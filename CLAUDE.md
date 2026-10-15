@@ -76,7 +76,7 @@ docs/                 # windows.md (Windows 세션 체크리스트)
 third_party/          # OpenBW·BWAPI·UAlbertaBot 클론(커밋 고정, git 미추적) + patches/(0001 폴더 로더, 0002 고정 시작 seed, 0003 런처 종료 크래시 회피, 0004 결정론적 LAN uid, 0005 UAlbertaBot BWAPI 4.2 포팅)
 reports/              # 스파이크·벤치·평가 리포트
 ```
-진행 상황(2026-10-15): M0 완료(012·013 외 Approved), M1 완료(벤치·OpenBW·데이터 추출), M2 완료(proto·브리지·T0 테란·셀프매치, `reports/m2_selfmatch.md`), M3 진행 중(2026-10-16: hostd·env 스케줄러 Linux, T0 3종족, T1 1단계 UAlbertaBot, 포팅 조사 `reports/oss_bot_porting.md` 완료. 최종 검증·`reports/m3.md` 남음. Windows는 `docs/windows.md`).
+진행 상황(2026-10-15): M0 완료(012·013 외 Approved), M1 완료(벤치·OpenBW·데이터 추출), M2 완료(proto·브리지·T0 테란·셀프매치, `reports/m2_selfmatch.md`), M3 Linux 범위 완료(2026-10-16: hostd·env 스케줄러, T0 3종족, T1 1단계 UAlbertaBot, `reports/m3.md`·`reports/oss_bot_porting.md`). 남은 것: Windows(`docs/windows.md`), 원격 2호스트 020-AC1, T1 2단계 결정.
 
 ## 코딩 규칙
 - Burn 0.22 모델 코드는 백엔드에 무관하게 쓰고 실행 시 `Device`로 고른다. 테스트는 `Device::flex()`로 한다 (032-R1).
