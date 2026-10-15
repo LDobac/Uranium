@@ -1,4 +1,5 @@
 # 021-AC2: T0 Terran vs every T1 bot, 10 games per bot and race (5 per map).
+# McRave plays 10 in total (P 5, Z 3, T 2): it is 10-40x slower per game in lockstep.
 name = "m3-t1"
 seed_base = 43000
 [[matchup]]
@@ -33,17 +34,17 @@ p0 = { kind = "t0", race = "terran" }
 p1 = { kind = "oss", name = "steamhammer", race = "terran" }
 [[matchup]]
 map = "both"
-games = 10
+games = 5
 p0 = { kind = "t0", race = "terran" }
 p1 = { kind = "oss", name = "mcrave", race = "protoss" }
 [[matchup]]
 map = "both"
-games = 10
+games = 3
 p0 = { kind = "t0", race = "terran" }
 p1 = { kind = "oss", name = "mcrave", race = "zerg" }
 [[matchup]]
 map = "both"
-games = 10
+games = 2
 p0 = { kind = "t0", race = "terran" }
 p1 = { kind = "oss", name = "mcrave", race = "terran" }
 [[matchup]]
