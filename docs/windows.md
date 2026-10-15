@@ -80,23 +80,32 @@
   - 콘솔 창이 뜨면 `CREATE_NO_WINDOW`를 쓴다.
 - [ ] OSS 봇 레지스트리: `<URANIUM_OSS_BOTS_DIR>\<name>\module.dll` (`config.rs`에 반영돼 있음)
 
-## 5. UAlbertaBot Windows 빌드 (`tools/oss/build_ualbertabot.ps1`)
-- [ ] 같은 커밋 `558899d8793456f4a6ec4196efbb5235552e24db`에 패치 0005를 적용한다.
-  - 원본은 MSVC 프로젝트이므로 패치의 `linux/compat.h`는 필요 없을 수 있다.
-  - 단, BWAPI 4.4 → 4.2 차이(`URANIUM_BOSS_BWAPI`, 설정 경로 `bwapi-data/AI`, `UraniumModule.cpp` 어댑터)는 그대로 필요하다.
-- [ ] Linux와 같은 파일 목록으로 DLL을 빌드한다.
-  - 제외: `main.cpp`, `BOSS_main.cpp`, `StarCraftGUI.cpp`, `TutorialCode.cpp`, `UnitInfoManager.cpp`
-  - `newAIModule`/`gameInit`을 export한다.
-  - 출력: `<URANIUM_OSS_BOTS_DIR>\ualbertabot\module.dll` + `bwapi-data\AI\UAlbertaBot_Config.txt`
+## 5. T1 봇 Windows 빌드 (`tools/oss/build_<bot>.ps1`)
+- [ ] `tools/oss/common.sh`와 같은 역할의 `common.ps1`을 만든다.
+  - 고정 커밋 clone, zip sha256 검증, 패치 적용, 출력 `<URANIUM_OSS_BOTS_DIR>\<bot>\{module.dll, VERSION, bwapi-data\}`
+- [ ] 봇별 출처와 고정값은 Linux 스크립트(`tools/oss/build_<bot>.sh`)를 따른다. 패치 0005–0010도 그대로 적용한다.
+  - 원본이 모두 MSVC 프로젝트라 Linux용 수정(`linux/compat.h`, 경로 대소문자 등)은 Windows에서 해가 없다.
+  - 대신 각 패치의 `linux/UraniumModule.cpp`는 빌드에서 빼고, 원본 `Dll.cpp`/`dllmain.cpp`를 쓴다.
+- [ ] 봇별 확인 사항
+  | 봇 | 확인할 것 |
+  |---|---|
+  | UAlbertaBot | 제외 파일(`main.cpp`, `BOSS_main.cpp`, `StarCraftGUI.cpp`, `TutorialCode.cpp`, `UnitInfoManager.cpp`). 단, `SparCraft::init`/`BOSS::init`은 `UraniumModule.cpp`에만 있으므로 Windows에서도 필요하다 |
+  | Steamhammer | `Steamhammer_dll.zip`의 JSON 설정 복사, 공백 포함 파일 `OpsBoss with immobile.cpp` 제외 |
+  | ZZZKBot | 패치의 `getRandomSeed()` 제거가 Windows OpenBW에도 필요하다 |
+  | Stardust | `IS_OPENBW`·계측 매크로 없이 빌드, zstd 정적 빌드, 채취 백엔드는 패치대로 MineralLocking |
+  | McRave | 59:59 자동 퇴장 제거 패치 유지 |
+  | Iron | `behavior/wall.cpp`는 VS 프로젝트에 없으므로 제외 |
+- [ ] 각 봇 스모크(`config/plans/m3-t1.toml`의 일부)
 
 ## 6. 검증
 hostd + `uranium-env run --plan config/plans/<plan>.toml`로 진행한다.
+- [ ] `uranium-env calibrate`로 이 PC의 동시 게임 수를 측정한다(020-R10). Windows에서도 결과 파일이 만들어지고 hostd가 읽는지 확인한다(020-AC5)
 - [ ] 스모크: `smoke-tvt`, `smoke-cross`, `smoke-uab`
 - [ ] 011-AC1: 두 맵 각 100판 완주
 - [ ] 011-AC4: 같은 seed 결정론. 결과 JSONL을 Linux 결과와 비교해 본다. 바이트 단위로 같아야 하는 것은 Windows 안에서만이고, Linux와의 비교는 참고용이다.
 - [ ] 010-AC6: 시야 위반 0
 - [ ] 020-AC3: 작업 관리자나 `taskkill /F`로 hostd를 강제 종료한 뒤 `BWAPILauncher.exe`가 0개
-- [ ] 021-AC2: UAlbertaBot 대 T0 각 종족 10판
+- [ ] 021-AC2: `config/plans/m3-t1.toml`(T1 봇 6종, 봇·종족별 10판)
 - [ ] 구성 (b): Windows에서 `uranium-env`를 실행하고, VPN 너머 Linux 게임 PC의 hostd를 쓴다.
   - 호스트 목록은 커밋하지 않는 `URANIUM_HOSTS_FILE`에 둔다.
   - `URANIUM_AGENT_LISTEN`은 게임 PC에서 접근 가능한 주소여야 한다.
