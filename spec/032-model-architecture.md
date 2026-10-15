@@ -1,0 +1,187 @@
+# 032 — Model Architecture (Burn)
+
+- **Status**: Approved (2026-10-15)
+- **Related**: [030](030-observation.md), [031](031-action-space.md), [033](033-reward.md), [034](034-action-table.md), [041](041-imitation-learning.md), [042](042-rl-training.md), [060](060-infra-bc250.md)
+
+## Purpose
+BC250(Vulkan) 학습 예산에 맞춘 경량 AlphaStar 계열 정책·가치 네트워크를 Burn으로 정의한다. 입력 계약은 [030](030-observation.md), 액션 구조는 [031](031-action-space.md)과 [034](034-action-table.md)를 따른다.
+
+## 확정 사항 (2026-10-15)
+| 항목 | 결정 |
+|---|---|
+| 정책 구조 | **단일 end-to-end 정책** (AMB-032-1 Resolved) |
+| 매치업 | **단일 공유 모델 + 상대 종족 임베딩** (AMB-032-2 Resolved) |
+| 전략 조건 z | **포함** (AMB-032-3 Resolved) |
+| 시간 축 코어 | **LSTM으로 시작**. M5에서 Transformer 메모리(GTrXL 계열)와 비교해 채택하고, `Core` trait로 교체 가능하게 한다 (AMB-032-4 Resolved) |
+| 관계 학습 | 유닛↔건물↔유닛 관계는 EntityEncoder(공간 축 트랜스포머)가 담당한다. 거리 기반 attention bias를 추가한다 |
+
+## 1. 전체 구조
+```
+entity_* ─► EntityEncoder(Transformer 3L + distance bias) ─► E[B,N,256], e_pool[B,256]
+                                   └─ scatter(Linear(E)→32ch @128²) ─┐
+spatial[B,26,128,128] ─────────────────────────────────────────────►┴► SpatialEncoder(U-Net enc) ─► S8[B,128,8,8], skips{64²,32²,16²}, s_pool[B,256]
+scalar, scalar_cat, z_* ─► ScalarEncoder ─► c[B,256]
+concat[e_pool, s_pool, c](768) ─► Core (LSTM 512) ─► h[B,512]
+h ─► Heads (자기회귀, ar[B,256]):
+      1 ActionType ─► 2 Delay ─► 3 Queued ─► 4 Selected(≤12) ─► 5 TargetUnit | 6 Location(128²)
+h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units, value}
+```
+
+## 2. 모듈 상세
+
+### 2.1 EntityEncoder
+- **입력**:
+  - `Emb(234,64)[unit_type]` ⊕ `Emb(3,8)[owner]` ⊕ `Emb(190,32)[order]` ⊕ `Emb(A,16)[last_action]` ⊕ `entity_cont(≈64)`
+  - → `Linear(→256)`
+- **Transformer**:
+  - 3층, d=256, heads=8, FFN=1024, pre-LayerNorm, GELU
+  - dropout은 BC에서 0.1, RL에서 0
+  - padding key는 마스크 처리한다.
+- **distance bias**:
+  - 각 층의 attention logit에 `bias[l, h, bucket(i,j)]`를 더한다.
+  - `bucket` = (같은 소유자 여부: 2) × (픽셀 거리 log bucket: 16) = 32개.
+  - 파라미터 수는 3층 × 8 head × 32. 비용은 [B,8,N,N] 덧셈 1회다.
+- **출력**:
+  - `E[B,N,256]`
+  - `e_pool` = `Linear(512→256)`(concat(masked_mean(E | self), masked_mean(E | enemy)))
+
+### 2.2 SpatialEncoder
+- **scatter**: `Linear(256→32)(E)`를 `entity_cell`에 scatter-add하고 셀별 개수로 나눈다(평균) → [B,32,128,128]
+- **stem**: concat(spatial, scatter) → `Conv3x3(58→32)` @128²
+- **다운샘플**:
+  - 각 단계는 `Conv3x3 stride2 + ResBlock(2×Conv3x3)`
+  - 128²→64²(64ch) → 32²(64ch) → 16²(128ch) → 8²(128ch)
+  - 64², 32², 16² 출력은 skip으로 보관한다.
+- **bottleneck**: ResBlock×2 @8²×128 → `S8`
+- **풀링**: `s_pool` = `Linear(8192→256)`(flatten(S8))
+
+### 2.3 ScalarEncoder
+- 연속값: `Linear(F_s→256)` → ReLU → `Linear(256→256)`
+- 범주형:
+  - enemy_race `Emb(4,32)`
+  - map_family `Emb(M,16)`
+  - start_loc `Emb(8,8)`
+- z:
+  - `Emb(A,32)[z_build]`(20개, 위치 임베딩 포함) → masked mean
+  - `Linear(U→32)[z_units]`
+  - → `Linear(→64)`, `z_present=false`면 0 벡터
+- 출력: concat → `Linear(→256)` = `c`. `c`는 ActionTypeHead의 GLU 게이트 문맥으로도 쓴다.
+
+### 2.4 Core
+- 인터페이스:
+  ```rust
+  trait Core: Module {
+      type State;
+      fn init_state(&self, batch: usize, device: &Device) -> Self::State;
+      fn step(&self, x: Tensor<2>, s: Self::State) -> (Tensor<2>, Self::State);          // 추론
+      fn forward_seq(&self, x: Tensor<3>, s0: Self::State) -> (Tensor<3>, Self::State);  // 학습 [B,T,·]
+  }
+  ```
+- 기본 구현은 `LstmCore`다.
+  - `Lstm(768→512)` 1층
+  - 학습은 T=64 truncated BPTT로 하고, 시작 상태는 actor가 기록한 값을 쓴다.
+  - 에피소드 시작 시 0으로 리셋한다.
+- 비교 대상(M5 ablation)은 `GtrxlCore`다.
+  - 최근 M=64 step의 core 입력에 causal self-attention 2층(d=512)을 쓴다.
+  - GRU-gated residual을 쓰고, 추론 시 KV cache를 유지한다.
+  - 채택 기준은 E-Elo([050](050-evaluation.md)), 추론 지연, 메모리다.
+- 장기 정보(적 건물 기억, 관측된 적 최대 수, 정찰 기록)는 관측([030](030-observation.md))에서 명시적으로 유지한다. 코어는 단기·중기 문맥을 담당한다.
+
+### 2.5 Heads
+| # | Head | 구조 | 출력 | `ar` 갱신 |
+|---|---|---|---|---|
+| 1 | ActionType | `Linear(512→256)` → ResMLP×2 → GLU(gate=c) → `Linear(256→A)` | a | `ar = Linear(h→256) + Linear(onehot(a)→256)` |
+| 2 | Delay | `MLP(256→128→16)` | 16 bucket {1,2,3,4,5,6,7,8,10,12,14,16,20,24,28,32} | `ar += Emb(16,256)[d]` |
+| 3 | Queued | `MLP(256→64→2)`, `uses_queued=false`면 0으로 고정 | q | `ar += Emb(2,256)[q]` |
+| 4 | Selected | key=`Linear(E→64)`, END key 1개 추가. query는 `GRUCell(64)`로 step마다 갱신(초기값 `Linear(ar→64)`). step마다 이미 고른 유닛을 마스크하고, `max_select` 도달 시 END만 허용. 최대 12 step | sel ⊆ N | `ar += Linear(64→256)(mean key[sel])` |
+| 5 | TargetUnit | `Linear(ar→64)` · key(`Linear(E→64)`, 4와 별도) | u | 종료 |
+| 6 | Location | `Linear(ar→16·8·8)` reshape ⊕ S8 → ConvT 업샘플 8²→16²→32²→64²→128²(skip concat) → `Conv1x1→1` | 128² logits | 종료 |
+
+- 헤드 5와 6은 `target` 종류에 따라 하나만 쓴다([034](034-action-table.md)).
+- 모든 헤드의 마스크는 [034](034-action-table.md) 테이블로 GPU에서 gather해 만든다(§5).
+
+### 2.6 ValueHeads
+- 입력:
+  - `h`
+  - z 임베딩
+  - enemy_race 임베딩
+  - **privileged**(학습 전용): [010](010-game-protocol.md)의 `PrivilegedSummary`(상대 실제 자원, 업그레이드, 테크, 유닛 구성)를 쓴다. RL에서는 OpenBW lockstep 학습 모드(셀프플레이와 오픈소스 봇 상대 모두, 011-R5)에서 얻고, BC에서는 리플레이 재생 모드(011-R12)에서 얻는다. 실전(SC:R)에는 존재하지 않는다.
+- 구조: 공유 `MLP(→256)`에 출력 4개를 둔다.
+  - win: tanh
+  - build, units, value: 선형
+  - 보상 성분과의 대응은 [033](033-reward.md)을 따른다.
+- privileged 입력이 정책 헤드로 흘러가는 경로가 그래프 상 존재하지 않아야 한다(032-R11).
+
+## 3. Requirements
+| ID | 요구사항 |
+|---|---|
+| 032-R1 | **MUST** Burn 0.22의 런타임 `Device` 방식으로 작성한다. 모델 코드는 백엔드에 무관하고, 실행 시 Device로 고른다. 학습·추론은 `Device::vulkan(..)`(BC250) 또는 `Device::cuda(n)`(CUDA PC)에 `.autodiff()`를 붙여 쓴다. 테스트는 `Device::flex()`(CPU)를 쓴다. (변경 이력: 0.22에서 백엔드 제네릭 제거·ndarray deprecated, 2026-10-15 CUDA 추가) |
+| 032-R2 | **MUST** 기본 크기는 약 12M 파라미터(§4)로 하고, 허용 범위는 10M–40M이다. 확장은 d_model 384, Transformer 4층 순으로 하며 M1(a) 벤치로 확정한다 |
+| 032-R3 | **MUST** 헤드는 자기회귀다. 학습에서는 teacher forcing(레이블 액션 주입), 추론에서는 샘플값을 주입한다 |
+| 032-R4 | **MUST** 모든 헤드에 마스크를 적용한다. 마스크된 logit은 `-1e9`로 둔다. 샘플링 결과는 항상 마스크를 만족해야 한다 |
+| 032-R5 | **MUST** Core 상태는 에피소드 간 리셋한다. 학습 시퀀스는 T=64 truncated BPTT로 한다 |
+| 032-R6 | **MUST** 체크포인트에 함께 저장할 항목: 가중치, `UraniumNetConfig`, feature 스키마 버전, action 스키마 버전([034](034-action-table.md)), 정규화 통계 |
+| 032-R7 | **MUST** 추론은 batch B개 게임 동시 처리를 지원한다. 엔티티는 배치 내 최대 N으로 동적 패딩한다 |
+| 032-R8 | **MUST** 학습과 추론은 **f16 혼합 정밀도**로 한다. M1(a)에서 BC250이 f16을 지원하고 matmul 오차가 4.5e-4, 속도가 약 1.5배임을 확인했다(2026-10-15 결정). 마스터 가중치·옵티마이저 상태·손실·softmax 누적은 f32로 두고, 손실 스케일링을 적용한다. 수치 문제가 생기면 해당 모듈만 f32로 되돌리고 기록한다 |
+| 032-R13 | **MUST** distance bias는 bias 테이블 gradient를 대규모 scatter-add로 모으지 않는 방식으로 구현한다. 예: bucket one-hot과 matmul, 또는 bucket별 사전 합산. M1(a)에서 기존 방식의 역전파가 정방향 대비 약 40배 느림(310ms)을 확인했다. 정방향 대비 역전파 시간이 5배 이내여야 한다 |
+| 032-R9 | **MUST** `act()`는 헤드 6개의 샘플링을 **한 번의 GPU forward 안에서** 수행한다(Gumbel-max). CPU 왕복은 없어야 한다 |
+| 032-R10 | **MUST** joint log-prob와 엔트로피는 `action_table`상 사용된 헤드만 합산한다 |
+| 032-R11 | **MUST** privileged 입력은 ValueHeads에만 연결한다. `act()` 시그니처는 privileged 텐서를 받지 않는다 |
+| 032-R12 | **MUST** Selected 헤드의 BC 레이블은 정규 순서(entity index 오름차순) 시퀀스 + END로 만든다 |
+
+## 4. 파라미터·연산 예산 (기본 구성, N=256)
+| 모듈 | 파라미터 | FLOPs/step (B=1) |
+|---|---|---|
+| EntityEncoder (임베딩, 3층, bias) | ~2.6M | ~1.2 GFLOP |
+| SpatialEncoder (s_pool 2.1M 포함) | ~3.0M | ~0.8 GFLOP |
+| ScalarEncoder + z | ~0.4M | 무시 |
+| Core LSTM(768→512) | ~2.6M | 무시 |
+| Heads | ~2.5M | ~0.4 GFLOP |
+| ValueHeads | ~1.0M | 무시 |
+| **합계** | **~12M** | **~2.5 GFLOP** |
+
+배치 16 추론 시 약 40 GFLOP이 필요하다. 실효 처리량 1–2 TFLOPS를 가정하면 20–40ms다. 실측은 M1(a)에서 한다.
+
+## 5. 마스크 파이프라인
+- CPU(env)가 계산하는 것: `type_mask[B,A]`, `unit_cap[B,N,K]`, `loc_class_mask[B,L,128,128]` ([030](030-observation.md), [034](034-action-table.md))
+- GPU에 상수로 올리는 것: `action_table` 텐서 `select_cap[A]`, `target_cap[A]`, `loc_class[A]`, `max_select[A]`, `uses_*[A]`
+- GPU에서 헤드 진행 중에 샘플된 a로 gather한다:
+  - `sel_mask = gather(unit_cap, select_cap[a]) ∧ is_self ∧ entity_mask`
+  - `tgt_mask = gather(unit_cap, target_cap[a]) ∧ entity_mask`
+  - `loc_mask = gather(loc_class_mask, loc_class[a])`
+
+## 6. 학습·추론 인터페이스
+```rust
+#[derive(Config)] pub struct UraniumNetConfig { entity, spatial, scalar, core, heads, value }
+#[derive(Module)] pub struct UraniumNet<C: Core> { entity, spatial, scalar, core: C, heads, value }
+
+// Burn 0.22: 백엔드는 텐서·모듈이 놓인 Device가 결정한다 (032-R1)
+impl<C: Core> UraniumNet<C> {
+    /// 추론 1 step. 샘플링은 GPU 내부(Gumbel-max), 온도 temp. 사용된 헤드의 log-prob 합과 value 반환.
+    pub fn act(&self, obs: ObsBatch, state: C::State, temp: f32) -> ActOutput<C::State>;
+    /// 학습 [B,T]. teacher forcing. 헤드별 masked logits + value 반환.
+    pub fn forward_seq(&self, obs: ObsSeq, labels: ActionSeq, priv_: Option<PrivSeq>, s0: C::State) -> SeqOutput;
+}
+```
+- 인코더와 헤드는 B×T를 펼쳐 병렬로 계산하고, Core만 T를 따라 순차 계산한다.
+- **BC**: 헤드별 CE × 사용 마스크([041](041-imitation-learning.md))
+- **RL**: `forward_seq`의 target logits와 actor behaviour log-prob로 V-trace, UPGO, 헤드별 KL(π‖π_BC)을 계산한다([042](042-rl-training.md)).
+
+## Acceptance Criteria
+- 032-AC1: Flex(CPU) 대비 Vulkan, CUDA 각각에서 같은 가중치·입력의 forward 출력 차이가 ≤ 1e-4(f32)다.
+- 032-AC2: 추론 지연은 batch=16, N=256 기준 ≤ 40ms(p95)다. 학습 호스트별로 측정한다: BC250 필수, CUDA PC는 준비되는 대로.
+- 032-AC3: 학습 처리량 batch 32×T64 기준 ≥ TBD(M1) samples/s이고, 메모리는 [060](060-infra-bc250.md) 예산 이내다.
+- 032-AC4: 무작위 마스크 10만 건에서 샘플링된 액션이 모두 마스크를 만족한다.
+- 032-AC5: `act()` 경로의 연산 그래프에 privileged 텐서가 없다(타입 수준 보장 + 테스트).
+- 032-AC6: `LstmCore`와 `GtrxlCore`가 같은 `Core` trait으로 교체되고, 둘 다 AC1–AC4를 통과한다.
+
+## Risks & Open Questions
+- **M1(a) 실측 (2026-10-15, f32, `reports/bench_bc250.md`)**:
+  - 추론 근사(B16·N256) 87ms로 032-AC2(40ms)에 미달한다.
+  - 학습 약 40 프레임/s로, BC 1회독에 약 34일이 걸린다.
+  - 사용자는 f16만 채택했다. 공간 64² 축소, 인코더 축소, 프레임 샘플링은 채택하지 않았다.
+  - M5에서 f16으로 실측했을 때도 AC2와 학습 속도가 부족하면 사용자에게 결과를 보고하고 추가 대응을 다시 확인받는다.
+- Burn의 scatter-add, GRUCell, attention bias 주입, ConvTranspose2d가 Vulkan에서 지원·성능 미확인이다. M1(a)에서 확인한다([060](060-infra-bc250.md)).
+  - 대체안: scatter → one-hot matmul, attention은 직접 구현
+- 128² Location 업샘플이 지연을 지배할 수 있다. 대체안은 64² 출력 + 2×2 subcell 헤드다.
+- Selected 12-step 루프 지연이 문제가 될 수 있다. 대체안은 단일 step multi-label(sigmoid)이다.
