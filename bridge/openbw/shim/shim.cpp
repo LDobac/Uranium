@@ -195,8 +195,9 @@ bool exec(const UrCmd& c, const int32_t* pool) {
 class UraniumModule : public AIModule {
  public:
   void onStart() override {
-    uint32_t seed = 0;
-    if (uranium_bridge_seed(&seed)) Broodwar->setRandomSeed(seed);
+    // The game seed is applied to every client at game start by OpenBW patch 0002
+    // (URANIUM_SEED). Do not call setRandomSeed() here: reseeding only our own client
+    // desyncs LAN games against any other AI module (M3 finding).
     privileged_ = uranium_bridge_privileged_requested() != 0;
     // 011-R5 (2026-10-15): always on in OpenBW lockstep mode. Needed for deterministic replay
     // ids; the policy observation is filtered by visible_to_self() regardless.

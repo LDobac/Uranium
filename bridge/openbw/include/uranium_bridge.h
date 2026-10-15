@@ -139,9 +139,8 @@ int32_t uranium_bridge_step(const UrFrame* frame, UrAct* out);
 void uranium_bridge_end(int32_t winner, uint8_t reason, uint32_t frame);
 /* Next frame at which the shim must call uranium_bridge_step. */
 uint32_t uranium_bridge_next_frame(void);
-/* Max frames (URANIUM_MAX_FRAMES) and seed (URANIUM_SEED, returns 0 if unset). */
+/* Max frames (URANIUM_MAX_FRAMES). The game seed is applied by OpenBW patch 0002. */
 uint32_t uranium_bridge_max_frames(void);
-int32_t uranium_bridge_seed(uint32_t* seed);
 uint8_t uranium_bridge_privileged_requested(void);
 
 #ifdef __cplusplus

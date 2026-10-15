@@ -47,19 +47,6 @@ pub extern "C" fn uranium_bridge_max_frames() -> u32 {
     env_u64("URANIUM_MAX_FRAMES").map(|v| v as u32).unwrap_or(86_400)
 }
 
-/// # Safety
-/// `seed` must be a valid pointer.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn uranium_bridge_seed(seed: *mut u32) -> i32 {
-    match env_u64("URANIUM_SEED") {
-        Some(v) => {
-            unsafe { *seed = v as u32 };
-            1
-        }
-        None => 0,
-    }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn uranium_bridge_privileged_requested() -> u8 {
     (std::env::var("URANIUM_PRIVILEGED").as_deref() == Ok("1")) as u8
