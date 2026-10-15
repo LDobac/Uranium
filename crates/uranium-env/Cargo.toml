@@ -1,0 +1,16 @@
+[package]
+name = "uranium-env"
+description = "Game scheduler: dispatches matchups to hostds and runs the embedded agent server (spec 020)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+uranium-proto.workspace = true
+uranium-agent.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
