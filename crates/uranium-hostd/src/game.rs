@@ -39,6 +39,8 @@ pub fn launcher_env(cfg: &Config, spec: &GameSpec, slot: usize, module: &Path, r
             if spec.save_replay { replay_dir.join(format!("g{}-p{slot}.rep", spec.game_id)).display().to_string() } else { String::new() },
         ),
         ("URANIUM_GAME_ID", spec.game_id.to_string()),
+        // 0004 patch: deterministic client ids => launcher slot = player slot (011-AC4).
+        ("URANIUM_LAN_SLOT", slot.to_string()),
         ("URANIUM_MAX_FRAMES", spec.max_frames.to_string()),
         ("URANIUM_PRIVILEGED", if spec.privileged { "1" } else { "0" }.to_string()),
     ];
@@ -107,8 +109,11 @@ pub fn run(cfg: &Config, platform: &dyn Platform, spec: &GameSpec, stop: &dyn Fn
             cmd.envs(lan.env[slot].iter().map(|(k, v)| (k, v)));
             children.push(platform.spawn(cmd).with_context(|| format!("spawning launcher {slot}"))?);
             logs.push(log);
-            // The first client binds the LAN endpoint; give it a head start (M2 harness).
-            std::thread::sleep(Duration::from_millis(200));
+            // The first client binds the LAN endpoint and becomes player slot 0; wait for it so
+            // slot assignment never depends on scheduling (011-AC4).
+            if slot == 0 && !platform.wait_first_ready(&lan, Duration::from_secs(20)) {
+                anyhow::bail!("first launcher did not open its LAN endpoint within 20 s");
+            }
         }
         Ok(())
     })();
@@ -209,6 +214,7 @@ mod tests {
         assert_eq!(get("URANIUM_AGENT_ADDR").unwrap(), "127.0.0.1:7600");
         assert_eq!(get("URANIUM_SEED").unwrap(), "9");
         assert_eq!(get("BWAPI_CONFIG_AUTO_MENU__SAVE_REPLAY").unwrap(), "");
+        assert_eq!(get("URANIUM_LAN_SLOT").unwrap(), "0");
         let env1 = launcher_env(&cfg(), &spec(None), 1, Path::new("/o/module.so"), Path::new("/w/g3"));
         assert!(env1.iter().all(|(k, _)| k != "URANIUM_AGENT_ADDR" && k != "URANIUM_SEED"));
         assert!(env1.iter().any(|(k, v)| k == "BWAPI_CONFIG_AUTO_MENU__RACE" && v == "Random"));

@@ -24,6 +24,9 @@ pub enum LanCleanup {
 pub trait Platform: Send + Sync {
     fn lan_setup(&self, game_id: u64) -> Result<LanSetup>;
     fn release(&self, lan: LanSetup);
+    /// Blocks until the first launcher's LAN endpoint exists, so player slots are assigned
+    /// in launch order and seeded games are reproducible (011-AC4).
+    fn wait_first_ready(&self, lan: &LanSetup, timeout: std::time::Duration) -> bool;
     /// Spawn so that the launcher and everything it starts can be killed as a unit and dies
     /// with hostd (020-AC3).
     fn spawn(&self, cmd: Command) -> Result<Child>;
@@ -67,6 +70,18 @@ mod unix {
             if let LanCleanup::File(p) = lan.cleanup {
                 let _ = std::fs::remove_file(p);
             }
+        }
+
+        fn wait_first_ready(&self, lan: &LanSetup, timeout: std::time::Duration) -> bool {
+            let LanCleanup::File(p) = &lan.cleanup else { return true };
+            let t = std::time::Instant::now();
+            while t.elapsed() < timeout {
+                if p.exists() {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            false
         }
 
         fn spawn(&self, mut cmd: Command) -> Result<Child> {
@@ -116,6 +131,9 @@ mod windows {
             unreachable!()
         }
         fn release(&self, _lan: LanSetup) {}
+        fn wait_first_ready(&self, _lan: &LanSetup, _timeout: std::time::Duration) -> bool {
+            unreachable!()
+        }
         fn spawn(&self, _cmd: Command) -> Result<Child> {
             unreachable!()
         }

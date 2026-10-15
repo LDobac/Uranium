@@ -275,7 +275,8 @@ class UraniumModule : public AIModule {
     uint8_t reason = 0;
     if (time_limit_) reason = 2;
     else if (isWinner) winner = Broodwar->self()->getID();
-    else if (Broodwar->enemy()) winner = Broodwar->enemy()->getID();
+    // Both eliminated on the same frame: draw (M3 finding).
+    else if (Broodwar->enemy() && !Broodwar->enemy()->isDefeated()) winner = Broodwar->enemy()->getID();
     uranium_bridge_end(winner, reason, (uint32_t)Broodwar->getFrameCount());
   }
 

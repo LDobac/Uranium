@@ -1,0 +1,18 @@
+--- a/sync.h
++++ b/sync.h
+@@ -34,6 +34,15 @@
+ 		std::array<uint32_t, 8> vals{};
+ 		static uid_t generate() {
+ 			uid_t r;
++			// Uranium patch: with URANIUM_LAN_SLOT set (by uranium-hostd), client ids are
++			// deterministic so player slots follow launch order (clients are sorted by uid,
++			// descending): slot 0 gets the largest id. See spec 011-AC4.
++			if (const char* slot = std::getenv("URANIUM_LAN_SLOT")) {
++				uint32_t s = (uint32_t)std::strtoul(slot, nullptr, 10);
++				r.vals.fill(0x5eed0000u);
++				r.vals[0] = 0xffffffffu - s;
++				return r;
++			}
+ 			std::array<uint32_t, 8> arr;
+ 			arr[0] = 42;
+ 			arr[1] = (uint32_t)std::chrono::high_resolution_clock::now().time_since_epoch().count();

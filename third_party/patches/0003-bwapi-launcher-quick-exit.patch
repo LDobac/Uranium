@@ -1,0 +1,26 @@
+diff --git a/bwapi/BWAPILauncher/Source/Main.cpp b/bwapi/BWAPILauncher/Source/Main.cpp
+index c9f7fc35..f3aa18b1 100644
+--- a/bwapi/BWAPILauncher/Source/Main.cpp
++++ b/bwapi/BWAPILauncher/Source/Main.cpp
+@@ -3,6 +3,7 @@
+ #include "BW/BWData.h"
+ 
+ #include <cstdio>
++#include <cstdlib>
+ 
+ int main() {
+ 
+@@ -37,7 +38,12 @@ int main() {
+         h->onGameEnd();
+         h->bwgame.leaveGame();
+       } while (!h->bwgame.gameClosed() && h->autoMenuManager.autoMenuRestartGame != "" && h->autoMenuManager.autoMenuRestartGame != "OFF");
+-      return 0;
++      // Uranium patch: the AI's onEnd has run and the replay is saved (onGameEnd). Skip the
++      // ~GameOwner teardown, which can double-free in the asio LAN socket when both players
++      // end on the same frame (M3 finding).
++      fflush(stdout);
++      fflush(stderr);
++      std::_Exit(0);
+     } catch (const std::exception& e) {
+       printf("Error: %s\n", e.what());
+       return 1;
