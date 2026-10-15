@@ -1,0 +1,90 @@
+//! M1(a) micro-benchmarks for the BC250 training host (spec 060-R2, 060-AC1/AC2).
+//!
+//! Every case runs on the selected backend and is timed; cases with a CPU reference are also
+//! run on Flex (CPU) with identical inputs and weights to report the max absolute / relative error.
+
+mod cases;
+mod report;
+mod util;
+
+use std::path::PathBuf;
+
+use anyhow::Result;
+use burn::tensor::{Device, DeviceKind};
+use clap::{Parser, ValueEnum};
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum Backend {
+    Vulkan,
+    /// CUDA GPU PC (060-AC4); requires `--features cuda`.
+    Cuda,
+    Flex,
+}
+
+#[derive(Parser, Debug)]
+#[command(about = "Burn micro-benchmarks for spec 060-R2")]
+struct Args {
+    #[arg(long, value_enum, default_value = "vulkan")]
+    backend: Backend,
+    /// Smaller shapes and fewer iterations (smoke test).
+    #[arg(long)]
+    quick: bool,
+    /// Skip the Flex (CPU) accuracy reference (faster).
+    #[arg(long)]
+    no_accuracy: bool,
+    /// Markdown report path.
+    #[arg(long, default_value = "reports/bench_bc250.md")]
+    out: PathBuf,
+    /// CUDA device index for `--backend cuda`.
+    #[arg(long, default_value_t = 0)]
+    cuda_index: usize,
+    /// Only run cases whose name contains this substring.
+    #[arg(long)]
+    filter: Option<String>,
+}
+
+#[cfg(feature = "cuda")]
+fn cuda_device(index: usize) -> Result<Device> {
+    Ok(Device::cuda(index))
+}
+
+#[cfg(not(feature = "cuda"))]
+fn cuda_device(_index: usize) -> Result<Device> {
+    anyhow::bail!("this build has no CUDA support; rebuild with `--features cuda` on a CUDA PC")
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+    let device = match args.backend {
+        Backend::Vulkan => Device::vulkan(DeviceKind::DefaultDevice),
+        Backend::Cuda => cuda_device(args.cuda_index)?,
+        Backend::Flex => Device::flex(),
+    };
+    let reference = (!args.no_accuracy && !matches!(args.backend, Backend::Flex)).then(Device::flex);
+
+    let ctx = cases::Ctx {
+        device,
+        reference,
+        quick: args.quick,
+        iters: if args.quick { 3 } else { 20 },
+        warmup: if args.quick { 1 } else { 3 },
+    };
+
+    let mut rows = Vec::new();
+    for case in cases::all() {
+        if let Some(f) = &args.filter {
+            if !case.name.contains(f.as_str()) {
+                continue;
+            }
+        }
+        eprintln!("[bench] {}", case.name);
+        let row = util::run_guarded(case.name, || (case.run)(&ctx));
+        eprintln!("        {}", row.summary());
+        rows.push(row);
+    }
+
+    let backend_name = format!("{:?}", args.backend).to_lowercase();
+    report::write(&args.out, &backend_name, args.quick, &rows)?;
+    eprintln!("[bench] wrote {}", args.out.display());
+    Ok(())
+}

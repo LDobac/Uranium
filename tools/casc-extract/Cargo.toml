@@ -1,0 +1,12 @@
+[package]
+name = "casc-extract"
+description = "Extract the game data files OpenBW needs from a StarCraft: Remastered CASC install (spec 011, AMB-011-1)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+sha2.workspace = true

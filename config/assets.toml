@@ -1,0 +1,21 @@
+# Pinned game assets (spec 011-R13, 000 AMB-000-3). Game data itself is never committed.
+# Validate with: sha256sum against these values.
+
+[openbw_data]
+# Extracted with: cargo run -p casc-extract -- ~/sc_data/scr/Data ~/sc_data/openbw
+dir = "~/sc_data/openbw"
+source = "StarCraft: Remastered CASC (.build.info branch kr, product s1)"
+files = 956
+manifest_sha256 = "f764fd0bac036f58fc824d79aab36b66e02717e18729fb00bf4dac2ac312de7d"   # sha256 of ~/sc_data/openbw/manifest.toml (per-file hashes inside)
+
+[maps.fighting_spirit]
+version = "1.3"
+file = "~/sc_data/maps/fighting_spirit_1.3.scx"
+origin = "SC:R Maps/ladder/2024Season1/(4)Fighting_Spirit_1.3.scx"
+sha256 = "f39df27cea359b06f0775cdc34d427150d40e9eb33cc688bfb10b6b5a29ca34d"
+
+[maps.circuit_breaker]
+version = "1.0"
+file = "~/sc_data/maps/circuit_breaker_1.0.scx"
+origin = "SC:R Maps/ladder/Season 10/(4)Circuit Breaker.scx (identical to every CircuitBreakers1.0.scx)"
+sha256 = "ba956f73d18342f3f329741b684fd569e6bcf718b1fcebd86c2d965481260bc0"

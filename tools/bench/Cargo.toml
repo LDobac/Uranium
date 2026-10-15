@@ -1,0 +1,16 @@
+[package]
+name = "bench"
+description = "M1(a) Burn/Vulkan micro-benchmarks for BC250 (spec 060-R2)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Enable only on a CUDA GPU PC (needs the CUDA toolkit): cargo run -p bench --release --features cuda -- --backend cuda
+cuda = ["burn/cuda"]
+
+[dependencies]
+burn = { workspace = true, features = ["std", "autodiff", "vulkan", "flex"] }
+anyhow.workspace = true
+clap.workspace = true

@@ -1,0 +1,70 @@
+diff --git a/data_loading.h b/data_loading.h
+index c8d5a0f..2717a92 100644
+--- a/data_loading.h
++++ b/data_loading.h
+@@ -9,6 +9,7 @@
+ #include <array>
+ #include <cstring>
+ #include <cstdio>
++#include <cstdlib>
+ 
+ namespace bwgame {
+ namespace data_loading {
+@@ -1311,7 +1312,32 @@ struct data_files_loader {
+ 				return;
+ 			}
+ 		}
+-		error("data_files_loader: %s: file not found", filename);
++		// Uranium patch: fall back to loose files extracted from a StarCraft: Remastered
++		// CASC install (directory given by URANIUM_DATA_DIR). See spec 011.
++		if (!loose_dir.empty() && read_loose_file(dst, filename)) return;
++		error("data_files_loader: %s: file not found (loose dir: '%s')", filename, loose_dir);
++	}
++
++	a_string loose_dir;
++
++	bool read_loose_file(a_vector<uint8_t>& dst, const a_string& filename) {
++		a_string rel = filename;
++		for (auto& c : rel) if (c == '\\') c = '/';
++		a_string lower = rel;
++		for (auto& c : lower) if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';
++		for (const a_string* name : {&rel, &lower}) {
++			FILE* f = fopen((loose_dir + *name).c_str(), "rb");
++			if (!f) continue;
++			dst.clear();
++			uint8_t buf[1 << 16];
++			size_t n;
++			while ((n = fread(buf, 1, sizeof(buf), f)) > 0) dst.insert(dst.end(), buf, buf + n);
++			bool ok = !ferror(f);
++			fclose(f);
++			if (!ok) error("data_files_loader: %s: read error", loose_dir + *name);
++			return true;
++		}
++		return false;
+ 	}
+ };
+ 
+@@ -1319,9 +1345,20 @@ template<typename data_files_loader_T = data_files_loader<>>
+ data_files_loader_T data_files_directory(a_string path) {
+ 	if (!path.empty() && path[path.size() - 1] != '/' && path[path.size() - 1] != '\\') path += '/';
+ 	data_files_loader_T r;
+-	r.add_mpq_file(path + "Patch_rt.mpq");
+-	r.add_mpq_file(path + "BrooDat.mpq");
+-	r.add_mpq_file(path + "StarDat.mpq");
++	// Uranium patch: with URANIUM_DATA_DIR set, MPQs are optional and loose files are used.
++	const char* loose = std::getenv("URANIUM_DATA_DIR");
++	auto exists = [](const a_string& p) {
++		FILE* f = fopen(p.c_str(), "rb");
++		if (f) fclose(f);
++		return f != nullptr;
++	};
++	for (const char* name : {"Patch_rt.mpq", "BrooDat.mpq", "StarDat.mpq"}) {
++		if (!loose || exists(path + name)) r.add_mpq_file(path + name);
++	}
++	if (loose && *loose) {
++		r.loose_dir = loose;
++		if (r.loose_dir.back() != '/') r.loose_dir += '/';
++	}
+ 	return r;
+ }
+ 

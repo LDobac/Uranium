@@ -1,0 +1,138 @@
+//! Extracts the files OpenBW needs from a StarCraft: Remastered install into a loose-file
+//! directory usable with `URANIUM_DATA_DIR` (spec 011, AMB-011-1 path (b)).
+//!
+//! Uses the third-party `casc` CLI (casc-cli 0.1.6, CascLib): `cargo install casc --version 0.1.6 --locked`.
+//!
+//! Usage: `casc-extract <scr_data_dir> <out_dir>` where `<scr_data_dir>` is the `Data` folder of
+//! the install (its parent must contain `.build.info`). Writes `<out_dir>/manifest.toml`
+//! (sizes, SHA-256, CASC names) and exits with code 2 if a required file is missing.
+
+mod files;
+
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use anyhow::{Context, Result, bail};
+use clap::Parser;
+use sha2::{Digest, Sha256};
+
+#[derive(Parser, Debug)]
+struct Args {
+    /// StarCraft: Remastered `Data` folder (the install root next to it holds `.build.info`).
+    scr_data_dir: PathBuf,
+    /// Output directory for loose files.
+    out_dir: PathBuf,
+    /// `casc` CLI executable.
+    #[arg(long, default_value = "casc")]
+    casc: String,
+}
+
+struct Extracted {
+    path: String,
+    casc_name: String,
+    size: usize,
+    sha256: String,
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+    let listing = run_casc(&args.casc, &["list".as_ref(), args.scr_data_dir.as_os_str()])?;
+    let index = files::Index::new(listing.lines());
+    eprintln!("CASC listing: {} files", index.len());
+
+    let staging = args.out_dir.join(".staging");
+    std::fs::create_dir_all(&staging)?;
+    let mut done = Vec::new();
+    let mut missing = Vec::new();
+
+    let mut wanted = files::fixed_files();
+    extract_all(&args, &index, &staging, &wanted, &mut done, &mut missing)?;
+    let tbl = std::fs::read(args.out_dir.join("arr/images.tbl"));
+    if let Ok(tbl) = tbl {
+        wanted = files::unit_files(&tbl)?;
+        extract_all(&args, &index, &staging, &wanted, &mut done, &mut missing)?;
+    }
+    std::fs::remove_dir_all(&staging).ok();
+
+    let manifest = args.out_dir.join("manifest.toml");
+    std::fs::write(&manifest, render_manifest(&args.scr_data_dir, &done, &missing)?)?;
+    eprintln!("extracted {} files, missing {} -> {}", done.len(), missing.len(), manifest.display());
+    for m in &missing {
+        eprintln!("  missing: {m}");
+    }
+    if !missing.is_empty() {
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
+fn extract_all(
+    args: &Args,
+    index: &files::Index,
+    staging: &Path,
+    paths: &[String],
+    done: &mut Vec<Extracted>,
+    missing: &mut Vec<String>,
+) -> Result<()> {
+    let mut found = Vec::new();
+    for p in paths {
+        match index.resolve(p) {
+            Some(name) => found.push((p.clone(), name.to_string())),
+            None => missing.push(p.clone()),
+        }
+    }
+    for chunk in found.chunks(200) {
+        let mut argv = vec!["extract".into(), "-o".into(), staging.as_os_str().to_owned(), args.scr_data_dir.clone().into_os_string()];
+        argv.extend(chunk.iter().map(|(_, n)| n.into()));
+        run_casc(&args.casc, &argv.iter().map(|s: &std::ffi::OsString| s.as_os_str()).collect::<Vec<_>>())?;
+        for (path, name) in chunk {
+            let src = staged_file(staging, name)?;
+            let data = std::fs::read(&src).with_context(|| format!("reading {}", src.display()))?;
+            let dst = args.out_dir.join(path);
+            std::fs::create_dir_all(dst.parent().unwrap())?;
+            std::fs::write(&dst, &data)?;
+            done.push(Extracted { path: path.clone(), casc_name: name.clone(), size: data.len(), sha256: hex(&Sha256::digest(&data)) });
+        }
+    }
+    Ok(())
+}
+
+/// Where casc-cli wrote `name` (internal structure kept, namespace prefix dropped).
+fn staged_file(staging: &Path, name: &str) -> Result<PathBuf> {
+    let rel = name.replace('\\', "/");
+    let candidates = [rel.clone(), rel.split_once(':').map(|(_, r)| r.trim_start_matches('/').to_string()).unwrap_or_default()];
+    for c in candidates.iter().filter(|c| !c.is_empty()) {
+        let p = staging.join(c);
+        if p.is_file() {
+            return Ok(p);
+        }
+    }
+    bail!("casc extracted `{name}` but the output file was not found under {}", staging.display())
+}
+
+fn run_casc(exe: &str, argv: &[&std::ffi::OsStr]) -> Result<String> {
+    let out = Command::new(exe)
+        .args(argv)
+        .output()
+        .with_context(|| format!("running `{exe}` (install: cargo install casc --version 0.1.6 --locked)"))?;
+    if !out.status.success() {
+        bail!("`{exe}` failed ({}): {}", out.status, String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn render_manifest(src: &Path, done: &[Extracted], missing: &[String]) -> Result<String> {
+    let mut s = String::new();
+    writeln!(s, "# Generated by casc-extract. Copy the hashes into config/assets.toml once validated.")?;
+    writeln!(s, "source = {:?}", src.display().to_string())?;
+    writeln!(s, "missing = {missing:?}\n")?;
+    for e in done {
+        writeln!(s, "[[file]]\npath = {:?}\ncasc_name = {:?}\nsize = {}\nsha256 = {:?}\n", e.path, e.casc_name, e.size, e.sha256)?;
+    }
+    Ok(s)
+}
