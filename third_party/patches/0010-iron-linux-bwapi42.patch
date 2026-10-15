@@ -1,0 +1,239 @@
+diff --git a/Iron/src/Iron/behavior/constructing.cpp b/Iron/src/Iron/behavior/constructing.cpp
+index 8deab6b..fc2afef 100644
+--- a/Iron/src/Iron/behavior/constructing.cpp
++++ b/Iron/src/Iron/behavior/constructing.cpp
+@@ -15,7 +15,7 @@
+ #include "../units/cc.h"
+ #include "../units/turret.h"
+ #include "../territory/stronghold.h"
+-#include "../territory/vgridmap.h"
++#include "../territory/vgridMap.h"
+ #include "../territory/vbase.h"
+ #include "../territory/wall.h"
+ #include "../strategy/strategy.h"
+diff --git a/Iron/src/Iron/behavior/dropping.cpp b/Iron/src/Iron/behavior/dropping.cpp
+index 0087dbb..0eeb4ae 100644
+--- a/Iron/src/Iron/behavior/dropping.cpp
++++ b/Iron/src/Iron/behavior/dropping.cpp
+@@ -10,7 +10,7 @@
+ 
+ #include "dropping.h"
+ #include "defaultBehavior.h"
+-#include "Dropping1T1V.h"
++#include "dropping1T1V.h"
+ #include "airSniping.h"
+ #include "../units/cc.h"
+ #include "../units/starport.h"
+diff --git a/Iron/src/Iron/bwem/src/bwapiExt.h b/Iron/src/Iron/bwem/src/bwapiExt.h
+index e62e0b5..224d9d0 100644
+--- a/Iron/src/Iron/bwem/src/bwapiExt.h
++++ b/Iron/src/Iron/bwem/src/bwapiExt.h
+@@ -79,7 +79,7 @@ template<typename T, int Scale = 1>
+ inline int queenWiseDist(BWAPI::Point<T, Scale> A, BWAPI::Point<T, Scale> B){ A -= B; return utils::queenWiseNorm(A.x, A.y); }
+ 
+ template<typename T, int Scale = 1>
+-inline int squaredDist(BWAPI::Point<T, Scale> A, BWAPI::Point<T, Scale> B)	{ A -= B; return squaredNorm(A.x, A.y); }
++inline int squaredDist(BWAPI::Point<T, Scale> A, BWAPI::Point<T, Scale> B)	{ A -= B; return utils::squaredNorm(A.x, A.y); }
+ 
+ template<typename T, int Scale = 1>
+ inline double dist(BWAPI::Point<T, Scale> A, BWAPI::Point<T, Scale> B)		{ A -= B; return utils::norm(A.x, A.y); }
+diff --git a/Iron/src/Iron/bwem/src/graph.h b/Iron/src/Iron/bwem/src/graph.h
+index 8377dfd..4405d7c 100644
+--- a/Iron/src/Iron/bwem/src/graph.h
++++ b/Iron/src/Iron/bwem/src/graph.h
+@@ -133,18 +133,8 @@ private:
+ };
+ 
+ 
+-template<class TPosition>
+-const Area * Graph::GetNearestArea(TPosition p) const
+-{
+-	typedef typename TileOfPosition<TPosition>::type Tile_t;
+-	if (const Area * area = GetArea(p)) return area;
+-
+-	p = GetMap()->BreadthFirstSearch(p,
+-					[this](const Tile_t & t, TPosition) { return t.AreaId() > 0; },	// findCond
+-					[](const Tile_t &,       TPosition) { return true; });			// visitCond
+-
+-	return GetArea(p);
+-}
++// Uranium patch: Graph::GetNearestArea is defined in mapImpl.h, where MapImpl is complete
++// (MSVC defers that lookup; GCC needs the full type).
+ 
+ 
+ Area * mainArea(MapImpl * pMap, BWAPI::TilePosition topLeft, BWAPI::TilePosition size);
+diff --git a/Iron/src/Iron/bwem/src/mapImpl.h b/Iron/src/Iron/bwem/src/mapImpl.h
+index 3e7178c..edeee9e 100644
+--- a/Iron/src/Iron/bwem/src/mapImpl.h
++++ b/Iron/src/Iron/bwem/src/mapImpl.h
+@@ -149,6 +149,21 @@ private:
+ 
+ 
+ 
++// Uranium patch: moved from graph.h (see there).
++template<class TPosition>
++const Area * Graph::GetNearestArea(TPosition p) const
++{
++	typedef typename utils::TileOfPosition<TPosition>::type Tile_t;
++	if (const Area * area = GetArea(p)) return area;
++
++	p = GetMap()->BreadthFirstSearch(p,
++					[this](const Tile_t & t, TPosition) { return t.AreaId() > 0; },	// findCond
++					[](const Tile_t &,       TPosition) { return true; });			// visitCond
++
++	return GetArea(p);
++}
++
++
+ }} // namespace BWEM::detail
+ 
+ 
+diff --git a/Iron/src/Iron/bwem/src/utils.h b/Iron/src/Iron/bwem/src/utils.h
+index d25a5be..2264fa9 100644
+--- a/Iron/src/Iron/bwem/src/utils.h
++++ b/Iron/src/Iron/bwem/src/utils.h
+@@ -161,7 +161,7 @@ inline void really_remove_if(T & Container, Pred pred)
+ template<class T, class E>
+ inline bool contains(const T & Container, const E & Element)
+ {
+-    return find(Container.begin(), Container.end(), Element) != Container.end();
++    return std::find(Container.begin(), Container.end(), Element) != Container.end();
+ }
+ 
+ 
+diff --git a/Iron/src/Iron/debug.h b/Iron/src/Iron/debug.h
+index de320a6..e37c3bb 100644
+--- a/Iron/src/Iron/debug.h
++++ b/Iron/src/Iron/debug.h
+@@ -12,7 +12,7 @@
+ #define DEBUG_H
+ 
+ #include <BWAPI.h>
+-#include "BWEM/src/winutils.h"
++#include "bwem/src/winutils.h"
+ #include "defs.h"
+ #include "utils.h"
+ 
+diff --git a/Iron/src/Iron/linux/UraniumModule.cpp b/Iron/src/Iron/linux/UraniumModule.cpp
+new file mode 100644
+index 0000000..822f9e2
+--- /dev/null
++++ b/Iron/src/Iron/linux/UraniumModule.cpp
+@@ -0,0 +1,8 @@
++// Uranium patch: Linux entry points replacing dllmain.cpp so OpenBW's BWAPILauncher can load
++// Iron as a BWAPI 4.2 AI module (spec 021, T1 stage 2).
++#include <BWAPI.h>
++
++#include "../Iron.h"
++
++extern "C" __attribute__((visibility("default"))) void gameInit(BWAPI::Game* game) { BWAPI::BroodwarPtr = game; }
++extern "C" __attribute__((visibility("default"))) BWAPI::AIModule* newAIModule() { return new iron::Iron(); }
+diff --git a/Iron/src/Iron/linux/compat.h b/Iron/src/Iron/linux/compat.h
+new file mode 100644
+index 0000000..d7064fe
+--- /dev/null
++++ b/Iron/src/Iron/linux/compat.h
+@@ -0,0 +1,29 @@
++// Uranium patch: GCC/Linux compatibility for MSVC-only constructs (spec 021, T1 stage 2).
++#pragma once
++#include <cstdint>
++#include <cstring>
++#include <cstdarg>
++#include <cstdio>
++#include <ctime>
++#include <thread>
++#include <chrono>
++#include <algorithm>
++// MSVC vsnprintf_s comes in 4- and 5-argument forms; map both onto vsnprintf.
++inline int uranium_vsnprintf_s(char* buf, size_t size, const char* fmt, va_list args) { return vsnprintf(buf, size, fmt, args); }
++inline int uranium_vsnprintf_s(char* buf, size_t size, size_t, const char* fmt, va_list args) { return vsnprintf(buf, size, fmt, args); }
++#define vsnprintf_s(buf, size, ...) uranium_vsnprintf_s((buf), (size), __VA_ARGS__)
++#define vsprintf_s(buf, size, fmt, args) vsnprintf((buf), (size), (fmt), (args))
++#define sprintf_s snprintf
++inline int localtime_s(struct tm* out, const time_t* t) { return localtime_r(t, out) ? 0 : 1; }
++// MSVC errno_t (used with localtime_s).
++typedef int errno_t;
++// MSVC __pragma(...) inside macros (warning control only).
++#define __pragma(x)
++// MSVC strncpy_s(dest, destsz, src, count): copy at most count chars, always terminate.
++inline int strncpy_s(char* dest, size_t destsz, const char* src, size_t count) {
++  if (!dest || destsz == 0) return 1;
++  size_t n = count < destsz - 1 ? count : destsz - 1;
++  strncpy(dest, src, n);
++  dest[n] = '\0';
++  return 0;
++}
+diff --git a/Iron/src/Iron/strategy/goliathRush.cpp b/Iron/src/Iron/strategy/goliathRush.cpp
+index 30608ca..dfecd1d 100644
+--- a/Iron/src/Iron/strategy/goliathRush.cpp
++++ b/Iron/src/Iron/strategy/goliathRush.cpp
+@@ -12,7 +12,7 @@
+ #include "strategy.h"
+ #include "stone.h"
+ #include "../units/army.h"
+-#include "../behavior/VChasing.h"
++#include "../behavior/vchasing.h"
+ #include "../Iron.h"
+ 
+ namespace { auto & bw = Broodwar; }
+diff --git a/Iron/src/Iron/strategy/strategy.h b/Iron/src/Iron/strategy/strategy.h
+index e456a86..36651dc 100644
+--- a/Iron/src/Iron/strategy/strategy.h
++++ b/Iron/src/Iron/strategy/strategy.h
+@@ -91,7 +91,7 @@ S * Strategy::Has()
+ template<class S>
+ const S * Strategy::Detected() const
+ {
+-	if (const S * s = ai()->GetStrategy()->Has<S>())
++	if (const S * s = Has<S>())	// Uranium patch: Iron owns the only Strategy; ai() is incomplete here under GCC
+ 		if (s->Detected())
+ 			return s;
+ 
+@@ -102,7 +102,7 @@ const S * Strategy::Detected() const
+ template<class S>
+ const S * Strategy::Active() const
+ {
+-	if (const S * s = ai()->GetStrategy()->Has<S>())
++	if (const S * s = Has<S>())	// Uranium patch: Iron owns the only Strategy; ai() is incomplete here under GCC
+ 		if (s->Active())
+ 			return s;
+ 
+diff --git a/Iron/src/Iron/strategy/wraithRush.cpp b/Iron/src/Iron/strategy/wraithRush.cpp
+index 1be136a..0834883 100644
+--- a/Iron/src/Iron/strategy/wraithRush.cpp
++++ b/Iron/src/Iron/strategy/wraithRush.cpp
+@@ -14,7 +14,7 @@
+ #include "goliathRush.h"
+ #include "stone.h"
+ #include "../units/army.h"
+-#include "../behavior/VChasing.h"
++#include "../behavior/vchasing.h"
+ #include "../Iron.h"
+ 
+ namespace { auto & bw = Broodwar; }
+diff --git a/Iron/src/Iron/territory/vbase.cpp b/Iron/src/Iron/territory/vbase.cpp
+index e55d3b3..c7b793c 100644
+--- a/Iron/src/Iron/territory/vbase.cpp
++++ b/Iron/src/Iron/territory/vbase.cpp
+@@ -10,7 +10,7 @@
+ 
+ #include "vbase.h"
+ #include "stronghold.h"
+-#include "../territory/vgridmap.h"
++#include "../territory/vgridMap.h"
+ #include "../units/cc.h"
+ #include "../units/refinery.h"
+ #include "../strategy/strategy.h"
+diff --git a/Iron/src/Iron/units/bwapiUnits.cpp b/Iron/src/Iron/units/bwapiUnits.cpp
+index 9aff107..9b6e2d1 100644
+--- a/Iron/src/Iron/units/bwapiUnits.cpp
++++ b/Iron/src/Iron/units/bwapiUnits.cpp
+@@ -11,7 +11,7 @@
+ #include "bwapiUnits.h"
+ #include "../behavior/behavior.h"
+ #include "../behavior/chasing.h"
+-#include "../behavior/Vchasing.h"
++#include "../behavior/vchasing.h"
+ #include "../behavior/repairing.h"
+ #include "../behavior/constructing.h"
+ #include "../territory/vgridMap.h"
