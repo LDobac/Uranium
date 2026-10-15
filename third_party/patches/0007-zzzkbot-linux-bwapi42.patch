@@ -1,0 +1,52 @@
+diff --git a/ZZZKBot/Source/ZZZKBotAIModule.cpp b/ZZZKBot/Source/ZZZKBotAIModule.cpp
+index 1da36dd..7aeae51 100644
+--- a/ZZZKBot/Source/ZZZKBotAIModule.cpp
++++ b/ZZZKBot/Source/ZZZKBotAIModule.cpp
+@@ -2665,7 +2665,7 @@ void ZZZKBotAIModule::onFrame()
+                 }
+ 
+                 oss << Broodwar->getInstanceNumber() << delim;
+-                oss << Broodwar->getRandomSeed() << delim;
++                oss << 0u /* Uranium patch: OpenBW does not implement getRandomSeed() (log field only) */ << delim;
+                 oss << Broodwar->isMultiplayer() << delim;
+                 oss << Broodwar->isBattleNet() << delim;
+                 oss << Broodwar->isReplay() << delim;
+diff --git a/ZZZKBot/Source/linux/UraniumModule.cpp b/ZZZKBot/Source/linux/UraniumModule.cpp
+new file mode 100644
+index 0000000..9eea4bc
+--- /dev/null
++++ b/ZZZKBot/Source/linux/UraniumModule.cpp
+@@ -0,0 +1,8 @@
++// Uranium patch: Linux entry points replacing Dll.cpp so OpenBW's BWAPILauncher can load
++// ZZZKBot as a BWAPI 4.2 AI module (spec 021, T1 stage 2). Same LGPL-3 terms as Dll.cpp.
++#include <BWAPI.h>
++
++#include "../ZZZKBotAIModule.h"
++
++extern "C" __attribute__((visibility("default"))) void gameInit(BWAPI::Game* game) { BWAPI::BroodwarPtr = game; }
++extern "C" __attribute__((visibility("default"))) BWAPI::AIModule* newAIModule() { return new ZZZKBotAIModule(); }
+diff --git a/ZZZKBot/Source/linux/compat.h b/ZZZKBot/Source/linux/compat.h
+new file mode 100644
+index 0000000..727bd15
+--- /dev/null
++++ b/ZZZKBot/Source/linux/compat.h
+@@ -0,0 +1,19 @@
++// Uranium patch: GCC/Linux compatibility for MSVC-only constructs (spec 021, T1 stage 2).
++#pragma once
++#include <cstdint>
++#include <cstring>
++#include <cstdarg>
++#include <cstdio>
++#include <ctime>
++#include <thread>
++#include <chrono>
++#include <algorithm>
++// MSVC vsnprintf_s comes in 4- and 5-argument forms; map both onto vsnprintf.
++inline int uranium_vsnprintf_s(char* buf, size_t size, const char* fmt, va_list args) { return vsnprintf(buf, size, fmt, args); }
++inline int uranium_vsnprintf_s(char* buf, size_t size, size_t, const char* fmt, va_list args) { return vsnprintf(buf, size, fmt, args); }
++#define vsnprintf_s(buf, size, ...) uranium_vsnprintf_s((buf), (size), __VA_ARGS__)
++#define vsprintf_s(buf, size, fmt, args) vsnprintf((buf), (size), (fmt), (args))
++#define sprintf_s snprintf
++inline int localtime_s(struct tm* out, const time_t* t) { return localtime_r(t, out) ? 0 : 1; }
++// MSVC errno_t (used with localtime_s).
++typedef int errno_t;
