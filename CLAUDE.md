@@ -70,11 +70,13 @@ crates/
   uranium-scripted    # T0 규칙 기반 상대 봇
 bridge/openbw         # BWAPI 4.2 AIModule shim(C++) + C ABI 헤더 → liburanium_bridge.so
 bridge/scr            # samase 플러그인 (.dll)
-tools/                # 벤치(bench), CASC 추출(casc-extract), OpenBW 빌드(openbw/)
-third_party/          # OpenBW·BWAPI 클론(커밋 고정, git 미추적) + patches/(0001 폴더 로더, 0002 고정 시작 seed)
+tools/                # 벤치(bench), CASC 추출(casc-extract), OpenBW 빌드(openbw/), 오픈소스 봇 빌드(oss/), .env 로더(env.sh)
+config/               # assets.toml, hosts.example.toml, plans/(uranium-env 매치업 계획)
+docs/                 # windows.md (Windows 세션 체크리스트)
+third_party/          # OpenBW·BWAPI·UAlbertaBot 클론(커밋 고정, git 미추적) + patches/(0001 폴더 로더, 0002 고정 시작 seed, 0003 런처 종료 크래시 회피, 0004 결정론적 LAN uid, 0005 UAlbertaBot BWAPI 4.2 포팅)
 reports/              # 스파이크·벤치·평가 리포트
 ```
-진행 상황(2026-10-15): M0 완료(012·013 외 Approved), M1 완료(벤치·OpenBW·데이터 추출), M2 완료(proto·브리지·T0 테란·셀프매치, `reports/m2_selfmatch.md`). 다음은 M3(hostd·상대 풀).
+진행 상황(2026-10-15): M0 완료(012·013 외 Approved), M1 완료(벤치·OpenBW·데이터 추출), M2 완료(proto·브리지·T0 테란·셀프매치, `reports/m2_selfmatch.md`), M3 진행 중(2026-10-16: hostd·env 스케줄러 Linux, T0 3종족, T1 1단계 UAlbertaBot, 포팅 조사 `reports/oss_bot_porting.md` 완료. 최종 검증·`reports/m3.md` 남음. Windows는 `docs/windows.md`).
 
 ## 코딩 규칙
 - Burn 0.22 모델 코드는 백엔드에 무관하게 쓰고 실행 시 `Device`로 고른다. 테스트는 `Device::flex()`로 한다 (032-R1).
@@ -92,6 +94,9 @@ reports/              # 스파이크·벤치·평가 리포트
 - 브리지 빌드(011): `tools/openbw/build_bridge.sh` → `bridge/openbw/build/liburanium_bridge.so` (shim은 500줄 이하 유지)
 - 설정: `cp .env.example .env` 후 값 입력. Rust 바이너리는 시작 시, 셸 스크립트는 `tools/env.sh`로 읽는다
 - 셀프매치(M2): `tools/openbw/selfmatch.sh <fighting_spirit|circuit_breaker> <games> [parallel] [seed_base] [agent args...]` → `runs/…/summary.md`. `SAME_SEED=1`이면 모든 게임 동일 seed(결정론 확인), `URANIUM_MAX_FRAMES`로 게임 길이 제한
+- hostd(020): `target/release/uranium-hostd serve`. 설정 키는 `.env.example`의 hostd 절(`URANIUM_BWAPI_DIR`, `URANIUM_BRIDGE_LIB`, `URANIUM_HOSTD_LISTEN`, `URANIUM_HOSTD_MAX_GAMES` 등)
+- 게임 스케줄러(020): `target/release/uranium-env run --plan config/plans/<plan>.toml [--out runs/<dir>]` → `games.jsonl`, `results.jsonl`, `summary.md`, `sessions.md`. 호스트 목록은 `URANIUM_HOSTS_FILE`(기본: 로컬 hostd 하나, 예시 `config/hosts.example.toml`)
+- UAlbertaBot 빌드(021): `tools/openbw/build.sh` 후 `tools/oss/build_ualbertabot.sh` → `<URANIUM_OSS_BOTS_DIR>/ualbertabot/module.so`
 - 에이전트 서버: `target/release/uranium-agent serve --listen 127.0.0.1:7600 --out runs/x.jsonl`, 요약 `uranium-agent summarize runs/x.jsonl --out x.md`
 - OpenBW LAN 소켓은 108바이트 경로 제한 때문에 `/run/user/<uid>/uranium/`에 둔다.
 - 게임 데이터(MPQ, CASC 추출물, 맵, 리플레이)는 저작권 자료라 절대 커밋하지 않는다(.gitignore).

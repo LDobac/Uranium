@@ -1,0 +1,18 @@
+# 021-AC2 (stage 1): T0 Terran vs UAlbertaBot, 10 games per opponent race.
+name = "m3-uab"
+seed_base = 41000
+[[matchup]]
+map = "both"
+games = 10
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "ualbertabot", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 10
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "ualbertabot", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 10
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "ualbertabot", race = "terran" }
