@@ -1,0 +1,9 @@
+# Host list for uranium-env (spec 020-R6). Copy to a git-ignored file and point
+# URANIUM_HOSTS_FILE at it. Never commit real addresses (001-R10).
+[[host]]
+addr = "127.0.0.1:7700"
+max_games = 5
+
+# [[host]]
+# addr = "<game-pc>:7700"
+# max_games = 10

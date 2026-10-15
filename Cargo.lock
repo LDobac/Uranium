@@ -6590,6 +6590,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "uranium-env"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "toml",
+ "uranium-agent",
+ "uranium-proto",
+]
+
+[[package]]
+name = "uranium-hostd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dotenvy",
+ "libc",
+ "uranium-proto",
+]
+
+[[package]]
 name = "uranium-proto"
 version = "0.1.0"
 dependencies = [

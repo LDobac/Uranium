@@ -5,6 +5,8 @@ members = [
     "crates/uranium-bridge-openbw",
     "crates/uranium-scripted",
     "crates/uranium-agent",
+    "crates/uranium-hostd",
+    "crates/uranium-env",
     "tools/bench",
     "tools/casc-extract",
 ]
@@ -28,6 +30,8 @@ proptest = "1"
 sha2 = "0.11"
 uranium-proto = { path = "crates/uranium-proto" }
 uranium-scripted = { path = "crates/uranium-scripted" }
+uranium-agent = { path = "crates/uranium-agent" }
+toml = "1"
 
 [profile.release]
 debug = 1
