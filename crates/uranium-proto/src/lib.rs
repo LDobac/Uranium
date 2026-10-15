@@ -4,6 +4,7 @@
 //! Positions are pixels with the origin at the top-left of the map (010-R4).
 //! Transport: `u32` little-endian length prefix + postcard payload (010-R1).
 
+pub mod control;
 mod framing;
 mod grid;
 
@@ -46,7 +47,7 @@ pub struct Hello {
     pub replay: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Race {
     Zerg,
     Terran,
