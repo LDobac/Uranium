@@ -6610,6 +6610,8 @@ dependencies = [
  "clap",
  "dotenvy",
  "libc",
+ "serde",
+ "toml",
  "uranium-proto",
 ]
 
