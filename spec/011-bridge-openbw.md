@@ -8,7 +8,7 @@ OpenBW 포크 BWAPI 4.2(`github.com/OpenBW/bwapi`) 위에서 동작하는 AIModu
 
 ## Scope & Non-goals
 - 범위: Linux 헤드리스 실행, lockstep 스텝, 1v1 LAN 매칭, 리플레이 저장, **리플레이 재생 모드**(BC 데이터 생성, [040](040-replay-dataset.md)).
-- 비범위: Windows 실행, GUI 디버깅. GUI 디버깅은 `OPENBW_ENABLE_UI=1` 빌드로 선택적으로만 지원한다.
+- 비범위: GUI 디버깅. GUI 디버깅은 `OPENBW_ENABLE_UI=1` 빌드로 선택적으로만 지원한다. (변경 이력: 2026-10-15 'Windows 실행'을 비범위에서 제외, 011-R16)
 
 ## 구조
 - `bridge/openbw/shim.cpp`: `BWAPI::AIModule` 구현. `onStart/onFrame/onEnd/onUnit*` 이벤트를 C ABI로 Rust에 전달한다. 약 500줄 이내로 유지한다.
@@ -23,6 +23,7 @@ OpenBW 포크 BWAPI 4.2(`github.com/OpenBW/bwapi`) 위에서 동작하는 AIModu
 | 011-R3 | **MUST** lockstep: `onFrame`에서 다음 관측 프레임이면 RawFrame을 보내고 `Act`가 올 때까지 블로킹한다. 그 사이 프레임은 즉시 반환한다 |
 | 011-R4 | **MUST** 1v1 매칭은 `auto_menu=LAN`, `OPENBW_LAN_MODE=TCP` 또는 `LOCAL`로 한다. 두 런처는 같은 맵과 같은 `bwapi.ini`를 써야 한다 |
 | 011-R5 | **MUST** 정책 관측(RawFrame)은 항상 **자기 시야로 필터링**한다(맵핵 금지). OpenBW 브리지(lockstep)는 `CompleteMapInformation`을 **항상 켠다**. 이는 결정론적 유닛 ID(`getReplayID`, 리플레이 명령의 유닛 ID와 동일)를 얻기 위해서다. RawFrame 생성 시에는 `isVisible(self)`와 탐지 여부로 적 유닛·이벤트를 직접 거른다. `PrivilegedSummary`는 `URANIUM_PRIVILEGED=1`일 때만 송신한다. (2026-10-15 사용자 승인으로 변경. 이전 문구는 '학습용 상대 정보 생성 시에만 켠다') |
+| 011-R16 | **MUST** Windows에서도 동작한다. 브리지는 MSVC로 빌드한 `.dll` AI 모듈이다. OpenBW는 Windows에서 `LOCAL` 소켓을 지원하지 않으므로 LAN 매칭은 `OPENBW_LAN_MODE=TCP`로 하고 게임마다 포트 2개(각 클라이언트 listen 1개)를 쓴다. 포트는 hostd가 할당한다(020-R8) |
 | 011-R15 | **MUST** 유닛 ID는 `getReplayID()`를 쓴다. `getID()`는 프로세스마다 다른 포인터 순서로 배정되어 재현이 불가능하다. 한 관측 안의 유닛·이펙트·이벤트는 결정론적 순서로 정렬한다 |
 | 011-R6 | **MUST** 정규 ID는 BWAPI enum 값과 같다. OpenBW 브리지의 ID 변환은 항등 매핑이다 |
 | 011-R7 | **MUST** 게임 종료 시 리플레이(`.rep`)를 저장하고 경로를 GameEnd에 포함한다. 저장 여부는 설정으로 끌 수 있다 |
@@ -54,6 +55,7 @@ OpenBW 포크 BWAPI 4.2(`github.com/OpenBW/bwapi`) 위에서 동작하는 AIModu
 - 011-AC4: 같은 seed와 같은 Act 시퀀스로 두 번 실행했을 때 GameEnd 프레임과 승자가 같다.
 - 011-AC5: 재생 모드에서 같은 리플레이를 두 번 재생했을 때 RawFrame 해시 시퀀스가 같다(040-R8). 지정 시점 밖의 적 유닛이 RawFrame에 없다.
 - 011-AC6: 에이전트를 같은 PC(`127.0.0.1`)에 둔 구성과 원격 PC에 둔 구성 모두에서 011-AC1 시나리오가 통과한다.
+- 011-AC8 (Windows 세션 검증): Windows에서 011-AC1(두 맵 각 100판 완주)과 011-AC4(seed 결정론)를 재현한다.
 - 011-AC7 (M2 검증, 브리지 필요): 에이전트가 응답을 최대 1초 지연해도 LAN 상대 클라이언트가 강제 퇴장(드롭)되지 않는다. 퇴장되면 대응 방안을 이 spec에 추가하고 사용자 확인을 받는다.
 
 ## Risks & Open Questions

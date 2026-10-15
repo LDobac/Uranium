@@ -27,7 +27,7 @@
 | 001-R5 | **MUST** 학습 모드는 lockstep(게임이 에이전트 응답을 기다림), 실전(SC:R) 모드는 realtime(데드라인 초과 시 무명령)으로 동작한다 |
 | 001-R6 | **MUST** 에이전트 서버(`uranium-agent`)가 listen하고 브리지가 접속한다. 서버는 원격 PC 또는 같은 PC(`127.0.0.1`)일 수 있다. 셀프플레이에서는 두 브리지가 같은 서버에 접속하고 `game_id`/`slot`(010-R9)으로 구분한다 |
 | 001-R7 | **MUST** 학습 전용 정보(`PrivilegedSummary`)는 learner와 value head로만 흐른다. 추론 서버의 정책 경로에는 들어가지 않는다(030-R9, 032-R11) |
-| 001-R8 | **MUST** 학습 쪽 crate(`uranium-proto`, `uranium-model`, `uranium-train`, `uranium-agent`, `uranium-env`)는 Linux와 Windows 모두에서 빌드·실행된다(Unix 전용 API 금지). 브리지(`bridge/openbw`)와 `uranium-hostd`는 Linux 전용이다(2026-10-15 추가) |
+| 001-R8 | **MUST** 학습 쪽 crate(`uranium-proto`, `uranium-model`, `uranium-train`, `uranium-agent`, `uranium-env`)는 Linux와 Windows 모두에서 빌드·실행된다(Unix 전용 API 금지). 브리지(`bridge/openbw`)와 `uranium-hostd`도 Linux와 Windows 모두를 지원한다. 브리지 C++ shim은 GCC와 MSVC 모두에서 빌드돼야 한다. (변경 이력: 2026-10-15 추가 → 같은 날 Windows CUDA PC에서 게임까지 돌리기 위해 브리지·hostd도 Windows 지원으로 확장. Windows 구현·검증은 `docs/windows.md`) |
 | 001-R9 | **MUST** 호스트별 설정(경로, 주소, 포트, 디버그 옵션 등)은 저장소 루트의 `.env` 파일에서 읽는다. `.env`는 git에 올리지 않는다(`.gitignore`). 같은 이름의 프로세스 환경변수가 있으면 그 값이 `.env`보다 우선한다. 쓸 수 있는 키와 설명은 값 없는 템플릿 `.env.example`로 커밋한다. 셸 프로필(`.bashrc` 등)에 설정을 두는 방식은 쓰지 않는다. Rust 바이너리는 시작 시 `.env`를 읽고, 셸 스크립트는 `tools/env.sh`로 읽는다. 비밀번호 같은 자격 증명은 `.env`에도 두지 않고 OS 자격 증명 저장소나 권한 600 파일(예: cifs credentials)에 둔다 (2026-10-15 사용자 결정) |
 | 001-R10 | **MUST** spec, 문서, 리포트, 코드 주석, 커밋 메시지에는 IP 주소, 호스트 이름, 계정 이름, 이메일, 개인 경로(`/home/<user>` 등), 자격 증명 같은 개인·보안 정보를 쓰지 않는다. 필요하면 `<server>`, `<user>` 같은 자리표시자를 쓰고 실제 값은 `.env`에만 둔다. `127.0.0.1` 같은 루프백 주소와 예시 사설 대역 표기는 예외다 (2026-10-15 사용자 결정) |
 

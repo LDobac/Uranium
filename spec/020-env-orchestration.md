@@ -11,7 +11,9 @@
 - **게임 쌍**: `BWAPILauncher` 2개로 구성된다.
   - P1: 우리 봇 브리지
   - P2: 상대. 우리 봇 브리지(셀프플레이) 또는 OSS 봇 `.so`
-  - 두 런처는 `OPENBW_LAN_MODE=LOCAL`(같은 호스트 소켓)로 매칭한다.
+  - 두 런처는 Linux에서 `OPENBW_LAN_MODE=LOCAL`(같은 호스트 소켓), Windows에서 `OPENBW_LAN_MODE=TCP`(포트 2개)로 매칭한다.
+- **uranium-env**: 학습 PC의 게임 스케줄러다. 에이전트 서버를 내장하고, 매치업 계획을 여러 hostd에 분배하고, 결과를 모은다.
+- hostd와 env는 Linux와 Windows 모두에서 돈다(001-R8).
 
 ## Requirements
 | ID | 요구사항 |
@@ -21,7 +23,9 @@
 | 020-R3 | **MUST** 타임아웃 처리 |
 | 020-R4 | **MUST** 크래시 처리: 런처 비정상 종료 시 에피소드를 `Aborted`로 표시하고 학습 데이터에서 제외한다. 같은 설정이 연속 3회 크래시하면 격리하고 경보를 낸다 |
 | 020-R5 | **MUST** 에피소드 메타데이터를 기록한다: id, 맵, 시작 위치, 상대 종류·버전, 정책 버전, 결과, 길이, 리플레이 경로 |
-| 020-R6 | **SHOULD** 호스트 목록과 호스트별 동시 게임 수는 설정 파일(`config/hosts.toml`)로 관리한다 |
+| 020-R6 | **SHOULD** 호스트 목록과 호스트별 동시 게임 수는 설정 파일로 관리한다. 실제 주소가 들어가므로 커밋하지 않는 로컬 파일(`URANIUM_HOSTS_FILE`)에 두고, 형식 예시만 `config/hosts.example.toml`로 커밋한다(001-R10, 2026-10-15 변경) |
+| 020-R8 | **MUST** hostd는 OS별 부분(LAN 매칭 설정, 프로세스 정리)을 플랫폼 계층으로 분리한다. Linux는 LOCAL 소켓과 프로세스 그룹 + `PR_SET_PDEATHSIG`를 쓰고, Windows는 TCP 포트 쌍(`URANIUM_HOSTD_PORT_BASE`부터 할당)과 Job Object(kill-on-close)를 쓴다 |
+| 020-R9 | **MUST** hostd 설정은 `.env`에서 읽는다(001-R9): `URANIUM_HOSTD_LISTEN`, `URANIUM_BWAPI_DIR`, `URANIUM_BRIDGE_LIB`, `URANIUM_DATA_DIR`, `URANIUM_MAPS_DIR`, `URANIUM_HOSTD_MAX_GAMES`, `URANIUM_HOSTD_PORT_BASE`(Windows) |
 | 020-R7 | **SHOULD** BC250 로컬 hostd도 지원한다. 이 경우 CPU 코어를 추론 서버와 나눠 쓰는 예산을 정한다([060](060-infra-bc250.md)) |
 
 ### 020-R3 타임아웃 규칙
