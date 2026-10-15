@@ -1,6 +1,7 @@
 //! `uranium-env`: game scheduler (spec 020). Runs the agent server in-process, spreads the
 //! games of a matchup plan over one or more `uranium-hostd`s and writes results.
 
+mod calibrate;
 mod plan;
 mod report;
 
@@ -36,6 +37,16 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Measure how many concurrent games this host sustains within the bridge latency
+    /// target and store it for uranium-hostd (020-R10). Run on the game host itself.
+    Calibrate {
+        /// Largest concurrency to try (default: logical cores).
+        #[arg(long)]
+        max: Option<u32>,
+        /// Frame limit per game.
+        #[arg(long, default_value_t = 8000)]
+        frames: u32,
+    },
 }
 
 /// One line of games.jsonl (hostd's view of a game).
@@ -60,6 +71,7 @@ fn main() -> Result<()> {
     load_env();
     match Cli::parse().cmd {
         Cmd::Run { plan, out } => run(&plan, out),
+        Cmd::Calibrate { max, frames } => calibrate::run(max, frames),
     }
 }
 
@@ -75,28 +87,48 @@ fn run(plan_path: &std::path::Path, out: Option<PathBuf>) -> Result<()> {
     let out = out.unwrap_or_else(|| PathBuf::from("runs").join(&plan.name));
     std::fs::create_dir_all(&out)?;
     std::fs::copy(plan_path, out.join("plan.toml"))?;
+    let _ = std::fs::remove_file(out.join("games.jsonl"));
+    let _ = std::fs::remove_file(out.join("results.jsonl"));
 
-    // Embedded agent server (001-R6): bridges on every host must reach this address.
-    let listen = env_or("URANIUM_AGENT_LISTEN", "127.0.0.1:7600");
-    let public = env_or("URANIUM_AGENT_PUBLIC_ADDR", &listen);
-    let listener = TcpListener::bind(&listen).with_context(|| format!("binding agent {listen}"))?;
-    let sink = open_sink(&out.join("results.jsonl"))?;
+    let public = start_agent(&env_or("URANIUM_AGENT_LISTEN", "127.0.0.1:7600"), &out.join("results.jsonl"))?;
+    let jobs = plan::expand(&plan, &public);
+    eprintln!("[env] plan `{}`: {} games, agent at {public}", plan.name, jobs.len());
+    let started = Instant::now();
+    let left = run_jobs(jobs, &hosts()?, &out.join("games.jsonl"))?;
+    eprintln!("[env] finished in {:.0}s ({left} games not run)", started.elapsed().as_secs_f64());
+    report::write(&out, &plan)?;
+    println!("{}", std::fs::read_to_string(out.join("summary.md"))?);
+    if left > 0 {
+        bail!("{left} games could not be scheduled");
+    }
+    Ok(())
+}
+
+/// Starts the embedded agent server (001-R6) and returns the address bridges connect to.
+/// Bridges on every host must reach it (`URANIUM_AGENT_PUBLIC_ADDR` when it differs).
+pub(crate) fn start_agent(listen: &str, results: &std::path::Path) -> Result<String> {
+    let listener = TcpListener::bind(listen).with_context(|| format!("binding agent {listen}"))?;
+    let bound = listener.local_addr()?.to_string();
+    let public = std::env::var("URANIUM_AGENT_PUBLIC_ADDR").ok().filter(|v| !v.trim().is_empty()).unwrap_or(bound);
+    let sink = open_sink(results)?;
     std::thread::spawn(move || {
         if let Err(e) = serve(listener, ServeOptions { policy: PolicyKind::ScriptedT0, delay_ms: 0, max_sessions: 0 }, sink) {
             eprintln!("[env] agent server stopped: {e:#}");
         }
     });
+    Ok(public)
+}
 
-    let jobs: VecDeque<Job> = plan::expand(&plan, &public).into();
+/// Plays `jobs` on `hosts`, appending hostd outcomes to `games_path`. Returns the number of
+/// games that could not be scheduled.
+pub(crate) fn run_jobs(jobs: Vec<Job>, hosts: &[HostEntry], games_path: &std::path::Path) -> Result<usize> {
     let total = jobs.len();
-    let queue = Arc::new(Mutex::new(jobs));
-    let games_out = Arc::new(Mutex::new(BufWriter::new(std::fs::File::create(out.join("games.jsonl"))?)));
+    let queue = Arc::new(Mutex::new(VecDeque::from(jobs)));
+    let file = std::fs::OpenOptions::new().create(true).append(true).open(games_path)?;
+    let games_out = Arc::new(Mutex::new(BufWriter::new(file)));
     let done = Arc::new(Mutex::new(0usize));
-    let started = Instant::now();
-    eprintln!("[env] plan `{}`: {total} games, agent at {public}", plan.name);
-
     let mut workers = Vec::new();
-    for host in hosts()? {
+    for host in hosts {
         let caps = capabilities(&host.addr).with_context(|| format!("hostd {}", host.addr))?;
         let slots = host.max_games.map_or(caps.max_concurrent_games, |m| m.min(caps.max_concurrent_games));
         eprintln!("[env] host {}: {:?}, {} slots, oss bots {:?}", host.addr, caps.os, slots, caps.oss_bots);
@@ -114,13 +146,7 @@ fn run(plan_path: &std::path::Path, out: Option<PathBuf>) -> Result<()> {
     // Session records are written when each bridge sends GameEnd, before its launcher exits.
     std::thread::sleep(Duration::from_secs(1));
     let left = queue.lock().unwrap().len();
-    eprintln!("[env] finished in {:.0}s ({left} games not run)", started.elapsed().as_secs_f64());
-    report::write(&out, &plan)?;
-    println!("{}", std::fs::read_to_string(out.join("summary.md"))?);
-    if left > 0 {
-        bail!("{left} games could not be scheduled");
-    }
-    Ok(())
+    Ok(left)
 }
 
 fn connect(addr: &str) -> Result<(BufReader<TcpStream>, BufWriter<TcpStream>)> {
@@ -135,7 +161,7 @@ fn connect(addr: &str) -> Result<(BufReader<TcpStream>, BufWriter<TcpStream>)> {
     }
 }
 
-fn capabilities(addr: &str) -> Result<Capabilities> {
+pub(crate) fn capabilities(addr: &str) -> Result<Capabilities> {
     let (mut r, mut w) = connect(addr)?;
     write_msg(&mut w, &ControlRequest::ListCapabilities)?;
     match read_msg(&mut r)? {

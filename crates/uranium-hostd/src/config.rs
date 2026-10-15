@@ -47,7 +47,7 @@ impl Config {
             bridge_lib: path_var("URANIUM_BRIDGE_LIB")?,
             data_dir: path_var("URANIUM_DATA_DIR")?,
             maps_dir: path_var("URANIUM_MAPS_DIR")?,
-            max_games: var("URANIUM_HOSTD_MAX_GAMES").and_then(|v| v.parse().ok()).unwrap_or(cores.saturating_sub(1).max(1)),
+            max_games: max_games(var("URANIUM_HOSTD_MAX_GAMES"), var("URANIUM_CACHE_DIR").map(PathBuf::from), cores).0,
             work_dir: var("URANIUM_HOSTD_WORK_DIR").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join("uranium-hostd")),
             oss_bots_dir: var("URANIUM_OSS_BOTS_DIR").map(PathBuf::from),
             port_base: var("URANIUM_HOSTD_PORT_BASE").and_then(|v| v.parse().ok()).unwrap_or(17_000),
@@ -84,8 +84,64 @@ impl Config {
     }
 }
 
+/// Where the concurrency limit came from (020-R10).
+#[derive(Debug, PartialEq, Eq)]
+pub enum MaxGamesSource {
+    Env,
+    Calibration,
+    Default,
+}
+
+#[derive(serde::Deserialize)]
+struct CalibrationFile {
+    max_games: u32,
+    measured_at: Option<String>,
+}
+
+/// 020-R10: `URANIUM_HOSTD_MAX_GAMES` → `<cache>/hostd_calibration.toml` (written by
+/// `uranium-env calibrate`) → conservative default `max(1, (cores - 1) / 2)`.
+pub fn max_games(env: Option<String>, cache_dir: Option<PathBuf>, cores: u32) -> (u32, MaxGamesSource) {
+    if let Some(n) = env.and_then(|v| v.parse::<u32>().ok()).filter(|n| *n > 0) {
+        eprintln!("[hostd] max concurrent games {n} (URANIUM_HOSTD_MAX_GAMES)");
+        return (n, MaxGamesSource::Env);
+    }
+    if let Some(path) = cache_dir.map(|d| d.join("hostd_calibration.toml")) {
+        match std::fs::read_to_string(&path).map(|t| toml::from_str::<CalibrationFile>(&t)) {
+            Ok(Ok(f)) if f.max_games > 0 => {
+                eprintln!("[hostd] max concurrent games {} (calibrated {})", f.max_games, f.measured_at.as_deref().unwrap_or("?"));
+                return (f.max_games, MaxGamesSource::Calibration);
+            }
+            Ok(_) => eprintln!("[hostd] warning: ignoring malformed {}", path.display()),
+            Err(_) => {}
+        }
+    }
+    let n = (cores.saturating_sub(1) / 2).max(1);
+    eprintln!("[hostd] warning: max concurrent games {n} (uncalibrated default); run `uranium-env calibrate` on this host (020-R10)");
+    (n, MaxGamesSource::Default)
+}
+
 /// `module.so` on Linux, `module.dll` on Windows.
 pub fn oss_module(bot_dir: &Path) -> Option<PathBuf> {
     let f = bot_dir.join(if cfg!(windows) { "module.dll" } else { "module.so" });
     f.is_file().then_some(f)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn max_games_priority_020_r10() {
+        let dir = std::env::temp_dir().join(format!("uranium-hostd-cal-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(max_games(None, Some(dir.clone()), 12), (5, MaxGamesSource::Default));
+        assert_eq!(max_games(None, None, 2), (1, MaxGamesSource::Default));
+        std::fs::write(dir.join("hostd_calibration.toml"), "max_games = 4\nmeasured_at = \"2026-10-16\"\ncores = 12\n").unwrap();
+        assert_eq!(max_games(None, Some(dir.clone()), 12), (4, MaxGamesSource::Calibration));
+        assert_eq!(max_games(Some("7".into()), Some(dir.clone()), 12), (7, MaxGamesSource::Env));
+        assert_eq!(max_games(Some("x".into()), Some(dir.clone()), 12), (4, MaxGamesSource::Calibration));
+        std::fs::write(dir.join("hostd_calibration.toml"), "nonsense").unwrap();
+        assert_eq!(max_games(None, Some(dir.clone()), 12), (5, MaxGamesSource::Default));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
