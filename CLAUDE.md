@@ -15,7 +15,7 @@
 | 언어/프레임워크 | Rust + Burn **0.22.0** (런타임 `Device`: `Device::vulkan` / `Device::cuda`). 테스트용 CPU 백엔드는 `flex`. 학습·추론은 f16 혼합 정밀도 (032-R8). 학습 쪽 crate는 Windows에서도 빌드돼야 함 (001-R8) |
 | 시뮬레이터 | OpenBW + BWAPI 4.2 포크, Linux 헤드리스. 같은 LAN의 다른 PC에서 실행될 수 있음 |
 | SC:R 연동 | samase 플러그인 DLL + samase_scarf (Windows x86_64). **로컬/LAN 커스텀 게임에서만** 실행하며 배틀넷 공개 게임과 래더는 대상이 아님 |
-| 체크포인트·데이터 | 로컬 네트워크 공용 드라이브(별도 리눅스 서버, Linux는 NFS·Windows는 Samba, `URANIUM_SHARED_DIR`). 학습 PC는 pull → 학습 → push, run당 한 PC만(heartbeat 잠금) (061) |
+| 체크포인트·데이터 | 네트워크 공용 드라이브(SMB, LAN 또는 VPN 경유, `URANIUM_SHARED_DIR`). 학습 PC는 pull → 학습 → push, run당 한 PC만(heartbeat 잠금) (061) |
 | C++ 사용 | OpenBW 브리지의 얇은 C++ shim(BWAPI ↔ C ABI 중계)만 허용. 그 외 영역은 Rust |
 
 ## Spec Driven 개발 규칙 (필수)
@@ -79,6 +79,8 @@ reports/              # 스파이크·벤치·평가 리포트
 ## 코딩 규칙
 - Burn 0.22 모델 코드는 백엔드에 무관하게 쓰고 실행 시 `Device`로 고른다. 테스트는 `Device::flex()`로 한다 (032-R1).
 - 버전별 ID와 오프셋은 데이터 테이블로만 관리한다. 코드에 매직 넘버를 흩뿌리지 않는다 (013-R1).
+- **개인·보안 정보 금지** (001-R10): spec, 문서, 리포트, 주석, 커밋에 IP, 호스트 이름, 계정, 이메일, 개인 경로, 자격 증명을 쓰지 않는다. `<server>` 같은 자리표시자를 쓴다.
+- **설정은 `.env`로** (001-R9): 호스트별 설정은 저장소 루트 `.env`(git 미추적)에서 읽고, 프로세스 환경변수가 우선한다. 키 템플릿은 `.env.example`에 둔다. `.bashrc`에 두지 않는다. 새 환경변수를 추가하면 `.env.example`도 갱신한다.
 - 결정론을 유지한다: executor와 feature 추출은 같은 입력이면 같은 출력을 낸다 (031-R7, 030-R1).
 - 각 spec의 Acceptance Criteria를 테스트나 벤치로 구현해 검증한다.
 
@@ -86,8 +88,9 @@ reports/              # 스파이크·벤치·평가 리포트
 - 전체 테스트: `cargo test --workspace`
 - Burn/Vulkan 벤치(060-R2): `cargo run -p bench --release -- --backend vulkan` (`--quick`, `--filter <name>`, `--backend flex`) → `reports/bench_bc250.md`
 - OpenBW/BWAPI 빌드(011): `tools/openbw/build.sh` → `third_party/bwapi/build/bin/BWAPILauncher`
-- 게임 데이터 추출(011-R13): `cargo install casc --version 0.1.6 --locked` 후 `cargo run -p casc-extract -- ~/sc_data/scr/Data ~/sc_data/openbw` → 실행 시 `URANIUM_DATA_DIR=~/sc_data/openbw`
+- 게임 데이터 추출(011-R13): `cargo install casc --version 0.1.6 --locked` 후 `cargo run -p casc-extract -- ~/sc_data/scr/Data ~/sc_data/openbw` → `.env`의 `URANIUM_DATA_DIR`에 추출 경로 지정
 - 브리지 빌드(011): `tools/openbw/build_bridge.sh` → `bridge/openbw/build/liburanium_bridge.so` (shim은 500줄 이하 유지)
+- 설정: `cp .env.example .env` 후 값 입력. Rust 바이너리는 시작 시, 셸 스크립트는 `tools/env.sh`로 읽는다
 - 셀프매치(M2): `tools/openbw/selfmatch.sh <fighting_spirit|circuit_breaker> <games> [parallel] [seed_base] [agent args...]` → `runs/…/summary.md`. `SAME_SEED=1`이면 모든 게임 동일 seed(결정론 확인), `URANIUM_MAX_FRAMES`로 게임 길이 제한
 - 에이전트 서버: `target/release/uranium-agent serve --listen 127.0.0.1:7600 --out runs/x.jsonl`, 요약 `uranium-agent summarize runs/x.jsonl --out x.md`
 - OpenBW LAN 소켓은 108바이트 경로 제한 때문에 `/run/user/<uid>/uranium/`에 둔다.

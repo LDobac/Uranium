@@ -46,7 +46,7 @@ StarCraft: Brood War 1v1 밀리에서 이기는 테란 AI 봇을 만든다. 학�
   - BC250은 Vulkan 백엔드로 학습·추론한다(ROCm/HIP 불가)
 - CUDA GPU PC(Linux 또는 Windows)에서도 Burn `cuda` 백엔드로 학습·추론할 수 있다(2026-10-15 변경, [060](060-infra-bc250.md))
 - OpenBW 인스턴스는 기본적으로 **게임 전용 Linux PC 2대 이상**에서 실행한다. BC250 로컬 실행도 가능하다([020](020-env-orchestration.md)).
-- 체크포인트와 학습 데이터는 **로컬 네트워크 공용 드라이브(별도 리눅스 서버, Linux 호스트는 NFS·Windows 호스트는 Samba)**에 두고, 학습하는 PC가 받아서 쓴다([061](061-shared-storage.md), 2026-10-15 변경). 저장 예산은 1TB 미만 기준을 공용 드라이브에 적용한다.
+- 체크포인트와 학습 데이터는 **네트워크 공용 드라이브(SMB, LAN 또는 VPN 경유)**에 두고, 학습하는 PC가 받아서 쓴다([061](061-shared-storage.md), 2026-10-15 변경). 저장 예산은 1TB 미만 기준을 공용 드라이브에 적용한다.
 - SC:R은 Windows PC에서 실행한다.
 
 ## 용어집

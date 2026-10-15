@@ -25,3 +25,8 @@
 /reports/raw/
 /bridge/openbw/build/
 /runs/
+
+# Host settings and secrets (spec 001-R9/R10): only the template is tracked
+.env
+.env.*
+!.env.example

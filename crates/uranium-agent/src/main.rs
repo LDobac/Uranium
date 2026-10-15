@@ -134,7 +134,22 @@ fn fnv1a(mut h: u64, bytes: &[u8]) -> u64 {
     h
 }
 
+/// Loads host settings from `.env` (or `$URANIUM_ENV_FILE`) before anything reads the
+/// environment; variables already set in the process win (spec 001-R9).
+fn load_env() {
+    let res = match std::env::var_os("URANIUM_ENV_FILE") {
+        Some(path) => dotenvy::from_path(path),
+        None => dotenvy::dotenv().map(|_| ()),
+    };
+    if let Err(e) = res {
+        if !e.not_found() {
+            eprintln!("warning: failed to load .env: {e}");
+        }
+    }
+}
+
 fn main() -> Result<()> {
+    load_env();
     match Cli::parse().cmd {
         Cmd::Serve { listen, policy, out, respond_delay_ms, sessions } => serve(&listen, policy, out, respond_delay_ms, sessions),
         Cmd::Summarize { input, out, title } => summary::summarize(&input, &out, &title),
