@@ -1,0 +1,108 @@
+diff --git a/src/General/UnitCluster/CombatSim.cpp b/src/General/UnitCluster/CombatSim.cpp
+index 87f160fb..415733c6 100644
+--- a/src/General/UnitCluster/CombatSim.cpp
++++ b/src/General/UnitCluster/CombatSim.cpp
+@@ -229,11 +229,11 @@ namespace
+             auto target = unitAndTarget.second ? unitAndTarget.second->id : 0;
+             if (attacking)
+             {
+-                sim.addPlayer1<choke>(makeUnit(unitAndTarget.first, cluster->vanguard, false, false, targetPosition, target));
++                sim.template addPlayer1<choke>(makeUnit(unitAndTarget.first, cluster->vanguard, false, false, targetPosition, target));
+             }
+             else
+             {
+-                sim.addPlayer2<choke>(makeUnit(unitAndTarget.first, cluster->vanguard, false, false, targetPosition, target));
++                sim.template addPlayer2<choke>(makeUnit(unitAndTarget.first, cluster->vanguard, false, false, targetPosition, target));
+             }
+ 
+             myCount++;
+@@ -284,11 +284,11 @@ namespace
+             {
+                 if (attacking)
+                 {
+-                    sim.addPlayer2<choke>(makeUnit(unit, cluster->vanguard, haveMobileDetection, assumeStim));
++                    sim.template addPlayer2<choke>(makeUnit(unit, cluster->vanguard, haveMobileDetection, assumeStim));
+                 }
+                 else
+                 {
+-                    sim.addPlayer1<choke>(makeUnit(unit, cluster->vanguard, haveMobileDetection, assumeStim));
++                    sim.template addPlayer1<choke>(makeUnit(unit, cluster->vanguard, haveMobileDetection, assumeStim));
+                 }
+ 
+                 enemyCount++;
+@@ -404,7 +404,7 @@ namespace
+             }
+ #endif
+ 
+-            sim.simulate<true, choke>(1);
++            sim.template simulate<true, choke>(1);
+ 
+ #if DEBUG_COMBATSIM_DRAW
+             if (attacking == DEBUG_COMBATSIM_DRAW_ATTACKER
+diff --git a/src/Instrumentation/Timer.cpp b/src/Instrumentation/Timer.cpp
+index d9ab38e3..bf67abf9 100644
+--- a/src/Instrumentation/Timer.cpp
++++ b/src/Instrumentation/Timer.cpp
+@@ -38,7 +38,7 @@ namespace Timer
+     {
+         overallLabel = label;
+         checkpoints.clear();
+-        startPoint = lastCheckpoint = std::chrono::high_resolution_clock::now();
++        startPoint = lastCheckpoint = std::chrono::steady_clock::now();
+     }
+ 
+     void checkpoint(const std::string &label)
+@@ -46,14 +46,14 @@ namespace Timer
+ #if DEBUG_LOG_EACH_CHECKPOINT
+         Log::Debug() << label;
+ #endif
+-        auto now = std::chrono::high_resolution_clock::now();
++        auto now = std::chrono::steady_clock::now();
+         checkpoints.emplace_back(label, std::chrono::duration_cast<std::chrono::microseconds>(now - lastCheckpoint).count());
+         lastCheckpoint = now;
+     }
+ 
+     void stop(bool forceOutput)
+     {
+-        long long overall = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - startPoint).count();
++        long long overall = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startPoint).count();
+ 
+         if (forceOutput || overall > DEBUG_CUTOFF)
+         {
+diff --git a/src/Workers/WorkerGatherOptimizer.h b/src/Workers/WorkerGatherOptimizer.h
+index eefb9f17..c9c13672 100644
+--- a/src/Workers/WorkerGatherOptimizer.h
++++ b/src/Workers/WorkerGatherOptimizer.h
+@@ -12,11 +12,13 @@
+ // This is heavily map and base dependent, however, since it varies depending on how BW does its pathing.
+ 
+ // Simple backend that only ensures mineral locking
+-// #include "MineralLockingOptimization/MineralLockingOptimization.h"
+-// #define WORKERGATHEROPTIMIZER MineralLockingOptimization
+-// #define MINERALS_PER_WORKER_FRAME 0.0465
+-// #define GAS_PER_WORKER_FRAME 0.071
+-// #define MINERALS_PER_GAS_UNIT 0.655
++// Uranium patch: selected on our OpenBW build. The path-based optimizer predicts BW's order
++// process timer frame-exactly and crashed (empty-set dereference) on our engine.
++#include "MineralLockingOptimization/MineralLockingOptimization.h"
++#define WORKERGATHEROPTIMIZER MineralLockingOptimization
++#define MINERALS_PER_WORKER_FRAME 0.0465
++#define GAS_PER_WORKER_FRAME 0.071
++#define MINERALS_PER_GAS_UNIT 0.655
+ 
+ // Backend that tries to optimize the order process timer only
+ // #include "OrderProcessTimerOptimization/WorkerOrderTimer.h"
+@@ -26,8 +28,8 @@
+ // #define MINERALS_PER_GAS_UNIT 0.655
+ 
+ // Current implementation of the path-based optimizer
+-#include "MiningOptimizationV2/MiningOptimization.h"
+-#define WORKERGATHEROPTIMIZER MiningOptimization
+-#define MINERALS_PER_WORKER_FRAME 0.0488
+-#define GAS_PER_WORKER_FRAME 0.071
+-#define MINERALS_PER_GAS_UNIT 0.687
++// #include "MiningOptimizationV2/MiningOptimization.h"
++// #define WORKERGATHEROPTIMIZER MiningOptimization
++// #define MINERALS_PER_WORKER_FRAME 0.0488
++// #define GAS_PER_WORKER_FRAME 0.071
++// #define MINERALS_PER_GAS_UNIT 0.687

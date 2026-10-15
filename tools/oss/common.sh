@@ -44,8 +44,18 @@ oss_patch() {
   fi
 }
 
-# oss_compile <obj dir> <cxx flags...> -- <sources...>: parallel incremental g++ -c.
-# Prints the object list (one per line) on stdout.
+# oss_stale <obj>: true if the object, or any header recorded in its .d file (-MMD), is out of date.
+oss_stale() {
+  local o="$1" d="${1%.o}.d" dep
+  [[ -f "$o" && -f "$d" ]] || return 0
+  while IFS= read -r dep; do
+    [[ -n "$dep" && ( ! -e "$dep" || "$dep" -nt "$o" ) ]] && return 0
+  done < <(sed -e 's/\\$//' -e 's/^[^:]*://' "$d" | tr ' ' '\n')
+  return 1
+}
+
+# oss_compile <obj dir> <cxx flags...> -- <sources...>: parallel incremental g++ -c with header
+# dependency tracking. Prints the object list (one per line) on stdout.
 oss_compile() {
   local obj="$1"; shift
   local flags=()
@@ -55,11 +65,11 @@ oss_compile() {
   local f o todo=()
   for f in "$@"; do
     o="$obj/$(echo "${f#$ROOT/third_party/}" | tr '/ ' '__').o"
-    [[ -f "$o" && "$o" -nt "$f" ]] || todo+=("$f"$'\t'"$o")
+    oss_stale "$o" && todo+=("$f"$'\t'"$o")
     echo "$o"
   done
   if ((${#todo[@]})); then
-    printf '%s\n' "${todo[@]}" | xargs -P "$JOBS" -d '\n' -I{} bash -c 'IFS=$'"'"'\t'"'"' read -r f o <<< "$1"; shift; g++ "$@" -c "$f" -o "$o" || { echo "FAILED: $f" >&2; exit 255; }' _ {} "${flags[@]}" >&2
+    printf '%s\n' "${todo[@]}" | xargs -P "$JOBS" -d '\n' -I{} bash -c 'IFS=$'"'"'\t'"'"' read -r f o <<< "$1"; shift; rm -f "$o"; g++ "$@" -MMD -c "$f" -o "$o" || { echo "FAILED: $f" >&2; exit 255; }' _ {} "${flags[@]}" >&2
   fi
 }
 
