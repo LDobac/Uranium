@@ -1,0 +1,18 @@
+# Quick cross-race check of the T0 bots.
+name = "m3-smoke-cross"
+seed_base = 21000
+[[matchup]]
+map = "both"
+games = 4
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 4
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 4
+p0 = { kind = "t0", race = "protoss" }
+p1 = { kind = "t0", race = "zerg" }

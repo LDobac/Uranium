@@ -1,0 +1,18 @@
+# T1 stage 1 smoke: T0 Terran vs UAlbertaBot (each race).
+name = "m3-smoke-uab"
+seed_base = 40000
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "ualbertabot", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "ualbertabot", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "ualbertabot", race = "terran" }

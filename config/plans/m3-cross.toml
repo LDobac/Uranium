@@ -1,0 +1,18 @@
+# 021-AC1: T0 bots of all three races play each other, 50 games per map per pairing.
+name = "m3-cross"
+seed_base = 30000
+[[matchup]]
+map = "both"
+games = 100
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 100
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 100
+p0 = { kind = "t0", race = "protoss" }
+p1 = { kind = "t0", race = "zerg" }

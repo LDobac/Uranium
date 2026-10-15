@@ -30,3 +30,5 @@
 .env
 .env.*
 !.env.example
+/third_party/ualbertabot/
+/build/

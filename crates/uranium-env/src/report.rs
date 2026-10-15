@@ -34,6 +34,9 @@ struct Row {
     violations: u64,
     session_errors: u32,
     minutes: Vec<f64>,
+    /// Games that ended within 300 frames: an opponent that never really played
+    /// (e.g. its module failed to load). Excluded from win counts.
+    suspect_short: u32,
 }
 
 pub fn write(out: &Path, plan: &Plan) -> Result<()> {
@@ -59,6 +62,10 @@ pub fn write(out: &Path, plan: &Plan) -> Result<()> {
         let Some(first) = ss.first() else { continue };
         if let Some(f) = first["end_frame"].as_f64() {
             row.minutes.push(f * 42.0 / 60_000.0);
+            if f < 300.0 {
+                row.suspect_short += 1;
+                continue;
+            }
         }
         let m = &plan.matchups[mi];
         let p0_race = match &m.p0 {
@@ -93,8 +100,8 @@ pub fn write(out: &Path, plan: &Plan) -> Result<()> {
 
     let mut md = String::new();
     writeln!(md, "# {} — matchup summary\n", plan.name)?;
-    writeln!(md, "| # | p0 | p1 | map | games | outcomes | p0 wins | p1 wins | draws | mirror decided | game min p50 | vis. violations | session errors |")?;
-    writeln!(md, "|---|---|---|---|---|---|---|---|---|---|---|---|---|")?;
+    writeln!(md, "| # | p0 | p1 | map | games | outcomes | p0 wins | p1 wins | draws | mirror decided | suspect (<300 frames) | game min p50 | vis. violations | session errors |")?;
+    writeln!(md, "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")?;
     for ((mi, map), r) in &mut rows {
         let m = &plan.matchups[*mi];
         r.minutes.sort_by(f64::total_cmp);
@@ -102,7 +109,7 @@ pub fn write(out: &Path, plan: &Plan) -> Result<()> {
         let p1 = if m.p1_random_ratio > 0.0 { format!("{} (random {:.0}%)", side_name(&m.p1), m.p1_random_ratio * 100.0) } else { side_name(&m.p1) };
         writeln!(
             md,
-            "| {mi} | {} | {p1} | {map} | {} | {:?} | {} | {} | {} | {} | {p50:.1} | {} | {} |",
+            "| {mi} | {} | {p1} | {map} | {} | {:?} | {} | {} | {} | {} | {} | {p50:.1} | {} | {} |",
             side_name(&m.p0),
             r.games,
             r.outcomes,
@@ -110,6 +117,7 @@ pub fn write(out: &Path, plan: &Plan) -> Result<()> {
             r.p1_wins,
             r.draws,
             r.decided_mirror,
+            r.suspect_short,
             r.violations,
             r.session_errors
         )?;

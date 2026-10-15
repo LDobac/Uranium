@@ -1,0 +1,229 @@
+diff --git a/BOSS/source/GameState.cpp b/BOSS/source/GameState.cpp
+index b3f0153..7c7439d 100644
+--- a/BOSS/source/GameState.cpp
++++ b/BOSS/source/GameState.cpp
+@@ -14,7 +14,7 @@ GameState::GameState(const RaceID r)
+     
+ }
+ 
+-#ifdef _MSC_VER
++#if defined(_MSC_VER) || defined(URANIUM_BOSS_BWAPI)
+ GameState::GameState(BWAPI::GameWrapper & game, BWAPI::PlayerInterface * self, const std::vector<BWAPI::UnitType> & buildingsQueued)
+     : _race                 (Races::GetRaceID(self->getRace()))
+     , _currentFrame         (game->getFrameCount())
+diff --git a/BOSS/source/GameState.h b/BOSS/source/GameState.h
+index 56741a5..87863bd 100644
+--- a/BOSS/source/GameState.h
++++ b/BOSS/source/GameState.h
+@@ -67,7 +67,7 @@ public:
+ 
+ // constructor based on BWAPI::Game only makes sense if using VS
+ // we won't be using this if we're compiling to emscripten or linux
+-#ifdef _MSC_VER
++#if defined(_MSC_VER) || defined(URANIUM_BOSS_BWAPI)
+     GameState(BWAPI::GameWrapper & game, BWAPI::PlayerInterface * player, const std::vector<BWAPI::UnitType> & buildingsQueued);
+ #endif
+ 
+diff --git a/UAlbertaBot/Source/BuildingData.cpp b/UAlbertaBot/Source/BuildingData.cpp
+index 7fd1004..5e6bb5a 100644
+--- a/UAlbertaBot/Source/BuildingData.cpp
++++ b/UAlbertaBot/Source/BuildingData.cpp
+@@ -9,7 +9,7 @@ BuildingData::BuildingData()
+ 
+ void BuildingData::removeBuilding(const Building & b)
+ {
+-    auto & building = std::find(m_buildings.begin(), m_buildings.end(), b);
++    auto building = std::find(m_buildings.begin(), m_buildings.end(), b);
+ 
+     if (building != m_buildings.end())
+     {
+diff --git a/UAlbertaBot/Source/BuildingManager.cpp b/UAlbertaBot/Source/BuildingManager.cpp
+index 07cc53b..ded3972 100644
+--- a/UAlbertaBot/Source/BuildingManager.cpp
++++ b/UAlbertaBot/Source/BuildingManager.cpp
+@@ -455,7 +455,7 @@ void BuildingManager::removeBuildings(const std::vector<Building> & toRemove)
+ {
+     for (auto & b : toRemove)
+     {
+-        auto & it = std::find(m_buildings.begin(), m_buildings.end(), b);
++        auto it = std::find(m_buildings.begin(), m_buildings.end(), b);
+ 
+         if (it != m_buildings.end())
+         {
+diff --git a/UAlbertaBot/Source/CombatSimulation.h b/UAlbertaBot/Source/CombatSimulation.h
+index 00c64dd..275e5ff 100644
+--- a/UAlbertaBot/Source/CombatSimulation.h
++++ b/UAlbertaBot/Source/CombatSimulation.h
+@@ -6,10 +6,10 @@
+ 	#include "Visualizer.h"
+ #endif
+ 
+-#include "..\..\SparCraft\source\GameState.h"
+-#include "..\..\SparCraft\source\Game.h"
+-#include "..\..\SparCraft\source\Unit.h"
+-#include "..\..\SparCraft\source\AllPlayers.h"
++#include "../../SparCraft/source/GameState.h"
++#include "../../SparCraft/source/Game.h"
++#include "../../SparCraft/source/Unit.h"
++#include "../../SparCraft/source/AllPlayers.h"
+ 
+ namespace UAlbertaBot
+ {
+diff --git a/UAlbertaBot/Source/Config.cpp b/UAlbertaBot/Source/Config.cpp
+index eb711d9..0c8c03c 100644
+--- a/UAlbertaBot/Source/Config.cpp
++++ b/UAlbertaBot/Source/Config.cpp
+@@ -12,7 +12,7 @@ namespace Config
+     {
+         bool ConfigFileFound                = false;
+         bool ConfigFileParsed               = false;
+-        std::string ConfigFileLocation      = "UAlbertaBot_Config.txt";
++        std::string ConfigFileLocation      = "bwapi-data/AI/UAlbertaBot_Config.txt"; // Uranium: packaged with the module
+     }
+ 
+     namespace Strategy
+diff --git a/UAlbertaBot/Source/ParseUtils.cpp b/UAlbertaBot/Source/ParseUtils.cpp
+index 44bd2d4..8c11fa2 100644
+--- a/UAlbertaBot/Source/ParseUtils.cpp
++++ b/UAlbertaBot/Source/ParseUtils.cpp
+@@ -1,5 +1,5 @@
+ #include "ParseUtils.h"
+-#include "rapidjson\document.h"
++#include "rapidjson/document.h"
+ #include "JSONTools.h"
+ #include "BuildOrder.h"
+ #include "StrategyManager.h"
+diff --git a/UAlbertaBot/Source/ProductionManager.cpp b/UAlbertaBot/Source/ProductionManager.cpp
+index d0aa28c..413216d 100644
+--- a/UAlbertaBot/Source/ProductionManager.cpp
++++ b/UAlbertaBot/Source/ProductionManager.cpp
+@@ -33,7 +33,7 @@ void ProductionManager::performBuildOrderSearch()
+ 
+     PROFILE_FUNCTION();
+ 
+-    BuildOrder & buildOrder = m_bossManager.getBuildOrder();
++    BuildOrder buildOrder = m_bossManager.getBuildOrder();
+ 
+     if (buildOrder.size() > 0)
+     {
+diff --git a/UAlbertaBot/Source/SquadData.cpp b/UAlbertaBot/Source/SquadData.cpp
+index 2be5a32..880e373 100644
+--- a/UAlbertaBot/Source/SquadData.cpp
++++ b/UAlbertaBot/Source/SquadData.cpp
+@@ -39,7 +39,7 @@ void SquadData::clearSquadData()
+ 
+ void SquadData::removeSquad(const std::string & squadName)
+ {
+-    auto & squadPtr = m_squads.find(squadName);
++    auto squadPtr = m_squads.find(squadName);
+ 
+     UAB_ASSERT_WARNING(squadPtr != m_squads.end(), "Trying to clear a squad that didn't exist: %s", squadName.c_str());
+     if (squadPtr == m_squads.end())
+diff --git a/UAlbertaBot/Source/StrategyManager.cpp b/UAlbertaBot/Source/StrategyManager.cpp
+index e84e1a9..043f3fa 100644
+--- a/UAlbertaBot/Source/StrategyManager.cpp
++++ b/UAlbertaBot/Source/StrategyManager.cpp
+@@ -84,7 +84,7 @@ const bool StrategyManager::shouldExpandNow() const
+     return false;
+ }
+ 
+-void StrategyManager::addStrategy(const std::string & name, Strategy & strategy)
++void StrategyManager::addStrategy(const std::string & name, const Strategy & strategy)
+ {
+     m_strategies[name] = strategy;
+ }
+diff --git a/UAlbertaBot/Source/StrategyManager.h b/UAlbertaBot/Source/StrategyManager.h
+index 67cd56d..c835793 100644
+--- a/UAlbertaBot/Source/StrategyManager.h
++++ b/UAlbertaBot/Source/StrategyManager.h
+@@ -52,7 +52,7 @@ class StrategyManager
+ public:
+ 
+     void                    onEnd(const bool isWinner);
+-    void                    addStrategy(const std::string & name, Strategy & strategy);
++    void                    addStrategy(const std::string & name, const Strategy & strategy);
+     void                    setLearnedStrategy();
+     void	                readResults();
+     const	MetaPairVector  getBuildOrderGoal();
+diff --git a/UAlbertaBot/Source/UnitData.cpp b/UAlbertaBot/Source/UnitData.cpp
+index 6545925..a718b5f 100644
+--- a/UAlbertaBot/Source/UnitData.cpp
++++ b/UAlbertaBot/Source/UnitData.cpp
+@@ -22,7 +22,7 @@ void UnitData::updateUnit(BWAPI::Unit unit)
+ 	if (!unit) { return; }
+ 
+     bool firstSeen = false;
+-    auto & it = unitMap.find(unit);
++    auto it = unitMap.find(unit);
+     if (it == unitMap.end())
+     {
+         firstSeen = true;
+diff --git a/UAlbertaBot/Source/linux/UraniumModule.cpp b/UAlbertaBot/Source/linux/UraniumModule.cpp
+new file mode 100644
+index 0000000..f79dc24
+--- /dev/null
++++ b/UAlbertaBot/Source/linux/UraniumModule.cpp
+@@ -0,0 +1,40 @@
++// Uranium patch: expose UAlbertaBot (BWAPI 4.4 client-mode bot) as a BWAPI 4.2 AI module
++// so OpenBW's BWAPILauncher can load it as a T1 opponent (spec 021, stage 1).
++#include <BWAPI.h>
++
++#include "../UAlbertaBotModule.h"
++#include "../../../SparCraft/source/SparCraft.h"
++#include "../../../BOSS/source/BOSS.h"
++
++namespace {
++
++class UABModule : public BWAPI::AIModule {
++  UAlbertaBot::UAlbertaBotModule bot;
++
++ public:
++  void onStart() override { bot.onStart(); }
++  void onFrame() override { bot.onFrame(); }
++  void onEnd(bool isWinner) override { bot.onEnd(isWinner); }
++  void onUnitDestroy(BWAPI::Unit u) override { bot.onUnitDestroy(u); }
++  void onUnitMorph(BWAPI::Unit u) override { bot.onUnitMorph(u); }
++  void onSendText(std::string t) override { bot.onSendText(t); }
++  void onUnitCreate(BWAPI::Unit u) override { bot.onUnitCreate(u); }
++  void onUnitComplete(BWAPI::Unit u) override { bot.onUnitComplete(u); }
++  void onUnitShow(BWAPI::Unit u) override { bot.onUnitShow(u); }
++  void onUnitHide(BWAPI::Unit u) override { bot.onUnitHide(u); }
++  void onUnitRenegade(BWAPI::Unit u) override { bot.onUnitRenegade(u); }
++};
++
++}  // namespace
++
++extern "C" __attribute__((visibility("default"))) void gameInit(BWAPI::Game* game) { BWAPI::BroodwarPtr = game; }
++extern "C" __attribute__((visibility("default"))) BWAPI::AIModule* newAIModule() {
++  // main.cpp of the client-mode bot initializes these before connecting.
++  static bool initialized = false;
++  if (!initialized) {
++    SparCraft::init();
++    BOSS::init();
++    initialized = true;
++  }
++  return new UABModule();
++}
+diff --git a/UAlbertaBot/Source/linux/compat.h b/UAlbertaBot/Source/linux/compat.h
+new file mode 100644
+index 0000000..b8b805d
+--- /dev/null
++++ b/UAlbertaBot/Source/linux/compat.h
+@@ -0,0 +1,17 @@
++// Uranium patch: GCC/Linux compatibility for MSVC-only constructs (spec 021, T1 stage 1).
++#pragma once
++#include <cstdint>
++#include <cstring>
++#include <cstdarg>
++#include <cstdio>
++#include <ctime>
++#include <thread>
++#include <chrono>
++#include <algorithm>
++// MSVC vsnprintf_s comes in 4- and 5-argument forms; map both onto vsnprintf.
++inline int uranium_vsnprintf_s(char* buf, size_t size, const char* fmt, va_list args) { return vsnprintf(buf, size, fmt, args); }
++inline int uranium_vsnprintf_s(char* buf, size_t size, size_t, const char* fmt, va_list args) { return vsnprintf(buf, size, fmt, args); }
++#define vsnprintf_s(buf, size, ...) uranium_vsnprintf_s((buf), (size), __VA_ARGS__)
++#define vsprintf_s(buf, size, fmt, args) vsnprintf((buf), (size), (fmt), (args))
++#define sprintf_s snprintf
++inline int localtime_s(struct tm* out, const time_t* t) { return localtime_r(t, out) ? 0 : 1; }
