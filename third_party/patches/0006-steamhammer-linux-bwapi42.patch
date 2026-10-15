@@ -1,0 +1,50 @@
+diff --git a/Steamhammer_source/Steamhammer/Source/ParseUtils.h b/Steamhammer_source/Steamhammer/Source/ParseUtils.h
+index 4493578..33771cd 100644
+--- a/Steamhammer_source/Steamhammer/Source/ParseUtils.h
++++ b/Steamhammer_source/Steamhammer/Source/ParseUtils.h
+@@ -1,7 +1,7 @@
+ #pragma once
+ 
+ #include "Common.h"
+-#include "rapidjson\document.h"
++#include "rapidjson/document.h"
+ 
+ namespace UAlbertaBot
+ {
+diff --git a/Steamhammer_source/Steamhammer/Source/linux/UraniumModule.cpp b/Steamhammer_source/Steamhammer/Source/linux/UraniumModule.cpp
+new file mode 100644
+index 0000000..ba04d44
+--- /dev/null
++++ b/Steamhammer_source/Steamhammer/Source/linux/UraniumModule.cpp
+@@ -0,0 +1,8 @@
++// Uranium patch: Linux entry points replacing Dll.cpp so OpenBW's BWAPILauncher can load
++// Steamhammer as a BWAPI 4.2 AI module (spec 021, T1 stage 2).
++#include <BWAPI.h>
++
++#include "../UAlbertaBotModule.h"
++
++extern "C" __attribute__((visibility("default"))) void gameInit(BWAPI::Game* game) { BWAPI::BroodwarPtr = game; }
++extern "C" __attribute__((visibility("default"))) BWAPI::AIModule* newAIModule() { return new UAlbertaBot::UAlbertaBotModule(); }
+diff --git a/Steamhammer_source/Steamhammer/Source/linux/compat.h b/Steamhammer_source/Steamhammer/Source/linux/compat.h
+new file mode 100644
+index 0000000..fd2b113
+--- /dev/null
++++ b/Steamhammer_source/Steamhammer/Source/linux/compat.h
+@@ -0,0 +1,17 @@
++// Uranium patch: GCC/Linux compatibility for MSVC-only constructs (spec 021, T1 stage 2).
++#pragma once
++#include <cstdint>
++#include <cstring>
++#include <cstdarg>
++#include <cstdio>
++#include <ctime>
++#include <thread>
++#include <chrono>
++#include <algorithm>
++// MSVC vsnprintf_s comes in 4- and 5-argument forms; map both onto vsnprintf.
++inline int uranium_vsnprintf_s(char* buf, size_t size, const char* fmt, va_list args) { return vsnprintf(buf, size, fmt, args); }
++inline int uranium_vsnprintf_s(char* buf, size_t size, size_t, const char* fmt, va_list args) { return vsnprintf(buf, size, fmt, args); }
++#define vsnprintf_s(buf, size, ...) uranium_vsnprintf_s((buf), (size), __VA_ARGS__)
++#define vsprintf_s(buf, size, fmt, args) vsnprintf((buf), (size), (fmt), (args))
++#define sprintf_s snprintf
++inline int localtime_s(struct tm* out, const time_t* t) { return localtime_r(t, out) ? 0 : 1; }

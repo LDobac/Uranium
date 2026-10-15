@@ -2,10 +2,10 @@
 /target/
 **/target/
 
-# Third-party build outputs (sources are cloned by tools/openbw/fetch.sh)
-/third_party/openbw/
-/third_party/bwapi/
-/third_party/*/build/
+# Third-party sources are fetched by tools/openbw/build.sh and tools/oss/build_<bot>.sh
+# (pinned commits/archives); only our patches are tracked.
+/third_party/*
+!/third_party/patches/
 
 # Game data (copyrighted, never commit) — see spec 011 / config/assets.toml
 /sc_data/
@@ -30,5 +30,4 @@
 .env
 .env.*
 !.env.example
-/third_party/ualbertabot/
 /build/
