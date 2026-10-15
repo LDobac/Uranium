@@ -90,7 +90,8 @@ pub struct Capabilities {
     pub cores: u32,
     pub max_concurrent_games: u32,
     pub max_concurrent_replays: u32,
-    /// Names usable in `PlayerKind::OssBot`.
+    /// Opponent IDs `<name>@<version>` (021-R3); the part before `@` is the name usable in
+    /// `PlayerKind::OssBot`. Bots built without a VERSION file are listed by name only.
     pub oss_bots: Vec<String>,
     pub maps: Vec<MapKey>,
 }

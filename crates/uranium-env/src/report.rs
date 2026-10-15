@@ -37,6 +37,8 @@ struct Row {
     /// Games that ended within 300 frames: an opponent that never really played
     /// (e.g. its module failed to load). Excluded from win counts.
     suspect_short: u32,
+    /// Opponent IDs seen for p1 (021-R3).
+    opponents: std::collections::BTreeSet<String>,
 }
 
 pub fn write(out: &Path, plan: &Plan) -> Result<()> {
@@ -51,6 +53,9 @@ pub fn write(out: &Path, plan: &Plan) -> Result<()> {
         let mi = g["matchup"].as_u64().unwrap_or(0) as usize;
         let row = rows.entry((mi, g["map"].as_str().unwrap_or("?").to_string())).or_default();
         row.games += 1;
+        if let Some(o) = g["opponent"].as_str() {
+            row.opponents.insert(o.to_string());
+        }
         *row.outcomes.entry(g["outcome"].as_str().unwrap_or("?").to_string()).or_default() += 1;
         let ss = by_game.get(&g["game_id"].as_u64().unwrap_or(0)).cloned().unwrap_or_default();
         for s in &ss {
@@ -106,7 +111,10 @@ pub fn write(out: &Path, plan: &Plan) -> Result<()> {
         let m = &plan.matchups[*mi];
         r.minutes.sort_by(f64::total_cmp);
         let p50 = r.minutes.get(r.minutes.len() / 2).copied().unwrap_or(f64::NAN);
-        let p1 = if m.p1_random_ratio > 0.0 { format!("{} (random {:.0}%)", side_name(&m.p1), m.p1_random_ratio * 100.0) } else { side_name(&m.p1) };
+        let mut p1 = if m.p1_random_ratio > 0.0 { format!("{} (random {:.0}%)", side_name(&m.p1), m.p1_random_ratio * 100.0) } else { side_name(&m.p1) };
+        if !r.opponents.is_empty() {
+            p1 = format!("{p1} `{}`", r.opponents.iter().cloned().collect::<Vec<_>>().join(", "));
+        }
         writeln!(
             md,
             "| {mi} | {} | {p1} | {map} | {} | {:?} | {} | {} | {} | {} | {} | {p50:.1} | {} | {} |",

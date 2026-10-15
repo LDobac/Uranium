@@ -65,14 +65,19 @@ impl Config {
         self.bwapi_dir.join("bin").join(exe)
     }
 
-    /// Registered third-party bots (directories containing a module file).
+    /// Registered third-party bots (directories containing a module file) as opponent IDs
+    /// `<name>@<version>` from the `VERSION` file the build script writes (021-R3).
     pub fn oss_bots(&self) -> Vec<String> {
         let Some(dir) = &self.oss_bots_dir else { return vec![] };
         let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
         let mut v: Vec<String> = rd
             .filter_map(|e| e.ok())
             .filter(|e| oss_module(&e.path()).is_some())
-            .filter_map(|e| e.file_name().into_string().ok())
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                let ver = std::fs::read_to_string(e.path().join("VERSION")).ok().map(|v| v.trim().to_string()).filter(|v| v.starts_with(&format!("{name}@")));
+                Some(ver.unwrap_or(name))
+            })
             .collect();
         v.sort();
         v

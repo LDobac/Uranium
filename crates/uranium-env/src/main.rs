@@ -5,7 +5,7 @@ mod calibrate;
 mod plan;
 mod report;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -58,6 +58,8 @@ struct GameRecord {
     map: String,
     races: [String; 2],
     p1_kind: String,
+    /// Opponent ID `<name>@<version>` (021-R3).
+    opponent: String,
     outcome: String,
     detail: Option<String>,
     wall_s: u32,
@@ -132,9 +134,10 @@ pub(crate) fn run_jobs(jobs: Vec<Job>, hosts: &[HostEntry], games_path: &std::pa
         let caps = capabilities(&host.addr).with_context(|| format!("hostd {}", host.addr))?;
         let slots = host.max_games.map_or(caps.max_concurrent_games, |m| m.min(caps.max_concurrent_games));
         eprintln!("[env] host {}: {:?}, {} slots, oss bots {:?}", host.addr, caps.os, slots, caps.oss_bots);
+        let ids: Arc<HashMap<String, String>> = Arc::new(caps.oss_bots.iter().map(|id| (id.split('@').next().unwrap_or(id).to_string(), id.clone())).collect());
         for _ in 0..slots {
-            let (addr, q, g, d) = (host.addr.clone(), queue.clone(), games_out.clone(), done.clone());
-            workers.push(std::thread::spawn(move || worker(&addr, &q, &g, &d, total)));
+            let (addr, q, g, d, ids) = (host.addr.clone(), queue.clone(), games_out.clone(), done.clone(), ids.clone());
+            workers.push(std::thread::spawn(move || worker(&addr, &q, &g, &d, &ids, total)));
         }
     }
     for w in workers {
@@ -170,7 +173,7 @@ pub(crate) fn capabilities(addr: &str) -> Result<Capabilities> {
     }
 }
 
-fn worker(addr: &str, queue: &Mutex<VecDeque<Job>>, games: &Mutex<BufWriter<std::fs::File>>, done: &Mutex<usize>, total: usize) -> Result<()> {
+fn worker(addr: &str, queue: &Mutex<VecDeque<Job>>, games: &Mutex<BufWriter<std::fs::File>>, done: &Mutex<usize>, ids: &HashMap<String, String>, total: usize) -> Result<()> {
     let (mut r, mut w) = connect(addr)?;
     loop {
         let Some(job) = queue.lock().unwrap().pop_front() else { return Ok(()) };
@@ -184,7 +187,7 @@ fn worker(addr: &str, queue: &Mutex<VecDeque<Job>>, games: &Mutex<BufWriter<std:
                     std::thread::sleep(Duration::from_secs(2));
                     continue;
                 }
-                record(games, addr, &job, "Rejected", Some(reason), 0)?;
+                record(games, addr, &job, ids, "Rejected", Some(reason), 0)?;
                 continue;
             }
             other => bail!("unexpected {other:?}"),
@@ -201,14 +204,23 @@ fn worker(addr: &str, queue: &Mutex<VecDeque<Job>>, games: &Mutex<BufWriter<std:
             GameOutcome::Timeout => ("Timeout", None),
             GameOutcome::Stopped => ("Stopped", None),
         };
-        record(games, addr, &job, outcome, detail, fin.wall_s)?;
+        record(games, addr, &job, ids, outcome, detail, fin.wall_s)?;
         let mut d = done.lock().unwrap();
         *d += 1;
         eprintln!("[env] {}/{total} game {} {outcome} ({}s)", *d, job.spec.game_id, fin.wall_s);
     }
 }
 
-fn record(games: &Mutex<BufWriter<std::fs::File>>, host: &str, job: &Job, outcome: &str, detail: Option<String>, wall_s: u32) -> Result<()> {
+/// 021-R3: T0 bots are versioned with the workspace, OSS bots by the host's VERSION file.
+fn opponent_id(p: &PlayerSpec, ids: &HashMap<String, String>) -> String {
+    match &p.kind {
+        PlayerKind::Bridge { .. } => format!("t0-{}@{}", format!("{:?}", p.race).to_lowercase(), env!("CARGO_PKG_VERSION")),
+        PlayerKind::OssBot { name } => ids.get(name).cloned().unwrap_or_else(|| format!("{name}@unknown")),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record(games: &Mutex<BufWriter<std::fs::File>>, host: &str, job: &Job, ids: &HashMap<String, String>, outcome: &str, detail: Option<String>, wall_s: u32) -> Result<()> {
     let p1_kind = match &job.spec.players[1].kind {
         PlayerKind::Bridge { .. } => "t0".to_string(),
         PlayerKind::OssBot { name } => format!("oss:{name}"),
@@ -220,6 +232,7 @@ fn record(games: &Mutex<BufWriter<std::fs::File>>, host: &str, job: &Job, outcom
         map: format!("{:?}", job.spec.map),
         races: [format!("{:?}", job.spec.players[0].race), format!("{:?}", job.spec.players[1].race)],
         p1_kind,
+        opponent: opponent_id(&job.spec.players[1], ids),
         outcome: outcome.to_string(),
         detail,
         wall_s,
