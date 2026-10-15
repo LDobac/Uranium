@@ -1,0 +1,22 @@
+diff --git a/sync.h b/sync.h
+index 19cbab6..120256c 100644
+--- a/sync.h
++++ b/sync.h
+@@ -1,6 +1,7 @@
+ #ifndef BWGAME_SYNC_H
+ #define BWGAME_SYNC_H
+ 
++#include <cstdlib>
+ #include "bwgame.h"
+ #include "actions.h"
+ #include "replay.h"
+@@ -687,6 +688,9 @@ struct sync_functions: action_functions {
+ 			a_string seed_str;
+ 			for (auto& v : sync_st.clients) seed_str += v.uid.str();
+ 			uint32_t rand_state = seed ^ data_loading::crc32_t()((const uint8_t*)seed_str.data(), seed_str.size());
++			// Uranium patch: deterministic game setup (start locations etc.) when URANIUM_SEED is set
++			// on every client. See spec 011-AC4.
++			if (const char* fixed = std::getenv("URANIUM_SEED")) rand_state = (uint32_t)std::strtoul(fixed, nullptr, 10);
+ 			st.lcg_rand_state = rand_state;
+ 
+ 			for (int i = 0; i != 12; ++i) {
