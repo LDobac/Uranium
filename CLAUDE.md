@@ -74,7 +74,7 @@ tools/                # 벤치(bench), CASC 추출(casc-extract), OpenBW 빌드(
 third_party/          # OpenBW·BWAPI 클론(커밋 고정, git 미추적) + patches/(0001 폴더 로더, 0002 고정 시작 seed)
 reports/              # 스파이크·벤치·평가 리포트
 ```
-진행 상황(2026-10-15): M0 완료(012·013 외 Approved), M1 완료(벤치·OpenBW·데이터 추출), M2 진행 중(proto·브리지·T0 테란·셀프매치).
+진행 상황(2026-10-15): M0 완료(012·013 외 Approved), M1 완료(벤치·OpenBW·데이터 추출), M2 완료(proto·브리지·T0 테란·셀프매치, `reports/m2_selfmatch.md`). 다음은 M3(hostd·상대 풀).
 
 ## 코딩 규칙
 - Burn 0.22 모델 코드는 백엔드에 무관하게 쓰고 실행 시 `Device`로 고른다. 테스트는 `Device::flex()`로 한다 (032-R1).
