@@ -50,5 +50,5 @@ OpenBW에는 내장 컴퓨터 AI가 없다. 그래서 RL과 평가에 쓸 상대
   2. **2단계**: BWAPI 4.4 봇(Steamhammer, McRave 등)은 봇별 포팅 비용을 측정해 `reports/oss_bot_porting.md`에 기록한다. 실제로 포팅을 진행할지, OpenBW를 4.4로 업그레이드할지는 **그 시점에 사용자에게 다시 확인**한다.
      - 2026-10-16 재확인: 4.2로 포팅한다. Steamhammer·McRave와 Stardust·ZZZKBot·Iron을 추가한다.
 - T1 최종 후보 목록은 1단계 빌드 검증 결과와 함께 사용자 확인을 받는다.
-- [SPEC AMBIGUOUS] AMB-021-3: OSS 봇의 결정론. 같은 seed로 2판을 돌리면 ZZZKBot만 같은 결과를 낸다. UAlbertaBot·Steamhammer·Iron은 시각 기반 난수를, Stardust·McRave는 실제 경과 시간 기반 계산량 조절을 쓴다(`reports/oss_bot_porting.md`). 020-AC2(재현)를 OSS 상대에도 요구할지, 난수 시드만 패치로 고정할지, 다양성으로 보고 그대로 둘지 결정이 필요하다.
+- **OSS 봇 결정론 (확정 2026-10-16, AMB-021-3): 그대로 둔다.** 같은 seed로 2판을 돌리면 ZZZKBot만 같은 결과를 낸다. UAlbertaBot·Steamhammer·Iron은 시각 기반 난수를, Stardust·McRave는 실제 경과 시간 기반 계산량 조절을 쓴다(`reports/oss_bot_porting.md`). 판마다 달라지는 것은 상대 다양성으로 보고 패치하지 않는다. 우리 쪽(T0·브리지·엔진)의 결정론은 유지하며, 020-AC2는 결정론적인 상대(T0, 셀프플레이)로 검증한다.
 - T0 봇이 너무 약하면 RL 초기 신호가 왜곡될 수 있다. BC 정책과 섞은 커리큘럼을 [042](042-rl-training.md)에서 다룬다.
