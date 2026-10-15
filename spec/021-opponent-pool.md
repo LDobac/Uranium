@@ -24,13 +24,19 @@ OpenBW에는 내장 컴퓨터 AI가 없다. 그래서 RL과 평가에 쓸 상대
 | 021-R7 | **MUST** T0·T1 봇은 일부 게임에서 Random 종족으로 시작할 수 있어야 한다(AMB-000-3, 042). 비율은 설정 파일로 관리한다 |
 | 021-R5 | **MUST** 상대 봇의 맵핵(CompleteMapInformation)은 **기본 금지**한다. 학습 후반에 더 강한 상대가 필요할 때만 별도 상대 ID(`<bot>+maphack@ver`)로 리그에 추가할 수 있다. **평가(050)에서는 사용하지 않는다** (확정 2026-10-15, AMB-021-2) |
 
-## T1 후보 조사 목록 (M3에서 빌드 검증)
-| 봇 | 종족 | 원본 BWAPI | 비고 |
-|---|---|---|---|
-| UAlbertaBot | T/P/Z | 4.1.2 계열 | C++, 포팅 난이도 낮음 예상 |
-| Steamhammer | Z (주력), P/T 일부 | 4.4 계열 | 4.2 API 차이 포팅 필요 |
-| McRave | P/Z | 4.4 계열 | BWEB/BWEM 의존 |
-| 기타 SSCAIT/AIIDE 공개 C++ 봇 | 다양 | 다양 | JVM 기반(JBWAPI) 봇은 제외 |
+## T1 확정 목록 (2026-10-16 사용자 결정, 021-R2 기록 항목)
+| 봇 | 종족 | 라이선스 | 원본 BWAPI | 4.2 포팅 | 빌드 스크립트 | 고정 |
+|---|---|---|---|---|---|---|
+| UAlbertaBot | T/P/Z | MIT | 4.4 계열 | 필요(패치 0005) | `tools/oss/build_ualbertabot.sh` | 커밋 `558899d8` |
+| Steamhammer | Z(주력)·P·T | MIT | 4.4 계열 | 필요 | `tools/oss/build_steamhammer.sh` | 5.3.6 소스 zip sha256 |
+| McRave | P/Z | MIT | 4.4 계열 | 필요(BWEM·BWEB 포함) | `tools/oss/build_mcrave.sh` | 커밋 고정 |
+| Stardust | P | MIT + 대회 출전 금지 조건 | 4.4 계열(자체 OpenBW 구성) | 필요 | `tools/oss/build_stardust.sh` | 커밋 고정 |
+| ZZZKBot | Z | LGPL-3 | 확인 필요 | 확인 필요 | `tools/oss/build_zzzkbot.sh` | 커밋 고정 |
+| Iron | T | 확인 필요(사용 불가면 대체 후보 제시) | 4.1.2 | 필요(BWEM 포함) | `tools/oss/build_iron.sh` | AIIDE 제출 소스 sha256 |
+
+- 실제 값과 포팅 내역은 `reports/oss_bot_porting.md`에 기록한다. 봇 하나가 막히면 사용자에게 보고하고 다음 봇으로 넘어간다.
+- JVM 기반(JBWAPI) 봇은 제외한다.
+- 상대 ID(021-R3): OSS 봇은 빌드 스크립트가 쓰는 `<bot>/VERSION`(`<bot>@<커밋 또는 버전>`), T0는 `t0-<race>@<uranium-scripted 버전>`이다.
 
 ## Acceptance Criteria
 - 021-AC1: T0 봇 3종족이 서로 맞붙어 각 맵에서 50판을 크래시 없이 완주한다.
@@ -42,5 +48,6 @@ OpenBW에는 내장 컴퓨터 AI가 없다. 그래서 RL과 평가에 쓸 상대
 - **상대 봇 확보 방식 (확정 2026-10-15, AMB-021-1): 단계적 접근**
   1. **1단계 (M3)**: T0 스크립트 봇과, 4.2에서 바로 돌거나 포팅이 쉬운 봇(UAlbertaBot 등)으로 시작한다.
   2. **2단계**: BWAPI 4.4 봇(Steamhammer, McRave 등)은 봇별 포팅 비용을 측정해 `reports/oss_bot_porting.md`에 기록한다. 실제로 포팅을 진행할지, OpenBW를 4.4로 업그레이드할지는 **그 시점에 사용자에게 다시 확인**한다.
+     - 2026-10-16 재확인: 4.2로 포팅한다. Steamhammer·McRave와 Stardust·ZZZKBot·Iron을 추가한다.
 - T1 최종 후보 목록은 1단계 빌드 검증 결과와 함께 사용자 확인을 받는다.
 - T0 봇이 너무 약하면 RL 초기 신호가 왜곡될 수 있다. BC 정책과 섞은 커리큘럼을 [042](042-rl-training.md)에서 다룬다.

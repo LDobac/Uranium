@@ -61,7 +61,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-012-3 | 실행 환경·안티치트 정책 (→AMB-000-2) | Resolved (2026-10-15: 로컬/LAN 한정) |
 | AMB-020-1 | OpenBW 원격 호스트 사양 | Resolved (2026-10-15: 게임 전용 Linux PC 2대 이상, 사양 자동 감지) |
 | AMB-020-2 | 최대 게임 시간·무승부 규칙 | Resolved (2026-10-15: 60분 초과 시 무승부, 보상 0 — 점수 판정안에서 변경) |
-| AMB-021-1 | BWAPI 4.4 봇 대응 방향, T1 후보 목록 | Resolved (2026-10-15: 단계적 접근 — 4.2 호환 봇+T0 먼저, 4.4 봇은 포팅 비용 측정 후 재확인) |
+| AMB-021-1 | BWAPI 4.4 봇 대응 방향, T1 후보 목록 | Resolved (2026-10-15: 단계적 접근 — 4.2 호환 봇+T0 먼저, 4.4 봇은 포팅 비용 측정 후 재확인. 2026-10-16 재확인: Steamhammer·McRave·Stardust·ZZZKBot·Iron 포팅) |
 | AMB-021-2 | 상대 봇 맵핵 허용 | Resolved (2026-10-15: 기본 금지, 학습 후반 강화용 별도 상대로만 허용, 평가 미사용) |
 | AMB-031-1 | executor(규칙) 범위 | Resolved (2026-10-15: 최소 — 일꾼·건물 선택만, 위치 보정·심시티 스냅·자동 채취 없음) |
 | AMB-031-2 | APM 제한 수치 (→AMB-000-1) | Resolved (2026-10-15: APM 제한 없음, delay 1–32 비균등 16 bucket) |
@@ -110,7 +110,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | M0 | spec 작성·리뷰 | 전체 |
 | M1 | 리스크 스파이크: (a) Burn/Vulkan 벤치, (b) OpenBW 헤드리스 + SC:R CASC 데이터 추출. ~~(c) samase_scarf~~ → M7로 이동(2026-10-15) | 060, 011 |
 | M2 | proto + OpenBW 브리지(대전 모드) + 에이전트 서버 최소판 + T0 테란 스크립트 봇으로 게임 완주·fps·결정론 측정 | 010, 011, 021(T0 테란) |
-| M3 | hostd·env 스케줄러(Linux 구현, Windows는 `docs/windows.md` 체크리스트) + T0 P/Z 봇 + T1 1단계(UAlbertaBot) | 020, 021 |
+| M3 | hostd·env 스케줄러(Linux 구현, Windows는 `docs/windows.md` 체크리스트) + T0 P/Z 봇 + T1 1단계(UAlbertaBot)·2단계(5종 추가 포팅) + 동시 게임 수 측정(calibrate) | 020, 021 |
 | M4 | 리플레이 파이프라인 (SC:R 리플레이 변환 포함) | 040, 013(명령 인코딩 부분) |
 | M5 | 모델 + BC | 030–034, 041 |
 | M6 | RL + 리그 | 042, 050 |
