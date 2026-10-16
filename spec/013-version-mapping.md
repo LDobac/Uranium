@@ -40,17 +40,26 @@ SC:R 리플레이를 OpenBW(1.16.1 로더, `third_party/openbw/replay.h`)로 재
 ### 명령 (SC:R 1.21 확장 → 1.16.1)
 | SC:R opcode | 1.16.1 opcode | SC:R 필드 | 변환 |
 |---|---|---|---|
-| `0x63` Select121 | `0x09` Select | count(u8), (tag u16, pad u16)×count | pad 제거 |
-| `0x64` SelectAdd121 | `0x0A` SelectAdd | 위와 같음 | pad 제거 |
-| `0x65` SelectRemove121 | `0x0B` SelectRemove | 위와 같음 | pad 제거 |
-| `0x60` RightClick121 | `0x14` RightClick | x u16, y u16, tag u16, pad u16, unit u16, queued u8 | pad 제거 |
-| `0x61` TargetedOrder121 | `0x15` TargetedOrder | x u16, y u16, tag u16, pad u16, unit u16, order u8, queued u8 | pad 제거 |
-| `0x62` Unload121 | `0x29` Unload | tag u16, pad u16 | pad 제거 |
+| `0x63` Select121 | `0x09` Select | count(u8), (tag u16, pad u16)×count | pad를 태그 상위 16비트로 합쳐 아래 태그 규칙으로 변환 |
+| `0x64` SelectAdd121 | `0x0A` SelectAdd | 위와 같음 | pad를 태그 상위 16비트로 합쳐 아래 태그 규칙으로 변환 |
+| `0x65` SelectRemove121 | `0x0B` SelectRemove | 위와 같음 | pad를 태그 상위 16비트로 합쳐 아래 태그 규칙으로 변환 |
+| `0x60` RightClick121 | `0x14` RightClick | x u16, y u16, tag u16, pad u16, unit u16, queued u8 | pad를 태그 상위 16비트로 합쳐 아래 태그 규칙으로 변환 |
+| `0x61` TargetedOrder121 | `0x15` TargetedOrder | x u16, y u16, tag u16, pad u16, unit u16, order u8, queued u8 | pad를 태그 상위 16비트로 합쳐 아래 태그 규칙으로 변환 |
+| `0x62` Unload121 | `0x29` Unload | tag u16, pad u16 | pad를 태그 상위 16비트로 합쳐 아래 태그 규칙으로 변환 |
 | 그 밖의 opcode | 같음 | 1.16.1과 같은 배치 | 그대로 복사 |
 
-- pad 값은 screp 기준 "항상 0"이다. 0이 아닌 pad가 나오면 해당 리플레이를 `Unsupported`로 폐기하고 개수를 리포트한다. 실측 분포는 M4 스파이크에서 기록한다.
-- 유닛 태그는 1.16.1과 같은 16비트(하위 11비트 인덱스 + 상위 재사용 비트)다. 이 값은 BWAPI `getReplayID()`와 같다(011-R5).
-- 1.16.1 opcode 표에 없는 명령(파싱할 수 없는 opcode)이 나오면 그 리플레이를 폐기한다(013-R2).
+- **유닛 태그 규칙** (M4 스파이크 실측, 2026-10-16. 1.21 형식의 pad는 screp 설명과 달리 항상 0이 아니며 재사용 카운터의 상위 비트다):
+  - SC:R 1.21 태그(32비트) = `tag u16 | pad u16 << 16`. `0`과 `0xFFFF`는 "유닛 없음"이다.
+  - 유닛 한도가 1,700(LMTS 섹션 없음 포함)이면 `인덱스 = 하위 11비트`, `재사용 = 나머지`다. 유닛 한도가 3,400 등 확장(`LMTS` 섹션 0x0C의 units 값)이면 `인덱스 = 하위 13비트`, `재사용 = 나머지`다.
+  - 1.16.1 태그 = `인덱스' | (재사용 & 0x1F) << 11`. 확장 한도에서는 플레이어 유닛이 배열 위쪽부터 배정되므로 `인덱스 ≥ 한도 - 1700`이면 `인덱스' = 인덱스 - (한도 - 1700)`이다. 맵 배치 유닛(미네랄 등)은 아래쪽 인덱스라 그대로 둔다. 인덱스는 1부터 시작한다.
+  - 변환 결과 인덱스가 1,700을 넘으면 그 리플레이를 `Unsupported`로 폐기한다(013-R2).
+  - 1.16.1 태그는 BWAPI `getReplayID()`와 같다(011-R5).
+- **플레이어 번호** (M4 스파이크 실측): 명령의 플레이어 바이트는 헤더 플레이어 구조체의 `ID` 필드다. BWAPI 플레이어 번호는 이름이 있는(점유된) 헤더 칸을 배열 순서대로 0, 1, 2…로 다시 매긴 값이며, 배열 위치나 `slot`·`ID` 필드와 다를 수 있다(BWAPI GameInfo와 이름 대조로 확인). 재생 시점(`URANIUM_REPLAY_PERSPECTIVE`, hostd `ReplaySpec.perspective_slot`)은 이 BWAPI 번호로 넘긴다.
+- **opcode 처리 규칙** (2026-10-16 사용자 지시: 알 수 없는 opcode를 단순 폐기하지 않는다). OpenBW 로더(`actions.h` `read_action`)가 처리하지 않는 명령은 재생 전체를 멈추므로 변환 시 다음처럼 나눈다.
+  - OpenBW가 처리하는 opcode: 그대로 둔다.
+  - OpenBW가 처리하지 않고 게임 상태에 영향이 없는 opcode(게임 속도 0x0F, 일시정지·재개 0x10·0x11, 지연 0x55, keep-alive·sync·로비 0x05–0x08·0x37–0x45·0x48·0x54·0x56·0x5B): 제거한다.
+  - 게임 상태에 영향이 있는데 OpenBW가 처리하지 않는 opcode(예: 0x1D)와 길이를 모르는 새 opcode: 리플레이를 버리지 않고 "확인 대기"로 분류해 opcode·프레임을 리포트한다. 정체(레퍼런스 파서·OpenBW 소스)를 확인해 OpenBW 실행에 문제가 없으면 파서와 이 표에 추가하고 다시 처리한다.
+- 헤더 플레이어 `ID`에 없는 플레이어 바이트(옵저버, 128 이상)의 명령은 변환 시 제거한다. OpenBW 로더가 "player id not found"로 재생을 멈추며, 이 명령들은 게임 상태에 영향이 없다(M4 스파이크 실측).
 
 ## Requirements
 | ID | 요구사항 |
