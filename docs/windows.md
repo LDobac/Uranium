@@ -20,7 +20,7 @@ Windows PC 한 대에서 게임·브리지·hostd·에이전트를 모두 돌리
   - LLVM이 있으면 그대로 설치한다(`cargo install casc --version 0.1.6 --locked`).
   - LLVM이 없고 관리자 권한도 없으면 PyPI `libclang` 휠에서 `libclang.dll`을 꺼내 쓴다. 휠의 sha256은 PyPI 값과 대조한다. 그다음 `LIBCLANG_PATH`를 그 폴더로 지정하고 설치한다.
 - 추출: `cargo run -p casc-extract --release -- "<SC:R>\Data" <data dir>` → 956파일
-  - `manifest.toml`에 절대 `source` 경로가 들어가므로 manifest 해시는 호스트마다 다르다(`reports/m3_windows.md` 참고).
+  - 추출이 끝나면 `content_sha256`이 출력된다. 이 값을 `config/assets.toml`의 값과 대조한다(011-R13, 경로에 무관한 내용 해시).
 - 맵: SC:R 설치 폴더의 `Maps\ladder`에서 복사하고 `config/assets.toml`의 sha256과 대조한다.
   - `2024Season1\(4)Fighting_Spirit_1.3.scx` → `fighting_spirit_1.3.scx`
   - `Season 10\(4)Circuit Breaker.scx` → `circuit_breaker_1.0.scx`

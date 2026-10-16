@@ -1,6 +1,6 @@
 # 011 — Bridge: OpenBW
 
-- **Status**: Approved (2026-10-15)
+- **Status**: Approved (2026-10-15, 2026-10-16 개정: 011-R13 내용 해시, 011-AC8 통과)
 - **Related**: [010](010-game-protocol.md), [013](013-version-mapping.md), [020](020-env-orchestration.md)
 
 ## Purpose
@@ -31,7 +31,7 @@ OpenBW 포크 BWAPI 4.2(`github.com/OpenBW/bwapi`) 위에서 동작하는 AIModu
 | 011-R9 | **SHOULD** 시작 위치를 고정 또는 랜덤으로 고를 수 있게 한다(`BWAPI_CONFIG_AUTO_MENU__MAP` + 맵 시드). 이 기능은 평가 재현용이다 |
 | 011-R10 | **MUST** **리플레이 재생 모드**: BWAPI 리플레이 모드로 `.rep`를 재생하고, 환경변수 `URANIUM_REPLAY_PERSPECTIVE=<player_slot>`으로 지정한 플레이어(테란) **시점의 시야로 필터링**한 RawFrame을 만든다(030-R3) |
 | 011-R11 | **MUST** 재생 모드의 `Hello.mode`는 `Lockstep`이고 별도 플래그 `replay=true`를 쓴다. 에이전트는 `cmds`가 비어 있는 `Act{advance_frames}`만 보낸다. 명령이 들어 있으면 브리지가 에러로 거부한다. 행동 레이블은 브리지가 아니라 [040](040-replay-dataset.md) 리플레이 파서가 만든다 |
-| 011-R13 | **MUST** 게임 데이터는 MPQ 3종 또는 **SC:R CASC에서 추출한 풀린 파일 폴더**(`URANIUM_DATA_DIR`) 중 하나로 공급한다. 폴더 방식은 OpenBW 패치 `third_party/patches/0001-openbw-loose-data-files.patch`로 지원한다. 추출 도구는 `tools/casc-extract`다(2026-10-15) |
+| 011-R13 | **MUST** 게임 데이터는 MPQ 3종 또는 **SC:R CASC에서 추출한 풀린 파일 폴더**(`URANIUM_DATA_DIR`) 중 하나로 공급한다. 폴더 방식은 OpenBW 패치 `third_party/patches/0001-openbw-loose-data-files.patch`로 지원한다. 추출 도구는 `tools/casc-extract`다(2026-10-15). 추출물 검증 값은 **경로에 무관한 내용 해시**(`content_sha256`)다. 파일마다 `<상대 경로(/ 구분)>\t<크기>\t<sha256>\n` 줄을 만들어 경로 순으로 이어 붙이고, 그 문자열의 SHA-256을 낸다. `config/assets.toml`은 이 값을 고정한다. `manifest.toml` 파일 자체의 해시는 추출 원본의 절대 경로가 들어가 호스트마다 달라지므로 쓰지 않는다(2026-10-16 변경) |
 | 011-R14 | **MUST** 서드파티 소스(OpenBW, BWAPI)는 커밋을 고정해 `tools/openbw/build.sh`가 받는다. 우리 수정은 `third_party/patches/NNNN-<repo>-<desc>.patch`로만 관리하고 빌드 시 적용한다 |
 | 011-R12 | **SHOULD** 재생 모드에서도 `PrivilegedSummary`(상대 실제 상태)를 생성할 수 있게 한다. BC 단계의 value head 사전학습 입력으로 쓴다 |
 
@@ -55,7 +55,7 @@ OpenBW 포크 BWAPI 4.2(`github.com/OpenBW/bwapi`) 위에서 동작하는 AIModu
 - 011-AC4: 같은 seed와 같은 Act 시퀀스로 두 번 실행했을 때 GameEnd 프레임과 승자가 같다.
 - 011-AC5: 재생 모드에서 같은 리플레이를 두 번 재생했을 때 RawFrame 해시 시퀀스가 같다(040-R8). 지정 시점 밖의 적 유닛이 RawFrame에 없다.
 - 011-AC6: 에이전트를 같은 PC(`127.0.0.1`)에 둔 구성과 원격 PC에 둔 구성 모두에서 011-AC1 시나리오가 통과한다.
-- 011-AC8 (Windows 세션 검증): Windows에서 011-AC1(두 맵 각 100판 완주)과 011-AC4(seed 결정론)를 재현한다.
+- 011-AC8 (Windows 세션 검증): Windows에서 011-AC1(두 맵 각 100판 완주)과 011-AC4(seed 결정론)를 재현한다. — **통과 (2026-10-16, `reports/m3_windows.md`)**
 - 011-AC7 (M2 검증, 브리지 필요): 에이전트가 응답을 최대 1초 지연해도 LAN 상대 클라이언트가 강제 퇴장(드롭)되지 않는다. 퇴장되면 대응 방안을 이 spec에 추가하고 사용자 확인을 받는다.
 
 ## Risks & Open Questions

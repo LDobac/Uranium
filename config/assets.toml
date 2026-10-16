@@ -6,7 +6,7 @@
 dir = "~/sc_data/openbw"
 source = "StarCraft: Remastered CASC (.build.info branch kr, product s1)"
 files = 956
-manifest_sha256 = "f764fd0bac036f58fc824d79aab36b66e02717e18729fb00bf4dac2ac312de7d"   # sha256 of ~/sc_data/openbw/manifest.toml (per-file hashes inside)
+content_sha256 = "64909688a13cdfbf6c4a9c74779762cfbdbaa18e4eee5eb8ddc4194a6cc17594"   # path-independent digest printed by casc-extract and stored in manifest.toml (011-R13); measured 2026-10-16
 
 [maps.fighting_spirit]
 version = "1.3"
