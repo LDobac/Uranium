@@ -131,7 +131,14 @@ pub(crate) fn run_jobs(jobs: Vec<Job>, hosts: &[HostEntry], games_path: &std::pa
     let done = Arc::new(Mutex::new(0usize));
     let mut workers = Vec::new();
     for host in hosts {
-        let caps = capabilities(&host.addr).with_context(|| format!("hostd {}", host.addr))?;
+        // 020-R4: an unreachable host is skipped, the others still play the plan.
+        let caps = match capabilities(&host.addr) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[env] WARNING: hostd {} unreachable, skipping it: {e:#}", host.addr);
+                continue;
+            }
+        };
         let slots = host.max_games.map_or(caps.max_concurrent_games, |m| m.min(caps.max_concurrent_games));
         eprintln!("[env] host {}: {:?}, {} slots, oss bots {:?}", host.addr, caps.os, slots, caps.oss_bots);
         let ids: Arc<HashMap<String, String>> = Arc::new(caps.oss_bots.iter().map(|id| (id.split('@').next().unwrap_or(id).to_string(), id.clone())).collect());
@@ -139,6 +146,9 @@ pub(crate) fn run_jobs(jobs: Vec<Job>, hosts: &[HostEntry], games_path: &std::pa
             let (addr, q, g, d, ids) = (host.addr.clone(), queue.clone(), games_out.clone(), done.clone(), ids.clone());
             workers.push(std::thread::spawn(move || worker(&addr, &q, &g, &d, &ids, total)));
         }
+    }
+    if workers.is_empty() {
+        bail!("no reachable hostd among {} configured host(s)", hosts.len());
     }
     for w in workers {
         if let Err(e) = w.join().expect("worker panicked") {
@@ -155,6 +165,10 @@ pub(crate) fn run_jobs(jobs: Vec<Job>, hosts: &[HostEntry], games_path: &std::pa
 fn connect(addr: &str) -> Result<(BufReader<TcpStream>, BufWriter<TcpStream>)> {
     let s = TcpStream::connect(addr)?;
     s.set_nodelay(true).ok();
+    // A game host that powers off never closes the socket; keepalive turns that into a read
+    // error within a few minutes instead of a worker blocked forever (020-R4).
+    let ka = socket2::TcpKeepalive::new().with_time(Duration::from_secs(30)).with_interval(Duration::from_secs(10));
+    socket2::SockRef::from(&s).set_tcp_keepalive(&ka).ok();
     let mut r = BufReader::new(s.try_clone()?);
     let mut w = BufWriter::new(s);
     write_msg(&mut w, &ControlRequest::Hello { control_version: CONTROL_VERSION })?;
@@ -177,8 +191,16 @@ fn worker(addr: &str, queue: &Mutex<VecDeque<Job>>, games: &Mutex<BufWriter<std:
     let (mut r, mut w) = connect(addr)?;
     loop {
         let Some(job) = queue.lock().unwrap().pop_front() else { return Ok(()) };
-        write_msg(&mut w, &ControlRequest::StartGame(job.spec.clone()))?;
-        match read_msg(&mut r)? {
+        let reply = write_msg(&mut w, &ControlRequest::StartGame(job.spec.clone())).and_then(|_| read_msg(&mut r));
+        let reply = match reply {
+            Ok(m) => m,
+            Err(e) => {
+                // The game never started: leave it for the remaining hosts (020-R4).
+                queue.lock().unwrap().push_front(job);
+                return Err(anyhow::Error::from(e).context(format!("hostd {addr} lost")));
+            }
+        };
+        match reply {
             ControlResponse::Started { .. } => {}
             ControlResponse::Rejected { reason } => {
                 eprintln!("[env] {addr} rejected game {}: {reason}", job.spec.game_id);
@@ -193,9 +215,16 @@ fn worker(addr: &str, queue: &Mutex<VecDeque<Job>>, games: &Mutex<BufWriter<std:
             other => bail!("unexpected {other:?}"),
         }
         let fin = loop {
-            match read_msg(&mut r)? {
-                ControlResponse::Finished(f) if f.game_id == job.spec.game_id => break f,
-                other => eprintln!("[env] ignoring {other:?}"),
+            match read_msg(&mut r) {
+                Ok(ControlResponse::Finished(f)) if f.game_id == job.spec.game_id => break f,
+                Ok(other) => eprintln!("[env] ignoring {other:?}"),
+                Err(e) => {
+                    // 020-R4: a game in flight on a lost host is Aborted, not silently dropped.
+                    record(games, addr, &job, ids, "Aborted", Some(format!("hostd connection lost: {e}")), 0)?;
+                    *done.lock().unwrap() += 1;
+                    eprintln!("[env] game {} Aborted: hostd {addr} lost", job.spec.game_id);
+                    return Err(anyhow::Error::from(e).context(format!("hostd {addr} lost")));
+                }
             }
         };
         let (outcome, detail) = match &fin.outcome {
@@ -241,4 +270,75 @@ fn record(games: &Mutex<BufWriter<std::fs::File>>, host: &str, job: &Job, ids: &
     writeln!(g, "{}", serde_json::to_string(&rec)?)?;
     g.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal hostd: answers the handshake and capabilities, plays every game for `game_ms`.
+    /// A `flaky` host drops the connection right after starting its first game.
+    fn fake_hostd(flaky: bool, game_ms: u64) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            for s in listener.incoming().flatten() {
+                std::thread::spawn(move || -> Result<()> {
+                    let mut r = BufReader::new(s.try_clone()?);
+                    let mut w = BufWriter::new(s);
+                    loop {
+                        let reply = match read_msg::<ControlRequest>(&mut r)? {
+                            ControlRequest::Hello { .. } => ControlResponse::Hello { control_version: CONTROL_VERSION, host_name_hint: String::new() },
+                            ControlRequest::ListCapabilities => ControlResponse::Capabilities(Capabilities {
+                                os: HostOs::Linux,
+                                cores: 2,
+                                max_concurrent_games: 1,
+                                max_concurrent_replays: 0,
+                                oss_bots: vec![],
+                                maps: vec![],
+                            }),
+                            ControlRequest::StartGame(g) => {
+                                write_msg(&mut w, &ControlResponse::Started { game_id: g.game_id })?;
+                                if flaky {
+                                    return Ok(());
+                                }
+                                std::thread::sleep(Duration::from_millis(game_ms));
+                                ControlResponse::Finished(GameFinished { game_id: g.game_id, outcome: GameOutcome::Finished, exit_codes: [Some(0), Some(0)], wall_s: 0 })
+                            }
+                            _ => return Ok(()),
+                        };
+                        write_msg(&mut w, &reply)?;
+                    }
+                });
+            }
+        });
+        addr
+    }
+
+    #[test]
+    fn lost_and_unreachable_hosts_do_not_stop_the_plan_020_r4() {
+        let dead = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+        let hosts: Vec<HostEntry> = [dead, fake_hostd(false, 200), fake_hostd(true, 0)].into_iter().map(|addr| HostEntry { addr, max_games: None }).collect();
+        let plan: plan::Plan = toml::from_str("name='t'\n[[matchup]]\nmap='both'\ngames=4\np0={kind='t0',race='terran'}\np1={kind='t0',race='terran'}").unwrap();
+        let dir = std::env::temp_dir().join(format!("uranium-env-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let games = dir.join("games.jsonl");
+        let left = run_jobs(plan::expand(&plan, "127.0.0.1:1"), &hosts, &games).unwrap();
+        let lines: Vec<serde_json::Value> = std::fs::read_to_string(&games).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(left, 0);
+        assert_eq!(lines.len(), 4, "{lines:?}");
+        assert_eq!(lines.iter().filter(|g| g["outcome"] == "Aborted").count(), 1, "{lines:?}");
+        assert_eq!(lines.iter().filter(|g| g["outcome"] == "Finished").count(), 3, "{lines:?}");
+    }
+
+    #[test]
+    fn no_reachable_host_is_an_error_020_r4() {
+        let dead = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+        let dir = std::env::temp_dir().join(format!("uranium-env-test-none-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let res = run_jobs(vec![], &[HostEntry { addr: dead, max_games: None }], &dir.join("games.jsonl"));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(res.is_err());
+    }
 }
