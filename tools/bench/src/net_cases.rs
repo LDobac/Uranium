@@ -45,7 +45,7 @@ fn parts(c: &Ctx, part: Part) -> Row {
         Part::Spatial => "net_act_parts_entity_spatial",
     };
     let mut row = Row::new(name, format!("B={b} N={n}"));
-    let (med, p95) = time_p95(c.warmup, c.iters.max(20), || {
+    let (med, p95) = time_p95(c.warmup, c.iters.max(50), || {
         let e = enc.forward(&obs);
         match part {
             Part::Entity => {
@@ -94,7 +94,7 @@ fn act<C: CoreInit>(c: &Ctx) -> Row {
     let net = UraniumNet::<C>::new(&cfg, &cols, &c.device);
     let (obs, _) = random_obs(&cfg, &cols, b, n, 1, &c.device);
     let mut row = Row::new(&format!("net_act_{:?}", C::KIND).to_lowercase(), format!("B={b} N={n} map={}", cfg.input.map_size));
-    let (med, p95) = time_p95(c.warmup, c.iters.max(20), || {
+    let (med, p95) = time_p95(c.warmup, c.iters.max(50), || {
         let out = net.act(&obs, net.init_state(b, &c.device), 1.0);
         let _ = out.action.action.into_data();
         sync(&c.device);

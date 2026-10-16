@@ -16,7 +16,8 @@ pub fn write(path: &Path, backend: &str, quick: bool, rows: &[Row]) -> Result<()
     let e = |v: Option<f64>| v.map(|x| format!("{x:.1e}")).unwrap_or_else(|| "–".into());
     for r in rows {
         let status = match &r.status {
-            Status::Ok => "ok".to_string(),
+            Status::Ok if r.note.is_empty() => "ok".to_string(),
+            Status::Ok => format!("ok ({})", r.note.replace('|', "/")),
             Status::Inaccurate => format!("**inaccurate** ({})", r.note),
             Status::Failed(m) => format!("**failed**: `{}`", m.replace('|', "/").replace('`', "'")),
         };

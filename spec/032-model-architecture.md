@@ -168,10 +168,10 @@ impl<C: Core> UraniumNet<C> {
 - **RL**: `forward_seq`의 target logits와 actor behaviour log-prob로 V-trace, UPGO, 헤드별 KL(π‖π_BC)을 계산한다([042](042-rl-training.md)).
 
 ## Acceptance Criteria
-- 032-AC1: Flex(CPU) 대비 Vulkan, CUDA 각각에서 같은 가중치·입력의 forward 출력 차이가 ≤ 1e-4(f32)다.
-  - [SPEC AMBIGUOUS] AMB-032-5: CUDA는 Burn 0.22(cubek-matmul)가 tensor core matmul에서 f32 입력을 TF32로 계산하고 끌 설정이 없다. 실측(2026-10-16, RTX 4070 Ti SUPER): value·action_type ≤ 6.5e-5, delay ≤ 2.0e-4, selected(최대 12 step log-prob 합) ≤ 1.3e-3. Vulkan은 같은 GPU에서 ≤ 1e-6으로 통과. 의존성 패치로 TF32를 끌지, CUDA 허용 오차를 따로 둘지 사용자 결정 필요.
-- 032-AC2: 추론 지연은 batch=16, N=256 기준 ≤ 40ms(p95)다. 학습 호스트별로 측정한다: BC250 필수, CUDA PC는 준비되는 대로.
-- 032-AC3: 학습 처리량 batch 32×T64 기준 ≥ TBD(M1) samples/s이고, 메모리는 [060](060-infra-bc250.md) 예산 이내다.
+- 032-AC1: Flex(CPU) 대비 같은 가중치·입력의 forward 출력(value, 헤드별 log-prob) 차이가 Vulkan에서 ≤ 1e-4(f32), CUDA에서 ≤ 1e-2다.
+  - CUDA 허용 오차 (AMB-032-5 Resolved, 2026-10-16 사용자 결정: 허용 오차를 늘린다). Burn 0.22(cubek-matmul)는 CUDA tensor core matmul에서 f32 입력을 TF32(가수 10비트, 누적은 f32)로 계산하고 끌 설정이 없다. 실측(RTX 4070 Ti SUPER, 기본 크기 B16·N256): value ≤ 6.0e-5, action_type ≤ 3.4e-5, delay ≤ 2.5e-4, selected(최대 12 step log-prob 합) ≤ 3.9e-3, 정책 분포 KL ≤ 1.2e-7, greedy 액션 일치 48/48. 1e-2는 최대 실측의 약 2.5배 여유다. 영향 분석은 `reports/m5_model.md`.
+- 032-AC2: 추론 지연은 batch=16, N=256 기준으로 측정한다(p95). CUDA PC에서는 같은 PC의 Vulkan보다 빠르면 통과한다(2026-10-16 사용자 결정: 40ms를 넘더라도 Vulkan보다 빠르면 된다). BC250 기준(초안 40ms)은 BC250 실측 후 사용자에게 다시 확인한다.
+- 032-AC3: 학습 처리량 batch 32×T64 기준 ≥ TBD(M1) samples/s이고, 메모리는 [060](060-infra-bc250.md) 예산 이내다. CUDA PC에서는 같은 PC의 Vulkan보다 빠르면 통과한다(2026-10-16 사용자 결정).
 - 032-AC4: 무작위 마스크 10만 건에서 샘플링된 액션이 모두 마스크를 만족한다.
 - 032-AC5: `act()` 경로의 연산 그래프에 privileged 텐서가 없다(타입 수준 보장 + 테스트).
 - 032-AC6: `LstmCore`와 `GtrxlCore`가 같은 `Core` trait으로 교체되고, 둘 다 AC1–AC4를 통과한다.

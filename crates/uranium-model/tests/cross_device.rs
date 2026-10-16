@@ -1,22 +1,28 @@
-//! 032-AC1: same weights and inputs give forward outputs within 1e-4 (f32) of Flex on Vulkan and
-//! CUDA. Needs a GPU, so it is ignored by default:
+//! 032-AC1: same weights and inputs give forward outputs close to Flex (CPU) on Vulkan and CUDA.
+//! Vulkan: <= 1e-4 (f32). CUDA: <= `CUDA_TOL`, because Burn's CUDA matmul computes f32 inputs in
+//! TF32 (AMB-032-5, user decision 2026-10-16). Needs a GPU, so ignored by default:
 //!   URANIUM_TEST_DEVICE=vulkan cargo test -p uranium-model --test cross_device -- --ignored --nocapture
-//!   URANIUM_TEST_DEVICE=cuda cargo test -p uranium-model --features cuda --test cross_device -- --ignored --nocapture
+//!   URANIUM_TEST_DEVICE=cuda cargo test --release -p uranium-model --features cuda --test cross_device -- --ignored --nocapture
 
 mod common;
 
 use burn::module::Module;
-use burn::tensor::{Device, DeviceKind};
+use burn::tensor::{Device, DeviceKind, Tensor};
 use common::*;
-use uranium_model::{CoreInit, GtrxlCore, LstmCore, UraniumNet};
+use uranium_model::config::{CoreKind, UraniumNetConfig};
+use uranium_model::{ActionBatch, CoreInit, GtrxlCore, LstmCore, UraniumNet};
 
-const TOL: f32 = 1e-4;
+/// 032-AC1 tolerance on Vulkan (and any exact-f32 backend).
+const VULKAN_TOL: f32 = 1e-4;
+/// AMB-032-5: absolute tolerance on CUDA (TF32 matmul) for values and per-head log-probs.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+const CUDA_TOL: f32 = 1e-2;
 
-fn target() -> Device {
+fn target() -> (Device, f32) {
     match std::env::var("URANIUM_TEST_DEVICE").as_deref() {
-        Ok("vulkan") => Device::vulkan(DeviceKind::DefaultDevice),
+        Ok("vulkan") => (Device::vulkan(DeviceKind::DefaultDevice), VULKAN_TOL),
         #[cfg(feature = "cuda")]
-        Ok("cuda") => Device::cuda(0),
+        Ok("cuda") => (Device::cuda(0), CUDA_TOL),
         Ok(other) => panic!("URANIUM_TEST_DEVICE={other} not supported by this build (cuda needs --features cuda)"),
         Err(_) => panic!("set URANIUM_TEST_DEVICE to vulkan or cuda"),
     }
@@ -26,45 +32,102 @@ fn max_abs(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).fold(0f32, |m, (x, y)| m.max((x - y).abs()))
 }
 
-fn compare<C: CoreInit>() {
-    let (cpu, gpu) = (Device::flex(), target());
+fn to(labels: &ActionBatch, d: &Device) -> ActionBatch {
+    ActionBatch {
+        action: Tensor::from_data(labels.action.clone().into_data(), d),
+        delay: Tensor::from_data(labels.delay.clone().into_data(), d),
+        queued: Tensor::from_data(labels.queued.clone().into_data(), d),
+        selected: Tensor::from_data(labels.selected.clone().into_data(), d),
+        target_unit: Tensor::from_data(labels.target_unit.clone().into_data(), d),
+        target_loc: Tensor::from_data(labels.target_loc.clone().into_data(), d),
+    }
+}
+
+/// Mean KL(p_cpu || p_gpu) over rows of two masked log-softmax tables [B,K].
+fn mean_kl(cpu: &[f32], gpu: &[f32], k: usize) -> f64 {
+    let rows = cpu.len() / k;
+    let mut total = 0.0;
+    for r in 0..rows {
+        for i in 0..k {
+            let (lc, lg) = (cpu[r * k + i] as f64, gpu[r * k + i] as f64);
+            if lc > -1e8 {
+                total += lc.exp() * (lc - lg);
+            }
+        }
+    }
+    total / rows as f64
+}
+
+struct Stats {
+    worst: f32,
+}
+
+/// Teacher-forced outputs on both devices (same weights, inputs, labels) and greedy decisions.
+fn measure<C: CoreInit>(cfg: &UraniumNetConfig, b: usize, n: usize, verbose: bool) -> Stats {
+    let (cpu, (gpu, _)) = (Device::flex(), target());
     cpu.seed(21);
-    let cfg = tiny_config(C::KIND);
     let cols = columns();
-    let net = UraniumNet::<C>::new(&cfg, &cols, &cpu);
-    let b = 8;
-    let (obs, _) = random_obs(&cfg, &cols, b, 16, 23, &cpu);
+    let net = UraniumNet::<C>::new(cfg, &cols, &cpu);
+    let (obs, _) = random_obs(cfg, &cols, b, n, 23, &cpu);
     let labels = net.act(&obs, net.init_state(b, &cpu), 0.0).action;
     let want = net.forward_seq(&obs, &labels, None, net.init_state(b, &cpu), 1);
-
     let gnet = net.clone().to_device(&gpu);
-    let (gobs, _) = random_obs(&cfg, &cols, b, 16, 23, &gpu);
-    let glabels = uranium_model::ActionBatch {
-        action: burn::tensor::Tensor::from_data(labels.action.into_data(), &gpu),
-        delay: burn::tensor::Tensor::from_data(labels.delay.into_data(), &gpu),
-        queued: burn::tensor::Tensor::from_data(labels.queued.into_data(), &gpu),
-        selected: burn::tensor::Tensor::from_data(labels.selected.into_data(), &gpu),
-        target_unit: burn::tensor::Tensor::from_data(labels.target_unit.into_data(), &gpu),
-        target_loc: burn::tensor::Tensor::from_data(labels.target_loc.into_data(), &gpu),
-    };
-    let got = gnet.forward_seq(&gobs, &glabels, None, gnet.init_state(b, &gpu), 1);
+    let (gobs, _) = random_obs(cfg, &cols, b, n, 23, &gpu);
+    let got = gnet.forward_seq(&gobs, &to(&labels, &gpu), None, gnet.init_state(b, &gpu), 1);
 
     let pairs = [
         ("value", floats(&want.value), floats(&got.value)),
         ("logp.action", floats(&want.heads.logp.action), floats(&got.heads.logp.action)),
         ("logp.delay", floats(&want.heads.logp.delay), floats(&got.heads.logp.delay)),
+        ("logp.queued", floats(&want.heads.logp.queued), floats(&got.heads.logp.queued)),
         ("logp.selected", floats(&want.heads.logp.selected), floats(&got.heads.logp.selected)),
         ("logp.target_unit", floats(&want.heads.logp.target_unit), floats(&got.heads.logp.target_unit)),
         ("logp.target_loc", floats(&want.heads.logp.target_loc), floats(&got.heads.logp.target_loc)),
-        ("dist.action", floats(&want.heads.dists.action), floats(&got.heads.dists.action)),
     ];
     let mut worst = 0f32;
     for (name, w, g) in &pairs {
         let d = max_abs(w, g);
-        eprintln!("{:?} {name}: max |gpu - flex| = {d:.2e}", C::KIND);
+        if verbose {
+            eprintln!("{:?} {name}: max |gpu - cpu| = {d:.2e}", C::KIND);
+        }
         worst = worst.max(d);
     }
-    assert!(worst <= TOL, "{:?}: max abs difference {worst:.2e} > {TOL:.0e} (032-AC1)", C::KIND);
+    if verbose {
+        let a = cfg.input.actions;
+        let m2 = cfg.input.map_size * cfg.input.map_size;
+        eprintln!("{:?} KL(cpu||gpu) action_type mean = {:.2e}", C::KIND, mean_kl(&floats(&want.heads.dists.action), &floats(&got.heads.dists.action), a));
+        eprintln!("{:?} KL(cpu||gpu) location mean = {:.2e}", C::KIND, mean_kl(&floats(&want.heads.dists.target_loc), &floats(&got.heads.dists.target_loc), m2));
+        // Greedy decisions made fully on each device (errors cascade through the autoregressive heads).
+        let gc = net.act(&obs, net.init_state(b, &cpu), 0.0).action;
+        let gg = gnet.act(&gobs, gnet.init_state(b, &gpu), 0.0).action;
+        let same = |x: Vec<i64>, y: Vec<i64>| x.iter().zip(&y).filter(|(a, b)| a == b).count();
+        let (ac, ag) = (ints1(&gc.action), ints1(&gg.action));
+        let s = gc.selected.dims()[1];
+        let (sc, sg) = (ints2(&gc.selected), ints2(&gg.selected));
+        let sel_same = (0..b).filter(|&r| sc[r * s..(r + 1) * s] == sg[r * s..(r + 1) * s]).count();
+        let full_same = (0..b)
+            .filter(|&r| {
+                ac[r] == ag[r]
+                    && sc[r * s..(r + 1) * s] == sg[r * s..(r + 1) * s]
+                    && ints1(&gc.target_loc)[r] == ints1(&gg.target_loc)[r]
+                    && ints1(&gc.target_unit)[r] == ints1(&gg.target_unit)[r]
+                    && ints1(&gc.delay)[r] == ints1(&gg.delay)[r]
+            })
+            .count();
+        eprintln!(
+            "{:?} greedy agreement over {b} rows: action_type {}/{b}, selected {sel_same}/{b}, location {}/{b}, whole action {full_same}/{b}",
+            C::KIND,
+            same(ac, ag),
+            same(ints1(&gc.target_loc), ints1(&gg.target_loc)),
+        );
+    }
+    Stats { worst }
+}
+
+fn compare<C: CoreInit>() {
+    let tol = target().1;
+    let s = measure::<C>(&tiny_config(C::KIND), 8, 16, true);
+    assert!(s.worst <= tol, "{:?}: max abs difference {:.2e} > {tol:.0e} (032-AC1)", C::KIND, s.worst);
 }
 
 #[test]
@@ -77,4 +140,21 @@ fn lstm_matches_flex_032_ac1() {
 #[ignore]
 fn gtrxl_matches_flex_032_ac1() {
     compare::<GtrxlCore>();
+}
+
+/// AMB-032-5 impact report: the default 11M-parameter model at B=16, N=256 (release build).
+#[test]
+#[ignore]
+fn default_size_difference_report_032_ac1() {
+    let tol = target().1;
+    let base = UraniumNetConfig::new();
+    for kind in [CoreKind::Lstm, CoreKind::Gtrxl] {
+        let cfg = base.clone().with_core(base.core.clone().with_kind(kind)).with_entity(base.entity.clone().with_dropout(0.0));
+        let s = match kind {
+            CoreKind::Lstm => measure::<LstmCore>(&cfg, 16, 256, true),
+            CoreKind::Gtrxl => measure::<GtrxlCore>(&cfg, 16, 256, true),
+        };
+        eprintln!("{kind:?} default size: worst {:.2e} (tolerance {tol:.0e})", s.worst);
+        assert!(s.worst <= tol);
+    }
 }
