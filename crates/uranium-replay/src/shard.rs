@@ -11,7 +11,8 @@ use uranium_proto::{GameInfo, PrivilegedSummary, RawFrame};
 use crate::label::Label;
 
 /// 2: games carry the bridge GameInfo (AMB-040-6); version-1 shards must be rebuilt.
-pub const SCHEMA_VERSION: u32 = 2;
+/// 3: label selections follow the game's selection rules (040-R3, 2026-10-17); rebuild 2.
+pub const SCHEMA_VERSION: u32 = 3;
 /// Features are not stored (040-R12).
 pub const FEATURE_VERSION: u32 = 0;
 const ZSTD_LEVEL: i32 = 3;

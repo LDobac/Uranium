@@ -6,7 +6,9 @@ use crate::types::TypeTables;
 
 /// 030-R5 / 032-R6: bump when any feature meaning, order or normalisation changes.
 /// 2: channel 12 is last_seen_age (AMB-030-1).
-pub const FEATURE_SCHEMA_VERSION: u32 = 2;
+/// 3: unit_cap gains can_right_click_unit; can_rally without completion, maelstrom disables
+///    (034, AMB-041-1).
+pub const FEATURE_SCHEMA_VERSION: u32 = 3;
 
 /// 030-R6: spatial side in build tiles.
 pub const MAP: usize = 128;

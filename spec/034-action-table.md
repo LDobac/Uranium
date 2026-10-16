@@ -1,6 +1,6 @@
 # 034 — Action Table
 
-- **Status**: Approved (2026-10-15)
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: Attack_Pos 선택 자격 can_move, Smart_Unit 선택 자격 can_right_click_unit, can_rally 완성 조건 제거, 무력화에 메일스트롬 포함 — AMB-041-1)
 - **Related**: [030](030-observation.md), [031](031-action-space.md), [032](032-model-architecture.md), [040](040-replay-dataset.md)
 
 ## Purpose
@@ -44,7 +44,7 @@ command = "UnitAttackUnit"   # 010 Command 매핑
 | 그룹 | action_type | select (max) | target | 비고 |
 |---|---|---|---|---|
 | 기본 | NoOp | – | – | delay만 사용 |
-| 이동·전투 | Move_Pos, Move_Unit(follow), Attack_Pos, Attack_Unit, Patrol_Pos, Hold, Stop, Smart_Pos, Smart_Unit | can_move / can_attack (12) | loc / unit / none | Smart = 우클릭. 게임이 의미를 결정하며, 사람 리플레이 역변환에 필요 |
+| 이동·전투 | Move_Pos, Move_Unit(follow), Attack_Pos, Attack_Unit, Patrol_Pos, Hold, Stop, Smart_Pos, Smart_Unit | can_move (Attack_Unit은 can_attack, Smart_Unit은 can_right_click_unit) (12) | loc / unit / none | Smart = 우클릭. 게임이 의미를 결정하며, 사람 리플레이 역변환에 필요. 유닛 우클릭은 시즈모드 탱크도 받는다(적이면 제자리 공격, OpenBW `right_click_action` 3), 땅 우클릭은 받지 않는다. Attack_Pos(어택땅)는 게임이 이동 가능한 모든 유닛에 적용하므로(OpenBW `unit_order_allowed`: AttackMove = 이동 가능) can_move다. 무기 없는 유닛은 이동만 하고 메딕은 HealMove로 바뀐다. BWAPI는 무장 유닛·메딕만 어택땅을 허용하므로 OpenBW 브리지는 나머지 이동 가능 유닛에 move를 보낸다(2026-10-17, AMB-041-1) |
 | 일꾼 | Gather_Unit, ReturnCargo, Repair_Unit | is_worker (12) | target_resource / – / repairable | |
 | 건설 ×12 | Build_{CommandCenter, SupplyDepot, Refinery, Barracks, EngineeringBay, MissileTurret, Academy, Bunker, Factory, Starport, Armory, ScienceFacility} | executor `pick_worker` | loc (클래스별) | 정책이 정확한 좌상단 타일 선택 |
 | 애드온 ×6 | BuildAddon_{ComsatStation, NuclearSilo, MachineShop, ControlTower, PhysicsLab, CovertOps} | addon_capable_{cc, factory, starport, scifac} (1) | – | 어느 건물에 붙일지는 정책이 선택 |
@@ -62,8 +62,10 @@ command = "UnitAttackUnit"   # 010 Command 매핑
 ## capability 클래스 (`unit_cap`, K≈48)
 | 분류 | 클래스 |
 |---|---|
-| 선택 자격 | can_move, can_attack, is_worker, can_be_loaded, is_transport_loaded, can_stim, can_siege, can_unsiege, can_cloak, can_decloak, can_lay_mine, can_cast_lockdown, can_cast_nuke, can_heal, can_cast_restoration, can_cast_flare, can_cast_matrix, can_cast_emp, can_cast_irradiate, can_cast_yamato, can_lift, can_land_noncc, can_land_cc, can_rally, addon_capable_{cc,factory,starport,scifac}(완성 ∧ 착지 상태 ∧ 애드온 미보유 ∧ 오른쪽 애드온 자리 2×2 비어 있음 ∧ 생산·연구 중 아님), can_cancel_{construction,train,research,upgrade,addon} |
+| 선택 자격 | can_move, can_right_click_unit(can_move ∨ 시즈모드 탱크), can_attack, is_worker, can_be_loaded, is_transport_loaded, can_stim, can_siege, can_unsiege, can_cloak, can_decloak, can_lay_mine, can_cast_lockdown, can_cast_nuke, can_heal, can_cast_restoration, can_cast_flare, can_cast_matrix, can_cast_emp, can_cast_irradiate, can_cast_yamato, can_lift, can_land_noncc, can_land_cc, can_rally, addon_capable_{cc,factory,starport,scifac}(완성 ∧ 착지 상태 ∧ 애드온 미보유 ∧ 오른쪽 애드온 자리 2×2 비어 있음 ∧ 생산·연구 중 아님), can_cancel_{construction,train,research,upgrade,addon} |
 | 타깃 자격 | attackable_enemy, any_unit, own_unit, target_resource(미네랄·아군 정제소), repairable(아군 기계·건물, 피해), lockdownable(적 기계, 미락다운), healable(아군 생체 지상, 피해), restorable(아군, 상태이상), flarable(적, 비건물), irradiatable(비건물), matrixable(아군), yamato_target(적), loadable_transport(아군 드랍십·벙커, 여유 공간) |
+
+선택 자격 공통: 무력화(락다운·스테이시스·메일스트롬, OpenBW `unit_is_disabled`)된 유닛은 명령을 받지 못한다. `can_rally`는 완성 여부를 보지 않는다(게임과 BWAPI `canSetRallyPosition` 모두 건설 중인 생산 건물의 랠리를 받는다, 2026-10-17).
 
 스킬 선택 자격은 연구 완료, 에너지 충분, 상태 조건을 모두 반영한다.
 - 예: `can_cast_lockdown` = Ghost ∧ Lockdown 연구 ∧ energy ≥ 100

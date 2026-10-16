@@ -60,6 +60,7 @@ fn cap(name: &str) -> usize {
         "matrixable" => 43,
         "yamato_target" => 44,
         "loadable_transport" => 45,
+        "can_right_click_unit" => 46,
         _ => panic!("capability {name}"),
     }
 }
@@ -104,7 +105,8 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     let loaded = u.has(flags::LOADED) || u.loaded_in.is_some();
     let lifted = u.has(flags::LIFTED);
     let commandable = own && done && !loaded && u.unit_type != ids.spider_mine && u.unit_type != ids.nuke;
-    let disabled = u.status_timers.lockdown > 0 || u.status_timers.stasis > 0;
+    // OpenBW `unit_is_disabled` (034-R3).
+    let disabled = u.status_timers.lockdown > 0 || u.status_timers.stasis > 0 || u.status_timers.maelstrom > 0;
     let energy = u.energy;
     let ty = u.unit_type;
     let mut set = |name: &str, v: bool| c[cap(name)] = v;
@@ -112,6 +114,9 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     // selection classes
     let mobile = commandable && !disabled && ((!t.is_building() && t.top_speed > 0.0) || lifted) && ty != ids.tank_sieged;
     set("can_move", mobile);
+    // Right click on a unit: movers follow / attack / load, and a sieged tank (OpenBW
+    // `right_click_action` 3) attacks an enemy target in place (034, AMB-041-1).
+    set("can_right_click_unit", mobile || (commandable && !disabled && ty == ids.tank_sieged));
     set("can_attack", commandable && !disabled && (t.ground_weapon >= 0 || t.air_weapon >= 0 || ty == ids.bunker));
     set("is_worker", commandable && t.is_worker());
     set("can_be_loaded", commandable && !t.is_building() && !t.is_flyer() && t.space_required > 0 && t.space_required <= 8);
@@ -140,7 +145,9 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     set("can_lift", commandable && liftable && !lifted && !busy);
     set("can_land_noncc", commandable && lifted && ty != ids.cc);
     set("can_land_cc", commandable && lifted && ty == ids.cc);
-    set("can_rally", commandable && t.has(crate::types::flag::PRODUCES_UNITS) && t.is_building() && !lifted);
+    // Rally needs no completion: the game and BWAPI `canSetRallyPosition` accept producers under
+    // construction (034-R3).
+    set("can_rally", own && !loaded && t.has(crate::types::flag::PRODUCES_UNITS) && t.is_building() && !lifted);
     let addon_ok = |parent: u16| commandable && ty == parent && !lifted && !u.has_addon && !busy && addon_space_free(w, u, t);
     set("addon_capable_cc", addon_ok(ids.cc));
     set("addon_capable_factory", addon_ok(ids.factory));

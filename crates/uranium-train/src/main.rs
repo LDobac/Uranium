@@ -104,19 +104,21 @@ fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::LabelCheck { shards, games } => {
             let mut src = ShardSource::new(&shards)?;
-            let (mut fails, mut totals, mut n) = (Default::default(), std::collections::BTreeMap::new(), 0usize);
+            let (mut st, mut n) = (uranium_train::data::LabelStats::default(), 0usize);
             while let Some(g) = uranium_train::data::StepSource::next_game(&mut src)? {
-                uranium_train::data::label_check(&g, &mut fails, &mut totals)?;
+                uranium_train::data::label_check(&g, &mut st)?;
                 n += 1;
                 if games.is_some_and(|m| n >= m) {
                     break;
                 }
             }
-            let invalid: usize = fails.values().sum();
-            let mut rows: Vec<_> = fails.iter().map(|((a, w), c)| (a.clone(), *w, *c, totals[a])).collect();
+            let invalid: usize = st.fails.values().sum();
+            let mut rows: Vec<_> = st.fails.iter().map(|((a, w), c)| (a.clone(), *w, *c, st.totals[a])).collect();
             rows.sort_by(|x, y| y.2.cmp(&x.2));
-            let labels: usize = totals.values().sum();
-            println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "games": n, "labels": labels, "invalid": invalid, "by_action_reason": rows }))?);
+            let mut detail: Vec<_> = st.cap_detail.into_iter().collect();
+            detail.sort_by(|x, y| y.1.cmp(&x.1));
+            let labels: usize = st.totals.values().sum();
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "games": n, "labels": labels, "invalid": invalid, "by_action_reason": rows, "select_cap_types": detail }))?);
             Ok(())
         }
         Cmd::Bc { shards, out, config, backend, core, s2, steps } => {

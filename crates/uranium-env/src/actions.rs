@@ -23,6 +23,8 @@ pub const CAPABILITIES: &[&str] = &[
     // targets
     "attackable_enemy", "any_unit", "own_unit", "target_resource", "repairable", "lockdownable", "healable", "restorable",
     "flarable", "irradiatable", "matrixable", "yamato_target", "loadable_transport",
+    // selection, appended 2026-10-17 (AMB-041-1)
+    "can_right_click_unit",
 ];
 
 /// 034 location classes (`loc_class_mask`, L = 8).

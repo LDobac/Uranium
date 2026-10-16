@@ -144,9 +144,9 @@ fn hex(b: &[u8]) -> String {
 fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler) -> Result<std::result::Result<(Vec<Step>, Coverage, i8, uranium_proto::GameInfo), Outcome>> {
     let me = slot_of(rep, view.perspective)?;
     // Replay A: own unit types at each command frame + desync signals.
-    let mut units_at: HashMap<u32, HashMap<u32, u16>> = HashMap::new();
+    let mut units_at: HashMap<u32, HashMap<u32, crate::label::Own>> = HashMap::new();
     let a = play_with(rep, view.perspective, cfg, &[], &mut |f, _| {
-        units_at.insert(f.frame, f.units.iter().filter(|u| u.owner == me).map(|u| (u.id, u.unit_type)).collect());
+        units_at.insert(f.frame, f.units.iter().filter(|u| u.owner == me).map(|u| (u.id, crate::label::Own::from_state(u))).collect());
     })?;
     let reasons = a.desync_reasons(None);
     if !reasons.is_empty() {

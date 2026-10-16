@@ -134,7 +134,12 @@ bool exec_unit_order(Unit u, const UrCmd& c) {
   bool q = c.queued != 0;
   switch (c.order) {
     case UR_ORD_MOVE: return t ? u->follow(t, q) : u->move(pos(c), q);
-    case UR_ORD_ATTACK: return t ? u->attack(t, q) : u->attack(pos(c), q);
+    case UR_ORD_ATTACK:
+      if (t) return u->attack(t, q);
+      // 034 Attack_Pos: the game attack-moves any unit that can move, and unarmed ones just
+      // move; BWAPI only lets armed units and medics attack-move, so send those the move.
+      if (!u->canAttackMove() && u->canMove()) return u->move(pos(c), q);
+      return u->attack(pos(c), q);
     case UR_ORD_PATROL: return u->patrol(pos(c), q);
     case UR_ORD_HOLD: return u->holdPosition(q);
     case UR_ORD_STOP: return u->stop(q);

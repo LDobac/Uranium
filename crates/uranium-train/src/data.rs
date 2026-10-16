@@ -139,20 +139,26 @@ pub fn host_label_check(l: &Label, o: &Observation) -> (HostLabel, Option<&'stat
     selected.dedup();
     let target_unit = l.target_unit.and_then(|id| index.get(&id).copied());
     let target_loc = l.target_tile.map(|(x, y)| y as usize * MAP + x as usize);
-    let h = HostLabel { action: l.action, delay_bucket: bucket_index(l.delay), queued: l.queued, selected, target_unit, target_loc };
+    let mut h = HostLabel { action: l.action, delay_bucket: bucket_index(l.delay), queued: l.queued, selected, target_unit, target_loc };
     let Some(a) = action_table().actions.get(l.action as usize) else { return (h, Some("unknown_action")) };
     let k = CAPABILITIES.len();
     let cap = |i: usize, name: &str| o.masks.unit_cap[i * k + CAPABILITIES.iter().position(|c| *c == name).unwrap()];
+    let visible = h.selected.len();
+    // 041-R11: the game runs a command on each selected unit that can take it and skips the rest
+    // (OpenBW `action_*`), so the label keeps only those; it is void when none can.
+    if a.uses_select {
+        h.selected.retain(|&i| cap(i, &a.select_cap));
+    }
     let why = if !o.masks.type_mask[a.id as usize] {
         Some("type_mask")
-    } else if a.uses_select && h.selected.is_empty() {
+    } else if a.uses_select && visible == 0 {
         Some("select_empty")
-    } else if a.uses_select && h.selected.len() != l.selected.len() {
+    } else if a.uses_select && visible != l.selected.len() {
         Some("select_not_visible")
+    } else if a.uses_select && h.selected.is_empty() {
+        Some("select_cap")
     } else if a.uses_select && h.selected.len() > a.max_select as usize {
         Some("select_too_many")
-    } else if a.uses_select && !h.selected.iter().all(|&i| cap(i, &a.select_cap)) {
-        Some("select_cap")
     } else {
         match a.target {
             TargetKind::Unit if h.target_unit.is_none() => Some("target_unit_missing"),
@@ -167,19 +173,53 @@ pub fn host_label_check(l: &Label, o: &Observation) -> (HostLabel, Option<&'stat
     (h, why)
 }
 
-/// Labels of one game that fail `host_label_check`, counted per (action, reason), and labels per
-/// action (034-AC3 diagnostics).
-pub fn label_check(game: &ShardGame, fails: &mut std::collections::BTreeMap<(String, &'static str), usize>, totals: &mut std::collections::BTreeMap<String, usize>) -> Result<()> {
+/// Unit ids of the label's (capability-filtered) selection.
+fn acting_ids(h: &HostLabel, o: &Observation) -> Vec<u32> {
+    h.selected.iter().map(|&i| o.entity_ids[i]).collect()
+}
+
+/// Label diagnostics (034-AC3): labels failing `host_label_check` per (action, reason), labels per
+/// action, and for `select_cap` failures the unit types in the selection that lack the capability.
+#[derive(Debug, Default)]
+pub struct LabelStats {
+    pub fails: std::collections::BTreeMap<(String, &'static str), usize>,
+    pub totals: std::collections::BTreeMap<String, usize>,
+    /// "<action> <- <type>+<type> (kept|void)" -> count: selected unit types without the
+    /// capability, dropped from a label that stays valid or leaving none (041-R11).
+    pub cap_detail: std::collections::BTreeMap<String, usize>,
+}
+
+pub fn label_check(game: &ShardGame, st: &mut LabelStats) -> Result<()> {
     let map = MapInfo::new(&game.game_info, family_index(&game.meta.map_family), map_precompute(&game.meta.map_hash).as_ref())?;
     let mut mem = AgentMemory::new(&game.game_info);
+    let k = CAPABILITIES.len();
     for s in &game.steps {
         let o = extract(&s.raw_frame, &mut mem, &map, None);
         let (label, why) = host_label_check(&s.action_label, &o);
-        mem.record_action(label.action, label.delay_bucket, &s.action_label.selected);
-        let name = action_table().actions.get(label.action as usize).map_or_else(|| format!("#{}", label.action), |a| a.name.clone());
-        *totals.entry(name.clone()).or_default() += 1;
+        mem.record_action(label.action, label.delay_bucket, &acting_ids(&label, &o));
+        let a = action_table().actions.get(label.action as usize);
+        let name = a.map_or_else(|| format!("#{}", label.action), |a| a.name.clone());
+        *st.totals.entry(name.clone()).or_default() += 1;
+        if let Some(a) = a.filter(|a| a.uses_select && matches!(why, None | Some("select_cap"))) {
+            let c = CAPABILITIES.iter().position(|c| *c == a.select_cap).unwrap();
+            let mut types: Vec<&str> = s
+                .action_label
+                .selected
+                .iter()
+                .filter_map(|id| o.entity_ids.iter().position(|e| e == id))
+                .filter(|&i| !o.masks.unit_cap[i * k + c])
+                .filter_map(|i| s.raw_frame.units.iter().find(|u| u.id == o.entity_ids[i]))
+                .filter_map(|u| uranium_env::types::TypeTables::get().unit(u.unit_type).map(|t| t.name.as_str()))
+                .collect();
+            types.sort_unstable();
+            types.dedup();
+            if !types.is_empty() {
+                let kind = if why.is_some() { "void" } else { "kept" };
+                *st.cap_detail.entry(format!("{name} <- {} ({kind})", types.join("+"))).or_default() += 1;
+            }
+        }
         if let Some(w) = why {
-            *fails.entry((name, w)).or_default() += 1;
+            *st.fails.entry((name, w)).or_default() += 1;
         }
     }
     Ok(())
@@ -244,8 +284,9 @@ impl GameStream {
             let o = extract(&s.raw_frame, &mut self.mem, &self.map, self.z.as_ref());
             let (mut label, ok) = host_label(&s.action_label, &o);
             invalid += !ok as usize;
-            // Memory sees what the policy did, like in RL (030 §4 previous action, §1 last action).
-            self.mem.record_action(label.action, label.delay_bucket, &s.action_label.selected);
+            // Memory sees what the policy did, like in RL (030 §4 previous action, §1 last action):
+            // the units that act on the command (041-R11).
+            self.mem.record_action(label.action, label.delay_bucket, &acting_ids(&label, &o));
             let o = if self.sym == Sym::IDENTITY {
                 o
             } else {
