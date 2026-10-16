@@ -93,3 +93,13 @@ Windows PC 한 대에서 게임·브리지·hostd·에이전트를 모두 돌리
 - 데이터셋으로 넣기: `uranium-replay build <raw\scr_ladder> --src scr_ladder --records <jsonl>`(040)
 - API를 단계별로 확인하려면 `uranium-ladder probe`와 `uranium-ladder shape`를 쓴다. 원본 응답에는 플레이어 이름이 들어 있다. 화면에 출력하거나 커밋하지 않는다(043-R11). PowerShell 5.1에서 원본을 읽을 때는 `Get-Content -Encoding UTF8`을 쓴다.
 - 클라이언트 업데이트로 응답 형식이 바뀌면 `collect`가 `failed (schema)`를 기록하고, 연속 20번 실패하면 멈춘다(043-R9). 이때는 `crates\uranium-ladder\src\schema.rs`만 고친다(043-R10).
+
+## 7. 학습 백엔드 (032)
+Windows에서 학습할 때는 CUDA를 쓴다. Vulkan 학습은 Linux(BC250)에서만 쓴다.
+- Windows에서 Vulkan으로 학습하는 구성은 운영 대상이 아니다(사용자 확인 2026-10-16). 학습 스텝이 GPU 타임아웃 복구(TDR, 2초 제한)에 걸려 중단되지만 대응하지 않는다. 측정 기록은 `reports/m5_model.md`에 있다.
+- CUDA는 NVIDIA GPU가 있는 PC에서만 켠다. CUDA Toolkit을 설치하고 `CUDA_PATH`를 지정한다.
+  - 빌드: `cargo build --release -p uranium-train --features cuda`
+  - 학습: `target\release\uranium-train.exe bc --shards <dir> --out <ckpt> --backend cuda`
+  - 벤치: `cargo run -p bench --release --features cuda -- --backend cuda --filter net_`
+- CUDA 판정 기준(032): Vulkan보다 빠르면 032-AC2/AC3 통과다. Flex 대비 허용 오차는 1e-2다(AMB-032-5, TF32 matmul).
+- 벤치와 GPU 테스트는 측정마다 시간 제한을 걸고 실행한다.
