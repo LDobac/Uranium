@@ -8,6 +8,7 @@ members = [
     "crates/uranium-hostd",
     "crates/uranium-env",
     "crates/uranium-replay",
+    "crates/uranium-model",
     "tools/bench",
     "tools/casc-extract",
 ]

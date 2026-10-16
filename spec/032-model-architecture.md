@@ -169,6 +169,7 @@ impl<C: Core> UraniumNet<C> {
 
 ## Acceptance Criteria
 - 032-AC1: Flex(CPU) 대비 Vulkan, CUDA 각각에서 같은 가중치·입력의 forward 출력 차이가 ≤ 1e-4(f32)다.
+  - [SPEC AMBIGUOUS] AMB-032-5: CUDA는 Burn 0.22(cubek-matmul)가 tensor core matmul에서 f32 입력을 TF32로 계산하고 끌 설정이 없다. 실측(2026-10-16, RTX 4070 Ti SUPER): value·action_type ≤ 6.5e-5, delay ≤ 2.0e-4, selected(최대 12 step log-prob 합) ≤ 1.3e-3. Vulkan은 같은 GPU에서 ≤ 1e-6으로 통과. 의존성 패치로 TF32를 끌지, CUDA 허용 오차를 따로 둘지 사용자 결정 필요.
 - 032-AC2: 추론 지연은 batch=16, N=256 기준 ≤ 40ms(p95)다. 학습 호스트별로 측정한다: BC250 필수, CUDA PC는 준비되는 대로.
 - 032-AC3: 학습 처리량 batch 32×T64 기준 ≥ TBD(M1) samples/s이고, 메모리는 [060](060-infra-bc250.md) 예산 이내다.
 - 032-AC4: 무작위 마스크 10만 건에서 샘플링된 액션이 모두 마스크를 만족한다.

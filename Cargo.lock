@@ -6643,6 +6643,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "uranium-model"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "burn",
+ "serde",
+ "serde_json",
+ "uranium-env",
+]
+
+[[package]]
 name = "uranium-proto"
 version = "0.1.0"
 dependencies = [
