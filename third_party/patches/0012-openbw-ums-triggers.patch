@@ -10,7 +10,26 @@ diff --git a/bwgame.h b/bwgame.h
  
  	std::array<type_indexed_array<int, UpgradeTypes>, 12> upgrade_levels;
  	std::array<type_indexed_array<bool, UpgradeTypes>, 12> upgrade_upgrading;
-@@ -18896,6 +18898,8 @@ struct state_functions {
+@@ -18812,7 +18814,8 @@ struct state_functions {
+ 	bool trigger_count_comparison(const trigger::condition& c, int count) const {
+ 		if (c.num_n == 0) return count >= c.count_n;
+ 		else if (c.num_n == 1) return count <= c.count_n;
+-		else if (c.num_n == 2) return count == c.count_n;
++		// uranium 0012: CHK stores "exactly" as 10 (0 at least, 1 at most).
++		else if (c.num_n == 2 || c.num_n == 10) return count == c.count_n;
+ 		else return false;
+ 	}
+ 
+@@ -18891,11 +18894,16 @@ struct state_functions {
+ 		case 3: // bring
+ 			return trigger_count_comparison(c, trigger_command_count(trigger_bring_count(st.locations.at(c.location - 1)), owner, c.group, c.unit_id, c.num_n != 1));
+ 		case 12: // elapsed time
+-			return trigger_count_comparison(c, st.current_frame);
++			// uranium 0012: in game seconds (Normal speed, 15 frames), not frames. Tournament UMS
++			// maps give starting minerals with "elapsed time exactly 0", which frames never meet
++			// at the first trigger check (frame 1). The 15-frame unit is only checked for 0 so far.
++			return trigger_count_comparison(c, st.current_frame / 15);
+ 		case 14: // opponents
  			return trigger_count_comparison(c, trigger_opponent_count(owner, c.group));
  		case 22: // always
  			return true;
@@ -19,7 +38,7 @@ diff --git a/bwgame.h b/bwgame.h
  		default:
  			error("unknown trigger condition %d\n", c.type);
  			return false;
-@@ -19298,6 +19302,32 @@ struct state_functions {
+@@ -19298,6 +19306,32 @@ struct state_functions {
  				set_unit_resources(u, a.group2_n);
  			}
  			return true;
