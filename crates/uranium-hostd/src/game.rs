@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use uranium_proto::Race;
-use uranium_proto::control::{GameFinished, GameOutcome, GameSpec, PlayerKind};
+use uranium_proto::control::{GameFinished, GameOutcome, GameSpec, PlayerKind, ReplaySpec};
 
 use crate::config::{Config, oss_module};
 use crate::platform::Platform;
@@ -160,6 +160,67 @@ pub fn run(cfg: &Config, platform: &dyn Platform, spec: &GameSpec, stop: &dyn Fn
     Ok(GameFinished { game_id: spec.game_id, outcome: outcome.unwrap(), exit_codes: codes, wall_s: started.elapsed().as_secs() as u32 })
 }
 
+/// Environment for one replay playback launcher (011-R10, 020-R1 StartReplay).
+pub fn replay_env(cfg: &Config, job: &ReplaySpec, rep: &Path) -> Vec<(String, String)> {
+    [
+        ("URANIUM_DATA_DIR", cfg.data_dir.display().to_string()),
+        ("OPENBW_ENABLE_UI", "0".to_string()),
+        ("BWAPI_CONFIG_AI__AI", cfg.bridge_lib.display().to_string()),
+        ("BWAPI_CONFIG_AUTO_MENU__AUTO_MENU", "SINGLE_PLAYER".to_string()),
+        ("BWAPI_CONFIG_AUTO_MENU__MAP", rep.display().to_string()),
+        ("BWAPI_CONFIG_AUTO_MENU__AUTO_RESTART", "OFF".to_string()),
+        ("BWAPI_CONFIG_AUTO_MENU__SAVE_REPLAY", String::new()),
+        ("URANIUM_GAME_ID", job.job_id.to_string()),
+        ("URANIUM_AGENT_ADDR", job.agent_addr.clone()),
+        // 013: BWAPI id of the observed player (rank of its occupied header slot).
+        ("URANIUM_REPLAY_PERSPECTIVE", job.perspective_slot.to_string()),
+        ("URANIUM_PRIVILEGED", if job.privileged { "1" } else { "0" }.to_string()),
+        // Replays end on their own; never cut them at the 60-minute game limit.
+        ("URANIUM_MAX_FRAMES", u32::MAX.to_string()),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect()
+}
+
+/// Plays one replay (`rep_bytes`, already in 1.16.1 form, 013-R6) with a single launcher in
+/// replay mode. The bridge streams RawFrames to `agent_addr` (040-R12 streaming, 020-AC4).
+pub fn run_replay(cfg: &Config, platform: &dyn Platform, job: &ReplaySpec, stop: &dyn Fn() -> bool) -> Result<GameFinished> {
+    let started = Instant::now();
+    let dir = cfg.work_dir.join(format!("r{}", job.job_id));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("bwapi-data"))?;
+    let rep = dir.join("replay.rep");
+    std::fs::write(&rep, &job.rep_bytes)?;
+    let log = dir.join("launcher.log");
+    let out = std::fs::File::create(&log)?;
+    let mut cmd = Command::new(cfg.launcher());
+    cmd.current_dir(&dir).stdin(Stdio::null()).stdout(out.try_clone()?).stderr(out);
+    cmd.envs(replay_env(cfg, job, &rep));
+    let mut child = platform.spawn(cmd).context("spawning replay launcher")?;
+    let timeout = Duration::from_secs(cfg.replay_timeout_s as u64);
+    let (outcome, code, exited) = loop {
+        if let Some(st) = child.try_wait()? {
+            let o = if st.code() == Some(0) {
+                GameOutcome::Finished
+            } else {
+                GameOutcome::Aborted { reason: format!("launcher exit code {:?}: {}", st.code(), tail(&log, 3)) }
+            };
+            break (o, st.code(), true);
+        }
+        if started.elapsed() > timeout {
+            break (GameOutcome::Timeout, None, false);
+        }
+        if stop() {
+            break (GameOutcome::Stopped, None, false);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    if exited { platform.reap(&mut child) } else { platform.kill_tree(&mut child) }
+    let _ = std::fs::remove_file(&rep);
+    Ok(GameFinished { game_id: job.job_id, outcome, exit_codes: [code, None], wall_s: started.elapsed().as_secs() as u32 })
+}
+
 /// Quarantine key: same map and player setup (020-R4).
 pub fn config_key(spec: &GameSpec) -> String {
     let p = |i: usize| {
@@ -188,6 +249,7 @@ mod tests {
             work_dir: "/w".into(),
             oss_bots_dir: None,
             port_base: 17000,
+            replay_timeout_s: 1800,
         }
     }
 
@@ -205,6 +267,17 @@ mod tests {
             save_replay: false,
             wall_timeout_s: 10,
         }
+    }
+
+    #[test]
+    fn replay_env_uses_perspective_and_no_frame_limit_011_r10() {
+        let job = ReplaySpec { job_id: 9, rep_bytes: vec![], perspective_slot: 3, agent_addr: "127.0.0.1:7600".into(), privileged: true };
+        let env: std::collections::HashMap<String, String> = replay_env(&cfg(), &job, Path::new("/w/r9/replay.rep")).into_iter().collect();
+        assert_eq!(env["URANIUM_REPLAY_PERSPECTIVE"], "3");
+        assert_eq!(env["BWAPI_CONFIG_AUTO_MENU__AUTO_MENU"], "SINGLE_PLAYER");
+        assert_eq!(env["BWAPI_CONFIG_AUTO_MENU__MAP"], Path::new("/w/r9/replay.rep").display().to_string());
+        assert_eq!(env["URANIUM_PRIVILEGED"], "1");
+        assert_eq!(env["URANIUM_MAX_FRAMES"], u32::MAX.to_string());
     }
 
     #[test]

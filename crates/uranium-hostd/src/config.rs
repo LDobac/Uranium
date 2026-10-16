@@ -20,6 +20,8 @@ pub struct Config {
     /// Windows: first TCP port for OpenBW LAN pairs (011-R16).
     #[cfg_attr(not(windows), allow(dead_code))]
     pub port_base: u16,
+    /// Wall-time limit of one replay playback job (020-R3, M4).
+    pub replay_timeout_s: u32,
 }
 
 fn var(name: &str) -> Option<String> {
@@ -51,6 +53,7 @@ impl Config {
             work_dir: var("URANIUM_HOSTD_WORK_DIR").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join("uranium-hostd")),
             oss_bots_dir: var("URANIUM_OSS_BOTS_DIR").map(PathBuf::from),
             port_base: var("URANIUM_HOSTD_PORT_BASE").and_then(|v| v.parse().ok()).unwrap_or(17_000),
+            replay_timeout_s: var("URANIUM_HOSTD_REPLAY_TIMEOUT_S").and_then(|v| v.parse().ok()).unwrap_or(1800),
         };
         must_exist(&cfg.launcher(), "BWAPILauncher")?;
         must_exist(&cfg.bridge_lib, "bridge library")?;

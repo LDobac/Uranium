@@ -94,7 +94,7 @@ fn capabilities(st: &State) -> Capabilities {
         os: if cfg!(windows) { HostOs::Windows } else { HostOs::Linux },
         cores: std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1),
         max_concurrent_games: st.cfg.max_games,
-        max_concurrent_replays: 0,
+        max_concurrent_replays: st.cfg.max_games,
         oss_bots: st.cfg.oss_bots(),
         maps,
     }
@@ -127,7 +127,32 @@ fn connection(stream: TcpStream, st: Arc<State>) -> Result<()> {
                 st.stop_requests.lock().unwrap().insert(game_id);
             }
             ControlRequest::StartReplay(job) => {
-                send(&writer, &ControlResponse::Unsupported { what: format!("StartReplay (job {}) is implemented in M4", job.job_id) })?;
+                // Replay jobs share the concurrency budget with games (one launcher each).
+                if st.running.fetch_add(1, Ordering::SeqCst) >= st.cfg.max_games {
+                    st.running.fetch_sub(1, Ordering::SeqCst);
+                    send(&writer, &ControlResponse::Rejected { reason: "host at capacity".into() })?;
+                    continue;
+                }
+                st.games.lock().unwrap().insert(job.job_id);
+                send(&writer, &ControlResponse::Started { game_id: job.job_id })?;
+                let (st2, w2) = (st.clone(), writer.clone());
+                std::thread::spawn(move || {
+                    let id = job.job_id;
+                    let stop = || st2.stop_requests.lock().unwrap().contains(&id);
+                    let fin = game::run_replay(&st2.cfg, st2.platform.as_ref(), &job, &stop).unwrap_or_else(|e| GameFinished {
+                        game_id: id,
+                        outcome: GameOutcome::Aborted { reason: format!("{e:#}") },
+                        exit_codes: [None, None],
+                        wall_s: 0,
+                    });
+                    st2.games.lock().unwrap().remove(&id);
+                    st2.stop_requests.lock().unwrap().remove(&id);
+                    st2.running.fetch_sub(1, Ordering::SeqCst);
+                    eprintln!("[hostd] replay job {id}: {:?} in {}s", fin.outcome, fin.wall_s);
+                    if let Err(e) = write_msg(&mut *w2.lock().unwrap(), &ControlResponse::Finished(fin)) {
+                        eprintln!("[hostd] could not report replay job {id}: {e}");
+                    }
+                });
             }
             ControlRequest::StartGame(spec) => {
                 let key = game::config_key(&spec);
