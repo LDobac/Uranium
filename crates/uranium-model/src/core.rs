@@ -19,6 +19,8 @@ pub trait Core: Module + ModuleDisplay {
     fn forward_seq(&self, x: Tensor<3>, s0: Self::State) -> (Tensor<3>, Self::State);
     /// Cut the gradient path at a truncation boundary.
     fn detach_state(s: Self::State) -> Self::State;
+    /// Zero the state of rows where `keep` is false (episode start in that lane, 032-R5).
+    fn mask_state(s: Self::State, keep: Tensor<1, Bool>) -> Self::State;
     fn hidden(&self) -> usize;
 }
 
@@ -56,6 +58,12 @@ impl Core for LstmCore {
 
     fn detach_state(s: Self::State) -> Self::State {
         LstmState::new(s.cell.detach(), s.hidden.detach())
+    }
+
+    fn mask_state(s: Self::State, keep: Tensor<1, Bool>) -> Self::State {
+        let b = keep.dims()[0];
+        let k = keep.float().reshape([b, 1]);
+        LstmState::new(s.cell * k.clone(), s.hidden * k)
     }
 
     fn hidden(&self) -> usize {
@@ -216,6 +224,14 @@ impl Core for GtrxlCore {
 
     fn detach_state(s: Self::State) -> Self::State {
         GtrxlState { memory: s.memory.into_iter().map(|t| t.detach()).collect(), valid: s.valid }
+    }
+
+    fn mask_state(s: Self::State, keep: Tensor<1, Bool>) -> Self::State {
+        let b = keep.dims()[0];
+        let m = s.valid.dims()[1];
+        let k = keep.clone().float().reshape([b, 1, 1]);
+        let valid = s.valid.bool_and(keep.reshape([b, 1]).expand([b, m]));
+        GtrxlState { memory: s.memory.into_iter().map(|t| t * k.clone()).collect(), valid }
     }
 
     fn hidden(&self) -> usize {

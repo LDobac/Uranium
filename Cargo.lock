@@ -6631,6 +6631,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "proptest",
  "serde",
  "serde_json",
  "socket2",
@@ -6698,6 +6699,23 @@ name = "uranium-scripted"
 version = "0.1.0"
 dependencies = [
  "uranium-proto",
+]
+
+[[package]]
+name = "uranium-train"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "burn",
+ "clap",
+ "dotenvy",
+ "serde",
+ "serde_json",
+ "toml",
+ "uranium-env",
+ "uranium-model",
+ "uranium-proto",
+ "uranium-replay",
 ]
 
 [[package]]

@@ -1,0 +1,34 @@
+# 041 behaviour cloning hyper-parameters (041-R3, R10: tuning targets, recorded in checkpoints).
+
+# Parallel games per batch (B) and truncated-BPTT length (T, 041-R2 / 032-R5).
+lanes = 32
+seq_len = 64
+# AdamW + linear warmup + cosine decay, gradient-norm clip 1.0 (041-R3).
+lr = 3e-4
+min_lr = 3e-6
+warmup_steps = 2000
+total_steps = 500000
+weight_decay = 1e-4
+grad_clip = 1.0
+# S2 fine-tuning uses 1/10 of the learning rate (041-R4).
+s2_lr_scale = 0.1
+# Head loss weights (041-R1).
+[heads]
+action = 1.0
+delay = 0.5
+queued = 0.2
+selected = 1.0
+target_unit = 1.0
+target_loc = 1.0
+
+[value]
+# win head MSE weight (041-R7)
+win = 0.5
+
+[data]
+# Fraction of games trained with z_present = false (041-R8 / 033-R2).
+z_drop = 0.25
+# Random dihedral symmetry per game at load time (030-R4, 040-R7).
+augment = true
+seed = 1
+checkpoint_every = 5000

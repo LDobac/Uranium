@@ -9,6 +9,7 @@ members = [
     "crates/uranium-env",
     "crates/uranium-replay",
     "crates/uranium-model",
+    "crates/uranium-train",
     "tools/bench",
     "tools/casc-extract",
     "tools/bwapi-tables",

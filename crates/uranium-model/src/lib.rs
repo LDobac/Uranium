@@ -3,6 +3,7 @@
 
 pub mod batch;
 pub mod checkpoint;
+pub mod collate;
 pub mod config;
 pub mod core;
 pub mod entity;
