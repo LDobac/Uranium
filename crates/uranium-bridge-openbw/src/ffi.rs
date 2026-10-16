@@ -30,6 +30,8 @@ pub struct UrStatic {
     pub n_players: u32,
     pub self_id: u8,
     pub privileged: u8,
+    /// 011-R10: replay playback; `self_id` is the perspective player.
+    pub replay: u8,
 }
 
 #[repr(C)]

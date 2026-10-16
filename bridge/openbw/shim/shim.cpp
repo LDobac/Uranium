@@ -20,6 +20,9 @@ namespace {
 int32_t uid(Unit u) { return u->getReplayID(); }
 int32_t id_or_none(Unit u) { return u ? uid(u) : UR_NONE; }
 
+// Observed player and its opponent: self()/enemy() in games, the 011-R10 perspective in replays.
+Player g_me = nullptr, g_enemy = nullptr;
+
 std::unordered_map<int32_t, Unit> g_units;  // replay id -> unit, rebuilt every observation
 Unit find_unit(int32_t id) {
   auto it = g_units.find(id);
@@ -109,7 +112,7 @@ void fill_unit(Unit u, UrUnit& o) {
 
 // 010-R5 / 011-R5: the policy only sees own units and what our player can currently see.
 bool visible_to_self(Unit u) {
-  Player self = Broodwar->self();
+  Player self = g_me;
   if (!u->exists() || !u->getPlayer()) return false;  // dying units
   if (u->getPlayer() == self) return true;
   if (!u->isVisible(self)) return false;
@@ -199,6 +202,23 @@ class UraniumModule : public AIModule {
     // (URANIUM_SEED). Do not call setRandomSeed() here: reseeding only our own client
     // desyncs LAN games against any other AI module (M3 finding).
     privileged_ = uranium_bridge_privileged_requested() != 0;
+    replay_ = Broodwar->isReplay();
+    g_me = Broodwar->self();
+    g_enemy = Broodwar->enemy();
+    if (replay_) {
+      // 011-R10: observe as the perspective player; patch 0011 restricts tile vision and
+      // detection to it. The opponent is the other player that starts with units.
+      int32_t pid = uranium_bridge_replay_perspective();
+      g_me = pid >= 0 ? Broodwar->getPlayer(pid) : nullptr;
+      if (!g_me) {
+        fail_ = true;
+        return;
+      }
+      for (Player p : Broodwar->getPlayers())
+        if (p != g_me) Broodwar->setVision(p, false);
+      for (Player p : Broodwar->getPlayers())
+        if (p != g_me && !p->isNeutral() && !p->getUnits().empty() && !g_enemy) g_enemy = p;
+    }
     // 011-R5 (2026-10-15): always on in OpenBW lockstep mode. Needed for deterministic replay
     // ids; the policy observation is filtered by visible_to_self() regardless.
     Broodwar->enableFlag(Flag::CompleteMapInformation);
@@ -227,8 +247,8 @@ class UraniumModule : public AIModule {
       UrPlayer o{};
       o.id = (uint8_t)p->getID();
       o.race = (uint8_t)p->getRace().getID();
-      o.is_self = p == Broodwar->self();
-      o.is_enemy = Broodwar->self()->isEnemy(p);
+      o.is_self = p == g_me;
+      o.is_enemy = g_me->isEnemy(p);
       TilePosition s = p->getStartLocation();
       bool known = s.isValid() && s != TilePositions::None && s != TilePositions::Unknown;
       o.start_x = known ? s.x : UR_NONE;
@@ -249,8 +269,9 @@ class UraniumModule : public AIModule {
     info.n_start_locations = (uint32_t)(starts.size() / 2);
     info.players = players.data();
     info.n_players = (uint32_t)players.size();
-    info.self_id = (uint8_t)Broodwar->self()->getID();
+    info.self_id = (uint8_t)g_me->getID();
     info.privileged = privileged_;
+    info.replay = replay_;
     if (uranium_bridge_start(&info) != 0) fail_ = true;
   }
 
@@ -275,9 +296,13 @@ class UraniumModule : public AIModule {
     int32_t winner = UR_NONE;
     uint8_t reason = 0;
     if (time_limit_) reason = 2;
-    else if (isWinner) winner = Broodwar->self()->getID();
+    else if (replay_) {
+      // isWinner is meaningless in replays; report a winner only when one side was defeated.
+      if (g_enemy && g_enemy->isDefeated() && !g_me->isDefeated()) winner = g_me->getID();
+      else if (g_enemy && g_me->isDefeated() && !g_enemy->isDefeated()) winner = g_enemy->getID();
+    } else if (isWinner) winner = g_me->getID();
     // Both eliminated on the same frame: draw (M3 finding).
-    else if (Broodwar->enemy() && !Broodwar->enemy()->isDefeated()) winner = Broodwar->enemy()->getID();
+    else if (g_enemy && !g_enemy->isDefeated()) winner = g_enemy->getID();
     uranium_bridge_end(winner, reason, (uint32_t)Broodwar->getFrameCount());
   }
 
@@ -295,7 +320,7 @@ class UraniumModule : public AIModule {
   void event(uint8_t kind, Unit u) {
     // With CompleteMapInformation (privileged mode) events fire for hidden units too; drop those.
     if (kind != UR_EV_DESTROY && kind != UR_EV_EVADE && !visible_to_self(u)) return;
-    if ((kind == UR_EV_DESTROY || kind == UR_EV_EVADE) && u->getPlayer() != Broodwar->self() && !u->isVisible(Broodwar->self())) return;
+    if ((kind == UR_EV_DESTROY || kind == UR_EV_EVADE) && u->getPlayer() != g_me && !u->isVisible(g_me)) return;
     events_.push_back(UrEvent{kind, uid(u), UR_NONE, UR_NONE});
   }
 
@@ -321,7 +346,7 @@ class UraniumModule : public AIModule {
       }
     effects_.clear();
     for (Bullet b : Broodwar->getBullets()) {
-      if (!b->isVisible(Broodwar->self())) continue;
+      if (!b->isVisible(g_me)) continue;
       Position p = b->getPosition();
       effects_.push_back(UrEffect{(uint16_t)b->getType().getID(), (uint16_t)std::max(0, p.x), (uint16_t)std::max(0, p.y),
                                   b->getRemoveTimer(), b->getPlayer() ? b->getPlayer()->getID() : UR_NONE});
@@ -333,7 +358,7 @@ class UraniumModule : public AIModule {
 
     UrFrame f{};
     f.frame = (uint32_t)frame;
-    fill_player_state(Broodwar->self(), f.self_state);
+    fill_player_state(g_me, f.self_state);
     f.units = units_.data();
     f.n_units = (uint32_t)units_.size();
     f.visible = visible_.data();
@@ -344,7 +369,7 @@ class UraniumModule : public AIModule {
     f.effects = effects_.data();
     f.n_effects = (uint32_t)effects_.size();
     UrPrivileged priv{};
-    if (privileged_ && Broodwar->enemy()) {
+    if (privileged_ && g_enemy) {
       fill_privileged(priv);
       f.privileged = &priv;
     }
@@ -363,7 +388,7 @@ class UraniumModule : public AIModule {
   }
 
   void fill_privileged(UrPrivileged& p) {
-    Player enemy = Broodwar->enemy();
+    Player enemy = g_enemy;
     fill_player_state(enemy, p.enemy);
     completed_.assign(UnitTypes::allUnitTypes().size() + 1, 0);
     producing_.assign(completed_.size(), 0);
@@ -386,7 +411,7 @@ class UraniumModule : public AIModule {
     p.n_in_production = (uint32_t)pp_.size();
   }
 
-  bool fail_ = false, done_ = false, left_ = false, time_limit_ = false, privileged_ = false;
+  bool fail_ = false, done_ = false, left_ = false, time_limit_ = false, privileged_ = false, replay_ = false;
   uint32_t max_frames_ = 86400;
   size_t tiles_ = 0;
   std::vector<UrUnit> units_;

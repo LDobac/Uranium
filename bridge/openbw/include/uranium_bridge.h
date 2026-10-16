@@ -35,6 +35,7 @@ typedef struct {
   uint32_t n_players;
   uint8_t self_id;
   uint8_t privileged;             /* CompleteMapInformation enabled for PrivilegedSummary */
+  uint8_t replay;                 /* 011-R10: replay playback, self_id is the perspective player */
 } UrStatic;
 
 typedef struct {
@@ -142,6 +143,8 @@ uint32_t uranium_bridge_next_frame(void);
 /* Max frames (URANIUM_MAX_FRAMES). The game seed is applied by OpenBW patch 0002. */
 uint32_t uranium_bridge_max_frames(void);
 uint8_t uranium_bridge_privileged_requested(void);
+/* 011-R10: URANIUM_REPLAY_PERSPECTIVE player id, or -1 when unset. */
+int32_t uranium_bridge_replay_perspective(void);
 
 #ifdef __cplusplus
 }

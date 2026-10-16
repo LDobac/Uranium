@@ -30,6 +30,8 @@ struct Bridge {
     agent_wait: Duration,
     serialize_us: Vec<f64>,
     observations: u32,
+    /// 011-R10: replay playback, commands are rejected (011-R11).
+    replay: bool,
 }
 
 static BRIDGE: Mutex<Option<Bridge>> = Mutex::new(None);
@@ -50,6 +52,11 @@ pub extern "C" fn uranium_bridge_max_frames() -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn uranium_bridge_privileged_requested() -> u8 {
     (std::env::var("URANIUM_PRIVILEGED").as_deref() == Ok("1")) as u8
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn uranium_bridge_replay_perspective() -> i32 {
+    env_u64("URANIUM_REPLAY_PERSPECTIVE").map(|v| v as i32).unwrap_or(-1)
 }
 
 #[unsafe(no_mangle)]
@@ -137,7 +144,7 @@ fn start(info: &UrStatic) -> Result<Bridge, String> {
         mode: Mode::Lockstep,
         game_id: env_u64("URANIUM_GAME_ID").unwrap_or(0),
         slot: info.self_id,
-        replay: false,
+        replay: info.replay != 0,
     };
     let stream = connect()?;
     let mut writer = BufWriter::new(stream.try_clone().map_err(|e| e.to_string())?);
@@ -158,6 +165,7 @@ fn start(info: &UrStatic) -> Result<Bridge, String> {
         agent_wait: Duration::ZERO,
         serialize_us: Vec::new(),
         observations: 0,
+        replay: info.replay != 0,
     })
 }
 
@@ -231,6 +239,9 @@ fn step(b: &mut Bridge, f: &UrFrame, out: &mut UrAct) -> Result<(), String> {
         AgentMsg::Act(a) => a,
         AgentMsg::Reject(r) => return Err(format!("agent rejected: {r}")),
     };
+    if b.replay && !act.cmds.is_empty() {
+        return Err(format!("011-R11: {} commands sent in replay mode", act.cmds.len()));
+    }
     convert::commands(&act.cmds, &mut b.cmds, &mut b.pool);
     out.cmds = b.cmds.as_ptr();
     out.n_cmds = b.cmds.len() as u32;
