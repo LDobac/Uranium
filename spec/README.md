@@ -74,6 +74,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-040-3 | 리플레이 라이선스·출처 표기·크롤링 범위 | Resolved (2026-10-15: 내부 학습 전용, 재배포 금지, 약관·robots.txt 준수) |
 | AMB-040-4 | BC 데이터 저장 방식 (디스크 < 1TB) | Resolved (2026-10-15: RawFrame 압축 저장 S2→S1 순, 예산 초과분은 재생 스트리밍) |
 | AMB-040-2 | 리플레이 품질 필터 기준 | Resolved (2026-10-15: S1 APM≥80·5분+, S2 프로/상위 래더 APM≥150) |
+| AMB-040-5 | 040-R8 디싱크 판정 기준(1.16.1은 승패 기록 없음) | Open (기본안: 무효 명령 비율·마지막 프레임 도달·이탈자 우세 중 하나, 임계값은 M4 스파이크 실측 후 제안) |
 | AMB-042-1 | 학습 기간·장비 예산 | Resolved (2026-10-15: 기간 제한 없음, 전체 리그 구성) |
 | AMB-042-2 | TvP·TvZ 상대 다양성 (P/Z 상대 정책 추가 여부) | Deferred (M6) |
 | AMB-050-1 | 승격 게이트·평가 판수·회귀 시나리오 | Resolved (2026-10-15: 초안 수치 확정, M5 이후 조정 제안 가능) |
@@ -89,7 +90,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | 010 | [Game Protocol](010-game-protocol.md) | 브리지↔에이전트 프로토콜 | **Approved** |
 | 011 | [Bridge: OpenBW](011-bridge-openbw.md) | OpenBW 래퍼 | **Approved** |
 | 012 | [Bridge: Remastered](012-bridge-remastered.md) | SC:R 래퍼 | Draft |
-| 013 | [Version Mapping](013-version-mapping.md) | 1.16.1 ↔ SC:R 정규화 | Draft |
+| 013 | [Version Mapping](013-version-mapping.md) | 1.16.1 ↔ SC:R 정규화 | Draft (명령 인코딩 절만 **Approved** 2026-10-16) |
 | 020 | [Env Orchestration](020-env-orchestration.md) | 게임 실행·병렬화 | **Approved** |
 | 021 | [Opponent Pool](021-opponent-pool.md) | 학습 상대 | **Approved** |
 | 030 | [Observation](030-observation.md) | 관측 feature | **Approved** |

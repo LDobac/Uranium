@@ -47,6 +47,7 @@ OpenBW 포크 BWAPI 4.2(`github.com/OpenBW/bwapi`) 위에서 동작하는 AIModu
 | `URANIUM_REPLAY_PERSPECTIVE` | 재생 모드 시점 (011-R10) | – |
 
 - 구현 단계: 재생 모드(R10–R12, AC5)는 **M4**에서 구현한다. M2는 대전 모드만 구현한다.
+- 재생 모드 실행(2026-10-16): hostd가 `rep_bytes`를 게임 작업 디렉터리에 `.rep`로 쓰고, 런처 1개를 `BWAPI_CONFIG_AUTO_MENU__MAP=<그 파일>`로 띄운다. SC:R 리플레이는 013 변환본을 넘긴다. 시야 필터 시점은 `URANIUM_REPLAY_PERSPECTIVE` 슬롯이다.
 
 ## Acceptance Criteria
 - 011-AC1: 투혼과 서킷브레이커 각각에서 스크립트 에이전트 vs 스크립트 에이전트 100판을 크래시 없이 완주한다.
