@@ -1,0 +1,13 @@
+# 040-R15: map families for stage S2 (target maps). A replay's map title is matched
+# case-insensitively against `name_patterns` (substring, color/control codes removed);
+# `chk_sha256` lists hashes of replay map sections once measured. Everything else is "other".
+
+[[family]]
+name = "fighting_spirit"
+name_patterns = ["fighting spirit", "fighting_spirit", "fightingspirit", "투혼"]
+chk_sha256 = []
+
+[[family]]
+name = "circuit_breaker"
+name_patterns = ["circuit breaker", "circuit_breaker", "circuitbreaker", "서킷브레이커", "서킷 브레이커"]
+chk_sha256 = []

@@ -1,0 +1,147 @@
+# Replay order -> 034 action mapping for label inversion (040-R3, R11, 031-AC3). Data only (013-R1).
+# `order` is the BW / BWAPI Order id carried by TargetedOrder (0x15) and Build (0x0C) commands.
+# `unit` is used when the command names a target unit, `pos` otherwise ("" = not applicable).
+
+[[order]]
+names = ["Move", "Follow"]
+ids = [6, 49]
+unit = "Move_Unit"
+pos = "Move_Pos"
+
+[[order]]
+names = ["Attack1", "Attack2", "AttackUnit", "AttackTile", "AttackMove"]
+ids = [8, 9, 10, 12, 14]
+unit = "Attack_Unit"
+pos = "Attack_Pos"
+
+[[order]]
+names = ["Patrol"]
+ids = [152]
+unit = "Patrol_Pos"
+pos = "Patrol_Pos"
+
+[[order]]
+names = ["Stop"]
+ids = [1]
+unit = "Stop"
+pos = "Stop"
+
+[[order]]
+names = ["HoldPosition"]
+ids = [107]
+unit = "Hold"
+pos = "Hold"
+
+[[order]]
+names = ["RightClickAction"]
+ids = [133]
+unit = "Smart_Unit"
+pos = "Smart_Pos"
+
+[[order]]
+names = ["Harvest1", "Harvest2", "MoveToGas", "MoveToMinerals"]
+ids = [79, 80, 81, 85]
+unit = "Gather_Unit"
+pos = ""
+
+[[order]]
+names = ["ReturnGas", "ReturnMinerals"]
+ids = [84, 90]
+unit = "ReturnCargo"
+pos = "ReturnCargo"
+
+[[order]]
+names = ["Repair", "MoveToRepair"]
+ids = [34, 35]
+unit = "Repair_Unit"
+pos = ""
+
+[[order]]
+names = ["RallyPointUnit", "RallyPointTile"]
+ids = [39, 40]
+unit = "SetRally_Unit"
+pos = "SetRally_Pos"
+
+[[order]]
+names = ["EnterTransport", "PickupTransport"]
+ids = [92, 94]
+unit = "Load_Unit"
+pos = ""
+
+[[order]]
+names = ["MoveUnload"]
+ids = [112]
+unit = "UnloadAll_Pos"
+pos = "UnloadAll_Pos"
+
+[[order]]
+names = ["VultureMine", "PlaceMine"]
+ids = [20, 132]
+unit = "SpiderMine_Pos"
+pos = "SpiderMine_Pos"
+
+[[order]]
+names = ["CastLockdown"]
+ids = [115]
+unit = "Lockdown_Unit"
+pos = ""
+
+[[order]]
+names = ["NukePaint", "CastNuclearStrike"]
+ids = [126, 128]
+unit = "Nuke_Pos"
+pos = "Nuke_Pos"
+
+[[order]]
+names = ["CastRestoration"]
+ids = [180]
+unit = "Restoration_Unit"
+pos = ""
+
+[[order]]
+names = ["CastOpticalFlare"]
+ids = [185]
+unit = "OpticalFlare_Unit"
+pos = ""
+
+[[order]]
+names = ["CastDefensiveMatrix"]
+ids = [141]
+unit = "DefensiveMatrix_Unit"
+pos = ""
+
+[[order]]
+names = ["CastEMPShockwave"]
+ids = [122]
+unit = "EMP_Pos"
+pos = "EMP_Pos"
+
+[[order]]
+names = ["CastIrradiate"]
+ids = [143]
+unit = "Irradiate_Unit"
+pos = ""
+
+[[order]]
+names = ["FireYamatoGun"]
+ids = [113]
+unit = "Yamato_Unit"
+pos = ""
+
+[[order]]
+names = ["MedicHeal", "HealMove"]
+ids = [176, 177]
+unit = "Heal_Unit"
+pos = ""
+
+[[order]]
+names = ["CastScannerSweep"]
+ids = [139]
+unit = "ScannerSweep_Pos"
+pos = "ScannerSweep_Pos"
+
+# Build (0x0C) command orders; the action follows from the unit type in the command.
+[build]
+place_building = 30
+place_addon = [36, 37]
+building_land = 71
