@@ -1,0 +1,54 @@
+diff --git a/bwgame.h b/bwgame.h
+--- a/bwgame.h
++++ b/bwgame.h
+@@ -203,6 +203,8 @@ struct state_base_copyable {
+ 	std::array<player_t, 12> players;
+ 
+ 	std::array<std::array<int, 12>, 12> alliances;
++	// uranium 0012: trigger switches (condition 11, action 13); all cleared at game start.
++	std::array<bool, 256> trigger_switches{};
+ 
+ 	std::array<type_indexed_array<int, UpgradeTypes>, 12> upgrade_levels;
+ 	std::array<type_indexed_array<bool, UpgradeTypes>, 12> upgrade_upgrading;
+@@ -18896,6 +18898,8 @@ struct state_functions {
+ 			return trigger_count_comparison(c, trigger_opponent_count(owner, c.group));
+ 		case 22: // always
+ 			return true;
++		case 11: // switch (uranium 0012): num_n 2 = set, 3 = cleared; extra_n = switch index
++			return st.trigger_switches.at(c.extra_n & 0xff) == (c.num_n == 2);
+ 		default:
+ 			error("unknown trigger condition %d\n", c.type);
+ 			return false;
+@@ -19298,6 +19302,32 @@ struct state_functions {
+ 				set_unit_resources(u, a.group2_n);
+ 			}
+ 			return true;
++		// uranium 0012: presentation-only actions; they do not change the game state.
++		case 8: // play wav
++		case 9: // display text message
++		case 10: // center view
++		case 12: // set mission objectives
++		case 28: // minimap ping
++		case 30: // mute unit speech
++		case 31: // unmute unit speech
++		case 47: // comment
++		case 17: case 18: case 19: case 20: case 21: // leader boards (display only)
++		case 32: case 33: case 34: case 35: case 36: case 37: case 40:
++			return true;
++		case 13: { // set switch (uranium 0012): group2_n = switch index, num_n 4 set / 5 clear / 6 toggle
++			bool& sw = st.trigger_switches.at(a.group2_n & 0xff);
++			if (a.num_n == 4) sw = true;
++			else if (a.num_n == 5) sw = false;
++			else if (a.num_n == 6) sw = !sw;
++			else error("set switch: unsupported state %d", a.num_n);
++			return true;
++		}
++		case 57: // set alliance status (uranium 0012): extra_n 0 enemy, 1 ally, 2 allied victory
++			for (int p : trigger_players(owner, a.group_n)) {
++				if (p == owner || p >= 12) continue;
++				st.alliances[owner][p] = a.extra_n;
++			}
++			return true;
+ 		default:
+ 			error("unknown trigger action %d", a.type);
+ 			return false;
