@@ -1,6 +1,6 @@
 # 042 — RL Training & League
 
-- **Status**: Approved (2026-10-15)
+- **Status**: Approved (2026-10-15, 2026-10-16 개정: 042-R10 Ctrl+C 정상 종료)
 - **Related**: [020](020-env-orchestration.md), [021](021-opponent-pool.md), [032](032-model-architecture.md), [033](033-reward.md), [050](050-evaluation.md), [060](060-infra-bc250.md)
 
 ## Purpose
@@ -45,11 +45,13 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 | 042-R7 | **MUST** 에이전트 3개(Main, Main Exploiter, League Exploiter)는 학습 호스트의 learner를 시분할로 쓴다. Main이 학습 시간의 50% 이상을 차지한다. 비율은 설정 파일로 관리한다 |
 | 042-R8 | **MUST** RL 학습 시퀀스 길이는 T=64다(032-R5와 동일) |
 | 042-R9 | **MUST** KL 계수, 엔트로피 계수, 커리큘럼 전환 승률 기준, 스냅샷 주기는 튜닝 대상이다. 설정 파일로 관리하고 체크포인트에 기록한다 |
+| 042-R10 | **MUST** 정상 종료(Ctrl+C, 2026-10-16 사용자 결정). 첫 Ctrl+C(SIGINT, Windows는 Ctrl+C 이벤트)를 받으면 다음 순서로 멈춘다. ① 새 게임 배정을 멈춘다. ② 진행 중인 게임을 중단하고 `Aborted`로 기록해 학습에서 뺀다(042-R3). ③ 체크포인트를 저장하고 push한다(061-R4 "정상 종료 시"). ④ 잠금을 해제한다(061-R5). 두 번째 Ctrl+C를 받으면 저장 없이 즉시 종료한다. 게임 PC 구성(hosts 파일)을 바꾸려면 정상 종료 후 재시작한다. 재시작하면 hosts 파일을 새로 읽고 마지막 체크포인트에서 재개한다(R1) |
 
 ## Acceptance Criteria
 - 042-AC1: 작은 설정(1맵, T0 1종족)에서 BC 정책 대비 승률 개선을 재현 가능하게 보인다. 3 seed 평균으로 측정한다.
 - 042-AC2: 72시간 연속 학습 중 크래시나 메모리 누수 없이 resume이 가능하다.
 - 042-AC3: Main이 이전 승격 체크포인트 대비 승률 ≥ 55%일 때만 승격한다.
+- 042-AC4: 학습 중 Ctrl+C 한 번이면 체크포인트 push와 잠금 해제까지 마치고 종료한다. 이어서 hosts 파일의 게임 PC를 하나 빼거나 더해 재시작하면, `--take-over` 없이 같은 step에서 재개하고 바뀐 호스트 구성으로 게임을 배정한다(042-R10).
 
 ## Risks & Open Questions
 > **[SPEC DEFERRED(M6)] AMB-042-2**: TvP·TvZ 실력이 T0·T1 봇 수준에서 정체될 수 있다(셀프플레이는 TvT만 가능). 지금은 T0·T1 P/Z 봇으로 진행한다(2026-10-15 결정). M6 중간 점검 때 아래 내용을 사용자에게 보고하고 대응을 다시 확인받는다.
