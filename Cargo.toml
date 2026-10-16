@@ -11,6 +11,7 @@ members = [
     "crates/uranium-model",
     "tools/bench",
     "tools/casc-extract",
+    "tools/bwapi-tables",
 ]
 
 [workspace.package]

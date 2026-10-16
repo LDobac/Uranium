@@ -468,6 +468,7 @@ dependencies = [
  "anyhow",
  "burn",
  "clap",
+ "uranium-model",
 ]
 
 [[package]]
@@ -1120,6 +1121,16 @@ dependencies = [
  "burn-backend",
  "burn-cubecl",
  "cubecl",
+]
+
+[[package]]
+name = "bwapi-tables"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "toml",
 ]
 
 [[package]]
