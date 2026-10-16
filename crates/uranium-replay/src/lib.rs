@@ -1,6 +1,7 @@
 //! `uranium-replay`: StarCraft replay parsing (040-R1), SC:R -> 1.16.1 conversion (013-R6..R8)
 //! and dataset filtering (040).
 
+pub mod chk;
 pub mod cmd;
 pub mod container;
 pub mod header;
@@ -100,7 +101,8 @@ impl Replay {
             })
             .filter(|b: &Result<cmd::Block>| b.as_ref().map_or(true, |b| !b.cmds.is_empty()))
             .collect::<Result<Vec<_>>>()?;
-        Ok(container::write_legacy(&self.raw_header, &cmd::encode(&blocks)?, &self.map))
+        // 013 맵 CHK 정규화: SC:R map versions (STRx) become ones OpenBW's loader accepts.
+        Ok(container::write_legacy(&self.raw_header, &cmd::encode(&blocks)?, &chk::to_legacy(&self.map)?))
     }
 
     /// 013-R7 / 013-AC4: the converted file parses back to exactly the converted commands
@@ -109,7 +111,7 @@ impl Replay {
         let back = parse(&self.to_legacy_file()?)?;
         anyhow::ensure!(back.format == Format::Legacy, "converted file is {:?}", back.format);
         anyhow::ensure!(back.raw_header == self.raw_header, "header changed");
-        anyhow::ensure!(back.map == self.map, "map changed");
+        anyhow::ensure!(back.map == chk::to_legacy(&self.map)?, "map changed");
         let ids: Vec<u8> = self.header.players.iter().map(|p| p.id).collect();
         let want: Vec<cmd::Cmd> = self
             .cmds()

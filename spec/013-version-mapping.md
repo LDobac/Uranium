@@ -1,6 +1,6 @@
 # 013 — Version Mapping (1.16.1 ↔ Remastered)
 
-- **Status**: Draft. 단, **"리플레이 명령 인코딩 (M4)" 절과 013-R6~R8은 Approved (2026-10-16, M4 계획 승인)**. 나머지는 M7에서 확정한다.
+- **Status**: Draft. 단, **"리플레이 명령 인코딩 (M4)" 절과 013-R6~R8은 Approved (2026-10-16, M4 계획 승인. 2026-10-17 개정: 맵 CHK 정규화, opcode 0x5D)**. 나머지는 M7에서 확정한다.
 - **Related**: [010](010-game-protocol.md), [011](011-bridge-openbw.md), [012](012-bridge-remastered.md)
 
 ## Purpose
@@ -36,6 +36,11 @@ SC:R 리플레이를 OpenBW(1.16.1 로더, `third_party/openbw/replay.h`)로 재
 - 섹션 구조는 `crc32, 청크 수, (청크 길이, 데이터)*`이고, 청크 출력은 최대 8,192바이트다.
 - 변환본은 ReplayID를 `reRS`로 쓰고 4개 섹션(Header·Commands·MapData 길이 접두 포함)만 남긴다. 청크는 **비압축**(입력 길이 = 출력 길이)으로 쓰고, crc32는 원본 데이터로 다시 계산한다. OpenBW 로더는 비압축 청크를 그대로 복사하므로 implode 압축기가 필요 없다.
 - PlayerNames와 확장 섹션(SKIN·LMTS·BFIX·CCLR·GCFG·서드파티)은 버린다. 게임 진행에 영향이 없다.
+- **맵 CHK 정규화** (2026-10-17 사용자 확인, `reports/m4_scr_desync.md`): OpenBW 맵 로더는 CHK `VER` 59·63·205만 받고 `STR `을 필수로 읽는다. SC:R 맵 형식 VER 64·206은 각각 63·205에 확장 문자열 표 `STRx`(u32 개수·u32 오프셋)를 쓰는 형식이다. 변환본의 맵 섹션에서
+  - `VER` 64 → 63, 206 → 205로 바꾼다.
+  - `STRx`를 `STR `(u16 개수·u16 오프셋)으로 다시 쓴다. 문자열 내용과 순서는 그대로 두고, 범위를 벗어난 오프셋은 빈 문자열로 둔다. 개수나 크기가 u16을 넘으면 변환 불가(`Unsupported`)다. `STRx`가 있으면 기존 `STR `은 버린다.
+  - 그 밖의 섹션과, 길이가 잘못된 뒤쪽 바이트(맵 보호 기법)는 그대로 복사한다.
+  - 맵 해시(`GameMeta.map_hash`)와 맵 패밀리 판정은 원본 CHK 기준이다.
 
 ### 명령 (SC:R 1.21 확장 → 1.16.1)
 | SC:R opcode | 1.16.1 opcode | SC:R 필드 | 변환 |
@@ -57,7 +62,7 @@ SC:R 리플레이를 OpenBW(1.16.1 로더, `third_party/openbw/replay.h`)로 재
 - **플레이어 번호** (M4 스파이크 실측): 명령의 플레이어 바이트는 헤더 플레이어 구조체의 `ID` 필드다. BWAPI 플레이어 번호는 이름이 있는(점유된) 헤더 칸을 배열 순서대로 0, 1, 2…로 다시 매긴 값이며, 배열 위치나 `slot`·`ID` 필드와 다를 수 있다(BWAPI GameInfo와 이름 대조로 확인). 재생 시점(`URANIUM_REPLAY_PERSPECTIVE`, hostd `ReplaySpec.perspective_slot`)은 이 BWAPI 번호로 넘긴다.
 - **opcode 처리 규칙** (2026-10-16 사용자 지시: 알 수 없는 opcode를 단순 폐기하지 않는다). OpenBW 로더(`actions.h` `read_action`)가 처리하지 않는 명령은 재생 전체를 멈추므로 변환 시 다음처럼 나눈다.
   - OpenBW가 처리하는 opcode: 그대로 둔다.
-  - OpenBW가 처리하지 않고 게임 상태에 영향이 없는 opcode(게임 속도 0x0F, 일시정지·재개 0x10·0x11, 지연 0x55, keep-alive·sync·로비 0x05–0x08·0x37–0x45·0x48·0x54·0x56·0x5B): 제거한다.
+  - OpenBW가 처리하지 않고 게임 상태에 영향이 없는 opcode(게임 속도 0x0F, 일시정지·재개 0x10·0x11, 지연 0x55, keep-alive·sync·로비 0x05–0x08·0x37–0x45·0x48·0x54·0x56·0x5B, SC:R `0x5D`): 제거한다. `0x5D`는 screp에도 정의가 없지만 래더 리플레이 2,000개에서 페이로드 4바이트로 읽으면 모든 블록이 정확히 끝나고 값이 항상 0이며 시작 프레임에만 나온다(2026-10-17 사용자 확인). 영향이 있었다면 040-R8 디싱크 검사가 걸러낸다.
   - 게임 상태에 영향이 있는데 OpenBW가 처리하지 않는 opcode(예: 0x1D)와 길이를 모르는 새 opcode: 리플레이를 버리지 않고 "확인 대기"로 분류해 opcode·프레임을 리포트한다. 정체(레퍼런스 파서·OpenBW 소스)를 확인해 OpenBW 실행에 문제가 없으면 파서와 이 표에 추가하고 다시 처리한다.
 - 헤더 플레이어 `ID`에 없는 플레이어 바이트(옵저버, 128 이상)의 명령은 변환 시 제거한다. OpenBW 로더가 "player id not found"로 재생을 멈추며, 이 명령들은 게임 상태에 영향이 없다(M4 스파이크 실측).
 

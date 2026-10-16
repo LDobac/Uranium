@@ -47,13 +47,28 @@ personal의 유즈맵 판은 대부분 활성 플레이어 수(1·0·3~7명)와 
 - screp(v1.13.8과 현재 master 모두)도 정의하지 않은 명령이다(`Unknown 0x5d`). 우리 파서는 013-R2에 따라 리플레이 전체를 `review`로 뺀다.
 - 래더 2,000개 전체에서 0x5d를 **4바이트 고정 크기**로 읽으면 모든 프레임 블록이 정확히 끝까지 파싱된다(실패 0). 페이로드는 150건 모두 `00000000`이고, 리플레이마다 시작 프레임(3)에 10번씩 나온다. 게임 상태와 무관한 명령으로 보인다.
 
-## 제안 (사용자 확인 필요, spec 013 명령 인코딩 절 변경)
-1. SC:R → 1.16.1 변환(013)에서 맵 CHK를 정규화한다: VER 64→63, 206→205, `STRx`→`STR `(문자열 표가 64KB를 넘으면 변환 불가로 분류). OpenBW 패치 대신 변환기에서 하면 엔진을 건드리지 않는다.
-2. opcode 0x5d를 "페이로드 4바이트, 게임 영향 없음(DropNoEffect)"으로 opcode 표에 추가한다. 실제로 영향이 있었다면 040-R8 디싱크 검사가 걸러낸다.
+## 조치 (2026-10-17 사용자 확인, 013 명령 인코딩 절 개정)
+1. SC:R → 1.16.1 변환(`uranium-replay` `chk::to_legacy`, `to_legacy_file`)에서 맵 CHK를 정규화한다: VER 64→63, 206→205, `STRx`→`STR `(문자열 표가 u16을 넘으면 변환 불가). OpenBW는 수정하지 않는다(013-R6). 맵 해시·패밀리는 원본 CHK 기준이다.
+2. opcode 0x5d를 "페이로드 4바이트, 게임 영향 없음(DropNoEffect)"으로 opcode 표에 추가했다.
+
+### 조치 후 재측정 (같은 래더 1/4 표본 500개)
+| | 조치 전 | 조치 후 |
+|---|---|---|
+| 열지 못함 | 237 | **0** |
+| review (0x5d) | 5 | **0** |
+| 재생된 시점 | 33 | **272** |
+| 저장된 시점 | 27 | **230** |
+| 디싱크 | 6 (18.2%) | 42 (**15.4%**) |
+
+- 변환 왕복(013-R7·AC4): 래더 2,000개 중 1,996개 통과. 실패 4개는 기존 규칙(유닛 인덱스가 1.16.1 범위를 넘음, 013-R2)이고 CHK 변환·0x5d 때문에 실패한 리플레이는 없다.
+- 맵별 디싱크(디싱크/재생 시점): Attitude SE 2.1 **21/53**, Radeon 1.2 6/45, 투혼 1.4 4/20, KnockOut 1.4 3/41, Colorless Fate 1.1 3/11, Octagon SE 2.0 2/54, Odyssey:RE 2.0 2/13, Backrooms 1.1 0/28, Aiolos 1.0b 0/7.
+- **Attitude SE만 40%로 튄다**(정글 타일셋, ERA 4). 이 맵을 빼면 21/219(9.6%)다. 원인(맵 고유 지형·두데드, SC:R 데이터 차이 등)은 아직 보지 않았다. S1용이라 대상 맵 학습에는 영향이 없고, 디싱크 판은 040-R8 검사로 이미 제외된다.
+- SC:R 전체(래더 표본 + personal): 47/431 시점(10.9%). 040-AC5 기준(30%) 이내다.
+- 디싱크 사유: 무효 선택 41건, 이탈자 우세 14건(겹침 포함).
 
 ## 재현
 ```
 uranium-replay build <raw>/scr_ladder --src scr_ladder --out <tmp>/shards --records <tmp>/rec/scr_ladder.jsonl --jobs 12 --parts 4 --part 0
 uranium-replay build <raw>/personal --src personal --out <tmp>/shards_p --records <tmp>/rec_p/personal.jsonl --jobs 12
 ```
-CHK 확인과 `STRx` 변환 실험은 임시 진단 스크립트로 했다(저장소에 넣지 않음). 제안 1을 구현하면 `uranium-replay` 테스트로 대체한다.
+처음 CHK 확인과 `STRx` 변환 실험은 임시 진단 스크립트로 했다(저장소에 넣지 않음). 구현 후에는 `uranium-replay` 단위 테스트(`chk::tests`, `opcode_classes_match_openbw_actions_h_013`)와 `uranium-replay roundtrip <raw>/scr_ladder`로 검증한다.
