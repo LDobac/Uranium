@@ -29,6 +29,27 @@ enum Cmd {
         #[arg(long)]
         perspective: Option<u8>,
     },
+    /// 020-AC4 / 040-AC6: the hostd StartReplay stream equals a local replay bit for bit.
+    StreamCheck {
+        rep: PathBuf,
+        #[arg(long)]
+        hostd: String,
+        /// This machine's address as the hostd's launcher reaches it.
+        #[arg(long, default_value = "127.0.0.1")]
+        agent_ip: String,
+        #[arg(long)]
+        perspective: Option<u8>,
+    },
+    /// Debug: list the map's triggers (CHK `TRIG`): condition and action types with arguments.
+    Triggers { rep: PathBuf },
+    /// 040-R6 / 040-AC4: dataset statistics markdown from `build` records.
+    Stats {
+        records: Vec<PathBuf>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// 013-AC4: SC:R -> 1.16.1 conversion round trip over a folder (JSON summary).
+    Roundtrip { dir: PathBuf },
     /// 040-R8 analysis: where a replay starts to diverge in OpenBW (JSON).
     Trace {
         rep: PathBuf,
@@ -173,6 +194,58 @@ fn main() -> Result<()> {
             }
             println!("{}", serde_json::json!({"replays": files.len(), "records": recs.len(), "by_outcome": counts}));
         }
+        Cmd::Stats { records, out } => std::fs::write(&out, stats_markdown(&records)?)?,
+        Cmd::StreamCheck { rep, hostd, agent_ip, perspective } => {
+            let r = load(&rep)?;
+            let cfg = uranium_replay::play::PlayConfig::from_env(uranium_replay::play::work_dir_default())?;
+            let views = perspective.map(|p| vec![p]).unwrap_or_else(|| uranium_replay::play::terran_perspectives(&r));
+            for p in views {
+                let local = uranium_replay::play::play_with(&r, p, &cfg, &[], &mut |_, _| {})?;
+                let remote = uranium_replay::play::play_hostd(&r, p, &hostd, &agent_ip, &[], &mut |_, _| {})?;
+                println!(
+                    "{}",
+                    serde_json::json!({"perspective": p, "local_digest": local.digest, "hostd_digest": remote.digest, "local_obs": local.observations, "hostd_obs": remote.observations, "identical": local.digest == remote.digest && local.observations == remote.observations})
+                );
+            }
+        }
+        Cmd::Triggers { rep } => {
+            let r = load(&rep)?;
+            let (m, mut pos) = (&r.map, 0usize);
+            let u32_at = |d: &[u8], o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+            while pos + 8 <= m.len() {
+                let (name, size) = (&m[pos..pos + 4], u32_at(m, pos + 4) as usize);
+                let data = &m[pos + 8..(pos + 8 + size).min(m.len())];
+                if name == b"TRIG" {
+                    for (i, t) in data.chunks_exact(2400).enumerate() {
+                        let conds: Vec<String> = (0..16)
+                            .map(|k| &t[k * 20..k * 20 + 20])
+                            .filter(|c| c[15] != 0)
+                            .map(|c| format!("c{}(grp {} n {} unit {} cmp {} res {})", c[15], u32_at(c, 4), u32_at(c, 8), u16::from_le_bytes([c[12], c[13]]), c[14], c[16]))
+                            .collect();
+                        let acts: Vec<String> = (0..64)
+                            .map(|k| &t[320 + k * 32..320 + k * 32 + 32])
+                            .filter(|a| a[26] != 0)
+                            .map(|a| format!("a{}(grp {} num {} unit {} mod {})", a[26], u32_at(a, 16), u32_at(a, 20), u16::from_le_bytes([a[24], a[25]]), a[27]))
+                            .collect();
+                        let players: Vec<usize> = (0..28).filter(|&p| t[2372 + p] != 0).collect();
+                        println!("trigger {i} players {players:?}: if {} then {}", conds.join(" & "), acts.join(", "));
+                    }
+                }
+                pos += 8 + size;
+            }
+        }
+        Cmd::Roundtrip { dir } => {
+            let mut files = Vec::new();
+            reps(&dir, &mut files)?;
+            let (mut ok, mut failed) = (0usize, std::collections::BTreeMap::<String, usize>::new());
+            for f in &files {
+                match load(f).and_then(|r| r.roundtrip_check()) {
+                    Ok(()) => ok += 1,
+                    Err(e) => *failed.entry(format!("{e:#}").split(" at frame").next().unwrap_or("").to_string()).or_default() += 1,
+                }
+            }
+            println!("{}", serde_json::json!({"replays": files.len(), "ok": ok, "failed": failed}));
+        }
         Cmd::Trace { rep, perspective } => {
             let r = load(&rep)?;
             let cfg = uranium_replay::play::PlayConfig::from_env(uranium_replay::play::work_dir_default())?;
@@ -266,4 +339,64 @@ fn check_screp(dir: &Path, screp: &Path, limit: Option<usize>) -> Result<()> {
     }
     println!("{}", serde_json::json!({"checked": files.len(), "match": ok, "mismatch": mismatch, "ours_failed": ours_failed, "screp_failed": screp_failed}));
     Ok(())
+}
+
+/// 040-R6 / 040-AC4: counts only, no file or player names (040-R14).
+fn stats_markdown(records: &[PathBuf]) -> Result<String> {
+    use std::collections::BTreeMap;
+    use std::fmt::Write as _;
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    for p in records {
+        for line in std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?.lines() {
+            rows.push(serde_json::from_str(line)?);
+        }
+    }
+    let s = |v: &serde_json::Value, k: &str| v[k].as_str().unwrap_or("").to_string();
+    let mut outcomes: BTreeMap<(String, String), usize> = BTreeMap::new();
+    let mut games: BTreeMap<(String, String, String), (usize, u64)> = BTreeMap::new();
+    let mut desync: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    let (mut cmds, mut labeled, mut spam) = (0u64, 0u64, 0u64);
+    let mut replays: BTreeMap<String, std::collections::BTreeSet<(String, u64)>> = BTreeMap::new();
+    for r in &rows {
+        let (src, outcome) = (s(r, "src"), s(r, "outcome"));
+        replays.entry(src.clone()).or_default().insert((s(r, "replay_sha256"), r["index"].as_u64().unwrap_or(0)));
+        *outcomes.entry((src.clone(), outcome.clone())).or_default() += 1;
+        let family = s(r, "map_family");
+        if outcome == "written" || outcome == "desync" {
+            let d = desync.entry(family.clone()).or_default();
+            d.1 += 1;
+            d.0 += (outcome == "desync") as usize;
+        }
+        if outcome == "written" {
+            let view = &r["view"];
+            let g = games.entry((family, s(view, "matchup"), s(view, "stage"))).or_default();
+            g.0 += 1;
+            g.1 += r["steps"].as_u64().unwrap_or(0);
+            let c = &r["coverage"];
+            cmds += c["commands"].as_u64().unwrap_or(0);
+            labeled += c["labeled"].as_u64().unwrap_or(0);
+            spam += c["merged_spam"].as_u64().unwrap_or(0);
+        }
+    }
+    let mut md = String::new();
+    writeln!(md, "# 데이터셋 통계 (040-R6, 040-AC4)\n")?;
+    writeln!(md, "`uranium-replay stats`로 생성. 개수만 기록한다(040-R14). 판(game)은 테란 시점 하나다(TvT는 두 시점, 040-R2).\n")?;
+    writeln!(md, "## 출처별 처리 결과\n\n| src | 리플레이 | 결과 | 레코드 |\n|---|---|---|---|")?;
+    for ((src, outcome), n) in &outcomes {
+        writeln!(md, "| {src} | {} | {outcome} | {n} |", replays.get(src).map_or(0, |r| r.len()))?;
+    }
+    writeln!(md, "\n## 저장된 판: 맵 패밀리 × 매치업 × 단계\n\n| 맵 패밀리 | 매치업 | 단계 | 판 | 판단 단계 |\n|---|---|---|---|---|")?;
+    for ((f, m, st), (n, steps)) in &games {
+        writeln!(md, "| {f} | {m} | {st} | {n} | {steps} |")?;
+    }
+    writeln!(md, "\n## 디싱크 비율 (040-AC2, 목표 < 10%)\n\n| 맵 패밀리 | 재생 시점 | 디싱크 | 비율 |\n|---|---|---|---|")?;
+    let (mut dt, mut tt) = (0, 0);
+    for (f, (d, t)) in &desync {
+        writeln!(md, "| {f} | {t} | {d} | {:.1}% |", *d as f64 * 100.0 / (*t).max(1) as f64)?;
+        dt += d;
+        tt += t;
+    }
+    writeln!(md, "| 전체 | {tt} | {dt} | {:.1}% |", dt as f64 * 100.0 / tt.max(1) as f64)?;
+    writeln!(md, "\n## 레이블 커버리지 (031-AC3, 목표 ≥ 95%)\n\n- 게임 영향 명령 {cmds}개 중 레이블 {labeled}개: {:.2}%\n- 스팸 병합(040-R4): {spam}개", labeled as f64 * 100.0 / cmds.max(1) as f64)?;
+    Ok(md)
 }

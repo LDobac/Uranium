@@ -103,6 +103,30 @@ impl Replay {
         Ok(container::write_legacy(&self.raw_header, &cmd::encode(&blocks)?, &self.map))
     }
 
+    /// 013-R7 / 013-AC4: the converted file parses back to exactly the converted commands
+    /// (observer and no-effect commands dropped) with the same header and map.
+    pub fn roundtrip_check(&self) -> Result<()> {
+        let back = parse(&self.to_legacy_file()?)?;
+        anyhow::ensure!(back.format == Format::Legacy, "converted file is {:?}", back.format);
+        anyhow::ensure!(back.raw_header == self.raw_header, "header changed");
+        anyhow::ensure!(back.map == self.map, "map changed");
+        let ids: Vec<u8> = self.header.players.iter().map(|p| p.id).collect();
+        let want: Vec<cmd::Cmd> = self
+            .cmds()
+            .filter(|c| ids.contains(&c.player))
+            .map(|c| cmd::to_legacy(c, self.unit_limit))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .filter(|c| cmd::openbw(c.op) == cmd::OpenBw::Supported)
+            .collect();
+        let got: Vec<cmd::Cmd> = back.cmds().cloned().collect();
+        anyhow::ensure!(got.len() == want.len(), "{} commands after round trip, expected {}", got.len(), want.len());
+        if let Some((g, w)) = got.iter().zip(&want).find(|(g, w)| g != w) {
+            anyhow::bail!("command differs at frame {}: {:?} vs {:?}", w.frame, g, w);
+        }
+        Ok(())
+    }
+
     /// Players that actually played: humans with at least one train/build command
     /// (observers never issue them; same idea as screp's observer heuristic).
     pub fn active_players(&self) -> Vec<(Player, PlayerStats)> {

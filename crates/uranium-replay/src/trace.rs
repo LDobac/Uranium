@@ -65,6 +65,10 @@ pub fn trace(rep: &Replay, perspective: u8, cfg: &PlayConfig) -> Result<Trace> {
             last_enemy = p.enemy.supply_used;
         }
         supply_log.push((f.frame, f.self_state.supply_used, last_enemy));
+        if std::env::var_os("URANIUM_REPLAY_DEBUG").is_some() && f.frame <= 400 {
+            let trains: Vec<u32> = cmds.iter().filter(|c| c.op == op::TRAIN && c.frame <= f.frame).map(|c| c.frame).collect();
+            eprintln!("[debug] frame {} minerals {} supply {} trains so far {:?}", f.frame, f.self_state.minerals, f.self_state.supply_used, trains);
+        }
         if std::env::var_os("URANIUM_REPLAY_DEBUG").is_some() && supply_log.len() <= 2 {
             let own: Vec<(u32, u16)> = f.units.iter().filter(|u| u.owner == me).map(|u| (u.id, u.unit_type)).collect();
             let all: Vec<(u32, u8, u16)> = f.units.iter().filter(|u| u.owner != me).take(6).map(|u| (u.id, u.owner, u.unit_type)).collect();

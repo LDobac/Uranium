@@ -79,6 +79,11 @@ pub fn write_legacy(header: &[u8], commands: &[u8], map: &[u8]) -> Vec<u8> {
 }
 
 fn put_section(out: &mut Vec<u8>, data: &[u8]) {
+    // Like Blizzard, an empty section is not written at all (only possible for a replay whose
+    // commands were all observer / no-effect commands; nothing to replay).
+    if data.is_empty() {
+        return;
+    }
     out.extend_from_slice(&crc32(data).to_le_bytes());
     out.extend_from_slice(&(data.len().div_ceil(CHUNK) as u32).to_le_bytes());
     for chunk in data.chunks(CHUNK) {
@@ -160,6 +165,7 @@ impl Reader<'_> {
 
     /// One section: crc32, chunk count, then (length, data) chunks inflating to `size` bytes.
     fn section(&mut self, size: usize) -> Result<Vec<u8>> {
+        // Blizzard writes nothing for an empty section (screp `sectionHeader`).
         if size == 0 {
             return Ok(Vec::new());
         }

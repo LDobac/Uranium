@@ -128,7 +128,7 @@ pub fn play_with(rep: &Replay, perspective: u8, cfg: &PlayConfig, extra_stops: &
         .stderr(log)
         .spawn()
         .with_context(|| format!("starting {}", cfg.launcher.display()))?;
-    let res = accept(&listener, &mut child, Duration::from_secs(60)).and_then(|s| session(rep, perspective, s, extra_stops, on_frame));
+    let res = accept(&listener, Some(&mut child), Duration::from_secs(60)).and_then(|s| session(rep, perspective, s, extra_stops, on_frame));
     let deadline = Instant::now() + Duration::from_secs(10);
     while child.try_wait()?.is_none() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
@@ -151,7 +151,39 @@ fn rand_salt() -> u128 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
 }
 
-fn accept(listener: &TcpListener, child: &mut std::process::Child, timeout: Duration) -> Result<TcpStream> {
+/// 020-AC4 / 040-AC6: plays the replay through a hostd `StartReplay` job instead of a local
+/// launcher. `agent_ip` is this machine's address as the hostd's launcher can reach it.
+pub fn play_hostd(rep: &Replay, perspective: u8, hostd: &str, agent_ip: &str, extra_stops: &[u32], on_frame: &mut OnFrame) -> Result<PlayResult> {
+    use uranium_proto::control::{CONTROL_VERSION, ControlRequest, ControlResponse, ReplaySpec};
+    let t0 = Instant::now();
+    let listener = TcpListener::bind((agent_ip, 0))?;
+    let agent_addr = listener.local_addr()?.to_string();
+    let ctl = TcpStream::connect(hostd).with_context(|| format!("connecting hostd {hostd}"))?;
+    let mut cr = BufReader::new(ctl.try_clone()?);
+    let mut cw = BufWriter::new(ctl);
+    write_msg(&mut cw, &ControlRequest::Hello { control_version: CONTROL_VERSION })?;
+    let _: ControlResponse = read_msg(&mut cr)?;
+    let job_id = (rand_salt() as u64) & 0xffff_ffff;
+    let spec = ReplaySpec { job_id, rep_bytes: rep.to_legacy_file()?, perspective_slot: slot_of(rep, perspective)?, agent_addr, privileged: true };
+    write_msg(&mut cw, &ControlRequest::StartReplay(spec))?;
+    match read_msg(&mut cr)? {
+        ControlResponse::Started { .. } => {}
+        other => bail!("hostd did not start the replay: {other:?}"),
+    }
+    let mut none: Option<std::process::Child> = None;
+    let mut res = accept(&listener, none.as_mut(), Duration::from_secs(60)).and_then(|s| session(rep, perspective, s, extra_stops, on_frame))?;
+    // Wait for the job to finish so the next job does not hit the capacity limit.
+    loop {
+        match read_msg::<ControlResponse>(&mut cr)? {
+            ControlResponse::Finished(f) if f.game_id == job_id => break,
+            _ => {}
+        }
+    }
+    res.wall_s = t0.elapsed().as_secs_f64();
+    Ok(res)
+}
+
+fn accept(listener: &TcpListener, mut child: Option<&mut std::process::Child>, timeout: Duration) -> Result<TcpStream> {
     listener.set_nonblocking(true)?;
     let deadline = Instant::now() + timeout;
     loop {
@@ -162,7 +194,7 @@ fn accept(listener: &TcpListener, child: &mut std::process::Child, timeout: Dura
                 return Ok(s);
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                if let Some(st) = child.try_wait()? {
+                if let Some(st) = child.as_mut().map(|c| c.try_wait()).transpose()?.flatten() {
                     bail!("launcher exited before the bridge connected ({st})");
                 }
                 if Instant::now() >= deadline {
