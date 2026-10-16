@@ -86,6 +86,9 @@ enum Cmd {
         /// Storage budget in GB for this run (060-R7 total is 600).
         #[arg(long, default_value_t = 600)]
         budget_gb: u64,
+        /// File of SHA-256 hashes (one per line, first column) to skip as duplicates.
+        #[arg(long)]
+        skip_hashes: Option<PathBuf>,
     },
     CheckScrep {
         dir: PathBuf,
@@ -178,7 +181,11 @@ fn main() -> Result<()> {
             }
         }
         Cmd::CheckScrep { dir, screp, limit } => check_screp(&dir, &screp, limit)?,
-        Cmd::Build { dir, src, out, records, jobs, limit, budget_gb } => {
+        Cmd::Build { dir, src, out, records, jobs, limit, budget_gb, skip_hashes } => {
+            let skip_sha256 = match skip_hashes {
+                Some(p) => std::fs::read_to_string(&p)?.lines().filter_map(|l| l.split_whitespace().next().map(str::to_string)).collect(),
+                None => Default::default(),
+            };
             let shards_dir = match out {
                 Some(o) => o,
                 None => PathBuf::from(std::env::var("URANIUM_SHARED_DIR").context("URANIUM_SHARED_DIR is not set (.env)")?).join("datasets/replays/shards").join(&src),
@@ -189,18 +196,25 @@ fn main() -> Result<()> {
             files.truncate(limit.unwrap_or(usize::MAX));
             let cfg = uranium_replay::play::PlayConfig::from_env(uranium_replay::play::work_dir_default())?;
             uranium_replay::play::ensure_file(&cfg.launcher)?;
-            let first = std::fs::read_dir(&shards_dir).map(|d| d.count() as u32).unwrap_or(0);
-            let opt = uranium_replay::pipeline::BuildOptions { src, shards_dir, jobs, shard_target_bytes: 512 << 20, budget_bytes: budget_gb << 30, first_shard_index: first };
-            let recs = uranium_replay::pipeline::build(&files, &opt, &cfg)?;
-            let mut w = std::io::BufWriter::new(std::fs::File::create(&records)?);
-            let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
-            for r in &recs {
+            let first = std::fs::read_dir(&shards_dir).map(|d| d.filter(|e| e.as_ref().is_ok_and(|e| e.file_name().to_string_lossy().starts_with("shard_"))).count() as u32).unwrap_or(0);
+            // Resume: replays already in the records file are not processed again.
+            let done_sha256: std::collections::HashSet<String> = std::fs::read_to_string(&records)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+                .filter_map(|v| v["replay_sha256"].as_str().map(str::to_string))
+                .collect();
+            let opt = uranium_replay::pipeline::BuildOptions { src, shards_dir, jobs, shard_target_bytes: 512 << 20, budget_bytes: budget_gb << 30, first_shard_index: first, skip_sha256, done_sha256 };
+            let out_file = std::sync::Mutex::new(std::fs::OpenOptions::new().create(true).append(true).open(&records)?);
+            let counts = std::sync::Mutex::new(std::collections::BTreeMap::<String, usize>::new());
+            uranium_replay::pipeline::build(&files, &opt, &cfg, &|r| {
                 use std::io::Write as _;
-                writeln!(w, "{}", serde_json::to_string(r)?)?;
-                let kind = serde_json::to_value(&r.outcome)?["outcome"].as_str().unwrap_or("?").to_string();
-                *counts.entry(kind).or_default() += 1;
-            }
-            println!("{}", serde_json::json!({"replays": files.len(), "records": recs.len(), "by_outcome": counts}));
+                let line = serde_json::to_string(r).unwrap_or_default();
+                let _ = writeln!(out_file.lock().unwrap(), "{line}");
+                let kind = serde_json::to_value(&r.outcome).ok().and_then(|v| v["outcome"].as_str().map(str::to_string)).unwrap_or_default();
+                *counts.lock().unwrap().entry(kind).or_default() += 1;
+            })?;
+            println!("{}", serde_json::json!({"replays": files.len(), "resumed_skip": opt.done_sha256.len(), "by_outcome": counts.into_inner().unwrap()}));
         }
         Cmd::Stats { records, out } => std::fs::write(&out, stats_markdown(&records)?)?,
         Cmd::Nondet { rep, perspective, runs } => {
