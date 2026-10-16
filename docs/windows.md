@@ -50,7 +50,8 @@ Windows PC 한 대에서 게임·브리지·hostd·에이전트를 모두 돌리
 - 봇 크래시 분석: WinDbg(`winget install Microsoft.WinDbg`)의 `cdbX64`에 `module.pdb` 경로를 `-y`로 준다.
 
 ## 5. 남은 일
-- 구성 (b): Windows에서 `uranium-env`를 실행하고, VPN 너머 Linux 게임 PC의 hostd를 쓴다.
+- 구성 (b): Windows에서 `uranium-env`를 실행하고, 로컬 hostd와 VPN 너머 Linux 게임 PC의 hostd를 함께 쓴다(020 호스트 구성, 2026-10-16).
+  - hosts 파일에 두 hostd를 모두 등록한다. Windows hostd의 `URANIUM_HOSTD_LISTEN`은 루프백이어도 된다.
   - `URANIUM_AGENT_LISTEN`은 게임 PC에서 접근 가능한 주소여야 한다.
   - 판단당 지연(브리지 RTT)을 기록한다.
   - 원격 2호스트 020-AC1과 함께 한다.

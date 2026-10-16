@@ -63,6 +63,7 @@
   - BC250 외에 **게임 전용 Linux PC 2대 이상**을 쓴다.
   - 호스트별 코어 수와 동시 게임 수는 hostd `ListCapabilities`로 자동 감지하고, `config/hosts.toml`로 덮어쓸 수 있다.
   - BC250 로컬 hostd는 기본 비활성이다. BC250은 추론과 학습을 전담한다.
+  - **Windows 학습 PC**(CUDA)는 학습·추론과 함께 로컬 hostd로 게임도 돌린다(2026-10-16 사용자 결정). 원격 Linux 게임 PC와 함께 `URANIUM_HOSTS_FILE`에 둘 다 등록하고, 에이전트 서버는 원격 브리지가 접속할 수 있는 주소로 listen한다(`URANIUM_AGENT_LISTEN`, `URANIUM_AGENT_PUBLIC_ADDR`). 학습 중 로컬 동시 게임 수는 hosts 파일의 `max_games`로 줄일 수 있으며, 값은 학습 부하를 측정해 정한다(TBD(M5)).
   - 020-AC1의 "호스트 2대·16게임"은 최소 기준으로 유지한다.
 
 - **시간 초과 처리 (확정 2026-10-15, AMB-020-2)**
