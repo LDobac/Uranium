@@ -1,0 +1,1521 @@
+# 034 action table (034-R1): one row per action_type, ids contiguous from 0 (034-R2).
+# Shared by env (masks, M5), model (mask gather, M5) and replay (label inversion, 040, M4).
+# Fields follow the 034 schema. `unit_type` / `tech` / `upgrade` are BWAPI enum values (013-R1),
+# `producer` is the building type pick_building chooses from (031-R1).
+# prereq (costs, supply, requirements) is filled in M5 from BWAPI type data (034-R3).
+
+[[action]]
+id = 0
+name = "NoOp"
+group = "basic"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "None"
+
+[[action]]
+id = 1
+name = "Move_Pos"
+group = "move"
+uses_select = true
+max_select = 12
+select_cap = "can_move"
+uses_queued = true
+target = "loc"
+target_cap = ""
+loc_class = "walkable"
+executor = "none"
+command = "UnitMove"
+
+[[action]]
+id = 2
+name = "Move_Unit"
+group = "move"
+uses_select = true
+max_select = 12
+select_cap = "can_move"
+uses_queued = true
+target = "unit"
+target_cap = "any_unit"
+loc_class = ""
+executor = "none"
+command = "UnitMove"
+
+[[action]]
+id = 3
+name = "Attack_Pos"
+group = "move"
+uses_select = true
+max_select = 12
+select_cap = "can_attack"
+uses_queued = true
+target = "loc"
+target_cap = ""
+loc_class = "any"
+executor = "none"
+command = "UnitAttack"
+
+[[action]]
+id = 4
+name = "Attack_Unit"
+group = "move"
+uses_select = true
+max_select = 12
+select_cap = "can_attack"
+uses_queued = true
+target = "unit"
+target_cap = "attackable_enemy"
+loc_class = ""
+executor = "none"
+command = "UnitAttack"
+
+[[action]]
+id = 5
+name = "Patrol_Pos"
+group = "move"
+uses_select = true
+max_select = 12
+select_cap = "can_move"
+uses_queued = true
+target = "loc"
+target_cap = ""
+loc_class = "any"
+executor = "none"
+command = "UnitPatrol"
+
+[[action]]
+id = 6
+name = "Hold"
+group = "move"
+uses_select = true
+max_select = 12
+select_cap = "can_move"
+uses_queued = true
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "UnitHold"
+
+[[action]]
+id = 7
+name = "Stop"
+group = "move"
+uses_select = true
+max_select = 12
+select_cap = "can_move"
+uses_queued = true
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "UnitStop"
+
+[[action]]
+id = 8
+name = "Smart_Pos"
+group = "move"
+uses_select = true
+max_select = 12
+select_cap = "can_move"
+uses_queued = true
+target = "loc"
+target_cap = ""
+loc_class = "any"
+executor = "none"
+command = "UnitRightClick"
+
+[[action]]
+id = 9
+name = "Smart_Unit"
+group = "move"
+uses_select = true
+max_select = 12
+select_cap = "can_move"
+uses_queued = true
+target = "unit"
+target_cap = "any_unit"
+loc_class = ""
+executor = "none"
+command = "UnitRightClick"
+
+[[action]]
+id = 10
+name = "Gather_Unit"
+group = "worker"
+uses_select = true
+max_select = 12
+select_cap = "is_worker"
+uses_queued = true
+target = "unit"
+target_cap = "target_resource"
+loc_class = ""
+executor = "none"
+command = "UnitGather"
+
+[[action]]
+id = 11
+name = "ReturnCargo"
+group = "worker"
+uses_select = true
+max_select = 12
+select_cap = "is_worker"
+uses_queued = true
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "UnitReturnCargo"
+
+[[action]]
+id = 12
+name = "Repair_Unit"
+group = "worker"
+uses_select = true
+max_select = 12
+select_cap = "is_worker"
+uses_queued = true
+target = "unit"
+target_cap = "repairable"
+loc_class = ""
+executor = "none"
+command = "UnitRepair"
+
+[[action]]
+id = 13
+name = "Build_CommandCenter"
+group = "build"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "loc"
+target_cap = ""
+loc_class = "cc_slot"
+executor = "pick_worker"
+command = "Build"
+unit_type = 106
+
+[[action]]
+id = 14
+name = "Build_SupplyDepot"
+group = "build"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "loc"
+target_cap = ""
+loc_class = "buildable_3x2"
+executor = "pick_worker"
+command = "Build"
+unit_type = 109
+
+[[action]]
+id = 15
+name = "Build_Refinery"
+group = "build"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "loc"
+target_cap = ""
+loc_class = "refinery_slot"
+executor = "pick_worker"
+command = "Build"
+unit_type = 110
+
+[[action]]
+id = 16
+name = "Build_Barracks"
+group = "build"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "loc"
+target_cap = ""
+loc_class = "buildable_4x3"
+executor = "pick_worker"
+command = "Build"
+unit_type = 111
+
+[[action]]
+id = 17
+name = "Build_EngineeringBay"
+group = "build"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "loc"
+target_cap = ""
+loc_class = "buildable_4x3"
+executor = "pick_worker"
+command = "Build"
+unit_type = 122
+
+[[action]]
+id = 18
+name = "Build_MissileTurret"
+group = "build"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "loc"
+target_cap = ""
+loc_class = "buildable_2x2"
+executor = "pick_worker"
+command = "Build"
+unit_type = 124
+
+[[action]]
+id = 19
+name = "Build_Academy"
+group = "build"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "loc"
+target_cap = ""
+loc_class = "buildable_3x2"
+executor = "pick_worker"
+command = "Build"
+unit_type = 112
+
+[[action]]
+id = 20
+name = "Build_Bunker"
+group = "build"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "loc"
+target_cap = ""
+loc_class = "buildable_3x2"
+executor = "pick_worker"
+command = "Build"
+unit_type = 125
+
+[[action]]
+id = 21
+name = "Build_Factory"
+group = "build"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "loc"
+target_cap = ""
+loc_class = "buildable_4x3"
+executor = "pick_worker"
+command = "Build"
+unit_type = 113
+
+[[action]]
+id = 22
+name = "Build_Starport"
+group = "build"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "loc"
+target_cap = ""
+loc_class = "buildable_4x3"
+executor = "pick_worker"
+command = "Build"
+unit_type = 114
+
+[[action]]
+id = 23
+name = "Build_Armory"
+group = "build"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "loc"
+target_cap = ""
+loc_class = "buildable_3x2"
+executor = "pick_worker"
+command = "Build"
+unit_type = 123
+
+[[action]]
+id = 24
+name = "Build_ScienceFacility"
+group = "build"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "loc"
+target_cap = ""
+loc_class = "buildable_4x3"
+executor = "pick_worker"
+command = "Build"
+unit_type = 116
+
+[[action]]
+id = 25
+name = "BuildAddon_ComsatStation"
+group = "addon"
+uses_select = true
+max_select = 1
+select_cap = "addon_capable_cc"
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "BuildAddon"
+unit_type = 107
+
+[[action]]
+id = 26
+name = "BuildAddon_NuclearSilo"
+group = "addon"
+uses_select = true
+max_select = 1
+select_cap = "addon_capable_cc"
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "BuildAddon"
+unit_type = 108
+
+[[action]]
+id = 27
+name = "BuildAddon_MachineShop"
+group = "addon"
+uses_select = true
+max_select = 1
+select_cap = "addon_capable_factory"
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "BuildAddon"
+unit_type = 120
+
+[[action]]
+id = 28
+name = "BuildAddon_ControlTower"
+group = "addon"
+uses_select = true
+max_select = 1
+select_cap = "addon_capable_starport"
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "BuildAddon"
+unit_type = 115
+
+[[action]]
+id = 29
+name = "BuildAddon_PhysicsLab"
+group = "addon"
+uses_select = true
+max_select = 1
+select_cap = "addon_capable_scifac"
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "BuildAddon"
+unit_type = 118
+
+[[action]]
+id = 30
+name = "BuildAddon_CovertOps"
+group = "addon"
+uses_select = true
+max_select = 1
+select_cap = "addon_capable_scifac"
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "BuildAddon"
+unit_type = 117
+
+[[action]]
+id = 31
+name = "Train_SCV"
+group = "train"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Train"
+unit_type = 7
+producer = "CommandCenter"
+
+[[action]]
+id = 32
+name = "Train_Marine"
+group = "train"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Train"
+unit_type = 0
+producer = "Barracks"
+
+[[action]]
+id = 33
+name = "Train_Firebat"
+group = "train"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Train"
+unit_type = 32
+producer = "Barracks"
+
+[[action]]
+id = 34
+name = "Train_Medic"
+group = "train"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Train"
+unit_type = 34
+producer = "Barracks"
+
+[[action]]
+id = 35
+name = "Train_Ghost"
+group = "train"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Train"
+unit_type = 1
+producer = "Barracks"
+
+[[action]]
+id = 36
+name = "Train_Vulture"
+group = "train"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Train"
+unit_type = 2
+producer = "Factory"
+
+[[action]]
+id = 37
+name = "Train_SiegeTank"
+group = "train"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Train"
+unit_type = 5
+producer = "Factory"
+
+[[action]]
+id = 38
+name = "Train_Goliath"
+group = "train"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Train"
+unit_type = 3
+producer = "Factory"
+
+[[action]]
+id = 39
+name = "Train_Wraith"
+group = "train"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Train"
+unit_type = 8
+producer = "Starport"
+
+[[action]]
+id = 40
+name = "Train_Dropship"
+group = "train"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Train"
+unit_type = 11
+producer = "Starport"
+
+[[action]]
+id = 41
+name = "Train_ScienceVessel"
+group = "train"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Train"
+unit_type = 9
+producer = "Starport"
+
+[[action]]
+id = 42
+name = "Train_Battlecruiser"
+group = "train"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Train"
+unit_type = 12
+producer = "Starport"
+
+[[action]]
+id = 43
+name = "Train_Valkyrie"
+group = "train"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Train"
+unit_type = 58
+producer = "Starport"
+
+[[action]]
+id = 44
+name = "Train_NuclearMissile"
+group = "train"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Train"
+unit_type = 14
+producer = "NuclearSilo"
+
+[[action]]
+id = 45
+name = "Research_Stim"
+group = "research"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Research"
+tech = 0
+producer = "Academy"
+
+[[action]]
+id = 46
+name = "Research_Restoration"
+group = "research"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Research"
+tech = 24
+producer = "Academy"
+
+[[action]]
+id = 47
+name = "Research_OpticalFlare"
+group = "research"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Research"
+tech = 30
+producer = "Academy"
+
+[[action]]
+id = 48
+name = "Research_SpiderMines"
+group = "research"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Research"
+tech = 3
+producer = "MachineShop"
+
+[[action]]
+id = 49
+name = "Research_TankSiege"
+group = "research"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Research"
+tech = 5
+producer = "MachineShop"
+
+[[action]]
+id = 50
+name = "Research_EMP"
+group = "research"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Research"
+tech = 2
+producer = "ScienceFacility"
+
+[[action]]
+id = 51
+name = "Research_Irradiate"
+group = "research"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Research"
+tech = 7
+producer = "ScienceFacility"
+
+[[action]]
+id = 52
+name = "Research_Yamato"
+group = "research"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Research"
+tech = 8
+producer = "PhysicsLab"
+
+[[action]]
+id = 53
+name = "Research_CloakingField"
+group = "research"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Research"
+tech = 9
+producer = "ControlTower"
+
+[[action]]
+id = 54
+name = "Research_Lockdown"
+group = "research"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Research"
+tech = 1
+producer = "CovertOps"
+
+[[action]]
+id = 55
+name = "Research_PersonnelCloaking"
+group = "research"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Research"
+tech = 10
+producer = "CovertOps"
+
+[[action]]
+id = 56
+name = "Upgrade_InfantryWeapons"
+group = "upgrade"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Upgrade"
+upgrade = 7
+producer = "EngineeringBay"
+
+[[action]]
+id = 57
+name = "Upgrade_InfantryArmor"
+group = "upgrade"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Upgrade"
+upgrade = 0
+producer = "EngineeringBay"
+
+[[action]]
+id = 58
+name = "Upgrade_VehicleWeapons"
+group = "upgrade"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Upgrade"
+upgrade = 8
+producer = "Armory"
+
+[[action]]
+id = 59
+name = "Upgrade_VehiclePlating"
+group = "upgrade"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Upgrade"
+upgrade = 1
+producer = "Armory"
+
+[[action]]
+id = 60
+name = "Upgrade_ShipWeapons"
+group = "upgrade"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Upgrade"
+upgrade = 9
+producer = "Armory"
+
+[[action]]
+id = 61
+name = "Upgrade_ShipPlating"
+group = "upgrade"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Upgrade"
+upgrade = 2
+producer = "Armory"
+
+[[action]]
+id = 62
+name = "Upgrade_U238Shells"
+group = "upgrade"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Upgrade"
+upgrade = 16
+producer = "Academy"
+
+[[action]]
+id = 63
+name = "Upgrade_IonThrusters"
+group = "upgrade"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Upgrade"
+upgrade = 17
+producer = "MachineShop"
+
+[[action]]
+id = 64
+name = "Upgrade_CharonBoosters"
+group = "upgrade"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Upgrade"
+upgrade = 54
+producer = "MachineShop"
+
+[[action]]
+id = 65
+name = "Upgrade_OcularImplants"
+group = "upgrade"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Upgrade"
+upgrade = 20
+producer = "CovertOps"
+
+[[action]]
+id = 66
+name = "Upgrade_MoebiusReactor"
+group = "upgrade"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Upgrade"
+upgrade = 21
+producer = "CovertOps"
+
+[[action]]
+id = 67
+name = "Upgrade_ApolloReactor"
+group = "upgrade"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Upgrade"
+upgrade = 22
+producer = "ControlTower"
+
+[[action]]
+id = 68
+name = "Upgrade_ColossusReactor"
+group = "upgrade"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Upgrade"
+upgrade = 23
+producer = "PhysicsLab"
+
+[[action]]
+id = 69
+name = "Upgrade_CaduceusReactor"
+group = "upgrade"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Upgrade"
+upgrade = 51
+producer = "Academy"
+
+[[action]]
+id = 70
+name = "Upgrade_TitanReactor"
+group = "upgrade"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "pick_building"
+command = "Upgrade"
+upgrade = 19
+producer = "ScienceFacility"
+
+[[action]]
+id = 71
+name = "Stim"
+group = "skill"
+uses_select = true
+max_select = 12
+select_cap = "can_stim"
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "UnitUseTech"
+tech = 0
+
+[[action]]
+id = 72
+name = "SiegeMode"
+group = "skill"
+uses_select = true
+max_select = 12
+select_cap = "can_siege"
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "UnitSiege"
+
+[[action]]
+id = 73
+name = "TankMode"
+group = "skill"
+uses_select = true
+max_select = 12
+select_cap = "can_unsiege"
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "UnitUnsiege"
+
+[[action]]
+id = 74
+name = "Cloak"
+group = "skill"
+uses_select = true
+max_select = 12
+select_cap = "can_cloak"
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "UnitCloak"
+
+[[action]]
+id = 75
+name = "Decloak"
+group = "skill"
+uses_select = true
+max_select = 12
+select_cap = "can_decloak"
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "UnitDecloak"
+
+[[action]]
+id = 76
+name = "SpiderMine_Pos"
+group = "skill"
+uses_select = true
+max_select = 1
+select_cap = "can_lay_mine"
+uses_queued = false
+target = "loc"
+target_cap = ""
+loc_class = "walkable"
+executor = "none"
+command = "UnitUseTech"
+tech = 3
+
+[[action]]
+id = 77
+name = "Lockdown_Unit"
+group = "skill"
+uses_select = true
+max_select = 1
+select_cap = "can_cast_lockdown"
+uses_queued = false
+target = "unit"
+target_cap = "lockdownable"
+loc_class = ""
+executor = "none"
+command = "UnitUseTech"
+tech = 1
+
+[[action]]
+id = 78
+name = "Nuke_Pos"
+group = "skill"
+uses_select = true
+max_select = 1
+select_cap = "can_cast_nuke"
+uses_queued = false
+target = "loc"
+target_cap = ""
+loc_class = "any"
+executor = "none"
+command = "UnitUseTech"
+tech = 45
+
+[[action]]
+id = 79
+name = "Restoration_Unit"
+group = "skill"
+uses_select = true
+max_select = 1
+select_cap = "can_cast_restoration"
+uses_queued = false
+target = "unit"
+target_cap = "restorable"
+loc_class = ""
+executor = "none"
+command = "UnitUseTech"
+tech = 24
+
+[[action]]
+id = 80
+name = "OpticalFlare_Unit"
+group = "skill"
+uses_select = true
+max_select = 1
+select_cap = "can_cast_flare"
+uses_queued = false
+target = "unit"
+target_cap = "flarable"
+loc_class = ""
+executor = "none"
+command = "UnitUseTech"
+tech = 30
+
+[[action]]
+id = 81
+name = "DefensiveMatrix_Unit"
+group = "skill"
+uses_select = true
+max_select = 1
+select_cap = "can_cast_matrix"
+uses_queued = false
+target = "unit"
+target_cap = "matrixable"
+loc_class = ""
+executor = "none"
+command = "UnitUseTech"
+tech = 6
+
+[[action]]
+id = 82
+name = "EMP_Pos"
+group = "skill"
+uses_select = true
+max_select = 1
+select_cap = "can_cast_emp"
+uses_queued = false
+target = "loc"
+target_cap = ""
+loc_class = "any"
+executor = "none"
+command = "UnitUseTech"
+tech = 2
+
+[[action]]
+id = 83
+name = "Irradiate_Unit"
+group = "skill"
+uses_select = true
+max_select = 1
+select_cap = "can_cast_irradiate"
+uses_queued = false
+target = "unit"
+target_cap = "irradiatable"
+loc_class = ""
+executor = "none"
+command = "UnitUseTech"
+tech = 7
+
+[[action]]
+id = 84
+name = "Yamato_Unit"
+group = "skill"
+uses_select = true
+max_select = 1
+select_cap = "can_cast_yamato"
+uses_queued = false
+target = "unit"
+target_cap = "yamato_target"
+loc_class = ""
+executor = "none"
+command = "UnitUseTech"
+tech = 8
+
+[[action]]
+id = 85
+name = "Heal_Unit"
+group = "skill"
+uses_select = true
+max_select = 12
+select_cap = "can_heal"
+uses_queued = false
+target = "unit"
+target_cap = "healable"
+loc_class = ""
+executor = "none"
+command = "UnitUseTech"
+tech = 34
+
+[[action]]
+id = 86
+name = "ScannerSweep_Pos"
+group = "scan"
+uses_select = false
+max_select = 0
+select_cap = ""
+uses_queued = false
+target = "loc"
+target_cap = ""
+loc_class = "any"
+executor = "pick_building"
+command = "UnitUseTech"
+tech = 4
+producer = "ComsatStation"
+
+[[action]]
+id = 87
+name = "Load_Unit"
+group = "transport"
+uses_select = true
+max_select = 12
+select_cap = "can_be_loaded"
+uses_queued = true
+target = "unit"
+target_cap = "loadable_transport"
+loc_class = ""
+executor = "none"
+command = "UnitLoad"
+
+[[action]]
+id = 88
+name = "UnloadAll"
+group = "transport"
+uses_select = true
+max_select = 12
+select_cap = "is_transport_loaded"
+uses_queued = true
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "UnitUnloadAll"
+
+[[action]]
+id = 89
+name = "UnloadAll_Pos"
+group = "transport"
+uses_select = true
+max_select = 12
+select_cap = "is_transport_loaded"
+uses_queued = true
+target = "loc"
+target_cap = ""
+loc_class = "walkable"
+executor = "none"
+command = "UnitUnloadAll"
+
+[[action]]
+id = 90
+name = "Lift"
+group = "building"
+uses_select = true
+max_select = 1
+select_cap = "can_lift"
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "UnitLift"
+
+[[action]]
+id = 91
+name = "Land_Pos"
+group = "building"
+uses_select = true
+max_select = 1
+select_cap = "can_land_noncc"
+uses_queued = false
+target = "loc"
+target_cap = ""
+loc_class = "landable_4x3"
+executor = "none"
+command = "UnitLand"
+
+[[action]]
+id = 92
+name = "Land_CommandCenter_Pos"
+group = "building"
+uses_select = true
+max_select = 1
+select_cap = "can_land_cc"
+uses_queued = false
+target = "loc"
+target_cap = ""
+loc_class = "cc_slot"
+executor = "none"
+command = "UnitLand"
+
+[[action]]
+id = 93
+name = "SetRally_Pos"
+group = "building"
+uses_select = true
+max_select = 12
+select_cap = "can_rally"
+uses_queued = false
+target = "loc"
+target_cap = ""
+loc_class = "any"
+executor = "none"
+command = "SetRally"
+
+[[action]]
+id = 94
+name = "SetRally_Unit"
+group = "building"
+uses_select = true
+max_select = 12
+select_cap = "can_rally"
+uses_queued = false
+target = "unit"
+target_cap = "any_unit"
+loc_class = ""
+executor = "none"
+command = "SetRally"
+
+[[action]]
+id = 95
+name = "Cancel_Construction"
+group = "cancel"
+uses_select = true
+max_select = 1
+select_cap = "can_cancel_construction"
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "Cancel"
+cancel = "Construction"
+
+[[action]]
+id = 96
+name = "Cancel_Train"
+group = "cancel"
+uses_select = true
+max_select = 1
+select_cap = "can_cancel_train"
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "Cancel"
+cancel = "Train"
+
+[[action]]
+id = 97
+name = "Cancel_Research"
+group = "cancel"
+uses_select = true
+max_select = 1
+select_cap = "can_cancel_research"
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "Cancel"
+cancel = "Research"
+
+[[action]]
+id = 98
+name = "Cancel_Upgrade"
+group = "cancel"
+uses_select = true
+max_select = 1
+select_cap = "can_cancel_upgrade"
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "Cancel"
+cancel = "Upgrade"
+
+[[action]]
+id = 99
+name = "Cancel_Addon"
+group = "cancel"
+uses_select = true
+max_select = 1
+select_cap = "can_cancel_addon"
+uses_queued = false
+target = "none"
+target_cap = ""
+loc_class = ""
+executor = "none"
+command = "Cancel"
+cancel = "Addon"
