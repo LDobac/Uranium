@@ -23,7 +23,7 @@ const W: u16 = 32;
 fn unit(id: u32, owner: u8, name: &str, tile: (i32, i32)) -> UnitState {
     let t = TypeTables::get().unit_by_name(name).unwrap();
     let pos = if t.is_building() || t.is_resource() {
-        ((tile.0 * 32 + t.dimensions[0]) as u16, (tile.1 * 32 + t.dimensions[1]) as u16)
+        ((tile.0 * 32 + t.tile_width * 16) as u16, (tile.1 * 32 + t.tile_height * 16) as u16)
     } else {
         ((tile.0 * 32 + 16) as u16, (tile.1 * 32 + 16) as u16)
     };

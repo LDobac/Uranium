@@ -145,6 +145,14 @@ impl Labeler {
         let mut raws: Vec<Raw> = Vec::new();
         for c in cmds {
             let d = &c.data;
+            // 040-R3: like the game, selections and hotkey groups drop units that died or were
+            // loaded (absent from the labeled player's units at this frame); otherwise dead units
+            // fill the 12 slots and later additions are lost.
+            let u = units(c.frame);
+            selection.retain(|t| u.own_type(*t).is_some());
+            for g in groups.values_mut() {
+                g.retain(|t| u.own_type(*t).is_some());
+            }
             let mut push = |action: Option<u16>, queued: bool, sel: bool, target_unit: Option<u32>, target_tile: Option<(u16, u16)>, cov: &mut Coverage| {
                 cov.commands += 1;
                 let Some(action) = action else {
@@ -194,7 +202,6 @@ impl Labeler {
                 },
                 op::RIGHT_CLICK => {
                     let (x, y, tag, q) = (u16_at(d, 0), u16_at(d, 2), valid_tag(u16_at(d, 4)), d[8] != 0);
-                    let u = units(c.frame);
                     // 040-R11: right click with buildings selected sets the rally point.
                     let buildings = !selection.is_empty() && selection.iter().all(|t| u.own_type(*t).is_some_and(uranium_scripted::types::is_building));
                     let name = match (buildings, tag) {
@@ -341,5 +348,33 @@ mod tests {
         assert!(labels.iter().find(|l| lab.table.actions[l.action as usize].name == "Train_Marine").unwrap().selected.is_empty());
         assert_eq!((cov.commands, cov.labeled, cov.unknown, cov.merged_spam), (6, 5, 1, 1));
         assert_eq!(cov.unknown_ops, vec![(op::UNLOAD, 1)]);
+    }
+
+    #[test]
+    fn dead_units_leave_selection_and_groups_040_r3() {
+        let lab = Labeler::new().unwrap();
+        // Twelve marines (tags 1..=12); tag 2 dies before frame 50, tag 13 is trained later.
+        let alive: HashMap<u32, u16> = (1..=12).map(|t| (t, 0u16)).collect();
+        let mut later = alive.clone();
+        later.remove(&2);
+        later.insert(13, 0);
+        let mut sel12 = vec![12u8];
+        for t in 1..=12u8 {
+            sel12.extend([t, 0]);
+        }
+        let attack = vec![64, 0, 96, 0, 0, 0, 0xe4, 0, 14, 0];
+        let cmds = vec![
+            cmd(10, op::SELECT, sel12),
+            cmd(10, op::HOTKEY, vec![0, 1]),          // assign group 1 (full)
+            cmd(50, op::HOTKEY, vec![1, 1]),          // recall: tag 2 is gone
+            cmd(51, op::TARGETED_ORDER, attack.clone()),
+            cmd(60, op::SELECT_ADD, vec![1, 13, 0]),  // the freed slot takes the new marine
+            cmd(61, op::TARGETED_ORDER, attack),
+        ];
+        let (labels, _) = lab.label(&cmds, 100, |f| if f < 50 { &alive } else { &later });
+        let attacks: Vec<&Label> = labels.iter().filter(|l| lab.table.actions[l.action as usize].name == "Attack_Pos").collect();
+        let expect: Vec<u32> = (1..=12).filter(|&t| t != 2).collect();
+        assert_eq!(attacks[0].selected, expect);
+        assert_eq!(attacks[1].selected, expect.iter().copied().chain([13]).collect::<Vec<_>>());
     }
 }

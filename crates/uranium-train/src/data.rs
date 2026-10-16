@@ -125,8 +125,14 @@ fn bucket_index(delay: u32) -> usize {
 }
 
 /// Replay label (unit ids, tile) -> entity indices of this observation, checked against the masks
-/// (031-R4). `None` when the label cannot be expressed or violates a mask.
+/// (031-R4). `false` when the label cannot be expressed or violates a mask.
 pub fn host_label(l: &Label, o: &Observation) -> (HostLabel, bool) {
+    let (h, why) = host_label_check(l, o);
+    (h, why.is_none())
+}
+
+/// `host_label` with the first failing check (label diagnostics, 034-AC3).
+pub fn host_label_check(l: &Label, o: &Observation) -> (HostLabel, Option<&'static str>) {
     let index: HashMap<u32, usize> = o.entity_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
     let mut selected: Vec<usize> = l.selected.iter().filter_map(|id| index.get(id).copied()).collect();
     selected.sort_unstable();
@@ -134,25 +140,49 @@ pub fn host_label(l: &Label, o: &Observation) -> (HostLabel, bool) {
     let target_unit = l.target_unit.and_then(|id| index.get(&id).copied());
     let target_loc = l.target_tile.map(|(x, y)| y as usize * MAP + x as usize);
     let h = HostLabel { action: l.action, delay_bucket: bucket_index(l.delay), queued: l.queued, selected, target_unit, target_loc };
-    let Some(a) = action_table().actions.get(l.action as usize) else { return (h, false) };
+    let Some(a) = action_table().actions.get(l.action as usize) else { return (h, Some("unknown_action")) };
     let k = CAPABILITIES.len();
     let cap = |i: usize, name: &str| o.masks.unit_cap[i * k + CAPABILITIES.iter().position(|c| *c == name).unwrap()];
-    let mut ok = o.masks.type_mask[a.id as usize];
-    if a.uses_select {
-        ok &= !h.selected.is_empty()
-            && h.selected.len() == l.selected.len()
-            && h.selected.len() <= a.max_select as usize
-            && h.selected.iter().all(|&i| cap(i, &a.select_cap));
-    }
-    match a.target {
-        TargetKind::Unit => ok &= h.target_unit.is_some_and(|i| cap(i, &a.target_cap)),
-        TargetKind::Loc => {
-            let lc = LOC_CLASSES.iter().position(|c| *c == a.loc_class).unwrap();
-            ok &= h.target_loc.is_some_and(|t| t < CELLS && o.masks.loc_class_mask[lc * CELLS + t]);
+    let why = if !o.masks.type_mask[a.id as usize] {
+        Some("type_mask")
+    } else if a.uses_select && h.selected.is_empty() {
+        Some("select_empty")
+    } else if a.uses_select && h.selected.len() != l.selected.len() {
+        Some("select_not_visible")
+    } else if a.uses_select && h.selected.len() > a.max_select as usize {
+        Some("select_too_many")
+    } else if a.uses_select && !h.selected.iter().all(|&i| cap(i, &a.select_cap)) {
+        Some("select_cap")
+    } else {
+        match a.target {
+            TargetKind::Unit if h.target_unit.is_none() => Some("target_unit_missing"),
+            TargetKind::Unit if !h.target_unit.is_some_and(|i| cap(i, &a.target_cap)) => Some("target_unit_cap"),
+            TargetKind::Loc => {
+                let lc = LOC_CLASSES.iter().position(|c| *c == a.loc_class).unwrap();
+                (!h.target_loc.is_some_and(|t| t < CELLS && o.masks.loc_class_mask[lc * CELLS + t])).then_some("target_loc")
+            }
+            _ => None,
         }
-        TargetKind::None => {}
+    };
+    (h, why)
+}
+
+/// Labels of one game that fail `host_label_check`, counted per (action, reason), and labels per
+/// action (034-AC3 diagnostics).
+pub fn label_check(game: &ShardGame, fails: &mut std::collections::BTreeMap<(String, &'static str), usize>, totals: &mut std::collections::BTreeMap<String, usize>) -> Result<()> {
+    let map = MapInfo::new(&game.game_info, family_index(&game.meta.map_family), map_precompute(&game.meta.map_hash).as_ref())?;
+    let mut mem = AgentMemory::new(&game.game_info);
+    for s in &game.steps {
+        let o = extract(&s.raw_frame, &mut mem, &map, None);
+        let (label, why) = host_label_check(&s.action_label, &o);
+        mem.record_action(label.action, label.delay_bucket, &s.action_label.selected);
+        let name = action_table().actions.get(label.action as usize).map_or_else(|| format!("#{}", label.action), |a| a.name.clone());
+        *totals.entry(name.clone()).or_default() += 1;
+        if let Some(w) = why {
+            *fails.entry((name, w)).or_default() += 1;
+        }
     }
-    (h, ok)
+    Ok(())
 }
 
 /// Tiny deterministic RNG for data choices (z drop, symmetry).

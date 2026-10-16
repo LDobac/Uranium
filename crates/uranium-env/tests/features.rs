@@ -267,6 +267,20 @@ fn pick_building_shortest_queue_031_r1() {
     assert!(w.addon_of.get(&building).is_some());
 }
 
+/// 034-R3: footprint tiles from BWAPI centre positions (STARDATA game: Factory at (544, 3856) with
+/// its Machine Shop at (640, 3872)); the shop's asymmetric pixel dimensions must not shift it.
+#[test]
+fn addon_footprint_matches_bwapi_positions_034_r3() {
+    let tables = uranium_env::types::TypeTables::get();
+    let at = |name: &str, pos: (u16, u16)| {
+        let t = tables.unit_by_name(name).unwrap();
+        uranium_env::features::world::top_left(&uranium_proto::UnitState { unit_type: t.id as u16, pos, ..Default::default() }, t)
+    };
+    let (fx, fy) = at("Terran_Factory", (544, 3856));
+    assert_eq!((fx, fy), (15, 119));
+    assert_eq!(at("Terran_Machine_Shop", (640, 3872)), (fx + 4, fy + 1));
+}
+
 /// 031-R2 / 031-AC4: the nearest non-carrying SCV builds at exactly the chosen tile.
 #[test]
 fn build_uses_nearest_free_scv_and_exact_tile_031_ac4() {

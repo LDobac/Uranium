@@ -151,9 +151,11 @@ pub fn tile_of(u: &UnitState) -> (i32, i32) {
     (u.pos.0 as i32 / 32, u.pos.1 as i32 / 32)
 }
 
-/// Top-left tile of a building footprint from its centre position.
+/// Top-left tile of a building footprint from its centre position. BWAPI places a building at
+/// `tile * 32 + tile_size * 16`; the pixel `dimensions` are asymmetric for some types (Machine
+/// Shop: 39 left, 31 right) and would land one tile off.
 pub fn top_left(u: &UnitState, t: &UnitType) -> (i32, i32) {
-    ((u.pos.0 as i32 - t.dimensions[0]) / 32, (u.pos.1 as i32 - t.dimensions[1]) / 32)
+    ((u.pos.0 as i32 - t.tile_width * 16).div_euclid(32), (u.pos.1 as i32 - t.tile_height * 16).div_euclid(32))
 }
 
 impl<'a> World<'a> {

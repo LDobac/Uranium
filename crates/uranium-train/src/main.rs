@@ -46,6 +46,14 @@ enum Cmd {
         #[arg(long)]
         steps: Option<usize>,
     },
+    /// 034-AC3 diagnostics: labels that fail the masks, by action and reason (JSON).
+    LabelCheck {
+        #[arg(long)]
+        shards: PathBuf,
+        /// Stop after this many games.
+        #[arg(long)]
+        games: Option<usize>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -94,6 +102,23 @@ fn run<C: uranium_model::CoreInit>(kind: CoreKind, shards: PathBuf, out: PathBuf
 fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     match Cli::parse().cmd {
+        Cmd::LabelCheck { shards, games } => {
+            let mut src = ShardSource::new(&shards)?;
+            let (mut fails, mut totals, mut n) = (Default::default(), std::collections::BTreeMap::new(), 0usize);
+            while let Some(g) = uranium_train::data::StepSource::next_game(&mut src)? {
+                uranium_train::data::label_check(&g, &mut fails, &mut totals)?;
+                n += 1;
+                if games.is_some_and(|m| n >= m) {
+                    break;
+                }
+            }
+            let invalid: usize = fails.values().sum();
+            let mut rows: Vec<_> = fails.iter().map(|((a, w), c)| (a.clone(), *w, *c, totals[a])).collect();
+            rows.sort_by(|x, y| y.2.cmp(&x.2));
+            let labels: usize = totals.values().sum();
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "games": n, "labels": labels, "invalid": invalid, "by_action_reason": rows }))?);
+            Ok(())
+        }
         Cmd::Bc { shards, out, config, backend, core, s2, steps } => {
             let cfg = BcConfig::load(&config)?;
             let dev = device(backend)?;
