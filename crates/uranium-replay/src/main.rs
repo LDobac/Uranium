@@ -86,6 +86,11 @@ enum Cmd {
         /// Storage budget in GB for this run (060-R7 total is 600).
         #[arg(long, default_value_t = 600)]
         budget_gb: u64,
+        /// This host's part when several hosts split one source (`index % parts == part`).
+        #[arg(long, default_value_t = 0)]
+        part: usize,
+        #[arg(long, default_value_t = 1)]
+        parts: usize,
         /// File of SHA-256 hashes (one per line, first column) to skip as duplicates.
         #[arg(long)]
         skip_hashes: Option<PathBuf>,
@@ -181,7 +186,8 @@ fn main() -> Result<()> {
             }
         }
         Cmd::CheckScrep { dir, screp, limit } => check_screp(&dir, &screp, limit)?,
-        Cmd::Build { dir, src, out, records, jobs, limit, budget_gb, skip_hashes } => {
+        Cmd::Build { dir, src, out, records, jobs, limit, budget_gb, skip_hashes, part, parts } => {
+            anyhow::ensure!(parts >= 1 && part < parts, "--part must be below --parts");
             let skip_sha256 = match skip_hashes {
                 Some(p) => std::fs::read_to_string(&p)?.lines().filter_map(|l| l.split_whitespace().next().map(str::to_string)).collect(),
                 None => Default::default(),
@@ -194,16 +200,28 @@ fn main() -> Result<()> {
             reps(&dir, &mut files)?;
             files.sort();
             files.truncate(limit.unwrap_or(usize::MAX));
+            // Several hosts split one source by sorted-file position (each writes its own shards
+            // folder and records file).
+            let files: Vec<PathBuf> = files.into_iter().enumerate().filter(|(i, _)| i % parts == part).map(|(_, f)| f).collect();
             let cfg = uranium_replay::play::PlayConfig::from_env(uranium_replay::play::work_dir_default())?;
             uranium_replay::play::ensure_file(&cfg.launcher)?;
+            std::fs::create_dir_all(&shards_dir)?;
             let first = std::fs::read_dir(&shards_dir).map(|d| d.filter(|e| e.as_ref().is_ok_and(|e| e.file_name().to_string_lossy().starts_with("shard_"))).count() as u32).unwrap_or(0);
-            // Resume: replays already in the records file are not processed again.
-            let done_sha256: std::collections::HashSet<String> = std::fs::read_to_string(&records)
-                .unwrap_or_default()
-                .lines()
-                .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-                .filter_map(|v| v["replay_sha256"].as_str().map(str::to_string))
-                .collect();
+            // Resume: replays in any records file of this source (same folder, name starting with
+            // the source tag) were handled by an earlier run or another host.
+            let rec_dir = records.parent().map(PathBuf::from).unwrap_or_default();
+            let mut done_sha256 = std::collections::HashSet::new();
+            for e in std::fs::read_dir(if rec_dir.as_os_str().is_empty() { Path::new(".") } else { &rec_dir })?.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if !(name.starts_with(&src) && name.ends_with(".jsonl")) {
+                    continue;
+                }
+                for l in std::fs::read_to_string(e.path()).unwrap_or_default().lines() {
+                    if let Some(s) = serde_json::from_str::<serde_json::Value>(l).ok().and_then(|v| v["replay_sha256"].as_str().map(str::to_string)) {
+                        done_sha256.insert(s);
+                    }
+                }
+            }
             let opt = uranium_replay::pipeline::BuildOptions { src, shards_dir, jobs, shard_target_bytes: 512 << 20, budget_bytes: budget_gb << 30, first_shard_index: first, skip_sha256, done_sha256 };
             let out_file = std::sync::Mutex::new(std::fs::OpenOptions::new().create(true).append(true).open(&records)?);
             let counts = std::sync::Mutex::new(std::collections::BTreeMap::<String, usize>::new());
