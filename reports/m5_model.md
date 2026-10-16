@@ -15,7 +15,7 @@ M4(리플레이 데이터셋)와 병행해 M5 중 대량 데이터가 필요 없
 | executor (031) | `features::executor` | pick_building·pick_worker 결정론, 마스크 위반 거부 |
 | 맵 사전계산 (031, AMB-031-3) | `features::mapgen` | 모든 맵: base 위치·choke·wall 힌트. `uranium-replay build`가 맵마다 `assets/maps/<map_hash>.toml` 생성 |
 | 보상 (033) | `uranium-env::reward`, `config/reward.toml` | 항목별 분리, z 조건, 관측된 파괴만 |
-| shard (AMB-040-6) | `uranium-replay::shard` | schema 2: 게임마다 `GameInfo` 저장. **schema 1 shard는 재빌드 필요** |
+| shard (AMB-040-6) | `uranium-replay::shard` | schema 2: 게임마다 `GameInfo` 저장. schema 1 shard는 2026-10-17 삭제, 전체 build 대기 |
 | BC 골격 (041) | `crates/uranium-train`, `config/bc.toml` | `StepSource`(shard/스트리밍 공통), 레이블 변환·검증, z 25% drop, 레인별 Core 상태, 손실·AdamW·warmup+cosine·clip, CLI `uranium-train bc` |
 
 ## Acceptance Criteria 상태
@@ -29,7 +29,7 @@ M4(리플레이 데이터셋)와 병행해 M5 중 대량 데이터가 필요 없
 | 030-AC5 (privileged 필드 없음) | 통과 (컴파일 타임 전수 패턴) | |
 | 031-AC1/AC4 (OpenBW 시나리오) | 일부: AC4의 타일 일치는 단위 테스트로 확인, OpenBW 실행 시나리오는 미실행 | |
 | 031-AC2 (마스크된 액션 미실행) | 통과 (proptest 400건) | |
-| 031-AC3 / 034-AC3 (역변환 커버리지) | M4 측정 항목 | |
+| 031-AC3 / 034-AC3 (역변환 커버리지) | 통과 98.91% (STARDATA 표본 103게임) | `reports/m4_stardata_preflight.md` |
 | 032-AC1 (Vulkan ≤ 1e-4, CUDA ≤ 1e-2) | 통과: Vulkan ≤ 1e-6, CUDA 기본 크기 최대 3.9e-3 | `tests/cross_device.rs`, AMB-032-5 Resolved |
 | 032-AC2 (CUDA PC: Vulkan보다 빠름) | 통과: CUDA f32 p95 61ms < Vulkan 70~170ms | BC250 기준은 실측 후 재확인 |
 | 032-AC3 (CUDA PC: Vulkan보다 빠름) | 통과: CUDA f32 66~70 samples/s, Vulkan 약 29 | |
@@ -100,7 +100,9 @@ M4(리플레이 데이터셋)와 병행해 M5 중 대량 데이터가 필요 없
 - 031-AC1/AC4 OpenBW 시나리오 테스트.
 - 실전·RL 게임에서 맵 사전계산 조회 키: shard는 CHK 해시, `GameInfo.map_hash`는 맵 파일 해시라 다르다. 라이브 게임에 자원 배치를 어떻게 줄지 M6 전에 정해야 한다.
 - crate 의존: `uranium-env`(바이너리)가 `uranium-agent`에 의존한다. 에이전트가 모델·feature를 쓰게 되면(M6) 패키지 순환이 생기므로 스케줄러 바이너리 분리 등 구조 변경이 필요하다.
-- 기존 schema 1 shard 재빌드(AMB-040-6).
+- BC GPU 메모리: 실제 게임은 엔티티가 상한 512에 자주 닿아 엔티티 attention(N²)이 커진다. 기본 레인 32 × T64는 16GB에서 OOM, 레인 8도 OOM, 레인 2만 동작(2026-10-17 표본). 032-AC3 측정은 N=256 기준이었다. f16·배치·체크포인팅 조정 필요.
+- 혼합 선택 레이블 판정(`select_cap`, 남은 무효의 약 절반): 일부 유닛만 자격이 있는 선택(메딕 섞인 스팀 등)을 지금은 전체 무효로 본다. 자격 있는 유닛만 남길지 결정 필요(학습 시점 정책, shard 무관).
+- 완료(2026-10-17): BC 데이터 로더를 BPTT 청크 단위 스트리밍으로 변경(게임 전체 feature가 게임당 약 4GB), 애드온 발자국 계산 수정, schema 1 shard 삭제.
 
 ## 재현 명령
 
