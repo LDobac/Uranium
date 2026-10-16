@@ -1,6 +1,6 @@
 # 040 — Replay Dataset
 
-- **Status**: Approved (2026-10-15, 2026-10-16 개정: R13 저장 위치, R14 src 태그, R15 맵 패밀리, M4 수집 대상, 자체 생성 봇 대전 출처. AMB-040-5 디싱크 판정 확정. 2026-10-16 개정 검토 중: R14 `scr_ladder`, 데이터 정책 043 예외)
+- **Status**: Approved (2026-10-15, 2026-10-16 개정: R13 저장 위치, R14 src 태그, R15 맵 패밀리, M4 수집 대상, 자체 생성 봇 대전 출처. AMB-040-5 디싱크 판정 확정. 2026-10-16 개정: R14 `scr_ladder`, 데이터 정책 043 예외)
 - **Related**: [030](030-observation.md), [031](031-action-space.md), [041](041-imitation-learning.md), [013](013-version-mapping.md)
 
 ## Purpose

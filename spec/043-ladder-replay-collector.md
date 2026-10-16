@@ -1,6 +1,6 @@
 # 043 — Ladder Replay Collector
 
-- **Status**: Review (2026-10-16 작성, AMB-043-1~6 확정)
+- **Status**: Review (2026-10-16 Approved 후 043-AC1 실측으로 AMB-043-7·8 발생 → 재검토. 1단계 `probe`·`shape`는 구현 완료)
 - **Related**: [040](040-replay-dataset.md), [061](061-shared-storage.md), [001](001-system-architecture.md), [013](013-version-mapping.md)
 
 ## Purpose
@@ -9,17 +9,19 @@ SC:R 래더(매치메이킹) 경기 리플레이를 자동으로 모아 040 파�
 
 ## 배경: SC:R 로컬 웹 API (비공식)
 - 배틀넷에 로그인한 SC:R 클라이언트는 `127.0.0.1`의 임의 포트에 HTTP 서버를 연다. 공식 문서는 없고, 커뮤니티가 리버스 엔지니어링으로 정리했다(bw-web-api, bw-web-api-rs, MIT).
-- 이 spec에서 쓰는 엔드포인트:
+- 엔드포인트(2026-10-16 실측, `reports/m4_ladder_probe.md`). 접두사는 `/web-api`다:
 
   | 용도 | 경로 |
   |---|---|
-  | 리더보드 목록 | `/v1/leaderboard` |
-  | 리더보드 순위 | `/v1/leaderboard/{ladder}?offset=&length=` |
-  | 플레이어 래더 전적 | `/v1/matchmaker-gameinfo-by-toon/{toon}/{gateway}/{ladder}/{season}` |
-  | 경기 정보 + 리플레이 링크 | `/v1/matchmaker-gameinfo-playerinfo/{match_id}` |
-  | 프로필 | `/v2/aurora-profile-by-toon/{toon}/{gateway}?request_flags=scr_profile` |
+  | 리더보드 목록 | `/web-api/v1/leaderboard` |
+  | 리더보드 순위 | `/web-api/v1/leaderboard/{leaderboard_id}?offset=&length=` (표 형식 `columns`+`rows`) |
+  | 프로필 (최근 리플레이 목록) | `/web-api/v2/aurora-profile-by-toon/{toon}/{gateway}?request_flags=scr_profile` → `replays[]` 최근 25개, `link`가 `MM-<UUID>`면 래더 |
+  | 경기 정보 + 리플레이 링크 | `/web-api/v1/matchmaker-gameinfo-playerinfo/{link}` → `replays[]`(양측 각 1개) `md5`, `url` |
+  | 플레이어 래더 전적 | `/web-api/v1/matchmaker-gameinfo-by-toon/{toon}/{gateway}/{gamemode}/{season}` (실측한 경기들은 playerinfo `replays`가 비어 있었다. 수집 경로로 쓰지 않는다) |
 
-- 경로는 bw-web-api README 표기를 따랐다. 실제 경로 앞에 접두사(예: `/web-api`)가 붙을 수 있다. 경로 접두사, 포트, 응답 스키마, 리플레이 링크 호스트, 필요한 헤더는 클라이언트 버전마다 달라질 수 있다. 정확한 값은 스파이크(043-AC1)로 실측한다: TBD(M4).
+- 수집 경로: 리더보드 → 대상 플레이어 프로필의 `replays[]`(래더, `replay_humans == 2`) → playerinfo → `url`(`https://storage.googleapis.com`, 인증 없음). md5를 API 값과 대조한다.
+- GCS 리플레이 파일은 약 30일(커뮤니티 보고 17~46일) 뒤 사라진다. 프로필 목록도 최근 25개뿐이다. 그래서 수집기는 주기적으로 돌아야 한다.
+- 응답 스키마는 클라이언트 버전마다 바뀔 수 있다(043-R9·R10).
 
 ## Scope & Non-goals
 - Scope:
@@ -41,7 +43,7 @@ SC:R 래더(매치메이킹) 경기 리플레이를 자동으로 모아 040 파�
 | 043-R2 | **MUST** 클라이언트가 이미 연 로컬 HTTP API만 호출한다. 클라이언트 프로세스 메모리 접근, 인증 토큰 추출, 배틀넷 서버 직접 호출은 하지 않는다. 리플레이 파일은 API가 준 링크로만 받는다 |
 | 043-R3 | **MUST** 포트는 `URANIUM_SCR_API_PORT`가 있으면 그 값을 쓰고, 없으면 `StarCraft` 프로세스의 LISTEN 포트에서 탐지한다. 후보가 여러 개면 리더보드 목록 응답이 유효한 포트를 고른다 |
 | 043-R4 | **MUST** 속도·양 한도(확정 2026-10-16, AMB-043-4): 로컬 API 호출과 리플레이 다운로드를 합쳐 **0.5 req/s 이하**(`URANIUM_LADDER_RPS`, 기본 0.5). 리플레이 다운로드는 **하루(로컬 시각 기준) 1,000개 이하**(`URANIUM_LADDER_DAILY_MAX`, 기본 1000). 한도에 닿으면 그날 수집을 마치고 종료한다(재실행 시 043-R6으로 이어감). 총량 상한은 두지 않고 디스크 예산(060-R7)만 지킨다 |
-| 043-R5 | **MUST** 수집 대상은 계획 파일(`config/ladder/<plan>.toml`)로 지정한다. 기본값(확정 2026-10-16, AMB-043-3): ① 게이트웨이 **아시아(한국)만** ② 추적 대상 플레이어는 리더보드에서 **랭크 문자 A 이상**(S·A) ③ 매치업 **전체**(테란이 없는 경기도 받는다. S1·평가 분석용, 040 필터가 거른다) ④ 맵 **래더 맵 전체** ⑤ 시즌 **API가 주는 과거 시즌 포함**. 상대 플레이어의 랭크는 제한하지 않는다 |
+| 043-R5 | **MUST** 수집 대상은 계획 파일(`config/ladder/<plan>.toml`)로 지정한다. 기본값(확정 2026-10-16, AMB-043-3): ① 게이트웨이 **아시아(한국)만** — Korea(30)·Asia(45) 중 어느 쪽인지 [SPEC AMBIGUOUS] AMB-043-7 ② 추적 대상 플레이어는 리더보드에서 **랭크 문자 A 이상**(S·A). API에는 문자가 없고 `bucket` 숫자만 있어 문자↔bucket 대응은 TBD(M4) ③ 매치업 **전체**(테란이 없는 경기도 받는다. S1·평가 분석용, 040 필터가 거른다) ④ 맵 **래더 맵 전체** ⑤ 시즌 **API가 주는 과거 시즌 포함** — 실측상 불가능, [SPEC AMBIGUOUS] AMB-043-8. 상대 플레이어의 랭크는 제한하지 않는다 |
 | 043-R6 | **MUST** 중복 제거와 재개: 경기 ID 단위로 기록한다. 이미 받은 경기, 이미 실패로 기록된 경기, `raw/` 전체 SHA-256과 같은 파일은 다시 받지 않는다. 중단 후 재실행하면 이어서 진행한다 |
 | 043-R7 | **MUST** 저장: 리플레이는 `<URANIUM_SHARED_DIR>/datasets/replays/raw/<src>/`(040-R13)에 둔다. 파일명은 경기 ID의 해시로 정하고 플레이어 이름은 쓰지 않는다. `src`는 **`scr_ladder`**(확정 2026-10-16, AMB-043-5, 040-R14에 추가). 리플레이 원본은 배틀태그·채팅을 포함한 그대로 보관한다(AMB-043-6) |
 | 043-R8 | **MUST** 수집 기록(`<URANIUM_SHARED_DIR>/datasets/replays/ladder/collect.jsonl`. `build` 기록과 섞이지 않게 `<src>*.jsonl` 이름을 쓰지 않는다)에 경기마다 경기 ID, SHA-256, 게이트웨이, 시즌, 맵 이름, 양측 종족, 양측 toon(평문)·MMR·랭크, 기록된 승자, 수집 시각, 상태(ok/failed/skipped와 사유)를 남긴다. 040 파이프라인은 랭크·MMR로 S2 "상위 래더" 기준을 적용하고, 승자는 040-R8 ④ 디싱크 판정에 쓴다. 식별자 평문 기록은 공용 드라이브 안에서만 허용한다(확정 2026-10-16, AMB-043-6). 이 파일은 git에 넣지 않는다 |
@@ -71,6 +73,8 @@ uranium-ladder status  [--src <src>]         # 수집 기록 집계(상태별·�
   - 040의 정책(AMB-040-3)은 "사이트 이용약관·robots.txt 준수"다.
   - Blizzard EULA에는 승인되지 않은 서드파티 프로그램으로 데이터를 수집하는 행위를 금지하는 조항이 있고, 로컬 API 자동 호출이 여기에 걸릴 수 있다(해석은 불확실).
   - 사용자는 이 위험을 알고 043 범위의 수집을 040 정책의 **예외로 허용**했다. 내부 학습 전용·재배포 금지는 그대로다.
+- [SPEC AMBIGUOUS] AMB-043-7 **게이트웨이**: API에서 30 Korea와 45 Asia는 별도 게이트웨이다. "아시아(한국)만"이 30만인지, 30+45인지 정해야 한다.
+- [SPEC AMBIGUOUS] AMB-043-8 **과거 시즌**: 리플레이 링크는 프로필의 최근 25경기에서만 나오고 파일은 약 30일 뒤 사라진다. 그래서 과거 시즌 리플레이는 받을 수 없다. 대안은 다음 중 하나다. 주기 실행(예: 매일)으로 최근 경기를 계속 모으거나, 이 조건을 빼고 1회성으로 수집한다.
 - **계정 제재 위험**: 사용자 본계정을 쓴다(AMB-043-2). 043-R4의 보수적 한도(0.5 req/s, 일 1,000개)로 트래픽을 줄이지만 위험이 없어지지는 않는다. 클라이언트가 오류·경고를 주면 즉시 멈추고 보고한다(043-R9).
 - 클라이언트 업데이트로 API가 바뀌거나 막힐 수 있다. 043-R9·R10으로 영향 범위를 한 모듈로 줄인다.
 - 리플레이 링크가 클라이언트 세션 쿠키·헤더를 요구할 수 있다. 그 경우 043-R2 범위(API가 준 정보만 사용) 안에서 가능한지 스파이크에서 확인하고, 안 되면 사용자에게 보고한다.
