@@ -57,8 +57,10 @@ M4 수집 대상(2026-10-16 사용자 결정): 공개 1.16.1 묶음(STARDATA 등
 shard_XXXXX.bin.zst
   header: schema_version, feature_version, action_version
   games[]: { meta{map_hash, map_family, matchup, player_race, perspective_slot, apm, result, src, stage},
+             game_info,                                        // 010 GameInfo(static_map 포함), 시점 플레이어 기준
              steps[]{raw_frame, privileged, action_label} }   // feature·마스크는 학습 시 생성 (040-R12)
 ```
+- `game_info`는 feature 추출(030)의 정적 맵 채널과 `MapInfo`에 쓴다. 추가하면서 `schema_version`을 올렸고, 이전 버전 shard는 다시 빌드한다 (AMB-040-6 Resolved, 2026-10-16).
 
 ## Acceptance Criteria
 - 040-AC1: 파서가 샘플 1,000개 리플레이를 오류 없이 파싱하고, 결과가 기존 공개 파서의 명령 수·APM과 일치한다.
