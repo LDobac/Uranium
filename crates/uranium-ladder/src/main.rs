@@ -1,26 +1,23 @@
 //! `uranium-ladder`: SC:R ladder replay collector over the logged-in client's local web API
-//! (spec 043). Stage 1 provides `probe` (043-AC1); `collect` and `status` follow once the
-//! response schema has been measured (043-R9, 043-R10).
+//! (spec 043). `probe` is the 043-AC1 spike, `collect` the daily run, `status` its summary.
 
+mod api;
+mod collect;
 mod env;
 mod limit;
 mod port;
 mod redact;
+mod schema;
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use sha2::{Digest, Sha256};
 
+use crate::api::{Api, Http};
 use crate::env::Settings;
-use crate::limit::{Daily, Limiter};
-
-/// Path prefixes tried in front of the documented `/v1/...` routes (043 background: TBD(M4)).
-const PATH_PREFIXES: [&str; 2] = ["", "/web-api"];
-/// Body size cap for one response or replay.
-const MAX_BODY: u64 = 64 << 20;
+use crate::limit::Daily;
 
 #[derive(Parser)]
 #[command(name = "uranium-ladder", about = "SC:R ladder replay collector (spec 043)")]
@@ -31,7 +28,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// 043-AC1 spike: detect the API, fetch one step of the leaderboard → history → match →
+    /// 043-AC1 spike: detect the API, fetch one step of the leaderboard → profile → match →
     /// replay chain, save the raw response outside git and print only its shape.
     Probe(ProbeArgs),
     /// Print the redacted shape (043-R11) of a saved response, optionally of one JSON pointer.
@@ -40,6 +37,23 @@ enum Cmd {
         /// RFC 6901 pointer, e.g. /replays/0
         #[arg(long)]
         pointer: Option<String>,
+    },
+    /// Daily collection run (043-R4..R9) into raw/scr_ladder and ladder/collect.jsonl.
+    Collect {
+        #[arg(long)]
+        plan: PathBuf,
+        /// Most downloads in this run
+        #[arg(long)]
+        limit: Option<u32>,
+        /// List new ladder links per tracked player without fetching match info or replays
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Counts of collect.jsonl per status, matchup and map (no player names).
+    Status {
+        /// Write the markdown here instead of stdout
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 }
 
@@ -50,84 +64,23 @@ struct ProbeArgs {
     out: Option<PathBuf>,
     /// Step 2: fetch the first page of this leaderboard id
     #[arg(long)]
-    leaderboard: Option<String>,
+    leaderboard: Option<u64>,
     /// Step 3: profile of --toon on --gateway (its `replays[]` list); with --gamemode and
     /// --season also the match history
     #[arg(long, requires = "gateway")]
     toon: Option<String>,
     #[arg(long)]
-    gateway: Option<String>,
+    gateway: Option<u32>,
     #[arg(long)]
     gamemode: Option<String>,
     #[arg(long)]
     season: Option<String>,
-    /// Step 4: match info (with the replay link) of this match id
+    /// Step 4: match info (with the replay links) of this profile `link`
     #[arg(long)]
     match_id: Option<String>,
     /// Step 5: download a replay link that appears in a saved probe response (043-R2)
     #[arg(long)]
     download: Option<String>,
-}
-
-struct Http {
-    agent: ureq::Agent,
-    limiter: Limiter,
-}
-
-struct Reply {
-    status: u16,
-    header_names: Vec<String>,
-    body: Vec<u8>,
-}
-
-impl Http {
-    fn new(rps: f64) -> Self {
-        let agent = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_global(Some(Duration::from_secs(30)))
-            .build()
-            .into();
-        Self { agent, limiter: Limiter::new(rps) }
-    }
-
-    /// One paced GET (043-R4).
-    fn get(&mut self, url: &str) -> Result<Reply> {
-        self.limiter.wait();
-        let mut resp = self.agent.get(url).call().context("request failed")?;
-        let status = resp.status().as_u16();
-        let header_names = resp.headers().keys().map(|k| k.as_str().to_string()).collect();
-        let body = resp.body_mut().with_config().limit(MAX_BODY).read_to_vec()?;
-        Ok(Reply { status, header_names, body })
-    }
-}
-
-/// Local API root: `http://127.0.0.1:<port><prefix>`.
-struct Api {
-    base: String,
-}
-
-impl Api {
-    /// 043-R3: the first candidate port and prefix whose leaderboard list answers with JSON.
-    fn connect(http: &mut Http, settings: &Settings) -> Result<Self> {
-        let ports = match settings.port {
-            Some(p) => vec![p],
-            None => port::candidates()?,
-        };
-        for port in &ports {
-            for prefix in PATH_PREFIXES {
-                let base = format!("http://127.0.0.1:{port}{prefix}");
-                match http.get(&format!("{base}/v1/leaderboard")) {
-                    Ok(r) if r.status == 200 && serde_json::from_slice::<serde_json::Value>(&r.body).is_ok() => {
-                        println!("api: port {port}, prefix {:?}", prefix);
-                        return Ok(Self { base });
-                    }
-                    Ok(r) => println!("api: port {port}, prefix {prefix:?} -> HTTP {}", r.status),
-                    Err(e) => println!("api: port {port}, prefix {prefix:?} -> {e:#}"),
-                }
-            }
-        }
-        bail!("no candidate port answered /v1/leaderboard with JSON (ports tried: {ports:?})")
-    }
 }
 
 fn main() -> Result<()> {
@@ -143,6 +96,22 @@ fn main() -> Result<()> {
                 None => &v,
             };
             println!("{}", serde_json::to_string_pretty(&redact::shape(v))?);
+            Ok(())
+        }
+        Cmd::Collect { plan, limit, dry_run } => {
+            let plan = collect::Plan::load(&plan)?;
+            let paths = collect::Paths::from_settings(&settings)?;
+            let s = collect::run(&settings, &paths, &plan, &collect::Opts { limit, dry_run })?;
+            println!("done: ok {}, skipped {}, failed {}", s.ok, s.skipped, s.failed);
+            Ok(())
+        }
+        Cmd::Status { out } => {
+            let paths = collect::Paths::from_settings(&settings)?;
+            let md = collect::status_markdown(&paths.ladder.join("collect.jsonl"))?;
+            match out {
+                Some(p) => std::fs::write(p, md)?,
+                None => print!("{md}"),
+            }
             Ok(())
         }
     }
@@ -161,34 +130,26 @@ fn probe(settings: &Settings, a: ProbeArgs) -> Result<()> {
     }
     let api = Api::connect(&mut http, settings)?;
     // Each step is chosen by the caller after reading the previous raw response, so no field
-    // of the (not yet measured) schema is guessed here (043-R9).
+    // is picked automatically here (043-R9).
     let mut steps: Vec<(&str, String, String)> = Vec::new();
-    if let Some(id) = &a.leaderboard {
-        steps.push(("leaderboard page", format!("/v1/leaderboard/{}?offset=0&length=100", enc(id)), format!("leaderboard_{}.json", file_part(id))));
+    if let Some(id) = a.leaderboard {
+        steps.push(("leaderboard page", schema::leaderboard_page(id, 0, 100), format!("leaderboard_{id}.json")));
     }
-    if let (Some(toon), Some(gw)) = (&a.toon, &a.gateway) {
-        steps.push((
-            "profile",
-            format!("/v2/aurora-profile-by-toon/{}/{}?request_flags=scr_profile", enc(toon), enc(gw)),
-            "profile.json".into(),
-        ));
-    }
-    if let (Some(toon), Some(gw), Some(gm), Some(season)) = (&a.toon, &a.gateway, &a.gamemode, &a.season) {
-        steps.push((
-            "match history",
-            format!("/v1/matchmaker-gameinfo-by-toon/{}/{}/{}/{}", enc(toon), enc(gw), enc(gm), enc(season)),
-            "history.json".into(),
-        ));
+    if let (Some(toon), Some(gw)) = (&a.toon, a.gateway) {
+        steps.push(("profile", schema::profile(toon, gw), "profile.json".into()));
+        if let (Some(gm), Some(season)) = (&a.gamemode, &a.season) {
+            steps.push(("match history", schema::match_history(toon, &gw.to_string(), gm, season), "history.json".into()));
+        }
     }
     if let Some(id) = &a.match_id {
-        steps.push(("match info", format!("/v1/matchmaker-gameinfo-playerinfo/{}", enc(id)), "match.json".into()));
+        steps.push(("match info", schema::match_info(id), "match.json".into()));
     }
     if steps.is_empty() {
-        steps.push(("leaderboard list", "/v1/leaderboard".into(), "leaderboard.json".into()));
-        steps.push(("gateways", "/v1/gateway".into(), "gateway.json".into()));
+        steps.push(("leaderboard list", schema::LEADERBOARD_LIST.into(), "leaderboard.json".into()));
+        steps.push(("gateways", schema::GATEWAYS.into(), "gateway.json".into()));
     }
     for (what, path, file) in steps {
-        let r = http.get(&format!("{}{path}", api.base))?;
+        let r = http.get(&api.url(&path))?;
         std::fs::write(out.join(&file), &r.body)?;
         // 043-R11: the path may hold a toon, so only the step name is printed.
         println!("\n== {what}: HTTP {} ({} bytes) -> <probe>/{file}", r.status, r.body.len());
@@ -243,20 +204,6 @@ fn print_shape(body: &[u8]) {
     }
 }
 
-/// Percent-encodes one path segment.
-fn enc(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
-}
-
-fn file_part(s: &str) -> String {
-    s.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect()
-}
-
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
@@ -274,11 +221,5 @@ mod tests {
         assert!(link_in_saved_responses(&dir, "http://cdn.example.com/r/MM-1.rep").unwrap());
         assert!(!link_in_saved_responses(&dir, "http://other.example.com/x.rep").unwrap());
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn path_segment_encoding() {
-        assert_eq!(enc("a b/#c"), "a%20b%2F%23c");
-        assert_eq!(enc("Toon_1.x"), "Toon_1.x");
     }
 }

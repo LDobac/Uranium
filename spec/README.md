@@ -81,8 +81,8 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-043-4 | 래더 수집: 속도·일일·총량 한도 | Resolved (2026-10-16: 0.5 req/s, 일 1,000개, 총량은 디스크 예산만) |
 | AMB-043-5 | 래더 수집: `src` 태그(`scr_public` vs `scr_ladder`) | Resolved (2026-10-16: `scr_ladder` 신설, 040-R14 개정) |
 | AMB-043-6 | 래더 수집: 플레이어 식별자·채팅 보관 범위 | Resolved (2026-10-16: 수집 기록에 toon 평문(공용 드라이브만), .rep 원본 유지) |
-| AMB-043-7 | 래더 수집: 게이트웨이 Korea(30)만 vs Korea+Asia(45) | Open |
-| AMB-043-8 | 래더 수집: 과거 시즌 불가(링크는 최근 25경기, 파일 ~30일) → 주기 수집 여부 | Open |
+| AMB-043-7 | 래더 수집: 게이트웨이 Korea(30)만 vs Korea+Asia(45) | Resolved (2026-10-16: Korea + Asia) |
+| AMB-043-8 | 래더 수집: 과거 시즌 불가(링크는 최근 25경기, 파일 ~30일) → 주기 수집 여부 | Resolved (2026-10-16: 과거 시즌 조건 삭제, 하루 1회 주기 수집) |
 | AMB-042-1 | 학습 기간·장비 예산 | Resolved (2026-10-15: 기간 제한 없음, 전체 리그 구성) |
 | AMB-042-2 | TvP·TvZ 상대 다양성 (P/Z 상대 정책 추가 여부) | Deferred (M6) |
 | AMB-050-1 | 승격 게이트·평가 판수·회귀 시나리오 | Resolved (2026-10-15: 초안 수치 확정, M5 이후 조정 제안 가능) |
@@ -109,7 +109,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | 040 | [Replay Dataset](040-replay-dataset.md) | 리플레이 데이터 | **Approved** |
 | 041 | [Imitation Learning](041-imitation-learning.md) | BC 학습 | **Approved** |
 | 042 | [RL Training](042-rl-training.md) | RL·리그 | **Approved** |
-| 043 | [Ladder Replay Collector](043-ladder-replay-collector.md) | SC:R 래더 리플레이 수집 | Review (AMB-043-7·8) |
+| 043 | [Ladder Replay Collector](043-ladder-replay-collector.md) | SC:R 래더 리플레이 수집 | **Approved** |
 | 050 | [Evaluation](050-evaluation.md) | 평가·게이트 | **Approved** |
 | 060 | [Infra: Training Hosts](060-infra-bc250.md) | 학습 호스트(BC250·CUDA PC) | **Approved** |
 | 061 | [Shared Storage](061-shared-storage.md) | 공용 드라이브 체크포인트·데이터 | **Approved** |

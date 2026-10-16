@@ -1,0 +1,10 @@
+# 043-R5 collection plan: Korea (30) + Asia (45) current-season 1v1 leaderboards,
+# all matchups and maps, run once a day (AMB-043-3, -7, -8).
+gateways = [30, 45]
+gamemode = 1
+page_size = 100
+
+# Lowest leaderboard bucket of tracked players: rank A and above. The API has no rank
+# letters; buckets 1-7 follow the 7 season thresholds and map to F ... A=6, S=7
+# (043-R5, user decision 2026-10-16).
+min_bucket = 6
