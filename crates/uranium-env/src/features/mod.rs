@@ -2,6 +2,7 @@
 //! executor (031). One code path for training, replays and SC:R (030 Purpose).
 
 pub mod augment;
+pub mod executor;
 pub mod extract;
 pub mod map;
 pub mod masks;

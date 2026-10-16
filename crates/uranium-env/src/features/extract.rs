@@ -31,6 +31,8 @@ pub struct Observation {
     pub entity_ids: Vec<UnitId>,
     /// Valid map size in tiles (width, height); needed by symmetry augmentation (030-R4).
     pub map_size: (usize, usize),
+    /// The observation is in transposed orientation (030-R4): building footprints are h x w.
+    pub transposed: bool,
 }
 
 pub fn action_table() -> &'static ActionTable {
@@ -66,7 +68,9 @@ pub fn extract(frame: &RawFrame, mem: &mut AgentMemory, map: &MapInfo, z: Option
         entity_cat.extend_from_slice(&[u.unit_type as i32, e.owner, order as i32, last as i32]);
         entity_cell.push(cell_of(u.pos, map));
         entity_pos.extend_from_slice(&[u.pos.0 as f32, u.pos.1 as f32]);
-        entity_cont.extend(entity_features(&w, e, map.width, map.height));
+        entity_cont.resize(entity_cont.len() + ENTITY_CONT, 0.0);
+        let row = entity_cont.len() - ENTITY_CONT;
+        entity_features(&w, e, map.width, map.height, &mut entity_cont[row..]);
         let c = unit_caps(&w, e);
         unit_cap.extend_from_slice(&c);
         caps.push(c);
@@ -91,6 +95,7 @@ pub fn extract(frame: &RawFrame, mem: &mut AgentMemory, map: &MapInfo, z: Option
         masks: Masks { type_mask: tmask, unit_cap, loc_class_mask: locs },
         entity_ids: entities.iter().map(|e| e.unit.id).collect(),
         map_size: (map.width, map.height),
+        transposed: false,
     }
 }
 
@@ -150,11 +155,11 @@ fn ratio(v: i32, max: i32) -> f32 {
 }
 
 /// 030 §2, 76 values.
-fn entity_features(w: &World, e: &Entity, width: usize, height: usize) -> Vec<f32> {
+fn entity_features(w: &World, e: &Entity, width: usize, height: usize, f: &mut [f32]) {
     let u = &e.unit;
     let t = w.ty(u);
     let (max_hp, max_sp, max_en) = t.map_or((0, 0, 0), |t| (t.max_hp, t.max_shields, t.max_energy));
-    let mut f = vec![0f32; ENTITY_CONT];
+
     // hp, shield, energy: ratio + sqrt(abs)/16
     for (i, (v, m)) in [(u.hp, max_hp), (u.shield, max_sp), (u.energy, max_en)].into_iter().enumerate() {
         f[i * 2] = ratio(v as i32, m);
@@ -218,7 +223,6 @@ fn entity_features(w: &World, e: &Entity, width: usize, height: usize) -> Vec<f3
     } else if t.is_some_and(|t| t.is_resource()) || u.unit_type == w.ids.refinery {
         f[75] = u.resources as f32 / 5000.0;
     }
-    f
 }
 
 /// 030 §3, [26,128,128].
@@ -267,9 +271,14 @@ fn spatial(w: &World, entities: &[&Entity]) -> Vec<f32> {
             counts[k * CELLS + cell] += 1;
         }
     }
+    // log(1+count) through a small table: most cells are 0.
+    let ln1p: [f32; 64] = std::array::from_fn(|n| (1.0 + n as f32).ln());
     for (k, c) in [ch::OWN_GROUND, ch::OWN_AIR, ch::ENEMY_GROUND, ch::ENEMY_AIR].into_iter().enumerate() {
         for i in 0..CELLS {
-            s[c * CELLS + i] = (1.0 + counts[k * CELLS + i] as f32).ln();
+            let n = counts[k * CELLS + i] as usize;
+            if n > 0 {
+                s[c * CELLS + i] = if n < ln1p.len() { ln1p[n] } else { (1.0 + n as f32).ln() };
+            }
         }
     }
     // Hazards (observed effects only) and own scanner sweeps.

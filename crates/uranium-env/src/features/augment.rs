@@ -78,15 +78,17 @@ impl Sym {
     }
 }
 
-/// Footprint of a location class's targets (034 위치 클래스); 1x1 for point targets.
-pub fn loc_footprint(class: &str) -> (usize, usize) {
-    match class {
+/// Footprint of a location class's targets (034 위치 클래스); 1x1 for point targets. In a
+/// transposed observation the footprint is h x w.
+pub fn loc_footprint(class: &str, transposed: bool) -> (usize, usize) {
+    let (w, h) = match class {
         "buildable_4x3" | "cc_slot" | "landable_4x3" => (4, 3),
         "buildable_3x2" => (3, 2),
         "buildable_2x2" => (2, 2),
         "refinery_slot" => (4, 2),
         _ => (1, 1),
-    }
+    };
+    if transposed { (h, w) } else { (w, h) }
 }
 
 fn permute_grid(sym: Sym, size: (usize, usize), src: &[f32], dst: &mut [f32]) {
@@ -104,6 +106,7 @@ pub fn transform(o: &Observation, sym: Sym) -> Observation {
     let new_size = sym.size(size);
     let mut out = o.clone();
     out.map_size = new_size;
+    out.transposed = o.transposed ^ sym.transpose;
     let ob = &mut out.obs;
     for i in 0..ob.n {
         let (px, py) = (o.obs.entity_pos[i * 2], o.obs.entity_pos[i * 2 + 1]);
@@ -129,7 +132,7 @@ pub fn transform(o: &Observation, sym: Sym) -> Observation {
     let m = &mut out.masks.loc_class_mask;
     m.fill(false);
     for (l, class) in LOC_CLASSES.iter().enumerate().take(L) {
-        let (fw, fh) = loc_footprint(class);
+        let (fw, fh) = loc_footprint(class, o.transposed);
         for y in 0..size.1 {
             for x in 0..size.0 {
                 if !o.masks.loc_class_mask[l * CELLS + y * MAP + x] || x + fw > size.0 || y + fh > size.1 {
@@ -143,13 +146,14 @@ pub fn transform(o: &Observation, sym: Sym) -> Observation {
     out
 }
 
-/// Transforms a location label (tile index y*128+x) of `action` (030-R4).
-pub fn transform_target_loc(action: u16, tile: usize, size: (usize, usize), sym: Sym) -> usize {
+/// Transforms a location label (tile index y*128+x) of `action` (030-R4). `size` and
+/// `transposed` describe the orientation the label is in.
+pub fn transform_target_loc(action: u16, tile: usize, size: (usize, usize), transposed: bool, sym: Sym) -> usize {
     let Some(a) = action_table().actions.get(action as usize) else { return tile };
     if a.target != TargetKind::Loc {
         return tile;
     }
-    let (fw, fh) = loc_footprint(&a.loc_class);
+    let (fw, fh) = loc_footprint(&a.loc_class, transposed);
     let (x, y) = (tile % MAP, tile / MAP);
     if x + fw > size.0 || y + fh > size.1 {
         return tile;

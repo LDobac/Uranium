@@ -4,14 +4,75 @@
 use uranium_proto::{UnitState, flags};
 
 use super::schema::{CELLS, MAP, OWNER_ENEMY, OWNER_SELF};
-use super::world::{Entity, World, queue_len, tile_of, top_left};
+use super::world::{Entity, World, queue_len, top_left};
 use crate::actions::{Action, ActionTable, CAPABILITIES, Executor, LOC_CLASSES, TargetKind};
 
 pub const K: usize = CAPABILITIES.len();
 pub const L: usize = LOC_CLASSES.len();
 
+/// Index into `CAPABILITIES` (a `match` compiles to fast comparisons; 030-AC3 budget). Kept in
+/// sync with the table by `cap_index_matches_table`.
 fn cap(name: &str) -> usize {
-    CAPABILITIES.iter().position(|c| *c == name).unwrap_or_else(|| panic!("capability {name}"))
+    match name {
+        "can_move" => 0,
+        "can_attack" => 1,
+        "is_worker" => 2,
+        "can_be_loaded" => 3,
+        "is_transport_loaded" => 4,
+        "can_stim" => 5,
+        "can_siege" => 6,
+        "can_unsiege" => 7,
+        "can_cloak" => 8,
+        "can_decloak" => 9,
+        "can_lay_mine" => 10,
+        "can_cast_lockdown" => 11,
+        "can_cast_nuke" => 12,
+        "can_heal" => 13,
+        "can_cast_restoration" => 14,
+        "can_cast_flare" => 15,
+        "can_cast_matrix" => 16,
+        "can_cast_emp" => 17,
+        "can_cast_irradiate" => 18,
+        "can_cast_yamato" => 19,
+        "can_lift" => 20,
+        "can_land_noncc" => 21,
+        "can_land_cc" => 22,
+        "can_rally" => 23,
+        "addon_capable_cc" => 24,
+        "addon_capable_factory" => 25,
+        "addon_capable_starport" => 26,
+        "addon_capable_scifac" => 27,
+        "can_cancel_construction" => 28,
+        "can_cancel_train" => 29,
+        "can_cancel_research" => 30,
+        "can_cancel_upgrade" => 31,
+        "can_cancel_addon" => 32,
+        "attackable_enemy" => 33,
+        "any_unit" => 34,
+        "own_unit" => 35,
+        "target_resource" => 36,
+        "repairable" => 37,
+        "lockdownable" => 38,
+        "healable" => 39,
+        "restorable" => 40,
+        "flarable" => 41,
+        "irradiatable" => 42,
+        "matrixable" => 43,
+        "yamato_target" => 44,
+        "loadable_transport" => 45,
+        _ => panic!("capability {name}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cap_index_matches_table() {
+        for (i, c) in super::CAPABILITIES.iter().enumerate() {
+            assert_eq!(super::cap(c), i, "{c}");
+        }
+        assert_eq!(super::CAPABILITIES.len(), super::K);
+    }
 }
 
 fn loc(name: &str) -> usize {
@@ -65,7 +126,7 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     set("can_decloak", commandable && cloaker && u.has(flags::CLOAKED));
     set("can_lay_mine", commandable && ty == ids.vulture && w.researched(ids.tech_mines) && u.spider_mines > 0);
     set("can_cast_lockdown", ty == ids.ghost && caster(ids.tech_lockdown));
-    let nuke_ready = w.frame.units.iter().any(|s| s.owner == w.mem.self_player && s.unit_type == ids.silo && s.nuke_armed);
+    let nuke_ready = w.nuke_ready;
     set("can_cast_nuke", ty == ids.ghost && caster(ids.tech_nuke) && nuke_ready);
     set("can_heal", ty == ids.medic && caster(ids.tech_healing));
     set("can_cast_restoration", ty == ids.medic && caster(ids.tech_restoration));
@@ -326,6 +387,5 @@ pub fn type_mask(w: &World, table: &ActionTable, caps: &[[bool; K]], locs: &[boo
 pub fn dist2_to_tile(u: &UnitState, tile: (i32, i32)) -> i64 {
     let (x, y) = (tile.0 as i64 * 32 + 16, tile.1 as i64 * 32 + 16);
     let (ux, uy) = (u.pos.0 as i64, u.pos.1 as i64);
-    let _ = tile_of(u);
     (x - ux).pow(2) + (y - uy).pow(2)
 }

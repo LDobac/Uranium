@@ -141,6 +141,8 @@ pub struct World<'a> {
     pub cargo: HashMap<u32, i32>,
     /// Own building id -> attached addon type.
     pub addon_of: HashMap<u32, u16>,
+    /// An own nuclear silo holds an armed nuke (034 can_cast_nuke).
+    pub nuke_ready: bool,
     /// Tiles covered by any known building or resource (own, visible, remembered), 034 location masks.
     pub blocked: Vec<bool>,
 }
@@ -240,7 +242,8 @@ impl<'a> World<'a> {
             block(r);
         }
 
-        Self { frame, mem, map, types, ids, entities, own_completed, cargo, addon_of, blocked }
+        let nuke_ready = frame.units.iter().any(|s| s.owner == mem.self_player && s.unit_type == ids.silo && s.nuke_armed);
+        Self { frame, mem, map, types, ids, entities, own_completed, cargo, addon_of, nuke_ready, blocked }
     }
 
     pub fn ty(&self, u: &UnitState) -> Option<&'static UnitType> {
