@@ -170,7 +170,8 @@ mod tests {
 
     #[test]
     fn validation_rejects_broken_tables_034_ac1() {
-        let gap = ACTIONS_TOML.replacen("id = 1\n", "id = 2\n", 1);
+        // Normalise CRLF (Windows checkouts, git autocrlf) before the textual edit.
+        let gap = ACTIONS_TOML.replace("\r\n", "\n").replacen("id = 1\n", "id = 2\n", 1);
         assert!(ActionTable::parse(&gap).is_err());
         let bad_cap = ACTIONS_TOML.replacen("select_cap = \"can_move\"", "select_cap = \"can_fly\"", 1);
         assert!(ActionTable::parse(&bad_cap).is_err());

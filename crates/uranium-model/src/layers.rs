@@ -4,7 +4,7 @@ use burn::module::Module;
 use burn::nn::conv::{Conv2d, Conv2dConfig};
 use burn::nn::{Dropout, DropoutConfig, LayerNorm, LayerNormConfig, Linear, LinearConfig, PaddingConfig2d};
 use burn::tensor::activation::{gelu, log_softmax, relu, sigmoid, softmax, tanh};
-use burn::tensor::{Bool, Distribution, Int, Tensor};
+use burn::tensor::{Bool, DType, Distribution, Int, Tensor};
 
 /// 032-R4: masked logits.
 pub const MASKED: f32 = -1e9;
@@ -164,9 +164,19 @@ pub fn masked_mean(x: Tensor<3>, mask: Tensor<2, Bool>) -> Tensor<2> {
     (x * m).sum_dim(1).div(count).reshape([b, d])
 }
 
+/// Log-softmax over the last dim of [B,K], accumulated in f32 whatever the compute dtype (032-R8).
+pub fn log_softmax_f32(logits: Tensor<2>) -> Tensor<2> {
+    log_softmax(logits.cast(DType::F32), 1)
+}
+
 /// Masked log-softmax over the last dim of [B,K] in f32 (032-R4, 032-R8).
 pub fn masked_log_softmax(logits: Tensor<2>, allowed: Tensor<2, Bool>) -> Tensor<2> {
-    log_softmax(logits.mask_fill(allowed.bool_not(), MASKED), 1)
+    log_softmax(logits.cast(DType::F32).mask_fill(allowed.bool_not(), MASKED), 1)
+}
+
+/// f32 zeros [B] for log-prob / entropy accumulators.
+pub fn zeros_f32(b: usize, device: &burn::tensor::Device) -> Tensor<1> {
+    Tensor::<1>::zeros([b], device).cast(DType::F32)
 }
 
 /// Gumbel-max sample from log-probs [B,K] at temperature `temp` (032-R9). `temp == 0` is greedy.
@@ -176,7 +186,7 @@ pub fn gumbel_argmax(logp: Tensor<2>, temp: f32) -> Tensor<1, Int> {
     if temp <= 0.0 {
         return logp.argmax(1).reshape([b]);
     }
-    let u = Tensor::<2>::random([b, k], Distribution::Uniform(1e-6, 1.0 - 1e-6), &logp.device());
+    let u = Tensor::<2>::random([b, k], Distribution::Uniform(1e-6, 1.0 - 1e-6), &logp.device()).cast(DType::F32);
     let g = u.log().neg().log().neg();
     (logp / temp as f64 + g).argmax(1).reshape([b])
 }
@@ -194,7 +204,7 @@ pub fn entropy(logp: Tensor<2>) -> Tensor<1> {
     (p * logp).sum_dim(1).neg().reshape([b])
 }
 
-/// Bool [B] -> float 0 / 1.
+/// Bool [B] -> f32 0 / 1 (multiplies f32 log-probs).
 pub fn flag(b: Tensor<1, Bool>) -> Tensor<1> {
-    b.float()
+    b.float().cast(DType::F32)
 }

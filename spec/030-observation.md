@@ -66,7 +66,7 @@ RawFrame과 에이전트 메모리를 모델 입력 텐서로 변환하는 규�
 | 구분 | 채널 | 수 |
 |---|---|---|
 | 정적 | height one-hot(3), walkable, buildable, start_loc, base_loc, choke(사전계산), wall_candidate(사전계산, 힌트 전용), valid_map | 10 |
-| 시야 | visible_now, explored, enemy_last_seen_age | 3 |
+| 시야 | visible_now, explored, enemy_last_seen_age [SPEC AMBIGUOUS] AMB-030-1 | 3 |
 | 지형 동적 | creep, own_building_footprint, enemy_building_footprint(기억 포함) | 3 |
 | 밀도 | own_ground, own_air, enemy_ground, enemy_air (log(1+count)) | 4 |
 | 위험 | hazard: Psionic Storm, Dark Swarm, Disruption Web, 핵 조준점, EMP·Irradiate·기타 투사체 (관측된 것만) | 5 |

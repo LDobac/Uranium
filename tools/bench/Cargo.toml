@@ -8,9 +8,10 @@ publish.workspace = true
 
 [features]
 # Enable only on a CUDA GPU PC (needs the CUDA toolkit): cargo run -p bench --release --features cuda -- --backend cuda
-cuda = ["burn/cuda"]
+cuda = ["burn/cuda", "uranium-model/cuda"]
 
 [dependencies]
 burn = { workspace = true, features = ["std", "autodiff", "vulkan", "flex"] }
 anyhow.workspace = true
 clap.workspace = true
+uranium-model = { path = "../../crates/uranium-model" }

@@ -264,6 +264,12 @@ struct WeaponRow {
 }
 
 #[derive(Serialize)]
+struct OrderRow {
+    id: i32,
+    name: String,
+}
+
+#[derive(Serialize)]
 struct Table<T> {
     #[serde(rename = "source")]
     source: String,
@@ -466,6 +472,11 @@ fn main() -> Result<()> {
     write("unit_types.toml", toml::to_string(&Table { source: source.clone(), rows: unit_rows })?)?;
     write("tech_types.toml", toml::to_string(&Table { source: source.clone(), rows: tech_rows })?)?;
     write("upgrade_types.toml", toml::to_string(&Table { source: source.clone(), rows: upg_rows })?)?;
-    write("weapon_types.toml", toml::to_string(&Table { source, rows: wpn_rows })?)?;
+    write("weapon_types.toml", toml::to_string(&Table { source: source.clone(), rows: wpn_rows })?)?;
+
+    // ---------------------------------------------------------------- orders (names only)
+    let order_names = enum_names(&std::fs::read_to_string(inc.join("Order.h"))?, "Orders")?;
+    let order_rows: Vec<OrderRow> = order_names.into_iter().enumerate().map(|(i, name)| OrderRow { id: i as i32, name }).collect();
+    write("order_types.toml", toml::to_string(&Table { source, rows: order_rows })?)?;
     Ok(())
 }

@@ -4,13 +4,14 @@
 //! run on Flex (CPU) with identical inputs and weights to report the max absolute / relative error.
 
 mod cases;
+mod net_cases;
 mod report;
 mod util;
 
 use std::path::PathBuf;
 
 use anyhow::Result;
-use burn::tensor::{Device, DeviceKind};
+use burn::tensor::{Device, DeviceKind, FloatDType, IntDType};
 use clap::{Parser, ValueEnum};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -41,6 +42,9 @@ struct Args {
     /// Only run cases whose name contains this substring.
     #[arg(long)]
     filter: Option<String>,
+    /// Make f16 the device's default float dtype (032-R8); `net_*` cases then run in f16.
+    #[arg(long)]
+    f16: bool,
 }
 
 #[cfg(feature = "cuda")]
@@ -55,11 +59,14 @@ fn cuda_device(_index: usize) -> Result<Device> {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let device = match args.backend {
+    let mut device = match args.backend {
         Backend::Vulkan => Device::vulkan(DeviceKind::DefaultDevice),
         Backend::Cuda => cuda_device(args.cuda_index)?,
         Backend::Flex => Device::flex(),
     };
+    if args.f16 {
+        device.configure((FloatDType::F16, IntDType::I32)).map_err(|e| anyhow::anyhow!("f16 not available: {e:?}"))?;
+    }
     let reference = (!args.no_accuracy && !matches!(args.backend, Backend::Flex)).then(Device::flex);
 
     let ctx = cases::Ctx {
@@ -83,7 +90,7 @@ fn main() -> Result<()> {
         rows.push(row);
     }
 
-    let backend_name = format!("{:?}", args.backend).to_lowercase();
+    let backend_name = format!("{:?}{}", args.backend, if args.f16 { " f16" } else { "" }).to_lowercase();
     report::write(&args.out, &backend_name, args.quick, &rows)?;
     eprintln!("[bench] wrote {}", args.out.display());
     Ok(())

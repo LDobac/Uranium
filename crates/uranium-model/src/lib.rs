@@ -11,6 +11,7 @@ pub mod layers;
 pub mod net;
 pub mod scalar;
 pub mod spatial;
+pub mod synthetic;
 pub mod value;
 
 pub use batch::{ActionBatch, ActionColumns, ObsBatch, PrivBatch};

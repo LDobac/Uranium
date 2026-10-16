@@ -10,7 +10,7 @@ use burn::tensor::{Bool, Device, Distribution, Int, Tensor};
 
 use crate::batch::{ActionBatch, ActionTableTensors, ObsBatch, gather_cap, gather_loc};
 use crate::config::{HeadsConfig, InputDims, SpatialConfig};
-use crate::layers::{GruCell, Mlp, ResMlp, entropy, gumbel_argmax, masked_log_softmax, pick};
+use crate::layers::{GruCell, Mlp, ResMlp, entropy, flag, gumbel_argmax, log_softmax_f32, masked_log_softmax, pick, zeros_f32};
 use crate::spatial::SpatialOut;
 
 pub enum Mode<'a> {
@@ -206,12 +206,12 @@ impl Heads {
         let mut ar = self.ar_h.forward(h) + flat(self.ar_action.forward(action.clone().reshape([b, 1])));
 
         // 2 Delay (always used)
-        let lp_delay = tempered(log_softmax(self.delay.forward(ar.clone()), 1), temp);
+        let lp_delay = tempered(log_softmax_f32(self.delay.forward(ar.clone())), temp);
         let delay = choose(&lp_delay, labels.map(|l| l.delay.clone()));
         ar = ar + flat(self.ar_delay.forward(delay.clone().reshape([b, 1])));
 
         // 3 Queued (fixed to 0 when unused)
-        let lp_queued = tempered(log_softmax(self.queued.forward(ar.clone()), 1), temp);
+        let lp_queued = tempered(log_softmax_f32(self.queued.forward(ar.clone())), temp);
         let queued = choose(&lp_queued, labels.map(|l| l.queued.clone())) * info.uses_queued.clone().int();
         ar = ar + flat(self.ar_queued.forward(queued.clone().reshape([b, 1])));
 
@@ -232,7 +232,7 @@ impl Heads {
         let lp_loc = tempered(masked_log_softmax(self.location.forward(ar, sp), loc_ok), temp);
         let target_loc = choose(&lp_loc, labels.map(|l| l.target_loc.clone()));
 
-        let f = |m: &Tensor<1, Bool>| m.clone().float();
+        let f = |m: &Tensor<1, Bool>| flag(m.clone());
         let (u_q, u_s, u_tu, u_tl) = (f(&info.uses_queued), f(&info.uses_select), f(&info.target_unit), f(&info.target_loc));
         let logp = PerHead {
             action: pick(lp_action.clone(), action.clone()),
@@ -295,7 +295,7 @@ impl Heads {
         let mut q = self.sel_query.forward(ar.clone());
         let mut sum_keys = Tensor::<2>::zeros([b, kd], &device);
         let mut count = Tensor::<1>::zeros([b], &device);
-        let (mut logp, mut ent) = (Tensor::<1>::zeros([b], &device), Tensor::<1>::zeros([b], &device));
+        let (mut logp, mut ent) = (zeros_f32(b, &device), zeros_f32(b, &device));
         let (mut choices, mut dists, mut actives) = (vec![], vec![], vec![]);
         let true_col = Tensor::<2, Int>::ones([b, 1], &device).equal_elem(1);
 
@@ -310,7 +310,7 @@ impl Heads {
                 Some(l) => l.clone().narrow(1, k, 1).reshape([b]).clamp(0, n as i64),
                 None => gumbel_argmax(lp.clone(), temp),
             };
-            let af = active.clone().float();
+            let af = flag(active.clone());
             logp = logp + pick(lp.clone(), choice.clone()) * af.clone();
             ent = ent + entropy(lp.clone()) * af;
 

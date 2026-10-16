@@ -2,7 +2,7 @@
 
 use burn::module::{Module, Param};
 use burn::nn::{Embedding, EmbeddingConfig, LayerNorm, Linear, LinearConfig};
-use burn::tensor::{Bool, Device, Distribution, Int, Tensor};
+use burn::tensor::{Bool, DType, Device, Distribution, Int, Tensor};
 
 use crate::batch::ObsBatch;
 use crate::config::{EntityConfig, InputDims};
@@ -116,7 +116,8 @@ impl EntityEncoder {
     /// bucket(i,j) = same_owner * D + clamp(floor(log2(1 + pixel distance)), 0, D-1) (032 §2.1).
     fn buckets(&self, obs: &ObsBatch) -> Tensor<3, Int> {
         let [b, n, _] = obs.entity_pos.dims();
-        let pos = obs.entity_pos.clone();
+        // f32: squared pixel distances overflow f16 (032-R8).
+        let pos = obs.entity_pos.clone().cast(DType::F32);
         let pi = pos.clone().reshape([b, n, 1, 2]);
         let pj = pos.reshape([b, 1, n, 2]);
         let dist = (pi - pj).powi_scalar(2).sum_dim(3).sqrt().reshape([b, n, n]);

@@ -54,6 +54,9 @@ pub fn all() -> Vec<Case> {
         Case { name: "gumbel_max_128sq", run: gumbel_max },
         Case { name: "act_approx_b16_n256", run: act_approx },
     ]
+    .into_iter()
+    .chain(crate::net_cases::all())
+    .collect()
 }
 
 // ---------------------------------------------------------------- matmul
