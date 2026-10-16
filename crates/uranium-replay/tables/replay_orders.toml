@@ -129,10 +129,17 @@ unit = "Yamato_Unit"
 pos = ""
 
 [[order]]
-names = ["MedicHeal", "HealMove"]
-ids = [176, 177]
+names = ["MedicHeal"]
+ids = [176]
 unit = "Heal_Unit"
 pos = ""
+
+# 040-R11 (2026-10-17): medic attack-move on the ground is attack-move.
+[[order]]
+names = ["HealMove"]
+ids = [177]
+unit = "Heal_Unit"
+pos = "Attack_Pos"
 
 [[order]]
 names = ["CastScannerSweep"]

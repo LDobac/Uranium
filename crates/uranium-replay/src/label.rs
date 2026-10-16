@@ -351,6 +351,21 @@ mod tests {
     }
 
     #[test]
+    fn medic_heal_move_on_ground_is_attack_move_040_r11() {
+        let lab = Labeler::new().unwrap();
+        let units: HashMap<u32, u16> = [(10, 0u16)].into_iter().collect();
+        let cmds = vec![
+            cmd(10, op::SELECT, vec![1, 10, 0]),
+            cmd(11, op::TARGETED_ORDER, vec![64, 0, 96, 0, 0, 0, 0xe4, 0, 177, 0]), // HealMove, ground
+            cmd(40, op::TARGETED_ORDER, vec![64, 0, 96, 0, 10, 0, 0xe4, 0, 177, 0]), // HealMove, unit
+        ];
+        let (labels, cov) = lab.label(&cmds, 100, |_| &units);
+        let names: Vec<&str> = labels.iter().filter(|l| l.action != 0).map(|l| lab.table.actions[l.action as usize].name.as_str()).collect();
+        assert_eq!(names, vec!["Attack_Pos", "Heal_Unit"]);
+        assert!(cov.unknown_orders.is_empty());
+    }
+
+    #[test]
     fn dead_units_leave_selection_and_groups_040_r3() {
         let lab = Labeler::new().unwrap();
         // Twelve marines (tags 1..=12); tag 2 dies before frame 50, tag 13 is trained later.
