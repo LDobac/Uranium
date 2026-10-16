@@ -130,6 +130,6 @@ STARDATA 200개 파이프라인(`uranium-replay build`)에서 디싱크가 많�
 
 ## 9. 남은 일
 - 공개 리플레이 묶음 추가(Synnaeve·Webber·ICCup 유저·PvT, `reports/dataset_sources.md`): 다운로드 후 STARDATA와 해시로 중복 제거
-- 040-AC5: SC:R 리플레이 100개 이상(공개 출처 없음, 사용자 수집 대기)
+- ~~040-AC5: SC:R 리플레이 100개 이상~~ → 2026-10-17 완료: 192시점 디싱크 5.7%(`reports/m4_scr_desync.md`). 최근 래더 맵(CHK VER 64·206, `STRx`)은 OpenBW가 열지 못해 변환기 정규화를 제안했다
 - 남은 디싱크 원인(iscript, 맵 밖 좌표, 사망 수 조건, 드문 비결정성)
 - 전체 규모 shard 생성과 `reports/dataset_stats.md`
