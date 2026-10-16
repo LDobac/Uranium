@@ -74,3 +74,22 @@ Windows PC 한 대에서 게임·브리지·hostd·에이전트를 모두 돌리
    - 응답하지 않는 hostd는 경고 후 빼고 진행한다.
    - 도중에 끊긴 hostd에서 돌던 게임은 Aborted로 기록한다(020-R4).
    - PC를 추가하거나 빼려면 run을 멈추고 hosts 파일을 고친 뒤 다시 시작한다.
+
+## 6. SC:R 래더 리플레이 수집 (043)
+로그인된 SC:R 클라이언트의 로컬 웹 API로 래더 리플레이를 받는다. 이 PC에 SC:R이 설치돼 있고 배틀넷(본계정)에 로그인한 상태여야 한다. 실측 결과와 API 경로는 `reports/m4_ladder_probe.md`에 있다.
+- 데이터 정책: Blizzard EULA 해석 위험을 감수하는 040 정책의 예외다(AMB-043-1). 내부 학습 전용이며 재배포하지 않는다.
+- 빌드: `cargo build --release -p uranium-ladder`
+- `.env`: `URANIUM_SHARED_DIR`가 필요하다. 선택 키는 `URANIUM_SCR_API_PORT`(포트 자동 탐지를 건너뜀), `URANIUM_LADDER_RPS`(기본 0.5), `URANIUM_LADDER_DAILY_MAX`(기본 1000).
+  - 포트는 `tasklist`와 `netstat -ano`로 찾는다. 관리자 권한이 필요 없다.
+- 하루 한 번 실행한다: `target\release\uranium-ladder.exe collect --plan config\ladder\kr_asia.toml`
+  - 리플레이 파일은 약 30일 뒤 사라지고, 프로필에는 최근 25경기만 있다. 그래서 매일 돌려야 놓치는 경기가 적다(AMB-043-8).
+  - 첫 실행은 `raw\` 전체 SHA-256 인덱스를 만드느라 몇 분 걸린다(8만 개 기준 약 6분). 이후에는 `ladder\raw_index.json` 캐시를 쓴다.
+  - 하루 다운로드 한도(1,000개)에 닿으면 그날 수집을 마친다. 다시 실행하면 `collect.jsonl`을 보고 이어서 진행한다.
+  - `--limit N`으로 이번 실행의 다운로드 수를 제한하고, `--dry-run`으로 새 링크 수만 본다.
+- 결과
+  - 리플레이: `<URANIUM_SHARED_DIR>\datasets\replays\raw\scr_ladder\`
+  - 기록: `<URANIUM_SHARED_DIR>\datasets\replays\ladder\collect.jsonl`. toon이 평문으로 들어 있으니 공용 드라이브 밖으로 옮기지 않는다(AMB-043-6).
+  - 집계: `target\release\uranium-ladder.exe status`
+- 데이터셋으로 넣기: `uranium-replay build <raw\scr_ladder> --src scr_ladder --records <jsonl>`(040)
+- API를 단계별로 확인하려면 `uranium-ladder probe`와 `uranium-ladder shape`를 쓴다. 원본 응답에는 플레이어 이름이 들어 있다. 화면에 출력하거나 커밋하지 않는다(043-R11). PowerShell 5.1에서 원본을 읽을 때는 `Get-Content -Encoding UTF8`을 쓴다.
+- 클라이언트 업데이트로 응답 형식이 바뀌면 `collect`가 `failed (schema)`를 기록하고, 연속 20번 실패하면 멈춘다(043-R9). 이때는 `crates\uranium-ladder\src\schema.rs`만 고친다(043-R10).

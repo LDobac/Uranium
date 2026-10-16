@@ -224,43 +224,83 @@ pub struct BuildOptions {
     /// 040-R12 / 060-R7 storage budget for this run's shards.
     pub budget_bytes: u64,
     pub first_shard_index: u32,
+    /// SHA-256 of replays already in another source (040 dedup by file hash); skipped.
+    pub skip_sha256: std::collections::HashSet<String>,
+    /// SHA-256 of replays already in this run's records (resume); not processed again.
+    pub done_sha256: std::collections::HashSet<String>,
 }
 
 /// Builds shards from `files`; returns one record per replay view (or per rejected replay).
-pub fn build(files: &[PathBuf], opt: &BuildOptions, cfg: &PlayConfig) -> Result<Vec<Record>> {
+/// Shard writer plus the records of games waiting in its unflushed shard.
+struct Pending {
+    writer: ShardWriter,
+    records: Vec<Record>,
+}
+
+/// Builds shards from `files`, handing every record to `sink` as soon as it is final: a
+/// written game's record only after the shard holding it is on disk, so an interrupted run
+/// can resume from its records (`BuildOptions::done_sha256`).
+pub fn build(files: &[PathBuf], opt: &BuildOptions, cfg: &PlayConfig, sink: &(dyn Fn(&Record) + Sync)) -> Result<()> {
     let families = MapFamilies::load()?;
     let labeler = Labeler::new()?;
-    let writer = Mutex::new(ShardWriter::new(opt.shards_dir.clone(), opt.first_shard_index, opt.shard_target_bytes)?);
+    let pending = Mutex::new(Pending { writer: ShardWriter::new(opt.shards_dir.clone(), opt.first_shard_index, opt.shard_target_bytes)?, records: Vec::new() });
     let queue = Mutex::new(files.iter().cloned().enumerate().collect::<VecDeque<_>>());
-    let records = Mutex::new(Vec::new());
     let written_bytes = Mutex::new(0u64);
+    let failure: Mutex<Option<anyhow::Error>> = Mutex::new(None);
     std::thread::scope(|s| {
         for w in 0..opt.jobs.max(1) {
-            let (families, labeler, writer, queue, records, written_bytes) = (&families, &labeler, &writer, &queue, &records, &written_bytes);
+            let (families, labeler, pending, queue, written_bytes, failure) = (&families, &labeler, &pending, &queue, &written_bytes, &failure);
             let cfg = PlayConfig { work_dir: cfg.work_dir.join(format!("w{w}")), launcher: cfg.launcher.clone(), bridge_lib: cfg.bridge_lib.clone(), data_dir: cfg.data_dir.clone() };
             s.spawn(move || {
                 while let Some((index, file)) = { let mut q = queue.lock().unwrap(); q.pop_front() } {
-                    for r in process(index, &file, opt, &cfg, families, labeler, writer, written_bytes) {
-                        records.lock().unwrap().push(r);
+                    for (r, game) in process(index, &file, opt, &cfg, families, labeler, written_bytes) {
+                        let Some(game) = game else {
+                            sink(&r);
+                            continue;
+                        };
+                        let mut p = pending.lock().unwrap();
+                        let before = p.writer.written.len();
+                        if let Err(e) = p.writer.add(game) {
+                            *failure.lock().unwrap() = Some(e);
+                            queue.lock().unwrap().clear();
+                            return;
+                        }
+                        p.records.push(r);
+                        if p.writer.written.len() > before {
+                            for r in p.records.drain(..) {
+                                sink(&r);
+                            }
+                        }
                     }
                 }
             });
         }
     });
-    writer.lock().unwrap().flush()?;
-    let mut records = records.into_inner().unwrap();
-    records.sort_by_key(|r| r.index);
-    Ok(records)
+    if let Some(e) = failure.into_inner().unwrap() {
+        return Err(e);
+    }
+    let mut p = pending.into_inner().unwrap();
+    p.writer.flush()?;
+    for r in p.records.drain(..) {
+        sink(&r);
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
-fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, families: &MapFamilies, labeler: &Labeler, writer: &Mutex<ShardWriter>, written: &Mutex<u64>) -> Vec<Record> {
-    let rec = |sha: &str, map: &str, family: &str, view: Option<View>, outcome: Outcome| Record { index, replay_sha256: sha.to_string(), src: opt.src.clone(), map_family: family.to_string(), map_name: map.chars().filter(|c| !c.is_control()).collect(), view, outcome };
+fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, families: &MapFamilies, labeler: &Labeler, written: &Mutex<u64>) -> Vec<(Record, Option<ShardGame>)> {
+    let rec = |sha: &str, map: &str, family: &str, view: Option<View>, outcome: Outcome| (Record { index, replay_sha256: sha.to_string(), src: opt.src.clone(), map_family: family.to_string(), map_name: map.chars().filter(|c| !c.is_control()).collect(), view, outcome }, None);
     let bytes = match std::fs::read(file) {
         Ok(b) => b,
         Err(e) => return vec![rec("", "", "", None, Outcome::Error { reason: e.to_string() })],
     };
     let sha = hex(&Sha256::digest(&bytes));
+    if opt.done_sha256.contains(&sha) {
+        return Vec::new(); // already recorded by an earlier run
+    }
+    if opt.skip_sha256.contains(&sha) {
+        return vec![rec(&sha, "", "", None, Outcome::Filtered { reason: "duplicate of another source".into() })];
+    }
     let rep = match crate::parse(&bytes) {
         Ok(r) => r,
         // 013: an opcode we cannot parse is held for review, not discarded.
@@ -305,10 +345,9 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
                 };
                 let game = ShardGame { meta, game_info, steps };
                 *written.lock().unwrap() += postcard::experimental::serialized_size(&game).unwrap_or(0) as u64;
-                match writer.lock().unwrap().add(game) {
-                    Ok(()) => Outcome::Written { steps: n, coverage },
-                    Err(e) => Outcome::Error { reason: format!("{e:#}") },
-                }
+                let (r, _) = rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Written { steps: n, coverage });
+                out.push((r, Some(game)));
+                continue;
             }
             Ok(Err(o)) => o,
             Err(e) if format!("{e:#}").contains("launcher exited before the bridge connected") => Outcome::Unplayable { reason: format!("{e:#}") },

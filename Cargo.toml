@@ -10,6 +10,7 @@ members = [
     "crates/uranium-replay",
     "crates/uranium-model",
     "crates/uranium-train",
+    "crates/uranium-ladder",
     "tools/bench",
     "tools/casc-extract",
     "tools/bwapi-tables",
@@ -37,6 +38,7 @@ uranium-scripted = { path = "crates/uranium-scripted" }
 uranium-agent = { path = "crates/uranium-agent" }
 toml = "1"
 socket2 = "0.6"
+ureq = "3"
 
 [profile.release]
 debug = 1

@@ -79,6 +79,14 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-040-2 | 리플레이 품질 필터 기준 | Resolved (2026-10-15: S1 APM≥80·5분+, S2 프로/상위 래더 APM≥150) |
 | AMB-040-5 | 040-R8 디싱크 판정 기준(1.16.1은 승패 기록 없음) | Resolved (2026-10-16: 무효 명령 비율·마지막 프레임 미도달·이탈자 우세·SC:R 기록 승자 불일치 중 하나면 디싱크. 임계값 2026-10-16 확정: 무효 15% 초과, 종료 프레임 미달, 이탈 직전 1.5배) |
 | AMB-040-6 | BC shard의 정적 맵 정보 출처 (feature 추출용) | Resolved (2026-10-16: shard game마다 `GameInfo`(static_map 포함) 저장, schema_version 상향 후 재빌드) |
+| AMB-043-1 | 래더 수집: 040 데이터 정책(약관 준수) 예외 허용 여부 | Resolved (2026-10-16: EULA 해석 위험 감수하고 예외 허용, 내부 학습 전용·재배포 금지 유지) |
+| AMB-043-2 | 래더 수집: 실행 PC·배틀넷 계정 | Resolved (2026-10-16: 사용자 본계정, SC:R이 도는 Windows PC) |
+| AMB-043-3 | 래더 수집: 범위 기본값(게이트웨이·순위/MMR·매치업·맵·시즌) | Resolved (2026-10-16: 아시아(한국)만, 추적 대상 랭크 A 이상, 매치업·맵 전체, 과거 시즌 포함) |
+| AMB-043-4 | 래더 수집: 속도·일일·총량 한도 | Resolved (2026-10-16: 0.5 req/s, 일 1,000개, 총량은 디스크 예산만) |
+| AMB-043-5 | 래더 수집: `src` 태그(`scr_public` vs `scr_ladder`) | Resolved (2026-10-16: `scr_ladder` 신설, 040-R14 개정) |
+| AMB-043-6 | 래더 수집: 플레이어 식별자·채팅 보관 범위 | Resolved (2026-10-16: 수집 기록에 toon 평문(공용 드라이브만), .rep 원본 유지) |
+| AMB-043-7 | 래더 수집: 게이트웨이 Korea(30)만 vs Korea+Asia(45) | Resolved (2026-10-16: Korea + Asia) |
+| AMB-043-8 | 래더 수집: 과거 시즌 불가(링크는 최근 25경기, 파일 ~30일) → 주기 수집 여부 | Resolved (2026-10-16: 과거 시즌 조건 삭제, 하루 1회 주기 수집) |
 | AMB-042-1 | 학습 기간·장비 예산 | Resolved (2026-10-15: 기간 제한 없음, 전체 리그 구성) |
 | AMB-042-2 | TvP·TvZ 상대 다양성 (P/Z 상대 정책 추가 여부) | Deferred (M6) |
 | AMB-050-1 | 승격 게이트·평가 판수·회귀 시나리오 | Resolved (2026-10-15: 초안 수치 확정, M5 이후 조정 제안 가능) |
@@ -105,6 +113,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | 040 | [Replay Dataset](040-replay-dataset.md) | 리플레이 데이터 | **Approved** |
 | 041 | [Imitation Learning](041-imitation-learning.md) | BC 학습 | **Approved** |
 | 042 | [RL Training](042-rl-training.md) | RL·리그 | **Approved** |
+| 043 | [Ladder Replay Collector](043-ladder-replay-collector.md) | SC:R 래더 리플레이 수집 | **Approved** |
 | 050 | [Evaluation](050-evaluation.md) | 평가·게이트 | **Approved** |
 | 060 | [Infra: Training Hosts](060-infra-bc250.md) | 학습 호스트(BC250·CUDA PC) | **Approved** |
 | 061 | [Shared Storage](061-shared-storage.md) | 공용 드라이브 체크포인트·데이터 | **Approved** |
@@ -117,7 +126,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | M1 | 리스크 스파이크: (a) Burn/Vulkan 벤치, (b) OpenBW 헤드리스 + SC:R CASC 데이터 추출. ~~(c) samase_scarf~~ → M7로 이동(2026-10-15) | 060, 011 |
 | M2 | proto + OpenBW 브리지(대전 모드) + 에이전트 서버 최소판 + T0 테란 스크립트 봇으로 게임 완주·fps·결정론 측정 | 010, 011, 021(T0 테란) |
 | M3 | hostd·env 스케줄러(Linux 구현, Windows는 `docs/windows.md` 체크리스트) + T0 P/Z 봇 + T1 1단계(UAlbertaBot)·2단계(5종 추가 포팅) + 동시 게임 수 측정(calibrate) | 020, 021 |
-| M4 | 리플레이 파이프라인 (SC:R 리플레이 변환 포함) | 040, 013(명령 인코딩 부분) |
+| M4 | 리플레이 파이프라인 (SC:R 리플레이 변환 포함), SC:R 래더 리플레이 수집 | 040, 043, 013(명령 인코딩 부분) |
 | M5 | 모델 + BC. 데이터 규모가 필요 없는 부분(모델·feature·마스크·executor·보상·BC 골격)은 M4와 병행한다(2026-10-16 사용자 결정) | 030–034, 041 |
 | M6 | RL + 리그 | 042, 050 |
 | M7 | samase_scarf 분석 스파이크 + SC:R 브리지 + 실전 스모크 | 012, 013, 050 |

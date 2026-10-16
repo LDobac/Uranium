@@ -64,6 +64,7 @@ crates/
   uranium-model       # Burn 모델
   uranium-train       # BC / RL / league
   uranium-replay      # .rep 파서·데이터셋
+  uranium-ladder      # SC:R 로컬 웹 API 래더 리플레이 수집기(043, Windows)
   uranium-hostd       # OpenBW 인스턴스 데몬
   uranium-agent       # 에이전트 서버(정책 세션)·실전 바이너리
   uranium-bridge-openbw # 브리지 Rust 절반(C ABI, staticlib)
@@ -71,12 +72,12 @@ crates/
 bridge/openbw         # BWAPI 4.2 AIModule shim(C++) + C ABI 헤더 → liburanium_bridge.so
 bridge/scr            # samase 플러그인 (.dll)
 tools/                # 벤치(bench), CASC 추출(casc-extract), OpenBW 빌드(openbw/), 오픈소스 봇 빌드(oss/), .env 로더(env.sh)
-config/               # assets.toml, hosts.example.toml, plans/(uranium-env 매치업 계획)
+config/               # assets.toml, hosts.example.toml, plans/(uranium-env 매치업 계획), ladder/(043 래더 수집 계획)
 docs/                 # windows.md (Windows 세션 체크리스트)
 third_party/          # OpenBW·BWAPI·T1 봇 소스(커밋/아카이브 고정, git 미추적) + patches/(0001 폴더 로더, 0002 고정 시작 seed, 0003 런처 종료 크래시 회피, 0004 결정론적 LAN uid, 0005–0010 T1 봇 BWAPI 4.2 포팅: UAlbertaBot·Steamhammer·ZZZKBot·Stardust·McRave·Iron, 0011 재생 시점 시야, 0012 유즈맵 트리거 보강)
 reports/              # 스파이크·벤치·평가 리포트
 ```
-진행 상황(2026-10-16): M0 완료(012·013 외 Approved), M1 완료(벤치·OpenBW·데이터 추출), M2 완료(proto·브리지·T0 테란·셀프매치, `reports/m2_selfmatch.md`), M3 Linux 범위 완료(hostd·env 스케줄러·calibrate, T0 3종족, T1 봇 6종, `reports/m3.md`·`reports/oss_bot_porting.md`). M3 Windows 단일 PC 구성(`reports/m3_windows.md`, 011-AC8)과 원격 구성 (b)(학습 PC + 원격 Linux 2대, 020-AC1·011-AC6, `reports/m3_remote.md`)까지 M3 완료. 다음은 M4(리플레이 파이프라인, spec 013 승인 선행). M5 중 데이터 독립 부분(모델·feature·마스크·executor·보상·BC 골격)은 M4와 병행 진행(2026-10-16, `reports/m5_model.md`). 2026-10-16 결정: CUDA PC는 Vulkan보다 빠르면 AC2/AC3 통과, CUDA 허용 오차 1e-2(AMB-032-5), `last_seen_age` 정찰 기록(AMB-030-1). 남은 것: f16 혼합 정밀도 학습, BC250 실측·기준 재확인.
+진행 상황(2026-10-16): M0 완료(012·013 외 Approved), M1 완료(벤치·OpenBW·데이터 추출), M2 완료(proto·브리지·T0 테란·셀프매치, `reports/m2_selfmatch.md`), M3 Linux 범위 완료(hostd·env 스케줄러·calibrate, T0 3종족, T1 봇 6종, `reports/m3.md`·`reports/oss_bot_porting.md`). M3 Windows 단일 PC 구성(`reports/m3_windows.md`, 011-AC8)과 원격 구성 (b)(학습 PC + 원격 Linux 2대, 020-AC1·011-AC6, `reports/m3_remote.md`)까지 M3 완료. 다음은 M4(리플레이 파이프라인, spec 013 승인 선행). M4 중 SC:R 래더 리플레이 수집기(spec 043, `uranium-ladder`)를 구현했다: 043-AC1 스파이크·AC2 테스트 완료, 실측 12개 저장(`reports/m4_ladder_probe.md`). AC3(100개 이상 수집 후 디싱크 리포트)·AC4(속도 확인)는 매일 수집하며 진행한다. M5 중 데이터 독립 부분(모델·feature·마스크·executor·보상·BC 골격)을 M4와 병행해 구현했다(`reports/m5_model.md`). 2026-10-16 결정: CUDA PC는 Vulkan보다 빠르면 032-AC2/AC3 통과, CUDA 허용 오차 1e-2(AMB-032-5), `last_seen_age` 정찰 기록(AMB-030-1). 남은 것: f16 혼합 정밀도 학습, BC250 실측·기준 재확인.
 
 ## 코딩 규칙
 - Burn 0.22 모델 코드는 백엔드에 무관하게 쓰고 실행 시 `Device`로 고른다. 테스트는 `Device::flex()`로 한다 (032-R1).
@@ -105,4 +106,5 @@ reports/              # 스파이크·벤치·평가 리포트
 - BWAPI 타입 표(013-R1): `cargo run -p bwapi-tables -- third_party/bwapi/bwapi crates/uranium-env/tables` → `{unit,tech,upgrade,weapon,order}_types.toml`
 - BC(041): `target/release/uranium-train bc --shards <dir> --out <ckpt> [--backend vulkan|cuda|flex] [--core lstm|gtrxl] [--s2]`, 하이퍼파라미터 `config/bc.toml`, 보상 가중치 `config/reward.toml`. 맵 사전계산은 `uranium-replay build`가 `URANIUM_MAPS_DIR`(기본 `assets/maps`, git 미추적)에 쓴다
 - 모델 벤치(032-AC2/AC3): `cargo run -p bench --release [--features cuda] -- --backend <vulkan|cuda> --filter net_ [--f16]`. CUDA는 CUDA Toolkit(`CUDA_PATH`) 필요
+- 래더 리플레이 수집(043, Windows·본계정 SC:R 로그인 상태): `target/release/uranium-ladder probe [--leaderboard <id> | --toon <t> --gateway <g> [--gamemode <m> --season <s>] | --match-id <MM-link> | --download <url>]` — 경로 리더보드 → 프로필 `replays[]` → playerinfo → GCS url(`reports/m4_ladder_probe.md`). 단계별 원본 응답은 `<URANIUM_SHARED_DIR>/datasets/replays/ladder/probe/`, 출력은 형태만(043-R11). 저장 응답 형태 보기 `uranium-ladder shape <json> [--pointer /a/0]`. 하루 1회 수집 `uranium-ladder collect --plan config/ladder/kr_asia.toml [--limit N] [--dry-run]` → `raw/scr_ladder/`, `<URANIUM_SHARED_DIR>/datasets/replays/ladder/collect.jsonl`(toon 평문, git 밖). 집계 `uranium-ladder status`. 0.5 req/s·일 1,000개(043-R4). 랭크 A 이상 = `min_bucket = 6`(F=1 … S=7)
 - 게임 데이터(MPQ, CASC 추출물, 맵, 리플레이)는 저작권 자료라 절대 커밋하지 않는다(.gitignore).
