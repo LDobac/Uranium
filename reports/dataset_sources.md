@@ -12,6 +12,19 @@
 |---|---|---|---|---|
 | `stardata` | STARDATA 원본 1.16.1 리플레이 | 65,646 | BSD + 특허 허여 (facebookresearch/StarData) | `original_replays.tar.gz` 다운로드(5.3GB, SHA-256 `037cb688…642a`) |
 | `personal` | 사용자 본인 SC:R 리플레이 | 576 (테란 1:1 5분 이상 140) | 사용자 소유 | 사용자 PC의 리플레이 폴더에서 복사 |
+| `community` | StarCraft AI wiki 리플레이 묶음 4종 (`raw/community/<묶음>/`) | 14,406 (손상 79) | 연구용 공개 묶음, 명시 라이선스 없음. 내부 학습 전용 | 묶음 파일 직접 다운로드(크롤링 아님), 각 `.sha256` 기록 |
+
+### community 묶음 상세 (2026-10-16)
+| 묶음 | 원본 수 | STARDATA와 중복 | 새 리플레이 | 파이프라인 표본 결과 |
+|---|---|---|---|---|
+| Synnaeve TL·GG·ICCup gosu (R3) | 7,708 | 4,458 | 3,248 | 앞쪽 300개는 중복·필터. 전체 실행에서 처리 |
+| Webber (R1) | 5,158 | 1,212 | 약 3,500 | 새 리플레이 121개 중 118개 디싱크. 1.16.1 이전 버전 리플레이로 판단해 **제외** |
+| ICCup 유저 (R4) | 1,031 | 687 | 344 | 저장 49, 디싱크 36 (42%). 옛 맵(Lost Temple 등)이 많음 |
+| Oregon State PvT (R5) | 509 | 452 | 37 | 저장 24, 디싱크 2 |
+
+- 파싱: 14,327/14,406. 실패 79개는 screp로도 읽히지 않는 손상 파일이다.
+- OpenBW가 처리하지 못하는 명령은 게임 속도(0x0F)뿐이고 변환 때 빠진다.
+- 중복은 파일 SHA-256으로 판정하고 `build --skip-hashes`로 건너뛴다.
 
 ## 자동 수집 후보 조사 (공개 SC:R 리플레이)
 | 사이트 | 결과 |
@@ -19,6 +32,11 @@
 | cwal.gg | robots.txt `User-agent: * / Disallow: *` → 자동 수집 불가 |
 | repmastered.app | "Account Suspended" 응답 → 현재 운영되지 않음 |
 | bwreplays.com | 도메인 매물 페이지 → 사이트 없음 |
+| ICCup (`/starcraft/replays.html`) | 스타크래프트 섹션 없음("존재하지 않는 페이지") |
+| Reps.ru (`/replays.php`) | 404 |
+| GosuGamers 리플레이 아카이브 | 404 |
+| TeamLiquid 리플레이 | robots.txt가 `/replay/download.php` 금지 → 수동 |
+| ygosu | 게시글 첨부 형태, 프로 리플레이 재게시 제한 → 수동 |
 
 자동 수집이 가능한 공개 SC:R 리플레이 출처는 아직 찾지 못했다. 찾으면 이 표에 추가하고 사용자 확인 후 수집한다.
 
