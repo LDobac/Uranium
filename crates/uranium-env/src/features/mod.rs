@@ -5,6 +5,7 @@ pub mod augment;
 pub mod executor;
 pub mod extract;
 pub mod map;
+pub mod mapgen;
 pub mod masks;
 pub mod memory;
 pub mod schema;
