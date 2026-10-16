@@ -101,4 +101,5 @@ reports/              # 스파이크·벤치·평가 리포트
 - 에이전트 서버: `target/release/uranium-agent serve --listen 127.0.0.1:7600 --out runs/x.jsonl`, 요약 `uranium-agent summarize runs/x.jsonl --out x.md`
 - Windows(001-R8, `docs/windows.md`): `tools\openbw\build.ps1` → `tools\openbw\build_bridge.ps1` → `tools\oss\build_<bot>.ps1`, `.env` 로더 `tools\env.ps1`. `.env`의 Windows 경로는 작은따옴표로 감싼다
 - OpenBW LAN 매칭(011-R16): Linux는 LOCAL 소켓을 쓰고, Unix 소켓 108바이트 경로 제한 때문에 `$XDG_RUNTIME_DIR/uranium/`(보통 `/run/user/<uid>/uranium/`)에 둔다. Windows는 OpenBW가 LOCAL 모드를 지원하지 않아 TCP 포트 쌍(`URANIUM_HOSTD_PORT_BASE`부터)을 쓰므로 소켓 경로·길이 제한이 없다
+- 리플레이(040, M4): `target/release/uranium-replay` — `inspect <rep>`, `convert <rep> <out>`(SC:R → 1.16.1, 013), `check-screp <dir> --screp <exe>`(040-AC1), `ophist <dir>`(OpenBW가 처리 못하는 opcode 확인), `play <rep>`(OpenBW 재생·디싱크 신호), `build <dir> --src <tag> --records <jsonl> [--jobs N --limit N]`(필터 → 재생 → 레이블 → shard, 기본 출력 `<URANIUM_SHARED_DIR>/datasets/replays/shards/<src>`). 원본 리플레이는 `<URANIUM_SHARED_DIR>/datasets/replays/raw/<src>/`(040-R13)
 - 게임 데이터(MPQ, CASC 추출물, 맵, 리플레이)는 저작권 자료라 절대 커밋하지 않는다(.gitignore).

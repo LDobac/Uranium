@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
-use uranium_proto::{Act, AgentMsg, BridgeMsg, GameEnd, read_msg, write_msg};
+use uranium_proto::{Act, AgentMsg, BridgeMsg, GameEnd, PrivilegedSummary, RawFrame, read_msg, write_msg};
 
 use crate::Replay;
 use crate::cmd::op;
@@ -41,7 +41,8 @@ pub struct PlayResult {
     pub winner: Option<u8>,
     pub observations: u32,
     pub select_cmds: u32,
-    /// Select commands naming at least one tag that is not a unit of the perspective player.
+    /// Select commands naming at least one tag that is not among the observed units. Players
+    /// also select visible enemy and neutral units (minerals), so any owner counts.
     pub invalid_select_cmds: u32,
     pub total_tags: u32,
     pub invalid_tags: u32,
@@ -91,6 +92,15 @@ impl PlayResult {
 }
 
 pub fn play(rep: &Replay, perspective: u8, cfg: &PlayConfig) -> Result<PlayResult> {
+    play_with(rep, perspective, cfg, &[], &mut |_, _| {})
+}
+
+/// Observation callback: the RawFrame and the PrivilegedSummary sent with it (011-R12).
+pub type OnFrame<'a> = dyn FnMut(&RawFrame, Option<&PrivilegedSummary>) + 'a;
+
+/// Like `play`, also stopping at `extra_stops` and handing every observation to `on_frame`
+/// (labels and shard steps, 040).
+pub fn play_with(rep: &Replay, perspective: u8, cfg: &PlayConfig, extra_stops: &[u32], on_frame: &mut OnFrame) -> Result<PlayResult> {
     let t0 = Instant::now();
     std::fs::create_dir_all(&cfg.work_dir)?;
     let name = format!("r{}-{}-{perspective}.rep", std::process::id(), t0.elapsed().as_nanos() ^ rand_salt());
@@ -118,7 +128,7 @@ pub fn play(rep: &Replay, perspective: u8, cfg: &PlayConfig) -> Result<PlayResul
         .stderr(log)
         .spawn()
         .with_context(|| format!("starting {}", cfg.launcher.display()))?;
-    let res = accept(&listener, &mut child, Duration::from_secs(60)).and_then(|s| session(rep, perspective, s));
+    let res = accept(&listener, &mut child, Duration::from_secs(60)).and_then(|s| session(rep, perspective, s, extra_stops, on_frame));
     let deadline = Instant::now() + Duration::from_secs(10);
     while child.try_wait()?.is_none() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
@@ -133,7 +143,7 @@ pub fn play(rep: &Replay, perspective: u8, cfg: &PlayConfig) -> Result<PlayResul
 
 /// BWAPI player id of the player with command id `id`: BWAPI numbers the occupied header slots
 /// 0, 1, 2, ... in array order (M4 spike, matched by name against GameInfo).
-fn slot_of(rep: &Replay, id: u8) -> Result<u8> {
+pub fn slot_of(rep: &Replay, id: u8) -> Result<u8> {
     rep.header.players.iter().position(|p| p.id == id).map(|i| i as u8).with_context(|| format!("no player with id {id}"))
 }
 
@@ -173,7 +183,7 @@ fn fnv1a(mut h: u64, bytes: &[u8]) -> u64 {
     h
 }
 
-fn session(rep: &Replay, perspective: u8, stream: TcpStream) -> Result<PlayResult> {
+fn session(rep: &Replay, perspective: u8, stream: TcpStream, extra_stops: &[u32], on_frame: &mut OnFrame) -> Result<PlayResult> {
     stream.set_read_timeout(Some(Duration::from_secs(60)))?;
     let mut r = BufReader::new(stream.try_clone()?);
     let mut w = BufWriter::new(stream);
@@ -183,14 +193,15 @@ fn session(rep: &Replay, perspective: u8, stream: TcpStream) -> Result<PlayResul
     let leave = rep.cmds().find(|c| c.op == op::LEAVE_GAME && players.contains(&c.player)).map(|c| (c.player, c.frame));
     // 040-R8 ③ needs the supplies on the frame before the first leave command.
     let pre_leave = leave.map(|(_, f)| f.saturating_sub(1)).filter(|&f| f >= 1);
-    let mut stops: Vec<u32> = mine.iter().map(|c| c.frame).chain([rep.header.frames.saturating_sub(1)]).chain(pre_leave).collect();
+    let mut stops: Vec<u32> = mine.iter().map(|c| c.frame).chain([rep.header.frames.saturating_sub(1)]).chain(pre_leave).chain(extra_stops.iter().copied()).collect();
     stops.sort_unstable();
     stops.dedup();
     let mut out = PlayResult { perspective, header_frames: rep.header.frames, first_leaver: leave.map(|(p, _)| p), ..Default::default() };
     let mut digest = 0xcbf2_9ce4_8422_2325u64;
     let mut checked = 0usize; // commands of `mine` already evaluated
     let mut enemy_supply = None;
-    let mut owner = perspective; // unit owner = BWAPI id of the observed player (Hello.slot)
+    let mut privileged: Option<PrivilegedSummary> = None;
+    let expected_slot = slot_of(rep, perspective)?;
     loop {
         let msg: BridgeMsg = match read_msg(&mut r) {
             Ok(m) => m,
@@ -201,7 +212,7 @@ fn session(rep: &Replay, perspective: u8, stream: TcpStream) -> Result<PlayResul
                 if !h.replay {
                     bail!("bridge is not in replay mode");
                 }
-                owner = h.slot;
+                anyhow::ensure!(h.slot == expected_slot, "bridge observes player {} instead of {expected_slot} (013 player numbering)", h.slot);
             }
             BridgeMsg::GameInfo(gi) => {
                 if std::env::var_os("URANIUM_REPLAY_DEBUG").is_some() {
@@ -214,12 +225,16 @@ fn session(rep: &Replay, perspective: u8, stream: TcpStream) -> Result<PlayResul
                     eprintln!("[debug] bwapi ids without a header name match: {unmatched:?}");
                 }
             }
-            BridgeMsg::Privileged(p) => enemy_supply = Some(p.enemy.supply_used),
+            BridgeMsg::Privileged(p) => {
+                enemy_supply = Some(p.enemy.supply_used);
+                privileged = Some(p);
+            }
             BridgeMsg::Frame(f) => {
                 let mut bytes = Vec::new();
                 write_msg(&mut bytes, &*f)?;
                 digest = fnv1a(digest, &bytes);
                 out.observations += 1;
+                on_frame(&f, privileged.as_ref().filter(|p| p.frame == f.frame));
                 out.final_frame = f.frame;
                 out.final_self_supply = f.self_state.supply_used;
                 out.final_enemy_supply = enemy_supply;
@@ -237,7 +252,7 @@ fn session(rep: &Replay, perspective: u8, stream: TcpStream) -> Result<PlayResul
                         let mut bad = 0;
                         for i in 0..n {
                             let tag = u16::from_le_bytes([legacy.data[1 + 2 * i], legacy.data[2 + 2 * i]]) as u32;
-                            if !f.units.iter().any(|u| u.id == tag && u.owner == owner) {
+                            if !f.units.iter().any(|u| u.id == tag) {
                                 bad += 1;
                             }
                         }

@@ -29,8 +29,35 @@ enum Cmd {
         #[arg(long)]
         perspective: Option<u8>,
     },
+    /// 040-R8 analysis: where a replay starts to diverge in OpenBW (JSON).
+    Trace {
+        rep: PathBuf,
+        #[arg(long)]
+        perspective: Option<u8>,
+    },
     /// 013: opcode histogram of a corpus with the OpenBW class of each opcode (JSON).
     Ophist { dir: PathBuf },
+    /// 040: build BC shards from a replay folder (filter, desync check, labels, shards).
+    Build {
+        dir: PathBuf,
+        /// 040-R14 source tag (stardata, scr_public, community, personal, user, bot).
+        #[arg(long)]
+        src: String,
+        /// Shard output folder (default `<URANIUM_SHARED_DIR>/datasets/replays/shards/<src>`, 040-R13).
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Per-replay records (JSON lines).
+        #[arg(long)]
+        records: PathBuf,
+        #[arg(long, default_value_t = 4)]
+        jobs: usize,
+        /// Process at most this many replays (sorted by path).
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Storage budget in GB for this run (060-R7 total is 600).
+        #[arg(long, default_value_t = 600)]
+        budget_gb: u64,
+    },
     CheckScrep {
         dir: PathBuf,
         /// screp executable (icza/screp release).
@@ -122,6 +149,38 @@ fn main() -> Result<()> {
             }
         }
         Cmd::CheckScrep { dir, screp, limit } => check_screp(&dir, &screp, limit)?,
+        Cmd::Build { dir, src, out, records, jobs, limit, budget_gb } => {
+            let shards_dir = match out {
+                Some(o) => o,
+                None => PathBuf::from(std::env::var("URANIUM_SHARED_DIR").context("URANIUM_SHARED_DIR is not set (.env)")?).join("datasets/replays/shards").join(&src),
+            };
+            let mut files = Vec::new();
+            reps(&dir, &mut files)?;
+            files.sort();
+            files.truncate(limit.unwrap_or(usize::MAX));
+            let cfg = uranium_replay::play::PlayConfig::from_env(uranium_replay::play::work_dir_default())?;
+            uranium_replay::play::ensure_file(&cfg.launcher)?;
+            let first = std::fs::read_dir(&shards_dir).map(|d| d.count() as u32).unwrap_or(0);
+            let opt = uranium_replay::pipeline::BuildOptions { src, shards_dir, jobs, shard_target_bytes: 512 << 20, budget_bytes: budget_gb << 30, first_shard_index: first };
+            let recs = uranium_replay::pipeline::build(&files, &opt, &cfg)?;
+            let mut w = std::io::BufWriter::new(std::fs::File::create(&records)?);
+            let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+            for r in &recs {
+                use std::io::Write as _;
+                writeln!(w, "{}", serde_json::to_string(r)?)?;
+                let kind = serde_json::to_value(&r.outcome)?["outcome"].as_str().unwrap_or("?").to_string();
+                *counts.entry(kind).or_default() += 1;
+            }
+            println!("{}", serde_json::json!({"replays": files.len(), "records": recs.len(), "by_outcome": counts}));
+        }
+        Cmd::Trace { rep, perspective } => {
+            let r = load(&rep)?;
+            let cfg = uranium_replay::play::PlayConfig::from_env(uranium_replay::play::work_dir_default())?;
+            let views = perspective.map(|p| vec![p]).unwrap_or_else(|| uranium_replay::play::terran_perspectives(&r));
+            for p in views {
+                println!("{}", serde_json::to_string_pretty(&uranium_replay::trace::trace(&r, p, &cfg)?)?);
+            }
+        }
         Cmd::Ophist { dir } => {
             let mut files = Vec::new();
             reps(&dir, &mut files)?;
