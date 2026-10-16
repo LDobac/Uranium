@@ -148,7 +148,9 @@ fn start(info: &UrStatic) -> Result<Bridge, String> {
         writer,
         width: w,
         height: h,
-        next_frame: 0,
+        // Replay ids are still 0 on frame 0 (CompleteMapInformation is enabled in onStart), so
+        // the first observation is frame 1 (011-R15).
+        next_frame: 1,
         cmds: Vec::new(),
         pool: Vec::new(),
         started: Instant::now(),
@@ -191,8 +193,8 @@ fn raw_frame(b: &Bridge, f: &UrFrame) -> RawFrame {
     // BWAPI unit/bullet sets iterate in pointer order, which differs between processes.
     // Sort so identical games produce identical observations (011-AC4, 010-AC6).
     let mut units: Vec<UnitState> = units.iter().map(convert::unit).collect();
-    // getReplayID() is still 0 for the starting units on the first frame, so break ties by
-    // content; otherwise their order follows heap addresses (differs per run under ASLR).
+    // Replay ids are unique from frame 1 on; the content tie-break only guards against a
+    // duplicate ever reaching the sort (heap order differs per run under ASLR).
     units.sort_by_key(|u| (u.id, u.owner, u.unit_type, u.pos));
     let mut effects: Vec<Effect> = effects.iter().map(convert::effect).collect();
     effects.extend(units.iter().filter_map(convert::spell_unit_effect));

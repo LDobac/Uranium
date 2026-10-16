@@ -1,6 +1,6 @@
 # 011 — Bridge: OpenBW
 
-- **Status**: Approved (2026-10-15, 2026-10-16 개정: 011-R13 내용 해시, 011-AC8 통과)
+- **Status**: Approved (2026-10-15, 2026-10-16 개정: 011-R13 내용 해시, 011-R15 첫 관측 프레임 1, 011-AC8 통과)
 - **Related**: [010](010-game-protocol.md), [013](013-version-mapping.md), [020](020-env-orchestration.md)
 
 ## Purpose
@@ -24,7 +24,7 @@ OpenBW 포크 BWAPI 4.2(`github.com/OpenBW/bwapi`) 위에서 동작하는 AIModu
 | 011-R4 | **MUST** 1v1 매칭은 `auto_menu=LAN`, `OPENBW_LAN_MODE=TCP` 또는 `LOCAL`로 한다. 두 런처는 같은 맵과 같은 `bwapi.ini`를 써야 한다 |
 | 011-R5 | **MUST** 정책 관측(RawFrame)은 항상 **자기 시야로 필터링**한다(맵핵 금지). OpenBW 브리지(lockstep)는 `CompleteMapInformation`을 **항상 켠다**. 이는 결정론적 유닛 ID(`getReplayID`, 리플레이 명령의 유닛 ID와 동일)를 얻기 위해서다. RawFrame 생성 시에는 `isVisible(self)`와 탐지 여부로 적 유닛·이벤트를 직접 거른다. `PrivilegedSummary`는 `URANIUM_PRIVILEGED=1`일 때만 송신한다. (2026-10-15 사용자 승인으로 변경. 이전 문구는 '학습용 상대 정보 생성 시에만 켠다') |
 | 011-R16 | **MUST** Windows에서도 동작한다. 브리지는 MSVC로 빌드한 `.dll` AI 모듈이다. OpenBW는 Windows에서 `LOCAL` 소켓을 지원하지 않으므로 LAN 매칭은 `OPENBW_LAN_MODE=TCP`로 하고 게임마다 포트 2개(각 클라이언트 listen 1개)를 쓴다. 포트는 hostd가 할당한다(020-R8) |
-| 011-R15 | **MUST** 유닛 ID는 `getReplayID()`를 쓴다. `getID()`는 프로세스마다 다른 포인터 순서로 배정되어 재현이 불가능하다. 한 관측 안의 유닛·이펙트·이벤트는 결정론적 순서로 정렬한다 |
+| 011-R15 | **MUST** 유닛 ID는 `getReplayID()`를 쓴다. `getID()`는 프로세스마다 다른 포인터 순서로 배정되어 재현이 불가능하다. 한 관측 안의 유닛·이펙트·이벤트는 결정론적 순서로 정렬한다. `CompleteMapInformation`은 `onStart`에서 켜지므로 프레임 0에서는 모든 유닛의 replay id가 0이다. 따라서 **첫 관측은 프레임 1**(replay id가 배정된 뒤)에 보낸다(2026-10-16 사용자 확인) |
 | 011-R6 | **MUST** 정규 ID는 BWAPI enum 값과 같다. OpenBW 브리지의 ID 변환은 항등 매핑이다 |
 | 011-R7 | **MUST** 게임 종료 시 리플레이(`.rep`)를 저장하고 경로를 GameEnd에 포함한다. 저장 여부는 설정으로 끌 수 있다 |
 | 011-R8 | **MUST** 에이전트 연결이 끊기면 `leaveGame()`을 호출하고 비정상 종료 코드로 끝낸다 |
