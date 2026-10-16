@@ -187,12 +187,64 @@ pub struct LabelStats {
     /// "<action> <- <type>+<type> (kept|void)" -> count: selected unit types without the
     /// capability, dropped from a label that stays valid or leaving none (041-R11).
     pub cap_detail: std::collections::BTreeMap<String, usize>,
+    /// "<action> <- <condition> (new|old)" -> count for `type_mask` failures of Train / Research /
+    /// Upgrade: which prerequisite fails, and whether it already failed at the previous step
+    /// (old) or only became false since (new).
+    pub type_detail: std::collections::BTreeMap<String, usize>,
+}
+
+/// First failing Train / Research / Upgrade prerequisite of `a` in `me` (034-R3 order).
+fn prereq_fail(a: &uranium_env::actions::Action, me: &uranium_proto::PlayerState) -> Option<&'static str> {
+    let t = uranium_env::types::TypeTables::get();
+    let afford = |m: i32, g: i32| me.minerals >= m && me.gas >= g;
+    match a.command.as_str() {
+        "Train" => {
+            let u = t.unit(a.unit_type?)?;
+            let supply = u.supply_required == 0 || me.supply_total as i32 - me.supply_used as i32 >= u.supply_required;
+            if !afford(u.minerals, u.gas) {
+                Some("afford")
+            } else if !supply {
+                Some("supply")
+            } else {
+                None
+            }
+        }
+        "Research" => {
+            let tech = a.tech?;
+            let r = &t.techs[tech as usize];
+            if me.tech & (1u64 << tech) != 0 {
+                Some("researched")
+            } else if me.researching & (1u64 << tech) != 0 {
+                Some("researching")
+            } else if !afford(r.minerals, r.gas) {
+                Some("afford")
+            } else {
+                None
+            }
+        }
+        "Upgrade" => {
+            let up = a.upgrade?;
+            let u = &t.upgrades[up as usize];
+            let level = me.upgrades.get(up as usize).copied().unwrap_or(0) as i32;
+            if level >= u.max_repeats {
+                Some("max_level")
+            } else if me.upgrading & (1u64 << up) != 0 {
+                Some("upgrading")
+            } else if !afford(u.minerals(level + 1), u.gas(level + 1)) {
+                Some("afford")
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 pub fn label_check(game: &ShardGame, st: &mut LabelStats) -> Result<()> {
     let map = MapInfo::new(&game.game_info, family_index(&game.meta.map_family), map_precompute(&game.meta.map_hash).as_ref())?;
     let mut mem = AgentMemory::new(&game.game_info);
     let k = CAPABILITIES.len();
+    let mut prev: Option<&uranium_proto::PlayerState> = None;
     for s in &game.steps {
         let o = extract(&s.raw_frame, &mut mem, &map, None);
         let (label, why) = host_label_check(&s.action_label, &o);
@@ -218,9 +270,34 @@ pub fn label_check(game: &ShardGame, st: &mut LabelStats) -> Result<()> {
                 *st.cap_detail.entry(format!("{name} <- {} ({kind})", types.join("+"))).or_default() += 1;
             }
         }
+        if let Some(w @ ("target_unit_cap" | "target_unit_missing")) = why {
+            // Target owner (self / enemy / neutral / unseen) and type, from the raw frame.
+            let target = s.action_label.target_unit.and_then(|id| s.raw_frame.units.iter().find(|u| u.id == id));
+            let me = game.game_info.self_player;
+            let desc = target.map_or_else(
+                || "not_in_frame".to_string(),
+                |u| {
+                    let owner = if u.owner == me { "self" } else if game.game_info.players.iter().any(|p| p.id == u.owner) { "enemy" } else { "neutral" };
+                    let ty = uranium_env::types::TypeTables::get().unit(u.unit_type).map_or("?", |t| t.name.as_str());
+                    format!("{owner} {ty}")
+                },
+            );
+            *st.type_detail.entry(format!("{name} [{w}] -> {desc}")).or_default() += 1;
+        }
+        if let (Some(a), Some("type_mask")) = (a, why) {
+            let me = &s.raw_frame.self_state;
+            let cond = prereq_fail(a, me).unwrap_or("producer_or_required");
+            let age = match prev.and_then(|p| prereq_fail(a, p)) {
+                Some(c) if c == cond => "old",
+                _ if cond == "producer_or_required" => "-",
+                _ => "new",
+            };
+            *st.type_detail.entry(format!("{name} <- {cond} ({age})")).or_default() += 1;
+        }
         if let Some(w) = why {
             *st.fails.entry((name, w)).or_default() += 1;
         }
+        prev = Some(&s.raw_frame.self_state);
     }
     Ok(())
 }

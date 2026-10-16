@@ -117,8 +117,13 @@ fn main() -> Result<()> {
             rows.sort_by(|x, y| y.2.cmp(&x.2));
             let mut detail: Vec<_> = st.cap_detail.into_iter().collect();
             detail.sort_by(|x, y| y.1.cmp(&x.1));
+            let mut type_detail: Vec<_> = st.type_detail.into_iter().collect();
+            type_detail.sort_by(|x, y| y.1.cmp(&x.1));
             let labels: usize = st.totals.values().sum();
-            println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "games": n, "labels": labels, "invalid": invalid, "by_action_reason": rows, "select_cap_types": detail }))?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({ "games": n, "labels": labels, "invalid": invalid, "by_action_reason": rows, "select_cap_types": detail, "type_mask_prereq": type_detail }))?
+            );
             Ok(())
         }
         Cmd::Bc { shards, out, config, backend, core, s2, steps } => {
