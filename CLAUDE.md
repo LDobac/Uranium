@@ -76,7 +76,7 @@ docs/                 # windows.md (Windows 세션 체크리스트)
 third_party/          # OpenBW·BWAPI·T1 봇 소스(커밋/아카이브 고정, git 미추적) + patches/(0001 폴더 로더, 0002 고정 시작 seed, 0003 런처 종료 크래시 회피, 0004 결정론적 LAN uid, 0005–0010 T1 봇 BWAPI 4.2 포팅: UAlbertaBot·Steamhammer·ZZZKBot·Stardust·McRave·Iron)
 reports/              # 스파이크·벤치·평가 리포트
 ```
-진행 상황(2026-10-16): M0 완료(012·013 외 Approved), M1 완료(벤치·OpenBW·데이터 추출), M2 완료(proto·브리지·T0 테란·셀프매치, `reports/m2_selfmatch.md`), M3 Linux 범위 완료(hostd·env 스케줄러·calibrate, T0 3종족, T1 봇 6종, `reports/m3.md`·`reports/oss_bot_porting.md`). M3 Windows 단일 PC 구성 완료(`reports/m3_windows.md`, 011-AC8). M3 남은 것: 원격 2호스트 020-AC1과 Windows 구성 (b). 다음은 M4(리플레이 파이프라인, spec 013 승인 선행).
+진행 상황(2026-10-16): M0 완료(012·013 외 Approved), M1 완료(벤치·OpenBW·데이터 추출), M2 완료(proto·브리지·T0 테란·셀프매치, `reports/m2_selfmatch.md`), M3 Linux 범위 완료(hostd·env 스케줄러·calibrate, T0 3종족, T1 봇 6종, `reports/m3.md`·`reports/oss_bot_porting.md`). M3 Windows 단일 PC 구성(`reports/m3_windows.md`, 011-AC8)과 원격 구성 (b)(학습 PC + 원격 Linux 2대, 020-AC1·011-AC6, `reports/m3_remote.md`)까지 M3 완료. 다음은 M4(리플레이 파이프라인, spec 013 승인 선행).
 
 ## 코딩 규칙
 - Burn 0.22 모델 코드는 백엔드에 무관하게 쓰고 실행 시 `Device`로 고른다. 테스트는 `Device::flex()`로 한다 (032-R1).

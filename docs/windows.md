@@ -49,9 +49,28 @@ Windows PC 한 대에서 게임·브리지·hostd·에이전트를 모두 돌리
 - 동시 게임 수 측정: `target\release\uranium-env.exe calibrate` → `<URANIUM_CACHE_DIR>\hostd_calibration.toml`
 - 봇 크래시 분석: WinDbg(`winget install Microsoft.WinDbg`)의 `cdbX64`에 `module.pdb` 경로를 `-y`로 준다.
 
-## 5. 남은 일
-- 구성 (b): Windows에서 `uranium-env`를 실행하고, 로컬 hostd와 VPN 너머 Linux 게임 PC의 hostd를 함께 쓴다(020 호스트 구성, 2026-10-16).
-  - hosts 파일에 두 hostd를 모두 등록한다. Windows hostd의 `URANIUM_HOSTD_LISTEN`은 루프백이어도 된다.
-  - `URANIUM_AGENT_LISTEN`은 게임 PC에서 접근 가능한 주소여야 한다.
-  - 판단당 지연(브리지 RTT)을 기록한다.
-  - 원격 2호스트 020-AC1과 함께 한다.
+## 5. 구성 (b): 이 PC + 원격 Linux 게임 PC (020 호스트 구성)
+학습 PC(Windows)가 `uranium-env`(에이전트 서버 내장)와 로컬 hostd를 돌린다. 원격 Linux 게임 PC는 hostd만 돌린다. 원격 게임의 브리지는 학습 PC의 에이전트에 접속한다. 검증 결과는 `reports/m3_remote.md`에 있다.
+
+**원격 Linux 게임 PC**
+1. 저장소를 받아 최신으로 맞춘다: `git pull --ff-only`
+2. 빌드한다: `tools/openbw/build.sh` → `tools/openbw/build_bridge.sh` → `cargo build --release -p uranium-hostd -p uranium-env -p uranium-agent` → `tools/oss/build_<bot>.sh`(6종)
+   - 패치가 바뀐 봇 소스는 먼저 `git -C third_party/<bot> reset --hard && git -C third_party/<bot> clean -fdx`로 되돌린다. 이전 패치가 적용된 상태에서는 새 패치가 들어가지 않는다.
+3. 게임 데이터(`URANIUM_DATA_DIR`, 맵)를 복사하고 `config/assets.toml`의 `content_sha256`과 맵 sha256으로 검증한다(011-R13).
+4. `.env`를 설정한다: `URANIUM_DATA_DIR`, `URANIUM_MAPS_DIR`, `URANIUM_CACHE_DIR`, `URANIUM_BWAPI_DIR`, `URANIUM_BRIDGE_LIB`, `URANIUM_OSS_BOTS_DIR`. `URANIUM_HOSTD_LISTEN`에는 그 PC의 LAN 주소를 `<addr>:7700` 형식으로 넣는다.
+5. `target/release/uranium-env calibrate`를 한 번 실행한 뒤 hostd를 띄운다: `setsid nohup target/release/uranium-hostd serve > /tmp/hostd.log 2>&1 < /dev/null &`
+   - 원격에서 `pkill -f uranium-hostd`를 쓰면 SSH 명령 자신도 매칭되어 함께 죽는다. `pkill -x uranium-hostd`를 쓴다.
+
+**학습 PC (Windows)**
+1. `config/hosts.toml`(git 미추적)에 로컬 hostd(`127.0.0.1:7700`)와 원격 hostd 주소를 등록한다. 형식은 `config/hosts.example.toml`을 따른다.
+2. `.env`를 설정한다.
+   - `URANIUM_HOSTS_FILE`: hosts 파일 경로
+   - `URANIUM_AGENT_LISTEN=0.0.0.0:7600`
+   - `URANIUM_AGENT_PUBLIC_ADDR`: 원격 PC에서 닿는 이 PC의 주소(VPN 주소 등)와 포트(`:7600`)
+   - 이 주소는 로컬 게임도 쓴다. 따라서 VPN이 꺼지면 로컬 게임도 접속하지 못한다.
+3. 방화벽에 들어오는 TCP 7600 허용 규칙을 추가한다. 관리자 권한이 필요하다.
+   - 예: `New-NetFirewallRule -DisplayName 'Uranium agent' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 7600 -Program <repo>\target\release\uranium-env.exe -Profile Any`
+4. 실행: `target\release\uranium-env.exe run --plan config\plans\m3-remote.toml`
+   - 응답하지 않는 hostd는 경고 후 빼고 진행한다.
+   - 도중에 끊긴 hostd에서 돌던 게임은 Aborted로 기록한다(020-R4).
+   - PC를 추가하거나 빼려면 run을 멈추고 hosts 파일을 고친 뒤 다시 시작한다.

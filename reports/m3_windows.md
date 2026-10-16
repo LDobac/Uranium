@@ -16,7 +16,7 @@
 | 020-AC3: hostd 강제 종료 뒤 고아 프로세스 없음 | 런처 14개 실행 중 `taskkill /F` → 2초 뒤 0개 | **통과** |
 | 020-AC5: calibrate 측정 파일 생성·적용 | 권장 16게임 저장, 재시작한 hostd가 16을 사용 | **통과** |
 | 021-AC2: T1 봇 6종 대 T0 | 100/100 완주(McRave 수정 후, 아래 3절) | **통과** |
-| 구성 (b): Windows 스케줄러 + 원격 Linux hostd | 원격 게임 PC 필요 | **미검증** |
+| 구성 (b): Windows 스케줄러 + 원격 Linux hostd | `reports/m3_remote.md` | **통과** |
 
 ## 1. 빌드 절차의 실제 차이
 | 항목 | Linux | Windows |
@@ -96,7 +96,7 @@
 - T0 전적: UAlbertaBot 상대 3/30승, Steamhammer 상대 5/30승, 나머지 봇 상대 0승이다. Linux 결과와 경향이 같다.
 
 ## 5. 남은 일
-- 구성 (b)와 020-AC1: 원격 Linux 게임 PC가 필요하다.
+- 구성 (b)와 020-AC1: `reports/m3_remote.md`에서 통과했다(2026-10-16).
 - 게임 데이터 해시(해결, 2026-10-16):
   - 이전 `manifest_sha256`은 `manifest.toml`에 들어간 추출 원본 절대 경로 때문에 호스트마다 달랐다.
   - 사용자 확인을 거쳐 011-R13을 경로에 무관한 `content_sha256`으로 바꿨다. 이 PC에서 측정한 값을 `config/assets.toml`에 고정했다.
