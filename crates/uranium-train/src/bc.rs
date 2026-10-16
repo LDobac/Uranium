@@ -17,7 +17,7 @@ use uranium_model::config::UraniumNetConfig;
 use uranium_model::value::VALUE_WIN;
 use uranium_model::{CoreInit, UraniumNet};
 
-use crate::data::{GameSeq, Rng, StepSource, TrainStep, prepare};
+use crate::data::{GameStream, Rng, StepSource, TrainStep};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct HeadWeights {
@@ -78,8 +78,9 @@ impl BcConfig {
 
 /// One lane: the current game and the position inside it.
 struct Lane {
-    game: Option<GameSeq>,
-    pos: usize,
+    game: Option<GameStream>,
+    /// Steps of the current BPTT window (041-R2).
+    chunk: Vec<TrainStep>,
     fresh: bool,
 }
 
@@ -121,7 +122,7 @@ impl<C: CoreInit> Trainer<C> {
             .with_weight_decay(cfg.weight_decay)
             .with_grad_clipping(Some(GradientClippingConfig::Norm(cfg.grad_clip)))
             .init();
-        let lanes = (0..cfg.lanes).map(|_| Lane { game: None, pos: 0, fresh: true }).collect();
+        let lanes = (0..cfg.lanes).map(|_| Lane { game: None, chunk: Vec::new(), fresh: true }).collect();
         let rng = Rng::new(cfg.data.seed);
         Self { net, cfg, net_cfg, optim, device, lanes, state: None, rng, step: 0, lr_scale: 1.0, invalid_labels: 0, games: 0 }
     }
@@ -130,18 +131,19 @@ impl<C: CoreInit> Trainer<C> {
     fn refill(&mut self, src: &mut dyn StepSource) -> Result<bool> {
 
         for i in 0..self.lanes.len() {
-            let need = self.lanes[i].game.as_ref().is_none_or(|g| self.lanes[i].pos >= g.steps.len());
-            if !need {
+            if self.lanes[i].game.as_ref().is_some_and(|g| g.remaining() > 0) {
                 continue;
             }
-            let Some(game) = src.next_game()? else { return Ok(false) };
+            let game = loop {
+                let Some(game) = src.next_game()? else { return Ok(false) };
+                if !game.steps.is_empty() {
+                    break game;
+                }
+            };
             let z_present = self.rng.unit() >= self.cfg.data.z_drop;
             let sym = if self.cfg.data.augment { Sym::all()[(self.rng.next() % 8) as usize] } else { Sym::IDENTITY };
-            let seq = prepare(&game, z_present, sym)?;
-            self.invalid_labels += seq.invalid_labels;
             self.games += 1;
-
-            self.lanes[i] = Lane { game: Some(seq), pos: 0, fresh: true };
+            self.lanes[i] = Lane { game: Some(GameStream::new(game, z_present, sym)?), chunk: Vec::new(), fresh: true };
         }
         Ok(true)
     }
@@ -152,6 +154,11 @@ impl<C: CoreInit> Trainer<C> {
             return Ok(None);
         }
         let (b, t) = (self.lanes.len(), self.cfg.seq_len);
+        for lane in &mut self.lanes {
+            let (chunk, invalid) = lane.game.as_mut().unwrap().next_chunk(t);
+            self.invalid_labels += invalid;
+            lane.chunk = chunk;
+        }
         // Gather rows in b-major order; a game shorter than the chunk is padded with its last
         // step at weight 0.
         let mut rows: Vec<&TrainStep> = Vec::with_capacity(b * t);
@@ -159,14 +166,13 @@ impl<C: CoreInit> Trainer<C> {
         let mut results = Vec::with_capacity(b * t);
         let mut keep = Vec::with_capacity(b);
         for lane in &self.lanes {
-            let g = lane.game.as_ref().unwrap();
+            let result = lane.game.as_ref().unwrap().result;
             keep.push(!lane.fresh);
             for k in 0..t {
-                let i = lane.pos + k;
-                let s = &g.steps[i.min(g.steps.len() - 1)];
+                let s = &lane.chunk[k.min(lane.chunk.len() - 1)];
                 rows.push(s);
-                weights.push(if i < g.steps.len() { s.weight } else { 0.0 });
-                results.push(g.result);
+                weights.push(if k < lane.chunk.len() { s.weight } else { 0.0 });
+                results.push(result);
             }
         }
         let obs: Vec<_> = rows.iter().map(|s| &s.obs).collect();
@@ -223,13 +229,11 @@ impl<C: CoreInit> Trainer<C> {
         let lr = self.cfg.lr_at(self.step, self.lr_scale);
         self.net = self.optim.step(lr, self.net.clone(), grads);
         self.step += 1;
-        for lane in &mut self.lanes {
-            lane.pos += t;
-            lane.fresh = false;
-        }
         // Lanes that finished their game start fresh next time (state reset on refill).
         for lane in &mut self.lanes {
-            if lane.game.as_ref().is_some_and(|g| lane.pos >= g.steps.len()) {
+            lane.fresh = false;
+            lane.chunk.clear();
+            if lane.game.as_ref().is_some_and(|g| g.remaining() == 0) {
                 lane.game = None;
             }
         }

@@ -56,6 +56,8 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// 034-AC3 / AMB-040-6: label distribution and GameInfo checks over a shard folder (JSON).
+    ShardStats { dir: PathBuf },
     /// 013-AC4: SC:R -> 1.16.1 conversion round trip over a folder (JSON summary).
     Roundtrip { dir: PathBuf },
     /// 040-R8 analysis: where a replay starts to diverge in OpenBW (JSON).
@@ -235,6 +237,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::json!({"replays": files.len(), "resumed_skip": opt.done_sha256.len(), "by_outcome": counts.into_inner().unwrap()}));
         }
         Cmd::Stats { records, out } => std::fs::write(&out, stats_markdown(&records)?)?,
+        Cmd::ShardStats { dir } => println!("{}", serde_json::to_string_pretty(&shard_stats(&dir)?)?),
         Cmd::Nondet { rep, perspective, runs } => {
             let r = load(&rep)?;
             let cfg = uranium_replay::play::PlayConfig::from_env(uranium_replay::play::work_dir_default())?;
@@ -418,6 +421,66 @@ fn check_screp(dir: &Path, screp: &Path, limit: Option<usize>) -> Result<()> {
 }
 
 /// 040-R6 / 040-AC4: counts only, no file or player names (040-R14).
+/// Shard folder summary: per-action label counts (034-AC3), delay buckets and argument use, and
+/// GameInfo consistency per game (AMB-040-6). Reading every shard also checks the schema version.
+fn shard_stats(dir: &Path) -> Result<serde_json::Value> {
+    use std::collections::BTreeMap;
+    let table = uranium_env::actions::ActionTable::load()?;
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.to_string_lossy().ends_with(".bin.zst")).collect();
+    files.sort();
+    let (mut games, mut steps, mut bad_game_info) = (0usize, 0usize, Vec::new());
+    let (mut with_select, mut with_unit, mut with_tile, mut queued) = (0usize, 0usize, 0usize, 0usize);
+    let mut actions = BTreeMap::<u16, usize>::new();
+    let mut delays = BTreeMap::<u32, usize>::new();
+    let mut matchups = BTreeMap::<String, usize>::new();
+    let mut families = BTreeMap::<String, usize>::new();
+    for f in &files {
+        let shard = uranium_replay::shard::read(f)?;
+        for g in &shard.games {
+            games += 1;
+            *matchups.entry(g.meta.matchup.clone()).or_default() += 1;
+            *families.entry(g.meta.map_family.clone()).or_default() += 1;
+            let gi = &g.game_info;
+            let sm = &gi.static_map;
+            let ok = gi.map_size_tiles == (sm.width_tiles, sm.height_tiles)
+                && sm.width_tiles > 0
+                && sm.ground_height.len() == sm.width_tiles as usize * sm.height_tiles as usize
+                && !sm.start_locations.is_empty()
+                && gi.self_player == g.meta.perspective_slot
+                && gi.players.iter().filter(|p| p.is_self).count() == 1
+                && gi.players.iter().any(|p| p.is_self && p.id == gi.self_player);
+            if !ok {
+                bad_game_info.push(g.meta.replay_sha256[..12].to_string());
+            }
+            for s in &g.steps {
+                steps += 1;
+                let l = &s.action_label;
+                *actions.entry(l.action).or_default() += 1;
+                *delays.entry(l.delay).or_default() += 1;
+                with_select += usize::from(!l.selected.is_empty());
+                with_unit += usize::from(l.target_unit.is_some());
+                with_tile += usize::from(l.target_tile.is_some());
+                queued += usize::from(l.queued);
+            }
+        }
+    }
+    let name = |id: u16| table.actions.get(id as usize).map_or_else(|| format!("#{id}"), |a| a.name.clone());
+    let mut by_count: Vec<(String, usize)> = actions.iter().map(|(&a, &n)| (name(a), n)).collect();
+    by_count.sort_by(|a, b| b.1.cmp(&a.1));
+    let unseen: Vec<String> = table.actions.iter().filter(|a| !actions.contains_key(&a.id)).map(|a| a.name.clone()).collect();
+    let pct = |n: usize| if steps == 0 { 0.0 } else { (n as f64 * 10000.0 / steps as f64).round() / 100.0 };
+    Ok(serde_json::json!({
+        "shards": files.len(), "games": games, "steps": steps,
+        "game_info_bad": bad_game_info,
+        "matchups": matchups, "map_families": families,
+        "pct_with_selected": pct(with_select), "pct_with_target_unit": pct(with_unit),
+        "pct_with_target_tile": pct(with_tile), "pct_queued": pct(queued),
+        "delay_buckets": delays,
+        "actions": by_count.iter().map(|(n, c)| serde_json::json!([n, c, pct(*c)])).collect::<Vec<_>>(),
+        "actions_unseen": unseen,
+    }))
+}
+
 fn stats_markdown(records: &[PathBuf]) -> Result<String> {
     use std::collections::BTreeMap;
     use std::fmt::Write as _;

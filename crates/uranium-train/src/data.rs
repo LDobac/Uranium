@@ -174,32 +174,67 @@ impl Rng {
     }
 }
 
-/// Runs feature extraction over a game in order (memory carries across steps) and converts
-/// labels. `z_present` and `sym` are chosen by the caller (041-R8, 040-R7).
-pub fn prepare(game: &ShardGame, z_present: bool, sym: Sym) -> Result<GameSeq> {
-    let map = MapInfo::new(&game.game_info, family_index(&game.meta.map_family), map_precompute(&game.meta.map_hash).as_ref())?;
-    let mut mem = AgentMemory::new(&game.game_info);
-    let z = z_present.then(|| replay_z(game));
-    let zero_priv = PrivilegedTensors { summary: vec![0.0; dims().privileged()] };
-    let mut steps = Vec::with_capacity(game.steps.len());
-    let mut invalid = 0;
-    for s in &game.steps {
-        let o = extract(&s.raw_frame, &mut mem, &map, z.as_ref());
-        let (mut label, ok) = host_label(&s.action_label, &o);
-        invalid += !ok as usize;
-        // Memory sees what the policy did, like in RL (030 §4 previous action, §1 last action).
-        let units: Vec<u32> = s.action_label.selected.clone();
-        mem.record_action(label.action, label.delay_bucket, &units);
-        let o = if sym == Sym::IDENTITY {
-            o
-        } else {
-            if let Some(t) = label.target_loc {
-                label.target_loc = Some(transform_target_loc(label.action, t, o.map_size, o.transposed, sym));
-            }
-            transform(&o, sym)
-        };
-        let privileged = s.privileged.as_ref().map_or_else(|| zero_priv.clone(), privileged);
-        steps.push(TrainStep { obs: o, label, privileged, weight: if ok { 1.0 } else { 0.0 } });
+/// Feature extraction over one game in order (memory carries across steps), producing training
+/// steps a chunk at a time so only the current BPTT window is held in memory (041-R2: a whole
+/// game of spatial features is gigabytes). `z_present` and `sym` are chosen by the caller (041-R8,
+/// 040-R7).
+pub struct GameStream {
+    game: ShardGame,
+    map: MapInfo,
+    mem: AgentMemory,
+    z: Option<Strategy>,
+    sym: Sym,
+    pos: usize,
+    zero_priv: PrivilegedTensors,
+    /// 041-R7 win target: +1 win, -1 loss, 0 unknown.
+    pub result: f32,
+}
+
+impl GameStream {
+    pub fn new(game: ShardGame, z_present: bool, sym: Sym) -> Result<Self> {
+        let map = MapInfo::new(&game.game_info, family_index(&game.meta.map_family), map_precompute(&game.meta.map_hash).as_ref())?;
+        let mem = AgentMemory::new(&game.game_info);
+        let z = z_present.then(|| replay_z(&game));
+        let zero_priv = PrivilegedTensors { summary: vec![0.0; dims().privileged()] };
+        let result = game.meta.result as f32;
+        Ok(Self { game, map, mem, z, sym, pos: 0, zero_priv, result })
     }
-    Ok(GameSeq { steps, result: game.meta.result as f32, invalid_labels: invalid })
+
+    /// Steps not yet produced.
+    pub fn remaining(&self) -> usize {
+        self.game.steps.len() - self.pos
+    }
+
+    /// Up to `n` next steps and how many of them have labels inconsistent with the masks.
+    pub fn next_chunk(&mut self, n: usize) -> (Vec<TrainStep>, usize) {
+        let end = (self.pos + n).min(self.game.steps.len());
+        let mut steps = Vec::with_capacity(end - self.pos);
+        let mut invalid = 0;
+        for s in &self.game.steps[self.pos..end] {
+            let o = extract(&s.raw_frame, &mut self.mem, &self.map, self.z.as_ref());
+            let (mut label, ok) = host_label(&s.action_label, &o);
+            invalid += !ok as usize;
+            // Memory sees what the policy did, like in RL (030 §4 previous action, §1 last action).
+            self.mem.record_action(label.action, label.delay_bucket, &s.action_label.selected);
+            let o = if self.sym == Sym::IDENTITY {
+                o
+            } else {
+                if let Some(t) = label.target_loc {
+                    label.target_loc = Some(transform_target_loc(label.action, t, o.map_size, o.transposed, self.sym));
+                }
+                transform(&o, self.sym)
+            };
+            let privileged = s.privileged.as_ref().map_or_else(|| self.zero_priv.clone(), privileged);
+            steps.push(TrainStep { obs: o, label, privileged, weight: if ok { 1.0 } else { 0.0 } });
+        }
+        self.pos = end;
+        (steps, invalid)
+    }
+}
+
+/// Whole game at once (tests, short games): `GameStream` drained in one chunk.
+pub fn prepare(game: &ShardGame, z_present: bool, sym: Sym) -> Result<GameSeq> {
+    let mut stream = GameStream::new(game.clone(), z_present, sym)?;
+    let (steps, invalid_labels) = stream.next_chunk(usize::MAX);
+    Ok(GameSeq { steps, result: stream.result, invalid_labels })
 }

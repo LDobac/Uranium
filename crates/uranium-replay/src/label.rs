@@ -78,6 +78,8 @@ pub struct Coverage {
     pub merged_spam: u32,
     /// Unknown commands by opcode, for the coverage report.
     pub unknown_ops: Vec<(u8, u32)>,
+    /// Targeted orders (0x15) without a 034 action, by order id (034-AC3 review).
+    pub unknown_orders: Vec<(u8, u32)>,
 }
 
 pub struct Labeler {
@@ -137,6 +139,7 @@ impl Labeler {
     {
         let mut cov = Coverage::default();
         let mut unknown_ops: HashMap<u8, u32> = HashMap::new();
+        let mut unknown_orders: HashMap<u8, u32> = HashMap::new();
         let mut selection: Vec<u32> = Vec::new();
         let mut groups: HashMap<u8, Vec<u32>> = HashMap::new();
         let mut raws: Vec<Raw> = Vec::new();
@@ -205,6 +208,9 @@ impl Labeler {
                 op::TARGETED_ORDER => {
                     let (x, y, tag, order, q) = (u16_at(d, 0), u16_at(d, 2), valid_tag(u16_at(d, 4)), d[8], d[9] != 0);
                     let name = self.orders.get(&order).map(|(unit, pos)| if tag.is_some() && !unit.is_empty() { unit } else { pos }).filter(|n| !n.is_empty());
+                    if name.is_none() {
+                        *unknown_orders.entry(order).or_insert(0) += 1;
+                    }
                     push(name.and_then(|n| self.id(n)), q, true, tag, pos_tile(x, y), &mut cov);
                 }
                 op::BUILD => {
@@ -245,11 +251,13 @@ impl Labeler {
                 _ => push(None, false, false, None, None, &mut cov),
             }
         }
-        cov.unknown_ops = {
-            let mut v: Vec<(u8, u32)> = unknown_ops.into_iter().collect();
+        let sorted = |m: HashMap<u8, u32>| {
+            let mut v: Vec<(u8, u32)> = m.into_iter().collect();
             v.sort();
             v
         };
+        cov.unknown_ops = sorted(unknown_ops);
+        cov.unknown_orders = sorted(unknown_orders);
         (with_delays(raws, end_frame, self.id("NoOp").unwrap_or(0)), cov)
     }
 
