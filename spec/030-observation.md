@@ -66,11 +66,13 @@ RawFrame과 에이전트 메모리를 모델 입력 텐서로 변환하는 규�
 | 구분 | 채널 | 수 |
 |---|---|---|
 | 정적 | height one-hot(3), walkable, buildable, start_loc, base_loc, choke(사전계산), wall_candidate(사전계산, 힌트 전용), valid_map | 10 |
-| 시야 | visible_now, explored, enemy_last_seen_age [SPEC AMBIGUOUS] AMB-030-1 | 3 |
+| 시야 | visible_now, explored, last_seen_age (이전 이름 enemy_last_seen_age) | 3 |
 | 지형 동적 | creep, own_building_footprint, enemy_building_footprint(기억 포함) | 3 |
 | 밀도 | own_ground, own_air, enemy_ground, enemy_air (log(1+count)) | 4 |
 | 위험 | hazard: Psionic Storm, Dark Swarm, Disruption Web, 핵 조준점, EMP·Irradiate·기타 투사체 (관측된 것만) | 5 |
 | 기타 | scanner_active(아군 스캔 범위) | 1 |
+
+`last_seen_age`는 타일을 자기 시야로 마지막으로 본 뒤 지난 시간이다(정찰 기록, 032 §2.4의 장기 정보). 지금 보이는 타일은 0, 한 번도 보지 못한 타일은 1, 그 외는 log(1+경과 프레임)/log(1+86400)이다. 적 유닛의 과거 위치는 담지 않는다. 단기 이동은 코어가 담당한다 (AMB-030-1 Resolved, 2026-10-16: 사용자가 Claude에게 결정을 위임).
 
 `wall_candidate`는 맵 사전계산 결과다. 정책에 주는 **힌트일 뿐** 강제 위치가 아니다([031](031-action-space.md)).
 

@@ -96,6 +96,33 @@ fn hidden_enemies_do_not_leak_030_ac2() {
     assert!(!o.entity_ids.contains(&hatch));
 }
 
+/// AMB-030-1: last_seen_age is 0 when visible, grows with time since last seen, 1 when never seen.
+#[test]
+fn last_seen_age_is_a_scouting_record_030() {
+    let map = map_info();
+    let mut mem = AgentMemory::new(&game_info());
+    let mut first = frame(100, vec![], false);
+    for y in 0..H {
+        for x in 0..W {
+            first.visibility.set(x, y, x < 40);
+        }
+    }
+    extract(&first, &mut mem, &map, None);
+    let mut later = frame(100 + 2400, vec![], false);
+    for y in 0..H {
+        for x in 0..W {
+            later.visibility.set(x, y, x < 10);
+        }
+    }
+    let o = extract(&later, &mut mem, &map, None);
+    let age = |x: usize, y: usize| o.obs.spatial[ch::LAST_SEEN_AGE * CELLS + y * MAP + x];
+    assert_eq!(age(5, 5), 0.0, "visible now");
+    let expect = (1.0f32 + 2400.0).ln() / (1.0f32 + 86400.0).ln();
+    assert!((age(20, 5) - expect).abs() < 1e-5, "seen 2400 frames ago: {}", age(20, 5));
+    assert_eq!(age(60, 5), 1.0, "never seen");
+    assert_eq!(age(120, 120), 0.0, "outside the map stays padding");
+}
+
 /// 030-AC4: every symmetry followed by its inverse restores the observation exactly, including
 /// location targets.
 #[test]

@@ -5,7 +5,8 @@ use crate::actions::{CAPABILITIES, LOC_CLASSES};
 use crate::types::TypeTables;
 
 /// 030-R5 / 032-R6: bump when any feature meaning, order or normalisation changes.
-pub const FEATURE_SCHEMA_VERSION: u32 = 1;
+/// 2: channel 12 is last_seen_age (AMB-030-1).
+pub const FEATURE_SCHEMA_VERSION: u32 = 2;
 
 /// 030-R6: spatial side in build tiles.
 pub const MAP: usize = 128;
@@ -51,8 +52,8 @@ pub mod ch {
     pub const VALID_MAP: usize = 9;
     pub const VISIBLE_NOW: usize = 10;
     pub const EXPLORED: usize = 11;
-    /// [SPEC AMBIGUOUS] AMB-030-1: meaning not decided; left at 0 until resolved.
-    pub const ENEMY_LAST_SEEN_AGE: usize = 12;
+    /// Time since the tile was last visible (scouting record, AMB-030-1).
+    pub const LAST_SEEN_AGE: usize = 12;
     pub const CREEP: usize = 13;
     pub const OWN_BUILDING: usize = 14;
     pub const ENEMY_BUILDING: usize = 15;

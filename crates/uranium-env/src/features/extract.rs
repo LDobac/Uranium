@@ -20,6 +20,8 @@ pub mod norm {
     pub const SPELL_COOLDOWN: f32 = 64.0;
     pub const STATUS_TIMER: f32 = 256.0;
     pub const COUNT_LOG: f32 = 4.0;
+    /// ln(1 + 86400): 60 minutes (020 time limit), the longest possible age.
+    pub const LAST_SEEN_LOG: f32 = 11.366_755;
 }
 
 /// Everything one decision step needs: model inputs, masks and the entity -> unit id map that
@@ -238,6 +240,13 @@ fn spatial(w: &World, entities: &[&Entity]) -> Vec<f32> {
             s[ch::VISIBLE_NOW * CELLS + i] = w.frame.visibility.get(gx, gy) as u8 as f32;
             s[ch::EXPLORED * CELLS + i] = w.frame.explored.get(gx, gy) as u8 as f32;
             s[ch::CREEP * CELLS + i] = w.frame.creep.get(gx, gy) as u8 as f32;
+            // AMB-030-1: 0 = visible now, 1 = never seen, else log(1+age)/log(1+86400).
+            let seen = w.mem.last_visible[i];
+            s[ch::LAST_SEEN_AGE * CELLS + i] = if seen == super::memory::NEVER {
+                1.0
+            } else {
+                ((1.0 + w.frame.frame.saturating_sub(seen) as f32).ln() / norm::LAST_SEEN_LOG).min(1.0)
+            };
         }
     }
     // Building footprints and unit densities.

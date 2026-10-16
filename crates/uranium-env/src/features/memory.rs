@@ -32,7 +32,12 @@ pub struct AgentMemory {
     /// 031-R10: the previous act had a failed command.
     pub last_failed: bool,
     pub frame: u32,
+    /// Frame each 128x128 tile was last visible (`NEVER` = not yet), 030 `last_seen_age`.
+    pub last_visible: Vec<u32>,
 }
+
+/// `AgentMemory::last_visible` for tiles never seen.
+pub const NEVER: u32 = u32::MAX;
 
 impl AgentMemory {
     pub fn new(info: &GameInfo) -> Self {
@@ -52,6 +57,7 @@ impl AgentMemory {
             last_action: None,
             last_failed: false,
             frame: 0,
+            last_visible: vec![NEVER; super::schema::CELLS],
         }
     }
 
@@ -62,6 +68,14 @@ impl AgentMemory {
     /// Folds one observation into the memory. Only visible units are used (030-R2).
     pub fn observe(&mut self, frame: &RawFrame, types: &TypeTables) {
         self.frame = frame.frame;
+        let (w, h) = (frame.visibility.width.min(128) as usize, frame.visibility.height.min(128) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                if frame.visibility.get(x as u16, y as u16) {
+                    self.last_visible[y * super::schema::MAP + x] = frame.frame;
+                }
+            }
+        }
         self.last_failed = frame.events.iter().any(|e| matches!(e, GameEvent::CommandFailed { .. }));
         let mut counts: HashMap<u16, u16> = HashMap::new();
         for u in &frame.units {
