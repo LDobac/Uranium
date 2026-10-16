@@ -1,6 +1,6 @@
 # 020 — Env Orchestration
 
-- **Status**: Approved (2026-10-15)
+- **Status**: Approved (2026-10-15, 2026-10-16 개정: 020-AC1 기준, Windows 학습 PC 로컬 hostd)
 - **Related**: [011](011-bridge-openbw.md), [021](021-opponent-pool.md), [042](042-rl-training.md), [060](060-infra-bc250.md)
 
 ## Purpose
@@ -49,7 +49,7 @@
 | 전체 결정 처리량 | TBD(M3). 추론 서버 한계가 병목일 것으로 예상([060](060-infra-bc250.md)) |
 
 ## Acceptance Criteria
-- 020-AC1: 원격 호스트 2대에서 동시에 16게임을 1시간 동안 돌렸을 때 Aborted 비율이 1% 미만이다.
+- 020-AC1: 원격 게임 호스트 2대와 학습 PC의 로컬 hostd(3대, 각자 측정한 동시 게임 수)로 T0·T1 혼합 200판(`config/plans/m3-remote.toml`)을 돌렸을 때 Aborted 비율이 1% 미만이다. 결과에는 호스트별·상대별 판당 시간을 기록한다. (2026-10-16 사용자 결정으로 "원격 2대·동시 16게임·1시간"에서 변경)
 - 020-AC2: 같은 seed, 같은 상대, 같은 정책(결정론적 샘플링)으로 실행했을 때 결과가 재현된다. 상대는 결정론적인 T0·셀프플레이로 한정한다. OSS 봇은 내부 난수·시간 의존으로 재현되지 않으며 그대로 둔다(AMB-021-3).
 - 020-AC3: hostd를 kill -9 한 뒤 재시작하면 고아 프로세스가 남지 않는다. 프로세스 그룹 정리로 보장한다.
 - 020-AC5: `uranium-env calibrate` 한 번으로 측정 파일이 만들어지고, `URANIUM_HOSTD_MAX_GAMES` 없이 재시작한 hostd가 그 값을 쓴다.
@@ -64,7 +64,7 @@
   - 호스트별 코어 수와 동시 게임 수는 hostd `ListCapabilities`로 자동 감지하고, `config/hosts.toml`로 덮어쓸 수 있다.
   - BC250 로컬 hostd는 기본 비활성이다. BC250은 추론과 학습을 전담한다.
   - **Windows 학습 PC**(CUDA)는 학습·추론과 함께 로컬 hostd로 게임도 돌린다(2026-10-16 사용자 결정). 원격 Linux 게임 PC와 함께 `URANIUM_HOSTS_FILE`에 둘 다 등록하고, 에이전트 서버는 원격 브리지가 접속할 수 있는 주소로 listen한다(`URANIUM_AGENT_LISTEN`, `URANIUM_AGENT_PUBLIC_ADDR`). 학습 중 로컬 동시 게임 수는 hosts 파일의 `max_games`로 줄일 수 있으며, 값은 학습 부하를 측정해 정한다(TBD(M5)).
-  - 020-AC1의 "호스트 2대·16게임"은 최소 기준으로 유지한다.
+  - 020-AC1은 원격 2대 + 학습 PC 구성 200판으로 판정한다(2026-10-16 변경).
 
 - **시간 초과 처리 (확정 2026-10-15, AMB-020-2)**
   - 60분(86,400 프레임)에 게임을 중단하고 **무승부**로 처리한다. 보상은 0이고 점수 판정은 하지 않는다.

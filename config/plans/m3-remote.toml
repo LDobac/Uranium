@@ -1,0 +1,474 @@
+# 020-AC1 / 011-AC6: 200 games on the two remote game hosts plus the training PC.
+# Ten identical blocks of 20 (T0 cross + every T1 bot) so each host gets the same mix.
+name = "m3-remote"
+seed_base = 50000
+
+# block 1
+[[matchup]]
+map = "both"
+games = 4
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "terran" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "ualbertabot", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "steamhammer", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "stardust", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "zzzkbot", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "iron", race = "terran" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "mcrave", race = "protoss" }
+
+# block 2
+[[matchup]]
+map = "both"
+games = 4
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "terran" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "ualbertabot", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "steamhammer", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "stardust", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "zzzkbot", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "iron", race = "terran" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "mcrave", race = "protoss" }
+
+# block 3
+[[matchup]]
+map = "both"
+games = 4
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "terran" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "ualbertabot", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "steamhammer", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "stardust", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "zzzkbot", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "iron", race = "terran" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "mcrave", race = "protoss" }
+
+# block 4
+[[matchup]]
+map = "both"
+games = 4
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "terran" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "ualbertabot", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "steamhammer", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "stardust", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "zzzkbot", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "iron", race = "terran" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "mcrave", race = "protoss" }
+
+# block 5
+[[matchup]]
+map = "both"
+games = 4
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "terran" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "ualbertabot", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "steamhammer", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "stardust", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "zzzkbot", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "iron", race = "terran" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "mcrave", race = "protoss" }
+
+# block 6
+[[matchup]]
+map = "both"
+games = 4
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "terran" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "ualbertabot", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "steamhammer", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "stardust", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "zzzkbot", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "iron", race = "terran" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "mcrave", race = "protoss" }
+
+# block 7
+[[matchup]]
+map = "both"
+games = 4
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "terran" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "ualbertabot", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "steamhammer", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "stardust", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "zzzkbot", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "iron", race = "terran" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "mcrave", race = "protoss" }
+
+# block 8
+[[matchup]]
+map = "both"
+games = 4
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "terran" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "ualbertabot", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "steamhammer", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "stardust", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "zzzkbot", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "iron", race = "terran" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "mcrave", race = "protoss" }
+
+# block 9
+[[matchup]]
+map = "both"
+games = 4
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "terran" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "ualbertabot", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "steamhammer", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "stardust", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "zzzkbot", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "iron", race = "terran" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "mcrave", race = "protoss" }
+
+# block 10
+[[matchup]]
+map = "both"
+games = 4
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "terran" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "ualbertabot", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "steamhammer", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "stardust", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "zzzkbot", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "iron", race = "terran" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "oss", name = "mcrave", race = "protoss" }
