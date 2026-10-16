@@ -6,11 +6,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use uranium_proto::{PrivilegedSummary, RawFrame};
+use uranium_proto::{GameInfo, PrivilegedSummary, RawFrame};
 
 use crate::label::Label;
 
-pub const SCHEMA_VERSION: u32 = 1;
+/// 2: games carry the bridge GameInfo (AMB-040-6); version-1 shards must be rebuilt.
+pub const SCHEMA_VERSION: u32 = 2;
 /// Features are not stored (040-R12).
 pub const FEATURE_VERSION: u32 = 0;
 const ZSTD_LEVEL: i32 = 3;
@@ -60,6 +61,8 @@ pub struct Step {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ShardGame {
     pub meta: GameMeta,
+    /// Static map and players of the perspective (AMB-040-6): feature extraction needs it (030).
+    pub game_info: GameInfo,
     pub steps: Vec<Step>,
 }
 
@@ -158,7 +161,23 @@ mod tests {
             privileged: None,
             action_label: Label { frame: n, action: 4, delay: 8, queued: false, selected: vec![1, 2], target_unit: Some(9), target_tile: None },
         };
-        ShardGame { meta, steps: vec![step; 3] }
+        let game_info = GameInfo {
+            map_name: "m".into(),
+            map_hash: [0; 32],
+            map_size_tiles: (4, 4),
+            self_player: 0,
+            players: vec![],
+            static_map: uranium_proto::StaticMap {
+                width_tiles: 4,
+                height_tiles: 4,
+                walkable: uranium_proto::BitGrid::new(16, 16),
+                buildable: uranium_proto::BitGrid::new(4, 4),
+                ground_height: vec![0; 16],
+                start_locations: vec![],
+            },
+            latency_frames: 0,
+        };
+        ShardGame { meta, game_info, steps: vec![step; 3] }
     }
 
     #[test]

@@ -141,7 +141,7 @@ fn hex(b: &[u8]) -> String {
 }
 
 /// Processes one view of one replay into a shard game.
-fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler) -> Result<std::result::Result<(Vec<Step>, Coverage, i8), Outcome>> {
+fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler) -> Result<std::result::Result<(Vec<Step>, Coverage, i8, uranium_proto::GameInfo), Outcome>> {
     let me = slot_of(rep, view.perspective)?;
     // Replay A: own unit types at each command frame + desync signals.
     let mut units_at: HashMap<u32, HashMap<u32, u16>> = HashMap::new();
@@ -188,7 +188,32 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler) ->
         Some(_) => -1,
         None => 0,
     };
-    Ok(Ok((steps, coverage, result)))
+    let Some(game_info) = res.game_info else {
+        return Ok(Err(Outcome::Error { reason: "bridge sent no GameInfo (AMB-040-6)".into() }));
+    };
+    Ok(Ok((steps, coverage, result, game_info)))
+}
+
+/// Directory of `<map_hash>.toml` map precomputes (031): `URANIUM_MAPS_DIR`, default `assets/maps`.
+pub fn maps_dir() -> PathBuf {
+    std::env::var_os("URANIUM_MAPS_DIR").map_or_else(|| PathBuf::from("assets/maps"), PathBuf::from)
+}
+
+/// Writes `<maps_dir>/<map_hash>.toml` unless it exists (031, AMB-031-3).
+pub fn write_map_precompute(map_hash: &str, info: &uranium_proto::GameInfo, chk: &[u8]) -> Result<()> {
+    use uranium_env::features::mapgen;
+    let dir = maps_dir();
+    let path = dir.join(format!("{map_hash}.toml"));
+    if path.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(&dir)?;
+    let pre = mapgen::precompute(&info.static_map, &mapgen::chk_resources(chk)?);
+    // Write then rename so parallel workers never read a partial file.
+    let tmp = dir.join(format!("{map_hash}.toml.{}", std::process::id()));
+    std::fs::write(&tmp, toml::to_string(&pre)?)?;
+    std::fs::rename(&tmp, &path).or_else(|_| std::fs::remove_file(&tmp))?;
+    Ok(())
 }
 
 pub struct BuildOptions {
@@ -260,8 +285,12 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
             continue;
         }
         let outcome = match build_view(&rep, &view, cfg, labeler) {
-            Ok(Ok((steps, coverage, result))) => {
+            Ok(Ok((steps, coverage, result, game_info))) => {
                 let n = steps.len();
+                // 031 / AMB-031-3: map precompute once per map (observation channels only).
+                if let Err(e) = write_map_precompute(&map_hash, &game_info, &rep.map) {
+                    eprintln!("map precompute for {map_hash}: {e:#}");
+                }
                 let meta = GameMeta {
                     map_hash: map_hash.clone(),
                     map_family: family.clone(),
@@ -274,7 +303,7 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
                     stage: view.stage.to_string(),
                     replay_sha256: sha.clone(),
                 };
-                let game = ShardGame { meta, steps };
+                let game = ShardGame { meta, game_info, steps };
                 *written.lock().unwrap() += postcard::experimental::serialized_size(&game).unwrap_or(0) as u64;
                 match writer.lock().unwrap().add(game) {
                     Ok(()) => Outcome::Written { steps: n, coverage },

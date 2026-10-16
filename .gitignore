@@ -32,3 +32,5 @@
 !.env.example
 config/hosts.toml
 /build/
+# 031 map precompute output (derived from map data, not committed)
+/assets/maps/

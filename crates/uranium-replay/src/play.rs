@@ -57,6 +57,9 @@ pub struct PlayResult {
     pub pre_leave_self_supply: Option<u16>,
     pub pre_leave_enemy_supply: Option<u16>,
     pub wall_s: f64,
+    /// The bridge's GameInfo (static map), stored in shards (AMB-040-6).
+    #[serde(skip)]
+    pub game_info: Option<uranium_proto::GameInfo>,
 }
 
 /// 040-R8 ① (user decision 2026-10-16): more than this share of invalid selections is a desync.
@@ -256,6 +259,7 @@ fn session(rep: &Replay, perspective: u8, stream: TcpStream, extra_stops: &[u32]
                     let unmatched = gi.players.iter().filter(|q| !rep.header.players.iter().any(|p| p.name == q.name.as_bytes())).map(|q| q.id).collect::<Vec<_>>();
                     eprintln!("[debug] bwapi ids without a header name match: {unmatched:?}");
                 }
+                out.game_info = Some(*gi);
             }
             BridgeMsg::Privileged(p) => {
                 enemy_supply = Some(p.enemy.supply_used);

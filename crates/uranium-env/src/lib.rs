@@ -3,4 +3,5 @@
 
 pub mod actions;
 pub mod features;
+pub mod reward;
 pub mod types;
