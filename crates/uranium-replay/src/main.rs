@@ -40,6 +40,14 @@ enum Cmd {
         #[arg(long)]
         perspective: Option<u8>,
     },
+    /// Debug (011-AC5): replay `runs` times and print the first observation that differs.
+    Nondet {
+        rep: PathBuf,
+        #[arg(long)]
+        perspective: u8,
+        #[arg(long, default_value_t = 4)]
+        runs: usize,
+    },
     /// Debug: list the map's triggers (CHK `TRIG`): condition and action types with arguments.
     Triggers { rep: PathBuf },
     /// 040-R6 / 040-AC4: dataset statistics markdown from `build` records.
@@ -195,6 +203,42 @@ fn main() -> Result<()> {
             println!("{}", serde_json::json!({"replays": files.len(), "records": recs.len(), "by_outcome": counts}));
         }
         Cmd::Stats { records, out } => std::fs::write(&out, stats_markdown(&records)?)?,
+        Cmd::Nondet { rep, perspective, runs } => {
+            let r = load(&rep)?;
+            let cfg = uranium_replay::play::PlayConfig::from_env(uranium_replay::play::work_dir_default())?;
+            let mut all: Vec<Vec<uranium_proto::RawFrame>> = Vec::new();
+            for _ in 0..runs {
+                let mut frames = Vec::new();
+                uranium_replay::play::play_with(&r, perspective, &cfg, &[], &mut |f, _| frames.push(f.clone()))?;
+                all.push(frames);
+            }
+            for k in 1..all.len() {
+                if let Some(i) = (0..all[0].len().min(all[k].len())).find(|&i| all[0][i] != all[k][i]) {
+                    let (a, b) = (&all[0][i], &all[k][i]);
+                    println!("run 0 vs {k}: first difference at observation {i} (frame {})", a.frame);
+                    let field = |name: &str, x: String, y: String| {
+                        if x != y {
+                            println!("  {name} differs:\n    {}\n    {}", &x[..x.len().min(600)], &y[..y.len().min(600)]);
+                        }
+                    };
+                    field("self_state", format!("{:?}", a.self_state), format!("{:?}", b.self_state));
+                    field("events", format!("{:?}", a.events), format!("{:?}", b.events));
+                    field("effects", format!("{:?}", a.effects), format!("{:?}", b.effects));
+                    field("visibility", format!("{:?}", a.visibility.count_ones()), format!("{:?}", b.visibility.count_ones()));
+                    for (ua, ub) in a.units.iter().zip(&b.units) {
+                        if ua != ub {
+                            println!("  unit differs:\n    {ua:?}\n    {ub:?}");
+                            break;
+                        }
+                    }
+                    if a.units.len() != b.units.len() {
+                        println!("  unit count {} vs {}", a.units.len(), b.units.len());
+                    }
+                } else {
+                    println!("run 0 vs {k}: identical ({} observations)", all[0].len());
+                }
+            }
+        }
         Cmd::StreamCheck { rep, hostd, agent_ip, perspective } => {
             let r = load(&rep)?;
             let cfg = uranium_replay::play::PlayConfig::from_env(uranium_replay::play::work_dir_default())?;
