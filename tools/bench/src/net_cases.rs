@@ -18,10 +18,15 @@ pub fn all() -> Vec<Case> {
     vec![
         Case { name: "net_act_lstm_b16_n256", run: act::<LstmCore> },
         Case { name: "net_act_gtrxl_b16_n256", run: act::<GtrxlCore> },
-        Case { name: "net_train_lstm_b2_t16_n256", run: |c| train::<LstmCore>(c, 2, 16) },
-        Case { name: "net_train_lstm_b4_t16_n256", run: |c| train::<LstmCore>(c, 4, 16) },
-        Case { name: "net_train_gtrxl_b2_t16_n256", run: |c| train::<GtrxlCore>(c, 2, 16) },
-        Case { name: "net_entity_bias_ratio_b16_n256", run: entity_ratio },
+        Case { name: "net_train_lstm_b2_t16_n256_full", run: |c| train::<LstmCore>(c, 2, 16, 256, false) },
+        Case { name: "net_train_lstm_b4_t16_n256_full", run: |c| train::<LstmCore>(c, 4, 16, 256, false) },
+        Case { name: "net_train_gtrxl_b2_t16_n256_full", run: |c| train::<GtrxlCore>(c, 2, 16, 256, false) },
+        // BC worst case (041 micro_lanes): real games reach N_max = 512 (030-R7); one / two lanes
+        // x T64 per forward/backward, all activations kept (_full) or gradient checkpointing (_ckpt).
+        Case { name: "net_train_lstm_b1_t64_n512_full", run: |c| train::<LstmCore>(c, 1, 64, 512, false) },
+        Case { name: "net_train_lstm_b1_t64_n512_ckpt", run: |c| train::<LstmCore>(c, 1, 64, 512, true) },
+        Case { name: "net_train_lstm_b2_t64_n512_full", run: |c| train::<LstmCore>(c, 2, 64, 512, false) },
+        Case { name: "net_train_lstm_b2_t64_n512_ckpt", run: |c| train::<LstmCore>(c, 2, 64, 512, true) },        Case { name: "net_entity_bias_ratio_b16_n256", run: entity_ratio },
         Case { name: "net_act_parts_entity_b16_n256", run: |c| parts(c, Part::Entity) },
         Case { name: "net_act_parts_spatial_b16_n256", run: |c| parts(c, Part::Spatial) },
     ]
@@ -110,17 +115,17 @@ fn net_params<C: CoreInit>(net: &UraniumNet<C>) -> usize {
 }
 
 /// 032-AC3: teacher-forced forward + backward over B x T steps; reports samples/s.
-fn train<C: CoreInit>(c: &Ctx, b: usize, t: usize) -> Row {
+fn train<C: CoreInit>(c: &Ctx, b: usize, t: usize, n: usize, ckpt: bool) -> Row {
     let (b, t) = if c.quick { (1, 4) } else { (b, t) };
-    let n = 256;
-    let ad = c.device.clone().autodiff();
+    let ad = if ckpt { c.device.clone().autodiff().gradient_checkpointing() } else { c.device.clone().autodiff() };
     let cfg = config(C::KIND, c.quick);
     let cols = columns();
     let net = UraniumNet::<C>::new(&cfg, &cols, &ad);
     let (obs, _) = random_obs(&cfg, &cols, b * t, n, 2, &ad);
     let labels: ActionBatch = net.act(&obs, net.init_state(b * t, &ad), 1.0).action;
     let priv_ = random_priv(&cfg, b * t, 3, &ad);
-    let mut row = Row::new(&format!("net_train_{:?}_b{b}_t{t}", C::KIND).to_lowercase(), format!("B={b} T={t} N={n} map={}", cfg.input.map_size));
+    let name = format!("net_train_{:?}_b{b}_t{t}_n{n}{}", C::KIND, if ckpt { "_ckpt" } else { "_full" }).to_lowercase();
+    let mut row = Row::new(&name, format!("B={b} T={t} N={n} map={}{}", cfg.input.map_size, if ckpt { " checkpointing" } else { "" }));
     let (med, _) = time_p95(c.warmup, c.iters, || {
         let out = net.forward_seq(&obs, &labels, Some(&priv_), net.init_state(b, &ad), t);
         let loss = out.heads.logp.sum().neg().mean() + out.value.powi_scalar(2).mean();

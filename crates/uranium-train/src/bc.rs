@@ -1,18 +1,20 @@
 //! Behaviour cloning trainer (041). B lanes each walk through games; every step trains on the
 //! next T observations of every lane with the core state carried over between chunks of the same
-//! game and reset when a lane starts a new game (041-R2, 032-R5).
+//! game and reset when a lane starts a new game (041-R2, 032-R5). Lanes run forward/backward in
+//! groups of `micro_lanes` and their gradients are summed before one optimizer step, so peak GPU
+//! memory follows the group, not B (entity attention is N² per row).
 
 use std::path::Path;
 
 use anyhow::Result;
 use burn::module::Module;
-use burn::optim::{AdamWConfig, GradientsParams, ModuleOptimizer};
+use burn::optim::{AdamWConfig, GradientsAccumulator, GradientsParams, ModuleOptimizer};
 use burn::optim::grad_clipping::GradientClippingConfig;
 use burn::tensor::{Bool, Device, Tensor, TensorData};
 use serde::{Deserialize, Serialize};
 use uranium_env::features::augment::Sym;
 use uranium_model::checkpoint::{self, CheckpointMeta};
-use uranium_model::collate::{HostLabel, action_batch, obs_batch, priv_batch};
+use uranium_model::collate::{HostLabel, action_batch, obs_batch_padded, priv_batch};
 use uranium_model::config::UraniumNetConfig;
 use uranium_model::value::VALUE_WIN;
 use uranium_model::{CoreInit, UraniumNet};
@@ -47,6 +49,17 @@ pub struct DataConfig {
 pub struct BcConfig {
     pub lanes: usize,
     pub seq_len: usize,
+    /// Lanes per forward/backward pass; gradients of all groups are accumulated into one update
+    /// (same result as one pass over all lanes). 0 = all lanes at once.
+    #[serde(default)]
+    pub micro_lanes: usize,
+    /// Recompute memory-bound activations during backward (Burn balanced checkpointing).
+    #[serde(default)]
+    pub grad_checkpointing: bool,
+    /// Round the padded entity count N up to a multiple of this (0 or 1 = batch max N only).
+    /// Fewer distinct tensor shapes per run (results are unchanged: padding is masked).
+    #[serde(default)]
+    pub pad_entities: usize,
     pub lr: f64,
     pub min_lr: f64,
     pub warmup_steps: usize,
@@ -99,6 +112,20 @@ pub struct LossParts {
     pub valid: f32,
 }
 
+impl LossParts {
+    /// Adds the loss terms of another lane group (each already divided by the batch-wide valid).
+    fn add(&mut self, o: &LossParts) {
+        self.total += o.total;
+        self.action += o.action;
+        self.delay += o.delay;
+        self.queued += o.queued;
+        self.selected += o.selected;
+        self.target_unit += o.target_unit;
+        self.target_loc += o.target_loc;
+        self.value += o.value;
+    }
+}
+
 pub struct Trainer<C: CoreInit> {
     pub net: UraniumNet<C>,
     pub cfg: BcConfig,
@@ -106,7 +133,8 @@ pub struct Trainer<C: CoreInit> {
     optim: ModuleOptimizer,
     device: Device,
     lanes: Vec<Lane>,
-    state: Option<C::State>,
+    /// Core state per lane group (a group of `micro_lanes` always holds the same lanes).
+    states: Vec<Option<C::State>>,
     rng: Rng,
     pub step: usize,
     /// 1.0 for S1, `s2_lr_scale` for S2 (041-R4).
@@ -124,7 +152,7 @@ impl<C: CoreInit> Trainer<C> {
             .init();
         let lanes = (0..cfg.lanes).map(|_| Lane { game: None, chunk: Vec::new(), fresh: true }).collect();
         let rng = Rng::new(cfg.data.seed);
-        Self { net, cfg, net_cfg, optim, device, lanes, state: None, rng, step: 0, lr_scale: 1.0, invalid_labels: 0, games: 0 }
+        Self { net, cfg, net_cfg, optim, device, lanes, states: Vec::new(), rng, step: 0, lr_scale: 1.0, invalid_labels: 0, games: 0 }
     }
 
     /// Fills lanes whose game is used up; returns false when the source ran dry for some lane.
@@ -148,24 +176,64 @@ impl<C: CoreInit> Trainer<C> {
         Ok(true)
     }
 
+    /// Lanes per forward/backward pass.
+    fn group_size(&self) -> usize {
+        match self.cfg.micro_lanes {
+            0 => self.lanes.len(),
+            m => m.min(self.lanes.len()),
+        }
+    }
+
     /// One gradient update over B lanes x T steps. `None` when the source is exhausted.
     pub fn train_step(&mut self, src: &mut dyn StepSource) -> Result<Option<LossParts>> {
         if !self.refill(src)? {
             return Ok(None);
         }
-        let (b, t) = (self.lanes.len(), self.cfg.seq_len);
+        let t = self.cfg.seq_len;
         for lane in &mut self.lanes {
             let (chunk, invalid) = lane.game.as_mut().unwrap().next_chunk(t);
             self.invalid_labels += invalid;
             lane.chunk = chunk;
         }
+        // Losses are divided by the usable steps of the whole batch, so the summed group
+        // gradients equal the gradient of one pass over all lanes.
+        let valid = self.lanes.iter().flat_map(|l| l.chunk.iter().map(|s| s.weight)).sum::<f32>().max(1.0);
+        let g = self.group_size();
+        let groups = self.lanes.len().div_ceil(g);
+        self.states.resize_with(groups, || None);
+        let mut acc = GradientsAccumulator::<UraniumNet<C>>::new();
+        let mut report = LossParts { valid, ..Default::default() };
+        for i in 0..groups {
+            let (loss, parts) = self.group_loss(i, i * g..((i + 1) * g).min(self.lanes.len()), valid);
+            report.add(&parts);
+            let grads = GradientsParams::from_grads(loss.backward(), &self.net);
+            acc.accumulate(&self.net, grads);
+        }
+        let lr = self.cfg.lr_at(self.step, self.lr_scale);
+        self.net = self.optim.step(lr, self.net.clone(), acc.grads());
+        self.step += 1;
+        // Lanes that finished their game start fresh next time (state reset on refill).
+        for lane in &mut self.lanes {
+            lane.fresh = false;
+            lane.chunk.clear();
+            if lane.game.as_ref().is_some_and(|g| g.remaining() == 0) {
+                lane.game = None;
+            }
+        }
+        Ok(Some(report))
+    }
+
+    /// Forward pass and weighted loss of lane group `group` (lanes `lanes`), divided by the
+    /// batch-wide `valid`. Carries the group's core state to its next chunk.
+    fn group_loss(&mut self, group: usize, lanes: std::ops::Range<usize>, valid: f32) -> (Tensor<1>, LossParts) {
+        let (b, t) = (lanes.len(), self.cfg.seq_len);
         // Gather rows in b-major order; a game shorter than the chunk is padded with its last
         // step at weight 0.
         let mut rows: Vec<&TrainStep> = Vec::with_capacity(b * t);
         let mut weights = Vec::with_capacity(b * t);
         let mut results = Vec::with_capacity(b * t);
         let mut keep = Vec::with_capacity(b);
-        for lane in &self.lanes {
+        for lane in &self.lanes[lanes] {
             let result = lane.game.as_ref().unwrap().result;
             keep.push(!lane.fresh);
             for k in 0..t {
@@ -179,21 +247,22 @@ impl<C: CoreInit> Trainer<C> {
         let labels: Vec<&HostLabel> = rows.iter().map(|s| &s.label).collect();
         let privs: Vec<_> = rows.iter().map(|s| &s.privileged).collect();
         let d = &self.device;
-        let ob = obs_batch(&obs, d);
+        let ob = obs_batch_padded(&obs, self.cfg.pad_entities, d);
         let n = ob.entities();
         let ab = action_batch(&labels, n, self.net_cfg.heads.max_select, d);
         let pb = priv_batch(&privs, d);
 
         let keep_t = Tensor::<1, Bool>::from_data(TensorData::new(keep, [b]), d);
-        let s0 = match self.state.take() {
-            Some(s) => C::mask_state(C::detach_state(s), keep_t),
+        let s0 = match self.states[group].take() {
+            Some(s) => C::mask_state(s, keep_t),
             None => self.net.init_state(b, d),
         };
         let out = self.net.forward_seq(&ob, &ab, Some(&pb), s0, t);
-        self.state = Some(out.state);
+        // Detached when stored so a waiting group's state does not keep its forward graph alive
+        // while the other groups run (the truncation point of 041-R2 is the same).
+        self.states[group] = Some(C::detach_state(out.state));
 
-        let w = Tensor::<1>::from_data(TensorData::new(weights.clone(), [b * t]), d);
-        let valid = weights.iter().sum::<f32>().max(1.0);
+        let w = Tensor::<1>::from_data(TensorData::new(weights, [b * t]), d);
         let ce = |logp: Tensor<1>| (logp.neg() * w.clone()).sum() / valid as f64;
         let h = &self.cfg.heads;
         let lp = &out.heads.logp;
@@ -223,21 +292,9 @@ impl<C: CoreInit> Trainer<C> {
             target_unit: scalar(&parts[4].0),
             target_loc: scalar(&parts[5].0),
             value: scalar(&value_loss),
-            valid,
+            valid: 0.0,
         };
-        let grads = GradientsParams::from_grads(loss.backward(), &self.net);
-        let lr = self.cfg.lr_at(self.step, self.lr_scale);
-        self.net = self.optim.step(lr, self.net.clone(), grads);
-        self.step += 1;
-        // Lanes that finished their game start fresh next time (state reset on refill).
-        for lane in &mut self.lanes {
-            lane.fresh = false;
-            lane.chunk.clear();
-            if lane.game.as_ref().is_some_and(|g| g.remaining() == 0) {
-                lane.game = None;
-            }
-        }
-        Ok(Some(report))
+        (loss, report)
     }
 
     /// 032-R6 / 041-R10: weights + config + schema versions + hyper-parameters.

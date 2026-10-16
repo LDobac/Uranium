@@ -151,12 +151,45 @@ fn bc_overfits_a_tiny_game_041() {
     train_tiny(40, true);
 }
 
-fn train_tiny(updates: usize, expect_drop: bool) {
+/// Lanes trained one at a time with summed gradients give the same updates as one pass over all
+/// lanes (041-R3: the batch is the hyper-parameter, `micro_lanes` only bounds GPU memory).
+#[test]
+fn micro_lanes_match_full_batch_041_r3() {
+    // One initial net for both runs: parallel tests share the device RNG, so seeding is not enough.
+    let net = tiny_net();
+    let run = |micro_lanes, pad_entities| {
+        let mut t = tiny_trainer_with(micro_lanes, pad_entities, net.clone());
+        let mut src = VecSource((0..4).map(|_| game()).collect::<VecDeque<_>>());
+        (0..4).map(|_| t.train_step(&mut src).unwrap().unwrap().total).collect::<Vec<_>>()
+    };
+    let full = run(0, 0);
+    // Extra masked entity padding (pad_entities) must not change the result either.
+    for (micro_lanes, pad) in [(1, 0), (1, 64)] {
+        let other = run(micro_lanes, pad);
+        for (a, b) in full.iter().zip(&other) {
+            assert!((a - b).abs() <= 1e-4 * a.abs().max(1.0), "full batch {full:?} != micro_lanes {micro_lanes} pad {pad}: {other:?}");
+        }
+    }
+}
+
+fn tiny_net() -> UraniumNet<LstmCore> {
     let ad = Device::flex().autodiff();
     ad.seed(3);
+    let cols = ActionColumns::from_table(action_table()).unwrap();
+    UraniumNet::<LstmCore>::new(&tiny_cfg(), &cols, &ad)
+}
+
+fn tiny_trainer(micro_lanes: usize) -> Trainer<LstmCore> {
+    tiny_trainer_with(micro_lanes, 0, tiny_net())
+}
+
+fn tiny_trainer_with(micro_lanes: usize, pad_entities: usize, net: UraniumNet<LstmCore>) -> Trainer<LstmCore> {
     let cfg = BcConfig {
         lanes: 2,
         seq_len: 4,
+        micro_lanes,
+        grad_checkpointing: false,
+        pad_entities,
         lr: 3e-3,
         min_lr: 3e-3,
         warmup_steps: 1,
@@ -168,10 +201,12 @@ fn train_tiny(updates: usize, expect_drop: bool) {
         value: ValueWeights { win: 0.5 },
         data: DataConfig { z_drop: 0.0, augment: false, seed: 1, checkpoint_every: 1000 },
     };
-    let net_cfg = tiny_cfg();
+    Trainer::new(net, tiny_cfg(), cfg, Device::flex().autodiff())
+}
+
+fn train_tiny(updates: usize, expect_drop: bool) {
+    let mut t = tiny_trainer(1);
     let cols = ActionColumns::from_table(action_table()).unwrap();
-    let net = UraniumNet::<LstmCore>::new(&net_cfg, &cols, &ad);
-    let mut t = Trainer::new(net, net_cfg, cfg, ad);
     let mut src = VecSource((0..updates).map(|_| game()).collect::<VecDeque<_>>());
     let mut losses = vec![];
     for _ in 0..updates {
@@ -201,6 +236,9 @@ fn warmup_cosine_schedule_041_r3() {
     let cfg = BcConfig {
         lanes: 1,
         seq_len: 1,
+        micro_lanes: 0,
+        grad_checkpointing: false,
+        pad_entities: 0,
         lr: 1e-3,
         min_lr: 1e-5,
         warmup_steps: 10,

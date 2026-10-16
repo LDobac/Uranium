@@ -74,7 +74,7 @@ fn device(b: Backend) -> Result<Device> {
 }
 
 fn run<C: uranium_model::CoreInit>(kind: CoreKind, shards: PathBuf, out: PathBuf, cfg: BcConfig, dev: Device, s2: bool, steps: Option<usize>) -> Result<()> {
-    let ad = dev.autodiff();
+    let ad = if cfg.grad_checkpointing { dev.autodiff().gradient_checkpointing() } else { dev.autodiff() };
     let base = UraniumNetConfig::new();
     let net_cfg = base.clone().with_input(input_dims()).with_core(base.core.clone().with_kind(kind));
     let cols = uranium_model::batch::ActionColumns::from_table(uranium_env::features::extract::action_table())?;

@@ -19,8 +19,14 @@ pub struct HostLabel {
 }
 
 pub fn obs_batch(rows: &[&Observation], device: &Device) -> ObsBatch {
+    obs_batch_padded(rows, 1, device)
+}
+
+/// `obs_batch` with N rounded up to a multiple of `pad` (masked like any other padding). Training
+/// sees a new N almost every update; bucketing N keeps the number of distinct shapes small.
+pub fn obs_batch_padded(rows: &[&Observation], pad: usize, device: &Device) -> ObsBatch {
     let b = rows.len();
-    let n = rows.iter().map(|o| o.obs.n).max().unwrap_or(0).max(1);
+    let n = rows.iter().map(|o| o.obs.n).max().unwrap_or(0).max(1).next_multiple_of(pad.max(1));
     let k = rows.first().map_or(0, |o| o.masks.unit_cap.len() / o.obs.n.max(1));
     let k = if k == 0 { uranium_env::actions::CAPABILITIES.len() } else { k };
     let a = rows.first().map_or(0, |o| o.masks.type_mask.len());

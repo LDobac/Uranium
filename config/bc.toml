@@ -3,6 +3,14 @@
 # Parallel games per batch (B) and truncated-BPTT length (T, 041-R2 / 032-R5).
 lanes = 32
 seq_len = 64
+# Lanes per forward/backward pass. Group gradients are summed into one update (same result as one
+# pass over all lanes), so peak GPU memory follows the group, not `lanes`. 0 = all lanes at once.
+micro_lanes = 1
+# Burn balanced gradient checkpointing: recompute memory-bound activations during backward.
+grad_checkpointing = false
+# Round the batch entity count N up to a multiple of this (masked padding, same result). Fewer
+# distinct tensor shapes; ~9% faster per update on the 13-game CUDA sample (2026-10-17).
+pad_entities = 64
 # AdamW + linear warmup + cosine decay, gradient-norm clip 1.0 (041-R3).
 lr = 3e-4
 min_lr = 3e-6
