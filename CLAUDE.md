@@ -76,7 +76,7 @@ docs/                 # windows.md (Windows 세션 체크리스트)
 third_party/          # OpenBW·BWAPI·T1 봇 소스(커밋/아카이브 고정, git 미추적) + patches/(0001 폴더 로더, 0002 고정 시작 seed, 0003 런처 종료 크래시 회피, 0004 결정론적 LAN uid, 0005–0010 T1 봇 BWAPI 4.2 포팅: UAlbertaBot·Steamhammer·ZZZKBot·Stardust·McRave·Iron, 0011 재생 시점 시야, 0012 유즈맵 트리거 보강)
 reports/              # 스파이크·벤치·평가 리포트
 ```
-진행 상황(2026-10-16): M0 완료(012·013 외 Approved), M1 완료(벤치·OpenBW·데이터 추출), M2 완료(proto·브리지·T0 테란·셀프매치, `reports/m2_selfmatch.md`), M3 Linux 범위 완료(hostd·env 스케줄러·calibrate, T0 3종족, T1 봇 6종, `reports/m3.md`·`reports/oss_bot_porting.md`). M3 Windows 단일 PC 구성(`reports/m3_windows.md`, 011-AC8)과 원격 구성 (b)(학습 PC + 원격 Linux 2대, 020-AC1·011-AC6, `reports/m3_remote.md`)까지 M3 완료. 다음은 M4(리플레이 파이프라인, spec 013 승인 선행). M5 중 데이터 독립 부분(모델·feature·마스크·executor·보상·BC 골격)은 M4와 병행 진행 중(2026-10-16).
+진행 상황(2026-10-16): M0 완료(012·013 외 Approved), M1 완료(벤치·OpenBW·데이터 추출), M2 완료(proto·브리지·T0 테란·셀프매치, `reports/m2_selfmatch.md`), M3 Linux 범위 완료(hostd·env 스케줄러·calibrate, T0 3종족, T1 봇 6종, `reports/m3.md`·`reports/oss_bot_porting.md`). M3 Windows 단일 PC 구성(`reports/m3_windows.md`, 011-AC8)과 원격 구성 (b)(학습 PC + 원격 Linux 2대, 020-AC1·011-AC6, `reports/m3_remote.md`)까지 M3 완료. 다음은 M4(리플레이 파이프라인, spec 013 승인 선행). M5 중 데이터 독립 부분(모델·feature·마스크·executor·보상·BC 골격)은 M4와 병행 진행(2026-10-16, `reports/m5_model.md`). 미결: 032-AC2 추론 속도 미달 대응, AMB-032-5, AMB-030-1, f16 혼합 정밀도 학습.
 
 ## 코딩 규칙
 - Burn 0.22 모델 코드는 백엔드에 무관하게 쓰고 실행 시 `Device`로 고른다. 테스트는 `Device::flex()`로 한다 (032-R1).
@@ -102,4 +102,7 @@ reports/              # 스파이크·벤치·평가 리포트
 - Windows(001-R8, `docs/windows.md`): `tools\openbw\build.ps1` → `tools\openbw\build_bridge.ps1` → `tools\oss\build_<bot>.ps1`, `.env` 로더 `tools\env.ps1`. `.env`의 Windows 경로는 작은따옴표로 감싼다
 - OpenBW LAN 매칭(011-R16): Linux는 LOCAL 소켓을 쓰고, Unix 소켓 108바이트 경로 제한 때문에 `$XDG_RUNTIME_DIR/uranium/`(보통 `/run/user/<uid>/uranium/`)에 둔다. Windows는 OpenBW가 LOCAL 모드를 지원하지 않아 TCP 포트 쌍(`URANIUM_HOSTD_PORT_BASE`부터)을 쓰므로 소켓 경로·길이 제한이 없다
 - 리플레이(040, M4): `target/release/uranium-replay` — `inspect <rep>`, `convert <rep> <out>`(SC:R → 1.16.1, 013), `check-screp <dir> --screp <exe>`(040-AC1), `ophist <dir>`(OpenBW가 처리 못하는 opcode 확인), `play <rep>`(OpenBW 재생·디싱크 신호), `build <dir> --src <tag> --records <jsonl> [--jobs N --limit N]`(필터 → 재생 → 레이블 → shard, 기본 출력 `<URANIUM_SHARED_DIR>/datasets/replays/shards/<src>`). 원본 리플레이는 `<URANIUM_SHARED_DIR>/datasets/replays/raw/<src>/`(040-R13)
+- BWAPI 타입 표(013-R1): `cargo run -p bwapi-tables -- third_party/bwapi/bwapi crates/uranium-env/tables` → `{unit,tech,upgrade,weapon,order}_types.toml`
+- BC(041): `target/release/uranium-train bc --shards <dir> --out <ckpt> [--backend vulkan|cuda|flex] [--core lstm|gtrxl] [--s2]`, 하이퍼파라미터 `config/bc.toml`, 보상 가중치 `config/reward.toml`. 맵 사전계산은 `uranium-replay build`가 `URANIUM_MAPS_DIR`(기본 `assets/maps`, git 미추적)에 쓴다
+- 모델 벤치(032-AC2/AC3): `cargo run -p bench --release [--features cuda] -- --backend <vulkan|cuda> --filter net_ [--f16]`. CUDA는 CUDA Toolkit(`CUDA_PATH`) 필요
 - 게임 데이터(MPQ, CASC 추출물, 맵, 리플레이)는 저작권 자료라 절대 커밋하지 않는다(.gitignore).
