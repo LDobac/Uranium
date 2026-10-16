@@ -22,6 +22,8 @@ pub struct Config {
     pub port_base: u16,
     /// Wall-time limit of one replay playback job (020-R3, M4).
     pub replay_timeout_s: u32,
+    /// Where saved game replays go (040 botgen); default: the game work dir.
+    pub replay_dir: Option<PathBuf>,
 }
 
 fn var(name: &str) -> Option<String> {
@@ -54,6 +56,7 @@ impl Config {
             oss_bots_dir: var("URANIUM_OSS_BOTS_DIR").map(PathBuf::from),
             port_base: var("URANIUM_HOSTD_PORT_BASE").and_then(|v| v.parse().ok()).unwrap_or(17_000),
             replay_timeout_s: var("URANIUM_HOSTD_REPLAY_TIMEOUT_S").and_then(|v| v.parse().ok()).unwrap_or(1800),
+            replay_dir: var("URANIUM_HOSTD_REPLAY_DIR").map(PathBuf::from),
         };
         must_exist(&cfg.launcher(), "BWAPILauncher")?;
         must_exist(&cfg.bridge_lib, "bridge library")?;

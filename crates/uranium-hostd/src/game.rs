@@ -20,6 +20,14 @@ pub fn race_name(r: Race) -> &'static str {
     }
 }
 
+/// BWAPI drops ':' from the save_replay path ("illegal characters"), so on Windows a drive
+/// letter turns the path relative to the launcher. Pass it drive-relative ("\dir\x.rep"); the
+/// replay dir must be on the same drive as the hostd work dir.
+fn bwapi_save_path(p: &Path) -> String {
+    let s = p.display().to_string();
+    if cfg!(windows) && s.as_bytes().get(1) == Some(&b':') { s[2..].to_string() } else { s }
+}
+
 /// Environment for one launcher (mirrors tools/openbw/selfmatch.sh).
 pub fn launcher_env(cfg: &Config, spec: &GameSpec, slot: usize, module: &Path, replay_dir: &Path) -> Vec<(String, String)> {
     let p = &spec.players[slot];
@@ -36,7 +44,8 @@ pub fn launcher_env(cfg: &Config, spec: &GameSpec, slot: usize, module: &Path, r
         ("BWAPI_CONFIG_AUTO_MENU__AUTO_RESTART", "OFF".to_string()),
         (
             "BWAPI_CONFIG_AUTO_MENU__SAVE_REPLAY",
-            if spec.save_replay { replay_dir.join(format!("g{}-p{slot}.rep", spec.game_id)).display().to_string() } else { String::new() },
+            // Both clients record the same game; keep slot 0 only (040 botgen dedup).
+            if spec.save_replay && slot == 0 { bwapi_save_path(&replay_dir.join(format!("g{}-s{}-p{slot}.rep", spec.game_id, spec.seed.map_or("x".to_string(), |s| s.to_string())))) } else { String::new() },
         ),
         ("URANIUM_GAME_ID", spec.game_id.to_string()),
         // 0004 patch: deterministic client ids => launcher slot = player slot (011-AC4).
@@ -105,7 +114,7 @@ pub fn run(cfg: &Config, platform: &dyn Platform, spec: &GameSpec, stop: &dyn Fn
             let out = std::fs::File::create(&log)?;
             let mut cmd = Command::new(cfg.launcher());
             cmd.current_dir(&pdir).stdin(Stdio::null()).stdout(out.try_clone()?).stderr(out);
-            cmd.envs(launcher_env(cfg, spec, slot, &module, &dir));
+            cmd.envs(launcher_env(cfg, spec, slot, &module, cfg.replay_dir.as_deref().unwrap_or(&dir)));
             cmd.envs(lan.env[slot].iter().map(|(k, v)| (k, v)));
             children.push(platform.spawn(cmd).with_context(|| format!("spawning launcher {slot}"))?);
             logs.push(log);
@@ -250,6 +259,7 @@ mod tests {
             oss_bots_dir: None,
             port_base: 17000,
             replay_timeout_s: 1800,
+            replay_dir: None,
         }
     }
 

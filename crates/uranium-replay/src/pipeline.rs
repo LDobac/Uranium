@@ -75,7 +75,7 @@ fn race_letter(r: u8) -> char {
 /// Terran player is a view (040-R2) with S2 on target maps at APM >= 150, S1 at APM >= 80.
 /// The game type is not filtered: many ladder 1v1 replays are recorded as "use map settings"
 /// and play fine; maps OpenBW cannot open show up as `Outcome::Unplayable` (M4 spike).
-pub fn filter(rep: &Replay, family: &str) -> std::result::Result<Vec<View>, String> {
+pub fn filter(rep: &Replay, family: &str, bot: bool) -> std::result::Result<Vec<View>, String> {
     let active = rep.active_players();
     if active.len() != 2 {
         return Err(format!("{} active players", active.len()));
@@ -92,7 +92,10 @@ pub fn filter(rep: &Replay, family: &str) -> std::result::Result<Vec<View>, Stri
             continue;
         }
         let other = &active[1 - i].0;
-        let stage = if family != "other" && s.apm >= S2_MIN_APM {
+        // 040 quality table: bot data (src bot / botgen) has no APM bar and stage B.
+        let stage = if bot {
+            "B"
+        } else if family != "other" && s.apm >= S2_MIN_APM {
             "S2"
         } else if s.apm >= S1_MIN_APM {
             "S1"
@@ -241,7 +244,7 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
     };
     let map_hash = hex(&Sha256::digest(&rep.map));
     let family = families.classify(&rep.header.map_name, &map_hash);
-    let views = match filter(&rep, &family) {
+    let views = match filter(&rep, &family, matches!(opt.src.as_str(), "bot" | "botgen")) {
         Ok(v) => v,
         Err(reason) => return vec![rec(&sha, &rep.header.map_name, &family, None, Outcome::Filtered { reason })],
     };
