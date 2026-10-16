@@ -30,4 +30,5 @@
 .env
 .env.*
 !.env.example
+config/hosts.toml
 /build/
