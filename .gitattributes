@@ -1,0 +1,4 @@
+# Patches are applied byte-for-byte with git apply; never convert their line endings (001-R8).
+*.patch -text
+# Shell scripts run on Linux hosts.
+*.sh text eol=lf

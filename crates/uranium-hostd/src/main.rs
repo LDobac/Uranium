@@ -64,7 +64,7 @@ fn main() -> Result<()> {
 
 fn serve() -> Result<()> {
     let cfg = Config::from_env()?;
-    let platform = platform::native()?;
+    let platform = platform::native(&cfg)?;
     let listener = TcpListener::bind(&cfg.listen).with_context(|| format!("binding {}", cfg.listen))?;
     eprintln!("[hostd] listening on {} (max {} games, oss bots {:?})", cfg.listen, cfg.max_games, cfg.oss_bots());
     let state = Arc::new(State {

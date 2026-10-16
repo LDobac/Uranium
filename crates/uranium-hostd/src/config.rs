@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 #[derive(Debug, Clone)]
 pub struct Config {
     pub listen: String,
-    /// BWAPI build dir containing `bin/BWAPILauncher[.exe]`.
+    /// BWAPI build dir containing `bin/BWAPILauncher` (Windows: `bin/Release/BWAPILauncher.exe`).
     pub bwapi_dir: PathBuf,
     pub bridge_lib: PathBuf,
     pub data_dir: PathBuf,
@@ -61,8 +61,12 @@ impl Config {
     }
 
     pub fn launcher(&self) -> PathBuf {
-        let exe = if cfg!(windows) { "BWAPILauncher.exe" } else { "BWAPILauncher" };
-        self.bwapi_dir.join("bin").join(exe)
+        // MSVC generators are multi-config: outputs go to bin/Release (tools/openbw/build.ps1).
+        if cfg!(windows) {
+            self.bwapi_dir.join("bin").join("Release").join("BWAPILauncher.exe")
+        } else {
+            self.bwapi_dir.join("bin").join("BWAPILauncher")
+        }
     }
 
     /// Registered third-party bots (directories containing a module file) as opponent IDs

@@ -399,6 +399,10 @@ class UraniumModule : public AIModule {
 
 }  // namespace
 
+#ifdef _MSC_VER
+#define UR_EXPORT extern "C" __declspec(dllexport)
+#else
 #define UR_EXPORT extern "C" __attribute__((visibility("default")))
+#endif
 UR_EXPORT void gameInit(Game* game) { BroodwarPtr = game; }
 UR_EXPORT AIModule* newAIModule() { return new UraniumModule(); }

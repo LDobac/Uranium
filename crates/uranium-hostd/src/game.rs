@@ -150,7 +150,9 @@ pub fn run(cfg: &Config, platform: &dyn Platform, spec: &GameSpec, stop: &dyn Fn
         }
     }
     for (i, c) in children.iter_mut().enumerate() {
-        if !done[i] {
+        if done[i] {
+            platform.reap(c);
+        } else {
             platform.kill_tree(c);
         }
     }
@@ -209,7 +211,9 @@ mod tests {
     fn launcher_env_matches_m2_harness() {
         let env = launcher_env(&cfg(), &spec(Some(9)), 0, Path::new("/b/lib.so"), Path::new("/w/g3"));
         let get = |k: &str| env.iter().find(|(a, _)| a == k).map(|(_, v)| v.clone());
-        assert_eq!(get("BWAPI_CONFIG_AUTO_MENU__MAP").unwrap(), "/m/fighting_spirit_1.3.scx");
+        // Path separator is platform-specific (001-R8).
+        let map = Path::new("/m").join("fighting_spirit_1.3.scx");
+        assert_eq!(get("BWAPI_CONFIG_AUTO_MENU__MAP").unwrap(), map.to_string_lossy());
         assert_eq!(get("BWAPI_CONFIG_AUTO_MENU__RACE").unwrap(), "Terran");
         assert_eq!(get("URANIUM_AGENT_ADDR").unwrap(), "127.0.0.1:7600");
         assert_eq!(get("URANIUM_SEED").unwrap(), "9");

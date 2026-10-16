@@ -76,7 +76,7 @@ docs/                 # windows.md (Windows 세션 체크리스트)
 third_party/          # OpenBW·BWAPI·T1 봇 소스(커밋/아카이브 고정, git 미추적) + patches/(0001 폴더 로더, 0002 고정 시작 seed, 0003 런처 종료 크래시 회피, 0004 결정론적 LAN uid, 0005–0010 T1 봇 BWAPI 4.2 포팅: UAlbertaBot·Steamhammer·ZZZKBot·Stardust·McRave·Iron)
 reports/              # 스파이크·벤치·평가 리포트
 ```
-진행 상황(2026-10-16): M0 완료(012·013 외 Approved), M1 완료(벤치·OpenBW·데이터 추출), M2 완료(proto·브리지·T0 테란·셀프매치, `reports/m2_selfmatch.md`), M3 Linux 범위 완료(hostd·env 스케줄러·calibrate, T0 3종족, T1 봇 6종, `reports/m3.md`·`reports/oss_bot_porting.md`). M3 남은 것: Windows(`docs/windows.md`), 원격 2호스트 020-AC1. 다음은 M4(리플레이 파이프라인, spec 013 승인 선행).
+진행 상황(2026-10-16): M0 완료(012·013 외 Approved), M1 완료(벤치·OpenBW·데이터 추출), M2 완료(proto·브리지·T0 테란·셀프매치, `reports/m2_selfmatch.md`), M3 Linux 범위 완료(hostd·env 스케줄러·calibrate, T0 3종족, T1 봇 6종, `reports/m3.md`·`reports/oss_bot_porting.md`). M3 Windows 단일 PC 구성 완료(`reports/m3_windows.md`, 011-AC8). M3 남은 것: 원격 2호스트 020-AC1과 Windows 구성 (b). 다음은 M4(리플레이 파이프라인, spec 013 승인 선행).
 
 ## 코딩 규칙
 - Burn 0.22 모델 코드는 백엔드에 무관하게 쓰고 실행 시 `Device`로 고른다. 테스트는 `Device::flex()`로 한다 (032-R1).
@@ -99,5 +99,6 @@ reports/              # 스파이크·벤치·평가 리포트
 - 동시 게임 수 측정(020-R10): 게임 호스트에서 `target/release/uranium-env calibrate` 한 번 → `<URANIUM_CACHE_DIR>/hostd_calibration.toml`. hostd는 `URANIUM_HOSTD_MAX_GAMES`가 없으면 이 값을 쓴다
 - T1 봇 빌드(021): `tools/openbw/build.sh` 후 `tools/oss/build_<bot>.sh` (`ualbertabot`, `steamhammer`, `zzzkbot`, `stardust`, `mcrave`, `iron`) → `<URANIUM_OSS_BOTS_DIR>/<bot>/{module.so, VERSION}`. 상대 ID는 `<bot>@<버전>`(021-R3)
 - 에이전트 서버: `target/release/uranium-agent serve --listen 127.0.0.1:7600 --out runs/x.jsonl`, 요약 `uranium-agent summarize runs/x.jsonl --out x.md`
+- Windows(001-R8, `docs/windows.md`): `tools\openbw\build.ps1` → `tools\openbw\build_bridge.ps1` → `tools\oss\build_<bot>.ps1`, `.env` 로더 `tools\env.ps1`. `.env`의 Windows 경로는 작은따옴표로 감싼다
 - OpenBW LAN 매칭(011-R16): Linux는 LOCAL 소켓을 쓰고, Unix 소켓 108바이트 경로 제한 때문에 `$XDG_RUNTIME_DIR/uranium/`(보통 `/run/user/<uid>/uranium/`)에 둔다. Windows는 OpenBW가 LOCAL 모드를 지원하지 않아 TCP 포트 쌍(`URANIUM_HOSTD_PORT_BASE`부터)을 쓰므로 소켓 경로·길이 제한이 없다
 - 게임 데이터(MPQ, CASC 추출물, 맵, 리플레이)는 저작권 자료라 절대 커밋하지 않는다(.gitignore).

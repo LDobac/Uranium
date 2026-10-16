@@ -11,6 +11,23 @@ index 3f1cdf1..5a81add 100644
      template <class T> //
      double getAngle(std::pair<T, T> p)
      {
+diff --git a/Source/BWEB/Block.cpp b/Source/BWEB/Block.cpp
+index c57e97e..51ddb59 100644
+--- a/Source/BWEB/Block.cpp
++++ b/Source/BWEB/Block.cpp
+@@ -48,8 +48,10 @@ namespace BWEB::Blocks {
+ 
+         void addToBlockGrid(TilePosition start, TilePosition end, BlockType type)
+         {
+-            for (int x = start.x; x < end.x; x++) {
+-                for (int y = start.y; y < end.y; y++)
++            // Uranium patch: station defense tiles can lie off the map; writing them overran
++            // blockGrid into neighbouring globals (crash with MSVC's layout).
++            for (int x = std::max(start.x, 0); x < std::min(end.x, 256); x++) {
++                for (int y = std::max(start.y, 0); y < std::min(end.y, 256); y++)
+                     blockGrid[x][y] = type;
+             }
+         }
 diff --git a/Source/BWEM/area.cpp b/Source/BWEM/area.cpp
 index 171491a..7d97eea 100644
 --- a/Source/BWEM/area.cpp

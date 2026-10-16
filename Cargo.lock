@@ -6613,6 +6613,7 @@ dependencies = [
  "serde",
  "toml",
  "uranium-proto",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
