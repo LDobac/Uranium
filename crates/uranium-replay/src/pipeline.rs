@@ -163,21 +163,17 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler) ->
     let empty = HashMap::new();
     let (labels, coverage) = labeler.label(&cmds, rep.header.frames, |f| units_at.get(&f).unwrap_or(&empty));
     let frames: Vec<u32> = labels.iter().map(|l| l.frame).collect();
-    // Replay B twice: decision-time observations; both runs must match (040-R8).
-    let mut runs = Vec::new();
-    for _ in 0..2 {
-        let mut by_frame: HashMap<u32, (uranium_proto::RawFrame, Option<uranium_proto::PrivilegedSummary>)> = HashMap::new();
-        let res = play_with(rep, view.perspective, cfg, &frames, &mut |f, p| {
-            if frames.binary_search(&f.frame).is_ok() {
-                by_frame.insert(f.frame, (f.clone(), p.cloned()));
-            }
-        })?;
-        runs.push((res, by_frame));
+    // Replay B: decision-time observations. B stops at every frame A stopped at, so A and B
+    // form the 040-R8 double-replay check (check_digest ignores B's extra stops).
+    let mut by_frame: HashMap<u32, (uranium_proto::RawFrame, Option<uranium_proto::PrivilegedSummary>)> = HashMap::new();
+    let res = play_with(rep, view.perspective, cfg, &frames, &mut |f, p| {
+        if frames.binary_search(&f.frame).is_ok() {
+            by_frame.insert(f.frame, (f.clone(), p.cloned()));
+        }
+    })?;
+    if a.check_digest != res.check_digest {
+        return Ok(Err(Outcome::Desync { reasons: vec![format!("replays differ: {} vs {}", a.check_digest, res.check_digest)] }));
     }
-    if runs[0].0.digest != runs[1].0.digest {
-        return Ok(Err(Outcome::Desync { reasons: vec![format!("replays differ: {} vs {}", runs[0].0.digest, runs[1].0.digest)] }));
-    }
-    let (res, mut by_frame) = runs.swap_remove(0);
     let mut steps = Vec::with_capacity(labels.len());
     for l in labels {
         let Some((raw_frame, privileged)) = by_frame.remove(&l.frame) else { break };

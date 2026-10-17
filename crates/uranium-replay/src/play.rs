@@ -46,8 +46,13 @@ pub struct PlayResult {
     pub invalid_select_cmds: u32,
     pub total_tags: u32,
     pub invalid_tags: u32,
-    /// FNV-1a over the serialized RawFrames (040-R8 double-replay check).
+    /// FNV-1a over the serialized RawFrames.
     pub digest: String,
+    /// 040-R8 double-replay check: FNV-1a over the observations that do not depend on
+    /// `extra_stops` (events in between accumulated and sorted), so a run with extra stops
+    /// compares equal to one without them.
+    #[serde(skip)]
+    pub check_digest: String,
     pub final_frame: u32,
     pub final_self_supply: u16,
     pub final_enemy_supply: Option<u16>,
@@ -210,6 +215,16 @@ fn accept(listener: &TcpListener, mut child: Option<&mut std::process::Child>, t
     }
 }
 
+/// Folds one observation (`state` = encoded frame without events) and the events accumulated
+/// since the previous hashed observation, in sorted order, into the 040-R8 check digest.
+fn check_step(h: u64, state: &[u8], events: &mut Vec<Vec<u8>>) -> Result<u64> {
+    events.sort_unstable();
+    let mut ev = Vec::new();
+    write_msg(&mut ev, events)?;
+    events.clear();
+    Ok(fnv1a(fnv1a(h, state), &ev))
+}
+
 fn fnv1a(mut h: u64, bytes: &[u8]) -> u64 {
     for &b in bytes {
         h ^= b as u64;
@@ -228,11 +243,21 @@ fn session(rep: &Replay, perspective: u8, stream: TcpStream, extra_stops: &[u32]
     let leave = rep.cmds().find(|c| c.op == op::LEAVE_GAME && players.contains(&c.player)).map(|c| (c.player, c.frame));
     // 040-R8 ③ needs the supplies on the frame before the first leave command.
     let pre_leave = leave.map(|(_, f)| f.saturating_sub(1)).filter(|&f| f >= 1);
-    let mut stops: Vec<u32> = mine.iter().map(|c| c.frame).chain([rep.header.frames.saturating_sub(1)]).chain(pre_leave).chain(extra_stops.iter().copied()).collect();
+    let mut base: Vec<u32> = mine.iter().map(|c| c.frame).chain([rep.header.frames.saturating_sub(1)]).chain(pre_leave).collect();
+    base.sort_unstable();
+    base.dedup();
+    let mut extra: Vec<u32> = extra_stops.iter().copied().filter(|f| base.binary_search(f).is_err()).collect();
+    extra.sort_unstable();
+    extra.dedup();
+    let mut stops: Vec<u32> = base.iter().chain(&extra).copied().collect();
     stops.sort_unstable();
-    stops.dedup();
     let mut out = PlayResult { perspective, header_frames: rep.header.frames, first_leaver: leave.map(|(p, _)| p), ..Default::default() };
     let mut digest = 0xcbf2_9ce4_8422_2325u64;
+    let mut check = 0xcbf2_9ce4_8422_2325u64;
+    let mut pending_events: Vec<Vec<u8>> = Vec::new();
+    let last_base = base.last().copied().unwrap_or(0);
+    let mut first = true;
+    let mut tail: Option<Vec<u8>> = None;
     let mut checked = 0usize; // commands of `mine` already evaluated
     let mut enemy_supply = None;
     let mut privileged: Option<PrivilegedSummary> = None;
@@ -269,6 +294,24 @@ fn session(rep: &Replay, perspective: u8, stream: TcpStream, extra_stops: &[u32]
                 let mut bytes = Vec::new();
                 write_msg(&mut bytes, &*f)?;
                 digest = fnv1a(digest, &bytes);
+                // 040-R8 check: hash the first observation and every base stop. Extra stops only
+                // split the events, which accumulate between observations. After the last base stop
+                // the runs may step differently, so only the last observation there is hashed.
+                for e in &f.events {
+                    let mut eb = Vec::new();
+                    write_msg(&mut eb, e)?;
+                    pending_events.push(eb);
+                }
+                let mut state = Vec::new();
+                if first || base.binary_search(&f.frame).is_ok() || f.frame > last_base {
+                    write_msg(&mut state, &(f.frame, &f.self_state, &f.units, &f.visibility, &f.explored, &f.creep, &f.effects))?;
+                }
+                if first || base.binary_search(&f.frame).is_ok() {
+                    check = check_step(check, &state, &mut pending_events)?;
+                } else if f.frame > last_base {
+                    tail = Some(state);
+                }
+                first = false;
                 out.observations += 1;
                 on_frame(&f, privileged.as_ref().filter(|p| p.frame == f.frame));
                 out.final_frame = f.frame;
@@ -310,6 +353,10 @@ fn session(rep: &Replay, perspective: u8, stream: TcpStream, extra_stops: &[u32]
         }
     }
     out.digest = format!("{digest:016x}");
+    if let Some(state) = tail {
+        check = check_step(check, &state, &mut pending_events)?;
+    }
+    out.check_digest = format!("{check:016x}");
     Ok(out)
 }
 
