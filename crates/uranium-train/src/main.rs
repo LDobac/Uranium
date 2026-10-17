@@ -11,6 +11,7 @@ use uranium_model::config::{CoreKind, UraniumNetConfig};
 use uranium_model::{GtrxlCore, LstmCore, UraniumNet};
 use uranium_train::bc::{BcConfig, Trainer};
 use uranium_train::data::ShardSource;
+use uranium_train::split::{Selection, Split, is_target_map, split_of};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum Backend {
@@ -43,6 +44,10 @@ enum Cmd {
         /// S2 fine-tuning: learning rate x s2_lr_scale (041-R4). Start from --init.
         #[arg(long)]
         s2: bool,
+        /// Games to train on (041-R13): s1 = train split of all maps, s2 = train split of the
+        /// target maps. Default: s2 with --s2, else s1 (ablation (A) = `--stage s2` without --s2).
+        #[arg(long, value_enum)]
+        stage: Option<StageArg>,
         /// Stop after this many updates (default: config total_steps).
         #[arg(long)]
         steps: Option<usize>,
@@ -58,6 +63,11 @@ enum Cmd {
         /// Stop after this many games.
         #[arg(long)]
         games: Option<usize>,
+    },
+    /// 041-R12: game counts per source, map group and split (reads every shard; no training).
+    SplitStats {
+        #[command(flatten)]
+        data: DataArgs,
     },
     /// 061-R7: writes `<dir>/manifest.json` (relative path -> sha256, bytes, subfolders included) so
     /// training PCs can pull and verify the dataset. `--verify` checks an existing one instead.
@@ -96,6 +106,12 @@ impl DataArgs {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
+enum StageArg {
+    S1,
+    S2,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
 enum CoreArg {
     Lstm,
     Gtrxl,
@@ -115,7 +131,7 @@ fn device(b: Backend) -> Result<Device> {
 #[allow(clippy::too_many_arguments)]
 fn run<C: uranium_model::CoreInit>(
     kind: CoreKind,
-    shards: Vec<PathBuf>,
+    mut src: ShardSource,
     out: PathBuf,
     cfg: BcConfig,
     dev: Device,
@@ -165,7 +181,6 @@ fn run<C: uranium_model::CoreInit>(
             dir.display()
         );
     }
-    let mut src = ShardSource::from_dirs(&shards)?;
     while t.step < total {
         let Some(l) = t.train_step(&mut src)? else {
             eprintln!("data exhausted after {} updates", t.step);
@@ -198,6 +213,18 @@ fn main() -> Result<()> {
                 "{}",
                 serde_json::json!({ "dir": dir, "files": m.files.len(), "bytes": bytes, "verified": verify })
             );
+            Ok(())
+        }
+        Cmd::SplitStats { data } => {
+            // (src, map group, split) -> games
+            let mut counts = std::collections::BTreeMap::<(String, &str, Split), usize>::new();
+            let mut src = ShardSource::from_dirs(&data.dirs()?)?;
+            while let Some(g) = uranium_train::data::StepSource::next_game(&mut src)? {
+                let group = if is_target_map(&g.meta) { "target" } else { "other" };
+                *counts.entry((g.meta.src.clone(), group, split_of(&g.meta))).or_default() += 1;
+            }
+            let rows: Vec<_> = counts.into_iter().map(|((s, m, sp), n)| serde_json::json!({ "src": s, "maps": m, "split": sp, "games": n })).collect();
+            println!("{}", serde_json::to_string_pretty(&rows)?);
             Ok(())
         }
         Cmd::LabelCheck { data, games } => {
@@ -237,12 +264,17 @@ fn main() -> Result<()> {
             backend,
             core,
             s2,
+            stage,
             steps,
             resume,
         } => {
             let cfg = BcConfig::load(&config)?;
             let dev = device(backend)?;
-            let shards = data.dirs()?;
+            let sel = match stage.unwrap_or(if s2 { StageArg::S2 } else { StageArg::S1 }) {
+                StageArg::S1 => Selection::S1,
+                StageArg::S2 => Selection::S2,
+            };
+            let shards = ShardSource::from_dirs(&data.dirs()?)?.select(sel).shuffled(cfg.data.seed);
             match core {
                 CoreArg::Lstm => {
                     run::<LstmCore>(CoreKind::Lstm, shards, out, cfg, dev, s2, steps, resume)

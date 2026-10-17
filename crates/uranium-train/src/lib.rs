@@ -4,4 +4,5 @@
 pub mod bc;
 pub mod ckpt;
 pub mod data;
+pub mod split;
 pub mod storage;

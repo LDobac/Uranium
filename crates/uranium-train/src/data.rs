@@ -22,10 +22,14 @@ pub trait StepSource {
 
 /// Stored shards (`shard_*.bin.zst`) under one or more dataset folders, subfolders included (a
 /// full build writes `<src>/<part>/shard_*.bin.zst`, 040-R13). Folders are read in the given
-/// order, each in path order, so the game order is deterministic.
+/// order, each in path order, so the game order is deterministic. `select` keeps one split/stage
+/// (041-R12, R13); `shuffled` permutes the shard files and the games inside each file with a fixed
+/// seed (041-R13).
 pub struct ShardSource {
     files: VecDeque<PathBuf>,
     games: VecDeque<ShardGame>,
+    select: Option<crate::split::Selection>,
+    rng: Option<Rng>,
 }
 
 impl ShardSource {
@@ -38,7 +42,26 @@ impl ShardSource {
         for d in dirs {
             files.extend(shard_files(d)?);
         }
-        Ok(Self { files: files.into(), games: VecDeque::new() })
+        Ok(Self { files: files.into(), games: VecDeque::new(), select: None, rng: None })
+    }
+
+    pub fn select(mut self, sel: crate::split::Selection) -> Self {
+        self.select = Some(sel);
+        self
+    }
+
+    pub fn shuffled(mut self, seed: u64) -> Self {
+        let mut rng = Rng::new(seed);
+        shuffle(self.files.make_contiguous(), &mut rng);
+        self.rng = Some(rng);
+        self
+    }
+}
+
+/// Fisher-Yates.
+fn shuffle<T>(v: &mut [T], rng: &mut Rng) {
+    for i in (1..v.len()).rev() {
+        v.swap(i, (rng.next() % (i as u64 + 1)) as usize);
     }
 }
 
@@ -66,7 +89,14 @@ impl StepSource for ShardSource {
     fn next_game(&mut self) -> Result<Option<ShardGame>> {
         while self.games.is_empty() {
             let Some(f) = self.files.pop_front() else { return Ok(None) };
-            self.games.extend(read(&f)?.games);
+            let mut games = read(&f)?.games;
+            if let Some(sel) = self.select {
+                games.retain(|g| crate::split::selects(sel, &g.meta));
+            }
+            if let Some(rng) = &mut self.rng {
+                shuffle(&mut games, rng);
+            }
+            self.games.extend(games);
         }
         Ok(self.games.pop_front())
     }

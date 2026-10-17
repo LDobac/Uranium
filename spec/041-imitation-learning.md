@@ -1,6 +1,6 @@
 # 041 — Imitation Learning (BC)
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: R11 혼합 선택 레이블 — AMB-041-1, AC2 측정 조건 — AMB-041-2)
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: R11 혼합 선택 레이블 — AMB-041-1, AC2 측정 조건 — AMB-041-2. 2026-10-18 개정: R12 분할 — AMB-041-3, R13 데이터 선택·셔플 — AMB-041-4)
 - **Related**: [032](032-model-architecture.md), [040](040-replay-dataset.md), [042](042-rl-training.md), [050](050-evaluation.md)
 
 ## Purpose
@@ -28,6 +28,8 @@
 | 041-R9 | **MUST** 데이터 로더는 저장 shard와 재생 스트리밍(040-R12)을 하나의 인터페이스로 읽는다. 두 경로의 출력은 동일하다(040-AC6) |
 | 041-R10 | **MUST** 손실 가중치, 학습률 등 하이퍼파라미터는 설정 파일로 관리하고 체크포인트에 함께 기록한다. 튜닝 대상이며 정책 결정 사항이 아니다 |
 | 041-R11 | **MUST** 혼합 선택 레이블(2026-10-17, AMB-041-1): 게임은 명령을 선택된 유닛마다 따로 적용하고, 받을 수 없는 유닛은 건너뛴다(OpenBW `action_*`). 그래서 레이블의 `selected`에서 해당 액션의 선택 자격([034](034-action-table.md) `select_cap`)이 없는 유닛을 빼고 학습한다. 남는 유닛이 없으면(게임에서 아무 일도 일어나지 않는 명령) 무효 레이블(weight 0, 031-R4)이다. 에이전트 기억(030 §4 직전 행동)에도 뺀 뒤의 유닛을 기록한다. 이 정책은 학습 시점 변환이며 shard에는 원래 선택을 저장한다 |
+| 041-R12 | **MUST** train/val/test 분할(040-R5 세부, 2026-10-18 확정, AMB-041-3): 원본 리플레이 해시(`replay_sha256`)로 게임 단위 결정론 분할한다. TvT 두 시점은 같은 쪽에 들어간다. 대상 맵(투혼·서킷브레이커 패밀리, 040-R15 `config/map_families.toml`로 build 때 정한 `map_family`)은 train 80 / val 10 / test 10, 그 외 맵은 train 95 / val 5(test 없음)다. S1·S2·ablation(041-R5) (A)·(B)가 모두 같은 분할을 쓰고, 대상 맵 test 셋은 어떤 학습에도 들어가지 않는다 |
+| 041-R13 | **MUST** 데이터 선택과 순서(2026-10-18 확정, AMB-041-4): S1은 모든 소스(`stardata`·`community`·`scr_ladder`·`personal`)의 train 분할 전체를 소스 가중치 없이 쓴다. S2는 대상 맵 train 분할만(소스 무관) 쓴다. 게임 순서는 고정 seed(설정 `data.seed`) 셔플로 결정론을 유지한다: shard 파일 순서와 파일 안 게임 순서를 섞는다 |
 
 ## 평가 지표
 - 오프라인 지표:
@@ -44,11 +46,7 @@
 - AC1과 AC2의 수치는 초기값이다(2026-10-15 확정). M5 기준선 측정 후 조정을 제안할 수 있고, 조정하려면 사용자 확인이 필요하다(050과 같은 방식).
 - 041-AC3: (B)가 (A)보다 대상 맵 test 지표가 같거나 높다. 그렇지 않으면 맵 전략을 재검토한다.
 
-## Risks & Open Questions
-- [SPEC AMBIGUOUS] AMB-041-3 — train/val/test 분할 방법과 비율. 040-R5는 "게임 단위, 대상 맵 test는 학습에서 완전히 분리"만 정한다. 기본안(미확정): 원본 리플레이 해시(`replay_sha256`, TvT 두 시점이 같은 쪽에 들어감)로 결정론적 분할, 대상 맵(투혼·서킷브레이커) 게임은 train 80 / val 10 / test 10, 그 외 맵은 train 95 / val 5(test 없음). S1·S2·ablation(041-R5) (A)·(B) 모두 같은 분할을 쓴다.
-- [SPEC AMBIGUOUS] AMB-041-4 — S1·S2 데이터 선택과 소스 혼합. 기본안(미확정): S1 = 모든 소스(`stardata`·`community`·`scr_ladder`·`personal`)의 train 게임 전체, 소스 가중치 없이 균등; S2 = 대상 맵 패밀리(040-R15) train 게임만(소스 무관); 게임 순서는 seed 고정 셔플(설정 `data.seed`, 결정론). 대안: 소스별 가중치(예: SC:R 래더·커뮤니티 상향), S2를 `stage=S2`(APM≥150) 게임으로 제한.
-
 ## 구현 메모 (비규범)
 - GPU 메모리(2026-10-17, [`reports/m5_bc_memory.md`](../reports/m5_bc_memory.md)): `config/bc.toml`의 `micro_lanes`만큼 레인을 묶어 forward/backward를 하고, gradient를 합쳐 AdamW step을 한 번 한다. 손실은 배치 전체 유효 스텝 수로 나누므로 `lanes` 전체를 한 번에 처리한 것과 같은 업데이트다(R2·R3 그대로). 최대 메모리는 그룹 크기를 따른다(기본 1 = 레인 1 × T64 × N512).
-- 데이터 로더(041-R9, 2026-10-18): `--dataset <rel>`(공용 드라이브 `datasets/` 아래, manifest 검증 후 사용, 061-R11-1·R12)과 `--shards <dir>`(검증 없음, 표본·테스트)를 여러 번 받는다. 폴더는 하위 폴더(build의 `<src>/<part>/`)까지 경로 순으로 읽는다. 분할·혼합·셔플은 AMB-041-3·4 확정 후 구현한다.
+- 데이터 로더(041-R9, 2026-10-18): `--dataset <rel>`(공용 드라이브 `datasets/` 아래, manifest 검증 후 사용, 061-R11-1·R12)과 `--shards <dir>`(검증 없음, 표본·테스트)를 여러 번 받는다. 폴더는 하위 폴더(build의 `<src>/<part>/`)까지 읽는다. `bc`는 기본 S1, `--s2`면 S2를 고르고, ablation (A)는 `--stage s2`(S2 데이터, 기본 학습률)다. 분할 집계는 `uranium-train split-stats`.
 - `pad_entities`는 배치 N을 그 배수로 올리는 마스크 패딩이고, `grad_checkpointing`은 Burn balanced checkpointing이다. 둘 다 결과를 바꾸지 않는다.
