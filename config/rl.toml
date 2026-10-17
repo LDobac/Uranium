@@ -1,0 +1,99 @@
+# 042 RL / league initial values (AMB-042-3, 2026-10-17). Tuning targets (042-R9):
+# recorded in every checkpoint. Draft only: no code reads this file yet.
+# agent step = one act() call; update = one learner parameter update.
+
+# Batch: lanes x seq_len agent steps per update (042-R8: T = 64).
+lanes = 32
+seq_len = 64
+micro_lanes = 1
+
+[optimizer]
+# Adam (AlphaStar RL stage), 1/10 of the BC learning rate.
+lr = 3e-5
+beta1 = 0.0
+beta2 = 0.99
+eps = 1e-5
+weight_decay = 0.0
+grad_clip = 1.0
+
+[loss]
+gamma = 1.0
+td_lambda = 0.8
+vtrace_rho_bar = 1.0
+vtrace_c_bar = 1.0
+pg = 1.0
+upgo = 1.0
+value = 0.5
+
+[entropy]
+# Per-head coefficients, summed over used heads only (032-R10).
+action = 3e-3
+delay = 1e-3
+queued = 1e-3
+selected = 1e-3
+target_unit = 1e-3
+target_loc = 1e-3
+
+[kl]
+# coef = max(floor, init * 0.5^(update / half_life_updates))
+init = 0.1
+floor = 0.01
+half_life_updates = 20000
+
+[actors]
+# Push weights to the inference server every K updates.
+weight_push_every = 4
+# 042-R4: drop trajectories whose behaviour version lags by more than this.
+max_policy_lag = 32
+# Trajectory queue capacity in batches; oldest dropped first.
+queue_batches = 4
+
+[league]
+# 042-R7 time share, applied from C2. C0/C1 train Main only.
+share_main = 0.5
+share_main_exploiter = 0.25
+share_league_exploiter = 0.25
+# Main opponents in C2.
+main_pfsp = 0.5
+main_self = 0.35
+main_t1 = 0.15
+# PFSP f_hard(x) = (1 - x)^p
+pfsp_power = 2.0
+# Main Exploiter falls back to f_var over Main snapshots below this win rate.
+main_exploiter_fallback_win_rate = 0.2
+main_exploiter_fallback_share = 0.5
+# Win-rate table: per-game EMA decay, prior for unseen opponents.
+win_rate_decay = 0.99
+win_rate_prior = 0.5
+# p_race = uniform_mix / 3 + (1 - uniform_mix) * (1 - w_r) / sum(1 - w)
+race_uniform_mix = 0.5
+# 021-R7: Random race share for multi-race T0/T1 bots.
+bot_random_race = 0.2
+
+[snapshot]
+main_every_updates = 2000
+exploiter_win_rate = 0.7
+exploiter_win_window = 200
+exploiter_max_updates = 4000
+league_exploiter_reset_prob = 0.25
+
+[curriculum]
+# 042-R5. Window = most recent games per opponent race.
+window_games = 300
+c0_t0 = 0.8
+c0_self = 0.2
+c0_to_c1_win_rate_vs_t0 = 0.7
+c1_t0 = 0.3
+c1_t1 = 0.4
+c1_self = 0.3
+c1_to_c2_win_rate_vs_t1 = 0.5
+# Pseudo-reward (033 r_build, r_units) linear decay to 0 after entering C2.
+pseudo_reward_decay_updates = 20000
+
+[ppo]
+# Comparison baseline (042 algorithm alternatives).
+clip = 0.2
+gae_lambda = 0.95
+epochs = 2
+# Adopt PPO only if 3-seed mean final win rate beats V-trace by more than this.
+adopt_margin = 0.03

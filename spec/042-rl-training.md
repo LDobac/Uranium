@@ -1,6 +1,6 @@
 # 042 — RL Training & League
 
-- **Status**: Approved (2026-10-15, 2026-10-16 개정: 042-R10 Ctrl+C 정상 종료)
+- **Status**: Approved (2026-10-15, 2026-10-16 개정: 042-R10 Ctrl+C 정상 종료, 2026-10-17 개정: 초기 설정값 확정(AMB-042-3, `config/rl.toml`), 첫 학습 호스트, AMB-042-2 M6 시작 재확인)
 - **Related**: [020](020-env-orchestration.md), [021](021-opponent-pool.md), [032](032-model-architecture.md), [033](033-reward.md), [050](050-evaluation.md), [060](060-infra-bc250.md)
 
 ## Purpose
@@ -12,7 +12,7 @@ BC 정책을 출발점으로 셀프플레이와 리그를 거쳐 승률을 극�
          └── trajectory(T=64: obs, privileged, action, behaviour logits, rewards, core_state0) ──► replay queue ──► [learner (학습 호스트 GPU)]
 learner ──► 새 가중치 (매 K 스텝) ──► inference server
 ```
-학습 호스트는 BC250(Vulkan) 또는 CUDA PC다([060](060-infra-bc250.md), 2026-10-15 변경). 한 호스트의 GPU 하나로 추론과 학습을 모두 하므로 GPU 시간을 분할한다. 학습 중에는 추론 지연이 늘어나지만 lockstep이라 정확성에는 영향이 없다. 게임 PC는 LAN으로 학습 호스트의 에이전트 서버에 접속한다(001-R6). 체크포인트·리그 스냅샷·승격 체크포인트는 공용 드라이브에 저장하며, 학습 시작·재개 절차와 run 잠금은 [061](061-shared-storage.md)을 따른다.
+학습 호스트는 BC250(Vulkan) 또는 CUDA PC다([060](060-infra-bc250.md), 2026-10-15 변경). **첫 RL 실험(042-AC1)은 CUDA PC(Windows)에서 한다**(2026-10-17 사용자 결정). 게임은 그 PC의 로컬 hostd로 돌리고, 필요하면 원격 Linux 게임 PC를 hosts 파일에 더한다(020). 한 호스트의 GPU 하나로 추론과 학습을 모두 하므로 GPU 시간을 분할한다. 학습 중에는 추론 지연이 늘어나지만 lockstep이라 정확성에는 영향이 없다. 게임 PC는 LAN으로 학습 호스트의 에이전트 서버에 접속한다(001-R6). 체크포인트·리그 스냅샷·승격 체크포인트는 공용 드라이브에 저장하며, 학습 시작·재개 절차와 run 잠금은 [061](061-shared-storage.md)을 따른다.
 
 ## 알고리즘
 - **V-trace**(IMPALA) off-policy 보정: actor 정책 지연을 허용한다.
@@ -33,6 +33,70 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 - **종족 구성의 한계**: 리그의 학습 에이전트(Main, Exploiter, 스냅샷)는 모두 테란이므로 셀프플레이로는 TvT만 연습된다. TvP·TvZ 상대는 T0·T1 봇뿐이다(아래 AMB-042-2).
 - 맵: 투혼과 서킷브레이커 균등, 시작 위치는 랜덤.
 
+## 초기 설정값 (2026-10-17, AMB-042-3)
+사용자 위임으로 Claude가 정했다. 근거는 IMPALA(Espeholt et al. 2018)와 AlphaStar(Vinyals et al. 2019)의 설정을 이 프로젝트 규모(학습 호스트 1대, GPU 하나를 추론과 공유)에 맞춰 줄인 것이다. **모든 값은 042-R9 튜닝 대상**이며 `config/rl.toml`로 관리하고 체크포인트에 기록한다. 042-AC1 소규모 실험 결과로 조정을 제안할 수 있고, 조정은 사용자 확인 후 반영한다.
+
+용어: **agent step** = `act()` 1회(한 게임의 한 결정). **update** = learner 파라미터 갱신 1회.
+
+### 학습 배치·옵티마이저
+| 항목 | 값 | 근거 |
+|---|---|---|
+| 배치 | 레인 32 × T64 = 2,048 agent step/update. `micro_lanes`로 나눠 gradient를 합친다(041과 같은 방식) | T=64는 042-R8. 레인 수는 BC(`config/bc.toml`)와 같게 해 메모리 특성을 재사용 |
+| 옵티마이저 | Adam, lr 3e-5, β1 0, β2 0.99, ε 1e-5, weight decay 0, gradient-norm clip 1.0 | AlphaStar RL 단계 설정(사전학습 정책 미세조정). BC lr(3e-4)의 1/10 |
+| 할인 γ | 1.0 (에피소드는 020 60분 상한으로 유한) | AlphaStar는 할인 없이 λ로 분산 조절 |
+| value 목표 | TD(λ), λ = 0.8 | AlphaStar |
+| V-trace 절단 | ρ̄ = 1.0, c̄ = 1.0 | IMPALA 기본값 |
+| 손실 가중치 | V-trace PG 1.0, UPGO 1.0, value 0.5(헤드별 동일), KL·엔트로피는 아래 | AlphaStar(PG·UPGO 동일 가중), value 0.5는 BC `value.win`과 같음 |
+| advantage 결합 | 보상 항목별 value head(033-R3)로 advantage를 따로 구하고 [033](033-reward.md) 가중치로 더한다 | 033-R3 |
+
+### 정책 지연·가중치 배포·큐
+| 항목 | 값 | 근거 |
+|---|---|---|
+| 가중치 배포 주기 K | 4 update마다 추론 서버에 반영 | 같은 GPU라 복사 비용이 작다. IMPALA는 매 update 배포 |
+| 정책 지연 임계값 (042-R4) | behaviour 버전이 learner보다 **32 update 넘게** 뒤처진 trajectory는 버린다. 버린 비율을 로그에 남긴다 | V-trace는 지연을 보정하지만 지연이 크면 ρ 절단으로 학습 신호가 줄어든다. K의 8배 |
+| trajectory 큐 | 최대 4 배치(128 trajectory). 가득 차면 가장 오래된 것부터 버린다 | 큐 대기로 생기는 지연을 임계값 안으로 묶는다 |
+
+### 엔트로피·KL
+| 항목 | 값 | 근거 |
+|---|---|---|
+| 헤드별 엔트로피 계수 | action_type 3e-3, delay 1e-3, queued 1e-3, selected 1e-3, target_unit 1e-3, target_loc 1e-3. 감쇠 없음 | KL(π‖π_BC)이 붕괴를 막으므로 IMPALA(1e-2)보다 작게 둔다. 행동 종류 다양성이 가장 중요해 action_type만 크게. 032-R10대로 사용된 헤드만 합산 |
+| KL 계수 스케줄 | `max(0.01, 0.1 × 0.5^(update / 20,000))` (반감기 20,000 update ≈ 4,100만 agent step) | 초기 0.1·하한 0.01은 기존 결정. 반감기는 C0~C1 동안 BC 근처를 유지하도록 정함 |
+| Exploiter의 KL | Main과 같은 스케줄. Exploiter를 BC로 리셋하면 스케줄도 처음부터 | AlphaStar는 Exploiter에도 KL을 적용 |
+
+### 리그·상대 선택
+| 항목 | 값 | 근거 |
+|---|---|---|
+| learner 시분할 (042-R7) | Main 50%, Main Exploiter 25%, League Exploiter 25%. **C2부터 적용**하고, C0·C1에서는 Main만 학습한다(100%) | 042-R7 하한. AlphaStar(Main:ME:LE = 1:1:2)보다 Main 비중을 크게 |
+| Main 상대 (C2) | PFSP 50%(전체 스냅샷 + T0/T1), 셀프 35%, T1 15% | 기존 리그 표 |
+| PFSP 가중 | Main·League Exploiter: `f_hard(x) = (1 − x)²`, x = 상대에 대한 자기 승률 | AlphaStar |
+| Main Exploiter | 현재 Main과 대전. 최근 승률이 20% 미만이면 게임의 50%를 Main 스냅샷 상대로 `f_var(x) = x(1 − x)` 가중 | AlphaStar(너무 어려운 상대에서 학습 신호 확보) |
+| 승률 표 | 상대별 지수 이동 평균(게임마다 감쇠 0.99), 처음 보는 상대는 0.5 | 오래된 결과의 영향을 줄인다 |
+| 종족 샘플링 | `p_r = 0.5 × 1/3 + 0.5 × (1 − w_r) / Σ(1 − w)`, w_r = 종족 r 상대 최근 승률. 모든 종족 최소 1/6 | 균등 + 약한 종족 가중(기존 결정)을 절반씩 |
+| Random 종족 비율 (021-R7) | 상대가 T0·T1 봇이고 여러 종족을 지원할 때 20% | 종족을 하나만 하는 T1 봇은 적용하지 않는다 |
+| 맵·시작 위치 | 투혼·서킷브레이커 균등, 시작 위치 랜덤 | 기존 결정 |
+
+### 스냅샷·리셋 (스냅샷 주기 N)
+| 에이전트 | 스냅샷 조건 | 리셋 |
+|---|---|---|
+| Main | 2,000 update마다(약 410만 agent step) | 없음 |
+| Main Exploiter | 현재 Main 상대 승률 ≥ 70%(최근 200판) 또는 4,000 update | 스냅샷 후 BC 정책으로 리셋 |
+| League Exploiter | PFSP 상대 전체 승률 ≥ 70%(최근 200판) 또는 4,000 update | 스냅샷 후 25% 확률로 BC 리셋 |
+
+근거: AlphaStar의 조건(승률 70%, 고정 주기, LE 리셋 확률 25%)을 이 규모 update 수로 바꿨다.
+
+### 커리큘럼 (042-R5)
+| 단계 | 상대 구성 | 다음 단계 조건 |
+|---|---|---|
+| C0 | T0 봇 80%(종족·빌드 균등), 셀프 20%. r_value 사용(033) | 종족마다 T0 상대 최근 300판 승률 ≥ 70% |
+| C1 | T0 30%, T1 40%, 셀프 30% | 종족마다 T1 상대 최근 300판 승률 ≥ 50% |
+| C2 | 풀 리그(위 표) | 없음(중단은 사용자 결정, AMB-042-1) |
+- 시간 기준 강제 전환은 두지 않는다. 한 단계에서 오래 정체하면 M6 중간 점검에서 사용자에게 보고한다.
+- pseudo-reward(r_build·r_units, 033)는 C0·C1에서 고정하고, C2 진입 후 Main 20,000 update에 걸쳐 0으로 선형 감쇠한다(033의 "리그 진행에 따라 감쇠"의 초기값, 033-R4).
+
+### V-trace vs PPO 채택 기준
+- PPO 비교 설정: clip 0.2, GAE λ 0.95, 같은 배치를 2 epoch, value clip 없음. 나머지(KL·엔트로피·옵티마이저)는 같다.
+- 판정: 042-AC1 설정에서 같은 agent step(아래 AC1)까지 3 seed 평균 최종 승률이 **3%p 넘게 높은 쪽**을 채택한다. 차이가 3%p 이하이면 비동기 actor와 잘 맞는 V-trace를 채택한다. 어느 seed든 발산(NaN, 또는 KL(π‖π_BC)이 계속 증가해 승률이 BC 미만으로 떨어짐)하면 그 알고리즘은 탈락한다.
+
 ## Requirements
 | ID | 요구사항 |
 |---|---|
@@ -49,6 +113,7 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 
 ## Acceptance Criteria
 - 042-AC1: 작은 설정(1맵, T0 1종족)에서 BC 정책 대비 승률 개선을 재현 가능하게 보인다. 3 seed 평균으로 측정한다.
+  - 설정(2026-10-17): 투혼, 상대는 BC 정책의 승률이 20~80%인 T0 종족 하나(TBD(M6): BC 측정 후 선택), seed당 1,000만 agent step, 학습 전후 각 200판 평가(050-R1 두 모드). 개선 = 3 seed 모두 학습 후 승률의 Wilson 95% 하한이 BC 승률의 상한보다 높음.
 - 042-AC2: 72시간 연속 학습 중 크래시나 메모리 누수 없이 resume이 가능하다.
 - 042-AC3: Main이 이전 승격 체크포인트 대비 승률 ≥ 55%일 때만 승격한다.
 - 042-AC4: 학습 중 Ctrl+C 한 번이면 체크포인트 push와 잠금 해제까지 마치고 종료한다. 이어서 hosts 파일의 게임 PC를 하나 빼거나 더해 재시작하면, `--take-over` 없이 같은 step에서 재개하고 바뀐 호스트 구성으로 게임을 배정한다(042-R10).
@@ -57,6 +122,10 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 > **[SPEC DEFERRED(M6)] AMB-042-2**: TvP·TvZ 실력이 T0·T1 봇 수준에서 정체될 수 있다(셀프플레이는 TvT만 가능). 지금은 T0·T1 P/Z 봇으로 진행한다(2026-10-15 결정). M6 중간 점검 때 아래 내용을 사용자에게 보고하고 대응을 다시 확인받는다.
 > - 보고 내용: TvP·TvZ 승률이 정체되었는지, 또는 T1 봇 상대 승률이 포화되었는지
 > - 대응 후보: 프로토스·저그를 플레이하는 상대 전용 정책을 추가할지
+>
+> M6 시작 시 재확인(2026-10-17): T0·T1 P/Z 봇으로 시작한다. M6 중간 점검에서 위 내용을 보고하고 다시 확인받는다(Deferred 유지).
+
+- **초기 설정값 (확정 2026-10-17, AMB-042-3)**: 위 "초기 설정값" 절의 수치는 사용자 위임으로 Claude가 문헌 기준으로 정했다. 042-AC1 이후 조정을 제안할 수 있다.
 
 - 학습 호스트 GPU 하나에서 추론과 학습이 경쟁한다. 다른 PC GPU를 추론 전용으로 쓰는 옵션은 [060](060-infra-bc250.md) R5를 따른다.
 
