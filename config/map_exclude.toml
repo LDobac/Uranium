@@ -1,0 +1,30 @@
+# 040-R16: maps excluded from `uranium-replay build` because their measured desync rate
+# (replayed views, 040-R8) is above 10%. A replay's map title is matched case-insensitively
+# against `name_patterns` (substring, color/control codes removed) or its CHK SHA-256 against
+# `chk_sha256`. Patterns carry the map version: other versions are measured before they are
+# added. Target-map families (map_families.toml) must not be listed. Analysis:
+# reports/m4_scr_desync.md.
+
+[[map]]
+name = "Attitude SE 2.1"
+name_patterns = ["attitude se 2.1"]
+chk_sha256 = []
+desync = "92/205 views (44.9%)"
+measured = "2026-10-17, all 2,000 scr_ladder replays (desync / replayed views)"
+cause = "4 invincible critters at the map centre keep consuming the shared RNG all game"
+
+[[map]]
+name = "Colorless Fate 1.1"
+name_patterns = ["colorless fate 1.1"]
+chk_sha256 = []
+desync = "10/38 views (26.3%)"
+measured = "2026-10-17, all 2,000 scr_ladder replays (desync / replayed views)"
+cause = "2 invincible critters (same mechanism as Attitude SE)"
+
+[[map]]
+name = "Radeon 1.2"
+name_patterns = ["radeon 1.2"]
+chk_sha256 = []
+desync = "22/162 views (13.6%)"
+measured = "2026-10-17, all 2,000 scr_ladder replays (desync / replayed views)"
+cause = "no critters; general SC:R vs OpenBW difference, not isolated"

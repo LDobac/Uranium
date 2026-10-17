@@ -1,6 +1,6 @@
 # 040 — Replay Dataset
 
-- **Status**: Approved (2026-10-15, 2026-10-16 개정: R13 저장 위치, R14 src 태그, R15 맵 패밀리, M4 수집 대상, 자체 생성 봇 대전 출처. AMB-040-5 디싱크 판정 확정. 2026-10-16 개정: R14 `scr_ladder`, 데이터 정책 043 예외. 2026-10-17 개정: R3 선택 추적을 게임 규칙과 일치, R11 떠 있는 건물 우클릭 — shard schema 3. 2026-10-17 개정: R8 두 번 재생 = 레이블용 재생과 관측 수집 재생의 공통 관측 비교, shard 불변)
+- **Status**: Approved (2026-10-15, 2026-10-16 개정: R13 저장 위치, R14 src 태그, R15 맵 패밀리, M4 수집 대상, 자체 생성 봇 대전 출처. AMB-040-5 디싱크 판정 확정. 2026-10-16 개정: R14 `scr_ladder`, 데이터 정책 043 예외. 2026-10-17 개정: R3 선택 추적을 게임 규칙과 일치, R11 떠 있는 건물 우클릭 — shard schema 3. 2026-10-17 개정: R8 두 번 재생 = 레이블용 재생과 관측 수집 재생의 공통 관측 비교, shard 불변. R16 디싱크 10% 초과 맵 제외)
 - **Related**: [030](030-observation.md), [031](031-action-space.md), [041](041-imitation-learning.md), [013](013-version-mapping.md)
 
 ## Purpose
@@ -49,6 +49,7 @@ M4 수집 대상(2026-10-16 사용자 결정): 공개 1.16.1 묶음(STARDATA 등
 | 040-R13 | **MUST** 저장 위치(061 레이아웃): 원본 `.rep`은 `<URANIUM_SHARED_DIR>/datasets/replays/raw/<src>/`, shard는 `<URANIUM_SHARED_DIR>/datasets/replays/shards/`에 둔다. 리플레이 파일과 shard는 git에 넣지 않는다 |
 | 040-R14 | **MUST** `src` 태그 값: `stardata`(공개 1.16.1 묶음), `scr_public`(공개 SC:R 프로/래더), `community`(커뮤니티 고수), `personal`(사용자 본인 SC:R 리플레이), `user`(사용자 제공), `bot`(공개 AI 봇 대회 리플레이), `botgen`(자체 생성 봇 대전, 생성 계획·봇 버전을 메타데이터에 남긴다), `scr_ladder`(SC:R 로컬 API로 수집한 래더 경기, [043](043-ladder-replay-collector.md), 2026-10-16 추가). 리포트에는 리플레이 파일명과 플레이어 이름을 쓰지 않는다(001-R10) |
 | 040-R15 | **MUST** 맵 패밀리 표 `config/map_families.toml`이 맵 해시·맵 이름 패턴을 `fighting_spirit` / `circuit_breaker` / `other`로 묶는다. S2(대상 맵) 판정에 쓴다 |
+| 040-R16 | **MUST** 디싱크가 많은 맵 제외(2026-10-17 사용자 결정): 측정한 디싱크 비율(재생된 시점 기준, 040-R8)이 **10%를 넘는 맵**은 build에서 재생 전에 제외하고 `filtered: excluded map (040-R16)`으로 기록한다. 목록은 `config/map_exclude.toml`(제목 패턴·CHK 해시, 측정값·날짜·출처를 함께 기록)로 관리하고, 새 맵·새 버전은 측정한 뒤 추가한다. 대상 맵(투혼·서킷브레이커 패밀리)은 제외 목록에 넣지 않으며, 기준을 넘으면 사용자에게 보고한다. 원인 분석은 `reports/m4_scr_desync.md` |
 
 - **용량 추정(실측은 M4)**: 판단 1회 RawFrame ≈ 5KB(압축), 게임 시점당 ≈ 4,000 판단 → ≈ 20MB. 600GB면 ≈ 3만 게임 시점이다.
 

@@ -45,12 +45,53 @@ impl MapFamilies {
 
     /// 040-R15: by CHK hash first, then by title pattern (control codes removed).
     pub fn classify(&self, map_name: &str, chk_sha256: &str) -> String {
-        let title: String = map_name.chars().filter(|c| !c.is_control()).collect::<String>().to_lowercase();
+        let title = clean_title(map_name);
         self.0
             .iter()
             .find(|f| f.chk_sha256.iter().any(|h| h == chk_sha256) || f.name_patterns.iter().any(|p| title.contains(&p.to_lowercase())))
             .map_or_else(|| "other".to_string(), |f| f.name.clone())
     }
+}
+
+pub const MAP_EXCLUDE_TOML: &str = include_str!("../../../config/map_exclude.toml");
+
+#[derive(Deserialize)]
+struct Excluded {
+    name: String,
+    name_patterns: Vec<String>,
+    chk_sha256: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct ExcludeFile {
+    map: Vec<Excluded>,
+}
+
+/// 040-R16: maps whose measured desync rate is above 10%, skipped before replaying.
+pub struct MapExcludes(Vec<Excluded>);
+
+impl MapExcludes {
+    /// Loads the list; a target-map family in it is a configuration error (040-R16).
+    pub fn load(families: &MapFamilies) -> Result<Self> {
+        let list = toml::from_str::<ExcludeFile>(MAP_EXCLUDE_TOML).context("map_exclude.toml")?.map;
+        for m in &list {
+            for p in &m.name_patterns {
+                anyhow::ensure!(families.classify(p, "") == "other", "map_exclude.toml: {} matches a target map family (040-R16)", m.name);
+            }
+        }
+        Ok(Self(list))
+    }
+
+    /// Name of the excluded map entry this replay map matches, if any.
+    pub fn matches(&self, map_name: &str, chk_sha256: &str) -> Option<&str> {
+        let title = clean_title(map_name);
+        self.0.iter().find(|m| m.chk_sha256.iter().any(|h| h == chk_sha256) || m.name_patterns.iter().any(|p| title.contains(&p.to_lowercase()))).map(|m| m.name.as_str())
+    }
+}
+
+/// Map title without color / control codes, lowercase (040-R15, R16 matching).
+fn clean_title(map_name: &str) -> String {
+    map_name.chars().filter(|c| !c.is_control()).collect::<String>().to_lowercase()
 }
 
 /// One player view the filter accepted.
@@ -238,6 +279,7 @@ struct Pending {
 /// can resume from its records (`BuildOptions::done_sha256`).
 pub fn build(files: &[PathBuf], opt: &BuildOptions, cfg: &PlayConfig, sink: &(dyn Fn(&Record) + Sync)) -> Result<()> {
     let families = MapFamilies::load()?;
+    let excludes = MapExcludes::load(&families)?;
     let labeler = Labeler::new()?;
     let pending = Mutex::new(Pending { writer: ShardWriter::new(opt.shards_dir.clone(), opt.first_shard_index, opt.shard_target_bytes)?, records: Vec::new() });
     let queue = Mutex::new(files.iter().cloned().enumerate().collect::<VecDeque<_>>());
@@ -245,11 +287,11 @@ pub fn build(files: &[PathBuf], opt: &BuildOptions, cfg: &PlayConfig, sink: &(dy
     let failure: Mutex<Option<anyhow::Error>> = Mutex::new(None);
     std::thread::scope(|s| {
         for w in 0..opt.jobs.max(1) {
-            let (families, labeler, pending, queue, written_bytes, failure) = (&families, &labeler, &pending, &queue, &written_bytes, &failure);
+            let (families, excludes, labeler, pending, queue, written_bytes, failure) = (&families, &excludes, &labeler, &pending, &queue, &written_bytes, &failure);
             let cfg = PlayConfig { work_dir: cfg.work_dir.join(format!("w{w}")), launcher: cfg.launcher.clone(), bridge_lib: cfg.bridge_lib.clone(), data_dir: cfg.data_dir.clone() };
             s.spawn(move || {
                 while let Some((index, file)) = { let mut q = queue.lock().unwrap(); q.pop_front() } {
-                    for (r, game) in process(index, &file, opt, &cfg, families, labeler, written_bytes) {
+                    for (r, game) in process(index, &file, opt, &cfg, families, excludes, labeler, written_bytes) {
                         let Some(game) = game else {
                             sink(&r);
                             continue;
@@ -284,7 +326,7 @@ pub fn build(files: &[PathBuf], opt: &BuildOptions, cfg: &PlayConfig, sink: &(dy
 }
 
 #[allow(clippy::too_many_arguments)]
-fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, families: &MapFamilies, labeler: &Labeler, written: &Mutex<u64>) -> Vec<(Record, Option<ShardGame>)> {
+fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, families: &MapFamilies, excludes: &MapExcludes, labeler: &Labeler, written: &Mutex<u64>) -> Vec<(Record, Option<ShardGame>)> {
     let rec = |sha: &str, map: &str, family: &str, view: Option<View>, outcome: Outcome| (Record { index, replay_sha256: sha.to_string(), src: opt.src.clone(), map_family: family.to_string(), map_name: map.chars().filter(|c| !c.is_control()).collect(), view, outcome }, None);
     let bytes = match std::fs::read(file) {
         Ok(b) => b,
@@ -305,6 +347,9 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
     };
     let map_hash = hex(&Sha256::digest(&rep.map));
     let family = families.classify(&rep.header.map_name, &map_hash);
+    if let Some(name) = excludes.matches(&rep.header.map_name, &map_hash) {
+        return vec![rec(&sha, &rep.header.map_name, &family, None, Outcome::Filtered { reason: format!("excluded map (040-R16): {name}") })];
+    }
     let views = match filter(&rep, &family, matches!(opt.src.as_str(), "bot" | "botgen")) {
         Ok(v) => v,
         Err(reason) => return vec![rec(&sha, &rep.header.map_name, &family, None, Outcome::Filtered { reason })],
@@ -365,5 +410,18 @@ mod tests {
         assert_eq!(f.classify("투혼 1.3", ""), "fighting_spirit");
         assert_eq!(f.classify("\u{3}Circuit Breakers \u{5}1.0", ""), "circuit_breaker");
         assert_eq!(f.classify("Python", ""), "other");
+    }
+
+    #[test]
+    fn high_desync_maps_are_excluded_040_r16() {
+        let f = MapFamilies::load().unwrap();
+        let x = MapExcludes::load(&f).unwrap();
+        // Titles as stored in SC:R replays (color codes inside).
+        assert_eq!(x.matches("\u{7}Attitude SE \u{5}2.1", ""), Some("Attitude SE 2.1"));
+        assert_eq!(x.matches("\u{1}C\u{6}olorless \u{2}F\u{6}ate \u{5}1.1", ""), Some("Colorless Fate 1.1"));
+        // Other versions and target maps are not excluded.
+        assert_eq!(x.matches("Attitude SE 2.2", ""), None);
+        assert_eq!(x.matches("\u{7}투혼 \u{5}1.4", ""), None);
+        assert_eq!(x.matches("Octagon SE 2.0", ""), None);
     }
 }
