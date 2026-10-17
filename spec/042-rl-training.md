@@ -1,6 +1,6 @@
 # 042 — RL Training & League
 
-- **Status**: Approved (2026-10-15, 2026-10-16 개정: 042-R10 Ctrl+C 정상 종료, 2026-10-17 개정: 초기 설정값 확정(AMB-042-3, `config/rl.toml`), 첫 학습 호스트, AMB-042-2 M6 시작 재확인)
+- **Status**: Approved (2026-10-15, 2026-10-16 개정: 042-R10 Ctrl+C 정상 종료, 2026-10-17 개정: 초기 설정값 확정(AMB-042-3, `config/rl.toml`), 첫 학습 호스트, AMB-042-2 M6 시작 재확인, behaviour log-prob 기록(AMB-042-4))
 - **Related**: [020](020-env-orchestration.md), [021](021-opponent-pool.md), [032](032-model-architecture.md), [033](033-reward.md), [050](050-evaluation.md), [060](060-infra-bc250.md)
 
 ## Purpose
@@ -9,9 +9,11 @@ BC 정책을 출발점으로 셀프플레이와 리그를 거쳐 승률을 극�
 ## 구조 (actor-learner)
 ```
 [uranium-env actors] ×M 게임 ──obs──► [inference server (학습 호스트 GPU, batched)] ──action──► actors
-         └── trajectory(T=64: obs, privileged, action, behaviour logits, rewards, core_state0) ──► replay queue ──► [learner (학습 호스트 GPU)]
+         └── trajectory(T=64: obs, privileged, action, behaviour log-prob(헤드별·joint), rewards, core_state0) ──► replay queue ──► [learner (학습 호스트 GPU)]
 learner ──► 새 가중치 (매 K 스텝) ──► inference server
 ```
+- **behaviour 기록 (확정 2026-10-17, AMB-042-4)**: actor는 전체 logits(target_loc 하나만 16,384개)가 아니라 **선택한 액션의 헤드별·joint behaviour log-prob**(032-R15)을 기록한다. V-trace·UPGO의 중요도 비율에는 이것으로 충분하다. KL(π‖π_BC)은 learner가 같은 관측으로 BC 모델을 다시 forward해 헤드별 분포로 계산한다.
+
 학습 호스트는 BC250(Vulkan) 또는 CUDA PC다([060](060-infra-bc250.md), 2026-10-15 변경). **첫 RL 실험(042-AC1)은 CUDA PC(Windows)에서 한다**(2026-10-17 사용자 결정). 게임은 그 PC의 로컬 hostd로 돌리고, 필요하면 원격 Linux 게임 PC를 hosts 파일에 더한다(020). 한 호스트의 GPU 하나로 추론과 학습을 모두 하므로 GPU 시간을 분할한다. 학습 중에는 추론 지연이 늘어나지만 lockstep이라 정확성에는 영향이 없다. 게임 PC는 LAN으로 학습 호스트의 에이전트 서버에 접속한다(001-R6). 체크포인트·리그 스냅샷·승격 체크포인트는 공용 드라이브에 저장하며, 학습 시작·재개 절차와 run 잠금은 [061](061-shared-storage.md)을 따른다.
 
 ## 알고리즘

@@ -1,6 +1,6 @@
 # 032 — Model Architecture (Burn)
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: R8 호스트별 정밀도 — CUDA PC f32(TF32) 허용, 사용자 결정)
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: R8 호스트별 정밀도 — CUDA PC f32(TF32) 허용, 사용자 결정 / 추론 서버 Core 상태 슬롯(032-R14), 샘플링 모드·헤드별 log-prob(032-R15))
 - **Related**: [030](030-observation.md), [031](031-action-space.md), [033](033-reward.md), [034](034-action-table.md), [041](041-imitation-learning.md), [042](042-rl-training.md), [060](060-infra-bc250.md)
 
 ## Purpose
@@ -75,6 +75,8 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
       fn init_state(&self, batch: usize, device: &Device) -> Self::State;
       fn step(&self, x: Tensor<2>, s: Self::State) -> (Tensor<2>, Self::State);          // 추론
       fn forward_seq(&self, x: Tensor<3>, s0: Self::State) -> (Tensor<3>, Self::State);  // 학습 [B,T,·]
+      fn select_rows(s: &Self::State, rows: Tensor<1, Int>) -> Self::State;              // 추론 서버: 슬롯 → 배치 (032-R14)
+      fn scatter_rows(s: Self::State, rows: Tensor<1, Int>, sub: Self::State) -> Self::State; // 배치 → 슬롯
   }
   ```
 - 기본 구현은 `LstmCore`다.
@@ -128,6 +130,8 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
 | 032-R10 | **MUST** joint log-prob와 엔트로피는 `action_table`상 사용된 헤드만 합산한다 |
 | 032-R11 | **MUST** privileged 입력은 ValueHeads에만 연결한다. `act()` 시그니처는 privileged 텐서를 받지 않는다 |
 | 032-R12 | **MUST** Selected 헤드의 BC 레이블은 정규 순서(entity index 오름차순) 시퀀스 + END로 만든다 |
+| 032-R14 | **MUST** 추론 서버(`uranium-agent`)는 세션마다 고정 슬롯을 두고 Core 상태를 `[capacity, …]` 텐서 하나에 보관한다. 요청이 모인 세션의 행만 `select_rows`로 꺼내 `act`를 돌리고 `scatter_rows`로 되돌린다. 세션이 시작될 때 그 슬롯을 0으로 리셋한다(032-R5). 배치로 처리한 결과는 세션을 하나씩 처리한 결과와 같아야 하고(허용 오차 이내), 세션 사이에 상태가 섞이지 않는다 (2026-10-17) |
+| 032-R15 | **MUST** `act()`의 샘플링 모드는 확률적(temp 1)과 결정론적(temp 0 = 헤드마다 argmax)을 둔다(050-R1). `ActOutput`은 joint log-prob과 함께 헤드별 log-prob [B,6]을 돌려준다. RL actor는 이 값을 behaviour log-prob로 기록한다(042) (2026-10-17) |
 
 ## 4. 파라미터·연산 예산 (기본 구성, N=256)
 | 모듈 | 파라미터 | FLOPs/step (B=1) |
@@ -157,7 +161,7 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
 
 // Burn 0.22: 백엔드는 텐서·모듈이 놓인 Device가 결정한다 (032-R1)
 impl<C: Core> UraniumNet<C> {
-    /// 추론 1 step. 샘플링은 GPU 내부(Gumbel-max), 온도 temp. 사용된 헤드의 log-prob 합과 value 반환.
+    /// 추론 1 step. 샘플링은 GPU 내부(Gumbel-max), 온도 temp(0 = argmax, 032-R15). 사용된 헤드의 log-prob 합, 헤드별 log-prob, value 반환.
     pub fn act(&self, obs: ObsBatch, state: C::State, temp: f32) -> ActOutput<C::State>;
     /// 학습 [B,T]. teacher forcing. 헤드별 masked logits + value 반환.
     pub fn forward_seq(&self, obs: ObsSeq, labels: ActionSeq, priv_: Option<PrivSeq>, s0: C::State) -> SeqOutput;

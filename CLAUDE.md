@@ -60,13 +60,14 @@ spec/                 # 스펙 문서 (먼저 읽을 것)
 crates/
   uranium-proto       # 공통 스키마·프레이밍
   uranium-adapter     # GameBackend trait, 버전 매핑 테이블
-  uranium-env         # 에피소드·feature·보상·executor
+  uranium-env         # 라이브러리: feature·마스크·보상·executor·맵 계열·맵 사전계산
   uranium-model       # Burn 모델
   uranium-train       # BC / RL / league
   uranium-replay      # .rep 파서·데이터셋
   uranium-ladder      # SC:R 로컬 웹 API 래더 리플레이 수집기(043, Windows)
   uranium-hostd       # OpenBW 인스턴스 데몬
-  uranium-agent       # 에이전트 서버(정책 세션)·실전 바이너리
+  uranium-agent       # 에이전트 서버(slot별 정책 라우팅, 배치 추론 서버, 모델 정책)·실전 바이너리
+  uranium-runner      # 게임 스케줄러(020), 바이너리 이름 `uranium-env`(run·calibrate). runner → agent → model → env (AMB-001-3)
   uranium-bridge-openbw # 브리지 Rust 절반(C ABI, staticlib)
   uranium-scripted    # T0 규칙 기반 상대 봇
 bridge/openbw         # BWAPI 4.2 AIModule shim(C++) + C ABI 헤더 → liburanium_bridge.so

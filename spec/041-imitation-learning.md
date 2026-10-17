@@ -1,6 +1,6 @@
 # 041 — Imitation Learning (BC)
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: R11 혼합 선택 레이블 — AMB-041-1)
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: R11 혼합 선택 레이블 — AMB-041-1, AC2 측정 조건 — AMB-041-2)
 - **Related**: [032](032-model-architecture.md), [040](040-replay-dataset.md), [042](042-rl-training.md), [050](050-evaluation.md)
 
 ## Purpose
@@ -40,6 +40,7 @@
 ## Acceptance Criteria
 - 041-AC1: 대상 맵 test action_type top-1 ≥ 50%다.
 - 041-AC2: BC 정책이 T0 봇 상대로 각 매치업에서 승률 ≥ 50%다.
+  - 측정 조건 (확정 2026-10-17, AMB-041-2): 조합(상대 종족 T·P·Z × 맵 2)당 50판(050 E-Matrix와 같음), z 없음(BC에서 25% 확률로 z를 빼고 학습한 조건, 041-R8), argmax와 확률적 샘플링 두 모드를 모두 측정·보고(050-R1), 승률에 Wilson 95% 구간 표기(050-R2). plan은 `config/plans/bc-vs-t0.toml`이다.
 - AC1과 AC2의 수치는 초기값이다(2026-10-15 확정). M5 기준선 측정 후 조정을 제안할 수 있고, 조정하려면 사용자 확인이 필요하다(050과 같은 방식).
 - 041-AC3: (B)가 (A)보다 대상 맵 test 지표가 같거나 높다. 그렇지 않으면 맵 전략을 재검토한다.
 

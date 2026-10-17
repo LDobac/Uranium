@@ -55,6 +55,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-000-3 | 맵 파일 버전, 상대 Random 종족 지원 | Resolved (2026-10-15: 최신 공개 버전(1.16.1 호환 검증 후 해시 고정), Random 지원) |
 | AMB-001-1 | SC:R 실전 추론 위치 | Deferred (M7) |
 | AMB-001-2 | OpenBW 브리지 C++ shim 허용 여부 | Resolved (2026-10-15: 얇은 C++ shim 허용) |
+| AMB-001-3 | 에이전트가 모델을 쓰면 생기는 crate 순환(agent → model → env → agent) 해결 | Resolved (2026-10-17: 스케줄러를 새 crate `uranium-runner`로 분리, 바이너리 이름 `uranium-env`·CLI 유지, `uranium-env`는 라이브러리만) |
 | AMB-011-1 | MPQ·맵 파일 확보 경로 (사용자 미보유) | Resolved (2026-10-15: 사용자 구버전 확보 + Claude SC:R CASC 추출 조사 병행) |
 | AMB-012-1 | samase_scarf 분석 실패 시 대안 선택 | Deferred (M7) |
 | AMB-012-2 | 대상 SC:R 빌드 정책, 기존 samase 환경 | Deferred (M7) |
@@ -68,6 +69,8 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-031-1 | executor(규칙) 범위 | Resolved (2026-10-15: 최소 — 일꾼·건물 선택만, 위치 보정·심시티 스냅·자동 채취 없음) |
 | AMB-031-2 | APM 제한 수치 (→AMB-000-1) | Resolved (2026-10-15: APM 제한 없음, delay 1–32 비균등 16 bucket) |
 | AMB-031-3 | 맵 사전계산 채널(base_loc·choke·wall_candidate) 적용 범위 | Resolved (2026-10-16: 대상 맵만이 아니라 모든 맵에 맵 무관 알고리즘으로 적용) |
+| AMB-031-4 | 라이브 게임 맵 사전계산 키(BC는 CHK 해시, 라이브 `GameInfo.map_hash`는 맵 파일 해시) | Resolved (2026-10-17: 대상 맵 2개만 맵 파일 해시 키로 오프라인 생성(`uranium-replay mapgen`), 그 외 맵은 사전계산 없음 + 경고, 브리지·프로토콜 변경 없음) |
+| AMB-031-5 | 모델 정책에서 executor가 액션을 거부할 때 동작 | Resolved (2026-10-17: 명령 없이 샘플된 delay만 진행, 거부 건수 기록) |
 | AMB-032-1 | 정책 구조 (단일 vs 계층형) | Resolved (2026-10-15: 단일 end-to-end) |
 | AMB-032-2 | 매치업별 모델 구성 | Resolved (2026-10-15: 단일 공유 모델 + 종족 임베딩) |
 | AMB-032-3 | 전략 조건 z 포함 여부 | Resolved (2026-10-15: 포함) |
@@ -88,9 +91,11 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-043-7 | 래더 수집: 게이트웨이 Korea(30)만 vs Korea+Asia(45) | Resolved (2026-10-16: Korea + Asia) |
 | AMB-043-8 | 래더 수집: 과거 시즌 불가(링크는 최근 25경기, 파일 ~30일) → 주기 수집 여부 | Resolved (2026-10-16: 과거 시즌 조건 삭제, 하루 1회 주기 수집) |
 | AMB-041-1 | BC 혼합 선택 레이블 판정(`select_cap`: 일부 유닛만 자격이 있는 선택) | Resolved (2026-10-17: 사용자 위임으로 Claude 결정 — 게임 엔진 동작 기준. 자격 없는 유닛을 레이블에서 빼고 남는 유닛이 없을 때만 무효(041-R11). 함께 확인한 엔진 규칙: 어택땅 자격 = 이동 가능(034), 선택 추적 = 게임 선택 규칙(040-R3), 떠 있는 건물 우클릭 = 이동(040-R11), 랠리는 건설 중에도 가능(034)) |
+| AMB-041-2 | 041-AC2(BC vs T0) 측정 판수·z·샘플링 모드 | Resolved (2026-10-17: 조합(종족×맵)당 50판, z 없음, argmax·확률적 두 모드 보고, Wilson 95%) |
 | AMB-042-1 | 학습 기간·장비 예산 | Resolved (2026-10-15: 기간 제한 없음, 전체 리그 구성) |
 | AMB-042-2 | TvP·TvZ 상대 다양성 (P/Z 상대 정책 추가 여부) | Deferred (M6) (2026-10-17 M6 시작 재확인: T0·T1 봇으로 시작, M6 중간 점검에서 정체 여부 보고 후 재확인) |
 | AMB-042-3 | RL 초기 설정값(정책 지연 임계값, 가중치 배포 K, 스냅샷 N, 커리큘럼 전환 조건, 헤드별 엔트로피, KL 감쇠, 시분할, PFSP, 종족·Random 비율, 배치·옵티마이저) | Resolved (2026-10-17: 사용자 위임으로 Claude 결정 — IMPALA·AlphaStar 기준 축소값을 042 "초기 설정값" 절·`config/rl.toml`에 기록, 전부 042-R9 튜닝 대상, 042-AC1 후 조정 제안 가능. 첫 RL 학습 호스트는 CUDA PC) |
+| AMB-042-4 | actor가 기록할 behaviour 정보(전체 logits는 target_loc만 16,384개) | Resolved (2026-10-17: 선택 액션의 헤드별·joint behaviour log-prob만 기록, KL(π‖π_BC)은 learner가 BC 모델 재계산) |
 | AMB-050-1 | 승격 게이트·평가 판수·회귀 시나리오 | Resolved (2026-10-15: 초안 수치 확정, M5 이후 조정 제안 가능) |
 | AMB-061-1 | 원격 CUDA PC(WireGuard 경유) 공유 시 pull·push 정책 | Resolved (2026-10-15: (b) 정책 보강 → 061-R11 shard 재사용·재개 pull·push 재시도·잠금 재확인·미push 복구) |
 | AMB-061-2 | 공유 제공 PC 자신의 로컬 캐시 복사 여부 | Resolved (2026-10-15: (b) 예외 추가 → 061-R12 `URANIUM_SHARED_LOCAL=1`이면 복사 없이 원본 읽기, 해시 검증 유지) |

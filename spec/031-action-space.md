@@ -1,6 +1,6 @@
 # 031 — Action Space & Executor
 
-- **Status**: Approved (2026-10-15)
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: 라이브 게임 맵 사전계산 키(AMB-031-4), executor 거부 시 동작(031-R4, AMB-031-5))
 - **Related**: [010](010-game-protocol.md), [030](030-observation.md), [032](032-model-architecture.md), [034](034-action-table.md), [040](040-replay-dataset.md)
 
 ## Purpose
@@ -33,7 +33,7 @@
 | 031-R1 | **MUST** `executor = pick_building` 액션(Train, Research, Upgrade, ScannerSweep): 가능한 건물 중 큐가 가장 짧은 건물을 고른다(Scan은 energy 최대 Comsat). tie-break는 unit id 오름차순으로 결정론적으로 한다 |
 | 031-R2 | **MUST** `executor = pick_worker` 액션(Build_*): 대상 타일까지 가장 가까운 비운반·비건설 SCV를 고른다. 운반 중인 SCV만 있으면 그중 가장 가까운 SCV를 고른다. **건설 위치는 정책이 고른 타일(좌상단)을 그대로 쓰고, 위치 보정은 하지 않는다.** 실행 시점에 위치가 무효면 명령 실패로 기록하고 재시도하지 않는다 |
 | 031-R3 | **MUST** 선택 상한은 12기다. selected 헤드는 최대 12 step 뒤에 END로 끝난다. 액션 하나는 Command 하나로 변환하며 분할하지 않는다. 12기를 넘는 군대에 명령하려면 여러 액션을 낸다 |
-| 031-R4 | **MUST** 무효 액션 마스크는 [034](034-action-table.md)의 정의를 따른다. 마스크는 BC, RL, 실전에서 동일하다 |
+| 031-R4 | **MUST** 무효 액션 마스크는 [034](034-action-table.md)의 정의를 따른다. 마스크는 BC, RL, 실전에서 동일하다. 모델 정책(RL·평가·실전)에서 executor가 액션을 거부하면 명령 없이 샘플된 delay만큼 진행하고, 거부 건수를 이유별로 세션 기록에 남긴다(2026-10-17, AMB-031-5). 에이전트 기억(030 §4 직전 행동)에는 거부 여부와 관계없이 샘플된 액션과 선택을 기록한다. BC 레이블 처리(041-R11)와 같은 규칙이다 |
 | 031-R5 | ~~APM 제한~~ — **삭제(2026-10-15)**. APM 제한을 두지 않는다. SC:R 네트워크 턴당 커맨드 버퍼 한도는 기술적 제약이며 브리지가 큐잉으로 처리한다([012](012-bridge-remastered.md)) |
 | 031-R6 | ~~자동 채취·자동화~~ — **삭제(2026-10-15)**. 새 SCV의 채취를 포함해 모든 유닛 지시는 정책이 직접 내린다 |
 | 031-R7 | **MUST** executor는 결정론적이어야 한다. 같은 입력이면 같은 Command를 낸다. BC 레이블 역변환이 가능해야 하기 때문이다([040](040-replay-dataset.md)) |
@@ -47,6 +47,12 @@
 - `tools/mapgen`이 `assets/maps/<map_hash>.toml`을 생성한다.
 - 대상 맵(투혼, 서킷브레이커)만이 아니라 BC 데이터에 나오는 **모든 맵**에 같은 맵 무관 알고리즘으로 적용한다. S1(전체 맵)과 S2(대상 맵)의 입력 분포를 같게 하기 위해서다 (AMB-031-3 Resolved, 2026-10-16).
 - **관측 채널(`base_loc`, `choke`, `wall_candidate`)로만 제공한다. executor가 위치를 강제하거나 보정하지 않는다.**
+- **라이브 게임의 사전계산 (확정 2026-10-17, AMB-031-4)**
+  - BC shard의 사전계산 키는 리플레이 CHK의 SHA-256이고, 라이브 게임의 `GameInfo.map_hash`는 맵 파일(.scx)의 SHA-256이다(010). 키가 달라 그대로는 라이브 게임에서 사전계산을 찾지 못한다.
+  - RL·평가 대상 맵 2개(`config/assets.toml`)만 지원한다. `uranium-replay mapgen <scx>...`가 맵 파일에서 CHK를 꺼내 자원 배치를 `<URANIUM_MAPS_DIR>/<맵 파일 SHA-256>.resources.toml`로 저장한다(오프라인, 맵마다 한 번).
+  - 에이전트 세션은 게임 시작 시 `<맵 파일 SHA-256>.toml`(사전계산)이 있으면 그것을 쓰고, 없으면 `.resources.toml`과 `GameInfo.static_map`으로 BC와 **같은 알고리즘**(`mapgen::precompute`)을 돌려 만든다. 리플레이 경로와 입력(정적 맵 + CHK 자원)이 같으므로 결과도 같다.
+  - 그 외 맵은 사전계산 없이(`base_loc`·`choke`·`wall_candidate` 채널 0) 진행하고 경고를 남긴다. 브리지·프로토콜은 바꾸지 않는다(001-R3).
+  - 맵 계열(`map_family`, 040-R15)은 BC와 같은 `config/map_families.toml` 규칙(제목 패턴)으로 `GameInfo.map_name`에서 정한다. 판정 코드는 `uranium-env` 라이브러리에 둔다.
 
 ## Acceptance Criteria
 - 031-AC1: [034](034-action-table.md)의 모든 action_type이 OpenBW에서 실제로 실행되는지 시나리오 테스트로 확인한다.
