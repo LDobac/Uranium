@@ -1,6 +1,6 @@
 # 040 — Replay Dataset
 
-- **Status**: Approved (2026-10-15, 2026-10-16 개정: R13 저장 위치, R14 src 태그, R15 맵 패밀리, M4 수집 대상, 자체 생성 봇 대전 출처. AMB-040-5 디싱크 판정 확정. 2026-10-16 개정: R14 `scr_ladder`, 데이터 정책 043 예외. 2026-10-17 개정: R3 선택 추적을 게임 규칙과 일치, R11 떠 있는 건물 우클릭 — shard schema 3. 2026-10-17 개정: R8 두 번 재생 = 레이블용 재생과 관측 수집 재생의 공통 관측 비교, shard 불변. R16 디싱크 10% 초과 맵 제외)
+- **Status**: Approved (2026-10-15, 2026-10-16 개정: R13 저장 위치, R14 src 태그, R15 맵 패밀리, M4 수집 대상, 자체 생성 봇 대전 출처. AMB-040-5 디싱크 판정 확정. 2026-10-16 개정: R14 `scr_ladder`, 데이터 정책 043 예외. 2026-10-17 개정: R3 선택 추적을 게임 규칙과 일치, R11 떠 있는 건물 우클릭 — shard schema 3. 2026-10-17 개정: R8 두 번 재생 = 레이블용 재생과 관측 수집 재생의 공통 관측 비교, shard 불변. R16 디싱크 10% 초과 맵 제외. 2026-10-17 개정: shard game_info 플레이어 = 시점·실제 상대, shard schema 4)
 - **Related**: [030](030-observation.md), [031](031-action-space.md), [041](041-imitation-learning.md), [013](013-version-mapping.md)
 
 ## Purpose
@@ -62,6 +62,7 @@ shard_XXXXX.bin.zst
              steps[]{raw_frame, privileged, action_label} }   // feature·마스크는 학습 시 생성 (040-R12)
 ```
 - `game_info`는 feature 추출(030)의 정적 맵 채널과 `MapInfo`에 쓴다. 추가하면서 `schema_version`을 올렸고, 이전 버전 shard는 다시 빌드한다 (AMB-040-6 Resolved, 2026-10-16).
+- `game_info.players`는 시점 플레이어와 실제 상대(리플레이의 다른 활동 플레이어) 두 명만 id 순으로 담고, `privileged`·`result`도 그 상대 기준이다(011-R10). 헤더에 빈 칸·활동 없는 칸이 있는 게임에서 상대가 실행마다 달라지던 문제(적 종족 feature·privileged·승자)를 고쳤다. schema 4 (2026-10-17, 위임 결정).
 
 ## Acceptance Criteria
 - 040-AC1: 파서가 샘플 1,000개 리플레이를 오류 없이 파싱하고, 결과가 기존 공개 파서의 명령 수·APM과 일치한다.

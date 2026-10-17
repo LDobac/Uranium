@@ -212,7 +212,8 @@ class UraniumModule : public AIModule {
     g_enemy = Broodwar->enemy();
     if (replay_) {
       // 011-R10: observe as the perspective player; patch 0011 restricts tile vision and
-      // detection to it. The opponent is the other player that starts with units.
+      // detection to it. The opponent is URANIUM_REPLAY_ENEMY, else the lowest-id other player
+      // that starts with units (players iterate in pointer order).
       int32_t pid = uranium_bridge_replay_perspective();
       g_me = pid >= 0 ? Broodwar->getPlayer(pid) : nullptr;
       if (!g_me) {
@@ -221,8 +222,11 @@ class UraniumModule : public AIModule {
       }
       for (Player p : Broodwar->getPlayers())
         if (p != g_me) Broodwar->setVision(p, false);
-      for (Player p : Broodwar->getPlayers())
-        if (p != g_me && !p->isNeutral() && !p->getUnits().empty() && !g_enemy) g_enemy = p;
+      int32_t eid = uranium_bridge_replay_enemy();
+      g_enemy = eid >= 0 ? Broodwar->getPlayer(eid) : nullptr;
+      if (!g_enemy)
+        for (Player p : Broodwar->getPlayers())
+          if (p != g_me && !p->isNeutral() && !p->getUnits().empty() && (!g_enemy || p->getID() < g_enemy->getID())) g_enemy = p;
     }
     // 011-R5 (2026-10-15): always on in OpenBW lockstep mode. Needed for deterministic replay
     // ids; the policy observation is filtered by visible_to_self() regardless.
@@ -249,6 +253,8 @@ class UraniumModule : public AIModule {
     std::vector<UrPlayer> players;
     for (Player p : Broodwar->getPlayers()) {
       if (p->isNeutral()) continue;
+      // 011-R10: a replay's GameInfo holds the perspective and its opponent only (1v1 form).
+      if (replay_ && p != g_me && p != g_enemy) continue;
       UrPlayer o{};
       o.id = (uint8_t)p->getID();
       o.race = (uint8_t)p->getRace().getID();

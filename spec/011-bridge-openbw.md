@@ -29,7 +29,7 @@ OpenBW 포크 BWAPI 4.2(`github.com/OpenBW/bwapi`) 위에서 동작하는 AIModu
 | 011-R7 | **MUST** 게임 종료 시 리플레이(`.rep`)를 저장하고 경로를 GameEnd에 포함한다. 저장 여부는 설정으로 끌 수 있다 |
 | 011-R8 | **MUST** 에이전트 연결이 끊기면 `leaveGame()`을 호출하고 비정상 종료 코드로 끝낸다 |
 | 011-R9 | **SHOULD** 시작 위치를 고정 또는 랜덤으로 고를 수 있게 한다(`BWAPI_CONFIG_AUTO_MENU__MAP` + 맵 시드). 이 기능은 평가 재현용이다 |
-| 011-R10 | **MUST** **리플레이 재생 모드**: BWAPI 리플레이 모드로 `.rep`를 재생하고, 환경변수 `URANIUM_REPLAY_PERSPECTIVE=<player_slot>`으로 지정한 플레이어(테란) **시점의 시야로 필터링**한 RawFrame을 만든다(030-R3) |
+| 011-R10 | **MUST** **리플레이 재생 모드**: BWAPI 리플레이 모드로 `.rep`를 재생하고, 환경변수 `URANIUM_REPLAY_PERSPECTIVE=<player_slot>`으로 지정한 플레이어(테란) **시점의 시야로 필터링**한 RawFrame을 만든다(030-R3). 상대(PrivilegedSummary·승자 판정 대상)는 `URANIUM_REPLAY_ENEMY=<player_slot>`으로 지정하고, 이때 GameInfo 플레이어 목록은 시점 플레이어와 상대 두 명만 담는다(활동 없는 빈 칸 제외, 실전 1:1과 같은 형태). 미지정이면 유닛을 가진 다른 플레이어 중 id가 가장 낮은 쪽을 상대로 한다. GameInfo 플레이어는 모든 모드에서 id 순이다(결정론, 2026-10-17 위임 결정) |
 | 011-R11 | **MUST** 재생 모드의 `Hello.mode`는 `Lockstep`이고 별도 플래그 `replay=true`를 쓴다. 에이전트는 `cmds`가 비어 있는 `Act{advance_frames}`만 보낸다. 명령이 들어 있으면 브리지가 에러로 거부한다. 행동 레이블은 브리지가 아니라 [040](040-replay-dataset.md) 리플레이 파서가 만든다 |
 | 011-R13 | **MUST** 게임 데이터는 MPQ 3종 또는 **SC:R CASC에서 추출한 풀린 파일 폴더**(`URANIUM_DATA_DIR`) 중 하나로 공급한다. 폴더 방식은 OpenBW 패치 `third_party/patches/0001-openbw-loose-data-files.patch`로 지원한다. 추출 도구는 `tools/casc-extract`다(2026-10-15). 추출물 검증 값은 **경로에 무관한 내용 해시**(`content_sha256`)다. 파일마다 `<상대 경로(/ 구분)>\t<크기>\t<sha256>\n` 줄을 만들어 경로 순으로 이어 붙이고, 그 문자열의 SHA-256을 낸다. `config/assets.toml`은 이 값을 고정한다. `manifest.toml` 파일 자체의 해시는 추출 원본의 절대 경로가 들어가 호스트마다 달라지므로 쓰지 않는다(2026-10-16 변경) |
 | 011-R14 | **MUST** 서드파티 소스(OpenBW, BWAPI)는 커밋을 고정해 `tools/openbw/build.sh`가 받는다. 우리 수정은 `third_party/patches/NNNN-<repo>-<desc>.patch`로만 관리하고 빌드 시 적용한다 |
@@ -45,6 +45,7 @@ OpenBW 포크 BWAPI 4.2(`github.com/OpenBW/bwapi`) 위에서 동작하는 AIModu
 | `URANIUM_PRIVILEGED` | `1`이면 lockstep 학습 모드에서 `PrivilegedSummary` 송신 (011-R5) | 0 |
 | `URANIUM_DATA_DIR` | 추출 데이터 폴더 (011-R13) | 미설정 |
 | `URANIUM_REPLAY_PERSPECTIVE` | 재생 모드 시점 (011-R10) | – |
+| `URANIUM_REPLAY_ENEMY` | 재생 모드 상대 (011-R10) | 유닛을 가진 다른 플레이어 중 최소 id |
 
 - 구현 단계: 재생 모드(R10–R12, AC5)는 **M4**에서 구현한다. M2는 대전 모드만 구현한다.
 - 재생 모드 실행(2026-10-16): hostd가 `rep_bytes`를 게임 작업 디렉터리에 `.rep`로 쓰고, 런처 1개를 `BWAPI_CONFIG_AUTO_MENU__MAP=<그 파일>`로 띄운다. SC:R 리플레이는 013 변환본을 넘긴다. 시야 필터 시점은 `URANIUM_REPLAY_PERSPECTIVE` 슬롯이다.

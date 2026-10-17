@@ -117,7 +117,12 @@ pub fn play_with(rep: &Replay, perspective: u8, cfg: &PlayConfig, extra_stops: &
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let addr = listener.local_addr()?.to_string();
     let log = std::fs::File::create(cfg.work_dir.join(format!("{name}.log")))?;
-    let mut child = Command::new(&cfg.launcher)
+    let mut cmd = Command::new(&cfg.launcher);
+    // 011-R10: the opponent is the other active player (empty slots are left out of GameInfo).
+    if let [opponent] = rep.active_players().iter().filter(|(p, _)| p.id != perspective).map(|(p, _)| p.id).collect::<Vec<_>>()[..] {
+        cmd.env("URANIUM_REPLAY_ENEMY", slot_of(rep, opponent)?.to_string());
+    }
+    let mut child = cmd
         .current_dir(&cfg.work_dir)
         .env("URANIUM_DATA_DIR", &cfg.data_dir)
         .env("OPENBW_ENABLE_UI", "0")

@@ -60,6 +60,11 @@ pub extern "C" fn uranium_bridge_replay_perspective() -> i32 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn uranium_bridge_replay_enemy() -> i32 {
+    env_u64("URANIUM_REPLAY_ENEMY").map(|v| v as i32).unwrap_or(-1)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn uranium_bridge_next_frame() -> u32 {
     BRIDGE.lock().unwrap().as_ref().map(|b| b.next_frame).unwrap_or(u32::MAX)
 }
@@ -109,8 +114,11 @@ fn start(info: &UrStatic) -> Result<Bridge, String> {
             slice(info.players, info.n_players),
         )
     };
+    // BWAPI iterates players in pointer order; sort for determinism (011-R10).
+    let mut players: Vec<_> = players.iter().collect();
+    players.sort_by_key(|p| p.id);
     let players = players
-        .iter()
+        .into_iter()
         .map(|p| PlayerInfo {
             id: p.id,
             name: unsafe { cstr(p.name.as_ptr()) },

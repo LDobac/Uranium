@@ -145,6 +145,8 @@ uint32_t uranium_bridge_max_frames(void);
 uint8_t uranium_bridge_privileged_requested(void);
 /* 011-R10: URANIUM_REPLAY_PERSPECTIVE player id, or -1 when unset. */
 int32_t uranium_bridge_replay_perspective(void);
+/* 011-R10: URANIUM_REPLAY_ENEMY player id, or -1 when unset. */
+int32_t uranium_bridge_replay_enemy(void);
 
 #ifdef __cplusplus
 }
