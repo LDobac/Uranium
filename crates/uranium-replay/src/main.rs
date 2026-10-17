@@ -159,8 +159,12 @@ fn load(p: &Path) -> Result<uranium_replay::Replay> {
 
 fn reps(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     for e in std::fs::read_dir(dir)? {
-        let p = e?.path();
-        if p.is_dir() {
+        let e = e?;
+        let p = e.path();
+        // The listing already carries the entry type, so no per-file stat (one SMB round trip
+        // each on Windows: minutes for 65k replays on a remote share).
+        let t = e.file_type()?;
+        if t.is_dir() || (t.is_symlink() && p.is_dir()) {
             reps(&p, out)?;
         } else if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("rep")) {
             out.push(p);
