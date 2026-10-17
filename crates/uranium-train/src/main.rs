@@ -1,4 +1,5 @@
-//! `uranium-train bc --shards <dir> --out <ckpt dir>` (041).
+//! `uranium-train bc --shards <dir> --out <ckpt dir>` (041),
+//! `uranium-train manifest <dir> [--verify]` (061-R7).
 
 use std::path::PathBuf;
 
@@ -58,6 +59,13 @@ enum Cmd {
         #[arg(long)]
         games: Option<usize>,
     },
+    /// 061-R7: writes `<dir>/manifest.json` (relative path -> sha256, bytes, subfolders included) so
+    /// training PCs can pull and verify the dataset. `--verify` checks an existing one instead.
+    Manifest {
+        dir: PathBuf,
+        #[arg(long)]
+        verify: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -78,17 +86,41 @@ fn device(b: Backend) -> Result<Device> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run<C: uranium_model::CoreInit>(kind: CoreKind, shards: PathBuf, out: PathBuf, cfg: BcConfig, dev: Device, s2: bool, steps: Option<usize>, resume: Option<PathBuf>) -> Result<()> {
-    let ad = if cfg.grad_checkpointing { dev.autodiff().gradient_checkpointing() } else { dev.autodiff() };
-    let cols = uranium_model::batch::ActionColumns::from_table(uranium_env::features::extract::action_table())?;
+fn run<C: uranium_model::CoreInit>(
+    kind: CoreKind,
+    shards: PathBuf,
+    out: PathBuf,
+    cfg: BcConfig,
+    dev: Device,
+    s2: bool,
+    steps: Option<usize>,
+    resume: Option<PathBuf>,
+) -> Result<()> {
+    let ad = if cfg.grad_checkpointing {
+        dev.autodiff().gradient_checkpointing()
+    } else {
+        dev.autodiff()
+    };
+    let cols = uranium_model::batch::ActionColumns::from_table(
+        uranium_env::features::extract::action_table(),
+    )?;
     let (net, net_cfg) = match &resume {
         Some(dir) => {
-            let (net, meta) = uranium_model::checkpoint::load::<C>(dir, &cols, uranium_env::features::FEATURE_SCHEMA_VERSION, uranium_env::actions::ACTION_SCHEMA_VERSION, &ad)?;
+            let (net, meta) = uranium_model::checkpoint::load::<C>(
+                dir,
+                &cols,
+                uranium_env::features::FEATURE_SCHEMA_VERSION,
+                uranium_env::actions::ACTION_SCHEMA_VERSION,
+                &ad,
+            )?;
             (net, meta.net_config()?)
         }
         None => {
             let base = UraniumNetConfig::new();
-            let net_cfg = base.clone().with_input(input_dims()).with_core(base.core.clone().with_kind(kind));
+            let net_cfg = base
+                .clone()
+                .with_input(input_dims())
+                .with_core(base.core.clone().with_kind(kind));
             (UraniumNet::<C>::new(&net_cfg, &cols, &ad), net_cfg)
         }
     };
@@ -101,7 +133,10 @@ fn run<C: uranium_model::CoreInit>(kind: CoreKind, shards: PathBuf, out: PathBuf
     if let Some(dir) = &resume
         && !t.resume(dir)?
     {
-        eprintln!("{}: no training state (older checkpoint); weights only, fresh optimizer", dir.display());
+        eprintln!(
+            "{}: no training state (older checkpoint); weights only, fresh optimizer",
+            dir.display()
+        );
     }
     let mut src = ShardSource::new(&shards)?;
     while t.step < total {
@@ -109,7 +144,10 @@ fn run<C: uranium_model::CoreInit>(kind: CoreKind, shards: PathBuf, out: PathBuf
             eprintln!("data exhausted after {} updates", t.step);
             break;
         };
-        eprintln!("{}", serde_json::json!({ "step": t.step, "loss": l, "games": t.games, "invalid_labels": t.invalid_labels }));
+        eprintln!(
+            "{}",
+            serde_json::json!({ "step": t.step, "loss": l, "games": t.games, "invalid_labels": t.invalid_labels })
+        );
         if t.step % every == 0 {
             t.save(&out.join(format!("step_{:08}", t.step)))?;
         }
@@ -120,6 +158,21 @@ fn run<C: uranium_model::CoreInit>(kind: CoreKind, shards: PathBuf, out: PathBuf
 fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     match Cli::parse().cmd {
+        Cmd::Manifest { dir, verify } => {
+            let m = if verify {
+                uranium_train::storage::verify_dir(&dir)?
+            } else {
+                let m = uranium_train::storage::Manifest::build(&dir)?;
+                m.write(&dir)?;
+                m
+            };
+            let bytes: u64 = m.files.values().map(|f| f.bytes).sum();
+            println!(
+                "{}",
+                serde_json::json!({ "dir": dir, "files": m.files.len(), "bytes": bytes, "verified": verify })
+            );
+            Ok(())
+        }
         Cmd::LabelCheck { shards, games } => {
             let mut src = ShardSource::new(&shards)?;
             let (mut st, mut n) = (uranium_train::data::LabelStats::default(), 0usize);
@@ -131,7 +184,11 @@ fn main() -> Result<()> {
                 }
             }
             let invalid: usize = st.fails.values().sum();
-            let mut rows: Vec<_> = st.fails.iter().map(|((a, w), c)| (a.clone(), *w, *c, st.totals[a])).collect();
+            let mut rows: Vec<_> = st
+                .fails
+                .iter()
+                .map(|((a, w), c)| (a.clone(), *w, *c, st.totals[a]))
+                .collect();
             rows.sort_by(|x, y| y.2.cmp(&x.2));
             let mut detail: Vec<_> = st.cap_detail.into_iter().collect();
             detail.sort_by(|x, y| y.1.cmp(&x.1));
@@ -140,16 +197,31 @@ fn main() -> Result<()> {
             let labels: usize = st.totals.values().sum();
             println!(
                 "{}",
-                serde_json::to_string_pretty(&serde_json::json!({ "games": n, "labels": labels, "invalid": invalid, "by_action_reason": rows, "select_cap_types": detail, "type_mask_prereq": type_detail }))?
+                serde_json::to_string_pretty(
+                    &serde_json::json!({ "games": n, "labels": labels, "invalid": invalid, "by_action_reason": rows, "select_cap_types": detail, "type_mask_prereq": type_detail })
+                )?
             );
             Ok(())
         }
-        Cmd::Bc { shards, out, config, backend, core, s2, steps, resume } => {
+        Cmd::Bc {
+            shards,
+            out,
+            config,
+            backend,
+            core,
+            s2,
+            steps,
+            resume,
+        } => {
             let cfg = BcConfig::load(&config)?;
             let dev = device(backend)?;
             match core {
-                CoreArg::Lstm => run::<LstmCore>(CoreKind::Lstm, shards, out, cfg, dev, s2, steps, resume),
-                CoreArg::Gtrxl => run::<GtrxlCore>(CoreKind::Gtrxl, shards, out, cfg, dev, s2, steps, resume),
+                CoreArg::Lstm => {
+                    run::<LstmCore>(CoreKind::Lstm, shards, out, cfg, dev, s2, steps, resume)
+                }
+                CoreArg::Gtrxl => {
+                    run::<GtrxlCore>(CoreKind::Gtrxl, shards, out, cfg, dev, s2, steps, resume)
+                }
             }
         }
     }
