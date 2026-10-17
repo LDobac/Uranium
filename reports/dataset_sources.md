@@ -14,7 +14,7 @@
 | `stardata` | STARDATA 원본 1.16.1 리플레이 | 65,646 | BSD + 특허 허여 (facebookresearch/StarData) | `original_replays.tar.gz` 다운로드(5.3GB, SHA-256 `037cb688…642a`) |
 | `personal` | 사용자 본인 SC:R 리플레이 | 576 (테란 1:1 5분 이상 140) | 사용자 소유 | 사용자 PC의 리플레이 폴더에서 복사 |
 | `community` | StarCraft AI wiki 리플레이 묶음 4종 (`raw/community/<묶음>/`) | 14,406 (손상 79) | 연구용 공개 묶음, 명시 라이선스 없음. 내부 학습 전용 | 묶음 파일 직접 다운로드(크롤링 아님), 각 `.sha256` 기록 |
-| `scr_ladder` | SC:R 래더 1:1 (Korea·Asia, 추적 대상 랭크 A 이상, 매치업·맵 전체) | 12 (2026-10-16 검증 실행, 매일 누적) | 내부 학습 전용, 040 정책 예외(AMB-043-1) | `uranium-ladder collect`(본계정 SC:R 로컬 API → 공개 GCS 링크). 기록은 `ladder/collect.jsonl`(`reports/m4_ladder_probe.md`) |
+| `scr_ladder` | SC:R 래더 1:1 (Korea·Asia, 추적 대상 랭크 A 이상, 매치업·맵 전체) | 2,000 (2026-10-17 기준, 매일 누적). 전체 build 측정: 재생 1,052시점(저장 892·디싱크 160), 필터 1,129, 오류 4. 디싱크 10% 초과 맵 3개는 제외(040-R16, `reports/m4_scr_desync.md`) | 내부 학습 전용, 040 정책 예외(AMB-043-1) | `uranium-ladder collect`(본계정 SC:R 로컬 API → 공개 GCS 링크). 기록은 `ladder/collect.jsonl`(`reports/m4_ladder_probe.md`) |
 
 ### community 묶음 상세 (2026-10-16)
 | 묶음 | 원본 수 | STARDATA와 중복 | 새 리플레이 | 파이프라인 표본 결과 |
@@ -51,7 +51,8 @@
   - https://www.starcraftai.com/wiki/StarCraft_Brood_War_Data_Mining
 
 ## 필요한 것
-- 040-AC5: SC:R 리플레이 100개 이상. 대상 맵(투혼·서킷브레이커) 위주가 좋다.
+- ~~040-AC5: SC:R 리플레이 100개 이상~~ → 2026-10-17 완료(`reports/m4_scr_desync.md`).
+- 대상 맵 SC:R 리플레이:
   - 사용자 리플레이 중 테란 1:1은 140개이고 모두 투혼 계열이다.
-  - 서킷브레이커 SC:R 리플레이는 아직 없다.
-  - `scr_ladder` 매일 수집으로 채운다. 첫 검증 12개 중 투혼은 2개였다. 5분 이상 경기는 약 1/4이었다(초반 이탈이 많음). 현재 래더 맵 풀에 서킷브레이커가 없으면 이 경로로는 얻을 수 없다.
+  - `scr_ladder` 2,000개에서 투혼(1.4)은 재생 86시점이다. 나머지는 현재 래더 맵 풀(KnockOut·Radeon·Backrooms·Octagon SE·Attitude SE·Colorless Fate·Aiolos·Odyssey:RE)이다.
+  - **서킷브레이커 SC:R 리플레이는 아직 없다.** 래더 2,000개에도 없다(현재 맵 풀에 없음). 다른 경로(대회·커뮤니티)가 필요하다.
