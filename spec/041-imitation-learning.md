@@ -42,3 +42,7 @@
 - 041-AC2: BC 정책이 T0 봇 상대로 각 매치업에서 승률 ≥ 50%다.
 - AC1과 AC2의 수치는 초기값이다(2026-10-15 확정). M5 기준선 측정 후 조정을 제안할 수 있고, 조정하려면 사용자 확인이 필요하다(050과 같은 방식).
 - 041-AC3: (B)가 (A)보다 대상 맵 test 지표가 같거나 높다. 그렇지 않으면 맵 전략을 재검토한다.
+
+## 구현 메모 (비규범)
+- GPU 메모리(2026-10-17, [`reports/m5_bc_memory.md`](../reports/m5_bc_memory.md)): `config/bc.toml`의 `micro_lanes`만큼 레인을 묶어 forward/backward를 하고, gradient를 합쳐 AdamW step을 한 번 한다. 손실은 배치 전체 유효 스텝 수로 나누므로 `lanes` 전체를 한 번에 처리한 것과 같은 업데이트다(R2·R3 그대로). 최대 메모리는 그룹 크기를 따른다(기본 1 = 레인 1 × T64 × N512).
+- `pad_entities`는 배치 N을 그 배수로 올리는 마스크 패딩이고, `grad_checkpointing`은 Burn balanced checkpointing이다. 둘 다 결과를 바꾸지 않는다.

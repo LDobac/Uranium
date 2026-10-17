@@ -16,7 +16,7 @@ M4(리플레이 데이터셋)와 병행해 M5 중 대량 데이터가 필요 없
 | 맵 사전계산 (031, AMB-031-3) | `features::mapgen` | 모든 맵: base 위치·choke·wall 힌트. `uranium-replay build`가 맵마다 `assets/maps/<map_hash>.toml` 생성 |
 | 보상 (033) | `uranium-env::reward`, `config/reward.toml` | 항목별 분리, z 조건, 관측된 파괴만 |
 | shard (AMB-040-6) | `uranium-replay::shard` | schema 2: 게임마다 `GameInfo` 저장. schema 1 shard는 2026-10-17 삭제, 전체 build 대기 |
-| BC 골격 (041) | `crates/uranium-train`, `config/bc.toml` | `StepSource`(shard/스트리밍 공통), 레이블 변환·검증, z 25% drop, 레인별 Core 상태, 손실·AdamW·warmup+cosine·clip, CLI `uranium-train bc` |
+| BC 골격 (041) | `crates/uranium-train`, `config/bc.toml` | `StepSource`(shard/스트리밍 공통), 레이블 변환·검증, z 25% drop, 레인별 Core 상태(`micro_lanes` 그룹 단위 forward/backward + gradient 누적), 손실·AdamW·warmup+cosine·clip, CLI `uranium-train bc` |
 
 ## Acceptance Criteria 상태
 
