@@ -1,4 +1,4 @@
-//! `uranium-train bc --shards <dir> --out <ckpt dir>` (041),
+//! `uranium-train bc (--dataset <rel> | --shards <dir>)... --out <ckpt dir>` (041),
 //! `uranium-train manifest <dir> [--verify]` (061-R7).
 
 use std::path::PathBuf;
@@ -30,8 +30,8 @@ struct Cli {
 enum Cmd {
     /// Behaviour cloning over replay shards.
     Bc {
-        #[arg(long)]
-        shards: PathBuf,
+        #[command(flatten)]
+        data: DataArgs,
         #[arg(long)]
         out: PathBuf,
         #[arg(long, default_value = "config/bc.toml")]
@@ -53,8 +53,8 @@ enum Cmd {
     },
     /// 034-AC3 diagnostics: labels that fail the masks, by action and reason (JSON).
     LabelCheck {
-        #[arg(long)]
-        shards: PathBuf,
+        #[command(flatten)]
+        data: DataArgs,
         /// Stop after this many games.
         #[arg(long)]
         games: Option<usize>,
@@ -66,6 +66,33 @@ enum Cmd {
         #[arg(long)]
         verify: bool,
     },
+}
+
+/// Shard folders to read, subfolders included, in the order given (041-R9).
+#[derive(clap::Args)]
+struct DataArgs {
+    /// Dataset under `<URANIUM_SHARED_DIR>/datasets/` with a manifest (e.g. `replays/shards/stardata`):
+    /// pulled into the cache, or verified in place with URANIUM_SHARED_LOCAL=1 (061-R11-1, R12).
+    #[arg(long)]
+    dataset: Vec<PathBuf>,
+    /// Shard folder read as is, without a manifest check (samples, tests).
+    #[arg(long)]
+    shards: Vec<PathBuf>,
+}
+
+impl DataArgs {
+    fn dirs(&self) -> Result<Vec<PathBuf>> {
+        anyhow::ensure!(!self.dataset.is_empty() || !self.shards.is_empty(), "pass --dataset or --shards");
+        let mut dirs = Vec::new();
+        if !self.dataset.is_empty() {
+            let cfg = uranium_train::storage::StorageConfig::from_env()?;
+            for d in &self.dataset {
+                dirs.push(uranium_train::storage::open_dataset(&cfg, d)?);
+            }
+        }
+        dirs.extend(self.shards.iter().cloned());
+        Ok(dirs)
+    }
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -88,7 +115,7 @@ fn device(b: Backend) -> Result<Device> {
 #[allow(clippy::too_many_arguments)]
 fn run<C: uranium_model::CoreInit>(
     kind: CoreKind,
-    shards: PathBuf,
+    shards: Vec<PathBuf>,
     out: PathBuf,
     cfg: BcConfig,
     dev: Device,
@@ -138,7 +165,7 @@ fn run<C: uranium_model::CoreInit>(
             dir.display()
         );
     }
-    let mut src = ShardSource::new(&shards)?;
+    let mut src = ShardSource::from_dirs(&shards)?;
     while t.step < total {
         let Some(l) = t.train_step(&mut src)? else {
             eprintln!("data exhausted after {} updates", t.step);
@@ -173,8 +200,8 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
-        Cmd::LabelCheck { shards, games } => {
-            let mut src = ShardSource::new(&shards)?;
+        Cmd::LabelCheck { data, games } => {
+            let mut src = ShardSource::from_dirs(&data.dirs()?)?;
             let (mut st, mut n) = (uranium_train::data::LabelStats::default(), 0usize);
             while let Some(g) = uranium_train::data::StepSource::next_game(&mut src)? {
                 uranium_train::data::label_check(&g, &mut st)?;
@@ -204,7 +231,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Bc {
-            shards,
+            data,
             out,
             config,
             backend,
@@ -215,6 +242,7 @@ fn main() -> Result<()> {
         } => {
             let cfg = BcConfig::load(&config)?;
             let dev = device(backend)?;
+            let shards = data.dirs()?;
             match core {
                 CoreArg::Lstm => {
                     run::<LstmCore>(CoreKind::Lstm, shards, out, cfg, dev, s2, steps, resume)

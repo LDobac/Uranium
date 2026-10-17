@@ -20,7 +20,9 @@ pub trait StepSource {
     fn next_game(&mut self) -> Result<Option<ShardGame>>;
 }
 
-/// Stored shards (`shard_*.bin.zst`) in a directory, in file-name order.
+/// Stored shards (`shard_*.bin.zst`) under one or more dataset folders, subfolders included (a
+/// full build writes `<src>/<part>/shard_*.bin.zst`, 040-R13). Folders are read in the given
+/// order, each in path order, so the game order is deterministic.
 pub struct ShardSource {
     files: VecDeque<PathBuf>,
     games: VecDeque<ShardGame>,
@@ -28,14 +30,36 @@ pub struct ShardSource {
 
 impl ShardSource {
     pub fn new(dir: &std::path::Path) -> Result<Self> {
-        let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-            .with_context(|| dir.display().to_string())?
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("shard_") && n.ends_with(".bin.zst")))
-            .collect();
-        files.sort();
+        Self::from_dirs(std::slice::from_ref(&dir.to_path_buf()))
+    }
+
+    pub fn from_dirs(dirs: &[PathBuf]) -> Result<Self> {
+        let mut files = Vec::new();
+        for d in dirs {
+            files.extend(shard_files(d)?);
+        }
         Ok(Self { files: files.into(), games: VecDeque::new() })
     }
+}
+
+/// Shard files under `dir` (recursive), sorted by path.
+pub fn shard_files(dir: &std::path::Path) -> Result<Vec<PathBuf>> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) -> Result<()> {
+        for e in std::fs::read_dir(dir).with_context(|| dir.display().to_string())? {
+            let e = e?;
+            let p = e.path();
+            if e.file_type()?.is_dir() {
+                walk(&p, out)?;
+            } else if p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("shard_") && n.ends_with(".bin.zst")) {
+                out.push(p);
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    walk(dir, &mut files)?;
+    files.sort();
+    Ok(files)
 }
 
 impl StepSource for ShardSource {

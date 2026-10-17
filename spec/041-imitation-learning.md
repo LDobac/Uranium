@@ -44,6 +44,11 @@
 - AC1과 AC2의 수치는 초기값이다(2026-10-15 확정). M5 기준선 측정 후 조정을 제안할 수 있고, 조정하려면 사용자 확인이 필요하다(050과 같은 방식).
 - 041-AC3: (B)가 (A)보다 대상 맵 test 지표가 같거나 높다. 그렇지 않으면 맵 전략을 재검토한다.
 
+## Risks & Open Questions
+- [SPEC AMBIGUOUS] AMB-041-3 — train/val/test 분할 방법과 비율. 040-R5는 "게임 단위, 대상 맵 test는 학습에서 완전히 분리"만 정한다. 기본안(미확정): 원본 리플레이 해시(`replay_sha256`, TvT 두 시점이 같은 쪽에 들어감)로 결정론적 분할, 대상 맵(투혼·서킷브레이커) 게임은 train 80 / val 10 / test 10, 그 외 맵은 train 95 / val 5(test 없음). S1·S2·ablation(041-R5) (A)·(B) 모두 같은 분할을 쓴다.
+- [SPEC AMBIGUOUS] AMB-041-4 — S1·S2 데이터 선택과 소스 혼합. 기본안(미확정): S1 = 모든 소스(`stardata`·`community`·`scr_ladder`·`personal`)의 train 게임 전체, 소스 가중치 없이 균등; S2 = 대상 맵 패밀리(040-R15) train 게임만(소스 무관); 게임 순서는 seed 고정 셔플(설정 `data.seed`, 결정론). 대안: 소스별 가중치(예: SC:R 래더·커뮤니티 상향), S2를 `stage=S2`(APM≥150) 게임으로 제한.
+
 ## 구현 메모 (비규범)
 - GPU 메모리(2026-10-17, [`reports/m5_bc_memory.md`](../reports/m5_bc_memory.md)): `config/bc.toml`의 `micro_lanes`만큼 레인을 묶어 forward/backward를 하고, gradient를 합쳐 AdamW step을 한 번 한다. 손실은 배치 전체 유효 스텝 수로 나누므로 `lanes` 전체를 한 번에 처리한 것과 같은 업데이트다(R2·R3 그대로). 최대 메모리는 그룹 크기를 따른다(기본 1 = 레인 1 × T64 × N512).
+- 데이터 로더(041-R9, 2026-10-18): `--dataset <rel>`(공용 드라이브 `datasets/` 아래, manifest 검증 후 사용, 061-R11-1·R12)과 `--shards <dir>`(검증 없음, 표본·테스트)를 여러 번 받는다. 폴더는 하위 폴더(build의 `<src>/<part>/`)까지 경로 순으로 읽는다. 분할·혼합·셔플은 AMB-041-3·4 확정 후 구현한다.
 - `pad_entities`는 배치 N을 그 배수로 올리는 마스크 패딩이고, `grad_checkpointing`은 Burn balanced checkpointing이다. 둘 다 결과를 바꾸지 않는다.
