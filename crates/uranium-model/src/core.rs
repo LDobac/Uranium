@@ -4,7 +4,7 @@
 use burn::module::{Module, ModuleDisplay, Param};
 use burn::nn::{LayerNorm, Linear, LinearConfig, Lstm, LstmConfig, LstmState};
 use burn::tensor::activation::{relu, sigmoid, tanh};
-use burn::tensor::{Bool, Device, Distribution, Int, Tensor, TensorData};
+use burn::tensor::{Bool, Device, Distribution, IndexingUpdateOp, Int, Tensor, TensorData};
 
 use crate::config::CoreConfig;
 use crate::layers::{Attention, FeedForward, layer_norm};
@@ -21,7 +21,39 @@ pub trait Core: Module + ModuleDisplay {
     fn detach_state(s: Self::State) -> Self::State;
     /// Zero the state of rows where `keep` is false (episode start in that lane, 032-R5).
     fn mask_state(s: Self::State, keep: Tensor<1, Bool>) -> Self::State;
+    /// Rows `rows` of a slot state as a batch state (inference server slots, 032-R14).
+    fn select_rows(s: &Self::State, rows: Tensor<1, Int>) -> Self::State;
+    /// Writes a batch state back into rows `rows` (distinct) of a slot state; other rows are kept
+    /// bit for bit (032-R14).
+    fn scatter_rows(s: Self::State, rows: Tensor<1, Int>, sub: Self::State) -> Self::State;
     fn hidden(&self) -> usize;
+}
+
+/// `t[rows] = sub` exactly: the new rows are added onto zeros (0 + v = v) and selected with a row
+/// mask, so neither the written nor the untouched rows go through float arithmetic.
+fn put_rows<const D: usize>(t: Tensor<D>, rows: Tensor<1, Int>, sub: Tensor<D>) -> Tensor<D> {
+    let dims = t.dims();
+    let device = t.device();
+    let n = rows.dims()[0];
+    let placed = t.zeros_like().select_assign(0, rows.clone(), sub, IndexingUpdateOp::Add);
+    let hit = Tensor::<1, Int>::zeros([dims[0]], &device).select_assign(0, rows, Tensor::ones([n], &device), IndexingUpdateOp::Add);
+    let mut shape = [1usize; D];
+    shape[0] = dims[0];
+    let mask = hit.equal_elem(1).reshape(shape).expand(dims);
+    t.mask_where(mask, placed)
+}
+
+/// Bool rows go through Int like `init_state` builds them (same bool storage on every backend).
+fn put_rows_bool<const D: usize>(t: Tensor<D, Bool>, rows: Tensor<1, Int>, sub: Tensor<D, Bool>) -> Tensor<D, Bool> {
+    let t = t.int();
+    let dims = t.dims();
+    let device = t.device();
+    let n = rows.dims()[0];
+    let placed = t.zeros_like().select_assign(0, rows.clone(), sub.int(), IndexingUpdateOp::Add);
+    let hit = Tensor::<1, Int>::zeros([dims[0]], &device).select_assign(0, rows, Tensor::ones([n], &device), IndexingUpdateOp::Add);
+    let mut shape = [1usize; D];
+    shape[0] = dims[0];
+    t.mask_where(hit.equal_elem(1).reshape(shape).expand(dims), placed).equal_elem(1)
 }
 
 // ---------------------------------------------------------------- LSTM
@@ -64,6 +96,14 @@ impl Core for LstmCore {
         let b = keep.dims()[0];
         let k = keep.float().reshape([b, 1]);
         LstmState::new(s.cell * k.clone(), s.hidden * k)
+    }
+
+    fn select_rows(s: &Self::State, rows: Tensor<1, Int>) -> Self::State {
+        LstmState::new(s.cell.clone().select(0, rows.clone()), s.hidden.clone().select(0, rows))
+    }
+
+    fn scatter_rows(s: Self::State, rows: Tensor<1, Int>, sub: Self::State) -> Self::State {
+        LstmState::new(put_rows(s.cell, rows.clone(), sub.cell), put_rows(s.hidden, rows, sub.hidden))
     }
 
     fn hidden(&self) -> usize {
@@ -202,7 +242,9 @@ impl Core for GtrxlCore {
         let (one_hot, window) = self.relative(t, &device);
         let lh = self.rel_table.dims()[1];
         let bias_all = one_hot.reshape([t * (m + t), m + 1]).matmul(self.rel_table.val()).reshape([t, m + t, lh]).permute([2, 0, 1]);
-        let valid_ext = Tensor::cat(vec![s0.valid, Tensor::<2, Int>::ones([b, t], &device).equal_elem(1)], 1);
+        // Through Int: a state gathered / scattered by the inference server may carry another bool
+        // storage than a fresh one on some backends (032-R14).
+        let valid_ext = Tensor::cat(vec![s0.valid.int(), Tensor::<2, Int>::ones([b, t], &device)], 1).equal_elem(1);
         let key_ok = window.reshape([1, t, m + t]).expand([b, t, m + t]).bool_and(valid_ext.clone().reshape([b, 1, m + t]).expand([b, t, m + t]));
 
         let mut x = self.input.forward(x);
@@ -232,6 +274,17 @@ impl Core for GtrxlCore {
         let k = keep.clone().float().reshape([b, 1, 1]);
         let valid = s.valid.bool_and(keep.reshape([b, 1]).expand([b, m]));
         GtrxlState { memory: s.memory.into_iter().map(|t| t * k.clone()).collect(), valid }
+    }
+
+    fn select_rows(s: &Self::State, rows: Tensor<1, Int>) -> Self::State {
+        GtrxlState { memory: s.memory.iter().map(|t| t.clone().select(0, rows.clone())).collect(), valid: s.valid.clone().select(0, rows) }
+    }
+
+    fn scatter_rows(s: Self::State, rows: Tensor<1, Int>, sub: Self::State) -> Self::State {
+        GtrxlState {
+            memory: s.memory.into_iter().zip(sub.memory).map(|(t, u)| put_rows(t, rows.clone(), u)).collect(),
+            valid: put_rows_bool(s.valid, rows, sub.valid),
+        }
     }
 
     fn hidden(&self) -> usize {

@@ -6619,10 +6619,15 @@ name = "uranium-agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "burn",
  "clap",
  "dotenvy",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
+ "toml",
+ "uranium-env",
+ "uranium-model",
  "uranium-proto",
  "uranium-scripted",
 ]
@@ -6640,13 +6645,9 @@ name = "uranium-env"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "clap",
  "proptest",
  "serde",
- "serde_json",
- "socket2",
  "toml",
- "uranium-agent",
  "uranium-proto",
 ]
 
@@ -6718,6 +6719,20 @@ dependencies = [
  "uranium-proto",
  "uranium-scripted",
  "zstd 0.13.3",
+]
+
+[[package]]
+name = "uranium-runner"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "socket2",
+ "toml",
+ "uranium-agent",
+ "uranium-proto",
 ]
 
 [[package]]

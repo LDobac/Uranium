@@ -15,7 +15,9 @@ use crate::play::{PlayConfig, play_with, slot_of};
 use crate::shard::{GameMeta, ShardGame, ShardWriter, Step};
 use crate::{Replay, cmd, header};
 
-pub const MAP_FAMILIES_TOML: &str = include_str!("../../../config/map_families.toml");
+// Map families and the precompute folder live in uranium-env (shared with live games, AMB-031-4).
+pub use uranium_env::maps::{MAP_FAMILIES_TOML, MapFamilies, maps_dir};
+use uranium_env::maps::clean_title;
 /// 040 filter: game length >= 5 minutes.
 pub const MIN_GAME_MS: u64 = 5 * 60 * 1000;
 /// 040 / AMB-040-2 quality stages.
@@ -23,35 +25,6 @@ pub const S1_MIN_APM: u32 = 80;
 pub const S2_MIN_APM: u32 = 150;
 /// 030-R6: map axes up to 128 tiles.
 pub const MAX_MAP_TILES: u16 = 128;
-
-#[derive(Deserialize)]
-struct Family {
-    name: String,
-    name_patterns: Vec<String>,
-    chk_sha256: Vec<String>,
-}
-
-#[derive(Deserialize)]
-struct Families {
-    family: Vec<Family>,
-}
-
-pub struct MapFamilies(Vec<Family>);
-
-impl MapFamilies {
-    pub fn load() -> Result<Self> {
-        Ok(Self(toml::from_str::<Families>(MAP_FAMILIES_TOML).context("map_families.toml")?.family))
-    }
-
-    /// 040-R15: by CHK hash first, then by title pattern (control codes removed).
-    pub fn classify(&self, map_name: &str, chk_sha256: &str) -> String {
-        let title = clean_title(map_name);
-        self.0
-            .iter()
-            .find(|f| f.chk_sha256.iter().any(|h| h == chk_sha256) || f.name_patterns.iter().any(|p| title.contains(&p.to_lowercase())))
-            .map_or_else(|| "other".to_string(), |f| f.name.clone())
-    }
-}
 
 pub const MAP_EXCLUDE_TOML: &str = include_str!("../../../config/map_exclude.toml");
 
@@ -90,10 +63,6 @@ impl MapExcludes {
 }
 
 /// Map title without color / control codes, lowercase (040-R15, R16 matching).
-fn clean_title(map_name: &str) -> String {
-    map_name.chars().filter(|c| !c.is_control()).collect::<String>().to_lowercase()
-}
-
 /// One player view the filter accepted.
 #[derive(Debug, Clone, Serialize)]
 pub struct View {
@@ -229,11 +198,6 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler) ->
         return Ok(Err(Outcome::Error { reason: "bridge sent no GameInfo (AMB-040-6)".into() }));
     };
     Ok(Ok((steps, coverage, result, game_info)))
-}
-
-/// Directory of `<map_hash>.toml` map precomputes (031): `URANIUM_MAPS_DIR`, default `assets/maps`.
-pub fn maps_dir() -> PathBuf {
-    std::env::var_os("URANIUM_MAPS_DIR").map_or_else(|| PathBuf::from("assets/maps"), PathBuf::from)
 }
 
 /// Writes `<maps_dir>/<map_hash>.toml` unless it exists (031, AMB-031-3).

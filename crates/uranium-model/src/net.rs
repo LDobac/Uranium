@@ -50,6 +50,8 @@ pub struct ActOutput<S> {
     pub action: ActionBatch,
     /// [B] joint log-prob of the used heads (032-R10), at the sampling temperature.
     pub log_prob: Tensor<1>,
+    /// [B,6] per-head log-prob, unused heads 0 (032-R15, behaviour log-prob for 042).
+    pub head_log_prob: Tensor<2>,
     /// [B] joint entropy of the used heads.
     pub entropy: Tensor<1>,
     /// [B,4] win, build, units, value (no privileged input).
@@ -107,13 +109,13 @@ impl<C: Core> UraniumNet<C> {
     }
 
     /// One inference step for B games; sampling happens inside this forward (032-R9). Takes no
-    /// privileged input (032-R11).
+    /// privileged input (032-R11). `temp` 0 picks the argmax of every head (032-R15, 050-R1).
     pub fn act(&self, obs: &ObsBatch, state: C::State, temp: f32) -> ActOutput<C::State> {
         let enc = self.encode(obs);
         let (h, state) = self.core.step(enc.core_in, state);
         let out = self.heads.forward(Mode::Sample { temp }, h.clone(), enc.sc.c.clone(), enc.e, &enc.sp, obs, &self.table);
         let value = self.value.forward(h, enc.sc.z, enc.sc.race, None);
-        ActOutput { log_prob: out.logp.sum(), entropy: out.entropy.sum(), action: out.chosen, value, state }
+        ActOutput { log_prob: out.logp.sum(), head_log_prob: out.logp.stack(), entropy: out.entropy.sum(), action: out.chosen, value, state }
     }
 
     /// Teacher-forced training pass over `t` steps per sequence. `obs`, `labels`, `privileged`

@@ -75,18 +75,10 @@ pub struct GameSeq {
     pub invalid_labels: usize,
 }
 
-/// 040-R15 family -> `scalar_cat` map_family index.
-pub fn family_index(family: &str) -> i32 {
-    match family {
-        "fighting_spirit" => 0,
-        "circuit_breaker" => 1,
-        _ => 2,
-    }
-}
+pub use uranium_env::maps::family_index;
 
 fn map_precompute(map_hash: &str) -> Option<MapPrecompute> {
-    let path = uranium_replay::pipeline::maps_dir().join(format!("{map_hash}.toml"));
-    toml::from_str(&std::fs::read_to_string(path).ok()?).ok()
+    uranium_env::maps::load_precompute(&uranium_env::maps::maps_dir(), map_hash)
 }
 
 /// 030 §5 BC z: the replay's first 20 Build / Train / Research / Upgrade actions and the

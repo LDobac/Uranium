@@ -1,0 +1,26 @@
+[package]
+name = "uranium-runner"
+description = "Game scheduler (spec 020): dispatches matchup plans to hostds and runs the embedded agent server. Binary name stays `uranium-env` (AMB-001-3)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "uranium-env"
+path = "src/main.rs"
+
+[features]
+# Enable only on a CUDA GPU PC (CLAUDE.md fixed conditions): --features cuda
+cuda = ["uranium-agent/cuda"]
+
+[dependencies]
+uranium-proto.workspace = true
+uranium-agent.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+socket2.workspace = true
+

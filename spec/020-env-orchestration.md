@@ -23,7 +23,7 @@
 | 020-R3 | **MUST** 타임아웃 처리 |
 | 020-R4 | **MUST** 크래시 처리: 런처 비정상 종료 시 에피소드를 `Aborted`로 표시하고 학습 데이터에서 제외한다. 같은 설정이 연속 3회 크래시하면 격리하고 경보를 낸다 |
 | 020-R5 | **MUST** 에피소드 메타데이터를 기록한다: id, 맵, 시작 위치, 상대 종류·버전, 정책 버전, 결과, 길이, 리플레이 경로. 모델 정책의 정책 버전은 체크포인트 id(체크포인트 폴더 이름 + `model.bpk` SHA-256 앞 12자리)와 샘플링 모드다 |
-| 020-R11 | **MUST** plan의 플레이어 종류에 `model`(체크포인트로 플레이하는 테란 정책)을 둔다. 스케줄러는 `StartGame`을 보내기 전에 에이전트 서버의 라우팅 표에 `(game_id, slot) → 정책`을 등록하고, 세션은 `Hello`의 `game_id`·`slot`(010-R9)으로 정책을 찾는다. 프로토콜 변경은 없다. 표에 없는 세션은 서버 기본 정책(T0)을 쓴다 (2026-10-17) |
+| 020-R11 | **MUST** plan의 플레이어 종류에 `model`(체크포인트로 플레이하는 테란 정책)을 둔다. 스케줄러는 `StartGame`을 보내기 전에 에이전트 서버의 라우팅 표에 `(game_id, slot) → 정책`을 등록하고, 세션은 `Hello.game_id`(010-R9)와 `GameSpec.players` 인덱스로 정책을 찾는다. 인덱스는 hostd가 붙이는 플레이어 이름 `uranium-p<i>`에서 읽는다. BWAPI 플레이어 id(`Hello.slot`)는 런처 순서와 다를 수 있기 때문이다. 이름이 없으면 `Hello.slot`을 쓴다. 프로토콜 변경은 없다. 표에 없는 세션은 서버 기본 정책(T0)을 쓴다 (2026-10-17) |
 | 020-R6 | **SHOULD** 호스트 목록과 호스트별 동시 게임 수는 설정 파일로 관리한다. 실제 주소가 들어가므로 커밋하지 않는 로컬 파일(`URANIUM_HOSTS_FILE`)에 두고, 형식 예시만 `config/hosts.example.toml`로 커밋한다(001-R10, 2026-10-15 변경) |
 | 020-R8 | **MUST** hostd는 OS별 부분(LAN 매칭 설정, 프로세스 정리)을 플랫폼 계층으로 분리한다. Linux는 LOCAL 소켓과 프로세스 그룹 + `PR_SET_PDEATHSIG`를 쓰고, Windows는 TCP 포트 쌍(`URANIUM_HOSTD_PORT_BASE`부터 할당)과 Job Object(kill-on-close)를 쓴다 |
 | 020-R9 | **MUST** hostd 설정은 `.env`에서 읽는다(001-R9): `URANIUM_HOSTD_LISTEN`, `URANIUM_BWAPI_DIR`, `URANIUM_BRIDGE_LIB`, `URANIUM_DATA_DIR`, `URANIUM_MAPS_DIR`, `URANIUM_HOSTD_MAX_GAMES`, `URANIUM_HOSTD_PORT_BASE`(Windows), `URANIUM_CACHE_DIR`(측정 파일, 020-R10) |
@@ -67,6 +67,9 @@ p0 = { kind = "model", checkpoint = "<dir>", sample = "argmax" }  # 모델 정�
 - 020-AC4: `StartReplay`로 스트리밍한 RawFrame이 같은 리플레이의 저장 shard와 일치한다(040-AC6).
 
 ## Risks & Open Questions
+- **slot 식별 (2026-10-17 실측)**: Windows 학습 PC(TCP LAN)에서 BWAPI 플레이어 id(`Hello.slot`)가 런처 순서와 다르게 배정됐다(T0 테란 대 T0 저그 4판 중 2판). 그래서 정책 라우팅(020-R11)과 시나리오 빌드(050)는 hostd가 붙이는 플레이어 이름 `uranium-p<i>`로 `GameSpec.players` 인덱스를 찾는다. 같은 게임의 두 세션이 승자를 다르게 보고한 판도 관측됐다(원인 미조사). 보고서는 그런 판을 "winner disagree"로 센다.
+
+
 - LAN 모드에서 두 런처의 프레임 동기 오버헤드를 측정해야 한다. 셀프플레이는 같은 에이전트 서버로 두 브리지가 접속하는 구조가 된다.
 - 원격 호스트의 MPQ와 맵 배포는 사용자가 직접 준비한다. hostd는 시작 시 파일 해시를 검증한다.
 

@@ -15,6 +15,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Live map precompute input (031, AMB-031-4): read each map file's CHK resources and write
+    /// `<URANIUM_MAPS_DIR>/<map file sha256>.resources.toml`.
+    Mapgen { maps: Vec<PathBuf> },
     /// Print header, players and per-player command counts / APM as JSON.
     Inspect { rep: PathBuf },
     /// Write the 1.16.1 (`reRS`, stored chunks) version of a replay for OpenBW.
@@ -152,6 +155,24 @@ fn summary(r: &uranium_replay::Replay) -> Summary {
     }
 }
 
+/// 031 / AMB-031-4: resources of a map file keyed by the file hash (= live `GameInfo.map_hash`).
+fn write_map_resources(map: &Path) -> Result<(PathBuf, usize)> {
+    use sha2::{Digest, Sha256};
+    use uranium_env::maps::{MapResources, maps_dir, resources_path};
+    let bytes = std::fs::read(map).with_context(|| format!("reading {}", map.display()))?;
+    let hash: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    let chk = uranium_replay::mpq::read_file(&bytes, uranium_replay::mpq::SCENARIO_CHK)?;
+    let resources = uranium_env::features::mapgen::chk_resources(&chk)?;
+    let dir = maps_dir();
+    std::fs::create_dir_all(&dir)?;
+    let path = resources_path(&dir, &hash);
+    let source = map.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let n = resources.len();
+    let chk_sha256: String = Sha256::digest(&chk).iter().map(|b| format!("{b:02x}")).collect();
+    std::fs::write(&path, toml::to_string(&MapResources { source, chk_sha256, resources })?)?;
+    Ok((path, n))
+}
+
 fn load(p: &Path) -> Result<uranium_replay::Replay> {
     let bytes = std::fs::read(p).with_context(|| format!("reading {}", p.display()))?;
     uranium_replay::parse(&bytes)
@@ -177,6 +198,12 @@ fn main() -> Result<()> {
     // 001-R9: host paths come from .env; the process environment wins.
     let _ = dotenvy::dotenv();
     match Cli::parse().cmd {
+        Cmd::Mapgen { maps } => {
+            for m in &maps {
+                let (path, n) = write_map_resources(m)?;
+                println!("{}: {n} resources -> {}", m.display(), path.display());
+            }
+        }
         Cmd::Inspect { rep } => println!("{}", serde_json::to_string_pretty(&summary(&load(&rep)?))?),
         Cmd::Convert { rep, out } => std::fs::write(&out, load(&rep)?.to_legacy_file()?)?,
         Cmd::Scan { dir } => {

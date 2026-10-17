@@ -31,7 +31,7 @@ Windows PC 한 대에서 게임·브리지·hostd·에이전트를 모두 돌리
 | OpenBW + BWAPI | `tools\openbw\build.ps1` | `third_party\bwapi\build\bin\Release\{BWAPILauncher.exe, BWAPI.dll, OpenBWData.dll}` |
 | 브리지 | `tools\openbw\build_bridge.ps1` | `bridge\openbw\build\Release\uranium_bridge.dll` |
 | T1 봇 | `tools\oss\build_<bot>.ps1` | `<URANIUM_OSS_BOTS_DIR>\<bot>\{module.dll, module.pdb, VERSION, bwapi-data\}` |
-| Rust 바이너리 | `cargo build --release -p uranium-hostd -p uranium-env -p uranium-agent` | `target\release\*.exe` |
+| Rust 바이너리 | `cargo build --release -p uranium-hostd -p uranium-runner -p uranium-agent` (CUDA 학습 PC에서 모델 추론까지 쓰려면 `--features uranium-runner/cuda,uranium-agent/cuda`, 020-R11) | `target\release\*.exe` |
 
 - `URANIUM_BWAPI_DIR`는 `third_party\bwapi\build`이다. hostd는 Windows에서 `bin\Release\BWAPILauncher.exe`를 찾는다.
 - 브리지는 `gameInit`과 `newAIModule`만 export한다(`dumpbin /exports`로 확인).
@@ -54,7 +54,7 @@ Windows PC 한 대에서 게임·브리지·hostd·에이전트를 모두 돌리
 
 **원격 Linux 게임 PC**
 1. 저장소를 받아 최신으로 맞춘다: `git pull --ff-only`
-2. 빌드한다: `tools/openbw/build.sh` → `tools/openbw/build_bridge.sh` → `cargo build --release -p uranium-hostd -p uranium-env -p uranium-agent` → `tools/oss/build_<bot>.sh`(6종)
+2. 빌드한다: `tools/openbw/build.sh` → `tools/openbw/build_bridge.sh` → `cargo build --release -p uranium-hostd -p uranium-runner -p uranium-agent` → `tools/oss/build_<bot>.sh`(6종)
    - 패치가 바뀐 봇 소스는 먼저 `git -C third_party/<bot> reset --hard && git -C third_party/<bot> clean -fdx`로 되돌린다. 이전 패치가 적용된 상태에서는 새 패치가 들어가지 않는다.
 3. 게임 데이터(`URANIUM_DATA_DIR`, 맵)를 복사하고 `config/assets.toml`의 `content_sha256`과 맵 sha256으로 검증한다(011-R13).
 4. `.env`를 설정한다: `URANIUM_DATA_DIR`, `URANIUM_MAPS_DIR`, `URANIUM_CACHE_DIR`, `URANIUM_BWAPI_DIR`, `URANIUM_BRIDGE_LIB`, `URANIUM_OSS_BOTS_DIR`. `URANIUM_HOSTD_LISTEN`에는 그 PC의 LAN 주소를 `<addr>:7700` 형식으로 넣는다.

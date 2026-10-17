@@ -1,16 +1,25 @@
 [package]
 name = "uranium-agent"
-description = "Agent server: accepts bridge sessions and runs a policy per game (spec 001-R6)"
+description = "Agent server: accepts bridge sessions, routes each (game_id, slot) to a policy and batches model inference (spec 001-R6, 020-R11, 032-R14)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# Enable only on a CUDA GPU PC (CLAUDE.md fixed conditions): --features cuda
+cuda = ["uranium-model/cuda", "burn/cuda"]
+
 [dependencies]
 uranium-proto.workspace = true
 uranium-scripted.workspace = true
+uranium-env = { path = "../uranium-env" }
+uranium-model = { path = "../uranium-model" }
+burn = { workspace = true, features = ["std", "flex", "vulkan", "store"] }
 anyhow.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+toml.workspace = true

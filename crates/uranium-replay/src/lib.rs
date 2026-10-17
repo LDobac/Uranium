@@ -6,6 +6,7 @@ pub mod cmd;
 pub mod container;
 pub mod header;
 pub mod label;
+pub mod mpq;
 pub mod pipeline;
 pub mod play;
 pub mod shard;

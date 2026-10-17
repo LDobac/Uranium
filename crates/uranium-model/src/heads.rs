@@ -40,7 +40,17 @@ impl PerHead {
             + self.target_unit.clone()
             + self.target_loc.clone()
     }
+
+    /// [B,6] in head order action, delay, queued, selected, target_unit, target_loc (032-R15).
+    pub fn stack(&self) -> Tensor<2> {
+        let b = self.action.dims()[0];
+        let col = |t: &Tensor<1>| t.clone().reshape([b, 1]);
+        Tensor::cat(vec![col(&self.action), col(&self.delay), col(&self.queued), col(&self.selected), col(&self.target_unit), col(&self.target_loc)], 1)
+    }
 }
+
+/// Number of autoregressive heads (032 §2.5).
+pub const HEADS: usize = 6;
 
 /// Masked log-softmax distributions (for per-head KL in RL, 042) and head usage.
 #[derive(Debug, Clone)]

@@ -1,7 +1,10 @@
 //! Agent server library (spec 001-R6). Bridges connect to it; every connection is one player
-//! of one game (`Hello.game_id` / `Hello.slot`, 010-R9) and is served by its own policy instance.
-//! Used by the `uranium-agent` binary and embedded by `uranium-env` (020).
+//! of one game (`Hello.game_id` / `Hello.slot`, 010-R9) and is served by its own policy instance,
+//! chosen from the routing table (020-R11). Used by the `uranium-agent` binary and embedded by the
+//! `uranium-env` scheduler (crate `uranium-runner`, 020).
 
+pub mod infer;
+pub mod model_policy;
 pub mod summary;
 
 use std::collections::HashMap;
@@ -16,16 +19,59 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use uranium_proto::*;
 
+use crate::infer::InferenceHandle;
+use crate::model_policy::{ModelPolicy, ModelStats};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum PolicyKind {
     /// T0 rule-based bot for our own race (021): picked from `GameInfo` at game start.
     ScriptedT0,
+    /// Checkpoint policy (020-R11), Terran only.
+    Model,
+}
+
+/// What plays one session (020-R11).
+#[derive(Clone, Debug)]
+pub enum PolicySpec {
+    ScriptedT0,
+    Model(InferenceHandle),
+}
+
+impl PolicySpec {
+    /// Session record label (020-R5 policy version).
+    pub fn label(&self) -> String {
+        match self {
+            Self::ScriptedT0 => format!("t0@{}", env!("CARGO_PKG_VERSION")),
+            Self::Model(h) => format!("model:{}:{:?}", h.checkpoint_id, h.sample).to_lowercase(),
+        }
+    }
+}
+
+/// `(game_id, GameSpec.players index) -> policy` registered by the scheduler before `StartGame`
+/// (020-R11). The index comes from the player name (`spec_index`), not the BWAPI player id.
+/// Sessions not in the table use the server default.
+#[derive(Clone, Default)]
+pub struct Routes(Arc<Mutex<HashMap<(u64, u8), PolicySpec>>>);
+
+impl Routes {
+    pub fn insert(&self, game_id: u64, slot: u8, spec: PolicySpec) {
+        self.0.lock().unwrap().insert((game_id, slot), spec);
+    }
+
+    /// Removes the entry: a game id is played once.
+    pub fn take(&self, game_id: u64, slot: u8) -> Option<PolicySpec> {
+        self.0.lock().unwrap().remove(&(game_id, slot))
+    }
 }
 
 /// A policy controls one player for one game.
 pub trait Policy: Send {
     fn on_privileged(&mut self, _p: &PrivilegedSummary) {}
-    fn on_frame(&mut self, f: &RawFrame) -> Act;
+    fn on_frame(&mut self, f: &RawFrame) -> Result<Act>;
+    /// Model policies report latency and executor rejections (020-R5, 031-R4).
+    fn model_stats(&mut self) -> Option<ModelStats> {
+        None
+    }
 }
 
 pub use uranium_scripted::T0Build;
@@ -41,15 +87,36 @@ pub fn spec_index(info: &GameInfo, slot: u8) -> u8 {
     name.strip_prefix("uranium-p").and_then(|i| i.parse().ok()).unwrap_or(slot)
 }
 
-pub fn make_policy(kind: PolicyKind, info: &GameInfo, build: T0Build) -> Box<dyn Policy> {
-    match kind {
-        PolicyKind::ScriptedT0 => Box::new(uranium_scripted::for_game_build(info, build)),
-    }
+pub fn make_policy(spec: &PolicySpec, info: &GameInfo, build: T0Build) -> Result<Box<dyn Policy>> {
+    Ok(match spec {
+        PolicySpec::ScriptedT0 => Box::new(uranium_scripted::for_game_build(info, build)),
+        PolicySpec::Model(h) => {
+            let me = info.players.iter().find(|p| p.is_self).map(|p| p.race);
+            if me != Some(Race::Terran) {
+                bail!("model policy plays Terran only, got {me:?}");
+            }
+            Box::new(ModelPolicy::new(h, info)?)
+        }
+    })
 }
 
 impl Policy for Box<dyn uranium_scripted::Bot> {
-    fn on_frame(&mut self, f: &RawFrame) -> Act {
-        self.act(f)
+    fn on_frame(&mut self, f: &RawFrame) -> Result<Act> {
+        Ok(self.act(f))
+    }
+}
+
+impl Policy for ModelPolicy {
+    fn on_privileged(&mut self, p: &PrivilegedSummary) {
+        ModelPolicy::on_privileged(self, p)
+    }
+
+    fn on_frame(&mut self, f: &RawFrame) -> Result<Act> {
+        ModelPolicy::on_frame(self, f)
+    }
+
+    fn model_stats(&mut self) -> Option<ModelStats> {
+        Some(self.stats())
     }
 }
 
@@ -82,6 +149,9 @@ pub struct SessionRecord {
     pub privileged_msgs: u64,
     /// 010-AC6: enemy units in an observation that our player could not see (must be 0).
     pub visibility_violations: u64,
+    /// 020-R5 policy version (`t0@<ver>` or `model:<checkpoint id>:<sample>`).
+    pub policy: String,
+    pub model: Option<ModelStats>,
     pub error: Option<String>,
 }
 
@@ -131,15 +201,23 @@ pub fn load_env() {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ServeOptions {
-    pub policy: PolicyKind,
+    /// Policy for sessions without a route (020-R11).
+    pub default: PolicySpec,
+    pub routes: Routes,
     /// Artificial delay before every Act (011-AC7 lag test).
     pub delay_ms: u64,
     /// Return after this many finished sessions (0 = run forever).
     pub max_sessions: usize,
     /// Scenario builds by game and slot (empty = every T0 player plays the standard build).
     pub t0_builds: T0Builds,
+}
+
+impl ServeOptions {
+    pub fn new(default: PolicySpec) -> Self {
+        Self { default, routes: Routes::default(), delay_ms: 0, max_sessions: 0, t0_builds: T0Builds::default() }
+    }
 }
 
 /// JSONL sink shared by all sessions.
@@ -161,15 +239,15 @@ pub fn serve_addr(listen: &str, opts: ServeOptions, out: PathBuf) -> Result<()> 
 
 /// Accepts bridge sessions until `max_sessions` are done (or forever).
 pub fn serve(listener: TcpListener, opts: ServeOptions, sink: RecordSink) -> Result<()> {
-    let ServeOptions { policy, delay_ms, max_sessions, t0_builds } = opts;
+    let max_sessions = opts.max_sessions;
     let finished = Arc::new(Mutex::new(0usize));
     let mut handles = Vec::new();
     for conn in listener.incoming() {
         let stream = conn?;
         stream.set_nodelay(true).ok();
-        let (sink, done, builds) = (sink.clone(), finished.clone(), t0_builds.clone());
+        let (sink, done, opts) = (sink.clone(), finished.clone(), opts.clone());
         handles.push(std::thread::spawn(move || {
-            let rec = session(stream, policy, delay_ms, &builds);
+            let rec = session(stream, &opts);
             let line = serde_json::to_string(&rec).expect("record serializes");
             let mut s = sink.lock().unwrap();
             writeln!(s, "{line}").ok();
@@ -189,7 +267,7 @@ pub fn serve(listener: TcpListener, opts: ServeOptions, sink: RecordSink) -> Res
     Ok(())
 }
 
-pub fn session(stream: TcpStream, kind: PolicyKind, delay_ms: u64, builds: &T0Builds) -> SessionRecord {
+pub fn session(stream: TcpStream, opts: &ServeOptions) -> SessionRecord {
     let started = Instant::now();
     let mut rec = SessionRecord {
         game_id: 0,
@@ -213,9 +291,11 @@ pub fn session(stream: TcpStream, kind: PolicyKind, delay_ms: u64, builds: &T0Bu
         frame_digest: String::new(),
         privileged_msgs: 0,
         visibility_violations: 0,
+        policy: String::new(),
+        model: None,
         error: None,
     };
-    if let Err(e) = run_session(stream, kind, delay_ms, builds, &mut rec) {
+    if let Err(e) = run_session(stream, opts, &mut rec) {
         eprintln!("[agent] game {} slot {}: {e:#}", rec.game_id, rec.slot);
         rec.error = Some(format!("{e:#}"));
     }
@@ -223,7 +303,8 @@ pub fn session(stream: TcpStream, kind: PolicyKind, delay_ms: u64, builds: &T0Bu
     rec
 }
 
-fn run_session(stream: TcpStream, kind: PolicyKind, delay_ms: u64, builds: &T0Builds, rec: &mut SessionRecord) -> Result<()> {
+fn run_session(stream: TcpStream, opts: &ServeOptions, rec: &mut SessionRecord) -> Result<()> {
+    let delay_ms = opts.delay_ms;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::new(stream);
     let BridgeMsg::Hello(hello) = read_msg(&mut reader)? else { bail!("expected Hello") };
@@ -239,9 +320,14 @@ fn run_session(stream: TcpStream, kind: PolicyKind, delay_ms: u64, builds: &T0Bu
     rec.self_race = info.players.iter().find(|p| p.is_self).map(|p| format!("{:?}", p.race)).unwrap_or_default();
     rec.enemy_race = info.players.iter().find(|p| p.is_enemy).map(|p| format!("{:?}", p.race)).unwrap_or_default();
     eprintln!("[agent] game {} slot {} on {:?} ({} start locations)", hello.game_id, hello.slot, info.map_name, info.static_map.start_locations.len());
-    let build = builds.lock().unwrap().get(&(hello.game_id, spec_index(&info, hello.slot))).copied().unwrap_or_default();
+    // 020-R11 / 050: policies and T0 builds are registered by `GameSpec.players` index; the BWAPI
+    // player id (`Hello.slot`) need not follow launch order, so it comes from the player name.
+    let index = spec_index(&info, hello.slot);
+    let spec = opts.routes.take(hello.game_id, index).unwrap_or_else(|| opts.default.clone());
+    rec.policy = spec.label();
+    let build = opts.t0_builds.lock().unwrap().get(&(hello.game_id, index)).copied().unwrap_or_default();
     rec.t0_build = build.name().to_string();
-    let mut policy = make_policy(kind, &info, build);
+    let mut policy = make_policy(&spec, &info, build)?;
     let mut policy_time = Duration::ZERO;
     let mut first = true;
     let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
@@ -285,7 +371,13 @@ fn run_session(stream: TcpStream, kind: PolicyKind, delay_ms: u64, builds: &T0Bu
                     }
                 }
                 let t = Instant::now();
-                let act = policy.on_frame(&f);
+                let act = match policy.on_frame(&f) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        rec.model = policy.model_stats();
+                        return Err(e);
+                    }
+                };
                 policy_time += t.elapsed();
                 rec.commands += act.cmds.len() as u64;
                 last_cmds.clone_from(&act.cmds);
@@ -302,6 +394,7 @@ fn run_session(stream: TcpStream, kind: PolicyKind, delay_ms: u64, builds: &T0Bu
                 rec.stats = end.stats;
                 rec.policy_ms = policy_time.as_secs_f64() * 1e3;
                 rec.frame_digest = format!("{digest:016x}");
+                rec.model = policy.model_stats();
                 return Ok(());
             }
             other => bail!("unexpected message {other:?}"),

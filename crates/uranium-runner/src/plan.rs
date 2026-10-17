@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use uranium_agent::T0Build;
 use uranium_proto::Race;
+use uranium_agent::infer::SampleMode;
 use uranium_proto::control::{GameSpec, MapKey, PlayerKind, PlayerSpec};
 
 #[derive(Deserialize, Debug, Clone)]
@@ -80,7 +81,33 @@ pub enum Side {
     },
     /// Registered third-party bot on the host (021 T1).
     Oss { name: String, race: RaceSel },
+    /// Checkpoint policy, Terran only (020-R11). Relative paths are under URANIUM_SHARED_DIR.
+    Model {
+        checkpoint: String,
+        #[serde(default)]
+        sample: SampleMode,
+    },
 }
+
+impl Side {
+    pub fn race(&self) -> RaceSel {
+        match self {
+            Side::T0 { race, .. } | Side::Oss { race, .. } => *race,
+            Side::Model { .. } => RaceSel::Terran,
+        }
+    }
+
+    /// The (checkpoint, sampling mode) a model side needs a server for.
+    pub fn model(&self) -> Option<ModelKey> {
+        match self {
+            Side::Model { checkpoint, sample } => Some((checkpoint.clone(), *sample)),
+            _ => None,
+        }
+    }
+}
+
+/// One inference server per checkpoint and sampling mode (020-R11).
+pub type ModelKey = (String, SampleMode);
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
@@ -140,6 +167,8 @@ pub struct Job {
     pub spec: GameSpec,
     /// T0 build per player slot (050 E-Regression scenario bots).
     pub t0_builds: [T0Build; 2],
+    /// Per slot: the model server that plays it (020-R11), `None` = T0 / OSS bot.
+    pub models: [Option<ModelKey>; 2],
 }
 
 /// Deterministic pseudo-random in [0,1) from the game index (no RNG state to persist).
@@ -166,18 +195,21 @@ pub fn expand(plan: &Plan, agent_addr: &str) -> Vec<Job> {
             let side = |s: &Side, random: bool| {
                 let (race, kind) = match s {
                     Side::T0 { race, .. } => (*race, PlayerKind::Bridge { agent_addr: agent_addr.to_string() }),
+                    Side::Model { .. } => (RaceSel::Terran, PlayerKind::Bridge { agent_addr: agent_addr.to_string() }),
                     Side::Oss { name, race } => (*race, PlayerKind::OssBot { name: name.clone() }),
                 };
                 PlayerSpec { race: if random { Race::Random } else { race.into() }, kind }
             };
-            let random = unit_hash(id) < m.p1_random_ratio;
+            // 021-R7 Random applies to bots only; the model plays Terran (020-R11).
+            let random = unit_hash(id) < m.p1_random_ratio && m.p1.model().is_none();
             let build = |s: &Side| match s {
                 Side::T0 { build, .. } => *build,
-                Side::Oss { .. } => T0Build::Standard,
+                Side::Oss { .. } | Side::Model { .. } => T0Build::Standard,
             };
             jobs.push(Job {
                 matchup: mi,
                 t0_builds: [build(&m.p0), build(&m.p1)],
+                models: [m.p0.model(), m.p1.model()],
                 spec: GameSpec {
                     game_id: id,
                     map,
@@ -260,6 +292,18 @@ p1 = { kind = "t0", race = "protoss" }
         std::fs::write(&path, format!("{base}p1={{kind='t0',race='zerg',build='zerg_rush'}}")).unwrap();
         assert!(load_plan(&path).is_ok());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn model_side_plays_terran_over_the_bridge_020_r11() {
+        let plan: Plan = toml::from_str("name='m'\n[[matchup]]\nmap='fighting_spirit'\ngames=2\np0={kind='model',checkpoint='ckpt/bc',sample='stochastic'}\np1={kind='t0',race='zerg'}").unwrap();
+        let jobs = expand(&plan, "a:1");
+        assert_eq!(jobs[0].spec.players[0].race, Race::Terran);
+        assert!(matches!(&jobs[0].spec.players[0].kind, PlayerKind::Bridge { .. }));
+        assert_eq!(jobs[0].models, [Some(("ckpt/bc".to_string(), SampleMode::Stochastic)), None]);
+        assert_eq!(jobs[0].t0_builds, [T0Build::Standard, T0Build::Standard]);
+        let argmax: Plan = toml::from_str("name='m'\n[[matchup]]\nmap='both'\ngames=1\np0={kind='model',checkpoint='c'}\np1={kind='t0',race='terran'}").unwrap();
+        assert_eq!(expand(&argmax, "a:1")[0].models[0], Some(("c".to_string(), SampleMode::Argmax)));
     }
 
     #[test]

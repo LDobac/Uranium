@@ -202,7 +202,7 @@ pub fn run(max: Option<u32>, frames: u32) -> Result<()> {
     std::fs::create_dir_all(&work)?;
 
     let results = work.join("results.jsonl");
-    let agent = crate::start_agent("127.0.0.1:0", &results, Default::default())?;
+    let agent = crate::start_agent("127.0.0.1:0", &results, Default::default(), Default::default())?;
     eprintln!("[calibrate] {cores} logical cores, trying 1..={max} concurrent games, {frames} frames per game");
 
     let mut steps = Vec::new();
@@ -219,7 +219,7 @@ pub fn run(max: Option<u32>, frames: u32) -> Result<()> {
         let ids: std::collections::HashSet<u64> = jobs.iter().map(|j| j.spec.game_id).collect();
         id_base += jobs.len() as u64;
         let t = Instant::now();
-        let left = crate::run_jobs(jobs, &[HostEntry { addr, max_games: Some(n) }], &dir.join("games.jsonl"))?;
+        let left = crate::run_jobs(jobs, &[HostEntry { addr, max_games: Some(n) }], &dir.join("games.jsonl"), &uranium_agent::Routes::default(), &crate::Models::new())?;
         let wall = t.elapsed().as_secs_f64();
         let sessions: Vec<Value> = read_jsonl(&results).into_iter().filter(|s| s["game_id"].as_u64().is_some_and(|g| ids.contains(&g))).collect();
         let mut step = summarize(n, &sessions, &read_jsonl(&dir.join("games.jsonl")), wall);

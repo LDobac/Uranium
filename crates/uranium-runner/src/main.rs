@@ -1,5 +1,6 @@
-//! `uranium-env`: game scheduler (spec 020). Runs the agent server in-process, spreads the
-//! games of a matchup plan over one or more `uranium-hostd`s and writes results.
+//! `uranium-env` binary (crate `uranium-runner`, AMB-001-3): game scheduler (spec 020). Runs the
+//! agent server in-process, spreads the games of a matchup plan over one or more
+//! `uranium-hostd`s and writes results.
 
 mod calibrate;
 mod plan;
@@ -15,11 +16,15 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
-use uranium_agent::{PolicyKind, ServeOptions, T0Build, T0Builds, load_env, open_sink, serve};
+use uranium_agent::infer::{InferBackend, InferOptions, InferenceHandle, resolve_checkpoint};
+use uranium_agent::{PolicySpec, Routes, ServeOptions, T0Build, T0Builds, load_env, open_sink, serve};
 use uranium_proto::control::*;
 use uranium_proto::{read_msg, write_msg};
 
-use crate::plan::{HostEntry, Job};
+use crate::plan::{HostEntry, Job, ModelKey};
+
+/// Model servers by (checkpoint, sampling mode) (020-R11).
+pub(crate) type Models = HashMap<ModelKey, PolicySpec>;
 
 #[derive(Parser)]
 struct Cli {
@@ -36,6 +41,15 @@ enum Cmd {
         /// Output directory (default runs/<plan name>).
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Inference device for `model` players (default: URANIUM_AGENT_BACKEND, else vulkan).
+        #[arg(long, value_enum)]
+        backend: Option<InferBackend>,
+        /// Inference batch size cap (placeholder until measured, 020-R11 TBD(M6)).
+        #[arg(long, default_value_t = 32)]
+        max_batch: usize,
+        /// Longest wait for more sessions before running a partial batch, ms (TBD(M6)).
+        #[arg(long, default_value_t = 5)]
+        max_wait_ms: u64,
     },
     /// Measure how many concurrent games this host sustains within the bridge latency
     /// target and store it for uranium-hostd (020-R10). Run on the game host itself.
@@ -75,7 +89,12 @@ fn env_or(name: &str, default: &str) -> String {
 fn main() -> Result<()> {
     load_env();
     match Cli::parse().cmd {
-        Cmd::Run { plan, out } => run(&plan, out),
+        Cmd::Run { plan, out, backend, max_batch, max_wait_ms } => {
+            let mut opts = InferOptions::new(backend.map_or_else(InferBackend::from_env, Ok)?);
+            opts.max_batch = max_batch.max(1);
+            opts.max_wait = Duration::from_millis(max_wait_ms);
+            run(&plan, out, opts)
+        }
         Cmd::Calibrate { max, frames } => calibrate::run(max, frames),
     }
 }
@@ -87,8 +106,24 @@ fn hosts() -> Result<Vec<HostEntry>> {
     }
 }
 
-fn run(plan_path: &std::path::Path, out: Option<PathBuf>) -> Result<()> {
+/// Starts one inference server per (checkpoint, sampling mode) the plan uses (020-R11).
+fn start_models(plan: &plan::Plan, opts: InferOptions) -> Result<Models> {
+    let mut models = Models::new();
+    for m in &plan.matchups {
+        for key in [m.p0.model(), m.p1.model()].into_iter().flatten() {
+            if !models.contains_key(&key) {
+                let dir = resolve_checkpoint(std::path::Path::new(&key.0))?;
+                let h = InferenceHandle::start(&dir, key.1, opts).with_context(|| format!("loading checkpoint {}", dir.display()))?;
+                models.insert(key, PolicySpec::Model(h));
+            }
+        }
+    }
+    Ok(models)
+}
+
+fn run(plan_path: &std::path::Path, out: Option<PathBuf>, infer: InferOptions) -> Result<()> {
     let plan = plan::load_plan(plan_path)?;
+    let models = start_models(&plan, infer)?;
     let out = out.unwrap_or_else(|| PathBuf::from("runs").join(&plan.name));
     std::fs::create_dir_all(&out)?;
     std::fs::copy(plan_path, out.join("plan.toml"))?;
@@ -96,7 +131,8 @@ fn run(plan_path: &std::path::Path, out: Option<PathBuf>) -> Result<()> {
     let _ = std::fs::remove_file(out.join("results.jsonl"));
 
     let builds = T0Builds::default();
-    let public = start_agent(&env_or("URANIUM_AGENT_LISTEN", "127.0.0.1:7600"), &out.join("results.jsonl"), builds.clone())?;
+    let routes = Routes::default();
+    let public = start_agent(&env_or("URANIUM_AGENT_LISTEN", "127.0.0.1:7600"), &out.join("results.jsonl"), routes.clone(), builds.clone())?;
     let jobs = plan::expand(&plan, &public);
     // Player slot = index in GameSpec.players (hostd launch order, 011-AC4).
     for j in &jobs {
@@ -108,7 +144,7 @@ fn run(plan_path: &std::path::Path, out: Option<PathBuf>) -> Result<()> {
     }
     eprintln!("[env] plan `{}`: {} games, agent at {public}", plan.name, jobs.len());
     let started = Instant::now();
-    let left = run_jobs(jobs, &hosts()?, &out.join("games.jsonl"))?;
+    let left = run_jobs(jobs, &hosts()?, &out.join("games.jsonl"), &routes, &models)?;
     eprintln!("[env] finished in {:.0}s ({left} games not run)", started.elapsed().as_secs_f64());
     report::write(&out, &plan)?;
     println!("{}", std::fs::read_to_string(out.join("summary.md"))?);
@@ -120,13 +156,13 @@ fn run(plan_path: &std::path::Path, out: Option<PathBuf>) -> Result<()> {
 
 /// Starts the embedded agent server (001-R6) and returns the address bridges connect to.
 /// Bridges on every host must reach it (`URANIUM_AGENT_PUBLIC_ADDR` when it differs).
-pub(crate) fn start_agent(listen: &str, results: &std::path::Path, t0_builds: T0Builds) -> Result<String> {
+pub(crate) fn start_agent(listen: &str, results: &std::path::Path, routes: Routes, t0_builds: T0Builds) -> Result<String> {
     let listener = TcpListener::bind(listen).with_context(|| format!("binding agent {listen}"))?;
     let bound = listener.local_addr()?.to_string();
     let public = std::env::var("URANIUM_AGENT_PUBLIC_ADDR").ok().filter(|v| !v.trim().is_empty()).unwrap_or(bound);
     let sink = open_sink(results)?;
     std::thread::spawn(move || {
-        if let Err(e) = serve(listener, ServeOptions { policy: PolicyKind::ScriptedT0, delay_ms: 0, max_sessions: 0, t0_builds }, sink) {
+        if let Err(e) = serve(listener, ServeOptions { routes, t0_builds, ..ServeOptions::new(PolicySpec::ScriptedT0) }, sink) {
             eprintln!("[env] agent server stopped: {e:#}");
         }
     });
@@ -135,7 +171,7 @@ pub(crate) fn start_agent(listen: &str, results: &std::path::Path, t0_builds: T0
 
 /// Plays `jobs` on `hosts`, appending hostd outcomes to `games_path`. Returns the number of
 /// games that could not be scheduled.
-pub(crate) fn run_jobs(jobs: Vec<Job>, hosts: &[HostEntry], games_path: &std::path::Path) -> Result<usize> {
+pub(crate) fn run_jobs(jobs: Vec<Job>, hosts: &[HostEntry], games_path: &std::path::Path, routes: &Routes, models: &Models) -> Result<usize> {
     let total = jobs.len();
     let queue = Arc::new(Mutex::new(VecDeque::from(jobs)));
     let file = std::fs::OpenOptions::new().create(true).append(true).open(games_path)?;
@@ -156,7 +192,8 @@ pub(crate) fn run_jobs(jobs: Vec<Job>, hosts: &[HostEntry], games_path: &std::pa
         let ids: Arc<HashMap<String, String>> = Arc::new(caps.oss_bots.iter().map(|id| (id.split('@').next().unwrap_or(id).to_string(), id.clone())).collect());
         for _ in 0..slots {
             let (addr, q, g, d, ids) = (host.addr.clone(), queue.clone(), games_out.clone(), done.clone(), ids.clone());
-            workers.push(std::thread::spawn(move || worker(&addr, &q, &g, &d, &ids, total)));
+            let (routes, models) = (routes.clone(), models.clone());
+            workers.push(std::thread::spawn(move || worker(&addr, &q, &g, &d, &ids, total, &routes, &models)));
         }
     }
     if workers.is_empty() {
@@ -199,10 +236,17 @@ pub(crate) fn capabilities(addr: &str) -> Result<Capabilities> {
     }
 }
 
-fn worker(addr: &str, queue: &Mutex<VecDeque<Job>>, games: &Mutex<BufWriter<std::fs::File>>, done: &Mutex<usize>, ids: &HashMap<String, String>, total: usize) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn worker(addr: &str, queue: &Mutex<VecDeque<Job>>, games: &Mutex<BufWriter<std::fs::File>>, done: &Mutex<usize>, ids: &HashMap<String, String>, total: usize, routes: &Routes, models: &Models) -> Result<()> {
     let (mut r, mut w) = connect(addr)?;
     loop {
         let Some(job) = queue.lock().unwrap().pop_front() else { return Ok(()) };
+        // 020-R11: model players are routed by (game_id, slot) before the bridges connect.
+        for (slot, key) in job.models.iter().enumerate() {
+            if let Some(spec) = key.as_ref().and_then(|k| models.get(k)) {
+                routes.insert(job.spec.game_id, slot as u8, spec.clone());
+            }
+        }
         let reply = write_msg(&mut w, &ControlRequest::StartGame(job.spec.clone())).and_then(|_| read_msg(&mut r));
         let reply = match reply {
             Ok(m) => m,
@@ -221,7 +265,7 @@ fn worker(addr: &str, queue: &Mutex<VecDeque<Job>>, games: &Mutex<BufWriter<std:
                     std::thread::sleep(Duration::from_secs(2));
                     continue;
                 }
-                record(games, addr, &job, ids, "Rejected", Some(reason), 0)?;
+                record(games, addr, &job, ids, models, "Rejected", Some(reason), 0)?;
                 continue;
             }
             other => bail!("unexpected {other:?}"),
@@ -232,7 +276,7 @@ fn worker(addr: &str, queue: &Mutex<VecDeque<Job>>, games: &Mutex<BufWriter<std:
                 Ok(other) => eprintln!("[env] ignoring {other:?}"),
                 Err(e) => {
                     // 020-R4: a game in flight on a lost host is Aborted, not silently dropped.
-                    record(games, addr, &job, ids, "Aborted", Some(format!("hostd connection lost: {e}")), 0)?;
+                    record(games, addr, &job, ids, models, "Aborted", Some(format!("hostd connection lost: {e}")), 0)?;
                     *done.lock().unwrap() += 1;
                     eprintln!("[env] game {} Aborted: hostd {addr} lost", job.spec.game_id);
                     return Err(anyhow::Error::from(e).context(format!("hostd {addr} lost")));
@@ -245,7 +289,7 @@ fn worker(addr: &str, queue: &Mutex<VecDeque<Job>>, games: &Mutex<BufWriter<std:
             GameOutcome::Timeout => ("Timeout", None),
             GameOutcome::Stopped => ("Stopped", None),
         };
-        record(games, addr, &job, ids, outcome, detail, fin.wall_s)?;
+        record(games, addr, &job, ids, models, outcome, detail, fin.wall_s)?;
         let mut d = done.lock().unwrap();
         *d += 1;
         eprintln!("[env] {}/{total} game {} {outcome} ({}s)", *d, job.spec.game_id, fin.wall_s);
@@ -253,8 +297,12 @@ fn worker(addr: &str, queue: &Mutex<VecDeque<Job>>, games: &Mutex<BufWriter<std:
 }
 
 /// 021-R3: T0 bots are versioned with the workspace (scenario builds add their tag:
-/// `t0-zerg-rush@<ver>`), OSS bots by the host's VERSION file.
-fn opponent_id(p: &PlayerSpec, build: T0Build, ids: &HashMap<String, String>) -> String {
+/// `t0-zerg-rush@<ver>`), OSS bots by the host's VERSION file; model players by checkpoint id
+/// and sampling mode (020-R5).
+fn opponent_id(p: &PlayerSpec, build: T0Build, model: Option<&PolicySpec>, ids: &HashMap<String, String>) -> String {
+    if let Some(m) = model {
+        return m.label();
+    }
     match &p.kind {
         PlayerKind::Bridge { .. } => {
             let race = format!("{:?}", p.race).to_lowercase();
@@ -268,10 +316,11 @@ fn opponent_id(p: &PlayerSpec, build: T0Build, ids: &HashMap<String, String>) ->
 }
 
 #[allow(clippy::too_many_arguments)]
-fn record(games: &Mutex<BufWriter<std::fs::File>>, host: &str, job: &Job, ids: &HashMap<String, String>, outcome: &str, detail: Option<String>, wall_s: u32) -> Result<()> {
-    let p1_kind = match &job.spec.players[1].kind {
-        PlayerKind::Bridge { .. } => "t0".to_string(),
-        PlayerKind::OssBot { name } => format!("oss:{name}"),
+fn record(games: &Mutex<BufWriter<std::fs::File>>, host: &str, job: &Job, ids: &HashMap<String, String>, models: &Models, outcome: &str, detail: Option<String>, wall_s: u32) -> Result<()> {
+    let p1_kind = match (&job.spec.players[1].kind, &job.models[1]) {
+        (PlayerKind::Bridge { .. }, Some(_)) => "model".to_string(),
+        (PlayerKind::Bridge { .. }, None) => "t0".to_string(),
+        (PlayerKind::OssBot { name }, _) => format!("oss:{name}"),
     };
     let rec = GameRecord {
         game_id: job.spec.game_id,
@@ -280,7 +329,7 @@ fn record(games: &Mutex<BufWriter<std::fs::File>>, host: &str, job: &Job, ids: &
         map: format!("{:?}", job.spec.map),
         races: [format!("{:?}", job.spec.players[0].race), format!("{:?}", job.spec.players[1].race)],
         p1_kind,
-        opponent: opponent_id(&job.spec.players[1], job.t0_builds[1], ids),
+        opponent: opponent_id(&job.spec.players[1], job.t0_builds[1], job.models[1].as_ref().and_then(|k| models.get(k)), ids),
         t0_build: Some(job.t0_builds[1]).filter(|b| *b != T0Build::Standard).map(|b| b.name().to_string()),
         outcome: outcome.to_string(),
         detail,
@@ -343,7 +392,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("uranium-env-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let games = dir.join("games.jsonl");
-        let left = run_jobs(plan::expand(&plan, "127.0.0.1:1"), &hosts, &games).unwrap();
+        let left = run_jobs(plan::expand(&plan, "127.0.0.1:1"), &hosts, &games, &Routes::default(), &Models::new()).unwrap();
         let lines: Vec<serde_json::Value> = std::fs::read_to_string(&games).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
         std::fs::remove_dir_all(&dir).ok();
         assert_eq!(left, 0);
@@ -357,7 +406,7 @@ mod tests {
         let dead = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
         let dir = std::env::temp_dir().join(format!("uranium-env-test-none-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let res = run_jobs(vec![], &[HostEntry { addr: dead, max_games: None }], &dir.join("games.jsonl"));
+        let res = run_jobs(vec![], &[HostEntry { addr: dead, max_games: None }], &dir.join("games.jsonl"), &Routes::default(), &Models::new());
         std::fs::remove_dir_all(&dir).ok();
         assert!(res.is_err());
     }
@@ -370,10 +419,10 @@ mod tests {
         let t0 = |race| PlayerSpec { race, kind: PlayerKind::Bridge { agent_addr: String::new() } };
         let v = env!("CARGO_PKG_VERSION");
         let ids = HashMap::new();
-        assert_eq!(opponent_id(&t0(Race::Zerg), T0Build::Standard, &ids), format!("t0-zerg@{v}"));
-        assert_eq!(opponent_id(&t0(Race::Zerg), T0Build::ZergRush, &ids), format!("t0-zerg-rush@{v}"));
-        assert_eq!(opponent_id(&t0(Race::Terran), T0Build::TerranDrop, &ids), format!("t0-terran-drop@{v}"));
-        assert_eq!(opponent_id(&t0(Race::Protoss), T0Build::ProtossDt, &ids), format!("t0-protoss-dt@{v}"));
-        assert_eq!(opponent_id(&t0(Race::Zerg), T0Build::ZergMuta, &ids), format!("t0-zerg-muta@{v}"));
+        assert_eq!(opponent_id(&t0(Race::Zerg), T0Build::Standard, None, &ids), format!("t0-zerg@{v}"));
+        assert_eq!(opponent_id(&t0(Race::Zerg), T0Build::ZergRush, None, &ids), format!("t0-zerg-rush@{v}"));
+        assert_eq!(opponent_id(&t0(Race::Terran), T0Build::TerranDrop, None, &ids), format!("t0-terran-drop@{v}"));
+        assert_eq!(opponent_id(&t0(Race::Protoss), T0Build::ProtossDt, None, &ids), format!("t0-protoss-dt@{v}"));
+        assert_eq!(opponent_id(&t0(Race::Zerg), T0Build::ZergMuta, None, &ids), format!("t0-zerg-muta@{v}"));
     }
 }

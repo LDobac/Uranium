@@ -141,6 +141,56 @@ fn checkpoint_round_trip<C: CoreInit>() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 032-R14: inference-server slots. Sessions step in changing subsets through
+/// `select_rows` / `scatter_rows` on one slot state and must match stepping each session alone;
+/// rows not in a batch stay untouched.
+fn slots_match_single_sessions<C: CoreInit>() {
+    use burn::tensor::{Int, TensorData};
+    let (net, _) = net::<C>(8);
+    let core = net.core();
+    let (cap, d) = (5, 32 + 32 + 32);
+    let mut slots = core.init_state(cap, &dev());
+    let mut alone: Vec<C::State> = (0..cap).map(|_| core.init_state(1, &dev())).collect();
+    // Which slots act at each step (distinct rows, any order).
+    let plan: [&[usize]; 6] = [&[0, 2, 4], &[3], &[4, 1], &[2, 3, 0, 1], &[1], &[0, 4, 3]];
+    for (t, rows) in plan.iter().enumerate() {
+        let b = rows.len();
+        let x = Tensor::<2>::from_data(TensorData::new((0..b * d).map(|i| (((i + 13 * t) * 29 % 97) as f32 / 48.0) - 1.0).collect::<Vec<_>>(), [b, d]), &dev());
+        let idx = Tensor::<1, Int>::from_data(TensorData::new(rows.iter().map(|&r| r as i32).collect::<Vec<_>>(), [b]), &dev());
+        let (h, sub) = core.step(x.clone(), C::select_rows(&slots, idx.clone()));
+        slots = C::scatter_rows(slots, idx, sub);
+        let got = floats(&h);
+        for (k, &r) in rows.iter().enumerate() {
+            let (h1, s1) = core.step(x.clone().narrow(0, k, 1), alone[r].clone());
+            alone[r] = s1;
+            let want = floats(&h1);
+            for (g, w) in got[k * core.hidden()..(k + 1) * core.hidden()].iter().zip(&want) {
+                assert!((g - w).abs() < 1e-4, "step {t} slot {r}: {g} != {w}");
+            }
+        }
+    }
+}
+
+/// 032-R15: per-head log-probs add up to the joint log-prob; argmax (temp 0) is deterministic.
+fn head_log_probs_and_argmax<C: CoreInit>() {
+    let (net, cfg) = net::<C>(9);
+    let cols = columns();
+    let b = 16;
+    let (obs, _) = random_obs(&cfg, &cols, b, 10, 21, &dev());
+    let out = net.act(&obs, net.init_state(b, &dev()), 1.0);
+    assert_eq!(out.head_log_prob.dims(), [b, uranium_model::heads::HEADS]);
+    let joint = floats(&out.log_prob);
+    for (r, row) in floats(&out.head_log_prob).chunks(uranium_model::heads::HEADS).enumerate() {
+        let s: f32 = row.iter().sum();
+        assert!((s - joint[r]).abs() < 1e-3, "row {r}: heads {s} != joint {}", joint[r]);
+    }
+    let a = net.act(&obs, net.init_state(b, &dev()), 0.0);
+    let c = net.act(&obs, net.init_state(b, &dev()), 0.0);
+    assert_eq!(host_actions(&a.action).action, host_actions(&c.action).action);
+    assert_eq!(ints2(&a.action.selected), ints2(&c.action.selected));
+    assert_eq!(ints1(&a.action.target_loc), ints1(&c.action.target_loc));
+}
+
 macro_rules! core_tests {
     ($m:ident, $core:ty) => {
         mod $m {
@@ -174,6 +224,14 @@ macro_rules! core_tests {
             #[test]
             fn checkpoint_round_trip_032_r6() {
                 checkpoint_round_trip::<$core>();
+            }
+            #[test]
+            fn slots_match_single_sessions_032_r14() {
+                slots_match_single_sessions::<$core>();
+            }
+            #[test]
+            fn head_log_probs_and_argmax_032_r15() {
+                head_log_probs_and_argmax::<$core>();
             }
         }
     };
