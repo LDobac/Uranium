@@ -1,6 +1,6 @@
 # 021 — Opponent Pool
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: R7 Random 적용 범위를 여러 종족 지원 봇으로 한정, 사용자 결정)
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: R7 Random 적용 범위를 여러 종족 지원 봇으로 한정, R3 T0 시나리오 빌드 상대 ID 분리, 사용자 결정)
 - **Related**: [020](020-env-orchestration.md), [042](042-rl-training.md), [050](050-evaluation.md)
 
 ## Purpose
@@ -36,7 +36,7 @@ OpenBW에는 내장 컴퓨터 AI가 없다. 그래서 RL과 평가에 쓸 상대
 
 - 실제 값과 포팅 내역은 `reports/oss_bot_porting.md`에 기록한다. 봇 하나가 막히면 사용자에게 보고하고 다음 봇으로 넘어간다.
 - JVM 기반(JBWAPI) 봇은 제외한다.
-- 상대 ID(021-R3): OSS 봇은 빌드 스크립트가 쓰는 `<bot>/VERSION`(`<bot>@<커밋 또는 버전>`), T0는 `t0-<race>@<uranium-scripted 버전>`이다.
+- 상대 ID(021-R3): OSS 봇은 빌드 스크립트가 쓰는 `<bot>/VERSION`(`<bot>@<커밋 또는 버전>`), T0 표준 빌드는 `t0-<race>@<uranium-scripted 버전>`이다. [050](050-evaluation.md) E-Regression용 시나리오 빌드는 빌드 태그를 붙여 `t0-<race>-<build>@<버전>`으로 따로 구분한다(2026-10-17 사용자 결정): `t0-zerg-rush`, `t0-terran-drop`, `t0-protoss-dt`, `t0-zerg-muta`. 승률 표·PFSP·E-Elo는 이 ID를 상대 단위로 쓴다.
 
 ## Acceptance Criteria
 - 021-AC1: T0 봇 3종족이 서로 맞붙어 각 맵에서 50판을 크래시 없이 완주한다.

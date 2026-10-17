@@ -54,6 +54,18 @@ pub enum T0Build {
 impl T0Build {
     pub const SCENARIOS: [T0Build; 4] = [T0Build::ZergRush, T0Build::TerranDrop, T0Build::ProtossDt, T0Build::ZergMuta];
 
+    /// 021-R3: the build part of the opponent id (`t0-<race>-<tag>@<version>`); the standard
+    /// build has none, so its id stays `t0-<race>@<version>`.
+    pub fn id_tag(self) -> Option<&'static str> {
+        match self {
+            T0Build::Standard => None,
+            T0Build::ZergRush => Some("rush"),
+            T0Build::TerranDrop => Some("drop"),
+            T0Build::ProtossDt => Some("dt"),
+            T0Build::ZergMuta => Some("muta"),
+        }
+    }
+
     /// The race a scenario build plays (`None` = any race).
     pub fn race(self) -> Option<Race> {
         match self {

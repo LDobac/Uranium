@@ -252,10 +252,17 @@ fn worker(addr: &str, queue: &Mutex<VecDeque<Job>>, games: &Mutex<BufWriter<std:
     }
 }
 
-/// 021-R3: T0 bots are versioned with the workspace, OSS bots by the host's VERSION file.
-fn opponent_id(p: &PlayerSpec, ids: &HashMap<String, String>) -> String {
+/// 021-R3: T0 bots are versioned with the workspace (scenario builds add their tag:
+/// `t0-zerg-rush@<ver>`), OSS bots by the host's VERSION file.
+fn opponent_id(p: &PlayerSpec, build: T0Build, ids: &HashMap<String, String>) -> String {
     match &p.kind {
-        PlayerKind::Bridge { .. } => format!("t0-{}@{}", format!("{:?}", p.race).to_lowercase(), env!("CARGO_PKG_VERSION")),
+        PlayerKind::Bridge { .. } => {
+            let race = format!("{:?}", p.race).to_lowercase();
+            match build.id_tag() {
+                Some(tag) => format!("t0-{race}-{tag}@{}", env!("CARGO_PKG_VERSION")),
+                None => format!("t0-{race}@{}", env!("CARGO_PKG_VERSION")),
+            }
+        }
         PlayerKind::OssBot { name } => ids.get(name).cloned().unwrap_or_else(|| format!("{name}@unknown")),
     }
 }
@@ -273,7 +280,7 @@ fn record(games: &Mutex<BufWriter<std::fs::File>>, host: &str, job: &Job, ids: &
         map: format!("{:?}", job.spec.map),
         races: [format!("{:?}", job.spec.players[0].race), format!("{:?}", job.spec.players[1].race)],
         p1_kind,
-        opponent: opponent_id(&job.spec.players[1], ids),
+        opponent: opponent_id(&job.spec.players[1], job.t0_builds[1], ids),
         t0_build: Some(job.t0_builds[1]).filter(|b| *b != T0Build::Standard).map(|b| b.name().to_string()),
         outcome: outcome.to_string(),
         detail,
@@ -353,5 +360,20 @@ mod tests {
         let res = run_jobs(vec![], &[HostEntry { addr: dead, max_games: None }], &dir.join("games.jsonl"));
         std::fs::remove_dir_all(&dir).ok();
         assert!(res.is_err());
+    }
+
+    /// 021-R3 (2026-10-17): scenario T0 builds get their own opponent id, the standard build keeps
+    /// `t0-<race>@<ver>`.
+    #[test]
+    fn opponent_id_021_r3_separates_t0_builds() {
+        use uranium_proto::Race;
+        let t0 = |race| PlayerSpec { race, kind: PlayerKind::Bridge { agent_addr: String::new() } };
+        let v = env!("CARGO_PKG_VERSION");
+        let ids = HashMap::new();
+        assert_eq!(opponent_id(&t0(Race::Zerg), T0Build::Standard, &ids), format!("t0-zerg@{v}"));
+        assert_eq!(opponent_id(&t0(Race::Zerg), T0Build::ZergRush, &ids), format!("t0-zerg-rush@{v}"));
+        assert_eq!(opponent_id(&t0(Race::Terran), T0Build::TerranDrop, &ids), format!("t0-terran-drop@{v}"));
+        assert_eq!(opponent_id(&t0(Race::Protoss), T0Build::ProtossDt, &ids), format!("t0-protoss-dt@{v}"));
+        assert_eq!(opponent_id(&t0(Race::Zerg), T0Build::ZergMuta, &ids), format!("t0-zerg-muta@{v}"));
     }
 }
