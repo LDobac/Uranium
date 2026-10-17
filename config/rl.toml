@@ -1,5 +1,5 @@
 # 042 RL / league initial values (AMB-042-3, 2026-10-17). Tuning targets (042-R9):
-# recorded in every checkpoint. Draft only: no code reads this file yet.
+# read by `uranium-train rl` and copied into every checkpoint (061-R10).
 # agent step = one act() call; update = one learner parameter update.
 
 # Batch: lanes x seq_len agent steps per update (042-R8: T = 64).
@@ -97,3 +97,24 @@ gae_lambda = 0.95
 epochs = 2
 # Adopt PPO only if 3-seed mean final win rate beats V-trace by more than this.
 adopt_margin = 0.03
+
+# T1 bots (021) and the races they play (measured in M3, config/plans/m3-t1.toml). League picks
+# only bots the game hosts list; Random applies to multi-race bots (021-R7).
+[[t1]]
+name = "ualbertabot"
+races = ["Terran", "Protoss", "Zerg"]
+[[t1]]
+name = "steamhammer"
+races = ["Terran", "Protoss", "Zerg"]
+[[t1]]
+name = "mcrave"
+races = ["Terran", "Protoss", "Zerg"]
+[[t1]]
+name = "stardust"
+races = ["Protoss"]
+[[t1]]
+name = "zzzkbot"
+races = ["Zerg"]
+[[t1]]
+name = "iron"
+races = ["Terran"]

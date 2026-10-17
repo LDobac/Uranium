@@ -1,5 +1,6 @@
 //! `uranium-train bc (--dataset <rel> | --shards <dir>)... --out <ckpt dir>` (041),
-//! `uranium-train manifest <dir> [--verify]` (061-R7).
+//! `uranium-train manifest <dir> [--verify]` (061-R7),
+//! `uranium-train rl --run <id> --bc <ckpt>` (042), `uranium-train z-table` (033-R8).
 
 use std::path::PathBuf;
 
@@ -21,7 +22,7 @@ enum Backend {
 }
 
 #[derive(Parser)]
-#[command(about = "Uranium training (spec 041)")]
+#[command(about = "Uranium training (spec 041, 042)")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -76,6 +77,70 @@ enum Cmd {
         #[arg(long)]
         verify: bool,
     },
+    /// 042 RL + league: learner, inference servers, agent server and game dispatch in one process.
+    /// Checkpoints go to the shared drive run `<run>` (061); Ctrl+C stops cleanly (042-R10).
+    Rl {
+        /// Run id (061 checkpoints/<run>/ and the lock).
+        #[arg(long)]
+        run: String,
+        /// BC checkpoint: starting policy and the KL reference (042).
+        #[arg(long)]
+        bc: PathBuf,
+        #[arg(long, default_value = "config/rl.toml")]
+        config: PathBuf,
+        #[arg(long, value_enum, default_value = "vtrace")]
+        algo: uranium_train::rl::learner::Algo,
+        #[arg(long, value_enum, default_value = "vulkan")]
+        backend: Backend,
+        #[arg(long, value_enum, default_value = "lstm")]
+        core: CoreArg,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Take the run lock from another PC (061-R5).
+        #[arg(long)]
+        take_over: bool,
+        /// Local logs: train.csv, games.csv, games.jsonl, sessions.jsonl (042-R2).
+        #[arg(long, default_value = "runs/rl")]
+        logs: PathBuf,
+        /// z table from `uranium-train z-table` (033-R8); without it every game has no z.
+        #[arg(long)]
+        z_table: Option<PathBuf>,
+        /// Stop after this many updates (smoke runs).
+        #[arg(long, default_value_t = 0)]
+        max_updates: u64,
+        /// Stop after this many minutes (smoke runs).
+        #[arg(long, default_value_t = 0)]
+        max_minutes: u64,
+        /// Checkpoint interval in minutes (061-R4).
+        #[arg(long, default_value_t = 30)]
+        checkpoint_minutes: u64,
+        /// Inference batch cap and wait (TBD(M6), 020-R11).
+        #[arg(long, default_value_t = 32)]
+        max_batch: usize,
+        #[arg(long, default_value_t = 5)]
+        max_wait_ms: u64,
+        /// 042-AC1 small setting: Main vs the standard T0 bot of this race on Fighting Spirit only.
+        #[arg(long, value_enum)]
+        ac1_race: Option<RaceArg>,
+    },
+    /// 033-R8: z table (one JSON line per game: build order + unit composition) from the Terran
+    /// views of target-map replays in a shard folder.
+    ZTable {
+        #[arg(long)]
+        shards: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        /// Include every map, not only the target maps (040-R15 families).
+        #[arg(long)]
+        all_maps: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum RaceArg {
+    Terran,
+    Protoss,
+    Zerg,
 }
 
 /// Shard folders to read, subfolders included, in the order given (041-R9).
@@ -197,9 +262,72 @@ fn run<C: uranium_model::CoreInit>(
     t.save(&out.join("last"))
 }
 
+fn rl_backend(b: Backend) -> uranium_agent::infer::InferBackend {
+    match b {
+        Backend::Vulkan => uranium_agent::infer::InferBackend::Vulkan,
+        Backend::Cuda => uranium_agent::infer::InferBackend::Cuda,
+        Backend::Flex => uranium_agent::infer::InferBackend::Flex,
+    }
+}
+
 fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     match Cli::parse().cmd {
+        Cmd::Rl { run, bc, config, algo, backend, core, seed, take_over, logs, z_table, max_updates, max_minutes, checkpoint_minutes, max_batch, max_wait_ms, ac1_race } => {
+            let args = uranium_train::rl::run::RlArgs {
+                run,
+                bc,
+                config,
+                algo,
+                backend: rl_backend(backend),
+                seed,
+                take_over,
+                log_dir: logs,
+                z_table,
+                max_updates,
+                max_minutes,
+                checkpoint_minutes,
+                max_batch,
+                max_wait_ms,
+                fixed_t0: ac1_race.map(|r| match r {
+                    RaceArg::Terran => uranium_proto::Race::Terran,
+                    RaceArg::Protoss => uranium_proto::Race::Protoss,
+                    RaceArg::Zerg => uranium_proto::Race::Zerg,
+                }),
+            };
+            let dev = device(backend)?;
+            match core {
+                CoreArg::Lstm => uranium_train::rl::run::run::<LstmCore>(args, dev),
+                CoreArg::Gtrxl => uranium_train::rl::run::run::<GtrxlCore>(args, dev),
+            }
+        }
+        Cmd::ZTable { shards, out, all_maps } => {
+            use std::io::Write as _;
+            let families = uranium_env::maps::MapFamilies::load()?;
+            let mut src = ShardSource::new(&shards)?;
+            let mut f = std::io::BufWriter::new(std::fs::File::create(&out)?);
+            let (mut seen, mut kept) = (0usize, 0usize);
+            while let Some(g) = uranium_train::data::StepSource::next_game(&mut src)? {
+                seen += 1;
+                let me = g.game_info.players.iter().find(|p| p.id == g.game_info.self_player);
+                if me.map(|p| p.race) != Some(uranium_proto::Race::Terran) {
+                    continue;
+                }
+                if !all_maps && families.classify(&g.game_info.map_name, "") == "other" {
+                    continue;
+                }
+                let z = uranium_train::data::replay_z(&g);
+                if z.build.is_empty() {
+                    continue;
+                }
+                let e = uranium_train::rl::run::ZEntry { build: z.build, units: z.units };
+                writeln!(f, "{}", serde_json::to_string(&e)?)?;
+                kept += 1;
+            }
+            f.flush()?;
+            println!("{}", serde_json::json!({ "games": seen, "z_entries": kept, "out": out }));
+            Ok(())
+        }
         Cmd::Manifest { dir, verify } => {
             let m = if verify {
                 uranium_train::storage::verify_dir(&dir)?
