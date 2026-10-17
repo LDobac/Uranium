@@ -17,7 +17,8 @@ fn lines(path: &Path) -> Result<Vec<Value>> {
 
 fn side_name(s: &Side) -> String {
     match s {
-        Side::T0 { race } => format!("T0 {race:?}"),
+        Side::T0 { race, build } if *build != Default::default() => format!("T0 {race:?} `{}`", build.name()),
+        Side::T0 { race, .. } => format!("T0 {race:?}"),
         Side::Oss { name, race } => format!("{name} ({race:?})"),
     }
 }
@@ -74,7 +75,7 @@ pub fn write(out: &Path, plan: &Plan) -> Result<()> {
         }
         let m = &plan.matchups[mi];
         let p0_race = match &m.p0 {
-            Side::T0 { race } | Side::Oss { race, .. } => format!("{race:?}"),
+            Side::T0 { race, .. } | Side::Oss { race, .. } => format!("{race:?}"),
         };
         match first["winner"].as_u64() {
             None => row.draws += 1,
@@ -83,7 +84,21 @@ pub fn write(out: &Path, plan: &Plan) -> Result<()> {
                 Side::T0 { .. } => {
                     let mirror = ss.len() == 2 && ss[0]["self_race"] == ss[1]["self_race"];
                     let winner_race = ss.iter().find(|s| s["slot"].as_u64() == Some(w)).and_then(|s| s["self_race"].as_str());
-                    if mirror {
+                    // A mirror between different builds (050 terran drop vs T0 Terran) is
+                    // attributed by the winner's build.
+                    let winner_build = ss.iter().find(|s| s["slot"].as_u64() == Some(w)).and_then(|s| s["t0_build"].as_str());
+                    let builds_differ = ss.len() == 2 && ss[0]["t0_build"] != ss[1]["t0_build"];
+                    let p1_build = match &m.p1 {
+                        Side::T0 { build, .. } => build.name(),
+                        Side::Oss { .. } => "",
+                    };
+                    if mirror && builds_differ {
+                        if winner_build == Some(p1_build) {
+                            row.p1_wins += 1;
+                        } else {
+                            row.p0_wins += 1;
+                        }
+                    } else if mirror {
                         row.decided_mirror += 1;
                     } else if winner_race.is_some_and(|r| r.eq_ignore_ascii_case(&p0_race)) {
                         row.p0_wins += 1;

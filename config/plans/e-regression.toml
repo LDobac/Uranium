@@ -1,0 +1,25 @@
+# 050 E-Regression: one T0 scenario bot per strategy, 10 games each (pass = p0 win rate >= 50%).
+# p0 is the T0 Terran standard build until the model policy session exists (M6 B1); then p0
+# becomes the checkpoint under test. Scenario bots play one race, so no Random (021-R7).
+name = "e-regression"
+seed_base = 50000
+[[matchup]]
+map = "both"
+games = 10
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "zerg", build = "zerg_rush" }
+[[matchup]]
+map = "both"
+games = 10
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "terran", build = "terran_drop" }
+[[matchup]]
+map = "both"
+games = 10
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "protoss", build = "protoss_dt" }
+[[matchup]]
+map = "both"
+games = 10
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "zerg", build = "zerg_muta" }

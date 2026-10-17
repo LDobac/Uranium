@@ -1,0 +1,25 @@
+# Smoke for the 050 E-Regression scenario bots: 2 games each (one per map), replays kept so
+# the strategy can be checked from the command log.
+name = "smoke-regression"
+seed_base = 51000
+save_replay = true
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "zerg", build = "zerg_rush" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "terran", build = "terran_drop" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "protoss", build = "protoss_dt" }
+[[matchup]]
+map = "both"
+games = 2
+p0 = { kind = "t0", race = "terran" }
+p1 = { kind = "t0", race = "zerg", build = "zerg_muta" }

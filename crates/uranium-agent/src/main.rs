@@ -44,7 +44,7 @@ fn main() -> Result<()> {
     load_env();
     match Cli::parse().cmd {
         Cmd::Serve { listen, policy, out, respond_delay_ms, sessions } => {
-            serve_addr(&listen, ServeOptions { policy, delay_ms: respond_delay_ms, max_sessions: sessions }, out)
+            serve_addr(&listen, ServeOptions { policy, delay_ms: respond_delay_ms, max_sessions: sessions, t0_builds: Default::default() }, out)
         }
         Cmd::Summarize { input, out, title } => summary::summarize(&input, &out, &title),
     }

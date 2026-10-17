@@ -4,6 +4,7 @@
 
 pub mod summary;
 
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};
@@ -27,9 +28,22 @@ pub trait Policy: Send {
     fn on_frame(&mut self, f: &RawFrame) -> Act;
 }
 
-pub fn make_policy(kind: PolicyKind, info: &GameInfo) -> Box<dyn Policy> {
+pub use uranium_scripted::T0Build;
+
+/// T0 build per (game id, `GameSpec.players` index) for scenario bots (050 E-Regression).
+/// The scheduler fills it before games start; players not listed play the standard build.
+pub type T0Builds = Arc<Mutex<HashMap<(u64, u8), T0Build>>>;
+
+/// Our `GameSpec.players` index: uranium-hostd names each player `uranium-p<index>` because
+/// the BWAPI player id (`Hello.slot`) need not follow launch order. Falls back to the slot.
+pub fn spec_index(info: &GameInfo, slot: u8) -> u8 {
+    let name = info.players.iter().find(|p| p.is_self).map(|p| p.name.as_str()).unwrap_or("");
+    name.strip_prefix("uranium-p").and_then(|i| i.parse().ok()).unwrap_or(slot)
+}
+
+pub fn make_policy(kind: PolicyKind, info: &GameInfo, build: T0Build) -> Box<dyn Policy> {
     match kind {
-        PolicyKind::ScriptedT0 => Box::new(uranium_scripted::for_game(info)),
+        PolicyKind::ScriptedT0 => Box::new(uranium_scripted::for_game_build(info, build)),
     }
 }
 
@@ -48,6 +62,8 @@ pub struct SessionRecord {
     pub map_hash: String,
     pub self_race: String,
     pub enemy_race: String,
+    /// T0 build this player was asked to play (050 E-Regression scenario bots).
+    pub t0_build: String,
     pub winner: Option<u8>,
     pub won: Option<bool>,
     pub reason: String,
@@ -115,13 +131,15 @@ pub fn load_env() {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ServeOptions {
     pub policy: PolicyKind,
     /// Artificial delay before every Act (011-AC7 lag test).
     pub delay_ms: u64,
     /// Return after this many finished sessions (0 = run forever).
     pub max_sessions: usize,
+    /// Scenario builds by game and slot (empty = every T0 player plays the standard build).
+    pub t0_builds: T0Builds,
 }
 
 /// JSONL sink shared by all sessions.
@@ -143,15 +161,15 @@ pub fn serve_addr(listen: &str, opts: ServeOptions, out: PathBuf) -> Result<()> 
 
 /// Accepts bridge sessions until `max_sessions` are done (or forever).
 pub fn serve(listener: TcpListener, opts: ServeOptions, sink: RecordSink) -> Result<()> {
-    let ServeOptions { policy, delay_ms, max_sessions } = opts;
+    let ServeOptions { policy, delay_ms, max_sessions, t0_builds } = opts;
     let finished = Arc::new(Mutex::new(0usize));
     let mut handles = Vec::new();
     for conn in listener.incoming() {
         let stream = conn?;
         stream.set_nodelay(true).ok();
-        let (sink, done) = (sink.clone(), finished.clone());
+        let (sink, done, builds) = (sink.clone(), finished.clone(), t0_builds.clone());
         handles.push(std::thread::spawn(move || {
-            let rec = session(stream, policy, delay_ms);
+            let rec = session(stream, policy, delay_ms, &builds);
             let line = serde_json::to_string(&rec).expect("record serializes");
             let mut s = sink.lock().unwrap();
             writeln!(s, "{line}").ok();
@@ -171,7 +189,7 @@ pub fn serve(listener: TcpListener, opts: ServeOptions, sink: RecordSink) -> Res
     Ok(())
 }
 
-pub fn session(stream: TcpStream, kind: PolicyKind, delay_ms: u64) -> SessionRecord {
+pub fn session(stream: TcpStream, kind: PolicyKind, delay_ms: u64, builds: &T0Builds) -> SessionRecord {
     let started = Instant::now();
     let mut rec = SessionRecord {
         game_id: 0,
@@ -180,6 +198,7 @@ pub fn session(stream: TcpStream, kind: PolicyKind, delay_ms: u64) -> SessionRec
         map_hash: String::new(),
         self_race: String::new(),
         enemy_race: String::new(),
+        t0_build: String::new(),
         winner: None,
         won: None,
         reason: "Disconnected".into(),
@@ -196,7 +215,7 @@ pub fn session(stream: TcpStream, kind: PolicyKind, delay_ms: u64) -> SessionRec
         visibility_violations: 0,
         error: None,
     };
-    if let Err(e) = run_session(stream, kind, delay_ms, &mut rec) {
+    if let Err(e) = run_session(stream, kind, delay_ms, builds, &mut rec) {
         eprintln!("[agent] game {} slot {}: {e:#}", rec.game_id, rec.slot);
         rec.error = Some(format!("{e:#}"));
     }
@@ -204,7 +223,7 @@ pub fn session(stream: TcpStream, kind: PolicyKind, delay_ms: u64) -> SessionRec
     rec
 }
 
-fn run_session(stream: TcpStream, kind: PolicyKind, delay_ms: u64, rec: &mut SessionRecord) -> Result<()> {
+fn run_session(stream: TcpStream, kind: PolicyKind, delay_ms: u64, builds: &T0Builds, rec: &mut SessionRecord) -> Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::new(stream);
     let BridgeMsg::Hello(hello) = read_msg(&mut reader)? else { bail!("expected Hello") };
@@ -220,10 +239,13 @@ fn run_session(stream: TcpStream, kind: PolicyKind, delay_ms: u64, rec: &mut Ses
     rec.self_race = info.players.iter().find(|p| p.is_self).map(|p| format!("{:?}", p.race)).unwrap_or_default();
     rec.enemy_race = info.players.iter().find(|p| p.is_enemy).map(|p| format!("{:?}", p.race)).unwrap_or_default();
     eprintln!("[agent] game {} slot {} on {:?} ({} start locations)", hello.game_id, hello.slot, info.map_name, info.static_map.start_locations.len());
-    let mut policy = make_policy(kind, &info);
+    let build = builds.lock().unwrap().get(&(hello.game_id, spec_index(&info, hello.slot))).copied().unwrap_or_default();
+    rec.t0_build = build.name().to_string();
+    let mut policy = make_policy(kind, &info, build);
     let mut policy_time = Duration::ZERO;
     let mut first = true;
     let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut last_cmds: Vec<Command> = Vec::new();
     loop {
         match read_msg::<BridgeMsg>(&mut reader)? {
             BridgeMsg::Privileged(p) => {
@@ -251,10 +273,22 @@ fn run_session(stream: TcpStream, kind: PolicyKind, delay_ms: u64, rec: &mut Ses
                 }
                 rec.visibility_violations += visibility_violations(&f, hello.slot);
                 rec.failed_commands += f.events.iter().filter(|e| matches!(e, GameEvent::CommandFailed { .. })).count() as u64;
+                // Debug aid: with URANIUM_AGENT_DUMP set, failed commands go to g<id>-s<slot>-failed.txt at any frame.
+                if let Ok(dir) = std::env::var("URANIUM_AGENT_DUMP") {
+                    for e in &f.events {
+                        if let GameEvent::CommandFailed { cmd_index, error } = e {
+                            let path = format!("{dir}/g{}-s{}-failed.txt", hello.game_id, hello.slot);
+                            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+                                writeln!(file, "{} error {error} {:?}", f.frame, last_cmds.get(*cmd_index as usize)).ok();
+                            }
+                        }
+                    }
+                }
                 let t = Instant::now();
                 let act = policy.on_frame(&f);
                 policy_time += t.elapsed();
                 rec.commands += act.cmds.len() as u64;
+                last_cmds.clone_from(&act.cmds);
                 if delay_ms > 0 {
                     std::thread::sleep(Duration::from_millis(delay_ms));
                 }

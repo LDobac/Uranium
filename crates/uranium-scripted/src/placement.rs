@@ -38,16 +38,16 @@ impl Placer {
         for u in units {
             if is_resource(u.unit_type) || is_building(u.unit_type) {
                 let (tx, ty_) = building_tile(u);
-                let (w, h) = tile_size(u.unit_type);
+                let (w, h) = footprint(u.unit_type);
                 let pad = if is_resource(u.unit_type) { 3 } else { 1 };
                 mark(tx as i32, ty_ as i32, w as i32, h as i32, pad);
             }
         }
         for &((tx, ty_), rty) in reserved {
-            let (w, h) = tile_size(rty);
+            let (w, h) = footprint(rty);
             mark(tx as i32, ty_ as i32, w as i32, h as i32, 1);
         }
-        let (fw, fh) = tile_size(ty);
+        let (fw, fh) = footprint(ty);
         let (cx, cy) = ((near.0 / 32) as i32, (near.1 / 32) as i32);
         for r in 2..max_r {
             for dy in -r..=r {
@@ -113,6 +113,16 @@ mod tests {
         let first = p.find(BARRACKS, (1000, 1000), &[], &[]).unwrap();
         let second = p.find(BARRACKS, (1000, 1000), &[], &[(first, BARRACKS)]).unwrap();
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn e_regression_050_starport_keeps_addon_slot_free() {
+        let p = Placer::new(&map(64, 64));
+        let t = p.find(STARPORT, (1000, 1000), &[], &[]).unwrap();
+        let next = p.find(BARRACKS, (1000, 1000), &[unit(STARPORT, t)], &[]).unwrap();
+        let (ax, ay) = addon_tile(t);
+        let hits_addon = next.0 < ax + 2 && next.0 + 4 > ax && next.1 < ay + 2 && next.1 + 3 > ay;
+        assert!(!hits_addon, "starport {t:?} barracks {next:?}");
     }
 
     #[test]

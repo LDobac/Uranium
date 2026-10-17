@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+use uranium_agent::T0Build;
 use uranium_proto::Race;
 use uranium_proto::control::{GameSpec, MapKey, PlayerKind, PlayerSpec};
 
@@ -70,8 +71,13 @@ impl From<RaceSel> for Race {
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Side {
-    /// T0 scripted bot for the given race, served by the embedded agent (021 T0).
-    T0 { race: RaceSel },
+    /// T0 scripted bot for the given race, served by the embedded agent (021 T0). `build`
+    /// picks an E-Regression scenario bot (050); the default is the standard build.
+    T0 {
+        race: RaceSel,
+        #[serde(default)]
+        build: T0Build,
+    },
     /// Registered third-party bot on the host (021 T1).
     Oss { name: String, race: RaceSel },
 }
@@ -106,6 +112,19 @@ pub fn load_plan(path: &Path) -> Result<Plan> {
     if plan.matchups.is_empty() {
         bail!("plan has no [[matchup]]");
     }
+    for (i, m) in plan.matchups.iter().enumerate() {
+        for side in [&m.p0, &m.p1] {
+            if let Side::T0 { race, build } = side {
+                if build.race().is_some_and(|r| r != Race::from(*race)) {
+                    bail!("matchup {i}: T0 build `{}` plays {:?}, not {race:?}", build.name(), build.race().unwrap());
+                }
+            }
+        }
+        // 021-R7: Random only for bots that play several races; a scenario bot plays one.
+        if m.p1_random_ratio > 0.0 && matches!(m.p1, Side::T0 { build, .. } if build != T0Build::Standard) {
+            bail!("matchup {i}: p1_random_ratio needs a multi-race bot, not a scenario build (021-R7)");
+        }
+    }
     Ok(plan)
 }
 
@@ -119,6 +138,8 @@ pub fn load_hosts(path: &Path) -> Result<Vec<HostEntry>> {
 pub struct Job {
     pub matchup: usize,
     pub spec: GameSpec,
+    /// T0 build per player slot (050 E-Regression scenario bots).
+    pub t0_builds: [T0Build; 2],
 }
 
 /// Deterministic pseudo-random in [0,1) from the game index (no RNG state to persist).
@@ -144,14 +165,19 @@ pub fn expand(plan: &Plan, agent_addr: &str) -> Vec<Job> {
             };
             let side = |s: &Side, random: bool| {
                 let (race, kind) = match s {
-                    Side::T0 { race } => (*race, PlayerKind::Bridge { agent_addr: agent_addr.to_string() }),
+                    Side::T0 { race, .. } => (*race, PlayerKind::Bridge { agent_addr: agent_addr.to_string() }),
                     Side::Oss { name, race } => (*race, PlayerKind::OssBot { name: name.clone() }),
                 };
                 PlayerSpec { race: if random { Race::Random } else { race.into() }, kind }
             };
             let random = unit_hash(id) < m.p1_random_ratio;
+            let build = |s: &Side| match s {
+                Side::T0 { build, .. } => *build,
+                Side::Oss { .. } => T0Build::Standard,
+            };
             jobs.push(Job {
                 matchup: mi,
+                t0_builds: [build(&m.p0), build(&m.p1)],
                 spec: GameSpec {
                     game_id: id,
                     map,
@@ -212,6 +238,28 @@ p1 = { kind = "t0", race = "protoss" }
         plan.matchups[0].p1_random_ratio = 0.2;
         let n = expand(&plan, "x").iter().filter(|j| j.matchup == 0 && j.spec.players[1].race == Race::Random).count();
         assert!((150..250).contains(&n), "{n}");
+    }
+
+    #[test]
+    fn e_regression_050_scenario_builds_reach_jobs() {
+        let plan: Plan = toml::from_str("name='x'\n[[matchup]]\nmap='both'\ngames=2\np0={kind='t0',race='terran'}\np1={kind='t0',race='zerg',build='zerg_muta'}").unwrap();
+        let jobs = expand(&plan, "x");
+        assert_eq!(jobs[1].t0_builds, [T0Build::Standard, T0Build::ZergMuta]);
+    }
+
+    #[test]
+    fn e_regression_050_scenario_build_race_and_random_are_checked() {
+        let dir = std::env::temp_dir().join(format!("uranium-plan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("p.toml");
+        let base = "name='x'\n[[matchup]]\nmap='both'\ngames=1\np0={kind='t0',race='terran'}\n";
+        std::fs::write(&path, format!("{base}p1={{kind='t0',race='protoss',build='zerg_rush'}}")).unwrap();
+        assert!(load_plan(&path).is_err());
+        std::fs::write(&path, format!("{base}p1={{kind='t0',race='zerg',build='zerg_rush'}}\np1_random_ratio=0.2")).unwrap();
+        assert!(load_plan(&path).is_err());
+        std::fs::write(&path, format!("{base}p1={{kind='t0',race='zerg',build='zerg_rush'}}")).unwrap();
+        assert!(load_plan(&path).is_ok());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

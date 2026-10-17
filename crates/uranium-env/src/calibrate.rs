@@ -93,8 +93,8 @@ fn step_plan(n: u32, frames: u32) -> Plan {
         .map(|(i, (a, b))| Matchup {
             map: MapSel::Both,
             games: total / 3 + u32::from((i as u32) < total % 3),
-            p0: Side::T0 { race: *a },
-            p1: Side::T0 { race: *b },
+            p0: Side::T0 { race: *a, build: Default::default() },
+            p1: Side::T0 { race: *b, build: Default::default() },
             p1_random_ratio: 0.0,
         })
         .filter(|m| m.games > 0)
@@ -202,7 +202,7 @@ pub fn run(max: Option<u32>, frames: u32) -> Result<()> {
     std::fs::create_dir_all(&work)?;
 
     let results = work.join("results.jsonl");
-    let agent = crate::start_agent("127.0.0.1:0", &results)?;
+    let agent = crate::start_agent("127.0.0.1:0", &results, Default::default())?;
     eprintln!("[calibrate] {cores} logical cores, trying 1..={max} concurrent games, {frames} frames per game");
 
     let mut steps = Vec::new();

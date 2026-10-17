@@ -8,3 +8,4 @@ publish.workspace = true
 
 [dependencies]
 uranium-proto.workspace = true
+serde.workspace = true

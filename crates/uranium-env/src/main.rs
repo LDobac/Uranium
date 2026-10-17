@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
-use uranium_agent::{PolicyKind, ServeOptions, load_env, open_sink, serve};
+use uranium_agent::{PolicyKind, ServeOptions, T0Build, T0Builds, load_env, open_sink, serve};
 use uranium_proto::control::*;
 use uranium_proto::{read_msg, write_msg};
 
@@ -60,6 +60,9 @@ struct GameRecord {
     p1_kind: String,
     /// Opponent ID `<name>@<version>` (021-R3).
     opponent: String,
+    /// p1's T0 build when it is an E-Regression scenario bot (050).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t0_build: Option<String>,
     outcome: String,
     detail: Option<String>,
     wall_s: u32,
@@ -92,8 +95,17 @@ fn run(plan_path: &std::path::Path, out: Option<PathBuf>) -> Result<()> {
     let _ = std::fs::remove_file(out.join("games.jsonl"));
     let _ = std::fs::remove_file(out.join("results.jsonl"));
 
-    let public = start_agent(&env_or("URANIUM_AGENT_LISTEN", "127.0.0.1:7600"), &out.join("results.jsonl"))?;
+    let builds = T0Builds::default();
+    let public = start_agent(&env_or("URANIUM_AGENT_LISTEN", "127.0.0.1:7600"), &out.join("results.jsonl"), builds.clone())?;
     let jobs = plan::expand(&plan, &public);
+    // Player slot = index in GameSpec.players (hostd launch order, 011-AC4).
+    for j in &jobs {
+        for (slot, b) in j.t0_builds.iter().enumerate() {
+            if *b != T0Build::Standard {
+                builds.lock().unwrap().insert((j.spec.game_id, slot as u8), *b);
+            }
+        }
+    }
     eprintln!("[env] plan `{}`: {} games, agent at {public}", plan.name, jobs.len());
     let started = Instant::now();
     let left = run_jobs(jobs, &hosts()?, &out.join("games.jsonl"))?;
@@ -108,13 +120,13 @@ fn run(plan_path: &std::path::Path, out: Option<PathBuf>) -> Result<()> {
 
 /// Starts the embedded agent server (001-R6) and returns the address bridges connect to.
 /// Bridges on every host must reach it (`URANIUM_AGENT_PUBLIC_ADDR` when it differs).
-pub(crate) fn start_agent(listen: &str, results: &std::path::Path) -> Result<String> {
+pub(crate) fn start_agent(listen: &str, results: &std::path::Path, t0_builds: T0Builds) -> Result<String> {
     let listener = TcpListener::bind(listen).with_context(|| format!("binding agent {listen}"))?;
     let bound = listener.local_addr()?.to_string();
     let public = std::env::var("URANIUM_AGENT_PUBLIC_ADDR").ok().filter(|v| !v.trim().is_empty()).unwrap_or(bound);
     let sink = open_sink(results)?;
     std::thread::spawn(move || {
-        if let Err(e) = serve(listener, ServeOptions { policy: PolicyKind::ScriptedT0, delay_ms: 0, max_sessions: 0 }, sink) {
+        if let Err(e) = serve(listener, ServeOptions { policy: PolicyKind::ScriptedT0, delay_ms: 0, max_sessions: 0, t0_builds }, sink) {
             eprintln!("[env] agent server stopped: {e:#}");
         }
     });
@@ -262,6 +274,7 @@ fn record(games: &Mutex<BufWriter<std::fs::File>>, host: &str, job: &Job, ids: &
         races: [format!("{:?}", job.spec.players[0].race), format!("{:?}", job.spec.players[1].race)],
         p1_kind,
         opponent: opponent_id(&job.spec.players[1], ids),
+        t0_build: Some(job.t0_builds[1]).filter(|b| *b != T0Build::Standard).map(|b| b.name().to_string()),
         outcome: outcome.to_string(),
         detail,
         wall_s,

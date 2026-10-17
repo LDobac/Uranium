@@ -5,25 +5,37 @@ use uranium_proto::{Tile, UnitState};
 // Terran
 pub const MARINE: u16 = 0;
 pub const SCV: u16 = 7;
+pub const DROPSHIP: u16 = 11;
 pub const CC: u16 = 106;
 pub const DEPOT: u16 = 109;
 pub const REFINERY: u16 = 110;
 pub const BARRACKS: u16 = 111;
+pub const FACTORY: u16 = 113;
+pub const STARPORT: u16 = 114;
+pub const CONTROL_TOWER: u16 = 115;
 // Zerg
 pub const ZERGLING: u16 = 37;
+pub const MUTALISK: u16 = 43;
 pub const LARVA: u16 = 35;
 pub const DRONE: u16 = 41;
 pub const OVERLORD: u16 = 42;
 pub const HATCHERY: u16 = 131;
 pub const LAIR: u16 = 132;
 pub const HIVE: u16 = 133;
+pub const SPIRE: u16 = 141;
 pub const SPAWNING_POOL: u16 = 142;
+pub const EXTRACTOR: u16 = 149;
 // Protoss
+pub const DARK_TEMPLAR: u16 = 61;
 pub const PROBE: u16 = 64;
 pub const ZEALOT: u16 = 65;
 pub const NEXUS: u16 = 154;
 pub const PYLON: u16 = 156;
+pub const ASSIMILATOR: u16 = 157;
 pub const GATEWAY: u16 = 160;
+pub const CITADEL: u16 = 163;
+pub const CYBERNETICS_CORE: u16 = 164;
+pub const TEMPLAR_ARCHIVES: u16 = 165;
 // Neutral
 pub const MINERAL_FIELDS: [u16; 3] = [176, 177, 178];
 pub const GEYSER: u16 = 188;
@@ -49,6 +61,11 @@ pub fn is_worker(ty: u16) -> bool {
     matches!(ty, SCV | PROBE | DRONE)
 }
 
+/// Gas buildings, placed on a geyser.
+pub fn is_refinery(ty: u16) -> bool {
+    matches!(ty, REFINERY | EXTRACTOR | ASSIMILATOR)
+}
+
 pub fn cost(ty: u16) -> i32 {
     match ty {
         DEPOT | PYLON | OVERLORD => 100,
@@ -56,9 +73,33 @@ pub fn cost(ty: u16) -> i32 {
         SPAWNING_POOL => 200,
         CC | NEXUS => 400,
         HATCHERY => 300,
-        REFINERY => 100,
+        REFINERY | ASSIMILATOR => 100,
         ZEALOT => 100,
+        FACTORY | SPIRE | CYBERNETICS_CORE => 200,
+        STARPORT | LAIR | CITADEL | TEMPLAR_ARCHIVES => 150,
+        DROPSHIP | MUTALISK => 100,
+        CONTROL_TOWER => 50,
+        DARK_TEMPLAR => 125,
         _ => 50,
+    }
+}
+
+/// Gas price (BWAPI 4.2 type table).
+pub fn gas_cost(ty: u16) -> i32 {
+    match ty {
+        FACTORY | STARPORT | DROPSHIP | LAIR | MUTALISK | CITADEL | DARK_TEMPLAR => 100,
+        SPIRE => 150,
+        TEMPLAR_ARCHIVES => 200,
+        CONTROL_TOWER => 50,
+        _ => 0,
+    }
+}
+
+/// Supply in BWAPI units (2 per marine) for one train order (a zergling order hatches two).
+pub fn supply_cost(ty: u16) -> i32 {
+    match ty {
+        ZEALOT | DARK_TEMPLAR | MUTALISK | DROPSHIP => 4,
+        _ => 2,
     }
 }
 
@@ -66,13 +107,28 @@ pub fn cost(ty: u16) -> i32 {
 pub fn tile_size(ty: u16) -> (u16, u16) {
     match ty {
         CC | BARRACKS | NEXUS | GATEWAY | HATCHERY | LAIR | HIVE => (4, 3),
-        DEPOT | SPAWNING_POOL => (3, 2),
-        PYLON => (2, 2),
-        REFINERY | GEYSER => (4, 2),
+        DEPOT | SPAWNING_POOL | CYBERNETICS_CORE | CITADEL | TEMPLAR_ARCHIVES => (3, 2),
+        PYLON | SPIRE | CONTROL_TOWER => (2, 2),
+        REFINERY | EXTRACTOR | ASSIMILATOR | GEYSER => (4, 2),
         t if is_mineral(t) => (2, 1),
         t if is_building(t) => (4, 3),
         _ => (1, 1),
     }
+}
+
+/// Tiles kept free for a building: its footprint plus the 2-tile add-on slot on the right for
+/// the scenario bots' factory and starport (050 terran drop needs a control tower).
+pub fn footprint(ty: u16) -> (u16, u16) {
+    let (w, h) = tile_size(ty);
+    match ty {
+        FACTORY | STARPORT => (w + 2, h),
+        _ => (w, h),
+    }
+}
+
+/// Add-on top-left tile for a parent building at `parent` (top-left).
+pub fn addon_tile(parent: Tile) -> Tile {
+    (parent.0 + 4, parent.1 + 1)
 }
 
 /// Top-left tile of a building/resource given its center position.

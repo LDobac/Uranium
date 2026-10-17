@@ -28,6 +28,9 @@ fn bwapi_save_path(p: &Path) -> String {
     if cfg!(windows) && s.as_bytes().get(1) == Some(&b':') { s[2..].to_string() } else { s }
 }
 
+/// Player name prefix; the suffix is the `GameSpec.players` index.
+pub const PLAYER_NAME_PREFIX: &str = "uranium-p";
+
 /// Environment for one launcher (mirrors tools/openbw/selfmatch.sh).
 pub fn launcher_env(cfg: &Config, spec: &GameSpec, slot: usize, module: &Path, replay_dir: &Path) -> Vec<(String, String)> {
     let p = &spec.players[slot];
@@ -50,6 +53,9 @@ pub fn launcher_env(cfg: &Config, spec: &GameSpec, slot: usize, module: &Path, r
         ("URANIUM_GAME_ID", spec.game_id.to_string()),
         // 0004 patch: deterministic client ids => launcher slot = player slot (011-AC4).
         ("URANIUM_LAN_SLOT", slot.to_string()),
+        // The BWAPI player id need not follow launch order; the name tells the agent which
+        // GameSpec player it is (050 scenario builds are looked up by it).
+        ("BWAPI_CONFIG_AUTO_MENU__CHARACTER_NAME", format!("{PLAYER_NAME_PREFIX}{slot}")),
         ("URANIUM_MAX_FRAMES", spec.max_frames.to_string()),
         ("URANIUM_PRIVILEGED", if spec.privileged { "1" } else { "0" }.to_string()),
     ];
@@ -302,6 +308,7 @@ mod tests {
         assert_eq!(get("URANIUM_SEED").unwrap(), "9");
         assert_eq!(get("BWAPI_CONFIG_AUTO_MENU__SAVE_REPLAY").unwrap(), "");
         assert_eq!(get("URANIUM_LAN_SLOT").unwrap(), "0");
+        assert_eq!(get("BWAPI_CONFIG_AUTO_MENU__CHARACTER_NAME").unwrap(), "uranium-p0");
         let env1 = launcher_env(&cfg(), &spec(None), 1, Path::new("/o/module.so"), Path::new("/w/g3"));
         assert!(env1.iter().all(|(k, _)| k != "URANIUM_AGENT_ADDR" && k != "URANIUM_SEED"));
         assert!(env1.iter().any(|(k, v)| k == "BWAPI_CONFIG_AUTO_MENU__RACE" && v == "Random"));
