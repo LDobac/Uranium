@@ -1,6 +1,6 @@
 # 032 — Model Architecture (Burn)
 
-- **Status**: Approved (2026-10-15)
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: R8 호스트별 정밀도 — CUDA PC f32(TF32) 허용, 사용자 결정)
 - **Related**: [030](030-observation.md), [031](031-action-space.md), [033](033-reward.md), [034](034-action-table.md), [041](041-imitation-learning.md), [042](042-rl-training.md), [060](060-infra-bc250.md)
 
 ## Purpose
@@ -122,7 +122,7 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
 | 032-R5 | **MUST** Core 상태는 에피소드 간 리셋한다. 학습 시퀀스는 T=64 truncated BPTT로 한다 |
 | 032-R6 | **MUST** 체크포인트에 함께 저장할 항목: 가중치, `UraniumNetConfig`, feature 스키마 버전, action 스키마 버전([034](034-action-table.md)), 정규화 통계 |
 | 032-R7 | **MUST** 추론은 batch B개 게임 동시 처리를 지원한다. 엔티티는 배치 내 최대 N으로 동적 패딩한다 |
-| 032-R8 | **MUST** 학습과 추론은 **f16 혼합 정밀도**로 한다. M1(a)에서 BC250이 f16을 지원하고 matmul 오차가 4.5e-4, 속도가 약 1.5배임을 확인했다(2026-10-15 결정). 마스터 가중치·옵티마이저 상태·손실·softmax 누적은 f32로 두고, 손실 스케일링을 적용한다. 수치 문제가 생기면 해당 모듈만 f32로 되돌리고 기록한다 |
+| 032-R8 | **MUST** 정밀도는 학습 호스트에서 **더 빠른 쪽**을 쓴다(2026-10-17 개정). **BC250(Vulkan)**: 학습과 추론은 **f16 혼합 정밀도**로 한다. M1(a)에서 BC250이 f16을 지원하고 matmul 오차가 4.5e-4, 속도가 약 1.5배임을 확인했다(2026-10-15 결정). 마스터 가중치·옵티마이저 상태·손실·softmax 누적은 f32로 두고, 손실 스케일링을 적용한다. 수치 문제가 생기면 해당 모듈만 f32로 되돌리고 기록한다. **CUDA PC**: f32(CUDA 내부 TF32 matmul)를 기본으로 한다. M5 실측에서 f16이 f32보다 느렸다(추론 중앙값 59 → 78ms, 학습 70 → 54 samples/s, `reports/m5_model.md`). f16 혼합 정밀도 학습 구현은 BC250 학습 전까지 미룬다(2026-10-17 사용자 결정) |
 | 032-R13 | **MUST** distance bias는 bias 테이블 gradient를 대규모 scatter-add로 모으지 않는 방식으로 구현한다. 예: bucket one-hot과 matmul, 또는 bucket별 사전 합산. M1(a)에서 기존 방식의 역전파가 정방향 대비 약 40배 느림(310ms)을 확인했다. 정방향 대비 역전파 시간이 5배 이내여야 한다 |
 | 032-R9 | **MUST** `act()`는 헤드 6개의 샘플링을 **한 번의 GPU forward 안에서** 수행한다(Gumbel-max). CPU 왕복은 없어야 한다 |
 | 032-R10 | **MUST** joint log-prob와 엔트로피는 `action_table`상 사용된 헤드만 합산한다 |

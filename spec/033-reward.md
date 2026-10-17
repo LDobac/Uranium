@@ -1,6 +1,6 @@
 # 033 — Reward
 
-- **Status**: Approved (2026-10-15)
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: AC2 비교 길이를 042-AC1 조건으로, 사용자 결정)
 - **Related**: [042](042-rl-training.md), [040](040-replay-dataset.md)
 
 ## Purpose
@@ -26,4 +26,4 @@ RL 단계의 보상 함수를 정의한다. 최종 목적은 승리이며, 보�
 
 ## Acceptance Criteria
 - 033-AC1: 보상 함수 단위 테스트를 통과한다. 합성 시나리오에서 부호와 크기가 맞는지 확인한다.
-- 033-AC2: pseudo-reward를 끈 ablation 대비 초기 1M 스텝의 승률 곡선을 비교해 [042](042-rl-training.md)에 기록한다.
+- 033-AC2: pseudo-reward를 끈 ablation과 승률 곡선을 비교해 [042](042-rl-training.md)에 기록한다. 조건은 042-AC1과 같다: 투혼, T0 1종족, seed당 1,000만 agent step, 3 seed(2026-10-17 개정, 이전 "초기 1M 스텝"은 KL 반감기 대비 너무 짧음).

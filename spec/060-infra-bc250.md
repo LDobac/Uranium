@@ -1,6 +1,6 @@
 # 060 — Infra: Training Hosts (BC250 · CUDA PC)
 
-- **Status**: Approved (2026-10-15)
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: AC2·AC4 정밀도를 032-R8 호스트별 기준에 맞춤, 사용자 결정)
 - **Related**: [032](032-model-architecture.md), [042](042-rl-training.md), [020](020-env-orchestration.md), [061](061-shared-storage.md)
 
 ## Purpose
@@ -64,9 +64,9 @@
 
 ## Acceptance Criteria
 - 060-AC1: 벤치 스위트 결과가 `reports/bench_bc250.md`에 기록된다. 이 결과로 032-R2의 모델 크기와 042의 배치 크기를 확정한다.
-- 060-AC2: f16 경로가 Flex(CPU) f32 대비 허용 오차(1e-2 상대) 이내이거나, 아니면 f32 전용으로 결정하고 기록한다.
+- 060-AC2: BC250의 f16 경로가 Flex(CPU) f32 대비 허용 오차(1e-2 상대) 이내이거나, 아니면 f32 전용으로 결정하고 기록한다. CUDA PC는 f32(TF32)가 기본이므로(032-R8, 2026-10-17) f16 판정 대상이 아니다.
 - 060-AC3: 24시간 BC 학습 스모크에서 드라이버 오류 없이 완주하거나, 오류 시 자동 재시작 후 이어서 학습한다.
-- 060-AC4: CUDA PC에서 같은 벤치 스위트(`cargo run -p bench --release --features cuda -- --backend cuda`)를 돌려 `reports/bench_<host>.md`에 기록한다. Flex 대비 정확도 기준은 060-AC1·AC2와 같다.
+- 060-AC4: CUDA PC에서 같은 벤치 스위트(`cargo run -p bench --release --features cuda -- --backend cuda`)를 돌려 `reports/bench_<host>.md`에 기록한다. Flex 대비 정확도 기준은 032-AC1(CUDA ≤ 1e-2, AMB-032-5)을 따르고, 정밀도는 f32(TF32)다(032-R8).
 
 ## Risks & Open Questions
 - BC250 GPU(gfx1013) + RADV에서 Burn/CubeCL 커널 성숙도가 불확실하다(특히 f16, subgroup 연산).
