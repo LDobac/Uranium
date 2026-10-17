@@ -17,5 +17,5 @@ pub mod value;
 
 pub use batch::{ActionBatch, ActionColumns, ObsBatch, PrivBatch};
 pub use config::UraniumNetConfig;
-pub use core::{Core, GtrxlCore, LstmCore};
+pub use core::{Core, GtrxlCore, HostState, LstmCore};
 pub use net::{ActOutput, CoreInit, SeqOutput, UraniumNet};

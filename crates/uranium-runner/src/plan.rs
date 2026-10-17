@@ -169,6 +169,10 @@ pub struct Job {
     pub t0_builds: [T0Build; 2],
     /// Per slot: the model server that plays it (020-R11), `None` = T0 / OSS bot.
     pub models: [Option<ModelKey>; 2],
+    /// Per slot: a policy given directly by a dynamic source (042 league); wins over `models`.
+    pub policies: [Option<uranium_agent::PolicySpec>; 2],
+    /// Opponent id for games.jsonl when the source knows it (042 snapshots, 021-R3).
+    pub opponent: Option<String>,
 }
 
 /// Deterministic pseudo-random in [0,1) from the game index (no RNG state to persist).
@@ -210,6 +214,8 @@ pub fn expand(plan: &Plan, agent_addr: &str) -> Vec<Job> {
                 matchup: mi,
                 t0_builds: [build(&m.p0), build(&m.p1)],
                 models: [m.p0.model(), m.p1.model()],
+                policies: [None, None],
+                opponent: None,
                 spec: GameSpec {
                     game_id: id,
                     map,

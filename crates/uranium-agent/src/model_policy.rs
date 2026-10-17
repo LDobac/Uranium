@@ -10,7 +10,11 @@ use serde::Serialize;
 use uranium_env::features::executor::{Rejected, execute};
 use uranium_env::features::world::World;
 use uranium_env::features::{AgentMemory, DELAY_BUCKETS, MapInfo, extract};
+use uranium_env::features::Strategy;
+use uranium_env::features::extract::action_table;
 use uranium_env::maps::{MapFamilies, PrecomputeSource, family_index, live_precompute, maps_dir};
+use uranium_env::reward::{Outcome, RewardParts, RewardTracker};
+use uranium_model::HostState;
 use uranium_proto::{Act, GameInfo, RawFrame};
 
 use crate::infer::{InferSession, InferenceHandle, SampleMode};
@@ -40,8 +44,7 @@ pub struct ModelStats {
 }
 
 /// One model decision as an RL actor needs it (042: obs, action, behaviour log-prob per head and
-/// joint, value). Rewards come from `uranium_env::reward` on the same frames; the segment start
-/// Core state (core_state0) is read from the inference server slot when the learner lands (M6).
+/// joint, value, reward, core_state0).
 pub struct Decision<'a> {
     pub frame: u32,
     pub obs: &'a uranium_env::features::Observation,
@@ -51,17 +54,41 @@ pub struct Decision<'a> {
     pub value: [f32; 4],
     /// The executor refused the action (031-R4): no command was sent.
     pub rejected: bool,
+    /// Weights version of the inference server (032-R16, 042-R4).
+    pub version: u64,
+    /// 033-R7: reward of the frames since the previous decision (it belongs to that decision).
+    pub reward_before: RewardParts,
+    /// Core state before this decision, when the observer asked for it (042 core_state0).
+    pub state: Option<HostState>,
 }
 
-/// Trajectory hook for the M6 actor (042). Sessions run without one until then.
+/// Trajectory hook for the RL actor (042).
 pub trait SessionObserver: Send {
     fn on_decision(&mut self, d: &Decision<'_>);
     /// Lockstep training only (010-R10); never reaches the policy (001-R7).
     fn on_privileged(&mut self, _p: &uranium_proto::PrivilegedSummary) {}
+    /// Whether the next decision should carry the Core state (start of a segment, 042).
+    fn wants_state(&self) -> bool {
+        false
+    }
+    /// Game over: reward of the frames after the last decision, the terminal r_win (033-R7) and
+    /// the game outcome (`None` = Aborted / disconnected, 042-R3).
+    fn on_end(&mut self, _reward_after: RewardParts, _outcome: Option<Outcome>) {}
+}
+
+/// Starts RL sessions: the z of the episode and its observer (042, 033-R8).
+pub trait LearnerHook: Send + Sync {
+    fn handle(&self) -> &InferenceHandle;
+    fn session(&self, game_id: u64, info: &GameInfo) -> (Option<Strategy>, Box<dyn SessionObserver>);
 }
 
 pub struct ModelPolicy {
     observer: Option<Box<dyn SessionObserver>>,
+    /// Strategy condition of the episode (030 §5, 033-R8); `None` = z absent.
+    z: Option<Strategy>,
+    /// 033 rewards, kept only when an observer records the trajectory.
+    reward: Option<RewardTracker>,
+    self_player: u8,
     sess: InferSession,
     mem: AgentMemory,
     map: MapInfo,
@@ -119,12 +146,27 @@ impl ModelPolicy {
             map_precompute: source,
             ..Default::default()
         };
-        Ok(Self { observer: None, sess: handle.open()?, mem: AgentMemory::new(info), map, stats, decide: vec![], run: vec![], host: vec![], batch_sum: 0 })
+        let self_player = info.players.iter().find(|p| p.is_self).map_or(0, |p| p.id);
+        Ok(Self { observer: None, z: None, reward: None, self_player, sess: handle.open()?, mem: AgentMemory::new(info), map, stats, decide: vec![], run: vec![], host: vec![], batch_sum: 0 })
     }
 
-    pub fn with_observer(mut self, o: Box<dyn SessionObserver>) -> Self {
+    /// Records the trajectory through `o` with 033 rewards for strategy `z` (042).
+    pub fn with_observer(mut self, z: Option<Strategy>, o: Box<dyn SessionObserver>) -> Self {
+        self.reward = Some(RewardTracker::new(z.clone(), self.self_player));
+        self.z = z;
         self.observer = Some(o);
         self
+    }
+
+    /// Game over (042, 033-R7): the frames after the last decision and r_win go to the observer.
+    pub fn on_end(&mut self, outcome: Option<Outcome>) {
+        if let Some(o) = self.observer.as_mut() {
+            let mut after = RewardParts::default();
+            if let Some(out) = outcome {
+                after.win = RewardTracker::end(out).win;
+            }
+            o.on_end(after, outcome);
+        }
     }
 
     pub fn on_privileged(&mut self, p: &uranium_proto::PrivilegedSummary) {
@@ -135,8 +177,13 @@ impl ModelPolicy {
 
     pub fn on_frame(&mut self, f: &RawFrame) -> Result<Act> {
         let t0 = Instant::now();
-        // z absent (041-AC2, AMB-041-2); RL z sampling comes with 033-R2.
-        let obs = extract(f, &mut self.mem, &self.map, None);
+        // z absent unless an RL session set one (041-AC2 / AMB-041-2, 033-R8).
+        let obs = extract(f, &mut self.mem, &self.map, self.z.as_ref());
+        let reward_before = self.reward.as_mut().map(|r| r.step(f)).unwrap_or_default();
+        let state = match self.observer.as_ref() {
+            Some(o) if o.wants_state() => Some(self.sess.state()?),
+            _ => None,
+        };
         let host_extract = t0.elapsed();
         let t1 = Instant::now();
         let r = self.sess.act(obs)?;
@@ -157,7 +204,24 @@ impl ModelPolicy {
             }
         };
         if let Some(o) = self.observer.as_mut() {
-            o.on_decision(&Decision { frame: f.frame, obs: &r.obs, action: a, log_prob: r.log_prob, head_log_prob: r.head_log_prob, value: r.value, rejected });
+            o.on_decision(&Decision {
+                frame: f.frame,
+                obs: &r.obs,
+                action: a,
+                log_prob: r.log_prob,
+                head_log_prob: r.head_log_prob,
+                value: r.value,
+                rejected,
+                version: r.version,
+                reward_before,
+                state,
+            });
+        }
+        // 033 r_build: own Build / Train / Research / Upgrade actions (same group as replay z).
+        if let (Some(rt), false) = (self.reward.as_mut(), rejected) {
+            if action_table().actions.get(a.action as usize).is_some_and(|x| matches!(x.command.as_str(), "Build" | "BuildAddon" | "Train" | "Research" | "Upgrade")) {
+                rt.record_build(a.action);
+            }
         }
         // Memory records the sampled action like BC records its label (030 §4, 041-R11).
         let ids: Vec<u32> = a.selected.iter().filter_map(|&i| r.obs.entity_ids.get(i).copied()).collect();

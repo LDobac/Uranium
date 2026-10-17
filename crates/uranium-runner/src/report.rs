@@ -59,10 +59,18 @@ struct Row {
     /// Games that ended within 300 frames: an opponent that never really played
     /// (e.g. its module failed to load). Excluded from win counts.
     suspect_short: u32,
-    /// Games whose two sessions report different winners (the first session's is counted).
+    /// Games whose two sessions report different winners; the later session decides (020-R13).
     winner_disagree: u32,
     /// Opponent IDs seen for p1 (021-R3).
     opponents: std::collections::BTreeSet<String>,
+}
+
+/// 020-R13: the session whose report decides the game: the one that ended last (largest
+/// `end_frame`); on a tie the first record stands.
+fn decisive<'a>(ss: &[&'a Value]) -> Option<&'a Value> {
+    let frame = |s: &Value| s["end_frame"].as_u64().unwrap_or(0);
+    let first = *ss.first()?;
+    Some(ss.iter().skip(1).fold(first, |best, s| if frame(s) > frame(best) { *s } else { best }))
 }
 
 pub fn write(out: &Path, plan: &Plan) -> Result<()> {
@@ -88,7 +96,7 @@ pub fn write(out: &Path, plan: &Plan) -> Result<()> {
                 row.session_errors += 1;
             }
         }
-        let Some(first) = ss.first() else { continue };
+        let Some(first) = decisive(&ss) else { continue };
         if ss.len() == 2 && ss[0]["winner"] != ss[1]["winner"] {
             row.winner_disagree += 1;
         }
@@ -243,6 +251,18 @@ pub fn write(out: &Path, plan: &Plan) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 020-R13: the report of the session that ended last decides a disagreement.
+    #[test]
+    fn decisive_session_is_the_later_one_020_r13() {
+        let a: Value = serde_json::json!({"slot": 0, "winner": null, "end_frame": 8999});
+        let b: Value = serde_json::json!({"slot": 1, "winner": 1, "end_frame": 9001});
+        assert_eq!(decisive(&[&a, &b]).unwrap()["winner"], 1);
+        assert_eq!(decisive(&[&b, &a]).unwrap()["winner"], 1);
+        let c: Value = serde_json::json!({"slot": 1, "winner": 1, "end_frame": 8999});
+        assert_eq!(decisive(&[&a, &c]).unwrap()["slot"], 0);
+        assert!(decisive(&[]).is_none());
+    }
 
     #[test]
     fn wilson_interval_050_r2() {

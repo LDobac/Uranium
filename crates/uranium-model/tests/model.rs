@@ -171,6 +171,24 @@ fn slots_match_single_sessions<C: CoreInit>() {
     }
 }
 
+/// 032-R16: a state survives the host round trip bit for bit, and host states of single rows
+/// stacked with `HostState::cat` equal the batch state.
+fn host_state_round_trip<C: CoreInit>() {
+    use burn::tensor::{Int, TensorData};
+    let (net, _) = net::<C>(10);
+    let core = net.core();
+    let (cap, d) = (3, 32 + 32 + 32);
+    let x = Tensor::<2>::from_data(TensorData::new((0..cap * d).map(|i| ((i * 31 % 89) as f32 / 44.0) - 1.0).collect::<Vec<_>>(), [cap, d]), &dev());
+    let (_, s) = core.step(x, core.init_state(cap, &dev()));
+    let host = C::state_to_host(&s);
+    assert_eq!(host.batch(), cap);
+    assert_eq!(C::state_to_host(&C::state_from_host(&host, &dev())), host);
+    let rows: Vec<_> = (0..cap)
+        .map(|r| C::state_to_host(&C::select_rows(&s, Tensor::<1, Int>::from_data(TensorData::new(vec![r as i32], [1]), &dev()))))
+        .collect();
+    assert_eq!(uranium_model::HostState::cat(&rows.iter().collect::<Vec<_>>()), host);
+}
+
 /// 032-R15: per-head log-probs add up to the joint log-prob; argmax (temp 0) is deterministic.
 fn head_log_probs_and_argmax<C: CoreInit>() {
     let (net, cfg) = net::<C>(9);
@@ -228,6 +246,10 @@ macro_rules! core_tests {
             #[test]
             fn slots_match_single_sessions_032_r14() {
                 slots_match_single_sessions::<$core>();
+            }
+            #[test]
+            fn host_state_round_trip_032_r16() {
+                host_state_round_trip::<$core>();
             }
             #[test]
             fn head_log_probs_and_argmax_032_r15() {

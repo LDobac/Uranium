@@ -27,6 +27,45 @@ pub trait Core: Module + ModuleDisplay {
     /// bit for bit (032-R14).
     fn scatter_rows(s: Self::State, rows: Tensor<1, Int>, sub: Self::State) -> Self::State;
     fn hidden(&self) -> usize;
+    /// Host copy of a state (032-R16, 042 core_state0); `state_from_host` rebuilds it bit for bit.
+    fn state_to_host(s: &Self::State) -> HostState;
+    fn state_from_host(h: &HostState, device: &Device) -> Self::State;
+}
+
+/// A Core state on the host: every tensor as f32 values with its shape (bools as 0/1). Row 0 of
+/// every shape is the batch.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct HostState {
+    pub parts: Vec<(Vec<usize>, Vec<f32>)>,
+}
+
+impl HostState {
+    pub fn batch(&self) -> usize {
+        self.parts.first().map_or(0, |(s, _)| s[0])
+    }
+
+    /// Stacks single-batch (or any batch) states along the batch dimension.
+    pub fn cat(rows: &[&HostState]) -> HostState {
+        let Some(first) = rows.first() else { return HostState::default() };
+        let parts = (0..first.parts.len())
+            .map(|i| {
+                let mut shape = first.parts[i].0.clone();
+                shape[0] = rows.iter().map(|r| r.parts[i].0[0]).sum();
+                let data = rows.iter().flat_map(|r| r.parts[i].1.iter().copied()).collect();
+                (shape, data)
+            })
+            .collect();
+        HostState { parts }
+    }
+}
+
+fn to_host<const D: usize>(t: &Tensor<D>) -> (Vec<usize>, Vec<f32>) {
+    (t.dims().to_vec(), t.clone().into_data().convert::<f32>().try_into_vec::<f32>().expect("f32 state"))
+}
+
+fn from_host<const D: usize>(p: &(Vec<usize>, Vec<f32>), device: &Device) -> Tensor<D> {
+    let shape: [usize; D] = p.0.clone().try_into().expect("state rank");
+    Tensor::from_data(TensorData::new(p.1.clone(), shape), device)
 }
 
 /// `t[rows] = sub` exactly: the new rows are added onto zeros (0 + v = v) and selected with a row
@@ -108,6 +147,14 @@ impl Core for LstmCore {
 
     fn hidden(&self) -> usize {
         self.hidden
+    }
+
+    fn state_to_host(s: &Self::State) -> HostState {
+        HostState { parts: vec![to_host(&s.cell), to_host(&s.hidden)] }
+    }
+
+    fn state_from_host(h: &HostState, device: &Device) -> Self::State {
+        LstmState::new(from_host(&h.parts[0], device), from_host(&h.parts[1], device))
     }
 }
 
@@ -289,5 +336,16 @@ impl Core for GtrxlCore {
 
     fn hidden(&self) -> usize {
         self.hidden
+    }
+
+    fn state_to_host(s: &Self::State) -> HostState {
+        let mut parts: Vec<_> = s.memory.iter().map(to_host).collect();
+        parts.push(to_host(&s.valid.clone().int().float()));
+        HostState { parts }
+    }
+
+    fn state_from_host(h: &HostState, device: &Device) -> Self::State {
+        let (mem, valid) = h.parts.split_at(h.parts.len() - 1);
+        GtrxlState { memory: mem.iter().map(|p| from_host(p, device)).collect(), valid: from_host::<2>(&valid[0], device).equal_elem(1.0) }
     }
 }

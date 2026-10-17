@@ -211,7 +211,7 @@ fn observer_sees_behaviour_log_probs_042() {
     let dir = checkpoint(CoreKind::Lstm, "observer");
     let h = handle(&dir, SampleMode::Stochastic, 1);
     let seen = Arc::new(Mutex::new(vec![]));
-    let mut p = ModelPolicy::new(&h, &game_info()).unwrap().with_observer(Box::new(Obs(seen.clone())));
+    let mut p = ModelPolicy::new(&h, &game_info()).unwrap().with_observer(None, Box::new(Obs(seen.clone())));
     for f in frames(2, 5) {
         p.on_frame(&f).unwrap();
     }
@@ -220,6 +220,33 @@ fn observer_sees_behaviour_log_probs_042() {
     for (joint, heads) in seen.iter() {
         assert!((joint - heads).abs() < 1e-3 && *joint <= 0.0, "{joint} vs {heads}");
     }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 032-R16: a slot's Core state can be read before a decision, and swapped weights answer with
+/// their version from the next batch on.
+#[test]
+fn weight_swap_and_slot_state_032_r16() {
+    use uranium_env::features::{AgentMemory, MapInfo, extract};
+    let dir = checkpoint(CoreKind::Lstm, "swap");
+    let h = handle(&dir, SampleMode::Argmax, 1);
+    let sess = h.open().unwrap();
+    let s0 = sess.state().unwrap();
+    assert!(s0.parts.iter().all(|(_, v)| v.iter().all(|x| *x == 0.0)), "fresh slot state is zero (032-R5)");
+    let info = game_info();
+    let mut mem = AgentMemory::new(&info);
+    let map = MapInfo::new(&info, 0, None).unwrap();
+    let fr = frames(0, 2);
+    let r = sess.act(extract(&fr[0], &mut mem, &map, None)).unwrap();
+    assert_eq!(r.version, 0);
+    assert_ne!(sess.state().unwrap(), s0, "state advanced after a decision");
+    let cols = uranium_model::batch::ActionColumns::from_table(uranium_env::features::extract::action_table()).unwrap();
+    let (net, _) = uranium_model::checkpoint::load::<uranium_model::LstmCore>(&dir, &cols, uranium_env::features::FEATURE_SCHEMA_VERSION, uranium_env::actions::ACTION_SCHEMA_VERSION, &Device::flex()).unwrap();
+    h.swap(Box::new(net), 7).unwrap();
+    assert!(h.swap(Box::new(5u32), 8).is_err(), "only a network of the server's core is accepted");
+    let r = sess.act(extract(&fr[1], &mut mem, &map, None)).unwrap();
+    assert_eq!(r.version, 7);
+    drop(sess);
     std::fs::remove_dir_all(&dir).ok();
 }
 

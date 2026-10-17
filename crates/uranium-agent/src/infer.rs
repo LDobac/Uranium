@@ -5,6 +5,7 @@
 //! and written back with `scatter_rows`. Lockstep games wait for their reply, so batching changes
 //! throughput only, never results.
 
+use std::any::Any;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -23,7 +24,7 @@ use uranium_model::checkpoint::{self, WEIGHTS_FILE};
 use uranium_model::collate::obs_batch_padded;
 use uranium_model::config::CoreKind;
 use uranium_model::heads::HEADS;
-use uranium_model::{CoreInit, GtrxlCore, LstmCore, UraniumNet};
+use uranium_model::{CoreInit, GtrxlCore, HostState, LstmCore, UraniumNet};
 
 /// Inference device (060-R1). CUDA only exists in builds with `--features cuda`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
@@ -111,12 +112,18 @@ pub struct ActReply {
     pub batch: usize,
     /// Model forward + host copy of that batch.
     pub run: Duration,
+    /// Weights version that produced this decision (032-R16, 042-R4): 0 = the loaded checkpoint.
+    pub version: u64,
 }
 
 enum Req {
     Open(Sender<Result<usize>>),
     Act { slot: usize, obs: Box<Observation>, reply: Sender<Result<ActReply>> },
     Close(usize),
+    /// 032-R16: replace the weights from the next batch on (`UraniumNet<C>` of the server's core).
+    Swap { net: Box<dyn Any + Send>, version: u64, reply: Sender<Result<()>> },
+    /// 032-R16: the slot's Core state on the host (042 core_state0).
+    State { slot: usize, reply: Sender<Result<HostState>> },
 }
 
 /// Cheap to clone; every clone talks to the same server thread.
@@ -172,6 +179,14 @@ impl InferenceHandle {
         Ok(Self { tx, checkpoint_id: id.into(), sample })
     }
 
+    /// 032-R16: weights for the next batches. `net` must be a `UraniumNet<C>` of the checkpoint's
+    /// core kind on the inference device; `version` is reported with every later decision.
+    pub fn swap(&self, net: Box<dyn Any + Send>, version: u64) -> Result<()> {
+        let (tx, rx) = mpsc::channel();
+        self.tx.send(Req::Swap { net, version, reply: tx }).map_err(|_| anyhow!("inference server is gone"))?;
+        rx.recv().map_err(|_| anyhow!("inference server is gone"))?
+    }
+
     /// A slot for one game player; its Core state starts at zero (032-R5).
     pub fn open(&self) -> Result<InferSession> {
         let (tx, rx) = mpsc::channel();
@@ -193,6 +208,13 @@ impl InferSession {
         self.tx.send(Req::Act { slot: self.slot, obs: Box::new(obs), reply: tx }).map_err(|_| anyhow!("inference server is gone"))?;
         rx.recv().map_err(|_| anyhow!("inference server dropped the request"))?
     }
+
+    /// 032-R16: this slot's current Core state (before the next `act`), for core_state0 (042).
+    pub fn state(&self) -> Result<HostState> {
+        let (tx, rx) = mpsc::channel();
+        self.tx.send(Req::State { slot: self.slot, reply: tx }).map_err(|_| anyhow!("inference server is gone"))?;
+        rx.recv().map_err(|_| anyhow!("inference server dropped the request"))?
+    }
 }
 
 impl Drop for InferSession {
@@ -208,14 +230,14 @@ struct Pending {
     since: Instant,
 }
 
-fn serve<C: CoreInit>(dir: &Path, sample: SampleMode, opts: InferOptions, rx: Receiver<Req>, ready: Sender<Result<()>>) -> Result<()> {
+fn serve<C: CoreInit + 'static>(dir: &Path, sample: SampleMode, opts: InferOptions, rx: Receiver<Req>, ready: Sender<Result<()>>) -> Result<()> {
     let loaded = (|| -> Result<_> {
         let device = opts.backend.device()?;
         let cols = ActionColumns::from_table(action_table())?;
         let (net, _meta) = checkpoint::load::<C>(dir, &cols, FEATURE_SCHEMA_VERSION, ACTION_SCHEMA_VERSION, &device)?;
         Ok((device, cols, net))
     })();
-    let (device, cols, net) = match loaded {
+    let (device, cols, mut net) = match loaded {
         Ok(x) => {
             let _ = ready.send(Ok(()));
             x
@@ -229,6 +251,7 @@ fn serve<C: CoreInit>(dir: &Path, sample: SampleMode, opts: InferOptions, rx: Re
     let mut state = net.init_state(opts.capacity, &device);
     let mut used = vec![false; opts.capacity];
     let mut pending: Vec<Pending> = Vec::new();
+    let mut version = 0u64;
     loop {
         // Wait for work: block when idle, otherwise until the oldest request's deadline.
         let req = if pending.is_empty() {
@@ -262,6 +285,21 @@ fn serve<C: CoreInit>(dir: &Path, sample: SampleMode, opts: InferOptions, rx: Re
                 pending.retain(|p| p.slot != slot);
             }
             Some(Req::Act { slot, obs, reply }) => pending.push(Pending { slot, obs, reply, since: Instant::now() }),
+            Some(Req::Swap { net: new, version: v, reply }) => {
+                let res = match new.downcast::<UraniumNet<C>>() {
+                    Ok(n) => {
+                        net = *n;
+                        version = v;
+                        Ok(())
+                    }
+                    Err(_) => Err(anyhow!("swap: weights are not a UraniumNet of this server's core")),
+                };
+                let _ = reply.send(res);
+            }
+            Some(Req::State { slot, reply }) => {
+                let rows = Tensor::<1, Int>::from_data(TensorData::new(vec![slot as i32], [1]), &device);
+                let _ = reply.send(Ok(C::state_to_host(&C::select_rows(&state, rows))));
+            }
             None => {}
         }
         let active = used.iter().filter(|u| **u).count();
@@ -269,12 +307,13 @@ fn serve<C: CoreInit>(dir: &Path, sample: SampleMode, opts: InferOptions, rx: Re
         if due {
             let n = pending.len().min(opts.max_batch);
             let batch: Vec<Pending> = pending.drain(..n).collect();
-            state = run_batch(&net, &cols, &device, state, batch, sample.temp(), opts.pad_entities);
+            state = run_batch(&net, &cols, &device, state, batch, sample.temp(), opts.pad_entities, version);
         }
     }
 }
 
-fn run_batch<C: CoreInit>(net: &UraniumNet<C>, cols: &ActionColumns, device: &Device, state: C::State, batch: Vec<Pending>, temp: f32, pad: usize) -> C::State {
+#[allow(clippy::too_many_arguments)]
+fn run_batch<C: CoreInit>(net: &UraniumNet<C>, cols: &ActionColumns, device: &Device, state: C::State, batch: Vec<Pending>, temp: f32, pad: usize, version: u64) -> C::State {
     let t0 = Instant::now();
     let b = batch.len();
     let rows = Tensor::<1, Int>::from_data(TensorData::new(batch.iter().map(|p| p.slot as i32).collect::<Vec<_>>(), [b]), device);
@@ -315,6 +354,7 @@ fn run_batch<C: CoreInit>(net: &UraniumNet<C>, cols: &ActionColumns, device: &De
             obs: *p.obs,
             batch: b,
             run,
+            version,
         };
         let _ = p.reply.send(Ok(reply));
     }

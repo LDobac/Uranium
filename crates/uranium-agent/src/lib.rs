@@ -20,7 +20,7 @@ use serde::Serialize;
 use uranium_proto::*;
 
 use crate::infer::InferenceHandle;
-use crate::model_policy::{ModelPolicy, ModelStats};
+use crate::model_policy::{LearnerHook, ModelPolicy, ModelStats};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum PolicyKind {
@@ -31,10 +31,22 @@ pub enum PolicyKind {
 }
 
 /// What plays one session (020-R11).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum PolicySpec {
     ScriptedT0,
     Model(InferenceHandle),
+    /// A model session that records its trajectory for the learner (042).
+    Learner(Arc<dyn LearnerHook>),
+}
+
+impl std::fmt::Debug for PolicySpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ScriptedT0 => write!(f, "ScriptedT0"),
+            Self::Model(h) => write!(f, "Model({h:?})"),
+            Self::Learner(l) => write!(f, "Learner({:?})", l.handle()),
+        }
+    }
 }
 
 impl PolicySpec {
@@ -43,6 +55,7 @@ impl PolicySpec {
         match self {
             Self::ScriptedT0 => format!("t0@{}", env!("CARGO_PKG_VERSION")),
             Self::Model(h) => format!("model:{}:{:?}", h.checkpoint_id, h.sample).to_lowercase(),
+            Self::Learner(l) => format!("learner:{}:{:?}", l.handle().checkpoint_id, l.handle().sample).to_lowercase(),
         }
     }
 }
@@ -72,9 +85,48 @@ pub trait Policy: Send {
     fn model_stats(&mut self) -> Option<ModelStats> {
         None
     }
+    /// Game over; `None` = Aborted or disconnected (042-R3).
+    fn on_end(&mut self, _outcome: Option<uranium_env::reward::Outcome>) {}
 }
 
 pub use uranium_scripted::T0Build;
+
+/// One session's GameEnd report (020-R13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionEnd {
+    /// BWAPI player id of the reporting session (`Hello.slot`).
+    pub slot: u8,
+    pub winner: Option<u8>,
+    pub frame: u32,
+    pub reason: EndReason,
+}
+
+/// 020-R13 (2026-10-17, AMB-020-3): when the sessions of one game report different winners, the
+/// session that ended last (largest end frame) decides; on a tie the first report stands. The
+/// loser's client can mark the winner as defeated too on its final frame (OpenBW leave timing,
+/// not a desync). Returns the chosen report and whether the reports disagreed.
+pub fn game_result(ends: &[SessionEnd]) -> Option<(SessionEnd, bool)> {
+    let first = *ends.first()?;
+    let chosen = ends.iter().skip(1).fold(first, |best, e| if e.frame > best.frame { *e } else { best });
+    let disagree = ends.iter().any(|e| e.winner != first.winner);
+    Some((chosen, disagree))
+}
+
+/// GameEnd reports by game id, filled by the agent server (020-R13). The RL league reads the
+/// reconciled result from here once hostd says the game is over (042 win table, 033 r_win).
+#[derive(Clone, Default)]
+pub struct EndBoard(Arc<Mutex<HashMap<u64, Vec<SessionEnd>>>>);
+
+impl EndBoard {
+    pub fn push(&self, game_id: u64, e: SessionEnd) {
+        self.0.lock().unwrap().entry(game_id).or_default().push(e);
+    }
+
+    /// Removes and returns the reports of a game.
+    pub fn take(&self, game_id: u64) -> Vec<SessionEnd> {
+        self.0.lock().unwrap().remove(&game_id).unwrap_or_default()
+    }
+}
 
 /// T0 build per (game id, `GameSpec.players` index) for scenario bots (050 E-Regression).
 /// The scheduler fills it before games start; players not listed play the standard build.
@@ -87,17 +139,41 @@ pub fn spec_index(info: &GameInfo, slot: u8) -> u8 {
     name.strip_prefix("uranium-p").and_then(|i| i.parse().ok()).unwrap_or(slot)
 }
 
-pub fn make_policy(spec: &PolicySpec, info: &GameInfo, build: T0Build) -> Result<Box<dyn Policy>> {
+pub fn make_policy(spec: &PolicySpec, game_id: u64, info: &GameInfo, build: T0Build) -> Result<Box<dyn Policy>> {
+    let terran = || -> Result<()> {
+        let me = info.players.iter().find(|p| p.is_self).map(|p| p.race);
+        if me != Some(Race::Terran) {
+            bail!("model policy plays Terran only, got {me:?}");
+        }
+        Ok(())
+    };
     Ok(match spec {
         PolicySpec::ScriptedT0 => Box::new(uranium_scripted::for_game_build(info, build)),
         PolicySpec::Model(h) => {
-            let me = info.players.iter().find(|p| p.is_self).map(|p| p.race);
-            if me != Some(Race::Terran) {
-                bail!("model policy plays Terran only, got {me:?}");
-            }
+            terran()?;
             Box::new(ModelPolicy::new(h, info)?)
         }
+        PolicySpec::Learner(l) => {
+            terran()?;
+            let (z, observer) = l.session(game_id, info);
+            Box::new(ModelPolicy::new(l.handle(), info)?.with_observer(z, observer))
+        }
     })
+}
+
+/// 033 outcome for our player from the bridge's GameEnd; `None` when the game did not finish
+/// (Aborted, agent timeout): such episodes are left out of training (042-R3).
+pub fn end_outcome(end: &GameEnd, me: u8) -> Option<uranium_env::reward::Outcome> {
+    use uranium_env::reward::Outcome;
+    match end.reason {
+        EndReason::Aborted | EndReason::AgentTimeout => None,
+        EndReason::TimeLimitDraw => Some(Outcome::Draw),
+        EndReason::Elimination | EndReason::Surrender => Some(match end.winner {
+            Some(w) if w == me => Outcome::Win,
+            Some(_) => Outcome::Loss,
+            None => Outcome::Draw,
+        }),
+    }
 }
 
 impl Policy for Box<dyn uranium_scripted::Bot> {
@@ -117,6 +193,10 @@ impl Policy for ModelPolicy {
 
     fn model_stats(&mut self) -> Option<ModelStats> {
         Some(self.stats())
+    }
+
+    fn on_end(&mut self, outcome: Option<uranium_env::reward::Outcome>) {
+        ModelPolicy::on_end(self, outcome)
     }
 }
 
@@ -212,11 +292,13 @@ pub struct ServeOptions {
     pub max_sessions: usize,
     /// Scenario builds by game and slot (empty = every T0 player plays the standard build).
     pub t0_builds: T0Builds,
+    /// Every session's GameEnd report (020-R13).
+    pub ends: EndBoard,
 }
 
 impl ServeOptions {
     pub fn new(default: PolicySpec) -> Self {
-        Self { default, routes: Routes::default(), delay_ms: 0, max_sessions: 0, t0_builds: T0Builds::default() }
+        Self { default, routes: Routes::default(), delay_ms: 0, max_sessions: 0, t0_builds: T0Builds::default(), ends: EndBoard::default() }
     }
 }
 
@@ -327,7 +409,18 @@ fn run_session(stream: TcpStream, opts: &ServeOptions, rec: &mut SessionRecord) 
     rec.policy = spec.label();
     let build = opts.t0_builds.lock().unwrap().get(&(hello.game_id, index)).copied().unwrap_or_default();
     rec.t0_build = build.name().to_string();
-    let mut policy = make_policy(&spec, &info, build)?;
+    let mut policy = make_policy(&spec, hello.game_id, &info, build)?;
+    let res = play(&mut reader, &mut writer, &mut *policy, &hello, rec, delay_ms, &opts.ends);
+    if res.is_err() {
+        // Disconnected or failed mid-game: not a finished episode (042-R3).
+        policy.on_end(None);
+    }
+    res
+}
+
+#[allow(clippy::too_many_arguments)]
+fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, policy: &mut dyn Policy, hello: &Hello, rec: &mut SessionRecord, delay_ms: u64, ends: &EndBoard) -> Result<()> {
+    let (mut reader, mut writer) = (reader, writer);
     let mut policy_time = Duration::ZERO;
     let mut first = true;
     let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
@@ -387,6 +480,8 @@ fn run_session(stream: TcpStream, opts: &ServeOptions, rec: &mut SessionRecord) 
                 write_msg(&mut writer, &AgentMsg::Act(act))?;
             }
             BridgeMsg::End(end) => {
+                let session_end = SessionEnd { slot: hello.slot, winner: end.winner, frame: end.frame, reason: end.reason };
+                let outcome = end_outcome(&end, hello.slot);
                 rec.winner = end.winner;
                 rec.won = end.winner.map(|w| w == hello.slot);
                 rec.reason = format!("{:?}", end.reason);
@@ -395,9 +490,36 @@ fn run_session(stream: TcpStream, opts: &ServeOptions, rec: &mut SessionRecord) 
                 rec.policy_ms = policy_time.as_secs_f64() * 1e3;
                 rec.frame_digest = format!("{digest:016x}");
                 rec.model = policy.model_stats();
+                ends.push(hello.game_id, session_end);
+                policy.on_end(outcome);
                 return Ok(());
             }
             other => bail!("unexpected message {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn end(slot: u8, winner: Option<u8>, frame: u32) -> SessionEnd {
+        SessionEnd { slot, winner, frame, reason: EndReason::Elimination }
+    }
+
+    /// 020-R13: on disagreement the session with the larger end frame decides.
+    #[test]
+    fn game_result_takes_the_later_session_020_r13() {
+        let (r, d) = game_result(&[end(0, Some(1), 9000), end(1, Some(1), 9000)]).unwrap();
+        assert_eq!((r.winner, d), (Some(1), false));
+        // Loser (slot 0) ended first and marked both as defeated: the winner's later report wins.
+        let (r, d) = game_result(&[end(0, None, 8999), end(1, Some(1), 9001)]).unwrap();
+        assert_eq!((r.winner, r.slot, d), (Some(1), 1, true));
+        let (r, d) = game_result(&[end(1, Some(1), 9001), end(0, None, 8999)]).unwrap();
+        assert_eq!((r.winner, d), (Some(1), true));
+        // Tie: the first report stands.
+        let (r, _) = game_result(&[end(0, Some(0), 500), end(1, Some(1), 500)]).unwrap();
+        assert_eq!(r.winner, Some(0));
+        assert!(game_result(&[]).is_none());
     }
 }
