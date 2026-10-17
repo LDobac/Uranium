@@ -1,6 +1,6 @@
 # 001 — System Architecture
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: 스케줄러를 `uranium-runner` crate로 분리(AMB-001-3), 에이전트 서버의 모델 정책·배치 추론)
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: 스케줄러를 `uranium-runner` crate로 분리(AMB-001-3), 에이전트 서버의 모델 정책·배치 추론 / `uranium-runner` 라이브러리화, `uranium-train rl`(3단계 계획 승인))
 - **Related**: [010](010-game-protocol.md), [011](011-bridge-openbw.md), [012](012-bridge-remastered.md), [020](020-env-orchestration.md), [060](060-infra-bc250.md), [061](061-shared-storage.md)
 
 ## Purpose
@@ -61,6 +61,7 @@ tools/               # 맵 분석, 벤치, 스크립트
 6. trajectory(관측, PrivilegedSummary, 액션, 헤드별·joint behaviour log-prob, 보상)는 learner로 전송된다(042).
 
 - **crate 의존 방향 (확정 2026-10-17, AMB-001-3)**: `uranium-runner → uranium-agent → uranium-model → uranium-env`. 스케줄러가 에이전트 서버를 품고 에이전트가 모델을 쓰므로, 스케줄러를 라이브러리 `uranium-env`에서 떼어 `uranium-runner`로 옮겼다. 바이너리 이름(`uranium-env`)과 CLI는 그대로다. 대안이던 "스케줄러가 `uranium-agent serve`를 하위 프로세스로 실행"은 Ctrl+C 연쇄 종료(042-R10)와 RL 가중치 교체가 IPC가 되므로 택하지 않았다.
+- **RL 프로세스 (2026-10-17, 3단계 계획 승인)**: `uranium-runner`는 lib + bin이다(020-R12). `uranium-train rl`이 learner, 추론 서버, 에이전트 서버, 게임 배정(runner 라이브러리), 리그 관리를 한 프로세스에서 돌린다. 의존 방향은 `uranium-train → uranium-runner → uranium-agent → uranium-model → uranium-env`로 순환이 없다. 새 crate는 없다.
 
 ## Interfaces (요약)
 ```rust

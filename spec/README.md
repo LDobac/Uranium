@@ -96,7 +96,13 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-042-2 | TvP·TvZ 상대 다양성 (P/Z 상대 정책 추가 여부) | Deferred (M6) (2026-10-17 M6 시작 재확인: T0·T1 봇으로 시작, M6 중간 점검에서 정체 여부 보고 후 재확인) |
 | AMB-042-3 | RL 초기 설정값(정책 지연 임계값, 가중치 배포 K, 스냅샷 N, 커리큘럼 전환 조건, 헤드별 엔트로피, KL 감쇠, 시분할, PFSP, 종족·Random 비율, 배치·옵티마이저) | Resolved (2026-10-17: 사용자 위임으로 Claude 결정 — IMPALA·AlphaStar 기준 축소값을 042 "초기 설정값" 절·`config/rl.toml`에 기록, 전부 042-R9 튜닝 대상, 042-AC1 후 조정 제안 가능. 첫 RL 학습 호스트는 CUDA PC) |
 | AMB-042-4 | actor가 기록할 behaviour 정보(전체 logits는 target_loc만 16,384개) | Resolved (2026-10-17: 선택 액션의 헤드별·joint behaviour log-prob만 기록, KL(π‖π_BC)은 learner가 BC 모델 재계산) |
+| AMB-042-5 | BC 본학습 체크포인트 전 RL 파이프라인 검증 정책 | Resolved (2026-10-17: build된 shard 표본으로 짧은 BC를 돌린 체크포인트로 042-AC1 형식 연습) |
+| AMB-042-6 | Aborted 게임 trajectory 처리(게임 끝까지 보류 vs 즉시 전송·회수) | Resolved (2026-10-17: 즉시 전송, Aborted면 미사용분 회수, Ctrl+C는 learner 먼저 정지, 042-R3 개정) |
+| AMB-042-7 | 042-AC1 실험 규모 | Resolved (2026-10-17: V-trace·PPO 각 3 seed(6 run), 033-AC2 ablation은 본 BC·z 테이블 이후) |
+| AMB-042-8 | 첫 RL 게임 PC 구성 | Resolved (2026-10-17: 학습 PC 로컬 hostd로 시작, 리플레이 build 후 bc250 두 대 추가) |
+| AMB-042-9 | KL(π‖π_BC) 계산 방식(BC 재forward 비용 약 1.5배) | Resolved (2026-10-17: BC 모델 재forward로 정확한 분포 KL, 16GB에서 부족하면 사용자에게 보고) |
 | AMB-050-1 | 승격 게이트·평가 판수·회귀 시나리오 | Resolved (2026-10-15: 초안 수치 확정, M5 이후 조정 제안 가능) |
+| AMB-050-2 | M6 3단계에서 구현할 승격 게이트 범위 | Resolved (2026-10-17: 직접 대전 ≥ 55%와 E-Regression만, E-Matrix·E-Elo는 4단계 평가 파이프라인과 함께) |
 | AMB-061-1 | 원격 CUDA PC(WireGuard 경유) 공유 시 pull·push 정책 | Resolved (2026-10-15: (b) 정책 보강 → 061-R11 shard 재사용·재개 pull·push 재시도·잠금 재확인·미push 복구) |
 | AMB-061-2 | 공유 제공 PC 자신의 로컬 캐시 복사 여부 | Resolved (2026-10-15: (b) 예외 추가 → 061-R12 `URANIUM_SHARED_LOCAL=1`이면 복사 없이 원본 읽기, 해시 검증 유지) |
 

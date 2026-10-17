@@ -1,6 +1,6 @@
 # 042 — RL Training & League
 
-- **Status**: Approved (2026-10-15, 2026-10-16 개정: 042-R10 Ctrl+C 정상 종료, 2026-10-17 개정: 초기 설정값 확정(AMB-042-3, `config/rl.toml`), 첫 학습 호스트, AMB-042-2 M6 시작 재확인, behaviour log-prob 기록(AMB-042-4))
+- **Status**: Approved (2026-10-15, 2026-10-16 개정: 042-R10 Ctrl+C 정상 종료, 2026-10-17 개정: 초기 설정값 확정(AMB-042-3, `config/rl.toml`), 첫 학습 호스트, AMB-042-2 M6 시작 재확인, behaviour log-prob 기록(AMB-042-4), 구현 구조·Aborted 회수(042-R3)·검증 정책·AC1 규모·게임 PC·KL 계산(AMB-042-5~9, 사용자 결정))
 - **Related**: [020](020-env-orchestration.md), [021](021-opponent-pool.md), [032](032-model-architecture.md), [033](033-reward.md), [050](050-evaluation.md), [060](060-infra-bc250.md)
 
 ## Purpose
@@ -15,6 +15,15 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 - **behaviour 기록 (확정 2026-10-17, AMB-042-4)**: actor는 전체 logits(target_loc 하나만 16,384개)가 아니라 **선택한 액션의 헤드별·joint behaviour log-prob**(032-R15)을 기록한다. V-trace·UPGO의 중요도 비율에는 이것으로 충분하다. KL(π‖π_BC)은 learner가 같은 관측으로 BC 모델을 다시 forward해 헤드별 분포로 계산한다.
 
 학습 호스트는 BC250(Vulkan) 또는 CUDA PC다([060](060-infra-bc250.md), 2026-10-15 변경). **첫 RL 실험(042-AC1)은 CUDA PC(Windows)에서 한다**(2026-10-17 사용자 결정). 게임은 그 PC의 로컬 hostd로 돌리고, 필요하면 원격 Linux 게임 PC를 hosts 파일에 더한다(020). 한 호스트의 GPU 하나로 추론과 학습을 모두 하므로 GPU 시간을 분할한다. 학습 중에는 추론 지연이 늘어나지만 lockstep이라 정확성에는 영향이 없다. 게임 PC는 LAN으로 학습 호스트의 에이전트 서버에 접속한다(001-R6). 체크포인트·리그 스냅샷·승격 체크포인트는 공용 드라이브에 저장하며, 학습 시작·재개 절차와 run 잠금은 [061](061-shared-storage.md)을 따른다.
+
+## 구현 구조 (2026-10-17, 3단계 계획 승인)
+- **프로세스**: 학습 PC에서 `uranium-train rl` 하나가 learner, 추론 서버(Main 1개 + 상대 스냅샷), 에이전트 서버(001-R6), 게임 배정, 리그 관리를 모두 맡는다. 게임 배정은 `uranium-runner` 라이브러리(020 동적 Job 공급자)를 쓴다. 추론 스레드와 learner는 같은 GPU에 각자 모델 사본을 둔다. learner는 K update마다 가중치를 추론 서버에 넘기고, 추론 응답에는 정책 버전이 붙는다(042-R4).
+- **trajectory**: 학습 중인 에이전트의 세션에만 기록한다. 한 결정의 보상은 직전 결정 뒤 받은 프레임들의 보상 합이다(033). 세그먼트는 T=64 결정이고, 시작 결정 직전의 Core 상태(core_state0)를 추론 서버 슬롯에서 읽어 함께 둔다. 게임이 끝나면 마지막 세그먼트를 마스크로 채우고 bootstrap은 0이다(γ = 1, 종료).
+- **손실**: 보상 항목별 value head마다 V-trace target과 advantage를 따로 구하고, 정책 gradient advantage는 033 가중치(감쇠 포함)로 더한다(033-R3). KL(π‖π_BC)은 고정된 BC 모델을 같은 입력으로 다시 forward해 헤드별 전체 분포로 계산하고 사용된 헤드만 더한다(032-R10). 정확한 분포 KL을 쓴다. 16GB GPU에서 메모리가 부족하면 근사로 바꾸지 않고 사용자에게 보고한다(2026-10-17 사용자 결정, AMB-042-9).
+- **스냅샷 상대 ID**: `uranium-<agent>@<run>/<update>` (agent = `main` | `main-exploiter` | `league-exploiter`, 021-R3 형식).
+- **로그 (042-R2)**: CSV 두 개. `train.csv`(update별 손실 항목, KL, 헤드별 엔트로피, 정책 지연, 버린·회수한 trajectory 수, 처리량, 추론 p50·p95)와 `games.csv`(게임별 결과, 보상 항목 합, 상대 ID, 종족, 맵).
+- **BC 본학습 전 검증 (2026-10-17 사용자 결정, AMB-042-5)**: 이미 build된 shard 표본으로 짧은 BC(몇 시간)를 돌린 체크포인트로 042-AC1 형식을 미리 연습한다. 본 BC 체크포인트가 나오면 그것으로 바꾼다.
+- **게임 PC (2026-10-17 사용자 결정, AMB-042-8)**: 첫 RL(스모크·042-AC1)은 학습 PC의 로컬 hostd만으로 시작한다. 리플레이 build가 끝나면 원격 bc250 두 대를 hosts 파일에 더한다(hostd를 master로 다시 빌드, 020-R11 플레이어 이름).
 
 ## 알고리즘
 - **V-trace**(IMPALA) off-policy 보정: actor 정책 지연을 허용한다.
@@ -104,7 +113,7 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 |---|---|
 | 042-R1 | **MUST** 학습 재개(resume)를 지원한다. 저장 대상은 가중치, 옵티마이저, 리그 상태, 승률 테이블, RNG 상태다. 다른 학습 호스트(Vulkan↔CUDA)에서도 재개할 수 있어야 한다(061-R10, 061-AC5) |
 | 042-R2 | **MUST** 에피소드 결과·보상 항목·KL·엔트로피·처리량을 TensorBoard 호환 로그 또는 CSV로 남긴다 |
-| 042-R3 | **MUST** Aborted 에피소드는 학습에서 제외한다(020-R4) |
+| 042-R3 | **MUST** Aborted 에피소드는 학습에서 제외한다(020-R4). 세그먼트는 끝나는 대로 큐에 넣고, 게임이 Aborted로 끝나면 그 게임의 세그먼트 중 아직 학습에 쓰지 않은 것을 큐에서 회수한다(2026-10-17 사용자 결정, AMB-042-6: 게임 끝까지 붙잡으면 정책 지연으로 대부분 버려짐). Ctrl+C(R10)는 learner를 먼저 멈추므로 완전히 제외된다. 크래시처럼 드문 경우 이미 학습에 쓴 세그먼트는 되돌리지 않으며, 그 수를 로그에 남긴다 |
 | 042-R4 | **MUST** 정책 지연(behaviour vs target 버전 차이)을 모니터링하고, 임계값을 넘는 trajectory는 버린다 |
 | 042-R5 | **SHOULD** 커리큘럼 단계 C0(T0 봇 위주) → C1(T0+T1+셀프) → C2(풀 리그) 전환은 승률 조건으로 자동화한다 |
 | 042-R6 | **MUST** 체크포인트 승격은 [050](050-evaluation.md)의 회귀 게이트를 통과해야 한다 |
@@ -116,6 +125,7 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 ## Acceptance Criteria
 - 042-AC1: 작은 설정(1맵, T0 1종족)에서 BC 정책 대비 승률 개선을 재현 가능하게 보인다. 3 seed 평균으로 측정한다.
   - 설정(2026-10-17): 투혼, 상대는 BC 정책의 승률이 20~80%인 T0 종족 하나(TBD(M6): BC 측정 후 선택), seed당 1,000만 agent step, 학습 전후 각 200판 평가(050-R1 두 모드). 개선 = 3 seed 모두 학습 후 승률의 Wilson 95% 하한이 BC 승률의 상한보다 높음.
+  - 규모(2026-10-17 사용자 결정, AMB-042-7): V-trace·PPO 각 3 seed(6 run)로 알고리즘을 고른다. 033-AC2 ablation 3 run은 본 BC 체크포인트와 z 테이블이 나온 뒤 실행한다. 처리량은 TBD(M6)로 측정해 run 시간을 다시 보고한다.
 - 042-AC2: 72시간 연속 학습 중 크래시나 메모리 누수 없이 resume이 가능하다.
 - 042-AC3: Main이 이전 승격 체크포인트 대비 승률 ≥ 55%일 때만 승격한다.
 - 042-AC4: 학습 중 Ctrl+C 한 번이면 체크포인트 push와 잠금 해제까지 마치고 종료한다. 이어서 hosts 파일의 게임 PC를 하나 빼거나 더해 재시작하면, `--take-over` 없이 같은 step에서 재개하고 바뀐 호스트 구성으로 게임을 배정한다(042-R10).

@@ -1,6 +1,6 @@
 # 032 — Model Architecture (Burn)
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: R8 호스트별 정밀도 — CUDA PC f32(TF32) 허용, 사용자 결정 / 추론 서버 Core 상태 슬롯(032-R14), 샘플링 모드·헤드별 log-prob(032-R15))
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: R8 호스트별 정밀도 — CUDA PC f32(TF32) 허용, 사용자 결정 / 추론 서버 Core 상태 슬롯(032-R14), 샘플링 모드·헤드별 log-prob(032-R15) / 추론 서버 가중치 교체·슬롯 상태 읽기(032-R16, 3단계 계획 승인))
 - **Related**: [030](030-observation.md), [031](031-action-space.md), [033](033-reward.md), [034](034-action-table.md), [041](041-imitation-learning.md), [042](042-rl-training.md), [060](060-infra-bc250.md)
 
 ## Purpose
@@ -132,6 +132,7 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
 | 032-R12 | **MUST** Selected 헤드의 BC 레이블은 정규 순서(entity index 오름차순) 시퀀스 + END로 만든다 |
 | 032-R14 | **MUST** 추론 서버(`uranium-agent`)는 세션마다 고정 슬롯을 두고 Core 상태를 `[capacity, …]` 텐서 하나에 보관한다. 요청이 모인 세션의 행만 `select_rows`로 꺼내 `act`를 돌리고 `scatter_rows`로 되돌린다. 세션이 시작될 때 그 슬롯을 0으로 리셋한다(032-R5). 배치로 처리한 결과는 세션을 하나씩 처리한 결과와 같아야 하고(허용 오차 이내), 세션 사이에 상태가 섞이지 않는다 (2026-10-17) |
 | 032-R15 | **MUST** `act()`의 샘플링 모드는 확률적(temp 1)과 결정론적(temp 0 = 헤드마다 argmax)을 둔다(050-R1). `ActOutput`은 joint log-prob과 함께 헤드별 log-prob [B,6]을 돌려준다. RL actor는 이 값을 behaviour log-prob로 기록한다(042) (2026-10-17) |
+| 032-R16 | **MUST** 추론 서버는 실행 중에 가중치를 교체할 수 있다(042 K update마다). 교체는 다음 배치부터 적용되고, 응답마다 정책 버전을 붙인다. 세션은 자기 슬롯의 Core 상태를 host 데이터로 읽을 수 있다(042 core_state0). Core는 상태를 host 데이터로 내보내고 다시 만드는 연산을 제공하며, 왕복은 비트 단위로 같다 (2026-10-17) |
 
 ## 4. 파라미터·연산 예산 (기본 구성, N=256)
 | 모듈 | 파라미터 | FLOPs/step (B=1) |
