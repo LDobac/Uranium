@@ -258,3 +258,39 @@ fn warmup_cosine_schedule_041_r3() {
     let file = BcConfig::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/bc.toml"))).unwrap();
     assert_eq!((file.seq_len, file.grad_clip, file.value.win, file.data.z_drop), (64, 1.0, 0.5, 0.25));
 }
+
+/// 061-R10 / 061-AC1 / 042-R1 (flex): save -> load -> the next updates are bit-identical to the
+/// run that kept going (weights, optimizer moments, step-driven lr schedule and RNG all restored).
+/// Both runs start the next updates with fresh lanes, as a resumed trainer does.
+#[test]
+fn resume_continues_bit_identically_061_r10() {
+    let cols = ActionColumns::from_table(action_table()).unwrap();
+    let dir = std::env::temp_dir().join(format!("uranium-bc-resume-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    let games = |n: usize| VecSource((0..n).map(|_| game()).collect::<VecDeque<_>>());
+    let next = |t: &mut Trainer<LstmCore>| {
+        let mut src = games(4);
+        (0..2).map(|_| t.train_step(&mut src).unwrap().unwrap().total.to_bits()).collect::<Vec<_>>()
+    };
+
+    let mut a = tiny_trainer(1);
+    let mut src = games(4);
+    for _ in 0..3 {
+        a.train_step(&mut src).unwrap().unwrap();
+    }
+    a.save(&dir).unwrap();
+    a.reset_lanes();
+    let kept = next(&mut a);
+
+    let ad = Device::flex().autodiff();
+    let load = || uranium_model::checkpoint::load::<LstmCore>(&dir, &cols, uranium_env::features::FEATURE_SCHEMA_VERSION, uranium_env::actions::ACTION_SCHEMA_VERSION, &ad).unwrap().0;
+    let mut b = tiny_trainer_with(1, 0, load());
+    assert!(b.resume(&dir).unwrap(), "training state present");
+    assert_eq!(b.step, 3);
+    assert_eq!(next(&mut b), kept, "resumed updates differ from the run that kept going");
+
+    // Control: the weights alone (fresh optimizer, step 0) do not reproduce the run.
+    let mut c = tiny_trainer_with(1, 0, load());
+    assert_ne!(next(&mut c), kept);
+    std::fs::remove_dir_all(&dir).ok();
+}

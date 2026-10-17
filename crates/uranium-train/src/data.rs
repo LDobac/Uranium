@@ -311,6 +311,13 @@ impl Rng {
     pub fn unit(&mut self) -> f64 {
         (self.next() >> 11) as f64 / (1u64 << 53) as f64
     }
+    /// Raw state for checkpoints (061-R10).
+    pub fn state(&self) -> u64 {
+        self.0
+    }
+    pub fn from_state(s: u64) -> Self {
+        Self(s)
+    }
 }
 
 /// Feature extraction over one game in order (memory carries across steps), producing training

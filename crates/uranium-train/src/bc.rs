@@ -19,6 +19,7 @@ use uranium_model::config::UraniumNetConfig;
 use uranium_model::value::VALUE_WIN;
 use uranium_model::{CoreInit, UraniumNet};
 
+use crate::ckpt::{self, TrainState};
 use crate::data::{GameStream, Rng, StepSource, TrainStep};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -297,10 +298,52 @@ impl<C: CoreInit> Trainer<C> {
         (loss, report)
     }
 
-    /// 032-R6 / 041-R10: weights + config + schema versions + hyper-parameters.
+    /// 032-R6 / 041-R10: weights + config + schema versions + hyper-parameters; 061-R10: optimizer
+    /// state, step and RNG so a run can resume on any host.
     pub fn save(&self, dir: &Path) -> Result<()> {
         let mut meta = CheckpointMeta::new(&self.net_cfg, uranium_env::features::FEATURE_SCHEMA_VERSION, uranium_env::actions::ACTION_SCHEMA_VERSION)?;
         meta.train = serde_json::json!({ "bc": self.cfg, "step": self.step, "lr_scale": self.lr_scale, "games": self.games, "invalid_labels": self.invalid_labels });
-        checkpoint::save(dir, &self.net.valid(), &meta)
+        checkpoint::save(dir, &self.net.valid(), &meta)?;
+        ckpt::save_optimizer(dir, OPTIM_NAME, &self.optim)?;
+        let state = TrainState {
+            kind: "bc".into(),
+            step: self.step as u64,
+            update: self.step as u64,
+            policy_version: self.step as u64,
+            rng: vec![self.rng.state()],
+            extra: serde_json::json!({ "lr_scale": self.lr_scale, "games": self.games, "invalid_labels": self.invalid_labels }),
+        };
+        ckpt::save_state(dir, &state)
+    }
+
+    /// 061-R10 / 042-R1: restores optimizer state, counters and RNG from `dir`. Load the weights
+    /// from the same checkpoint first (`uranium_model::checkpoint::load` on the autodiff device).
+    /// Returns false for a checkpoint without training state (written before 061-R10 was
+    /// implemented): the weights are used as they are and the optimizer starts fresh.
+    /// The data position is not stored: lanes start over on the source given next.
+    pub fn resume(&mut self, dir: &Path) -> Result<bool> {
+        let Some(state) = ckpt::load_state(dir)? else { return Ok(false) };
+        anyhow::ensure!(state.kind == "bc", "{} is a {} checkpoint, not bc", dir.display(), state.kind);
+        let optim = std::mem::replace(&mut self.optim, AdamWConfig::new().init());
+        self.optim = ckpt::load_optimizer(dir, OPTIM_NAME, optim)?;
+        self.step = state.step as usize;
+        self.rng = Rng::from_state(*state.rng.first().ok_or_else(|| anyhow::anyhow!("no rng state in {}", dir.display()))?);
+        self.lr_scale = state.extra["lr_scale"].as_f64().unwrap_or(self.lr_scale);
+        self.games = state.extra["games"].as_u64().unwrap_or(0) as usize;
+        self.invalid_labels = state.extra["invalid_labels"].as_u64().unwrap_or(0) as usize;
+        self.reset_lanes();
+        Ok(true)
+    }
+
+    /// Drops the games in progress and the core states: the next update starts every lane on a
+    /// new game from the source (what a resumed trainer does).
+    pub fn reset_lanes(&mut self) {
+        for l in &mut self.lanes {
+            *l = Lane { game: None, chunk: Vec::new(), fresh: true };
+        }
+        self.states.clear();
     }
 }
+
+/// Optimizer name in a BC checkpoint (`optim-main.bpk`).
+const OPTIM_NAME: &str = "main";

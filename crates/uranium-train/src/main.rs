@@ -45,6 +45,10 @@ enum Cmd {
         /// Stop after this many updates (default: config total_steps).
         #[arg(long)]
         steps: Option<usize>,
+        /// Continue from a checkpoint folder: weights, optimizer state, step and RNG (061-R10).
+        /// The shard order starts over.
+        #[arg(long)]
+        resume: Option<PathBuf>,
     },
     /// 034-AC3 diagnostics: labels that fail the masks, by action and reason (JSON).
     LabelCheck {
@@ -73,17 +77,31 @@ fn device(b: Backend) -> Result<Device> {
     })
 }
 
-fn run<C: uranium_model::CoreInit>(kind: CoreKind, shards: PathBuf, out: PathBuf, cfg: BcConfig, dev: Device, s2: bool, steps: Option<usize>) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn run<C: uranium_model::CoreInit>(kind: CoreKind, shards: PathBuf, out: PathBuf, cfg: BcConfig, dev: Device, s2: bool, steps: Option<usize>, resume: Option<PathBuf>) -> Result<()> {
     let ad = if cfg.grad_checkpointing { dev.autodiff().gradient_checkpointing() } else { dev.autodiff() };
-    let base = UraniumNetConfig::new();
-    let net_cfg = base.clone().with_input(input_dims()).with_core(base.core.clone().with_kind(kind));
     let cols = uranium_model::batch::ActionColumns::from_table(uranium_env::features::extract::action_table())?;
-    let net = UraniumNet::<C>::new(&net_cfg, &cols, &ad);
+    let (net, net_cfg) = match &resume {
+        Some(dir) => {
+            let (net, meta) = uranium_model::checkpoint::load::<C>(dir, &cols, uranium_env::features::FEATURE_SCHEMA_VERSION, uranium_env::actions::ACTION_SCHEMA_VERSION, &ad)?;
+            (net, meta.net_config()?)
+        }
+        None => {
+            let base = UraniumNetConfig::new();
+            let net_cfg = base.clone().with_input(input_dims()).with_core(base.core.clone().with_kind(kind));
+            (UraniumNet::<C>::new(&net_cfg, &cols, &ad), net_cfg)
+        }
+    };
     let total = steps.unwrap_or(cfg.total_steps);
     let every = cfg.data.checkpoint_every.max(1);
     let mut t = Trainer::new(net, net_cfg, cfg, ad);
     if s2 {
         t.lr_scale = t.cfg.s2_lr_scale;
+    }
+    if let Some(dir) = &resume
+        && !t.resume(dir)?
+    {
+        eprintln!("{}: no training state (older checkpoint); weights only, fresh optimizer", dir.display());
     }
     let mut src = ShardSource::new(&shards)?;
     while t.step < total {
@@ -126,12 +144,12 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
-        Cmd::Bc { shards, out, config, backend, core, s2, steps } => {
+        Cmd::Bc { shards, out, config, backend, core, s2, steps, resume } => {
             let cfg = BcConfig::load(&config)?;
             let dev = device(backend)?;
             match core {
-                CoreArg::Lstm => run::<LstmCore>(CoreKind::Lstm, shards, out, cfg, dev, s2, steps),
-                CoreArg::Gtrxl => run::<GtrxlCore>(CoreKind::Gtrxl, shards, out, cfg, dev, s2, steps),
+                CoreArg::Lstm => run::<LstmCore>(CoreKind::Lstm, shards, out, cfg, dev, s2, steps, resume),
+                CoreArg::Gtrxl => run::<GtrxlCore>(CoreKind::Gtrxl, shards, out, cfg, dev, s2, steps, resume),
             }
         }
     }
