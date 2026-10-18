@@ -4,8 +4,9 @@
 //! lock of this same host is taken back, an unpushed local checkpoint is pushed first).
 //!
 //! Not restarted: exit 0 (finished, `--steps`/`--max-*` reached, Ctrl+C clean stop, lock lost to
-//! another PC) and 130 (second Ctrl+C), or anything after this supervisor got Ctrl+C. Restarts
-//! are limited per time window and spaced with a growing delay.
+//! another PC), 130 (second Ctrl+C), 75 (the lock could not be taken, 061-R5) and 76 (yielded,
+//! 061-R14), or anything after this supervisor got Ctrl+C. Restarts are limited per time window
+//! and spaced with a growing delay.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -74,9 +75,11 @@ pub struct Watch {
 }
 
 impl Watch {
-    /// Installs the Ctrl+C handler (once per process). Ctrl+C reaches the child too (same
-    /// console / process group); it is remembered so a child that then exits is never restarted,
-    /// and passed on (Unix) when only this process got it.
+    /// Installs the Ctrl+C handler (once per process). It is remembered so a child that then
+    /// exits is never restarted. Unix: the child runs in its own process group (see
+    /// [`child_command`]), so a terminal Ctrl+C reaches only this process, which passes SIGINT on
+    /// exactly once per Ctrl+C (060-R6, H-4). Windows: the console delivers Ctrl+C to the child
+    /// as well (same console), so nothing is passed on.
     pub fn new(tag: &'static str, log: Option<&PathBuf>) -> Result<Self> {
         let log = match log {
             Some(p) => Some(Arc::new(Mutex::new(std::fs::OpenOptions::new().create(true).append(true).open(p).with_context(|| p.display().to_string())?))),
@@ -90,7 +93,10 @@ impl Watch {
                 stopping.store(true, Ordering::SeqCst);
                 #[cfg(unix)]
                 if let Some(pid) = *child_pid.lock().unwrap() {
-                    let _ = Command::new("kill").args(["-INT", &pid.to_string()]).status();
+                    // SAFETY: plain syscall on the child's pid.
+                    unsafe {
+                        libc::kill(pid as libc::pid_t, libc::SIGINT);
+                    }
                 }
                 #[cfg(not(unix))]
                 let _ = &child_pid;
@@ -128,7 +134,8 @@ impl Watch {
     pub fn run_child(&self, args: &[String], hang: Duration, progress_file: Option<&PathBuf>) -> Result<Ending> {
         let exe = std::env::current_exe()?;
         self.note(&format!("start: {}", args.join(" ")));
-        let mut child = Command::new(&exe).args(args).stderr(Stdio::piped()).spawn().context("starting the training command")?;
+        let mut cmd = child_command(&exe);
+        let mut child = cmd.args(args).stderr(Stdio::piped()).spawn().context("starting the training command")?;
         *self.child_pid.lock().unwrap() = Some(child.id());
         let last = Arc::new(Mutex::new(Instant::now()));
         let reader = {
@@ -168,6 +175,41 @@ impl Watch {
         *self.child_pid.lock().unwrap() = None;
         Ok(ending)
     }
+}
+
+/// The training child's command (060-R6, H-4). Linux / Unix: its own process group, so a
+/// terminal Ctrl+C does not reach it twice (process group + forwarding: the second one would exit
+/// 130 without saving). Linux: `PR_SET_PDEATHSIG` = SIGINT, so a watchdog killed hard (SIGKILL)
+/// does not leave an orphan that keeps the run lock's heartbeat alive; the child then saves,
+/// pushes and releases as on Ctrl+C. The signal follows the spawning *thread*: children are
+/// started from the watchdog's main loop thread. Windows: unchanged (same console, Ctrl+C reaches
+/// the child directly; closing the console ends both).
+pub fn child_command(exe: &std::path::Path) -> Command {
+    #[allow(unused_mut)]
+    let mut cmd = Command::new(exe);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+        #[cfg(target_os = "linux")]
+        {
+            let parent = std::process::id() as libc::pid_t;
+            // SAFETY: only async-signal-safe calls (prctl, getppid, raise) between fork and exec.
+            unsafe {
+                cmd.pre_exec(move || {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGINT) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    // The watchdog died before prctl took effect: stop like on Ctrl+C.
+                    if libc::getppid() != parent {
+                        libc::raise(libc::SIGINT);
+                    }
+                    Ok(())
+                });
+            }
+        }
+    }
+    cmd
 }
 
 pub fn run(a: SuperviseArgs) -> Result<i32> {

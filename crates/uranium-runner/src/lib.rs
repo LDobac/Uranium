@@ -473,7 +473,9 @@ mod tests {
 
     #[test]
     fn lost_and_unreachable_hosts_do_not_stop_the_plan_020_r4() {
-        let dead = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+        // Port 0 can never accept a connection, so this fails on every OS. (Binding port 0 and
+        // dropping the listener left a free port that a parallel test's fake hostd could reuse.)
+        let dead = "127.0.0.1:0".to_string();
         let hosts: Vec<HostEntry> = [dead, fake_hostd(false, 200), fake_hostd(true, 0)].into_iter().map(|addr| HostEntry { addr, max_games: None }).collect();
         let plan: plan::Plan = toml::from_str("name='t'\n[[matchup]]\nmap='both'\ngames=4\np0={kind='t0',race='terran'}\np1={kind='t0',race='terran'}").unwrap();
         let dir = std::env::temp_dir().join(format!("uranium-env-test-{}", std::process::id()));
@@ -507,7 +509,9 @@ mod tests {
 
     #[test]
     fn no_reachable_host_is_an_error_020_r4() {
-        let dead = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+        // Port 0 can never accept a connection, so this fails on every OS. (Binding port 0 and
+        // dropping the listener left a free port that a parallel test's fake hostd could reuse.)
+        let dead = "127.0.0.1:0".to_string();
         let dir = std::env::temp_dir().join(format!("uranium-env-test-none-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let res = run_jobs(vec![], &[HostEntry { addr: dead, max_games: None }], &dir.join("games.jsonl"), &Routes::default(), &Models::new());

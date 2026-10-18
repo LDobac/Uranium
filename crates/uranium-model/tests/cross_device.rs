@@ -1,4 +1,5 @@
 //! 032-AC1: same weights and inputs give forward outputs close to Flex (CPU) on Vulkan and CUDA.
+//! 032-AC8: the backward pass (BC loss and per-parameter gradients) is close to Flex as well.
 //! Vulkan: <= 1e-4 (f32). CUDA: <= `CUDA_TOL`, because Burn's CUDA matmul computes f32 inputs in
 //! TF32 (AMB-032-5, user decision 2026-10-16). Needs a GPU, so ignored by default:
 //!   URANIUM_TEST_DEVICE=vulkan cargo test -p uranium-model --test cross_device -- --ignored --nocapture
@@ -224,15 +225,17 @@ fn gradients_match<C: CoreInit>(cfg: &UraniumNetConfig, b: usize, t: usize, n: u
     }
     let worst = rows.first().map_or(0.0, |r| r.2);
     eprintln!("{:?} {} parameters, worst L2 relative gradient difference {worst:.2e}", C::KIND, rows.len());
-    // Gradients sum many more rounding steps than one forward value: Vulkan f32 lands near 5e-4
-    // with or without kernel changes (2026-10-18), so its bound is 1e-3; CUDA keeps 1e-2 (TF32).
+    // 032-AC8: gradients sum many more rounding steps than one forward value: Vulkan f32 lands
+    // near 5e-4 with or without kernel changes (2026-10-18), so its bound is 1e-3. The CUDA bound
+    // is TBD(M6) (032-AC8: re-measure with autotune + fusion, then confirm with the user); until
+    // then the current value 1e-2 (the forward CUDA tolerance) is kept.
     let grad_tol = (tol as f64).max(1e-3);
     assert!(worst <= grad_tol, "gradient L2 relative difference {worst:.2e} > {grad_tol:.0e}");
 }
 
 #[test]
 #[ignore]
-fn lstm_gradients_match_flex_032_ac1() {
+fn lstm_gradients_match_flex_032_ac8() {
     let base = tiny_config(CoreKind::Lstm);
     let cfg = base.clone().with_entity(base.entity.clone().with_dropout(0.0));
     gradients_match::<LstmCore>(&cfg, 2, 4, 16);

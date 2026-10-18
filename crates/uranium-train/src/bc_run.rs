@@ -17,7 +17,7 @@ use uranium_model::{CoreInit, UraniumNet};
 use crate::bc::{BcConfig, Prefetch, Trainer};
 use crate::ckpt;
 use crate::data::ShardSource;
-use crate::storage::{LockStatus, PushOutcome, Run, StorageConfig};
+use crate::storage::{LockStatus, PushOutcome, Run, StorageConfig, TakeOver};
 
 /// What a `bc` invocation trains (041-R4, R5, R13).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,7 +62,7 @@ pub enum BcOut {
     /// A local folder: `step_<n>/` and `last/`.
     Local(PathBuf),
     /// 061 run `<shared>/checkpoints/<run>/` (lock, `ckpt-<step>/`, `LATEST`).
-    Run { id: String, take_over: bool },
+    Run { id: String, take: TakeOver },
 }
 
 pub struct BcArgs {
@@ -75,7 +75,7 @@ pub struct BcArgs {
     pub stop_at: Option<usize>,
     /// Local mode: continue from this checkpoint (weights, optimizer, step, data position).
     pub resume: Option<PathBuf>,
-    /// Weights only (S1 -> S2, 041-R4): a checkpoint folder or a 061 run folder with `LATEST`.
+    /// Weights only (S1 -> S2, 041-R4): a checkpoint folder or a finished 061 run folder (`DONE`).
     pub init: Option<PathBuf>,
     /// For the device log (061-R15): `cuda`, `vulkan` or `flex`.
     pub backend: String,
@@ -90,11 +90,13 @@ pub enum BcExit {
     Stopped,
     /// Lock taken over by another PC: nothing pushed (061-R5). Exit 0.
     LockLost,
-    /// Gave the run to the host that asked (061-R14) after a checkpoint. Exit 76.
+    /// Gave the run to the host that asked (061-R14) after a checkpoint that was pushed. Exit 76.
     Yielded,
 }
 
-/// Exit code of a run whose lock is held (or reserved by a yield request) by another PC.
+/// 061-R5: exit code of a run that could not take its lock: another PC's lock (fresh or expired,
+/// without `--take-over`), a lost race for a new lock, a lock that changed since a worker saw it
+/// expire, or a run reserved by another host's yield request (R14). Watchdogs never restart it.
 pub const EXIT_BUSY: i32 = 75;
 /// Exit code after yielding the run (061-R14).
 pub const EXIT_YIELDED: i32 = 76;
@@ -110,7 +112,20 @@ fn precision(backend: &str) -> &'static str {
 const STOP_NONE: usize = 0;
 const STOP_CLEAN: usize = 1;
 
-/// A checkpoint folder, or the one `LATEST` names in a 061 run folder.
+/// 061-R13 (H-1): the `--init` weights. A 061 run folder (it has `LATEST` or `DONE`) must be
+/// finished: its `DONE` names the final checkpoint. A run still training (or given up) is
+/// refused, so S2 never starts from S1's intermediate weights. Any other folder is a checkpoint.
+pub fn resolve_init(dir: &Path) -> Result<PathBuf> {
+    let done = dir.join("DONE");
+    if dir.join("LATEST").is_file() || done.exists() {
+        let name = std::fs::read_to_string(&done).with_context(|| format!("--init run {} is not finished (no DONE); S2 waits for it (061-R13)", dir.display()))?;
+        return Ok(dir.join(name.trim()));
+    }
+    Ok(dir.to_path_buf())
+}
+
+/// A checkpoint folder, or the one `LATEST` names in a 061 run folder (evaluation of a run in
+/// progress is fine; `--init` uses [`resolve_init`]).
 pub fn resolve_checkpoint(dir: &Path) -> Result<PathBuf> {
     let latest = dir.join("LATEST");
     if latest.is_file() {
@@ -138,19 +153,29 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
         Ok((net, meta.net_config()?))
     };
 
+    // 061-R13 (H-1): checked before the lock is taken, so a refusal leaves no lock behind.
+    let init_dir = args.init.as_deref().map(resolve_init).transpose()?;
     // 061-R3 / R5: a run takes the lock and resumes from LATEST (or an unpushed local checkpoint).
     let mut run = match &args.out {
-        BcOut::Run { id, take_over } => {
-            let r = Run::acquire(StorageConfig::from_env()?, id, *take_over)?;
+        BcOut::Run { id, take } => {
+            let r = Run::acquire_with(StorageConfig::from_env()?, id, take.clone())?;
             // 061-R14: a live yield request reserves the run for the host that asked.
             match crate::storage::read_yield(&r.cfg, id) {
-                Some(req) if req.host != r.cfg.host => {
+                Ok(Some(req)) if req.host != r.cfg.host => {
                     let msg = format!("run {id} is reserved for {} (yield request, 061-R14)", req.host);
                     r.release()?;
                     return Err(anyhow::Error::new(crate::storage::LockBusy(msg)));
                 }
-                Some(_) => crate::storage::clear_yield(&r.cfg, id),
-                None => {}
+                Ok(Some(_)) => {
+                    if let Err(e) = crate::storage::clear_yield(&r.cfg, id) {
+                        eprintln!("[bc] could not remove this host's yield request on {id} ({e:#}); it expires after 30 min (061-R14)");
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    let _ = r.release();
+                    return Err(e.context("reading the yield request (061-R13: unknown, not started)"));
+                }
             }
             Some(r)
         }
@@ -162,7 +187,7 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
     };
     let (net, net_cfg) = match (&resume_dir, &args.init) {
         (Some(d), _) => load(d)?,
-        (None, Some(i)) => load(&resolve_checkpoint(i)?)?,
+        (None, Some(_)) => load(init_dir.as_ref().expect("resolved above"))?,
         (None, None) => {
             let base = UraniumNetConfig::new();
             let net_cfg = base.clone().with_input(input_dims()).with_core(base.core.clone().with_kind(args.core));
@@ -220,6 +245,8 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
     let mut lock_lost = false;
     let mut exhausted = false;
     let mut yielded = false;
+    // 061-R14 ②: a yield whose checkpoint push was deferred waits for the next pushed one.
+    let mut yield_waiting = false;
     let mut saved_at: Option<usize> = None;
     while t.step < stop_at && stop.load(Ordering::SeqCst) < STOP_CLEAN {
         let Some(batch) = data.next()? else {
@@ -248,26 +275,57 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
             }
         }
         if t.step % every == 0 || (!every_time.is_zero() && last_ckpt.elapsed() >= every_time) {
-            if save(&t, &args, &mut run, false)? == Some(PushOutcome::Pushed) {
-                device_log(&run, serde_json::json!({ "event": "checkpoint", "step": t.step }));
-                saved_at = Some(t.step);
+            match save(&t, &args, &mut run, false)? {
+                Some(PushOutcome::Pushed) => {
+                    device_log(&run, serde_json::json!({ "event": "checkpoint", "step": t.step }));
+                    saved_at = Some(t.step);
+                }
+                Some(PushOutcome::LockLost(l)) => {
+                    eprintln!("[bc] lock lost to {l:?}: stopping without a push (061-R11-4)");
+                    lock_lost = true;
+                    break;
+                }
+                _ => {}
             }
             last_ckpt = Instant::now();
         }
-        // 061-R14: another host asked for this run: checkpoint, release, leave.
+        // 061-R14: another host asked for this run: checkpoint, push, release, leave. If the push
+        // is deferred (share unreachable, R11-3), keep the lock and train on; yield after the
+        // next checkpoint that is pushed (R14 ②).
         if let Some(r) = &run
-            && let Some(req) = crate::storage::read_yield(&r.cfg, &r.run_id)
-            && req.host != r.cfg.host
+            && let Some(req) = crate::storage::yield_by_other(&r.cfg, &r.run_id)
         {
-            eprintln!("[bc] yield requested by {} (priority {}): checkpoint and release (061-R14)", req.host, req.priority);
-            yielded = true;
-            break;
+            if saved_at == Some(t.step) {
+                eprintln!("[bc] yield requested by {} (priority {}): checkpoint pushed, releasing (061-R14)", req.host, req.priority);
+                yielded = true;
+                break;
+            }
+            if !yield_waiting {
+                yield_waiting = true;
+                eprintln!("[bc] yield requested by {} (priority {}): checkpoint and release (061-R14)", req.host, req.priority);
+                match save(&t, &args, &mut run, false)? {
+                    Some(PushOutcome::Pushed) => {
+                        device_log(&run, serde_json::json!({ "event": "checkpoint", "step": t.step }));
+                        saved_at = Some(t.step);
+                        yielded = true;
+                        break;
+                    }
+                    Some(PushOutcome::LockLost(l)) => {
+                        eprintln!("[bc] lock lost to {l:?}: stopping without a push (061-R11-4)");
+                        lock_lost = true;
+                        break;
+                    }
+                    other => eprintln!("[bc] yield: push {other:?}; keeping the lock and training on, yielding after the next pushed checkpoint (061-R14 ②)"),
+                }
+                last_ckpt = Instant::now();
+            }
         }
     }
     if lock_lost {
         device_log(&run, serde_json::json!({ "event": "stop", "step": t.step, "reason": "lock lost" }));
         return Ok(BcExit::LockLost);
     }
+    // A yield leaves the loop only right after a pushed checkpoint (061-R14 ②), so it lands here.
     let pushed = if (t.step == start_step && resume_dir.is_some()) || saved_at == Some(t.step) {
         eprintln!("[bc] step {} is already the last checkpoint: nothing more to save", t.step);
         Some(PushOutcome::Pushed)

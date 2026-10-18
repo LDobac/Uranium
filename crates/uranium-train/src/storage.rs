@@ -176,14 +176,19 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 
 /// 061-R11-1/2: brings `dst` to the manifest of `src`. Files already matching are skipped, the
 /// rest are copied as `<name>.part` and renamed only after their hash checks out; the manifest is
-/// written last, so an interrupted pull resumes where it stopped.
+/// written last, so an interrupted pull resumes where it stopped. Every file prints one progress
+/// line on stderr (a first dataset pull of tens of GB is otherwise silent for longer than the
+/// 060-R6 hang limit could tolerate).
 pub fn pull_tree(src: &Path, dst: &Path) -> Result<Manifest> {
     let m = Manifest::read(src)?;
-    for (rel, want) in &m.files {
+    let n = m.files.len();
+    for (i, (rel, want)) in m.files.iter().enumerate() {
         let to = dst.join(rel);
         if to.is_file() && sha256_file(&to).is_ok_and(|got| &got == want) {
+            eprintln!("[pull] {}/{n} {} ok ({} B, cached)", i + 1, src.join(rel).display(), want.bytes);
             continue;
         }
+        eprintln!("[pull] {}/{n} {} copying ({} B)", i + 1, src.join(rel).display(), want.bytes);
         fs::create_dir_all(to.parent().unwrap())?;
         let part = to.with_file_name(format!("{}.part", to.file_name().unwrap().to_string_lossy()));
         fs::copy(src.join(rel), &part).with_context(|| format!("copying {}", src.join(rel).display()))?;
@@ -203,7 +208,14 @@ pub fn pull_tree(src: &Path, dst: &Path) -> Result<Manifest> {
 pub fn open_dataset(cfg: &StorageConfig, rel: &Path) -> Result<PathBuf> {
     let src = cfg.shared.join("datasets").join(rel);
     if cfg.shared_local {
-        verify_dir(&src)?;
+        // Hashing in place: one progress line per file, as in `pull_tree`.
+        let m = Manifest::read(&src)?;
+        let n = m.files.len();
+        for (i, (rel, want)) in m.files.iter().enumerate() {
+            eprintln!("[verify] {}/{n} {} ({} B)", i + 1, src.join(rel).display(), want.bytes);
+            let got = sha256_file(&src.join(rel))?;
+            ensure!(&got == want, "{} does not match its manifest (061-R7)", src.join(rel).display());
+        }
         return Ok(src);
     }
     let dst = cfg.cache.join("datasets").join(rel);
@@ -232,9 +244,22 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
 pub struct LockInfo {
     pub host: String,
     pub pid: u32,
-    /// Unix seconds (writer's clock; staleness uses the share's file times instead).
+    /// Unix seconds by the writer's clock. Never compared with another PC's clock: expiry is a
+    /// heartbeat that stays the same while a worker watches it (061-R5, [`LockObserver`]).
     pub started: u64,
     pub heartbeat: u64,
+}
+
+/// How [`Run::acquire_with`] treats a lock of another PC (061-R5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TakeOver {
+    /// Refused (exit 75), fresh or expired alike.
+    No,
+    /// Manual `--take-over`: taken at once, with a warning.
+    Force,
+    /// Worker auto take-over (061-R13): taken only if the lock still has exactly the contents the
+    /// worker saw unchanged for `stale_after` ([`LockObserver`]); otherwise refused (exit 75).
+    IfUnchanged(LockInfo),
 }
 
 /// Result of a heartbeat (061-R5, R11-4).
@@ -303,20 +328,48 @@ fn ckpt_steps(dir: &Path) -> Result<Vec<u64>> {
 }
 
 /// One training run holding its lock (061-R5). Dropping it without [`Run::release`] keeps the
-/// lock file, as a crash would: the lease then expires after `stale_after`.
+/// lock file, as a crash would: the same host takes it back on restart, a worker elsewhere after
+/// watching it unchanged for `stale_after` (061-R5), anyone with `--take-over`.
 pub struct Run {
     pub cfg: StorageConfig,
     pub run_id: String,
     me: LockInfo,
-    /// Lock found at acquire time (same host after a crash, or a taken-over stale lock).
+    /// Lock found at acquire time (same host after a crash, or a taken-over lock).
     previous: Option<LockInfo>,
+    /// 061-R11-5 / R14 ③: ids ([`ckpt_id`]) of the checkpoints this run continues, oldest first:
+    /// the resumed checkpoint's own lineage plus itself, then every checkpoint sealed here.
+    lineage: Vec<String>,
+}
+
+/// Lineage entries kept in a checkpoint (`lineage.json`); an unpushed checkpoint is always a
+/// few checkpoints past `LATEST`, so older entries are not needed.
+const LINEAGE_KEEP: usize = 256;
+const LINEAGE_FILE: &str = "lineage.json";
+
+/// Identity of a sealed checkpoint: SHA-256 of its manifest (every file's hash, the lineage
+/// file included, so equal ids mean equal contents and equal history).
+pub fn ckpt_id(dir: &Path) -> Result<String> {
+    let m = Manifest::read(dir)?;
+    Ok(Sha256::digest(serde_json::to_vec(&m)?).iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// The lineage stored in a checkpoint (empty for checkpoints written before 061-R11-5 lineage).
+fn read_lineage(dir: &Path) -> Vec<String> {
+    fs::read(dir.join(LINEAGE_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 impl Run {
-    /// 061-R5 / AC3: takes the run lock. A fresh lock of another PC is refused; a stale one
-    /// (no heartbeat for `stale_after`) only with `take_over`. A lock of this same host (its
-    /// process is gone after a crash) is taken back: the spec refuses other PCs only.
+    /// 061-R5 / AC3: takes the run lock; `take_over` = manual `--take-over` ([`TakeOver::Force`]).
     pub fn acquire(cfg: StorageConfig, run_id: &str, take_over: bool) -> Result<Self> {
+        Self::acquire_with(cfg, run_id, if take_over { TakeOver::Force } else { TakeOver::No })
+    }
+
+    /// 061-R5 / AC3: takes the run lock. A lock of another PC, fresh or expired, is refused with
+    /// [`LockBusy`] (exit 75) unless taken over: [`TakeOver::Force`] at once with a warning,
+    /// [`TakeOver::IfUnchanged`] only if the lock is still the one a worker watched expire. No
+    /// file time or clock is compared here (061-AC3). A lock of this same host (its process is
+    /// gone after a crash) is taken back: the spec refuses other PCs only.
+    pub fn acquire_with(cfg: StorageConfig, run_id: &str, take: TakeOver) -> Result<Self> {
         check_name(run_id)?;
         check_name(&cfg.host)?;
         let locks = cfg.shared.join("locks");
@@ -325,7 +378,7 @@ impl Run {
         let now = now_secs();
         let me = LockInfo { host: cfg.host.clone(), pid: std::process::id(), started: now, heartbeat: now };
         let path = locks.join(format!("{run_id}.json"));
-        let mut run = Self { cfg, run_id: run_id.to_string(), me, previous: None };
+        let mut run = Self { cfg, run_id: run_id.to_string(), me, previous: None, lineage: Vec::new() };
         match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut f) => {
                 f.write_all(&serde_json::to_vec_pretty(&run.me)?)?;
@@ -335,13 +388,30 @@ impl Run {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(anyhow!(e).context(format!("creating lock {}", path.display()))),
         }
-        let held: LockInfo = serde_json::from_slice(&fs::read(&path)?).with_context(|| format!("reading lock {}", path.display()))?;
-        let age = run.lock_age()?;
+        let bytes = fs::read(&path).with_context(|| format!("reading lock {}", path.display()))?;
+        let Ok(held) = serde_json::from_slice::<LockInfo>(&bytes) else {
+            // Another process created it a moment ago and has not written it yet.
+            return Err(anyhow::Error::new(LockBusy(format!("run {run_id}: lock {} is being written by another process (061-R5)", path.display()))));
+        };
         if held.host != run.me.host {
-            if age < run.cfg.stale_after {
-                return Err(anyhow::Error::new(LockBusy(format!("run {run_id} is locked by {} (pid {}, last heartbeat {}s ago) (061-R5)", held.host, held.pid, age.as_secs()))));
+            match &take {
+                TakeOver::No => {
+                    return Err(anyhow::Error::new(LockBusy(format!(
+                        "run {run_id} is locked by {} (pid {}); a lock of another PC is taken only with --take-over (061-R5)",
+                        held.host, held.pid
+                    ))));
+                }
+                TakeOver::Force => eprintln!(
+                    "WARNING: --take-over: taking run {run_id} from {} (pid {}) now (061-R5). If that training is still alive it stops without a push at its next heartbeat, and checkpoints only it had (not pushed) may be lost (061-R11-4).",
+                    held.host, held.pid
+                ),
+                TakeOver::IfUnchanged(seen) if *seen == held => {
+                    eprintln!("taking over run {run_id}: the lock of {} (pid {}) did not change for {} min (061-R5, R13)", held.host, held.pid, run.cfg.stale_after.as_secs() / 60)
+                }
+                TakeOver::IfUnchanged(_) => {
+                    return Err(anyhow::Error::new(LockBusy(format!("run {run_id}: the lock of {} changed since it was seen expired; not taken (061-R5)", held.host))));
+                }
             }
-            ensure!(take_over, "run {run_id}: lock of {} expired ({}s without heartbeat); pass --take-over to take it (061-R5)", held.host, age.as_secs());
         }
         run.previous = Some(held);
         write_atomic(&path, &serde_json::to_vec_pretty(&run.me)?)?;
@@ -374,16 +444,6 @@ impl Run {
     /// The lock that was there before this run took it, if any.
     pub fn previous_owner(&self) -> Option<&LockInfo> {
         self.previous.as_ref()
-    }
-
-    /// Lock age by the share's own clock: a probe file is touched and its modification time is
-    /// compared with the lock's (host clocks may differ by minutes).
-    fn lock_age(&self) -> Result<Duration> {
-        let probe = self.cfg.shared.join("locks").join(format!(".clock-{}", self.cfg.host));
-        fs::write(&probe, b"")?;
-        let now = fs::metadata(&probe)?.modified()?;
-        let lock = fs::metadata(self.lock_path())?.modified()?;
-        Ok(now.duration_since(lock).unwrap_or(Duration::ZERO))
     }
 
     fn read_lock(&self) -> Result<LockInfo> {
@@ -427,8 +487,10 @@ impl Run {
         if !self.cfg.shared_local
             && let Some(step) = self.recoverable(latest)?
         {
+            let dir = self.cache_dir().join(ckpt_name(step));
+            self.continue_from(&dir)?;
             match self.push(step)? {
-                PushOutcome::Pushed => return Ok(Some(Resume { step, dir: self.cache_dir().join(ckpt_name(step)), recovered: true })),
+                PushOutcome::Pushed => return Ok(Some(Resume { step, dir, recovered: true })),
                 other => bail!("could not push the unpushed checkpoint {} at start (061-R11-5): {other:?}", ckpt_name(step)),
             }
         }
@@ -436,25 +498,46 @@ impl Run {
         let src = self.shared_dir().join(ckpt_name(step));
         if self.cfg.shared_local {
             verify_dir(&src)?;
+            self.continue_from(&src)?;
             return Ok(Some(Resume { step, dir: src, recovered: false }));
         }
         let dst = self.cache_dir().join(ckpt_name(step));
         pull_tree(&src, &dst)?;
+        self.continue_from(&dst)?;
         Ok(Some(Resume { step, dir: dst, recovered: false }))
     }
 
+    /// The run continues the checkpoint in `dir`: its lineage plus itself (061-R11-5).
+    fn continue_from(&mut self, dir: &Path) -> Result<()> {
+        let mut l = read_lineage(dir);
+        l.push(ckpt_id(dir)?);
+        self.lineage = l;
+        Ok(())
+    }
+
     /// 061-R11-5: the newest cached checkpoint newer than `LATEST`, if this host was the last
-    /// owner of the lock and the checkpoint verifies.
+    /// owner of the lock, the checkpoint verifies and it descends from `LATEST` (lineage
+    /// condition, R14 ③: a checkpoint left from before another PC pushed its own is never used).
     fn recoverable(&self, latest: Option<u64>) -> Result<Option<u64>> {
         let last_owner_is_me = self.previous.as_ref().is_some_and(|p| p.host == self.me.host);
         if !last_owner_is_me {
             return Ok(None);
         }
+        let latest_id = match latest {
+            Some(l) => Some(ckpt_id(&self.shared_dir().join(ckpt_name(l))).context("reading the manifest LATEST names")?),
+            None => None,
+        };
         for step in ckpt_steps(&self.cache_dir())?.into_iter().rev() {
             if latest.is_some_and(|l| step <= l) {
                 break;
             }
-            if verify_dir(&self.cache_dir().join(ckpt_name(step))).is_ok() {
+            let dir = self.cache_dir().join(ckpt_name(step));
+            let descends = latest_id.as_ref().is_none_or(|id| read_lineage(&dir).contains(id));
+            if !descends {
+                eprintln!("{} in the cache does not descend from LATEST: not recovered (061-R11-5)", dir.display());
+                continue;
+            }
+            if verify_dir(&dir).is_ok() {
                 return Ok(Some(step));
             }
         }
@@ -479,12 +562,15 @@ impl Run {
     /// `ckpt-<step>/`. In local mode (R12) this is on the share, and `LATEST` is updated too.
     pub fn seal(&mut self, step: u64) -> Result<PathBuf> {
         let stage = self.work_dir().join(self.stage_name(step));
+        let keep_from = self.lineage.len().saturating_sub(LINEAGE_KEEP);
+        fs::write(stage.join(LINEAGE_FILE), serde_json::to_vec(&self.lineage[keep_from..])?)?;
         Manifest::build(&stage)?.write(&stage)?;
         let done = self.work_dir().join(ckpt_name(step));
         if done.exists() {
             fs::remove_dir_all(&done)?;
         }
         fs::rename(&stage, &done)?;
+        self.lineage.push(ckpt_id(&done)?);
         if self.cfg.shared_local {
             self.write_latest(step)?;
         }
@@ -560,14 +646,20 @@ impl Run {
 
     /// Cached checkpoints not on the share yet, oldest first (R11-3). Pushes go oldest first, so
     /// these are the cached steps after `LATEST` (older ones were pushed, maybe pruned since).
-    /// With the share unreachable every cached checkpoint counts. Empty in local mode.
+    /// With the share unreachable every cached checkpoint counts. Only checkpoints of this run's
+    /// lineage count (061-R14 ③: another lineage's leftovers are never pushed). Empty in local
+    /// mode.
     pub fn unpushed(&self) -> Result<Vec<u64>> {
         if self.cfg.shared_local {
             return Ok(Vec::new());
         }
         let latest = self.latest().ok().flatten();
         let shared = ckpt_steps(&self.shared_dir())?;
-        Ok(ckpt_steps(&self.cache_dir())?.into_iter().filter(|s| latest.is_none_or(|l| *s > l) && !shared.contains(s)).collect())
+        Ok(ckpt_steps(&self.cache_dir())?
+            .into_iter()
+            .filter(|s| latest.is_none_or(|l| *s > l) && !shared.contains(s))
+            .filter(|s| ckpt_id(&self.cache_dir().join(ckpt_name(*s))).is_ok_and(|id| self.lineage.contains(&id)))
+            .collect())
     }
 
     /// R11-3: retries every unpushed checkpoint, oldest first; stops at the first failure.
@@ -660,31 +752,98 @@ impl std::error::Error for LockBusy {}
 // ---------------------------------------------------------------------------------------------
 // Run queue support (061-R13..R15)
 
-/// The run's lock as another process sees it.
+/// `<shared>/<name>/`, created if missing, but never the share root itself: an unmounted mount
+/// point must not quietly become a local "share" (061-R13, H-2).
+fn share_subdir(cfg: &StorageConfig, name: &str) -> Result<PathBuf> {
+    let d = cfg.shared.join(name);
+    match fs::create_dir(&d) {
+        Ok(()) => Ok(d),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(d),
+        Err(e) => Err(anyhow!(e).context(format!("creating {}", d.display()))),
+    }
+}
+
+/// 061-R13 (H-2): the share is there. A shared folder that lost its mount (an empty mount point)
+/// or a dropped connection fails here, so "no lock / no DONE" is never read off a missing share.
+/// The worker creates `checkpoints/` when it starts.
+pub fn probe_share(cfg: &StorageConfig) -> Result<()> {
+    let d = cfg.shared.join("checkpoints");
+    let m = fs::metadata(&d).with_context(|| format!("shared drive not reachable ({})", d.display()))?;
+    ensure!(m.is_dir(), "{} is not a folder", d.display());
+    fs::read_dir(&d).with_context(|| format!("listing {}", d.display()))?;
+    Ok(())
+}
+
+/// The run's lock file as read now: `None` = no lock. A read or parse failure is an error, never
+/// "no lock" (061-R13, H-2: unknown is not Free).
+pub fn peek_lock(cfg: &StorageConfig, run_id: &str) -> Result<Option<LockInfo>> {
+    let path = cfg.shared.join("locks").join(format!("{run_id}.json"));
+    match fs::read(&path) {
+        Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes).with_context(|| format!("parsing lock {}", path.display()))?)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(anyhow!(e).context(format!("reading lock {}", path.display()))),
+    }
+}
+
+/// The run's lock as a worker sees it (061-R5, R13).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LockView {
     Free,
-    /// Held with a heartbeat younger than `stale_after`.
+    /// Held, and not (yet) seen unchanged for `stale_after`.
     Held(LockInfo),
-    /// Held, but no heartbeat for `stale_after` or longer.
+    /// The worker saw exactly this lock unchanged for `stale_after` on its own monotonic clock.
     Stale(LockInfo),
+    /// Could not be read (061-R13 "unknown"): neither free nor expired.
+    Unknown(String),
 }
 
-/// Age of `path` by the share's clock (see `Run::lock_age`).
+/// 061-R5 expiry for the worker's automatic take-over (H-3): a lock is expired only when this
+/// process has watched its contents (host, pid, heartbeat) stay the same for `stale_after`, by
+/// its own monotonic clock. File times and the clocks written in the lock are never compared, so
+/// PC clock differences do not matter. A change, a read failure or a gap in watching (longer
+/// than half of `stale_after`, e.g. while the worker trained another run) starts over.
+#[derive(Debug, Default)]
+pub struct LockObserver {
+    /// run id → (contents, first seen, last seen).
+    seen: std::collections::HashMap<String, (LockInfo, std::time::Instant, std::time::Instant)>,
+}
+
+impl LockObserver {
+    /// Records one read of the run's lock at `now` and says what it means.
+    pub fn observe(&mut self, run_id: &str, read: &Result<Option<LockInfo>>, now: std::time::Instant, stale_after: Duration) -> LockView {
+        let info = match read {
+            Ok(None) => {
+                self.seen.remove(run_id);
+                return LockView::Free;
+            }
+            Err(e) => {
+                self.seen.remove(run_id);
+                return LockView::Unknown(format!("{e:#}"));
+            }
+            Ok(Some(l)) => l,
+        };
+        let continued = self.seen.get(run_id).is_some_and(|(l, _, last)| l == info && now.saturating_duration_since(*last) <= stale_after / 2);
+        let first = if continued { self.seen[run_id].1 } else { now };
+        self.seen.insert(run_id.to_string(), (info.clone(), first, now));
+        if now.saturating_duration_since(first) >= stale_after { LockView::Stale(info.clone()) } else { LockView::Held(info.clone()) }
+    }
+
+    /// Forgets every observation (the worker stops watching while it trains).
+    pub fn reset(&mut self) {
+        self.seen.clear();
+    }
+}
+
+/// Age of `path` by the share's clock: a probe file is touched and its modification time is
+/// compared with the file's. Used only for the 30-minute expiry of yield requests (061-R14),
+/// never for lock expiry (061-R5).
 fn share_age(cfg: &StorageConfig, path: &Path) -> Result<Duration> {
-    fs::create_dir_all(cfg.shared.join("locks"))?;
+    share_subdir(cfg, "locks")?;
     let probe = cfg.shared.join("locks").join(format!(".clock-{}", cfg.host));
     fs::write(&probe, b"")?;
     let now = fs::metadata(&probe)?.modified()?;
     let t = fs::metadata(path)?.modified()?;
     Ok(now.duration_since(t).unwrap_or(Duration::ZERO))
-}
-
-pub fn peek_lock(cfg: &StorageConfig, run_id: &str) -> Result<LockView> {
-    let path = cfg.shared.join("locks").join(format!("{run_id}.json"));
-    let Ok(bytes) = fs::read(&path) else { return Ok(LockView::Free) };
-    let Ok(info) = serde_json::from_slice::<LockInfo>(&bytes) else { return Ok(LockView::Free) };
-    Ok(if share_age(cfg, &path)? >= cfg.stale_after { LockView::Stale(info) } else { LockView::Held(info) })
 }
 
 /// 061-R14 yield request on a run: the requesting host takes the run next.
@@ -702,21 +861,48 @@ fn yield_path(cfg: &StorageConfig, run_id: &str) -> PathBuf {
     cfg.shared.join("locks").join(format!("{run_id}.yield"))
 }
 
-/// A live (not expired) yield request on the run.
-pub fn read_yield(cfg: &StorageConfig, run_id: &str) -> Option<YieldRequest> {
+/// A live (not expired) yield request on the run; `Ok(None)` = none. A read failure is an error
+/// (061-R13 "unknown").
+pub fn read_yield(cfg: &StorageConfig, run_id: &str) -> Result<Option<YieldRequest>> {
     let p = yield_path(cfg, run_id);
-    let req: YieldRequest = serde_json::from_slice(&fs::read(&p).ok()?).ok()?;
-    (share_age(cfg, &p).ok()? < YIELD_EXPIRY).then_some(req)
+    let bytes = match fs::read(&p) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(anyhow!(e).context(format!("reading {}", p.display()))),
+    };
+    let req: YieldRequest = serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", p.display()))?;
+    Ok((share_age(cfg, &p)? < YIELD_EXPIRY).then_some(req))
+}
+
+/// A live yield request by another host (training loop check: a read failure counts as none,
+/// training goes on, 061-R11-3).
+pub fn yield_by_other(cfg: &StorageConfig, run_id: &str) -> Option<YieldRequest> {
+    read_yield(cfg, run_id).ok().flatten().filter(|y| y.host != cfg.host)
 }
 
 pub fn request_yield(cfg: &StorageConfig, run_id: &str, priority: i32) -> Result<()> {
-    fs::create_dir_all(cfg.shared.join("locks"))?;
+    share_subdir(cfg, "locks")?;
     let req = YieldRequest { host: cfg.host.clone(), priority, time: now_secs() };
     write_atomic(&yield_path(cfg, run_id), &serde_json::to_vec_pretty(&req)?)
 }
 
-pub fn clear_yield(cfg: &StorageConfig, run_id: &str) {
-    let _ = fs::remove_file(yield_path(cfg, run_id));
+/// Removes the run's yield request if this host wrote it (061-R14: when the host takes the run,
+/// takes another run, or its worker stops). Another host's request is left alone.
+pub fn clear_yield(cfg: &StorageConfig, run_id: &str) -> Result<()> {
+    let p = yield_path(cfg, run_id);
+    let bytes = match fs::read(&p) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(anyhow!(e).context(format!("reading {}", p.display()))),
+    };
+    if serde_json::from_slice::<YieldRequest>(&bytes).is_ok_and(|y| y.host == cfg.host) {
+        match fs::remove_file(&p) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(anyhow!(e).context(format!("removing {}", p.display()))),
+        }
+    }
+    Ok(())
 }
 
 /// `checkpoints/<id>/DONE`: the run finished (061-R13).
@@ -724,8 +910,14 @@ pub fn done_path(cfg: &StorageConfig, run_id: &str) -> PathBuf {
     cfg.shared.join("checkpoints").join(run_id).join("DONE")
 }
 
-pub fn is_done(cfg: &StorageConfig, run_id: &str) -> bool {
-    done_path(cfg, run_id).is_file()
+/// Whether the run has `DONE`. A read failure is an error, not "not done" (061-R13, H-2).
+pub fn is_done(cfg: &StorageConfig, run_id: &str) -> Result<bool> {
+    let p = done_path(cfg, run_id);
+    match fs::metadata(&p) {
+        Ok(m) => Ok(m.is_file()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(anyhow!(e).context(format!("reading {}", p.display()))),
+    }
 }
 
 pub fn mark_done(cfg: &StorageConfig, run_id: &str, step: u64) -> Result<()> {
@@ -751,6 +943,82 @@ pub fn log_device(cfg: &StorageConfig, run_id: &str, line: serde_json::Value) {
     }
 }
 
+/// One training session's stretch of updates on one host (061-R15): updates `from..to`.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct DeviceSpan {
+    pub host: String,
+    pub backend: Option<String>,
+    pub precision: Option<String>,
+    pub from: u64,
+    pub to: u64,
+    /// The `stop` reason, or `crash` when the session has no `stop` line.
+    pub end: String,
+}
+
+/// 061-R15 aggregation of `devices.jsonl` lines (in file order). A session starts at a `start`
+/// line; its `checkpoint` and `stop` lines are the following ones of the same host (a PC that
+/// lost the lock may write its `stop` after the next owner's `start`). It ends at its `stop`
+/// step; without a `stop` (crash, kill), or after a lost lock (nothing pushed after the last
+/// checkpoint), at its last `checkpoint` step (its start step if none): later updates were not
+/// kept and the next session does them again. A next session that starts at a smaller step cuts
+/// it there.
+pub fn device_spans(lines: &[serde_json::Value]) -> Vec<DeviceSpan> {
+    struct S {
+        span: DeviceSpan,
+        last_ckpt: u64,
+        stop: Option<(u64, String)>,
+    }
+    let s = |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+    let mut sessions: Vec<S> = Vec::new();
+    for v in lines {
+        let (Some(event), Some(host)) = (s(v, "event"), s(v, "host")) else { continue };
+        let step = v.get("step").and_then(|x| x.as_u64()).unwrap_or(0);
+        if event == "start" {
+            let span = DeviceSpan { host, backend: s(v, "backend"), precision: s(v, "precision"), from: step, to: step, end: "crash".into() };
+            sessions.push(S { span, last_ckpt: step, stop: None });
+            continue;
+        }
+        let Some(cur) = sessions.iter_mut().rev().find(|x| x.span.host == host) else { continue };
+        if cur.stop.is_some() {
+            continue;
+        }
+        match event.as_str() {
+            "checkpoint" => cur.last_ckpt = cur.last_ckpt.max(step),
+            "stop" => cur.stop = Some((step, s(v, "reason").unwrap_or_else(|| "stop".into()))),
+            _ => {}
+        }
+    }
+    let starts: Vec<u64> = sessions.iter().map(|x| x.span.from).collect();
+    sessions
+        .into_iter()
+        .enumerate()
+        .map(|(i, x)| {
+            let mut span = x.span;
+            let (end, why) = match x.stop {
+                Some((_, r)) if r == "lock lost" => (x.last_ckpt, r),
+                Some((step, r)) => (step, r),
+                None => (x.last_ckpt, "crash".into()),
+            };
+            let mut to = end.max(span.from);
+            if let Some(&next) = starts.get(i + 1)
+                && next < to
+            {
+                to = next.max(span.from);
+            }
+            span.to = to;
+            span.end = why;
+            span
+        })
+        .collect()
+}
+
+/// `runs/<id>/devices.jsonl` as JSON lines; a torn last line (crash mid-write) is skipped.
+pub fn read_devices(cfg: &StorageConfig, run_id: &str) -> Result<Vec<serde_json::Value>> {
+    let p = cfg.shared.join("runs").join(run_id).join("devices.jsonl");
+    let text = fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
+    Ok(text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
+}
+
 /// 061-R13 worker status in `workers/<host>.json`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct WorkerStatus {
@@ -763,7 +1031,7 @@ pub struct WorkerStatus {
 
 pub fn write_worker(cfg: &StorageConfig, priority: i32, backend: &str, run: Option<&str>) -> Result<()> {
     let dir = cfg.shared.join("workers");
-    fs::create_dir_all(&dir)?;
+    share_subdir(cfg, "workers")?;
     let s = WorkerStatus { host: cfg.host.clone(), priority, backend: backend.into(), run: run.map(str::to_string), time: now_secs() };
     write_atomic(&dir.join(format!("{}.json", cfg.host)), &serde_json::to_vec_pretty(&s)?)
 }

@@ -1,21 +1,26 @@
-# 061-R13 / 060-R6: the BC run queue worker as a systemd user service on a Linux training host
-# (BC250 1호기). Install:
+# 061-R13 / 060-R6: the BC run queue worker as a systemd user service on a Linux Vulkan training
+# host. Install:
 #   mkdir -p ~/.config/systemd/user && cp tools/worker/uranium-worker.service ~/.config/systemd/user/
 #   edit WorkingDirectory / ExecStart (<repo> = the Uranium checkout, <shared> = URANIUM_SHARED_DIR)
 #   systemctl --user daemon-reload && systemctl --user enable --now uranium-worker
 #   loginctl enable-linger $USER     # keep it running without a login session
 # Stop (checkpoint, push, release, then exit): systemctl --user stop uranium-worker
 # Log: journalctl --user -u uranium-worker -f  (and the --log file)
+# A user manager cannot order itself after the system's remote-fs.target; it does not need to:
+# while the shared drive is not mounted the worker takes nothing and looks again every poll
+# (061-R13 "unknown"), it does not exit.
 [Unit]
 Description=Uranium BC run queue worker (061-R13)
-After=network-online.target remote-fs.target
+After=network-online.target
 
 [Service]
 WorkingDirectory=<repo>
 ExecStart=<repo>/target/release/uranium-train worker --queue <shared>/queue/bc.toml --backend vulkan --priority 1 --log <repo>/runs/worker.log
-# Ctrl+C semantics: the worker passes SIGINT to the training child, which saves and pushes.
+# Ctrl+C semantics: the worker passes SIGINT once to the training child (its own process group,
+# 060-R6), which saves and pushes. A worker killed hard still stops the child (PR_SET_PDEATHSIG).
 KillSignal=SIGINT
 KillMode=process
+# 060-R6: 900 s (15 min) everywhere, room for the last checkpoint and push.
 TimeoutStopSec=900
 # The worker restarts its own children (060-R6); this only covers the worker itself.
 Restart=on-failure

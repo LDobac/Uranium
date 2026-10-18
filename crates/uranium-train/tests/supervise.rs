@@ -35,3 +35,26 @@ fn restart_policy_060_r6() {
     assert_eq!(decide(Ending::Exited(Some(1)), true, 0, &a), Decision::Stop);
     assert_eq!(decide(Ending::Hung, true, 0, &a), Decision::Stop);
 }
+
+#[test]
+fn lock_busy_and_yield_are_not_restarted_060_r6() {
+    let a = args();
+    // 75: the lock could not be taken (061-R5); 76: yielded (061-R14).
+    assert_eq!(decide(Ending::Exited(Some(75)), false, 0, &a), Decision::Stop);
+    assert_eq!(decide(Ending::Exited(Some(76)), false, 0, &a), Decision::Stop);
+}
+
+/// 060-R6 (H-4): on Unix the training child gets its own process group, so a terminal Ctrl+C
+/// reaches only the watchdog, which passes it on once.
+#[cfg(unix)]
+#[test]
+fn child_runs_in_its_own_process_group_060_r6() {
+    let mut child = uranium_train::supervise::child_command(std::path::Path::new("/bin/sleep")).arg("5").spawn().unwrap();
+    let pid = child.id() as libc::pid_t;
+    // SAFETY: plain syscalls.
+    let (theirs, mine) = unsafe { (libc::getpgid(pid), libc::getpgrp()) };
+    child.kill().ok();
+    child.wait().ok();
+    assert_eq!(theirs, pid, "the child leads its own group");
+    assert_ne!(theirs, mine);
+}

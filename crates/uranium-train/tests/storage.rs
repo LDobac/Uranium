@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use uranium_train::storage::{LockStatus, Manifest, PushOutcome, PushStage, Run, StorageConfig, check_name, ckpt_name, open_dataset, pull_tree, verify_dir};
+use uranium_train::storage::{LockBusy, LockStatus, Manifest, PushOutcome, PushStage, Run, StorageConfig, check_name, ckpt_name, open_dataset, pull_tree, verify_dir};
 
 struct Tmp(PathBuf);
 
@@ -56,13 +56,16 @@ fn lock_refuses_other_pc_and_needs_take_over_061_ac3() {
     let mut a = Run::acquire(cfg(&t, "pc-a"), "run1", false).unwrap();
     let err = Run::acquire(cfg(&t, "pc-b"), "run1", false).err().expect("valid lock refuses another PC");
     assert!(format!("{err:#}").contains("locked by pc-a"), "{err:#}");
-    // Even --take-over does not take a fresh lock.
-    assert!(Run::acquire(cfg(&t, "pc-b"), "run1", true).is_err());
+    assert!(err.downcast_ref::<LockBusy>().is_some(), "refusal is exit 75 (061-R5)");
     assert_eq!(a.heartbeat(), LockStatus::Held);
 
+    // An old file time changes nothing: still refused with 75 without --take-over (061-AC3).
     age_lock(&a.lock_path(), Duration::from_secs(11 * 60));
-    let err = Run::acquire(cfg(&t, "pc-b"), "run1", false).err().expect("stale lock needs --take-over");
-    assert!(format!("{err:#}").contains("--take-over"), "{err:#}");
+    let err = Run::acquire(cfg(&t, "pc-b"), "run1", false).err().expect("expired or not, the lock needs --take-over");
+    assert!(err.downcast_ref::<LockBusy>().is_some() && format!("{err:#}").contains("--take-over"), "{err:#}");
+    // --take-over takes a fresh lock at once (061-R5 manual take-over, with a warning).
+    age_lock(&a.lock_path(), Duration::ZERO);
+    assert_eq!(a.heartbeat(), LockStatus::Held);
     let b = Run::acquire(cfg(&t, "pc-b"), "run1", true).unwrap();
     assert_eq!(b.previous_owner().unwrap().host, "pc-a");
     // The old owner notices on its next heartbeat (R11-4).
@@ -226,4 +229,74 @@ fn names_avoid_smb_forbidden_characters_061_r9() {
         assert!(check_name(bad).is_err(), "{bad:?}");
     }
     check_name("main-exploiter_2026-10-17").unwrap();
+}
+
+/// 061-R11-5 / R14 ③: an unpushed checkpoint left from before another PC pushed its own is never
+/// recovered or pushed; one that continues the current `LATEST` is.
+#[test]
+fn unpushed_checkpoint_of_an_old_lineage_is_not_recovered_061_r14() {
+    let t = Tmp::new("lineage");
+    let mut a = Run::acquire(cfg(&t, "pc-a"), "run1", false).unwrap();
+    assert_eq!(a.begin().unwrap(), None);
+    write_ckpt(&mut a, 1);
+    assert_eq!(a.push(1).unwrap(), PushOutcome::Pushed);
+    write_ckpt(&mut a, 7); // never pushed
+    drop(a); // crash
+
+    // pc-b takes the run over and pushes its own continuation of ckpt-1, then crashes.
+    let mut b = Run::acquire(cfg(&t, "pc-b"), "run1", true).unwrap();
+    assert_eq!(b.begin().unwrap().unwrap().step, 1);
+    write_ckpt(&mut b, 5);
+    assert_eq!(b.push(5).unwrap(), PushOutcome::Pushed);
+    drop(b);
+
+    // pc-a takes it back, resumes from LATEST (5) and crashes before any checkpoint.
+    let mut a = Run::acquire(cfg(&t, "pc-a"), "run1", true).unwrap();
+    let r = a.begin().unwrap().unwrap();
+    assert_eq!((r.step, r.recovered), (5, false));
+    drop(a);
+    // Last owner is pc-a and its cache has ckpt-7 > LATEST, but ckpt-7 does not descend from 5.
+    let mut a = Run::acquire(cfg(&t, "pc-a"), "run1", false).unwrap();
+    let r = a.begin().unwrap().unwrap();
+    assert_eq!((r.step, r.recovered), (5, false));
+    assert!(a.unpushed().unwrap().is_empty(), "the old lineage is never pushed");
+    // A checkpoint of this lineage is recovered after the next crash.
+    write_ckpt(&mut a, 9);
+    drop(a);
+    let mut a = Run::acquire(cfg(&t, "pc-a"), "run1", false).unwrap();
+    let r = a.begin().unwrap().unwrap();
+    assert_eq!((r.step, r.recovered), (9, true));
+    assert_eq!(latest_verified(&a), Some(9));
+}
+
+/// 061-R15: device spans from `devices.jsonl` lines, crashes and lost locks ending at the last
+/// checkpoint, a smaller next start cutting the previous session.
+#[test]
+fn device_spans_follow_the_line_format_061_r15() {
+    use serde_json::json;
+    use uranium_train::storage::device_spans;
+    let start = |h: &str, s: u64, b: &str| json!({ "event": "start", "host": h, "step": s, "time": 1, "backend": b, "precision": "f32", "core": "Lstm", "stage": "S1" });
+    let ckpt = |h: &str, s: u64| json!({ "event": "checkpoint", "host": h, "step": s, "time": 1 });
+    let stop = |h: &str, s: u64, r: &str| json!({ "event": "stop", "host": h, "step": s, "time": 1, "reason": r });
+    let lines = vec![
+        start("a", 0, "vulkan"),
+        ckpt("a", 10),
+        ckpt("a", 20), // then a crash: no stop line
+        start("b", 20, "cuda"),
+        ckpt("b", 30),
+        stop("b", 35, "ctrl-c"),
+        start("a", 35, "vulkan"),
+        ckpt("a", 50),
+        start("b", 50, "cuda"), // took the lock over
+        stop("a", 55, "lock lost"),
+        stop("b", 60, "yield"),
+        start("a", 60, "vulkan"),
+        ckpt("a", 70),
+        stop("a", 75, "ctrl-c"), // final push deferred: the next start is earlier
+        start("b", 70, "cuda"),
+    ];
+    let got: Vec<(String, Option<String>, u64, u64, String)> = device_spans(&lines).into_iter().map(|s| (s.host, s.backend, s.from, s.to, s.end)).collect();
+    let want = [("a", "vulkan", 0, 20, "crash"), ("b", "cuda", 20, 35, "ctrl-c"), ("a", "vulkan", 35, 50, "lock lost"), ("b", "cuda", 50, 60, "yield"), ("a", "vulkan", 60, 70, "ctrl-c"), ("b", "cuda", 70, 70, "crash")];
+    let want: Vec<_> = want.iter().map(|(h, b, f, t, e)| (h.to_string(), Some(b.to_string()), *f, *t, e.to_string())).collect();
+    assert_eq!(got, want);
 }

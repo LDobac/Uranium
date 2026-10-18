@@ -42,18 +42,23 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 - `bc (--dataset <rel> | --shards <dir>)... (--out <ckpt> | --run <id> [--take-over]) [--backend vulkan|cuda|flex] [--core lstm|gtrxl] [--s2 | --stage s2] [--resume <ckpt> | --init <ckpt|run>] [--steps N]`
   - `--dataset replays/shards/<src>`는 manifest를 검증하고, `--shards`는 검증하지 않는다. 하위 폴더까지 읽는다(041-R9).
   - `--run`은 061 run(`checkpoints/<id>/`): 잠금·heartbeat·push, 시작 시 `LATEST`에서 재개(데이터 위치 포함, 061-R10). 체크포인트는 `checkpoint_every` update 또는 `checkpoint_minutes`마다, Ctrl+C는 저장 후 종료.
-  - 기본 S1(전 소스 train 분할), `--s2`·`--stage s2`는 대상 맵 train 분할(041-R12·R13). S2는 `--init`으로 가중치만 가져온다(041-R4). 학습 길이는 `config/bc.toml` `[steps]`(041-R14). `URANIUM_BC_PROFILE=1`이면 구간별 시간 출력.
+  - 다른 PC의 잠금이 있으면(유효·만료 모두) 종료 코드 75로 거부된다. `--take-over`는 상대 PC가 멈춘 것을 확인한 뒤에만 쓴다: 잠금 상태와 무관하게 즉시 인수하고 경고를 출력하며, 상대가 살아 있으면 그쪽은 다음 heartbeat에서 push 없이 멈춘다(061-R5).
+  - 기본 S1(전 소스 train 분할), `--s2`·`--stage s2`는 대상 맵 train 분할(041-R12·R13). S2는 `--init`으로 가중치만 가져온다(041-R4). `--init`에 run 폴더를 주면 그 run에 `DONE`이 있어야 하고 `DONE`이 가리키는 마지막 체크포인트를 쓴다(061-R13). 학습 길이는 `config/bc.toml` `[steps]`(041-R14). `URANIUM_BC_PROFILE=1`이면 구간별 시간 출력.
+  - `--dataset` pull·검증은 파일마다 `[pull]`/`[verify]` 진행 줄을 stderr에 쓴다(감시 30분 멈춤 판정 대비).
 - `bc-epoch`(1 epoch update 수), `bc-eval --checkpoint <ckpt|run> [--split test|val] [--games N]`(041 지표), `bc-profile --backend <b> [--batches N]`, `split-stats`, `label-check [--games N]`(034-AC3), `manifest <dir> [--verify]`(061-R7). 모두 `--dataset`/`--shards`를 받는다.
 - 하이퍼파라미터 `config/bc.toml`(GPU 메모리는 `micro_lanes`, `pad_entities`, `grad_checkpointing`), 코어 비교 `config/bc_core_ablation.toml`, 보상 `config/reward.toml`.
 
 ## 감시·작업자(060-R6, 061-R13~R15)
-- `uranium-train supervise [--hang-minutes 30 --max-restarts 5 --window-minutes 60 --delay-seconds 60 --progress-file <file> --log <file>] -- <bc|rl 인자>`: 비정상 종료·멈춤이면 같은 run을 재시작한다. 종료 코드 0·130·75(다른 PC가 잡음)·76(양보)은 재시작하지 않는다.
-- `uranium-train worker --queue <shared>/queue/<이름>.toml --backend <cuda|vulkan> --priority <n> [--log <file>]`
+- `uranium-train supervise [--hang-minutes 30 --max-restarts 5 --window-minutes 60 --delay-seconds 60 --progress-file <file> --log <file>] -- <bc|rl 인자>`: 비정상 종료·멈춤이면 같은 run을 재시작한다. 종료 코드 0·130·75(잠금을 얻지 못함: 다른 PC 잠금, 획득 경쟁에서 짐, 양보 예약)·76(양보)은 재시작하지 않는다.
+  - Linux: 자식 학습은 별도 프로세스 그룹으로 뜨고 `PR_SET_PDEATHSIG`(SIGINT)가 걸린다. 터미널 포그라운드 Ctrl+C도 감시 프로세스가 한 번만 전달하므로 저장 후 끝난다. 감시 프로세스가 강제 종료돼도 자식은 SIGINT를 받아 저장·push·잠금 해제 후 끝난다(060-R6). Windows: 같은 콘솔이라 Ctrl+C가 자식에게 직접 간다(기존 동작).
+- `uranium-train worker --queue <shared>/queue/<이름>.toml --backend <cuda|vulkan> --priority <n> [--poll-seconds 60] [--log <file>]`
   - 큐: `[defaults] datasets=[...] config="..."`, `[[run]] id, config, core, stage(s1|s2|ablation-a), init_run, datasets, steps`.
-  - 끝나지 않은(`checkpoints/<id>/DONE` 없음) 잡을 수 있는 run을 순서대로 돌린다. 빈 run이 없으면 우선순위가 낮은 PC에 양보 요청(`locks/<id>.yield`)을 쓴다. 장비 구간은 `runs/<id>/devices.jsonl`.
-  - 학습 PC(CUDA, 우선순위 10): 쉴 때 실행, Ctrl+C로 멈춘다(저장·push·잠금 해제, 약 30초).
-  - BC250 1호기(Vulkan f32, 우선순위 1): 상시 실행. `tools/worker/uranium-worker.service`(systemd user, `KillSignal=SIGINT`) 또는 `setsid nohup ... &`, 멈출 때 `kill -INT <pid>`.
-  - BC250 2호기는 learner로 쓰지 않는다.
+  - 끝나지 않은(`checkpoints/<id>/DONE` 없음) 잡을 수 있는 run을 순서대로 돌린다. `init_run`이 있는 run은 `init_run`에 `DONE`이 생긴 뒤에만 잡는다(061-R13). 빈 run이 없으면 우선순위가 낮은 PC에 양보 요청(`locks/<id>.yield`)을 쓰고, 다른 run을 잡거나 작업자가 끝나면 자기 요청을 지운다(061-R14).
+  - 다른 PC 잠금의 자동 인수: 작업자가 자기 단조 시계로 같은 heartbeat 내용을 10분 동안 연속 관측했을 때만 한다(PC 시계·파일 mtime 무관, 061-R5). 학습하는 동안에는 관측하지 않으므로, 돌아온 뒤 다시 10분을 관측한다.
+  - 공용 드라이브를 읽거나 쓰지 못하면(큐·잠금·`DONE`·양보 요청) 상태를 "모름"으로 보고 새 run을 잡지 않으며, 종료하지 않고 `--poll-seconds`마다 다시 본다. 공용 드라이브가 없는 동안 자식이 실패한 것은 재시작 횟수에 넣지 않는다(061-R13).
+  - 상태 파일 `workers/<host>.json`은 1분마다(자식 학습 중에도) 갱신한다. 장비 구간은 `runs/<id>/devices.jsonl`, 집계는 `uranium-train devices --run <id>`(host별 update 수·비율, 061-R15).
+  - Windows CUDA 학습 PC(우선순위 10): 쉴 때 직접 실행, Ctrl+C로 멈춘다(저장·push·잠금 해제, 약 30초). 자동 시작 구성은 없다(060-R6).
+  - Linux Vulkan 호스트(Vulkan f32, 우선순위 1): 상시 실행. `tools/worker/uranium-worker.service`(systemd user, `KillSignal=SIGINT`, `TimeoutStopSec=900`) 또는 `setsid nohup ... &`, 멈출 때 `kill -INT <pid>`. learner로 정하지 않은 호스트에서는 띄우지 않는다.
 
 ## RL(042)
 - `uranium-train rl --run <id> --bc <BC ckpt> --logs <dir> [--config config/rl.toml] [--algo vtrace|ppo] [--backend cuda|vulkan|flex] [--z-table <jsonl>] [--ac1-race terran|protoss|zerg] [--max-agent-steps N] [--max-updates N] [--max-minutes N] [--take-over]`

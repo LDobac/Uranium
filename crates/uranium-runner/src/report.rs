@@ -23,17 +23,29 @@ pub struct PolicyInfo {
 }
 
 /// Reads a model side's checkpoint for its display info; `None` for other sides or when the
-/// checkpoint cannot be read (the report then shows the plan path only).
+/// checkpoint cannot be read. The latter is warned about: the report then shows the plan path
+/// only, and a model-vs-model matchup lands in the mirror row without per-policy tables.
 fn model_info(side: &Side) -> Option<PolicyInfo> {
-    use uranium_agent::infer::{checkpoint_core, checkpoint_id, model_policy_label, resolve_checkpoint};
     let Side::Model { checkpoint, sample } = side else { return None };
-    let dir = resolve_checkpoint(Path::new(checkpoint)).ok()?;
+    match read_model_info(Path::new(checkpoint), *sample) {
+        Ok(i) => Some(i),
+        Err(e) => {
+            eprintln!("[env] WARNING: summary: model checkpoint {checkpoint} unreadable ({e:#}); its matchup is reported without per-policy rows");
+            None
+        }
+    }
+}
+
+fn read_model_info(checkpoint: &Path, sample: uranium_agent::infer::SampleMode) -> Result<PolicyInfo> {
+    use uranium_agent::infer::{checkpoint_core, checkpoint_id, model_policy_label, resolve_checkpoint};
+    let dir = resolve_checkpoint(checkpoint)?;
     let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned());
+    let leaf = name(&dir).ok_or_else(|| anyhow::anyhow!("no folder name in {}", dir.display()))?;
     let run = match dir.parent().and_then(name) {
-        Some(parent) => format!("{parent}/{}", name(&dir)?),
-        None => name(&dir)?,
+        Some(parent) => format!("{parent}/{leaf}"),
+        None => leaf,
     };
-    Some(PolicyInfo { id: model_policy_label(&checkpoint_id(&dir).ok()?, *sample), core: checkpoint_core(&dir).ok()?, run })
+    Ok(PolicyInfo { id: model_policy_label(&checkpoint_id(&dir)?, sample), core: checkpoint_core(&dir)?, run })
 }
 
 fn lines(path: &Path) -> Result<Vec<Value>> {

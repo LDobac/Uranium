@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use burn::tensor::{Device, DeviceKind};
 use clap::{Parser, Subcommand, ValueEnum};
 use uranium_model::config::CoreKind;
@@ -42,9 +42,15 @@ enum Cmd {
         /// `LATEST` with the data position on any training PC.
         #[arg(long)]
         run: Option<String>,
-        /// Take the run lock from another PC whose heartbeat stopped (061-R5).
+        /// Take the run lock from another PC now, whatever its state, with a warning (061-R5).
+        /// Use it only after checking that PC stopped: if it still trains, it stops at its next
+        /// heartbeat without pushing and loses checkpoints only it had.
         #[arg(long, requires = "run")]
         take_over: bool,
+        /// Run queue worker's automatic take-over (061-R5, R13): the lock as the worker saw it
+        /// unchanged for `stale_after` (JSON); taken only if it is still exactly that.
+        #[arg(long, requires = "run", conflicts_with = "take_over", hide = true)]
+        take_over_if: Option<String>,
         #[arg(long, default_value = "config/bc.toml")]
         config: PathBuf,
         #[arg(long, value_enum, default_value = "vulkan")]
@@ -67,7 +73,8 @@ enum Cmd {
         #[arg(long, conflicts_with_all = ["init", "run"])]
         resume: Option<PathBuf>,
         /// Start from a checkpoint's weights only: fresh optimizer, schedule and step counter
-        /// (S1 -> S2, 041-R4). A checkpoint folder or a run folder with `LATEST`.
+        /// (S1 -> S2, 041-R4). A checkpoint folder, or a 061 run folder that is finished (`DONE`,
+        /// its final checkpoint); a run still training is refused (061-R13).
         #[arg(long)]
         init: Option<PathBuf>,
     },
@@ -134,6 +141,11 @@ enum Cmd {
         /// Also append children's stderr and the worker's notes here.
         #[arg(long)]
         log: Option<PathBuf>,
+    },
+    /// 061-R15: updates per host of a run from `runs/<id>/devices.jsonl` (spans and shares).
+    Devices {
+        #[arg(long)]
+        run: String,
     },
     /// Where a BC update's time goes, module by module (forward marks, backward by gradient
     /// cuts), on real S1 batches with a fresh network. The first batch only warms kernels up.
@@ -208,7 +220,8 @@ enum Cmd {
         core: CoreArg,
         #[arg(long, default_value_t = 1)]
         seed: u64,
-        /// Take the run lock from another PC (061-R5).
+        /// Take the run lock from another PC now, whatever its state, with a warning (061-R5):
+        /// only after checking that PC stopped.
         #[arg(long)]
         take_over: bool,
         /// Local logs: train.csv, games.csv, games.jsonl, sessions.jsonl (042-R2).
@@ -356,9 +369,17 @@ fn main() -> Result<()> {
                 }),
             };
             let dev = device(backend)?;
-            match core {
+            let res = match core {
                 CoreArg::Lstm => uranium_train::rl::run::run::<LstmCore>(args, dev),
                 CoreArg::Gtrxl => uranium_train::rl::run::run::<GtrxlCore>(args, dev),
+            };
+            // 061-R5: a lock that could not be taken ends with 75 (the watchdog does not restart it).
+            match res {
+                Err(e) if e.downcast_ref::<uranium_train::storage::LockBusy>().is_some() => {
+                    eprintln!("{e:#}");
+                    std::process::exit(uranium_train::bc_run::EXIT_BUSY)
+                }
+                other => other,
             }
         }
         Cmd::ZTable { shards, out, all_maps } => {
@@ -445,7 +466,7 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
-        Cmd::Bc { data, out, run, take_over, config, backend, core, s2, stage, steps, resume, init } => {
+        Cmd::Bc { data, out, run, take_over, take_over_if, config, backend, core, s2, stage, steps, resume, init } => {
             let stage = match (s2, stage.unwrap_or(if s2 { StageArg::S2 } else { StageArg::S1 })) {
                 (true, _) => BcStage::S2,
                 (false, StageArg::S2) => BcStage::AblationA,
@@ -453,7 +474,14 @@ fn main() -> Result<()> {
             };
             let out = match (out, run) {
                 (Some(o), _) => BcOut::Local(o),
-                (None, Some(id)) => BcOut::Run { id, take_over },
+                (None, Some(id)) => {
+                    let take = match (take_over, take_over_if) {
+                        (_, Some(seen)) => uranium_train::storage::TakeOver::IfUnchanged(serde_json::from_str(&seen).context("--take-over-if")?),
+                        (true, None) => uranium_train::storage::TakeOver::Force,
+                        (false, None) => uranium_train::storage::TakeOver::No,
+                    };
+                    BcOut::Run { id, take }
+                }
                 (None, None) => unreachable!("clap requires --out or --run"),
             };
             let kind = match core {
@@ -505,6 +533,7 @@ fn main() -> Result<()> {
                 priority,
                 preempt: !no_preempt,
                 poll: std::time::Duration::from_secs(poll_seconds),
+                status_every: std::time::Duration::from_secs(60),
                 supervise: uranium_train::supervise::SuperviseArgs {
                     max_restarts,
                     window: std::time::Duration::from_secs(window_minutes * 60),
@@ -515,6 +544,21 @@ fn main() -> Result<()> {
                     args: Vec::new(),
                 },
             })
+        }
+        Cmd::Devices { run } => {
+            let cfg = uranium_train::storage::StorageConfig::from_env()?;
+            let spans = uranium_train::storage::device_spans(&uranium_train::storage::read_devices(&cfg, &run)?);
+            let total: u64 = spans.iter().map(|s| s.to - s.from).sum();
+            let mut by_host: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+            for s in &spans {
+                *by_host.entry(s.host.clone()).or_default() += s.to - s.from;
+            }
+            let hosts: serde_json::Map<String, serde_json::Value> = by_host
+                .into_iter()
+                .map(|(h, n)| (h, serde_json::json!({ "updates": n, "share": if total > 0 { n as f64 / total as f64 } else { 0.0 } })))
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "run": run, "updates": total, "hosts": hosts, "spans": spans }))?);
+            Ok(())
         }
         Cmd::BcProfile { data, batches, backend, config, core } => {
             let cfg = BcConfig::load(&config)?;
