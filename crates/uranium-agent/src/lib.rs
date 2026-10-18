@@ -54,7 +54,7 @@ impl PolicySpec {
     pub fn label(&self) -> String {
         match self {
             Self::ScriptedT0 => format!("t0@{}", env!("CARGO_PKG_VERSION")),
-            Self::Model(h) => format!("model:{}:{:?}", h.checkpoint_id, h.sample).to_lowercase(),
+            Self::Model(h) => infer::model_policy_label(&h.checkpoint_id, h.sample),
             Self::Learner(l) => format!("learner:{}:{:?}", l.handle().checkpoint_id, l.handle().sample).to_lowercase(),
         }
     }

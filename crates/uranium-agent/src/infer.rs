@@ -160,6 +160,16 @@ pub fn checkpoint_id(dir: &Path) -> Result<String> {
     Ok(format!("{name}@{sha}"))
 }
 
+/// The checkpoint's Core kind, lower case (`lstm` / `gtrxl`), for reports (020-R5 summary).
+pub fn checkpoint_core(dir: &Path) -> Result<String> {
+    Ok(format!("{:?}", checkpoint::read_meta(dir)?.net_config()?.core.kind).to_lowercase())
+}
+
+/// 020-R5: the session `policy` label of a model player (same text as `PolicySpec::label`).
+pub fn model_policy_label(checkpoint_id: &str, sample: SampleMode) -> String {
+    format!("model:{checkpoint_id}:{sample:?}").to_lowercase()
+}
+
 impl InferenceHandle {
     /// Loads the checkpoint on its own thread; returns once the model is ready (or failed).
     pub fn start(dir: &Path, sample: SampleMode, opts: InferOptions) -> Result<Self> {

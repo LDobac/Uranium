@@ -4,6 +4,7 @@
 # relative to URANIUM_SHARED_DIR, 061).
 name = "core-ablation-t0"
 seed_base = 32800
+save_replay = true
 [[matchup]]
 map = "fighting_spirit"
 games = 50

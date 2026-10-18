@@ -1,6 +1,6 @@
 # 020 — Env Orchestration
 
-- **Status**: Approved (2026-10-15, 2026-10-16 개정: 020-AC1 기준, Windows 학습 PC 로컬 hostd, 2026-10-17 개정: 스케줄러 crate `uranium-runner`, plan 플레이어 `model`과 slot별 정책 라우팅(020-R11), 정책 버전 기록 / 020-R12 동적 Job 공급자(RL 리그, 3단계 계획 승인) / 020-R13 승자 불일치 판정(AMB-020-3, 사용자 결정), 2026-10-18 개정: `Finished.replay` 리플레이 바이트 반환(020-R1, 042-R11), 020-R13 상호 퇴장 = Aborted·hostd 드롭 시간(011-R17·R18, 사용자 결정))
+- **Status**: Approved (2026-10-15, 2026-10-16 개정: 020-AC1 기준, Windows 학습 PC 로컬 hostd, 2026-10-17 개정: 스케줄러 crate `uranium-runner`, plan 플레이어 `model`과 slot별 정책 라우팅(020-R11), 정책 버전 기록 / 020-R12 동적 Job 공급자(RL 리그, 3단계 계획 승인) / 020-R13 승자 불일치 판정(AMB-020-3, 사용자 결정), 2026-10-18 개정: `Finished.replay` 리플레이 바이트 반환(020-R1, 042-R11), 020-R13 상호 퇴장 = Aborted·hostd 드롭 시간(011-R17·R18, 사용자 결정) / summary.md 정책 표시·정책별 합산(사용자 결정, Risks 절 메모))
 - **Related**: [011](011-bridge-openbw.md), [021](021-opponent-pool.md), [042](042-rl-training.md), [060](060-infra-bc250.md)
 
 ## Purpose
@@ -70,6 +70,7 @@ p0 = { kind = "model", checkpoint = "<dir>", sample = "argmax" }  # 모델 정�
 
 ## Risks & Open Questions
 - **slot 식별 (2026-10-17 실측)**: Windows 학습 PC(TCP LAN)에서 BWAPI 플레이어 id(`Hello.slot`)가 런처 순서와 다르게 배정됐다(T0 테란 대 T0 저그 4판 중 2판). 그래서 정책 라우팅(020-R11)과 시나리오 빌드(050)는 hostd가 붙이는 플레이어 이름 `uranium-p<i>`로 `GameSpec.players` 인덱스를 찾는다. 같은 게임의 두 세션이 승자를 다르게 보고한 판도 관측됐다. 원인(2026-10-17 조사): 패자 클라이언트가 마지막 프레임에 상대도 패배로 표시한다. 디싱크가 아니며 OpenBW 이탈 처리 타이밍 문제로 추정한다(재현: seed 30000, 모델 argmax 대 T0 테란, 1번 게임). 판정은 020-R13을 따르고, 보고서는 그런 판을 "winner disagree"로 따로 센다.
+- **summary.md 형식 (2026-10-18 사용자 결정, 구현 메모)**: 모델 대 모델 대전(032-R17 맞대결)을 읽을 수 있게 `uranium-env` summary를 바꾼다. 대전 동작은 바꾸지 않는다. ① matchup 표의 p0·p1 모두 모델이면 `model <core> \`<run 폴더>/<체크포인트 폴더>\` (샘플링)`과 정책 버전(020-R5 `policy` 값)을 표시한다. core는 체크포인트 `meta.json`에서 읽는다. ② 서로 다른 두 모델 정책의 게임은 승자 세션의 `policy`로 p0·p1 승을 가른다(이전에는 "mirror decided"로만 셌다). 같은 정책끼리는 그대로 mirror다. ③ "Per policy (slot swaps combined)" 표: (정책, 상대)별로 슬롯 교대 matchup을 합친 승·패·무, Wilson 95%(050-R2), dropped를 맵별과 전체(`all`)로 낸다. ④ "Model sessions" 표에 core·run 열을 더한다. 테스트 `report::tests::model_vs_model_summary_per_policy_032_r17`.
 
 
 - LAN 모드에서 두 런처의 프레임 동기 오버헤드를 측정해야 한다. 셀프플레이는 같은 에이전트 서버로 두 브리지가 접속하는 구조가 된다.

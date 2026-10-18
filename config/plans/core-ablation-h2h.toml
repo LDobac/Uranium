@@ -4,6 +4,7 @@
 # `bc --run core-abl-gtrxl` (ckpt-5300, relative to URANIUM_SHARED_DIR, 061).
 name = "core-ablation-h2h"
 seed_base = 32700
+save_replay = true
 [[matchup]]
 map = "fighting_spirit"
 games = 25
