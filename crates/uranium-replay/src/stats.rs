@@ -54,6 +54,17 @@ pub fn dataset_markdown(records: &[PathBuf]) -> Result<String> {
             rows.push(serde_json::from_str(line).with_context(|| format!("parsing {}", p.display()))?);
         }
     }
+    // A re-run can record the same view twice (same replay and perspective, or the same rejected
+    // replay): the last record counts.
+    let before = rows.len();
+    let mut last: BTreeMap<(String, Option<u64>), usize> = BTreeMap::new();
+    for (i, r) in rows.iter().enumerate() {
+        last.insert((r["replay_sha256"].as_str().unwrap_or("").to_string(), r["view"]["perspective"].as_u64()), i);
+    }
+    let keep: BTreeSet<usize> = last.into_values().collect();
+    let rows: Vec<Value> = rows.into_iter().enumerate().filter(|(i, _)| keep.contains(i)).map(|(_, r)| r).collect();
+    let duplicates = before - rows.len();
+    let mut recorded: BTreeMap<String, usize> = BTreeMap::new();
     let s = |v: &Value, k: &str| v[k].as_str().unwrap_or("").to_string();
     // Build outcomes per src: records (views, or whole replays rejected before a view exists).
     let mut outcomes: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
@@ -71,6 +82,9 @@ pub fn dataset_markdown(records: &[PathBuf]) -> Result<String> {
     for r in &rows {
         let (src, outcome, sha, family) = (s(r, "src"), s(r, "outcome"), s(r, "replay_sha256"), s(r, "map_family"));
         replays.entry(src.clone()).or_default().insert(sha.clone());
+        if let Some(m) = r["recorded_winner"].as_str() {
+            *recorded.entry(m.to_string()).or_default() += 1;
+        }
         *outcomes.entry(src.clone()).or_default().entry(outcome.clone()).or_default() += 1;
         if outcome == "written" || outcome == "desync" {
             for key in [("전체", String::new()), ("src", src.clone()), ("map_family", family.clone())] {
@@ -107,7 +121,9 @@ pub fn dataset_markdown(records: &[PathBuf]) -> Result<String> {
         records.len()
     )?;
     writeln!(md, "- 저장: 게임 {} / 시점 {} / 스텝 {}", total.games.len(), total.views, total.steps)?;
-    writeln!(md, "- 레이블 커버리지(031-AC3, 목표 ≥ 95%): 게임 영향 명령 {cmds}개 중 {labeled}개, {:.2}%\n", labeled as f64 * 100.0 / cmds.max(1) as f64)?;
+    writeln!(md, "- 레이블 커버리지(031-AC3, 목표 ≥ 95%): 게임 영향 명령 {cmds}개 중 {labeled}개, {:.2}%", labeled as f64 * 100.0 / cmds.max(1) as f64)?;
+    writeln!(md, "- 중복 기록(같은 리플레이·시점, 마지막 것만 셈): {duplicates}개 제외")?;
+    writeln!(md, "- 기록 승자(040-R8, 기록 단위): 이름 일치 {}, 불일치 {}\n", recorded.get("matched").unwrap_or(&0), recorded.get("unmatched").unwrap_or(&0))?;
 
     writeln!(md, "## 맵 패밀리 × 매치업 (040-AC4)\n\n| 맵 패밀리 | 매치업 | 게임 | 시점 | 스텝 |\n|---|---|---|---|---|")?;
     for ((f, m), c) in &by_family_matchup {
@@ -174,10 +190,10 @@ pub fn dataset_markdown(records: &[PathBuf]) -> Result<String> {
 mod tests {
     use super::*;
 
-    fn written(sha: &str, family: &str, title: &str, matchup: &str, source: &str, result: i8) -> String {
+    fn written(sha: &str, perspective: u8, family: &str, title: &str, matchup: &str, source: &str, result: i8) -> String {
         serde_json::json!({
             "index": 0, "replay_sha256": sha, "src": "stardata", "map_family": family, "map_name": title, "map_hash": "",
-            "view": {"perspective": 0, "stage": "S1", "apm": 100, "matchup": matchup, "enemy_random": false},
+            "view": {"perspective": perspective, "stage": "S1", "apm": 100, "matchup": matchup, "enemy_random": false},
             "outcome": "written", "steps": 10, "coverage": {"commands": 5, "labeled": 5, "unknown": 0, "unknown_ops": [], "unknown_orders": []},
             "result": result, "result_source": source
         })
@@ -192,9 +208,11 @@ mod tests {
         let p = dir.join("stardata_p00.jsonl");
         let a = "a".repeat(64);
         let lines = [
-            written(&a, "fighting_spirit", "투혼 1.3", "TvT", "bridge", 1),
-            written(&a, "fighting_spirit", "투혼 1.3", "TvT", "bridge", -1),
-            written(&"b".repeat(64), "other", "Python", "TvZ", "none", 0),
+            written(&a, 0, "fighting_spirit", "투혼 1.3", "TvT", "bridge", 1),
+            written(&a, 1, "fighting_spirit", "투혼 1.3", "TvT", "bridge", -1),
+            // A re-run wrote the same view again: counted once.
+            written(&a, 1, "fighting_spirit", "투혼 1.3", "TvT", "bridge", -1),
+            written(&"b".repeat(64), 0, "other", "Python", "TvZ", "none", 0),
             serde_json::json!({"index": 3, "replay_sha256": "c".repeat(64), "src": "stardata", "map_family": "other", "map_name": "Python", "map_hash": "", "view": {"perspective": 0, "stage": "S1", "apm": 90, "matchup": "TvP", "enemy_random": false}, "outcome": "desync", "reasons": ["x"]}).to_string(),
         ];
         std::fs::write(&p, lines.join("\n")).unwrap();
@@ -204,6 +222,7 @@ mod tests {
         assert!(md.contains("| none | 0 | 1 | 33.3% |"), "{md}");
         assert!(md.contains("| 전체 |  | 4 | 1 | 25.0% |"), "{md}");
         assert!(md.contains("| map_family | other | 2 | 1 | 50.0% |"), "{md}");
+        assert!(md.contains("중복 기록(같은 리플레이·시점, 마지막 것만 셈): 1개 제외"), "{md}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

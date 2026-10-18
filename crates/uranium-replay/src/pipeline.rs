@@ -146,6 +146,10 @@ pub struct Record {
     pub map_name: String,
     /// SHA-256 of the map CHK (040-R15 / R16 hash lists).
     pub map_hash: String,
+    /// 040-R8 (c) / ④: `matched` / `unmatched` when the ladder records name a winner for this
+    /// replay (unmatched = the name is neither player's, so it is not used).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recorded_winner: Option<&'static str>,
     pub view: Option<View>,
     #[serde(flatten)]
     pub outcome: Outcome,
@@ -165,10 +169,15 @@ pub fn judge(play: &PlayResult, recorded_winner: Option<u8>, me: u8) -> (i8, &'s
 }
 
 /// BWAPI id of the recorded winner (043-R8 toon) among the two active players, matched by name.
+/// Exact name first; otherwise an ASCII case-insensitive match if it names exactly one player.
 fn recorded_slot(rep: &Replay, winner: Option<&str>) -> Option<u8> {
-    let w = winner?;
+    let w = winner?.as_bytes();
     let active = rep.active_players();
-    let p = active.iter().find(|(p, _)| p.name == w.as_bytes())?;
+    let exact = active.iter().find(|(p, _)| p.name == w);
+    let p = exact.or_else(|| match active.iter().filter(|(p, _)| p.name.eq_ignore_ascii_case(w)).collect::<Vec<_>>()[..] {
+        [one] => Some(one),
+        _ => None,
+    })?;
     slot_of(rep, p.0.id).ok()
 }
 
@@ -273,6 +282,31 @@ struct Pending {
     records: Vec<Record>,
 }
 
+/// Adds one written game under the `pending` lock; its record (and those of the games before it
+/// in the same shard) reach `sink` only once the shard is verified on the shared drive (040-R17).
+/// Returns false when the build has failed: then nothing is added, and a shard whose copy failed
+/// drops its records for good (they are never sunk, so a resumed build processes those replays
+/// again) while the writer refuses further writes, keeping the failed local copy intact.
+fn add_game(p: &mut Pending, failure: &Mutex<Option<anyhow::Error>>, game: ShardGame, r: Record, sink: &(dyn Fn(&Record) + Sync)) -> bool {
+    // Checked under the `pending` lock: no worker adds after another worker's flush failed.
+    if failure.lock().unwrap().is_some() {
+        return false;
+    }
+    let before = p.writer.written.len();
+    if let Err(e) = p.writer.add(game) {
+        p.records.clear();
+        *failure.lock().unwrap() = Some(e);
+        return false;
+    }
+    p.records.push(r);
+    if p.writer.written.len() > before {
+        for r in p.records.drain(..) {
+            sink(&r);
+        }
+    }
+    true
+}
+
 /// Builds shards from `files`, handing every record to `sink` as soon as it is final: a
 /// written game's record only after the shard holding it is on disk, so an interrupted run
 /// can resume from its records (`BuildOptions::done_sha256`).
@@ -295,18 +329,9 @@ pub fn build(files: &[PathBuf], opt: &BuildOptions, cfg: &PlayConfig, sink: &(dy
                             sink(&r);
                             continue;
                         };
-                        let mut p = pending.lock().unwrap();
-                        let before = p.writer.written.len();
-                        if let Err(e) = p.writer.add(game) {
-                            *failure.lock().unwrap() = Some(e);
+                        if !add_game(&mut pending.lock().unwrap(), failure, game, r, sink) {
                             queue.lock().unwrap().clear();
                             return;
-                        }
-                        p.records.push(r);
-                        if p.writer.written.len() > before {
-                            for r in p.records.drain(..) {
-                                sink(&r);
-                            }
                         }
                     }
                 }
@@ -327,8 +352,19 @@ pub fn build(files: &[PathBuf], opt: &BuildOptions, cfg: &PlayConfig, sink: &(dy
 #[allow(clippy::too_many_arguments)]
 fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, families: &MapFamilies, excludes: &MapExcludes, labeler: &Labeler, written: &Mutex<u64>) -> Vec<(Record, Option<ShardGame>)> {
     let map_hash_cell = std::cell::RefCell::new(String::new());
+    let recorded_cell: std::cell::RefCell<Option<&'static str>> = std::cell::RefCell::new(None);
     let rec = |sha: &str, map: &str, family: &str, view: Option<View>, outcome: Outcome| {
-        let r = Record { index, replay_sha256: sha.to_string(), src: opt.src.clone(), map_family: family.to_string(), map_name: map.chars().filter(|c| !c.is_control()).collect(), map_hash: map_hash_cell.borrow().clone(), view, outcome };
+        let r = Record {
+            index,
+            replay_sha256: sha.to_string(),
+            src: opt.src.clone(),
+            map_family: family.to_string(),
+            map_name: map.chars().filter(|c| !c.is_control()).collect(),
+            map_hash: map_hash_cell.borrow().clone(),
+            recorded_winner: *recorded_cell.borrow(),
+            view,
+            outcome,
+        };
         (r, None)
     };
     let bytes = match std::fs::read(file) {
@@ -364,7 +400,13 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
         let outcome = if reason.starts_with("review:") { Outcome::Review { reason } } else { Outcome::Error { reason: format!("013-R7 round trip: {reason}") } };
         return vec![rec(&sha, &rep.header.map_name, &family, None, outcome)];
     }
-    let recorded_winner = recorded_slot(&rep, opt.recorded_winners.get(&sha).map(String::as_str));
+    let recorded_name = opt.recorded_winners.get(&sha).map(String::as_str);
+    let recorded_winner = recorded_slot(&rep, recorded_name);
+    // A recorded winner that names neither player is reported, not silently dropped (040-R8 (c) / ④).
+    *recorded_cell.borrow_mut() = recorded_name.map(|_| if recorded_winner.is_some() { "matched" } else { "unmatched" });
+    if recorded_name.is_some() && recorded_winner.is_none() {
+        eprintln!("040-R8: recorded winner of {} matches no player name", &sha[..12]);
+    }
     let mut out = Vec::new();
     for view in views {
         if *written.lock().unwrap() >= opt.budget_bytes {
@@ -431,6 +473,45 @@ mod tests {
         assert_eq!(judge(&PlayResult { first_leaver_slot: Some(1), ..p.clone() }, None, 0), (1, result_source::LEAVE));
         assert_eq!(judge(&p, Some(1), 0), (-1, result_source::RECORDED));
         assert_eq!(judge(&p, None, 0), (0, result_source::NONE));
+    }
+
+    fn written_record(n: u32) -> Record {
+        let coverage = Coverage::default();
+        Record { index: n as usize, replay_sha256: format!("{n:064x}"), src: "t".into(), map_family: "other".into(), map_name: String::new(), map_hash: String::new(), recorded_winner: None, view: None, outcome: Outcome::Written { steps: 3, coverage, result: 0, result_source: "none".into() } }
+    }
+
+    /// 040-R17 (review M1): a shard whose copy fails verification stops the build. Its records
+    /// (the pending ones before it too) are never sunk, later adds by other workers are refused,
+    /// and the kept local copy is not overwritten.
+    #[test]
+    fn failed_shard_records_are_never_sunk_040_r17() {
+        use crate::shard::tests::{corrupting_copy, game};
+        let dir = std::env::temp_dir().join(format!("uranium-pipeline-m1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let one = postcard::experimental::serialized_size(&game(1)).unwrap();
+        // The second game fills the shard and triggers the (failing) flush.
+        let mut writer = ShardWriter::new(dir.join("shared"), dir.join("local"), 0, one + 1).unwrap();
+        writer.copy = corrupting_copy;
+        let mut p = Pending { writer, records: Vec::new() };
+        let failure = Mutex::new(None);
+        let sunk = Mutex::new(Vec::<String>::new());
+        let sink = |r: &Record| sunk.lock().unwrap().push(r.replay_sha256.clone());
+        assert!(add_game(&mut p, &failure, game(1), written_record(1), &sink));
+        assert!(!add_game(&mut p, &failure, game(2), written_record(2), &sink));
+        assert!(failure.lock().unwrap().is_some() && p.records.is_empty());
+        let local = |d: &str| std::fs::read_dir(dir.join(d)).map(|r| r.flatten().map(|e| e.path()).collect::<Vec<_>>()).unwrap_or_default();
+        let kept = local("local");
+        assert_eq!(kept.len(), 1);
+        let bytes = std::fs::read(&kept[0]).unwrap();
+        // Another worker adds afterwards: refused before touching the writer.
+        p.writer.copy = |from, to| std::fs::copy(from, to);
+        assert!(!add_game(&mut p, &failure, game(3), written_record(3), &sink));
+        assert!(!add_game(&mut p, &failure, game(4), written_record(4), &sink));
+        assert!(sunk.lock().unwrap().is_empty());
+        assert_eq!(local("local"), kept);
+        assert_eq!(std::fs::read(&kept[0]).unwrap(), bytes);
+        assert!(local("shared").is_empty());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

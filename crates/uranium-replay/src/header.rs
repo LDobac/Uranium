@@ -66,8 +66,11 @@ pub fn parse(h: &[u8]) -> Header {
 /// Hangul is never valid UTF-8, while UTF-8 Hangul can also parse as CP949 pairs), then CP949
 /// without replacement characters, and UTF-8 with replacement characters as the last resort.
 pub fn decode_title(b: &[u8]) -> String {
-    if let Ok(s) = std::str::from_utf8(b) {
-        return s.to_string();
+    match std::str::from_utf8(b) {
+        Ok(s) => return s.to_string(),
+        // UTF-8 cut inside its last character by the 26-byte field: keep the valid prefix.
+        Err(e) if e.error_len().is_none() && e.valid_up_to() > 0 => return String::from_utf8_lossy(&b[..e.valid_up_to()]).into_owned(),
+        Err(_) => {}
     }
     let cp949 = |b: &[u8]| encoding_rs::EUC_KR.decode_without_bom_handling_and_without_replacement(b).map(|s| s.into_owned());
     // The 26-byte field can cut a two-byte character after its lead byte.
@@ -98,6 +101,9 @@ mod tests {
         // Truncated after a lead byte (26-byte field).
         assert_eq!(decode_title(&[0xc5, 0xf5, 0xc8]), "투");
         assert_eq!(decode_title("\u{7}투혼 \u{5}1.4".as_bytes()), "\u{7}투혼 \u{5}1.4");
+        // UTF-8 cut inside the last character (26-byte field): the valid prefix, not CP949.
+        let utf8 = "| 서킷브레이커".as_bytes();
+        assert_eq!(decode_title(&utf8[..utf8.len() - 1]), "| 서킷브레이");
         assert_eq!(decode_title(b"| iCCup | Fighting Spirit "), "| iCCup | Fighting Spirit ");
         // Neither UTF-8 nor CP949: replacement characters, never a panic.
         assert!(decode_title(&[0xff, 0xff, 0xff]).contains('\u{fffd}'));

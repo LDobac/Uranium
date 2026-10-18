@@ -193,6 +193,8 @@ pub struct ShardWriter {
     pub written: Vec<(PathBuf, u64)>,
     pub copy: CopyFn,
     pub retries: u32,
+    /// Local copy of the shard that failed verification (040-R17); set once, then every write fails.
+    failed: Option<PathBuf>,
 }
 
 impl ShardWriter {
@@ -201,10 +203,11 @@ impl ShardWriter {
     pub fn new(dir: PathBuf, staging: PathBuf, first_index: u32, target_bytes: usize) -> Result<Self> {
         std::fs::create_dir_all(&dir)?;
         std::fs::create_dir_all(&staging).with_context(|| format!("creating {} (040-R17 staging)", staging.display()))?;
-        Ok(Self { dir, staging, next_index: first_index, target_bytes, pending: Vec::new(), pending_bytes: 0, written: Vec::new(), copy: |from, to| std::fs::copy(from, to), retries: COPY_RETRIES })
+        Ok(Self { dir, staging, next_index: first_index, target_bytes, pending: Vec::new(), pending_bytes: 0, written: Vec::new(), copy: |from, to| std::fs::copy(from, to), retries: COPY_RETRIES, failed: None })
     }
 
     pub fn add(&mut self, game: ShardGame) -> Result<()> {
+        self.check()?;
         self.pending_bytes += postcard::experimental::serialized_size(&game).unwrap_or(0);
         self.pending.push(game);
         if self.pending_bytes >= self.target_bytes {
@@ -213,28 +216,48 @@ impl ShardWriter {
         Ok(())
     }
 
+    /// 040-R17: after a failed shard the writer refuses everything, so the kept local copy is
+    /// never overwritten and no later shard is published past the failure.
+    fn check(&self) -> Result<()> {
+        match &self.failed {
+            Some(local) => bail!("040-R17: an earlier shard failed verification (local copy {}); no more shards are written", local.display()),
+            None => Ok(()),
+        }
+    }
+
     pub fn flush(&mut self) -> Result<()> {
+        self.check()?;
         if self.pending.is_empty() {
             return Ok(());
         }
+        // The index and the pending games are consumed whatever happens; the local name is
+        // unique per process and attempt, so no later flush or run can overwrite a kept copy.
         let name = format!("shard_{:05}.bin.zst", self.next_index);
-        let path = self.dir.join(&name);
-        let local = self.staging.join(format!("{}-{name}", std::process::id()));
-        let shard = Shard { header: ShardHeader::default(), games: std::mem::take(&mut self.pending) };
-        let n = write(&local, &shard)?;
-        publish(&local, &path, self.copy, self.retries)?;
-        self.written.push((path, n));
         self.next_index += 1;
         self.pending_bytes = 0;
-        Ok(())
+        let path = self.dir.join(&name);
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+        let local = self.staging.join(format!("{}-{stamp}-{name}", std::process::id()));
+        let shard = Shard { header: ShardHeader::default(), games: std::mem::take(&mut self.pending) };
+        let res = write(&local, &shard).and_then(|n| publish(&local, &path, self.copy, self.retries).map(|_| n));
+        match res {
+            Ok(n) => {
+                self.written.push((path, n));
+                Ok(())
+            }
+            Err(e) => {
+                self.failed = Some(local);
+                Err(e)
+            }
+        }
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn game(n: u32) -> ShardGame {
+    pub(crate) fn game(n: u32) -> ShardGame {
         let meta = GameMeta {
             map_hash: "ab".into(),
             map_family: "fighting_spirit".into(),
@@ -323,7 +346,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    fn corrupting_copy(from: &Path, to: &Path) -> std::io::Result<u64> {
+    pub(crate) fn corrupting_copy(from: &Path, to: &Path) -> std::io::Result<u64> {
         // Zeroes the first bytes, like the SMB failure of reports/m4_desync_nondet.md.
         let mut b = std::fs::read(from)?;
         b[..4].fill(0);
@@ -348,7 +371,18 @@ mod tests {
         let err = format!("{:#}", w.flush().unwrap_err());
         assert!(err.contains("failed verification after 4 copies"), "{err}");
         assert!(files(&dir.join("shared")).is_empty());
-        assert_eq!(files(&dir.join("local")), vec![format!("{}-shard_00007.bin.zst", std::process::id())]);
+        let kept = files(&dir.join("local"));
+        assert!(kept.len() == 1 && kept[0].starts_with(&format!("{}-", std::process::id())) && kept[0].ends_with("-shard_00007.bin.zst"), "{kept:?}");
+        let kept_bytes = std::fs::read(dir.join("local").join(&kept[0])).unwrap();
+        assert_eq!(read(&dir.join("local").join(&kept[0])).unwrap().games, vec![game(1)]);
+        // A failed writer refuses further games and flushes, even with a working copy: the kept
+        // local copy is never overwritten and nothing is published after the failure.
+        w.copy = |from, to| std::fs::copy(from, to);
+        assert!(w.add(game(3)).is_err());
+        assert!(w.flush().is_err());
+        assert_eq!(files(&dir.join("local")), kept);
+        assert_eq!(std::fs::read(dir.join("local").join(&kept[0])).unwrap(), kept_bytes);
+        assert!(files(&dir.join("shared")).is_empty());
         // Two bad copies, then a good one: published under the final name.
         FAILS_LEFT.store(2, std::sync::atomic::Ordering::SeqCst);
         let mut w = ShardWriter::new(dir.join("shared"), dir.join("local2"), 8, usize::MAX).unwrap();
