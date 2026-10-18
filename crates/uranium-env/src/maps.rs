@@ -143,9 +143,81 @@ pub fn live_precompute(dir: &Path, info: &GameInfo) -> (Option<MapPrecompute>, P
     }
 }
 
+/// 040-R15 target-map families (투혼, 서킷브레이커): RL and evaluation maps.
+pub fn is_target_family(family: &str) -> bool {
+    matches!(family, "fighting_spirit" | "circuit_breaker")
+}
+
+/// 031 live precompute with the session rule (메인 결정 2026-10-19): a target-map family
+/// (`family`, 040-R15) without a current precompute refuses the session (BC evaluation games and
+/// RL would otherwise play with zero base_loc / choke / wall channels and no map resource
+/// entities); any other map keeps the AMB-031-4 rule (channels 0, the caller warns). `dir` is
+/// `URANIUM_MAPS_DIR` (`None` / `Err` = not set).
+pub fn live_precompute_for_session(dir: Result<PathBuf>, info: &GameInfo, family: &str) -> Result<(Option<MapPrecompute>, PrecomputeSource)> {
+    let (pre, source) = match &dir {
+        Ok(d) => live_precompute(d, info),
+        Err(_) => (None, PrecomputeSource::Missing),
+    };
+    if pre.is_none() && is_target_family(family) {
+        let hash: String = info.map_hash.iter().map(|b| format!("{b:02x}")).collect();
+        let why = match &dir {
+            Ok(d) => format!(
+                "no current map precompute (v{PRECOMPUTE_VERSION}) for {:?} in {}: neither <map file sha256>.toml nor {hash}.resources.toml (run `uranium-replay mapgen <scx>`)",
+                info.map_name,
+                d.display()
+            ),
+            Err(e) => format!("{e:#}"),
+        };
+        anyhow::bail!("refusing the game on target map family {family} (031, 메인 결정 2026-10-19): {why}");
+    }
+    Ok((pre, source))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 031 (메인 결정 2026-10-19): on a target map a missing precompute refuses the session; on any
+    /// other map the game goes on without one; a present resource file makes the target map work.
+    #[test]
+    fn target_map_without_precompute_refuses_the_session_031() {
+        let dir = std::env::temp_dir().join(format!("uranium-maps-live-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let w = 8u16;
+        let n = w as usize * w as usize;
+        let info = GameInfo {
+            map_name: "Fighting Spirit".into(),
+            map_hash: [7; 32],
+            map_size_tiles: (w, w),
+            self_player: 0,
+            players: vec![],
+            static_map: uranium_proto::StaticMap {
+                width_tiles: w,
+                height_tiles: w,
+                walkable: uranium_proto::BitGrid::from_bytes(w * 4, w * 4, &vec![1; n * 16]),
+                buildable: uranium_proto::BitGrid::from_bytes(w, w, &vec![1; n]),
+                ground_height: vec![0; n],
+                start_locations: vec![],
+            },
+            latency_frames: 0,
+        };
+        let err = live_precompute_for_session(Ok(dir.clone()), &info, "fighting_spirit").err().expect("target map refused");
+        assert!(format!("{err:#}").contains("refusing the game") && format!("{err:#}").contains("mapgen"), "{err:#}");
+        let err = live_precompute_for_session(Err(anyhow::anyhow!("URANIUM_MAPS_DIR is not set")), &info, "circuit_breaker").err().expect("no folder");
+        assert!(format!("{err:#}").contains("URANIUM_MAPS_DIR"), "{err:#}");
+        let (pre, src) = live_precompute_for_session(Ok(dir.clone()), &info, "other").unwrap();
+        assert_eq!((pre, src), (None, PrecomputeSource::Missing), "other maps keep AMB-031-4");
+        // An older precompute version counts as missing.
+        let hash: String = info.map_hash.iter().map(|b| format!("{b:02x}")).collect();
+        std::fs::write(dir.join(format!("{hash}.toml")), "base_locs = []\nchokes = []\nwall_candidates = []\n").unwrap();
+        assert!(live_precompute_for_session(Ok(dir.clone()), &info, "fighting_spirit").is_err(), "old version refused");
+        let cur = MapPrecompute { version: PRECOMPUTE_VERSION, ..Default::default() };
+        std::fs::write(dir.join(format!("{hash}.toml")), toml::to_string(&cur).unwrap()).unwrap();
+        let (pre, src) = live_precompute_for_session(Ok(dir.clone()), &info, "fighting_spirit").unwrap();
+        assert_eq!((pre, src), (Some(cur), PrecomputeSource::Cached));
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn map_families_classify_040_r15() {

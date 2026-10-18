@@ -336,8 +336,40 @@ fn location_on_used_rows_matches_all_rows_032_r10() {
     let cols = columns();
     let net = UraniumNet::<LstmCore>::new(&cfg, &cols, &ad);
     let (b, t) = (2, 4);
-    let (obs, _) = random_obs(&cfg, &cols, b * t, 16, 59, &ad);
-    let labels = net.act(&obs, net.init_state(b * t, &ad), 1.0).action;
+    let n = 16;
+    let (obs, hm) = random_obs(&cfg, &cols, b * t, n, 59, &ad);
+    // Labels built on the host from the (host-seeded) masks, not sampled: even rows take an
+    // allowed location action, odd rows NoOp (action 0, always allowed, no arguments), so the
+    // batch always mixes rows with and without a location. Sampling used the device RNG shared
+    // with parallel tests and sometimes drew no location row at all.
+    let rows = b * t;
+    let s = cfg.heads.max_select;
+    let (mut action, mut selected, mut target_loc) = (vec![0i64; rows], vec![n as i64; rows * s], vec![0i64; rows]);
+    for r in (0..rows).step_by(2) {
+        let pick = (0..cols.len()).find_map(|a| {
+            if !hm.type_mask[r * cols.len() + a] || cols.target_kind[a] != uranium_model::batch::TARGET_LOC {
+                return None;
+            }
+            let cell = (0..hm.cells).find(|&c| hm.loc(r, cols.loc_class[a] as usize, c))?;
+            let unit = if cols.uses_select[a] == 1 { Some((0..n).find(|&i| hm.sel_ok(&cols, r, a, i))?) } else { None };
+            Some((a, cell, unit))
+        });
+        let (a, cell, unit) = pick.unwrap_or_else(|| panic!("row {r}: the seeded masks allow a location action"));
+        action[r] = a as i64;
+        target_loc[r] = cell as i64;
+        if let Some(i) = unit {
+            selected[r * s] = i as i64;
+        }
+    }
+    let int1 = |v: Vec<i64>| Tensor::<1, burn::tensor::Int>::from_data(burn::tensor::TensorData::new(v, [rows]), &ad);
+    let labels = uranium_model::batch::ActionBatch {
+        action: int1(action),
+        delay: int1(vec![0; rows]),
+        queued: int1(vec![0; rows]),
+        selected: Tensor::<2, burn::tensor::Int>::from_data(burn::tensor::TensorData::new(selected, [rows, s]), &ad),
+        target_unit: int1(vec![0; rows]),
+        target_loc: int1(target_loc),
+    };
     let run = |all: bool| {
         uranium_model::heads::LOCATION_ALL_ROWS.store(all, Ordering::SeqCst);
         let out = net.forward_seq(&obs, &labels, None, net.init_state(b, &ad), t);

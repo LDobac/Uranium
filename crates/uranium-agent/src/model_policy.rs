@@ -12,7 +12,7 @@ use uranium_env::features::world::World;
 use uranium_env::features::{AgentMemory, DELAY_BUCKETS, MapInfo, extract};
 use uranium_env::features::Strategy;
 use uranium_env::features::extract::action_table;
-use uranium_env::maps::{MapFamilies, PrecomputeSource, family_index, live_precompute, maps_dir};
+use uranium_env::maps::{MapFamilies, PrecomputeSource, family_index, live_precompute_for_session, maps_dir};
 use uranium_env::reward::{Outcome, RewardParts, RewardTracker};
 use uranium_model::HostState;
 use uranium_proto::{Act, GameInfo, RawFrame};
@@ -123,15 +123,10 @@ fn pct(v: &mut [f32], q: f64) -> f64 {
 impl ModelPolicy {
     pub fn new(handle: &InferenceHandle, info: &GameInfo) -> Result<Self> {
         let family = MapFamilies::load()?.classify(&info.map_name, "");
-        // 031 (AMB-031-4): a map without a precompute is played with the precompute channels at 0
-        // and a warning; the spec keeps live games going (unlike BC, which refuses to start, B-2).
-        let (pre, source) = match maps_dir() {
-            Ok(dir) => live_precompute(&dir, info),
-            Err(e) => {
-                elog!("[agent] WARNING: {e:#}");
-                (None, PrecomputeSource::Missing)
-            }
-        };
+        // 031: a target map (투혼, 서킷브레이커) without a current precompute refuses the session
+        // (메인 결정 2026-10-19); any other map is played with the precompute channels at 0 and a
+        // warning (AMB-031-4).
+        let (pre, source) = live_precompute_for_session(maps_dir(), info, &family)?;
         let source = match source {
             PrecomputeSource::Cached => "cached".to_string(),
             PrecomputeSource::Resources => "resources".to_string(),
