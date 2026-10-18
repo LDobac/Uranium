@@ -69,7 +69,7 @@
 
 ## Risks & Open Questions
 - Linux Vulkan 호스트(Mesa Vulkan 드라이버)에서 Burn/CubeCL 커널 성숙도가 불확실하다(특히 f16, subgroup 연산).
-- 060-R6 별도 프로세스 그룹: 감시 프로세스가 강제 종료(SIGKILL 등)되면 자식 학습이 고아로 남아 heartbeat를 계속 갱신할 수 있다(다른 PC가 인수하지 못함). 대응: 감시 프로세스는 종료할 때 자식을 정리한다.
+- 060-R6 별도 프로세스 그룹: 감시 프로세스가 강제 종료(SIGKILL 등)되면 자식 학습이 고아로 남아 heartbeat를 계속 갱신할 수 있다(다른 PC가 인수하지 못함). 대응: Linux는 자식에 `PR_SET_PDEATHSIG`(SIGINT 또는 SIGTERM)를 설정해 감시 프로세스가 강제 종료돼도 자식이 신호를 받아 멈추게 한다.
 - 체크포인트 쓰기는 원자적으로 한다(061-R4).
 
 - 메모리를 공유하는 호스트는 CPU 작업(OpenBW, feature 추출)과 메모리 대역폭을 두고 경합한다. 로컬 OpenBW는 최소화하고 원격 호스트를 우선한다.
