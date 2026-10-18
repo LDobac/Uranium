@@ -262,10 +262,9 @@ pub struct SessionRecord {
 /// BWAPI neutral player id.
 const NEUTRAL_PLAYER: u8 = 11;
 
-/// Enemy units that are not on (or next to) a currently visible tile, or that are cloaked or
-/// burrowed without being detected. The bridge must never send these (010-R5, 010-AC6).
 /// 030-R11: race of the first non-neutral, non-own unit in the frame ("Terran" / "Protoss" /
-/// "Zerg"), for the session record of a lobby-Random enemy.
+/// "Zerg"), for the session record of a lobby-Random enemy. Assumes 1v1 (any such unit is the
+/// enemy).
 fn revealed_enemy_race(f: &RawFrame, me: u8) -> Option<String> {
     let types = uranium_env::types::TypeTables::get();
     f.units
@@ -276,6 +275,8 @@ fn revealed_enemy_race(f: &RawFrame, me: u8) -> Option<String> {
         .map(|t| t.race.clone())
 }
 
+/// Enemy units that are not on (or next to) a currently visible tile, or that are cloaked or
+/// burrowed without being detected. The bridge must never send these (010-R5, 010-AC6).
 fn visibility_violations(f: &RawFrame, me: u8) -> u64 {
     f.units
         .iter()
