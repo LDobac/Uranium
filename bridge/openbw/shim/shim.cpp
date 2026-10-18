@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "uranium_bridge.h"
@@ -18,12 +19,16 @@ namespace {
 // are identical across processes (getID() depends on pointer order; 011-AC4) and match the
 // unit ids in .rep command streams (040).
 int32_t uid(Unit u) { return u->getReplayID(); }
-int32_t id_or_none(Unit u) { return u ? uid(u) : UR_NONE; }
-
 // Observed player and its opponent: self()/enemy() in games, the 011-R10 perspective in replays.
 Player g_me = nullptr, g_enemy = nullptr;
 
 std::unordered_map<int32_t, Unit> g_units;  // replay id -> unit, rebuilt every observation
+std::unordered_set<Unit> g_observed;         // the same units, by pointer
+
+// Unit references (order target, transport) name observed units only. A reference to a dead
+// or untracked unit carries a stale or uninitialized replayID (and exists() flag) in BWAPI,
+// which differed between runs of one replay (030-R1, 040-R8); hidden ones would leak (010-R5).
+int32_t id_or_none(Unit u) { return u && g_observed.count(u) ? uid(u) : UR_NONE; }
 Unit find_unit(int32_t id) {
   auto it = g_units.find(id);
   return it == g_units.end() ? nullptr : it->second;
@@ -338,9 +343,15 @@ class UraniumModule : public AIModule {
   void step(int frame) {
     units_.clear();
     g_units.clear();
+    g_observed.clear();
     for (Unit u : Broodwar->getAllUnits()) {
       if (!visible_to_self(u)) continue;
       g_units[uid(u)] = u;
+      g_observed.insert(u);
+    }
+    // Second pass: references are resolved against the complete observed set.
+    for (Unit u : Broodwar->getAllUnits()) {
+      if (!g_observed.count(u)) continue;
       units_.emplace_back();
       fill_unit(u, units_.back());
     }
