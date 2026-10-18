@@ -157,3 +157,41 @@ A~E에 없는 내용과, 리뷰 이후 이미 반영된 결정을 모은다. 근
 3. G-M1 재빌드 → (재build를 하면) 표본 build → 학습 end-to-end 확인 → 전체 재build → manifest·분할 재집계.
 4. G-M2·G-M3·G-M5 측정.
 5. 코어 비교(032-R17, worker 운영) → 코어 선택 → BC 본학습(S1 → S2, (A)).
+
+H 절(5661ff8·695cbfe 추가 리뷰)의 본학습 전 필수 항목 H-1~H-4도 이 체크리스트에 포함한다(G-2 수정과 함께 진행).
+
+## H. 추가 리뷰: 5661ff8(supervise·worker·양보)·695cbfe(summary.md 집계) (2026-10-19)
+
+### 배경·방법
+- 첫 리뷰(e190799)를 마친 뒤 master에 들어온 두 커밋을 같은 방식으로 점검했다(Fable 5.1(high) 리뷰어 1명, 읽기 전용, 2af92d2 기준). 핵심 주장 H-1·H-2는 코드에서 다시 확인했다(아래 "재확인").
+- 테스트(2af92d2, debug, flex): `cargo test --workspace --no-fail-fast` **196 통과 / 11 실패**. 실패 11개는 모두 B-1(`bool_not ... got U8`)과 같은 원인이고, 두 커밋이 만든 새 실패는 없다(`tests/worker.rs`·`tests/supervise.rs` 통과). 처음 돌린 실행은 리뷰어 빌드와 같은 target 디렉터리를 써서 `cubek_matmul` rlib 오류로 깨졌다. 별도 target 디렉터리에서 다시 돌린 결과가 위 숫자다.
+
+### 본학습·코어 비교 전 필수
+| # | 심각도 | 내용 | 위치 |
+|---|---|---|---|
+| H-1 | High (재확인) | **worker가 `init_run`의 DONE을 확인하지 않는다.** 큐가 `[bc-s1, bc-s2(init_run=bc-s1)]`이고 S1을 다른 PC가 잡고 있으면 S2가 Free로 보여 바로 시작된다. 그러면 S1 중간 `LATEST` 가중치로 S2를 끝까지 학습하고 DONE까지 기록한다. 한 PC에서도 S1이 GiveUp(1시간 skip)되면 같은 일이 생긴다. S1에 `LATEST`가 없으면 S2 잠금이 해제되지 않고 남는다. 코어 비교 큐(S1 두 개)는 해당 없음 | `crates/uranium-train/src/worker.rs:101-117`, `bc_run.rs` `resolve_checkpoint` |
+| H-2 | High (재확인) | **공유 I/O 오류 처리.** `peek_lock`은 읽기·파싱 실패를 `Free`로 해석한다. worker 루프는 `Queue::load`·`pick`(probe 쓰기)·`request_yield` 오류에서 바로 종료한다. VPN이 끊기면 `setsid nohup`으로 띄운 worker는 그대로 죽는다. 끊김이 계속되는 동안에는 매 poll마다 자식을 띄웠다 실패하는 일을 반복하다 GiveUp한다 | `storage.rs:683-688`, `worker.rs:159-165` |
+| H-3 | Medium→High(가능성) | **잠금 만료 자동 인수가 "공유 서버가 mtime을 부여한다"는 가정에 의존한다.** Linux cifs가 클라이언트 시계로 mtime을 쓰면 문제가 된다. BC250 1호기 시계가 10분 넘게 느려지면 이 PC worker가 살아 있는 run을 계속 빼앗고, 그때마다 최대 60분 작업이 손실된다. 4차 리포트에 "몇 분 빠름" 기록이 있다. 본학습 전에 BC250이 쓴 잠금의 `share_age`를 한 번 측정할 것. 자동 인수를 "같은 heartbeat를 단조 시계로 stale_after 동안 연속 관측"으로 바꾸면 시계와 무관해진다 | `storage.rs:674-688`, `worker.rs:112,181` |
+| H-4 | Medium | **Linux 포그라운드 터미널에서 Ctrl+C를 누르면 자식이 SIGINT를 두 번 받는다**(프로세스 그룹 + supervise 전달). 그러면 "두 번째 Ctrl+C"로 저장 없이 130으로 종료된다. 문서에 있는 systemd·`setsid nohup` 경로에서는 생기지 않고, Windows도 안전하다. 운영 경로를 고정하거나 자식을 별도 프로세스 그룹으로 띄울 것 | `supervise.rs:89-97`, `bc_run.rs:206-212` |
+
+### Medium·Low
+- [Medium] 요청한 PC가 멈추거나 다른 run을 잡아도 그 PC의 양보 요청(`.yield`)이 30분간 남아, 그동안 BC250이 논다. 종료하거나 다른 run을 잡을 때 자기 요청을 지우게 하는 것을 권장(061-R14 보완).
+- [Medium(가능성)] 양보 중 최종 push가 Deferred면 잠금을 쥔 채 76으로 끝난다. 그러면 요청 PC는 10분 stale까지 기다리고, 캐시에 남은 옛 계통 미push 체크포인트를 나중에 `recoverable`이 골라 계통이 섞일 수 있다.
+- [Medium] `cross_device.rs`의 gradient 허용치 1e-3은 어느 spec에도 없다. 처음부터 1e-4를 통과한 적이 없으니 문제를 숨긴 것은 아니고, 처음 정한 기준이다. 032에 backward AC를 추가하거나 테스트명에서 `032_ac1`을 뗄 것(사용자 확인).
+- [Medium] 첫 데이터셋 pull(약 40GB)·manifest 해시 구간에는 진행 출력이 없다. 지금은 30분 멈춤 기준 안에 들지만 여유가 문서화돼 있지 않다. `pull_tree`가 파일마다 출력하면 해결된다. kill해도 체크포인트는 깨지지 않는다(스테이징·rename 확인).
+- [Low] stale인데 `take_over=false`인 경쟁은 exit 1 → 재시작 반복 → GiveUp(드묾). worker 상태 파일이 spec의 "1분마다"가 아니라 루프 시점에만 갱신된다. 수동 `bc --run`은 우선순위 0으로 취급된다. 061-AC8 자동 테스트가 run 1개만 쓴다.
+- [Low] 문서 불일치: 서비스 `TimeoutStopSec=900` vs CLAUDE.md 600, 061-R13 `init` vs 코드 `init_run`, 060-R6 "Windows 작업 스케줄러"(구성 없음), 061-R15 "매 줄 백엔드" vs start 줄만, user 매니저에서 `After=remote-fs.target` 무시, 실행 중 바이너리 교체 시 다음 자식부터 새 바이너리.
+- [Low] 695cbfe: `model_info` 실패 시 모델 대 모델 게임이 경고 없이 "mirror"로 들어가 정책별 표가 빈다. 경고 출력 권장.
+
+### 확인 결과 정상
+- 동시 획득은 `create_new`로 한쪽만 성공하고 진 쪽은 75로 끝난다. 양보 흐름(요청 → 체크포인트·release·76 → 요청한 host만 획득)이 맞다.
+- DONE은 데이터 소진이나 `stop_at` 도달일 때만 기록된다(Ctrl+C·LockLost·Yielded 제외). DONE 기록 전 크래시는 다음 획득자가 복구한다. 같은 step 이중 저장(B-8)은 `saved_at`으로 해결됐다.
+- 종료 코드 75·76을 다른 오류가 우연히 내는 경로는 없다. devices.jsonl은 step 구간 기준으로 일관된다.
+- 695cbfe 집계: 같은 게임을 두 번 세지 않는다. 무승부는 n에 포함되고, Aborted는 승패에서 제외되며, 승자 판정은 020-R13을 따른다. Wilson 공식이 맞다. 001-R10 위반이 새로 들어간 곳은 없다.
+
+### spec 개정 제안 (사용자 확인 필요)
+1. 061-R13: `init_run`이 DONE이 아닌 run은 잡지 않는다. 공유 I/O 오류 시 종료하지 않고 재시도한다. 자동 인수 조건을 명시한다.
+2. 061-R14: 요청 host가 종료하거나 다른 run을 잡으면 자기 요청을 지운다.
+3. 060-R6·061-AC9: Linux 감시 프로세스를 터미널 포그라운드로 실행하는 것을 금지한다(또는 코드로 해결).
+4. 032: backward 허용치 AC(Vulkan 1e-3, CUDA 1e-2) 추가 또는 테스트명 수정.
+5. 사소: R13 `init`→`init_run`, R15 줄 형식, 060-R6 Windows 자동 시작 문구, `TimeoutStopSec` 통일.
