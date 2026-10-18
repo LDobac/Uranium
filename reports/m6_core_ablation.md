@@ -45,6 +45,28 @@
 
 BC 본 설정(레인 32 × T64)의 GTrXL update 시간은 아직 재지 않았다. 첫 run에서 기록한다.
 
+**추가 측정 (2026-10-18 20시, 실행 전 확인, `reports/m6_bc_preflight.md` 3차 최적화 후 코드):**
+- 설정과 조건:
+  - `config/bc_core_ablation.toml`: 레인 32 × T64, `micro_lanes 1`, `pad_entities 64`, 대칭 증강 4종
+  - 실데이터 `stardata/p00` S1(이 표본의 엔티티 수 N은 64)
+  - 랜덤 초기화 망, 장비마다 GPU 단독
+- update 시간은 `bc --steps 3~4`의 정상 상태 값이다. 모듈 시간은 `bc-profile`(레인 그룹 = 64행, update = 32그룹)로 쟀다.
+
+| 항목 | 이 PC CUDA (TF32) LSTM | 이 PC CUDA GTrXL | bc250_1 Vulkan f32 LSTM | bc250_1 Vulkan f32 GTrXL |
+|---|---|---|---|---|
+| update 시간 | 25.0–26.1 s | **22.6–23.4 s** | 128–152 s | 134–156 s |
+| 레인 그룹 forward / backward | 0.194 / 0.599 s | 0.159 / 0.537 s | 0.588 / 3.622 s | 0.565 / 3.563 s |
+| └ core forward / backward | 0.032 / 0.057 s | 0.004 / 0.005 s | 0.037 / 0.068 s | 0.023 / 0.037 s |
+| 최대 GPU 메모리 | 5.1 GB / 16 GB (nvidia-smi, 메모리 풀 포함) | 5.4 GB | VRAM 0.5 + GTT 3.2 = 3.5 GB / 15.9 GB | VRAM 0.5 + GTT 3.2 = 3.5 GB |
+| OOM·장치 리셋 | 없음 | 없음 | 없음 | 없음 |
+
+- **bc250_1 Linux에서 GTrXL 학습이 된다.** Windows Vulkan에서 TDR로 측정할 수 없었던 문제는 Linux에서 나지 않았다(update 3회와 프로파일 모두 정상 종료).
+- 두 코어의 차이는 core 부분뿐이다. 그 차이가 update 시간에서 차지하는 비중은 작다. 나머지는 spatial encoder(conv)와 location head(ConvTranspose)가 차지하고, 두 코어가 같다.
+  - CUDA에서는 GTrXL이 T 방향 병렬이라 약 10% 빠르다.
+  - Vulkan에서는 거의 같다. 측정 사이 편차(약 ±10%)가 차이보다 크다.
+- 메모리는 N과 엔티티 encoder에 따라 커지고, core는 영향이 작다. N=512 최악 조건은 M5 메모리 측정(`reports/m5_bc_memory.md`, CUDA 16 GB에서 레인 1 동작)을 따른다. 이번 표본은 N=64라 최대치가 아니다.
+- 대응이 필요한 OOM이나 속도 저하는 없었다.
+
 ### 1.6 왜 지금 나왔나
 - AMB-032-4가 "LSTM 시작, M5에서 비교"로 Resolved 처리돼 미결 목록에서 빠졌다.
 - 032에는 채택 기준 한 줄만 있었고, 절차와 AC가 없었다. 032-AC6은 교체 가능 여부만 요구했다.
@@ -56,7 +78,8 @@ BC 본 설정(레인 32 × T64)의 GTrXL update 시간은 아직 재지 않았�
 | 항목 | 결정 |
 |---|---|
 | 비교 여부 | 둘 다 짧게 학습해 비교한다("일단 실험하는 거니까 둘 다 테스트, 짧게 1–2일") |
-| 학습 길이 | 코어마다 S1 5,300 update(약 2일), 각 1회(seed 1개), 이 PC(CUDA)에서 차례로 |
+| 학습 길이 | 코어마다 S1 5,300 update, 각 1회(seed 1개) |
+| 장비 | 혼합 유동 운영(2026-10-18 사용자 결정): bc250_1(Vulkan f32)은 상시, 이 PC(CUDA, TF32 matmul)는 쉬는 동안 run 큐 작업자로 두 run을 나눠 맡고 서로 이어받는다(061-R13·R14). 장비별 update 구간은 `runs/<id>/devices.jsonl`(061-R15). 두 run의 장비 비율을 최종 집계해 4절에 적는다 |
 | 학습률 스케줄 | 짧은 run 전용: warmup 5%(265) + cosine이 5,300에서 끝남. 비교 run은 본학습에 다시 쓰지 않는다 |
 | 오프라인 지표 | `bc-eval --split val --games 500`(두 코어 같은 500게임) |
 | 대전 | 맞대결과 각자 T0 상대 둘 다. 맞대결은 맵당 50판(25판마다 슬롯 교대). 확률적 샘플링(temp 1) |
@@ -86,12 +109,35 @@ BC 본 설정(레인 32 × T64)의 GTrXL update 시간은 아직 재지 않았�
 - `config/plans/core-ablation-h2h.toml`: 맞대결 100판.
 - `config/plans/core-ablation-t0.toml`: 코어마다 T0 T/P/Z × 2맵 × 50판 = 300판, 합계 600판.
 
+학습은 run 큐 작업자로 돌린다(2026-10-18 결정, 061-R13·R14). 큐 파일 `<shared>/queue/core-ablation.toml`:
+```toml
+[defaults]
+datasets = ["replays/shards/stardata", "replays/shards/community", "replays/shards/scr_ladder", "replays/shards/personal"]
+config = "config/bc_core_ablation.toml"
+
+[[run]]
+id = "core-abl-lstm"
+core = "lstm"
+
+[[run]]
+id = "core-abl-gtrxl"
+core = "gtrxl"
 ```
-cargo build --release -p uranium-train -p uranium-runner --features cuda
+```
+cargo build --release -p uranium-train -p uranium-runner --features cuda     # 이 PC
+cargo build --release -p uranium-train                                       # bc250_1
+# bc250_1: 상시 실행 (systemd user 서비스 tools/worker/uranium-worker.service, 또는 setsid nohup)
+uranium-train worker --queue <shared>/queue/core-ablation.toml --backend vulkan --priority 1 --log runs/worker.log
+# 이 PC: 쉬는 동안 실행, 멈출 때 Ctrl+C (현재 run 체크포인트·push·잠금 해제)
+uranium-train worker --queue <shared>/queue/core-ablation.toml --backend cuda --priority 10 --log runs/worker.log
+```
+- 작업자는 큐 순서대로 빈 run을 잡는다. 빈 run이 없으면 이 PC(우선순위 10)가 bc250_1(1)이 돌리는 run에 양보를 요청한다. bc250_1은 다음 update 끝에서 체크포인트·잠금 해제 후 넘기고, 이 PC를 멈추면 다시 이어 간다.
+- 장비별 update 구간: `<shared>/runs/core-abl-lstm/devices.jsonl`, `<shared>/runs/core-abl-gtrxl/devices.jsonl`(시작·체크포인트·종료마다 host·백엔드·정밀도·step).
+- **공정성 주의:** 두 run의 장비별 update 비율이 크게 다르면 Vulkan f32와 CUDA TF32의 수치 차이가 비교에 섞일 수 있다. 4절에 run별 장비 비율을 집계해 적는다.
+```
+# (참고) 작업자 없이 한 PC에서 직접 돌릴 때
 DATA="--dataset replays/shards/stardata --dataset replays/shards/community --dataset replays/shards/scr_ladder --dataset replays/shards/personal"
-# 1) LSTM (약 2일)
 uranium-train bc $DATA --run core-abl-lstm  --config config/bc_core_ablation.toml --core lstm  --backend cuda
-# 2) GTrXL (약 2일, update 시간 미측정)
 uranium-train bc $DATA --run core-abl-gtrxl --config config/bc_core_ablation.toml --core gtrxl --backend cuda
 # 3) 오프라인 지표 (val 같은 500게임)
 uranium-train bc-eval $DATA --checkpoint <shared>/checkpoints/core-abl-lstm  --split val --games 500 --core lstm  --config config/bc_core_ablation.toml --backend cuda
@@ -120,6 +166,7 @@ uranium-env run --plan config/plans/core-ablation-t0.toml  --backend cuda --out 
 | target_loc 타일 오차 | | |
 | selected F1 | | |
 | update 시간(s, GPU 단독) | | |
+| 장비 비율 (update 수: 이 PC CUDA / bc250_1 Vulkan) | | |
 
 | 대전 | 결과 (Wilson 95%) |
 |---|---|
@@ -137,3 +184,5 @@ uranium-env run --plan config/plans/core-ablation-t0.toml  --backend cuda --out 
 - 2026-10-18 18:38 — 계획 확정. spec 032-R17·AC7, AMB-032-6 등록, 설정·plan 작성. 실행은 아직 하지 않음.
 - 2026-10-18 19:01 — T0 대전 판수 사용자 확정: 조합당 50판(코어당 300판, 합계 600판). 맞대결·샘플링은 변경 없음.
 - 2026-10-18 19:05 — 시작 전 남은 확인 5가지를 3절에 정리. 장비 혼합 유동 운영(bc250_1 + 이 PC, worker 큐)은 다른 세션이 worker 구현과 함께 032-R17 ①·이 문서 2·3절에 반영하기로 함.
+- 2026-10-18 20:22 — GTrXL 실제 BC 설정 확인(1.5절): 이 PC CUDA GTrXL 22.6–23.4 s/update(LSTM 25.0–26.1 s), bc250_1 Linux Vulkan f32 GTrXL 134–156 s(LSTM 128–152 s), OOM·TDR 없음, 최대 메모리 CUDA 5.4 GB·bc250_1 VRAM+GTT 3.5 GB. 3절 확인 2번(GTrXL BC 미검증) 해소. 3번(기간): 단독이면 이 PC 약 1.6일(5,300 × 약 26 s), bc250_1 약 8–9일(5,300 × 약 140 s)이고, 혼합 운영 기간은 이 PC 가동 시간에 따라 달라진다.
+- 2026-10-18 21:00 — run 큐 작업자(061-R13·R14·R15)·감시 재시작(060-R6) 구현과 두 PC 실기 시험 완료(`reports/m6_bc_preflight.md` 4차). 2·3절에 작업자 기반 실행 절차와 장비 비율 집계(4절 표)를 반영했다. 실행은 사용자 승인 전이다.

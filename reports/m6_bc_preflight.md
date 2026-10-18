@@ -48,11 +48,11 @@
 |---|---|---|---|
 | S1 | 이 PC (CUDA f32) | 36,985 × 26.4 s (3차 최적화 후) | **약 11.3일** |
 | S2 (S1 후) | 이 PC | 7,915 × 26.4 s | 약 2.4일 |
-| ablation (A) (S1과 동시) | bc250_1 (Vulkan **f32**) | 7,915 × 169 s (최적화 전, 최적화 후 값은 3차 절) | **약 15.5일 이하** |
+| ablation (A) (S1과 동시) | bc250_1 (Vulkan **f32**) | 7,915 × 약 135 s (3차 최적화 후) | **약 12.4일** |
 | 오프라인 평가 (대상 맵 test 895게임) | 이 PC | – | 체크포인트당 약 3시간 |
 | 041-AC2 (600판) | 이 PC hostd | – | 7시간 이상(측정 전) |
 
-- 이 PC의 S1+S2는 약 13.7일이다. (A)는 3차 최적화(location 사용 행만)로 Vulkan에서 크게 줄 것으로 보며, 최종 값은 3차 절에 적는다.
+- 이 PC의 S1+S2는 약 13.7일, bc250_1의 (A)는 약 12.4일이다(둘 다 GPU 단독 기준). 실제 운영은 장비 혼합 유동 방식(061-R13·R14)이라 run별 장비 구간에 따라 달라진다.
 - 다른 세션이 이 PC GPU를 같이 쓰면 S1 update가 50~60 s로 느려진다. 그러면 S1만 21~26일이다.
 
 ### 본학습 실행 명령 (승인 후)
@@ -81,6 +81,57 @@ uranium-env run --plan config/plans/bc-vs-t0.toml --backend cuda
 - backward가 forward의 3.6~6.9배다. 모듈별 backward 프로파일로 비효율 연산을 찾는 것을 제안한다(032-R13 distance bias와 같은 종류일 수 있음).
 - collate를 prefetch 스레드로 옮기기: 출력 동일, 약 3%.
 
+## 4차: 감시·재시작(060-R6)과 run 큐 작업자(061-R13·R14·R15) (2026-10-18 밤)
+
+사용자 결정(2026-10-18)은 두 가지다.
+- 장비 혼합 유동 운영: bc250_1은 상시, 이 PC는 쉬는 동안 돌리고 수시로 멈춘다.
+- 비정상 종료 시 자동 재시작.
+
+### 구현
+- **`uranium-train supervise -- <bc|rl …>`(060-R6):** 자식 학습 프로세스를 감시한다.
+  - 비정상 종료나 진행 멈춤(stderr 출력이 `--hang-minutes` 동안 없음)이면 같은 run을 다시 시작한다.
+  - 재시작 횟수는 시간 창(60분)당 5회까지이고, 간격은 60초에서 2배씩 늘어 최대 10분이다.
+  - 0(완료·Ctrl+C·잠금 상실), 130, 75(다른 PC가 잡음), 76(양보)은 재시작하지 않는다.
+- **`uranium-train worker --queue <큐> --backend <b> --priority <n>`(061-R13):** 큐 순서대로 끝나지 않고 잡을 수 있는 run을 고른다.
+  - 잡을 수 있는 run: 잠금 없음, 자기 PC 잠금, 또는 만료 잠금.
+  - 고른 run을 `bc --run`으로 돌리고 같은 감시를 붙인다.
+  - 끝나면 `checkpoints/<id>/DONE`을 남기고 다음 run으로 간다.
+- **양보 요청(061-R14):** 빈 run이 없고 다른 PC 작업자의 우선순위가 더 낮으면 `locks/<id>.yield`를 쓴다.
+  - 학습은 매 update 끝에 이 파일을 확인한다. 다른 host의 요청이면 체크포인트·push·잠금 해제 후 종료 코드 76으로 끝난다.
+  - 요청이 있는 run은 요청한 host만 잡을 수 있다(예약). 요청은 30분 뒤 만료된다.
+- **장비 기록(061-R15):** `runs/<id>/devices.jsonl`에 세션 시작·체크포인트·종료마다 한 줄을 남긴다(host, 백엔드, 정밀도, step, 시각, 종료 사유).
+- **bc 종료 코드:** 다른 PC가 run을 잡고 있으면(잠금 경합) 75, 양보했으면 76이다. 마지막 step이 이미 체크포인트이면 다시 저장하지 않는다.
+- **bc250_1 상시 실행 견본:** `tools/worker/uranium-worker.service`(systemd user, `KillSignal=SIGINT`).
+
+### 시험
+- **가짜 학습 작업자 둘(061-AC8, `crates/uranium-train/tests/worker.rs`, GPU 없음):** 4회 반복해 모두 통과했다.
+  - 낮은 우선순위가 run을 잡는다.
+  - 높은 우선순위가 양보를 요청하고, 낮은 쪽이 넘긴다.
+  - 높은 쪽을 Ctrl+C로 멈추면 낮은 쪽이 이어받아 끝낸다.
+  - 한 run에 두 소유자가 생기지 않았고, 진행 step은 앞으로만 갔다.
+- **재시작 정책 단위 테스트:** `tests/supervise.rs`
+- **실기(061-AC9):** 이 PC(CUDA, 우선순위 10)와 bc250_1(Vulkan f32, 우선순위 1)에서 run 7개(각 6 update)로 시험했다. 시험 run은 끝난 뒤 지웠다.
+
+| 시험 | 결과 |
+|---|---|
+| 큐 순서대로 잡기 | 이 PC 작업자가 `wtest-a`→`b`→`c`→`d`를 차례로 끝냈다 |
+| 잠금 경합 | 이 PC가 bc250_1과 거의 동시에 `wtest-f`를 시도했다. 학습 쪽이 잠금 단계에서 75로 끝났고, 작업자는 다음 빈 run(`wtest-g`)을 잡았다. 두 소유자 없음 |
+| Ctrl+C (Windows 작업자) | 진행 중이던 run을 체크포인트(`ckpt-2`, `ckpt-3`)·push·잠금 해제한 뒤 작업자가 종료했다 |
+| 같은 PC 재개 | 다시 띄우자 `ckpt-2`·데이터 위치에서 이어 6까지 끝냈다 |
+| 강제 종료 (Windows, 자식 TerminateProcess) | `Exited(Some(-1))` → 5초 뒤 같은 run 재시작 → 완료 |
+| 강제 종료 (Linux bc250_1, 자식 `kill -9`) | `Exited(None)` → 5초 뒤 재시작 → 완료 |
+| PC 간 이어받기 | 이 PC가 Ctrl+C로 멈춘 `wtest-g`(ckpt-3, CUDA)를 bc250_1이 데이터 위치째 이어받았다 |
+| 양보 요청 | 이 PC가 요청 → bc250_1이 다음 update 끝에서 `ckpt-4`·잠금 해제(76) → 이 PC가 `ckpt-4`에서 이어 6까지 끝냈다 |
+| SIGINT (Linux 작업자) | 대기 중이던 작업자가 정상 종료했다 |
+| 장비 기록 | `wtest-g`: 이 PC CUDA 0→3 (ctrl-c), bc250_1 Vulkan 3→4 (yield), 이 PC CUDA 4→6 (done) |
+
+- **알려진 점:**
+  - `devices.jsonl`의 `time`은 각 PC의 시계라 PC 사이 순서가 어긋날 수 있다(bc250_1이 몇 분 빠름). 장비 비율은 step 구간으로 집계한다.
+  - kill -9된 세션은 stop 줄이 없다. 다음 start의 step이 그 세션의 끝을 대신한다.
+- 시험 스크립트에서 고친 점(코드 결함 아님):
+  - `powershell -File` 인자 안의 큰따옴표가 사라져 대기 패턴이 맞지 않았다.
+  - 하네스가 시험 스크립트를 중단하면 그 아래 작업자도 함께 종료된다.
+
 ## 3차: backward 최적화, Ctrl+C, 운영 절차 (2026-10-18 저녁)
 
 ### 모듈별 프로파일 (`uranium-train bc-profile`)
@@ -94,13 +145,13 @@ uranium-env run --plan config/plans/bc-vs-t0.toml --backend cuda
 
 | 구간 | CUDA 기존 | CUDA 최종 | Vulkan 기존 | Vulkan 최종 |
 |---|---|---|---|---|
-| forward 합 | 0.216 | 0.194 | 0.656 | 측정 중 |
+| forward 합 | 0.216 | 0.194 | 0.656 | 0.588 |
 | ├ spatial encoder | 0.104 | 0.103 | 0.395 | |
 | ├ core (LSTM) | 0.050 | 0.032 | 0.067 | |
 | ├ selected head | 0.028 | 0.030 | 0.035 | |
 | ├ location head | 0.015 | 0.008 | 0.084 | |
 | └ entity encoder (attn+ffn+bias) | 0.010 | 0.010 | 0.055 | |
-| backward 합 | 0.666 | 0.599 | 3.979 | 측정 중 |
+| backward 합 | 0.666 | 0.599 | 3.979 | 3.622 (location 1.810, spatial 1.407, core 0.068) |
 | ├ spatial encoder | 0.309 | 0.310 | 1.213 | |
 | ├ location head (target_loc) | 0.256 | 0.195 | **2.326** | |
 | ├ core (LSTM) | 0.066 | 0.057 | 0.071 | |
@@ -128,7 +179,8 @@ uranium-env run --plan config/plans/bc-vs-t0.toml --backend cuda
   - + LSTM 묶음: 26.9–27.7 s
   - **+ location 사용 행만: 25.1–27.5 s(평균 약 26.4 s)**
   - 합계 약 18% 단축이다.
-- **Vulkan(bc250_1) 실제 update 시간:** 기존 약 169 s → 최종 값은 측정 중(후속 커밋).
+- **Vulkan(bc250_1) 실제 update 시간:** 기존 약 169 s → 최종 121–152 s(측정마다 편차 약 ±10%, 평균 약 135 s, 약 20% 단축). Vulkan에서는 location head backward(ConvTranspose)가 여전히 가장 크다(레인 그룹 1.81 s).
+- **gradient 비교(Vulkan f32 대 Flex):** 최종 코드 5.0e-4, autotune 빌드 4.3e-4. Vulkan에서는 autotune이 gradient를 거의 바꾸지 않는다(CUDA와 다름). 다만 속도 이득도 약 1.35배로 작다. gradient 비교 테스트의 Vulkan 허용치는 forward(1e-4)와 따로 1e-3으로 둔다(커널을 바꾸지 않은 계산에서도 5e-4가 나오는 누적 반올림 차이).
 
 ### 제안만 하는 것 (결과가 달라짐)
 
@@ -148,6 +200,7 @@ uranium-env run --plan config/plans/bc-vs-t0.toml --backend cuda
 - **bc250_1(Linux, SIGINT):** run `bcpre-ctrlc-l`(flex 백엔드, Ctrl+C 처리는 백엔드와 무관)에 학습 중 `kill -INT` → `[bc] Ctrl+C: saving…` → 진행 중 update 완료 → `ckpt-2 Pushed` → 종료(exit 0). 재개 시 `ckpt-2`·데이터 위치에서 이어 갔다. 이때 재개 지점이 `--steps`와 같으면 같은 step을 다시 저장해 push가 미뤄지고 잠금이 남는 버그를 찾아 고쳤다(update가 없으면 저장하지 않고 잠금 해제, 이 PC에서 재확인).
 
 ### 운영 절차 (같은 run을 PC를 바꿔 이어 하기)
+(4차에서 run 큐 작업자로 자동화했다. 아래 수동 절차는 작업자 없이 돌릴 때의 참고용이다.)
 - 장비 역할은 다음과 같다.
   - learner: 이 PC(CUDA), bc250_1(Vulkan f32)
   - **bc250_2는 learner 금지**

@@ -79,6 +79,62 @@ enum Cmd {
         #[arg(long, default_value = "config/bc.toml")]
         config: PathBuf,
     },
+    /// 060-R6 watchdog: run `bc` / `rl` arguments as a child and restart the same run after an
+    /// abnormal exit or a hang (it resumes from its last checkpoint). Exit 0 (done, step limit,
+    /// Ctrl+C clean stop, lock lost) and 130 (second Ctrl+C) are not restarted.
+    /// Example: `uranium-train supervise -- bc --run bc-s1 --dataset ... --backend cuda`.
+    Supervise {
+        /// Restarts allowed within --window-minutes; then give up.
+        #[arg(long, default_value = "5")]
+        max_restarts: usize,
+        #[arg(long, default_value = "60")]
+        window_minutes: u64,
+        /// Delay before a restart (doubles per restart in the window, at most 10 min).
+        #[arg(long, default_value = "60")]
+        delay_seconds: u64,
+        /// No stderr line (and no progress-file change) for this long = hang: kill and restart.
+        #[arg(long, default_value = "30")]
+        hang_minutes: u64,
+        /// File whose changes count as progress (rl: <logs>/train.csv).
+        #[arg(long)]
+        progress_file: Option<PathBuf>,
+        /// Also append the child's stderr and the restart notes to this file.
+        #[arg(long)]
+        log: Option<PathBuf>,
+        /// The training command: `bc ...` or `rl ...`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        args: Vec<String>,
+    },
+    /// 061-R13/R14 run queue worker: takes the first unfinished, untaken run of the queue and trains
+    /// it (`bc --run`, 060-R6 watchdog), then the next; asks a slower PC to yield when nothing is
+    /// free. Ctrl+C: checkpoint, push, release, stop.
+    Worker {
+        /// Queue file (TOML: [defaults] datasets/config, [[run]] id/config/core/stage/init_run/steps).
+        #[arg(long)]
+        queue: PathBuf,
+        #[arg(long, value_enum, default_value = "vulkan")]
+        backend: Backend,
+        /// Faster PCs get higher numbers; only a higher priority may ask a run to yield.
+        #[arg(long, default_value = "0")]
+        priority: i32,
+        /// Never ask other PCs to yield.
+        #[arg(long)]
+        no_preempt: bool,
+        /// Seconds between looks at the queue when no run is free.
+        #[arg(long, default_value = "60")]
+        poll_seconds: u64,
+        #[arg(long, default_value = "5")]
+        max_restarts: usize,
+        #[arg(long, default_value = "60")]
+        window_minutes: u64,
+        #[arg(long, default_value = "60")]
+        delay_seconds: u64,
+        #[arg(long, default_value = "30")]
+        hang_minutes: u64,
+        /// Also append children's stderr and the worker's notes here.
+        #[arg(long)]
+        log: Option<PathBuf>,
+    },
     /// Where a BC update's time goes, module by module (forward marks, backward by gradient
     /// cuts), on real S1 batches with a fresh network. The first batch only warms kernels up.
     BcProfile {
@@ -90,6 +146,8 @@ enum Cmd {
         backend: Backend,
         #[arg(long, default_value = "config/bc.toml")]
         config: PathBuf,
+        #[arg(long, value_enum, default_value = "lstm")]
+        core: CoreArg,
     },
     /// 041 offline metrics on a split (default: the target-map test set, 041-AC1): action_type
     /// top-1/top-5, delay MAE, target_loc tile error, selected F1, plus the loss terms.
@@ -402,11 +460,22 @@ fn main() -> Result<()> {
                 CoreArg::Lstm => CoreKind::Lstm,
                 CoreArg::Gtrxl => CoreKind::Gtrxl,
             };
-            let args = BcArgs { dirs: data.dirs()?, out, config, stage, core: kind, stop_at: steps, resume, init };
+            let backend_name = format!("{backend:?}").to_lowercase();
+            let args = BcArgs { dirs: data.dirs()?, out, config, stage, core: kind, stop_at: steps, resume, init, backend: backend_name };
             let dev = device(backend)?;
-            match core {
+            let res = match core {
                 CoreArg::Lstm => uranium_train::bc_run::run::<LstmCore>(args, dev),
                 CoreArg::Gtrxl => uranium_train::bc_run::run::<GtrxlCore>(args, dev),
+            };
+            // 061-R13/R14 exit codes for the run queue worker.
+            match res {
+                Ok(uranium_train::bc_run::BcExit::Yielded) => std::process::exit(uranium_train::bc_run::EXIT_YIELDED),
+                Ok(_) => Ok(()),
+                Err(e) if e.downcast_ref::<uranium_train::storage::LockBusy>().is_some() => {
+                    eprintln!("{e:#}");
+                    std::process::exit(uranium_train::bc_run::EXIT_BUSY)
+                }
+                Err(e) => Err(e),
             }
         }
         Cmd::BcEpoch { data, config } => {
@@ -416,10 +485,44 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&out)?);
             Ok(())
         }
-        Cmd::BcProfile { data, batches, backend, config } => {
+        Cmd::Supervise { max_restarts, window_minutes, delay_seconds, hang_minutes, progress_file, log, args } => {
+            anyhow::ensure!(matches!(args.first().map(String::as_str), Some("bc" | "rl")), "supervise runs `bc ...` or `rl ...`");
+            let code = uranium_train::supervise::run(uranium_train::supervise::SuperviseArgs {
+                max_restarts,
+                window: std::time::Duration::from_secs(window_minutes * 60),
+                delay: std::time::Duration::from_secs(delay_seconds),
+                hang: std::time::Duration::from_secs(hang_minutes * 60),
+                progress_file,
+                log,
+                args,
+            })?;
+            std::process::exit(code);
+        }
+        Cmd::Worker { queue, backend, priority, no_preempt, poll_seconds, max_restarts, window_minutes, delay_seconds, hang_minutes, log } => {
+            uranium_train::worker::run(uranium_train::worker::WorkerArgs {
+                queue,
+                backend: format!("{backend:?}").to_lowercase(),
+                priority,
+                preempt: !no_preempt,
+                poll: std::time::Duration::from_secs(poll_seconds),
+                supervise: uranium_train::supervise::SuperviseArgs {
+                    max_restarts,
+                    window: std::time::Duration::from_secs(window_minutes * 60),
+                    delay: std::time::Duration::from_secs(delay_seconds),
+                    hang: std::time::Duration::from_secs(hang_minutes * 60),
+                    progress_file: None,
+                    log,
+                    args: Vec::new(),
+                },
+            })
+        }
+        Cmd::BcProfile { data, batches, backend, config, core } => {
             let cfg = BcConfig::load(&config)?;
             let dev = device(backend)?;
-            let rep = uranium_train::bc_prof::profile::<LstmCore>(&data.dirs()?, &cfg, batches, dev)?;
+            let rep = match core {
+                CoreArg::Lstm => uranium_train::bc_prof::profile::<LstmCore>(&data.dirs()?, &cfg, batches, dev)?,
+                CoreArg::Gtrxl => uranium_train::bc_prof::profile::<GtrxlCore>(&data.dirs()?, &cfg, batches, dev)?,
+            };
             println!("{}", serde_json::to_string_pretty(&rep)?);
             Ok(())
         }

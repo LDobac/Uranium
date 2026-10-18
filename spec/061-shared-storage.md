@@ -1,6 +1,6 @@
 # 061 — Shared Storage (체크포인트·데이터 공용 드라이브)
 
-- **Status**: Approved (2026-10-15, 같은 날 AMB-061-1·2 해결로 개정: 원격 공유 전송 정책 R11, 공유 제공 PC 로컬 모드 R12. 2026-10-16 개정: 정상 종료 시 잠금 해제, 042-R10)
+- **Status**: Approved (2026-10-15, 같은 날 AMB-061-1·2 해결로 개정: 원격 공유 전송 정책 R11, 공유 제공 PC 로컬 모드 R12. 2026-10-16 개정: 정상 종료 시 잠금 해제, 042-R10. 2026-10-18 개정: R13 run 큐 작업자, R14 양보 요청, R15 장비 기록, AC8·AC9 — 사용자 결정: 장비 혼합 유동 운영)
 - **Related**: [060](060-infra-bc250.md), [040](040-replay-dataset.md), [041](041-imitation-learning.md), [042](042-rl-training.md), [032](032-model-architecture.md)
 
 ## Purpose
@@ -42,6 +42,9 @@
 | 061-R10 | **SHOULD** 체크포인트 형식은 Burn 레코드(가중치) + 옵티마이저 상태 + 학습 상태(step, RNG, 리그 표, 승률 표) + 메타데이터(032-R6, 042-R1)다. 장치(Vulkan/CUDA) 독립 형식으로 저장해 다른 호스트에서 이어서 학습할 수 있어야 한다 |
 | 061-R11 | **MUST** 원격 공유 전송 정책(AMB-061-1 결정). 공용 드라이브가 느리거나 끊길 수 있다고 가정한다. 세부 규칙은 아래 "061-R11 원격 전송 규칙"을 따른다 |
 | 061-R12 | **MUST** 공유 제공 PC 로컬 모드(AMB-061-2 결정). 설정 `URANIUM_SHARED_LOCAL=1`이면 공용 드라이브가 같은 PC의 로컬 디스크라고 보고, pull 때 shard와 체크포인트를 캐시로 복사하지 않고 원본 경로를 바로 읽는다. manifest SHA-256 검증은 그대로 한다. push는 R4 절차를 그대로 따른다(같은 디스크 안 rename). 로컬 캐시는 로그 등 나머지 용도로만 쓴다. 기본값은 0(복사)이다 |
+| 061-R13 | **MUST** run 큐 작업자(2026-10-18 사용자 결정: 장비 혼합 유동 운영). `uranium-train worker --queue <큐 파일>`은 큐(TOML, run마다 id·config·core·stage·init·datasets·steps)에서 **순서대로** 끝나지 않았고(`checkpoints/<id>/DONE` 없음) 잡을 수 있는(잠금 없음, 자기 PC 잠금, 또는 heartbeat가 `stale_after`를 넘은 잠금) run을 골라 `bc --run <id>`와 같은 학습을 자식 프로세스로 돌린다. 다른 PC의 만료 잠금을 넘겨받는 것은 작업자에 한해 자동이다(R5의 `--take-over`와 같은 규칙, 그 PC에만 있던 미push 체크포인트는 잃을 수 있음). run이 끝나면(마지막 update 후 push, `DONE` 기록) 다음 run으로 간다. 잡을 run이 없으면 주기적으로 다시 확인한다. 자식이 비정상 종료하거나 진행이 멈추면 060-R6 규칙으로 같은 run을 재시작한다. Ctrl+C(SIGINT)는 현재 run을 체크포인트·push·잠금 해제한 뒤 작업자까지 끝낸다. 작업자는 `workers/<host>.json`에 자기 상태(우선순위, 백엔드, 현재 run, 갱신 시각)를 1분마다 쓴다 |
+| 061-R14 | **MUST** 양보 요청(preemption, 2026-10-18 사용자 결정). 잡을 run이 없고 다른 PC가 큐의 run을 돌리고 있으며 자기 우선순위(`--priority`, 빠른 장비가 큼)가 그 PC 작업자보다 높으면, 작업자는 `locks/<id>.yield`(요청 host·우선순위·시각)를 쓴다. 그 run을 돌리는 학습은 매 update 끝에 요청 파일을 확인하고, 다른 host의 요청이면 체크포인트·push·잠금 해제 후 종료 코드 76으로 끝난다. 그 작업자는 다른 run으로 가거나 기다린다. 요청이 있는 run은 요청 host만 잡을 수 있고(예약), 요청 host가 잡으면 요청 파일을 지운다. 요청이 30분 안에 처리되지 않으면 만료로 보고 무시한다. 한 run에는 한 순간 한 잠금 소유자만 있다(R5) |
+| 061-R15 | **MUST** 장비 기록: 학습은 `runs/<id>/devices.jsonl`에 세션 시작·체크포인트·종료마다 한 줄(host, 백엔드, 정밀도, step, 시각, 종료 사유)을 덧붙인다. run마다 장비별 update 구간과 비율을 이 파일로 집계한다(코어 비교 등 공정성 확인, 032-R17) |
 
 ### 061-R4 push 순서
 1. `ckpt-<step>.tmp-<host>/`에 모든 파일과 `manifest.json`(파일별 SHA-256)을 쓴다.
@@ -76,7 +79,12 @@ $URANIUM_SHARED_DIR/
   datasets/
     rep/                    # 원본 리플레이 (040, 내부 전용)
     shards/                 # 040-R12 저장 shard + manifest
-  locks/<run_id>.json
+  locks/<run_id>.json        # 잠금 (R5)
+  locks/<run_id>.yield       # 양보 요청 (R14)
+  checkpoints/<run_id>/DONE  # run 완료 표시 (R13)
+  runs/<run_id>/devices.jsonl  # 장비 기록 (R15)
+  workers/<host>.json        # 작업자 상태 (R13)
+  queue/<name>.toml          # run 큐 (R13)
   reports/                  # 평가·학습 리포트 사본
 $URANIUM_CACHE_DIR/         # 학습 PC 로컬 캐시 (shards, 현재 run 체크포인트, 미push 체크포인트). R12 로컬 모드에서는 로그 등만
 ```
@@ -89,6 +97,8 @@ $URANIUM_CACHE_DIR/         # 학습 PC 로컬 캐시 (shards, 현재 run 체크
 - 061-AC6: 공용 드라이브 접근 차단(장애 주입) 상태에서 학습이 계속되고, push가 재시도된다. 미push 체크포인트는 정리되지 않는다. 접근이 복구되면 push된다. 차단 중 강제 종료 후 재시작하면 R11-5 조건에서 로컬 체크포인트를 push하고 그 step에서 재개한다. 차단 중 다른 PC가 `--take-over`했다면 복구 후 원래 PC는 push 없이 멈춘다.
 - 061-AC7: R12 로컬 모드에서 pull이 캐시에 shard를 복사하지 않는다. 원본 shard 하나를 변조하면 manifest 검증 실패로 학습 시작이 거부된다.
 - 061-AC5: Vulkan 호스트에서 저장한 체크포인트를 CUDA 호스트에서 불러왔을 때, 같은 입력의 forward 출력 차이가 ≤ 1e-4(f32)다. 반대 방향도 같다.
+- 061-AC8: 작업자 둘(가짜 학습, Flex)이 같은 큐에서 서로 다른 run을 잡고, 한 run에 두 소유자가 생기지 않으며, 양보 요청 시 낮은 우선순위 쪽이 체크포인트·잠금 해제 후 넘기고 요청한 쪽이 이어받는다. Ctrl+C로 멈춘 run을 다른 작업자가 이어받는다.
+- 061-AC9: 이 PC(CUDA)와 bc250_1(Vulkan)에서 짧은 시험 run 두 개로 잡기, Ctrl+C 후 이어받기, 양보 요청, 강제 종료 후 watchdog 재시작을 확인하고 `devices.jsonl`에 장비 구간이 남는다.
 
 ## Risks & Open Questions
 - SMB 위에서의 rename 원자성은 서버 구현(Windows, Samba, NAS)에 따라 다를 수 있다. 2026-10-15 실제 공유(Windows SMB, Linux cifs 3.1.1 마운트, VPN 경유)에서 확인한 결과는 다음과 같다. M5에서 장애 주입으로 061-AC2를 정식 검증한다.

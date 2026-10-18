@@ -77,6 +77,34 @@ pub struct BcArgs {
     pub resume: Option<PathBuf>,
     /// Weights only (S1 -> S2, 041-R4): a checkpoint folder or a 061 run folder with `LATEST`.
     pub init: Option<PathBuf>,
+    /// For the device log (061-R15): `cuda`, `vulkan` or `flex`.
+    pub backend: String,
+}
+
+/// How a `bc` run ended (the process exit code, see `main`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BcExit {
+    /// The stage (or `--steps`) is complete; a run gets `DONE` (061-R13). Exit 0.
+    Done,
+    /// Ctrl+C clean stop after a checkpoint. Exit 0.
+    Stopped,
+    /// Lock taken over by another PC: nothing pushed (061-R5). Exit 0.
+    LockLost,
+    /// Gave the run to the host that asked (061-R14) after a checkpoint. Exit 76.
+    Yielded,
+}
+
+/// Exit code of a run whose lock is held (or reserved by a yield request) by another PC.
+pub const EXIT_BUSY: i32 = 75;
+/// Exit code after yielding the run (061-R14).
+pub const EXIT_YIELDED: i32 = 76;
+
+/// Precision actually trained in (032-R8), for the device log.
+fn precision(backend: &str) -> &'static str {
+    match backend {
+        "cuda" => "f32 (TF32 matmul)",
+        _ => "f32",
+    }
 }
 
 const STOP_NONE: usize = 0;
@@ -92,7 +120,7 @@ pub fn resolve_checkpoint(dir: &Path) -> Result<PathBuf> {
     Ok(dir.to_path_buf())
 }
 
-pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<()> {
+pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
     let mut cfg = BcConfig::load(&args.config)?;
     let stage_steps = args.stage.steps(&cfg);
     if stage_steps > 0 {
@@ -112,7 +140,20 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<()> {
 
     // 061-R3 / R5: a run takes the lock and resumes from LATEST (or an unpushed local checkpoint).
     let mut run = match &args.out {
-        BcOut::Run { id, take_over } => Some(Run::acquire(StorageConfig::from_env()?, id, *take_over)?),
+        BcOut::Run { id, take_over } => {
+            let r = Run::acquire(StorageConfig::from_env()?, id, *take_over)?;
+            // 061-R14: a live yield request reserves the run for the host that asked.
+            match crate::storage::read_yield(&r.cfg, id) {
+                Some(req) if req.host != r.cfg.host => {
+                    let msg = format!("run {id} is reserved for {} (yield request, 061-R14)", req.host);
+                    r.release()?;
+                    return Err(anyhow::Error::new(crate::storage::LockBusy(msg)));
+                }
+                Some(_) => crate::storage::clear_yield(&r.cfg, id),
+                None => {}
+            }
+            Some(r)
+        }
         BcOut::Local(_) => None,
     };
     let resume_dir = match &mut run {
@@ -148,6 +189,15 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<()> {
         }
     }
     eprintln!("{}", serde_json::json!({ "stage": format!("{:?}", args.stage), "total_steps": total, "stop_at": stop_at, "lr_scale": t.lr_scale }));
+    let device_log = |r: &Option<Run>, line: serde_json::Value| {
+        if let Some(r) = r {
+            crate::storage::log_device(&r.cfg, &r.run_id, line);
+        }
+    };
+    device_log(
+        &run,
+        serde_json::json!({ "event": "start", "step": t.step, "backend": args.backend, "precision": precision(&args.backend), "core": format!("{:?}", args.core), "stage": format!("{:?}", args.stage) }),
+    );
 
     // 042-R10 style: first Ctrl+C = save and stop, second = exit now.
     let stop = Arc::new(AtomicUsize::new(STOP_NONE));
@@ -169,6 +219,8 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<()> {
     let (mut last_ckpt, mut last_beat) = (Instant::now(), Instant::now());
     let mut lock_lost = false;
     let mut exhausted = false;
+    let mut yielded = false;
+    let mut saved_at: Option<usize> = None;
     while t.step < stop_at && stop.load(Ordering::SeqCst) < STOP_CLEAN {
         let Some(batch) = data.next()? else {
             exhausted = true;
@@ -196,30 +248,63 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<()> {
             }
         }
         if t.step % every == 0 || (!every_time.is_zero() && last_ckpt.elapsed() >= every_time) {
-            save(&t, &args, &mut run, false)?;
+            if save(&t, &args, &mut run, false)? == Some(PushOutcome::Pushed) {
+                device_log(&run, serde_json::json!({ "event": "checkpoint", "step": t.step }));
+                saved_at = Some(t.step);
+            }
             last_ckpt = Instant::now();
+        }
+        // 061-R14: another host asked for this run: checkpoint, release, leave.
+        if let Some(r) = &run
+            && let Some(req) = crate::storage::read_yield(&r.cfg, &r.run_id)
+            && req.host != r.cfg.host
+        {
+            eprintln!("[bc] yield requested by {} (priority {}): checkpoint and release (061-R14)", req.host, req.priority);
+            yielded = true;
+            break;
         }
     }
     if lock_lost {
-        return Ok(());
+        device_log(&run, serde_json::json!({ "event": "stop", "step": t.step, "reason": "lock lost" }));
+        return Ok(BcExit::LockLost);
     }
-    let pushed = if t.step == start_step && resume_dir.is_some() {
-        eprintln!("[bc] no update since the checkpoint of step {}: nothing to save", t.step);
+    let pushed = if (t.step == start_step && resume_dir.is_some()) || saved_at == Some(t.step) {
+        eprintln!("[bc] step {} is already the last checkpoint: nothing more to save", t.step);
         Some(PushOutcome::Pushed)
     } else {
         save(&t, &args, &mut run, true)?
     };
+    let finished = exhausted || t.step >= stop_at;
+    let reason = if yielded {
+        "yield"
+    } else if finished {
+        "done"
+    } else {
+        "ctrl-c"
+    };
+    device_log(&run, serde_json::json!({ "event": "stop", "step": t.step, "reason": reason }));
     if let Some(r) = run {
         // 061-R11-5/6: keep the lock when the final push did not go through.
         match pushed {
-            Some(PushOutcome::Pushed) => r.release()?,
+            Some(PushOutcome::Pushed) => {
+                if finished && !yielded {
+                    crate::storage::mark_done(&r.cfg, &r.run_id, t.step as u64)?;
+                }
+                r.release()?
+            }
             other => eprintln!("[bc] final push {other:?}: keeping the lock so the next start recovers it (061-R11-5/6)"),
         }
     }
-    if exhausted || t.step >= total {
+    if finished {
         eprintln!("{}", serde_json::json!({ "done": true, "step": t.step, "games": t.games() }));
     }
-    Ok(())
+    Ok(if yielded {
+        BcExit::Yielded
+    } else if finished {
+        BcExit::Done
+    } else {
+        BcExit::Stopped
+    })
 }
 
 /// Local: `step_<n>/` (or `last/` when `last`). Run: stage → seal → push (061-R4), then prune.

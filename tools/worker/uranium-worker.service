@@ -1,0 +1,25 @@
+# 061-R13 / 060-R6: the BC run queue worker as a systemd user service on a Linux training host
+# (bc250_1). Install:
+#   mkdir -p ~/.config/systemd/user && cp tools/worker/uranium-worker.service ~/.config/systemd/user/
+#   edit WorkingDirectory / ExecStart (<repo> = the Uranium checkout, <shared> = URANIUM_SHARED_DIR)
+#   systemctl --user daemon-reload && systemctl --user enable --now uranium-worker
+#   loginctl enable-linger $USER     # keep it running without a login session
+# Stop (checkpoint, push, release, then exit): systemctl --user stop uranium-worker
+# Log: journalctl --user -u uranium-worker -f  (and the --log file)
+[Unit]
+Description=Uranium BC run queue worker (061-R13)
+After=network-online.target remote-fs.target
+
+[Service]
+WorkingDirectory=<repo>
+ExecStart=<repo>/target/release/uranium-train worker --queue <shared>/queue/bc.toml --backend vulkan --priority 1 --log <repo>/runs/worker.log
+# Ctrl+C semantics: the worker passes SIGINT to the training child, which saves and pushes.
+KillSignal=SIGINT
+KillMode=process
+TimeoutStopSec=900
+# The worker restarts its own children (060-R6); this only covers the worker itself.
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=default.target

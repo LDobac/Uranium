@@ -339,7 +339,7 @@ impl Run {
         let age = run.lock_age()?;
         if held.host != run.me.host {
             if age < run.cfg.stale_after {
-                bail!("run {run_id} is locked by {} (pid {}, last heartbeat {}s ago) (061-R5)", held.host, held.pid, age.as_secs());
+                return Err(anyhow::Error::new(LockBusy(format!("run {run_id} is locked by {} (pid {}, last heartbeat {}s ago) (061-R5)", held.host, held.pid, age.as_secs()))));
             }
             ensure!(take_over, "run {run_id}: lock of {} expired ({}s without heartbeat); pass --take-over to take it (061-R5)", held.host, age.as_secs());
         }
@@ -643,4 +643,131 @@ impl Run {
         }
         Ok(())
     }
+}
+
+/// A fresh lock of another PC holds the run (061-R5); the run queue worker moves on (061-R13).
+#[derive(Debug)]
+pub struct LockBusy(pub String);
+
+impl std::fmt::Display for LockBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for LockBusy {}
+
+// ---------------------------------------------------------------------------------------------
+// Run queue support (061-R13..R15)
+
+/// The run's lock as another process sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LockView {
+    Free,
+    /// Held with a heartbeat younger than `stale_after`.
+    Held(LockInfo),
+    /// Held, but no heartbeat for `stale_after` or longer.
+    Stale(LockInfo),
+}
+
+/// Age of `path` by the share's clock (see `Run::lock_age`).
+fn share_age(cfg: &StorageConfig, path: &Path) -> Result<Duration> {
+    fs::create_dir_all(cfg.shared.join("locks"))?;
+    let probe = cfg.shared.join("locks").join(format!(".clock-{}", cfg.host));
+    fs::write(&probe, b"")?;
+    let now = fs::metadata(&probe)?.modified()?;
+    let t = fs::metadata(path)?.modified()?;
+    Ok(now.duration_since(t).unwrap_or(Duration::ZERO))
+}
+
+pub fn peek_lock(cfg: &StorageConfig, run_id: &str) -> Result<LockView> {
+    let path = cfg.shared.join("locks").join(format!("{run_id}.json"));
+    let Ok(bytes) = fs::read(&path) else { return Ok(LockView::Free) };
+    let Ok(info) = serde_json::from_slice::<LockInfo>(&bytes) else { return Ok(LockView::Free) };
+    Ok(if share_age(cfg, &path)? >= cfg.stale_after { LockView::Stale(info) } else { LockView::Held(info) })
+}
+
+/// 061-R14 yield request on a run: the requesting host takes the run next.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct YieldRequest {
+    pub host: String,
+    pub priority: i32,
+    pub time: u64,
+}
+
+/// Requests older than this are ignored (061-R14).
+pub const YIELD_EXPIRY: Duration = Duration::from_secs(30 * 60);
+
+fn yield_path(cfg: &StorageConfig, run_id: &str) -> PathBuf {
+    cfg.shared.join("locks").join(format!("{run_id}.yield"))
+}
+
+/// A live (not expired) yield request on the run.
+pub fn read_yield(cfg: &StorageConfig, run_id: &str) -> Option<YieldRequest> {
+    let p = yield_path(cfg, run_id);
+    let req: YieldRequest = serde_json::from_slice(&fs::read(&p).ok()?).ok()?;
+    (share_age(cfg, &p).ok()? < YIELD_EXPIRY).then_some(req)
+}
+
+pub fn request_yield(cfg: &StorageConfig, run_id: &str, priority: i32) -> Result<()> {
+    fs::create_dir_all(cfg.shared.join("locks"))?;
+    let req = YieldRequest { host: cfg.host.clone(), priority, time: now_secs() };
+    write_atomic(&yield_path(cfg, run_id), &serde_json::to_vec_pretty(&req)?)
+}
+
+pub fn clear_yield(cfg: &StorageConfig, run_id: &str) {
+    let _ = fs::remove_file(yield_path(cfg, run_id));
+}
+
+/// `checkpoints/<id>/DONE`: the run finished (061-R13).
+pub fn done_path(cfg: &StorageConfig, run_id: &str) -> PathBuf {
+    cfg.shared.join("checkpoints").join(run_id).join("DONE")
+}
+
+pub fn is_done(cfg: &StorageConfig, run_id: &str) -> bool {
+    done_path(cfg, run_id).is_file()
+}
+
+pub fn mark_done(cfg: &StorageConfig, run_id: &str, step: u64) -> Result<()> {
+    let p = done_path(cfg, run_id);
+    fs::create_dir_all(p.parent().unwrap())?;
+    write_atomic(&p, format!("{}\n", ckpt_name(step)).as_bytes())
+}
+
+/// 061-R15: appends one line (plus host and time) to `runs/<id>/devices.jsonl`.
+pub fn log_device(cfg: &StorageConfig, run_id: &str, line: serde_json::Value) {
+    let dir = cfg.shared.join("runs").join(run_id);
+    let mut v = line;
+    if let Some(o) = v.as_object_mut() {
+        o.insert("host".into(), serde_json::json!(cfg.host));
+        o.insert("time".into(), serde_json::json!(now_secs()));
+    }
+    let res = fs::create_dir_all(&dir).and_then(|_| {
+        let mut f = fs::OpenOptions::new().create(true).append(true).open(dir.join("devices.jsonl"))?;
+        writeln!(f, "{v}")
+    });
+    if let Err(e) = res {
+        eprintln!("devices.jsonl not written ({e}); training continues (061-R11-3)");
+    }
+}
+
+/// 061-R13 worker status in `workers/<host>.json`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct WorkerStatus {
+    pub host: String,
+    pub priority: i32,
+    pub backend: String,
+    pub run: Option<String>,
+    pub time: u64,
+}
+
+pub fn write_worker(cfg: &StorageConfig, priority: i32, backend: &str, run: Option<&str>) -> Result<()> {
+    let dir = cfg.shared.join("workers");
+    fs::create_dir_all(&dir)?;
+    let s = WorkerStatus { host: cfg.host.clone(), priority, backend: backend.into(), run: run.map(str::to_string), time: now_secs() };
+    write_atomic(&dir.join(format!("{}.json", cfg.host)), &serde_json::to_vec_pretty(&s)?)
+}
+
+pub fn read_worker(cfg: &StorageConfig, host: &str) -> Option<WorkerStatus> {
+    serde_json::from_slice(&fs::read(cfg.shared.join("workers").join(format!("{host}.json"))).ok()?).ok()
 }
