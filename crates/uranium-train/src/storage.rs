@@ -425,8 +425,10 @@ impl Run {
         }
         run.previous = Some(held);
         write_atomic(&path, &serde_json::to_vec_pretty(&run.me)?)?;
-        // Two takers at once both rename their lock in; the last rename wins. Read it back so
-        // the loser stops now (exit 75) instead of at its first heartbeat (061-R5).
+        // Two takers at once both rename their lock in; the last rename wins. Reading it back
+        // narrows the double-ownership window but does not close it: a loser whose read comes
+        // before the winner's rename still starts, and stops (Lost, no push) at its next
+        // heartbeat, within a minute (061-R5, R11-4). A loser that reads after it exits 75 now.
         let now = run.read_lock().with_context(|| format!("reading back lock {}", path.display()))?;
         if !run.owns(&now) {
             return Err(anyhow::Error::new(LockBusy(format!("run {run_id}: {} (pid {}) took the lock at the same moment (061-R5)", now.host, now.pid))));
