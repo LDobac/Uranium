@@ -1,7 +1,8 @@
-//! Symmetry augmentation (030-R4): the 8 dihedral transforms of the valid map region applied to
-//! features, masks and action coordinates. Applied at load time (040-R7). Location targets are
-//! top-left anchored footprints, so they are transformed as rectangles; that keeps every
-//! transform exactly invertible (030-AC4).
+//! Symmetry augmentation (030-R4): transforms of the valid map region applied to features,
+//! masks, action coordinates and the own start index. Training uses the four flips
+//! ([`Sym::augment`], 2026-10-18); all 8 dihedral transforms stay available and exactly
+//! invertible (030-AC4). Applied at load time (040-R7). Location targets are top-left anchored
+//! footprints, so they are transformed as rectangles.
 
 use super::extract::{CONT_ANGLE, CONT_POS, CONT_VEL, Observation, position_features};
 use super::masks::L;
@@ -20,6 +21,17 @@ pub struct Sym {
 impl Sym {
     pub const IDENTITY: Sym = Sym { flip_x: false, flip_y: false, transpose: false };
 
+    /// The training augmentations (030-R4, 2026-10-18): identity, left-right flip, up-down flip
+    /// and both. The transposing half of [`Sym::all`] is not used for training.
+    pub fn augment() -> [Sym; 4] {
+        let mut out = [Sym::IDENTITY; 4];
+        for (i, o) in out.iter_mut().enumerate() {
+            *o = Sym { flip_x: i & 1 != 0, flip_y: i & 2 != 0, transpose: false };
+        }
+        out
+    }
+
+    /// All 8 dihedral transforms (030-AC4 round trips).
     pub fn all() -> [Sym; 8] {
         let mut out = [Sym::IDENTITY; 8];
         for (i, o) in out.iter_mut().enumerate() {
@@ -141,6 +153,33 @@ pub fn transform(o: &Observation, sym: Sym) -> Observation {
                 let (nx, ny, _, _) = sym.rect(size, x, y, fw, fh);
                 m[l * CELLS + ny * MAP + nx] = true;
             }
+        }
+    }
+    out
+}
+
+/// Footprint of a start location's resource depot (its tile is the top-left one).
+const START_FOOTPRINT: (usize, usize) = (4, 3);
+
+/// [`transform`] plus `scalar_cat.start_loc` (030-R4): the own start location moves with the
+/// map, so the index becomes that of the map start location nearest to the transformed one
+/// (`starts` = the map's start locations in index order, as in `MapInfo`).
+pub fn transform_with_starts(o: &Observation, sym: Sym, starts: &[uranium_proto::Tile]) -> Observation {
+    let mut out = transform(o, sym);
+    let i = o.obs.scalar_cat[2].max(0) as usize;
+    let (w, h) = o.map_size;
+    let (fw, fh) = START_FOOTPRINT;
+    if let Some(&(x, y)) = starts.get(i)
+        && (x as usize) + fw <= w
+        && (y as usize) + fh <= h
+    {
+        let (nx, ny, _, _) = sym.rect(o.map_size, x as usize, y as usize, fw, fh);
+        let d = |&(sx, sy): &uranium_proto::Tile| {
+            let (dx, dy) = (sx as i64 - nx as i64, sy as i64 - ny as i64);
+            dx * dx + dy * dy
+        };
+        if let Some((j, _)) = starts.iter().enumerate().min_by_key(|(j, s)| (d(s), *j)) {
+            out.obs.scalar_cat[2] = j.min(7) as i32;
         }
     }
     out

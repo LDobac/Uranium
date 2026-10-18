@@ -136,7 +136,7 @@ pub struct LaneState {
     pub id: GameId,
     pub pos: usize,
     pub z_present: bool,
-    /// Index into `Sym::all()`.
+    /// Index into `Sym::augment()` (030-R4).
     pub sym: u8,
 }
 
@@ -222,7 +222,7 @@ impl Feeder {
                 }
             };
             let z_present = self.rng.unit() >= self.z_drop;
-            let sym = if self.augment { Sym::all()[(self.rng.next() % 8) as usize] } else { Sym::IDENTITY };
+            let sym = if self.augment { Sym::augment()[(self.rng.next() % 4) as usize] } else { Sym::IDENTITY };
             self.games += 1;
             self.lanes[i] = Lane { game: Some(GameStream::new(game, z_present, sym)?), id: src.last_id(), fresh: true };
         }
@@ -279,7 +279,7 @@ impl Feeder {
             .iter()
             .map(|l| {
                 let (g, id) = (l.game.as_ref()?, l.id?);
-                Some(LaneState { id, pos: g.pos(), z_present: g.z_present(), sym: Sym::all().iter().position(|s| *s == g.sym()).unwrap_or(0) as u8 })
+                Some(LaneState { id, pos: g.pos(), z_present: g.z_present(), sym: Sym::augment().iter().position(|s| *s == g.sym()).unwrap_or(0) as u8 })
             })
             .collect();
         FeedState { lanes, source: pos, rng: self.rng.state(), games: self.games, invalid_labels: self.invalid_labels, files: self.files.clone() }
@@ -304,7 +304,7 @@ impl Feeder {
         for (lane, saved) in self.lanes.iter_mut().zip(st.lanes.iter().chain(std::iter::repeat(&None))) {
             *lane = Lane::empty();
             let Some(s) = saved else { continue };
-            let mut g = GameStream::new(src.game(s.id)?, s.z_present, Sym::all()[s.sym as usize % 8])?;
+            let mut g = GameStream::new(src.game(s.id)?, s.z_present, Sym::augment()[s.sym as usize % 4])?;
             g.advance_to(s.pos);
             if g.remaining() > 0 {
                 *lane = Lane { game: Some(g), id: Some(s.id), fresh: true };

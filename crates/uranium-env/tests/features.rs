@@ -339,3 +339,40 @@ proptest! {
         }
     }
 }
+
+/// 030-AC6: the four training flips keep the map size and footprints (no transpose), remap the
+/// own start index to the start location the own base moved to, and are deterministic.
+#[test]
+fn training_flips_keep_footprints_and_start_loc_030_ac6() {
+    use uranium_env::features::augment::transform_with_starts;
+    let (o, _, _, map) = observe(true);
+    let (w, h) = o.map_size;
+    assert_eq!(Sym::augment().len(), 4);
+    assert!(Sym::augment().iter().all(|s| !s.transpose), "training uses no transposes");
+    // A start list that the flips map exactly onto itself: corners of a w x h map (4x3 depots).
+    let corners: Vec<uranium_proto::Tile> = vec![(4, 4), ((w - 8) as u16, 4), (4, (h - 7) as u16), ((w - 8) as u16, (h - 7) as u16)];
+    let mut own0 = o.clone();
+    own0.obs.scalar_cat[2] = 0;
+    for (k, sym) in Sym::augment().into_iter().enumerate() {
+        let t = transform_with_starts(&own0, sym, &corners);
+        assert_eq!(t.map_size, (w, h), "{sym:?}");
+        assert!(!t.transposed, "{sym:?}: footprints stay w x h");
+        assert_eq!(t.obs.scalar_cat[2] as usize, k, "{sym:?}: own start corner 0 moves to corner {k}");
+        assert_eq!(t, transform_with_starts(&own0, sym, &corners), "{sym:?} is deterministic");
+
+        // The test map's own start: the new index names the map start nearest to where the own
+        // depot moved, and that place is a start location in the transformed spatial channel.
+        let t = transform_with_starts(&o, sym, &map.start_locations);
+        let own = map.start_locations[o.obs.scalar_cat[2] as usize];
+        let (nx, ny, fw, fh) = sym.rect((w, h), own.0 as usize, own.1 as usize, 4, 3);
+        let dist = |s: &uranium_proto::Tile| (s.0 as i64 - nx as i64).pow(2) + (s.1 as i64 - ny as i64).pow(2);
+        let best = map.start_locations.iter().map(dist).min().unwrap();
+        assert_eq!(dist(&map.start_locations[t.obs.scalar_cat[2] as usize]), best, "{sym:?}");
+        let ch = |x: usize, y: usize| t.obs.spatial[ch::START_LOC * CELLS + y * MAP + x];
+        for dy in 0..fh {
+            for dx in 0..fw {
+                assert_eq!(ch(nx + dx, ny + dy), 1.0, "{sym:?}: own depot tile ({}, {}) not a start location", nx + dx, ny + dy);
+            }
+        }
+    }
+}

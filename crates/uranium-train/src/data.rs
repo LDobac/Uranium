@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use uranium_env::actions::{CAPABILITIES, LOC_CLASSES, TargetKind};
-use uranium_env::features::augment::{Sym, transform, transform_target_loc};
+use uranium_env::features::augment::{Sym, transform_target_loc, transform_with_starts};
 use uranium_env::features::extract::{action_table, dims};
 use uranium_env::features::*;
 use uranium_model::collate::HostLabel;
@@ -574,7 +574,7 @@ impl GameStream {
                 if let Some(t) = label.target_loc {
                     label.target_loc = Some(transform_target_loc(label.action, t, o.map_size, o.transposed, self.sym));
                 }
-                transform(&o, self.sym)
+                transform_with_starts(&o, self.sym, &self.map.start_locations)
             };
             let privileged = s.privileged.as_ref().map_or_else(|| self.zero_priv.clone(), privileged);
             steps.push(TrainStep { obs: o, label, privileged, weight: if ok { 1.0 } else { 0.0 } });
