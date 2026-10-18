@@ -797,35 +797,55 @@ pub enum LockView {
     Unknown(String),
 }
 
-/// 061-R5 expiry for the worker's automatic take-over (H-3): a lock is expired only when this
-/// process has watched its contents (host, pid, heartbeat) stay the same for `stale_after`, by
-/// its own monotonic clock. File times and the clocks written in the lock are never compared, so
-/// PC clock differences do not matter. A change, a read failure or a gap in watching (longer
-/// than half of `stale_after`, e.g. while the worker trained another run) starts over.
-#[derive(Debug, Default)]
-pub struct LockObserver {
-    /// run id → (contents, first seen, last seen).
-    seen: std::collections::HashMap<String, (LockInfo, std::time::Instant, std::time::Instant)>,
+/// Expiry by watching (061-R5 locks, H-3; 061-R14 yield requests): a file's contents count as
+/// expired only when this process has seen them stay exactly the same for the limit, by its own
+/// monotonic clock. File times and the clocks written in the files are never compared, so PC
+/// clock differences and the share's time stamps do not matter. A change, a read failure or a
+/// gap in watching (longer than half of the limit, e.g. while the worker trained another run)
+/// starts over.
+#[derive(Debug)]
+pub struct ContentObserver<T> {
+    /// run id -> (contents, first seen, last seen).
+    seen: std::collections::HashMap<String, (T, std::time::Instant, std::time::Instant)>,
 }
 
-impl LockObserver {
-    /// Records one read of the run's lock at `now` and says what it means.
-    pub fn observe(&mut self, run_id: &str, read: &Result<Option<LockInfo>>, now: std::time::Instant, stale_after: Duration) -> LockView {
-        let info = match read {
+impl<T> Default for ContentObserver<T> {
+    fn default() -> Self {
+        Self { seen: std::collections::HashMap::new() }
+    }
+}
+
+/// One read of a watched file, as [`ContentObserver::watch`] sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Watched<T> {
+    /// No file.
+    Absent,
+    /// Present, not (yet) seen unchanged for the limit.
+    Fresh(T),
+    /// Seen unchanged for the limit on this process's monotonic clock.
+    Expired(T),
+    /// Could not be read (061-R13 "unknown").
+    Unknown(String),
+}
+
+impl<T: Clone + PartialEq> ContentObserver<T> {
+    /// Records one read of the run's file at `now` against `limit`.
+    pub fn watch(&mut self, run_id: &str, read: &Result<Option<T>>, now: std::time::Instant, limit: Duration) -> Watched<T> {
+        let v = match read {
             Ok(None) => {
                 self.seen.remove(run_id);
-                return LockView::Free;
+                return Watched::Absent;
             }
             Err(e) => {
                 self.seen.remove(run_id);
-                return LockView::Unknown(format!("{e:#}"));
+                return Watched::Unknown(format!("{e:#}"));
             }
-            Ok(Some(l)) => l,
+            Ok(Some(v)) => v,
         };
-        let continued = self.seen.get(run_id).is_some_and(|(l, _, last)| l == info && now.saturating_duration_since(*last) <= stale_after / 2);
+        let continued = self.seen.get(run_id).is_some_and(|(x, _, last)| x == v && now.saturating_duration_since(*last) <= limit / 2);
         let first = if continued { self.seen[run_id].1 } else { now };
-        self.seen.insert(run_id.to_string(), (info.clone(), first, now));
-        if now.saturating_duration_since(first) >= stale_after { LockView::Stale(info.clone()) } else { LockView::Held(info.clone()) }
+        self.seen.insert(run_id.to_string(), (v.clone(), first, now));
+        if now.saturating_duration_since(first) >= limit { Watched::Expired(v.clone()) } else { Watched::Fresh(v.clone()) }
     }
 
     /// Forgets every observation (the worker stops watching while it trains).
@@ -834,16 +854,23 @@ impl LockObserver {
     }
 }
 
-/// Age of `path` by the share's clock: a probe file is touched and its modification time is
-/// compared with the file's. Used only for the 30-minute expiry of yield requests (061-R14),
-/// never for lock expiry (061-R5).
-fn share_age(cfg: &StorageConfig, path: &Path) -> Result<Duration> {
-    share_subdir(cfg, "locks")?;
-    let probe = cfg.shared.join("locks").join(format!(".clock-{}", cfg.host));
-    fs::write(&probe, b"")?;
-    let now = fs::metadata(&probe)?.modified()?;
-    let t = fs::metadata(path)?.modified()?;
-    Ok(now.duration_since(t).unwrap_or(Duration::ZERO))
+/// 061-R5 expiry for the worker's automatic take-over: lock contents (host, pid, heartbeat)
+/// watched unchanged for `stale_after`.
+pub type LockObserver = ContentObserver<LockInfo>;
+
+/// 061-R14 expiry of yield requests: request contents watched unchanged for [`YIELD_EXPIRY`].
+pub type YieldObserver = ContentObserver<YieldRequest>;
+
+impl ContentObserver<LockInfo> {
+    /// Records one read of the run's lock at `now` and says what it means.
+    pub fn observe(&mut self, run_id: &str, read: &Result<Option<LockInfo>>, now: std::time::Instant, stale_after: Duration) -> LockView {
+        match self.watch(run_id, read, now, stale_after) {
+            Watched::Absent => LockView::Free,
+            Watched::Fresh(l) => LockView::Held(l),
+            Watched::Expired(l) => LockView::Stale(l),
+            Watched::Unknown(e) => LockView::Unknown(e),
+        }
+    }
 }
 
 /// 061-R14 yield request on a run: the requesting host takes the run next.
@@ -854,15 +881,17 @@ pub struct YieldRequest {
     pub time: u64,
 }
 
-/// Requests older than this are ignored (061-R14).
+/// A request seen unchanged this long by a worker's own monotonic clock is expired and removed
+/// (061-R14, [`YieldObserver`]).
 pub const YIELD_EXPIRY: Duration = Duration::from_secs(30 * 60);
 
 fn yield_path(cfg: &StorageConfig, run_id: &str) -> PathBuf {
     cfg.shared.join("locks").join(format!("{run_id}.yield"))
 }
 
-/// A live (not expired) yield request on the run; `Ok(None)` = none. A read failure is an error
-/// (061-R13 "unknown").
+/// The run's yield request as written; `Ok(None)` = none. A read failure is an error (061-R13
+/// "unknown"). Expiry is not judged here: workers watch requests ([`YieldObserver`]) and remove
+/// expired ones ([`remove_yield_if`]).
 pub fn read_yield(cfg: &StorageConfig, run_id: &str) -> Result<Option<YieldRequest>> {
     let p = yield_path(cfg, run_id);
     let bytes = match fs::read(&p) {
@@ -870,8 +899,21 @@ pub fn read_yield(cfg: &StorageConfig, run_id: &str) -> Result<Option<YieldReque
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(anyhow!(e).context(format!("reading {}", p.display()))),
     };
-    let req: YieldRequest = serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", p.display()))?;
-    Ok((share_age(cfg, &p)? < YIELD_EXPIRY).then_some(req))
+    Ok(Some(serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", p.display()))?))
+}
+
+/// Removes the run's yield request if it still has exactly the contents `seen` (an expired
+/// request, 061-R14; whoever wrote it).
+pub fn remove_yield_if(cfg: &StorageConfig, run_id: &str, seen: &YieldRequest) -> Result<bool> {
+    if read_yield(cfg, run_id)?.as_ref() != Some(seen) {
+        return Ok(false);
+    }
+    let p = yield_path(cfg, run_id);
+    match fs::remove_file(&p) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(anyhow!(e).context(format!("removing {}", p.display()))),
+    }
 }
 
 /// A live yield request by another host (training loop check: a read failure counts as none,

@@ -162,7 +162,10 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
             // 061-R14: a live yield request reserves the run for the host that asked.
             match crate::storage::read_yield(&r.cfg, id) {
                 Ok(Some(req)) if req.host != r.cfg.host => {
-                    let msg = format!("run {id} is reserved for {} (yield request, 061-R14)", req.host);
+                    let msg = format!(
+                        "run {id} is reserved for {} (yield request, 061-R14). A worker removes it once it has seen it unchanged for 30 min; if that host is gone, delete locks/{id}.yield",
+                        req.host
+                    );
                     r.release()?;
                     return Err(anyhow::Error::new(crate::storage::LockBusy(msg)));
                 }

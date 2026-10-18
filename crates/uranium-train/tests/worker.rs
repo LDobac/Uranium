@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::Result;
 use uranium_train::storage::{self, LockBusy, LockInfo, LockObserver, LockView, Run, StorageConfig, TakeOver};
 use uranium_train::supervise::{Ending, SuperviseArgs};
-use uranium_train::worker::{Defaults, Launcher, Pick, Queue, QueueRun, WorkerArgs, pick, work};
+use uranium_train::worker::{Defaults, Launcher, Observers, Pick, Queue, QueueRun, WorkerArgs, pick, preempt_target, work};
 
 /// Simulated `bc --run`: same lock / yield / done protocol, one "update" per tick, progress kept
 /// on the share (as a checkpoint would be).
@@ -222,18 +222,18 @@ fn init_run_not_done_is_not_taken_061_r13() {
     let q = queue("[[run]]\nid = \"s1\"\n[[run]]\nid = \"s2\"\nstage = \"s2\"\ninit_run = \"s1\"\n");
     // S1 trains on another PC.
     let s1 = Run::acquire(local_cfg(&root, "other"), "s1", false).unwrap();
-    let mut obs = LockObserver::default();
+    let mut obs = Observers::default();
     let skip = HashMap::new();
-    assert_eq!(pick(&cfg, &q, &skip, &mut obs, Instant::now()).unwrap(), None, "S2 waits for S1");
+    assert_eq!(pick(&cfg, &q, &skip, &mut obs, Instant::now()).unwrap().pick, None, "S2 waits for S1");
     // S1 given up (lock gone, no DONE): still not.
     s1.release().unwrap();
-    assert_eq!(pick(&cfg, &q, &skip, &mut obs, Instant::now()).unwrap().map(|p| p.run.id.clone()), Some("s1".into()));
+    assert_eq!(pick(&cfg, &q, &skip, &mut obs, Instant::now()).unwrap().pick.map(|p| p.run.id.clone()), Some("s1".into()));
     let mut skip_s1 = HashMap::new();
     skip_s1.insert("s1".to_string(), Instant::now());
-    assert_eq!(pick(&cfg, &q, &skip_s1, &mut obs, Instant::now()).unwrap(), None, "S1 skipped, S2 still waits");
+    assert_eq!(pick(&cfg, &q, &skip_s1, &mut obs, Instant::now()).unwrap().pick, None, "S1 skipped, S2 still waits");
     // S1 done: S2 is next.
     storage::mark_done(&cfg, "s1", 10).unwrap();
-    assert_eq!(pick(&cfg, &q, &skip, &mut obs, Instant::now()).unwrap().map(|p| p.run.id.clone()), Some("s2".into()));
+    assert_eq!(pick(&cfg, &q, &skip, &mut obs, Instant::now()).unwrap().pick.map(|p| p.run.id.clone()), Some("s2".into()));
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -253,23 +253,87 @@ fn init_needs_a_finished_run_061_r13() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// 061-R13 (H-2): an unreadable lock is unknown (not free), an unreachable share takes nothing.
+/// 061-R13 (H-2): an unreachable share takes nothing; a run whose lock cannot be read is unknown
+/// (not free) and skipped for that poll while the other runs stay pickable (2026-10-19).
 #[test]
 fn unknown_share_state_takes_nothing_061_r13() {
     let root = tmp("h2-pick");
     let cfg = local_cfg(&root, "me");
-    let q = queue("[[run]]\nid = \"r\"\n");
-    let mut obs = LockObserver::default();
+    let q = queue("[[run]]\nid = \"r\"\n[[run]]\nid = \"s\"\n");
+    let mut obs = Observers::default();
     let skip = HashMap::new();
     // No `checkpoints/` (e.g. an empty mount point): unknown.
     assert!(pick(&cfg, &q, &skip, &mut obs, Instant::now()).is_err());
     std::fs::create_dir_all(root.join("shared").join("checkpoints")).unwrap();
     std::fs::create_dir_all(root.join("shared").join("locks")).unwrap();
-    // A lock that cannot be parsed is not Free.
+    // A lock that cannot be parsed is not Free: `r` is skipped, `s` is taken.
     std::fs::write(root.join("shared").join("locks").join("r.json"), b"{").unwrap();
-    assert!(pick(&cfg, &q, &skip, &mut obs, Instant::now()).is_err());
+    let p = pick(&cfg, &q, &skip, &mut obs, Instant::now()).unwrap();
+    assert_eq!(p.pick.map(|p| p.run.id.clone()), Some("s".into()));
+    assert_eq!(p.unknown.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["r"]);
+    // An unreadable yield request is unknown too.
     std::fs::remove_file(root.join("shared").join("locks").join("r.json")).unwrap();
-    assert_eq!(pick(&cfg, &q, &skip, &mut obs, Instant::now()).unwrap().map(|p| p.run.id.clone()), Some("r".into()));
+    std::fs::write(root.join("shared").join("locks").join("r.yield"), b"not json").unwrap();
+    let p = pick(&cfg, &q, &skip, &mut obs, Instant::now()).unwrap();
+    assert_eq!((p.pick.map(|p| p.run.id.clone()), p.unknown.len()), (Some("s".into()), 1));
+    std::fs::remove_file(root.join("shared").join("locks").join("r.yield")).unwrap();
+    assert_eq!(pick(&cfg, &q, &skip, &mut obs, Instant::now()).unwrap().pick.map(|p| p.run.id.clone()), Some("r".into()));
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 061-R14: a yield request expires only after a worker has seen it unchanged for 30 min on its
+/// own monotonic clock (file times play no part); the expired request is removed.
+#[test]
+fn yield_request_expires_on_the_own_clock_061_r14() {
+    let root = tmp("r14-expiry");
+    let cfg = local_cfg(&root, "me");
+    std::fs::create_dir_all(root.join("shared").join("checkpoints")).unwrap();
+    let q = queue("[[run]]\nid = \"r\"\n");
+    let other = local_cfg(&root, "other");
+    storage::request_yield(&other, "r", 5).unwrap();
+    // An old file time does not expire it.
+    let path = root.join("shared").join("locks").join("r.yield");
+    std::fs::File::options().write(true).open(&path).unwrap().set_modified(SystemTime::now() - Duration::from_secs(7200)).unwrap();
+    let skip = HashMap::new();
+    let mut obs = Observers::default();
+    let t0 = Instant::now();
+    for m in [0, 10, 20, 29] {
+        let p = pick(&cfg, &q, &skip, &mut obs, t0 + Duration::from_secs(m * 60)).unwrap();
+        assert!(p.pick.is_none() && p.expired.is_empty(), "reserved for `other` at {m} min");
+    }
+    // Seen unchanged for 30 min: removed; the run is free at the next look.
+    let p = pick(&cfg, &q, &skip, &mut obs, t0 + Duration::from_secs(30 * 60)).unwrap();
+    assert_eq!(p.expired, [("r".to_string(), "other".to_string())]);
+    assert!(storage::read_yield(&cfg, "r").unwrap().is_none());
+    assert_eq!(pick(&cfg, &q, &skip, &mut obs, t0 + Duration::from_secs(31 * 60)).unwrap().pick.map(|p| p.run.id.clone()), Some("r".into()));
+    // A renewed request (new contents) starts the 30 minutes over.
+    storage::request_yield(&other, "r", 5).unwrap();
+    let t1 = t0 + Duration::from_secs(40 * 60);
+    assert!(pick(&cfg, &q, &skip, &mut obs, t1).unwrap().pick.is_none());
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 061-R14 (user decision 2026-10-19): a run started by hand (`bc --run`, no worker state naming
+/// it) is never asked to yield; a run a slower worker trains is.
+#[test]
+fn manual_runs_are_not_asked_to_yield_061_r14() {
+    let root = tmp("r14-manual");
+    let cfg = local_cfg(&root, "fast");
+    std::fs::create_dir_all(root.join("shared").join("checkpoints")).unwrap();
+    let q = queue("[[run]]\nid = \"r\"\n");
+    let slow = local_cfg(&root, "slow");
+    let _lock = Run::acquire(slow.clone(), "r", false).unwrap();
+    // No worker state at all: manual.
+    assert_eq!(preempt_target(&cfg, &q, 10).unwrap(), None);
+    // A worker on that host, but on another run (or idle): the run is still the manual one.
+    storage::write_worker(&slow, 0, "vulkan", None).unwrap();
+    assert_eq!(preempt_target(&cfg, &q, 10).unwrap(), None);
+    storage::write_worker(&slow, 0, "vulkan", Some("other")).unwrap();
+    assert_eq!(preempt_target(&cfg, &q, 10).unwrap(), None);
+    // The slower worker trains it: asked (higher priority only).
+    storage::write_worker(&slow, 0, "vulkan", Some("r")).unwrap();
+    assert_eq!(preempt_target(&cfg, &q, 10).unwrap().map(|r| r.id.clone()), Some("r".into()));
+    assert_eq!(preempt_target(&cfg, &q, 0).unwrap(), None);
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -395,15 +459,15 @@ fn auto_take_over_ignores_file_times_061_ac3() {
     let set_mtime = |age: Duration| std::fs::File::options().write(true).open(&path).unwrap().set_modified(SystemTime::now() - age).unwrap();
     let skip = HashMap::new();
     let t0 = Instant::now();
-    let mut obs = LockObserver::default();
+    let mut obs = Observers::default();
     // An hour-old file time on the first look: not expired.
     set_mtime(Duration::from_secs(3600));
-    assert_eq!(pick(&cfg, &q, &skip, &mut obs, t0).unwrap(), None);
+    assert_eq!(pick(&cfg, &q, &skip, &mut obs, t0).unwrap().pick, None);
     // Watched for 10 minutes (polls every 4): expired, whatever the file time says.
     set_mtime(Duration::ZERO);
-    assert_eq!(pick(&cfg, &q, &skip, &mut obs, t0 + Duration::from_secs(240)).unwrap(), None);
-    assert_eq!(pick(&cfg, &q, &skip, &mut obs, t0 + Duration::from_secs(480)).unwrap(), None);
-    let p = pick(&cfg, &q, &skip, &mut obs, t0 + Duration::from_secs(600)).unwrap().unwrap();
+    assert_eq!(pick(&cfg, &q, &skip, &mut obs, t0 + Duration::from_secs(240)).unwrap().pick, None);
+    assert_eq!(pick(&cfg, &q, &skip, &mut obs, t0 + Duration::from_secs(480)).unwrap().pick, None);
+    let p = pick(&cfg, &q, &skip, &mut obs, t0 + Duration::from_secs(600)).unwrap().pick.unwrap();
     let Pick { take: TakeOver::IfUnchanged(seen), .. } = p else { panic!("{p:?}") };
     // The owner wakes up before the take-over: the changed lock is not taken (exit 75).
     std::thread::sleep(Duration::from_millis(1100));

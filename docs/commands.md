@@ -53,9 +53,10 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
   - Linux: 자식 학습은 별도 프로세스 그룹으로 뜨고 `PR_SET_PDEATHSIG`(SIGINT)가 걸린다. 터미널 포그라운드 Ctrl+C도 감시 프로세스가 한 번만 전달하므로 저장 후 끝난다. 감시 프로세스가 강제 종료돼도 자식은 SIGINT를 받아 저장·push·잠금 해제 후 끝난다(060-R6). Windows: 같은 콘솔이라 Ctrl+C가 자식에게 직접 간다(기존 동작).
 - `uranium-train worker --queue <shared>/queue/<이름>.toml --backend <cuda|vulkan> --priority <n> [--poll-seconds 60] [--log <file>]`
   - 큐: `[defaults] datasets=[...] config="..."`, `[[run]] id, config, core, stage(s1|s2|ablation-a), init_run, datasets, steps`.
-  - 끝나지 않은(`checkpoints/<id>/DONE` 없음) 잡을 수 있는 run을 순서대로 돌린다. `init_run`이 있는 run은 `init_run`에 `DONE`이 생긴 뒤에만 잡는다(061-R13). 빈 run이 없으면 우선순위가 낮은 PC에 양보 요청(`locks/<id>.yield`)을 쓰고, 다른 run을 잡거나 작업자가 끝나면 자기 요청을 지운다(061-R14).
+  - 끝나지 않은(`checkpoints/<id>/DONE` 없음) 잡을 수 있는 run을 순서대로 돌린다. `init_run`이 있는 run은 `init_run`에 `DONE`이 생긴 뒤에만 잡는다(061-R13). 빈 run이 없으면 우선순위가 낮은 PC의 작업자가 돌리는 run에 양보 요청(`locks/<id>.yield`)을 쓰고, 다른 run을 잡거나 작업자가 끝나면 자기 요청을 지운다(061-R14). 직접 실행한 `bc --run`에는 양보 요청을 쓰지 않는다.
+  - 양보 요청 만료: 작업자가 같은 요청 내용을 자기 단조 시계로 30분 동안 관측하면 만료로 보고 지운다(파일 mtime 무관). 작업자가 하나도 없을 때 요청한 host가 사라졌으면 `locks/<id>.yield`를 직접 지운다.
   - 다른 PC 잠금의 자동 인수: 작업자가 자기 단조 시계로 같은 heartbeat 내용을 10분 동안 연속 관측했을 때만 한다(PC 시계·파일 mtime 무관, 061-R5). 학습하는 동안에는 관측하지 않으므로, 돌아온 뒤 다시 10분을 관측한다.
-  - 공용 드라이브를 읽거나 쓰지 못하면(큐·잠금·`DONE`·양보 요청) 상태를 "모름"으로 보고 새 run을 잡지 않으며, 종료하지 않고 `--poll-seconds`마다 다시 본다. 공용 드라이브가 없는 동안 자식이 실패한 것은 재시작 횟수에 넣지 않는다(061-R13).
+  - 공용 드라이브를 읽거나 쓰지 못하면 상태를 "모름"으로 보고 종료하지 않으며 `--poll-seconds`마다 다시 본다. 모름은 run 단위다: 잠금·`DONE`·양보 요청을 읽지 못한 run만 그 주기에 건너뛰고, 공용 드라이브 자체(큐, `checkpoints/`)에 접근할 수 없으면 아무 run도 잡지 않는다. 공용 드라이브가 없는 동안 자식이 실패한 것은 재시작 횟수에 넣지 않는다(061-R13).
   - 상태 파일 `workers/<host>.json`은 1분마다(자식 학습 중에도) 갱신한다. 장비 구간은 `runs/<id>/devices.jsonl`, 집계는 `uranium-train devices --run <id>`(host별 update 수·비율, 061-R15).
   - Windows CUDA 학습 PC(우선순위 10): 쉴 때 직접 실행, Ctrl+C로 멈춘다(저장·push·잠금 해제, 약 30초). 자동 시작 구성은 없다(060-R6).
   - Linux Vulkan 호스트(Vulkan f32, 우선순위 1): 상시 실행. `tools/worker/uranium-worker.service`(systemd user, `KillSignal=SIGINT`, `TimeoutStopSec=900`) 또는 `setsid nohup ... &`, 멈출 때 `kill -INT <pid>`. learner로 정하지 않은 호스트에서는 띄우지 않는다.

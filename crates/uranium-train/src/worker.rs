@@ -13,10 +13,10 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use crate::storage::{self, LockObserver, LockView, StorageConfig, TakeOver};
+use crate::storage::{self, LockObserver, LockView, StorageConfig, TakeOver, Watched, YieldObserver};
 use crate::supervise::{Decision, Ending, SuperviseArgs, Watch, decide};
 
 /// The queue file (TOML). `datasets` and `config` in `[defaults]` apply to runs that omit them.
@@ -115,56 +115,112 @@ pub struct Pick<'a> {
 /// Runs skipped after too many restarts are left alone this long.
 const GIVE_UP_SKIP: Duration = Duration::from_secs(3600);
 
-/// The next run this host can take (061-R13). `Err` = the share's state is unknown (unreachable,
-/// a file that cannot be read): take nothing this time (H-2). `now` is this process's monotonic
-/// clock, the only clock lock expiry uses (061-R5, H-3).
-pub fn pick<'a>(cfg: &StorageConfig, q: &'a Queue, skip: &HashMap<String, Instant>, obs: &mut LockObserver, now: Instant) -> Result<Option<Pick<'a>>> {
+/// What a worker watches between polls on its own monotonic clock: run locks (061-R5 expiry)
+/// and yield requests (061-R14 expiry).
+#[derive(Debug, Default)]
+pub struct Observers {
+    pub locks: LockObserver,
+    pub yields: YieldObserver,
+}
+
+impl Observers {
+    pub fn reset(&mut self) {
+        self.locks.reset();
+        self.yields.reset();
+    }
+}
+
+/// The result of one look at the queue.
+#[derive(Debug, Default)]
+pub struct Picked<'a> {
+    pub pick: Option<Pick<'a>>,
+    /// Runs skipped this time because their state could not be read (061-R13 "unknown", per run).
+    pub unknown: Vec<(String, String)>,
+    /// Yield requests removed as expired (061-R14), `(run, requesting host)`.
+    pub expired: Vec<(String, String)>,
+}
+
+/// The next run this host can take (061-R13). `Err` = the share itself is unreachable: take
+/// nothing (H-2). A run whose `DONE`, lock or yield request cannot be read is "unknown": it is
+/// skipped this time and the other runs stay pickable (2026-10-19 decision). `now` is this
+/// process's monotonic clock, the only clock lock and request expiry use (061-R5, R14).
+pub fn pick<'a>(cfg: &StorageConfig, q: &'a Queue, skip: &HashMap<String, Instant>, obs: &mut Observers, now: Instant) -> Result<Picked<'a>> {
     storage::probe_share(cfg)?;
+    let mut out = Picked::default();
     for r in &q.run {
-        if storage::is_done(cfg, &r.id)? || skip.get(&r.id).is_some_and(|t| t.elapsed() < GIVE_UP_SKIP) {
-            continue;
-        }
-        // H-1: S2 starts from the finished S1 only.
-        if let Some(i) = &r.init_run
-            && !storage::is_done(cfg, i)?
-        {
-            continue;
-        }
-        if storage::read_yield(cfg, &r.id)?.is_some_and(|y| y.host != cfg.host) {
-            continue; // reserved for the host that asked (061-R14)
-        }
-        match obs.observe(&r.id, &storage::peek_lock(cfg, &r.id), now, cfg.stale_after) {
-            LockView::Free => return Ok(Some(Pick { run: r, take: TakeOver::No })),
-            LockView::Held(l) | LockView::Stale(l) if l.host == cfg.host => return Ok(Some(Pick { run: r, take: TakeOver::No })),
-            LockView::Stale(l) => return Ok(Some(Pick { run: r, take: TakeOver::IfUnchanged(l) })),
-            LockView::Held(_) => {}
-            LockView::Unknown(e) => return Err(anyhow!("lock of {}: {e}", r.id)),
+        match look(cfg, r, skip, obs, now, &mut out.expired) {
+            Ok(Some(p)) => {
+                out.pick = Some(p);
+                break;
+            }
+            Ok(None) => {}
+            Err(e) => out.unknown.push((r.id.clone(), format!("{e:#}"))),
         }
     }
-    Ok(None)
+    Ok(out)
+}
+
+fn look<'a>(cfg: &StorageConfig, r: &'a QueueRun, skip: &HashMap<String, Instant>, obs: &mut Observers, now: Instant, expired: &mut Vec<(String, String)>) -> Result<Option<Pick<'a>>> {
+    if storage::is_done(cfg, &r.id)? || skip.get(&r.id).is_some_and(|t| t.elapsed() < GIVE_UP_SKIP) {
+        return Ok(None);
+    }
+    // H-1: S2 starts from the finished S1 only.
+    if let Some(i) = &r.init_run
+        && !storage::is_done(cfg, i)?
+    {
+        return Ok(None);
+    }
+    // 061-R14: a request reserves the run for the host that asked, until a worker has seen it
+    // unchanged for 30 min; then it is removed as expired.
+    match obs.yields.watch(&r.id, &storage::read_yield(cfg, &r.id), now, storage::YIELD_EXPIRY) {
+        Watched::Absent => {}
+        Watched::Fresh(y) if y.host != cfg.host => return Ok(None),
+        Watched::Fresh(_) => {}
+        Watched::Expired(y) => {
+            if storage::remove_yield_if(cfg, &r.id, &y)? {
+                expired.push((r.id.clone(), y.host.clone()));
+            }
+            if y.host != cfg.host {
+                return Ok(None); // looked at again next poll, without the request
+            }
+        }
+        Watched::Unknown(e) => anyhow::bail!("yield request: {e}"),
+    }
+    Ok(match obs.locks.observe(&r.id, &storage::peek_lock(cfg, &r.id), now, cfg.stale_after) {
+        LockView::Free => Some(Pick { run: r, take: TakeOver::No }),
+        LockView::Held(l) | LockView::Stale(l) if l.host == cfg.host => Some(Pick { run: r, take: TakeOver::No }),
+        LockView::Stale(l) => Some(Pick { run: r, take: TakeOver::IfUnchanged(l) }),
+        LockView::Held(_) => None,
+        LockView::Unknown(e) => anyhow::bail!("lock: {e}"),
+    })
 }
 
 /// A run held by a PC whose worker has a lower priority than `priority`, to ask to yield
-/// (061-R14). None when a request of this host is already pending. `Err` = unknown (H-2).
+/// (061-R14). Only runs a worker trains are targets: the holder's `workers/<host>.json` must name
+/// that run. A run started by hand (`bc --run`, no worker state) is never asked (user decision
+/// 2026-10-19). None when a request of this host is already pending. Runs whose state cannot be
+/// read are skipped (per run); `Err` = the share is unreachable.
 pub fn preempt_target<'a>(cfg: &StorageConfig, q: &'a Queue, priority: i32) -> Result<Option<&'a QueueRun>> {
     storage::probe_share(cfg)?;
     for r in &q.run {
-        if storage::is_done(cfg, &r.id)? {
-            continue;
-        }
-        if let Some(y) = storage::read_yield(cfg, &r.id)? {
-            if y.host == cfg.host {
+        let target = (|| -> Result<Option<bool>> {
+            if storage::is_done(cfg, &r.id)? {
                 return Ok(None);
             }
-            continue;
-        }
-        if let Some(l) = storage::peek_lock(cfg, &r.id)?
-            && l.host != cfg.host
-        {
-            let theirs = storage::read_worker(cfg, &l.host).map_or(0, |w| w.priority);
-            if priority > theirs {
-                return Ok(Some(r));
+            if let Some(y) = storage::read_yield(cfg, &r.id)? {
+                return Ok(if y.host == cfg.host { Some(false) } else { None });
             }
+            let Some(l) = storage::peek_lock(cfg, &r.id)? else { return Ok(None) };
+            if l.host == cfg.host {
+                return Ok(None);
+            }
+            let Some(w) = storage::read_worker(cfg, &l.host) else { return Ok(None) };
+            Ok((w.run.as_deref() == Some(r.id.as_str()) && priority > w.priority).then_some(true))
+        })();
+        match target {
+            Ok(Some(true)) => return Ok(Some(r)),
+            Ok(Some(false)) => return Ok(None), // this host's request is pending
+            Ok(None) | Err(_) => {}
         }
     }
     Ok(None)
@@ -239,10 +295,11 @@ fn work_loop<L: Launcher>(
     set_current: &dyn Fn(Option<&str>),
 ) -> Result<()> {
     let mut skip: HashMap<String, Instant> = HashMap::new();
-    let mut obs = LockObserver::default();
+    let mut obs = Observers::default();
     // 061-R14 ①: the run this host asked to yield, cleared when it takes another run or stops.
     let mut my_request: Option<String> = None;
     let mut said = Once(None);
+    let mut said_unknown = Once(None);
     let drop_request = |my_request: &mut Option<String>, keep: Option<&str>| {
         if let Some(id) = my_request.take() {
             if Some(id.as_str()) == keep {
@@ -269,7 +326,19 @@ fn work_loop<L: Launcher>(
         };
         set_current(None);
         let picked = match pick(cfg, &q, &skip, &mut obs, Instant::now()) {
-            Ok(p) => p,
+            Ok(p) => {
+                for (id, host) in &p.expired {
+                    note(&format!("removed the yield request of {host} on {id}: unchanged for 30 min (061-R14)"));
+                }
+                if !p.unknown.is_empty() {
+                    let ids: Vec<&str> = p.unknown.iter().map(|(id, _)| id.as_str()).collect();
+                    let detail: Vec<String> = p.unknown.iter().map(|(id, e)| format!("{id}: {e}")).collect();
+                    said_unknown.note(note, &format!("unknown {ids:?}"), &format!("state unknown, skipped this time (061-R13): {}", detail.join("; ")));
+                } else {
+                    said_unknown.reset();
+                }
+                p.pick
+            }
             Err(e) => {
                 said.note(note, "unknown", &format!("shared drive state unknown ({e:#}); taking nothing, retrying every {} s (061-R13)", a.poll.as_secs()));
                 if !wait(a.poll) {
