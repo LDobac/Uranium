@@ -28,8 +28,11 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 
 ## 리플레이(040)
 `uranium-replay`:
-- `inspect <rep>`, `convert <rep> <out>`(SC:R → 1.16.1, 맵 CHK 정규화 포함, 013), `check-screp <dir> --screp <exe>`(040-AC1), `ophist <dir>`, `play <rep>`(재생·디싱크 신호), `shard-stats <dir>`, `mapgen`.
-- `build <dir> --src <tag> --records <jsonl> [--jobs N --limit N --part i --parts N]`: 필터 → 재생 → 레이블 → shard. 기본 출력 `<URANIUM_SHARED_DIR>/datasets/replays/shards/<src>`. 원본은 `datasets/replays/raw/<src>/`(040-R13). 맵 사전계산은 `URANIUM_MAPS_DIR`에 쓴다.
+- `inspect <rep>`, `convert <rep> <out>`(SC:R → 1.16.1, 맵 CHK 정규화 포함, 013), `check-screp <dir> --screp <exe>`(040-AC1), `ophist <dir>`, `play <rep>`(재생·디싱크 신호), `shard-stats <dir>`(GameInfo `is_enemy`가 정확히 1명이 아닌 게임이 있으면 실패, B-12), `mapgen`, `roundtrip <dir>`(013-R7).
+- `dataset-stats <records.jsonl 또는 폴더>... --out reports/dataset_stats.md`: build 기록으로 맵·매치업·src·stage·분할별 게임·시점 수, 디싱크 폐기율, `result_source` 분포를 쓴다(040-R6, 040-AC2, 040-AC4).
+- `build <dir> --src <tag> --records <jsonl> [--jobs N --limit N --part i --parts N --ladder-records <collect.jsonl>]`: 필터 → 013-R7 왕복 검증 → 재생 → 레이블 → shard. 기본 출력 `<URANIUM_SHARED_DIR>/datasets/replays/shards/<src>`. 원본은 `datasets/replays/raw/<src>/`(040-R13). 맵 사전계산은 `URANIUM_MAPS_DIR`에 쓴다.
+  - shard는 `URANIUM_SHARD_STAGING_DIR`(로컬)에 먼저 쓰고, 공용 경로에 `<이름>.tmp`로 복사해 SHA-256을 다시 읽어 맞춘 뒤 rename한다. 불일치는 3회 재시도, 그래도 실패하면 build가 오류로 멈추고 로컬 사본이 남는다(040-R17).
+  - 승패(`result`)는 브리지 승자 → 첫 LEAVE 이탈자 패배 → 기록 승자(`--ladder-records`, `--src scr_ladder`이면 `datasets/replays/ladder/collect.jsonl` 기본) → 판정 불가(0) 순서다(040-R8).
   - 재개는 records 폴더에서 이름이 `<src>`로 시작하는 `.jsonl`을 모두 읽어 건너뛴다. 표본·시험 records는 하위 폴더에 둔다.
   - `config/map_exclude.toml`의 맵(디싱크 10% 초과, 040-R16)은 재생 전에 제외된다. 대상 맵은 넣을 수 없다.
   - build 전에 브리지와 `uranium-replay`를 같은 커밋으로 빌드한다(011-R10).

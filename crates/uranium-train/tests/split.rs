@@ -22,6 +22,8 @@ fn meta(i: usize, family: &str, slot: u8) -> GameMeta {
         perspective_slot: slot,
         apm: 100,
         result: 1,
+        result_source: "bridge".into(),
+        enemy_random: false,
         src: "test".into(),
         stage: "S1".into(),
         replay_sha256: hash(i),

@@ -16,8 +16,9 @@ flate2 = "1"
 uranium-proto.workspace = true
 dotenvy.workspace = true
 uranium-env = { path = "../uranium-env" }
-uranium-scripted.workspace = true
 toml.workspace = true
 postcard.workspace = true
 zstd = "0.13"
 sha2.workspace = true
+# 040-R15 / A-1: 1.16.1 map titles are CP949.
+encoding_rs = "=0.8.35"

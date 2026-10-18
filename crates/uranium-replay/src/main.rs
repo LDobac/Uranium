@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
+use sha2::Digest as _;
 
 #[derive(Parser)]
 struct Cli {
@@ -53,13 +54,18 @@ enum Cmd {
     },
     /// Debug: list the map's triggers (CHK `TRIG`): condition and action types with arguments.
     Triggers { rep: PathBuf },
-    /// 040-R6 / 040-AC4: dataset statistics markdown from `build` records.
-    Stats {
+    /// 040-R6 / 040-AC2 / 040-AC4 (C-4): `reports/dataset_stats.md` from `build` records (games and
+    /// views by map, matchup, src, stage, split; desync rate; result_source; map families).
+    #[command(alias = "stats")]
+    DatasetStats {
+        /// `build` records (JSON lines); folders are searched for `*.jsonl` (not recursive).
         records: Vec<PathBuf>,
         #[arg(long)]
         out: PathBuf,
     },
-    /// 034-AC3 / AMB-040-6: label distribution and GameInfo checks over a shard folder (JSON).
+    /// 034-AC3 / AMB-040-6 / B-12: label distribution and GameInfo checks over a shard folder
+    /// (JSON). Exits with an error when a game's GameInfo fails a check (e.g. not exactly one
+    /// `is_enemy` player).
     ShardStats { dir: PathBuf },
     /// 013-AC4: SC:R -> 1.16.1 conversion round trip over a folder (JSON summary).
     Roundtrip { dir: PathBuf },
@@ -99,6 +105,10 @@ enum Cmd {
         /// File of SHA-256 hashes (one per line, first column) to skip as duplicates.
         #[arg(long)]
         skip_hashes: Option<PathBuf>,
+        /// Ladder collection records (043-R8) with recorded winners for 040-R8 (c) / ④. Default for
+        /// `--src scr_ladder`: `<URANIUM_SHARED_DIR>/datasets/replays/ladder/collect.jsonl` if present.
+        #[arg(long)]
+        ladder_records: Option<PathBuf>,
     },
     CheckScrep {
         dir: PathBuf,
@@ -122,6 +132,8 @@ struct Summary {
     players: Vec<PlayerOut>,
     cmd_count: usize,
     unit_limit: Option<u32>,
+    /// SHA-256 of the map section (CHK): the key of `map_families.toml` / `map_exclude.toml`.
+    map_sha256: String,
 }
 
 #[derive(Serialize)]
@@ -152,6 +164,7 @@ fn summary(r: &uranium_replay::Replay) -> Summary {
         players,
         cmd_count: r.cmds().count(),
         unit_limit: r.unit_limit,
+        map_sha256: hex(&sha2::Sha256::digest(&r.map)),
     }
 }
 
@@ -171,6 +184,10 @@ fn write_map_resources(map: &Path) -> Result<(PathBuf, usize)> {
     let chk_sha256: String = Sha256::digest(&chk).iter().map(|b| format!("{b:02x}")).collect();
     std::fs::write(&path, toml::to_string(&MapResources { source, chk_sha256, resources })?)?;
     Ok((path, n))
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 fn load(p: &Path) -> Result<uranium_replay::Replay> {
@@ -211,15 +228,16 @@ fn main() -> Result<()> {
             reps(&dir, &mut files)?;
             files.sort();
             for (i, f) in files.iter().enumerate() {
+                let sha = std::fs::read(f).map(|b| hex(&sha2::Sha256::digest(&b))).unwrap_or_default();
                 let line = match load(f) {
-                    Ok(r) => serde_json::json!({"index": i, "ok": true, "summary": summary(&r)}),
+                    Ok(r) => serde_json::json!({"index": i, "ok": true, "replay_sha256": sha, "summary": summary(&r)}),
                     Err(e) => serde_json::json!({"index": i, "ok": false, "error": format!("{e:#}")}),
                 };
                 println!("{line}");
             }
         }
         Cmd::CheckScrep { dir, screp, limit } => check_screp(&dir, &screp, limit)?,
-        Cmd::Build { dir, src, out, records, jobs, limit, budget_gb, skip_hashes, part, parts } => {
+        Cmd::Build { dir, src, out, records, jobs, limit, budget_gb, skip_hashes, part, parts, ladder_records } => {
             anyhow::ensure!(parts >= 1 && part < parts, "--part must be below --parts");
             let skip_sha256 = match skip_hashes {
                 Some(p) => std::fs::read_to_string(&p)?.lines().filter_map(|l| l.split_whitespace().next().map(str::to_string)).collect(),
@@ -239,7 +257,18 @@ fn main() -> Result<()> {
             let cfg = uranium_replay::play::PlayConfig::from_env(uranium_replay::play::work_dir_default())?;
             uranium_replay::play::ensure_file(&cfg.launcher)?;
             std::fs::create_dir_all(&shards_dir)?;
-            let first = std::fs::read_dir(&shards_dir).map(|d| d.filter(|e| e.as_ref().is_ok_and(|e| e.file_name().to_string_lossy().starts_with("shard_"))).count() as u32).unwrap_or(0);
+            // 040-R17: one past the highest finished shard; temporary copies do not count.
+            let first = uranium_replay::shard::next_shard_index(&shards_dir);
+            // 040-R8 (c) / ④: recorded winners of ladder replays (043-R8).
+            let ladder_records = ladder_records.or_else(|| {
+                let p = PathBuf::from(std::env::var_os("URANIUM_SHARED_DIR")?).join("datasets/replays/ladder/collect.jsonl");
+                (src == "scr_ladder" && p.is_file()).then_some(p)
+            });
+            let recorded_winners = match &ladder_records {
+                Some(p) => recorded_winners(p)?,
+                None => Default::default(),
+            };
+            eprintln!("recorded winners: {} (040-R8)", recorded_winners.len());
             // Resume: replays in any records file of this source (same folder, name starting with
             // the source tag) were handled by an earlier run or another host.
             let rec_dir = records.parent().map(PathBuf::from).unwrap_or_default();
@@ -255,7 +284,8 @@ fn main() -> Result<()> {
                     }
                 }
             }
-            let opt = uranium_replay::pipeline::BuildOptions { src, shards_dir, jobs, shard_target_bytes: 512 << 20, budget_bytes: budget_gb << 30, first_shard_index: first, skip_sha256, done_sha256 };
+            let staging_dir = uranium_replay::shard::staging_dir();
+            let opt = uranium_replay::pipeline::BuildOptions { src, shards_dir, staging_dir, recorded_winners, jobs, shard_target_bytes: 512 << 20, budget_bytes: budget_gb << 30, first_shard_index: first, skip_sha256, done_sha256 };
             let out_file = std::sync::Mutex::new(std::fs::OpenOptions::new().create(true).append(true).open(&records)?);
             let counts = std::sync::Mutex::new(std::collections::BTreeMap::<String, usize>::new());
             uranium_replay::pipeline::build(&files, &opt, &cfg, &|r| {
@@ -267,8 +297,26 @@ fn main() -> Result<()> {
             })?;
             println!("{}", serde_json::json!({"replays": files.len(), "resumed_skip": opt.done_sha256.len(), "by_outcome": counts.into_inner().unwrap()}));
         }
-        Cmd::Stats { records, out } => std::fs::write(&out, stats_markdown(&records)?)?,
-        Cmd::ShardStats { dir } => println!("{}", serde_json::to_string_pretty(&shard_stats(&dir)?)?),
+        Cmd::DatasetStats { records, out } => {
+            let mut files = Vec::new();
+            for p in records {
+                if p.is_dir() {
+                    let mut v: Vec<PathBuf> = std::fs::read_dir(&p)?.flatten().map(|e| e.path()).filter(|f| f.extension().is_some_and(|x| x == "jsonl")).collect();
+                    v.sort();
+                    files.extend(v);
+                } else {
+                    files.push(p);
+                }
+            }
+            std::fs::write(&out, uranium_replay::stats::dataset_markdown(&files)?)?;
+        }
+        Cmd::ShardStats { dir } => {
+            let s = shard_stats(&dir)?;
+            println!("{}", serde_json::to_string_pretty(&s)?);
+            // B-12: every game must have exactly one is_enemy player.
+            let bad = s["is_enemy_violations"].as_u64().unwrap_or(0);
+            anyhow::ensure!(bad == 0, "B-12: {bad} games without exactly one is_enemy player");
+        }
         Cmd::Nondet { rep, perspective, runs } => {
             let r = load(&rep)?;
             let cfg = uranium_replay::play::PlayConfig::from_env(uranium_replay::play::work_dir_default())?;
@@ -451,7 +499,6 @@ fn check_screp(dir: &Path, screp: &Path, limit: Option<usize>) -> Result<()> {
     Ok(())
 }
 
-/// 040-R6 / 040-AC4: counts only, no file or player names (040-R14).
 /// Shard folder summary: per-action label counts (034-AC3), delay buckets and argument use, and
 /// GameInfo consistency per game (AMB-040-6). Reading every shard also checks the schema version.
 fn shard_stats(dir: &Path) -> Result<serde_json::Value> {
@@ -465,6 +512,8 @@ fn shard_stats(dir: &Path) -> Result<serde_json::Value> {
     let mut delays = BTreeMap::<u32, usize>::new();
     let mut matchups = BTreeMap::<String, usize>::new();
     let mut families = BTreeMap::<String, usize>::new();
+    let mut result_sources = BTreeMap::<String, usize>::new();
+    let (mut is_enemy_violations, mut enemy_random, mut not_game_start) = (0usize, 0usize, 0usize);
     for f in &files {
         let shard = uranium_replay::shard::read(f)?;
         for g in &shard.games {
@@ -483,6 +532,16 @@ fn shard_stats(dir: &Path) -> Result<serde_json::Value> {
             if !ok {
                 bad_game_info.push(g.meta.replay_sha256[..12].to_string());
             }
+            if !uranium_replay::stats::one_enemy(gi) {
+                is_enemy_violations += 1;
+            }
+            *result_sources.entry(g.meta.result_source.clone()).or_default() += 1;
+            // 040-R18: the first step is the game-start observation.
+            let start = uranium_replay::label::GAME_START_FRAME;
+            if !g.steps.first().is_some_and(|s| s.raw_frame.frame == start && s.action_label.frame == start) {
+                not_game_start += 1;
+            }
+            enemy_random += usize::from(g.meta.enemy_random);
             for s in &g.steps {
                 steps += 1;
                 let l = &s.action_label;
@@ -503,6 +562,9 @@ fn shard_stats(dir: &Path) -> Result<serde_json::Value> {
     Ok(serde_json::json!({
         "shards": files.len(), "games": games, "steps": steps,
         "game_info_bad": bad_game_info,
+        "is_enemy_violations": is_enemy_violations,
+        "result_sources": result_sources, "enemy_random": enemy_random,
+        "first_step_not_game_start": not_game_start,
         "matchups": matchups, "map_families": families,
         "pct_with_selected": pct(with_select), "pct_with_target_unit": pct(with_unit),
         "pct_with_target_tile": pct(with_tile), "pct_queued": pct(queued),
@@ -512,61 +574,14 @@ fn shard_stats(dir: &Path) -> Result<serde_json::Value> {
     }))
 }
 
-fn stats_markdown(records: &[PathBuf]) -> Result<String> {
-    use std::collections::BTreeMap;
-    use std::fmt::Write as _;
-    let mut rows: Vec<serde_json::Value> = Vec::new();
-    for p in records {
-        for line in std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?.lines() {
-            rows.push(serde_json::from_str(line)?);
+/// 043-R8 `collect.jsonl`: recorded winner (player name) by replay SHA-256, for 040-R8 (c) / ④.
+fn recorded_winners(path: &Path) -> Result<std::collections::HashMap<String, String>> {
+    let mut out = std::collections::HashMap::new();
+    for l in std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else { continue };
+        if let (Some(sha), Some(w)) = (v["sha256"].as_str(), v["winner"].as_str()) {
+            out.insert(sha.to_string(), w.to_string());
         }
     }
-    let s = |v: &serde_json::Value, k: &str| v[k].as_str().unwrap_or("").to_string();
-    let mut outcomes: BTreeMap<(String, String), usize> = BTreeMap::new();
-    let mut games: BTreeMap<(String, String, String), (usize, u64)> = BTreeMap::new();
-    let mut desync: BTreeMap<String, (usize, usize)> = BTreeMap::new();
-    let (mut cmds, mut labeled, mut spam) = (0u64, 0u64, 0u64);
-    let mut replays: BTreeMap<String, std::collections::BTreeSet<(String, u64)>> = BTreeMap::new();
-    for r in &rows {
-        let (src, outcome) = (s(r, "src"), s(r, "outcome"));
-        replays.entry(src.clone()).or_default().insert((s(r, "replay_sha256"), r["index"].as_u64().unwrap_or(0)));
-        *outcomes.entry((src.clone(), outcome.clone())).or_default() += 1;
-        let family = s(r, "map_family");
-        if outcome == "written" || outcome == "desync" {
-            let d = desync.entry(family.clone()).or_default();
-            d.1 += 1;
-            d.0 += (outcome == "desync") as usize;
-        }
-        if outcome == "written" {
-            let view = &r["view"];
-            let g = games.entry((family, s(view, "matchup"), s(view, "stage"))).or_default();
-            g.0 += 1;
-            g.1 += r["steps"].as_u64().unwrap_or(0);
-            let c = &r["coverage"];
-            cmds += c["commands"].as_u64().unwrap_or(0);
-            labeled += c["labeled"].as_u64().unwrap_or(0);
-            spam += c["merged_spam"].as_u64().unwrap_or(0);
-        }
-    }
-    let mut md = String::new();
-    writeln!(md, "# 데이터셋 통계 (040-R6, 040-AC4)\n")?;
-    writeln!(md, "`uranium-replay stats`로 생성. 개수만 기록한다(040-R14). 판(game)은 테란 시점 하나다(TvT는 두 시점, 040-R2).\n")?;
-    writeln!(md, "## 출처별 처리 결과\n\n| src | 리플레이 | 결과 | 레코드 |\n|---|---|---|---|")?;
-    for ((src, outcome), n) in &outcomes {
-        writeln!(md, "| {src} | {} | {outcome} | {n} |", replays.get(src).map_or(0, |r| r.len()))?;
-    }
-    writeln!(md, "\n## 저장된 판: 맵 패밀리 × 매치업 × 단계\n\n| 맵 패밀리 | 매치업 | 단계 | 판 | 판단 단계 |\n|---|---|---|---|---|")?;
-    for ((f, m, st), (n, steps)) in &games {
-        writeln!(md, "| {f} | {m} | {st} | {n} | {steps} |")?;
-    }
-    writeln!(md, "\n## 디싱크 비율 (040-AC2, 목표 < 10%)\n\n| 맵 패밀리 | 재생 시점 | 디싱크 | 비율 |\n|---|---|---|---|")?;
-    let (mut dt, mut tt) = (0, 0);
-    for (f, (d, t)) in &desync {
-        writeln!(md, "| {f} | {t} | {d} | {:.1}% |", *d as f64 * 100.0 / (*t).max(1) as f64)?;
-        dt += d;
-        tt += t;
-    }
-    writeln!(md, "| 전체 | {tt} | {dt} | {:.1}% |", dt as f64 * 100.0 / tt.max(1) as f64)?;
-    writeln!(md, "\n## 레이블 커버리지 (031-AC3, 목표 ≥ 95%)\n\n- 게임 영향 명령 {cmds}개 중 레이블 {labeled}개: {:.2}%\n- 스팸 병합(040-R4): {spam}개", labeled as f64 * 100.0 / cmds.max(1) as f64)?;
-    Ok(md)
+    Ok(out)
 }

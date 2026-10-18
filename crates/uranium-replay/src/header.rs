@@ -27,7 +27,7 @@ pub struct Header {
     pub map_height: u16,
     /// screp `GameType` id (2 Melee, 3 FFA, 4 1on1, 10 UMS, 15 TvB, ...).
     pub game_type: u16,
-    /// Map title as stored (may be EUC-KR/CP949 on old replays, UTF-8 on SC:R).
+    /// Map title decoded by `decode_title` (UTF-8 on SC:R, CP949 on Korean 1.16.1 replays).
     pub map_name: String,
     /// Slots with a non-empty name, in slot order (screp `OrigPlayers`).
     pub players: Vec<Player>,
@@ -36,6 +36,9 @@ pub struct Header {
 pub const RACE_ZERG: u8 = 0;
 pub const RACE_TERRAN: u8 = 1;
 pub const RACE_PROTOSS: u8 = 2;
+/// Lobby race "Random" (screp). The replays measured so far (1.16.1 and SC:R, 2026-10-19) store
+/// the race actually played, so this only appears if a header keeps the lobby choice (030-R11).
+pub const RACE_RANDOM: u8 = 6;
 
 pub fn parse(h: &[u8]) -> Header {
     let u16_at = |o: usize| u16::from_le_bytes([h[o], h[o + 1]]);
@@ -53,9 +56,22 @@ pub fn parse(h: &[u8]) -> Header {
         map_width: u16_at(0x34),
         map_height: u16_at(0x36),
         game_type: u16_at(0x3c),
-        map_name: String::from_utf8_lossy(cstr(&h[0x61..0x61 + 26])).into_owned(),
+        map_name: decode_title(cstr(&h[0x61..0x61 + 26])),
         players,
     }
+}
+
+/// 040-R15 / A-1: map title bytes to text. SC:R stores UTF-8; Korean 1.16.1 replays store
+/// CP949 ("투혼" used to become U+FFFD and fell into `other`). Valid UTF-8 is kept as is (CP949
+/// Hangul is never valid UTF-8, while UTF-8 Hangul can also parse as CP949 pairs), then CP949
+/// without replacement characters, and UTF-8 with replacement characters as the last resort.
+pub fn decode_title(b: &[u8]) -> String {
+    if let Ok(s) = std::str::from_utf8(b) {
+        return s.to_string();
+    }
+    let cp949 = |b: &[u8]| encoding_rs::EUC_KR.decode_without_bom_handling_and_without_replacement(b).map(|s| s.into_owned());
+    // The 26-byte field can cut a two-byte character after its lead byte.
+    cp949(b).or_else(|| b.split_last().and_then(|(_, head)| cp949(head))).unwrap_or_else(|| String::from_utf8_lossy(b).into_owned())
 }
 
 fn cstr(b: &[u8]) -> &[u8] {
@@ -67,5 +83,26 @@ impl Header {
     /// on some versions, so the stricter filter is done by the dataset filter (040).
     pub fn humans(&self) -> impl Iterator<Item = &Player> {
         self.players.iter().filter(|p| p.kind == 2)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A-1 / 040-R15: CP949 titles of 1.16.1 replays decode to Hangul, UTF-8 titles stay.
+    #[test]
+    fn map_title_cp949_and_utf8_040_r15() {
+        // "투혼 1.3" in CP949.
+        assert_eq!(decode_title(&[0xc5, 0xf5, 0xc8, 0xa5, b' ', b'1', b'.', b'3']), "투혼 1.3");
+        // Truncated after a lead byte (26-byte field).
+        assert_eq!(decode_title(&[0xc5, 0xf5, 0xc8]), "투");
+        assert_eq!(decode_title("\u{7}투혼 \u{5}1.4".as_bytes()), "\u{7}투혼 \u{5}1.4");
+        assert_eq!(decode_title(b"| iCCup | Fighting Spirit "), "| iCCup | Fighting Spirit ");
+        // Neither UTF-8 nor CP949: replacement characters, never a panic.
+        assert!(decode_title(&[0xff, 0xff, 0xff]).contains('\u{fffd}'));
+        let mut h = vec![0u8; crate::container::HEADER_SIZE];
+        h[0x61..0x65].copy_from_slice(&[0xc5, 0xf5, 0xc8, 0xa5]);
+        assert_eq!(parse(&h).map_name, "투혼");
     }
 }

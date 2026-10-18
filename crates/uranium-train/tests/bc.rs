@@ -100,6 +100,8 @@ fn game() -> ShardGame {
         perspective_slot: 0,
         apm: 100,
         result: 1,
+        result_source: "bridge".into(),
+        enemy_random: false,
         src: "test".into(),
         stage: "S1".into(),
         replay_sha256: "00".into(),

@@ -10,15 +10,15 @@ use uranium_env::actions::{ActionTable, Executor, TargetKind};
 
 use crate::cmd::{Cmd, op};
 
-/// 031: delay buckets in frames.
-pub const DELAY_BUCKETS: [u32; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 20, 24, 28, 32];
+/// 031 delay buckets in frames: one definition in `uranium-env` (E-7), re-exported here.
+pub use uranium_env::features::DELAY_BUCKETS;
 /// 031-R3: game selection limit.
 pub const MAX_SELECT: usize = 12;
 /// Hotkey groups 0..=9.
 const GROUPS: usize = 10;
-/// 040-R4: commands at most this many frames apart count as "near"; identical near commands
-/// are merged as spam.
-pub const NEAR_FRAMES: u32 = 2;
+/// 040-R18: frame of the game-start observation, the first step of every sequence (the bridge's
+/// first observation is frame 1, 011-R15).
+pub const GAME_START_FRAME: u32 = 1;
 
 pub const ORDERS_TOML: &str = include_str!("../tables/replay_orders.toml");
 
@@ -158,7 +158,6 @@ pub struct Coverage {
     pub commands: u32,
     pub labeled: u32,
     pub unknown: u32,
-    pub merged_spam: u32,
     /// Unknown commands by opcode, for the coverage report.
     pub unknown_ops: Vec<(u8, u32)>,
     /// Targeted orders (0x15) without a 034 action, by order id (034-AC3 review).
@@ -242,13 +241,9 @@ impl Labeler {
                 };
                 let a = &self.table.actions[action as usize];
                 let selected = if sel && a.uses_select { selection.iter().copied().take(a.max_select as usize).collect() } else { Vec::new() };
-                let raw = Raw { frame: c.frame, action, queued: queued && a.uses_queued, selected, target_unit: target_unit.filter(|_| a.target == TargetKind::Unit), target_tile: target_tile.filter(|_| a.target == TargetKind::Loc) };
-                // 040-R4: identical near commands are spam.
-                if raws.last().is_some_and(|p| c.frame - p.frame <= NEAR_FRAMES && Raw { frame: p.frame, ..raw.clone() } == *p) {
-                    cov.merged_spam += 1;
-                } else {
-                    raws.push(raw);
-                }
+                // 040-R4 (A-2): repeated commands are never merged; each one is a label (Train
+                // presses and building cycling all reach the game).
+                raws.push(Raw { frame: c.frame, action, queued: queued && a.uses_queued, selected, target_unit: target_unit.filter(|_| a.target == TargetKind::Unit), target_tile: target_tile.filter(|_| a.target == TargetKind::Loc) });
                 cov.labeled += 1;
             };
             let pos_tile = |x: u16, y: u16| Some((x / 32, y / 32));
@@ -301,7 +296,7 @@ impl Labeler {
                     let (x, y, tag, q) = (u16_at(d, 0), u16_at(d, 2), valid_tag(u16_at(d, 4)), d[8] != 0);
                     // 040-R11: right click with landed buildings selected sets the rally point; a
                     // lifted building moves (`get_default_order`).
-                    let buildings = !selection.is_empty() && selection.iter().all(|t| u.own(*t).is_some_and(|o| uranium_scripted::types::is_building(o.unit_type) && !o.lifted));
+                    let buildings = !selection.is_empty() && selection.iter().all(|t| u.own(*t).is_some_and(|o| is_building(o.unit_type) && !o.lifted));
                     let name = match (buildings, tag) {
                         (true, Some(_)) => "SetRally_Unit",
                         (true, None) => "SetRally_Pos",
@@ -326,7 +321,7 @@ impl Labeler {
                     } else if self.build.place_addon.contains(&order) {
                         self.by_arg("BuildAddon", |a| a.unit_type, ty)
                     } else if order == self.build.building_land {
-                        self.id(if ty == uranium_scripted::types::CC { "Land_CommandCenter_Pos" } else { "Land_Pos" })
+                        self.id(if ty == command_center() { "Land_CommandCenter_Pos" } else { "Land_Pos" })
                     } else {
                         None
                     };
@@ -408,15 +403,33 @@ fn tags(d: &[u8]) -> Vec<u32> {
     (0..d[0] as usize).filter_map(|i| valid_tag(u16_at(d, 1 + 2 * i))).collect()
 }
 
+/// Building per the unit type table (E-13: `uranium-env` types, no `uranium-scripted`).
+fn is_building(unit_type: u16) -> bool {
+    uranium_env::types::TypeTables::get().unit(unit_type).is_some_and(|t| t.is_building())
+}
+
+fn unit_id(name: &str) -> u16 {
+    uranium_env::types::TypeTables::get().unit_by_name(name).unwrap_or_else(|| panic!("unit type {name}")).id as u16
+}
+
+fn command_center() -> u16 {
+    static CC: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+    *CC.get_or_init(|| unit_id("Terran_Command_Center"))
+}
+
 fn floor_bucket(gap: u32) -> u32 {
     DELAY_BUCKETS.iter().rev().copied().find(|&b| b <= gap).unwrap_or(1)
 }
 
 /// 031-R11 / 040-R4: every action gets the largest bucket <= the gap to the next action (at least
 /// 1); the rest of the gap is filled with NoOps of the largest fitting bucket.
+/// 040-R18: the sequence starts at the game-start observation; the wait until the first command
+/// is NoOps the same way.
 fn with_delays(raws: Vec<Raw>, end_frame: u32, noop: u16) -> Vec<Label> {
-    let mut out = Vec::with_capacity(raws.len());
-    let mut frame = raws.first().map_or(0, |r| r.frame);
+    let mut out = Vec::with_capacity(raws.len() + 1);
+    let Some(first) = raws.first() else { return out };
+    let mut frame = GAME_START_FRAME;
+    noops(&mut out, &mut frame, first.frame, noop);
     for (i, r) in raws.iter().enumerate() {
         // Near commands are shifted to keep delay >= 1 (040-R4).
         frame = frame.max(r.frame);
@@ -424,13 +437,18 @@ fn with_delays(raws: Vec<Raw>, end_frame: u32, noop: u16) -> Vec<Label> {
         let delay = floor_bucket(next - frame);
         out.push(Label { frame, action: r.action, delay, queued: r.queued, selected: r.selected.clone(), target_unit: r.target_unit, target_tile: r.target_tile });
         frame += delay;
-        while frame < next {
-            let d = floor_bucket(next - frame);
-            out.push(Label { frame, action: noop, delay: d, queued: false, selected: vec![], target_unit: None, target_tile: None });
-            frame += d;
-        }
+        noops(&mut out, &mut frame, next, noop);
     }
     out
+}
+
+/// NoOps of the largest fitting bucket from `frame` up to `next` (031-R11).
+fn noops(out: &mut Vec<Label>, frame: &mut u32, next: u32, noop: u16) {
+    while *frame < next {
+        let d = floor_bucket(next - *frame);
+        out.push(Label { frame: *frame, action: noop, delay: d, queued: false, selected: vec![], target_unit: None, target_tile: None });
+        *frame += d;
+    }
 }
 
 #[cfg(test)]
@@ -441,15 +459,70 @@ mod tests {
         Cmd { frame, player: 0, op, data }
     }
 
+    fn raw(frame: u32) -> Raw {
+        Raw { frame, action: 5, queued: false, selected: vec![], target_unit: None, target_tile: None }
+    }
+
     #[test]
-    fn delays_and_noops_follow_031_r11() {
-        let r = |frame| Raw { frame, action: 5, queued: false, selected: vec![], target_unit: None, target_tile: None };
-        let l = with_delays(vec![r(100), r(109), r(109), r(180)], 200, 0);
+    fn delays_and_noops_follow_031_r11_040_r4() {
+        let l = with_delays(vec![raw(100), raw(109), raw(109), raw(180)], 200, 0);
         let got: Vec<(u32, u16, u32)> = l.iter().map(|l| (l.frame, l.action, l.delay)).collect();
         assert_eq!(
             got,
-            vec![(100, 5, 8), (108, 0, 1), (109, 5, 1), (110, 5, 32), (142, 0, 32), (174, 0, 6), (180, 5, 20)]
+            vec![
+                // 040-R18: game start (frame 1) to the first command: 99 frames of NoOps.
+                (1, 0, 32),
+                (33, 0, 32),
+                (65, 0, 32),
+                (97, 0, 3),
+                (100, 5, 8),
+                (108, 0, 1),
+                // 040-R4: the same-frame pair stays two labels, the second shifted to delay >= 1.
+                (109, 5, 1),
+                (110, 5, 32),
+                (142, 0, 32),
+                (174, 0, 6),
+                (180, 5, 20)
+            ]
         );
+    }
+
+    /// 040-R18 (E-2): the first step is the game-start observation (frame 1) even when the first
+    /// command comes right away, and a command at frame 1 (or 0) is that first step itself.
+    #[test]
+    fn first_step_is_game_start_040_r18() {
+        let l = with_delays(vec![raw(2), raw(40)], 60, 0);
+        assert_eq!(l.iter().map(|l| (l.frame, l.action, l.delay)).take(2).collect::<Vec<_>>(), vec![(1, 0, 1), (2, 5, 32)]);
+        let l = with_delays(vec![raw(1), raw(5)], 10, 0);
+        assert_eq!((l[0].frame, l[0].action, l[0].delay), (1, 5, 4));
+        let l = with_delays(vec![raw(0), raw(5)], 10, 0);
+        assert_eq!((l[0].frame, l[0].action), (GAME_START_FRAME, 5));
+        assert!(with_delays(vec![], 100, 0).is_empty());
+    }
+
+    /// 040-R4 (A-2): repeated identical commands (Train presses, the same right click) are kept,
+    /// one label each.
+    #[test]
+    fn repeated_commands_are_not_merged_040_r4() {
+        let lab = Labeler::new().unwrap();
+        let units: HashMap<u32, u16> = [(20, unit_id("Terran_Barracks")), (21, unit_id("Terran_Barracks")), (10, 0)].into_iter().collect();
+        let cmds = vec![
+            cmd(10, op::SELECT, sel(&[20])),
+            cmd(11, op::TRAIN, vec![0, 0]),
+            cmd(12, op::TRAIN, vec![0, 0]),
+            cmd(12, op::TRAIN, vec![0, 0]),
+            cmd(13, op::SELECT, sel(&[21])),
+            cmd(13, op::TRAIN, vec![0, 0]),
+            cmd(20, op::SELECT, sel(&[10])),
+            cmd(21, op::RIGHT_CLICK, vec![64, 0, 64, 0, 0, 0, 0xe4, 0, 0]),
+            cmd(22, op::RIGHT_CLICK, vec![64, 0, 64, 0, 0, 0, 0xe4, 0, 0]),
+        ];
+        let (labels, cov) = lab.label(&cmds, 100, |_| &units);
+        let names: Vec<&str> = labels.iter().filter(|l| l.action != 0).map(|l| lab.table.actions[l.action as usize].name.as_str()).collect();
+        assert_eq!(names, vec!["Train_Marine", "Train_Marine", "Train_Marine", "Train_Marine", "Smart_Pos", "Smart_Pos"]);
+        assert_eq!((cov.commands, cov.labeled), (6, 6));
+        // Every delay is at least 1 and the steps tile the game without gaps.
+        assert!(labels.windows(2).all(|w| w[1].frame == w[0].frame + w[0].delay && w[0].delay >= 1));
     }
 
     #[test]
@@ -464,19 +537,21 @@ mod tests {
             cmd(41, op::RIGHT_CLICK, vec![64, 0, 64, 0, 0, 0, 0xe4, 0, 0]),           // rally
             cmd(60, op::HOTKEY, vec![1, 1]),                                          // recall group 1
             cmd(61, op::RIGHT_CLICK, vec![64, 0, 64, 0, 99, 0, 0xb0, 0, 0]),          // smart on unit 99
-            cmd(62, op::RIGHT_CLICK, vec![64, 0, 64, 0, 99, 0, 0xb0, 0, 0]),          // spam
+            cmd(62, op::RIGHT_CLICK, vec![64, 0, 64, 0, 99, 0, 0xb0, 0, 0]),          // repeat: kept (040-R4)
             cmd(70, op::TRAIN, vec![0, 0]),                                           // marine
             cmd(71, 0x5c, vec![0; 81]),                                               // chat: ignored
             cmd(72, op::UNLOAD, vec![5, 0]),                                          // no 034 action
         ];
         let (labels, cov) = lab.label(&cmds, 100, |_| &units);
         let names: Vec<&str> = labels.iter().filter(|l| l.action != 0).map(|l| lab.table.actions[l.action as usize].name.as_str()).collect();
-        assert_eq!(names, vec!["Attack_Pos", "SetRally_Pos", "Smart_Unit", "Train_Marine"]);
+        // 040-R4: the repeated right click is a label of its own.
+        assert_eq!(names, vec!["Attack_Pos", "SetRally_Pos", "Smart_Unit", "Smart_Unit", "Train_Marine"]);
         let smart = labels.iter().find(|l| lab.table.actions[l.action as usize].name == "Smart_Unit").unwrap();
         assert_eq!((smart.selected.clone(), smart.target_unit), (vec![10, 11], Some(99)));
-        assert_eq!(labels[0].target_tile, Some((2, 3)));
+        let attack = labels.iter().find(|l| lab.table.actions[l.action as usize].name == "Attack_Pos").unwrap();
+        assert_eq!(attack.target_tile, Some((2, 3)));
         assert!(labels.iter().find(|l| lab.table.actions[l.action as usize].name == "Train_Marine").unwrap().selected.is_empty());
-        assert_eq!((cov.commands, cov.labeled, cov.unknown, cov.merged_spam), (6, 5, 1, 1));
+        assert_eq!((cov.commands, cov.labeled, cov.unknown), (6, 5, 1));
         assert_eq!(cov.unknown_ops, vec![(op::UNLOAD, 1)]);
     }
 
@@ -541,7 +616,7 @@ mod tests {
     #[test]
     fn selection_follows_game_admission_040_r3() {
         let lab = Labeler::new().unwrap();
-        let units: HashMap<u32, u16> = [(1, 0u16), (2, 0), (3, uranium_scripted::types::BARRACKS), (4, uranium_scripted::types::DEPOT)].into_iter().collect();
+        let units: HashMap<u32, u16> = [(1, 0u16), (2, 0), (3, unit_id("Terran_Barracks")), (4, unit_id("Terran_Supply_Depot"))].into_iter().collect();
         let mut twelve: Vec<u8> = (20..31).collect();
         twelve.push(1);
         let mut many: HashMap<u32, u16> = units.clone();
@@ -566,14 +641,14 @@ mod tests {
     fn hotkey_groups_follow_game_rules_040_r3() {
         let lab = Labeler::new().unwrap();
         let scv = |order: u16, loaded: bool| {
-            let mut u = uranium_proto::UnitState { unit_type: uranium_scripted::types::SCV, order, ..Default::default() };
+            let mut u = uranium_proto::UnitState { unit_type: unit_id("Terran_SCV"), order, ..Default::default() };
             if loaded {
                 u.flags |= uranium_proto::flags::LOADED;
             }
             Own::from_state(&u)
         };
         let gas = uranium_env::types::order_id("HarvestGas").unwrap();
-        let before: HashMap<u32, Own> = [(1, scv(0, false)), (2, scv(0, false)), (3, Own::of_type(uranium_scripted::types::BARRACKS))].into_iter().collect();
+        let before: HashMap<u32, Own> = [(1, scv(0, false)), (2, scv(0, false)), (3, Own::of_type(unit_id("Terran_Barracks")))].into_iter().collect();
         let mut later = before.clone();
         later.insert(2, scv(gas, false)); // inside a refinery: hidden, still selected
         let mut loaded = later.clone();
@@ -603,7 +678,7 @@ mod tests {
         let lab = Labeler::new().unwrap();
         let barracks = |lifted: bool| {
             let flags = if lifted { uranium_proto::flags::LIFTED } else { 0 };
-            Own::from_state(&uranium_proto::UnitState { unit_type: uranium_scripted::types::BARRACKS, flags, ..Default::default() })
+            Own::from_state(&uranium_proto::UnitState { unit_type: unit_id("Terran_Barracks"), flags, ..Default::default() })
         };
         let landed: HashMap<u32, Own> = [(3, barracks(false))].into_iter().collect();
         let lifted: HashMap<u32, Own> = [(3, barracks(true))].into_iter().collect();

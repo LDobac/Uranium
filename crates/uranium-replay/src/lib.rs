@@ -10,6 +10,8 @@ pub mod mpq;
 pub mod pipeline;
 pub mod play;
 pub mod shard;
+pub mod split;
+pub mod stats;
 pub mod trace;
 
 use anyhow::{Context, Result};
@@ -106,7 +108,7 @@ impl Replay {
         Ok(container::write_legacy(&self.raw_header, &cmd::encode(&blocks)?, &chk::to_legacy(&self.map)?))
     }
 
-    /// 013-R7 / 013-AC4: the converted file parses back to exactly the converted commands
+    /// 013-R7 / 013-AC4 (called by `build` for every replay, C-7): the converted file parses back to exactly the converted commands
     /// (observer and no-effect commands dropped) with the same header and map.
     pub fn roundtrip_check(&self) -> Result<()> {
         let back = parse(&self.to_legacy_file()?)?;

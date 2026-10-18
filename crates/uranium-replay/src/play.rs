@@ -58,6 +58,10 @@ pub struct PlayResult {
     pub final_enemy_supply: Option<u16>,
     /// Player id of the first leave command of the two players, if any.
     pub first_leaver: Option<u8>,
+    /// BWAPI id (slot) of that player (040-R8 result rule (b)).
+    pub first_leaver_slot: Option<u8>,
+    /// BWAPI ids (slots) of the two active players.
+    pub player_slots: Vec<u8>,
     /// Supplies on the last observation before the first leave command (040-R8 ③).
     pub pre_leave_self_supply: Option<u16>,
     pub pre_leave_enemy_supply: Option<u16>,
@@ -73,8 +77,23 @@ pub const MAX_INVALID_SELECT: f64 = 0.15;
 pub const LEAVER_AHEAD_RATIO: f64 = 1.5;
 
 impl PlayResult {
-    /// 040-R8 desync reasons (empty = keep). `recorded_winner` is the SC:R recorded winner
-    /// (player id) when the replay has one (④).
+    /// 040-R8 result rules (a) and (b): the bridge's winner, else the opponent of the first player
+    /// to leave (LEAVE 0x57). BWAPI id (slot) and `result_source`.
+    pub fn decided_winner(&self) -> Option<(u8, &'static str)> {
+        use crate::shard::result_source;
+        if let Some(w) = self.winner {
+            return Some((w, result_source::BRIDGE));
+        }
+        let leaver = self.first_leaver_slot?;
+        match self.player_slots[..] {
+            [a, b] if a == leaver => Some((b, result_source::LEAVE)),
+            [a, b] if b == leaver => Some((a, result_source::LEAVE)),
+            _ => None,
+        }
+    }
+
+    /// 040-R8 desync reasons (empty = keep). `recorded_winner` is the recorded winner of an SC:R
+    /// replay (BWAPI id, 043-R8) when there is one; ④ compares it with `decided_winner`.
     pub fn desync_reasons(&self, recorded_winner: Option<u8>) -> Vec<String> {
         let mut why = Vec::new();
         if self.select_cmds > 0 && self.invalid_select_cmds as f64 / self.select_cmds as f64 > MAX_INVALID_SELECT {
@@ -90,9 +109,9 @@ impl PlayResult {
                 why.push(format!("leaver ahead before leaving ({l} vs {o})"));
             }
         }
-        if let (Some(rec), Some(w)) = (recorded_winner, self.winner) {
+        if let (Some(rec), Some((w, source))) = (recorded_winner, self.decided_winner()) {
             if rec != w {
-                why.push(format!("recorded winner {rec} != replayed winner {w}"));
+                why.push(format!("recorded winner {rec} != replayed winner {w} ({source})"));
             }
         }
         why
@@ -256,7 +275,14 @@ fn session(rep: &Replay, perspective: u8, stream: TcpStream, extra_stops: &[u32]
     extra.dedup();
     let mut stops: Vec<u32> = base.iter().chain(&extra).copied().collect();
     stops.sort_unstable();
-    let mut out = PlayResult { perspective, header_frames: rep.header.frames, first_leaver: leave.map(|(p, _)| p), ..Default::default() };
+    let mut out = PlayResult {
+        perspective,
+        header_frames: rep.header.frames,
+        first_leaver: leave.map(|(p, _)| p),
+        first_leaver_slot: leave.map(|(p, _)| slot_of(rep, p)).transpose()?,
+        player_slots: players.iter().map(|&p| slot_of(rep, p)).collect::<Result<_>>()?,
+        ..Default::default()
+    };
     let mut digest = 0xcbf2_9ce4_8422_2325u64;
     let mut check = 0xcbf2_9ce4_8422_2325u64;
     let mut pending_events: Vec<Vec<u8>> = Vec::new();
@@ -404,5 +430,25 @@ mod tests {
         let dead = PlayResult { pre_leave_self_supply: Some(0), ..lv };
         assert!(dead.desync_reasons(None).is_empty());
         assert_eq!(PlayResult { winner: Some(1), ..ok() }.desync_reasons(Some(0)).len(), 1);
+    }
+
+    /// 040-R8 result rules (A-3): bridge winner first, else the first leaver loses; ④ compares a
+    /// recorded winner with either.
+    #[test]
+    fn leaver_loses_and_recorded_winner_is_checked_040_r8() {
+        use crate::shard::result_source;
+        let two = PlayResult { player_slots: vec![0, 1], ..ok() };
+        assert_eq!(two.decided_winner(), None);
+        assert_eq!(PlayResult { winner: Some(1), first_leaver_slot: Some(1), ..two.clone() }.decided_winner(), Some((1, result_source::BRIDGE)));
+        let left = PlayResult { first_leaver_slot: Some(0), ..two.clone() };
+        assert_eq!(left.decided_winner(), Some((1, result_source::LEAVE)));
+        assert_eq!(PlayResult { first_leaver_slot: Some(1), ..two.clone() }.decided_winner(), Some((0, result_source::LEAVE)));
+        // A leaver that is not one of the two players decides nothing.
+        assert_eq!(PlayResult { first_leaver_slot: Some(3), ..two.clone() }.decided_winner(), None);
+        // ④: the recorded winner must match the leave-decided winner too.
+        assert!(left.desync_reasons(Some(1)).is_empty());
+        assert_eq!(left.desync_reasons(Some(0)).len(), 1);
+        // Nothing decided: a recorded winner cannot disagree.
+        assert!(two.desync_reasons(Some(0)).is_empty());
     }
 }

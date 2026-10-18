@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::label::{Coverage, Labeler};
-use crate::play::{PlayConfig, play_with, slot_of};
-use crate::shard::{GameMeta, ShardGame, ShardWriter, Step};
+use crate::play::{PlayConfig, PlayResult, play_with, slot_of};
+use crate::shard::{GameMeta, ShardGame, ShardWriter, Step, result_source};
 use crate::{Replay, cmd, header};
 
 // Map families and the precompute folder live in uranium-env (shared with live games, AMB-031-4).
@@ -70,6 +70,8 @@ pub struct View {
     pub stage: &'static str,
     pub apm: u32,
     pub matchup: String,
+    /// 030-R11: the opponent's header race is Random (lobby choice).
+    pub enemy_random: bool,
 }
 
 fn race_letter(r: u8) -> char {
@@ -112,7 +114,7 @@ pub fn filter(rep: &Replay, family: &str, bot: bool) -> std::result::Result<Vec<
         } else {
             continue;
         };
-        views.push(View { perspective: p.id, stage, apm: s.apm, matchup: format!("Tv{}", race_letter(other.race)) });
+        views.push(View { perspective: p.id, stage, apm: s.apm, matchup: format!("Tv{}", race_letter(other.race)), enemy_random: other.race == header::RACE_RANDOM });
     }
     if views.is_empty() {
         return Err("no Terran view passes the APM bar".into());
@@ -123,7 +125,8 @@ pub fn filter(rep: &Replay, family: &str, bot: bool) -> std::result::Result<Vec<
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum Outcome {
-    Written { steps: usize, coverage: Coverage },
+    /// `result` / `result_source`: 040-R8 result of the view (dataset statistics, 040-R6).
+    Written { steps: usize, coverage: Coverage, result: i8, result_source: String },
     Filtered { reason: String },
     Desync { reasons: Vec<String> },
     /// 013: opcode or command OpenBW cannot run; kept for review, not discarded.
@@ -139,8 +142,10 @@ pub struct Record {
     pub replay_sha256: String,
     pub src: String,
     pub map_family: String,
-    /// Map title as stored (for per-map desync statistics).
+    /// Map title (decoded, control codes removed) for per-map statistics.
     pub map_name: String,
+    /// SHA-256 of the map CHK (040-R15 / R16 hash lists).
+    pub map_hash: String,
     pub view: Option<View>,
     #[serde(flatten)]
     pub outcome: Outcome,
@@ -150,15 +155,41 @@ fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// 040-R8 `result` of the perspective (BWAPI id `me`) and its `result_source`: (a) bridge winner,
+/// (b) the first leaver loses, (c) the recorded SC:R winner (BWAPI id), (d) undecided = 0.
+pub fn judge(play: &PlayResult, recorded_winner: Option<u8>, me: u8) -> (i8, &'static str) {
+    match play.decided_winner().or(recorded_winner.map(|w| (w, result_source::RECORDED))) {
+        Some((w, source)) => (if w == me { 1 } else { -1 }, source),
+        None => (0, result_source::NONE),
+    }
+}
+
+/// BWAPI id of the recorded winner (043-R8 toon) among the two active players, matched by name.
+fn recorded_slot(rep: &Replay, winner: Option<&str>) -> Option<u8> {
+    let w = winner?;
+    let active = rep.active_players();
+    let p = active.iter().find(|(p, _)| p.name == w.as_bytes())?;
+    slot_of(rep, p.0.id).ok()
+}
+
+/// Shard game of one view with its label coverage and 040-R8 result.
+pub struct ViewGame {
+    pub steps: Vec<Step>,
+    pub coverage: Coverage,
+    pub result: i8,
+    pub result_source: &'static str,
+    pub game_info: uranium_proto::GameInfo,
+}
+
 /// Processes one view of one replay into a shard game.
-fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler) -> Result<std::result::Result<(Vec<Step>, Coverage, i8, uranium_proto::GameInfo), Outcome>> {
+fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, recorded_winner: Option<u8>) -> Result<std::result::Result<ViewGame, Outcome>> {
     let me = slot_of(rep, view.perspective)?;
     // Replay A: own unit types at each command frame + desync signals.
     let mut units_at: HashMap<u32, HashMap<u32, crate::label::Own>> = HashMap::new();
     let a = play_with(rep, view.perspective, cfg, &[], &mut |f, _| {
         units_at.insert(f.frame, f.units.iter().filter(|u| u.owner == me).map(|u| (u.id, crate::label::Own::from_state(u))).collect());
     })?;
-    let reasons = a.desync_reasons(None);
+    let reasons = a.desync_reasons(recorded_winner);
     if !reasons.is_empty() {
         return Ok(Err(Outcome::Desync { reasons }));
     }
@@ -189,15 +220,15 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler) ->
         let Some((raw_frame, privileged)) = by_frame.remove(&l.frame) else { break };
         steps.push(Step { raw_frame, privileged, action_label: l });
     }
-    let result = match res.winner {
-        Some(w) if w == me => 1,
-        Some(_) => -1,
-        None => 0,
-    };
+    // 040-R18: the sequence must start with the game-start observation.
+    if let Some(&f) = frames.first().filter(|_| steps.is_empty()) {
+        return Ok(Err(Outcome::Error { reason: format!("no observation at the first step frame {f} (040-R18)") }));
+    }
+    let (result, result_source) = judge(&res, recorded_winner, me);
     let Some(game_info) = res.game_info else {
         return Ok(Err(Outcome::Error { reason: "bridge sent no GameInfo (AMB-040-6)".into() }));
     };
-    Ok(Ok((steps, coverage, result, game_info)))
+    Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info }))
 }
 
 /// Writes `<maps_dir>/<map_hash>.toml` unless it exists (031, AMB-031-3).
@@ -220,6 +251,10 @@ pub fn write_map_precompute(map_hash: &str, info: &uranium_proto::GameInfo, chk:
 pub struct BuildOptions {
     pub src: String,
     pub shards_dir: PathBuf,
+    /// 040-R17: local folder where shards are completed before the verified copy.
+    pub staging_dir: PathBuf,
+    /// 040-R8 (c) / ④: recorded winner (player name) by replay SHA-256 (043-R8 `collect.jsonl`).
+    pub recorded_winners: HashMap<String, String>,
     pub jobs: usize,
     pub shard_target_bytes: usize,
     /// 040-R12 / 060-R7 storage budget for this run's shards.
@@ -245,7 +280,7 @@ pub fn build(files: &[PathBuf], opt: &BuildOptions, cfg: &PlayConfig, sink: &(dy
     let families = MapFamilies::load()?;
     let excludes = MapExcludes::load(&families)?;
     let labeler = Labeler::new()?;
-    let pending = Mutex::new(Pending { writer: ShardWriter::new(opt.shards_dir.clone(), opt.first_shard_index, opt.shard_target_bytes)?, records: Vec::new() });
+    let pending = Mutex::new(Pending { writer: ShardWriter::new(opt.shards_dir.clone(), opt.staging_dir.clone(), opt.first_shard_index, opt.shard_target_bytes)?, records: Vec::new() });
     let queue = Mutex::new(files.iter().cloned().enumerate().collect::<VecDeque<_>>());
     let written_bytes = Mutex::new(0u64);
     let failure: Mutex<Option<anyhow::Error>> = Mutex::new(None);
@@ -291,7 +326,11 @@ pub fn build(files: &[PathBuf], opt: &BuildOptions, cfg: &PlayConfig, sink: &(dy
 
 #[allow(clippy::too_many_arguments)]
 fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, families: &MapFamilies, excludes: &MapExcludes, labeler: &Labeler, written: &Mutex<u64>) -> Vec<(Record, Option<ShardGame>)> {
-    let rec = |sha: &str, map: &str, family: &str, view: Option<View>, outcome: Outcome| (Record { index, replay_sha256: sha.to_string(), src: opt.src.clone(), map_family: family.to_string(), map_name: map.chars().filter(|c| !c.is_control()).collect(), view, outcome }, None);
+    let map_hash_cell = std::cell::RefCell::new(String::new());
+    let rec = |sha: &str, map: &str, family: &str, view: Option<View>, outcome: Outcome| {
+        let r = Record { index, replay_sha256: sha.to_string(), src: opt.src.clone(), map_family: family.to_string(), map_name: map.chars().filter(|c| !c.is_control()).collect(), map_hash: map_hash_cell.borrow().clone(), view, outcome };
+        (r, None)
+    };
     let bytes = match std::fs::read(file) {
         Ok(b) => b,
         Err(e) => return vec![rec("", "", "", None, Outcome::Error { reason: e.to_string() })],
@@ -310,6 +349,7 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
         Err(e) => return vec![rec(&sha, "", "", None, Outcome::Error { reason: format!("{e:#}") })],
     };
     let map_hash = hex(&Sha256::digest(&rep.map));
+    *map_hash_cell.borrow_mut() = map_hash.clone();
     let family = families.classify(&rep.header.map_name, &map_hash);
     if let Some(name) = excludes.matches(&rep.header.map_name, &map_hash) {
         return vec![rec(&sha, &rep.header.map_name, &family, None, Outcome::Filtered { reason: format!("excluded map (040-R16): {name}") })];
@@ -318,19 +358,21 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
         Ok(v) => v,
         Err(reason) => return vec![rec(&sha, &rep.header.map_name, &family, None, Outcome::Filtered { reason })],
     };
-    if let Err(e) = rep.to_legacy_file() {
+    // 013-R7 (C-7): the 1.16.1 conversion must round-trip losslessly before it is replayed.
+    if let Err(e) = rep.roundtrip_check() {
         let reason = format!("{e:#}");
-        let outcome = if reason.starts_with("review:") { Outcome::Review { reason } } else { Outcome::Error { reason } };
+        let outcome = if reason.starts_with("review:") { Outcome::Review { reason } } else { Outcome::Error { reason: format!("013-R7 round trip: {reason}") } };
         return vec![rec(&sha, &rep.header.map_name, &family, None, outcome)];
     }
+    let recorded_winner = recorded_slot(&rep, opt.recorded_winners.get(&sha).map(String::as_str));
     let mut out = Vec::new();
     for view in views {
         if *written.lock().unwrap() >= opt.budget_bytes {
             out.push(rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Filtered { reason: "storage budget reached (040-R12)".into() }));
             continue;
         }
-        let outcome = match build_view(&rep, &view, cfg, labeler) {
-            Ok(Ok((steps, coverage, result, game_info))) => {
+        let outcome = match build_view(&rep, &view, cfg, labeler, recorded_winner) {
+            Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info })) => {
                 let n = steps.len();
                 // 031 / AMB-031-3: map precompute once per map (observation channels only).
                 if let Err(e) = write_map_precompute(&map_hash, &game_info, &rep.map) {
@@ -344,13 +386,15 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
                     perspective_slot: slot_of(&rep, view.perspective).unwrap_or(0),
                     apm: view.apm,
                     result,
+                    result_source: result_source.to_string(),
+                    enemy_random: view.enemy_random,
                     src: opt.src.clone(),
                     stage: view.stage.to_string(),
                     replay_sha256: sha.clone(),
                 };
                 let game = ShardGame { meta, game_info, steps };
                 *written.lock().unwrap() += postcard::experimental::serialized_size(&game).unwrap_or(0) as u64;
-                let (r, _) = rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Written { steps: n, coverage });
+                let (r, _) = rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Written { steps: n, coverage, result, result_source: result_source.to_string() });
                 out.push((r, Some(game)));
                 continue;
             }
@@ -374,6 +418,19 @@ mod tests {
         assert_eq!(f.classify("투혼 1.3", ""), "fighting_spirit");
         assert_eq!(f.classify("\u{3}Circuit Breakers \u{5}1.0", ""), "circuit_breaker");
         assert_eq!(f.classify("Python", ""), "other");
+    }
+
+    /// 040-R8 (A-3): bridge -> leave -> recorded -> undecided (result 0, `none`).
+    #[test]
+    fn result_order_bridge_leave_recorded_none_040_r8() {
+        let p = PlayResult { player_slots: vec![0, 1], ..Default::default() };
+        assert_eq!(judge(&PlayResult { winner: Some(0), first_leaver_slot: Some(0), ..p.clone() }, Some(1), 0), (1, result_source::BRIDGE));
+        // The perspective (slot 0) left first: a loss even if a recorded winner says otherwise
+        // (that disagreement is a desync, ④).
+        assert_eq!(judge(&PlayResult { first_leaver_slot: Some(0), ..p.clone() }, None, 0), (-1, result_source::LEAVE));
+        assert_eq!(judge(&PlayResult { first_leaver_slot: Some(1), ..p.clone() }, None, 0), (1, result_source::LEAVE));
+        assert_eq!(judge(&p, Some(1), 0), (-1, result_source::RECORDED));
+        assert_eq!(judge(&p, None, 0), (0, result_source::NONE));
     }
 
     #[test]
