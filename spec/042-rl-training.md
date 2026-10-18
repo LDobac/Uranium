@@ -53,7 +53,7 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 | 항목 | 값 | 근거 |
 |---|---|---|
 | 배치 | 레인 32 × T64 = 2,048 agent step/update. `micro_lanes`로 나눠 gradient를 합친다(041과 같은 방식) | T=64는 042-R8. 레인 수는 BC(`config/bc.toml`)와 같게 해 메모리 특성을 재사용 |
-| 옵티마이저 | Adam, lr 3e-5, β1 0, β2 0.99, ε 1e-5, weight decay 0, gradient-norm clip 1.0(전역 L2 norm, 041-R3과 같은 구현, 2026-10-19 사용자 결정 G-D4) | AlphaStar RL 단계 설정(사전학습 정책 미세조정). BC lr(3e-4)의 1/10 |
+| 옵티마이저 | Adam, lr 3e-5, β1 0, β2 0.99, ε 1e-5, weight decay 0, gradient-norm clip 1.0(전역 L2 norm, 041-R3과 같은 구현, 2026-10-19 사용자 결정 G-D4, AMB-041-5) | AlphaStar RL 단계 설정(사전학습 정책 미세조정). BC lr(3e-4)의 1/10 |
 | 할인 γ | 1.0 (에피소드는 020 60분 상한으로 유한) | AlphaStar는 할인 없이 λ로 분산 조절 |
 | value 목표 | TD(λ), λ = 0.8 | AlphaStar |
 | V-trace 절단 | ρ̄ = 1.0, c̄ = 1.0 | IMPALA 기본값 |
@@ -121,7 +121,7 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 | 042-R8 | **MUST** RL 학습 시퀀스 길이는 T=64다(032-R5와 동일) |
 | 042-R9 | **MUST** KL 계수, 엔트로피 계수, 커리큘럼 전환 승률 기준, 스냅샷 주기는 튜닝 대상이다. 설정 파일로 관리하고 체크포인트에 기록한다 |
 | 042-R10 | **MUST** 정상 종료(Ctrl+C, 2026-10-16 사용자 결정). 첫 Ctrl+C(SIGINT, Windows는 Ctrl+C 이벤트)를 받으면 다음 순서로 멈춘다. ① 새 게임 배정을 멈춘다. ② 진행 중인 게임을 중단하고 `Aborted`로 기록해 학습에서 뺀다(042-R3). ③ 체크포인트를 저장하고 push한다(061-R4 "정상 종료 시"). ④ 잠금을 해제한다(061-R5). 두 번째 Ctrl+C를 받으면 저장 없이 즉시 종료한다. 게임 PC 구성(hosts 파일)을 바꾸려면 정상 종료 후 재시작한다. 재시작하면 hosts 파일을 새로 읽고 마지막 체크포인트에서 재개한다(R1) |
-| 042-R11 | **MUST** 학습 중 리플레이를 저장한다(2026-10-18 사용자 결정). 모든 게임을 `save_replay`로 시작하고(게임 PC가 임시로 저장, 020-R1 `Finished.replay`로 학습 PC에 전달), 판정 뒤 **정기 표본(게임 id가 `[replays] sample_every`(기본 100)의 배수)** 이거나 **승자 불일치 게임(020-R13)** 이면 `<URANIUM_SHARED_DIR>/runs/<run_id>/replays/g<game_id>-<sample\|disagree>.rep`에 쓴다(임시 이름으로 쓰고 다시 읽어 바이트를 대조한 뒤 이름을 바꾼다). 나머지는 버린다. run이 끝나도 지우지 않고, 저장 예산(060-R7)을 넘어도 자동 삭제하지 않는다(경고만, 2026-10-19 사용자 결정). `games.csv`에 `replay`(run 폴더 기준 경로)와 `replay_reason` 열을 남긴다 |
+| 042-R11 | **MUST** 학습 중 리플레이를 저장한다(2026-10-18 사용자 결정). 모든 게임을 `save_replay`로 시작하고(게임 PC가 임시로 저장, 020-R1 `Finished.replay`로 학습 PC에 전달), 판정 뒤 **정기 표본(게임 id가 `[replays] sample_every`(기본 100)의 배수)** 이거나 **승자 불일치 게임(020-R13)** 이면 `<URANIUM_SHARED_DIR>/runs/<run_id>/replays/g<game_id>-<sample\|disagree>.rep`에 쓴다(임시 이름으로 쓰고 다시 읽어 바이트를 대조한 뒤 이름을 바꾼다). 나머지는 버린다. run이 끝나도 지우지 않고, 저장 예산(060-R7)을 넘어도 자동 삭제하지 않는다(경고만, 2026-10-19 사용자 결정, AMB-061-5. 총량 측정은 060-R7). `games.csv`에 `replay`(run 폴더 기준 경로)와 `replay_reason` 열을 남긴다 |
 | 042-R12 | **MUST** agent step 상한(`--max-agent-steps`, 042-AC1·033-AC2는 1,000만)에 도달하면 R10의 정상 종료 순서(①~④)로 멈춘다. agent step은 체크포인트(`TrainState.step`)에서 이어 세므로 재개해도 run 전체 누적이다. 진행 중이던 게임은 R10처럼 Aborted로 빠지므로 실제 학습량은 상한을 약간 넘거나 모자랄 수 있고, 마지막 체크포인트 step으로 기록한다 (2026-10-18) |
 
 ## Acceptance Criteria

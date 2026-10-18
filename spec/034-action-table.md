@@ -1,6 +1,6 @@
 # 034 — Action Table
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: Attack_Pos 선택 자격 can_move, Smart_Unit 선택 자격 can_right_click_unit, can_rally 완성 조건 제거, 무력화에 메일스트롬 포함 — AMB-041-1. 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): R6 무력화 규칙을 모든 선택 자격·executor 선택에 적용(B-11), R7 건물 대상 명령은 건물 1개만 선택(E-4, SetRally max_select 12 → 1))
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: Attack_Pos 선택 자격 can_move, Smart_Unit 선택 자격 can_right_click_unit, can_rally 완성 조건 제거, 무력화에 메일스트롬 포함 — AMB-041-1. 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): R6 무력화 규칙을 모든 선택 자격·executor 선택에 명시(기존 규칙과 정합, B-11), R7 선택 집합에 건물이 들어가면 그 건물 1개만(E-4, SetRally max_select 12 → 1, Selected 헤드 마스크), AMB-034-1)
 - **Related**: [030](030-observation.md), [031](031-action-space.md), [032](032-model-architecture.md), [040](040-replay-dataset.md)
 
 ## Purpose
@@ -17,8 +17,8 @@
 | 034-R3 | **MUST** `type_mask[a]`가 true인 조건은 아래 셋을 모두 만족하는 것이다. 아니면 false다. 해당 조건이 없는 항목은 자동으로 만족한 것으로 본다(vacuous true). |
 | 034-R4 | **MUST** `sel_mask = unit_cap[:, select_cap[a]] ∧ owner==self ∧ entity_mask`, `tgt_mask = unit_cap[:, target_cap[a]] ∧ entity_mask`, `loc_mask = loc_class_mask[loc_class[a]]`. 이 gather는 GPU에서 수행한다([032](032-model-architecture.md) §5) |
 | 034-R5 | **MUST** 유효한 타일이 하나도 없는 위치 클래스를 쓰는 action_type은 type_mask에서 닫는다 |
-| 034-R6 | **MUST** 무력화 유닛(락다운·스테이시스·메일스트롬, OpenBW `unit_is_disabled`)은 명령을 받지 못한다(2026-10-19 사용자 결정, B-11). 이 규칙은 이동·공격·캐스터 클래스만이 아니라 **모든 선택 자격 클래스**(일꾼, 수송, 스킬, 건물(이륙·착륙·랠리·애드온·취소) 등)에 적용하고, executor가 유닛을 고르는 경우(`pick_worker`, `pick_building`)에도 무력화 유닛·건물은 후보에서 뺀다. 고를 수 있는 후보가 없으면 해당 action_type은 type_mask에서 닫는다(R3 선택 자격과 같은 처리) |
-| 034-R7 | **MUST** 건물 대상 명령은 건물 1개만 선택한다(2026-10-19 사용자 결정, E-4). 스타1은 건물을 다중 선택할 수 없다(040-R3 ①). 선택 자격이 건물인 action_type(`SetRally_*`, `Lift`, `Land_*`, `BuildAddon_*`, `Cancel_*`)은 `max_select = 1`이다(이번 개정으로 `SetRally_Pos`·`SetRally_Unit`을 12에서 1로 바꿈). 생산·연구·업그레이드·스캔은 executor `pick_building`이 건물 1개를 고른다 |
+| 034-R6 | **MUST** 무력화 유닛(락다운·스테이시스·메일스트롬, OpenBW `unit_is_disabled`)은 명령을 받지 못한다(아래 "선택 자격 공통" 규칙의 적용 범위 명시, 정합. 2026-10-19 사용자 결정, B-11, AMB-034-1). 이 규칙은 이동·공격·캐스터 클래스만이 아니라 **모든 선택 자격 클래스**(일꾼, 수송, 스킬, 건물(이륙·착륙·랠리·애드온·취소) 등)에 적용하고, executor가 유닛을 고르는 경우(`pick_worker`, `pick_building`)에도 무력화 유닛·건물은 후보에서 뺀다. 고를 수 있는 후보가 없으면 해당 action_type은 type_mask에서 닫는다(R3 선택 자격과 같은 처리) |
+| 034-R7 | **MUST** 건물 단일 선택(2026-10-19 사용자 결정 E-4, AMB-034-1): 스타1은 건물을 다중 선택할 수 없다(040-R3 ① 게임 규칙). 그래서 **모든 action_type**에서 선택 집합에 건물(떠 있는 건물·벙커·미사일 터렛 포함)이 들어가면 그 건물 1개만 선택한다. Selected 헤드 마스크(032 §2.5·§5): 첫 선택이 건물이면 다음 step은 END만 허용하고, 첫 선택이 건물이 아니면 이후 step에서 건물을 제외한다. 선택 자격이 건물뿐인 action_type(`SetRally_*`, `Lift`, `Land_*`, `BuildAddon_*`, `Cancel_*`)은 `max_select = 1`이다(이번 개정으로 `SetRally_Pos`·`SetRally_Unit`을 12에서 1로 바꿈). 생산·연구·업그레이드·스캔은 executor `pick_building`이 건물 1개를 고른다 |
 
 ### 034-R3 `type_mask[a]` 조건
 1. **선행 조건**: `prereq`(자원, 가스, 서플라이, 테크, 필요 건물)를 만족한다.

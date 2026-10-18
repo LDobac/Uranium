@@ -96,7 +96,7 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
 | 1 | ActionType | `Linear(512→256)` → ResMLP×2 → GLU(gate=c) → `Linear(256→A)` | a | `ar = Linear(h→256) + Linear(onehot(a)→256)` |
 | 2 | Delay | `MLP(256→128→16)` | 16 bucket {1,2,3,4,5,6,7,8,10,12,14,16,20,24,28,32} | `ar += Emb(16,256)[d]` |
 | 3 | Queued | `MLP(256→64→2)`, `uses_queued=false`면 0으로 고정 | q | `ar += Emb(2,256)[q]` |
-| 4 | Selected | key=`Linear(E→64)`, END key 1개 추가. query는 `GRUCell(64)`로 step마다 갱신(초기값 `Linear(ar→64)`). step마다 이미 고른 유닛을 마스크하고, `max_select` 도달 시 END만 허용. 최대 12 step | sel ⊆ N | `ar += Linear(64→256)(mean key[sel])` |
+| 4 | Selected | key=`Linear(E→64)`, END key 1개 추가. query는 `GRUCell(64)`로 step마다 갱신(초기값 `Linear(ar→64)`). step마다 이미 고른 유닛을 마스크하고, `max_select` 도달 시 END만 허용. 건물 규칙(034-R7): 첫 선택이 건물이면 다음 step은 END만 허용하고, 첫 선택이 건물이 아니면 이후 step에서 건물을 마스크한다. 최대 12 step | sel ⊆ N | `ar += Linear(64→256)(mean key[sel])` |
 | 5 | TargetUnit | `Linear(ar→64)` · key(`Linear(E→64)`, 4와 별도) | u | 종료 |
 | 6 | Location | `Linear(ar→16·8·8)` reshape ⊕ S8 → ConvT 업샘플 8²→16²→32²→64²→128²(skip concat) → `Conv1x1→1` | 128² logits | 종료 |
 
@@ -134,7 +134,7 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
 | 032-R14 | **MUST** 추론 서버(`uranium-agent`)는 세션마다 고정 슬롯을 두고 Core 상태를 `[capacity, …]` 텐서 하나에 보관한다. 요청이 모인 세션의 행만 `select_rows`로 꺼내 `act`를 돌리고 `scatter_rows`로 되돌린다. 세션이 시작될 때 그 슬롯을 0으로 리셋한다(032-R5). 배치로 처리한 결과는 세션을 하나씩 처리한 결과와 같아야 하고(허용 오차 이내), 세션 사이에 상태가 섞이지 않는다 (2026-10-17) |
 | 032-R15 | **MUST** `act()`의 샘플링 모드는 확률적(temp 1)과 결정론적(temp 0 = 헤드마다 argmax)을 둔다(050-R1). `ActOutput`은 joint log-prob과 함께 헤드별 log-prob [B,6]을 돌려준다. RL actor는 이 값을 behaviour log-prob로 기록한다(042) (2026-10-17) |
 | 032-R16 | **MUST** 추론 서버는 실행 중에 가중치를 교체할 수 있다(042 K update마다). 교체는 다음 배치부터 적용되고, 응답마다 정책 버전을 붙인다. 세션은 자기 슬롯의 Core 상태를 host 데이터로 읽을 수 있다(042 core_state0). Core는 상태를 host 데이터로 내보내고 다시 만드는 연산을 제공하며, 왕복은 비트 단위로 같다 (2026-10-17) |
-| 032-R17 | **MUST** 시간 축 코어(LSTM vs GTrXL)는 BC 본학습 전에 짧은 비교 학습으로 고른다(2026-10-18 사용자 결정, AMB-032-6). ① 학습: 코어마다 S1을 5,300 update 1회(seed 1개)씩 돌린다. 장비는 혼합 유동 운영이다(2026-10-18 사용자 결정): Linux Vulkan 호스트(f32)는 상시, Windows CUDA 호스트(TF32 matmul)는 쉬는 동안 run 큐 작업자(061-R13·R14)로 두 run을 나눠 맡고 서로 이어받는다. 장비별 update 구간은 `runs/<id>/devices.jsonl`(061-R15)에 남고, 두 run의 장비 비율을 최종 집계해 리포트에 적는다. 두 run의 장비 비율이 크게 다르면 Vulkan f32와 CUDA TF32의 수치 차이가 비교에 섞일 수 있다(공정성 주의). 데이터 순서(`data.seed`)와 그 밖의 설정(Burn autotune·fusion 포함, 041-R15)은 같다. 학습률 스케줄은 짧은 run 전용으로, warmup 5%(265) 뒤 cosine이 5,300에서 끝난다(`config/bc_core_ablation.toml`). ② 오프라인 지표: `bc-eval --split val --games 500`(두 코어 같은 500게임). 500게임은 val 분할을 **고정 seed로 셔플**해 앞에서 고른다(출처 편중을 줄이기 위해, 2026-10-19 사용자 결정 G-D8). 학습 seed는 1개로 유지하고, 그 한계(seed 간 편차를 모름)는 리포트에 적는다. test 분할은 041-AC1용이라 쓰지 않는다. ③ 대전: 두 체크포인트 맞대결(TvT, 맵당 50판, 25판마다 슬롯 교대, `config/plans/core-ablation-h2h.toml`)과 각자 T0 상대 승률(상대 종족 3 × 맵 2 조합당 50판, 코어당 300판·합계 600판, 사용자 확정 2026-10-18, `config/plans/core-ablation-t0.toml`). 샘플링은 확률적(temp 1)이고 z는 없다. 대전 700판의 리플레이를 모두 저장한다(두 plan `save_replay = true`, `<out>/replays/g<id>.rep`, 2026-10-18 사용자 결정). ④ 판정: 규칙을 미리 정하지 않는다. 결과를 사용자에게 보고하고 사용자가 고른다. ⑤ 비교 run의 체크포인트·로그·평가 출력은 지우지 않는다(비교 설정은 061-R6 `keep_checkpoints` 예외로 전부 보존, 2026-10-19 사용자 결정 G-D6) |
+| 032-R17 | **MUST** 시간 축 코어(LSTM vs GTrXL)는 BC 본학습 전에 짧은 비교 학습으로 고른다(2026-10-18 사용자 결정, AMB-032-6). ① 학습: 코어마다 S1을 5,300 update 1회(seed 1개)씩 돌린다. 장비는 혼합 유동 운영이다(2026-10-18 사용자 결정): Linux Vulkan 호스트(f32)는 상시, Windows CUDA 호스트(TF32 matmul)는 쉬는 동안 run 큐 작업자(061-R13·R14)로 두 run을 나눠 맡고 서로 이어받는다. 장비별 update 구간은 `runs/<id>/devices.jsonl`(061-R15)에 남고, 두 run의 장비 비율을 최종 집계해 리포트에 적는다. 두 run의 장비 비율이 크게 다르면 Vulkan f32와 CUDA TF32의 수치 차이가 비교에 섞일 수 있다(공정성 주의). 데이터 순서(`data.seed`)와 그 밖의 설정(Burn autotune·fusion 포함, 041-R15)은 같다. 학습률 스케줄은 짧은 run 전용으로, warmup 5%(265) 뒤 cosine이 5,300에서 끝난다(`config/bc_core_ablation.toml`). ② 오프라인 지표: `bc-eval --split val --games 500`(두 코어 같은 500게임). 500게임은 val 분할을 **고정 seed로 셔플**해 앞에서 고른다(출처 편중을 줄이기 위해, 2026-10-19 사용자 결정 G-D8, AMB-032-7). 학습 seed는 1개로 유지하고, 그 한계(seed 간 편차를 모름)는 리포트에 적는다. test 분할은 041-AC1용이라 쓰지 않는다. ③ 대전: 두 체크포인트 맞대결(TvT, 맵당 50판, 25판마다 슬롯 교대, `config/plans/core-ablation-h2h.toml`)과 각자 T0 상대 승률(상대 종족 3 × 맵 2 조합당 50판, 코어당 300판·합계 600판, 사용자 확정 2026-10-18, `config/plans/core-ablation-t0.toml`). 샘플링은 확률적(temp 1)이고 z는 없다. 대전 700판의 리플레이를 모두 저장한다(두 plan `save_replay = true`, `<out>/replays/g<id>.rep`, 2026-10-18 사용자 결정). ④ 판정: 규칙을 미리 정하지 않는다. 결과를 사용자에게 보고하고 사용자가 고른다. ⑤ 비교 run의 체크포인트·로그·평가 출력은 지우지 않는다(비교 설정은 061-R6 `keep_checkpoints` 예외로 전부 보존, 2026-10-19 사용자 결정 G-D6) |
 
 ## 4. 파라미터·연산 예산 (기본 구성, N=256)
 | 모듈 | 파라미터 | FLOPs/step (B=1) |
@@ -153,7 +153,7 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
 - CPU(env)가 계산하는 것: `type_mask[B,A]`, `unit_cap[B,N,K]`, `loc_class_mask[B,L,128,128]` ([030](030-observation.md), [034](034-action-table.md))
 - GPU에 상수로 올리는 것: `action_table` 텐서 `select_cap[A]`, `target_cap[A]`, `loc_class[A]`, `max_select[A]`, `uses_*[A]`
 - GPU에서 헤드 진행 중에 샘플된 a로 gather한다:
-  - `sel_mask = gather(unit_cap, select_cap[a]) ∧ is_self ∧ entity_mask`
+  - `sel_mask = gather(unit_cap, select_cap[a]) ∧ is_self ∧ entity_mask`. Selected step마다 이미 고른 유닛과 건물 규칙(034-R7: 첫 선택이 건물이면 END만, 아니면 건물 제외)을 더 적용한다. 건물 여부는 엔티티별 `is_building`(떠 있는 건물·벙커·터렛 포함)으로 GPU에 올린다
   - `tgt_mask = gather(unit_cap, target_cap[a]) ∧ entity_mask`
   - `loc_mask = gather(loc_class_mask, loc_class[a])`
 
@@ -176,7 +176,7 @@ impl<C: Core> UraniumNet<C> {
 - 처리량 구현 메모(비규범, 2026-10-18, `reports/m6_bc_preflight.md`): 결과가 같은 계산 순서 변경만 한다.
   - LSTM Core: Burn `Lstm`과 같은 파라미터·수식을 쓰고, T step의 입력 투영과 4 게이트를 한 번의 matmul로 계산한다(step당 [B,H]×[H,4H] 1회).
   - teacher forcing의 Location 헤드: location을 쓰는 행만 계산한다. 다른 행의 `dists.target_loc`은 0이고 R10 사용 마스크로 곱해져 결과에 영향이 없다.
-  - Burn kernel autotune·fusion은 CUDA·Vulkan 모두 켠다(2026-10-19 사용자 결정, G-D5, 041-R15). 2026-10-18 측정에서 CUDA는 일부 conv gradient가 Flex 대비 2~5% 달라졌고(끈 상태 0.13%), Vulkan은 거의 바뀌지 않았다(`reports/m6_bc_preflight.md` 4차). 판정은 AC1(forward)·AC8(backward)을 따른다.
+  - Burn kernel autotune·fusion은 CUDA·Vulkan 모두 켠다(2026-10-19 사용자 결정, G-D5, 041-R15, AMB-032-7). 2026-10-18 측정에서 CUDA는 일부 conv gradient가 Flex 대비 2~5% 달라졌고(끈 상태 0.13%), Vulkan은 거의 바뀌지 않았다(`reports/m6_bc_preflight.md` 4차). 판정은 AC1(forward)·AC8(backward)을 따른다.
   - 분석 도구: `uranium-train bc-profile`(모듈별 forward 표시, gradient 절단 비교).
 
 ## Acceptance Criteria
@@ -187,8 +187,8 @@ impl<C: Core> UraniumNet<C> {
 - 032-AC4: 무작위 마스크 10만 건에서 샘플링된 액션이 모두 마스크를 만족한다.
 - 032-AC5: `act()` 경로의 연산 그래프에 privileged 텐서가 없다(타입 수준 보장 + 테스트).
 - 032-AC6: `LstmCore`와 `GtrxlCore`가 같은 `Core` trait으로 교체되고, 둘 다 AC1–AC4를 통과한다.
-- 032-AC8: backward(학습) 정확도(2026-10-19 사용자 결정, H): Flex(CPU) 대비 같은 가중치·입력·레이블의 BC 손실 차이가 AC1 허용 오차 안이고, 파라미터마다 gradient 차이의 상대 L2(‖g_dev − g_flex‖ ÷ ‖g_flex‖, 분모는 가장 큰 파라미터 gradient norm의 1e-3 이상으로 둔다)가 **Vulkan ≤ 1e-3, CUDA ≤ 1e-2**다. dropout은 0으로 둔다. 측정은 학습과 같은 Burn 설정(autotune·fusion, 041-R15)으로 한다. 테스트는 `crates/uranium-model/tests/cross_device.rs`의 gradient 비교다. forward(AC1 Vulkan 1e-4)와 기준이 다른 이유: gradient는 반올림 누적이 많아 커널을 바꾸지 않은 Vulkan f32에서도 약 5e-4가 나온다(`reports/m6_bc_preflight.md` 4차).
 - 032-AC7: 032-R17 비교의 두 run이 같은 update 수에서 끝나고, val 지표·맞대결·T0 승률(Wilson 95%)이 `reports/m6_core_ablation.md`에 기록되며, 사용자가 채택할 코어를 정한다.
+- 032-AC8: backward(학습) 정확도(2026-10-19 사용자 결정, H·D-a, AMB-032-7): Flex(CPU) 대비 같은 가중치·입력·레이블의 BC 손실 차이가 AC1 허용 오차 안이고, 파라미터마다 gradient 차이의 상대 L2(‖g_dev − g_flex‖ ÷ ‖g_flex‖, 분모는 가장 큰 파라미터 gradient norm의 1e-3 이상으로 둔다)가 **Vulkan ≤ 1e-3**이다. **CUDA 기준은 autotune·fusion을 켜고 다시 측정한 값에 여유를 둔 값으로 확정한다(TBD(M6), 2026-10-19 사용자 결정 D-a. autotune·fusion 채택(041-R15)은 유지)**. dropout은 0으로 둔다. 측정은 학습과 같은 Burn 설정(autotune·fusion, 041-R15)으로 한다. 테스트는 `crates/uranium-model/tests/cross_device.rs`의 gradient 비교다. forward(AC1 Vulkan 1e-4)와 기준이 다른 이유: gradient는 반올림 누적이 많아 커널을 바꾸지 않은 Vulkan f32에서도 약 5e-4가 나온다(`reports/m6_bc_preflight.md` 4차).
 
 ## Risks & Open Questions
 - **M1(a) 실측 (2026-10-15, Linux Vulkan 호스트 f32, `reports/bench_bc250.md`)**:
@@ -198,6 +198,6 @@ impl<C: Core> UraniumNet<C> {
   - M5에서 f16으로 실측했을 때도 AC2와 학습 속도가 부족하면 사용자에게 결과를 보고하고 추가 대응을 다시 확인받는다.
 - Burn의 scatter-add, GRUCell, attention bias 주입, ConvTranspose2d가 Vulkan에서 지원·성능 미확인이다. M1(a)에서 확인한다([060](060-infra-bc250.md)).
   - 대체안: scatter → one-hot matmul, attention은 직접 구현
-- **AC8 CUDA 기준과 autotune·fusion (2026-10-19 기록)**: 2026-10-18 측정(`reports/m6_bc_preflight.md` 4차)에서 CUDA autotune+fusion의 일부 conv gradient 차이가 2.2e-2(autotune만 5.3e-2)였다. 이 값이 AC8과 같은 지표(파라미터별 상대 L2)라면 CUDA 기준 1e-2를 넘는다. AC8 테스트를 autotune·fusion 설정으로 다시 돌려 넘으면 사용자에게 보고하고 기준이나 설정을 다시 확인받는다.
+- **AC8 CUDA 기준 (2026-10-19, 사용자 결정 D-a)**: 2026-10-18 측정(`reports/m6_bc_preflight.md` 4차)에서 CUDA autotune+fusion의 일부 conv gradient 차이는 2.2e-2(autotune만 5.3e-2, 끈 상태 1.3e-3)였다. 처음 제안한 CUDA 1e-2는 이 값보다 작으므로 쓰지 않는다. autotune·fusion을 켠 AC8 테스트로 다시 측정하고(학습 코드 수정 단계), 그 값에 여유를 둔 기준을 사용자 확인을 거쳐 이 AC에 적는다.
 - 128² Location 업샘플이 지연을 지배할 수 있다. 대체안은 64² 출력 + 2×2 subcell 헤드다.
 - Selected 12-step 루프 지연이 문제가 될 수 있다. 대체안은 단일 step multi-label(sigmoid)이다.
