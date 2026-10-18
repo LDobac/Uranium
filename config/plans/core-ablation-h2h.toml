@@ -1,0 +1,26 @@
+# 032-R17 / 032-AC7 (AMB-032-6, 2026-10-18): LSTM vs GTrXL head-to-head after the short S1 runs.
+# 50 games per map, the two cores swap player slots half way (25 + 25), stochastic sampling (temp 1),
+# no z. Wilson 95% in summary.md (050-R2). Checkpoints: final step of `bc --run core-abl-lstm` and
+# `bc --run core-abl-gtrxl` (ckpt-5300, relative to URANIUM_SHARED_DIR, 061).
+name = "core-ablation-h2h"
+seed_base = 32700
+[[matchup]]
+map = "fighting_spirit"
+games = 25
+p0 = { kind = "model", checkpoint = "checkpoints/core-abl-lstm/ckpt-5300", sample = "stochastic" }
+p1 = { kind = "model", checkpoint = "checkpoints/core-abl-gtrxl/ckpt-5300", sample = "stochastic" }
+[[matchup]]
+map = "fighting_spirit"
+games = 25
+p0 = { kind = "model", checkpoint = "checkpoints/core-abl-gtrxl/ckpt-5300", sample = "stochastic" }
+p1 = { kind = "model", checkpoint = "checkpoints/core-abl-lstm/ckpt-5300", sample = "stochastic" }
+[[matchup]]
+map = "circuit_breaker"
+games = 25
+p0 = { kind = "model", checkpoint = "checkpoints/core-abl-lstm/ckpt-5300", sample = "stochastic" }
+p1 = { kind = "model", checkpoint = "checkpoints/core-abl-gtrxl/ckpt-5300", sample = "stochastic" }
+[[matchup]]
+map = "circuit_breaker"
+games = 25
+p0 = { kind = "model", checkpoint = "checkpoints/core-abl-gtrxl/ckpt-5300", sample = "stochastic" }
+p1 = { kind = "model", checkpoint = "checkpoints/core-abl-lstm/ckpt-5300", sample = "stochastic" }

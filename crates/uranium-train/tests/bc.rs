@@ -271,6 +271,13 @@ fn warmup_cosine_schedule_041_r3() {
     assert_eq!(file.steps.s2_warmup, uranium_train::bc::short_stage_warmup(file.steps.s2));
     assert_eq!(file.steps.ablation_a_warmup, uranium_train::bc::short_stage_warmup(file.steps.ablation_a));
     assert_eq!(file.warmup_steps, 2000, "S1 keeps its warmup");
+    // 032-R17 (AMB-032-6): the core ablation is bc.toml with a short S1 schedule only.
+    let abl = BcConfig::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/bc_core_ablation.toml"))).unwrap();
+    assert_eq!((abl.steps.s1, abl.warmup_steps), (5300, uranium_train::bc::short_stage_warmup(5300)));
+    let mut same = abl.clone();
+    same.steps.s1 = file.steps.s1;
+    same.warmup_steps = file.warmup_steps;
+    assert_eq!(same, file, "032-R17: only the S1 length and warmup differ from bc.toml");
 }
 
 /// 061-R10 / 061-AC1 / 042-R1 (flex): save -> load -> the next updates are bit-identical to the

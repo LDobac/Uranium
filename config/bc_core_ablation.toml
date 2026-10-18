@@ -1,0 +1,56 @@
+# 032-R17 core ablation (AMB-032-6, 2026-10-18): config/bc.toml with a short S1 schedule.
+# LSTM and GTrXL each train S1 for 5,300 updates (~2 days at 32.5 s/update on the CUDA PC) on the
+# same game order (data.seed). Warmup 5% (265), cosine ends at 5,300. Everything else = bc.toml;
+# keep the two files in step when bc.toml changes before the ablation runs.
+
+# Parallel games per batch (B) and truncated-BPTT length (T, 041-R2 / 032-R5).
+lanes = 32
+seq_len = 64
+# Lanes per forward/backward pass. Group gradients are summed into one update (same result as one
+# pass over all lanes), so peak GPU memory follows the group, not `lanes`. 0 = all lanes at once.
+micro_lanes = 1
+# Burn balanced gradient checkpointing: recompute memory-bound activations during backward.
+grad_checkpointing = false
+# Round the batch entity count N up to a multiple of this (masked padding, same result).
+pad_entities = 64
+# AdamW + linear warmup + cosine decay, gradient-norm clip 1.0 (041-R3).
+lr = 3e-4
+min_lr = 3e-6
+# 032-R17: 5% of the short S1 schedule (5300 x 0.05 = 265).
+warmup_steps = 265
+# Schedule length when no stage length applies (smoke runs). `bc` uses [steps] below.
+total_steps = 500000
+weight_decay = 1e-4
+grad_clip = 1.0
+# S2 fine-tuning uses 1/10 of the learning rate (041-R4). Not used by the ablation.
+s2_lr_scale = 0.1
+# Head loss weights (041-R1).
+[heads]
+action = 1.0
+delay = 0.5
+queued = 0.2
+selected = 1.0
+target_unit = 1.0
+target_loc = 1.0
+
+[steps]
+# 032-R17: the ablation trains S1 only, 5,300 updates per core.
+s1 = 5300
+s2 = 7915
+ablation_a = 7915
+s2_warmup = 396
+ablation_a_warmup = 396
+
+[value]
+# win head MSE weight (041-R7)
+win = 0.5
+
+[data]
+# Fraction of games trained with z_present = false (041-R8 / 033-R2).
+z_drop = 0.25
+# Random dihedral symmetry per game at load time (030-R4, 040-R7).
+augment = true
+seed = 1
+checkpoint_every = 5000
+# Also checkpoint at least this often in wall time (061-R10).
+checkpoint_minutes = 60

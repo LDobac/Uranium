@@ -1,6 +1,6 @@
 # 032 — Model Architecture (Burn)
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: R8 호스트별 정밀도 — CUDA PC f32(TF32) 허용, 사용자 결정 / 추론 서버 Core 상태 슬롯(032-R14), 샘플링 모드·헤드별 log-prob(032-R15) / 추론 서버 가중치 교체·슬롯 상태 읽기(032-R16, 3단계 계획 승인))
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: R8 호스트별 정밀도 — CUDA PC f32(TF32) 허용, 사용자 결정 / 추론 서버 Core 상태 슬롯(032-R14), 샘플링 모드·헤드별 log-prob(032-R15) / 추론 서버 가중치 교체·슬롯 상태 읽기(032-R16, 3단계 계획 승인) / 2026-10-18 개정: 코어 비교 절차(032-R17, AC7, AMB-032-6))
 - **Related**: [030](030-observation.md), [031](031-action-space.md), [033](033-reward.md), [034](034-action-table.md), [041](041-imitation-learning.md), [042](042-rl-training.md), [060](060-infra-bc250.md)
 
 ## Purpose
@@ -86,7 +86,8 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
 - 비교 대상(M5 ablation)은 `GtrxlCore`다.
   - 최근 M=64 step의 core 입력에 causal self-attention 2층(d=512)을 쓴다.
   - GRU-gated residual을 쓰고, 추론 시 KV cache를 유지한다.
-  - 채택 기준은 E-Elo([050](050-evaluation.md)), 추론 지연, 메모리다.
+  - 채택은 짧은 BC 비교 학습으로 정한다(032-R17, AMB-032-6). 추론 지연·메모리는 M5에서 측정했다(CUDA에서 두 코어가 거의 같다, `reports/m5_model.md`).
+  - 비교가 끝나기 전까지 BC 본학습(041)은 시작하지 않는다. 비교 결과는 `reports/m6_core_ablation.md`에 기록한다.
 - 장기 정보(적 건물 기억, 관측된 적 최대 수, 정찰 기록)는 관측([030](030-observation.md))에서 명시적으로 유지한다. 코어는 단기·중기 문맥을 담당한다.
 
 ### 2.5 Heads
@@ -133,6 +134,7 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
 | 032-R14 | **MUST** 추론 서버(`uranium-agent`)는 세션마다 고정 슬롯을 두고 Core 상태를 `[capacity, …]` 텐서 하나에 보관한다. 요청이 모인 세션의 행만 `select_rows`로 꺼내 `act`를 돌리고 `scatter_rows`로 되돌린다. 세션이 시작될 때 그 슬롯을 0으로 리셋한다(032-R5). 배치로 처리한 결과는 세션을 하나씩 처리한 결과와 같아야 하고(허용 오차 이내), 세션 사이에 상태가 섞이지 않는다 (2026-10-17) |
 | 032-R15 | **MUST** `act()`의 샘플링 모드는 확률적(temp 1)과 결정론적(temp 0 = 헤드마다 argmax)을 둔다(050-R1). `ActOutput`은 joint log-prob과 함께 헤드별 log-prob [B,6]을 돌려준다. RL actor는 이 값을 behaviour log-prob로 기록한다(042) (2026-10-17) |
 | 032-R16 | **MUST** 추론 서버는 실행 중에 가중치를 교체할 수 있다(042 K update마다). 교체는 다음 배치부터 적용되고, 응답마다 정책 버전을 붙인다. 세션은 자기 슬롯의 Core 상태를 host 데이터로 읽을 수 있다(042 core_state0). Core는 상태를 host 데이터로 내보내고 다시 만드는 연산을 제공하며, 왕복은 비트 단위로 같다 (2026-10-17) |
+| 032-R17 | **MUST** 시간 축 코어(LSTM vs GTrXL)는 BC 본학습 전에 짧은 비교 학습으로 고른다(2026-10-18 사용자 결정, AMB-032-6). ① 학습: 코어마다 S1을 5,300 update 1회(seed 1개, 약 2일)씩, 같은 CUDA PC에서 차례로 돌린다. 데이터 순서(`data.seed`)와 그 밖의 설정은 같다. 학습률 스케줄은 짧은 run 전용으로, warmup 5%(265) 뒤 cosine이 5,300에서 끝난다(`config/bc_core_ablation.toml`). ② 오프라인 지표: `bc-eval --split val --games 500`(두 코어 같은 500게임). test 분할은 041-AC1용이라 쓰지 않는다. ③ 대전: 두 체크포인트 맞대결(TvT, 맵당 50판, 25판마다 슬롯 교대, `config/plans/core-ablation-h2h.toml`)과 각자 T0 상대 승률(041-AC2 규모, `config/plans/core-ablation-t0.toml`). 샘플링은 확률적(temp 1)이고 z는 없다. ④ 판정: 규칙을 미리 정하지 않는다. 결과를 사용자에게 보고하고 사용자가 고른다. ⑤ 비교 run의 체크포인트·로그·평가 출력은 지우지 않는다 |
 
 ## 4. 파라미터·연산 예산 (기본 구성, N=256)
 | 모듈 | 파라미터 | FLOPs/step (B=1) |
@@ -185,6 +187,7 @@ impl<C: Core> UraniumNet<C> {
 - 032-AC4: 무작위 마스크 10만 건에서 샘플링된 액션이 모두 마스크를 만족한다.
 - 032-AC5: `act()` 경로의 연산 그래프에 privileged 텐서가 없다(타입 수준 보장 + 테스트).
 - 032-AC6: `LstmCore`와 `GtrxlCore`가 같은 `Core` trait으로 교체되고, 둘 다 AC1–AC4를 통과한다.
+- 032-AC7: 032-R17 비교의 두 run이 같은 update 수에서 끝나고, val 지표·맞대결·T0 승률(Wilson 95%)이 `reports/m6_core_ablation.md`에 기록되며, 사용자가 채택할 코어를 정한다.
 
 ## Risks & Open Questions
 - **M1(a) 실측 (2026-10-15, f32, `reports/bench_bc250.md`)**:
