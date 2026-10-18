@@ -144,6 +144,7 @@ fn connection(stream: TcpStream, st: Arc<State>) -> Result<()> {
                         outcome: GameOutcome::Aborted { reason: format!("{e:#}") },
                         exit_codes: [None, None],
                         wall_s: 0,
+                        replay: None,
                     });
                     st2.games.lock().unwrap().remove(&id);
                     st2.stop_requests.lock().unwrap().remove(&id);
@@ -176,6 +177,7 @@ fn connection(stream: TcpStream, st: Arc<State>) -> Result<()> {
                         outcome: GameOutcome::Aborted { reason: format!("{e:#}") },
                         exit_codes: [None, None],
                         wall_s: 0,
+                        replay: None,
                     });
                     {
                         let mut aborts = st2.consecutive_aborts.lock().unwrap();

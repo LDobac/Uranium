@@ -1,6 +1,6 @@
 # 020 — Env Orchestration
 
-- **Status**: Approved (2026-10-15, 2026-10-16 개정: 020-AC1 기준, Windows 학습 PC 로컬 hostd, 2026-10-17 개정: 스케줄러 crate `uranium-runner`, plan 플레이어 `model`과 slot별 정책 라우팅(020-R11), 정책 버전 기록 / 020-R12 동적 Job 공급자(RL 리그, 3단계 계획 승인) / 020-R13 승자 불일치 판정(AMB-020-3, 사용자 결정))
+- **Status**: Approved (2026-10-15, 2026-10-16 개정: 020-AC1 기준, Windows 학습 PC 로컬 hostd, 2026-10-17 개정: 스케줄러 crate `uranium-runner`, plan 플레이어 `model`과 slot별 정책 라우팅(020-R11), 정책 버전 기록 / 020-R12 동적 Job 공급자(RL 리그, 3단계 계획 승인) / 020-R13 승자 불일치 판정(AMB-020-3, 사용자 결정), 2026-10-18 개정: `Finished.replay` 리플레이 바이트 반환(020-R1, 042-R11))
 - **Related**: [011](011-bridge-openbw.md), [021](021-opponent-pool.md), [042](042-rl-training.md), [060](060-infra-bc250.md)
 
 ## Purpose
@@ -18,7 +18,7 @@
 ## Requirements
 | ID | 요구사항 |
 |---|---|
-| 020-R1 | **MUST** hostd API: `StartGame{map, p1, p2, start_locs?, seed, agent_addrs, save_replay}`, `StartReplay{rep_bytes, perspective_slot, agent_addr, privileged: bool}`(040-R12 스트리밍, 011 재생 모드), `StopGame{id}`, `Status`, `ListCapabilities{max_concurrent_games, max_concurrent_replays, oss_bots}` |
+| 020-R1 | **MUST** hostd API: `StartGame{map, p1, p2, start_locs?, seed, agent_addrs, save_replay}`, `StartReplay{rep_bytes, perspective_slot, agent_addr, privileged: bool}`(040-R12 스트리밍, 011 재생 모드), `StopGame{id}`, `Status`, `ListCapabilities{max_concurrent_games, max_concurrent_replays, oss_bots}`. `save_replay` 게임이 끝나면 hostd는 slot 0이 저장한 리플레이(두 클라이언트가 같은 게임을 기록하므로 하나면 충분) 바이트를 `Finished.replay`에 담아 돌려준다. 원격 게임 PC의 리플레이를 학습 PC가 모으기 위한 것이다. `URANIUM_HOSTD_REPLAY_DIR`이 있으면 그 폴더에 파일도 남기고, 없으면 작업 폴더의 임시 파일을 보낸 뒤 지운다. 제어 프로토콜 버전 2 (2026-10-18, 042-R11) |
 | 020-R2 | **MUST** 게임별 작업 디렉터리와 포트를 격리한다. 같은 호스트에서 N개 게임이 동시에 돌아도 충돌이 없어야 한다 |
 | 020-R3 | **MUST** 타임아웃 처리 |
 | 020-R4 | **MUST** 크래시 처리: 런처 비정상 종료 시 에피소드를 `Aborted`로 표시하고 학습 데이터에서 제외한다. 같은 설정이 연속 3회 크래시하면 격리하고 경보를 낸다 |

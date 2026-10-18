@@ -111,6 +111,10 @@ enum Cmd {
         /// Stop after this many minutes (smoke runs).
         #[arg(long, default_value_t = 0)]
         max_minutes: u64,
+        /// 042-R12: clean stop once the run's agent steps (counted across resumes) reach this;
+        /// 042-AC1 / 033-AC2 use 10,000,000. 0 = no limit.
+        #[arg(long, default_value_t = 0)]
+        max_agent_steps: u64,
         /// Checkpoint interval in minutes (061-R4).
         #[arg(long, default_value_t = 30)]
         checkpoint_minutes: u64,
@@ -273,7 +277,7 @@ fn rl_backend(b: Backend) -> uranium_agent::infer::InferBackend {
 fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     match Cli::parse().cmd {
-        Cmd::Rl { run, bc, config, algo, backend, core, seed, take_over, logs, z_table, max_updates, max_minutes, checkpoint_minutes, max_batch, max_wait_ms, ac1_race } => {
+        Cmd::Rl { run, bc, config, algo, backend, core, seed, take_over, logs, z_table, max_updates, max_minutes, max_agent_steps, checkpoint_minutes, max_batch, max_wait_ms, ac1_race } => {
             let args = uranium_train::rl::run::RlArgs {
                 run,
                 bc,
@@ -286,6 +290,7 @@ fn main() -> Result<()> {
                 z_table,
                 max_updates,
                 max_minutes,
+                max_agent_steps,
                 checkpoint_minutes,
                 max_batch,
                 max_wait_ms,

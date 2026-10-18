@@ -98,6 +98,11 @@ epochs = 2
 # Adopt PPO only if 3-seed mean final win rate beats V-trace by more than this.
 adopt_margin = 0.03
 
+[replays]
+# 042-R11: keep 1 replay per this many games (game id multiple) plus every winner-disagreement
+# game (020-R13), under <URANIUM_SHARED_DIR>/runs/<run>/replays/. Never deleted.
+sample_every = 100
+
 # T1 bots (021) and the races they play (measured in M3, config/plans/m3-t1.toml). League picks
 # only bots the game hosts list; Random applies to multi-race bots (021-R7).
 [[t1]]

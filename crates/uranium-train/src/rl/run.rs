@@ -60,6 +60,8 @@ pub struct RlArgs {
     pub max_updates: u64,
     /// Stop after this many minutes (smoke runs); 0 = no limit.
     pub max_minutes: u64,
+    /// 042-R12: clean stop at this many agent steps (run total, across resumes); 0 = no limit.
+    pub max_agent_steps: u64,
     /// Checkpoint every this many minutes (061-R4: 30).
     pub checkpoint_minutes: u64,
     pub max_batch: usize,
@@ -100,6 +102,9 @@ struct Shared {
     disagree: AtomicU64,
     aborted: AtomicU64,
     max_frames: u32,
+    /// 042-R11: `<shared>/runs/<run>/replays` and the regular sample interval.
+    replay_dir: PathBuf,
+    replay_every: u64,
 }
 
 /// Inference servers of league snapshots, least recently used first out.
@@ -220,7 +225,8 @@ impl LeagueSource {
             seed: Some(seed),
             max_frames: s.max_frames,
             privileged: true,
-            save_replay: false,
+            // 042-R11: every game is recorded; `done` keeps the sample and disagreements.
+            save_replay: true,
             wall_timeout_s: 3600,
         };
         s.games.lock().unwrap().insert(id, GameMeta { pick, self_player: None, enemy_race });
@@ -268,7 +274,7 @@ impl JobSource for LeagueSource {
         self.shared.games.lock().unwrap().remove(&job.spec.game_id);
     }
 
-    fn done(&self, job: &Job, outcome: JobOutcome) {
+    fn done(&self, job: &Job, outcome: JobOutcome, replay: Option<Vec<u8>>) {
         let s = &self.shared;
         let id = job.spec.game_id;
         let Some(meta) = s.games.lock().unwrap().remove(&id) else { return };
@@ -322,11 +328,22 @@ impl JobSource for LeagueSource {
                 s.aborted.fetch_add(1, Ordering::SeqCst);
             }
         }
+        let disagree = verdict.as_ref().is_some_and(|v| v.1);
+        let (replay_path, replay_reason) = match (replay_reason(id, disagree, s.replay_every), replay) {
+            (Some(why), Some(bytes)) => match keep_replay(&s.replay_dir, id, why, &bytes) {
+                Ok(name) => (format!("replays/{name}"), why),
+                Err(e) => {
+                    eprintln!("[rl] replay of game {id} not kept: {e:#}");
+                    (String::new(), "")
+                }
+            },
+            _ => (String::new(), ""),
+        };
         let (sum, decisions) = result.as_ref().map_or(([0.0; 4], 0), |r| (r.reward_sum, r.decisions));
         s.agent_steps.fetch_add(decisions, Ordering::SeqCst);
         s.games_done.fetch_add(1, Ordering::SeqCst);
         let line = format!(
-            "{},{},{},{},{:?},{},{},{:?},{},{},{},{},{},{}\n",
+            "{},{},{},{},{:?},{},{},{:?},{},{},{},{},{},{},{},{}\n",
             id,
             AgentKind::ALL[agent].name(),
             job.opponent.clone().unwrap_or_default(),
@@ -339,16 +356,47 @@ impl JobSource for LeagueSource {
             if meta.pick.fighting_spirit { "fighting_spirit" } else { "circuit_breaker" },
             outcome.as_str(),
             decided,
-            verdict.as_ref().is_some_and(|v| v.1),
+            disagree,
             decisions,
             r_win + sum[0],
             sum[1],
             sum[2],
-            sum[3]
+            sum[3],
+            replay_path,
+            replay_reason
         );
         let _ = s.games_csv.lock().unwrap().write_all(line.as_bytes());
     }
 }
+
+/// 042-R11: why a game's replay is kept, if it is.
+fn replay_reason(game_id: u64, disagree: bool, every: u64) -> Option<&'static str> {
+    if disagree {
+        Some("disagree")
+    } else if every > 0 && game_id % every == 0 {
+        Some("sample")
+    } else {
+        None
+    }
+}
+
+/// 042-R11: writes `g<id>-<reason>.rep` under a temporary name, reads it back and compares the
+/// bytes before the rename (a share can lose a write silently), and returns the file name.
+fn keep_replay(dir: &Path, game_id: u64, reason: &str, bytes: &[u8]) -> Result<String> {
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let name = format!("g{game_id}-{reason}.rep");
+    let tmp = dir.join(format!("{name}.part"));
+    std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
+    if std::fs::read(&tmp)? != bytes {
+        let _ = std::fs::remove_file(&tmp);
+        anyhow::bail!("{} reads back different bytes", tmp.display());
+    }
+    std::fs::rename(&tmp, dir.join(&name))?;
+    Ok(name)
+}
+
+/// games.csv header (042-R2, R11).
+const GAMES_HEADER: &str = "game_id,agent,opponent,class,enemy_race,map,hostd_outcome,outcome,winner_disagree,decisions,r_win,r_build,r_units,r_value,replay,replay_reason\n";
 
 /// 042-R2 train.csv header / row.
 fn train_header() -> String {
@@ -401,7 +449,9 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
     let av = uranium_env::actions::ACTION_SCHEMA_VERSION;
 
     // 061-R3 / R5: lock the run, recover or pull LATEST.
-    let mut run = Run::acquire(StorageConfig::from_env()?, &args.run, args.take_over)?;
+    let storage = StorageConfig::from_env()?;
+    let replay_dir = storage.shared.join("runs").join(&args.run).join("replays");
+    let mut run = Run::acquire(storage, &args.run, args.take_over)?;
     let resume = run.begin()?;
     let (bc, bc_meta) = checkpoint::load_with::<C>(&args.bc, &cols, fv, av, &ad, rl_config).context("loading the BC checkpoint (042 start / KL reference)")?;
     let net_cfg = bc_meta.net_config()?;
@@ -465,7 +515,7 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
     let new_games = !games_csv_path.exists();
     let mut games_csv = std::fs::OpenOptions::new().create(true).append(true).open(&games_csv_path)?;
     if new_games {
-        games_csv.write_all(b"game_id,agent,opponent,class,enemy_race,map,hostd_outcome,outcome,winner_disagree,decisions,r_win,r_build,r_units,r_value\n")?;
+        games_csv.write_all(GAMES_HEADER.as_bytes())?;
     }
     let base_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) * 1000;
     let shared = Arc::new(Shared {
@@ -483,11 +533,14 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
         snapshots: Mutex::new(SnapshotPool { dirs: snap_dirs, live: VecDeque::new(), cap: 8 }),
         infer,
         games_csv: Mutex::new(games_csv),
-        agent_steps: AtomicU64::new(0),
+        // 042-R12: agent steps continue from the checkpoint (TrainState.step).
+        agent_steps: AtomicU64::new(step),
         games_done: AtomicU64::new(0),
         disagree: AtomicU64::new(0),
         aborted: AtomicU64::new(0),
         max_frames: 86_400,
+        replay_dir,
+        replay_every: cfg.replays.sample_every,
     });
     let z = load_z(&args.z_table)?;
     if z.is_empty() {
@@ -527,10 +580,14 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
     let (mut last_ckpt, mut last_beat) = (Instant::now(), Instant::now());
     let mut lock_lost = false;
     let mut updates_this_run = 0u64;
-    let mut last_rate = (Instant::now(), 0u64);
+    let mut last_rate = (Instant::now(), shared.agent_steps.load(Ordering::SeqCst));
     let mut steps_per_s = 0.0f64;
     loop {
-        let limit_hit = (args.max_updates > 0 && updates_this_run >= args.max_updates) || (args.max_minutes > 0 && started.elapsed() >= Duration::from_secs(args.max_minutes * 60));
+        let steps_hit = args.max_agent_steps > 0 && shared.agent_steps.load(Ordering::SeqCst) >= args.max_agent_steps;
+        if steps_hit {
+            eprintln!("[rl] {} agent steps reached: clean stop (042-R12)", args.max_agent_steps);
+        }
+        let limit_hit = steps_hit || (args.max_updates > 0 && updates_this_run >= args.max_updates) || (args.max_minutes > 0 && started.elapsed() >= Duration::from_secs(args.max_minutes * 60));
         if stop.load(Ordering::SeqCst) >= STOP_CLEAN || limit_hit {
             break;
         }
@@ -715,5 +772,34 @@ mod tests {
     #[test]
     fn train_csv_header_columns() {
         assert_eq!(train_header().trim().split(',').count(), 15 + 12 + 8);
+    }
+
+    /// 042-R11: one regular sample per `every` game ids, every disagreement, nothing else.
+    #[test]
+    fn replay_reason_samples_and_disagreements_042_r11() {
+        assert_eq!(replay_reason(200, false, 100), Some("sample"));
+        assert_eq!(replay_reason(201, false, 100), None);
+        assert_eq!(replay_reason(201, true, 100), Some("disagree"));
+        assert_eq!(replay_reason(200, true, 100), Some("disagree"));
+        assert_eq!(replay_reason(200, false, 0), None, "0 = no regular sample");
+        let kept = (1_000u64..2_000).filter(|id| replay_reason(*id, false, 100).is_some()).count();
+        assert_eq!(kept, 10);
+    }
+
+    /// 042-R11: the kept replay is complete under its final name, no `.part` left behind.
+    #[test]
+    fn keep_replay_writes_verified_file_042_r11() {
+        let dir = std::env::temp_dir().join(format!("uranium-rl-rep-{}", std::process::id()));
+        let name = keep_replay(&dir, 7, "disagree", b"replay bytes").unwrap();
+        assert_eq!(name, "g7-disagree.rep");
+        assert_eq!(std::fs::read(dir.join(&name)).unwrap(), b"replay bytes");
+        assert!(!dir.join("g7-disagree.rep.part").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn games_csv_header_matches_rows_042_r2() {
+        assert_eq!(GAMES_HEADER.trim().split(',').count(), 16);
+        assert!(GAMES_HEADER.trim().ends_with(",replay,replay_reason"));
     }
 }

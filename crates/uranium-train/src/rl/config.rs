@@ -106,6 +106,20 @@ pub struct PpoConfig {
     pub adopt_margin: f64,
 }
 
+/// 042-R11: replays kept from training games.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct ReplaysConfig {
+    /// Keep the replay of every game whose id is a multiple of this (0 = no regular sample);
+    /// winner-disagreement games (020-R13) are always kept.
+    pub sample_every: u64,
+}
+
+impl Default for ReplaysConfig {
+    fn default() -> Self {
+        Self { sample_every: 100 }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct RlConfig {
     pub lanes: usize,
@@ -120,6 +134,9 @@ pub struct RlConfig {
     pub snapshot: SnapshotConfig,
     pub curriculum: CurriculumConfig,
     pub ppo: PpoConfig,
+    /// Absent in configs copied into checkpoints before 042-R11.
+    #[serde(default)]
+    pub replays: ReplaysConfig,
 }
 
 impl RlConfig {
@@ -145,5 +162,6 @@ mod tests {
         assert!((c.kl.coef(0) - 0.1).abs() < 1e-6);
         assert!((c.kl.coef(20_000) - 0.05).abs() < 1e-6);
         assert!((c.kl.coef(10_000_000) - 0.01).abs() < 1e-6);
+        assert_eq!(c.replays.sample_every, 100, "042-R11");
     }
 }

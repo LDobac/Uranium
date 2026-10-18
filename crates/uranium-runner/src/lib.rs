@@ -55,8 +55,9 @@ pub trait JobSource: Send + Sync {
     fn next(&self) -> Option<Job>;
     /// A game that never started (its host was lost): play it elsewhere.
     fn requeue(&self, job: Job);
-    /// hostd's outcome for a game that was started (or rejected).
-    fn done(&self, _job: &Job, _outcome: JobOutcome) {}
+    /// hostd's outcome for a game that was started (or rejected), with the replay hostd sent
+    /// back for a `save_replay` game (020-R1).
+    fn done(&self, _job: &Job, _outcome: JobOutcome, _replay: Option<Vec<u8>>) {}
     /// Games still waiting (reported as "not run" when the workers stop).
     fn left(&self) -> usize {
         0
@@ -65,23 +66,41 @@ pub trait JobSource: Send + Sync {
 
 /// A fixed list of games (matchup plans).
 #[derive(Default)]
-pub struct QueueSource(Mutex<VecDeque<Job>>);
+pub struct QueueSource {
+    jobs: Mutex<VecDeque<Job>>,
+    /// Where replays hostd sends back are written (`g<id>.rep`); `None` drops them.
+    replay_dir: Option<PathBuf>,
+}
 
 impl QueueSource {
     pub fn new(jobs: Vec<Job>) -> Self {
-        Self(Mutex::new(VecDeque::from(jobs)))
+        Self { jobs: Mutex::new(VecDeque::from(jobs)), replay_dir: None }
+    }
+
+    /// 020-R5: replays of `save_replay` games land in `dir` on the scheduler's PC, wherever the
+    /// game ran.
+    pub fn with_replays(mut self, dir: PathBuf) -> Self {
+        self.replay_dir = Some(dir);
+        self
     }
 }
 
 impl JobSource for QueueSource {
     fn next(&self) -> Option<Job> {
-        self.0.lock().unwrap().pop_front()
+        self.jobs.lock().unwrap().pop_front()
     }
     fn requeue(&self, job: Job) {
-        self.0.lock().unwrap().push_front(job);
+        self.jobs.lock().unwrap().push_front(job);
+    }
+    fn done(&self, job: &Job, _outcome: JobOutcome, replay: Option<Vec<u8>>) {
+        let (Some(dir), Some(bytes)) = (&self.replay_dir, replay) else { return };
+        let path = dir.join(format!("g{}.rep", job.spec.game_id));
+        if let Err(e) = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, bytes)) {
+            eprintln!("[env] could not write {}: {e}", path.display());
+        }
     }
     fn left(&self) -> usize {
-        self.0.lock().unwrap().len()
+        self.jobs.lock().unwrap().len()
     }
 }
 
@@ -192,7 +211,8 @@ pub fn start_agent(listen: &str, results: &Path, routes: Routes, t0_builds: T0Bu
 /// Plays `jobs` on `hosts`, appending hostd outcomes to `games_path`. Returns the number of
 /// games that could not be scheduled.
 pub fn run_jobs(jobs: Vec<Job>, hosts: &[HostEntry], games_path: &Path, routes: &Routes, models: &Models) -> Result<usize> {
-    let source = Arc::new(QueueSource::new(jobs));
+    let replays = games_path.parent().unwrap_or(Path::new(".")).join("replays");
+    let source = Arc::new(QueueSource::new(jobs).with_replays(replays));
     run_source(source.clone(), hosts, games_path, &Dispatch::new(routes.clone(), models.clone(), T0Builds::default()))?;
     Ok(source.left())
 }
@@ -300,7 +320,7 @@ fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter<std::fs::F
                     continue;
                 }
                 record(games, addr, &job, ids, &dispatch.models, JobOutcome::Rejected, Some(reason), 0)?;
-                source.done(&job, JobOutcome::Rejected);
+                source.done(&job, JobOutcome::Rejected, None);
                 continue;
             }
             other => bail!("unexpected {other:?}"),
@@ -318,7 +338,7 @@ fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter<std::fs::F
                     dispatch.inflight.games.lock().unwrap().remove(&job.spec.game_id);
                     // 020-R4: a game in flight on a lost host is Aborted, not silently dropped.
                     record(games, addr, &job, ids, &dispatch.models, JobOutcome::Aborted, Some(format!("hostd connection lost: {e}")), 0)?;
-                    source.done(&job, JobOutcome::Aborted);
+                    source.done(&job, JobOutcome::Aborted, None);
                     *done.lock().unwrap() += 1;
                     eprintln!("[env] game {} Aborted: hostd {addr} lost", job.spec.game_id);
                     return Err(anyhow::Error::from(e).context(format!("hostd {addr} lost")));
@@ -333,7 +353,7 @@ fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter<std::fs::F
             GameOutcome::Stopped => (JobOutcome::Stopped, None),
         };
         record(games, addr, &job, ids, &dispatch.models, outcome, detail, fin.wall_s)?;
-        source.done(&job, outcome);
+        source.done(&job, outcome, fin.replay);
         let mut d = done.lock().unwrap();
         *d += 1;
         eprintln!("[env] {} game {} {} ({}s)", *d, job.spec.game_id, outcome.as_str(), fin.wall_s);
@@ -439,7 +459,7 @@ mod tests {
                                     Ok(ControlRequest::StopGame { .. }) => GameOutcome::Stopped,
                                     _ => GameOutcome::Finished,
                                 };
-                                ControlResponse::Finished(GameFinished { game_id: g.game_id, outcome, exit_codes: [Some(0), Some(0)], wall_s: 0 })
+                                ControlResponse::Finished(GameFinished { game_id: g.game_id, outcome, exit_codes: [Some(0), Some(0)], wall_s: 0, replay: g.save_replay.then(|| b"rep".to_vec()) })
                             }
                             _ => continue,
                         };
@@ -466,6 +486,23 @@ mod tests {
         assert_eq!(lines.len(), 4, "{lines:?}");
         assert_eq!(lines.iter().filter(|g| g["outcome"] == "Aborted").count(), 1, "{lines:?}");
         assert_eq!(lines.iter().filter(|g| g["outcome"] == "Finished").count(), 3, "{lines:?}");
+    }
+
+    /// 020-R1 / R5: a `save_replay` game's replay comes back from hostd and lands next to
+    /// games.jsonl, whichever host played it.
+    #[test]
+    fn plan_replays_come_back_from_hostd_020_r1() {
+        let hosts = vec![HostEntry { addr: fake_hostd(false, 50), max_games: None }];
+        let plan: plan::Plan = toml::from_str("name='t'\nsave_replay=true\n[[matchup]]\nmap='both'\ngames=2\np0={kind='t0',race='terran'}\np1={kind='t0',race='terran'}").unwrap();
+        let dir = std::env::temp_dir().join(format!("uranium-env-test-rep-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let jobs = plan::expand(&plan, "127.0.0.1:1");
+        let ids: Vec<u64> = jobs.iter().map(|j| j.spec.game_id).collect();
+        run_jobs(jobs, &hosts, &dir.join("games.jsonl"), &Routes::default(), &Models::new()).unwrap();
+        for id in ids {
+            assert_eq!(std::fs::read(dir.join("replays").join(format!("g{id}.rep"))).unwrap(), b"rep");
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -496,7 +533,7 @@ mod tests {
                 Some(j)
             }
             fn requeue(&self, _job: Job) {}
-            fn done(&self, job: &Job, outcome: JobOutcome) {
+            fn done(&self, job: &Job, outcome: JobOutcome, _replay: Option<Vec<u8>>) {
                 self.outcomes.lock().unwrap().push((job.spec.game_id, outcome));
             }
         }

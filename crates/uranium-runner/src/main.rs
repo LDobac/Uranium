@@ -78,7 +78,7 @@ fn run(plan_path: &std::path::Path, out: Option<PathBuf>, infer: InferOptions) -
     let started = Instant::now();
     // Scenario builds (050) and model routes are registered per game by the workers (020-R11).
     let dispatch = uranium_runner::Dispatch::new(routes, models, builds);
-    let source = std::sync::Arc::new(uranium_runner::QueueSource::new(jobs));
+    let source = std::sync::Arc::new(uranium_runner::QueueSource::new(jobs).with_replays(out.join("replays")));
     uranium_runner::run_source(source.clone(), &hosts()?, &out.join("games.jsonl"), &dispatch)?;
     let left = uranium_runner::JobSource::left(&*source);
     eprintln!("[env] finished in {:.0}s ({left} games not run)", started.elapsed().as_secs_f64());

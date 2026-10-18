@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::Race;
 
 /// Bumped on incompatible control-schema changes.
-pub const CONTROL_VERSION: u32 = 1;
+pub const CONTROL_VERSION: u32 = 2;
 
 /// Target map families (`config/assets.toml`).
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -115,6 +115,9 @@ pub struct GameFinished {
     /// Exit codes of the two launchers (`None` = killed / no code).
     pub exit_codes: [Option<i32>; 2],
     pub wall_s: u32,
+    /// The slot-0 replay of a `save_replay` game, so a learner can collect replays from remote
+    /// game hosts (020-R1, 042-R11). `None` when not asked for or not written.
+    pub replay: Option<Vec<u8>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -158,7 +161,7 @@ mod tests {
         };
         rt(ControlRequest::StartGame(spec));
         rt(ControlRequest::StopGame { game_id: 7 });
-        rt(ControlResponse::Finished(GameFinished { game_id: 7, outcome: GameOutcome::Aborted { reason: "x".into() }, exit_codes: [Some(0), None], wall_s: 3 }));
+        rt(ControlResponse::Finished(GameFinished { game_id: 7, outcome: GameOutcome::Aborted { reason: "x".into() }, exit_codes: [Some(0), None], wall_s: 3, replay: Some(vec![1, 2, 3]) }));
         rt(ControlResponse::Capabilities(Capabilities {
             os: HostOs::Linux,
             cores: 12,

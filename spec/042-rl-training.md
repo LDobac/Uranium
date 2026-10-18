@@ -1,6 +1,6 @@
 # 042 — RL Training & League
 
-- **Status**: Approved (2026-10-15, 2026-10-16 개정: 042-R10 Ctrl+C 정상 종료, 2026-10-17 개정: 초기 설정값 확정(AMB-042-3, `config/rl.toml`), 첫 학습 호스트, AMB-042-2 M6 시작 재확인, behaviour log-prob 기록(AMB-042-4), 구현 구조·Aborted 회수(042-R3)·검증 정책·AC1 규모·게임 PC·KL 계산(AMB-042-5~9, 사용자 결정))
+- **Status**: Approved (2026-10-15, 2026-10-16 개정: 042-R10 Ctrl+C 정상 종료, 2026-10-17 개정: 초기 설정값 확정(AMB-042-3, `config/rl.toml`), 첫 학습 호스트, AMB-042-2 M6 시작 재확인, behaviour log-prob 기록(AMB-042-4), 구현 구조·Aborted 회수(042-R3)·검증 정책·AC1 규모·게임 PC·KL 계산(AMB-042-5~9, 사용자 결정), 2026-10-18 개정: 학습 중 리플레이 저장(042-R11)·agent step 상한 종료(042-R12), 사용자 결정)
 - **Related**: [020](020-env-orchestration.md), [021](021-opponent-pool.md), [032](032-model-architecture.md), [033](033-reward.md), [050](050-evaluation.md), [060](060-infra-bc250.md)
 
 ## Purpose
@@ -21,7 +21,7 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 - **trajectory**: 학습 중인 에이전트의 세션에만 기록한다. 한 결정의 보상은 직전 결정 뒤 받은 프레임들의 보상 합이다(033). 세그먼트는 T=64 결정이고, 시작 결정 직전의 Core 상태(core_state0)를 추론 서버 슬롯에서 읽어 함께 둔다. 게임이 끝나면 마지막 세그먼트를 마스크로 채우고 bootstrap은 0이다(γ = 1, 종료).
 - **손실**: 보상 항목별 value head마다 V-trace target과 advantage를 따로 구하고, 정책 gradient advantage는 033 가중치(감쇠 포함)로 더한다(033-R3). KL(π‖π_BC)은 고정된 BC 모델을 같은 입력으로 다시 forward해 헤드별 전체 분포로 계산하고 사용된 헤드만 더한다(032-R10). 정확한 분포 KL을 쓴다. 16GB GPU에서 메모리가 부족하면 근사로 바꾸지 않고 사용자에게 보고한다(2026-10-17 사용자 결정, AMB-042-9).
 - **스냅샷 상대 ID**: `uranium-<agent>@<run>/<update>` (agent = `main` | `main-exploiter` | `league-exploiter`, 021-R3 형식).
-- **로그 (042-R2)**: CSV 두 개. `train.csv`(update별 손실 항목, KL, 헤드별 엔트로피, 정책 지연, 버린·회수한 trajectory 수, 처리량, 추론 p50·p95)와 `games.csv`(게임별 결과, 보상 항목 합, 상대 ID, 종족, 맵).
+- **로그 (042-R2)**: CSV 두 개. `train.csv`(update별 손실 항목, KL, 헤드별 엔트로피, 정책 지연, 버린·회수한 trajectory 수, 처리량, 추론 p50·p95)와 `games.csv`(게임별 결과, 보상 항목 합, 상대 ID, 종족, 맵, 저장한 리플레이 경로·사유(042-R11)).
 - **BC 본학습 전 검증 (2026-10-17 사용자 결정, AMB-042-5)**: 이미 build된 shard 표본으로 짧은 BC(몇 시간)를 돌린 체크포인트로 042-AC1 형식을 미리 연습한다. 본 BC 체크포인트가 나오면 그것으로 바꾼다.
 - **게임 PC (2026-10-17 사용자 결정, AMB-042-8)**: 첫 RL(스모크·042-AC1)은 학습 PC의 로컬 hostd만으로 시작한다. 리플레이 build가 끝나면 원격 bc250 두 대를 hosts 파일에 더한다(hostd를 master로 다시 빌드, 020-R11 플레이어 이름).
 
@@ -121,6 +121,8 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 | 042-R8 | **MUST** RL 학습 시퀀스 길이는 T=64다(032-R5와 동일) |
 | 042-R9 | **MUST** KL 계수, 엔트로피 계수, 커리큘럼 전환 승률 기준, 스냅샷 주기는 튜닝 대상이다. 설정 파일로 관리하고 체크포인트에 기록한다 |
 | 042-R10 | **MUST** 정상 종료(Ctrl+C, 2026-10-16 사용자 결정). 첫 Ctrl+C(SIGINT, Windows는 Ctrl+C 이벤트)를 받으면 다음 순서로 멈춘다. ① 새 게임 배정을 멈춘다. ② 진행 중인 게임을 중단하고 `Aborted`로 기록해 학습에서 뺀다(042-R3). ③ 체크포인트를 저장하고 push한다(061-R4 "정상 종료 시"). ④ 잠금을 해제한다(061-R5). 두 번째 Ctrl+C를 받으면 저장 없이 즉시 종료한다. 게임 PC 구성(hosts 파일)을 바꾸려면 정상 종료 후 재시작한다. 재시작하면 hosts 파일을 새로 읽고 마지막 체크포인트에서 재개한다(R1) |
+| 042-R11 | **MUST** 학습 중 리플레이를 저장한다(2026-10-18 사용자 결정). 모든 게임을 `save_replay`로 시작하고(게임 PC가 임시로 저장, 020-R1 `Finished.replay`로 학습 PC에 전달), 판정 뒤 **정기 표본(게임 id가 `[replays] sample_every`(기본 100)의 배수)** 이거나 **승자 불일치 게임(020-R13)** 이면 `<URANIUM_SHARED_DIR>/runs/<run_id>/replays/g<game_id>-<sample\|disagree>.rep`에 쓴다(임시 이름으로 쓰고 다시 읽어 바이트를 대조한 뒤 이름을 바꾼다). 나머지는 버린다. run이 끝나도 지우지 않는다. `games.csv`에 `replay`(run 폴더 기준 경로)와 `replay_reason` 열을 남긴다 |
+| 042-R12 | **MUST** agent step 상한(`--max-agent-steps`, 042-AC1·033-AC2는 1,000만)에 도달하면 R10의 정상 종료 순서(①~④)로 멈춘다. agent step은 체크포인트(`TrainState.step`)에서 이어 세므로 재개해도 run 전체 누적이다. 진행 중이던 게임은 R10처럼 Aborted로 빠지므로 실제 학습량은 상한을 약간 넘거나 모자랄 수 있고, 마지막 체크포인트 step으로 기록한다 (2026-10-18) |
 
 ## Acceptance Criteria
 - 042-AC1: 작은 설정(1맵, T0 1종족)에서 BC 정책 대비 승률 개선을 재현 가능하게 보인다. 3 seed 평균으로 측정한다.

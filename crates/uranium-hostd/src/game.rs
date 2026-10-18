@@ -28,6 +28,25 @@ fn bwapi_save_path(p: &Path) -> String {
     if cfg!(windows) && s.as_bytes().get(1) == Some(&b':') { s[2..].to_string() } else { s }
 }
 
+/// Where launcher slot 0 saves the replay of a `save_replay` game (011-R7).
+pub fn replay_file(spec: &GameSpec, replay_dir: &Path) -> PathBuf {
+    replay_dir.join(format!("g{}-s{}-p0.rep", spec.game_id, spec.seed.map_or("x".to_string(), |s| s.to_string())))
+}
+
+/// 020-R1 / 042-R11: the saved replay goes back in `Finished.replay`. A file in the configured
+/// replay folder stays; one in the game's work folder is only a temporary copy and is removed.
+fn take_replay(cfg: &Config, spec: &GameSpec, dir: &Path) -> Option<Vec<u8>> {
+    if !spec.save_replay {
+        return None;
+    }
+    let path = replay_file(spec, cfg.replay_dir.as_deref().unwrap_or(dir));
+    let bytes = std::fs::read(&path).ok()?;
+    if cfg.replay_dir.is_none() {
+        let _ = std::fs::remove_file(&path);
+    }
+    Some(bytes)
+}
+
 /// Player name prefix; the suffix is the `GameSpec.players` index.
 pub const PLAYER_NAME_PREFIX: &str = "uranium-p";
 
@@ -48,7 +67,7 @@ pub fn launcher_env(cfg: &Config, spec: &GameSpec, slot: usize, module: &Path, r
         (
             "BWAPI_CONFIG_AUTO_MENU__SAVE_REPLAY",
             // Both clients record the same game; keep slot 0 only (040 botgen dedup).
-            if spec.save_replay && slot == 0 { bwapi_save_path(&replay_dir.join(format!("g{}-s{}-p{slot}.rep", spec.game_id, spec.seed.map_or("x".to_string(), |s| s.to_string())))) } else { String::new() },
+            if spec.save_replay && slot == 0 { bwapi_save_path(&replay_file(spec, replay_dir)) } else { String::new() },
         ),
         ("URANIUM_GAME_ID", spec.game_id.to_string()),
         // 0004 patch: deterministic client ids => launcher slot = player slot (011-AC4).
@@ -172,7 +191,8 @@ pub fn run(cfg: &Config, platform: &dyn Platform, spec: &GameSpec, stop: &dyn Fn
         }
     }
     platform.release(lan);
-    Ok(GameFinished { game_id: spec.game_id, outcome: outcome.unwrap(), exit_codes: codes, wall_s: started.elapsed().as_secs() as u32 })
+    let replay = take_replay(cfg, spec, &dir);
+    Ok(GameFinished { game_id: spec.game_id, outcome: outcome.unwrap(), exit_codes: codes, wall_s: started.elapsed().as_secs() as u32, replay })
 }
 
 /// Environment for one replay playback launcher (011-R10, 020-R1 StartReplay).
@@ -233,7 +253,7 @@ pub fn run_replay(cfg: &Config, platform: &dyn Platform, job: &ReplaySpec, stop:
     };
     if exited { platform.reap(&mut child) } else { platform.kill_tree(&mut child) }
     let _ = std::fs::remove_file(&rep);
-    Ok(GameFinished { game_id: job.job_id, outcome, exit_codes: [code, None], wall_s: started.elapsed().as_secs() as u32 })
+    Ok(GameFinished { game_id: job.job_id, outcome, exit_codes: [code, None], wall_s: started.elapsed().as_secs() as u32, replay: None })
 }
 
 /// Quarantine key: same map and player setup (020-R4).
@@ -283,6 +303,28 @@ mod tests {
             save_replay: false,
             wall_timeout_s: 10,
         }
+    }
+
+    /// 020-R1 / 042-R11: the replay travels back in `Finished`; a work-folder copy is temporary,
+    /// a file in the configured replay folder stays.
+    #[test]
+    fn take_replay_returns_bytes_and_cleans_work_copy_020_r1() {
+        let root = std::env::temp_dir().join(format!("uranium-hostd-rep-{}", std::process::id()));
+        let (work, keep) = (root.join("g3"), root.join("keep"));
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&keep).unwrap();
+        let mut s = spec(Some(9));
+        assert_eq!(take_replay(&cfg(), &s, &work), None, "not asked for");
+        s.save_replay = true;
+        assert_eq!(take_replay(&cfg(), &s, &work), None, "nothing written");
+        std::fs::write(replay_file(&s, &work), b"rep").unwrap();
+        assert_eq!(take_replay(&cfg(), &s, &work).as_deref(), Some(&b"rep"[..]));
+        assert!(!replay_file(&s, &work).exists(), "temporary copy removed");
+        let c = Config { replay_dir: Some(keep.clone()), ..cfg() };
+        std::fs::write(replay_file(&s, &keep), b"rep2").unwrap();
+        assert_eq!(take_replay(&c, &s, &work).as_deref(), Some(&b"rep2"[..]));
+        assert!(replay_file(&s, &keep).exists(), "configured folder keeps the file");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
