@@ -228,7 +228,11 @@ pub struct SessionRecord {
     pub map: String,
     pub map_hash: String,
     pub self_race: String,
+    /// Race the enemy actually played: the lobby race, or for a lobby-Random enemy (030-R11) the
+    /// race of its first unit we saw ("Unknown" if never seen). For per-race statistics.
     pub enemy_race: String,
+    /// Race as `GameInfo` gave it at game start ("Unknown" for a lobby-Random enemy, 030-R11).
+    pub enemy_race_lobby: String,
     /// T0 build this player was asked to play (050 E-Regression scenario bots).
     pub t0_build: String,
     pub winner: Option<u8>,
@@ -260,6 +264,18 @@ const NEUTRAL_PLAYER: u8 = 11;
 
 /// Enemy units that are not on (or next to) a currently visible tile, or that are cloaked or
 /// burrowed without being detected. The bridge must never send these (010-R5, 010-AC6).
+/// 030-R11: race of the first non-neutral, non-own unit in the frame ("Terran" / "Protoss" /
+/// "Zerg"), for the session record of a lobby-Random enemy.
+fn revealed_enemy_race(f: &RawFrame, me: u8) -> Option<String> {
+    let types = uranium_env::types::TypeTables::get();
+    f.units
+        .iter()
+        .filter(|u| u.owner != me && u.owner != NEUTRAL_PLAYER)
+        .filter_map(|u| types.unit(u.unit_type))
+        .find(|t| matches!(t.race.as_str(), "Terran" | "Protoss" | "Zerg"))
+        .map(|t| t.race.clone())
+}
+
 fn visibility_violations(f: &RawFrame, me: u8) -> u64 {
     f.units
         .iter()
@@ -378,6 +394,7 @@ pub fn session(stream: TcpStream, opts: &ServeOptions) -> SessionRecord {
         map_hash: String::new(),
         self_race: String::new(),
         enemy_race: String::new(),
+        enemy_race_lobby: String::new(),
         t0_build: String::new(),
         winner: None,
         won: None,
@@ -421,6 +438,8 @@ fn run_session(stream: TcpStream, opts: &ServeOptions, rec: &mut SessionRecord) 
     rec.map_hash = info.map_hash.iter().map(|b| format!("{b:02x}")).collect();
     rec.self_race = info.players.iter().find(|p| p.is_self).map(|p| format!("{:?}", p.race)).unwrap_or_default();
     rec.enemy_race = info.players.iter().find(|p| p.is_enemy).map(|p| format!("{:?}", p.race)).unwrap_or_default();
+    // 030-R11: a lobby-Random enemy arrives as Unknown; `play` fills in the race once seen.
+    rec.enemy_race_lobby = rec.enemy_race.clone();
     elog!("[agent] game {} slot {} on {:?} ({} start locations)", hello.game_id, hello.slot, info.map_name, info.static_map.start_locations.len());
     // 020-R11 / 050: policies and T0 builds are registered by `GameSpec.players` index; the BWAPI
     // player id (`Hello.slot`) need not follow launch order, so it comes from the player name.
@@ -469,6 +488,11 @@ fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, po
                     rec.first_frame_units = f.units.len();
                     rec.first_frame_minerals = f.units.iter().filter(|u| uranium_scripted::types::is_mineral(u.unit_type)).count();
                     first = false;
+                }
+                if matches!(rec.enemy_race.as_str(), "Unknown" | "Random") {
+                    if let Some(r) = revealed_enemy_race(&f, hello.slot) {
+                        rec.enemy_race = r;
+                    }
                 }
                 rec.visibility_violations += visibility_violations(&f, hello.slot);
                 rec.failed_commands += f.events.iter().filter(|e| matches!(e, GameEvent::CommandFailed { .. })).count() as u64;

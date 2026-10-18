@@ -274,9 +274,16 @@ impl JobSource for LeagueSource {
     fn done(&self, job: &Job, outcome: JobOutcome, replay: Option<Vec<u8>>) {
         let s = &self.shared;
         let id = job.spec.game_id;
-        let Some(meta) = s.games.lock().unwrap().remove(&id) else { return };
+        let Some(mut meta) = s.games.lock().unwrap().remove(&id) else { return };
         let agent = meta.pick.agent.index();
         let (result, held) = self.collect(id);
+        // 030-R11: a Random enemy reaches the agent as Unknown; the race its memory saw is the race
+        // played, which the per-race league windows and games.csv need.
+        if matches!(meta.enemy_race, Race::Random | Race::Unknown) {
+            if let Some(r) = result.as_ref().and_then(|r| r.enemy_race) {
+                meta.enemy_race = r;
+            }
+        }
         let ends = s.ends.take(id);
         // 020-R13: the session that ended last decides.
         let verdict = (outcome == JobOutcome::Finished).then(|| game_result(&ends)).flatten();

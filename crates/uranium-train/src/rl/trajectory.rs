@@ -231,6 +231,9 @@ pub struct GameResult {
     /// Sum of each reward component over the game (033-R3 logging).
     pub reward_sum: [f32; 4],
     pub decisions: u64,
+    /// Enemy race the agent's memory knew at its last decision (030-R11: a lobby-Random enemy is
+    /// unknown until seen); `None` if never revealed. Per-race league statistics use it.
+    pub enemy_race: Option<uranium_proto::Race>,
 }
 
 /// `SessionObserver` of a learning session (042).
@@ -247,6 +250,7 @@ pub struct TrajectoryObserver {
     privileged: PrivilegedTensors,
     reward_sum: [f32; 4],
     decisions: u64,
+    enemy_race: Option<uranium_proto::Race>,
     /// 020-R13: the terminal segment waits here for the game-level verdict that sets r_win.
     hold: Option<Box<dyn Fn(Segment) + Send>>,
 }
@@ -259,7 +263,7 @@ impl TrajectoryObserver {
     pub fn new(agent: usize, game_id: u64, seq_len: usize, queue: Arc<SegmentQueue>, results: Sender<GameResult>) -> Self {
         assert!(seq_len >= 2, "segments overlap by one step");
         let privileged = PrivilegedTensors { summary: vec![0.0; uranium_env::features::extract::dims().privileged()] };
-        Self { agent, game_id, seq_len, queue, results, steps: Vec::new(), state0: None, next_state0: None, privileged, reward_sum: [0.0; 4], decisions: 0, hold: None }
+        Self { agent, game_id, seq_len, queue, results, steps: Vec::new(), state0: None, next_state0: None, privileged, reward_sum: [0.0; 4], decisions: 0, enemy_race: None, hold: None }
     }
 
     /// Hands the terminal segment to `sink` without r_win instead of queueing it: the caller
@@ -291,6 +295,16 @@ impl SessionObserver for TrajectoryObserver {
 
     fn on_decision(&mut self, d: &Decision<'_>) {
         self.decisions += 1;
+        {
+            use uranium_env::features::{RACE_PROTOSS, RACE_TERRAN, RACE_ZERG};
+            use uranium_proto::Race;
+            match d.obs.obs.scalar_cat[0] {
+                RACE_TERRAN => self.enemy_race = Some(Race::Terran),
+                RACE_PROTOSS => self.enemy_race = Some(Race::Protoss),
+                RACE_ZERG => self.enemy_race = Some(Race::Zerg),
+                _ => {}
+            }
+        }
         // 033-R7: the frames since the previous decision are that decision's reward.
         self.add_reward(parts(&d.reward_before));
         if self.steps.is_empty() {
@@ -345,7 +359,7 @@ impl SessionObserver for TrajectoryObserver {
                 }
             }
         }
-        let _ = self.results.send(GameResult { agent: self.agent, game_id: self.game_id, outcome, reward_sum: self.reward_sum, decisions: self.decisions });
+        let _ = self.results.send(GameResult { agent: self.agent, game_id: self.game_id, outcome, reward_sum: self.reward_sum, decisions: self.decisions, enemy_race: self.enemy_race });
     }
 }
 
@@ -415,6 +429,8 @@ mod tests {
         assert_eq!(r.outcome, Some(Outcome::Win));
         assert_eq!(r.decisions, 6);
         assert_eq!(r.reward_sum, [1.0, 0.0, 0.0, 15.5]);
+        // 030-R11: the race the agent's memory knew is reported for the per-race league tables.
+        assert_eq!(r.enemy_race, Some(uranium_proto::Race::Zerg));
     }
 
     /// 042-R3: an Aborted game's queued segments are revoked; taken ones are counted.

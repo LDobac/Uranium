@@ -524,6 +524,64 @@ fn unseen_resources_are_remembered_entities_030_r2() {
     assert_eq!(neutrals(&extract(&f, &mut mem, &map, None)), 0, "seen empty stays dropped");
 }
 
+/// 030-R2 / E-3: building a refinery morphs the geyser unit itself (same id, now a player's
+/// Refinery). The geyser memory goes with it: out of sight there is only the remembered enemy
+/// refinery (no duplicate id, no refinery_slot); once the refinery dies and the geyser is seen
+/// again, the geyser memory is back.
+#[test]
+fn geyser_morphed_into_refinery_is_forgotten_030_r2() {
+    let geyser_res = resource_at("Resource_Vespene_Geyser", (40, 60), 5000);
+    let map = map_with_resources(vec![geyser_res]);
+    let mut mem = AgentMemory::new(&game_info());
+    let mut b = Builder::new();
+    b.add(SELF, "Terran_SCV", (10, 10));
+    let own = b.units.clone();
+    let g = b.add(NEUTRAL, "Resource_Vespene_Geyser", (40, 60));
+    let geyser = b.units.iter().find(|u| u.id == g).unwrap().clone();
+    let blind = |f: &mut uranium_proto::RawFrame| {
+        for y in 0..H {
+            for x in 30..W {
+                f.visibility.set(x, y, false);
+            }
+        }
+    };
+    let refinery_slot = |o: &Observation| {
+        let l = LOC_CLASSES.iter().position(|c| *c == "refinery_slot").unwrap();
+        o.masks.loc_class_mask[l * CELLS + 60 * MAP + 40]
+    };
+    let at_tile = |o: &Observation| (0..o.obs.n).filter(|&i| o.obs.entity_cell[i] == (61 * MAP + 42) as i32).count();
+
+    extract(&frame(10, [own.clone(), vec![geyser.clone()]].concat(), false), &mut mem, &map, None);
+    let mut refinery = geyser.clone();
+    refinery.owner = ENEMY;
+    refinery.unit_type = ty("Terran_Refinery");
+    extract(&frame(20, [own.clone(), vec![refinery.clone()]].concat(), false), &mut mem, &map, None);
+    let mut f = frame(30, own.clone(), false);
+    blind(&mut f);
+    let o = extract(&f, &mut mem, &map, None);
+    assert_eq!(o.entity_ids.iter().filter(|&&id| id == g).count(), 1, "one entity for the id");
+    assert_eq!(at_tile(&o), 1, "only the remembered enemy refinery");
+    assert_eq!(o.obs.entity_cat[index_of(&o, g) * 4 + 1], OWNER_ENEMY);
+    assert!(!refinery_slot(&o));
+
+    // The refinery dies and the geyser is seen again (a new unit, or the same id): memory is back.
+    for new_id in [999, g] {
+        let mut mem = mem.clone();
+        let mut back = geyser.clone();
+        back.id = new_id;
+        let mut f = frame(40, [own.clone(), vec![back]].concat(), false);
+        f.events.push(GameEvent::UnitDestroyed(g));
+        extract(&f, &mut mem, &map, None);
+        let mut f = frame(50, own.clone(), false);
+        blind(&mut f);
+        let o = extract(&f, &mut mem, &map, None);
+        let i = index_of(&o, new_id);
+        assert!(!o.entity_ids.contains(&g) || new_id == g, "refinery forgotten");
+        assert_eq!((o.obs.entity_cat[i * 4 + 1], at_tile(&o)), (OWNER_NEUTRAL, 1));
+        assert_eq!(o.obs.entity_cont[i * ENTITY_CONT + 73], 10.0 / 2048.0, "seen at frame 40");
+    }
+}
+
 /// 030-R7 / 030 §2 (Q3, 2026-10-19): past N_MAX the remembered (out-of-vision) resources go first;
 /// own units, visible enemies and remembered enemy buildings stay.
 #[test]

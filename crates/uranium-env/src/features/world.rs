@@ -176,8 +176,8 @@ fn unseen_resources(mem: &AgentMemory, map: &MapInfo, visible: &std::collections
             out.insert(*k, Entity { unit: r.unit.clone(), owner: OWNER_NEUTRAL, remembered: true, seen_frame: r.seen_frame });
         }
     }
-    // Per-type fields (hp, flags, order) as a seen resource of that type reports them, so a
-    // never-seen field looks like a seen one: the first seen in tile order (deterministic).
+    // Display fields (owner, hp, shield, energy) as a seen resource of that type reports them, the
+    // first seen in tile order (deterministic); order, targets, flags and timers are reset.
     let mut templates: HashMap<u16, &UnitState> = HashMap::new();
     for s in mem.resources.values() {
         templates.entry(s.unit.unit_type).or_insert(&s.unit);
@@ -187,19 +187,22 @@ fn unseen_resources(mem: &AgentMemory, map: &MapInfo, visible: &std::collections
         if mem.resources.contains_key(&k) || mem.resources_gone.contains(&k) || out.contains_key(&k) {
             continue;
         }
-        let template = templates.get(&r.unit_type).map(|&s| s.clone());
-        let mut unit = template.unwrap_or_else(|| UnitState {
-            owner: NEUTRAL_PLAYER,
-            hp: types.unit(r.unit_type).map_or(0, |t| t.max_hp.clamp(0, u16::MAX as i32) as u16),
-            flags: flags::COMPLETED,
+        let max_hp = types.unit(r.unit_type).map_or(0, |t| t.max_hp.clamp(0, u16::MAX as i32) as u16);
+        let (owner, hp, shield, energy) = templates.get(&r.unit_type).map_or((NEUTRAL_PLAYER, max_hp, 0, 0), |s| (s.owner, s.hp, s.shield, s.energy));
+        let unit = UnitState {
+            id: UNSEEN_RESOURCE_ID + i as UnitId,
+            owner,
+            unit_type: r.unit_type,
+            pos: r.pos,
+            hp,
+            shield,
+            energy,
             order: ORDER_NONE,
+            flags: flags::COMPLETED,
+            build_queue: [Ids::get().none; 5],
+            resources: r.amount.min(u16::MAX as u32) as u16,
             ..Default::default()
-        });
-        unit.id = UNSEEN_RESOURCE_ID + i as UnitId;
-        unit.unit_type = r.unit_type;
-        unit.pos = r.pos;
-        unit.vel = (0, 0);
-        unit.resources = r.amount.min(u16::MAX as u32) as u16;
+        };
         out.insert(k, Entity { unit, owner: OWNER_NEUTRAL, remembered: true, seen_frame: 0 });
     }
     out.into_values().collect()

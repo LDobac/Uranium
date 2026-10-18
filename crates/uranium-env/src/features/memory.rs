@@ -118,6 +118,7 @@ impl AgentMemory {
         // 030-R10: see `zero_last_failed`.
         self.last_failed = !self.zero_last_failed && frame.events.iter().any(|e| matches!(e, GameEvent::CommandFailed { .. }));
         let mut counts: HashMap<u16, u16> = HashMap::new();
+        let mut neutral_resources: std::collections::HashSet<UnitId> = std::collections::HashSet::new();
         for u in &frame.units {
             let Some(t) = types.unit(u.unit_type) else { continue };
             if self.is_enemy(u.owner) {
@@ -135,6 +136,7 @@ impl AgentMemory {
                 }
             } else if u.owner != self.self_player && t.is_resource() {
                 let key = top_left(u, t);
+                neutral_resources.insert(u.id);
                 self.resources_gone.remove(&key);
                 self.resources.insert(key, Remembered { unit: u.clone(), seen_frame: frame.frame });
             }
@@ -150,7 +152,9 @@ impl AgentMemory {
             if let GameEvent::UnitDestroyed(id) = e {
                 self.enemy_buildings.remove(id);
                 self.unit_last_action.remove(id);
-                let dead: Vec<ResourceTile> = self.resources.iter().filter(|(_, r)| r.unit.id == *id).map(|(k, _)| *k).collect();
+                // A resource seen in this very frame is alive whatever the event says.
+                let dead: Vec<ResourceTile> =
+                    self.resources.iter().filter(|(_, r)| r.unit.id == *id && !neutral_resources.contains(id)).map(|(k, _)| *k).collect();
                 for k in dead {
                     self.resources.remove(&k);
                     self.resources_gone.insert(k);
@@ -160,12 +164,22 @@ impl AgentMemory {
         self.enemy_buildings.retain(|id, r| {
             visible_ids.contains(id) || !frame.visibility.get(r.unit.pos.0 / 32, r.unit.pos.1 / 32)
         });
-        // Resources whose tile is visible but that are not there were mined out (or a geyser now
-        // carries a refinery).
+        // A remembered resource is gone when (a) its id is visible but no longer a neutral resource:
+        // building a refinery morphs the geyser unit itself (OpenBW `build_refinery`), so the same id
+        // turns into a player's Refinery / Extractor / Assimilator; or (b) its tile is visible and it
+        // is not there (mined out). The tile stays gone until a neutral resource is seen there again
+        // (e.g. the geyser back after the refinery dies).
         let missing: Vec<ResourceTile> = self
             .resources
             .iter()
-            .filter(|(_, r)| !visible_ids.contains(&r.unit.id) && frame.visibility.get(r.unit.pos.0 / 32, r.unit.pos.1 / 32))
+            .filter(|(_, r)| {
+                let id = r.unit.id;
+                if visible_ids.contains(&id) {
+                    !neutral_resources.contains(&id)
+                } else {
+                    frame.visibility.get(r.unit.pos.0 / 32, r.unit.pos.1 / 32)
+                }
+            })
             .map(|(k, _)| *k)
             .collect();
         for k in missing {

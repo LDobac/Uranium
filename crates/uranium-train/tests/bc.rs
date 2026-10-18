@@ -301,7 +301,7 @@ fn warmup_cosine_schedule_041_r3() {
         s2_lr_scale: 0.1,
         heads: HeadWeights { action: 1.0, delay: 0.5, queued: 0.2, selected: 1.0, target_unit: 1.0, target_loc: 1.0 },
         value: ValueWeights { win: 0.5 },
-        data: DataConfig { z_drop: 0.25, augment: true, seed: 1, checkpoint_every: 1, checkpoint_minutes: 0, enemy_race_mask: 0.5 },
+        data: DataConfig { z_drop: 0.25, augment: true, seed: 1, checkpoint_every: 1, checkpoint_minutes: 0, enemy_race_mask: 0.05 },
     };
     assert!((cfg.lr_at(0, 1.0) - 1e-4).abs() < 1e-12);
     assert!((cfg.lr_at(9, 1.0) - 1e-3).abs() < 1e-12);
@@ -310,6 +310,8 @@ fn warmup_cosine_schedule_041_r3() {
     assert!((cfg.lr_at(9, 0.1) - 1e-4).abs() < 1e-12, "S2 = 1/10 (041-R4)");
     let file = BcConfig::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/bc.toml"))).unwrap();
     assert_eq!((file.seq_len, file.grad_clip, file.value.win, file.data.z_drop), (64, 1.0, 0.5, 0.25));
+    // 030-R11 (user decision 2026-10-19): 5% of games mask the enemy race.
+    assert_eq!(file.data.enemy_race_mask, 0.05);
     // 041-R14: one epoch per stage; (A) reads the S2 games.
     assert!(file.steps.s1 > file.steps.s2 && file.steps.s2 > 0 && file.steps.ablation_a == file.steps.s2);
     // 041-R14 (2026-10-18): S2 and (A) warm up over 5% of their epoch, rounded half up.
