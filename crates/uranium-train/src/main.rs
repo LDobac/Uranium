@@ -376,7 +376,7 @@ fn main() -> Result<()> {
             // 061-R5: a lock that could not be taken ends with 75 (the watchdog does not restart it).
             match res {
                 Err(e) if e.downcast_ref::<uranium_train::storage::LockBusy>().is_some() => {
-                    eprintln!("{e:#}");
+                    uranium_train::elog!("{e:#}");
                     std::process::exit(uranium_train::bc_run::EXIT_BUSY)
                 }
                 other => other,
@@ -467,6 +467,8 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Bc { data, out, run, take_over, take_over_if, config, backend, core, s2, stage, steps, resume, init } => {
+            // 042-R10 / 060-R6: before the dataset pull and the model load, so an early SIGINT is kept.
+            let stop = uranium_train::install_stop_handler("bc")?;
             let stage = match (s2, stage.unwrap_or(if s2 { StageArg::S2 } else { StageArg::S1 })) {
                 (true, _) => BcStage::S2,
                 (false, StageArg::S2) => BcStage::AblationA,
@@ -489,7 +491,16 @@ fn main() -> Result<()> {
                 CoreArg::Gtrxl => CoreKind::Gtrxl,
             };
             let backend_name = format!("{backend:?}").to_lowercase();
-            let args = BcArgs { dirs: data.dirs()?, out, config, stage, core: kind, stop_at: steps, resume, init, backend: backend_name };
+            let dirs = match data.dirs() {
+                Ok(d) => d,
+                // Ctrl+C during the dataset pull: no lock yet, a clean stop (042-R10).
+                Err(e) if e.downcast_ref::<uranium_train::Interrupted>().is_some() => {
+                    uranium_train::elog!("[bc] {e:#}");
+                    return Ok(());
+                }
+                Err(e) => return Err(e),
+            };
+            let args = BcArgs { dirs, out, config, stage, core: kind, stop_at: steps, resume, init, backend: backend_name, stop };
             let dev = device(backend)?;
             let res = match core {
                 CoreArg::Lstm => uranium_train::bc_run::run::<LstmCore>(args, dev),
@@ -500,7 +511,7 @@ fn main() -> Result<()> {
                 Ok(uranium_train::bc_run::BcExit::Yielded) => std::process::exit(uranium_train::bc_run::EXIT_YIELDED),
                 Ok(_) => Ok(()),
                 Err(e) if e.downcast_ref::<uranium_train::storage::LockBusy>().is_some() => {
-                    eprintln!("{e:#}");
+                    uranium_train::elog!("{e:#}");
                     std::process::exit(uranium_train::bc_run::EXIT_BUSY)
                 }
                 Err(e) => Err(e),

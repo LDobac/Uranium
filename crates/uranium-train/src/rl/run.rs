@@ -10,7 +10,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -69,9 +69,6 @@ pub struct RlArgs {
     /// 042-AC1 small setting: always this T0 race on Fighting Spirit, Main only.
     pub fixed_t0: Option<Race>,
 }
-
-const STOP_NONE: usize = 0;
-const STOP_CLEAN: usize = 1;
 
 /// Per-game bookkeeping between dispatch and the end of the game.
 struct GameMeta {
@@ -263,7 +260,7 @@ impl JobSource for LeagueSource {
         match self.job(pick) {
             Ok(j) => Some(j),
             Err(e) => {
-                eprintln!("[rl] cannot build a game: {e:#}");
+                crate::elog!("[rl] cannot build a game: {e:#}");
                 None
             }
         }
@@ -314,7 +311,7 @@ impl JobSource for LeagueSource {
                 s.queues[agent].finish(id);
                 let stage_up = s.league.lock().unwrap().record(&meta.pick, meta.enemy_race, o);
                 if stage_up {
-                    eprintln!("[rl] curriculum advanced to {:?} (042-R5)", s.league.lock().unwrap().stage);
+                    crate::elog!("[rl] curriculum advanced to {:?} (042-R5)", s.league.lock().unwrap().stage);
                 }
             }
             (Some(o), None) => {
@@ -333,7 +330,7 @@ impl JobSource for LeagueSource {
             (Some(why), Some(bytes)) => match keep_replay(&s.replay_dir, id, why, &bytes) {
                 Ok(name) => (format!("replays/{name}"), why),
                 Err(e) => {
-                    eprintln!("[rl] replay of game {id} not kept: {e:#}");
+                    crate::elog!("[rl] replay of game {id} not kept: {e:#}");
                     (String::new(), "")
                 }
             },
@@ -441,6 +438,8 @@ fn save_checkpoint<C: CoreInit + 'static>(run: &mut Run, step: u64, learners: &[
 }
 
 pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
+    // 042-R10 / 060-R6: first thing, so an early SIGINT is never lost (see install_stop_handler).
+    let stop = crate::install_stop_handler("rl")?;
     let cfg = RlConfig::load(&args.config)?;
     std::fs::create_dir_all(&args.log_dir)?;
     let ad = dev.autodiff();
@@ -451,8 +450,26 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
     // 061-R3 / R5: lock the run, recover or pull LATEST.
     let storage = StorageConfig::from_env()?;
     let replay_dir = storage.shared.join("runs").join(&args.run).join("replays");
+    if crate::stopping(&stop) {
+        crate::elog!("[rl] Ctrl+C before start: not started");
+        return Ok(());
+    }
     let mut run = Run::acquire(storage, &args.run, args.take_over)?;
-    let resume = run.begin()?;
+    let resume = match run.begin() {
+        Ok(r) => r,
+        Err(e) if e.downcast_ref::<crate::Interrupted>().is_some() => {
+            crate::elog!("[rl] {e:#}; releasing the lock (042-R10)");
+            run.release()?;
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    };
+    // Ctrl+C during the pull: release before loading anything (nothing new to save).
+    if crate::stopping(&stop) {
+        crate::elog!("[rl] Ctrl+C during start: releasing the lock, nothing to save (042-R10)");
+        run.release()?;
+        return Ok(());
+    }
     let (bc, bc_meta) = checkpoint::load_with::<C>(&args.bc, &cols, fv, av, &ad, rl_config).context("loading the BC checkpoint (042 start / KL reference)")?;
     let net_cfg = bc_meta.net_config()?;
 
@@ -481,7 +498,7 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
     }
     let mut step = resume.as_ref().map_or(0, |r| r.step);
     if let Some(r) = &resume {
-        eprintln!("[rl] resumed {} at step {} (recovered {}), stage {:?}", args.run, r.step, r.recovered, league.stage);
+        crate::elog!("[rl] resumed {} at step {} (recovered {}), stage {:?}", args.run, r.step, r.recovered, league.stage);
     }
 
     // Inference servers start from the learners' current weights (written to the cache).
@@ -544,7 +561,7 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
     });
     let z = load_z(&args.z_table)?;
     if z.is_empty() {
-        eprintln!("[rl] no z table: every game runs without z, pseudo-rewards off (033-R8)");
+        crate::elog!("[rl] no z table: every game runs without z, pseudo-rewards off (033-R8)");
     }
     let hooks: Vec<Arc<Hook>> = AgentKind::ALL
         .iter()
@@ -554,18 +571,6 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
     let dispatch = Dispatch::new(routes, Default::default(), builds);
     let hosts: Vec<HostEntry> = uranium_runner::hosts()?;
 
-    // 042-R10: first Ctrl+C = clean stop, second = exit now.
-    let stop = Arc::new(AtomicUsize::new(STOP_NONE));
-    {
-        let stop = stop.clone();
-        ctrlc::set_handler(move || {
-            if stop.fetch_add(1, Ordering::SeqCst) >= STOP_CLEAN {
-                eprintln!("[rl] second Ctrl+C: exiting without saving (042-R10)");
-                std::process::exit(130);
-            }
-            eprintln!("[rl] Ctrl+C: stopping games, saving and pushing the checkpoint (042-R10)");
-        })?;
-    }
     let games_thread = {
         let (source, dispatch, games) = (source.clone(), dispatch.clone(), args.log_dir.join("games.jsonl"));
         std::thread::spawn(move || uranium_runner::run_source(source, &hosts, &games, &dispatch))
@@ -585,10 +590,10 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
     loop {
         let steps_hit = args.max_agent_steps > 0 && shared.agent_steps.load(Ordering::SeqCst) >= args.max_agent_steps;
         if steps_hit {
-            eprintln!("[rl] {} agent steps reached: clean stop (042-R12)", args.max_agent_steps);
+            crate::elog!("[rl] {} agent steps reached: clean stop (042-R12)", args.max_agent_steps);
         }
         let limit_hit = steps_hit || (args.max_updates > 0 && updates_this_run >= args.max_updates) || (args.max_minutes > 0 && started.elapsed() >= Duration::from_secs(args.max_minutes * 60));
-        if stop.load(Ordering::SeqCst) >= STOP_CLEAN || limit_hit {
+        if crate::stopping(&stop) || limit_hit {
             break;
         }
         // 061-R5: heartbeat every minute; a lost lock stops training.
@@ -597,11 +602,11 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
             match run.heartbeat() {
                 LockStatus::Held => {}
                 LockStatus::Lost(l) => {
-                    eprintln!("[rl] lock lost to {l:?}: stopping (061-R5)");
+                    crate::elog!("[rl] lock lost to {l:?}: stopping (061-R5)");
                     lock_lost = true;
                     break;
                 }
-                LockStatus::Unreachable(e) => eprintln!("[rl] heartbeat: share unreachable ({e}), continuing (061-R11-3)"),
+                LockStatus::Unreachable(e) => crate::elog!("[rl] heartbeat: share unreachable ({e}), continuing (061-R11-3)"),
             }
         }
         let ready: Vec<AgentKind> = AgentKind::ALL.iter().copied().filter(|a| queues[a.index()].len() >= cfg.lanes).collect();
@@ -637,9 +642,9 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
                 PushOutcome::Pushed => {
                     let dir = run.league_snapshot(step, &snapshot_name(&id))?;
                     shared.snapshots.lock().unwrap().dirs.insert(id.clone(), dir.join(ckpt::AGENTS_DIR).join(agent.name()));
-                    eprintln!("[rl] snapshot {id}");
+                    crate::elog!("[rl] snapshot {id}");
                 }
-                other => eprintln!("[rl] snapshot {id} not published: {other:?}"),
+                other => crate::elog!("[rl] snapshot {id} not published: {other:?}"),
             }
             if reset {
                 learners[i].reset_to_bc();
@@ -651,7 +656,7 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
             step += 1;
             let league_now = shared.league.lock().unwrap().clone();
             let out = save_checkpoint(&mut run, step, &learners, &league_now, &args, serde_json::json!({ "games": shared.games_done.load(Ordering::SeqCst) }))?;
-            eprintln!("[rl] checkpoint {} {:?}", crate::storage::ckpt_name(step), out);
+            crate::elog!("[rl] checkpoint {} {:?}", crate::storage::ckpt_name(step), out);
             run.prune().ok();
             last_ckpt = Instant::now();
         }
@@ -666,16 +671,16 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
     }
     let _ = games_thread.join();
     if lock_lost {
-        eprintln!("[rl] lock lost: no final push, lock left as is (061-R11-4)");
+        crate::elog!("[rl] lock lost: no final push, lock left as is (061-R11-4)");
         return Ok(());
     }
     step = step.max(shared.agent_steps.load(Ordering::SeqCst)) + 1;
     let league_now = shared.league.lock().unwrap().clone();
     let out = save_checkpoint(&mut run, step, &learners, &league_now, &args, serde_json::json!({ "games": shared.games_done.load(Ordering::SeqCst) }))?;
-    eprintln!("[rl] final checkpoint {}: {out:?}", crate::storage::ckpt_name(step));
+    crate::elog!("[rl] final checkpoint {}: {out:?}", crate::storage::ckpt_name(step));
     match out {
         PushOutcome::Pushed => run.release()?,
-        other => eprintln!("[rl] push {other:?}: keeping the lock so the next start recovers it (061-R11-5/6)"),
+        other => crate::elog!("[rl] push {other:?}: keeping the lock so the next start recovers it (061-R11-5/6)"),
     }
     Ok(())
 }

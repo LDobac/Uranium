@@ -131,7 +131,7 @@ impl ModelPolicy {
                 format!("replay_build(match={})", rebuilt.as_ref() == pre.as_ref())
             }
             PrecomputeSource::Missing => {
-                eprintln!("[agent] WARNING: no map precompute for {:?}; base_loc/choke/wall channels stay 0 (031, run `uranium-replay mapgen`)", info.map_name);
+                elog!("[agent] WARNING: no map precompute for {:?}; base_loc/choke/wall channels stay 0 (031, run `uranium-replay mapgen`)", info.map_name);
                 "missing".to_string()
             }
         };

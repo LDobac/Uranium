@@ -164,8 +164,12 @@ pub fn verify_dir(dir: &Path) -> Result<Manifest> {
     Ok(m)
 }
 
+/// Writes through a temporary file unique to this process and call (threads of one process may
+/// write the same file, e.g. the worker status, 061-R13), then renames it over `path`.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let tmp = path.with_file_name(format!("{}.tmp-{}", path.file_name().unwrap().to_string_lossy(), std::process::id()));
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_file_name(format!("{}.tmp-{}-{n}", path.file_name().unwrap().to_string_lossy(), std::process::id()));
     {
         let mut f = fs::File::create(&tmp).with_context(|| format!("writing {}", tmp.display()))?;
         f.write_all(bytes)?;
@@ -183,12 +187,15 @@ pub fn pull_tree(src: &Path, dst: &Path) -> Result<Manifest> {
     let m = Manifest::read(src)?;
     let n = m.files.len();
     for (i, (rel, want)) in m.files.iter().enumerate() {
+        if crate::stop_requested() {
+            return Err(anyhow::Error::new(crate::Interrupted(format!("Ctrl+C: pull of {} stopped after {i}/{n} files; it resumes there next time (061-R11-2)", src.display()))));
+        }
         let to = dst.join(rel);
         if to.is_file() && sha256_file(&to).is_ok_and(|got| &got == want) {
-            eprintln!("[pull] {}/{n} {} ok ({} B, cached)", i + 1, src.join(rel).display(), want.bytes);
+            crate::elog!("[pull] {}/{n} {} ok ({} B, cached)", i + 1, src.join(rel).display(), want.bytes);
             continue;
         }
-        eprintln!("[pull] {}/{n} {} copying ({} B)", i + 1, src.join(rel).display(), want.bytes);
+        crate::elog!("[pull] {}/{n} {} copying ({} B)", i + 1, src.join(rel).display(), want.bytes);
         fs::create_dir_all(to.parent().unwrap())?;
         let part = to.with_file_name(format!("{}.part", to.file_name().unwrap().to_string_lossy()));
         fs::copy(src.join(rel), &part).with_context(|| format!("copying {}", src.join(rel).display()))?;
@@ -212,7 +219,10 @@ pub fn open_dataset(cfg: &StorageConfig, rel: &Path) -> Result<PathBuf> {
         let m = Manifest::read(&src)?;
         let n = m.files.len();
         for (i, (rel, want)) in m.files.iter().enumerate() {
-            eprintln!("[verify] {}/{n} {} ({} B)", i + 1, src.join(rel).display(), want.bytes);
+            if crate::stop_requested() {
+                return Err(anyhow::Error::new(crate::Interrupted(format!("Ctrl+C: verification of {} stopped after {i}/{n} files", src.display()))));
+            }
+            crate::elog!("[verify] {}/{n} {} ({} B)", i + 1, src.join(rel).display(), want.bytes);
             let got = sha256_file(&src.join(rel))?;
             ensure!(&got == want, "{} does not match its manifest (061-R7)", src.join(rel).display());
         }
@@ -401,12 +411,12 @@ impl Run {
                         held.host, held.pid
                     ))));
                 }
-                TakeOver::Force => eprintln!(
+                TakeOver::Force => crate::elog!(
                     "WARNING: --take-over: taking run {run_id} from {} (pid {}) now (061-R5). If that training is still alive it stops without a push at its next heartbeat, and checkpoints only it had (not pushed) may be lost (061-R11-4).",
                     held.host, held.pid
                 ),
                 TakeOver::IfUnchanged(seen) if *seen == held => {
-                    eprintln!("taking over run {run_id}: the lock of {} (pid {}) did not change for {} min (061-R5, R13)", held.host, held.pid, run.cfg.stale_after.as_secs() / 60)
+                    crate::elog!("taking over run {run_id}: the lock of {} (pid {}) did not change for {} min (061-R5, R13)", held.host, held.pid, run.cfg.stale_after.as_secs() / 60)
                 }
                 TakeOver::IfUnchanged(_) => {
                     return Err(anyhow::Error::new(LockBusy(format!("run {run_id}: the lock of {} changed since it was seen expired; not taken (061-R5)", held.host))));
@@ -415,6 +425,12 @@ impl Run {
         }
         run.previous = Some(held);
         write_atomic(&path, &serde_json::to_vec_pretty(&run.me)?)?;
+        // Two takers at once both rename their lock in; the last rename wins. Read it back so
+        // the loser stops now (exit 75) instead of at its first heartbeat (061-R5).
+        let now = run.read_lock().with_context(|| format!("reading back lock {}", path.display()))?;
+        if !run.owns(&now) {
+            return Err(anyhow::Error::new(LockBusy(format!("run {run_id}: {} (pid {}) took the lock at the same moment (061-R5)", now.host, now.pid))));
+        }
         Ok(run)
     }
 
@@ -534,7 +550,7 @@ impl Run {
             let dir = self.cache_dir().join(ckpt_name(step));
             let descends = latest_id.as_ref().is_none_or(|id| read_lineage(&dir).contains(id));
             if !descends {
-                eprintln!("{} in the cache does not descend from LATEST: not recovered (061-R11-5)", dir.display());
+                crate::elog!("{} in the cache does not descend from LATEST: not recovered (061-R11-5)", dir.display());
                 continue;
             }
             if verify_dir(&dir).is_ok() {
@@ -981,7 +997,7 @@ pub fn log_device(cfg: &StorageConfig, run_id: &str, line: serde_json::Value) {
         writeln!(f, "{v}")
     });
     if let Err(e) = res {
-        eprintln!("devices.jsonl not written ({e}); training continues (061-R11-3)");
+        crate::elog!("devices.jsonl not written ({e}); training continues (061-R11-3)");
     }
 }
 

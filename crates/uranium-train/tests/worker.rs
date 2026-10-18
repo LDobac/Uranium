@@ -324,16 +324,110 @@ fn manual_runs_are_not_asked_to_yield_061_r14() {
     let slow = local_cfg(&root, "slow");
     let _lock = Run::acquire(slow.clone(), "r", false).unwrap();
     // No worker state at all: manual.
-    assert_eq!(preempt_target(&cfg, &q, 10).unwrap(), None);
+    assert_eq!(preempt_target(&cfg, &q, 10, &HashMap::new()).unwrap(), None);
     // A worker on that host, but on another run (or idle): the run is still the manual one.
     storage::write_worker(&slow, 0, "vulkan", None).unwrap();
-    assert_eq!(preempt_target(&cfg, &q, 10).unwrap(), None);
+    assert_eq!(preempt_target(&cfg, &q, 10, &HashMap::new()).unwrap(), None);
     storage::write_worker(&slow, 0, "vulkan", Some("other")).unwrap();
-    assert_eq!(preempt_target(&cfg, &q, 10).unwrap(), None);
+    assert_eq!(preempt_target(&cfg, &q, 10, &HashMap::new()).unwrap(), None);
     // The slower worker trains it: asked (higher priority only).
     storage::write_worker(&slow, 0, "vulkan", Some("r")).unwrap();
-    assert_eq!(preempt_target(&cfg, &q, 10).unwrap().map(|r| r.id.clone()), Some("r".into()));
-    assert_eq!(preempt_target(&cfg, &q, 0).unwrap(), None);
+    assert_eq!(preempt_target(&cfg, &q, 10, &HashMap::new()).unwrap().map(|r| r.id.clone()), Some("r".into()));
+    assert_eq!(preempt_target(&cfg, &q, 0, &HashMap::new()).unwrap(), None);
+    // A run this worker gave up on for now (GiveUp skip) is not asked either.
+    let skip: HashMap<String, Instant> = [("r".to_string(), Instant::now())].into();
+    assert_eq!(preempt_target(&cfg, &q, 10, &skip).unwrap(), None);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 061-R5: a poll interval of half the lock expiry or more could never see a lock expire.
+#[test]
+fn slow_poll_is_refused_061_r5() {
+    let root = tmp("poll");
+    let cfg = local_cfg(&root, "me");
+    let mut a = args(root.join("queue.toml"), 1);
+    a.poll = cfg.stale_after / 2;
+    let err = work(&cfg, &a, &Instant0 { cfg: cfg.clone(), started: Arc::new(Mutex::new(Vec::new())) }, &|| false, &|_| {}, &|_| false).unwrap_err();
+    assert!(format!("{err:#}").contains("--poll-seconds"), "{err:#}");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// Ends with 75 every time (the lock went elsewhere between the look and the start).
+struct Busy {
+    calls: Arc<AtomicUsize>,
+}
+
+impl Launcher for Busy {
+    fn launch(&self, _r: &QueueRun, _d: &Defaults, _take: &TakeOver) -> Result<Ending> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(Ending::Exited(Some(75)))
+    }
+}
+
+/// 061-R14: when the requested run is picked but its child ends with 75 (never took it), this
+/// host's request is removed at once, not left as a 30-minute reservation.
+#[test]
+fn request_removed_when_the_child_does_not_take_the_run_061_r14() {
+    let root = tmp("r14-75");
+    let cfg = local_cfg(&root, "high");
+    std::fs::create_dir_all(root.join("shared").join("checkpoints")).unwrap();
+    let queue = root.join("queue.toml");
+    std::fs::write(&queue, "[[run]]\nid = \"a\"\n").unwrap();
+    // The slower worker trains `a`: the fast one asks for it.
+    let low = local_cfg(&root, "low");
+    storage::write_worker(&low, 0, "vulkan", Some("a")).unwrap();
+    let lock = Run::acquire(low.clone(), "a", false).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let notes = Arc::new(Mutex::new(Vec::new()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let w = spawn_worker(cfg.clone(), args(queue, 10), Busy { calls: calls.clone() }, stop.clone(), notes.clone());
+    wait_for("request", Duration::from_secs(10), || storage::read_yield(&cfg, "a").unwrap().is_some());
+    // The slow PC yields (lock released); the fast one picks `a`, its child ends with 75.
+    lock.release().unwrap();
+    wait_for("child ran", Duration::from_secs(10), || calls.load(Ordering::SeqCst) >= 1);
+    stop.store(true, Ordering::SeqCst);
+    w.join().unwrap();
+    assert!(storage::read_yield(&cfg, "a").unwrap().is_none(), "request left behind: {:?}", notes.lock().unwrap());
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 060-R6 (must-fix): a training child whose stderr pipe closed (watchdog killed hard) keeps
+/// running through `elog!` instead of panicking on EPIPE like `eprintln!`. The test runs itself
+/// as a child with stderr piped and the read end closed at once.
+#[test]
+fn logging_survives_a_closed_stderr_060_r6() {
+    const MODE: &str = "URANIUM_ELOG_CHILD";
+    if let Ok(mode) = std::env::var(MODE) {
+        let marker = std::path::PathBuf::from(std::env::var("URANIUM_ELOG_MARKER").unwrap());
+        std::thread::sleep(Duration::from_millis(300)); // the parent closes the pipe meanwhile
+        for i in 0..2000 {
+            if mode == "elog" {
+                uranium_train::elog!("line {i} after the watchdog died");
+            } else {
+                eprintln!("line {i} after the watchdog died");
+            }
+        }
+        std::fs::write(&marker, b"saved").unwrap(); // stands for save, push, release
+        return;
+    }
+    let root = tmp("elog");
+    let run = |mode: &str| -> (bool, bool) {
+        let marker = root.join(format!("marker-{mode}"));
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "logging_survives_a_closed_stderr_060_r6", "--nocapture", "--test-threads=1"])
+            .env(MODE, mode)
+            .env("URANIUM_ELOG_MARKER", &marker)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        drop(child.stderr.take()); // the watchdog is gone
+        let ok = child.wait().unwrap().success();
+        (ok, marker.exists())
+    };
+    assert_eq!(run("elog"), (true, true), "elog! must not stop the child");
+    // Control: plain eprintln! panics on the closed pipe before the "save".
+    assert_eq!(run("eprintln").1, false, "eprintln! was expected to fail on a closed stderr");
     std::fs::remove_dir_all(&root).ok();
 }
 

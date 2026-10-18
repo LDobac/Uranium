@@ -184,11 +184,11 @@ impl InferenceHandle {
                 CoreKind::Gtrxl => serve::<GtrxlCore>(&dir, sample, opts, rx, ready_tx),
             };
             if let Err(e) = res {
-                eprintln!("[infer] server for {} stopped: {e:#}", dir.display());
+                elog!("[infer] server for {} stopped: {e:#}", dir.display());
             }
         })?;
         ready_rx.recv().map_err(|_| anyhow!("inference thread exited while loading"))??;
-        eprintln!("[infer] {id} ready ({:?}, {sample:?}, {kind:?}, max_batch {}, capacity {})", opts.backend, opts.max_batch, opts.capacity);
+        elog!("[infer] {id} ready ({:?}, {sample:?}, {kind:?}, max_batch {}, capacity {})", opts.backend, opts.max_batch, opts.capacity);
         Ok(Self { tx, checkpoint_id: id.into(), sample })
     }
 
@@ -352,7 +352,7 @@ fn run_batch<C: CoreInit>(net: &UraniumNet<C>, cols: &ActionColumns, device: &De
         // 011-AC7: OpenBW drops a LAN client after 60 s without sync, so a stall here ends the
         // game early with both sides claiming the win. Log it with wall time to line it up.
         let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        eprintln!("[infer] slow batch: {b} requests took {:.1}s (unix {unix})", run.as_secs_f64());
+        elog!("[infer] slow batch: {b} requests took {:.1}s (unix {unix})", run.as_secs_f64());
     }
     for (r, p) in batch.into_iter().enumerate() {
         let a = action[r] as usize;

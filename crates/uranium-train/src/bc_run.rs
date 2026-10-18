@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -79,6 +79,8 @@ pub struct BcArgs {
     pub init: Option<PathBuf>,
     /// For the device log (061-R15): `cuda`, `vulkan` or `flex`.
     pub backend: String,
+    /// Ctrl+C state from [`crate::install_stop_handler`], installed before the dataset pull.
+    pub stop: Arc<AtomicUsize>,
 }
 
 /// How a `bc` run ended (the process exit code, see `main`).
@@ -109,8 +111,6 @@ fn precision(backend: &str) -> &'static str {
     }
 }
 
-const STOP_NONE: usize = 0;
-const STOP_CLEAN: usize = 1;
 
 /// 061-R13 (H-1): the `--init` weights. A 061 run folder (it has `LATEST` or `DONE`) must be
 /// finished: its `DONE` names the final checkpoint. A run still training (or given up) is
@@ -153,6 +153,12 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
         Ok((net, meta.net_config()?))
     };
 
+    // 042-R10 / 060-R6: Ctrl+C (or the watchdog's death) before the lock: nothing to release.
+    let stop = args.stop.clone();
+    if crate::stopping(&stop) {
+        crate::elog!("[bc] Ctrl+C before start: not started");
+        return Ok(BcExit::Stopped);
+    }
     // 061-R13 (H-1): checked before the lock is taken, so a refusal leaves no lock behind.
     let init_dir = args.init.as_deref().map(resolve_init).transpose()?;
     // 061-R3 / R5: a run takes the lock and resumes from LATEST (or an unpushed local checkpoint).
@@ -171,7 +177,7 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
                 }
                 Ok(Some(_)) => {
                     if let Err(e) = crate::storage::clear_yield(&r.cfg, id) {
-                        eprintln!("[bc] could not remove this host's yield request on {id} ({e:#}); it expires after 30 min (061-R14)");
+                        crate::elog!("[bc] could not remove this host's yield request on {id} ({e:#}); it expires after 30 min (061-R14)");
                     }
                 }
                 Ok(None) => {}
@@ -184,10 +190,25 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
         }
         BcOut::Local(_) => None,
     };
-    let resume_dir = match &mut run {
-        Some(r) => r.begin()?.map(|res| res.dir),
+    let begun = run.as_mut().map(|r| r.begin());
+    let resume_dir = match begun {
+        Some(Ok(res)) => res.map(|res| res.dir),
+        Some(Err(e)) if e.downcast_ref::<crate::Interrupted>().is_some() => {
+            crate::elog!("[bc] {e:#}; releasing the lock (042-R10)");
+            run.take().expect("run mode").release()?;
+            return Ok(BcExit::Stopped);
+        }
+        Some(Err(e)) => return Err(e),
         None => args.resume.clone(),
     };
+    // 042-R10: Ctrl+C during the start: release before loading anything (nothing new to save).
+    if crate::stopping(&stop)
+        && let Some(r) = run.take()
+    {
+        crate::elog!("[bc] Ctrl+C during start: releasing the lock, nothing to save (042-R10)");
+        r.release()?;
+        return Ok(BcExit::Stopped);
+    }
     let (net, net_cfg) = match (&resume_dir, &args.init) {
         (Some(d), _) => load(d)?,
         (None, Some(_)) => load(init_dir.as_ref().expect("resolved above"))?,
@@ -211,12 +232,12 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
             // 061-R10: continue the data where the checkpoint was taken.
             let data = t.data.clone();
             t.feeder.restore(&data, &mut src)?;
-            eprintln!("{}", serde_json::json!({ "resumed": dir, "step": t.step, "games": data.games, "source": data.source }));
+            crate::elog!("{}", serde_json::json!({ "resumed": dir, "step": t.step, "games": data.games, "source": data.source }));
         } else {
-            eprintln!("{}: no training state (older checkpoint); weights only, fresh optimizer", dir.display());
+            crate::elog!("{}: no training state (older checkpoint); weights only, fresh optimizer", dir.display());
         }
     }
-    eprintln!("{}", serde_json::json!({ "stage": format!("{:?}", args.stage), "total_steps": total, "stop_at": stop_at, "lr_scale": t.lr_scale }));
+    crate::elog!("{}", serde_json::json!({ "stage": format!("{:?}", args.stage), "total_steps": total, "stop_at": stop_at, "lr_scale": t.lr_scale }));
     let device_log = |r: &Option<Run>, line: serde_json::Value| {
         if let Some(r) = r {
             crate::storage::log_device(&r.cfg, &r.run_id, line);
@@ -226,19 +247,6 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
         &run,
         serde_json::json!({ "event": "start", "step": t.step, "backend": args.backend, "precision": precision(&args.backend), "core": format!("{:?}", args.core), "stage": format!("{:?}", args.stage) }),
     );
-
-    // 042-R10 style: first Ctrl+C = save and stop, second = exit now.
-    let stop = Arc::new(AtomicUsize::new(STOP_NONE));
-    {
-        let stop = stop.clone();
-        ctrlc::set_handler(move || {
-            if stop.fetch_add(1, Ordering::SeqCst) >= STOP_CLEAN {
-                eprintln!("[bc] second Ctrl+C: exiting without saving");
-                std::process::exit(130);
-            }
-            eprintln!("[bc] Ctrl+C: saving a checkpoint after this update");
-        })?;
-    }
 
     // Nothing to save when no update happens (resumed at or past the stop point).
     let start_step = t.step;
@@ -251,15 +259,15 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
     // 061-R14 ②: a yield whose checkpoint push was deferred waits for the next pushed one.
     let mut yield_waiting = false;
     let mut saved_at: Option<usize> = None;
-    while t.step < stop_at && stop.load(Ordering::SeqCst) < STOP_CLEAN {
+    while t.step < stop_at && !crate::stopping(&stop) {
         let Some(batch) = data.next()? else {
             exhausted = true;
-            eprintln!("data exhausted after {} updates (end of the epoch)", t.step);
+            crate::elog!("data exhausted after {} updates (end of the epoch)", t.step);
             break;
         };
         let started = Instant::now();
         let l = t.train_batch(batch)?;
-        eprintln!(
+        crate::elog!(
             "{}",
             serde_json::json!({ "step": t.step, "loss": l, "games": t.games(), "invalid_labels": t.invalid_labels(), "secs": (started.elapsed().as_secs_f64() * 100.0).round() / 100.0 })
         );
@@ -270,11 +278,11 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
             match r.heartbeat() {
                 LockStatus::Held => {}
                 LockStatus::Lost(l) => {
-                    eprintln!("[bc] lock lost to {l:?}: stopping without a push (061-R5)");
+                    crate::elog!("[bc] lock lost to {l:?}: stopping without a push (061-R5)");
                     lock_lost = true;
                     break;
                 }
-                LockStatus::Unreachable(e) => eprintln!("[bc] heartbeat: share unreachable ({e}), continuing (061-R11-3)"),
+                LockStatus::Unreachable(e) => crate::elog!("[bc] heartbeat: share unreachable ({e}), continuing (061-R11-3)"),
             }
         }
         if t.step % every == 0 || (!every_time.is_zero() && last_ckpt.elapsed() >= every_time) {
@@ -284,7 +292,7 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
                     saved_at = Some(t.step);
                 }
                 Some(PushOutcome::LockLost(l)) => {
-                    eprintln!("[bc] lock lost to {l:?}: stopping without a push (061-R11-4)");
+                    crate::elog!("[bc] lock lost to {l:?}: stopping without a push (061-R11-4)");
                     lock_lost = true;
                     break;
                 }
@@ -295,17 +303,20 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
         // 061-R14: another host asked for this run: checkpoint, push, release, leave. If the push
         // is deferred (share unreachable, R11-3), keep the lock and train on; yield after the
         // next checkpoint that is pushed (R14 ②).
-        if let Some(r) = &run
-            && let Some(req) = crate::storage::yield_by_other(&r.cfg, &r.run_id)
-        {
+        let request = run.as_ref().and_then(|r| crate::storage::yield_by_other(&r.cfg, &r.run_id));
+        if request.is_none() && yield_waiting {
+            // The request was withdrawn or removed as expired: a new one starts over.
+            yield_waiting = false;
+        }
+        if let Some(req) = request {
             if saved_at == Some(t.step) {
-                eprintln!("[bc] yield requested by {} (priority {}): checkpoint pushed, releasing (061-R14)", req.host, req.priority);
+                crate::elog!("[bc] yield requested by {} (priority {}): checkpoint pushed, releasing (061-R14)", req.host, req.priority);
                 yielded = true;
                 break;
             }
             if !yield_waiting {
                 yield_waiting = true;
-                eprintln!("[bc] yield requested by {} (priority {}): checkpoint and release (061-R14)", req.host, req.priority);
+                crate::elog!("[bc] yield requested by {} (priority {}): checkpoint and release (061-R14)", req.host, req.priority);
                 match save(&t, &args, &mut run, false)? {
                     Some(PushOutcome::Pushed) => {
                         device_log(&run, serde_json::json!({ "event": "checkpoint", "step": t.step }));
@@ -314,11 +325,11 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
                         break;
                     }
                     Some(PushOutcome::LockLost(l)) => {
-                        eprintln!("[bc] lock lost to {l:?}: stopping without a push (061-R11-4)");
+                        crate::elog!("[bc] lock lost to {l:?}: stopping without a push (061-R11-4)");
                         lock_lost = true;
                         break;
                     }
-                    other => eprintln!("[bc] yield: push {other:?}; keeping the lock and training on, yielding after the next pushed checkpoint (061-R14 ②)"),
+                    other => crate::elog!("[bc] yield: push {other:?}; keeping the lock and training on, yielding after the next pushed checkpoint (061-R14 ②)"),
                 }
                 last_ckpt = Instant::now();
             }
@@ -328,14 +339,17 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
         device_log(&run, serde_json::json!({ "event": "stop", "step": t.step, "reason": "lock lost" }));
         return Ok(BcExit::LockLost);
     }
+    let finished = exhausted || t.step >= stop_at;
     // A yield leaves the loop only right after a pushed checkpoint (061-R14 ②), so it lands here.
-    let pushed = if (t.step == start_step && resume_dir.is_some()) || saved_at == Some(t.step) {
-        eprintln!("[bc] step {} is already the last checkpoint: nothing more to save", t.step);
+    // No update in this session (resumed at the stop point, or stopped before the first update):
+    // nothing new to save; a run then just releases its lock.
+    let no_update = t.step == start_step && (resume_dir.is_some() || (run.is_some() && !finished));
+    let pushed = if no_update || saved_at == Some(t.step) {
+        crate::elog!("[bc] step {} is already saved: nothing more to save", t.step);
         Some(PushOutcome::Pushed)
     } else {
         save(&t, &args, &mut run, true)?
     };
-    let finished = exhausted || t.step >= stop_at;
     let reason = if yielded {
         "yield"
     } else if finished {
@@ -353,11 +367,11 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
                 }
                 r.release()?
             }
-            other => eprintln!("[bc] final push {other:?}: keeping the lock so the next start recovers it (061-R11-5/6)"),
+            other => crate::elog!("[bc] final push {other:?}: keeping the lock so the next start recovers it (061-R11-5/6)"),
         }
     }
     if finished {
-        eprintln!("{}", serde_json::json!({ "done": true, "step": t.step, "games": t.games() }));
+        crate::elog!("{}", serde_json::json!({ "done": true, "step": t.step, "games": t.games() }));
     }
     Ok(if yielded {
         BcExit::Yielded
@@ -384,7 +398,7 @@ fn save<C: CoreInit>(t: &Trainer<C>, args: &BcArgs, run: &mut Option<Run>, last:
             ckpt::copy_configs(&dir, &[&args.config])?;
             r.seal(step)?;
             let out = r.push(step)?;
-            eprintln!("[bc] checkpoint {} {:?}", crate::storage::ckpt_name(step), out);
+            crate::elog!("[bc] checkpoint {} {:?}", crate::storage::ckpt_name(step), out);
             if out == PushOutcome::Pushed {
                 r.prune()?;
             }

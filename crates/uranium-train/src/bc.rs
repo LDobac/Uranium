@@ -635,7 +635,7 @@ impl Prof {
             return;
         }
         let m: serde_json::Map<String, serde_json::Value> = self.spent.iter().map(|(p, s)| (p.to_string(), serde_json::json!((s * 1000.0).round() / 1000.0))).collect();
-        eprintln!("{}", serde_json::json!({ "profile_step": step, "secs": m }));
+        crate::elog!("{}", serde_json::json!({ "profile_step": step, "secs": m }));
     }
 }
 

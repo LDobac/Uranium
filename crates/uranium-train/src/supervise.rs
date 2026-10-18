@@ -181,7 +181,10 @@ impl Watch {
 /// terminal Ctrl+C does not reach it twice (process group + forwarding: the second one would exit
 /// 130 without saving). Linux: `PR_SET_PDEATHSIG` = SIGINT, so a watchdog killed hard (SIGKILL)
 /// does not leave an orphan that keeps the run lock's heartbeat alive; the child then saves,
-/// pushes and releases as on Ctrl+C. The signal follows the spawning *thread*: children are
+/// pushes and releases as on Ctrl+C. Its stderr pipe to the dead watchdog is closed by then, so
+/// `bc` / `rl` log through `elog!`, which ignores write errors (`eprintln!` would panic on EPIPE
+/// and skip the save); their output after that point is lost. The signal follows the spawning
+/// *thread*: children are
 /// started from the watchdog's main loop thread. Windows: unchanged (same console, Ctrl+C reaches
 /// the child directly; closing the console ends both).
 pub fn child_command(exe: &std::path::Path) -> Command {

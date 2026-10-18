@@ -3,6 +3,16 @@
 //! chosen from the routing table (020-R11). Used by the `uranium-agent` binary and embedded by the
 //! `uranium-env` scheduler (crate `uranium-runner`, 020).
 
+/// `eprintln!` that never panics: inside `uranium-train rl` this runs in a training child whose
+/// stderr is a pipe to its watchdog; when the watchdog is killed hard the pipe closes and
+/// `eprintln!` would panic (EPIPE) instead of letting the run save, push and release (060-R6).
+macro_rules! elog {
+    ($($t:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($t)*);
+    }};
+}
+
 pub mod infer;
 pub mod model_policy;
 pub mod summary;
@@ -262,7 +272,7 @@ fn visibility_violations(f: &RawFrame, me: u8) -> u64 {
             let seen = (y0..=y0 + h as i32 + 1).any(|ty| (x0..=x0 + w as i32 + 1).any(|tx| tx >= 0 && ty >= 0 && f.visibility.get(tx as u16, ty as u16)));
             let hidden = (u.has(flags::CLOAKED) || u.has(flags::BURROWED)) && !u.has(flags::DETECTED);
             if (!seen || hidden) && std::env::var("URANIUM_AGENT_DEBUG_VIS").is_ok() {
-                eprintln!("[vis] frame {} slot {me} unit {} type {} owner {} pos {:?} flags {:#x} seen {seen} hidden {hidden}", f.frame, u.id, u.unit_type, u.owner, u.pos, u.flags);
+                elog!("[vis] frame {} slot {me} unit {} type {} owner {} pos {:?} flags {:#x} seen {seen} hidden {hidden}", f.frame, u.id, u.unit_type, u.owner, u.pos, u.flags);
             }
             !seen || hidden
         })
@@ -286,7 +296,7 @@ pub fn load_env() {
     };
     if let Err(e) = res {
         if !e.not_found() {
-            eprintln!("warning: failed to load .env: {e}");
+            elog!("warning: failed to load .env: {e}");
         }
     }
 }
@@ -325,7 +335,7 @@ pub fn open_sink(out: &Path) -> Result<RecordSink> {
 
 pub fn serve_addr(listen: &str, opts: ServeOptions, out: PathBuf) -> Result<()> {
     let listener = TcpListener::bind(listen).with_context(|| format!("binding {listen}"))?;
-    eprintln!("[agent] listening on {listen}");
+    elog!("[agent] listening on {listen}");
     serve(listener, opts, open_sink(&out)?)
 }
 
@@ -388,7 +398,7 @@ pub fn session(stream: TcpStream, opts: &ServeOptions) -> SessionRecord {
         error: None,
     };
     if let Err(e) = run_session(stream, opts, &mut rec) {
-        eprintln!("[agent] game {} slot {}: {e:#}", rec.game_id, rec.slot);
+        elog!("[agent] game {} slot {}: {e:#}", rec.game_id, rec.slot);
         rec.error = Some(format!("{e:#}"));
     }
     rec.wall_s = started.elapsed().as_secs_f64();
@@ -411,7 +421,7 @@ fn run_session(stream: TcpStream, opts: &ServeOptions, rec: &mut SessionRecord) 
     rec.map_hash = info.map_hash.iter().map(|b| format!("{b:02x}")).collect();
     rec.self_race = info.players.iter().find(|p| p.is_self).map(|p| format!("{:?}", p.race)).unwrap_or_default();
     rec.enemy_race = info.players.iter().find(|p| p.is_enemy).map(|p| format!("{:?}", p.race)).unwrap_or_default();
-    eprintln!("[agent] game {} slot {} on {:?} ({} start locations)", hello.game_id, hello.slot, info.map_name, info.static_map.start_locations.len());
+    elog!("[agent] game {} slot {} on {:?} ({} start locations)", hello.game_id, hello.slot, info.map_name, info.static_map.start_locations.len());
     // 020-R11 / 050: policies and T0 builds are registered by `GameSpec.players` index; the BWAPI
     // player id (`Hello.slot`) need not follow launch order, so it comes from the player name.
     let index = spec_index(&info, hello.slot);

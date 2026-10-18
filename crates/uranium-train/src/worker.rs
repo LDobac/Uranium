@@ -199,10 +199,14 @@ fn look<'a>(cfg: &StorageConfig, r: &'a QueueRun, skip: &HashMap<String, Instant
 /// (061-R14). Only runs a worker trains are targets: the holder's `workers/<host>.json` must name
 /// that run. A run started by hand (`bc --run`, no worker state) is never asked (user decision
 /// 2026-10-19). None when a request of this host is already pending. Runs whose state cannot be
-/// read are skipped (per run); `Err` = the share is unreachable.
-pub fn preempt_target<'a>(cfg: &StorageConfig, q: &'a Queue, priority: i32) -> Result<Option<&'a QueueRun>> {
+/// read are skipped (per run), and so are runs this worker gave up on for now (`skip`): it would
+/// not take them either. `Err` = the share is unreachable.
+pub fn preempt_target<'a>(cfg: &StorageConfig, q: &'a Queue, priority: i32, skip: &HashMap<String, Instant>) -> Result<Option<&'a QueueRun>> {
     storage::probe_share(cfg)?;
     for r in &q.run {
+        if skip.get(&r.id).is_some_and(|t| t.elapsed() < GIVE_UP_SKIP) {
+            continue;
+        }
         let target = (|| -> Result<Option<bool>> {
             if storage::is_done(cfg, &r.id)? {
                 return Ok(None);
@@ -257,30 +261,48 @@ impl Once {
 /// The worker loop over any launcher; returns when Ctrl+C was pressed (`stop()` true). Shared
 /// drive errors never end it (061-R13, H-2).
 pub fn work<L: Launcher>(cfg: &StorageConfig, a: &WorkerArgs, launcher: &L, stop: &dyn Fn() -> bool, note: &dyn Fn(&str), wait: &dyn Fn(Duration) -> bool) -> Result<()> {
+    // 061-R5: expiry watching restarts after a gap longer than stale_after / 2, so a slower poll
+    // would never see a lock expire.
+    anyhow::ensure!(
+        a.poll < cfg.stale_after / 2,
+        "--poll-seconds ({} s) must be shorter than half the lock expiry ({} s) (061-R5)",
+        a.poll.as_secs_f64(),
+        (cfg.stale_after / 2).as_secs()
+    );
     // `checkpoints/` marks a reachable share (storage::probe_share); never the root itself.
     let _ = std::fs::create_dir(cfg.shared.join("checkpoints"));
+    // The current run; the mutex also serialises every status write (061-R13).
     let current: Mutex<Option<String>> = Mutex::new(None);
     let finished = AtomicBool::new(false);
+    let write_status = |run: Option<&str>| {
+        let mut cur = current.lock().unwrap();
+        *cur = run.map(str::to_string);
+        let _ = storage::write_worker(cfg, a.priority, &a.backend, cur.as_deref());
+    };
     std::thread::scope(|s| {
         // 061-R13: the status file every `status_every`, while a child trains as well.
         s.spawn(|| {
             let mut last: Option<Instant> = None;
             while !finished.load(Ordering::SeqCst) {
                 if last.is_none_or(|t| t.elapsed() >= a.status_every) {
-                    let run = current.lock().unwrap().clone();
-                    let _ = storage::write_worker(cfg, a.priority, &a.backend, run.as_deref());
+                    let cur = current.lock().unwrap();
+                    let _ = storage::write_worker(cfg, a.priority, &a.backend, cur.as_deref());
+                    drop(cur);
                     last = Some(Instant::now());
                 }
                 std::thread::sleep(Duration::from_millis(50).min(a.status_every));
             }
         });
-        let set_current = |r: Option<&str>| {
-            *current.lock().unwrap() = r.map(str::to_string);
-            let _ = storage::write_worker(cfg, a.priority, &a.backend, r);
-        };
-        let res = work_loop(cfg, a, launcher, stop, note, wait, &set_current);
-        finished.store(true, Ordering::SeqCst);
-        set_current(None);
+        /// Ends the status thread however the loop ends (a panic included), so the scope joins.
+        struct Finish<'a>(&'a AtomicBool);
+        impl Drop for Finish<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let _finish = Finish(&finished);
+        let res = work_loop(cfg, a, launcher, stop, note, wait, &write_status);
+        write_status(None);
         res
     })
 }
@@ -348,7 +370,7 @@ fn work_loop<L: Launcher>(
             }
         };
         let Some(Pick { run: r, take }) = picked else {
-            let target = if a.preempt { preempt_target(cfg, &q, a.priority) } else { Ok(None) };
+            let target = if a.preempt { preempt_target(cfg, &q, a.priority, &skip) } else { Ok(None) };
             match target {
                 Ok(Some(t)) => {
                     // An earlier request of this host (expired by now) is withdrawn first.
@@ -371,6 +393,10 @@ fn work_loop<L: Launcher>(
             continue;
         };
         said.reset();
+        // 061-R14: the child that takes the run removes this host's request on it; if it ends
+        // without taking it (e.g. 75), the request is removed below, never left as a 30-min
+        // reservation.
+        let asked_for_it = my_request.as_deref() == Some(r.id.as_str());
         drop_request(&mut my_request, Some(&r.id));
         set_current(Some(&r.id));
         // Not watching other locks while training: observations restart afterwards (061-R5).
@@ -420,6 +446,9 @@ fn work_loop<L: Launcher>(
                     restarts.push(Instant::now());
                 }
             }
+        }
+        if asked_for_it && let Err(e) = storage::clear_yield(cfg, &r.id) {
+            note(&format!("could not remove this host's yield request on {} ({e:#}); workers drop it after 30 min (061-R14)", r.id));
         }
     }
     drop_request(&mut my_request, None);

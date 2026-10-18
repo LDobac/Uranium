@@ -3,6 +3,16 @@
 //! (020-R12): a matchup plan is a fixed queue (`QueueSource`), the RL league (042) picks each
 //! game when a host slot frees up. Used by the `uranium-env` binary and by `uranium-train rl`.
 
+/// `eprintln!` that never panics: inside `uranium-train rl` this runs in a training child whose
+/// stderr is a pipe to its watchdog; when the watchdog is killed hard the pipe closes and
+/// `eprintln!` would panic (EPIPE) instead of letting the run save, push and release (060-R6).
+macro_rules! elog {
+    ($($t:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($t)*);
+    }};
+}
+
 pub mod calibrate;
 pub mod plan;
 pub mod report;
@@ -96,7 +106,7 @@ impl JobSource for QueueSource {
         let (Some(dir), Some(bytes)) = (&self.replay_dir, replay) else { return };
         let path = dir.join(format!("g{}.rep", job.spec.game_id));
         if let Err(e) = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, bytes)) {
-            eprintln!("[env] could not write {}: {e}", path.display());
+            elog!("[env] could not write {}: {e}", path.display());
         }
     }
     fn left(&self) -> usize {
@@ -118,7 +128,7 @@ impl InFlight {
         for (id, w) in self.games.lock().unwrap().iter() {
             let mut w = w.lock().unwrap();
             if let Err(e) = write_msg(&mut *w, &ControlRequest::StopGame { game_id: *id }) {
-                eprintln!("[env] StopGame {id} failed: {e}");
+                elog!("[env] StopGame {id} failed: {e}");
             }
         }
     }
@@ -202,7 +212,7 @@ pub fn start_agent(listen: &str, results: &Path, routes: Routes, t0_builds: T0Bu
     let sink = open_sink(results)?;
     std::thread::spawn(move || {
         if let Err(e) = serve(listener, ServeOptions { routes, t0_builds, ends, ..ServeOptions::new(PolicySpec::ScriptedT0) }, sink) {
-            eprintln!("[env] agent server stopped: {e:#}");
+            elog!("[env] agent server stopped: {e:#}");
         }
     });
     Ok(public)
@@ -228,12 +238,12 @@ pub fn run_source(source: Arc<dyn JobSource>, hosts: &[HostEntry], games_path: &
         let caps = match capabilities(&host.addr) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[env] WARNING: hostd {} unreachable, skipping it: {e:#}", host.addr);
+                elog!("[env] WARNING: hostd {} unreachable, skipping it: {e:#}", host.addr);
                 continue;
             }
         };
         let slots = host.max_games.map_or(caps.max_concurrent_games, |m| m.min(caps.max_concurrent_games));
-        eprintln!("[env] host {}: {:?}, {} slots, oss bots {:?}", host.addr, caps.os, slots, caps.oss_bots);
+        elog!("[env] host {}: {:?}, {} slots, oss bots {:?}", host.addr, caps.os, slots, caps.oss_bots);
         let ids: Arc<HashMap<String, String>> = Arc::new(caps.oss_bots.iter().map(|id| (id.split('@').next().unwrap_or(id).to_string(), id.clone())).collect());
         for _ in 0..slots {
             let (addr, src, g, d, ids, dispatch) = (host.addr.clone(), source.clone(), games_out.clone(), done.clone(), ids.clone(), dispatch.clone());
@@ -245,7 +255,7 @@ pub fn run_source(source: Arc<dyn JobSource>, hosts: &[HostEntry], games_path: &
     }
     for w in workers {
         if let Err(e) = w.join().expect("worker panicked") {
-            eprintln!("[env] worker failed: {e:#}");
+            elog!("[env] worker failed: {e:#}");
         }
     }
     games_out.lock().unwrap().flush()?;
@@ -313,7 +323,7 @@ fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter<std::fs::F
         match reply {
             ControlResponse::Started { .. } => {}
             ControlResponse::Rejected { reason } => {
-                eprintln!("[env] {addr} rejected game {}: {reason}", job.spec.game_id);
+                elog!("[env] {addr} rejected game {}: {reason}", job.spec.game_id);
                 if reason.contains("capacity") {
                     source.requeue(job);
                     std::thread::sleep(Duration::from_secs(2));
@@ -333,14 +343,14 @@ fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter<std::fs::F
         let fin = loop {
             match read_msg(&mut r) {
                 Ok(ControlResponse::Finished(f)) if f.game_id == job.spec.game_id => break f,
-                Ok(other) => eprintln!("[env] ignoring {other:?}"),
+                Ok(other) => elog!("[env] ignoring {other:?}"),
                 Err(e) => {
                     dispatch.inflight.games.lock().unwrap().remove(&job.spec.game_id);
                     // 020-R4: a game in flight on a lost host is Aborted, not silently dropped.
                     record(games, addr, &job, ids, &dispatch.models, JobOutcome::Aborted, Some(format!("hostd connection lost: {e}")), 0)?;
                     source.done(&job, JobOutcome::Aborted, None);
                     *done.lock().unwrap() += 1;
-                    eprintln!("[env] game {} Aborted: hostd {addr} lost", job.spec.game_id);
+                    elog!("[env] game {} Aborted: hostd {addr} lost", job.spec.game_id);
                     return Err(anyhow::Error::from(e).context(format!("hostd {addr} lost")));
                 }
             }
@@ -356,7 +366,7 @@ fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter<std::fs::F
         source.done(&job, outcome, fin.replay);
         let mut d = done.lock().unwrap();
         *d += 1;
-        eprintln!("[env] {} game {} {} ({}s)", *d, job.spec.game_id, outcome.as_str(), fin.wall_s);
+        elog!("[env] {} game {} {} ({}s)", *d, job.spec.game_id, outcome.as_str(), fin.wall_s);
     }
 }
 

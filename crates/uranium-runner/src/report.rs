@@ -30,7 +30,7 @@ fn model_info(side: &Side) -> Option<PolicyInfo> {
     match read_model_info(Path::new(checkpoint), *sample) {
         Ok(i) => Some(i),
         Err(e) => {
-            eprintln!("[env] WARNING: summary: model checkpoint {checkpoint} unreadable ({e:#}); its matchup is reported without per-policy rows");
+            elog!("[env] WARNING: summary: model checkpoint {checkpoint} unreadable ({e:#}); its matchup is reported without per-policy rows");
             None
         }
     }
