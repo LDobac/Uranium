@@ -89,7 +89,7 @@ impl StepSource for ShardSource {
     fn next_game(&mut self) -> Result<Option<ShardGame>> {
         while self.games.is_empty() {
             let Some(f) = self.files.pop_front() else { return Ok(None) };
-            let mut games = read(&f)?.games;
+            let mut games = read(&f).with_context(|| f.display().to_string())?.games;
             if let Some(sel) = self.select {
                 games.retain(|g| crate::split::selects(sel, &g.meta));
             }
