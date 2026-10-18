@@ -421,7 +421,8 @@ fn prereq_fail(a: &uranium_env::actions::Action, me: &uranium_proto::PlayerState
 
 pub fn label_check(game: &ShardGame, st: &mut LabelStats) -> Result<()> {
     let map = MapInfo::new(&game.game_info, family_index(&game.meta.map_family), map_precompute(&game.meta.map_hash).as_ref())?;
-    let mut mem = AgentMemory::new(&game.game_info);
+    // 030-R11: a lobby-Random enemy stays unknown until seen.
+    let mut mem = AgentMemory::with_lobby(&game.game_info, game.meta.enemy_random);
     let k = CAPABILITIES.len();
     let mut prev: Option<&uranium_proto::PlayerState> = None;
     for s in &game.steps {
@@ -507,6 +508,26 @@ impl Rng {
     }
 }
 
+/// 030-R11 BC exception (user decision 2026-10-19): whether this game's enemy race is masked as
+/// `unknown` until first seen. Per game and deterministic: a hash of the replay SHA-256 and the
+/// data seed (not the data RNG stream, so resume and the other data choices are unaffected),
+/// true for a `ratio` share of games.
+pub fn enemy_race_masked(replay_sha256: &str, seed: u64, ratio: f64) -> bool {
+    if ratio <= 0.0 {
+        return false;
+    }
+    // FNV-1a over the hash text, then a splitmix64 finaliser with the seed.
+    let mut h: u64 = 0xCBF2_9CE4_8422_2325;
+    for b in replay_sha256.bytes() {
+        h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    let mut z = h ^ seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0x5241_4345_4D41_534B;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    ((z >> 11) as f64 / (1u64 << 53) as f64) < ratio
+}
+
 /// Feature extraction over one game in order (memory carries across steps), producing training
 /// steps a chunk at a time so only the current BPTT window is held in memory (041-R2: a whole
 /// game of spatial features is gigabytes). `z_present` and `sym` are chosen by the caller (041-R8,
@@ -526,11 +547,26 @@ pub struct GameStream {
 impl GameStream {
     pub fn new(game: ShardGame, z_present: bool, sym: Sym) -> Result<Self> {
         let map = MapInfo::new(&game.game_info, family_index(&game.meta.map_family), map_precompute(&game.meta.map_hash).as_ref())?;
-        let mem = AgentMemory::new(&game.game_info);
+        // 030-R11: a lobby-Random enemy (shard `enemy_random`) stays unknown until seen. Replay
+        // headers store the played race, so in BC data this is rarely set; `mask_enemy_race` (5% of
+        // games) is what teaches the `unknown` input.
+        let mem = AgentMemory::with_lobby(&game.game_info, game.meta.enemy_random);
         let z = z_present.then(|| replay_z(&game));
         let zero_priv = PrivilegedTensors { summary: vec![0.0; dims().privileged()] };
         let result = game.meta.result as f32;
         Ok(Self { game, map, mem, z, sym, pos: 0, zero_priv, result })
+    }
+
+    /// 030-R11 BC exception (user decision 2026-10-19, 5%): when [`enemy_race_masked`] picks this
+    /// game, the enemy race is `unknown` until the first enemy unit is observed, whatever the
+    /// lobby race. The game itself is used as usual (no copy): 5% of games change, the data size
+    /// does not. Call before the first step.
+    pub fn with_race_mask(mut self, ratio: f64, seed: u64) -> Self {
+        debug_assert_eq!(self.pos, 0, "race mask after the first step");
+        if enemy_race_masked(&self.game.meta.replay_sha256, seed, ratio) {
+            self.mem.enemy_race = uranium_proto::Race::Unknown;
+        }
+        self
     }
 
     /// Steps not yet produced.

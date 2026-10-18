@@ -129,6 +129,32 @@ fn labels_convert_and_survive_symmetry_041() {
     assert!(!prepare(&g, false, Sym::IDENTITY).unwrap().steps[0].obs.obs.z_present);
 }
 
+/// 030-R11 (user decision 2026-10-19): about 5% of games, chosen per game from the replay hash and
+/// the data seed, see the enemy race as unknown until an enemy unit is seen; shard
+/// `enemy_random` does the same; other games keep the lobby race.
+#[test]
+fn enemy_race_mask_per_game_030_r11() {
+    use uranium_env::features::RACE_UNKNOWN;
+    use uranium_train::data::{GameStream, enemy_race_masked};
+    let shas: Vec<String> = (0..20_000u32).map(|i| format!("{:064x}", u64::from(i).wrapping_mul(0x9E37_79B9_7F4A_7C15))).collect();
+    let share = shas.iter().filter(|s| enemy_race_masked(s, 1, 0.05)).count() as f64 / shas.len() as f64;
+    assert!((0.04..0.06).contains(&share), "masked share {share}");
+    assert!(shas.iter().all(|s| enemy_race_masked(s, 1, 0.05) == enemy_race_masked(s, 1, 0.05)), "deterministic");
+    assert!(shas.iter().any(|s| enemy_race_masked(s, 1, 0.05) != enemy_race_masked(s, 2, 0.05)), "seed matters");
+    assert!(!enemy_race_masked(&shas[0], 1, 0.0) && enemy_race_masked(&shas[0], 1, 1.0));
+
+    let race = |g: &ShardGame, ratio: f64| {
+        let mut s = GameStream::new(g.clone(), false, Sym::IDENTITY).unwrap().with_race_mask(ratio, 1);
+        s.next_chunk(1).0[0].obs.obs.scalar_cat[0]
+    };
+    let g = game();
+    assert_eq!(race(&g, 0.0), 2, "Zerg from the lobby");
+    assert_eq!(race(&g, 1.0), RACE_UNKNOWN, "masked game");
+    let mut random = game();
+    random.meta.enemy_random = true;
+    assert_eq!(race(&random, 0.0), RACE_UNKNOWN, "lobby Random");
+}
+
 /// 034-R7 / E-4: a label selecting a building together with other units breaks the game's
 /// selection rule and is void (`select_building`); the building alone is fine.
 #[test]
@@ -226,7 +252,7 @@ fn tiny_bc(micro_lanes: usize, pad_entities: usize) -> BcConfig {
         s2_lr_scale: 0.1,
         heads: HeadWeights { action: 1.0, delay: 0.5, queued: 0.2, selected: 1.0, target_unit: 1.0, target_loc: 1.0 },
         value: ValueWeights { win: 0.5 },
-        data: DataConfig { z_drop: 0.0, augment: false, seed: 1, checkpoint_every: 1000, checkpoint_minutes: 0 },
+        data: DataConfig { z_drop: 0.0, augment: false, seed: 1, checkpoint_every: 1000, checkpoint_minutes: 0, enemy_race_mask: 0.0 },
     }
 }
 
@@ -275,7 +301,7 @@ fn warmup_cosine_schedule_041_r3() {
         s2_lr_scale: 0.1,
         heads: HeadWeights { action: 1.0, delay: 0.5, queued: 0.2, selected: 1.0, target_unit: 1.0, target_loc: 1.0 },
         value: ValueWeights { win: 0.5 },
-        data: DataConfig { z_drop: 0.25, augment: true, seed: 1, checkpoint_every: 1, checkpoint_minutes: 0 },
+        data: DataConfig { z_drop: 0.25, augment: true, seed: 1, checkpoint_every: 1, checkpoint_minutes: 0, enemy_race_mask: 0.5 },
     };
     assert!((cfg.lr_at(0, 1.0) - 1e-4).abs() < 1e-12);
     assert!((cfg.lr_at(9, 1.0) - 1e-3).abs() < 1e-12);

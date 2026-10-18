@@ -51,6 +51,9 @@ win = 0.5
 z_drop = 0.25
 # Random dihedral symmetry per game at load time (030-R4, 040-R7).
 augment = true
+# 030-R11 (user decision 2026-10-19): share of games whose enemy race is masked as unknown until
+# the first enemy unit is seen (per game, hash of replay sha256 + seed; no extra copies).
+enemy_race_mask = 0.05
 seed = 1
 checkpoint_every = 5000
 # Also checkpoint at least this often in wall time (061-R10; ~2 updates/min on CUDA).

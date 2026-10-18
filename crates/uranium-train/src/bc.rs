@@ -46,6 +46,14 @@ pub struct DataConfig {
     /// Checkpoint at least this often in wall time (0 = updates only).
     #[serde(default)]
     pub checkpoint_minutes: u64,
+    /// 030-R11 BC exception (user decision 2026-10-19): share of games whose enemy race is
+    /// `unknown` until first seen (per game, hash of replay SHA-256 + `seed`). Default 0.05.
+    #[serde(default = "default_enemy_race_mask")]
+    pub enemy_race_mask: f64,
+}
+
+fn default_enemy_race_mask() -> f64 {
+    0.05
 }
 
 /// Updates of one epoch per stage (041-R13, 2026-10-18: S1, S2 and ablation (A) train one epoch
@@ -180,6 +188,9 @@ pub struct Feeder {
     seq_len: usize,
     z_drop: f64,
     augment: bool,
+    /// 030-R11: `data.enemy_race_mask` and `data.seed`.
+    race_mask: f64,
+    seed: u64,
     games: usize,
     invalid_labels: usize,
     /// Fingerprint of the shard source (set on the first batch from it).
@@ -197,6 +208,8 @@ impl Feeder {
             seq_len: cfg.seq_len,
             z_drop: cfg.data.z_drop,
             augment: cfg.data.augment,
+            race_mask: cfg.data.enemy_race_mask,
+            seed: cfg.data.seed,
             games: 0,
             invalid_labels: 0,
             files: String::new(),
@@ -224,7 +237,8 @@ impl Feeder {
             let z_present = self.rng.unit() >= self.z_drop;
             let sym = if self.augment { Sym::augment()[(self.rng.next() % 4) as usize] } else { Sym::IDENTITY };
             self.games += 1;
-            self.lanes[i] = Lane { game: Some(GameStream::new(game, z_present, sym)?), id: src.last_id(), fresh: true };
+            let g = GameStream::new(game, z_present, sym)?.with_race_mask(self.race_mask, self.seed);
+            self.lanes[i] = Lane { game: Some(g), id: src.last_id(), fresh: true };
         }
         Ok(true)
     }
@@ -304,7 +318,7 @@ impl Feeder {
         for (lane, saved) in self.lanes.iter_mut().zip(st.lanes.iter().chain(std::iter::repeat(&None))) {
             *lane = Lane::empty();
             let Some(s) = saved else { continue };
-            let mut g = GameStream::new(src.game(s.id)?, s.z_present, Sym::augment()[s.sym as usize % 4])?;
+            let mut g = GameStream::new(src.game(s.id)?, s.z_present, Sym::augment()[s.sym as usize % 4])?.with_race_mask(self.race_mask, self.seed);
             g.advance_to(s.pos);
             if g.remaining() > 0 {
                 *lane = Lane { game: Some(g), id: Some(s.id), fresh: true };

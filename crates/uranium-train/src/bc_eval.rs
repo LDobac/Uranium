@@ -164,6 +164,8 @@ pub fn evaluate<C: CoreInit>(dirs: &[PathBuf], ckpt: &Path, split: Split, max_ga
     let mut ecfg = cfg.clone();
     ecfg.data.z_drop = 1.0;
     ecfg.data.augment = false;
+    // 030-R11: the race mask is a training-only exception; evaluation sees the real input.
+    ecfg.data.enemy_race_mask = 0.0;
     let mut feeder = Feeder::new(&ecfg);
     feeder.drain = true;
     let mut src = ShardSource::from_dirs(dirs)?.select(Selection::Only(split));
