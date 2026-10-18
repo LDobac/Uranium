@@ -65,10 +65,24 @@ pub fn read_meta(dir: &Path) -> Result<CheckpointMeta> {
 /// Rebuilds the net from `meta.json` and loads the weights. The caller passes the schema
 /// versions it was built with; a mismatch is an error (032-R6).
 pub fn load<C: CoreInit>(dir: &Path, columns: &ActionColumns, feature_version: u32, action_version: u32, device: &Device) -> Result<(UraniumNet<C>, CheckpointMeta)> {
-    let meta = read_meta(dir)?;
+    load_with(dir, columns, feature_version, action_version, device, |c| c)
+}
+
+/// `load` with the stored config adjusted before the net is built, for settings that have no
+/// weights (e.g. 032 §2: dropout 0.1 for BC, 0 for RL).
+pub fn load_with<C: CoreInit>(
+    dir: &Path,
+    columns: &ActionColumns,
+    feature_version: u32,
+    action_version: u32,
+    device: &Device,
+    adjust: impl FnOnce(UraniumNetConfig) -> UraniumNetConfig,
+) -> Result<(UraniumNet<C>, CheckpointMeta)> {
+    let mut meta = read_meta(dir)?;
     ensure!(meta.feature_version == feature_version, "feature schema {} != {}", meta.feature_version, feature_version);
     ensure!(meta.action_version == action_version, "action schema {} != {}", meta.action_version, action_version);
-    let cfg = meta.net_config()?;
+    let cfg = adjust(meta.net_config()?);
+    meta.config = serde_json::to_value(&cfg)?;
     ensure!(cfg.core.kind == C::KIND, "checkpoint core {:?} != requested {:?}", cfg.core.kind, C::KIND);
     let mut net = UraniumNet::<C>::new(&cfg, columns, device);
     let mut store = BurnpackStore::from_file(dir.join(WEIGHTS_FILE));

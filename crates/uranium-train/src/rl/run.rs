@@ -403,15 +403,15 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
     // 061-R3 / R5: lock the run, recover or pull LATEST.
     let mut run = Run::acquire(StorageConfig::from_env()?, &args.run, args.take_over)?;
     let resume = run.begin()?;
-    let (bc, _) = checkpoint::load::<C>(&args.bc, &cols, fv, av, &ad).context("loading the BC checkpoint (042 start / KL reference)")?;
-    let net_cfg = checkpoint::read_meta(&args.bc)?.net_config()?;
+    let (bc, bc_meta) = checkpoint::load_with::<C>(&args.bc, &cols, fv, av, &ad, rl_config).context("loading the BC checkpoint (042 start / KL reference)")?;
+    let net_cfg = bc_meta.net_config()?;
 
     let mut learners: Vec<Learner<C>> = Vec::new();
     for a in AgentKind::ALL {
         let mut l = Learner::new(bc.clone(), bc.clone(), net_cfg.clone(), cfg.clone(), args.algo, ad.clone());
         if let Some(r) = &resume {
             let dir = ckpt::agent_dir(&r.dir, a.name())?;
-            let (net, meta) = checkpoint::load::<C>(&dir, &cols, fv, av, &ad)?;
+            let (net, meta) = checkpoint::load_with::<C>(&dir, &cols, fv, av, &ad, rl_config)?;
             l.net = net;
             l.update = meta.train["update"].as_u64().unwrap_or(0);
             if ckpt::has_optimizer(&r.dir, a.name()) {
@@ -623,6 +623,13 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
     Ok(())
 }
 
+/// 032 §2: dropout 0 in RL (0.1 is the BC setting). The actors run without dropout, so a
+/// learner with dropout would see π ≠ μ even on-policy (V-trace ρ, KL to π_BC).
+fn rl_config(mut c: uranium_model::UraniumNetConfig) -> uranium_model::UraniumNetConfig {
+    c.entity.dropout = 0.0;
+    c
+}
+
 /// Snapshot folder name (061-R9 forbids `/` and `@`): `<agent>-<run>-<update>`.
 pub fn snapshot_name(id: &str) -> String {
     id.trim_start_matches("uranium-").replace(['@', '/'], "-")
@@ -696,6 +703,13 @@ mod tests {
     fn rl_toml_lists_t1_bots_021() {
         let bots = cfg_t1(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/rl.toml"))).unwrap();
         assert!(bots.iter().any(|b| b.name == "zzzkbot" && b.races == vec![Race::Zerg]));
+    }
+
+    /// 032 §2: RL nets are built without dropout.
+    #[test]
+    fn rl_nets_have_no_dropout_032() {
+        let c = rl_config(uranium_model::UraniumNetConfig::new());
+        assert_eq!(c.entity.dropout, 0.0);
     }
 
     #[test]
