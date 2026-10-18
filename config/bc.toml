@@ -15,6 +15,7 @@ pad_entities = 64
 lr = 3e-4
 min_lr = 3e-6
 warmup_steps = 2000
+# Schedule length when no stage length applies (smoke runs). `bc` uses [steps] below.
 total_steps = 500000
 weight_decay = 1e-4
 grad_clip = 1.0
@@ -29,6 +30,14 @@ selected = 1.0
 target_unit = 1.0
 target_loc = 1.0
 
+[steps]
+# 041-R14 (2026-10-18): S1, S2 and ablation (A) train one epoch each; the cosine schedule ends
+# there. Counted by `uranium-train bc-epoch` on the four sources after the 96 added views
+# (35,966 games: S1 32,863 / S2 7,201) with lanes 32, seq_len 64, data.seed 1.
+s1 = 36985
+s2 = 7915
+ablation_a = 7915
+
 [value]
 # win head MSE weight (041-R7)
 win = 0.5
@@ -40,3 +49,5 @@ z_drop = 0.25
 augment = true
 seed = 1
 checkpoint_every = 5000
+# Also checkpoint at least this often in wall time (061-R10; ~2 updates/min on CUDA).
+checkpoint_minutes = 60

@@ -2,7 +2,90 @@
 
 대규모 배치 전 점검 규칙에 따라 BC(041) 본학습 경로를 표본으로 끝까지 돌렸다. 본학습은 시작하지 않았다.
 
-## 결론
+## 2차: 본학습 준비 (2026-10-18 오후, 사용자 결정 반영)
+
+이 절의 내용이 아래 1차의 "예상 시간", "실행 명령", "남은 결정"을 대신한다.
+
+### 반영한 결정과 구현
+- **학습 길이(041-R14):** S1, S2, ablation (A)를 각각 1 epoch만 학습한다. cosine 스케줄 길이는 그 update 수와 같다.
+  - `uranium-train bc-epoch`가 트레이너와 같은 레인 진행으로 update 수를 센다. 1 epoch = S1 36,985 update(32,863게임, 74.76M 결정), S2와 (A) 각 7,915 update(7,201게임, 16.03M 결정). 레인 32, T64, seed 1 기준이다.
+  - 이 값을 `config/bc.toml` `[steps]`에 넣었다. 게임 수는 96개 추가 후 집계(S1 32,863 / S2 7,201)와 같다.
+  - 데이터셋 순서를 인자 순서와 무관하게 정렬한다. 파일 안 셔플 seed는 파일 순번에서 만들어, 재개 때 앞 파일을 읽지 않고 위치를 찾는다.
+- **장기 실행 안전장치(결정 불필요분):**
+  - `bc --run <id>`는 061 run으로 동작한다: 잠금, heartbeat, push, 시작 시 `LATEST`에서 재개.
+  - 체크포인트에 데이터 위치를 넣는다: 레인별 게임·진행 step·z·대칭, 다음 shard 위치, 데이터 RNG, shard 목록 지문.
+  - 체크포인트는 `checkpoint_minutes = 60`마다 저장하고, Ctrl+C는 저장 후 종료한다.
+- **출력에 영향 없는 최적화:** feature 추출과 shard 읽기를 별도 스레드가 다음 batch로 미리 만든다(`Prefetch`, batch 순서 동일, 테스트로 확인).
+- **오프라인 평가 명령:** `uranium-train bc-eval`을 추가했다.
+
+### 프로파일 (`URANIUM_BC_PROFILE=1`, 구간마다 device sync)
+
+| 구간 | CUDA (이 PC) | Vulkan f32 (bc250_1) |
+|---|---|---|
+| backward | 21.8 s (70%) | 142 s (84%) |
+| forward | 6.1 s (20%) | 20.6 s (12%) |
+| feature 추출 (CPU) | 2.0 s → prefetch로 숨김 | 숨김 |
+| collate (CPU→GPU) | 0.8 s | 5.7 s |
+| shard 읽기 | 파일당 약 2.2 s → 숨김 | 숨김 |
+| optimizer·손실 읽기 | 0.1 s 미만 | 0.1 s 미만 |
+| **update 전체** | 31–33 s → **29.5–30.4 s** (prefetch) | **약 169 s** |
+
+- GPU 연산(backward)이 대부분이다.
+- `micro_lanes` 2·4는 backward가 줄지 않았다(GPU 단독 재측정). 1을 유지한다.
+- Vulkan은 backward가 forward의 6.9배다. CUDA는 3.6배다.
+- 모델·정밀도 변경 없이 더 줄일 수 있는 것은 collate를 prefetch 스레드로 옮기는 것뿐이다. 모델 crate collate API를 바꿔야 하고, 효과는 CUDA 약 3%, Vulkan 약 3%다.
+
+### PC 간 이어 하기 실측 (run `bcpre-xpc`)
+1. 이 PC CUDA에서 3 update를 하고 `ckpt-3`을 push했다.
+2. bc250_1 Vulkan이 `LATEST`를 pull해 데이터 위치(파일 2, 게임 9)에서 이어 2 update를 하고 `ckpt-5`를 push했다.
+3. 이 PC CUDA에서 다시 이어 2 update를 하고 `ckpt-7`을 push했다.
+- 매번 잠금이 해제됐다. 게임 수와 손실이 이어졌다(처음 게임으로 돌아가지 않음).
+- **CUDA f32 ↔ Vulkan f16은 실측할 수 없었다.** f16 혼합 정밀도 학습이 구현되어 있지 않아(032-R8 구현 메모: BC250 학습 전까지 미룸) bc250_1도 f32로 돌았다.
+
+### 본학습 예상 시간 (GPU 단독)
+
+| 작업 | PC | update | 시간 |
+|---|---|---|---|
+| S1 | 이 PC (CUDA f32) | 36,985 × 30 s | **약 12.8일** |
+| S2 (S1 후) | 이 PC | 7,915 × 30 s | 약 2.7일 |
+| ablation (A) (S1과 동시) | bc250_1 (Vulkan **f32**) | 7,915 × 169 s | **약 15.5일** |
+| 오프라인 평가 (대상 맵 test 895게임) | 이 PC | – | 체크포인트당 약 3시간 |
+| 041-AC2 (600판) | 이 PC hostd | – | 7시간 이상(측정 전) |
+
+- 전체는 약 15.5~15.6일이다. S1+S2(15.5일)와 (A)(15.5일)가 거의 같이 끝난다.
+- 다른 세션이 이 PC GPU를 같이 쓰면 S1 update가 50~60 s로 느려진다. 그러면 S1만 21~26일이다.
+
+### 본학습 실행 명령 (승인 후)
+```
+DATA="--dataset replays/shards/stardata --dataset replays/shards/community --dataset replays/shards/scr_ladder --dataset replays/shards/personal"
+# 이 PC: S1 → S2
+uranium-train bc $DATA --run bc-s1 --backend cuda
+uranium-train bc $DATA --run bc-s2 --s2 --init <shared>/checkpoints/bc-s1 --backend cuda
+# bc250_1: ablation (A), S1과 동시
+uranium-train bc $DATA --run bc-ablation-a --stage s2 --backend vulkan
+# 평가: 041-AC1, AC3 ((B) = bc-s2 vs (A) = bc-ablation-a)
+uranium-train bc-eval $DATA --checkpoint <shared>/checkpoints/bc-s2 --backend cuda
+uranium-train bc-eval $DATA --checkpoint <shared>/checkpoints/bc-ablation-a --backend cuda
+# 041-AC2: config/plans/bc-vs-t0.toml (checkpoint = checkpoints/bc-s2/ckpt-7915)
+uranium-env run --plan config/plans/bc-vs-t0.toml --backend cuda
+```
+- 중단되면 같은 명령을 다시 실행해 이어 한다. 다른 PC에서 이어 하려면 `--backend`만 바꾼다(잠금이 살아 있으면 `--take-over`).
+
+### 남은 결정
+1. **(A)를 bc250_1에서 f32로 돌릴지(032-R8 충돌).**
+   - 032-R8은 BC250 학습을 f16 혼합 정밀도로 정하고 있고, 그 구현은 BC250 학습 전까지 미뤄져 있다.
+   - 이번 지시는 정밀도 변경 금지이므로 구현하지 않았다.
+   - 선택지는 두 가지다.
+     - (a) (A)만 f32로 돌리고 032-R8에 예외를 적는다. 약 15.5일 걸린다.
+     - (b) f16 혼합 정밀도를 먼저 구현한다. BC250 측정상 약 1.5배 빨라 (A)가 10일 안팎이지만, 구현·검증 기간이 든다.
+2. **S2 warmup.** S2와 (A)는 7,915 update인데 warmup이 2,000이라 전체의 25%다. 하이퍼파라미터 변경이라 제안만 한다(S2만 warmup 축소 등).
+
+### 제안만 하는 것 (모델·정밀도 변경)
+- f16 혼합 정밀도(032-R8): CUDA에서는 M5 실측상 느렸다. BC250에서는 효과가 있을 것으로 본다.
+- backward가 forward의 3.6~6.9배다. 모듈별 backward 프로파일로 비효율 연산을 찾는 것을 제안한다(032-R13 distance bias와 같은 종류일 수 있음).
+- collate를 prefetch 스레드로 옮기기: 출력 동일, 약 3%.
+
+## 결론 (1차)
 - **경로는 끝까지 동작한다.** 동작한 단계는 다음과 같다.
   - S1 학습(`--dataset` 4개, manifest 검증)
   - 체크포인트 저장과 `--resume`

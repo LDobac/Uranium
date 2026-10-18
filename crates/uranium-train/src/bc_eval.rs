@@ -165,38 +165,53 @@ pub fn evaluate<C: CoreInit>(dirs: &[PathBuf], ckpt: &Path, split: Split, max_ga
     ecfg.data.z_drop = 1.0;
     ecfg.data.augment = false;
     let mut feeder = Feeder::new(&ecfg);
+    feeder.drain = true;
     let mut src = ShardSource::from_dirs(dirs)?.select(Selection::Only(split));
     let mut limited = Limit { src: &mut src, left: max_games };
     let t = cfg.seq_len;
-    let mut state: Option<C::State> = None;
+    // Lanes in groups of `micro_lanes` per forward, each group keeping its core state (as in
+    // training: GPU memory follows the group).
+    let g = match cfg.micro_lanes {
+        0 => cfg.lanes,
+        m => m.min(cfg.lanes),
+    };
+    let mut states: Vec<Option<C::State>> = (0..cfg.lanes.div_ceil(g)).map(|_| None).collect();
     let mut acc = Acc::default();
     while let Some(batch) = feeder.next_batch(&mut limited, None)? {
-        let (chunks, fresh, results) = batch.parts();
-        let b = chunks.len();
-        let mut rows: Vec<&TrainStep> = Vec::with_capacity(b * t);
-        let mut weights = Vec::with_capacity(b * t);
-        for c in chunks {
-            for k in 0..t {
-                rows.push(&c[k.min(c.len() - 1)]);
-                weights.push(if k < c.len() { c[k].weight } else { 0.0 });
+        let (chunks, fresh, _) = batch.parts();
+        // Drained lanes (no game left) are filled with another lane's step at weight 0.
+        let Some(filler) = chunks.iter().find_map(|c| c.first()) else { break };
+        for (gi, lanes) in (0..chunks.len()).collect::<Vec<_>>().chunks(g).enumerate() {
+            if lanes.iter().all(|&l| chunks[l].is_empty()) {
+                states[gi] = None;
+                continue;
             }
+            let b = lanes.len();
+            let mut rows: Vec<&TrainStep> = Vec::with_capacity(b * t);
+            let mut weights = Vec::with_capacity(b * t);
+            for &l in lanes {
+                let c = &chunks[l];
+                for k in 0..t {
+                    rows.push(c.get(k.min(c.len().saturating_sub(1))).unwrap_or(filler));
+                    weights.push(if k < c.len() { c[k].weight } else { 0.0 });
+                }
+            }
+            let obs: Vec<_> = rows.iter().map(|s| &s.obs).collect();
+            let labels: Vec<&HostLabel> = rows.iter().map(|s| &s.label).collect();
+            let privs: Vec<_> = rows.iter().map(|s| &s.privileged).collect();
+            let ob = obs_batch_padded(&obs, cfg.pad_entities, &dev);
+            let ab = action_batch(&labels, ob.entities(), net_cfg.heads.max_select, &dev);
+            let pb = priv_batch(&privs, &dev);
+            let keep: Vec<bool> = lanes.iter().map(|&l| !fresh[l]).collect();
+            let keep_t = Tensor::<1, Bool>::from_data(TensorData::new(keep, [b]), &dev);
+            let s0 = match states[gi].take() {
+                Some(s) => C::mask_state(s, keep_t),
+                None => net.init_state(b, &dev),
+            };
+            let out = net.forward_seq(&ob, &ab, Some(&pb), s0, t);
+            states[gi] = Some(out.state);
+            score(&mut acc, &out.heads, &labels, &weights);
         }
-        let _ = results;
-        let obs: Vec<_> = rows.iter().map(|s| &s.obs).collect();
-        let labels: Vec<&HostLabel> = rows.iter().map(|s| &s.label).collect();
-        let privs: Vec<_> = rows.iter().map(|s| &s.privileged).collect();
-        let ob = obs_batch_padded(&obs, cfg.pad_entities, &dev);
-        let ab = action_batch(&labels, ob.entities(), net_cfg.heads.max_select, &dev);
-        let pb = priv_batch(&privs, &dev);
-        let keep: Vec<bool> = fresh.iter().map(|f| !f).collect();
-        let keep_t = Tensor::<1, Bool>::from_data(TensorData::new(keep, [b]), &dev);
-        let s0 = match state.take() {
-            Some(s) if b == cfg.lanes => C::mask_state(s, keep_t),
-            _ => net.init_state(b, &dev),
-        };
-        let out = net.forward_seq(&ob, &ab, Some(&pb), s0, t);
-        state = Some(out.state);
-        score(&mut acc, &out.heads, &labels, &weights);
     }
     let n = acc.steps.max(1) as f64;
     let mut errs = acc.loc_err.clone();

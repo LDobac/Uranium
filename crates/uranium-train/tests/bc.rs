@@ -262,6 +262,8 @@ fn warmup_cosine_schedule_041_r3() {
     assert!((cfg.lr_at(9, 0.1) - 1e-4).abs() < 1e-12, "S2 = 1/10 (041-R4)");
     let file = BcConfig::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/bc.toml"))).unwrap();
     assert_eq!((file.seq_len, file.grad_clip, file.value.win, file.data.z_drop), (64, 1.0, 0.5, 0.25));
+    // 041-R14: one epoch per stage; (A) reads the S2 games.
+    assert!(file.steps.s1 > file.steps.s2 && file.steps.s2 > 0 && file.steps.ablation_a == file.steps.s2);
 }
 
 /// 061-R10 / 061-AC1 / 042-R1 (flex): save -> load -> the next updates are bit-identical to the
@@ -398,4 +400,24 @@ fn prefetch_gives_the_feeder_batches_041() {
     }
     assert_eq!(got, want);
     std::fs::remove_dir_all(&root).ok();
+}
+
+/// Evaluation drains the lanes: every step of every game is produced exactly once, also with
+/// fewer games than lanes.
+#[test]
+fn drained_feeder_covers_every_step_041() {
+    for (lanes, n) in [(4, 2), (2, 7), (3, 15)] {
+        let mut cfg = tiny_bc(1, 0);
+        cfg.lanes = lanes;
+        let games: Vec<ShardGame> = varied_games().into_iter().take(n).collect();
+        let want: usize = games.iter().map(|g| g.steps.len()).sum();
+        let mut f = Feeder::new(&cfg);
+        f.drain = true;
+        let mut src = VecSource(games.into());
+        let mut got = 0;
+        while let Some(b) = f.next_batch(&mut src, None).unwrap() {
+            got += b.parts().0.iter().map(|c| c.len()).sum::<usize>();
+        }
+        assert_eq!(got, want, "lanes {lanes}, games {n}");
+    }
 }

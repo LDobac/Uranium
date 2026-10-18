@@ -174,6 +174,9 @@ pub struct Feeder {
     invalid_labels: usize,
     /// Fingerprint of the shard source (set on the first batch from it).
     files: String,
+    /// Evaluation: when the source runs dry, idle lanes give empty chunks until every lane is
+    /// done (training instead ends the epoch at the first lane it cannot fill).
+    pub drain: bool,
 }
 
 impl Feeder {
@@ -187,6 +190,7 @@ impl Feeder {
             games: 0,
             invalid_labels: 0,
             files: String::new(),
+            drain: false,
         }
     }
 
@@ -197,7 +201,12 @@ impl Feeder {
                 continue;
             }
             let game = loop {
-                let Some(game) = src.next_game()? else { return Ok(false) };
+                let Some(game) = src.next_game()? else {
+                    if self.drain {
+                        return Ok(self.lanes.iter().any(|l| l.game.is_some()));
+                    }
+                    return Ok(false);
+                };
                 if !game.steps.is_empty() {
                     break game;
                 }
@@ -219,7 +228,13 @@ impl Feeder {
         let mut fresh = Vec::with_capacity(self.lanes.len());
         let mut results = Vec::with_capacity(self.lanes.len());
         for lane in &mut self.lanes {
-            let g = lane.game.as_mut().unwrap();
+            let Some(g) = lane.game.as_mut() else {
+                // Drained lane (evaluation only).
+                chunks.push(Vec::new());
+                fresh.push(true);
+                results.push(0.0);
+                continue;
+            };
             let (chunk, invalid) = g.next_chunk(self.seq_len);
             self.invalid_labels += invalid;
             chunks.push(chunk);
