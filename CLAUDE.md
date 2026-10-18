@@ -1,118 +1,93 @@
 # CLAUDE.md — Uranium
 
-스타크래프트1 **테란 밀리 AI 봇**을 구현하고 직접 강화학습하는 프로젝트다.
-- 학습: OpenBW(1.16.1)
-- 최종 실행: StarCraft: Remastered(SC:R)
-- 사용자와의 대화와 문서는 **한국어**로 작성한다. 코드 식별자와 주석은 영어로 쓴다.
+스타크래프트1 **테란 밀리 AI 봇**을 구현하고 강화학습하는 프로젝트. 학습은 OpenBW(1.16.1), 최종 실행은 SC:R.
+- 사용자와의 대화와 문서는 **한국어**, 코드 식별자와 주석은 영어.
+
+## 진행 상황
+- 시간순 기록: `reports/timeline.md`
+- BC 본학습 전 남은 결정·수정: `reports/m6_pre_bc_review.md` G절
+- 마일스톤별 결과: `reports/` (m2~m6)
 
 ## 고정 조건
 | 항목 | 값 |
 |---|---|
-| 플레이 종족 | Terran (고정) |
-| 상대 종족 | T / P / Z |
+| 종족 | 테란 고정. 상대 T / P / Z |
 | 맵 | 투혼(Fighting Spirit), 서킷브레이커(Circuit Breaker) |
-| 학습 장비 | AMD BC250(Vulkan) 또는 CUDA GPU PC(Linux/Windows). CUDA는 Burn `cuda` feature로만 쓰고(해당 PC에서만 빌드), 직접 작성한 CUDA·ROCm·HIP 코드는 금지 |
-| 언어/프레임워크 | Rust + Burn **0.22.0** (런타임 `Device`: `Device::vulkan` / `Device::cuda`). 테스트용 CPU 백엔드는 `flex`. 학습·추론 정밀도는 BC250 f16 혼합 정밀도, CUDA PC f32(TF32) (032-R8, 2026-10-17). f16 학습은 미구현이라 BC250의 BC 학습은 모두 f32로 한다(032-R8 예외, 2026-10-18). 학습 쪽 crate는 Windows에서도 빌드돼야 함 (001-R8) |
-| 시뮬레이터 | OpenBW + BWAPI 4.2 포크, Linux 헤드리스. 같은 LAN의 다른 PC에서 실행될 수 있음 |
-| SC:R 연동 | samase 플러그인 DLL + samase_scarf (Windows x86_64). **로컬/LAN 커스텀 게임에서만** 실행하며 배틀넷 공개 게임과 래더는 대상이 아님 |
-| 체크포인트·데이터 | 네트워크 공용 드라이브(SMB, LAN 또는 VPN 경유, `URANIUM_SHARED_DIR`). 학습 PC는 pull → 학습 → push, run당 한 PC만(heartbeat 잠금) (061) |
-| C++ 사용 | OpenBW 브리지의 얇은 C++ shim(BWAPI ↔ C ABI 중계)만 허용. 그 외 영역은 Rust |
+| 학습 장비 | BC250(Vulkan) 또는 CUDA PC. CUDA는 Burn `cuda` feature로만 쓰고(그 PC에서만 빌드), 직접 쓴 CUDA·ROCm·HIP 코드는 금지 |
+| 프레임워크 | Rust + Burn **0.22.0**, 실행 시 `Device::vulkan`/`Device::cuda`, 테스트는 `flex`. 정밀도는 032-R8(CUDA f32, BC250 BC 학습 f32). 학습 crate는 Windows에서도 빌드 (001-R8) |
+| 시뮬레이터 | OpenBW + BWAPI 4.2 포크, Linux 헤드리스. 다른 LAN PC에서 실행될 수 있음 |
+| SC:R 연동 | samase 플러그인 DLL + samase_scarf. **로컬/LAN 커스텀 게임만**, 배틀넷 공개 게임·래더 대상 아님 |
+| 체크포인트·데이터 | 공용 드라이브(SMB, `URANIUM_SHARED_DIR`). pull → 학습 → push, run당 한 PC(heartbeat 잠금) (061) |
+| C++ | OpenBW 브리지의 얇은 shim만. 나머지는 Rust |
 
-## Spec Driven 개발 규칙 (필수)
-1. **`spec/`이 단일 진실 공급원이다.** 작업 전에 `spec/README.md`와 관련 spec을 먼저 읽는다.
-2. **spec 없이 구현하지 않는다.** 해당 spec이 `Approved`가 아니면 구현하지 말고 사용자에게 알린다.
-3. 동작을 바꿀 때 순서는 **spec 수정 → 사용자 확인 → 코드**다. 코드가 spec과 다르면 코드를 고치거나, spec 변경을 사용자에게 제안한다.
-4. 코드 주석, 테스트 이름, 커밋 메시지에는 요구사항 ID(`010-R3`, `011-AC1` 등)를 참조한다.
-5. 새 spec은 공통 템플릿을 따르고 `spec/README.md` 인덱스에 추가한다. spec 번호는 **구현 순서가 아니라 영역 대역**(00x 개요, 01x 게임 연동, 02x 실행 환경, 03x 모델, 04x 데이터·학습, 05x 평가, 06x 인프라)이고, 한 번 부여한 번호는 바꾸지 않는다. 구현 순서는 마일스톤(M0~M7)을 따른다.
-   - 공통 템플릿: `Status / Purpose / Scope & Non-goals / Requirements / Interfaces / Acceptance Criteria / Risks & Open Questions / Related`
-6. 큰 작업(새 crate, 아키텍처 변경, 여러 spec에 걸친 변경)은 Plan 모드로 계획을 먼저 세우고 승인을 받는다.
+## Spec Driven 규칙 (필수)
+1. **`spec/`이 단일 진실 공급원.** 작업 전에 `spec/README.md`와 관련 spec을 읽는다.
+2. `Approved`가 아닌 spec은 구현하지 않고 사용자에게 알린다.
+3. 동작 변경 순서: **spec 수정 → 사용자 확인 → 코드**. 코드와 spec이 다르면 코드를 고치거나 spec 변경을 제안한다.
+4. 주석·테스트 이름·커밋 메시지에 요구사항 ID(`010-R3` 등)를 적는다.
+5. 새 spec은 공통 템플릿(`Status / Purpose / Scope & Non-goals / Requirements / Interfaces / Acceptance Criteria / Risks & Open Questions / Related`)을 따르고 `spec/README.md`에 추가한다. 번호는 영역 대역(00x 개요, 01x 게임 연동, 02x 실행 환경, 03x 모델, 04x 데이터·학습, 05x 평가, 06x 인프라)이고 바꾸지 않는다. 구현 순서는 마일스톤 M0~M7.
+6. 큰 작업(새 crate, 아키텍처 변경, 여러 spec에 걸친 변경)은 Plan 모드로 승인을 받는다.
 
-## 모호함 처리 규칙 (필수)
-- spec에서 사용자 결정이 필요한 부분은 **`[SPEC AMBIGUOUS] AMB-<spec번호>-<n>`** 으로 표기하고, `spec/README.md`의 Ambiguity Registry에 등록한다.
-- **모호하거나 애매한 부분은 추측으로 진행하지 않는다. 항상 사용자에게 되물어 컨펌을 받는다.**
-  - 기본안이 있더라도 "기본안(미확정)"으로 제시만 하고 확인을 기다린다.
-  - 작업 중 새로 발견한 모호함도 같은 방식으로 처리한다: spec에 태그 추가 → 레지스트리 등록 → 사용자에게 질문.
-  - 사용자가 지정하지 않은 수치, 정책, 범위를 임의로 확정하지 않는다. 예: 승률 목표, APM 제한, 데이터 출처, 실행 환경.
-- `[SPEC AMBIGUOUS]` 항목에 의존하는 코드는 작성하지 않는다. 의존하지 않는 부분만 진행한다.
-- **보류 항목**: 사용자가 결정 시점을 뒤 마일스톤으로 미루기로 확인한 항목은 `[SPEC DEFERRED(Mx)]`로 표기한다.
-  - 보류 항목은 spec 승인을 막지 않는다.
-  - 의존 코드는 여전히 작성할 수 없다.
-  - 해당 마일스톤을 시작하기 전에 반드시 다시 질문한다.
-  - 현재 보류 중: 리마스터 관련 AMB-001-1, AMB-012-1, AMB-012-2 (M7), TvP·TvZ 상대 다양성 AMB-042-2 (M6).
-- 사용자가 확정하면 처리 순서는 다음과 같다.
-  1. 본문에 결정을 반영한다.
-  2. 태그를 제거한다.
-  3. 레지스트리를 `Resolved (YYYY-MM-DD: 결정 내용)`으로 갱신한다.
-- 구분: `TBD(Mx)`는 **측정만 하면 정해지는 값**이고, `[SPEC AMBIGUOUS]`는 **사용자 판단이 필요한 값**이다. 둘을 혼동하지 않는다.
+## 모호함 처리 (필수)
+- 사용자 결정이 필요한 부분은 `[SPEC AMBIGUOUS] AMB-<spec>-<n>`으로 표기하고 `spec/README.md` 레지스트리에 등록한다.
+- **추측하지 않고 사용자에게 묻는다.** 기본안은 "기본안(미확정)"으로만 제시한다. 사용자가 정하지 않은 수치·정책·범위(승률 목표, APM 제한, 데이터 출처, 실행 환경 등)를 확정하지 않는다.
+- `[SPEC AMBIGUOUS]`에 의존하는 코드는 쓰지 않는다.
+- `[SPEC DEFERRED(Mx)]`: 결정을 뒤 마일스톤으로 미룬 항목. spec 승인은 막지 않지만 의존 코드는 쓰지 않고, 그 마일스톤 시작 전에 다시 묻는다. 목록은 레지스트리 참조.
+- 확정되면: 본문 반영 → 태그 제거 → 레지스트리 `Resolved (YYYY-MM-DD: 결정)`.
+- `TBD(Mx)`는 측정하면 정해지는 값, `[SPEC AMBIGUOUS]`는 사용자 판단이 필요한 값.
+- 남은 작업·대규모 배치 전 점검에서는 태그만 보지 말고 spec의 미이행 약속("Mx에서 ~", "비교해 채택")과 미실행 AC도 확인한다.
 
 ## 아키텍처 원칙
-- **에이전트 코어는 게임 버전을 모른다** (001-R1). 버전 의존 코드는 `bridge/*`와 `uranium-adapter`(013 매핑 테이블)에만 둔다.
-- 브리지는 **얇게** 유지한다 (001-R3). 브리지가 하는 일은 상태 직렬화, 명령 실행, 시야 필터링뿐이고 의사결정 로직은 넣지 않는다.
-- 브리지와 에이전트는 `uranium-proto` 프로토콜(TCP, postcard)로만 통신한다 (010).
-- **맵핵 금지**: 관측은 자기 플레이어 시야 기준이다 (010-R5, 011-R5, 012-R3, 030-R2).
-- SC:R 명령은 네트워크 커맨드 경로로만 보낸다. 유닛 메모리를 직접 수정하지 않는다 (012-R4).
-- 학습은 lockstep, SC:R 실전은 realtime 모드로 동작한다 (001-R5).
-- 맵 고정은 RL·평가 범위에만 적용한다. BC 사전학습은 전체 맵 리플레이로 하고 대상 맵으로 파인튜닝한다 (041).
+- 에이전트 코어는 게임 버전을 모른다 (001-R1). 버전 의존 코드는 `bridge/*`와 013 매핑 테이블에만.
+- 브리지는 얇게: 상태 직렬화, 명령 실행, 시야 필터링만 (001-R3).
+- 브리지 ↔ 에이전트는 `uranium-proto`(TCP, postcard)로만 (010).
+- **맵핵 금지**: 관측은 자기 시야 기준 (010-R5, 011-R5, 012-R3, 030-R2).
+- SC:R 명령은 네트워크 커맨드 경로로만, 유닛 메모리 직접 수정 금지 (012-R4).
+- 학습은 lockstep, SC:R 실전은 realtime (001-R5).
+- 맵 고정은 RL·평가에만. BC는 전체 맵으로 사전학습하고 대상 맵으로 파인튜닝 (041).
 
-## 저장소 구조 (계획, 001 참조)
+## 저장소 구조
 ```
-spec/                 # 스펙 문서 (먼저 읽을 것)
+spec/                    스펙 (먼저 읽을 것)
 crates/
-  uranium-proto       # 공통 스키마·프레이밍
-  uranium-adapter     # GameBackend trait, 버전 매핑 테이블 (아직 만들지 않음)
-  uranium-env         # 라이브러리: feature·마스크·보상·executor·맵 계열·맵 사전계산
-  uranium-model       # Burn 모델
-  uranium-train       # BC / RL / league, 학습 상태 체크포인트(ckpt), 공용 드라이브 잠금·push·pull(storage, 061)
-  uranium-replay      # .rep 파서·데이터셋
-  uranium-ladder      # SC:R 로컬 웹 API 래더 리플레이 수집기(043, Windows)
-  uranium-hostd       # OpenBW 인스턴스 데몬
-  uranium-agent       # 에이전트 서버(slot별 정책 라우팅, 배치 추론 서버, 모델 정책)·실전 바이너리
-  uranium-runner      # 게임 스케줄러(020), 바이너리 이름 `uranium-env`(run·calibrate). runner → agent → model → env (AMB-001-3)
-  uranium-bridge-openbw # 브리지 Rust 절반(C ABI, staticlib)
-  uranium-scripted    # T0 규칙 기반 상대 봇
-bridge/openbw         # BWAPI 4.2 AIModule shim(C++) + C ABI 헤더 → liburanium_bridge.so
-bridge/scr            # samase 플러그인 (.dll)
-tools/                # 벤치(bench), CASC 추출(casc-extract), OpenBW 빌드(openbw/), 오픈소스 봇 빌드(oss/), .env 로더(env.sh)
-config/               # assets.toml, hosts.example.toml, plans/(uranium-env 매치업 계획), ladder/(043 래더 수집 계획), bc.toml·reward.toml·rl.toml(042 초기값), map_families.toml(040-R15 대상 맵 판정), map_exclude.toml(040-R16 디싱크 10% 초과 맵 제외)
-docs/                 # windows.md (Windows 세션 체크리스트)
-third_party/          # OpenBW·BWAPI·T1 봇 소스(커밋/아카이브 고정, git 미추적) + patches/(0001 폴더 로더, 0002 고정 시작 seed, 0003 런처 종료 크래시 회피, 0004 결정론적 LAN uid, 0005–0010 T1 봇 BWAPI 4.2 포팅: UAlbertaBot·Steamhammer·ZZZKBot·Stardust·McRave·Iron, 0011 재생 시점 시야, 0012 유즈맵 트리거 보강, 0013 드롭 시간 `URANIUM_OPENBW_DROP_TIMEOUT_MS`(011-R18))
-reports/              # 스파이크·벤치·평가 리포트
+  uranium-proto          공통 스키마·프레이밍
+  uranium-env            feature·마스크·보상·executor·맵 사전계산 (라이브러리)
+  uranium-model          Burn 모델
+  uranium-train          BC·RL·리그, 체크포인트, 공용 드라이브 잠금(061), worker
+  uranium-replay         .rep 파서·데이터셋 build
+  uranium-ladder         SC:R 래더 리플레이 수집 (043, Windows)
+  uranium-hostd          OpenBW 인스턴스 데몬
+  uranium-agent          에이전트 서버(정책 라우팅, 배치 추론)
+  uranium-runner         게임 스케줄러 (바이너리 이름 uranium-env)
+  uranium-bridge-openbw  브리지 Rust 절반 (C ABI)
+  uranium-scripted       T0 규칙 기반 봇
+bridge/openbw            BWAPI shim(C++) → liburanium_bridge
+bridge/scr               samase 플러그인 (M7)
+tools/                   bench, casc-extract, openbw/, oss/, worker/, env 로더
+config/                  plans/, ladder/, bc.toml, rl.toml, reward.toml, map_families.toml, map_exclude.toml
+docs/                    windows.md, commands.md
+third_party/             OpenBW·BWAPI·T1 봇 소스(git 미추적) + patches/
+reports/                 리포트, timeline.md
 ```
-진행 상황(2026-10-17): M0 완료(012·013 외 Approved), M1 완료(벤치·OpenBW·데이터 추출), M2 완료(proto·브리지·T0 테란·셀프매치, `reports/m2_selfmatch.md`), M3 Linux 범위 완료(hostd·env 스케줄러·calibrate, T0 3종족, T1 봇 6종, `reports/m3.md`·`reports/oss_bot_porting.md`). M3 Windows 단일 PC 구성(`reports/m3_windows.md`, 011-AC8)과 원격 구성 (b)(학습 PC + 원격 Linux 2대, 020-AC1·011-AC6, `reports/m3_remote.md`)까지 M3 완료. 다음은 M4(리플레이 파이프라인, spec 013 승인 선행). M4 중 SC:R 래더 리플레이 수집기(spec 043, `uranium-ladder`)를 구현했다: 043-AC1 스파이크·AC2 테스트 완료, 실측 12개 저장(`reports/m4_ladder_probe.md`). AC4(속도 확인)는 매일 수집하며 진행한다. 2026-10-17 SC:R 디싱크 검증(040-AC5·043-AC3, `reports/m4_scr_desync.md`): 최근 래더 맵(CHK VER 64·206 + `STRx`)은 OpenBW가 열지 못해 변환기에서 VER·`STRx`→`STR `를 정규화하고 opcode 0x5d(4바이트, 무영향)를 추가했다(013 개정). 래더 전체 디싱크 15.2%. 무적 크리터 맵(Attitude SE·Colorless Fate)과 Radeon은 디싱크 10%를 넘어 build에서 제외한다(040-R16, `config/map_exclude.toml`) → 5.6%. M5 중 데이터 독립 부분(모델·feature·마스크·executor·보상·BC 골격)을 M4와 병행해 구현했다(`reports/m5_model.md`). 2026-10-16 결정: CUDA PC는 Vulkan보다 빠르면 032-AC2/AC3 통과, CUDA 허용 오차 1e-2(AMB-032-5), `last_seen_age` 정찰 기록(AMB-030-1), Windows에서 Vulkan 학습은 운영 대상 아님(Windows 학습은 CUDA, Vulkan 학습은 Linux BC250, `docs/windows.md` 7절). 2026-10-17 STARDATA 전체 build 전 표본 검증(`reports/m4_stardata_preflight.md`): 레이블러가 죽은·탑승한 유닛을 선택에 남기던 버그(040-R3)와 애드온 마스크 버그를 고치고, 메딕 어택땅 `HealMove`는 `Attack_Pos`로 정했다(040-R11). 무효 레이블 17.6% → 6.6%. 이어서 혼합 선택 레이블(AMB-041-1, 사용자 위임으로 엔진 동작 기준 결정: 자격 없는 유닛은 레이블에서 빼고 남는 유닛이 없을 때만 무효, 041-R11)과 선택 추적을 게임 규칙에 맞췄다(040-R3·R11, shard schema 3). 무효 레이블 → 3.6%. 2026-10-17 build 속도·결정론: 관점당 OpenBW 재생을 3회 → 2회로 줄였고(040-R8 두 번 재생 검사 = 레이블용 재생 A와 관측 수집 재생 B의 공통 관측 해시, 리플레이 1개 24 → 16초, 전체 약 35 → 24시간), 리플레이 상대를 `URANIUM_REPLAY_ENEMY`로 지정해 GameInfo 플레이어를 시점·상대 두 명(id 순)으로 고정했다(011-R10, shard schema 4, 표본 두 번 build 바이트 동일, `reports/m4_stardata_preflight.md`). **추출 PC마다 브리지 재빌드 필요.** 구 schema 1 shard·records는 삭제했고, 전체 build는 새 추출 PC를 추가한 뒤 시작한다(사용자 지시 전 시작 금지). BC GPU 메모리는 `micro_lanes` gradient 누적으로 해결했다(레인 1 × T64 × N512씩 처리, 16GB CUDA 확인, `reports/m5_bc_memory.md`). 남은 것: 보고된 레인 2 OOM 환경 확인(이 PC에서는 재현 안 됨), f16 혼합 정밀도 학습(Burn에 AMP 없음, BC250 학습 전까지 미룸 — CUDA PC는 f32, 032-R8 2026-10-17), BC250 실측·기준 재확인. 2026-10-17 M6 준비: spec 042 개정 — RL 초기 설정값(배치·옵티마이저·정책 지연·KL·엔트로피·리그·커리큘럼·스냅샷)을 사용자 위임으로 확정(AMB-042-3, `config/rl.toml`, 모두 042-R9 튜닝 대상), 첫 RL은 CUDA PC, AMB-042-2는 T0·T1 봇으로 시작(Deferred 유지). 2026-10-17~19 M6 진행(시간순 색인 `reports/timeline.md`): 전체 shard build 완료(35,966게임, 네 소스 manifest, 디싱크 오판 브리지 버그 수정 f74bc54), RL learner·리그·`uranium-train rl`과 CUDA 스모크(`reports/m6_rl.md`), RL 리플레이 저장·끊김 대응(011-R17·R18, 042-R11·R12), BC 로더·분할·1 epoch 설정·`bc-eval`·`bc --run`·watchdog·run 큐 worker(060-R6, 061-R13~R15, `reports/m6_bc_preflight.md`), 코어 비교 계획(032-R17, `reports/m6_core_ablation.md`)과 맞대결 스모크. BC 본학습 전 리뷰에서 데이터·학습 코드 문제가 나와(`reports/m6_pre_bc_review.md`, G절 체크리스트) **코어 비교와 BC 본학습은 그 수정·결정 뒤로 보류** 중이다.
 
 ## 코딩 규칙
-- Burn 0.22 모델 코드는 백엔드에 무관하게 쓰고 실행 시 `Device`로 고른다. 테스트는 `Device::flex()`로 한다 (032-R1).
-- 버전별 ID와 오프셋은 데이터 테이블로만 관리한다. 코드에 매직 넘버를 흩뿌리지 않는다 (013-R1).
-- **개인·보안 정보 금지** (001-R10): spec, 문서, 리포트, 주석, 커밋에 IP, 호스트 이름, 계정, 이메일, 개인 경로, 자격 증명을 쓰지 않는다. `<server>` 같은 자리표시자를 쓴다.
-- **설정은 `.env`로** (001-R9): 호스트별 설정은 저장소 루트 `.env`(git 미추적)에서 읽고, 프로세스 환경변수가 우선한다. 키 템플릿은 `.env.example`에 둔다. `.bashrc`에 두지 않는다. 새 환경변수를 추가하면 `.env.example`도 갱신한다.
-- 결정론을 유지한다: executor와 feature 추출은 같은 입력이면 같은 출력을 낸다 (031-R7, 030-R1).
-- 각 spec의 Acceptance Criteria를 테스트나 벤치로 구현해 검증한다.
-- **git 통합**: 워크트리 브랜치는 `git fetch` → `git rebase origin/master` → 테스트 → `git push origin HEAD:master`(fast-forward)로 master에 붙인다. merge 커밋을 만들지 않는다(2026-10-17 사용자 지적: merge 커밋으로 history가 지저분해짐. 이 절차는 그 지적을 반영한 운영 방식이고, 2026-10-19 사용자가 유지하기로 확인). push한 뒤에는 메인 작업 사본(저장소 루트의 `master` 체크아웃)도 `pull --ff-only`로 맞춰 로컬 `master`와 `origin/master`를 같게 둔다. 메인 작업 사본에 커밋 안 된 변경(추적 안 되는 파일 제외)이 있거나 `master`가 아닌 브랜치면 건드리지 않고 사용자에게 알린다(2026-10-19 사용자 결정).
-- **시간순 기록**(2026-10-18 사용자 지시): 모든 일이 끝난 뒤 중간 산출물을 시간 순서로 보며 최종 보고서를 쓴다. 결정·발견·장시간 실행의 시작과 끝·새 리포트는 `reports/timeline.md`에 한 줄씩 덧붙이고(지우거나 고치지 않음), 실험 리포트에는 실험 전 배경·예상과 시각별 진행 기록을 남긴다. 체크포인트·학습 로그·평가 출력·대전 결과 같은 중간 산출물은 지우지 않고 위치를 적는다.
-- **대규모 배치(4시간 이상: shard build, 학습 등) 전**에는 출력에 영향을 주는 결정이 모두 확정·구현됐는지 확인하고, 표본으로 끝까지(build → 학습) 먼저 돌린다.
+- Burn 모델 코드는 백엔드 무관, 실행 시 `Device`로 고른다. 테스트는 `Device::flex()` (032-R1).
+- 버전별 ID·오프셋은 데이터 테이블로만 관리한다 (013-R1).
+- **개인·보안 정보 금지** (001-R10): spec·문서·리포트·주석·커밋에 IP, 호스트 이름, 계정, 이메일, 개인 경로, 자격 증명을 쓰지 않는다. `<server>`, "BC250 1호기" 같은 표기를 쓴다.
+- **설정은 `.env`** (001-R9): 저장소 루트 `.env`(git 미추적), 프로세스 환경변수 우선. 새 키는 `.env.example`에도 추가.
+- 결정론: executor와 feature 추출은 같은 입력이면 같은 출력 (031-R7, 030-R1).
+- 각 spec의 AC는 테스트나 벤치로 검증한다.
+- **git**: worktree 브랜치는 `fetch` → `rebase origin/master` → 테스트 → `push origin HEAD:master`(fast-forward). merge 커밋 금지. push 뒤 메인 작업 사본(저장소 루트 `master`)도 `pull --ff-only`로 맞춘다. 커밋 안 된 변경이 있거나 `master`가 아니면 건드리지 않고 알린다.
+- **기록**: 결정·발견·장시간 실행의 시작과 끝·새 리포트는 `reports/timeline.md`에 한 줄씩 덧붙인다(수정·삭제 금지). 실험 리포트에는 실험 전 배경·예상과 진행 기록을 남긴다. 체크포인트·로그·평가 출력 같은 중간 산출물은 지우지 않고 위치를 적는다.
+- **대규모 배치(4시간 이상) 전**: 출력에 영향을 주는 결정이 모두 확정·구현됐는지 확인하고, 표본으로 끝까지(build → 학습) 먼저 돌린다.
+- 게임 데이터(MPQ, CASC 추출물, 맵, 리플레이)는 커밋하지 않는다.
 
 ## 명령어
-- 전체 테스트: `cargo test --workspace`
-- Burn/Vulkan 벤치(060-R2): `cargo run -p bench --release -- --backend vulkan` (`--quick`, `--filter <name>`, `--backend flex`) → `reports/bench_bc250.md`
-- OpenBW/BWAPI 빌드(011): `tools/openbw/build.sh` → `third_party/bwapi/build/bin/BWAPILauncher`
-- 게임 데이터 추출(011-R13): `cargo install casc --version 0.1.6 --locked` 후 `cargo run -p casc-extract -- ~/sc_data/scr/Data ~/sc_data/openbw` → `.env`의 `URANIUM_DATA_DIR`에 추출 경로 지정
-- 브리지 빌드(011): `tools/openbw/build_bridge.sh` → `bridge/openbw/build/liburanium_bridge.so` (shim은 500줄 이하 유지)
-- 설정: `cp .env.example .env` 후 값 입력. Rust 바이너리는 시작 시, 셸 스크립트는 `tools/env.sh`로 읽는다
-- 셀프매치(M2): `tools/openbw/selfmatch.sh <fighting_spirit|circuit_breaker> <games> [parallel] [seed_base] [agent args...]` → `runs/…/summary.md`. `SAME_SEED=1`이면 모든 게임 동일 seed(결정론 확인), `URANIUM_MAX_FRAMES`로 게임 길이 제한
-- hostd(020): `target/release/uranium-hostd serve`. 설정 키는 `.env.example`의 hostd 절(`URANIUM_BWAPI_DIR`, `URANIUM_BRIDGE_LIB`, `URANIUM_HOSTD_LISTEN`, `URANIUM_HOSTD_MAX_GAMES` 등)
-- 게임 스케줄러(020): `target/release/uranium-env run --plan config/plans/<plan>.toml [--out runs/<dir>] [--backend cuda|vulkan|flex --max-batch N --max-wait-ms M]` → `games.jsonl`, `results.jsonl`, `summary.md`(Wilson 95%, 모델 세션 지연·거부 표), `sessions.md`. 호스트 목록은 `URANIUM_HOSTS_FILE`(기본: 로컬 hostd 하나, 예시 `config/hosts.example.toml`). 빌드는 `cargo build --release -p uranium-runner [--features cuda]`(crate `uranium-runner`, 바이너리 `uranium-env`, AMB-001-3). plan의 `save_replay = true` 게임은 hostd가 리플레이 바이트를 돌려줘(020-R1, 제어 프로토콜 2 — hostd와 같은 커밋으로 빌드) `<out>/replays/g<id>.rep`에 모인다
-- 모델 정책(020-R11): plan 플레이어 `{ kind = "model", checkpoint = "<URANIUM_SHARED_DIR 기준 상대 경로>", sample = "argmax"|"stochastic" }`(테란 고정). 추론 백엔드 기본은 `.env` `URANIUM_AGENT_BACKEND`. 대상 맵 사전계산 입력은 맵마다 한 번 `uranium-replay mapgen <URANIUM_MAPS_DIR>/fighting_spirit_1.3.scx <…>/circuit_breaker_1.0.scx`(AMB-031-4). 스모크 `config/plans/smoke-model.toml`(체크포인트는 `uranium-agent random-checkpoint --out <dir>`), 041-AC2 `config/plans/bc-vs-t0.toml`(`checkpoint` 수정 후 실행)
-- 동시 게임 수 측정(020-R10): 게임 호스트에서 `target/release/uranium-env calibrate` 한 번 → `<URANIUM_CACHE_DIR>/hostd_calibration.toml`. hostd는 `URANIUM_HOSTD_MAX_GAMES`가 없으면 이 값을 쓴다
-- T1 봇 빌드(021): `tools/openbw/build.sh` 후 `tools/oss/build_<bot>.sh` (`ualbertabot`, `steamhammer`, `zzzkbot`, `stardust`, `mcrave`, `iron`) → `<URANIUM_OSS_BOTS_DIR>/<bot>/{module.so, VERSION}`. 상대 ID는 `<bot>@<버전>`(021-R3)
-- 에이전트 서버: `target/release/uranium-agent serve --listen 127.0.0.1:7600 --out runs/x.jsonl [--policy model --checkpoint <dir> --backend <b> --sample argmax]`, 요약 `uranium-agent summarize runs/x.jsonl --out x.md`
-- Windows(001-R8, `docs/windows.md`): `tools\openbw\build.ps1` → `tools\openbw\build_bridge.ps1` → `tools\oss\build_<bot>.ps1`, `.env` 로더 `tools\env.ps1`. `.env`의 Windows 경로는 작은따옴표로 감싼다
-- OpenBW LAN 매칭(011-R16): Linux는 LOCAL 소켓을 쓰고, Unix 소켓 108바이트 경로 제한 때문에 `$XDG_RUNTIME_DIR/uranium/`(보통 `/run/user/<uid>/uranium/`)에 둔다. Windows는 OpenBW가 LOCAL 모드를 지원하지 않아 TCP 포트 쌍(`URANIUM_HOSTD_PORT_BASE`부터)을 쓰므로 소켓 경로·길이 제한이 없다
-- 리플레이(040, M4): `target/release/uranium-replay` — `inspect <rep>`, `convert <rep> <out>`(SC:R → 1.16.1, 013), `check-screp <dir> --screp <exe>`(040-AC1), `ophist <dir>`(OpenBW가 처리 못하는 opcode 확인), `play <rep>`(OpenBW 재생·디싱크 신호), `build <dir> --src <tag> --records <jsonl> [--jobs N --limit N --part i --parts N]`(필터 → 재생 → 레이블 → shard, 기본 출력 `<URANIUM_SHARED_DIR>/datasets/replays/shards/<src>`, PC별 분할은 `--part`/`--parts`와 PC마다 다른 records 파일), `shard-stats <dir>`(액션 분포·GameInfo 검사). build 재개는 records 폴더에서 이름이 `<src>`로 시작하는 `.jsonl`을 모두 읽어 건너뛰므로, 표본·시험 records는 하위 폴더에 둔다. records의 `coverage.unknown_orders`는 034 액션에 매핑되지 않은 0x15 order별 건수다. `config/map_exclude.toml`의 맵(측정 디싱크 10% 초과, 버전 포함)은 재생 전에 `filtered: excluded map (040-R16)`으로 기록되며, 새 맵·새 버전은 측정 후 추가한다(대상 맵은 넣을 수 없음). SC:R 리플레이 변환은 맵 CHK(VER 64·206, `STRx`)도 정규화한다(013). 원본 리플레이는 `<URANIUM_SHARED_DIR>/datasets/replays/raw/<src>/`(040-R13). build 전에 브리지(`tools/openbw/build_bridge.{sh,ps1}`)와 `uranium-replay`를 같은 커밋으로 빌드한다(011-R10 상대 지정은 둘 다 필요)
-- BWAPI 타입 표(013-R1): `cargo run -p bwapi-tables -- third_party/bwapi/bwapi crates/uranium-env/tables` → `{unit,tech,upgrade,weapon,order}_types.toml`
-- BC(041): `target/release/uranium-train bc (--dataset <rel> | --shards <dir>)... (--out <ckpt> | --run <id> [--take-over]) [--backend vulkan|cuda|flex] [--core lstm|gtrxl] [--s2] [--resume <ckpt> | --init <ckpt|run 폴더>] [--steps N]`(`--run`은 061 run `checkpoints/<id>/`: 잠금·heartbeat·push, 시작 시 `LATEST`에서 재개해 학습 PC를 바꿔 이어 할 수 있다. 체크포인트에 옵티마이저·step·RNG·데이터 위치 포함, 재개 시 본 게임을 다시 학습하지 않음, 061-R10. 체크포인트는 `checkpoint_every` update 또는 `checkpoint_minutes`마다, Ctrl+C는 저장 후 종료. S2는 `--s2 --init <S1 ckpt 또는 run 폴더>`: 가중치만 가져오고 옵티마이저·스케줄·step은 새로, 041-R4. 학습 길이는 단계별 1 epoch = `config/bc.toml` `[steps]`, 041-R14. `--steps`는 그 update에서 멈추기만 한다. `URANIUM_BC_PROFILE=1`이면 update 구간별 시간 출력). 1 epoch update 수 집계 `uranium-train bc-epoch (--dataset|--shards)...`, 오프라인 지표(top-1 등, 041-AC1) `uranium-train bc-eval --checkpoint <ckpt|run 폴더> (--dataset|--shards)... [--split test|val] [--games N]`, update 모듈별 시간(forward 표시·backward gradient 절단 비교) `uranium-train bc-profile (--dataset|--shards)... --backend <cuda|vulkan> [--batches N]`, 데이터는 `--dataset replays/shards/<src>`(공용 `datasets/` 아래, manifest 검증, 061-R11-1) 또는 `--shards <dir>`(검증 없음)을 여러 번 줄 수 있고 하위 폴더(`<src>/<part>/`)까지 읽는다(041-R9). 분할은 리플레이 해시 기준(대상 맵 80/10/10, 그 외 95/5, 041-R12), `bc` 기본 S1 = 전 소스 train 분할, `--s2`(또는 `--stage s2`, ablation (A)) = 대상 맵 train 분할, 순서는 `data.seed` 셔플(041-R13). 분할 집계 `uranium-train split-stats (--dataset|--shards)...`. 하이퍼파라미터 `config/bc.toml`(GPU 메모리는 `micro_lanes`: 레인을 그 수만큼씩 forward/backward하고 gradient를 합쳐 한 번 업데이트, 기본 1 = 레인 1 × T64 × N512, 16GB에서 동작. `pad_entities`·`grad_checkpointing`도 여기서), 보상 가중치 `config/reward.toml`. 마스크에 걸리는 레이블 진단 `uranium-train label-check (--dataset <rel> | --shards <dir>)... [--games N]`(034-AC3). 데이터셋 manifest(061-R7, 하위 폴더 포함 `<dir>/manifest.json`) 생성 `uranium-train manifest <dir>`, 검증 `--verify`. CUDA 실행은 `CUDA_PATH`가 필요하다(없으면 커널 컴파일 시 libdevice 오류). 맵 사전계산은 `uranium-replay build`가 `URANIUM_MAPS_DIR`(기본 `assets/maps`, git 미추적)에 쓴다
-- BC/RL 감시·재시작(060-R6): `uranium-train supervise [--hang-minutes 30 --max-restarts 5 --window-minutes 60 --delay-seconds 60 --progress-file <rl logs>/train.csv --log <file>] -- <bc|rl 인자>`. 비정상 종료·진행 멈춤이면 같은 run을 재시작(체크포인트에서 이어 감)하고, 종료 코드 0(완료·Ctrl+C·잠금 상실)·130·75(다른 PC가 잡음)·76(양보)은 재시작하지 않는다
-- run 큐 작업자(061-R13·R14·R15, 장비 혼합 유동 운영): `uranium-train worker --queue <shared>/queue/<이름>.toml --backend <cuda|vulkan> --priority <n> [--log <file>]`. 큐 TOML은 `[defaults] datasets=[...] config="..."`, `[[run]] id, config, core(lstm|gtrxl), stage(s1|s2|ablation-a), init_run, datasets, steps`. 순서대로 끝나지 않은(`checkpoints/<id>/DONE` 없음) 잡을 수 있는 run을 `bc --run`으로 돌리고(감시·재시작 포함), 빈 run이 없으면 우선순위가 낮은 PC의 run에 양보 요청(`locks/<id>.yield`)을 쓴다. 장비별 구간은 `runs/<id>/devices.jsonl`. **이 PC**(CUDA, 우선순위 10): 쉴 때 콘솔에서 실행하고 Ctrl+C로 멈춘다(현재 run 체크포인트·push·잠금 해제 후 종료, 약 30초). **BC250 1호기**(Vulkan f32, 우선순위 1): 상시 실행, `systemd --user` 서비스(`KillSignal=SIGINT`, `TimeoutStopSec=600`, `loginctl enable-linger`) 또는 `setsid nohup uranium-train worker ... &`, 멈출 때 `kill -INT <worker pid>`. **BC250 2호기는 learner 금지**
-- RL(042): `target/release/uranium-train rl --run <id> --bc <BC ckpt> --logs <dir> [--config config/rl.toml] [--algo vtrace|ppo] [--backend cuda|vulkan|flex] [--z-table <jsonl>] [--ac1-race terran|protoss|zerg] [--max-agent-steps N] [--max-updates N] [--max-minutes N] [--take-over]` (빌드 `--features cuda`는 CUDA PC에서만). 체크포인트·잠금은 061(`<URANIUM_SHARED_DIR>/checkpoints/<run>/`), 게임 PC는 `URANIUM_HOSTS_FILE`. 로그 `train.csv`·`games.csv`(042-R2). 042-AC1·033-AC2는 `--max-agent-steps 10000000`(run 누적, 재개해도 이어 셈, 도달하면 Ctrl+C와 같은 정상 종료, 042-R12). 리플레이는 모든 게임을 임시 저장하고 `[replays] sample_every`(기본 100)의 배수 게임 id와 승자 불일치 게임만 `<URANIUM_SHARED_DIR>/runs/<run>/replays/g<id>-<sample|disagree>.rep`에 남긴다(지우지 않음, games.csv `replay`·`replay_reason`, 042-R11). z 테이블 `uranium-train z-table`(033-R8)
-- 모델 벤치(032-AC2/AC3): `cargo run -p bench --release [--features cuda] -- --backend <vulkan|cuda> --filter net_ [--f16]`. CUDA는 CUDA Toolkit(`CUDA_PATH`) 필요
-- 래더 리플레이 수집(043, Windows·본계정 SC:R 로그인 상태): `target/release/uranium-ladder probe [--leaderboard <id> | --toon <t> --gateway <g> [--gamemode <m> --season <s>] | --match-id <MM-link> | --download <url>]` — 경로 리더보드 → 프로필 `replays[]` → playerinfo → GCS url(`reports/m4_ladder_probe.md`). 단계별 원본 응답은 `<URANIUM_SHARED_DIR>/datasets/replays/ladder/probe/`, 출력은 형태만(043-R11). 저장 응답 형태 보기 `uranium-ladder shape <json> [--pointer /a/0]`. 하루 1회 수집 `uranium-ladder collect --plan config/ladder/kr_asia.toml [--limit N] [--dry-run]` → `raw/scr_ladder/`, `<URANIUM_SHARED_DIR>/datasets/replays/ladder/collect.jsonl`(toon 평문, git 밖). 집계 `uranium-ladder status`. 0.5 req/s·일 1,000개(043-R4). 랭크 A 이상 = `min_bucket = 6`(F=1 … S=7)
-- 게임 데이터(MPQ, CASC 추출물, 맵, 리플레이)는 저작권 자료라 절대 커밋하지 않는다(.gitignore).
+상세 옵션은 `docs/commands.md`.
+- 테스트: `cargo test --workspace`
+- 빌드: `tools/openbw/build.sh` → `tools/openbw/build_bridge.sh` (Windows는 `.ps1`), `cargo build --release [--features cuda]`
+- 게임: `uranium-hostd serve`, `uranium-env run --plan config/plans/<plan>.toml`, `uranium-env calibrate`
+- 리플레이: `uranium-replay build <dir> --src <tag> --records <jsonl> [--part i --parts N]`
+- BC: `uranium-train bc --dataset replays/shards/<src>... --run <id> --backend <cuda|vulkan>`, `bc-eval`, `bc-epoch`, `split-stats`, `manifest`
+- 작업자: `uranium-train worker --queue <큐> --backend <b> --priority <n>`, 감시 `uranium-train supervise -- <인자>`
+- RL: `uranium-train rl --run <id> --bc <ckpt> --logs <dir>`
