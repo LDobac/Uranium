@@ -57,7 +57,8 @@ pub struct EpochTable {
 pub fn epoch_table(dirs: &[PathBuf], cfg: &BcConfig) -> Result<EpochTable> {
     let base = ShardSource::from_dirs(dirs)?;
     let files: Vec<PathBuf> = base.files().to_vec();
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    // A decoded shard is close to 1 GB: a few readers keep a 16 GB host (BC250) out of swap.
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(4);
     let next = std::sync::atomic::AtomicUsize::new(0);
     let mut per_file: Vec<Option<Vec<LenItem>>> = vec![None; files.len()];
     let results = std::sync::Mutex::new(&mut per_file);

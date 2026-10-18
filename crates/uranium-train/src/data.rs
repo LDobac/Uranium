@@ -87,6 +87,20 @@ impl ShardSource {
         &self.files
     }
 
+    /// The file list in read order by the last three path parts (`<src>/<part>/shard_*`), the same
+    /// on every PC whatever the local dataset folder: a data position only applies to this list.
+    pub fn fingerprint(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        for f in &self.files {
+            let parts: Vec<_> = f.components().rev().take(3).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+            h.update(parts.join("/").as_bytes());
+            h.update(b"\n");
+        }
+        let hex: String = h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect();
+        format!("{}:{hex}", self.files.len())
+    }
+
     /// Selected games of file `k` in source order (selection, then the per-file shuffle).
     pub fn file_games(&self, k: usize) -> Result<Vec<ShardGame>> {
         let f = &self.files[k];

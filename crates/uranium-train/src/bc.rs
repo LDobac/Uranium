@@ -139,6 +139,9 @@ pub struct FeedState {
     pub rng: u64,
     pub games: usize,
     pub invalid_labels: usize,
+    /// [`ShardSource::fingerprint`] the position refers to (empty: not a shard source).
+    #[serde(default)]
+    pub files: String,
 }
 
 /// The CPU half of an update: B lanes x T steps of features and labels (041-R2), plus the data
@@ -169,6 +172,8 @@ pub struct Feeder {
     augment: bool,
     games: usize,
     invalid_labels: usize,
+    /// Fingerprint of the shard source (set on the first batch from it).
+    files: String,
 }
 
 impl Feeder {
@@ -181,6 +186,7 @@ impl Feeder {
             augment: cfg.data.augment,
             games: 0,
             invalid_labels: 0,
+            files: String::new(),
         }
     }
 
@@ -230,9 +236,13 @@ impl Feeder {
 
     /// [`Feeder::next_batch`] from a shard source, with its read position in the batch's state.
     pub fn next_batch_from(&mut self, src: &mut ShardSource) -> Result<Option<Batch>> {
+        if self.files.is_empty() {
+            self.files = src.fingerprint();
+        }
         let b = self.next_batch(src, None)?;
         Ok(b.map(|mut b| {
             b.state.source = Some(src.position());
+            b.state.files = self.files.clone();
             b
         }))
     }
@@ -247,12 +257,22 @@ impl Feeder {
                 Some(LaneState { id, pos: g.pos(), z_present: g.z_present(), sym: Sym::all().iter().position(|s| *s == g.sym()).unwrap_or(0) as u8 })
             })
             .collect();
-        FeedState { lanes, source: pos, rng: self.rng.state(), games: self.games, invalid_labels: self.invalid_labels }
+        FeedState { lanes, source: pos, rng: self.rng.state(), games: self.games, invalid_labels: self.invalid_labels, files: self.files.clone() }
     }
 
     /// Back to `st` (061-R10 resume): counters and RNG, lanes re-read from `src` and advanced to
     /// their recorded step, and `src` sought to the recorded position.
     pub fn restore(&mut self, st: &FeedState, src: &mut ShardSource) -> Result<()> {
+        if !st.files.is_empty() {
+            let here = src.fingerprint();
+            anyhow::ensure!(
+                st.files == here,
+                "the checkpoint's data position is for another shard list ({} here {}): pass the same datasets, selection and seed (061-R10)",
+                st.files,
+                here
+            );
+            self.files = here;
+        }
         self.rng = Rng::from_state(st.rng);
         self.games = st.games;
         self.invalid_labels = st.invalid_labels;
@@ -543,6 +563,7 @@ impl<C: CoreInit> Trainer<C> {
                 rng: *state.rng.first().ok_or_else(|| anyhow::anyhow!("no rng state in {}", dir.display()))?,
                 games: state.extra["games"].as_u64().unwrap_or(0) as usize,
                 invalid_labels: state.extra["invalid_labels"].as_u64().unwrap_or(0) as usize,
+                files: String::new(),
             },
         };
         self.feeder.restore_counters(&self.data);

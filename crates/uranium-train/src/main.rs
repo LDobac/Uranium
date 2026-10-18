@@ -207,7 +207,12 @@ impl DataArgs {
         let mut dirs = Vec::new();
         if !self.dataset.is_empty() {
             let cfg = uranium_train::storage::StorageConfig::from_env()?;
-            for d in &self.dataset {
+            // Sorted, so the game order (041-R13) and a run's data position (061-R10) do not
+            // depend on the order the datasets were named in.
+            let mut names = self.dataset.clone();
+            names.sort();
+            names.dedup();
+            for d in &names {
                 dirs.push(uranium_train::storage::open_dataset(&cfg, d)?);
             }
         }
