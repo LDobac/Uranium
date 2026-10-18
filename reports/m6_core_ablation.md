@@ -52,7 +52,7 @@ BC 본 설정(레인 32 × T64)의 GTrXL update 시간은 아직 재지 않았�
   - 랜덤 초기화 망, 장비마다 GPU 단독
 - update 시간은 `bc --steps 3~4`의 정상 상태 값이다. 모듈 시간은 `bc-profile`(레인 그룹 = 64행, update = 32그룹)로 쟀다.
 
-| 항목 | 이 PC CUDA (TF32) LSTM | 이 PC CUDA GTrXL | bc250_1 Vulkan f32 LSTM | bc250_1 Vulkan f32 GTrXL |
+| 항목 | 이 PC CUDA (TF32) LSTM | 이 PC CUDA GTrXL | BC250 1호기 Vulkan f32 LSTM | BC250 1호기 Vulkan f32 GTrXL |
 |---|---|---|---|---|
 | update 시간 | 25.0–26.1 s | **22.6–23.4 s** | 128–152 s | 134–156 s |
 | 레인 그룹 forward / backward | 0.194 / 0.599 s | 0.159 / 0.537 s | 0.588 / 3.622 s | 0.565 / 3.563 s |
@@ -60,7 +60,7 @@ BC 본 설정(레인 32 × T64)의 GTrXL update 시간은 아직 재지 않았�
 | 최대 GPU 메모리 | 5.1 GB / 16 GB (nvidia-smi, 메모리 풀 포함) | 5.4 GB | VRAM 0.5 + GTT 3.2 = 3.5 GB / 15.9 GB | VRAM 0.5 + GTT 3.2 = 3.5 GB |
 | OOM·장치 리셋 | 없음 | 없음 | 없음 | 없음 |
 
-- **bc250_1 Linux에서 GTrXL 학습이 된다.** Windows Vulkan에서 TDR로 측정할 수 없었던 문제는 Linux에서 나지 않았다(update 3회와 프로파일 모두 정상 종료).
+- **BC250 1호기 Linux에서 GTrXL 학습이 된다.** Windows Vulkan에서 TDR로 측정할 수 없었던 문제는 Linux에서 나지 않았다(update 3회와 프로파일 모두 정상 종료).
 - 두 코어의 차이는 core 부분뿐이다. 그 차이가 update 시간에서 차지하는 비중은 작다. 나머지는 spatial encoder(conv)와 location head(ConvTranspose)가 차지하고, 두 코어가 같다.
   - CUDA에서는 GTrXL이 T 방향 병렬이라 약 10% 빠르다.
   - Vulkan에서는 거의 같다. 측정 사이 편차(약 ±10%)가 차이보다 크다.
@@ -79,7 +79,7 @@ BC 본 설정(레인 32 × T64)의 GTrXL update 시간은 아직 재지 않았�
 |---|---|
 | 비교 여부 | 둘 다 짧게 학습해 비교한다("일단 실험하는 거니까 둘 다 테스트, 짧게 1–2일") |
 | 학습 길이 | 코어마다 S1 5,300 update, 각 1회(seed 1개) |
-| 장비 | 혼합 유동 운영(2026-10-18 사용자 결정): bc250_1(Vulkan f32)은 상시, 이 PC(CUDA, TF32 matmul)는 쉬는 동안 run 큐 작업자로 두 run을 나눠 맡고 서로 이어받는다(061-R13·R14). 장비별 update 구간은 `runs/<id>/devices.jsonl`(061-R15). 두 run의 장비 비율을 최종 집계해 4절에 적는다 |
+| 장비 | 혼합 유동 운영(2026-10-18 사용자 결정): BC250 1호기(Vulkan f32)은 상시, 이 PC(CUDA, TF32 matmul)는 쉬는 동안 run 큐 작업자로 두 run을 나눠 맡고 서로 이어받는다(061-R13·R14). 장비별 update 구간은 `runs/<id>/devices.jsonl`(061-R15). 두 run의 장비 비율을 최종 집계해 4절에 적는다 |
 | 학습률 스케줄 | 짧은 run 전용: warmup 5%(265) + cosine이 5,300에서 끝남. 비교 run은 본학습에 다시 쓰지 않는다 |
 | 오프라인 지표 | `bc-eval --split val --games 500`(두 코어 같은 500게임) |
 | 대전 | 맞대결과 각자 T0 상대 둘 다. 맞대결은 맵당 50판(25판마다 슬롯 교대). 확률적 샘플링(temp 1) |
@@ -99,9 +99,9 @@ BC 본 설정(레인 32 × T64)의 GTrXL update 시간은 아직 재지 않았�
 
 시작 전 남은 확인 (2026-10-18 19:10 정리, 아직 하지 않음):
 1. **val 500게임의 출처 편중.** `bc-eval`은 val 분할을 셔플 없이 shard 순서대로 앞에서 500게임 읽는다(`bc_eval.rs` `evaluate`). 두 코어가 같은 게임을 보는 것은 보장된다. 다만 데이터셋 순서가 정렬된 고정 순서라서(1076101) 500게임이 소스 하나에 몰릴 수 있다. 소스·맵 분포를 확인하고, 치우치면 "소스별 균등" 또는 "고정 seed 셔플 500게임"을 사용자에게 묻는다.
-2. **GTrXL은 BC 본 설정으로 학습해 본 적이 없다.** BC 준비 검증(preflight 1–3차, 이어 하기, 최적화)은 모두 LSTM이었다. GTrXL은 벤치(B2·T16)만 돌렸다. 레인 32 × T64 × N512에서 메모리와 update 시간을 모른다. Vulkan에서는 GTrXL 학습을 측정한 적이 없다(Windows TDR). CUDA와 bc250_1 양쪽에서 짧은 스모크가 필요하다. → **처리됨(진행 기록 2026-10-18 20:22 참조).**
-3. **장비를 섞으면 "약 2일"이 맞지 않는다.** 2일은 CUDA 단독 32.5 s/update 기준이다(이후 약 18% 단축). bc250_1 Vulkan은 최적화 전 169 s/update로, 단독이면 5,300 update에 약 10일이다. 최적화 후 값은 측정 중이다. 두 run의 장비별 update 구간 비율이 다르면 TF32와 f32의 수치 차이가 섞이므로, 장비별 구간을 기록한다.
-   - 다시 계산(2026-10-18 21:10, 진행 기록 20:22의 실측: GTrXL CUDA 약 23 s·Vulkan 약 145 s, LSTM CUDA 약 26 s·Vulkan 약 140 s; 아래는 두 코어 평균 CUDA 24.5 s·Vulkan 142 s 사용): 두 run 합계 10,600 update. 이 PC 단독으로 차례로 돌리면 약 71시간(약 3.0일). bc250_1 단독이면 run당 약 209시간(약 8.7일). 두 PC를 함께 쓰면 처리량은 `a/24.5 + 1/142` update/s다. 여기서 a는 이 PC의 가용률(학습에 쓸 수 있는 시간 비율)이고, bc250_1은 상시 가동이며 run이 PC 사이를 옮겨도 손실이 없다고 가정한다. a=100%면 약 62시간(약 2.6일), a=50%면 약 107시간(약 4.5일), a=25%면 약 171시간(약 7.1일)이다. 한 run이 bc250_1에만 오래 머물면 그 run이 늦게 끝나므로, 실제 기간은 작업자 큐 배분에 따라 이보다 길어질 수 있다.
+2. **GTrXL은 BC 본 설정으로 학습해 본 적이 없다.** BC 준비 검증(preflight 1–3차, 이어 하기, 최적화)은 모두 LSTM이었다. GTrXL은 벤치(B2·T16)만 돌렸다. 레인 32 × T64 × N512에서 메모리와 update 시간을 모른다. Vulkan에서는 GTrXL 학습을 측정한 적이 없다(Windows TDR). CUDA와 BC250 1호기 양쪽에서 짧은 스모크가 필요하다. → **처리됨(진행 기록 2026-10-18 20:22 참조).**
+3. **장비를 섞으면 "약 2일"이 맞지 않는다.** 2일은 CUDA 단독 32.5 s/update 기준이다(이후 약 18% 단축). BC250 1호기 Vulkan은 최적화 전 169 s/update로, 단독이면 5,300 update에 약 10일이다. 최적화 후 값은 측정 중이다. 두 run의 장비별 update 구간 비율이 다르면 TF32와 f32의 수치 차이가 섞이므로, 장비별 구간을 기록한다.
+   - 다시 계산(2026-10-18 21:10, 진행 기록 20:22의 실측: GTrXL CUDA 약 23 s·Vulkan 약 145 s, LSTM CUDA 약 26 s·Vulkan 약 140 s; 아래는 두 코어 평균 CUDA 24.5 s·Vulkan 142 s 사용): 두 run 합계 10,600 update. 이 PC 단독으로 차례로 돌리면 약 71시간(약 3.0일). BC250 1호기 단독이면 run당 약 209시간(약 8.7일). 두 PC를 함께 쓰면 처리량은 `a/24.5 + 1/142` update/s다. 여기서 a는 이 PC의 가용률(학습에 쓸 수 있는 시간 비율)이고, BC250 1호기은 상시 가동이며 run이 PC 사이를 옮겨도 손실이 없다고 가정한다. a=100%면 약 62시간(약 2.6일), a=50%면 약 107시간(약 4.5일), a=25%면 약 171시간(약 7.1일)이다. 한 run이 BC250 1호기에만 오래 머물면 그 run이 늦게 끝나므로, 실제 기간은 작업자 큐 배분에 따라 이보다 길어질 수 있다.
 4. **맞대결 경로 미시험.** 코어별 모델 정책 테스트는 있지만(`crates/uranium-agent/tests/model_policy.rs`), 한 게임에 LSTM 모델과 GTrXL 모델이 함께 들어간 실행은 없다. `uranium-agent random-checkpoint --core lstm|gtrxl` 두 개로 2–4판 스모크를 한다. → **처리됨(진행 기록 2026-10-18 21:03 참조).**
 5. **seed 1개.** 작은 차이는 seed 잡음일 수 있고, 판단할 근거가 없다. 결과 보고에 함께 적는다.
 
@@ -126,13 +126,13 @@ core = "gtrxl"
 ```
 ```
 cargo build --release -p uranium-train -p uranium-runner --features cuda     # 이 PC
-cargo build --release -p uranium-train                                       # bc250_1
-# bc250_1: 상시 실행 (systemd user 서비스 tools/worker/uranium-worker.service, 또는 setsid nohup)
+cargo build --release -p uranium-train                                       # BC250 1호기
+# BC250 1호기: 상시 실행 (systemd user 서비스 tools/worker/uranium-worker.service, 또는 setsid nohup)
 uranium-train worker --queue <shared>/queue/core-ablation.toml --backend vulkan --priority 1 --log runs/worker.log
 # 이 PC: 쉬는 동안 실행, 멈출 때 Ctrl+C (현재 run 체크포인트·push·잠금 해제)
 uranium-train worker --queue <shared>/queue/core-ablation.toml --backend cuda --priority 10 --log runs/worker.log
 ```
-- 작업자는 큐 순서대로 빈 run을 잡는다. 빈 run이 없으면 이 PC(우선순위 10)가 bc250_1(1)이 돌리는 run에 양보를 요청한다. bc250_1은 다음 update 끝에서 체크포인트·잠금 해제 후 넘기고, 이 PC를 멈추면 다시 이어 간다.
+- 작업자는 큐 순서대로 빈 run을 잡는다. 빈 run이 없으면 이 PC(우선순위 10)가 BC250 1호기(1)이 돌리는 run에 양보를 요청한다. BC250 1호기은 다음 update 끝에서 체크포인트·잠금 해제 후 넘기고, 이 PC를 멈추면 다시 이어 간다.
 - 장비별 update 구간: `<shared>/runs/core-abl-lstm/devices.jsonl`, `<shared>/runs/core-abl-gtrxl/devices.jsonl`(시작·체크포인트·종료마다 host·백엔드·정밀도·step).
 - **공정성 주의:** 두 run의 장비별 update 비율이 크게 다르면 Vulkan f32와 CUDA TF32의 수치 차이가 비교에 섞일 수 있다. 4절에 run별 장비 비율을 집계해 적는다.
 ```
@@ -167,7 +167,7 @@ uranium-env run --plan config/plans/core-ablation-t0.toml  --backend cuda --out 
 | target_loc 타일 오차 | | |
 | selected F1 | | |
 | update 시간(s, GPU 단독) | | |
-| 장비 비율 (update 수: 이 PC CUDA / bc250_1 Vulkan) | | |
+| 장비 비율 (update 수: 이 PC CUDA / BC250 1호기 Vulkan) | | |
 
 | 대전 | 결과 (Wilson 95%) |
 |---|---|
@@ -184,8 +184,8 @@ uranium-env run --plan config/plans/core-ablation-t0.toml  --backend cuda --out 
 
 - 2026-10-18 18:38 — 계획 확정. spec 032-R17·AC7, AMB-032-6 등록, 설정·plan 작성. 실행은 아직 하지 않음.
 - 2026-10-18 19:01 — T0 대전 판수 사용자 확정: 조합당 50판(코어당 300판, 합계 600판). 맞대결·샘플링은 변경 없음.
-- 2026-10-18 19:05 — 시작 전 남은 확인 5가지를 3절에 정리. 장비 혼합 유동 운영(bc250_1 + 이 PC, worker 큐)은 다른 세션이 worker 구현과 함께 032-R17 ①·이 문서 2·3절에 반영하기로 함.
-- 2026-10-18 20:22 — GTrXL 실제 BC 설정 확인(1.5절): 이 PC CUDA GTrXL 22.6–23.4 s/update(LSTM 25.0–26.1 s), bc250_1 Linux Vulkan f32 GTrXL 134–156 s(LSTM 128–152 s), OOM·TDR 없음, 최대 메모리 CUDA 5.4 GB·bc250_1 VRAM+GTT 3.5 GB. 3절 확인 2번(GTrXL BC 미검증) 해소. 3번(기간): 단독이면 이 PC 약 1.6일(5,300 × 약 26 s), bc250_1 약 8–9일(5,300 × 약 140 s)이고, 혼합 운영 기간은 이 PC 가동 시간에 따라 달라진다.
+- 2026-10-18 19:05 — 시작 전 남은 확인 5가지를 3절에 정리. 장비 혼합 유동 운영(BC250 1호기 + 이 PC, worker 큐)은 다른 세션이 worker 구현과 함께 032-R17 ①·이 문서 2·3절에 반영하기로 함.
+- 2026-10-18 20:22 — GTrXL 실제 BC 설정 확인(1.5절): 이 PC CUDA GTrXL 22.6–23.4 s/update(LSTM 25.0–26.1 s), BC250 1호기 Linux Vulkan f32 GTrXL 134–156 s(LSTM 128–152 s), OOM·TDR 없음, 최대 메모리 CUDA 5.4 GB·BC250 1호기 VRAM+GTT 3.5 GB. 3절 확인 2번(GTrXL BC 미검증) 해소. 3번(기간): 단독이면 이 PC 약 1.6일(5,300 × 약 26 s), BC250 1호기 약 8–9일(5,300 × 약 140 s)이고, 혼합 운영 기간은 이 PC 가동 시간에 따라 달라진다.
 - 2026-10-18 21:00 — run 큐 작업자(061-R13·R14·R15)·감시 재시작(060-R6) 구현과 두 PC 실기 시험 완료(`reports/m6_bc_preflight.md` 4차). 2·3절에 작업자 기반 실행 절차와 장비 비율 집계(4절 표)를 반영했다. 실행은 사용자 승인 전이다.
 - 2026-10-18 21:03 — 맞대결 경로 스모크 통과(3절 4번). 3 step(LSTM)·2 step(GTrXL) 시험 BC 체크포인트로 맞대결 plan의 3판 축소본을 이 PC 로컬 hostd(동시 3판)에서 돌림. 추론 서버가 두 코어를 동시에 띄움. 3판 모두 끝까지 진행해 60분 시간 제한 무승부(TimeLimitDraw, 두 세션 승자 일치). winner disagree·dropped·세션 오류·시야 위반·executor 거부 모두 0. 결정 지연 p50/p95: LSTM 57.4/179.3ms, GTrXL 62.4/194.2ms(평균 배치 약 2). 시간 제한까지 가는 판은 동시 3판에서 판당 실제 약 16분.
 - 2026-10-18 21:03 — 스모크 준비 중 GTrXL CUDA BC가 OOM으로 1회 실패(데이터 업로드 시점). 다른 GPU 작업과 겹친 때로 보이며, 바로 재시도하니 정상이었다(샘플링 최대 약 7.5GB 관측). 이 PC가 쉬는 동안만 학습하는 운영이면 다른 GPU 작업과 겹쳐 재발할 수 있고, 그때는 watchdog 재시작(060-R6)에 의존한다.

@@ -20,7 +20,7 @@
 
 ### 프로파일 (`URANIUM_BC_PROFILE=1`, 구간마다 device sync)
 
-| 구간 | CUDA (이 PC) | Vulkan f32 (bc250_1) |
+| 구간 | CUDA (이 PC) | Vulkan f32 (BC250 1호기) |
 |---|---|---|
 | backward | 21.8 s (70%) | 142 s (84%) |
 | forward | 6.1 s (20%) | 20.6 s (12%) |
@@ -37,10 +37,10 @@
 
 ### PC 간 이어 하기 실측 (run `bcpre-xpc`)
 1. 이 PC CUDA에서 3 update를 하고 `ckpt-3`을 push했다.
-2. bc250_1 Vulkan이 `LATEST`를 pull해 데이터 위치(파일 2, 게임 9)에서 이어 2 update를 하고 `ckpt-5`를 push했다.
+2. BC250 1호기 Vulkan이 `LATEST`를 pull해 데이터 위치(파일 2, 게임 9)에서 이어 2 update를 하고 `ckpt-5`를 push했다.
 3. 이 PC CUDA에서 다시 이어 2 update를 하고 `ckpt-7`을 push했다.
 - 매번 잠금이 해제됐다. 게임 수와 손실이 이어졌다(처음 게임으로 돌아가지 않음).
-- **CUDA f32 ↔ Vulkan f16은 실측할 수 없었다.** f16 혼합 정밀도 학습이 구현되어 있지 않아(032-R8 구현 메모: BC250 학습 전까지 미룸) bc250_1도 f32로 돌았다.
+- **CUDA f32 ↔ Vulkan f16은 실측할 수 없었다.** f16 혼합 정밀도 학습이 구현되어 있지 않아(032-R8 구현 메모: BC250 학습 전까지 미룸) BC250 1호기도 f32로 돌았다.
 
 ### 본학습 예상 시간 (GPU 단독)
 
@@ -48,11 +48,11 @@
 |---|---|---|---|
 | S1 | 이 PC (CUDA f32) | 36,985 × 26.4 s (3차 최적화 후) | **약 11.3일** |
 | S2 (S1 후) | 이 PC | 7,915 × 26.4 s | 약 2.4일 |
-| ablation (A) (S1과 동시) | bc250_1 (Vulkan **f32**) | 7,915 × 약 135 s (3차 최적화 후) | **약 12.4일** |
+| ablation (A) (S1과 동시) | BC250 1호기 (Vulkan **f32**) | 7,915 × 약 135 s (3차 최적화 후) | **약 12.4일** |
 | 오프라인 평가 (대상 맵 test 895게임) | 이 PC | – | 체크포인트당 약 3시간 |
 | 041-AC2 (600판) | 이 PC hostd | – | 7시간 이상(측정 전) |
 
-- 이 PC의 S1+S2는 약 13.7일, bc250_1의 (A)는 약 12.4일이다(둘 다 GPU 단독 기준). 실제 운영은 장비 혼합 유동 방식(061-R13·R14)이라 run별 장비 구간에 따라 달라진다.
+- 이 PC의 S1+S2는 약 13.7일, BC250 1호기의 (A)는 약 12.4일이다(둘 다 GPU 단독 기준). 실제 운영은 장비 혼합 유동 방식(061-R13·R14)이라 run별 장비 구간에 따라 달라진다.
 - 다른 세션이 이 PC GPU를 같이 쓰면 S1 update가 50~60 s로 느려진다. 그러면 S1만 21~26일이다.
 
 ### 본학습 실행 명령 (승인 후)
@@ -61,7 +61,7 @@ DATA="--dataset replays/shards/stardata --dataset replays/shards/community --dat
 # 이 PC: S1 → S2
 uranium-train bc $DATA --run bc-s1 --backend cuda
 uranium-train bc $DATA --run bc-s2 --s2 --init <shared>/checkpoints/bc-s1 --backend cuda
-# bc250_1: ablation (A), S1과 동시
+# BC250 1호기: ablation (A), S1과 동시
 uranium-train bc $DATA --run bc-ablation-a --stage s2 --backend vulkan
 # 평가: 041-AC1, AC3 ((B) = bc-s2 vs (A) = bc-ablation-a)
 uranium-train bc-eval $DATA --checkpoint <shared>/checkpoints/bc-s2 --backend cuda
@@ -72,7 +72,7 @@ uranium-env run --plan config/plans/bc-vs-t0.toml --backend cuda
 - 중단되면 같은 명령을 다시 실행해 이어 한다. 다른 PC에서 이어 하려면 `--backend`만 바꾼다(잠금이 살아 있으면 `--take-over`).
 
 ### 결정 (2026-10-18 사용자)
-1. **(A)는 bc250_1에서 f32로 학습한다.** 032-R8에 예외로 기록했다(f16 미구현). 약 15.5일 걸린다.
+1. **(A)는 BC250 1호기에서 f32로 학습한다.** 032-R8에 예외로 기록했다(f16 미구현). 약 15.5일 걸린다.
 2. **S2와 (A)의 warmup은 그 단계 1 epoch의 5%다.** 반올림하며 .5는 올린다: 7,915 × 0.05 = 395.75 → 396. S1은 2,000을 그대로 둔다. 041-R14와 `config/bc.toml` `[steps]`에 반영했다.
 3. **BC 본학습은 보류한다.** 시작하지 않았다.
 
@@ -84,7 +84,7 @@ uranium-env run --plan config/plans/bc-vs-t0.toml --backend cuda
 ## 4차: 감시·재시작(060-R6)과 run 큐 작업자(061-R13·R14·R15) (2026-10-18 밤)
 
 사용자 결정(2026-10-18)은 두 가지다.
-- 장비 혼합 유동 운영: bc250_1은 상시, 이 PC는 쉬는 동안 돌리고 수시로 멈춘다.
+- 장비 혼합 유동 운영: BC250 1호기은 상시, 이 PC는 쉬는 동안 돌리고 수시로 멈춘다.
 - 비정상 종료 시 자동 재시작.
 
 ### 구현
@@ -101,7 +101,7 @@ uranium-env run --plan config/plans/bc-vs-t0.toml --backend cuda
   - 요청이 있는 run은 요청한 host만 잡을 수 있다(예약). 요청은 30분 뒤 만료된다.
 - **장비 기록(061-R15):** `runs/<id>/devices.jsonl`에 세션 시작·체크포인트·종료마다 한 줄을 남긴다(host, 백엔드, 정밀도, step, 시각, 종료 사유).
 - **bc 종료 코드:** 다른 PC가 run을 잡고 있으면(잠금 경합) 75, 양보했으면 76이다. 마지막 step이 이미 체크포인트이면 다시 저장하지 않는다.
-- **bc250_1 상시 실행 견본:** `tools/worker/uranium-worker.service`(systemd user, `KillSignal=SIGINT`).
+- **BC250 1호기 상시 실행 견본:** `tools/worker/uranium-worker.service`(systemd user, `KillSignal=SIGINT`).
 
 ### 시험
 - **가짜 학습 작업자 둘(061-AC8, `crates/uranium-train/tests/worker.rs`, GPU 없음):** 4회 반복해 모두 통과했다.
@@ -110,23 +110,23 @@ uranium-env run --plan config/plans/bc-vs-t0.toml --backend cuda
   - 높은 쪽을 Ctrl+C로 멈추면 낮은 쪽이 이어받아 끝낸다.
   - 한 run에 두 소유자가 생기지 않았고, 진행 step은 앞으로만 갔다.
 - **재시작 정책 단위 테스트:** `tests/supervise.rs`
-- **실기(061-AC9):** 이 PC(CUDA, 우선순위 10)와 bc250_1(Vulkan f32, 우선순위 1)에서 run 7개(각 6 update)로 시험했다. 시험 run은 끝난 뒤 지웠다.
+- **실기(061-AC9):** 이 PC(CUDA, 우선순위 10)와 BC250 1호기(Vulkan f32, 우선순위 1)에서 run 7개(각 6 update)로 시험했다. 시험 run은 끝난 뒤 지웠다.
 
 | 시험 | 결과 |
 |---|---|
 | 큐 순서대로 잡기 | 이 PC 작업자가 `wtest-a`→`b`→`c`→`d`를 차례로 끝냈다 |
-| 잠금 경합 | 이 PC가 bc250_1과 거의 동시에 `wtest-f`를 시도했다. 학습 쪽이 잠금 단계에서 75로 끝났고, 작업자는 다음 빈 run(`wtest-g`)을 잡았다. 두 소유자 없음 |
+| 잠금 경합 | 이 PC가 BC250 1호기과 거의 동시에 `wtest-f`를 시도했다. 학습 쪽이 잠금 단계에서 75로 끝났고, 작업자는 다음 빈 run(`wtest-g`)을 잡았다. 두 소유자 없음 |
 | Ctrl+C (Windows 작업자) | 진행 중이던 run을 체크포인트(`ckpt-2`, `ckpt-3`)·push·잠금 해제한 뒤 작업자가 종료했다 |
 | 같은 PC 재개 | 다시 띄우자 `ckpt-2`·데이터 위치에서 이어 6까지 끝냈다 |
 | 강제 종료 (Windows, 자식 TerminateProcess) | `Exited(Some(-1))` → 5초 뒤 같은 run 재시작 → 완료 |
-| 강제 종료 (Linux bc250_1, 자식 `kill -9`) | `Exited(None)` → 5초 뒤 재시작 → 완료 |
-| PC 간 이어받기 | 이 PC가 Ctrl+C로 멈춘 `wtest-g`(ckpt-3, CUDA)를 bc250_1이 데이터 위치째 이어받았다 |
-| 양보 요청 | 이 PC가 요청 → bc250_1이 다음 update 끝에서 `ckpt-4`·잠금 해제(76) → 이 PC가 `ckpt-4`에서 이어 6까지 끝냈다 |
+| 강제 종료 (Linux BC250 1호기, 자식 `kill -9`) | `Exited(None)` → 5초 뒤 재시작 → 완료 |
+| PC 간 이어받기 | 이 PC가 Ctrl+C로 멈춘 `wtest-g`(ckpt-3, CUDA)를 BC250 1호기이 데이터 위치째 이어받았다 |
+| 양보 요청 | 이 PC가 요청 → BC250 1호기이 다음 update 끝에서 `ckpt-4`·잠금 해제(76) → 이 PC가 `ckpt-4`에서 이어 6까지 끝냈다 |
 | SIGINT (Linux 작업자) | 대기 중이던 작업자가 정상 종료했다 |
-| 장비 기록 | `wtest-g`: 이 PC CUDA 0→3 (ctrl-c), bc250_1 Vulkan 3→4 (yield), 이 PC CUDA 4→6 (done) |
+| 장비 기록 | `wtest-g`: 이 PC CUDA 0→3 (ctrl-c), BC250 1호기 Vulkan 3→4 (yield), 이 PC CUDA 4→6 (done) |
 
 - **알려진 점:**
-  - `devices.jsonl`의 `time`은 각 PC의 시계라 PC 사이 순서가 어긋날 수 있다(bc250_1이 몇 분 빠름). 장비 비율은 step 구간으로 집계한다.
+  - `devices.jsonl`의 `time`은 각 PC의 시계라 PC 사이 순서가 어긋날 수 있다(BC250 1호기이 몇 분 빠름). 장비 비율은 step 구간으로 집계한다.
   - kill -9된 세션은 stop 줄이 없다. 다음 start의 step이 그 세션의 끝을 대신한다.
 - 시험 스크립트에서 고친 점(코드 결함 아님):
   - `powershell -File` 인자 안의 큰따옴표가 사라져 대기 패턴이 맞지 않았다.
@@ -179,7 +179,7 @@ uranium-env run --plan config/plans/bc-vs-t0.toml --backend cuda
   - + LSTM 묶음: 26.9–27.7 s
   - **+ location 사용 행만: 25.1–27.5 s(평균 약 26.4 s)**
   - 합계 약 18% 단축이다.
-- **Vulkan(bc250_1) 실제 update 시간:** 기존 약 169 s → 최종 121–152 s(측정마다 편차 약 ±10%, 평균 약 135 s, 약 20% 단축). Vulkan에서는 location head backward(ConvTranspose)가 여전히 가장 크다(레인 그룹 1.81 s).
+- **Vulkan(BC250 1호기) 실제 update 시간:** 기존 약 169 s → 최종 121–152 s(측정마다 편차 약 ±10%, 평균 약 135 s, 약 20% 단축). Vulkan에서는 location head backward(ConvTranspose)가 여전히 가장 크다(레인 그룹 1.81 s).
 - **gradient 비교(Vulkan f32 대 Flex):** 최종 코드 5.0e-4, autotune 빌드 4.3e-4. Vulkan에서는 autotune이 gradient를 거의 바꾸지 않는다(CUDA와 다름). 다만 속도 이득도 약 1.35배로 작다. gradient 비교 테스트의 Vulkan 허용치는 forward(1e-4)와 따로 1e-3으로 둔다(커널을 바꾸지 않은 계산에서도 5e-4가 나오는 누적 반올림 차이).
 
 ### 제안만 하는 것 (결과가 달라짐)
@@ -197,39 +197,39 @@ uranium-env run --plan config/plans/bc-vs-t0.toml --backend cuda
   - CTRL_C_EVENT는 반응이 없었다. 시험 하네스가 만든 프로세스는 "Ctrl+C 무시" 속성을 물려받기 때문으로 보인다. 사용자가 터미널에서 직접 누르는 경우와는 다르다.
   - CTRL_BREAK_EVENT로 시험했다. 결과: `[bc] Ctrl+C: saving a checkpoint after this update` → 진행 중 update 완료 → `ckpt-24 Pushed` → 잠금 파일 삭제 → 종료.
   - 같은 명령으로 재개하니 `ckpt-24`와 데이터 위치(파일 2, 게임 3)에서 이어 `ckpt-26`을 push했고, 잠금도 해제됐다.
-- **bc250_1(Linux, SIGINT):** run `bcpre-ctrlc-l`(flex 백엔드, Ctrl+C 처리는 백엔드와 무관)에 학습 중 `kill -INT` → `[bc] Ctrl+C: saving…` → 진행 중 update 완료 → `ckpt-2 Pushed` → 종료(exit 0). 재개 시 `ckpt-2`·데이터 위치에서 이어 갔다. 이때 재개 지점이 `--steps`와 같으면 같은 step을 다시 저장해 push가 미뤄지고 잠금이 남는 버그를 찾아 고쳤다(update가 없으면 저장하지 않고 잠금 해제, 이 PC에서 재확인).
+- **BC250 1호기(Linux, SIGINT):** run `bcpre-ctrlc-l`(flex 백엔드, Ctrl+C 처리는 백엔드와 무관)에 학습 중 `kill -INT` → `[bc] Ctrl+C: saving…` → 진행 중 update 완료 → `ckpt-2 Pushed` → 종료(exit 0). 재개 시 `ckpt-2`·데이터 위치에서 이어 갔다. 이때 재개 지점이 `--steps`와 같으면 같은 step을 다시 저장해 push가 미뤄지고 잠금이 남는 버그를 찾아 고쳤다(update가 없으면 저장하지 않고 잠금 해제, 이 PC에서 재확인).
 
 ### 운영 절차 (같은 run을 PC를 바꿔 이어 하기)
 (4차에서 run 큐 작업자로 자동화했다. 아래 수동 절차는 작업자 없이 돌릴 때의 참고용이다.)
 - 장비 역할은 다음과 같다.
-  - learner: 이 PC(CUDA), bc250_1(Vulkan f32)
-  - **bc250_2는 learner 금지**
+  - learner: 이 PC(CUDA), BC250 1호기(Vulkan f32)
+  - **BC250 2호기는 learner 금지**
   - run: `bc-s1`, `bc-s2`, `bc-ablation-a`
 - 같은 run은 한 번에 한 PC만 돌린다(잠금). 재개하면 마지막 체크포인트의 데이터 위치부터 이어 간다.
 
 ```
 DATA="--dataset replays/shards/stardata --dataset replays/shards/community --dataset replays/shards/scr_ladder --dataset replays/shards/personal"
-# 평소: 이 PC는 S1, bc250_1은 (A)
+# 평소: 이 PC는 S1, BC250 1호기은 (A)
 [이 PC]    uranium-train bc $DATA --run bc-s1 --backend cuda
-[bc250_1]  uranium-train bc $DATA --run bc-ablation-a --stage s2 --backend vulkan
+[BC250 1호기]  uranium-train bc $DATA --run bc-ablation-a --stage s2 --backend vulkan
 ```
-1. **이 PC를 다른 작업에 쓰려고 S1을 bc250_1로 넘길 때**
+1. **이 PC를 다른 작업에 쓰려고 S1을 BC250 1호기로 넘길 때**
    1. 이 PC S1 콘솔에서 Ctrl+C를 누른다. `[bc] checkpoint ckpt-N Pushed`가 나오고 종료할 때까지 기다린다(update 1회, 약 30초).
-   2. bc250_1의 (A) 콘솔에서 Ctrl+C를 누르고(SIGINT) 같은 방식으로 종료를 확인한다. 한 GPU에서 둘을 같이 돌리면 둘 다 느려지므로 (A)는 쉰다.
-   3. bc250_1에서 `uranium-train bc $DATA --run bc-s1 --backend vulkan`을 실행한다. `LATEST`를 pull해 데이터 위치부터 이어 간다.
+   2. BC250 1호기의 (A) 콘솔에서 Ctrl+C를 누르고(SIGINT) 같은 방식으로 종료를 확인한다. 한 GPU에서 둘을 같이 돌리면 둘 다 느려지므로 (A)는 쉰다.
+   3. BC250 1호기에서 `uranium-train bc $DATA --run bc-s1 --backend vulkan`을 실행한다. `LATEST`를 pull해 데이터 위치부터 이어 간다.
 2. **이 PC로 S1을 되돌릴 때**
-   1. bc250_1 S1 콘솔에서 Ctrl+C를 누르고 push·종료를 확인한다(update 1회, 약 2~3분).
+   1. BC250 1호기 S1 콘솔에서 Ctrl+C를 누르고 push·종료를 확인한다(update 1회, 약 2~3분).
    2. 이 PC에서 `uranium-train bc $DATA --run bc-s1 --backend cuda`를 실행한다.
-   3. bc250_1에서 (A)를 같은 명령으로 다시 시작한다. (A)도 마지막 체크포인트에서 이어 간다.
+   3. BC250 1호기에서 (A)를 같은 명령으로 다시 시작한다. (A)도 마지막 체크포인트에서 이어 간다.
 3. **반대 방향((A)를 이 PC로)도 같다.** run 이름만 바꾸면 된다.
 4. **PC가 비정상 종료해 잠금이 남았을 때**
    - 같은 PC에서 다시 시작하면 잠금을 넘겨받는다. 그 PC에만 있던 미push 체크포인트도 먼저 push한다.
    - 다른 PC에서 이어 받으려면 heartbeat가 10분 끊긴 뒤 `--take-over`를 붙인다.
    - 잃는 것은 마지막 체크포인트 이후, 최대 1시간(`checkpoint_minutes = 60`)이다.
 5. **S2는 S1이 끝난 뒤 시작한다:** `uranium-train bc $DATA --run bc-s2 --s2 --init <shared>/checkpoints/bc-s1 --backend cuda`.
-- **주의 (확인 필요):** S1을 bc250_1에서 이어 하면 그 구간은 Vulkan **f32**로 학습한다.
+- **주의 (확인 필요):** S1을 BC250 1호기에서 이어 하면 그 구간은 Vulkan **f32**로 학습한다.
   - 032-R8 예외는 지금 (A)에만 적혀 있다.
-  - 이 운영 방식을 쓰려면 S1·S2의 bc250_1 구간에도 f32 예외를 넓혀야 한다.
+  - 이 운영 방식을 쓰려면 S1·S2의 BC250 1호기 구간에도 f32 예외를 넓혀야 한다.
 
 ## 결론 (1차)
 - **경로는 끝까지 동작한다.** 동작한 단계는 다음과 같다.
@@ -291,7 +291,7 @@ DATA="--dataset replays/shards/stardata --dataset replays/shards/community --dat
 | S2 (대상 맵 train, 20.0%) | 약 16.3M | 약 8,000 | 약 3.0일 |
 | ablation (A) (S2 데이터, 처음부터) | 약 16.3M | 약 8,000 | 약 3.0일 |
 
-- 1 epoch씩 하면 S1 + S2 + (A)가 이 PC 하나로 약 20일이다. (A)를 bc250_1(Vulkan)에서 동시에 돌리면 약 17일이다. 단, bc250_1의 Vulkan 속도는 아직 측정하지 않았다.
+- 1 epoch씩 하면 S1 + S2 + (A)가 이 PC 하나로 약 20일이다. (A)를 BC250 1호기(Vulkan)에서 동시에 돌리면 약 17일이다. 단, BC250 1호기의 Vulkan 속도는 아직 측정하지 않았다.
 - 지금 설정 `total_steps = 500000`은 약 13.7 epoch이고 약 190일이다. 그런데 학습기는 1 epoch(약 36,400 update)에서 데이터가 떨어져 멈춘다. 이때 cosine 스케줄은 500,000 기준이라 학습률이 거의 최대값인 채로 끝난다.
 - 041-AC2 600판: 표본은 6판에 258초였다(동시 3게임, 상한 24,000 frame). 실제 BC가 강해지면 게임이 길어진다. 대략 7시간 이상이고, 측정 전 추정이다.
 
@@ -322,7 +322,7 @@ uranium-env run --plan config/plans/bc-vs-t0.toml --backend cuda
    - f16 학습(032-R8): Burn에 AMP가 없어서 구현이 필요하다.
    - 모델 축소나 레인 조정: 결과가 달라지는 튜닝이다.
    - 구간 표본 추출: 데이터 일부만 쓴다.
-   - (A)는 bc250_1로 분리한다.
+   - (A)는 BC250 1호기로 분리한다.
 3. **오프라인 평가 명령 구현(spec 정의, 결정 불필요).** 대상 맵 test 셋에서 top-1/top-5, delay MAE, target_loc 오차, selected F1을 계산한다. AC1·AC3 판정 전에 필요하다.
 4. **장기 실행 안전장치(제안).**
    - resume 시 데이터 위치 저장

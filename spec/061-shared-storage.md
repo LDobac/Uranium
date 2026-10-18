@@ -98,7 +98,7 @@ $URANIUM_CACHE_DIR/         # 학습 PC 로컬 캐시 (shards, 현재 run 체크
 - 061-AC7: R12 로컬 모드에서 pull이 캐시에 shard를 복사하지 않는다. 원본 shard 하나를 변조하면 manifest 검증 실패로 학습 시작이 거부된다.
 - 061-AC5: Vulkan 호스트에서 저장한 체크포인트를 CUDA 호스트에서 불러왔을 때, 같은 입력의 forward 출력 차이가 ≤ 1e-4(f32)다. 반대 방향도 같다.
 - 061-AC8: 작업자 둘(가짜 학습, Flex)이 같은 큐에서 서로 다른 run을 잡고, 한 run에 두 소유자가 생기지 않으며, 양보 요청 시 낮은 우선순위 쪽이 체크포인트·잠금 해제 후 넘기고 요청한 쪽이 이어받는다. Ctrl+C로 멈춘 run을 다른 작업자가 이어받는다.
-- 061-AC9: 이 PC(CUDA)와 bc250_1(Vulkan)에서 짧은 시험 run 두 개로 잡기, Ctrl+C 후 이어받기, 양보 요청, 강제 종료 후 watchdog 재시작을 확인하고 `devices.jsonl`에 장비 구간이 남는다.
+- 061-AC9: 이 PC(CUDA)와 BC250 1호기(Vulkan)에서 짧은 시험 run 두 개로 잡기, Ctrl+C 후 이어받기, 양보 요청, 강제 종료 후 watchdog 재시작을 확인하고 `devices.jsonl`에 장비 구간이 남는다.
 
 ## Risks & Open Questions
 - SMB 위에서의 rename 원자성은 서버 구현(Windows, Samba, NAS)에 따라 다를 수 있다. 2026-10-15 실제 공유(Windows SMB, Linux cifs 3.1.1 마운트, VPN 경유)에서 확인한 결과는 다음과 같다. M5에서 장애 주입으로 061-AC2를 정식 검증한다.
