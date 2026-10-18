@@ -158,3 +158,79 @@ fn default_size_difference_report_032_ac1() {
         assert!(s.worst <= tol);
     }
 }
+
+/// Gradients of every parameter, in visit order.
+struct GradDump<'a> {
+    grads: &'a burn::tensor::Gradients,
+    out: Vec<Vec<f32>>,
+}
+
+impl burn::module::ModuleVisitor for GradDump<'_> {
+    fn visit_float<const D: usize>(&mut self, param: &burn::module::Param<Tensor<D>>) {
+        self.out.push(param.val().grad(self.grads).map(|g| floats(&g)).unwrap_or_default());
+    }
+}
+
+/// Training loss and parameter gradients of one teacher-forced sequence pass (T steps, as BC).
+fn loss_and_grads<C: CoreInit>(net: &UraniumNet<C>, cfg: &UraniumNetConfig, labels: &ActionBatch, b: usize, t: usize, n: usize, d: &Device) -> (f32, Vec<Vec<f32>>) {
+    let cols = columns();
+    let (obs, _) = random_obs(cfg, &cols, b * t, n, 23, d);
+    let out = net.forward_seq(&obs, &to(labels, d), None, net.init_state(b, d), t);
+    let lp = &out.heads.logp;
+    let loss = (lp.action.clone() + lp.delay.clone() + lp.queued.clone() + lp.selected.clone() + lp.target_unit.clone() + lp.target_loc.clone()).neg().mean()
+        + out.value.powi_scalar(2).mean();
+    let l = floats(&loss)[0];
+    let grads = loss.backward();
+    let mut dump = GradDump { grads: &grads, out: Vec::new() };
+    net.visit(&mut dump);
+    (l, dump.out)
+}
+
+/// The backward pass on the GPU matches Flex: loss within the forward tolerance and every
+/// parameter gradient within it relative to the gradient's scale. Guards kernel choices that
+/// must not change results (Burn autotune / fusion, 2026-10-18).
+fn gradients_match<C: CoreInit>(cfg: &UraniumNetConfig, b: usize, t: usize, n: usize) {
+    let (cpu, (gpu, tol)) = (Device::flex(), target());
+    cpu.seed(31);
+    let cols = columns();
+    let (cpu_ad, gpu_ad) = (cpu.clone().autodiff(), gpu.clone().autodiff());
+    let net = UraniumNet::<C>::new(cfg, &cols, &cpu_ad);
+    let (obs, _) = random_obs(cfg, &cols, b * t, n, 23, &cpu_ad);
+    let labels = net.act(&obs, net.init_state(b * t, &cpu_ad), 0.0).action;
+    let (lc, gc) = loss_and_grads(&net.clone(), cfg, &labels, b, t, n, &cpu_ad);
+    // `fork` keeps the parameters tracked on the new device (`to_device` would not).
+    let (lg, gg) = loss_and_grads(&net.fork(&gpu_ad), cfg, &labels, b, t, n, &gpu_ad);
+    eprintln!("{:?} loss cpu {lc:.6} gpu {lg:.6}", C::KIND);
+    assert!((lc - lg).abs() <= tol * lc.abs().max(1.0), "loss differs: {lc} vs {lg}");
+    // Per parameter: ||g_gpu - g_cpu|| / ||g_cpu|| (L2), and the max-abs ratio for the report.
+    let l2 = |v: &[f32]| v.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
+    // Parameters whose gradient is ~0 in exact arithmetic (e.g. a bias right before a norm) only
+    // carry rounding noise: measure against 1e-3 of the largest parameter gradient at least.
+    let floor = 1e-3 * gc.iter().map(|a| l2(a)).fold(0.0, f64::max);
+    let mut rows = Vec::new();
+    for (i, (a, g)) in gc.iter().zip(&gg).enumerate() {
+        assert_eq!(a.is_empty(), g.is_empty(), "parameter {i}: gradient on one device only");
+        if a.is_empty() {
+            continue;
+        }
+        let diff: Vec<f32> = a.iter().zip(g).map(|(x, y)| x - y).collect();
+        let rel_l2 = l2(&diff) / l2(a).max(floor).max(1e-12);
+        let rel_max = max_abs(a, g) / a.iter().fold(0f32, |m, x| m.max(x.abs())).max(1e-12);
+        rows.push((i, a.len(), rel_l2, rel_max));
+    }
+    rows.sort_by(|x, y| y.2.total_cmp(&x.2));
+    for (i, len, rel_l2, rel_max) in rows.iter().take(5) {
+        eprintln!("{:?} parameter {i} ({len} values): L2 rel {rel_l2:.2e}, max-abs rel {rel_max:.2e}", C::KIND);
+    }
+    let worst = rows.first().map_or(0.0, |r| r.2);
+    eprintln!("{:?} {} parameters, worst L2 relative gradient difference {worst:.2e}", C::KIND, rows.len());
+    assert!(worst <= tol as f64, "gradient L2 relative difference {worst:.2e} > {tol:.0e}");
+}
+
+#[test]
+#[ignore]
+fn lstm_gradients_match_flex_032_ac1() {
+    let base = tiny_config(CoreKind::Lstm);
+    let cfg = base.clone().with_entity(base.entity.clone().with_dropout(0.0));
+    gradients_match::<LstmCore>(&cfg, 2, 4, 16);
+}

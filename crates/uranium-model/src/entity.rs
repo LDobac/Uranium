@@ -85,14 +85,18 @@ impl EntityEncoder {
             2,
         );
         let mut x = self.input.forward(x);
+        crate::prof::mark("fwd.entity.embed");
 
         let bias = self.distance_bias(obs);
+        crate::prof::mark("fwd.entity.dist_bias");
         let key_ok = obs.entity_mask.clone().reshape([b, 1, n]);
         for (l, layer) in self.layers.iter().enumerate() {
             let bias_l = bias.clone().narrow(1, l * self.heads, self.heads);
             let y = layer.ln1.forward(x.clone());
             x = x + layer.attn.forward(y.clone(), y, Some(bias_l), key_ok.clone());
+            crate::prof::mark("fwd.entity.attn");
             x = x.clone() + layer.ffn.forward(layer.ln2.forward(x));
+            crate::prof::mark("fwd.entity.ffn");
         }
         let e = self.ln_out.forward(x);
 

@@ -108,6 +108,42 @@ impl LstmCore {
     pub fn new(d_in: usize, c: &CoreConfig, device: &Device) -> Self {
         Self { lstm: LstmConfig::new(d_in, c.hidden, true).init(device), hidden: c.hidden }
     }
+
+    /// The LSTM over [B,T,d] with the same parameters and math as Burn's `Lstm::forward`
+    /// (`LstmConfig` defaults: sigmoid gates, tanh cell and output, separate forget gate, no clip),
+    /// computed with fewer kernels: the input projections of all T steps and four gates in one
+    /// matmul, then one [B,H]x[H,4H] matmul per step (2026-10-18, BC throughput).
+    fn run(&self, x: Tensor<3>, s: LstmState<2>) -> (Tensor<3>, LstmState<2>) {
+        let l = &self.lstm;
+        let forget = l.forget_gate.as_ref().expect("LstmCore is built with a forget gate");
+        let gates = [&l.input_gate, forget, &l.output_gate, &l.cell_gate];
+        let [b, t, d] = x.dims();
+        let h = self.hidden;
+        let w_in = Tensor::cat(gates.iter().map(|g| g.input_transform.weight.val()).collect(), 1);
+        let w_h = Tensor::cat(gates.iter().map(|g| g.hidden_transform.weight.val()).collect(), 1);
+        let bias = |lin: &Linear| lin.bias.as_ref().expect("LSTM gates have biases").val();
+        let b_all = Tensor::cat(gates.iter().map(|g| bias(&g.input_transform) + bias(&g.hidden_transform)).collect(), 0);
+        let xp = (x.reshape([b * t, d]).matmul(w_in) + b_all.reshape([1, 4 * h])).reshape([b, t, 4 * h]);
+        let (mut c, mut hs) = (s.cell, s.hidden);
+        let mut outs = Vec::with_capacity(t);
+        for k in 0..t {
+            let z = xp.clone().narrow(1, k, 1).reshape([b, 4 * h]) + hs.clone().matmul(w_h.clone());
+            let i = sigmoid(z.clone().narrow(1, 0, h));
+            let f = sigmoid(z.clone().narrow(1, h, h));
+            let o = sigmoid(z.clone().narrow(1, 2 * h, h));
+            let g = tanh(z.narrow(1, 3 * h, h));
+            c = f * c + i * g;
+            hs = o * tanh(c.clone());
+            outs.push(hs.clone().reshape([b, 1, h]));
+        }
+        (Tensor::cat(outs, 1), LstmState::new(c, hs))
+    }
+
+    /// Burn's own `Lstm::forward` (reference for [`LstmCore::run`] in tests).
+    #[doc(hidden)]
+    pub fn forward_seq_reference(&self, x: Tensor<3>, s0: LstmState<2>) -> (Tensor<3>, LstmState<2>) {
+        self.lstm.forward(x, Some(s0))
+    }
 }
 
 impl Core for LstmCore {
@@ -119,12 +155,12 @@ impl Core for LstmCore {
 
     fn step(&self, x: Tensor<2>, s: Self::State) -> (Tensor<2>, Self::State) {
         let [b, d] = x.dims();
-        let (out, s) = self.lstm.forward(x.reshape([b, 1, d]), Some(s));
+        let (out, s) = self.run(x.reshape([b, 1, d]), s);
         (out.reshape([b, self.hidden]), s)
     }
 
     fn forward_seq(&self, x: Tensor<3>, s0: Self::State) -> (Tensor<3>, Self::State) {
-        self.lstm.forward(x, Some(s0))
+        self.run(x, s0)
     }
 
     fn detach_state(s: Self::State) -> Self::State {

@@ -25,6 +25,9 @@ publish = false
 
 [workspace.dependencies]
 # 060: Burn is pinned via Cargo.lock; upgrades go through a spec change.
+# Burn kernel autotune / fusion stay off: on CUDA they move some conv gradients by 2-5% against
+# Flex (2026-10-18 cross_device gradient test), a precision change; proposed with their ~2.5-3.5x
+# BC speed-up in reports/m6_bc_preflight.md.
 burn = { version = "=0.22.0", default-features = false }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

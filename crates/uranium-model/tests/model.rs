@@ -273,3 +273,95 @@ fn default_size_032_r2() {
     let gtrxl = UraniumNet::<GtrxlCore>::new(&cfg.clone().with_core(cfg.core.clone().with_kind(CoreKind::Gtrxl)), &columns(), &dev());
     eprintln!("default UraniumNet<GtrxlCore>: {} parameters", gtrxl.num_params());
 }
+
+/// Parameter gradients in visit order.
+struct Grads<'a>(&'a burn::tensor::Gradients, Vec<Vec<f32>>);
+
+impl burn::module::ModuleVisitor for Grads<'_> {
+    fn visit_float<const D: usize>(&mut self, p: &burn::module::Param<Tensor<D>>) {
+        self.1.push(p.val().grad(self.0).map(|g| g.into_data().convert::<f32>().try_to_vec::<f32>().unwrap()).unwrap_or_default());
+    }
+}
+
+/// 032-R5: the batched LSTM (`LstmCore::forward_seq`, `step`) gives Burn's `Lstm` outputs, states
+/// and parameter gradients for the same weights (BC throughput change 2026-10-18).
+#[test]
+fn lstm_core_matches_burn_lstm_032_r5() {
+    use burn::module::Module;
+    use burn::nn::LstmState;
+    use burn::tensor::Distribution;
+    use uranium_model::Core;
+    let ad = dev().autodiff();
+    ad.seed(41);
+    let core = LstmCore::new(12, &uranium_model::config::CoreConfig::new().with_hidden(16), &ad);
+    let (b, t) = (3, 5);
+    let x = Tensor::<3>::random([b, t, 12], Distribution::Normal(0.0, 1.0), &ad);
+    let s0 = || LstmState::new(Tensor::<2>::random([b, 16], Distribution::Normal(0.0, 0.5), &ad), Tensor::<2>::random([b, 16], Distribution::Normal(0.0, 0.5), &ad));
+    let c0 = s0();
+    let w = Tensor::<3>::random([b, t, 16], Distribution::Normal(0.0, 1.0), &ad);
+    let run = |fast: bool| {
+        let s = LstmState::new(c0.cell.clone(), c0.hidden.clone());
+        let (out, st) = if fast { core.forward_seq(x.clone(), s) } else { core.forward_seq_reference(x.clone(), s) };
+        let loss = (out.clone() * w.clone()).sum() + st.cell.clone().sum() * 0.3 + st.hidden.clone().sum() * 0.7;
+        let grads = loss.backward();
+        let mut g = Grads(&grads, Vec::new());
+        core.visit(&mut g);
+        let flat = |t: Tensor<3>| t.into_data().convert::<f32>().try_to_vec::<f32>().unwrap();
+        (flat(out), st.cell.into_data().convert::<f32>().try_to_vec::<f32>().unwrap(), g.1)
+    };
+    let (fo, fc, fg) = run(true);
+    let (ro, rc, rg) = run(false);
+    let close = |a: &[f32], b: &[f32], what: &str| {
+        let d = a.iter().zip(b).fold(0f32, |m, (x, y)| m.max((x - y).abs()));
+        assert!(d <= 1e-5, "{what}: max diff {d:.2e}");
+    };
+    close(&fo, &ro, "outputs");
+    close(&fc, &rc, "final cell");
+    assert_eq!(fg.len(), rg.len());
+    for (i, (a, r)) in fg.iter().zip(&rg).enumerate() {
+        assert_eq!(a.len(), r.len(), "parameter {i}");
+        close(a, r, &format!("gradient of parameter {i}"));
+    }
+}
+
+/// Teacher forcing computes the location head only on rows whose action uses a location: the
+/// loss and every parameter gradient equal the all-rows computation (2026-10-18, BC throughput).
+#[test]
+fn location_on_used_rows_matches_all_rows_032_r10() {
+    use std::sync::atomic::Ordering;
+    let ad = dev().autodiff();
+    ad.seed(53);
+    let cfg = tiny_config(CoreKind::Lstm);
+    let cfg = cfg.clone().with_entity(cfg.entity.clone().with_dropout(0.0));
+    let cols = columns();
+    let net = UraniumNet::<LstmCore>::new(&cfg, &cols, &ad);
+    let (b, t) = (2, 4);
+    let (obs, _) = random_obs(&cfg, &cols, b * t, 16, 59, &ad);
+    let labels = net.act(&obs, net.init_state(b * t, &ad), 1.0).action;
+    let run = |all: bool| {
+        uranium_model::heads::LOCATION_ALL_ROWS.store(all, Ordering::SeqCst);
+        let out = net.forward_seq(&obs, &labels, None, net.init_state(b, &ad), t);
+        uranium_model::heads::LOCATION_ALL_ROWS.store(false, Ordering::SeqCst);
+        let lp = &out.heads.logp;
+        let loss = (lp.action.clone() + lp.delay.clone() + lp.queued.clone() + lp.selected.clone() + lp.target_unit.clone() + lp.target_loc.clone()).neg().sum()
+            + out.value.powi_scalar(2).sum();
+        let used = out.heads.dists.uses_target_loc.clone().into_data().convert::<bool>().try_to_vec::<bool>().unwrap();
+        let lp_loc = floats(&out.heads.logp.target_loc);
+        let grads = loss.backward();
+        let mut g = Grads(&grads, Vec::new());
+        net.visit(&mut g);
+        (floats(&loss)[0], lp_loc, used, g.1)
+    };
+    let (l_sub, lp_sub, used, g_sub) = run(false);
+    let (l_all, lp_all, _, g_all) = run(true);
+    let n_used = used.iter().filter(|u| **u).count();
+    assert!(n_used > 0 && n_used < used.len(), "the sample must mix rows with and without a location ({n_used}/{})", used.len());
+    assert!((l_sub - l_all).abs() <= 1e-5 * l_all.abs().max(1.0), "loss {l_sub} vs {l_all}");
+    for (a, c) in lp_sub.iter().zip(&lp_all) {
+        assert!((a - c).abs() <= 1e-5, "target_loc log-prob {a} vs {c}");
+    }
+    for (i, (a, c)) in g_sub.iter().zip(&g_all).enumerate() {
+        let d = a.iter().zip(c).fold(0f32, |m, (x, y)| m.max((x - y).abs()));
+        assert!(d <= 1e-5, "gradient of parameter {i}: max diff {d:.2e}");
+    }
+}

@@ -79,6 +79,18 @@ enum Cmd {
         #[arg(long, default_value = "config/bc.toml")]
         config: PathBuf,
     },
+    /// Where a BC update's time goes, module by module (forward marks, backward by gradient
+    /// cuts), on real S1 batches with a fresh network. The first batch only warms kernels up.
+    BcProfile {
+        #[command(flatten)]
+        data: DataArgs,
+        #[arg(long, default_value = "1")]
+        batches: usize,
+        #[arg(long, value_enum, default_value = "vulkan")]
+        backend: Backend,
+        #[arg(long, default_value = "config/bc.toml")]
+        config: PathBuf,
+    },
     /// 041 offline metrics on a split (default: the target-map test set, 041-AC1): action_type
     /// top-1/top-5, delay MAE, target_loc tile error, selected F1, plus the loss terms.
     BcEval {
@@ -402,6 +414,13 @@ fn main() -> Result<()> {
             let dirs = data.dirs()?;
             let out = uranium_train::bc_eval::epoch_table(&dirs, &cfg)?;
             println!("{}", serde_json::to_string_pretty(&out)?);
+            Ok(())
+        }
+        Cmd::BcProfile { data, batches, backend, config } => {
+            let cfg = BcConfig::load(&config)?;
+            let dev = device(backend)?;
+            let rep = uranium_train::bc_prof::profile::<LstmCore>(&data.dirs()?, &cfg, batches, dev)?;
+            println!("{}", serde_json::to_string_pretty(&rep)?);
             Ok(())
         }
         Cmd::BcEval { data, checkpoint, split, backend, core, games, config } => {

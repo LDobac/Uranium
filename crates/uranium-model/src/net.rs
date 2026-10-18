@@ -68,6 +68,20 @@ pub struct SeqOutput<S> {
     pub state: S,
 }
 
+/// Where [`UraniumNet::forward_seq_cut`] stops the gradient.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cut {
+    None,
+    /// Entity encoder outputs.
+    Entity,
+    /// Spatial encoder outputs.
+    Spatial,
+    /// All encoder outputs (backward runs through core, heads and value).
+    Encoders,
+    /// Encoders and the core output (backward runs through heads and value only).
+    Core,
+}
+
 struct Encoded {
     core_in: Tensor<2>,
     e: Tensor<3>,
@@ -97,9 +111,30 @@ impl<C: CoreInit> UraniumNet<C> {
 
 impl<C: Core> UraniumNet<C> {
     fn encode(&self, obs: &ObsBatch) -> Encoded {
-        let ent = self.entity.forward(obs);
-        let sp = self.spatial.forward(obs, ent.e.clone());
-        let sc = self.scalar.forward(obs);
+        self.encode_cut(obs, Cut::None)
+    }
+
+    fn encode_cut(&self, obs: &ObsBatch, cut: Cut) -> Encoded {
+        let mut ent = self.entity.forward(obs);
+        crate::prof::mark("fwd.entity");
+        if matches!(cut, Cut::Entity | Cut::Encoders | Cut::Core) {
+            ent.e = ent.e.detach();
+            ent.pool = ent.pool.detach();
+        }
+        let mut sp = self.spatial.forward(obs, ent.e.clone());
+        crate::prof::mark("fwd.spatial");
+        let mut sc = self.scalar.forward(obs);
+        crate::prof::mark("fwd.scalar");
+        if matches!(cut, Cut::Spatial | Cut::Encoders | Cut::Core) {
+            sp.pool = sp.pool.detach();
+            sp.s8 = sp.s8.detach();
+            sp.skips = sp.skips.map(|s| s.detach());
+        }
+        if matches!(cut, Cut::Encoders | Cut::Core) {
+            sc.c = sc.c.detach();
+            sc.z = sc.z.detach();
+            sc.race = sc.race.detach();
+        }
         let core_in = Tensor::cat(vec![ent.pool, sp.pool.clone(), sc.c.clone()], 1);
         Encoded { core_in, e: ent.e, sp, sc }
     }
@@ -121,15 +156,26 @@ impl<C: Core> UraniumNet<C> {
     /// Teacher-forced training pass over `t` steps per sequence. `obs`, `labels`, `privileged`
     /// hold B·T rows in b-major order (032 §6).
     pub fn forward_seq(&self, obs: &ObsBatch, labels: &ActionBatch, privileged: Option<&PrivBatch>, s0: C::State, t: usize) -> SeqOutput<C::State> {
+        self.forward_seq_cut(obs, labels, privileged, s0, t, Cut::None)
+    }
+
+    /// [`UraniumNet::forward_seq`] with the gradient stopped at `cut` (profiling the backward
+    /// pass module by module; the forward values are the same).
+    pub fn forward_seq_cut(&self, obs: &ObsBatch, labels: &ActionBatch, privileged: Option<&PrivBatch>, s0: C::State, t: usize, cut: Cut) -> SeqOutput<C::State> {
         let bt = obs.batch();
         assert!(t > 0 && bt % t == 0, "batch rows must be B*T");
         let b = bt / t;
-        let enc = self.encode(obs);
+        let enc = self.encode_cut(obs, cut);
         let d = enc.core_in.dims()[1];
         let (h, state) = self.core.forward_seq(enc.core_in.reshape([b, t, d]), s0);
-        let h = h.reshape([bt, self.core.hidden()]);
+        let mut h = h.reshape([bt, self.core.hidden()]);
+        crate::prof::mark("fwd.core");
+        if cut == Cut::Core {
+            h = h.detach();
+        }
         let heads = self.heads.forward(Mode::Teacher(labels), h.clone(), enc.sc.c.clone(), enc.e, &enc.sp, obs, &self.table);
         let value = self.value.forward(h, enc.sc.z, enc.sc.race, privileged);
+        crate::prof::mark("fwd.value");
         SeqOutput { heads, value, state }
     }
 

@@ -171,6 +171,11 @@ impl<C: Core> UraniumNet<C> {
 - 인코더와 헤드는 B×T를 펼쳐 병렬로 계산하고, Core만 T를 따라 순차 계산한다.
 - **BC**: 헤드별 CE × 사용 마스크([041](041-imitation-learning.md))
 - **RL**: `forward_seq`의 target logits와 actor behaviour log-prob로 V-trace, UPGO, 헤드별 KL(π‖π_BC)을 계산한다([042](042-rl-training.md)).
+- 처리량 구현 메모(비규범, 2026-10-18, `reports/m6_bc_preflight.md`): 결과가 같은 계산 순서 변경만 한다.
+  - LSTM Core: Burn `Lstm`과 같은 파라미터·수식을 쓰고, T step의 입력 투영과 4 게이트를 한 번의 matmul로 계산한다(step당 [B,H]×[H,4H] 1회).
+  - teacher forcing의 Location 헤드: location을 쓰는 행만 계산한다. 다른 행의 `dists.target_loc`은 0이고 R10 사용 마스크로 곱해져 결과에 영향이 없다.
+  - Burn kernel autotune·fusion은 끈다. CUDA에서 일부 conv gradient가 Flex 대비 2~5% 달라졌다. 정밀도 변경이라 제안으로만 남긴다.
+  - 분석 도구: `uranium-train bc-profile`(모듈별 forward 표시, gradient 절단 비교).
 
 ## Acceptance Criteria
 - 032-AC1: Flex(CPU) 대비 같은 가중치·입력의 forward 출력(value, 헤드별 log-prob) 차이가 Vulkan에서 ≤ 1e-4(f32), CUDA에서 ≤ 1e-2다.

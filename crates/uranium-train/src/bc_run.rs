@@ -162,6 +162,8 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<()> {
         })?;
     }
 
+    // Nothing to save when no update happens (resumed at or past the stop point).
+    let start_step = t.step;
     let feeder = std::mem::replace(&mut t.feeder, crate::bc::Feeder::new(&cfg));
     let data = Prefetch::start(feeder, src, 2);
     let (mut last_ckpt, mut last_beat) = (Instant::now(), Instant::now());
@@ -201,7 +203,12 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<()> {
     if lock_lost {
         return Ok(());
     }
-    let pushed = save(&t, &args, &mut run, true)?;
+    let pushed = if t.step == start_step && resume_dir.is_some() {
+        eprintln!("[bc] no update since the checkpoint of step {}: nothing to save", t.step);
+        Some(PushOutcome::Pushed)
+    } else {
+        save(&t, &args, &mut run, true)?
+    };
     if let Some(r) = run {
         // 061-R11-5/6: keep the lock when the final push did not go through.
         match pushed {

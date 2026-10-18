@@ -13,6 +13,11 @@ use crate::config::{HeadsConfig, InputDims, SpatialConfig};
 use crate::layers::{GruCell, Mlp, ResMlp, entropy, flag, gumbel_argmax, log_softmax_f32, masked_log_softmax, pick, zeros_f32};
 use crate::spatial::SpatialOut;
 
+/// Tests only: teacher forcing computes the location head on every row (the reference for the
+/// used-rows path).
+#[doc(hidden)]
+pub static LOCATION_ALL_ROWS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub enum Mode<'a> {
     /// Inject labels (032-R3).
     Teacher(&'a ActionBatch),
@@ -214,6 +219,7 @@ impl Heads {
         let action = choose(&lp_action, labels.map(|l| l.action.clone()));
         let info = table.info(action.clone());
         let mut ar = self.ar_h.forward(h) + flat(self.ar_action.forward(action.clone().reshape([b, 1])));
+        crate::prof::mark("fwd.head.action");
 
         // 2 Delay (always used)
         let lp_delay = tempered(log_softmax_f32(self.delay.forward(ar.clone())), temp);
@@ -224,9 +230,11 @@ impl Heads {
         let lp_queued = tempered(log_softmax_f32(self.queued.forward(ar.clone())), temp);
         let queued = choose(&lp_queued, labels.map(|l| l.queued.clone())) * info.uses_queued.clone().int();
         ar = ar + flat(self.ar_queued.forward(queued.clone().reshape([b, 1])));
+        crate::prof::mark("fwd.head.delay_queued");
 
         // 4 Selected
         let sel = self.selected(&mut ar, e.clone(), obs, &info, labels.map(|l| l.selected.clone()), temp);
+        crate::prof::mark("fwd.head.selected");
 
         // 5 TargetUnit
         let keys = self.tgt_key.forward(e);
@@ -236,11 +244,19 @@ impl Heads {
         let tgt_ok = gather_cap(obs.unit_cap.clone(), info.target_cap.clone()).bool_and(obs.entity_mask.clone());
         let lp_tu = tempered(masked_log_softmax(logits, tgt_ok), temp);
         let target_unit = choose(&lp_tu, labels.map(|l| l.target_unit.clone()));
+        crate::prof::mark("fwd.head.target_unit");
 
         // 6 Location
         let loc_ok = gather_loc(obs.loc_class_mask.clone(), info.loc_class.clone());
-        let lp_loc = tempered(masked_log_softmax(self.location.forward(ar, sp), loc_ok), temp);
+        let lp_loc = match labels {
+            // Teacher forcing: only rows whose action uses a location (the others' terms are
+            // multiplied by 0, 032-R10); their rows of `dists.target_loc` are 0. Same values and
+            // gradients for the used rows, about half the upsampling work (2026-10-18).
+            Some(_) => self.location_used_rows(ar, sp, loc_ok, info.target_loc.clone()),
+            None => tempered(masked_log_softmax(self.location.forward(ar, sp), loc_ok), temp),
+        };
         let target_loc = choose(&lp_loc, labels.map(|l| l.target_loc.clone()));
+        crate::prof::mark("fwd.head.location");
 
         let f = |m: &Tensor<1, Bool>| flag(m.clone());
         let (u_q, u_s, u_tu, u_tl) = (f(&info.uses_queued), f(&info.uses_select), f(&info.target_unit), f(&info.target_loc));
@@ -252,6 +268,7 @@ impl Heads {
             target_unit: pick(lp_tu.clone(), target_unit.clone()) * u_tu.clone(),
             target_loc: pick(lp_loc.clone(), target_loc.clone()) * u_tl.clone(),
         };
+        crate::prof::mark("fwd.head.pick");
         let entropy = PerHead {
             action: entropy(lp_action.clone()),
             delay: entropy(lp_delay.clone()),
@@ -260,6 +277,7 @@ impl Heads {
             target_unit: entropy(lp_tu.clone()) * u_tu,
             target_loc: entropy(lp_loc.clone()) * u_tl,
         };
+        crate::prof::mark("fwd.head.entropy");
         HeadsOut {
             chosen: ActionBatch { action, delay, queued, selected: sel.chosen, target_unit, target_loc },
             logp,
@@ -278,6 +296,31 @@ impl Heads {
                 uses_target_loc: info.target_loc,
             },
         }
+    }
+
+    /// Masked location log-probs [B, M*M] computed for the rows where `used` is set; other rows 0.
+    fn location_used_rows(&self, ar: Tensor<2>, sp: &SpatialOut, loc_ok: Tensor<2, Bool>, used: Tensor<1, Bool>) -> Tensor<2> {
+        if LOCATION_ALL_ROWS.load(std::sync::atomic::Ordering::Relaxed) {
+            return masked_log_softmax(self.location.forward(ar, sp), loc_ok);
+        }
+        let [b, mm] = loc_ok.dims();
+        let device = ar.device();
+        let flags = used.into_data().convert::<bool>().try_into_vec::<bool>().expect("bool mask");
+        let rows: Vec<i64> = flags.iter().enumerate().filter(|(_, u)| **u).map(|(i, _)| i as i64).collect();
+        // No used row: compute every row anyway, so the location parameters still get their (zero)
+        // gradient and the optimizer treats them as before (AdamW skips parameters without one).
+        if rows.len() == b || rows.is_empty() {
+            return masked_log_softmax(self.location.forward(ar, sp), loc_ok);
+        }
+        let k = rows.len();
+        let idx = Tensor::<1, Int>::from_data(burn::tensor::TensorData::new(rows, [k]), &device);
+        let sub = SpatialOut {
+            s8: sp.s8.clone().select(0, idx.clone()),
+            skips: sp.skips.clone().map(|s| s.select(0, idx.clone())),
+            pool: sp.pool.clone().select(0, idx.clone()),
+        };
+        let lp = masked_log_softmax(self.location.forward(ar.select(0, idx.clone()), &sub), loc_ok.select(0, idx.clone()));
+        Tensor::<2>::zeros([b, mm], &device).select_assign(0, idx, lp, burn::tensor::IndexingUpdateOp::Add)
     }
 
     /// Pointer network over own eligible units with an END key (032 §2.5 #4, 031-R3, 032-R12).

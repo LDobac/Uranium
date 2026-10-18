@@ -3,6 +3,7 @@
 
 pub mod bc;
 pub mod bc_eval;
+pub mod bc_prof;
 pub mod bc_run;
 pub mod ckpt;
 pub mod data;

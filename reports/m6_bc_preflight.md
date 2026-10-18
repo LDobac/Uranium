@@ -46,13 +46,13 @@
 
 | 작업 | PC | update | 시간 |
 |---|---|---|---|
-| S1 | 이 PC (CUDA f32) | 36,985 × 30 s | **약 12.8일** |
-| S2 (S1 후) | 이 PC | 7,915 × 30 s | 약 2.7일 |
-| ablation (A) (S1과 동시) | bc250_1 (Vulkan **f32**) | 7,915 × 169 s | **약 15.5일** |
+| S1 | 이 PC (CUDA f32) | 36,985 × 26.4 s (3차 최적화 후) | **약 11.3일** |
+| S2 (S1 후) | 이 PC | 7,915 × 26.4 s | 약 2.4일 |
+| ablation (A) (S1과 동시) | bc250_1 (Vulkan **f32**) | 7,915 × 169 s (최적화 전, 최적화 후 값은 3차 절) | **약 15.5일 이하** |
 | 오프라인 평가 (대상 맵 test 895게임) | 이 PC | – | 체크포인트당 약 3시간 |
 | 041-AC2 (600판) | 이 PC hostd | – | 7시간 이상(측정 전) |
 
-- 전체는 약 15.5~15.6일이다. S1+S2(15.5일)와 (A)(15.5일)가 거의 같이 끝난다.
+- 이 PC의 S1+S2는 약 13.7일이다. (A)는 3차 최적화(location 사용 행만)로 Vulkan에서 크게 줄 것으로 보며, 최종 값은 3차 절에 적는다.
 - 다른 세션이 이 PC GPU를 같이 쓰면 S1 update가 50~60 s로 느려진다. 그러면 S1만 21~26일이다.
 
 ### 본학습 실행 명령 (승인 후)
@@ -80,6 +80,103 @@ uranium-env run --plan config/plans/bc-vs-t0.toml --backend cuda
 - f16 혼합 정밀도(032-R8): CUDA에서는 M5 실측상 느렸다. BC250에서는 효과가 있을 것으로 본다.
 - backward가 forward의 3.6~6.9배다. 모듈별 backward 프로파일로 비효율 연산을 찾는 것을 제안한다(032-R13 distance bias와 같은 종류일 수 있음).
 - collate를 prefetch 스레드로 옮기기: 출력 동일, 약 3%.
+
+## 3차: backward 최적화, Ctrl+C, 운영 절차 (2026-10-18 저녁)
+
+### 모듈별 프로파일 (`uranium-train bc-profile`)
+
+- **측정 방법:**
+  - 레인 그룹 1개(B1 × T64 = 64행) 기준이고, update는 32그룹이다.
+  - 실데이터 `stardata/p00` S1 batch 1개로 쟀고, 그 전에 1개를 warm-up으로 돌렸다.
+  - forward는 모듈마다 device sync 표시로 쟀다.
+  - backward는 gradient를 모듈 경계에서 끊은 변형과 비교해 그 차이로 쟀다. head별 값은 encoder와 core를 끊고 그 head의 손실 항만 역전파한 값이다.
+- 단위는 초 / 레인 그룹이다.
+
+| 구간 | CUDA 기존 | CUDA 최종 | Vulkan 기존 | Vulkan 최종 |
+|---|---|---|---|---|
+| forward 합 | 0.216 | 0.194 | 0.656 | 측정 중 |
+| ├ spatial encoder | 0.104 | 0.103 | 0.395 | |
+| ├ core (LSTM) | 0.050 | 0.032 | 0.067 | |
+| ├ selected head | 0.028 | 0.030 | 0.035 | |
+| ├ location head | 0.015 | 0.008 | 0.084 | |
+| └ entity encoder (attn+ffn+bias) | 0.010 | 0.010 | 0.055 | |
+| backward 합 | 0.666 | 0.599 | 3.979 | 측정 중 |
+| ├ spatial encoder | 0.309 | 0.310 | 1.213 | |
+| ├ location head (target_loc) | 0.256 | 0.195 | **2.326** | |
+| ├ core (LSTM) | 0.066 | 0.057 | 0.071 | |
+| ├ entity encoder | 0.024 | 0.028 | 0.045 | |
+| └ 그 외 head·value | 각 0.01 미만 | 각 0.01 미만 | 각 0.02~0.04 | |
+| collate (CPU→GPU) | 0.022 | 0.022 | 0.062 | |
+
+- 기존 후보 원인을 점검한 결과는 다음과 같다.
+  - 엔티티 transformer, distance bias, 마스크·손실, 헤드별 반복(selected 12단계)은 작다.
+  - backward 대부분은 **합성곱**이다. spatial encoder(conv stack, 128×128)와 location head(ConvTranspose2d로 128×128까지 업샘플링)가 이에 해당한다.
+  - 이 표본의 엔티티 수 N은 64(패딩 단위)였다.
+
+### 적용한 최적화 (결과 동일, 테스트로 확인)
+
+| 변경 | 내용 | 검증 |
+|---|---|---|
+| LSTM 묶음 계산 | Burn `Lstm`과 같은 파라미터·수식이다. T step 입력 투영과 4게이트를 matmul 1회로, step당 [B,H]×[H,4H] 1회로 계산한다 | `lstm_core_matches_burn_lstm_032_r5`: 출력·최종 상태·모든 파라미터 gradient 차이 ≤ 1e-5 (Flex) |
+| location 사용 행만 계산 (teacher forcing) | location을 쓰는 행만 업샘플링한다. 다른 행 `dists.target_loc`은 0이다(R10 사용 마스크로 곱해져 영향 없음). 사용 행이 없으면 전 행을 계산해 optimizer 동작을 유지한다 | `location_on_used_rows_matches_all_rows_032_r10`: 손실·log-prob·모든 gradient ≤ 1e-5 |
+| 데이터 prefetch (2차) | feature 추출·shard 읽기를 GPU와 겹친다 | batch 순서 동일 테스트 |
+
+- CUDA 기능 끈 빌드에서 gradient의 Flex 대비 차이는 최대 1.3e-3으로, 변경 전과 같다(`lstm_gradients_match_flex_032_ac1`).
+- **실제 update 시간(CUDA, GPU 단독):**
+  - 처음: 31–33 s
+  - prefetch: 29.5–30.4 s
+  - + LSTM 묶음: 26.9–27.7 s
+  - **+ location 사용 행만: 25.1–27.5 s(평균 약 26.4 s)**
+  - 합계 약 18% 단축이다.
+- **Vulkan(bc250_1) 실제 update 시간:** 기존 약 169 s → 최종 값은 측정 중(후속 커밋).
+
+### 제안만 하는 것 (결과가 달라짐)
+
+| 제안 | CUDA 속도 | Vulkan 속도 | 결과 변화 |
+|---|---|---|---|
+| Burn kernel **autotune** 켜기 | update 약 28 → 11.8 s(**2.5배**), 레인 그룹 fwd 0.122 / bwd 0.225 | 레인 그룹 fwd 0.590 / bwd 2.839(기존 0.656 / 3.979, 약 **1.35배**), location backward는 2.08로 거의 그대로 | Flex 대비 일부 conv 파라미터 gradient가 **5.3e-2**까지 달라진다(기능 끈 빌드 1.3e-3). 정밀도가 다른 conv 커널(TF32 등)을 고르는 것으로 보인다. forward는 허용치 1e-2 안(최대 2e-3) |
+| autotune + **fusion** | 레인 그룹 fwd 0.098 / bwd 0.155(약 **3.5배**) | 레인 그룹 fwd 0.537 / bwd 2.655(약 1.45배) | gradient 차이 2.2e-2 |
+| f16 혼합 정밀도(032-R8) | M5 실측상 CUDA에서 느림 | 약 1.5배(M1 matmul) | 정밀도 변경, 구현 필요 |
+
+- autotune만으로 S1이 약 11.7일에서 약 4.9일이 된다. 다만 결과가 Flex 기준에서 달라지므로 사용자 판단이 필요하다. CUDA는 이미 matmul에 TF32를 쓰고 있다(AMB-032-5). conv에도 TF32를 허용하는 것과 같은 성격의 결정이다.
+
+### Ctrl+C 실제 시험
+- **이 PC(Windows):** run `bcpre-ctrlc`를 별도 콘솔(`cmd /c`)로 띄우고 학습 중에 콘솔 이벤트를 보냈다.
+  - CTRL_C_EVENT는 반응이 없었다. 시험 하네스가 만든 프로세스는 "Ctrl+C 무시" 속성을 물려받기 때문으로 보인다. 사용자가 터미널에서 직접 누르는 경우와는 다르다.
+  - CTRL_BREAK_EVENT로 시험했다. 결과: `[bc] Ctrl+C: saving a checkpoint after this update` → 진행 중 update 완료 → `ckpt-24 Pushed` → 잠금 파일 삭제 → 종료.
+  - 같은 명령으로 재개하니 `ckpt-24`와 데이터 위치(파일 2, 게임 3)에서 이어 `ckpt-26`을 push했고, 잠금도 해제됐다.
+- **bc250_1(Linux, SIGINT):** run `bcpre-ctrlc-l`(flex 백엔드, Ctrl+C 처리는 백엔드와 무관)에 학습 중 `kill -INT` → `[bc] Ctrl+C: saving…` → 진행 중 update 완료 → `ckpt-2 Pushed` → 종료(exit 0). 재개 시 `ckpt-2`·데이터 위치에서 이어 갔다. 이때 재개 지점이 `--steps`와 같으면 같은 step을 다시 저장해 push가 미뤄지고 잠금이 남는 버그를 찾아 고쳤다(update가 없으면 저장하지 않고 잠금 해제, 이 PC에서 재확인).
+
+### 운영 절차 (같은 run을 PC를 바꿔 이어 하기)
+- 장비 역할은 다음과 같다.
+  - learner: 이 PC(CUDA), bc250_1(Vulkan f32)
+  - **bc250_2는 learner 금지**
+  - run: `bc-s1`, `bc-s2`, `bc-ablation-a`
+- 같은 run은 한 번에 한 PC만 돌린다(잠금). 재개하면 마지막 체크포인트의 데이터 위치부터 이어 간다.
+
+```
+DATA="--dataset replays/shards/stardata --dataset replays/shards/community --dataset replays/shards/scr_ladder --dataset replays/shards/personal"
+# 평소: 이 PC는 S1, bc250_1은 (A)
+[이 PC]    uranium-train bc $DATA --run bc-s1 --backend cuda
+[bc250_1]  uranium-train bc $DATA --run bc-ablation-a --stage s2 --backend vulkan
+```
+1. **이 PC를 다른 작업에 쓰려고 S1을 bc250_1로 넘길 때**
+   1. 이 PC S1 콘솔에서 Ctrl+C를 누른다. `[bc] checkpoint ckpt-N Pushed`가 나오고 종료할 때까지 기다린다(update 1회, 약 30초).
+   2. bc250_1의 (A) 콘솔에서 Ctrl+C를 누르고(SIGINT) 같은 방식으로 종료를 확인한다. 한 GPU에서 둘을 같이 돌리면 둘 다 느려지므로 (A)는 쉰다.
+   3. bc250_1에서 `uranium-train bc $DATA --run bc-s1 --backend vulkan`을 실행한다. `LATEST`를 pull해 데이터 위치부터 이어 간다.
+2. **이 PC로 S1을 되돌릴 때**
+   1. bc250_1 S1 콘솔에서 Ctrl+C를 누르고 push·종료를 확인한다(update 1회, 약 2~3분).
+   2. 이 PC에서 `uranium-train bc $DATA --run bc-s1 --backend cuda`를 실행한다.
+   3. bc250_1에서 (A)를 같은 명령으로 다시 시작한다. (A)도 마지막 체크포인트에서 이어 간다.
+3. **반대 방향((A)를 이 PC로)도 같다.** run 이름만 바꾸면 된다.
+4. **PC가 비정상 종료해 잠금이 남았을 때**
+   - 같은 PC에서 다시 시작하면 잠금을 넘겨받는다. 그 PC에만 있던 미push 체크포인트도 먼저 push한다.
+   - 다른 PC에서 이어 받으려면 heartbeat가 10분 끊긴 뒤 `--take-over`를 붙인다.
+   - 잃는 것은 마지막 체크포인트 이후, 최대 1시간(`checkpoint_minutes = 60`)이다.
+5. **S2는 S1이 끝난 뒤 시작한다:** `uranium-train bc $DATA --run bc-s2 --s2 --init <shared>/checkpoints/bc-s1 --backend cuda`.
+- **주의 (확인 필요):** S1을 bc250_1에서 이어 하면 그 구간은 Vulkan **f32**로 학습한다.
+  - 032-R8 예외는 지금 (A)에만 적혀 있다.
+  - 이 운영 방식을 쓰려면 S1·S2의 bc250_1 구간에도 f32 예외를 넓혀야 한다.
 
 ## 결론 (1차)
 - **경로는 끝까지 동작한다.** 동작한 단계는 다음과 같다.
