@@ -1,4 +1,5 @@
-//! `uranium-train bc (--dataset <rel> | --shards <dir>)... --out <ckpt dir>` (041),
+//! `uranium-train bc (--dataset <rel> | --shards <dir>)... (--out <ckpt dir> | --run <id>)` (041),
+//! `uranium-train bc-epoch`, `uranium-train bc-eval` (041 one-epoch lengths, offline metrics),
 //! `uranium-train manifest <dir> [--verify]` (061-R7),
 //! `uranium-train rl --run <id> --bc <ckpt>` (042), `uranium-train z-table` (033-R8).
 
@@ -7,12 +8,12 @@ use std::path::PathBuf;
 use anyhow::Result;
 use burn::tensor::{Device, DeviceKind};
 use clap::{Parser, Subcommand, ValueEnum};
-use uranium_model::collate::input_dims;
-use uranium_model::config::{CoreKind, UraniumNetConfig};
-use uranium_model::{GtrxlCore, LstmCore, UraniumNet};
-use uranium_train::bc::{BcConfig, Trainer};
+use uranium_model::config::CoreKind;
+use uranium_model::{GtrxlCore, LstmCore};
+use uranium_train::bc::BcConfig;
+use uranium_train::bc_run::{BcArgs, BcOut, BcStage};
 use uranium_train::data::ShardSource;
-use uranium_train::split::{Selection, Split, is_target_map, split_of};
+use uranium_train::split::{Split, is_target_map, split_of};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum Backend {
@@ -34,8 +35,16 @@ enum Cmd {
     Bc {
         #[command(flatten)]
         data: DataArgs,
+        /// Local checkpoint folder (`step_<n>/`, `last/`).
+        #[arg(long, required_unless_present = "run", conflicts_with = "run")]
+        out: Option<PathBuf>,
+        /// 061 run on the shared drive (`checkpoints/<run>/`): lock, push, and resume from
+        /// `LATEST` with the data position on any training PC.
         #[arg(long)]
-        out: PathBuf,
+        run: Option<String>,
+        /// Take the run lock from another PC whose heartbeat stopped (061-R5).
+        #[arg(long, requires = "run")]
+        take_over: bool,
         #[arg(long, default_value = "config/bc.toml")]
         config: PathBuf,
         #[arg(long, value_enum, default_value = "vulkan")]
@@ -49,17 +58,46 @@ enum Cmd {
         /// target maps. Default: s2 with --s2, else s1 (ablation (A) = `--stage s2` without --s2).
         #[arg(long, value_enum)]
         stage: Option<StageArg>,
-        /// Stop after this many updates (default: config total_steps).
+        /// Stop after this update (smoke runs); the schedule length stays the stage's
+        /// (`[steps]` in the config).
         #[arg(long)]
         steps: Option<usize>,
-        /// Continue from a checkpoint folder: weights, optimizer state, step and RNG (061-R10).
-        /// The shard order starts over.
-        #[arg(long, conflicts_with = "init")]
+        /// Local mode: continue from a checkpoint folder (weights, optimizer, step, RNG and data
+        /// position, 061-R10). A run resumes from `LATEST` by itself.
+        #[arg(long, conflicts_with_all = ["init", "run"])]
         resume: Option<PathBuf>,
         /// Start from a checkpoint's weights only: fresh optimizer, schedule and step counter
-        /// (S1 -> S2, 041-R4; the S1 checkpoint folder is left as is).
+        /// (S1 -> S2, 041-R4). A checkpoint folder or a run folder with `LATEST`.
         #[arg(long)]
         init: Option<PathBuf>,
+    },
+    /// 041-R13: updates in one epoch of a stage (the trainer's lane walk without the model);
+    /// the numbers for `[steps]` in `config/bc.toml`. Reads every shard once.
+    BcEpoch {
+        #[command(flatten)]
+        data: DataArgs,
+        #[arg(long, default_value = "config/bc.toml")]
+        config: PathBuf,
+    },
+    /// 041 offline metrics on a split (default: the target-map test set, 041-AC1): action_type
+    /// top-1/top-5, delay MAE, target_loc tile error, selected F1, plus the loss terms.
+    BcEval {
+        #[command(flatten)]
+        data: DataArgs,
+        /// Checkpoint folder, or a 061 run folder (its `LATEST`).
+        #[arg(long)]
+        checkpoint: PathBuf,
+        #[arg(long, value_enum, default_value = "test")]
+        split: SplitArg,
+        #[arg(long, value_enum, default_value = "vulkan")]
+        backend: Backend,
+        #[arg(long, value_enum, default_value = "lstm")]
+        core: CoreArg,
+        /// Stop after this many games (quick checks).
+        #[arg(long)]
+        games: Option<usize>,
+        #[arg(long, default_value = "config/bc.toml")]
+        config: PathBuf,
     },
     /// 034-AC3 diagnostics: labels that fail the masks, by action and reason (JSON).
     LabelCheck {
@@ -185,6 +223,13 @@ enum StageArg {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
+enum SplitArg {
+    Train,
+    Val,
+    Test,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
 enum CoreArg {
     Lstm,
     Gtrxl,
@@ -199,76 +244,6 @@ fn device(b: Backend) -> Result<Device> {
         Backend::Cuda => anyhow::bail!("rebuild with --features cuda on a CUDA PC"),
         Backend::Flex => Device::flex(),
     })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn run<C: uranium_model::CoreInit>(
-    kind: CoreKind,
-    mut src: ShardSource,
-    out: PathBuf,
-    cfg: BcConfig,
-    dev: Device,
-    s2: bool,
-    steps: Option<usize>,
-    resume: Option<PathBuf>,
-    init: Option<PathBuf>,
-) -> Result<()> {
-    let ad = if cfg.grad_checkpointing {
-        dev.autodiff().gradient_checkpointing()
-    } else {
-        dev.autodiff()
-    };
-    let cols = uranium_model::batch::ActionColumns::from_table(
-        uranium_env::features::extract::action_table(),
-    )?;
-    let (net, net_cfg) = match resume.as_ref().or(init.as_ref()) {
-        Some(dir) => {
-            let (net, meta) = uranium_model::checkpoint::load::<C>(
-                dir,
-                &cols,
-                uranium_env::features::FEATURE_SCHEMA_VERSION,
-                uranium_env::actions::ACTION_SCHEMA_VERSION,
-                &ad,
-            )?;
-            (net, meta.net_config()?)
-        }
-        None => {
-            let base = UraniumNetConfig::new();
-            let net_cfg = base
-                .clone()
-                .with_input(input_dims())
-                .with_core(base.core.clone().with_kind(kind));
-            (UraniumNet::<C>::new(&net_cfg, &cols, &ad), net_cfg)
-        }
-    };
-    let total = steps.unwrap_or(cfg.total_steps);
-    let every = cfg.data.checkpoint_every.max(1);
-    let mut t = Trainer::new(net, net_cfg, cfg, ad);
-    if s2 {
-        t.lr_scale = t.cfg.s2_lr_scale;
-    }
-    if let Some(dir) = &resume
-        && !t.resume(dir)?
-    {
-        eprintln!(
-            "{}: no training state (older checkpoint); weights only, fresh optimizer",
-            dir.display()
-        );
-    }
-    while t.step < total {
-        let Some(l) = t.train_step(&mut src)? else {
-            eprintln!("data exhausted after {} updates", t.step);
-            break;
-        };
-        eprintln!(
-            "{}",
-            serde_json::json!({ "step": t.step, "loss": l, "games": t.games, "invalid_labels": t.invalid_labels })
-        );
-        if t.step % every == 0 {
-            t.save(&out.join(format!("step_{:08}", t.step)))?;
-        }
-    }
-    t.save(&out.join("last"))
 }
 
 fn rl_backend(b: Backend) -> uranium_agent::infer::InferBackend {
@@ -395,33 +370,51 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
-        Cmd::Bc {
-            data,
-            out,
-            config,
-            backend,
-            core,
-            s2,
-            stage,
-            steps,
-            resume,
-            init,
-        } => {
-            let cfg = BcConfig::load(&config)?;
-            let dev = device(backend)?;
-            let sel = match stage.unwrap_or(if s2 { StageArg::S2 } else { StageArg::S1 }) {
-                StageArg::S1 => Selection::S1,
-                StageArg::S2 => Selection::S2,
+        Cmd::Bc { data, out, run, take_over, config, backend, core, s2, stage, steps, resume, init } => {
+            let stage = match (s2, stage.unwrap_or(if s2 { StageArg::S2 } else { StageArg::S1 })) {
+                (true, _) => BcStage::S2,
+                (false, StageArg::S2) => BcStage::AblationA,
+                (false, StageArg::S1) => BcStage::S1,
             };
-            let shards = ShardSource::from_dirs(&data.dirs()?)?.select(sel).shuffled(cfg.data.seed);
+            let out = match (out, run) {
+                (Some(o), _) => BcOut::Local(o),
+                (None, Some(id)) => BcOut::Run { id, take_over },
+                (None, None) => unreachable!("clap requires --out or --run"),
+            };
+            let kind = match core {
+                CoreArg::Lstm => CoreKind::Lstm,
+                CoreArg::Gtrxl => CoreKind::Gtrxl,
+            };
+            let args = BcArgs { dirs: data.dirs()?, out, config, stage, core: kind, stop_at: steps, resume, init };
+            let dev = device(backend)?;
             match core {
-                CoreArg::Lstm => {
-                    run::<LstmCore>(CoreKind::Lstm, shards, out, cfg, dev, s2, steps, resume, init)
-                }
-                CoreArg::Gtrxl => {
-                    run::<GtrxlCore>(CoreKind::Gtrxl, shards, out, cfg, dev, s2, steps, resume, init)
-                }
+                CoreArg::Lstm => uranium_train::bc_run::run::<LstmCore>(args, dev),
+                CoreArg::Gtrxl => uranium_train::bc_run::run::<GtrxlCore>(args, dev),
             }
+        }
+        Cmd::BcEpoch { data, config } => {
+            let cfg = BcConfig::load(&config)?;
+            let dirs = data.dirs()?;
+            let out = uranium_train::bc_eval::epoch_table(&dirs, &cfg)?;
+            println!("{}", serde_json::to_string_pretty(&out)?);
+            Ok(())
+        }
+        Cmd::BcEval { data, checkpoint, split, backend, core, games, config } => {
+            let cfg = BcConfig::load(&config)?;
+            let split = match split {
+                SplitArg::Train => Split::Train,
+                SplitArg::Val => Split::Val,
+                SplitArg::Test => Split::Test,
+            };
+            let ckpt = uranium_train::bc_run::resolve_checkpoint(&checkpoint)?;
+            let dev = device(backend)?;
+            let dirs = data.dirs()?;
+            let report = match core {
+                CoreArg::Lstm => uranium_train::bc_eval::evaluate::<LstmCore>(&dirs, &ckpt, split, games, &cfg, dev)?,
+                CoreArg::Gtrxl => uranium_train::bc_eval::evaluate::<GtrxlCore>(&dirs, &ckpt, split, games, &cfg, dev)?,
+            };
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
         }
     }
 }

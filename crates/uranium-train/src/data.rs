@@ -18,18 +18,45 @@ use uranium_replay::shard::{ShardGame, read};
 pub trait StepSource {
     /// Next game, or `None` when the source is exhausted.
     fn next_game(&mut self) -> Result<Option<ShardGame>>;
+
+    /// Where the game last returned by `next_game` sits in the source (resume, 061-R10).
+    /// `None` for sources that cannot be re-read.
+    fn last_id(&self) -> Option<GameId> {
+        None
+    }
+}
+
+/// A game's place in a [`ShardSource`]: file `file` of the (shuffled) file order, game `game` of
+/// that file after selection and shuffle. Stable for the same folders, selection and seed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct GameId {
+    pub file: usize,
+    pub game: usize,
+}
+
+/// Read position of a [`ShardSource`]: the next game to return is `next` (041-R13 order).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SourcePos {
+    pub next: GameId,
 }
 
 /// Stored shards (`shard_*.bin.zst`) under one or more dataset folders, subfolders included (a
 /// full build writes `<src>/<part>/shard_*.bin.zst`, 040-R13). Folders are read in the given
 /// order, each in path order, so the game order is deterministic. `select` keeps one split/stage
-/// (041-R12, R13); `shuffled` permutes the shard files and the games inside each file with a fixed
-/// seed (041-R13).
+/// (041-R12, R13); `shuffled` permutes the shard files with a fixed seed and the games inside each
+/// file with a seed derived from it and the file's place (041-R13), so a position can be sought
+/// without reading the files before it.
 pub struct ShardSource {
-    files: VecDeque<PathBuf>,
-    games: VecDeque<ShardGame>,
+    files: Vec<PathBuf>,
+    /// Next file to load.
+    next_file: usize,
+    /// Games left of the loaded file, with their index in it.
+    games: VecDeque<(usize, ShardGame)>,
+    /// File of `games`.
+    cur_file: usize,
+    last: Option<GameId>,
     select: Option<crate::split::Selection>,
-    rng: Option<Rng>,
+    seed: Option<u64>,
 }
 
 impl ShardSource {
@@ -42,7 +69,7 @@ impl ShardSource {
         for d in dirs {
             files.extend(shard_files(d)?);
         }
-        Ok(Self { files: files.into(), games: VecDeque::new(), select: None, rng: None })
+        Ok(Self { files, next_file: 0, games: VecDeque::new(), cur_file: 0, last: None, select: None, seed: None })
     }
 
     pub fn select(mut self, sel: crate::split::Selection) -> Self {
@@ -51,10 +78,70 @@ impl ShardSource {
     }
 
     pub fn shuffled(mut self, seed: u64) -> Self {
-        let mut rng = Rng::new(seed);
-        shuffle(self.files.make_contiguous(), &mut rng);
-        self.rng = Some(rng);
+        shuffle(&mut self.files, &mut Rng::new(seed));
+        self.seed = Some(seed);
         self
+    }
+
+    pub fn files(&self) -> &[PathBuf] {
+        &self.files
+    }
+
+    /// Selected games of file `k` in source order (selection, then the per-file shuffle).
+    pub fn file_games(&self, k: usize) -> Result<Vec<ShardGame>> {
+        let f = &self.files[k];
+        let games = read(f).with_context(|| f.display().to_string())?.games;
+        Ok(self.order_file(k, games))
+    }
+
+    /// Selection and per-file shuffle of file `k`'s games (any item type with a meta).
+    pub fn order_file<T: HasMeta>(&self, k: usize, mut games: Vec<T>) -> Vec<T> {
+        if let Some(sel) = self.select {
+            games.retain(|g| crate::split::selects(sel, g.meta()));
+        }
+        if let Some(seed) = self.seed {
+            shuffle(&mut games, &mut Rng::new(seed ^ (k as u64 + 1).wrapping_mul(0xD1B5_4A32_D192_ED03)));
+        }
+        games
+    }
+
+    /// The next game to return.
+    pub fn position(&self) -> SourcePos {
+        match self.games.front() {
+            Some((g, _)) => SourcePos { next: GameId { file: self.cur_file, game: *g } },
+            None => SourcePos { next: GameId { file: self.next_file, game: 0 } },
+        }
+    }
+
+    /// Continues from `pos` (061-R10 resume): only the file of `pos` is read.
+    pub fn seek(&mut self, pos: SourcePos) -> Result<()> {
+        self.games.clear();
+        self.next_file = pos.next.file;
+        if pos.next.file < self.files.len() {
+            let games = self.file_games(pos.next.file)?;
+            self.cur_file = pos.next.file;
+            self.next_file = pos.next.file + 1;
+            self.games = games.into_iter().enumerate().skip(pos.next.game).collect();
+        }
+        Ok(())
+    }
+
+    /// The game `id` (re-read from its file).
+    pub fn game(&self, id: GameId) -> Result<ShardGame> {
+        let mut games = self.file_games(id.file)?;
+        anyhow::ensure!(id.game < games.len(), "{:?} is past the end of {}", id, self.files[id.file].display());
+        Ok(games.swap_remove(id.game))
+    }
+}
+
+/// Items ordered by [`ShardSource::order_file`].
+pub trait HasMeta {
+    fn meta(&self) -> &uranium_replay::shard::GameMeta;
+}
+
+impl HasMeta for ShardGame {
+    fn meta(&self) -> &uranium_replay::shard::GameMeta {
+        &self.meta
     }
 }
 
@@ -88,17 +175,21 @@ pub fn shard_files(dir: &std::path::Path) -> Result<Vec<PathBuf>> {
 impl StepSource for ShardSource {
     fn next_game(&mut self) -> Result<Option<ShardGame>> {
         while self.games.is_empty() {
-            let Some(f) = self.files.pop_front() else { return Ok(None) };
-            let mut games = read(&f).with_context(|| f.display().to_string())?.games;
-            if let Some(sel) = self.select {
-                games.retain(|g| crate::split::selects(sel, &g.meta));
+            if self.next_file >= self.files.len() {
+                return Ok(None);
             }
-            if let Some(rng) = &mut self.rng {
-                shuffle(&mut games, rng);
-            }
-            self.games.extend(games);
+            let k = self.next_file;
+            self.next_file += 1;
+            self.cur_file = k;
+            self.games = self.file_games(k)?.into_iter().enumerate().collect();
         }
-        Ok(self.games.pop_front())
+        let (i, g) = self.games.pop_front().unwrap();
+        self.last = Some(GameId { file: self.cur_file, game: i });
+        Ok(Some(g))
+    }
+
+    fn last_id(&self) -> Option<GameId> {
+        self.last
     }
 }
 
@@ -108,6 +199,30 @@ pub struct VecSource(pub VecDeque<ShardGame>);
 impl StepSource for VecSource {
     fn next_game(&mut self) -> Result<Option<ShardGame>> {
         Ok(self.0.pop_front())
+    }
+}
+
+/// Updates of one epoch (041-R13 "1 epoch", 2026-10-18): the trainer's lane walk without the
+/// model. `lens` are the step counts of the games in source order; each update every lane takes
+/// up to `seq_len` steps, a lane whose game is used up takes the next non-empty game, and the
+/// epoch ends at the first update a lane cannot be filled (as [`crate::bc::Trainer::train_step`]).
+pub fn epoch_updates(lens: impl IntoIterator<Item = usize>, lanes: usize, seq_len: usize) -> u64 {
+    let mut lens = lens.into_iter().filter(|&l| l > 0);
+    let mut rem = vec![0usize; lanes];
+    let mut updates = 0u64;
+    loop {
+        for r in &mut rem {
+            if *r == 0 {
+                match lens.next() {
+                    Some(l) => *r = l,
+                    None => return updates,
+                }
+            }
+        }
+        for r in &mut rem {
+            *r -= (*r).min(seq_len);
+        }
+        updates += 1;
     }
 }
 
@@ -403,6 +518,28 @@ impl GameStream {
     /// Steps not yet produced.
     pub fn remaining(&self) -> usize {
         self.game.steps.len() - self.pos
+    }
+
+    /// Steps produced so far.
+    pub fn pos(&self) -> usize {
+        self.pos
+    }
+
+    pub fn sym(&self) -> Sym {
+        self.sym
+    }
+
+    pub fn z_present(&self) -> bool {
+        self.z.is_some()
+    }
+
+    /// Runs the first `pos` steps through feature extraction without keeping them, so agent
+    /// memory is where it was (resume at a recorded lane position, 061-R10).
+    pub fn advance_to(&mut self, pos: usize) {
+        while self.pos < pos.min(self.game.steps.len()) {
+            let n = (pos - self.pos).min(64);
+            self.next_chunk(n);
+        }
     }
 
     /// Up to `n` next steps and how many of them have labels inconsistent with the masks.

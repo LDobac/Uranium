@@ -15,8 +15,8 @@ use uranium_model::{LstmCore, UraniumNet};
 use uranium_proto::*;
 use uranium_replay::label::Label;
 use uranium_replay::shard::{GameMeta, ShardGame, Step};
-use uranium_train::bc::{BcConfig, DataConfig, HeadWeights, Trainer, ValueWeights};
-use uranium_train::data::{VecSource, prepare};
+use uranium_train::bc::{Batch, BcConfig, DataConfig, Feeder, HeadWeights, Prefetch, Trainer, ValueWeights};
+use uranium_train::data::{ShardSource, VecSource, epoch_updates, prepare};
 
 const W: u16 = 32;
 
@@ -184,7 +184,11 @@ fn tiny_trainer(micro_lanes: usize) -> Trainer<LstmCore> {
 }
 
 fn tiny_trainer_with(micro_lanes: usize, pad_entities: usize, net: UraniumNet<LstmCore>) -> Trainer<LstmCore> {
-    let cfg = BcConfig {
+    Trainer::new(net, tiny_cfg(), tiny_bc(micro_lanes, pad_entities), Device::flex().autodiff())
+}
+
+fn tiny_bc(micro_lanes: usize, pad_entities: usize) -> BcConfig {
+    BcConfig {
         lanes: 2,
         seq_len: 4,
         micro_lanes,
@@ -194,14 +198,14 @@ fn tiny_trainer_with(micro_lanes: usize, pad_entities: usize, net: UraniumNet<Ls
         min_lr: 3e-3,
         warmup_steps: 1,
         total_steps: 100,
+        steps: Default::default(),
         weight_decay: 0.0,
         grad_clip: 1.0,
         s2_lr_scale: 0.1,
         heads: HeadWeights { action: 1.0, delay: 0.5, queued: 0.2, selected: 1.0, target_unit: 1.0, target_loc: 1.0 },
         value: ValueWeights { win: 0.5 },
-        data: DataConfig { z_drop: 0.0, augment: false, seed: 1, checkpoint_every: 1000 },
-    };
-    Trainer::new(net, tiny_cfg(), cfg, Device::flex().autodiff())
+        data: DataConfig { z_drop: 0.0, augment: false, seed: 1, checkpoint_every: 1000, checkpoint_minutes: 0 },
+    }
 }
 
 fn train_tiny(updates: usize, expect_drop: bool) {
@@ -243,12 +247,13 @@ fn warmup_cosine_schedule_041_r3() {
         min_lr: 1e-5,
         warmup_steps: 10,
         total_steps: 110,
+        steps: Default::default(),
         weight_decay: 0.0,
         grad_clip: 1.0,
         s2_lr_scale: 0.1,
         heads: HeadWeights { action: 1.0, delay: 0.5, queued: 0.2, selected: 1.0, target_unit: 1.0, target_loc: 1.0 },
         value: ValueWeights { win: 0.5 },
-        data: DataConfig { z_drop: 0.25, augment: true, seed: 1, checkpoint_every: 1 },
+        data: DataConfig { z_drop: 0.25, augment: true, seed: 1, checkpoint_every: 1, checkpoint_minutes: 0 },
     };
     assert!((cfg.lr_at(0, 1.0) - 1e-4).abs() < 1e-12);
     assert!((cfg.lr_at(9, 1.0) - 1e-3).abs() < 1e-12);
@@ -293,4 +298,104 @@ fn resume_continues_bit_identically_061_r10() {
     let mut c = tiny_trainer_with(1, 0, load());
     assert_ne!(next(&mut c), kept);
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A game of `len` steps (1..=16) with its own replay hash.
+fn game_len(len: usize, tag: u32) -> ShardGame {
+    let mut g = game();
+    g.steps.truncate(len);
+    g.meta.replay_sha256 = format!("{tag:064x}");
+    g
+}
+
+/// Shard files `<root>/p<k>/shard_00000.bin.zst` holding `games` in chunks of `per_file`.
+fn shard_dir(name: &str, games: &[ShardGame], per_file: usize) -> std::path::PathBuf {
+    use uranium_replay::shard::{Shard, ShardHeader, write};
+    let root = std::env::temp_dir().join(format!("uranium-bc-{name}-{}", std::process::id()));
+    std::fs::remove_dir_all(&root).ok();
+    for (k, chunk) in games.chunks(per_file).enumerate() {
+        let d = root.join(format!("p{k}"));
+        std::fs::create_dir_all(&d).unwrap();
+        write(&d.join("shard_00000.bin.zst"), &Shard { header: ShardHeader::default(), games: chunk.to_vec() }).unwrap();
+    }
+    root
+}
+
+fn varied_games() -> Vec<ShardGame> {
+    [16, 3, 9, 16, 5, 1, 12, 7, 16, 2, 11, 4, 16, 8, 6].iter().enumerate().map(|(i, &l)| game_len(l, i as u32 + 1)).collect()
+}
+
+/// What a batch trains on: per lane, the label actions and delays of its steps.
+fn batch_key(b: &Batch) -> Vec<Vec<(u16, usize)>> {
+    b.parts().0.iter().map(|c| c.iter().map(|s| (s.label.action, s.label.delay_bucket)).collect()).collect()
+}
+
+/// 041-R13 one epoch: `epoch_updates` counts exactly the batches the trainer's lane walk makes.
+#[test]
+fn epoch_count_matches_the_lane_walk_041_r13() {
+    for lanes in [1, 2, 3] {
+        let mut cfg = tiny_bc(1, 0);
+        cfg.lanes = lanes;
+        let games = varied_games();
+        let lens: Vec<usize> = games.iter().map(|g| g.steps.len()).collect();
+        let mut f = Feeder::new(&cfg);
+        let mut src = VecSource(games.into());
+        let mut n = 0u64;
+        while f.next_batch(&mut src, None).unwrap().is_some() {
+            n += 1;
+        }
+        assert_eq!(n, epoch_updates(lens, lanes, cfg.seq_len), "lanes {lanes}");
+    }
+}
+
+/// 061-R10: a feeder restored from a batch's data state gives the batches that followed, with
+/// no game trained twice (lanes resume mid-game; only the core state starts fresh).
+#[test]
+fn feeder_resume_continues_the_data_061_r10() {
+    let root = shard_dir("feed-resume", &varied_games(), 4);
+    let mut cfg = tiny_bc(1, 0);
+    cfg.data.z_drop = 0.5;
+    cfg.data.augment = true;
+    let src = || ShardSource::new(&root).unwrap().shuffled(5);
+    let mut a = Feeder::new(&cfg);
+    let mut sa = src();
+    let mut saved = None;
+    let mut kept = Vec::new();
+    for i in 0..6 {
+        let b = a.next_batch_from(&mut sa).unwrap().unwrap();
+        if i == 2 {
+            saved = Some(b.state.clone());
+        } else if i > 2 {
+            kept.push((batch_key(&b), b.state.clone()));
+        }
+    }
+    let mut b = Feeder::new(&cfg);
+    let mut sb = src();
+    b.restore(saved.as_ref().unwrap(), &mut sb).unwrap();
+    for (key, state) in &kept {
+        let x = b.next_batch_from(&mut sb).unwrap().unwrap();
+        assert_eq!(&batch_key(&x), key);
+        assert_eq!(&x.state, state);
+    }
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// The prefetch thread gives the same batches, in order, as the feeder on the trainer's thread.
+#[test]
+fn prefetch_gives_the_feeder_batches_041() {
+    let root = shard_dir("prefetch", &varied_games(), 4);
+    let cfg = tiny_bc(1, 0);
+    let mut f = Feeder::new(&cfg);
+    let mut s = ShardSource::new(&root).unwrap().shuffled(9);
+    let mut want = Vec::new();
+    while let Some(b) = f.next_batch_from(&mut s).unwrap() {
+        want.push((batch_key(&b), b.state));
+    }
+    let p = Prefetch::start(Feeder::new(&cfg), ShardSource::new(&root).unwrap().shuffled(9), 2);
+    let mut got = Vec::new();
+    while let Some(b) = p.next().unwrap() {
+        got.push((batch_key(&b), b.state));
+    }
+    assert_eq!(got, want);
+    std::fs::remove_dir_all(&root).ok();
 }

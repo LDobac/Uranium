@@ -2,6 +2,8 @@
 //! the league (spec 042).
 
 pub mod bc;
+pub mod bc_eval;
+pub mod bc_run;
 pub mod ckpt;
 pub mod data;
 pub mod rl;
