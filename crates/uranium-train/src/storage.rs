@@ -34,7 +34,8 @@ pub struct StorageConfig {
     pub host: String,
     pub heartbeat_every: Duration,
     pub stale_after: Duration,
-    /// Newest checkpoints kept per run (061-R6).
+    /// Newest checkpoints kept per run on the share (061-R6, default 5; 0 = all, G-D6). Runs
+    /// set it from their config (`keep_checkpoints`).
     pub keep_latest: usize,
 }
 
@@ -349,6 +350,8 @@ pub struct Run {
     /// 061-R11-5 / R14 ③: ids ([`ckpt_id`]) of the checkpoints this run continues, oldest first:
     /// the resumed checkpoint's own lineage plus itself, then every checkpoint sealed here.
     lineage: Vec<String>,
+    /// Folder delete of [`Run::prune`] (`fs::remove_dir_all`; replaced in tests).
+    remove_dir: fn(&Path) -> std::io::Result<()>,
 }
 
 /// Lineage entries kept in a checkpoint (`lineage.json`); an unpushed checkpoint is always a
@@ -388,7 +391,7 @@ impl Run {
         let now = now_secs();
         let me = LockInfo { host: cfg.host.clone(), pid: std::process::id(), started: now, heartbeat: now };
         let path = locks.join(format!("{run_id}.json"));
-        let mut run = Self { cfg, run_id: run_id.to_string(), me, previous: None, lineage: Vec::new() };
+        let mut run = Self { cfg, run_id: run_id.to_string(), me, previous: None, lineage: Vec::new(), remove_dir: |p| fs::remove_dir_all(p) };
         match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut f) => {
                 f.write_all(&serde_json::to_vec_pretty(&run.me)?)?;
@@ -692,18 +695,31 @@ impl Run {
     }
 
     /// 061-R6: keeps the newest `keep_latest` checkpoints on the share (always the one `LATEST`
-    /// names) and in the cache only unpushed ones plus the newest. `promoted/` and `league/` are
-    /// never touched. Only the lock holder prunes; an unreachable share prunes nothing.
-    pub fn prune(&mut self) -> Result<()> {
+    /// names; `keep_latest = 0` keeps all, G-D6) and in the cache only unpushed ones plus the
+    /// newest. `promoted/` and `league/` are never touched. Only the lock holder prunes; an
+    /// unreachable share prunes nothing. A checkpoint that cannot be deleted (B-7: an SMB delete
+    /// error) is logged and left for the next prune; the others are still deleted. Returns how
+    /// many deletes failed.
+    pub fn prune(&mut self) -> Result<usize> {
         if self.heartbeat() != LockStatus::Held {
-            return Ok(());
+            return Ok(0);
         }
+        let mut failed = 0;
+        let rm = self.remove_dir;
+        let mut remove = |dir: PathBuf| {
+            if let Err(e) = rm(&dir) {
+                failed += 1;
+                crate::elog!("[prune] WARNING: could not delete {} ({e}); training goes on, the next prune tries again (061-R6)", dir.display());
+            }
+        };
         let latest = self.latest()?;
-        let shared = ckpt_steps(&self.shared_dir())?;
-        let keep_from = shared.len().saturating_sub(self.cfg.keep_latest);
-        for (i, step) in shared.iter().enumerate() {
-            if i < keep_from && Some(*step) != latest {
-                fs::remove_dir_all(self.shared_dir().join(ckpt_name(*step)))?;
+        if self.cfg.keep_latest > 0 {
+            let shared = ckpt_steps(&self.shared_dir())?;
+            let keep_from = shared.len().saturating_sub(self.cfg.keep_latest);
+            for (i, step) in shared.iter().enumerate() {
+                if i < keep_from && Some(*step) != latest {
+                    remove(self.shared_dir().join(ckpt_name(*step)));
+                }
             }
         }
         if !self.cfg.shared_local {
@@ -712,11 +728,17 @@ impl Run {
             let newest = local.last().copied();
             for step in local {
                 if !unpushed.contains(&step) && Some(step) != newest {
-                    fs::remove_dir_all(self.cache_dir().join(ckpt_name(step)))?;
+                    remove(self.cache_dir().join(ckpt_name(step)));
                 }
             }
         }
-        Ok(())
+        Ok(failed)
+    }
+
+    /// Replaces the folder delete used by [`Run::prune`] (fault injection in tests, B-7).
+    #[doc(hidden)]
+    pub fn set_remove_dir(&mut self, f: fn(&Path) -> std::io::Result<()>) {
+        self.remove_dir = f;
     }
 
     fn publish_copy(&self, step: u64, kind: &str, name: &str) -> Result<PathBuf> {

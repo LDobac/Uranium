@@ -176,7 +176,7 @@ fn write_map_resources(map: &Path) -> Result<(PathBuf, usize)> {
     let hash: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
     let chk = uranium_replay::mpq::read_file(&bytes, uranium_replay::mpq::SCENARIO_CHK)?;
     let resources = uranium_env::features::mapgen::chk_resources(&chk)?;
-    let dir = maps_dir();
+    let dir = maps_dir()?;
     std::fs::create_dir_all(&dir)?;
     let path = resources_path(&dir, &hash);
     let source = map.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
@@ -284,6 +284,9 @@ fn main() -> Result<()> {
                     }
                 }
             }
+            // B-2: map precomputes go to URANIUM_MAPS_DIR; without it every game would be written
+            // without one, so the build refuses to start.
+            uranium_env::maps::maps_dir()?;
             let staging_dir = uranium_replay::shard::staging_dir();
             let opt = uranium_replay::pipeline::BuildOptions { src, shards_dir, staging_dir, recorded_winners, jobs, shard_target_bytes: 512 << 20, budget_bytes: budget_gb << 30, first_shard_index: first, skip_sha256, done_sha256 };
             let out_file = std::sync::Mutex::new(std::fs::OpenOptions::new().create(true).append(true).open(&records)?);

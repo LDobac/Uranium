@@ -21,6 +21,8 @@ weight_decay = 1e-4
 grad_clip = 1.0
 # S2 fine-tuning uses 1/10 of the learning rate (041-R4).
 s2_lr_scale = 0.1
+# 061-R6 (G-D6): checkpoints kept per run on the shared drive. Absent = 5; 0 = keep all.
+# keep_checkpoints = 5
 # Head loss weights (041-R1).
 [heads]
 action = 1.0

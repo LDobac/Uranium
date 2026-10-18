@@ -244,7 +244,7 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
 /// older `PRECOMPUTE_VERSION` (no resource list, 030 §2 E-3) is written again.
 pub fn write_map_precompute(map_hash: &str, info: &uranium_proto::GameInfo, chk: &[u8]) -> Result<()> {
     use uranium_env::features::mapgen;
-    let dir = maps_dir();
+    let dir = maps_dir()?;
     let path = dir.join(format!("{map_hash}.toml"));
     if uranium_env::maps::load_precompute(&dir, map_hash).is_some() {
         return Ok(());

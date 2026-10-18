@@ -47,6 +47,7 @@
 - BC 데이터는 `uranium-replay build`가 리플레이를 재생할 때 맵마다 `<URANIUM_MAPS_DIR>/<CHK 해시>.toml`을 만든다(알고리즘은 `uranium-env` `mapgen::precompute`). 라이브 대상 맵의 자원 파일은 `uranium-replay mapgen`이 만든다(아래). 사전계산에는 CHK 유닛 배치에서 뽑은 중립 자원(종류·위치·초기량)도 들어가며, 시야 밖 자원 엔티티의 초기값으로 쓴다(030 §2, 010-R5 예외, AMB-030-3). (2026-10-19 정정: 이전 표기 `tools/mapgen`·`assets/maps/`는 실제와 달랐다)
 - 대상 맵(투혼, 서킷브레이커)만이 아니라 BC 데이터에 나오는 **모든 맵**에 같은 맵 무관 알고리즘으로 적용한다. S1(전체 맵)과 S2(대상 맵)의 입력 분포를 같게 하기 위해서다 (AMB-031-3 Resolved, 2026-10-16).
 - **관측 채널(`base_loc`, `choke`, `wall_candidate`)로만 제공한다. executor가 위치를 강제하거나 보정하지 않는다.**
+- **BC 학습·평가에서 사전계산이 없을 때 (2026-10-19, 리뷰 B-2·G-F2, BC 전 리뷰 계획 승인)**: `URANIUM_MAPS_DIR`는 필수다(상대 경로 기본값 없음). `bc`·`bc-eval`·`label-check`는 시작할 때 고른 게임의 맵 해시마다 현재 버전 사전계산이 있는지 확인하고, 없으면 빠진 해시를 나열하고 실패한다. 로더도 사전계산이 없는 게임을 오류로 처리한다(채널 0으로 조용히 학습하지 않는다). 라이브 게임은 아래 규칙대로 경고 후 진행한다.
 - **라이브 게임의 사전계산 (확정 2026-10-17, AMB-031-4)**
   - BC shard의 사전계산 키는 리플레이 CHK의 SHA-256이고, 라이브 게임의 `GameInfo.map_hash`는 맵 파일(.scx)의 SHA-256이다(010). 키가 달라 그대로는 라이브 게임에서 사전계산을 찾지 못한다.
   - RL·평가 대상 맵 2개(`config/assets.toml`)만 지원한다. `uranium-replay mapgen <scx>...`가 맵 파일에서 CHK를 꺼내 자원 배치를 `<URANIUM_MAPS_DIR>/<맵 파일 SHA-256>.resources.toml`로 저장한다(오프라인, 맵마다 한 번).

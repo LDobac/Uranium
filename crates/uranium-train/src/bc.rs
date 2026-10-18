@@ -5,6 +5,7 @@
 //! memory follows the group, not B (entity attention is N² per row).
 
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::Result;
 use burn::module::Module;
@@ -20,7 +21,7 @@ use uranium_model::value::VALUE_WIN;
 use uranium_model::{CoreInit, UraniumNet};
 
 use crate::ckpt::{self, TrainState};
-use crate::data::{GameId, GameStream, Rng, ShardSource, SourcePos, StepSource, TrainStep};
+use crate::data::{GameId, GameStream, MapStore, Rng, ShardSource, SourcePos, StepSource, TrainStep};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct HeadWeights {
@@ -104,11 +105,45 @@ pub struct BcConfig {
     pub heads: HeadWeights,
     pub value: ValueWeights,
     pub data: DataConfig,
+    /// 061-R6 (G-D6, 2026-10-19): newest checkpoints a run keeps on the shared drive. Absent = 5
+    /// (061-R6 default); 0 = keep every checkpoint (the core ablation, 032-R17 ⑤).
+    #[serde(default)]
+    pub keep_checkpoints: Option<usize>,
 }
+
+/// 061-R6 default number of checkpoints kept per run.
+pub const DEFAULT_KEEP_CHECKPOINTS: usize = 5;
 
 impl BcConfig {
     pub fn load(path: &Path) -> Result<Self> {
         Ok(toml::from_str(&std::fs::read_to_string(path)?)?)
+    }
+
+    /// 061-R6: checkpoints kept on the share (0 = all).
+    pub fn keep_checkpoints(&self) -> usize {
+        self.keep_checkpoints.unwrap_or(DEFAULT_KEEP_CHECKPOINTS)
+    }
+
+    /// B-3: SHA-256 (16 hex digits) of the settings that decide what a run learns: the effective
+    /// config after the stage's `[steps]` (schedule length and warmup), learning rates, loss
+    /// weights and the data settings (seed, z drop, symmetry, enemy race mask). Settings that only
+    /// change how an update is run or saved (`micro_lanes`, `grad_checkpointing`,
+    /// `pad_entities`, `checkpoint_every`, `checkpoint_minutes`, `keep_checkpoints`) are left out:
+    /// they may differ between hosts of one run without changing the updates (041-R3).
+    pub fn fingerprint(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut c = self.clone();
+        c.micro_lanes = 0;
+        c.grad_checkpointing = false;
+        c.pad_entities = 0;
+        c.data.checkpoint_every = 0;
+        c.data.checkpoint_minutes = 0;
+        c.keep_checkpoints = None;
+        // The stage's own length is in total_steps / warmup_steps (set by `bc` from [steps]);
+        // the other stages' lengths do not concern this run.
+        c.steps = StageSteps::default();
+        let json = serde_json::to_vec(&c).expect("BcConfig serialises");
+        Sha256::digest(&json).iter().take(8).map(|b| format!("{b:02x}")).collect()
     }
 
     /// Linear warmup then cosine decay to `min_lr` (041-R3); `scale` = 1 (S1) or `s2_lr_scale`.
@@ -160,6 +195,10 @@ pub struct FeedState {
     /// [`ShardSource::fingerprint`] the position refers to (empty: not a shard source).
     #[serde(default)]
     pub files: String,
+    /// 041-R7 / A-3: games started so far whose result is undecided (`result_source = none`,
+    /// value weight 0).
+    #[serde(default)]
+    pub no_result_games: usize,
 }
 
 /// The CPU half of an update: B lanes x T steps of features and labels (041-R2), plus the data
@@ -168,6 +207,8 @@ pub struct Batch {
     chunks: Vec<Vec<TrainStep>>,
     fresh: Vec<bool>,
     results: Vec<f32>,
+    /// 041-R7 / A-3: per lane, the value-loss weight of its game (0 = undecided result).
+    value_weights: Vec<f32>,
     pub state: FeedState,
 }
 
@@ -175,6 +216,11 @@ impl Batch {
     /// Per lane: the T steps (fewer at a game's end), whether the game started here, its result.
     pub fn parts(&self) -> (&[Vec<TrainStep>], &[bool], &[f32]) {
         (&self.chunks, &self.fresh, &self.results)
+    }
+
+    /// Per lane: the value-loss weight of its game (041-R7 / A-3).
+    pub fn value_weights(&self) -> &[f32] {
+        &self.value_weights
     }
 }
 
@@ -193,14 +239,18 @@ pub struct Feeder {
     seed: u64,
     games: usize,
     invalid_labels: usize,
+    no_result_games: usize,
     /// Fingerprint of the shard source (set on the first batch from it).
     files: String,
     /// Evaluation: when the source runs dry, idle lanes give empty chunks until every lane is
     /// done (training instead ends the epoch at the first lane it cannot fill).
     pub drain: bool,
+    /// Map precomputes (B-2): `URANIUM_MAPS_DIR` unless replaced with [`Feeder::with_maps`].
+    maps: Arc<MapStore>,
 }
 
 impl Feeder {
+    /// Map precomputes from `URANIUM_MAPS_DIR` (B-2: a game without one is an error).
     pub fn new(cfg: &BcConfig) -> Self {
         Self {
             lanes: (0..cfg.lanes).map(|_| Lane::empty()).collect(),
@@ -212,9 +262,21 @@ impl Feeder {
             seed: cfg.data.seed,
             games: 0,
             invalid_labels: 0,
+            no_result_games: 0,
             files: String::new(),
             drain: false,
+            maps: Arc::new(MapStore::from_env()),
         }
+    }
+
+    /// Another map precompute store (shared with a start check, or synthetic maps in tests).
+    pub fn with_maps(mut self, maps: Arc<MapStore>) -> Self {
+        self.maps = maps;
+        self
+    }
+
+    pub fn set_maps(&mut self, maps: Arc<MapStore>) {
+        self.maps = maps;
     }
 
     /// Fills lanes whose game is used up; returns false when the source ran dry for some lane.
@@ -237,7 +299,8 @@ impl Feeder {
             let z_present = self.rng.unit() >= self.z_drop;
             let sym = if self.augment { Sym::augment()[(self.rng.next() % 4) as usize] } else { Sym::IDENTITY };
             self.games += 1;
-            let g = GameStream::new(game, z_present, sym)?.with_race_mask(self.race_mask, self.seed);
+            let g = GameStream::new(game, z_present, sym, &self.maps)?.with_race_mask(self.race_mask, self.seed);
+            self.no_result_games += (g.value_weight == 0.0) as usize;
             self.lanes[i] = Lane { game: Some(g), id: src.last_id(), fresh: true };
         }
         Ok(true)
@@ -251,12 +314,14 @@ impl Feeder {
         let mut chunks = Vec::with_capacity(self.lanes.len());
         let mut fresh = Vec::with_capacity(self.lanes.len());
         let mut results = Vec::with_capacity(self.lanes.len());
+        let mut value_weights = Vec::with_capacity(self.lanes.len());
         for lane in &mut self.lanes {
             let Some(g) = lane.game.as_mut() else {
                 // Drained lane (evaluation only).
                 chunks.push(Vec::new());
                 fresh.push(true);
                 results.push(0.0);
+                value_weights.push(0.0);
                 continue;
             };
             let (chunk, invalid) = g.next_chunk(self.seq_len);
@@ -264,13 +329,14 @@ impl Feeder {
             chunks.push(chunk);
             fresh.push(lane.fresh);
             results.push(g.result);
+            value_weights.push(g.value_weight);
             lane.fresh = false;
             if g.remaining() == 0 {
                 lane.game = None;
                 lane.id = None;
             }
         }
-        Ok(Some(Batch { chunks, fresh, results, state: self.state(pos) }))
+        Ok(Some(Batch { chunks, fresh, results, value_weights, state: self.state(pos) }))
     }
 
     /// [`Feeder::next_batch`] from a shard source, with its read position in the batch's state.
@@ -296,7 +362,15 @@ impl Feeder {
                 Some(LaneState { id, pos: g.pos(), z_present: g.z_present(), sym: Sym::augment().iter().position(|s| *s == g.sym()).unwrap_or(0) as u8 })
             })
             .collect();
-        FeedState { lanes, source: pos, rng: self.rng.state(), games: self.games, invalid_labels: self.invalid_labels, files: self.files.clone() }
+        FeedState {
+            lanes,
+            source: pos,
+            rng: self.rng.state(),
+            games: self.games,
+            invalid_labels: self.invalid_labels,
+            files: self.files.clone(),
+            no_result_games: self.no_result_games,
+        }
     }
 
     /// Back to `st` (061-R10 resume): counters and RNG, lanes re-read from `src` and advanced to
@@ -315,10 +389,16 @@ impl Feeder {
         self.rng = Rng::from_state(st.rng);
         self.games = st.games;
         self.invalid_labels = st.invalid_labels;
+        self.no_result_games = st.no_result_games;
+        // B-13: every shard the lanes need is decoded once, not once per lane.
+        let saved: Vec<&LaneState> = st.lanes.iter().flatten().collect();
+        let ids: Vec<GameId> = saved.iter().map(|s| s.id).collect();
+        let mut games = src.games(&ids)?.into_iter();
         for (lane, saved) in self.lanes.iter_mut().zip(st.lanes.iter().chain(std::iter::repeat(&None))) {
             *lane = Lane::empty();
             let Some(s) = saved else { continue };
-            let mut g = GameStream::new(src.game(s.id)?, s.z_present, Sym::augment()[s.sym as usize % 4])?.with_race_mask(self.race_mask, self.seed);
+            let game = games.next().expect("one game per saved lane");
+            let mut g = GameStream::new(game, s.z_present, Sym::augment()[s.sym as usize % 4], &self.maps)?.with_race_mask(self.race_mask, self.seed);
             g.advance_to(s.pos);
             if g.remaining() > 0 {
                 *lane = Lane { game: Some(g), id: Some(s.id), fresh: true };
@@ -335,6 +415,7 @@ impl Feeder {
         self.rng = Rng::from_state(st.rng);
         self.games = st.games;
         self.invalid_labels = st.invalid_labels;
+        self.no_result_games = st.no_result_games;
         self.reset_lanes();
     }
 
@@ -493,6 +574,8 @@ impl<C: CoreInit> Trainer<C> {
         let mut rows: Vec<&TrainStep> = Vec::with_capacity(b * t);
         let mut weights = Vec::with_capacity(b * t);
         let mut results = Vec::with_capacity(b * t);
+        // 041-R7 / A-3: value-loss weight per row = label weight x the game's value weight.
+        let mut value_w = Vec::with_capacity(b * t);
         let mut keep = Vec::with_capacity(b);
         for l in lanes {
             let chunk = &batch.chunks[l];
@@ -500,8 +583,10 @@ impl<C: CoreInit> Trainer<C> {
             for k in 0..t {
                 let s = &chunk[k.min(chunk.len() - 1)];
                 rows.push(s);
-                weights.push(if k < chunk.len() { s.weight } else { 0.0 });
+                let w = if k < chunk.len() { s.weight } else { 0.0 };
+                weights.push(w);
                 results.push(batch.results[l]);
+                value_w.push(w * batch.value_weights[l]);
             }
         }
         let obs: Vec<_> = rows.iter().map(|s| &s.obs).collect();
@@ -537,10 +622,12 @@ impl<C: CoreInit> Trainer<C> {
             (ce(lp.target_unit.clone()), h.target_unit),
             (ce(lp.target_loc.clone()), h.target_loc),
         ];
-        // 041-R7: win value head regresses the replay result (privileged inputs), MSE.
+        // 041-R7: win value head regresses the replay result (privileged inputs), MSE; games
+        // with an undecided result (A-3) have value weight 0.
         let target = Tensor::<1>::from_data(TensorData::new(results, [b * t]), d);
+        let vw = Tensor::<1>::from_data(TensorData::new(value_w, [b * t]), d);
         let win = out.value.narrow(1, VALUE_WIN, 1).reshape([b * t]);
-        let value_loss = ((win - target).powi_scalar(2) * w.clone()).sum() / valid as f64;
+        let value_loss = ((win - target).powi_scalar(2) * vw).sum() / valid as f64;
         let mut loss = value_loss.clone() * self.cfg.value.win as f64;
         for (l, k) in &parts {
             loss = loss + l.clone() * *k as f64;
@@ -603,6 +690,7 @@ impl<C: CoreInit> Trainer<C> {
                 games: state.extra["games"].as_u64().unwrap_or(0) as usize,
                 invalid_labels: state.extra["invalid_labels"].as_u64().unwrap_or(0) as usize,
                 files: String::new(),
+                no_result_games: 0,
             },
         };
         self.feeder.restore_counters(&self.data);
@@ -616,6 +704,66 @@ impl<C: CoreInit> Trainer<C> {
         self.feeder.reset_lanes();
         self.states.clear();
     }
+}
+
+/// B-3 (2026-10-19): what a BC run trains, stored in each checkpoint's training state
+/// (`extra.run`) and compared on resume, so a run never continues with another stage, config or
+/// dataset (another data order, schedule length or learning rate) without notice.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct RunIdent {
+    /// `S1`, `S2` or `AblationA` (041-R4, R5, R13).
+    pub stage: String,
+    /// [`BcConfig::fingerprint`] of the effective config.
+    pub config: String,
+    /// [`crate::data::dataset_fingerprint`] of the selected shard files.
+    pub dataset: String,
+}
+
+const IDENT_KEY: &str = "run";
+
+/// Adds `ident` to the training state of the checkpoint in `dir` (after [`Trainer::save`]).
+pub fn write_ident(dir: &Path, ident: &RunIdent) -> Result<()> {
+    let mut state = ckpt::load_state(dir)?.ok_or_else(|| anyhow::anyhow!("{} has no training state", dir.display()))?;
+    match state.extra.as_object_mut() {
+        Some(o) => {
+            o.insert(IDENT_KEY.into(), serde_json::to_value(ident)?);
+        }
+        None => anyhow::bail!("{}: training state extra is not an object", dir.display()),
+    }
+    ckpt::save_state(dir, &state)
+}
+
+/// The [`RunIdent`] stored in a checkpoint, if any (checkpoints before B-3 have none).
+pub fn read_ident(dir: &Path) -> Result<Option<RunIdent>> {
+    let Some(state) = ckpt::load_state(dir)? else { return Ok(None) };
+    state.extra.get(IDENT_KEY).map(|v| serde_json::from_value(v.clone())).transpose().map_err(Into::into)
+}
+
+/// B-3: refuses to resume from `dir` when its stage, config or dataset differs from `want`.
+/// A checkpoint written before B-3 (no identity) is resumed with a warning. There is no override
+/// (start a new run, or `--init` from the checkpoint for weights only).
+pub fn check_ident(dir: &Path, want: &RunIdent) -> Result<()> {
+    let Some(have) = read_ident(dir)? else {
+        crate::elog!("[bc] WARNING: {} has no stage / config / dataset fingerprint (written before B-3); resuming unchecked", dir.display());
+        return Ok(());
+    };
+    let mut diff = Vec::new();
+    if have.stage != want.stage {
+        diff.push(format!("stage {} (checkpoint) != {} (now)", have.stage, want.stage));
+    }
+    if have.config != want.config {
+        diff.push(format!("config fingerprint {} != {} (another --config, or bc.toml changed: schedule, lr, loss or data settings)", have.config, want.config));
+    }
+    if have.dataset != want.dataset {
+        diff.push(format!("dataset fingerprint {} != {} (other --dataset / --shards, or the shards were rebuilt)", have.dataset, want.dataset));
+    }
+    anyhow::ensure!(
+        diff.is_empty(),
+        "refusing to resume from {} (B-3, 061-R10): {}. Use the stage, config and datasets the run started with, or start a new run (`--init` takes the weights only)",
+        dir.display(),
+        diff.join("; ")
+    );
+    Ok(())
 }
 
 /// `URANIUM_BC_PROFILE=1`: wall time per phase of an update (device synced at every mark, so

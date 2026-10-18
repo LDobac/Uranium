@@ -47,7 +47,14 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
   - 다른 PC의 잠금이 있으면(유효·만료 모두) 종료 코드 75로 거부된다. `--take-over`는 상대 PC가 멈춘 것을 확인한 뒤에만 쓴다: 잠금 상태와 무관하게 즉시 인수하고 경고를 출력하며, 상대가 살아 있으면 그쪽은 다음 heartbeat에서 push 없이 멈춘다(061-R5).
   - 기본 S1(전 소스 train 분할), `--s2`·`--stage s2`는 대상 맵 train 분할(041-R12·R13). S2는 `--init`으로 가중치만 가져온다(041-R4). `--init`에 run 폴더를 주면 그 run에 `DONE`이 있어야 하고 `DONE`이 가리키는 마지막 체크포인트를 쓴다(061-R13). 학습 길이는 `config/bc.toml` `[steps]`(041-R14). `URANIUM_BC_PROFILE=1`이면 구간별 시간 출력.
   - `--dataset` pull·검증은 파일마다 `[pull]`/`[verify]` 진행 줄을 stderr에 쓴다(감시 30분 멈춤 판정 대비).
-- `bc-epoch`(1 epoch update 수), `bc-eval --checkpoint <ckpt|run> [--split test|val] [--games N]`(041 지표), `bc-profile --backend <b> [--batches N]`, `split-stats`, `label-check [--games N]`(034-AC3), `manifest <dir> [--verify]`(061-R7). 모두 `--dataset`/`--shards`를 받는다.
+  - 맵 사전계산(B-2): `URANIUM_MAPS_DIR`가 필수다(기본값 없음). 시작할 때(잠금 전) 고른 게임의 맵 해시마다 현재 버전 `<map_hash>.toml`이 있는지 shard를 한 번 훑어 확인하고, 없으면 빠진 해시와 게임 수를 나열하고 실패한다. 로더도 사전계산이 없는 게임은 오류로 처리한다. `bc-eval`·`label-check`도 같다.
+  - 재개 검사(B-3): 체크포인트 `train_state.json`의 `extra.run`에 stage(`S1`/`S2`/`AblationA`), 설정 지문(`[steps]`를 반영한 실효 설정. `micro_lanes`·`grad_checkpointing`·`pad_entities`·`checkpoint_every`·`checkpoint_minutes`·`keep_checkpoints`는 제외), 데이터 지문(파일별 manifest SHA-256, manifest가 없으면 크기)을 남긴다. 재개할 때 하나라도 다르면 잠금을 풀고 거부한다(우회 옵션 없음, 새 run 또는 `--init`).
+  - 체크포인트 보존(061-R6): 설정 `keep_checkpoints`(없으면 5, 0이면 전부 보존). `config/bc_core_ablation.toml`은 0. 정리(삭제) 실패는 경고만 하고 학습을 계속한다.
+  - 디스크 경고(061-R8): 학습 시작과 체크포인트 저장마다 공용 드라이브·로컬 캐시(로컬 `--out`이면 그 폴더)의 물리 디스크 사용률이 80% 이상이면 경고한다. 학습은 멈추지 않는다.
+  - 로그 줄의 `no_result_games`는 지금까지 시작한 게임 중 승패 판정 불가(`result_source = none`)로 value 가중치 0인 게임 수다(041-R7).
+- `bc-epoch`(1 epoch update 수, 게임 시작 NoOp 스텝 포함), `bc-eval --checkpoint <ckpt|run> [--split test|val] [--games N --seed 1]`(041 지표), `bc-profile --backend <b> [--batches N]`, `split-stats`, `label-check [--games N]`(034-AC3), `manifest <dir> [--verify]`(061-R7). 모두 `--dataset`/`--shards`를 받는다.
+  - `bc-eval --games N`은 분할 전체를 고정 seed(`--seed`, 기본 1)로 섞어 앞의 N게임을 고른다. 체크포인트·코어와 무관하게 같은 게임이다(032-R17 ②). 단위(E-9): `delay_mae_frames`는 프레임(bucket 값), `delay_mae_buckets`는 bucket 번호, `nll.<head>`는 그 헤드를 쓰는 스텝(`nll_steps.<head>`)만의 평균이다. 출력 `units`에 같은 설명이 들어 있다.
+  - `split-stats` 출력: `splits`(소스·맵 그룹·분할별 게임 수), `sources`(소스별 `privileged` 없는 게임·스텝 수와 비율(E-10), `result_source`별 게임 수(040-R8)).
 - 하이퍼파라미터 `config/bc.toml`(GPU 메모리는 `micro_lanes`, `pad_entities`, `grad_checkpointing`), 코어 비교 `config/bc_core_ablation.toml`, 보상 `config/reward.toml`.
 
 ## 감시·작업자(060-R6, 061-R13~R15)
@@ -70,6 +77,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
   - 체크포인트·잠금은 061, 게임 PC는 `URANIUM_HOSTS_FILE`. 로그 `train.csv`·`games.csv`(042-R2).
   - 042-AC1·033-AC2는 `--max-agent-steps 10000000`(run 누적, 도달하면 정상 종료, 042-R12).
   - 리플레이: `[replays] sample_every`(기본 100)의 배수 게임과 승자 불일치 게임만 `runs/<run>/replays/`에 남긴다(042-R11).
+  - 학습 시작과 체크포인트마다 디스크 사용률(80% 경고, 061-R8)과 `runs/*/replays/` 합계(예산 100GB 초과 시 경고, 지우지 않음, 060-R7)를 확인한다. 보존 개수는 `config/rl.toml`의 `keep_checkpoints`(없으면 5, 0이면 전부).
 - z 테이블 `uranium-train z-table`(033-R8).
 
 ## 래더 리플레이 수집(043, Windows, SC:R 로그인 상태)

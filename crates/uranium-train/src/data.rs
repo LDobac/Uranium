@@ -2,8 +2,9 @@
 //! into a sequence of (observation, label, privileged, weight) steps by running the same feature
 //! extraction as RL and SC:R (030), so stored and streamed games give identical inputs (040-AC6).
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use uranium_env::actions::{CAPABILITIES, LOC_CLASSES, TargetKind};
@@ -12,7 +13,7 @@ use uranium_env::features::extract::{action_table, dims};
 use uranium_env::features::*;
 use uranium_model::collate::HostLabel;
 use uranium_replay::label::Label;
-use uranium_replay::shard::{ShardGame, read};
+use uranium_replay::shard::{GameMeta, ShardGame, read, result_source};
 
 /// One replay game from any source (041-R9).
 pub trait StepSource {
@@ -57,6 +58,9 @@ pub struct ShardSource {
     last: Option<GameId>,
     select: Option<crate::split::Selection>,
     seed: Option<u64>,
+    /// Files to read (by index); the others are skipped without being read (032-R17 ② evaluation
+    /// of chosen games). `None` = every file.
+    only_files: Option<HashSet<usize>>,
 }
 
 impl ShardSource {
@@ -69,7 +73,7 @@ impl ShardSource {
         for d in dirs {
             files.extend(shard_files(d)?);
         }
-        Ok(Self { files, next_file: 0, games: VecDeque::new(), cur_file: 0, last: None, select: None, seed: None })
+        Ok(Self { files, next_file: 0, games: VecDeque::new(), cur_file: 0, last: None, select: None, seed: None, only_files: None })
     }
 
     pub fn select(mut self, sel: crate::split::Selection) -> Self {
@@ -85,6 +89,13 @@ impl ShardSource {
 
     pub fn files(&self) -> &[PathBuf] {
         &self.files
+    }
+
+    /// Reads only the files `keep` (indices into [`ShardSource::files`]); game ids stay those of
+    /// the full list.
+    pub fn only_files(mut self, keep: HashSet<usize>) -> Self {
+        self.only_files = Some(keep);
+        self
     }
 
     /// The file list in read order by the last three path parts (`<src>/<part>/shard_*`), the same
@@ -146,6 +157,26 @@ impl ShardSource {
         anyhow::ensure!(id.game < games.len(), "{:?} is past the end of {}", id, self.files[id.file].display());
         Ok(games.swap_remove(id.game))
     }
+
+    /// The games `ids`, in the order given, each file decoded once however many of its games are
+    /// asked for (B-13: a resume restores up to `lanes` games, often from the same shard).
+    pub fn games(&self, ids: &[GameId]) -> Result<Vec<ShardGame>> {
+        // File by file, so only one decoded shard (about 1 GB) is held at a time.
+        let mut by_file: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for (slot, id) in ids.iter().enumerate() {
+            by_file.entry(id.file).or_default().push(slot);
+        }
+        let mut out: Vec<Option<ShardGame>> = (0..ids.len()).map(|_| None).collect();
+        for (file, slots) in by_file {
+            let mut games: Vec<Option<ShardGame>> = self.file_games(file)?.into_iter().map(Some).collect();
+            for slot in slots {
+                let id = ids[slot];
+                anyhow::ensure!(id.game < games.len(), "{:?} is past the end of {}", id, self.files[file].display());
+                out[slot] = Some(games[id.game].take().ok_or_else(|| anyhow::anyhow!("{id:?} asked for twice"))?);
+            }
+        }
+        Ok(out.into_iter().map(|g| g.expect("every slot filled")).collect())
+    }
 }
 
 /// Items ordered by [`ShardSource::order_file`].
@@ -160,7 +191,7 @@ impl HasMeta for ShardGame {
 }
 
 /// Fisher-Yates.
-fn shuffle<T>(v: &mut [T], rng: &mut Rng) {
+pub fn shuffle<T>(v: &mut [T], rng: &mut Rng) {
     for i in (1..v.len()).rev() {
         v.swap(i, (rng.next() % (i as u64 + 1)) as usize);
     }
@@ -194,6 +225,9 @@ impl StepSource for ShardSource {
             }
             let k = self.next_file;
             self.next_file += 1;
+            if self.only_files.as_ref().is_some_and(|keep| !keep.contains(&k)) {
+                continue;
+            }
             self.cur_file = k;
             self.games = self.file_games(k)?.into_iter().enumerate().collect();
         }
@@ -260,8 +294,229 @@ pub struct GameSeq {
 
 pub use uranium_env::maps::family_index;
 
-fn map_precompute(map_hash: &str) -> Option<MapPrecompute> {
-    uranium_env::maps::load_precompute(&uranium_env::maps::maps_dir(), map_hash)
+/// Map precomputes of BC games (031 맵 사전계산, 030 §2 resources). B-2 (2026-10-19): a game
+/// whose map has no current-version precompute is an error, never a game with the base_loc /
+/// choke / wall channels and the map resource entities at 0 (that trained part of a run on a
+/// different input distribution on hosts without the files). Loaded files are kept in memory.
+pub struct MapStore {
+    kind: MapsKind,
+    cache: Mutex<HashMap<String, Arc<MapPrecompute>>>,
+}
+
+enum MapsKind {
+    Dir(PathBuf),
+    /// `URANIUM_MAPS_DIR` missing: every lookup fails with this message.
+    Unset(String),
+    /// Synthetic test games: no precompute, channels 0 (tests only).
+    Synthetic,
+}
+
+impl MapStore {
+    /// `URANIUM_MAPS_DIR` (031, `.env`); when it is not set, every lookup fails.
+    pub fn from_env() -> Self {
+        match uranium_env::maps::maps_dir() {
+            Ok(d) => Self::dir(d),
+            Err(e) => Self { kind: MapsKind::Unset(format!("{e:#}")), cache: Mutex::default() },
+        }
+    }
+
+    pub fn dir(dir: impl Into<PathBuf>) -> Self {
+        Self { kind: MapsKind::Dir(dir.into()), cache: Mutex::default() }
+    }
+
+    /// Tests with synthetic maps only: every game gets no precompute.
+    pub fn synthetic() -> Self {
+        Self { kind: MapsKind::Synthetic, cache: Mutex::default() }
+    }
+
+    fn folder(&self) -> Result<Option<&Path>> {
+        match &self.kind {
+            MapsKind::Synthetic => Ok(None),
+            MapsKind::Unset(e) => anyhow::bail!("{e} (B-2: BC needs the map precomputes)"),
+            MapsKind::Dir(d) => Ok(Some(d)),
+        }
+    }
+
+    /// The precompute of `map_hash`; an error when it is missing or of an older version (B-2).
+    pub fn get(&self, map_hash: &str) -> Result<Option<Arc<MapPrecompute>>> {
+        let Some(dir) = self.folder()? else { return Ok(None) };
+        if let Some(p) = self.cache.lock().unwrap().get(map_hash) {
+            return Ok(Some(p.clone()));
+        }
+        let p = uranium_env::maps::load_precompute(dir, map_hash).ok_or_else(|| {
+            anyhow::anyhow!(
+                "no map precompute v{} for map {map_hash} in {} (B-2: copy the build's precomputes there, or rebuild them with `uranium-replay build`)",
+                uranium_env::features::PRECOMPUTE_VERSION,
+                dir.display()
+            )
+        })?;
+        let p = Arc::new(p);
+        self.cache.lock().unwrap().insert(map_hash.to_string(), p.clone());
+        Ok(Some(p))
+    }
+
+    /// B-2 start check: map hashes (sorted, once each) without a current precompute.
+    pub fn missing<'a>(&self, hashes: impl IntoIterator<Item = &'a str>) -> Result<Vec<String>> {
+        let Some(dir) = self.folder()? else { return Ok(Vec::new()) };
+        let set: std::collections::BTreeSet<&str> = hashes.into_iter().collect();
+        Ok(set.into_iter().filter(|h| uranium_env::maps::load_precompute(dir, h).is_none()).map(str::to_string).collect())
+    }
+
+    /// B-2: fails, listing every map hash of `games` (with its game count) that has no
+    /// precompute, before any training or evaluation starts.
+    pub fn check(&self, games: &[&GameSummary]) -> Result<()> {
+        let missing = self.missing(games.iter().map(|g| g.meta.map_hash.as_str()))?;
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let count = |h: &str| games.iter().filter(|g| g.meta.map_hash == h).count();
+        let list: Vec<String> = missing.iter().map(|h| format!("{h} ({} games)", count(h))).collect();
+        let dir = self.folder()?.map_or_else(String::new, |d| d.display().to_string());
+        anyhow::bail!(
+            "{} map hash(es) of the selected games have no map precompute v{} in {dir} (B-2; copy the build's `<map_hash>.toml` files there): {}",
+            missing.len(),
+            uranium_env::features::PRECOMPUTE_VERSION,
+            list.join(", ")
+        )
+    }
+}
+
+/// What a scan keeps of one game (no frames): selection data and counts.
+#[derive(Clone, Debug)]
+pub struct GameSummary {
+    pub meta: GameMeta,
+    pub steps: usize,
+    /// Steps without a `PrivilegedSummary` (E-10; the value input is then all zeros).
+    pub privileged_none: usize,
+}
+
+impl HasMeta for GameSummary {
+    fn meta(&self) -> &GameMeta {
+        &self.meta
+    }
+}
+
+/// Every game of every file, file by file in `files` order (games in file order), read in
+/// parallel. A decoded shard is close to 1 GB: a few readers keep a 16 GB host out of swap.
+pub fn scan_files(files: &[PathBuf]) -> Result<Vec<Vec<GameSummary>>> {
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(4);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut per_file: Vec<Option<Vec<GameSummary>>> = vec![None; files.len()];
+    let results = Mutex::new(&mut per_file);
+    std::thread::scope(|s| -> Result<()> {
+        let mut hs = Vec::new();
+        for _ in 0..threads {
+            hs.push(s.spawn(|| -> Result<()> {
+                loop {
+                    let k = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if k >= files.len() {
+                        return Ok(());
+                    }
+                    let games = read(&files[k]).map_err(|e| anyhow::anyhow!("{}: {e:#}", files[k].display()))?.games;
+                    let items = games
+                        .into_iter()
+                        .map(|g| GameSummary { steps: g.steps.len(), privileged_none: g.steps.iter().filter(|s| s.privileged.is_none()).count(), meta: g.meta })
+                        .collect();
+                    results.lock().unwrap()[k] = Some(items);
+                }
+            }));
+        }
+        for h in hs {
+            h.join().map_err(|_| anyhow::anyhow!("reader thread panicked"))??;
+        }
+        Ok(())
+    })?;
+    Ok(per_file.into_iter().map(|v| v.expect("every file read")).collect())
+}
+
+/// B-2 start check of a training / evaluation input: scans the files of `src` and checks the
+/// map precompute of every game `sel` keeps (all games when `None`). Returns the scan.
+pub fn check_maps(src: &ShardSource, sel: Option<crate::split::Selection>, maps: &MapStore) -> Result<Vec<Vec<GameSummary>>> {
+    let started = std::time::Instant::now();
+    let scan = scan_files(src.files())?;
+    let games: Vec<&GameSummary> = scan.iter().flatten().filter(|g| sel.is_none_or(|s| crate::split::selects(s, &g.meta))).collect();
+    maps.check(&games)?;
+    let n_maps = games.iter().map(|g| g.meta.map_hash.as_str()).collect::<HashSet<_>>().len();
+    crate::elog!("{}", serde_json::json!({ "map_precomputes": "ok (B-2)", "games": games.len(), "maps": n_maps, "secs": started.elapsed().as_secs() }));
+    Ok(scan)
+}
+
+/// 041-R7 / A-3 (2026-10-19): value-loss weight of a game: 0 when its result could not be decided
+/// (`result_source = none`, `result = 0`), else 1. The policy heads train on it either way.
+pub fn value_weight(meta: &GameMeta) -> f32 {
+    if meta.result_source == result_source::NONE { 0.0 } else { 1.0 }
+}
+
+/// B-3: what the data of a run is: per file (in read order) its last three path parts and its
+/// SHA-256 from the folder's `manifest.json` (061-R7, verified when the dataset was opened), or
+/// its size for a folder without a manifest (`--shards`). A rebuilt dataset with the same file
+/// names gives another fingerprint.
+pub fn dataset_fingerprint(dirs: &[PathBuf], files: &[PathBuf]) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut manifests = Vec::new();
+    for d in dirs {
+        if d.join(crate::storage::MANIFEST_FILE).is_file() {
+            manifests.push((d.clone(), crate::storage::Manifest::read(d)?));
+        }
+    }
+    let mut h = Sha256::new();
+    for f in files {
+        let parts: Vec<_> = f.components().rev().take(3).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+        let entry = manifests.iter().find_map(|(d, m)| {
+            let rel = f.strip_prefix(d).ok()?.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/");
+            m.files.get(&rel).map(|e| e.sha256.clone())
+        });
+        let id = match entry {
+            Some(sha) => sha,
+            None => format!("bytes:{}", std::fs::metadata(f).with_context(|| f.display().to_string())?.len()),
+        };
+        h.update(parts.join("/").as_bytes());
+        h.update(b"\t");
+        h.update(id.as_bytes());
+        h.update(b"\n");
+    }
+    let hex: String = h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect();
+    Ok(format!("{}:{hex}", files.len()))
+}
+
+/// 032-R17 ② (G-D8, 2026-10-19): `n` games of a split chosen by a fixed-seed shuffle over the
+/// whole split (not the first files: sources are not spread evenly over the files).
+/// `counts[k]` = selected games of file `k`; the result is the chosen ids sorted by place.
+pub fn sample_games(counts: &[usize], n: usize, seed: u64) -> Vec<GameId> {
+    let mut ids: Vec<GameId> = counts.iter().enumerate().flat_map(|(file, &c)| (0..c).map(move |game| GameId { file, game })).collect();
+    shuffle(&mut ids, &mut Rng::new(seed));
+    ids.truncate(n);
+    ids.sort_by_key(|g| (g.file, g.game));
+    ids
+}
+
+/// The games `ids` of a [`ShardSource`] (in source order), skipping the rest; files with none of
+/// them are not read.
+pub struct ChosenGames {
+    src: ShardSource,
+    ids: HashSet<GameId>,
+}
+
+impl ChosenGames {
+    pub fn new(src: ShardSource, ids: &[GameId]) -> Self {
+        let files = ids.iter().map(|g| g.file).collect();
+        Self { src: src.only_files(files), ids: ids.iter().copied().collect() }
+    }
+}
+
+impl StepSource for ChosenGames {
+    fn next_game(&mut self) -> Result<Option<ShardGame>> {
+        while let Some(g) = self.src.next_game()? {
+            if self.src.last_id().is_some_and(|id| self.ids.contains(&id)) {
+                return Ok(Some(g));
+            }
+        }
+        Ok(None)
+    }
+
+    fn last_id(&self) -> Option<GameId> {
+        self.src.last_id()
+    }
 }
 
 /// 030 §5 BC z: the replay's first 20 Build / Train / Research / Upgrade actions and the
@@ -419,8 +674,8 @@ fn prereq_fail(a: &uranium_env::actions::Action, me: &uranium_proto::PlayerState
     }
 }
 
-pub fn label_check(game: &ShardGame, st: &mut LabelStats) -> Result<()> {
-    let map = MapInfo::new(&game.game_info, family_index(&game.meta.map_family), map_precompute(&game.meta.map_hash).as_ref())?;
+pub fn label_check(game: &ShardGame, st: &mut LabelStats, maps: &MapStore) -> Result<()> {
+    let map = MapInfo::new(&game.game_info, family_index(&game.meta.map_family), maps.get(&game.meta.map_hash)?.as_deref())?;
     // 030-R11: a lobby-Random enemy stays unknown until seen.
     let mut mem = AgentMemory::with_lobby(&game.game_info, game.meta.enemy_random);
     let k = CAPABILITIES.len();
@@ -542,11 +797,14 @@ pub struct GameStream {
     zero_priv: PrivilegedTensors,
     /// 041-R7 win target: +1 win, -1 loss, 0 unknown.
     pub result: f32,
+    /// 041-R7 / A-3: value-loss weight, 0 for an undecided result ([`value_weight`]).
+    pub value_weight: f32,
 }
 
 impl GameStream {
-    pub fn new(game: ShardGame, z_present: bool, sym: Sym) -> Result<Self> {
-        let map = MapInfo::new(&game.game_info, family_index(&game.meta.map_family), map_precompute(&game.meta.map_hash).as_ref())?;
+    /// Fails when the game's map has no precompute in `maps` (B-2).
+    pub fn new(game: ShardGame, z_present: bool, sym: Sym, maps: &MapStore) -> Result<Self> {
+        let map = MapInfo::new(&game.game_info, family_index(&game.meta.map_family), maps.get(&game.meta.map_hash)?.as_deref())?;
         // 030-R11: a lobby-Random enemy (shard `enemy_random`) stays unknown until seen. Replay
         // headers store the played race, so in BC data this is rarely set; `mask_enemy_race` (5% of
         // games) is what teaches the `unknown` input.
@@ -554,7 +812,8 @@ impl GameStream {
         let z = z_present.then(|| replay_z(&game));
         let zero_priv = PrivilegedTensors { summary: vec![0.0; dims().privileged()] };
         let result = game.meta.result as f32;
-        Ok(Self { game, map, mem, z, sym, pos: 0, zero_priv, result })
+        let value_weight = value_weight(&game.meta);
+        Ok(Self { game, map, mem, z, sym, pos: 0, zero_priv, result, value_weight })
     }
 
     /// 030-R11 BC exception (user decision 2026-10-19, 5%): when [`enemy_race_masked`] picks this
@@ -625,8 +884,8 @@ impl GameStream {
 }
 
 /// Whole game at once (tests, short games): `GameStream` drained in one chunk.
-pub fn prepare(game: &ShardGame, z_present: bool, sym: Sym) -> Result<GameSeq> {
-    let mut stream = GameStream::new(game.clone(), z_present, sym)?;
+pub fn prepare(game: &ShardGame, z_present: bool, sym: Sym, maps: &MapStore) -> Result<GameSeq> {
+    let mut stream = GameStream::new(game.clone(), z_present, sym, maps)?;
     let (steps, invalid_labels) = stream.next_chunk(usize::MAX);
     Ok(GameSeq { steps, result: stream.result, invalid_labels })
 }

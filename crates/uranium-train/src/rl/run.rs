@@ -441,7 +441,26 @@ fn save_checkpoint<C: CoreInit + 'static>(run: &mut Run, step: u64, learners: &[
     }
     ckpt::copy_configs(&dir, &files)?;
     run.seal(step)?;
-    run.push(step)
+    let out = run.push(step);
+    // 061-R8 / 060-R7 (C-3): at every checkpoint.
+    check_storage(run);
+    out
+}
+
+/// 061-R8: shared drive and cache disk usage; 060-R7: `runs/*/replays/` against the replay
+/// budget (042-R11: never deleted). Warnings only.
+fn check_storage(run: &Run) {
+    crate::disk::warn_storage("rl", &run.cfg);
+    crate::disk::warn_replay_budget(&run.cfg.shared, crate::disk::REPLAY_BUDGET_BYTES);
+}
+
+/// B-7 / 061-R6: a failed prune is logged; training goes on.
+fn prune_logged(run: &mut Run) {
+    match run.prune() {
+        Ok(0) => {}
+        Ok(n) => crate::elog!("[rl] prune: {n} checkpoint folder(s) not deleted, left for the next prune (061-R6)"),
+        Err(e) => crate::elog!("[rl] WARNING: prune failed ({e:#}); training goes on (061-R6)"),
+    }
 }
 
 pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
@@ -461,7 +480,12 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
         crate::elog!("[rl] Ctrl+C before start: not started");
         return Ok(());
     }
+    let mut storage = storage;
+    // 061-R6 (G-D6): the run's retention (`keep_checkpoints`, 0 = all).
+    storage.keep_latest = cfg.keep_checkpoints.unwrap_or(crate::bc::DEFAULT_KEEP_CHECKPOINTS);
     let mut run = Run::acquire(storage, &args.run, args.take_over)?;
+    // 061-R8 / 060-R7 (C-3): disk usage and the replay total at the start (warnings only).
+    check_storage(&run);
     let resume = match run.begin() {
         Ok(r) => r,
         Err(e) if e.downcast_ref::<crate::Interrupted>().is_some() => {
@@ -664,7 +688,9 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
             let league_now = shared.league.lock().unwrap().clone();
             let out = save_checkpoint(&mut run, step, &learners, &league_now, &args, serde_json::json!({ "games": shared.games_done.load(Ordering::SeqCst) }))?;
             crate::elog!("[rl] checkpoint {} {:?}", crate::storage::ckpt_name(step), out);
-            run.prune().ok();
+            if out == PushOutcome::Pushed {
+                prune_logged(&mut run);
+            }
             last_ckpt = Instant::now();
         }
     }

@@ -55,9 +55,17 @@ pub fn family_index(family: &str) -> i32 {
     }
 }
 
-/// Directory of `<map_hash>.toml` map precomputes (031): `URANIUM_MAPS_DIR`, default `assets/maps`.
-pub fn maps_dir() -> PathBuf {
-    std::env::var_os("URANIUM_MAPS_DIR").map_or_else(|| PathBuf::from("assets/maps"), PathBuf::from)
+/// `.env` key of the map precompute folder (031, 001-R9).
+pub const MAPS_DIR_ENV: &str = "URANIUM_MAPS_DIR";
+
+/// Directory of `<map_hash>.toml` map precomputes (031): `URANIUM_MAPS_DIR`. There is no default
+/// (B-2, 2026-10-19): a relative fallback silently pointed at an empty folder on some hosts, and
+/// a missing precompute zeroes the base_loc / choke / wall channels and the map resource entities.
+pub fn maps_dir() -> Result<PathBuf> {
+    match std::env::var_os(MAPS_DIR_ENV) {
+        Some(v) if !v.is_empty() => Ok(PathBuf::from(v)),
+        _ => anyhow::bail!("{MAPS_DIR_ENV} is not set (.env, 031 맵 사전계산): the folder of <map_hash>.toml map precomputes"),
+    }
 }
 
 /// `<dir>/<map_hash>.toml`, if present, readable and of the current [`PRECOMPUTE_VERSION`]. An

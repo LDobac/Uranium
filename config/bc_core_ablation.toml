@@ -24,6 +24,9 @@ weight_decay = 1e-4
 grad_clip = 1.0
 # S2 fine-tuning uses 1/10 of the learning rate (041-R4). Not used by the ablation.
 s2_lr_scale = 0.1
+# 061-R6 / 032-R17 ⑤ (G-D6, user decision 2026-10-19): the core ablation keeps every checkpoint
+# (0 = keep all; bc.toml leaves it out = the 061-R6 default of 5).
+keep_checkpoints = 0
 # Head loss weights (041-R1).
 [heads]
 action = 1.0

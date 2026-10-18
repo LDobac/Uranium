@@ -16,7 +16,12 @@ use uranium_proto::*;
 use uranium_replay::label::Label;
 use uranium_replay::shard::{GameMeta, ShardGame, Step};
 use uranium_train::bc::{Batch, BcConfig, DataConfig, Feeder, HeadWeights, Prefetch, Trainer, ValueWeights};
-use uranium_train::data::{ShardSource, VecSource, epoch_updates, prepare};
+use uranium_train::data::{MapStore, ShardSource, VecSource, epoch_updates, prepare};
+
+/// A feeder for the synthetic test maps (no map precompute files, B-2).
+fn feeder(cfg: &BcConfig) -> Feeder {
+    Feeder::new(cfg).with_maps(std::sync::Arc::new(MapStore::synthetic()))
+}
 
 const W: u16 = 32;
 
@@ -113,7 +118,7 @@ fn game() -> ShardGame {
 fn labels_convert_and_survive_symmetry_041() {
     let g = game();
     for sym in Sym::all() {
-        let seq = prepare(&g, true, sym).unwrap();
+        let seq = prepare(&g, true, sym, &MapStore::synthetic()).unwrap();
         assert_eq!(seq.invalid_labels, 0, "{sym:?}");
         for s in &seq.steps {
             let a = &action_table().actions[s.label.action as usize];
@@ -124,9 +129,9 @@ fn labels_convert_and_survive_symmetry_041() {
         }
     }
     // z (041-R8): the replay's own build actions.
-    let seq = prepare(&g, true, Sym::IDENTITY).unwrap();
+    let seq = prepare(&g, true, Sym::IDENTITY, &MapStore::synthetic()).unwrap();
     assert!(seq.steps[0].obs.obs.z_present && seq.steps[0].obs.obs.z_build[0] != 0);
-    assert!(!prepare(&g, false, Sym::IDENTITY).unwrap().steps[0].obs.obs.z_present);
+    assert!(!prepare(&g, false, Sym::IDENTITY, &MapStore::synthetic()).unwrap().steps[0].obs.obs.z_present);
 }
 
 /// 030-R11 (user decision 2026-10-19): about 5% of games, chosen per game from the replay hash and
@@ -144,7 +149,7 @@ fn enemy_race_mask_per_game_030_r11() {
     assert!(!enemy_race_masked(&shas[0], 1, 0.0) && enemy_race_masked(&shas[0], 1, 1.0));
 
     let race = |g: &ShardGame, ratio: f64| {
-        let mut s = GameStream::new(g.clone(), false, Sym::IDENTITY).unwrap().with_race_mask(ratio, 1);
+        let mut s = GameStream::new(g.clone(), false, Sym::IDENTITY, &MapStore::synthetic()).unwrap().with_race_mask(ratio, 1);
         s.next_chunk(1).0[0].obs.obs.scalar_cat[0]
     };
     let g = game();
@@ -232,7 +237,9 @@ fn tiny_trainer(micro_lanes: usize) -> Trainer<LstmCore> {
 }
 
 fn tiny_trainer_with(micro_lanes: usize, pad_entities: usize, net: UraniumNet<LstmCore>) -> Trainer<LstmCore> {
-    Trainer::new(net, tiny_cfg(), tiny_bc(micro_lanes, pad_entities), Device::flex().autodiff())
+    let mut t = Trainer::new(net, tiny_cfg(), tiny_bc(micro_lanes, pad_entities), Device::flex().autodiff());
+    t.feeder.set_maps(std::sync::Arc::new(MapStore::synthetic()));
+    t
 }
 
 fn tiny_bc(micro_lanes: usize, pad_entities: usize) -> BcConfig {
@@ -253,6 +260,7 @@ fn tiny_bc(micro_lanes: usize, pad_entities: usize) -> BcConfig {
         heads: HeadWeights { action: 1.0, delay: 0.5, queued: 0.2, selected: 1.0, target_unit: 1.0, target_loc: 1.0 },
         value: ValueWeights { win: 0.5 },
         data: DataConfig { z_drop: 0.0, augment: false, seed: 1, checkpoint_every: 1000, checkpoint_minutes: 0, enemy_race_mask: 0.0 },
+        keep_checkpoints: None,
     }
 }
 
@@ -302,6 +310,7 @@ fn warmup_cosine_schedule_041_r3() {
         heads: HeadWeights { action: 1.0, delay: 0.5, queued: 0.2, selected: 1.0, target_unit: 1.0, target_loc: 1.0 },
         value: ValueWeights { win: 0.5 },
         data: DataConfig { z_drop: 0.25, augment: true, seed: 1, checkpoint_every: 1, checkpoint_minutes: 0, enemy_race_mask: 0.05 },
+        keep_checkpoints: None,
     };
     assert!((cfg.lr_at(0, 1.0) - 1e-4).abs() < 1e-12);
     assert!((cfg.lr_at(9, 1.0) - 1e-3).abs() < 1e-12);
@@ -327,7 +336,22 @@ fn warmup_cosine_schedule_041_r3() {
     let mut same = abl.clone();
     same.steps.s1 = file.steps.s1;
     same.warmup_steps = file.warmup_steps;
-    assert_eq!(same, file, "032-R17: only the S1 length and warmup differ from bc.toml");
+    // 061-R6 / 032-R17 ⑤ (G-D6): the ablation keeps every checkpoint; bc.toml the default 5.
+    assert_eq!((abl.keep_checkpoints(), file.keep_checkpoints(), file.keep_checkpoints), (0, 5, None));
+    same.keep_checkpoints = file.keep_checkpoints;
+    assert_eq!(same, file, "032-R17: only the S1 length, warmup and retention differ from bc.toml");
+    // B-3: the ablation's fingerprint differs (schedule), the retention alone does not count.
+    assert_ne!(abl.fingerprint(), file.fingerprint());
+    let mut kept = file.clone();
+    kept.keep_checkpoints = Some(0);
+    kept.micro_lanes = 4;
+    kept.data.checkpoint_minutes = 5;
+    assert_eq!(kept.fingerprint(), file.fingerprint(), "B-3: execution-only settings are not part of the fingerprint");
+    kept.data.enemy_race_mask = 0.1;
+    assert_ne!(kept.fingerprint(), file.fingerprint(), "B-3: data settings are");
+    kept = file.clone();
+    kept.total_steps += 1;
+    assert_ne!(kept.fingerprint(), file.fingerprint(), "B-3: the schedule length is");
 }
 
 /// 061-R10 / 061-AC1 / 042-R1 (flex): save -> load -> the next updates are bit-identical to the
@@ -404,7 +428,7 @@ fn epoch_count_matches_the_lane_walk_041_r13() {
         cfg.lanes = lanes;
         let games = varied_games();
         let lens: Vec<usize> = games.iter().map(|g| g.steps.len()).collect();
-        let mut f = Feeder::new(&cfg);
+        let mut f = feeder(&cfg);
         let mut src = VecSource(games.into());
         let mut n = 0u64;
         while f.next_batch(&mut src, None).unwrap().is_some() {
@@ -423,7 +447,7 @@ fn feeder_resume_continues_the_data_061_r10() {
     cfg.data.z_drop = 0.5;
     cfg.data.augment = true;
     let src = || ShardSource::new(&root).unwrap().shuffled(5);
-    let mut a = Feeder::new(&cfg);
+    let mut a = feeder(&cfg);
     let mut sa = src();
     let mut saved = None;
     let mut kept = Vec::new();
@@ -435,7 +459,7 @@ fn feeder_resume_continues_the_data_061_r10() {
             kept.push((batch_key(&b), b.state.clone()));
         }
     }
-    let mut b = Feeder::new(&cfg);
+    let mut b = feeder(&cfg);
     let mut sb = src();
     b.restore(saved.as_ref().unwrap(), &mut sb).unwrap();
     for (key, state) in &kept {
@@ -451,13 +475,13 @@ fn feeder_resume_continues_the_data_061_r10() {
 fn prefetch_gives_the_feeder_batches_041() {
     let root = shard_dir("prefetch", &varied_games(), 4);
     let cfg = tiny_bc(1, 0);
-    let mut f = Feeder::new(&cfg);
+    let mut f = feeder(&cfg);
     let mut s = ShardSource::new(&root).unwrap().shuffled(9);
     let mut want = Vec::new();
     while let Some(b) = f.next_batch_from(&mut s).unwrap() {
         want.push((batch_key(&b), b.state));
     }
-    let p = Prefetch::start(Feeder::new(&cfg), ShardSource::new(&root).unwrap().shuffled(9), 2);
+    let p = Prefetch::start(feeder(&cfg), ShardSource::new(&root).unwrap().shuffled(9), 2);
     let mut got = Vec::new();
     while let Some(b) = p.next().unwrap() {
         got.push((batch_key(&b), b.state));
@@ -475,7 +499,7 @@ fn drained_feeder_covers_every_step_041() {
         cfg.lanes = lanes;
         let games: Vec<ShardGame> = varied_games().into_iter().take(n).collect();
         let want: usize = games.iter().map(|g| g.steps.len()).sum();
-        let mut f = Feeder::new(&cfg);
+        let mut f = feeder(&cfg);
         f.drain = true;
         let mut src = VecSource(games.into());
         let mut got = 0;
@@ -484,4 +508,221 @@ fn drained_feeder_covers_every_step_041() {
         }
         assert_eq!(got, want, "lanes {lanes}, games {n}");
     }
+}
+
+/// Folder with a current-version precompute for the synthetic map hash `none` (B-2).
+fn maps_dir_with_none(tag: &str) -> std::path::PathBuf {
+    use uranium_env::features::{MapPrecompute, PRECOMPUTE_VERSION};
+    let d = std::env::temp_dir().join(format!("uranium-bc-maps-{tag}-{}", std::process::id()));
+    std::fs::remove_dir_all(&d).ok();
+    std::fs::create_dir_all(&d).unwrap();
+    let p = MapPrecompute { version: PRECOMPUTE_VERSION, ..Default::default() };
+    std::fs::write(d.join("none.toml"), toml::to_string(&p).unwrap()).unwrap();
+    d
+}
+
+/// B-2: a game whose map has no precompute is an error (never channels at 0), the start check
+/// lists every missing map hash with its game count, and a folder with the file works.
+#[test]
+fn missing_map_precompute_fails_b2() {
+    use uranium_train::data::{GameStream, check_maps};
+    let empty = std::env::temp_dir().join(format!("uranium-bc-maps-empty-{}", std::process::id()));
+    std::fs::create_dir_all(&empty).unwrap();
+    let store = MapStore::dir(&empty);
+    let err = GameStream::new(game(), false, Sym::IDENTITY, &store).err().expect("no precompute");
+    assert!(format!("{err:#}").contains("no map precompute") && format!("{err:#}").contains("none"), "{err:#}");
+    // The feeder (training and evaluation) fails the same way.
+    let mut f = Feeder::new(&tiny_bc(1, 0)).with_maps(std::sync::Arc::new(MapStore::dir(&empty)));
+    assert!(f.next_batch(&mut VecSource([game()].into()), None).is_err());
+
+    let mut other = game_len(4, 99);
+    other.meta.map_hash = "abc".into();
+    let mut games = varied_games();
+    games.push(other);
+    let root = shard_dir("maps-check", &games, 4);
+    let src = ShardSource::new(&root).unwrap();
+    let err = check_maps(&src, None, &store).err().expect("start check fails");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("2 map hash(es)") && msg.contains("abc (1 games)") && msg.contains("none (15 games)"), "{msg}");
+
+    let dir = maps_dir_with_none("b2");
+    let store = MapStore::dir(&dir);
+    let err = check_maps(&src, None, &store).err().expect("abc still missing");
+    assert!(format!("{err:#}").contains("1 map hash(es)"), "{err:#}");
+    assert!(GameStream::new(game(), false, Sym::IDENTITY, &store).is_ok());
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&empty).ok();
+}
+
+/// B-3: the checkpoint carries the stage, config and dataset fingerprints; a resume with another
+/// one is refused with the difference, the same one passes, and a checkpoint from before B-3
+/// (none stored) resumes with a warning.
+#[test]
+fn resume_refuses_other_stage_config_or_data_b3() {
+    use uranium_train::bc::{RunIdent, check_ident, read_ident, write_ident};
+    let dir = std::env::temp_dir().join(format!("uranium-bc-ident-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    let t = tiny_trainer(1);
+    t.save(&dir).unwrap();
+    let want = RunIdent { stage: "S1".into(), config: t.cfg.fingerprint(), dataset: "3:abcd".into() };
+    check_ident(&dir, &want).expect("no identity stored: resumed with a warning");
+    write_ident(&dir, &want).unwrap();
+    assert_eq!(read_ident(&dir).unwrap(), Some(want.clone()));
+    check_ident(&dir, &want).unwrap();
+    let mut b = tiny_trainer(1);
+    assert!(b.resume(&dir).unwrap(), "the identity does not disturb the training state");
+    for (field, other) in [
+        ("stage", RunIdent { stage: "S2".into(), ..want.clone() }),
+        ("config fingerprint", RunIdent { config: "0000".into(), ..want.clone() }),
+        ("dataset fingerprint", RunIdent { dataset: "3:ffff".into(), ..want.clone() }),
+    ] {
+        let err = check_ident(&dir, &other).err().unwrap_or_else(|| panic!("{field} mismatch accepted"));
+        assert!(format!("{err:#}").contains(field) && format!("{err:#}").contains("refusing to resume"), "{err:#}");
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// B-3: the dataset fingerprint follows the files' contents (manifest SHA-256, or size without a
+/// manifest), not only their names.
+#[test]
+fn dataset_fingerprint_follows_contents_b3() {
+    use uranium_train::data::dataset_fingerprint;
+    let root = shard_dir("ds-fp", &varied_games(), 4);
+    let src = ShardSource::new(&root).unwrap();
+    let dirs = vec![root.clone()];
+    let plain = dataset_fingerprint(&dirs, src.files()).unwrap();
+    assert_eq!(plain, dataset_fingerprint(&dirs, src.files()).unwrap());
+    uranium_train::storage::Manifest::build(&root).unwrap().write(&root).unwrap();
+    let with_manifest = dataset_fingerprint(&dirs, src.files()).unwrap();
+    assert_ne!(plain, with_manifest, "manifest hashes are used when present");
+    // Same file names, other contents (a rebuild).
+    let games: Vec<ShardGame> = varied_games().into_iter().rev().collect();
+    let again = shard_dir("ds-fp", &games, 4);
+    uranium_train::storage::Manifest::build(&again).unwrap().write(&again).unwrap();
+    let src2 = ShardSource::new(&again).unwrap();
+    assert_eq!(src2.fingerprint(), src.fingerprint(), "the file list alone is the same");
+    assert_ne!(dataset_fingerprint(&[again.clone()], src2.files()).unwrap(), with_manifest);
+    std::fs::remove_dir_all(&again).ok();
+}
+
+/// 041-R7 / A-3: a game whose result is undecided (`result_source = none`) trains the policy
+/// heads but adds nothing to the value loss; its count is kept in the data state.
+#[test]
+fn undecided_result_has_value_weight_zero_041_r7() {
+    let net = tiny_net();
+    let run = |source: &str| {
+        let mut t = tiny_trainer_with(1, 0, net.clone());
+        let mut g = game();
+        g.meta.result_source = source.into();
+        g.meta.result = if source == "none" { 0 } else { 1 };
+        let mut src = VecSource((0..2).map(|_| g.clone()).collect::<VecDeque<_>>());
+        let l = t.train_step(&mut src).unwrap().unwrap();
+        (l, t.data.no_result_games)
+    };
+    let (none, n_none) = run("none");
+    assert_eq!(none.value, 0.0, "value weight 0");
+    assert!(none.action > 0.0 && none.total.is_finite(), "policy heads still train");
+    assert_eq!(n_none, 2);
+    let (bridge, n_bridge) = run("bridge");
+    assert!(bridge.value > 0.0, "decided games train the value head");
+    assert_eq!(n_bridge, 0);
+    assert_eq!(uranium_train::data::value_weight(&game().meta), 1.0);
+}
+
+/// B-13: a resume decodes each shard once for all lanes; the games are the ones `game(id)` reads.
+#[test]
+fn batched_game_lookup_matches_single_reads_b13() {
+    use uranium_train::data::GameId;
+    let root = shard_dir("b13", &varied_games(), 4);
+    let src = ShardSource::new(&root).unwrap().shuffled(5);
+    let ids = [GameId { file: 2, game: 1 }, GameId { file: 0, game: 3 }, GameId { file: 2, game: 0 }, GameId { file: 1, game: 2 }];
+    let got = src.games(&ids).unwrap();
+    for (id, g) in ids.iter().zip(&got) {
+        assert_eq!(&src.game(*id).unwrap(), g, "{id:?}");
+    }
+    assert!(src.games(&[GameId { file: 0, game: 0 }, GameId { file: 0, game: 0 }]).is_err(), "a game is asked for once");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 032-R17 ② (G-D8): `bc-eval --games n` takes n games of a fixed-seed shuffle over the whole
+/// split: the same games every time (both cores), spread over the files, and only those are read.
+#[test]
+fn eval_games_are_a_fixed_seed_sample_032_r17() {
+    use uranium_train::data::{ChosenGames, StepSource, sample_games, scan_files};
+    let a = sample_games(&[4, 0, 7, 3], 5, 1);
+    assert_eq!(a, sample_games(&[4, 0, 7, 3], 5, 1), "deterministic");
+    assert_eq!(a.len(), 5);
+    assert!(a.windows(2).all(|w| (w[0].file, w[0].game) < (w[1].file, w[1].game)), "sorted, no repeats");
+    assert!(a.iter().all(|g| g.file != 1 && g.game < [4, 0, 7, 3][g.file]));
+    assert_ne!(a, sample_games(&[4, 0, 7, 3], 5, 2), "the seed matters");
+    assert_eq!(sample_games(&[4, 0, 7, 3], 100, 1).len(), 14, "at most the whole split");
+
+    let root = shard_dir("eval-sample", &varied_games(), 4);
+    let pick = || {
+        let src = ShardSource::new(&root).unwrap().select(uranium_train::split::Selection::Only(uranium_train::split::split_of(&game().meta)));
+        let scan = scan_files(src.files()).unwrap();
+        let ids = uranium_train::bc_eval::eval_games(&src, &scan, 6, 1);
+        let mut chosen = ChosenGames::new(src, &ids);
+        let mut got = Vec::new();
+        while let Some(g) = chosen.next_game().unwrap() {
+            got.push(g.meta.replay_sha256.clone());
+        }
+        (ids, got)
+    };
+    let (ids, first) = pick();
+    assert_eq!(first.len(), ids.len());
+    assert!(!first.is_empty());
+    assert_eq!(pick().1, first, "same games on every call");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 040-R18 / E-2: the game-start observation and the NoOp steps until the first command (delay 32
+/// each, 031-R11) are ordinary usable steps: labels valid, trained, counted in the epoch.
+#[test]
+fn game_start_noop_steps_are_trained_and_counted_040_r18() {
+    let noop = action_table().by_name("NoOp").unwrap().id;
+    let mut g = game();
+    let first = g.steps[0].clone();
+    let lead: Vec<Step> = (0..3u32)
+        .map(|k| {
+            let mut s = first.clone();
+            s.raw_frame.frame = 1 + 32 * k;
+            s.action_label = Label { frame: 1 + 32 * k, action: noop, delay: 32, queued: false, selected: vec![], target_unit: None, target_tile: None };
+            s
+        })
+        .collect();
+    let n = g.steps.len();
+    g.steps.splice(0..0, lead);
+    let seq = prepare(&g, false, Sym::IDENTITY, &MapStore::synthetic()).unwrap();
+    assert_eq!(seq.steps.len(), n + 3);
+    assert_eq!(seq.invalid_labels, 0);
+    assert!(seq.steps[..3].iter().all(|s| s.weight == 1.0 && s.label.action == noop && s.label.delay_bucket == 15), "NoOp(delay=32)");
+    let mut t = tiny_trainer(1);
+    let mut src = VecSource([g.clone(), g.clone()].into());
+    let l = t.train_step(&mut src).unwrap().unwrap();
+    assert!(l.total.is_finite() && l.valid == 8.0);
+    assert_eq!(epoch_updates([g.steps.len()], 1, 4), (n as u64 + 3).div_ceil(4), "bc-epoch counts the leading steps");
+}
+
+/// E-10: split-stats gives per source the share of games and steps without a privileged summary
+/// and the result sources (040-R8, A-3).
+#[test]
+fn split_stats_privileged_none_and_result_sources_e10() {
+    use uranium_train::data::GameSummary;
+    let meta = |src: &str, rs: &str| GameMeta { src: src.into(), result_source: rs.into(), ..game().meta };
+    let games = [
+        GameSummary { meta: meta("a", "bridge"), steps: 10, privileged_none: 0 },
+        GameSummary { meta: meta("a", "none"), steps: 10, privileged_none: 5 },
+        GameSummary { meta: meta("b", "leave"), steps: 4, privileged_none: 4 },
+    ];
+    let st = uranium_train::split::split_stats(games.iter());
+    assert_eq!(st.sources.len(), 2);
+    let a = &st.sources[0];
+    assert_eq!((a.src.as_str(), a.games, a.games_privileged_none, a.steps_privileged_none), ("a", 2, 1, 5));
+    assert_eq!((a.games_privileged_none_ratio, a.steps_privileged_none_ratio), (0.5, 0.25));
+    assert_eq!(a.result_source.get("none"), Some(&1));
+    assert_eq!(st.sources[1].steps_privileged_none_ratio, 1.0);
+    let total: u64 = st.splits.iter().map(|r| r["games"].as_u64().unwrap()).sum();
+    assert_eq!(total, 3);
 }

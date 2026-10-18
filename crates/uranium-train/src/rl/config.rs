@@ -137,6 +137,9 @@ pub struct RlConfig {
     /// Absent in configs copied into checkpoints before 042-R11.
     #[serde(default)]
     pub replays: ReplaysConfig,
+    /// 061-R6 (G-D6): newest checkpoints kept on the share; absent = 5, 0 = all.
+    #[serde(default)]
+    pub keep_checkpoints: Option<usize>,
 }
 
 impl RlConfig {

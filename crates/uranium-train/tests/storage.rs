@@ -176,6 +176,96 @@ fn retention_keeps_newest_promoted_and_league_061_r6() {
     assert_eq!(latest_verified(&run), Some(7));
 }
 
+fn ckpt_names(d: &Path) -> Vec<String> {
+    let mut v: Vec<String> = fs::read_dir(d).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("ckpt-")).collect();
+    v.sort();
+    v
+}
+
+/// 061-R6 (G-D6): `keep_checkpoints` sets the share's retention; 0 keeps every checkpoint (the
+/// core ablation), the cache is still cleaned.
+#[test]
+fn keep_checkpoints_sets_retention_and_zero_keeps_all_061_r6() {
+    for (keep, want) in [(0usize, vec!["ckpt-1", "ckpt-2", "ckpt-3", "ckpt-4"]), (2, vec!["ckpt-3", "ckpt-4"])] {
+        let t = Tmp::new(&format!("keep-{keep}"));
+        let mut c = cfg(&t, "pc-a");
+        c.keep_latest = keep;
+        let mut run = Run::acquire(c, "run1", false).unwrap();
+        for step in 1..=4 {
+            write_ckpt(&mut run, step);
+            run.push(step).unwrap();
+        }
+        assert_eq!(run.prune().unwrap(), 0);
+        assert_eq!(ckpt_names(&run.shared_dir()), want, "keep {keep}");
+        assert_eq!(ckpt_names(&run.cache_dir()), ["ckpt-4"]);
+    }
+}
+
+/// B-7 / 061-R6: a delete that fails (an SMB error) is logged and counted; the other deletes
+/// still happen and the next prune retries it. The run is never ended by it.
+#[test]
+fn failed_prune_delete_is_a_warning_061_r6_b7() {
+    let t = Tmp::new("prune-fail");
+    let mut c = cfg(&t, "pc-a");
+    c.keep_latest = 1;
+    let mut run = Run::acquire(c, "run1", false).unwrap();
+    for step in 1..=3 {
+        write_ckpt(&mut run, step);
+        run.push(step).unwrap();
+    }
+    // Deleting ckpt-1 anywhere fails; everything else goes through.
+    run.set_remove_dir(|p| {
+        if p.file_name().is_some_and(|n| n == "ckpt-1") { Err(std::io::Error::other("injected SMB delete failure")) } else { fs::remove_dir_all(p) }
+    });
+    assert_eq!(run.prune().unwrap(), 2, "ckpt-1 on the share and in the cache");
+    assert_eq!(ckpt_names(&run.shared_dir()), ["ckpt-1", "ckpt-3"]);
+    assert_eq!(ckpt_names(&run.cache_dir()), ["ckpt-1", "ckpt-3"]);
+    // The next prune (delete working again) catches up.
+    run.set_remove_dir(|p| fs::remove_dir_all(p));
+    assert_eq!(run.prune().unwrap(), 0);
+    assert_eq!(ckpt_names(&run.shared_dir()), ["ckpt-3"]);
+    assert_eq!(latest_verified(&run), Some(3));
+}
+
+/// B-8: a checkpoint whose push was deferred (share unreachable) right before Ctrl+C is not
+/// written a second time at the same step: the final save pushes the first copy, also when the
+/// share already holds it from a push that failed after the rename (a second, different copy
+/// would be refused there forever).
+#[test]
+fn same_step_is_never_written_twice_b8() {
+    use uranium_train::bc_run::run_checkpoint;
+    for share_has_it in [false, true] {
+        let t = Tmp::new(&format!("b8-{share_has_it}"));
+        let mut run = Run::acquire(cfg(&t, "pc-a"), "run1", false).unwrap();
+        let mut sealed_at = None;
+        let write = |d: &Path| -> anyhow::Result<()> {
+            fs::write(d.join("model.bpk"), "weights 7")?;
+            Ok(())
+        };
+        assert_eq!(run_checkpoint(&mut run, 5, &mut sealed_at, write).unwrap(), PushOutcome::Pushed);
+        // Time checkpoint at step 7.
+        let lock = run.lock_path();
+        let held = fs::read(&lock).unwrap();
+        if share_has_it {
+            // The push got as far as the rename (LATEST not written), then the share went away.
+            write_ckpt(&mut run, 7);
+            sealed_at = Some(7);
+            assert_eq!(run.push_until(7, PushStage::Renamed).unwrap(), PushOutcome::Pushed);
+        } else {
+            fs::remove_file(&lock).unwrap();
+            assert!(matches!(run_checkpoint(&mut run, 7, &mut sealed_at, write).unwrap(), PushOutcome::Deferred(_)));
+            fs::write(&lock, &held).unwrap();
+        }
+        assert_eq!(sealed_at, Some(7));
+        let id = uranium_train::storage::ckpt_id(&run.cache_dir().join(ckpt_name(7))).unwrap();
+        // Ctrl+C: the final save at the same step.
+        let rewrite = |_: &Path| -> anyhow::Result<()> { panic!("step 7 written twice (B-8)") };
+        assert_eq!(run_checkpoint(&mut run, 7, &mut sealed_at, rewrite).unwrap(), PushOutcome::Pushed, "share has it: {share_has_it}");
+        assert_eq!(uranium_train::storage::ckpt_id(&run.cache_dir().join(ckpt_name(7))).unwrap(), id, "the first copy is kept");
+        assert_eq!(latest_verified(&run), Some(7));
+    }
+}
+
 #[test]
 fn pull_skips_done_files_and_rejects_corruption_061_r11() {
     let t = Tmp::new("pulltree");

@@ -14,9 +14,9 @@ use uranium_model::collate::input_dims;
 use uranium_model::config::{CoreKind, UraniumNetConfig};
 use uranium_model::{CoreInit, UraniumNet};
 
-use crate::bc::{BcConfig, Prefetch, Trainer};
+use crate::bc::{BcConfig, Prefetch, RunIdent, Trainer};
 use crate::ckpt;
-use crate::data::ShardSource;
+use crate::data::{MapStore, ShardSource};
 use crate::storage::{LockStatus, PushOutcome, Run, StorageConfig, TakeOver};
 
 /// What a `bc` invocation trains (041-R4, R5, R13).
@@ -153,6 +153,16 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
         Ok((net, meta.net_config()?))
     };
 
+    // B-2: every selected game's map must have its precompute here, checked before the lock and
+    // the model (a missing one would zero the base_loc / choke / wall channels and the map
+    // resource entities). The loader also refuses such a game (`MapStore::get`).
+    let maps = Arc::new(MapStore::from_env());
+    let src = ShardSource::from_dirs(&args.dirs)?.select(args.stage.selection()).shuffled(cfg.data.seed);
+    crate::data::check_maps(&src, Some(args.stage.selection()), &maps)?;
+    // B-3: what this run trains; stored in every checkpoint and compared on resume.
+    let ident = RunIdent { stage: format!("{:?}", args.stage), config: cfg.fingerprint(), dataset: crate::data::dataset_fingerprint(&args.dirs, src.files())? };
+    crate::elog!("{}", serde_json::json!({ "run_ident": ident, "keep_checkpoints": cfg.keep_checkpoints() }));
+
     // 042-R10 / 060-R6: Ctrl+C (or the watchdog's death) before the lock: nothing to release.
     let stop = args.stop.clone();
     if crate::stopping(&stop) {
@@ -164,7 +174,10 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
     // 061-R3 / R5: a run takes the lock and resumes from LATEST (or an unpushed local checkpoint).
     let mut run = match &args.out {
         BcOut::Run { id, take } => {
-            let r = Run::acquire_with(StorageConfig::from_env()?, id, take.clone())?;
+            let mut storage = StorageConfig::from_env()?;
+            // 061-R6 (G-D6): the run's own retention (`keep_checkpoints`, 0 = all).
+            storage.keep_latest = cfg.keep_checkpoints();
+            let r = Run::acquire_with(storage, id, take.clone())?;
             // 061-R14: a live yield request reserves the run for the host that asked.
             match crate::storage::read_yield(&r.cfg, id) {
                 Ok(Some(req)) if req.host != r.cfg.host => {
@@ -209,6 +222,17 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
         r.release()?;
         return Ok(BcExit::Stopped);
     }
+    // B-3: a resume continues the same stage, config and data, or nothing.
+    if let Some(dir) = &resume_dir
+        && let Err(e) = crate::bc::check_ident(dir, &ident)
+    {
+        if let Some(r) = run.take() {
+            r.release()?;
+        }
+        return Err(e);
+    }
+    // 061-R8 (C-3): disk usage at the start (warning only).
+    check_disks(&args, &run);
     let (net, net_cfg) = match (&resume_dir, &args.init) {
         (Some(d), _) => load(d)?,
         (None, Some(_)) => load(init_dir.as_ref().expect("resolved above"))?,
@@ -223,10 +247,11 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
     let every = cfg.data.checkpoint_every.max(1);
     let every_time = Duration::from_secs(cfg.data.checkpoint_minutes * 60);
     let mut t = Trainer::new(net, net_cfg, cfg.clone(), ad);
+    t.feeder.set_maps(maps.clone());
     if args.stage == BcStage::S2 {
         t.lr_scale = t.cfg.s2_lr_scale;
     }
-    let mut src = ShardSource::from_dirs(&args.dirs)?.select(args.stage.selection()).shuffled(cfg.data.seed);
+    let mut src = src;
     if let Some(dir) = &resume_dir {
         if t.resume(dir)? {
             // 061-R10: continue the data where the checkpoint was taken.
@@ -250,7 +275,7 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
 
     // Nothing to save when no update happens (resumed at or past the stop point).
     let start_step = t.step;
-    let feeder = std::mem::replace(&mut t.feeder, crate::bc::Feeder::new(&cfg));
+    let feeder = std::mem::replace(&mut t.feeder, crate::bc::Feeder::new(&cfg).with_maps(maps.clone()));
     let data = Prefetch::start(feeder, src, 2);
     let (mut last_ckpt, mut last_beat) = (Instant::now(), Instant::now());
     let mut lock_lost = false;
@@ -258,7 +283,10 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
     let mut yielded = false;
     // 061-R14 ②: a yield whose checkpoint push was deferred waits for the next pushed one.
     let mut yield_waiting = false;
+    // Step of the last checkpoint pushed (061-R14 yield) and of the last one written at all
+    // (B-8: a step is never written twice, whatever its push did).
     let mut saved_at: Option<usize> = None;
+    let mut sealed_at: Option<usize> = None;
     while t.step < stop_at && !crate::stopping(&stop) {
         let Some(batch) = data.next()? else {
             exhausted = true;
@@ -269,7 +297,7 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
         let l = t.train_batch(batch)?;
         crate::elog!(
             "{}",
-            serde_json::json!({ "step": t.step, "loss": l, "games": t.games(), "invalid_labels": t.invalid_labels(), "secs": (started.elapsed().as_secs_f64() * 100.0).round() / 100.0 })
+            serde_json::json!({ "step": t.step, "loss": l, "games": t.games(), "invalid_labels": t.invalid_labels(), "no_result_games": t.data.no_result_games, "secs": (started.elapsed().as_secs_f64() * 100.0).round() / 100.0 })
         );
         if let Some(r) = &mut run
             && last_beat.elapsed() >= Duration::from_secs(60)
@@ -286,7 +314,7 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
             }
         }
         if t.step % every == 0 || (!every_time.is_zero() && last_ckpt.elapsed() >= every_time) {
-            match save(&t, &args, &mut run, false)? {
+            match save(&t, &args, &mut run, false, &mut sealed_at, &ident)? {
                 Some(PushOutcome::Pushed) => {
                     device_log(&run, serde_json::json!({ "event": "checkpoint", "step": t.step }));
                     saved_at = Some(t.step);
@@ -317,7 +345,7 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
             if !yield_waiting {
                 yield_waiting = true;
                 crate::elog!("[bc] yield requested by {} (priority {}): checkpoint and release (061-R14)", req.host, req.priority);
-                match save(&t, &args, &mut run, false)? {
+                match save(&t, &args, &mut run, false, &mut sealed_at, &ident)? {
                     Some(PushOutcome::Pushed) => {
                         device_log(&run, serde_json::json!({ "event": "checkpoint", "step": t.step }));
                         saved_at = Some(t.step);
@@ -348,7 +376,7 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
         crate::elog!("[bc] step {} is already saved: nothing more to save", t.step);
         Some(PushOutcome::Pushed)
     } else {
-        save(&t, &args, &mut run, true)?
+        save(&t, &args, &mut run, true, &mut sealed_at, &ident)?
     };
     let reason = if yielded {
         "yield"
@@ -382,28 +410,70 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
     })
 }
 
-/// Local: `step_<n>/` (or `last/` when `last`). Run: stage → seal → push (061-R4), then prune.
-fn save<C: CoreInit>(t: &Trainer<C>, args: &BcArgs, run: &mut Option<Run>, last: bool) -> Result<Option<PushOutcome>> {
+/// 061-R8 (C-3): disk usage of the shared drive and the local cache (run), or of the output
+/// folder (local mode). Warnings only.
+fn check_disks(args: &BcArgs, run: &Option<Run>) {
     match (&args.out, run) {
+        (_, Some(r)) => {
+            crate::disk::warn_storage("bc", &r.cfg);
+        }
+        (BcOut::Local(out), None) => {
+            let p = if out.exists() { out.as_path() } else { out.parent().filter(|p| p.exists()).unwrap_or(Path::new(".")) };
+            crate::disk::warn_disks("bc", &[("checkpoint folder", p)]);
+        }
+        (BcOut::Run { .. }, None) => {}
+    }
+}
+
+/// Local: `step_<n>/` (or `last/` when `last`). Run: stage → seal → push (061-R4), then prune.
+/// B-8: a step already sealed (`sealed_at`, e.g. a time checkpoint whose push was deferred just
+/// before Ctrl+C) is never written again: its contents would differ (lineage), and a share that
+/// already got the first copy would then refuse every push of the second. Its push is retried.
+fn save<C: CoreInit>(t: &Trainer<C>, args: &BcArgs, run: &mut Option<Run>, last: bool, sealed_at: &mut Option<usize>, ident: &RunIdent) -> Result<Option<PushOutcome>> {
+    let out = match (&args.out, run.as_mut()) {
         (BcOut::Local(out), _) => {
             let dir = if last { out.join("last") } else { out.join(format!("step_{:08}", t.step)) };
             t.save(&dir)?;
+            crate::bc::write_ident(&dir, ident)?;
             ckpt::copy_configs(&dir, &[&args.config])?;
-            Ok(None)
+            None
         }
-        (BcOut::Run { .. }, Some(r)) => {
-            let step = t.step as u64;
-            let dir = r.stage_dir(step)?;
-            t.save(&dir)?;
-            ckpt::copy_configs(&dir, &[&args.config])?;
-            r.seal(step)?;
-            let out = r.push(step)?;
-            crate::elog!("[bc] checkpoint {} {:?}", crate::storage::ckpt_name(step), out);
-            if out == PushOutcome::Pushed {
-                r.prune()?;
-            }
-            Ok(Some(out))
-        }
+        (BcOut::Run { .. }, Some(r)) => Some(run_checkpoint(r, t.step as u64, sealed_at, |dir| {
+            t.save(dir)?;
+            crate::bc::write_ident(dir, ident)?;
+            ckpt::copy_configs(dir, &[&args.config])
+        })?),
         (BcOut::Run { .. }, None) => unreachable!("run mode holds a Run"),
+    };
+    // 061-R8 (C-3): disk usage at every checkpoint.
+    check_disks(args, run);
+    Ok(out)
+}
+
+/// One checkpoint of a run at `step`: `write` fills the stage folder, then seal → push (061-R4)
+/// → prune. B-8: when `step` was already sealed in this session (`sealed_at`, e.g. a time
+/// checkpoint whose push was deferred right before Ctrl+C), it is not written again (a second copy
+/// differs in its lineage, and a share that already got the first one would refuse it forever);
+/// its push is retried instead. B-7: a failed prune is only logged.
+pub fn run_checkpoint(r: &mut Run, step: u64, sealed_at: &mut Option<usize>, write: impl FnOnce(&Path) -> Result<()>) -> Result<PushOutcome> {
+    let out = if *sealed_at == Some(step as usize) {
+        crate::elog!("[bc] {} is already written: pushing it again instead of writing it twice (B-8)", crate::storage::ckpt_name(step));
+        r.push(step)?
+    } else {
+        let dir = r.stage_dir(step)?;
+        write(&dir)?;
+        r.seal(step)?;
+        *sealed_at = Some(step as usize);
+        r.push(step)?
+    };
+    crate::elog!("[bc] checkpoint {} {:?}", crate::storage::ckpt_name(step), out);
+    if out == PushOutcome::Pushed {
+        // B-7 / 061-R6: a failed delete is a warning; the run goes on.
+        match r.prune() {
+            Ok(0) => {}
+            Ok(n) => crate::elog!("[bc] prune: {n} checkpoint folder(s) not deleted, left for the next prune (061-R6)"),
+            Err(e) => crate::elog!("[bc] WARNING: prune failed ({e:#}); training goes on (061-R6)"),
+        }
     }
+    Ok(out)
 }

@@ -30,4 +30,9 @@ ctrlc = "3.5"
 
 [target.'cfg(unix)'.dependencies]
 # 060-R6 (H-4): child training in its own process group, PR_SET_PDEATHSIG, SIGINT forwarding.
+# 061-R8: statvfs for the disk usage warning.
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# 061-R8: GetDiskFreeSpaceExW for the disk usage warning (same windows-sys as uranium-hostd).
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

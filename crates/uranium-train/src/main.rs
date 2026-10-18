@@ -13,7 +13,7 @@ use uranium_model::{GtrxlCore, LstmCore};
 use uranium_train::bc::BcConfig;
 use uranium_train::bc_run::{BcArgs, BcOut, BcStage};
 use uranium_train::data::ShardSource;
-use uranium_train::split::{Split, is_target_map, split_of};
+use uranium_train::split::Split;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum Backend {
@@ -175,9 +175,14 @@ enum Cmd {
         backend: Backend,
         #[arg(long, value_enum, default_value = "lstm")]
         core: CoreArg,
-        /// Stop after this many games (quick checks).
+        /// Score this many games, chosen by a fixed-seed shuffle over the whole split (032-R17 ②:
+        /// the core ablation uses `--split val --games 500`; every checkpoint gets the same games).
+        /// Default: every game of the split.
         #[arg(long)]
         games: Option<usize>,
+        /// Seed of the `--games` shuffle (032-R17 ②, G-D8).
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
         #[arg(long, default_value = "config/bc.toml")]
         config: PathBuf,
     },
@@ -189,7 +194,9 @@ enum Cmd {
         #[arg(long)]
         games: Option<usize>,
     },
-    /// 041-R12: game counts per source, map group and split (reads every shard; no training).
+    /// 041-R12: game counts per source, map group and split; per source the share of games and
+    /// steps without a privileged summary (E-10) and the result sources (040-R8, A-3). Reads every
+    /// shard; no training.
     SplitStats {
         #[command(flatten)]
         data: DataArgs,
@@ -425,22 +432,19 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::SplitStats { data } => {
-            // (src, map group, split) -> games
-            let mut counts = std::collections::BTreeMap::<(String, &str, Split), usize>::new();
-            let mut src = ShardSource::from_dirs(&data.dirs()?)?;
-            while let Some(g) = uranium_train::data::StepSource::next_game(&mut src)? {
-                let group = if is_target_map(&g.meta) { "target" } else { "other" };
-                *counts.entry((g.meta.src.clone(), group, split_of(&g.meta))).or_default() += 1;
-            }
-            let rows: Vec<_> = counts.into_iter().map(|((s, m, sp), n)| serde_json::json!({ "src": s, "maps": m, "split": sp, "games": n })).collect();
-            println!("{}", serde_json::to_string_pretty(&rows)?);
+            let src = ShardSource::from_dirs(&data.dirs()?)?;
+            let scan = uranium_train::data::scan_files(src.files())?;
+            println!("{}", serde_json::to_string_pretty(&uranium_train::split::split_stats(scan.iter().flatten()))?);
             Ok(())
         }
         Cmd::LabelCheck { data, games } => {
             let mut src = ShardSource::from_dirs(&data.dirs()?)?;
+            // B-2: every map precompute is there before the first game.
+            let maps = uranium_train::data::MapStore::from_env();
+            uranium_train::data::check_maps(&src, None, &maps)?;
             let (mut st, mut n) = (uranium_train::data::LabelStats::default(), 0usize);
             while let Some(g) = uranium_train::data::StepSource::next_game(&mut src)? {
-                uranium_train::data::label_check(&g, &mut st)?;
+                uranium_train::data::label_check(&g, &mut st, &maps)?;
                 n += 1;
                 if games.is_some_and(|m| n >= m) {
                     break;
@@ -581,7 +585,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&rep)?);
             Ok(())
         }
-        Cmd::BcEval { data, checkpoint, split, backend, core, games, config } => {
+        Cmd::BcEval { data, checkpoint, split, backend, core, games, seed, config } => {
             let cfg = BcConfig::load(&config)?;
             let split = match split {
                 SplitArg::Train => Split::Train,
@@ -591,9 +595,10 @@ fn main() -> Result<()> {
             let ckpt = uranium_train::bc_run::resolve_checkpoint(&checkpoint)?;
             let dev = device(backend)?;
             let dirs = data.dirs()?;
+            let sel = uranium_train::bc_eval::EvalSelection { split, games, seed };
             let report = match core {
-                CoreArg::Lstm => uranium_train::bc_eval::evaluate::<LstmCore>(&dirs, &ckpt, split, games, &cfg, dev)?,
-                CoreArg::Gtrxl => uranium_train::bc_eval::evaluate::<GtrxlCore>(&dirs, &ckpt, split, games, &cfg, dev)?,
+                CoreArg::Lstm => uranium_train::bc_eval::evaluate::<LstmCore>(&dirs, &ckpt, sel, &cfg, dev)?,
+                CoreArg::Gtrxl => uranium_train::bc_eval::evaluate::<GtrxlCore>(&dirs, &ckpt, sel, &cfg, dev)?,
             };
             println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())

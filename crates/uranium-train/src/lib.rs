@@ -19,6 +19,7 @@ pub mod bc_prof;
 pub mod bc_run;
 pub mod ckpt;
 pub mod data;
+pub mod disk;
 pub mod rl;
 pub mod split;
 pub mod storage;

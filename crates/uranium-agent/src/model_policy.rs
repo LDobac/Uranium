@@ -123,7 +123,15 @@ fn pct(v: &mut [f32], q: f64) -> f64 {
 impl ModelPolicy {
     pub fn new(handle: &InferenceHandle, info: &GameInfo) -> Result<Self> {
         let family = MapFamilies::load()?.classify(&info.map_name, "");
-        let (pre, source) = live_precompute(&maps_dir(), info);
+        // 031 (AMB-031-4): a map without a precompute is played with the precompute channels at 0
+        // and a warning; the spec keeps live games going (unlike BC, which refuses to start, B-2).
+        let (pre, source) = match maps_dir() {
+            Ok(dir) => live_precompute(&dir, info),
+            Err(e) => {
+                elog!("[agent] WARNING: {e:#}");
+                (None, PrecomputeSource::Missing)
+            }
+        };
         let source = match source {
             PrecomputeSource::Cached => "cached".to_string(),
             PrecomputeSource::Resources => "resources".to_string(),
@@ -256,6 +264,6 @@ impl ModelPolicy {
 /// Precompute rebuilt from the map file's resources (ignores a cached replay-build file).
 fn live_rebuild(info: &GameInfo) -> Option<uranium_env::features::MapPrecompute> {
     let hash: String = info.map_hash.iter().map(|b| format!("{b:02x}")).collect();
-    let r = uranium_env::maps::load_resources(&maps_dir(), &hash)?;
+    let r = uranium_env::maps::load_resources(&maps_dir().ok()?, &hash)?;
     Some(uranium_env::features::mapgen::precompute(&info.static_map, &r.resources))
 }
