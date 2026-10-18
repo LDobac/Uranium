@@ -48,4 +48,5 @@
 - 16:00 — BC 준비 3차: 모듈별 프로파일(`bc-profile`), 결과 동일 최적화(LSTM 묶음 계산, teacher forcing location 사용 행만) update 약 18% 단축, Burn autotune·fusion은 conv gradient 2–5% 변화로 제안만, Ctrl+C 시험 (`m6_bc_preflight.md` 3차, 7d395e5)
 - 18:49 — 학습 증강 4종(transpose 제외)·start_loc 변환(030-R4·AC6), bc250 BC 학습 f32 예외 확대(032-R8, 060-AC2 닫힘), 041-R6 클래스 가중치 미적용 결정 기록 (2d8dc4e)
 - 20:22 — GTrXL 실제 BC 설정 확인: 이 PC·bc250_1 모두 OOM·TDR 없음 (`m6_core_ablation.md` 1.5절)
+- 20:50 — **발견**: BC 본학습 전 전수 리뷰(e190799, 리뷰어 4명). debug 테스트 11개 실패(heads.rs Bool select, 7d395e5), 기존 데이터 영향 3건(투혼 CP949 제목 → other 약 2,900게임, Train 연타 병합으로 Train 레이블 약 9.4% 손실, value result 표본 70% 0), S2 APM 기준 040↔041 모순, 맵 사전계산 누락 무음 (`m6_pre_bc_review.md`)
 - 21:00 — 감시 재시작 `supervise`(060-R6), run 큐 작업자·양보 요청·장비 기록(061-R13·R14·R15) 구현, 두 PC 실기 시험 (`m6_bc_preflight.md` 4차). 시험 run은 지움
