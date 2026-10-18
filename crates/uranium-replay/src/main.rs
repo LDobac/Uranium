@@ -182,7 +182,7 @@ fn write_map_resources(map: &Path) -> Result<(PathBuf, usize)> {
     let source = map.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
     let n = resources.len();
     let chk_sha256: String = Sha256::digest(&chk).iter().map(|b| format!("{b:02x}")).collect();
-    std::fs::write(&path, toml::to_string(&MapResources { source, chk_sha256, resources })?)?;
+    std::fs::write(&path, toml::to_string(&MapResources::new(source, chk_sha256, resources))?)?;
     Ok((path, n))
 }
 

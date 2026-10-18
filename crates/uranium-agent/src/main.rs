@@ -72,6 +72,10 @@ struct ModelArgs {
     max_batch: usize,
     #[arg(long, default_value_t = 5)]
     max_wait_ms: u64,
+    /// 030-R10 / E-5: feed last_failed = 0 (evaluation games of a BC checkpoint; BC data never
+    /// has a failed command, see `InferOptions::zero_last_failed`). Off for RL.
+    #[arg(long)]
+    zero_last_failed: bool,
 }
 
 fn main() -> Result<()> {
@@ -85,6 +89,7 @@ fn main() -> Result<()> {
                     let mut opts = InferOptions::new(model.backend.map_or_else(InferBackend::from_env, Ok)?);
                     opts.max_batch = model.max_batch.max(1);
                     opts.max_wait = Duration::from_millis(model.max_wait_ms);
+                    opts.zero_last_failed = model.zero_last_failed;
                     PolicySpec::Model(InferenceHandle::start(&dir, model.sample, opts)?)
                 }
             };

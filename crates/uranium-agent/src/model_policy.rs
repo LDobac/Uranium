@@ -29,6 +29,8 @@ pub struct ModelStats {
     /// Where the map precompute came from (031, AMB-031-4); `replay_build` also says whether the
     /// precompute rebuilt from the map file matches it.
     pub map_precompute: String,
+    /// 030-R10 / E-5: the session fed `last_failed = 0` (BC evaluation games).
+    pub zero_last_failed: bool,
     pub decisions: u64,
     /// 031-R4 / AMB-031-5: executor rejections by reason.
     pub rejected: BTreeMap<String, u64>,
@@ -144,10 +146,17 @@ impl ModelPolicy {
             },
             map_family: family,
             map_precompute: source,
+            zero_last_failed: handle.zero_last_failed,
             ..Default::default()
         };
         let self_player = info.players.iter().find(|p| p.is_self).map_or(0, |p| p.id);
-        Ok(Self { observer: None, z: None, reward: None, self_player, sess: handle.open()?, mem: AgentMemory::new(info), map, stats, decide: vec![], run: vec![], host: vec![], batch_sum: 0 })
+        // 030-R11: a lobby-Random enemy (GameInfo race Random / Unknown) stays `unknown` until its
+        // first unit is seen (`AgentMemory::new`).
+        let mut mem = AgentMemory::new(info);
+        // 030-R10 / E-5: evaluation games of a BC checkpoint feed last_failed = 0 (see
+        // `AgentMemory::zero_last_failed` for why); RL sessions keep the real value.
+        mem.zero_last_failed = handle.zero_last_failed;
+        Ok(Self { observer: None, z: None, reward: None, self_player, sess: handle.open()?, mem, map, stats, decide: vec![], run: vec![], host: vec![], batch_sum: 0 })
     }
 
     /// Records the trajectory through `o` with 033 rewards for strategy `z` (042).
@@ -247,7 +256,6 @@ impl ModelPolicy {
 /// Precompute rebuilt from the map file's resources (ignores a cached replay-build file).
 fn live_rebuild(info: &GameInfo) -> Option<uranium_env::features::MapPrecompute> {
     let hash: String = info.map_hash.iter().map(|b| format!("{b:02x}")).collect();
-    let text = std::fs::read_to_string(uranium_env::maps::resources_path(&maps_dir(), &hash)).ok()?;
-    let r: uranium_env::maps::MapResources = toml::from_str(&text).ok()?;
+    let r = uranium_env::maps::load_resources(&maps_dir(), &hash)?;
     Some(uranium_env::features::mapgen::precompute(&info.static_map, &r.resources))
 }

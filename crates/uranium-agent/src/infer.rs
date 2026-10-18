@@ -91,11 +91,18 @@ pub struct InferOptions {
     pub capacity: usize,
     /// Entity count is rounded up to a multiple of this (fewer distinct shapes, 030-R7).
     pub pad_entities: usize,
+    /// 030-R10 / E-5: feed `last_failed = 0` to the model in every session of this server.
+    /// Why: replay playback has no command-failure events, so in BC training data the
+    /// `last_failed` scalar is always 0. A BC checkpoint has never seen 1 there; in an evaluation
+    /// game a 1 would be an untrained input and only add noise to the evaluation numbers. So
+    /// evaluation games of BC checkpoints (core ablation 032-R17, 041-AC2 bc-vs-t0) set this
+    /// (plan `zero_last_failed = true`). RL (042) leaves it off and uses the real value.
+    pub zero_last_failed: bool,
 }
 
 impl InferOptions {
     pub fn new(backend: InferBackend) -> Self {
-        Self { backend, max_batch: 32, max_wait: Duration::from_millis(5), capacity: 128, pad_entities: 64 }
+        Self { backend, max_batch: 32, max_wait: Duration::from_millis(5), capacity: 128, pad_entities: 64, zero_last_failed: false }
     }
 }
 
@@ -136,6 +143,8 @@ pub struct InferenceHandle {
     /// 020-R5 policy version: checkpoint folder name + first 12 hex of `model.bpk` SHA-256.
     pub checkpoint_id: Arc<str>,
     pub sample: SampleMode,
+    /// `InferOptions::zero_last_failed` of the server (030-R10, E-5).
+    pub zero_last_failed: bool,
 }
 
 impl std::fmt::Debug for InferenceHandle {
@@ -189,7 +198,7 @@ impl InferenceHandle {
         })?;
         ready_rx.recv().map_err(|_| anyhow!("inference thread exited while loading"))??;
         elog!("[infer] {id} ready ({:?}, {sample:?}, {kind:?}, max_batch {}, capacity {})", opts.backend, opts.max_batch, opts.capacity);
-        Ok(Self { tx, checkpoint_id: id.into(), sample })
+        Ok(Self { tx, checkpoint_id: id.into(), sample, zero_last_failed: opts.zero_last_failed })
     }
 
     /// 032-R16: weights for the next batches. `net` must be a `UraniumNet<C>` of the checkpoint's

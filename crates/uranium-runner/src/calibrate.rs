@@ -107,6 +107,7 @@ fn step_plan(n: u32, frames: u32) -> Plan {
         wall_timeout_s: 600,
         privileged: false,
         save_replay: false,
+        zero_last_failed: false,
         matchups,
     }
 }

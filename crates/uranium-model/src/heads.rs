@@ -343,6 +343,10 @@ impl Heads {
         let keys_all = Tensor::cat(vec![keys, end], 1);
 
         let base = gather_cap(obs.unit_cap.clone(), info.select_cap.clone()).bool_and(obs.is_self()).bool_and(obs.entity_mask.clone());
+        // 034-R7 / E-4 (032 §2.5, §5): a building is selected only alone. Steps after the first
+        // never offer a building, and nothing but END once the first pick was a building.
+        let not_building = obs.is_building.clone().bool_not();
+        let mut first_building = Tensor::<2, Int>::zeros([b, 1], &device).equal_elem(1);
         let mut chosen_units = Tensor::<2, Int>::zeros([b, n], &device).equal_elem(1);
         let mut ended = info.uses_select.clone().bool_not();
         let mut q = self.sel_query.forward(ar.clone());
@@ -354,7 +358,10 @@ impl Heads {
 
         for k in 0..self.max_select {
             let active = ended.clone().bool_not().bool_and(info.max_select.clone().greater_elem(k as i64));
-            let units_ok = base.clone().bool_and(chosen_units.clone().bool_not());
+            let mut units_ok = base.clone().bool_and(chosen_units.clone().bool_not());
+            if k > 0 {
+                units_ok = units_ok.bool_and(not_building.clone()).bool_and(first_building.clone().bool_not().expand([b, n]));
+            }
             let end_ok = if k == 0 { units_ok.clone().any_dim(1).bool_not() } else { true_col.clone() };
             let allowed = Tensor::cat(vec![units_ok, end_ok], 1);
             let logits = keys_all.clone().matmul(q.clone().reshape([b, kd, 1])).reshape([b, n + 1]);
@@ -373,6 +380,9 @@ impl Heads {
             let key = one_hot.clone().reshape([b, 1, n + 1]).matmul(keys_all.clone()).reshape([b, kd]);
             let tf = take.clone().float();
             let picked = one_hot.narrow(1, 0, n).equal_elem(1.0).bool_and(take.clone().reshape([b, 1]).expand([b, n]));
+            if k == 0 {
+                first_building = picked.clone().bool_and(obs.is_building.clone()).any_dim(1);
+            }
             chosen_units = chosen_units.bool_or(picked);
             sum_keys = sum_keys + key.clone() * tf.clone().reshape([b, 1]);
             count = count + tf;

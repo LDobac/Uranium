@@ -5,6 +5,8 @@
 name = "core-ablation-h2h"
 seed_base = 32700
 save_replay = true
+# 030-R10 / E-5: BC checkpoints get last_failed = 0 (BC data never has a failed command).
+zero_last_failed = true
 [[matchup]]
 map = "fighting_spirit"
 games = 25

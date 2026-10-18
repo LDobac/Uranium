@@ -334,6 +334,10 @@ pub fn host_label_check(l: &Label, o: &Observation) -> (HostLabel, Option<&'stat
         Some("select_cap")
     } else if a.uses_select && h.selected.len() > a.max_select as usize {
         Some("select_too_many")
+    } else if a.uses_select && h.selected.len() > 1 && h.selected.iter().any(|&i| o.masks.is_building[i]) {
+        // 034-R7 / E-4: the game never multi-selects a building (040-R3 ①); such a label cannot
+        // come from a valid replay and is void like any other mask violation.
+        Some("select_building")
     } else {
         match a.target {
             TargetKind::Unit if h.target_unit.is_none() => Some("target_unit_missing"),

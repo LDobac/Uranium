@@ -3,19 +3,47 @@
 
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
-use uranium_proto::{GameInfo, Tile};
+use uranium_proto::{GameInfo, Pos, Tile};
 
 use super::schema::{CELLS, MAP, ch};
 
-/// `assets/maps/<map_hash>.toml` written by `tools/mapgen` (031).
+/// `MapPrecompute::version` this code writes and accepts. Files of another version are ignored
+/// (`maps::load_precompute` returns `None`) and the next replay build writes them again (031).
+/// 1 = no version field (before 2026-10-19). 2 = adds `resources` (030 §2, E-3, AMB-030-3).
+pub const PRECOMPUTE_VERSION: u32 = 2;
+
+/// One neutral resource of the map file (CHK `UNIT` section): public map information that the
+/// 010-R5 exception and 030-R2 allow out of vision (E-3, AMB-030-3).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MapResource {
+    /// BWAPI unit type (mineral field or vespene geyser).
+    pub unit_type: u16,
+    /// Centre pixel as the CHK stores it (the same as `UnitState::pos` in game).
+    pub pos: Pos,
+    /// Initial amount: the CHK value when its "resources valid" property bit (0x10) is set, else
+    /// 0 (OpenBW `create_initial_unit` + `set_unit_resources`).
+    pub amount: u32,
+}
+
+/// `<URANIUM_MAPS_DIR>/<map_hash>.toml` written by `uranium-replay build` (031 맵 사전계산).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct MapPrecompute {
+    /// [`PRECOMPUTE_VERSION`] of the writer; files without the field are version 1.
+    #[serde(default = "precompute_v1")]
+    pub version: u32,
     /// Resource-depot top-left tiles of every base.
     pub base_locs: Vec<Tile>,
     /// Tiles on choke points.
     pub chokes: Vec<Tile>,
     /// Wall-in hint tiles (observation only, never enforced, 031).
     pub wall_candidates: Vec<Tile>,
+    /// Neutral resources in CHK order: the state of resources not yet seen (030 §2, E-3).
+    #[serde(default)]
+    pub resources: Vec<MapResource>,
+}
+
+fn precompute_v1() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone)]
@@ -32,6 +60,8 @@ pub struct MapInfo {
     pub self_start: Option<usize>,
     /// 040-R15 family index: fighting_spirit 0, circuit_breaker 1, other 2.
     pub map_family: i32,
+    /// Map-public neutral resources from the precompute (030-R2 exception, E-3); empty without one.
+    pub resources: Vec<MapResource>,
 }
 
 pub const STATIC_CHANNELS: usize = 10;
@@ -103,7 +133,7 @@ impl MapInfo {
             .find(|p| p.is_self)
             .and_then(|p| p.start_tile)
             .and_then(|t| s.start_locations.iter().position(|&l| l == t));
-        Ok(Self { width: w, height: h, static_channels: chans, walkable, buildable, start_locations: s.start_locations.clone(), self_start, map_family })
+        Ok(Self { width: w, height: h, static_channels: chans, walkable, buildable, start_locations: s.start_locations.clone(), self_start, map_family, resources: pre.map_or_else(Vec::new, |p| p.resources.clone()) })
     }
 
     pub fn in_map(&self, x: i32, y: i32) -> bool {

@@ -224,7 +224,7 @@ fn extraction_breakdown_030_ac3() {
         }
         eprintln!("{name}: {:.3} ms", t.elapsed().as_secs_f64() * 1e3 / 50.0);
     };
-    time("observe", &mut || mem.clone().observe(&f, uranium_env::types::TypeTables::get()));
+    time("observe", &mut || mem.clone().observe(&f, uranium_env::types::TypeTables::get(), &map));
     time("world", &mut || {
         std::hint::black_box(World::new(&f, &mem, &map));
     });
@@ -375,4 +375,254 @@ fn training_flips_keep_footprints_and_start_loc_030_ac6() {
             }
         }
     }
+}
+
+fn cap_of(o: &Observation, i: usize, name: &str) -> bool {
+    o.masks.unit_cap[i * CAPABILITIES.len() + CAPABILITIES.iter().position(|c| *c == name).unwrap()]
+}
+
+fn index_of(o: &Observation, id: u32) -> usize {
+    o.entity_ids.iter().position(|&e| e == id).unwrap_or_else(|| panic!("entity {id} missing"))
+}
+
+/// 030 §3 / E-1: each hazard paints the tiles its own radius overlaps (game data table in
+/// `hazard_radius`), Plague and Ensnare included; a radius sent by the bridge wins.
+#[test]
+fn hazard_uses_effect_radius_030_e1() {
+    use uranium_env::features::extract::hazard_radius;
+    use uranium_proto::{Effect, EffectKind};
+    assert_eq!(
+        [EffectKind::PsionicStorm, EffectKind::DarkSwarm, EffectKind::DisruptionWeb, EffectKind::NukeDot, EffectKind::EmpShockwave, EffectKind::Irradiate, EffectKind::Plague, EffectKind::Ensnare, EffectKind::Other(1)]
+            .map(hazard_radius),
+        [48, 80, 60, 256, 64, 32, 64, 64, 16]
+    );
+    let map = map_info();
+    let mut mem = AgentMemory::new(&game_info());
+    let mut f = frame(10, vec![], false);
+    let ef = |kind, pos, radius| Effect { kind, pos, radius, remaining_frames: None, source_owner: None };
+    f.effects = vec![ef(EffectKind::PsionicStorm, (1000, 1000), 0), ef(EffectKind::Plague, (1000, 2000), 0), ef(EffectKind::Ensnare, (2000, 1000), 0), ef(EffectKind::Other(3), (2500, 2500), 100)];
+    let o = extract(&f, &mut mem, &map, None);
+    let at = |c: usize, x: usize, y: usize| o.obs.spatial[c * CELLS + y * MAP + x];
+    // Storm (r 48) at pixel 1000 = tile 31.25: tiles 29..=32 on its row, not 28 or 33.
+    let storm: Vec<usize> = (26..37).filter(|&x| at(ch::HAZARD_STORM, x, 31) == 1.0).collect();
+    assert_eq!(storm, vec![29, 30, 31, 32]);
+    // Plague (r 64): tiles 29..=33; diagonal (29, 60) overlaps, (28, 59) does not.
+    let plague: Vec<usize> = (26..37).filter(|&x| at(ch::HAZARD_OTHER, x, 62) == 1.0).collect();
+    assert_eq!(plague, vec![29, 30, 31, 32, 33]);
+    assert_eq!(at(ch::HAZARD_OTHER, 29, 60), 1.0);
+    assert_eq!(at(ch::HAZARD_OTHER, 28, 59), 0.0);
+    // Ensnare (r 64) also goes to the "other" channel.
+    assert_eq!(at(ch::HAZARD_OTHER, 62, 31), 1.0);
+    assert_eq!(at(ch::HAZARD_OTHER, 64, 31), 1.0);
+    assert_eq!(at(ch::HAZARD_OTHER, 65, 31), 0.0);
+    // A bridge radius (100) overrides the 16 px default of other projectiles.
+    assert_eq!(at(ch::HAZARD_OTHER, 78 - 3, 78), 1.0);
+    assert_eq!(at(ch::HAZARD_STORM, 31, 62), 0.0, "plague is not a storm");
+}
+
+/// 030-R4 / B-6: a flipped even-width building's cell is the cell of the mirrored building
+/// (W = 96, Barracks x0 = 20 -> mirrored x0 72, centre tile 74), recomputed from the pixel.
+#[test]
+fn flip_cell_from_pixel_even_width_030_r4() {
+    let (o, f, ..) = observe(true);
+    let rax_pos = ((20 * 32 + 64) as u16, (10 * 32 + 48) as u16);
+    let rax = f.units.iter().find(|u| u.unit_type == ty("Terran_Barracks") && u.pos == rax_pos).unwrap().id;
+    let i = index_of(&o, rax);
+    assert_eq!(o.obs.entity_cell[i], (11 * MAP + 22) as i32);
+    let t = transform(&o, Sym { flip_x: true, flip_y: false, transpose: false });
+    assert_eq!(t.obs.entity_cell[i], (11 * MAP + 74) as i32, "x: 96*32 - 704 = 2368 -> tile 74 (B-6)");
+    assert_eq!(t.obs.entity_pos[i * 2], 2368.0);
+    let t = transform(&o, Sym { flip_x: false, flip_y: true, transpose: false });
+    assert_eq!(t.obs.entity_cell[i], (84 * MAP + 22) as i32, "y: 96*32 - 368 = 2704 -> tile 84");
+}
+
+fn map_with_resources(resources: Vec<MapResource>) -> MapInfo {
+    let pre = MapPrecompute { version: PRECOMPUTE_VERSION, resources, ..Default::default() };
+    MapInfo::new(&game_info(), 0, Some(&pre)).unwrap()
+}
+
+fn resource_at(name: &str, tile: (i32, i32), amount: u32) -> MapResource {
+    let t = uranium_env::types::TypeTables::get().unit_by_name(name).unwrap();
+    MapResource { unit_type: t.id as u16, pos: ((tile.0 * 32 + t.tile_width * 16) as u16, (tile.1 * 32 + t.tile_height * 16) as u16), amount }
+}
+
+fn neutrals(o: &Observation) -> usize {
+    (0..o.obs.n).filter(|&i| o.obs.entity_cat[i * 4 + 1] == OWNER_NEUTRAL).count()
+}
+
+/// 030-R2 exception / 010-R5 / E-3: map resources out of vision are remembered neutral entities:
+/// never seen -> map initial amount, `seen_frame` 0, not targetable (no id); seen -> last seen
+/// amount and frame, real id, still a gather / right-click target; seen empty -> dropped. The
+/// current amount out of vision never leaks.
+#[test]
+fn unseen_resources_are_remembered_entities_030_r2() {
+    let far = resource_at("Resource_Mineral_Field", (70, 20), 777);
+    let geyser = resource_at("Resource_Vespene_Geyser", (40, 60), 5000);
+    let map = map_with_resources(vec![far, geyser]);
+    let mut mem = AgentMemory::new(&game_info());
+    let mut b = Builder::new();
+    b.add(SELF, "Terran_SCV", (10, 10));
+    let own: Vec<_> = b.units.clone();
+    let mineral = b.add(NEUTRAL, "Resource_Mineral_Field", (70, 20));
+    let blind = |f: &mut uranium_proto::RawFrame| {
+        for y in 0..H {
+            for x in 30..W {
+                f.visibility.set(x, y, false);
+            }
+        }
+    };
+    let cont = |o: &Observation, i: usize| o.obs.entity_cont[i * ENTITY_CONT..(i + 1) * ENTITY_CONT].to_vec();
+
+    // Frame 100: only x < 30 visible. Both map resources are remembered entities.
+    let mut f = frame(100, own.clone(), false);
+    blind(&mut f);
+    let o = extract(&f, &mut mem.clone(), &map, None);
+    assert_eq!(o, extract(&f, &mut mem.clone(), &map, None), "deterministic (030-R1)");
+    let o = extract(&f, &mut mem, &map, None);
+    assert_eq!(neutrals(&o), 2);
+    let i = (0..o.obs.n).find(|&i| o.obs.entity_cat[i * 4 + 1] == OWNER_NEUTRAL && o.obs.entity_cat[i * 4] == far.unit_type as i32).unwrap();
+    assert!(uranium_env::features::world::is_unseen_resource_id(o.entity_ids[i]));
+    let c = cont(&o, i);
+    assert_eq!((c[72], c[73], c[74]), (1.0, 100.0 / 2048.0, 777.0 / 1500.0), "remembered, seen_frame 0, map amount");
+    assert_eq!(o.obs.entity_pos[i * 2..i * 2 + 2], [far.pos.0 as f32, far.pos.1 as f32]);
+    assert!(!cap_of(&o, i, "target_resource") && !cap_of(&o, i, "any_unit"), "never seen: no id to target");
+
+    // Frame 200: the field is seen with 600 left.
+    let mut m = b.units.iter().find(|u| u.id == mineral).unwrap().clone();
+    m.resources = 600;
+    let mut units = own.clone();
+    units.push(m.clone());
+    let mut f = frame(200, units, false);
+    blind(&mut f);
+    for y in 15..25 {
+        for x in 65..75 {
+            f.visibility.set(x, y, true);
+        }
+    }
+    let o = extract(&f, &mut mem, &map, None);
+    let i = index_of(&o, mineral);
+    assert_eq!(cont(&o, i)[72], 0.0);
+    assert_eq!(neutrals(&o), 2, "the visible field replaces its map entry");
+
+    // Frame 300: out of vision again (its real amount meanwhile 500, never reported): last seen
+    // state with its real id.
+    let mut f = frame(300, own.clone(), false);
+    blind(&mut f);
+    let o = extract(&f, &mut mem, &map, None);
+    let i = index_of(&o, mineral);
+    let c = cont(&o, i);
+    assert_eq!((c[72], c[73], c[74]), (1.0, 100.0 / 2048.0, 600.0 / 1500.0), "last seen amount and frame");
+    assert!(cap_of(&o, i, "target_resource") && cap_of(&o, i, "any_unit"), "seen before: still a target");
+    assert_eq!(neutrals(&o), 2);
+
+    // Frame 400: everything visible, the field is gone (mined out) and the geyser tile is empty.
+    let o = extract(&frame(400, own.clone(), false), &mut mem, &map, None);
+    assert!(!o.entity_ids.contains(&mineral));
+    assert_eq!(neutrals(&o), 0);
+    let mut f = frame(500, own.clone(), false);
+    blind(&mut f);
+    assert_eq!(neutrals(&extract(&f, &mut mem, &map, None)), 0, "seen empty stays dropped");
+}
+
+/// 034-R6 / B-11: a disabled unit (lockdown, stasis, maelstrom) has no selection class at all and
+/// no executor picks it.
+#[test]
+fn disabled_units_take_no_command_034_r6() {
+    let map = map_info();
+    let mut mem = AgentMemory::new(&game_info());
+    let mut b = Builder::new();
+    b.add(SELF, "Terran_Command_Center", (10, 10));
+    let locked_scv = b.add(SELF, "Terran_SCV", (30, 30));
+    b.get(locked_scv).status_timers.lockdown = 50;
+    let free_scv = b.add(SELF, "Terran_SCV", (60, 60));
+    let tank = b.add(SELF, "Terran_Siege_Tank_Tank_Mode", (40, 40));
+    b.get(tank).status_timers.stasis = 50;
+    let ship = b.add(SELF, "Terran_Dropship", (42, 42));
+    b.get(ship).status_timers.maelstrom = 20;
+    let cargo = b.add(SELF, "Terran_Marine", (42, 42));
+    b.get(cargo).loaded_in = Some(ship);
+    b.get(cargo).flags |= uranium_proto::flags::LOADED;
+    let rax = b.add(SELF, "Terran_Barracks", (20, 40));
+    b.get(rax).status_timers.stasis = 50;
+    b.get(rax).build_queue[0] = ty("Terran_Marine");
+    let f = frame(10, b.units.clone(), true);
+    let o = extract(&f, &mut mem, &map, None);
+    for (id, caps) in [
+        (locked_scv, &["is_worker", "can_move", "can_be_loaded"][..]),
+        (tank, &["can_siege", "can_move", "can_attack"][..]),
+        (ship, &["is_transport_loaded", "can_move"][..]),
+        (rax, &["can_rally", "can_lift", "can_cancel_train"][..]),
+    ] {
+        let i = index_of(&o, id);
+        for c in caps {
+            assert!(!cap_of(&o, i, c), "disabled {id} has {c}");
+        }
+    }
+    assert!(cap_of(&o, index_of(&o, free_scv), "is_worker"));
+    // pick_worker skips the nearer locked SCV; Train_Marine has no producer.
+    let w = World::new(&f, &mem, &map);
+    assert_eq!(pick_worker(&w, (30, 30)).unwrap().id, free_scv);
+    let train = action_table().by_name("Train_Marine").unwrap();
+    assert!(!o.masks.type_mask[train.id as usize], "only a stasis-ed barracks");
+}
+
+/// 034-R7 / E-4: `is_building` covers landed, lifted and bunker; the executor accepts a building
+/// only alone; SetRally selects one building.
+#[test]
+fn building_selected_alone_034_r7() {
+    use uranium_env::features::executor::Rejected;
+    let (o, f, mem, map) = observe(true);
+    let id_of = |name: &str| f.units.iter().find(|u| u.unit_type == ty(name) && u.owner == SELF).unwrap().id;
+    let bunker = index_of(&o, id_of("Terran_Bunker"));
+    let marine = index_of(&o, id_of("Terran_Marine"));
+    let firebat = index_of(&o, id_of("Terran_Firebat"));
+    assert!(o.masks.is_building[bunker] && !o.masks.is_building[marine]);
+    let lifted = f.units.iter().find(|u| u.unit_type == ty("Terran_Command_Center") && u.has(uranium_proto::flags::LIFTED)).unwrap().id;
+    assert!(o.masks.is_building[index_of(&o, lifted)], "lifted buildings count");
+    assert_eq!(o.masks.is_building.len(), o.obs.n);
+    let w = World::new(&f, &mem, &map);
+    let zergling = index_of(&o, f.units.iter().find(|u| u.unit_type == ty("Zerg_Zergling")).unwrap().id);
+    assert!(cap_of(&o, bunker, "can_attack"));
+    let attack = |sel: Vec<usize>| execute(&w, &o, &host("Attack_Unit", sel, Some(zergling), None));
+    assert_eq!(attack(vec![bunker, marine]), Err(Rejected::BadSelection));
+    assert_eq!(attack(vec![marine, bunker]), Err(Rejected::BadSelection));
+    assert!(attack(vec![bunker]).is_ok());
+    assert!(attack(vec![marine, firebat]).is_ok());
+    for name in ["SetRally_Pos", "SetRally_Unit"] {
+        assert_eq!(action_table().by_name(name).unwrap().max_select, 1, "{name}");
+    }
+}
+
+/// 030-R11 / E-6: a lobby-Random enemy is `unknown` until its first unit is observed, in live
+/// games (GameInfo race Random) and replays (`enemy_random`; GameInfo holds the played race).
+#[test]
+fn random_enemy_race_unknown_until_seen_030_r11() {
+    let map = map_info();
+    let mut live = game_info();
+    live.players[1].race = uranium_proto::Race::Random;
+    for mut mem in [AgentMemory::new(&live), AgentMemory::with_lobby(&game_info(), true)] {
+        let mut b = Builder::new();
+        b.add(SELF, "Terran_SCV", (10, 10));
+        let o = extract(&frame(10, b.units.clone(), false), &mut mem, &map, None);
+        assert_eq!(o.obs.scalar_cat[0], RACE_UNKNOWN);
+        b.add(ENEMY, "Zerg_Drone", (30, 30));
+        let o = extract(&frame(20, b.units.clone(), false), &mut mem, &map, None);
+        assert_eq!(o.obs.scalar_cat[0], RACE_ZERG);
+    }
+    // A race chosen in the lobby is known from the start.
+    let o = extract(&frame(10, vec![], false), &mut AgentMemory::with_lobby(&game_info(), false), &map, None);
+    assert_eq!(o.obs.scalar_cat[0], RACE_ZERG);
+}
+
+/// 030-R10 / E-5: with `zero_last_failed` (BC evaluation games) a failed command leaves the
+/// `last_failed` scalar at 0, as in BC data.
+#[test]
+fn zero_last_failed_flag_030_r10() {
+    let map = map_info();
+    let mut mem = AgentMemory::new(&game_info());
+    mem.zero_last_failed = true;
+    let mut f = frame(10, rich_units().units, true);
+    f.events.push(GameEvent::CommandFailed { cmd_index: 0, error: 1 });
+    let o = extract(&f, &mut mem, &map, None);
+    assert_eq!(*o.obs.scalar.last().unwrap(), 0.0);
 }

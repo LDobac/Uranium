@@ -4,11 +4,11 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
 
-use uranium_proto::{RawFrame, UnitState, flags};
+use uranium_proto::{RawFrame, UnitId, UnitState, flags};
 
 use super::map::MapInfo;
-use super::memory::AgentMemory;
-use super::schema::{CELLS, MAP, OWNER_ENEMY, OWNER_NEUTRAL, OWNER_SELF};
+use super::memory::{AgentMemory, ResourceTile, resource_tile};
+use super::schema::{CELLS, MAP, ORDER_NONE, OWNER_ENEMY, OWNER_NEUTRAL, OWNER_SELF};
 use crate::types::{TypeTables, UnitType};
 
 /// Unit / tech / upgrade ids resolved by name from the BWAPI tables (013-R1).
@@ -147,6 +147,67 @@ pub struct World<'a> {
     pub blocked: Vec<bool>,
 }
 
+/// Unit ids of resources known only from the map precompute (never seen, so their game id is
+/// unknown): `UNSEEN_RESOURCE_ID + index in MapInfo::resources`. Not targetable (034 target
+/// classes need a real id) and never sent in a command.
+pub const UNSEEN_RESOURCE_ID: UnitId = 0xFFFF_0000;
+
+pub fn is_unseen_resource_id(id: UnitId) -> bool {
+    id >= UNSEEN_RESOURCE_ID
+}
+
+/// OpenBW `unit_is_disabled`: lockdown, stasis or maelstrom. Such a unit takes no command, so it
+/// has no selection capability and no executor picks it (034-R6, B-11).
+pub fn is_disabled(u: &UnitState) -> bool {
+    let s = &u.status_timers;
+    s.lockdown > 0 || s.stasis > 0 || s.maelstrom > 0
+}
+
+/// 030-R2 exception (010-R5, E-3, AMB-030-3): resources out of vision as remembered neutral
+/// entities, in tile order. Seen ones keep their last observed state and frame; resources never
+/// seen take the map's initial state with `seen_frame = 0` (known from the map at game start).
+/// Tiles seen empty (`resources_gone`) are left out. The current amount of a resource out of
+/// vision is never used (no map hack).
+fn unseen_resources(mem: &AgentMemory, map: &MapInfo, visible: &std::collections::HashSet<UnitId>) -> Vec<Entity> {
+    let types = TypeTables::get();
+    let mut out: BTreeMap<ResourceTile, Entity> = BTreeMap::new();
+    for (k, r) in &mem.resources {
+        if !visible.contains(&r.unit.id) {
+            out.insert(*k, Entity { unit: r.unit.clone(), owner: OWNER_NEUTRAL, remembered: true, seen_frame: r.seen_frame });
+        }
+    }
+    // Per-type fields (hp, flags, order) as a seen resource of that type reports them, so a
+    // never-seen field looks like a seen one: the first seen in tile order (deterministic).
+    let mut templates: HashMap<u16, &UnitState> = HashMap::new();
+    for s in mem.resources.values() {
+        templates.entry(s.unit.unit_type).or_insert(&s.unit);
+    }
+    for (i, r) in map.resources.iter().enumerate() {
+        let Some(k) = resource_tile(r.unit_type, r.pos) else { continue };
+        if mem.resources.contains_key(&k) || mem.resources_gone.contains(&k) || out.contains_key(&k) {
+            continue;
+        }
+        let template = templates.get(&r.unit_type).map(|&s| s.clone());
+        let mut unit = template.unwrap_or_else(|| UnitState {
+            owner: NEUTRAL_PLAYER,
+            hp: types.unit(r.unit_type).map_or(0, |t| t.max_hp.clamp(0, u16::MAX as i32) as u16),
+            flags: flags::COMPLETED,
+            order: ORDER_NONE,
+            ..Default::default()
+        });
+        unit.id = UNSEEN_RESOURCE_ID + i as UnitId;
+        unit.unit_type = r.unit_type;
+        unit.pos = r.pos;
+        unit.vel = (0, 0);
+        unit.resources = r.amount.min(u16::MAX as u32) as u16;
+        out.insert(k, Entity { unit, owner: OWNER_NEUTRAL, remembered: true, seen_frame: 0 });
+    }
+    out.into_values().collect()
+}
+
+/// BW neutral player (owner of map resources).
+const NEUTRAL_PLAYER: u8 = 11;
+
 pub fn tile_of(u: &UnitState) -> (i32, i32) {
     (u.pos.0 as i32 / 32, u.pos.1 as i32 / 32)
 }
@@ -189,7 +250,8 @@ impl<'a> World<'a> {
             .filter(|(id, _)| !visible.contains(id))
             .map(|(_, r)| Entity { unit: r.unit.clone(), owner: OWNER_ENEMY, remembered: true, seen_frame: r.seen_frame })
             .collect();
-        let entities: Vec<Entity> = own.into_iter().chain(enemy).chain(remembered).chain(neutral).collect();
+        let unseen = unseen_resources(mem, map, &visible);
+        let entities: Vec<Entity> = own.into_iter().chain(enemy).chain(remembered).chain(neutral).chain(unseen).collect();
 
         let mut own_completed = HashMap::new();
         let mut cargo = HashMap::new();
@@ -241,7 +303,7 @@ impl<'a> World<'a> {
             block(&e.unit);
         }
         for r in mem.resources.values() {
-            block(r);
+            block(&r.unit);
         }
 
         let nuke_ready = frame.units.iter().any(|s| s.owner == mem.self_player && s.unit_type == ids.silo && s.nuke_armed);
@@ -279,6 +341,8 @@ impl<'a> World<'a> {
             .iter()
             .filter(|u| u.owner == self.mem.self_player && u.unit_type == producer)
             .filter(|u| u.has(flags::COMPLETED) && !u.has(flags::LIFTED))
+            // 034-R6: a disabled (e.g. stasis-ed) building takes no command.
+            .filter(|u| !is_disabled(u))
             .filter(|u| need_addon.is_none_or(|a| self.addon_of.get(&u.id) == Some(&a)))
             .filter(|u| if research { u.remaining_research == 0 && queue_len(u) == 0 } else { queue_len(u) < 5 && u.remaining_research == 0 })
             .collect();

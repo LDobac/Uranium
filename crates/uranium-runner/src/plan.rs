@@ -26,6 +26,11 @@ pub struct Plan {
     pub privileged: bool,
     #[serde(default)]
     pub save_replay: bool,
+    /// 030-R10 / E-5: model players get `last_failed = 0`. Set in evaluation plans of BC
+    /// checkpoints (core ablation, bc-vs-t0): replay playback has no command-failure events, so BC
+    /// never saw a 1 there and it would only add noise to the evaluation. RL keeps the real value.
+    #[serde(default)]
+    pub zero_last_failed: bool,
     #[serde(rename = "matchup")]
     pub matchups: Vec<Matchup>,
 }

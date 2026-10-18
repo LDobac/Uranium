@@ -3,8 +3,8 @@
 
 use uranium_proto::{UnitState, flags};
 
-use super::schema::{CELLS, MAP, OWNER_ENEMY, OWNER_SELF};
-use super::world::{Entity, World, queue_len, top_left};
+use super::schema::{CELLS, MAP, OWNER_ENEMY, OWNER_NEUTRAL, OWNER_SELF};
+use super::world::{Entity, World, is_disabled, is_unseen_resource_id, queue_len, top_left};
 use crate::actions::{Action, ActionTable, CAPABILITIES, Executor, LOC_CLASSES, TargetKind};
 
 pub const K: usize = CAPABILITIES.len();
@@ -104,9 +104,10 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     let done = u.has(flags::COMPLETED);
     let loaded = u.has(flags::LOADED) || u.loaded_in.is_some();
     let lifted = u.has(flags::LIFTED);
-    let commandable = own && done && !loaded && u.unit_type != ids.spider_mine && u.unit_type != ids.nuke;
-    // OpenBW `unit_is_disabled` (034-R3).
-    let disabled = u.status_timers.lockdown > 0 || u.status_timers.stasis > 0 || u.status_timers.maelstrom > 0;
+    // OpenBW `unit_is_disabled` (034-R6, B-11): a disabled unit takes no command, so every
+    // selection class below excludes it (through `commandable` / `own_any` / the rally rule).
+    let disabled = is_disabled(u);
+    let commandable = own && done && !loaded && !disabled && u.unit_type != ids.spider_mine && u.unit_type != ids.nuke;
     let energy = u.energy;
     let ty = u.unit_type;
     let mut set = |name: &str, v: bool| c[cap(name)] = v;
@@ -147,13 +148,13 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     set("can_land_cc", commandable && lifted && ty == ids.cc);
     // Rally needs no completion: the game and BWAPI `canSetRallyPosition` accept producers under
     // construction (034-R3).
-    set("can_rally", own && !loaded && t.has(crate::types::flag::PRODUCES_UNITS) && t.is_building() && !lifted);
+    set("can_rally", own && !loaded && !disabled && t.has(crate::types::flag::PRODUCES_UNITS) && t.is_building() && !lifted);
     let addon_ok = |parent: u16| commandable && ty == parent && !lifted && !u.has_addon && !busy && addon_space_free(w, u, t);
     set("addon_capable_cc", addon_ok(ids.cc));
     set("addon_capable_factory", addon_ok(ids.factory));
     set("addon_capable_starport", addon_ok(ids.starport));
     set("addon_capable_scifac", addon_ok(ids.science_facility));
-    let own_any = own && !loaded;
+    let own_any = own && !loaded && !disabled;
     set("can_cancel_construction", own_any && t.is_building() && !done);
     set("can_cancel_train", own_any && done && queue_len(u) > 0);
     set("can_cancel_research", own_any && done && u.remaining_research > 0 && u.order == ids.order_research);
@@ -164,10 +165,14 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     let targetable = visible && !(u.has(flags::CLOAKED) && !u.has(flags::DETECTED) && e.owner != OWNER_SELF);
     let hurt = (u.hp as i32) < t.max_hp;
     let building = t.is_building();
+    // 030 §2 / E-3: a resource out of vision that was seen before (its real id is known) stays a
+    // target, like a fogged mineral field a player right-clicks; one never seen (map-only, no id)
+    // is not.
+    let known_resource = e.remembered && e.owner == OWNER_NEUTRAL && t.is_resource() && !is_unseen_resource_id(u.id);
     set("attackable_enemy", enemy && targetable && !t.has(crate::types::flag::INVINCIBLE));
-    set("any_unit", targetable);
+    set("any_unit", targetable || known_resource);
     set("own_unit", own && visible);
-    set("target_resource", visible && ((t.is_resource() && ty != ids.geyser) || (own && ty == ids.refinery && done)));
+    set("target_resource", (visible || known_resource) && ((t.is_resource() && ty != ids.geyser) || (own && ty == ids.refinery && done)));
     set("repairable", own && visible && (t.is_mechanical() || building) && hurt && done);
     set("lockdownable", enemy && targetable && t.is_mechanical() && !building && u.status_timers.lockdown == 0);
     set("healable", own && visible && t.is_organic() && !t.is_flyer() && !building && hurt);
@@ -241,7 +246,7 @@ pub fn loc_masks(w: &World) -> Vec<bool> {
     });
     // Resource no-build zone for resource depots: 3 tiles around minerals and geysers.
     let mut near_res = vec![false; CELLS];
-    let resources = w.entities.iter().map(|e| &e.unit).chain(w.mem.resources.values());
+    let resources = w.entities.iter().map(|e| &e.unit).chain(w.mem.resources.values().map(|r| &r.unit));
     for r in resources {
         let Some(t) = w.ty(r).filter(|t| t.is_resource()) else { continue };
         let (x, y) = top_left(r, t);
@@ -283,7 +288,9 @@ pub fn loc_masks(w: &World) -> Vec<bool> {
     for e in w.entities.iter().filter(|e| e.unit.unit_type == w.ids.geyser) {
         let t = w.ty(&e.unit).unwrap();
         let (x, y) = top_left(&e.unit, t);
-        if w.map.in_map(x, y) {
+        // Geysers out of vision are entities too (E-3); only explored ones can take a refinery,
+        // as for every other build footprint (`bad` above). Visible geysers are always explored.
+        if w.map.in_map(x, y) && explored.get(x as u16, y as u16) {
             m[refinery * CELLS + y as usize * MAP + x as usize] = true;
         }
     }
@@ -307,7 +314,7 @@ pub fn pick_building_candidates<'w>(w: &'w World, a: &Action) -> Vec<&'w UnitSta
         // Scanner sweep: the comsat with the most energy (031-R1).
         let need = w.tech_energy(a.tech.unwrap_or(0));
         let mut v: Vec<&UnitState> =
-            w.frame.units.iter().filter(|u| u.owner == w.mem.self_player && u.unit_type == p && u.has(flags::COMPLETED) && u.energy >= need).collect();
+            w.frame.units.iter().filter(|u| u.owner == w.mem.self_player && u.unit_type == p && u.has(flags::COMPLETED) && !is_disabled(u) && u.energy >= need).collect();
         v.sort_by_key(|u| (std::cmp::Reverse(u.energy), u.id));
         return v;
     }

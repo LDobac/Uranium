@@ -8,7 +8,12 @@ use crate::types::TypeTables;
 /// 2: channel 12 is last_seen_age (AMB-030-1).
 /// 3: unit_cap gains can_right_click_unit; can_rally without completion, maelstrom disables
 ///    (034, AMB-041-1).
-pub const FEATURE_SCHEMA_VERSION: u32 = 3;
+/// 4 (2026-10-19, BC pre-training review): resources out of vision are remembered entities
+///    (030-R2 exception, E-3) and seen ones stay targets; hazard discs use each effect's radius
+///    (030 §3, E-1); flipped `entity_cell` from the flipped pixel (030-R4, B-6); disabled units
+///    lose every selection class (034-R6, B-11); Random enemy race unknown until seen (030-R11,
+///    E-6); `Masks::is_building` for the single-building rule (034-R7, E-4).
+pub const FEATURE_SCHEMA_VERSION: u32 = 4;
 
 /// 030-R6: spatial side in build tiles.
 pub const MAP: usize = 128;
@@ -146,6 +151,9 @@ pub struct Masks {
     pub unit_cap: Vec<bool>,
     /// [L,128,128]
     pub loc_class_mask: Vec<bool>,
+    /// [n] the entity is a building (landed or lifted, bunker and turret included): the Selected
+    /// head's single-building rule (034-R7, 032 §2.5 / §5, E-4).
+    pub is_building: Vec<bool>,
 }
 
 /// Training-only inputs (030-R9). Never part of `ObsTensors`.

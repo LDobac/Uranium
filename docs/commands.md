@@ -21,6 +21,8 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 - 동시 게임 수 측정(020-R10): 게임 호스트에서 `uranium-env calibrate` → `<URANIUM_CACHE_DIR>/hostd_calibration.toml`(`URANIUM_HOSTD_MAX_GAMES`가 없을 때 사용).
 - 스케줄러(020): `uranium-env run --plan config/plans/<plan>.toml [--out runs/<dir>] [--backend cuda|vulkan|flex --max-batch N --max-wait-ms M]` → `games.jsonl`, `results.jsonl`, `summary.md`(Wilson 95%, 정책별 합산), `sessions.md`. 호스트 목록은 `URANIUM_HOSTS_FILE`(예시 `config/hosts.example.toml`). crate는 `uranium-runner`, 바이너리 이름은 `uranium-env`.
   - plan의 `save_replay = true` 게임은 `<out>/replays/g<id>.rep`에 모인다(020-R1, hostd와 같은 커밋으로 빌드).
+  - plan의 `zero_last_failed = true`는 모델 플레이어의 `last_failed` 입력을 0으로 고정한다(030-R10). BC 체크포인트 평가 plan(코어 비교, bc-vs-t0)에서 켜고 RL은 끈다. 에이전트 서버 단독 실행은 `--zero-last-failed`.
+  - 맵 사전계산 파일 형식이 바뀌었다(`version = 2`, 자원 목록 포함, 030 §2). 옛 `<hash>.toml`·`<hash>.resources.toml`은 없는 것으로 보므로 재build와 `uranium-replay mapgen`으로 다시 만든다.
   - 모델 정책(020-R11): 플레이어 `{ kind = "model", checkpoint = "<URANIUM_SHARED_DIR 기준 경로>", sample = "argmax"|"stochastic" }`. 추론 백엔드 기본 `URANIUM_AGENT_BACKEND`. 대상 맵 사전계산 `uranium-replay mapgen <맵 파일>...`(AMB-031-4). 스모크 `config/plans/smoke-model.toml`(체크포인트 `uranium-agent random-checkpoint --out <dir>`), 041-AC2 `config/plans/bc-vs-t0.toml`.
 - 셀프매치(M2): `tools/openbw/selfmatch.sh <map> <games> [parallel] [seed_base] [agent args...]`. `SAME_SEED=1`이면 같은 seed, `URANIUM_MAX_FRAMES`로 길이 제한.
 - 에이전트 서버: `uranium-agent serve --listen 127.0.0.1:7600 --out runs/x.jsonl [--policy model --checkpoint <dir> --backend <b> --sample argmax]`, 요약 `uranium-agent summarize <jsonl> --out <md>`.

@@ -4,7 +4,7 @@
 //! invertible (030-AC4). Applied at load time (040-R7). Location targets are top-left anchored
 //! footprints, so they are transformed as rectangles.
 
-use super::extract::{CONT_ANGLE, CONT_POS, CONT_VEL, Observation, position_features};
+use super::extract::{CONT_ANGLE, CONT_POS, CONT_VEL, Observation, cell_of_pixel, position_features};
 use super::masks::L;
 use super::schema::{CELLS, ENTITY_CONT, MAP, SPATIAL};
 use crate::actions::{LOC_CLASSES, TargetKind};
@@ -125,9 +125,10 @@ pub fn transform(o: &Observation, sym: Sym) -> Observation {
         let (nx, ny) = sym.pixel(size, px, py);
         ob.entity_pos[i * 2] = nx;
         ob.entity_pos[i * 2 + 1] = ny;
-        let cell = o.obs.entity_cell[i] as usize;
-        let (tx, ty) = sym.tile(size, cell % MAP, cell / MAP);
-        ob.entity_cell[i] = (ty * MAP + tx) as i32;
+        // 030-R4 / B-6: the cell comes from the transformed pixel with the extraction rule. Flipping
+        // the tile index instead puts an even-width building (centre on a multiple of 32) one
+        // tile off its mirrored position.
+        ob.entity_cell[i] = cell_of_pixel(nx, ny, new_size);
         let f = &mut ob.entity_cont[i * ENTITY_CONT..(i + 1) * ENTITY_CONT];
         position_features(nx, ny, new_size.0, new_size.1, &mut f[CONT_POS..CONT_POS + 34]);
         let (vx, vy) = sym.vector(f[CONT_VEL], f[CONT_VEL + 1]);

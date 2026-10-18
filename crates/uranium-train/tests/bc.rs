@@ -129,6 +129,26 @@ fn labels_convert_and_survive_symmetry_041() {
     assert!(!prepare(&g, false, Sym::IDENTITY).unwrap().steps[0].obs.obs.z_present);
 }
 
+/// 034-R7 / E-4: a label selecting a building together with other units breaks the game's
+/// selection rule and is void (`select_building`); the building alone is fine.
+#[test]
+fn building_with_units_label_is_void_034_r7() {
+    use uranium_env::features::{AgentMemory, MapInfo, extract};
+    use uranium_train::data::host_label_check;
+    let g = game();
+    let map = MapInfo::new(&g.game_info, 2, None).unwrap();
+    let mut f = g.steps[0].raw_frame.clone();
+    let mut rax = unit(10, 0, "Terran_Barracks", (20, 20));
+    rax.flags |= flags::LIFTED;
+    f.units.push(rax);
+    let o = extract(&f, &mut AgentMemory::new(&g.game_info), &map, None);
+    let mv = action_table().by_name("Move_Pos").unwrap().id;
+    let label = |selected: Vec<u32>| Label { frame: 0, action: mv, delay: 8, queued: false, selected, target_unit: None, target_tile: Some((12, 12)) };
+    assert_eq!(host_label_check(&label(vec![2, 10]), &o).1, Some("select_building"));
+    assert_eq!(host_label_check(&label(vec![10]), &o).1, None);
+    assert_eq!(host_label_check(&label(vec![2]), &o).1, None);
+}
+
 fn tiny_cfg() -> UraniumNetConfig {
     UraniumNetConfig::new()
         .with_input(input_dims())

@@ -12,6 +12,6 @@ pub mod schema;
 pub mod world;
 
 pub use extract::{Observation, extract, privileged};
-pub use map::{MapInfo, MapPrecompute};
+pub use map::{MapInfo, MapPrecompute, MapResource, PRECOMPUTE_VERSION};
 pub use memory::AgentMemory;
 pub use schema::*;

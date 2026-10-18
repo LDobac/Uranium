@@ -65,6 +65,8 @@ pub struct HostMasks {
     pub unit_cap: Vec<bool>,
     pub loc: Vec<bool>,
     pub type_mask: Vec<bool>,
+    /// [B*N] (034-R7)
+    pub is_building: Vec<bool>,
 }
 
 impl HostMasks {
@@ -113,7 +115,10 @@ pub fn random_obs(cfg: &UraniumNetConfig, cols: &ActionColumns, b: usize, n: usi
     }
     let unit_cap: Vec<bool> = (0..b * n * k).map(|_| r.chance(0.4)).collect();
     let loc: Vec<bool> = (0..b * l * cells).map(|_| r.chance(0.05)).collect();
-    let mut hm = HostMasks { b, n, cells, entity: entity.clone(), owner, unit_cap: unit_cap.clone(), loc: loc.clone(), type_mask: vec![] };
+    // Own RNG stream, so the other inputs stay what they were before the flag existed (E-4).
+    let mut rb = Rng::new(seed ^ 0xB11D_B11D);
+    let is_building: Vec<bool> = (0..b * n).map(|_| rb.chance(0.3)).collect();
+    let mut hm = HostMasks { b, n, cells, entity: entity.clone(), owner, unit_cap: unit_cap.clone(), loc: loc.clone(), type_mask: vec![], is_building: is_building.clone() };
     let mut type_mask = vec![false; b * cols.len()];
     for row in 0..b {
         for a in 0..cols.len() {
@@ -154,6 +159,7 @@ pub fn random_obs(cfg: &UraniumNetConfig, cols: &ActionColumns, b: usize, n: usi
         type_mask: Tensor::<2, Bool>::from_data(TensorData::new(type_mask, [b, cols.len()]), device),
         unit_cap: Tensor::<3, Bool>::from_data(TensorData::new(unit_cap, [b, n, k]), device),
         loc_class_mask: Tensor::<4, Bool>::from_data(TensorData::new(loc, [b, l, m, m]), device),
+        is_building: Tensor::<2, Bool>::from_data(TensorData::new(is_building, [b, n]), device),
     };
     (obs, hm)
 }
@@ -212,6 +218,9 @@ pub fn check_actions(cols: &ActionColumns, hm: &HostMasks, acts: &HostActions) -
             for &i in &picked {
                 assert!(hm.sel_ok(cols, row, a, i), "row {row}: action {a} selected ineligible entity {i}");
             }
+            // 034-R7: a building is selected only alone.
+            let buildings = picked.iter().filter(|&&i| hm.is_building[row * hm.n + i]).count();
+            assert!(buildings == 0 || picked.len() == 1, "row {row}: action {a} selected a building with others: {picked:?}");
         }
         if cols.target_kind[a] == TARGET_UNIT {
             let t = acts.target_unit[row] as usize;

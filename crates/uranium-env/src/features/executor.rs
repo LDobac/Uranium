@@ -8,7 +8,7 @@ use uranium_proto::{CancelKind, CmdOrder, Command, Target, UnitId, UnitState, fl
 use super::extract::{Observation, action_table};
 use super::masks::{dist2_to_tile, pick_building_candidates};
 use super::schema::{CELLS, MAP};
-use super::world::World;
+use super::world::{World, is_disabled};
 use crate::actions::{Action, CAPABILITIES, Executor, LOC_CLASSES, TargetKind};
 
 /// One policy decision in host form (entity indices refer to `Observation::entity_ids`).
@@ -71,7 +71,9 @@ pub fn execute(w: &World, obs: &Observation, act: &HostAction) -> Result<Execute
         let ok = !act.selected.is_empty()
             && act.selected.len() <= a.max_select as usize
             && act.selected.iter().all(|&i| cap(i, &a.select_cap) && obs.obs.entity_cat[i * 4 + 1] == 0 && seen.insert(i));
-        if !ok {
+        // 034-R7 / E-4: a selection with a building holds that building only.
+        let building = act.selected.iter().any(|&i| obs.masks.is_building.get(i).copied().unwrap_or(false));
+        if !ok || (building && act.selected.len() > 1) {
             return Err(Rejected::BadSelection);
         }
         units = act.selected.iter().map(|&i| unit(i)).collect();
@@ -140,7 +142,7 @@ pub fn execute(w: &World, obs: &Observation, act: &HostAction) -> Result<Execute
                 _ => Command::Upgrade { building: b.id, upgrade: a.upgrade.unwrap() },
             }
         }
-        // One rally command for the first selected building (031-R3: one action, one command).
+        // One building (034-R7: SetRally max_select 1), one command (031-R3).
         "SetRally" => Command::SetRally { building: units[0], target: target.unwrap() },
         "Cancel" => {
             let kind = match a.cancel.as_deref() {
@@ -164,7 +166,8 @@ pub fn pick_worker<'w>(w: &'w World, tile: (i32, i32)) -> Option<&'w UnitState> 
         .frame
         .units
         .iter()
-        .filter(|u| u.owner == w.mem.self_player && u.unit_type == w.ids.scv && u.has(flags::COMPLETED) && u.loaded_in.is_none())
+        // 034-R6 / B-11: a disabled (locked down, stasis, maelstrom) SCV takes no command.
+        .filter(|u| u.owner == w.mem.self_player && u.unit_type == w.ids.scv && u.has(flags::COMPLETED) && u.loaded_in.is_none() && !is_disabled(u))
         .filter(|u| !u.has(flags::CONSTRUCTING))
         .collect();
     let best = |carrying: bool| scvs.iter().filter(|u| u.has(flags::CARRYING) == carrying).min_by_key(|u| (dist2_to_tile(u, tile), u.id)).copied();

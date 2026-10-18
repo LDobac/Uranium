@@ -6,9 +6,9 @@
 use std::collections::VecDeque;
 
 use anyhow::{Result, ensure};
-use uranium_proto::{Pos, StaticMap, Tile};
+use uranium_proto::{StaticMap, Tile};
 
-use super::map::MapPrecompute;
+use super::map::{MapPrecompute, MapResource, PRECOMPUTE_VERSION};
 use crate::types::TypeTables;
 
 /// Resources closer than this (tiles) belong to the same base.
@@ -24,8 +24,13 @@ const CHOKE_REACH: i32 = 12;
 /// Wall-in hint radius around a main base's choke (tiles).
 const WALL_RADIUS: i32 = 4;
 
-/// Neutral resources from the map's CHK `UNIT` sections (36-byte records, centre pixel position).
-pub fn chk_resources(chk: &[u8]) -> Result<Vec<(u16, Pos)>> {
+/// CHK `UNIT` record: "valid unit properties" bit for the resource amount (OpenBW map loader).
+const CHK_PROP_RESOURCES: u16 = 0x10;
+
+/// Neutral resources from the map's CHK `UNIT` sections (36-byte records: centre pixel at 4..8,
+/// type at 8, valid properties at 14, resource amount u32 at 20). The amount is the initial state
+/// of resources not yet seen (030 §2, E-3, AMB-030-3).
+pub fn chk_resources(chk: &[u8]) -> Result<Vec<MapResource>> {
     let types = TypeTables::get();
     let mut out = vec![];
     let mut i = 0;
@@ -39,8 +44,10 @@ pub fn chk_resources(chk: &[u8]) -> Result<Vec<(u16, Pos)>> {
                 let x = u16::from_le_bytes([r[4], r[5]]);
                 let y = u16::from_le_bytes([r[6], r[7]]);
                 let ty = u16::from_le_bytes([r[8], r[9]]);
+                let props = u16::from_le_bytes([r[14], r[15]]);
+                let amount = if props & CHK_PROP_RESOURCES != 0 { u32::from_le_bytes([r[20], r[21], r[22], r[23]]) } else { 0 };
                 if types.unit(ty).is_some_and(|t| t.is_resource()) {
-                    out.push((ty, (x, y)));
+                    out.push(MapResource { unit_type: ty, pos: (x, y), amount });
                 }
             }
         }
@@ -60,8 +67,8 @@ impl Grid {
     }
 }
 
-/// Map-agnostic precompute.
-pub fn precompute(map: &StaticMap, resources: &[(u16, Pos)]) -> MapPrecompute {
+/// Map-agnostic precompute. The resource list is stored as is (030 §2, E-3).
+pub fn precompute(map: &StaticMap, resources: &[MapResource]) -> MapPrecompute {
     let g = Grid { w: map.width_tiles as i32, h: map.height_tiles as i32 };
     let n = (g.w * g.h) as usize;
     let walkable: Vec<bool> = (0..n)
@@ -75,7 +82,8 @@ pub fn precompute(map: &StaticMap, resources: &[(u16, Pos)]) -> MapPrecompute {
     // Resource footprints (top-left tile, w, h).
     let res: Vec<(i32, i32, i32, i32)> = resources
         .iter()
-        .filter_map(|&(ty, (px, py))| {
+        .filter_map(|r| {
+            let (ty, (px, py)) = (r.unit_type, r.pos);
             let t = types.unit(ty)?;
             Some(((px as i32 - t.dimensions[0]) / 32, (py as i32 - t.dimensions[1]) / 32, t.tile_width, t.tile_height))
         })
@@ -234,7 +242,7 @@ pub fn precompute(map: &StaticMap, resources: &[(u16, Pos)]) -> MapPrecompute {
             }
         }
     }
-    MapPrecompute { base_locs, chokes, wall_candidates: wall }
+    MapPrecompute { version: PRECOMPUTE_VERSION, base_locs, chokes, wall_candidates: wall, resources: resources.to_vec() }
 }
 
 #[cfg(test)]
@@ -243,7 +251,7 @@ mod tests {
     use uranium_proto::BitGrid;
 
     /// Two open fields joined by a 3-tile corridor; minerals and a geyser in the right field.
-    fn two_rooms() -> (StaticMap, Vec<(u16, Pos)>) {
+    fn two_rooms() -> (StaticMap, Vec<MapResource>) {
         let (w, h) = (64u16, 32u16);
         let mut walk = vec![0u8; w as usize * 4 * h as usize * 4];
         let mut build = vec![0u8; w as usize * h as usize];
@@ -273,9 +281,11 @@ mod tests {
         let geyser = t.unit_by_name("Resource_Vespene_Geyser").unwrap();
         let mut res = vec![];
         for k in 0..6 {
-            res.push((mineral.id as u16, ((58 * 32 + mineral.dimensions[0]) as u16, ((8 + k * 2) * 32 + mineral.dimensions[1]) as u16)));
+            let pos = ((58 * 32 + mineral.dimensions[0]) as u16, ((8 + k * 2) * 32 + mineral.dimensions[1]) as u16);
+            res.push(MapResource { unit_type: mineral.id as u16, pos, amount: 1500 });
         }
-        res.push((geyser.id as u16, ((50 * 32 + geyser.dimensions[0]) as u16, (4 * 32 + geyser.dimensions[1]) as u16)));
+        let pos = ((50 * 32 + geyser.dimensions[0]) as u16, (4 * 32 + geyser.dimensions[1]) as u16);
+        res.push(MapResource { unit_type: geyser.id as u16, pos, amount: 5000 });
         (map, res)
     }
 
@@ -292,25 +302,35 @@ mod tests {
         assert!(p.chokes.iter().all(|&(x, y)| (26..38).contains(&x) && (14..19).contains(&y)), "chokes off the corridor: {:?}", p.chokes);
         assert!(!p.wall_candidates.is_empty());
         assert_eq!(precompute(&map, &res), p, "deterministic");
+        // 030 §2 / E-3: the resource list is kept, with the current file version.
+        assert_eq!(p.resources, res);
+        assert_eq!(p.version, PRECOMPUTE_VERSION);
     }
 
     #[test]
-    fn chk_unit_section_resources() {
+    fn chk_unit_section_resources_030_r2() {
         let t = TypeTables::get();
         let mineral = t.unit_by_name("Resource_Mineral_Field").unwrap().id as u16;
+        let geyser = t.unit_by_name("Resource_Vespene_Geyser").unwrap().id as u16;
         let marine = t.unit_by_name("Terran_Marine").unwrap().id as u16;
-        let rec = |ty: u16, x: u16, y: u16| {
+        let rec = |ty: u16, x: u16, y: u16, props: u16, amount: u32| {
             let mut r = vec![0u8; 36];
             r[4..6].copy_from_slice(&x.to_le_bytes());
             r[6..8].copy_from_slice(&y.to_le_bytes());
             r[8..10].copy_from_slice(&ty.to_le_bytes());
+            r[14..16].copy_from_slice(&props.to_le_bytes());
+            r[20..24].copy_from_slice(&amount.to_le_bytes());
             r
         };
-        let body: Vec<u8> = [rec(mineral, 100, 200), rec(marine, 5, 5)].concat();
+        // The amount counts only with the "resources valid" bit (0x10), as in OpenBW.
+        let body: Vec<u8> = [rec(mineral, 100, 200, 0x10 | 0x2, 1500), rec(marine, 5, 5, 0x10, 9), rec(geyser, 300, 400, 0x2, 5000)].concat();
         let mut chk = b"VER \x02\x00\x00\x00\xcd\x00".to_vec();
         chk.extend_from_slice(b"UNIT");
         chk.extend_from_slice(&(body.len() as u32).to_le_bytes());
         chk.extend_from_slice(&body);
-        assert_eq!(chk_resources(&chk).unwrap(), vec![(mineral, (100, 200))]);
+        assert_eq!(
+            chk_resources(&chk).unwrap(),
+            vec![MapResource { unit_type: mineral, pos: (100, 200), amount: 1500 }, MapResource { unit_type: geyser, pos: (300, 400), amount: 0 }]
+        );
     }
 }

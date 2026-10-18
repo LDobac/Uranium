@@ -189,7 +189,9 @@ pub fn hosts() -> Result<Vec<HostEntry>> {
 }
 
 /// Starts one inference server per (checkpoint, sampling mode) the plan uses (020-R11).
-pub fn start_models(plan: &plan::Plan, opts: InferOptions) -> Result<Models> {
+pub fn start_models(plan: &plan::Plan, mut opts: InferOptions) -> Result<Models> {
+    // 030-R10 / E-5: BC evaluation plans feed last_failed = 0 (reason at `Plan::zero_last_failed`).
+    opts.zero_last_failed = plan.zero_last_failed;
     let mut models = Models::new();
     for m in &plan.matchups {
         for key in [m.p0.model(), m.p1.model()].into_iter().flatten() {

@@ -40,6 +40,7 @@ pub fn obs_batch_padded(rows: &[&Observation], pad: usize, device: &Device) -> O
     let mut cell = vec![0i32; b * n];
     let mut pos = vec![0f32; b * n * 2];
     let mut caps = vec![false; b * n * k];
+    let mut building = vec![false; b * n];
     let mut spatial = Vec::with_capacity(b * SPATIAL * CELLS);
     let mut scalar = Vec::with_capacity(b * fs);
     let mut scalar_cat = Vec::with_capacity(b * 3);
@@ -57,6 +58,7 @@ pub fn obs_batch_padded(rows: &[&Observation], pad: usize, device: &Device) -> O
         cell[base..base + m].copy_from_slice(&o.obs.entity_cell);
         pos[base * 2..(base + m) * 2].copy_from_slice(&o.obs.entity_pos);
         caps[base * k..(base + m) * k].copy_from_slice(&o.masks.unit_cap);
+        building[base..base + m].copy_from_slice(&o.masks.is_building);
         spatial.extend_from_slice(&o.obs.spatial);
         scalar.extend_from_slice(&o.obs.scalar);
         scalar_cat.extend_from_slice(&o.obs.scalar_cat);
@@ -82,6 +84,7 @@ pub fn obs_batch_padded(rows: &[&Observation], pad: usize, device: &Device) -> O
         type_mask: Tensor::<2, Bool>::from_data(TensorData::new(type_mask, [b, a]), device),
         unit_cap: Tensor::<3, Bool>::from_data(TensorData::new(caps, [b, n, k]), device),
         loc_class_mask: Tensor::<4, Bool>::from_data(TensorData::new(loc, [b, l, MAP, MAP]), device),
+        is_building: Tensor::<2, Bool>::from_data(TensorData::new(building, [b, n]), device),
     }
 }
 

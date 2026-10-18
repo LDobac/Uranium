@@ -78,6 +78,20 @@ RawFrame과 에이전트 메모리를 모델 입력 텐서로 변환하는 규�
 
 hazard 채널(2026-10-19 사용자 결정, E-1, AMB-030-2): 관측된 효과마다 효과 위치를 중심으로 **그 효과의 실제 반지름**(1.16.1 게임 데이터 기준 영향 범위, 효과 종류별)의 원과 겹치는 타일을 1로 칠한다(고정 16px이 아님). Plague와 Ensnare도 hazard 채널(기타)에 넣는다. 효과별 반지름 값은 구현 때 게임 데이터에서 옮겨 이 절에 기록한다.
 
+효과별 반지름(2026-10-19 구현 기록, 코드 `crates/uranium-env/src/features/extract.rs` `hazard_radius`). 브리지가 `Effect.radius`(> 0)를 보내면 그 값을 쓰고, 지금 OpenBW 브리지는 0을 보내므로 아래 표를 쓴다. 출처는 OpenBW `bwgame.h`(1.16.1 동작 재현)와 BWAPI 4.2 `WeaponType.cpp` 스플래시 반지름, `unit_types.toml` 크기다. 상자 모양 효과는 반폭을 반지름으로 쓴다. 타일은 원이 그 타일 사각형과 겹치면(원 중심에서 타일까지 최단 거리 ≤ 반지름) 1이다.
+
+| 효과 | 채널 | 반지름(px) | 출처 |
+|---|---|---|---|
+| Psionic Storm | storm | 48 | Psionic Storm 무기 바깥 스플래시 48 |
+| Dark Swarm | swarm | 80 | Spell_Dark_Swarm 크기 80/80/79/79(160×160 상자) |
+| Disruption Web | web | 60 | Spell_Disruption_Web 크기 60/40/59/39(120×80 상자) |
+| 핵 조준점 | nuke | 256 | Nuclear Strike 무기 스플래시 128/192/256의 바깥 |
+| EMP Shockwave | 기타 | 64 | OpenBW `emp_shockwave`: 무기 안쪽 스플래시 64의 정사각형 |
+| Irradiate | 기타 | 32 | OpenBW: 방사능 유닛에서 32px 안의 유닛이 피해 |
+| Plague | 기타 | 64 | OpenBW `plague`: 중심 ±64px 정사각형 |
+| Ensnare | 기타 | 64 | OpenBW `ensnare`: 중심 ±64px 정사각형 |
+| 그 밖의 투사체 | 기타 | 16 | 범위 데이터 없음, 투사체가 있는 타일(이전 동작) |
+
 `wall_candidate`는 맵 사전계산 결과다. 정책에 주는 **힌트일 뿐** 강제 위치가 아니다([031](031-action-space.md)).
 
 ## 4. 스칼라 (`scalar`)

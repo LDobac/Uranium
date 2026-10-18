@@ -379,3 +379,51 @@ fn select_bool_stays_bool_032_r10() {
     let got = got.into_data().convert::<bool>().try_into_vec::<bool>().unwrap();
     assert_eq!(got, vec![false, false, false, true]);
 }
+
+/// 034-R7 / E-4 (032 §2.5, §5): sampled selections hold a building only alone, and teacher
+/// forcing gives a label that breaks the rule a masked (very low) log-prob.
+#[test]
+fn selected_building_alone_034_r7() {
+    let (net, cfg) = net::<LstmCore>(5);
+    let cols = columns();
+    let (b, n) = (400, 12);
+    let (obs, hm) = random_obs(&cfg, &cols, b, n, 77, &dev());
+    let out = net.act(&obs, net.init_state(b, &dev()), 1.0);
+    let acts = host_actions(&out.action);
+    check_actions(&cols, &hm, &acts);
+    let (mut alone, mut multi) = (0, 0);
+    for row in 0..b {
+        let a = acts.action[row] as usize;
+        let picked: Vec<usize> = acts.selected[row * acts.s..(row + 1) * acts.s].iter().take_while(|&&i| i != n as i64).map(|&i| i as usize).collect();
+        if cols.uses_select[a] == 1 && cols.max_select[a] > 1 {
+            alone += (picked.len() == 1 && hm.is_building[row * n + picked[0]]) as usize;
+            multi += (picked.len() > 1) as usize;
+        }
+    }
+    assert!(alone > 0 && multi > 0, "rule not exercised: {alone} building-alone rows, {multi} multi rows");
+
+    // A label "building first, then another unit" for a row that allows both.
+    let row = (0..b)
+        .find(|&r| {
+            let a = acts.action[r] as usize;
+            cols.uses_select[a] == 1
+                && cols.max_select[a] > 1
+                && (0..n).any(|i| hm.sel_ok(&cols, r, a, i) && hm.is_building[r * n + i])
+                && (0..n).filter(|&i| hm.sel_ok(&cols, r, a, i) && !hm.is_building[r * n + i]).count() > 0
+        })
+        .expect("a row with a selectable building and unit");
+    let a = acts.action[row] as usize;
+    let bld = (0..n).find(|&i| hm.sel_ok(&cols, row, a, i) && hm.is_building[row * n + i]).unwrap();
+    let other = (0..n).find(|&i| hm.sel_ok(&cols, row, a, i) && !hm.is_building[row * n + i]).unwrap();
+    let mut sel = acts.selected.clone();
+    for k in 0..acts.s {
+        sel[row * acts.s + k] = n as i64;
+    }
+    sel[row * acts.s] = bld as i64;
+    sel[row * acts.s + 1] = other as i64;
+    let mut labels = out.action.clone();
+    labels.selected = burn::tensor::Tensor::<2, burn::tensor::Int>::from_data(burn::tensor::TensorData::new(sel, [b, acts.s]), &dev());
+    let seq = net.forward_seq(&obs, &labels, None, net.init_state(b, &dev()), 1);
+    let lp = floats(&seq.heads.logp.selected);
+    assert!(lp[row] < -1e3, "building + unit label log-prob {} not masked", lp[row]);
+}

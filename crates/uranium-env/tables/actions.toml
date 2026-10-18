@@ -1423,7 +1423,8 @@ id = 93
 name = "SetRally_Pos"
 group = "building"
 uses_select = true
-max_select = 12
+# 034-R7 (E-4, 2026-10-19): buildings are never multi-selected; was 12.
+max_select = 1
 select_cap = "can_rally"
 uses_queued = false
 target = "loc"
@@ -1437,7 +1438,8 @@ id = 94
 name = "SetRally_Unit"
 group = "building"
 uses_select = true
-max_select = 12
+# 034-R7 (E-4, 2026-10-19): buildings are never multi-selected; was 12.
+max_select = 1
 select_cap = "can_rally"
 uses_queued = false
 target = "unit"

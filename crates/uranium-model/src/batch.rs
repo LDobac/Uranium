@@ -39,6 +39,9 @@ pub struct ObsBatch {
     pub unit_cap: Tensor<3, Bool>,
     /// [B,L,M,M] (034)
     pub loc_class_mask: Tensor<4, Bool>,
+    /// [B,N] entity is a building, lifted / bunker / turret included (034-R7, 032 §5, E-4):
+    /// the Selected head allows a building only as the sole selection.
+    pub is_building: Tensor<2, Bool>,
 }
 
 impl ObsBatch {

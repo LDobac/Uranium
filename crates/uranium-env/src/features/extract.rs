@@ -50,7 +50,7 @@ pub fn dims() -> &'static FeatureDims {
 /// 030-R1. `z` is the strategy condition for this episode (030 §5); `None` = z_present false.
 pub fn extract(frame: &RawFrame, mem: &mut AgentMemory, map: &MapInfo, z: Option<&Strategy>) -> Observation {
     let types = TypeTables::get();
-    mem.observe(frame, types);
+    mem.observe(frame, types, map);
     let w = World::new(frame, mem, map);
     let mut entities: Vec<&Entity> = w.entities.iter().collect();
     // 030 §2: entities beyond N_MAX are dropped from the end (neutral first).
@@ -63,7 +63,10 @@ pub fn extract(frame: &RawFrame, mem: &mut AgentMemory, map: &MapInfo, z: Option
     let mut entity_pos = Vec::with_capacity(n * 2);
     let mut unit_cap = Vec::with_capacity(n * K);
     let mut caps = Vec::with_capacity(n);
+    let mut is_building = Vec::with_capacity(n);
     for e in &entities {
+        // 034-R7 / E-4: lifted buildings, bunkers and turrets count as buildings.
+        is_building.push(w.ty(&e.unit).is_some_and(|t| t.is_building()));
         let u = &e.unit;
         let last = if e.owner == OWNER_SELF { mem.unit_last_action.get(&u.id).copied().unwrap_or(0) } else { 0 };
         let order = if (u.order as usize) < ORDERS { u.order } else { ORDER_NONE };
@@ -94,7 +97,7 @@ pub fn extract(frame: &RawFrame, mem: &mut AgentMemory, map: &MapInfo, z: Option
     };
     Observation {
         obs,
-        masks: Masks { type_mask: tmask, unit_cap, loc_class_mask: locs },
+        masks: Masks { type_mask: tmask, unit_cap, loc_class_mask: locs, is_building },
         entity_ids: entities.iter().map(|e| e.unit.id).collect(),
         map_size: (map.width, map.height),
         transposed: false,
@@ -127,9 +130,14 @@ pub fn race_index(r: Race) -> i32 {
 }
 
 pub fn cell_of(pos: (u16, u16), map: &MapInfo) -> i32 {
-    let x = (pos.0 as usize / 32).min(map.width.max(1) - 1).min(MAP - 1);
-    let y = (pos.1 as usize / 32).min(map.height.max(1) - 1).min(MAP - 1);
-    (y * MAP + x) as i32
+    cell_of_pixel(pos.0 as f32, pos.1 as f32, (map.width, map.height))
+}
+
+/// 030 §1 `entity_cell` from a pixel position: tile = pixel / 32 rounded down, clamped to the
+/// `size` (w, h) map and the 128 grid. Also used on transformed pixels (030-R4, B-6).
+pub fn cell_of_pixel(px: f32, py: f32, (w, h): (usize, usize)) -> i32 {
+    let tile = |p: f32, n: usize| ((p.max(0.0) / 32.0).floor() as usize).min(n.max(1) - 1).min(MAP - 1);
+    (tile(py, h) * MAP + tile(px, w)) as i32
 }
 
 /// Offset of the position block inside `entity_cont` (2 normalised + 32 Fourier).
@@ -290,7 +298,32 @@ fn spatial(w: &World, entities: &[&Entity]) -> Vec<f32> {
             }
         }
     }
-    // Hazards (observed effects only) and own scanner sweeps.
+    // 030 §3 / E-1: hazards (observed effects only), every tile the effect's circle overlaps.
+    for ef in &w.frame.effects {
+        let c = match ef.kind {
+            EffectKind::PsionicStorm => ch::HAZARD_STORM,
+            EffectKind::DarkSwarm => ch::HAZARD_SWARM,
+            EffectKind::DisruptionWeb => ch::HAZARD_WEB,
+            EffectKind::NukeDot => ch::HAZARD_NUKE,
+            // EMP, Irradiate, Plague, Ensnare and any other projectile.
+            _ => ch::HAZARD_OTHER,
+        };
+        let r = if ef.radius > 0 { ef.radius as i32 } else { hazard_radius(ef.kind) };
+        let (cx, cy) = (ef.pos.0 as i32, ef.pos.1 as i32);
+        for ty in (cy - r).div_euclid(32)..=(cy + r).div_euclid(32) {
+            for tx in (cx - r).div_euclid(32)..=(cx + r).div_euclid(32) {
+                // Nearest point of the tile [32tx, 32tx+32) x [32ty, 32ty+32) to the centre.
+                let dx = cx.clamp(tx * 32, tx * 32 + 31) - cx;
+                let dy = cy.clamp(ty * 32, ty * 32 + 31) - cy;
+                if dx * dx + dy * dy <= r * r {
+                    if let Some(i) = at(c, tx, ty) {
+                        s[i] = 1.0;
+                    }
+                }
+            }
+        }
+    }
+    // Own scanner sweeps (sight range disc, unchanged by E-1).
     let mut disc = |c: usize, pos: (u16, u16), radius: i32| {
         let (cx, cy, r) = (pos.0 as i32, pos.1 as i32, radius.max(16));
         for ty in (cy - r) / 32..=(cy + r) / 32 {
@@ -304,20 +337,34 @@ fn spatial(w: &World, entities: &[&Entity]) -> Vec<f32> {
             }
         }
     };
-    for ef in &w.frame.effects {
-        let c = match ef.kind {
-            EffectKind::PsionicStorm => ch::HAZARD_STORM,
-            EffectKind::DarkSwarm => ch::HAZARD_SWARM,
-            EffectKind::DisruptionWeb => ch::HAZARD_WEB,
-            EffectKind::NukeDot => ch::HAZARD_NUKE,
-            _ => ch::HAZARD_OTHER,
-        };
-        disc(c, ef.pos, ef.radius as i32);
-    }
     for u in w.frame.units.iter().filter(|u| u.owner == w.mem.self_player && u.unit_type == w.ids.scanner_sweep) {
         disc(ch::SCANNER, u.pos, w.types.unit(u.unit_type).map_or(320, |t| t.sight_range));
     }
     s
+}
+
+/// 030 §3 / E-1: hazard radius in pixels when the bridge sends none (`Effect::radius` 0, the
+/// OpenBW bridge today). Values from the 1.16.1 game data as OpenBW (`bwgame.h`) and BWAPI 4.2
+/// (`WeaponType.cpp` splash radii, `unit_types.toml` dimensions) apply them; table in 030 §3.
+pub fn hazard_radius(kind: EffectKind) -> i32 {
+    match kind {
+        // Psionic Storm weapon: outer splash 48 (bullet damage within 48 px of the storm).
+        EffectKind::PsionicStorm => 48,
+        // Spell_Dark_Swarm unit: dimensions 80 / 80 / 79 / 79 (a 160 x 160 box), half-width 80.
+        EffectKind::DarkSwarm => 80,
+        // Spell_Disruption_Web unit: dimensions 60 / 40 / 59 / 39 (120 x 80 box), half-width 60.
+        EffectKind::DisruptionWeb => 60,
+        // Nuclear Strike weapon: splash 128 / 192 / 256; the outer radius 256.
+        EffectKind::NukeDot => 256,
+        // EMP Shockwave: OpenBW `emp_shockwave` square of the weapon's inner splash 64.
+        EffectKind::EmpShockwave => 64,
+        // Irradiate: units within 32 px of the irradiated unit take damage.
+        EffectKind::Irradiate => 32,
+        // Plague / Ensnare: OpenBW `plague` / `ensnare` affect the square at +-64 px.
+        EffectKind::Plague | EffectKind::Ensnare => 64,
+        // Other projectiles: no area in the data we use; the tile under it (as before E-1).
+        EffectKind::Other(_) => 16,
+    }
 }
 
 /// 030 §4 scalar vector; layout in `FeatureDims::scalar`.
