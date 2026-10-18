@@ -11,6 +11,9 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
+/// Batches slower than this are logged (normal p95 is well under a second).
+const SLOW_BATCH: Duration = Duration::from_secs(5);
+
 use anyhow::{Context, Result, anyhow, bail};
 use burn::tensor::{Device, Int, Tensor, TensorData};
 use serde::{Deserialize, Serialize};
@@ -335,6 +338,12 @@ fn run_batch<C: CoreInit>(net: &UraniumNet<C>, cols: &ActionColumns, device: &De
     let heads = floats(out.head_log_prob.into_data());
     let value = floats(out.value.into_data());
     let run = t0.elapsed();
+    if run >= SLOW_BATCH {
+        // 011-AC7: OpenBW drops a LAN client after 60 s without sync, so a stall here ends the
+        // game early with both sides claiming the win. Log it with wall time to line it up.
+        let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        eprintln!("[infer] slow batch: {b} requests took {:.1}s (unix {unix})", run.as_secs_f64());
+    }
     for (r, p) in batch.into_iter().enumerate() {
         let a = action[r] as usize;
         let uses = |v: &Vec<i32>| v.get(a).copied().unwrap_or(0);
