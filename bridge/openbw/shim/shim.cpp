@@ -233,6 +233,13 @@ class UraniumModule : public AIModule {
         for (Player p : Broodwar->getPlayers())
           if (p != g_me && !p->isNeutral() && !p->getUnits().empty() && (!g_enemy || p->getID() < g_enemy->getID())) g_enemy = p;
     }
+    // 030-R11 (E-6, 2026-10-19): read player races before CompleteMapInformation. Without the
+    // flag BWAPI reports a lobby-Random player not seen yet as Races::Unknown; with it, the race
+    // the game rolled would leak to the agent. Replays keep the played race (the shard's
+    // `enemy_random` marks Random there).
+    std::unordered_map<int, int> lobby_race;
+    if (!replay_)
+      for (Player p : Broodwar->getPlayers()) lobby_race[p->getID()] = p->getRace().getID();
     // 011-R5 (2026-10-15): always on in OpenBW lockstep mode. Needed for deterministic replay
     // ids; the policy observation is filtered by visible_to_self() regardless.
     Broodwar->enableFlag(Flag::CompleteMapInformation);
@@ -262,7 +269,8 @@ class UraniumModule : public AIModule {
       if (replay_ && p != g_me && p != g_enemy) continue;
       UrPlayer o{};
       o.id = (uint8_t)p->getID();
-      o.race = (uint8_t)p->getRace().getID();
+      auto lr = lobby_race.find(p->getID());
+      o.race = (uint8_t)(lr != lobby_race.end() ? lr->second : p->getRace().getID());
       o.is_self = p == g_me;
       o.is_enemy = g_me->isEnemy(p);
       TilePosition s = p->getStartLocation();

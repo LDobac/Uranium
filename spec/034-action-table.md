@@ -65,9 +65,11 @@ command = "UnitAttackUnit"   # 010 Command 매핑
 | 분류 | 클래스 |
 |---|---|
 | 선택 자격 | can_move, can_right_click_unit(can_move ∨ 시즈모드 탱크), can_attack, is_worker, can_be_loaded, is_transport_loaded, can_stim, can_siege, can_unsiege, can_cloak, can_decloak, can_lay_mine, can_cast_lockdown, can_cast_nuke, can_heal, can_cast_restoration, can_cast_flare, can_cast_matrix, can_cast_emp, can_cast_irradiate, can_cast_yamato, can_lift, can_land_noncc, can_land_cc, can_rally, addon_capable_{cc,factory,starport,scifac}(완성 ∧ 착지 상태 ∧ 애드온 미보유 ∧ 오른쪽 애드온 자리 2×2 비어 있음 ∧ 생산·연구 중 아님), can_cancel_{construction,train,research,upgrade,addon} |
-| 타깃 자격 | attackable_enemy, any_unit, own_unit, target_resource(미네랄·아군 정제소), repairable(아군 기계·건물, 피해), lockdownable(적 기계, 미락다운), healable(아군 생체 지상, 피해), restorable(아군, 상태이상), flarable(적, 비건물), irradiatable(비건물), matrixable(아군), yamato_target(적), loadable_transport(아군 드랍십·벙커, 여유 공간) |
+| 타깃 자격 | attackable_enemy, any_unit(보이는 유닛 + 시야 밖이지만 한 번 본 중립 자원), own_unit, target_resource(미네랄·아군 정제소. 미네랄은 시야 밖이라도 한 번 본 것 포함), repairable(아군 기계·건물, 피해), lockdownable(적 기계, 미락다운), healable(아군 생체 지상, 피해), restorable(아군, 상태이상), flarable(적, 비건물), irradiatable(비건물), matrixable(아군), yamato_target(적), loadable_transport(아군 드랍십·벙커, 여유 공간) |
 
 선택 자격 공통: 무력화(락다운·스테이시스·메일스트롬, OpenBW `unit_is_disabled`)된 유닛은 명령을 받지 못한다. 모든 선택 자격 클래스와 executor 선택에 적용한다(R6). `can_rally`는 완성 여부를 보지 않는다(게임과 BWAPI `canSetRallyPosition` 모두 건설 중인 생산 건물의 랠리를 받는다, 2026-10-17).
+
+시야 밖 자원의 타깃 자격(메인 결정 2026-10-19(게임 규칙), 010-R5 예외·030-R2·030 §2): 스타1에서 탐색했지만 안개 속인 자원은 보이고 클릭할 수 있고, 탐색하지 않은 곳의 자원은 그렇지 않다. 그래서 시야 밖이라도 한 번 본 자원(실제 unit id를 아는 기억 엔티티)은 `any_unit`·`target_resource` 대상이고, 한 번도 못 본 자원(맵 사전계산 초기값, 합성 id)은 어떤 타깃 자격에도 들지 않는다. 시야 밖 간헐천의 `refinery_slot`은 탐색된 타일일 때만 연다.
 
 스킬 선택 자격은 연구 완료, 에너지 충분, 상태 조건을 모두 반영한다.
 - 예: `can_cast_lockdown` = Ghost ∧ Lockdown 연구 ∧ energy ≥ 100

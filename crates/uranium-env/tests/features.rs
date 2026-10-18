@@ -524,6 +524,48 @@ fn unseen_resources_are_remembered_entities_030_r2() {
     assert_eq!(neutrals(&extract(&f, &mut mem, &map, None)), 0, "seen empty stays dropped");
 }
 
+/// 030-R7 / 030 §2 (Q3, 2026-10-19): past N_MAX the remembered (out-of-vision) resources go first;
+/// own units, visible enemies and remembered enemy buildings stay.
+#[test]
+fn truncation_drops_remembered_resources_first_030_r7() {
+    let res: Vec<MapResource> = (0..60).map(|k| resource_at("Resource_Mineral_Field", (40 + 2 * (k % 20), 50 + k / 20 * 2), 1500)).collect();
+    let map = map_with_resources(res);
+    let mut mem = AgentMemory::new(&game_info());
+    let mut b = Builder::new();
+    let hatch = b.add(ENEMY, "Zerg_Hatchery", (80, 80));
+    let mut f = frame(10, b.units.clone(), false);
+    for y in 45..70 {
+        for x in 0..W {
+            f.visibility.set(x, y, false);
+        }
+    }
+    extract(&f, &mut mem, &map, None);
+    b.units.clear();
+    let visible_mineral = b.add(NEUTRAL, "Resource_Mineral_Field", (2, 2));
+    for k in 0..400 {
+        b.add(SELF, "Terran_Marine", (k % 25, 5 + k / 25));
+    }
+    for k in 0..100 {
+        b.add(ENEMY, "Zerg_Zergling", (k % 25, 25 + k / 25 % 4));
+    }
+    let mut f = frame(20, b.units.clone(), false);
+    for y in 0..H {
+        for x in 30..W {
+            f.visibility.set(x, y, false);
+        }
+    }
+    let o = extract(&f, &mut mem, &map, None);
+    assert_eq!(o.obs.n, N_MAX);
+    for u in b.units.iter().filter(|u| u.owner != NEUTRAL) {
+        assert!(o.entity_ids.contains(&u.id), "unit {} dropped", u.id);
+    }
+    assert!(o.entity_ids.contains(&hatch), "remembered enemy building kept");
+    // 400 + 100 + 1 building + 1 visible mineral = 502: 10 of the 60 remembered fields fit.
+    assert!(o.entity_ids.contains(&visible_mineral), "visible resource kept");
+    let remembered = o.entity_ids.iter().filter(|&&id| uranium_env::features::world::is_unseen_resource_id(id)).count();
+    assert_eq!(remembered, N_MAX - 502);
+}
+
 /// 034-R6 / B-11: a disabled unit (lockdown, stasis, maelstrom) has no selection class at all and
 /// no executor picks it.
 #[test]
