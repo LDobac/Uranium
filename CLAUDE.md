@@ -87,7 +87,7 @@ reports/              # 스파이크·벤치·평가 리포트
 - **설정은 `.env`로** (001-R9): 호스트별 설정은 저장소 루트 `.env`(git 미추적)에서 읽고, 프로세스 환경변수가 우선한다. 키 템플릿은 `.env.example`에 둔다. `.bashrc`에 두지 않는다. 새 환경변수를 추가하면 `.env.example`도 갱신한다.
 - 결정론을 유지한다: executor와 feature 추출은 같은 입력이면 같은 출력을 낸다 (031-R7, 030-R1).
 - 각 spec의 Acceptance Criteria를 테스트나 벤치로 구현해 검증한다.
-- **git 통합**: 워크트리 브랜치는 `git fetch` → `git rebase origin/master` → 테스트 → `git push origin HEAD:master`(fast-forward)로 master에 붙인다. merge 커밋을 만들지 않는다(2026-10-17 사용자 결정).
+- **git 통합**: 워크트리 브랜치는 `git fetch` → `git rebase origin/master` → 테스트 → `git push origin HEAD:master`(fast-forward)로 master에 붙인다. merge 커밋을 만들지 않는다(2026-10-17 사용자 지적: merge 커밋으로 history가 지저분해짐. 이 절차는 그 지적을 반영한 운영 방식이고, 2026-10-19 사용자가 유지하기로 확인). push한 뒤에는 메인 작업 사본(저장소 루트의 `master` 체크아웃)도 `pull --ff-only`로 맞춰 로컬 `master`와 `origin/master`를 같게 둔다. 메인 작업 사본에 커밋 안 된 변경(추적 안 되는 파일 제외)이 있거나 `master`가 아닌 브랜치면 건드리지 않고 사용자에게 알린다(2026-10-19 사용자 결정).
 - **시간순 기록**(2026-10-18 사용자 지시): 모든 일이 끝난 뒤 중간 산출물을 시간 순서로 보며 최종 보고서를 쓴다. 결정·발견·장시간 실행의 시작과 끝·새 리포트는 `reports/timeline.md`에 한 줄씩 덧붙이고(지우거나 고치지 않음), 실험 리포트에는 실험 전 배경·예상과 시각별 진행 기록을 남긴다. 체크포인트·학습 로그·평가 출력·대전 결과 같은 중간 산출물은 지우지 않고 위치를 적는다.
 - **대규모 배치(4시간 이상: shard build, 학습 등) 전**에는 출력에 영향을 주는 결정이 모두 확정·구현됐는지 확인하고, 표본으로 끝까지(build → 학습) 먼저 돌린다.
 

@@ -53,3 +53,4 @@
 - 21:05 — GTrXL 대 LSTM 맞대결 스모크 3판 통과, 요약표에 두 진영 정책·코어 표시와 모델끼리 대전 승리 집계 버그 수정, 코어 비교 대전 리플레이 전부 저장 (695cbfe, `m6_core_ablation.md`)
 - 2026-10-19 01시 — BC 본학습 전 통합 체크리스트(`m6_pre_bc_review.md` F·G절), 정규화 상수 spec 기록(030 §6), CLAUDE.md 정밀도·진행 상황 갱신, 문서의 장비 호스트 이름을 중립 표기로 교체(001-R10), 병합된 worktree·브랜치 정리
 - 2026-10-19 01시 — **발견**: 5661ff8·695cbfe 추가 리뷰(`m6_pre_bc_review.md` H절). worker가 `init_run` DONE을 확인하지 않아 S2가 미완성 S1 위에서 시작될 수 있음, 공유 I/O 오류 시 `peek_lock` Free 해석·worker 종료, 잠금 자동 인수의 mtime 시계 가정, Linux 포그라운드 Ctrl+C 이중 SIGINT. 테스트 196 통과 / 11 실패(B-1과 같은 원인)
+- 2026-10-19 01시 — **결정**: git 운영은 worktree → rebase → origin master push를 유지하고, push 뒤 메인 작업 사본도 pull --ff-only로 맞춘다(로컬 master가 계속 뒤처지던 문제). 기존 규칙의 "사용자 결정" 표기는 사용자 지적(merge 커밋)을 세션이 절차로 옮긴 것이었음을 바로잡음 (CLAUDE.md git 통합)
