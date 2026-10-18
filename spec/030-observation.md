@@ -1,6 +1,6 @@
 # 030 — Observation Features
 
-- **Status**: Approved (2026-10-15)
+- **Status**: Approved (2026-10-15. 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): R2 맵 공개 자원 예외(010-R5, E-3), R4 `entity_cell` 재계산·flip 기준 크기(B-6), R10 평가 대전 `last_failed` 0 고정(E-5), R11 Random 상대 종족 모름(E-6), §3 hazard 반지름·채널(E-1), F_c = 76)
 - **Related**: [010](010-game-protocol.md), [031](031-action-space.md), [032](032-model-architecture.md), [034](034-action-table.md), [040](040-replay-dataset.md)
 
 ## Purpose
@@ -19,20 +19,22 @@ RawFrame과 에이전트 메모리를 모델 입력 텐서로 변환하는 규�
 | ID | 요구사항 |
 |---|---|
 | 030-R1 | **MUST** feature 추출은 `uranium-env::features`의 순수 함수로 구현한다: `(RawFrame, &mut AgentMemory, &MapInfo) -> ObsTensors` |
-| 030-R2 | **MUST** 자기 시야 밖 정보는 쓰지 않는다. 적 건물 기억은 "마지막 목격 상태 + 경과 프레임"으로만 표현한다 |
+| 030-R2 | **MUST** 자기 시야 밖 정보는 쓰지 않는다. 적 건물 기억은 "마지막 목격 상태 + 경과 프레임"으로만 표현한다. 예외: 맵에서 공개적으로 알 수 있는 중립 자원(미네랄 필드·베스핀 간헐천)은 시야 밖이어도 마지막 관측 상태(한 번도 못 봤으면 맵 초기값)로 엔티티에 넣는다(010-R5 예외, 2026-10-19 사용자 결정 E-3) |
 | 030-R3 | **MUST** 리플레이 BC 데이터 생성 시 관측자 시점이 아닌 **테란 플레이어 시점**으로 시야를 필터링한다 |
-| 030-R4 | **MUST** 대칭 증강 변환을 feature 수준에서 지원하고, 액션 좌표에도 같은 변환을 적용한다. 학습에 쓰는 변환은 원본, 좌우 뒤집기, 상하 뒤집기, 둘 다(180° 회전) **4종**이다. 가로·세로를 바꾸는(transpose) 4종은 쓰지 않는다(2026-10-18 사용자 결정). 변환은 엔티티 위치·속도·각도, 공간 채널, 마스크, 액션 좌표(footprint 사각형 기준)와 `scalar_cat.start_loc`에 함께 적용한다. `start_loc`은 변환한 자기 시작 위치(자원 건물 4×3 footprint의 왼쪽 위 타일)에 가장 가까운 맵 시작 위치의 인덱스로 바꿔 공간 채널과 일치시킨다. **알려진 한계**: 좌우 뒤집기에서는 애드온이 본체 왼쪽에 붙은 것처럼 보인다(실제 게임은 항상 오른쪽). 사용자가 좌우 뒤집기 유지를 선택했다(2026-10-18) |
+| 030-R4 | **MUST** 대칭 증강 변환을 feature 수준에서 지원하고, 액션 좌표에도 같은 변환을 적용한다. 학습에 쓰는 변환은 원본, 좌우 뒤집기, 상하 뒤집기, 둘 다(180° 회전) **4종**이다. 가로·세로를 바꾸는(transpose) 4종은 쓰지 않는다(2026-10-18 사용자 결정). 변환은 엔티티 위치·속도·각도, 공간 채널, 마스크, 액션 좌표(footprint 사각형 기준)와 `scalar_cat.start_loc`에 함께 적용한다. `start_loc`은 변환한 자기 시작 위치(자원 건물 4×3 footprint의 왼쪽 위 타일)에 가장 가까운 맵 시작 위치의 인덱스로 바꿔 공간 채널과 일치시킨다. **알려진 한계**: 좌우 뒤집기에서는 애드온이 본체 왼쪽에 붙은 것처럼 보인다(실제 게임은 항상 오른쪽). 사용자가 좌우 뒤집기 유지를 선택했다(2026-10-18). **변환 기준(2026-10-19 명시, 코드 `crates/uranium-env/src/features/augment.rs`)**: 뒤집기 기준 크기는 128 패딩이 아니라 **실제 맵 크기**(W×H 타일)다. 픽셀 좌표는 x → W·32 − x(상하는 H), 타일·footprint 사각형 [x, x+fw)는 x → W − x − fw로 바꾼다. 공간 채널과 위치 마스크는 유효 영역(W×H)만 옮기고 패딩 영역은 0으로 둔다. `entity_pos`·위치 feature는 변환한 픽셀로 다시 계산하고, **`entity_cell`도 변환한 픽셀에서 다시 계산한다**(타일 = 픽셀 ÷ 32 내림, 맵 범위로 자름. 추출 때와 같은 규칙). 타일 인덱스를 따로 뒤집으면 중심이 32의 배수인 짝수 폭 건물에서 1타일 어긋나기 때문이다(B-6) |
 | 030-R5 | **SHOULD** feature 스키마에 버전을 붙이고 체크포인트에 저장한다 |
 | 030-R6 | **MUST** 공간 텐서는 **128×128 빌드타일(32px) 해상도**로 한다. 맵이 128보다 작은 축은 zero-pad하고 `valid_map` 채널로 표시한다. 각 축이 128을 넘는 맵은 BC 데이터에서 제외한다([040](040-replay-dataset.md)) |
 | 030-R7 | **MUST** 엔티티 수 상한은 N_max=512이다. 배치 안에서는 최대 N으로 동적 패딩하고 `entity_mask`로 표시한다 |
 | 030-R8 | **MUST** 마스크 계산용 텐서(`type_mask`, `unit_cap`, `loc_class_mask`)는 feature와 같은 시점의 상태에서 계산한다. 의미는 [034](034-action-table.md)를 따른다 |
 | 030-R9 | **MUST** 학습 전용 privileged feature는 [010](010-game-protocol.md)의 `PrivilegedSummary`로 만들고 `PrivilegedTensors`로 분리한다. 추론용 `ObsTensors`에는 절대 포함하지 않는다 |
+| 030-R10 | **MUST** 직전 액션 실패 여부(`last_failed`, §4, 031-R10) 스칼라(2026-10-19 사용자 결정, E-5): BC 모델을 그대로 쓰는 평가 대전(코어 비교 032-R17, 041-AC2 등)에서는 설정 플래그로 **0으로 고정**한다. 이유: 리플레이 재생에는 명령 실패 이벤트가 없어 BC 학습 데이터에서 이 값이 항상 0이다. 평가 대전에서 처음 보는 값 1이 들어가면 학습하지 않은 입력이라 잡음이 된다. RL부터는 실제 값을 쓴다. 플래그를 쓰는 코드에는 이 이유를 주석으로 남긴다 |
+| 030-R11 | **MUST** 상대 종족(`scalar_cat.enemy_race`, 2026-10-19 사용자 결정, E-6): 로비에서 종족을 고른 상대는 처음부터 그 종족이다. 로비에서 **Random**인 상대는 첫 적 유닛을 관측하기 전까지 `unknown`이고, 관측한 뒤 그 유닛의 종족으로 정한다(000 AMB-000-3). 리플레이(BC)와 라이브 게임에 같은 규칙을 쓴다 |
 
 ## 1. 텐서 계약
 | 이름 | shape / dtype | 내용 |
 |---|---|---|
 | `entity_cat` | [B,N,4] i32 | unit_type(234), owner(3: self/enemy/neutral), order(190), last_action_type(A, 아군만, 없으면 0) |
-| `entity_cont` | [B,N,F_c≈76] f32 | §2 |
+| `entity_cont` | [B,N,F_c=76] f32 | §2 |
 | `entity_mask` | [B,N] bool | 패딩이 아니면 true |
 | `entity_cell` | [B,N] i32 | 128×128 타일 인덱스 `y*128+x` (scatter용) |
 | `entity_pos` | [B,N,2] f32 | 픽셀 좌표 (distance bias 계산용, [032](032-model-architecture.md)) |
@@ -47,7 +49,7 @@ RawFrame과 에이전트 메모리를 모델 입력 텐서로 변환하는 규�
 | `loc_class_mask` | [B,L=8,128,128] bool | [034](034-action-table.md) |
 
 ## 2. 엔티티 연속 feature (`entity_cont`)
-포함 순서: 아군 → 보이는 적 → 기억된 적 건물 → 중립(자원). N_max를 넘으면 중립부터 잘라낸다.
+포함 순서: 아군 → 보이는 적 → 기억된 적 건물 → 중립(자원). N_max를 넘으면 중립부터 잘라낸다. 중립 자원은 지금 보이는 것과, 시야 밖이면 마지막 관측 상태(못 봤으면 맵 초기값)를 넣는다(R2 예외). 시야 밖 자원은 memory feature(`is_remembered`, 경과 프레임)를 기억된 적 건물과 같은 방식으로 채운다.
 
 | feature | 인코딩 | 차원 |
 |---|---|---|
@@ -69,10 +71,12 @@ RawFrame과 에이전트 메모리를 모델 입력 텐서로 변환하는 규�
 | 시야 | visible_now, explored, last_seen_age (이전 이름 enemy_last_seen_age) | 3 |
 | 지형 동적 | creep, own_building_footprint, enemy_building_footprint(기억 포함) | 3 |
 | 밀도 | own_ground, own_air, enemy_ground, enemy_air (log(1+count)) | 4 |
-| 위험 | hazard: Psionic Storm, Dark Swarm, Disruption Web, 핵 조준점, EMP·Irradiate·기타 투사체 (관측된 것만) | 5 |
+| 위험 | hazard: Psionic Storm, Dark Swarm, Disruption Web, 핵 조준점, 기타(EMP·Irradiate·Plague·Ensnare·그 밖의 투사체) (관측된 것만) | 5 |
 | 기타 | scanner_active(아군 스캔 범위) | 1 |
 
 `last_seen_age`는 타일을 자기 시야로 마지막으로 본 뒤 지난 시간이다(정찰 기록, 032 §2.4의 장기 정보). 지금 보이는 타일은 0, 한 번도 보지 못한 타일은 1, 그 외는 log(1+경과 프레임)/log(1+86400)이다. 적 유닛의 과거 위치는 담지 않는다. 단기 이동은 코어가 담당한다 (AMB-030-1 Resolved, 2026-10-16: 사용자가 Claude에게 결정을 위임).
+
+hazard 채널(2026-10-19 사용자 결정, E-1): 관측된 효과마다 효과 위치를 중심으로 **그 효과의 실제 반지름**(1.16.1 게임 데이터 기준 영향 범위, 효과 종류별)의 원과 겹치는 타일을 1로 칠한다(고정 16px이 아님). Plague와 Ensnare도 hazard 채널(기타)에 넣는다. 효과별 반지름 값은 구현 때 게임 데이터에서 옮겨 이 절에 기록한다.
 
 `wall_candidate`는 맵 사전계산 결과다. 정책에 주는 **힌트일 뿐** 강제 위치가 아니다([031](031-action-space.md)).
 
@@ -82,7 +86,7 @@ RawFrame과 에이전트 메모리를 모델 입력 텐서로 변환하는 규�
 - 업그레이드 레벨 63(정규화), 테크 47(완료 여부), 연구·업그레이드 진행 중 여부
 - 아군 유닛·건물 타입별 수(테란 subset): 완성 수와 생산 중 수
 - 관측된 적 유닛 타입별 **최대 동시 관측 수**(전 종족 subset)
-- 직전 액션: action_type one-hot, delay bucket, 실행 실패 여부(031-R10)
+- 직전 액션: action_type one-hot, delay bucket, 실행 실패 여부(031-R10, 평가 대전 처리는 R10)
 
 ## 5. 전략 조건 z (확정: 포함)
 | 상황 | z 출처 |

@@ -27,7 +27,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
    - 레지스트리 상태는 `Deferred (Mx)`다.
    - Deferred 항목은 spec의 `Approved`를 막지 않는다. 그러나 **그 항목에 의존하는 코드는 작성할 수 없다.**
    - 해당 마일스톤을 시작하기 전에 반드시 사용자에게 다시 질문해 확정한다.
-8-2. **개인·보안 정보 금지** — 도입 2026-10-15. spec과 모든 문서에 IP 주소, 호스트 이름, 계정, 이메일, 개인 경로, 자격 증명을 쓰지 않는다. 자리표시자(`<server>`)를 쓰고 실제 값은 git에 올리지 않는 `.env`에 둔다([001-R9·R10](001-system-architecture.md)).
+8-2. **개인·보안 정보 금지** — 도입 2026-10-15. spec과 모든 문서에 IP 주소, 호스트 이름, 계정, 이메일, 개인 경로, 자격 증명을 쓰지 않는다. 자리표시자(`<server>`)를 쓰고 실제 값은 git에 올리지 않는 `.env`에 둔다([001-R9·R10](001-system-architecture.md)). 장비 종류·상태(보드·GPU 모델명, 장비 번호, 특정 PC 이름·사양)도 spec에 쓰지 않고 OS·백엔드(Linux/Windows, Vulkan/CUDA)로만 표기한다(2026-10-19, 001-R10).
 9. **spec 번호는 구현 순서가 아니라 영역 분류다.**
    - 앞 두 자리가 영역(대역)을 나타낸다.
    - 같은 대역 안에서는 다른 문서가 의존하는 문서에 앞번호를 주는 것을 권장한다. 강제는 아니다.
@@ -56,34 +56,43 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-001-1 | SC:R 실전 추론 위치 | Deferred (M7) |
 | AMB-001-2 | OpenBW 브리지 C++ shim 허용 여부 | Resolved (2026-10-15: 얇은 C++ shim 허용) |
 | AMB-001-3 | 에이전트가 모델을 쓰면 생기는 crate 순환(agent → model → env → agent) 해결 | Resolved (2026-10-17: 스케줄러를 새 crate `uranium-runner`로 분리, 바이너리 이름 `uranium-env`·CLI 유지, `uranium-env`는 라이브러리만) |
+| AMB-001-4 | 장비 라벨(보드 이름·장비 번호)을 문서에 쓰는 것이 001-R10 위반인지(BC 전 리뷰 G-D9) | Resolved (2026-10-19: git 추적 파일(spec·코드·주석·추적 config·docs·CLAUDE.md)에는 장비 종류·상태를 쓰지 않고 OS·백엔드로만 표기, 허용 위치는 git 미추적 config와 리포트 — 001-R10) |
 | AMB-011-1 | MPQ·맵 파일 확보 경로 (사용자 미보유) | Resolved (2026-10-15: 사용자 구버전 확보 + Claude SC:R CASC 추출 조사 병행) |
 | AMB-012-1 | samase_scarf 분석 실패 시 대안 선택 | Deferred (M7) |
 | AMB-012-2 | 대상 SC:R 빌드 정책, 기존 samase 환경 | Deferred (M7) |
 | AMB-012-3 | 실행 환경·안티치트 정책 (→AMB-000-2) | Resolved (2026-10-15: 로컬/LAN 한정) |
 | AMB-020-1 | OpenBW 원격 호스트 사양 | Resolved (2026-10-15: 게임 전용 Linux PC 2대 이상, 사양 자동 감지) |
 | AMB-020-2 | 최대 게임 시간·무승부 규칙 | Resolved (2026-10-15: 60분 초과 시 무승부, 보상 0 — 점수 판정안에서 변경) |
+| AMB-020-4 | 020-R3 "에이전트 무응답 30초 → 게임 중단"(미구현)과 011-R18 드롭 시간 10분의 모순(리뷰 C-9) | Resolved (2026-10-19: 30초 중단 삭제, 011-R18 드롭 → 상호 퇴장 Aborted(020-R13)로 정합, 5초 초과 추론 로그 유지 — 020-R3) |
 | AMB-020-3 | 같은 게임의 두 세션이 다른 승자를 보고할 때의 판정 | Resolved (2026-10-17: 더 늦게 끝난(GameEnd 프레임이 더 큰) 세션의 승자를 쓴다, 불일치 건수는 따로 기록. 평가 집계·리그 승률 표·r_win 모두 적용, 020-R13) |
 | AMB-021-1 | BWAPI 4.4 봇 대응 방향, T1 후보 목록 | Resolved (2026-10-15: 단계적 접근 — 4.2 호환 봇+T0 먼저, 4.4 봇은 포팅 비용 측정 후 재확인. 2026-10-16 재확인: Steamhammer·McRave·Stardust·ZZZKBot·Iron 포팅) |
 | AMB-021-2 | 상대 봇 맵핵 허용 | Resolved (2026-10-15: 기본 금지, 학습 후반 강화용 별도 상대로만 허용, 평가 미사용) |
 | AMB-021-3 | OSS 봇 결정론(020-AC2를 T1 상대에도 요구할지) | Resolved (2026-10-16: 그대로 둔다 — 상대 다양성으로 보고 패치하지 않음, 020-AC2는 T0·셀프플레이로 검증) |
 | AMB-030-1 | `enemy_last_seen_age` 채널 의미: (a) 타일을 마지막으로 본 뒤 경과 시간 vs (b) 그 타일에서 적을 마지막으로 본 뒤 경과 시간, 정규화 | Resolved (2026-10-16: 사용자 위임으로 Claude 결정 — (a) 정찰 기록, 채널명 `last_seen_age`, 보임 0·미탐색 1·그 외 log(1+경과)/log(1+86400)) |
+| AMB-030-2 | BC 전 리뷰 E절 관측 항목: hazard 반지름 고정 16px, 시야 밖 자원 미포함, 평가 대전 `last_failed`, Random 상대 종족, 증강 `entity_cell` 1타일 어긋남 | Resolved (2026-10-19: 효과별 실제 반지름·플레이그·인스네어 포함(030 §3), 맵 공개 자원은 마지막 관측 상태로 포함(010-R5 예외·030-R2), 평가 대전 `last_failed` 0 고정·RL부터 실제 값(030-R10), Random 상대는 첫 적 유닛 관측 전 unknown(030-R11), `entity_cell`은 변환 픽셀로 재계산(030-R4)) |
 | AMB-031-1 | executor(규칙) 범위 | Resolved (2026-10-15: 최소 — 일꾼·건물 선택만, 위치 보정·심시티 스냅·자동 채취 없음) |
 | AMB-031-2 | APM 제한 수치 (→AMB-000-1) | Resolved (2026-10-15: APM 제한 없음, delay 1–32 비균등 16 bucket) |
 | AMB-031-3 | 맵 사전계산 채널(base_loc·choke·wall_candidate) 적용 범위 | Resolved (2026-10-16: 대상 맵만이 아니라 모든 맵에 맵 무관 알고리즘으로 적용) |
 | AMB-031-4 | 라이브 게임 맵 사전계산 키(BC는 CHK 해시, 라이브 `GameInfo.map_hash`는 맵 파일 해시) | Resolved (2026-10-17: 대상 맵 2개만 맵 파일 해시 키로 오프라인 생성(`uranium-replay mapgen`), 그 외 맵은 사전계산 없음 + 경고, 브리지·프로토콜 변경 없음) |
 | AMB-031-5 | 모델 정책에서 executor가 액션을 거부할 때 동작 | Resolved (2026-10-17: 명령 없이 샘플된 delay만 진행, 거부 건수 기록) |
+| AMB-032-7 | Burn autotune·fusion 채택(리뷰 F-2-1·G-D5)과 backward 허용 오차(리뷰 H, `cross_device.rs` 1e-3이 spec에 없음), 코어 비교 val 500게임 선정(G-D8) | Resolved (2026-10-19: CUDA·Vulkan 모두 autotune+fusion, 코어 비교·본학습 같은 설정(041-R15). backward AC Vulkan 1e-3·CUDA 1e-2(032-AC8). val은 고정 seed 셔플 500게임, seed 1개 유지·한계는 리포트(032-R17 ②)) |
 | AMB-032-1 | 정책 구조 (단일 vs 계층형) | Resolved (2026-10-15: 단일 end-to-end) |
 | AMB-032-2 | 매치업별 모델 구성 | Resolved (2026-10-15: 단일 공유 모델 + 종족 임베딩) |
 | AMB-032-3 | 전략 조건 z 포함 여부 | Resolved (2026-10-15: 포함) |
 | AMB-032-4 | 시간 축 코어 | Resolved (2026-10-15: LSTM 시작, M5에서 Transformer 메모리와 비교. 비교 절차는 AMB-032-6) |
 | AMB-032-5 | 032-AC1의 CUDA 판정: Burn/cubek CUDA matmul이 f32를 TF32로 계산해 Flex 대비 최대 1.3e-3 차이(Vulkan은 1e-6) | Resolved (2026-10-16: 허용 오차 확대 — CUDA ≤ 1e-2, Vulkan ≤ 1e-4 유지) |
 | AMB-032-6 | 시간 축 코어 비교 절차(AMB-032-4가 "M5에서 비교"를 남긴 채 닫혀 절차·AC가 없었음, 2026-10-18 발견) | Resolved (2026-10-18: BC 본학습 전 짧은 비교. 코어마다 S1 5,300 update 1회(약 2일), 짧은 run 전용 스케줄(warmup 5% + cosine), val 500게임 bc-eval, 맞대결 맵당 50판 + 각자 T0 상대 조합당 50판(코어당 300판), 확률적 샘플링, 판정은 결과 보고 후 사용자 결정 — 032-R17·AC7) |
+| AMB-034-1 | 무력화 유닛 명령 불가 규칙이 일부 클래스에만 적용(리뷰 B-11), SetRally 다중 건물 선택(리뷰 E) | Resolved (2026-10-19: 무력화 규칙을 모든 선택 자격·executor 선택에 적용(034-R6), 건물 대상 명령은 건물 1개만 선택, SetRally max_select 1(034-R7)) |
 | AMB-040-1 | 리플레이 출처 | Resolved (2026-10-15: 공개 데이터셋·커뮤니티·공개 프로/래더·AI 봇 리플레이) |
 | AMB-040-3 | 리플레이 라이선스·출처 표기·크롤링 범위 | Resolved (2026-10-15: 내부 학습 전용, 재배포 금지, 약관·robots.txt 준수) |
 | AMB-040-4 | BC 데이터 저장 방식 (디스크 < 1TB) | Resolved (2026-10-15: RawFrame 압축 저장 S2→S1 순, 예산 초과분은 재생 스트리밍) |
 | AMB-040-2 | 리플레이 품질 필터 기준 | Resolved (2026-10-15: S1 APM≥80·5분+, S2 프로/상위 래더 APM≥150) |
 | AMB-040-5 | 040-R8 디싱크 판정 기준(1.16.1은 승패 기록 없음) | Resolved (2026-10-16: 무효 명령 비율·마지막 프레임 미도달·이탈자 우세·SC:R 기록 승자 불일치 중 하나면 디싱크. 임계값 2026-10-16 확정: 무효 15% 초과, 종료 프레임 미달, 이탈 직전 1.5배) |
 | AMB-040-6 | BC shard의 정적 맵 정보 출처 (feature 추출용) | Resolved (2026-10-16: shard game마다 `GameInfo`(static_map 포함) 저장, schema_version 상향 후 재빌드) |
+| AMB-040-7 | S2 품질 기준(040 품질 표 테란 APM ≥ 150·프로/상위 래더, 043-R8)과 041-R13("대상 맵 train 분할만, 소스 무관")의 모순(리뷰 A-4·G-D3) | Resolved (2026-10-19: APM ≥ 150 등 S2 기준은 적용하지 않음. 041-R13 유지, 040 품질 표·043-R8을 맞춤) |
+| AMB-040-8 | 040-R4 "스팸 명령 병합"이 Train 연타 등 게임에서 모두 적용되는 명령까지 합침(리뷰 A-2) | Resolved (2026-10-19: 병합 전면 제거, 근접 프레임 delay 최소 1 정규화는 유지 — 040-R4) |
+| AMB-040-9 | value 정답 `result`가 LEAVE로 끝난 게임에서 0(리뷰 A-3), 040-R8 ④ 미구현 | Resolved (2026-10-19: 브리지 승자가 없으면 첫 LEAVE 이탈자 패배, 판정 불가는 result 0 + value 가중치 0(041-R7), SC:R 기록 승자가 있으면 대조 — 040-R8) |
+| AMB-040-10 | 데이터 수정 방식(재build vs 로더 수정)과 shard 쓰기 검증(리뷰 G-D1·G-D2, F-2-3) | Resolved (2026-10-19: 전체 재build(A-1·A-2·A-3·E-2·E-3), shard는 로컬 우선 → 공용 복사 → 재읽기 해시 검증 → rename(040-R17), 첫 스텝은 게임 시작 관측(040-R18)) |
 | AMB-043-1 | 래더 수집: 040 데이터 정책(약관 준수) 예외 허용 여부 | Resolved (2026-10-16: EULA 해석 위험 감수하고 예외 허용, 내부 학습 전용·재배포 금지 유지) |
 | AMB-043-2 | 래더 수집: 실행 PC·배틀넷 계정 | Resolved (2026-10-16: 사용자 본계정, SC:R이 도는 Windows PC) |
 | AMB-043-3 | 래더 수집: 범위 기본값(게이트웨이·순위/MMR·매치업·맵·시즌) | Resolved (2026-10-16: 아시아(한국)만, 추적 대상 랭크 A 이상, 매치업·맵 전체, 과거 시즌 포함) |
@@ -96,6 +105,8 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-041-2 | 041-AC2(BC vs T0) 측정 판수·z·샘플링 모드 | Resolved (2026-10-17: 조합(종족×맵)당 50판, z 없음, argmax·확률적 두 모드 보고, Wilson 95%) |
 | AMB-041-3 | BC train/val/test 분할 방법·비율(040-R5 세부) | Resolved (2026-10-18: `replay_sha256` 게임 단위 결정론 분할(TvT 두 시점 같은 쪽), 대상 맵 80/10/10, 그 외 95/5, S1·S2·ablation 공통, 대상 맵 test는 학습 제외 — 041-R12) |
 | AMB-041-4 | BC S1·S2 데이터 선택, 소스 혼합 가중치, 게임 순서 셔플 | Resolved (2026-10-18: S1 네 소스 train 분할 전부 가중치 없이, S2 대상 맵 train 분할만, 고정 seed 셔플 — 041-R13) |
+| AMB-041-5 | grad clip 1.0의 의미(Burn은 파라미터 텐서별 클립, 리뷰 B-9·G-D4) | Resolved (2026-10-19: 전역 L2 norm clip 1.0, micro-lane gradient 합산 뒤 적용, 직접 구현, BC·RL learner 공통 — 041-R3, 042 옵티마이저 표) |
+| AMB-041-6 | 041-R9 스트리밍 로더 미구현(리뷰 E-11) | Resolved (2026-10-19: 예산 초과 시에만 필요한 조건부 요구사항으로 — 041-R9) |
 | AMB-042-1 | 학습 기간·장비 예산 | Resolved (2026-10-15: 기간 제한 없음, 전체 리그 구성) |
 | AMB-042-2 | TvP·TvZ 상대 다양성 (P/Z 상대 정책 추가 여부) | Deferred (M6) (2026-10-17 M6 시작 재확인: T0·T1 봇으로 시작, M6 중간 점검에서 정체 여부 보고 후 재확인) |
 | AMB-042-3 | RL 초기 설정값(정책 지연 임계값, 가중치 배포 K, 스냅샷 N, 커리큘럼 전환 조건, 헤드별 엔트로피, KL 감쇠, 시분할, PFSP, 종족·Random 비율, 배치·옵티마이저) | Resolved (2026-10-17: 사용자 위임으로 Claude 결정 — IMPALA·AlphaStar 기준 축소값을 042 "초기 설정값" 절·`config/rl.toml`에 기록, 전부 042-R9 튜닝 대상, 042-AC1 후 조정 제안 가능. 첫 RL 학습 호스트는 CUDA PC) |
@@ -103,12 +114,16 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-042-5 | BC 본학습 체크포인트 전 RL 파이프라인 검증 정책 | Resolved (2026-10-17: build된 shard 표본으로 짧은 BC를 돌린 체크포인트로 042-AC1 형식 연습) |
 | AMB-042-6 | Aborted 게임 trajectory 처리(게임 끝까지 보류 vs 즉시 전송·회수) | Resolved (2026-10-17: 즉시 전송, Aborted면 미사용분 회수, Ctrl+C는 learner 먼저 정지, 042-R3 개정) |
 | AMB-042-7 | 042-AC1 실험 규모 | Resolved (2026-10-17: V-trace·PPO 각 3 seed(6 run), 033-AC2 ablation은 본 BC·z 테이블 이후) |
-| AMB-042-8 | 첫 RL 게임 PC 구성 | Resolved (2026-10-17: 학습 PC 로컬 hostd로 시작, 리플레이 build 후 bc250 두 대 추가) |
+| AMB-042-8 | 첫 RL 게임 PC 구성 | Resolved (2026-10-17: 학습 PC 로컬 hostd로 시작, 리플레이 build 후 원격 Linux 게임 PC 두 대 추가) |
 | AMB-042-9 | KL(π‖π_BC) 계산 방식(BC 재forward 비용 약 1.5배) | Resolved (2026-10-17: BC 모델 재forward로 정확한 분포 KL, 16GB에서 부족하면 사용자에게 보고) |
 | AMB-050-1 | 승격 게이트·평가 판수·회귀 시나리오 | Resolved (2026-10-15: 초안 수치 확정, M5 이후 조정 제안 가능) |
 | AMB-050-2 | M6 3단계에서 구현할 승격 게이트 범위 | Resolved (2026-10-17: 직접 대전 ≥ 55%와 E-Regression만, E-Matrix·E-Elo는 4단계 평가 파이프라인과 함께) |
 | AMB-061-1 | 원격 CUDA PC(WireGuard 경유) 공유 시 pull·push 정책 | Resolved (2026-10-15: (b) 정책 보강 → 061-R11 shard 재사용·재개 pull·push 재시도·잠금 재확인·미push 복구) |
 | AMB-061-2 | 공유 제공 PC 자신의 로컬 캐시 복사 여부 | Resolved (2026-10-15: (b) 예외 추가 → 061-R12 `URANIUM_SHARED_LOCAL=1`이면 복사 없이 원본 읽기, 해시 검증 유지) |
+| AMB-061-3 | 체크포인트 보존(061-R6 최신 5개)과 032-R17 ⑤ "비교 run은 지우지 않는다"의 모순(리뷰 C-1·G-D6) | Resolved (2026-10-19: run 설정 `keep_checkpoints`(없으면 5), 코어 비교 config는 전부 보존 — 061-R6) |
+| AMB-061-4 | 061-AC1 RNG 비트 일치(dropout RNG 저장 불가)·AC5 1e-4와 CUDA 1e-2의 모순(리뷰 C-6·G-D7) | Resolved (2026-10-19: 불러온 가중치·옵티마이저 상태 비트 일치 + forward는 032-AC1 기준(Vulkan·Flex 1e-4, CUDA가 끼면 1e-2). AC1 "끊김 없이" = 같은 장비 비트 동일, 다른 장비 허용 오차 내, dropout RNG 제외) |
+| AMB-061-5 | 여유 공간 경고(061-R8·060-R7 90%, 미구현)와 RL 리플레이 자동 삭제(060-R7)↔042-R11 "지우지 않는다" 모순(리뷰 C-3, D) | Resolved (2026-10-19: 공용 드라이브·로컬 캐시 물리 디스크 사용률 80% 경고, 학습 시작·체크포인트 저장마다, 중단 없음(061-R8). RL 리플레이는 지우지 않고 예산 초과는 경고만(060-R7)) |
+| AMB-061-6 | 작업자 장치 리뷰 H: `init_run` DONE 미확인, 공유 I/O 오류 시 종료·Free 해석, mtime 기반 만료, 이중 SIGINT, 양보 요청 잔류·양보 중 push 실패 | Resolved (2026-10-19: H-1~H-4와 Medium·Low 모두 코드로. 만료는 관측자 단조 시계로 heartbeat 불변을 stale_after 동안 관측, 자식은 별도 프로세스 그룹 — 061-R5·R11-5·R13·R14·R15, 060-R6) |
 
 ## 인덱스
 
@@ -132,7 +147,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | 042 | [RL Training](042-rl-training.md) | RL·리그 | **Approved** |
 | 043 | [Ladder Replay Collector](043-ladder-replay-collector.md) | SC:R 래더 리플레이 수집 | **Approved** |
 | 050 | [Evaluation](050-evaluation.md) | 평가·게이트 | **Approved** |
-| 060 | [Infra: Training Hosts](060-infra-bc250.md) | 학습 호스트(BC250·CUDA PC) | **Approved** |
+| 060 | [Infra: Training Hosts](060-infra-bc250.md) | 학습 호스트(Linux Vulkan·CUDA) | **Approved** |
 | 061 | [Shared Storage](061-shared-storage.md) | 공용 드라이브 체크포인트·데이터 | **Approved** |
 
 ## 마일스톤

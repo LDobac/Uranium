@@ -1,6 +1,6 @@
 # 031 — Action Space & Executor
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: 라이브 게임 맵 사전계산 키(AMB-031-4), executor 거부 시 동작(031-R4, AMB-031-5))
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: 라이브 게임 맵 사전계산 키(AMB-031-4), executor 거부 시 동작(031-R4, AMB-031-5). 2026-10-19: 맵 사전계산 생성 경로 표기를 실제(`uranium-replay`)로 정정)
 - **Related**: [010](010-game-protocol.md), [030](030-observation.md), [032](032-model-architecture.md), [034](034-action-table.md), [040](040-replay-dataset.md)
 
 ## Purpose
@@ -44,7 +44,7 @@
 
 ## 맵 사전계산 (모든 맵)
 - 시작 위치별 본진·앞마당 베이스 위치, 초크 포인트, 확장 순서, 입구 벽 후보 타일.
-- `tools/mapgen`이 `assets/maps/<map_hash>.toml`을 생성한다.
+- BC 데이터는 `uranium-replay build`가 리플레이를 재생할 때 맵마다 `<URANIUM_MAPS_DIR>/<CHK 해시>.toml`을 만든다(알고리즘은 `uranium-env` `mapgen::precompute`). 라이브 대상 맵의 자원 파일은 `uranium-replay mapgen`이 만든다(아래). (2026-10-19 정정: 이전 표기 `tools/mapgen`·`assets/maps/`는 실제와 달랐다)
 - 대상 맵(투혼, 서킷브레이커)만이 아니라 BC 데이터에 나오는 **모든 맵**에 같은 맵 무관 알고리즘으로 적용한다. S1(전체 맵)과 S2(대상 맵)의 입력 분포를 같게 하기 위해서다 (AMB-031-3 Resolved, 2026-10-16).
 - **관측 채널(`base_loc`, `choke`, `wall_candidate`)로만 제공한다. executor가 위치를 강제하거나 보정하지 않는다.**
 - **라이브 게임의 사전계산 (확정 2026-10-17, AMB-031-4)**

@@ -1,6 +1,6 @@
 # 021 — Opponent Pool
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: R7 Random 적용 범위를 여러 종족 지원 봇으로 한정, R3 T0 시나리오 빌드 상대 ID 분리, 사용자 결정)
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: R7 Random 적용 범위를 여러 종족 지원 봇으로 한정, R3 T0 시나리오 빌드 상대 ID 분리, 사용자 결정. 2026-10-19: McRave 종족 표기를 실측(T/P/Z)과 `config/rl.toml`·040에 맞춤)
 - **Related**: [020](020-env-orchestration.md), [042](042-rl-training.md), [050](050-evaluation.md)
 
 ## Purpose
@@ -29,7 +29,7 @@ OpenBW에는 내장 컴퓨터 AI가 없다. 그래서 RL과 평가에 쓸 상대
 |---|---|---|---|---|---|---|
 | UAlbertaBot | T/P/Z | MIT | 4.4 계열 | 필요(패치 0005) | `tools/oss/build_ualbertabot.sh` | 커밋 `558899d8` |
 | Steamhammer | Z(주력)·P·T | MIT | 4.4 계열 | 필요 | `tools/oss/build_steamhammer.sh` | 5.3.6 소스 zip sha256 |
-| McRave | P/Z | MIT | 4.4 계열 | 필요(BWEM·BWEB 포함) | `tools/oss/build_mcrave.sh` | 커밋 고정 |
+| McRave | T/P/Z | MIT | 4.4 계열 | 필요(BWEM·BWEB 포함) | `tools/oss/build_mcrave.sh` | 커밋 고정 |
 | Stardust | P | MIT + 대회 출전 금지 조건 | 4.4 계열(자체 OpenBW 구성) | 필요 | `tools/oss/build_stardust.sh` | 커밋 고정 |
 | ZZZKBot | Z | LGPL-3 | 확인 필요 | 확인 필요 | `tools/oss/build_zzzkbot.sh` | 커밋 고정 |
 | Iron | T | 확인 필요(사용 불가면 대체 후보 제시) | 4.1.2 | 필요(BWEM 포함) | `tools/oss/build_iron.sh` | AIIDE 제출 소스 sha256 |

@@ -1,6 +1,6 @@
 # 020 — Env Orchestration
 
-- **Status**: Approved (2026-10-15, 2026-10-16 개정: 020-AC1 기준, Windows 학습 PC 로컬 hostd, 2026-10-17 개정: 스케줄러 crate `uranium-runner`, plan 플레이어 `model`과 slot별 정책 라우팅(020-R11), 정책 버전 기록 / 020-R12 동적 Job 공급자(RL 리그, 3단계 계획 승인) / 020-R13 승자 불일치 판정(AMB-020-3, 사용자 결정), 2026-10-18 개정: `Finished.replay` 리플레이 바이트 반환(020-R1, 042-R11), 020-R13 상호 퇴장 = Aborted·hostd 드롭 시간(011-R17·R18, 사용자 결정) / summary.md 정책 표시·정책별 합산(사용자 결정, Risks 절 메모))
+- **Status**: Approved (2026-10-15, 2026-10-16 개정: 020-AC1 기준, Windows 학습 PC 로컬 hostd, 2026-10-17 개정: 스케줄러 crate `uranium-runner`, plan 플레이어 `model`과 slot별 정책 라우팅(020-R11), 정책 버전 기록 / 020-R12 동적 Job 공급자(RL 리그, 3단계 계획 승인) / 020-R13 승자 불일치 판정(AMB-020-3, 사용자 결정), 2026-10-18 개정: `Finished.replay` 리플레이 바이트 반환(020-R1, 042-R11), 020-R13 상호 퇴장 = Aborted·hostd 드롭 시간(011-R17·R18, 사용자 결정) / summary.md 정책 표시·정책별 합산(사용자 결정, Risks 절 메모). 2026-10-19 개정: R3 에이전트 무응답 30초 중단 삭제 → OpenBW 드롭(011-R18)·상호 퇴장 Aborted(R13)로 정합(C-9, 사용자 결정), 장비 표기 중립화(001-R10))
 - **Related**: [011](011-bridge-openbw.md), [021](021-opponent-pool.md), [042](042-rl-training.md), [060](060-infra-bc250.md)
 
 ## Purpose
@@ -30,13 +30,13 @@
 | 020-R8 | **MUST** hostd는 OS별 부분(LAN 매칭 설정, 프로세스 정리)을 플랫폼 계층으로 분리한다. Linux는 LOCAL 소켓과 프로세스 그룹 + `PR_SET_PDEATHSIG`를 쓰고, Windows는 TCP 포트 쌍(`URANIUM_HOSTD_PORT_BASE`부터 할당)과 Job Object(kill-on-close)를 쓴다 |
 | 020-R9 | **MUST** hostd 설정은 `.env`에서 읽는다(001-R9): `URANIUM_HOSTD_LISTEN`, `URANIUM_BWAPI_DIR`, `URANIUM_BRIDGE_LIB`, `URANIUM_DATA_DIR`, `URANIUM_MAPS_DIR`, `URANIUM_HOSTD_MAX_GAMES`, `URANIUM_HOSTD_PORT_BASE`(Windows), `URANIUM_CACHE_DIR`(측정 파일, 020-R10) |
 | 020-R10 | **MUST** 호스트별 동시 게임 수는 측정으로 정한다. 게임 호스트에서 `uranium-env calibrate`를 한 번 실행하면 동시 게임 수 N을 1부터 늘려 가며 T0 대전(단계마다 2N판)을 돌린다. 세션별 브리지 p99(011-AC2 지표)의 중앙값이 300µs 이하인 가장 큰 N을 권장값으로 `<URANIUM_CACHE_DIR>/hostd_calibration.toml`에 저장한다. hostd의 동시 게임 수는 다음 순서로 정한다: `.env` `URANIUM_HOSTD_MAX_GAMES` → 측정 파일 → 측정 전 기본값 `max(1, (코어 수 − 1) / 2)`(경고 출력). 학습 프로세스와 함께 돌릴 때의 CPU 예산(020-R7)은 M5/M6에서 같은 명령을 확장해 정한다 (2026-10-16 사용자 결정) |
-| 020-R7 | **SHOULD** BC250 로컬 hostd도 지원한다. 이 경우 CPU 코어를 추론 서버와 나눠 쓰는 예산을 정한다([060](060-infra-bc250.md)) |
+| 020-R7 | **SHOULD** Linux Vulkan 학습 호스트의 로컬 hostd도 지원한다. 이 경우 CPU 코어를 추론 서버와 나눠 쓰는 예산을 정한다([060](060-infra-bc250.md)) |
 
 ### 020-R3 타임아웃 규칙
 | 상황 | 기준 | 처리 |
 |---|---|---|
 | 게임 길이 | 최대 게임 시간 60분(= 86,400 프레임) 초과 | **무승부** (보상 0, `TimeLimitDraw`) |
-| 에이전트 무응답 | 30초 이상 | 해당 게임 중단 |
+| 에이전트 무응답 | 별도 중단 기준 없음(2026-10-19 사용자 결정, C-9) | lockstep 학습은 에이전트 응답을 기다린다(001-R5). 멈춤이 OpenBW 드롭 시간(011-R18, 기본 10분)을 넘으면 클라이언트가 서로를 끊고, 두 세션이 모두 상대 퇴장으로 승리를 보고하면 `Aborted`로 처리한다(020-R13). 추론 배치가 5초를 넘으면 시각과 함께 로그를 남긴다(011 관측과 대응) |
 
 ### 020-R4 크래시 처리
 | 상황 | 처리 |
@@ -52,7 +52,7 @@ p0 = { kind = "model", checkpoint = "<dir>", sample = "argmax" }  # 모델 정�
 ```
 - `checkpoint`가 상대 경로면 `URANIUM_SHARED_DIR` 기준으로 찾는다(061). 같은 체크포인트·샘플링 모드를 쓰는 세션은 추론 서버 하나를 공유한다.
 - 추론 백엔드는 `uranium-env run --backend <cuda|vulkan|flex>`, 없으면 `.env` `URANIUM_AGENT_BACKEND`, 그것도 없으면 `vulkan`이다(060-R1).
-- 추론 배치 파라미터(`max_batch`, `max_wait_ms`)는 CLI로 바꿀 수 있고 기본값은 측정해 정한다(TBD(M6)). lockstep이라 정확성에는 영향이 없고 처리량만 바뀐다. 정확성 제약은 020-R3의 30초 무응답 기준뿐이다.
+- 추론 배치 파라미터(`max_batch`, `max_wait_ms`)는 CLI로 바꿀 수 있고 기본값은 측정해 정한다(TBD(M6)). lockstep이라 정확성에는 영향이 없고 처리량만 바뀐다. 정확성 제약은 OpenBW 드롭 시간(011-R18)뿐이다.
 
 ## 처리량 목표 (M3에서 실측)
 | 지표 | 목표 |
@@ -77,9 +77,9 @@ p0 = { kind = "model", checkpoint = "<dir>", sample = "argmax" }  # 모델 정�
 - 원격 호스트의 MPQ와 맵 배포는 사용자가 직접 준비한다. hostd는 시작 시 파일 해시를 검증한다.
 
 - **호스트 구성 (확정 2026-10-15, AMB-020-1)**
-  - BC250 외에 **게임 전용 Linux PC 2대 이상**을 쓴다.
+  - 학습 호스트 외에 **게임 전용 Linux PC 2대 이상**을 쓴다.
   - 호스트별 코어 수와 동시 게임 수는 hostd `ListCapabilities`로 자동 감지하고, `config/hosts.toml`로 덮어쓸 수 있다.
-  - BC250 로컬 hostd는 기본 비활성이다. BC250은 추론과 학습을 전담한다.
+  - Linux Vulkan 학습 호스트의 로컬 hostd는 기본 비활성이다. 그 호스트를 learner로 쓰는 동안에는 추론과 학습을 전담한다.
   - **Windows 학습 PC**(CUDA)는 학습·추론과 함께 로컬 hostd로 게임도 돌린다(2026-10-16 사용자 결정). 원격 Linux 게임 PC와 함께 `URANIUM_HOSTS_FILE`에 둘 다 등록하고, 에이전트 서버는 원격 브리지가 접속할 수 있는 주소로 listen한다(`URANIUM_AGENT_LISTEN`, `URANIUM_AGENT_PUBLIC_ADDR`). 학습 중 로컬 동시 게임 수는 hosts 파일의 `max_games`로 줄일 수 있으며, 값은 학습 부하를 측정해 정한다(TBD(M5)).
   - 020-AC1은 원격 2대 + 학습 PC 구성 200판으로 판정한다(2026-10-16 변경).
 

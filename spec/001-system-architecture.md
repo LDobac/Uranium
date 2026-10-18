@@ -1,6 +1,6 @@
 # 001 — System Architecture
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: 스케줄러를 `uranium-runner` crate로 분리(AMB-001-3), 에이전트 서버의 모델 정책·배치 추론 / `uranium-runner` 라이브러리화, `uranium-train rl`(3단계 계획 승인))
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: 스케줄러를 `uranium-runner` crate로 분리(AMB-001-3), 에이전트 서버의 모델 정책·배치 추론 / `uranium-runner` 라이브러리화, `uranium-train rl`(3단계 계획 승인). 2026-10-19 개정: 001-R10 장비 표기 규칙(G-D9, 사용자 결정))
 - **Related**: [010](010-game-protocol.md), [011](011-bridge-openbw.md), [012](012-bridge-remastered.md), [020](020-env-orchestration.md), [060](060-infra-bc250.md), [061](061-shared-storage.md)
 
 ## Purpose
@@ -8,7 +8,7 @@
 
 ## 구성도
 ```
- [게임 PC (Linux, 2대 이상)]                     [학습 호스트: BC250(Vulkan) 또는 CUDA PC(Linux/Windows)]      [Windows SC:R PC]
+ [게임 PC (Linux, 2대 이상)]                     [학습 호스트: Linux(Vulkan) 또는 CUDA(Linux/Windows)]      [Windows SC:R PC]
  uranium-hostd ◄──제어 TCP── uranium-env          uranium-train (BC·RL learner + 리그, Burn)
    ├ 대전: BWAPILauncher ×2 (1v1 LAN)              uranium-agent (에이전트 서버, 배치 추론)  ◄──TCP── bridge_scr.dll (samase)
    │   ├ bridge_openbw.so ──TCP: RawFrame, PrivilegedSummary──►  (listen)                        └ StarCraft.exe
@@ -29,7 +29,7 @@
 | 001-R7 | **MUST** 학습 전용 정보(`PrivilegedSummary`)는 learner와 value head로만 흐른다. 추론 서버의 정책 경로에는 들어가지 않는다(030-R9, 032-R11) |
 | 001-R8 | **MUST** 학습 쪽 crate(`uranium-proto`, `uranium-model`, `uranium-train`, `uranium-agent`, `uranium-env`, `uranium-runner`)는 Linux와 Windows 모두에서 빌드·실행된다(Unix 전용 API 금지). 브리지(`bridge/openbw`)와 `uranium-hostd`도 Linux와 Windows 모두를 지원한다. 브리지 C++ shim은 GCC와 MSVC 모두에서 빌드돼야 한다. (변경 이력: 2026-10-15 추가 → 같은 날 Windows CUDA PC에서 게임까지 돌리기 위해 브리지·hostd도 Windows 지원으로 확장. Windows 구현·검증은 `docs/windows.md`) |
 | 001-R9 | **MUST** 호스트별 설정(경로, 주소, 포트, 디버그 옵션 등)은 저장소 루트의 `.env` 파일에서 읽는다. `.env`는 git에 올리지 않는다(`.gitignore`). 같은 이름의 프로세스 환경변수가 있으면 그 값이 `.env`보다 우선한다. 쓸 수 있는 키와 설명은 값 없는 템플릿 `.env.example`로 커밋한다. 셸 프로필(`.bashrc` 등)에 설정을 두는 방식은 쓰지 않는다. Rust 바이너리는 시작 시 `.env`를 읽고, 셸 스크립트는 `tools/env.sh`로 읽는다. 비밀번호 같은 자격 증명은 `.env`에도 두지 않고 OS 자격 증명 저장소나 권한 600 파일(예: cifs credentials)에 둔다 (2026-10-15 사용자 결정) |
-| 001-R10 | **MUST** spec, 문서, 리포트, 코드 주석, 커밋 메시지에는 IP 주소, 호스트 이름, 계정 이름, 이메일, 개인 경로(`/home/<user>` 등), 자격 증명 같은 개인·보안 정보를 쓰지 않는다. 필요하면 `<server>`, `<user>` 같은 자리표시자를 쓰고 실제 값은 `.env`에만 둔다. `127.0.0.1` 같은 루프백 주소와 예시 사설 대역 표기는 예외다 (2026-10-15 사용자 결정) |
+| 001-R10 | **MUST** spec, 문서, 리포트, 코드 주석, 커밋 메시지에는 IP 주소, 호스트 이름, 계정 이름, 이메일, 개인 경로(`/home/<user>` 등), 자격 증명 같은 개인·보안 정보를 쓰지 않는다. 필요하면 `<server>`, `<user>` 같은 자리표시자를 쓰고 실제 값은 `.env`에만 둔다. `127.0.0.1` 같은 루프백 주소와 예시 사설 대역 표기는 예외다 (2026-10-15 사용자 결정). **장비 표기(2026-10-19 사용자 결정, G-D9)**: git이 추적하는 파일(spec, 코드·주석, 추적되는 config, docs, CLAUDE.md)에는 장비 종류·상태(보드·GPU 모델명, "1호기" 같은 장비 번호, 특정 PC 이름·사양, 어느 장비가 어떤 역할을 할 수 없는지 등)를 쓰지 않고 OS와 백엔드(Linux/Windows, Vulkan/CUDA)로만 표기한다. 장비 표기는 git이 추적하지 않는 config와 리포트(`reports/`)에만 쓸 수 있다 |
 
 ## Cargo Workspace
 ```
@@ -82,7 +82,7 @@ trait GameSession {
 ## Risks & Open Questions
 > **[SPEC DEFERRED(M7)] AMB-001-1**: SC:R 실전 시 추론을 어디서 할지 정해야 한다. M7에서 지연을 측정한 뒤 사용자 확인을 받는다.
 > - 기본안(미확정): SC:R PC에서 Burn wgpu로 로컬 추론
-> - 대안: LAN 너머 BC250 추론 서버에 요청
+> - 대안: LAN 너머 학습 호스트의 추론 서버에 요청
 > - 확인 필요: SC:R PC의 GPU 사양
 
 - **확정 (2026-10-15, AMB-001-2)**: OpenBW 브리지에 **얇은 C++ shim**을 허용한다.
