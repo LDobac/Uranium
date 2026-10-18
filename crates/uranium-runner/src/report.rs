@@ -61,6 +61,9 @@ struct Row {
     suspect_short: u32,
     /// Games whose two sessions report different winners; the later session decides (020-R13).
     winner_disagree: u32,
+    /// Both sessions claimed the win because the other one left: a connection drop, Aborted and
+    /// left out of the win counts (020-R13, 011-AC7).
+    dropped: u32,
     /// Opponent IDs seen for p1 (021-R3).
     opponents: std::collections::BTreeSet<String>,
 }
@@ -71,6 +74,12 @@ fn decisive<'a>(ss: &[&'a Value]) -> Option<&'a Value> {
     let frame = |s: &Value| s["end_frame"].as_u64().unwrap_or(0);
     let first = *ss.first()?;
     Some(ss.iter().skip(1).fold(first, |best, s| if frame(s) > frame(best) { *s } else { best }))
+}
+
+/// 020-R13: both sessions say the other one left and claim the win (a drop, not a GG: the
+/// leaver of a real GG reports the other side as winner).
+fn mutual_leave(ss: &[&Value]) -> bool {
+    ss.len() == 2 && ss.iter().all(|s| s["reason"] == "Surrender" && !s["winner"].is_null() && s["winner"] == s["slot"])
 }
 
 pub fn write(out: &Path, plan: &Plan) -> Result<()> {
@@ -99,6 +108,10 @@ pub fn write(out: &Path, plan: &Plan) -> Result<()> {
         let Some(first) = decisive(&ss) else { continue };
         if ss.len() == 2 && ss[0]["winner"] != ss[1]["winner"] {
             row.winner_disagree += 1;
+        }
+        if mutual_leave(&ss) {
+            row.dropped += 1;
+            continue;
         }
         if let Some(f) = first["end_frame"].as_f64() {
             row.minutes.push(f * 42.0 / 60_000.0);
@@ -170,8 +183,8 @@ pub fn write(out: &Path, plan: &Plan) -> Result<()> {
 
     let mut md = String::new();
     writeln!(md, "# {} — matchup summary\n", plan.name)?;
-    writeln!(md, "| # | p0 | p1 | map | games | outcomes | p0 wins | p1 wins | draws | p0 win% [95% CI] | mirror decided | winner disagree | suspect (<300 frames) | game min p50 | vis. violations | session errors |")?;
-    writeln!(md, "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")?;
+    writeln!(md, "| # | p0 | p1 | map | games | outcomes | p0 wins | p1 wins | draws | p0 win% [95% CI] | mirror decided | winner disagree | dropped (Aborted) | suspect (<300 frames) | game min p50 | vis. violations | session errors |")?;
+    writeln!(md, "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")?;
     for ((mi, map), r) in &mut rows {
         let m = &plan.matchups[*mi];
         r.minutes.sort_by(f64::total_cmp);
@@ -186,7 +199,7 @@ pub fn write(out: &Path, plan: &Plan) -> Result<()> {
         let rate = if n > 0 { format!("{:.0}% [{lo:.0}, {hi:.0}]", 100.0 * r.p0_wins as f64 / n as f64) } else { "-".into() };
         writeln!(
             md,
-            "| {mi} | {} | {p1} | {map} | {} | {:?} | {} | {} | {} | {rate} | {} | {} | {} | {p50:.1} | {} | {} |",
+            "| {mi} | {} | {p1} | {map} | {} | {:?} | {} | {} | {} | {rate} | {} | {} | {} | {} | {p50:.1} | {} | {} |",
             side_name(&m.p0),
             r.games,
             r.outcomes,
@@ -195,6 +208,7 @@ pub fn write(out: &Path, plan: &Plan) -> Result<()> {
             r.draws,
             r.decided_mirror,
             r.winner_disagree,
+            r.dropped,
             r.suspect_short,
             r.violations,
             r.session_errors
@@ -262,6 +276,19 @@ mod tests {
         let c: Value = serde_json::json!({"slot": 1, "winner": 1, "end_frame": 8999});
         assert_eq!(decisive(&[&a, &c]).unwrap()["slot"], 0);
         assert!(decisive(&[]).is_none());
+    }
+
+    /// 020-R13: both sessions claiming the win because the other left is a drop.
+    #[test]
+    fn mutual_leave_is_a_drop_020_r13() {
+        let a: Value = serde_json::json!({"slot": 0, "winner": 0, "reason": "Surrender", "end_frame": 1615});
+        let b: Value = serde_json::json!({"slot": 1, "winner": 1, "reason": "Surrender", "end_frame": 1615});
+        assert!(mutual_leave(&[&a, &b]));
+        let gg: Value = serde_json::json!({"slot": 1, "winner": 0, "reason": "Elimination", "end_frame": 1600});
+        assert!(!mutual_leave(&[&a, &gg]));
+        let elim: Value = serde_json::json!({"slot": 1, "winner": 1, "reason": "Elimination", "end_frame": 8031});
+        assert!(!mutual_leave(&[&a, &elim]));
+        assert!(!mutual_leave(&[&a]));
     }
 
     #[test]

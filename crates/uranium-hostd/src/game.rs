@@ -64,6 +64,7 @@ pub fn launcher_env(cfg: &Config, spec: &GameSpec, slot: usize, module: &Path, r
         ("BWAPI_CONFIG_AUTO_MENU__GAME_TYPE", "MELEE".to_string()),
         ("BWAPI_CONFIG_AUTO_MENU__WAIT_FOR_MIN_PLAYERS", "2".to_string()),
         ("BWAPI_CONFIG_AUTO_MENU__AUTO_RESTART", "OFF".to_string()),
+        ("URANIUM_OPENBW_DROP_TIMEOUT_MS", cfg.drop_timeout_ms.to_string()),
         (
             "BWAPI_CONFIG_AUTO_MENU__SAVE_REPLAY",
             // Both clients record the same game; keep slot 0 only (040 botgen dedup).
@@ -286,6 +287,7 @@ mod tests {
             port_base: 17000,
             replay_timeout_s: 1800,
             replay_dir: None,
+            drop_timeout_ms: crate::config::DEFAULT_DROP_TIMEOUT_MS,
         }
     }
 
@@ -351,7 +353,10 @@ mod tests {
         assert_eq!(get("BWAPI_CONFIG_AUTO_MENU__SAVE_REPLAY").unwrap(), "");
         assert_eq!(get("URANIUM_LAN_SLOT").unwrap(), "0");
         assert_eq!(get("BWAPI_CONFIG_AUTO_MENU__CHARACTER_NAME").unwrap(), "uranium-p0");
+        // 011-R18: both clients get the raised drop timeout (patch 0013).
+        assert_eq!(get("URANIUM_OPENBW_DROP_TIMEOUT_MS").unwrap(), "600000");
         let env1 = launcher_env(&cfg(), &spec(None), 1, Path::new("/o/module.so"), Path::new("/w/g3"));
+        assert!(env1.iter().any(|(k, v)| k == "URANIUM_OPENBW_DROP_TIMEOUT_MS" && v == "600000"));
         assert!(env1.iter().all(|(k, _)| k != "URANIUM_AGENT_ADDR" && k != "URANIUM_SEED"));
         assert!(env1.iter().any(|(k, v)| k == "BWAPI_CONFIG_AUTO_MENU__RACE" && v == "Random"));
     }

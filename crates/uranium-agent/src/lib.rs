@@ -109,7 +109,17 @@ pub fn game_result(ends: &[SessionEnd]) -> Option<(SessionEnd, bool)> {
     let first = *ends.first()?;
     let chosen = ends.iter().skip(1).fold(first, |best, e| if e.frame > best.frame { *e } else { best });
     let disagree = ends.iter().any(|e| e.winner != first.winner);
+    if mutual_leave(ends) {
+        return Some((SessionEnd { winner: None, reason: EndReason::Aborted, ..chosen }, disagree));
+    }
     Some((chosen, disagree))
+}
+
+/// 020-R13: both sessions say the other one left and claim the win. A real leave (a bot's GG)
+/// is reported as a loss by the leaver, so this is a connection drop (OpenBW drops a client that
+/// stops syncing, 011-AC7): the game is Aborted and its segments revoked (042-R3).
+pub fn mutual_leave(ends: &[SessionEnd]) -> bool {
+    ends.len() == 2 && ends.iter().all(|e| e.reason == EndReason::Surrender && e.winner == Some(e.slot))
 }
 
 /// GameEnd reports by game id, filled by the agent server (020-R13). The RL league reads the
@@ -521,5 +531,19 @@ mod tests {
         let (r, _) = game_result(&[end(0, Some(0), 500), end(1, Some(1), 500)]).unwrap();
         assert_eq!(r.winner, Some(0));
         assert!(game_result(&[]).is_none());
+    }
+
+    /// 020-R13: both sides claiming the win because the other left is a drop: Aborted. A real
+    /// leave (the leaver reports the other side as winner) and a normal elimination stand.
+    #[test]
+    fn mutual_leave_is_aborted_020_r13() {
+        let left = |slot, winner, frame| SessionEnd { slot, winner, frame, reason: EndReason::Surrender };
+        let (r, d) = game_result(&[left(0, Some(0), 1615), left(1, Some(1), 1615)]).unwrap();
+        assert_eq!((r.reason, r.winner, d), (EndReason::Aborted, None, true));
+        let (r, _) = game_result(&[end(0, Some(1), 4000), left(1, Some(1), 4010)]).unwrap();
+        assert_eq!((r.reason, r.winner), (EndReason::Surrender, Some(1)));
+        let (r, _) = game_result(&[end(0, Some(0), 8000), left(1, Some(1), 8031)]).unwrap();
+        assert_eq!((r.reason, r.winner), (EndReason::Surrender, Some(1)));
+        assert!(!mutual_leave(&[left(0, Some(0), 1615)]));
     }
 }

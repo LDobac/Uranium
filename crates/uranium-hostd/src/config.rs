@@ -24,7 +24,13 @@ pub struct Config {
     pub replay_timeout_s: u32,
     /// Where saved game replays go (040 botgen); default: the game work dir.
     pub replay_dir: Option<PathBuf>,
+    /// 011-R18: OpenBW drops a LAN client that stops syncing after this long (patch 0013).
+    /// Lockstep games block while the agent thinks, so the default is far above upstream's 60 s.
+    pub drop_timeout_ms: u64,
 }
+
+/// 011-R18: training default for the OpenBW drop timeout (10 minutes).
+pub const DEFAULT_DROP_TIMEOUT_MS: u64 = 600_000;
 
 fn var(name: &str) -> Option<String> {
     std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
@@ -57,6 +63,7 @@ impl Config {
             port_base: var("URANIUM_HOSTD_PORT_BASE").and_then(|v| v.parse().ok()).unwrap_or(17_000),
             replay_timeout_s: var("URANIUM_HOSTD_REPLAY_TIMEOUT_S").and_then(|v| v.parse().ok()).unwrap_or(1800),
             replay_dir: var("URANIUM_HOSTD_REPLAY_DIR").map(PathBuf::from),
+            drop_timeout_ms: var("URANIUM_OPENBW_DROP_TIMEOUT_MS").and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_DROP_TIMEOUT_MS),
         };
         must_exist(&cfg.launcher(), "BWAPILauncher")?;
         must_exist(&cfg.bridge_lib, "bridge library")?;

@@ -1,0 +1,27 @@
+--- a/sync.h
++++ b/sync.h
+@@ -618,12 +618,23 @@
+ 			w.put<uint8_t>(sync_st.sync_frame);
+ 			send(w);
+ 		}
++		// Uranium patch: a client that stops syncing is dropped after URANIUM_OPENBW_DROP_TIMEOUT_MS
++		// (default 60 s as upstream). Lockstep training blocks in the agent, so hostd raises it.
++		// See spec 011-R18.
++		static std::chrono::milliseconds drop_timeout() {
++			static const std::chrono::milliseconds timeout = [] {
++				const char* v = std::getenv("URANIUM_OPENBW_DROP_TIMEOUT_MS");
++				long long ms = v ? std::strtoll(v, nullptr, 10) : 0;
++				return std::chrono::milliseconds(ms > 0 ? ms : 60000);
++			}();
++			return timeout;
++		}
+ 		void timeout_func() {
+ 			auto now = std::chrono::steady_clock::now();
+ 			for (auto i = sync_st.clients.begin(); i != sync_st.clients.end();) {
+ 				auto* c = &*i;
+ 				++i;
+-				if (now - c->last_synced >= std::chrono::seconds(60)) {
++				if (now - c->last_synced >= drop_timeout()) {
+ 					if ((int8_t)(sync_st.sync_frame - c->frame) >= (int8_t)sync_st.latency) {
+ 						kill_client(c);
+ 					}

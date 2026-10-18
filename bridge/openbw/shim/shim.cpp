@@ -304,13 +304,27 @@ class UraniumModule : public AIModule {
       left_ = true;
       return;
     }
+    if (!replay_ && g_enemy) {
+      enemy_buildings_.clear();
+      for (Unit u : g_enemy->getUnits())
+        if (u->getType().isBuilding()) enemy_buildings_.push_back(u);
+    }
     if ((uint32_t)frame < uranium_bridge_next_frame()) return;
     step(frame);
+  }
+
+  // 011-R17: the enemy left (or was dropped) instead of being eliminated. A melee defeat needs
+  // every building destroyed; leaving turns the buildings neutral, so they still exist.
+  void onPlayerLeft(Player p) override {
+    if (replay_ || p != g_enemy) return;
+    for (Unit u : enemy_buildings_)
+      if (u->exists()) { enemy_left_ = true; break; }
   }
 
   void onEnd(bool isWinner) override {
     int32_t winner = UR_NONE;
     uint8_t reason = 0;
+    if (enemy_left_) reason = 1;
     if (time_limit_) reason = 2;
     else if (replay_) {
       // isWinner is meaningless in replays; report a winner only when one side was defeated.
@@ -434,6 +448,8 @@ class UraniumModule : public AIModule {
   }
 
   bool fail_ = false, done_ = false, left_ = false, time_limit_ = false, privileged_ = false, replay_ = false;
+  bool enemy_left_ = false;
+  std::vector<Unit> enemy_buildings_;
   uint32_t max_frames_ = 86400;
   size_t tiles_ = 0;
   std::vector<UrUnit> units_;

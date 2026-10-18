@@ -303,6 +303,7 @@ pub extern "C" fn uranium_bridge_end(winner: i32, reason: u8, frame: u32) {
         reason: match reason {
             0 => EndReason::Elimination,
             2 => EndReason::TimeLimitDraw,
+            // 1: the enemy left or was dropped with buildings standing (011-R17).
             _ => EndReason::Surrender,
         },
         stats: Some(stats),
