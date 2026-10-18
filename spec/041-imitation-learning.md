@@ -48,5 +48,5 @@
 
 ## 구현 메모 (비규범)
 - GPU 메모리(2026-10-17, [`reports/m5_bc_memory.md`](../reports/m5_bc_memory.md)): `config/bc.toml`의 `micro_lanes`만큼 레인을 묶어 forward/backward를 하고, gradient를 합쳐 AdamW step을 한 번 한다. 손실은 배치 전체 유효 스텝 수로 나누므로 `lanes` 전체를 한 번에 처리한 것과 같은 업데이트다(R2·R3 그대로). 최대 메모리는 그룹 크기를 따른다(기본 1 = 레인 1 × T64 × N512).
-- 데이터 로더(041-R9, 2026-10-18): `--dataset <rel>`(공용 드라이브 `datasets/` 아래, manifest 검증 후 사용, 061-R11-1·R12)과 `--shards <dir>`(검증 없음, 표본·테스트)를 여러 번 받는다. 폴더는 하위 폴더(build의 `<src>/<part>/`)까지 읽는다. `bc`는 기본 S1, `--s2`면 S2를 고르고, ablation (A)는 `--stage s2`(S2 데이터, 기본 학습률)다. 분할 집계는 `uranium-train split-stats`.
+- 데이터 로더(041-R9, 2026-10-18): `--dataset <rel>`(공용 드라이브 `datasets/` 아래, manifest 검증 후 사용, 061-R11-1·R12)과 `--shards <dir>`(검증 없음, 표본·테스트)를 여러 번 받는다. 폴더는 하위 폴더(build의 `<src>/<part>/`)까지 읽는다. `bc`는 기본 S1, `--s2`면 S2를 고르고, ablation (A)는 `--stage s2`(S2 데이터, 기본 학습률)다. S1→S2(R4)는 `--s2 --init <S1 체크포인트>`로 가중치만 가져오고 옵티마이저·스케줄·step은 새로 시작한다(`--resume`은 같은 단계 이어 하기). 분할 집계는 `uranium-train split-stats`.
 - `pad_entities`는 배치 N을 그 배수로 올리는 마스크 패딩이고, `grad_checkpointing`은 Burn balanced checkpointing이다. 둘 다 결과를 바꾸지 않는다.

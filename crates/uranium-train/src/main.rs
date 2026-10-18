@@ -54,8 +54,12 @@ enum Cmd {
         steps: Option<usize>,
         /// Continue from a checkpoint folder: weights, optimizer state, step and RNG (061-R10).
         /// The shard order starts over.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "init")]
         resume: Option<PathBuf>,
+        /// Start from a checkpoint's weights only: fresh optimizer, schedule and step counter
+        /// (S1 -> S2, 041-R4; the S1 checkpoint folder is left as is).
+        #[arg(long)]
+        init: Option<PathBuf>,
     },
     /// 034-AC3 diagnostics: labels that fail the masks, by action and reason (JSON).
     LabelCheck {
@@ -207,6 +211,7 @@ fn run<C: uranium_model::CoreInit>(
     s2: bool,
     steps: Option<usize>,
     resume: Option<PathBuf>,
+    init: Option<PathBuf>,
 ) -> Result<()> {
     let ad = if cfg.grad_checkpointing {
         dev.autodiff().gradient_checkpointing()
@@ -216,7 +221,7 @@ fn run<C: uranium_model::CoreInit>(
     let cols = uranium_model::batch::ActionColumns::from_table(
         uranium_env::features::extract::action_table(),
     )?;
-    let (net, net_cfg) = match &resume {
+    let (net, net_cfg) = match resume.as_ref().or(init.as_ref()) {
         Some(dir) => {
             let (net, meta) = uranium_model::checkpoint::load::<C>(
                 dir,
@@ -400,6 +405,7 @@ fn main() -> Result<()> {
             stage,
             steps,
             resume,
+            init,
         } => {
             let cfg = BcConfig::load(&config)?;
             let dev = device(backend)?;
@@ -410,10 +416,10 @@ fn main() -> Result<()> {
             let shards = ShardSource::from_dirs(&data.dirs()?)?.select(sel).shuffled(cfg.data.seed);
             match core {
                 CoreArg::Lstm => {
-                    run::<LstmCore>(CoreKind::Lstm, shards, out, cfg, dev, s2, steps, resume)
+                    run::<LstmCore>(CoreKind::Lstm, shards, out, cfg, dev, s2, steps, resume, init)
                 }
                 CoreArg::Gtrxl => {
-                    run::<GtrxlCore>(CoreKind::Gtrxl, shards, out, cfg, dev, s2, steps, resume)
+                    run::<GtrxlCore>(CoreKind::Gtrxl, shards, out, cfg, dev, s2, steps, resume, init)
                 }
             }
         }
