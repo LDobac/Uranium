@@ -365,3 +365,17 @@ fn location_on_used_rows_matches_all_rows_032_r10() {
         assert!(d <= 1e-5, "gradient of parameter {i}: max diff {d:.2e}");
     }
 }
+
+/// Review B-1 (032-R10): a Bool row `select` must stay a Bool tensor that later bool ops accept
+/// (burn-flex debug builds returned U8 from a direct Bool `select`, so `bool_not` panicked), and
+/// pick exactly the rows a direct select would.
+#[test]
+fn select_bool_stays_bool_032_r10() {
+    use burn::tensor::{Bool, Int, TensorData};
+    let d = dev();
+    let m = Tensor::<2, Bool>::from_data(TensorData::new(vec![true, false, false, true, true, true], [3, 2]), &d);
+    let idx = Tensor::<1, Int>::from_data(TensorData::new(vec![2i64, 0], [2]), &d);
+    let got = uranium_model::layers::select_bool(m, 0, idx).bool_not();
+    let got = got.into_data().convert::<bool>().try_into_vec::<bool>().unwrap();
+    assert_eq!(got, vec![false, false, false, true]);
+}

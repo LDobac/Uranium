@@ -169,6 +169,13 @@ pub fn log_softmax_f32(logits: Tensor<2>) -> Tensor<2> {
     log_softmax(logits.cast(DType::F32), 1)
 }
 
+/// Row `select` on a Bool tensor, routed through Int (032-R10, review B-1). burn-flex debug builds
+/// return U8 storage from a direct Bool `select`, and the next bool op (`bool_not`) panics on the
+/// dtype check; Int round-trip gives the same values (0/1 -> `== 1`) with Bool storage everywhere.
+pub fn select_bool<const D: usize>(t: Tensor<D, Bool>, dim: usize, idx: Tensor<1, Int>) -> Tensor<D, Bool> {
+    t.int().select(dim, idx).equal_elem(1)
+}
+
 /// Masked log-softmax over the last dim of [B,K] in f32 (032-R4, 032-R8).
 pub fn masked_log_softmax(logits: Tensor<2>, allowed: Tensor<2, Bool>) -> Tensor<2> {
     log_softmax(logits.cast(DType::F32).mask_fill(allowed.bool_not(), MASKED), 1)

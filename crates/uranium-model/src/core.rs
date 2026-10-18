@@ -360,7 +360,7 @@ impl Core for GtrxlCore {
     }
 
     fn select_rows(s: &Self::State, rows: Tensor<1, Int>) -> Self::State {
-        GtrxlState { memory: s.memory.iter().map(|t| t.clone().select(0, rows.clone())).collect(), valid: s.valid.clone().select(0, rows) }
+        GtrxlState { memory: s.memory.iter().map(|t| t.clone().select(0, rows.clone())).collect(), valid: crate::layers::select_bool(s.valid.clone(), 0, rows) }
     }
 
     fn scatter_rows(s: Self::State, rows: Tensor<1, Int>, sub: Self::State) -> Self::State {

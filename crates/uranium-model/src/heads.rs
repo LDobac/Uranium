@@ -10,7 +10,7 @@ use burn::tensor::{Bool, Device, Distribution, Int, Tensor};
 
 use crate::batch::{ActionBatch, ActionTableTensors, ObsBatch, gather_cap, gather_loc};
 use crate::config::{HeadsConfig, InputDims, SpatialConfig};
-use crate::layers::{GruCell, Mlp, ResMlp, entropy, flag, gumbel_argmax, log_softmax_f32, masked_log_softmax, pick, zeros_f32};
+use crate::layers::{GruCell, Mlp, ResMlp, entropy, flag, gumbel_argmax, log_softmax_f32, masked_log_softmax, pick, select_bool, zeros_f32};
 use crate::spatial::SpatialOut;
 
 /// Tests only: teacher forcing computes the location head on every row (the reference for the
@@ -319,7 +319,7 @@ impl Heads {
             skips: sp.skips.clone().map(|s| s.select(0, idx.clone())),
             pool: sp.pool.clone().select(0, idx.clone()),
         };
-        let lp = masked_log_softmax(self.location.forward(ar.select(0, idx.clone()), &sub), loc_ok.select(0, idx.clone()));
+        let lp = masked_log_softmax(self.location.forward(ar.select(0, idx.clone()), &sub), select_bool(loc_ok, 0, idx.clone()));
         Tensor::<2>::zeros([b, mm], &device).select_assign(0, idx, lp, burn::tensor::IndexingUpdateOp::Add)
     }
 
