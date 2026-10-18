@@ -108,6 +108,7 @@ $URANIUM_CACHE_DIR/         # 학습 PC 로컬 캐시 (shards, 현재 run 체크
 - 061-AC9: Windows CUDA 호스트와 Linux Vulkan 호스트에서 짧은 시험 run 두 개로 잡기, Ctrl+C 후 이어받기, 양보 요청, 강제 종료 후 watchdog 재시작을 확인하고 `devices.jsonl`에 장비 구간이 남는다.
 
 ## Risks & Open Questions
+- R14 수동 실행 run 판별의 한계(2026-10-19): 양보 대상 여부는 잠금 주인 host의 `workers/<host>.json`이 그 run을 가리키는지로 판단한다. 작업자가 강제 종료되면 상태 파일이 `run=X`인 채로 남으므로, 그 host에서 X를 `bc --run`으로 수동 실행하면 다른 작업자가 양보를 요청할 수 있다. 대응: 수동 실행 전에 남은 상태 파일을 지우거나, 그 host의 작업자를 다시 띄워 상태 파일을 갱신한다(`docs/commands.md`).
 - SMB 위에서의 rename 원자성은 서버 구현(Windows, Samba, NAS)에 따라 다를 수 있다. 2026-10-15 실제 공유(Windows SMB, Linux cifs 3.1.1 마운트, VPN 경유)에서 확인한 결과는 다음과 같다. M5에서 장애 주입으로 061-AC2를 정식 검증한다.
   - tmp→최종 디렉터리 rename 후 SHA-256 검증: 통과
   - 기존 파일 위로 rename(`LATEST` 갱신): 통과
