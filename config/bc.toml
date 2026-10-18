@@ -37,6 +37,10 @@ target_loc = 1.0
 s1 = 36985
 s2 = 7915
 ablation_a = 7915
+# 041-R14 (2026-10-18): S2 and (A) warm up over 5% of their epoch, rounded half up
+# (7915 x 0.05 = 395.75 -> 396). S1 keeps warmup_steps above.
+s2_warmup = 396
+ablation_a_warmup = 396
 
 [value]
 # win head MSE weight (041-R7)

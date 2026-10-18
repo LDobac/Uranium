@@ -264,6 +264,13 @@ fn warmup_cosine_schedule_041_r3() {
     assert_eq!((file.seq_len, file.grad_clip, file.value.win, file.data.z_drop), (64, 1.0, 0.5, 0.25));
     // 041-R14: one epoch per stage; (A) reads the S2 games.
     assert!(file.steps.s1 > file.steps.s2 && file.steps.s2 > 0 && file.steps.ablation_a == file.steps.s2);
+    // 041-R14 (2026-10-18): S2 and (A) warm up over 5% of their epoch, rounded half up.
+    assert_eq!(uranium_train::bc::short_stage_warmup(7915), 396, "395.75 -> 396");
+    assert_eq!(uranium_train::bc::short_stage_warmup(10), 1, "0.5 -> 1");
+    assert_eq!(uranium_train::bc::short_stage_warmup(9), 0, "0.45 -> 0");
+    assert_eq!(file.steps.s2_warmup, uranium_train::bc::short_stage_warmup(file.steps.s2));
+    assert_eq!(file.steps.ablation_a_warmup, uranium_train::bc::short_stage_warmup(file.steps.ablation_a));
+    assert_eq!(file.warmup_steps, 2000, "S1 keeps its warmup");
 }
 
 /// 061-R10 / 061-AC1 / 042-R1 (flex): save -> load -> the next updates are bit-identical to the

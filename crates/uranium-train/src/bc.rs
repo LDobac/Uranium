@@ -55,6 +55,16 @@ pub struct StageSteps {
     pub s1: usize,
     pub s2: usize,
     pub ablation_a: usize,
+    /// Warmup of S2 and (A): 5% of their epoch, rounded half up (2026-10-18). 0 = `warmup_steps`.
+    #[serde(default)]
+    pub s2_warmup: usize,
+    #[serde(default)]
+    pub ablation_a_warmup: usize,
+}
+
+/// 041-R14 short-stage warmup: `steps` x 5% rounded half up.
+pub fn short_stage_warmup(steps: usize) -> usize {
+    (steps * 5 + 50) / 100
 }
 
 /// `config/bc.toml` (041-R3, R10).

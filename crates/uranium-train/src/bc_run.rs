@@ -46,6 +46,15 @@ impl BcStage {
             BcStage::AblationA => cfg.steps.ablation_a,
         }
     }
+
+    /// Warmup of the stage (041-R14: S2 and (A) from `[steps]`, 0 = keep `warmup_steps`).
+    pub fn warmup(self, cfg: &BcConfig) -> usize {
+        match self {
+            BcStage::S1 => 0,
+            BcStage::S2 => cfg.steps.s2_warmup,
+            BcStage::AblationA => cfg.steps.ablation_a_warmup,
+        }
+    }
 }
 
 /// Where checkpoints go.
@@ -88,6 +97,10 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<()> {
     let stage_steps = args.stage.steps(&cfg);
     if stage_steps > 0 {
         cfg.total_steps = stage_steps;
+    }
+    let stage_warmup = args.stage.warmup(&cfg);
+    if stage_warmup > 0 {
+        cfg.warmup_steps = stage_warmup;
     }
     let ad = if cfg.grad_checkpointing { dev.autodiff().gradient_checkpointing() } else { dev.autodiff() };
     let cols = uranium_model::batch::ActionColumns::from_table(uranium_env::features::extract::action_table())?;
