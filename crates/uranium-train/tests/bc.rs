@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 
+use burn::module::Module;
 use burn::tensor::Device;
 use uranium_env::features::augment::Sym;
 use uranium_env::features::extract::action_table;
@@ -388,6 +389,90 @@ fn resume_continues_bit_identically_061_r10() {
     let mut c = tiny_trainer_with(1, 0, load());
     assert_ne!(next(&mut c), kept);
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Every float parameter of a module as raw f32 bits, in visit order.
+struct ParamBits(Vec<Vec<u32>>);
+
+impl burn::module::ModuleVisitor for ParamBits {
+    fn visit_float<const D: usize>(&mut self, p: &burn::module::Param<burn::tensor::Tensor<D>>) {
+        self.0.push(host_f32(p.val()).iter().map(|x| x.to_bits()).collect());
+    }
+}
+
+fn host_f32<const D: usize>(t: burn::tensor::Tensor<D>) -> Vec<f32> {
+    t.into_data().convert::<f32>().try_to_vec::<f32>().unwrap()
+}
+
+fn param_bits<M: burn::module::Module>(m: &M) -> Vec<Vec<u32>> {
+    let mut v = ParamBits(Vec::new());
+    m.visit(&mut v);
+    v.0
+}
+
+/// A burnpack file as sorted (tensor name, raw bytes) plus its scalars: independent of the order
+/// the writer iterated its state in (Burn's optimizer keeps it in a hash map).
+fn burnpack_digest(path: &std::path::Path) -> (Vec<(String, Vec<u8>)>, String) {
+    let r = burn::store::burn_pack::Reader::from_file(path).unwrap();
+    let mut t: Vec<(String, Vec<u8>)> = r.tensor_names().into_iter().map(|n| (n.to_string(), r.tensor_data(n).unwrap())).collect();
+    t.sort();
+    (t, format!("{:?}", r.scalars()))
+}
+
+/// 061-AC5 / AC1 (G-D7, flex): a saved checkpoint loads back with weights and optimizer state
+/// bit-identical to what was saved (both checked on host data, so independent of the device the
+/// checkpoint is loaded on), and the loaded net's forward outputs match the saved net's within
+/// the 032-AC1 tolerance (Flex/Vulkan 1e-4; Flex is exact here). On a GPU the stored values are
+/// the same; the forward then follows 032-AC1 (CUDA 1e-2), and a resumed run continues
+/// bit-identically only on the same host with the same autotune cache (041-R15).
+#[test]
+fn checkpoint_round_trip_is_bit_identical_061_ac5() {
+    let cols = ActionColumns::from_table(action_table()).unwrap();
+    let root = std::env::temp_dir().join(format!("uranium-bc-ac5-{}", std::process::id()));
+    std::fs::remove_dir_all(&root).ok();
+    let (a_dir, b_dir) = (root.join("a"), root.join("b"));
+    let mut a = tiny_trainer(1);
+    let mut src = VecSource((0..4).map(|_| game()).collect::<VecDeque<_>>());
+    for _ in 0..3 {
+        a.train_step(&mut src).unwrap().unwrap();
+    }
+    a.save(&a_dir).unwrap();
+
+    // Weights: loaded on a plain (non-autodiff) Flex device, bit-identical to the trained net.
+    let flex = Device::flex();
+    let load = |d: &Device| uranium_model::checkpoint::load::<LstmCore>(&a_dir, &cols, uranium_env::features::FEATURE_SCHEMA_VERSION, uranium_env::actions::ACTION_SCHEMA_VERSION, d).unwrap().0;
+    let loaded = load(&flex);
+    assert_eq!(param_bits(&loaded), param_bits(&a.net.valid()), "061-AC5: loaded weights differ from the saved ones");
+    // 041-R15: the Burn runtime setting travels with the weights.
+    let meta = uranium_model::checkpoint::read_meta(&a_dir).unwrap();
+    assert_eq!(meta.train["burn"], uranium_model::runtime::settings_json());
+
+    // Optimizer state: resume into a fresh trainer and save again: same moments and scalars.
+    let mut b = tiny_trainer_with(1, 0, load(&Device::flex().autodiff()));
+    assert!(b.resume(&a_dir).unwrap());
+    b.save(&b_dir).unwrap();
+    let optim = uranium_train::ckpt::optim_file("main");
+    let (oa, ob) = (burnpack_digest(&a_dir.join(&optim)), burnpack_digest(&b_dir.join(&optim)));
+    assert!(!oa.0.is_empty(), "the optimizer state holds the AdamW moments after 3 updates");
+    assert_eq!(oa, ob, "061-AC5: optimizer state after load differs from the saved one");
+    let w = uranium_model::checkpoint::WEIGHTS_FILE;
+    assert_eq!(burnpack_digest(&a_dir.join(w)), burnpack_digest(&b_dir.join(w)));
+
+    // Forward outputs: same inputs, saved net vs loaded net, within 032-AC1 (Flex 1e-4).
+    let (obs, _) = uranium_model::synthetic::random_obs(&tiny_cfg(), &cols, 4, 16, 41, &flex);
+    let saved = a.net.valid();
+    let labels = saved.act(&obs, saved.init_state(4, &flex), 0.0).action;
+    let want = saved.forward_seq(&obs, &labels, None, saved.init_state(4, &flex), 1);
+    let got = loaded.forward_seq(&obs, &labels, None, loaded.init_state(4, &flex), 1);
+    let max_abs = |x: Vec<f32>, y: Vec<f32>| x.iter().zip(&y).fold(0f32, |m, (p, q)| m.max((p - q).abs()));
+    for (name, d) in [
+        ("value", max_abs(host_f32(want.value.clone()), host_f32(got.value.clone()))),
+        ("logp.action", max_abs(host_f32(want.heads.logp.action.clone()), host_f32(got.heads.logp.action.clone()))),
+        ("dists.action", max_abs(host_f32(want.heads.dists.action.clone()), host_f32(got.heads.dists.action.clone()))),
+    ] {
+        assert!(d <= 1e-4, "061-AC5 / 032-AC1: {name} differs by {d:.2e} after load");
+    }
+    std::fs::remove_dir_all(&root).ok();
 }
 
 /// A game of `len` steps (1..=16) with its own replay hash.

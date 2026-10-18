@@ -50,6 +50,10 @@ impl InferBackend {
     }
 
     pub fn device(self) -> Result<Device> {
+        // 041-R15: same autotune cache location as training when URANIUM_AUTOTUNE_CACHE_DIR is set.
+        if self != Self::Flex {
+            uranium_model::runtime::init_gpu_runtime(false)?;
+        }
         Ok(match self {
             Self::Vulkan => Device::vulkan(burn::tensor::DeviceKind::DefaultDevice),
             #[cfg(feature = "cuda")]

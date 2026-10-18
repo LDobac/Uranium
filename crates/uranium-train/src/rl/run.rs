@@ -430,7 +430,8 @@ fn save_checkpoint<C: CoreInit + 'static>(run: &mut Run, step: u64, learners: &[
     for (i, l) in learners.iter().enumerate() {
         let name = AgentKind::ALL[i].name();
         let mut meta = CheckpointMeta::new(&l.net_cfg, uranium_env::features::FEATURE_SCHEMA_VERSION, uranium_env::actions::ACTION_SCHEMA_VERSION)?;
-        meta.train = serde_json::json!({ "rl": l.cfg, "algo": l.algo, "update": l.update, "agent": name });
+        // 041-R15: Burn autotune / fusion recorded with the weights (041-R10).
+        meta.train = serde_json::json!({ "rl": l.cfg, "algo": l.algo, "update": l.update, "agent": name, "burn": uranium_model::runtime::settings_json() });
         checkpoint::save(&ckpt::agent_dir(&dir, name)?, &l.net.valid(), &meta)?;
         ckpt::save_optimizer(&dir, name, l.optimizer())?;
     }

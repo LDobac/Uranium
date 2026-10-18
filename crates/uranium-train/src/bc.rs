@@ -10,7 +10,6 @@ use std::sync::Arc;
 use anyhow::Result;
 use burn::module::Module;
 use burn::optim::{AdamWConfig, GradientsAccumulator, GradientsParams, ModuleOptimizer};
-use burn::optim::grad_clipping::GradientClippingConfig;
 use burn::tensor::{Bool, Device, Tensor, TensorData};
 use serde::{Deserialize, Serialize};
 use uranium_env::features::augment::Sym;
@@ -100,6 +99,7 @@ pub struct BcConfig {
     #[serde(default)]
     pub steps: StageSteps,
     pub weight_decay: f32,
+    /// Global L2-norm clip over all parameter gradients (041-R3, `crate::clip`).
     pub grad_clip: f32,
     pub s2_lr_scale: f64,
     pub heads: HeadWeights,
@@ -543,10 +543,8 @@ pub struct Trainer<C: CoreInit> {
 impl<C: CoreInit> Trainer<C> {
     /// `device` must be an autodiff device.
     pub fn new(net: UraniumNet<C>, net_cfg: UraniumNetConfig, cfg: BcConfig, device: Device) -> Self {
-        let optim = AdamWConfig::new()
-            .with_weight_decay(cfg.weight_decay)
-            .with_grad_clipping(Some(GradientClippingConfig::Norm(cfg.grad_clip)))
-            .init();
+        // 041-R3 (G-D4): no Burn clipping (it is per tensor); `train_batch` clips the global norm.
+        let optim = AdamWConfig::new().with_weight_decay(cfg.weight_decay).init();
         let feeder = Feeder::new(&cfg);
         let data = feeder.state(None);
         Self { net, cfg, net_cfg, optim, device, feeder, states: Vec::new(), step: 0, lr_scale: 1.0, data }
@@ -599,8 +597,11 @@ impl<C: CoreInit> Trainer<C> {
             acc.accumulate(&self.net, grads);
             prof.mark("accumulate");
         }
+        // 041-R3 (G-D4): one global L2-norm clip over the summed gradients of all lane groups.
+        let (grads, _norm) = crate::clip::clip_global_norm(&self.net, acc.grads(), self.cfg.grad_clip);
+        prof.mark("clip");
         let lr = self.cfg.lr_at(self.step, self.lr_scale);
-        self.net = self.optim.step(lr, self.net.clone(), acc.grads());
+        self.net = self.optim.step(lr, self.net.clone(), grads);
         prof.mark("optimizer");
         prof.report(self.step);
         self.step += 1;
@@ -697,7 +698,7 @@ impl<C: CoreInit> Trainer<C> {
     /// state, step and RNG so a run can resume on any host.
     pub fn save(&self, dir: &Path) -> Result<()> {
         let mut meta = CheckpointMeta::new(&self.net_cfg, uranium_env::features::FEATURE_SCHEMA_VERSION, uranium_env::actions::ACTION_SCHEMA_VERSION)?;
-        meta.train = serde_json::json!({ "bc": self.cfg, "step": self.step, "lr_scale": self.lr_scale, "games": self.data.games, "invalid_labels": self.data.invalid_labels });
+        meta.train = serde_json::json!({ "bc": self.cfg, "step": self.step, "lr_scale": self.lr_scale, "games": self.data.games, "invalid_labels": self.data.invalid_labels, "burn": uranium_model::runtime::settings_json() });
         checkpoint::save(dir, &self.net.valid(), &meta)?;
         ckpt::save_optimizer(dir, OPTIM_NAME, &self.optim)?;
         let state = TrainState {

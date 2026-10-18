@@ -11,6 +11,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 - 게임 데이터 추출(011-R13): `cargo install casc --version 0.1.6 --locked` 후 `cargo run -p casc-extract -- <SC:R Data> <출력>` → `.env` `URANIUM_DATA_DIR`.
 - BWAPI 타입 표(013-R1): `cargo run -p bwapi-tables -- third_party/bwapi/bwapi crates/uranium-env/tables`.
 - CUDA 실행은 `CUDA_PATH`가 필요하다(없으면 커널 컴파일 시 libdevice 오류). CUDA 빌드(`--features cuda`)는 CUDA PC에서만 한다.
+- Burn autotune·fusion(041-R15): 워크스페이스 `burn` 의존성의 `autotune`·`fusion` feature로 모든 빌드에서 켜진다(코어 비교·BC·RL·추론·벤치 공통, Flex에는 영향 없음). autotune 캐시는 `.env` `URANIUM_AUTOTUNE_CACHE_DIR`(호스트별 고정 로컬 폴더)에 둔다. GPU 학습 명령(`bc`, `rl`, `bc-eval`, `bc-profile`의 cuda·vulkan)은 이 키가 없으면 시작하지 않는다. run이 끝날 때까지 캐시를 지우지 않는다: 같은 장비·같은 캐시로 재개하면 비트 단위로 같고, 장비나 캐시가 다르면 032-AC1·AC8 허용 오차 안에서만 같다(061-AC1). 첫 update는 autotune 측정 때문에 느리다.
 
 ## 벤치
 - Burn/Vulkan(060-R2): `cargo run -p bench --release -- --backend vulkan [--quick] [--filter <name>]` → `reports/bench_bc250.md`.
@@ -57,7 +58,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 - `bc-epoch`(1 epoch update 수, 게임 시작 NoOp 스텝 포함), `bc-eval --checkpoint <ckpt|run> [--split test|val] [--games N --seed 1]`(041 지표), `bc-profile --backend <b> [--batches N]`, `split-stats`, `label-check [--games N]`(034-AC3), `manifest <dir> [--verify]`(061-R7). 모두 `--dataset`/`--shards`를 받는다.
   - `bc-eval --games N`은 분할 전체를 고정 seed(`--seed`, 기본 1)로 섞어 앞의 N게임을 고른다. 체크포인트·코어와 무관하게 같은 게임이다(032-R17 ②). 단위(E-9): `delay_mae_frames`는 프레임(bucket 값), `delay_mae_buckets`는 bucket 번호, `nll.<head>`는 그 헤드를 쓰는 스텝(`nll_steps.<head>`)만의 평균이다. 출력 `units`에 같은 설명이 들어 있다.
   - `split-stats` 출력: `splits`(소스·맵 그룹·분할별 게임 수), `sources`(소스별 `privileged` 없는 게임·스텝 수와 비율(E-10), `result_source`별 게임 수(040-R8)).
-- 하이퍼파라미터 `config/bc.toml`(GPU 메모리는 `micro_lanes`, `pad_entities`, `grad_checkpointing`), 코어 비교 `config/bc_core_ablation.toml`, 보상 `config/reward.toml`.
+- 하이퍼파라미터 `config/bc.toml`(GPU 메모리는 `micro_lanes`, `pad_entities`, `grad_checkpointing`), 코어 비교 `config/bc_core_ablation.toml`, 보상 `config/reward.toml`. `grad_clip`은 모든 파라미터 gradient를 한 벡터로 본 전역 L2 norm 기준이고, 레인 그룹 gradient를 합친 뒤 optimizer step 전에 한 번 적용한다(041-R3, RL `config/rl.toml`도 같음).
 
 ## 감시·작업자(060-R6, 061-R13~R15)
 - `uranium-train supervise [--hang-minutes 30 --max-restarts 5 --window-minutes 60 --delay-seconds 60 --progress-file <file> --log <file>] -- <bc|rl 인자>`: 비정상 종료·멈춤이면 같은 run을 재시작한다. 종료 코드 0·130·75(잠금을 얻지 못함: 다른 PC 잠금, 획득 경쟁에서 짐, 양보 예약)·76(양보)은 재시작하지 않는다.

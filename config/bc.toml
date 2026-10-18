@@ -11,7 +11,8 @@ grad_checkpointing = false
 # Round the batch entity count N up to a multiple of this (masked padding, same result). Fewer
 # distinct tensor shapes; ~9% faster per update on the 13-game CUDA sample (2026-10-17).
 pad_entities = 64
-# AdamW + linear warmup + cosine decay, gradient-norm clip 1.0 (041-R3).
+# AdamW + linear warmup + cosine decay, gradient-norm clip 1.0 (041-R3): one global L2 norm over
+# all parameter gradients after the micro-lane sum (not Burn's per-tensor clip, G-D4).
 lr = 3e-4
 min_lr = 3e-6
 warmup_steps = 2000

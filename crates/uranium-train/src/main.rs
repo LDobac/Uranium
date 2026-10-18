@@ -331,6 +331,11 @@ enum CoreArg {
 }
 
 fn device(b: Backend) -> Result<Device> {
+    // 041-R15: autotune + fusion are compiled in; the autotune cache must sit in the host's fixed
+    // URANIUM_AUTOTUNE_CACHE_DIR before the first GPU device is made (training: required).
+    if !matches!(b, Backend::Flex) {
+        uranium_model::runtime::init_gpu_runtime(true)?;
+    }
     Ok(match b {
         Backend::Vulkan => Device::vulkan(DeviceKind::DefaultDevice),
         #[cfg(feature = "cuda")]

@@ -11,6 +11,7 @@ pub mod heads;
 pub mod layers;
 pub mod net;
 pub mod prof;
+pub mod runtime;
 pub mod scalar;
 pub mod spatial;
 pub mod synthetic;

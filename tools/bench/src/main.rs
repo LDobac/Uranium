@@ -59,6 +59,10 @@ fn cuda_device(_index: usize) -> Result<Device> {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    // 041-R15 / 060-AC4: autotune + fusion as in training, cache in URANIUM_AUTOTUNE_CACHE_DIR.
+    if !matches!(args.backend, Backend::Flex) {
+        uranium_model::runtime::init_gpu_runtime(false)?;
+    }
     let mut device = match args.backend {
         Backend::Vulkan => Device::vulkan(DeviceKind::DefaultDevice),
         Backend::Cuda => cuda_device(args.cuda_index)?,

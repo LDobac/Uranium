@@ -13,6 +13,7 @@ pub struct OptimizerConfig {
     pub beta2: f32,
     pub eps: f32,
     pub weight_decay: f32,
+    /// Global L2-norm clip over all parameter gradients (042 table = 041-R3, `crate::clip`).
     pub grad_clip: f32,
 }
 

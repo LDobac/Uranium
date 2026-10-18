@@ -11,7 +11,6 @@
 use std::any::Any;
 
 use burn::module::Module;
-use burn::optim::grad_clipping::GradientClippingConfig;
 use burn::optim::{AdamConfig, GradientsAccumulator, GradientsParams, ModuleOptimizer};
 use burn::tensor::{Device, Tensor, TensorData};
 use serde::Serialize;
@@ -77,7 +76,7 @@ pub fn new_optimizer(cfg: &RlConfig) -> ModuleOptimizer {
         .with_beta_1(o.beta1)
         .with_beta_2(o.beta2)
         .with_epsilon(o.eps)
-        .with_grad_clipping(Some(GradientClippingConfig::Norm(o.grad_clip)))
+        // 042 optimizer table / 041-R3 (G-D4): the global-norm clip runs in `update`, not in Burn.
         .init()
 }
 
@@ -240,7 +239,9 @@ impl<C: CoreInit + 'static> Learner<C> {
                 let grads = GradientsParams::from_grads(loss.backward(), &self.net);
                 acc.accumulate(&self.net, grads);
             }
-            self.net = self.optim.step(self.cfg.optimizer.lr, self.net.clone(), acc.grads());
+            // 042 optimizer table / 041-R3 (G-D4): global L2-norm clip after the lane-group sum.
+            let (grads, _norm) = crate::clip::clip_global_norm(&self.net, acc.grads(), self.cfg.optimizer.grad_clip);
+            self.net = self.optim.step(self.cfg.optimizer.lr, self.net.clone(), grads);
         }
         stats.loss = stats.policy + stats.value + stats.kl * kl_coef - self.entropy_bonus(&stats.entropy_heads);
         stats.rho_mean /= n;

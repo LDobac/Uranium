@@ -18,8 +18,17 @@ const VULKAN_TOL: f32 = 1e-4;
 /// AMB-032-5: absolute tolerance on CUDA (TF32 matmul) for values and per-head log-probs.
 #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 const CUDA_TOL: f32 = 1e-2;
+/// 032-AC8 backward bound on Vulkan: per-parameter L2 relative gradient difference.
+const VULKAN_GRAD_TOL: f64 = 1e-3;
+/// 032-AC8 backward bound on CUDA (2026-10-19 measured basis, user decision D-a): with autotune +
+/// fusion on (041-R15) the worst parameter measured 3.7e-3 to 4.9e-3 over six runs; about 2x margin,
+/// rounded up.
+const CUDA_GRAD_TOL: f64 = 1e-2;
 
 fn target() -> (Device, f32) {
+    // 041-R15 / 032-AC8: same Burn settings as training (autotune + fusion are compiled in; the
+    // autotune cache goes to URANIUM_AUTOTUNE_CACHE_DIR when set).
+    uranium_model::runtime::init_gpu_runtime(false).expect("autotune cache (041-R15)");
     match std::env::var("URANIUM_TEST_DEVICE").as_deref() {
         Ok("vulkan") => (Device::vulkan(DeviceKind::DefaultDevice), VULKAN_TOL),
         #[cfg(feature = "cuda")]
@@ -226,10 +235,9 @@ fn gradients_match<C: CoreInit>(cfg: &UraniumNetConfig, b: usize, t: usize, n: u
     let worst = rows.first().map_or(0.0, |r| r.2);
     eprintln!("{:?} {} parameters, worst L2 relative gradient difference {worst:.2e}", C::KIND, rows.len());
     // 032-AC8: gradients sum many more rounding steps than one forward value: Vulkan f32 lands
-    // near 5e-4 with or without kernel changes (2026-10-18), so its bound is 1e-3. The CUDA bound
-    // is TBD(M6) (032-AC8: re-measure with autotune + fusion, then confirm with the user); until
-    // then the current value 1e-2 (the forward CUDA tolerance) is kept.
-    let grad_tol = (tol as f64).max(1e-3);
+    // near 5e-4 with or without kernel changes (2026-10-18), so its bound is 1e-3. CUDA: measured
+    // with autotune + fusion (2026-10-19, D-a), see `CUDA_GRAD_TOL`.
+    let grad_tol = if tol > VULKAN_TOL { CUDA_GRAD_TOL } else { VULKAN_GRAD_TOL };
     assert!(worst <= grad_tol, "gradient L2 relative difference {worst:.2e} > {grad_tol:.0e}");
 }
 

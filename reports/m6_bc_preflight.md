@@ -330,3 +330,44 @@ uranium-env run --plan config/plans/bc-vs-t0.toml --backend cuda
    - bc Ctrl+C 저장
    - 다른 PC에서 이어 하려면 061 공용 저장소(잠금·push) 연동
    - 약 14일 실행이라 중단 가능성이 높다.
+
+## 5차: autotune·fusion 켠 상태의 032-AC8 CUDA 재측정 (2026-10-19)
+
+### 배경과 예상
+- 사용자 결정 G-D5(041-R15)로 CUDA·Vulkan 모두 Burn autotune + fusion을 켠다. 워크스페이스 `burn` 의존성에 `autotune`·`fusion` feature를 넣어 모든 빌드(코어 비교·BC·RL·추론·벤치)가 같은 설정이 되게 했다. autotune 캐시는 `URANIUM_AUTOTUNE_CACHE_DIR`에 둔다.
+- 사용자 결정 D-a: 032-AC8의 CUDA backward 기준은 autotune·fusion을 켠 AC8 테스트로 다시 재고, 실측값에 여유를 둔 값으로 정한다.
+- 예상: 3차 표의 값(autotune + fusion 2.2e-2, autotune만 5.3e-2)과 비슷하게 1e-2를 넘을 것으로 보았다.
+
+### 방법
+- 테스트: `crates/uranium-model/tests/cross_device.rs` `lstm_gradients_match_flex_032_ac8`(tiny 설정, B2·T4·N16, dropout 0). 지표는 파라미터별 상대 L2(‖g_dev − g_flex‖ ÷ ‖g_flex‖, 분모 하한은 가장 큰 gradient norm의 1e-3)의 최댓값이다.
+- CUDA 호스트(Windows, CUDA f32·TF32 matmul), `--release --features cuda`, 별도 `CARGO_TARGET_DIR`. 1~3회는 회마다 새 autotune 캐시 폴더, 4~6회는 3회와 같은 캐시 폴더를 지정했다.
+- 같은 빌드로 forward(032-AC1) 테스트와, 이 PC의 Vulkan 드라이버(NVIDIA)로 AC8도 돌렸다. BC250(Vulkan 호스트, Linux)은 표본 단계(R-2)에서 같은 테스트를 돌린다.
+
+### 결과
+| 회 | 캐시 | 손실(Flex 7.146390) | 최악 파라미터 상대 L2 | 그 파라미터의 최대 절대 상대 차이 |
+|---|---|---|---|---|
+| 1 | 새 캐시 1 | 7.146374 | 4.88e-3 | 1.42e-2 |
+| 2 | 새 캐시 2 | 7.146452 | 4.94e-3 | 1.44e-2 |
+| 3 | 새 캐시 3 | 7.146405 | 4.91e-3 | 1.43e-2 |
+| 4 | 캐시 3 | 7.146374 | 4.88e-3 | 1.42e-2 |
+| 5 | 캐시 3 | 7.146389 | 3.73e-3 | 3.49e-3 |
+| 6 | 캐시 3 | 7.146407 | 4.81e-3 | — |
+
+- **CUDA 최댓값 4.94e-3**(범위 3.73e-3~4.94e-3). 약 2배 여유를 두고 올려 **CUDA 기준 1e-2를 제안**하고, spec 032-AC8과 테스트 상수 `CUDA_GRAD_TOL`에 "2026-10-19 실측 기준(사용자 결정 D-a)"으로 적었다. 사용자 확인이 필요하다.
+- 3차의 2.2e-2보다 작다. 같은 테스트·같은 지표인데 원인은 확인하지 못했다. 후보는 그 뒤의 모델 코드 수정(heads 등)과 autotune의 측정 시간 기반 커널 선택이다. 다른 세션이나 호스트에서 1e-2를 넘으면 기준을 다시 확인받는다.
+- forward(032-AC1, CUDA): LSTM 최대 3.8e-4, GTrXL 최대 1.3e-4로 1e-2 안이다.
+- Vulkan(이 PC의 NVIDIA 드라이버) AC8: 3회 모두 5.81e-4(손실은 Flex와 같은 자리까지 일치)로 1e-3 안이고, 회마다 결과가 같았다.
+
+### 발견: CUDA는 같은 장비·같은 캐시로도 회마다 결과가 다르다
+- 4~6회는 같은 캐시 폴더인데 손실과 gradient가 회마다 다르다.
+- 원인 1: Windows에서 CubeCL 0.11의 영구 캐시(Turso DB)가 쓰기 모드로 열리지 않는다("experimental multiprocess WAL is not supported by the active IO backend" → 읽기 전용, 테이블 없음 → 메모리 캐시). `default.db`는 0바이트로 남고, 프로세스마다 autotune을 다시 측정한다. 후보 커널의 시간이 비슷해(예: matmul 후보 51~55µs) 회마다 다른 커널을 고를 수 있다. 첫 update의 autotune 시간도 매번 든다.
+- 원인 2: CUDA 축소 연산 일부가 float atomic add(`atomicrmw FAdd`)로 컴파일된다. 더하는 순서가 실행마다 달라 비트 단위 결과가 달라질 수 있다.
+- 영향: 041-R15·061-AC1의 "같은 장비가 같은 캐시로 재개하면 비트 단위로 같다"는 적어도 Windows CUDA 호스트에서는 성립하지 않는다. 재개 결과는 032-AC1·AC8 허용 오차 안에서만 같다. Linux Vulkan 호스트에서 캐시가 저장되는지는 표본 단계에서 확인한다(이 PC의 Vulkan은 3회 결과가 같았다).
+- 결정 필요: 061-AC1·041-R15 문구를 "CUDA 호스트는 같은 장비여도 허용 오차 기준"으로 바꿀지(기본안(미확정)), Windows 캐시 저장 문제를 별도로 다룰지.
+
+### 같이 반영한 것(코드)
+- 041-R3 전역 L2 norm clip(`crates/uranium-train/src/clip.rs`): BC와 RL learner 모두 레인 그룹 gradient 합산 뒤, optimizer step 전에 한 번 적용한다. Burn 텐서별 clip은 뺐다. 이전과 학습 수치가 달라진다(본학습 체크포인트는 아직 없다).
+- 061-AC5 테스트(`checkpoint_round_trip_is_bit_identical_061_ac5`, Flex): 불러온 가중치·옵티마이저 상태가 저장값과 비트 단위로 같고, forward 차이가 1e-4 안이다.
+- BC·RL 체크포인트 `meta.json` `train.burn`에 `{"autotune": true, "fusion": true}`를 기록한다(041-R10·R15).
+- BC update 시간 영향은 이번에 재지 않았다(3차 표: CUDA 레인 그룹 약 3.5배, Vulkan 약 1.45배). 표본 단계(R-2)에서 실제 update 시간을 잰다.
+- 측정 산출물: autotune 캐시 폴더와 CubeCL 로그는 작업 트리의 `target/cuda/` 아래(git 미추적)에 있다.

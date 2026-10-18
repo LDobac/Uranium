@@ -25,10 +25,10 @@ publish = false
 
 [workspace.dependencies]
 # 060: Burn is pinned via Cargo.lock; upgrades go through a spec change.
-# Burn kernel autotune / fusion stay off: on CUDA they move some conv gradients by 2-5% against
-# Flex (2026-10-18 cross_device gradient test), a precision change; proposed with their ~2.5-3.5x
-# BC speed-up in reports/m6_bc_preflight.md.
-burn = { version = "=0.22.0", default-features = false }
+# 041-R15 (G-D5, 2026-10-19 user decision): Burn kernel autotune + fusion on for every build, so the
+# core comparison, BC, RL and inference all use the same setting (CUDA and Vulkan; Flex has
+# neither). The autotune cache goes to URANIUM_AUTOTUNE_CACHE_DIR (uranium_model::runtime).
+burn = { version = "=0.22.0", default-features = false, features = ["autotune", "fusion"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"
