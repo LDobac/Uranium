@@ -662,6 +662,107 @@ pub struct LabelStats {
     /// Upgrade: which prerequisite fails, and whether it already failed at the previous step
     /// (old) or only became false since (new).
     pub type_detail: std::collections::BTreeMap<String, usize>,
+    /// 액션 감사 F23·F24: "<action> [<reason>] -> <cause>" for target and location failures:
+    /// whether a missing target was seen before / later / never, and which footprint condition
+    /// rejects a build tile (with the building type).
+    pub cause_detail: std::collections::BTreeMap<String, usize>,
+    /// Per game: (src, "replay SHA-256 prefix, matchup, map", labels, invalid, target_unit_missing, target_loc),
+    /// to tell a few divergent replays from a spread-out mask issue.
+    pub per_game: Vec<(String, String, usize, usize, usize, usize)>,
+}
+
+/// Frames since a unit was last observed, bucketed (label-check, 액션 감사 F23).
+fn age_bucket(frames: u32) -> &'static str {
+    match frames {
+        0..=8 => "<=8f",
+        9..=24 => "<=24f",
+        25..=96 => "<=96f",
+        _ => ">96f",
+    }
+}
+
+/// Why a Build_* / Land_* tile fails its location class (액션 감사 F24): every failing footprint
+/// condition, the building on it, and whether a neighbouring tile would pass (footprint offset).
+fn loc_cause(w: &uranium_env::features::world::World, o: &Observation, a: &uranium_env::actions::Action, tile: Option<(u16, u16)>) -> String {
+    use uranium_env::features::world::top_left;
+    let Some((x, y)) = tile.map(|(x, y)| (x as i32, y as i32)) else { return "no_tile".into() };
+    let tt = uranium_env::types::TypeTables::get();
+    let lc = uranium_env::actions::LOC_CLASSES.iter().position(|c| *c == a.loc_class).unwrap();
+    let ok_at = |tx: i32, ty: i32| tx >= 0 && ty >= 0 && (tx as usize) < MAP && (ty as usize) < MAP && o.masks.loc_class_mask[lc * CELLS + ty as usize * MAP + tx as usize];
+    let mut causes: Vec<String> = vec![];
+    let built = a.unit_type.and_then(|u| tt.unit(u));
+    if a.loc_class == "refinery_slot" {
+        let geyser = w.entities.iter().find(|e| e.unit.unit_type == w.ids.geyser && w.ty(&e.unit).is_some_and(|t| top_left(&e.unit, t) == (x, y)));
+        let refinery = w.frame.units.iter().find(|u| tt.unit(u.unit_type).is_some_and(|t| t.name.ends_with("_Refinery") || t.name.ends_with("_Assimilator") || t.name.ends_with("_Extractor")) && tt.unit(u.unit_type).is_some_and(|t| top_left(u, t) == (x, y)));
+        causes.push(match (geyser, refinery) {
+            (_, Some(r)) if r.owner == w.mem.self_player => format!("own_refinery_here(completed={})", r.has(uranium_proto::flags::COMPLETED)),
+            (_, Some(_)) => "enemy_refinery_here".into(),
+            (Some(g), None) if g.remembered => format!("geyser_out_of_vision(explored={})", w.frame.explored.get(x as u16, y as u16)),
+            (Some(_), None) => "geyser_visible".into(),
+            (None, None) => "no_geyser_at_tile".into(),
+        });
+    } else {
+        let (fw, fh) = match a.loc_class.as_str() {
+            "buildable_4x3" | "landable_4x3" | "cc_slot" => (4, 3),
+            "buildable_3x2" => (3, 2),
+            "buildable_2x2" => (2, 2),
+            _ => (1, 1),
+        };
+        for ty in y..y + fh {
+            for tx in x..x + fw {
+                if !w.map.in_map(tx, ty) {
+                    causes.push("out_of_map".into());
+                    continue;
+                }
+                let i = ty as usize * MAP + tx as usize;
+                if !w.map.buildable[i] {
+                    causes.push("unbuildable".into());
+                }
+                if !w.frame.explored.get(tx as u16, ty as u16) {
+                    causes.push("unexplored".into());
+                }
+                if w.frame.creep.get(tx as u16, ty as u16) {
+                    causes.push("creep".into());
+                }
+                if w.blocked[i] {
+                    // What covers the tile: the same building at the same tile is a repeated
+                    // order after the building was placed.
+                    let on = w.entities.iter().find(|e| {
+                        w.ty(&e.unit).is_some_and(|t| (t.is_building() || t.is_resource()) && !e.unit.has(uranium_proto::flags::LIFTED) && {
+                            let (bx, by) = top_left(&e.unit, t);
+                            tx >= bx && tx < bx + t.tile_width && ty >= by && ty < by + t.tile_height
+                        })
+                    });
+                    causes.push(match on {
+                        Some(e) => {
+                            let t = w.ty(&e.unit).unwrap();
+                            let same = built.is_some_and(|b| b.id as u16 == e.unit.unit_type);
+                            let owner = if e.owner == OWNER_SELF { "own" } else if e.owner == OWNER_NEUTRAL { "neutral" } else if e.remembered { "remembered_enemy" } else { "enemy" };
+                            if same && top_left(&e.unit, t) == (x, y) {
+                                format!("same_building_same_tile(completed={})", e.unit.has(uranium_proto::flags::COMPLETED))
+                            } else if t.is_resource() {
+                                "blocked_by_resource".into()
+                            } else {
+                                format!("blocked_by_{owner}_building")
+                            }
+                        }
+                        None => "blocked_by_remembered_resource".into(),
+                    });
+                }
+            }
+        }
+        if causes.is_empty() && a.loc_class == "cc_slot" {
+            causes.push("near_resource".into());
+        }
+        if causes.is_empty() {
+            causes.push("mask_other".into());
+        }
+    }
+    causes.sort();
+    causes.dedup();
+    let shift = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)].into_iter().find(|&(dx, dy)| ok_at(x + dx, y + dy));
+    let shift = shift.map_or(String::new(), |(dx, dy)| format!(" (passes at {dx:+},{dy:+})"));
+    format!("{}{shift}", causes.join("+"))
 }
 
 /// First failing Train / Research / Upgrade prerequisite of `a` in `me` (034-R3 order).
@@ -707,6 +808,10 @@ fn prereq_fail(a: &uranium_env::actions::Action, me: &uranium_proto::PlayerState
                 None
             }
         }
+        "Build" => {
+            let u = t.unit(a.unit_type?)?;
+            if !afford(u.minerals, u.gas) { Some("afford") } else { None }
+        }
         _ => None,
     }
 }
@@ -716,7 +821,12 @@ pub fn label_check(game: &ShardGame, st: &mut LabelStats, maps: &MapStore) -> Re
     let mut walker = LabelWalker::new(&game.game_info, family_index(&game.meta.map_family), maps.get(&game.meta.map_hash)?.as_deref(), game.meta.enemy_random)?;
     let k = CAPABILITIES.len();
     let mut prev: Option<&uranium_proto::PlayerState> = None;
-    for s in &game.steps {
+    // 액션 감사 F23: last frame, owner and type each unit id was observed at (earlier steps).
+    let mut seen: HashMap<u32, (u32, u8, u16)> = HashMap::new();
+    let tt = uranium_env::types::TypeTables::get();
+    let type_name = |t: u16| tt.unit(t).map_or("?", |t| t.name.as_str());
+    let mut g = (game.meta.src.clone(), format!("{} {} map {} {}x{}", game.meta.replay_sha256.chars().take(12).collect::<String>(), game.meta.matchup, game.meta.map_hash.chars().take(8).collect::<String>(), game.game_info.map_size_tiles.0, game.game_info.map_size_tiles.1), 0usize, 0usize, 0usize, 0usize);
+    for (si, s) in game.steps.iter().enumerate() {
         let (o, label, why) = walker.step(&s.raw_frame, &s.action_label, None);
         // 031-AC3 `unknown` steps (labeler version 2) are counted under their own name.
         let a = action_table().actions.get(label.action as usize).filter(|_| !s.action_label.is_unknown());
@@ -754,6 +864,43 @@ pub fn label_check(game: &ShardGame, st: &mut LabelStats, maps: &MapStore) -> Re
             );
             *st.type_detail.entry(format!("{name} [{w}] -> {desc}")).or_default() += 1;
         }
+        if let (Some(_), Some(w @ ("target_unit_missing" | "target_unit_cap"))) = (a, why) {
+            let id = s.action_label.target_unit;
+            let in_frame = id.and_then(|id| s.raw_frame.units.iter().find(|u| u.id == id));
+            let cause = match (id, in_frame) {
+                (None, _) => "no_target_id".to_string(),
+                (Some(_), Some(u)) if w == "target_unit_missing" => format!("in_frame_not_entity({})", type_name(u.unit_type)),
+                (Some(_), Some(u)) => {
+                    let done = u.has(uranium_proto::flags::COMPLETED);
+                    let loaded = u.has(uranium_proto::flags::LOADED) || u.loaded_in.is_some();
+                    format!("present_ineligible({}, completed={done}, loaded={loaded})", type_name(u.unit_type))
+                }
+                (Some(id), None) => {
+                    let later = game.steps[si + 1..].iter().take(3).any(|n| n.raw_frame.units.iter().any(|u| u.id == id));
+                    match seen.get(&id) {
+                        Some(&(f, _, t)) => format!("seen_before({}, {}{})", type_name(t), age_bucket(s.raw_frame.frame.saturating_sub(f)), if later { ", back later" } else { "" }),
+                        None if later => "first_seen_later".to_string(),
+                        None => "never_seen".to_string(),
+                    }
+                }
+            };
+            *st.cause_detail.entry(format!("{name} [{w}] -> {cause}")).or_default() += 1;
+        }
+        if let (Some(a), Some("target_loc")) = (a, why) {
+            let w = uranium_env::features::world::World::new(&s.raw_frame, &walker.mem, &walker.map);
+            let ty = a.unit_type.map_or("-", type_name);
+            // Did the game build it there anyway (our mask is wrong) or not (the order failed)?
+            let me = game.game_info.self_player;
+            let built = s.action_label.target_tile.zip(a.unit_type).is_some_and(|((x, y), ut)| {
+                game.steps[si + 1..].iter().take(200).any(|n| {
+                    n.raw_frame.units.iter().any(|u| {
+                        u.owner == me && u.unit_type == ut && tt.unit(ut).is_some_and(|t| uranium_env::features::world::top_left(u, t) == (x as i32, y as i32))
+                    })
+                })
+            });
+            let cause = loc_cause(&w, &o, a, s.action_label.target_tile);
+            *st.cause_detail.entry(format!("{name} [target_loc] {ty} -> {cause}{}", if built { " [built there]" } else { " [not built there]" })).or_default() += 1;
+        }
         if let (Some(a), Some("type_mask")) = (a, why) {
             let me = &s.raw_frame.self_state;
             let cond = prereq_fail(a, me).unwrap_or("producer_or_required");
@@ -764,11 +911,19 @@ pub fn label_check(game: &ShardGame, st: &mut LabelStats, maps: &MapStore) -> Re
             };
             *st.type_detail.entry(format!("{name} <- {cond} ({age})")).or_default() += 1;
         }
+        g.2 += 1;
         if let Some(w) = why {
+            g.3 += 1;
+            g.4 += (w == "target_unit_missing") as usize;
+            g.5 += (w == "target_loc") as usize;
             *st.fails.entry((name, w)).or_default() += 1;
         }
         prev = Some(&s.raw_frame.self_state);
+        for u in &s.raw_frame.units {
+            seen.insert(u.id, (s.raw_frame.frame, u.owner, u.unit_type));
+        }
     }
+    st.per_game.push(g);
     Ok(())
 }
 

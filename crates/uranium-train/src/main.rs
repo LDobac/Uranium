@@ -469,11 +469,13 @@ fn main() -> Result<()> {
             detail.sort_by(|x, y| y.1.cmp(&x.1));
             let mut type_detail: Vec<_> = st.type_detail.into_iter().collect();
             type_detail.sort_by(|x, y| y.1.cmp(&x.1));
+            let mut cause_detail: Vec<_> = st.cause_detail.into_iter().collect();
+            cause_detail.sort_by(|x, y| y.1.cmp(&x.1));
             let labels: usize = st.totals.values().sum::<usize>() - unknown;
             println!(
                 "{}",
                 serde_json::to_string_pretty(
-                    &serde_json::json!({ "games": n, "labels": labels, "invalid": invalid, "unknown": unknown, "by_action_reason": rows, "select_cap_types": detail, "type_mask_prereq": type_detail })
+                    &serde_json::json!({ "games": n, "labels": labels, "invalid": invalid, "unknown": unknown, "by_action_reason": rows, "select_cap_types": detail, "type_mask_prereq": type_detail, "target_causes": cause_detail, "per_game": st.per_game })
                 )?
             );
             Ok(())

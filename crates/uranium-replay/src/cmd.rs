@@ -182,6 +182,9 @@ pub fn to_legacy(c: &Cmd, unit_limit: Option<u32>) -> Result<Cmd> {
         }
         op::RIGHT_CLICK | op::TARGETED_ORDER => (c.op, [&d[..4], &tag(d, 4, false)?[..], &d[6..]].concat()),
         op::UNLOAD_121 => (op::UNLOAD, tag(d, 0, true)?.to_vec()),
+        // CANCEL_TRAIN (0x20) carries a queue slot (254 = last; OpenBW `read_action_cancel_build_queue`),
+        // not a unit tag. Slots 0..4 and 254 pass the tag mapping unchanged, so it is kept as is
+        // (액션 감사 F13: changing it would not change any output).
         op::UNLOAD | op::CANCEL_TRAIN => (c.op, tag(d, 0, false)?.to_vec()),
         _ => return Ok(c.clone()),
     };

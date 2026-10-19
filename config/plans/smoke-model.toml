@@ -1,6 +1,7 @@
 # 020-R11 smoke: model policy (random-init checkpoint) vs T0 Terran / Zerg, both sampling modes.
 # Create the checkpoint once (relative paths are under URANIUM_SHARED_DIR, 061):
-#   uranium-agent random-checkpoint --out <URANIUM_SHARED_DIR>/checkpoints/smoke/random-lstm
+#   uranium-agent random-checkpoint --out <URANIUM_SHARED_DIR>/checkpoints/smoke/random-lstm-fv6
+# (feature schema 6, 액션 감사 T8; the older random-lstm is schema 4)
 # Run on the CUDA training host: uranium-env run --plan config/plans/smoke-model.toml --backend cuda
 name = "smoke-model"
 seed_base = 30000
@@ -8,10 +9,10 @@ max_frames = 12000
 [[matchup]]
 map = "both"
 games = 4
-p0 = { kind = "model", checkpoint = "checkpoints/smoke/random-lstm", sample = "argmax" }
+p0 = { kind = "model", checkpoint = "checkpoints/smoke/random-lstm-fv6", sample = "argmax" }
 p1 = { kind = "t0", race = "terran" }
 [[matchup]]
 map = "both"
 games = 2
-p0 = { kind = "model", checkpoint = "checkpoints/smoke/random-lstm", sample = "stochastic" }
+p0 = { kind = "model", checkpoint = "checkpoints/smoke/random-lstm-fv6", sample = "stochastic" }
 p1 = { kind = "t0", race = "zerg" }

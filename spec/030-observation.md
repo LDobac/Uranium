@@ -45,7 +45,7 @@ RawFrame과 에이전트 메모리를 모델 입력 텐서로 변환하는 규�
 | `z_units` | [B,U] f32 | 전략 유닛 구성(bag-of-units, 테란 유닛·건물 타입별 목표 비율) — §5 |
 | `z_present` | [B] bool | z 조건 사용 여부 |
 | `type_mask` | [B,A] bool | [034](034-action-table.md) |
-| `unit_cap` | [B,N,K≈48] bool | [034](034-action-table.md). 2026-10-19 K=49(can_stop·can_unload_pos 추가, feature 스키마 버전 5, 액션 감사) |
+| `unit_cap` | [B,N,K≈48] bool | [034](034-action-table.md). 2026-10-19 K=51(T9 can_unload_unit·loaded_unit, T8 can_stop·can_unload_pos 추가, feature 스키마 버전 6, 액션 감사) |
 | `loc_class_mask` | [B,L=8,128,128] bool | [034](034-action-table.md) |
 
 ## 2. 엔티티 연속 feature (`entity_cont`)
