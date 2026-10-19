@@ -1,6 +1,6 @@
 # 011 — Bridge: OpenBW
 
-- **Status**: Approved (2026-10-15, 2026-10-16 개정: 011-R13 내용 해시, 011-R15 첫 관측 프레임 1, 011-AC6 원격 판정 기준, 011-AC8 통과, 2026-10-18 개정: 011-R17 퇴장 사유 구분·011-R18 드롭 시간(011-AC7 대응, 사용자 결정). 2026-10-19 개정: 011-R19 GameEnd 최종 관측(010-R12, 사용자 결정))
+- **Status**: Approved (2026-10-15, 2026-10-16 개정: 011-R13 내용 해시, 011-R15 첫 관측 프레임 1, 011-AC6 원격 판정 기준, 011-AC8 통과, 2026-10-18 개정: 011-R17 퇴장 사유 구분·011-R18 드롭 시간(011-AC7 대응, 사용자 결정). 2026-10-19 개정: 011-R19 GameEnd 최종 관측(010-R12, 사용자 결정). 2026-10-19 액션 감사 개정: 011-R20 명령 실행(사용자 결정 2026-10-19, 액션 감사 F2·F3·F17))
 - **Related**: [010](010-game-protocol.md), [013](013-version-mapping.md), [020](020-env-orchestration.md)
 
 ## Purpose
@@ -11,7 +11,7 @@ OpenBW 포크 BWAPI 4.2(`github.com/OpenBW/bwapi`) 위에서 동작하는 AIModu
 - 비범위: GUI 디버깅. GUI 디버깅은 `OPENBW_ENABLE_UI=1` 빌드로 선택적으로만 지원한다. (변경 이력: 2026-10-15 'Windows 실행'을 비범위에서 제외, 011-R16)
 
 ## 구조
-- `bridge/openbw/shim.cpp`: `BWAPI::AIModule` 구현. `onStart/onFrame/onEnd/onUnit*` 이벤트를 C ABI로 Rust에 전달한다. 약 500줄 이내로 유지한다.
+- `bridge/openbw/shim.cpp`: `BWAPI::AIModule` 구현. `onStart/onFrame/onEnd/onUnit*` 이벤트를 C ABI로 Rust에 전달한다. 약 500줄 이내로 유지한다(2026-10-19 011-R20 추가 뒤 약 570줄).
 - `bridge/openbw/src/lib.rs` (`staticlib`): BWAPI 상태 덤프 구조체를 받아 RawFrame으로 변환하고, TCP 송수신과 Command 디코딩을 한다.
 - 빌드는 CMake로 하며 shim과 Rust staticlib을 링크해 `liburanium_bridge.so`를 만든다.
 
@@ -36,6 +36,7 @@ OpenBW 포크 BWAPI 4.2(`github.com/OpenBW/bwapi`) 위에서 동작하는 AIModu
 | 011-R17 | **MUST** GameEnd 사유: 상대가 섬멸되지 않고 게임을 떠나면(자발적 퇴장 또는 OpenBW 드롭) `Surrender`, 섬멸이면 `Elimination`으로 보고한다. 판정은 `onPlayerLeft(상대)` 시점에 직전 프레임까지 보던 상대 건물이 아직 존재하는지로 한다. 근접전 패배는 건물이 모두 파괴돼야 하고, 퇴장하면 건물이 중립으로 남기 때문이다(BWAPI는 섬멸된 플레이어에도 `onPlayerLeft`를 보내므로 이벤트만으로는 구분할 수 없다). 시간 제한은 기존대로 `TimeLimitDraw`다. 두 세션이 서로 상대 퇴장으로 승리를 보고한 게임의 처리는 020-R13 (2026-10-18 사용자 결정) |
 | 011-R18 | **MUST** OpenBW 드롭 시간: 동기화가 끊긴 LAN 클라이언트를 끊는 OpenBW 타임아웃(원본 60초 고정)을 환경변수 `URANIUM_OPENBW_DROP_TIMEOUT_MS`로 바꿀 수 있게 한다(패치 `0013-openbw-drop-timeout.patch`). 미설정이면 원본과 같은 60초다. hostd는 모든 런처에 이 값을 넘기며 기본값은 600,000(10분)이다(020, `.env`로 변경). lockstep 학습은 에이전트 응답을 기다리며 블로킹하므로 학습 호스트 멈춤이 60초를 넘으면 두 클라이언트가 서로를 끊어 버린다(2026-10-18 관측, 011-AC7) (2026-10-18 사용자 결정) |
 | 011-R19 | **MUST** 최종 관측(010-R12, 사용자 결정 2026-10-19, E-8): shim의 `onEnd`는 종료 프레임의 자기 시야 상태와 마지막 step 뒤 이벤트로 `UrFrame`을 만들어 `uranium_bridge_end(winner, reason, frame, last)`로 넘긴다. 실패 상태·리플레이 모드에서는 NULL이다 |
+| 011-R20 | **MUST** 명령 실행(사용자 결정 2026-10-19, `reports/m6_action_audit.md` F2·F3·F17). ① **대상 해석**: `Command`의 유닛 대상 id는 이번 관측에 넣은 유닛에서 찾고, 없으면 맵의 중립 미네랄 필드·베스핀 간헐천 전체(시야 밖 포함)에서 찾는다. 034의 "시야 밖이지만 한 번 본 자원" 대상을 실행하기 위한 것이며, 맵에서 공개된 자원뿐이므로 010-R5 예외 범위 안이다. 적·다른 플레이어 유닛은 관측 유닛에서만 찾는다(맵핵 금지). ② **즉시 실패**: 대상 id를 찾지 못하거나, 위치가 필요한 명령에 위치가 없으면(`UR_NONE`) 게임에 아무것도 보내지 않고 `CommandFailed`(Unit_Does_Not_Exist 또는 Invalid_Parameter)를 낸다. 이전에는 Move·RightClick이 (-1,-1) 이동으로 떨어져 실패 이벤트 없이 무시됐다. ③ **그룹 명령**: `Command::Unit`은 선택 유닛 전체에 한 번의 명령으로 보낸다. 같은 명령을 받는 유닛은 BWAPI `Game::issueCommand`(선택 1회 + 명령 1회)로 함께 보내 엔진의 그룹 이동(`calc_group_move`)이 사람 명령과 같게 적용된다. 그룹으로 명령할 수 없는 유닛(떠 있는 건물 등)은 따로 보낸다. 유닛마다 명령이 달라지는 보정 — 비무장 유닛 Attack_Pos → move(AMB-041-1), 적을 공격할 수 없는 유닛(메딕·드랍십·베슬 등)의 적 우클릭 → follow(F17, 게임은 Follow·HealMove로 바꾸지만 BWAPI는 거절) — 은 명령별로 묶어 보낸다. ④ **실패 판정**: 선택 중 1기 이상이 명령을 받으면 성공이고, 받은 유닛이 없을 때만 `CommandFailed`(첫 거절 유닛의 BWAPI 오류)를 낸다(게임도 명령을 받을 수 없는 선택 유닛만 건너뛴다, 041-R11). 유닛별 거절 수는 `CommandFailed`에 넣지 않는다(010 프로토콜 변경은 별도 결정). BWAPI `Unitset`은 포인터 해시 순서로 돌기 때문에 게임이 보는 선택 순서는 풀 순서와 다를 수 있으나, OpenBW의 그룹 처리(`action_order`, `calc_group_move`)는 선택 순서에 의존하지 않는다(011-AC4 결정론은 재확인 대상) |
 | 011-R12 | **SHOULD** 재생 모드에서도 `PrivilegedSummary`(상대 실제 상태)를 생성할 수 있게 한다. BC 단계의 value head 사전학습 입력으로 쓴다 |
 
 ## 환경변수 (2026-10-15 정리)

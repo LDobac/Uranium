@@ -320,6 +320,23 @@ mod tests {
         assert_eq!(pool[12], 99);
     }
 
+    /// 011-R20 (액션 감사 F2): a unit-target order carries no position, so the shim fails it at
+    /// once when it cannot resolve the target instead of moving to (-1, -1).
+    #[test]
+    fn unit_target_orders_carry_no_position_011_r20() {
+        let (mut out, mut pool) = (Vec::new(), Vec::new());
+        let unit = |order| Command::Unit { units: vec![1], order, queued: false };
+        commands(
+            &[unit(CmdOrder::Move(Target::Unit(9))), unit(CmdOrder::RightClick(Target::Unit(9))), unit(CmdOrder::Gather(9)), unit(CmdOrder::Move(Target::Pos((5, 6))))],
+            &mut out,
+            &mut pool,
+        );
+        for c in &out[..3] {
+            assert_eq!((c.target_unit, c.x, c.y), (9, UR_NONE, UR_NONE));
+        }
+        assert_eq!((out[3].target_unit, out[3].x, out[3].y), (UR_NONE, 5, 6));
+    }
+
     #[test]
     fn effects_map_spells() {
         let e = effect(&UrEffect { bullet_type: 157, x: 1, y: 2, remaining: 40, owner: 1 });

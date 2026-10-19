@@ -3,6 +3,7 @@
 // by the Rust bridge. No decision logic lives here.
 #include <BWAPI.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <unordered_map>
@@ -32,6 +33,22 @@ int32_t id_or_none(Unit u) { return u && g_observed.count(u) ? uid(u) : UR_NONE;
 Unit find_unit(int32_t id) {
   auto it = g_units.find(id);
   return it == g_units.end() ? nullptr : it->second;
+}
+
+// Neutral mineral fields and geysers by replay id, out of vision included (rebuilt every
+// observation). A command may target a resource the agent saw before and no longer sees (034
+// target classes, 010-R5 exception: map-public resources only). Every other unit, enemy units
+// above all, is resolved among the observed units alone (no map hack; 011-R20, audit F2).
+std::unordered_map<int32_t, Unit> g_resources;
+Unit find_target(int32_t id) {
+  if (id == UR_NONE) return nullptr;
+  if (Unit u = find_unit(id)) return u;
+  auto it = g_resources.find(id);
+  return it == g_resources.end() ? nullptr : it->second;
+}
+bool is_map_resource(Unit u) {
+  UnitType t = u->getType();
+  return u->getPlayer() && u->getPlayer()->isNeutral() && (t.isMineralField() || t == UnitTypes::Resource_Vespene_Geyser);
 }
 
 void fill_player_state(Player p, UrPlayerState& s) {
@@ -134,55 +151,110 @@ bool visible_to_self(Unit u) {
 
 Position pos(const UrCmd& c) { return Position(c.x, c.y); }
 
-bool exec_unit_order(Unit u, const UrCmd& c) {
-  Unit t = c.target_unit != UR_NONE ? find_unit(c.target_unit) : nullptr;
+// The command one unit of a selection gets. The unit is left null so that equal commands compare
+// equal and go to the game as one group. `t` is the resolved unit target.
+UnitCommand unit_command(Unit u, const UrCmd& c, Unit t) {
   bool q = c.queued != 0;
+  Position p = pos(c);
   switch (c.order) {
-    case UR_ORD_MOVE: return t ? u->follow(t, q) : u->move(pos(c), q);
+    case UR_ORD_MOVE: return t ? UnitCommand::follow(nullptr, t, q) : UnitCommand::move(nullptr, p, q);
     case UR_ORD_ATTACK:
-      if (t) return u->attack(t, q);
+      if (t) return UnitCommand::attack(nullptr, t, q);
       // 034 Attack_Pos: the game attack-moves any unit that can move, and unarmed ones just
       // move; BWAPI only lets armed units and medics attack-move, so send those the move.
-      if (!u->canAttackMove() && u->canMove()) return u->move(pos(c), q);
-      return u->attack(pos(c), q);
-    case UR_ORD_PATROL: return u->patrol(pos(c), q);
-    case UR_ORD_HOLD: return u->holdPosition(q);
-    case UR_ORD_STOP: return u->stop(q);
-    case UR_ORD_RIGHT_CLICK: return t ? u->rightClick(t, q) : u->rightClick(pos(c), q);
-    case UR_ORD_SIEGE: return u->siege();
-    case UR_ORD_UNSIEGE: return u->unsiege();
-    case UR_ORD_CLOAK: return u->cloak();
-    case UR_ORD_DECLOAK: return u->decloak();
-    case UR_ORD_BURROW: return u->burrow();
-    case UR_ORD_UNBURROW: return u->unburrow();
-    case UR_ORD_LIFT: return u->lift();
-    case UR_ORD_LAND: return u->land(TilePosition(c.x, c.y));
-    case UR_ORD_LOAD: return t && u->load(t, q);
-    case UR_ORD_UNLOAD_ALL: return c.x == UR_NONE ? u->unloadAll(q) : u->unloadAll(pos(c), q);
-    case UR_ORD_REPAIR: return t && u->repair(t, q);
-    case UR_ORD_GATHER: return t && u->gather(t, q);
-    case UR_ORD_RETURN_CARGO: return u->returnCargo(q);
+      if (!u->canAttackMove() && u->canMove()) return UnitCommand::move(nullptr, p, q);
+      return UnitCommand::attack(nullptr, p, q);
+    case UR_ORD_PATROL: return UnitCommand::patrol(nullptr, p, q);
+    case UR_ORD_HOLD: return UnitCommand::holdPosition(nullptr, q);
+    case UR_ORD_STOP: return UnitCommand::stop(nullptr, q);
+    case UR_ORD_RIGHT_CLICK:
+      if (!t) return UnitCommand::rightClick(nullptr, p, q);
+      // Audit F17 (as AMB-041-1): the game turns the right click of a unit that cannot attack the
+      // enemy target into a follow (medic: heal-move); BWAPI rejects it, so send the follow.
+      if (t->getPlayer() && g_me->isEnemy(t->getPlayer()) && !u->canAttackUnit(t) && u->canFollow(t))
+        return UnitCommand::follow(nullptr, t, q);
+      return UnitCommand::rightClick(nullptr, t, q);
+    case UR_ORD_SIEGE: return UnitCommand::siege(nullptr);
+    case UR_ORD_UNSIEGE: return UnitCommand::unsiege(nullptr);
+    case UR_ORD_CLOAK: return UnitCommand::cloak(nullptr);
+    case UR_ORD_DECLOAK: return UnitCommand::decloak(nullptr);
+    case UR_ORD_BURROW: return UnitCommand::burrow(nullptr);
+    case UR_ORD_UNBURROW: return UnitCommand::unburrow(nullptr);
+    case UR_ORD_LIFT: return UnitCommand::lift(nullptr);
+    case UR_ORD_LAND: return UnitCommand::land(nullptr, TilePosition(c.x, c.y));
+    case UR_ORD_LOAD: return UnitCommand::load(nullptr, t, q);
+    case UR_ORD_UNLOAD_ALL: return c.x == UR_NONE ? UnitCommand::unloadAll(nullptr, q) : UnitCommand::unloadAll(nullptr, p, q);
+    case UR_ORD_REPAIR: return UnitCommand::repair(nullptr, t, q);
+    case UR_ORD_GATHER: return UnitCommand::gather(nullptr, t, q);
+    case UR_ORD_RETURN_CARGO: return UnitCommand::returnCargo(nullptr, q);
     case UR_ORD_USE_TECH:
-      if (t) return u->useTech(TechType(c.type), t);
-      if (c.x != UR_NONE) return u->useTech(TechType(c.type), pos(c));
-      return u->useTech(TechType(c.type));
+      if (t) return UnitCommand::useTech(nullptr, TechType(c.type), t);
+      if (c.x != UR_NONE) return UnitCommand::useTech(nullptr, TechType(c.type), p);
+      return UnitCommand::useTech(nullptr, TechType(c.type));
     // 034 Unload_Unit (2026-10-19): the transport drops one loaded unit (no queue argument).
-    case UR_ORD_UNLOAD: return t && u->unload(t);
+    case UR_ORD_UNLOAD: return UnitCommand::unload(nullptr, t);
   }
-  return false;
+  return UnitCommand();
+}
+
+// Arguments each order needs (011-R20): a unit, a unit or a position, or a position.
+bool needs_unit(uint8_t o) { return o == UR_ORD_LOAD || o == UR_ORD_REPAIR || o == UR_ORD_GATHER || o == UR_ORD_UNLOAD; }
+bool needs_unit_or_pos(uint8_t o) { return o == UR_ORD_MOVE || o == UR_ORD_ATTACK || o == UR_ORD_RIGHT_CLICK; }
+bool needs_pos(uint8_t o) { return o == UR_ORD_PATROL || o == UR_ORD_LAND; }
+
+// 011-R20 (audit F2/F3, user decision 2026-10-19): one command to the whole selection, as a
+// player gives it. Units sharing a command go to the game together (`Game::issueCommand`: one
+// select and one order, so the engine's group movement applies); units BWAPI cannot order as a
+// group (lifted buildings) get it one by one. The command succeeds when at least one unit took it;
+// otherwise the error is the first rejected unit's. A unit target that is neither observed nor a
+// map resource, or a missing position, fails the command at once (no silent move to (-1, -1)).
+bool exec_units(const UrCmd& c, const int32_t* pool) {
+  Unit t = find_target(c.target_unit);
+  if ((c.target_unit != UR_NONE || needs_unit(c.order)) && !t) return Broodwar->setLastError(Errors::Unit_Does_Not_Exist);
+  if ((needs_unit_or_pos(c.order) && !t && c.x == UR_NONE) || (needs_pos(c.order) && c.x == UR_NONE))
+    return Broodwar->setLastError(Errors::Invalid_Parameter);
+  std::vector<std::pair<UnitCommand, Unitset>> groups;
+  Error first = Errors::None;
+  bool accepted = false;
+  for (uint32_t i = 0; i < c.n_units; ++i) {
+    Unit u = find_unit(pool[c.units_offset + i]);
+    if (!u) {
+      if (first == Errors::None) first = Errors::Unit_Does_Not_Exist;
+      continue;
+    }
+    UnitCommand cmd = unit_command(u, c, t);
+    if (u->canIssueCommandGrouped(cmd)) {
+      auto g = std::find_if(groups.begin(), groups.end(), [&](const std::pair<UnitCommand, Unitset>& x) { return x.first == cmd; });
+      if (g == groups.end()) {
+        groups.emplace_back(cmd, Unitset());
+        g = groups.end() - 1;
+      }
+      g->second.insert(u);
+      accepted = true;
+      continue;
+    }
+    cmd.unit = u;
+    if (u->issueCommand(cmd)) {
+      accepted = true;
+    } else if (first == Errors::None) {
+      first = Broodwar->getLastError();
+    }
+  }
+  // BWAPI's Unitset iterates by pointer hash, so the game may see the units in another order than
+  // the pool; OpenBW's group handling does not depend on it (`action_order` and `calc_group_move`
+  // sum over the selection).
+  for (auto& g : groups) {
+    g.first.unit = *g.second.begin();
+    Broodwar->issueCommand(g.second, g.first);
+  }
+  // setLastError returns whether the error is None.
+  return Broodwar->setLastError(accepted ? Errors::None : first == Errors::None ? Errors::Unit_Does_Not_Exist : first);
 }
 
 bool exec(const UrCmd& c, const int32_t* pool) {
-  if (c.kind == UR_CMD_UNIT) {
-    bool ok = c.n_units > 0;
-    for (uint32_t i = 0; i < c.n_units; ++i) {
-      Unit u = find_unit(pool[c.units_offset + i]);
-      ok = u && exec_unit_order(u, c) && ok;
-    }
-    return ok;
-  }
+  if (c.kind == UR_CMD_UNIT) return exec_units(c, pool);
   Unit u = find_unit(c.unit);
-  if (!u) return false;
+  if (!u) return Broodwar->setLastError(Errors::Unit_Does_Not_Exist);
   switch (c.kind) {
     case UR_CMD_BUILD: return u->build(UnitType(c.type), TilePosition(c.x, c.y));
     case UR_CMD_BUILD_ADDON: return u->buildAddon(UnitType(c.type));
@@ -191,7 +263,9 @@ bool exec(const UrCmd& c, const int32_t* pool) {
     case UR_CMD_RESEARCH: return u->research(TechType(c.type));
     case UR_CMD_UPGRADE: return u->upgrade(UpgradeType(c.type));
     case UR_CMD_SET_RALLY: {
-      Unit t = c.target_unit != UR_NONE ? find_unit(c.target_unit) : nullptr;
+      Unit t = find_target(c.target_unit);
+      if (c.target_unit != UR_NONE && !t) return Broodwar->setLastError(Errors::Unit_Does_Not_Exist);
+      if (!t && c.x == UR_NONE) return Broodwar->setLastError(Errors::Invalid_Parameter);
       return t ? u->setRallyPoint(t) : u->setRallyPoint(pos(c));
     }
     case UR_CMD_CANCEL:
@@ -377,7 +451,9 @@ class UraniumModule : public AIModule {
     units_.clear();
     g_units.clear();
     g_observed.clear();
+    g_resources.clear();
     for (Unit u : Broodwar->getAllUnits()) {
+      if (u->exists() && is_map_resource(u)) g_resources[uid(u)] = u;
       if (!visible_to_self(u)) continue;
       g_units[uid(u)] = u;
       g_observed.insert(u);
