@@ -1524,3 +1524,20 @@ loc_class = ""
 executor = "none"
 command = "Cancel"
 cancel = "Addon"
+
+# 2026-10-19 (user decision, action audit F7): single-unit unload (replay opcode 0x29). The
+# selected transport unloads one of its loaded units (BWAPI `unload(unit)`); appended so earlier
+# ids keep their meaning (034-R2, action schema 2).
+[[action]]
+id = 100
+name = "Unload_Unit"
+group = "transport"
+uses_select = true
+max_select = 1
+select_cap = "can_unload_unit"
+uses_queued = false
+target = "unit"
+target_cap = "loaded_unit"
+loc_class = ""
+executor = "none"
+command = "UnitUnload"

@@ -1,6 +1,6 @@
 # 010 — Game Protocol
 
-- **Status**: Approved (2026-10-15. 2026-10-19 개정: R5 맵 공개 자원 예외(E-3, 사용자 결정, AMB-030-2·AMB-030-3). 같은 날 개정: R12 `GameEnd.final_frame`, `PROTOCOL_VERSION` 2(E-8, 사용자 결정 2026-10-19))
+- **Status**: Approved (2026-10-15. 2026-10-19 개정: R5 맵 공개 자원 예외(E-3, 사용자 결정, AMB-030-2·AMB-030-3). 같은 날 개정: R12 `GameEnd.final_frame`, `PROTOCOL_VERSION` 2(E-8, 사용자 결정 2026-10-19). 같은 날 개정: 034 `Unload_Unit` 추가로 `CmdOrder::Unload`, `PROTOCOL_VERSION` 3(R11, 사용자 결정 2026-10-19, 액션 감사 F7))
 - **Related**: [001](001-system-architecture.md), [011](011-bridge-openbw.md), [012](012-bridge-remastered.md), [013](013-version-mapping.md)
 
 ## Purpose
@@ -78,7 +78,8 @@ enum Command {
 }
 enum CmdOrder { Move(Pos), Attack(Target), Patrol(Pos), Hold, Stop, RightClick(Target),
                 Siege, Unsiege, Stim, Cloak, Decloak, Lift, Land(Tile), Load(u32), UnloadAll(Option<Pos>),
-                Repair(u32), Gather(u32), ReturnCargo, UseTech{tech:u16, target: Target}, ... }
+                Repair(u32), Gather(u32), ReturnCargo, UseTech{tech:u16, target: Target}, ...,
+                Unload(u32) /* 034 Unload_Unit: 탑승 유닛 1기 하차, 마지막 variant (PROTOCOL_VERSION 3) */ }
 
 struct Act { cmds: Vec<Command>, advance_frames: u32, valid_until_frame: Option<u32> }
 
@@ -89,7 +90,7 @@ struct PrivilegedSummary {
     enemy_unit_counts: Vec<(u16, u16)>,    // (unit_type, 완성 수) 전체
     enemy_in_production: Vec<(u16, u16)>,  // (unit_type, 생산 중 수)
 }
-pub const PROTOCOL_VERSION: u32 = 2;   // 2: GameEnd.final_frame (010-R12)
+pub const PROTOCOL_VERSION: u32 = 3;   // 2: GameEnd.final_frame (010-R12), 3: CmdOrder::Unload (010-R11, 034 Unload_Unit, 2026-10-19)
 
 struct GameEnd { winner: Option<u8>, frame: u32, reason: EndReason, stats: Option<BridgeStats>,
                  final_frame: Option<Box<RawFrame>> /* 010-R12: 마지막 RawFrame 이후 최종 관측(자기 시야) */ }

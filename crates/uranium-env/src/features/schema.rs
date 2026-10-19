@@ -13,7 +13,9 @@ use crate::types::TypeTables;
 ///    (030 §3, E-1); flipped `entity_cell` from the flipped pixel (030-R4, B-6); disabled units
 ///    lose every selection class (034-R6, B-11); Random enemy race unknown until seen (030-R11,
 ///    E-6); `Masks::is_building` for the single-building rule (034-R7, E-4).
-pub const FEATURE_SCHEMA_VERSION: u32 = 4;
+/// 5 (2026-10-19, action audit F7): action schema 2 (`Unload_Unit`, A = 101) and unit_cap gains
+///    `can_unload_unit` / `loaded_unit` (034).
+pub const FEATURE_SCHEMA_VERSION: u32 = 5;
 
 /// 030-R6: spatial side in build tiles.
 pub const MAP: usize = 128;

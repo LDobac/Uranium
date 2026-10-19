@@ -10,7 +10,9 @@ use serde::Deserialize;
 pub const ACTIONS_TOML: &str = include_str!("../tables/actions.toml");
 
 /// 034-R2 / 032-R6: bump when action ids change meaning; stored in shard headers (040).
-pub const ACTION_SCHEMA_VERSION: u32 = 1;
+/// 2: `Unload_Unit` (id 100) appended, capability classes `can_unload_unit` / `loaded_unit`
+/// (2026-10-19, action audit F7). Ids 0..=99 keep their meaning, so schema-1 shards stay readable.
+pub const ACTION_SCHEMA_VERSION: u32 = 2;
 
 /// 034 capability classes (`unit_cap`).
 pub const CAPABILITIES: &[&str] = &[
@@ -25,6 +27,8 @@ pub const CAPABILITIES: &[&str] = &[
     "flarable", "irradiatable", "matrixable", "yamato_target", "loadable_transport",
     // selection, appended 2026-10-17 (AMB-041-1)
     "can_right_click_unit",
+    // Unload_Unit selection / target, appended 2026-10-19 (action audit F7)
+    "can_unload_unit", "loaded_unit",
 ];
 
 /// 034 location classes (`loc_class_mask`, L = 8).
@@ -35,7 +39,7 @@ pub const LOC_CLASSES: &[&str] =
 pub const COMMANDS: &[&str] = &[
     "None", "UnitMove", "UnitAttack", "UnitPatrol", "UnitHold", "UnitStop", "UnitRightClick", "UnitGather", "UnitReturnCargo",
     "UnitRepair", "Build", "BuildAddon", "Train", "Research", "Upgrade", "UnitUseTech", "UnitSiege", "UnitUnsiege", "UnitCloak",
-    "UnitDecloak", "UnitLoad", "UnitUnloadAll", "UnitLift", "UnitLand", "SetRally", "Cancel",
+    "UnitDecloak", "UnitLoad", "UnitUnloadAll", "UnitLift", "UnitLand", "SetRally", "Cancel", "UnitUnload",
 ];
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,7 +168,11 @@ mod tests {
     #[test]
     fn table_loads_and_validates_034_ac1() {
         let t = ActionTable::load().unwrap();
-        assert_eq!(t.actions.len(), 100);
+        assert_eq!(t.actions.len(), 101);
+        // F7 (2026-10-19): Unload_Unit appended last, ids 0..=99 unchanged (034-R2).
+        let u = t.by_name("Unload_Unit").unwrap();
+        assert_eq!((u.id, u.max_select, u.select_cap.as_str(), u.target_cap.as_str(), u.command.as_str()), (100, 1, "can_unload_unit", "loaded_unit", "UnitUnload"));
+        assert_eq!(t.by_name("Cancel_Addon").unwrap().id, 99);
         assert_eq!(t.by_name("Attack_Unit").unwrap().target, TargetKind::Unit);
         assert_eq!(t.by_name("Build_Barracks").unwrap().loc_class, "buildable_4x3");
         assert_eq!(t.by_name("Train_Marine").unwrap().producer.as_deref(), Some("Barracks"));

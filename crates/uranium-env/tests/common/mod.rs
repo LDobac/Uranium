@@ -274,6 +274,7 @@ pub fn command_name(c: &Command) -> &'static str {
             CmdOrder::Land(_) => "UnitLand",
             CmdOrder::Load(_) => "UnitLoad",
             CmdOrder::UnloadAll(_) => "UnitUnloadAll",
+            CmdOrder::Unload(_) => "UnitUnload",
             CmdOrder::Repair(_) => "UnitRepair",
             CmdOrder::Gather(_) => "UnitGather",
             CmdOrder::ReturnCargo => "UnitReturnCargo",

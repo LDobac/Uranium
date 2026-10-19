@@ -100,6 +100,7 @@ fn arb_order() -> impl Strategy<Value = CmdOrder> {
         Just(CmdOrder::Siege),
         (any::<u16>(), any::<u16>()).prop_map(CmdOrder::Land),
         prop::option::of(arb_pos()).prop_map(CmdOrder::UnloadAll),
+        any::<u32>().prop_map(CmdOrder::Unload),
         any::<u32>().prop_map(CmdOrder::Gather),
         (any::<u16>(), prop::option::of(arb_target())).prop_map(|(tech, target)| CmdOrder::UseTech { tech, target }),
     ]

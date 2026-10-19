@@ -118,6 +118,15 @@ pub fn execute(w: &World, obs: &Observation, act: &HostAction) -> Result<Execute
         "UnitDecloak" => unit_cmd(CmdOrder::Decloak),
         "UnitLoad" => unit_cmd(CmdOrder::Load(target_id())),
         "UnitUnloadAll" => unit_cmd(CmdOrder::UnloadAll(tile.filter(|_| a.target == TargetKind::Loc).map(|_| pos()))),
+        // Unload_Unit (2026-10-19, F7): the target must be loaded in the selected transport
+        // (BWAPI `canUnload` Invalid_Parameter otherwise); the masks only know "loaded" (031-R4).
+        "UnitUnload" => {
+            let cargo = target_id();
+            if !w.frame.units.iter().any(|u| u.id == cargo && u.loaded_in == Some(units[0])) {
+                return Err(Rejected::BadTarget);
+            }
+            Command::Unit { units: units.clone(), order: CmdOrder::Unload(cargo), queued: false }
+        }
         "UnitLift" => unit_cmd(CmdOrder::Lift),
         "UnitLand" => unit_cmd(CmdOrder::Land(tile.unwrap())),
         "UnitUseTech" if a.executor == Executor::PickBuilding => {

@@ -703,7 +703,8 @@ impl State {
         let has_cap = |cap: &str| (0..cx.o.obs.n).any(|i| cx.cap(i, cap));
         match name {
             "Lift" => self.ok("Land_Pos") && !self.ok("Land_CommandCenter_Pos") && !lifted,
-            "Load_Unit" => !self.ok("UnloadAll_Pos") && !has_cap("is_transport_loaded") && !cx.own("Terran_Dropship").is_empty(),
+            // Unload_Unit (F7, 2026-10-19) needs a loaded transport too.
+            "Load_Unit" => !(self.ok("UnloadAll_Pos") && self.ok("Unload_Unit")) && !has_cap("is_transport_loaded") && !cx.own("Terran_Dropship").is_empty(),
             "Irradiate_Unit" => !self.ok("Restoration_Unit") && has_cap("can_cast_restoration") && !has_cap("restorable"),
             "Stim" => !self.ok("Heal_Unit") && has_cap("can_heal") && !has_cap("healable"),
             "Build_MissileTurret" => !self.ok("Cancel_Construction") && cx.own("Terran_Missile_Turret").iter().all(|u| u.has(flags::COMPLETED)),
@@ -781,7 +782,7 @@ impl State {
                 ("Cancel_Research", Role::Select) => is(u, "Terran_Control_Tower").then_some(0),
                 ("Cancel_Addon", Role::Select) => is(u, "Terran_Factory").then_some(0),
                 ("SetRally_Pos" | "SetRally_Unit", Role::Select) => (!is(u, "Terran_Command_Center")).then_some(0),
-                ("UnloadAll_Pos", Role::Select) => is(u, "Terran_Dropship").then_some(0),
+                ("UnloadAll_Pos" | "Unload_Unit", Role::Select) => is(u, "Terran_Dropship").then_some(0),
                 ("Load_Unit", Role::Target) => Some(if is(u, "Terran_Dropship") { 0 } else { 1 }),
                 ("Load_Unit", Role::Select) => is(u, "Terran_Marine").then_some(0),
                 ("Stim", Role::Select) => is(u, "Terran_Marine").then_some(0),

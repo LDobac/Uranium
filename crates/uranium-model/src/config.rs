@@ -15,8 +15,8 @@ pub struct InputDims {
     /// 030: BWAPI order vocabulary.
     #[config(default = 190)]
     pub orders: usize,
-    /// 034: number of action types (A).
-    #[config(default = 100)]
+    /// 034: number of action types (A). 101 since action schema 2 (`Unload_Unit`, 2026-10-19).
+    #[config(default = 101)]
     pub actions: usize,
     /// 030 §2: `entity_cont` width (F_c).
     #[config(default = 76)]

@@ -241,6 +241,11 @@ pub fn commands(cmds: &[Command], out: &mut Vec<UrCmd>, pool: &mut Vec<i32>) {
                         }
                         19
                     }
+                    // UR_ORD_UNLOAD (034 Unload_Unit, 2026-10-19): the loaded unit to drop.
+                    CmdOrder::Unload(id) => {
+                        u.target_unit = *id as i32;
+                        20
+                    }
                 };
             }
             Command::Build { worker, unit_type, tile } => {

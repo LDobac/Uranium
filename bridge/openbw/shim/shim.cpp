@@ -166,6 +166,8 @@ bool exec_unit_order(Unit u, const UrCmd& c) {
       if (t) return u->useTech(TechType(c.type), t);
       if (c.x != UR_NONE) return u->useTech(TechType(c.type), pos(c));
       return u->useTech(TechType(c.type));
+    // 034 Unload_Unit (2026-10-19): the transport drops one loaded unit (no queue argument).
+    case UR_ORD_UNLOAD: return t && u->unload(t);
   }
   return false;
 }

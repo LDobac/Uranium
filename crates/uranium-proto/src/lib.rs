@@ -13,7 +13,8 @@ pub use grid::BitGrid;
 use serde::{Deserialize, Serialize};
 
 /// Bumped on any incompatible schema change (010-R2). 2: `GameEnd.final_frame` (010-R12).
-pub const PROTOCOL_VERSION: u32 = 2;
+/// 3: `CmdOrder::Unload` (034 `Unload_Unit`, 010-R11, 2026-10-19).
+pub const PROTOCOL_VERSION: u32 = 3;
 
 pub type UnitId = u32;
 /// Pixel position.
@@ -256,6 +257,9 @@ pub enum CmdOrder {
     Gather(UnitId),
     ReturnCargo,
     UseTech { tech: u16, target: Option<Target> },
+    /// One loaded unit leaves the transport (034 `Unload_Unit`, 2026-10-19). Appended last so the
+    /// other variants keep their postcard index; protocol version 3.
+    Unload(UnitId),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
