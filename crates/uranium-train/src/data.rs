@@ -911,9 +911,11 @@ pub fn label_check(game: &ShardGame, st: &mut LabelStats, maps: &MapStore) -> Re
             };
             *st.type_detail.entry(format!("{name} <- {cond} ({age})")).or_default() += 1;
         }
-        g.2 += 1;
+        // 040-AC7: 031-AC3 `unknown` steps are neither labels nor invalid labels here.
+        let unknown = why == Some(UNKNOWN_REASON);
+        g.2 += !unknown as usize;
         if let Some(w) = why {
-            g.3 += 1;
+            g.3 += !unknown as usize;
             g.4 += (w == "target_unit_missing") as usize;
             g.5 += (w == "target_loc") as usize;
             *st.fails.entry((name, w)).or_default() += 1;

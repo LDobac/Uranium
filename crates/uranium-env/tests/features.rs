@@ -919,6 +919,7 @@ fn unknown_label_has_weight_zero_031_ac3() {
     let (h, why) = host_label_check(&l, &o);
     assert_eq!(why, Some(UNKNOWN_REASON));
     assert_eq!((h.action, h.delay_bucket, h.selected.len(), h.target_unit, h.target_loc), (0, bucket_index(12), 0, None, None));
+}
 
 /// 액션 감사 F1 (사용자 결정 2026-10-19): a unit still in production (incomplete non-building) or
 /// loaded in a transport is no target of any class; a building under construction still is.

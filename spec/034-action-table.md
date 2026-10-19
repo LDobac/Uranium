@@ -13,7 +13,7 @@
 | ID | 요구사항 |
 |---|---|
 | 034-R1 | **MUST** 테이블은 데이터 파일 `crates/uranium-env/tables/actions.toml`로 관리한다. env(마스크 계산), model(GPU 마스크 gather), replay(역변환)가 같은 파일을 쓴다 |
-| 034-R2 | **MUST** action_type ID는 0부터 연속이고 0은 `NoOp`이다. ID를 변경하거나 재사용하려면 action 스키마 버전을 올려야 한다(032-R6). 액션 추가도 버전을 올린다: 스키마 2(2026-10-19)는 `Unload_Unit`(id 100)과 capability 클래스 `loaded_unit`을 끝에 더했다(K 47 → 48, feature 스키마 5). 기존 id의 의미는 같으므로 스키마 1로 만든 shard 레이블은 그대로 읽는다(040 "Shard 포맷"). 체크포인트는 버전이 다르면 읽지 않는다 |
+| 034-R2 | **MUST** action_type ID는 0부터 연속이고 0은 `NoOp`이다. ID를 변경하거나 재사용하려면 action 스키마 버전을 올려야 한다(032-R6). 액션 추가도 버전을 올린다: 스키마 2(2026-10-19)는 `Unload_Unit`(id 100)과 capability 클래스 `loaded_unit`을 끝에 더했다(K 47 → 48, feature 스키마 5). 같은 날 액션 감사 T8이 선택 자격 `can_stop`·`can_unload_pos`를 그 뒤에 더해 K = 50, feature 스키마 6이다(action id는 그대로라 action 스키마는 2). 기존 id의 의미는 같으므로 스키마 1로 만든 shard 레이블은 그대로 읽는다(040 "Shard 포맷"). 체크포인트는 버전이 다르면 읽지 않는다 |
 | 034-R3 | **MUST** `type_mask[a]`가 true인 조건은 아래 셋을 모두 만족하는 것이다. 아니면 false다. 해당 조건이 없는 항목은 자동으로 만족한 것으로 본다(vacuous true). |
 | 034-R4 | **MUST** `sel_mask = unit_cap[:, select_cap[a]] ∧ owner==self ∧ entity_mask`, `tgt_mask = unit_cap[:, target_cap[a]] ∧ entity_mask`, `loc_mask = loc_class_mask[loc_class[a]]`. 이 gather는 GPU에서 수행한다([032](032-model-architecture.md) §5) |
 | 034-R5 | **MUST** 유효한 타일이 하나도 없는 위치 클래스를 쓰는 action_type은 type_mask에서 닫는다 |
@@ -64,7 +64,7 @@ command = "UnitAttackUnit"   # 010 Command 매핑
 | 건물 | Lift, Land_Pos, Land_CommandCenter_Pos, SetRally_Pos, SetRally_Unit | can_lift (1) / can_land_noncc (1) / can_land_cc (1) / can_rally (1) | – / landable_4x3 / cc_slot / any / any_unit | CC 착륙은 건설과 같은 자원 거리 규칙 적용. 건물은 1개만 선택(R7) |
 | 취소 | Cancel_Construction, Cancel_Train, Cancel_Research, Cancel_Upgrade, Cancel_Addon | can_cancel_* (1) | – | |
 
-## capability 클래스 (`unit_cap`, K≈48)
+## capability 클래스 (`unit_cap`, K = 50)
 | 분류 | 클래스 |
 |---|---|
 | 선택 자격 | can_move, can_right_click_unit(can_move ∨ 시즈모드 탱크), can_stop(완성 비건물 ∨ 떠 있는 건물 ∨ 미사일 터렛. 시즈모드 탱크·건설 중 SCV·시즈 전환 중 탱크 포함 = BWAPI `canStop`, 액션 감사 F5), can_unload_pos(탑승 유닛이 있는 비건물 수송선 = 드랍십, F6), can_attack(무기 보유. 벙커는 무기·공격 order가 없어 게임이 건너뛰고 BWAPI가 Unable_To_Hit로 거절하므로 제외, F11), is_worker, can_be_loaded, is_transport_loaded, can_stim, can_siege, can_unsiege, can_cloak, can_decloak, can_lay_mine, can_cast_lockdown, can_cast_nuke, can_heal, can_cast_restoration, can_cast_flare, can_cast_matrix, can_cast_emp, can_cast_irradiate, can_cast_yamato, can_lift, can_land_noncc, can_land_cc, can_rally, addon_capable_{cc,factory,starport,scifac}(완성 ∧ 착지 상태 ∧ 애드온 미보유 ∧ 오른쪽 애드온 자리 2×2 비어 있음 ∧ 생산·연구 중 아님), can_cancel_{construction,train,research,upgrade,addon} |
