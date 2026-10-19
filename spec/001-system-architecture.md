@@ -1,6 +1,6 @@
 # 001 — System Architecture
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: 스케줄러를 `uranium-runner` crate로 분리(AMB-001-3), 에이전트 서버의 모델 정책·배치 추론 / `uranium-runner` 라이브러리화, `uranium-train rl`(3단계 계획 승인). 2026-10-19 개정: 001-R10 장비 표기 규칙(G-D9, 사용자 결정), R1·Cargo Workspace 표기 정정: 없는 crate `uranium-adapter` → 실제 위치 `uranium-env`·`uranium-replay` `tables/`(의미 불변))
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: 스케줄러를 `uranium-runner` crate로 분리(AMB-001-3), 에이전트 서버의 모델 정책·배치 추론 / `uranium-runner` 라이브러리화, `uranium-train rl`(3단계 계획 승인). 2026-10-19 개정: 001-R10 장비 표기 규칙(G-D9, 사용자 결정), R1·Cargo Workspace 표기 정정: 현재 매핑 테이블 위치를 적고 `uranium-adapter`를 M7 예정으로 표시)
 - **Related**: [010](010-game-protocol.md), [011](011-bridge-openbw.md), [012](012-bridge-remastered.md), [020](020-env-orchestration.md), [060](060-infra.md), [061](061-shared-storage.md)
 
 ## Purpose
@@ -20,7 +20,7 @@
 ## Requirements
 | ID | 요구사항 |
 |---|---|
-| 001-R1 | **MUST** 에이전트 코어(env feature, model, executor)는 게임 버전을 모른다. 버전 의존 코드는 `bridge/*`와 013 매핑 테이블(`crates/uranium-env/tables/*.toml`·`crates/uranium-replay/tables/*.toml`, 이를 읽는 `uranium-env` `types`·`actions`와 `uranium-replay` `label`)에만 둔다(2026-10-19 표기 정정: 이전 표기 `uranium-adapter`는 없는 crate였다) |
+| 001-R1 | **MUST** 에이전트 코어(env feature, model, executor)는 게임 버전을 모른다. 버전 의존 코드는 `bridge/*`와 013 매핑 테이블에만 둔다. 현재(M4~M6) 매핑 테이블은 `crates/uranium-env/tables`와 `crates/uranium-replay/tables`에 있고 각 crate는 테이블을 읽기만 한다. SC:R 매핑 테이블과 백엔드는 `uranium-adapter`(M7 예정, 미생성)에 둔다 |
 | 001-R2 | **MUST** 브리지와 에이전트는 [010](010-game-protocol.md) 프로토콜로만 통신한다. 같은 호스트든 원격이든 같은 TCP 경로를 쓴다 |
 | 001-R3 | **MUST** 브리지는 얇게 유지한다. 상태 직렬화, 명령 실행, 시야 필터링만 하고 의사결정 로직은 넣지 않는다 |
 | 001-R4 | **SHOULD** OpenBW 호스트를 추가할 때 코드 수정 없이 설정 파일만 바꾸면 되게 한다 |
@@ -29,13 +29,14 @@
 | 001-R7 | **MUST** 학습 전용 정보(`PrivilegedSummary`)는 learner와 value head로만 흐른다. 추론 서버의 정책 경로에는 들어가지 않는다(030-R9, 032-R11) |
 | 001-R8 | **MUST** 학습 쪽 crate(`uranium-proto`, `uranium-model`, `uranium-train`, `uranium-agent`, `uranium-env`, `uranium-runner`)는 Linux와 Windows 모두에서 빌드·실행된다(Unix 전용 API 금지). 브리지(`bridge/openbw`)와 `uranium-hostd`도 Linux와 Windows 모두를 지원한다. 브리지 C++ shim은 GCC와 MSVC 모두에서 빌드돼야 한다. (변경 이력: 2026-10-15 추가 → 같은 날 Windows CUDA 호스트에서 게임까지 돌리기 위해 브리지·hostd도 Windows 지원으로 확장. Windows 구현·검증은 `docs/windows.md`) |
 | 001-R9 | **MUST** 호스트별 설정(경로, 주소, 포트, 디버그 옵션 등)은 저장소 루트의 `.env` 파일에서 읽는다. `.env`는 git에 올리지 않는다(`.gitignore`). 같은 이름의 프로세스 환경변수가 있으면 그 값이 `.env`보다 우선한다. 쓸 수 있는 키와 설명은 값 없는 템플릿 `.env.example`로 커밋한다. 셸 프로필(`.bashrc` 등)에 설정을 두는 방식은 쓰지 않는다. Rust 바이너리는 시작 시 `.env`를 읽고, 셸 스크립트는 `tools/env.sh`로 읽는다. 비밀번호 같은 자격 증명은 `.env`에도 두지 않고 OS 자격 증명 저장소나 권한 600 파일(예: cifs credentials)에 둔다 (2026-10-15 사용자 결정) |
-| 001-R10 | **MUST** spec, 문서, 리포트, 코드 주석, 커밋 메시지에는 IP 주소, 호스트 이름, 계정 이름, 이메일, 개인 경로(`/home/<user>` 등), 자격 증명 같은 개인·보안 정보를 쓰지 않는다. 필요하면 `<server>`, `<user>` 같은 자리표시자를 쓰고 실제 값은 `.env`에만 둔다. `127.0.0.1` 같은 루프백 주소와 예시 사설 대역 표기는 예외다 (2026-10-15 사용자 결정). **장비 표기(2026-10-19 사용자 결정, G-D9, AMB-001-4)**: git이 추적하는 파일(spec, 코드·주석, 추적되는 config, docs, CLAUDE.md)에는 장비 종류·상태(보드·GPU 모델명, 장비 번호, 특정 PC 이름·사양, 어느 장비가 어떤 역할을 할 수 없는지 등)를 쓰지 않고 OS와 백엔드(Linux/Windows, Vulkan/CUDA)로만 표기한다. 장비 표기는 git이 추적하지 않는 config와 리포트(`reports/`)에만 쓸 수 있다 |
+| 001-R10 | **MUST** spec, 문서, 리포트, 코드 주석, 커밋 메시지에는 IP 주소, 호스트 이름, 계정 이름, 이메일, 개인 경로(`/home/<user>` 등), 자격 증명 같은 개인·보안 정보를 쓰지 않는다. 필요하면 `<server>`, `<user>` 같은 자리표시자를 쓰고 실제 값은 `.env`에만 둔다. `127.0.0.1` 같은 루프백 주소와 예시 사설 대역 표기는 예외다 (2026-10-15 사용자 결정). **장비 표기(2026-10-19 사용자 결정, G-D9, AMB-001-4)**: git이 추적하는 파일(spec, 코드·주석, 추적되는 config, docs, CLAUDE.md, tools 스크립트)에는 장비 종류·상태(보드·GPU 모델명, 장비 번호, 특정 PC 이름·사양, 어느 장비가 어떤 역할을 할 수 없는지 등)를 쓰지 않고 OS와 백엔드(Linux/Windows, Vulkan/CUDA)로만 표기한다. 장비 표기는 git이 추적하지 않는 config와 리포트(`reports/`)에만 쓸 수 있다 |
 
 ## Cargo Workspace
 ```
 Cargo.toml (workspace)
 crates/
   uranium-proto      # 스키마, 프레이밍, 버전 협상 (no_std 호환 지향, postcard)
+  uranium-adapter    # (M7 예정, 미생성) GameBackend trait, OpenBW/SCR 백엔드 클라이언트, SC:R 정규화 테이블(013)
   uranium-env        # 라이브러리: feature 추출(030), 마스크(034), 보상(033), executor(031), 맵 계열(040-R15)·맵 사전계산(031), 013 매핑 테이블(`tables/`)
   uranium-model      # Burn 모델(032)
   uranium-train      # BC(041), RL(042), 리그·PFSP·스냅샷

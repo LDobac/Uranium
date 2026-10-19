@@ -1,6 +1,6 @@
 # 013 — Version Mapping (1.16.1 ↔ Remastered)
 
-- **Status**: Draft. 단, **"리플레이 명령 인코딩 (M4)" 절과 013-R6~R8은 Approved (2026-10-16, M4 계획 승인. 2026-10-17 개정: 맵 CHK 정규화, opcode 0x5D)**. 나머지는 M7에서 확정한다. 2026-10-19 표기 정정: 013-R1 테이블 경로를 실제 위치로(의미 불변).
+- **Status**: Draft. 단, **"리플레이 명령 인코딩 (M4)" 절과 013-R6~R8은 Approved (2026-10-16, M4 계획 승인. 2026-10-17 개정: 맵 CHK 정규화, opcode 0x5D)**. 나머지는 M7에서 확정한다. 2026-10-19 표기 정정: 013-R1에 현재 테이블 위치를 적고 `uranium-adapter`를 M7 예정으로 표시.
 - **Related**: [010](010-game-protocol.md), [011](011-bridge-openbw.md), [012](012-bridge-remastered.md)
 
 ## Purpose
@@ -72,7 +72,7 @@ SC:R 리플레이를 OpenBW(1.16.1 로더, `third_party/openbw/replay.h`)로 재
 | 013-R6 | **MUST** SC:R 리플레이(Modern, Modern 1.21+)는 위 "리플레이 명령 인코딩" 표에 따라 1.16.1 컨테이너와 명령으로 변환한 뒤 OpenBW로 재생한다(040-R10). 변환은 `uranium-replay`의 Rust 코드로만 하고 OpenBW는 수정하지 않는다 |
 | 013-R7 | **MUST** 변환은 손실 없이 왕복 검증한다. 변환본을 다시 파싱한 명령 목록(프레임, 플레이어, opcode 의미, 인자)이 원본 파싱 결과와 같아야 한다 |
 | 013-R8 | **MUST** 변환 불가(`Unsupported`)·디싱크로 폐기한 리플레이 수와 사유를 리포트한다(040-AC5) |
-| 013-R1 | **MUST** 버전별 매핑은 데이터 파일(`crates/uranium-env/tables/*.toml`, 리플레이 명령은 `crates/uranium-replay/tables/*.toml`. 코드에 컴파일해 넣어 `uranium-env` `types`·`actions`, `uranium-replay` `label`이 읽는다)로 관리하고, 각 테이블에 버전 키를 둔다(2026-10-19 표기 정정: 이전 표기 `crates/uranium-adapter/tables`는 없는 경로였다) |
+| 013-R1 | **MUST** 버전별 매핑은 데이터 파일로 관리하고, 각 테이블에 버전 키를 둔다. 현재(M4~M6) 테이블은 `crates/uranium-env/tables/*.toml`과 `crates/uranium-replay/tables/*.toml`에 있다. SC:R 매핑 테이블은 `crates/uranium-adapter/tables/*.toml`(M7 예정, 미생성)에 둔다 |
 | 013-R2 | **MUST** 정규 ID 집합의 각 원소는 두 백엔드 모두에서 왕복 변환된다(전단사). 불가능한 항목은 명시적으로 `Unsupported`로 처리한다 |
 | 013-R3 | **MUST** realtime 모드에서는 명령 지연(turn latency)을 GameInfo에 포함해 에이전트에 알린다. delay 헤드 해석 시 이 값을 보정한다 |
 | 013-R4 | **SHOULD** 같은 리플레이를 OpenBW와 SC:R에서 재생해 프레임 N의 RawFrame을 비교하는 골든 테스트를 둔다 |

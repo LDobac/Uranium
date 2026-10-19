@@ -62,10 +62,10 @@
 | 로그·리포트·기타 | 나머지 |
 
 ## Acceptance Criteria
-- 060-AC1: 벤치 스위트 결과가 Vulkan 호스트 벤치 리포트(`reports/bench_<label>.md`, 장비 라벨은 리포트에만, 001-R10)에 기록된다. 이 결과로 032-R2의 모델 크기와 042의 배치 크기를 확정한다.
+- 060-AC1: 벤치 스위트 결과가 Vulkan 호스트 벤치 리포트(기본 출력 `reports/bench_vulkan.md`, 백엔드별 이름, 2026-10-19. 2026-10-15 M1(a) 결과는 그 전 이름의 Vulkan 벤치 리포트에 있다)에 기록된다. 이 결과로 032-R2의 모델 크기와 042의 배치 크기를 확정한다.
 - 060-AC2: Vulkan 호스트의 f16 경로가 Flex(CPU) f32 대비 허용 오차(1e-2 상대) 이내이거나, 아니면 f32 전용으로 결정하고 기록한다. CUDA 호스트는 f32(TF32)가 기본이므로(032-R8, 2026-10-17) f16 판정 대상이 아니다. **닫힘(2026-10-18 사용자 결정)**: Vulkan 호스트의 BC 학습은 f32 전용으로 정했다(032-R8 예외). f16 학습 경로는 구현하지 않았다.
 - 060-AC3: 24시간 BC 학습 스모크에서 드라이버 오류 없이 완주하거나, 오류 시 자동 재시작 후 이어서 학습한다. 코어 비교 run(032-R17)의 첫 24시간으로 대신한다(2026-10-19 사용자 결정).
-- 060-AC4: CUDA 호스트에서 같은 벤치 스위트(`cargo run -p bench --release --features cuda -- --backend cuda`)를 돌려 `reports/bench_<label>.md`(장비 라벨, 001-R10)에 기록한다. autotune·fusion 설정(041-R15)으로 측정한다. Flex 대비 정확도 기준은 032-AC1(CUDA ≤ 1e-2, AMB-032-5)을 따르고, 정밀도는 f32(TF32)다(032-R8).
+- 060-AC4: CUDA 호스트에서 같은 벤치 스위트(`cargo run -p bench --release --features cuda -- --backend cuda`)를 돌려 `reports/bench_cuda.md`(기본 출력, 백엔드별 이름, `--out`으로 바꿀 수 있다)에 기록한다. autotune·fusion 설정(041-R15)으로 측정한다. Flex 대비 정확도 기준은 032-AC1(CUDA ≤ 1e-2, AMB-032-5)을 따르고, 정밀도는 f32(TF32)다(032-R8).
 
 ## Risks & Open Questions
 - Linux Vulkan 호스트(Mesa Vulkan 드라이버)에서 Burn/CubeCL 커널 성숙도가 불확실하다(특히 f16, subgroup 연산).

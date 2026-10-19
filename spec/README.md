@@ -108,7 +108,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-042-5 | BC 본학습 체크포인트 전 RL 파이프라인 검증 정책 | Resolved (2026-10-17: build된 shard 표본으로 짧은 BC를 돌린 체크포인트로 042-AC1 형식 연습) |
 | AMB-042-6 | Aborted 게임 trajectory 처리(게임 끝까지 보류 vs 즉시 전송·회수) | Resolved (2026-10-17: 즉시 전송, Aborted면 미사용분 회수, Ctrl+C는 learner 먼저 정지, 042-R3 개정) |
 | AMB-042-7 | 042-AC1 실험 규모 | Resolved (2026-10-17: V-trace·PPO 각 3 seed(6 run), 033-AC2 ablation은 본 BC·z 테이블 이후) |
-| AMB-042-8 | 첫 RL 게임 호스트 구성 | Resolved (2026-10-17: 학습 호스트 로컬 hostd로 시작, 리플레이 build 후 원격 Linux 게임 호스트 추가) |
+| AMB-042-8 | 첫 RL 게임 호스트 구성 | Resolved (2026-10-17: 학습 호스트 로컬 hostd로 시작, 리플레이 build 후 원격 Linux 게임 호스트 두 대 추가) |
 | AMB-042-9 | KL(π‖π_BC) 계산 방식(BC 재forward 비용 약 1.5배) | Resolved (2026-10-17: BC 모델 재forward로 정확한 분포 KL, GPU 메모리가 부족하면 사용자에게 보고) |
 | AMB-043-1 | 래더 수집: 040 데이터 정책(약관 준수) 예외 허용 여부 | Resolved (2026-10-16: EULA 해석 위험 감수하고 예외 허용, 내부 학습 전용·재배포 금지 유지) |
 | AMB-043-2 | 래더 수집: 실행 PC·배틀넷 계정 | Resolved (2026-10-16: 사용자 본계정, SC:R이 도는 Windows PC) |

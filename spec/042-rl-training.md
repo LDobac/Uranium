@@ -23,7 +23,7 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 - **스냅샷 상대 ID**: `uranium-<agent>@<run>/<update>` (agent = `main` | `main-exploiter` | `league-exploiter`, 021-R3 형식).
 - **로그 (042-R2)**: CSV 두 개. `train.csv`(update별 손실 항목, KL, 헤드별 엔트로피, 정책 지연, 버린·회수한 trajectory 수, 처리량, 추론 p50·p95)와 `games.csv`(게임별 결과, 보상 항목 합, 상대 ID, 종족, 맵, 저장한 리플레이 경로·사유(042-R11)).
 - **BC 본학습 전 검증 (2026-10-17 사용자 결정, AMB-042-5)**: 이미 build된 shard 표본으로 짧은 BC(몇 시간)를 돌린 체크포인트로 042-AC1 형식을 미리 연습한다. 본 BC 체크포인트가 나오면 그것으로 바꾼다.
-- **게임 호스트 (2026-10-17 사용자 결정, AMB-042-8)**: 첫 RL(스모크·042-AC1)은 학습 호스트의 로컬 hostd만으로 시작한다. 리플레이 build가 끝나면 원격 Linux 게임 호스트를 hosts 파일에 더한다(hostd를 master로 다시 빌드, 020-R11 플레이어 이름).
+- **게임 호스트 (2026-10-17 사용자 결정, AMB-042-8)**: 첫 RL(스모크·042-AC1)은 학습 호스트의 로컬 hostd만으로 시작한다. 리플레이 build가 끝나면 원격 Linux 게임 호스트 두 대를 hosts 파일에 더한다(hostd를 master로 다시 빌드, 020-R11 플레이어 이름).
 
 ## 알고리즘
 - **V-trace**(IMPALA) off-policy 보정: actor 정책 지연을 허용한다.

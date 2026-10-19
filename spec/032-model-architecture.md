@@ -191,7 +191,7 @@ impl<C: Core> UraniumNet<C> {
 - 032-AC8: backward(학습) 정확도(2026-10-19 사용자 결정, H·D-a, AMB-032-7): Flex(CPU) 대비 같은 가중치·입력·레이블의 BC 손실 차이가 AC1 허용 오차 안이고, 파라미터마다 gradient 차이의 상대 L2(‖g_dev − g_flex‖ ÷ ‖g_flex‖, 분모는 가장 큰 파라미터 gradient norm의 1e-3 이상으로 둔다)가 **Vulkan ≤ 1e-3**이다. **CUDA ≤ 1e-2**(2026-10-19 실측 기준(사용자 결정 D-a): autotune·fusion을 켠 이 테스트를 CUDA 호스트에서 6회 돌린 최댓값 4.9e-3(범위 3.7e-3~4.9e-3)에 약 2배 여유를 두고 올림. `reports/m6_bc_preflight.md` 5차. autotune·fusion 채택(041-R15)은 유지). dropout은 0으로 둔다. 측정은 학습과 같은 Burn 설정(autotune·fusion, 041-R15)으로 한다. 테스트는 `crates/uranium-model/tests/cross_device.rs`의 gradient 비교다. forward(AC1 Vulkan 1e-4)와 기준이 다른 이유: gradient는 반올림 누적이 많아 커널을 바꾸지 않은 Vulkan f32에서도 약 5e-4가 나온다(`reports/m6_bc_preflight.md` 4차).
 
 ## Risks & Open Questions
-- **M1(a) 실측 (2026-10-15, Linux Vulkan 호스트 f32, `reports/bench_<label>.md`)**:
+- **M1(a) 실측 (2026-10-15, Linux Vulkan 호스트 f32, `reports/`의 M1(a) Vulkan 벤치 리포트)**:
   - 추론 근사(B16·N256) 87ms로 032-AC2(40ms)에 미달한다.
   - 학습 약 40 프레임/s로, BC 1회독에 약 34일이 걸린다.
   - 사용자는 f16만 채택했다. 공간 64² 축소, 인코더 축소, 프레임 샘플링은 채택하지 않았다.

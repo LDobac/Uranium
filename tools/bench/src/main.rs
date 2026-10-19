@@ -33,9 +33,9 @@ struct Args {
     /// Skip the Flex (CPU) accuracy reference (faster).
     #[arg(long)]
     no_accuracy: bool,
-    /// Markdown report path.
-    #[arg(long, default_value = "reports/bench_bc250.md")]
-    out: PathBuf,
+    /// Markdown report path. Default: `reports/bench_<backend>.md` (vulkan / cuda / flex).
+    #[arg(long)]
+    out: Option<PathBuf>,
     /// CUDA device index for `--backend cuda`.
     #[arg(long, default_value_t = 0)]
     cuda_index: usize,
@@ -55,6 +55,11 @@ fn cuda_device(index: usize) -> Result<Device> {
 #[cfg(not(feature = "cuda"))]
 fn cuda_device(_index: usize) -> Result<Device> {
     anyhow::bail!("this build has no CUDA support; rebuild with `--features cuda` on a CUDA host")
+}
+
+/// 060-AC1 / 060-AC4: default report path per backend (no device label in tracked code, 001-R10).
+fn default_out(backend: Backend) -> PathBuf {
+    PathBuf::from(format!("reports/bench_{}.md", format!("{backend:?}").to_lowercase()))
 }
 
 fn main() -> Result<()> {
@@ -98,7 +103,8 @@ fn main() -> Result<()> {
     }
 
     let backend_name = format!("{:?}{}", args.backend, if args.f16 { " f16" } else { "" }).to_lowercase();
-    report::write(&args.out, &backend_name, args.quick, &rows)?;
-    eprintln!("[bench] wrote {}", args.out.display());
+    let out = args.out.clone().unwrap_or_else(|| default_out(args.backend));
+    report::write(&out, &backend_name, args.quick, &rows)?;
+    eprintln!("[bench] wrote {}", out.display());
     Ok(())
 }

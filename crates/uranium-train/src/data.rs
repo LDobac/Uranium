@@ -407,7 +407,7 @@ impl HasMeta for GameSummary {
 }
 
 /// Every game of every file, file by file in `files` order (games in file order), read in
-/// parallel. A decoded shard is close to 1 GB: a few readers keep a 16 GB host out of swap.
+/// parallel. A decoded shard is close to 1 GB: a few readers keep a host with limited RAM out of swap.
 pub fn scan_files(files: &[PathBuf]) -> Result<Vec<Vec<GameSummary>>> {
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(4);
     let next = std::sync::atomic::AtomicUsize::new(0);
