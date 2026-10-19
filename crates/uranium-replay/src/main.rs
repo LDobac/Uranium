@@ -269,26 +269,25 @@ fn main() -> Result<()> {
                 None => Default::default(),
             };
             eprintln!("recorded winners: {} (040-R8)", recorded_winners.len());
-            // Resume: replays in any records file of this source (same folder, name starting with
-            // the source tag) were handled by an earlier run or another host.
+            // Resume: perspectives (and replays rejected as a whole) in any records file of this
+            // source (same folder, name starting with the source tag) were handled by an earlier
+            // run or another host (per perspective: `ResumeDone`).
             let rec_dir = records.parent().map(PathBuf::from).unwrap_or_default();
-            let mut done_sha256 = std::collections::HashSet::new();
+            let mut done = uranium_replay::pipeline::ResumeDone::default();
             for e in std::fs::read_dir(if rec_dir.as_os_str().is_empty() { Path::new(".") } else { &rec_dir })?.flatten() {
                 let name = e.file_name().to_string_lossy().to_string();
                 if !(name.starts_with(&src) && name.ends_with(".jsonl")) {
                     continue;
                 }
                 for l in std::fs::read_to_string(e.path()).unwrap_or_default().lines() {
-                    if let Some(s) = serde_json::from_str::<serde_json::Value>(l).ok().and_then(|v| v["replay_sha256"].as_str().map(str::to_string)) {
-                        done_sha256.insert(s);
-                    }
+                    done.add_line(l);
                 }
             }
             // B-2: map precomputes go to URANIUM_MAPS_DIR; without it every game would be written
             // without one, so the build refuses to start.
             uranium_env::maps::maps_dir()?;
             let staging_dir = uranium_replay::shard::staging_dir();
-            let opt = uranium_replay::pipeline::BuildOptions { src, shards_dir, staging_dir, recorded_winners, jobs, shard_target_bytes: 512 << 20, budget_bytes: budget_gb << 30, first_shard_index: first, skip_sha256, done_sha256 };
+            let opt = uranium_replay::pipeline::BuildOptions { src, shards_dir, staging_dir, recorded_winners, jobs, shard_target_bytes: 512 << 20, budget_bytes: budget_gb << 30, first_shard_index: first, skip_sha256, done };
             let out_file = std::sync::Mutex::new(std::fs::OpenOptions::new().create(true).append(true).open(&records)?);
             let counts = std::sync::Mutex::new(std::collections::BTreeMap::<String, usize>::new());
             uranium_replay::pipeline::build(&files, &opt, &cfg, &|r| {
@@ -298,7 +297,7 @@ fn main() -> Result<()> {
                 let kind = serde_json::to_value(&r.outcome).ok().and_then(|v| v["outcome"].as_str().map(str::to_string)).unwrap_or_default();
                 *counts.lock().unwrap().entry(kind).or_default() += 1;
             })?;
-            println!("{}", serde_json::json!({"replays": files.len(), "resumed_skip": opt.done_sha256.len(), "by_outcome": counts.into_inner().unwrap()}));
+            println!("{}", serde_json::json!({"replays": files.len(), "resumed_skip": opt.done.len(), "by_outcome": counts.into_inner().unwrap()}));
         }
         Cmd::DatasetStats { records, out } => {
             let mut files = Vec::new();

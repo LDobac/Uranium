@@ -295,8 +295,56 @@ pub struct BuildOptions {
     pub first_shard_index: u32,
     /// SHA-256 of replays already in another source (040 dedup by file hash); skipped.
     pub skip_sha256: std::collections::HashSet<String>,
-    /// SHA-256 of replays already in this run's records (resume); not processed again.
-    pub done_sha256: std::collections::HashSet<String>,
+    /// What this source's records already hold (resume); not processed again.
+    pub done: ResumeDone,
+}
+
+/// Resume state from earlier records, per perspective (040-R17 / 040-R19 review): a written
+/// perspective's record waits for its shard flush while another perspective of the same replay
+/// (filtered, desync, ...) is recorded at once, so "the replay has a record" does not mean every
+/// perspective is done. A perspective is done when it has its own record; a replay is done as a
+/// whole only through a record without a view (rejected before perspectives exist).
+#[derive(Debug, Default, Clone)]
+pub struct ResumeDone {
+    /// Replays with a record without a view.
+    pub whole: std::collections::HashSet<String>,
+    /// (replay SHA-256, perspective) with their own record.
+    pub views: std::collections::HashSet<(String, u8)>,
+}
+
+impl ResumeDone {
+    /// Adds one records line (JSON); lines that do not parse are ignored.
+    pub fn add_line(&mut self, line: &str) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { return };
+        let Some(sha) = v["replay_sha256"].as_str().filter(|s| !s.is_empty()) else { return };
+        match v["view"]["perspective"].as_u64() {
+            Some(p) => {
+                self.views.insert((sha.to_string(), p as u8));
+            }
+            None => {
+                self.whole.insert(sha.to_string());
+            }
+        }
+    }
+
+    /// Replay handled as a whole by an earlier run.
+    pub fn replay_done(&self, sha: &str) -> bool {
+        self.whole.contains(sha)
+    }
+
+    /// The perspectives of `views` still without a record.
+    pub fn remaining(&self, sha: &str, views: Vec<View>) -> Vec<View> {
+        views.into_iter().filter(|v| !self.views.contains(&(sha.to_string(), v.perspective))).collect()
+    }
+
+    /// Records counted (replays done as a whole + perspectives done).
+    pub fn len(&self) -> usize {
+        self.whole.len() + self.views.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Builds shards from `files`; returns one record per replay view (or per rejected replay).
@@ -333,7 +381,7 @@ fn add_game(p: &mut Pending, failure: &Mutex<Option<anyhow::Error>>, game: Shard
 
 /// Builds shards from `files`, handing every record to `sink` as soon as it is final: a
 /// written game's record only after the shard holding it is on disk, so an interrupted run
-/// can resume from its records (`BuildOptions::done_sha256`).
+/// can resume from its records (`BuildOptions::done`, per perspective).
 pub fn build(files: &[PathBuf], opt: &BuildOptions, cfg: &PlayConfig, sink: &(dyn Fn(&Record) + Sync)) -> Result<()> {
     let families = MapFamilies::load()?;
     let excludes = MapExcludes::load(&families)?;
@@ -396,7 +444,7 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
         Err(e) => return vec![rec("", "", "", None, Outcome::Error { reason: e.to_string() })],
     };
     let sha = hex(&Sha256::digest(&bytes));
-    if opt.done_sha256.contains(&sha) {
+    if opt.done.replay_done(&sha) {
         return Vec::new(); // already recorded by an earlier run
     }
     if opt.skip_sha256.contains(&sha) {
@@ -418,6 +466,12 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
         Ok(v) => v,
         Err(reason) => return vec![rec(&sha, &rep.header.map_name, &family, None, Outcome::Filtered { reason })],
     };
+    // Resume: only perspectives without their own record (an earlier run may have recorded one
+    // perspective and lost the other with an unflushed shard).
+    let views = opt.done.remaining(&sha, views);
+    if views.is_empty() {
+        return Vec::new();
+    }
     // 013-R7 (C-7): the 1.16.1 conversion must round-trip losslessly before it is replayed.
     if let Err(e) = rep.roundtrip_check() {
         let reason = format!("{e:#}");
@@ -551,6 +605,44 @@ mod tests {
         assert_eq!(local("local"), kept);
         assert_eq!(std::fs::read(&kept[0]).unwrap(), bytes);
         assert!(local("shared").is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 040-R17 / 040-R19 resume: perspective 0 is filtered (recorded at once) while perspective 1
+    /// is written but its shard not yet flushed when the run stops. The resumed run builds only
+    /// perspective 1, and afterwards the replay is done with one record per perspective.
+    #[test]
+    fn resume_rebuilds_unflushed_perspective_040_r17() {
+        use crate::shard::tests::game;
+        let dir = std::env::temp_dir().join(format!("uranium-pipeline-resume-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let sha = "ab".repeat(32);
+        let view = |p: u8| View { perspective: p, stage: "S1", apm: 900, matchup: "TvT".into(), enemy_random: false };
+        let record = |p: u8, outcome: Outcome| Record { view: Some(view(p)), outcome, replay_sha256: sha.clone(), ..written_record(7) };
+        let lines = Mutex::new(Vec::<String>::new());
+        let sink = |r: &Record| lines.lock().unwrap().push(serde_json::to_string(r).unwrap());
+        // First run: a large shard target, so nothing is flushed before the interruption.
+        let writer = ShardWriter::new(dir.join("shared"), dir.join("local"), 0, 1 << 30).unwrap();
+        let mut p = Pending { writer, records: Vec::new() };
+        let failure = Mutex::new(None);
+        sink(&record(0, Outcome::Filtered { reason: "invalid_labels>=20% (54.6%, 20444/37441) (040-R19)".into() }));
+        assert!(add_game(&mut p, &failure, game(1), record(1, written_record(7).outcome), &sink));
+        drop(p); // interrupted: the written perspective's record never reaches the records file
+        let mut done = ResumeDone::default();
+        lines.lock().unwrap().iter().for_each(|l| done.add_line(l));
+        assert!(!done.replay_done(&sha));
+        let todo: Vec<u8> = done.remaining(&sha, vec![view(0), view(1)]).iter().map(|v| v.perspective).collect();
+        assert_eq!(todo, vec![1], "only the lost perspective is built again");
+        // Resumed run writes perspective 1; a third run has nothing left.
+        sink(&record(1, written_record(7).outcome));
+        let mut done = ResumeDone::default();
+        lines.lock().unwrap().iter().for_each(|l| done.add_line(l));
+        assert!(done.remaining(&sha, vec![view(0), view(1)]).is_empty());
+        assert_eq!(done.len(), 2, "one record per perspective, no duplicates");
+        // A record without a view (rejected replay) marks the replay done as a whole.
+        let mut whole = ResumeDone::default();
+        whole.add_line(&serde_json::to_string(&Record { outcome: Outcome::Filtered { reason: "shorter than 5 minutes".into() }, ..written_record(9) }).unwrap());
+        assert!(whole.replay_done(&format!("{:064x}", 9)));
         std::fs::remove_dir_all(&dir).ok();
     }
 
