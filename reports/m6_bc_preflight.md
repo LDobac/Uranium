@@ -368,7 +368,7 @@ uranium-env run --plan config/plans/bc-vs-t0.toml --backend cuda
 ### E-8: 마지막 결정 뒤 dense 보상(사용자 결정 2026-10-19)
 - 배경: 브리지는 종료 시 `GameEnd`만 보내 마지막 결정 뒤 프레임(예: 마지막 건물 파괴)의 value·build·units 보상이 버려졌다.
 - 변경: `GameEnd.final_frame`(010-R12, `PROTOCOL_VERSION` 2) — shim `onEnd`가 종료 프레임의 자기 시야 상태와 마지막 step 뒤 이벤트를 넘기고(011-R19), 에이전트가 `RewardTracker::step`을 한 번 더 불러 마지막 결정에 더한다(033-R7, 042). SC:R 브리지는 M7에서 같은 필드를 보낸다(012-R10).
-- 시험: proto round-trip(있음·없음), 버전 1 거부, Flex 정책 테스트(마지막 결정 뒤 적 파괴 → value 보상이 종료 보상에 포함). OpenBW 실제 게임 확인은 아래 Linux 빌드 확인 결과를 따른다.
+- 시험: proto round-trip(있음·없음), 버전 1 거부, Flex 정책 테스트(마지막 결정 뒤 적 파괴 → value 보상이 종료 보상에 포함). OpenBW 실제 게임 확인(2026-10-19, Linux Vulkan 호스트의 임시 clone, 기존 체크아웃·서비스는 건드리지 않음): `tools/openbw/build_bridge.sh` 빌드 성공(경고 0), T0 대 T0 1판(투혼, `URANIUM_MAX_FRAMES=3000`)에서 두 세션 모두 `final_frame`을 받았다(프레임 3001, 보이는 유닛 28·27, 이벤트 0, 시야 위반 0). 임시 폴더는 삭제했다. 마지막 결정 뒤 이벤트가 실제로 담기는 경우(섬멸 종료)는 표본 단계에서 함께 확인한다.
 
 ### 같이 반영한 것(코드)
 - 041-R3 전역 L2 norm clip(`crates/uranium-train/src/clip.rs`): BC와 RL learner 모두 레인 그룹 gradient 합산 뒤, optimizer step 전에 한 번 적용한다. Burn 텐서별 clip은 뺐다. 이전과 학습 수치가 달라진다(본학습 체크포인트는 아직 없다).
