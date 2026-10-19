@@ -535,6 +535,11 @@ mod tests {
 
     /// Minimal HTTP/1.1 server answering GETs from `routes`; counts file downloads.
     fn serve(listener: TcpListener, routes: Routes, downloads: Arc<AtomicU32>) {
+        serve_logged(listener, routes, downloads, Arc::default());
+    }
+
+    /// `serve` that also records when each request line arrived (043-AC4, server side).
+    fn serve_logged(listener: TcpListener, routes: Routes, downloads: Arc<AtomicU32>, arrivals: Arc<Mutex<Vec<std::time::Instant>>>) {
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -542,6 +547,7 @@ mod tests {
                 if reader.read_line(&mut line).is_err() {
                     continue;
                 }
+                arrivals.lock().unwrap().push(std::time::Instant::now());
                 loop {
                     let mut h = String::new();
                     if reader.read_line(&mut h).is_err() || h.trim().is_empty() {
@@ -670,6 +676,55 @@ not json
         // 043-R5: refuse to run without a confirmed min_bucket.
         let unset = Plan { min_bucket: None, ..plan };
         assert!(run(&settings, &paths, &unset, &opt).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 043-AC4: a whole collect run (leaderboard, profile, match info, download) reaches the
+    /// server no faster than the configured rate, and the collector's own send log agrees.
+    #[test]
+    fn r043_ac4_collect_requests_stay_under_the_rate() {
+        let dir = std::env::temp_dir().join(format!("uranium-ladder-rate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = Paths { ladder: dir.join("ladder"), raw_root: dir.join("raw") };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let rep = b"seRS fake ladder replay rate".to_vec();
+        let api = |p: &str| format!("/web-api{p}");
+        let mut r: BTreeMap<String, (u16, Vec<u8>)> = BTreeMap::new();
+        let mut put = |path: String, v: serde_json::Value| r.insert(path, (200, serde_json::to_vec(&v).unwrap()));
+        put(api("/v1/leaderboard"), json!({"leaderboards": {"1": {"id": 101, "gamemode_id": 1, "gateway_id": 30, "season_id": 20, "name": "Korea"}}}));
+        let cols = json!(["rank", "toon", "gateway_id", "rating", "bucket"]);
+        put(api("/v1/leaderboard/101?offset=0&length=100"), json!({"columns": cols, "rows": [[1, "toonA", 30, 2300, 7]]}));
+        put(api(&schema::profile("toonA", 30)), json!({"replays": [replay("MM-1", "2", 1000)]}));
+        let pa = player("toonA", "Terran", &[("toonA", "Win"), ("toonB", "Loss")]);
+        let pb = player("toonB", "Zerg", &[("toonA", "Win"), ("toonB", "Loss")]);
+        put(api(&schema::match_info("MM-1")), json!({"players": {"1": pa, "2": pb},
+            "replays": [{"md5": hex(&md5::Md5::digest(&rep)), "url": format!("http://127.0.0.1:{port}/files/1.rep")}]}));
+        r.insert("/files/1.rep".into(), (200, rep));
+        let arrivals = Arc::new(Mutex::new(Vec::new()));
+        serve_logged(listener, Arc::new(Mutex::new(r)), Arc::new(AtomicU32::new(0)), arrivals.clone());
+
+        let rps = 10.0;
+        let settings = Settings { port: Some(port), rps, daily_max: 1000, shared_dir: None };
+        let plan = Plan { gateways: vec![30], gamemode: 1, min_bucket: Some(6), page_size: 100 };
+        let s = run(&settings, &paths, &plan, &Opts { limit: None, dry_run: false }).unwrap();
+        assert_eq!(s.ok, 1);
+        let t = arrivals.lock().unwrap().clone();
+        // connect (prefix "" then "/web-api"), list, page, profile, match info, download.
+        assert_eq!(t.len(), 7, "every request is paced");
+        // Server side: sends are 100 ms apart; allow 20 ms of loopback jitter per gap.
+        let min_gap = t.windows(2).map(|w| w[1] - w[0]).min().unwrap();
+        assert!(min_gap >= std::time::Duration::from_millis(80), "requests {min_gap:?} apart at {rps} req/s");
+        assert!(t[t.len() - 1] - t[0] >= std::time::Duration::from_millis(580));
+
+        // The collector's own send log (printed when the run's `Http` is dropped).
+        let mut http = Http::new(rps);
+        for _ in 0..4 {
+            http.get(&format!("http://127.0.0.1:{port}/web-api/v1/leaderboard")).unwrap();
+        }
+        let st = http.rate_stats();
+        assert_eq!(st.requests, 4);
+        assert!(st.within(rps), "{st:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

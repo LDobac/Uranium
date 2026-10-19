@@ -19,6 +19,17 @@ const RETRY_PAUSE: Duration = Duration::from_secs(5);
 pub struct Http {
     agent: ureq::Agent,
     limiter: Limiter,
+    rps: f64,
+}
+
+/// 043-AC4: every run logs the rate its paced requests actually used, also when it stops early.
+impl Drop for Http {
+    fn drop(&mut self) {
+        let s = self.limiter.stats();
+        if s.requests > 0 {
+            println!("{}", s.line(self.rps));
+        }
+    }
 }
 
 pub struct Reply {
@@ -52,7 +63,12 @@ impl Http {
             .timeout_global(Some(Duration::from_secs(30)))
             .build()
             .into();
-        Self { agent, limiter: Limiter::new(rps) }
+        Self { agent, limiter: Limiter::new(rps), rps }
+    }
+
+    /// 043-AC4: observed rate so far.
+    pub fn rate_stats(&self) -> crate::limit::RateStats {
+        self.limiter.stats()
     }
 
     /// One paced GET (043-R4).

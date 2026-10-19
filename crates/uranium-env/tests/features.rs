@@ -726,3 +726,40 @@ fn zero_last_failed_flag_030_r10() {
     let o = extract(&f, &mut mem, &map, None);
     assert_eq!(*o.obs.scalar.last().unwrap(), 0.0);
 }
+
+/// 010-AC4: every 034 action type yields an executor `Command` (NoOp: none, by design) whose kind
+/// matches the table's `command`, and that command survives the protocol round trip (postcard
+/// framing, as the agent sends it in `Act`) unchanged.
+#[test]
+fn every_action_type_command_round_trips_010_ac4() {
+    use uranium_proto::{Act, AgentMsg, read_msg, write_msg};
+    let table = action_table();
+    let mut done = vec![false; table.actions.len()];
+    for techs in [true, false] {
+        let (o, f, mem, map) = observe(techs);
+        let w = World::new(&f, &mem, &map);
+        for a in &table.actions {
+            if done[a.id as usize] {
+                continue;
+            }
+            let Some(act) = valid_action(&o, a, &|_, i| Some(i as i64), &|t| Some(t as i64)) else { continue };
+            let out = execute(&w, &o, &act).unwrap_or_else(|e| panic!("{}: {e:?}", a.name));
+            if a.id == 0 {
+                assert!(out.commands.is_empty(), "NoOp sends nothing");
+                done[0] = true;
+                continue;
+            }
+            assert_eq!(out.commands.len(), 1, "{}: one command (031-R3)", a.name);
+            let cmd = &out.commands[0];
+            assert_eq!(command_name(cmd), a.command, "{}", a.name);
+            let msg = AgentMsg::Act(Act { cmds: out.commands.clone(), advance_frames: 1, valid_until_frame: None });
+            let mut buf = Vec::new();
+            write_msg(&mut buf, &msg).unwrap();
+            let back: AgentMsg = read_msg(&mut buf.as_slice()).unwrap();
+            assert_eq!(back, msg, "{}", a.name);
+            done[a.id as usize] = true;
+        }
+    }
+    let missing: Vec<&str> = table.actions.iter().filter(|a| !done[a.id as usize]).map(|a| a.name.as_str()).collect();
+    assert!(missing.is_empty(), "no command for {missing:?}");
+}

@@ -205,3 +205,88 @@ pub fn rich_units() -> Builder {
     b.add(ENEMY, "Zerg_Hatchery", (80, 80));
     b
 }
+
+/// Arguments for action `a` that satisfy the masks of `o` (034-R4): the selection is the
+/// eligible own entity ranked first by `rank` (lowest key), the unit target likewise, the
+/// location the first allowed tile ranked by `loc_rank`; the target is never a selected unit. `None` when the type mask is closed or
+/// an argument has no candidate. One unit is selected: enough for every action (034-R7 allows a
+/// building only alone) and for 010-AC4 / 031-AC1.
+pub fn valid_action(
+    o: &uranium_env::features::Observation,
+    a: &uranium_env::actions::Action,
+    rank: &dyn Fn(Role, usize) -> Option<i64>,
+    loc_rank: &dyn Fn(usize) -> Option<i64>,
+) -> Option<uranium_env::features::executor::HostAction> {
+    use uranium_env::actions::{CAPABILITIES, LOC_CLASSES, TargetKind};
+    use uranium_env::features::{CELLS, OWNER_SELF};
+    if !o.masks.type_mask[a.id as usize] {
+        return None;
+    }
+    let k = CAPABILITIES.len();
+    let cap = |name: &str| CAPABILITIES.iter().position(|c| *c == name).unwrap();
+    let best = |role: Role, name: &str, own: bool, skip: &[usize]| {
+        let c = cap(name);
+        (0..o.obs.n)
+            .filter(|&i| o.masks.unit_cap[i * k + c] && (!own || o.obs.entity_cat[i * 4 + 1] == OWNER_SELF) && !skip.contains(&i))
+            .filter_map(|i| rank(role, i).map(|r| (r, i)))
+            .min()
+            .map(|(_, i)| i)
+    };
+    let selected = if a.uses_select { vec![best(Role::Select, &a.select_cap, true, &[])?] } else { vec![] };
+    // A unit never targets itself (the game rejects following or right-clicking oneself).
+    let target_unit = match a.target {
+        TargetKind::Unit => Some(best(Role::Target, &a.target_cap, false, &selected)?),
+        _ => None,
+    };
+    let target_loc = match a.target {
+        TargetKind::Loc => {
+            let l = LOC_CLASSES.iter().position(|c| *c == a.loc_class).unwrap();
+            let tiles = &o.masks.loc_class_mask[l * CELLS..(l + 1) * CELLS];
+            Some((0..CELLS).filter(|&t| tiles[t]).filter_map(|t| loc_rank(t).map(|r| (r, t))).min()?.1)
+        }
+        _ => None,
+    };
+    Some(uranium_env::features::executor::HostAction { action: a.id, delay_bucket: 0, queued: false, selected, target_unit, target_loc })
+}
+
+/// Which argument `valid_action` is ranking candidates for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    Select,
+    Target,
+}
+
+/// The 034 `command` name a protocol command came from (010-AC4).
+pub fn command_name(c: &Command) -> &'static str {
+    match c {
+        Command::Unit { order, .. } => match order {
+            CmdOrder::Move(_) => "UnitMove",
+            CmdOrder::Attack(_) => "UnitAttack",
+            CmdOrder::Patrol(_) => "UnitPatrol",
+            CmdOrder::Hold => "UnitHold",
+            CmdOrder::Stop => "UnitStop",
+            CmdOrder::RightClick(_) => "UnitRightClick",
+            CmdOrder::Siege => "UnitSiege",
+            CmdOrder::Unsiege => "UnitUnsiege",
+            CmdOrder::Cloak => "UnitCloak",
+            CmdOrder::Decloak => "UnitDecloak",
+            CmdOrder::Lift => "UnitLift",
+            CmdOrder::Land(_) => "UnitLand",
+            CmdOrder::Load(_) => "UnitLoad",
+            CmdOrder::UnloadAll(_) => "UnitUnloadAll",
+            CmdOrder::Repair(_) => "UnitRepair",
+            CmdOrder::Gather(_) => "UnitGather",
+            CmdOrder::ReturnCargo => "UnitReturnCargo",
+            CmdOrder::UseTech { .. } => "UnitUseTech",
+            CmdOrder::Burrow | CmdOrder::Unburrow => "UnitBurrow",
+        },
+        Command::Build { .. } => "Build",
+        Command::BuildAddon { .. } => "BuildAddon",
+        Command::Train { .. } => "Train",
+        Command::Morph { .. } => "Morph",
+        Command::Research { .. } => "Research",
+        Command::Upgrade { .. } => "Upgrade",
+        Command::Cancel { .. } => "Cancel",
+        Command::SetRally { .. } => "SetRally",
+    }
+}
