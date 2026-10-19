@@ -341,7 +341,7 @@ fn device(b: Backend) -> Result<Device> {
         #[cfg(feature = "cuda")]
         Backend::Cuda => Device::cuda(0),
         #[cfg(not(feature = "cuda"))]
-        Backend::Cuda => anyhow::bail!("rebuild with --features cuda on a CUDA PC"),
+        Backend::Cuda => anyhow::bail!("rebuild with --features cuda on a CUDA host"),
         Backend::Flex => Device::flex(),
     })
 }

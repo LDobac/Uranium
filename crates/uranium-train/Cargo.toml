@@ -7,7 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# Enable only on a CUDA GPU PC: --features cuda
+# Enable only on a CUDA host: --features cuda
 cuda = ["burn/cuda", "uranium-model/cuda", "uranium-agent/cuda", "uranium-runner/cuda"]
 
 [dependencies]

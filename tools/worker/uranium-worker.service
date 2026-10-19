@@ -9,6 +9,9 @@
 # A user manager cannot order itself after the system's remote-fs.target; it does not need to:
 # while the shared drive is not mounted the worker takes nothing and looks again every poll
 # (061-R13 "unknown"), it does not exit.
+# Replacing the binary: stop the service first, rebuild, then start it. A rebuild while it runs
+# leaves the worker and the running child on the old binary and starts the next child from the
+# new one, so the two versions mix.
 [Unit]
 Description=Uranium BC run queue worker (061-R13)
 After=network-online.target

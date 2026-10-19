@@ -1,7 +1,7 @@
 # 000 — Overview
 
 - **Status**: Approved (2026-10-15. 2026-10-19 개정: 맵 해시를 `config/assets.toml` 참조로, 장비 표기 중립화(001-R10))
-- **Related**: [001](001-system-architecture.md), [050](050-evaluation.md), [060](060-infra-bc250.md), [061](061-shared-storage.md)
+- **Related**: [001](001-system-architecture.md), [050](050-evaluation.md), [060](060-infra.md), [061](061-shared-storage.md)
 
 ## Purpose
 StarCraft: Brood War 1v1 밀리에서 이기는 테란 AI 봇을 만든다. 학습은 OpenBW(1.16.1 규칙)에서 하고, 최종 실행은 StarCraft: Remastered(SC:R)에서 한다.
@@ -40,8 +40,8 @@ StarCraft: Brood War 1v1 밀리에서 이기는 테란 AI 봇을 만든다. 학�
   - 상대의 **Random 종족을 지원**한다. 정찰 전까지는 `enemy_race = unknown`으로 처리한다([030](030-observation.md)).
 
 ## 하드웨어 제약
-- Linux Vulkan 호스트는 Burn Vulkan 백엔드로 학습·추론한다(ROCm/HIP는 쓰지 않는다). 장비 사양은 M1(a) 리포트에 둔다([060](060-infra-bc250.md), 001-R10).
-- CUDA 호스트(Linux 또는 Windows)에서도 Burn `cuda` 백엔드로 학습·추론할 수 있다(2026-10-15 변경, [060](060-infra-bc250.md))
+- Linux Vulkan 호스트는 Burn Vulkan 백엔드로 학습·추론한다(ROCm/HIP는 쓰지 않는다). 장비 사양은 M1(a) 리포트에 둔다([060](060-infra.md), 001-R10).
+- CUDA 호스트(Linux 또는 Windows)에서도 Burn `cuda` 백엔드로 학습·추론할 수 있다(2026-10-15 변경, [060](060-infra.md))
 - OpenBW 인스턴스는 기본적으로 **게임 전용 Linux PC 2대 이상**에서 실행한다. 학습 호스트 로컬 실행도 가능하다([020](020-env-orchestration.md)).
 - 체크포인트와 학습 데이터는 **네트워크 공용 드라이브(SMB, LAN 또는 VPN 경유)**에 두고, 학습하는 PC가 받아서 쓴다([061](061-shared-storage.md), 2026-10-15 변경). 저장 예산은 1TB 미만 기준을 공용 드라이브에 적용한다.
 - SC:R은 Windows PC에서 실행한다.

@@ -1,4 +1,4 @@
-# 020-AC1 / 011-AC6: 200 games on the two remote game hosts plus the training PC.
+# 020-AC1 / 011-AC6: 200 games on the two remote game hosts plus the local hostd of the training host.
 # Ten identical blocks of 20 (T0 cross + every T1 bot) so each host gets the same mix.
 name = "m3-remote"
 seed_base = 50000

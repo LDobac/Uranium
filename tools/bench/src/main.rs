@@ -1,4 +1,4 @@
-//! M1(a) micro-benchmarks for the BC250 training host (spec 060-R2, 060-AC1/AC2).
+//! M1(a) micro-benchmarks for the Linux Vulkan and CUDA training hosts (spec 060-R2, 060-AC1/AC2, 060-AC4).
 //!
 //! Every case runs on the selected backend and is timed; cases with a CPU reference are also
 //! run on Flex (CPU) with identical inputs and weights to report the max absolute / relative error.
@@ -17,7 +17,7 @@ use clap::{Parser, ValueEnum};
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum Backend {
     Vulkan,
-    /// CUDA GPU PC (060-AC4); requires `--features cuda`.
+    /// CUDA host (060-AC4); requires `--features cuda`.
     Cuda,
     Flex,
 }
@@ -54,7 +54,7 @@ fn cuda_device(index: usize) -> Result<Device> {
 
 #[cfg(not(feature = "cuda"))]
 fn cuda_device(_index: usize) -> Result<Device> {
-    anyhow::bail!("this build has no CUDA support; rebuild with `--features cuda` on a CUDA PC")
+    anyhow::bail!("this build has no CUDA support; rebuild with `--features cuda` on a CUDA host")
 }
 
 fn main() -> Result<()> {

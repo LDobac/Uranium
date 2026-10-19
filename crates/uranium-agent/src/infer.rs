@@ -59,7 +59,7 @@ impl InferBackend {
             #[cfg(feature = "cuda")]
             Self::Cuda => Device::cuda(0),
             #[cfg(not(feature = "cuda"))]
-            Self::Cuda => bail!("CUDA inference needs a build with --features cuda (CUDA PC only)"),
+            Self::Cuda => bail!("CUDA inference needs a build with --features cuda (CUDA host only)"),
             Self::Flex => Device::flex(),
         })
     }

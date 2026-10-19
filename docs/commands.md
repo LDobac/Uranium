@@ -10,11 +10,11 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 - T1 봇(021): `tools/oss/build_<bot>.sh`(`ualbertabot`, `steamhammer`, `zzzkbot`, `stardust`, `mcrave`, `iron`) → `<URANIUM_OSS_BOTS_DIR>/<bot>/{module.so, VERSION}`. 상대 ID는 `<bot>@<버전>`(021-R3).
 - 게임 데이터 추출(011-R13): `cargo install casc --version 0.1.6 --locked` 후 `cargo run -p casc-extract -- <SC:R Data> <출력>` → `.env` `URANIUM_DATA_DIR`.
 - BWAPI 타입 표(013-R1): `cargo run -p bwapi-tables -- third_party/bwapi/bwapi crates/uranium-env/tables`.
-- CUDA 실행은 `CUDA_PATH`가 필요하다(없으면 커널 컴파일 시 libdevice 오류). CUDA 빌드(`--features cuda`)는 CUDA PC에서만 한다.
+- CUDA 실행은 `CUDA_PATH`가 필요하다(없으면 커널 컴파일 시 libdevice 오류). CUDA 빌드(`--features cuda`)는 CUDA 호스트에서만 한다.
 - Burn autotune·fusion(041-R15): 워크스페이스 `burn` 의존성의 `autotune`·`fusion` feature로 모든 빌드에서 켜진다(코어 비교·BC·RL·추론·벤치 공통, Flex에는 영향 없음). autotune 캐시는 `.env` `URANIUM_AUTOTUNE_CACHE_DIR`(호스트별 고정 로컬 폴더)에 둔다. GPU 학습 명령(`bc`, `rl`, `bc-eval`, `bc-profile`의 cuda·vulkan)은 이 키가 없으면 시작하지 않는다. run이 끝날 때까지 캐시를 지우지 않는다: Flex·Vulkan은 같은 장비·같은 캐시로 재개하면 비트 단위로 같고, CUDA 호스트는 같은 PC여도, 다른 장비나 캐시면 모두 032-AC1·AC8 허용 오차 안에서만 같다(061-AC1). Windows에서는 CubeCL 영구 캐시가 열리지 않아 프로세스마다 autotune을 다시 측정한다(첫 update 지연, 알려진 제약).
 
 ## 벤치
-- Burn/Vulkan(060-R2): `cargo run -p bench --release -- --backend vulkan [--quick] [--filter <name>]` → `reports/bench_bc250.md`.
+- Burn/Vulkan(060-R2): `cargo run -p bench --release -- --backend vulkan [--quick] [--filter <name>] --out reports/bench_<label>.md`(`<label>`은 장비 라벨, 리포트에만 쓴다. `--out`을 빼면 기존 Vulkan 리포트 파일에 덮어쓴다).
 - 모델(032-AC2/AC3): `cargo run -p bench --release [--features cuda] -- --backend <vulkan|cuda> --filter net_ [--f16]`.
 
 ## 게임 실행
@@ -61,23 +61,24 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 - 하이퍼파라미터 `config/bc.toml`(GPU 메모리는 `micro_lanes`, `pad_entities`, `grad_checkpointing`), 코어 비교 `config/bc_core_ablation.toml`, 보상 `config/reward.toml`. `grad_clip`은 모든 파라미터 gradient를 한 벡터로 본 전역 L2 norm 기준이고, 레인 그룹 gradient를 합친 뒤 optimizer step 전에 한 번 적용한다(041-R3, RL `config/rl.toml`도 같음).
 
 ## 감시·작업자(060-R6, 061-R13~R15)
-- `uranium-train supervise [--hang-minutes 30 --max-restarts 5 --window-minutes 60 --delay-seconds 60 --progress-file <file> --log <file>] -- <bc|rl 인자>`: 비정상 종료·멈춤이면 같은 run을 재시작한다. 종료 코드 0·130·75(잠금을 얻지 못함: 다른 PC 잠금, 획득 경쟁에서 짐, 양보 예약)·76(양보)은 재시작하지 않는다.
+- `uranium-train supervise [--hang-minutes 30 --max-restarts 5 --window-minutes 60 --delay-seconds 60 --progress-file <file> --log <file>] -- <bc|rl 인자>`: 비정상 종료·멈춤이면 같은 run을 재시작한다. 종료 코드 0·130·75(잠금을 얻지 못함: 다른 호스트 잠금, 획득 경쟁에서 짐, 양보 예약)·76(양보)은 재시작하지 않는다.
   - Linux: 자식 학습은 별도 프로세스 그룹으로 뜨고 `PR_SET_PDEATHSIG`(SIGINT)가 걸린다. 터미널 포그라운드 Ctrl+C도 감시 프로세스가 한 번만 전달하므로 저장 후 끝난다. 감시 프로세스가 강제 종료돼도 자식은 SIGINT를 받아 저장·push·잠금 해제 후 끝난다(060-R6). 이때 자식의 stderr 파이프는 닫혀 있어서 그 뒤 로그는 남지 않는다(학습 코드는 stderr 쓰기 실패를 무시한다). `bc`·`rl`의 Ctrl+C 처리는 데이터셋 pull·모델 로드보다 먼저 설치되므로, 시작 중 Ctrl+C도 잠금이 있으면 해제하고, 없으면 그냥 끝난다(pull은 다음에 이어서 받는다). Windows: 같은 콘솔이라 Ctrl+C가 자식에게 직접 간다(기존 동작).
 - `uranium-train worker --queue <shared>/queue/<이름>.toml --backend <cuda|vulkan> --priority <n> [--poll-seconds 60] [--log <file>]`
   - 큐: `[defaults] datasets=[...] config="..."`, `[[run]] id, config, core, stage(s1|s2|ablation-a), init_run, datasets, steps`.
-  - 끝나지 않은(`checkpoints/<id>/DONE` 없음) 잡을 수 있는 run을 순서대로 돌린다. `init_run`이 있는 run은 `init_run`에 `DONE`이 생긴 뒤에만 잡는다(061-R13). 빈 run이 없으면 우선순위가 낮은 PC의 작업자가 돌리는 run에 양보 요청(`locks/<id>.yield`)을 쓰고, 다른 run을 잡거나 작업자가 끝나면 자기 요청을 지운다(061-R14). 직접 실행한 `bc --run`에는 양보 요청을 쓰지 않는다.
+  - 끝나지 않은(`checkpoints/<id>/DONE` 없음) 잡을 수 있는 run을 순서대로 돌린다. `init_run`이 있는 run은 `init_run`에 `DONE`이 생긴 뒤에만 잡는다(061-R13). 빈 run이 없으면 우선순위가 낮은 호스트의 작업자가 돌리는 run에 양보 요청(`locks/<id>.yield`)을 쓰고, 다른 run을 잡거나 작업자가 끝나면 자기 요청을 지운다(061-R14). 직접 실행한 `bc --run`에는 양보 요청을 쓰지 않는다.
   - 양보 요청 만료: 작업자가 같은 요청 내용을 자기 단조 시계로 30분 동안 관측하면 만료로 보고 지운다(파일 mtime 무관). 작업자가 하나도 없을 때 요청한 host가 사라졌으면 `locks/<id>.yield`를 직접 지운다.
-  - 다른 PC 잠금의 자동 인수: 작업자가 자기 단조 시계로 같은 heartbeat 내용을 10분 동안 연속 관측했을 때만 한다(PC 시계·파일 mtime 무관, 061-R5). 학습하는 동안에는 관측하지 않으므로, 돌아온 뒤 다시 10분을 관측한다. 관측 간격이 5분(만료의 절반)을 넘으면 관측이 끊긴 것으로 보므로 `--poll-seconds`는 300 미만이어야 한다(넘으면 작업자가 시작을 거부한다).
-  - 같은 PC에서 큐에 있는 run을 수동으로(`bc --run`) 실행하지 않는다. 같은 host의 잠금은 작업자가 자기 것으로 보고 다시 잡는다.
+  - 다른 호스트 잠금의 자동 인수: 작업자가 자기 단조 시계로 같은 heartbeat 내용을 10분 동안 연속 관측했을 때만 한다(호스트 시계·파일 mtime 무관, 061-R5). 학습하는 동안에는 관측하지 않으므로, 돌아온 뒤 다시 10분을 관측한다. 관측 간격이 5분(만료의 절반)을 넘으면 관측이 끊긴 것으로 보므로 `--poll-seconds`는 300 미만이어야 한다(넘으면 작업자가 시작을 거부한다).
+  - 같은 호스트에서 큐에 있는 run을 수동으로(`bc --run`) 실행하지 않는다. 같은 host의 잠금은 작업자가 자기 것으로 보고 다시 잡는다.
   - 알려진 한계: 작업자를 강제 종료(kill -9, 전원 차단 등)하면 상태 파일 `workers/<host>.json`이 `run=X`인 채로 남는다. 그 host에서 X를 `bc --run`으로 수동 실행하면 다른 작업자는 이를 작업자가 돌리는 run으로 보고 양보 요청을 보낼 수 있다(061-R14). 수동 실행 전에 남은 상태 파일을 지우거나, 그 host의 작업자를 다시 띄워 상태 파일을 갱신한다.
   - 공용 드라이브를 읽거나 쓰지 못하면 상태를 "모름"으로 보고 종료하지 않으며 `--poll-seconds`마다 다시 본다. 모름은 run 단위다: 잠금·`DONE`·양보 요청을 읽지 못한 run만 그 주기에 건너뛰고, 공용 드라이브 자체(큐, `checkpoints/`)에 접근할 수 없으면 아무 run도 잡지 않는다. 공용 드라이브가 없는 동안 자식이 실패한 것은 재시작 횟수에 넣지 않는다(061-R13).
   - 상태 파일 `workers/<host>.json`은 1분마다(자식 학습 중에도) 갱신한다. 장비 구간은 `runs/<id>/devices.jsonl`, 집계는 `uranium-train devices --run <id>`(host별 update 수·비율, 061-R15).
-  - Windows CUDA 학습 PC(우선순위 10): 쉴 때 직접 실행, Ctrl+C로 멈춘다(저장·push·잠금 해제, 약 30초). 자동 시작 구성은 없다(060-R6).
-  - Linux Vulkan 호스트(Vulkan f32, 우선순위 1): 상시 실행. `tools/worker/uranium-worker.service`(systemd user, `KillSignal=SIGINT`, `TimeoutStopSec=900`) 또는 `setsid nohup ... &`, 멈출 때 `kill -INT <pid>`. learner로 정하지 않은 호스트에서는 띄우지 않는다.
+  - Windows CUDA 호스트(우선순위 10): 사용자가 직접 실행하고 Ctrl+C로 멈춘다(저장·push·잠금 해제, 약 30초). 자동 시작 구성은 없다(060-R6).
+  - Linux Vulkan 호스트(Vulkan f32, 우선순위 1): `tools/worker/uranium-worker.service`(systemd user, `KillSignal=SIGINT`, `TimeoutStopSec=900`) 또는 `setsid nohup ... &`, 멈출 때 `kill -INT <pid>`. learner로 정하지 않은 호스트에서는 띄우지 않는다.
+  - 바이너리 교체: 작업자를 먼저 멈추고(Ctrl+C, Linux 서비스는 `systemctl --user stop uranium-worker`) 다시 빌드한 뒤 띄운다. 작업자가 도는 중에 다시 빌드하면 작업자와 돌고 있는 자식 학습은 옛 바이너리로 계속 돌고 다음 자식부터 새 바이너리가 떠서 두 버전이 섞인다.
 
 ## RL(042)
 - `uranium-train rl --run <id> --bc <BC ckpt> --logs <dir> [--config config/rl.toml] [--algo vtrace|ppo] [--backend cuda|vulkan|flex] [--z-table <jsonl>] [--ac1-race terran|protoss|zerg] [--max-agent-steps N] [--max-updates N] [--max-minutes N] [--take-over]`
-  - 체크포인트·잠금은 061, 게임 PC는 `URANIUM_HOSTS_FILE`. 로그 `train.csv`·`games.csv`(042-R2).
+  - 체크포인트·잠금은 061, 게임 호스트는 `URANIUM_HOSTS_FILE`. 로그 `train.csv`·`games.csv`(042-R2).
   - 042-AC1·033-AC2는 `--max-agent-steps 10000000`(run 누적, 도달하면 정상 종료, 042-R12).
   - 리플레이: `[replays] sample_every`(기본 100)의 배수 게임과 승자 불일치 게임만 `runs/<run>/replays/`에 남긴다(042-R11).
   - 학습 시작과 체크포인트마다 디스크 사용률(80% 경고, 061-R8)과 `runs/*/replays/` 합계(예산 100GB 초과 시 경고, 지우지 않음, 060-R7)를 확인한다. 보존 개수는 `config/rl.toml`의 `keep_checkpoints`(없으면 5, 0이면 전부).

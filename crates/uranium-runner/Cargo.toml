@@ -11,7 +11,7 @@ name = "uranium-env"
 path = "src/main.rs"
 
 [features]
-# Enable only on a CUDA GPU PC (CLAUDE.md fixed conditions): --features cuda
+# Enable only on a CUDA host (CLAUDE.md fixed conditions): --features cuda
 cuda = ["uranium-agent/cuda"]
 
 [dependencies]

@@ -1,5 +1,5 @@
 //! Uranium policy / value network (spec 032) on Burn 0.22. Backend-agnostic: the `Device` the
-//! module and tensors live on picks Flex (tests), Vulkan (BC250) or CUDA (032-R1).
+//! module and tensors live on picks Flex (tests), Vulkan or CUDA (032-R1).
 
 pub mod batch;
 pub mod checkpoint;

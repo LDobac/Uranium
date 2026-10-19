@@ -13,11 +13,11 @@
 |---|---|
 | 종족 | 테란 고정. 상대 T / P / Z |
 | 맵 | 투혼(Fighting Spirit), 서킷브레이커(Circuit Breaker) |
-| 학습 장비 | BC250(Vulkan) 또는 CUDA PC. CUDA는 Burn `cuda` feature로만 쓰고(그 PC에서만 빌드), 직접 쓴 CUDA·ROCm·HIP 코드는 금지 |
-| 프레임워크 | Rust + Burn **0.22.0**, 실행 시 `Device::vulkan`/`Device::cuda`, 테스트는 `flex`. 정밀도는 032-R8(CUDA f32, BC250 BC 학습 f32). 학습 crate는 Windows에서도 빌드 (001-R8) |
-| 시뮬레이터 | OpenBW + BWAPI 4.2 포크, Linux 헤드리스. 다른 LAN PC에서 실행될 수 있음 |
+| 학습 호스트 | Linux Vulkan 호스트 또는 CUDA 호스트(Linux/Windows). CUDA는 Burn `cuda` feature로만 쓰고(CUDA 호스트에서만 빌드), 직접 쓴 CUDA·ROCm·HIP 코드는 금지 |
+| 프레임워크 | Rust + Burn **0.22.0**, 실행 시 `Device::vulkan`/`Device::cuda`, 테스트는 `flex`. 정밀도는 032-R8(CUDA f32, Vulkan BC 학습 f32). 학습 crate는 Windows에서도 빌드 (001-R8) |
+| 시뮬레이터 | OpenBW + BWAPI 4.2 포크, Linux 헤드리스. 다른 LAN 호스트에서 실행될 수 있음 |
 | SC:R 연동 | samase 플러그인 DLL + samase_scarf. **로컬/LAN 커스텀 게임만**, 배틀넷 공개 게임·래더 대상 아님 |
-| 체크포인트·데이터 | 공용 드라이브(SMB, `URANIUM_SHARED_DIR`). pull → 학습 → push, run당 한 PC(heartbeat 잠금) (061) |
+| 체크포인트·데이터 | 공용 드라이브(SMB, `URANIUM_SHARED_DIR`). pull → 학습 → push, run당 한 호스트(heartbeat 잠금) (061) |
 | C++ | OpenBW 브리지의 얇은 shim만. 나머지는 Rust |
 
 ## Spec Driven 규칙 (필수)
@@ -73,7 +73,7 @@ reports/                 리포트, timeline.md
 ## 코딩 규칙
 - Burn 모델 코드는 백엔드 무관, 실행 시 `Device`로 고른다. 테스트는 `Device::flex()` (032-R1).
 - 버전별 ID·오프셋은 데이터 테이블로만 관리한다 (013-R1).
-- **개인·보안 정보 금지** (001-R10): spec·문서·리포트·주석·커밋에 IP, 호스트 이름, 계정, 이메일, 개인 경로, 자격 증명을 쓰지 않는다. `<server>`, "BC250 1호기" 같은 표기를 쓴다.
+- **개인·보안 정보 금지** (001-R10): spec·문서·리포트·주석·커밋에 IP, 호스트 이름, 계정, 이메일, 개인 경로, 자격 증명을 쓰지 않는다. `<server>`, "Linux Vulkan 호스트" 같은 표기를 쓴다. 추적 파일(spec·코드·주석·추적 config·docs·CLAUDE.md·tools)에는 장비 종류·모델명·번호·상태를 쓰지 않고 OS·백엔드로만 적는다. 장비 표기는 추적하지 않는 config와 `reports/`에만 둔다.
 - **설정은 `.env`** (001-R9): 저장소 루트 `.env`(git 미추적), 프로세스 환경변수 우선. 새 키는 `.env.example`에도 추가.
 - 결정론: executor와 feature 추출은 같은 입력이면 같은 출력 (031-R7, 030-R1).
 - 각 spec의 AC는 테스트나 벤치로 검증한다.

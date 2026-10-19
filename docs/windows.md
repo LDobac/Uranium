@@ -31,7 +31,7 @@ Windows PC 한 대에서 게임·브리지·hostd·에이전트를 모두 돌리
 | OpenBW + BWAPI | `tools\openbw\build.ps1` | `third_party\bwapi\build\bin\Release\{BWAPILauncher.exe, BWAPI.dll, OpenBWData.dll}` |
 | 브리지 | `tools\openbw\build_bridge.ps1` | `bridge\openbw\build\Release\uranium_bridge.dll` |
 | T1 봇 | `tools\oss\build_<bot>.ps1` | `<URANIUM_OSS_BOTS_DIR>\<bot>\{module.dll, module.pdb, VERSION, bwapi-data\}` |
-| Rust 바이너리 | `cargo build --release -p uranium-hostd -p uranium-runner -p uranium-agent` (CUDA 학습 PC에서 모델 추론까지 쓰려면 `--features uranium-runner/cuda,uranium-agent/cuda`, 020-R11) | `target\release\*.exe` |
+| Rust 바이너리 | `cargo build --release -p uranium-hostd -p uranium-runner -p uranium-agent` (CUDA 호스트에서 모델 추론까지 쓰려면 `--features uranium-runner/cuda,uranium-agent/cuda`, 020-R11) | `target\release\*.exe` |
 
 - `URANIUM_BWAPI_DIR`는 `third_party\bwapi\build`이다. hostd는 Windows에서 `bin\Release\BWAPILauncher.exe`를 찾는다.
 - 브리지는 `gameInit`과 `newAIModule`만 export한다(`dumpbin /exports`로 확인).
@@ -49,10 +49,10 @@ Windows PC 한 대에서 게임·브리지·hostd·에이전트를 모두 돌리
 - 동시 게임 수 측정: `target\release\uranium-env.exe calibrate` → `<URANIUM_CACHE_DIR>\hostd_calibration.toml`
 - 봇 크래시 분석: WinDbg(`winget install Microsoft.WinDbg`)의 `cdbX64`에 `module.pdb` 경로를 `-y`로 준다.
 
-## 5. 구성 (b): 이 PC + 원격 Linux 게임 PC (020 호스트 구성)
-학습 PC(Windows)가 `uranium-env`(에이전트 서버 내장)와 로컬 hostd를 돌린다. 원격 Linux 게임 PC는 hostd만 돌린다. 원격 게임의 브리지는 학습 PC의 에이전트에 접속한다. 검증 결과는 `reports/m3_remote.md`에 있다.
+## 5. 구성 (b): Windows 호스트 + 원격 Linux 게임 호스트 (020 호스트 구성)
+Windows 학습 호스트가 `uranium-env`(에이전트 서버 내장)와 로컬 hostd를 돌린다. 원격 Linux 게임 호스트는 hostd만 돌린다. 원격 게임의 브리지는 Windows 학습 호스트의 에이전트에 접속한다. 검증 결과는 `reports/m3_remote.md`에 있다.
 
-**원격 Linux 게임 PC**
+**원격 Linux 게임 호스트**
 1. 저장소를 받아 최신으로 맞춘다: `git pull --ff-only`
 2. 빌드한다: `tools/openbw/build.sh` → `tools/openbw/build_bridge.sh` → `cargo build --release -p uranium-hostd -p uranium-runner -p uranium-agent` → `tools/oss/build_<bot>.sh`(6종)
    - 패치가 바뀐 봇 소스는 먼저 `git -C third_party/<bot> reset --hard && git -C third_party/<bot> clean -fdx`로 되돌린다. 이전 패치가 적용된 상태에서는 새 패치가 들어가지 않는다.
@@ -61,12 +61,12 @@ Windows PC 한 대에서 게임·브리지·hostd·에이전트를 모두 돌리
 5. `target/release/uranium-env calibrate`를 한 번 실행한 뒤 hostd를 띄운다: `setsid nohup target/release/uranium-hostd serve > /tmp/hostd.log 2>&1 < /dev/null &`
    - 원격에서 `pkill -f uranium-hostd`를 쓰면 SSH 명령 자신도 매칭되어 함께 죽는다. `pkill -x uranium-hostd`를 쓴다.
 
-**학습 PC (Windows)**
+**Windows 학습 호스트**
 1. `config/hosts.toml`(git 미추적)에 로컬 hostd(`127.0.0.1:7700`)와 원격 hostd 주소를 등록한다. 형식은 `config/hosts.example.toml`을 따른다.
 2. `.env`를 설정한다.
    - `URANIUM_HOSTS_FILE`: hosts 파일 경로
    - `URANIUM_AGENT_LISTEN=0.0.0.0:7600`
-   - `URANIUM_AGENT_PUBLIC_ADDR`: 원격 PC에서 닿는 이 PC의 주소(VPN 주소 등)와 포트(`:7600`)
+   - `URANIUM_AGENT_PUBLIC_ADDR`: 원격 호스트에서 닿는 이 호스트의 주소(VPN 주소 등)와 포트(`:7600`)
    - 이 주소는 로컬 게임도 쓴다. 따라서 VPN이 꺼지면 로컬 게임도 접속하지 못한다.
 3. 방화벽에 들어오는 TCP 7600 허용 규칙을 추가한다. 관리자 권한이 필요하다.
    - 예: `New-NetFirewallRule -DisplayName 'Uranium agent' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 7600 -Program <repo>\target\release\uranium-env.exe -Profile Any`
@@ -76,7 +76,7 @@ Windows PC 한 대에서 게임·브리지·hostd·에이전트를 모두 돌리
    - PC를 추가하거나 빼려면 run을 멈추고 hosts 파일을 고친 뒤 다시 시작한다.
 
 ## 6. SC:R 래더 리플레이 수집 (043)
-로그인된 SC:R 클라이언트의 로컬 웹 API로 래더 리플레이를 받는다. 이 PC에 SC:R이 설치돼 있고 배틀넷(본계정)에 로그인한 상태여야 한다. 실측 결과와 API 경로는 `reports/m4_ladder_probe.md`에 있다.
+로그인된 SC:R 클라이언트의 로컬 웹 API로 래더 리플레이를 받는다. 이 Windows 호스트에 SC:R이 설치돼 있고 배틀넷(본계정)에 로그인한 상태여야 한다. 실측 결과와 API 경로는 `reports/m4_ladder_probe.md`에 있다.
 - 데이터 정책: Blizzard EULA 해석 위험을 감수하는 040 정책의 예외다(AMB-043-1). 내부 학습 전용이며 재배포하지 않는다.
 - 빌드: `cargo build --release -p uranium-ladder`
 - `.env`: `URANIUM_SHARED_DIR`가 필요하다. 선택 키는 `URANIUM_SCR_API_PORT`(포트 자동 탐지를 건너뜀), `URANIUM_LADDER_RPS`(기본 0.5), `URANIUM_LADDER_DAILY_MAX`(기본 1000).
@@ -95,9 +95,9 @@ Windows PC 한 대에서 게임·브리지·hostd·에이전트를 모두 돌리
 - 클라이언트 업데이트로 응답 형식이 바뀌면 `collect`가 `failed (schema)`를 기록하고, 연속 20번 실패하면 멈춘다(043-R9). 이때는 `crates\uranium-ladder\src\schema.rs`만 고친다(043-R10).
 
 ## 7. 학습 백엔드 (032)
-Windows에서 학습할 때는 CUDA를 쓴다. Vulkan 학습은 Linux(BC250)에서만 쓴다.
+Windows에서 학습할 때는 CUDA를 쓴다. Vulkan 학습은 Linux Vulkan 호스트에서만 쓴다.
 - Windows에서 Vulkan으로 학습하는 구성은 운영 대상이 아니다(사용자 확인 2026-10-16). 학습 스텝이 GPU 타임아웃 복구(TDR, 2초 제한)에 걸려 중단되지만 대응하지 않는다. 측정 기록은 `reports/m5_model.md`에 있다.
-- CUDA는 NVIDIA GPU가 있는 PC에서만 켠다. CUDA Toolkit을 설치하고 `CUDA_PATH`를 지정한다.
+- CUDA는 CUDA 호스트에서만 켠다. CUDA Toolkit을 설치하고 `CUDA_PATH`를 지정한다.
   - 빌드: `cargo build --release -p uranium-train --features cuda`
   - 학습: `target\release\uranium-train.exe bc --shards <dir> --out <ckpt> --backend cuda`
   - 벤치: `cargo run -p bench --release --features cuda -- --backend cuda --filter net_`
