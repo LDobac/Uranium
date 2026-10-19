@@ -300,24 +300,38 @@ pub fn run(settings: &Settings, paths: &Paths, plan: &Plan, opt: &Opts) -> Resul
     Ok(rec.summary)
 }
 
-/// Latest record per match, in first-seen order (later lines replace earlier ones).
-fn latest_records(text: &str) -> Vec<Record> {
+/// Latest record per match, in first-seen order (later lines replace earlier ones), and the
+/// number of lines that did not parse as a record.
+fn latest_records(text: &str) -> (Vec<Record>, usize) {
     let mut order: Vec<String> = Vec::new();
     let mut last: std::collections::HashMap<String, Record> = std::collections::HashMap::new();
+    let mut bad = 0;
     for l in text.lines().filter(|l| !l.trim().is_empty()) {
-        let Ok(r) = serde_json::from_str::<Record>(l) else { continue };
+        let Ok(r) = serde_json::from_str::<Record>(l) else {
+            bad += 1;
+            continue;
+        };
         if !last.contains_key(&r.link) {
             order.push(r.link.clone());
         }
         last.insert(r.link.clone(), r);
     }
-    order.into_iter().filter_map(|k| last.remove(&k)).collect()
+    (order.into_iter().filter_map(|k| last.remove(&k)).collect(), bad)
+}
+
+/// `latest_records` of a file, with a stderr summary of skipped unparsable lines.
+fn latest_records_of(path: &Path) -> Result<Vec<Record>> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("{}", path.display()))?;
+    let (records, bad) = latest_records(&text);
+    if bad > 0 {
+        eprintln!("warning: {bad} unparsable lines in {} skipped", path.display());
+    }
+    Ok(records)
 }
 
 /// `--retry-failed`: matches whose latest record is `failed` with a reason starting with `prefix`.
 fn retry_targets(records: &Path, prefix: &str) -> Result<Vec<(String, u64)>> {
-    let text = std::fs::read_to_string(records).with_context(|| format!("{}", records.display()))?;
-    Ok(latest_records(&text)
+    Ok(latest_records_of(records)?
         .into_iter()
         .filter(|r| r.status == "failed" && r.reason.as_deref().is_some_and(|x| x.starts_with(prefix)))
         .map(|r| (r.link, r.create_time.unwrap_or(0)))
@@ -458,12 +472,11 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// `status`: counts per status/reason, and per matchup and map for stored replays (no names).
 pub fn status_markdown(records: &Path) -> Result<String> {
-    let text = std::fs::read_to_string(records).with_context(|| format!("{}", records.display()))?;
     let mut by_status: BTreeMap<String, u32> = BTreeMap::new();
     let mut by_matchup: BTreeMap<String, u32> = BTreeMap::new();
     let mut by_map: BTreeMap<String, u32> = BTreeMap::new();
     // A retried match counts once, by its latest record.
-    for r in latest_records(&text) {
+    for r in latest_records_of(records)? {
         let reason = r.reason.as_deref().map(|s| s.split(':').next().unwrap_or(s).to_string());
         *by_status.entry(match reason {
             Some(x) => format!("{} ({x})", r.status),
@@ -649,6 +662,10 @@ mod tests {
         let md = status_markdown(&paths.records()).unwrap();
         assert!(md.contains("| ok | 2 |") && !md.contains("failed (schema)"), "{md}");
         let opt = Opts { retry_failed: None, ..retry };
+        let (_, bad) = latest_records("{\"match\":\"MM-9\",\"status\":\"ok\",\"collected_at\":\"t\"}
+not json
+");
+        assert_eq!(bad, 1);
 
         // 043-R5: refuse to run without a confirmed min_bucket.
         let unset = Plan { min_bucket: None, ..plan };

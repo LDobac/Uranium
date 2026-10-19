@@ -126,8 +126,8 @@ pub struct MatchPlayer {
     /// Results as this player's client reported them, keyed by toon ("" for empty slots).
     pub game_result: BTreeMap<String, GameResult>,
     pub info_attributes: BTreeMap<String, Value>,
-    /// Missing for some players (seen on 2026-10-17/19 ladder games); the match is still
-    /// collected and the record leaves that player's MMR/rank empty (043-R8, R9).
+    /// Missing for some players (measured 2026-10-19; user decision 2026-10-19): the match is
+    /// still collected and the record leaves that player's MMR/rank empty (043-R8, R9).
     #[serde(default)]
     pub score: Option<Score>,
 }
