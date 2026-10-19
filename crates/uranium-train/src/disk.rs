@@ -164,9 +164,30 @@ pub fn warn_replay_budget(shared: &Path, budget: u64) -> Option<u64> {
     }
 }
 
-/// 061-R8 for a run: the shared drive and the local cache.
+/// 061-R8 for a run: the shared drive and the local cache. The cache is left out on the PC that
+/// hosts the share (`URANIUM_SHARED_LOCAL=1`, 061-R12: checkpoints are written on the share) and
+/// while its folder does not exist yet (nothing there to warn about).
 pub fn warn_storage(tag: &str, cfg: &crate::storage::StorageConfig) -> Vec<DiskCheck> {
-    warn_disks(tag, &[("shared drive", &cfg.shared), ("local cache", &cfg.cache)])
+    let mut paths: Vec<(&str, &Path)> = vec![("shared drive", &cfg.shared)];
+    if !cfg.shared_local && cfg.cache.exists() {
+        paths.push(("local cache", &cfg.cache));
+    }
+    warn_disks(tag, &paths)
+}
+
+/// 060-R7 replay total measured off the training thread (the share walk can take a while):
+/// starts a measurement unless one is still running. Warnings only.
+pub fn spawn_replay_check(shared: &Path, budget: u64) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    if RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let shared = shared.to_path_buf();
+    std::thread::spawn(move || {
+        warn_replay_budget(&shared, budget);
+        RUNNING.store(false, Ordering::SeqCst);
+    });
 }
 
 #[cfg(test)]

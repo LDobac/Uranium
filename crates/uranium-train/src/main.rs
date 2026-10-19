@@ -433,7 +433,7 @@ fn main() -> Result<()> {
         }
         Cmd::SplitStats { data } => {
             let src = ShardSource::from_dirs(&data.dirs()?)?;
-            let scan = uranium_train::data::scan_files(src.files())?;
+            let scan = uranium_train::data::scan_cached(&src)?;
             println!("{}", serde_json::to_string_pretty(&uranium_train::split::split_stats(scan.iter().flatten()))?);
             Ok(())
         }

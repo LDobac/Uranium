@@ -726,3 +726,95 @@ fn split_stats_privileged_none_and_result_sources_e10() {
     let total: u64 = st.splits.iter().map(|r| r["games"].as_u64().unwrap()).sum();
     assert_eq!(total, 3);
 }
+
+/// Review T4a: the start scan is cached per dataset fingerprint, given back in the source's own
+/// file order, and a changed dataset (another fingerprint) is scanned again, never served stale.
+#[test]
+fn scan_cache_follows_the_dataset_fingerprint() {
+    use uranium_train::data::{scan_cached_in, scan_files};
+    let root = shard_dir("scan-cache", &varied_games(), 4);
+    let cache = std::env::temp_dir().join(format!("uranium-scan-cache-dir-{}", std::process::id()));
+    std::fs::remove_dir_all(&cache).ok();
+    let src = ShardSource::new(&root).unwrap().shuffled(3);
+    let fresh = scan_files(src.files()).unwrap();
+    assert_eq!(scan_cached_in(&src, Some(&cache)).unwrap(), fresh, "first call scans");
+    let files: Vec<_> = std::fs::read_dir(&cache).unwrap().flatten().map(|e| e.path()).collect();
+    assert_eq!(files.len(), 1, "one cache file: {files:?}");
+    assert!(files[0].file_name().unwrap().to_string_lossy().starts_with("scan-"));
+    // A cached answer is used (prove it by editing the cache) and reordered for another order.
+    let text = std::fs::read_to_string(&files[0]).unwrap().replace("\"privileged_none\":0", "\"privileged_none\":7");
+    std::fs::write(&files[0], text).unwrap();
+    let other_order = ShardSource::new(&root).unwrap();
+    let got = scan_cached_in(&other_order, Some(&cache)).unwrap();
+    assert!(got.iter().flatten().all(|g| g.privileged_none == 7), "served from the cache");
+    let want: Vec<usize> = scan_files(other_order.files()).unwrap().iter().map(|f| f.len()).collect();
+    assert_eq!(got.iter().map(|f| f.len()).collect::<Vec<_>>(), want, "in the source's file order");
+    // The dataset changes (a manifest appears, contents differ): new key, fresh scan.
+    uranium_train::storage::Manifest::build(&root).unwrap().write(&root).unwrap();
+    let again = scan_cached_in(&ShardSource::new(&root).unwrap(), Some(&cache)).unwrap();
+    assert!(again.iter().flatten().all(|g| g.privileged_none == 0), "not the stale cache");
+    assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 2);
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&cache).ok();
+}
+
+/// B-3: every `BcConfig` field (and `[data]` key) is either in the fingerprinted
+/// `ResultSettings` or listed in `EXECUTION_ONLY`; a new field fails here until it is classified.
+/// Execution-only fields never move the fingerprint, result fields always do.
+#[test]
+fn config_fingerprint_fields_are_classified_b3() {
+    use uranium_train::bc::EXECUTION_ONLY;
+    const RESULT: [&str; 15] = [
+        "lanes", "seq_len", "lr", "min_lr", "warmup_steps", "total_steps", "weight_decay", "grad_clip", "s2_lr_scale", "heads", "value", "data.z_drop", "data.augment", "data.seed", "data.enemy_race_mask",
+    ];
+    let mut cfg = tiny_bc(1, 0);
+    cfg.keep_checkpoints = Some(3);
+    let v = serde_json::to_value(&cfg).unwrap();
+    let mut keys: Vec<String> = Vec::new();
+    for (k, x) in v.as_object().unwrap() {
+        if k == "data" {
+            keys.extend(x.as_object().unwrap().keys().map(|d| format!("data.{d}")));
+        } else {
+            keys.push(k.clone());
+        }
+    }
+    keys.sort();
+    let mut classified: Vec<String> = RESULT.iter().chain(EXECUTION_ONLY.iter()).map(|s| s.to_string()).collect();
+    classified.sort();
+    assert_eq!(keys, classified, "classify new BcConfig fields: ResultSettings (result) or EXECUTION_ONLY");
+    let view = serde_json::to_value(cfg.results_view()).unwrap();
+    assert_eq!(view.as_object().unwrap().len(), RESULT.len(), "ResultSettings holds exactly the result fields");
+
+    let base = cfg.fingerprint();
+    let mut c = cfg.clone();
+    c.micro_lanes = 9;
+    c.grad_checkpointing = true;
+    c.pad_entities = 128;
+    c.steps.s1 = 12345;
+    c.keep_checkpoints = None;
+    c.data.checkpoint_every = 7;
+    c.data.checkpoint_minutes = 3;
+    assert_eq!(c.fingerprint(), base, "execution-only settings");
+    let changes: [fn(&mut BcConfig); 15] = [
+        |c| c.lanes += 1,
+        |c| c.seq_len += 1,
+        |c| c.lr *= 2.0,
+        |c| c.min_lr *= 2.0,
+        |c| c.warmup_steps += 1,
+        |c| c.total_steps += 1,
+        |c| c.weight_decay += 0.1,
+        |c| c.grad_clip += 0.5,
+        |c| c.s2_lr_scale *= 2.0,
+        |c| c.heads.delay += 0.1,
+        |c| c.value.win += 0.1,
+        |c| c.data.z_drop += 0.1,
+        |c| c.data.augment = !c.data.augment,
+        |c| c.data.seed += 1,
+        |c| c.data.enemy_race_mask += 0.01,
+    ];
+    for (i, f) in changes.iter().enumerate() {
+        let mut c = cfg.clone();
+        f(&mut c);
+        assert_ne!(c.fingerprint(), base, "{} changes the fingerprint", RESULT[i]);
+    }
+}

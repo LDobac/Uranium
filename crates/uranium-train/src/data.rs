@@ -61,6 +61,8 @@ pub struct ShardSource {
     /// Files to read (by index); the others are skipped without being read (032-R17 ② evaluation
     /// of chosen games). `None` = every file.
     only_files: Option<HashSet<usize>>,
+    /// The dataset folders given (their manifests key the scan cache, B-3 fingerprint).
+    dirs: Vec<PathBuf>,
 }
 
 impl ShardSource {
@@ -73,7 +75,7 @@ impl ShardSource {
         for d in dirs {
             files.extend(shard_files(d)?);
         }
-        Ok(Self { files, next_file: 0, games: VecDeque::new(), cur_file: 0, last: None, select: None, seed: None, only_files: None })
+        Ok(Self { files, next_file: 0, games: VecDeque::new(), cur_file: 0, last: None, select: None, seed: None, only_files: None, dirs: dirs.to_vec() })
     }
 
     pub fn select(mut self, sel: crate::split::Selection) -> Self {
@@ -89,6 +91,11 @@ impl ShardSource {
 
     pub fn files(&self) -> &[PathBuf] {
         &self.files
+    }
+
+    /// The folders the files were found in.
+    pub fn dirs(&self) -> &[PathBuf] {
+        &self.dirs
     }
 
     /// Reads only the files `keep` (indices into [`ShardSource::files`]); game ids stay those of
@@ -365,12 +372,15 @@ impl MapStore {
     /// B-2: fails, listing every map hash of `games` (with its game count) that has no
     /// precompute, before any training or evaluation starts.
     pub fn check(&self, games: &[&GameSummary]) -> Result<()> {
-        let missing = self.missing(games.iter().map(|g| g.meta.map_hash.as_str()))?;
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for g in games {
+            *counts.entry(g.meta.map_hash.as_str()).or_default() += 1;
+        }
+        let missing = self.missing(counts.keys().copied())?;
         if missing.is_empty() {
             return Ok(());
         }
-        let count = |h: &str| games.iter().filter(|g| g.meta.map_hash == h).count();
-        let list: Vec<String> = missing.iter().map(|h| format!("{h} ({} games)", count(h))).collect();
+        let list: Vec<String> = missing.iter().map(|h| format!("{h} ({} games)", counts[h.as_str()])).collect();
         let dir = self.folder()?.map_or_else(String::new, |d| d.display().to_string());
         anyhow::bail!(
             "{} map hash(es) of the selected games have no map precompute v{} in {dir} (B-2; copy the build's `<map_hash>.toml` files there): {}",
@@ -382,7 +392,7 @@ impl MapStore {
 }
 
 /// What a scan keeps of one game (no frames): selection data and counts.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GameSummary {
     pub meta: GameMeta,
     pub steps: usize,
@@ -433,12 +443,87 @@ pub fn scan_files(files: &[PathBuf]) -> Result<Vec<Vec<GameSummary>>> {
 /// map precompute of every game `sel` keeps (all games when `None`). Returns the scan.
 pub fn check_maps(src: &ShardSource, sel: Option<crate::split::Selection>, maps: &MapStore) -> Result<Vec<Vec<GameSummary>>> {
     let started = std::time::Instant::now();
-    let scan = scan_files(src.files())?;
+    let scan = scan_cached(src)?;
     let games: Vec<&GameSummary> = scan.iter().flatten().filter(|g| sel.is_none_or(|s| crate::split::selects(s, &g.meta))).collect();
     maps.check(&games)?;
     let n_maps = games.iter().map(|g| g.meta.map_hash.as_str()).collect::<HashSet<_>>().len();
     crate::elog!("{}", serde_json::json!({ "map_precomputes": "ok (B-2)", "games": games.len(), "maps": n_maps, "secs": started.elapsed().as_secs() }));
     Ok(scan)
+}
+
+/// `.env` key of the local cache root (061-R7); scans are cached under `<cache>/scans/`.
+const CACHE_DIR_ENV: &str = "URANIUM_CACHE_DIR";
+/// Bump when [`GameSummary`] changes.
+const SCAN_CACHE_VERSION: u32 = 1;
+
+/// Folder of scan caches: `<URANIUM_CACHE_DIR>/scans`, or `None` (no cache) when not set.
+pub fn scan_cache_dir() -> Option<PathBuf> {
+    std::env::var_os(CACHE_DIR_ENV).filter(|v| !v.is_empty()).map(|v| PathBuf::from(v).join("scans"))
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ScanCache {
+    version: u32,
+    shard_schema: u32,
+    key: String,
+    /// File keys (last three path parts) in sorted path order, and their games.
+    files: Vec<(String, Vec<GameSummary>)>,
+}
+
+fn file_key(f: &Path) -> String {
+    let mut parts: Vec<_> = f.components().rev().take(3).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    parts.reverse();
+    parts.join("/")
+}
+
+/// [`scan_files`] of `src`'s files (in `src`'s order) through a local cache (review T4a: the start
+/// checks of `bc`, `bc-eval`, `label-check`, `split-stats` and `bc-epoch` would otherwise decode
+/// every shard each time). The cache is `<cache>/scan-<key>.json`, `key` = the files'
+/// fingerprint (manifest SHA-256; size and modification time for files without a manifest), so
+/// a changed dataset gets a new file and the old one is never read for it. Written atomically
+/// (temporary name, rename); a cache that cannot be read or written only costs a fresh scan.
+pub fn scan_cached(src: &ShardSource) -> Result<Vec<Vec<GameSummary>>> {
+    scan_cached_in(src, scan_cache_dir().as_deref())
+}
+
+pub fn scan_cached_in(src: &ShardSource, cache: Option<&Path>) -> Result<Vec<Vec<GameSummary>>> {
+    let mut sorted: Vec<PathBuf> = src.files().to_vec();
+    sorted.sort();
+    let key = files_fingerprint(src.dirs(), &sorted, true)?.replace(':', "-");
+    let path = cache.map(|d| d.join(format!("scan-{key}.json")));
+    let keys: Vec<String> = sorted.iter().map(|f| file_key(f)).collect();
+    let cached = path.as_ref().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice::<ScanCache>(&b).ok()).filter(|c| {
+        c.version == SCAN_CACHE_VERSION
+            && c.shard_schema == uranium_replay::shard::SCHEMA_VERSION
+            && c.key == key
+            && c.files.len() == keys.len()
+            && c.files.iter().zip(&keys).all(|((k, _), want)| k == want)
+    });
+    let by_sorted: Vec<Vec<GameSummary>> = match cached {
+        Some(c) => {
+            crate::elog!("[scan] {} files from the cache {}", c.files.len(), path.as_ref().unwrap().display());
+            c.files.into_iter().map(|(_, g)| g).collect()
+        }
+        None => {
+            let scan = scan_files(&sorted)?;
+            if let Some(p) = &path {
+                let c = ScanCache { version: SCAN_CACHE_VERSION, shard_schema: uranium_replay::shard::SCHEMA_VERSION, key: key.clone(), files: keys.iter().cloned().zip(scan.iter().cloned()).collect() };
+                let write = || -> Result<()> {
+                    std::fs::create_dir_all(p.parent().unwrap())?;
+                    let tmp = p.with_extension(format!("json.tmp-{}", std::process::id()));
+                    std::fs::write(&tmp, serde_json::to_vec(&c)?)?;
+                    std::fs::rename(&tmp, p)?;
+                    Ok(())
+                };
+                if let Err(e) = write() {
+                    crate::elog!("[scan] could not write the scan cache {} ({e:#}); the next start scans again", p.display());
+                }
+            }
+            scan
+        }
+    };
+    let index: HashMap<&PathBuf, usize> = sorted.iter().enumerate().map(|(i, f)| (f, i)).collect();
+    Ok(src.files().iter().map(|f| by_sorted[index[f]].clone()).collect())
 }
 
 /// 041-R7 / A-3 (2026-10-19): value-loss weight of a game: 0 when its result could not be decided
@@ -452,6 +537,12 @@ pub fn value_weight(meta: &GameMeta) -> f32 {
 /// its size for a folder without a manifest (`--shards`). A rebuilt dataset with the same file
 /// names gives another fingerprint.
 pub fn dataset_fingerprint(dirs: &[PathBuf], files: &[PathBuf]) -> Result<String> {
+    files_fingerprint(dirs, files, false)
+}
+
+/// [`dataset_fingerprint`]; with `local`, a file without a manifest entry is also keyed by its
+/// modification time (a local cache key only: times differ between PCs).
+fn files_fingerprint(dirs: &[PathBuf], files: &[PathBuf], local: bool) -> Result<String> {
     use sha2::{Digest, Sha256};
     let mut manifests = Vec::new();
     for d in dirs {
@@ -468,7 +559,11 @@ pub fn dataset_fingerprint(dirs: &[PathBuf], files: &[PathBuf]) -> Result<String
         });
         let id = match entry {
             Some(sha) => sha,
-            None => format!("bytes:{}", std::fs::metadata(f).with_context(|| f.display().to_string())?.len()),
+            None => {
+                let m = std::fs::metadata(f).with_context(|| f.display().to_string())?;
+                let mtime = if local { m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos()) } else { 0 };
+                if local { format!("bytes:{}:mtime:{mtime}", m.len()) } else { format!("bytes:{}", m.len()) }
+            }
         };
         h.update(parts.join("/").as_bytes());
         h.update(b"\t");

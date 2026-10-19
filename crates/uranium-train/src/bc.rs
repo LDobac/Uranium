@@ -111,6 +111,35 @@ pub struct BcConfig {
     pub keep_checkpoints: Option<usize>,
 }
 
+/// B-3: the `BcConfig` settings that change what a run learns; [`BcConfig::fingerprint`] hashes
+/// only these. Add a new result-affecting field here.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct ResultSettings {
+    pub lanes: usize,
+    pub seq_len: usize,
+    pub lr: f64,
+    pub min_lr: f64,
+    pub warmup_steps: usize,
+    pub total_steps: usize,
+    pub weight_decay: f32,
+    pub grad_clip: f32,
+    pub s2_lr_scale: f64,
+    pub heads: HeadWeights,
+    pub value: ValueWeights,
+    pub z_drop: f64,
+    pub augment: bool,
+    pub seed: u64,
+    pub enemy_race_mask: f64,
+}
+
+/// B-3: `BcConfig` fields (as `toml` keys, `data.` for the `[data]` table) left out of the
+/// fingerprint because they do not change the updates (041-R3: `micro_lanes` gives the same
+/// update; padding, checkpointing, saving and retention do not touch the math) or because the
+/// stage's share is already in `total_steps` / `warmup_steps` (`steps`). New fields that do not
+/// change results must be listed here, result-affecting ones go into [`ResultSettings`]; a field
+/// in neither fails `config_fingerprint_fields_are_classified_b3`.
+pub const EXECUTION_ONLY: [&str; 7] = ["micro_lanes", "grad_checkpointing", "pad_entities", "steps", "keep_checkpoints", "data.checkpoint_every", "data.checkpoint_minutes"];
+
 /// 061-R6 default number of checkpoints kept per run.
 pub const DEFAULT_KEEP_CHECKPOINTS: usize = 5;
 
@@ -124,26 +153,37 @@ impl BcConfig {
         self.keep_checkpoints.unwrap_or(DEFAULT_KEEP_CHECKPOINTS)
     }
 
-    /// B-3: SHA-256 (16 hex digits) of the settings that decide what a run learns: the effective
-    /// config after the stage's `[steps]` (schedule length and warmup), learning rates, loss
-    /// weights and the data settings (seed, z drop, symmetry, enemy race mask). Settings that only
-    /// change how an update is run or saved (`micro_lanes`, `grad_checkpointing`,
-    /// `pad_entities`, `checkpoint_every`, `checkpoint_minutes`, `keep_checkpoints`) are left out:
-    /// they may differ between hosts of one run without changing the updates (041-R3).
+    /// B-3: SHA-256 (16 hex digits) of [`BcConfig::results_view`], the settings that decide what
+    /// a run learns. A whitelist: a new `BcConfig` field is outside the fingerprint until it is
+    /// added to [`ResultSettings`], and the test `config_fingerprint_fields_are_classified_b3`
+    /// fails until the field is listed there or in [`EXECUTION_ONLY`].
     pub fn fingerprint(&self) -> String {
         use sha2::{Digest, Sha256};
-        let mut c = self.clone();
-        c.micro_lanes = 0;
-        c.grad_checkpointing = false;
-        c.pad_entities = 0;
-        c.data.checkpoint_every = 0;
-        c.data.checkpoint_minutes = 0;
-        c.keep_checkpoints = None;
-        // The stage's own length is in total_steps / warmup_steps (set by `bc` from [steps]);
-        // the other stages' lengths do not concern this run.
-        c.steps = StageSteps::default();
-        let json = serde_json::to_vec(&c).expect("BcConfig serialises");
+        let json = serde_json::to_vec(&self.results_view()).expect("ResultSettings serialises");
         Sha256::digest(&json).iter().take(8).map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// The result-affecting settings (B-3): the effective config after the stage's `[steps]`
+    /// (schedule length and warmup in `total_steps` / `warmup_steps`), learning rates, clip, loss
+    /// weights and the data settings.
+    pub fn results_view(&self) -> ResultSettings {
+        ResultSettings {
+            lanes: self.lanes,
+            seq_len: self.seq_len,
+            lr: self.lr,
+            min_lr: self.min_lr,
+            warmup_steps: self.warmup_steps,
+            total_steps: self.total_steps,
+            weight_decay: self.weight_decay,
+            grad_clip: self.grad_clip,
+            s2_lr_scale: self.s2_lr_scale,
+            heads: self.heads.clone(),
+            value: self.value.clone(),
+            z_drop: self.data.z_drop,
+            augment: self.data.augment,
+            seed: self.data.seed,
+            enemy_race_mask: self.data.enemy_race_mask,
+        }
     }
 
     /// Linear warmup then cosine decay to `min_lr` (041-R3); `scale` = 1 (S1) or `s2_lr_scale`.
@@ -542,6 +582,9 @@ impl<C: CoreInit> Trainer<C> {
         // Losses are divided by the usable steps of the whole batch, so the summed group
         // gradients equal the gradient of one pass over all lanes.
         let valid = batch.chunks.iter().flat_map(|c| c.iter().map(|s| s.weight)).sum::<f32>().max(1.0);
+        // 041-R7 / A-3: the value loss is divided by the usable steps of decided games only, so
+        // its scale does not follow the share of undecided games in the batch.
+        let value_valid = batch.chunks.iter().zip(&batch.value_weights).map(|(c, vw)| c.iter().map(|s| s.weight * vw).sum::<f32>()).sum::<f32>().max(1.0);
         let lanes = batch.chunks.len();
         let g = self.group_size();
         let groups = lanes.div_ceil(g);
@@ -549,7 +592,7 @@ impl<C: CoreInit> Trainer<C> {
         let mut acc = GradientsAccumulator::<UraniumNet<C>>::new();
         let mut report = LossParts { valid, ..Default::default() };
         for i in 0..groups {
-            let (loss, parts) = self.group_loss(&batch, i, i * g..((i + 1) * g).min(lanes), valid, &mut prof);
+            let (loss, parts) = self.group_loss(&batch, i, i * g..((i + 1) * g).min(lanes), valid, value_valid, &mut prof);
             report.add(&parts);
             let grads = GradientsParams::from_grads(loss.backward(), &self.net);
             prof.mark("backward");
@@ -566,8 +609,9 @@ impl<C: CoreInit> Trainer<C> {
     }
 
     /// Forward pass and weighted loss of lane group `group` (lanes `lanes`), divided by the
-    /// batch-wide `valid`. Carries the group's core state to its next chunk.
-    fn group_loss(&mut self, batch: &Batch, group: usize, lanes: std::ops::Range<usize>, valid: f32, prof: &mut Prof) -> (Tensor<1>, LossParts) {
+    /// batch-wide `valid` (policy heads) and `value_valid` (value head, decided games only).
+    /// Carries the group's core state to its next chunk.
+    fn group_loss(&mut self, batch: &Batch, group: usize, lanes: std::ops::Range<usize>, valid: f32, value_valid: f32, prof: &mut Prof) -> (Tensor<1>, LossParts) {
         let (b, t) = (lanes.len(), self.cfg.seq_len);
         // Gather rows in b-major order; a game shorter than the chunk is padded with its last
         // step at weight 0.
@@ -627,7 +671,7 @@ impl<C: CoreInit> Trainer<C> {
         let target = Tensor::<1>::from_data(TensorData::new(results, [b * t]), d);
         let vw = Tensor::<1>::from_data(TensorData::new(value_w, [b * t]), d);
         let win = out.value.narrow(1, VALUE_WIN, 1).reshape([b * t]);
-        let value_loss = ((win - target).powi_scalar(2) * vw).sum() / valid as f64;
+        let value_loss = ((win - target).powi_scalar(2) * vw).sum() / value_valid as f64;
         let mut loss = value_loss.clone() * self.cfg.value.win as f64;
         for (l, k) in &parts {
             loss = loss + l.clone() * *k as f64;

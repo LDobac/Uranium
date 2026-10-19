@@ -422,6 +422,9 @@ fn load_z(path: &Option<PathBuf>) -> Result<Vec<ZEntry>> {
 }
 
 /// Everything the checkpoint needs from the learners (061-R10).
+/// B-8 does not apply here: every caller advances `step` first (snapshot and timed checkpoints
+/// `step += 1`, the final one `max(step, agent steps) + 1`), so one session never writes the same
+/// `ckpt-<step>` twice, whatever an earlier push did.
 fn save_checkpoint<C: CoreInit + 'static>(run: &mut Run, step: u64, learners: &[Learner<C>], league: &League, args: &RlArgs, state_extra: serde_json::Value) -> Result<PushOutcome> {
     let dir = run.stage_dir(step)?;
     for (i, l) in learners.iter().enumerate() {
@@ -448,10 +451,11 @@ fn save_checkpoint<C: CoreInit + 'static>(run: &mut Run, step: u64, learners: &[
 }
 
 /// 061-R8: shared drive and cache disk usage; 060-R7: `runs/*/replays/` against the replay
-/// budget (042-R11: never deleted). Warnings only.
+/// budget (042-R11: never deleted), measured on a background thread so the learner does not wait
+/// for the share walk. Warnings only.
 fn check_storage(run: &Run) {
     crate::disk::warn_storage("rl", &run.cfg);
-    crate::disk::warn_replay_budget(&run.cfg.shared, crate::disk::REPLAY_BUDGET_BYTES);
+    crate::disk::spawn_replay_check(&run.cfg.shared, crate::disk::REPLAY_BUDGET_BYTES);
 }
 
 /// B-7 / 061-R6: a failed prune is logged; training goes on.

@@ -46,7 +46,7 @@ pub struct EpochTable {
 /// Reads every shard once (in parallel) and counts the updates of one epoch per stage.
 pub fn epoch_table(dirs: &[PathBuf], cfg: &BcConfig) -> Result<EpochTable> {
     let base = ShardSource::from_dirs(dirs)?;
-    let scan = crate::data::scan_files(base.files())?;
+    let scan = crate::data::scan_cached(&base)?;
     let by_path: std::collections::HashMap<&PathBuf, &Vec<GameSummary>> = base.files().iter().zip(scan.iter()).collect();
     let count = |sel: Selection| -> Result<EpochCount> {
         let src = ShardSource::from_dirs(dirs)?.select(sel).shuffled(cfg.data.seed);
