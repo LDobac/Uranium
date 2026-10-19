@@ -254,6 +254,8 @@ pub struct SessionRecord {
     pub privileged_msgs: u64,
     /// 010-AC6: enemy units in an observation that our player could not see (must be 0).
     pub visibility_violations: u64,
+    /// 010-R12: (frame, units, events) of `GameEnd.final_frame`, `None` if the bridge sent none.
+    pub final_frame: Option<(u32, usize, usize)>,
     /// 020-R5 policy version (`t0@<ver>` or `model:<checkpoint id>:<sample>`).
     pub policy: String,
     pub model: Option<ModelStats>,
@@ -412,6 +414,7 @@ pub fn session(stream: TcpStream, opts: &ServeOptions) -> SessionRecord {
         frame_digest: String::new(),
         privileged_msgs: 0,
         visibility_violations: 0,
+        final_frame: None,
         policy: String::new(),
         model: None,
         error: None,
@@ -540,6 +543,7 @@ fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, po
                 if let Some(last) = &end.final_frame {
                     // 010-AC6 also holds for the final frame (010-R12 keeps 010-R5).
                     rec.visibility_violations += visibility_violations(last, hello.slot);
+                    rec.final_frame = Some((last.frame, last.units.len(), last.events.len()));
                 }
                 policy.on_end(outcome, end.final_frame.as_deref());
                 return Ok(());
