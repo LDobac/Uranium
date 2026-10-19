@@ -15,7 +15,11 @@ use crate::types::TypeTables;
 ///    E-6); `Masks::is_building` for the single-building rule (034-R7, E-4).
 /// 5 (2026-10-19, action audit F7): action schema 2 (`Unload_Unit`, A = 101) and unit_cap gains
 ///    `loaded_unit` (034).
-pub const FEATURE_SCHEMA_VERSION: u32 = 5;
+/// 6 (2026-10-19, 액션 감사 F1·F5·F6·F11·F15·F16, 사용자 결정): unit_cap gains can_stop and
+///    can_unload_pos (K 48 -> 50); target classes drop units in production and loaded units;
+///    can_attack drops the bunker; constructing SCVs and siege transitions lose every selection
+///    class but can_stop; Build_* open only with a `pick_worker` candidate.
+pub const FEATURE_SCHEMA_VERSION: u32 = 6;
 
 /// 030-R6: spatial side in build tiles.
 pub const MAP: usize = 128;

@@ -169,17 +169,21 @@ pub fn execute(w: &World, obs: &Observation, act: &HostAction) -> Result<Execute
     Ok(Executed { commands: vec![cmd], units })
 }
 
+/// SCVs `pick_worker` may take: own, completed, not loaded, not disabled (034-R6 / B-11), not
+/// constructing, not in an uninterruptible order (inside a refinery, after mining: BWAPI
+/// `canBuild` Unit_Busy). Build_* type masks open only when there is one (034-R6, 액션 감사 F15).
+pub fn worker_candidates<'w>(w: &'w World) -> impl Iterator<Item = &'w UnitState> {
+    w.frame
+        .units
+        .iter()
+        .filter(|u| u.owner == w.mem.self_player && u.unit_type == w.ids.scv && u.has(flags::COMPLETED) && u.loaded_in.is_none() && !u.has(flags::LOADED) && !is_disabled(u))
+        .filter(|u| !u.has(flags::CONSTRUCTING) && !w.ids.orders_uninterruptible.contains(&u.order))
+}
+
 /// 031-R2: nearest SCV that is neither carrying nor constructing; otherwise the nearest carrying
 /// one. Ties by unit id.
 pub fn pick_worker<'w>(w: &'w World, tile: (i32, i32)) -> Option<&'w UnitState> {
-    let scvs: Vec<&UnitState> = w
-        .frame
-        .units
-        .iter()
-        // 034-R6 / B-11: a disabled (locked down, stasis, maelstrom) SCV takes no command.
-        .filter(|u| u.owner == w.mem.self_player && u.unit_type == w.ids.scv && u.has(flags::COMPLETED) && u.loaded_in.is_none() && !is_disabled(u))
-        .filter(|u| !u.has(flags::CONSTRUCTING))
-        .collect();
+    let scvs: Vec<&UnitState> = worker_candidates(w).collect();
     let best = |carrying: bool| scvs.iter().filter(|u| u.has(flags::CARRYING) == carrying).min_by_key(|u| (dist2_to_tile(u, tile), u.id)).copied();
     best(false).or_else(|| best(true))
 }

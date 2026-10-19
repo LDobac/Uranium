@@ -33,6 +33,7 @@ pub struct Ids {
     pub comsat: u16,
     pub silo: u16,
     pub bunker: u16,
+    pub turret: u16,
     pub refinery: u16,
     pub factory: u16,
     pub starport: u16,
@@ -56,6 +57,13 @@ pub struct Ids {
     pub tech_scanner: u16,
     pub order_research: u16,
     pub order_upgrade: u16,
+    pub order_constructing: u16,
+    pub order_sieging: u16,
+    pub order_unsieging: u16,
+    pub order_harvest_gas: u16,
+    /// Orders that cannot be interrupted (orders.dat `can_be_interrupted` = 0, read 2026-10-19):
+    /// BWAPI refuses most commands (Unit_Busy) while a unit runs one (액션 감사 F15·F16).
+    pub orders_uninterruptible: Vec<u16>,
     /// `UnitTypes::None` (empty training queue slot).
     pub none: u16,
 }
@@ -90,6 +98,7 @@ impl Ids {
                 comsat: u("Terran_Comsat_Station"),
                 silo: u("Terran_Nuclear_Silo"),
                 bunker: u("Terran_Bunker"),
+                turret: u("Terran_Missile_Turret"),
                 refinery: u("Terran_Refinery"),
                 factory: u("Terran_Factory"),
                 starport: u("Terran_Starport"),
@@ -113,6 +122,17 @@ impl Ids {
                 tech_scanner: tech("Scanner_Sweep"),
                 order_research: order("ResearchTech"),
                 order_upgrade: order("Upgrade"),
+                order_constructing: order("ConstructingBuilding"),
+                order_sieging: order("Sieging"),
+                order_unsieging: order("Unsieging"),
+                order_harvest_gas: order("HarvestGas"),
+                orders_uninterruptible: [
+                    "VultureMine", "BuildingLiftOff", "LiftingOff", "HarvestGas", "Harvest3", "Harvest4", "Interrupted", "Sieging",
+                    "Unsieging", "NukeTrack", "ResetCollision", "ResetHarvestCollision", "MedicHealToIdle",
+                ]
+                .into_iter()
+                .map(order)
+                .collect(),
                 none: u("None"),
             }
         })

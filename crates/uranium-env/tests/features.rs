@@ -679,15 +679,17 @@ fn building_selected_alone_034_r7() {
     assert!(o.masks.is_building[bunker] && !o.masks.is_building[marine]);
     let lifted = f.units.iter().find(|u| u.unit_type == ty("Terran_Command_Center") && u.has(uranium_proto::flags::LIFTED)).unwrap().id;
     assert!(o.masks.is_building[index_of(&o, lifted)], "lifted buildings count");
+    let _ = bunker;
     assert_eq!(o.masks.is_building.len(), o.obs.n);
     let w = World::new(&f, &mem, &map);
-    let zergling = index_of(&o, f.units.iter().find(|u| u.unit_type == ty("Zerg_Zergling")).unwrap().id);
-    assert!(cap_of(&o, bunker, "can_attack"));
-    let attack = |sel: Vec<usize>| execute(&w, &o, &host("Attack_Unit", sel, Some(zergling), None));
-    assert_eq!(attack(vec![bunker, marine]), Err(Rejected::BadSelection));
-    assert_eq!(attack(vec![marine, bunker]), Err(Rejected::BadSelection));
-    assert!(attack(vec![bunker]).is_ok());
-    assert!(attack(vec![marine, firebat]).is_ok());
+    // A lifted building moves like a unit (can_move), so it is the building of a mixed selection.
+    let lifted = index_of(&o, lifted);
+    assert!(cap_of(&o, lifted, "can_move"));
+    let mv = |sel: Vec<usize>| execute(&w, &o, &host("Move_Pos", sel, None, Some(20 * 128 + 20)));
+    assert_eq!(mv(vec![lifted, marine]), Err(Rejected::BadSelection));
+    assert_eq!(mv(vec![marine, lifted]), Err(Rejected::BadSelection));
+    assert!(mv(vec![lifted]).is_ok());
+    assert!(mv(vec![marine, firebat]).is_ok());
     for name in ["SetRally_Pos", "SetRally_Unit"] {
         assert_eq!(action_table().by_name(name).unwrap().max_select, 1, "{name}");
     }
@@ -917,4 +919,103 @@ fn unknown_label_has_weight_zero_031_ac3() {
     let (h, why) = host_label_check(&l, &o);
     assert_eq!(why, Some(UNKNOWN_REASON));
     assert_eq!((h.action, h.delay_bucket, h.selected.len(), h.target_unit, h.target_loc), (0, bucket_index(12), 0, None, None));
+
+/// 액션 감사 F1 (사용자 결정 2026-10-19): a unit still in production (incomplete non-building) or
+/// loaded in a transport is no target of any class; a building under construction still is.
+#[test]
+fn units_in_production_or_loaded_are_no_targets_034_audit_f1() {
+    let map = map_info();
+    let mut mem = AgentMemory::new(&game_info());
+    let mut b = Builder::new();
+    b.add(SELF, "Terran_Command_Center", (10, 10));
+    b.add(SELF, "Terran_Medic", (20, 20));
+    b.add(SELF, "Terran_Science_Vessel", (21, 20));
+    b.add(SELF, "Terran_SCV", (22, 22));
+    // An SCV being trained in the CC and a marine in production (hurt: hp rises while it trains).
+    let scv = b.add(SELF, "Terran_SCV", (12, 12));
+    b.get(scv).flags = 0;
+    let marine = b.add(SELF, "Terran_Marine", (14, 14));
+    b.get(marine).flags = 0;
+    b.get(marine).hp = 10;
+    b.get(marine).status_timers.irradiate = 5;
+    let ship = b.add(SELF, "Terran_Dropship", (30, 30));
+    let cargo = b.add(SELF, "Terran_Marine", (30, 30));
+    b.get(cargo).loaded_in = Some(ship);
+    b.get(cargo).flags |= uranium_proto::flags::LOADED;
+    b.get(cargo).hp = 10;
+    let depot = b.add(SELF, "Terran_Supply_Depot", (40, 40));
+    b.get(depot).flags = 0;
+    b.get(depot).hp = 10;
+    let f = frame(10, b.units.clone(), true);
+    let o = extract(&f, &mut mem, &map, None);
+    let targets = ["any_unit", "own_unit", "healable", "restorable", "irradiatable", "matrixable", "repairable", "target_resource", "loadable_transport"];
+    for id in [scv, marine, cargo] {
+        let i = index_of(&o, id);
+        for c in targets {
+            assert!(!cap_of(&o, i, c), "unit {id} is a {c} target");
+        }
+    }
+    let d = index_of(&o, depot);
+    assert!(cap_of(&o, d, "any_unit") && cap_of(&o, d, "own_unit"), "a building under construction stays a target");
+    // Move_Unit has a target (the completed SCV, the medic, ...) but never the trained ones.
+    let w = World::new(&f, &mem, &map);
+    let medic = index_of(&o, f.units.iter().find(|u| u.unit_type == ty("Terran_Medic")).unwrap().id);
+    for t in [scv, marine, cargo] {
+        assert!(execute(&w, &o, &host("Move_Unit", vec![medic], Some(index_of(&o, t)), None)).is_err());
+    }
+}
+
+/// 액션 감사 F5·F6·F11·F15·F16 (사용자 결정 2026-10-19): Stop takes sieged tanks, turrets, lifted
+/// buildings and constructing SCVs (BWAPI `canStop`), not grounded buildings; UnloadAll_Pos takes
+/// a loaded dropship, not a loaded bunker; a bunker is no attacker; a constructing SCV or a tank in
+/// a siege transition takes no other command; Build_* close when no SCV is free to build.
+#[test]
+fn stop_unload_attack_and_busy_selection_classes_034_audit() {
+    use uranium_env::types::order_id;
+    let map = map_info();
+    let mut mem = AgentMemory::new(&game_info());
+    let mut b = Builder::new();
+    b.add(SELF, "Terran_Command_Center", (10, 10));
+    let sieged = b.add(SELF, "Terran_Siege_Tank_Siege_Mode", (20, 20));
+    let turret = b.add(SELF, "Terran_Missile_Turret", (24, 24));
+    let bunker = b.add(SELF, "Terran_Bunker", (30, 30));
+    let in_bunker = b.add(SELF, "Terran_Marine", (30, 30));
+    b.get(in_bunker).loaded_in = Some(bunker);
+    b.get(in_bunker).flags |= uranium_proto::flags::LOADED;
+    let ship = b.add(SELF, "Terran_Dropship", (40, 40));
+    let in_ship = b.add(SELF, "Terran_Marine", (40, 40));
+    b.get(in_ship).loaded_in = Some(ship);
+    b.get(in_ship).flags |= uranium_proto::flags::LOADED;
+    let builder = b.add(SELF, "Terran_SCV", (50, 50));
+    b.get(builder).order = order_id("ConstructingBuilding").unwrap();
+    b.get(builder).flags |= uranium_proto::flags::CONSTRUCTING;
+    let sieging = b.add(SELF, "Terran_Siege_Tank_Tank_Mode", (55, 55));
+    b.get(sieging).order = order_id("Sieging").unwrap();
+    let f = frame(10, b.units.clone(), true);
+    let o = extract(&f, &mut mem, &map, None);
+    let i = |id| index_of(&o, id);
+    for id in [sieged, turret, builder, sieging] {
+        assert!(cap_of(&o, i(id), "can_stop"), "{id} can stop");
+    }
+    assert!(!cap_of(&o, i(bunker), "can_stop"), "a grounded bunker cannot stop (BWAPI)");
+    assert!(!cap_of(&o, i(sieged), "can_move") && !cap_of(&o, i(turret), "can_move"));
+    assert!(cap_of(&o, i(bunker), "is_transport_loaded") && !cap_of(&o, i(bunker), "can_unload_pos"));
+    assert!(cap_of(&o, i(ship), "is_transport_loaded") && cap_of(&o, i(ship), "can_unload_pos"));
+    assert!(!cap_of(&o, i(bunker), "can_attack"), "a bunker is no attacker");
+    for c in ["is_worker", "can_move", "can_be_loaded", "can_right_click_unit"] {
+        assert!(!cap_of(&o, i(builder), c), "constructing SCV has {c}");
+    }
+    for c in ["can_siege", "can_move", "can_attack"] {
+        assert!(!cap_of(&o, i(sieging), c), "sieging tank has {c}");
+    }
+    let open = |name: &str| o.masks.type_mask[action_table().by_name(name).unwrap().id as usize];
+    assert!(open("Stop") && open("UnloadAll_Pos"));
+    // The only SCV is constructing: no Build_* (034-R6, pick_worker has no candidate).
+    assert!(!open("Build_SupplyDepot") && !open("Build_Barracks"));
+    let w = World::new(&f, &mem, &map);
+    assert!(execute(&w, &o, &host("Stop", vec![i(sieged)], None, None)).is_ok());
+    // Stop alone in BC labels: a sieged-tank Stop is a valid label now.
+    use uranium_env::features::label::{Label, host_label_check};
+    let l = Label { frame: 10, action: action_table().by_name("Stop").unwrap().id, delay: 8, queued: false, selected: vec![sieged], target_unit: None, target_tile: None };
+    assert_eq!(host_label_check(&l, &o).1, None);
 }

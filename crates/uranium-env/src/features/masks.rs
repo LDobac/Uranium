@@ -62,6 +62,8 @@ fn cap(name: &str) -> usize {
         "loadable_transport" => 45,
         "can_right_click_unit" => 46,
         "loaded_unit" => 47,
+        "can_stop" => 48,
+        "can_unload_pos" => 49,
         _ => panic!("capability {name}"),
     }
 }
@@ -108,9 +110,18 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     // OpenBW `unit_is_disabled` (034-R6, B-11): a disabled unit takes no command, so every
     // selection class below excludes it (through `commandable` / `own_any` / the rally rule).
     let disabled = is_disabled(u);
-    let commandable = own && done && !loaded && !disabled && u.unit_type != ids.spider_mine && u.unit_type != ids.nuke;
-    let energy = u.energy;
     let ty = u.unit_type;
+    // Owned, completed, not loaded, not disabled, not a mine or nuke: may take Stop (034 can_stop).
+    let stoppable = own && done && !loaded && !disabled && ty != ids.spider_mine && ty != ids.nuke;
+    // Every other command also needs (액션 감사 F15·F16, 사용자 결정 2026-10-19): not an SCV
+    // constructing a building (OpenBW `unit_can_receive_order` allows it Stop only) and not in a
+    // siege / unsiege transition (orders.dat not interruptible: BWAPI Unit_Busy).
+    let constructing_scv = ty == ids.scv && u.order == ids.order_constructing;
+    let transitioning = u.order == ids.order_sieging || u.order == ids.order_unsieging;
+    // An SCV inside a refinery is hidden: no player can click it, BWAPI refuses it (Unit_Busy).
+    let in_gas = u.order == ids.order_harvest_gas;
+    let commandable = stoppable && !constructing_scv && !transitioning && !in_gas;
+    let energy = u.energy;
     let mut set = |name: &str, v: bool| c[cap(name)] = v;
 
     // selection classes
@@ -119,10 +130,19 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     // Right click on a unit: movers follow / attack / load, and a sieged tank (OpenBW
     // `right_click_action` 3) attacks an enemy target in place (034, AMB-041-1).
     set("can_right_click_unit", mobile || (commandable && !disabled && ty == ids.tank_sieged));
-    set("can_attack", commandable && !disabled && (t.ground_weapon >= 0 || t.air_weapon >= 0 || ty == ids.bunker));
+    // A bunker has no weapon and no attack order (units.dat right_click_action 0): the game skips
+    // it and BWAPI rejects it (Unable_To_Hit), so it is not an attacker (액션 감사 F11).
+    set("can_attack", commandable && !disabled && (t.ground_weapon >= 0 || t.air_weapon >= 0));
+    // BWAPI `canStop`: completed non-buildings (sieged tanks, constructing SCVs and units in a
+    // siege transition included), lifted buildings and missile turrets; the game stops any unit
+    // (액션 감사 F5).
+    set("can_stop", stoppable && !in_gas && (!t.is_building() || lifted || ty == ids.turret));
     set("is_worker", commandable && t.is_worker());
     set("can_be_loaded", commandable && !t.is_building() && !t.is_flyer() && t.space_required > 0 && t.space_required <= 8);
     set("is_transport_loaded", commandable && t.space_provided > 0 && w.cargo.get(&u.id).copied().unwrap_or(0) > 0);
+    // UnloadAll_Pos (MoveUnload) is a dropship order: BWAPI `canUnloadAllPosition` rejects a
+    // bunker (Incompatible_UnitType) (액션 감사 F6).
+    set("can_unload_pos", commandable && t.space_provided > 0 && !t.is_building() && w.cargo.get(&u.id).copied().unwrap_or(0) > 0);
     let caster = |tech: u16| commandable && !disabled && w.researched(tech) && energy >= w.tech_energy(tech);
     set("can_stim", commandable && (ty == ids.marine || ty == ids.firebat) && w.researched(ids.tech_stim) && u.hp > 10);
     set("can_siege", commandable && ty == ids.tank && w.researched(ids.tech_siege));
@@ -164,7 +184,12 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     set("can_cancel_addon", own_any && done && u.has_addon && w.addon_of.get(&u.id).is_none_or(|_| addon_incomplete(w, u)));
 
     // target classes
-    let targetable = visible && !(u.has(flags::CLOAKED) && !u.has(flags::DETECTED) && e.owner != OWNER_SELF);
+    // A unit still in production (created incomplete inside its producer) or loaded in a
+    // transport cannot be clicked, and BWAPI `canTargetUnit` rejects an incomplete non-building
+    // (Incompatible_State); buildings under construction stay targets (액션 감사 F1).
+    let present = visible && (done || t.is_building()) && !loaded && !in_gas;
+    let targetable = present && !(u.has(flags::CLOAKED) && !u.has(flags::DETECTED) && e.owner != OWNER_SELF);
+    let own_target = own && present;
     let hurt = (u.hp as i32) < t.max_hp;
     let building = t.is_building();
     // 030 §2 / E-3: a resource out of vision that was seen before (its real id is known) stays a
@@ -173,20 +198,20 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     let known_resource = e.remembered && e.owner == OWNER_NEUTRAL && t.is_resource() && !is_unseen_resource_id(u.id);
     set("attackable_enemy", enemy && targetable && !t.has(crate::types::flag::INVINCIBLE));
     set("any_unit", targetable || known_resource);
-    set("own_unit", own && visible);
+    set("own_unit", own_target);
     set("target_resource", (visible || known_resource) && ((t.is_resource() && ty != ids.geyser) || (own && ty == ids.refinery && done)));
-    set("repairable", own && visible && (t.is_mechanical() || building) && hurt && done);
+    set("repairable", own_target && (t.is_mechanical() || building) && hurt && done);
     set("lockdownable", enemy && targetable && t.is_mechanical() && !building && u.status_timers.lockdown == 0);
-    set("healable", own && visible && t.is_organic() && !t.is_flyer() && !building && hurt);
+    set("healable", own_target && t.is_organic() && !t.is_flyer() && !building && hurt);
     let st = &u.status_timers;
     let afflicted = st.lockdown > 0 || st.irradiate > 0 || st.plague > 0 || st.ensnare > 0 || st.maelstrom > 0 || st.blind || st.parasite;
-    set("restorable", own && visible && !building && afflicted);
+    set("restorable", own_target && !building && afflicted);
     set("flarable", enemy && targetable && !building && !st.blind);
     set("irradiatable", targetable && !building);
-    set("matrixable", own && visible && !building);
+    set("matrixable", own_target && !building);
     set("yamato_target", enemy && targetable);
     let free_space = t.space_provided - w.cargo.get(&u.id).copied().unwrap_or(0);
-    set("loadable_transport", own && visible && done && (ty == ids.dropship || ty == ids.bunker) && free_space > 0);
+    set("loadable_transport", own_target && done && (ty == ids.dropship || ty == ids.bunker) && free_space > 0);
     // Unload_Unit (2026-10-19, action audit F7): a transport with cargo (`is_transport_loaded`,
     // BWAPI `canUnloadWithOrWithoutTarget`) unloads one own loaded unit. Cargo is own, so this
     // never reveals anything outside own vision (010-R5). The target must sit in the selected
@@ -392,7 +417,8 @@ pub fn type_mask(w: &World, table: &ActionTable, caps: &[[bool; K]], locs: &[boo
             }
             match a.executor {
                 Executor::PickBuilding => ok &= !pick_building_candidates(w, a).is_empty(),
-                Executor::PickWorker => ok &= cap_any("is_worker", true),
+                // 034-R6: the candidates `pick_worker` takes (액션 감사 F15).
+                Executor::PickWorker => ok &= super::executor::worker_candidates(w).next().is_some(),
                 Executor::None => {}
             }
             match a.target {

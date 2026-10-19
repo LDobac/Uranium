@@ -29,6 +29,8 @@ pub const CAPABILITIES: &[&str] = &[
     "can_right_click_unit",
     // Unload_Unit target, appended 2026-10-19 (action audit F7; the selection is is_transport_loaded)
     "loaded_unit",
+    // selection, appended 2026-10-19 (액션 감사 F5, F6)
+    "can_stop", "can_unload_pos",
 ];
 
 /// 034 location classes (`loc_class_mask`, L = 8).
