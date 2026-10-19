@@ -125,6 +125,8 @@ struct State {
     log: Vec<String>,
     /// (frame, checksum of every observed unit) per observation: 011-AC4 determinism.
     sums: Vec<(u32, u64)>,
+    /// `Command::Unit` sent with two or more units (group commands, 011-R20).
+    group_cmds: u32,
     end: Option<String>,
 }
 
@@ -191,6 +193,7 @@ impl Coverage {
                 frame: 0,
                 log: vec![],
                 sums: vec![],
+                group_cmds: 0,
                 end: None,
             },
         }
@@ -490,6 +493,7 @@ impl State {
                     self.stats[st_i].sent += 1;
                     self.stats[st_i].last_try_frame = f.frame;
                     self.last.push(Sent { action: act.action, units: e.units.clone(), unarmed, fog: is_fog });
+                    self.group_cmds += e.commands.iter().filter(|c| matches!(c, Command::Unit { units, .. } if units.len() > 1)).count() as u32;
                     cmds.extend(e.commands);
                 }
                 Err(_) => {
@@ -1179,5 +1183,7 @@ fn same_seed_same_acts_same_game_011_ac4() {
     assert_eq!(first_diff, None, "first differing observation: {:?} vs {:?}", first_diff.map(|i| a.sums[i]), first_diff.map(|i| b.sums[i]));
     assert_eq!(a.sums.len(), b.sums.len());
     assert_eq!(a.end, b.end, "GameEnd differs");
-    assert!(sent(&a) > 100, "the script sent group commands");
+    assert!(sent(&a) > 100, "the script sent commands");
+    eprintln!("[011-AC4] multi-unit group commands a {} b {}", a.group_cmds, b.group_cmds);
+    assert!(a.group_cmds > 0 && a.group_cmds == b.group_cmds, "multi-unit group commands were issued (011-R20)");
 }

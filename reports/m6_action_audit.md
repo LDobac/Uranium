@@ -448,4 +448,5 @@
 - feature 스키마 버전 6(T9의 5 위에 한 번 더): 버전 4·5 체크포인트는 로드가 거부된다. 스모크 랜덤 체크포인트를 `<URANIUM_SHARED_DIR>/checkpoints/smoke/random-lstm-fv6`로 새로 만들고 `config/plans/smoke-model.toml`이 그것을 가리킨다(옛 `random-lstm`은 그대로 둠). BC 본학습 전이라 다른 체크포인트 영향은 없다.
 - 브리지(shim) 변경(011-R20): 이 브랜치가 master에 들어가면 **모든 게임 호스트(이 PC, Linux 호스트 A·B)의 브리지 재빌드와 hostd 재시작**이 필요하다. 재build(리플레이 재생)는 명령을 보내지 않으므로(011-R11) shim 변경의 영향을 받지 않지만, 재build가 끝난 뒤 배포한다. Linux 컴파일 확인: Linux 호스트 A 임시 폴더(nice 19, `-j 2`)에서 `liburanium_bridge.so` 빌드 성공, 경고 없음, 내보내기 심볼 `gameInit`·`newAIModule`만. 임시 폴더 삭제.
 - **011-AC4 재확인(그룹 명령 뒤)**: 테스트 `same_seed_same_acts_same_game_011_ac4`(`#[ignore]`, hostd 필요)가 같은 seed(41)·같은 스크립트로 10분(14,400프레임) 게임을 두 번 돌려 관측마다 유닛 체크섬(id·종류·위치·hp·실드·에너지·order·order 대상·플래그, 자원)을 비교한다. 이 PC 임시 hostd에서 **통과**: 관측 1,800개 체크섬 전부 같음, 두 게임 모두 TimeLimitDraw 14,401프레임·승자 없음, 명령 191개씩. BWAPI `Unitset` 순회 순서가 프로세스마다 달라도 결과가 같다는 판단이 실측으로 맞았다.
+- 진행 중인 전체 재build(R-4)의 040-R19 필터는 수정 전 마스크(d452c29)로 판정했다(F1·F15·U-4 미반영). BC 로더의 weight 0 판정과 아주 작게 다를 수 있으며(위 비교 기준 ±0.1%p 안팎), 다음 재build에서 맞춰진다.
 - 작업 사본 `target/lc/`·`target/maps_tmp/`(투혼 자원 파일)는 `<URANIUM_SHARED_DIR>/artifacts/m6_action_audit/t8/`로 옮겼다.

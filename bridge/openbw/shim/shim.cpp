@@ -303,6 +303,11 @@ bool exec(const UrCmd& c, const int32_t* pool) {
 class UraniumModule : public AIModule {
  public:
   void onStart() override {
+    // Per-game state of the command path (011-R20): nothing carries over from an earlier game.
+    g_units.clear();
+    g_observed.clear();
+    g_resources.clear();
+    g_resource_pos.clear();
     // The game seed is applied to every client at game start by OpenBW patch 0002
     // (URANIUM_SEED). Do not call setRandomSeed() here: reseeding only our own client
     // desyncs LAN games against any other AI module (M3 finding).
