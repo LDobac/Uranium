@@ -46,6 +46,11 @@ Unit find_target(int32_t id) {
   auto it = g_resources.find(id);
   return it == g_resources.end() ? nullptr : it->second;
 }
+// Position of every map resource ever present (map-public, never cleared). A command on a
+// remembered resource that no longer exists (mined out, geyser under a refinery) becomes a move
+// there, like clicking a fog ghost sprite: no CommandFailed, so the agent learns nothing it could
+// not see (011-R20, main decision 2026-10-19).
+std::unordered_map<int32_t, Position> g_resource_pos;
 bool is_map_resource(Unit u) {
   UnitType t = u->getType();
   return u->getPlayer() && u->getPlayer()->isNeutral() && (t.isMineralField() || t == UnitTypes::Resource_Vespene_Geyser);
@@ -170,9 +175,12 @@ UnitCommand unit_command(Unit u, const UrCmd& c, Unit t) {
     case UR_ORD_RIGHT_CLICK:
       if (!t) return UnitCommand::rightClick(nullptr, p, q);
       // Audit F17 (as AMB-041-1): the game turns the right click of a unit that cannot attack the
-      // enemy target into a follow (medic: heal-move); BWAPI rejects it, so send the follow.
-      if (t->getPlayer() && g_me->isEnemy(t->getPlayer()) && !u->canAttackUnit(t) && u->canFollow(t))
-        return UnitCommand::follow(nullptr, t, q);
+      // enemy target into a follow, and a medic's into a heal-move; BWAPI rejects both, so send a
+      // follow, and the medic an attack-move to the target's position (the game makes it HealMove).
+      if (t->getPlayer() && g_me->isEnemy(t->getPlayer()) && !u->canAttackUnit(t)) {
+        if (u->getType() == UnitTypes::Terran_Medic && u->canAttackMove()) return UnitCommand::attack(nullptr, t->getPosition(), q);
+        if (u->canFollow(t)) return UnitCommand::follow(nullptr, t, q);
+      }
       return UnitCommand::rightClick(nullptr, t, q);
     case UR_ORD_SIEGE: return UnitCommand::siege(nullptr);
     case UR_ORD_UNSIEGE: return UnitCommand::unsiege(nullptr);
@@ -208,8 +216,17 @@ bool needs_pos(uint8_t o) { return o == UR_ORD_PATROL || o == UR_ORD_LAND; }
 // group (lifted buildings) get it one by one. The command succeeds when at least one unit took it;
 // otherwise the error is the first rejected unit's. A unit target that is neither observed nor a
 // map resource, or a missing position, fails the command at once (no silent move to (-1, -1)).
-bool exec_units(const UrCmd& c, const int32_t* pool) {
+bool exec_units(const UrCmd& c_in, const int32_t* pool) {
+  UrCmd c = c_in;
   Unit t = find_target(c.target_unit);
+  auto gone = g_resource_pos.find(c.target_unit);
+  if (c.target_unit != UR_NONE && !t && gone != g_resource_pos.end() &&
+      (c.order == UR_ORD_MOVE || c.order == UR_ORD_RIGHT_CLICK || c.order == UR_ORD_GATHER)) {
+    c.order = UR_ORD_MOVE;
+    c.target_unit = UR_NONE;
+    c.x = gone->second.x;
+    c.y = gone->second.y;
+  }
   if ((c.target_unit != UR_NONE || needs_unit(c.order)) && !t) return Broodwar->setLastError(Errors::Unit_Does_Not_Exist);
   if ((needs_unit_or_pos(c.order) && !t && c.x == UR_NONE) || (needs_pos(c.order) && c.x == UR_NONE))
     return Broodwar->setLastError(Errors::Invalid_Parameter);
@@ -264,6 +281,8 @@ bool exec(const UrCmd& c, const int32_t* pool) {
     case UR_CMD_UPGRADE: return u->upgrade(UpgradeType(c.type));
     case UR_CMD_SET_RALLY: {
       Unit t = find_target(c.target_unit);
+      auto gone = g_resource_pos.find(c.target_unit);
+      if (c.target_unit != UR_NONE && !t && gone != g_resource_pos.end()) return u->setRallyPoint(gone->second);
       if (c.target_unit != UR_NONE && !t) return Broodwar->setLastError(Errors::Unit_Does_Not_Exist);
       if (!t && c.x == UR_NONE) return Broodwar->setLastError(Errors::Invalid_Parameter);
       return t ? u->setRallyPoint(t) : u->setRallyPoint(pos(c));
@@ -453,7 +472,10 @@ class UraniumModule : public AIModule {
     g_observed.clear();
     g_resources.clear();
     for (Unit u : Broodwar->getAllUnits()) {
-      if (u->exists() && is_map_resource(u)) g_resources[uid(u)] = u;
+      if (u->exists() && is_map_resource(u)) {
+        g_resources[uid(u)] = u;
+        g_resource_pos[uid(u)] = u->getPosition();
+      }
       if (!visible_to_self(u)) continue;
       g_units[uid(u)] = u;
       g_observed.insert(u);

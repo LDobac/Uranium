@@ -64,6 +64,9 @@ pub struct Ids {
     /// Orders that cannot be interrupted (orders.dat `can_be_interrupted` = 0, read 2026-10-19):
     /// BWAPI refuses most commands (Unit_Busy) while a unit runs one (액션 감사 F15·F16).
     pub orders_uninterruptible: Vec<u16>,
+    /// Incomplete units that are still targets (034-R10): eggs, cocoons and merging archons
+    /// (BWAPI `canTargetUnit` accepts morphing units and archons).
+    pub targetable_incomplete: Vec<u16>,
     /// `UnitTypes::None` (empty training queue slot).
     pub none: u16,
 }
@@ -133,6 +136,7 @@ impl Ids {
                 .into_iter()
                 .map(order)
                 .collect(),
+                targetable_incomplete: ["Zerg_Egg", "Zerg_Lurker_Egg", "Zerg_Cocoon", "Protoss_Archon", "Protoss_Dark_Archon"].into_iter().map(u).collect(),
                 none: u("None"),
             }
         })

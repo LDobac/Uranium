@@ -370,8 +370,8 @@
 ### 발견별 상태
 | 발견 | 상태 | 내용 |
 |---|---|---|
-| F1 | **수정** | 모든 타깃 자격에서 생산 중(미완성 비건물)·탑승 유닛 제외, 건설 중 건물은 유지(034-R10). 정제소 안 SCV(order HarvestGas, 숨김)도 대상·선택에서 제외. 테스트 `units_in_production_or_loaded_are_no_targets_034_audit_f1` |
-| F2 | **수정** | shim이 대상 id를 관측 유닛 외에 맵 중립 미네랄·간헐천(시야 밖 포함)에서 찾음. 적 유닛은 관측에서만. 대상 없음·위치 없음은 즉시 `CommandFailed`(Unit_Does_Not_Exist·Invalid_Parameter), (-1,-1) 이동 제거(011-R20). 실게임 확인: 시야 밖 미네랄 Smart_Unit·Gather_Unit 수락, SCV order MoveToMinerals(85) |
+| F1 | **수정** | 모든 타깃 자격에서 생산 중(미완성 비건물)·탑승 유닛 제외, 건설 중 건물은 유지(034-R10). 리뷰 반영(2026-10-19): 알·럴커 알·코쿤·합체 중 아콘·다크 아콘은 미완성이어도 대상(BWAPI `canTargetUnit`이 변태 중 유닛·아콘을 받음), 테스트 `eggs_cocoons_and_merging_archons_are_targets_034_r10`. 정제소 안 SCV(order HarvestGas, 숨김)도 대상·선택에서 제외. 테스트 `units_in_production_or_loaded_are_no_targets_034_audit_f1` |
+| F2 | **수정** | shim이 대상 id를 관측 유닛 외에 맵 중립 미네랄·간헐천(시야 밖 포함)에서 찾음. 적 유닛은 관측에서만. 대상 없음·위치 없음은 즉시 `CommandFailed`(Unit_Does_Not_Exist·Invalid_Parameter), (-1,-1) 이동 제거(011-R20). 실게임 확인: 시야 밖 미네랄 Smart_Unit·Gather_Unit 수락, SCV order MoveToMinerals(85). 리뷰 반영(메인 기술 결정 2026-10-19, 맵핵 금지): 한 번 본 자원이 없어졌으면(채굴 완료·정제소 아래 간헐천) `CommandFailed` 대신 마지막 위치로 이동(SetRally는 그 위치로 랠리) — 실패 이벤트가 "자원이 없어졌다"는 시야 밖 정보를 알리지 않도록 |
 | F3 | **수정** | `Command::Unit`을 `Game::issueCommand` 그룹 명령으로(같은 명령끼리 묶음, 그룹 불가 유닛은 개별). 1기 이상 수락이면 성공, 전원 거절일 때만 첫 거절 오류로 `CommandFailed`(011-R20, 031-R10). 유닛별 거절 수 필드는 프로토콜 변경이라 넣지 않음(U-6) |
 | F4 | 사용자 결정 필요 | U-1 |
 | F5 | **수정** | 선택 자격 `can_stop`(BWAPI `canStop`: 완성 비건물·떠 있는 건물·미사일 터렛, 시즈 탱크·건설 중 SCV 포함). feature 스키마 버전 5(T9) → 6, `unit_cap` K 48 → 50. 테스트 `stop_unload_attack_and_busy_selection_classes_034_audit` |
@@ -384,8 +384,8 @@
 | F13 | **주석 정정** | `cmd.rs` 0x20 페이로드가 슬롯임을 명시(출력 변화 없음). 슬롯 지정 취소는 기록만 |
 | F14 | 기록만 | 선택·대상 결합 조건 |
 | F15 | **수정** | 건설 중 SCV(order ConstructingBuilding)는 `can_stop` 외 모든 선택 자격에서 제외. Build_* type_mask는 `pick_worker` 후보가 있을 때만 |
-| F16 | **수정(클로킹 제외)** | 시즈·언시즈 전환 중(order Sieging·Unsieging) 탱크는 `can_stop` 외 선택 자격 제외. 클로킹 진행 중은 관측에 secondary order가 없어 미반영. 추가: `pick_worker`가 중단 불가 order(orders.dat `can_be_interrupted` = 0: HarvestGas·Harvest3/4·ResetHarvestCollision 등)인 SCV를 고르지 않음 — 031-AC1 Build_* Unit_Busy(오류 3)의 원인이었다 |
-| F17 | **수정** | shim: 적을 공격할 수 없는 유닛의 적 유닛 우클릭은 follow로 보냄(AMB-041-1과 같은 결, 게임은 Follow·HealMove) |
+| F16 | **수정(클로킹 제외)** | 시즈·언시즈 전환 중(order Sieging·Unsieging) 탱크는 **라이브에서만** `can_stop` 외 선택 자격 제외. 리플레이 레이블(BC·040-R19·label-check)은 엔진 규칙(전환 뒤로 큐)대로 유효(U-4 사용자 결정 2026-10-19, `AgentMemory::replay_labels`, 테스트 `siege_transition_live_blocked_labels_valid_u4`). 클로킹 진행 중은 관측에 secondary order가 없어 미반영. 추가: `pick_worker`가 중단 불가 order(orders.dat `can_be_interrupted` = 0: HarvestGas·Harvest3/4·ResetHarvestCollision 등)인 SCV를 고르지 않음 — 031-AC1 Build_* Unit_Busy(오류 3)의 원인이었다 |
+| F17 | **수정** | shim: 적을 공격할 수 없는 유닛의 적 유닛 우클릭은 follow로, 메딕은 대상 위치로 어택땅(BWAPI가 메딕 어택땅을 허용하고 게임이 HealMove로 바꿈 = 게임의 메딕 우클릭과 같은 order)으로 보냄(AMB-041-1과 같은 결) |
 | F18 | 사용자 결정 필요 | U-2 |
 | F20·F21·F22 | 다음 재build | 아래 목록 4·5 |
 | F23·F24 | **원인 조사 완료, 마스크 수정 없음** | 아래 "F23·F24 원인", U-5 |
@@ -400,7 +400,8 @@
 
 - 무효가 약간(0.1~0.2%p) 늘었다. 늘어난 몫은 F15·F16이다: 사람은 시즈 전환 중에 같은 명령을 연타하고, 건설 중 SCV만 고른 채 우클릭한다. 엔진은 전자를 전환 뒤로 미뤄 받고(중단 불가 order 뒤에 큐), 후자는 거절한다. BWAPI(라이브)는 둘 다 Unit_Busy로 거절한다. 마스크가 BC·RL·실전에서 같다는 031-R4에 따라 라이브 기준을 택했다. 전환 중 연타 레이블을 살리려면 F16을 되돌리고 라이브는 실행 실패로 두는 선택지가 있다(U-4).
 - F5는 시즈 탱크 Stop 무효를 없앴다(`Stop <- Terran_Siege_Tank_Siege_Mode (void)` 54 → 0).
-- 출력: 작업 사본 `target/lc/{old,lc}_{scr_ladder,stardata}.json`.
+- **리뷰 반영 뒤(F1 알·아콘 예외, U-4 전환 중 레이블 유효) 다시 측정**: scr_ladder 4,909 (5.670%), stardata 3,552 (3.850%). 72cf539 대비 scr_ladder −0.03%p, stardata +0.04%p(건설 중 SCV만 고른 명령 = 엔진도 거절, F15). 시즈 탱크 Stop 무효 0 유지. `unknown` 0(레이블러 1 shard).
+- 출력: `<URANIUM_SHARED_DIR>/artifacts/m6_action_audit/t8/lc/` (`old_*`=72cf539, `lc_*`=리뷰 전, `lc2_*`=리뷰 반영 뒤 `.json`, 복사한 shard 4개, 최악 게임 추적 `t8_debug_d4778.txt`).
 
 ### F23·F24 원인
 - **두 덩어리 모두 scr_ladder 일부 리플레이에 몰려 있다.** stardata 44게임은 `target_unit_missing` 53, `target_loc` 4뿐이고, scr_ladder 33게임은 1,224와 469다. scr_ladder에서도 상위 2게임이 F23+F24의 60%, 상위 8게임이 95%다(`per_game`). 같은 맵의 다른 게임은 깨끗하므로 맵 문제는 아니다.
@@ -419,11 +420,12 @@
 | 3·4 | 99/100 | 드랍십이 생산 중일 때 Load 반복 8회를 다 써 버림(생산 중 드랍십은 F1로 대상 아님 — 마스크가 맞음) → 완성 드랍십이 있을 때만 반복 |
 | 5 | 100/100, 비무장 확인 실패 | 탑승 중인 드랍십에 Attack_Pos를 줘 다음 order가 PickupTransport → 탑승 직후·탑승 중 수송선은 확인에서 제외 |
 | 6 | **통과**: 100/100, 거절 1건(BuildAddon_ControlTower Unbuildable_Location, 정당화), 시야 밖 미네랄 2/2, 베슬 Attack_Pos → Move | 송신 230·수락 229, 마지막 첫 수락 프레임 25,257(Yamato_Unit), 모두 덮어 StopGame(벽시계 28초) |
-
 | 7·8 | **통과**(T9 반영 뒤, master aa187b2 위로 rebase): 101/101(`Unload_Unit` 포함), 거절 2건(BuildAddon_ControlTower·CovertOps Unbuildable_Location, 정당화), 시야 밖 미네랄 2/2 | 8회차 송신 231·수락 229, 마지막 첫 수락 프레임 25,209, 벽시계 28초 |
 
 - T7 5회차와 비교: Move_Unit·Smart_Unit·Heal_Unit 오류 6(F1)과 Build_* Unit_Busy가 사라졌다.
-- 산출물(git 미추적): 메인 작업 사본 `reports/raw/t8_031_ac1/` (`ac1_run1~8.log`, 8회차 표 `openbw_actions_031_ac1.md`, 리플레이 `.rep`).
+- 리뷰 반영 뒤 9회차(`ac_run9.log`): 031-AC1 101/101, 거절 2건(Unbuildable_Location, 정당화), 시야 밖 미네랄 2/2 통과.
+- 한계(U-6): 시나리오는 명령 단위 `CommandFailed`만 보므로, 그룹 명령에서 일부 유닛만 거절된 경우(1기 이상 수락 = 성공, 011-R20)는 잡지 못한다. 유닛별 거절 수는 프로토콜 필드가 생겨야 검사할 수 있다.
+- 산출물: `<URANIUM_SHARED_DIR>/artifacts/m6_action_audit/t8/t8_031_ac1/` (메인 작업 사본 `reports/raw/t8_031_ac1/`에도 사본, `ac1_run1~8.log`·`ac_run9.log`, 8회차 표 `openbw_actions_031_ac1.md`, 리플레이 `.rep`).
 
 ### 다음 재build 목록 (shard 내용이 바뀌는 항목, 사용자 결정 2026-10-19)
 다음 전체 재build 전에 한꺼번에 결정·구현한다. 지금 shard에는 반영되지 않는다.
@@ -438,11 +440,12 @@
 - U-1 **F4 Train 서플라이**: 엔진은 큐가 비어 있지 않으면 서플라이를 보지 않지만 BWAPI `canMake`(라이브)는 항상 본다. (a) 마스크를 엔진 규칙으로(라이브는 실패 또는 BWAPI 포크 패치), (b) 현재 유지. 이번 표본 `Train_* <- supply`는 scr_ladder 193·stardata 258건(레이블의 0.2~0.3%, 큐가 빈 경우 포함 상한).
 - U-2 **F18 시야 밖 기억 적 건물 공격 대상**: 맵핵은 아니지만(마지막 목격) shim 대상 해석을 적 건물로 넓혀야 한다.
 - U-3 **F11 무기·사거리**: 공중/지상 무기 없는 유닛·사거리 밖 대상의 Attack_Unit 처리(F3 뒤로는 그룹 일부 거절이 명령 실패가 되지 않음).
-- U-4 **F16 전환 중 연타 레이블**: §11 비교처럼 BC 레이블 0.1%p 안팎을 잃는다. 라이브 기준(현재 구현) 유지 또는 되돌림.
-- U-5 **F23·F24 scr_ladder 어긋난 재생**: (a) 지금처럼 무효(weight 0)로 두고 040-R19(시점 무효 ≥ 20%)에 맡김 — 최악 게임 19.2%는 통과했다, (b) scr_ladder 보조 기준(`target_unit_missing`+`target_loc` 비율, 재생에서 실패한 배치 비율)을 040-R19에 더해 어긋난 재생을 걸러냄(재build 필요), (c) 상위 게임의 SC:R 태그 변환을 원본 리플레이로 대조(013-R7 왕복 검증은 통과했으므로 재생 차이일 가능성이 큼).
+- U-4 **F16 전환 중 연타 레이블**: **결정됨(사용자 결정 2026-10-19)** — BC 레이블은 유효(엔진이 받음), 라이브 마스크·executor는 막음(BWAPI 거절). 구현 완료.
+- U-5 **F23·F24 scr_ladder 어긋난 재생**: 지금은 변경 없음, build 뒤 재평가(사용자 결정 2026-10-19). (a) 지금처럼 무효(weight 0)로 두고 040-R19(시점 무효 ≥ 20%)에 맡김 — 최악 게임 19.2%는 통과했다, (b) scr_ladder 보조 기준(`target_unit_missing`+`target_loc` 비율, 재생에서 실패한 배치 비율)을 040-R19에 더해 어긋난 재생을 걸러냄(재build 필요), (c) 상위 게임의 SC:R 태그 변환을 원본 리플레이로 대조(013-R7 왕복 검증은 통과했으므로 재생 차이일 가능성이 큼).
 - U-6 **010 `CommandFailed` 유닛별 거절 수**: F3 뒤 부분 거절을 기록하려면 프로토콜 필드가 필요하다(PROTOCOL_VERSION 상승).
 
 ### 배포·후속
 - feature 스키마 버전 6(T9의 5 위에 한 번 더): 버전 4·5 체크포인트는 로드가 거부된다. 스모크 랜덤 체크포인트를 `<URANIUM_SHARED_DIR>/checkpoints/smoke/random-lstm-fv6`로 새로 만들고 `config/plans/smoke-model.toml`이 그것을 가리킨다(옛 `random-lstm`은 그대로 둠). BC 본학습 전이라 다른 체크포인트 영향은 없다.
 - 브리지(shim) 변경(011-R20): 이 브랜치가 master에 들어가면 **모든 게임 호스트(이 PC, Linux 호스트 A·B)의 브리지 재빌드와 hostd 재시작**이 필요하다. 재build(리플레이 재생)는 명령을 보내지 않으므로(011-R11) shim 변경의 영향을 받지 않지만, 재build가 끝난 뒤 배포한다. Linux 컴파일 확인: Linux 호스트 A 임시 폴더(nice 19, `-j 2`)에서 `liburanium_bridge.so` 빌드 성공, 경고 없음, 내보내기 심볼 `gameInit`·`newAIModule`만. 임시 폴더 삭제.
-- 011-AC4(같은 seed·같은 Act 결정론)는 그룹 명령 뒤 재확인이 필요하다(BWAPI `Unitset`이 포인터 해시 순서로 돌지만 OpenBW 그룹 처리는 순서 무관으로 판단).
+- **011-AC4 재확인(그룹 명령 뒤)**: 테스트 `same_seed_same_acts_same_game_011_ac4`(`#[ignore]`, hostd 필요)가 같은 seed(41)·같은 스크립트로 10분(14,400프레임) 게임을 두 번 돌려 관측마다 유닛 체크섬(id·종류·위치·hp·실드·에너지·order·order 대상·플래그, 자원)을 비교한다. 이 PC 임시 hostd에서 **통과**: 관측 1,800개 체크섬 전부 같음, 두 게임 모두 TimeLimitDraw 14,401프레임·승자 없음, 명령 191개씩. BWAPI `Unitset` 순회 순서가 프로세스마다 달라도 결과가 같다는 판단이 실측으로 맞았다.
+- 작업 사본 `target/lc/`·`target/maps_tmp/`(투혼 자원 파일)는 `<URANIUM_SHARED_DIR>/artifacts/m6_action_audit/t8/`로 옮겼다.

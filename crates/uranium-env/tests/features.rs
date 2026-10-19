@@ -1020,3 +1020,56 @@ fn stop_unload_attack_and_busy_selection_classes_034_audit() {
     let l = Label { frame: 10, action: action_table().by_name("Stop").unwrap().id, delay: 8, queued: false, selected: vec![sieged], target_unit: None, target_tile: None };
     assert_eq!(host_label_check(&l, &o).1, None);
 }
+
+/// 034-R10 (review 2026-10-19): eggs, lurker eggs, cocoons and merging archons are incomplete but
+/// stay targets (BWAPI `canTargetUnit` accepts morphing units and archons, so does the game).
+#[test]
+fn eggs_cocoons_and_merging_archons_are_targets_034_r10() {
+    let map = map_info();
+    let mut mem = AgentMemory::new(&game_info());
+    let mut b = Builder::new();
+    b.add(SELF, "Terran_Command_Center", (10, 10));
+    let ids: Vec<u32> = ["Zerg_Egg", "Zerg_Lurker_Egg", "Zerg_Cocoon", "Protoss_Archon", "Protoss_Dark_Archon"]
+        .iter()
+        .enumerate()
+        .map(|(k, n)| {
+            let id = b.add(ENEMY, n, (30 + 3 * k as i32, 30));
+            b.get(id).flags = uranium_proto::flags::DETECTED;
+            id
+        })
+        .collect();
+    let incomplete_marine = b.add(ENEMY, "Zerg_Zergling", (50, 50));
+    b.get(incomplete_marine).flags = 0;
+    let o = extract(&frame(10, b.units.clone(), true), &mut mem, &map, None);
+    for id in ids {
+        let i = index_of(&o, id);
+        for c in ["any_unit", "attackable_enemy", "irradiatable"] {
+            assert!(cap_of(&o, i, c), "{id} not a {c} target");
+        }
+    }
+    assert!(!cap_of(&o, index_of(&o, incomplete_marine), "any_unit"), "other incomplete units stay excluded");
+}
+
+/// U-4 (user decision 2026-10-19, action audit F16): a tank in a siege transition takes no
+/// command live (BWAPI Unit_Busy) but its replay labels are valid (the game queues the command).
+#[test]
+fn siege_transition_live_blocked_labels_valid_u4() {
+    use uranium_env::features::label::{Label, host_label_check};
+    use uranium_env::types::order_id;
+    let map = map_info();
+    let mut b = Builder::new();
+    b.add(SELF, "Terran_Command_Center", (10, 10));
+    let tank = b.add(SELF, "Terran_Siege_Tank_Tank_Mode", (30, 30));
+    b.get(tank).order = order_id("Sieging").unwrap();
+    let f = frame(10, b.units.clone(), true);
+    let siege = action_table().by_name("SiegeMode").unwrap().id;
+    let label = Label { frame: 10, action: siege, delay: 8, queued: false, selected: vec![tank], target_unit: None, target_tile: None };
+    let mut live = AgentMemory::new(&game_info());
+    let o = extract(&f, &mut live, &map, None);
+    assert!(!cap_of(&o, index_of(&o, tank), "can_siege") && !o.masks.type_mask[siege as usize]);
+    let mut replay = AgentMemory::new(&game_info());
+    replay.replay_labels = true;
+    let o = extract(&f, &mut replay, &map, None);
+    assert!(cap_of(&o, index_of(&o, tank), "can_siege"));
+    assert_eq!(host_label_check(&label, &o).1, None);
+}

@@ -117,7 +117,9 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     // constructing a building (OpenBW `unit_can_receive_order` allows it Stop only) and not in a
     // siege / unsiege transition (orders.dat not interruptible: BWAPI Unit_Busy).
     let constructing_scv = ty == ids.scv && u.order == ids.order_constructing;
-    let transitioning = u.order == ids.order_sieging || u.order == ids.order_unsieging;
+    // Live only: replay labels follow the engine, which queues the command (U-4, user decision
+    // 2026-10-19; `AgentMemory::replay_labels`).
+    let transitioning = !w.mem.replay_labels && (u.order == ids.order_sieging || u.order == ids.order_unsieging);
     // An SCV inside a refinery is hidden: no player can click it, BWAPI refuses it (Unit_Busy).
     let in_gas = u.order == ids.order_harvest_gas;
     let commandable = stoppable && !constructing_scv && !transitioning && !in_gas;
@@ -187,7 +189,9 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     // A unit still in production (created incomplete inside its producer) or loaded in a
     // transport cannot be clicked, and BWAPI `canTargetUnit` rejects an incomplete non-building
     // (Incompatible_State); buildings under construction stay targets (액션 감사 F1).
-    let present = visible && (done || t.is_building()) && !loaded && !in_gas;
+    // Eggs, cocoons and merging archons are incomplete but targetable (BWAPI `canTargetUnit`:
+    // morphing units and archons; the game accepts them too).
+    let present = visible && (done || t.is_building() || ids.targetable_incomplete.contains(&ty)) && !loaded && !in_gas;
     let targetable = present && !(u.has(flags::CLOAKED) && !u.has(flags::DETECTED) && e.owner != OWNER_SELF);
     let own_target = own && present;
     let hurt = (u.hp as i32) < t.max_hp;

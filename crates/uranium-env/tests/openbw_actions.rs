@@ -123,6 +123,8 @@ struct State {
     rotate: usize,
     frame: u32,
     log: Vec<String>,
+    /// (frame, checksum of every observed unit) per observation: 011-AC4 determinism.
+    sums: Vec<(u32, u64)>,
     end: Option<String>,
 }
 
@@ -188,6 +190,7 @@ impl Coverage {
                 rotate: 0,
                 frame: 0,
                 log: vec![],
+                sums: vec![],
                 end: None,
             },
         }
@@ -195,6 +198,7 @@ impl Coverage {
 
     fn on_frame(&mut self, f: &RawFrame) -> Act {
         self.st.frame = f.frame;
+        self.st.sums.push((f.frame, frame_checksum(f)));
         self.st.settle(&f.events);
         let o = extract(f, &mut self.mem, &self.map, None);
         let w = World::new(f, &self.mem, &self.map);
@@ -919,7 +923,30 @@ enum Report {
 }
 
 /// One bridge connection: player 0 runs the coverage script, player 1 idles.
-fn session(stream: TcpStream, hostd: String, game_id: u64) -> Result<Report, String> {
+/// FNV-1a over the observed units (id order): id, type, position, hp, shield, energy, order,
+/// order target, flags. Equal sequences = the two games played the same (011-AC4).
+fn frame_checksum(f: &RawFrame) -> u64 {
+    let mut units: Vec<&UnitState> = f.units.iter().collect();
+    units.sort_by_key(|u| u.id);
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |v: u64| {
+        for b in v.to_le_bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    eat(f.frame as u64);
+    for u in units {
+        for v in [u.id as u64, u.unit_type as u64, u.pos.0 as u64, u.pos.1 as u64, u.hp as u64, u.shield as u64, u.energy as u64, u.order as u64, u.order_target.map_or(u64::MAX, |t| t as u64), u.flags as u64] {
+            eat(v);
+        }
+    }
+    eat(f.self_state.minerals as u64);
+    eat(f.self_state.gas as u64);
+    h
+}
+
+fn session(stream: TcpStream, hostd: String, game_id: u64, stop_when_done: bool) -> Result<Report, String> {
     let e = |x: ProtoError| x.to_string();
     let mut r = BufReader::new(stream.try_clone().map_err(|x| x.to_string())?);
     let mut w = stream;
@@ -927,7 +954,7 @@ fn session(stream: TcpStream, hostd: String, game_id: u64) -> Result<Report, Str
     let BridgeMsg::GameInfo(info) = read_msg(&mut r).map_err(e)? else { return Err("expected GameInfo".into()) };
     let me = info.players.iter().find(|p| p.is_self).map(|p| p.name.clone()).unwrap_or_default();
     let mut cov = (me == "uranium-p0").then(|| Coverage::new(&info));
-    let mut stopped = false;
+    let mut stopped = !stop_when_done;
     loop {
         let msg = match read_msg::<BridgeMsg>(&mut r) {
             Ok(m) => m,
@@ -1033,9 +1060,9 @@ fn report(st: &State) -> String {
     md
 }
 
-#[test]
-#[ignore = "needs a running uranium-hostd with OpenBW (URANIUM_TEST_HOSTD)"]
-fn every_action_type_runs_in_openbw_031_ac1() {
+/// One scripted game on hostd: player 0 runs the coverage script (stopping the game once every
+/// type is covered when `stop_when_done`), player 1 idles. Returns the script state.
+fn play(seed: u32, max_frames: u32, stop_when_done: bool, tag: &str) -> Box<State> {
     let hostd = std::env::var("URANIUM_TEST_HOSTD").expect("URANIUM_TEST_HOSTD=<hostd control address>");
     let listen = std::env::var("URANIUM_TEST_AGENT_LISTEN").unwrap_or_else(|_| "127.0.0.1:0".into());
     let listener = TcpListener::bind(&listen).expect("agent listener");
@@ -1047,13 +1074,14 @@ fn every_action_type_runs_in_openbw_031_ac1() {
         format!("{host}:{}", bound.port())
     });
     let game_id = 0x031A_C100_0000 + (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() & 0xFFFF_FFFF);
+    let _ = tag;
     let player = PlayerSpec { race: Race::Terran, kind: PlayerKind::Bridge { agent_addr: agent_addr.clone() } };
     let spec = GameSpec {
         game_id,
         map: MapKey::FightingSpirit,
         players: [player.clone(), player],
-        seed: Some(31),
-        max_frames: MAX_FRAMES,
+        seed: Some(seed),
+        max_frames,
         privileged: false,
         save_replay: true,
         wall_timeout_s: 3600,
@@ -1067,7 +1095,7 @@ fn every_action_type_runs_in_openbw_031_ac1() {
                 let (s, _) = listener.accept().expect("bridge connection");
                 s.set_nodelay(true).ok();
                 let hostd = hostd.clone();
-                handles.push(std::thread::spawn(move || session(s, hostd, game_id)));
+                handles.push(std::thread::spawn(move || session(s, hostd, game_id, stop_when_done)));
             }
             handles.into_iter().map(|h| h.join().expect("session panicked")).collect::<Vec<_>>()
         })
@@ -1076,17 +1104,17 @@ fn every_action_type_runs_in_openbw_031_ac1() {
     let t0 = Instant::now();
     let (mut r, _w, resp) = control(&hostd, ControlRequest::StartGame(spec), true).expect("StartGame");
     assert!(matches!(resp, Some(ControlResponse::Started { .. })), "hostd: {resp:?}");
-    eprintln!("[031-AC1] game {game_id} started, agent at {agent_addr}");
+    eprintln!("[{tag}] game {game_id} started, agent at {agent_addr}");
     let finished = loop {
         match read_msg::<ControlResponse>(&mut r).expect("hostd reply") {
             ControlResponse::Finished(f) if f.game_id == game_id => break f,
             _ => {}
         }
     };
-    eprintln!("[031-AC1] hostd: {:?} after {:?} (wall {} s)", finished.outcome, t0.elapsed(), finished.wall_s);
+    eprintln!("[{tag}] hostd: {:?} after {:?} (wall {} s)", finished.outcome, t0.elapsed(), finished.wall_s);
     let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
     if let Some(rep) = &finished.replay {
-        let _ = std::fs::write(out.join("openbw_actions_031_ac1.rep"), rep);
+        let _ = std::fs::write(out.join(format!("openbw_actions_{tag}.rep")), rep);
     }
     assert!(matches!(finished.outcome, GameOutcome::Finished | GameOutcome::Stopped), "game did not run: {:?}", finished.outcome);
 
@@ -1098,6 +1126,14 @@ fn every_action_type_runs_in_openbw_031_ac1() {
             _ => None,
         })
         .expect("no coverage session (player uranium-p0)");
+    st
+}
+
+#[test]
+#[ignore = "needs a running uranium-hostd with OpenBW (URANIUM_TEST_HOSTD)"]
+fn every_action_type_runs_in_openbw_031_ac1() {
+    let st = play(31, MAX_FRAMES, true, "031_ac1");
+    let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
     let md = report(&st);
     let _ = std::fs::write(out.join("openbw_actions_031_ac1.md"), &md);
     eprintln!("{md}");
@@ -1125,4 +1161,23 @@ fn every_action_type_runs_in_openbw_031_ac1() {
     for (ty, order) in &st.unarmed {
         assert_eq!(*order, mv, "{ty}: Attack_Pos did not become a move");
     }
+}
+
+/// 011-AC4 with group commands (011-R20, review 2026-10-19): the same seed and the same scripted
+/// Act sequence give the same game twice — every observation's unit checksum and the GameEnd frame
+/// and winner. The script plays 10 game minutes (no StopGame: its timing is wall clock).
+#[test]
+#[ignore = "needs a running uranium-hostd with OpenBW (URANIUM_TEST_HOSTD)"]
+fn same_seed_same_acts_same_game_011_ac4() {
+    let frames = 24 * 60 * 10;
+    let a = play(41, frames, false, "011_ac4_a");
+    let b = play(41, frames, false, "011_ac4_b");
+    eprintln!("[011-AC4] a: {} observations, end {:?}; b: {} observations, end {:?}", a.sums.len(), a.end, b.sums.len(), b.end);
+    let sent = |s: &State| s.stats.iter().map(|x| x.sent).sum::<u32>();
+    eprintln!("[011-AC4] commands sent a {} b {}", sent(&a), sent(&b));
+    let first_diff = a.sums.iter().zip(&b.sums).position(|(x, y)| x != y);
+    assert_eq!(first_diff, None, "first differing observation: {:?} vs {:?}", first_diff.map(|i| a.sums[i]), first_diff.map(|i| b.sums[i]));
+    assert_eq!(a.sums.len(), b.sums.len());
+    assert_eq!(a.end, b.end, "GameEnd differs");
+    assert!(sent(&a) > 100, "the script sent group commands");
 }

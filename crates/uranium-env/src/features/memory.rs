@@ -48,6 +48,12 @@ pub struct AgentMemory {
     /// on and only adds noise to the evaluation, so those games set this flag. RL (042) leaves it
     /// off and uses the real value. Set by the agent from `InferOptions::zero_last_failed`.
     pub zero_last_failed: bool,
+    /// Replay labels (BC data, 040-R19 filter, `label-check`; set by `LabelWalker`): masks follow
+    /// the engine where it accepts what BWAPI refuses. Today only the siege transition: the game
+    /// queues a command given during Sieging / Unsieging, BWAPI (live) refuses it (Unit_Busy). User
+    /// decision 2026-10-19 (U-4, action audit F16): such labels are valid, live masks keep the
+    /// exclusion (034 선택 자격 공통).
+    pub replay_labels: bool,
     pub frame: u32,
     /// Frame each 128x128 tile was last visible (`NEVER` = not yet), 030 `last_seen_age`.
     pub last_visible: Vec<u32>,
@@ -94,6 +100,7 @@ impl AgentMemory {
             last_action: None,
             last_failed: false,
             zero_last_failed: false,
+            replay_labels: false,
             frame: 0,
             last_visible: vec![NEVER; super::schema::CELLS],
         }

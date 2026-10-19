@@ -179,7 +179,10 @@ impl LabelWalker {
     /// `map_family`: 040-R15 index (`maps::family_index`); `pre`: the map precompute (031);
     /// `enemy_random`: shard `enemy_random` (030-R11).
     pub fn new(info: &GameInfo, map_family: i32, pre: Option<&MapPrecompute>, enemy_random: bool) -> Result<Self> {
-        Ok(Self { map: MapInfo::new(info, map_family, pre)?, mem: AgentMemory::with_lobby(info, enemy_random) })
+        let mut mem = AgentMemory::with_lobby(info, enemy_random);
+        // U-4 (user decision 2026-10-19): replay labels use the engine rule for siege transitions.
+        mem.replay_labels = true;
+        Ok(Self { map: MapInfo::new(info, map_family, pre)?, mem })
     }
 
     /// Observation of `frame`, the label as entity indices and why it is invalid (`None` = valid).
