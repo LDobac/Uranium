@@ -1,6 +1,6 @@
 # 001 — System Architecture
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: 스케줄러를 `uranium-runner` crate로 분리(AMB-001-3), 에이전트 서버의 모델 정책·배치 추론 / `uranium-runner` 라이브러리화, `uranium-train rl`(3단계 계획 승인). 2026-10-19 개정: 001-R10 장비 표기 규칙(G-D9, 사용자 결정))
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: 스케줄러를 `uranium-runner` crate로 분리(AMB-001-3), 에이전트 서버의 모델 정책·배치 추론 / `uranium-runner` 라이브러리화, `uranium-train rl`(3단계 계획 승인). 2026-10-19 개정: 001-R10 장비 표기 규칙(G-D9, 사용자 결정), R1·Cargo Workspace 표기 정정: 없는 crate `uranium-adapter` → 실제 위치 `uranium-env`·`uranium-replay` `tables/`(의미 불변))
 - **Related**: [010](010-game-protocol.md), [011](011-bridge-openbw.md), [012](012-bridge-remastered.md), [020](020-env-orchestration.md), [060](060-infra.md), [061](061-shared-storage.md)
 
 ## Purpose
@@ -20,7 +20,7 @@
 ## Requirements
 | ID | 요구사항 |
 |---|---|
-| 001-R1 | **MUST** 에이전트 코어(env feature, model, executor)는 게임 버전을 모른다. 버전 의존 코드는 `bridge/*`와 `uranium-adapter`에만 둔다 |
+| 001-R1 | **MUST** 에이전트 코어(env feature, model, executor)는 게임 버전을 모른다. 버전 의존 코드는 `bridge/*`와 013 매핑 테이블(`crates/uranium-env/tables/*.toml`·`crates/uranium-replay/tables/*.toml`, 이를 읽는 `uranium-env` `types`·`actions`와 `uranium-replay` `label`)에만 둔다(2026-10-19 표기 정정: 이전 표기 `uranium-adapter`는 없는 crate였다) |
 | 001-R2 | **MUST** 브리지와 에이전트는 [010](010-game-protocol.md) 프로토콜로만 통신한다. 같은 호스트든 원격이든 같은 TCP 경로를 쓴다 |
 | 001-R3 | **MUST** 브리지는 얇게 유지한다. 상태 직렬화, 명령 실행, 시야 필터링만 하고 의사결정 로직은 넣지 않는다 |
 | 001-R4 | **SHOULD** OpenBW 호스트를 추가할 때 코드 수정 없이 설정 파일만 바꾸면 되게 한다 |
@@ -36,11 +36,10 @@
 Cargo.toml (workspace)
 crates/
   uranium-proto      # 스키마, 프레이밍, 버전 협상 (no_std 호환 지향, postcard)
-  uranium-adapter    # GameBackend trait, OpenBW/SCR 백엔드 클라이언트, 정규화 테이블(013)
-  uranium-env        # 라이브러리: feature 추출(030), 마스크(034), 보상(033), executor(031), 맵 계열(040-R15)·맵 사전계산(031)
+  uranium-env        # 라이브러리: feature 추출(030), 마스크(034), 보상(033), executor(031), 맵 계열(040-R15)·맵 사전계산(031), 013 매핑 테이블(`tables/`)
   uranium-model      # Burn 모델(032)
   uranium-train      # BC(041), RL(042), 리그·PFSP·스냅샷
-  uranium-replay     # .rep 파서, 데이터셋 생성(040)
+  uranium-replay     # .rep 파서, 데이터셋 생성(040), 리플레이 명령 매핑 테이블(`tables/`, 013)
   uranium-hostd      # OpenBW 인스턴스 데몬(020)
   uranium-agent      # 에이전트 서버(세션별 정책 라우팅, 배치 추론 서버, 모델 정책) + SC:R 실전 실행 바이너리
   uranium-runner     # 게임 스케줄러(020). 바이너리 이름은 `uranium-env`(run·calibrate). 에이전트 서버를 프로세스 안에 품는다
