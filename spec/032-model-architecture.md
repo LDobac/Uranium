@@ -1,6 +1,6 @@
 # 032 — Model Architecture (Burn)
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: R8 호스트별 정밀도 — CUDA 호스트 f32(TF32) 허용, 사용자 결정 / 추론 서버 Core 상태 슬롯(032-R14), 샘플링 모드·헤드별 log-prob(032-R15) / 추론 서버 가중치 교체·슬롯 상태 읽기(032-R16, 3단계 계획 승인) / 2026-10-18 개정: 코어 비교 절차(032-R17, AC7, AMB-032-6). 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): AC8 backward 허용 오차(H), autotune·fusion 채택(G-D5, 041-R15), R17 ② val 고정 seed 셔플 500게임(G-D8), F_c를 030과 일치, 장비 표기 중립화(001-R10, G-D9))
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: R8 호스트별 정밀도 — CUDA 호스트 f32(TF32) 허용, 사용자 결정 / 추론 서버 Core 상태 슬롯(032-R14), 샘플링 모드·헤드별 log-prob(032-R15) / 추론 서버 가중치 교체·슬롯 상태 읽기(032-R16, 3단계 계획 승인) / 2026-10-18 개정: 코어 비교 절차(032-R17, AC7, AMB-032-6). 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): AC8 backward 허용 오차(H), autotune·fusion 채택(G-D5, 041-R15), R17 ② val 고정 seed 셔플 500게임(G-D8), F_c를 030과 일치, 장비 표기 중립화(001-R10, G-D9). 2026-10-19 T7 개정(사용자 결정): §5 대상 마스크에서 선택 유닛 제외(034-R9), `self_target[A]` 상수)
 - **Related**: [030](030-observation.md), [031](031-action-space.md), [033](033-reward.md), [034](034-action-table.md), [041](041-imitation-learning.md), [042](042-rl-training.md), [060](060-infra.md)
 
 ## Purpose
@@ -97,7 +97,7 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
 | 2 | Delay | `MLP(256→128→16)` | 16 bucket {1,2,3,4,5,6,7,8,10,12,14,16,20,24,28,32} | `ar += Emb(16,256)[d]` |
 | 3 | Queued | `MLP(256→64→2)`, `uses_queued=false`면 0으로 고정 | q | `ar += Emb(2,256)[q]` |
 | 4 | Selected | key=`Linear(E→64)`, END key 1개 추가. query는 `GRUCell(64)`로 step마다 갱신(초기값 `Linear(ar→64)`). step마다 이미 고른 유닛을 마스크하고, `max_select` 도달 시 END만 허용. 건물 규칙(034-R7): 첫 선택이 건물이면 다음 step은 END만 허용하고, 첫 선택이 건물이 아니면 이후 step에서 건물을 마스크한다. 최대 12 step | sel ⊆ N | `ar += Linear(64→256)(mean key[sel])` |
-| 5 | TargetUnit | `Linear(ar→64)` · key(`Linear(E→64)`, 4와 별도) | u | 종료 |
+| 5 | TargetUnit | `Linear(ar→64)` · key(`Linear(E→64)`, 4와 별도). 4에서 고른 유닛은 대상에서 뺀다(034-R9, `self_target` 액션 제외, §5) | u | 종료 |
 | 6 | Location | `Linear(ar→16·8·8)` reshape ⊕ S8 → ConvT 업샘플 8²→16²→32²→64²→128²(skip concat) → `Conv1x1→1` | 128² logits | 종료 |
 
 - 헤드 5와 6은 `target` 종류에 따라 하나만 쓴다([034](034-action-table.md)).
@@ -151,10 +151,10 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
 
 ## 5. 마스크 파이프라인
 - CPU(env)가 계산하는 것: `type_mask[B,A]`, `unit_cap[B,N,K]`, `loc_class_mask[B,L,128,128]` ([030](030-observation.md), [034](034-action-table.md))
-- GPU에 상수로 올리는 것: `action_table` 텐서 `select_cap[A]`, `target_cap[A]`, `loc_class[A]`, `max_select[A]`, `uses_*[A]`
+- GPU에 상수로 올리는 것: `action_table` 텐서 `select_cap[A]`, `target_cap[A]`, `loc_class[A]`, `max_select[A]`, `uses_*[A]`, `self_target[A]`(034-R9)
 - GPU에서 헤드 진행 중에 샘플된 a로 gather한다:
   - `sel_mask = gather(unit_cap, select_cap[a]) ∧ is_self ∧ entity_mask`. Selected step마다 이미 고른 유닛과 건물 규칙(034-R7: 첫 선택이 건물이면 END만, 아니면 건물 제외)을 더 적용한다. 건물 여부는 엔티티별 `is_building`(떠 있는 건물·벙커·터렛 포함)으로 GPU에 올린다
-  - `tgt_mask = gather(unit_cap, target_cap[a]) ∧ entity_mask`
+  - `tgt_mask = gather(unit_cap, target_cap[a]) ∧ entity_mask ∧ ¬(sel ∧ ¬self_target[a])`. `sel`은 4번 헤드가 이번 스텝에 고른 유닛 집합[B,N]이다(샘플이든 teacher forcing이든 같다, 034-R9, 2026-10-19 사용자 결정). 이 조건으로 남는 대상이 없는 행은 원래 마스크(`gather(unit_cap, target_cap[a]) ∧ entity_mask`)를 쓰고, executor가 그 액션을 거부한다(031-R4)
   - `loc_mask = gather(loc_class_mask, loc_class[a])`
 
 ## 6. 학습·추론 인터페이스

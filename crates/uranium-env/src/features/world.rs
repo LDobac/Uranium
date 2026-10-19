@@ -335,8 +335,6 @@ impl<'a> World<'a> {
         self.own_completed.get(&unit_type).copied().unwrap_or(0) > 0
     }
 
-    /// 031-R1: own completed, landed, idle-enough buildings of `producer` type that can run
-    /// `what` now, ordered by (queue length, id) — or by energy for the scanner.
     /// 034-R8: a completed own building that is constructing its addon (BWAPI `isConstructing`
     /// on a completed building, or an incomplete addon in its slot).
     pub fn building_addon(&self, u: &UnitState) -> bool {
@@ -345,6 +343,8 @@ impl<'a> World<'a> {
             && (u.has(flags::CONSTRUCTING) || (u.has_addon && super::masks::addon_incomplete(self, u)))
     }
 
+    /// 031-R1: own completed, landed, idle-enough buildings of `producer` type that can run
+    /// `what` now, ordered by (queue length, id) — or by energy for the scanner.
     pub fn producers(&self, producer: u16, need_addon: Option<u16>, research: bool) -> Vec<&UnitState> {
         let mut v: Vec<&UnitState> = self
             .frame

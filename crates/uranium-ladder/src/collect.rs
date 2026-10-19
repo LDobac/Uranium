@@ -707,7 +707,7 @@ not json
         let rps = 10.0;
         let settings = Settings { port: Some(port), rps, daily_max: 1000, shared_dir: None };
         let plan = Plan { gateways: vec![30], gamemode: 1, min_bucket: Some(6), page_size: 100 };
-        let s = run(&settings, &paths, &plan, &Opts { limit: None, dry_run: false }).unwrap();
+        let s = run(&settings, &paths, &plan, &Opts { limit: None, dry_run: false, retry_failed: None }).unwrap();
         assert_eq!(s.ok, 1);
         let t = arrivals.lock().unwrap().clone();
         // connect (prefix "" then "/web-api"), list, page, profile, match info, download.

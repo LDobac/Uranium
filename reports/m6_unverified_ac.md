@@ -81,6 +81,7 @@
 | Build_* 일부 | 3 / 11 | 수 회 | 같은 Act의 두 명령이 같은 자원을 썼거나 일꾼이 바쁜 경우(테스트 스크립트 영향 포함) |
 
 - 1회차에서 본 것: 034 마스크는 Move_Unit·Smart_Unit·SetRally_Unit에서 **선택 유닛 자신을 대상으로 허용**한다. 게임은 이를 거절한다(오류 6·25). executor(031-R4)도 거절하지 않는다.
+  - 정정(2026-10-19): 실측 거절은 Move_Unit·Smart_Unit뿐이다. SetRally_Unit은 게임·BWAPI(`canSetRallyUnit`)가 건물 자신을 받는다(랠리 해제). 그래서 034-R9에서 예외로 두었다(아래 진행 기록, 사용자 확정).
 
 ## 043-AC4
 - 코드(`crates/uranium-ladder/src/limit.rs`, `api.rs`)
@@ -145,7 +146,7 @@ cargo run -p bench --release --features cuda -- --backend cuda --out reports/ben
 1. **애드온 건설 중인 건물**(2026-10-19 결정·반영, 034-R8, 아래 진행 기록): `pick_building`(031-R1)과 Train·Research·Upgrade 마스크가 애드온을 짓는 건물을 후보에서 빼지 않는다. 그래서 게임이 Unit_Busy로 거절하는 것으로 추정된다(실게임 3회차 Train_SCV 48회).
    - 빼도록 고치면 마스크가 바뀐다. 재build 중인 shard 생성 경로(레이블 무효 판정)에도 영향이 있을 수 있어 이번에는 고치지 않았다.
    - 고칠지, 고친다면 언제(재build 뒤 RL 전) 할지 결정이 필요하다.
-2. **자기 자신 대상**(2026-10-19 결정·반영, 034-R9, SetRally_Unit 예외는 확인 필요, 아래 진행 기록): Move_Unit·Smart_Unit·SetRally_Unit에서 선택 유닛 자신을 대상으로 고를 수 있고, 게임은 거절한다. 마스크·executor에서 막을지 결정이 필요하다(현재는 031-R10 실패로 기록되고 RL이 피하도록 학습).
+2. **자기 자신 대상**(2026-10-19 결정·반영, 034-R9, SetRally_Unit 예외는 사용자 확정 2026-10-19, 아래 진행 기록): Move_Unit·Smart_Unit·SetRally_Unit에서 선택 유닛 자신을 대상으로 고를 수 있고, 게임은 거절한다. 마스크·executor에서 막을지 결정이 필요하다(현재는 031-R10 실패로 기록되고 RL이 피하도록 학습).
 3. **032-AC2 Linux Vulkan 기준**: 체크리스트 2 측정 뒤 기준값을 정해 주기 바란다.
 
 ## 진행 기록: 질문 1·2 반영 (사용자 결정 2026-10-19)
@@ -160,7 +161,7 @@ cargo run -p bench --release --features cuda -- --backend cuda --out reports/ben
   - `target = "unit"` action_type의 대상에서 이번 선택을 뺀다. 모델 대상 마스크(샘플·teacher forcing, Bool 연산), executor, BC 레이블 모두 같다.
   - 레이블은 041-R11처럼 대상 유닛만 선택에서 빼고, 남는 유닛이 없으면 `target_selected`로 무효다.
   - 모든 대상이 선택에 들어 남는 대상이 없으면, 모델은 원래 마스크를 쓰고 executor가 거부한다.
-- **지시와 다르게 한 점(확인 필요)**: `SetRally_Unit`은 예외(`self_target = true`)로 두었다.
+- **지시와 다르게 한 점(사용자 확정 2026-10-19: 예외 유지)**: `SetRally_Unit`은 예외(`self_target = true`)로 두었다.
   - BWAPI `canSetRallyUnit`에는 자기 대상 검사가 없다. 게임도 건물 자신을 랠리 대상으로 받는다(랠리 해제).
   - 처음 리포트에서 SetRally_Unit도 거절된다고 쓴 것은 실측이 아니었다(실측 거절은 Move_Unit·Smart_Unit뿐).
   - 처음 구현처럼 SetRally_Unit까지 막으면 표본 레이블 564개(사람의 랠리 해제)가 무효가 됐다.
