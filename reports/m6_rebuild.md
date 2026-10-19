@@ -153,3 +153,82 @@
 2. 에이전트가 도는 장비의 `URANIUM_MAPS_DIR`에서 대상 맵 `mapgen`을 다시 돌려 v2를 만든다(실전·평가 전).
 3. G-M2: Linux 호스트 A의 BC 스왑을 따로 측정한다.
 4. 계획 R.3(기존 결과물 `_prev_20261019` 이동)부터 진행한다.
+   - 사용자 결정(2026-10-19)으로 이동 없이 바로 삭제했다. 아래 R-3 절 참조.
+
+## R-3 전체 재build 준비 (2026-10-19 16시, master d452c29)
+
+### 배경
+- 6523286 뒤 master에 T3c(040-R19 무효 레이블 20% 이상 시점 `filtered`, 레이블 검사 `uranium_env::features::label` 이동, (리플레이, 시점) 단위 재개)가 들어왔다. 브리지·proto 변경은 없다.
+- 기존 shards·records는 재사용하지 않는다(사용자 결정 2026-10-19). `_prev` 이동 없이 삭제한다.
+- 예상: 바이너리만 바꾸면 되고 hostd는 소스 변경이 없어 재시작이 필요 없을 것으로 봤다.
+
+### 1. 재빌드
+| 장비 | 내용 | uranium-replay sha256(앞 8자리) | hostd |
+|---|---|---|---|
+| 학습 PC | `cargo build --release --features cuda`(replay·train·agent·runner·hostd) | 2bef85e3 (train 2c96e483) | 실행하지 않음 |
+| Linux 호스트 A | `git pull --ff-only`(6523286 → d452c29) → `cargo build --release`(같은 5개) | 1342618c (train 3cd8104e) | 바이너리가 바뀜(a3d46a13 → d0e61b01) → 게임 없음 확인 후 시작 스크립트로 재시작, 수신 대기 정상(동시 5게임) |
+| Linux 호스트 B | 같음 | fdc63dd4 (train 7b2bb60b) | 바이너리 그대로(a3d46a13) → 재시작 안 함 |
+
+- 브리지는 다시 빌드하지 않았다.
+- hostd 소스(hostd·proto)는 6523286 이후 바뀌지 않았다. 그런데도 Linux 호스트 A만 hostd가 다시 링크됐다(6분 28초, 의존성 다수 재컴파일). 호스트 B는 49초였다.
+- Linux 호스트 A·B는 rustc 1.99.0이 같지만 배포본이 다르다(rustup / 배포판 패키지). 그래서 바이너리 해시가 서로 다르다. 출력 결정론은 R-2에서 장비 간 같다고 확인했다.
+
+### 2. 삭제 전 기록
+- 옛 `build/jobs.txt`(78줄, 머리 줄 포함)는 내용을 그대로 보관했다가 다시 썼다.
+
+  | 출처 | 파트 |
+  |---|---|
+  | stardata | 64 |
+  | community | 11 (synnaeve_gosu 8, iccup_users 2, osu_pvt 1) |
+  | scr_ladder | 1 |
+  | personal | 1 |
+
+- 옛 records 합계(레코드 줄 수, `outcome`별)
+
+  | 출처 | written | filtered | desync | unplayable | error |
+  |---|---|---|---|---|---|
+  | stardata | 34,714 | 32,309 | 727 | 300 | 0 |
+  | community | 393 | 6,464 | 1,556 | 12 | 1 |
+  | scr_ladder | 609 | 1,458 | 38 | 0 | 3 |
+  | personal | 154 | 434 | 5 | 8 | 0 |
+
+  - `records/fix-desync/`(디싱크 오판 재처리): stardata written 91, community 3, scr_ladder 2
+
+### 3. 사용 중 확인
+- 학습 PC: uranium 프로세스가 없었다.
+- Linux 호스트 A·B: hostd만 돌고 있었다. 게임 자식 프로세스, build·학습·bc-eval은 없었다.
+- 추출 전용 Windows PC는 SSH 연결이 되지 않았다(꺼져 있는 것으로 보임). 이 PC는 SSH 세션에서 공용 드라이브를 쓸 수 없고, 이번 재build 참여 대상도 아니다.
+
+### 4. 삭제 목록
+| 위치 | 대상 | 크기 |
+|---|---|---|
+| 공용 | `datasets/replays/shards/`(네 출처, `fix-desync-p0`, 출처별 `manifest.json`) | 약 37GB |
+| 공용 | `datasets/replays/records/`(`fix-desync/` 포함) | 24MB |
+| 공용 | `datasets/replays/build/claims/`, `build/logs/`, `build/jobs.txt` | 약 0.4MB |
+| 공용 | `datasets/replays/build/maps/`(v1 사전계산) | 11MB |
+| 공용 | `datasets/replays/quarantine/`(`stardata_p16`) | 557MB |
+| 학습 PC | `URANIUM_MAPS_DIR`의 v1 사전계산 `*.toml` 1,252개(`.scx` 2개는 유지) | 약 12MB |
+| 학습 PC | `URANIUM_CACHE_DIR/scans/` 스캔 캐시 4개 | 24KB |
+| 학습 PC | 로컬 앱 데이터 `uranium-build/2f2b0a0`(옛 build 큐용 바이너리 사본) | 209MB |
+| Linux 호스트 A | `URANIUM_CACHE_DIR/datasets/`(BC용 옛 shard 캐시) | 약 37GB |
+| Linux 호스트 A | `URANIUM_CACHE_DIR/scans/` | 비어 있음 |
+
+- 확보한 공간
+  - 학습 PC 드라이브(공용 드라이브 포함): 39.6GB, 사용률 65% → 63%
+  - Linux 호스트 A: 39.3GB, 사용률 38% → 29%
+- 학습 PC 공용 드라이브가 로컬 디스크라 학습 PC에는 따로 받은 shard 캐시가 없다.
+- Linux 호스트 B에는 데이터 캐시·바이너리 사본이 없었다.
+- 유지: `raw/`, `build/hashes/`, `build/run_queue.*`, `ladder/`, 맵 `.scx`, `URANIUM_CACHE_DIR/checkpoints`·`calibrate`, `checkpoints/smoke`
+
+### 5. 새 큐
+- 빈 `shards/`, `records/`, `build/claims/`, `build/logs/`, `build/maps/`를 다시 만들었다.
+- `build/jobs.txt`는 옛 파일과 바이트가 같다(78줄, 작업 77개).
+- 모든 raw 폴더와 skip-hashes 파일 4개(`skip_{iccup_users,osu_pvt,synnaeve_gosu,personal}.txt`)가 있다.
+- Linux 호스트 A·B에서 공용 마운트로 빈 폴더와 78줄을 확인했다.
+
+### 6. `.env` 확인
+- 세 장비 모두 `URANIUM_SHARD_STAGING_DIR`가 있고, staging 폴더는 비어 있다.
+- 세 장비 모두 `URANIUM_MAPS_DIR`가 있다. 큐 스크립트는 이 값을 `build/maps`로 덮어쓴다.
+
+### 상태
+- 큐는 시작하지 않았다. `run_queue`를 시작하면 바로 전체 재build(계획 R.4)로 넘어간다.
