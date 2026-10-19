@@ -181,6 +181,66 @@ fn building_with_units_label_is_void_034_r7() {
     assert_eq!(host_label_check(&label(vec![2]), &o).1, None);
 }
 
+/// The synthetic game stretched to `steps` steps with the first `invalid` labels void
+/// (`select_empty`: the selected unit 99 does not exist).
+fn game_with_invalid(steps: usize, invalid: usize) -> ShardGame {
+    let mut g = game();
+    let base = g.steps.clone();
+    g.steps = (0..steps).map(|k| base[k % base.len()].clone()).collect();
+    let mv = action_table().by_name("Move_Pos").unwrap().id;
+    for s in &mut g.steps[..invalid] {
+        s.action_label = Label { frame: s.action_label.frame, action: mv, delay: 8, queued: false, selected: vec![99], target_unit: None, target_tile: Some((12, 12)) };
+    }
+    g
+}
+
+/// 040-R19 / 040-AC7 (user decision 2026-10-19): the build rejects a perspective whose invalid labels are
+/// at least 20% of its labeled steps, and keeps one below that.
+#[test]
+fn invalid_label_share_filters_perspective_040_r19() {
+    use uranium_env::features::label::INVALID_LABEL_MAX;
+    use uranium_replay::pipeline::invalid_label_filter;
+    assert_eq!(INVALID_LABEL_MAX, 0.20);
+    assert_eq!(invalid_label_filter(&game_with_invalid(20, 0), None).unwrap(), None);
+    assert_eq!(invalid_label_filter(&game_with_invalid(20, 3), None).unwrap(), None, "15% is kept");
+    // Exactly 20% is rejected (>=).
+    let r = invalid_label_filter(&game_with_invalid(20, 4), None).unwrap().expect("20% is rejected");
+    assert_eq!(r, "invalid_labels>=20% (20.0%, 4/20) (040-R19)");
+    assert_eq!(uranium_replay::stats::filter_group(&r), uranium_replay::stats::INVALID_LABEL_GROUP);
+    let r = invalid_label_filter(&game_with_invalid(20, 11), None).unwrap().unwrap();
+    assert!(r.starts_with("invalid_labels>=20% (55.0%, 11/20)"), "{r}");
+    // Deterministic: the same game gives the same result.
+    assert_eq!(invalid_label_filter(&game_with_invalid(20, 11), None).unwrap().unwrap(), r);
+}
+
+/// 040-R19 / 040-AC7: the build's count is the BC loader's (`prepare` weight-0 labels, every symmetry and
+/// z setting) and `label-check`'s, from one shared check (`uranium_env::features::label`).
+#[test]
+fn build_label_check_matches_training_040_r19() {
+    use uranium_env::features::label::label_validity;
+    use uranium_train::data::{LabelStats, label_check};
+    for (steps, invalid) in [(16, 0), (20, 4), (20, 11), (33, 30)] {
+        let g = game_with_invalid(steps, invalid);
+        let v = label_validity(&g.game_info, 2, None, false, g.steps.iter().map(|s| (&s.raw_frame, &s.action_label))).unwrap();
+        assert_eq!((v.labeled, v.invalid), (steps, invalid));
+        for sym in Sym::all() {
+            for z in [false, true] {
+                let seq = prepare(&g, z, sym, &MapStore::synthetic()).unwrap();
+                assert_eq!(seq.invalid_labels, v.invalid, "{sym:?} z={z}");
+                assert_eq!(seq.steps.iter().filter(|s| s.weight == 0.0).count(), v.invalid);
+            }
+        }
+        let mut st = LabelStats::default();
+        label_check(&g, &mut st, &MapStore::synthetic()).unwrap();
+        let mut by_reason = std::collections::BTreeMap::new();
+        for ((_, why), n) in &st.fails {
+            *by_reason.entry(*why).or_insert(0) += n;
+        }
+        assert_eq!(by_reason, v.by_reason);
+        assert_eq!(st.totals.values().sum::<usize>(), v.labeled);
+    }
+}
+
 fn tiny_cfg() -> UraniumNetConfig {
     UraniumNetConfig::new()
         .with_input(input_dims())

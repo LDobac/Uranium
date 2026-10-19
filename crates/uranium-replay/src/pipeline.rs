@@ -241,21 +241,44 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
 }
 
 /// Writes `<maps_dir>/<map_hash>.toml` unless a current one exists (031, AMB-031-3). A file of an
-/// older `PRECOMPUTE_VERSION` (no resource list, 030 §2 E-3) is written again.
-pub fn write_map_precompute(map_hash: &str, info: &uranium_proto::GameInfo, chk: &[u8]) -> Result<()> {
+/// older `PRECOMPUTE_VERSION` (no resource list, 030 §2 E-3) is written again. Returns the
+/// precompute BC loads for this map (040-R19 label check); `Err` only when it cannot be computed.
+/// A failed write is reported and only loses the file (the next build writes it).
+pub fn write_map_precompute(map_hash: &str, info: &uranium_proto::GameInfo, chk: &[u8]) -> Result<uranium_env::features::MapPrecompute> {
     use uranium_env::features::mapgen;
-    let dir = maps_dir()?;
-    let path = dir.join(format!("{map_hash}.toml"));
-    if uranium_env::maps::load_precompute(&dir, map_hash).is_some() {
-        return Ok(());
+    let dir = maps_dir();
+    if let Some(p) = dir.as_deref().ok().and_then(|d| uranium_env::maps::load_precompute(d, map_hash)) {
+        return Ok(p);
     }
-    std::fs::create_dir_all(&dir)?;
     let pre = mapgen::precompute(&info.static_map, &mapgen::chk_resources(chk)?);
-    // Write then rename so parallel workers never read a partial file.
-    let tmp = dir.join(format!("{map_hash}.toml.{}", std::process::id()));
-    std::fs::write(&tmp, toml::to_string(&pre)?)?;
-    std::fs::rename(&tmp, &path).or_else(|_| std::fs::remove_file(&tmp))?;
-    Ok(())
+    let write = || -> Result<()> {
+        let dir = dir?;
+        std::fs::create_dir_all(&dir)?;
+        // Write then rename so parallel workers never read a partial file.
+        let path = dir.join(format!("{map_hash}.toml"));
+        let tmp = dir.join(format!("{map_hash}.toml.{}", std::process::id()));
+        std::fs::write(&tmp, toml::to_string(&pre)?)?;
+        std::fs::rename(&tmp, &path).or_else(|_| std::fs::remove_file(&tmp))?;
+        Ok(())
+    };
+    if let Err(e) = write() {
+        eprintln!("map precompute for {map_hash}: {e:#}");
+    }
+    Ok(pre)
+}
+
+/// 040-R19 (user decision 2026-10-19): the `filtered` reason when the perspective's share of
+/// invalid labels (the BC label check, `uranium_env::features::label`) is at least
+/// `INVALID_LABEL_MAX` (20%), else `None`.
+pub fn invalid_label_filter(game: &ShardGame, pre: Option<&uranium_env::features::MapPrecompute>) -> Result<Option<String>> {
+    let v = uranium_env::features::label::label_validity(
+        &game.game_info,
+        uranium_env::maps::family_index(&game.meta.map_family),
+        pre,
+        game.meta.enemy_random,
+        game.steps.iter().map(|s| (&s.raw_frame, &s.action_label)),
+    )?;
+    Ok(v.rejected().then(|| v.filter_reason()))
 }
 
 pub struct BuildOptions {
@@ -418,9 +441,13 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
             Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info })) => {
                 let n = steps.len();
                 // 031 / AMB-031-3: map precompute once per map (observation channels only).
-                if let Err(e) = write_map_precompute(&map_hash, &game_info, &rep.map) {
-                    eprintln!("map precompute for {map_hash}: {e:#}");
-                }
+                let pre = match write_map_precompute(&map_hash, &game_info, &rep.map) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        out.push(rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Error { reason: format!("map precompute: {e:#}") }));
+                        continue;
+                    }
+                };
                 let meta = GameMeta {
                     map_hash: map_hash.clone(),
                     map_family: family.clone(),
@@ -436,6 +463,18 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
                     replay_sha256: sha.clone(),
                 };
                 let game = ShardGame { meta, game_info, steps };
+                // 040-R19: a perspective with too many invalid labels is not stored.
+                match invalid_label_filter(&game, Some(&pre)) {
+                    Ok(None) => {}
+                    Ok(Some(reason)) => {
+                        out.push(rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Filtered { reason }));
+                        continue;
+                    }
+                    Err(e) => {
+                        out.push(rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Error { reason: format!("040-R19 label check: {e:#}") }));
+                        continue;
+                    }
+                }
                 *written.lock().unwrap() += postcard::experimental::serialized_size(&game).unwrap_or(0) as u64;
                 let (r, _) = rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Written { steps: n, coverage, result, result_source: result_source.to_string() });
                 out.push((r, Some(game)));

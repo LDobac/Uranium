@@ -7,12 +7,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use uranium_env::actions::{CAPABILITIES, LOC_CLASSES, TargetKind};
+use uranium_env::actions::CAPABILITIES;
 use uranium_env::features::augment::{Sym, transform_target_loc, transform_with_starts};
 use uranium_env::features::extract::{action_table, dims};
 use uranium_env::features::*;
+use uranium_env::features::label::LabelWalker;
 use uranium_model::collate::HostLabel;
-use uranium_replay::label::Label;
 use uranium_replay::shard::{GameMeta, ShardGame, read, result_source};
 
 /// One replay game from any source (041-R9).
@@ -645,67 +645,9 @@ pub fn replay_z(game: &ShardGame) -> Strategy {
     Strategy { build, units: counts }
 }
 
-fn bucket_index(delay: u32) -> usize {
-    DELAY_BUCKETS.iter().rposition(|&b| b <= delay).unwrap_or(0)
-}
-
-/// Replay label (unit ids, tile) -> entity indices of this observation, checked against the masks
-/// (031-R4). `false` when the label cannot be expressed or violates a mask.
-pub fn host_label(l: &Label, o: &Observation) -> (HostLabel, bool) {
-    let (h, why) = host_label_check(l, o);
-    (h, why.is_none())
-}
-
-/// `host_label` with the first failing check (label diagnostics, 034-AC3).
-pub fn host_label_check(l: &Label, o: &Observation) -> (HostLabel, Option<&'static str>) {
-    let index: HashMap<u32, usize> = o.entity_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
-    let mut selected: Vec<usize> = l.selected.iter().filter_map(|id| index.get(id).copied()).collect();
-    selected.sort_unstable();
-    selected.dedup();
-    let target_unit = l.target_unit.and_then(|id| index.get(&id).copied());
-    let target_loc = l.target_tile.map(|(x, y)| y as usize * MAP + x as usize);
-    let mut h = HostLabel { action: l.action, delay_bucket: bucket_index(l.delay), queued: l.queued, selected, target_unit, target_loc };
-    let Some(a) = action_table().actions.get(l.action as usize) else { return (h, Some("unknown_action")) };
-    let k = CAPABILITIES.len();
-    let cap = |i: usize, name: &str| o.masks.unit_cap[i * k + CAPABILITIES.iter().position(|c| *c == name).unwrap()];
-    let visible = h.selected.len();
-    // 041-R11: the game runs a command on each selected unit that can take it and skips the rest
-    // (OpenBW `action_*`), so the label keeps only those; it is void when none can.
-    if a.uses_select {
-        h.selected.retain(|&i| cap(i, &a.select_cap));
-    }
-    let why = if !o.masks.type_mask[a.id as usize] {
-        Some("type_mask")
-    } else if a.uses_select && visible == 0 {
-        Some("select_empty")
-    } else if a.uses_select && visible != l.selected.len() {
-        Some("select_not_visible")
-    } else if a.uses_select && h.selected.is_empty() {
-        Some("select_cap")
-    } else if a.uses_select && h.selected.len() > a.max_select as usize {
-        Some("select_too_many")
-    } else if a.uses_select && h.selected.len() > 1 && h.selected.iter().any(|&i| o.masks.is_building[i]) {
-        // 034-R7 / E-4: the game never multi-selects a building (040-R3 ①); such a label cannot
-        // come from a valid replay and is void like any other mask violation.
-        Some("select_building")
-    } else {
-        match a.target {
-            TargetKind::Unit if h.target_unit.is_none() => Some("target_unit_missing"),
-            TargetKind::Unit if !h.target_unit.is_some_and(|i| cap(i, &a.target_cap)) => Some("target_unit_cap"),
-            TargetKind::Loc => {
-                let lc = LOC_CLASSES.iter().position(|c| *c == a.loc_class).unwrap();
-                (!h.target_loc.is_some_and(|t| t < CELLS && o.masks.loc_class_mask[lc * CELLS + t])).then_some("target_loc")
-            }
-            _ => None,
-        }
-    };
-    (h, why)
-}
-
-/// Unit ids of the label's (capability-filtered) selection.
-fn acting_ids(h: &HostLabel, o: &Observation) -> Vec<u32> {
-    h.selected.iter().map(|&i| o.entity_ids[i]).collect()
-}
+/// Label conversion and check: one implementation in `uranium-env`, shared with the replay build
+/// (040-R19 invalid-label filter).
+pub use uranium_env::features::label::{acting_ids, host_label, host_label_check};
 
 /// Label diagnostics (034-AC3): labels failing `host_label_check` per (action, reason), labels per
 /// action, and for `select_cap` failures the unit types in the selection that lack the capability.
@@ -770,15 +712,12 @@ fn prereq_fail(a: &uranium_env::actions::Action, me: &uranium_proto::PlayerState
 }
 
 pub fn label_check(game: &ShardGame, st: &mut LabelStats, maps: &MapStore) -> Result<()> {
-    let map = MapInfo::new(&game.game_info, family_index(&game.meta.map_family), maps.get(&game.meta.map_hash)?.as_deref())?;
     // 030-R11: a lobby-Random enemy stays unknown until seen.
-    let mut mem = AgentMemory::with_lobby(&game.game_info, game.meta.enemy_random);
+    let mut walker = LabelWalker::new(&game.game_info, family_index(&game.meta.map_family), maps.get(&game.meta.map_hash)?.as_deref(), game.meta.enemy_random)?;
     let k = CAPABILITIES.len();
     let mut prev: Option<&uranium_proto::PlayerState> = None;
     for s in &game.steps {
-        let o = extract(&s.raw_frame, &mut mem, &map, None);
-        let (label, why) = host_label_check(&s.action_label, &o);
-        mem.record_action(label.action, label.delay_bucket, &acting_ids(&label, &o));
+        let (o, label, why) = walker.step(&s.raw_frame, &s.action_label, None);
         let a = action_table().actions.get(label.action as usize);
         let name = a.map_or_else(|| format!("#{}", label.action), |a| a.name.clone());
         *st.totals.entry(name.clone()).or_default() += 1;
@@ -884,8 +823,8 @@ pub fn enemy_race_masked(replay_sha256: &str, seed: u64, ratio: f64) -> bool {
 /// 040-R7).
 pub struct GameStream {
     game: ShardGame,
-    map: MapInfo,
-    mem: AgentMemory,
+    /// Map, agent memory and the label check shared with the replay build (040-R19).
+    walker: LabelWalker,
     z: Option<Strategy>,
     sym: Sym,
     pos: usize,
@@ -899,16 +838,15 @@ pub struct GameStream {
 impl GameStream {
     /// Fails when the game's map has no precompute in `maps` (B-2).
     pub fn new(game: ShardGame, z_present: bool, sym: Sym, maps: &MapStore) -> Result<Self> {
-        let map = MapInfo::new(&game.game_info, family_index(&game.meta.map_family), maps.get(&game.meta.map_hash)?.as_deref())?;
         // 030-R11: a lobby-Random enemy (shard `enemy_random`) stays unknown until seen. Replay
         // headers store the played race, so in BC data this is rarely set; `mask_enemy_race` (5% of
         // games) is what teaches the `unknown` input.
-        let mem = AgentMemory::with_lobby(&game.game_info, game.meta.enemy_random);
+        let walker = LabelWalker::new(&game.game_info, family_index(&game.meta.map_family), maps.get(&game.meta.map_hash)?.as_deref(), game.meta.enemy_random)?;
         let z = z_present.then(|| replay_z(&game));
         let zero_priv = PrivilegedTensors { summary: vec![0.0; dims().privileged()] };
         let result = game.meta.result as f32;
         let value_weight = value_weight(&game.meta);
-        Ok(Self { game, map, mem, z, sym, pos: 0, zero_priv, result, value_weight })
+        Ok(Self { game, walker, z, sym, pos: 0, zero_priv, result, value_weight })
     }
 
     /// 030-R11 BC exception (user decision 2026-10-19, 5%): when [`enemy_race_masked`] picks this
@@ -918,7 +856,7 @@ impl GameStream {
     pub fn with_race_mask(mut self, ratio: f64, seed: u64) -> Self {
         debug_assert_eq!(self.pos, 0, "race mask after the first step");
         if enemy_race_masked(&self.game.meta.replay_sha256, seed, ratio) {
-            self.mem.enemy_race = uranium_proto::Race::Unknown;
+            self.walker.mem.enemy_race = uranium_proto::Race::Unknown;
         }
         self
     }
@@ -956,19 +894,18 @@ impl GameStream {
         let mut steps = Vec::with_capacity(end - self.pos);
         let mut invalid = 0;
         for s in &self.game.steps[self.pos..end] {
-            let o = extract(&s.raw_frame, &mut self.mem, &self.map, self.z.as_ref());
-            let (mut label, ok) = host_label(&s.action_label, &o);
-            invalid += !ok as usize;
             // Memory sees what the policy did, like in RL (030 §4 previous action, §1 last action):
-            // the units that act on the command (041-R11).
-            self.mem.record_action(label.action, label.delay_bucket, &acting_ids(&label, &o));
+            // the units that act on the command (041-R11); `LabelWalker::step` records it.
+            let (o, mut label, why) = self.walker.step(&s.raw_frame, &s.action_label, self.z.as_ref());
+            let ok = why.is_none();
+            invalid += !ok as usize;
             let o = if self.sym == Sym::IDENTITY {
                 o
             } else {
                 if let Some(t) = label.target_loc {
                     label.target_loc = Some(transform_target_loc(label.action, t, o.map_size, o.transposed, self.sym));
                 }
-                transform_with_starts(&o, self.sym, &self.map.start_locations)
+                transform_with_starts(&o, self.sym, &self.walker.map.start_locations)
             };
             let privileged = s.privileged.as_ref().map_or_else(|| self.zero_priv.clone(), privileged);
             steps.push(TrainStep { obs: o, label, privileged, weight: if ok { 1.0 } else { 0.0 } });

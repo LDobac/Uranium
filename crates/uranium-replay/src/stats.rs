@@ -68,6 +68,8 @@ pub fn dataset_markdown(records: &[PathBuf]) -> Result<String> {
     let s = |v: &Value, k: &str| v[k].as_str().unwrap_or("").to_string();
     // Build outcomes per src: records (views, or whole replays rejected before a view exists).
     let mut outcomes: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+    // `filtered` records by reason group (040-R19 invalid labels among them) and src.
+    let mut filtered: BTreeMap<(String, String), usize> = BTreeMap::new();
     let mut replays: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     // 040-AC2 desync rate = desync / (written + desync), per src and map family.
     let mut played: BTreeMap<(&'static str, String), (usize, usize)> = BTreeMap::new();
@@ -86,6 +88,9 @@ pub fn dataset_markdown(records: &[PathBuf]) -> Result<String> {
             *recorded.entry(m.to_string()).or_default() += 1;
         }
         *outcomes.entry(src.clone()).or_default().entry(outcome.clone()).or_default() += 1;
+        if outcome == "filtered" {
+            *filtered.entry((filter_group(r["reason"].as_str().unwrap_or("")), src.clone())).or_default() += 1;
+        }
         if outcome == "written" || outcome == "desync" {
             for key in [("전체", String::new()), ("src", src.clone()), ("map_family", family.clone())] {
                 let d = played.entry(key).or_default();
@@ -183,7 +188,26 @@ pub fn dataset_markdown(records: &[PathBuf]) -> Result<String> {
         let other: usize = m.iter().filter(|(k, _)| !OUTCOMES.contains(&k.as_str())).map(|(_, n)| n).sum();
         writeln!(md, "| {src} | {} | {} | {other} |", replays.get(src).map_or(0, |r| r.len()), cells.join(" | "))?;
     }
+
+    writeln!(md, "\n## 필터 사유 (`filtered`, 기록 단위)\n\n`{INVALID_LABEL_GROUP}`은 시점 단위(040-R19), 나머지는 대부분 리플레이 단위다.\n\n| 사유 | src | 기록 |\n|---|---|---|")?;
+    for ((reason, src), n) in &filtered {
+        writeln!(md, "| {} | {src} | {n} |", reason.replace('|', "\\|"))?;
+    }
     Ok(md)
+}
+
+/// Group label of the 040-R19 filter (invalid labels ≥ 20%) in the statistics.
+pub const INVALID_LABEL_GROUP: &str = "invalid_labels>=20% (040-R19)";
+
+/// A `filtered` reason without its per-record details (ratio, map name), for counting.
+pub fn filter_group(reason: &str) -> String {
+    if reason.starts_with(uranium_env::features::label::INVALID_LABEL_PREFIX) {
+        INVALID_LABEL_GROUP.to_string()
+    } else if let Some((head, _)) = reason.split_once(": ") {
+        head.to_string()
+    } else {
+        reason.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -214,6 +238,10 @@ mod tests {
             written(&a, 1, "fighting_spirit", "투혼 1.3", "TvT", "bridge", -1),
             written(&"b".repeat(64), 0, "other", "Python", "TvZ", "none", 0),
             serde_json::json!({"index": 3, "replay_sha256": "c".repeat(64), "src": "stardata", "map_family": "other", "map_name": "Python", "map_hash": "", "view": {"perspective": 0, "stage": "S1", "apm": 90, "matchup": "TvP", "enemy_random": false}, "outcome": "desync", "reasons": ["x"]}).to_string(),
+            // 040-R19: two perspectives rejected for invalid labels, counted under one reason.
+            serde_json::json!({"index": 4, "replay_sha256": "d".repeat(64), "src": "stardata", "map_family": "other", "map_name": "Python", "map_hash": "", "view": {"perspective": 0, "stage": "S1", "apm": 900, "matchup": "TvT", "enemy_random": false}, "outcome": "filtered", "reason": "invalid_labels>=20% (55.0%, 11/20) (040-R19)"}).to_string(),
+            serde_json::json!({"index": 4, "replay_sha256": "d".repeat(64), "src": "stardata", "map_family": "other", "map_name": "Python", "map_hash": "", "view": {"perspective": 1, "stage": "S1", "apm": 950, "matchup": "TvT", "enemy_random": false}, "outcome": "filtered", "reason": "invalid_labels>=20% (24.6%, 1119/4550) (040-R19)"}).to_string(),
+            serde_json::json!({"index": 5, "replay_sha256": "e".repeat(64), "src": "stardata", "map_family": "other", "map_name": "X", "map_hash": "", "view": null, "outcome": "filtered", "reason": "excluded map (040-R16): X"}).to_string(),
         ];
         std::fs::write(&p, lines.join("\n")).unwrap();
         let md = dataset_markdown(&[p]).unwrap();
@@ -223,6 +251,8 @@ mod tests {
         assert!(md.contains("| 전체 |  | 4 | 1 | 25.0% |"), "{md}");
         assert!(md.contains("| map_family | other | 2 | 1 | 50.0% |"), "{md}");
         assert!(md.contains("중복 기록(같은 리플레이·시점, 마지막 것만 셈): 1개 제외"), "{md}");
+        assert!(md.contains("| invalid_labels>=20% (040-R19) | stardata | 2 |"), "{md}");
+        assert!(md.contains("| excluded map (040-R16) | stardata | 1 |"), "{md}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

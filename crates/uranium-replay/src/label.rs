@@ -137,19 +137,8 @@ fn admit(selection: &mut Vec<u32>, tag: u32, own: Option<Own>) {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct Label {
-    /// Frame of the decision (observation frame).
-    pub frame: u32,
-    pub action: u16,
-    /// 031 delay bucket: frames until the next observation.
-    pub delay: u32,
-    pub queued: bool,
-    pub selected: Vec<u32>,
-    pub target_unit: Option<u32>,
-    /// Build tile (top-left) or position / 32.
-    pub target_tile: Option<(u16, u16)>,
-}
+/// 040 shard action label: one definition in `uranium-env`, shared with the BC label check (040-R19).
+pub use uranium_env::features::label::Label;
 
 /// Coverage counters for 031-AC3.
 #[derive(Serialize, Debug, Clone, Default, PartialEq, Eq)]

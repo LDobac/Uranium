@@ -6,17 +6,8 @@ use uranium_env::features::{CELLS, ENTITY_CAT, ENTITY_CONT, MAP, Observation, Pr
 
 use crate::batch::{ActionBatch, ObsBatch, PrivBatch};
 
-/// Host form of one action label / sample (entity indices into that step's observation).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostLabel {
-    pub action: u16,
-    pub delay_bucket: usize,
-    pub queued: bool,
-    /// Entity indices in canonical ascending order (032-R12), without END.
-    pub selected: Vec<usize>,
-    pub target_unit: Option<usize>,
-    pub target_loc: Option<usize>,
-}
+/// Host form of one action label: defined next to the label check in `uranium-env` (040-R19).
+pub use uranium_env::features::label::HostLabel;
 
 pub fn obs_batch(rows: &[&Observation], device: &Device) -> ObsBatch {
     obs_batch_padded(rows, 1, device)
