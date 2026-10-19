@@ -354,5 +354,5 @@
 ### 남은 일
 - master 반영 뒤 모든 호스트의 브리지·hostd·에이전트 재빌드(`PROTOCOL_VERSION` 3, 옛 브리지는 010-R2로 거부). 재build를 이어 갈 장비는 새 `uranium-replay`로 바꾼다(재생 모드는 브리지 프로토콜을 검사하지 않아 옛 브리지로도 build는 된다).
 - action·feature 스키마가 바뀌어 기존 체크포인트(스모크용 무작위 체크포인트 `<URANIUM_SHARED_DIR>/checkpoints/smoke/random-lstm` 포함)는 읽히지 않는다. master 반영 뒤 `uranium-agent random-checkpoint --out <URANIUM_SHARED_DIR>/checkpoints/smoke/random-lstm`로 다시 만든다.
-- 사용자 확인: `unknown` 레이블을 040-R19 비율과 040-AC7 집계에서 빼는 처리(레이블러 1 시점과 판정 기준을 같게 하려는 도출, spec 040-R19에 확인 대기로 적음).
+- 결정(2026-10-19 사용자 확정): `unknown` 레이블은 040-R19 비율과 040-AC7 무효 집계에서 뺀다(레이블러 1 시점과 판정 기준을 같게). spec 040-R19에 반영.
 - 표본 출력은 작업 사본 `job-tmp/`(build-old·build-new·stats-*.json·lc-*.json)에 있다(worktree 정리 시 함께 삭제됨).
