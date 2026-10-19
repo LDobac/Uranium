@@ -420,8 +420,10 @@
 | 5 | 100/100, 비무장 확인 실패 | 탑승 중인 드랍십에 Attack_Pos를 줘 다음 order가 PickupTransport → 탑승 직후·탑승 중 수송선은 확인에서 제외 |
 | 6 | **통과**: 100/100, 거절 1건(BuildAddon_ControlTower Unbuildable_Location, 정당화), 시야 밖 미네랄 2/2, 베슬 Attack_Pos → Move | 송신 230·수락 229, 마지막 첫 수락 프레임 25,257(Yamato_Unit), 모두 덮어 StopGame(벽시계 28초) |
 
+| 7·8 | **통과**(T9 반영 뒤, master aa187b2 위로 rebase): 101/101(`Unload_Unit` 포함), 거절 2건(BuildAddon_ControlTower·CovertOps Unbuildable_Location, 정당화), 시야 밖 미네랄 2/2 | 8회차 송신 231·수락 229, 마지막 첫 수락 프레임 25,209, 벽시계 28초 |
+
 - T7 5회차와 비교: Move_Unit·Smart_Unit·Heal_Unit 오류 6(F1)과 Build_* Unit_Busy가 사라졌다.
-- 산출물(git 미추적): 메인 작업 사본 `reports/raw/t8_031_ac1/` (`ac1_run1~6.log`, 6회차 표 `openbw_actions_031_ac1.md`, 리플레이 `.rep`).
+- 산출물(git 미추적): 메인 작업 사본 `reports/raw/t8_031_ac1/` (`ac1_run1~8.log`, 8회차 표 `openbw_actions_031_ac1.md`, 리플레이 `.rep`).
 
 ### 다음 재build 목록 (shard 내용이 바뀌는 항목, 사용자 결정 2026-10-19)
 다음 전체 재build 전에 한꺼번에 결정·구현한다. 지금 shard에는 반영되지 않는다.
