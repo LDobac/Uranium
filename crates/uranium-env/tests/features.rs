@@ -312,7 +312,7 @@ proptest! {
 
     /// 031-AC2: random policy outputs are executed only when they satisfy every mask.
     #[test]
-    fn masked_actions_never_execute_031_ac2(action in 0u16..101,sel in proptest::collection::vec(0usize..80, 0..13),
+    fn masked_actions_never_execute_031_ac2(action in 0u16..action_table().actions.len() as u16, sel in proptest::collection::vec(0usize..80, 0..13),
                                             tu in proptest::option::of(0usize..80), tl in proptest::option::of(0usize..CELLS), techs: bool) {
         let (o, f, mem, map) = observe(techs);
         let w = World::new(&f, &mem, &map);
@@ -834,7 +834,7 @@ fn no_self_target_034_r9() {
 #[test]
 fn unload_unit_masks_and_executor_f7() {
     use uranium_env::features::executor::Rejected;
-    use uranium_env::features::label::{Label, host_label_check};
+    use uranium_env::features::label::{Label, LabelWalker, NOT_IN_TRANSPORT_REASON, host_label_check, unload_target_check};
     let mut b = rich_units();
     let ship2 = b.add(SELF, "Terran_Dropship", (24, 20));
     let cargo2 = b.add(SELF, "Terran_Firebat", (24, 20));
@@ -849,7 +849,7 @@ fn unload_unit_masks_and_executor_f7() {
     let ship = f.units.iter().find(|u| u.unit_type == ty("Terran_Dropship") && u.id != ship2 && u.id != empty_ship).unwrap().id;
     let cargo = f.units.iter().find(|u| u.loaded_in == Some(ship)).unwrap().id;
     let (s1, s2, se, c1, c2) = (index_of(&o, ship), index_of(&o, ship2), index_of(&o, empty_ship), index_of(&o, cargo), index_of(&o, cargo2));
-    assert!(cap_of(&o, s1, "can_unload_unit") && cap_of(&o, s2, "can_unload_unit") && !cap_of(&o, se, "can_unload_unit"));
+    assert!(cap_of(&o, s1, "is_transport_loaded") && cap_of(&o, s2, "is_transport_loaded") && !cap_of(&o, se, "is_transport_loaded"));
     assert!(cap_of(&o, c1, "loaded_unit") && cap_of(&o, c2, "loaded_unit"));
     let loaded: Vec<usize> = cap_rows(&o, "loaded_unit").collect();
     assert_eq!(loaded.len(), 2, "only own loaded units are targets: {loaded:?}");
@@ -863,7 +863,15 @@ fn unload_unit_masks_and_executor_f7() {
     // A replay label (labeler version 2: transport selected, opcode 0x29 target) is valid.
     let l = Label { frame: 0, action: unload, delay: 8, queued: false, selected: vec![ship], target_unit: Some(cargo), target_tile: None };
     let (h, why) = host_label_check(&l, &o);
-    assert_eq!((h.selected, h.target_unit, why), (vec![s1], Some(c1), None));
+    assert_eq!((h.selected.clone(), h.target_unit, why), (vec![s1], Some(c1), None));
+    assert_eq!(unload_target_check(&h, &o, &f), None);
+    // The BC label check (label walker) voids a target outside the selected transport.
+    let other = Label { target_unit: Some(cargo2), ..l };
+    let (h2, why2) = host_label_check(&other, &o);
+    assert_eq!(why2, None, "the masks only say loaded");
+    assert_eq!(unload_target_check(&h2, &o, &f), Some(NOT_IN_TRANSPORT_REASON));
+    let mut walker = LabelWalker::new(&game_info(), 0, None, false).unwrap();
+    assert_eq!(walker.step(&f, &other, None).2, Some(NOT_IN_TRANSPORT_REASON));
 }
 
 /// Action audit F12 (2026-10-19): a max_select = 1 label keeps the whole selection (labeler

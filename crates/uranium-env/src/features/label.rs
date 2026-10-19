@@ -146,6 +146,23 @@ pub fn host_label_check(l: &Label, o: &Observation) -> (HostLabel, Option<&'stat
     (h, why)
 }
 
+/// [`unload_target_check`] reason: the `Unload_Unit` target is not loaded in the selected transport.
+pub const NOT_IN_TRANSPORT_REASON: &str = "target_not_in_transport";
+
+/// `Unload_Unit` (F7, 2026-10-19): the target must be loaded in the selected transport (BWAPI
+/// `canUnload`, the executor rejects it otherwise). The masks only know "loaded", so the check
+/// reads the frame's `loaded_in`; part of the BC label check through [`LabelWalker::step`].
+pub fn unload_target_check(h: &HostLabel, o: &Observation, frame: &RawFrame) -> Option<&'static str> {
+    let a = action_table().actions.get(h.action as usize)?;
+    if a.command != "UnitUnload" {
+        return None;
+    }
+    let (Some(t), Some(&s)) = (h.target_unit, h.selected.first()) else { return None };
+    let (target, transport) = (o.entity_ids[t], o.entity_ids[s]);
+    let inside = frame.units.iter().any(|u| u.id == target && u.loaded_in == Some(transport));
+    (!inside).then_some(NOT_IN_TRANSPORT_REASON)
+}
+
 /// Unit ids of the label's (capability-filtered) selection.
 pub fn acting_ids(h: &HostLabel, o: &Observation) -> Vec<u32> {
     h.selected.iter().map(|&i| o.entity_ids[i]).collect()
@@ -168,7 +185,10 @@ impl LabelWalker {
     /// Observation of `frame`, the label as entity indices and why it is invalid (`None` = valid).
     pub fn step(&mut self, frame: &RawFrame, l: &Label, z: Option<&Strategy>) -> (Observation, HostLabel, Option<&'static str>) {
         let o = extract(frame, &mut self.mem, &self.map, z);
-        let (label, why) = host_label_check(l, &o);
+        let (label, mut why) = host_label_check(l, &o);
+        if why.is_none() {
+            why = unload_target_check(&label, &o, frame);
+        }
         self.mem.record_action(label.action, label.delay_bucket, &acting_ids(&label, &o));
         (o, label, why)
     }

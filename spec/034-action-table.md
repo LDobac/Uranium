@@ -1,6 +1,6 @@
 # 034 — Action Table
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: Attack_Pos 선택 자격 can_move, Smart_Unit 선택 자격 can_right_click_unit, can_rally 완성 조건 제거, 무력화에 메일스트롬 포함 — AMB-041-1. 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): R6 무력화 규칙을 모든 선택 자격·executor 선택에 명시(기존 규칙과 정합, B-11), R7 선택 집합에 건물이 들어가면 그 건물 1개만(E-4, SetRally max_select 12 → 1, Selected 헤드 마스크), AMB-034-1. 2026-10-19 T7 개정(사용자 결정): R8 애드온 건설 중인 건물 제외, R9 자기 대상 금지. 2026-10-19 액션 감사 개정(사용자 결정, F7): `Unload_Unit`(id 100) 추가 → 101개, 선택 자격 `can_unload_unit`·타깃 자격 `loaded_unit`, action 스키마 2)
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: Attack_Pos 선택 자격 can_move, Smart_Unit 선택 자격 can_right_click_unit, can_rally 완성 조건 제거, 무력화에 메일스트롬 포함 — AMB-041-1. 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): R6 무력화 규칙을 모든 선택 자격·executor 선택에 명시(기존 규칙과 정합, B-11), R7 선택 집합에 건물이 들어가면 그 건물 1개만(E-4, SetRally max_select 12 → 1, Selected 헤드 마스크), AMB-034-1. 2026-10-19 T7 개정(사용자 결정): R8 애드온 건설 중인 건물 제외, R9 자기 대상 금지. 2026-10-19 액션 감사 개정(사용자 결정, F7): `Unload_Unit`(id 100) 추가 → 101개, 선택 자격 `is_transport_loaded`·타깃 자격 `loaded_unit`, action 스키마 2)
 - **Related**: [030](030-observation.md), [031](031-action-space.md), [032](032-model-architecture.md), [040](040-replay-dataset.md)
 
 ## Purpose
@@ -13,7 +13,7 @@
 | ID | 요구사항 |
 |---|---|
 | 034-R1 | **MUST** 테이블은 데이터 파일 `crates/uranium-env/tables/actions.toml`로 관리한다. env(마스크 계산), model(GPU 마스크 gather), replay(역변환)가 같은 파일을 쓴다 |
-| 034-R2 | **MUST** action_type ID는 0부터 연속이고 0은 `NoOp`이다. ID를 변경하거나 재사용하려면 action 스키마 버전을 올려야 한다(032-R6). 액션 추가도 버전을 올린다: 스키마 2(2026-10-19)는 `Unload_Unit`(id 100)과 capability 클래스 2개를 끝에 더했다(K 47 → 49, feature 스키마 5). 기존 id의 의미는 같으므로 스키마 1로 만든 shard 레이블은 그대로 읽는다(040 "Shard 포맷"). 체크포인트는 버전이 다르면 읽지 않는다 |
+| 034-R2 | **MUST** action_type ID는 0부터 연속이고 0은 `NoOp`이다. ID를 변경하거나 재사용하려면 action 스키마 버전을 올려야 한다(032-R6). 액션 추가도 버전을 올린다: 스키마 2(2026-10-19)는 `Unload_Unit`(id 100)과 capability 클래스 `loaded_unit`을 끝에 더했다(K 47 → 48, feature 스키마 5). 기존 id의 의미는 같으므로 스키마 1로 만든 shard 레이블은 그대로 읽는다(040 "Shard 포맷"). 체크포인트는 버전이 다르면 읽지 않는다 |
 | 034-R3 | **MUST** `type_mask[a]`가 true인 조건은 아래 셋을 모두 만족하는 것이다. 아니면 false다. 해당 조건이 없는 항목은 자동으로 만족한 것으로 본다(vacuous true). |
 | 034-R4 | **MUST** `sel_mask = unit_cap[:, select_cap[a]] ∧ owner==self ∧ entity_mask`, `tgt_mask = unit_cap[:, target_cap[a]] ∧ entity_mask`, `loc_mask = loc_class_mask[loc_class[a]]`. 이 gather는 GPU에서 수행한다([032](032-model-architecture.md) §5) |
 | 034-R5 | **MUST** 유효한 타일이 하나도 없는 위치 클래스를 쓰는 action_type은 type_mask에서 닫는다 |
@@ -59,14 +59,14 @@ command = "UnitAttackUnit"   # 010 Command 매핑
 | 스킬(타깃) | SpiderMine_Pos, Lockdown_Unit, Nuke_Pos, Restoration_Unit, OpticalFlare_Unit, DefensiveMatrix_Unit, EMP_Pos, Irradiate_Unit, Yamato_Unit | can_cast_* (**1**) | loc / unit (클래스별) | 031-R8 |
 | 스킬(다수) | Heal_Unit | can_heal (12) | healable | |
 | 스캔 | ScannerSweep_Pos | executor `pick_building` | loc(any) | |
-| 수송 | Load_Unit, UnloadAll, UnloadAll_Pos, Unload_Unit | can_be_loaded (12) / is_transport_loaded (12) / can_unload_unit (1) | loadable_transport / – / walkable / loaded_unit | `Unload_Unit`(2026-10-19 사용자 결정, 액션 감사 F7): 선택한 수송선(드랍십·벙커)이 탑승 유닛 1기를 내린다(리플레이 opcode 0x29, BWAPI `unload(unit)`, `uses_queued = false`). 대상은 선택한 수송선 안의 유닛이어야 하는데 마스크(독립 gather)는 "탑승 중"까지만 표현하므로, 다른 수송선의 탑승 유닛이면 executor가 거부한다(031-R4). 테이블 끝(id 100)에 추가해 기존 id 0–99의 의미는 그대로다 |
+| 수송 | Load_Unit, UnloadAll, UnloadAll_Pos, Unload_Unit | can_be_loaded (12) / is_transport_loaded (12) / is_transport_loaded (1) | loadable_transport / – / walkable / loaded_unit | `Unload_Unit`(2026-10-19 사용자 결정, 액션 감사 F7): 선택한 수송선(드랍십·벙커)이 탑승 유닛 1기를 내린다(리플레이 opcode 0x29, BWAPI `unload(unit)`, `uses_queued = false`). 대상은 선택한 수송선 안의 유닛이어야 하는데 마스크(독립 gather)는 "탑승 중"까지만 표현하므로, 다른 수송선의 탑승 유닛이면 executor가 거부하고(031-R4), BC 레이블 검사도 무효(`target_not_in_transport`)로 둔다. 테이블 끝(id 100)에 추가해 기존 id 0–99의 의미는 그대로다 |
 | 건물 | Lift, Land_Pos, Land_CommandCenter_Pos, SetRally_Pos, SetRally_Unit | can_lift (1) / can_land_noncc (1) / can_land_cc (1) / can_rally (1) | – / landable_4x3 / cc_slot / any / any_unit | CC 착륙은 건설과 같은 자원 거리 규칙 적용. 건물은 1개만 선택(R7) |
 | 취소 | Cancel_Construction, Cancel_Train, Cancel_Research, Cancel_Upgrade, Cancel_Addon | can_cancel_* (1) | – | |
 
 ## capability 클래스 (`unit_cap`, K≈48)
 | 분류 | 클래스 |
 |---|---|
-| 선택 자격 | can_move, can_right_click_unit(can_move ∨ 시즈모드 탱크), can_attack, is_worker, can_be_loaded, is_transport_loaded, can_stim, can_siege, can_unsiege, can_cloak, can_decloak, can_lay_mine, can_cast_lockdown, can_cast_nuke, can_heal, can_cast_restoration, can_cast_flare, can_cast_matrix, can_cast_emp, can_cast_irradiate, can_cast_yamato, can_lift, can_land_noncc, can_land_cc, can_rally, addon_capable_{cc,factory,starport,scifac}(완성 ∧ 착지 상태 ∧ 애드온 미보유 ∧ 오른쪽 애드온 자리 2×2 비어 있음 ∧ 생산·연구 중 아님), can_cancel_{construction,train,research,upgrade,addon}, can_unload_unit(탑승 유닛이 있는 수송선(space_provided > 0), 2026-10-19) |
+| 선택 자격 | can_move, can_right_click_unit(can_move ∨ 시즈모드 탱크), can_attack, is_worker, can_be_loaded, is_transport_loaded, can_stim, can_siege, can_unsiege, can_cloak, can_decloak, can_lay_mine, can_cast_lockdown, can_cast_nuke, can_heal, can_cast_restoration, can_cast_flare, can_cast_matrix, can_cast_emp, can_cast_irradiate, can_cast_yamato, can_lift, can_land_noncc, can_land_cc, can_rally, addon_capable_{cc,factory,starport,scifac}(완성 ∧ 착지 상태 ∧ 애드온 미보유 ∧ 오른쪽 애드온 자리 2×2 비어 있음 ∧ 생산·연구 중 아님), can_cancel_{construction,train,research,upgrade,addon} (`is_transport_loaded`는 `Unload_Unit` 선택 자격도 겸한다, 2026-10-19) |
 | 타깃 자격 | attackable_enemy, any_unit(보이는 유닛 + 시야 밖이지만 한 번 본 중립 자원), own_unit, target_resource(미네랄·아군 정제소. 미네랄은 시야 밖이라도 한 번 본 것 포함), repairable(아군 기계·건물, 피해), lockdownable(적 기계, 미락다운), healable(아군 생체 지상, 피해), restorable(아군, 상태이상), flarable(적, 비건물), irradiatable(비건물), matrixable(아군), yamato_target(적), loadable_transport(아군 드랍십·벙커, 여유 공간), loaded_unit(수송선에 탑승한 아군 유닛. 자기 유닛뿐이라 시야 정보가 늘지 않는다(010-R5), 2026-10-19) |
 
 선택 자격 공통: 무력화(락다운·스테이시스·메일스트롬, OpenBW `unit_is_disabled`)된 유닛은 명령을 받지 못한다. 모든 선택 자격 클래스와 executor 선택에 적용한다(R6). `can_rally`는 완성 여부를 보지 않는다(게임과 BWAPI `canSetRallyPosition` 모두 건설 중인 생산 건물의 랠리를 받는다, 2026-10-17).
@@ -95,3 +95,6 @@ command = "UnitAttackUnit"   # 010 Command 매핑
 - 034-AC1: 테이블 로더 테스트를 통과한다. ID 연속성, 참조된 capability와 위치 클래스의 존재, Command 매핑 존재를 확인한다.
 - 034-AC2: 모든 action_type에 대해 type_mask가 true인 합성 상태에서 sel/tgt/loc 마스크가 비어 있지 않다.
 - 034-AC3: 리플레이 역변환 커버리지 ≥ 95% (031-AC3).
+
+## Risks & Open Questions
+- `Unload_Unit`(2026-10-19): 관측에는 수송선과 탑승 유닛을 잇는 feature가 없고 대상 마스크(`loaded_unit`)는 독립 gather다. 수송선이 여럿이면 정책이 다른 수송선의 탑승 유닛을 고를 수 있고, 그때 executor가 `BadTarget`으로 거부한다(RL에서 거부 건수로 관찰). 많으면 대상 마스크를 선택 결과로 다시 막는 방식(034-R9와 같은 구조) 또는 관측 feature 추가를 검토한다.

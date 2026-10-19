@@ -61,8 +61,7 @@ fn cap(name: &str) -> usize {
         "yamato_target" => 44,
         "loadable_transport" => 45,
         "can_right_click_unit" => 46,
-        "can_unload_unit" => 47,
-        "loaded_unit" => 48,
+        "loaded_unit" => 47,
         _ => panic!("capability {name}"),
     }
 }
@@ -188,11 +187,11 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     set("yamato_target", enemy && targetable);
     let free_space = t.space_provided - w.cargo.get(&u.id).copied().unwrap_or(0);
     set("loadable_transport", own && visible && done && (ty == ids.dropship || ty == ids.bunker) && free_space > 0);
-    // Unload_Unit (2026-10-19, action audit F7): a transport with cargo (BWAPI
-    // `canUnloadWithOrWithoutTarget`) unloads one own loaded unit. Cargo is own, so this never
-    // reveals anything outside own vision (010-R5). The target must sit in the selected transport;
-    // the executor checks that (031-R4), the masks only say "loaded".
-    set("can_unload_unit", commandable && t.space_provided > 0 && w.cargo.get(&u.id).copied().unwrap_or(0) > 0);
+    // Unload_Unit (2026-10-19, action audit F7): a transport with cargo (`is_transport_loaded`,
+    // BWAPI `canUnloadWithOrWithoutTarget`) unloads one own loaded unit. Cargo is own, so this
+    // never reveals anything outside own vision (010-R5). The target must sit in the selected
+    // transport; the executor and the BC label walker check that (031-R4), the masks only say
+    // "loaded".
     set("loaded_unit", own && loaded);
     c
 }

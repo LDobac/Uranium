@@ -321,7 +321,7 @@
 ### 구현(브랜치 `t9-unload-unit`, master 미반영)
 | 항목 | 내용 |
 |---|---|
-| 034 | `Unload_Unit`: 선택 `can_unload_unit`(탑승 유닛이 있는 수송선, max 1), 대상 `loaded_unit`(탑승한 아군 유닛), `UnitUnload`. 다른 수송선의 탑승 유닛이면 executor가 `BadTarget`(BWAPI `canUnload` Invalid_Parameter). action 스키마 2, feature 스키마 5(K 47 → 49, A 100 → 101) |
+| 034 | `Unload_Unit`: 선택 `is_transport_loaded`(탑승 유닛이 있는 수송선, max 1. 리뷰 뒤 같은 정의의 별도 클래스 대신 재사용), 대상 `loaded_unit`(탑승한 아군 유닛), `UnitUnload`. 다른 수송선의 탑승 유닛이면 executor가 `BadTarget`(BWAPI `canUnload` Invalid_Parameter)이고 BC 레이블 검사(`LabelWalker::step`)는 `target_not_in_transport`로 무효. action 스키마 2, feature 스키마 5(K 47 → 48, A 100 → 101) |
 | 010·011 | `CmdOrder::Unload(u32)`(마지막 variant), `PROTOCOL_VERSION` 3, shim `UR_ORD_UNLOAD` → `unload(unit)` |
 | 040 레이블러 버전 2 | 0x29 → `Unload_Unit`, order 114 → `Yamato_Unit`, 유닛 대상 order 19(TowerAttack) → `Attack_Unit`. Guard(2)·TowerGuard(18)·PickupBunker(95)·위치 대상 TowerAttack·0x2d 등은 `unknown`(action id 65535). 선택은 전체 저장 |
 | 검사·로더 | `host_label_check`: `unknown` → 사유 `unknown`, host 형태 NoOp(기억에 NoOp 기록). 자격 필터 → 자기 대상 제외 → 선택 순서 앞 `max_select`기. `select_too_many` 사유 없어짐. 040-R19 비율·040-AC7 무효 수·`label-check` `invalid`에서 `unknown` 제외(따로 `unknown`) |
@@ -330,7 +330,7 @@
 레이블러 1 shard에서 달라지는 것은 없다: 검사의 자르기는 이미 잘린 선택에 영향이 없고, `unknown`·`Unload_Unit` 레이블이 없다(테스트 `labeler_v1_v2_train_the_same_except_unknown_steps_040`, `schema5_shards_read_as_labeler_v1_040`, `resume_reads_labeler_v1_records_040_r17`).
 
 ### 표본 비교(같은 리플레이, 옛 바이너리 99eee6b vs 새 바이너리)
-리플레이 80개(stardata 40, scr_ladder 40, 정렬 앞쪽), 학습 PC, `--jobs 4` Idle, 출력·맵 사전계산·staging은 작업 사본 `job-tmp/`(공용 shards·records 미사용). 결과 동일: stardata written 30 / filtered 16, scr_ladder written 12 / filtered 30 / desync 1. 검사는 새 `uranium-train label-check`.
+리플레이 80개(stardata 40, scr_ladder 40, 정렬 앞쪽), 학습 PC, `--jobs 4` Idle, 출력·맵 사전계산·staging은 작업 사본 임시 폴더(공용 shards·records 미사용, 보존 사본은 아래 "산출물"). 표의 검사 수치는 `target_not_in_transport` 검사를 넣기 전(커밋 5e96a20)의 것이다. 결과 동일: stardata written 30 / filtered 16, scr_ladder written 12 / filtered 30 / desync 1. 검사는 새 `uranium-train label-check`.
 
 | 항목 | 옛(레이블러 1) | 새(레이블러 2) |
 |---|---|---|
@@ -348,11 +348,15 @@
 - 이 표본에는 MoveToFireYamatoGun·TowerAttack이 없어 그 매핑의 실데이터 확인은 못 했다(단위 테스트만).
 
 ### 검증
-- `cargo test --workspace --no-fail-fast`(debug, Idle `-j 2`) 통과. 031-AC1 OpenBW 실게임 시나리오(`Unload_Unit` 포함으로 확장)는 hostd·브리지 재설치가 필요해 실행하지 않았다.
+- `cargo test --workspace --no-fail-fast`(debug, Idle `-j 2`) 통과.
+- 031-AC1 OpenBW 실게임 시나리오(`Unload_Unit` 포함 101개로 확장)는 **보류**: T8(마스크·shim 수정)이 반영되고 브리지·hostd를 재빌드한 뒤 메인이 실행한다.
 - Linux 호스트에서 임시 clone으로 `tools/openbw/build_bridge.sh`(BWAPI·OpenBW는 기존 checkout을 읽기 전용 링크, 임시 CARGO_HOME·target) 빌드 성공, 경고 0. 임시 폴더 삭제.
 
 ### 남은 일
 - master 반영 뒤 모든 호스트의 브리지·hostd·에이전트 재빌드(`PROTOCOL_VERSION` 3, 옛 브리지는 010-R2로 거부). 재build를 이어 갈 장비는 새 `uranium-replay`로 바꾼다(재생 모드는 브리지 프로토콜을 검사하지 않아 옛 브리지로도 build는 된다).
 - action·feature 스키마가 바뀌어 기존 체크포인트(스모크용 무작위 체크포인트 `<URANIUM_SHARED_DIR>/checkpoints/smoke/random-lstm` 포함)는 읽히지 않는다. master 반영 뒤 `uranium-agent random-checkpoint --out <URANIUM_SHARED_DIR>/checkpoints/smoke/random-lstm`로 다시 만든다.
 - 결정(2026-10-19 사용자 확정): `unknown` 레이블은 040-R19 비율과 040-AC7 무효 집계에서 뺀다(레이블러 1 시점과 판정 기준을 같게). spec 040-R19에 반영.
-- 표본 출력은 작업 사본 `job-tmp/`(build-old·build-new·stats-*.json·lc-*.json)에 있다(worktree 정리 시 함께 삭제됨).
+- `unknown` 스텝은 가중치 0이므로 value 손실(스텝 가중치 × 게임 value 가중치)에서도 빠진다(spec 040-R11에 명시).
+
+### 산출물
+- `<URANIUM_SHARED_DIR>/artifacts/m6_action_audit/t9_sample/`: `build-old`·`build-new`(shards·records·maps·로그), `stats-{old,new}-{stardata,scr_ladder}.json`(`shard-stats`), `lc-{old,new}.json`(`label-check`), `sample_build.ps1`, `summarize.py`(약 80MB).
