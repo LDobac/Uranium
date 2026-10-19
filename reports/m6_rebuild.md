@@ -284,3 +284,44 @@
 - 처리량은 학습 PC 약 29분/파트, Linux 호스트 A·B 약 55분/파트다. 합쳐서 약 14분/파트다.
 - 남은 74파트 중 stardata가 약 62개다. community·personal은 중복 제외가 많아 빠르다.
 - 완료는 약 15–16시간 뒤인 10-20 오전 9–10시경으로 예상한다.
+
+## R-4 재개 (2026-10-20 00:10경, 바이너리 master aa187b2)
+
+### 배경
+- 10-19 밤 액션 감사 F7·F12 수정(T9, 레이블러 2, shard schema 6, `Unload_Unit`)을 기다리려고 아직 시작하지 않은 50파트를 보류했다.
+  - 보류 방법: claim 파일 내용을 `hold-f7f12`로 만들어 두었다. 목록은 `<shared>/datasets/replays/build/held_f7f12.txt`.
+  - 네 장비 큐는 진행 중이던 파트를 끝내고 `queue empty`로 멈췄다(마지막 22:02–23:05).
+- 사용자 결정(2026-10-20): 남은 마스크·브리지 수정을 기다리지 않고 지금 재개한다.
+- 결과적으로 재build는 두 레이블러가 섞인다(040 "Shard 포맷", schema 5는 레이블러 1로 읽음).
+  - 옛 레이블러(d452c29, schema 5) 27파트: scr_ladder p0, stardata p00–p25
+  - 새 레이블러(aa187b2, schema 6, 레이블러 2) 50파트: stardata p26–p63 38개, community 11개(synnaeve_gosu 8, iccup_users 2, osu_pvt 1), personal 1개
+
+### 재빌드
+| 장비 | 내용 | uranium-replay / 브리지 sha256(앞 8자리) |
+|---|---|---|
+| 학습 PC | `build_bridge.ps1` → `cargo build --release -p uranium-replay` | 로컬 앱 데이터 `uranium-build/aa187b2/` |
+| Linux 호스트 A·B | `git pull --ff-only` → `cargo build --release -p uranium-bridge-openbw -p uranium-replay` → 브리지 cmake를 별도 폴더 `bridge/openbw/build-aa187b2`로 빌드 | 11a5fce7 / 884a7a14(두 장비 같음) |
+| Linux 호스트 C | 저장소 `git pull --ff-only`, 새 소스 worktree `~/uranium-build/src-aa187b2`(OpenBW·BWAPI 빌드 결과는 src-d452c29에서 복사) → `build_bridge.sh` → `cargo build --release -p uranium-replay` | ed85d088 / 15a71297 |
+
+- 실행 파일은 각 장비 `uranium-build/aa187b2/`에 복사했다(d452c29와 같은 방식).
+- Linux 호스트 A·B는 hostd가 저장소의 `bridge/openbw/build/liburanium_bridge.so`(PROTOCOL 2)를 쓴다. 이 파일을 덮어쓰지 않으려고 브리지를 별도 cmake 폴더로 빌드했다. hostd는 재시작하지 않았다. PROTOCOL 3 hostd·agent 재배포는 남은 실게임 쪽 수정 뒤에 한다.
+
+### 표본 확인
+- 학습 PC에서 scr_ladder 리플레이 3개를 새 바이너리로 build했다(출력은 작업 tmp, 공용 shards·records 아님, `--jobs 3`, 8.6초).
+- 결과: written 2시점(1리플레이), filtered 2(제외 맵 1, APM 1), error 0
+- records 전부 `labeler_version: 2`, unknown 0
+- `shard-stats`: `labeler_versions`가 2만 있음(schema 6 헤더)
+
+### 재개
+- `held_f7f12.txt`의 50개 claim을 내용이 `hold-f7f12`인 것만 지웠다(50개 모두 해당). 다른 claim·done 파일은 그대로다.
+- 네 장비 큐를 이전과 같은 이름·jobs로 다시 띄웠다(학습 PC 12, Linux 8).
+
+  | 장비 | 첫 파트 |
+  |---|---|
+  | 학습 PC | stardata_p29 |
+  | Linux 호스트 A | stardata_p26 |
+  | Linux 호스트 B | stardata_p27 |
+  | Linux 호스트 C | stardata_p28 |
+
+- 시작 직후 네 파트의 records 줄은 모두 `labeler_version: 2`이고 error는 0이다.
+- 예상 완료: 네 장비 합쳐 약 12분/파트, 50파트 → 약 10시간, 10-20 오전 10시경
