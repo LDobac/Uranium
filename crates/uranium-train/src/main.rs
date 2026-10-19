@@ -455,7 +455,10 @@ fn main() -> Result<()> {
                     break;
                 }
             }
-            let invalid: usize = st.fails.values().sum();
+            // 031-AC3 `unknown` steps (labeler version 2) are weight 0 but not invalid labels
+            // (040-R19, 040-AC7): reported on their own.
+            let unknown = st.totals.get("Unknown").copied().unwrap_or(0);
+            let invalid: usize = st.fails.iter().filter(|((_, w), _)| *w != uranium_train::data::UNKNOWN_REASON).map(|(_, c)| c).sum();
             let mut rows: Vec<_> = st
                 .fails
                 .iter()
@@ -466,11 +469,11 @@ fn main() -> Result<()> {
             detail.sort_by(|x, y| y.1.cmp(&x.1));
             let mut type_detail: Vec<_> = st.type_detail.into_iter().collect();
             type_detail.sort_by(|x, y| y.1.cmp(&x.1));
-            let labels: usize = st.totals.values().sum();
+            let labels: usize = st.totals.values().sum::<usize>() - unknown;
             println!(
                 "{}",
                 serde_json::to_string_pretty(
-                    &serde_json::json!({ "games": n, "labels": labels, "invalid": invalid, "by_action_reason": rows, "select_cap_types": detail, "type_mask_prereq": type_detail })
+                    &serde_json::json!({ "games": n, "labels": labels, "invalid": invalid, "unknown": unknown, "by_action_reason": rows, "select_cap_types": detail, "type_mask_prereq": type_detail })
                 )?
             );
             Ok(())

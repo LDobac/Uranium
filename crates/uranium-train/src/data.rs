@@ -647,7 +647,7 @@ pub fn replay_z(game: &ShardGame) -> Strategy {
 
 /// Label conversion and check: one implementation in `uranium-env`, shared with the replay build
 /// (040-R19 invalid-label filter).
-pub use uranium_env::features::label::{acting_ids, host_label, host_label_check};
+pub use uranium_env::features::label::{UNKNOWN_REASON, acting_ids, host_label, host_label_check};
 
 /// Label diagnostics (034-AC3): labels failing `host_label_check` per (action, reason), labels per
 /// action, and for `select_cap` failures the unit types in the selection that lack the capability.
@@ -718,8 +718,9 @@ pub fn label_check(game: &ShardGame, st: &mut LabelStats, maps: &MapStore) -> Re
     let mut prev: Option<&uranium_proto::PlayerState> = None;
     for s in &game.steps {
         let (o, label, why) = walker.step(&s.raw_frame, &s.action_label, None);
-        let a = action_table().actions.get(label.action as usize);
-        let name = a.map_or_else(|| format!("#{}", label.action), |a| a.name.clone());
+        // 031-AC3 `unknown` steps (labeler version 2) are counted under their own name.
+        let a = action_table().actions.get(label.action as usize).filter(|_| !s.action_label.is_unknown());
+        let name = if s.action_label.is_unknown() { "Unknown".to_string() } else { a.map_or_else(|| format!("#{}", label.action), |a| a.name.clone()) };
         *st.totals.entry(name.clone()).or_default() += 1;
         if let Some(a) = a.filter(|a| a.uses_select && matches!(why, None | Some("select_cap"))) {
             let c = CAPABILITIES.iter().position(|c| *c == a.select_cap).unwrap();
@@ -898,7 +899,9 @@ impl GameStream {
             // the units that act on the command (041-R11); `LabelWalker::step` records it.
             let (o, mut label, why) = self.walker.step(&s.raw_frame, &s.action_label, self.z.as_ref());
             let ok = why.is_none();
-            invalid += !ok as usize;
+            // 040-AC7: `invalid` counts what the 040-R19 filter counts; 031-AC3 `unknown` steps
+            // (labeler version 2) are weight 0 too but not invalid labels.
+            invalid += (!ok && why != Some(UNKNOWN_REASON)) as usize;
             let o = if self.sym == Sym::IDENTITY {
                 o
             } else {

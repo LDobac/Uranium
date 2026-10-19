@@ -151,6 +151,8 @@ pub struct Record {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recorded_winner: Option<&'static str>,
     pub view: Option<View>,
+    /// `label::LABELER_VERSION` of this build (2026-10-19); records without it are version 1.
+    pub labeler_version: u32,
     #[serde(flatten)]
     pub outcome: Outcome,
 }
@@ -435,6 +437,7 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
             map_hash: map_hash_cell.borrow().clone(),
             recorded_winner: *recorded_cell.borrow(),
             view,
+            labeler_version: crate::label::LABELER_VERSION,
             outcome,
         };
         (r, None)
@@ -571,7 +574,7 @@ mod tests {
 
     fn written_record(n: u32) -> Record {
         let coverage = Coverage::default();
-        Record { index: n as usize, replay_sha256: format!("{n:064x}"), src: "t".into(), map_family: "other".into(), map_name: String::new(), map_hash: String::new(), recorded_winner: None, view: None, outcome: Outcome::Written { steps: 3, coverage, result: 0, result_source: "none".into() } }
+        Record { index: n as usize, replay_sha256: format!("{n:064x}"), src: "t".into(), map_family: "other".into(), map_name: String::new(), map_hash: String::new(), recorded_winner: None, view: None, labeler_version: crate::label::LABELER_VERSION, outcome: Outcome::Written { steps: 3, coverage, result: 0, result_source: "none".into() } }
     }
 
     /// 040-R17 (review M1): a shard whose copy fails verification stops the build. Its records
@@ -644,6 +647,24 @@ mod tests {
         whole.add_line(&serde_json::to_string(&Record { outcome: Outcome::Filtered { reason: "shorter than 5 minutes".into() }, ..written_record(9) }).unwrap());
         assert!(whole.replay_done(&format!("{:064x}", 9)));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 2026-10-19 (labeler version 2 mid-rebuild): records of the labeler-1 binary (no
+    /// `labeler_version` field) resume exactly as before: the same perspectives and replays are
+    /// done, nothing is built twice; new records carry version 2.
+    #[test]
+    fn resume_reads_labeler_v1_records_040_r17() {
+        let sha = "cd".repeat(32);
+        let v1_written = format!(r#"{{"index":3,"replay_sha256":"{sha}","src":"t","map_family":"other","map_name":"m","map_hash":"h","view":{{"perspective":1,"stage":"S1","apm":200,"matchup":"TvZ","enemy_random":false}},"outcome":"written","steps":10,"coverage":{{"commands":5,"labeled":5,"unknown":0,"unknown_ops":[],"unknown_orders":[]}},"result":1,"result_source":"bridge"}}"#);
+        let v1_whole = format!(r#"{{"index":4,"replay_sha256":"{}","src":"t","map_family":"other","map_name":"","map_hash":"","view":null,"outcome":"filtered","reason":"shorter than 5 minutes"}}"#, "ef".repeat(32));
+        let mut done = ResumeDone::default();
+        done.add_line(&v1_written);
+        done.add_line(&v1_whole);
+        let view = |p: u8| View { perspective: p, stage: "S1", apm: 200, matchup: "TvZ".into(), enemy_random: false };
+        assert_eq!(done.remaining(&sha, vec![view(0), view(1)]).iter().map(|v| v.perspective).collect::<Vec<_>>(), vec![0]);
+        assert!(done.replay_done(&"ef".repeat(32)));
+        let v: serde_json::Value = serde_json::to_value(written_record(1)).unwrap();
+        assert_eq!(v["labeler_version"], crate::label::LABELER_VERSION);
     }
 
     #[test]

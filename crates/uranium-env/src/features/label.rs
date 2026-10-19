@@ -30,6 +30,20 @@ pub struct Label {
     pub target_tile: Option<(u16, u16)>,
 }
 
+/// `Label::action` of a game-affecting human command without a 034 action (031-AC3, 2026-10-19
+/// user decision, action audit F7): the step is kept with its delay but never learned (reason
+/// [`UNKNOWN_REASON`], BC weight 0). Labeler version 2 only; version 1 filled that time with NoOp.
+pub const UNKNOWN_ACTION: u16 = u16::MAX;
+/// [`host_label_check`] reason of an [`UNKNOWN_ACTION`] label.
+pub const UNKNOWN_REASON: &str = "unknown";
+
+impl Label {
+    /// 031-AC3: a command without a 034 action (labeler version 2).
+    pub fn is_unknown(&self) -> bool {
+        self.action == UNKNOWN_ACTION
+    }
+}
+
 /// Host form of one action label / sample (entity indices into that step's observation).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostLabel {
@@ -60,14 +74,27 @@ pub fn host_label(l: &Label, o: &Observation) -> (HostLabel, bool) {
 /// `host_label` with the first failing check (label diagnostics, 034-AC3). A label is invalid
 /// (BC weight 0, 040-R19) exactly when this returns a reason.
 pub fn host_label_check(l: &Label, o: &Observation) -> (HostLabel, Option<&'static str>) {
+    // 031-AC3 (F7): a command without a 034 action is a step of its own that is never learned;
+    // the host form is a NoOp with the label's delay (what agent memory records, as the NoOp
+    // steps of labeler version 1 did) and the reason makes its BC weight 0.
+    if l.is_unknown() {
+        return (HostLabel { action: 0, delay_bucket: bucket_index(l.delay), queued: false, selected: vec![], target_unit: None, target_loc: None }, Some(UNKNOWN_REASON));
+    }
     let index: HashMap<u32, usize> = o.entity_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
-    let mut selected: Vec<usize> = l.selected.iter().filter_map(|id| index.get(id).copied()).collect();
-    selected.sort_unstable();
-    selected.dedup();
+    // Selection order of the label (the human's selection order) until the max_select cut below.
+    let mut selected: Vec<usize> = Vec::with_capacity(l.selected.len());
+    for i in l.selected.iter().filter_map(|id| index.get(id).copied()) {
+        if !selected.contains(&i) {
+            selected.push(i);
+        }
+    }
     let target_unit = l.target_unit.and_then(|id| index.get(&id).copied());
     let target_loc = l.target_tile.map(|(x, y)| y as usize * MAP + x as usize);
     let mut h = HostLabel { action: l.action, delay_bucket: bucket_index(l.delay), queued: l.queued, selected, target_unit, target_loc };
-    let Some(a) = action_table().actions.get(l.action as usize) else { return (h, Some("unknown_action")) };
+    let Some(a) = action_table().actions.get(l.action as usize) else {
+        h.selected.sort_unstable();
+        return (h, Some("unknown_action"));
+    };
     let k = CAPABILITIES.len();
     let cap = |i: usize, name: &str| o.masks.unit_cap[i * k + CAPABILITIES.iter().position(|c| *c == name).unwrap()];
     let visible = h.selected.len();
@@ -83,7 +110,14 @@ pub fn host_label_check(l: &Label, o: &Observation) -> (HostLabel, Option<&'stat
             h.selected.retain(|&i| i != t);
         }
         self_only = capable && h.selected.is_empty();
+        // F12 (2026-10-19 user decision): the label holds the whole human selection (labeler
+        // version 2); eligibility is filtered first, then the first `max_select` eligible units
+        // in selection order act (a mine order with the first vulture out of mines is laid by the
+        // next vulture that has one). Version-1 labels are already cut to `max_select`, so this
+        // changes nothing for them.
+        h.selected.truncate(a.max_select as usize);
     }
+    h.selected.sort_unstable();
     let why = if !o.masks.type_mask[a.id as usize] {
         Some("type_mask")
     } else if a.uses_select && visible == 0 {
@@ -94,8 +128,6 @@ pub fn host_label_check(l: &Label, o: &Observation) -> (HostLabel, Option<&'stat
         Some("target_selected")
     } else if a.uses_select && h.selected.is_empty() {
         Some("select_cap")
-    } else if a.uses_select && h.selected.len() > a.max_select as usize {
-        Some("select_too_many")
     } else if a.uses_select && h.selected.len() > 1 && h.selected.iter().any(|&i| o.masks.is_building[i]) {
         // 034-R7 / E-4: the game never multi-selects a building (040-R3 ①); such a label cannot
         // come from a valid replay and is void like any other mask violation.
@@ -149,6 +181,9 @@ pub struct LabelValidity {
     pub labeled: usize,
     pub invalid: usize,
     pub by_reason: BTreeMap<&'static str, usize>,
+    /// 031-AC3 `unknown` steps (labeler version 2): weight 0 in BC but neither labeled nor
+    /// invalid here, so the 040-R19 ratio means the same for labeler versions 1 and 2.
+    pub unknown: usize,
 }
 
 impl LabelValidity {
@@ -176,6 +211,10 @@ pub fn label_validity<'a>(info: &GameInfo, map_family: i32, pre: Option<&MapPrec
     let mut v = LabelValidity::default();
     for (frame, l) in steps {
         let (_, _, why) = w.step(frame, l, None);
+        if why == Some(UNKNOWN_REASON) {
+            v.unknown += 1;
+            continue;
+        }
         v.labeled += 1;
         if let Some(r) = why {
             v.invalid += 1;

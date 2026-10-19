@@ -312,7 +312,7 @@ proptest! {
 
     /// 031-AC2: random policy outputs are executed only when they satisfy every mask.
     #[test]
-    fn masked_actions_never_execute_031_ac2(action in 0u16..100, sel in proptest::collection::vec(0usize..80, 0..13),
+    fn masked_actions_never_execute_031_ac2(action in 0u16..101,sel in proptest::collection::vec(0usize..80, 0..13),
                                             tu in proptest::option::of(0usize..80), tl in proptest::option::of(0usize..CELLS), techs: bool) {
         let (o, f, mem, map) = observe(techs);
         let w = World::new(&f, &mem, &map);
@@ -826,4 +826,87 @@ fn no_self_target_034_r9() {
     let rally = action_table().by_name("SetRally_Unit").unwrap().id;
     let l = Label { frame: 0, action: rally, delay: 8, queued: false, selected: vec![rax], target_unit: Some(rax), target_tile: None };
     assert_eq!(host_label_check(&l, &o).1, None);
+}
+
+/// Action audit F7 (2026-10-19): `Unload_Unit` selects a transport with cargo and targets an own
+/// loaded unit; the executor only sends it for a unit in the selected transport (031-R4, BWAPI
+/// `canUnload`) and the protocol carries `CmdOrder::Unload`.
+#[test]
+fn unload_unit_masks_and_executor_f7() {
+    use uranium_env::features::executor::Rejected;
+    use uranium_env::features::label::{Label, host_label_check};
+    let mut b = rich_units();
+    let ship2 = b.add(SELF, "Terran_Dropship", (24, 20));
+    let cargo2 = b.add(SELF, "Terran_Firebat", (24, 20));
+    b.get(cargo2).loaded_in = Some(ship2);
+    b.get(cargo2).flags |= uranium_proto::flags::LOADED;
+    let empty_ship = b.add(SELF, "Terran_Dropship", (26, 20));
+    let f = frame(100, b.units.clone(), true);
+    let map = map_info();
+    let mut mem = AgentMemory::new(&game_info());
+    let o = extract(&f, &mut mem, &map, None);
+    let w = World::new(&f, &mem, &map);
+    let ship = f.units.iter().find(|u| u.unit_type == ty("Terran_Dropship") && u.id != ship2 && u.id != empty_ship).unwrap().id;
+    let cargo = f.units.iter().find(|u| u.loaded_in == Some(ship)).unwrap().id;
+    let (s1, s2, se, c1, c2) = (index_of(&o, ship), index_of(&o, ship2), index_of(&o, empty_ship), index_of(&o, cargo), index_of(&o, cargo2));
+    assert!(cap_of(&o, s1, "can_unload_unit") && cap_of(&o, s2, "can_unload_unit") && !cap_of(&o, se, "can_unload_unit"));
+    assert!(cap_of(&o, c1, "loaded_unit") && cap_of(&o, c2, "loaded_unit"));
+    let loaded: Vec<usize> = cap_rows(&o, "loaded_unit").collect();
+    assert_eq!(loaded.len(), 2, "only own loaded units are targets: {loaded:?}");
+    let unload = action_table().by_name("Unload_Unit").unwrap().id;
+    assert!(o.masks.type_mask[unload as usize]);
+    let out = execute(&w, &o, &host("Unload_Unit", vec![s1], Some(c1), None)).unwrap();
+    assert_eq!(out.commands, vec![Command::Unit { units: vec![ship], order: uranium_proto::CmdOrder::Unload(cargo), queued: false }]);
+    // Cargo of another transport: the game (BWAPI) refuses, so the executor does too.
+    assert_eq!(execute(&w, &o, &host("Unload_Unit", vec![s1], Some(c2), None)), Err(Rejected::BadTarget));
+    assert_eq!(execute(&w, &o, &host("Unload_Unit", vec![se], Some(c1), None)), Err(Rejected::BadSelection));
+    // A replay label (labeler version 2: transport selected, opcode 0x29 target) is valid.
+    let l = Label { frame: 0, action: unload, delay: 8, queued: false, selected: vec![ship], target_unit: Some(cargo), target_tile: None };
+    let (h, why) = host_label_check(&l, &o);
+    assert_eq!((h.selected, h.target_unit, why), (vec![s1], Some(c1), None));
+}
+
+/// Action audit F12 (2026-10-19): a max_select = 1 label keeps the whole selection (labeler
+/// version 2); the check filters eligibility first and then keeps the first eligible unit, so a
+/// mine order whose first vulture has no mines is laid by the next one. A version-1 label (cut
+/// to the first unit by the labeler) stays as before.
+#[test]
+fn max_select_one_picks_first_eligible_f12() {
+    use uranium_env::features::label::{Label, host_label_check};
+    let mut b = rich_units();
+    let empty = b.add(SELF, "Terran_Vulture", (30, 30));
+    let armed = b.add(SELF, "Terran_Vulture", (30, 31));
+    b.get(armed).spider_mines = 2;
+    let armed2 = b.add(SELF, "Terran_Vulture", (30, 32));
+    b.get(armed2).spider_mines = 1;
+    let f = frame(100, b.units.clone(), true);
+    let map = map_info();
+    let mut mem = AgentMemory::new(&game_info());
+    let o = extract(&f, &mut mem, &map, None);
+    let mine = action_table().by_name("SpiderMine_Pos").unwrap().id;
+    let label = |selected: Vec<u32>| Label { frame: 0, action: mine, delay: 8, queued: false, selected, target_unit: None, target_tile: Some((31, 30)) };
+    // Version 2: whole selection, first eligible in selection order (not entity order).
+    let (h, why) = host_label_check(&label(vec![empty, armed2, armed]), &o);
+    assert_eq!((h.selected, why), (vec![index_of(&o, armed2)], None));
+    // Version 1: the labeler kept only the first unit; out of mines -> void, as before.
+    assert_eq!(host_label_check(&label(vec![empty]), &o).1, Some("select_cap"));
+    assert_eq!(host_label_check(&label(vec![armed]), &o).0.selected, vec![index_of(&o, armed)]);
+    // A max_select = 12 action is unaffected (v1 and v2 store the same selection).
+    let mv = action_table().by_name("Move_Pos").unwrap().id;
+    let l = Label { action: mv, ..label(vec![empty, armed, armed2]) };
+    let mut all = vec![index_of(&o, empty), index_of(&o, armed), index_of(&o, armed2)];
+    all.sort_unstable();
+    assert_eq!(host_label_check(&l, &o), (uranium_env::features::label::HostLabel { action: mv, delay_bucket: uranium_env::features::label::bucket_index(8), queued: false, selected: all, target_unit: None, target_loc: Some(30 * MAP + 31) }, None));
+}
+
+/// 031-AC3 (F7, 2026-10-19): a command without a 034 action is a label of its own with reason
+/// `unknown` (BC weight 0); its host form is a NoOp with the label's delay.
+#[test]
+fn unknown_label_has_weight_zero_031_ac3() {
+    use uranium_env::features::label::{Label, UNKNOWN_ACTION, UNKNOWN_REASON, bucket_index, host_label_check};
+    let (o, ..) = observe(true);
+    let l = Label { frame: 0, action: UNKNOWN_ACTION, delay: 12, queued: true, selected: vec![1, 2], target_unit: Some(3), target_tile: Some((1, 1)) };
+    let (h, why) = host_label_check(&l, &o);
+    assert_eq!(why, Some(UNKNOWN_REASON));
+    assert_eq!((h.action, h.delay_bucket, h.selected.len(), h.target_unit, h.target_loc), (0, bucket_index(12), 0, None, None));
 }

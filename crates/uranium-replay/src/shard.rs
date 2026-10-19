@@ -17,7 +17,14 @@ use crate::label::Label;
 /// 2026-10-17); rebuild 3.
 /// 5: `result_source` and `enemy_random` in the meta, no spam merging (040-R4), game-start first
 /// step (040-R18) (2026-10-19, full rebuild G-D1); older shards are refused.
-pub const SCHEMA_VERSION: u32 = 5;
+/// 6: the header carries `labeler_version` (2026-10-19 user decision, action audit F7 / F12).
+/// Schema 5 differs only in the header and is still read, as labeler version 1, because the
+/// full rebuild G-D1 is part schema 5 and part schema 6 (040 "Shard 포맷").
+pub const SCHEMA_VERSION: u32 = 6;
+/// Oldest schema [`read`] accepts.
+pub const MIN_SCHEMA_VERSION: u32 = 5;
+/// Labeler version of schema-5 shards (040 "Shard 포맷").
+pub const SCHEMA5_LABELER_VERSION: u32 = 1;
 /// Features are not stored (040-R12).
 pub const FEATURE_VERSION: u32 = 0;
 const ZSTD_LEVEL: i32 = 3;
@@ -47,12 +54,33 @@ pub struct ShardHeader {
     pub schema_version: u32,
     pub feature_version: u32,
     pub action_version: u32,
+    /// `label::LABELER_VERSION` the labels were made with (schema 6); 1 for schema-5 shards.
+    pub labeler_version: u32,
 }
 
 impl Default for ShardHeader {
     fn default() -> Self {
-        Self { schema_version: SCHEMA_VERSION, feature_version: FEATURE_VERSION, action_version: uranium_env::actions::ACTION_SCHEMA_VERSION }
+        Self {
+            schema_version: SCHEMA_VERSION,
+            feature_version: FEATURE_VERSION,
+            action_version: uranium_env::actions::ACTION_SCHEMA_VERSION,
+            labeler_version: crate::label::LABELER_VERSION,
+        }
     }
+}
+
+/// Schema-5 header (no labeler version); games are laid out as in schema 6.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+struct ShardHeaderV5 {
+    schema_version: u32,
+    feature_version: u32,
+    action_version: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ShardV5 {
+    header: ShardHeaderV5,
+    games: Vec<ShardGame>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -118,12 +146,25 @@ pub fn write(path: &Path, shard: &Shard) -> Result<u64> {
     Ok(packed.len() as u64)
 }
 
+/// Reads a shard of schema 6, or of schema 5 as labeler version 1 (040 "Shard 포맷": the G-D1
+/// rebuild mixes both). Older schemas are refused.
 pub fn read(path: &Path) -> Result<Shard> {
     let packed = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let bytes = zstd::decode_all(packed.as_slice())?;
-    let shard: Shard = postcard::from_bytes(&bytes).context("decoding shard")?;
-    ensure!(shard.header.schema_version == SCHEMA_VERSION, "shard schema {} != {SCHEMA_VERSION}", shard.header.schema_version);
-    Ok(shard)
+    decode(&bytes)
+}
+
+fn decode(bytes: &[u8]) -> Result<Shard> {
+    // The schema version is the first field of every header version.
+    let (schema, _) = postcard::take_from_bytes::<u32>(bytes).context("decoding shard header")?;
+    ensure!((MIN_SCHEMA_VERSION..=SCHEMA_VERSION).contains(&schema), "shard schema {schema} != {SCHEMA_VERSION} (schema {MIN_SCHEMA_VERSION} is also read)");
+    if schema == 5 {
+        let s: ShardV5 = postcard::from_bytes(bytes).context("decoding schema-5 shard")?;
+        let h = s.header;
+        let header = ShardHeader { schema_version: h.schema_version, feature_version: h.feature_version, action_version: h.action_version, labeler_version: SCHEMA5_LABELER_VERSION };
+        return Ok(Shard { header, games: s.games });
+    }
+    postcard::from_bytes(bytes).context("decoding shard")
 }
 
 /// `<path>.tmp`: the name a shard has while it is copied (040-R17).
@@ -334,7 +375,25 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Schema 5: shards of an older schema are refused (040 "Shard 포맷").
+    /// Schema 6 (2026-10-19): schema-5 shards of the same rebuild are still read, as labeler
+    /// version 1, with their games unchanged (040 "Shard 포맷").
+    #[test]
+    fn schema5_shards_read_as_labeler_v1_040() {
+        let dir = tmp_dir("schema5");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("shard_00000.bin.zst");
+        let v5 = ShardV5 { header: ShardHeaderV5 { schema_version: 5, feature_version: 0, action_version: 1 }, games: vec![game(1), game(2)] };
+        std::fs::write(&p, zstd::encode_all(postcard::to_stdvec(&v5).unwrap().as_slice(), 3).unwrap()).unwrap();
+        let s = read(&p).unwrap();
+        assert_eq!(s.header, ShardHeader { schema_version: 5, feature_version: 0, action_version: 1, labeler_version: SCHEMA5_LABELER_VERSION });
+        assert_eq!(s.games, vec![game(1), game(2)]);
+        // New shards carry the current labeler version.
+        write(&p, &Shard { header: ShardHeader::default(), games: vec![game(3)] }).unwrap();
+        assert_eq!(read(&p).unwrap().header.labeler_version, crate::label::LABELER_VERSION);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Schemas older than 5 are refused (040 "Shard 포맷").
     #[test]
     fn old_schema_is_refused_040() {
         let dir = tmp_dir("schema");

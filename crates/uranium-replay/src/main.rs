@@ -516,9 +516,22 @@ fn shard_stats(dir: &Path) -> Result<serde_json::Value> {
     let mut families = BTreeMap::<String, usize>::new();
     let mut result_sources = BTreeMap::<String, usize>::new();
     let (mut is_enemy_violations, mut enemy_random, mut not_game_start) = (0usize, 0usize, 0usize);
+    // 2026-10-19: labeler version -> shards, games, steps, unknown labels, Unload_Unit labels,
+    // labels whose selection is longer than the action's max_select (F12, version 2 only).
+    let mut by_labeler = BTreeMap::<u32, [usize; 6]>::new();
+    let unload = table.by_name("Unload_Unit").map(|a| a.id);
     for f in &files {
         let shard = uranium_replay::shard::read(f)?;
+        let lv = by_labeler.entry(shard.header.labeler_version).or_default();
+        lv[0] += 1;
         for g in &shard.games {
+            lv[1] += 1;
+            lv[2] += g.steps.len();
+            for l in g.steps.iter().map(|s| &s.action_label) {
+                lv[3] += usize::from(l.is_unknown());
+                lv[4] += usize::from(Some(l.action) == unload);
+                lv[5] += usize::from(table.actions.get(l.action as usize).is_some_and(|a| l.selected.len() > a.max_select as usize));
+            }
             games += 1;
             *matchups.entry(g.meta.matchup.clone()).or_default() += 1;
             *families.entry(g.meta.map_family.clone()).or_default() += 1;
@@ -556,13 +569,18 @@ fn shard_stats(dir: &Path) -> Result<serde_json::Value> {
             }
         }
     }
-    let name = |id: u16| table.actions.get(id as usize).map_or_else(|| format!("#{id}"), |a| a.name.clone());
+    let name = |id: u16| if id == uranium_replay::label::UNKNOWN_ACTION { "Unknown".to_string() } else { table.actions.get(id as usize).map_or_else(|| format!("#{id}"), |a| a.name.clone()) };
+    let labeler: serde_json::Map<String, serde_json::Value> = by_labeler
+        .iter()
+        .map(|(v, n)| (v.to_string(), serde_json::json!({ "shards": n[0], "games": n[1], "steps": n[2], "unknown": n[3], "unload_unit": n[4], "selected_over_max": n[5] })))
+        .collect();
     let mut by_count: Vec<(String, usize)> = actions.iter().map(|(&a, &n)| (name(a), n)).collect();
     by_count.sort_by(|a, b| b.1.cmp(&a.1));
     let unseen: Vec<String> = table.actions.iter().filter(|a| !actions.contains_key(&a.id)).map(|a| a.name.clone()).collect();
     let pct = |n: usize| if steps == 0 { 0.0 } else { (n as f64 * 10000.0 / steps as f64).round() / 100.0 };
     Ok(serde_json::json!({
         "shards": files.len(), "games": games, "steps": steps,
+        "labeler_versions": labeler,
         "game_info_bad": bad_game_info,
         "is_enemy_violations": is_enemy_violations,
         "result_sources": result_sources, "enemy_random": enemy_random,

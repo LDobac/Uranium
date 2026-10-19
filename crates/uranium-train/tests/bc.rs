@@ -241,6 +241,32 @@ fn build_label_check_matches_training_040_r19() {
     }
 }
 
+/// Labeler versions 1 and 2 in one dataset (2026-10-19, 040 "Shard 포맷"): a version-2 game whose
+/// NoOp step is an unknown command instead (031-AC3, F7) trains the same as the version-1 game
+/// everywhere else: identical observations (agent memory records the unknown step as the NoOp
+/// version 1 had), labels and weights; the unknown step is weight 0 but not an invalid label
+/// (040-R19 / 040-AC7 count the same), and the build filter does not count it.
+#[test]
+fn labeler_v1_v2_train_the_same_except_unknown_steps_040() {
+    use uranium_env::features::label::{UNKNOWN_ACTION, label_validity};
+    let v1 = game();
+    let mut v2 = game();
+    let k = v2.steps.iter().position(|s| s.action_label.action == 0).unwrap();
+    v2.steps[k].action_label.action = UNKNOWN_ACTION;
+    for sym in [Sym::IDENTITY, Sym::all()[1]] {
+        let a = prepare(&v1, true, sym, &MapStore::synthetic()).unwrap();
+        let b = prepare(&v2, true, sym, &MapStore::synthetic()).unwrap();
+        assert_eq!(a.invalid_labels, b.invalid_labels, "{sym:?}");
+        for (i, (x, y)) in a.steps.iter().zip(&b.steps).enumerate() {
+            assert_eq!(x.obs, y.obs, "{sym:?} step {i}: observation");
+            assert_eq!(x.label, y.label, "{sym:?} step {i}: host label");
+            assert_eq!((x.weight, y.weight), if i == k { (1.0, 0.0) } else { (x.weight, x.weight) }, "{sym:?} step {i}: weight");
+        }
+    }
+    let v = label_validity(&v2.game_info, 2, None, false, v2.steps.iter().map(|s| (&s.raw_frame, &s.action_label))).unwrap();
+    assert_eq!((v.labeled, v.invalid, v.unknown), (v1.steps.len() - 1, 0, 1));
+}
+
 fn tiny_cfg() -> UraniumNetConfig {
     UraniumNetConfig::new()
         .with_input(input_dims())

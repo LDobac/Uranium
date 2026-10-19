@@ -22,6 +22,16 @@ pub const GAME_START_FRAME: u32 = 1;
 
 pub const ORDERS_TOML: &str = include_str!("../tables/replay_orders.toml");
 
+/// Label semantics written into the shard header (040 "Shard 포맷", 2026-10-19 user decision).
+/// 1 (shard schema 5): `selected` cut to the action's `max_select` (first units of the
+/// selection), unknown commands left out (their time became NoOp labels), no `Unload_Unit`.
+/// 2: the whole selection (up to 12; the BC label check filters eligibility, then cuts, F12),
+/// unknown commands are labels with [`UNKNOWN_ACTION`] (031-AC3, F7), opcode 0x29 is
+/// `Unload_Unit`, `MoveToFireYamatoGun` / `TowerAttack` orders map to Yamato / Attack.
+pub const LABELER_VERSION: u32 = 2;
+
+pub use uranium_env::features::label::UNKNOWN_ACTION;
+
 #[derive(Deserialize)]
 struct OrderRow {
     #[allow(dead_code)]
@@ -226,10 +236,15 @@ impl Labeler {
                 let Some(action) = action else {
                     cov.unknown += 1;
                     *unknown_ops.entry(c.op).or_insert(0) += 1;
+                    // 031-AC3 (F7, 2026-10-19): the command keeps its own step, never learned
+                    // (BC weight 0), instead of turning into NoOp time.
+                    raws.push(Raw { frame: c.frame, action: UNKNOWN_ACTION, queued: false, selected: Vec::new(), target_unit: None, target_tile: None });
                     return;
                 };
                 let a = &self.table.actions[action as usize];
-                let selected = if sel && a.uses_select { selection.iter().copied().take(a.max_select as usize).collect() } else { Vec::new() };
+                // F12 (2026-10-19): the whole selection; the BC label check keeps the eligible
+                // units and then the first `max_select` of them (labeler version 2).
+                let selected = if sel && a.uses_select { selection.clone() } else { Vec::new() };
                 // 040-R4 (A-2): repeated commands are never merged; each one is a label (Train
                 // presses and building cycling all reach the game).
                 raws.push(Raw { frame: c.frame, action, queued: queued && a.uses_queued, selected, target_unit: target_unit.filter(|_| a.target == TargetKind::Unit), target_tile: target_tile.filter(|_| a.target == TargetKind::Loc) });
@@ -323,6 +338,10 @@ impl Labeler {
                 0x2b => push(self.id("Hold"), d[0] != 0, true, None, None, &mut cov),
                 0x1e => push(self.id("ReturnCargo"), d[0] != 0, true, None, None, &mut cov),
                 0x28 => push(self.id("UnloadAll"), d[0] != 0, true, None, None, &mut cov),
+                // F7 (2026-10-19): single-unit unload; the payload is the loaded unit. The game
+                // (`action_unload`) does not look at the selection, the UI needs the transport
+                // selected to show its cargo.
+                op::UNLOAD => push(self.id("Unload_Unit"), false, true, valid_tag(u16_at(d, 0)), None, &mut cov),
                 0x26 => push(self.id("SiegeMode"), false, true, None, None, &mut cov),
                 0x25 => push(self.id("TankMode"), false, true, None, None, &mut cov),
                 0x21 => push(self.id("Cloak"), false, true, None, None, &mut cov),
@@ -529,19 +548,99 @@ mod tests {
             cmd(62, op::RIGHT_CLICK, vec![64, 0, 64, 0, 99, 0, 0xb0, 0, 0]),          // repeat: kept (040-R4)
             cmd(70, op::TRAIN, vec![0, 0]),                                           // marine
             cmd(71, 0x5c, vec![0; 81]),                                               // chat: ignored
-            cmd(72, op::UNLOAD, vec![5, 0]),                                          // no 034 action
+            cmd(72, 0x2d, vec![0]),                                                   // unburrow: no 034 action
         ];
         let (labels, cov) = lab.label(&cmds, 100, |_| &units);
-        let names: Vec<&str> = labels.iter().filter(|l| l.action != 0).map(|l| lab.table.actions[l.action as usize].name.as_str()).collect();
-        // 040-R4: the repeated right click is a label of its own.
-        assert_eq!(names, vec!["Attack_Pos", "SetRally_Pos", "Smart_Unit", "Smart_Unit", "Train_Marine"]);
+        let names: Vec<&str> = labels.iter().filter(|l| l.action != 0).map(|l| name_of(&lab, l)).collect();
+        // 040-R4: the repeated right click is a label of its own; 031-AC3: so is the unknown command.
+        assert_eq!(names, vec!["Attack_Pos", "SetRally_Pos", "Smart_Unit", "Smart_Unit", "Train_Marine", "Unknown"]);
         let smart = labels.iter().find(|l| lab.table.actions[l.action as usize].name == "Smart_Unit").unwrap();
         assert_eq!((smart.selected.clone(), smart.target_unit), (vec![10, 11], Some(99)));
         let attack = labels.iter().find(|l| lab.table.actions[l.action as usize].name == "Attack_Pos").unwrap();
         assert_eq!(attack.target_tile, Some((2, 3)));
         assert!(labels.iter().find(|l| lab.table.actions[l.action as usize].name == "Train_Marine").unwrap().selected.is_empty());
         assert_eq!((cov.commands, cov.labeled, cov.unknown), (6, 5, 1));
-        assert_eq!(cov.unknown_ops, vec![(op::UNLOAD, 1)]);
+        assert_eq!(cov.unknown_ops, vec![(0x2d, 1)]);
+    }
+
+    fn name_of<'a>(lab: &'a Labeler, l: &Label) -> &'a str {
+        if l.is_unknown() { "Unknown" } else { lab.table.actions[l.action as usize].name.as_str() }
+    }
+
+    /// 031-AC3 (F7, 2026-10-19): an unknown command is a label of its own (weight 0 at training)
+    /// with the delay to the next command, instead of NoOp time; the steps still tile the game.
+    #[test]
+    fn unknown_commands_are_labels_031_ac3() {
+        let lab = Labeler::new().unwrap();
+        let units: HashMap<u32, u16> = [(10, 0u16)].into_iter().collect();
+        let guard = vec![64, 0, 96, 0, 0, 0, 0xe4, 0, 2, 0]; // order Guard (2): no 034 action
+        let cmds = vec![cmd(10, op::SELECT, sel(&[10])), cmd(20, op::TARGETED_ORDER, guard), cmd(40, op::TARGETED_ORDER, ATTACK.to_vec())];
+        let (labels, cov) = lab.label(&cmds, 100, |_| &units);
+        let got: Vec<(u32, &str, u32)> = labels.iter().map(|l| (l.frame, name_of(&lab, l), l.delay)).collect();
+        assert_eq!(got, vec![(1, "NoOp", 16), (17, "NoOp", 3), (20, "Unknown", 20), (40, "Attack_Pos", 32), (72, "NoOp", 28)]);
+        let unknown = &labels[2];
+        assert_eq!((unknown.action, unknown.selected.is_empty(), unknown.target_unit, unknown.target_tile, unknown.queued), (UNKNOWN_ACTION, true, None, None, false));
+        assert_eq!((cov.commands, cov.labeled, cov.unknown, cov.unknown_orders.clone()), (2, 1, 1, vec![(2, 1)]));
+        assert!(labels.windows(2).all(|w| w[1].frame == w[0].frame + w[0].delay));
+    }
+
+    /// F7 (2026-10-19): opcode 0x29 (single-unit unload) is `Unload_Unit`: the selected transport
+    /// and the loaded unit as target. MoveToFireYamatoGun / TowerAttack map to Yamato / Attack;
+    /// Guard, TowerGuard and PickupBunker stay unknown (040-R11).
+    #[test]
+    fn single_unload_and_order_mappings_f7() {
+        let lab = Labeler::new().unwrap();
+        let ship = unit_id("Terran_Dropship");
+        let units: HashMap<u32, Own> = [
+            (30, Own::of_type(ship)),
+            (5, Own::from_state(&uranium_proto::UnitState { unit_type: 0, flags: uranium_proto::flags::LOADED, loaded_in: Some(30), ..Default::default() })),
+            (40, Own::of_type(unit_id("Terran_Battlecruiser"))),
+            (50, Own::of_type(unit_id("Terran_Missile_Turret"))),
+            (60, Own::of_type(unit_id("Terran_Bunker"))),
+        ]
+        .into_iter()
+        .collect();
+        let order = |o: u8, tag: u8| vec![64, 0, 96, 0, tag, 0, 0xe4, 0, o, 0];
+        let cmds = vec![
+            cmd(10, op::SELECT, sel(&[30])),
+            cmd(11, op::UNLOAD, vec![5, 0]),
+            cmd(20, op::SELECT, sel(&[40])),
+            cmd(21, op::TARGETED_ORDER, order(114, 99)), // MoveToFireYamatoGun
+            cmd(30, op::SELECT, sel(&[50])),
+            cmd(31, op::TARGETED_ORDER, order(19, 99)),  // TowerAttack on a unit
+            cmd(32, op::TARGETED_ORDER, order(19, 0)),   // TowerAttack on the ground: unknown
+            cmd(33, op::TARGETED_ORDER, order(18, 0)),   // TowerGuard: unknown
+            cmd(40, op::SELECT, sel(&[60])),
+            cmd(41, op::TARGETED_ORDER, order(95, 7)),   // PickupBunker: unknown
+        ];
+        let (labels, cov) = lab.label(&cmds, 100, |_| &units);
+        let acts: Vec<(&str, Vec<u32>, Option<u32>)> = labels.iter().filter(|l| l.action != 0).map(|l| (name_of(&lab, l), l.selected.clone(), l.target_unit)).collect();
+        assert_eq!(
+            acts,
+            vec![
+                ("Unload_Unit", vec![30], Some(5)),
+                ("Yamato_Unit", vec![40], Some(99)),
+                ("Attack_Unit", vec![50], Some(99)),
+                ("Unknown", vec![], None),
+                ("Unknown", vec![], None),
+                ("Unknown", vec![], None),
+            ]
+        );
+        assert_eq!((cov.commands, cov.labeled, cov.unknown), (6, 3, 3));
+        assert_eq!(cov.unknown_orders, vec![(18, 1), (19, 1), (95, 1)]);
+    }
+
+    /// F12 (2026-10-19, labeler version 2): every action keeps the whole selection, max_select = 1
+    /// actions included; the BC label check picks the eligible unit.
+    #[test]
+    fn max_select_one_keeps_whole_selection_f12() {
+        let lab = Labeler::new().unwrap();
+        let vulture = unit_id("Terran_Vulture");
+        let units: HashMap<u32, u16> = (1..=3).map(|t| (t, vulture)).collect();
+        let mine = vec![64, 0, 96, 0, 0, 0, 0xe4, 0, 20, 0]; // VultureMine at a position
+        let cmds = vec![cmd(10, op::SELECT, sel(&[1, 2, 3])), cmd(11, op::TARGETED_ORDER, mine)];
+        let (labels, _) = lab.label(&cmds, 100, |_| &units);
+        assert_eq!(selected_of(&lab, &labels, "SpiderMine_Pos"), vec![vec![1, 2, 3]]);
     }
 
     #[test]

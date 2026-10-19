@@ -81,6 +81,9 @@ pub fn dataset_markdown(records: &[PathBuf]) -> Result<String> {
     let mut by_source: BTreeMap<(String, i64), Count> = BTreeMap::new();
     let mut total = Count::default();
     let (mut cmds, mut labeled) = (0u64, 0u64);
+    // 2026-10-19: labeler version (records without one are version 1) -> written views and
+    // (commands, labeled, unknown) of their coverage (040 "Shard 포맷", mixed G-D1 rebuild).
+    let mut by_labeler: BTreeMap<u64, (Count, [u64; 3])> = BTreeMap::new();
     for r in &rows {
         let (src, outcome, sha, family) = (s(r, "src"), s(r, "outcome"), s(r, "replay_sha256"), s(r, "map_family"));
         replays.entry(src.clone()).or_default().insert(sha.clone());
@@ -114,8 +117,14 @@ pub fn dataset_markdown(records: &[PathBuf]) -> Result<String> {
         // Records written before schema 5 have no result: shown as "(none recorded)".
         let source = r["result_source"].as_str().unwrap_or("(none recorded)").to_string();
         by_source.entry((source, r["result"].as_i64().unwrap_or(0))).or_default().add(&sha, steps);
-        cmds += r["coverage"]["commands"].as_u64().unwrap_or(0);
-        labeled += r["coverage"]["labeled"].as_u64().unwrap_or(0);
+        let cov = |k: &str| r["coverage"][k].as_u64().unwrap_or(0);
+        cmds += cov("commands");
+        labeled += cov("labeled");
+        let lv = by_labeler.entry(r["labeler_version"].as_u64().unwrap_or(1)).or_default();
+        lv.0.add(&sha, steps);
+        for (i, k) in ["commands", "labeled", "unknown"].into_iter().enumerate() {
+            lv.1[i] += cov(k);
+        }
     }
 
     let mut md = String::new();
@@ -129,6 +138,15 @@ pub fn dataset_markdown(records: &[PathBuf]) -> Result<String> {
     writeln!(md, "- 레이블 커버리지(031-AC3, 목표 ≥ 95%): 게임 영향 명령 {cmds}개 중 {labeled}개, {:.2}%", labeled as f64 * 100.0 / cmds.max(1) as f64)?;
     writeln!(md, "- 중복 기록(같은 리플레이·시점, 마지막 것만 셈): {duplicates}개 제외")?;
     writeln!(md, "- 기록 승자(040-R8, 기록 단위): 이름 일치 {}, 불일치 {}\n", recorded.get("matched").unwrap_or(&0), recorded.get("unmatched").unwrap_or(&0))?;
+
+    writeln!(
+        md,
+        "## 레이블러 버전 (040 \"Shard 포맷\")\n\n버전 1(shard schema 5)은 선택을 `max_select`로 자르고 미분류 명령 시간을 NoOp으로 채웠다. 버전 2(schema 6)는 선택 전체·`unknown` 레이블(가중치 0)·`Unload_Unit`. 기록에 버전이 없으면 1이다.\n\n| 레이블러 | 게임 | 시점 | 스텝 | 게임 영향 명령 | 레이블 | unknown |\n|---|---|---|---|---|---|---|"
+    )?;
+    for (v, (c, n)) in &by_labeler {
+        writeln!(md, "| {v} | {} | {} | {} | {} | {} | {} |", c.games.len(), c.views, c.steps, n[0], n[1], n[2])?;
+    }
+    writeln!(md)?;
 
     writeln!(md, "## 맵 패밀리 × 매치업 (040-AC4)\n\n| 맵 패밀리 | 매치업 | 게임 | 시점 | 스텝 |\n|---|---|---|---|---|")?;
     for ((f, m), c) in &by_family_matchup {
@@ -237,6 +255,8 @@ mod tests {
             // A re-run wrote the same view again: counted once.
             written(&a, 1, "fighting_spirit", "투혼 1.3", "TvT", "bridge", -1),
             written(&"b".repeat(64), 0, "other", "Python", "TvZ", "none", 0),
+            // Labeler version 2 (2026-10-19): one written view with 2 unknown commands.
+            serde_json::json!({"index": 6, "replay_sha256": "f".repeat(64), "src": "stardata", "map_family": "other", "map_name": "Python", "map_hash": "", "view": {"perspective": 0, "stage": "S1", "apm": 100, "matchup": "TvZ", "enemy_random": false}, "labeler_version": 2, "outcome": "written", "steps": 7, "coverage": {"commands": 9, "labeled": 7, "unknown": 2, "unknown_ops": [[41, 2]], "unknown_orders": []}, "result": 1, "result_source": "bridge"}).to_string(),
             serde_json::json!({"index": 3, "replay_sha256": "c".repeat(64), "src": "stardata", "map_family": "other", "map_name": "Python", "map_hash": "", "view": {"perspective": 0, "stage": "S1", "apm": 90, "matchup": "TvP", "enemy_random": false}, "outcome": "desync", "reasons": ["x"]}).to_string(),
             // 040-R19: two perspectives rejected for invalid labels, counted under one reason.
             serde_json::json!({"index": 4, "replay_sha256": "d".repeat(64), "src": "stardata", "map_family": "other", "map_name": "Python", "map_hash": "", "view": {"perspective": 0, "stage": "S1", "apm": 900, "matchup": "TvT", "enemy_random": false}, "outcome": "filtered", "reason": "invalid_labels>=20% (55.0%, 11/20) (040-R19)"}).to_string(),
@@ -247,9 +267,12 @@ mod tests {
         let md = dataset_markdown(&[p]).unwrap();
         assert!(md.contains("| fighting_spirit | TvT | 1 | 2 | 20 |"), "{md}");
         assert!(md.contains("| 투혼 1.3 | fighting_spirit | 1 / 2 | 0 / 0 | 0 / 0 | 1 / 2 |"), "{md}");
-        assert!(md.contains("| none | 0 | 1 | 33.3% |"), "{md}");
-        assert!(md.contains("| 전체 |  | 4 | 1 | 25.0% |"), "{md}");
-        assert!(md.contains("| map_family | other | 2 | 1 | 50.0% |"), "{md}");
+        assert!(md.contains("| none | 0 | 1 | 25.0% |"), "{md}");
+        assert!(md.contains("| 전체 |  | 5 | 1 | 20.0% |"), "{md}");
+        assert!(md.contains("| map_family | other | 3 | 1 | 33.3% |"), "{md}");
+        // Labeler versions: records without the field are version 1.
+        assert!(md.contains("| 1 | 2 | 3 | 30 | 15 | 15 | 0 |"), "{md}");
+        assert!(md.contains("| 2 | 1 | 1 | 7 | 9 | 7 | 2 |"), "{md}");
         assert!(md.contains("중복 기록(같은 리플레이·시점, 마지막 것만 셈): 1개 제외"), "{md}");
         assert!(md.contains("| invalid_labels>=20% (040-R19) | stardata | 2 |"), "{md}");
         assert!(md.contains("| excluded map (040-R16) | stardata | 1 |"), "{md}");

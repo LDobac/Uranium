@@ -122,10 +122,22 @@ ids = [143]
 unit = "Irradiate_Unit"
 pos = ""
 
+# MoveToFireYamatoGun (114): the order the UI sends when the target is out of range; the
+# battlecruiser moves into range and fires (action audit F22, 2026-10-19 user decision).
 [[order]]
-names = ["FireYamatoGun"]
-ids = [113]
+names = ["FireYamatoGun", "MoveToFireYamatoGun"]
+ids = [113, 114]
 unit = "Yamato_Unit"
+pos = ""
+
+# TowerAttack (19): a missile turret's attack on a unit (units.dat attack_unit of the turret), the
+# same game effect as Attack_Unit, whose `can_attack` includes turrets (action audit F22). A
+# position has no meaning for a turret: Unknown. Guard (2), TowerGuard (18) and PickupBunker (95)
+# have no 034 action and stay Unknown (040-R11, labels of weight 0, 031-AC3).
+[[order]]
+names = ["TowerAttack"]
+ids = [19]
+unit = "Attack_Unit"
 pos = ""
 
 [[order]]

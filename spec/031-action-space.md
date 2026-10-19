@@ -1,6 +1,6 @@
 # 031 — Action Space & Executor
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: 라이브 게임 맵 사전계산 키(AMB-031-4), executor 거부 시 동작(031-R4, AMB-031-5). 2026-10-19: 맵 사전계산 생성 경로 표기를 실제(`uranium-replay`)로 정정)
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: 라이브 게임 맵 사전계산 키(AMB-031-4), executor 거부 시 동작(031-R4, AMB-031-5). 2026-10-19: 맵 사전계산 생성 경로 표기를 실제(`uranium-replay`)로 정정. 2026-10-19: AC3 미분류 명령 처리 구체화(사용자 결정, 액션 감사 F7))
 - **Related**: [010](010-game-protocol.md), [030](030-observation.md), [032](032-model-architecture.md), [034](034-action-table.md), [040](040-replay-dataset.md)
 
 ## Purpose
@@ -59,5 +59,5 @@
 ## Acceptance Criteria
 - 031-AC1: [034](034-action-table.md)의 모든 action_type이 OpenBW에서 실제로 실행되는지 시나리오 테스트로 확인한다.
 - 031-AC2: 마스크된 액션이 실행되지 않는다(property test).
-- 031-AC3: 리플레이 사람 명령을 의미 단위 액션으로 역변환할 때 커버리지 ≥ 95%다. 미분류는 `Unknown`으로 기록하고 학습에서 제외한다.
+- 031-AC3: 리플레이 사람 명령을 의미 단위 액션으로 역변환할 때 커버리지 ≥ 95%다. 미분류는 `Unknown`으로 기록하고 학습에서 제외한다. 구체적으로(2026-10-19 사용자 결정, 액션 감사 F7, 레이블러 버전 2) 미분류 명령은 다음 명령까지의 delay를 가진 자기 스텝(`unknown` 레이블)이 되고 BC 가중치는 0이다. 그 시간을 `NoOp` 레이블로 채우지 않는다(레이블러 버전 1은 채웠다, 040 "Shard 포맷"). 에이전트 기억에는 `NoOp`으로 기록한다.
 - 031-AC4: Build 액션 실행 시 건설 위치가 정책이 고른 타일과 정확히 같다.
