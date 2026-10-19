@@ -341,7 +341,15 @@ class UraniumModule : public AIModule {
     } else if (isWinner) winner = g_me->getID();
     // Both eliminated on the same frame: draw (M3 finding).
     else if (g_enemy && !g_enemy->isDefeated()) winner = g_enemy->getID();
-    uranium_bridge_end(winner, reason, (uint32_t)Broodwar->getFrameCount());
+    // 010-R12 / 011-R19: the final own-vision frame carries what happened after the last step.
+    int frame = Broodwar->getFrameCount();
+    if (fail_ || replay_) {
+      uranium_bridge_end(winner, reason, (uint32_t)frame, nullptr);
+      return;
+    }
+    UrFrame f = observe(frame);
+    uranium_bridge_end(winner, reason, (uint32_t)frame, &f);
+    events_.clear();
   }
 
   void onUnitCreate(Unit u) override { event(UR_EV_CREATE, u); }
@@ -362,7 +370,8 @@ class UraniumModule : public AIModule {
     events_.push_back(UrEvent{kind, uid(u), UR_NONE, UR_NONE});
   }
 
-  void step(int frame) {
+  // Own-vision state of `frame` (010-R5) with the events since the last step, into the buffers.
+  UrFrame observe(int frame) {
     units_.clear();
     g_units.clear();
     g_observed.clear();
@@ -412,6 +421,11 @@ class UraniumModule : public AIModule {
     f.n_events = (uint32_t)events_.size();
     f.effects = effects_.data();
     f.n_effects = (uint32_t)effects_.size();
+    return f;
+  }
+
+  void step(int frame) {
+    UrFrame f = observe(frame);
     UrPrivileged priv{};
     if (privileged_ && g_enemy) {
       fill_privileged(priv);

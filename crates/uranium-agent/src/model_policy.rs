@@ -171,9 +171,14 @@ impl ModelPolicy {
     }
 
     /// Game over (042, 033-R7): the frames after the last decision and r_win go to the observer.
-    pub fn on_end(&mut self, outcome: Option<Outcome>) {
+    /// E-8 / 010-R12: the dense reward of those frames comes from the bridge's final frame (own
+    /// vision, events since the last decision); without one only r_win is added.
+    pub fn on_end(&mut self, outcome: Option<Outcome>, final_frame: Option<&RawFrame>) {
         if let Some(o) = self.observer.as_mut() {
-            let mut after = RewardParts::default();
+            let mut after = match (outcome, final_frame, self.reward.as_mut()) {
+                (Some(_), Some(f), Some(r)) => r.step(f),
+                _ => RewardParts::default(),
+            };
             if let Some(out) = outcome {
                 after.win = RewardTracker::end(out).win;
             }

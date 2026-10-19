@@ -95,8 +95,9 @@ pub trait Policy: Send {
     fn model_stats(&mut self) -> Option<ModelStats> {
         None
     }
-    /// Game over; `None` = Aborted or disconnected (042-R3).
-    fn on_end(&mut self, _outcome: Option<uranium_env::reward::Outcome>) {}
+    /// Game over; `None` = Aborted or disconnected (042-R3). `final_frame`: the own-vision state at
+    /// the end with the events since the last frame (010-R12), when the bridge sent one.
+    fn on_end(&mut self, _outcome: Option<uranium_env::reward::Outcome>, _final_frame: Option<&RawFrame>) {}
 }
 
 pub use uranium_scripted::T0Build;
@@ -215,8 +216,8 @@ impl Policy for ModelPolicy {
         Some(self.stats())
     }
 
-    fn on_end(&mut self, outcome: Option<uranium_env::reward::Outcome>) {
-        ModelPolicy::on_end(self, outcome)
+    fn on_end(&mut self, outcome: Option<uranium_env::reward::Outcome>, final_frame: Option<&RawFrame>) {
+        ModelPolicy::on_end(self, outcome, final_frame)
     }
 }
 
@@ -453,7 +454,7 @@ fn run_session(stream: TcpStream, opts: &ServeOptions, rec: &mut SessionRecord) 
     let res = play(&mut reader, &mut writer, &mut *policy, &hello, rec, delay_ms, &opts.ends);
     if res.is_err() {
         // Disconnected or failed mid-game: not a finished episode (042-R3).
-        policy.on_end(None);
+        policy.on_end(None, None);
     }
     res
 }
@@ -536,7 +537,11 @@ fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, po
                 rec.frame_digest = format!("{digest:016x}");
                 rec.model = policy.model_stats();
                 ends.push(hello.game_id, session_end);
-                policy.on_end(outcome);
+                if let Some(last) = &end.final_frame {
+                    // 010-AC6 also holds for the final frame (010-R12 keeps 010-R5).
+                    rec.visibility_violations += visibility_violations(last, hello.slot);
+                }
+                policy.on_end(outcome, end.final_frame.as_deref());
                 return Ok(());
             }
             other => bail!("unexpected message {other:?}"),

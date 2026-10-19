@@ -29,6 +29,7 @@ StarCraft: Remastered 프로세스에 samase 플러그인 DLL로 로드되는 �
 | 012-R7 | **MUST** realtime 모드: 에이전트 응답이 `valid_until_frame`을 넘으면 그 명령은 버린다(010-R7) |
 | 012-R8 | **SHOULD** 관측 송신 주기는 에이전트가 요청한 delay를 따르되, 최소 간격은 2프레임으로 한다 |
 | 012-R9 | **SHOULD** 디버그 오버레이(선택 유닛, 의도된 타깃)는 기본으로 끈다 |
+| 012-R10 | **MUST** 게임 종료 시 `GameEnd.final_frame`(010-R12)을 OpenBW 브리지와 같은 의미로 보낸다: 마지막 `RawFrame` 이후 이벤트와 종료 시점의 자기 시야 상태(012-R3 필터 적용). M7 구현 때 반영한다(사용자 결정 2026-10-19, E-8) |
 
 ## 명령 인코딩 (SC:R)
 SC:R 확장 커맨드를 사용한다. 정확한 바이트 레이아웃은 [013](013-version-mapping.md)에 둔다.

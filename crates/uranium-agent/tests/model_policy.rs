@@ -177,7 +177,7 @@ fn routes_pick_policy_per_slot_020_r11() {
                 w.flush().unwrap();
                 let AgentMsg::Act(_) = read_msg::<AgentMsg>(&mut r).unwrap() else { panic!("expected Act") };
             }
-            write_msg(&mut w, &BridgeMsg::End(GameEnd { winner: Some(0), frame: 100, reason: EndReason::Elimination, stats: None })).unwrap();
+            write_msg(&mut w, &BridgeMsg::End(GameEnd { winner: Some(0), frame: 100, reason: EndReason::Elimination, stats: None, final_frame: None })).unwrap();
             w.flush().unwrap();
         })
     };
@@ -220,6 +220,47 @@ fn observer_sees_behaviour_log_probs_042() {
     for (joint, heads) in seen.iter() {
         assert!((joint - heads).abs() < 1e-3 && *joint <= 0.0, "{joint} vs {heads}");
     }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// E-8 / 010-R12 / 033-R7: the dense reward of frames after the last decision comes from the
+/// bridge's final frame and reaches the observer's end call (it lands on the last decision, 042);
+/// without a final frame only r_win is added.
+#[test]
+fn final_frame_reward_reaches_the_last_decision_010_r12() {
+    struct Obs(Arc<Mutex<Vec<uranium_env::reward::RewardParts>>>);
+    impl uranium_agent::model_policy::SessionObserver for Obs {
+        fn on_decision(&mut self, _d: &uranium_agent::model_policy::Decision<'_>) {}
+        fn on_end(&mut self, after: uranium_env::reward::RewardParts, _o: Option<uranium_env::reward::Outcome>) {
+            self.0.lock().unwrap().push(after);
+        }
+    }
+    let dir = checkpoint(CoreKind::Lstm, "final");
+    let h = handle(&dir, SampleMode::Argmax, 1);
+    let run = |with_final: bool| {
+        let seen = Arc::new(Mutex::new(vec![]));
+        let mut p = ModelPolicy::new(&h, &game_info()).unwrap().with_observer(None, Box::new(Obs(seen.clone())));
+        let fs = frames(0, 3);
+        for f in &fs {
+            p.on_frame(f).unwrap();
+        }
+        // After the last decision an enemy unit we saw dies in sight.
+        let mut last = fs.last().unwrap().clone();
+        let victim = last.units.iter().position(|u| u.owner == ENEMY).expect("an enemy unit in sight");
+        let gone = last.units.remove(victim);
+        last.frame += 12;
+        last.events = vec![GameEvent::UnitDestroyed(gone.id)];
+        p.on_end(Some(uranium_env::reward::Outcome::Win), with_final.then_some(&last));
+        let v = seen.lock().unwrap().clone();
+        assert_eq!(v.len(), 1);
+        (v[0], gone.unit_type)
+    };
+    let (with, ty) = run(true);
+    let cost = uranium_env::types::TypeTables::get().unit(ty).map_or(0.0, |t| (t.minerals + t.gas) as f32) / 1000.0;
+    assert_eq!(with.win, 1.0);
+    assert!(cost > 0.0 && (with.value - cost).abs() < 1e-6, "value {} vs kill {cost}", with.value);
+    let (without, _) = run(false);
+    assert_eq!((without.win, without.value), (1.0, 0.0));
     std::fs::remove_dir_all(&dir).ok();
 }
 

@@ -11,7 +11,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 - 게임 데이터 추출(011-R13): `cargo install casc --version 0.1.6 --locked` 후 `cargo run -p casc-extract -- <SC:R Data> <출력>` → `.env` `URANIUM_DATA_DIR`.
 - BWAPI 타입 표(013-R1): `cargo run -p bwapi-tables -- third_party/bwapi/bwapi crates/uranium-env/tables`.
 - CUDA 실행은 `CUDA_PATH`가 필요하다(없으면 커널 컴파일 시 libdevice 오류). CUDA 빌드(`--features cuda`)는 CUDA PC에서만 한다.
-- Burn autotune·fusion(041-R15): 워크스페이스 `burn` 의존성의 `autotune`·`fusion` feature로 모든 빌드에서 켜진다(코어 비교·BC·RL·추론·벤치 공통, Flex에는 영향 없음). autotune 캐시는 `.env` `URANIUM_AUTOTUNE_CACHE_DIR`(호스트별 고정 로컬 폴더)에 둔다. GPU 학습 명령(`bc`, `rl`, `bc-eval`, `bc-profile`의 cuda·vulkan)은 이 키가 없으면 시작하지 않는다. run이 끝날 때까지 캐시를 지우지 않는다: 같은 장비·같은 캐시로 재개하면 비트 단위로 같고, 장비나 캐시가 다르면 032-AC1·AC8 허용 오차 안에서만 같다(061-AC1). 첫 update는 autotune 측정 때문에 느리다.
+- Burn autotune·fusion(041-R15): 워크스페이스 `burn` 의존성의 `autotune`·`fusion` feature로 모든 빌드에서 켜진다(코어 비교·BC·RL·추론·벤치 공통, Flex에는 영향 없음). autotune 캐시는 `.env` `URANIUM_AUTOTUNE_CACHE_DIR`(호스트별 고정 로컬 폴더)에 둔다. GPU 학습 명령(`bc`, `rl`, `bc-eval`, `bc-profile`의 cuda·vulkan)은 이 키가 없으면 시작하지 않는다. run이 끝날 때까지 캐시를 지우지 않는다: Flex·Vulkan은 같은 장비·같은 캐시로 재개하면 비트 단위로 같고, CUDA 호스트는 같은 PC여도, 다른 장비나 캐시면 모두 032-AC1·AC8 허용 오차 안에서만 같다(061-AC1). Windows에서는 CubeCL 영구 캐시가 열리지 않아 프로세스마다 autotune을 다시 측정한다(첫 update 지연, 알려진 제약).
 
 ## 벤치
 - Burn/Vulkan(060-R2): `cargo run -p bench --release -- --backend vulkan [--quick] [--filter <name>]` → `reports/bench_bc250.md`.

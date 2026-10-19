@@ -12,8 +12,8 @@ pub use framing::{MAX_MESSAGE_BYTES, ProtoError, read_msg, write_msg};
 pub use grid::BitGrid;
 use serde::{Deserialize, Serialize};
 
-/// Bumped on any incompatible schema change (010-R2).
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Bumped on any incompatible schema change (010-R2). 2: `GameEnd.final_frame` (010-R12).
+pub const PROTOCOL_VERSION: u32 = 2;
 
 pub type UnitId = u32;
 /// Pixel position.
@@ -329,6 +329,11 @@ pub struct GameEnd {
     pub frame: u32,
     pub reason: EndReason,
     pub stats: Option<BridgeStats>,
+    /// 010-R12: what the agent would have observed at the end (own vision only, 010-R5): units
+    /// visible at the last frame and the events since the last `RawFrame`, so rewards accrued
+    /// after the last decision reach it (033-R7, 042). `None` when the bridge could not build it
+    /// (failed shim) or in replay mode.
+    pub final_frame: Option<Box<RawFrame>>,
 }
 
 /// Everything a bridge sends.

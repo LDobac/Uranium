@@ -363,7 +363,12 @@ uranium-env run --plan config/plans/bc-vs-t0.toml --backend cuda
 - 원인 1: Windows에서 CubeCL 0.11의 영구 캐시(Turso DB)가 쓰기 모드로 열리지 않는다("experimental multiprocess WAL is not supported by the active IO backend" → 읽기 전용, 테이블 없음 → 메모리 캐시). `default.db`는 0바이트로 남고, 프로세스마다 autotune을 다시 측정한다. 후보 커널의 시간이 비슷해(예: matmul 후보 51~55µs) 회마다 다른 커널을 고를 수 있다. 첫 update의 autotune 시간도 매번 든다.
 - 원인 2: CUDA 축소 연산 일부가 float atomic add(`atomicrmw FAdd`)로 컴파일된다. 더하는 순서가 실행마다 달라 비트 단위 결과가 달라질 수 있다.
 - 영향: 041-R15·061-AC1의 "같은 장비가 같은 캐시로 재개하면 비트 단위로 같다"는 적어도 Windows CUDA 호스트에서는 성립하지 않는다. 재개 결과는 032-AC1·AC8 허용 오차 안에서만 같다. Linux Vulkan 호스트에서 캐시가 저장되는지는 표본 단계에서 확인한다(이 PC의 Vulkan은 3회 결과가 같았다).
-- 결정 필요: 061-AC1·041-R15 문구를 "CUDA 호스트는 같은 장비여도 허용 오차 기준"으로 바꿀지(기본안(미확정)), Windows 캐시 저장 문제를 별도로 다룰지.
+- 결정(사용자 결정 2026-10-19): CUDA 호스트는 같은 PC여도 032-AC1 허용 오차로 비교하고, 비트 단위 이어 하기는 Flex와 캐시를 고정한 Vulkan에만 요구한다(041-R15·061-AC1 개정). Windows 캐시 미저장은 알려진 제약으로 둔다. CUDA AC8 기준 1e-2는 확정됐다. 3차의 2.2e-2와의 차이는 미해결 관찰로 남긴다.
+
+### E-8: 마지막 결정 뒤 dense 보상(사용자 결정 2026-10-19)
+- 배경: 브리지는 종료 시 `GameEnd`만 보내 마지막 결정 뒤 프레임(예: 마지막 건물 파괴)의 value·build·units 보상이 버려졌다.
+- 변경: `GameEnd.final_frame`(010-R12, `PROTOCOL_VERSION` 2) — shim `onEnd`가 종료 프레임의 자기 시야 상태와 마지막 step 뒤 이벤트를 넘기고(011-R19), 에이전트가 `RewardTracker::step`을 한 번 더 불러 마지막 결정에 더한다(033-R7, 042). SC:R 브리지는 M7에서 같은 필드를 보낸다(012-R10).
+- 시험: proto round-trip(있음·없음), 버전 1 거부, Flex 정책 테스트(마지막 결정 뒤 적 파괴 → value 보상이 종료 보상에 포함). OpenBW 실제 게임 확인은 아래 Linux 빌드 확인 결과를 따른다.
 
 ### 같이 반영한 것(코드)
 - 041-R3 전역 L2 norm clip(`crates/uranium-train/src/clip.rs`): BC와 RL learner 모두 레인 그룹 gradient 합산 뒤, optimizer step 전에 한 번 적용한다. Burn 텐서별 clip은 뺐다. 이전과 학습 수치가 달라진다(본학습 체크포인트는 아직 없다).

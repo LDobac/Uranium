@@ -10,8 +10,11 @@
 //! "environment" database. [`init_gpu_runtime`] puts it under `URANIUM_AUTOTUNE_CACHE_DIR`
 //! (001-R9) instead of CubeCL's default (`target/environment` of the workspace the process was
 //! started in, or the user cache), so it neither moves with the working directory nor disappears
-//! with `cargo clean`. Resuming on the same host with the same cache gives bit-identical results
-//! (061-AC1); with another host or a rebuilt cache, results agree only within 032-AC1 / AC8.
+//! with `cargo clean`. On Vulkan, resuming on the same host with the same cache gives
+//! bit-identical results (061-AC1); CUDA hosts (atomic-add reductions), other hosts or a rebuilt
+//! cache agree only within 032-AC1 / AC8 (user decision 2026-10-19). Known limitation: on Windows
+//! CubeCL 0.11 cannot open its persistent cache for writing (Turso WAL), so autotune re-runs in
+//! every process.
 
 use std::path::PathBuf;
 

@@ -1,6 +1,6 @@
 # 011 — Bridge: OpenBW
 
-- **Status**: Approved (2026-10-15, 2026-10-16 개정: 011-R13 내용 해시, 011-R15 첫 관측 프레임 1, 011-AC6 원격 판정 기준, 011-AC8 통과, 2026-10-18 개정: 011-R17 퇴장 사유 구분·011-R18 드롭 시간(011-AC7 대응, 사용자 결정))
+- **Status**: Approved (2026-10-15, 2026-10-16 개정: 011-R13 내용 해시, 011-R15 첫 관측 프레임 1, 011-AC6 원격 판정 기준, 011-AC8 통과, 2026-10-18 개정: 011-R17 퇴장 사유 구분·011-R18 드롭 시간(011-AC7 대응, 사용자 결정). 2026-10-19 개정: 011-R19 GameEnd 최종 관측(010-R12, 사용자 결정))
 - **Related**: [010](010-game-protocol.md), [013](013-version-mapping.md), [020](020-env-orchestration.md)
 
 ## Purpose
@@ -35,6 +35,7 @@ OpenBW 포크 BWAPI 4.2(`github.com/OpenBW/bwapi`) 위에서 동작하는 AIModu
 | 011-R14 | **MUST** 서드파티 소스(OpenBW, BWAPI)는 커밋을 고정해 `tools/openbw/build.sh`가 받는다. 우리 수정은 `third_party/patches/NNNN-<repo>-<desc>.patch`로만 관리하고 빌드 시 적용한다 |
 | 011-R17 | **MUST** GameEnd 사유: 상대가 섬멸되지 않고 게임을 떠나면(자발적 퇴장 또는 OpenBW 드롭) `Surrender`, 섬멸이면 `Elimination`으로 보고한다. 판정은 `onPlayerLeft(상대)` 시점에 직전 프레임까지 보던 상대 건물이 아직 존재하는지로 한다. 근접전 패배는 건물이 모두 파괴돼야 하고, 퇴장하면 건물이 중립으로 남기 때문이다(BWAPI는 섬멸된 플레이어에도 `onPlayerLeft`를 보내므로 이벤트만으로는 구분할 수 없다). 시간 제한은 기존대로 `TimeLimitDraw`다. 두 세션이 서로 상대 퇴장으로 승리를 보고한 게임의 처리는 020-R13 (2026-10-18 사용자 결정) |
 | 011-R18 | **MUST** OpenBW 드롭 시간: 동기화가 끊긴 LAN 클라이언트를 끊는 OpenBW 타임아웃(원본 60초 고정)을 환경변수 `URANIUM_OPENBW_DROP_TIMEOUT_MS`로 바꿀 수 있게 한다(패치 `0013-openbw-drop-timeout.patch`). 미설정이면 원본과 같은 60초다. hostd는 모든 런처에 이 값을 넘기며 기본값은 600,000(10분)이다(020, `.env`로 변경). lockstep 학습은 에이전트 응답을 기다리며 블로킹하므로 학습 PC 멈춤이 60초를 넘으면 두 클라이언트가 서로를 끊어 버린다(2026-10-18 관측, 011-AC7) (2026-10-18 사용자 결정) |
+| 011-R19 | **MUST** 최종 관측(010-R12, 사용자 결정 2026-10-19, E-8): shim의 `onEnd`는 종료 프레임의 자기 시야 상태와 마지막 step 뒤 이벤트로 `UrFrame`을 만들어 `uranium_bridge_end(winner, reason, frame, last)`로 넘긴다. 실패 상태·리플레이 모드에서는 NULL이다 |
 | 011-R12 | **SHOULD** 재생 모드에서도 `PrivilegedSummary`(상대 실제 상태)를 생성할 수 있게 한다. BC 단계의 value head 사전학습 입력으로 쓴다 |
 
 ## 환경변수 (2026-10-15 정리)

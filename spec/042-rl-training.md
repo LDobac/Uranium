@@ -18,7 +18,7 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 
 ## 구현 구조 (2026-10-17, 3단계 계획 승인)
 - **프로세스**: 학습 PC에서 `uranium-train rl` 하나가 learner, 추론 서버(Main 1개 + 상대 스냅샷), 에이전트 서버(001-R6), 게임 배정, 리그 관리를 모두 맡는다. 게임 배정은 `uranium-runner` 라이브러리(020 동적 Job 공급자)를 쓴다. 추론 스레드와 learner는 같은 GPU에 각자 모델 사본을 둔다. learner는 K update마다 가중치를 추론 서버에 넘기고, 추론 응답에는 정책 버전이 붙는다(042-R4).
-- **trajectory**: 학습 중인 에이전트의 세션에만 기록한다. 한 결정의 보상은 직전 결정 뒤 받은 프레임들의 보상 합이다(033). 세그먼트는 T=64 결정이고, 시작 결정 직전의 Core 상태(core_state0)를 추론 서버 슬롯에서 읽어 함께 둔다. 게임이 끝나면 마지막 세그먼트를 마스크로 채우고 bootstrap은 0이다(γ = 1, 종료).
+- **trajectory**: 학습 중인 에이전트의 세션에만 기록한다. 한 결정의 보상은 직전 결정 뒤 받은 프레임들의 보상 합이다(033). 세그먼트는 T=64 결정이고, 시작 결정 직전의 Core 상태(core_state0)를 추론 서버 슬롯에서 읽어 함께 둔다. 게임이 끝나면 마지막 세그먼트를 마스크로 채우고 bootstrap은 0이다(γ = 1, 종료). 마지막 결정 뒤 종료까지의 dense 보상(`GameEnd.final_frame`, 010-R12)과 r_win은 마지막 transition에 더한다(033-R7, E-8, 사용자 결정 2026-10-19).
 - **손실**: 보상 항목별 value head마다 V-trace target과 advantage를 따로 구하고, 정책 gradient advantage는 033 가중치(감쇠 포함)로 더한다(033-R3). KL(π‖π_BC)은 고정된 BC 모델을 같은 입력으로 다시 forward해 헤드별 전체 분포로 계산하고 사용된 헤드만 더한다(032-R10). 정확한 분포 KL을 쓴다. 16GB GPU에서 메모리가 부족하면 근사로 바꾸지 않고 사용자에게 보고한다(2026-10-17 사용자 결정, AMB-042-9).
 - **스냅샷 상대 ID**: `uranium-<agent>@<run>/<update>` (agent = `main` | `main-exploiter` | `league-exploiter`, 021-R3 형식).
 - **로그 (042-R2)**: CSV 두 개. `train.csv`(update별 손실 항목, KL, 헤드별 엔트로피, 정책 지연, 버린·회수한 trajectory 수, 처리량, 추론 p50·p95)와 `games.csv`(게임별 결과, 보상 항목 합, 상대 ID, 종족, 맵, 저장한 리플레이 경로·사유(042-R11)).

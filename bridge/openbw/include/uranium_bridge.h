@@ -136,8 +136,10 @@ typedef struct {
 /* Return 0 on success; non-zero means the shim must leave the game. */
 int32_t uranium_bridge_start(const UrStatic* info);
 int32_t uranium_bridge_step(const UrFrame* frame, UrAct* out);
-/* reason: 0 elimination, 1 surrender/left, 2 time limit draw */
-void uranium_bridge_end(int32_t winner, uint8_t reason, uint32_t frame);
+/* reason: 0 elimination, 1 surrender/left, 2 time limit draw.
+   last: own-vision state at the end and the events since the last step (010-R12), or NULL.
+   Its privileged pointer is ignored. */
+void uranium_bridge_end(int32_t winner, uint8_t reason, uint32_t frame, const UrFrame* last);
 /* Next frame at which the shim must call uranium_bridge_step. */
 uint32_t uranium_bridge_next_frame(void);
 /* Max frames (URANIUM_MAX_FRAMES). The game seed is applied by OpenBW patch 0002. */

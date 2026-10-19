@@ -150,11 +150,13 @@ fn arb_bridge_msg() -> impl Strategy<Value = BridgeMsg> {
             enemy_in_production: c
         })),
         arb_frame().prop_map(|f| BridgeMsg::Frame(Box::new(f))),
-        (any::<Option<u8>>(), any::<u32>(), any::<f64>()).prop_map(|(winner, frame, t)| BridgeMsg::End(GameEnd {
+        (any::<Option<u8>>(), any::<u32>(), any::<f64>(), prop::option::of(arb_frame())).prop_map(|(winner, frame, t, last)| BridgeMsg::End(GameEnd {
             winner,
             frame,
             reason: EndReason::TimeLimitDraw,
-            stats: Some(BridgeStats { game_frames: frame, game_time_ms: t, ..Default::default() })
+            stats: Some(BridgeStats { game_frames: frame, game_time_ms: t, ..Default::default() }),
+            // 010-R12: the final frame round-trips with and without content.
+            final_frame: last.map(Box::new),
         })),
     ]
 }
@@ -201,6 +203,9 @@ fn ac2_version_mismatch_is_rejected() {
     h.protocol_version += 1;
     let err = check_hello(&h).unwrap_err();
     assert!(err.contains("protocol version mismatch"), "{err}");
+    // 010-R12: a peer still on version 1 (GameEnd without final_frame) is rejected too.
+    h.protocol_version = 1;
+    assert!(PROTOCOL_VERSION >= 2 && check_hello(&h).unwrap_err().contains("protocol version mismatch"));
 }
 
 /// 010-AC3: 200 units ≤ 64 KB, encode+decode ≤ 1 ms.

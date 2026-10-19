@@ -286,9 +286,14 @@ fn p99(v: &mut [f64]) -> f64 {
     v[((v.len() as f64 * 0.99) as usize).min(v.len() - 1)]
 }
 
+/// # Safety
+/// `last` is NULL or points to a valid `UrFrame` for the duration of the call (uranium_bridge.h).
+/// 010-R12: `last` is the own-vision state at the end with the events since the last step; it is
+/// sent as `GameEnd.final_frame` (not in replay mode, where the agent only records labels).
 #[unsafe(no_mangle)]
-pub extern "C" fn uranium_bridge_end(winner: i32, reason: u8, frame: u32) {
+pub unsafe extern "C" fn uranium_bridge_end(winner: i32, reason: u8, frame: u32, last: *const UrFrame) {
     let Some(mut b) = BRIDGE.lock().unwrap().take() else { return };
+    let final_frame = (!last.is_null() && !b.replay).then(|| Box::new(raw_frame(&b, unsafe { &*last })));
     let total = b.started.elapsed();
     let stats = BridgeStats {
         game_frames: frame,
@@ -307,6 +312,7 @@ pub extern "C" fn uranium_bridge_end(winner: i32, reason: u8, frame: u32) {
             _ => EndReason::Surrender,
         },
         stats: Some(stats),
+        final_frame,
     };
     if let Err(e) = write_msg(&mut b.writer, &BridgeMsg::End(end)) {
         log(&format!("sending GameEnd failed: {e}"));
