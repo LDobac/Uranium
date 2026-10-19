@@ -868,7 +868,9 @@ fn config_fingerprint_fields_are_classified_b3() {
     classified.sort();
     assert_eq!(keys, classified, "classify new BcConfig fields: ResultSettings (result) or EXECUTION_ONLY");
     let view = serde_json::to_value(cfg.results_view()).unwrap();
-    assert_eq!(view.as_object().unwrap().len(), RESULT.len(), "ResultSettings holds exactly the result fields");
+    // Plus the code constants in the fingerprint (not config fields): the 041-R3 clip semantics.
+    assert_eq!(view.as_object().unwrap().len(), RESULT.len() + 1, "ResultSettings holds exactly the result fields and clip_mode");
+    assert_eq!(view["clip_mode"], uranium_train::clip::CLIP_MODE);
 
     let base = cfg.fingerprint();
     let mut c = cfg.clone();

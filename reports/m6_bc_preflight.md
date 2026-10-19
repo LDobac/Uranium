@@ -366,6 +366,7 @@ uranium-env run --plan config/plans/bc-vs-t0.toml --backend cuda
 - 결정(사용자 결정 2026-10-19): CUDA 호스트는 같은 PC여도 032-AC1 허용 오차로 비교하고, 비트 단위 이어 하기는 Flex와 캐시를 고정한 Vulkan에만 요구한다(041-R15·061-AC1 개정). Windows 캐시 미저장은 알려진 제약으로 둔다. CUDA AC8 기준 1e-2는 확정됐다. 3차의 2.2e-2와의 차이는 미해결 관찰로 남긴다.
 
 ### E-8: 마지막 결정 뒤 dense 보상(사용자 결정 2026-10-19)
+- **배포 주의**: 브리지 C ABI `uranium_bridge_end`가 인자 4개로 바뀌었고 프로토콜은 버전 2다. 모든 PC에서 브리지 .so(shim + Rust staticlib, `tools/openbw/build_bridge.sh`), 에이전트(`uranium-agent`·`uranium-train`·`uranium-env`), hostd를 함께 다시 빌드한다. 옛 shim과 새 Rust 라이브러리를 섞으면(인자 3개로 호출) 정의되지 않은 동작이고, 옛 브리지와 새 에이전트는 버전 불일치로 연결이 거부된다(010-R2).
 - 배경: 브리지는 종료 시 `GameEnd`만 보내 마지막 결정 뒤 프레임(예: 마지막 건물 파괴)의 value·build·units 보상이 버려졌다.
 - 변경: `GameEnd.final_frame`(010-R12, `PROTOCOL_VERSION` 2) — shim `onEnd`가 종료 프레임의 자기 시야 상태와 마지막 step 뒤 이벤트를 넘기고(011-R19), 에이전트가 `RewardTracker::step`을 한 번 더 불러 마지막 결정에 더한다(033-R7, 042). SC:R 브리지는 M7에서 같은 필드를 보낸다(012-R10).
 - 시험: proto round-trip(있음·없음), 버전 1 거부, Flex 정책 테스트(마지막 결정 뒤 적 파괴 → value 보상이 종료 보상에 포함). OpenBW 실제 게임 확인(2026-10-19, Linux Vulkan 호스트의 임시 clone, 기존 체크아웃·서비스는 건드리지 않음): `tools/openbw/build_bridge.sh` 빌드 성공(경고 0), T0 대 T0 1판(투혼, `URANIUM_MAX_FRAMES=3000`)에서 두 세션 모두 `final_frame`을 받았다(프레임 3001, 보이는 유닛 28·27, 이벤트 0, 시야 위반 0). 임시 폴더는 삭제했다. 마지막 결정 뒤 이벤트가 실제로 담기는 경우(섬멸 종료)는 표본 단계에서 함께 확인한다.
@@ -375,4 +376,5 @@ uranium-env run --plan config/plans/bc-vs-t0.toml --backend cuda
 - 061-AC5 테스트(`checkpoint_round_trip_is_bit_identical_061_ac5`, Flex): 불러온 가중치·옵티마이저 상태가 저장값과 비트 단위로 같고, forward 차이가 1e-4 안이다.
 - BC·RL 체크포인트 `meta.json` `train.burn`에 `{"autotune": true, "fusion": true}`를 기록한다(041-R10·R15).
 - BC update 시간 영향은 이번에 재지 않았다(3차 표: CUDA 레인 그룹 약 3.5배, Vulkan 약 1.45배). 표본 단계(R-2)에서 실제 update 시간을 잰다.
-- 측정 산출물: autotune 캐시 폴더와 CubeCL 로그는 작업 트리의 `target/cuda/` 아래(git 미추적)에 있다.
+- 측정 산출물: autotune 캐시 폴더(`autotune-1`~`3`·`autotune-m`·`autotune-probe*`·`autotune-vk1`~`3`, 모두 `default.db` 0바이트)와 CubeCL 로그(`cubecl-log.txt`, 약 105MB, 6회째 CUDA 실행)는 `<shared>/artifacts/m6_bc_preflight/round5/`에 보존했다.
+- 041-R3 clip 보강(리뷰): 전역 norm이 NaN·inf이면 그 update의 gradient를 모두 0으로 둔다(device 안에서 처리, sync 없음). BC 설정 지문(B-3 `ResultSettings`)에 `clip_mode = "global_l2"`를 넣어, clip 의미를 바꾸기 전 run과 지문이 달라지게 했다.

@@ -58,6 +58,9 @@ fn cuda_device(_index: usize) -> Result<Device> {
 }
 
 fn main() -> Result<()> {
+    // 001-R9: .env first, so URANIUM_AUTOTUNE_CACHE_DIR applies (060-AC4: bench under the
+    // training settings, 041-R15).
+    dotenvy::dotenv().ok();
     let args = Args::parse();
     // 041-R15 / 060-AC4: autotune + fusion as in training, cache in URANIUM_AUTOTUNE_CACHE_DIR.
     if !matches!(args.backend, Backend::Flex) {

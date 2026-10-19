@@ -7,10 +7,18 @@
 //! optimizer step) and build their optimizers without Burn clipping.
 //!
 //! The norm and the factor stay on the device (no host read), so clipping adds no sync point.
+//!
+//! A non-finite global norm (NaN / inf anywhere in the gradients) sets every gradient to 0 for
+//! that update, also on the device: the step then adds no gradient (AdamW moments still decay
+//! and weight decay still applies), instead of writing NaN into the weights.
 
 use burn::module::{Module, ModuleVisitor, Param};
 use burn::optim::GradientsParams;
-use burn::tensor::{DType, FloatDType, Tensor};
+use burn::tensor::{Bool, DType, FloatDType, Tensor};
+
+/// The clip semantics, part of the BC config fingerprint (B-3): one global L2 norm (041-R3), not
+/// Burn's per-tensor clip used before 2026-10-19.
+pub const CLIP_MODE: &str = "global_l2";
 
 /// Added to the norm before dividing (as torch `clip_grad_norm_`), so a zero gradient stays zero.
 pub const CLIP_EPS: f64 = 1e-6;
@@ -36,10 +44,12 @@ impl ModuleVisitor for SquaredSum<'_> {
     }
 }
 
-/// Multiplies every gradient by `coef` ([1]).
+/// Multiplies every gradient by `coef` ([1]); where `bad` ([1]) is true the gradient becomes 0
+/// (a NaN entry times 0 would stay NaN).
 struct Scale<'a> {
     grads: &'a mut GradientsParams,
     coef: Tensor<1>,
+    bad: Tensor<1, Bool>,
 }
 
 impl ModuleVisitor for Scale<'_> {
@@ -47,10 +57,12 @@ impl ModuleVisitor for Scale<'_> {
         let Some(g) = self.grads.remove::<D>(param.id) else { return };
         let dtype = g.dtype();
         let c = self.coef.clone().unsqueeze::<D>();
+        let shape = g.shape();
         let scaled = match dtype {
             DType::F16 | DType::BF16 => (g.cast(FloatDType::F32) * c).cast(dtype),
             _ => g * c,
         };
+        let scaled = scaled.mask_fill(self.bad.clone().unsqueeze::<D>().expand(shape), 0.0);
         self.grads.register::<D>(param.id, scaled);
     }
 }
@@ -67,8 +79,10 @@ pub fn global_norm<M: Module>(module: &M, grads: &GradientsParams) -> Option<Ten
 /// L2 norm. Returns the clipped gradients and the norm before clipping ([1], not read back).
 pub fn clip_global_norm<M: Module>(module: &M, mut grads: GradientsParams, max_norm: f32) -> (GradientsParams, Option<Tensor<1>>) {
     let Some(norm) = global_norm(module, &grads) else { return (grads, None) };
-    let coef = (norm.clone().add_scalar(CLIP_EPS).recip() * max_norm as f64).clamp_max(1.0);
-    let mut v = Scale { grads: &mut grads, coef };
+    // Non-finite norm: factor 0 and the gradients masked to 0 (no host read, see module docs).
+    let bad = norm.clone().is_finite().bool_not();
+    let coef = (norm.clone().add_scalar(CLIP_EPS).recip() * max_norm as f64).clamp_max(1.0).mask_fill(bad.clone(), 0.0);
+    let mut v = Scale { grads: &mut grads, coef, bad };
     module.visit(&mut v);
     (grads, Some(norm))
 }
@@ -162,6 +176,18 @@ mod tests {
         let want = [3.0 / 13.0, 4.0 / 13.0, 0.0, 0.0, 0.0, 12.0 / 13.0];
         for (x, w) in flat(&m, &g).iter().zip(want) {
             assert!((*x as f64 - w).abs() < 1e-6, "{x} vs {w}");
+        }
+    }
+
+    /// 041-R3: a NaN or inf anywhere makes the global norm non-finite; every gradient becomes 0
+    /// (finite) so the step writes no NaN into the weights.
+    #[test]
+    fn non_finite_norm_zeroes_the_gradients_041_r3() {
+        for bad in [f32::NAN, f32::INFINITY] {
+            let (m, g) = setup([3.0, bad], [1.0, 2.0, 3.0, 4.0]);
+            let (g, norm) = clip_global_norm(&m, g, 1.0);
+            assert!(!host(norm.unwrap())[0].is_finite());
+            assert_eq!(flat(&m, &g), vec![0.0; 6], "{bad}");
         }
     }
 

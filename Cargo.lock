@@ -468,6 +468,7 @@ dependencies = [
  "anyhow",
  "burn",
  "clap",
+ "dotenvy",
  "uranium-model",
 ]
 

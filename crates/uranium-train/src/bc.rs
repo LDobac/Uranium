@@ -130,6 +130,9 @@ pub struct ResultSettings {
     pub augment: bool,
     pub seed: u64,
     pub enemy_race_mask: f64,
+    /// Not a config field: the gradient clip semantics (041-R3 global L2 norm since 2026-10-19,
+    /// `crate::clip::CLIP_MODE`), so runs from before the change do not match the fingerprint.
+    pub clip_mode: &'static str,
 }
 
 /// B-3: `BcConfig` fields (as `toml` keys, `data.` for the `[data]` table) left out of the
@@ -183,6 +186,7 @@ impl BcConfig {
             augment: self.data.augment,
             seed: self.data.seed,
             enemy_race_mask: self.data.enemy_race_mask,
+            clip_mode: crate::clip::CLIP_MODE,
         }
     }
 

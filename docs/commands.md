@@ -5,7 +5,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 ## 빌드·설정
 - 설정: `cp .env.example .env` 후 값 입력. Rust 바이너리는 시작 시, 셸 스크립트는 `tools/env.sh`(Windows `tools\env.ps1`)로 읽는다. Windows 경로는 작은따옴표로 감싼다.
 - OpenBW/BWAPI(011): `tools/openbw/build.sh` → `third_party/bwapi/build/bin/BWAPILauncher`. 패치는 `third_party/patches/`(0001~0013)를 순서대로 적용한다.
-- 브리지(011): `tools/openbw/build_bridge.sh` → `bridge/openbw/build/liburanium_bridge.so`. shim은 500줄 이하.
+- 브리지(011): `tools/openbw/build_bridge.sh` → `bridge/openbw/build/liburanium_bridge.so`. shim은 500줄 이하. shim과 Rust 쪽은 C ABI로 묶여 있어 항상 함께 빌드한다. 2026-10-19 `uranium_bridge_end` 인자 4개·프로토콜 버전 2(010-R12)부터는 브리지 .so·에이전트·hostd를 모든 PC에서 함께 다시 빌드하고, 옛 shim과 새 라이브러리를 섞지 않는다.
 - Windows(001-R8, `docs/windows.md`): `tools\openbw\build.ps1` → `tools\openbw\build_bridge.ps1` → `tools\oss\build_<bot>.ps1`.
 - T1 봇(021): `tools/oss/build_<bot>.sh`(`ualbertabot`, `steamhammer`, `zzzkbot`, `stardust`, `mcrave`, `iron`) → `<URANIUM_OSS_BOTS_DIR>/<bot>/{module.so, VERSION}`. 상대 ID는 `<bot>@<버전>`(021-R3).
 - 게임 데이터 추출(011-R13): `cargo install casc --version 0.1.6 --locked` 후 `cargo run -p casc-extract -- <SC:R Data> <출력>` → `.env` `URANIUM_DATA_DIR`.
