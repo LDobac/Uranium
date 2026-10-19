@@ -86,4 +86,4 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 
 ## 래더 리플레이 수집(043, Windows, SC:R 로그인 상태)
 - `uranium-ladder probe [--leaderboard <id> | --toon <t> --gateway <g> [--gamemode <m> --season <s>] | --match-id <link> | --download <url>]`(`reports/m4_ladder_probe.md`), `shape <json> [--pointer /a/0]`.
-- 하루 1회 `uranium-ladder collect --plan config/ladder/kr_asia.toml [--limit N] [--dry-run]` → `raw/scr_ladder/`, 집계 `uranium-ladder status`. 0.5 req/s·일 1,000개(043-R4). 랭크 A 이상 = `min_bucket = 6`.
+- 하루 1회 `uranium-ladder collect --plan config/ladder/kr_asia.toml [--limit N] [--dry-run]` → `raw/scr_ladder/`, 집계 `uranium-ladder status`. 0.5 req/s·일 1,000개(043-R4). 랭크 A 이상 = `min_bucket = 6`. 스키마 실패 경기 재시도 `collect --plan ... --retry-failed [사유 접두어, 기본 schema:]`(043-R9, 같은 속도·일일 한도).

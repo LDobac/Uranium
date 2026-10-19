@@ -126,7 +126,10 @@ pub struct MatchPlayer {
     /// Results as this player's client reported them, keyed by toon ("" for empty slots).
     pub game_result: BTreeMap<String, GameResult>,
     pub info_attributes: BTreeMap<String, Value>,
-    pub score: Score,
+    /// Missing for some players (seen on 2026-10-17/19 ladder games); the match is still
+    /// collected and the record leaves that player's MMR/rank empty (043-R8, R9).
+    #[serde(default)]
+    pub score: Option<Score>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -237,6 +240,17 @@ mod tests {
         assert_eq!(m.race(), Some("zerg"));
         let m: MatchPlayer = serde_json::from_value(player("b", &[("b", "Win")])).unwrap();
         assert_eq!(m.race(), Some("Terran"));
+    }
+
+    /// 043-R9: a player without `score` still parses; only that player's MMR/rank is unknown.
+    #[test]
+    fn r043_r9_match_player_without_score() {
+        let mut b = player("b", &[("a", "Win"), ("b", "Loss")]);
+        b.as_object_mut().unwrap().remove("score");
+        let m: MatchInfo = serde_json::from_value(json!({"players": {"1": player("a", &[("a", "Win"), ("b", "Loss")]), "2": b}, "replays": []})).unwrap();
+        assert_eq!(m.players["1"].score.as_ref().map(|s| s.base), Some(2000));
+        assert!(m.players["2"].score.is_none());
+        assert_eq!(m.agreed_winner(), Some("a"));
     }
 
     #[test]

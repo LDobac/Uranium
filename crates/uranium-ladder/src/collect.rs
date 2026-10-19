@@ -72,6 +72,9 @@ pub struct Opts {
     pub limit: Option<u32>,
     /// List candidate matches without fetching match info or replays.
     pub dry_run: bool,
+    /// Instead of walking the leaderboard, fetch again the matches whose latest record is
+    /// `failed` with a reason starting with this prefix (043-R6, R9).
+    pub retry_failed: Option<String>,
 }
 
 /// 043-R8 record, one line of collect.jsonl per match.
@@ -109,8 +112,11 @@ pub struct RecordPlayer {
     pub gateway_id: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub race: Option<String>,
-    pub rating: i64,
-    pub bucket: i64,
+    /// MMR and leaderboard bucket; empty when the match info has no `score` for this player.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bucket: Option<i64>,
     /// This player's client report per toon (`Win`, `Loss`, `Disconnect`, `Undecided`, …).
     pub reports: BTreeMap<String, String>,
 }
@@ -180,6 +186,40 @@ pub fn run(settings: &Settings, paths: &Paths, plan: &Plan, opt: &Opts) -> Resul
     let mut daily = Daily::load_today(&paths.ladder.join("daily.json"), settings.daily_max)?;
     let mut raw_shas = if opt.dry_run { HashSet::new() } else { raw_index(&paths.raw_root, &paths.ladder.join("raw_index.json"))? };
     let mut http = Http::new(settings.rps);
+    if let Some(prefix) = &opt.retry_failed {
+        let targets = retry_targets(&paths.records(), prefix)?;
+        println!("retry: {} matches whose latest record failed with this reason", targets.len());
+        if opt.dry_run || targets.is_empty() {
+            return Ok(rec.summary);
+        }
+        let api = Api::connect(&mut http, settings)?;
+        let mut failures = Failures(0);
+        let mut downloads = 0u32;
+        let n = targets.len();
+        for (i, (link, create_time)) in targets.into_iter().enumerate() {
+            if daily.remaining() == 0 {
+                println!("daily download budget ({}) reached (043-R4)", settings.daily_max);
+                break;
+            }
+            if opt.limit.is_some_and(|l| downloads >= l) {
+                break;
+            }
+            let (r, downloaded) = fetch_match(&api, &mut http, paths, &mut raw_shas, &link, create_time)?;
+            if downloaded {
+                downloads += 1;
+                daily.record()?;
+            }
+            let failed = r.status == "failed";
+            println!("[retry {}/{n}] {} {}", i + 1, r.status, r.reason.as_deref().or(r.sha256.as_deref().map(|s| &s[..12])).unwrap_or(""));
+            rec.write(r)?;
+            if failed {
+                failures.fail("match")?;
+            } else {
+                failures.0 = 0;
+            }
+        }
+        return Ok(rec.summary);
+    }
     let api = Api::connect(&mut http, settings)?;
 
     let list: LeaderboardList = api.json(&mut http, schema::LEADERBOARD_LIST).map_err(|e| anyhow::anyhow!("leaderboard list: {e}"))?;
@@ -260,6 +300,30 @@ pub fn run(settings: &Settings, paths: &Paths, plan: &Plan, opt: &Opts) -> Resul
     Ok(rec.summary)
 }
 
+/// Latest record per match, in first-seen order (later lines replace earlier ones).
+fn latest_records(text: &str) -> Vec<Record> {
+    let mut order: Vec<String> = Vec::new();
+    let mut last: std::collections::HashMap<String, Record> = std::collections::HashMap::new();
+    for l in text.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(r) = serde_json::from_str::<Record>(l) else { continue };
+        if !last.contains_key(&r.link) {
+            order.push(r.link.clone());
+        }
+        last.insert(r.link.clone(), r);
+    }
+    order.into_iter().filter_map(|k| last.remove(&k)).collect()
+}
+
+/// `--retry-failed`: matches whose latest record is `failed` with a reason starting with `prefix`.
+fn retry_targets(records: &Path, prefix: &str) -> Result<Vec<(String, u64)>> {
+    let text = std::fs::read_to_string(records).with_context(|| format!("{}", records.display()))?;
+    Ok(latest_records(&text)
+        .into_iter()
+        .filter(|r| r.status == "failed" && r.reason.as_deref().is_some_and(|x| x.starts_with(prefix)))
+        .map(|r| (r.link, r.create_time.unwrap_or(0)))
+        .collect())
+}
+
 /// Match info → download → verify → store. Returns the record and whether a download happened.
 fn fetch_match(api: &Api, http: &mut Http, paths: &Paths, raw_shas: &mut HashSet<String>, link: &str, create_time: u64) -> Result<(Record, bool)> {
     let mut r = Record { link: link.to_string(), create_time: Some(create_time), collected_at: chrono::Local::now().to_rfc3339(), ..Default::default() };
@@ -322,7 +386,7 @@ fn describe(r: &mut Record, info: &MatchInfo) {
     let first = info.players.values().next();
     r.map_name = first.and_then(|p| p.game_attr("map_name")).map(str::to_string);
     r.map_md5 = first.and_then(|p| p.game_attr("map_md5")).map(str::to_string);
-    r.season_id = first.and_then(|p| p.score.season_id);
+    r.season_id = info.players.values().find_map(|p| p.score.as_ref()?.season_id);
     r.winner = info.agreed_winner().map(str::to_string);
     r.players = info
         .players
@@ -331,8 +395,8 @@ fn describe(r: &mut Record, info: &MatchInfo) {
             toon: p.name.clone(),
             gateway_id: p.gateway_id,
             race: p.race().map(str::to_string),
-            rating: p.score.base,
-            bucket: p.score.bucket_new,
+            rating: p.score.as_ref().map(|s| s.base),
+            bucket: p.score.as_ref().map(|s| s.bucket_new),
             reports: p.game_result.iter().filter(|(t, _)| !t.is_empty()).map(|(t, g)| (t.clone(), g.result.clone())).collect(),
         })
         .collect();
@@ -398,8 +462,8 @@ pub fn status_markdown(records: &Path) -> Result<String> {
     let mut by_status: BTreeMap<String, u32> = BTreeMap::new();
     let mut by_matchup: BTreeMap<String, u32> = BTreeMap::new();
     let mut by_map: BTreeMap<String, u32> = BTreeMap::new();
-    for l in text.lines().filter(|l| !l.trim().is_empty()) {
-        let r: Record = serde_json::from_str(l)?;
+    // A retried match counts once, by its latest record.
+    for r in latest_records(&text) {
         let reason = r.reason.as_deref().map(|s| s.split(':').next().unwrap_or(s).to_string());
         *by_status.entry(match reason {
             Some(x) => format!("{} ({x})", r.status),
@@ -533,11 +597,12 @@ mod tests {
         r.insert("/files/1.rep".into(), (200, new_rep.clone()));
         r.insert("/files/5.rep".into(), (200, dup.clone()));
         let downloads = Arc::new(AtomicU32::new(0));
-        serve(listener, Arc::new(Mutex::new(r)), downloads.clone());
+        let routes: Routes = Arc::new(Mutex::new(r));
+        serve(listener, routes.clone(), downloads.clone());
 
         let settings = Settings { port: Some(port), rps: 1000.0, daily_max: 1000, shared_dir: None };
         let plan = Plan { gateways: vec![30], gamemode: 1, min_bucket: Some(6), page_size: 2 };
-        let opt = Opts { limit: None, dry_run: false };
+        let opt = Opts { limit: None, dry_run: false, retry_failed: None };
 
         let s = run(&settings, &paths, &plan, &opt).unwrap();
         assert_eq!(s, Summary { ok: 1, skipped: 1, failed: 1 });
@@ -564,6 +629,26 @@ mod tests {
         let md = status_markdown(&paths.records()).unwrap();
         assert!(md.contains("| TvZ | 1 |") && md.contains("| failed (schema) | 1 |"), "{md}");
         assert!(!md.contains("toon"), "status must not name players: {md}");
+
+        // 043-R9 retry: MM-4 now answers with a player lacking `score`; only it is fetched again.
+        let rep4 = b"seRS fake ladder replay 4".to_vec();
+        let mut pb_no_score = pb.clone();
+        pb_no_score.as_object_mut().unwrap().remove("score");
+        routes.lock().unwrap().insert(api(&schema::match_info("MM-4")), (200, serde_json::to_vec(&json!({"players": {"1": pa, "2": pb_no_score}, "replays": [{"md5": md5_of(&rep4), "url": file("4.rep")}]})).unwrap()));
+        routes.lock().unwrap().insert("/files/4.rep".into(), (200, rep4.clone()));
+        let retry = Opts { retry_failed: Some("schema:".into()), ..opt };
+        let s = run(&settings, &paths, &plan, &retry).unwrap();
+        assert_eq!(s, Summary { ok: 1, skipped: 0, failed: 0 });
+        assert_eq!(downloads.load(Ordering::SeqCst), 3);
+        let last: Record = serde_json::from_str(std::fs::read_to_string(paths.records()).unwrap().lines().last().unwrap()).unwrap();
+        assert_eq!((last.link.as_str(), last.status.as_str()), ("MM-4", "ok"));
+        assert_eq!(last.players.iter().filter(|p| p.rating.is_none()).count(), 1);
+        assert_eq!(last.season_id, Some(20));
+        // Nothing left to retry, and status counts MM-4 once (latest record).
+        assert_eq!(run(&settings, &paths, &plan, &retry).unwrap(), Summary::default());
+        let md = status_markdown(&paths.records()).unwrap();
+        assert!(md.contains("| ok | 2 |") && !md.contains("failed (schema)"), "{md}");
+        let opt = Opts { retry_failed: None, ..retry };
 
         // 043-R5: refuse to run without a confirmed min_bucket.
         let unset = Plan { min_bucket: None, ..plan };

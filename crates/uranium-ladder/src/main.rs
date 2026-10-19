@@ -48,6 +48,11 @@ enum Cmd {
         /// List new ladder links per tracked player without fetching match info or replays
         #[arg(long)]
         dry_run: bool,
+        /// Fetch again only the matches whose latest record failed with a reason starting with
+        /// this prefix (default `schema:`), e.g. after a schema fix (043-R9). Same rate and
+        /// daily budget (043-R4).
+        #[arg(long, num_args = 0..=1, default_missing_value = "schema:")]
+        retry_failed: Option<String>,
     },
     /// Counts of collect.jsonl per status, matchup and map (no player names).
     Status {
@@ -98,10 +103,10 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&redact::shape(v))?);
             Ok(())
         }
-        Cmd::Collect { plan, limit, dry_run } => {
+        Cmd::Collect { plan, limit, dry_run, retry_failed } => {
             let plan = collect::Plan::load(&plan)?;
             let paths = collect::Paths::from_settings(&settings)?;
-            let s = collect::run(&settings, &paths, &plan, &collect::Opts { limit, dry_run })?;
+            let s = collect::run(&settings, &paths, &plan, &collect::Opts { limit, dry_run, retry_failed })?;
             println!("done: ok {}, skipped {}, failed {}", s.ok, s.skipped, s.failed);
             Ok(())
         }
