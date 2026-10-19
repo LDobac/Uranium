@@ -79,6 +79,10 @@ pub struct Action {
     pub producer: Option<String>,
     /// 010 `CancelKind` for Cancel.
     pub cancel: Option<String>,
+    /// 034-R9: the game accepts the selected unit itself as the target (rally on itself resets
+    /// the rally). Every other unit-target action excludes the selection from its targets.
+    #[serde(default)]
+    pub self_target: bool,
 }
 
 #[derive(Deserialize, Debug)]

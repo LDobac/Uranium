@@ -73,8 +73,16 @@ pub fn host_label_check(l: &Label, o: &Observation) -> (HostLabel, Option<&'stat
     let visible = h.selected.len();
     // 041-R11: the game runs a command on each selected unit that can take it and skips the rest
     // (OpenBW `action_*`), so the label keeps only those; it is void when none can.
+    let mut self_only = false;
     if a.uses_select {
         h.selected.retain(|&i| cap(i, &a.select_cap));
+        let capable = !h.selected.is_empty();
+        // 034-R9: a unit cannot target itself; the game skips it and runs the command on the
+        // other selected units (as above), so the label keeps those.
+        if let (TargetKind::Unit, false, Some(t)) = (a.target, a.self_target, h.target_unit) {
+            h.selected.retain(|&i| i != t);
+        }
+        self_only = capable && h.selected.is_empty();
     }
     let why = if !o.masks.type_mask[a.id as usize] {
         Some("type_mask")
@@ -82,6 +90,8 @@ pub fn host_label_check(l: &Label, o: &Observation) -> (HostLabel, Option<&'stat
         Some("select_empty")
     } else if a.uses_select && visible != l.selected.len() {
         Some("select_not_visible")
+    } else if self_only {
+        Some("target_selected")
     } else if a.uses_select && h.selected.is_empty() {
         Some("select_cap")
     } else if a.uses_select && h.selected.len() > a.max_select as usize {

@@ -1447,6 +1447,8 @@ target_cap = "any_unit"
 loc_class = ""
 executor = "none"
 command = "SetRally"
+# 034-R9: BWAPI `canSetRallyUnit` and the game accept the building itself (clears the rally).
+self_target = true
 
 [[action]]
 id = 95

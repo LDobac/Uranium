@@ -103,6 +103,8 @@ pub struct ActionTableTensors {
     pub target_cap: Tensor<1, Int>,
     /// [A] location class index (0 when unused).
     pub loc_class: Tensor<1, Int>,
+    /// [A] 0 / 1: the target may be a selected unit (034-R9).
+    pub self_target: Tensor<1, Int>,
 }
 
 pub const TARGET_NONE: i32 = 0;
@@ -119,6 +121,7 @@ pub struct ActionColumns {
     pub target_kind: Vec<i32>,
     pub target_cap: Vec<i32>,
     pub loc_class: Vec<i32>,
+    pub self_target: Vec<i32>,
 }
 
 impl ActionColumns {
@@ -133,6 +136,7 @@ impl ActionColumns {
             target_kind: vec![],
             target_cap: vec![],
             loc_class: vec![],
+            self_target: vec![],
         };
         for a in &table.actions {
             ensure!(a.max_select as usize <= 12, "action {}: max_select > 12 (031-R3)", a.name);
@@ -147,6 +151,7 @@ impl ActionColumns {
             });
             c.target_cap.push(cap(&a.target_cap));
             c.loc_class.push(loc(&a.loc_class));
+            c.self_target.push(a.self_target as i32);
         }
         Ok(c)
     }
@@ -169,6 +174,7 @@ impl ActionColumns {
             target_kind: t(&self.target_kind),
             target_cap: t(&self.target_cap),
             loc_class: t(&self.loc_class),
+            self_target: t(&self.self_target),
         }
     }
 }
@@ -184,6 +190,8 @@ pub struct ActionInfo {
     pub target_loc: Tensor<1, Bool>,
     pub target_cap: Tensor<1, Int>,
     pub loc_class: Tensor<1, Int>,
+    /// [B] the target may be a selected unit (034-R9).
+    pub self_target: Tensor<1, Bool>,
 }
 
 impl ActionTableTensors {
@@ -200,6 +208,7 @@ impl ActionTableTensors {
             target_loc: kind.equal_elem(TARGET_LOC),
             target_cap: g(&self.target_cap),
             loc_class: g(&self.loc_class),
+            self_target: g(&self.self_target).equal_elem(1),
         }
     }
 }

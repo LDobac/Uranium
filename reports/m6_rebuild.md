@@ -248,11 +248,13 @@
 | Linux 호스트 A | 16:35(첫 파트 16:40) | 8 | `ssh -n -f` + `setsid nohup run_queue.sh` |
 | Linux 호스트 B | 16:35(첫 파트 16:43) | 8 | 같음 |
 | 학습 PC | 16:59 | 12 | 세션과 분리된 프로세스로 `run_queue.ps1` 실행 |
+| Linux 호스트 C(4C/8T, RAM 14 GiB, swap 4 GiB) | 18:31(첫 파트 stardata_p07) | 8 | Linux 호스트 A와 같음. `.env` 키 같음, staging은 로컬 |
 
 - 실행 파일: 각 장비 로컬 `uranium-build/d452c29/`에 복사한 d452c29 `uranium-replay`와 브리지
   - Linux는 `URANIUM_BRIDGE_LIB`로 브리지를 지정했다.
   - 학습 PC는 `-BridgeLib`로 지정했다.
 - 학습 PC는 처음에 권한 거부로 띄우지 못했다. 사용자가 권한을 준 뒤 16:59에 시작했다.
+- Linux 호스트 C는 18:31에 합류했다. d452c29 바이너리를 그 호스트에서 빌드했다. 합류 전 표본(scr_ladder 12, stardata 20)을 `--jobs 1`로 돌려 Linux 호스트 A와 비교했고, shard·records가 바이트 단위로 같았다.
 - 시각은 각 장비 시계 기준이다. 학습 PC 시계가 Linux보다 약 8분 늦다.
 - Linux 호스트 A·B: build를 방해하지 않게 `nice`로 대상 맵 `mapgen`을 돌렸다. 각 장비 `URANIUM_MAPS_DIR`에 v2 사전계산이 생겼다(서킷브레이커 자원 136, 투혼 122). 1절의 남은 일 2를 Linux 두 대에서 해결했다.
 

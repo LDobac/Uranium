@@ -337,6 +337,14 @@ impl<'a> World<'a> {
 
     /// 031-R1: own completed, landed, idle-enough buildings of `producer` type that can run
     /// `what` now, ordered by (queue length, id) — or by energy for the scanner.
+    /// 034-R8: a completed own building that is constructing its addon (BWAPI `isConstructing`
+    /// on a completed building, or an incomplete addon in its slot).
+    pub fn building_addon(&self, u: &UnitState) -> bool {
+        self.ty(u).is_some_and(|t| t.is_building())
+            && u.has(flags::COMPLETED)
+            && (u.has(flags::CONSTRUCTING) || (u.has_addon && super::masks::addon_incomplete(self, u)))
+    }
+
     pub fn producers(&self, producer: u16, need_addon: Option<u16>, research: bool) -> Vec<&UnitState> {
         let mut v: Vec<&UnitState> = self
             .frame
@@ -346,6 +354,9 @@ impl<'a> World<'a> {
             .filter(|u| u.has(flags::COMPLETED) && !u.has(flags::LIFTED))
             // 034-R6: a disabled (e.g. stasis-ed) building takes no command.
             .filter(|u| !is_disabled(u))
+            // 034-R8 (사용자 결정 2026-10-19): the game refuses Train / Research / Upgrade
+            // (Unit_Busy) while the building constructs its addon.
+            .filter(|u| !self.building_addon(u))
             .filter(|u| need_addon.is_none_or(|a| self.addon_of.get(&u.id) == Some(&a)))
             .filter(|u| if research { u.remaining_research == 0 && queue_len(u) == 0 } else { queue_len(u) < 5 && u.remaining_research == 0 })
             .collect();

@@ -763,3 +763,67 @@ fn every_action_type_command_round_trips_010_ac4() {
     let missing: Vec<&str> = table.actions.iter().filter(|a| !done[a.id as usize]).map(|a| a.name.as_str()).collect();
     assert!(missing.is_empty(), "no command for {missing:?}");
 }
+
+/// 034-R8: a building constructing its addon takes no Train / Research / Upgrade / Lift (the game
+/// answers Unit_Busy). Seen either as BWAPI `isConstructing` on the completed building or as an
+/// incomplete addon in its slot (replay observations).
+#[test]
+fn building_constructing_addon_is_busy_034_r8() {
+    let map = map_info();
+    let vulture = action_table().by_name("Train_Vulture").unwrap().id as usize;
+    for flag_only in [true, false] {
+        let mut b = Builder::new();
+        b.add(SELF, "Terran_Command_Center", (10, 10));
+        b.add(SELF, "Terran_SCV", (16, 16));
+        let fac = b.add(SELF, "Terran_Factory", (26, 10));
+        if flag_only {
+            b.get(fac).flags |= uranium_proto::flags::CONSTRUCTING;
+        } else {
+            b.get(fac).has_addon = true;
+            let shop = b.add(SELF, "Terran_Machine_Shop", (30, 11));
+            b.get(shop).flags &= !uranium_proto::flags::COMPLETED;
+        }
+        let f = frame(10, b.units.clone(), false);
+        let mut mem = AgentMemory::new(&game_info());
+        let o = extract(&f, &mut mem, &map, None);
+        assert!(!o.masks.type_mask[vulture], "flag_only={flag_only}: busy factory trains");
+        assert!(!cap_of(&o, index_of(&o, fac), "can_lift"), "flag_only={flag_only}: busy factory lifts");
+        // A second, idle factory is the one picked.
+        let idle = b.add(SELF, "Terran_Factory", (26, 30));
+        let f = frame(20, b.units.clone(), false);
+        let o = extract(&f, &mut mem, &map, None);
+        assert!(o.masks.type_mask[vulture]);
+        let w = World::new(&f, &mem, &map);
+        let out = execute(&w, &o, &host("Train_Vulture", vec![], None, None)).unwrap();
+        assert!(matches!(out.commands[0], Command::Train { building, .. } if building == idle), "{out:?}");
+    }
+}
+
+/// 034-R9: a unit never targets itself. The executor rejects it; a label targeting one of its own
+/// selected units keeps the others (the game skips the target) and is void when none remain.
+#[test]
+fn no_self_target_034_r9() {
+    use uranium_env::features::executor::Rejected;
+    use uranium_env::features::label::{Label, host_label_check};
+    let (o, f, mem, map) = observe(true);
+    let w = World::new(&f, &mem, &map);
+    let marines: Vec<u32> =
+        f.units.iter().filter(|u| u.unit_type == ty("Terran_Marine") && u.loaded_in.is_none() && u.status_timers.lockdown == 0).map(|u| u.id).collect();
+    let (m0, m1) = (index_of(&o, marines[0]), index_of(&o, marines[1]));
+    for name in ["Move_Unit", "Smart_Unit"] {
+        assert_eq!(execute(&w, &o, &host(name, vec![m0], Some(m0), None)), Err(Rejected::BadTarget), "{name}");
+        assert!(execute(&w, &o, &host(name, vec![m0], Some(m1), None)).is_ok(), "{name}");
+    }
+    let mv = action_table().by_name("Move_Unit").unwrap().id;
+    let label = |selected: Vec<u32>| Label { frame: 0, action: mv, delay: 8, queued: false, selected, target_unit: Some(marines[0]), target_tile: None };
+    let (h, why) = host_label_check(&label(vec![marines[0], marines[1]]), &o);
+    assert_eq!((h.selected, why), (vec![m1], None));
+    assert_eq!(host_label_check(&label(vec![marines[0]]), &o).1, Some("target_selected"));
+    // SetRally_Unit is the exception (`self_target`): a rally on the building itself clears it.
+    let rax = f.units.iter().find(|u| u.unit_type == ty("Terran_Barracks") && !u.has(uranium_proto::flags::LIFTED)).unwrap().id;
+    let r = index_of(&o, rax);
+    assert!(execute(&w, &o, &host("SetRally_Unit", vec![r], Some(r), None)).is_ok());
+    let rally = action_table().by_name("SetRally_Unit").unwrap().id;
+    let l = Label { frame: 0, action: rally, delay: 8, queued: false, selected: vec![rax], target_unit: Some(rax), target_tile: None };
+    assert_eq!(host_label_check(&l, &o).1, None);
+}

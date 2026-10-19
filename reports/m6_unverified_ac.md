@@ -142,8 +142,43 @@ cargo run -p bench --release --features cuda -- --backend cuda --out reports/ben
   ```
 
 ## 질문 (사용자 결정 필요)
-1. **애드온 건설 중인 건물**: `pick_building`(031-R1)과 Train·Research·Upgrade 마스크가 애드온을 짓는 건물을 후보에서 빼지 않는다. 그래서 게임이 Unit_Busy로 거절하는 것으로 추정된다(실게임 3회차 Train_SCV 48회).
+1. **애드온 건설 중인 건물**(2026-10-19 결정·반영, 034-R8, 아래 진행 기록): `pick_building`(031-R1)과 Train·Research·Upgrade 마스크가 애드온을 짓는 건물을 후보에서 빼지 않는다. 그래서 게임이 Unit_Busy로 거절하는 것으로 추정된다(실게임 3회차 Train_SCV 48회).
    - 빼도록 고치면 마스크가 바뀐다. 재build 중인 shard 생성 경로(레이블 무효 판정)에도 영향이 있을 수 있어 이번에는 고치지 않았다.
    - 고칠지, 고친다면 언제(재build 뒤 RL 전) 할지 결정이 필요하다.
-2. **자기 자신 대상**: Move_Unit·Smart_Unit·SetRally_Unit에서 선택 유닛 자신을 대상으로 고를 수 있고, 게임은 거절한다. 마스크·executor에서 막을지 결정이 필요하다(현재는 031-R10 실패로 기록되고 RL이 피하도록 학습).
+2. **자기 자신 대상**(2026-10-19 결정·반영, 034-R9, SetRally_Unit 예외는 확인 필요, 아래 진행 기록): Move_Unit·Smart_Unit·SetRally_Unit에서 선택 유닛 자신을 대상으로 고를 수 있고, 게임은 거절한다. 마스크·executor에서 막을지 결정이 필요하다(현재는 031-R10 실패로 기록되고 RL이 피하도록 학습).
 3. **032-AC2 Linux Vulkan 기준**: 체크리스트 2 측정 뒤 기준값을 정해 주기 바란다.
+
+## 진행 기록: 질문 1·2 반영 (사용자 결정 2026-10-19)
+- 결정: 두 마스크 문제를 지금 고친다. 데이터는 다시 build하지 않는다.
+  - 진행 중인 전체 재build는 d452c29 바이너리를 그대로 쓴다.
+  - 마스크는 학습 시점에 shard 관측으로 계산하므로 학습에는 바로 반영된다.
+  - 다만 build의 040-R19 시점 걸러냄(무효 레이블 20% 이상)은 옛 마스크로 판정했다. 알려진 불일치이고 영향은 아래 측정처럼 무시할 수준이다.
+- 034-R8(애드온 건설 중인 건물)
+  - 완성된 건물이 `CONSTRUCTING`이거나 애드온 자리에 미완성 애드온이 있으면, `World::producers`(Train·Research·Upgrade의 `pick_building`)와 `can_lift`에서 뺀다.
+  - 근거: BWAPI `canTrain`(`isConstructing`)·`canResearch`/`canUpgrade`/`canLift`(`isIdle`)가 Unit_Busy를 낸다.
+- 034-R9(자기 대상 금지)
+  - `target = "unit"` action_type의 대상에서 이번 선택을 뺀다. 모델 대상 마스크(샘플·teacher forcing, Bool 연산), executor, BC 레이블 모두 같다.
+  - 레이블은 041-R11처럼 대상 유닛만 선택에서 빼고, 남는 유닛이 없으면 `target_selected`로 무효다.
+  - 모든 대상이 선택에 들어 남는 대상이 없으면, 모델은 원래 마스크를 쓰고 executor가 거부한다.
+- **지시와 다르게 한 점(확인 필요)**: `SetRally_Unit`은 예외(`self_target = true`)로 두었다.
+  - BWAPI `canSetRallyUnit`에는 자기 대상 검사가 없다. 게임도 건물 자신을 랠리 대상으로 받는다(랠리 해제).
+  - 처음 리포트에서 SetRally_Unit도 거절된다고 쓴 것은 실측이 아니었다(실측 거절은 Move_Unit·Smart_Unit뿐).
+  - 처음 구현처럼 SetRally_Unit까지 막으면 표본 레이블 564개(사람의 랠리 해제)가 무효가 됐다.
+- 레이블 영향(`uranium-train label-check`, 재build 출력 중 완성 shard 3개를 로컬로 복사해 읽기만 함: stardata p00 2개, scr_ladder p0 1개)
+
+  | 기준 | 게임 | 레이블 | 무효 | 비율 |
+  |---|---|---|---|---|
+  | 변경 전(d452c29 release) | 65 | 135,411 | 7,290 | 5.384% |
+  | 변경 후, SetRally_Unit도 막음(첫 구현) | 65 | 135,411 | 7,912 | 5.843% |
+  | 변경 후(최종, SetRally_Unit 예외) | 65 | 135,411 | 7,348 | 5.427% |
+
+  - 최종 증가 58개는 모두 `Smart_Unit target_selected`이다.
+  - Lift 2개는 무효 사유만 `select_cap`에서 `type_mask`로 바뀌었다.
+  - Train·Research·Upgrade 레이블의 무효 수는 바뀌지 않았다.
+- OpenBW 시나리오 재실행(6회차, Idle): **100/100**, 비무장 대체 통과, 벽시계 65초.
+  - Train Unit_Busy 거절은 없다(3회차 Train_SCV 48회가 원인).
+  - 자기 대상 오류(1회차 오류 25)도 없다. 남은 거절은 5회차와 같다.
+    - Move_Unit·Smart_Unit 오류 6 각 4회: 게임 초반 SCV가 다른 SCV를 따라갈 때로, 자기 대상이 아니다. 원인 미확인.
+    - Heal 오류 6 4회.
+    - 애드온 자리에 유닛(19), 자원 부족(11), Unit_Busy(3)가 몇 회 있다(건설·TankMode).
+  - 로그: 메인 작업 사본 `reports/raw/t7_031_ac1/run6.log`

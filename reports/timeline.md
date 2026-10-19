@@ -68,3 +68,7 @@
 - 2026-10-19 16시 — 래더 수집 시작(043): `uranium-ladder collect --plan config/ladder/kr_asia.toml`(학습 PC, d452c29 빌드). 추적 대상 gw30 3,185명·gw45 462명, raw index 82,630개. 앞선 dry-run이 멈춘 것처럼 보인 것은 출력 파이프(`| tail`) 버퍼링 때문이었고 API 감지는 정상
 - 2026-10-19 18시 — 래더 수집 종료: 일일 상한 도달, ok 1000·skipped 0·failed 37(`schema: missing field score` 34, `game_info` 3). 오늘 받은 1000개 중 길이 5분 이상 78.3%(783개). 누적 ok 3000·failed(schema) 105. 로그는 작업 tmp `ladder_collect_20261019.log`
 - 2026-10-19 18시 — **결정·구현**: 043-R9 예외(사용자 결정) — match info 플레이어에 `score`가 없으면 경기를 수집하고 MMR·랭크 칸만 비움, 다른 스키마 불일치는 그대로 failed. `collect --retry-failed [사유 접두어]` 추가(최신 기록이 해당 사유의 failed인 경기만 재조회, 043-R4 한도 동일, `status`는 경기별 최신 기록). score 실패 81경기(10-16 7·10-17 40·10-19 34)는 10-20 일반 수집 전에 재시도. 표본 match info 재조회에서 replays URL은 서명·만료 파라미터 없음
+- 2026-10-19 18:31 — R-4 전체 재build에 Linux 추출 호스트 C 합류(d452c29 바이너리를 그 호스트에서 빌드, jobs 8). 합류 전 표본(scr_ladder 12, stardata 20)을 `--jobs 1`로 Linux 호스트 A와 비교해 shard·records 바이트 동일
+- 2026-10-19 — T7 미검증 AC: 010-AC4·043-AC4 테스트, 031-AC1 OpenBW 시나리오 실게임 100/100(비무장 Attack_Pos → Move 확인), 013-R7 build 경로 확인. 060-AC4·032-AC2는 재build 뒤 측정(`m6_unverified_ac.md`)
+- 2026-10-19 — **결정·구현**: 034-R8 애드온 건설 중인 건물은 생산·연구·업그레이드·이륙 후보에서 제외, 034-R9 유닛 대상 액션은 선택 유닛을 대상으로 못 함(SetRally_Unit 예외, 확인 필요). 재build 없음(build의 040-R19 판정은 옛 마스크, 무시할 수준). 표본 무효 레이블 5.384% → 5.427%, 시나리오 재실행 100/100
+- 2026-10-19 — **결정**: 034-R9 SetRally_Unit 자기 대상 예외 사용자 확정(2026-10-19). 건물 자신을 랠리 대상으로 하는 랠리 해제를 허용(`self_target = true`)

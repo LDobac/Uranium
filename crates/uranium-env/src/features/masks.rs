@@ -141,7 +141,8 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     set("can_cast_emp", ty == ids.vessel && caster(ids.tech_emp));
     set("can_cast_irradiate", ty == ids.vessel && caster(ids.tech_irradiate));
     set("can_cast_yamato", ty == ids.battlecruiser && caster(ids.tech_yamato));
-    let busy = queue_len(u) > 0 || u.remaining_research > 0;
+    // 034-R8: a building constructing its addon is busy too (BWAPI `isIdle` false).
+    let busy = queue_len(u) > 0 || u.remaining_research > 0 || w.building_addon(u);
     let liftable = t.has(crate::types::flag::FLYING_BUILDING);
     set("can_lift", commandable && liftable && !lifted && !busy);
     set("can_land_noncc", commandable && lifted && ty != ids.cc);
@@ -198,7 +199,7 @@ fn addon_space_free(w: &World, u: &UnitState, t: &crate::types::UnitType) -> boo
     }))
 }
 
-fn addon_incomplete(w: &World, b: &UnitState) -> bool {
+pub(crate) fn addon_incomplete(w: &World, b: &UnitState) -> bool {
     let Some(t) = w.ty(b) else { return false };
     let (x, y) = top_left(b, t);
     let slot = (x + t.tile_width, y + t.tile_height - 2);

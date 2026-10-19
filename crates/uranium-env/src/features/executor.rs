@@ -80,7 +80,8 @@ pub fn execute(w: &World, obs: &Observation, act: &HostAction) -> Result<Execute
     }
     let target = match a.target {
         TargetKind::Unit => {
-            let t = act.target_unit.filter(|&i| cap(i, &a.target_cap)).ok_or(Rejected::BadTarget)?;
+            // 034-R9: never a unit of the selection (the game rejects self-targeting).
+            let t = act.target_unit.filter(|&i| cap(i, &a.target_cap) && (a.self_target || !act.selected.contains(&i))).ok_or(Rejected::BadTarget)?;
             Some(Target::Unit(unit(t)))
         }
         TargetKind::Loc => {

@@ -225,6 +225,10 @@ pub fn check_actions(cols: &ActionColumns, hm: &HostMasks, acts: &HostActions) -
         if cols.target_kind[a] == TARGET_UNIT {
             let t = acts.target_unit[row] as usize;
             assert!(hm.tgt_ok(cols, row, a, t), "row {row}: action {a} invalid target unit {t}");
+            // 034-R9: not a selected unit, unless every eligible target was selected (then the
+            // row has no valid target and the executor rejects it, 031-R4).
+            let free = (0..hm.n).any(|i| hm.tgt_ok(cols, row, a, i) && !picked.contains(&i));
+            assert!(cols.self_target[a] == 1 || !free || !picked.contains(&t), "row {row}: action {a} targets selected unit {t}");
         }
         if cols.target_kind[a] == TARGET_LOC {
             let c = acts.target_loc[row] as usize;

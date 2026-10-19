@@ -241,7 +241,14 @@ impl Heads {
         let q = self.tgt_query.forward(ar.clone());
         let kd = q.dims()[1];
         let logits = keys.matmul(q.reshape([b, kd, 1])).reshape([b, n]);
-        let tgt_ok = gather_cap(obs.unit_cap.clone(), info.target_cap.clone()).bool_and(obs.entity_mask.clone());
+        // 034-R9: never a unit of this step's selection (sampled or teacher-forced). A row whose
+        // every eligible target was selected keeps the plain mask (the executor then rejects the
+        // action, 031-R4) rather than an all-masked distribution.
+        let cap_ok = gather_cap(obs.unit_cap.clone(), info.target_cap.clone()).bool_and(obs.entity_mask.clone());
+        let taken = sel.units.clone().bool_and(info.self_target.clone().bool_not().reshape([b, 1]).expand([b, n]));
+        let free = cap_ok.clone().bool_and(taken.bool_not());
+        let none_free = free.clone().any_dim(1).bool_not().expand([b, n]);
+        let tgt_ok = free.bool_or(cap_ok.bool_and(none_free));
         let lp_tu = tempered(masked_log_softmax(logits, tgt_ok), temp);
         let target_unit = choose(&lp_tu, labels.map(|l| l.target_unit.clone()));
         crate::prof::mark("fwd.head.target_unit");
@@ -398,6 +405,7 @@ impl Heads {
         let mean_key = sum_keys / count.clamp_min(1.0).reshape([b, 1]);
         *ar = ar.clone() + self.ar_selected.forward(mean_key) * info.uses_select.clone().float().reshape([b, 1]);
         Selected {
+            units: chosen_units,
             chosen: Tensor::cat(choices, 1),
             logp,
             entropy: ent,
@@ -414,6 +422,8 @@ fn flat(t: Tensor<3>) -> Tensor<2> {
 }
 
 struct Selected {
+    /// [B,N] entities picked in this step's selection (034-R9 target mask).
+    units: Tensor<2, Bool>,
     chosen: Tensor<2, Int>,
     logp: Tensor<1>,
     entropy: Tensor<1>,
