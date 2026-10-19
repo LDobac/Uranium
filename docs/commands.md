@@ -49,6 +49,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
   - `--dataset` pull·검증은 파일마다 `[pull]`/`[verify]` 진행 줄을 stderr에 쓴다(감시 30분 멈춤 판정 대비).
   - 맵 사전계산(B-2): `URANIUM_MAPS_DIR`가 필수다(기본값 없음). 시작할 때(잠금 전) 고른 게임의 맵 해시마다 현재 버전 `<map_hash>.toml`이 있는지 shard를 한 번 훑어 확인하고, 없으면 빠진 해시와 게임 수를 나열하고 실패한다. 로더도 사전계산이 없는 게임은 오류로 처리한다. `bc-eval`·`label-check`도 같다. 라이브 게임(에이전트)은 투혼·서킷브레이커에서 사전계산을 얻지 못하면 세션을 거부하고, 그 외 맵은 경고 후 채널 0으로 진행한다(031).
   - 시작 검사용 shard 훑기 결과(게임별 meta·스텝 수·privileged 없는 스텝 수)는 `<URANIUM_CACHE_DIR>/scans/scan-<지문>.json`에 캐시한다. 지문은 파일별 manifest SHA-256(manifest가 없으면 크기·수정 시각)이라 데이터가 바뀌면 새로 훑는다. `bc`·`bc-eval`·`label-check`·`split-stats`·`bc-epoch`가 같이 쓴다.
+  - `--shards` 폴더에 `manifest.json`이 있으면 스캔 캐시와 데이터 지문이 manifest를 따른다. shard를 다시 만들었으면 `manifest <dir>`로 manifest를 다시 만들거나 옛 `manifest.json`을 지운다(그대로 두면 옛 해시로 판단한다).
   - 재개 검사(B-3): 체크포인트 `train_state.json`의 `extra.run`에 stage(`S1`/`S2`/`AblationA`), 설정 지문(결과에 영향을 주는 설정만 담은 화이트리스트 `ResultSettings`, `[steps]` 반영. 실행 방식 설정은 `EXECUTION_ONLY`에 따로 두고, 새 필드는 둘 중 하나로 분류해야 테스트가 통과한다), 데이터 지문(파일별 manifest SHA-256, manifest가 없으면 크기)을 남긴다. 재개할 때 하나라도 다르면 잠금을 풀고 거부한다(우회 옵션 없음, 새 run 또는 `--init`).
   - 체크포인트 보존(061-R6): 설정 `keep_checkpoints`(없으면 5, 0이면 전부 보존). `config/bc_core_ablation.toml`은 0. 정리(삭제) 실패는 경고만 하고 학습을 계속한다.
   - 디스크 경고(061-R8): 학습 시작과 체크포인트 저장마다 공용 드라이브·로컬 캐시(로컬 `--out`이면 그 폴더)의 물리 디스크 사용률이 80% 이상이면 경고한다. 학습은 멈추지 않는다.
