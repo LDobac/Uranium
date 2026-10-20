@@ -288,16 +288,19 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
     let mut saved_at: Option<usize> = None;
     let mut sealed_at: Option<usize> = None;
     while t.step < stop_at && !crate::stopping(&stop) {
+        // 060-AC4: time blocked on the data thread (loader stall), logged per update.
+        let waited = Instant::now();
         let Some(batch) = data.next()? else {
             exhausted = true;
             crate::elog!("data exhausted after {} updates (end of the epoch)", t.step);
             break;
         };
+        let wait_secs = waited.elapsed().as_secs_f64();
         let started = Instant::now();
         let l = t.train_batch(batch)?;
         crate::elog!(
             "{}",
-            serde_json::json!({ "step": t.step, "loss": l, "games": t.games(), "invalid_labels": t.invalid_labels(), "no_result_games": t.data.no_result_games, "secs": (started.elapsed().as_secs_f64() * 100.0).round() / 100.0 })
+            serde_json::json!({ "step": t.step, "loss": l, "games": t.games(), "invalid_labels": t.invalid_labels(), "no_result_games": t.data.no_result_games, "secs": (started.elapsed().as_secs_f64() * 100.0).round() / 100.0, "wait_secs": (wait_secs * 100.0).round() / 100.0 })
         );
         if let Some(r) = &mut run
             && last_beat.elapsed() >= Duration::from_secs(60)

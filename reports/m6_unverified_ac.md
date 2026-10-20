@@ -20,8 +20,8 @@
 | AMB-041-1 비무장 Attack_Pos | **통과** | 같은 테스트. 드랍십·사이언스 베슬 모두 다음 관측에서 order = Move(6) |
 | 043-AC4 | **통과(테스트 추가) + 기존 로그 위반 흔적 없음** | `r043_ac4_collect_requests_stay_under_the_rate`, `r043_ac4_rate_stats_from_send_times`. 실행마다 속도 요약 한 줄을 남긴다 |
 | 013-R7 / 013-AC4 | **build 경로 호출 확인** | T3a(C-7) 이후 `uranium-replay build`가 리플레이마다 `roundtrip_check`를 부른다(`crates/uranium-replay/src/pipeline.rs`, 실패 시 `013-R7 round trip` 오류 또는 review로 기록). AC4 자체는 이전에 통과 |
-| 060-AC4 | **대기(재build 뒤)** | 아래 체크리스트 1 |
-| 032-AC2 | **대기(재build 뒤) + 사용자 확인 필요** | 아래 체크리스트 2 |
+| 060-AC4 | **통과(2026-10-20 측정)** | `reports/bench_cuda.md`, 아래 "진행 기록: 060-AC4·032-AC2 측정" |
+| 032-AC2 | **학습 PC 통과(CUDA < Vulkan), Linux 호스트 A는 사용자 기준 결정 대기** | 아래 "진행 기록: 060-AC4·032-AC2 측정" |
 
 ## 010-AC4
 - 합성 상태 두 개(테크 있음·없음)에서 action_type마다 마스크를 만족하는 인자를 고른다. 선택은 1기, 타깃은 선택하지 않은 유닛이다.
@@ -183,3 +183,40 @@ cargo run -p bench --release --features cuda -- --backend cuda --out reports/ben
     - Heal 오류 6 4회.
     - 애드온 자리에 유닛(19), 자원 부족(11), Unit_Busy(3)가 몇 회 있다(건설·TankMode).
   - 로그: 메인 작업 사본 `reports/raw/t7_031_ac1/run6.log`
+
+## 진행 기록: 060-AC4·032-AC2 측정 (2026-10-20, master 925b995 + 벤치 허용 오차·`wait_secs` 수정)
+- 배경과 예상: 재build가 끝나 체크리스트 1·2를 돌렸다. 예상은 CUDA p95 약 61ms(m5), Linux 호스트 A Vulkan은 초안 40ms를 넘을 것(M1 근사 87ms, M5 Vulkan 70~170ms).
+- 원본 로그: 메인 작업 사본 `reports/raw/060_ac4_032_ac2_20261020/`(추적하지 않는 폴더).
+
+### 060-AC4 (학습 PC, CUDA)
+- 결과: **통과.** 자세한 표·비교는 `reports/bench_cuda.md`.
+  - 정확도는 모두 CUDA 기준(≤ 1e-2) 안이다(최대 상대오차 4.5e-4).
+  - 벤치 하네스가 CUDA에도 Vulkan 기준(1e-4)을 써서 TF32 오차(2~4e-4)를 inaccurate로 표시하던 것을 고쳤다(CUDA는 케이스 기준을 최소 1e-2로, `tools/bench/src/cases.rs`).
+  - `CUDA_PATH`가 없는 셸에서는 fusion 커널 컴파일이 libdevice를 못 찾아 실패한다(알려진 조건). 지정 후 정상.
+  - `net_train_lstm_b2_t64_n512_*` 2건은 autotune 후보 `matmul_naive`의 "Cube count too big"으로 실패했다. 학습은 micro_lanes 1이라 이 모양을 쓰지 않는다. micro_lanes를 올리면 다시 확인해야 한다.
+- 실제 데이터(`--dataset` 네 출처, `config/bc.toml` S1 설정, 21 update, 임시 로컬 `--out`, 잠금 없음)
+  - 첫 update 약 210초(autotune), 이후 중앙값 **11.1초/update**(약 185 samples/s), 데이터 대기 0초, GPU 메모리 최대 약 9.7GB(16GB 중).
+  - 시간 대부분은 backward 6.7초와 forward 3.7초, collate 1.0초다. S1 전체(38,584 update)는 이 PC 단독으로 약 5~6일로 추정된다.
+  - 데이터 대기를 보려고 학습 로그에 `wait_secs`를 추가했다(`crates/uranium-train/src/bc_run.rs`, 로그만 바뀜).
+
+### 032-AC2 (추론 지연, B16·N256, p95)
+| 장비·설정 | LSTM 중앙값 / p95 | GTrXL 중앙값 / p95 | entity / entity+spatial p95 |
+|---|---|---|---|
+| 학습 PC CUDA f32 (autotune·fusion) | 46.8 / **51.4ms** | 53.0 / **57.4ms** | 10.1 / 13.0ms |
+| 학습 PC Vulkan f32 (Windows) | 75.2 / 77.5ms | 81.9 / 90.3ms | 12.5 / 35.3ms |
+| Linux 호스트 A Vulkan f32, 1회차 | 177.3 / **179.0ms** | 185.7 / **187.4ms** | 35.7 / 138.3ms |
+| Linux 호스트 A Vulkan f32, 2회차 | 178.0 / 179.5ms | 185.0 / 187.4ms | 35.9 / 138.0ms |
+| Linux 호스트 A Vulkan f16(참고, `--f16`) | 142.9 / 147.3ms | 150.1 / 155.7ms | 22.9 / 106.7ms |
+
+- 학습 PC: **통과.** CUDA p95가 같은 PC Vulkan보다 두 코어 모두 빠르다(2026-10-16 결정 기준). 40ms 초안에는 여전히 못 미친다(결정상 상관없음).
+- Linux 호스트 A: 초안 40ms의 약 **4.5배**다. 두 번 재도 거의 같아 측정은 안정적이다.
+  - 시간 대부분은 공간(맵) 부분이다. entity만 약 36ms이고, 공간을 더하면 약 138ms가 된다. 나머지 약 40ms가 코어와 헤드다.
+  - f16으로 바꾸면 약 18% 빨라지지만(147ms) 여전히 40ms와 거리가 멀다. f16 학습·추론 혼합 정밀도는 아직 구현되지 않았다(032-R8).
+  - 측정 조건: master 925b995를 그 호스트에서 `-j 4`로 빌드, autotune·fusion 켬(`.env` 캐시 폴더). hostd는 그대로 두었고, 측정 시점에 진행 중인 게임은 없었다(연결 0, 부하 0.1 안팎). 측정은 회당 약 1분.
+- **사용자 결정 필요(032-AC2 문구: Linux Vulkan 기준은 실측 후 다시 확인)**
+  - 상황: Linux 호스트 A에서 모델이 16판을 한 번에 결정하는 데 약 0.18초가 걸린다. 학습 PC CUDA는 약 0.05초다.
+  - 선택지
+    1. **Linux Vulkan 호스트는 추론 서버로 쓰지 않는다.** 실게임·RL 추론은 학습 PC CUDA에서만 하고, 이 AC의 Linux 기준은 "해당 없음"으로 닫는다. 그 호스트는 게임 실행과 학습(learner)만 한다.
+    2. **실측 기준으로 바꾼다.** 예: Linux Vulkan p95 ≤ 200ms(f32). 그 호스트에서 추론을 돌리면 결정이 느린 만큼 게임 안 반응이 늦어지지만, lockstep 학습(001-R5)에서는 게임이 기다려 주므로 결과는 같고 속도만 느리다.
+    3. **40ms를 지킨다.** 그러려면 모델을 줄여야 한다(예: 공간 입력 128² → 64², 2026-10-15에 채택하지 않은 안). 이 경우 BC 본학습 전에 모델 변경과 재측정이 필요하다.
+  - 기본안(미확정): 1번. 지금 운영 계획(첫 RL은 CUDA PC)과 맞고 모델을 바꾸지 않아도 된다.

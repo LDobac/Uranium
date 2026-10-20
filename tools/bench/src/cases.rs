@@ -17,11 +17,18 @@ pub struct Ctx {
     pub quick: bool,
     pub iters: usize,
     pub warmup: usize,
+    /// CUDA backend: accuracy rows use the CUDA bound of 032-AC1 (060-AC4).
+    pub cuda: bool,
 }
 
 impl Ctx {
     fn ad(&self) -> Device {
         self.device.clone().autodiff()
+    }
+    /// 060-AC4 / 032-AC1: relative tolerance of a row. `strict` is the Vulkan/Flex f32 bound;
+    /// on CUDA (TF32 matmul, 032-R8) the bound is at least 1e-2.
+    fn tol(&self, strict: f64) -> f64 {
+        if self.cuda { strict.max(1e-2) } else { strict }
     }
     fn pick(&self, full: usize, quick: usize) -> usize {
         if self.quick { quick } else { full }
@@ -77,7 +84,7 @@ fn matmul(c: &Ctx, n: usize, f16: bool) -> Row {
     if let (Some(r), true) = (&c.reference, n <= 1024) {
         let got = to_vec(a.matmul(b).cast(DType::F32));
         let want = to_vec(float([n, n], 1, r).matmul(float([n, n], 2, r)));
-        row.set_error(&got, &want, if f16 { 1e-2 } else { 1e-4 });
+        row.set_error(&got, &want, c.tol(if f16 { 1e-2 } else { 1e-4 }));
     }
     row
 }
@@ -107,7 +114,7 @@ fn conv2d_128(c: &Ctx) -> Row {
         let m: Conv2d = cfg.init(r);
         let want = to_vec(m.forward(float([2, 58, 32, 32], 4, r)));
         let got = to_vec(m.to_device(&c.device).forward(float([2, 58, 32, 32], 4, &c.device)));
-        row.set_error(&got, &want, 1e-4);
+        row.set_error(&got, &want, c.tol(1e-4));
     }
     row
 }
@@ -159,7 +166,7 @@ fn conv_transpose(c: &Ctx) -> Row {
         let m = Decoder::new(r);
         let want = to_vec(m.forward(float([2, 144, 8, 8], 6, r)));
         let got = to_vec(m.to_device(&c.device).forward(float([2, 144, 8, 8], 6, &c.device)));
-        row.set_error(&got, &want, 1e-4);
+        row.set_error(&got, &want, c.tol(1e-4));
     }
     row
 }
@@ -188,7 +195,7 @@ fn lstm_seq(c: &Ctx) -> Row {
         let m: Lstm = cfg.init(r);
         let want = to_vec(m.forward(float([2, 8, 768], 8, r), None).0);
         let got = to_vec(m.to_device(&c.device).forward(float([2, 8, 768], 8, &c.device), None).0);
-        row.set_error(&got, &want, 1e-4);
+        row.set_error(&got, &want, c.tol(1e-4));
     }
     row
 }
@@ -242,7 +249,7 @@ fn transformer(c: &Ctx, n: usize) -> Row {
             m.to_device(&c.device)
                 .forward(TransformerEncoderInput::new(float([2, 32, 256], 11, &c.device)).mask_pad(pad_mask(2, 32, &c.device))),
         );
-        row.set_error(&got, &want, 1e-3);
+        row.set_error(&got, &want, c.tol(1e-3));
     }
     row
 }
@@ -283,7 +290,7 @@ fn attention_bias(c: &Ctx) -> Row {
         let (q, k, v, t, i) = mk(r, 2, 32);
         let want = to_vec(attn_with_bias(q, k, v, t, i));
         let (q, k, v, t, i) = mk(&c.device, 2, 32);
-        row.set_error(&to_vec(attn_with_bias(q, k, v, t, i)), &want, 1e-4);
+        row.set_error(&to_vec(attn_with_bias(q, k, v, t, i)), &want, c.tol(1e-4));
     }
     row
 }
@@ -316,7 +323,7 @@ fn scatter_add(c: &Ctx) -> Row {
         // few cells so that additions collide
         let want = to_vec(scatter_entities(float([2, 64, 32], 19, r), ints([2, 64], 16, 20, r)));
         let got = to_vec(scatter_entities(float([2, 64, 32], 19, &c.device), ints([2, 64], 16, 20, &c.device)));
-        row.set_error(&got, &want, 1e-5);
+        row.set_error(&got, &want, c.tol(1e-5));
     }
     row
 }
@@ -401,7 +408,7 @@ fn pointer_gru(c: &Ctx) -> Row {
         let want = to_vec(pointer_steps(&cr, float([2, 32, 64], 25, r), float([2, 64], 26, r), 12));
         let cg = GruCell { x: cr.x.to_device(&c.device), h: cr.h.to_device(&c.device) };
         let got = to_vec(pointer_steps(&cg, float([2, 32, 64], 25, &c.device), float([2, 64], 26, &c.device), 12));
-        row.set_error(&got, &want, 1e-4);
+        row.set_error(&got, &want, c.tol(1e-4));
     }
     row
 }

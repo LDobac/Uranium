@@ -87,6 +87,7 @@ fn main() -> Result<()> {
         quick: args.quick,
         iters: if args.quick { 3 } else { 20 },
         warmup: if args.quick { 1 } else { 3 },
+        cuda: matches!(args.backend, Backend::Cuda),
     };
 
     let mut rows = Vec::new();
