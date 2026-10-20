@@ -126,15 +126,22 @@ fn open_uncached(_path: &Path) -> std::io::Result<Option<std::fs::File>> {
 /// Streams the file as the server holds it (see the module notes) and returns its length. Call
 /// [`sync_file`] first when this client wrote the file.
 pub fn read_uncached_with(path: &Path, each: &mut dyn FnMut(&[u8])) -> std::io::Result<u64> {
-    if let Some(mut f) = open_uncached(path)? {
-        match drain(&mut f, each) {
+    match open_uncached(path)? {
+        Some(mut f) => match drain(&mut f, each) {
             Ok(n) => return Ok(n),
             // The volume accepted the flag at open but refuses unbuffered reads.
-            Err(None) => {}
+            Err(None) => warn_fallback(path),
             Err(Some(e)) => return Err(e),
-        }
+        },
+        None => warn_fallback(path),
     }
     drain(&mut std::fs::File::open(path)?, each).map_err(|e| e.unwrap_or_else(|| std::io::Error::other("read refused")))
+}
+
+/// One warning per process when the uncached read is refused and a plain read is used.
+fn warn_fallback(path: &Path) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| eprintln!("040-R17: warning: uncached read refused for {} (and possibly later files); reading through the cache", path.display()));
 }
 
 /// The whole file as the server holds it.

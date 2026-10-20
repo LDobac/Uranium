@@ -133,7 +133,12 @@ pub struct Shard {
 
 pub fn encode(shard: &Shard) -> Result<Vec<u8>> {
     let bytes = postcard::to_stdvec(shard).context("encoding shard")?;
-    Ok(zstd::encode_all(bytes.as_slice(), ZSTD_LEVEL)?)
+    // 040-R17 (R-5): the frame carries a content checksum, so a damaged shard fails to decompress
+    // instead of decoding garbage. Readers accept frames with or without it (older shards).
+    let mut enc = zstd::stream::Encoder::new(Vec::new(), ZSTD_LEVEL)?;
+    enc.include_checksum(true)?;
+    std::io::Write::write_all(&mut enc, &bytes)?;
+    Ok(enc.finish()?)
 }
 
 /// Writes one shard to a local path (write then rename, so readers never see a partial file).
@@ -169,7 +174,9 @@ fn decode(bytes: &[u8]) -> Result<Shard> {
 
 /// 040-R17 (R-5): every finished shard (`shard_NNNNN.bin.zst`) below `dir` decompresses and
 /// decodes completely. Checked on `jobs` threads; the error lists every shard that fails, so a
-/// manifest is never written over a corrupt shard. Returns (shards, games).
+/// manifest is never written over a corrupt shard. Files are read past this client's cache
+/// (`share_io`); `jobs` is capped at 4 (each worker holds one decoded shard). Returns (shards,
+/// games).
 pub fn validate_tree(dir: &Path, jobs: usize) -> Result<(usize, usize)> {
     fn walk(d: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
         for e in std::fs::read_dir(d).with_context(|| format!("listing {}", d.display()))? {
@@ -190,10 +197,10 @@ pub fn validate_tree(dir: &Path, jobs: usize) -> Result<(usize, usize)> {
     let games = std::sync::atomic::AtomicUsize::new(0);
     let bad = std::sync::Mutex::new(Vec::new());
     std::thread::scope(|s| {
-        for _ in 0..jobs.max(1) {
+        for _ in 0..jobs.clamp(1, 4) {
             s.spawn(|| {
                 while let Some(f) = files.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
-                    match read(f) {
+                    match crate::share_io::read_uncached(f).map_err(anyhow::Error::from).and_then(|p| decode(&zstd::decode_all(p.as_slice())?)) {
                         Ok(sh) => {
                             games.fetch_add(sh.games.len(), std::sync::atomic::Ordering::Relaxed);
                         }
@@ -406,10 +413,10 @@ pub(crate) mod tests {
     fn validate_tree_names_every_corrupt_shard_040_r17() {
         let dir = tmp_dir("validate");
         let mut w = ShardWriter::new(dir.join("shared").join("p0"), dir.join("local"), 0, 1).unwrap();
-        for n in 1..=3 {
+        for n in 1..=4 {
             w.add(game(n)).unwrap();
         }
-        assert_eq!(validate_tree(&dir.join("shared"), 2).unwrap(), (3, 3));
+        assert_eq!(validate_tree(&dir.join("shared"), 2).unwrap(), (4, 4));
         // R-5: an 8 MiB zero-filled head as found on the share; a truncated file.
         let p0 = &w.written[0].0;
         let mut b = std::fs::read(p0).unwrap();
@@ -419,8 +426,37 @@ pub(crate) mod tests {
         let p2 = &w.written[2].0;
         let b = std::fs::read(p2).unwrap();
         std::fs::write(p2, &b[..b.len() / 2]).unwrap();
+        // R-5: a zero-filled region in the middle of the file (found at 4 MiB on the share).
+        let p3 = &w.written[3].0;
+        let mut b = std::fs::read(p3).unwrap();
+        let (lo, hi) = (b.len() / 3, 2 * b.len() / 3);
+        b[lo..hi].fill(0);
+        std::fs::write(p3, &b).unwrap();
         let e = format!("{:#}", validate_tree(&dir.join("shared"), 2).unwrap_err());
-        assert!(e.contains("2 of 3 shards") && e.contains("shard_00000") && e.contains("shard_00002") && !e.contains("shard_00001"), "{e}");
+        assert!(e.contains("3 of 4 shards") && e.contains("shard_00000") && e.contains("shard_00002") && e.contains("shard_00003") && !e.contains("shard_00001"), "{e}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 040-R17 (R-5): new shards carry a zstd content checksum; shards written before it (no
+    /// checksum) still read the same.
+    #[test]
+    fn shard_checksum_is_new_and_old_shards_still_read_040_r17() {
+        let shard = Shard { header: ShardHeader::default(), games: vec![game(1), game(2)] };
+        let packed = encode(&shard).unwrap();
+        // Frame header descriptor (after the 4-byte magic): bit 2 = content checksum flag.
+        assert_eq!(packed[4] & 0b100, 0b100, "checksum flag set");
+        assert_eq!(decode(&zstd::decode_all(packed.as_slice()).unwrap()).unwrap(), shard);
+        let old = zstd::encode_all(postcard::to_stdvec(&shard).unwrap().as_slice(), ZSTD_LEVEL).unwrap();
+        assert_eq!(old[4] & 0b100, 0, "older shards have no checksum");
+        let dir = tmp_dir("oldsum");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("shard_00000.bin.zst"), &old).unwrap();
+        assert_eq!(read(&dir.join("shard_00000.bin.zst")).unwrap(), shard);
+        // A flipped byte in the compressed data is caught by the checksum or the decoder.
+        let mut bad = packed.clone();
+        let mid = bad.len() / 2;
+        bad[mid] ^= 0xff;
+        assert!(zstd::decode_all(bad.as_slice()).map_err(anyhow::Error::from).and_then(|b| decode(&b)).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 

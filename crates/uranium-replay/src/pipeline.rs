@@ -28,36 +28,70 @@ pub const MAX_MAP_TILES: u16 = 128;
 
 pub const MAP_EXCLUDE_TOML: &str = include_str!("../../../config/map_exclude.toml");
 
-/// 040-R20: `filtered` reason of a replay file whose SHA-256 an earlier file of the same build
-/// run already has. Such a record does not mark the replay done for resume (the first file's
-/// perspectives may still be waiting for their shard flush).
+/// 040-R20: `filtered` reason of a replay file whose SHA-256 a file earlier in the source's full
+/// sorted list already has (followed by `: same file as global index <n>`). Such a record does
+/// not mark the replay done for resume (the first file's perspectives may still be waiting for
+/// their shard flush).
 pub const DUPLICATE_IN_SOURCE: &str = "duplicate file in this source (040-R20)";
 
-/// 040-R20: SHA-256 of each readable file -> the first position (in `files` order) holding it.
-/// Read on `jobs` threads; unreadable files are left to `process` (which records the error).
-pub fn first_index_by_sha(files: &[PathBuf], jobs: usize) -> HashMap<String, usize> {
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let found = Mutex::new(Vec::new());
-    std::thread::scope(|s| {
-        for _ in 0..jobs.max(1) {
-            s.spawn(|| {
-                let mut mine = Vec::new();
-                loop {
-                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let Some(f) = files.get(i) else { break };
-                    if let Ok(b) = std::fs::read(f) {
-                        mine.push((hex(&Sha256::digest(&b)), i));
-                    }
-                }
-                found.lock().unwrap().extend(mine);
-            });
+/// 040-R20: which files of this run repeat an earlier file of the whole source. Decided on the
+/// full sorted file list (before the `--part` split), so every host decides the same.
+#[derive(Debug, Default, Clone)]
+pub struct Duplicates {
+    /// Global index (position in the source's full sorted list) of each file of this run.
+    pub global: Vec<usize>,
+    /// SHA-256 -> first global index, for the files that share a size with another file.
+    pub first: HashMap<String, usize>,
+    /// Files of this run that repeat an earlier file.
+    pub repeats: usize,
+}
+
+impl Duplicates {
+    /// `all`: the source's full sorted list; `mine`: global indices of this run's files (in run
+    /// order). Only files whose size equals another file's size can be identical, so only size
+    /// groups that contain one of `mine` are read and hashed (`jobs` threads); unreadable files
+    /// are left to `process` (which records the error).
+    pub fn find(all: &[PathBuf], mine: &[usize], jobs: usize) -> Self {
+        let sizes: Vec<Option<u64>> = all.iter().map(|f| std::fs::metadata(f).ok().map(|m| m.len())).collect();
+        let mut by_size: HashMap<u64, Vec<usize>> = HashMap::new();
+        for (i, s) in sizes.iter().enumerate() {
+            if let Some(s) = s {
+                by_size.entry(*s).or_default().push(i);
+            }
         }
-    });
-    let mut first = HashMap::new();
-    for (sha, i) in found.into_inner().unwrap() {
-        first.entry(sha).and_modify(|j: &mut usize| *j = (*j).min(i)).or_insert(i);
+        let mut todo: Vec<usize> = mine.iter().filter_map(|&i| sizes[i]).filter_map(|s| by_size.get(&s)).filter(|g| g.len() > 1).flatten().copied().collect();
+        todo.sort_unstable();
+        todo.dedup();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let found = Mutex::new(Vec::new());
+        std::thread::scope(|s| {
+            for _ in 0..jobs.max(1) {
+                s.spawn(|| {
+                    let mut got = Vec::new();
+                    while let Some(&i) = todo.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
+                        if let Ok(b) = std::fs::read(&all[i]) {
+                            got.push((hex(&Sha256::digest(&b)), i));
+                        }
+                    }
+                    found.lock().unwrap().extend(got);
+                });
+            }
+        });
+        let found = found.into_inner().unwrap();
+        let mut first = HashMap::new();
+        for (sha, i) in &found {
+            first.entry(sha.clone()).and_modify(|j: &mut usize| *j = (*j).min(*i)).or_insert(*i);
+        }
+        let mine_set: std::collections::HashSet<usize> = mine.iter().copied().collect();
+        let repeats = found.iter().filter(|(sha, i)| mine_set.contains(i) && first[sha] != *i).count();
+        Self { global: mine.to_vec(), first, repeats }
     }
-    first
+
+    /// The first global index of `sha` when the run's file `index` is a later copy of it.
+    pub fn earlier_copy(&self, index: usize, sha: &str) -> Option<usize> {
+        let me = self.global.get(index).copied().unwrap_or(index);
+        self.first.get(sha).copied().filter(|&f| f != me)
+    }
 }
 
 #[derive(Deserialize)]
@@ -331,6 +365,8 @@ pub struct BuildOptions {
     pub skip_sha256: std::collections::HashSet<String>,
     /// What this source's records already hold (resume); not processed again.
     pub done: ResumeDone,
+    /// 040-R20: later copies of identical files in the whole source.
+    pub duplicates: Duplicates,
 }
 
 /// Resume state from earlier records, per perspective (040-R17 / 040-R19 review): a written
@@ -424,9 +460,6 @@ pub fn build(files: &[PathBuf], opt: &BuildOptions, cfg: &PlayConfig, sink: &(dy
     let families = MapFamilies::load()?;
     let excludes = MapExcludes::load(&families)?;
     let labeler = Labeler::new()?;
-    // 040-R20: identical files in this run build one game (the first file's).
-    let first_index = first_index_by_sha(files, opt.jobs);
-    let first_index = &first_index;
     let pending = Mutex::new(Pending { writer: ShardWriter::new(opt.shards_dir.clone(), opt.staging_dir.clone(), opt.first_shard_index, opt.shard_target_bytes)?, records: Vec::new() });
     let queue = Mutex::new(files.iter().cloned().enumerate().collect::<VecDeque<_>>());
     let written_bytes = Mutex::new(0u64);
@@ -437,7 +470,7 @@ pub fn build(files: &[PathBuf], opt: &BuildOptions, cfg: &PlayConfig, sink: &(dy
             let cfg = PlayConfig { work_dir: cfg.work_dir.join(format!("w{w}")), launcher: cfg.launcher.clone(), bridge_lib: cfg.bridge_lib.clone(), data_dir: cfg.data_dir.clone() };
             s.spawn(move || {
                 while let Some((index, file)) = { let mut q = queue.lock().unwrap(); q.pop_front() } {
-                    for (r, game) in process(index, &file, opt, &cfg, families, excludes, labeler, written_bytes, first_index) {
+                    for (r, game) in process(index, &file, opt, &cfg, families, excludes, labeler, written_bytes) {
                         let Some(game) = game else {
                             sink(&r);
                             continue;
@@ -463,7 +496,7 @@ pub fn build(files: &[PathBuf], opt: &BuildOptions, cfg: &PlayConfig, sink: &(dy
 }
 
 #[allow(clippy::too_many_arguments)]
-fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, families: &MapFamilies, excludes: &MapExcludes, labeler: &Labeler, written: &Mutex<u64>, first_index: &HashMap<String, usize>) -> Vec<(Record, Option<ShardGame>)> {
+fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, families: &MapFamilies, excludes: &MapExcludes, labeler: &Labeler, written: &Mutex<u64>) -> Vec<(Record, Option<ShardGame>)> {
     let map_hash_cell = std::cell::RefCell::new(String::new());
     let recorded_cell: std::cell::RefCell<Option<&'static str>> = std::cell::RefCell::new(None);
     let rec = |sha: &str, map: &str, family: &str, view: Option<View>, outcome: Outcome| {
@@ -489,8 +522,9 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
     if opt.done.replay_done(&sha) {
         return Vec::new(); // already recorded by an earlier run
     }
-    if let Some(&first) = first_index.get(&sha).filter(|&&i| i != index) {
-        return vec![rec(&sha, "", "", None, Outcome::Filtered { reason: format!("{DUPLICATE_IN_SOURCE}: same file as index {first}") })];
+    // 040-R20: a later copy of a file anywhere in the source (decided before the part split).
+    if let Some(first) = opt.duplicates.earlier_copy(index, &sha) {
+        return vec![rec(&sha, "", "", None, Outcome::Filtered { reason: format!("{DUPLICATE_IN_SOURCE}: same file as global index {first}") })];
     }
     if opt.skip_sha256.contains(&sha) {
         return vec![rec(&sha, "", "", None, Outcome::Filtered { reason: "duplicate of another source".into() })];
@@ -714,18 +748,43 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("uranium-dup-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let files: Vec<PathBuf> = ["a", "b", "c", "d"].iter().map(|n| dir.join(format!("{n}.rep"))).collect();
-        for (f, body) in files.iter().zip(["x", "y", "x", "x"]) {
+        for (f, body) in files.iter().zip(["xx", "y", "xx", "xx"]) {
             std::fs::write(f, body).unwrap();
         }
-        let first = first_index_by_sha(&files, 3);
         let sha = |b: &str| hex(&Sha256::digest(b.as_bytes()));
-        assert_eq!(first.len(), 2);
-        assert_eq!(first[&sha("x")], 0, "the first file in sorted order keeps the replay");
-        assert_eq!(first[&sha("y")], 1);
+        // Two parts (`i % 2`): global 0, 2 in part 0; 1, 3 in part 1. The copies at global 2
+        // (part 0) and 3 (part 1) are decided on the full list, so both parts agree.
+        let part0 = Duplicates::find(&files, &[0, 2], 2);
+        let part1 = Duplicates::find(&files, &[1, 3], 2);
+        assert_eq!(part0.first[&sha("xx")], 0, "the first file in sorted order keeps the replay");
+        assert_eq!(part1.first[&sha("xx")], 0);
+        assert!(!part1.first.contains_key(&sha("y")), "a file of unique size is not read");
+        assert_eq!((part0.repeats, part1.repeats), (1, 1));
+        // Run-local indices: part 0 file 0 = global 0 (kept), file 1 = global 2 (copy).
+        assert_eq!(part0.earlier_copy(0, &sha("xx")), None);
+        assert_eq!(part0.earlier_copy(1, &sha("xx")), Some(0));
+        assert_eq!(part1.earlier_copy(0, &sha("y")), None);
+        assert_eq!(part1.earlier_copy(1, &sha("xx")), Some(0));
+
+        // process(): the copy is filtered before parsing and names the global index.
+        let families = MapFamilies::load().unwrap();
+        let excludes = MapExcludes::load(&families).unwrap();
+        let labeler = Labeler::new().unwrap();
+        let cfg = PlayConfig { launcher: dir.join("none"), bridge_lib: dir.join("none"), data_dir: dir.join("none"), work_dir: dir.join("w") };
+        let opt = BuildOptions { src: "t".into(), shards_dir: dir.join("s"), staging_dir: dir.join("l"), recorded_winners: HashMap::new(), jobs: 1, shard_target_bytes: 1, budget_bytes: 1 << 30, first_shard_index: 0, skip_sha256: Default::default(), done: ResumeDone::default(), duplicates: part1 };
+        let out = process(1, &files[3], &opt, &cfg, &families, &excludes, &labeler, &Mutex::new(0));
+        assert_eq!(out.len(), 1);
+        let (r, game) = &out[0];
+        assert!(game.is_none() && r.view.is_none() && r.replay_sha256 == sha("xx"));
+        assert!(matches!(&r.outcome, Outcome::Filtered { reason } if reason == &format!("{DUPLICATE_IN_SOURCE}: same file as global index 0")), "{:?}", r.outcome);
+        // The kept file goes on (here: it is not a replay, so it errors, but not as a duplicate).
+        let kept = process(0, &files[1], &opt, &cfg, &families, &excludes, &labeler, &Mutex::new(0));
+        assert!(!matches!(&kept[0].0.outcome, Outcome::Filtered { reason } if reason.starts_with(DUPLICATE_IN_SOURCE)));
+
         // A duplicate's record (no view) does not mark the replay done for resume.
         let mut done = ResumeDone::default();
-        done.add_line(&format!(r#"{{"index":2,"replay_sha256":"{}","src":"t","view":null,"outcome":"filtered","reason":"{DUPLICATE_IN_SOURCE}: same file as index 0"}}"#, sha("x")));
-        assert!(!done.replay_done(&sha("x")) && done.is_empty());
+        done.add_line(&serde_json::to_string(r).unwrap());
+        assert!(!done.replay_done(&sha("xx")) && done.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 

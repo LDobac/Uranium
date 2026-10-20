@@ -427,8 +427,8 @@ fn main() -> Result<()> {
                 uranium_train::storage::verify_dir(&dir)?
             } else {
                 // 040-R17 (R-5): a shard that does not decode must fail here, not be hashed as valid.
-                // Each worker holds one decoded shard; 8 keeps memory modest on 16 GB hosts.
-                let jobs = std::thread::available_parallelism().map_or(4, |n| n.get()).min(8);
+                // `validate_tree` caps the workers at 4 (each holds one decoded shard).
+                let jobs = std::thread::available_parallelism().map_or(4, |n| n.get());
                 let (shards, games) = uranium_replay::shard::validate_tree(&dir, jobs)?;
                 if shards > 0 {
                     eprintln!("[manifest] {shards} shards decode ({games} games, 040-R17)");

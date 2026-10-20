@@ -253,7 +253,11 @@ fn main() -> Result<()> {
             files.truncate(limit.unwrap_or(usize::MAX));
             // Several hosts split one source by sorted-file position (each writes its own shards
             // folder and records file).
-            let files: Vec<PathBuf> = files.into_iter().enumerate().filter(|(i, _)| i % parts == part).map(|(_, f)| f).collect();
+            let mine: Vec<usize> = (0..files.len()).filter(|i| i % parts == part).collect();
+            // 040-R20: identical files are decided on the full list, so every part agrees.
+            let duplicates = uranium_replay::pipeline::Duplicates::find(&files, &mine, jobs);
+            eprintln!("040-R20: {} files of this part repeat an earlier file of the source", duplicates.repeats);
+            let files: Vec<PathBuf> = mine.iter().map(|&i| files[i].clone()).collect();
             let cfg = uranium_replay::play::PlayConfig::from_env(uranium_replay::play::work_dir_default())?;
             uranium_replay::play::ensure_file(&cfg.launcher)?;
             std::fs::create_dir_all(&shards_dir)?;
@@ -287,7 +291,7 @@ fn main() -> Result<()> {
             // without one, so the build refuses to start.
             uranium_env::maps::maps_dir()?;
             let staging_dir = uranium_replay::shard::staging_dir();
-            let opt = uranium_replay::pipeline::BuildOptions { src, shards_dir, staging_dir, recorded_winners, jobs, shard_target_bytes: 512 << 20, budget_bytes: budget_gb << 30, first_shard_index: first, skip_sha256, done };
+            let opt = uranium_replay::pipeline::BuildOptions { src, shards_dir, staging_dir, recorded_winners, jobs, shard_target_bytes: 512 << 20, budget_bytes: budget_gb << 30, first_shard_index: first, skip_sha256, done, duplicates };
             let out_file = std::sync::Mutex::new(std::fs::OpenOptions::new().create(true).append(true).open(&records)?);
             let counts = std::sync::Mutex::new(std::collections::BTreeMap::<String, usize>::new());
             uranium_replay::pipeline::build(&files, &opt, &cfg, &|r| {
@@ -313,13 +317,9 @@ fn main() -> Result<()> {
             std::fs::write(&out, uranium_replay::stats::dataset_markdown(&files)?)?;
         }
         Cmd::ShardStats { dir } => {
-            let s = shard_stats(&dir)?;
+            let s = uranium_replay::stats::shard_stats(&dir)?;
             println!("{}", serde_json::to_string_pretty(&s)?);
-            // B-12: every game must have exactly one is_enemy player.
-            let bad = s["is_enemy_violations"].as_u64().unwrap_or(0);
-            anyhow::ensure!(bad == 0, "B-12: {bad} games without exactly one is_enemy player");
-            let dup = s["duplicate_games"].as_u64().unwrap_or(0);
-            anyhow::ensure!(dup == 0, "040-R20: {dup} games repeat a (replay, perspective) already in this folder");
+            uranium_replay::stats::check_shard_stats(&s)?;
         }
         Cmd::Nondet { rep, perspective, runs } => {
             let r = load(&rep)?;
@@ -505,115 +505,6 @@ fn check_screp(dir: &Path, screp: &Path, limit: Option<usize>) -> Result<()> {
 
 /// Shard folder summary: per-action label counts (034-AC3), delay buckets and argument use, and
 /// GameInfo consistency per game (AMB-040-6). Reading every shard also checks the schema version.
-fn shard_stats(dir: &Path) -> Result<serde_json::Value> {
-    use std::collections::BTreeMap;
-    let table = uranium_env::actions::ActionTable::load()?;
-    // Subfolders too (build writes `<src>/<part>/`), finished shards only (040-R17).
-    fn walk(d: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-        for e in std::fs::read_dir(d)? {
-            let e = e?;
-            if e.file_type()?.is_dir() {
-                walk(&e.path(), out)?;
-            } else if uranium_replay::shard::shard_index(&e.file_name().to_string_lossy()).is_some() {
-                out.push(e.path());
-            }
-        }
-        Ok(())
-    }
-    let mut files = Vec::new();
-    walk(dir, &mut files)?;
-    files.sort();
-    // 040-R20: one game per (replay, perspective) in a source.
-    let mut seen = std::collections::HashSet::<(String, u8)>::new();
-    let mut duplicate_games = 0usize;
-    let (mut games, mut steps, mut bad_game_info) = (0usize, 0usize, Vec::new());
-    let (mut with_select, mut with_unit, mut with_tile, mut queued) = (0usize, 0usize, 0usize, 0usize);
-    let mut actions = BTreeMap::<u16, usize>::new();
-    let mut delays = BTreeMap::<u32, usize>::new();
-    let mut matchups = BTreeMap::<String, usize>::new();
-    let mut families = BTreeMap::<String, usize>::new();
-    let mut result_sources = BTreeMap::<String, usize>::new();
-    let (mut is_enemy_violations, mut enemy_random, mut not_game_start) = (0usize, 0usize, 0usize);
-    // 2026-10-19: labeler version -> shards, games, steps, unknown labels, Unload_Unit labels,
-    // labels whose selection is longer than the action's max_select (F12, version 2 only).
-    let mut by_labeler = BTreeMap::<u32, [usize; 6]>::new();
-    let unload = table.by_name("Unload_Unit").map(|a| a.id);
-    for f in &files {
-        let shard = uranium_replay::shard::read(f)?;
-        let lv = by_labeler.entry(shard.header.labeler_version).or_default();
-        lv[0] += 1;
-        for g in &shard.games {
-            lv[1] += 1;
-            lv[2] += g.steps.len();
-            for l in g.steps.iter().map(|s| &s.action_label) {
-                lv[3] += usize::from(l.is_unknown());
-                lv[4] += usize::from(Some(l.action) == unload);
-                lv[5] += usize::from(table.actions.get(l.action as usize).is_some_and(|a| l.selected.len() > a.max_select as usize));
-            }
-            games += 1;
-            duplicate_games += usize::from(!seen.insert((g.meta.replay_sha256.clone(), g.meta.perspective_slot)));
-            *matchups.entry(g.meta.matchup.clone()).or_default() += 1;
-            *families.entry(g.meta.map_family.clone()).or_default() += 1;
-            let gi = &g.game_info;
-            let sm = &gi.static_map;
-            let ok = gi.map_size_tiles == (sm.width_tiles, sm.height_tiles)
-                && sm.width_tiles > 0
-                && sm.ground_height.len() == sm.width_tiles as usize * sm.height_tiles as usize
-                && !sm.start_locations.is_empty()
-                && gi.self_player == g.meta.perspective_slot
-                && gi.players.iter().filter(|p| p.is_self).count() == 1
-                && gi.players.iter().any(|p| p.is_self && p.id == gi.self_player);
-            if !ok {
-                bad_game_info.push(g.meta.replay_sha256[..12].to_string());
-            }
-            if !uranium_replay::stats::one_enemy(gi) {
-                is_enemy_violations += 1;
-            }
-            *result_sources.entry(g.meta.result_source.clone()).or_default() += 1;
-            // 040-R18: the first step is the game-start observation.
-            let start = uranium_replay::label::GAME_START_FRAME;
-            if !g.steps.first().is_some_and(|s| s.raw_frame.frame == start && s.action_label.frame == start) {
-                not_game_start += 1;
-            }
-            enemy_random += usize::from(g.meta.enemy_random);
-            for s in &g.steps {
-                steps += 1;
-                let l = &s.action_label;
-                *actions.entry(l.action).or_default() += 1;
-                *delays.entry(l.delay).or_default() += 1;
-                with_select += usize::from(!l.selected.is_empty());
-                with_unit += usize::from(l.target_unit.is_some());
-                with_tile += usize::from(l.target_tile.is_some());
-                queued += usize::from(l.queued);
-            }
-        }
-    }
-    let name = |id: u16| if id == uranium_replay::label::UNKNOWN_ACTION { "Unknown".to_string() } else { table.actions.get(id as usize).map_or_else(|| format!("#{id}"), |a| a.name.clone()) };
-    let labeler: serde_json::Map<String, serde_json::Value> = by_labeler
-        .iter()
-        .map(|(v, n)| (v.to_string(), serde_json::json!({ "shards": n[0], "games": n[1], "steps": n[2], "unknown": n[3], "unload_unit": n[4], "selected_over_max": n[5] })))
-        .collect();
-    let mut by_count: Vec<(String, usize)> = actions.iter().map(|(&a, &n)| (name(a), n)).collect();
-    by_count.sort_by(|a, b| b.1.cmp(&a.1));
-    let unseen: Vec<String> = table.actions.iter().filter(|a| !actions.contains_key(&a.id)).map(|a| a.name.clone()).collect();
-    let pct = |n: usize| if steps == 0 { 0.0 } else { (n as f64 * 10000.0 / steps as f64).round() / 100.0 };
-    Ok(serde_json::json!({
-        "shards": files.len(), "games": games, "steps": steps,
-        "labeler_versions": labeler,
-        "game_info_bad": bad_game_info,
-        "is_enemy_violations": is_enemy_violations,
-        "duplicate_games": duplicate_games,
-        "result_sources": result_sources, "enemy_random": enemy_random,
-        "first_step_not_game_start": not_game_start,
-        "matchups": matchups, "map_families": families,
-        "pct_with_selected": pct(with_select), "pct_with_target_unit": pct(with_unit),
-        "pct_with_target_tile": pct(with_tile), "pct_queued": pct(queued),
-        "delay_buckets": delays,
-        "actions": by_count.iter().map(|(n, c)| serde_json::json!([n, c, pct(*c)])).collect::<Vec<_>>(),
-        "actions_unseen": unseen,
-    }))
-}
-
 /// 043-R8 `collect.jsonl`: recorded winner (player name) by replay SHA-256, for 040-R8 (c) / ④.
 fn recorded_winners(path: &Path) -> Result<std::collections::HashMap<String, String>> {
     let mut out = std::collections::HashMap::new();

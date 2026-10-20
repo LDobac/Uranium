@@ -56,11 +56,13 @@ pub fn dataset_markdown(records: &[PathBuf]) -> Result<String> {
     }
     // A re-run can record the same view twice (same replay and perspective, or the same rejected
     // replay): the last record counts. The key includes the source (R-5): a replay skipped as
-    // "duplicate of another source" is a different record from that source's own.
+    // "duplicate of another source" is a different record from that source's own. A 040-R20
+    // record (a later copy of the same file) is kept apart from the first file's record too.
     let before = rows.len();
-    let mut last: BTreeMap<(String, String, Option<u64>), usize> = BTreeMap::new();
+    let mut last: BTreeMap<(String, String, Option<u64>, bool), usize> = BTreeMap::new();
     for (i, r) in rows.iter().enumerate() {
-        last.insert((r["src"].as_str().unwrap_or("").to_string(), r["replay_sha256"].as_str().unwrap_or("").to_string(), r["view"]["perspective"].as_u64()), i);
+        let copy = r["reason"].as_str().is_some_and(|s| s.starts_with(crate::pipeline::DUPLICATE_IN_SOURCE));
+        last.insert((r["src"].as_str().unwrap_or("").to_string(), r["replay_sha256"].as_str().unwrap_or("").to_string(), r["view"]["perspective"].as_u64(), copy), i);
     }
     let keep: BTreeSet<usize> = last.into_values().collect();
     let rows: Vec<Value> = rows.into_iter().enumerate().filter(|(i, _)| keep.contains(i)).map(|(_, r)| r).collect();
@@ -229,6 +231,127 @@ pub fn filter_group(reason: &str) -> String {
     }
 }
 
+/// 034-AC3 / AMB-040-6 / B-12 / 040-R20: label distribution and GameInfo checks over a shard
+/// folder (subfolders included), as JSON. [`check_shard_stats`] turns the checks into an error.
+pub fn shard_stats(dir: &std::path::Path) -> Result<Value> {
+    use std::collections::BTreeMap;
+    let table = uranium_env::actions::ActionTable::load()?;
+    // Subfolders too (build writes `<src>/<part>/`), finished shards only (040-R17).
+    fn walk(d: &std::path::Path, out: &mut Vec<PathBuf>) -> Result<()> {
+        for e in std::fs::read_dir(d)? {
+            let e = e?;
+            if e.file_type()?.is_dir() {
+                walk(&e.path(), out)?;
+            } else if crate::shard::shard_index(&e.file_name().to_string_lossy()).is_some() {
+                out.push(e.path());
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    walk(dir, &mut files)?;
+    files.sort();
+    // 040-R20: one game per (replay, perspective) in a source.
+    let mut seen = std::collections::HashSet::<(String, u8)>::new();
+    let mut duplicate_games = 0usize;
+    let (mut games, mut steps, mut bad_game_info) = (0usize, 0usize, Vec::new());
+    let (mut with_select, mut with_unit, mut with_tile, mut queued) = (0usize, 0usize, 0usize, 0usize);
+    let mut actions = BTreeMap::<u16, usize>::new();
+    let mut delays = BTreeMap::<u32, usize>::new();
+    let mut matchups = BTreeMap::<String, usize>::new();
+    let mut families = BTreeMap::<String, usize>::new();
+    let mut result_sources = BTreeMap::<String, usize>::new();
+    let (mut is_enemy_violations, mut enemy_random, mut not_game_start) = (0usize, 0usize, 0usize);
+    // 2026-10-19: labeler version -> shards, games, steps, unknown labels, Unload_Unit labels,
+    // labels whose selection is longer than the action's max_select (F12, version 2 only).
+    let mut by_labeler = BTreeMap::<u32, [usize; 6]>::new();
+    let unload = table.by_name("Unload_Unit").map(|a| a.id);
+    for f in &files {
+        let shard = crate::shard::read(f)?;
+        let lv = by_labeler.entry(shard.header.labeler_version).or_default();
+        lv[0] += 1;
+        for g in &shard.games {
+            lv[1] += 1;
+            lv[2] += g.steps.len();
+            for l in g.steps.iter().map(|s| &s.action_label) {
+                lv[3] += usize::from(l.is_unknown());
+                lv[4] += usize::from(Some(l.action) == unload);
+                lv[5] += usize::from(table.actions.get(l.action as usize).is_some_and(|a| l.selected.len() > a.max_select as usize));
+            }
+            games += 1;
+            duplicate_games += usize::from(!seen.insert((g.meta.replay_sha256.clone(), g.meta.perspective_slot)));
+            *matchups.entry(g.meta.matchup.clone()).or_default() += 1;
+            *families.entry(g.meta.map_family.clone()).or_default() += 1;
+            let gi = &g.game_info;
+            let sm = &gi.static_map;
+            let ok = gi.map_size_tiles == (sm.width_tiles, sm.height_tiles)
+                && sm.width_tiles > 0
+                && sm.ground_height.len() == sm.width_tiles as usize * sm.height_tiles as usize
+                && !sm.start_locations.is_empty()
+                && gi.self_player == g.meta.perspective_slot
+                && gi.players.iter().filter(|p| p.is_self).count() == 1
+                && gi.players.iter().any(|p| p.is_self && p.id == gi.self_player);
+            if !ok {
+                bad_game_info.push(g.meta.replay_sha256[..12].to_string());
+            }
+            if !crate::stats::one_enemy(gi) {
+                is_enemy_violations += 1;
+            }
+            *result_sources.entry(g.meta.result_source.clone()).or_default() += 1;
+            // 040-R18: the first step is the game-start observation.
+            let start = crate::label::GAME_START_FRAME;
+            if !g.steps.first().is_some_and(|s| s.raw_frame.frame == start && s.action_label.frame == start) {
+                not_game_start += 1;
+            }
+            enemy_random += usize::from(g.meta.enemy_random);
+            for s in &g.steps {
+                steps += 1;
+                let l = &s.action_label;
+                *actions.entry(l.action).or_default() += 1;
+                *delays.entry(l.delay).or_default() += 1;
+                with_select += usize::from(!l.selected.is_empty());
+                with_unit += usize::from(l.target_unit.is_some());
+                with_tile += usize::from(l.target_tile.is_some());
+                queued += usize::from(l.queued);
+            }
+        }
+    }
+    let name = |id: u16| if id == crate::label::UNKNOWN_ACTION { "Unknown".to_string() } else { table.actions.get(id as usize).map_or_else(|| format!("#{id}"), |a| a.name.clone()) };
+    let labeler: serde_json::Map<String, serde_json::Value> = by_labeler
+        .iter()
+        .map(|(v, n)| (v.to_string(), serde_json::json!({ "shards": n[0], "games": n[1], "steps": n[2], "unknown": n[3], "unload_unit": n[4], "selected_over_max": n[5] })))
+        .collect();
+    let mut by_count: Vec<(String, usize)> = actions.iter().map(|(&a, &n)| (name(a), n)).collect();
+    by_count.sort_by(|a, b| b.1.cmp(&a.1));
+    let unseen: Vec<String> = table.actions.iter().filter(|a| !actions.contains_key(&a.id)).map(|a| a.name.clone()).collect();
+    let pct = |n: usize| if steps == 0 { 0.0 } else { (n as f64 * 10000.0 / steps as f64).round() / 100.0 };
+    Ok(serde_json::json!({
+        "shards": files.len(), "games": games, "steps": steps,
+        "labeler_versions": labeler,
+        "game_info_bad": bad_game_info,
+        "is_enemy_violations": is_enemy_violations,
+        "duplicate_games": duplicate_games,
+        "result_sources": result_sources, "enemy_random": enemy_random,
+        "first_step_not_game_start": not_game_start,
+        "matchups": matchups, "map_families": families,
+        "pct_with_selected": pct(with_select), "pct_with_target_unit": pct(with_unit),
+        "pct_with_target_tile": pct(with_tile), "pct_queued": pct(queued),
+        "delay_buckets": delays,
+        "actions": by_count.iter().map(|(n, c)| serde_json::json!([n, c, pct(*c)])).collect::<Vec<_>>(),
+        "actions_unseen": unseen,
+    }))
+}
+
+/// `shard-stats` failure rules: a game without exactly one `is_enemy` player (B-12) or a
+/// (replay, perspective) that appears twice (040-R20).
+pub fn check_shard_stats(s: &Value) -> Result<()> {
+    let bad = s["is_enemy_violations"].as_u64().unwrap_or(0);
+    anyhow::ensure!(bad == 0, "B-12: {bad} games without exactly one is_enemy player");
+    let dup = s["duplicate_games"].as_u64().unwrap_or(0);
+    anyhow::ensure!(dup == 0, "040-R20: {dup} games repeat a (replay, perspective) already in this folder");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,6 +388,8 @@ mod tests {
             serde_json::json!({"index": 5, "replay_sha256": "e".repeat(64), "src": "stardata", "map_family": "other", "map_name": "X", "map_hash": "", "view": null, "outcome": "filtered", "reason": "excluded map (040-R16): X"}).to_string(),
             // R-5: the same replay skipped by another source is that source's own record.
             serde_json::json!({"index": 0, "replay_sha256": "e".repeat(64), "src": "community", "map_family": "", "map_name": "", "map_hash": "", "view": null, "outcome": "filtered", "reason": "duplicate of another source"}).to_string(),
+            // 040-R20: a later copy of the excluded-map file must not hide the first file's reason.
+            serde_json::json!({"index": 9, "replay_sha256": "e".repeat(64), "src": "stardata", "map_family": "", "map_name": "", "map_hash": "", "view": null, "outcome": "filtered", "reason": format!("{}: same file as global index 5", crate::pipeline::DUPLICATE_IN_SOURCE)}).to_string(),
         ];
         std::fs::write(&p, lines.join("\n")).unwrap();
         let md = dataset_markdown(&[p]).unwrap();
@@ -280,6 +405,7 @@ mod tests {
         assert!(md.contains("| invalid_labels>=20% (040-R19) | stardata | 2 |"), "{md}");
         assert!(md.contains("| excluded map (040-R16) | stardata | 1 |"), "{md}");
         assert!(md.contains("| duplicate of another source | community | 1 |"), "{md}");
+        assert!(md.contains("| duplicate file in this source (040-R20) | stardata | 1 |"), "{md}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -306,6 +432,35 @@ mod tests {
             },
             latency_frames: 0,
         }
+    }
+
+    /// 040-R20: `shard-stats` reads subfolders and fails when a (replay, perspective) appears
+    /// twice, e.g. built by two parts.
+    #[test]
+    fn shard_stats_fail_on_a_repeated_game_040_r20() {
+        use crate::shard::{ShardWriter, tests::game};
+        let dir = std::env::temp_dir().join(format!("uranium-shardstats-dup-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let g = |n: u32| {
+            let mut g = game(n);
+            g.game_info = info(1);
+            g
+        };
+        let mut w = ShardWriter::new(dir.join("shards").join("p0"), dir.join("local"), 0, usize::MAX).unwrap();
+        w.add(g(1)).unwrap();
+        w.add(g(2)).unwrap();
+        w.flush().unwrap();
+        let s = shard_stats(&dir.join("shards")).unwrap();
+        assert_eq!((s["games"].as_u64(), s["duplicate_games"].as_u64()), (Some(2), Some(0)));
+        check_shard_stats(&s).unwrap();
+        let mut w = ShardWriter::new(dir.join("shards").join("p1"), dir.join("local"), 0, usize::MAX).unwrap();
+        w.add(g(1)).unwrap();
+        w.flush().unwrap();
+        let s = shard_stats(&dir.join("shards")).unwrap();
+        assert_eq!(s["duplicate_games"].as_u64(), Some(1));
+        let e = format!("{:#}", check_shard_stats(&s).unwrap_err());
+        assert!(e.contains("040-R20"), "{e}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// B-12: exactly one is_enemy player.
