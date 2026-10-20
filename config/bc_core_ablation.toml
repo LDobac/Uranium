@@ -40,10 +40,11 @@ target_loc = 1.0
 [steps]
 # 032-R17: the ablation trains S1 only, 5,300 updates per core.
 s1 = 5300
-s2 = 7915
-ablation_a = 7915
-s2_warmup = 396
-ablation_a_warmup = 396
+# Same as bc.toml (041-R14, R-5 bc-epoch 2026-10-20); not used by the S1-only ablation.
+s2 = 11319
+ablation_a = 11319
+s2_warmup = 566
+ablation_a_warmup = 566
 
 [value]
 # win head MSE weight (041-R7)

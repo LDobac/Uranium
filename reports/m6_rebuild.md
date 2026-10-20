@@ -325,3 +325,231 @@
 
 - 시작 직후 네 파트의 records 줄은 모두 `labeler_version: 2`이고 error는 0이다.
 - 예상 완료: 네 장비 합쳐 약 12분/파트, 50파트 → 약 10시간, 10-20 오전 10시경
+
+## R-5 재build 뒤 검증과 shard 손상 수리 (2026-10-20, master 7b0879e)
+
+### 배경과 예상
+- R-4 전체 재build가 10-20 07:56에 끝났다. 77파트 모두 `.done`이고, 네 장비 큐는 모두 `queue empty`로 멈췄다.
+  - 레이블러가 섞여 있다. 레이블러 1(shard schema 5)이 27파트, 레이블러 2(schema 6, aa187b2)가 50파트다.
+  - 040-R19 무효 레이블 필터는 액션 감사 마스크 수정(`m6_action_audit.md` §11) 이전 마스크로 판정했다. 받아들이기로 했고, 다시 build하지 않는다.
+- 10-19에 받은 래더 리플레이 약 1,000개는 scr_ladder 파트를 build한 뒤에 `raw/`에 들어와서 shard에 없었다.
+- 할 일은 다음과 같다.
+  - 래더 증분 build
+  - manifest와 검증, `shard-stats`
+  - 분할 재집계와 `dataset_stats.md`
+  - 숫자 표
+  - `[steps]` 갱신과 BC 스모크
+  - 맵 사전계산 동기화
+  - 고정 바이너리 사본 정리
+- 예상
+  - 투혼 시점 수는 헤더 CP949 수정 뒤라 약 11,100이다.
+  - 040-R19 걸러짐은 stardata에서 드물고, scr_ladder는 약 6%다.
+  - 검증은 통과한다.
+
+### 1. 래더 증분 build (학습 PC, 08:35–08:58, f513b92)
+- jobs.txt의 `scr_ladder-p0`와 같은 인자를 썼다. 출력 폴더는 `shards/scr_ladder/scr_ladder-p0`, records는 `scr_ladder_scr_ladder-p0.jsonl`, `URANIUM_MAPS_DIR=build/maps`, `--jobs 12`.
+- 재개가 기존 records 2,108줄을 건너뛰고 새 리플레이 1,000개만 처리했다.
+  - written 378, filtered 694, desync 38, error 1
+  - filtered 사유: 제외 맵 377, APM 145, 5분 미만 88, 인원 45, 040-R19 39
+  - 새 shard는 `shard_00043`~`00062`다.
+- 로그: `<shared>/datasets/replays/build/logs/r5-incremental/`
+- 10:08–10:35에는 다른 세션이 오늘 수집분 1,000개를 Linux 호스트 B에서 f513b92로 build했다.
+  - 결과: written 285, filtered 738, desync 19, records 4,261줄
+  - 새 shard는 `shard_00063`~`00080`이다.
+
+### 2. 발견: 검증을 통과한 shard 7개가 공용 드라이브에서 손상됨
+- 첫 `shard-stats`에서 stardata 4파트가 "Unknown frame descriptor" 또는 "Data corruption detected"로 실패했다.
+- 그래서 shard 2,023개를 모두 끝까지 압축 해제해 보았고, 7개가 풀리지 않았다.
+
+  | 파트(쓴 장비) | 파일 | 크기 | 손상 모양 |
+  |---|---|---|---|
+  | scr_ladder p0 (Linux 호스트 A) | shard_00014 | 18,016,519 | 앞 8MiB가 0 |
+  | scr_ladder p0 (Linux 호스트 A) | shard_00034 | 18,078,644 | 앞 8MiB가 0 |
+  | stardata p00 (Linux 호스트 B) | shard_00010 | 22,208,552 | 앞 8MiB가 0 |
+  | stardata p00 (Linux 호스트 B) | shard_00023 | 4,194,304 | 정확히 4MiB에서 잘림 |
+  | stardata p03 (Linux 호스트 A) | shard_00022 | 20,972,798 | 0x400000부터 16MiB가 0 |
+  | stardata p08 (Linux 호스트 A) | shard_00003 | 19,573,667 | 앞 16MiB가 0 |
+  | stardata p27 (Linux 호스트 B) | shard_00004 | 20,853,606 | 0x400000부터 8MiB가 0 |
+
+- 손상 시각은 10-19 17:00–18:44와 10-20 00:22다.
+- 모두 Linux 호스트 A·B가 CIFS 마운트로 쓴 파일이다. 학습 PC(공유를 제공하는 PC)와 Linux 호스트 C가 쓴 파일은 깨끗했다.
+- 손상 구간이 모두 4MiB(마운트 `wsize`) 단위다.
+- 원인 조사
+  - Linux 호스트 A·B는 커널 6.18 LTS, cifs 모듈 2.57이다. 마운트 옵션은 `vers=3.1.1, cache=strict, hard, rsize=wsize=4MiB, actimeo=1, closetimeo=1`이다.
+  - 해당 시간대 커널 로그에 CIFS·SMB 메시지(재연결, I/O 오류)가 하나도 없다. OOM도 없다.
+  - Linux 호스트 C는 커널 7.0, cifs 2.59이고 마운트 옵션은 같으며 손상이 없었다.
+  - 학습 PC의 System 로그와 SMBServer 로그에도 관련 이벤트가 없다.
+  - 결론: 클라이언트가 쓰기 요청 일부를 조용히 잃었다. 그런데 040-R17 검증은 자기 페이지 캐시에서 다시 읽어 해시가 맞았다고 본다. 로그로 확정할 증거는 없다.
+  - 사용자 결정(2026-10-20): Linux A·B 마운트 설정은 그대로 둔다.
+- 영향: 읽을 수 없는 게임은 132시점이었다. scr_ladder 43, stardata p00 36, p03 18, p08 19, p27 16.
+
+### 3. 코드 수정 (spec 개정, 사용자 결정 2026-10-20, AMB-040-12)
+master 67488fc·1ce972c·7b0879e. `cargo test --workspace` 통과 303, 실패 0.
+
+- **040-R17 다시 읽기를 서버 기준으로**
+  - 복사본을 fsync한 뒤 클라이언트 캐시를 거치지 않고 읽는다(`uranium_replay::share_io`).
+    - Linux: `posix_fadvise(DONTNEED)` + `O_DIRECT`
+    - Windows: `FILE_FLAG_NO_BUFFERING`
+    - 이 방식이 거부되면 일반 읽기로 넘어가고 경고를 한 줄 남긴다.
+  - Linux 호스트 A의 CIFS 마운트에서 `O_DIRECT` 읽기가 받아들여지고, 일반 읽기와 결과가 같은 것을 확인했다.
+- **061-R4 체크포인트 push**: 같은 약점(캐시에서 다시 읽기)이 있어서 같은 방식으로 바꿨다(`Manifest::verify_on_server`).
+- **manifest 생성**
+  - 해시를 만들기 전에 하위 폴더의 shard를 모두 끝까지 디코드해 본다.
+  - 실패하면 실패한 shard를 모두 나열하고 manifest를 쓰지 않는다.
+- **새 shard에 zstd 내용 체크섬**: 체크섬 없는 이전 shard도 그대로 읽는다.
+- **040-R20 (신설): 한 출처 안의 같은 리플레이 파일은 한 게임**
+  - 출처 전체의 정렬된 목록(`--part`로 나누기 전)에서 앞선 파일만 처리한다. 나머지는 `duplicate file in this source (040-R20): same file as global index <n>`으로 거른다.
+  - `shard-stats`는 하위 폴더까지 읽고, 같은 (리플레이, 시점)이 두 번 나오면 실패한다.
+- **`dataset-stats`**: 중복 제거 키에 출처와 040-R20 기록인지 여부를 넣었다.
+
+### 4. 수리 (학습 PC, 7b0879e 바이너리와 브리지)
+삭제와 records 수정은 사용자 승인(2026-10-20)을 받았다.
+
+- **지운 shard 7개**는 위 표와 같다. 목록(경로, 크기, 시각, 해시 앞 12자리)은 `<shared>/datasets/replays/build/r5-backup/deleted_shards.tsv`에 있다.
+- **지운 records 줄**: written 132줄
+  - 대상은 읽히는 shard에 없는 게임이다. (출처, 리플레이 해시, APM, 매치업)으로 대조했다. shard의 `perspective_slot`은 records의 `view.perspective`와 값이 다르기 때문이다.
+  - 파일별: `stardata_p00` 36, `stardata_p03` 18, `stardata_p08` 19, `stardata_p27` 16, `scr_ladder_scr_ladder-p0` 43
+  - 지운 줄 원문은 `build/r5-backup/dropped-records/`에 보관했다.
+  - scr_ladder는 Linux 호스트 B build가 끝난 뒤의 최종 상태에서 다시 계산했다. 그 build가 새로 쓴 shard 18개는 모두 정상이었다.
+- **재개 build**(jobs 12): 지운 게임만 다시 처리했다.
+
+  | 파트 | 걸린 시간 | 결과 |
+  |---|---|---|
+  | stardata p00 | 106초 | written 36 |
+  | stardata p03 | 50초 | written 18 |
+  | stardata p08 | 63초 | written 19 |
+  | stardata p27 | 96초 | written 16 |
+  | scr_ladder | 70초 | written 43 |
+
+  - 040-R19로 새로 걸러진 시점은 없다.
+  - 다시 만든 시점은 레이블러 2이고 액션 감사 이후 마스크를 쓴다. 그래서 stardata p00·p03·p08에서 73시점이 레이블러 1에서 2로 바뀌었다.
+- **personal 전체 재build**
+  - 옛 shard 7개(153게임)와 records는 `build/r5-backup/personal/`로 옮겼다(삭제하지 않음).
+  - 결과: written 152, 040-R20 중복 2파일. 중복 2파일은 같은 리플레이 사본이고, 하나는 written 게임, 하나는 "1 active players"로 걸러진 리플레이다.
+  - shard 게임 수 152가 고유 게임 수와 같다.
+- 로그: `build/logs/r5-repair/`
+
+### 5. 검증 결과 (7b0879e)
+- **manifest**: 네 출처 모두 다시 만들었고, 만들 때 모든 shard 디코드에 성공했다. `--verify`도 통과했다.
+
+  | 출처 | 파일 | 크기 |
+  |---|---|---|
+  | stardata | 1,913 | 38.4GB |
+  | scr_ladder | 81 | 1.47GB |
+  | community | 43 | 0.82GB |
+  | personal | 7 | 0.09GB |
+
+- **`shard-stats`**(하위 폴더 포함): 네 출처 모두 다음이 0이다.
+  - `is_enemy_violations`, `game_info_bad`, `first_step_not_game_start`, `duplicate_games`
+  - shard 게임 수는 records written과 같다: stardata 34,664, scr_ladder 1,233, community 396, personal 152.
+- **처음부터 다시 한 디코드 검사**: 손상 shard를 지우고 다시 만든 뒤 전체 shard를 다시 압축 해제했고, 오류가 0이다.
+
+### 6. 숫자
+records 기준. 같은 출처·리플레이·시점이 여러 번 있으면 마지막 기록만 센다. 040-R20 기록은 따로 센다.
+
+| 출처 | 리플레이 | written | filtered | desync | unplayable | error |
+|---|---|---|---|---|---|---|
+| stardata | 65,646 | 34,664 | 32,441 | 644 | 301 | 0 |
+| community | 8,219 | 396 | 6,552 | 1,552 | 12 | 1 |
+| scr_ladder | 4,000 | 1,233 | 2,926 | 98 | 0 | 4 |
+| personal | 574 | 152 | 436 | 5 | 8 | 0 |
+| 이전 build 합계(R-3 기록) | | 35,870 | 40,665 | 2,326 | 320 | 4 |
+
+- 이전 build 출처별 값(written / filtered / desync / unplayable / error)
+  - stardata: 34,714 / 32,309 / 727 / 300 / 0
+  - community: 393 / 6,464 / 1,556 / 12 / 1
+  - scr_ladder(리플레이 2,000개였음): 609 / 1,458 / 38 / 0 / 3
+  - personal: 154 / 434 / 5 / 8 / 0
+- filtered 사유
+  - stardata: APM 29,697, 5분 미만 2,364, 인원 244, 040-R19 132, 맵 크기 4
+  - community: 다른 출처 중복 5,092, APM 1,306, 인원 124, 5분 미만 30
+  - scr_ladder: 제외 맵(040-R16) 1,438, APM 714, 5분 미만 443, 인원 248, 040-R19 83
+  - personal: 인원 368, 5분 미만 43, APM 22, 040-R20 중복 2, 040-R19 1
+- **040-R19 무효 레이블 필터**(시점 수, 비율 = 걸러짐 ÷ (written + 걸러짐))
+
+  | 출처 | 레이블러 1 | 레이블러 2 |
+  |---|---|---|
+  | stardata | 50(49게임) 0.35% | 82(79게임) 0.40% |
+  | scr_ladder | 36(36게임) 6.39% | 47(45게임) 6.24% |
+  | personal | — | 1 0.65% |
+  | community | — | 0 |
+
+  - 사유 문자열: `invalid_labels>=20% (<비율>%, <무효>/<전체>) (040-R19)`
+  - 레이블러 2 판정 중 오늘 증분 build(f513b92, 마스크 수정 후) 분량이 섞여 있다.
+- **대상 맵**(게임 / 시점)
+  - 투혼: 10,476 / 11,211. 증분 전에는 시점 11,101로, 예상한 약 11,100과 맞는다.
+  - 서킷브레이커: 725 / 781
+- **승패 판정 불가**(result 0, value 가중치 0): 7,421 / 36,445 = **20.36%**
+  - 출처별: stardata 20.94%, community 18.94%, personal 56.58%, scr_ladder 0.08%
+  - 재build 전 약 70%에서 크게 줄었다.
+- **privileged 없는 스텝**(E-10, `split-stats`): 네 출처 모두 0게임 / 0스텝(0%)
+- **디싱크 폐기율**(040-AC2): 전체 5.9%
+  - 출처별: stardata 1.8%, community 79.7%, scr_ladder 7.4%, personal 3.2%
+  - 맵 패밀리별: 투혼 1.5%, 서킷브레이커 0.4%, 기타 8.0%
+- **분할**(041-R12, 시점 수. 로더는 시점 하나를 게임 하나로 센다)
+
+  | 맵 그룹 | train | val | test |
+  |---|---|---|---|
+  | 대상 맵 | 9,608 | 1,192 | 1,192 |
+  | 기타 맵 | 23,264 | 1,189 | 없음 |
+
+  - 대상 맵 test 셋 출처별(시점): stardata 1,153, scr_ladder 17, personal 17, community 5
+- 맵·매치업·출처·stage·분할별 표: `reports/dataset_stats.md`(040-AC2·AC4, 생성 명령은 파일 첫머리)
+
+### 7. 학습 길이 `[steps]` (041-R14, `bc-epoch`, lanes 32, seq_len 64, seed 1)
+| 항목 | 이전 | 새 값 |
+|---|---|---|
+| s1 | 36,985 | **38,584** (S1 32,872시점, 78.0M 스텝) |
+| s2 / ablation_a | 7,915 | **11,319** (S2 9,608시점, 22.9M 스텝) |
+| s2_warmup / ablation_a_warmup | 396 | **566** (11,319 × 0.05 = 565.95) |
+| S1 warmup | 2,000 | 2,000 (그대로) |
+
+- `config/bc_core_ablation.toml`은 s2·ablation_a·두 warmup만 맞췄다. s1 5,300과 warmup 265는 032-R17 고정값이라 그대로 두었다.
+- S2가 크게 늘었다(+43%). 투혼 CP949 제목 수정(A-1)으로 대상 맵 게임이 늘었기 때문이다.
+
+### 8. BC 스모크
+| 항목 | 학습 PC CUDA | Linux 호스트 A Vulkan |
+|---|---|---|
+| 데이터 | `--dataset` 네 출처(manifest 검증 2,045파일) | `--shards` 네 출처(CIFS 마운트 직접) |
+| update | 6 | 3 |
+| 첫 update(autotune 측정 포함) | 237초 | 124초(시작 검사 스캔 1,017초 별도, 스캔 캐시 없음) |
+| 이후 s/update | 약 10초 | 약 101초 |
+| loss | 유한값. total 10.0 → 15.9 | 유한값. total 10.3 → 13.0 |
+| 기타 | B-2 맵 사전계산 검사 통과(1,212맵), `no_result_games` 4 | master 8757c29(7b0879e 포함)를 그 호스트에서 빌드. autotune 후보 `matmul_naive`가 "Cube count too big"으로 작업 스레드 panic을 출력했지만 학습은 계속됐다(R-2와 같은 현상). `meta.json` autotune·fusion·`grad_clip` 1.0 기록 확인 |
+
+- 체크포인트 `meta.json`에 `autotune: true`, `fusion: true`, `grad_clip: 1.0`이 기록됐다. 코드는 전역 L2 norm clip(041-R3)이다.
+- 레이블러 1·2(schema 5·6)가 섞인 2,044파일을 시작 검사 스캔이 모두 읽었다.
+- 같은 seed인데도 `--dataset`(학습 PC)와 `--shards`(Linux 호스트 A)는 첫 배치가 달랐다(데이터 지문 `2044:1491…` / `2044:46ae…`).
+  - 학습 PC에서 `--shards`로 1 update를 다시 돌리자 지문(`46ae…`)과 첫 배치(무효 474, valid 1,574)가 Linux 호스트 A와 같았다. 스캔 캐시 키도 두 장비가 같다.
+  - 그래서 장비 차이가 아니라 데이터 지정 방식 차이다. 장비를 오가며 같은 run을 이어 하려면 모든 호스트가 같은 방식(작업자 큐의 `--dataset`)을 써야 한다.
+- 처음 6 update 동안 loss가 오른다. 레인이 같은 게임들의 뒷부분으로 진행하면서 선택 수가 큰 구간이 나오기 때문으로 보인다. 학습률은 warmup 초반이다.
+- 출력은 학습 PC 작업 tmp의 임시 `--out`이고, 잠금(heartbeat)은 쓰지 않았다.
+
+### 9. 맵 사전계산 동기화
+- `build/maps`의 v2 사전계산 1,244개를 학습 PC `URANIUM_MAPS_DIR`로 복사했다. 이 폴더에는 원래 `.scx`만 있었고, 지운 것은 없다.
+- 대상 맵 `.scx` 두 개에 `uranium-replay mapgen`을 돌렸다. 자원은 투혼 122, 서킷브레이커 136이다.
+- 각 `.resources.toml`의 CHK 해시로 v2 사전계산(`<chk>.toml`, version 2)을 찾을 수 있다. 라이브 에이전트의 ReplayBuild 경로로 투혼·서킷브레이커 사전계산을 얻는다.
+
+### 10. 고정 바이너리 사본 정리
+- 사용 중 확인: 네 장비 모두 uranium-replay·run_queue 프로세스가 없었다. Linux 호스트 B의 다른 세션 build는 10:35에 끝났다.
+- 지운 것
+
+  | 장비 | 대상 | 크기 |
+  |---|---|---|
+  | 학습 PC | 로컬 앱 데이터 `uranium-build/aa187b2`, `uranium-build/d452c29` | 4.6MB, 4.5MB |
+  | Linux 호스트 A | `~/uranium-build/aa187b2`, `d452c29`, `build_aa187b2.log`, 저장소 `bridge/openbw/build-aa187b2` | 42MB, 45MB, 4KB, 3MB |
+  | Linux 호스트 B | 같음 | 42MB, 41MB, 4KB, 3MB |
+  | Linux 호스트 C | git worktree `~/uranium-build/src-aa187b2`·`src-d452c29`(`git worktree remove --force` 뒤 `prune`), `aa187b2`, `d452c29`, build 로그 2개 | 598MB, 597MB, 49MB, 48MB, 24KB |
+
+- Linux 호스트 C 저장소는 깨끗한 master라서 `git pull --ff-only`로 aa187b2에서 8757c29로 올렸다.
+- 남긴 것
+  - 라이브 브리지 `bridge/openbw/build/`, 각 저장소 `target/`, `build/hashes/`, `quarantine/`, `raw/`, shard, records
+  - Linux 호스트 B의 `~/uranium-build/f513b92`: 다른 세션의 래더 증분 build용이다.
+- 학습 PC 메인 작업 사본도 7b0879e로 맞췄다(`pull --ff-only`).
+
+### 상태
+- 재build 데이터 검증이 끝났다. 코어 비교(032-R17)와 BC 본학습은 시작하지 않았다.
+- 040-R19 20% 기준은 그대로다. 출처별 걸러짐은 위 6절에 있다.
+- 남은 것
+  - Linux 호스트 A·B의 CIFS 쓰기 손실 원인(커널·`wsize`)은 확정하지 못했다. 사용자 결정으로 마운트는 그대로 둔다. 이제는 검증과 체크섬이 손상을 잡는다.
+  - 레이블러 1·2 혼합과 마스크 버전 혼합은 받아들인 상태다.

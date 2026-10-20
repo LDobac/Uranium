@@ -134,7 +134,7 @@ A~E에 없는 내용과, 리뷰 이후 이미 반영된 결정을 모은다. 근
 | G-F5 | `prune()` 실패가 run을 끝내지 않게 | B-7 | 대기 |
 | G-F6 | Ctrl+C 직후 같은 step 이중 저장 | B-8 | 대기 |
 | G-F7 | 무력화 유닛 명령 불가 규칙을 모든 클래스·`pick_worker`에 적용(034) | B-11 | 대기 |
-| G-F8 | shard `GameInfo` `is_enemy` 정확히 1명 검사(`shard-stats`) | B-12 | 대기 |
+| G-F8 | shard `GameInfo` `is_enemy` 정확히 1명 검사(`shard-stats`) | B-12 | 완료(재build 전체 네 출처 위반 0, `m6_rebuild.md` R-5) |
 | G-F9 | G-D1·G-D2·G-D3·G-D4 결정에 따른 수정(맵 분류, Train 병합, result 0, S2 선택, grad clip, build 검증) | A-1~A-4, B-9, F-2-3 | 대기 |
 
 ### G-3. 측정·실행 준비
@@ -142,7 +142,7 @@ A~E에 없는 내용과, 리뷰 이후 이미 반영된 결정을 모은다. 근
 |---|---|---|---|
 | G-M1 | 학습 PC 메인 체크아웃과 BC250 1호기를 master로 재빌드(재build를 하면 추출 전용 Windows PC도) | F-2-5 | 대기 |
 | G-M2 | BC250 prefetch 메모리 실측(스왑 여부) | B-5 | 대기 |
-| G-M3 | `bc-epoch`로 `[steps]` 재대조(A-1을 고치면 S2 값이 바뀜), `bc_core_ablation.toml` 동기화 | B-10 | 대기 |
+| G-M3 | `bc-epoch`로 `[steps]` 재대조(A-1을 고치면 S2 값이 바뀜), `bc_core_ablation.toml` 동기화 | B-10 | 완료(2026-10-20: s1 38,584, s2·ablation_a 11,319, warmup 566, `m6_rebuild.md` R-5) |
 | G-M4 | 060-AC3 24시간 스모크 — 코어 비교 run의 첫 24시간으로 대신할지 포함 | C-2 | 대기 |
 | G-M5 | Windows 실제 콘솔 Ctrl+C 확인 | F-2-4 | 대기 |
 
@@ -157,6 +157,7 @@ A~E에 없는 내용과, 리뷰 이후 이미 반영된 결정을 모은다. 근
 1. G-1 결정.
 2. G-2 수정(G-F1 먼저), G-W3 문서.
 3. G-M1 재빌드 → (재build를 하면) 표본 build → 학습 end-to-end 확인 → 전체 재build → manifest·분할 재집계.
+   - 2026-10-20 상태: 전체 재build(R-4) 끝, 손상 shard 7개 수리, manifest·`shard-stats`·분할 재집계·`dataset_stats.md`·BC 스모크 완료(`m6_rebuild.md` R-5).
 4. G-M2·G-M3·G-M5 측정.
 5. 코어 비교(032-R17, worker 운영) → 코어 선택 → BC 본학습(S1 → S2, (A)).
 
