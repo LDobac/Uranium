@@ -1104,5 +1104,56 @@ fn a_source_given_twice_is_refused_041_r13() {
     copy_dir(&shards.join("alpha"), &copy, true);
     let err = ShardSource::from_dirs(&[shards.join("alpha"), copy]).err().expect("same keys twice");
     assert!(format!("{err:#}").contains("same key alpha/p0/shard_00000.bin.zst"), "{err:#}");
+    // The same folder under another spelling (case on Windows): the same files, refused.
+    let upper = shards.join("ALPHA");
+    if upper.is_dir() {
+        let err = ShardSource::from_dirs(&[shards.join("alpha"), upper]).err().expect("same files twice");
+        assert!(format!("{err:#}").contains("given twice"), "{err:#}");
+    }
+    let err = ShardSource::from_dirs(&[shards.join("alpha"), shards.clone()]).err().expect("source and its parent");
+    assert!(format!("{err:#}").contains("given twice"), "{err:#}");
+    std::fs::remove_dir_all(&base).ok();
+}
+
+/// 041-R13 regression: for the build layout the canonical order and both fingerprints are exactly
+/// what `--dataset` computed before the canonical keys (folders sorted by name, each in path
+/// order; hashed text = the last three path parts from the file name up), so runs started with
+/// `--dataset` keep their order and resume checks.
+#[test]
+fn build_layout_keeps_the_old_dataset_order_and_fingerprints_041_r13() {
+    use sha2::{Digest, Sha256};
+    use uranium_train::data::{Rng, dataset_fingerprint, shard_files, shuffle};
+    let base = std::env::temp_dir().join(format!("uranium-canon-old-{}", std::process::id()));
+    std::fs::remove_dir_all(&base).ok();
+    let shards = two_source_share(&base, &varied_games());
+    let seed = 11;
+    let dirs = vec![shards.join("alpha"), shards.join("beta")];
+    // Before: concatenation in (sorted) folder order, then the seeded shuffle.
+    let mut old: Vec<std::path::PathBuf> = dirs.iter().flat_map(|d| shard_files(d).unwrap()).collect();
+    shuffle(&mut old, &mut Rng::new(seed));
+    let old_text = |f: &std::path::Path| f.components().rev().take(3).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/");
+    let hex = |h: Sha256| h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect::<String>();
+    let mut list = Sha256::new();
+    let mut data = Sha256::new();
+    for f in &old {
+        list.update(old_text(f).as_bytes());
+        list.update(b"\n");
+        let d = dirs.iter().find(|d| f.starts_with(d)).unwrap();
+        let m = uranium_train::storage::Manifest::read(d).unwrap();
+        let rel = f.strip_prefix(d).unwrap().components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/");
+        data.update(old_text(f).as_bytes());
+        data.update(b"\t");
+        data.update(m.files[&rel].sha256.as_bytes());
+        data.update(b"\n");
+    }
+    let (old_list, old_data) = (format!("{}:{}", old.len(), hex(list)), format!("{}:{}", old.len(), hex(data)));
+    // Now, from either spelling and folder order.
+    for d in [vec![shards.join("beta"), shards.join("alpha")], vec![shards.clone()]] {
+        let src = ShardSource::from_dirs(&d).unwrap().shuffled(seed);
+        let names: Vec<String> = src.files().iter().map(|f| old_text(f)).collect();
+        assert_eq!(names, old.iter().map(|f| old_text(f)).collect::<Vec<_>>(), "order");
+        assert_eq!(src.fingerprint(), old_list);
+        assert_eq!(dataset_fingerprint(&src).unwrap(), old_data);
+    }
     std::fs::remove_dir_all(&base).ok();
 }

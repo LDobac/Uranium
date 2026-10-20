@@ -46,14 +46,14 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 `uranium-train`:
 - `bc (--dataset <rel> | --shards <dir>)... (--out <ckpt> | --run <id> [--take-over]) [--backend vulkan|cuda|flex] [--core lstm|gtrxl] [--s2 | --stage s2] [--resume <ckpt> | --init <ckpt|run>] [--steps N]`
   - `--dataset replays/shards/<src>`는 manifest를 검증하고, `--shards`는 검증하지 않는다. 하위 폴더까지 읽는다(041-R9).
-  - 파일 순서는 파일마다 `<출처>/<파트>/<파일>` 키로 정한다(041-R13). 그래서 같은 shard 파일이면 `--dataset`/`--shards`, 폴더를 적은 순서, 출처 폴더를 하나씩 주든 출처들을 담은 상위 폴더를 주든, 저장 위치(캐시·공용 드라이브·다른 마운트)와 상관없이 게임 순서·첫 배치·지문이 같다. 같은 키가 두 번 나오면(같은 출처를 두 번 지정) 실패한다.
+  - 파일 순서는 파일마다 `<출처>/<파트>/<파일>` 키로 정한다(041-R13). 폴더는 build 배치여야 한다: 출처 폴더(`<파트>/shard_*`)나 출처들을 담은 상위 폴더(`<출처>/<파트>/shard_*`). 다른 깊이(출처 폴더 바로 아래 shard, 더 깊은 하위 폴더, 두 깊이 혼합)는 파일 이름과 함께 오류로 멈춘다. 이 배치에서는 같은 shard 파일이면 `--dataset`/`--shards`, 폴더를 적은 순서, 출처 폴더를 하나씩 주든 상위 폴더를 주든, 저장 위치(캐시·공용 드라이브·다른 마운트)·대소문자 표기와 상관없이 게임 순서·첫 배치·지문이 같다. 같은 출처나 같은 파일을 두 번 지정하면(대소문자·링크만 다른 경로 포함) 실패한다.
   - `--run`은 061 run(`checkpoints/<id>/`): 잠금·heartbeat·push, 시작 시 `LATEST`에서 재개(데이터 위치 포함, 061-R10). 체크포인트는 `checkpoint_every` update 또는 `checkpoint_minutes`마다, Ctrl+C는 저장 후 종료.
   - 다른 PC의 잠금이 있으면(유효·만료 모두) 종료 코드 75로 거부된다. `--take-over`는 상대 PC가 멈춘 것을 확인한 뒤에만 쓴다: 잠금 상태와 무관하게 즉시 인수하고 경고를 출력하며, 상대가 살아 있으면 그쪽은 다음 heartbeat에서 push 없이 멈춘다(061-R5).
   - 기본 S1(전 소스 train 분할), `--s2`·`--stage s2`는 대상 맵 train 분할(041-R12·R13). S2는 `--init`으로 가중치만 가져온다(041-R4). `--init`에 run 폴더를 주면 그 run에 `DONE`이 있어야 하고 `DONE`이 가리키는 마지막 체크포인트를 쓴다(061-R13). 학습 길이는 `config/bc.toml` `[steps]`(041-R14). `URANIUM_BC_PROFILE=1`이면 구간별 시간 출력.
   - `--dataset` pull·검증은 파일마다 `[pull]`/`[verify]` 진행 줄을 stderr에 쓴다(감시 30분 멈춤 판정 대비).
   - 맵 사전계산(B-2): `URANIUM_MAPS_DIR`가 필수다(기본값 없음). 시작할 때(잠금 전) 고른 게임의 맵 해시마다 현재 버전 `<map_hash>.toml`이 있는지 shard를 한 번 훑어 확인하고, 없으면 빠진 해시와 게임 수를 나열하고 실패한다. 로더도 사전계산이 없는 게임은 오류로 처리한다. `bc-eval`·`label-check`도 같다. 라이브 게임(에이전트)은 투혼·서킷브레이커에서 사전계산을 얻지 못하면 세션을 거부하고, 그 외 맵은 경고 후 채널 0으로 진행한다(031).
   - 시작 검사용 shard 훑기 결과(게임별 meta·스텝 수·privileged 없는 스텝 수)는 `<URANIUM_CACHE_DIR>/scans/scan-<지문>.json`에 캐시한다. 지문은 파일별 manifest SHA-256(manifest가 없으면 크기·수정 시각)이라 데이터가 바뀌면 새로 훑는다. `bc`·`bc-eval`·`label-check`·`split-stats`·`bc-epoch`가 같이 쓴다.
-  - `--shards` 폴더(또는 그 아래 출처 폴더)에 `manifest.json`이 있으면 스캔 캐시와 데이터 지문이 manifest를 따른다. manifest가 없는 사본은 지문이 크기 기준이라 `--dataset`으로 시작한 run을 이어 받지 못한다(재개 거부). shard를 다시 만들었으면 `manifest <dir>`로 manifest를 다시 만들거나 옛 `manifest.json`을 지운다(그대로 두면 옛 해시로 판단한다).
+  - `--shards` 폴더(상위 폴더를 주면 그 아래 출처 폴더들)에 `manifest.json`이 있으면 스캔 캐시와 데이터 지문이 manifest를 따른다. `--shards`는 manifest를 검증하지 않는다. 그래서 shard를 다시 만들고 manifest를 그대로 두면 지문이 옛 데이터와 같아져 **다른 데이터로 재개가 허용될 수 있다**. shard를 다시 만들면 반드시 `manifest <dir>`로 manifest를 다시 만들거나 옛 `manifest.json`을 지운다. manifest가 없는 사본은 지문이 크기 기준이라 `--dataset`으로 시작한 run을 이어 받지 못한다(재개 거부).
   - 재개 검사(B-3): 체크포인트 `train_state.json`의 `extra.run`에 stage(`S1`/`S2`/`AblationA`), 설정 지문(결과에 영향을 주는 설정만 담은 화이트리스트 `ResultSettings`, `[steps]` 반영. 실행 방식 설정은 `EXECUTION_ONLY`에 따로 두고, 새 필드는 둘 중 하나로 분류해야 테스트가 통과한다), 데이터 지문(파일별 manifest SHA-256, manifest가 없으면 크기)을 남긴다. 재개할 때 하나라도 다르면 잠금을 풀고 거부한다(우회 옵션 없음, 새 run 또는 `--init`).
   - 체크포인트 보존(061-R6): 설정 `keep_checkpoints`(없으면 5, 0이면 전부 보존). `config/bc_core_ablation.toml`은 0. 정리(삭제) 실패는 경고만 하고 학습을 계속한다.
   - 디스크 경고(061-R8): 학습 시작과 체크포인트 저장마다 공용 드라이브·로컬 캐시(로컬 `--out`이면 그 폴더)의 물리 디스크 사용률이 80% 이상이면 경고한다. 학습은 멈추지 않는다.

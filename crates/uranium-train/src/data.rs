@@ -43,15 +43,16 @@ pub struct SourcePos {
 
 /// Stored shards (`shard_*.bin.zst`) under one or more dataset folders, subfolders included (a
 /// full build writes `<src>/<part>/shard_*.bin.zst`, 040-R13). Every file has a canonical key
-/// ([`shard_key`], `<src>/<part>/shard_*` whatever folder holds it) and the files are read in key
-/// order, so the game order depends only on which files are given: not on `--dataset` vs
-/// `--shards`, the order the folders were named in, or where they live (041-R13, 061-R10).
+/// ([`shard_keys`], `<src>/<part>/shard_*`) and the files are read in key order, so for that
+/// layout the game order depends only on which files are given: not on `--dataset` vs `--shards`,
+/// the order the folders were named in, or where they live (041-R13, 061-R10). Other layouts are
+/// refused.
 /// `select` keeps one split/stage (041-R12, R13); `shuffled` permutes the shard files with a fixed
 /// seed and the games inside each file with a seed derived from it and the file's place (041-R13),
 /// so a position can be sought without reading the files before it.
 pub struct ShardSource {
     files: Vec<PathBuf>,
-    /// [`shard_key`] of each file (same order as `files`).
+    /// [`shard_keys`] key of each file (same order as `files`).
     keys: Vec<String>,
     /// Next file to load.
     next_file: usize,
@@ -76,14 +77,21 @@ impl ShardSource {
 
     /// The shard files of `dirs` in canonical key order (041-R13); the order the folders are given
     /// in does not matter. Two files with the same key (a source given twice, or two folders with
-    /// the same source name) are an error.
+    /// the same source name) or one file reached by two spellings (case, links) are an error.
     pub fn from_dirs(dirs: &[PathBuf]) -> Result<Self> {
         let mut found: Vec<(String, PathBuf)> = Vec::new();
         for d in dirs {
-            for f in shard_files(d)? {
-                found.push((shard_key(d, &f)?, f));
+            found.extend(shard_keys(d)?);
+        }
+        // One file under two spellings (another case on Windows, a symlink) is the same file.
+        let mut seen: HashMap<PathBuf, &Path> = HashMap::new();
+        for (_, f) in &found {
+            let real = std::fs::canonicalize(f).with_context(|| f.display().to_string())?;
+            if let Some(first) = seen.insert(real, f) {
+                anyhow::bail!("the shard file {} is given twice (also as {}): give each source once, by --dataset or --shards (041-R13)", f.display(), first.display());
             }
         }
+        drop(seen);
         found.sort_by(|a, b| key_cmp(&a.0, &b.0).then_with(|| a.1.cmp(&b.1)));
         if let Some(w) = found.windows(2).find(|w| w[0].0 == w[1].0) {
             anyhow::bail!(
@@ -116,7 +124,7 @@ impl ShardSource {
         &self.files
     }
 
-    /// [`shard_key`] of each file, in read order.
+    /// [`shard_keys`] key of each file, in read order.
     pub fn keys(&self) -> &[String] {
         &self.keys
     }
@@ -133,8 +141,9 @@ impl ShardSource {
         self
     }
 
-    /// The file list in read order by canonical key ([`shard_key`]), the same on every PC and for
-    /// `--dataset` and `--shards` alike (041-R13, 061-R10): a data position only applies to this list.
+    /// The file list in read order by canonical key ([`shard_keys`] key), the same on every PC and
+    /// for `--dataset` and `--shards` alike in the build layout (041-R13, 061-R10): a data position
+    /// only applies to this list.
     pub fn fingerprint(&self) -> String {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
@@ -231,22 +240,34 @@ pub fn shuffle<T>(v: &mut [T], rng: &mut Rng) {
     }
 }
 
-/// 041-R13 canonical key of shard file `file` found under the given folder `dir`: the last three
-/// parts of `<dir's own name>/<path of file inside dir>`, joined by `/`. For a build's layout this
-/// is `<src>/<part>/shard_*.bin.zst` whether `dir` is the source folder (`--dataset`, `--shards
-/// <src>`) or a folder holding several sources, and whatever is above `dir` (cache, share, a
-/// mount point): the same files get the same keys on every host.
-pub fn shard_key(dir: &Path, file: &Path) -> Result<String> {
-    let name = match dir.file_name() {
-        Some(n) => n.to_os_string(),
-        // `.`, `..`, a drive root: name it by its real path.
-        None => std::fs::canonicalize(dir).ok().and_then(|p| p.file_name().map(|n| n.to_os_string())).unwrap_or_default(),
-    };
-    let rel = file.strip_prefix(dir).with_context(|| format!("{} is not under {}", file.display(), dir.display()))?;
-    let mut parts: Vec<String> = std::iter::once(name.to_string_lossy().into_owned()).filter(|n| !n.is_empty()).collect();
-    parts.extend(rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()));
-    let skip = parts.len().saturating_sub(3);
-    Ok(parts[skip..].join("/"))
+/// 041-R13: the shard files under the given folder `dir` with their canonical keys
+/// `<src>/<part>/shard_*.bin.zst` (the build layout, 040-R13). `dir` is either a source folder
+/// (`--dataset`, `--shards <src>`: files at `<part>/shard_*`, the key starts with the folder's
+/// real name on disk, so another case or a link gives the same key) or a folder of sources
+/// (`--shards <parent>`: files at `<src>/<part>/shard_*`). Whatever is above `dir` (cache, share,
+/// a mount point) is not in the key. Any other depth (shards directly in `dir`, deeper nesting, or
+/// both depths in one folder) is an error naming the file: its key would depend on how the folder
+/// was given.
+pub fn shard_keys(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
+    const LAYOUT: &str = "expected <source>/<part>/shard_*.bin.zst under a source folder's parent, or <part>/shard_*.bin.zst under a source folder (040-R13, 041-R13)";
+    let files = shard_files(dir)?;
+    let real = std::fs::canonicalize(dir).with_context(|| dir.display().to_string())?;
+    let name = real.file_name().map(|n| n.to_string_lossy().into_owned());
+    let mut depth = None;
+    let mut out = Vec::with_capacity(files.len());
+    for f in files {
+        let rel: Vec<String> = f.strip_prefix(dir)?.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+        let key = match (rel.len(), &name) {
+            (3, _) => rel.join("/"),
+            (2, Some(n)) => format!("{n}/{}", rel.join("/")),
+            _ => anyhow::bail!("{}: shard at depth {} under {}; {LAYOUT}", f.display(), rel.len(), dir.display()),
+        };
+        if *depth.get_or_insert(rel.len()) != rel.len() {
+            anyhow::bail!("{}: shards at two depths under {}; {LAYOUT}", f.display(), dir.display());
+        }
+        out.push((key, f));
+    }
+    Ok(out)
 }
 
 /// Key order: part by part (as path order), so `p0/…` sorts before `p0-x/…` on every OS.
@@ -522,7 +543,7 @@ struct ScanCache {
     version: u32,
     shard_schema: u32,
     key: String,
-    /// File keys ([`shard_key`]) in key order, and their games.
+    /// File keys ([`shard_keys`] key) in key order, and their games.
     files: Vec<(String, Vec<GameSummary>)>,
 }
 
@@ -585,10 +606,11 @@ pub fn value_weight(meta: &GameMeta) -> f32 {
 }
 
 /// B-3: what the data of a run is: per file of `src` (in read order) its canonical key
-/// ([`shard_key`]) and its SHA-256 from the nearest `manifest.json` at or below the given folder
-/// (061-R7, verified when the dataset was opened; a `--shards` copy of a dataset carries it), or
-/// its size when no manifest lists it. The same files give the same fingerprint for `--dataset`
-/// and `--shards` on any host (041-R13, 061-R10); a rebuilt dataset with the same file names
+/// ([`shard_keys`] key) and its SHA-256 from the nearest `manifest.json` at or below the given
+/// folder (061-R7; verified when opened with `--dataset`, taken as is with `--shards`, so a stale
+/// manifest after a rebuild still gives the old hashes), or its size when no manifest lists it.
+/// The same files in the build layout give the same fingerprint for `--dataset` and `--shards` on
+/// any host (041-R13, 061-R10); a rebuilt dataset (with its new manifest) and the same file names
 /// gives another.
 pub fn dataset_fingerprint(src: &ShardSource) -> Result<String> {
     files_fingerprint(src.dirs(), src.files(), src.keys(), false)
