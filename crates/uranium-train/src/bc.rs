@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use burn::module::Module;
 use burn::optim::{AdamWConfig, GradientsAccumulator, GradientsParams, ModuleOptimizer};
 use burn::tensor::{Bool, Device, Tensor, TensorData};
@@ -470,17 +470,36 @@ impl Feeder {
     }
 }
 
+/// 041-R16: batches built ahead of the trainer when nothing in `.env` says otherwise.
+pub const PREFETCH_DEPTH_DEFAULT: usize = 2;
+
+/// 041-R16: this host's prefetch depth, `URANIUM_BC_PREFETCH` (001-R9), default
+/// [`PREFETCH_DEPTH_DEFAULT`].
+pub fn prefetch_depth() -> Result<usize> {
+    match std::env::var("URANIUM_BC_PREFETCH") {
+        Ok(v) if !v.trim().is_empty() => v.trim().parse().with_context(|| format!("URANIUM_BC_PREFETCH={v:?}: expected a batch count (0 = no data thread)")),
+        _ => Ok(PREFETCH_DEPTH_DEFAULT),
+    }
+}
+
 /// [`Feeder`] on its own thread, `depth` batches ahead of the trainer (041 throughput: feature
-/// extraction and shard reads overlap the GPU update; the batches are the ones
-/// [`Feeder::next_batch`] gives in order).
-pub struct Prefetch {
-    rx: std::sync::mpsc::Receiver<Result<Option<Batch>>>,
-    _thread: std::thread::JoinHandle<()>,
+/// extraction and shard reads overlap the GPU update), or with `depth` 0 on the caller's thread
+/// when it asks, so only the batch being trained is in host memory (041-R16, a ~4 GB batch on a
+/// host sharing its RAM with the GPU). Either way the batches are the ones
+/// [`Feeder::next_batch_from`] gives in order.
+pub struct Prefetch(PrefetchMode);
+
+enum PrefetchMode {
+    Thread { rx: std::sync::mpsc::Receiver<Result<Option<Batch>>>, _thread: std::thread::JoinHandle<()> },
+    Inline { feeder: Box<Feeder>, src: ShardSource },
 }
 
 impl Prefetch {
     pub fn start(mut feeder: Feeder, mut src: ShardSource, depth: usize) -> Self {
-        let (tx, rx) = std::sync::mpsc::sync_channel(depth.max(1));
+        if depth == 0 {
+            return Self(PrefetchMode::Inline { feeder: Box::new(feeder), src });
+        }
+        let (tx, rx) = std::sync::mpsc::sync_channel(depth);
         let thread = std::thread::spawn(move || {
             loop {
                 let b = feeder.next_batch_from(&mut src);
@@ -490,11 +509,16 @@ impl Prefetch {
                 }
             }
         });
-        Self { rx, _thread: thread }
+        Self(PrefetchMode::Thread { rx, _thread: thread })
     }
 
-    pub fn next(&self) -> Result<Option<Batch>> {
-        self.rx.recv().map_err(|_| anyhow::anyhow!("data thread stopped"))?
+    // Not an Iterator: a batch can fail (`Err`) and the training loop stops on the first `None`.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Result<Option<Batch>> {
+        match &mut self.0 {
+            PrefetchMode::Thread { rx, .. } => rx.recv().map_err(|_| anyhow::anyhow!("data thread stopped"))?,
+            PrefetchMode::Inline { feeder, src } => feeder.next_batch_from(src),
+        }
     }
 }
 

@@ -276,7 +276,10 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
     // Nothing to save when no update happens (resumed at or past the stop point).
     let start_step = t.step;
     let feeder = std::mem::replace(&mut t.feeder, crate::bc::Feeder::new(&cfg).with_maps(maps.clone()));
-    let data = Prefetch::start(feeder, src, 2);
+    // 041-R16: per-host depth; it changes host memory only, never the batches.
+    let depth = crate::bc::prefetch_depth()?;
+    crate::elog!("{}", serde_json::json!({ "prefetch": depth }));
+    let mut data = Prefetch::start(feeder, src, depth);
     let (mut last_ckpt, mut last_beat) = (Instant::now(), Instant::now());
     let mut lock_lost = false;
     let mut exhausted = false;

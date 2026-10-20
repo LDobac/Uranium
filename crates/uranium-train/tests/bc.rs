@@ -641,9 +641,10 @@ fn feeder_resume_continues_the_data_061_r10() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// The prefetch thread gives the same batches, in order, as the feeder on the trainer's thread.
+/// The prefetch thread gives the same batches, in order, as the feeder on the trainer's thread,
+/// at every depth, also 0 (no thread, 041-R16).
 #[test]
-fn prefetch_gives_the_feeder_batches_041() {
+fn prefetch_gives_the_feeder_batches_041_r16() {
     let root = shard_dir("prefetch", &varied_games(), 4);
     let cfg = tiny_bc(1, 0);
     let mut f = feeder(&cfg);
@@ -652,13 +653,29 @@ fn prefetch_gives_the_feeder_batches_041() {
     while let Some(b) = f.next_batch_from(&mut s).unwrap() {
         want.push((batch_key(&b), b.state));
     }
-    let p = Prefetch::start(feeder(&cfg), ShardSource::new(&root).unwrap().shuffled(9), 2);
-    let mut got = Vec::new();
-    while let Some(b) = p.next().unwrap() {
-        got.push((batch_key(&b), b.state));
+    assert!(want.len() > 3, "too few batches to tell the depths apart");
+    for depth in [0, 1, 2] {
+        let mut p = Prefetch::start(feeder(&cfg), ShardSource::new(&root).unwrap().shuffled(9), depth);
+        let mut got = Vec::new();
+        while let Some(b) = p.next().unwrap() {
+            got.push((batch_key(&b), b.state));
+        }
+        assert_eq!(got, want, "depth {depth}");
     }
-    assert_eq!(got, want);
     std::fs::remove_dir_all(&root).ok();
+}
+
+/// 041-R16: `URANIUM_BC_PREFETCH` sets the depth; unset or empty keeps the default, junk fails.
+#[test]
+fn prefetch_depth_from_env_041_r16() {
+    // SAFETY: the only test in this binary that touches this variable.
+    unsafe { std::env::remove_var("URANIUM_BC_PREFETCH") };
+    assert_eq!(uranium_train::bc::prefetch_depth().unwrap(), uranium_train::bc::PREFETCH_DEPTH_DEFAULT);
+    for (v, want) in [("0", Some(0)), (" 1 ", Some(1)), ("", Some(uranium_train::bc::PREFETCH_DEPTH_DEFAULT)), ("two", None), ("-1", None)] {
+        unsafe { std::env::set_var("URANIUM_BC_PREFETCH", v) };
+        assert_eq!(uranium_train::bc::prefetch_depth().ok(), want, "{v:?}");
+    }
+    unsafe { std::env::remove_var("URANIUM_BC_PREFETCH") };
 }
 
 /// Evaluation drains the lanes: every step of every game is produced exactly once, also with
