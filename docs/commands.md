@@ -38,7 +38,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
   - shard는 `URANIUM_SHARD_STAGING_DIR`(로컬)에 먼저 쓰고, 공용 경로에 `<이름>.tmp`로 복사해 fsync 뒤 클라이언트 캐시를 거치지 않고 다시 읽은 SHA-256을 맞춘 뒤 rename한다. 불일치는 3회 재시도, 그래도 실패하면 build가 오류로 멈추고 로컬 사본이 남는다(040-R17).
   - 승패(`result`)는 브리지 승자 → 첫 LEAVE 이탈자 패배 → 기록 승자(`--ladder-records`, `--src scr_ladder`이면 `datasets/replays/ladder/collect.jsonl` 기본) → 판정 불가(0) 순서다(040-R8).
   - 재개는 records 폴더에서 이름이 `<src>`로 시작하는 `.jsonl`을 모두 읽어 건너뛴다. 표본·시험 records는 하위 폴더에 둔다.
-  - 내용(SHA-256)이 같은 파일은 출처 전체 정렬 목록(`--part` 분할 전) 기준 첫 파일만 처리하고 나머지는 `duplicate file in this source (040-R20): same file as global index <n>`으로 거른다. 크기가 같은 파일만 읽어 해시하므로 파트마다 출처 전체의 크기 목록을 읽는다.
+  - 내용(SHA-256)이 같은 파일은 출처 전체 정렬 목록(`--part` 분할 전) 기준 첫 파일만 처리하고 나머지는 `duplicate file in this source (040-R20): same file as global index <n>`으로 거른다. 크기가 같은 파일만 읽어 해시하므로 파트마다 출처 전체의 크기 목록을 읽는다. 출처의 일부 파트만 돌리면, 원본(첫 파일)이 돌리지 않은 파트에 있는 리플레이는 빠진다.
   - `config/map_exclude.toml`의 맵(디싱크 10% 초과, 040-R16)은 재생 전에 제외된다. 대상 맵은 넣을 수 없다.
   - build 전에 브리지와 `uranium-replay`를 같은 커밋으로 빌드한다(011-R10).
 

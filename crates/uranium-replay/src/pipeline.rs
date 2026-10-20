@@ -90,7 +90,10 @@ impl Duplicates {
     /// The first global index of `sha` when the run's file `index` is a later copy of it.
     pub fn earlier_copy(&self, index: usize, sha: &str) -> Option<usize> {
         let me = self.global.get(index).copied().unwrap_or(index);
-        self.first.get(sha).copied().filter(|&f| f != me)
+        // Only an EARLIER file makes this one a copy: if hashing missed this file (e.g. a
+        // transient read failure), the worst case is one extra game (caught by shard-stats),
+        // never both copies dropped.
+        self.first.get(sha).copied().filter(|&f| f < me)
     }
 }
 
@@ -765,6 +768,11 @@ mod tests {
         assert_eq!(part0.earlier_copy(1, &sha("xx")), Some(0));
         assert_eq!(part1.earlier_copy(0, &sha("y")), None);
         assert_eq!(part1.earlier_copy(1, &sha("xx")), Some(0));
+        // The first file was not hashed in this run (transient read failure): a later first
+        // index never filters an earlier file, so at most one extra game results.
+        let missed = Duplicates { global: vec![0, 2], first: HashMap::from([(sha("xx"), 2)]), repeats: 0 };
+        assert_eq!(missed.earlier_copy(0, &sha("xx")), None);
+        assert_eq!(missed.earlier_copy(1, &sha("xx")), None);
 
         // process(): the copy is filtered before parsing and names the global index.
         let families = MapFamilies::load().unwrap();
