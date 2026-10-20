@@ -259,3 +259,14 @@ run 배정 (작업자 큐 순서대로, 061-R13)
 | `core-abl-gtrxl` | BC250 1호기 Vulkan f32 | 78.1~111.7 s (step 2~4) |
 
 출력 위치(지우지 않음): 체크포인트 `<shared>/checkpoints/core-abl-{lstm,gtrxl}/`, 장비 구간 `<shared>/runs/core-abl-{lstm,gtrxl}/devices.jsonl`, 작업자·학습 로그는 각 장비 저장소 `runs/worker.log`(학습 PC, BC250 1호기). 빌드 로그는 Linux 장비 `~/build-logs/build_20261020.log`, asus calibrate 로그는 asus 저장소 `runs/calibrate_20261020.log`.
+
+### 2026-10-20 16:43 BC250 1호기 OOM과 수정 (041-R16, G-M2)
+- **16:43:19 커널 OOM 종료.** GTrXL run이 step 31 뒤에 끝났다. tmux 세션 전체가 OOM으로 종료됐다(systemd: `tmux-spawn-*.scope: Failed with result 'oom-kill'`, 최대 RAM 13.2 GB·스왑 13.6 GB). 1시간 체크포인트 전이라 step 3~31을 잃었고, 마지막 체크포인트는 `ckpt-2`다. 15:50에 스왑 상승(11.9 GB)을 기록했지만 대응하지 않았다. 이 항목은 BC 전 리뷰의 미해결 측정 G-M2(B-5, prefetch 메모리)가 실제로 터진 것이다.
+- **사용자 결정(16:5x)**: 원인 측정부터 한다. CUDA 호스트의 LSTM run은 그대로 둔다.
+- **측정 1(지금 설정, 17:09~17:23)**: `ckpt-2`부터 로컬 폴더(`--out`, run·잠금 없음)로 같은 데이터를 학습하며 15초마다 기록했다(`~/memdiag.sh`). 학습 프로세스 힙(anon)은 RAM 6.3~8.3 GB와 스왑 8.4~9.6 GB를 합쳐 약 16 GB였다. GTT는 4.5~6.5 GB였다. 17:23:04에 15초 만에 프로세스 스왑이 9.4 GB에서 11.6 GB로 뛰어 남은 스왑이 2.3 GB가 됐고, 측정 스크립트의 안전 정지(남은 스왑 < 2.5 GB면 SIGINT)가 step 9에서 멈췄다. 이때 4줄마다 하나만 출력해 STOP 줄을 놓쳤고, 사용자에게 "외부 중단 신호"라고 잘못 보고했다가 정정했다.
+- **원인**: batch 하나(레인 32 × T64 = 2,048 시점, 공간 feature 26채널 f32)는 약 4 GB다. 미리 읽기 깊이 2에서는 학습 중 1개, 채널 대기 2개, 만드는 중 1개로 최대 4개가 동시에 메모리에 있다(`bc_run.rs` `Prefetch::start(…, 2)`). 이 호스트는 RAM 15 GB를 GPU(GTT)와 나눠 쓰므로 늘 스왑 근처였고, 오르내림이 한도를 넘으면 OOM이 났다.
+- **수정(c971b1f, 041-R16)**: 깊이를 `.env` `URANIUM_BC_PREFETCH`로 정한다(기본 2). 0이면 데이터 스레드 없이 update마다 그 자리에서 batch를 만든다. 깊이 0·1·2가 같은 batch·같은 순서를 주는 것을 테스트로 확인했다(`prefetch_gives_the_feeder_batches_041_r16`). 설정 지문은 바뀌지 않는다. BC250 1호기 `.env`에 `URANIUM_BC_PREFETCH=0`을 넣고 `uranium-train`만 다시 빌드했다. 학습 PC는 기본값 2이고 다시 빌드하지 않았다(작업자 실행 중이고, 출력은 같다).
+- **측정 2(깊이 0, 18:20~19:34, step 3→45 완료)**: 힙은 RAM 1.8~5.9 GB에 스왑 0~5.7 GB였다. GTT는 처음 6.5 GB에서 step 16에 8.6 GB, **step 32에 11.3 GB**로 커진 뒤 줄지 않았다. 남은 스왑 최소는 8.05 GB였다(측정 1은 2.3 GB). 이전에 OOM이 난 step 31~32를 통과했다. update는 82~116 s(배치 생성 제외), 실제 경과는 약 99 s/update로 측정 1과 비슷하다.
+- **남은 위험**: GTT는 큰 batch(엔티티 많음)를 만나면 커지고 줄지 않는다. Burn 메모리 풀로 보이며, 최악 N=512에서 얼마까지 커질지는 모른다. GTT는 스왑되지 않아 힙이 대신 스왑으로 밀리고, 그만큼 느려진다. 남은 스왑 여유(약 8 GB)로 운영하면서 계속 본다.
+- **재개**: 19:36 tmux `train` 작업자 재시작. `ckpt-2`에서 재개했고, `{"prefetch":0}`, 잠금은 BC250 1호기가 다시 잡았다.
+- 측정 출력(지우지 않음): BC250 1호기 `~/diag/g-m2/base/`, `~/diag/g-m2/p0/`(`mem.csv`, `train.log`, 로컬 체크포인트 `out/`).
