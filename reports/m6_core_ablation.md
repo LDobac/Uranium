@@ -191,3 +191,18 @@ uranium-env run --plan config/plans/core-ablation-t0.toml  --backend cuda --out 
 - 2026-10-18 21:03 — 스모크 준비 중 GTrXL CUDA BC가 OOM으로 1회 실패(데이터 업로드 시점). 다른 GPU 작업과 겹친 때로 보이며, 바로 재시도하니 정상이었다(샘플링 최대 약 7.5GB 관측). 이 PC가 쉬는 동안만 학습하는 운영이면 다른 GPU 작업과 겹쳐 재발할 수 있고, 그때는 watchdog 재시작(060-R6)에 의존한다.
 - 2026-10-18 21:03 — 사용자 결정: ① `uranium-env` summary.md 개선 — p0·p1 모두 정책 표시, 정책 이름에 core와 run id, 슬롯 교대 matchup을 합친 정책별 승·패·무와 Wilson 95% 합산 표(spec 020 Risks 절 메모). 모델 대 모델 게임의 승리를 이전에는 "mirror decided"로만 세던 것을 승자 정책으로 가르게 됨. ② 대전 700판(맞대결 100 + T0 600) 리플레이를 모두 저장(`core-ablation-h2h.toml`·`core-ablation-t0.toml`에 `save_replay = true`, 032-R17). 저장 위치는 `<out>/replays/g<id>.rep`(3,000프레임 제한 3판 시험으로 확인, 새 summary 표도 같은 시험에서 확인).
 - 2026-10-18 21:10 — 3절 3번 기간을 실측 update 시간으로 다시 계산(이 PC 가용률 a 가정, 3절 참조).
+
+### 2026-10-20 선행 조건 점검 (master 925b995, 확인만 하고 결정은 하지 않음)
+3절 "시작 전 확인"과 메모의 선행 조건을 현재 master에서 다시 확인했다.
+
+1. **030-R4 증강 변경(transpose 제외) — master에 있음.** 2d8dc4e(증강 4종·`start_loc` 변환)와 7ee6442(flip `entity_cell` 재계산, B-6)가 925b995의 조상이다. 학습 로더는 `Sym::augment()`(원본·좌우·상하·둘 다)만 쓰고(`uranium-train/src/bc.rs`), transpose를 포함한 8종 `Sym::all()`은 030-AC4 왕복 테스트에만 쓴다. spec 030-R4 본문도 같다.
+2. **041-R6 클래스 가중치 — 결정됨.** 적용하지 않는다(사용자 결정 2026-10-18, spec 041-R6 본문, 2d8dc4e). 재검토 조건은 BC 평가가 너무 낮을 때다. 레지스트리에 열린 항목은 없다.
+3. **`config/bc_core_ablation.toml` ↔ `config/bc.toml` — 의도한 차이만 있음.** 다른 값은 `[steps] s1 = 5300`, `warmup_steps = 265`, `keep_checkpoints = 0` 세 개와 주석뿐이다. 모델(lanes 32, seq_len 64, micro_lanes, pad_entities 64, lr 3e-4, min_lr, weight_decay, grad_clip 1.0), 헤드 가중치, value, data(z_drop, augment, enemy_race_mask 0.05, seed 1, checkpoint 주기)는 같다. 방금 갱신한 `s2`·`ablation_a` 11319, `s2_warmup`·`ablation_a_warmup` 566도 두 파일이 같다(S1만 쓰는 비교에는 쓰이지 않음). 테스트 `warmup_cosine_schedule_041_r3`가 세 값을 맞춘 뒤 두 설정 전체가 같은지 검사한다.
+4. **plan 파일 — 있음, 맵·상대 유효.** `config/plans/core-ablation-h2h.toml`(맵 2 × 25판 × 슬롯 교대 = 100판)과 `core-ablation-t0.toml`(코어 2 × 종족 3 × 맵 2 × 50판 = 600판). 맵 이름 `fighting_spirit`·`circuit_breaker`는 `config/assets.toml`에 있고, 상대 `t0` terran·protoss·zerg는 `bc-vs-t0.toml`과 같은 형식이다. 둘 다 `save_replay = true`, `zero_last_failed = true`. 체크포인트 `checkpoints/core-abl-*/ckpt-5300`은 학습 뒤에 생긴다. 저장소 plan 파일 전체를 읽어 보는 자동 테스트는 없다.
+   - **맞대결 경로 시험 이력**: 2026-10-18 21:03 3판 축소본 스모크가 마지막이다(위 진행 기록). 그 뒤 모델 세션 실게임은 R-2(2026-10-19, proto v2, 무작위 LSTM 대 T0 1판, `m6_rebuild.md` 5절)뿐이고, 모델끼리 대전은 다시 돌린 기록이 없다. 그 사이 proto v3(`Unload_Unit`), 액션 101개, feature 스키마 6, 브리지 그룹 명령(011-R20)이 들어왔다. 옛 스모크 체크포인트는 스키마가 달라 읽히지 않는다(`m6_action_audit.md` 배포·후속). 그래서 지금 바이너리로는 맞대결·T0 경로 모두 미시험이다. 무작위 체크포인트 두 개(`uranium-agent random-checkpoint --core lstm|gtrxl`)로 짧은 스모크를 다시 하는 것이 안전하다(제안).
+5. **코어 비교가 기대는 열린 `[SPEC AMBIGUOUS]`·DEFERRED 항목 — 없음.** `spec/README.md` 레지스트리에서 Resolved가 아닌 것은 AMB-001-1·AMB-012-1·AMB-012-2(M7, SC:R)와 AMB-042-2(M6, RL 상대 다양성)뿐이다. 모두 BC 학습·코어 비교와 무관하다. 032-R17·AMB-032-6·AMB-032-7, 041 AMB-041-1~6은 모두 Resolved다. 태그는 아니지만 032-AC2 Linux Vulkan 기준값은 측정 뒤 사용자 결정이 남아 있다. 대전은 lockstep이라 이 값이 비교 결과를 바꾸지는 않는다.
+
+함께 본 것(결정 아님)
+- 3절 3번 기간 계산은 autotune·fusion 이전 값(CUDA 약 24.5 s, Vulkan 약 142 s)이다. R-5 스모크는 LSTM 기준 CUDA 약 10 s, Linux Vulkan 약 101 s/update였다(`m6_rebuild.md` R-5 8절). GTrXL은 새 설정으로 다시 재지 않았다.
+- 학습 장비는 최신 master(cd2973a·925b995 shard 순서·지문)로 다시 빌드해야 한다. 게임 호스트는 브리지·proto v3를 반영해 재빌드하고 hostd를 재시작해야 하는데, 그 기록을 찾지 못했다.
+- `m6_pre_bc_review.md` G절에서 남은 것: G-M2(Linux Vulkan 호스트 메모리·스왑 측정), G-M5(Windows 실제 콘솔 Ctrl+C), C-8의 060-AC4·032-AC2(측정 중). G-M4(060-AC3)는 코어 비교 run의 첫 24시간으로 대신한다.

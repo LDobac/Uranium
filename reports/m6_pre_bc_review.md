@@ -109,7 +109,7 @@ A~E에 없는 내용과, 리뷰 이후 이미 반영된 결정을 모은다. 근
 | F-2-7 | RL 본 실행 전 항목(BC와 무관): z 테이블 생성(033-R8), 추론 `max_batch`·동시 게임 수 측정(020 TBD), BC250 1호기 calibrate, 승격 게이트(042-R6) 미구현(C2 전), 050 평가 파이프라인, 승자 불일치 리플레이 대조(권장) | RL 전 | spec 전수 점검(10-18) |
 
 ## G. BC 본학습 전 통합 체크리스트 (2026-10-19 기준)
-상태: 미결 = 사용자 결정 대기, 대기 = 결정 뒤 작업, 완료 = 반영됨. 코어 비교(032-R17)도 같은 데이터·코드로 돌려야 하므로 이 표가 끝난 뒤에 시작한다.
+상태: 미결 = 사용자 결정 대기, 대기 = 결정 뒤 작업, 완료 = 반영됨, 남음 = 아직 하지 않음, 측정 중 = 다른 작업이 실행 중(2026-10-20 상태 열 갱신, 커밋 이력과 리포트로 확인해 근거를 함께 적음. G절 끝 "결과(2026-10-20)"). 코어 비교(032-R17)도 같은 데이터·코드로 돌려야 하므로 이 표가 끝난 뒤에 시작한다.
 
 ### G-1. 사용자 결정
 | # | 항목 | 출처 | 상태 |
@@ -128,31 +128,31 @@ A~E에 없는 내용과, 리뷰 이후 이미 반영된 결정을 모은다. 근
 ### G-2. 코드 수정 (spec 개정 → 확인 → 코드)
 | # | 항목 | 출처 | 상태 |
 |---|---|---|---|
-| G-F1 | debug 테스트 회귀 수정(`heads.rs:322`) 후 `cargo test --workspace`(debug) 전부 통과, Vulkan에서 같은 경로 1~2 update 확인 | B-1, F-2-6 | 대기 |
-| G-F2 | 맵 사전계산: BC250에도 배포하고, 없으면 경고 없이 0이 되지 않게(시작 시 검사·실패) | B-2 | 대기 |
-| G-F3 | 재개 시 단계·설정 검증(체크포인트에 stage·config 지문) | B-3 | 대기 |
-| G-F4 | 증강 flip의 짝수 폭 건물 `entity_cell` 1타일 어긋남 | B-6 | 대기 |
-| G-F5 | `prune()` 실패가 run을 끝내지 않게 | B-7 | 대기 |
-| G-F6 | Ctrl+C 직후 같은 step 이중 저장 | B-8 | 대기 |
-| G-F7 | 무력화 유닛 명령 불가 규칙을 모든 클래스·`pick_worker`에 적용(034) | B-11 | 대기 |
+| G-F1 | debug 테스트 회귀 수정(`heads.rs:322`) 후 `cargo test --workspace`(debug) 전부 통과, Vulkan에서 같은 경로 1~2 update 확인 | B-1, F-2-6 | 완료(cccdeca `layers::select_bool`. debug `cargo test --workspace` 통과: `m6_action_audit.md` §10 검증, `m6_rebuild.md` R-5 §3 303 통과. Vulkan 1~2 update: R-2 BC 스모크 약 86 s/update, R-5 §8 3 update) |
+| G-F2 | 맵 사전계산: BC250에도 배포하고, 없으면 경고 없이 0이 되지 않게(시작 시 검사·실패) | B-2 | 완료(5688c50 시작 시 검사·로더 거부, 2d408d6 라이브 대상 맵 거부. 배포: R-4 Linux 호스트 A·B 대상 맵 mapgen, R-5 §9 학습 PC 1,244개 복사, R-5 §8 스모크 검사 통과) |
+| G-F3 | 재개 시 단계·설정 검증(체크포인트에 stage·config 지문) | B-3 | 완료(5688c50 체크포인트에 stage·config·dataset 지문, 4fc34eb 설정 지문 화이트리스트, 6523286 clip_mode, cd2973a·925b995 위치 무관 shard 순서·지문) |
+| G-F4 | 증강 flip의 짝수 폭 건물 `entity_cell` 1타일 어긋남 | B-6 | 완료(7ee6442, 030-R4 변환한 픽셀로 `entity_cell` 재계산) |
+| G-F5 | `prune()` 실패가 run을 끝내지 않게 | B-7 | 완료(5688c50, 삭제 실패는 기록·집계만 하고 run을 끝내지 않음) |
+| G-F6 | Ctrl+C 직후 같은 step 이중 저장 | B-8 | 완료(5688c50, 한 번 봉인한 step은 다시 쓰지 않음. H절 "확인 결과 정상") |
+| G-F7 | 무력화 유닛 명령 불가 규칙을 모든 클래스·`pick_worker`에 적용(034) | B-11 | 완료(7ee6442 034-R6 모든 선택 클래스·`pick_worker`·`pick_building`, aabad1e 추가 클래스 정리) |
 | G-F8 | shard `GameInfo` `is_enemy` 정확히 1명 검사(`shard-stats`) | B-12 | 완료(재build 전체 네 출처 위반 0, `m6_rebuild.md` R-5) |
-| G-F9 | G-D1·G-D2·G-D3·G-D4 결정에 따른 수정(맵 분류, Train 병합, result 0, S2 선택, grad clip, build 검증) | A-1~A-4, B-9, F-2-3 | 대기 |
+| G-F9 | G-D1·G-D2·G-D3·G-D4 결정에 따른 수정(맵 분류, Train 병합, result 0, S2 선택, grad clip, build 검증) | A-1~A-4, B-9, F-2-3 | 완료(5d24a1f 맵 제목 CP949·CHK 해시, Train 병합 제거, result 규칙, shard 로컬 우선 쓰기·재읽기. 5688c50 판정 불가 게임 value 가중치 0. efb93e8 전역 norm clip. S2 선택은 G-D3 결정대로 041-R13 유지(005e6fe, 코드 변경 없음). 67488fc·1ce972c 재읽기 캐시 우회·체크섬) |
 
 ### G-3. 측정·실행 준비
 | # | 항목 | 출처 | 상태 |
 |---|---|---|---|
-| G-M1 | 학습 PC 메인 체크아웃과 BC250 1호기를 master로 재빌드(재build를 하면 추출 전용 Windows PC도) | F-2-5 | 대기 |
-| G-M2 | BC250 prefetch 메모리 실측(스왑 여부) | B-5 | 대기 |
+| G-M1 | 학습 PC 메인 체크아웃과 BC250 1호기를 master로 재빌드(재build를 하면 추출 전용 Windows PC도) | F-2-5 | 완료(R-1 6523286, R-3 d452c29, R-4 aa187b2, R-5 Linux 호스트 A 8757c29·학습 PC 7b0879e, `m6_rebuild.md`). 추출 전용 Windows PC는 불참하고 Linux 호스트 C가 대신 합류. 코어 비교 전에 다시 필요: 학습 장비는 최신 master(cd2973a·925b995 shard 순서), 게임 호스트는 브리지(011-R20)·proto v3 반영 재빌드와 hostd 재시작(기록 없음) |
+| G-M2 | BC250 prefetch 메모리 실측(스왑 여부) | B-5 | 남음. R-2에서 Linux 호스트 A Vulkan BC 중 스왑 최대 13.3GB(원인 미구분: prefetch·autotune·통합 메모리 할당), R-5 §8은 약 101 s/update. 원인을 가르는 별도 측정이 아직 없음 |
 | G-M3 | `bc-epoch`로 `[steps]` 재대조(A-1을 고치면 S2 값이 바뀜), `bc_core_ablation.toml` 동기화 | B-10 | 완료(2026-10-20: s1 38,584, s2·ablation_a 11,319, warmup 566, `m6_rebuild.md` R-5) |
-| G-M4 | 060-AC3 24시간 스모크 — 코어 비교 run의 첫 24시간으로 대신할지 포함 | C-2 | 대기 |
-| G-M5 | Windows 실제 콘솔 Ctrl+C 확인 | F-2-4 | 대기 |
+| G-M4 | 060-AC3 24시간 스모크 — 코어 비교 run의 첫 24시간으로 대신할지 포함 | C-2 | 남음. 방식은 정해짐(aaa665c: 060-AC3를 코어 비교 run의 첫 24시간으로 대신). 코어 비교 시작 전이라 미실행 |
+| G-M5 | Windows 실제 콘솔 Ctrl+C 확인 | F-2-4 | 남음. 사용자가 Windows 실제 콘솔에서 Ctrl+C를 눌러 확인해야 함 |
 
 ### G-4. 문서 (동작 불변)
 | # | 항목 | 상태 |
 |---|---|---|
 | G-W1 | 정규화 상수 spec 기록 | 완료(030 §6, 10-19) |
 | G-W2 | CLAUDE.md 정밀도(BC250 BC f32 예외), `uranium-adapter` 미생성 표시, 진행 상황 갱신 | 완료(10-19) |
-| G-W3 | D절 나머지(061 경로 표기, 060-R1 `--device`, 030·032 F_c, 031 mapgen, 021 McRave, 000 맵 해시, 061-R4 주기, `.env.example` 누락 키) | 대기 |
+| G-W3 | D절 나머지(061 경로 표기, 060-R1 `--device`, 030·032 F_c, 031 mapgen, 021 McRave, 000 맵 해시, 061-R4 주기, `.env.example` 누락 키) | 완료(005e6fe spec 본문: 061 실제 경로, 060-R1 `--backend`, F_c = 76, 031 mapgen, 021 McRave, 000 맵 해시, 061-R4 주기, 060-R7은 042-R11대로 삭제 안 함. f535cf6 `.env.example` 4개 키·장비 표기 중립화) |
 
 ### G-5. 진행 순서
 1. G-1 결정.
@@ -171,9 +171,25 @@ H 절(5661ff8·695cbfe 추가 리뷰)의 본학습 전 필수 항목 H-1~H-4도 
 | C-7 | 013-R7 왕복 검증 build 경로 호출 | 완료(T3a, `pipeline.rs`) |
 | C-8 | 010-AC4 executor Command 왕복 | 완료(테스트) |
 | C-8 | 043-AC4 수집 속도 제한 | 완료(테스트, 실행별 속도 기록 추가, 기존 기록 위반 흔적 없음) |
-| C-8 | 060-AC4 CUDA 벤치 리포트 | 대기(재build 뒤, 명령은 `m6_unverified_ac.md`) |
-| C-8 | 032-AC2 Linux Vulkan 기준 재확인 | 대기(재build 뒤 측정, 그다음 사용자 결정) |
+| C-8 | 060-AC4 CUDA 벤치 리포트 | 측정 중(2026-10-20 다른 작업, 명령은 `m6_unverified_ac.md`) |
+| C-8 | 032-AC2 Linux Vulkan 기준 재확인 | 측정 중(2026-10-20 다른 작업. 측정 뒤 기준값은 사용자 결정) |
 | T7 발견 | 034-R8 애드온 건설 중인 건물 제외, 034-R9 자기 대상 금지(SetRally_Unit 예외는 사용자 확정 2026-10-19) | 완료(사용자 결정 2026-10-19, 재build 없음, 표본 무효 레이블 5.384% → 5.427%) |
+
+### 결과(2026-10-20)
+- 확인 방법: master 925b995 기준으로 10-18 이후 커밋 메시지(요구사항 ID)와 `m6_rebuild.md`·`m6_unverified_ac.md`·`m6_action_audit.md`·`timeline.md`를 대조해 위 상태 열을 고쳤다. 지운 행은 없다.
+- 끝난 것
+  - 사용자 결정 G-D1~G-D10 전부.
+  - 코드 수정 G-F1~G-F9 전부: debug 테스트 회귀(cccdeca), 맵 사전계산 검사와 배포, 재개 시 단계·설정 검사, flip `entity_cell`, prune 실패, Ctrl+C 이중 저장, 무력화 유닛, `is_enemy` 검사, 데이터 수정(맵 분류·Train 병합·result·grad clip·shard 검증).
+  - 전체 재build(R-4)와 손상 shard 수리·검증(R-5), `[steps]` 재계산(G-M3), 문서 G-W1~G-W3.
+  - H절 작업자 수정 H-1~H-4(0366217, a5c6c63, 772119c).
+  - C절: C-3 디스크 경고(5688c50), C-4 `dataset_stats.md`(c7f69db), C-5·C-7과 C-8의 010-AC4·043-AC4(6ae1bef, 031-AC1은 T9 뒤 101/101), C-6 기준 결정(efb93e8·965d031), C-9 30초 중단 삭제(005e6fe, spec만).
+- 남은 것(코어 비교 전)
+  - G-M2: Linux Vulkan 호스트의 BC 중 메모리·스왑 원인 측정(R-2 스왑 최대 13.3GB).
+  - G-M5: 사용자가 Windows 실제 콘솔에서 Ctrl+C 확인.
+  - C-8의 060-AC4 CUDA 벤치와 032-AC2 추론 지연: 측정 중(다른 작업). 032-AC2 기준값은 측정 뒤 사용자 결정.
+  - G-M1 후속: 학습 장비를 최신 master로 다시 빌드하고, 게임 호스트는 브리지(011-R20 그룹 명령)·proto v3를 반영해 재빌드·hostd 재시작. 두 번째는 기록을 찾지 못했다.
+- 코어 비교 중에 하는 것: G-M4(060-AC3 24시간 스모크를 코어 비교 run의 첫 24시간으로 대신), C-1(032-AC7 코어 비교 자체).
+- 코어 비교 시작 전 확인 결과는 `m6_core_ablation.md` 5절 "2026-10-20 선행 조건 점검"에 있다.
 
 ## H. 추가 리뷰: 5661ff8(supervise·worker·양보)·695cbfe(summary.md 집계) (2026-10-19)
 
