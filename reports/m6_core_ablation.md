@@ -233,3 +233,29 @@ uranium-env run --plan config/plans/core-ablation-t0.toml  --backend cuda --out 
 - 출력 형식: `summary.md`에 matchup 표와 "Per policy (slot swaps combined)" 표(정책·상대·맵별 승/패/무와 Wilson 95%, 맵 합계 all)가 나온다. "Model sessions" 표에는 core·run·결정 지연이 있다. 4절 대전 표(맞대결 LSTM 승률 맵별, 코어별 T0 승률)는 이 합산 표에서 옮길 수 있다. 무승부만 나온 스모크라 승패 집계 자체는 확인하지 못했다.
 - 참고: 추론 서버 첫 배치가 60–80초 걸렸다(`[infer] slow batch`, 시작 직후 1회, CUDA 초기 준비로 보임). 게임은 lockstep이라 결과에 영향은 없고, 본 대전에서는 첫 판 시간만 늘어난다.
 - 출력 위치(지우지 않음): 학습 PC 저장소 루트 `runs/eval-smoke-2026-10-20/h2h/`, `runs/eval-smoke-2026-10-20/t0/`(`games.jsonl`, `results.jsonl`, `summary.md`, `sessions.md`, `plan.toml`, `replays/`).
+
+### 2026-10-20 15:21 학습 시작 (사용자 지시)
+사용자 지시: 학습은 BC250 1호기(Linux Vulkan, 상시)와 학습 PC(CUDA, 쉬는 동안만, 사용자가 직접 켜고 끔)가 맡는다. 게임 호스트는 네 장비 모두(학습 PC, BC250 1·2호기, asus) 평가 때 쓴다. 네 장비 모두 최신 빌드. BC250 1호기 작업자는 tmux 세션 `train`.
+
+준비
+- 빌드: 네 장비 master 2639038(OpenBW·BWAPI, 브리지, release 바이너리). 학습 PC는 `--features cuda`. asus는 OpenBW·BWAPI 소스부터 새로 받아 빌드하고 `.env`에 hostd 항목을 넣었다(옛 고정 build 경로 → 저장소 경로, 원본 `.env.bak-20261020`).
+- 큐 `<shared>/queue/core-ablation.toml`: 3절과 같음(`core-abl-lstm`, `core-abl-gtrxl`, `config/bc_core_ablation.toml`, 네 출처).
+- 게임 호스트: hostd는 학습에 쓰지 않으므로(BC는 리플레이 shard만 읽음) 사용자 지시로 모두 꺼 두었다. asus는 calibrate만 했다. 결과는 동시 3게임(브리지 p99 중앙값 1/2/3/4게임 78/87/208/420 µs, 4게임에서 기준 300 µs 초과, `~/.cache/uranium/hostd_calibration.toml`). 학습 PC의 미추적 `config/hosts.toml`에 asus를 추가해 평가 때 네 대가 들어가게 했다. 다른 장비의 동시 게임 수는 기존 측정값(학습 PC 24, BC250 1호기 5, 2호기 4)이다.
+
+run 배정 (작업자 큐 순서대로, 061-R13)
+- BC250 1호기 작업자(15:21:56)가 먼저 `core-abl-lstm`을 집었다. 그러나 `bc`는 잠금을 데이터 pull(shard 1,913개 로컬 복사, 약 18분)과 맵 검사 뒤에 잡는다. 그사이 학습 PC 작업자(15:24:23)가 같은 run의 잠금을 먼저 잡았다. 학습 PC는 공용 드라이브가 로컬 디스크라 복사 없이 검사만 한다.
+- BC250 1호기 `bc`는 맵 검사 실패(아래)로 2회 끝났다. 3번째 시도(15:43:53)는 "locked by <학습 PC>"로 끝나 종료 코드 75를 냈다. 작업자는 이것을 재시작으로 세지 않고 다음 run `core-abl-gtrxl`을 잡았다(15:44:47).
+- 결과 배정: **LSTM은 학습 PC CUDA, GTrXL은 BC250 1호기 Vulkan f32**에서 시작했다. 학습 PC가 쉬는 시간에 따라 두 run의 장비 비율이 크게 다를 수 있다(3절 공정성 주의). 4절 표에 run별 장비 비율을 적는다(`uranium-train devices --run <id>`).
+
+발견과 조치
+1. **맵 사전계산 누락 (BC250 1호기).** `bc` 시작 검사(B-2)가 "1212 map hash(es) ... have no map precompute v2 in ~/sc_data/maps"로 끝났다(15:39·15:41, 종료 코드 1, 감시 재시작 60·120초). R-5 재build로 만든 build 맵 사전계산은 12:40에 학습 PC에만 복사했고, Linux 학습 호스트에는 복사하지 않았다. `<shared>/datasets/replays/build/maps/*.toml` 1,244개를 `cp -n`으로 복사했다(v2 확인, 폴더 합계 1,248). 다음 재시작부터 `map_precomputes: ok (B-2)`가 나왔고, 학습 PC와 같은 `run_ident`(config `b19dac76b7908acb`, dataset `2044:14919882ffd994af`)가 찍혔다. README 3절에 학습 호스트 준비 단계로 추가했다.
+2. **GTrXL Vulkan autotune 후보 panic.** 첫 update 중 `thread 'DSD-4-8192' panicked at cubecl-runtime-0.11.0/src/tune/local.rs:224: Should run when selected by autotune.: matmul_naive ... Cube count too big (9, 131072, 1)`가 났다. autotune이 행렬곱 후보를 시험하다 `matmul_naive`가 GPU 디스패치 한도를 넘은 것이다. 프로세스는 계속 돌았고 update도 정상으로 이어졌다(step 1 161.7 s는 autotune 포함, step 2 78.1 s, loss 유한). 이 사실을 확인하기 전에, 학습이 멈춘 것으로 잘못 보고 작업자를 SIGINT로 멈췄다(15:50:13). 그때 `ckpt-2`가 저장·push되고 잠금이 풀렸다. 작업자를 tmux에서 다시 띄우자 15:50:36에 `ckpt-2`부터 재개했다(같은 호스트·같은 autotune 캐시). 재개 시작 때 같은 panic이 1회 더 났고, step 3·4는 111.7·91.4 s였다. 탈락한 후보는 캐시에 남지 않아 프로세스가 시작할 때마다 1회 날 것으로 보인다. 10-18 GTrXL Vulkan 확인(1.5절)은 autotune 도입 전이었고, R-5 Vulkan 스모크는 LSTM만 했다. 그래서 이번이 GTrXL·Vulkan·autotune 조합의 첫 실행이다. 출력에 영향이 있는지는 확인하지 않았다. 다른 후보로 계산하므로 영향이 없을 것으로 본다.
+3. **BC250 1호기 메모리.** GTrXL 학습 중 사용 14.9 GB / 15.2 GB, 스왑 11.9 GB / 16 GB(15:50). R-2 LSTM 스모크 최대 13.3 GB에 가깝다. 남은 확인 항목인 Linux 메모리·스왑 기록(README 6절)으로 계속 본다.
+
+속도(시작 직후)
+| run | 장비 | update 시간 |
+|---|---|---|
+| `core-abl-lstm` | 학습 PC CUDA (TF32) | 약 10.2~14.8 s (step 93까지) |
+| `core-abl-gtrxl` | BC250 1호기 Vulkan f32 | 78.1~111.7 s (step 2~4) |
+
+출력 위치(지우지 않음): 체크포인트 `<shared>/checkpoints/core-abl-{lstm,gtrxl}/`, 장비 구간 `<shared>/runs/core-abl-{lstm,gtrxl}/devices.jsonl`, 작업자·학습 로그는 각 장비 저장소 `runs/worker.log`(학습 PC, BC250 1호기). 빌드 로그는 Linux 장비 `~/build-logs/build_20261020.log`, asus calibrate 로그는 asus 저장소 `runs/calibrate_20261020.log`.

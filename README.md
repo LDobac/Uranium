@@ -7,7 +7,7 @@
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | 0 | 데이터 재build·검증, 벤치, 대전 경로 시험 | 완료 (`reports/m6_rebuild.md` R-5) |
-| 1 | **코어 비교**: LSTM·GTrXL을 S1 5,300 update씩 학습 → 평가 → 사용자가 코어 선택 | 시작 대기 |
+| 1 | **코어 비교**: LSTM·GTrXL을 S1 5,300 update씩 학습 → 평가 → 사용자가 코어 선택 | 학습 중 (2026-10-20 시작) |
 | 2 | **BC 본학습 S1**: 전체 맵 38,584 update | 1 뒤 |
 | 3 | **BC S2**: 대상 맵(투혼·서킷브레이커) 11,319 update, S1에서 시작 + 비교용 ablation (A) | 2 뒤 |
 | 4 | 평가(오프라인 지표, T0 대전) → RL | 3 뒤 |
@@ -22,6 +22,11 @@
 ## 3. 준비 (호스트마다 한 번, 코드가 바뀌면 다시)
 
 `.env`(저장소 루트, git 미추적)에 필요: `URANIUM_SHARED_DIR`, `URANIUM_MAPS_DIR`, `URANIUM_CACHE_DIR`, `URANIUM_AUTOTUNE_CACHE_DIR`.
+
+학습 호스트는 `URANIUM_MAPS_DIR`에 build 맵 사전계산(v2)을 복사해 둔다. 없으면 `bc`가 시작 검사(B-2)에서 "map hash(es) ... have no map precompute v2"로 끝나고 작업자가 재시작을 반복한다. 재build로 사전계산이 바뀌었으면 다시 복사한다.
+```bash
+cp -n <shared>/datasets/replays/build/maps/*.toml <URANIUM_MAPS_DIR>/     # Windows: Copy-Item
+```
 
 ```powershell
 # CUDA 호스트 (Windows PowerShell)
@@ -116,7 +121,7 @@ stage = "ablation-a"
 
 ## 6. 남은 확인 (운영 중에 함께)
 
-- [ ] 코어 비교 시작 (사용자)
+- [x] 코어 비교 시작 (2026-10-20)
 - [ ] **Windows 실제 콘솔 Ctrl+C**: CUDA 호스트 작업자 창에서 Ctrl+C → `ckpt-N Pushed` → 종료 → Linux 호스트가 이어받는지 확인
 - [ ] **Linux 호스트 메모리·스왑**: Linux 호스트가 학습하는 동안 `free -m`, `vmstat 5`를 몇 번 기록
 - [ ] **24시간 연속 실행(060-AC3)**: 코어 비교 첫 24시간에 작업자·run이 멈추지 않았는지 `workers/<host>.json`·로그로 확인
