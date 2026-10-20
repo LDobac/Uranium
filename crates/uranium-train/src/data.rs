@@ -42,13 +42,17 @@ pub struct SourcePos {
 }
 
 /// Stored shards (`shard_*.bin.zst`) under one or more dataset folders, subfolders included (a
-/// full build writes `<src>/<part>/shard_*.bin.zst`, 040-R13). Folders are read in the given
-/// order, each in path order, so the game order is deterministic. `select` keeps one split/stage
-/// (041-R12, R13); `shuffled` permutes the shard files with a fixed seed and the games inside each
-/// file with a seed derived from it and the file's place (041-R13), so a position can be sought
-/// without reading the files before it.
+/// full build writes `<src>/<part>/shard_*.bin.zst`, 040-R13). Every file has a canonical key
+/// ([`shard_key`], `<src>/<part>/shard_*` whatever folder holds it) and the files are read in key
+/// order, so the game order depends only on which files are given: not on `--dataset` vs
+/// `--shards`, the order the folders were named in, or where they live (041-R13, 061-R10).
+/// `select` keeps one split/stage (041-R12, R13); `shuffled` permutes the shard files with a fixed
+/// seed and the games inside each file with a seed derived from it and the file's place (041-R13),
+/// so a position can be sought without reading the files before it.
 pub struct ShardSource {
     files: Vec<PathBuf>,
+    /// [`shard_key`] of each file (same order as `files`).
+    keys: Vec<String>,
     /// Next file to load.
     next_file: usize,
     /// Games left of the loaded file, with their index in it.
@@ -70,12 +74,27 @@ impl ShardSource {
         Self::from_dirs(std::slice::from_ref(&dir.to_path_buf()))
     }
 
+    /// The shard files of `dirs` in canonical key order (041-R13); the order the folders are given
+    /// in does not matter. Two files with the same key (a source given twice, or two folders with
+    /// the same source name) are an error.
     pub fn from_dirs(dirs: &[PathBuf]) -> Result<Self> {
-        let mut files = Vec::new();
+        let mut found: Vec<(String, PathBuf)> = Vec::new();
         for d in dirs {
-            files.extend(shard_files(d)?);
+            for f in shard_files(d)? {
+                found.push((shard_key(d, &f)?, f));
+            }
         }
-        Ok(Self { files, next_file: 0, games: VecDeque::new(), cur_file: 0, last: None, select: None, seed: None, only_files: None, dirs: dirs.to_vec() })
+        found.sort_by(|a, b| key_cmp(&a.0, &b.0).then_with(|| a.1.cmp(&b.1)));
+        if let Some(w) = found.windows(2).find(|w| w[0].0 == w[1].0) {
+            anyhow::bail!(
+                "two shard files have the same key {} ({} and {}): give each source once, by --dataset or --shards (041-R13)",
+                w[0].0,
+                w[0].1.display(),
+                w[1].1.display()
+            );
+        }
+        let (keys, files) = found.into_iter().unzip();
+        Ok(Self { files, keys, next_file: 0, games: VecDeque::new(), cur_file: 0, last: None, select: None, seed: None, only_files: None, dirs: dirs.to_vec() })
     }
 
     pub fn select(mut self, sel: crate::split::Selection) -> Self {
@@ -83,14 +102,23 @@ impl ShardSource {
         self
     }
 
+    /// 041-R13: the canonical key order permuted with `seed` alone.
     pub fn shuffled(mut self, seed: u64) -> Self {
-        shuffle(&mut self.files, &mut Rng::new(seed));
+        let mut order: Vec<usize> = (0..self.files.len()).collect();
+        shuffle(&mut order, &mut Rng::new(seed));
+        self.files = order.iter().map(|&i| self.files[i].clone()).collect();
+        self.keys = order.iter().map(|&i| self.keys[i].clone()).collect();
         self.seed = Some(seed);
         self
     }
 
     pub fn files(&self) -> &[PathBuf] {
         &self.files
+    }
+
+    /// [`shard_key`] of each file, in read order.
+    pub fn keys(&self) -> &[String] {
+        &self.keys
     }
 
     /// The folders the files were found in.
@@ -105,14 +133,13 @@ impl ShardSource {
         self
     }
 
-    /// The file list in read order by the last three path parts (`<src>/<part>/shard_*`), the same
-    /// on every PC whatever the local dataset folder: a data position only applies to this list.
+    /// The file list in read order by canonical key ([`shard_key`]), the same on every PC and for
+    /// `--dataset` and `--shards` alike (041-R13, 061-R10): a data position only applies to this list.
     pub fn fingerprint(&self) -> String {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
-        for f in &self.files {
-            let parts: Vec<_> = f.components().rev().take(3).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
-            h.update(parts.join("/").as_bytes());
+        for k in &self.keys {
+            h.update(key_hash_text(k).as_bytes());
             h.update(b"\n");
         }
         let hex: String = h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect();
@@ -202,6 +229,35 @@ pub fn shuffle<T>(v: &mut [T], rng: &mut Rng) {
     for i in (1..v.len()).rev() {
         v.swap(i, (rng.next() % (i as u64 + 1)) as usize);
     }
+}
+
+/// 041-R13 canonical key of shard file `file` found under the given folder `dir`: the last three
+/// parts of `<dir's own name>/<path of file inside dir>`, joined by `/`. For a build's layout this
+/// is `<src>/<part>/shard_*.bin.zst` whether `dir` is the source folder (`--dataset`, `--shards
+/// <src>`) or a folder holding several sources, and whatever is above `dir` (cache, share, a
+/// mount point): the same files get the same keys on every host.
+pub fn shard_key(dir: &Path, file: &Path) -> Result<String> {
+    let name = match dir.file_name() {
+        Some(n) => n.to_os_string(),
+        // `.`, `..`, a drive root: name it by its real path.
+        None => std::fs::canonicalize(dir).ok().and_then(|p| p.file_name().map(|n| n.to_os_string())).unwrap_or_default(),
+    };
+    let rel = file.strip_prefix(dir).with_context(|| format!("{} is not under {}", file.display(), dir.display()))?;
+    let mut parts: Vec<String> = std::iter::once(name.to_string_lossy().into_owned()).filter(|n| !n.is_empty()).collect();
+    parts.extend(rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()));
+    let skip = parts.len().saturating_sub(3);
+    Ok(parts[skip..].join("/"))
+}
+
+/// Key order: part by part (as path order), so `p0/…` sorts before `p0-x/…` on every OS.
+fn key_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    a.split('/').cmp(b.split('/'))
+}
+
+/// What the fingerprints hash for a key: its parts from the file name up (`shard_*/<part>/<src>`),
+/// the text they hashed before the canonical keys, so `--dataset` fingerprints are unchanged.
+fn key_hash_text(key: &str) -> String {
+    key.rsplit('/').collect::<Vec<_>>().join("/")
 }
 
 /// Shard files under `dir` (recursive), sorted by path.
@@ -466,14 +522,8 @@ struct ScanCache {
     version: u32,
     shard_schema: u32,
     key: String,
-    /// File keys (last three path parts) in sorted path order, and their games.
+    /// File keys ([`shard_key`]) in key order, and their games.
     files: Vec<(String, Vec<GameSummary>)>,
-}
-
-fn file_key(f: &Path) -> String {
-    let mut parts: Vec<_> = f.components().rev().take(3).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
-    parts.reverse();
-    parts.join("/")
 }
 
 /// [`scan_files`] of `src`'s files (in `src`'s order) through a local cache (review T4a: the start
@@ -487,11 +537,13 @@ pub fn scan_cached(src: &ShardSource) -> Result<Vec<Vec<GameSummary>>> {
 }
 
 pub fn scan_cached_in(src: &ShardSource, cache: Option<&Path>) -> Result<Vec<Vec<GameSummary>>> {
-    let mut sorted: Vec<PathBuf> = src.files().to_vec();
-    sorted.sort();
-    let key = files_fingerprint(src.dirs(), &sorted, true)?.replace(':', "-");
+    // Key order, so the cache serves any read order of the same files (041-R13).
+    let mut order: Vec<usize> = (0..src.files().len()).collect();
+    order.sort_by(|&a, &b| key_cmp(&src.keys()[a], &src.keys()[b]));
+    let sorted: Vec<PathBuf> = order.iter().map(|&i| src.files()[i].clone()).collect();
+    let keys: Vec<String> = order.iter().map(|&i| src.keys()[i].clone()).collect();
+    let key = files_fingerprint(src.dirs(), &sorted, &keys, true)?.replace(':', "-");
     let path = cache.map(|d| d.join(format!("scan-{key}.json")));
-    let keys: Vec<String> = sorted.iter().map(|f| file_key(f)).collect();
     let cached = path.as_ref().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice::<ScanCache>(&b).ok()).filter(|c| {
         c.version == SCAN_CACHE_VERSION
             && c.shard_schema == uranium_replay::shard::SCHEMA_VERSION
@@ -532,31 +584,42 @@ pub fn value_weight(meta: &GameMeta) -> f32 {
     if meta.result_source == result_source::NONE { 0.0 } else { 1.0 }
 }
 
-/// B-3: what the data of a run is: per file (in read order) its last three path parts and its
-/// SHA-256 from the folder's `manifest.json` (061-R7, verified when the dataset was opened), or
-/// its size for a folder without a manifest (`--shards`). A rebuilt dataset with the same file
-/// names gives another fingerprint.
-pub fn dataset_fingerprint(dirs: &[PathBuf], files: &[PathBuf]) -> Result<String> {
-    files_fingerprint(dirs, files, false)
+/// B-3: what the data of a run is: per file of `src` (in read order) its canonical key
+/// ([`shard_key`]) and its SHA-256 from the nearest `manifest.json` at or below the given folder
+/// (061-R7, verified when the dataset was opened; a `--shards` copy of a dataset carries it), or
+/// its size when no manifest lists it. The same files give the same fingerprint for `--dataset`
+/// and `--shards` on any host (041-R13, 061-R10); a rebuilt dataset with the same file names
+/// gives another.
+pub fn dataset_fingerprint(src: &ShardSource) -> Result<String> {
+    files_fingerprint(src.dirs(), src.files(), src.keys(), false)
 }
 
-/// [`dataset_fingerprint`]; with `local`, a file without a manifest entry is also keyed by its
-/// modification time (a local cache key only: times differ between PCs).
-fn files_fingerprint(dirs: &[PathBuf], files: &[PathBuf], local: bool) -> Result<String> {
+/// [`dataset_fingerprint`] of `files` with their `keys`; with `local`, a file without a manifest
+/// entry is also keyed by its modification time (a local cache key only: times differ between PCs).
+fn files_fingerprint(dirs: &[PathBuf], files: &[PathBuf], keys: &[String], local: bool) -> Result<String> {
     use sha2::{Digest, Sha256};
-    let mut manifests = Vec::new();
-    for d in dirs {
-        if d.join(crate::storage::MANIFEST_FILE).is_file() {
-            manifests.push((d.clone(), crate::storage::Manifest::read(d)?));
-        }
-    }
+    // Manifests by folder, read once (`None`: the folder has none).
+    let mut manifests: HashMap<PathBuf, Option<crate::storage::Manifest>> = HashMap::new();
     let mut h = Sha256::new();
-    for f in files {
-        let parts: Vec<_> = f.components().rev().take(3).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
-        let entry = manifests.iter().find_map(|(d, m)| {
-            let rel = f.strip_prefix(d).ok()?.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/");
-            m.files.get(&rel).map(|e| e.sha256.clone())
-        });
+    for (f, key) in files.iter().zip(keys) {
+        let mut entry = None;
+        if let Some(root) = dirs.iter().find(|d| f.starts_with(d)) {
+            // The nearest manifest from the file's folder up to the given folder.
+            for anc in f.ancestors().skip(1) {
+                if !anc.starts_with(root) {
+                    break;
+                }
+                if !manifests.contains_key(anc) {
+                    let m = if anc.join(crate::storage::MANIFEST_FILE).is_file() { Some(crate::storage::Manifest::read(anc)?) } else { None };
+                    manifests.insert(anc.to_path_buf(), m);
+                }
+                if let Some(m) = &manifests[anc] {
+                    let rel = f.strip_prefix(anc)?.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/");
+                    entry = m.files.get(&rel).map(|e| e.sha256.clone());
+                    break;
+                }
+            }
+        }
         let id = match entry {
             Some(sha) => sha,
             None => {
@@ -565,7 +628,7 @@ fn files_fingerprint(dirs: &[PathBuf], files: &[PathBuf], local: bool) -> Result
                 if local { format!("bytes:{}:mtime:{mtime}", m.len()) } else { format!("bytes:{}", m.len()) }
             }
         };
-        h.update(parts.join("/").as_bytes());
+        h.update(key_hash_text(key).as_bytes());
         h.update(b"\t");
         h.update(id.as_bytes());
         h.update(b"\n");

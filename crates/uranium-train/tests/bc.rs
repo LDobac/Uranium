@@ -761,11 +761,10 @@ fn dataset_fingerprint_follows_contents_b3() {
     use uranium_train::data::dataset_fingerprint;
     let root = shard_dir("ds-fp", &varied_games(), 4);
     let src = ShardSource::new(&root).unwrap();
-    let dirs = vec![root.clone()];
-    let plain = dataset_fingerprint(&dirs, src.files()).unwrap();
-    assert_eq!(plain, dataset_fingerprint(&dirs, src.files()).unwrap());
+    let plain = dataset_fingerprint(&src).unwrap();
+    assert_eq!(plain, dataset_fingerprint(&src).unwrap());
     uranium_train::storage::Manifest::build(&root).unwrap().write(&root).unwrap();
-    let with_manifest = dataset_fingerprint(&dirs, src.files()).unwrap();
+    let with_manifest = dataset_fingerprint(&src).unwrap();
     assert_ne!(plain, with_manifest, "manifest hashes are used when present");
     // Same file names, other contents (a rebuild).
     let games: Vec<ShardGame> = varied_games().into_iter().rev().collect();
@@ -773,7 +772,7 @@ fn dataset_fingerprint_follows_contents_b3() {
     uranium_train::storage::Manifest::build(&again).unwrap().write(&again).unwrap();
     let src2 = ShardSource::new(&again).unwrap();
     assert_eq!(src2.fingerprint(), src.fingerprint(), "the file list alone is the same");
-    assert_ne!(dataset_fingerprint(&[again.clone()], src2.files()).unwrap(), with_manifest);
+    assert_ne!(dataset_fingerprint(&src2).unwrap(), with_manifest);
     std::fs::remove_dir_all(&again).ok();
 }
 
@@ -990,4 +989,120 @@ fn config_fingerprint_fields_are_classified_b3() {
         f(&mut c);
         assert_ne!(c.fingerprint(), base, "{} changes the fingerprint", RESULT[i]);
     }
+}
+
+/// Copies the folder `src` to `dst` (files and subfolders), with or without the manifests.
+fn copy_dir(src: &std::path::Path, dst: &std::path::Path, with_manifests: bool) {
+    std::fs::create_dir_all(dst).unwrap();
+    for e in std::fs::read_dir(src).unwrap().flatten() {
+        let to = dst.join(e.file_name());
+        if e.file_type().unwrap().is_dir() {
+            copy_dir(&e.path(), &to, with_manifests);
+        } else if with_manifests || e.file_name() != uranium_train::storage::MANIFEST_FILE {
+            std::fs::copy(e.path(), &to).unwrap();
+        }
+    }
+}
+
+/// `<root>/datasets/replays/shards/{alpha,beta}/p<k>/shard_00000.bin.zst` with a manifest per
+/// source (as the replay build leaves them on the share); `games` are split between the sources.
+fn two_source_share(root: &std::path::Path, games: &[ShardGame]) -> std::path::PathBuf {
+    let shards = root.join("datasets").join("replays").join("shards");
+    let (a, b) = games.split_at(games.len() / 2);
+    for (name, part) in [("alpha", a), ("beta", b)] {
+        let tmp = shard_dir(&format!("canon-{name}-{}", root.file_name().unwrap().to_string_lossy()), part, 3);
+        let dst = shards.join(name);
+        copy_dir(&tmp, &dst, true);
+        std::fs::remove_dir_all(&tmp).ok();
+        uranium_train::storage::Manifest::build(&dst).unwrap().write(&dst).unwrap();
+    }
+    shards
+}
+
+/// The first `n` batches (what they train on, and their data state) of `src` shuffled with `seed`.
+fn first_batches(src: ShardSource, seed: u64, n: usize) -> Vec<(Vec<Vec<(u16, usize)>>, uranium_train::bc::FeedState)> {
+    let mut cfg = tiny_bc(1, 0);
+    cfg.data.z_drop = 0.5;
+    cfg.data.augment = true;
+    let mut f = feeder(&cfg);
+    let mut s = src.shuffled(seed);
+    (0..n).map_while(|_| f.next_batch_from(&mut s).unwrap()).map(|b| (batch_key(&b), b.state)).collect()
+}
+
+/// 041-R13, 061-R10 / 061-AC1 (resume on another host): the same shard files give the same file
+/// order, the same first batches and the same data-position and B-3 dataset fingerprints whether
+/// they are opened with `--dataset` (pulled into a cache, or read in place) or `--shards`, in any
+/// folder order, one folder per source or one folder holding all sources, wherever they are.
+#[test]
+fn same_shards_give_the_same_batches_for_any_spelling_or_root_041_r13_061_ac1() {
+    use uranium_train::data::dataset_fingerprint;
+    use uranium_train::storage::{StorageConfig, open_dataset};
+    let base = std::env::temp_dir().join(format!("uranium-canon-{}", std::process::id()));
+    std::fs::remove_dir_all(&base).ok();
+    let share = base.join("share");
+    let shards = two_source_share(&share, &varied_games());
+    // Another host: the same files under another mount point, one level deeper.
+    let other = base.join("mnt").join("deeper").join("shards");
+    copy_dir(&shards, &other, true);
+
+    // `--dataset`: pulled into a cache, or read in place (061-R12).
+    let pulled = StorageConfig::new(&share, base.join("cache"), "a");
+    let mut local = StorageConfig::new(&share, base.join("unused-cache"), "b");
+    local.shared_local = true;
+    let open = |cfg: &StorageConfig| -> Vec<std::path::PathBuf> {
+        ["replays/shards/alpha", "replays/shards/beta"].iter().map(|r| open_dataset(cfg, std::path::Path::new(r)).unwrap()).collect()
+    };
+    let spellings: Vec<(&str, Vec<std::path::PathBuf>)> = vec![
+        ("--dataset (cache)", open(&pulled)),
+        ("--dataset (in place)", open(&local)),
+        ("--shards in reverse order", vec![shards.join("beta"), shards.join("alpha")]),
+        ("--shards at another root", vec![other.join("alpha"), other.join("beta")]),
+        ("--shards of the folder of all sources", vec![other.clone()]),
+    ];
+    let seed = 7;
+    let fp = |dirs: &[std::path::PathBuf]| dataset_fingerprint(&ShardSource::from_dirs(dirs).unwrap().shuffled(seed)).unwrap();
+    let want_src = ShardSource::from_dirs(&spellings[0].1).unwrap();
+    let want_keys = want_src.keys().to_vec();
+    assert_eq!(want_keys.len(), 6);
+    assert!(want_keys.iter().all(|k| k.starts_with("alpha/p") || k.starts_with("beta/p")), "{want_keys:?}");
+    let want_list = want_src.fingerprint();
+    let want_data = fp(&spellings[0].1);
+    let want_batches = first_batches(want_src, seed, 6);
+    assert_eq!(want_batches.len(), 6);
+    for (name, dirs) in &spellings {
+        let src = ShardSource::from_dirs(dirs).unwrap();
+        assert_eq!(src.keys(), &want_keys[..], "{name}: file order");
+        assert_eq!(src.fingerprint(), want_list, "{name}: data position fingerprint");
+        assert_eq!(fp(dirs), want_data, "{name}: B-3 dataset fingerprint");
+        assert_eq!(first_batches(src, seed, 6), want_batches, "{name}: first batches");
+    }
+
+    // A copy without manifests reads the same batches; its B-3 fingerprint falls back to file
+    // sizes, so a resume from it is refused (with a message), never run silently on other data.
+    let bare = base.join("bare");
+    copy_dir(&shards, &bare, false);
+    let dirs = vec![bare.join("alpha"), bare.join("beta")];
+    assert_eq!(first_batches(ShardSource::from_dirs(&dirs).unwrap(), seed, 6), want_batches);
+    assert_ne!(fp(&dirs), want_data);
+
+    // Other data under the same file names (rebuilt sources): the same file list, another B-3
+    // dataset fingerprint.
+    let rebuilt = two_source_share(&base.join("rebuilt"), &varied_games().into_iter().rev().collect::<Vec<_>>());
+    let dirs = vec![rebuilt.join("alpha"), rebuilt.join("beta")];
+    assert_eq!(ShardSource::from_dirs(&dirs).unwrap().fingerprint(), want_list);
+    assert_ne!(fp(&dirs), want_data);
+    std::fs::remove_dir_all(&base).ok();
+}
+
+/// 041-R13: a source given twice (by both options, or from two places) is refused, not read twice.
+#[test]
+fn a_source_given_twice_is_refused_041_r13() {
+    let base = std::env::temp_dir().join(format!("uranium-canon-dup-{}", std::process::id()));
+    std::fs::remove_dir_all(&base).ok();
+    let shards = two_source_share(&base, &varied_games());
+    let copy = base.join("copy").join("alpha");
+    copy_dir(&shards.join("alpha"), &copy, true);
+    let err = ShardSource::from_dirs(&[shards.join("alpha"), copy]).err().expect("same keys twice");
+    assert!(format!("{err:#}").contains("same key alpha/p0/shard_00000.bin.zst"), "{err:#}");
+    std::fs::remove_dir_all(&base).ok();
 }

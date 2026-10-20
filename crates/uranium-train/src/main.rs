@@ -280,7 +280,8 @@ enum RaceArg {
     Zerg,
 }
 
-/// Shard folders to read, subfolders included, in the order given (041-R9).
+/// Shard folders to read, subfolders included (041-R9); files are read in canonical key order
+/// whatever the folder order or spelling (041-R13).
 #[derive(clap::Args)]
 struct DataArgs {
     /// Dataset under `<URANIUM_SHARED_DIR>/datasets/` with a manifest (e.g. `replays/shards/stardata`):
@@ -298,8 +299,8 @@ impl DataArgs {
         let mut dirs = Vec::new();
         if !self.dataset.is_empty() {
             let cfg = uranium_train::storage::StorageConfig::from_env()?;
-            // Sorted, so the game order (041-R13) and a run's data position (061-R10) do not
-            // depend on the order the datasets were named in.
+            // Deduplicated. The game order (041-R13) and a run's data position (061-R10) follow
+            // the files' canonical keys (`ShardSource::from_dirs`), not this folder order.
             let mut names = self.dataset.clone();
             names.sort();
             names.dedup();

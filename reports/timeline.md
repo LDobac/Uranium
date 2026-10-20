@@ -91,3 +91,5 @@
 - 2026-10-20 12시 — **결정 반영**(041-R14): `bc-epoch`로 `[steps]` 갱신 s1 36,985 → 38,584, s2·ablation_a 7,915 → 11,319, warmup 396 → 566(`config/bc.toml`, `bc_core_ablation.toml`은 s1 5,300 유지)
 - 2026-10-20 12:2x~12:40 — BC 스모크(새 데이터 네 출처, autotune·fusion·전역 clip): 학습 PC CUDA 6 update(첫 237초, 이후 약 10초/update), Linux 호스트 A Vulkan 3 update(첫 124초, 이후 약 101초), loss 유한. `--dataset`과 `--shards`는 첫 배치 순서가 다름(장비 차이 아님)
 - 2026-10-20 12:40 — 고정 build 바이너리 정리: 학습 PC `uranium-build/{aa187b2,d452c29}`, Linux 호스트 A·B 같은 사본과 `bridge/openbw/build-aa187b2`, Linux 호스트 C `src-*` worktree 2개(약 1.2GB)와 사본. 학습 PC `URANIUM_MAPS_DIR`에 build 맵 사전계산 1,244개 복사·대상 맵 mapgen(v2 확인)
+- 2026-10-20 — **결정**(U-5, 040-R19): 무효 레이블 20% 기준 유지, scr_ladder 보조 필터 없음. 걸러진 시점 약 36.6k 중 216(stardata 132 0.4%, scr_ladder 83 6.3%, personal 1, 대부분 20~25%). scr_ladder 비율이 높은 이유는 나중에 조사
+- 2026-10-20 — **발견·수정**(041-R13, 061-R10): `--dataset`/`--shards` 첫 배치 차이의 원인은 폴더를 적힌 순서대로 이어 붙인 뒤 섞은 것(`--dataset`만 이름 정렬). 실제 데이터로 재현(정렬 `1491…`, stardata·community·scr_ladder·personal 순서 `46ae…`). 파일별 `<출처>/<파트>/<파일>` 키 정렬로 바꿈(041-R13 문구 추가, 사용자 확인 대기). `--dataset` 순서·지문은 그대로, 정렬 안 된 `--shards`만 바뀜. 같은 출처 두 번 지정은 실패

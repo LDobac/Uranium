@@ -160,7 +160,7 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
     let src = ShardSource::from_dirs(&args.dirs)?.select(args.stage.selection()).shuffled(cfg.data.seed);
     crate::data::check_maps(&src, Some(args.stage.selection()), &maps)?;
     // B-3: what this run trains; stored in every checkpoint and compared on resume.
-    let ident = RunIdent { stage: format!("{:?}", args.stage), config: cfg.fingerprint(), dataset: crate::data::dataset_fingerprint(&args.dirs, src.files())? };
+    let ident = RunIdent { stage: format!("{:?}", args.stage), config: cfg.fingerprint(), dataset: crate::data::dataset_fingerprint(&src)? };
     crate::elog!("{}", serde_json::json!({ "run_ident": ident, "keep_checkpoints": cfg.keep_checkpoints() }));
 
     // 042-R10 / 060-R6: Ctrl+C (or the watchdog's death) before the lock: nothing to release.

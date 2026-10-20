@@ -3,7 +3,22 @@
 
 use std::fs;
 
-use uranium_train::data::shard_files;
+use std::path::Path;
+
+use uranium_train::data::{shard_files, shard_key};
+
+/// 041-R13: a shard's canonical key is `<src>/<part>/<file>` whatever folder above it was given
+/// and wherever that folder is; a flat folder keeps its own name and nothing above it.
+#[test]
+fn shard_key_is_location_independent_041_r13() {
+    let f = Path::new("mnt").join("x").join("shards").join("stardata").join("p00").join("shard_00001.bin.zst");
+    for dir in [Path::new("mnt/x/shards/stardata"), Path::new("mnt/x/shards"), Path::new("mnt/x"), Path::new("mnt")] {
+        assert_eq!(shard_key(&dir.components().collect::<std::path::PathBuf>(), &f).unwrap(), "stardata/p00/shard_00001.bin.zst", "{}", dir.display());
+    }
+    let flat = Path::new("a").join("b").join("sample").join("shard_00000.bin.zst");
+    assert_eq!(shard_key(&Path::new("a").join("b").join("sample"), &flat).unwrap(), "sample/shard_00000.bin.zst");
+    assert!(shard_key(Path::new("elsewhere"), &flat).is_err());
+}
 
 #[test]
 fn shard_files_recurse_in_path_order_041_r9() {
