@@ -167,6 +167,48 @@ fn decode(bytes: &[u8]) -> Result<Shard> {
     postcard::from_bytes(bytes).context("decoding shard")
 }
 
+/// 040-R17 (R-5): every finished shard (`shard_NNNNN.bin.zst`) below `dir` decompresses and
+/// decodes completely. Checked on `jobs` threads; the error lists every shard that fails, so a
+/// manifest is never written over a corrupt shard. Returns (shards, games).
+pub fn validate_tree(dir: &Path, jobs: usize) -> Result<(usize, usize)> {
+    fn walk(d: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+        for e in std::fs::read_dir(d).with_context(|| format!("listing {}", d.display()))? {
+            let e = e?;
+            let p = e.path();
+            if e.file_type()?.is_dir() {
+                walk(&p, out)?;
+            } else if shard_index(&e.file_name().to_string_lossy()).is_some() {
+                out.push(p);
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    walk(dir, &mut files)?;
+    files.sort();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let games = std::sync::atomic::AtomicUsize::new(0);
+    let bad = std::sync::Mutex::new(Vec::new());
+    std::thread::scope(|s| {
+        for _ in 0..jobs.max(1) {
+            s.spawn(|| {
+                while let Some(f) = files.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
+                    match read(f) {
+                        Ok(sh) => {
+                            games.fetch_add(sh.games.len(), std::sync::atomic::Ordering::Relaxed);
+                        }
+                        Err(e) => bad.lock().unwrap().push(format!("{}: {e:#}", f.display())),
+                    }
+                }
+            });
+        }
+    });
+    let mut bad = bad.into_inner().unwrap();
+    bad.sort();
+    ensure!(bad.is_empty(), "040-R17: {} of {} shards do not decode:\n{}", bad.len(), files.len(), bad.join("\n"));
+    Ok((files.len(), games.into_inner()))
+}
+
 /// `<path>.tmp`: the name a shard has while it is copied (040-R17).
 pub fn temp_path(path: &Path) -> PathBuf {
     let mut s = path.as_os_str().to_owned();
@@ -201,12 +243,14 @@ pub type CopyFn = fn(&Path, &Path) -> std::io::Result<u64>;
 /// 040-R17: `local` is complete; copy it to `<dest>.tmp`, read the copy back and compare
 /// SHA-256, rename to `dest` only on a match and then delete `local`. A mismatch removes the
 /// temporary copy and copies again, `retries` times; after that the error names the local copy,
-/// which is kept.
+/// which is kept. The read-back is what the file server holds: the copy is `fsync`ed and read
+/// past this client's cache (`share_io`, R-5: a cached read-back passed 7 shards that were
+/// zero-filled on the share).
 pub fn publish(local: &Path, dest: &Path, copy: CopyFn, retries: u32) -> Result<()> {
     let want = sha256_hex(&std::fs::read(local).with_context(|| format!("reading {}", local.display()))?);
     let tmp = temp_path(dest);
     for attempt in 0..=retries {
-        let got = copy(local, &tmp).and_then(|_| std::fs::read(&tmp)).map(|b| sha256_hex(&b));
+        let got = copy(local, &tmp).and_then(|_| crate::share_io::sync_file(&tmp)).and_then(|_| crate::share_io::read_uncached(&tmp)).map(|b| sha256_hex(&b));
         match got {
             Ok(h) if h == want => {
                 std::fs::rename(&tmp, dest).with_context(|| format!("renaming {} (040-R17)", tmp.display()))?;
@@ -356,6 +400,28 @@ pub(crate) mod tests {
         let mut v: Vec<String> = std::fs::read_dir(dir).map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
         v.sort();
         v
+    }
+
+    #[test]
+    fn validate_tree_names_every_corrupt_shard_040_r17() {
+        let dir = tmp_dir("validate");
+        let mut w = ShardWriter::new(dir.join("shared").join("p0"), dir.join("local"), 0, 1).unwrap();
+        for n in 1..=3 {
+            w.add(game(n)).unwrap();
+        }
+        assert_eq!(validate_tree(&dir.join("shared"), 2).unwrap(), (3, 3));
+        // R-5: an 8 MiB zero-filled head as found on the share; a truncated file.
+        let p0 = &w.written[0].0;
+        let mut b = std::fs::read(p0).unwrap();
+        let n = 8.min(b.len());
+        b[..n].fill(0);
+        std::fs::write(p0, &b).unwrap();
+        let p2 = &w.written[2].0;
+        let b = std::fs::read(p2).unwrap();
+        std::fs::write(p2, &b[..b.len() / 2]).unwrap();
+        let e = format!("{:#}", validate_tree(&dir.join("shared"), 2).unwrap_err());
+        assert!(e.contains("2 of 3 shards") && e.contains("shard_00000") && e.contains("shard_00002") && !e.contains("shard_00001"), "{e}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

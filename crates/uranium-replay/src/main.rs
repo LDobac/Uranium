@@ -65,7 +65,7 @@ enum Cmd {
     },
     /// 034-AC3 / AMB-040-6 / B-12: label distribution and GameInfo checks over a shard folder
     /// (JSON). Exits with an error when a game's GameInfo fails a check (e.g. not exactly one
-    /// `is_enemy` player).
+    /// `is_enemy` player) or a (replay, perspective) appears twice (040-R20). Subfolders included.
     ShardStats { dir: PathBuf },
     /// 013-AC4: SC:R -> 1.16.1 conversion round trip over a folder (JSON summary).
     Roundtrip { dir: PathBuf },
@@ -318,6 +318,8 @@ fn main() -> Result<()> {
             // B-12: every game must have exactly one is_enemy player.
             let bad = s["is_enemy_violations"].as_u64().unwrap_or(0);
             anyhow::ensure!(bad == 0, "B-12: {bad} games without exactly one is_enemy player");
+            let dup = s["duplicate_games"].as_u64().unwrap_or(0);
+            anyhow::ensure!(dup == 0, "040-R20: {dup} games repeat a (replay, perspective) already in this folder");
         }
         Cmd::Nondet { rep, perspective, runs } => {
             let r = load(&rep)?;
@@ -506,8 +508,24 @@ fn check_screp(dir: &Path, screp: &Path, limit: Option<usize>) -> Result<()> {
 fn shard_stats(dir: &Path) -> Result<serde_json::Value> {
     use std::collections::BTreeMap;
     let table = uranium_env::actions::ActionTable::load()?;
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.to_string_lossy().ends_with(".bin.zst")).collect();
+    // Subfolders too (build writes `<src>/<part>/`), finished shards only (040-R17).
+    fn walk(d: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+        for e in std::fs::read_dir(d)? {
+            let e = e?;
+            if e.file_type()?.is_dir() {
+                walk(&e.path(), out)?;
+            } else if uranium_replay::shard::shard_index(&e.file_name().to_string_lossy()).is_some() {
+                out.push(e.path());
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    walk(dir, &mut files)?;
     files.sort();
+    // 040-R20: one game per (replay, perspective) in a source.
+    let mut seen = std::collections::HashSet::<(String, u8)>::new();
+    let mut duplicate_games = 0usize;
     let (mut games, mut steps, mut bad_game_info) = (0usize, 0usize, Vec::new());
     let (mut with_select, mut with_unit, mut with_tile, mut queued) = (0usize, 0usize, 0usize, 0usize);
     let mut actions = BTreeMap::<u16, usize>::new();
@@ -533,6 +551,7 @@ fn shard_stats(dir: &Path) -> Result<serde_json::Value> {
                 lv[5] += usize::from(table.actions.get(l.action as usize).is_some_and(|a| l.selected.len() > a.max_select as usize));
             }
             games += 1;
+            duplicate_games += usize::from(!seen.insert((g.meta.replay_sha256.clone(), g.meta.perspective_slot)));
             *matchups.entry(g.meta.matchup.clone()).or_default() += 1;
             *families.entry(g.meta.map_family.clone()).or_default() += 1;
             let gi = &g.game_info;
@@ -583,6 +602,7 @@ fn shard_stats(dir: &Path) -> Result<serde_json::Value> {
         "labeler_versions": labeler,
         "game_info_bad": bad_game_info,
         "is_enemy_violations": is_enemy_violations,
+        "duplicate_games": duplicate_games,
         "result_sources": result_sources, "enemy_random": enemy_random,
         "first_step_not_game_start": not_game_start,
         "matchups": matchups, "map_families": families,

@@ -32,12 +32,13 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 
 ## 리플레이(040)
 `uranium-replay`:
-- `inspect <rep>`, `convert <rep> <out>`(SC:R → 1.16.1, 맵 CHK 정규화 포함, 013), `check-screp <dir> --screp <exe>`(040-AC1), `ophist <dir>`, `play <rep>`(재생·디싱크 신호), `shard-stats <dir>`(GameInfo `is_enemy`가 정확히 1명이 아닌 게임이 있으면 실패, B-12), `mapgen`, `roundtrip <dir>`(013-R7).
+- `inspect <rep>`, `convert <rep> <out>`(SC:R → 1.16.1, 맵 CHK 정규화 포함, 013), `check-screp <dir> --screp <exe>`(040-AC1), `ophist <dir>`, `play <rep>`(재생·디싱크 신호), `shard-stats <dir>`(하위 폴더 포함. GameInfo `is_enemy`가 정확히 1명이 아닌 게임(B-12)이나 같은 (리플레이, 시점) 게임이 두 번 있으면(040-R20) 실패), `mapgen`, `roundtrip <dir>`(013-R7).
 - `dataset-stats <records.jsonl 또는 폴더>... --out reports/dataset_stats.md`: build 기록으로 맵·매치업·src·stage·분할별 게임·시점 수, 디싱크 폐기율, `result_source` 분포를 쓴다(040-R6, 040-AC2, 040-AC4).
 - `build <dir> --src <tag> --records <jsonl> [--jobs N --limit N --part i --parts N --ladder-records <collect.jsonl>]`: 필터 → 013-R7 왕복 검증 → 재생 → 레이블 → shard. 기본 출력 `<URANIUM_SHARED_DIR>/datasets/replays/shards/<src>`. 원본은 `datasets/replays/raw/<src>/`(040-R13). 맵 사전계산은 `URANIUM_MAPS_DIR`에 쓴다.
-  - shard는 `URANIUM_SHARD_STAGING_DIR`(로컬)에 먼저 쓰고, 공용 경로에 `<이름>.tmp`로 복사해 SHA-256을 다시 읽어 맞춘 뒤 rename한다. 불일치는 3회 재시도, 그래도 실패하면 build가 오류로 멈추고 로컬 사본이 남는다(040-R17).
+  - shard는 `URANIUM_SHARD_STAGING_DIR`(로컬)에 먼저 쓰고, 공용 경로에 `<이름>.tmp`로 복사해 fsync 뒤 클라이언트 캐시를 거치지 않고 다시 읽은 SHA-256을 맞춘 뒤 rename한다. 불일치는 3회 재시도, 그래도 실패하면 build가 오류로 멈추고 로컬 사본이 남는다(040-R17).
   - 승패(`result`)는 브리지 승자 → 첫 LEAVE 이탈자 패배 → 기록 승자(`--ladder-records`, `--src scr_ladder`이면 `datasets/replays/ladder/collect.jsonl` 기본) → 판정 불가(0) 순서다(040-R8).
   - 재개는 records 폴더에서 이름이 `<src>`로 시작하는 `.jsonl`을 모두 읽어 건너뛴다. 표본·시험 records는 하위 폴더에 둔다.
+  - 한 실행 안에서 내용(SHA-256)이 같은 파일은 첫 파일만 처리하고 나머지는 `duplicate file in this source (040-R20)`로 거른다.
   - `config/map_exclude.toml`의 맵(디싱크 10% 초과, 040-R16)은 재생 전에 제외된다. 대상 맵은 넣을 수 없다.
   - build 전에 브리지와 `uranium-replay`를 같은 커밋으로 빌드한다(011-R10).
 
@@ -56,7 +57,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
   - 체크포인트 보존(061-R6): 설정 `keep_checkpoints`(없으면 5, 0이면 전부 보존). `config/bc_core_ablation.toml`은 0. 정리(삭제) 실패는 경고만 하고 학습을 계속한다.
   - 디스크 경고(061-R8): 학습 시작과 체크포인트 저장마다 공용 드라이브·로컬 캐시(로컬 `--out`이면 그 폴더)의 물리 디스크 사용률이 80% 이상이면 경고한다. 학습은 멈추지 않는다.
   - 로그 줄의 `no_result_games`는 지금까지 시작한 게임 중 승패 판정 불가(`result_source = none`)로 value 가중치 0인 게임 수다(041-R7).
-- `bc-epoch`(1 epoch update 수, 게임 시작 NoOp 스텝 포함), `bc-eval --checkpoint <ckpt|run> [--split test|val] [--games N --seed 1]`(041 지표), `bc-profile --backend <b> [--batches N]`, `split-stats`, `label-check [--games N]`(034-AC3; 출력에 `target_causes`(대상 없음·위치 거절 원인: 이전 목격 여부와 경과 프레임, 건물 종류별 막는 조건, 실제로 지어졌는지)와 `per_game`(게임별 무효 수) 포함, 액션 감사 F23·F24), `manifest <dir> [--verify]`(061-R7). 모두 `--dataset`/`--shards`를 받는다.
+- `bc-epoch`(1 epoch update 수, 게임 시작 NoOp 스텝 포함), `bc-eval --checkpoint <ckpt|run> [--split test|val] [--games N --seed 1]`(041 지표), `bc-profile --backend <b> [--batches N]`, `split-stats`, `label-check [--games N]`(034-AC3; 출력에 `target_causes`(대상 없음·위치 거절 원인: 이전 목격 여부와 경과 프레임, 건물 종류별 막는 조건, 실제로 지어졌는지)와 `per_game`(게임별 무효 수) 포함, 액션 감사 F23·F24), `manifest <dir> [--verify]`(061-R7. 만들 때 하위 폴더의 shard를 모두 끝까지 디코드해 보고, 실패하면 실패한 shard를 나열하고 쓰지 않는다, 040-R17). 모두 `--dataset`/`--shards`를 받는다.
   - `bc-eval --games N`은 분할 전체를 고정 seed(`--seed`, 기본 1)로 섞어 앞의 N게임을 고른다. 체크포인트·코어와 무관하게 같은 게임이다(032-R17 ②). 단위(E-9): `delay_mae_frames`는 프레임(bucket 값), `delay_mae_buckets`는 bucket 번호, `nll.<head>`는 그 헤드를 쓰는 스텝(`nll_steps.<head>`)만의 평균이다. 출력 `units`에 같은 설명이 들어 있다.
   - `split-stats` 출력: `splits`(소스·맵 그룹·분할별 게임 수), `sources`(소스별 `privileged` 없는 게임·스텝 수와 비율(E-10), `result_source`별 게임 수(040-R8)).
 - 하이퍼파라미터 `config/bc.toml`(GPU 메모리는 `micro_lanes`, `pad_entities`, `grad_checkpointing`), 코어 비교 `config/bc_core_ablation.toml`, 보상 `config/reward.toml`. `grad_clip`은 모든 파라미터 gradient를 한 벡터로 본 전역 L2 norm 기준이고, 레인 그룹 gradient를 합친 뒤 optimizer step 전에 한 번 적용한다(041-R3, RL `config/rl.toml`도 같음).

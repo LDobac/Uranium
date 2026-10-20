@@ -22,3 +22,7 @@ zstd = "0.13"
 sha2.workspace = true
 # 040-R15 / A-1: 1.16.1 map titles are CP949.
 encoding_rs = "=0.8.35"
+
+[target.'cfg(unix)'.dependencies]
+# 040-R17: O_DIRECT / posix_fadvise for the cache-bypassing read-back of shared-drive copies.
+libc = "0.2"

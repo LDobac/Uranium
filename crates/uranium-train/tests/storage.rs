@@ -290,6 +290,21 @@ fn pull_skips_done_files_and_rejects_corruption_061_r11() {
     assert!(pull_tree(&src, &dst).is_err());
 }
 
+/// 061-R4 push check (R-5): the read-back that bypasses this client's cache gives the same
+/// result as the manifest for good files and refuses a changed one.
+#[test]
+fn push_check_reads_the_share_061_r4() {
+    let t = Tmp::new("onserver");
+    let d = t.0.join("ckpt");
+    fs::create_dir_all(d.join("sub")).unwrap();
+    fs::write(d.join("model.bin"), (0..(5 << 20) + 7).map(|i| (i % 253) as u8).collect::<Vec<u8>>()).unwrap();
+    fs::write(d.join("sub").join("empty.bin"), b"").unwrap();
+    let m = Manifest::build(&d).unwrap();
+    m.verify_on_server(&d).unwrap();
+    fs::write(d.join("model.bin"), vec![0u8; 4096]).unwrap();
+    assert!(m.verify_on_server(&d).is_err());
+}
+
 #[test]
 fn local_mode_reads_in_place_and_verifies_061_ac7() {
     let t = Tmp::new("local");

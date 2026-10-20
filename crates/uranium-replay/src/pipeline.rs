@@ -28,6 +28,38 @@ pub const MAX_MAP_TILES: u16 = 128;
 
 pub const MAP_EXCLUDE_TOML: &str = include_str!("../../../config/map_exclude.toml");
 
+/// 040-R20: `filtered` reason of a replay file whose SHA-256 an earlier file of the same build
+/// run already has. Such a record does not mark the replay done for resume (the first file's
+/// perspectives may still be waiting for their shard flush).
+pub const DUPLICATE_IN_SOURCE: &str = "duplicate file in this source (040-R20)";
+
+/// 040-R20: SHA-256 of each readable file -> the first position (in `files` order) holding it.
+/// Read on `jobs` threads; unreadable files are left to `process` (which records the error).
+pub fn first_index_by_sha(files: &[PathBuf], jobs: usize) -> HashMap<String, usize> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let found = Mutex::new(Vec::new());
+    std::thread::scope(|s| {
+        for _ in 0..jobs.max(1) {
+            s.spawn(|| {
+                let mut mine = Vec::new();
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(f) = files.get(i) else { break };
+                    if let Ok(b) = std::fs::read(f) {
+                        mine.push((hex(&Sha256::digest(&b)), i));
+                    }
+                }
+                found.lock().unwrap().extend(mine);
+            });
+        }
+    });
+    let mut first = HashMap::new();
+    for (sha, i) in found.into_inner().unwrap() {
+        first.entry(sha).and_modify(|j: &mut usize| *j = (*j).min(i)).or_insert(i);
+    }
+    first
+}
+
 #[derive(Deserialize)]
 struct Excluded {
     name: String,
@@ -319,6 +351,10 @@ impl ResumeDone {
     pub fn add_line(&mut self, line: &str) {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { return };
         let Some(sha) = v["replay_sha256"].as_str().filter(|s| !s.is_empty()) else { return };
+        // 040-R20: the second file of a replay says nothing about the first file's progress.
+        if v["reason"].as_str().is_some_and(|r| r.starts_with(DUPLICATE_IN_SOURCE)) {
+            return;
+        }
         match v["view"]["perspective"].as_u64() {
             Some(p) => {
                 self.views.insert((sha.to_string(), p as u8));
@@ -388,6 +424,9 @@ pub fn build(files: &[PathBuf], opt: &BuildOptions, cfg: &PlayConfig, sink: &(dy
     let families = MapFamilies::load()?;
     let excludes = MapExcludes::load(&families)?;
     let labeler = Labeler::new()?;
+    // 040-R20: identical files in this run build one game (the first file's).
+    let first_index = first_index_by_sha(files, opt.jobs);
+    let first_index = &first_index;
     let pending = Mutex::new(Pending { writer: ShardWriter::new(opt.shards_dir.clone(), opt.staging_dir.clone(), opt.first_shard_index, opt.shard_target_bytes)?, records: Vec::new() });
     let queue = Mutex::new(files.iter().cloned().enumerate().collect::<VecDeque<_>>());
     let written_bytes = Mutex::new(0u64);
@@ -398,7 +437,7 @@ pub fn build(files: &[PathBuf], opt: &BuildOptions, cfg: &PlayConfig, sink: &(dy
             let cfg = PlayConfig { work_dir: cfg.work_dir.join(format!("w{w}")), launcher: cfg.launcher.clone(), bridge_lib: cfg.bridge_lib.clone(), data_dir: cfg.data_dir.clone() };
             s.spawn(move || {
                 while let Some((index, file)) = { let mut q = queue.lock().unwrap(); q.pop_front() } {
-                    for (r, game) in process(index, &file, opt, &cfg, families, excludes, labeler, written_bytes) {
+                    for (r, game) in process(index, &file, opt, &cfg, families, excludes, labeler, written_bytes, first_index) {
                         let Some(game) = game else {
                             sink(&r);
                             continue;
@@ -424,7 +463,7 @@ pub fn build(files: &[PathBuf], opt: &BuildOptions, cfg: &PlayConfig, sink: &(dy
 }
 
 #[allow(clippy::too_many_arguments)]
-fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, families: &MapFamilies, excludes: &MapExcludes, labeler: &Labeler, written: &Mutex<u64>) -> Vec<(Record, Option<ShardGame>)> {
+fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, families: &MapFamilies, excludes: &MapExcludes, labeler: &Labeler, written: &Mutex<u64>, first_index: &HashMap<String, usize>) -> Vec<(Record, Option<ShardGame>)> {
     let map_hash_cell = std::cell::RefCell::new(String::new());
     let recorded_cell: std::cell::RefCell<Option<&'static str>> = std::cell::RefCell::new(None);
     let rec = |sha: &str, map: &str, family: &str, view: Option<View>, outcome: Outcome| {
@@ -449,6 +488,9 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
     let sha = hex(&Sha256::digest(&bytes));
     if opt.done.replay_done(&sha) {
         return Vec::new(); // already recorded by an earlier run
+    }
+    if let Some(&first) = first_index.get(&sha).filter(|&&i| i != index) {
+        return vec![rec(&sha, "", "", None, Outcome::Filtered { reason: format!("{DUPLICATE_IN_SOURCE}: same file as index {first}") })];
     }
     if opt.skip_sha256.contains(&sha) {
         return vec![rec(&sha, "", "", None, Outcome::Filtered { reason: "duplicate of another source".into() })];
@@ -665,6 +707,26 @@ mod tests {
         assert!(done.replay_done(&"ef".repeat(32)));
         let v: serde_json::Value = serde_json::to_value(written_record(1)).unwrap();
         assert_eq!(v["labeler_version"], crate::label::LABELER_VERSION);
+    }
+
+    #[test]
+    fn identical_files_build_one_game_040_r20() {
+        let dir = std::env::temp_dir().join(format!("uranium-dup-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let files: Vec<PathBuf> = ["a", "b", "c", "d"].iter().map(|n| dir.join(format!("{n}.rep"))).collect();
+        for (f, body) in files.iter().zip(["x", "y", "x", "x"]) {
+            std::fs::write(f, body).unwrap();
+        }
+        let first = first_index_by_sha(&files, 3);
+        let sha = |b: &str| hex(&Sha256::digest(b.as_bytes()));
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[&sha("x")], 0, "the first file in sorted order keeps the replay");
+        assert_eq!(first[&sha("y")], 1);
+        // A duplicate's record (no view) does not mark the replay done for resume.
+        let mut done = ResumeDone::default();
+        done.add_line(&format!(r#"{{"index":2,"replay_sha256":"{}","src":"t","view":null,"outcome":"filtered","reason":"{DUPLICATE_IN_SOURCE}: same file as index 0"}}"#, sha("x")));
+        assert!(!done.replay_done(&sha("x")) && done.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

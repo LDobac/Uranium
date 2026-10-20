@@ -55,11 +55,12 @@ pub fn dataset_markdown(records: &[PathBuf]) -> Result<String> {
         }
     }
     // A re-run can record the same view twice (same replay and perspective, or the same rejected
-    // replay): the last record counts.
+    // replay): the last record counts. The key includes the source (R-5): a replay skipped as
+    // "duplicate of another source" is a different record from that source's own.
     let before = rows.len();
-    let mut last: BTreeMap<(String, Option<u64>), usize> = BTreeMap::new();
+    let mut last: BTreeMap<(String, String, Option<u64>), usize> = BTreeMap::new();
     for (i, r) in rows.iter().enumerate() {
-        last.insert((r["replay_sha256"].as_str().unwrap_or("").to_string(), r["view"]["perspective"].as_u64()), i);
+        last.insert((r["src"].as_str().unwrap_or("").to_string(), r["replay_sha256"].as_str().unwrap_or("").to_string(), r["view"]["perspective"].as_u64()), i);
     }
     let keep: BTreeSet<usize> = last.into_values().collect();
     let rows: Vec<Value> = rows.into_iter().enumerate().filter(|(i, _)| keep.contains(i)).map(|(_, r)| r).collect();
@@ -262,6 +263,8 @@ mod tests {
             serde_json::json!({"index": 4, "replay_sha256": "d".repeat(64), "src": "stardata", "map_family": "other", "map_name": "Python", "map_hash": "", "view": {"perspective": 0, "stage": "S1", "apm": 900, "matchup": "TvT", "enemy_random": false}, "outcome": "filtered", "reason": "invalid_labels>=20% (55.0%, 11/20) (040-R19)"}).to_string(),
             serde_json::json!({"index": 4, "replay_sha256": "d".repeat(64), "src": "stardata", "map_family": "other", "map_name": "Python", "map_hash": "", "view": {"perspective": 1, "stage": "S1", "apm": 950, "matchup": "TvT", "enemy_random": false}, "outcome": "filtered", "reason": "invalid_labels>=20% (24.6%, 1119/4550) (040-R19)"}).to_string(),
             serde_json::json!({"index": 5, "replay_sha256": "e".repeat(64), "src": "stardata", "map_family": "other", "map_name": "X", "map_hash": "", "view": null, "outcome": "filtered", "reason": "excluded map (040-R16): X"}).to_string(),
+            // R-5: the same replay skipped by another source is that source's own record.
+            serde_json::json!({"index": 0, "replay_sha256": "e".repeat(64), "src": "community", "map_family": "", "map_name": "", "map_hash": "", "view": null, "outcome": "filtered", "reason": "duplicate of another source"}).to_string(),
         ];
         std::fs::write(&p, lines.join("\n")).unwrap();
         let md = dataset_markdown(&[p]).unwrap();
@@ -276,6 +279,7 @@ mod tests {
         assert!(md.contains("중복 기록(같은 리플레이·시점, 마지막 것만 셈): 1개 제외"), "{md}");
         assert!(md.contains("| invalid_labels>=20% (040-R19) | stardata | 2 |"), "{md}");
         assert!(md.contains("| excluded map (040-R16) | stardata | 1 |"), "{md}");
+        assert!(md.contains("| duplicate of another source | community | 1 |"), "{md}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

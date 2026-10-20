@@ -156,6 +156,22 @@ impl Manifest {
         }
         Ok(())
     }
+
+    /// 061-R4 push check: like [`Manifest::verify`] on files this client just wrote to the share,
+    /// but each file is `fsync`ed and read past this client's cache, so the hash is of what the
+    /// file server holds (same rule as the 040-R17 shard copy; a cached read-back passed shards
+    /// that were zero-filled on the share, R-5).
+    pub fn verify_on_server(&self, dir: &Path) -> Result<()> {
+        for (rel, want) in &self.files {
+            let p = dir.join(rel);
+            uranium_replay::share_io::sync_file(&p).with_context(|| format!("syncing {}", p.display()))?;
+            let mut h = Sha256::new();
+            let bytes = uranium_replay::share_io::read_uncached_with(&p, &mut |b| h.update(b)).with_context(|| format!("reading back {}", p.display()))?;
+            let got = FileEntry { sha256: h.finalize().iter().map(|b| format!("{b:02x}")).collect(), bytes };
+            ensure!(&got == want, "{} on the share does not match its manifest (061-R4)", p.display());
+        }
+        Ok(())
+    }
 }
 
 /// Reads the directory's manifest and verifies it.
@@ -648,7 +664,7 @@ impl Run {
                 return Ok(());
             }
             manifest.write(&tmp)?;
-            manifest.verify(&tmp)?;
+            manifest.verify_on_server(&tmp)?;
             if stage == PushStage::Manifested {
                 return Ok(());
             }
