@@ -206,3 +206,30 @@ uranium-env run --plan config/plans/core-ablation-t0.toml  --backend cuda --out 
 - 3절 3번 기간 계산은 autotune·fusion 이전 값(CUDA 약 24.5 s, Vulkan 약 142 s)이다. R-5 스모크는 LSTM 기준 CUDA 약 10 s, Linux Vulkan 약 101 s/update였다(`m6_rebuild.md` R-5 8절). GTrXL은 새 설정으로 다시 재지 않았다.
 - 학습 장비는 최신 master(cd2973a·925b995 shard 순서·지문)로 다시 빌드해야 한다. 게임 호스트는 브리지·proto v3를 반영해 재빌드하고 hostd를 재시작해야 하는데, 그 기록을 찾지 못했다.
 - `m6_pre_bc_review.md` G절에서 남은 것: G-M2(Linux Vulkan 호스트 메모리·스왑 측정), G-M5(Windows 실제 콘솔 Ctrl+C), C-8의 060-AC4·032-AC2(측정 중). G-M4(060-AC3)는 코어 비교 run의 첫 24시간으로 대신한다.
+
+### 2026-10-20 15시 대전 경로 스모크 (지금 바이너리, 무작위 체크포인트)
+위 4번의 제안을 실행했다. 대상은 PROTOCOL 3·액션 101개·feature 스키마 6·브리지 그룹 명령이 들어간 지금 바이너리다. 에이전트·runner는 master 87900c3에서 CUDA로 다시 빌드했다(f513b92 이후 이 두 crate와 proto·env·model은 바뀌지 않음).
+
+준비
+- 무작위 체크포인트 두 개: 기존 `<shared>/checkpoints/smoke/random-lstm-fv6`, 새로 만든 `<shared>/checkpoints/smoke/random-gtrxl-fv6`(`uranium-agent random-checkpoint --core gtrxl`, feature 6·action 2, `random_init`).
+- 두 plan의 임시 축소본(저장소 밖, 실행 뒤 삭제). 축소한 것은 체크포인트·판수·`max_frames = 6000`(약 4.2분)뿐이고, `seed_base`·확률적 샘플링·`save_replay`·`zero_last_failed`는 원래 plan과 같다.
+  - 맞대결: 투혼 1판(p0 LSTM, p1 GTrXL) + 서킷브레이커 1판(p0 GTrXL, p1 LSTM, 슬롯 교대) = 2판.
+  - T0: 투혼에서 LSTM 대 T0 테란, GTrXL 대 T0 프로토스, GTrXL 대 T0 저그 = 3판(GTrXL 대 T0 경로도 함께 보려고 코어를 섞음).
+- 게임 호스트는 Linux 호스트 A·B만 쓴 임시 호스트 목록, 에이전트는 학습 PC `--backend cuda`.
+
+결과: **두 경로 모두 통과.**
+| 항목 | 맞대결 2판 | T0 3판 |
+|---|---|---|
+| 종료 | 모두 GameEnd(6,001프레임 시간 제한 무승부) | 같음 |
+| 세션 오류·빠진 쪽·winner disagree·dropped | 0 | 0 |
+| 시야 위반(010-AC6) | 0 | 0 |
+| 모델 executor 거부(`rejected`) | 없음 | 없음 |
+| 모델 명령 수(판·쪽별) | LSTM 446·450, GTrXL 424·414 | LSTM 450, GTrXL 406·445(T0 쪽 61·70·38) |
+| 실패 명령 비율 | 3.3% | 2.2% |
+| 결정 지연 p50/p95 | LSTM 77/139ms, GTrXL 86/157ms | LSTM 63/97ms, GTrXL 92/180ms |
+| 리플레이 | `replays/g1.rep`·`g2.rep` | `replays/g1~g3.rep` |
+
+- 플레이어 슬롯 라우팅(020-R11): `results.jsonl`의 `slot`은 BWAPI 플레이어 id이고 plan의 p0/p1 순서와 다를 수 있다. 서킷브레이커 판(p0 GTrXL)에서 BWAPI id 0 세션이 LSTM을 받았다. 라우팅이 플레이어 이름(`uranium-p<i>`)의 plan 순서로 정해졌다는 뜻이다. id로 정해졌다면 GTrXL을 받았어야 한다. 두 판 모두 두 세션이 서로 다른 체크포인트를 받았고, 기본 정책(T0)으로 빠진 세션은 없다. T0 판에서는 상대 종족이 plan대로(테란·프로토스·저그) 나왔다. summary.md의 matchup 표 p0/p1도 plan과 일치한다.
+- 출력 형식: `summary.md`에 matchup 표와 "Per policy (slot swaps combined)" 표(정책·상대·맵별 승/패/무와 Wilson 95%, 맵 합계 all)가 나온다. "Model sessions" 표에는 core·run·결정 지연이 있다. 4절 대전 표(맞대결 LSTM 승률 맵별, 코어별 T0 승률)는 이 합산 표에서 옮길 수 있다. 무승부만 나온 스모크라 승패 집계 자체는 확인하지 못했다.
+- 참고: 추론 서버 첫 배치가 60–80초 걸렸다(`[infer] slow batch`, 시작 직후 1회, CUDA 초기 준비로 보임). 게임은 lockstep이라 결과에 영향은 없고, 본 대전에서는 첫 판 시간만 늘어난다.
+- 출력 위치(지우지 않음): 학습 PC 저장소 루트 `runs/eval-smoke-2026-10-20/h2h/`, `runs/eval-smoke-2026-10-20/t0/`(`games.jsonl`, `results.jsonl`, `summary.md`, `sessions.md`, `plan.toml`, `replays/`).
