@@ -14,52 +14,14 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use uranium_env::features::executor::HostAction;
 use uranium_env::features::extract::privileged;
-use uranium_env::features::{Observation, PrivilegedTensors};
+use uranium_env::features::PrivilegedTensors;
 use uranium_env::reward::{Outcome, RewardParts};
 use uranium_agent::model_policy::{Decision, SessionObserver};
 use uranium_model::HostState;
 use uranium_model::heads::HEADS;
 
-/// An observation with its two large planes compressed (spatial features and location masks
-/// are mostly zero): ~1.9 MB per step raw, a batch is 2,048 steps (042).
-#[derive(Clone)]
-pub struct PackedObs {
-    obs: Observation,
-    spatial: Vec<u8>,
-    loc_mask: Vec<u8>,
-    spatial_len: usize,
-    loc_len: usize,
-}
-
-impl PackedObs {
-    pub fn pack(o: &Observation) -> Self {
-        let mut obs = o.clone();
-        let spatial_bytes: Vec<u8> = obs.obs.spatial.iter().flat_map(|f| f.to_le_bytes()).collect();
-        let loc_bytes: Vec<u8> = obs.masks.loc_class_mask.iter().map(|&b| b as u8).collect();
-        let (spatial_len, loc_len) = (obs.obs.spatial.len(), obs.masks.loc_class_mask.len());
-        obs.obs.spatial = Vec::new();
-        obs.masks.loc_class_mask = Vec::new();
-        Self {
-            obs,
-            spatial: zstd::bulk::compress(&spatial_bytes, 1).expect("zstd compress"),
-            loc_mask: zstd::bulk::compress(&loc_bytes, 1).expect("zstd compress"),
-            spatial_len,
-            loc_len,
-        }
-    }
-
-    pub fn unpack(&self) -> Observation {
-        let mut o = self.obs.clone();
-        let s = zstd::bulk::decompress(&self.spatial, self.spatial_len * 4).expect("zstd spatial");
-        o.obs.spatial = s.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
-        o.masks.loc_class_mask = zstd::bulk::decompress(&self.loc_mask, self.loc_len).expect("zstd loc mask").into_iter().map(|b| b != 0).collect();
-        o
-    }
-
-    pub fn bytes(&self) -> usize {
-        self.spatial.len() + self.loc_mask.len() + self.obs.obs.entity_cont.len() * 4 + self.obs.masks.unit_cap.len()
-    }
-}
+/// Observations with their two large planes compressed (042), shared with BC (041-R18).
+pub use crate::pack::PackedObs;
 
 /// One decision of a learning session.
 #[derive(Clone)]

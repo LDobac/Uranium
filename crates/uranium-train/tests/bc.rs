@@ -10,7 +10,7 @@ use uranium_env::actions::LOC_CLASSES;
 use uranium_env::features::CELLS;
 use uranium_env::types::TypeTables;
 use uranium_model::batch::ActionColumns;
-use uranium_model::collate::input_dims;
+use uranium_model::collate::{input_dims, obs_batch_padded};
 use uranium_model::config::*;
 use uranium_model::{LstmCore, UraniumNet};
 use uranium_proto::*;
@@ -676,6 +676,82 @@ fn prefetch_depth_from_env_041_r16() {
         assert_eq!(uranium_train::bc::prefetch_depth().ok(), want, "{v:?}");
     }
     unsafe { std::env::remove_var("URANIUM_BC_PREFETCH") };
+}
+
+/// 041-R17 / R18: `URANIUM_BC_ENTITY_CHUNK` is a row count (unset or empty 0 = off) and
+/// `URANIUM_BC_PACK_BATCH` is `1` on, unset, empty or `0` off; anything else fails.
+#[test]
+fn entity_chunk_and_pack_from_env_041_r17_r18() {
+    // SAFETY: the only test in this binary that touches these variables.
+    unsafe { std::env::remove_var("URANIUM_BC_ENTITY_CHUNK") };
+    unsafe { std::env::remove_var("URANIUM_BC_PACK_BATCH") };
+    assert_eq!(uranium_train::bc::entity_chunk().ok(), Some(0));
+    assert_eq!(uranium_train::bc::pack_batch().ok(), Some(false));
+    for (v, want) in [("16", Some(16)), (" 8 ", Some(8)), ("0", Some(0)), ("", Some(0)), ("x", None), ("-1", None)] {
+        unsafe { std::env::set_var("URANIUM_BC_ENTITY_CHUNK", v) };
+        assert_eq!(uranium_train::bc::entity_chunk().ok(), want, "{v:?}");
+    }
+    for (v, want) in [("1", Some(true)), (" 1 ", Some(true)), ("0", Some(false)), ("", Some(false)), ("yes", None), ("2", None)] {
+        unsafe { std::env::set_var("URANIUM_BC_PACK_BATCH", v) };
+        assert_eq!(uranium_train::bc::pack_batch().ok(), want, "{v:?}");
+    }
+    unsafe { std::env::remove_var("URANIUM_BC_ENTITY_CHUNK") };
+    unsafe { std::env::remove_var("URANIUM_BC_PACK_BATCH") };
+}
+
+/// 041-R17 / R18: the entity encoder recomputed in row chunks (even and uneven) and packed
+/// batches give the same updates as the plain path (tiny config: no dropout).
+#[test]
+fn entity_recompute_and_pack_keep_the_updates_041_r17_r18() {
+    let net = tiny_net();
+    let run = |micro_lanes, chunk, pack| {
+        let mut t = tiny_trainer_with(micro_lanes, 0, net.clone());
+        t.set_entity_chunk(chunk);
+        t.feeder.set_pack(pack);
+        let mut src = VecSource((0..4).map(|_| game()).collect::<VecDeque<_>>());
+        (0..4).map(|_| t.train_step(&mut src).unwrap().unwrap().total).collect::<Vec<_>>()
+    };
+    for micro_lanes in [0, 1] {
+        let plain = run(micro_lanes, 0, false);
+        assert_eq!(run(micro_lanes, 0, true), plain, "micro_lanes {micro_lanes}: packed batches");
+        for (chunk, pack) in [(1, false), (3, false), (2, true), (64, false)] {
+            let other = run(micro_lanes, chunk, pack);
+            for (a, b) in plain.iter().zip(&other) {
+                assert!((a - b).abs() <= 1e-4 * a.abs().max(1.0), "micro_lanes {micro_lanes} chunk {chunk} pack {pack}: {plain:?} != {other:?}");
+            }
+        }
+    }
+}
+
+/// 041-R17: with dropout on, the untracked first pass and the tracked recompute give the same
+/// output under the same device seed (so the recompute's gradient is the first pass's).
+#[test]
+fn untracked_entity_pass_matches_the_recompute_041_r17() {
+    let ad = Device::flex().autodiff();
+    let mut cfg = tiny_cfg();
+    cfg.entity.dropout = 0.5;
+    let cols = ActionColumns::from_table(action_table()).unwrap();
+    let net = UraniumNet::<LstmCore>::new(&cfg, &cols, &ad);
+    let seq = prepare(&game(), true, Sym::IDENTITY, &MapStore::synthetic()).unwrap();
+    let obs: Vec<_> = seq.steps.iter().map(|s| &s.obs).collect();
+    let ob = obs_batch_padded(&obs, 0, &ad);
+    let max_abs = |x: burn::tensor::Tensor<3>| x.abs().max().into_data().convert::<f32>().try_to_vec::<f32>().unwrap()[0];
+    // Parallel tests share the device RNG: a draw of theirs between a seed and its forward
+    // changes the masks, so a few attempts are allowed.
+    let same = (0..5).any(|_| {
+        ad.seed(11);
+        let first = net.entity_untracked(&ob).e;
+        ad.seed(11);
+        let again = net.entity(&ob).e;
+        assert!(!first.is_tracked() && again.is_tracked(), "only the recompute records a graph");
+        max_abs(first - again.detach()) <= 1e-6
+    });
+    assert!(same, "same seed, same dropout masks");
+    ad.seed(11);
+    let first = net.entity_untracked(&ob).e;
+    ad.seed(12);
+    let other_seed = net.entity(&ob).e;
+    assert!(max_abs(first - other_seed.detach()) > 1e-3, "dropout is on in both passes");
 }
 
 /// Evaluation drains the lanes: every step of every game is produced exactly once, also with

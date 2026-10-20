@@ -21,6 +21,7 @@ pub mod ckpt;
 pub mod clip;
 pub mod data;
 pub mod disk;
+pub mod pack;
 pub mod rl;
 pub mod split;
 pub mod storage;

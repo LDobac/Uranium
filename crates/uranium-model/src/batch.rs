@@ -53,6 +53,19 @@ impl ObsBatch {
         self.entity_mask.dims()[1]
     }
 
+    /// Rows `start..start + len` of the entity encoder's inputs (entity_cat, entity_cont,
+    /// entity_mask, entity_pos) with N kept; the other fields are left whole, as the entity
+    /// encoder does not read them (041-R17 row chunks).
+    pub fn entity_rows(&self, start: usize, len: usize) -> ObsBatch {
+        ObsBatch {
+            entity_cat: self.entity_cat.clone().narrow(0, start, len),
+            entity_cont: self.entity_cont.clone().narrow(0, start, len),
+            entity_mask: self.entity_mask.clone().narrow(0, start, len),
+            entity_pos: self.entity_pos.clone().narrow(0, start, len),
+            ..self.clone()
+        }
+    }
+
     /// [B,N] owner == self (034-R4).
     pub fn is_self(&self) -> Tensor<2, Bool> {
         let [b, n, _] = self.entity_cat.dims();

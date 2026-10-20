@@ -278,7 +278,12 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
     let feeder = std::mem::replace(&mut t.feeder, crate::bc::Feeder::new(&cfg).with_maps(maps.clone()));
     // 041-R16: per-host depth; it changes host memory only, never the batches.
     let depth = crate::bc::prefetch_depth()?;
-    crate::elog!("{}", serde_json::json!({ "prefetch": depth }));
+    // 041-R17 / R18: per host as well; device and host memory only, never the gradient.
+    let (entity_chunk, pack) = (crate::bc::entity_chunk()?, crate::bc::pack_batch()?);
+    crate::elog!("{}", serde_json::json!({ "prefetch": depth, "entity_chunk": entity_chunk, "pack_batch": pack }));
+    t.set_entity_chunk(entity_chunk);
+    let mut feeder = feeder;
+    feeder.set_pack(pack);
     let mut data = Prefetch::start(feeder, src, depth);
     let (mut last_ckpt, mut last_beat) = (Instant::now(), Instant::now());
     let mut lock_lost = false;

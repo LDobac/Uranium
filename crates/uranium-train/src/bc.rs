@@ -17,10 +17,12 @@ use uranium_model::checkpoint::{self, CheckpointMeta};
 use uranium_model::collate::{HostLabel, action_batch, obs_batch_padded, priv_batch};
 use uranium_model::config::UraniumNetConfig;
 use uranium_model::value::VALUE_WIN;
-use uranium_model::{CoreInit, UraniumNet};
+use uranium_model::entity::EntityOut;
+use uranium_model::{CoreInit, ObsBatch, UraniumNet};
 
 use crate::ckpt::{self, TrainState};
 use crate::data::{GameId, GameStream, MapStore, Rng, ShardSource, SourcePos, StepSource, TrainStep};
+use crate::pack::Planes;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct HeadWeights {
@@ -249,6 +251,8 @@ pub struct FeedState {
 /// state after it.
 pub struct Batch {
     chunks: Vec<Vec<TrainStep>>,
+    /// 041-R18: per lane and step, the planes taken out of `chunks` (empty = not packed).
+    planes: Vec<Vec<Planes>>,
     fresh: Vec<bool>,
     results: Vec<f32>,
     /// 041-R7 / A-3: per lane, the value-loss weight of its game (0 = undecided result).
@@ -259,6 +263,7 @@ pub struct Batch {
 impl Batch {
     /// Per lane: the T steps (fewer at a game's end), whether the game started here, its result.
     pub fn parts(&self) -> (&[Vec<TrainStep>], &[bool], &[f32]) {
+        assert!(self.planes.is_empty(), "041-R18: a packed batch is read by the trainer only");
         (&self.chunks, &self.fresh, &self.results)
     }
 
@@ -291,6 +296,8 @@ pub struct Feeder {
     pub drain: bool,
     /// Map precomputes (B-2): `URANIUM_MAPS_DIR` unless replaced with [`Feeder::with_maps`].
     maps: Arc<MapStore>,
+    /// 041-R18: batches with their planes compressed ([`Feeder::set_pack`]).
+    pack: bool,
 }
 
 impl Feeder {
@@ -310,7 +317,14 @@ impl Feeder {
             files: String::new(),
             drain: false,
             maps: Arc::new(MapStore::from_env()),
+            pack: false,
         }
+    }
+
+    /// 041-R18: keep the batches' spatial planes and location masks compressed until their lane
+    /// group trains. Does not change the batches.
+    pub fn set_pack(&mut self, pack: bool) {
+        self.pack = pack;
     }
 
     /// Another map precompute store (shared with a start check, or synthetic maps in tests).
@@ -359,17 +373,24 @@ impl Feeder {
         let mut fresh = Vec::with_capacity(self.lanes.len());
         let mut results = Vec::with_capacity(self.lanes.len());
         let mut value_weights = Vec::with_capacity(self.lanes.len());
+        let mut planes = Vec::new();
         for lane in &mut self.lanes {
             let Some(g) = lane.game.as_mut() else {
                 // Drained lane (evaluation only).
+                if self.pack {
+                    planes.push(Vec::new());
+                }
                 chunks.push(Vec::new());
                 fresh.push(true);
                 results.push(0.0);
                 value_weights.push(0.0);
                 continue;
             };
-            let (chunk, invalid) = g.next_chunk(self.seq_len);
+            let (mut chunk, invalid) = g.next_chunk(self.seq_len);
             self.invalid_labels += invalid;
+            if self.pack {
+                planes.push(chunk.iter_mut().map(|s| Planes::take(&mut s.obs)).collect());
+            }
             chunks.push(chunk);
             fresh.push(lane.fresh);
             results.push(g.result);
@@ -380,7 +401,7 @@ impl Feeder {
                 lane.id = None;
             }
         }
-        Ok(Some(Batch { chunks, fresh, results, value_weights, state: self.state(pos) }))
+        Ok(Some(Batch { chunks, planes, fresh, results, value_weights, state: self.state(pos) }))
     }
 
     /// [`Feeder::next_batch`] from a shard source, with its read position in the batch's state.
@@ -482,6 +503,25 @@ pub fn prefetch_depth() -> Result<usize> {
     }
 }
 
+/// 041-R17: this host's entity encoder chunk, `URANIUM_BC_ENTITY_CHUNK` (001-R9) rows, unset,
+/// empty or 0 = off.
+pub fn entity_chunk() -> Result<usize> {
+    match std::env::var("URANIUM_BC_ENTITY_CHUNK") {
+        Ok(v) if !v.trim().is_empty() => v.trim().parse().with_context(|| format!("URANIUM_BC_ENTITY_CHUNK={v:?}: expected a row count (0 = off)")),
+        _ => Ok(0),
+    }
+}
+
+/// 041-R18: whether this host keeps batches compressed, `URANIUM_BC_PACK_BATCH` (001-R9): `1`
+/// on, unset, empty or `0` off.
+pub fn pack_batch() -> Result<bool> {
+    match std::env::var("URANIUM_BC_PACK_BATCH").as_deref().map(str::trim) {
+        Ok("1") => Ok(true),
+        Ok("" | "0") | Err(_) => Ok(false),
+        Ok(v) => anyhow::bail!("URANIUM_BC_PACK_BATCH={v:?}: expected 0 or 1"),
+    }
+}
+
 /// [`Feeder`] on its own thread, `depth` batches ahead of the trainer (041 throughput: feature
 /// extraction and shard reads overlap the GPU update), or with `depth` 0 on the caller's thread
 /// when it asks, so only the batch being trained is in host memory (041-R16, a ~4 GB batch on a
@@ -566,6 +606,20 @@ pub struct Trainer<C: CoreInit> {
     pub lr_scale: f64,
     /// Data state after the last trained batch (saved in checkpoints, 061-R10).
     pub data: FeedState,
+    /// 041-R17: rows per entity encoder chunk, 0 = the encoder inside the forward graph.
+    entity_chunk: usize,
+}
+
+/// 041-R17: one lane group's entity encoder output, kept outside the graph, and how to
+/// recompute it after the group's backward.
+struct EntityRecompute {
+    ob: ObsBatch,
+    e: Tensor<3>,
+    pool: Tensor<2>,
+    /// (first row, rows, dropout seed) per chunk.
+    chunks: Vec<(usize, usize, u64)>,
+    /// Device seed after the recompute, so later draws do not repeat a chunk's.
+    rest_seed: u64,
 }
 
 impl<C: CoreInit> Trainer<C> {
@@ -575,7 +629,13 @@ impl<C: CoreInit> Trainer<C> {
         let optim = AdamWConfig::new().with_weight_decay(cfg.weight_decay).init();
         let feeder = Feeder::new(&cfg);
         let data = feeder.state(None);
-        Self { net, cfg, net_cfg, optim, device, feeder, states: Vec::new(), step: 0, lr_scale: 1.0, data }
+        Self { net, cfg, net_cfg, optim, device, feeder, states: Vec::new(), step: 0, lr_scale: 1.0, data, entity_chunk: 0 }
+    }
+
+    /// 041-R17: run the entity encoder in chunks of `rows` rows and recompute it for the
+    /// backward pass (0 = off). Changes device memory, not the gradient.
+    pub fn set_entity_chunk(&mut self, rows: usize) {
+        self.entity_chunk = rows;
     }
 
     pub fn games(&self) -> usize {
@@ -618,11 +678,29 @@ impl<C: CoreInit> Trainer<C> {
         let mut acc = GradientsAccumulator::<UraniumNet<C>>::new();
         let mut report = LossParts { valid, ..Default::default() };
         for i in 0..groups {
-            let (loss, parts) = self.group_loss(&batch, i, i * g..((i + 1) * g).min(lanes), valid, value_valid, &mut prof);
+            let (loss, parts, recompute) = self.group_loss(&batch, i, i * g..((i + 1) * g).min(lanes), valid, value_valid, &mut prof);
             report.add(&parts);
-            let grads = GradientsParams::from_grads(loss.backward(), &self.net);
+            let mut grads = loss.backward();
+            let entity = recompute.map(|r| {
+                let ge = r.e.grad_remove(&mut grads).expect("041-R17: entity output has no gradient");
+                let gp = r.pool.grad_remove(&mut grads).expect("041-R17: entity pool has no gradient");
+                (r, ge, gp)
+            });
+            acc.accumulate(&self.net, GradientsParams::from_grads(grads, &self.net));
             prof.mark("backward");
-            acc.accumulate(&self.net, grads);
+            // 041-R17: the entity encoder's share of the gradient, one row chunk at a time: the
+            // same chunk with the same dropout seed gives the forward's output again, and
+            // sum(out * d loss/d out) carries d loss/d out back into its parameters.
+            if let Some((r, ge, gp)) = entity {
+                for &(start, len, seed) in &r.chunks {
+                    self.device.seed(seed);
+                    let o = self.net.entity(&r.ob.entity_rows(start, len));
+                    let s = (o.e * ge.clone().narrow(0, start, len)).sum() + (o.pool * gp.clone().narrow(0, start, len)).sum();
+                    acc.accumulate(&self.net, GradientsParams::from_grads(s.backward(), &self.net));
+                }
+                self.device.seed(r.rest_seed);
+                prof.mark("entity_recompute");
+            }
             prof.mark("accumulate");
         }
         // 041-R3 (G-D4): one global L2-norm clip over the summed gradients of all lane groups.
@@ -639,8 +717,9 @@ impl<C: CoreInit> Trainer<C> {
 
     /// Forward pass and weighted loss of lane group `group` (lanes `lanes`), divided by the
     /// batch-wide `valid` (policy heads) and `value_valid` (value head, decided games only).
-    /// Carries the group's core state to its next chunk.
-    fn group_loss(&mut self, batch: &Batch, group: usize, lanes: std::ops::Range<usize>, valid: f32, value_valid: f32, prof: &mut Prof) -> (Tensor<1>, LossParts) {
+    /// Carries the group's core state to its next chunk. With the entity recompute on (041-R17)
+    /// the entity encoder runs outside the graph and the caller finishes its backward.
+    fn group_loss(&mut self, batch: &Batch, group: usize, lanes: std::ops::Range<usize>, valid: f32, value_valid: f32, prof: &mut Prof) -> (Tensor<1>, LossParts, Option<EntityRecompute>) {
         let (b, t) = (lanes.len(), self.cfg.seq_len);
         // Gather rows in b-major order; a game shorter than the chunk is padded with its last
         // step at weight 0.
@@ -650,11 +729,17 @@ impl<C: CoreInit> Trainer<C> {
         // 041-R7 / A-3: value-loss weight per row = label weight x the game's value weight.
         let mut value_w = Vec::with_capacity(b * t);
         let mut keep = Vec::with_capacity(b);
+        // 041-R18: this group's observations with their planes back (a packed batch only).
+        let mut restored = Vec::new();
         for l in lanes {
             let chunk = &batch.chunks[l];
             keep.push(!batch.fresh[l]);
             for k in 0..t {
-                let s = &chunk[k.min(chunk.len() - 1)];
+                let i = k.min(chunk.len() - 1);
+                let s = &chunk[i];
+                if !batch.planes.is_empty() {
+                    restored.push(batch.planes[l][i].restore(&s.obs));
+                }
                 rows.push(s);
                 let w = if k < chunk.len() { s.weight } else { 0.0 };
                 weights.push(w);
@@ -662,11 +747,13 @@ impl<C: CoreInit> Trainer<C> {
                 value_w.push(w * batch.value_weights[l]);
             }
         }
-        let obs: Vec<_> = rows.iter().map(|s| &s.obs).collect();
+        let obs: Vec<_> = if restored.is_empty() { rows.iter().map(|s| &s.obs).collect() } else { restored.iter().collect() };
         let labels: Vec<&HostLabel> = rows.iter().map(|s| &s.label).collect();
         let privs: Vec<_> = rows.iter().map(|s| &s.privileged).collect();
         let d = &self.device;
         let ob = obs_batch_padded(&obs, self.cfg.pad_entities, d);
+        drop(obs);
+        drop(restored);
         let n = ob.entities();
         let ab = action_batch(&labels, n, self.net_cfg.heads.max_select, d);
         let pb = priv_batch(&privs, d);
@@ -677,7 +764,29 @@ impl<C: CoreInit> Trainer<C> {
             Some(s) => C::mask_state(s, keep_t),
             None => self.net.init_state(b, d),
         };
-        let out = self.net.forward_seq(&ob, &ab, Some(&pb), s0, t);
+        let mut recompute = None;
+        let out = if self.entity_chunk == 0 {
+            self.net.forward_seq(&ob, &ab, Some(&pb), s0, t)
+        } else {
+            // 041-R17: the entity encoder in row chunks, each with its own dropout seed and no
+            // graph recorded, so no chunk's activations outlive it.
+            let mut rng = Rng::new(self.cfg.data.seed ^ ((self.step as u64) << 24) ^ ((group as u64) << 4) ^ 0x0E17);
+            let chunks: Vec<(usize, usize, u64)> = (0..b * t).step_by(self.entity_chunk).map(|s| (s, self.entity_chunk.min(b * t - s), rng.next())).collect();
+            let (mut es, mut pools) = (Vec::with_capacity(chunks.len()), Vec::with_capacity(chunks.len()));
+            for &(start, len, seed) in &chunks {
+                d.seed(seed);
+                let o = self.net.entity_untracked(&ob.entity_rows(start, len));
+                es.push(o.e.detach());
+                pools.push(o.pool.detach());
+            }
+            let e = Tensor::cat(es, 0).require_grad();
+            let pool = Tensor::cat(pools, 0).require_grad();
+            d.seed(rng.next());
+            let ent = EntityOut { e: e.clone(), pool: pool.clone() };
+            let out = self.net.forward_seq_with_entity(&ob, &ab, Some(&pb), s0, t, ent);
+            recompute = Some(EntityRecompute { ob: ob.clone(), e, pool, chunks, rest_seed: rng.next() });
+            out
+        };
         // Detached when stored so a waiting group's state does not keep its forward graph alive
         // while the other groups run (the truncation point of 041-R2 is the same).
         self.states[group] = Some(C::detach_state(out.state));
@@ -719,7 +828,7 @@ impl<C: CoreInit> Trainer<C> {
             valid: 0.0,
         };
         prof.mark("loss_read");
-        (loss, report)
+        (loss, report, recompute)
     }
 
     /// 032-R6 / 041-R10: weights + config + schema versions + hyper-parameters; 061-R10: optimizer

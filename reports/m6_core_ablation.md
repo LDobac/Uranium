@@ -270,3 +270,27 @@ run 배정 (작업자 큐 순서대로, 061-R13)
 - **남은 위험**: GTT는 큰 batch(엔티티 많음)를 만나면 커지고 줄지 않는다. Burn 메모리 풀로 보이며, 최악 N=512에서 얼마까지 커질지는 모른다. GTT는 스왑되지 않아 힙이 대신 스왑으로 밀리고, 그만큼 느려진다. 남은 스왑 여유(약 8 GB)로 운영하면서 계속 본다.
 - **재개**: 19:36 tmux `train` 작업자 재시작. `ckpt-2`에서 재개했고, `{"prefetch":0}`, 잠금은 BC250 1호기가 다시 잡았다.
 - 측정 출력(지우지 않음): BC250 1호기 `~/diag/g-m2/base/`, `~/diag/g-m2/p0/`(`mem.csv`, `train.log`, 로컬 체크포인트 `out/`).
+
+### 2026-10-20 20:52 BC250 1호기 GPU 메모리 할당 실패와 수정 (041-R17, R18)
+- **20:52·21:13 종료(코드 101).** 깊이 0으로 재개한 GTrXL run이 step 47 다음 update에서 `can't allocate buffer of size: 2147483648`으로 panic했다(`bc.rs` loss 읽기). 이번에는 커널 OOM이 아니라 GPU 버퍼 할당 실패다. 감시가 `ckpt-38`부터 재시작했지만 같은 batch(step 48)에서 다시 실패했고, 작업자를 멈췄다(12:14Z). step 39~47 두 번을 잃었다.
+- **효과 없던 시도**:
+  - update마다 메모리 풀 비우기(Burn `memory_cleanup`): update 사이 GTT는 11.3 → 1.9 GB로 줄었지만 step 48에서 같은 실패.
+  - Burn gradient checkpointing(`grad_checkpointing = true`, 실행 전용 설정): 같은 실패. Burn 방식은 행렬곱 결과를 다시 계산하지 않고 들고 있어 attention 메모리가 거의 줄지 않는다.
+- **빠른 재현**: `ckpt-38`부터 `--steps 47`로 로컬 체크포인트를 한 번 만들고, 거기서 update 1회(step 48)만 돌려 약 2분에 판정했다.
+- **원인**:
+  - 레인 1개(64행)의 forward 직후 GPU 사용량이 엔티티 수 n에 따라 늘었다. n=192는 3.3 GB, 256은 4.5 GB, 320은 5.8 GB, 384는 7.2 GB였고, n=512는 약 10.5 GB로 추정된다. step 48 batch의 13번째 레인이 처음으로 n=512(`N_MAX`)였다.
+  - 2 GiB 할당은 거리 bias one-hot `[64·512·512, 32]` f32(`entity.rs` `distance_bias`, 032-R13)와 크기가 정확히 같다. 엔티티 인코더의 n² 텐서(one-hot, bias, attention)가 대부분을 차지한다.
+  - GTT 상한은 15 GiB(`ttm pages_limit`)로 설정돼 있지만, GTT는 스왑할 수 없는 실제 RAM(전체 14.85 GiB)이다. 실패 순간에는 GTT 9.85 GB, 힙 RSS 4.4 GB, 남은 RAM 0.46 GB였고, 스왑은 11.5 GB가 비어 있었다. 스왑이 부족했던 게 아니라 고정할 RAM이 없었다.
+- **수정(사용자 결정)**:
+  - 041-R17 엔티티 인코더 재계산(`URANIUM_BC_ENTITY_CHUNK`, 행 수): 1단계에서 인코더를 조각별로 gradient 기록 없이(`Module::no_grad`, dropout 유지) 계산한다. 코어·헤드 backward 뒤에 같은 조각을 같은 seed로 다시 계산해 gradient를 되돌린다.
+    - 처음에는 detach만 했는데, Burn이 backward 전까지 1단계 그래프를 놓지 않아 메모리가 줄지 않았다(n=384 forward 7.38 GB).
+  - 041-R18 호스트 batch 압축(`URANIUM_BC_PACK_BATCH`): RL `PackedObs`와 같은 zstd 무손실 압축(`pack.rs`)을 쓰고, 레인 그룹 학습 때 그 행만 푼다.
+- **검증(BC250 1호기, chunk 16 + 압축)**:
+  - step 48 단독 실행: n=512 레인 forward 1.83 GB(이전 약 10.5 GB), 풀 최대 4.5 GB, GTT 최대 4.3 GB로 통과했다. 1단계 출력과 재계산 출력의 최대 차이는 1.2~1.9×10⁻⁶(32개 레인 그룹 모두)이라 dropout 마스크가 같다.
+  - `ckpt-38`부터 연속 실행(사용자 지시로 step 40까지): update는 137.9 s(첫 update, autotune 포함), 108.4 s(이전 92~109 s)였다. GTT 최대 4.15 GB, 남은 RAM 최소 3.5 GB, 스왑 0.
+  - 테스트: 재계산·압축 켬/끔의 update 동일성(tiny, dropout 0, 조각 균등·불균등, `micro_lanes` 0·1), dropout을 켠 1단계·재계산 출력 동일성, `.env` 파싱.
+- **남은 관찰**:
+  - 압축을 켜도 힙 RSS가 5.7~6.2 GB다. batch 외의 힙 사용처는 따로 보지 않았다. GTT가 작아져 지금은 여유가 있다.
+  - 거리 bias를 one-hot 행렬곱 대신 gather로 계산하면(032-R13 변경) 조각당 메모리가 더 준다. 후보로만 남긴다.
+- **운영**: BC250 1호기 `.env`에 `URANIUM_BC_ENTITY_CHUNK=16`, `URANIUM_BC_PACK_BATCH=1`을 넣었다. 학습 PC는 기본값(끔)이다. 설정 지문은 바뀌지 않으므로 `ckpt-38`부터 이어 간다.
+- 측정 출력: BC250 1호기 `~/diag/r17/`의 `mem.csv`·`train.log`(dbg48: 레인별 사용량, rc48b: 재계산 차이, rc60: 연속 실행). 로컬 체크포인트와 임시 스크립트는 사용자 지시로 지웠다.

@@ -102,3 +102,5 @@
 - 2026-10-20 16:43 — **장시간 실행 중단**: Linux 호스트 A GTrXL run이 커널 OOM으로 종료(step 31, 체크포인트 전이라 step 3~31 유실, `ckpt-2` 남음). 원인은 BC batch(약 4 GB) 최대 4개 동시 상주(미리 읽기 깊이 2, G-M2)와 GPU와 나눠 쓰는 RAM (`m6_core_ablation.md` 5절)
 - 2026-10-20 18시 — **결정·구현**(041-R16, 사용자 결정): 호스트별 미리 읽기 깊이 `URANIUM_BC_PREFETCH`(기본 2, 0 = 데이터 스레드 없음, batch 동일·설정 지문 불변). master c971b1f. Linux 호스트 A만 0으로 두고 재빌드
 - 2026-10-20 18:20~19:34 — 측정(G-M2): 깊이 0으로 `ckpt-2`부터 45 step 완료, OOM 지점 통과. 힙 스왑 최대 5.7 GB(깊이 2는 11.6 GB에서 안전 정지), GTT는 큰 batch에서 11.3 GB까지 커지고 유지, 남은 스왑 최소 8.05 GB. 19:36 GTrXL run 재개(`ckpt-2`부터). 출력 Linux 호스트 A `~/diag/g-m2/`
+- 2026-10-20 20:52 — **장시간 실행 중단**: Linux 호스트 A GTrXL run이 GPU 버퍼 할당 실패(2 GiB)로 종료, `ckpt-38`부터 재시작했으나 같은 batch(step 48)에서 재실패, 작업자 정지. 원인은 엔티티 512개 레인(64행)의 엔티티 인코더 forward 약 10.5 GB(거리 bias one-hot 2 GiB 포함)와 GPU와 나눠 쓰는 RAM. 풀 정리·Burn gradient checkpointing은 효과 없음 (`m6_core_ablation.md` 5절)
+- 2026-10-20 23시 — **결정·구현**(041-R17·R18, 사용자 결정): 엔티티 인코더 조각 재계산 `URANIUM_BC_ENTITY_CHUNK`, 호스트 batch zstd 압축 `URANIUM_BC_PACK_BATCH`(둘 다 기본 끔, 설정 지문 불변). Linux 호스트 A(16, 1)에서 step 48 통과, GTT 최대 11.3 → 4.2 GB, update 108 s. 측정 출력 Linux 호스트 A `~/diag/r17/`

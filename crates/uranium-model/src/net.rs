@@ -7,7 +7,7 @@ use burn::tensor::{Device, Tensor};
 use crate::batch::{ActionBatch, ActionColumns, ActionTableTensors, ObsBatch, PrivBatch};
 use crate::config::{CoreKind, UraniumNetConfig};
 use crate::core::{Core, GtrxlCore, LstmCore};
-use crate::entity::EntityEncoder;
+use crate::entity::{EntityEncoder, EntityOut};
 use crate::heads::{Heads, HeadsOut, Mode};
 use crate::scalar::{ScalarEncoder, ScalarOut};
 use crate::spatial::{SpatialEncoder, SpatialOut};
@@ -115,8 +115,13 @@ impl<C: Core> UraniumNet<C> {
     }
 
     fn encode_cut(&self, obs: &ObsBatch, cut: Cut) -> Encoded {
-        let mut ent = self.entity.forward(obs);
+        let ent = self.entity.forward(obs);
         crate::prof::mark("fwd.entity");
+        self.encode_rest(obs, cut, ent)
+    }
+
+    /// The encoders after the entity encoder, on its output `ent`.
+    fn encode_rest(&self, obs: &ObsBatch, cut: Cut, mut ent: EntityOut) -> Encoded {
         if matches!(cut, Cut::Entity | Cut::Encoders | Cut::Core) {
             ent.e = ent.e.detach();
             ent.pool = ent.pool.detach();
@@ -162,10 +167,33 @@ impl<C: Core> UraniumNet<C> {
     /// [`UraniumNet::forward_seq`] with the gradient stopped at `cut` (profiling the backward
     /// pass module by module; the forward values are the same).
     pub fn forward_seq_cut(&self, obs: &ObsBatch, labels: &ActionBatch, privileged: Option<&PrivBatch>, s0: C::State, t: usize, cut: Cut) -> SeqOutput<C::State> {
+        self.forward_seq_enc(self.encode_cut(obs, cut), obs, labels, privileged, s0, t, cut)
+    }
+
+    /// The entity encoder alone (041-R17: the trainer recomputes it in row chunks for the
+    /// backward pass).
+    pub fn entity(&self, obs: &ObsBatch) -> EntityOut {
+        self.entity.forward(obs)
+    }
+
+    /// [`UraniumNet::entity`] with no graph recorded (041-R17): the parameters do not track
+    /// gradients, dropout stays on, so with the same device seed the output equals the tracked
+    /// recompute's.
+    pub fn entity_untracked(&self, obs: &ObsBatch) -> EntityOut {
+        self.entity.clone().no_grad().forward(obs)
+    }
+
+    /// [`UraniumNet::forward_seq`] on an entity encoder output computed outside (041-R17);
+    /// `ent` must be [`UraniumNet::entity`] of the same `obs` rows.
+    pub fn forward_seq_with_entity(&self, obs: &ObsBatch, labels: &ActionBatch, privileged: Option<&PrivBatch>, s0: C::State, t: usize, ent: EntityOut) -> SeqOutput<C::State> {
+        self.forward_seq_enc(self.encode_rest(obs, Cut::None, ent), obs, labels, privileged, s0, t, Cut::None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn forward_seq_enc(&self, enc: Encoded, obs: &ObsBatch, labels: &ActionBatch, privileged: Option<&PrivBatch>, s0: C::State, t: usize, cut: Cut) -> SeqOutput<C::State> {
         let bt = obs.batch();
         assert!(t > 0 && bt % t == 0, "batch rows must be B*T");
         let b = bt / t;
-        let enc = self.encode_cut(obs, cut);
         let d = enc.core_in.dims()[1];
         let (h, state) = self.core.forward_seq(enc.core_in.reshape([b, t, d]), s0);
         let mut h = h.reshape([bt, self.core.hidden()]);
