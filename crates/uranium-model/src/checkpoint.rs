@@ -44,8 +44,27 @@ impl CheckpointMeta {
         })
     }
 
+    /// The stored net config. Keys a config written before a field existed lacks (032-R18
+    /// `value.win_open`) take that field's default first: Burn's `Config` derive needs every
+    /// field on deserialisation, and older checkpoints must load unchanged.
     pub fn net_config(&self) -> Result<UraniumNetConfig> {
-        Ok(serde_json::from_value(self.config.clone())?)
+        let mut v = self.config.clone();
+        fill_missing(&mut v, &serde_json::to_value(UraniumNetConfig::new())?);
+        Ok(serde_json::from_value(v)?)
+    }
+}
+
+/// Inserts every key of `defaults` that `v` lacks, recursively through nested objects. Keys
+/// `v` has are kept as stored.
+pub fn fill_missing(v: &mut serde_json::Value, defaults: &serde_json::Value) {
+    let (Some(o), Some(d)) = (v.as_object_mut(), defaults.as_object()) else { return };
+    for (k, dv) in d {
+        match o.get_mut(k) {
+            Some(x) => fill_missing(x, dv),
+            None => {
+                o.insert(k.clone(), dv.clone());
+            }
+        }
     }
 }
 

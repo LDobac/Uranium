@@ -1292,12 +1292,15 @@ fn win_open_head_leaves_the_rest_unchanged_032_ac9() {
         t.feeder.set_maps(std::sync::Arc::new(MapStore::synthetic()));
         t
     };
-    let (mut off, mut on) = (build(false), build(true));
-    assert!(on.net.has_win_open() && !off.net.has_win_open());
-    assert_eq!(on.net.win_open_params().len(), 6, "MLP (two Linear) + output Linear, weight and bias each");
-    assert!(off.net.win_open_params().is_empty());
+    // Burn parameters initialise lazily from the device RNG on first use: each net is built and
+    // read right after its seed, as a run builds one net and starts.
+    let mut off = build(false);
     let (shared_off, none) = split_bits(&off.net);
+    let mut on = build(true);
     let (shared_on, head0) = split_bits(&on.net);
+    assert!(on.net.has_win_open() && !off.net.has_win_open());
+    assert_eq!(on.net.win_open_params().len(), 6, "three Linear layers, weight and bias each");
+    assert!(off.net.win_open_params().is_empty());
     assert!(none.is_empty());
     assert_eq!(shared_on, shared_off, "032-R18 ③: the head shifts no other initial weight");
 
@@ -1316,12 +1319,32 @@ fn win_open_head_leaves_the_rest_unchanged_032_ac9() {
     assert_ne!(head1, head0, "the head trains");
 }
 
-/// 032-R18 ②: a model config written before `value.win_open` existed loads with the head off.
+/// 032-R18 ②: a checkpoint config written before `value.win_open` existed loads with the head off
+/// (Burn's Config derive needs every field; `CheckpointMeta::net_config` fills the defaults).
 #[test]
 fn config_without_win_open_loads_032_r18() {
-    let mut v = serde_json::to_value(tiny_cfg()).unwrap();
-    v["value"].as_object_mut().unwrap().remove("win_open").expect("serialised");
-    let cfg: UraniumNetConfig = serde_json::from_value(v).unwrap();
+    let mut meta = uranium_model::checkpoint::CheckpointMeta::new(&tiny_cfg(), 1, 1).unwrap();
+    meta.config["value"].as_object_mut().unwrap().remove("win_open").expect("serialised");
+    assert!(serde_json::from_value::<UraniumNetConfig>(meta.config.clone()).is_err(), "the derive alone refuses a missing field");
+    let cfg = meta.net_config().unwrap();
     assert!(!cfg.value.win_open);
     assert_eq!(cfg, tiny_cfg());
+    // A stored value is kept.
+    meta.config["value"]["win_open"] = serde_json::json!(true);
+    assert!(meta.net_config().unwrap().value.win_open);
+
+    // A whole checkpoint whose meta.json predates the key (as the core ablation's) loads.
+    let dir = std::env::temp_dir().join(format!("uranium-bc-old-cfg-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    let t = tiny_trainer(1);
+    t.save(&dir).unwrap();
+    let path = dir.join(uranium_model::checkpoint::META_FILE);
+    let mut json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    json["config"]["value"].as_object_mut().unwrap().remove("win_open").expect("saved with the key");
+    std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+    let cols = ActionColumns::from_table(action_table()).unwrap();
+    let (net, meta) = uranium_model::checkpoint::load::<LstmCore>(&dir, &cols, uranium_env::features::FEATURE_SCHEMA_VERSION, uranium_env::actions::ACTION_SCHEMA_VERSION, &Device::flex()).unwrap();
+    assert!(!net.has_win_open() && !meta.net_config().unwrap().value.win_open);
+    assert_eq!(param_bits(&net), param_bits(&t.net.valid()));
+    std::fs::remove_dir_all(&dir).ok();
 }
