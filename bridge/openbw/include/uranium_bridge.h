@@ -132,7 +132,15 @@ typedef struct {
   uint32_t n_cmds;
   const int32_t* unit_pool;
   uint32_t advance_frames;
+  /* 010-R13 / 011-R21: non-zero = surrender (n_cmds is 0). Send surrender_chat (NUL-terminated
+     UTF-8, at most 80 bytes, empty = no chat; valid until the next call) as chat, then leave the
+     game UR_SURRENDER_LEAVE_FRAMES later without calling uranium_bridge_step again. */
+  uint8_t surrender;
+  const char* surrender_chat;
 } UrAct;
+
+/* 011-R21: frames between the surrender chat and leaving (about 1 s, so the chat goes out). */
+enum { UR_SURRENDER_LEAVE_FRAMES = 24 };
 
 /* Return 0 on success; non-zero means the shim must leave the game. */
 int32_t uranium_bridge_start(const UrStatic* info);

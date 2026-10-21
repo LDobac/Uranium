@@ -176,7 +176,13 @@ pub struct UrAct {
     pub n_cmds: u32,
     pub unit_pool: *const i32,
     pub advance_frames: u32,
+    /// 010-R13 / 011-R21: non-zero = surrender, `surrender_chat` NUL-terminated (empty = no chat).
+    pub surrender: u8,
+    pub surrender_chat: *const c_char,
 }
+
+/// 011-R21 (`UR_SURRENDER_LEAVE_FRAMES`): frames between the surrender chat and leaving.
+pub const SURRENDER_LEAVE_FRAMES: u32 = 24;
 
 /// # Safety
 /// `ptr` must point to `n` valid elements (or `n == 0`).

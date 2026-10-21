@@ -163,6 +163,10 @@ pub struct ValueConfig {
     pub hidden: usize,
     #[config(default = 128)]
     pub privileged: usize,
+    /// 032-R18: build the `win_open` head (no privileged input, 031-R12 surrender). Off in
+    /// configs that predate it, so their checkpoints load unchanged.
+    #[config(default = false)]
+    pub win_open: bool,
 }
 
 #[derive(Config, Debug, PartialEq)]

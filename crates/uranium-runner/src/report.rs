@@ -325,8 +325,8 @@ pub fn write_with(out: &Path, plan: &Plan, infos: &[[Option<PolicyInfo>; 2]]) ->
             by.entry(s["policy"].as_str().unwrap_or("?").to_string()).or_default().push(s);
         }
         writeln!(md, "\n## Model sessions\n")?;
-        writeln!(md, "| policy | core | run | sessions | decisions | decide ms p50 (median) | decide ms p95 (max) | run ms p50 (median) | mean batch | host ms p50 | rejected | map precompute |")?;
-        writeln!(md, "|---|---|---|---|---|---|---|---|---|---|---|---|")?;
+        writeln!(md, "| policy | core | run | sessions | decisions | decide ms p50 (median) | decide ms p95 (max) | run ms p50 (median) | mean batch | host ms p50 | rejected | map precompute | surrender | surrender held | held & won |")?;
+        writeln!(md, "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")?;
         for (policy, ss) in by {
             let f = |k: &str| ss.iter().filter_map(|s| s["model"][k].as_f64()).collect::<Vec<f64>>();
             let decisions: u64 = ss.iter().filter_map(|s| s["model"]["decisions"].as_u64()).sum();
@@ -341,9 +341,10 @@ pub fn write_with(out: &Path, plan: &Plan, infos: &[[Option<PolicyInfo>; 2]]) ->
                 *pre.entry(s["model"]["map_precompute"].as_str().unwrap_or("?").to_string()).or_default() += 1;
             }
             let p95 = f("decide_ms_p95").into_iter().fold(0.0f64, f64::max);
+            let (modes, held, won) = surrender_cells(&ss);
             writeln!(
                 md,
-                "| `{policy}` | {} | {} | {} | {decisions} | {:.1} | {p95:.1} | {:.1} | {:.2} | {:.2} | {rejected:?} | {pre:?} |",
+                "| `{policy}` | {} | {} | {} | {decisions} | {:.1} | {p95:.1} | {:.1} | {:.2} | {:.2} | {rejected:?} | {pre:?} | {modes} | {held} | {won} |",
                 labels.get(policy.as_str()).map_or("-", |i| i.core.as_str()),
                 labels.get(policy.as_str()).map_or("-".to_string(), |i| format!("`{}`", i.run)),
                 ss.len(),
@@ -367,9 +368,30 @@ pub fn write_with(out: &Path, plan: &Plan, infos: &[[Option<PolicyInfo>; 2]]) ->
     Ok(())
 }
 
+/// 020-R14: surrender modes of the sessions, sessions where the 031-R12 check held, and how many
+/// of those the session's player won (its own GameEnd report; in Shadow mode a false surrender).
+fn surrender_cells(ss: &[&Value]) -> (String, u32, String) {
+    let modes: std::collections::BTreeSet<&str> = ss.iter().filter_map(|s| s["model"]["surrender"].as_str()).collect();
+    let held: Vec<&&Value> = ss.iter().filter(|s| s["model"]["surrender_frame"].is_u64()).collect();
+    let won = held.iter().filter(|s| s["winner"].as_u64().is_some() && s["winner"].as_u64() == s["slot"].as_u64()).count();
+    let modes = if modes.is_empty() { "-".to_string() } else { modes.into_iter().collect::<Vec<_>>().join(", ") };
+    let won = if held.is_empty() { "-".to_string() } else { format!("{won} ({:.0}%)", 100.0 * won as f64 / held.len() as f64) };
+    (modes, held.len() as u32, won)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 020-R14: held sessions and their wins (false surrenders in Shadow mode).
+    #[test]
+    fn surrender_cells_count_held_and_won_020_r14() {
+        let s = |slot: u64, winner: Option<u64>, frame: Option<u32>| serde_json::json!({"slot": slot, "winner": winner, "model": {"surrender": "shadow", "surrender_frame": frame}});
+        let v = [s(0, Some(0), Some(20_000)), s(0, Some(1), Some(15_000)), s(1, Some(1), None), s(0, None, Some(30_000))];
+        let refs: Vec<&Value> = v.iter().collect();
+        assert_eq!(surrender_cells(&refs), ("shadow".to_string(), 3, "1 (33%)".to_string()));
+        assert_eq!(surrender_cells(&[]), ("-".to_string(), 0, "-".to_string()));
+    }
 
     /// 020-R13: the report of the session that ended last decides a disagreement.
     #[test]

@@ -25,6 +25,8 @@ vtrace_c_bar = 1.0
 pg = 1.0
 upgo = 1.0
 value = 0.5
+# 042-R13: win_open head (when the model has one) regresses the win v-trace target, same form.
+win_open = 0.5
 
 [entropy]
 # Per-head coefficients, summed over used heads only (032-R10).

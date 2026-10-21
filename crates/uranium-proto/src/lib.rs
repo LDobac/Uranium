@@ -13,8 +13,9 @@ pub use grid::BitGrid;
 use serde::{Deserialize, Serialize};
 
 /// Bumped on any incompatible schema change (010-R2). 2: `GameEnd.final_frame` (010-R12).
-/// 3: `CmdOrder::Unload` (034 `Unload_Unit`, 010-R11, 2026-10-19).
-pub const PROTOCOL_VERSION: u32 = 3;
+/// 3: `CmdOrder::Unload` (034 `Unload_Unit`, 010-R11, 2026-10-19). 4: `Act.surrender` (010-R13,
+/// 2026-10-21).
+pub const PROTOCOL_VERSION: u32 = 4;
 
 pub type UnitId = u32;
 /// Pixel position.
@@ -294,7 +295,13 @@ pub struct Act {
     pub advance_frames: u32,
     /// 010-R7: realtime deadline.
     pub valid_until_frame: Option<u32>,
+    /// 010-R13: `Some(text)` = surrender (031-R12): no `cmds`; the bridge sends `text` as chat when
+    /// it is not empty (at most [`MAX_SURRENDER_CHAT`] bytes) and leaves the game.
+    pub surrender: Option<String>,
 }
+
+/// 010-R13: longest surrender chat line in UTF-8 bytes.
+pub const MAX_SURRENDER_CHAT: usize = 80;
 
 /// Lockstep training mode only (010-R10). Never a policy input.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]

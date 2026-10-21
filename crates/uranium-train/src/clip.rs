@@ -12,7 +12,7 @@
 //! that update, also on the device: the step then adds no gradient (AdamW moments still decay
 //! and weight decay still applies), instead of writing NaN into the weights.
 
-use burn::module::{Module, ModuleVisitor, Param};
+use burn::module::{Module, ModuleVisitor, Param, ParamId};
 use burn::optim::GradientsParams;
 use burn::tensor::{Bool, DType, FloatDType, Tensor};
 
@@ -23,14 +23,36 @@ pub const CLIP_MODE: &str = "global_l2";
 /// Added to the norm before dividing (as torch `clip_grad_norm_`), so a zero gradient stays zero.
 pub const CLIP_EPS: f64 = 1e-6;
 
-/// Sum of squared gradient entries over all parameters of a module, in f32.
+/// Which parameters a visitor touches (041-R19: the win_open head is clipped apart).
+#[derive(Clone, Copy)]
+enum Pick<'a> {
+    All,
+    In(&'a [ParamId]),
+    NotIn(&'a [ParamId]),
+}
+
+impl Pick<'_> {
+    fn takes(self, id: ParamId) -> bool {
+        match self {
+            Pick::All => true,
+            Pick::In(ids) => ids.contains(&id),
+            Pick::NotIn(ids) => !ids.contains(&id),
+        }
+    }
+}
+
+/// Sum of squared gradient entries over the picked parameters of a module, in f32.
 struct SquaredSum<'a> {
     grads: &'a GradientsParams,
+    pick: Pick<'a>,
     sum: Option<Tensor<1>>,
 }
 
 impl ModuleVisitor for SquaredSum<'_> {
     fn visit_float<const D: usize>(&mut self, param: &Param<Tensor<D>>) {
+        if !self.pick.takes(param.id) {
+            return;
+        }
         let Some(g) = self.grads.get::<D>(param.id) else { return };
         let g = match g.dtype() {
             DType::F16 | DType::BF16 => g.cast(FloatDType::F32),
@@ -44,16 +66,20 @@ impl ModuleVisitor for SquaredSum<'_> {
     }
 }
 
-/// Multiplies every gradient by `coef` ([1]); where `bad` ([1]) is true the gradient becomes 0
-/// (a NaN entry times 0 would stay NaN).
+/// Multiplies every picked gradient by `coef` ([1]); where `bad` ([1]) is true the gradient
+/// becomes 0 (a NaN entry times 0 would stay NaN).
 struct Scale<'a> {
     grads: &'a mut GradientsParams,
+    pick: Pick<'a>,
     coef: Tensor<1>,
     bad: Tensor<1, Bool>,
 }
 
 impl ModuleVisitor for Scale<'_> {
     fn visit_float<const D: usize>(&mut self, param: &Param<Tensor<D>>) {
+        if !self.pick.takes(param.id) {
+            return;
+        }
         let Some(g) = self.grads.remove::<D>(param.id) else { return };
         let dtype = g.dtype();
         let c = self.coef.clone().unsqueeze::<D>();
@@ -67,24 +93,44 @@ impl ModuleVisitor for Scale<'_> {
     }
 }
 
-/// Global L2 norm of `grads` over the parameters of `module` ([1], on the gradients' device).
-/// `None` when no parameter has a gradient.
-pub fn global_norm<M: Module>(module: &M, grads: &GradientsParams) -> Option<Tensor<1>> {
-    let mut v = SquaredSum { grads, sum: None };
+fn picked_norm<M: Module>(module: &M, grads: &GradientsParams, pick: Pick<'_>) -> Option<Tensor<1>> {
+    let mut v = SquaredSum { grads, pick, sum: None };
     module.visit(&mut v);
     v.sum.map(|s| s.sqrt())
 }
 
-/// 041-R3: scales all gradients by `min(1, max_norm / (norm + eps))` where `norm` is the global
-/// L2 norm. Returns the clipped gradients and the norm before clipping ([1], not read back).
-pub fn clip_global_norm<M: Module>(module: &M, mut grads: GradientsParams, max_norm: f32) -> (GradientsParams, Option<Tensor<1>>) {
-    let Some(norm) = global_norm(module, &grads) else { return (grads, None) };
+/// Global L2 norm of `grads` over the parameters of `module` ([1], on the gradients' device).
+/// `None` when no parameter has a gradient.
+pub fn global_norm<M: Module>(module: &M, grads: &GradientsParams) -> Option<Tensor<1>> {
+    picked_norm(module, grads, Pick::All)
+}
+
+fn clip_picked<M: Module>(module: &M, mut grads: GradientsParams, max_norm: f32, pick: Pick<'_>) -> (GradientsParams, Option<Tensor<1>>) {
+    let Some(norm) = picked_norm(module, &grads, pick) else { return (grads, None) };
     // Non-finite norm: factor 0 and the gradients masked to 0 (no host read, see module docs).
     let bad = norm.clone().is_finite().bool_not();
     let coef = (norm.clone().add_scalar(CLIP_EPS).recip() * max_norm as f64).clamp_max(1.0).mask_fill(bad.clone(), 0.0);
-    let mut v = Scale { grads: &mut grads, coef, bad };
+    let mut v = Scale { grads: &mut grads, pick, coef, bad };
     module.visit(&mut v);
     (grads, Some(norm))
+}
+
+/// 041-R3: scales all gradients by `min(1, max_norm / (norm + eps))` where `norm` is the global
+/// L2 norm. Returns the clipped gradients and the norm before clipping ([1], not read back).
+pub fn clip_global_norm<M: Module>(module: &M, grads: GradientsParams, max_norm: f32) -> (GradientsParams, Option<Tensor<1>>) {
+    clip_picked(module, grads, max_norm, Pick::All)
+}
+
+/// 041-R19 / 042-R13: [`clip_global_norm`] over the parameters not in `apart`, then the same clip
+/// over `apart` alone (the win_open head, 032-R18), so the head does not change the other
+/// parameters' clip factor. Returns the norm of the rest. Empty `apart` = [`clip_global_norm`].
+pub fn clip_global_norm_except<M: Module>(module: &M, grads: GradientsParams, max_norm: f32, apart: &[ParamId]) -> (GradientsParams, Option<Tensor<1>>) {
+    if apart.is_empty() {
+        return clip_global_norm(module, grads, max_norm);
+    }
+    let (grads, norm) = clip_picked(module, grads, max_norm, Pick::NotIn(apart));
+    let (grads, _) = clip_picked(module, grads, max_norm, Pick::In(apart));
+    (grads, norm)
 }
 
 #[cfg(test)]
@@ -197,5 +243,25 @@ mod tests {
         let (m, _) = setup([0.0; 2], [0.0; 4]);
         let (g, norm) = clip_global_norm(&m, GradientsParams::new(), 1.0);
         assert!(norm.is_none() && g.is_empty());
+    }
+
+    /// 041-R19: parameters clipped apart do not change the others' factor; each part is clipped
+    /// to `max_norm` on its own; no `apart` is the plain global clip.
+    #[test]
+    fn apart_params_clip_on_their_own_041_r19() {
+        let (m, g) = setup([3.0, 4.0], [0.0, 0.0, 0.0, 100.0]);
+        let apart = [m.b.id];
+        let (g, norm) = clip_global_norm_except(&m, g, 1.0, &apart);
+        assert!((host(norm.unwrap())[0] - 5.0).abs() < 1e-5, "returned norm is the rest's");
+        let a = host(g.get::<1>(m.a.id).unwrap());
+        let b = host(g.get::<2>(m.b.id).unwrap());
+        assert!((a[0] - 0.6).abs() < 1e-5 && (a[1] - 0.8).abs() < 1e-5, "{a:?}");
+        assert!((l2(&b) - 1.0).abs() < 1e-5, "{b:?}");
+
+        let (m, g) = setup([3.0, 4.0], [0.0, 0.0, 0.0, 100.0]);
+        let plain = flat(&m, &clip_global_norm(&m, g, 1.0).0);
+        let (m2, g2) = setup([3.0, 4.0], [0.0, 0.0, 0.0, 100.0]);
+        let none = flat(&m2, &clip_global_norm_except(&m2, g2, 1.0, &[]).0);
+        assert_eq!(plain, none);
     }
 }

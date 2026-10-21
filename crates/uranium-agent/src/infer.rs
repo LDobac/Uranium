@@ -22,6 +22,7 @@ use uranium_env::actions::ACTION_SCHEMA_VERSION;
 use uranium_env::features::executor::HostAction;
 use uranium_env::features::extract::action_table;
 use uranium_env::features::{FEATURE_SCHEMA_VERSION, Observation};
+pub use uranium_env::surrender::{DEFAULT_CHAT, SurrenderMode};
 use uranium_model::batch::{ActionColumns, TARGET_LOC, TARGET_UNIT};
 use uranium_model::checkpoint::{self, WEIGHTS_FILE};
 use uranium_model::collate::obs_batch_padded;
@@ -120,6 +121,8 @@ pub struct ActReply {
     pub head_log_prob: [f32; HEADS],
     /// win, build, units, value (032 §2.6, no privileged input).
     pub value: [f32; 4],
+    /// 032-R18 win estimate in [-1, 1]; `None` when the checkpoint has no win_open head.
+    pub win_open: Option<f32>,
     /// The observation, handed back so the caller can run the executor without a copy.
     pub obs: Observation,
     /// Rows in the batch this decision ran in.
@@ -149,6 +152,10 @@ pub struct InferenceHandle {
     pub sample: SampleMode,
     /// `InferOptions::zero_last_failed` of the server (030-R10, E-5).
     pub zero_last_failed: bool,
+    /// 031-R12 / 020-R14: surrender mode of the sessions (default `Shadow`: check, never leave).
+    pub surrender: SurrenderMode,
+    /// 020-R14: chat line sent before leaving (default `gg`, empty = no chat).
+    pub surrender_chat: Arc<str>,
 }
 
 impl std::fmt::Debug for InferenceHandle {
@@ -202,7 +209,14 @@ impl InferenceHandle {
         })?;
         ready_rx.recv().map_err(|_| anyhow!("inference thread exited while loading"))??;
         elog!("[infer] {id} ready ({:?}, {sample:?}, {kind:?}, max_batch {}, capacity {})", opts.backend, opts.max_batch, opts.capacity);
-        Ok(Self { tx, checkpoint_id: id.into(), sample, zero_last_failed: opts.zero_last_failed })
+        Ok(Self { tx, checkpoint_id: id.into(), sample, zero_last_failed: opts.zero_last_failed, surrender: SurrenderMode::Shadow, surrender_chat: DEFAULT_CHAT.into() })
+    }
+
+    /// 031-R12 / 020-R14: surrender mode and chat line for the sessions opened from this handle.
+    pub fn with_surrender(mut self, mode: SurrenderMode, chat: &str) -> Self {
+        self.surrender = mode;
+        self.surrender_chat = chat.into();
+        self
     }
 
     /// 032-R16: weights for the next batches. `net` must be a `UraniumNet<C>` of the checkpoint's
@@ -360,6 +374,7 @@ fn run_batch<C: CoreInit>(net: &UraniumNet<C>, cols: &ActionColumns, device: &De
     let log_prob = floats(out.log_prob.into_data());
     let heads = floats(out.head_log_prob.into_data());
     let value = floats(out.value.into_data());
+    let win_open = out.win_open.map(|t| floats(t.into_data()));
     let run = t0.elapsed();
     if run >= SLOW_BATCH {
         // 011-AC7: OpenBW drops a LAN client after 60 s without sync, so a stall here ends the
@@ -383,6 +398,7 @@ fn run_batch<C: CoreInit>(net: &UraniumNet<C>, cols: &ActionColumns, device: &De
             log_prob: log_prob[r],
             head_log_prob: std::array::from_fn(|h| heads[r * HEADS + h]),
             value: std::array::from_fn(|v| value[r * 4 + v]),
+            win_open: win_open.as_ref().map(|w| w[r]),
             obs: *p.obs,
             batch: b,
             run,

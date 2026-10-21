@@ -14,6 +14,7 @@ use uranium_env::features::Strategy;
 use uranium_env::features::extract::action_table;
 use uranium_env::maps::{MapFamilies, PrecomputeSource, family_index, live_precompute_for_session, maps_dir};
 use uranium_env::reward::{Outcome, RewardParts, RewardTracker};
+use uranium_env::surrender::{SurrenderJudge, SurrenderMode, rule_holds};
 use uranium_model::HostState;
 use uranium_proto::{Act, GameInfo, RawFrame};
 
@@ -31,6 +32,12 @@ pub struct ModelStats {
     pub map_precompute: String,
     /// 030-R10 / E-5: the session fed `last_failed = 0` (BC evaluation games).
     pub zero_last_failed: bool,
+    /// 031-R12 / 020-R14: surrender mode (`off` / `shadow` / `on`), and whether the checkpoint has
+    /// the win_open head (without it the check never holds).
+    pub surrender: String,
+    pub win_open: bool,
+    /// First frame the 031-R12 check held (Shadow and On); in On mode the session surrendered there.
+    pub surrender_frame: Option<u32>,
     pub decisions: u64,
     /// 031-R4 / AMB-031-5: executor rejections by reason.
     pub rejected: BTreeMap<String, u64>,
@@ -99,6 +106,15 @@ pub struct ModelPolicy {
     run: Vec<f32>,
     host: Vec<f32>,
     batch_sum: u64,
+    /// 031-R12 check of this game, with the handle's mode and chat line (020-R14).
+    judge: SurrenderJudge,
+    surrender_mode: SurrenderMode,
+    surrender_chat: String,
+    /// The surrender Act went out (010-R13); the bridge asks for no more decisions.
+    surrendered: bool,
+    /// Test only (011-AC9 / 031-AC5 integration): `URANIUM_TEST_SURRENDER_FRAME`, in On mode the
+    /// first decision at or after this frame surrenders whatever the check says.
+    test_surrender_frame: Option<u32>,
 }
 
 fn rejected_name(r: &Rejected) -> &'static str {
@@ -150,8 +166,10 @@ impl ModelPolicy {
             map_family: family,
             map_precompute: source,
             zero_last_failed: handle.zero_last_failed,
+            surrender: format!("{:?}", handle.surrender).to_lowercase(),
             ..Default::default()
         };
+        let test_surrender_frame = std::env::var("URANIUM_TEST_SURRENDER_FRAME").ok().and_then(|v| v.trim().parse().ok());
         let self_player = info.players.iter().find(|p| p.is_self).map_or(0, |p| p.id);
         // 030-R11: a lobby-Random enemy (GameInfo race Random / Unknown) stays `unknown` until its
         // first unit is seen (`AgentMemory::new`).
@@ -159,7 +177,25 @@ impl ModelPolicy {
         // 030-R10 / E-5: evaluation games of a BC checkpoint feed last_failed = 0 (see
         // `AgentMemory::zero_last_failed` for why); RL sessions keep the real value.
         mem.zero_last_failed = handle.zero_last_failed;
-        Ok(Self { observer: None, z: None, reward: None, self_player, sess: handle.open()?, mem, map, stats, decide: vec![], run: vec![], host: vec![], batch_sum: 0 })
+        Ok(Self {
+            observer: None,
+            z: None,
+            reward: None,
+            self_player,
+            sess: handle.open()?,
+            mem,
+            map,
+            stats,
+            decide: vec![],
+            run: vec![],
+            host: vec![],
+            batch_sum: 0,
+            judge: SurrenderJudge::new(),
+            surrender_mode: handle.surrender,
+            surrender_chat: handle.surrender_chat.to_string(),
+            surrendered: false,
+            test_surrender_frame,
+        })
     }
 
     /// Records the trajectory through `o` with 033 rewards for strategy `z` (042).
@@ -192,6 +228,34 @@ impl ModelPolicy {
         }
     }
 
+    /// 031-R12 after a decision (memory has seen `f`). `Some(act)` = surrender now (On mode).
+    fn surrender_check(&mut self, f: &RawFrame, win_open: Option<f32>) -> Option<Act> {
+        let mode = self.surrender_mode;
+        if mode == SurrenderMode::Off || self.surrendered {
+            return None;
+        }
+        if win_open.is_none() && self.stats.decisions == 0 {
+            elog!("[agent] WARNING: checkpoint {} has no win_open head: the 031-R12 surrender check never holds", self.stats.checkpoint);
+        }
+        self.stats.win_open = win_open.is_some();
+        let mem = &self.mem;
+        let held = self.judge.decide(f.frame, win_open, || rule_holds(f, mem));
+        if held && self.stats.surrender_frame.is_none() {
+            self.stats.surrender_frame = Some(f.frame);
+        }
+        let forced = self.test_surrender_frame.is_some_and(|n| f.frame >= n);
+        if mode != SurrenderMode::On || !(held || forced) {
+            return None;
+        }
+        if forced && self.stats.surrender_frame.is_none() {
+            self.stats.surrender_frame = Some(f.frame);
+        }
+        self.surrendered = true;
+        let chat = self.surrender_chat.clone();
+        elog!("[agent] 031-R12: surrender at frame {} (chat {chat:?}{})", f.frame, if forced { ", forced by URANIUM_TEST_SURRENDER_FRAME" } else { "" });
+        Some(Act { cmds: vec![], advance_frames: 1, valid_until_frame: None, surrender: Some(chat) })
+    }
+
     pub fn on_frame(&mut self, f: &RawFrame) -> Result<Act> {
         let t0 = Instant::now();
         // z absent unless an RL session set one (041-AC2 / AMB-041-2, 033-R8).
@@ -207,6 +271,10 @@ impl ModelPolicy {
         self.decide.push(t1.elapsed().as_secs_f32() * 1e3);
         self.run.push(r.run.as_secs_f32() * 1e3);
         self.batch_sum += r.batch as u64;
+        if let Some(act) = self.surrender_check(f, r.win_open) {
+            self.stats.decisions += 1;
+            return Ok(act);
+        }
         let t2 = Instant::now();
         let a = &r.action;
         let (cmds, rejected) = {
@@ -246,7 +314,7 @@ impl ModelPolicy {
         self.stats.decisions += 1;
         self.host.push((host_extract + t2.elapsed()).as_secs_f32() * 1e3);
         let bucket = a.delay_bucket.min(DELAY_BUCKETS.len() - 1);
-        Ok(Act { cmds, advance_frames: DELAY_BUCKETS[bucket], valid_until_frame: None })
+        Ok(Act { cmds, advance_frames: DELAY_BUCKETS[bucket], valid_until_frame: None, surrender: None })
     }
 
     pub fn stats(&mut self) -> ModelStats {

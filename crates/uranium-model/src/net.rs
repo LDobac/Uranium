@@ -1,7 +1,7 @@
 //! `UraniumNet` (032 §1, §6). Encoders and heads run over all B (or B·T) rows in parallel; only
 //! the Core walks the time axis.
 
-use burn::module::Module;
+use burn::module::{Module, ModuleVisitor, Param, ParamId};
 use burn::tensor::{Device, Tensor};
 
 use crate::batch::{ActionBatch, ActionColumns, ActionTableTensors, ObsBatch, PrivBatch};
@@ -56,6 +56,8 @@ pub struct ActOutput<S> {
     pub entropy: Tensor<1>,
     /// [B,4] win, build, units, value (no privileged input).
     pub value: Tensor<2>,
+    /// [B] 032-R18 win estimate, `None` without the head.
+    pub win_open: Option<Tensor<1>>,
     pub state: S,
 }
 
@@ -65,6 +67,8 @@ pub struct SeqOutput<S> {
     pub heads: HeadsOut,
     /// [B·T,4]
     pub value: Tensor<2>,
+    /// [B·T] 032-R18 win estimate, `None` without the head.
+    pub win_open: Option<Tensor<1>>,
     pub state: S,
 }
 
@@ -154,8 +158,11 @@ impl<C: Core> UraniumNet<C> {
         let enc = self.encode(obs);
         let (h, state) = self.core.step(enc.core_in, state);
         let out = self.heads.forward(Mode::Sample { temp }, h.clone(), enc.sc.c.clone(), enc.e, &enc.sp, obs, &self.table);
-        let value = self.value.forward(h, enc.sc.z, enc.sc.race, None);
-        ActOutput { log_prob: out.logp.sum(), head_log_prob: out.logp.stack(), entropy: out.entropy.sum(), action: out.chosen, value, state }
+        let value = self.value.forward(h.clone(), enc.sc.z.clone(), enc.sc.race.clone(), None);
+        // 032-R18 ③: the head runs last, so a lazily initialised parameter cannot shift the
+        // other modules' initial weights.
+        let win_open = self.value.win_open(h, enc.sc.z, enc.sc.race);
+        ActOutput { log_prob: out.logp.sum(), head_log_prob: out.logp.stack(), entropy: out.entropy.sum(), action: out.chosen, value, win_open, state }
     }
 
     /// Teacher-forced training pass over `t` steps per sequence. `obs`, `labels`, `privileged`
@@ -202,12 +209,35 @@ impl<C: Core> UraniumNet<C> {
             h = h.detach();
         }
         let heads = self.heads.forward(Mode::Teacher(labels), h.clone(), enc.sc.c.clone(), enc.e, &enc.sp, obs, &self.table);
-        let value = self.value.forward(h, enc.sc.z, enc.sc.race, privileged);
+        let value = self.value.forward(h.clone(), enc.sc.z.clone(), enc.sc.race.clone(), privileged);
+        // 032-R18 ③: last, as in `act`.
+        let win_open = self.value.win_open(h, enc.sc.z, enc.sc.race);
         crate::prof::mark("fwd.value");
-        SeqOutput { heads, value, state }
+        SeqOutput { heads, value, win_open, state }
     }
 
     pub fn core(&self) -> &C {
         &self.core
+    }
+
+    /// 032-R18: whether the model has the win_open head.
+    pub fn has_win_open(&self) -> bool {
+        self.value.open.is_some()
+    }
+
+    /// 032-R18: parameter ids of the win_open head (041-R19 / 042-R13 clip them apart). Empty
+    /// without the head.
+    pub fn win_open_params(&self) -> Vec<ParamId> {
+        struct Ids(Vec<ParamId>);
+        impl ModuleVisitor for Ids {
+            fn visit_float<const D: usize>(&mut self, param: &Param<Tensor<D>>) {
+                self.0.push(param.id);
+            }
+        }
+        let mut ids = Ids(Vec::new());
+        if let Some(open) = &self.value.open {
+            open.visit(&mut ids);
+        }
+        ids.0
     }
 }

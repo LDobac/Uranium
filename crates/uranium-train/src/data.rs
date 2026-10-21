@@ -365,6 +365,11 @@ pub struct TrainStep {
     pub label: HostLabel,
     pub privileged: PrivilegedTensors,
     pub weight: f32,
+    /// Game frame of the step's observation.
+    pub frame: u32,
+    /// 031-R12 ③ at this step (own vision and memory, as the live check sees it); `bc-eval`
+    /// replays the surrender check with it (041-AC4).
+    pub surrender_rule: bool,
 }
 
 /// A prepared game.
@@ -1140,6 +1145,8 @@ impl GameStream {
             // Memory sees what the policy did, like in RL (030 §4 previous action, §1 last action):
             // the units that act on the command (041-R11); `LabelWalker::step` records it.
             let (o, mut label, why) = self.walker.step(&s.raw_frame, &s.action_label, self.z.as_ref());
+            // 031-R12 ③ after memory saw this frame, as in the live check (041-AC4).
+            let surrender_rule = uranium_env::surrender::rule_holds(&s.raw_frame, &self.walker.mem);
             let ok = why.is_none();
             // 040-AC7: `invalid` counts what the 040-R19 filter counts; 031-AC3 `unknown` steps
             // (labeler version 2) are weight 0 too but not invalid labels.
@@ -1153,7 +1160,7 @@ impl GameStream {
                 transform_with_starts(&o, self.sym, &self.walker.map.start_locations)
             };
             let privileged = s.privileged.as_ref().map_or_else(|| self.zero_priv.clone(), privileged);
-            steps.push(TrainStep { obs: o, label, privileged, weight: if ok { 1.0 } else { 0.0 } });
+            steps.push(TrainStep { obs: o, label, privileged, weight: if ok { 1.0 } else { 0.0 }, frame: s.raw_frame.frame, surrender_rule });
         }
         self.pos = end;
         (steps, invalid)

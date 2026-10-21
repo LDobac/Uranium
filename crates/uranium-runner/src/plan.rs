@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use uranium_agent::T0Build;
 use uranium_proto::Race;
-use uranium_agent::infer::SampleMode;
+use uranium_agent::infer::{DEFAULT_CHAT, SampleMode, SurrenderMode};
 use uranium_proto::control::{GameSpec, MapKey, PlayerKind, PlayerSpec};
 
 #[derive(Deserialize, Debug, Clone)]
@@ -31,6 +31,14 @@ pub struct Plan {
     /// never saw a 1 there and it would only add noise to the evaluation. RL keeps the real value.
     #[serde(default)]
     pub zero_last_failed: bool,
+    /// 031-R12 / 020-R14: surrender mode of the model players. OpenBW default `shadow`: the check
+    /// runs and is recorded, training and evaluation games never leave.
+    #[serde(default = "d_surrender")]
+    pub surrender: SurrenderMode,
+    /// 020-R14: chat line sent before leaving (default `gg`, empty = leave without chat, at most
+    /// 80 UTF-8 bytes).
+    #[serde(default = "d_surrender_chat")]
+    pub surrender_chat: String,
     #[serde(rename = "matchup")]
     pub matchups: Vec<Matchup>,
 }
@@ -43,6 +51,23 @@ fn d_max_frames() -> u32 {
 }
 fn d_wall_timeout() -> u32 {
     1800
+}
+fn d_surrender() -> SurrenderMode {
+    SurrenderMode::Shadow
+}
+fn d_surrender_chat() -> String {
+    DEFAULT_CHAT.into()
+}
+
+/// 020-R14 / 010-R13: the surrender chat line fits the protocol limit.
+pub fn check_surrender_chat(chat: &str) -> Result<()> {
+    if chat.len() > uranium_proto::MAX_SURRENDER_CHAT {
+        bail!("surrender_chat is {} bytes, at most {} (020-R14)", chat.len(), uranium_proto::MAX_SURRENDER_CHAT);
+    }
+    if chat.contains('\0') {
+        bail!("surrender_chat contains NUL (020-R14)");
+    }
+    Ok(())
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +169,7 @@ pub fn load_plan(path: &Path) -> Result<Plan> {
     if plan.matchups.is_empty() {
         bail!("plan has no [[matchup]]");
     }
+    check_surrender_chat(&plan.surrender_chat)?;
     for (i, m) in plan.matchups.iter().enumerate() {
         for side in [&m.p0, &m.p1] {
             if let Side::T0 { race, build } = side {
@@ -240,6 +266,22 @@ pub fn expand(plan: &Plan, agent_addr: &str) -> Vec<Job> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 020-R14: surrender defaults to `shadow` / "gg", both can be set, the chat line is checked.
+    #[test]
+    fn surrender_options_020_r14() {
+        let base = "[[matchup]]\nmap='both'\ngames=1\np0={kind='t0',race='terran'}\np1={kind='t0',race='zerg'}";
+        let p: Plan = toml::from_str(&format!("name='x'\n{base}")).unwrap();
+        assert_eq!((p.surrender, p.surrender_chat.as_str()), (SurrenderMode::Shadow, "gg"));
+        let p: Plan = toml::from_str(&format!("name='x'\nsurrender='on'\nsurrender_chat='good game'\n{base}")).unwrap();
+        assert_eq!((p.surrender, p.surrender_chat.as_str()), (SurrenderMode::On, "good game"));
+        let p: Plan = toml::from_str(&format!("name='x'\nsurrender='off'\nsurrender_chat=''\n{base}")).unwrap();
+        assert_eq!((p.surrender, p.surrender_chat.as_str()), (SurrenderMode::Off, ""));
+        assert!(toml::from_str::<Plan>(&format!("name='x'\nsurrender='maybe'\n{base}")).is_err());
+        assert!(check_surrender_chat("").is_ok());
+        assert!(check_surrender_chat(&"a".repeat(80)).is_ok());
+        assert!(check_surrender_chat(&"a".repeat(81)).is_err());
+    }
 
     const PLAN: &str = r#"
 name = "t"

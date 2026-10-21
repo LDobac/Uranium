@@ -197,7 +197,8 @@ pub fn start_models(plan: &plan::Plan, mut opts: InferOptions) -> Result<Models>
         for key in [m.p0.model(), m.p1.model()].into_iter().flatten() {
             if !models.contains_key(&key) {
                 let dir = resolve_checkpoint(Path::new(&key.0))?;
-                let h = InferenceHandle::start(&dir, key.1, opts).with_context(|| format!("loading checkpoint {}", dir.display()))?;
+                // 031-R12 / 020-R14: the plan's surrender mode and chat line.
+                let h = InferenceHandle::start(&dir, key.1, opts).with_context(|| format!("loading checkpoint {}", dir.display()))?.with_surrender(plan.surrender, &plan.surrender_chat);
                 models.insert(key, PolicySpec::Model(h));
             }
         }

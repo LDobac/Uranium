@@ -345,7 +345,7 @@ fn tiny_bc(micro_lanes: usize, pad_entities: usize) -> BcConfig {
         grad_clip: 1.0,
         s2_lr_scale: 0.1,
         heads: HeadWeights { action: 1.0, delay: 0.5, queued: 0.2, selected: 1.0, target_unit: 1.0, target_loc: 1.0 },
-        value: ValueWeights { win: 0.5 },
+        value: ValueWeights { win: 0.5, win_open: None },
         data: DataConfig { z_drop: 0.0, augment: false, seed: 1, checkpoint_every: 1000, checkpoint_minutes: 0, enemy_race_mask: 0.0 },
         keep_checkpoints: None,
     }
@@ -395,7 +395,7 @@ fn warmup_cosine_schedule_041_r3() {
         grad_clip: 1.0,
         s2_lr_scale: 0.1,
         heads: HeadWeights { action: 1.0, delay: 0.5, queued: 0.2, selected: 1.0, target_unit: 1.0, target_loc: 1.0 },
-        value: ValueWeights { win: 0.5 },
+        value: ValueWeights { win: 0.5, win_open: None },
         data: DataConfig { z_drop: 0.25, augment: true, seed: 1, checkpoint_every: 1, checkpoint_minutes: 0, enemy_race_mask: 0.05 },
         keep_checkpoints: None,
     };
@@ -426,7 +426,13 @@ fn warmup_cosine_schedule_041_r3() {
     // 061-R6 / 032-R17 ⑤ (G-D6): the ablation keeps every checkpoint; bc.toml the default 5.
     assert_eq!((abl.keep_checkpoints(), file.keep_checkpoints(), file.keep_checkpoints), (0, 5, None));
     same.keep_checkpoints = file.keep_checkpoints;
-    assert_eq!(same, file, "032-R17: only the S1 length, warmup and retention differ from bc.toml");
+    // 041-R19 (2026-10-21): the main BC trains the win_open head; the running ablation does not.
+    assert_eq!((abl.value.win_open, file.value.win_open), (None, Some(0.5)));
+    same.value.win_open = file.value.win_open;
+    assert_eq!(same, file, "032-R17: only the S1 length, warmup, retention and win_open differ from bc.toml");
+    // 041-R19: an absent win_open leaves the fingerprint JSON as before the key existed.
+    let view = serde_json::to_value(abl.results_view()).unwrap();
+    assert_eq!(view["value"], serde_json::json!({ "win": 0.5 }));
     // B-3: the ablation's fingerprint differs (schedule), the retention alone does not count.
     assert_ne!(abl.fingerprint(), file.fingerprint());
     let mut kept = file.clone();
@@ -1249,4 +1255,73 @@ fn build_layout_keeps_the_old_dataset_order_and_fingerprints_041_r13() {
         assert_eq!(dataset_fingerprint(&src).unwrap(), old_data);
     }
     std::fs::remove_dir_all(&base).ok();
+}
+
+/// Every float parameter as (id, raw f32 bits), in visit order.
+struct IdBits(Vec<(burn::module::ParamId, Vec<u32>)>);
+
+impl burn::module::ModuleVisitor for IdBits {
+    fn visit_float<const D: usize>(&mut self, p: &burn::module::Param<burn::tensor::Tensor<D>>) {
+        self.0.push((p.id, host_f32(p.val()).iter().map(|x| x.to_bits()).collect()));
+    }
+}
+
+/// (shared parameters, win_open head parameters) as bits.
+fn split_bits(net: &UraniumNet<LstmCore>) -> (Vec<Vec<u32>>, Vec<Vec<u32>>) {
+    let head = net.win_open_params();
+    let mut v = IdBits(Vec::new());
+    net.visit(&mut v);
+    let (h, s): (Vec<_>, Vec<_>) = v.0.into_iter().partition(|(id, _)| head.contains(id));
+    (s.into_iter().map(|x| x.1).collect(), h.into_iter().map(|x| x.1).collect())
+}
+
+/// 032-AC9 / 041-R19 (flex): the win_open head changes nothing else. With the same seed the
+/// shared parameters start bit-identical with and without the head, and after the same updates
+/// (head loss added, head clipped apart) they are still bit-identical; the head itself trains.
+#[test]
+fn win_open_head_leaves_the_rest_unchanged_032_ac9() {
+    let cols = ActionColumns::from_table(action_table()).unwrap();
+    let build = |open: bool| {
+        let ad = Device::flex().autodiff();
+        ad.seed(3);
+        let cfg = tiny_cfg().with_value(ValueConfig::new().with_hidden(32).with_privileged(8).with_win_open(open));
+        let net = UraniumNet::<LstmCore>::new(&cfg, &cols, &ad);
+        let mut bc = tiny_bc(1, 0);
+        bc.value.win_open = open.then_some(0.5);
+        let mut t = Trainer::new(net, cfg, bc, ad);
+        t.feeder.set_maps(std::sync::Arc::new(MapStore::synthetic()));
+        t
+    };
+    let (mut off, mut on) = (build(false), build(true));
+    assert!(on.net.has_win_open() && !off.net.has_win_open());
+    assert_eq!(on.net.win_open_params().len(), 6, "MLP (two Linear) + output Linear, weight and bias each");
+    assert!(off.net.win_open_params().is_empty());
+    let (shared_off, none) = split_bits(&off.net);
+    let (shared_on, head0) = split_bits(&on.net);
+    assert!(none.is_empty());
+    assert_eq!(shared_on, shared_off, "032-R18 ③: the head shifts no other initial weight");
+
+    let games = || VecSource((0..4).map(|_| game()).collect::<VecDeque<_>>());
+    let (mut src_off, mut src_on) = (games(), games());
+    for _ in 0..2 {
+        let a = off.train_step(&mut src_off).unwrap().unwrap();
+        let b = on.train_step(&mut src_on).unwrap().unwrap();
+        assert_eq!(a.win_open, 0.0);
+        assert!(b.win_open > 0.0 && b.win_open.is_finite(), "{b:?}");
+        assert_eq!((a.action.to_bits(), a.value.to_bits()), (b.action.to_bits(), b.value.to_bits()));
+    }
+    let (shared_off, _) = split_bits(&off.net);
+    let (shared_on, head1) = split_bits(&on.net);
+    assert_eq!(shared_on, shared_off, "041-R19: the other parameters update as without the head");
+    assert_ne!(head1, head0, "the head trains");
+}
+
+/// 032-R18 ②: a model config written before `value.win_open` existed loads with the head off.
+#[test]
+fn config_without_win_open_loads_032_r18() {
+    let mut v = serde_json::to_value(tiny_cfg()).unwrap();
+    v["value"].as_object_mut().unwrap().remove("win_open").expect("serialised");
+    let cfg: UraniumNetConfig = serde_json::from_value(v).unwrap();
+    assert!(!cfg.value.win_open);
+    assert_eq!(cfg, tiny_cfg());
 }

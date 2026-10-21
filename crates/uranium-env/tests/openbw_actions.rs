@@ -206,7 +206,7 @@ impl Coverage {
         let o = extract(f, &mut self.mem, &self.map, None);
         let w = World::new(f, &self.mem, &self.map);
         let cmds = self.st.decide(f, &o, &w);
-        Act { cmds, advance_frames: STEP, valid_until_frame: None }
+        Act { cmds, advance_frames: STEP, valid_until_frame: None, surrender: None }
     }
 }
 
@@ -973,7 +973,7 @@ fn session(stream: TcpStream, hostd: String, game_id: u64, stop_when_done: bool)
             BridgeMsg::Frame(f) => {
                 let act = match &mut cov {
                     Some(c) => c.on_frame(&f),
-                    None => Act { cmds: vec![], advance_frames: 96, valid_until_frame: None },
+                    None => Act { cmds: vec![], advance_frames: 96, valid_until_frame: None, surrender: None },
                 };
                 if write_msg(&mut w, &AgentMsg::Act(act)).is_err() {
                     break;

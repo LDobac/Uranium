@@ -754,7 +754,7 @@ fn every_action_type_command_round_trips_010_ac4() {
             assert_eq!(out.commands.len(), 1, "{}: one command (031-R3)", a.name);
             let cmd = &out.commands[0];
             assert_eq!(command_name(cmd), a.command, "{}", a.name);
-            let msg = AgentMsg::Act(Act { cmds: out.commands.clone(), advance_frames: 1, valid_until_frame: None });
+            let msg = AgentMsg::Act(Act { cmds: out.commands.clone(), advance_frames: 1, valid_until_frame: None, surrender: None });
             let mut buf = Vec::new();
             write_msg(&mut buf, &msg).unwrap();
             let back: AgentMsg = read_msg(&mut buf.as_slice()).unwrap();

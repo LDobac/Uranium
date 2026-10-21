@@ -373,7 +373,7 @@ fn session(rep: &Replay, perspective: u8, stream: TcpStream, extra_stops: &[u32]
                     }
                 }
                 let next = stops.iter().copied().find(|&s| s > f.frame).unwrap_or(f.frame + 1);
-                let act = Act { cmds: vec![], advance_frames: next - f.frame, valid_until_frame: None };
+                let act = Act { cmds: vec![], advance_frames: next - f.frame, valid_until_frame: None, surrender: None };
                 write_msg(&mut w, &AgentMsg::Act(act))?;
             }
             BridgeMsg::End(GameEnd { winner, frame, .. }) => {

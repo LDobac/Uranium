@@ -412,6 +412,16 @@ class UraniumModule : public AIModule {
       left_ = true;
       return;
     }
+    // 011-R21: after the surrender chat, leave without asking for more decisions.
+    if (surrender_at_ >= 0) {
+      if (frame >= surrender_at_) {
+        self_left_ = true;
+        done_ = true;
+        Broodwar->leaveGame();
+        left_ = true;
+      }
+      return;
+    }
     if (!replay_ && g_enemy) {
       enemy_buildings_.clear();
       for (Unit u : g_enemy->getUnits())
@@ -441,6 +451,11 @@ class UraniumModule : public AIModule {
     } else if (isWinner) winner = g_me->getID();
     // Both eliminated on the same frame: draw (M3 finding).
     else if (g_enemy && !g_enemy->isDefeated()) winner = g_enemy->getID();
+    // 011-R21: we surrendered: the enemy wins, reason surrender (the stayer reports the same).
+    if (self_left_) {
+      reason = 1;
+      winner = g_enemy ? g_enemy->getID() : UR_NONE;
+    }
     // 010-R12 / 011-R19: the final own-vision frame carries what happened after the last step.
     int frame = Broodwar->getFrameCount();
     if (fail_ || replay_) {
@@ -544,6 +559,12 @@ class UraniumModule : public AIModule {
       fail_ = true;
       return;
     }
+    // 010-R13 / 011-R21: surrender = chat now, leave UR_SURRENDER_LEAVE_FRAMES later.
+    if (act.surrender) {
+      if (act.surrender_chat && act.surrender_chat[0]) Broodwar->sendText("%s", act.surrender_chat);
+      surrender_at_ = frame + UR_SURRENDER_LEAVE_FRAMES;
+      return;
+    }
     for (uint32_t i = 0; i < act.n_cmds; ++i) {
       if (!exec(act.cmds[i], act.unit_pool))
         events_.push_back(UrEvent{UR_EV_CMD_FAILED, (int32_t)i, Broodwar->getLastError().getID(), UR_NONE});
@@ -576,6 +597,9 @@ class UraniumModule : public AIModule {
 
   bool fail_ = false, done_ = false, left_ = false, time_limit_ = false, privileged_ = false, replay_ = false;
   bool enemy_left_ = false;
+  // 011-R21: frame to leave at after a surrender (-1 = none), and whether we left that way.
+  int surrender_at_ = -1;
+  bool self_left_ = false;
   std::vector<Unit> enemy_buildings_;
   uint32_t max_frames_ = 86400;
   size_t tiles_ = 0;

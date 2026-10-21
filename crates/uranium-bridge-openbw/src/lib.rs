@@ -6,7 +6,7 @@
 mod convert;
 mod ffi;
 
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::io::{BufReader, BufWriter};
 use std::net::TcpStream;
 use std::sync::Mutex;
@@ -32,6 +32,8 @@ struct Bridge {
     observations: u32,
     /// 011-R10: replay playback, commands are rejected (011-R11).
     replay: bool,
+    /// 010-R13: the surrender chat line handed to the shim (lives until the next step).
+    chat: CString,
 }
 
 static BRIDGE: Mutex<Option<Bridge>> = Mutex::new(None);
@@ -174,6 +176,7 @@ fn start(info: &UrStatic) -> Result<Bridge, String> {
         serialize_us: Vec::new(),
         observations: 0,
         replay: info.replay != 0,
+        chat: CString::default(),
     })
 }
 
@@ -250,16 +253,42 @@ fn step(b: &mut Bridge, f: &UrFrame, out: &mut UrAct) -> Result<(), String> {
     if b.replay && !act.cmds.is_empty() {
         return Err(format!("011-R11: {} commands sent in replay mode", act.cmds.len()));
     }
+    if let Some(text) = &act.surrender {
+        surrender_check(b.replay, &act.cmds, text)?;
+        b.chat = CString::new(text.as_str()).map_err(|_| "010-R13: surrender chat contains NUL".to_string())?;
+        log(&format!("011-R21: surrender at frame {} (chat {:?})", f.frame, text));
+    }
     convert::commands(&act.cmds, &mut b.cmds, &mut b.pool);
     out.cmds = b.cmds.as_ptr();
     out.n_cmds = b.cmds.len() as u32;
     out.unit_pool = b.pool.as_ptr();
     out.advance_frames = act.advance_frames.max(1);
+    out.surrender = act.surrender.is_some() as u8;
+    out.surrender_chat = if act.surrender.is_some() { b.chat.as_ptr() } else { std::ptr::null() };
+    if act.surrender.is_some() {
+        // 011-R21: the shim leaves this many frames later and asks for no more decisions.
+        out.advance_frames = SURRENDER_LEAVE_FRAMES;
+    }
     b.next_frame = f.frame + out.advance_frames;
     b.observations += 1;
     b.serialize_us.push((t1 - t0).as_secs_f64() * 1e6);
     b.agent_wait += t2 - t1;
     b.in_bridge += t2 - t0;
+    Ok(())
+}
+
+/// 010-R13: a surrender `Act` carries no commands, a chat line of at most
+/// [`MAX_SURRENDER_CHAT`] bytes, and is not allowed in replay playback (011-R11).
+fn surrender_check(replay: bool, cmds: &[Command], text: &str) -> Result<(), String> {
+    if replay {
+        return Err("010-R13: surrender in replay mode".into());
+    }
+    if !cmds.is_empty() {
+        return Err(format!("010-R13: surrender with {} commands", cmds.len()));
+    }
+    if text.len() > MAX_SURRENDER_CHAT {
+        return Err(format!("010-R13: surrender chat is {} bytes (max {MAX_SURRENDER_CHAT})", text.len()));
+    }
     Ok(())
 }
 
@@ -316,5 +345,22 @@ pub unsafe extern "C" fn uranium_bridge_end(winner: i32, reason: u8, frame: u32,
     };
     if let Err(e) = write_msg(&mut b.writer, &BridgeMsg::End(end)) {
         log(&format!("sending GameEnd failed: {e}"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 010-AC8: what the bridge accepts as a surrender Act.
+    #[test]
+    fn surrender_act_checks_010_ac8() {
+        assert!(surrender_check(false, &[], "gg").is_ok());
+        assert!(surrender_check(false, &[], "").is_ok(), "empty = leave without chat");
+        assert!(surrender_check(false, &[], &"가".repeat(26)).is_ok(), "78 bytes");
+        assert!(surrender_check(false, &[], &"가".repeat(27)).is_err(), "81 bytes");
+        assert!(surrender_check(true, &[], "gg").is_err(), "replay mode");
+        let stop = Command::Unit { units: vec![1], order: CmdOrder::Stop, queued: false };
+        assert!(surrender_check(false, &[stop], "gg").is_err(), "commands with a surrender");
     }
 }

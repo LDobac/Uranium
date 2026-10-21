@@ -411,7 +411,7 @@ fn train_header() -> String {
     for n in HEAD_NAMES {
         h += &format!(",entropy_{n}");
     }
-    h += ",dropped_lag,dropped_full,revoked,used_aborted,winner_disagree,aborted_games,steps_per_s,stage\n";
+    h += ",dropped_lag,dropped_full,revoked,used_aborted,winner_disagree,aborted_games,steps_per_s,stage,win_open\n";
     h
 }
 
@@ -764,7 +764,7 @@ fn write_row(csv: &mut std::fs::File, started: Instant, agent: AgentKind, s: &Up
     }
     let stage = shared.league.lock().unwrap().stage;
     row += &format!(
-        ",{},{},{},{},{},{},{:.2},{:?}\n",
+        ",{},{},{},{},{},{},{:.2},{:?},{}\n",
         q.dropped_lag,
         q.dropped_full,
         q.revoked,
@@ -772,7 +772,8 @@ fn write_row(csv: &mut std::fs::File, started: Instant, agent: AgentKind, s: &Up
         shared.disagree.load(Ordering::SeqCst),
         shared.aborted.load(Ordering::SeqCst),
         steps_per_s,
-        stage
+        stage,
+        s.win_open
     );
     csv.write_all(row.as_bytes())?;
     Ok(())
@@ -814,7 +815,7 @@ mod tests {
 
     #[test]
     fn train_csv_header_columns() {
-        assert_eq!(train_header().trim().split(',').count(), 15 + 12 + 8);
+        assert_eq!(train_header().trim().split(',').count(), 15 + 12 + 9);
     }
 
     /// 042-R11: one regular sample per `every` game ids, every disagreement, nothing else.

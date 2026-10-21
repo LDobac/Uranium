@@ -37,6 +37,11 @@ pub struct HeadWeights {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ValueWeights {
     pub win: f32,
+    /// 041-R19: win_open head MSE weight. Present = a new run builds the head (032-R18). Absent
+    /// (configs before 2026-10-21, the core ablation) is left out of the fingerprint JSON, so
+    /// their B-3 fingerprints do not change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub win_open: Option<f32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -573,6 +578,8 @@ pub struct LossParts {
     pub target_unit: f32,
     pub target_loc: f32,
     pub value: f32,
+    /// 041-R19 win_open MSE (0 without the head or its weight).
+    pub win_open: f32,
     /// Steps with a usable label in this batch.
     pub valid: f32,
 }
@@ -588,6 +595,7 @@ impl LossParts {
         self.target_unit += o.target_unit;
         self.target_loc += o.target_loc;
         self.value += o.value;
+        self.win_open += o.win_open;
     }
 }
 
@@ -627,6 +635,13 @@ impl<C: CoreInit> Trainer<C> {
     pub fn new(net: UraniumNet<C>, net_cfg: UraniumNetConfig, cfg: BcConfig, device: Device) -> Self {
         // 041-R3 (G-D4): no Burn clipping (it is per tensor); `train_batch` clips the global norm.
         let optim = AdamWConfig::new().with_weight_decay(cfg.weight_decay).init();
+        // 041-R19: the head comes from the model config (a new run: `[value] win_open` present;
+        // a resume: the checkpoint), the loss weight from this config.
+        match (net_cfg.value.win_open, cfg.value.win_open) {
+            (false, Some(_)) => crate::elog!("[bc] WARNING: [value] win_open is set but the model has no win_open head (checkpoint from before 032-R18): no win_open loss"),
+            (true, None) => crate::elog!("[bc] WARNING: the model has a win_open head but [value] win_open is not set: the head is not trained (041-R19)"),
+            _ => {}
+        }
         let feeder = Feeder::new(&cfg);
         let data = feeder.state(None);
         Self { net, cfg, net_cfg, optim, device, feeder, states: Vec::new(), step: 0, lr_scale: 1.0, data, entity_chunk: 0 }
@@ -704,7 +719,8 @@ impl<C: CoreInit> Trainer<C> {
             prof.mark("accumulate");
         }
         // 041-R3 (G-D4): one global L2-norm clip over the summed gradients of all lane groups.
-        let (grads, _norm) = crate::clip::clip_global_norm(&self.net, acc.grads(), self.cfg.grad_clip);
+        // 041-R19: the win_open head is clipped on its own, the rest updates as without it.
+        let (grads, _norm) = crate::clip::clip_global_norm_except(&self.net, acc.grads(), self.cfg.grad_clip, &self.net.win_open_params());
         prof.mark("clip");
         let lr = self.cfg.lr_at(self.step, self.lr_scale);
         self.net = self.optim.step(lr, self.net.clone(), grads);
@@ -809,11 +825,21 @@ impl<C: CoreInit> Trainer<C> {
         let target = Tensor::<1>::from_data(TensorData::new(results, [b * t]), d);
         let vw = Tensor::<1>::from_data(TensorData::new(value_w, [b * t]), d);
         let win = out.value.narrow(1, VALUE_WIN, 1).reshape([b * t]);
-        let value_loss = ((win - target).powi_scalar(2) * vw).sum() / value_valid as f64;
+        let value_loss = ((win - target.clone()).powi_scalar(2) * vw.clone()).sum() / value_valid as f64;
         let mut loss = value_loss.clone() * self.cfg.value.win as f64;
         for (l, k) in &parts {
             loss = loss + l.clone() * *k as f64;
         }
+        // 041-R19: win_open regresses the same target with the same weights (detached input,
+        // 032-R18), added last so the other terms sum as before.
+        let open_loss = match (out.win_open, self.cfg.value.win_open) {
+            (Some(open), Some(k)) => {
+                let l = ((open - target).powi_scalar(2) * vw).sum() / value_valid as f64;
+                loss = loss + l.clone() * k as f64;
+                Some(l)
+            }
+            _ => None,
+        };
         prof.mark("loss");
         let scalar = |x: &Tensor<1>| x.clone().into_data().convert::<f32>().try_to_vec::<f32>().unwrap()[0];
         let report = LossParts {
@@ -825,6 +851,7 @@ impl<C: CoreInit> Trainer<C> {
             target_unit: scalar(&parts[4].0),
             target_loc: scalar(&parts[5].0),
             value: scalar(&value_loss),
+            win_open: open_loss.as_ref().map_or(0.0, scalar),
             valid: 0.0,
         };
         prof.mark("loss_read");

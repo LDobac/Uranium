@@ -654,7 +654,7 @@ impl Bot for Brain {
             }
         }
 
-        Act { cmds, advance_frames: STEP_FRAMES, valid_until_frame: None }
+        Act { cmds, advance_frames: STEP_FRAMES, valid_until_frame: None, surrender: None }
     }
 }
 

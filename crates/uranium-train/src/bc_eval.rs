@@ -6,7 +6,9 @@
 //! selection step against the label set), and the per-head NLL averaged over the steps that use
 //! the head (E-9). Games are read without z (041-AC2 condition) or symmetry. With `--games N`
 //! the N games are chosen by a fixed-seed shuffle over the whole split (032-R17 ②, G-D8), so the
-//! two cores of the core ablation are scored on the same games.
+//! two cores of the core ablation are scored on the same games. With a win_open head (032-R18)
+//! it also reports the head's MSE and replays the 031-R12 surrender check over every game
+//! (041-AC4: how often it would have held, and how many of those games were won).
 //!
 //! `epoch_table`: updates of one epoch per stage (041-R13, 2026-10-18), from the step counts of
 //! every game in the order the trainer reads them.
@@ -17,6 +19,7 @@ use anyhow::Result;
 use burn::tensor::{Bool, Device, Int, Tensor, TensorData};
 use serde::Serialize;
 use uranium_env::features::DELAY_BUCKETS;
+use uranium_env::surrender::SurrenderJudge;
 use uranium_model::CoreInit;
 use uranium_model::collate::{HostLabel, action_batch, obs_batch_padded, priv_batch};
 
@@ -72,14 +75,33 @@ pub fn eval_games(src: &ShardSource, scan: &[Vec<GameSummary>], n: usize, seed: 
 }
 
 /// Output fields and their units (E-9), printed with every report.
-pub const UNITS: [(&str, &str); 6] = [
+pub const UNITS: [(&str, &str); 8] = [
     ("action_top1 / action_top5", "share of scored steps"),
     ("delay_mae_frames", "mean |predicted - label| delay in game frames (bucket values, 031-R11)"),
     ("delay_mae_buckets", "the same in delay bucket indices"),
     ("target_loc_err_*", "Euclidean distance in target_loc cells (map tiles)"),
     ("nll.<head>", "mean -log p of the label over the scored steps that use the head (nll_steps.<head>)"),
     ("steps", "steps with a usable label (041-R11 weight 1); padding and void labels are not scored"),
+    ("win_open_mse", "mean (win_open - result)^2 over the steps of decided games (032-R18, result +1 / -1)"),
+    ("surrender.*", "031-R12 check replayed per game (041-AC4): games, games where it held, the share of those won, first frame it held"),
 ];
+
+/// 041-AC4: the 031-R12 surrender check replayed over the evaluated games (Shadow mode).
+#[derive(Serialize, Debug, Default, Clone)]
+pub struct SurrenderEval {
+    pub games: u64,
+    /// Games where the check held at some decision.
+    pub held: u64,
+    /// Of those, games with a decided result, and the ones the player won (false surrenders).
+    pub held_decided: u64,
+    pub held_won: u64,
+    /// held_won / held_decided.
+    pub false_surrender_rate: f64,
+    /// First frame it held: min / median / max over the games where it held.
+    pub held_frame_min: Option<u32>,
+    pub held_frame_median: Option<u32>,
+    pub held_frame_max: Option<u32>,
+}
 
 #[derive(Serialize, Debug, Default)]
 pub struct EvalReport {
@@ -112,6 +134,10 @@ pub struct EvalReport {
     pub nll_steps: std::collections::BTreeMap<String, u64>,
     /// 041-AC1: target-map test action_type top-1 >= 50%.
     pub ac1_pass: Option<bool>,
+    /// 032-R18: win_open MSE over the steps of decided games; `None` without the head.
+    pub win_open_mse: Option<f64>,
+    /// 041-AC4; `None` without the head.
+    pub surrender: Option<SurrenderEval>,
     /// Field -> unit (E-9).
     pub units: std::collections::BTreeMap<String, String>,
 }
@@ -132,6 +158,26 @@ struct Acc {
     sel_fn: u64,
     nll: [f64; 6],
     nll_n: [u64; 6],
+    open_se: f64,
+    open_n: u64,
+    sur: SurrenderEval,
+    held_frames: Vec<u32>,
+}
+
+impl Acc {
+    /// 041-AC4: a lane's game is over (or the evaluation ended).
+    fn finish_game(&mut self, judge: Option<(SurrenderJudge, f32)>) {
+        let Some((j, result)) = judge else { return };
+        self.sur.games += 1;
+        if let Some(f) = j.first() {
+            self.sur.held += 1;
+            self.held_frames.push(f);
+            if result != 0.0 {
+                self.sur.held_decided += 1;
+                self.sur.held_won += (result > 0.0) as u64;
+            }
+        }
+    }
 }
 
 /// How `evaluate` picks games.
@@ -182,8 +228,21 @@ pub fn evaluate<C: CoreInit>(dirs: &[PathBuf], ckpt: &Path, sel: EvalSelection, 
     };
     let mut states: Vec<Option<C::State>> = (0..cfg.lanes.div_ceil(g)).map(|_| None).collect();
     let mut acc = Acc::default();
+    let has_open = net.has_win_open();
+    // 041-AC4: per lane, the surrender check of its current game and the game's result.
+    let mut judges: Vec<Option<(SurrenderJudge, f32)>> = vec![None; cfg.lanes];
     while let Some(batch) = feeder.next_batch(source, None)? {
-        let (chunks, fresh, _) = batch.parts();
+        let (chunks, fresh, results) = batch.parts();
+        if has_open {
+            for l in 0..chunks.len() {
+                if fresh[l] || chunks[l].is_empty() {
+                    acc.finish_game(judges[l].take());
+                }
+                if !chunks[l].is_empty() && judges[l].is_none() {
+                    judges[l] = Some((SurrenderJudge::new(), results[l]));
+                }
+            }
+        }
         // Drained lanes (no game left) are filled with another lane's step at weight 0.
         let Some(filler) = chunks.iter().find_map(|c| c.first()) else { break };
         for (gi, lanes) in (0..chunks.len()).collect::<Vec<_>>().chunks(g).enumerate() {
@@ -216,9 +275,40 @@ pub fn evaluate<C: CoreInit>(dirs: &[PathBuf], ckpt: &Path, sel: EvalSelection, 
             let out = net.forward_seq(&ob, &ab, Some(&pb), s0, t);
             states[gi] = Some(out.state);
             score(&mut acc, &out.heads, &labels, &weights);
+            // 032-R18 MSE and the 041-AC4 replay, every real step in game order (a decision).
+            if let Some(open) = out.win_open {
+                let v = host_f32(open);
+                for (i, &l) in lanes.iter().enumerate() {
+                    for (k, s) in chunks[l].iter().enumerate() {
+                        let x = v[i * t + k];
+                        if results[l] != 0.0 {
+                            acc.open_se += ((x - results[l]) as f64).powi(2);
+                            acc.open_n += 1;
+                        }
+                        if let Some((j, _)) = judges[l].as_mut() {
+                            j.decide(s.frame, Some(x), || s.surrender_rule);
+                        }
+                    }
+                }
+            }
         }
     }
-    Ok(report(&acc, ckpt, split, feeder.state(None).games, sel.games.map(|_| sel.seed)))
+    for j in judges.iter_mut() {
+        acc.finish_game(j.take());
+    }
+    let mut rep = report(&acc, ckpt, split, feeder.state(None).games, sel.games.map(|_| sel.seed));
+    if has_open {
+        rep.win_open_mse = Some(acc.open_se / acc.open_n.max(1) as f64);
+        let mut s = acc.sur.clone();
+        let mut f = acc.held_frames.clone();
+        f.sort_unstable();
+        s.false_surrender_rate = s.held_won as f64 / s.held_decided.max(1) as f64;
+        s.held_frame_min = f.first().copied();
+        s.held_frame_median = f.get(f.len() / 2).copied();
+        s.held_frame_max = f.last().copied();
+        rep.surrender = Some(s);
+    }
+    Ok(rep)
 }
 
 const HEADS: [&str; 6] = ["action", "delay", "queued", "selected", "target_unit", "target_loc"];
@@ -249,6 +339,8 @@ fn report(acc: &Acc, ckpt: &Path, split: Split, games: usize, selection_seed: Op
         nll: HEADS.iter().enumerate().map(|(h, k)| (k.to_string(), acc.nll[h] / acc.nll_n[h].max(1) as f64)).collect(),
         nll_steps: HEADS.iter().enumerate().map(|(h, k)| (k.to_string(), acc.nll_n[h])).collect(),
         ac1_pass: (split == Split::Test).then_some(top1 >= 0.5),
+        win_open_mse: None,
+        surrender: None,
         units: UNITS.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
     }
 }

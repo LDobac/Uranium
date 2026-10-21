@@ -49,6 +49,10 @@ ablation_a_warmup = 566
 [value]
 # win head MSE weight (041-R7)
 win = 0.5
+# 041-R19 (2026-10-21): win_open head MSE weight. Present = a new run builds the head (032-R18,
+# win estimate without privileged input for the 031-R12 surrender rule). Clipped apart from the
+# other parameters, so they update as without it. Not in bc_core_ablation.toml.
+win_open = 0.5
 
 [data]
 # Fraction of games trained with z_present = false (041-R8 / 033-R2).

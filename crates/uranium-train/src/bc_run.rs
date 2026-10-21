@@ -238,7 +238,8 @@ pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
         (None, Some(_)) => load(init_dir.as_ref().expect("resolved above"))?,
         (None, None) => {
             let base = UraniumNetConfig::new();
-            let net_cfg = base.clone().with_input(input_dims()).with_core(base.core.clone().with_kind(args.core));
+            // 032-R18 / 041-R19: a new run builds the win_open head when the config weights it.
+            let net_cfg = base.clone().with_input(input_dims()).with_core(base.core.clone().with_kind(args.core)).with_value(base.value.clone().with_win_open(cfg.value.win_open.is_some()));
             (UraniumNet::<C>::new(&net_cfg, &cols, &ad), net_cfg)
         }
     };

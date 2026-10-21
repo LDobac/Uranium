@@ -52,6 +52,8 @@ pub struct UpdateStats {
     pub adv_mean: f32,
     /// Learner version minus the segments' oldest behaviour version, mean over the batch.
     pub lag_mean: f32,
+    /// 042-R13 win_open loss (0 without the head).
+    pub win_open: f32,
 }
 
 pub struct Learner<C: CoreInit> {
@@ -228,6 +230,7 @@ impl<C: CoreInit + 'static> Learner<C> {
                 if epoch == 0 {
                     stats.policy += part.policy;
                     stats.value += part.value;
+                    stats.win_open += part.win_open;
                     stats.kl += part.kl;
                     stats.rho_mean += part.rho_mean;
                     stats.adv_mean += part.adv_mean;
@@ -239,11 +242,12 @@ impl<C: CoreInit + 'static> Learner<C> {
                 let grads = GradientsParams::from_grads(loss.backward(), &self.net);
                 acc.accumulate(&self.net, grads);
             }
-            // 042 optimizer table / 041-R3 (G-D4): global L2-norm clip after the lane-group sum.
-            let (grads, _norm) = crate::clip::clip_global_norm(&self.net, acc.grads(), self.cfg.optimizer.grad_clip);
+            // 042 optimizer table / 041-R3 (G-D4): global L2-norm clip after the lane-group sum;
+            // 042-R13: the win_open head apart (041-R19).
+            let (grads, _norm) = crate::clip::clip_global_norm_except(&self.net, acc.grads(), self.cfg.optimizer.grad_clip, &self.net.win_open_params());
             self.net = self.optim.step(self.cfg.optimizer.lr, self.net.clone(), grads);
         }
-        stats.loss = stats.policy + stats.value + stats.kl * kl_coef - self.entropy_bonus(&stats.entropy_heads);
+        stats.loss = stats.policy + stats.value + stats.win_open + stats.kl * kl_coef - self.entropy_bonus(&stats.entropy_heads);
         stats.rho_mean /= n;
         stats.adv_mean /= n;
         self.update += 1;
@@ -325,6 +329,8 @@ impl<C: CoreInit + 'static> Learner<C> {
         };
         let policy = (policy * maskt.clone()).sum() / n as f64;
         let vs = Tensor::<2>::from_data(TensorData::new(tg.vs.clone(), [rows, 4]), d);
+        // 042-R13: win_open regresses the win v-trace target (column 0); not in the advantage.
+        let win_open = out.win_open.clone().map(|o| ((o - vs.clone().narrow(1, 0, 1).reshape([rows])).powi_scalar(2) * maskt.clone()).sum() * (0.5 * self.cfg.loss.win_open as f64 / n as f64));
         let value = ((out.value.clone() - vs).powi_scalar(2).sum_dim(1).reshape([rows]) * maskt.clone()).sum() * (0.5 * self.cfg.loss.value as f64 / n as f64);
 
         let e = &self.cfg.entropy;
@@ -351,10 +357,14 @@ impl<C: CoreInit + 'static> Learner<C> {
             kl_total = kl_total + term;
         }
 
-        let loss = policy.clone() + value.clone() - entropy + kl_total.clone() * kl_coef as f64;
+        let mut loss = policy.clone() + value.clone() - entropy + kl_total.clone() * kl_coef as f64;
+        if let Some(w) = &win_open {
+            loss = loss + w.clone();
+        }
         let part = UpdateStats {
             policy: host_f32(policy.detach())[0],
             value: host_f32(value.detach())[0],
+            win_open: win_open.map_or(0.0, |w| host_f32(w.detach())[0]),
             kl: host_f32(kl_total.detach())[0],
             kl_heads: kl_stats,
             entropy_heads: ent_stats,

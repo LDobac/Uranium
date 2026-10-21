@@ -76,6 +76,30 @@ struct ModelArgs {
     /// has a failed command, see `InferOptions::zero_last_failed`). Off for RL.
     #[arg(long)]
     zero_last_failed: bool,
+    /// 031-R12 / 020-R14: surrender mode (`off`, `shadow`: check and record only, `on`: chat and
+    /// leave). SC:R games use `on` (012-R11).
+    #[arg(long, value_enum, default_value = "shadow")]
+    surrender: SurrenderArg,
+    /// 020-R14: chat line sent before leaving (empty = no chat, at most 80 bytes).
+    #[arg(long, default_value = uranium_agent::infer::DEFAULT_CHAT)]
+    surrender_chat: String,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum SurrenderArg {
+    Off,
+    Shadow,
+    On,
+}
+
+impl From<SurrenderArg> for uranium_agent::infer::SurrenderMode {
+    fn from(a: SurrenderArg) -> Self {
+        match a {
+            SurrenderArg::Off => Self::Off,
+            SurrenderArg::Shadow => Self::Shadow,
+            SurrenderArg::On => Self::On,
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -90,7 +114,10 @@ fn main() -> Result<()> {
                     opts.max_batch = model.max_batch.max(1);
                     opts.max_wait = Duration::from_millis(model.max_wait_ms);
                     opts.zero_last_failed = model.zero_last_failed;
-                    PolicySpec::Model(InferenceHandle::start(&dir, model.sample, opts)?)
+                    if model.surrender_chat.len() > uranium_proto::MAX_SURRENDER_CHAT {
+                        anyhow::bail!("--surrender-chat is {} bytes, at most {} (020-R14)", model.surrender_chat.len(), uranium_proto::MAX_SURRENDER_CHAT);
+                    }
+                    PolicySpec::Model(InferenceHandle::start(&dir, model.sample, opts)?.with_surrender(model.surrender.into(), &model.surrender_chat))
                 }
             };
             let opts = ServeOptions { delay_ms: respond_delay_ms, max_sessions: sessions, ..ServeOptions::new(default) };

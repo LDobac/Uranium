@@ -26,6 +26,14 @@ pub struct LossConfig {
     pub pg: f32,
     pub upgo: f32,
     pub value: f32,
+    /// 042-R13: win_open MSE weight (same 0.5 x weight x squared error form as `value`), used
+    /// only when the model has the head (032-R18). Absent = 0.5.
+    #[serde(default = "default_win_open")]
+    pub win_open: f32,
+}
+
+fn default_win_open() -> f32 {
+    0.5
 }
 
 /// Per-head entropy coefficients, summed over used heads only (032-R10).

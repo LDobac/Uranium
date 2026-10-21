@@ -167,8 +167,11 @@ fn arb_agent_msg() -> impl Strategy<Value = AgentMsg> {
         (prop::collection::vec(arb_command(), 0..20), 1u32..64, any::<Option<u32>>()).prop_map(|(cmds, advance_frames, valid_until_frame)| AgentMsg::Act(Act {
             cmds,
             advance_frames,
-            valid_until_frame
+            valid_until_frame,
+            surrender: None
         })),
+        // 010-AC8: a surrender Act (no commands) with a chat line, possibly empty.
+        (1u32..64, prop::option::of("\\PC{0,20}")).prop_map(|(advance_frames, surrender)| AgentMsg::Act(Act { cmds: vec![], advance_frames, valid_until_frame: None, surrender })),
         "\\PC{0,32}".prop_map(AgentMsg::Reject),
     ]
 }

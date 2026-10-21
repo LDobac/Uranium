@@ -108,6 +108,8 @@ fn step_plan(n: u32, frames: u32) -> Plan {
         privileged: false,
         save_replay: false,
         zero_last_failed: false,
+        surrender: uranium_agent::infer::SurrenderMode::Off,
+        surrender_chat: uranium_agent::infer::DEFAULT_CHAT.into(),
         matchups,
     }
 }
