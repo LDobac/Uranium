@@ -1,22 +1,23 @@
 diff --git a/bwapi/BWAPI/Source/BWAPI/GameImpl.cpp b/bwapi/BWAPI/Source/BWAPI/GameImpl.cpp
 --- a/bwapi/BWAPI/Source/BWAPI/GameImpl.cpp
 +++ b/bwapi/BWAPI/Source/BWAPI/GameImpl.cpp
-@@ -479,6 +479,18 @@
+@@ -475,6 +475,19 @@
+       {
+         Broodwar << this->BWAPIPlayer->getTextColor() << this->BWAPIPlayer->getName()
+                   << ": " << Text::Green << buffer << std::endl;
++        // Uranium 0014 (011-R21): OpenBW reports NetMode 0, so LAN games land here as well and
++        // the text never left the client. Send it as the game's chat action (0x5C: sender slot +
++        // 80 bytes) too, so the other client and the saved replay both get it. BWAPI's own
++        // start-up notices (frame 0: "now live", enabled flags) stay local.
++        if ( this->getFrameCount() > 0 )
++        {
++          u8 msg[82] = {};
++          msg[0] = 0x5C;
++          msg[1] = (u8)this->BWAPIPlayer->getIndex();
++          for ( int i = 0; i < 79 && buffer[i]; ++i )
++            msg[2 + i] = (u8)buffer[i];
++          bwgame.QueueCommand(msg, sizeof msg);
++        }
+       }
      } // single
      else  // multiplayer or lobby
-     {
-+      // Uranium 0014 (011-R21): OpenBW has no Storm chat; send the text as the game's chat action
-+      // (0x5C: sender slot + 80 bytes), so the other client and the saved replay both get it.
-+      if ( this->isInGame() )
-+      {
-+        u8 msg[82] = {};
-+        msg[0] = 0x5C;
-+        msg[1] = (u8)this->BWAPIPlayer->getIndex();
-+        for ( int i = 0; i < 79 && buffer[i]; ++i )
-+          msg[2 + i] = (u8)buffer[i];
-+        bwgame.QueueCommand(msg, sizeof msg);
-+        return;
-+      }
-       // fixme
- //      // Otherwise, send the message using Storm command
- //      char szMessage[82];
