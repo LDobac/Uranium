@@ -80,7 +80,7 @@ struct ModelArgs {
     /// leave). SC:R games use `on` (012-R11).
     #[arg(long, value_enum, default_value = "shadow")]
     surrender: SurrenderArg,
-    /// 020-R14: chat line sent before leaving (empty = no chat, at most 80 bytes).
+    /// 020-R14: chat line sent before leaving (empty = no chat, at most 79 bytes).
     #[arg(long, default_value = uranium_agent::infer::DEFAULT_CHAT)]
     surrender_chat: String,
 }

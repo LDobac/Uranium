@@ -133,7 +133,7 @@ typedef struct {
   const int32_t* unit_pool;
   uint32_t advance_frames;
   /* 010-R13 / 011-R21: non-zero = surrender (n_cmds is 0). Send surrender_chat (NUL-terminated
-     UTF-8, at most 80 bytes, empty = no chat; valid until the next call) as chat, then leave the
+     UTF-8, at most 79 bytes, empty = no chat; valid until the next call) as chat, then leave the
      game UR_SURRENDER_LEAVE_FRAMES later without calling uranium_bridge_step again. */
   uint8_t surrender;
   const char* surrender_chat;

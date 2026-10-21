@@ -31,7 +31,7 @@
 | 020-R9 | **MUST** hostd 설정은 `.env`에서 읽는다(001-R9): `URANIUM_HOSTD_LISTEN`, `URANIUM_BWAPI_DIR`, `URANIUM_BRIDGE_LIB`, `URANIUM_DATA_DIR`, `URANIUM_MAPS_DIR`, `URANIUM_HOSTD_MAX_GAMES`, `URANIUM_HOSTD_PORT_BASE`(Windows), `URANIUM_CACHE_DIR`(측정 파일, 020-R10) |
 | 020-R10 | **MUST** 호스트별 동시 게임 수는 측정으로 정한다. 게임 호스트에서 `uranium-env calibrate`를 한 번 실행하면 동시 게임 수 N을 1부터 늘려 가며 T0 대전(단계마다 2N판)을 돌린다. 세션별 브리지 p99(011-AC2 지표)의 중앙값이 300µs 이하인 가장 큰 N을 권장값으로 `<URANIUM_CACHE_DIR>/hostd_calibration.toml`에 저장한다. hostd의 동시 게임 수는 다음 순서로 정한다: `.env` `URANIUM_HOSTD_MAX_GAMES` → 측정 파일 → 측정 전 기본값 `max(1, (코어 수 − 1) / 2)`(경고 출력). 학습 프로세스와 함께 돌릴 때의 CPU 예산(020-R7)은 M5/M6에서 같은 명령을 확장해 정한다 (2026-10-16 사용자 결정) |
 | 020-R7 | **SHOULD** Linux Vulkan 학습 호스트의 로컬 hostd도 지원한다. 이 경우 CPU 코어를 추론 서버와 나눠 쓰는 예산을 정한다([060](060-infra.md)) |
-| 020-R14 | **MUST** plan 항복 옵션(2026-10-21 사용자 결정, AMB-031-6): `surrender = "off" \| "shadow" \| "on"`(031-R12 모드, OpenBW plan 기본 `"shadow"` — 학습·평가 게임은 나가지 않는다)과 `surrender_chat`(문자열, 기본 `"gg"`, 빈 문자열이면 채팅 없이 퇴장, UTF-8 80바이트 초과는 plan 로드 오류). 모델 정책 슬롯에만 적용된다. summary는 모델 정책별로 열 두 개를 더한다: 판정이 성립한 게임 수(Shadow·On 공통), 그중 그 정책이 이긴 게임 비율(Shadow에서만 의미 있음 — 오항복률). `results.jsonl`의 세션 통계에 첫 성립 프레임을 남긴다 |
+| 020-R14 | **MUST** plan 항복 옵션(2026-10-21 사용자 결정, AMB-031-6): `surrender = "off" \| "shadow" \| "on"`(031-R12 모드, OpenBW plan 기본 `"shadow"` — 학습·평가 게임은 나가지 않는다)과 `surrender_chat`(문자열, 기본 `"gg"`, 빈 문자열이면 채팅 없이 퇴장, UTF-8 79바이트 초과는 plan 로드 오류(010-R13)). 모델 정책 슬롯에만 적용된다. summary는 모델 정책별로 열 두 개를 더한다: 판정이 성립한 게임 수(Shadow·On 공통), 그중 그 정책이 이긴 게임 비율(Shadow에서만 의미 있음 — 오항복률). `results.jsonl`의 세션 통계에 첫 성립 프레임을 남긴다 |
 
 ### 020-R3 타임아웃 규칙
 | 상황 | 기준 | 처리 |

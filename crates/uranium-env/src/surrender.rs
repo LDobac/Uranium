@@ -21,7 +21,7 @@ pub const ARMY_RATIO: i32 = 3;
 /// ③(b) collapse: this many completed SCVs or fewer.
 pub const MAX_WORKERS: usize = 5;
 /// 020-R14: chat line limit (UTF-8 bytes), checked by the plan loader and the bridge (010-R13).
-pub const MAX_CHAT_BYTES: usize = 80;
+pub const MAX_CHAT_BYTES: usize = uranium_proto::MAX_SURRENDER_CHAT;
 /// 020-R14 / 012-R11 default chat line.
 pub const DEFAULT_CHAT: &str = "gg";
 

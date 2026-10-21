@@ -300,8 +300,9 @@ pub struct Act {
     pub surrender: Option<String>,
 }
 
-/// 010-R13: longest surrender chat line in UTF-8 bytes.
-pub const MAX_SURRENDER_CHAT: usize = 80;
+/// 010-R13: longest surrender chat line in UTF-8 bytes (the game's 80-byte chat buffer with its NUL,
+/// as BWAPI `sendText`).
+pub const MAX_SURRENDER_CHAT: usize = 79;
 
 /// Lockstep training mode only (010-R10). Never a policy input.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]

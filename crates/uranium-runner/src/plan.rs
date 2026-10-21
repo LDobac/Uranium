@@ -36,7 +36,7 @@ pub struct Plan {
     #[serde(default = "d_surrender")]
     pub surrender: SurrenderMode,
     /// 020-R14: chat line sent before leaving (default `gg`, empty = leave without chat, at most
-    /// 80 UTF-8 bytes).
+    /// 79 UTF-8 bytes, 010-R13).
     #[serde(default = "d_surrender_chat")]
     pub surrender_chat: String,
     #[serde(rename = "matchup")]
@@ -279,8 +279,8 @@ mod tests {
         assert_eq!((p.surrender, p.surrender_chat.as_str()), (SurrenderMode::Off, ""));
         assert!(toml::from_str::<Plan>(&format!("name='x'\nsurrender='maybe'\n{base}")).is_err());
         assert!(check_surrender_chat("").is_ok());
-        assert!(check_surrender_chat(&"a".repeat(80)).is_ok());
-        assert!(check_surrender_chat(&"a".repeat(81)).is_err());
+        assert!(check_surrender_chat(&"a".repeat(79)).is_ok());
+        assert!(check_surrender_chat(&"a".repeat(80)).is_err());
     }
 
     const PLAN: &str = r#"

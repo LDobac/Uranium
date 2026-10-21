@@ -359,6 +359,8 @@ mod tests {
         assert!(surrender_check(false, &[], "").is_ok(), "empty = leave without chat");
         assert!(surrender_check(false, &[], &"가".repeat(26)).is_ok(), "78 bytes");
         assert!(surrender_check(false, &[], &"가".repeat(27)).is_err(), "81 bytes");
+        assert!(surrender_check(false, &[], &"a".repeat(79)).is_ok());
+        assert!(surrender_check(false, &[], &"a".repeat(80)).is_err(), "80 bytes: no room for the NUL");
         assert!(surrender_check(true, &[], "gg").is_err(), "replay mode");
         let stop = Command::Unit { units: vec![1], order: CmdOrder::Stop, queued: false };
         assert!(surrender_check(false, &[stop], "gg").is_err(), "commands with a surrender");
