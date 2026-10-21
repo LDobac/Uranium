@@ -1275,15 +1275,40 @@ fn split_bits(net: &UraniumNet<LstmCore>) -> (Vec<Vec<u32>>, Vec<Vec<u32>>) {
     (s.into_iter().map(|x| x.1).collect(), h.into_iter().map(|x| x.1).collect())
 }
 
-/// 032-AC9 / 041-R19 (flex): the win_open head changes nothing else. With the same seed the
-/// shared parameters start bit-identical with and without the head, and after the same updates
-/// (head loss added, head clipped apart) they are still bit-identical; the head itself trains.
+/// Copies the float parameters of another net (as f32 data, in visit order) into every
+/// parameter not in `skip`.
+struct CopyFrom {
+    src: Vec<Vec<f32>>,
+    skip: Vec<burn::module::ParamId>,
+    next: usize,
+}
+
+impl burn::module::ModuleMapper for CopyFrom {
+    fn map_float<const D: usize>(&mut self, param: burn::module::Param<burn::tensor::Tensor<D>>) -> burn::module::Param<burn::tensor::Tensor<D>> {
+        if self.skip.contains(&param.id) {
+            return param;
+        }
+        let v = param.val();
+        let data = burn::tensor::TensorData::new(self.src[self.next].clone(), v.shape());
+        self.next += 1;
+        let t = burn::tensor::Tensor::<D>::from_data(data, &v.device()).require_grad();
+        burn::module::Param::initialized(param.id, t)
+    }
+}
+
+/// 032-AC9 / 041-R19 (flex): the win_open head changes nothing else.
+/// - Its initial weights do not come from the device RNG (032-R18 ③): two device seeds give the
+///   same head. (Comparing whole nets built from one seed is not reliable here: the tests of this
+///   binary run in parallel on the one Flex device RNG.)
+/// - With the same shared weights (copied) and the same batches, the shared parameters stay
+///   bit-identical with and without the head (head loss added, head clipped apart) and the
+///   policy / value losses match; the head itself trains.
 #[test]
 fn win_open_head_leaves_the_rest_unchanged_032_ac9() {
     let cols = ActionColumns::from_table(action_table()).unwrap();
-    let build = |open: bool| {
+    let build = |open: bool, seed: u64| {
         let ad = Device::flex().autodiff();
-        ad.seed(3);
+        ad.seed(seed);
         let cfg = tiny_cfg().with_value(ValueConfig::new().with_hidden(32).with_privileged(8).with_win_open(open));
         let net = UraniumNet::<LstmCore>::new(&cfg, &cols, &ad);
         let mut bc = tiny_bc(1, 0);
@@ -1292,17 +1317,22 @@ fn win_open_head_leaves_the_rest_unchanged_032_ac9() {
         t.feeder.set_maps(std::sync::Arc::new(MapStore::synthetic()));
         t
     };
-    // Burn parameters initialise lazily from the device RNG on first use: each net is built and
-    // read right after its seed, as a run builds one net and starts.
-    let mut off = build(false);
-    let (shared_off, none) = split_bits(&off.net);
-    let mut on = build(true);
-    let (shared_on, head0) = split_bits(&on.net);
+    let mut off = build(false, 3);
+    let mut on = build(true, 3);
     assert!(on.net.has_win_open() && !off.net.has_win_open());
     assert_eq!(on.net.win_open_params().len(), 6, "three Linear layers, weight and bias each");
     assert!(off.net.win_open_params().is_empty());
+    let (_, head0) = split_bits(&on.net);
+    let (_, head_other_seed) = split_bits(&build(true, 4).net);
+    assert_eq!(head0, head_other_seed, "032-R18 ③: the head's initial weights do not use the device RNG");
+
+    let (shared_off, none) = split_bits(&off.net);
     assert!(none.is_empty());
-    assert_eq!(shared_on, shared_off, "032-R18 ③: the head shifts no other initial weight");
+    let src = shared_off.iter().map(|b| b.iter().map(|&x| f32::from_bits(x)).collect()).collect();
+    let skip = on.net.win_open_params();
+    on.net = on.net.clone().map(&mut CopyFrom { src, skip, next: 0 });
+    let (shared_on, head) = split_bits(&on.net);
+    assert_eq!((shared_on, head), (shared_off, head0.clone()), "copied shared weights, head untouched");
 
     let games = || VecSource((0..4).map(|_| game()).collect::<VecDeque<_>>());
     let (mut src_off, mut src_on) = (games(), games());
