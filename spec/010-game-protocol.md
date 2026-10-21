@@ -1,6 +1,6 @@
 # 010 — Game Protocol
 
-- **Status**: Approved (2026-10-15. 2026-10-19 개정: R5 맵 공개 자원 예외(E-3, 사용자 결정, AMB-030-2·AMB-030-3). 같은 날 개정: R12 `GameEnd.final_frame`, `PROTOCOL_VERSION` 2(E-8, 사용자 결정 2026-10-19). 같은 날 개정: 034 `Unload_Unit` 추가로 `CmdOrder::Unload`, `PROTOCOL_VERSION` 3(R11, 사용자 결정 2026-10-19, 액션 감사 F7))
+- **Status**: Approved (2026-10-15. 2026-10-19 개정: R5 맵 공개 자원 예외(E-3, 사용자 결정, AMB-030-2·AMB-030-3). 같은 날 개정: R12 `GameEnd.final_frame`, `PROTOCOL_VERSION` 2(E-8, 사용자 결정 2026-10-19). 같은 날 개정: 034 `Unload_Unit` 추가로 `CmdOrder::Unload`, `PROTOCOL_VERSION` 3(R11, 사용자 결정 2026-10-19, 액션 감사 F7). 2026-10-21 개정: 010-R13 `Act.surrender`, `PROTOCOL_VERSION` 4(사용자 결정, AMB-031-6))
 - **Related**: [001](001-system-architecture.md), [011](011-bridge-openbw.md), [012](012-bridge-remastered.md), [013](013-version-mapping.md)
 
 ## Purpose
@@ -25,6 +25,7 @@
 | 010-R10 | **MUST** `PrivilegedSummary`는 **lockstep 학습 모드에서만** 송신한다. realtime(실전) 모드에서는 생성 코드가 동작하지 않아야 한다. 수신 측은 이 메시지를 value head 학습 입력으로만 쓴다(030-R9, 032-R11) |
 | 010-R12 | **MUST** `GameEnd`에 마지막 `RawFrame` 이후의 최종 관측 `final_frame: Option<RawFrame>`을 싣는다(E-8, 사용자 결정 2026-10-19). 내용은 게임이 끝난 프레임의 자기 시야 상태(보이는 유닛, 시야·탐색 격자, 효과)와 마지막 `RawFrame` 뒤에 생긴 이벤트이고, 010-R5(맵핵 금지)를 그대로 따른다. `PrivilegedSummary` 정보는 넣지 않는다. 브리지가 만들 수 없을 때(shim 실패)와 리플레이 모드(011-R11)에서는 `None`이다. 에이전트는 이 프레임으로 마지막 결정 뒤의 dense 보상을 계산해 마지막 결정에 더한다(033-R7, 042 trajectory). 에이전트에 결정을 요구하지 않으므로 `Act` 응답은 없다. 스키마가 바뀌므로 `PROTOCOL_VERSION`을 2로 올리고, 버전 1인 상대는 010-R2로 거부된다. SC:R 브리지도 같은 필드를 보내야 한다(012-R10) |
 | 010-R11 | **MUST** `Command`는 [034](034-action-table.md) 액션 테이블의 모든 `command` 매핑을 표현할 수 있어야 한다 |
+| 010-R13 | **MUST** `Act.surrender: Option<String>`(2026-10-21 사용자 결정, AMB-031-6). `Some(text)`이면 에이전트가 항복한다(031-R12): `cmds`는 비어 있어야 하고(아니면 브리지가 거부), 브리지는 `text`가 비어 있지 않으면 채팅으로 보낸 뒤 게임을 떠난다(011-R21, 012-R11). `text`는 UTF-8 80바이트 이하이고 넘으면 브리지가 거부한다. 떠난 쪽 `GameEnd`는 winner = 상대, reason = `Surrender`다. 떠난 쪽은 자기 승리를 보고하지 않으므로 020-R13 상호 퇴장 판정에 걸리지 않는다. 스크립트 봇과 재생 모드는 항상 `None`이다. 스키마가 바뀌므로 `PROTOCOL_VERSION`을 4로 올린다 |
 
 ## Schema (Rust 정의 개요)
 ```rust
@@ -81,7 +82,7 @@ enum CmdOrder { Move(Pos), Attack(Target), Patrol(Pos), Hold, Stop, RightClick(T
                 Repair(u32), Gather(u32), ReturnCargo, UseTech{tech:u16, target: Target}, ...,
                 Unload(u32) /* 034 Unload_Unit: 탑승 유닛 1기 하차, 마지막 variant (PROTOCOL_VERSION 3) */ }
 
-struct Act { cmds: Vec<Command>, advance_frames: u32, valid_until_frame: Option<u32> }
+struct Act { cmds: Vec<Command>, advance_frames: u32, valid_until_frame: Option<u32>, surrender: Option<String> /* 010-R13, PROTOCOL_VERSION 4 */ }
 
 /// 학습(lockstep) 모드 전용. 정책 입력에 쓰지 않는다 (010-R10).
 struct PrivilegedSummary {
@@ -90,7 +91,7 @@ struct PrivilegedSummary {
     enemy_unit_counts: Vec<(u16, u16)>,    // (unit_type, 완성 수) 전체
     enemy_in_production: Vec<(u16, u16)>,  // (unit_type, 생산 중 수)
 }
-pub const PROTOCOL_VERSION: u32 = 3;   // 2: GameEnd.final_frame (010-R12), 3: CmdOrder::Unload (010-R11, 034 Unload_Unit, 2026-10-19)
+pub const PROTOCOL_VERSION: u32 = 4;   // 2: GameEnd.final_frame (010-R12), 3: CmdOrder::Unload (010-R11, 034 Unload_Unit, 2026-10-19), 4: Act.surrender (010-R13, 2026-10-21)
 
 struct GameEnd { winner: Option<u8>, frame: u32, reason: EndReason, stats: Option<BridgeStats>,
                  final_frame: Option<Box<RawFrame>> /* 010-R12: 마지막 RawFrame 이후 최종 관측(자기 시야) */ }
@@ -117,6 +118,7 @@ Bridge → Agent : GameEnd           (final_frame: 마지막 RawFrame 이후 이
 - 010-AC5: realtime 모드 실행 시 `PrivilegedSummary`가 한 번도 송신되지 않는다.
 - 010-AC7: `GameEnd.final_frame`(있음·없음)이 round-trip 되고(AC1 proptest), 버전 1 상대는 거부된다(AC2). 마지막 결정 뒤 보이는 적 유닛이 파괴되면 그 value 보상이 마지막 결정의 보상에 더해진다(`final_frame_reward_reaches_the_last_decision_010_r12`). 최종 프레임도 AC6 시야 검사를 받는다. OpenBW 실제 게임에서 최종 프레임이 오는지는 표본 단계에서 확인한다.
 - 010-AC6: 모든 관측에서 자기 시야 밖의 적 유닛(가시 타일 및 인접 타일에 없거나, 은폐·버로우 상태인데 탐지되지 않은 유닛)이 0개다. 에이전트가 매 프레임 자동 검사한다(`visibility_violations`, 030-AC2 연동). 2026-10-15 변경: 011-R5에 따라 플래그를 항상 켜므로, 플래그 켜기·끄기 비교 대신 불변식 검사로 바꾼다.
+- 010-AC8: `Act.surrender` 왕복 직렬화 테스트, 버전 3 상대 거부(010-R2), `cmds`가 있거나 80바이트를 넘는 `surrender` 거부.
 
 ## Risks & Open Questions
 - 시야 BitGrid 해상도는 32px 타일로 확정한다(2026-10-17 사용자 확인). 엔진과 BWAPI(`isVisible`·`isExplored`)가 시야를 32px 타일 단위로만 기록하고, 모델 공간 입력도 32px 빌드타일이다(030-R6).

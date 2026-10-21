@@ -1,6 +1,6 @@
 # 041 — Imitation Learning (BC)
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: R11 혼합 선택 레이블 — AMB-041-1, AC2 측정 조건 — AMB-041-2. 2026-10-18 개정: R12 분할 — AMB-041-3, R13 데이터 선택·셔플 — AMB-041-4, R14 학습 길이 1 epoch — 사용자 결정. 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): R3 전역 norm clip(G-D4), R7 판정 불가 value 가중치 0(A-3), R9 스트리밍 로더 조건부(E-11), R15 Burn autotune·fusion(G-D5), 장비 표기 중립화(001-R10). 같은 날: R15 CUDA 호스트 비교 기준·Windows autotune 캐시 제약(사용자 결정 2026-10-19). 2026-10-20 개정: R13 셔플 전 파일 순서(`<출처>/<파트>/<파일>` 키)와 같은 출처 중복 지정 거부(사용자 결정))
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: R11 혼합 선택 레이블 — AMB-041-1, AC2 측정 조건 — AMB-041-2. 2026-10-18 개정: R12 분할 — AMB-041-3, R13 데이터 선택·셔플 — AMB-041-4, R14 학습 길이 1 epoch — 사용자 결정. 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): R3 전역 norm clip(G-D4), R7 판정 불가 value 가중치 0(A-3), R9 스트리밍 로더 조건부(E-11), R15 Burn autotune·fusion(G-D5), 장비 표기 중립화(001-R10). 같은 날: R15 CUDA 호스트 비교 기준·Windows autotune 캐시 제약(사용자 결정 2026-10-19). 2026-10-20 개정: R13 셔플 전 파일 순서(`<출처>/<파트>/<파일>` 키)와 같은 출처 중복 지정 거부(사용자 결정). 2026-10-21 개정: 041-R19 win_open BC 학습, 041-AC4 항복 판정 측정(사용자 결정, AMB-031-6))
 - **Related**: [032](032-model-architecture.md), [040](040-replay-dataset.md), [042](042-rl-training.md), [050](050-evaluation.md)
 
 ## Purpose
@@ -35,6 +35,7 @@
 | 041-R16 | **MUST** 데이터 미리 읽기 깊이(2026-10-20 사용자 결정, G-M2): 학습 루프 앞에서 다음 batch를 미리 만들어 두는 개수를 호스트마다 `.env` 키 `URANIUM_BC_PREFETCH`(001-R9, 없으면 2)로 정한다. 0이면 데이터 스레드 없이 학습 루프가 update마다 그 자리에서 batch를 만들어, 호스트 메모리에 batch가 하나만 있다. batch(레인 32 × T64)는 약 4 GB이고 깊이 2에서는 최대 4개가 동시에 있다. RAM을 GPU와 나눠 쓰는 Linux Vulkan 호스트는 이 때문에 코어 비교 GTrXL run 중 OOM으로 끝났다(`reports/m6_core_ablation.md` 5절). 깊이는 batch 내용·순서·데이터 위치(R13·061-R10)를 바꾸지 않는다. 그래서 설정 지문(R10)에 넣지 않고, 깊이가 다른 호스트끼리 같은 run을 이어 해도 된다 |
 | 041-R17 | **MUST** 엔티티 인코더 재계산(2026-10-20 사용자 결정): 호스트마다 `.env` 키 `URANIUM_BC_ENTITY_CHUNK`(001-R9, 행 수, 없거나 0이면 끔)로 정한다. 켜면 레인 그룹마다 엔티티 인코더를 그 행 수씩 gradient 기록 없이 계산하고, 코어·헤드·가치 backward가 끝난 뒤 같은 조각을 같은 dropout seed로 다시 계산해 그 출력의 gradient를 인코더로 되돌린다. 그래서 엔티티 수 N에 따라 N²로 커지는 엔티티 인코더 activation(거리 bias one-hot, attention)이 한 조각만큼만 메모리에 있다. 조각의 dropout seed는 `data.seed`·step·레인 그룹·조각 번호로 정한다. dropout 0이면 gradient가 끈 경우와 같고, dropout이 있으면 끈 호스트와 난수 열만 다르다(분포는 같다). RAM을 GPU와 나눠 쓰는 Linux Vulkan 호스트에서 N=512 레인(64행)의 forward가 약 10.5 GB여서 코어 비교 GTrXL run이 같은 batch(step 48)에서 세 번 종료됐다(`reports/m6_core_ablation.md` 5절). 설정 지문(R10)에 넣지 않고, 설정이 다른 호스트끼리 같은 run을 이어 해도 된다 |
 | 041-R18 | **MUST** 호스트 batch 압축(2026-10-20 사용자 결정): 호스트마다 `.env` 키 `URANIUM_BC_PACK_BATCH`(001-R9, `1`이면 켬, 없거나 `0`이면 끔)로 정한다. 켜면 batch를 만들 때 공간 feature와 위치 마스크를 zstd 무손실로 압축해 두고, 레인 그룹을 학습할 때 그 그룹의 행만 푼다(RL trajectory와 같은 압축). batch 내용은 비트 단위로 같으므로 설정 지문(R10)에 넣지 않는다. GPU와 나눠 쓰는 RAM에서 힙이 GTT 자리를 덜 차지하게 하려는 것이다 |
+| 041-R19 | **MUST** `win_open`(032-R18)도 BC에서 학습한다(2026-10-21 사용자 결정, AMB-031-6). 정답과 게임 가중치는 041-R7 win과 같고(승패 판정 불가 게임은 0), 손실은 MSE, 가중치는 `value.win_open_weight`(기본 0.5)다. 전역 L2 clip(041-R3)의 norm에는 win_open 파라미터를 넣지 않고, win_open 파라미터만 따로 같은 max norm으로 clip한다. 그래서 나머지 파라미터의 update는 헤드가 없을 때와 같다. 본학습 설정(`config/bc.toml`)부터 켜고 코어 비교 설정(`config/bc_core_ablation.toml`)은 바꾸지 않는다. shard 형식은 바뀌지 않는다(정답은 기존 `result`) |
 
 ## 평가 지표
 - 오프라인 지표:
@@ -50,6 +51,7 @@
   - 측정 조건 (확정 2026-10-17, AMB-041-2): 조합(상대 종족 T·P·Z × 맵 2)당 50판(050 E-Matrix와 같음), z 없음(BC에서 25% 확률로 z를 빼고 학습한 조건, 041-R8), argmax와 확률적 샘플링 두 모드를 모두 측정·보고(050-R1), 승률에 Wilson 95% 구간 표기(050-R2). plan은 `config/plans/bc-vs-t0.toml`이다.
 - AC1과 AC2의 수치는 초기값이다(2026-10-15 확정). M5 기준선 측정 후 조정을 제안할 수 있고, 조정하려면 사용자 확인이 필요하다(050과 같은 방식).
 - 041-AC3: (B)가 (A)보다 대상 맵 test 지표가 같거나 높다. 그렇지 않으면 맵 전략을 재검토한다.
+- 041-AC4 (측정만, 2026-10-21): `bc-eval`이 평가 게임마다 031-R12 판정을 스텝 프레임 기준으로 재현해(`Shadow`와 같은 계산), 조건이 성립한 게임 수, 그중 실제로 이긴 게임 비율(오항복률), 성립 프레임 분포를 출력한다. win_open이 있는 체크포인트에만 해당한다. 기준값은 TBD(M6) — 결과를 보고하고 사용자가 정한다.
 
 ## 구현 메모 (비규범)
 - GPU 메모리(2026-10-17, [`reports/m5_bc_memory.md`](../reports/m5_bc_memory.md)): `config/bc.toml`의 `micro_lanes`만큼 레인을 묶어 forward/backward를 하고, gradient를 합쳐 전역 norm clip(R3) 뒤 AdamW step을 한 번 한다. 손실은 배치 전체 유효 스텝 수로 나누므로 `lanes` 전체를 한 번에 처리한 것과 같은 업데이트다(R2·R3 그대로). 최대 메모리는 그룹 크기를 따른다(기본 1 = 레인 1 × T64 × N512).

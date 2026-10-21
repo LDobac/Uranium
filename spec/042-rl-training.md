@@ -1,6 +1,6 @@
 # 042 — RL Training & League
 
-- **Status**: Approved (2026-10-15, 2026-10-16 개정: 042-R10 Ctrl+C 정상 종료, 2026-10-17 개정: 초기 설정값 확정(AMB-042-3, `config/rl.toml`), 첫 학습 호스트, AMB-042-2 M6 시작 재확인, behaviour log-prob 기록(AMB-042-4), 구현 구조·Aborted 회수(042-R3)·검증 정책·AC1 규모·게임 호스트·KL 계산(AMB-042-5~9, 사용자 결정), 2026-10-18 개정: 학습 중 리플레이 저장(042-R11)·agent step 상한 종료(042-R12), 사용자 결정. 2026-10-19 개정: 옵티마이저 clip = 041-R3 전역 norm(G-D4), R11 리플레이 보존과 060-R7 정합, 장비 표기 중립화(001-R10). 2026-10-20 개정: 주 장비 규칙 참조(060-R8, AMB-032-8))
+- **Status**: Approved (2026-10-15, 2026-10-16 개정: 042-R10 Ctrl+C 정상 종료, 2026-10-17 개정: 초기 설정값 확정(AMB-042-3, `config/rl.toml`), 첫 학습 호스트, AMB-042-2 M6 시작 재확인, behaviour log-prob 기록(AMB-042-4), 구현 구조·Aborted 회수(042-R3)·검증 정책·AC1 규모·게임 호스트·KL 계산(AMB-042-5~9, 사용자 결정), 2026-10-18 개정: 학습 중 리플레이 저장(042-R11)·agent step 상한 종료(042-R12), 사용자 결정. 2026-10-19 개정: 옵티마이저 clip = 041-R3 전역 norm(G-D4), R11 리플레이 보존과 060-R7 정합, 장비 표기 중립화(001-R10). 2026-10-20 개정: 주 장비 규칙 참조(060-R8, AMB-032-8). 2026-10-21 개정: 042-R13 win_open RL 학습(사용자 결정, AMB-031-6))
 - **Related**: [020](020-env-orchestration.md), [021](021-opponent-pool.md), [032](032-model-architecture.md), [033](033-reward.md), [050](050-evaluation.md), [060](060-infra.md)
 
 ## Purpose
@@ -123,6 +123,7 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 | 042-R10 | **MUST** 정상 종료(Ctrl+C, 2026-10-16 사용자 결정). 첫 Ctrl+C(SIGINT, Windows는 Ctrl+C 이벤트)를 받으면 다음 순서로 멈춘다. ① 새 게임 배정을 멈춘다. ② 진행 중인 게임을 중단하고 `Aborted`로 기록해 학습에서 뺀다(042-R3). ③ 체크포인트를 저장하고 push한다(061-R4 "정상 종료 시"). ④ 잠금을 해제한다(061-R5). 두 번째 Ctrl+C를 받으면 저장 없이 즉시 종료한다. 게임 호스트 구성(hosts 파일)을 바꾸려면 정상 종료 후 재시작한다. 재시작하면 hosts 파일을 새로 읽고 마지막 체크포인트에서 재개한다(R1) |
 | 042-R11 | **MUST** 학습 중 리플레이를 저장한다(2026-10-18 사용자 결정). 모든 게임을 `save_replay`로 시작하고(게임 호스트가 임시로 저장, 020-R1 `Finished.replay`로 학습 호스트에 전달), 판정 뒤 **정기 표본(게임 id가 `[replays] sample_every`(기본 100)의 배수)** 이거나 **승자 불일치 게임(020-R13)** 이면 `<URANIUM_SHARED_DIR>/runs/<run_id>/replays/g<game_id>-<sample\|disagree>.rep`에 쓴다(임시 이름으로 쓰고 다시 읽어 바이트를 대조한 뒤 이름을 바꾼다). 나머지는 버린다. run이 끝나도 지우지 않고, 저장 예산(060-R7)을 넘어도 자동 삭제하지 않는다(경고만, 2026-10-19 사용자 결정, AMB-061-5. 총량 측정은 060-R7). `games.csv`에 `replay`(run 폴더 기준 경로)와 `replay_reason` 열을 남긴다 |
 | 042-R12 | **MUST** agent step 상한(`--max-agent-steps`, 042-AC1·033-AC2는 1,000만)에 도달하면 R10의 정상 종료 순서(①~④)로 멈춘다. agent step은 체크포인트(`TrainState.step`)에서 이어 세므로 재개해도 run 전체 누적이다. 진행 중이던 게임은 R10처럼 Aborted로 빠지므로 실제 학습량은 상한을 약간 넘거나 모자랄 수 있고, 마지막 체크포인트 step으로 기록한다 (2026-10-18) |
+| 042-R13 | **MUST** RL learner는 win_open(032-R18)이 있는 모델에서 win_open을 win의 v-trace target에 MSE로 학습한다(가중치는 041-R19 `value.win_open_weight`, 2026-10-21 사용자 결정, AMB-031-6). advantage·policy gradient에는 쓰지 않고, 전역 clip은 041-R19처럼 win_open 파라미터를 따로 한다. RL 게임(OpenBW)에서 항복 모드는 plan 기본값(020-R14 `shadow`)을 따른다 |
 
 ## Acceptance Criteria
 - 042-AC1: 작은 설정(1맵, T0 1종족)에서 BC 정책 대비 승률 개선을 재현 가능하게 보인다. 3 seed 평균으로 측정한다.
