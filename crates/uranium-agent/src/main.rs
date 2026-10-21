@@ -48,6 +48,9 @@ enum Cmd {
         out: PathBuf,
         #[arg(long, value_enum, default_value = "lstm")]
         core: CoreArg,
+        /// 032-R18: include the win_open head (031-R12 surrender check).
+        #[arg(long)]
+        win_open: bool,
     },
 }
 
@@ -124,12 +127,14 @@ fn main() -> Result<()> {
             serve_addr(&listen, opts, out)
         }
         Cmd::Summarize { input, out, title } => summary::summarize(&input, &out, &title),
-        Cmd::RandomCheckpoint { out, core } => {
+        Cmd::RandomCheckpoint { out, core, win_open } => {
             let kind = match core {
                 CoreArg::Lstm => uranium_model::config::CoreKind::Lstm,
                 CoreArg::Gtrxl => uranium_model::config::CoreKind::Gtrxl,
             };
-            write_random_checkpoint(&out, &default_config(kind), &burn::tensor::Device::flex())?;
+            let cfg = default_config(kind);
+            let cfg = cfg.clone().with_value(cfg.value.clone().with_win_open(win_open));
+            write_random_checkpoint(&out, &cfg, &burn::tensor::Device::flex())?;
             println!("{}", uranium_agent::infer::checkpoint_id(&out)?);
             Ok(())
         }

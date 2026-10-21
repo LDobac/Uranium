@@ -302,3 +302,40 @@ impl Write for SinkWriter {
         Ok(())
     }
 }
+
+/// 031-R12 / 020-R14 / 010-R13: Shadow checks without leaving; On (here forced at a frame, as the
+/// integration check does) sends one surrender Act with the handle's chat line and no commands.
+#[test]
+fn surrender_modes_031_r12() {
+    let dir = std::env::temp_dir().join(format!("uranium_agent_ckpt_open_{}", std::process::id()));
+    let d = Device::flex();
+    d.seed(11);
+    let cfg = tiny_cfg(CoreKind::Lstm);
+    write_random_checkpoint(&dir, &cfg.clone().with_value(cfg.value.clone().with_win_open(true)), &d).unwrap();
+    let fs = frames(0, 6);
+
+    // Shadow (the handle default): plays as before; before 10 minutes the check never holds.
+    let h = handle(&dir, SampleMode::Argmax, 1);
+    assert_eq!(h.surrender, uranium_agent::infer::SurrenderMode::Shadow);
+    let mut p = ModelPolicy::new(&h, &game_info()).unwrap();
+    for f in &fs {
+        assert!(p.on_frame(f).unwrap().surrender.is_none());
+    }
+    let s = p.stats();
+    assert!(s.win_open, "the checkpoint has the head");
+    assert_eq!((s.surrender.as_str(), s.surrender_frame, s.decisions), ("shadow", None, 6));
+
+    // On, forced from frame 49 (the third frame): one surrender Act, then the bridge leaves.
+    // SAFETY: only this test sets the variable, and only On-mode sessions read it.
+    unsafe { std::env::set_var("URANIUM_TEST_SURRENDER_FRAME", "49") };
+    let h = h.with_surrender(uranium_agent::infer::SurrenderMode::On, "good game");
+    let mut p = ModelPolicy::new(&h, &game_info()).unwrap();
+    unsafe { std::env::remove_var("URANIUM_TEST_SURRENDER_FRAME") };
+    let acts: Vec<Act> = fs[..3].iter().map(|f| p.on_frame(f).unwrap()).collect();
+    assert!(acts[..2].iter().all(|a| a.surrender.is_none()));
+    assert_eq!(acts[2].surrender.as_deref(), Some("good game"));
+    assert!(acts[2].cmds.is_empty(), "010-R13: no commands with a surrender");
+    let s = p.stats();
+    assert_eq!((s.surrender.as_str(), s.surrender_frame, s.decisions), ("on", Some(49), 3));
+    let _ = std::fs::remove_dir_all(&dir);
+}

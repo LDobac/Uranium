@@ -329,6 +329,7 @@ impl SessionObserver for TrajectoryObserver {
 mod tests {
     use super::*;
     use std::sync::mpsc;
+    use uranium_env::features::Observation;
 
     pub(crate) fn fake_obs(i: usize) -> Observation {
         crate::rl::testkit::observations(i % 3 + 1).pop().unwrap()
