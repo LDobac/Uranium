@@ -185,15 +185,20 @@ fn entity_features(w: &World, e: &Entity, width: usize, height: usize, f: &mut [
     f[44] = ratio(u.air_cd as i32, t.map_or(0, |t| wcd(t.air_weapon)));
     f[45] = (u.spell_cd as f32 / norm::SPELL_COOLDOWN).min(1.0);
     // progress: construction, else training; queue length / 5
+    // AMB-030-5: like BWAPI without CompleteMapInformation (canAccessInside), another player's
+    // production queue, remaining build/train time and nuke are hidden; the OpenBW shim sends them.
+    let inside = e.owner == OWNER_SELF;
     let build_time = |ty: u16| w.types.unit(ty).map_or(0, |t| t.build_time);
-    f[46] = if !u.has(flags::COMPLETED) {
+    f[46] = if !inside {
+        0.0
+    } else if !u.has(flags::COMPLETED) {
         1.0 - ratio(u.remaining_build as i32, build_time(u.unit_type))
     } else if queue_len(u) > 0 {
         1.0 - ratio(u.remaining_train as i32, build_time(u.build_queue[0]))
     } else {
         0.0
     };
-    f[47] = queue_len(u) as f32 / 5.0;
+    f[47] = if inside { queue_len(u) as f32 / 5.0 } else { 0.0 };
     // 12 flags
     let flag_bits = [
         u.has(flags::COMPLETED),
@@ -223,7 +228,7 @@ fn entity_features(w: &World, e: &Entity, width: usize, height: usize, f: &mut [
     f[69] = (s.stim as f32 / norm::STATUS_TIMER).min(1.0);
     // skill resources
     f[70] = u.spider_mines as f32 / 3.0;
-    f[71] = u.nuke_armed as u8 as f32;
+    f[71] = (inside && u.nuke_armed) as u8 as f32;
     // memory
     f[72] = e.remembered as u8 as f32;
     f[73] = w.frame.frame.saturating_sub(e.seen_frame) as f32 / 2048.0;

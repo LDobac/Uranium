@@ -54,6 +54,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-000-2 | SC:R 실사용 환경(로컬/LAN vs 배틀넷)·상대 | Resolved (2026-10-15: 로컬/LAN 커스텀 한정, 상대 사람/내장 AI) |
 | AMB-000-3 | 맵 파일 버전, 상대 Random 종족 지원 | Resolved (2026-10-15: 최신 공개 버전(1.16.1 호환 검증 후 해시 고정), Random 지원) |
 | AMB-001-1 | SC:R 실전 추론 위치 | Deferred (M7) |
+| AMB-001-5 | SC:R 변환용 crate `uranium-adapter`(001·013에 M7 예정으로 적힘)를 만들지 | Resolved (2026-10-22: 만들지 않는다. SC:R 원시 ID가 BW와 같고 정규화는 브리지 안에서 끝남. 표는 `bridge/scr/tables`, 에이전트는 realtime 처리만 추가 — 001-R1, 013-R1, 012-R18·R19) |
 | AMB-001-2 | OpenBW 브리지 C++ shim 허용 여부 | Resolved (2026-10-15: 얇은 C++ shim 허용) |
 | AMB-001-3 | 에이전트가 모델을 쓰면 생기는 crate 순환(agent → model → env → agent) 해결 | Resolved (2026-10-17: 스케줄러를 새 crate `uranium-runner`로 분리, 바이너리 이름 `uranium-env`·CLI 유지, `uranium-env`는 라이브러리만) |
 | AMB-001-4 | 장비 라벨(보드 이름·장비 번호)을 문서에 쓰는 것이 001-R10 위반인지(BC 전 리뷰 G-D9) | Resolved (2026-10-19: git 추적 파일(spec·코드·주석·추적 config·docs·CLAUDE.md)에는 장비 종류·상태를 쓰지 않고 OS·백엔드로만 표기, 허용 위치는 git 미추적 config와 리포트 — 001-R10) |
@@ -61,6 +62,8 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-012-1 | samase_scarf 분석 실패 시 대안 선택 | Resolved (2026-10-22: 대안 불필요 — M7 스파이크에서 samase 0.10.28-64가 SC:R 1.23.10.13515 x64에서 012-AC1 목록을 모두 제공, 명령 송신·시야 비트 실게임 확인) |
 | AMB-012-2 | 대상 SC:R 빌드 정책, 기존 samase 환경 | Resolved (2026-10-22: SC:R 1.23.10.13515 하나로 고정(exe 해시, 다른 빌드는 012-R6 비활성), 기존 samase 환경 없음 → M7 스파이크에서 로더 확보·설치 절차 조사, 실전 PC는 CUDA 학습 호스트(Windows)와 같은 PC) |
 | AMB-012-4 | SC:R 항복 시 게임 나가기(`0x57`로는 로컬 클라이언트가 빠지지 않음, samase에 수단 없음) | Resolved (2026-10-22: 채팅 후 브리지가 명령을 멈추고 `GameEnd(Surrender)`를 보낸 뒤 연결을 닫는다. 게임 창은 사람이 닫는다. 메뉴 키 입력·내부 함수 호출은 쓰지 않는다 — 012-R11) |
+| AMB-012-5 | SC:R 실전 지연(관측 → 추론 → 네트워크 1~2프레임) 처리와 명령 유효 기한 | Resolved (2026-10-22: 보정하지 않고 기록만, `valid_until_frame` = 관측 프레임 + 24, 지난 명령은 버리고 건수 기록 — 012-R7·R13, 013-R3) |
+| AMB-012-6 | SC:R `CommandFailed`(BWAPI 명령 가능 검사 없음) | Deferred (M7: RL 모델을 SC:R에 올리기 전에 다시 묻는다. 그때까지 보내지 않고 `last_failed` 0 고정 — 012-R14) |
 | AMB-012-3 | 실행 환경·안티치트 정책 (→AMB-000-2) | Resolved (2026-10-15: 로컬/LAN 한정) |
 | AMB-020-1 | OpenBW 원격 호스트 사양 | Resolved (2026-10-15: 게임 전용 Linux PC 2대 이상, 사양 자동 감지) |
 | AMB-020-2 | 최대 게임 시간·무승부 규칙 | Resolved (2026-10-15: 60분 초과 시 무승부, 보상 0 — 점수 판정안에서 변경) |
@@ -73,6 +76,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-030-2 | BC 전 리뷰 E절 관측 항목: hazard 반지름 고정 16px, 시야 밖 자원 미포함, 평가 대전 `last_failed`, Random 상대 종족, 증강 `entity_cell` 1타일 어긋남 | Resolved (2026-10-19: 효과별 실제 반지름·플레이그·인스네어 포함(030 §3), 맵 공개 자원은 마지막 관측 상태로 포함(010-R5 예외·030-R2), 평가 대전 `last_failed` 0 고정·RL부터 실제 값(030-R10), Random 상대는 첫 적 유닛 관측 전 unknown(030-R11), `entity_cell`은 변환 픽셀로 재계산(030-R4)) |
 | AMB-030-3 | 시야 밖 자원(E-3)의 초기값 출처와 엔티티 대응 | Resolved (2026-10-19: 기술 결정(메인). 맵 사전계산(`MapPrecompute`, CHK 해시별, CHK 유닛 배치의 자원 종류·위치·초기량)을 BC·라이브 공통으로 쓰고, 레이블 target과는 타일 위치로 매칭, 한 번도 못 본 자원은 `seen_frame = 0`(경과 프레임 feature = 현재 프레임 ÷ 2048). 브리지·proto 무변경 — 030 §2, 010-R5, 031) |
 | AMB-030-4 | 탄환 효과의 시야 누출(OpenBW shim이 CompleteMapInformation을 켜서 BWAPI가 모든 탄환을 보이는 것으로 처리 → 시야 밖 탄환이 hazard 채널에 들어감, 2026-10-22 M7 조사 중 발견) | Resolved (2026-10-22: 사람 화면과 같은 규칙 — 중심 타일이 지금 보이는 효과만. 에이전트 feature 추출에서 `RawFrame.visibility`로 거르고(재build 없음, BC 본학습 전 반영), OpenBW 브리지·SC:R 브리지도 같은 규칙으로 보낸다. 끝난 코어 비교 학습은 그대로 둔다 — 030 §3, 010-R5) |
+| AMB-030-5 | 보이는 적 유닛의 내부 정보(생산 큐·남은 생산/건설/연구 시간·핵 장전)가 CompleteMapInformation 때문에 모델 입력에 들어감(2026-10-22 M7 조사 중 발견) | Resolved (2026-10-22: BWAPI 공정 모드 `canAccessInside` 기준으로 다른 플레이어 유닛의 progress 2개·nuke_armed를 0으로, 에이전트 feature 추출에서 처리(재build 없음, BC 본학습 전 반영). 체력·에너지·쿨다운·order·마인 수는 유지 — 030 §2) |
 | AMB-031-1 | executor(규칙) 범위 | Resolved (2026-10-15: 최소 — 일꾼·건물 선택만, 위치 보정·심시티 스냅·자동 채취 없음) |
 | AMB-031-2 | APM 제한 수치 (→AMB-000-1) | Resolved (2026-10-15: APM 제한 없음, delay 1–32 비균등 16 bucket) |
 | AMB-031-3 | 맵 사전계산 채널(base_loc·choke·wall_candidate) 적용 범위 | Resolved (2026-10-16: 대상 맵만이 아니라 모든 맵에 맵 무관 알고리즘으로 적용) |
@@ -141,8 +145,8 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | 001 | [System Architecture](001-system-architecture.md) | 전체 구조 | **Approved** |
 | 010 | [Game Protocol](010-game-protocol.md) | 브리지↔에이전트 프로토콜 | **Approved** |
 | 011 | [Bridge: OpenBW](011-bridge-openbw.md) | OpenBW 래퍼 | **Approved** |
-| 012 | [Bridge: Remastered](012-bridge-remastered.md) | SC:R 래퍼 | Draft |
-| 013 | [Version Mapping](013-version-mapping.md) | 1.16.1 ↔ SC:R 정규화 | Draft (명령 인코딩 절만 **Approved** 2026-10-16) |
+| 012 | [Bridge: Remastered](012-bridge-remastered.md) | SC:R 래퍼 | Review (2026-10-22 개정안) |
+| 013 | [Version Mapping](013-version-mapping.md) | 1.16.1 ↔ SC:R 정규화 | Review (2026-10-22 개정안. 명령 인코딩 절은 **Approved** 2026-10-16) |
 | 020 | [Env Orchestration](020-env-orchestration.md) | 게임 실행·병렬화 | **Approved** |
 | 021 | [Opponent Pool](021-opponent-pool.md) | 학습 상대 | **Approved** |
 | 030 | [Observation](030-observation.md) | 관측 feature | **Approved** |

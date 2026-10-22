@@ -1,6 +1,6 @@
 # 001 — System Architecture
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: 스케줄러를 `uranium-runner` crate로 분리(AMB-001-3), 에이전트 서버의 모델 정책·배치 추론 / `uranium-runner` 라이브러리화, `uranium-train rl`(3단계 계획 승인). 2026-10-19 개정: 001-R10 장비 표기 규칙(G-D9, 사용자 결정), R1·Cargo Workspace 표기 정정: 현재 매핑 테이블 위치를 적고 `uranium-adapter`를 M7 예정으로 표시)
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: 스케줄러를 `uranium-runner` crate로 분리(AMB-001-3), 에이전트 서버의 모델 정책·배치 추론 / `uranium-runner` 라이브러리화, `uranium-train rl`(3단계 계획 승인). 2026-10-22 개정: R1·Cargo Workspace에서 `uranium-adapter` 계획 삭제, `bridge/scr` 자체 workspace(AMB-001-5, 사용자 결정). 2026-10-19 개정: 001-R10 장비 표기 규칙(G-D9, 사용자 결정), R1·Cargo Workspace 표기 정정: 현재 매핑 테이블 위치를 적고 `uranium-adapter`를 M7 예정으로 표시)
 - **Related**: [010](010-game-protocol.md), [011](011-bridge-openbw.md), [012](012-bridge-remastered.md), [020](020-env-orchestration.md), [060](060-infra.md), [061](061-shared-storage.md)
 
 ## Purpose
@@ -20,7 +20,7 @@
 ## Requirements
 | ID | 요구사항 |
 |---|---|
-| 001-R1 | **MUST** 에이전트 코어(env feature, model, executor)는 게임 버전을 모른다. 버전 의존 코드는 `bridge/*`와 013 매핑 테이블에만 둔다. 현재(M4~M6) 매핑 테이블은 `crates/uranium-env/tables`와 `crates/uranium-replay/tables`에 있고 각 crate는 테이블을 읽기만 한다. SC:R 매핑 테이블과 백엔드는 `uranium-adapter`(M7 예정, 미생성)에 둔다 |
+| 001-R1 | **MUST** 에이전트 코어(env feature, model, executor)는 게임 버전을 모른다. 버전 의존 코드는 `bridge/*`와 013 매핑 테이블에만 둔다. 현재(M4~M6) 매핑 테이블은 `crates/uranium-env/tables`와 `crates/uranium-replay/tables`에 있고 각 crate는 테이블을 읽기만 한다. SC:R 브리지의 표는 `bridge/scr/tables`에 둔다. 별도 crate `uranium-adapter`는 만들지 않는다(2026-10-22 사용자 결정, AMB-001-5: SC:R 원시 ID가 BW와 같고 정규화는 브리지 안에서 끝나며, 에이전트에는 realtime 처리만 더한다 — 012-R18·R19) |
 | 001-R2 | **MUST** 브리지와 에이전트는 [010](010-game-protocol.md) 프로토콜로만 통신한다. 같은 호스트든 원격이든 같은 TCP 경로를 쓴다 |
 | 001-R3 | **MUST** 브리지는 얇게 유지한다. 상태 직렬화, 명령 실행, 시야 필터링만 하고 의사결정 로직은 넣지 않는다 |
 | 001-R4 | **SHOULD** OpenBW 호스트를 추가할 때 코드 수정 없이 설정 파일만 바꾸면 되게 한다 |
@@ -36,7 +36,6 @@
 Cargo.toml (workspace)
 crates/
   uranium-proto      # 스키마, 프레이밍, 버전 협상 (no_std 호환 지향, postcard)
-  uranium-adapter    # (M7 예정, 미생성) GameBackend trait, OpenBW/SCR 백엔드 클라이언트, SC:R 정규화 테이블(013)
   uranium-env        # 라이브러리: feature 추출(030), 마스크(034), 보상(033), executor(031), 맵 계열(040-R15)·맵 사전계산(031), 013 매핑 테이블(`tables/`)
   uranium-model      # Burn 모델(032)
   uranium-train      # BC(041), RL(042), 리그·PFSP·스냅샷
@@ -47,7 +46,7 @@ crates/
   uranium-scripted   # T0 규칙 기반 상대 봇 (T/P/Z, 010 Command 직접 생성, 021)
 bridge/
   openbw/            # C++ BWAPI AIModule shim + Rust staticlib(uranium-proto)
-  scr/               # Rust cdylib samase 플러그인 (x86_64-pc-windows-msvc)
+  scr/               # Rust cdylib samase 플러그인 (x86_64-pc-windows-msvc). 루트 workspace 밖 자체 workspace, 표는 scr/tables (012, 013-R1)
 spec/
 tools/               # 맵 분석, 벤치, 스크립트
 ```

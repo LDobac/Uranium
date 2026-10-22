@@ -1,6 +1,6 @@
 # 013 — Version Mapping (1.16.1 ↔ Remastered)
 
-- **Status**: Draft. 단, **"리플레이 명령 인코딩 (M4)" 절과 013-R6~R8은 Approved (2026-10-16, M4 계획 승인. 2026-10-17 개정: 맵 CHK 정규화, opcode 0x5D)**. 나머지는 M7에서 확정한다. 2026-10-19 표기 정정: 013-R1에 현재 테이블 위치를 적고 `uranium-adapter`를 M7 예정으로 표시.
+- **Status**: Review (2026-10-22 M7 개정안, 승인 요청 중: 차이표 실측 반영, 013-R1 SC:R 표 위치(AMB-001-5), 013-R3 지연 보정 없음(AMB-012-5), "SC:R 브리지 정규화" 절 추가). **"리플레이 명령 인코딩 (M4)" 절과 013-R6~R8은 Approved (2026-10-16, M4 계획 승인. 2026-10-17 개정: 맵 CHK 정규화, opcode 0x5D)**. 2026-10-19 표기 정정: 013-R1에 현재 테이블 위치를 적고 `uranium-adapter`를 M7 예정으로 표시.
 - **Related**: [010](010-game-protocol.md), [011](011-bridge-openbw.md), [012](012-bridge-remastered.md)
 
 ## Purpose
@@ -10,16 +10,16 @@ OpenBW(1.16.1)와 SC:R 사이의 차이를 한곳에 모으고, 두 백엔드가
 - 범위: ID 체계, 구조체 레이아웃, 명령 인코딩, 타이밍, 유닛 한도, 리플레이 포맷 차이.
 - 비범위: 그래픽과 UI 차이(HD 그래픽 등). 게임 로직에 영향이 없으므로 다루지 않는다.
 
-## 차이표 (초안, M1c/M7에서 검증)
+## 차이표 (2026-10-22 M7 스파이크 실측 반영)
 | 항목 | 1.16.1 / OpenBW | SC:R | 정규화 |
 |---|---|---|---|
-| unit/order/tech/upgrade/weapon ID | BWAPI enum | dat 파일 기준 동일 ID 예상 | 정규 ID = BWAPI enum, 차이 발견 시 테이블 |
+| unit/order/tech/upgrade/weapon ID | BWAPI enum | 원시 ID가 1.16.1과 같다(SCV unit_id 7, Move order 6 실측) | 정규 ID = BWAPI enum. order는 BWAPI와 같은 원시→BWAPI 변환표(`BWtoBWAPI`)를 SC:R 브리지 표로 옮겨 쓴다 |
 | 유닛 구조체 | BWAPI 추상화 | 64비트 메모리 레이아웃(포인터 8바이트) | 브리지 내부 `UnitView` 접근자, 오프셋 테이블 |
-| 선택 명령 | 0x09/0x0A/0x0B (unit index 16bit) | 0x63/0x64/0x65 확장 | proto `Command`는 단일 형식, 브리지에서 인코딩 |
-| 우클릭/타깃 명령 | 0x14/0x15 | 0x60/0x61 | 동일 |
-| 유닛 한도 | 1700 | 1700 (확장 한도 옵션 확인 필요) | proto는 u32 ID 사용 |
+| 선택 명령 | 0x09/0x0A/0x0B (unit index 16bit) | 0x63/0x64/0x65 확장(count + u32 태그, `0x63` 실게임 확인) | proto `Command`는 단일 형식, 브리지에서 인코딩 |
+| 우클릭/타깃 명령 | 0x14/0x15 | 0x60/0x61(`0x60` 실게임 확인) | 동일 |
+| 유닛 한도 | 1700 | 유닛 배열 3400(1v1 커스텀·LAN 실측), 태그 index 13비트 | proto는 u32 ID(SC:R 태그 그대로, 012-R17) |
 | 프레임 속도 | Fastest 42ms | Fastest 42ms (멀티 latency 설정 차이) | 정규 시간 단위 = 프레임 |
-| 명령 지연 | lockstep 즉시 반영 | 네트워크 turn latency (Low/High) | realtime 모드에서 latency 프레임만큼 delay 보정 |
+| 명령 지연 | lockstep 즉시 반영 | 보낸 프레임 대비 처리 프레임 싱글 +1, LAN +2(실측) | `GameInfo.latency_frames`로 알리고 보정하지 않는다(AMB-012-5) |
 | 게임 로직 | 1.16.1 | 1.16.1 기반 + 일부 버그 수정 | 차이 목록 유지, 학습 영향 평가 |
 | 리플레이 | PKWare 압축 섹션 | zlib 압축 + 추가 섹션 (1.21+) | [040](040-replay-dataset.md) 파서가 양쪽 지원 |
 
@@ -66,15 +66,27 @@ SC:R 리플레이를 OpenBW(1.16.1 로더, `third_party/openbw/replay.h`)로 재
   - 게임 상태에 영향이 있는데 OpenBW가 처리하지 않는 opcode(예: 0x1D)와 길이를 모르는 새 opcode: 리플레이를 버리지 않고 "확인 대기"로 분류해 opcode·프레임을 리포트한다. 정체(레퍼런스 파서·OpenBW 소스)를 확인해 OpenBW 실행에 문제가 없으면 파서와 이 표에 추가하고 다시 처리한다.
 - 헤더 플레이어 `ID`에 없는 플레이어 바이트(옵저버, 128 이상)의 명령은 변환 시 제거한다. OpenBW 로더가 "player id not found"로 재생을 멈추며, 이 명령들은 게임 상태에 영향이 없다(M4 스파이크 실측).
 
+## SC:R 브리지 정규화 (M7, 2026-10-22 개정안)
+- 원시 메모리 → 010 필드 대응은 `reports/m7_scr_field_mapping.md` §1·§2를 따른다. OpenBW shim이 BWAPI(CompleteMapInformation 켬)로 얻는 값과 같은 의미가 되게 한다(012-R12).
+- 일부러 OpenBW와 같게 둔 학습 데이터 특성:
+  - Discover = Create, Evade = Destroy와 같은 프레임
+  - `UNDER_ATTACK` 항상 0
+  - `MOVING`은 직전 프레임 order 기준
+  - 다른 플레이어 유닛 내부 정보는 보내고 에이전트가 지움(AMB-030-5)
+- 일부러 다르게 둔 것(차이 목록, 013-R5):
+  - `CommandFailed` 없음(012-R14, AMB-012-6)
+  - `PrivilegedSummary` 없음(010-R10)
+- 브리지 표(`bridge/scr/tables`): order 원시→BWAPI 변환, 명령 opcode·레이아웃, 효과(탄환 flingy id → `EffectKind`), 테크 연구 건물 표(BWAPI `whatResearches`). 각 표에 버전 키(`scr-1.23.10.13515`)를 둔다.
+
 ## Requirements
 | ID | 요구사항 |
 |---|---|
 | 013-R6 | **MUST** SC:R 리플레이(Modern, Modern 1.21+)는 위 "리플레이 명령 인코딩" 표에 따라 1.16.1 컨테이너와 명령으로 변환한 뒤 OpenBW로 재생한다(040-R10). 변환은 `uranium-replay`의 Rust 코드로만 하고 OpenBW는 수정하지 않는다 |
 | 013-R7 | **MUST** 변환은 손실 없이 왕복 검증한다. 변환본을 다시 파싱한 명령 목록(프레임, 플레이어, opcode 의미, 인자)이 원본 파싱 결과와 같아야 한다 |
 | 013-R8 | **MUST** 변환 불가(`Unsupported`)·디싱크로 폐기한 리플레이 수와 사유를 리포트한다(040-AC5) |
-| 013-R1 | **MUST** 버전별 매핑은 데이터 파일로 관리하고, 각 테이블에 버전 키를 둔다. 현재(M4~M6) 테이블은 `crates/uranium-env/tables/*.toml`과 `crates/uranium-replay/tables/*.toml`에 있다. SC:R 매핑 테이블은 `crates/uranium-adapter/tables/*.toml`(M7 예정, 미생성)에 둔다 |
+| 013-R1 | **MUST** 버전별 매핑은 데이터 파일로 관리하고, 각 테이블에 버전 키를 둔다. 현재(M4~M6) 테이블은 `crates/uranium-env/tables/*.toml`과 `crates/uranium-replay/tables/*.toml`에 있다. SC:R 브리지의 표는 `bridge/scr/tables/*.toml`에 둔다(2026-10-22 사용자 결정, AMB-001-5: 별도 crate `uranium-adapter`는 만들지 않는다) |
 | 013-R2 | **MUST** 정규 ID 집합의 각 원소는 두 백엔드 모두에서 왕복 변환된다(전단사). 불가능한 항목은 명시적으로 `Unsupported`로 처리한다 |
-| 013-R3 | **MUST** realtime 모드에서는 명령 지연(turn latency)을 GameInfo에 포함해 에이전트에 알린다. delay 헤드 해석 시 이 값을 보정한다 |
+| 013-R3 | **MUST** realtime 모드에서는 명령 지연(turn latency)을 `GameInfo.latency_frames`에 넣어 에이전트에 알린다(012-R13). 에이전트는 이 값을 기록에만 쓰고 delay 헤드를 보정하지 않는다(2026-10-22 사용자 결정, AMB-012-5) |
 | 013-R4 | **SHOULD** 같은 리플레이를 OpenBW와 SC:R에서 재생해 프레임 N의 RawFrame을 비교하는 골든 테스트를 둔다 |
 | 013-R5 | **MUST** 게임 로직 차이(버그 수정 등)가 학습한 정책에 영향을 줄 수 있으면 목록에 기록하고 [050](050-evaluation.md)에서 평가한다 |
 

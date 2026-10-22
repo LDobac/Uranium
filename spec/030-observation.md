@@ -1,6 +1,6 @@
 # 030 — Observation Features
 
-- **Status**: Approved (2026-10-15. 2026-10-22 개정: §3 관측된 효과 = 중심 타일이 보이는 효과(AMB-030-4, 사용자 결정). 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): R2 맵 공개 자원 예외(010-R5, E-3), R4 `entity_cell` 재계산·flip 기준 크기(B-6), R10 평가 대전 `last_failed` 0 고정(E-5), R11 Random 상대 종족 모름(E-6), §3 hazard 반지름·채널(E-1), F_c = 76)
+- **Status**: Approved (2026-10-15. 2026-10-22 개정(사용자 결정): §3 관측된 효과 = 중심 타일이 보이는 효과(AMB-030-4), §2 적 유닛 내부 정보 숨김(AMB-030-5). 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): R2 맵 공개 자원 예외(010-R5, E-3), R4 `entity_cell` 재계산·flip 기준 크기(B-6), R10 평가 대전 `last_failed` 0 고정(E-5), R11 Random 상대 종족 모름(E-6), §3 hazard 반지름·채널(E-1), F_c = 76)
 - **Related**: [010](010-game-protocol.md), [031](031-action-space.md), [032](032-model-architecture.md), [034](034-action-table.md), [040](040-replay-dataset.md)
 
 ## Purpose
@@ -57,10 +57,12 @@ RawFrame과 에이전트 메모리를 모델 입력 텐서로 변환하는 규�
 | 위치 | x/(mapW·32), y/(mapH·32) + Fourier(8주파수 × 2축 × sin/cos) | 34 |
 | vel, angle | 정규화 연속값 | 3 |
 | cooldowns | ground/air/spell 쿨다운 / 최대 | 3 |
-| progress | 건설·생산·연구 진행도 [0,1], build_queue 길이/5 | 2 |
+| progress | 건설·생산·연구 진행도 [0,1], build_queue 길이/5. **자기 유닛만**(다른 플레이어 유닛은 0, AMB-030-5) | 2 |
 | flags | 완성, 시즈, 버로우, 클록, 탐지됨, 리프트, 운반, 탑승, idle, 피격, 애드온 보유, 건설 중 SCV | 12 |
 | 상태이상 | Lockdown, Irradiate, DefensiveMatrix, Stasis, Plague, Ensnare, Maelstrom, Blind, Parasite, Stim 남은 시간, (클록·버로우는 flags) | 10 |
-| 스킬 자원 | spider_mine_count/3, nuke_armed | 2 |
+| 스킬 자원 | spider_mine_count/3, nuke_armed(자기 유닛만, AMB-030-5) | 2 |
+
+**적 유닛 내부 정보(2026-10-22 사용자 결정, AMB-030-5)**: 다른 플레이어 유닛의 생산 큐, 건설·생산·연구 남은 시간(진행도), 핵 장전 여부는 쓰지 않는다(위 표의 progress 2개와 nuke_armed를 0으로 둔다). 기준은 BWAPI 공정 모드(CompleteMapInformation 꺼짐)의 `canAccessInside`다. 사람도 상대 건물이 무엇을 얼마나 만드는지 볼 수 없다. 체력·실드·에너지·쿨다운·order·스파이더 마인 수는 BWAPI가 보이는 적에게도 공개하는 값이므로 그대로 쓴다. OpenBW shim은 CompleteMapInformation을 켜서 이 값을 보내므로 에이전트가 feature를 만들 때 지운다. 기존 shard도 재build 없이 같은 규칙이 적용된다. 2026-10-22 전 학습(코어 비교)에는 이 값이 들어 있었다.
 | memory | is_remembered, frames_since_seen/2048 | 2 |
 | resources | 미네랄 잔량/1500, 가스 잔량/5000 | 2 |
 

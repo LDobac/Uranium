@@ -420,6 +420,32 @@ fn hazard_uses_effect_radius_030_e1() {
     assert_eq!(at(ch::HAZARD_STORM, 31, 62), 0.0, "plague is not a storm");
 }
 
+/// AMB-030-5: another player's production queue, remaining train time and nuke stay hidden, as in
+/// BWAPI without CompleteMapInformation; our own are kept.
+#[test]
+fn enemy_inside_info_is_hidden_amb_030_5() {
+    let map = map_info();
+    let mut mem = AgentMemory::new(&game_info());
+    let mut b = Builder::new();
+    let own = b.add(SELF, "Terran_Barracks", (10, 10));
+    let enemy = b.add(ENEMY, "Terran_Barracks", (40, 40));
+    let marine = ty("Terran_Marine");
+    for u in b.units.iter_mut() {
+        u.build_queue[0] = marine;
+        u.build_queue[1] = marine;
+        u.remaining_train = 100;
+        u.nuke_armed = true;
+    }
+    let o = extract(&frame(10, b.units.clone(), false), &mut mem, &map, None);
+    let cont = |id: u32| {
+        let i = index_of(&o, id);
+        o.obs.entity_cont[i * ENTITY_CONT..(i + 1) * ENTITY_CONT].to_vec()
+    };
+    let (mine, theirs) = (cont(own), cont(enemy));
+    assert!(mine[46] > 0.0 && mine[47] == 2.0 / 5.0 && mine[71] == 1.0, "own inside info kept: {:?}", &mine[46..48]);
+    assert_eq!([theirs[46], theirs[47], theirs[71]], [0.0; 3], "enemy inside info leaked");
+}
+
 /// AMB-030-4 / 010-R5: an effect whose centre tile is not visible now is not observed, even when
 /// its circle reaches visible tiles (the OpenBW shim sends every bullet).
 #[test]
