@@ -519,8 +519,10 @@ class UraniumModule : public AIModule {
       }
     effects_.clear();
     for (Bullet b : Broodwar->getBullets()) {
-      if (!b->isVisible(g_me)) continue;
+      // AMB-030-4 / 010-R5: with CompleteMapInformation on, BWAPI reports every bullet visible,
+      // so keep only bullets whose centre tile we see now (what a player's screen shows).
       Position p = b->getPosition();
+      if (!b->isVisible(g_me) || !Broodwar->isVisible(TilePosition(p))) continue;
       effects_.push_back(UrEffect{(uint16_t)b->getType().getID(), (uint16_t)std::max(0, p.x), (uint16_t)std::max(0, p.y),
                                   b->getRemoveTimer(), b->getPlayer() ? b->getPlayer()->getID() : UR_NONE});
     }

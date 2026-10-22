@@ -1,6 +1,6 @@
 # 030 — Observation Features
 
-- **Status**: Approved (2026-10-15. 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): R2 맵 공개 자원 예외(010-R5, E-3), R4 `entity_cell` 재계산·flip 기준 크기(B-6), R10 평가 대전 `last_failed` 0 고정(E-5), R11 Random 상대 종족 모름(E-6), §3 hazard 반지름·채널(E-1), F_c = 76)
+- **Status**: Approved (2026-10-15. 2026-10-22 개정: §3 관측된 효과 = 중심 타일이 보이는 효과(AMB-030-4, 사용자 결정). 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): R2 맵 공개 자원 예외(010-R5, E-3), R4 `entity_cell` 재계산·flip 기준 크기(B-6), R10 평가 대전 `last_failed` 0 고정(E-5), R11 Random 상대 종족 모름(E-6), §3 hazard 반지름·채널(E-1), F_c = 76)
 - **Related**: [010](010-game-protocol.md), [031](031-action-space.md), [032](032-model-architecture.md), [034](034-action-table.md), [040](040-replay-dataset.md)
 
 ## Purpose
@@ -77,6 +77,8 @@ RawFrame과 에이전트 메모리를 모델 입력 텐서로 변환하는 규�
 `last_seen_age`는 타일을 자기 시야로 마지막으로 본 뒤 지난 시간이다(정찰 기록, 032 §2.4의 장기 정보). 지금 보이는 타일은 0, 한 번도 보지 못한 타일은 1, 그 외는 log(1+경과 프레임)/log(1+86400)이다. 적 유닛의 과거 위치는 담지 않는다. 단기 이동은 코어가 담당한다 (AMB-030-1 Resolved, 2026-10-16: 사용자가 Claude에게 결정을 위임).
 
 hazard 채널(2026-10-19 사용자 결정, E-1, AMB-030-2): 관측된 효과마다 효과 위치를 중심으로 **그 효과의 실제 반지름**(1.16.1 게임 데이터 기준 영향 범위, 효과 종류별)의 원과 겹치는 타일을 1로 칠한다(고정 16px이 아님). Plague와 Ensnare도 hazard 채널(기타)에 넣는다. 효과별 반지름 값은 구현 때 게임 데이터에서 옮겨 이 절에 기록한다.
+
+**관측된 효과의 정의(2026-10-22 사용자 결정, AMB-030-4)**: 효과 위치(중심)의 타일이 그 프레임에 **자기 시야로 보이는** 효과만 관측된 것이다. 사람 화면에서 안개 속 탄환·마법이 그려지지 않는 것과 같은 규칙이다. 에이전트는 feature를 만들 때 `RawFrame.visibility`로 이 조건을 다시 검사해, 조건을 어긴 효과를 버린다. 기존 BC shard도 재build 없이 같은 규칙이 적용된다. 브리지도 같은 규칙으로 보낸다(010-R5). 배경: OpenBW shim은 CompleteMapInformation을 켜는데, 이때 BWAPI가 모든 탄환을 보이는 것으로 처리한다(`BulletImpl.cpp`). 그래서 2026-10-22 전 데이터와 학습에는 시야 밖 탄환이 들어 있었다(`reports/m7_scr_field_mapping.md` §4-2).
 
 효과별 반지름(2026-10-19 구현 기록, 코드 `crates/uranium-env/src/features/extract.rs` `hazard_radius`). 브리지가 `Effect.radius`(> 0)를 보내면 그 값을 쓰고, 지금 OpenBW 브리지는 0을 보내므로 아래 표를 쓴다. 출처는 OpenBW `bwgame.h`(1.16.1 동작 재현)와 BWAPI 4.2 `WeaponType.cpp` 스플래시 반지름, `unit_types.toml` 크기다. 상자 모양 효과는 반폭을 반지름으로 쓴다. 타일은 원이 그 타일 사각형과 겹치면(원 중심에서 타일까지 최단 거리 ≤ 반지름) 1이다.
 

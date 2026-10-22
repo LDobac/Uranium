@@ -420,6 +420,29 @@ fn hazard_uses_effect_radius_030_e1() {
     assert_eq!(at(ch::HAZARD_STORM, 31, 62), 0.0, "plague is not a storm");
 }
 
+/// AMB-030-4 / 010-R5: an effect whose centre tile is not visible now is not observed, even when
+/// its circle reaches visible tiles (the OpenBW shim sends every bullet).
+#[test]
+fn hazard_ignores_effects_with_unseen_centre_amb_030_4() {
+    use uranium_proto::{Effect, EffectKind};
+    let map = map_info();
+    let mut mem = AgentMemory::new(&game_info());
+    let mut f = frame(10, vec![], false);
+    let ef = |kind, pos| Effect { kind, pos, radius: 0, remaining_frames: None, source_owner: None };
+    f.effects = vec![ef(EffectKind::PsionicStorm, (1000, 1000)), ef(EffectKind::PsionicStorm, (2000, 2000))];
+    // Hide only the second storm's centre tile (62, 62); its neighbours stay visible.
+    let (w, h) = (f.visibility.width, f.visibility.height);
+    let mut bits = vec![1u8; w as usize * h as usize];
+    bits[62 * w as usize + 62] = 0;
+    f.visibility = uranium_proto::BitGrid::from_bytes(w, h, &bits);
+    let o = extract(&f, &mut mem, &map, None);
+    let at = |c: usize, x: usize, y: usize| o.obs.spatial[c * CELLS + y * MAP + x];
+    assert_eq!(at(ch::HAZARD_STORM, 31, 31), 1.0, "visible storm is observed");
+    for (x, y) in [(61, 62), (62, 62), (63, 62), (62, 61)] {
+        assert_eq!(at(ch::HAZARD_STORM, x, y), 0.0, "storm with an unseen centre leaks at ({x}, {y})");
+    }
+}
+
 /// 030-R4 / B-6: a flipped even-width building's cell is the cell of the mirrored building
 /// (W = 96, Barracks x0 = 20 -> mirrored x0 72, centre tile 74), recomputed from the pixel.
 #[test]

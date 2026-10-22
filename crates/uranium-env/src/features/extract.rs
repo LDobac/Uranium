@@ -299,7 +299,10 @@ fn spatial(w: &World, entities: &[&Entity]) -> Vec<f32> {
         }
     }
     // 030 §3 / E-1: hazards (observed effects only), every tile the effect's circle overlaps.
-    for ef in &w.frame.effects {
+    // AMB-030-4: an effect is observed only when its centre tile is visible now, as on a
+    // player's screen. The OpenBW shim sends every bullet (CompleteMapInformation makes BWAPI
+    // report all bullets visible), so the check is made here and also covers existing shards.
+    for ef in w.frame.effects.iter().filter(|ef| w.frame.visibility.get(ef.pos.0 / 32, ef.pos.1 / 32)) {
         let c = match ef.kind {
             EffectKind::PsionicStorm => ch::HAZARD_STORM,
             EffectKind::DarkSwarm => ch::HAZARD_SWARM,
