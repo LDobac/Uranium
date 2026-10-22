@@ -252,6 +252,15 @@ impl Sources {
                 }
             })
             .collect();
+        // 030-R11 diagnosis: where SC:R keeps a lobby-Random pick (the race is rolled before the
+        // plugin's first frame).
+        crate::log::log(&format!(
+            "race fields: player.race {:?} starting_races {:?} player_randomization {:?} starting_player_types {:?}",
+            (0..8).map(|p| unsafe { (*self.players.add(p)).race }).collect::<Vec<_>>(),
+            &g.starting_races[..8],
+            g.player_randomization,
+            &g.starting_player_types[..8]
+        ));
         let mut starts = [(0u16, 0u16); 8];
         for (i, s) in g.start_position.iter().enumerate() {
             starts[i] = (s[0], s[1]);

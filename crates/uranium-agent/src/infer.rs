@@ -103,11 +103,15 @@ pub struct InferOptions {
     /// evaluation games of BC checkpoints (core ablation 032-R17, 041-AC2 bc-vs-t0) set this
     /// (plan `zero_last_failed = true`). RL (042) leaves it off and uses the real value.
     pub zero_last_failed: bool,
+    /// 012-R19 (SC:R realtime): before serving, run one batch-1 forward per padded entity count up
+    /// to this many entities, so kernel autotune does not stall a live game (the first forward on
+    /// CUDA took 57 s in the first SC:R game, 2026-10-22). 0 = no warm-up.
+    pub warmup_entities: usize,
 }
 
 impl InferOptions {
     pub fn new(backend: InferBackend) -> Self {
-        Self { backend, max_batch: 32, max_wait: Duration::from_millis(5), capacity: 128, pad_entities: 64, zero_last_failed: false }
+        Self { backend, max_batch: 32, max_wait: Duration::from_millis(5), capacity: 128, pad_entities: 64, zero_last_failed: false, warmup_entities: 0 }
     }
 }
 
@@ -274,7 +278,18 @@ fn serve<C: CoreInit + 'static>(dir: &Path, sample: SampleMode, opts: InferOptio
     let loaded = (|| -> Result<_> {
         let device = opts.backend.device()?;
         let cols = ActionColumns::from_table(action_table())?;
-        let (net, _meta) = checkpoint::load::<C>(dir, &cols, FEATURE_SCHEMA_VERSION, ACTION_SCHEMA_VERSION, &device)?;
+        let (net, meta) = checkpoint::load::<C>(dir, &cols, FEATURE_SCHEMA_VERSION, ACTION_SCHEMA_VERSION, &device)?;
+        if opts.warmup_entities > 0 {
+            let cfg = meta.net_config()?;
+            let pad = opts.pad_entities.max(1);
+            for n in (pad..=opts.warmup_entities.next_multiple_of(pad)).step_by(pad) {
+                let t = Instant::now();
+                let (ob, _) = uranium_model::synthetic::random_obs(&cfg, &cols, 1, n, n as u64, &device);
+                let out = net.act(&ob, net.init_state(1, &device), sample.temp());
+                let _ = out.action.action.into_data();
+                elog!("[infer] warm-up N={n}: {:.1}s", t.elapsed().as_secs_f64());
+            }
+        }
         Ok((device, cols, net))
     })();
     let (device, cols, mut net) = match loaded {

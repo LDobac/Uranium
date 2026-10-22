@@ -99,6 +99,12 @@ unsafe fn resolve(api: *const PluginApi) -> Result<Api, String> {
             unsafe { (a.$f)() }.ok_or_else(|| format!("samase does not provide {}", stringify!($f)))?
         };
     }
+    // Variables must be registered with load_vars before read_vars returns them (as aise does);
+    // 0 = not found, 1 = needs a newer samase, 2 = read only, 3 = read / write.
+    let vars = [VarId::TilesetIndexedMapTiles as u16, VarId::MinitileData as u16];
+    let mut loaded = [0u8; 2];
+    unsafe { (a.load_vars)(vars.as_ptr(), loaded.as_mut_ptr(), vars.len()) };
+    log(&format!("load_vars TilesetIndexedMapTiles {} MinitileData {} (>= 2 = readable)", loaded[0], loaded[1]));
     let mut ext_ptr: *mut samase_plugin::ExtendedArray = std::ptr::null_mut();
     let ext_len = unsafe { (a.extended_arrays)(&mut ext_ptr) };
     let ext = (0..ext_len)

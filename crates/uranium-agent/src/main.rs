@@ -117,10 +117,14 @@ impl From<SurrenderArg> for uranium_agent::infer::SurrenderMode {
     }
 }
 
-/// Starts the inference server for `--checkpoint` (020-R11); `surrender` applies when the flag is absent.
-fn model_policy(model: &ModelArgs, surrender: SurrenderArg) -> Result<PolicySpec> {
+/// Starts the inference server for `--checkpoint` (020-R11); `surrender` applies when the flag is
+/// absent. `warmup`: forward every padded entity count up to N_MAX before serving (SC:R realtime).
+fn model_policy(model: &ModelArgs, surrender: SurrenderArg, warmup: bool) -> Result<PolicySpec> {
     let dir = resolve_checkpoint(model.checkpoint.as_ref().context("a model policy needs --checkpoint")?)?;
     let mut opts = InferOptions::new(model.backend.map_or_else(InferBackend::from_env, Ok)?);
+    if warmup {
+        opts.warmup_entities = uranium_env::features::N_MAX;
+    }
     opts.max_batch = model.max_batch.max(1);
     opts.max_wait = Duration::from_millis(model.max_wait_ms);
     opts.zero_last_failed = model.zero_last_failed;
@@ -137,12 +141,12 @@ fn main() -> Result<()> {
         Cmd::Serve { listen, policy, out, respond_delay_ms, sessions, model } => {
             let default = match policy {
                 PolicyKind::ScriptedT0 => PolicySpec::ScriptedT0,
-                PolicyKind::Model => model_policy(&model, SurrenderArg::Shadow)?,
+                PolicyKind::Model => model_policy(&model, SurrenderArg::Shadow, false)?,
             };
             let opts = ServeOptions { delay_ms: respond_delay_ms, max_sessions: sessions, ..ServeOptions::new(default) };
             serve_addr(&listen, opts, out)
         }
-        Cmd::Scr { listen, out, model } => serve_addr(&listen, ServeOptions::new(model_policy(&model, SurrenderArg::On)?), out),
+        Cmd::Scr { listen, out, model } => serve_addr(&listen, ServeOptions::new(model_policy(&model, SurrenderArg::On, true)?), out),
         Cmd::Summarize { input, out, title } => summary::summarize(&input, &out, &title),
         Cmd::RandomCheckpoint { out, core, win_open } => {
             let kind = match core {
