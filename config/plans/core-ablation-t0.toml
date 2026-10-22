@@ -5,6 +5,9 @@
 name = "core-ablation-t0"
 seed_base = 32800
 save_replay = true
+# 032-R17 (2026-10-22): 2 h wall limit, see core-ablation-h2h.toml (the 1,800 s default cuts
+# games that reach the 60-minute draw when inference is slow).
+wall_timeout_s = 7200
 # 030-R10 / E-5: BC checkpoints get last_failed = 0 (BC data never has a failed command).
 zero_last_failed = true
 [[matchup]]

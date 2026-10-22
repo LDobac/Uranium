@@ -134,3 +134,6 @@
   - **발견**: 로비 Random 상대가 처음부터 실제 종족으로 감(030-R11 위반, SC:R 로비 값 위치 미확인). 사람이 나간 판은 다음 게임 시작 때 Aborted로 기록됨. 훅 최대 11.2ms 튐 1회.
   - 로그는 worktree `runs/scr/logs/{game1-lstm,game2-3-gtrxl}/`, `runs/scr/sessions.jsonl`
 - 2026-10-23 — M7 1차 세션 정리: 실게임 로그를 학습 PC 메인 작업 사본 `runs/scr/`로 옮김(logs/game1-lstm, logs/game2-3-gtrxl, sessions.jsonl, mod/), samase 실행 파일·탐침·스파이크 로그는 저장소 밖 스파이크 폴더에 둠, 학습 PC `.env`에 `URANIUM_SCR_SAMASE` 등록, CLAUDE.md에 M7 링크·명령 추가. 다음 할 일은 `reports/m7_scr_bridge.md` 4절
+- 2026-10-22 17:00~17:14 — 네 장비 master 6fa8fbd 재빌드(GG 항복 반영 proto v4, BWAPI 패치 0014, 브리지, release). 코어 비교 학습은 두 run 모두 `ckpt-5300` 완료(GTrXL 장비 비율 CUDA 84.4% / Vulkan 15.6%, LSTM CUDA 100%) (`m6_core_ablation.md` 4·5절)
+- 2026-10-22 17:40~21:21 — 코어 비교 대전 시도 2회 실패(사용자 지시로 학습 PC 제외, Linux 세 대 + Linux Vulkan 추론): 1차는 에이전트가 127.0.0.1로 열려 다른 호스트 판이 0초 종료, 2차는 plan 실제 시간 상한 1,800초에 맞대결 85판 중 69판이 잘림(약 24프레임/초). **발견**: 브리지 시작 실패 판을 스케줄러가 `Finished`로 기록. 출력 `<shared>/artifacts/m6_core_ablation/core-ablation-eval-20261022-abort{1,2-timeout}/` (`m6_core_ablation.md` 5절)
+- 2026-10-23 — **결정**(사용자): 코어 비교 대전·채점은 학습 PC를 포함해 학습 PC에서 끝낸다. 두 plan `wall_timeout_s = 7200`. 빌드는 학습 때 관측과 같은 6fa8fbd로 고정(이후 AMB-030-4·5 관측 변경 전, 학습 PC `%LOCALAPPDATA%\uranium-build\6fa8fbd\`). 실행 스크립트 `<shared>/artifacts/m6_core_ablation/final/run_final.ps1`, 학습 PC 재부팅 뒤 시작

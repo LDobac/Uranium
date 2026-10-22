@@ -167,7 +167,7 @@ uranium-env run --plan config/plans/core-ablation-t0.toml  --backend cuda --out 
 | target_loc 타일 오차 | | |
 | selected F1 | | |
 | update 시간(s, GPU 단독) | | |
-| 장비 비율 (update 수: 이 PC CUDA / BC250 1호기 Vulkan) | | |
+| 장비 비율 (update 수: 이 PC CUDA / BC250 1호기 Vulkan) | 5,300 / 0 (100% CUDA) | 4,474 / 826 (CUDA 84.4%) |
 
 | 대전 | 결과 (Wilson 95%) |
 |---|---|
@@ -306,3 +306,14 @@ run 배정 (작업자 큐 순서대로, 061-R13)
 - **결과 3 — argmax는 랠리 지정 고리에 갇힌다**: 결정의 99.9%가 SetRally_Pos다. SetRally_Pos 뒤 SetRally_Pos 확률이 0.90이라 한 번 고르면 계속 고른다. 사람 데이터에서도 SetRally_Pos 뒤 SetRally_Pos는 64%(반복 클릭, 040-R4 반복 병합 없음)이고, 모델은 이것을 그대로 배웠다(리플레이 0.63). argmax 평가는 이 체크포인트에 쓸 수 없다. 평가 plan은 이미 확률적 샘플링이다.
 - **판단(제안, 미확정)**: 지금 플레이는 주로 학습량 부족(①)과 BC의 한계로 보인다. 입력 버그(③)는 시작 시점에서 배제했다. 반복 클릭 학습은 argmax와 APM에 영향을 준다. 다만 "반복 병합 없음"은 사용자 결정(040-R4)이라 바꾸지 않았다.
 - 출력(지우지 않음): 학습 PC 저장소 `runs/lstm-vs-t1-2026-10-21/`(확률적 9판), `runs/lstm-vs-t1-argmax-2026-10-21/`(argmax 9판), `runs/lstm-trace-2026-10-21/`(기록 6판 `trace/*.bin`, 리플레이, `first_decisions.md`(무효 레이블 포함), `first_decisions_valid.md`(유효 레이블만)), plan `runs/adhoc-plans/`. 진단 코드는 로컬 브랜치 `diag-first-decisions`(02acb9a, worktree `../Uranium-diag`, master 미반영).
+
+### 2026-10-22~23 비교 단계 (재빌드, 대전 시도 2회 실패, 최종 실행 준비)
+- **16:57 시작(사용자 지시 "비교 단계 시작").** GTrXL 학습은 07:53Z에 `ckpt-5300`으로 끝나 있었다(학습 PC 작업자). 장비 비율은 4절 표에 적었다(`uranium-train devices`).
+- **17:00 재빌드(사용자 지시 "최신 빌드로 다시 시작").** 네 장비(학습 PC, Linux 호스트 A·B·C)를 master 6fa8fbd로 다시 빌드했다: OpenBW·BWAPI(패치 0014 새로 적용), 브리지, release(학습 PC는 `--features cuda`). 17:01~17:14에 끝났다. Linux 호스트 C의 첫 시도는 비대화형 ssh에서 `cargo`가 PATH에 없어 브리지 단계에서 실패했고, `~/.cargo/env`를 읽게 해 다시 빌드했다. 빌드 로그는 학습 PC 저장소 `runs/build_20261022.log`, Linux `~/build-logs/build_20261022.log`.
+- **학습 PC 사용 중단(사용자 지시).** 학습 PC에서 돌던 val 500게임 채점(LSTM, 17:04~17:47)을 끝나기 전에 멈췄다. 대전은 Linux 세 대로만 하기로 했다: 스케줄러·추론은 Linux 호스트 A(Vulkan), 게임은 A·B·C(동시 5·4·3판).
+- **1차 시도(17:40) 실패 — 에이전트 주소.** Linux 호스트 A에는 `URANIUM_AGENT_LISTEN`/`PUBLIC_ADDR`가 없어 에이전트가 `127.0.0.1:7600`으로 열렸다. B·C의 브리지는 자기 장비의 127.0.0.1에 접속하려다 30초 재시도 끝에 시작을 포기했고(`launcher.log`: `connect 127.0.0.1:7600: Connection refused`), 게임은 0초에 끝났다. 스케줄러는 이 판들을 실패가 아니라 `Finished (30s)`로 기록했고 `results.jsonl`은 비었다(발견: 브리지 시작 실패를 실패 판으로 세지 않음, 020 수정 제안 예정). 실행 스크립트에서 두 값을 LAN 주소로 지정해 다시 시작했다.
+- **2차 시도(17:42~21:21) 중단 — 실제 시간 상한.** plan의 `wall_timeout_s` 기본값 1,800초에 맞대결 85판 중 69판이 `Timeout`으로 끊겼고, 정상 종료는 16판이었다. 추론이 Linux 호스트 A Vulkan 하나에 몰려 게임마다 약 24프레임/초(학습 PC CUDA 동시 9판은 약 100프레임/초)로 진행됐기 때문이다. 게임 시간 약 30분이 넘는 판은 모두 잘렸다. 게임 호스트 세 대의 CPU는 거의 놀았다(부하 0.1 이하). 정상 종료 16판은 짧은 판만 남은 것이라 결과로 쓰지 않는다.
+- **결정(2026-10-23, 사용자)**: 학습 PC를 포함해 학습 PC에서 끝낸다. 두 plan에 `wall_timeout_s = 7200`(안전장치, 결과 무관)을 넣었다.
+- **빌드 고정(Claude 판단)**: 비교 대전·채점은 6fa8fbd 빌드로 한다. 그 뒤 master(890bf3f·e93e3a0)가 OpenBW 관측에서 상대 생산 큐와 보이지 않는 칸의 탄환을 숨긴다(AMB-030-4·5). 두 모델은 변경 전 관측으로 학습했으므로 학습 때와 같은 입력으로 비교한다. 두 코어 조건은 같다. 학습 PC는 실행 파일·Windows 브리지·BWAPI 빌드를 `%LOCALAPPDATA%\uranium-build\6fa8fbd\`에 고정 복사했다.
+- **최종 실행 준비**: `<shared>/artifacts/m6_core_ablation/final/run_final.ps1`(맞대결 100 → T0 600 → val 500 채점, 끝난 단계는 건너뜀, 끝나지 않은 단계 폴더는 보존 후 다시 시작). 고정 plan·호스트 목록·BC 설정은 같은 폴더 `plans/`에 있다. 출력은 모두 공용 드라이브(학습 PC 로컬 디스크)에 바로 쓴다. 학습 PC 재부팅 뒤 시작한다.
+- 출력 위치(지우지 않음): 1차 `<shared>/artifacts/m6_core_ablation/core-ablation-eval-20261022-abort1/`, 2차 `.../core-ablation-eval-20261022-abort2-timeout/`(맞대결 16판 리플레이·결과, 스케줄러·동기화 로그). Linux 호스트 A 원본은 `runs/core-ablation-eval-20261022{,-abort1}/`. 이전 대전 리플레이 사본 `.../earlier/`는 만들지 않았다(학습 PC 저장소 `runs/`에만 있음).
