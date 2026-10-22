@@ -59,7 +59,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-001-4 | 장비 라벨(보드 이름·장비 번호)을 문서에 쓰는 것이 001-R10 위반인지(BC 전 리뷰 G-D9) | Resolved (2026-10-19: git 추적 파일(spec·코드·주석·추적 config·docs·CLAUDE.md)에는 장비 종류·상태를 쓰지 않고 OS·백엔드로만 표기, 허용 위치는 git 미추적 config와 리포트 — 001-R10) |
 | AMB-011-1 | MPQ·맵 파일 확보 경로 (사용자 미보유) | Resolved (2026-10-15: 사용자 구버전 확보 + Claude SC:R CASC 추출 조사 병행) |
 | AMB-012-1 | samase_scarf 분석 실패 시 대안 선택 | Deferred (M7) |
-| AMB-012-2 | 대상 SC:R 빌드 정책, 기존 samase 환경 | Deferred (M7) |
+| AMB-012-2 | 대상 SC:R 빌드 정책, 기존 samase 환경 | Resolved (2026-10-22: SC:R 1.23.10.13515 하나로 고정(exe 해시, 다른 빌드는 012-R6 비활성), 기존 samase 환경 없음 → M7 스파이크에서 로더 확보·설치 절차 조사, 실전 PC는 CUDA 학습 호스트(Windows)와 같은 PC) |
 | AMB-012-3 | 실행 환경·안티치트 정책 (→AMB-000-2) | Resolved (2026-10-15: 로컬/LAN 한정) |
 | AMB-020-1 | OpenBW 원격 호스트 사양 | Resolved (2026-10-15: 게임 전용 Linux PC 2대 이상, 사양 자동 감지) |
 | AMB-020-2 | 최대 게임 시간·무승부 규칙 | Resolved (2026-10-15: 60분 초과 시 무승부, 보상 0 — 점수 판정안에서 변경) |
