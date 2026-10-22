@@ -34,6 +34,18 @@ enum Cmd {
         #[command(flatten)]
         model: ModelArgs,
     },
+    /// SC:R live play (012-R19): the SC:R bridge connects once per game, forever. Realtime sessions
+    /// get the Act deadline (012-R7) and last_failed = 0 (012-R14); surrender defaults to `on`
+    /// (012-R11).
+    Scr {
+        #[arg(long, default_value = "127.0.0.1:7700")]
+        listen: String,
+        /// JSONL file receiving one record per game (appended).
+        #[arg(long, default_value = "runs/scr/sessions.jsonl")]
+        out: PathBuf,
+        #[command(flatten)]
+        model: ModelArgs,
+    },
     /// Summarize a JSONL results file into Markdown.
     Summarize {
         input: PathBuf,
@@ -80,9 +92,9 @@ struct ModelArgs {
     #[arg(long)]
     zero_last_failed: bool,
     /// 031-R12 / 020-R14: surrender mode (`off`, `shadow`: check and record only, `on`: chat and
-    /// leave). SC:R games use `on` (012-R11).
-    #[arg(long, value_enum, default_value = "shadow")]
-    surrender: SurrenderArg,
+    /// leave). Default `shadow` for `serve`, `on` for `scr` (012-R11).
+    #[arg(long, value_enum)]
+    surrender: Option<SurrenderArg>,
     /// 020-R14: chat line sent before leaving (empty = no chat, at most 79 bytes).
     #[arg(long, default_value = uranium_agent::infer::DEFAULT_CHAT)]
     surrender_chat: String,
@@ -105,27 +117,32 @@ impl From<SurrenderArg> for uranium_agent::infer::SurrenderMode {
     }
 }
 
+/// Starts the inference server for `--checkpoint` (020-R11); `surrender` applies when the flag is absent.
+fn model_policy(model: &ModelArgs, surrender: SurrenderArg) -> Result<PolicySpec> {
+    let dir = resolve_checkpoint(model.checkpoint.as_ref().context("a model policy needs --checkpoint")?)?;
+    let mut opts = InferOptions::new(model.backend.map_or_else(InferBackend::from_env, Ok)?);
+    opts.max_batch = model.max_batch.max(1);
+    opts.max_wait = Duration::from_millis(model.max_wait_ms);
+    opts.zero_last_failed = model.zero_last_failed;
+    if model.surrender_chat.len() > uranium_proto::MAX_SURRENDER_CHAT {
+        anyhow::bail!("--surrender-chat is {} bytes, at most {} (020-R14)", model.surrender_chat.len(), uranium_proto::MAX_SURRENDER_CHAT);
+    }
+    let surrender = model.surrender.unwrap_or(surrender);
+    Ok(PolicySpec::Model(InferenceHandle::start(&dir, model.sample, opts)?.with_surrender(surrender.into(), &model.surrender_chat)))
+}
+
 fn main() -> Result<()> {
     load_env();
     match Cli::parse().cmd {
         Cmd::Serve { listen, policy, out, respond_delay_ms, sessions, model } => {
             let default = match policy {
                 PolicyKind::ScriptedT0 => PolicySpec::ScriptedT0,
-                PolicyKind::Model => {
-                    let dir = resolve_checkpoint(&model.checkpoint.context("--policy model needs --checkpoint")?)?;
-                    let mut opts = InferOptions::new(model.backend.map_or_else(InferBackend::from_env, Ok)?);
-                    opts.max_batch = model.max_batch.max(1);
-                    opts.max_wait = Duration::from_millis(model.max_wait_ms);
-                    opts.zero_last_failed = model.zero_last_failed;
-                    if model.surrender_chat.len() > uranium_proto::MAX_SURRENDER_CHAT {
-                        anyhow::bail!("--surrender-chat is {} bytes, at most {} (020-R14)", model.surrender_chat.len(), uranium_proto::MAX_SURRENDER_CHAT);
-                    }
-                    PolicySpec::Model(InferenceHandle::start(&dir, model.sample, opts)?.with_surrender(model.surrender.into(), &model.surrender_chat))
-                }
+                PolicyKind::Model => model_policy(&model, SurrenderArg::Shadow)?,
             };
             let opts = ServeOptions { delay_ms: respond_delay_ms, max_sessions: sessions, ..ServeOptions::new(default) };
             serve_addr(&listen, opts, out)
         }
+        Cmd::Scr { listen, out, model } => serve_addr(&listen, ServeOptions::new(model_policy(&model, SurrenderArg::On)?), out),
         Cmd::Summarize { input, out, title } => summary::summarize(&input, &out, &title),
         Cmd::RandomCheckpoint { out, core, win_open } => {
             let kind = match core {

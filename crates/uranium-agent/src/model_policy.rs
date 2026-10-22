@@ -198,6 +198,14 @@ impl ModelPolicy {
         })
     }
 
+    /// 012-R14 / 012-R18: SC:R (realtime) sessions get no `CommandFailed`, so `last_failed` is 0
+    /// whatever the inference server was started with.
+    pub fn with_zero_last_failed(mut self) -> Self {
+        self.mem.zero_last_failed = true;
+        self.stats.zero_last_failed = true;
+        self
+    }
+
     /// Records the trajectory through `o` with 033 rewards for strategy `z` (042).
     pub fn with_observer(mut self, z: Option<Strategy>, o: Box<dyn SessionObserver>) -> Self {
         self.reward = Some(RewardTracker::new(z.clone(), self.self_player));

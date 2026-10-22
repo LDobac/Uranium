@@ -160,7 +160,13 @@ pub fn spec_index(info: &GameInfo, slot: u8) -> u8 {
     name.strip_prefix("uranium-p").and_then(|i| i.parse().ok()).unwrap_or(slot)
 }
 
-pub fn make_policy(spec: &PolicySpec, game_id: u64, info: &GameInfo, build: T0Build) -> Result<Box<dyn Policy>> {
+/// 012-R7: a realtime Act is valid until the observed frame plus this many frames (about 1 s,
+/// AMB-012-5); the bridge drops it after that.
+pub const REALTIME_ACT_FRAMES: u32 = 24;
+
+/// `realtime`: the bridge said `Mode::Realtime` (SC:R, 012-R18).
+pub fn make_policy(spec: &PolicySpec, game_id: u64, info: &GameInfo, build: T0Build, realtime: bool) -> Result<Box<dyn Policy>> {
+    let model = |p: ModelPolicy| if realtime { p.with_zero_last_failed() } else { p };
     let terran = || -> Result<()> {
         let me = info.players.iter().find(|p| p.is_self).map(|p| p.race);
         if me != Some(Race::Terran) {
@@ -172,12 +178,12 @@ pub fn make_policy(spec: &PolicySpec, game_id: u64, info: &GameInfo, build: T0Bu
         PolicySpec::ScriptedT0 => Box::new(uranium_scripted::for_game_build(info, build)),
         PolicySpec::Model(h) => {
             terran()?;
-            Box::new(ModelPolicy::new(h, info)?)
+            Box::new(model(ModelPolicy::new(h, info)?))
         }
         PolicySpec::Learner(l) => {
             terran()?;
             let (z, observer) = l.session(game_id, info);
-            Box::new(ModelPolicy::new(l.handle(), info)?.with_observer(z, observer))
+            Box::new(model(ModelPolicy::new(l.handle(), info)?.with_observer(z, observer)))
         }
     })
 }
@@ -453,7 +459,7 @@ fn run_session(stream: TcpStream, opts: &ServeOptions, rec: &mut SessionRecord) 
     rec.policy = spec.label();
     let build = opts.t0_builds.lock().unwrap().get(&(hello.game_id, index)).copied().unwrap_or_default();
     rec.t0_build = build.name().to_string();
-    let mut policy = make_policy(&spec, hello.game_id, &info, build)?;
+    let mut policy = make_policy(&spec, hello.game_id, &info, build, hello.mode == Mode::Realtime)?;
     let res = play(&mut reader, &mut writer, &mut *policy, &hello, rec, delay_ms, &opts.ends);
     if res.is_err() {
         // Disconnected or failed mid-game: not a finished episode (042-R3).
@@ -465,6 +471,7 @@ fn run_session(stream: TcpStream, opts: &ServeOptions, rec: &mut SessionRecord) 
 #[allow(clippy::too_many_arguments)]
 fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, policy: &mut dyn Policy, hello: &Hello, rec: &mut SessionRecord, delay_ms: u64, ends: &EndBoard) -> Result<()> {
     let (mut reader, mut writer) = (reader, writer);
+    let realtime = hello.mode == Mode::Realtime;
     let mut policy_time = Duration::ZERO;
     let mut first = true;
     let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
@@ -473,7 +480,13 @@ fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, po
         match read_msg::<BridgeMsg>(&mut reader)? {
             BridgeMsg::Privileged(p) => {
                 rec.privileged_msgs += 1;
-                policy.on_privileged(&p)
+                // 010-R10: realtime bridges must never send it; count it (012-AC6) but keep it away
+                // from the policy.
+                if realtime {
+                    elog!("[agent] game {} slot {}: PrivilegedSummary in a realtime session ignored (010-R10)", hello.game_id, hello.slot);
+                } else {
+                    policy.on_privileged(&p)
+                }
             }
             BridgeMsg::Frame(f) => {
                 let mut bytes = Vec::new();
@@ -513,7 +526,7 @@ fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, po
                     }
                 }
                 let t = Instant::now();
-                let act = match policy.on_frame(&f) {
+                let mut act = match policy.on_frame(&f) {
                     Ok(a) => a,
                     Err(e) => {
                         rec.model = policy.model_stats();
@@ -525,6 +538,10 @@ fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, po
                 last_cmds.clone_from(&act.cmds);
                 if delay_ms > 0 {
                     std::thread::sleep(Duration::from_millis(delay_ms));
+                }
+                if realtime {
+                    // 012-R7 / 010-R7: every policy's Act expires REALTIME_ACT_FRAMES after the frame it saw.
+                    act.valid_until_frame = Some(f.frame + REALTIME_ACT_FRAMES);
                 }
                 write_msg(&mut writer, &AgentMsg::Act(act))?;
             }

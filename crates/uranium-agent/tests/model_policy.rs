@@ -198,6 +198,63 @@ fn routes_pick_policy_per_slot_020_r11() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 012-R7 / 012-R18 / 010-R10: a realtime (SC:R) session's Acts expire 24 frames after the frame
+/// they answer, its model plays with last_failed = 0 although the server was started without
+/// it, and a PrivilegedSummary is counted but kept from the policy. A lockstep session on the same
+/// server is unchanged.
+#[test]
+fn realtime_session_012_r18() {
+    let dir = checkpoint(CoreKind::Lstm, "realtime");
+    let h = handle(&dir, SampleMode::Argmax, 2);
+    assert!(!h.zero_last_failed);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let sink: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let opts = ServeOptions { max_sessions: 2, ..ServeOptions::new(PolicySpec::Model(h.clone())) };
+    let server_sink = sink.clone();
+    let server = std::thread::spawn(move || serve(listener, opts, Arc::new(Mutex::new(SinkWriter(server_sink)))).unwrap());
+    let bridge = |game_id: u64, mode: Mode| {
+        std::thread::spawn(move || {
+            let s = TcpStream::connect(addr).unwrap();
+            let mut r = BufReader::new(s.try_clone().unwrap());
+            let mut w = BufWriter::new(s);
+            let backend = if mode == Mode::Realtime { Backend::Remastered } else { Backend::OpenBw };
+            let hello = Hello { protocol_version: PROTOCOL_VERSION, backend, game_version: "test".into(), mode, game_id, slot: 0, replay: false };
+            write_msg(&mut w, &BridgeMsg::Hello(hello)).unwrap();
+            write_msg(&mut w, &BridgeMsg::GameInfo(Box::new(game_info()))).unwrap();
+            let mut deadlines = vec![];
+            for f in frames(0, 3) {
+                write_msg(&mut w, &BridgeMsg::Privileged(PrivilegedSummary { frame: f.frame, ..Default::default() })).unwrap();
+                let seen = f.frame;
+                write_msg(&mut w, &BridgeMsg::Frame(Box::new(f))).unwrap();
+                w.flush().unwrap();
+                let AgentMsg::Act(a) = read_msg::<AgentMsg>(&mut r).unwrap() else { panic!("expected Act") };
+                deadlines.push((seen, a.valid_until_frame));
+            }
+            write_msg(&mut w, &BridgeMsg::End(GameEnd { winner: Some(0), frame: 100, reason: EndReason::Elimination, stats: None, final_frame: None })).unwrap();
+            w.flush().unwrap();
+            deadlines
+        })
+    };
+    let realtime = bridge(1, Mode::Realtime).join().unwrap();
+    let lockstep = bridge(2, Mode::Lockstep).join().unwrap();
+    for (seen, until) in realtime {
+        assert_eq!(until, Some(seen + uranium_agent::REALTIME_ACT_FRAMES), "012-R7 deadline");
+    }
+    assert!(lockstep.iter().all(|(_, until)| until.is_none()), "lockstep Acts carry no deadline");
+    std::thread::sleep(Duration::from_millis(300));
+    let _ = TcpStream::connect(addr);
+    server.join().unwrap();
+    let text = String::from_utf8(sink.lock().unwrap().clone()).unwrap();
+    let recs: Vec<serde_json::Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let by_game = |g: u64| recs.iter().find(|r| r["game_id"] == g).unwrap_or_else(|| panic!("no record for game {g}: {text}"));
+    assert_eq!(by_game(1)["model"]["zero_last_failed"], true, "012-R14: realtime sessions feed last_failed = 0");
+    assert_eq!(by_game(2)["model"]["zero_last_failed"], false);
+    assert_eq!(by_game(1)["privileged_msgs"], 3, "counted for 012-AC6");
+    assert_eq!(by_game(1)["model"]["decisions"], 3);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// M6 hook (042): every decision reaches the observer with per-head log-probs that add up to the
 /// joint behaviour log-prob (032-R15, AMB-042-4).
 #[test]
