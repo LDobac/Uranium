@@ -1,6 +1,6 @@
 # 013 — Version Mapping (1.16.1 ↔ Remastered)
 
-- **Status**: Review (2026-10-22 M7 개정안, 승인 요청 중: 차이표 실측 반영, 013-R1 SC:R 표 위치(AMB-001-5), 013-R3 지연 보정 없음(AMB-012-5), "SC:R 브리지 정규화" 절 추가). **"리플레이 명령 인코딩 (M4)" 절과 013-R6~R8은 Approved (2026-10-16, M4 계획 승인. 2026-10-17 개정: 맵 CHK 정규화, opcode 0x5D)**. 2026-10-19 표기 정정: 013-R1에 현재 테이블 위치를 적고 `uranium-adapter`를 M7 예정으로 표시.
+- **Status**: **Approved** (2026-10-22 사용자 승인, M7 개정: 차이표 실측 반영, 013-R1 SC:R 표 위치(AMB-001-5), 013-R3 지연 보정 없음(AMB-012-5), "SC:R 브리지 정규화" 절 추가). **"리플레이 명령 인코딩 (M4)" 절과 013-R6~R8은 Approved (2026-10-16, M4 계획 승인. 2026-10-17 개정: 맵 CHK 정규화, opcode 0x5D)**. 2026-10-19 표기 정정: 013-R1에 현재 테이블 위치를 적고 `uranium-adapter`를 M7 예정으로 표시.
 - **Related**: [010](010-game-protocol.md), [011](011-bridge-openbw.md), [012](012-bridge-remastered.md)
 
 ## Purpose

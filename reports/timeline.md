@@ -123,3 +123,4 @@
 - 2026-10-22 — **결정·구현**(AMB-030-5, 사용자 결정): 보이는 적 유닛의 내부 정보(생산 큐 길이, 생산·건설·연구 진행도, 핵 장전)는 BWAPI 공정 모드 `canAccessInside` 기준으로 숨긴다. 에이전트 feature 추출에서 다른 플레이어 유닛의 해당 값 3개를 0으로 둔다(재build 없음, BC 본학습부터, 코어 비교는 그대로). 체력·에너지·쿨다운·order·마인 수는 BWAPI가 보이는 적에게도 공개하므로 유지. 테스트 `enemy_inside_info_is_hidden_amb_030_5` (030 §2)
 - 2026-10-22 — **결정**(사용자): SC:R 실전 지연은 보정하지 않고 기록만, 명령 유효 기한은 관측 + 24프레임(AMB-012-5). `uranium-adapter` crate는 만들지 않고 SC:R 표는 `bridge/scr/tables`(AMB-001-5). SC:R `CommandFailed`는 보내지 않고 RL 모델 SC:R 배포 전에 다시 정함(AMB-012-6 Deferred)
 - 2026-10-22 — spec 012·013 M7 개정안(Review): 스파이크 실측(빌드·로더 고정, API 목록, 시야 비트, 지연 1/2프레임, 유닛 배열 3400, 채팅 0x5C), 위 결정, 관측 시점 규칙(012-R8), 게임 종료 판정(012-R15), 에이전트 realtime 처리(012-R18·R19), AC 재구성(AC2~AC7). 001 R1·workspace에서 `uranium-adapter` 삭제. 승인 요청
+- 2026-10-22 — **승인**(사용자): spec 012·013 M7 개정안 Approved(012-R15 시간 제한 없음, 012-R16 접속 실패 시 비활성 포함). 다음은 `bridge/scr`·에이전트 realtime 구현 계획(Plan 모드)

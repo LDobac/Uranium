@@ -1,6 +1,6 @@
 # 012 — Bridge: Remastered (samase plugin)
 
-- **Status**: Review (2026-10-22 개정안. M7 스파이크 결과와 2026-10-22 사용자 결정 AMB-012-1·2·4·5·6, AMB-001-5, AMB-030-4·5를 반영했다. 승인 요청 중)
+- **Status**: **Approved** (2026-10-22 사용자 승인. M7 스파이크 결과와 2026-10-22 사용자 결정 AMB-012-1·2·4·5·6, AMB-001-5, AMB-030-4·5를 반영했다. 012-R15 시간 제한 없음, 012-R16 접속 실패 시 비활성 포함)
 - **Related**: [001](001-system-architecture.md), [010](010-game-protocol.md), [013](013-version-mapping.md), [030](030-observation.md), [050](050-evaluation.md)
 - **근거 리포트**: `reports/m7_scr_spike.md`(실게임 측정), `reports/m7_scr_field_mapping.md`(필드 대응표)
 

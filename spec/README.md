@@ -145,8 +145,8 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | 001 | [System Architecture](001-system-architecture.md) | 전체 구조 | **Approved** |
 | 010 | [Game Protocol](010-game-protocol.md) | 브리지↔에이전트 프로토콜 | **Approved** |
 | 011 | [Bridge: OpenBW](011-bridge-openbw.md) | OpenBW 래퍼 | **Approved** |
-| 012 | [Bridge: Remastered](012-bridge-remastered.md) | SC:R 래퍼 | Review (2026-10-22 개정안) |
-| 013 | [Version Mapping](013-version-mapping.md) | 1.16.1 ↔ SC:R 정규화 | Review (2026-10-22 개정안. 명령 인코딩 절은 **Approved** 2026-10-16) |
+| 012 | [Bridge: Remastered](012-bridge-remastered.md) | SC:R 래퍼 | **Approved** (2026-10-22) |
+| 013 | [Version Mapping](013-version-mapping.md) | 1.16.1 ↔ SC:R 정규화 | **Approved** (2026-10-22. 명령 인코딩 절은 2026-10-16) |
 | 020 | [Env Orchestration](020-env-orchestration.md) | 게임 실행·병렬화 | **Approved** |
 | 021 | [Opponent Pool](021-opponent-pool.md) | 학습 상대 | **Approved** |
 | 030 | [Observation](030-observation.md) | 관측 feature | **Approved** |
