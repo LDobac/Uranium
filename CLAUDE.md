@@ -6,7 +6,8 @@
 ## 진행 상황
 - 시간순 기록: `reports/timeline.md`
 - BC 본학습 전 남은 결정·수정: `reports/m6_pre_bc_review.md` G절
-- 마일스톤별 결과: `reports/` (m2~m6)
+- 마일스톤별 결과: `reports/` (m2~m7)
+- M7 SC:R 남은 과제: `reports/m7_scr_bridge.md` 4절
 
 ## 고정 조건
 | 항목 | 값 |
@@ -62,8 +63,8 @@ crates/
   uranium-bridge-openbw  브리지 Rust 절반 (C ABI)
   uranium-scripted       T0 규칙 기반 봇
 bridge/openbw            BWAPI shim(C++) → liburanium_bridge
-bridge/scr               samase 플러그인 (M7)
-tools/                   bench, casc-extract, openbw/, oss/, worker/, env 로더
+bridge/scr               samase 플러그인 (M7, 자체 Cargo workspace, 표는 tables/)
+tools/                   bench, casc-extract, openbw/, oss/, scr/, worker/, env 로더
 config/                  plans/, ladder/, bc.toml, rl.toml, reward.toml, map_families.toml, map_exclude.toml
 docs/                    windows.md, commands.md
 third_party/             OpenBW·BWAPI·T1 봇 소스(git 미추적) + patches/
@@ -91,3 +92,4 @@ reports/                 리포트, timeline.md
 - BC: `uranium-train bc --dataset replays/shards/<src>... --run <id> --backend <cuda|vulkan>`, `bc-eval`, `bc-epoch`, `split-stats`, `manifest`
 - 작업자: `uranium-train worker --queue <큐> --backend <b> --priority <n>`, 감시 `uranium-train supervise -- <인자>`
 - RL: `uranium-train rl --run <id> --bc <ckpt> --logs <dir>`
+- SC:R 실전(`docs/scr.md`): `tools\scr\build.ps1` → `uranium-agent scr --checkpoint <ckpt> --backend cuda` → `tools\scr\run.ps1` → 게임 시작은 사람이

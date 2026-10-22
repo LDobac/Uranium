@@ -133,3 +133,4 @@
   - 수정: 에이전트 `scr` 시작 전 엔티티 64~512 예열(합계 약 85초, 012-R19), 브리지 `load_vars` 등록(samase 변수는 등록해야 읽힘 → 타일셋 걷기 판정 반영).
   - **발견**: 로비 Random 상대가 처음부터 실제 종족으로 감(030-R11 위반, SC:R 로비 값 위치 미확인). 사람이 나간 판은 다음 게임 시작 때 Aborted로 기록됨. 훅 최대 11.2ms 튐 1회.
   - 로그는 worktree `runs/scr/logs/{game1-lstm,game2-3-gtrxl}/`, `runs/scr/sessions.jsonl`
+- 2026-10-23 — M7 1차 세션 정리: 실게임 로그를 학습 PC 메인 작업 사본 `runs/scr/`로 옮김(logs/game1-lstm, logs/game2-3-gtrxl, sessions.jsonl, mod/), samase 실행 파일·탐침·스파이크 로그는 저장소 밖 스파이크 폴더에 둠, 학습 PC `.env`에 `URANIUM_SCR_SAMASE` 등록, CLAUDE.md에 M7 링크·명령 추가. 다음 할 일은 `reports/m7_scr_bridge.md` 4절

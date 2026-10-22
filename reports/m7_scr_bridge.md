@@ -27,7 +27,7 @@
   - **발견 2(로비 종족)**: 상대 컴퓨터의 실제 종족은 저그(0)인데, 로비 종족으로 읽은 `Game.starting_races[2]`는 2였다. 필드 뜻을 다시 확인해야 한다. 로비 Random 판정(030-R11)에 쓰는 값이다.
   - **발견 3(첫 추론 지연)**: 에이전트의 첫 추론이 57.5초 걸렸다. CUDA 커널 autotune 때문이고, Windows에서는 autotune 캐시가 저장되지 않는다. 그동안 게임은 멈추지 않았다(012-R1). 사용자 확인으로는 그 동안 봇이 가만히 있었고, 그 뒤 움직였다. 엔티티 수가 64 단위로 바뀔 때마다 새 크기의 autotune이 다시 일어날 수 있다.
     - 조치(코드 작성, 게임이 끝난 뒤 빌드): `uranium-agent scr`가 접속을 받기 전에 엔티티 64~512 각각을 배치 1로 한 번씩 추론해 둔다(`InferOptions.warmup_entities`). 모델 출력은 바뀌지 않는다.
-- 23:57 게임 1(LSTM) 종료. 결과와 로그(`runs/scr/logs/game1-lstm/`, `runs/scr/sessions.jsonl`, worktree 기준):
+- 23:57 게임 1(LSTM) 종료. 결과와 로그(학습 PC 메인 작업 사본 `runs/scr/logs/game1-lstm/`, `runs/scr/sessions.jsonl`. 게임 2·3은 `runs/scr/logs/game2-3-gtrxl/`. 각 폴더에 브리지 로그, 에이전트 로그, GameInfo 덤프 `gameinfo.bin`):
 
 | 항목 | 값 | 기준 |
 |---|---|---|
