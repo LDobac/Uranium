@@ -1,0 +1,665 @@
+//! Brood War / SC:R x64 memory layouts (012-R2, 012-R5), copied from the `bw_dat` crate of
+//! neivv/aise (`bw_dat/src/bw/structs.rs`, lines 14-656 at commit da4fed6; Apache License 2.0,
+//! Copyright Markus Heikkinen). Changes: serde attributes removed, size checks limited to the
+//! types used here. Read only through samase plugin API pointers; never written (012-R4).
+#![allow(dead_code)]
+
+use std::ffi::c_void;
+#[repr(C)]
+pub struct DatTable {
+    pub data: *mut c_void,
+    pub entry_size: u32,
+    pub entries: u32,
+}
+
+#[repr(C)]
+pub struct Supplies {
+    pub provided: [u32; 0xc],
+    pub used: [u32; 0xc],
+    pub max: [u32; 0xc],
+}
+
+#[repr(C)]
+pub struct Game {
+    pub minerals: [u32; 0xc],
+    pub gas: [u32; 0xc],
+    pub dc60: [u8; 0x60],
+    pub starting_local_player_id: u32,
+    pub starting_player_types: [u8; 0xc],
+    pub starting_races: [u8; 0xc],
+    pub team_game_main_player: [u8; 4],
+    pub screen_pos_x_tiles: u16,
+    pub screen_pos_y_tiles: u16,
+    pub map_width_tiles: u16,
+    pub map_height_tiles: u16,
+    pub dce8: [u8; 0x4],
+    pub tileset: u16,
+    pub bgm_song: u16,
+    pub dcf0: u8,
+    pub active_net_players: u8,
+    pub player_race: u8,
+    pub custom_singleplayer: u8,
+    pub dcf4: [u8; 0x8],
+    pub visions: [u32; 0xc],
+    pub player_randomization: [u32; 0x8],
+    pub frame_count: u32,
+    pub saved_elapsed_seconds: u32,
+    pub campaign_mission: u16,
+    pub next_scenario: [u8; 0x20],
+    pub selected_singleplayer_race: u8,
+    pub selected_singleplayer_computer_races: [u8; 0x8],
+    pub saved_screen_positions: [[u16; 2]; 3],
+    pub unit_availability: [[u8; 0xe4]; 0xc],
+    pub dcc3c: [u8; 0x10],
+    pub map_path: [u8; 0x104],
+    pub map_title: [u8; 0x20],
+    pub selection_hotkeys: [[[u32; 0xc]; 0x12]; 0x8],
+    pub dc2870: [u8; 0x400],
+    pub chat_dialog_recipient: u8,
+    pub player_lose_type: u8,
+    pub player_was_dropped: [u8; 0x8],
+    pub self_alliance_colors: [u8; 0xc],
+    pub player_color_palette: [[u8; 0x8]; 0xc],
+    pub player_minimap_color: [u8; 0xc],
+    pub scores: [[u32; 0xc]; 0x12],
+    pub supplies: [Supplies; 0x3],
+    pub custom_score: [u32; 0xc],
+    pub all_units_count: [[u32; 0xc]; 0xe4],
+    pub completed_units_count: [[u32; 0xc]; 0xe4],
+    pub unit_kills: [[u32; 0xc]; 0xe4],
+    pub deaths: [[u32; 0xc]; 0xe4],
+    pub tech_availability_sc: [[u8; 0x18]; 0xc],
+    pub tech_level_sc: [[u8; 0x18]; 0xc],
+    pub tech_in_progress_legacy: [u8; 0x24],
+    pub upgrade_limit_sc: [[u8; 0x2e]; 0xc],
+    pub upgrade_level_sc: [[u8; 0x2e]; 0xc],
+    pub dce3e8: [u8; 0xd8],
+    pub player_forces: [u8; 0x8],
+    pub force_flags: [u8; 0x4],
+    pub force_names: [[u8; 0x1e]; 0x4],
+    pub alliances: [[u8; 0xc]; 0xc],
+    pub player_objectives_string: [u32; 0xc],
+    pub countdown_timer: u32,
+    pub elapsed_seconds: u32,
+    pub dce60c: [u8; 0x4],
+    pub victory_state: [u8; 0x8],
+    pub computers_in_leaderboard: u32,
+    pub leaderboard_type: u8,
+    pub leaderboard_location: u8,
+    pub leaderboard_parameter: u16,
+    pub leaderboard_goal: u32,
+    pub leaderboard_string: u32,
+    pub pauses_remaining: [u8; 0x8],
+    pub start_position: [[u16; 0x2]; 0x8],
+    pub locations_legacy: [Location; 0x40],
+    pub unkeb50: [u8; 0x20],
+    pub locations: [Location; 0xff],
+    pub dcff5c: [u8; 0x4],
+    pub tech_availability_bw: [[u8; 0x14]; 0xc],
+    pub tech_level_bw: [[u8; 0x14]; 0xc],
+    pub tech_in_progress: [[u8; 0x6]; 0xc],
+    pub upgrade_limit_bw: [[u8; 0xf]; 0xc],
+    pub upgrade_level_bw: [[u8; 0xf]; 0xc],
+    pub upgrade_in_progress: [[u8; 0x8]; 0xc],
+    pub is_bw: u8,
+    pub unk10351: u8,
+    pub scr_color_unk: [u8; 0x8],
+    pub scr_init_color_rgba: [[u8; 4]; 8],
+    pub scr_unk1037a: [u8; 0x10],
+    pub scr_player_color_preference: [u8; 0x10],
+    pub padding: [u8; 0x7366],
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct Location {
+    pub area: Rect32,
+    pub unk: u16,
+    pub flags: u16,
+}
+
+pub struct GrpSprite;
+
+#[repr(C)]
+pub struct Image {
+    pub prev: *mut Image,
+    pub next: *mut Image,
+    pub image_id: u16,
+    pub drawfunc: u8,
+    pub direction: u8,
+    pub flags: u16,
+    pub x_offset: i8,
+    pub y_offset: i8,
+    pub iscript: Iscript,
+    pub frameset: u16,
+    pub frame: u16,
+    pub map_position: Point,
+    pub screen_position: Point,
+    pub grp_bounds: Rect,
+    pub grp: *mut c_void,
+    pub drawfunc_param: *mut c_void,
+    pub draw: u32,
+    pub step_frame: u32,
+    pub parent: *mut Sprite,
+}
+
+#[repr(C)]
+pub struct Iscript {
+    pub header: u16,
+    pub pos: u16,
+    pub return_pos: u16,
+    pub animation: u8,
+    pub wait: u8,
+}
+
+#[repr(C)]
+pub struct Sprite {
+    pub prev: *mut Sprite,
+    pub next: *mut Sprite,
+    pub sprite_id: u16,
+    pub player: u8,
+    pub selection_index: u8,
+    pub visibility_mask: u8,
+    pub elevation_level: u8,
+    pub flags: u8,
+    pub selection_flash_timer: u8,
+    pub index: u16,
+    pub width: u8,
+    pub height: u8,
+    pub version_specific: SpriteVersions,
+}
+
+/// 1.16.1-only sprite if struct size is needed.
+/// Other than size the layout will match that of Sprite.
+#[repr(C)]
+pub struct OldSprite {
+    pub prev: *mut Sprite,
+    pub next: *mut Sprite,
+    pub sprite_id: u16,
+    pub player: u8,
+    pub selection_index: u8,
+    pub visibility_mask: u8,
+    pub elevation_level: u8,
+    pub flags: u8,
+    pub selection_flash_timer: u8,
+    pub index: u16,
+    pub width: u8,
+    pub height: u8,
+    pub position: Point,
+    pub main_image: *mut Image,
+    pub first_image: *mut Image,
+    pub last_image: *mut Image,
+}
+
+#[repr(C)]
+pub union SpriteVersions {
+    pub legacy: SpriteLegacy,
+    pub scr: SpriteScr,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct SpriteLegacy {
+    pub position: Point,
+    pub main_image: *mut Image,
+    pub first_image: *mut Image,
+    pub last_image: *mut Image,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct SpriteScr {
+    pub position: [usize; 2],
+    pub main_image: *mut Image,
+    pub first_image: *mut Image,
+    pub last_image: *mut Image,
+}
+
+#[repr(C)]
+pub struct Order {
+    pub prev: *mut Order,
+    pub next: *mut Order,
+    pub order_id: u8,
+    pub padding: u8,
+    pub unit_id: u16,
+    pub target: PointAndUnit,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Rect32 {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Rect {
+    pub left: i16,
+    pub top: i16,
+    pub right: i16,
+    pub bottom: i16,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub struct Point {
+    pub x: i16,
+    pub y: i16,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub struct Point32 {
+    pub x: i32,
+    pub y: i32,
+}
+
+#[repr(C)]
+pub struct LoneSprite {
+    pub prev: *mut LoneSprite,
+    pub next: *mut LoneSprite,
+    pub hitpoints: i32,
+    pub sprite: *mut Sprite,
+}
+
+#[repr(C)]
+pub struct Flingy {
+    pub prev: *mut Flingy,
+    pub next: *mut Flingy,
+    pub hitpoints: i32,
+    pub sprite: *mut Sprite,
+    pub move_target: PointAndUnit,
+    pub next_move_waypoint: Point,
+    pub unk_move_waypoint: Point,
+    pub flingy_flags: u8,
+    pub facing_direction: u8,
+    pub turn_speed: u8,
+    pub movement_direction: u8,
+    pub flingy_id: u16,
+    pub unk_26: u8,
+    pub movement_type: u8,
+    pub position: Point,
+    pub exact_position: Point32,
+    pub top_speed: u32,
+    pub current_speed: i32,
+    pub next_speed: i32,
+    pub current_speed_x: i32,
+    pub current_speed_y: i32,
+    pub acceleration: u16,
+    pub new_direction: u8,
+    pub target_direction: u8,
+}
+
+#[repr(C)]
+pub struct Unit {
+    pub flingy: Flingy,
+    pub player: u8,
+    pub order: u8,
+    pub order_state: u8,
+    pub order_signal: u8,
+    pub order_fow_unit: u16,
+    pub unused52: u16,
+    pub order_timer: u8,
+    pub ground_cooldown: u8,
+    pub air_cooldown: u8,
+    pub spell_cooldown: u8,
+    pub order_target: PointAndUnit,
+    // Entity end
+    pub shields: i32,
+    pub unit_id: u16,
+    pub unused66: u16,
+    pub prev_player_unit: *mut Unit,
+    pub next_player_unit: *mut Unit,
+    pub subunit: *mut Unit,
+    pub order_queue_begin: *mut Order,
+    pub order_queue_end: *mut Order,
+    pub previous_attacker: *mut Unit,
+    pub related: *mut Unit,
+    pub highlight_order_count: u8,
+    pub order_wait: u8,
+    pub unk86: u8,
+    pub attack_notify_timer: u8,
+    pub previous_unit_id: u16,
+    pub minimap_draw_counter: u8,
+    pub minimap_draw_color: u8,
+    pub unused8c: u16,
+    pub rank: u8,
+    pub kills: u8,
+    pub last_attacking_player: u8,
+    pub secondary_order_wait: u8,
+    pub ai_spell_flags: u8,
+    pub order_flags: u8,
+    pub buttons: u16,
+    pub invisibility_effects: u8,
+    pub movement_state: u8,
+    pub build_queue: [u16; 5],
+    pub energy: u16,
+    pub current_build_slot: u8,
+    pub minor_unique_index: u8,
+    pub secondary_order: u8,
+    pub building_overlay_state: u8,
+    pub build_hp_gain: u16,
+    pub build_shield_gain: u16,
+    pub remaining_build_time: u16,
+    pub previous_hp: u16,
+    pub loaded_units: [u16; 8],
+    pub unit_specific: UnitSpecific1,
+    pub unit_specific2: UnitSpecific2,
+    pub flags: u32,
+    pub carried_powerup_flags: u8,
+    pub wireframe_seed: u8,
+    pub secondary_order_state: u8,
+    pub move_target_update_timer: u8,
+    pub detection_status: u32,
+    pub secondary_order_target: PointAndUnit,
+    pub prev_invisible: *mut Unit,
+    pub next_invisible: *mut Unit,
+    pub rally_pylon: RallyPylon,
+    #[cfg(target_pointer_width = "64")]
+    pub unk_64bit_value: usize, // ??? This is not needed for alignment or anything
+    pub path: *mut Path,
+    pub path_frame: u8,
+    pub pathing_flags: u8,
+    pub _unk106: u8,
+    /// This was probably a padding byte originally that BW used, so it is inside pathing data
+    /// struct.
+    pub is_being_healed: u8,
+    pub collision_points: [u16; 0x4],
+    pub death_timer: u16,
+    pub defensive_matrix_dmg: u16,
+    pub matrix_timer: u8,
+    pub stim_timer: u8,
+    pub ensnare_timer: u8,
+    pub lockdown_timer: u8,
+    pub irradiate_timer: u8,
+    pub stasis_timer: u8,
+    pub plague_timer: u8,
+    pub is_under_storm: u8,
+    pub irradiated_by: *mut Unit,
+    pub irradiate_player: u8,
+    pub parasited_by_players: u8,
+    pub master_spell_timer: u8,
+    pub is_blind: u8,
+    pub maelstrom_timer: u8,
+    pub _unk125: u8,
+    pub acid_spore_count: u8,
+    pub acid_spore_timers: [u8; 0x9],
+    pub bullet_spread_seed: u16,
+    pub scr_carried_unit_high_bits: u16,
+    pub ai: *mut c_void,
+    pub air_strength: u16,
+    pub ground_strength: u16,
+    pub position_search_indices: [u32; 4],
+    pub repulse_misc: u8,
+    pub repulse_direction: u8,
+    pub repulse_chunk_x: u8,
+    pub repulse_chunk_y: u8,
+}
+
+#[repr(C)]
+pub struct Path {
+    pub header: PathHeader,
+    pub start_frame: u32,
+    pub dodge_unit_uid: u32,
+    pub xy_speed: u32,
+    pub flags: u8,
+    pub collision_recheck_timer: u8,
+    pub direction: u8,
+    pub total_region_count: u8,
+    pub unk1c: [u8; 4],
+    pub values: [u16; 0x30],
+}
+
+#[repr(C)]
+pub union PathHeader {
+    pub allocated: AllocatedPathHeader,
+    pub free: FreePathHeader,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct AllocatedPathHeader {
+    pub start: Point,
+    pub next_pos: Point,
+    pub end: Point,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct FreePathHeader {
+    pub next_path_index: u32,
+    pub self_index: u32,
+}
+
+#[repr(C)]
+pub struct PointAndUnit {
+    pub pos: Point,
+    pub unit: *mut Unit,
+}
+
+#[repr(C)]
+pub union UnitSpecific1 {
+    pub carrier: UnitCarrier,
+    pub interceptor: UnitInterceptor,
+    pub worker: UnitWorker1,
+    pub vulture: UnitVulture,
+    pub building: UnitBuilding,
+}
+
+#[repr(C)]
+pub union UnitSpecific2 {
+    pub worker: UnitWorker2,
+    pub nydus: UnitNydus,
+    pub resource: UnitResource,
+    pub powerup: UnitPowerup,
+    pub nuke_silo: UnitNukeSilo,
+    pub pylon: UnitPylonAura,
+}
+
+#[repr(C)]
+pub union RallyPylon {
+    pub rally: UnitRally,
+    pub pylon: UnitPylon,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct UnitVulture {
+    pub mines: u8,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct UnitCarrier {
+    pub first_inside_child: *mut Unit,
+    pub first_outside_child: *mut Unit,
+    pub in_hangar_count: u8,
+    pub out_hangar_count: u8,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct UnitInterceptor {
+    pub parent: *mut Unit,
+    pub next: *mut Unit,
+    pub prev: *mut Unit,
+    pub is_outside_hangar: u8,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct UnitBuilding {
+    pub addon: *mut Unit,
+    pub build_addon_unit_id: u16,
+    pub research_time_remaining: u16,
+    pub tech: u8,
+    pub upgrade: u8,
+    pub larva_timer: u8,
+    pub is_landing: u8,
+    pub creep_spread_cooldown: u8,
+    pub next_upgrade_level: u8,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct UnitNukeSilo {
+    pub nuke: *mut Unit,
+    pub has_nuke: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct UnitPylonAura {
+    pub aura: *mut Sprite,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct UnitWorker1 {
+    pub powerup: *mut Unit,
+    pub harvest_target_pos: Point,
+    pub current_harvest_target: *mut Unit,
+    pub repair_resource_loss_timer: u16,
+    pub is_harvesting: u8,
+    pub carried_resource_count: u8,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct UnitWorker2 {
+    pub harvest_target: *mut Unit,
+    pub previous_awaiting: *mut Unit,
+    pub next_awaiting: *mut Unit,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct UnitResource {
+    pub amount: u16,
+    pub iscript_anim: u8,
+    pub has_awaiting_workers: u8,
+    pub first_awaiting_worker: *mut Unit,
+    pub resource_area: u8,
+    pub ai_used_resource: u8,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct UnitNydus {
+    pub linked: *mut Unit,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct UnitPowerup {
+    pub orig_pos: Point,
+    pub worker: *mut Unit,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct UnitRally {
+    pub pos: Point,
+    pub unit: *mut Unit,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct UnitPylon {
+    pub prev: *mut Unit,
+    pub next: *mut Unit,
+}
+
+#[repr(C)]
+pub struct Bullet {
+    pub flingy: Flingy,
+    pub player: u8,
+    pub state: u8,
+    pub order_state: u8,
+    pub order_signal: u8,
+    pub order_fow_unit: u16,
+    pub unused52: u16,
+    pub order_timer: u8,
+    pub ground_cooldown: u8,
+    pub air_cooldown: u8,
+    pub spell_cooldown: u8,
+    pub target: PointAndUnit,
+    // Entity end
+    pub weapon_id: u8,
+    pub death_timer: u8,
+    pub flags: u8,
+    pub bounces_remaining: u8,
+    pub parent: *mut Unit,
+    pub previous_bounce_target: *mut Unit,
+    pub spread_seed: u8,
+}
+
+#[repr(C)]
+pub struct Pathing {
+    pub region_count: u16,
+    pub _dc2: [u8; 0x2],
+    pub unk_ids: *mut u16,
+    pub unk_split_region: *mut SplitRegion,
+    pub map_tile_regions: [u16; 0x100 * 0x100],
+    pub split_regions: [SplitRegion; 25000],
+    pub regions: [Region; 5000],
+    pub _dc92bfc: [u8; 0x4e24],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct SplitRegion {
+    pub minitile_flags: u16,
+    pub region_false: u16,
+    pub region_true: u16,
+}
+
+#[repr(C)]
+pub struct Region {
+    pub walkability: u16,
+    pub group: u16,
+    pub tile_count: u16,
+    pub ground_neighbours: u8,
+    pub all_neighbours: u8,
+    pub temp_val: *mut c_void,
+    pub neighbour_ids: *mut u16,
+    pub center: [u32; 2],
+    pub area: Rect,
+    pub priority: u8,
+    pub ignored_neighbours: u8,
+    pub _dc20: [u8; 0x1e],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct Player {
+    pub id: u32,
+    pub storm_id: u32,
+    pub player_type: u8,
+    pub race: u8,
+    pub team: u8,
+    pub name: [u8; 25],
+}
+
+
+#[cfg(all(test, target_pointer_width = "64"))]
+mod tests {
+    use super::*;
+
+    /// The layouts must match the SC:R x64 game (bw_dat's own size checks).
+    #[test]
+    fn x64_sizes_012_r5() {
+        use std::mem::size_of;
+        assert_eq!(size_of::<Game>(), 0x17700);
+        assert_eq!(size_of::<Flingy>(), 0x68);
+        assert_eq!(size_of::<Unit>(), 0x1e8);
+        assert_eq!(size_of::<Bullet>(), 0xa8);
+        assert_eq!(size_of::<Sprite>(), 0x48);
+        assert_eq!(size_of::<Player>(), 0x24);
+        assert_eq!(size_of::<Path>(), 0x80);
+        assert_eq!(size_of::<Order>(), 0x28);
+    }
+}

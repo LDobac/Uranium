@@ -1,0 +1,54 @@
+# 012-R4 / 013 (SC:R bridge normalisation): network command opcodes the bridge sends. Unit
+# selections and unit-targeted orders use the SC:R 1.21 forms (u32 unit tags); every other
+# command keeps its 1.16.1 opcode and layout. Layouts follow BWAPI 4.2 `BW::Orders`
+# (BWAPI/Source/BW/OrderTypes.h) and are written in src/commands.rs. Spike-checked bytes:
+# select, right_click, chat (reports/m7_scr_spike.md).
+version = "scr-1.23.10.13515"
+
+# BWAPI `TechType::getOrder` (BWAPILIB/Source/TechType.cpp techOrders), by tech id; "None" = the
+# tech has no targeted order (it is used through its own command or not at all).
+tech_orders = [
+    "None", "CastLockdown", "CastEMPShockwave", "PlaceMine", "CastScannerSweep", "None",
+    "CastDefensiveMatrix", "CastIrradiate", "FireYamatoGun", "None", "None", "None",
+    "CastInfestation", "CastSpawnBroodlings", "CastDarkSwarm", "CastPlague", "CastConsume",
+    "CastEnsnare", "CastParasite", "CastPsionicStorm", "CastHallucination", "CastRecall",
+    "CastStasisField", "None", "CastRestoration", "CastDisruptionWeb", "None", "CastMindControl",
+    "None", "CastFeedback", "CastOpticalFlare", "CastMaelstrom", "None", "None", "MedicHeal",
+    "None", "None", "None", "None", "None", "None", "None", "None", "None", "None", "NukePaint",
+]
+
+[opcodes]
+select = 0x63
+right_click = 0x60
+targeted_order = 0x61
+unload_unit = 0x62
+place = 0x0c
+train = 0x1f
+train_fighter = 0x27
+unit_morph = 0x23
+building_morph = 0x35
+research = 0x30
+upgrade = 0x32
+hold_position = 0x2b
+stop = 0x1a
+reaver_stop = 0x1c
+carrier_stop = 0x1b
+return_cargo = 0x1e
+siege = 0x26
+unsiege = 0x25
+cloak = 0x21
+decloak = 0x22
+burrow = 0x2c
+unburrow = 0x2d
+lift = 0x2f
+unload_all = 0x28
+stim = 0x36
+merge_archon = 0x2a
+merge_dark_archon = 0x5a
+cancel_construction = 0x18
+cancel_train = 0x20
+cancel_research = 0x31
+cancel_upgrade = 0x33
+cancel_addon = 0x34
+cancel_unit_morph = 0x19
+chat = 0x5c

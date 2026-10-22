@@ -16,6 +16,9 @@ members = [
     "tools/casc-extract",
     "tools/bwapi-tables",
 ]
+# 012: the SC:R bridge is a Windows x64 cdylib with its own workspace (bridge/scr/Cargo.toml),
+# so Linux hosts never build it (001-R8).
+exclude = ["bridge/scr"]
 
 [workspace.package]
 edition = "2024"

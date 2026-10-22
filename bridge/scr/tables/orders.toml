@@ -1,0 +1,43 @@
+# 012-R12 / 013 (SC:R bridge normalisation): raw game order -> BWAPI order, as BWAPI 4.2
+# `BWtoBWAPI_init` (BWAPI/Source/BWAPI/BWtoBWAPI.cpp) maps them. Every other order keeps its raw
+# id (SC:R raw order ids are the 1.16.1 ones, which are the BWAPI enum). Names are BWAPI order
+# names (crates/uranium-env/tables/order_types.toml).
+version = "scr-1.23.10.13515"
+
+overrides = [
+    ["ReaverStop", "Stop"],
+    ["CarrierStop", "Stop"],
+    ["Attack1", "AttackUnit"],
+    ["Attack2", "AttackUnit"],
+    ["CarrierAttack", "AttackUnit"],
+    ["CarrierMoveToAttack", "AttackUnit"],
+    ["CarrierFight", "AttackUnit"],
+    ["ReaverAttack", "AttackUnit"],
+    ["ReaverMoveToAttack", "AttackUnit"],
+    ["ReaverFight", "AttackUnit"],
+    ["StayInRange", "AttackUnit"],
+    ["SuicideUnit", "AttackUnit"],
+    ["WatchTarget", "AttackUnit"],
+    ["TowerAttack", "AttackUnit"],
+    ["TurretAttack", "AttackUnit"],
+    ["AttackFixedRange", "AttackUnit"],
+    ["CarrierHoldPosition", "HoldPosition"],
+    ["QueenHoldPosition", "HoldPosition"],
+    ["SuicideHoldPosition", "HoldPosition"],
+    ["MedicHoldPosition", "HoldPosition"],
+    ["ReaverHoldPosition", "HoldPosition"],
+    ["PlaceProtossBuilding", "PlaceBuilding"],
+    ["DroneStartBuild", "PlaceBuilding"],
+    ["DroneLand", "PlaceBuilding"],
+    ["DroneBuild", "IncompleteBuilding"],
+    ["IncompleteMorphing", "IncompleteBuilding"],
+    ["IncompleteWarping", "IncompleteBuilding"],
+    ["SuicideLocation", "AttackMove"],
+    ["MoveToRepair", "Repair"],
+    ["MoveToFireYamatoGun", "FireYamatoGun"],
+    ["InitializeArbiter", "PlayerGuard"],
+    ["InitializePsiProvider", "Nothing"],
+    ["MoveToInfest", "CastInfestation"],
+    ["ResetHarvestCollision", "ResetCollision"],
+    ["NukePaint", "CastNuclearStrike"],
+]

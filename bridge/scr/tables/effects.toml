@@ -1,0 +1,17 @@
+# 012-R12 / 013 (SC:R bridge normalisation): effects as the OpenBW bridge reports them
+# (crates/uranium-bridge-openbw/src/convert.rs). BWAPI's bullet type is the bullet's flingy id
+# (OpenBWData `Bullet::type`); any other bullet is `Other(id)`. Dark Swarm and Disruption Web are
+# neutral units and become effects too.
+version = "scr-1.23.10.13515"
+
+bullets = [
+    [151, "EmpShockwave"],
+    [157, "PsionicStorm"],
+    [168, "Plague"],
+    [170, "Ensnare"],
+]
+
+spell_units = [
+    [202, "DarkSwarm"],
+    [105, "DisruptionWeb"],
+]

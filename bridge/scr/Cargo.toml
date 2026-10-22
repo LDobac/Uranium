@@ -1,0 +1,23 @@
+# 012: SC:R bridge, a samase plugin DLL (x86_64-pc-windows-msvc). Own workspace: kept out of the
+# root workspace so Linux hosts never build it (001-R8). Build with tools/scr/build.ps1.
+[package]
+name = "uranium-bridge-scr"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[lib]
+name = "uranium_bridge_scr"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+uranium-proto = { path = "../../crates/uranium-proto" }
+uranium-env = { path = "../../crates/uranium-env" }
+# samase plugin API (MIT). Pinned: the layout must match samase 0.10.28-64, plugin API 44 (012).
+samase_plugin = { git = "https://github.com/neivv/samase_plugin", rev = "c01a88f00b1aaf6286f96940b0f04498cea6c7b7" }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+sha2 = "0.11"
+
+[workspace]
