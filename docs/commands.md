@@ -16,6 +16,9 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 - 마지막 Burn 커밋은 태그 `burn-final`이다. Burn 체크포인트(`model.bpk`)는 보관만 하고 읽지 않는다(061-R10).
 
 ## 벤치·프로파일
+- 벤치 스위트(060-R2): `python -m uranium bench suite [--suite kernels,model,infer] [--filter <regex>] [--precision f32|bf16] [--budget 10] [--out reports/bench_<backend>.md] [--json reports/raw/<name>.json]`. 커널·모델·추론 케이스의 forward / forward+backward 중앙값·p95, CPU f32 대비 오차, 최대 GPU 할당. 반복 횟수는 표준오차가 평균의 1% 아래가 될 때까지 늘린다(워밍업 제외, 케이스당 `--budget`초까지).
+- 실데이터 BC update(060-R2, AMB-041-7): `python -m uranium bench bc (--dataset <rel> | --shards <dir>)... [--groups 1,2,4,8] [--updates 20] [--seed 1] [--phases] [--ops 25] [--json <log>]`. 그룹 크기마다 같은 초기 가중치·같은 batch로 update 시간, 데이터 대기, 최대 GPU 할당·상주 메모리(060-R3), update별 손실을 기록한다. 첫 update는 워밍업이라 중앙값에서 뺀다.
+- 최적화 후보의 동등성(AMB-000-4 2단계): 기준과 후보를 같은 `--seed`·데이터로 `bench bc --updates 100 --json`한 뒤 `python -m uranium bench loss <기준.json> <후보.json> [--group N] [--window 20]`. 구간 평균 손실의 상대 차이를 낸다(그룹 크기가 다르면 dropout 난수열이 달라진다).
 - BC update 구간별 시간과 연산별 장치 시간(060-AC4): `python -m uranium bc-profile (--dataset <rel> | --shards <dir>)... [--backend cuda|rocm|cpu] [--core gtrxl|lstm] [--batches 3] [--ops 25] [--trace <chrome trace json>]`. 학습 중에는 `URANIUM_BC_PROFILE=1`로 update마다 구간 시간을 로그에 쓴다.
 - 장치 비교(032-AC1·AC8): `pytest -m gpu tests/python`(CPU f32 대비. CUDA bf16은 잠정 허용치).
 

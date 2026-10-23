@@ -29,6 +29,7 @@ def main(a) -> int:
 
     from uranium import _core
     from uranium.bc.trainer import BcTrainer, new_net_config
+    from uranium.bench.realbc import profile_update
     from uranium.device import configure, resolve
     from uranium.model import UraniumNet
 
@@ -60,13 +61,6 @@ def main(a) -> int:
     if a.ops:
         b = feeder.next()
         if b is not None:
-            acts = [torch.profiler.ProfilerActivity.CPU] + ([torch.profiler.ProfilerActivity.CUDA] if device.type == "cuda" else [])
-            with torch.profiler.profile(activities=acts) as prof:
-                t.train_batch(b, cfg["lr"], a.batches + 1)
-            key = "self_device_time_total" if device.type == "cuda" else "self_cpu_time_total"
-            ev = sorted(prof.key_averages(), key=lambda e: getattr(e, key, 0.0), reverse=True)[: a.ops]
-            report["ops"] = [{"name": e.key, "calls": e.count, "self_ms": round(getattr(e, key, 0.0) / 1e3, 3), "cpu_ms": round(e.self_cpu_time_total / 1e3, 3)} for e in ev]
-            if a.trace:
-                prof.export_chrome_trace(a.trace)
+            report["ops"] = profile_update(t, b, cfg["lr"], a.batches + 1, device, a.ops, a.trace)
     print(json.dumps(report, indent=2))
     return 0

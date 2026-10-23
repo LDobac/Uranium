@@ -50,6 +50,9 @@ def main(argv: list[str] | None = None) -> int:
     from uranium.rl import run as rl_run
 
     rl_run.add_parser(sub)
+    from uranium import bench
+
+    bench.add_parser(sub)
     a = p.parse_args(argv)
     return a.fn(a)
 
