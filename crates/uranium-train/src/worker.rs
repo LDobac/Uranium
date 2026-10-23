@@ -40,7 +40,8 @@ pub struct Defaults {
 pub struct QueueRun {
     pub id: String,
     pub config: Option<String>,
-    #[serde(default = "lstm")]
+    /// Default: the adopted core (032-R17, 2026-10-23).
+    #[serde(default = "gtrxl")]
     pub core: String,
     /// `s1`, `s2` (fine-tuning, needs `init_run`) or `ablation-a`.
     #[serde(default = "s1")]
@@ -53,8 +54,8 @@ pub struct QueueRun {
     pub steps: Option<usize>,
 }
 
-fn lstm() -> String {
-    "lstm".into()
+fn gtrxl() -> String {
+    "gtrxl".into()
 }
 
 fn s1() -> String {

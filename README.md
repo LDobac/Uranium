@@ -16,7 +16,8 @@
 
 - **Linux Vulkan 호스트**: 작업자를 24시간 띄워 둔다(우선순위 1).
 - **CUDA 호스트**: 쉬는 동안만 사용자가 작업자를 직접 켠다(우선순위 10). PC를 써야 하면 **Ctrl+C** → `ckpt-N Pushed` 출력 후 종료될 때까지 기다린다(약 30초). 2026-10-21 코어 비교에서 이 흐름으로 Linux 호스트가 이어받는 것을 확인했다.
-- 작업자는 큐에서 끝나지 않은 run을 순서대로 잡는다. 두 run이면 두 호스트가 하나씩 동시에 학습한다. 빈 run이 없으면 CUDA 호스트가 Linux 쪽 run을 양보받아 이어 가고, CUDA 호스트를 멈추면 Linux 호스트가 마지막 체크포인트부터 다시 잡는다. 수동으로 넘길 필요 없다.
+- 작업자는 큐에서 비어 있는 첫 run을 잡아 끝날 때까지 놓지 않는다. 잡을 run이 없을 때만 CUDA 호스트가 Linux 쪽 run을 양보받는다. CUDA 호스트를 멈추면 그 run은 다른 작업자가 비어 있을 때 마지막 체크포인트부터 다시 잡는다. 수동으로 넘길 필요 없다.
+- 본학습 큐(4절, 2026-10-23 결정 I-D3 ②)에서는 CUDA 호스트가 `bc-s1`, Linux 호스트가 `bc-ablation-a`를 잡는다. CUDA 호스트를 멈춘 동안 `bc-s1`은 쉬고(Linux 호스트는 (A)를 계속), 다시 켜면 이어 간다. `bc-s1`이 끝나면 CUDA 호스트가 `bc-s2`를 잡고, 그것도 끝나면 Linux 호스트의 `bc-ablation-a`를 양보받아 마무리한다. 반대로 (A)가 먼저 끝나면 Linux 호스트는 CUDA 호스트가 멈춘 동안 `bc-s1`(끝났으면 `bc-s2`)을 이어받고, CUDA 호스트를 다시 켜면 양보받아 되찾는다(코어 비교 때와 같은 교대). **CUDA 호스트 작업자를 먼저 켠다**(Linux 호스트가 먼저 켜지면 `bc-s1`을 잡아, CUDA 호스트가 (A)를 맡게 된다).
 - 같은 run을 큐 밖에서 `bc --run`으로 직접 돌리지 않는다.
 
 ## 3. 준비 (호스트마다 한 번, 코드가 바뀌면 다시)
@@ -52,7 +53,7 @@ cargo build --release -p uranium-train
 
 ## 4. BC 본학습 (041)
 
-**큐 파일** `<shared>/queue/bc.toml`. 코어는 **GTrXL**이다(2026-10-23 결정). `--core` 기본값은 아직 `lstm`이므로 run마다 `core = "gtrxl"`을 꼭 적는다.
+**큐 파일** `<shared>/queue/bc.toml`. 코어는 **GTrXL**이다(2026-10-23 결정). `--core`·큐 `core` 기본값도 `gtrxl`이지만(2026-10-23 변경) 큐에는 run마다 명시해 둔다.
 ```toml
 [defaults]
 datasets = ["replays/shards/stardata", "replays/shards/community", "replays/shards/scr_ladder", "replays/shards/personal"]
@@ -111,7 +112,9 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
 - [x] Windows 실제 콘솔 Ctrl+C(2026-10-21 코어 비교 중 확인)
 - [x] Linux 호스트 메모리·스왑(041-R16~R18 설정으로 해결)
 - [x] 24시간 연속 실행(060-AC3, 코어 비교 LSTM run: CUDA 오류 1회 → 자동 재시작 → 완주)
-- [ ] 본학습 착수 전 결정·작업(데이터 동결 시점, `--core` 기본값, 학습 장비 재빌드, `[steps]` 재계산, 표본 end-to-end, 큐 작성): `reports/m6_pre_bc_review.md` I절
+- [x] 데이터 동결(지금 데이터 2,069 파일), `--core` 기본값 gtrxl(2026-10-23)
+- [x] 큐 구성: S1·S2·(A)를 처음부터 함께, Linux 호스트가 (A)(2026-10-23)
+- [ ] 본학습 착수 전 남은 작업(학습 장비 재빌드, `[steps]` 재계산, 표본 end-to-end, 큐 작성): `reports/m6_pre_bc_review.md` I절
 
 ## 7. 문제가 생기면
 

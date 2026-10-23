@@ -58,7 +58,7 @@ enum Cmd {
     RandomCheckpoint {
         #[arg(long)]
         out: PathBuf,
-        #[arg(long, value_enum, default_value = "lstm")]
+        #[arg(long, value_enum, default_value = "gtrxl")]
         core: CoreArg,
         /// 032-R18: include the win_open head (031-R12 surrender check).
         #[arg(long)]

@@ -47,7 +47,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 ## BC(041)
 `uranium-train`:
 - `bc (--dataset <rel> | --shards <dir>)... (--out <ckpt> | --run <id> [--take-over]) [--backend vulkan|cuda|flex] [--core lstm|gtrxl] [--s2 | --stage s2] [--resume <ckpt> | --init <ckpt|run>] [--steps N]`
-  - `--core` 기본값은 `lstm`이지만 채택 코어는 GTrXL이다(032-R17, 2026-10-23). 본학습·평가(`bc`, `bc-eval`, 큐의 `core`)에서는 `gtrxl`을 명시한다.
+  - `--core` 기본값은 채택 코어 `gtrxl`이다(032-R17, 2026-10-23 변경. `bc`·`bc-eval`·`bc-profile`·`rl`, 큐의 `core`, `uranium-agent random-checkpoint`). 코어 비교의 LSTM 체크포인트를 다룰 때는 `--core lstm`을 적는다(코어가 다르면 체크포인트를 읽을 때 오류로 멈춘다).
   - `--dataset replays/shards/<src>`는 manifest를 검증하고, `--shards`는 검증하지 않는다. 하위 폴더까지 읽는다(041-R9).
   - 파일 순서는 파일마다 `<출처>/<파트>/<파일>` 키로 정한다(041-R13). 폴더는 build 배치여야 한다: 출처 폴더(`<파트>/shard_*`)나 출처들을 담은 상위 폴더(`<출처>/<파트>/shard_*`). 다른 깊이(출처 폴더 바로 아래 shard, 더 깊은 하위 폴더, 두 깊이 혼합)는 파일 이름과 함께 오류로 멈춘다. 이 배치에서는 같은 shard 파일이면 `--dataset`/`--shards`, 폴더를 적은 순서, 출처 폴더를 하나씩 주든 상위 폴더를 주든, 저장 위치(캐시·공용 드라이브·다른 마운트)·대소문자 표기와 상관없이 게임 순서·첫 배치·지문이 같다. 같은 출처나 같은 파일을 두 번 지정하면(대소문자·링크만 다른 경로 포함) 실패한다.
   - `--run`은 061 run(`checkpoints/<id>/`): 잠금·heartbeat·push, 시작 시 `LATEST`에서 재개(데이터 위치 포함, 061-R10). 체크포인트는 `checkpoint_every` update 또는 `checkpoint_minutes`마다, Ctrl+C는 저장 후 종료.

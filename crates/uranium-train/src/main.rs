@@ -55,7 +55,7 @@ enum Cmd {
         config: PathBuf,
         #[arg(long, value_enum, default_value = "vulkan")]
         backend: Backend,
-        #[arg(long, value_enum, default_value = "lstm")]
+        #[arg(long, value_enum, default_value = "gtrxl")]
         core: CoreArg,
         /// S2 fine-tuning: learning rate x s2_lr_scale (041-R4). Start from --init.
         #[arg(long)]
@@ -158,7 +158,7 @@ enum Cmd {
         backend: Backend,
         #[arg(long, default_value = "config/bc.toml")]
         config: PathBuf,
-        #[arg(long, value_enum, default_value = "lstm")]
+        #[arg(long, value_enum, default_value = "gtrxl")]
         core: CoreArg,
     },
     /// 041 offline metrics on a split (default: the target-map test set, 041-AC1): action_type
@@ -173,7 +173,7 @@ enum Cmd {
         split: SplitArg,
         #[arg(long, value_enum, default_value = "vulkan")]
         backend: Backend,
-        #[arg(long, value_enum, default_value = "lstm")]
+        #[arg(long, value_enum, default_value = "gtrxl")]
         core: CoreArg,
         /// Score this many games, chosen by a fixed-seed shuffle over the whole split (032-R17 ②:
         /// the core ablation uses `--split val --games 500`; every checkpoint gets the same games).
@@ -224,7 +224,7 @@ enum Cmd {
         algo: uranium_train::rl::learner::Algo,
         #[arg(long, value_enum, default_value = "vulkan")]
         backend: Backend,
-        #[arg(long, value_enum, default_value = "lstm")]
+        #[arg(long, value_enum, default_value = "gtrxl")]
         core: CoreArg,
         #[arg(long, default_value_t = 1)]
         seed: u64,
