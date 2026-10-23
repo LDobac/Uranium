@@ -1,4 +1,4 @@
-# Burn 대 PyTorch 속도 실측 (학습 PC, 2026-10-23)
+# Burn 대 PyTorch 속도 실측 (학습 PC·bc250_1, 2026-10-23)
 
 ## 배경과 예상 (측정 전)
 - 사용자 질문: "Burn이 PyTorch(CUDA native)보다 얼마나 느린가." 처음에는 저장소에 직접 비교한 측정이 없어서, `bench_cuda.md`(10-20)의 수치로 추정했다.
@@ -100,9 +100,83 @@ PyTorch 칸은 "Windows / WSL" 순서다.
 - Burn LSTM B2·T64·N512는 Windows와 WSL 모두 같은 원인으로 실패했다. autotune 후보 `matmul_naive`의 "Cube count too big (1048576, 3, 1)" 오류이며, `bench_cuda.md`(10-20)와 같은 현상이다. 실제 학습은 레인 1개(micro_lanes 1)라 이 모양을 쓰지 않는다.
 - 참고(결정 아님): Burn 안에서 개선 여지가 큰 곳은 conv·conv transpose backward(spatial 인코더, Location 헤드), 작은 f16 행렬곱 커널 선택, AMP 부재다.
 
+## bc250_1: ROCm PyTorch 대 Burn Vulkan (21:49~22:20)
+
+### 배경과 예상 (측정 전)
+- 사용자가 bc250_1(Linux Vulkan 호스트, BC-250 gfx1013, 40 CU, 최대 1700 MHz)에 ROCm 7.2.4를 설치하고, gfx1013용 rocBLAS와 PyTorch를 직접 빌드했다. 공개된 BC-250 ROCm 조사 저장소의 절차를 Arch에 맞게 바꿨고, amdgpu 모듈에 flush 패치 2종을 넣고 SDMA 펌웨어도 교체했다. 공식 ROCm은 gfx1013을 지원하지 않는다.
+- 사용자 지시: ROCm PyTorch 벤치는 bc250_1에서만 돌린다. 같은 이식본과 같은 케이스를 같은 장비의 Burn Vulkan(f32, autotune·fusion)과 비교한다.
+- 예상: 속도 수치는 미리 예상하지 않았다. 셋업 기록상 fp16 autocast가 이 보드에서 7.7배 느렸으므로, bf16 모드도 느릴 것으로 봤다. 비교 기준은 f32다.
+
+### 방법과 진행 기록
+- 실행 환경
+  - 소스 빌드 torch 2.14.1a0(HIP 7.2, Python 3.14)과 홈 폴더의 gfx1013 rocBLAS를 `LD_LIBRARY_PATH`로 지정하고 `HSA_ENABLE_SDMA=0`을 붙였다.
+  - `/opt/rocm`의 rocBLAS에는 gfx1013 Tensile 라이브러리가 없어서, 지정하지 않으면 첫 행렬곱에서 중단된다.
+- **MIOpen LSTM backward가 gfx1013에서 실패한다**(`miopenStatusUnknownError`). 연산별로 시험한 결과, MIOpen을 켠 채로 conv·conv transpose·SDPA·bf16 행렬곱은 forward와 backward 모두 정상이었고 LSTM backward만 실패했다.
+  - 그래서 ROCm에서는 `nn.LSTM` 호출 때만 MIOpen을 끄고 PyTorch 자체 커널을 쓴다.
+  - 영향받는 것은 fast 모드의 LSTM 코어와 `lstm_seq` 커널 케이스뿐이다. 나머지 코드는 학습 PC 측정과 같다.
+- 정확성 확인(셋업 기록의 권고)
+  - 벤치 전후로 셋업 저장소의 `torch_train.py`(MLP 50스텝을 CPU와 대조)를 돌렸다. 두 번 모두 loss 차이 1.799e-05, 파라미터 차이 9.312e-03으로 셋업 기록의 기준값과 같았다.
+  - 이식 모델도 같은 가중치와 입력으로 CPU와 GPU를 비교했다(`check_rocm.py`, B2·T8·N128, dropout 끔). LSTM·GTrXL × faithful·fast 네 조합 모두 logp·value·gradient 최대 차이가 1e-6 수준이었다.
+  - GPU 두 번 실행은 비트 단위로는 다르지만 차이가 1e-6 수준이다. atomic 연산의 누적 순서 차이로 보며, 벤치에는 영향이 없다.
+  - 벤치 뒤 커널 로그에 fence, page fault, GPU 리셋 메시지는 없었다.
+- 측정 경과
+  - 21:49~22:10: PyTorch 세 모드
+  - 22:10~22:16: Burn Vulkan 전체 벤치(10-22 빌드, 모델 코드는 그 뒤로 바뀌지 않음)
+    - `net_train_gtrxl_b2_t16`까지는 정상이었다.
+    - `net_train_lstm_b1_t64_n512_full`은 실행 오류로 실패했다.
+    - 이어진 `_ckpt` 케이스에서 wgpu가 panic한 뒤 프로세스가 강제 종료(137)됐고, 리포트 파일이 생기지 않았다. 표의 값은 실행 로그에서 옮겼다.
+    - 엔티티 512개 장면에서 2 GiB 할당이 실패하는 것은 이미 알려진 Linux Vulkan 호스트의 한계다(`docs/commands.md`, 학습기는 041-R17 조각 재계산으로 피한다). 벤치에는 그 설정이 없다.
+  - 22:2x: 빠진 엔티티 인코더 케이스만 `--filter net_entity`로 다시 쟀다.
+
+### 결과: 전체 모델 (ms)
+
+| 케이스 | Burn Vulkan | torch faithful | torch fast | torch fast-bf16 | Burn ÷ torch (faithful / fast) |
+|---|---|---|---|---|---|
+| 학습 LSTM B2·T16·N256 | 1,075.1 | 746.2 | 293.3 | 1,040.4 | 1.4배 / 3.7배 |
+| 학습 LSTM B4·T16·N256 | 2,231.5 | 1,453.8 | 560.8 | 2,125.7 | 1.5배 / 4.0배 |
+| 학습 GTrXL B2·T16·N256 | 911.3 | 756.1 | 296.3 | 1,045.3 | 1.2배 / 3.1배 |
+| 학습 LSTM B1·T64·N512 | 실패(메모리 할당) | 4,820.0 | 1,225.7 | 3,467.0 | – |
+| 학습 GTrXL B1·T64·N512 (본학습 레인 모양) | Burn 벤치에 없음 | 4,810.2 | 1,168.9 | 3,384.8 | – |
+| 추론 act LSTM B16 | 179.1 | 40.2 | 37.8 | 123.9 | 4.5배 / 4.7배 |
+| 추론 act GTrXL B16 | 187.7 | 48.3 | 46.2 | 133.0 | 3.9배 / 4.1배 |
+| 엔티티 인코더 fwd / fwd+bwd B16 | 35.6 / 109.1 | 23.7 / 303.7 | 21.4 / 79.9 | 21.6 / 158.8 | fwd+bwd 0.36배 / 1.4배 |
+
+- 학습 최대 메모리(PyTorch, B1·T64·N512): faithful 7.5 GiB, fast 5.8 GiB, bf16 5.4 GiB. 셋업 기록상 이 장비가 쓸 수 있는 GPU 메모리는 약 13.1 GiB다.
+- 추론 p95는 중앙값과 거의 같았다(예: faithful LSTM 40.2 / 40.4ms). 학습 PC보다 오히려 고르다.
+
+### 결과: 커널 (ms)
+
+| 케이스 | Burn Vulkan fwd / fwd+bwd | torch ROCm fwd / fwd+bwd | 비고 |
+|---|---|---|---|
+| matmul f32 4096² | 43.1 | 27.1 | torch 1.6배 (3.2 대 5.1 TFLOP/s) |
+| matmul f32 1024² | 1.91 | 1.65 | 1.2배 |
+| matmul f16 4096² | 23.9 | 28.3 | **Burn이 1.2배 빠름** (5.7 대 4.8 TFLOP/s). 이 보드의 rocBLAS f16은 f32보다 빠르지 않다 |
+| conv 3×3 [16,58,128²] | 10.84 / 38.14 | 0.87 / 13.38 | forward 12배, 전체 2.9배 |
+| conv transpose 8→128 | 5.03 / 66.81 | 1.42 / 23.27 | 2.9~3.5배 |
+| LSTM B32·T64 (Burn 기본 `Lstm` 대 torch 자체 커널) | 75.7 / 114.0 | 11.6 / 66.4 | forward 6.5배, 전체 1.7배 |
+| transformer N256 | 20.4 / 55.7 | 14.3 / 43.7 | 1.3~1.4배 |
+| transformer N512 | 44.6 / 120.3 | 36.3 / 108.2 | 1.1~1.2배 |
+| 거리 bias attention (테이블 `select`) | 3.02 / 302.7 | 1.61 / 57.1 | backward 5.3배 |
+| scatter-add 128² | 0.471 / 1.012 | 0.288 / 0.410 | 1.6~2.5배 |
+| pointer GRU 12스텝 | 4.95 / 16.6 | 3.08 / 11.0 | 1.5배 |
+
+### 해석
+- **bc250_1에서 PyTorch(ROCm) fast 모드는 Burn Vulkan보다 학습이 3~4배, 추론이 4~4.7배 빠르다.**
+- **반면 코드를 그대로 옮긴 faithful 모드의 학습 이득은 1.2~1.5배로 작다.** 학습 PC(2~2.6배)보다 훨씬 작다.
+  - 원인은 faithful 엔티티 인코더의 backward다(303.7ms로 Burn의 109.1ms보다 2.8배 느림).
+  - faithful은 거리 bias를 one-hot @ table로 계산한다(032-R13). 이 [B·N·N, 32] 행렬의 backward가 이 보드의 ROCm에서 느리다. embedding 조회로 바꾼 fast 모드는 79.9ms다.
+  - 즉 Burn이 scatter-add를 피하려고 쓴 방식이 ROCm PyTorch에는 맞지 않는다.
+- **bf16 AMP는 이 보드에서 역효과다.** 학습이 fast 대비 2.9~3.8배, 추론이 3.3배 느려져 faithful보다도 느리다. 셋업 기록의 fp16 결과와 같은 경향이다.
+- 장비 간 비교(같은 PyTorch fast, B1·T64·N512 LSTM): bc250_1 1,225.7ms 대 학습 PC 204.3ms로 약 6배 차이다. Burn끼리(LSTM B2·T16)는 bc250_1 Vulkan 1,075.1ms 대 학습 PC CUDA 164.6ms로 약 6.5배다.
+- 이 장비의 ROCm 스택은 트리 밖 커널 패치와 직접 빌드한 라이브러리로 돌아가며 안정성이 보장되지 않는다(셋업 기록: 드문 page fault, GPU 리셋 불가, 24시간 이상 검증 없음). 이번 약 30분 동안 GPU 오류는 없었다.
+
 ## 산출물
 - 메인 작업 사본 `reports/raw/torch_vs_burn_20261023/`(추적하지 않는 폴더)
   - PyTorch 이식본과 벤치: `uranium_torch/`, `bench.py`, `README.md`
   - 측정 원본: `results_full.json`(Windows), `results_wsl.json`(WSL), `burn_bench_cuda_win.md`, `burn_bench_cuda_wsl.md`, 실행 로그 `windows_run_log.txt`, `wsl_burn_run_log.txt`
   - WSL 준비 스크립트(sudo 없이 CUDA redist, rustup, uv 설치): `wsl_setup.sh`, `wsl_burn.sh`
+  - bc250_1(`bc250_1/` 하위 폴더)
+    - ROCm용으로 고친 코드: `bench.py`, `uranium_torch/model.py`(LSTM에서 MIOpen 끔), `run_rocm.sh`(실행 환경), `check_rocm.py`(CPU·GPU 대조), `README.md`
+    - 측정 원본: `results_rocm.json`, `quick.json`, 전체 실행 로그 `bench_rocm.log`(PyTorch·Burn·사후 검사·커널 로그), `burn_bench_vulkan_bc250_log.txt`, `burn_bench_vulkan_bc250_entity.md`
+  - bc250_1의 `~/Workspace/uranium-torch-bench`에도 같은 파일이 남아 있다.
 - 측정에 쓴 가상환경, WSL 툴체인, 저장소 복제본은 측정 뒤 지웠다. 위 스크립트로 다시 만들 수 있다.
