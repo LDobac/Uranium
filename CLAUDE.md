@@ -54,8 +54,10 @@ spec/                    스펙 (먼저 읽을 것)
 crates/
   uranium-proto          공통 스키마·프레이밍
   uranium-env            feature·마스크·보상·executor·맵 사전계산 (라이브러리)
-  uranium-model          Burn 모델
-  uranium-train          BC·RL·리그, 체크포인트, 공용 드라이브 잠금(061), worker
+  uranium-data           BC 데이터 공급(041): shard·게임 순서·Feeder·prefetch·host collate·지문
+  uranium-store          공용 드라이브(061): 잠금·push/pull·Manifest·학습 상태 파일
+  uranium-model          Burn 모델 (PyTorch 전환 뒤 삭제 예정)
+  uranium-train          BC·RL 학습(Burn), worker·supervise. 데이터·저장소는 위 두 crate를 다시 내보냄
   uranium-replay         .rep 파서·데이터셋 build
   uranium-ladder         SC:R 래더 리플레이 수집 (043, Windows)
   uranium-hostd          OpenBW 인스턴스 데몬

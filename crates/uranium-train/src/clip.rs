@@ -16,9 +16,8 @@ use burn::module::{Module, ModuleVisitor, Param, ParamId};
 use burn::optim::GradientsParams;
 use burn::tensor::{Bool, DType, FloatDType, Tensor};
 
-/// The clip semantics, part of the BC config fingerprint (B-3): one global L2 norm (041-R3), not
-/// Burn's per-tensor clip used before 2026-10-19.
-pub const CLIP_MODE: &str = "global_l2";
+/// The clip semantics in the BC config fingerprint (B-3), defined with the fingerprint.
+pub use uranium_data::bc::CLIP_MODE;
 
 /// Added to the norm before dividing (as torch `clip_grad_norm_`), so a zero gradient stays zero.
 pub const CLIP_EPS: f64 = 1e-6;

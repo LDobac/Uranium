@@ -12,7 +12,7 @@ use uranium_env::features::augment::{Sym, transform_target_loc, transform_with_s
 use uranium_env::features::extract::{action_table, dims};
 use uranium_env::features::*;
 use uranium_env::features::label::LabelWalker;
-use uranium_model::collate::HostLabel;
+use uranium_env::features::label::HostLabel;
 use uranium_replay::shard::{GameMeta, ShardGame, read, result_source};
 
 /// One replay game from any source (041-R9).
@@ -337,7 +337,7 @@ impl StepSource for VecSource {
 /// Updates of one epoch (041-R13 "1 epoch", 2026-10-18): the trainer's lane walk without the
 /// model. `lens` are the step counts of the games in source order; each update every lane takes
 /// up to `seq_len` steps, a lane whose game is used up takes the next non-empty game, and the
-/// epoch ends at the first update a lane cannot be filled (as [`crate::bc::Trainer::train_step`]).
+/// epoch ends at the first update a lane cannot be filled (as the trainer's lane walk).
 pub fn epoch_updates(lens: impl IntoIterator<Item = usize>, lanes: usize, seq_len: usize) -> u64 {
     let mut lens = lens.into_iter().filter(|&l| l > 0);
     let mut rem = vec![0usize; lanes];
@@ -626,7 +626,7 @@ pub fn dataset_fingerprint(src: &ShardSource) -> Result<String> {
 fn files_fingerprint(dirs: &[PathBuf], files: &[PathBuf], keys: &[String], local: bool) -> Result<String> {
     use sha2::{Digest, Sha256};
     // Manifests by folder, read once (`None`: the folder has none).
-    let mut manifests: HashMap<PathBuf, Option<crate::storage::Manifest>> = HashMap::new();
+    let mut manifests: HashMap<PathBuf, Option<uranium_store::storage::Manifest>> = HashMap::new();
     let mut h = Sha256::new();
     for (f, key) in files.iter().zip(keys) {
         let mut entry = None;
@@ -637,7 +637,7 @@ fn files_fingerprint(dirs: &[PathBuf], files: &[PathBuf], keys: &[String], local
                     break;
                 }
                 if !manifests.contains_key(anc) {
-                    let m = if anc.join(crate::storage::MANIFEST_FILE).is_file() { Some(crate::storage::Manifest::read(anc)?) } else { None };
+                    let m = if anc.join(uranium_store::storage::MANIFEST_FILE).is_file() { Some(uranium_store::storage::Manifest::read(anc)?) } else { None };
                     manifests.insert(anc.to_path_buf(), m);
                 }
                 if let Some(m) = &manifests[anc] {

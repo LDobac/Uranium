@@ -6814,6 +6814,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "uranium-data"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "toml",
+ "uranium-env",
+ "uranium-proto",
+ "uranium-replay",
+ "uranium-store",
+ "zstd 0.13.3",
+]
+
+[[package]]
 name = "uranium-env"
 version = "0.1.0"
 dependencies = [
@@ -6918,6 +6934,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "uranium-store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ctrlc",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "uranium-replay",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "uranium-train"
 version = "0.1.0"
 dependencies = [
@@ -6932,11 +6962,13 @@ dependencies = [
  "sha2 0.11.1",
  "toml",
  "uranium-agent",
+ "uranium-data",
  "uranium-env",
  "uranium-model",
  "uranium-proto",
  "uranium-replay",
  "uranium-runner",
+ "uranium-store",
  "windows-sys 0.61.2",
  "zstd 0.13.3",
 ]

@@ -1380,3 +1380,67 @@ fn config_without_win_open_loads_032_r18() {
     assert_eq!(param_bits(&net), param_bits(&t.net.valid()));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// AMB-000-4 (PyTorch switch, step 1): the host collate in `uranium-data` packs a batch exactly
+/// like the Burn collate the trainer uses — same values, shapes and padding (030 §1, 030-R7,
+/// 032-R12 END = n) — so the Python trainer reads the same batches.
+#[test]
+fn host_collate_matches_burn_collate_041() {
+    use uranium_data::collate as host;
+    use uranium_model::collate::{action_batch, priv_batch};
+    let dev = Device::flex();
+    let mut steps = Vec::new();
+    // A game with two more units, so rows of one batch have different entity counts (030-R7).
+    let mut more = game_len(5, 2);
+    for s in &mut more.steps {
+        s.raw_frame.units.extend([unit(4, 0, "Terran_SCV", (10, 6)), unit(5, 0, "Terran_SCV", (11, 6))]);
+    }
+    for g in [game(), more, game_with_invalid(9, 3)] {
+        for sym in [Sym::IDENTITY, Sym::augment()[3]] {
+            steps.extend(prepare(&g, true, sym, &MapStore::synthetic()).unwrap().steps);
+        }
+    }
+    assert!(steps.iter().map(|s| s.obs.obs.n).collect::<std::collections::HashSet<_>>().len() > 1, "rows with different entity counts");
+    let obs: Vec<_> = steps.iter().map(|s| &s.obs).collect();
+    let labels: Vec<_> = steps.iter().map(|s| &s.label).collect();
+    let privs: Vec<_> = steps.iter().map(|s| &s.privileged).collect();
+    let f = |t: burn::tensor::TensorData| t.convert::<f32>().into_vec::<f32>().unwrap();
+    let i = |t: burn::tensor::TensorData| t.convert::<i32>().into_vec::<i32>().unwrap();
+    let bits = |v: &[bool]| v.iter().map(|&b| b as i32).collect::<Vec<i32>>();
+    for pad in [0, 1, 64] {
+        let d = obs_batch_padded(&obs, pad, &dev);
+        let h = host::obs_batch(&obs, pad);
+        assert_eq!((h.b, h.n), (d.batch(), d.entities()), "pad {pad}");
+        assert_eq!(h.entity_cat, i(d.entity_cat.clone().into_data()), "entity_cat pad {pad}");
+        assert_eq!(h.entity_cont, f(d.entity_cont.clone().into_data()), "entity_cont pad {pad}");
+        assert_eq!(bits(&h.entity_mask), i(d.entity_mask.clone().int().into_data()), "entity_mask pad {pad}");
+        assert_eq!(h.entity_cell, i(d.entity_cell.clone().into_data()), "entity_cell pad {pad}");
+        assert_eq!(h.entity_pos, f(d.entity_pos.clone().into_data()), "entity_pos pad {pad}");
+        assert_eq!(h.spatial, f(d.spatial.clone().into_data()), "spatial pad {pad}");
+        assert_eq!(h.scalar, f(d.scalar.clone().into_data()), "scalar pad {pad}");
+        assert_eq!(h.scalar_cat, i(d.scalar_cat.clone().into_data()), "scalar_cat pad {pad}");
+        assert_eq!(h.z_build, i(d.z_build.clone().into_data()), "z_build pad {pad}");
+        assert_eq!(h.z_units, f(d.z_units.clone().into_data()), "z_units pad {pad}");
+        assert_eq!(bits(&h.z_present), i(d.z_present.clone().int().into_data()), "z_present pad {pad}");
+        assert_eq!(bits(&h.type_mask), i(d.type_mask.clone().int().into_data()), "type_mask pad {pad}");
+        assert_eq!(bits(&h.unit_cap), i(d.unit_cap.clone().int().into_data()), "unit_cap pad {pad}");
+        assert_eq!(bits(&h.loc_class_mask), i(d.loc_class_mask.clone().int().into_data()), "loc_class_mask pad {pad}");
+        assert_eq!(bits(&h.is_building), i(d.is_building.clone().int().into_data()), "is_building pad {pad}");
+        assert_eq!(d.unit_cap.dims(), [h.b, h.n, h.k]);
+        assert_eq!(d.type_mask.dims(), [h.b, h.a]);
+        assert_eq!(d.loc_class_mask.dims()[1], h.l);
+        assert_eq!(d.scalar.dims(), [h.b, h.fs]);
+        assert_eq!(d.z_units.dims(), [h.b, h.u]);
+
+        let (da, ha) = (action_batch(&labels, h.n, 12, &dev), host::action_batch(&labels, h.n, 12));
+        assert_eq!(ha.action, i(da.action.into_data()), "action pad {pad}");
+        assert_eq!(ha.delay, i(da.delay.into_data()), "delay pad {pad}");
+        assert_eq!(ha.queued, i(da.queued.into_data()), "queued pad {pad}");
+        assert_eq!(ha.selected, i(da.selected.into_data()), "selected pad {pad}");
+        assert_eq!(ha.target_unit, i(da.target_unit.into_data()), "target_unit pad {pad}");
+        assert_eq!(ha.target_loc, i(da.target_loc.into_data()), "target_loc pad {pad}");
+    }
+    let (dp, hp) = (priv_batch(&privs, &dev), host::priv_batch(&privs));
+    assert_eq!(dp.summary.dims(), [hp.b, hp.p]);
+    assert_eq!(hp.summary, f(dp.summary.into_data()));
+}

@@ -9,6 +9,8 @@ members = [
     "crates/uranium-env",
     "crates/uranium-runner",
     "crates/uranium-replay",
+    "crates/uranium-data",
+    "crates/uranium-store",
     "crates/uranium-model",
     "crates/uranium-train",
     "crates/uranium-ladder",

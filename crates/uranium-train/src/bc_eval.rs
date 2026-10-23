@@ -24,55 +24,10 @@ use uranium_model::CoreInit;
 use uranium_model::collate::{HostLabel, action_batch, obs_batch_padded, priv_batch};
 
 use crate::bc::{BcConfig, Feeder};
-use crate::data::{ChosenGames, GameSummary, MapStore, ShardSource, StepSource, TrainStep, epoch_updates, sample_games};
+use crate::data::{ChosenGames, MapStore, ShardSource, StepSource, TrainStep};
 use crate::split::{Selection, Split};
 
-#[derive(Serialize, Debug, Clone, Copy, Default)]
-pub struct EpochCount {
-    pub updates: u64,
-    pub games: usize,
-    /// Every step of the games, the game-start NoOp steps (040-R18, E-2) included.
-    pub steps: u64,
-}
-
-#[derive(Serialize, Debug)]
-pub struct EpochTable {
-    pub lanes: usize,
-    pub seq_len: usize,
-    pub seed: u64,
-    pub s1: EpochCount,
-    pub s2: EpochCount,
-    /// Ablation (A) reads the S2 games in the same order.
-    pub ablation_a: EpochCount,
-}
-
-/// Reads every shard once (in parallel) and counts the updates of one epoch per stage.
-pub fn epoch_table(dirs: &[PathBuf], cfg: &BcConfig) -> Result<EpochTable> {
-    let base = ShardSource::from_dirs(dirs)?;
-    let scan = crate::data::scan_cached(&base)?;
-    let by_path: std::collections::HashMap<&PathBuf, &Vec<GameSummary>> = base.files().iter().zip(scan.iter()).collect();
-    let count = |sel: Selection| -> Result<EpochCount> {
-        let src = ShardSource::from_dirs(dirs)?.select(sel).shuffled(cfg.data.seed);
-        let mut lens = Vec::new();
-        for (k, f) in src.files().iter().enumerate() {
-            lens.extend(src.order_file(k, by_path[f].clone()).into_iter().map(|i| i.steps));
-        }
-        let games = lens.iter().filter(|&&l| l > 0).count();
-        let steps = lens.iter().map(|&l| l as u64).sum();
-        Ok(EpochCount { updates: epoch_updates(lens, cfg.lanes, cfg.seq_len), games, steps })
-    };
-    let s1 = count(Selection::S1)?;
-    let s2 = count(Selection::S2)?;
-    Ok(EpochTable { lanes: cfg.lanes, seq_len: cfg.seq_len, seed: cfg.data.seed, s1, s2, ablation_a: s2 })
-}
-
-/// 032-R17 ② (G-D8): the games `bc-eval --games n` scores: a fixed-seed shuffle over every game
-/// of the split `src` selects (from a scan of its files; `src` has no game shuffle), first
-/// `n`. The same for any checkpoint and core.
-pub fn eval_games(src: &ShardSource, scan: &[Vec<GameSummary>], n: usize, seed: u64) -> Vec<crate::data::GameId> {
-    let counts: Vec<usize> = scan.iter().enumerate().map(|(k, items)| src.order_file(k, items.clone()).len()).collect();
-    sample_games(&counts, n, seed)
-}
+pub use uranium_data::bc::{EpochCount, EpochTable, epoch_table, eval_games};
 
 /// Output fields and their units (E-9), printed with every report.
 pub const UNITS: [(&str, &str); 8] = [
