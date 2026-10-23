@@ -47,6 +47,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 ## BC(041)
 `uranium-train`:
 - `bc (--dataset <rel> | --shards <dir>)... (--out <ckpt> | --run <id> [--take-over]) [--backend vulkan|cuda|flex] [--core lstm|gtrxl] [--s2 | --stage s2] [--resume <ckpt> | --init <ckpt|run>] [--steps N]`
+  - `--core` 기본값은 `lstm`이지만 채택 코어는 GTrXL이다(032-R17, 2026-10-23). 본학습·평가(`bc`, `bc-eval`, 큐의 `core`)에서는 `gtrxl`을 명시한다.
   - `--dataset replays/shards/<src>`는 manifest를 검증하고, `--shards`는 검증하지 않는다. 하위 폴더까지 읽는다(041-R9).
   - 파일 순서는 파일마다 `<출처>/<파트>/<파일>` 키로 정한다(041-R13). 폴더는 build 배치여야 한다: 출처 폴더(`<파트>/shard_*`)나 출처들을 담은 상위 폴더(`<출처>/<파트>/shard_*`). 다른 깊이(출처 폴더 바로 아래 shard, 더 깊은 하위 폴더, 두 깊이 혼합)는 파일 이름과 함께 오류로 멈춘다. 이 배치에서는 같은 shard 파일이면 `--dataset`/`--shards`, 폴더를 적은 순서, 출처 폴더를 하나씩 주든 상위 폴더를 주든, 저장 위치(캐시·공용 드라이브·다른 마운트)·대소문자 표기와 상관없이 게임 순서·첫 배치·지문이 같다. 같은 출처나 같은 파일을 두 번 지정하면(대소문자·링크만 다른 경로 포함) 실패한다.
   - `--run`은 061 run(`checkpoints/<id>/`): 잠금·heartbeat·push, 시작 시 `LATEST`에서 재개(데이터 위치 포함, 061-R10). 체크포인트는 `checkpoint_every` update 또는 `checkpoint_minutes`마다, Ctrl+C는 저장 후 종료.
@@ -63,6 +64,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
   - 디스크 경고(061-R8): 학습 시작과 체크포인트 저장마다 공용 드라이브·로컬 캐시(로컬 `--out`이면 그 폴더)의 물리 디스크 사용률이 80% 이상이면 경고한다. 학습은 멈추지 않는다.
   - 로그 줄의 `no_result_games`는 지금까지 시작한 게임 중 승패 판정 불가(`result_source = none`)로 value 가중치 0인 게임 수다(041-R7).
 - `bc-epoch`(1 epoch update 수, 게임 시작 NoOp 스텝 포함), `bc-eval --checkpoint <ckpt|run> [--split test|val] [--games N --seed 1]`(041 지표), `bc-profile --backend <b> [--batches N]`, `split-stats`, `label-check [--games N]`(034-AC3; 출력에 `target_causes`(대상 없음·위치 거절 원인: 이전 목격 여부와 경과 프레임, 건물 종류별 막는 조건, 실제로 지어졌는지)와 `per_game`(게임별 무효 수) 포함, 액션 감사 F23·F24), `manifest <dir> [--verify]`(061-R7. 만들 때 하위 폴더의 shard를 모두 끝까지 디코드해 보고, 실패하면 실패한 shard를 나열하고 쓰지 않는다, 040-R17). 모두 `--dataset`/`--shards`를 받는다.
+  - `bc-eval`에는 041-R17 엔티티 조각 재계산이 없어, GPU와 RAM을 나눠 쓰는 Linux Vulkan 호스트에서는 엔티티 512개 장면의 2 GiB 할당에 실패한다(2026-10-23). 오프라인 평가는 CUDA 호스트에서 돌린다.
   - `bc-eval --games N`은 분할 전체를 고정 seed(`--seed`, 기본 1)로 섞어 앞의 N게임을 고른다. 체크포인트·코어와 무관하게 같은 게임이다(032-R17 ②). 단위(E-9): `delay_mae_frames`는 프레임(bucket 값), `delay_mae_buckets`는 bucket 번호, `nll.<head>`는 그 헤드를 쓰는 스텝(`nll_steps.<head>`)만의 평균이다. 출력 `units`에 같은 설명이 들어 있다.
   - `split-stats` 출력: `splits`(소스·맵 그룹·분할별 게임 수), `sources`(소스별 `privileged` 없는 게임·스텝 수와 비율(E-10), `result_source`별 게임 수(040-R8)).
 - 하이퍼파라미터 `config/bc.toml`(GPU 메모리는 `micro_lanes`, `pad_entities`, `grad_checkpointing`), 코어 비교 `config/bc_core_ablation.toml`, 보상 `config/reward.toml`. `grad_clip`은 모든 파라미터 gradient를 한 벡터로 본 전역 L2 norm 기준이고, 레인 그룹 gradient를 합친 뒤 optimizer step 전에 한 번 적용한다(041-R3, RL `config/rl.toml`도 같음).

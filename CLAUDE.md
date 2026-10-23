@@ -5,7 +5,7 @@
 
 ## 진행 상황
 - 시간순 기록: `reports/timeline.md`
-- BC 본학습 전 남은 결정·수정: `reports/m6_pre_bc_review.md` G절
+- BC 본학습 착수 전 남은 결정·작업: `reports/m6_pre_bc_review.md` I절 (코어는 GTrXL, `reports/m6_core_ablation.md`)
 - 마일스톤별 결과: `reports/` (m2~m7)
 - M7 SC:R 남은 과제: `reports/m7_scr_bridge.md` 4절
 

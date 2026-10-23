@@ -142,11 +142,11 @@ A~E에 없는 내용과, 리뷰 이후 이미 반영된 결정을 모은다. 근
 | # | 항목 | 출처 | 상태 |
 |---|---|---|---|
 | G-M1 | 학습 PC 메인 체크아웃과 BC250 1호기를 master로 재빌드(재build를 하면 추출 전용 Windows PC도) | F-2-5 | 완료(R-1 6523286, R-3 d452c29, R-4 aa187b2, R-5 Linux 호스트 A 8757c29·학습 PC 7b0879e, `m6_rebuild.md`). 추출 전용 Windows PC는 불참하고 Linux 호스트 C가 대신 합류. 코어 비교 전에 다시 필요: 학습 장비는 최신 master(cd2973a·925b995 shard 순서), 게임 호스트는 브리지(011-R20)·proto v3 반영 재빌드와 hostd 재시작(기록 없음) |
-| G-M2 | BC250 prefetch 메모리 실측(스왑 여부) | B-5 | 남음. R-2에서 Linux 호스트 A Vulkan BC 중 스왑 최대 13.3GB(원인 미구분: prefetch·autotune·통합 메모리 할당), R-5 §8은 약 101 s/update. 원인을 가르는 별도 측정이 아직 없음 |
+| G-M2 | BC250 prefetch 메모리 실측(스왑 여부) | B-5 | 완료(2026-10-20 코어 비교 중 측정·수정: prefetch 깊이 2가 batch 최대 4개를 동시에 들고 있어 커널 OOM → 041-R16 `URANIUM_BC_PREFETCH`(Linux 호스트 A 0). GTrXL의 N=512 GPU 할당 실패 → 041-R17 엔티티 조각 재계산·R18 batch 압축(Linux 호스트 A 16·1). `m6_core_ablation.md` 5절) |
 | G-M3 | `bc-epoch`로 `[steps]` 재대조(A-1을 고치면 S2 값이 바뀜), `bc_core_ablation.toml` 동기화 | B-10 | 완료(2026-10-20: s1 38,584, s2·ablation_a 11,319, warmup 566, `m6_rebuild.md` R-5) |
-| G-M4 | 060-AC3 24시간 스모크 — 코어 비교 run의 첫 24시간으로 대신할지 포함 | C-2 | 남음. 방식은 정해짐(aaa665c: 060-AC3를 코어 비교 run의 첫 24시간으로 대신). 코어 비교 시작 전이라 미실행 |
-| G-M5 | Windows 실제 콘솔 Ctrl+C 확인 | F-2-4 | 남음. 사용자가 Windows 실제 콘솔에서 Ctrl+C를 눌러 확인해야 함 |
-| G-M6 | 본학습 설정에 win_open 헤드 포함(032-R18·041-R19, GG 항복 031-R12, 2026-10-21 사용자 결정). 본학습 시작 전 학습 장비가 4fdaf23 이후 master인지, 게임 호스트(평가·RL)가 BWAPI 패치 0014·브리지·proto v4로 재빌드됐는지 확인 | AMB-031-6 | 구현 완료(53a8a01~4fdaf23, `config/bc.toml` `[value] win_open = 0.5`, 코어 비교 설정·지문 불변). 장비 재빌드 남음 |
+| G-M4 | 060-AC3 24시간 스모크 — 코어 비교 run의 첫 24시간으로 대신할지 포함 | C-2 | 완료(통과, 2026-10-23 기록 대조): `core-abl-lstm`이 학습 PC CUDA에서 10-20 15:24 시작 → 22.6시간에 5,300 완료. 약 4시간째 CUDA 오류(`cuEventSynchronize failed with status 2`, 종료 코드 101) 1회 → 감시가 60초 뒤 재시작해 `ckpt-951`부터 이어 감(`runs/worker.log`, `<shared>/runs/core-abl-lstm/devices.jsonl`) |
+| G-M5 | Windows 실제 콘솔 Ctrl+C 확인 | F-2-4 | 완료(2026-10-21 운영 기록): `core-abl-gtrxl` 학습 PC 구간이 `ctrl-c`로 step 983에서 끝나고, 약 4분 뒤 Linux 호스트 A가 step 983부터 이어받음(`devices.jsonl`) |
+| G-M6 | 본학습 설정에 win_open 헤드 포함(032-R18·041-R19, GG 항복 031-R12, 2026-10-21 사용자 결정). 본학습 시작 전 학습 장비가 4fdaf23 이후 master인지, 게임 호스트(평가·RL)가 BWAPI 패치 0014·브리지·proto v4로 재빌드됐는지 확인 | AMB-031-6 | 구현 완료(53a8a01~4fdaf23, `config/bc.toml` `[value] win_open = 0.5`, 코어 비교 설정·지문 불변). 2026-10-22 네 장비 6fa8fbd 재빌드(0014·proto v4, `m6_core_ablation.md` 5절). 그 뒤 master에 관측 변경(AMB-030-4·5)이 들어와 학습 장비는 다시 빌드해야 함 → I-1 |
 
 ### G-4. 문서 (동작 불변)
 | # | 항목 | 상태 |
@@ -162,6 +162,7 @@ A~E에 없는 내용과, 리뷰 이후 이미 반영된 결정을 모은다. 근
    - 2026-10-20 상태: 전체 재build(R-4) 끝, 손상 shard 7개 수리, manifest·`shard-stats`·분할 재집계·`dataset_stats.md`·BC 스모크 완료(`m6_rebuild.md` R-5).
 4. G-M2·G-M3·G-M5 측정.
 5. 코어 비교(032-R17, worker 운영) → 코어 선택 → BC 본학습(S1 → S2, (A)).
+   - 2026-10-23 상태: 코어 비교 완료, **GTrXL 채택**(`m6_core_ablation.md` 4절). 본학습 착수 전 남은 일은 I절.
 
 H 절(5661ff8·695cbfe 추가 리뷰)의 본학습 전 필수 항목 H-1~H-4도 이 체크리스트에 포함한다(G-2 수정과 함께 진행).
 
@@ -172,7 +173,7 @@ H 절(5661ff8·695cbfe 추가 리뷰)의 본학습 전 필수 항목 H-1~H-4도 
 | C-7 | 013-R7 왕복 검증 build 경로 호출 | 완료(T3a, `pipeline.rs`) |
 | C-8 | 010-AC4 executor Command 왕복 | 완료(테스트) |
 | C-8 | 043-AC4 수집 속도 제한 | 완료(테스트, 실행별 속도 기록 추가, 기존 기록 위반 흔적 없음) |
-| C-8 | 060-AC4 CUDA 벤치 리포트 | 측정 중(2026-10-20 다른 작업, 명령은 `m6_unverified_ac.md`) |
+| C-8 | 060-AC4 CUDA 벤치 리포트 | 완료(2026-10-20 통과, `reports/bench_cuda.md`, timeline 10-20 14시) |
 | C-8 | 032-AC2 Linux Vulkan 기준 재확인 | 완료(2026-10-20 사용자 결정: 판정은 CUDA 호스트만(통과), Linux Vulkan 호스트는 실측 기록만·학습 PC가 바쁠 때 주 장비, AMB-032-8·060-R8, `m6_unverified_ac.md` 032-AC2 진행 기록 끝) |
 | T7 발견 | 034-R8 애드온 건설 중인 건물 제외, 034-R9 자기 대상 금지(SetRally_Unit 예외는 사용자 확정 2026-10-19) | 완료(사용자 결정 2026-10-19, 재build 없음, 표본 무효 레이블 5.384% → 5.427%) |
 
@@ -227,3 +228,34 @@ H 절(5661ff8·695cbfe 추가 리뷰)의 본학습 전 필수 항목 H-1~H-4도 
 3. 060-R6·061-AC9: Linux 감시 프로세스를 터미널 포그라운드로 실행하는 것을 금지한다(또는 코드로 해결).
 4. 032: backward 허용치 AC(Vulkan 1e-3, CUDA 1e-2) 추가 또는 테스트명 수정.
 5. 사소: R13 `init`→`init_run`, R15 줄 형식, 060-R6 Windows 자동 시작 문구, `TimeoutStopSec` 통일.
+
+## I. BC 본학습 착수 전 (2026-10-23, GTrXL 채택 뒤)
+코어 비교가 끝나 GTrXL을 채택했다(032-R17, `m6_core_ablation.md` 4절). G절은 모두 끝났고(G-M6은 I-2로 이어짐), 본학습(S1 → S2, (A)) 전에 남은 것을 여기에 모은다. 상태 표기는 G절과 같다.
+
+### I절 사용자 결정
+| # | 항목 | 상태 |
+|---|---|---|
+| I-D1 | **데이터 동결 시점.** 래더 수집은 6,000판(10-22 수집분까지)인데 build는 5,000판(10-21분)까지다. 10-22 수집분 1,000판(그 뒤 수집분 포함 여부도)을 build해 본학습에 넣을지, 지금 데이터(2,069 파일)로 동결할지. 넣으면 증분 build(약 1시간, 10-21 실적 written 332판) → manifest → I-3 순서 | 미결 |
+| I-D2 | **`uranium-train` `--core` 기본값.** 지금 `bc`·`bc-eval` 등의 기본값은 `lstm`이다. 본학습 큐에 `core = "gtrxl"`을 적으면 되지만, 빠뜨리면 LSTM으로 며칠씩 학습해 버릴 수 있다. 기본값을 `gtrxl`로 바꿀지(코드 변경, 032-R17 결정과 일치) | 미결 |
+
+### I절 작업
+| # | 항목 | 상태 |
+|---|---|---|
+| I-1 | 학습 장비(학습 PC CUDA, Linux 호스트 A Vulkan)를 최신 master로 다시 빌드한다. 6fa8fbd 이후 master에 관측 변경이 들어왔다: 상대 유닛의 생산 큐·진행도·핵 숨김(AMB-030-5, `extract.rs`), 지금 보이는 칸의 탄환만 관측(AMB-030-4, shim과 `extract.rs`). 코어 비교 모델은 변경 전 관측으로 학습·평가했다(6fa8fbd 고정). 본학습은 바뀐 관측으로 한다. 평가·RL용 게임 호스트(Linux 호스트 A·B·C, 학습 PC)도 shim이 바뀌었으니 브리지를 다시 빌드한다 | 남음 |
+| I-2 | `bc-epoch`로 `[steps]`(s1·s2·ablation_a, warmup)를 다시 계산해 `config/bc.toml`에 반영한다(041-R14). 10-23에 staging의 scr_ladder 25 shard를 되돌려 데이터셋이 2,044 → 2,069 파일(scr_ladder 106 shard·1,565게임)이 됐고, 데이터 지문도 바뀌었다. I-D1에서 데이터를 더 넣으면 그 뒤에 계산한다 | 남음 |
+| I-3 | **표본 end-to-end**(대규모 배치 전 점검): GTrXL + win_open(041-R19) + 새 관측 조합은 아직 한 번도 학습해 보지 않았다. 학습 PC CUDA와 Linux 호스트 A Vulkan에서 실제 큐 설정으로 몇 update씩 돌리고, 체크포인트 → 다른 장비 재개(061)까지 확인한다. Linux 호스트 A `.env`의 GTrXL 메모리 설정(`URANIUM_BC_PREFETCH=0`, `URANIUM_BC_ENTITY_CHUNK=16`, `URANIUM_BC_PACK_BATCH=1`)은 유지돼 있다(10-23 확인) | 남음 |
+| I-4 | 본학습 큐 `<shared>/queue/bc.toml` 작성: `bc-s1`·`bc-s2`(init_run = bc-s1)·`bc-ablation-a`, 모두 `core = "gtrxl"`, `config/bc.toml`, 네 출처(루트 `README.md` 5절) | 남음 |
+| I-5 | 작업자 실행(학습 PC 우선순위 10, Linux 호스트 A 우선순위 1, 060-R8) — I-1~I-4 뒤 | 대기 |
+
+### I절 참고·위험
+- **예상 기간**(코어 비교 실측, GTrXL): 학습 PC CUDA 약 12 s/update, Linux 호스트 A Vulkan 약 108 s/update(엔티티 조각 재계산·압축 켬). S1 38,584 update(I-2에서 바뀜)는 학습 PC가 쉬지 않으면 약 5.4일, Linux 호스트 A만이면 약 48일이다. S2·(A)는 각 11,319 update로 학습 PC 약 1.6일씩이다. 실제 기간은 학습 PC를 학습에 쓸 수 있는 시간에 거의 비례한다. 기존 "약 15일"은 LSTM 26 s/update 시절 값이다.
+- **오프라인 평가는 CUDA 호스트에서**: `bc-eval`에는 041-R17 엔티티 조각 재계산이 없어 Linux Vulkan 호스트에서 N=512 장면의 2 GiB 할당에 실패한다(2026-10-23, `m6_core_ablation.md` 5절). 고칠지는 후속 제안.
+- **GTrXL 추론 부담**: 엔티티가 많은 장면에서 추론이 무거워, 코어 비교 T0 대전에서 27판이 실제 시간 2시간 상한에 걸렸다. 평가 plan은 `wall_timeout_s`를 넉넉히 두고, RL 처리량과 SC:R 실시간 추론(012)에서 다시 본다.
+- **브리지 시작 실패 판**: 에이전트에 접속하지 못한 판을 스케줄러가 `Finished`로 기록한다(2026-10-22 발견). 다른 호스트를 쓰는 평가에서는 `.env` `URANIUM_AGENT_LISTEN`/`PUBLIC_ADDR`를 LAN 주소로 둔다. 실패로 세는 수정은 후속 제안(020).
+- H절 spec 개정 제안 1~4는 여기서 다시 다루지 않는다(H-1~H-4 코드 수정은 완료).
+
+### I절 순서
+1. I-D1·I-D2 결정.
+2. (I-D1에 따라) 증분 build → manifest → I-2 `[steps]` 재계산.
+3. I-1 재빌드 → I-3 표본 end-to-end.
+4. I-4 큐 작성 → I-5 작업자 시작(장시간 실행 시작을 timeline에 기록).
