@@ -115,7 +115,7 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
 - [x] 데이터 동결(지금 데이터 2,069 파일), `--core` 기본값 gtrxl(2026-10-23)
 - [x] 큐 구성: S1·S2·(A)를 처음부터 함께, Linux 호스트가 (A)(2026-10-23)
 - [x] 학습 장비 재빌드, `[steps]` 재계산, 표본 end-to-end(2026-10-23)
-- [ ] 본학습 큐 작성 → 작업자 시작(CUDA 호스트 먼저): `reports/m6_pre_bc_review.md` I절
+- [x] 본학습 큐 작성 → 작업자 시작(2026-10-23 15:50)
 
 ## 7. 문제가 생기면
 
