@@ -10,7 +10,7 @@ import torch.nn as nn
 from uranium.model.config import UraniumNetConfig
 from uranium.model.core import build_core
 from uranium.model.encoders import EntityEncoder, ScalarEncoder, SpatialEncoder
-from uranium.model.heads import HEAD_NAMES, ActionTable, Heads
+from uranium.model.heads import HEAD_NAMES, LOC_ROW_MODES, ActionTable, Heads, env_choice, location_rows
 from uranium.model.value import ValueHeads
 
 OBS_KEYS = ("entity_cat", "entity_cont", "entity_mask", "entity_cell", "entity_pos", "spatial", "scalar", "scalar_cat", "z_build", "z_units", "z_present", "type_mask", "unit_cap", "loc_class_mask", "is_building")
@@ -95,6 +95,16 @@ class UraniumNet(nn.Module):
         sc = self.scalar(obs)
         core_in = torch.cat([e_pool, sp["pool"].to(e_pool.dtype), sc["c"].to(e_pool.dtype)], 1)
         return core_in, e, sp, sc
+
+    def labels(self, group: dict, device) -> dict:
+        """`to_labels` plus the location head's row list from the host labels when
+        `URANIUM_LOC_ROWS` is not `off` (no device sync, bucketed shapes, AMB-000-4 step 2)."""
+        out = to_labels(group, device)
+        mode = env_choice("URANIUM_LOC_ROWS", LOC_ROW_MODES, "off")
+        if mode != "off":
+            spec = location_rows(group["action"], self._cols["target_kind"], mode)
+            out["loc_rows"], out["loc_k"] = (None, -1) if spec is None else (torch.as_tensor(spec[0]).to(device, non_blocking=True), spec[1])
+        return out
 
     def init_state(self, b: int, device=None):
         return self.core.init_state(b, device or next(self.parameters()).device)

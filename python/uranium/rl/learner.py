@@ -18,7 +18,7 @@ import torch
 from uranium.agent.infer import leaves, rebuild
 from uranium.bc.clip import clip_global_norm
 from uranium.device import autocast
-from uranium.model import to_labels, to_obs
+from uranium.model import to_obs
 from uranium.rl.returns import gae, upgo, vtrace
 
 HEADS = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
@@ -177,7 +177,7 @@ class Learner:
         steps `n`); returns the detached loss parts."""
         cfg, dev, net = self.cfg, self.device, self.net
         t = g["t"]
-        obs, labels = to_obs(g, dev), to_labels(g, dev)
+        obs, labels = to_obs(g, dev), net.labels(g, dev)
         priv = torch.as_tensor(g["privileged"]).to(dev, torch.float32)
         mask = torch.as_tensor(g["mask"]).to(dev, torch.float32)
         s0 = state0_of(net, g, dev)

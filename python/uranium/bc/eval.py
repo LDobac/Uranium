@@ -135,7 +135,7 @@ class Acc:
 def evaluate(dirs: list[str], ckpt_dir: str, split: str, games, seed: int, config: str, device, precision: str, core=None, maps_dir=None, synthetic_maps=False) -> dict:
     from uranium import _core, ckpt
     from uranium.device import autocast
-    from uranium.model import to_labels, to_obs
+    from uranium.model import to_obs
 
     cfg = json.loads(_core.bc_config(config, "s1")[0])
     # 032 §2: no dropout at evaluation (eval mode).
@@ -158,7 +158,7 @@ def evaluate(dirs: list[str], ckpt_dir: str, split: str, games, seed: int, confi
                 states[gi] = None
                 continue
             hg = b.group(start, end, t, cfg["pad_entities"], net.cfg.heads.max_select)
-            obs, labels = to_obs(hg, device), to_labels(hg, device)
+            obs, labels = to_obs(hg, device), net.labels(hg, device)
             priv = torch.as_tensor(hg["privileged"]).to(device, torch.float32)
             keep = torch.as_tensor(hg["keep"]).to(device).bool()
             s = states[gi]

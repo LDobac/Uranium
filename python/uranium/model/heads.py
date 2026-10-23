@@ -2,6 +2,10 @@
 TargetUnit | Location. One code path serves teacher forcing (labels injected) and sampling
 (Gumbel-max inside the forward, 032-R3, 032-R9). Same math and names as Burn `heads.rs`."""
 
+import math
+import os
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -12,6 +16,45 @@ from uranium.model.layers import GruCell, Mlp, ResMlp, entropy, gumbel_argmax, l
 HEAD_NAMES = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
 TARGET_UNIT = 1
 TARGET_LOC = 2
+# AMB-000-4 step 2: teacher forcing computes the location head on the rows whose action uses a
+# location (032-R10). `URANIUM_LOC_ROWS` picks how those rows are found and shaped:
+#   off   - `nonzero` on the device (a host sync; the row count changes every call)
+#   exact - the row list from the host labels (no sync; same shapes as `off`)
+#   mult8 / pow2 - the host list padded to a multiple of 8 / a power of two by repeating a used
+#                  row (fewer distinct shapes for cuDNN / MIOpen and graph capture); the padded
+#                  rows' outputs are dropped, so the result is the same
+LOC_ROW_MODES = ("off", "exact", "mult8", "pow2")
+# `URANIUM_LOC_OUT`: the location head's last 1x1 conv (32 -> 1) as `conv` or as the same sum
+# written out (`mulsum`: multiply, sum the channels), which MIOpen's slow 1x1 backward avoids.
+LOC_OUT_MODES = ("conv", "mulsum")
+
+
+def env_choice(key: str, choices: tuple, default: str) -> str:
+    v = os.environ.get(key, "") or default
+    if v not in choices:
+        raise ValueError(f"{key}={v!r}: expected one of {choices}")
+    return v
+
+
+def bucket_rows(k: int, mode: str) -> int:
+    if mode == "mult8":
+        return -(-k // 8) * 8
+    if mode == "pow2":
+        return 1 << math.ceil(math.log2(k)) if k > 1 else k
+    return k
+
+
+def location_rows(action, target_kind, mode: str) -> tuple[np.ndarray, int] | None:
+    """Host row list for the location head from the action labels (numpy): (row indices padded
+    to the bucket, number of real rows), or None when every row is computed (no used row, or the
+    bucket covers the batch: the `location_used_rows` fallbacks)."""
+    a = np.clip(np.asarray(action).astype(np.int64).reshape(-1), 0, len(target_kind) - 1)
+    used = np.flatnonzero(np.asarray(target_kind)[a] == TARGET_LOC)
+    k, b = len(used), len(a)
+    kb = bucket_rows(k, mode)
+    if k == 0 or kb >= b:
+        return None
+    return np.concatenate([used, np.full(kb - k, used[0], dtype=used.dtype)]), k
 
 
 class ActionTable:
@@ -62,6 +105,7 @@ class LocationHead(nn.Module):
         self.ups = nn.ModuleList([up(h.loc_ar_channels + c4, c3), up(2 * c3, c2), up(2 * c2, c1), up(2 * c1, 32)])
         self.out = nn.Conv2d(32, 1, 1)
         self.ar_channels = h.loc_ar_channels
+        self.out_mode = env_choice("URANIUM_LOC_OUT", LOC_OUT_MODES, "conv")
 
     def forward(self, ar, sp: dict):
         """-> logits [B, M*M]"""
@@ -73,6 +117,9 @@ class LocationHead(nn.Module):
             if i < 3:
                 x = torch.cat([x, skips[i]], 1)
         m = x.shape[2]
+        if self.out_mode == "mulsum":
+            w = self.out.weight.view(1, -1, 1, 1).to(x.dtype)
+            return ((x * w).sum(1) + self.out.bias.to(x.dtype)).view(b, m * m)
         return self.out(x).view(b, m * m)
 
 
@@ -156,7 +203,7 @@ class Heads(nn.Module):
         # 6 Location
         loc_ok = gather_loc(obs["loc_class_mask"], info["loc_class"])
         if labels is not None:
-            lp_loc = self.location_used_rows(ar, sp, loc_ok, info["target_loc"])
+            lp_loc = self.location_used_rows(ar, sp, loc_ok, info["target_loc"], labels.get("loc_rows"), labels.get("loc_k"))
         else:
             lp_loc = tempered(masked_log_softmax(self.location(ar, sp), loc_ok), temp)
         target_loc = choose(lp_loc, "target_loc")
@@ -186,19 +233,22 @@ class Heads(nn.Module):
         }
         return {"chosen": chosen, "logp": logp, "entropy": ent, "dists": dists}
 
-    def location_used_rows(self, ar, sp: dict, loc_ok, used):
+    def location_used_rows(self, ar, sp: dict, loc_ok, used, rows=None, k: int | None = None):
         """Masked location log-probs [B, M*M] for the rows whose action uses a location; other rows
-        0 (their terms are multiplied by 0, 032-R10). No used row or all rows: every row."""
-        if self.location_all_rows:
+        0 (their terms are multiplied by 0, 032-R10). No used row or all rows: every row. `rows` /
+        `k`: the host row list (`location_rows`, first `k` real, the rest padding; `k` -1 = every
+        row), else the rows are found on the device."""
+        if self.location_all_rows or k == -1:
             return masked_log_softmax(self.location(ar, sp), loc_ok)
         b, mm = loc_ok.shape
-        rows = used.nonzero().squeeze(1)
-        k = rows.numel()
-        if k == b or k == 0:
-            return masked_log_softmax(self.location(ar, sp), loc_ok)
+        if rows is None:
+            rows = used.nonzero().squeeze(1)
+            k = rows.numel()
+            if k == b or k == 0:
+                return masked_log_softmax(self.location(ar, sp), loc_ok)
         sub = {"s8": sp["s8"][rows], "skips": [s[rows] for s in sp["skips"]], "pool": sp["pool"][rows]}
         lp = masked_log_softmax(self.location(ar[rows], sub), loc_ok[rows])
-        return torch.zeros(b, mm, dtype=lp.dtype, device=lp.device).index_add(0, rows, lp)
+        return torch.zeros(b, mm, dtype=lp.dtype, device=lp.device).index_add(0, rows[:k], lp[:k])
 
     def selected(self, ar, e, obs: dict, info: dict, labels, temp: float, generator):
         """Pointer network over own eligible units with an END key (032 §2.5 #4, 031-R3, 032-R12).
