@@ -92,7 +92,15 @@ def bc_main(a) -> int:
         os.environ["URANIUM_BC_PROFILE"] = "1"
     backend, device, precision = resolve(a.backend)
     configure(backend)
-    groups = [run_group(a, int(g), device, precision, log=lambda m: print(m, file=sys.stderr, flush=True)) for g in a.groups.split(",")]
+    import torch
+
+    groups = []
+    for g in a.groups.split(","):
+        try:
+            groups.append(run_group(a, int(g), device, precision, log=lambda m: print(m, file=sys.stderr, flush=True)))
+        except torch.OutOfMemoryError as e:  # a group size over the device memory is a result (060-R3)
+            groups.append({"group": int(g), "updates": [], "median_s": None, "mean_s": None, "p95_s": None, "wait_median_s": None, "peak_gib": None, "peak_rss_gib": None, "failed": str(e).splitlines()[0][:160]})
+            torch.cuda.empty_cache()
     env = environment(backend, precision, device) | {"entity_chunk": os.environ.get("URANIUM_BC_ENTITY_CHUNK", "0"), "prefetch": os.environ.get("URANIUM_BC_PREFETCH", "default")}
     md = bc_markdown(groups, env, "python -m uranium bench " + " ".join(sys.argv[2:]))
     write(a.out, md)
