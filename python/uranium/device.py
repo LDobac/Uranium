@@ -2,6 +2,7 @@
 mixed, ROCm and CPU f32). ROCm runs through PyTorch's `cuda` device API."""
 
 import contextlib
+import os
 
 import torch
 
@@ -29,12 +30,25 @@ def resolve(backend: str | None) -> tuple[str, torch.device, str]:
     return backend, torch.device("cuda"), "bf16" if backend == "cuda" else "f32"
 
 
+# AMB-000-4 step 2: per backend, the implementation each switch defaults to (same math, the faster
+# one in the comparison on that backend, `reports/pytorch_opt.md` 2). A process variable or `.env`
+# key wins.
+IMPL_DEFAULTS = {
+    "rocm": {"URANIUM_LOC_ROWS": "exact", "URANIUM_LOC_OUT": "mulsum"},
+    "cuda": {},
+    "cpu": {},
+}
+
+
 def configure(backend: str) -> None:
     """041-R15 kernel selection: cuDNN benchmark mode on CUDA hosts only. ROCm keeps MIOpen's
     immediate mode with its find-db (`MIOPEN_USER_DB_PATH`): benchmark mode there runs a MIOpen
     search for every new shape (4.6 s to 2 min per shape on the Linux ROCm host, 2026-10-24), and
-    the location head's row count changes every call (032-R10)."""
+    the location head's row count changes every call (032-R10). Then the backend's implementation
+    defaults (`IMPL_DEFAULTS`); call before building the network."""
     torch.backends.cudnn.benchmark = backend == "cuda"
+    for k, v in IMPL_DEFAULTS[backend].items():
+        os.environ.setdefault(k, v)
 
 
 def autocast(device: torch.device, precision: str):

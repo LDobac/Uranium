@@ -178,11 +178,12 @@ def evaluate(dirs: list[str], ckpt_dir: str, split: str, games, seed: int, confi
 
 def main(a) -> int:
     from uranium import _core
-    from uranium.device import resolve
+    from uranium.device import configure, resolve
 
     dirs = _core.dataset_dirs(a.dataset, a.shards)
     ckpt_dir = str(_core.resolve_checkpoint(a.checkpoint))
-    _, device, precision = resolve(a.backend)
+    backend, device, precision = resolve(a.backend)
+    configure(backend)
     rep = evaluate(dirs, ckpt_dir, a.split, a.games, a.seed, a.config, device, precision, a.core, a.maps_dir, a.synthetic_maps)
     print(json.dumps(rep, indent=2))
     return 0
