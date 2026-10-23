@@ -90,10 +90,12 @@ def bc_main(a) -> int:
 
     if a.phases:
         os.environ["URANIUM_BC_PROFILE"] = "1"
-    backend, device, precision = resolve(a.backend)
-    configure(backend)
     import torch
 
+    backend, device, precision = resolve(a.backend)
+    configure(backend)
+    env = environment(backend, precision, device) | {"entity_chunk": os.environ.get("URANIUM_BC_ENTITY_CHUNK", "0"), "prefetch": os.environ.get("URANIUM_BC_PREFETCH", "default")}
+    cmd = "python -m uranium bench " + " ".join(sys.argv[2:])
     groups = []
     for g in a.groups.split(","):
         try:
@@ -101,10 +103,10 @@ def bc_main(a) -> int:
         except torch.OutOfMemoryError as e:  # a group size over the device memory is a result (060-R3)
             groups.append({"group": int(g), "updates": [], "median_s": None, "mean_s": None, "p95_s": None, "wait_median_s": None, "peak_gib": None, "peak_rss_gib": None, "failed": str(e).splitlines()[0][:160]})
             torch.cuda.empty_cache()
-    env = environment(backend, precision, device) | {"entity_chunk": os.environ.get("URANIUM_BC_ENTITY_CHUNK", "0"), "prefetch": os.environ.get("URANIUM_BC_PREFETCH", "default")}
-    md = bc_markdown(groups, env, "python -m uranium bench " + " ".join(sys.argv[2:]))
-    write(a.out, md)
-    write(a.json, json.dumps({"env": env, "groups": groups}, indent=1))
+        # Written after every group: a long sweep that is stopped keeps the groups it finished.
+        md = bc_markdown(groups, env, cmd)
+        write(a.out, md)
+        write(a.json, json.dumps({"env": env, "groups": groups}, indent=1))
     emit(md)
     return 0
 
