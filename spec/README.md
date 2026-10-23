@@ -175,7 +175,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | M0 | spec 작성·리뷰 | 전체 |
 | M1 | 리스크 스파이크: (a) Burn/Vulkan 벤치, (b) OpenBW 헤드리스 + SC:R CASC 데이터 추출. ~~(c) samase_scarf~~ → M7로 이동(2026-10-15) | 060, 011 |
 | M2 | proto + OpenBW 브리지(대전 모드) + 에이전트 서버 최소판 + T0 테란 스크립트 봇으로 게임 완주·fps·결정론 측정 | 010, 011, 021(T0 테란) |
-| M3 | hostd·env 스케줄러(Linux 구현, Windows는 `docs/windows.md` 체크리스트) + T0 P/Z 봇 + T1 1단계(UAlbertaBot)·2단계(5종 추가 포팅) + 동시 게임 수 측정(calibrate) | 020, 021 |
+| M3 | hostd·env 스케줄러(Linux 구현, Windows는 `docs/commands.md` "Windows" 절) + T0 P/Z 봇 + T1 1단계(UAlbertaBot)·2단계(5종 추가 포팅) + 동시 게임 수 측정(calibrate) | 020, 021 |
 | M4 | 리플레이 파이프라인 (SC:R 리플레이 변환 포함), SC:R 래더 리플레이 수집 | 040, 043, 013(명령 인코딩 부분) |
 | M5 | 모델 + BC. 데이터 규모가 필요 없는 부분(모델·feature·마스크·executor·보상·BC 골격)은 M4와 병행한다(2026-10-16 사용자 결정) | 030–034, 041 |
 | M6 | RL + 리그. RL 전에 학습·추론을 PyTorch로 전환한다(2026-10-23, AMB-000-4: 1단계 기능 이식·동등성 검증 → Burn 삭제 → 2단계 최적화, BC 본학습은 PyTorch로 새로 시작) | 042, 050, 032, 041, 060, 061 |

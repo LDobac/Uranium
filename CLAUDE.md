@@ -8,7 +8,7 @@
 - BC 본학습(GTrXL, 10-23 시작 후 중지): `reports/m6_pre_bc_review.md` I절, 실행 안내 루트 `README.md`
 - 마일스톤별 결과: `reports/` (m2~m7)
 - M7 SC:R 남은 과제: `reports/m7_scr_bridge.md` 4절
-- PyTorch 전환(진행 중, 아래 명령어는 전환 전 기준): `spec/README.md` AMB-000-4, 근거 `reports/torch_vs_burn.md`
+- PyTorch 전환(1단계 이식 완료, 2단계 최적화 남음): `spec/README.md` AMB-000-4, 진행 `reports/pytorch_port.md`, 근거 `reports/torch_vs_burn.md`
 
 ## 고정 조건
 | 항목 | 값 |
@@ -58,21 +58,21 @@ crates/
   uranium-store          공용 드라이브(061): 잠금·push/pull·Manifest·학습 상태 파일
   uranium-league         RL(042): 리그·궤적·세그먼트 큐·리턴 타깃·RL 실행 루프(학습기는 Python)
   uranium-py             PyO3 확장 `uranium._core`: 위 Rust 기능을 Python에 노출, 추론 Broker
-  uranium-model          Burn 모델 (PyTorch 전환 뒤 삭제 예정)
-  uranium-train          BC 학습(Burn, 삭제 예정), worker·supervise, 호스트 데이터 명령
+  uranium-train          run 큐 작업자·감시(학습 자식은 Python), 호스트 데이터 명령
   uranium-replay         .rep 파서·데이터셋 build
   uranium-ladder         SC:R 래더 리플레이 수집 (043, Windows)
   uranium-hostd          OpenBW 인스턴스 데몬
-  uranium-agent          에이전트 서버(정책 라우팅, 배치 추론)
+  uranium-agent          에이전트 서버(정책 라우팅, 추론 Broker. 모델은 Python)
   uranium-runner         게임 스케줄러 (바이너리 이름 uranium-env)
   uranium-bridge-openbw  브리지 Rust 절반 (C ABI)
   uranium-scripted       T0 규칙 기반 봇
 python/uranium           학습·추론(PyTorch): model/, bc/, rl/, agent/, ckpt.py. 진입점 `python -m uranium`
 bridge/openbw            BWAPI shim(C++) → liburanium_bridge
 bridge/scr               samase 플러그인 (M7, 자체 Cargo workspace, 표는 tables/)
-tools/                   bench, casc-extract, openbw/, oss/, scr/, worker/, env 로더
+tools/                   casc-extract, bwapi-tables, openbw/, oss/, scr/, worker/, env 로더
+tests/python             pytest (CPU 기준, `-m gpu` 장치 비교), fixtures/
 config/                  plans/, ladder/, bc.toml, rl.toml, reward.toml, map_families.toml, map_exclude.toml
-docs/                    windows.md, commands.md
+docs/                    commands.md(명령 상세·Windows·여러 호스트), scr.md
 third_party/             OpenBW·BWAPI·T1 봇 소스(git 미추적) + patches/
 reports/                 리포트, timeline.md
 ```
@@ -92,11 +92,11 @@ reports/                 리포트, timeline.md
 
 ## 명령어
 상세 옵션은 `docs/commands.md`.
-- 테스트: `cargo test --workspace`
-- 빌드: `tools/openbw/build.sh` → `tools/openbw/build_bridge.sh` (Windows는 `.ps1`), `cargo build --release [--features cuda]`
-- 게임: `uranium-hostd serve`, `uranium-env run --plan config/plans/<plan>.toml`, `uranium-env calibrate`
+- 테스트: `cargo test --workspace`, `<venv python> -m pytest tests/python` (GPU 호스트는 `-m gpu`도)
+- 빌드: `tools/openbw/build.sh` → `tools/openbw/build_bridge.sh` (Windows는 `.ps1`), `cargo build --release`, Python 패키지 `uv pip install --python <venv python> -e .`
+- 게임: `uranium-hostd serve`, `python -m uranium run --plan config/plans/<plan>.toml`(스크립트 플레이어만이면 `uranium-env run`), `uranium-env calibrate`
 - 리플레이: `uranium-replay build <dir> --src <tag> --records <jsonl> [--part i --parts N]`
-- BC: `uranium-train bc --dataset replays/shards/<src>... --run <id> --backend <cuda|vulkan>`, `bc-eval`, `bc-epoch`, `split-stats`, `manifest`
-- 작업자: `uranium-train worker --queue <큐> --backend <b> --priority <n>`, 감시 `uranium-train supervise -- <인자>`
-- RL: `uranium-train rl --run <id> --bc <ckpt> --logs <dir>`
-- SC:R 실전(`docs/scr.md`): `tools\scr\build.ps1` → `uranium-agent scr --checkpoint <ckpt> --backend cuda` → `tools\scr\run.ps1` → 게임 시작은 사람이
+- BC: `python -m uranium bc --dataset replays/shards/<src>... --run <id> --backend <cuda|rocm>`, `bc-eval`, `bc-profile`. 데이터: `uranium-train bc-epoch | split-stats | manifest`
+- 작업자: `uranium-train worker --queue <큐> --backend <cuda|rocm> --priority <n>`(자식 `URANIUM_PYTHON -m uranium`), 감시 `uranium-train supervise -- <인자>`
+- RL: `python -m uranium rl --run <id> --bc <ckpt> --logs <dir>`
+- SC:R 실전(`docs/scr.md`): `tools\scr\build.ps1` → `python -m uranium scr --checkpoint <ckpt>` → `tools\scr\run.ps1` → 게임 시작은 사람이

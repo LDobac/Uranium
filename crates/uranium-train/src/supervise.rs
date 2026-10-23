@@ -129,13 +129,13 @@ impl Watch {
         !self.stopping()
     }
 
-    /// Runs `uranium-train <args>` to its end; a hang (no stderr line and no `progress_file`
-    /// change for `hang`) kills it (060-R6).
+    /// Runs `URANIUM_PYTHON -m uranium <args>` (the PyTorch trainer, 060-R6, AMB-000-4) to its
+    /// end; a hang (no stderr line and no `progress_file` change for `hang`) kills it.
     pub fn run_child(&self, args: &[String], hang: Duration, progress_file: Option<&PathBuf>) -> Result<Ending> {
-        let exe = std::env::current_exe()?;
-        self.note(&format!("start: {}", args.join(" ")));
-        let mut cmd = child_command(&exe);
-        let mut child = cmd.args(args).stderr(Stdio::piped()).spawn().context("starting the training command")?;
+        let python = python()?;
+        self.note(&format!("start: {} -m uranium {}", python.display(), args.join(" ")));
+        let mut cmd = child_command(&python);
+        let mut child = cmd.args(["-m", "uranium"]).args(args).stderr(Stdio::piped()).spawn().context("starting the training command")?;
         *self.child_pid.lock().unwrap() = Some(child.id());
         let last = Arc::new(Mutex::new(Instant::now()));
         let reader = {
@@ -187,6 +187,15 @@ impl Watch {
 /// *thread*: children are
 /// started from the watchdog's main loop thread. Windows: unchanged (same console, Ctrl+C reaches
 /// the child directly; closing the console ends both).
+/// 001-R9: the interpreter of the Python training children (`URANIUM_PYTHON`, e.g. the venv's
+/// python). No default: a worker must not train with whichever python is on the PATH.
+pub fn python() -> Result<PathBuf> {
+    match std::env::var_os("URANIUM_PYTHON").filter(|v| !v.is_empty()) {
+        Some(p) => Ok(PathBuf::from(p)),
+        None => anyhow::bail!("URANIUM_PYTHON is not set: put the training venv's python in .env (001-R9), e.g. URANIUM_PYTHON=/path/to/.venv/bin/python"),
+    }
+}
+
 pub fn child_command(exe: &std::path::Path) -> Command {
     #[allow(unused_mut)]
     let mut cmd = Command::new(exe);

@@ -1,18 +1,12 @@
 [package]
 name = "uranium-train"
-description = "Training: behaviour cloning from replay shards (spec 041), RL and the league (spec 042)"
+description = "Training host commands (041 data checks, 061 manifests and devices, 033-R8 z table), the 060-R6 watchdog and the 061-R13 run queue worker around the PyTorch trainer"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 publish.workspace = true
 
-[features]
-# Enable only on a CUDA host: --features cuda
-cuda = ["burn/cuda", "uranium-model/cuda"]
-
 [dependencies]
-burn = { workspace = true, features = ["std", "autodiff", "flex", "vulkan", "optim", "store"] }
-uranium-model = { path = "../uranium-model" }
 uranium-env = { path = "../uranium-env" }
 uranium-replay = { path = "../uranium-replay" }
 uranium-data = { path = "../uranium-data" }

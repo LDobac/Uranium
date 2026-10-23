@@ -188,3 +188,16 @@ def test_run_bc_refuses_another_run_ident(tiny_config, shards, tmp_path):
     other.write_text(tiny_config.read_text().replace("lr = 3e-3", "lr = 1e-3"), encoding="utf-8")
     with pytest.raises(RuntimeError):
         _core.run_bc(make, str(other), out=str(tmp_path / "o2"), shards=[str(shards)], steps=2, resume=str(out / "last"), synthetic_maps=True)
+
+
+def test_entity_recompute_keeps_the_update_041_r17(tiny_config, shards):
+    """041-R17: the entity encoder in recomputed row chunks gives the same update (dropout 0 in
+    the tiny net, so the replayed draws do not matter)."""
+    b = feeder(tiny_config, shards).next()
+    after = {}
+    for chunk in (0, 3):
+        t = BcTrainer(bc_cfg(tiny_config), tiny_net(), CPU, "f32", entity_chunk=chunk)
+        t.train_batch(b, 3e-3, 0)
+        after[chunk] = params_of(t.net)
+    for k in after[0]:
+        assert torch.allclose(after[3][k], after[0][k], atol=1e-6, rtol=1e-5), k

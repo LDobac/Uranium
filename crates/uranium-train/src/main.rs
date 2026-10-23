@@ -1,25 +1,20 @@
-//! `uranium-train bc (--dataset <rel> | --shards <dir>)... (--out <ckpt dir> | --run <id>)` (041),
-//! `uranium-train bc-epoch`, `uranium-train bc-eval` (041 one-epoch lengths, offline metrics),
-//! `uranium-train manifest <dir> [--verify]` (061-R7),
-//! `uranium-train rl --run <id> --bc <ckpt>` (042), `uranium-train z-table` (033-R8).
+//! `uranium-train`: host data commands (`bc-epoch`, `label-check`, `split-stats`, `manifest`,
+//! `devices`, `z-table`, `feed-digest`), the 060-R6 watchdog (`supervise`) and the 061-R13 run
+//! queue worker, which run the PyTorch trainer (`python -m uranium bc | rl`, AMB-000-4).
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
-use burn::tensor::{Device, DeviceKind};
+use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use uranium_model::config::CoreKind;
-use uranium_model::{GtrxlCore, LstmCore};
-use uranium_train::bc::BcConfig;
-use uranium_train::bc_run::{BcArgs, BcOut, BcStage};
+use uranium_train::bc::{BcConfig, BcStage};
 use uranium_train::data::ShardSource;
-use uranium_train::split::Split;
 
+/// Device labels of the PyTorch training children (001-R10).
 #[derive(Clone, Copy, Debug, ValueEnum)]
-enum Backend {
-    Vulkan,
+enum ChildBackend {
     Cuda,
-    Flex,
+    Rocm,
+    Cpu,
 }
 
 #[derive(Parser)]
@@ -31,53 +26,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Behaviour cloning over replay shards.
-    Bc {
-        #[command(flatten)]
-        data: DataArgs,
-        /// Local checkpoint folder (`step_<n>/`, `last/`).
-        #[arg(long, required_unless_present = "run", conflicts_with = "run")]
-        out: Option<PathBuf>,
-        /// 061 run on the shared drive (`checkpoints/<run>/`): lock, push, and resume from
-        /// `LATEST` with the data position on any training PC.
-        #[arg(long)]
-        run: Option<String>,
-        /// Take the run lock from another PC now, whatever its state, with a warning (061-R5).
-        /// Use it only after checking that PC stopped: if it still trains, it stops at its next
-        /// heartbeat without pushing and loses checkpoints only it had.
-        #[arg(long, requires = "run")]
-        take_over: bool,
-        /// Run queue worker's automatic take-over (061-R5, R13): the lock as the worker saw it
-        /// unchanged for `stale_after` (JSON); taken only if it is still exactly that.
-        #[arg(long, requires = "run", conflicts_with = "take_over", hide = true)]
-        take_over_if: Option<String>,
-        #[arg(long, default_value = "config/bc.toml")]
-        config: PathBuf,
-        #[arg(long, value_enum, default_value = "vulkan")]
-        backend: Backend,
-        #[arg(long, value_enum, default_value = "gtrxl")]
-        core: CoreArg,
-        /// S2 fine-tuning: learning rate x s2_lr_scale (041-R4). Start from --init.
-        #[arg(long)]
-        s2: bool,
-        /// Games to train on (041-R13): s1 = train split of all maps, s2 = train split of the
-        /// target maps. Default: s2 with --s2, else s1 (ablation (A) = `--stage s2` without --s2).
-        #[arg(long, value_enum)]
-        stage: Option<StageArg>,
-        /// Stop after this update (smoke runs); the schedule length stays the stage's
-        /// (`[steps]` in the config).
-        #[arg(long)]
-        steps: Option<usize>,
-        /// Local mode: continue from a checkpoint folder (weights, optimizer, step, RNG and data
-        /// position, 061-R10). A run resumes from `LATEST` by itself.
-        #[arg(long, conflicts_with_all = ["init", "run"])]
-        resume: Option<PathBuf>,
-        /// Start from a checkpoint's weights only: fresh optimizer, schedule and step counter
-        /// (S1 -> S2, 041-R4). A checkpoint folder, or a 061 run folder that is finished (`DONE`,
-        /// its final checkpoint); a run still training is refused (061-R13).
-        #[arg(long)]
-        init: Option<PathBuf>,
-    },
     /// 041-R13: updates in one epoch of a stage (the trainer's lane walk without the model);
     /// the numbers for `[steps]` in `config/bc.toml`. Reads every shard once.
     BcEpoch {
@@ -138,14 +86,15 @@ enum Cmd {
         args: Vec<String>,
     },
     /// 061-R13/R14 run queue worker: takes the first unfinished, untaken run of the queue and trains
-    /// it (`bc --run`, 060-R6 watchdog), then the next; asks a slower PC to yield when nothing is
-    /// free. Ctrl+C: checkpoint, push, release, stop.
+    /// it (`URANIUM_PYTHON -m uranium bc --run`, 060-R6 watchdog), then the next; asks a slower PC
+    /// to yield when nothing is free. Ctrl+C: checkpoint, push, release, stop.
     Worker {
         /// Queue file (TOML: [defaults] datasets/config, [[run]] id/config/core/stage/init_run/steps).
         #[arg(long)]
         queue: PathBuf,
-        #[arg(long, value_enum, default_value = "vulkan")]
-        backend: Backend,
+        /// Device of the PyTorch children (001-R10).
+        #[arg(long, value_enum)]
+        backend: ChildBackend,
         /// Faster PCs get higher numbers; only a higher priority may ask a run to yield.
         #[arg(long, default_value = "0")]
         priority: i32,
@@ -171,45 +120,6 @@ enum Cmd {
     Devices {
         #[arg(long)]
         run: String,
-    },
-    /// Where a BC update's time goes, module by module (forward marks, backward by gradient
-    /// cuts), on real S1 batches with a fresh network. The first batch only warms kernels up.
-    BcProfile {
-        #[command(flatten)]
-        data: DataArgs,
-        #[arg(long, default_value = "1")]
-        batches: usize,
-        #[arg(long, value_enum, default_value = "vulkan")]
-        backend: Backend,
-        #[arg(long, default_value = "config/bc.toml")]
-        config: PathBuf,
-        #[arg(long, value_enum, default_value = "gtrxl")]
-        core: CoreArg,
-    },
-    /// 041 offline metrics on a split (default: the target-map test set, 041-AC1): action_type
-    /// top-1/top-5, delay MAE, target_loc tile error, selected F1, plus the loss terms.
-    BcEval {
-        #[command(flatten)]
-        data: DataArgs,
-        /// Checkpoint folder, or a 061 run folder (its `LATEST`).
-        #[arg(long)]
-        checkpoint: PathBuf,
-        #[arg(long, value_enum, default_value = "test")]
-        split: SplitArg,
-        #[arg(long, value_enum, default_value = "vulkan")]
-        backend: Backend,
-        #[arg(long, value_enum, default_value = "gtrxl")]
-        core: CoreArg,
-        /// Score this many games, chosen by a fixed-seed shuffle over the whole split (032-R17 ②:
-        /// the core ablation uses `--split val --games 500`; every checkpoint gets the same games).
-        /// Default: every game of the split.
-        #[arg(long)]
-        games: Option<usize>,
-        /// Seed of the `--games` shuffle (032-R17 ②, G-D8).
-        #[arg(long, default_value_t = 1)]
-        seed: u64,
-        #[arg(long, default_value = "config/bc.toml")]
-        config: PathBuf,
     },
     /// 034-AC3 diagnostics: labels that fail the masks, by action and reason (JSON).
     LabelCheck {
@@ -273,34 +183,8 @@ enum StageArg {
     S2,
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum SplitArg {
-    Train,
-    Val,
-    Test,
-}
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum CoreArg {
-    Lstm,
-    Gtrxl,
-}
 
-fn device(b: Backend) -> Result<Device> {
-    // 041-R15: autotune + fusion are compiled in; the autotune cache must sit in the host's fixed
-    // URANIUM_AUTOTUNE_CACHE_DIR before the first GPU device is made (training: required).
-    if !matches!(b, Backend::Flex) {
-        uranium_model::runtime::init_gpu_runtime(true)?;
-    }
-    Ok(match b {
-        Backend::Vulkan => Device::vulkan(DeviceKind::DefaultDevice),
-        #[cfg(feature = "cuda")]
-        Backend::Cuda => Device::cuda(0),
-        #[cfg(not(feature = "cuda"))]
-        Backend::Cuda => anyhow::bail!("rebuild with --features cuda on a CUDA host"),
-        Backend::Flex => Device::flex(),
-    })
-}
 
 fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -398,61 +282,10 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
-        Cmd::Bc { data, out, run, take_over, take_over_if, config, backend, core, s2, stage, steps, resume, init } => {
-            // 042-R10 / 060-R6: before the dataset pull and the model load, so an early SIGINT is kept.
-            let stop = uranium_train::install_stop_handler("bc")?;
-            let stage = match (s2, stage.unwrap_or(if s2 { StageArg::S2 } else { StageArg::S1 })) {
-                (true, _) => BcStage::S2,
-                (false, StageArg::S2) => BcStage::AblationA,
-                (false, StageArg::S1) => BcStage::S1,
-            };
-            let out = match (out, run) {
-                (Some(o), _) => BcOut::Local(o),
-                (None, Some(id)) => {
-                    let take = match (take_over, take_over_if) {
-                        (_, Some(seen)) => uranium_train::storage::TakeOver::IfUnchanged(serde_json::from_str(&seen).context("--take-over-if")?),
-                        (true, None) => uranium_train::storage::TakeOver::Force,
-                        (false, None) => uranium_train::storage::TakeOver::No,
-                    };
-                    BcOut::Run { id, take }
-                }
-                (None, None) => unreachable!("clap requires --out or --run"),
-            };
-            let kind = match core {
-                CoreArg::Lstm => CoreKind::Lstm,
-                CoreArg::Gtrxl => CoreKind::Gtrxl,
-            };
-            let backend_name = format!("{backend:?}").to_lowercase();
-            let dirs = match data.dirs() {
-                Ok(d) => d,
-                // Ctrl+C during the dataset pull: no lock yet, a clean stop (042-R10).
-                Err(e) if e.downcast_ref::<uranium_train::Interrupted>().is_some() => {
-                    uranium_train::elog!("[bc] {e:#}");
-                    return Ok(());
-                }
-                Err(e) => return Err(e),
-            };
-            let args = BcArgs { dirs, out, config, stage, core: kind, stop_at: steps, resume, init, backend: backend_name, stop };
-            let dev = device(backend)?;
-            let res = match core {
-                CoreArg::Lstm => uranium_train::bc_run::run::<LstmCore>(args, dev),
-                CoreArg::Gtrxl => uranium_train::bc_run::run::<GtrxlCore>(args, dev),
-            };
-            // 061-R13/R14 exit codes for the run queue worker.
-            match res {
-                Ok(uranium_train::bc_run::BcExit::Yielded) => std::process::exit(uranium_train::bc_run::EXIT_YIELDED),
-                Ok(_) => Ok(()),
-                Err(e) if e.downcast_ref::<uranium_train::storage::LockBusy>().is_some() => {
-                    uranium_train::elog!("{e:#}");
-                    std::process::exit(uranium_train::bc_run::EXIT_BUSY)
-                }
-                Err(e) => Err(e),
-            }
-        }
         Cmd::BcEpoch { data, config } => {
             let cfg = BcConfig::load(&config)?;
             let dirs = data.dirs()?;
-            let out = uranium_train::bc_eval::epoch_table(&dirs, &cfg)?;
+            let out = uranium_train::bc::epoch_table(&dirs, &cfg)?;
             println!("{}", serde_json::to_string_pretty(&out)?);
             Ok(())
         }
@@ -526,34 +359,6 @@ fn main() -> Result<()> {
                 .map(|(h, n)| (h, serde_json::json!({ "updates": n, "share": if total > 0 { n as f64 / total as f64 } else { 0.0 } })))
                 .collect();
             println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "run": run, "updates": total, "hosts": hosts, "spans": spans }))?);
-            Ok(())
-        }
-        Cmd::BcProfile { data, batches, backend, config, core } => {
-            let cfg = BcConfig::load(&config)?;
-            let dev = device(backend)?;
-            let rep = match core {
-                CoreArg::Lstm => uranium_train::bc_prof::profile::<LstmCore>(&data.dirs()?, &cfg, batches, dev)?,
-                CoreArg::Gtrxl => uranium_train::bc_prof::profile::<GtrxlCore>(&data.dirs()?, &cfg, batches, dev)?,
-            };
-            println!("{}", serde_json::to_string_pretty(&rep)?);
-            Ok(())
-        }
-        Cmd::BcEval { data, checkpoint, split, backend, core, games, seed, config } => {
-            let cfg = BcConfig::load(&config)?;
-            let split = match split {
-                SplitArg::Train => Split::Train,
-                SplitArg::Val => Split::Val,
-                SplitArg::Test => Split::Test,
-            };
-            let ckpt = uranium_train::bc_run::resolve_checkpoint(&checkpoint)?;
-            let dev = device(backend)?;
-            let dirs = data.dirs()?;
-            let sel = uranium_train::bc_eval::EvalSelection { split, games, seed };
-            let report = match core {
-                CoreArg::Lstm => uranium_train::bc_eval::evaluate::<LstmCore>(&dirs, &ckpt, sel, &cfg, dev)?,
-                CoreArg::Gtrxl => uranium_train::bc_eval::evaluate::<GtrxlCore>(&dirs, &ckpt, sel, &cfg, dev)?,
-            };
-            println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
         }
     }

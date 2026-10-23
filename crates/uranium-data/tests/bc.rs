@@ -1,23 +1,17 @@
-//! 041 skeleton: shard -> features -> labels -> BC updates on a synthetic game (Flex).
+//! 041 data side on synthetic games: labels, lanes, batches, resume positions, prefetch,
+//! fingerprints and the game order (moved from uranium-train with the Burn trainer's removal,
+//! AMB-000-4; the update tests are tests/python/test_bc.py).
 
-use std::collections::VecDeque;
-
-use burn::module::Module;
-use burn::tensor::Device;
-use uranium_env::features::augment::Sym;
-use uranium_env::features::extract::action_table;
+use uranium_data::bc::{Batch, BcConfig, DataConfig, Feeder, HeadWeights, Prefetch, ValueWeights};
+use uranium_data::data::{MapStore, ShardSource, VecSource, epoch_updates, prepare};
 use uranium_env::actions::LOC_CLASSES;
 use uranium_env::features::CELLS;
+use uranium_env::features::augment::Sym;
+use uranium_env::features::extract::action_table;
 use uranium_env::types::TypeTables;
-use uranium_model::batch::ActionColumns;
-use uranium_model::collate::{input_dims, obs_batch_padded};
-use uranium_model::config::*;
-use uranium_model::{LstmCore, UraniumNet};
 use uranium_proto::*;
 use uranium_replay::label::Label;
 use uranium_replay::shard::{GameMeta, ShardGame, Step};
-use uranium_train::bc::{Batch, BcConfig, DataConfig, Feeder, HeadWeights, Prefetch, Trainer, ValueWeights};
-use uranium_train::data::{MapStore, ShardSource, VecSource, epoch_updates, prepare};
 
 /// A feeder for the synthetic test maps (no map precompute files, B-2).
 fn feeder(cfg: &BcConfig) -> Feeder {
@@ -141,7 +135,7 @@ fn labels_convert_and_survive_symmetry_041() {
 #[test]
 fn enemy_race_mask_per_game_030_r11() {
     use uranium_env::features::RACE_UNKNOWN;
-    use uranium_train::data::{GameStream, enemy_race_masked};
+    use uranium_data::data::{GameStream, enemy_race_masked};
     let shas: Vec<String> = (0..20_000u32).map(|i| format!("{:064x}", u64::from(i).wrapping_mul(0x9E37_79B9_7F4A_7C15))).collect();
     let share = shas.iter().filter(|s| enemy_race_masked(s, 1, 0.05)).count() as f64 / shas.len() as f64;
     assert!((0.04..0.06).contains(&share), "masked share {share}");
@@ -166,7 +160,7 @@ fn enemy_race_mask_per_game_030_r11() {
 #[test]
 fn building_with_units_label_is_void_034_r7() {
     use uranium_env::features::{AgentMemory, MapInfo, extract};
-    use uranium_train::data::host_label_check;
+    use uranium_data::data::host_label_check;
     let g = game();
     let map = MapInfo::new(&g.game_info, 2, None).unwrap();
     let mut f = g.steps[0].raw_frame.clone();
@@ -218,7 +212,7 @@ fn invalid_label_share_filters_perspective_040_r19() {
 #[test]
 fn build_label_check_matches_training_040_r19() {
     use uranium_env::features::label::label_validity;
-    use uranium_train::data::{LabelStats, label_check};
+    use uranium_data::data::{LabelStats, label_check};
     for (steps, invalid) in [(16, 0), (20, 4), (20, 11), (33, 30)] {
         let g = game_with_invalid(steps, invalid);
         let v = label_validity(&g.game_info, 2, None, false, g.steps.iter().map(|s| (&s.raw_frame, &s.action_label))).unwrap();
@@ -267,68 +261,6 @@ fn labeler_v1_v2_train_the_same_except_unknown_steps_040() {
     assert_eq!((v.labeled, v.invalid, v.unknown), (v1.steps.len() - 1, 0, 1));
 }
 
-fn tiny_cfg() -> UraniumNetConfig {
-    UraniumNetConfig::new()
-        .with_input(input_dims())
-        .with_entity(EntityConfig::new().with_d_model(32).with_layers(1).with_heads(4).with_ffn(64).with_dropout(0.0).with_unit_type_emb(8).with_order_emb(8).with_last_action_emb(4))
-        .with_spatial(SpatialConfig::new().with_scatter_channels(4).with_stem_channels(8).with_stages([8, 8, 16, 16]).with_pool(32))
-        .with_scalar(ScalarConfig::new().with_hidden(32).with_race_emb(4).with_map_family_emb(4).with_start_loc_emb(4).with_z_build_emb(8).with_z_units_emb(8).with_z_out(8))
-        .with_core(CoreConfig::new().with_hidden(32))
-        .with_heads(HeadsConfig::new().with_ar(32).with_key(16).with_loc_ar_channels(4))
-        .with_value(ValueConfig::new().with_hidden(32).with_privileged(8))
-}
-
-/// Default run: a few updates (finite loss, usable labels, checkpoint). The full overfit check is
-/// slow in debug: cargo test --release -p uranium-train -- --ignored --nocapture
-#[test]
-fn bc_smoke_041() {
-    train_tiny(3, false);
-}
-
-#[test]
-#[ignore]
-fn bc_overfits_a_tiny_game_041() {
-    train_tiny(40, true);
-}
-
-/// Lanes trained one at a time with summed gradients give the same updates as one pass over all
-/// lanes (041-R3: the batch is the hyper-parameter, `micro_lanes` only bounds GPU memory).
-#[test]
-fn micro_lanes_match_full_batch_041_r3() {
-    // One initial net for both runs: parallel tests share the device RNG, so seeding is not enough.
-    let net = tiny_net();
-    let run = |micro_lanes, pad_entities| {
-        let mut t = tiny_trainer_with(micro_lanes, pad_entities, net.clone());
-        let mut src = VecSource((0..4).map(|_| game()).collect::<VecDeque<_>>());
-        (0..4).map(|_| t.train_step(&mut src).unwrap().unwrap().total).collect::<Vec<_>>()
-    };
-    let full = run(0, 0);
-    // Extra masked entity padding (pad_entities) must not change the result either.
-    for (micro_lanes, pad) in [(1, 0), (1, 64)] {
-        let other = run(micro_lanes, pad);
-        for (a, b) in full.iter().zip(&other) {
-            assert!((a - b).abs() <= 1e-4 * a.abs().max(1.0), "full batch {full:?} != micro_lanes {micro_lanes} pad {pad}: {other:?}");
-        }
-    }
-}
-
-fn tiny_net() -> UraniumNet<LstmCore> {
-    let ad = Device::flex().autodiff();
-    ad.seed(3);
-    let cols = ActionColumns::from_table(action_table()).unwrap();
-    UraniumNet::<LstmCore>::new(&tiny_cfg(), &cols, &ad)
-}
-
-fn tiny_trainer(micro_lanes: usize) -> Trainer<LstmCore> {
-    tiny_trainer_with(micro_lanes, 0, tiny_net())
-}
-
-fn tiny_trainer_with(micro_lanes: usize, pad_entities: usize, net: UraniumNet<LstmCore>) -> Trainer<LstmCore> {
-    let mut t = Trainer::new(net, tiny_cfg(), tiny_bc(micro_lanes, pad_entities), Device::flex().autodiff());
-    t.feeder.set_maps(std::sync::Arc::new(MapStore::synthetic()));
-    t
-}
-
 fn tiny_bc(micro_lanes: usize, pad_entities: usize) -> BcConfig {
     BcConfig {
         lanes: 2,
@@ -349,33 +281,6 @@ fn tiny_bc(micro_lanes: usize, pad_entities: usize) -> BcConfig {
         data: DataConfig { z_drop: 0.0, augment: false, seed: 1, checkpoint_every: 1000, checkpoint_minutes: 0, enemy_race_mask: 0.0 },
         keep_checkpoints: None,
     }
-}
-
-fn train_tiny(updates: usize, expect_drop: bool) {
-    let mut t = tiny_trainer(1);
-    let cols = ActionColumns::from_table(action_table()).unwrap();
-    let mut src = VecSource((0..updates).map(|_| game()).collect::<VecDeque<_>>());
-    let mut losses = vec![];
-    for _ in 0..updates {
-        let Some(l) = t.train_step(&mut src).unwrap() else { break };
-        assert!(l.total.is_finite());
-        assert_eq!(l.valid, 8.0, "every label usable");
-        losses.push(l.total);
-    }
-    assert_eq!(losses.len(), updates);
-    if expect_drop {
-        let first: f32 = losses[..4].iter().sum::<f32>() / 4.0;
-        let last: f32 = losses[losses.len() - 4..].iter().sum::<f32>() / 4.0;
-        eprintln!("loss {first:.3} -> {last:.3} over {} updates", losses.len());
-        assert!(last < first * 0.5, "loss did not drop: {first} -> {last}");
-    }
-
-    let dir = std::env::temp_dir().join(format!("uranium-bc-{}", std::process::id()));
-    t.save(&dir).unwrap();
-    let meta = uranium_model::checkpoint::read_meta(&dir).unwrap();
-    assert_eq!(meta.train["bc"]["seq_len"], 4, "hyper-parameters recorded (041-R10)");
-    let (_net, _) = uranium_model::checkpoint::load::<LstmCore>(&dir, &cols, uranium_env::features::FEATURE_SCHEMA_VERSION, uranium_env::actions::ACTION_SCHEMA_VERSION, &Device::flex()).unwrap();
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -411,15 +316,15 @@ fn warmup_cosine_schedule_041_r3() {
     // 041-R14: one epoch per stage; (A) reads the S2 games.
     assert!(file.steps.s1 > file.steps.s2 && file.steps.s2 > 0 && file.steps.ablation_a == file.steps.s2);
     // 041-R14 (2026-10-18): S2 and (A) warm up over 5% of their epoch, rounded half up.
-    assert_eq!(uranium_train::bc::short_stage_warmup(7915), 396, "395.75 -> 396");
-    assert_eq!(uranium_train::bc::short_stage_warmup(10), 1, "0.5 -> 1");
-    assert_eq!(uranium_train::bc::short_stage_warmup(9), 0, "0.45 -> 0");
-    assert_eq!(file.steps.s2_warmup, uranium_train::bc::short_stage_warmup(file.steps.s2));
-    assert_eq!(file.steps.ablation_a_warmup, uranium_train::bc::short_stage_warmup(file.steps.ablation_a));
+    assert_eq!(uranium_data::bc::short_stage_warmup(7915), 396, "395.75 -> 396");
+    assert_eq!(uranium_data::bc::short_stage_warmup(10), 1, "0.5 -> 1");
+    assert_eq!(uranium_data::bc::short_stage_warmup(9), 0, "0.45 -> 0");
+    assert_eq!(file.steps.s2_warmup, uranium_data::bc::short_stage_warmup(file.steps.s2));
+    assert_eq!(file.steps.ablation_a_warmup, uranium_data::bc::short_stage_warmup(file.steps.ablation_a));
     assert_eq!(file.warmup_steps, 2000, "S1 keeps its warmup");
     // 032-R17 (AMB-032-6): the core ablation is bc.toml with a short S1 schedule only.
     let abl = BcConfig::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/bc_core_ablation.toml"))).unwrap();
-    assert_eq!((abl.steps.s1, abl.warmup_steps), (5300, uranium_train::bc::short_stage_warmup(5300)));
+    assert_eq!((abl.steps.s1, abl.warmup_steps), (5300, uranium_data::bc::short_stage_warmup(5300)));
     let mut same = abl.clone();
     // 2026-10-23 (I-2): bc.toml's stage lengths were recounted on the frozen main-run data after
     // the ablation; the finished ablation keeps the numbers it ran with.
@@ -447,126 +352,6 @@ fn warmup_cosine_schedule_041_r3() {
     kept = file.clone();
     kept.total_steps += 1;
     assert_ne!(kept.fingerprint(), file.fingerprint(), "B-3: the schedule length is");
-}
-
-/// 061-R10 / 061-AC1 / 042-R1 (flex): save -> load -> the next updates are bit-identical to the
-/// run that kept going (weights, optimizer moments, step-driven lr schedule and RNG all restored).
-/// Both runs start the next updates with fresh lanes, as a resumed trainer does.
-#[test]
-fn resume_continues_bit_identically_061_r10() {
-    let cols = ActionColumns::from_table(action_table()).unwrap();
-    let dir = std::env::temp_dir().join(format!("uranium-bc-resume-{}", std::process::id()));
-    std::fs::remove_dir_all(&dir).ok();
-    let games = |n: usize| VecSource((0..n).map(|_| game()).collect::<VecDeque<_>>());
-    let next = |t: &mut Trainer<LstmCore>| {
-        let mut src = games(4);
-        (0..2).map(|_| t.train_step(&mut src).unwrap().unwrap().total.to_bits()).collect::<Vec<_>>()
-    };
-
-    let mut a = tiny_trainer(1);
-    let mut src = games(4);
-    for _ in 0..3 {
-        a.train_step(&mut src).unwrap().unwrap();
-    }
-    a.save(&dir).unwrap();
-    a.reset_lanes();
-    let kept = next(&mut a);
-
-    let ad = Device::flex().autodiff();
-    let load = || uranium_model::checkpoint::load::<LstmCore>(&dir, &cols, uranium_env::features::FEATURE_SCHEMA_VERSION, uranium_env::actions::ACTION_SCHEMA_VERSION, &ad).unwrap().0;
-    let mut b = tiny_trainer_with(1, 0, load());
-    assert!(b.resume(&dir).unwrap(), "training state present");
-    assert_eq!(b.step, 3);
-    assert_eq!(next(&mut b), kept, "resumed updates differ from the run that kept going");
-
-    // Control: the weights alone (fresh optimizer, step 0) do not reproduce the run.
-    let mut c = tiny_trainer_with(1, 0, load());
-    assert_ne!(next(&mut c), kept);
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-/// Every float parameter of a module as raw f32 bits, in visit order.
-struct ParamBits(Vec<Vec<u32>>);
-
-impl burn::module::ModuleVisitor for ParamBits {
-    fn visit_float<const D: usize>(&mut self, p: &burn::module::Param<burn::tensor::Tensor<D>>) {
-        self.0.push(host_f32(p.val()).iter().map(|x| x.to_bits()).collect());
-    }
-}
-
-fn host_f32<const D: usize>(t: burn::tensor::Tensor<D>) -> Vec<f32> {
-    t.into_data().convert::<f32>().try_to_vec::<f32>().unwrap()
-}
-
-fn param_bits<M: burn::module::Module>(m: &M) -> Vec<Vec<u32>> {
-    let mut v = ParamBits(Vec::new());
-    m.visit(&mut v);
-    v.0
-}
-
-/// A burnpack file as sorted (tensor name, raw bytes) plus its scalars: independent of the order
-/// the writer iterated its state in (Burn's optimizer keeps it in a hash map).
-fn burnpack_digest(path: &std::path::Path) -> (Vec<(String, Vec<u8>)>, String) {
-    let r = burn::store::burn_pack::Reader::from_file(path).unwrap();
-    let mut t: Vec<(String, Vec<u8>)> = r.tensor_names().into_iter().map(|n| (n.to_string(), r.tensor_data(n).unwrap())).collect();
-    t.sort();
-    (t, format!("{:?}", r.scalars()))
-}
-
-/// 061-AC5 / AC1 (G-D7, flex): a saved checkpoint loads back with weights and optimizer state
-/// bit-identical to what was saved (both checked on host data, so independent of the device the
-/// checkpoint is loaded on), and the loaded net's forward outputs match the saved net's within
-/// the 032-AC1 tolerance (Flex/Vulkan 1e-4; Flex is exact here). On a GPU the stored values are
-/// the same; the forward then follows 032-AC1 (CUDA 1e-2), and a resumed run continues
-/// bit-identically only on the same host with the same autotune cache (041-R15).
-#[test]
-fn checkpoint_round_trip_is_bit_identical_061_ac5() {
-    let cols = ActionColumns::from_table(action_table()).unwrap();
-    let root = std::env::temp_dir().join(format!("uranium-bc-ac5-{}", std::process::id()));
-    std::fs::remove_dir_all(&root).ok();
-    let (a_dir, b_dir) = (root.join("a"), root.join("b"));
-    let mut a = tiny_trainer(1);
-    let mut src = VecSource((0..4).map(|_| game()).collect::<VecDeque<_>>());
-    for _ in 0..3 {
-        a.train_step(&mut src).unwrap().unwrap();
-    }
-    a.save(&a_dir).unwrap();
-
-    // Weights: loaded on a plain (non-autodiff) Flex device, bit-identical to the trained net.
-    let flex = Device::flex();
-    let load = |d: &Device| uranium_model::checkpoint::load::<LstmCore>(&a_dir, &cols, uranium_env::features::FEATURE_SCHEMA_VERSION, uranium_env::actions::ACTION_SCHEMA_VERSION, d).unwrap().0;
-    let loaded = load(&flex);
-    assert_eq!(param_bits(&loaded), param_bits(&a.net.valid()), "061-AC5: loaded weights differ from the saved ones");
-    // 041-R15: the Burn runtime setting travels with the weights.
-    let meta = uranium_model::checkpoint::read_meta(&a_dir).unwrap();
-    assert_eq!(meta.train["burn"], uranium_model::runtime::settings_json());
-
-    // Optimizer state: resume into a fresh trainer and save again: same moments and scalars.
-    let mut b = tiny_trainer_with(1, 0, load(&Device::flex().autodiff()));
-    assert!(b.resume(&a_dir).unwrap());
-    b.save(&b_dir).unwrap();
-    let optim = uranium_train::ckpt::optim_file("main");
-    let (oa, ob) = (burnpack_digest(&a_dir.join(&optim)), burnpack_digest(&b_dir.join(&optim)));
-    assert!(!oa.0.is_empty(), "the optimizer state holds the AdamW moments after 3 updates");
-    assert_eq!(oa, ob, "061-AC5: optimizer state after load differs from the saved one");
-    let w = uranium_model::checkpoint::WEIGHTS_FILE;
-    assert_eq!(burnpack_digest(&a_dir.join(w)), burnpack_digest(&b_dir.join(w)));
-
-    // Forward outputs: same inputs, saved net vs loaded net, within 032-AC1 (Flex 1e-4).
-    let (obs, _) = uranium_model::synthetic::random_obs(&tiny_cfg(), &cols, 4, 16, 41, &flex);
-    let saved = a.net.valid();
-    let labels = saved.act(&obs, saved.init_state(4, &flex), 0.0).action;
-    let want = saved.forward_seq(&obs, &labels, None, saved.init_state(4, &flex), 1);
-    let got = loaded.forward_seq(&obs, &labels, None, loaded.init_state(4, &flex), 1);
-    let max_abs = |x: Vec<f32>, y: Vec<f32>| x.iter().zip(&y).fold(0f32, |m, (p, q)| m.max((p - q).abs()));
-    for (name, d) in [
-        ("value", max_abs(host_f32(want.value.clone()), host_f32(got.value.clone()))),
-        ("logp.action", max_abs(host_f32(want.heads.logp.action.clone()), host_f32(got.heads.logp.action.clone()))),
-        ("dists.action", max_abs(host_f32(want.heads.dists.action.clone()), host_f32(got.heads.dists.action.clone()))),
-    ] {
-        assert!(d <= 1e-4, "061-AC5 / 032-AC1: {name} differs by {d:.2e} after load");
-    }
-    std::fs::remove_dir_all(&root).ok();
 }
 
 /// A game of `len` steps (1..=16) with its own replay hash.
@@ -678,10 +463,10 @@ fn prefetch_gives_the_feeder_batches_041_r16() {
 fn prefetch_depth_from_env_041_r16() {
     // SAFETY: the only test in this binary that touches this variable.
     unsafe { std::env::remove_var("URANIUM_BC_PREFETCH") };
-    assert_eq!(uranium_train::bc::prefetch_depth().unwrap(), uranium_train::bc::PREFETCH_DEPTH_DEFAULT);
-    for (v, want) in [("0", Some(0)), (" 1 ", Some(1)), ("", Some(uranium_train::bc::PREFETCH_DEPTH_DEFAULT)), ("two", None), ("-1", None)] {
+    assert_eq!(uranium_data::bc::prefetch_depth().unwrap(), uranium_data::bc::PREFETCH_DEPTH_DEFAULT);
+    for (v, want) in [("0", Some(0)), (" 1 ", Some(1)), ("", Some(uranium_data::bc::PREFETCH_DEPTH_DEFAULT)), ("two", None), ("-1", None)] {
         unsafe { std::env::set_var("URANIUM_BC_PREFETCH", v) };
-        assert_eq!(uranium_train::bc::prefetch_depth().ok(), want, "{v:?}");
+        assert_eq!(uranium_data::bc::prefetch_depth().ok(), want, "{v:?}");
     }
     unsafe { std::env::remove_var("URANIUM_BC_PREFETCH") };
 }
@@ -693,73 +478,18 @@ fn entity_chunk_and_pack_from_env_041_r17_r18() {
     // SAFETY: the only test in this binary that touches these variables.
     unsafe { std::env::remove_var("URANIUM_BC_ENTITY_CHUNK") };
     unsafe { std::env::remove_var("URANIUM_BC_PACK_BATCH") };
-    assert_eq!(uranium_train::bc::entity_chunk().ok(), Some(0));
-    assert_eq!(uranium_train::bc::pack_batch().ok(), Some(false));
+    assert_eq!(uranium_data::bc::entity_chunk().ok(), Some(0));
+    assert_eq!(uranium_data::bc::pack_batch().ok(), Some(false));
     for (v, want) in [("16", Some(16)), (" 8 ", Some(8)), ("0", Some(0)), ("", Some(0)), ("x", None), ("-1", None)] {
         unsafe { std::env::set_var("URANIUM_BC_ENTITY_CHUNK", v) };
-        assert_eq!(uranium_train::bc::entity_chunk().ok(), want, "{v:?}");
+        assert_eq!(uranium_data::bc::entity_chunk().ok(), want, "{v:?}");
     }
     for (v, want) in [("1", Some(true)), (" 1 ", Some(true)), ("0", Some(false)), ("", Some(false)), ("yes", None), ("2", None)] {
         unsafe { std::env::set_var("URANIUM_BC_PACK_BATCH", v) };
-        assert_eq!(uranium_train::bc::pack_batch().ok(), want, "{v:?}");
+        assert_eq!(uranium_data::bc::pack_batch().ok(), want, "{v:?}");
     }
     unsafe { std::env::remove_var("URANIUM_BC_ENTITY_CHUNK") };
     unsafe { std::env::remove_var("URANIUM_BC_PACK_BATCH") };
-}
-
-/// 041-R17 / R18: the entity encoder recomputed in row chunks (even and uneven) and packed
-/// batches give the same updates as the plain path (tiny config: no dropout).
-#[test]
-fn entity_recompute_and_pack_keep_the_updates_041_r17_r18() {
-    let net = tiny_net();
-    let run = |micro_lanes, chunk, pack| {
-        let mut t = tiny_trainer_with(micro_lanes, 0, net.clone());
-        t.set_entity_chunk(chunk);
-        t.feeder.set_pack(pack);
-        let mut src = VecSource((0..4).map(|_| game()).collect::<VecDeque<_>>());
-        (0..4).map(|_| t.train_step(&mut src).unwrap().unwrap().total).collect::<Vec<_>>()
-    };
-    for micro_lanes in [0, 1] {
-        let plain = run(micro_lanes, 0, false);
-        assert_eq!(run(micro_lanes, 0, true), plain, "micro_lanes {micro_lanes}: packed batches");
-        for (chunk, pack) in [(1, false), (3, false), (2, true), (64, false)] {
-            let other = run(micro_lanes, chunk, pack);
-            for (a, b) in plain.iter().zip(&other) {
-                assert!((a - b).abs() <= 1e-4 * a.abs().max(1.0), "micro_lanes {micro_lanes} chunk {chunk} pack {pack}: {plain:?} != {other:?}");
-            }
-        }
-    }
-}
-
-/// 041-R17: with dropout on, the untracked first pass and the tracked recompute give the same
-/// output under the same device seed (so the recompute's gradient is the first pass's).
-#[test]
-fn untracked_entity_pass_matches_the_recompute_041_r17() {
-    let ad = Device::flex().autodiff();
-    let mut cfg = tiny_cfg();
-    cfg.entity.dropout = 0.5;
-    let cols = ActionColumns::from_table(action_table()).unwrap();
-    let net = UraniumNet::<LstmCore>::new(&cfg, &cols, &ad);
-    let seq = prepare(&game(), true, Sym::IDENTITY, &MapStore::synthetic()).unwrap();
-    let obs: Vec<_> = seq.steps.iter().map(|s| &s.obs).collect();
-    let ob = obs_batch_padded(&obs, 0, &ad);
-    let max_abs = |x: burn::tensor::Tensor<3>| x.abs().max().into_data().convert::<f32>().try_to_vec::<f32>().unwrap()[0];
-    // Parallel tests share the device RNG: a draw of theirs between a seed and its forward
-    // changes the masks, so a few attempts are allowed.
-    let same = (0..5).any(|_| {
-        ad.seed(11);
-        let first = net.entity_untracked(&ob).e;
-        ad.seed(11);
-        let again = net.entity(&ob).e;
-        assert!(!first.is_tracked() && again.is_tracked(), "only the recompute records a graph");
-        max_abs(first - again.detach()) <= 1e-6
-    });
-    assert!(same, "same seed, same dropout masks");
-    ad.seed(11);
-    let first = net.entity_untracked(&ob).e;
-    ad.seed(12);
-    let other_seed = net.entity(&ob).e;
-    assert!(max_abs(first - other_seed.detach()) > 1e-3, "dropout is on in both passes");
 }
 
 /// Evaluation drains the lanes: every step of every game is produced exactly once, also with
@@ -797,7 +527,7 @@ fn maps_dir_with_none(tag: &str) -> std::path::PathBuf {
 /// lists every missing map hash with its game count, and a folder with the file works.
 #[test]
 fn missing_map_precompute_fails_b2() {
-    use uranium_train::data::{GameStream, check_maps};
+    use uranium_data::data::{GameStream, check_maps};
     let empty = std::env::temp_dir().join(format!("uranium-bc-maps-empty-{}", std::process::id()));
     std::fs::create_dir_all(&empty).unwrap();
     let store = MapStore::dir(&empty);
@@ -827,84 +557,32 @@ fn missing_map_precompute_fails_b2() {
     std::fs::remove_dir_all(&empty).ok();
 }
 
-/// B-3: the checkpoint carries the stage, config and dataset fingerprints; a resume with another
-/// one is refused with the difference, the same one passes, and a checkpoint from before B-3
-/// (none stored) resumes with a warning.
-#[test]
-fn resume_refuses_other_stage_config_or_data_b3() {
-    use uranium_train::bc::{RunIdent, check_ident, read_ident, write_ident};
-    let dir = std::env::temp_dir().join(format!("uranium-bc-ident-{}", std::process::id()));
-    std::fs::remove_dir_all(&dir).ok();
-    let t = tiny_trainer(1);
-    t.save(&dir).unwrap();
-    let want = RunIdent { stage: "S1".into(), config: t.cfg.fingerprint(), dataset: "3:abcd".into() };
-    check_ident(&dir, &want).expect("no identity stored: resumed with a warning");
-    write_ident(&dir, &want).unwrap();
-    assert_eq!(read_ident(&dir).unwrap(), Some(want.clone()));
-    check_ident(&dir, &want).unwrap();
-    let mut b = tiny_trainer(1);
-    assert!(b.resume(&dir).unwrap(), "the identity does not disturb the training state");
-    for (field, other) in [
-        ("stage", RunIdent { stage: "S2".into(), ..want.clone() }),
-        ("config fingerprint", RunIdent { config: "0000".into(), ..want.clone() }),
-        ("dataset fingerprint", RunIdent { dataset: "3:ffff".into(), ..want.clone() }),
-    ] {
-        let err = check_ident(&dir, &other).err().unwrap_or_else(|| panic!("{field} mismatch accepted"));
-        assert!(format!("{err:#}").contains(field) && format!("{err:#}").contains("refusing to resume"), "{err:#}");
-    }
-    std::fs::remove_dir_all(&dir).ok();
-}
-
 /// B-3: the dataset fingerprint follows the files' contents (manifest SHA-256, or size without a
 /// manifest), not only their names.
 #[test]
 fn dataset_fingerprint_follows_contents_b3() {
-    use uranium_train::data::dataset_fingerprint;
+    use uranium_data::data::dataset_fingerprint;
     let root = shard_dir("ds-fp", &varied_games(), 4);
     let src = ShardSource::new(&root).unwrap();
     let plain = dataset_fingerprint(&src).unwrap();
     assert_eq!(plain, dataset_fingerprint(&src).unwrap());
-    uranium_train::storage::Manifest::build(&root).unwrap().write(&root).unwrap();
+    uranium_store::storage::Manifest::build(&root).unwrap().write(&root).unwrap();
     let with_manifest = dataset_fingerprint(&src).unwrap();
     assert_ne!(plain, with_manifest, "manifest hashes are used when present");
     // Same file names, other contents (a rebuild).
     let games: Vec<ShardGame> = varied_games().into_iter().rev().collect();
     let again = shard_dir("ds-fp", &games, 4);
-    uranium_train::storage::Manifest::build(&again).unwrap().write(&again).unwrap();
+    uranium_store::storage::Manifest::build(&again).unwrap().write(&again).unwrap();
     let src2 = ShardSource::new(&again).unwrap();
     assert_eq!(src2.fingerprint(), src.fingerprint(), "the file list alone is the same");
     assert_ne!(dataset_fingerprint(&src2).unwrap(), with_manifest);
     std::fs::remove_dir_all(&again).ok();
 }
 
-/// 041-R7 / A-3: a game whose result is undecided (`result_source = none`) trains the policy
-/// heads but adds nothing to the value loss; its count is kept in the data state.
-#[test]
-fn undecided_result_has_value_weight_zero_041_r7() {
-    let net = tiny_net();
-    let run = |source: &str| {
-        let mut t = tiny_trainer_with(1, 0, net.clone());
-        let mut g = game();
-        g.meta.result_source = source.into();
-        g.meta.result = if source == "none" { 0 } else { 1 };
-        let mut src = VecSource((0..2).map(|_| g.clone()).collect::<VecDeque<_>>());
-        let l = t.train_step(&mut src).unwrap().unwrap();
-        (l, t.data.no_result_games)
-    };
-    let (none, n_none) = run("none");
-    assert_eq!(none.value, 0.0, "value weight 0");
-    assert!(none.action > 0.0 && none.total.is_finite(), "policy heads still train");
-    assert_eq!(n_none, 2);
-    let (bridge, n_bridge) = run("bridge");
-    assert!(bridge.value > 0.0, "decided games train the value head");
-    assert_eq!(n_bridge, 0);
-    assert_eq!(uranium_train::data::value_weight(&game().meta), 1.0);
-}
-
 /// B-13: a resume decodes each shard once for all lanes; the games are the ones `game(id)` reads.
 #[test]
 fn batched_game_lookup_matches_single_reads_b13() {
-    use uranium_train::data::GameId;
+    use uranium_data::data::GameId;
     let root = shard_dir("b13", &varied_games(), 4);
     let src = ShardSource::new(&root).unwrap().shuffled(5);
     let ids = [GameId { file: 2, game: 1 }, GameId { file: 0, game: 3 }, GameId { file: 2, game: 0 }, GameId { file: 1, game: 2 }];
@@ -920,7 +598,7 @@ fn batched_game_lookup_matches_single_reads_b13() {
 /// split: the same games every time (both cores), spread over the files, and only those are read.
 #[test]
 fn eval_games_are_a_fixed_seed_sample_032_r17() {
-    use uranium_train::data::{ChosenGames, StepSource, sample_games, scan_files};
+    use uranium_data::data::{ChosenGames, StepSource, sample_games, scan_files};
     let a = sample_games(&[4, 0, 7, 3], 5, 1);
     assert_eq!(a, sample_games(&[4, 0, 7, 3], 5, 1), "deterministic");
     assert_eq!(a.len(), 5);
@@ -931,9 +609,9 @@ fn eval_games_are_a_fixed_seed_sample_032_r17() {
 
     let root = shard_dir("eval-sample", &varied_games(), 4);
     let pick = || {
-        let src = ShardSource::new(&root).unwrap().select(uranium_train::split::Selection::Only(uranium_train::split::split_of(&game().meta)));
+        let src = ShardSource::new(&root).unwrap().select(uranium_data::split::Selection::Only(uranium_data::split::split_of(&game().meta)));
         let scan = scan_files(src.files()).unwrap();
-        let ids = uranium_train::bc_eval::eval_games(&src, &scan, 6, 1);
+        let ids = uranium_data::bc::eval_games(&src, &scan, 6, 1);
         let mut chosen = ChosenGames::new(src, &ids);
         let mut got = Vec::new();
         while let Some(g) = chosen.next_game().unwrap() {
@@ -948,46 +626,18 @@ fn eval_games_are_a_fixed_seed_sample_032_r17() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// 040-R18 / E-2: the game-start observation and the NoOp steps until the first command (delay 32
-/// each, 031-R11) are ordinary usable steps: labels valid, trained, counted in the epoch.
-#[test]
-fn game_start_noop_steps_are_trained_and_counted_040_r18() {
-    let noop = action_table().by_name("NoOp").unwrap().id;
-    let mut g = game();
-    let first = g.steps[0].clone();
-    let lead: Vec<Step> = (0..3u32)
-        .map(|k| {
-            let mut s = first.clone();
-            s.raw_frame.frame = 1 + 32 * k;
-            s.action_label = Label { frame: 1 + 32 * k, action: noop, delay: 32, queued: false, selected: vec![], target_unit: None, target_tile: None };
-            s
-        })
-        .collect();
-    let n = g.steps.len();
-    g.steps.splice(0..0, lead);
-    let seq = prepare(&g, false, Sym::IDENTITY, &MapStore::synthetic()).unwrap();
-    assert_eq!(seq.steps.len(), n + 3);
-    assert_eq!(seq.invalid_labels, 0);
-    assert!(seq.steps[..3].iter().all(|s| s.weight == 1.0 && s.label.action == noop && s.label.delay_bucket == 15), "NoOp(delay=32)");
-    let mut t = tiny_trainer(1);
-    let mut src = VecSource([g.clone(), g.clone()].into());
-    let l = t.train_step(&mut src).unwrap().unwrap();
-    assert!(l.total.is_finite() && l.valid == 8.0);
-    assert_eq!(epoch_updates([g.steps.len()], 1, 4), (n as u64 + 3).div_ceil(4), "bc-epoch counts the leading steps");
-}
-
 /// E-10: split-stats gives per source the share of games and steps without a privileged summary
 /// and the result sources (040-R8, A-3).
 #[test]
 fn split_stats_privileged_none_and_result_sources_e10() {
-    use uranium_train::data::GameSummary;
+    use uranium_data::data::GameSummary;
     let meta = |src: &str, rs: &str| GameMeta { src: src.into(), result_source: rs.into(), ..game().meta };
     let games = [
         GameSummary { meta: meta("a", "bridge"), steps: 10, privileged_none: 0 },
         GameSummary { meta: meta("a", "none"), steps: 10, privileged_none: 5 },
         GameSummary { meta: meta("b", "leave"), steps: 4, privileged_none: 4 },
     ];
-    let st = uranium_train::split::split_stats(games.iter());
+    let st = uranium_data::split::split_stats(games.iter());
     assert_eq!(st.sources.len(), 2);
     let a = &st.sources[0];
     assert_eq!((a.src.as_str(), a.games, a.games_privileged_none, a.steps_privileged_none), ("a", 2, 1, 5));
@@ -1002,7 +652,7 @@ fn split_stats_privileged_none_and_result_sources_e10() {
 /// file order, and a changed dataset (another fingerprint) is scanned again, never served stale.
 #[test]
 fn scan_cache_follows_the_dataset_fingerprint() {
-    use uranium_train::data::{scan_cached_in, scan_files};
+    use uranium_data::data::{scan_cached_in, scan_files};
     let root = shard_dir("scan-cache", &varied_games(), 4);
     let cache = std::env::temp_dir().join(format!("uranium-scan-cache-dir-{}", std::process::id()));
     std::fs::remove_dir_all(&cache).ok();
@@ -1021,7 +671,7 @@ fn scan_cache_follows_the_dataset_fingerprint() {
     let want: Vec<usize> = scan_files(other_order.files()).unwrap().iter().map(|f| f.len()).collect();
     assert_eq!(got.iter().map(|f| f.len()).collect::<Vec<_>>(), want, "in the source's file order");
     // The dataset changes (a manifest appears, contents differ): new key, fresh scan.
-    uranium_train::storage::Manifest::build(&root).unwrap().write(&root).unwrap();
+    uranium_store::storage::Manifest::build(&root).unwrap().write(&root).unwrap();
     let again = scan_cached_in(&ShardSource::new(&root).unwrap(), Some(&cache)).unwrap();
     assert!(again.iter().flatten().all(|g| g.privileged_none == 0), "not the stale cache");
     assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 2);
@@ -1034,7 +684,7 @@ fn scan_cache_follows_the_dataset_fingerprint() {
 /// Execution-only fields never move the fingerprint, result fields always do.
 #[test]
 fn config_fingerprint_fields_are_classified_b3() {
-    use uranium_train::bc::EXECUTION_ONLY;
+    use uranium_data::bc::EXECUTION_ONLY;
     const RESULT: [&str; 15] = [
         "lanes", "seq_len", "lr", "min_lr", "warmup_steps", "total_steps", "weight_decay", "grad_clip", "s2_lr_scale", "heads", "value", "data.z_drop", "data.augment", "data.seed", "data.enemy_race_mask",
     ];
@@ -1056,7 +706,7 @@ fn config_fingerprint_fields_are_classified_b3() {
     let view = serde_json::to_value(cfg.results_view()).unwrap();
     // Plus the code constants in the fingerprint (not config fields): the 041-R3 clip semantics.
     assert_eq!(view.as_object().unwrap().len(), RESULT.len() + 1, "ResultSettings holds exactly the result fields and clip_mode");
-    assert_eq!(view["clip_mode"], uranium_train::clip::CLIP_MODE);
+    assert_eq!(view["clip_mode"], uranium_data::bc::CLIP_MODE);
 
     let base = cfg.fingerprint();
     let mut c = cfg.clone();
@@ -1099,7 +749,7 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path, with_manifests: bool) 
         let to = dst.join(e.file_name());
         if e.file_type().unwrap().is_dir() {
             copy_dir(&e.path(), &to, with_manifests);
-        } else if with_manifests || e.file_name() != uranium_train::storage::MANIFEST_FILE {
+        } else if with_manifests || e.file_name() != uranium_store::storage::MANIFEST_FILE {
             std::fs::copy(e.path(), &to).unwrap();
         }
     }
@@ -1115,13 +765,13 @@ fn two_source_share(root: &std::path::Path, games: &[ShardGame]) -> std::path::P
         let dst = shards.join(name);
         copy_dir(&tmp, &dst, true);
         std::fs::remove_dir_all(&tmp).ok();
-        uranium_train::storage::Manifest::build(&dst).unwrap().write(&dst).unwrap();
+        uranium_store::storage::Manifest::build(&dst).unwrap().write(&dst).unwrap();
     }
     shards
 }
 
 /// The first `n` batches (what they train on, and their data state) of `src` shuffled with `seed`.
-fn first_batches(src: ShardSource, seed: u64, n: usize) -> Vec<(Vec<Vec<(u16, usize)>>, uranium_train::bc::FeedState)> {
+fn first_batches(src: ShardSource, seed: u64, n: usize) -> Vec<(Vec<Vec<(u16, usize)>>, uranium_data::bc::FeedState)> {
     let mut cfg = tiny_bc(1, 0);
     cfg.data.z_drop = 0.5;
     cfg.data.augment = true;
@@ -1136,8 +786,8 @@ fn first_batches(src: ShardSource, seed: u64, n: usize) -> Vec<(Vec<Vec<(u16, us
 /// folder order, one folder per source or one folder holding all sources, wherever they are.
 #[test]
 fn same_shards_give_the_same_batches_for_any_spelling_or_root_041_r13_061_ac1() {
-    use uranium_train::data::dataset_fingerprint;
-    use uranium_train::storage::{StorageConfig, open_dataset};
+    use uranium_data::data::dataset_fingerprint;
+    use uranium_store::storage::{StorageConfig, open_dataset};
     let base = std::env::temp_dir().join(format!("uranium-canon-{}", std::process::id()));
     std::fs::remove_dir_all(&base).ok();
     let share = base.join("share");
@@ -1223,7 +873,7 @@ fn a_source_given_twice_is_refused_041_r13() {
 #[test]
 fn build_layout_keeps_the_old_dataset_order_and_fingerprints_041_r13() {
     use sha2::{Digest, Sha256};
-    use uranium_train::data::{Rng, dataset_fingerprint, shard_files, shuffle};
+    use uranium_data::data::{Rng, dataset_fingerprint, shard_files, shuffle};
     let base = std::env::temp_dir().join(format!("uranium-canon-old-{}", std::process::id()));
     std::fs::remove_dir_all(&base).ok();
     let shards = two_source_share(&base, &varied_games());
@@ -1240,7 +890,7 @@ fn build_layout_keeps_the_old_dataset_order_and_fingerprints_041_r13() {
         list.update(old_text(f).as_bytes());
         list.update(b"\n");
         let d = dirs.iter().find(|d| f.starts_with(d)).unwrap();
-        let m = uranium_train::storage::Manifest::read(d).unwrap();
+        let m = uranium_store::storage::Manifest::read(d).unwrap();
         let rel = f.strip_prefix(d).unwrap().components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/");
         data.update(old_text(f).as_bytes());
         data.update(b"\t");
@@ -1257,190 +907,4 @@ fn build_layout_keeps_the_old_dataset_order_and_fingerprints_041_r13() {
         assert_eq!(dataset_fingerprint(&src).unwrap(), old_data);
     }
     std::fs::remove_dir_all(&base).ok();
-}
-
-/// Every float parameter as (id, raw f32 bits), in visit order.
-struct IdBits(Vec<(burn::module::ParamId, Vec<u32>)>);
-
-impl burn::module::ModuleVisitor for IdBits {
-    fn visit_float<const D: usize>(&mut self, p: &burn::module::Param<burn::tensor::Tensor<D>>) {
-        self.0.push((p.id, host_f32(p.val()).iter().map(|x| x.to_bits()).collect()));
-    }
-}
-
-/// (shared parameters, win_open head parameters) as bits.
-fn split_bits(net: &UraniumNet<LstmCore>) -> (Vec<Vec<u32>>, Vec<Vec<u32>>) {
-    let head = net.win_open_params();
-    let mut v = IdBits(Vec::new());
-    net.visit(&mut v);
-    let (h, s): (Vec<_>, Vec<_>) = v.0.into_iter().partition(|(id, _)| head.contains(id));
-    (s.into_iter().map(|x| x.1).collect(), h.into_iter().map(|x| x.1).collect())
-}
-
-/// Copies the float parameters of another net (as f32 data, in visit order) into every
-/// parameter not in `skip`.
-struct CopyFrom {
-    src: Vec<Vec<f32>>,
-    skip: Vec<burn::module::ParamId>,
-    next: usize,
-}
-
-impl burn::module::ModuleMapper for CopyFrom {
-    fn map_float<const D: usize>(&mut self, param: burn::module::Param<burn::tensor::Tensor<D>>) -> burn::module::Param<burn::tensor::Tensor<D>> {
-        if self.skip.contains(&param.id) {
-            return param;
-        }
-        let v = param.val();
-        let data = burn::tensor::TensorData::new(self.src[self.next].clone(), v.shape());
-        self.next += 1;
-        let t = burn::tensor::Tensor::<D>::from_data(data, &v.device()).require_grad();
-        burn::module::Param::initialized(param.id, t)
-    }
-}
-
-/// 032-AC9 / 041-R19 (flex): the win_open head changes nothing else.
-/// - Its initial weights do not come from the device RNG (032-R18 ③): two device seeds give the
-///   same head. (Comparing whole nets built from one seed is not reliable here: the tests of this
-///   binary run in parallel on the one Flex device RNG.)
-/// - With the same shared weights (copied) and the same batches, the shared parameters stay
-///   bit-identical with and without the head (head loss added, head clipped apart) and the
-///   policy / value losses match; the head itself trains.
-#[test]
-fn win_open_head_leaves_the_rest_unchanged_032_ac9() {
-    let cols = ActionColumns::from_table(action_table()).unwrap();
-    let build = |open: bool, seed: u64| {
-        let ad = Device::flex().autodiff();
-        ad.seed(seed);
-        let cfg = tiny_cfg().with_value(ValueConfig::new().with_hidden(32).with_privileged(8).with_win_open(open));
-        let net = UraniumNet::<LstmCore>::new(&cfg, &cols, &ad);
-        let mut bc = tiny_bc(1, 0);
-        bc.value.win_open = open.then_some(0.5);
-        let mut t = Trainer::new(net, cfg, bc, ad);
-        t.feeder.set_maps(std::sync::Arc::new(MapStore::synthetic()));
-        t
-    };
-    let mut off = build(false, 3);
-    let mut on = build(true, 3);
-    assert!(on.net.has_win_open() && !off.net.has_win_open());
-    assert_eq!(on.net.win_open_params().len(), 6, "three Linear layers, weight and bias each");
-    assert!(off.net.win_open_params().is_empty());
-    let (_, head0) = split_bits(&on.net);
-    let (_, head_other_seed) = split_bits(&build(true, 4).net);
-    assert_eq!(head0, head_other_seed, "032-R18 ③: the head's initial weights do not use the device RNG");
-
-    let (shared_off, none) = split_bits(&off.net);
-    assert!(none.is_empty());
-    let src = shared_off.iter().map(|b| b.iter().map(|&x| f32::from_bits(x)).collect()).collect();
-    let skip = on.net.win_open_params();
-    on.net = on.net.clone().map(&mut CopyFrom { src, skip, next: 0 });
-    let (shared_on, head) = split_bits(&on.net);
-    assert_eq!((shared_on, head), (shared_off, head0.clone()), "copied shared weights, head untouched");
-
-    let games = || VecSource((0..4).map(|_| game()).collect::<VecDeque<_>>());
-    let (mut src_off, mut src_on) = (games(), games());
-    for _ in 0..2 {
-        let a = off.train_step(&mut src_off).unwrap().unwrap();
-        let b = on.train_step(&mut src_on).unwrap().unwrap();
-        assert_eq!(a.win_open, 0.0);
-        assert!(b.win_open > 0.0 && b.win_open.is_finite(), "{b:?}");
-        assert_eq!((a.action.to_bits(), a.value.to_bits()), (b.action.to_bits(), b.value.to_bits()));
-    }
-    let (shared_off, _) = split_bits(&off.net);
-    let (shared_on, head1) = split_bits(&on.net);
-    assert_eq!(shared_on, shared_off, "041-R19: the other parameters update as without the head");
-    assert_ne!(head1, head0, "the head trains");
-}
-
-/// 032-R18 ②: a checkpoint config written before `value.win_open` existed loads with the head off
-/// (Burn's Config derive needs every field; `CheckpointMeta::net_config` fills the defaults).
-#[test]
-fn config_without_win_open_loads_032_r18() {
-    let mut meta = uranium_model::checkpoint::CheckpointMeta::new(&tiny_cfg(), 1, 1).unwrap();
-    meta.config["value"].as_object_mut().unwrap().remove("win_open").expect("serialised");
-    assert!(serde_json::from_value::<UraniumNetConfig>(meta.config.clone()).is_err(), "the derive alone refuses a missing field");
-    let cfg = meta.net_config().unwrap();
-    assert!(!cfg.value.win_open);
-    assert_eq!(cfg, tiny_cfg());
-    // A stored value is kept.
-    meta.config["value"]["win_open"] = serde_json::json!(true);
-    assert!(meta.net_config().unwrap().value.win_open);
-
-    // A whole checkpoint whose meta.json predates the key (as the core ablation's) loads.
-    let dir = std::env::temp_dir().join(format!("uranium-bc-old-cfg-{}", std::process::id()));
-    std::fs::remove_dir_all(&dir).ok();
-    let t = tiny_trainer(1);
-    t.save(&dir).unwrap();
-    let path = dir.join(uranium_model::checkpoint::META_FILE);
-    let mut json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    json["config"]["value"].as_object_mut().unwrap().remove("win_open").expect("saved with the key");
-    std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
-    let cols = ActionColumns::from_table(action_table()).unwrap();
-    let (net, meta) = uranium_model::checkpoint::load::<LstmCore>(&dir, &cols, uranium_env::features::FEATURE_SCHEMA_VERSION, uranium_env::actions::ACTION_SCHEMA_VERSION, &Device::flex()).unwrap();
-    assert!(!net.has_win_open() && !meta.net_config().unwrap().value.win_open);
-    assert_eq!(param_bits(&net), param_bits(&t.net.valid()));
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-/// AMB-000-4 (PyTorch switch, step 1): the host collate in `uranium-data` packs a batch exactly
-/// like the Burn collate the trainer uses — same values, shapes and padding (030 §1, 030-R7,
-/// 032-R12 END = n) — so the Python trainer reads the same batches.
-#[test]
-fn host_collate_matches_burn_collate_041() {
-    use uranium_data::collate as host;
-    use uranium_model::collate::{action_batch, priv_batch};
-    let dev = Device::flex();
-    let mut steps = Vec::new();
-    // A game with two more units, so rows of one batch have different entity counts (030-R7).
-    let mut more = game_len(5, 2);
-    for s in &mut more.steps {
-        s.raw_frame.units.extend([unit(4, 0, "Terran_SCV", (10, 6)), unit(5, 0, "Terran_SCV", (11, 6))]);
-    }
-    for g in [game(), more, game_with_invalid(9, 3)] {
-        for sym in [Sym::IDENTITY, Sym::augment()[3]] {
-            steps.extend(prepare(&g, true, sym, &MapStore::synthetic()).unwrap().steps);
-        }
-    }
-    assert!(steps.iter().map(|s| s.obs.obs.n).collect::<std::collections::HashSet<_>>().len() > 1, "rows with different entity counts");
-    let obs: Vec<_> = steps.iter().map(|s| &s.obs).collect();
-    let labels: Vec<_> = steps.iter().map(|s| &s.label).collect();
-    let privs: Vec<_> = steps.iter().map(|s| &s.privileged).collect();
-    let f = |t: burn::tensor::TensorData| t.convert::<f32>().try_into_vec::<f32>().unwrap();
-    let i = |t: burn::tensor::TensorData| t.convert::<i32>().try_into_vec::<i32>().unwrap();
-    let bits = |v: &[bool]| v.iter().map(|&b| b as i32).collect::<Vec<i32>>();
-    for pad in [0, 1, 64] {
-        let d = obs_batch_padded(&obs, pad, &dev);
-        let h = host::obs_batch(&obs, pad);
-        assert_eq!((h.b, h.n), (d.batch(), d.entities()), "pad {pad}");
-        assert_eq!(h.entity_cat, i(d.entity_cat.clone().into_data()), "entity_cat pad {pad}");
-        assert_eq!(h.entity_cont, f(d.entity_cont.clone().into_data()), "entity_cont pad {pad}");
-        assert_eq!(bits(&h.entity_mask), i(d.entity_mask.clone().int().into_data()), "entity_mask pad {pad}");
-        assert_eq!(h.entity_cell, i(d.entity_cell.clone().into_data()), "entity_cell pad {pad}");
-        assert_eq!(h.entity_pos, f(d.entity_pos.clone().into_data()), "entity_pos pad {pad}");
-        assert_eq!(h.spatial, f(d.spatial.clone().into_data()), "spatial pad {pad}");
-        assert_eq!(h.scalar, f(d.scalar.clone().into_data()), "scalar pad {pad}");
-        assert_eq!(h.scalar_cat, i(d.scalar_cat.clone().into_data()), "scalar_cat pad {pad}");
-        assert_eq!(h.z_build, i(d.z_build.clone().into_data()), "z_build pad {pad}");
-        assert_eq!(h.z_units, f(d.z_units.clone().into_data()), "z_units pad {pad}");
-        assert_eq!(bits(&h.z_present), i(d.z_present.clone().int().into_data()), "z_present pad {pad}");
-        assert_eq!(bits(&h.type_mask), i(d.type_mask.clone().int().into_data()), "type_mask pad {pad}");
-        assert_eq!(bits(&h.unit_cap), i(d.unit_cap.clone().int().into_data()), "unit_cap pad {pad}");
-        assert_eq!(bits(&h.loc_class_mask), i(d.loc_class_mask.clone().int().into_data()), "loc_class_mask pad {pad}");
-        assert_eq!(bits(&h.is_building), i(d.is_building.clone().int().into_data()), "is_building pad {pad}");
-        assert_eq!(d.unit_cap.dims(), [h.b, h.n, h.k]);
-        assert_eq!(d.type_mask.dims(), [h.b, h.a]);
-        assert_eq!(d.loc_class_mask.dims()[1], h.l);
-        assert_eq!(d.scalar.dims(), [h.b, h.fs]);
-        assert_eq!(d.z_units.dims(), [h.b, h.u]);
-
-        let (da, ha) = (action_batch(&labels, h.n, 12, &dev), host::action_batch(&labels, h.n, 12));
-        assert_eq!(ha.action, i(da.action.into_data()), "action pad {pad}");
-        assert_eq!(ha.delay, i(da.delay.into_data()), "delay pad {pad}");
-        assert_eq!(ha.queued, i(da.queued.into_data()), "queued pad {pad}");
-        assert_eq!(ha.selected, i(da.selected.into_data()), "selected pad {pad}");
-        assert_eq!(ha.target_unit, i(da.target_unit.into_data()), "target_unit pad {pad}");
-        assert_eq!(ha.target_loc, i(da.target_loc.into_data()), "target_loc pad {pad}");
-    }
-    let (dp, hp) = (priv_batch(&privs, &dev), host::priv_batch(&privs));
-    assert_eq!(dp.summary.dims(), [hp.b, hp.p]);
-    assert_eq!(hp.summary, f(dp.summary.into_data()));
 }

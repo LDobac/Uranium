@@ -6,21 +6,23 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 - 설정: `cp .env.example .env` 후 값 입력. Rust 바이너리는 시작 시, 셸 스크립트는 `tools/env.sh`(Windows `tools\env.ps1`)로 읽는다. Windows 경로는 작은따옴표로 감싼다.
 - OpenBW/BWAPI(011): `tools/openbw/build.sh` → `third_party/bwapi/build/bin/BWAPILauncher`. 패치는 `third_party/patches/`(0001~0013)를 순서대로 적용한다.
 - 브리지(011): `tools/openbw/build_bridge.sh` → `bridge/openbw/build/liburanium_bridge.so`. shim은 500줄 이하. shim과 Rust 쪽은 C ABI로 묶여 있어 항상 함께 빌드한다. 2026-10-19 `uranium_bridge_end` 인자 4개·프로토콜 버전 2(010-R12)부터는 브리지 .so·에이전트·hostd를 모든 PC에서 함께 다시 빌드하고, 옛 shim과 새 라이브러리를 섞지 않는다.
-- Windows(001-R8, `docs/windows.md`): `tools\openbw\build.ps1` → `tools\openbw\build_bridge.ps1` → `tools\oss\build_<bot>.ps1`.
+- Windows(001-R8, 아래 "Windows" 절): `tools\openbw\build.ps1` → `tools\openbw\build_bridge.ps1` → `tools\oss\build_<bot>.ps1`.
 - T1 봇(021): `tools/oss/build_<bot>.sh`(`ualbertabot`, `steamhammer`, `zzzkbot`, `stardust`, `mcrave`, `iron`) → `<URANIUM_OSS_BOTS_DIR>/<bot>/{module.so, VERSION}`. 상대 ID는 `<bot>@<버전>`(021-R3).
 - 게임 데이터 추출(011-R13): `cargo install casc --version 0.1.6 --locked` 후 `cargo run -p casc-extract -- <SC:R Data> <출력>` → `.env` `URANIUM_DATA_DIR`.
 - BWAPI 타입 표(013-R1): `cargo run -p bwapi-tables -- third_party/bwapi/bwapi crates/uranium-env/tables`.
-- CUDA 실행은 `CUDA_PATH`가 필요하다(없으면 커널 컴파일 시 libdevice 오류). CUDA 빌드(`--features cuda`)는 CUDA 호스트에서만 한다.
-- Burn autotune·fusion(041-R15): 워크스페이스 `burn` 의존성의 `autotune`·`fusion` feature로 모든 빌드에서 켜진다(코어 비교·BC·RL·추론·벤치 공통, Flex에는 영향 없음). autotune 캐시는 `.env` `URANIUM_AUTOTUNE_CACHE_DIR`(호스트별 고정 로컬 폴더)에 둔다. GPU 학습 명령(`bc`, `rl`, `bc-eval`, `bc-profile`의 cuda·vulkan)은 이 키가 없으면 시작하지 않는다. run이 끝날 때까지 캐시를 지우지 않는다: Flex·Vulkan은 같은 장비·같은 캐시로 재개하면 비트 단위로 같고, CUDA 호스트는 같은 PC여도, 다른 장비나 캐시면 모두 032-AC1·AC8 허용 오차 안에서만 같다(061-AC1). Windows에서는 CubeCL 영구 캐시가 열리지 않아 프로세스마다 autotune을 다시 측정한다(첫 update 지연, 알려진 제약).
+- Python(AMB-000-4, 001-R8): 학습·추론은 Python 3.14 + PyTorch 2.14(`python/uranium`). 호스트마다 venv를 만들고(`uv venv --python 3.14 .venv`) PyTorch를 설치한 뒤(CUDA 호스트 `uv pip install --python <venv python> "torch==2.14.*" --index-url https://download.pytorch.org/whl/cu130`, Linux ROCm 호스트는 그 GPU용으로 빌드한 PyTorch) 저장소 루트에서 `uv pip install --python <venv python> -e .`로 `uranium` 패키지와 Rust 확장 `uranium._core`(crate `uranium-py`, maturin)를 설치한다. Rust를 고치면 같은 명령으로 다시 설치한다. `.env`의 `URANIUM_PYTHON`에 그 venv의 python을 적는다(작업자·감시가 학습 자식을 띄울 때 씀).
+- 정밀도(032-R8): CUDA는 bf16 혼합, Linux ROCm은 f32. 커널 선택(041-R15): cuDNN benchmark는 CUDA에서만 켜고, ROCm은 MIOpen find-db(`MIOPEN_USER_DB_PATH`)만 쓴다(ROCm에서 benchmark를 켜면 모양이 바뀔 때마다 수 초~수 분 탐색).
+- Linux ROCm 호스트 실행 환경: 그 호스트용 rocBLAS 경로를 `LD_LIBRARY_PATH`에 두고 `HSA_ENABLE_SDMA=0`.
+- 마지막 Burn 커밋은 태그 `burn-final`이다. Burn 체크포인트(`model.bpk`)는 보관만 하고 읽지 않는다(061-R10).
 
-## 벤치
-- Burn/Vulkan(060-R2): `cargo run -p bench --release -- --backend vulkan [--quick] [--filter <name>] [--out <file>]` → 기본 출력 `reports/bench_<backend>.md`(`bench_vulkan.md`·`bench_cuda.md`·`bench_flex.md`). CUDA는 `--features cuda -- --backend cuda`(060-AC4).
-- 모델(032-AC2/AC3): `cargo run -p bench --release [--features cuda] -- --backend <vulkan|cuda> --filter net_ [--f16]`.
+## 벤치·프로파일
+- BC update 구간별 시간과 연산별 장치 시간(060-AC4): `python -m uranium bc-profile (--dataset <rel> | --shards <dir>)... [--backend cuda|rocm|cpu] [--core gtrxl|lstm] [--batches 3] [--ops 25] [--trace <chrome trace json>]`. 학습 중에는 `URANIUM_BC_PROFILE=1`로 update마다 구간 시간을 로그에 쓴다.
+- 장치 비교(032-AC1·AC8): `pytest -m gpu tests/python`(CPU f32 대비. CUDA bf16은 잠정 허용치).
 
 ## 게임 실행
 - hostd(020): `uranium-hostd serve`. 설정 키는 `.env.example` hostd 절.
 - 동시 게임 수 측정(020-R10): 게임 호스트에서 `uranium-env calibrate` → `<URANIUM_CACHE_DIR>/hostd_calibration.toml`(`URANIUM_HOSTD_MAX_GAMES`가 없을 때 사용).
-- 스케줄러(020): `uranium-env run --plan config/plans/<plan>.toml [--out runs/<dir>] [--backend cuda|vulkan|flex --max-batch N --max-wait-ms M]` → `games.jsonl`, `results.jsonl`, `summary.md`(Wilson 95%, 정책별 합산), `sessions.md`. 호스트 목록은 `URANIUM_HOSTS_FILE`(예시 `config/hosts.example.toml`). crate는 `uranium-runner`, 바이너리 이름은 `uranium-env`.
+- 스케줄러(020): `uranium-env run --plan config/plans/<plan>.toml [--out runs/<dir>]`(스크립트 플레이어만) 또는 `python -m uranium run --plan <plan> [--out runs/<dir>] [--backend cuda|rocm|cpu --max-batch N --max-wait-ms M]`(모델 플레이어 포함) → `games.jsonl`, `results.jsonl`, `summary.md`(Wilson 95%, 정책별 합산), `sessions.md`. 호스트 목록은 `URANIUM_HOSTS_FILE`(예시 `config/hosts.example.toml`). crate는 `uranium-runner`, 바이너리 이름은 `uranium-env`.
   - plan의 `save_replay = true` 게임은 `<out>/replays/g<id>.rep`에 모인다(020-R1, hostd와 같은 커밋으로 빌드).
   - plan의 `surrender = "off" | "shadow" | "on"`(기본 `shadow`)과 `surrender_chat`(기본 `"gg"`, 빈 문자열 = 채팅 없이 퇴장, 79바이트 이하)은 모델 플레이어의 GG 항복이다(031-R12, 020-R14). `shadow`는 판정만 기록하고 나가지 않으며 summary의 Model sessions 표에 판정 성립 세션 수와 그중 승리 수(오항복)를 적는다. `on`은 판정이 성립하면 채팅 후 1초 뒤 퇴장한다(패배). 판정에는 win_open 헤드가 있는 체크포인트가 필요하다(032-R18, 본학습 설정부터). 에이전트 서버 단독 실행은 `--surrender on --surrender-chat gg`. 통합 확인용으로 `URANIUM_TEST_SURRENDER_FRAME=<프레임>`을 주면 `on` 모드에서 그 프레임 이후 첫 결정에 판정과 무관하게 항복한다(테스트 전용).
   - plan의 `zero_last_failed = true`는 모델 플레이어의 `last_failed` 입력을 0으로 고정한다(030-R10). BC 체크포인트 평가 plan(코어 비교, bc-vs-t0)에서 켜고 RL은 끈다. 에이전트 서버 단독 실행은 `--zero-last-failed`.
@@ -45,16 +47,17 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
   - build 전에 브리지와 `uranium-replay`를 같은 커밋으로 빌드한다(011-R10).
 
 ## BC(041)
-`uranium-train`:
-- `bc (--dataset <rel> | --shards <dir>)... (--out <ckpt> | --run <id> [--take-over]) [--backend vulkan|cuda|flex] [--core lstm|gtrxl] [--s2 | --stage s2] [--resume <ckpt> | --init <ckpt|run>] [--steps N]`
-  - `--core` 기본값은 채택 코어 `gtrxl`이다(032-R17, 2026-10-23 변경. `bc`·`bc-eval`·`bc-profile`·`rl`, 큐의 `core`, `uranium-agent random-checkpoint`). 코어 비교의 LSTM 체크포인트를 다룰 때는 `--core lstm`을 적는다(코어가 다르면 체크포인트를 읽을 때 오류로 멈춘다).
+학습은 `python -m uranium`(PyTorch 학습기 + Rust 데이터 공급·실행 루프, AMB-000-4), 데이터 확인 명령은 `uranium-train`:
+- `python -m uranium bc (--dataset <rel> | --shards <dir>)... (--out <ckpt> | --run <id> [--take-over]) [--backend cuda|rocm|cpu] [--core lstm|gtrxl] [--s2 | --stage s2] [--resume <ckpt> | --init <ckpt|run>] [--steps N]`
+  - 체크포인트(061-R10): `model.safetensors`(f32, 정책 버전 = 이 파일의 SHA-256), `optim-main.safetensors`, `meta.json`, `train_state.json`, `run_ident.json`, `config/`.
+  - `--core` 기본값은 채택 코어 `gtrxl`이다(032-R17, 2026-10-23 변경. `bc`·`bc-profile`·`random-checkpoint`, 큐의 `core`). 코어 비교의 LSTM 체크포인트를 다룰 때는 `--core lstm`을 적는다(코어가 다르면 체크포인트를 읽을 때 오류로 멈춘다).
   - `--dataset replays/shards/<src>`는 manifest를 검증하고, `--shards`는 검증하지 않는다. 하위 폴더까지 읽는다(041-R9).
   - 파일 순서는 파일마다 `<출처>/<파트>/<파일>` 키로 정한다(041-R13). 폴더는 build 배치여야 한다: 출처 폴더(`<파트>/shard_*`)나 출처들을 담은 상위 폴더(`<출처>/<파트>/shard_*`). 다른 깊이(출처 폴더 바로 아래 shard, 더 깊은 하위 폴더, 두 깊이 혼합)는 파일 이름과 함께 오류로 멈춘다. 이 배치에서는 같은 shard 파일이면 `--dataset`/`--shards`, 폴더를 적은 순서, 출처 폴더를 하나씩 주든 상위 폴더를 주든, 저장 위치(캐시·공용 드라이브·다른 마운트)·대소문자 표기와 상관없이 게임 순서·첫 배치·지문이 같다. 같은 출처나 같은 파일을 두 번 지정하면(대소문자·링크만 다른 경로 포함) 실패한다.
   - `--run`은 061 run(`checkpoints/<id>/`): 잠금·heartbeat·push, 시작 시 `LATEST`에서 재개(데이터 위치 포함, 061-R10). 체크포인트는 `checkpoint_every` update 또는 `checkpoint_minutes`마다, Ctrl+C는 저장 후 종료.
   - 다른 PC의 잠금이 있으면(유효·만료 모두) 종료 코드 75로 거부된다. `--take-over`는 상대 PC가 멈춘 것을 확인한 뒤에만 쓴다: 잠금 상태와 무관하게 즉시 인수하고 경고를 출력하며, 상대가 살아 있으면 그쪽은 다음 heartbeat에서 push 없이 멈춘다(061-R5).
   - 기본 S1(전 소스 train 분할), `--s2`·`--stage s2`는 대상 맵 train 분할(041-R12·R13). S2는 `--init`으로 가중치만 가져온다(041-R4). `--init`에 run 폴더를 주면 그 run에 `DONE`이 있어야 하고 `DONE`이 가리키는 마지막 체크포인트를 쓴다(061-R13). 학습 길이는 `config/bc.toml` `[steps]`(041-R14). `URANIUM_BC_PROFILE=1`이면 구간별 시간 출력.
-  - 미리 읽기 깊이 `URANIUM_BC_PREFETCH`(041-R16, 기본 2): batch 하나가 약 4 GB이고 깊이 + 2개까지 메모리에 있다. RAM을 GPU와 나눠 쓰는 Linux Vulkan 호스트는 `.env`에 `0`(데이터 스레드 없음, batch 1개)으로 둔다. batch 내용·순서는 바뀌지 않으므로 깊이가 다른 호스트끼리 같은 run을 이어 해도 된다. 시작 때 `{"prefetch": N, ...}` 줄로 확인한다.
-  - 엔티티 인코더 재계산 `URANIUM_BC_ENTITY_CHUNK`(041-R17, 기본 0 = 끔)와 호스트 batch 압축 `URANIUM_BC_PACK_BATCH`(041-R18, 기본 0): RAM을 GPU와 나눠 쓰는 Linux Vulkan 호스트는 `.env`에 `16`과 `1`로 둔다. 엔티티가 512개인 레인의 GPU 최대 메모리가 약 10.5 GB에서 약 2 GB로, batch의 호스트 메모리가 약 4 GB에서 약 1 GB로 줄고, update는 더 걸린다. gradient와 batch는 바뀌지 않으므로(재계산의 dropout 난수 열만 다름) 설정이 다른 호스트끼리 같은 run을 이어 해도 된다. 시작 줄의 `entity_chunk`·`pack_batch`로 확인한다.
+  - 미리 읽기 깊이 `URANIUM_BC_PREFETCH`(041-R16, 기본 2): batch 하나가 약 4 GB이고 깊이 + 2개까지 메모리에 있다. RAM을 GPU와 나눠 쓰는 Linux ROCm 호스트는 `.env`에 `0`(데이터 스레드 없음, batch 1개)으로 둘 수 있다(데이터 대기 약 3.7초/update가 생김, `reports/pytorch_port.md` 3.4). 다음 레인 그룹의 collate는 항상 작업 스레드에서 미리 한다. batch 내용·순서는 바뀌지 않으므로 깊이가 다른 호스트끼리 같은 run을 이어 해도 된다. 시작 때 `{"prefetch": N, ...}` 줄로 확인한다.
+  - 엔티티 인코더 재계산 `URANIUM_BC_ENTITY_CHUNK`(041-R17, 기본 0 = 끔, `torch.utils.checkpoint`)와 호스트 batch 압축 `URANIUM_BC_PACK_BATCH`(041-R18, 기본 0): RAM을 GPU와 나눠 쓰는 Linux ROCm 호스트는 `.env`에 `16`과 `1`로 둔다. GPU 메모리와 batch의 호스트 메모리가 줄고, 값은 바뀌지 않으므로(재계산의 dropout 난수 열만 다름) 설정이 다른 호스트끼리 같은 run을 이어 해도 된다. 시작 줄의 `entity_chunk`·`pack_batch`로 확인한다.
   - `--dataset` pull·검증은 파일마다 `[pull]`/`[verify]` 진행 줄을 stderr에 쓴다(감시 30분 멈춤 판정 대비).
   - 맵 사전계산(B-2): `URANIUM_MAPS_DIR`가 필수다(기본값 없음). 시작할 때(잠금 전) 고른 게임의 맵 해시마다 현재 버전 `<map_hash>.toml`이 있는지 shard를 한 번 훑어 확인하고, 없으면 빠진 해시와 게임 수를 나열하고 실패한다. 로더도 사전계산이 없는 게임은 오류로 처리한다. `bc-eval`·`label-check`도 같다. 라이브 게임(에이전트)은 투혼·서킷브레이커에서 사전계산을 얻지 못하면 세션을 거부하고, 그 외 맵은 경고 후 채널 0으로 진행한다(031).
   - 시작 검사용 shard 훑기 결과(게임별 meta·스텝 수·privileged 없는 스텝 수)는 `<URANIUM_CACHE_DIR>/scans/scan-<지문>.json`에 캐시한다. 지문은 파일별 manifest SHA-256(manifest가 없으면 크기·수정 시각)이라 데이터가 바뀌면 새로 훑는다. `bc`·`bc-eval`·`label-check`·`split-stats`·`bc-epoch`가 같이 쓴다.
@@ -63,16 +66,16 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
   - 체크포인트 보존(061-R6): 설정 `keep_checkpoints`(없으면 5, 0이면 전부 보존). `config/bc_core_ablation.toml`은 0. 정리(삭제) 실패는 경고만 하고 학습을 계속한다.
   - 디스크 경고(061-R8): 학습 시작과 체크포인트 저장마다 공용 드라이브·로컬 캐시(로컬 `--out`이면 그 폴더)의 물리 디스크 사용률이 80% 이상이면 경고한다. 학습은 멈추지 않는다.
   - 로그 줄의 `no_result_games`는 지금까지 시작한 게임 중 승패 판정 불가(`result_source = none`)로 value 가중치 0인 게임 수다(041-R7).
-- `bc-epoch`(1 epoch update 수, 게임 시작 NoOp 스텝 포함), `bc-eval --checkpoint <ckpt|run> [--split test|val] [--games N --seed 1]`(041 지표), `bc-profile --backend <b> [--batches N]`, `split-stats`, `label-check [--games N]`(034-AC3; 출력에 `target_causes`(대상 없음·위치 거절 원인: 이전 목격 여부와 경과 프레임, 건물 종류별 막는 조건, 실제로 지어졌는지)와 `per_game`(게임별 무효 수) 포함, 액션 감사 F23·F24), `manifest <dir> [--verify]`(061-R7. 만들 때 하위 폴더의 shard를 모두 끝까지 디코드해 보고, 실패하면 실패한 shard를 나열하고 쓰지 않는다, 040-R17). 모두 `--dataset`/`--shards`를 받는다.
-  - `bc-eval`에는 041-R17 엔티티 조각 재계산이 없어, GPU와 RAM을 나눠 쓰는 Linux Vulkan 호스트에서는 엔티티 512개 장면의 2 GiB 할당에 실패한다(2026-10-23). 오프라인 평가는 CUDA 호스트에서 돌린다.
+- `python -m uranium bc-eval (--dataset <rel> | --shards <dir>)... --checkpoint <ckpt|run> [--split test|val] [--games N --seed 1] [--backend cuda|rocm|cpu]`(041 지표, 서렌더 재현 041-AC4 포함), `python -m uranium bc-profile`(벤치 절).
+- `uranium-train`: `bc-epoch`(1 epoch update 수, 게임 시작 NoOp 스텝 포함), `split-stats`, `label-check [--games N]`(034-AC3; 출력에 `target_causes`(대상 없음·위치 거절 원인: 이전 목격 여부와 경과 프레임, 건물 종류별 막는 조건, 실제로 지어졌는지)와 `per_game`(게임별 무효 수) 포함, 액션 감사 F23·F24), `manifest <dir> [--verify]`(061-R7. 만들 때 하위 폴더의 shard를 모두 끝까지 디코드해 보고, 실패하면 실패한 shard를 나열하고 쓰지 않는다, 040-R17). 모두 `--dataset`/`--shards`를 받는다.
   - `bc-eval --games N`은 분할 전체를 고정 seed(`--seed`, 기본 1)로 섞어 앞의 N게임을 고른다. 체크포인트·코어와 무관하게 같은 게임이다(032-R17 ②). 단위(E-9): `delay_mae_frames`는 프레임(bucket 값), `delay_mae_buckets`는 bucket 번호, `nll.<head>`는 그 헤드를 쓰는 스텝(`nll_steps.<head>`)만의 평균이다. 출력 `units`에 같은 설명이 들어 있다.
   - `split-stats` 출력: `splits`(소스·맵 그룹·분할별 게임 수), `sources`(소스별 `privileged` 없는 게임·스텝 수와 비율(E-10), `result_source`별 게임 수(040-R8)).
 - 하이퍼파라미터 `config/bc.toml`(GPU 메모리는 `micro_lanes`, `pad_entities`, `grad_checkpointing`), 코어 비교 `config/bc_core_ablation.toml`, 보상 `config/reward.toml`. `grad_clip`은 모든 파라미터 gradient를 한 벡터로 본 전역 L2 norm 기준이고, 레인 그룹 gradient를 합친 뒤 optimizer step 전에 한 번 적용한다(041-R3, RL `config/rl.toml`도 같음).
 
 ## 감시·작업자(060-R6, 061-R13~R15)
-- `uranium-train supervise [--hang-minutes 30 --max-restarts 5 --window-minutes 60 --delay-seconds 60 --progress-file <file> --log <file>] -- <bc|rl 인자>`: 비정상 종료·멈춤이면 같은 run을 재시작한다. 종료 코드 0·130·75(잠금을 얻지 못함: 다른 호스트 잠금, 획득 경쟁에서 짐, 양보 예약)·76(양보)은 재시작하지 않는다.
+- `uranium-train supervise [--hang-minutes 30 --max-restarts 5 --window-minutes 60 --delay-seconds 60 --progress-file <file> --log <file>] -- <bc|rl 인자>`: 자식은 `URANIUM_PYTHON -m uranium <bc|rl 인자>`다(`.env`에 없으면 시작하지 않는다). 비정상 종료·멈춤이면 같은 run을 재시작한다. 종료 코드 0·130·75(잠금을 얻지 못함: 다른 호스트 잠금, 획득 경쟁에서 짐, 양보 예약)·76(양보)은 재시작하지 않는다.
   - Linux: 자식 학습은 별도 프로세스 그룹으로 뜨고 `PR_SET_PDEATHSIG`(SIGINT)가 걸린다. 터미널 포그라운드 Ctrl+C도 감시 프로세스가 한 번만 전달하므로 저장 후 끝난다. 감시 프로세스가 강제 종료돼도 자식은 SIGINT를 받아 저장·push·잠금 해제 후 끝난다(060-R6). 이때 자식의 stderr 파이프는 닫혀 있어서 그 뒤 로그는 남지 않는다(학습 코드는 stderr 쓰기 실패를 무시한다). `bc`·`rl`의 Ctrl+C 처리는 데이터셋 pull·모델 로드보다 먼저 설치되므로, 시작 중 Ctrl+C도 잠금이 있으면 해제하고, 없으면 그냥 끝난다(pull은 다음에 이어서 받는다). Windows: 같은 콘솔이라 Ctrl+C가 자식에게 직접 간다(기존 동작).
-- `uranium-train worker --queue <shared>/queue/<이름>.toml --backend <cuda|vulkan> --priority <n> [--poll-seconds 60] [--log <file>]`
+- `uranium-train worker --queue <shared>/queue/<이름>.toml --backend <cuda|rocm|cpu> --priority <n> [--poll-seconds 60] [--log <file>]`(자식 `URANIUM_PYTHON -m uranium bc --run ...`)
   - 큐: `[defaults] datasets=[...] config="..."`, `[[run]] id, config, core, stage(s1|s2|ablation-a), init_run, datasets, steps`.
   - 끝나지 않은(`checkpoints/<id>/DONE` 없음) 잡을 수 있는 run을 순서대로 돌린다. `init_run`이 있는 run은 `init_run`에 `DONE`이 생긴 뒤에만 잡는다(061-R13). 빈 run이 없으면 우선순위가 낮은 호스트의 작업자가 돌리는 run에 양보 요청(`locks/<id>.yield`)을 쓰고, 다른 run을 잡거나 작업자가 끝나면 자기 요청을 지운다(061-R14). 직접 실행한 `bc --run`에는 양보 요청을 쓰지 않는다.
   - 양보 요청 만료: 작업자가 같은 요청 내용을 자기 단조 시계로 30분 동안 관측하면 만료로 보고 지운다(파일 mtime 무관). 작업자가 하나도 없을 때 요청한 host가 사라졌으면 `locks/<id>.yield`를 직접 지운다.
@@ -82,8 +85,8 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
   - 공용 드라이브를 읽거나 쓰지 못하면 상태를 "모름"으로 보고 종료하지 않으며 `--poll-seconds`마다 다시 본다. 모름은 run 단위다: 잠금·`DONE`·양보 요청을 읽지 못한 run만 그 주기에 건너뛰고, 공용 드라이브 자체(큐, `checkpoints/`)에 접근할 수 없으면 아무 run도 잡지 않는다. 공용 드라이브가 없는 동안 자식이 실패한 것은 재시작 횟수에 넣지 않는다(061-R13).
   - 상태 파일 `workers/<host>.json`은 1분마다(자식 학습 중에도) 갱신한다. 장비 구간은 `runs/<id>/devices.jsonl`, 집계는 `uranium-train devices --run <id>`(host별 update 수·비율, 061-R15).
   - Windows CUDA 호스트(우선순위 10): 사용자가 직접 실행하고 Ctrl+C로 멈춘다(저장·push·잠금 해제, 약 30초). 자동 시작 구성은 없다(060-R6).
-  - Linux Vulkan 호스트(Vulkan f32, 우선순위 1): `tools/worker/uranium-worker.service`(systemd user, `KillSignal=SIGINT`, `TimeoutStopSec=900`) 또는 `setsid nohup ... &`, 멈출 때 `kill -INT <pid>`. learner로 정하지 않은 호스트에서는 띄우지 않는다.
-  - 바이너리 교체: 작업자를 먼저 멈추고(Ctrl+C, Linux 서비스는 `systemctl --user stop uranium-worker`) 다시 빌드한 뒤 띄운다. 작업자가 도는 중에 다시 빌드하면 작업자와 돌고 있는 자식 학습은 옛 바이너리로 계속 돌고 다음 자식부터 새 바이너리가 떠서 두 버전이 섞인다.
+  - Linux ROCm 호스트(ROCm f32, 우선순위 1): `tools/worker/uranium-worker.service`(systemd user, `KillSignal=SIGINT`, `TimeoutStopSec=900`) 또는 `setsid nohup ... &`, 멈출 때 `kill -INT <pid>`. learner로 정하지 않은 호스트에서는 띄우지 않는다.
+  - 코드 교체: 작업자를 먼저 멈추고(Ctrl+C, Linux 서비스는 `systemctl --user stop uranium-worker`) 다시 빌드·설치(`uv pip install -e .`)한 뒤 띄운다. 작업자가 도는 중에 바꾸면 돌고 있는 자식 학습은 옛 코드로 계속 돌고 다음 자식부터 새 코드가 떠서 두 버전이 섞인다.
 
 ## RL(042)
 - `python -m uranium rl --run <id> --bc <BC ckpt> --logs <dir> [--config config/rl.toml] [--algo vtrace|ppo] [--backend cuda|rocm|cpu] [--z-table <jsonl>] [--ac1-race terran|protoss|zerg] [--max-agent-steps N] [--max-updates N] [--max-minutes N] [--checkpoint-minutes 30] [--max-batch 32] [--max-wait-ms 5] [--take-over]`
@@ -97,3 +100,16 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 ## 래더 리플레이 수집(043, Windows, SC:R 로그인 상태)
 - `uranium-ladder probe [--leaderboard <id> | --toon <t> --gateway <g> [--gamemode <m> --season <s>] | --match-id <link> | --download <url>]`(`reports/m4_ladder_probe.md`), `shape <json> [--pointer /a/0]`.
 - 하루 1회 `uranium-ladder collect --plan config/ladder/kr_asia.toml [--limit N] [--dry-run]` → `raw/scr_ladder/`, 집계 `uranium-ladder status`. 0.5 req/s·일 1,000개(043-R4). 랭크 A 이상 = `min_bucket = 6`. 스키마 실패 경기 재시도 `collect --plan ... --retry-failed [사유 접두어, 기본 schema:]`(043-R9, 같은 속도·일일 한도).
+- 운영 메모(043): 로그인된 SC:R 클라이언트의 로컬 웹 API를 쓴다. 포트는 `tasklist`·`netstat -ano`로 찾고(관리자 권한 불필요) `URANIUM_SCR_API_PORT`로 고정할 수 있다. 리플레이 파일은 약 30일 뒤 사라지고 프로필에는 최근 25경기만 있어 매일 돌린다(AMB-043-8). 첫 실행은 `raw\` 전체 SHA-256 인덱스를 만들어 몇 분 걸리고 이후 `ladder\raw_index.json`을 쓴다. 일일 한도에 닿으면 그날 수집을 마치고, 다시 실행하면 `collect.jsonl`을 보고 이어 간다. 기록 `datasets\replays\ladder\collect.jsonl`에는 toon이 평문으로 있으니 공용 드라이브 밖으로 옮기지 않는다(AMB-043-6). 원본 응답의 플레이어 이름은 출력·커밋하지 않는다(043-R11, PowerShell 5.1은 `Get-Content -Encoding UTF8`). 응답 형식이 바뀌어 `failed (schema)`가 20번 연속이면 멈추고, `crates\uranium-ladder\src\schema.rs`만 고친다(043-R9·R10). 데이터 정책은 040의 예외로 내부 학습 전용, 재배포하지 않는다(AMB-043-1).
+
+## Windows (001-R8, 011-R16, 020-R8)
+명령은 PowerShell 기준, 스크립트는 `powershell -ExecutionPolicy Bypass -File <script>`. 검증 결과 `reports/m3_windows.md`·`reports/m3_remote.md`.
+- 준비: Visual Studio 2026(또는 2022)의 "C++를 사용한 데스크톱 개발", CMake 3.16+, Git, Rust MSVC 툴체인(`rustup default stable-x86_64-pc-windows-msvc`). 빌드 스크립트의 CMake 생성기 기본값은 `Visual Studio 18 2026`, VS 2022는 `URANIUM_CMAKE_GENERATOR="Visual Studio 17 2022"`. `.gitattributes`가 생기기 전에 clone했다면 패치를 다시 체크아웃한다(`Remove-Item third_party\patches\*.patch; git checkout -- third_party/patches`). `.env`의 Windows 경로는 작은따옴표, 셸 스크립트 로더는 `tools\env.ps1`(`. tools\env.ps1; Import-UraniumEnv <repo>`). PowerShell 변수 이름은 대소문자를 구분하지 않는다(`$T`와 `$t`는 같은 변수).
+- 게임 데이터: `casc` CLI 설치에 libclang이 필요하다(LLVM이 없고 관리자 권한도 없으면 PyPI `libclang` 휠의 `libclang.dll`을 sha256 대조 뒤 `LIBCLANG_PATH`로). 추출 결과 `content_sha256`과 맵 sha256은 `config/assets.toml`과 대조한다(011-R13). 맵은 SC:R `Maps\ladder`에서 `2024Season1\(4)Fighting_Spirit_1.3.scx` → `fighting_spirit_1.3.scx`, `Season 10\(4)Circuit Breaker.scx` → `circuit_breaker_1.0.scx`.
+- 빌드 산출물: OpenBW+BWAPI `third_party\bwapi\build\bin\Release\{BWAPILauncher.exe, BWAPI.dll, OpenBWData.dll}`(`URANIUM_BWAPI_DIR=third_party\bwapi\build`), 브리지 `bridge\openbw\build\Release\uranium_bridge.dll`(export는 `gameInit`·`newAIModule`만), T1 봇 `<URANIUM_OSS_BOTS_DIR>\<bot>\{module.dll, module.pdb, VERSION, bwapi-data\}`(Linux와 같은 커밋·패치, `tools\oss\common.ps1`이 봇마다 CMake 프로젝트를 만들어 MSVC로 빌드), Rust `cargo build --release -p uranium-hostd -p uranium-runner -p uranium-agent -p uranium-train`.
+- hostd: LAN 매칭은 게임마다 `URANIUM_HOSTD_PORT_BASE`(기본 17000)부터 루프백 TCP 포트 2개(011-R16, LISTEN 중인 포트는 건너뜀). 런처는 게임마다 Job Object(kill-on-close)에 들어가 hostd가 죽으면 함께 끝난다(020-AC3). 봇 크래시는 WinDbg `cdbX64`에 `-y <module.pdb 폴더>`.
+
+## 여러 호스트로 게임 돌리기 (020 호스트 구성)
+학습 호스트가 스케줄러(에이전트 서버 내장, `python -m uranium run` 또는 `uranium-env run`)와 로컬 hostd를, 원격 Linux 게임 호스트는 hostd만 돌린다. 원격 게임의 브리지는 학습 호스트의 에이전트에 접속한다.
+- 원격 게임 호스트: `git pull --ff-only` → `tools/openbw/build.sh` → `tools/openbw/build_bridge.sh` → `cargo build --release -p uranium-hostd -p uranium-runner -p uranium-agent` → `tools/oss/build_<bot>.sh`(패치가 바뀐 봇은 먼저 `git -C third_party/<bot> reset --hard && git -C third_party/<bot> clean -fdx`). 게임 데이터를 복사해 `config/assets.toml`로 검증, `.env`에 `URANIUM_DATA_DIR`·`URANIUM_MAPS_DIR`·`URANIUM_CACHE_DIR`·`URANIUM_BWAPI_DIR`·`URANIUM_BRIDGE_LIB`·`URANIUM_OSS_BOTS_DIR`, `URANIUM_HOSTD_LISTEN=<LAN 주소>:7700`. `uranium-env calibrate` 한 번 뒤 `setsid nohup target/release/uranium-hostd serve > /tmp/hostd.log 2>&1 < /dev/null &`. 원격에서 `pkill -f uranium-hostd`는 SSH 명령 자신도 죽이므로 `pkill -x uranium-hostd`.
+- 학습 호스트: `config/hosts.toml`(git 미추적, 형식 `config/hosts.example.toml`)에 로컬·원격 hostd를 적고 `.env`에 `URANIUM_HOSTS_FILE`, `URANIUM_AGENT_LISTEN=0.0.0.0:7600`, `URANIUM_AGENT_PUBLIC_ADDR=<원격에서 닿는 주소>:7600`(로컬 게임도 이 주소를 쓴다). Windows는 들어오는 TCP 7600 방화벽 허용이 필요하다(관리자 권한, `New-NetFirewallRule -DisplayName 'Uranium agent' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 7600 -Program <python 또는 uranium-env.exe> -Profile Any`). 응답하지 않는 hostd는 경고 후 빼고, 도중에 끊긴 hostd의 게임은 Aborted(020-R4). 호스트를 바꾸려면 run을 멈추고 hosts 파일을 고친 뒤 다시 시작한다.

@@ -13,11 +13,8 @@ members = [
     "crates/uranium-store",
     "crates/uranium-league",
     "crates/uranium-py",
-    "crates/uranium-model",
     "crates/uranium-train",
     "crates/uranium-ladder",
-    "tools/bench",
-    "tools/burn-parity",
     "tools/casc-extract",
     "tools/bwapi-tables",
 ]
@@ -32,11 +29,8 @@ license = "UNLICENSED"
 publish = false
 
 [workspace.dependencies]
-# 060: Burn is pinned via Cargo.lock; upgrades go through a spec change.
-# 041-R15 (G-D5, 2026-10-19 user decision): Burn kernel autotune + fusion on for every build, so the
-# core comparison, BC, RL and inference all use the same setting (CUDA and Vulkan; Flex has
-# neither). The autotune cache goes to URANIUM_AUTOTUNE_CACHE_DIR (uranium_model::runtime).
-burn = { version = "=0.22.0", default-features = false, features = ["autotune", "fusion"] }
+# The model, training and inference are PyTorch (python/uranium, AMB-000-4); the last Burn
+# commit is tagged `burn-final`.
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"

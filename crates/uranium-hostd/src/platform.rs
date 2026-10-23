@@ -18,7 +18,7 @@ pub struct LanSetup {
 pub enum LanCleanup {
     #[cfg_attr(not(unix), allow(dead_code))]
     File(std::path::PathBuf),
-    /// Windows TCP port pair starting at this port (docs/windows.md).
+    /// Windows TCP port pair starting at this port (docs/commands.md, "Windows").
     #[cfg_attr(not(windows), allow(dead_code))]
     Ports(u16),
 }

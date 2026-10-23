@@ -110,3 +110,13 @@
 
 - 결론: ROCm f32는 Burn과 float 반올림 누적 수준(100 update 뒤 0.02%)으로 같다. CUDA bf16도 100 update 동안 0.34% 안에 있어 학습 곡선을 바꾸지 않는다. 손실은 모두 유한. 032-AC10(BC)과 계획 1-6을 통과로 본다.
 - 산출물: bc250_1 `~/parity_bc/`(torch.log, burn.log, torch_cuda.log, 초기 체크포인트·변환본).
+- 추가(10-24 04:3x, 학습 PC Windows CUDA): `uranium._core` Windows 빌드와 SC:R warm-up 확인. `python -m uranium scr`(random-init GTrXL, bf16)의 warm-up 첫 forward 0.7초, 나머지 엔티티 수(128~512) 약 0초, 이후 정상 대기(Burn 때 첫 SC:R 게임의 첫 forward 57초). 실제 SC:R 게임은 사람이 시작해야 해서 하지 않았다.
+
+## 11. 마무리 (1-9, 10-24 04:4x~05:0x)
+- **Burn 삭제**: 마지막 Burn 커밋 `fbb5026`에 태그 `burn-final`. `crates/uranium-model`, `tools/bench`, `tools/burn-parity`, `uranium-train`의 Burn 학습기(`bc.rs`·`bc_eval.rs`·`bc_prof.rs`·`bc_run.rs`·`ckpt.rs`·`clip.rs`)와 `bc`·`bc-eval`·`bc-profile` 명령, 워크스페이스 `burn` 의존성을 지웠다. `tests/fixtures/burn_parity`와 `test_burn_parity.py`(032-AC10 golden)는 남긴다.
+- **테스트 이동**: `uranium-train/tests/bc.rs`의 Burn 없는 데이터 테스트 23개를 `uranium-data/tests/bc.rs`로 옮겼다. Burn 학습기 테스트는 pytest에 대응이 있다(micro-lane 041-R3, 재개 비트 일치 061-R10, 체크포인트 왕복 061-AC5, win_open 032-AC9, 엔티티 재계산 041-R17은 이번에 추가). 대응 없이 빠진 것: 승패 판정 불가 게임의 value loss 0(041-R7)은 Rust `Batch::group`의 value_w(데이터 쪽)로만 확인된다.
+- **작업자·감시**: 자식 학습을 `URANIUM_PYTHON -m uranium <bc|rl …>`로 띄운다(없으면 시작 거부, 001-R9). 작업자 `--backend`는 `cuda|rocm|cpu`.
+- **문서**: README(PyTorch 기준 준비·큐·작업자·평가, 새 run id `*-pt`), `docs/commands.md`(빌드·벤치·BC·작업자·Windows·여러 호스트), `docs/windows.md`는 사용자 지시로 삭제하고 필요한 내용을 `docs/commands.md`로 옮김, `.env.example`(`URANIUM_PYTHON`, Burn 키 삭제), worker 서비스, CLAUDE.md.
+- **학습 PC 전체 크기 BC update**(`bc-profile`, 32레인 × T64, GTrXL, CUDA bf16): 약 11초(warm-up 뒤). Burn CUDA(약 12초)와 비슷하다. torch.profiler의 장치 시간 합은 약 2.5초뿐이고 나머지는 작은 커널 수만 번(`copy_` 25,785회 등)의 Python·launch 부담이다. CUDA는 2단계의 그래프 캡처·torch.compile·모양 버킷이 첫 과녁이다(bc250_1은 반대로 MIOpen transposed conv가 병목, 4절). GPU 최대 메모리 2.7 GiB.
+- **남은 것**: `uranium.bench`(같은 케이스 이름의 벤치)는 만들지 않았다. 지금은 `bc-profile`로 재고, 2단계 시작 때 측정 절차와 함께 만든다.
+- 확인: 학습 PC에서 Rust `uranium-data`·`uranium-train`·`uranium-league`·`uranium-agent`·`uranium-store` 테스트 전부 통과, asus·학습 PC pytest 통과(asus 47 통과·5 건너뜀).

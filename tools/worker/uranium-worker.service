@@ -1,5 +1,6 @@
-# 061-R13 / 060-R6: the BC run queue worker as a systemd user service on a Linux Vulkan training
-# host. Install:
+# 061-R13 / 060-R6: the BC run queue worker as a systemd user service on a Linux ROCm training
+# host. Its training children are `URANIUM_PYTHON -m uranium bc --run ...` (set URANIUM_PYTHON
+# and the ROCm library path / HSA_ENABLE_SDMA=0 in .env or Environment= below). Install:
 #   mkdir -p ~/.config/systemd/user && cp tools/worker/uranium-worker.service ~/.config/systemd/user/
 #   edit WorkingDirectory / ExecStart (<repo> = the Uranium checkout, <shared> = URANIUM_SHARED_DIR)
 #   systemctl --user daemon-reload && systemctl --user enable --now uranium-worker
@@ -9,16 +10,16 @@
 # A user manager cannot order itself after the system's remote-fs.target; it does not need to:
 # while the shared drive is not mounted the worker takes nothing and looks again every poll
 # (061-R13 "unknown"), it does not exit.
-# Replacing the binary: stop the service first, rebuild, then start it. A rebuild while it runs
-# leaves the worker and the running child on the old binary and starts the next child from the
-# new one, so the two versions mix.
+# Replacing the code: stop the service first, rebuild / reinstall (`uv pip install -e .`), then
+# start it. A change while it runs leaves the running child on the old code and starts the next
+# child from the new one, so the two versions mix.
 [Unit]
 Description=Uranium BC run queue worker (061-R13)
 After=network-online.target
 
 [Service]
 WorkingDirectory=<repo>
-ExecStart=<repo>/target/release/uranium-train worker --queue <shared>/queue/bc.toml --backend vulkan --priority 1 --log <repo>/runs/worker.log
+ExecStart=<repo>/target/release/uranium-train worker --queue <shared>/queue/bc.toml --backend rocm --priority 1 --log <repo>/runs/worker.log
 # Ctrl+C semantics: the worker passes SIGINT once to the training child (its own process group,
 # 060-R6), which saves and pushes. A worker killed hard still stops the child (PR_SET_PDEATHSIG).
 KillSignal=SIGINT
