@@ -8,7 +8,7 @@
 |---|---|---|
 | 0 | 데이터 재build·검증, 벤치, 대전 경로 시험 | 완료 (`reports/m6_rebuild.md` R-5) |
 | 1 | **코어 비교**: LSTM·GTrXL을 S1 5,300 update씩 학습 → 평가 → 사용자가 코어 선택 | 완료 (2026-10-23, **GTrXL 채택**, `reports/m6_core_ablation.md` 4절) |
-| 2 | **BC 본학습 S1**: 전체 맵, GTrXL. update 수는 `bc-epoch`로 다시 계산(이전 값 38,584) | 착수 준비 (`m6_pre_bc_review.md` I절) |
+| 2 | **BC 본학습 S1**: 전체 맵, GTrXL. 39,096 update(2026-10-23 `bc-epoch`) | 착수 준비 (`m6_pre_bc_review.md` I절) |
 | 3 | **BC S2**: 대상 맵(투혼·서킷브레이커), S1에서 시작 + 비교용 ablation (A) | 2 뒤 |
 | 4 | 평가(오프라인 지표, T0 대전) → RL | 3 뒤 |
 
@@ -94,7 +94,7 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
 - 장비별 update 수·비율: `uranium-train devices --run bc-s1`
 - 체크포인트: `<shared>/checkpoints/bc-s1/` 등(1시간마다, 끝나면 `DONE`)
 
-**예상 기간**(코어 비교 실측, GTrXL): CUDA 호스트 약 12 s/update, Linux Vulkan 호스트 약 108 s/update. S1 약 38,600 update는 CUDA 호스트가 쉬지 않으면 약 5.4일, Linux 호스트만이면 약 48일이다. S2·(A)는 각 약 11,300 update(CUDA 약 1.6일씩). 실제 기간은 CUDA 호스트를 학습에 쓸 수 있는 시간에 거의 비례한다.
+**예상 기간**(코어 비교 실측, GTrXL): CUDA 호스트 약 12 s/update, Linux Vulkan 호스트 약 108 s/update. S1 39,096 update는 CUDA 호스트가 쉬지 않으면 약 5.4일, Linux 호스트만이면 약 49일이다. S2·(A)는 각 11,387 update(CUDA 약 1.6일씩, (A)를 Linux 호스트 혼자 돌리면 약 14일). 실제 기간은 CUDA 호스트를 학습에 쓸 수 있는 시간에 거의 비례한다.
 
 **평가**
 - 오프라인 지표는 **CUDA 호스트에서** 돌린다: `uranium-train bc-eval $DATA --checkpoint <shared>/checkpoints/bc-s2 --split test --core gtrxl --backend cuda`(ablation-a도 같이). Linux Vulkan 호스트에서는 엔티티 512개 장면에서 2 GiB 할당에 실패한다(엔티티 조각 재계산이 `bc-eval`에는 없음).
@@ -114,7 +114,8 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
 - [x] 24시간 연속 실행(060-AC3, 코어 비교 LSTM run: CUDA 오류 1회 → 자동 재시작 → 완주)
 - [x] 데이터 동결(지금 데이터 2,069 파일), `--core` 기본값 gtrxl(2026-10-23)
 - [x] 큐 구성: S1·S2·(A)를 처음부터 함께, Linux 호스트가 (A)(2026-10-23)
-- [ ] 본학습 착수 전 남은 작업(학습 장비 재빌드, `[steps]` 재계산, 표본 end-to-end, 큐 작성): `reports/m6_pre_bc_review.md` I절
+- [x] 학습 장비 재빌드, `[steps]` 재계산, 표본 end-to-end(2026-10-23)
+- [ ] 본학습 큐 작성 → 작업자 시작(CUDA 호스트 먼저): `reports/m6_pre_bc_review.md` I절
 
 ## 7. 문제가 생기면
 

@@ -421,7 +421,9 @@ fn warmup_cosine_schedule_041_r3() {
     let abl = BcConfig::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/bc_core_ablation.toml"))).unwrap();
     assert_eq!((abl.steps.s1, abl.warmup_steps), (5300, uranium_train::bc::short_stage_warmup(5300)));
     let mut same = abl.clone();
-    same.steps.s1 = file.steps.s1;
+    // 2026-10-23 (I-2): bc.toml's stage lengths were recounted on the frozen main-run data after
+    // the ablation; the finished ablation keeps the numbers it ran with.
+    same.steps = file.steps.clone();
     same.warmup_steps = file.warmup_steps;
     // 061-R6 / 032-R17 ⑤ (G-D6): the ablation keeps every checkpoint; bc.toml the default 5.
     assert_eq!((abl.keep_checkpoints(), file.keep_checkpoints(), file.keep_checkpoints), (0, 5, None));
@@ -429,7 +431,7 @@ fn warmup_cosine_schedule_041_r3() {
     // 041-R19 (2026-10-21): the main BC trains the win_open head; the running ablation does not.
     assert_eq!((abl.value.win_open, file.value.win_open), (None, Some(0.5)));
     same.value.win_open = file.value.win_open;
-    assert_eq!(same, file, "032-R17: only the S1 length, warmup, retention and win_open differ from bc.toml");
+    assert_eq!(same, file, "032-R17: only the stage lengths, warmup, retention and win_open differ from bc.toml");
     // 041-R19: an absent win_open leaves the fingerprint JSON as before the key existed.
     let view = serde_json::to_value(abl.results_view()).unwrap();
     assert_eq!(view["value"], serde_json::json!({ "win": 0.5 }));

@@ -35,16 +35,17 @@ target_loc = 1.0
 
 [steps]
 # 041-R14 (2026-10-18): S1, S2 and ablation (A) train one epoch each; the cosine schedule ends
-# there. Counted by `uranium-train bc-epoch` on the four sources of the R-4 rebuild after the
-# R-5 repair (2026-10-20, 36,445 views: S1 32,872 / S2 9,608) with lanes 32, seq_len 64,
-# data.seed 1. Before: s1 36985, s2 7915 (pre-rebuild data).
-s1 = 38584
-s2 = 11319
-ablation_a = 11319
+# there. Counted by `uranium-train bc-epoch` on the frozen main-run data (2026-10-23, I-D1:
+# 2,069 files with the 25 scr_ladder shards back; S1 33,183 views / S2 9,653) with lanes 32,
+# seq_len 64, data.seed 1. Before: s1 38584, s2 11319 (2,044 files); s1 36985, s2 7915
+# (pre-rebuild data).
+s1 = 39096
+s2 = 11387
+ablation_a = 11387
 # 041-R14 (2026-10-18): S2 and (A) warm up over 5% of their epoch, rounded half up
-# (11319 x 0.05 = 565.95 -> 566). S1 keeps warmup_steps above.
-s2_warmup = 566
-ablation_a_warmup = 566
+# (11387 x 0.05 = 569.35 -> 569). S1 keeps warmup_steps above.
+s2_warmup = 569
+ablation_a_warmup = 569
 
 [value]
 # win head MSE weight (041-R7)

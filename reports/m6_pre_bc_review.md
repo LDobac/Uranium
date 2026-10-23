@@ -242,17 +242,19 @@ H 절(5661ff8·695cbfe 추가 리뷰)의 본학습 전 필수 항목 H-1~H-4도 
 ### I절 작업
 | # | 항목 | 상태 |
 |---|---|---|
-| I-1 | 학습 장비(학습 PC CUDA, Linux 호스트 A Vulkan)를 최신 master로 다시 빌드한다. 6fa8fbd 이후 master에 관측 변경이 들어왔다: 상대 유닛의 생산 큐·진행도·핵 숨김(AMB-030-5, `extract.rs`), 지금 보이는 칸의 탄환만 관측(AMB-030-4, shim과 `extract.rs`). 코어 비교 모델은 변경 전 관측으로 학습·평가했다(6fa8fbd 고정). 본학습은 바뀐 관측으로 한다. 평가·RL용 게임 호스트(Linux 호스트 A·B·C, 학습 PC)도 shim이 바뀌었으니 브리지를 다시 빌드한다 | 남음 |
-| I-2 | `bc-epoch`로 `[steps]`(s1·s2·ablation_a, warmup)를 다시 계산해 `config/bc.toml`에 반영한다(041-R14). 10-23에 staging의 scr_ladder 25 shard를 되돌려 데이터셋이 2,044 → 2,069 파일(scr_ladder 106 shard·1,565게임)이 됐고, 데이터 지문도 바뀌었다. I-D1에서 데이터를 더 넣으면 그 뒤에 계산한다 | 남음 |
-| I-3 | **표본 end-to-end**(대규모 배치 전 점검): GTrXL + win_open(041-R19) + 새 관측 조합은 아직 한 번도 학습해 보지 않았다. 학습 PC CUDA와 Linux 호스트 A Vulkan에서 실제 큐 설정으로 몇 update씩 돌리고, 체크포인트 → 다른 장비 재개(061)까지 확인한다. Linux 호스트 A `.env`의 GTrXL 메모리 설정(`URANIUM_BC_PREFETCH=0`, `URANIUM_BC_ENTITY_CHUNK=16`, `URANIUM_BC_PACK_BATCH=1`)은 유지돼 있다(10-23 확인) | 남음 |
+| I-1 | 학습 장비(학습 PC CUDA, Linux 호스트 A Vulkan)를 최신 master로 다시 빌드한다. 6fa8fbd 이후 master에 관측 변경이 들어왔다: 상대 유닛의 생산 큐·진행도·핵 숨김(AMB-030-5, `extract.rs`), 지금 보이는 칸의 탄환만 관측(AMB-030-4, shim과 `extract.rs`). 코어 비교 모델은 변경 전 관측으로 학습·평가했다(6fa8fbd 고정). 본학습은 바뀐 관측으로 한다. 평가·RL용 게임 호스트(Linux 호스트 A·B·C, 학습 PC)도 shim이 바뀌었으니 브리지를 다시 빌드한다 | **학습 장비 완료(2026-10-23, 2d6be1a)**: 학습 PC CUDA·Linux 호스트 A Vulkan `uranium-train` release. 관측 변경 둘 다 학습 때 feature 추출에서 적용돼(AMB-030-4는 `extract.rs`에서 시야 재검사) 기존 shard 재build는 필요 없다. 게임 호스트 브리지 재빌드는 평가·RL 전에 남음 |
+| I-2 | `bc-epoch`로 `[steps]`(s1·s2·ablation_a, warmup)를 다시 계산해 `config/bc.toml`에 반영한다(041-R14). 10-23에 staging의 scr_ladder 25 shard를 되돌려 데이터셋이 2,044 → 2,069 파일(scr_ladder 106 shard·1,565게임)이 됐고, 데이터 지문도 바뀌었다. I-D1에서 데이터를 더 넣으면 그 뒤에 계산한다 | **완료(2026-10-23)**: s1 39,096 / s2·ablation_a 11,387, warmup 569 (S1 33,183게임, S2 9,653게임) |
+| I-3 | **표본 end-to-end**(대규모 배치 전 점검): GTrXL + win_open(041-R19) + 새 관측 조합은 아직 한 번도 학습해 보지 않았다. 학습 PC CUDA와 Linux 호스트 A Vulkan에서 실제 큐 설정으로 몇 update씩 돌리고, 체크포인트 → 다른 장비 재개(061)까지 확인한다. Linux 호스트 A `.env`의 GTrXL 메모리 설정(`URANIUM_BC_PREFETCH=0`, `URANIUM_BC_ENTITY_CHUNK=16`, `URANIUM_BC_PACK_BATCH=1`)은 유지돼 있다(10-23 확인) | **통과(2026-10-23)**: 표본 큐 `<shared>/queue/bc-sample-{cuda,vulkan}.toml`. 학습 PC S1 3 update → S2(`--init`, 학습률 ×0.1) 2 update, Linux 호스트 A (A) 2 update(약 124 s/update), 손실(win_open 포함) 정상, 체크포인트 push·DONE. 장비 교대는 코어 비교에서 검증돼 다시 하지 않았다. 산출물 `<shared>/checkpoints/sample-bc-{s1,s2,abl}`, 로그 각 장비 `runs/worker-sample.log` |
 | I-4 | 본학습 큐 `<shared>/queue/bc.toml` 작성: `bc-s1`·`bc-s2`(init_run = bc-s1)·`bc-ablation-a`, 모두 `core = "gtrxl"`, `config/bc.toml`, 네 출처(루트 `README.md` 5절) | 남음 |
 | I-5 | 작업자 실행(학습 PC 우선순위 10, Linux 호스트 A 우선순위 1, 060-R8) — I-1~I-4 뒤. **학습 PC 작업자를 먼저** 켠다(I-D3) | 대기 |
 
 ### I절 참고·위험
-- **예상 기간**(코어 비교 실측, GTrXL): 학습 PC CUDA 약 12 s/update, Linux 호스트 A Vulkan 약 108 s/update(엔티티 조각 재계산·압축 켬). S1 38,584 update(I-2에서 바뀜)는 학습 PC가 쉬지 않으면 약 5.4일, Linux 호스트 A만이면 약 48일이다. S2·(A)는 각 11,319 update로 학습 PC 약 1.6일씩이다. 실제 기간은 학습 PC를 학습에 쓸 수 있는 시간에 거의 비례한다. 기존 "약 15일"은 LSTM 26 s/update 시절 값이다.
+- **예상 기간**(코어 비교 실측, GTrXL): 학습 PC CUDA 약 12 s/update, Linux 호스트 A Vulkan 약 108 s/update(엔티티 조각 재계산·압축 켬). S1 39,096 update(I-2)는 학습 PC가 쉬지 않으면 약 5.4일, Linux 호스트 A만이면 약 49일이다. S2·(A)는 각 11,387 update로 학습 PC 약 1.6일씩, (A)를 Linux 호스트 A 혼자 돌리면 약 14일이다. 실제 기간은 학습 PC를 학습에 쓸 수 있는 시간에 거의 비례한다. 기존 "약 15일"은 LSTM 26 s/update 시절 값이다.
 - **오프라인 평가는 CUDA 호스트에서**: `bc-eval`에는 041-R17 엔티티 조각 재계산이 없어 Linux Vulkan 호스트에서 N=512 장면의 2 GiB 할당에 실패한다(2026-10-23, `m6_core_ablation.md` 5절). 고칠지는 후속 제안.
 - **GTrXL 추론 부담**: 엔티티가 많은 장면에서 추론이 무거워, 코어 비교 T0 대전에서 27판이 실제 시간 2시간 상한에 걸렸다. 평가 plan은 `wall_timeout_s`를 넉넉히 두고, RL 처리량과 SC:R 실시간 추론(012)에서 다시 본다.
 - **브리지 시작 실패 판**: 에이전트에 접속하지 못한 판을 스케줄러가 `Finished`로 기록한다(2026-10-22 발견). 다른 호스트를 쓰는 평가에서는 `.env` `URANIUM_AGENT_LISTEN`/`PUBLIC_ADDR`를 LAN 주소로 둔다. 실패로 세는 수정은 후속 제안(020).
+- **Linux Vulkan 시작 메시지(무해)**: Linux 호스트 A에서 `bc`가 시작·재개할 때마다 첫 update 중 별도 스레드에서 CubeCL autotune panic(`matmul_naive ... Cube count too big (9, 131072, 1)`)이 한 번 찍힌다. 코어 비교 GTrXL run에서도 7번 났고 학습은 정상이었다(표본에서도 같음). 조치 불필요.
+- **새 데이터 첫 훑기와 30분 감시**: 데이터 지문이 바뀌면 시작 검사가 shard를 모두 다시 훑는다. 2026-10-23 표본에서 같은 데이터를 두 프로세스가 동시에 훑느라 30분을 넘겨 작업자 감시(060-R6)가 한 번 재시작했다(재시작 뒤에는 캐시로 6초). 지금 데이터의 훑기 캐시는 두 학습 장비에 있다. 데이터를 바꾸면 `bc-epoch`로 캐시를 먼저 만든 뒤 작업자를 켠다.
 - H절 spec 개정 제안 1~4는 여기서 다시 다루지 않는다(H-1~H-4 코드 수정은 완료).
 
 ### I절 순서
