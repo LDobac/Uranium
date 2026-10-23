@@ -1,6 +1,6 @@
 # 032 — Model Architecture (Burn)
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: R8 호스트별 정밀도 — CUDA 호스트 f32(TF32) 허용, 사용자 결정 / 추론 서버 Core 상태 슬롯(032-R14), 샘플링 모드·헤드별 log-prob(032-R15) / 추론 서버 가중치 교체·슬롯 상태 읽기(032-R16, 3단계 계획 승인) / 2026-10-18 개정: 코어 비교 절차(032-R17, AC7, AMB-032-6). 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): AC8 backward 허용 오차(H), autotune·fusion 채택(G-D5, 041-R15), R17 ② val 고정 seed 셔플 500게임(G-D8), F_c를 030과 일치, 장비 표기 중립화(001-R10, G-D9). 2026-10-19 T7 개정(사용자 결정): §5 대상 마스크에서 선택 유닛 제외(034-R9), `self_target[A]` 상수). 2026-10-20 개정(사용자 결정, AMB-032-8): AC2 기준은 CUDA 호스트에만 적용하고 Linux Vulkan 호스트는 실측 기록만 하는 대체 장비로 둔다, R17 주 장비 규칙(CUDA 호스트가 유휴면 주, 아니면 Linux Vulkan 호스트가 주, 060-R8). 2026-10-21 개정: 032-R18 win_open 헤드(사용자 결정, AMB-031-6))
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: R8 호스트별 정밀도 — CUDA 호스트 f32(TF32) 허용, 사용자 결정 / 추론 서버 Core 상태 슬롯(032-R14), 샘플링 모드·헤드별 log-prob(032-R15) / 추론 서버 가중치 교체·슬롯 상태 읽기(032-R16, 3단계 계획 승인) / 2026-10-18 개정: 코어 비교 절차(032-R17, AC7, AMB-032-6). 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): AC8 backward 허용 오차(H), autotune·fusion 채택(G-D5, 041-R15), R17 ② val 고정 seed 셔플 500게임(G-D8), F_c를 030과 일치, 장비 표기 중립화(001-R10, G-D9). 2026-10-19 T7 개정(사용자 결정): §5 대상 마스크에서 선택 유닛 제외(034-R9), `self_target[A]` 상수). 2026-10-20 개정(사용자 결정, AMB-032-8): AC2 기준은 CUDA 호스트에만 적용하고 Linux Vulkan 호스트는 실측 기록만 하는 대체 장비로 둔다, R17 주 장비 규칙(CUDA 호스트가 유휴면 주, 아니면 Linux Vulkan 호스트가 주, 060-R8). 2026-10-21 개정: 032-R18 win_open 헤드(사용자 결정, AMB-031-6). 2026-10-23 개정: 코어 비교 결과로 GTrXL 채택(032-R17 ④, AC7, 사용자 결정))
 - **Related**: [030](030-observation.md), [031](031-action-space.md), [033](033-reward.md), [034](034-action-table.md), [041](041-imitation-learning.md), [042](042-rl-training.md), [060](060-infra.md)
 
 ## Purpose
@@ -12,7 +12,7 @@ Linux Vulkan 호스트의 학습 예산에 맞춘 경량 AlphaStar 계열 정책
 | 정책 구조 | **단일 end-to-end 정책** (AMB-032-1 Resolved) |
 | 매치업 | **단일 공유 모델 + 상대 종족 임베딩** (AMB-032-2 Resolved) |
 | 전략 조건 z | **포함** (AMB-032-3 Resolved) |
-| 시간 축 코어 | **LSTM으로 시작**. M5에서 Transformer 메모리(GTrXL 계열)와 비교해 채택하고, `Core` trait로 교체 가능하게 한다 (AMB-032-4 Resolved) |
+| 시간 축 코어 | **GTrXL**(2026-10-23 코어 비교로 채택, 032-R17). LSTM으로 시작해 짧은 BC 비교 학습으로 골랐고, 두 코어 모두 `Core` trait 구현으로 남긴다 (AMB-032-4·AMB-032-6 Resolved) |
 | 관계 학습 | 유닛↔건물↔유닛 관계는 EntityEncoder(공간 축 트랜스포머)가 담당한다. 거리 기반 attention bias를 추가한다 |
 
 ## 1. 전체 구조
@@ -79,15 +79,17 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
       fn scatter_rows(s: Self::State, rows: Tensor<1, Int>, sub: Self::State) -> Self::State; // 배치 → 슬롯
   }
   ```
-- 기본 구현은 `LstmCore`다.
+- **채택 코어는 `GtrxlCore`다**(2026-10-23 사용자 결정, 032-R17). BC 본학습(041)과 RL(042)은 GTrXL로 한다. `LstmCore`는 처음 구현이자 비교 기준으로 남긴다.
+- `LstmCore`:
   - `Lstm(768→512)` 1층
   - 학습은 T=64 truncated BPTT로 하고, 시작 상태는 actor가 기록한 값을 쓴다.
   - 에피소드 시작 시 0으로 리셋한다.
-- 비교 대상(M5 ablation)은 `GtrxlCore`다.
+- `GtrxlCore`(M5 ablation 비교 대상, 2026-10-23 채택):
   - 최근 M=64 step의 core 입력에 causal self-attention 2층(d=512)을 쓴다.
   - GRU-gated residual을 쓰고, 추론 시 KV cache를 유지한다.
   - 채택은 짧은 BC 비교 학습으로 정한다(032-R17, AMB-032-6). 추론 지연·메모리는 M5에서 측정했다(CUDA에서 두 코어가 거의 같다, `reports/m5_model.md`).
   - 비교가 끝나기 전까지 BC 본학습(041)은 시작하지 않는다. 비교 결과는 `reports/m6_core_ablation.md`에 기록한다.
+  - 비교 결과(2026-10-23, 같은 update 수): 맞대결 100판 GTrXL 42승·LSTM 13승·무 45, T0 상대 승률 GTrXL 약 10%(274판)·LSTM 2.7%(300판), val 500게임 모든 지표 GTrXL 우세. GTrXL은 엔티티가 많은 장면에서 추론이 무거워 T0 대전 27판이 실제 시간 상한에 걸렸다(실시간 추론 부담은 060·012에서 다시 본다).
 - 장기 정보(적 건물 기억, 관측된 적 최대 수, 정찰 기록)는 관측([030](030-observation.md))에서 명시적으로 유지한다. 코어는 단기·중기 문맥을 담당한다.
 
 ### 2.5 Heads
@@ -135,7 +137,7 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
 | 032-R14 | **MUST** 추론 서버(`uranium-agent`)는 세션마다 고정 슬롯을 두고 Core 상태를 `[capacity, …]` 텐서 하나에 보관한다. 요청이 모인 세션의 행만 `select_rows`로 꺼내 `act`를 돌리고 `scatter_rows`로 되돌린다. 세션이 시작될 때 그 슬롯을 0으로 리셋한다(032-R5). 배치로 처리한 결과는 세션을 하나씩 처리한 결과와 같아야 하고(허용 오차 이내), 세션 사이에 상태가 섞이지 않는다 (2026-10-17) |
 | 032-R15 | **MUST** `act()`의 샘플링 모드는 확률적(temp 1)과 결정론적(temp 0 = 헤드마다 argmax)을 둔다(050-R1). `ActOutput`은 joint log-prob과 함께 헤드별 log-prob [B,6]을 돌려준다. RL actor는 이 값을 behaviour log-prob로 기록한다(042) (2026-10-17) |
 | 032-R16 | **MUST** 추론 서버는 실행 중에 가중치를 교체할 수 있다(042 K update마다). 교체는 다음 배치부터 적용되고, 응답마다 정책 버전을 붙인다. 세션은 자기 슬롯의 Core 상태를 host 데이터로 읽을 수 있다(042 core_state0). Core는 상태를 host 데이터로 내보내고 다시 만드는 연산을 제공하며, 왕복은 비트 단위로 같다 (2026-10-17) |
-| 032-R17 | **MUST** 시간 축 코어(LSTM vs GTrXL)는 BC 본학습 전에 짧은 비교 학습으로 고른다(2026-10-18 사용자 결정, AMB-032-6). ① 학습: 코어마다 S1을 5,300 update 1회(seed 1개)씩 돌린다. 장비는 혼합 유동 운영이다(2026-10-18 사용자 결정): Linux Vulkan 호스트(f32)와 Windows CUDA 호스트(TF32 matmul)가 run 큐 작업자(061-R13·R14)로 두 run을 나눠 맡고 서로 이어받는다. 장비별 update 구간은 `runs/<id>/devices.jsonl`(061-R15)에 남고, 두 run의 장비 비율을 최종 집계해 리포트에 적는다. 두 run의 장비 비율이 크게 다르면 Vulkan f32와 CUDA TF32의 수치 차이가 비교에 섞일 수 있다(공정성 주의). 주 장비 규칙(2026-10-20 사용자 결정, AMB-032-8, 060-R8): CUDA 호스트가 유휴일 때는 CUDA 호스트가 주가 되고, 바쁠 때는 Linux Vulkan 호스트가 주가 된다. 이 규칙은 작업자 우선순위(CUDA 호스트에 더 높은 `--priority`)와 양보 요청(061-R14)으로 이미 구현돼 있다. 데이터 순서(`data.seed`)와 그 밖의 설정(Burn autotune·fusion 포함, 041-R15)은 같다. 학습률 스케줄은 짧은 run 전용으로, warmup 5%(265) 뒤 cosine이 5,300에서 끝난다(`config/bc_core_ablation.toml`). ② 오프라인 지표: `bc-eval --split val --games 500`(두 코어 같은 500게임). 500게임은 val 분할을 **고정 seed로 셔플**해 앞에서 고른다(출처 편중을 줄이기 위해, 2026-10-19 사용자 결정 G-D8, AMB-032-7). 학습 seed는 1개로 유지하고, 그 한계(seed 간 편차를 모름)는 리포트에 적는다. test 분할은 041-AC1용이라 쓰지 않는다. ③ 대전: 두 체크포인트 맞대결(TvT, 맵당 50판, 25판마다 슬롯 교대, `config/plans/core-ablation-h2h.toml`)과 각자 T0 상대 승률(상대 종족 3 × 맵 2 조합당 50판, 코어당 300판·합계 600판, 사용자 확정 2026-10-18, `config/plans/core-ablation-t0.toml`). 샘플링은 확률적(temp 1)이고 z는 없다. 대전 700판의 리플레이를 모두 저장한다(두 plan `save_replay = true`, `<out>/replays/g<id>.rep`, 2026-10-18 사용자 결정). ④ 판정: 규칙을 미리 정하지 않는다. 결과를 사용자에게 보고하고 사용자가 고른다. ⑤ 비교 run의 체크포인트·로그·평가 출력은 지우지 않는다(비교 설정은 061-R6 `keep_checkpoints` 예외로 전부 보존, 2026-10-19 사용자 결정 G-D6) |
+| 032-R17 | **MUST** 시간 축 코어(LSTM vs GTrXL)는 BC 본학습 전에 짧은 비교 학습으로 고른다(2026-10-18 사용자 결정, AMB-032-6). ① 학습: 코어마다 S1을 5,300 update 1회(seed 1개)씩 돌린다. 장비는 혼합 유동 운영이다(2026-10-18 사용자 결정): Linux Vulkan 호스트(f32)와 Windows CUDA 호스트(TF32 matmul)가 run 큐 작업자(061-R13·R14)로 두 run을 나눠 맡고 서로 이어받는다. 장비별 update 구간은 `runs/<id>/devices.jsonl`(061-R15)에 남고, 두 run의 장비 비율을 최종 집계해 리포트에 적는다. 두 run의 장비 비율이 크게 다르면 Vulkan f32와 CUDA TF32의 수치 차이가 비교에 섞일 수 있다(공정성 주의). 주 장비 규칙(2026-10-20 사용자 결정, AMB-032-8, 060-R8): CUDA 호스트가 유휴일 때는 CUDA 호스트가 주가 되고, 바쁠 때는 Linux Vulkan 호스트가 주가 된다. 이 규칙은 작업자 우선순위(CUDA 호스트에 더 높은 `--priority`)와 양보 요청(061-R14)으로 이미 구현돼 있다. 데이터 순서(`data.seed`)와 그 밖의 설정(Burn autotune·fusion 포함, 041-R15)은 같다. 학습률 스케줄은 짧은 run 전용으로, warmup 5%(265) 뒤 cosine이 5,300에서 끝난다(`config/bc_core_ablation.toml`). ② 오프라인 지표: `bc-eval --split val --games 500`(두 코어 같은 500게임). 500게임은 val 분할을 **고정 seed로 셔플**해 앞에서 고른다(출처 편중을 줄이기 위해, 2026-10-19 사용자 결정 G-D8, AMB-032-7). 학습 seed는 1개로 유지하고, 그 한계(seed 간 편차를 모름)는 리포트에 적는다. test 분할은 041-AC1용이라 쓰지 않는다. ③ 대전: 두 체크포인트 맞대결(TvT, 맵당 50판, 25판마다 슬롯 교대, `config/plans/core-ablation-h2h.toml`)과 각자 T0 상대 승률(상대 종족 3 × 맵 2 조합당 50판, 코어당 300판·합계 600판, 사용자 확정 2026-10-18, `config/plans/core-ablation-t0.toml`). 샘플링은 확률적(temp 1)이고 z는 없다. 대전 700판의 리플레이를 모두 저장한다(두 plan `save_replay = true`, `<out>/replays/g<id>.rep`, 2026-10-18 사용자 결정). ④ 판정: 규칙을 미리 정하지 않는다. 결과를 사용자에게 보고하고 사용자가 고른다. **결과: GTrXL 채택(2026-10-23 사용자 결정, `reports/m6_core_ablation.md` 4절).** ⑤ 비교 run의 체크포인트·로그·평가 출력은 지우지 않는다(비교 설정은 061-R6 `keep_checkpoints` 예외로 전부 보존, 2026-10-19 사용자 결정 G-D6) |
 | 032-R18 | **MUST** `win_open` 헤드(2026-10-21 사용자 결정, AMB-031-6). ① privileged 입력 경로가 없고, 코어 출력 `h`는 detach해서 받으므로 정책·인코더·코어·기존 value 헤드에 gradient가 가지 않는다. ② 설정 `value.win_open`(기본 false)이 true일 때만 만든다. 이 키가 없는 기존 설정·체크포인트(코어 비교 run 등)는 그대로 로드되고 win_open 출력이 없다(Burn `Config` derive는 모든 필드를 요구하므로, 체크포인트 메타의 설정에 없는 키는 기본값으로 채워 읽는다). ③ 파라미터는 장치 RNG를 쓰지 않고 고정 seed 생성기로 초기화한다(Burn 기본과 같은 U(−k, k), k = 1/√fan_in). Burn 파라미터는 처음 쓸 때 장치 RNG로 초기화되므로, 장치 RNG를 쓰면 다른 모듈의 초기 가중치와 이후 dropout 난수가 바뀌기 때문이다. 그래서 헤드가 있어도 기존 모듈의 초기 가중치와 학습 난수는 같다. ④ `act()`와 학습 forward는 win_open을 value와 따로 돌려준다(꺼져 있으면 없음) |
 
 ## 4. 파라미터·연산 예산 (기본 구성, N=256)
@@ -189,7 +191,7 @@ impl<C: Core> UraniumNet<C> {
 - 032-AC4: 무작위 마스크 10만 건에서 샘플링된 액션이 모두 마스크를 만족한다.
 - 032-AC5: `act()` 경로의 연산 그래프에 privileged 텐서가 없다(타입 수준 보장 + 테스트).
 - 032-AC6: `LstmCore`와 `GtrxlCore`가 같은 `Core` trait으로 교체되고, 둘 다 AC1–AC4를 통과한다.
-- 032-AC7: 032-R17 비교의 두 run이 같은 update 수에서 끝나고, val 지표·맞대결·T0 승률(Wilson 95%)이 `reports/m6_core_ablation.md`에 기록되며, 사용자가 채택할 코어를 정한다.
+- 032-AC7: 032-R17 비교의 두 run이 같은 update 수에서 끝나고, val 지표·맞대결·T0 승률(Wilson 95%)이 `reports/m6_core_ablation.md`에 기록되며, 사용자가 채택할 코어를 정한다. — **통과(2026-10-23)**: 두 run 5,300 update, 4절에 기록, GTrXL 채택. T0 GTrXL 26판은 실제 시간 상한으로 결과가 없어 함께 기록했다(사용자 결정).
 - 032-AC8: backward(학습) 정확도(2026-10-19 사용자 결정, H·D-a, AMB-032-7): Flex(CPU) 대비 같은 가중치·입력·레이블의 BC 손실 차이가 AC1 허용 오차 안이고, 파라미터마다 gradient 차이의 상대 L2(‖g_dev − g_flex‖ ÷ ‖g_flex‖, 분모는 가장 큰 파라미터 gradient norm의 1e-3 이상으로 둔다)가 **Vulkan ≤ 1e-3**이다. **CUDA ≤ 1e-2**(2026-10-19 실측 기준(사용자 결정 D-a): autotune·fusion을 켠 이 테스트를 CUDA 호스트에서 6회 돌린 최댓값 4.9e-3(범위 3.7e-3~4.9e-3)에 약 2배 여유를 두고 올림. `reports/m6_bc_preflight.md` 5차. autotune·fusion 채택(041-R15)은 유지). dropout은 0으로 둔다. 측정은 학습과 같은 Burn 설정(autotune·fusion, 041-R15)으로 한다. 테스트는 `crates/uranium-model/tests/cross_device.rs`의 gradient 비교다. forward(AC1 Vulkan 1e-4)와 기준이 다른 이유: gradient는 반올림 누적이 많아 커널을 바꾸지 않은 Vulkan f32에서도 약 5e-4가 나온다(`reports/m6_bc_preflight.md` 4차).
 - 032-AC9: win_open 경로에 privileged 텐서가 없다(타입 + 테스트). `value.win_open` 키가 없는 설정의 체크포인트가 새 코드에서 로드된다. 같은 seed에서 win_open을 켠 모델과 끈 모델의 공통 파라미터 초기값, 그리고 같은 batch 한 update(041-R19 clip 분리 포함) 뒤의 값이 Flex에서 비트 일치한다.
 
