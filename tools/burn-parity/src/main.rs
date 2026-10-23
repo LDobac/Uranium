@@ -30,8 +30,12 @@ struct Args {
     #[arg(long)]
     out: PathBuf,
     /// tiny-lstm | tiny-gtrxl | full-lstm | full-gtrxl
+    #[arg(long, required_unless_present = "export")]
+    config: Option<String>,
+    /// BC parity (AMB-000-4 step 1-6): write this Burn checkpoint's weights (`weights.safetensors`,
+    /// Burn paths) and net config (`meta.json`) to `--out` instead of a model dump.
     #[arg(long)]
-    config: String,
+    export: Option<PathBuf>,
     #[arg(long, default_value = "7")]
     seed: u64,
 }
@@ -132,6 +136,28 @@ fn labels_out(o: &mut Out, a: &ActionBatch) {
     o.i32("target_loc", a.target_loc.clone().into_data());
 }
 
+/// A Burn checkpoint's weights by module path and its net config (flex).
+fn export(dir: &Path, out: &Path) -> Result<()> {
+    std::fs::create_dir_all(out)?;
+    let meta = uranium_model::checkpoint::read_meta(dir)?;
+    let cfg = meta.net_config()?;
+    match cfg.core.kind {
+        CoreKind::Lstm => export_as::<LstmCore>(dir, out),
+        CoreKind::Gtrxl => export_as::<GtrxlCore>(dir, out),
+    }
+}
+
+fn export_as<C: CoreInit>(dir: &Path, out: &Path) -> Result<()> {
+    let dev = Device::flex();
+    let (net, meta) = uranium_model::checkpoint::load::<C>(dir, &columns(), uranium_env::features::FEATURE_SCHEMA_VERSION, uranium_env::actions::ACTION_SCHEMA_VERSION, &dev)?;
+    let (w, ids) = params(&net, None);
+    w.write(&out.join("weights.safetensors"))?;
+    let m = serde_json::json!({ "config": meta.config, "params": ids.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(), "num_params": net.num_params(), "source": dir });
+    std::fs::write(out.join("meta.json"), serde_json::to_vec_pretty(&m)?)?;
+    println!("{} params -> {}", net.num_params(), out.display());
+    Ok(())
+}
+
 fn dump<C: CoreInit>(cfg: UraniumNetConfig, out: &Path, b: usize, t: usize, n: usize, seed: u64) -> Result<()> {
     std::fs::create_dir_all(out)?;
     let ad = Device::flex().autodiff();
@@ -228,7 +254,10 @@ fn main() -> Result<()> {
         c.clone().with_entity(c.entity.clone().with_dropout(0.0))
     };
     let with_open = |c: UraniumNetConfig| c.clone().with_value(c.value.clone().with_win_open(true));
-    match a.config.as_str() {
+    if let Some(dir) = &a.export {
+        return export(dir, &a.out);
+    }
+    match a.config.as_deref().unwrap_or_default() {
         "tiny-lstm" => dump::<LstmCore>(tiny_config(CoreKind::Lstm), &a.out, 2, 4, 12, a.seed),
         "tiny-gtrxl" => dump::<GtrxlCore>(with_open(tiny_config(CoreKind::Gtrxl)), &a.out, 2, 4, 12, a.seed),
         "full-lstm" => dump::<LstmCore>(full(CoreKind::Lstm), &a.out, 2, 8, 64, a.seed),
