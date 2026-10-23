@@ -79,6 +79,50 @@ pub fn obs_batch_padded(rows: &[&Observation], pad: usize, device: &Device) -> O
     }
 }
 
+/// Device batch from the host collate of `uranium-data` (same layout, AMB-000-4): the BC trainer
+/// collates lane groups there (`Batch::group`), as the Python trainer does.
+pub fn obs_from_host(h: &uranium_data::collate::HostObsBatch, device: &Device) -> ObsBatch {
+    let (b, n) = (h.b, h.n);
+    let f = |v: &Vec<f32>, s: Vec<usize>| Tensor::from_data(TensorData::new(v.clone(), s), device);
+    let i2 = |v: &Vec<i32>, s: [usize; 2]| Tensor::<2, Int>::from_data(TensorData::new(v.clone(), s), device);
+    let b2 = |v: &Vec<bool>, s: [usize; 2]| Tensor::<2, Bool>::from_data(TensorData::new(v.clone(), s), device);
+    ObsBatch {
+        entity_cat: Tensor::<3, Int>::from_data(TensorData::new(h.entity_cat.clone(), [b, n, ENTITY_CAT]), device),
+        entity_cont: f(&h.entity_cont, vec![b, n, ENTITY_CONT]),
+        entity_mask: b2(&h.entity_mask, [b, n]),
+        entity_cell: i2(&h.entity_cell, [b, n]),
+        entity_pos: f(&h.entity_pos, vec![b, n, 2]),
+        spatial: f(&h.spatial, vec![b, SPATIAL, MAP, MAP]),
+        scalar: f(&h.scalar, vec![b, h.fs]),
+        scalar_cat: i2(&h.scalar_cat, [b, 3]),
+        z_build: i2(&h.z_build, [b, Z_BUILD]),
+        z_units: f(&h.z_units, vec![b, h.u]),
+        z_present: Tensor::<1, Bool>::from_data(TensorData::new(h.z_present.clone(), [b]), device),
+        type_mask: b2(&h.type_mask, [b, h.a]),
+        unit_cap: Tensor::<3, Bool>::from_data(TensorData::new(h.unit_cap.clone(), [b, n, h.k]), device),
+        loc_class_mask: Tensor::<4, Bool>::from_data(TensorData::new(h.loc_class_mask.clone(), [b, h.l, MAP, MAP]), device),
+        is_building: b2(&h.is_building, [b, n]),
+    }
+}
+
+/// Device labels from the host collate (END = the padded n of the matching batch, 032-R12).
+pub fn actions_from_host(h: &uranium_data::collate::HostActionBatch, device: &Device) -> ActionBatch {
+    let i = |v: &Vec<i32>| Tensor::<1, Int>::from_data(TensorData::new(v.clone(), [h.b]), device);
+    ActionBatch {
+        action: i(&h.action),
+        delay: i(&h.delay),
+        queued: i(&h.queued),
+        selected: Tensor::<2, Int>::from_data(TensorData::new(h.selected.clone(), [h.b, h.s]), device),
+        target_unit: i(&h.target_unit),
+        target_loc: i(&h.target_loc),
+    }
+}
+
+/// Device privileged inputs from the host collate (030-R9).
+pub fn priv_from_host(h: &uranium_data::collate::HostPrivBatch, device: &Device) -> PrivBatch {
+    PrivBatch { summary: Tensor::from_data(TensorData::new(h.summary.clone(), [h.b, h.p]), device) }
+}
+
 /// `n` is the padded entity count of the matching `ObsBatch`; END = n (032-R12).
 pub fn action_batch(labels: &[&HostLabel], n: usize, max_select: usize, device: &Device) -> ActionBatch {
     let b = labels.len();

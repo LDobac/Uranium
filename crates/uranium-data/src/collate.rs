@@ -5,7 +5,9 @@
 //! copy of the layout logic (AMB-000-4).
 
 use uranium_env::features::label::HostLabel;
-use uranium_env::features::{CELLS, ENTITY_CAT, ENTITY_CONT, MAP, Observation, PrivilegedTensors, SPATIAL, Z_BUILD};
+use uranium_env::features::{Observation, PrivilegedTensors};
+/// Layout constants of the feature schema (030), re-exported for consumers of the buffers.
+pub use uranium_env::features::{CELLS, ENTITY_CAT, ENTITY_CONT, MAP, SPATIAL, Z_BUILD};
 
 /// One batch of observations (`ObsBatch` on the host). Shapes in the field docs; `b` rows, `n`
 /// padded entities.

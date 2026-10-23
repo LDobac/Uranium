@@ -19,43 +19,8 @@ use crate::ckpt;
 use crate::data::{MapStore, ShardSource};
 use crate::storage::{LockStatus, PushOutcome, Run, StorageConfig, TakeOver};
 
-/// What a `bc` invocation trains (041-R4, R5, R13).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BcStage {
-    /// S1 pre-training, all sources.
-    S1,
-    /// S2 fine-tuning from S1 (learning rate x `s2_lr_scale`).
-    S2,
-    /// Ablation (A): S2 data from scratch at the S1 learning rate.
-    AblationA,
-}
-
-impl BcStage {
-    pub fn selection(self) -> crate::split::Selection {
-        match self {
-            BcStage::S1 => crate::split::Selection::S1,
-            BcStage::S2 | BcStage::AblationA => crate::split::Selection::S2,
-        }
-    }
-
-    /// Schedule length of the stage from `config/bc.toml` `[steps]` (0 = keep `total_steps`).
-    pub fn steps(self, cfg: &BcConfig) -> usize {
-        match self {
-            BcStage::S1 => cfg.steps.s1,
-            BcStage::S2 => cfg.steps.s2,
-            BcStage::AblationA => cfg.steps.ablation_a,
-        }
-    }
-
-    /// Warmup of the stage (041-R14: S2 and (A) from `[steps]`, 0 = keep `warmup_steps`).
-    pub fn warmup(self, cfg: &BcConfig) -> usize {
-        match self {
-            BcStage::S1 => 0,
-            BcStage::S2 => cfg.steps.s2_warmup,
-            BcStage::AblationA => cfg.steps.ablation_a_warmup,
-        }
-    }
-}
+/// What a `bc` invocation trains (041-R4, R5, R13); defined with the data side (AMB-000-4).
+pub use uranium_data::bc::BcStage;
 
 /// Where checkpoints go.
 pub enum BcOut {
@@ -136,15 +101,7 @@ pub fn resolve_checkpoint(dir: &Path) -> Result<PathBuf> {
 }
 
 pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
-    let mut cfg = BcConfig::load(&args.config)?;
-    let stage_steps = args.stage.steps(&cfg);
-    if stage_steps > 0 {
-        cfg.total_steps = stage_steps;
-    }
-    let stage_warmup = args.stage.warmup(&cfg);
-    if stage_warmup > 0 {
-        cfg.warmup_steps = stage_warmup;
-    }
+    let cfg = BcConfig::load(&args.config)?.for_stage(args.stage);
     let ad = if cfg.grad_checkpointing { dev.autodiff().gradient_checkpointing() } else { dev.autodiff() };
     let cols = uranium_model::batch::ActionColumns::from_table(uranium_env::features::extract::action_table())?;
     let load = |dir: &Path| -> Result<(UraniumNet<C>, UraniumNetConfig)> {

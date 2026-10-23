@@ -11,6 +11,7 @@ members = [
     "crates/uranium-replay",
     "crates/uranium-data",
     "crates/uranium-store",
+    "crates/uranium-py",
     "crates/uranium-model",
     "crates/uranium-train",
     "crates/uranium-ladder",

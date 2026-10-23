@@ -1,0 +1,26 @@
+[package]
+name = "uranium-py"
+description = "Python extension module uranium._core (PyO3): the Rust data side, storage and game runtime for the PyTorch trainer and inference (001, AMB-000-4)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "_core"
+crate-type = ["cdylib"]
+# Built by maturin into the `uranium` Python package; tested from Python (tests/python).
+test = false
+doctest = false
+
+[features]
+# Set by maturin (pyproject.toml): do not link libpython (the interpreter provides it).
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+uranium-data = { path = "../uranium-data", features = ["testkit"] }
+uranium-store = { path = "../uranium-store" }
+anyhow.workspace = true
+serde_json.workspace = true
+pyo3 = "0.30"
+numpy = "0.30"

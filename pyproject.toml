@@ -1,0 +1,33 @@
+# Python package `uranium` (001, AMB-000-4): PyTorch training and inference, with the Rust data
+# side, storage and game runtime as the extension module `uranium._core` (crates/uranium-py).
+#
+# PyTorch is not a dependency here: each host installs its own build (060: CUDA host the official
+# CUDA wheel, Linux ROCm host a build for its GPU), then `uv pip install -e .` (maturin builds the
+# extension for this host's Python).
+
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[project]
+name = "uranium"
+version = "0.1.0"
+description = "Uranium: StarCraft Brood War Terran bot - training and inference"
+requires-python = ">=3.14"
+dependencies = ["numpy>=2", "safetensors>=0.6"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "uranium._core"
+manifest-path = "crates/uranium-py/Cargo.toml"
+features = ["extension-module"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+markers = [
+    "gpu: needs a CUDA or ROCm device (032-AC1, AC8)",
+    "data: needs the real BC shards (URANIUM_TEST_SHARDS) and map precomputes",
+]

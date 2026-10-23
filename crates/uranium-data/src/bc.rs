@@ -206,6 +206,60 @@ impl BcConfig {
     }
 }
 
+/// What a `bc` invocation trains (041-R4, R5, R13).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BcStage {
+    /// S1 pre-training, all sources.
+    S1,
+    /// S2 fine-tuning from S1 (learning rate x `s2_lr_scale`).
+    S2,
+    /// Ablation (A): S2 data from scratch at the S1 learning rate.
+    AblationA,
+}
+
+impl BcStage {
+    pub fn selection(self) -> Selection {
+        match self {
+            BcStage::S1 => Selection::S1,
+            BcStage::S2 | BcStage::AblationA => Selection::S2,
+        }
+    }
+
+    /// Schedule length of the stage from `config/bc.toml` `[steps]` (0 = keep `total_steps`).
+    pub fn steps(self, cfg: &BcConfig) -> usize {
+        match self {
+            BcStage::S1 => cfg.steps.s1,
+            BcStage::S2 => cfg.steps.s2,
+            BcStage::AblationA => cfg.steps.ablation_a,
+        }
+    }
+
+    /// Warmup of the stage (041-R14: S2 and (A) from `[steps]`, 0 = keep `warmup_steps`).
+    pub fn warmup(self, cfg: &BcConfig) -> usize {
+        match self {
+            BcStage::S1 => 0,
+            BcStage::S2 => cfg.steps.s2_warmup,
+            BcStage::AblationA => cfg.steps.ablation_a_warmup,
+        }
+    }
+}
+
+impl BcConfig {
+    /// The effective config of `stage`: the schedule length and warmup from `[steps]` (041-R14;
+    /// 0 keeps `total_steps` / `warmup_steps`). The fingerprint (B-3) is taken from this config.
+    pub fn for_stage(mut self, stage: BcStage) -> Self {
+        let steps = stage.steps(&self);
+        if steps > 0 {
+            self.total_steps = steps;
+        }
+        let warmup = stage.warmup(&self);
+        if warmup > 0 {
+            self.warmup_steps = warmup;
+        }
+        self
+    }
+}
+
 /// One lane: the current game and the position inside it.
 struct Lane {
     game: Option<GameStream>,
@@ -670,4 +724,126 @@ pub fn epoch_table(dirs: &[PathBuf], cfg: &BcConfig) -> Result<EpochTable> {
 pub fn eval_games(src: &ShardSource, scan: &[Vec<GameSummary>], n: usize, seed: u64) -> Vec<crate::data::GameId> {
     let counts: Vec<usize> = scan.iter().enumerate().map(|(k, items)| src.order_file(k, items.clone()).len()).collect();
     sample_games(&counts, n, seed)
+}
+
+/// One lane group of a batch, collated on the host (041-R2, R3): what the trainer feeds one
+/// forward/backward. Rows are b-major (row = lane * T + step); a game shorter than the chunk is
+/// padded with its last step at weight 0.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HostGroup {
+    /// Lanes in the group.
+    pub b: usize,
+    /// Steps per lane (`seq_len`).
+    pub t: usize,
+    pub obs: crate::collate::HostObsBatch,
+    pub labels: crate::collate::HostActionBatch,
+    pub privileged: crate::collate::HostPrivBatch,
+    /// [b * t] label weight (0 = void label or chunk padding).
+    pub weights: Vec<f32>,
+    /// [b * t] the game result of the row's lane (041-R7).
+    pub results: Vec<f32>,
+    /// [b * t] value-loss weight: label weight x the game's value weight (041-R7 / A-3).
+    pub value_w: Vec<f32>,
+    /// [b] true when the lane continues a game from the last batch (core state kept, 041-R2).
+    pub keep: Vec<bool>,
+}
+
+/// Field order of [`HostGroup::digest`] (the Python side hashes its arrays in the same order).
+pub const GROUP_FIELDS: [&str; 26] = [
+    "entity_cat", "entity_cont", "entity_mask", "entity_cell", "entity_pos", "spatial", "scalar", "scalar_cat", "z_build", "z_units", "z_present", "type_mask", "unit_cap",
+    "loc_class_mask", "is_building", "action", "delay", "queued", "selected", "target_unit", "target_loc", "privileged", "weights", "results", "value_w", "keep",
+];
+
+impl HostGroup {
+    /// SHA-256 (hex) over the group's buffers in [`GROUP_FIELDS`] order: i32 / f32 little-endian,
+    /// bool one byte 0 / 1. Lets another implementation check it reads the same batch.
+    pub fn digest(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        let i = |h: &mut Sha256, v: &[i32]| v.iter().for_each(|x| h.update(x.to_le_bytes()));
+        let f = |h: &mut Sha256, v: &[f32]| v.iter().for_each(|x| h.update(x.to_le_bytes()));
+        let b = |h: &mut Sha256, v: &[bool]| h.update(v.iter().map(|&x| x as u8).collect::<Vec<u8>>());
+        let (o, l) = (&self.obs, &self.labels);
+        i(&mut h, &o.entity_cat);
+        f(&mut h, &o.entity_cont);
+        b(&mut h, &o.entity_mask);
+        i(&mut h, &o.entity_cell);
+        f(&mut h, &o.entity_pos);
+        f(&mut h, &o.spatial);
+        f(&mut h, &o.scalar);
+        i(&mut h, &o.scalar_cat);
+        i(&mut h, &o.z_build);
+        f(&mut h, &o.z_units);
+        b(&mut h, &o.z_present);
+        b(&mut h, &o.type_mask);
+        b(&mut h, &o.unit_cap);
+        b(&mut h, &o.loc_class_mask);
+        b(&mut h, &o.is_building);
+        i(&mut h, &l.action);
+        i(&mut h, &l.delay);
+        i(&mut h, &l.queued);
+        i(&mut h, &l.selected);
+        i(&mut h, &l.target_unit);
+        i(&mut h, &l.target_loc);
+        f(&mut h, &self.privileged.summary);
+        f(&mut h, &self.weights);
+        f(&mut h, &self.results);
+        f(&mut h, &self.value_w);
+        b(&mut h, &self.keep);
+        h.finalize().iter().map(|x| format!("{x:02x}")).collect()
+    }
+}
+
+impl Batch {
+    /// Lanes in the batch.
+    pub fn lanes(&self) -> usize {
+        self.chunks.len()
+    }
+
+    /// Usable label steps of the whole batch (at least 1): every lane group's policy loss is
+    /// divided by it, so the summed group gradients equal one pass over all lanes (041-R3).
+    pub fn valid(&self) -> f32 {
+        self.chunks.iter().flat_map(|c| c.iter().map(|s| s.weight)).sum::<f32>().max(1.0)
+    }
+
+    /// Usable label steps of decided games (at least 1): the value-loss divisor (041-R7 / A-3).
+    pub fn value_valid(&self) -> f32 {
+        self.chunks.iter().zip(&self.value_weights).map(|(c, vw)| c.iter().map(|s| s.weight * vw).sum::<f32>()).sum::<f32>().max(1.0)
+    }
+
+    /// Lanes `lanes` collated for one forward/backward: `t` steps per lane, entities padded to a
+    /// multiple of `pad` (030-R7), selections cut at `max_select` with END = padded n (032-R12).
+    /// A packed batch (041-R18) gets its planes back here, for this group only.
+    pub fn group(&self, lanes: std::ops::Range<usize>, t: usize, pad: usize, max_select: usize) -> HostGroup {
+        let b = lanes.len();
+        let mut rows: Vec<&TrainStep> = Vec::with_capacity(b * t);
+        let mut weights = Vec::with_capacity(b * t);
+        let mut results = Vec::with_capacity(b * t);
+        let mut value_w = Vec::with_capacity(b * t);
+        let mut keep = Vec::with_capacity(b);
+        let mut restored = Vec::new();
+        for l in lanes {
+            let chunk = &self.chunks[l];
+            keep.push(!self.fresh[l]);
+            for k in 0..t {
+                let i = k.min(chunk.len() - 1);
+                let s = &chunk[i];
+                if !self.planes.is_empty() {
+                    restored.push(self.planes[l][i].restore(&s.obs));
+                }
+                rows.push(s);
+                let w = if k < chunk.len() { s.weight } else { 0.0 };
+                weights.push(w);
+                results.push(self.results[l]);
+                value_w.push(w * self.value_weights[l]);
+            }
+        }
+        let obs: Vec<_> = if restored.is_empty() { rows.iter().map(|s| &s.obs).collect() } else { restored.iter().collect() };
+        let obs = crate::collate::obs_batch(&obs, pad);
+        let labels: Vec<_> = rows.iter().map(|s| &s.label).collect();
+        let labels = crate::collate::action_batch(&labels, obs.n, max_select);
+        let privs: Vec<_> = rows.iter().map(|s| &s.privileged).collect();
+        let privileged = crate::collate::priv_batch(&privs);
+        HostGroup { b, t, obs, labels, privileged, weights, results, value_w, keep }
+    }
 }

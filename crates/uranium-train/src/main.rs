@@ -86,6 +86,31 @@ enum Cmd {
         #[arg(long, default_value = "config/bc.toml")]
         config: PathBuf,
     },
+    /// AMB-000-4 check: SHA-256 of every lane group of the first BC batches (`Batch::group`, the
+    /// host collate). The Python side hashes the `uranium._core` arrays the same way, so the two
+    /// can be compared. One JSON line per batch.
+    #[command(hide = true)]
+    FeedDigest {
+        #[command(flatten)]
+        data: DataArgs,
+        #[arg(long, default_value = "config/bc.toml")]
+        config: PathBuf,
+        #[arg(long, value_enum, default_value = "s1")]
+        stage: StageArg,
+        #[arg(long, default_value = "3")]
+        batches: usize,
+        /// Lanes per group.
+        #[arg(long, default_value = "1")]
+        group: usize,
+        #[arg(long, default_value = "12")]
+        max_select: usize,
+        /// 041-R18: packed batches.
+        #[arg(long)]
+        pack: bool,
+        /// Test shards without map precomputes (`uranium_data::testkit`).
+        #[arg(long)]
+        synthetic_maps: bool,
+    },
     /// 060-R6 watchdog: run `bc` / `rl` arguments as a child and restart the same run after an
     /// abnormal exit or a hang (it resumes from its last checkpoint). Exit 0 (done, step limit,
     /// Ctrl+C clean stop, lock lost) and 130 (second Ctrl+C) are not restarted.
@@ -545,6 +570,31 @@ fn main() -> Result<()> {
             let dirs = data.dirs()?;
             let out = uranium_train::bc_eval::epoch_table(&dirs, &cfg)?;
             println!("{}", serde_json::to_string_pretty(&out)?);
+            Ok(())
+        }
+        Cmd::FeedDigest { data, config, stage, batches, group, max_select, pack, synthetic_maps } => {
+            let stage = match stage {
+                StageArg::S1 => BcStage::S1,
+                StageArg::S2 => BcStage::S2,
+            };
+            let cfg = BcConfig::load(&config)?.for_stage(stage);
+            let src = ShardSource::from_dirs(&data.dirs()?)?.select(stage.selection()).shuffled(cfg.data.seed);
+            let mut feeder = uranium_train::bc::Feeder::new(&cfg);
+            if synthetic_maps {
+                feeder.set_maps(std::sync::Arc::new(uranium_train::data::MapStore::synthetic()));
+            }
+            feeder.set_pack(pack);
+            let mut batches_left = batches;
+            let mut p = uranium_train::bc::Prefetch::start(feeder, src, 0);
+            let mut k = 0;
+            while batches_left > 0 {
+                let Some(b) = p.next()? else { break };
+                let lanes = b.lanes();
+                let groups: Vec<String> = (0..lanes).step_by(group.max(1)).map(|s| b.group(s..(s + group.max(1)).min(lanes), cfg.seq_len, cfg.pad_entities, max_select).digest()).collect();
+                println!("{}", serde_json::json!({ "batch": k, "valid": b.valid(), "value_valid": b.value_valid(), "groups": groups, "state": b.state }));
+                k += 1;
+                batches_left -= 1;
+            }
             Ok(())
         }
         Cmd::Supervise { max_restarts, window_minutes, delay_seconds, hang_minutes, progress_file, log, args } => {

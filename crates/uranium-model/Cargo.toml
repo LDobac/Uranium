@@ -13,6 +13,7 @@ cuda = ["burn/cuda"]
 [dependencies]
 burn = { workspace = true, features = ["std", "autodiff", "flex", "vulkan", "store", "cubecl"] }
 uranium-env = { path = "../uranium-env" }
+uranium-data = { path = "../uranium-data" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

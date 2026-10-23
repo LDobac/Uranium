@@ -6,6 +6,10 @@ version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# Synthetic games and shard writing for tests (Rust and Python via uranium-py).
+testkit = []
+
 [dependencies]
 uranium-env = { path = "../uranium-env" }
 uranium-replay = { path = "../uranium-replay" }

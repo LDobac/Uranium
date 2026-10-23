@@ -11,3 +11,5 @@ pub mod collate;
 pub mod data;
 pub mod pack;
 pub mod split;
+#[cfg(feature = "testkit")]
+pub mod testkit;

@@ -12,14 +12,14 @@ use burn::optim::{AdamWConfig, GradientsAccumulator, GradientsParams, ModuleOpti
 use burn::tensor::{Bool, Device, Tensor, TensorData};
 use serde::Serialize;
 use uranium_model::checkpoint::{self, CheckpointMeta};
-use uranium_model::collate::{HostLabel, action_batch, obs_batch_padded, priv_batch};
+use uranium_model::collate::{actions_from_host, obs_from_host, priv_from_host};
 use uranium_model::config::UraniumNetConfig;
 use uranium_model::value::VALUE_WIN;
 use uranium_model::entity::EntityOut;
 use uranium_model::{CoreInit, ObsBatch, UraniumNet};
 
 use crate::ckpt::{self, TrainState};
-use crate::data::{Rng, StepSource, TrainStep};
+use crate::data::{Rng, StepSource};
 // 041 data side (config, fingerprint, schedule, lanes, batches, prefetch, run identity) moved to
 // uranium-data (AMB-000-4); re-exported so `crate::bc::*` paths keep working.
 pub use uranium_data::bc::*;
@@ -194,42 +194,16 @@ impl<C: CoreInit> Trainer<C> {
     /// the entity encoder runs outside the graph and the caller finishes its backward.
     fn group_loss(&mut self, batch: &Batch, group: usize, lanes: std::ops::Range<usize>, valid: f32, value_valid: f32, prof: &mut Prof) -> (Tensor<1>, LossParts, Option<EntityRecompute>) {
         let (b, t) = (lanes.len(), self.cfg.seq_len);
-        // Gather rows in b-major order; a game shorter than the chunk is padded with its last
-        // step at weight 0.
-        let mut rows: Vec<&TrainStep> = Vec::with_capacity(b * t);
-        let mut weights = Vec::with_capacity(b * t);
-        let mut results = Vec::with_capacity(b * t);
-        // 041-R7 / A-3: value-loss weight per row = label weight x the game's value weight.
-        let mut value_w = Vec::with_capacity(b * t);
-        let mut keep = Vec::with_capacity(b);
-        // 041-R18: this group's observations with their planes back (a packed batch only).
-        let mut restored = Vec::new();
-        for l in lanes {
-            let chunk = &batch.chunks[l];
-            keep.push(!batch.fresh[l]);
-            for k in 0..t {
-                let i = k.min(chunk.len() - 1);
-                let s = &chunk[i];
-                if !batch.planes.is_empty() {
-                    restored.push(batch.planes[l][i].restore(&s.obs));
-                }
-                rows.push(s);
-                let w = if k < chunk.len() { s.weight } else { 0.0 };
-                weights.push(w);
-                results.push(batch.results[l]);
-                value_w.push(w * batch.value_weights[l]);
-            }
-        }
-        let obs: Vec<_> = if restored.is_empty() { rows.iter().map(|s| &s.obs).collect() } else { restored.iter().collect() };
-        let labels: Vec<&HostLabel> = rows.iter().map(|s| &s.label).collect();
-        let privs: Vec<_> = rows.iter().map(|s| &s.privileged).collect();
+        // Rows in b-major order, a game shorter than the chunk padded with its last step at
+        // weight 0, a packed batch's planes restored for this group only (041-R18), value-loss
+        // weight = label weight x the game's value weight (041-R7 / A-3): `Batch::group`, the
+        // same host collate the Python trainer uses (AMB-000-4).
+        let hg = batch.group(lanes, t, self.cfg.pad_entities, self.net_cfg.heads.max_select);
         let d = &self.device;
-        let ob = obs_batch_padded(&obs, self.cfg.pad_entities, d);
-        drop(obs);
-        drop(restored);
-        let n = ob.entities();
-        let ab = action_batch(&labels, n, self.net_cfg.heads.max_select, d);
-        let pb = priv_batch(&privs, d);
+        let ob = obs_from_host(&hg.obs, d);
+        let ab = actions_from_host(&hg.labels, d);
+        let pb = priv_from_host(&hg.privileged, d);
+        let HostGroup { weights, results, value_w, keep, .. } = hg;
         prof.mark("collate");
 
         let keep_t = Tensor::<1, Bool>::from_data(TensorData::new(keep, [b]), d);
