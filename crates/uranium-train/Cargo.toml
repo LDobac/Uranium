@@ -8,7 +8,7 @@ publish.workspace = true
 
 [features]
 # Enable only on a CUDA host: --features cuda
-cuda = ["burn/cuda", "uranium-model/cuda", "uranium-agent/cuda", "uranium-runner/cuda"]
+cuda = ["burn/cuda", "uranium-model/cuda"]
 
 [dependencies]
 burn = { workspace = true, features = ["std", "autodiff", "flex", "vulkan", "optim", "store"] }

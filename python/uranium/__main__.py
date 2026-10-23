@@ -44,6 +44,9 @@ def main(argv: list[str] | None = None) -> int:
     bc_run.add_parser(sub)
     bc_eval.add_parser(sub)
     bc_profile.add_parser(sub)
+    from uranium.agent import serve as agent_serve
+
+    agent_serve.add_parsers(sub)
     a = p.parse_args(argv)
     return a.fn(a)
 

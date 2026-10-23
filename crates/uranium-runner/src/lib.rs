@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
-use uranium_agent::infer::{InferOptions, InferenceHandle, resolve_checkpoint};
+use uranium_agent::infer::InferenceHandle;
 use uranium_agent::{EndBoard, PolicySpec, Routes, ServeOptions, T0Build, T0Builds, open_sink, serve};
 use uranium_proto::control::*;
 use uranium_proto::{read_msg, write_msg};
@@ -188,22 +188,63 @@ pub fn hosts() -> Result<Vec<HostEntry>> {
     }
 }
 
-/// Starts one inference server per (checkpoint, sampling mode) the plan uses (020-R11).
-pub fn start_models(plan: &plan::Plan, mut opts: InferOptions) -> Result<Models> {
-    // 030-R10 / E-5: BC evaluation plans feed last_failed = 0 (reason at `Plan::zero_last_failed`).
-    opts.zero_last_failed = plan.zero_last_failed;
-    let mut models = Models::new();
+/// The (checkpoint, sampling mode) pairs the plan's players use, each once (020-R11). Their
+/// inference servers run in the Python process (`python -m uranium run`, AMB-000-4).
+pub fn plan_models(plan: &plan::Plan) -> Vec<ModelKey> {
+    let mut keys = Vec::new();
     for m in &plan.matchups {
         for key in [m.p0.model(), m.p1.model()].into_iter().flatten() {
-            if !models.contains_key(&key) {
-                let dir = resolve_checkpoint(Path::new(&key.0))?;
-                // 031-R12 / 020-R14: the plan's surrender mode and chat line.
-                let h = InferenceHandle::start(&dir, key.1, opts).with_context(|| format!("loading checkpoint {}", dir.display()))?.with_surrender(plan.surrender, &plan.surrender_chat);
-                models.insert(key, PolicySpec::Model(h));
+            if !keys.contains(&key) {
+                keys.push(key);
             }
         }
     }
+    keys
+}
+
+/// Model policies of the plan from one inference handle per [`plan_models`] key, with the plan's
+/// session settings: 031-R12 / 020-R14 surrender mode and chat line, 030-R10 / E-5
+/// `last_failed = 0` for BC evaluation plans (reason at `Plan::zero_last_failed`).
+pub fn plan_policies(plan: &plan::Plan, handles: &HashMap<ModelKey, InferenceHandle>) -> Result<Models> {
+    let mut models = Models::new();
+    for key in plan_models(plan) {
+        let h = handles.get(&key).with_context(|| format!("no inference server for {} ({:?})", key.0, key.1))?;
+        let mut h = h.clone().with_surrender(plan.surrender, &plan.surrender_chat);
+        h.zero_last_failed = plan.zero_last_failed;
+        models.insert(key, PolicySpec::Model(h));
+    }
     Ok(models)
+}
+
+/// Plays every game of a plan (020) with the agent server in-process and writes the results and
+/// report under `out` (default `runs/<plan name>`). `models`: [`plan_policies`] (empty for a plan
+/// of scripted players only).
+pub fn run_plan(plan_path: &Path, out: Option<PathBuf>, models: Models) -> Result<()> {
+    let plan = plan::load_plan(plan_path)?;
+    let out = out.unwrap_or_else(|| default_out(&plan));
+    std::fs::create_dir_all(&out)?;
+    std::fs::copy(plan_path, out.join("plan.toml"))?;
+    let _ = std::fs::remove_file(out.join("games.jsonl"));
+    let _ = std::fs::remove_file(out.join("results.jsonl"));
+
+    let builds = T0Builds::default();
+    let routes = Routes::default();
+    let public = start_agent(&env_or("URANIUM_AGENT_LISTEN", "127.0.0.1:7600"), &out.join("results.jsonl"), routes.clone(), builds.clone(), Default::default())?;
+    let jobs = plan::expand(&plan, &public);
+    elog!("[env] plan `{}`: {} games, agent at {public}", plan.name, jobs.len());
+    let started = std::time::Instant::now();
+    // Scenario builds (050) and model routes are registered per game by the workers (020-R11).
+    let dispatch = Dispatch::new(routes, models, builds);
+    let source = Arc::new(QueueSource::new(jobs).with_replays(out.join("replays")));
+    run_source(source.clone(), &hosts()?, &out.join("games.jsonl"), &dispatch)?;
+    let left = JobSource::left(&*source);
+    elog!("[env] finished in {:.0}s ({left} games not run)", started.elapsed().as_secs_f64());
+    report::write(&out, &plan)?;
+    println!("{}", std::fs::read_to_string(out.join("summary.md"))?);
+    if left > 0 {
+        bail!("{left} games could not be scheduled");
+    }
+    Ok(())
 }
 
 /// Starts the embedded agent server (001-R6) and returns the address bridges connect to.

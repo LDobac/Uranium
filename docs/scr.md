@@ -18,12 +18,12 @@
 3. 브리지를 빌드한다: `tools\scr\build.ps1`.
    - 단위 테스트를 돌린 뒤 release DLL을 `runs\scr\mod\samase\`(또는 `URANIUM_SCR_MOD_DIR`)에 복사한다.
    - `plugins` 목록 파일도 쓴다.
-4. 에이전트를 CUDA로 빌드한다: `cargo build --release -p uranium-agent --features cuda`.
+4. Python 환경에 `uranium` 패키지(Rust 확장 `uranium._core` 포함)와 CUDA PyTorch를 설치한다: 저장소 루트에서 `uv pip install -e .`(AMB-000-4).
 5. 대상 맵(투혼·서킷브레이커) 사전계산이 `URANIUM_MAPS_DIR`에 있어야 한다. 없으면 에이전트가 세션을 거부한다(AMB-031-4).
    - SC:R이 연 맵 파일과 같은 파일로 만든다: `uranium-replay mapgen <맵 파일>`.
 
 ## 실행 순서
-1. **에이전트**: `uranium-agent scr --checkpoint <체크포인트> --backend cuda [--sample stochastic]`.
+1. **에이전트**: `python -m uranium scr --checkpoint <체크포인트> [--sample stochastic]`(백엔드 기본은 그 PC의 GPU, CUDA는 bf16, 032-R8).
    - 기본 listen 주소는 `127.0.0.1:7700`, 항복 모드는 `on`(채팅 `gg`)이다.
    - 결과는 `runs/scr/sessions.jsonl`에 게임마다 한 줄씩 쌓인다. `uranium-agent summarize runs/scr/sessions.jsonl --out <md>`로 요약한다.
 2. **SC:R**: `tools\scr\run.ps1`.

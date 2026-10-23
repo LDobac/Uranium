@@ -66,3 +66,16 @@
 ## 5. 산출물
 - bc250_1 `~/bcprof/`: `host.log`(3.1), `prof_c16.json`·`prof_c0.json`(2레인 연산별), `prof_full.json`·`run2.log`(3.3), `run3_2.log`·`run3_0.log`(3.4)
 - 마이크로벤치 스크립트: bc250_1 `~/deconv_bench.py`
+
+## 6. BC 동등성 (1-6, 진행 중)
+- 방법: Burn `bc --steps 0`으로 만든 초기 체크포인트의 가중치를 `tools/burn-parity --export` → `bc_parity.py convert`로 PyTorch 체크포인트로 바꾸고, 두 학습기를 `--init`(step 0, 같은 학습률 일정)으로 같은 S1 데이터(personal shard)에서 500 update씩 돌린다. dropout은 둘 다 0으로 두어 난수 잡음을 없앴다. 설정은 `config/bc.toml`에서 lanes 4, warmup_steps 50만 바꿨다(500 update 안에 최대 학습률에 닿도록).
+- 예상: 두 손실은 float 반올림 차이만 있고, update가 쌓이며 차이가 천천히 커진다.
+- 5 update 시험(10-24 03:0x): 총 손실 상대 차이 update 1 0, 3 3.2e-7, 5 1.9e-6. 같은 5 update에 PyTorch 25초, Burn 110초(시작 시간 포함).
+- 500 update: 03:05 시작.
+
+## 7. 추론 이식 (1-7)
+- 구조: `uranium-agent`에서 Burn을 뺐다. 세션 쪽 API(`InferenceHandle`·`open`·`act`·`state`)는 그대로이고, 서버 쪽은 `uranium_agent::broker::Broker`다. Broker는 슬롯·배치 규칙(최대 배치, 활성 세션 전원 대기, `max_wait`)을 지키며 요청을 모으고 host collate한다. Python 모델 스레드(`uranium.agent.infer.InferenceServer`)는 `next()`로 배치를 받아 `[capacity, …]` core 상태(장치에 상주)에서 행을 골라 `act`를 돌리고, `reply()`로 돌려준다. 행동 해석(034 열, END = 패딩 n)은 Rust가 한다. Burn RL용 서버는 `uranium_train::burn_infer`로 옮겨 1-8까지만 쓴다.
+- 진입점: `python -m uranium serve | scr | run | random-checkpoint`. 모델 플레이어가 있는 plan은 Python이 모델마다 Broker와 스레드를 띄운 뒤 Rust 스케줄러를 GIL 없이 돌린다. `uranium-env run`·`uranium-agent serve`는 스크립트 플레이어만 맡는다.
+- 테스트: Rust `uranium-agent` 세션 테스트 7개(mock 모델: 경로 지정, realtime, observer, 종료 보상, 슬롯 상태·재열기, 배치 행 배분, 항복). pytest `test_infer.py` 9개(작은 실모델 CPU: 마스크 안 행동 031-R4, argmax 결정론 031-R7, 배치 = 단독 032-R14, 슬롯 상태 032-R16, random-checkpoint). asus에서 통과(10-24 03:2x).
+- end-to-end(10-24 03:22, asus CPU): random-init LSTM 체크포인트 대 T0 테란 1판(투혼, 4,000프레임 시간 제한 무승부). 결정 2,000회, 결정 지연 p50 22ms·p95 37ms, executor 거절 0, 실패 명령 0, results·games·summary 생성. 산출물 asus `~/e2e17/`.
+- 남은 것: Windows CUDA PC에서 `uranium._core` 빌드와 SC:R warm-up 확인(학습 PC 부하라 사용자 확인 후). `bc-vs-t0`·코어 비교 plan의 체크포인트 경로는 Burn 체크포인트라 PyTorch BC 체크포인트가 생기면 바꾼다.

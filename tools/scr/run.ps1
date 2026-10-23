@@ -1,5 +1,5 @@
 # Start SC:R with the Uranium bridge through samase (spec 012). Start the agent first
-# (`uranium-agent scr --checkpoint ...`), then this script, then start a game in SC:R by hand.
+# (`python -m uranium scr --checkpoint ...`), then this script, then start a game in SC:R by hand.
 # Settings come from .env (001-R9): URANIUM_SCR_SAMASE, URANIUM_SCR_MOD_DIR, URANIUM_SCR_AGENT_ADDR,
 # URANIUM_SCR_LOG_DIR. See docs/scr.md.
 $ErrorActionPreference = 'Stop'

@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [features]
 # Enable only on a CUDA host (CLAUDE.md fixed conditions): --features cuda
-cuda = ["uranium-agent/cuda"]
+cuda = []
 
 [dependencies]
 uranium-proto.workspace = true

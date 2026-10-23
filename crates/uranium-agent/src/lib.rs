@@ -13,9 +13,12 @@ macro_rules! elog {
     }};
 }
 
+pub mod broker;
 pub mod infer;
 pub mod model_policy;
 pub mod summary;
+#[cfg(feature = "testkit")]
+pub mod testkit;
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;

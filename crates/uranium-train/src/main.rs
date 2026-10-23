@@ -360,11 +360,11 @@ fn device(b: Backend) -> Result<Device> {
     })
 }
 
-fn rl_backend(b: Backend) -> uranium_agent::infer::InferBackend {
+fn rl_backend(b: Backend) -> uranium_train::burn_infer::InferBackend {
     match b {
-        Backend::Vulkan => uranium_agent::infer::InferBackend::Vulkan,
-        Backend::Cuda => uranium_agent::infer::InferBackend::Cuda,
-        Backend::Flex => uranium_agent::infer::InferBackend::Flex,
+        Backend::Vulkan => uranium_train::burn_infer::InferBackend::Vulkan,
+        Backend::Cuda => uranium_train::burn_infer::InferBackend::Cuda,
+        Backend::Flex => uranium_train::burn_infer::InferBackend::Flex,
     }
 }
 

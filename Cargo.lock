@@ -1007,6 +1007,7 @@ dependencies = [
  "clap",
  "safetensors 0.8.0",
  "serde_json",
+ "uranium-env",
  "uranium-model",
  "uranium-train",
 ]
@@ -6884,15 +6885,14 @@ name = "uranium-agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "burn",
  "clap",
  "dotenvy",
  "serde",
  "serde_json",
  "sha2 0.11.1",
  "toml",
+ "uranium-data",
  "uranium-env",
- "uranium-model",
  "uranium-proto",
  "uranium-scripted",
 ]
@@ -6991,7 +6991,10 @@ dependencies = [
  "numpy",
  "pyo3",
  "serde_json",
+ "uranium-agent",
  "uranium-data",
+ "uranium-proto",
+ "uranium-runner",
  "uranium-store",
 ]
 

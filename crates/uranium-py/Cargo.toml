@@ -19,6 +19,9 @@ extension-module = ["pyo3/extension-module"]
 
 [dependencies]
 uranium-data = { path = "../uranium-data", features = ["testkit"] }
+uranium-agent = { path = "../uranium-agent", features = ["testkit"] }
+uranium-runner = { path = "../uranium-runner" }
+uranium-proto.workspace = true
 uranium-store = { path = "../uranium-store" }
 anyhow.workspace = true
 serde_json.workspace = true

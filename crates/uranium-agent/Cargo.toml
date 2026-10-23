@@ -7,15 +7,15 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# Enable only on a CUDA host (CLAUDE.md fixed conditions): --features cuda
-cuda = ["uranium-model/cuda", "burn/cuda"]
+# Synthetic frames for tests of other crates (uranium-py: the Python inference tests).
+testkit = []
 
 [dependencies]
 uranium-proto.workspace = true
 uranium-scripted.workspace = true
 uranium-env = { path = "../uranium-env" }
-uranium-model = { path = "../uranium-model" }
-burn = { workspace = true, features = ["std", "flex", "vulkan", "store"] }
+# Host collate and action columns (AMB-000-4: the model runs in Python behind `broker`).
+uranium-data = { path = "../uranium-data" }
 anyhow.workspace = true
 clap.workspace = true
 dotenvy.workspace = true

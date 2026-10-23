@@ -1,11 +1,12 @@
-//! `uranium-agent` binary: standalone agent server and result summarizer (spec 001-R6).
+//! `uranium-agent` binary: standalone agent server for the scripted bot, and the result
+//! summarizer (spec 001-R6). Model players (`serve --policy model`, SC:R `scr`, random
+//! checkpoints) run in the Python process: `python -m uranium serve | scr | random-checkpoint`
+//! (AMB-000-4).
 
 use std::path::PathBuf;
-use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
-use uranium_agent::infer::{InferBackend, InferOptions, InferenceHandle, SampleMode, default_config, resolve_checkpoint, write_random_checkpoint};
 use uranium_agent::{PolicyKind, PolicySpec, ServeOptions, load_env, serve_addr, summary};
 
 #[derive(Parser)]
@@ -16,7 +17,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Accept bridge connections and play.
+    /// Accept bridge connections and play (scripted T0; model players: `python -m uranium serve`).
     Serve {
         #[arg(long, default_value = "127.0.0.1:7600")]
         listen: String,
@@ -31,20 +32,6 @@ enum Cmd {
         /// Exit after this many finished sessions (0 = run forever).
         #[arg(long, default_value_t = 0)]
         sessions: usize,
-        #[command(flatten)]
-        model: ModelArgs,
-    },
-    /// SC:R live play (012-R19): the SC:R bridge connects once per game, forever. Realtime sessions
-    /// get the Act deadline (012-R7) and last_failed = 0 (012-R14); surrender defaults to `on`
-    /// (012-R11).
-    Scr {
-        #[arg(long, default_value = "127.0.0.1:7700")]
-        listen: String,
-        /// JSONL file receiving one record per game (appended).
-        #[arg(long, default_value = "runs/scr/sessions.jsonl")]
-        out: PathBuf,
-        #[command(flatten)]
-        model: ModelArgs,
     },
     /// Summarize a JSONL results file into Markdown.
     Summarize {
@@ -54,110 +41,18 @@ enum Cmd {
         #[arg(long, default_value = "")]
         title: String,
     },
-    /// Write a randomly initialised checkpoint (smoke tests before a BC checkpoint exists).
-    RandomCheckpoint {
-        #[arg(long)]
-        out: PathBuf,
-        #[arg(long, value_enum, default_value = "gtrxl")]
-        core: CoreArg,
-        /// 032-R18: include the win_open head (031-R12 surrender check).
-        #[arg(long)]
-        win_open: bool,
-    },
-}
-
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
-enum CoreArg {
-    Lstm,
-    Gtrxl,
-}
-
-/// Model policy options (020-R11). Batch defaults are placeholders until measured (TBD(M6)).
-#[derive(clap::Args)]
-struct ModelArgs {
-    /// Checkpoint folder; relative paths are under URANIUM_SHARED_DIR (061).
-    #[arg(long)]
-    checkpoint: Option<PathBuf>,
-    /// Inference device (default: URANIUM_AGENT_BACKEND, else vulkan).
-    #[arg(long, value_enum)]
-    backend: Option<InferBackend>,
-    #[arg(long, value_enum, default_value = "argmax")]
-    sample: SampleMode,
-    #[arg(long, default_value_t = 32)]
-    max_batch: usize,
-    #[arg(long, default_value_t = 5)]
-    max_wait_ms: u64,
-    /// 030-R10 / E-5: feed last_failed = 0 (evaluation games of a BC checkpoint; BC data never
-    /// has a failed command, see `InferOptions::zero_last_failed`). Off for RL.
-    #[arg(long)]
-    zero_last_failed: bool,
-    /// 031-R12 / 020-R14: surrender mode (`off`, `shadow`: check and record only, `on`: chat and
-    /// leave). Default `shadow` for `serve`, `on` for `scr` (012-R11).
-    #[arg(long, value_enum)]
-    surrender: Option<SurrenderArg>,
-    /// 020-R14: chat line sent before leaving (empty = no chat, at most 79 bytes).
-    #[arg(long, default_value = uranium_agent::infer::DEFAULT_CHAT)]
-    surrender_chat: String,
-}
-
-#[derive(clap::ValueEnum, Clone, Copy, Debug)]
-enum SurrenderArg {
-    Off,
-    Shadow,
-    On,
-}
-
-impl From<SurrenderArg> for uranium_agent::infer::SurrenderMode {
-    fn from(a: SurrenderArg) -> Self {
-        match a {
-            SurrenderArg::Off => Self::Off,
-            SurrenderArg::Shadow => Self::Shadow,
-            SurrenderArg::On => Self::On,
-        }
-    }
-}
-
-/// Starts the inference server for `--checkpoint` (020-R11); `surrender` applies when the flag is
-/// absent. `warmup`: forward every padded entity count up to N_MAX before serving (SC:R realtime).
-fn model_policy(model: &ModelArgs, surrender: SurrenderArg, warmup: bool) -> Result<PolicySpec> {
-    let dir = resolve_checkpoint(model.checkpoint.as_ref().context("a model policy needs --checkpoint")?)?;
-    let mut opts = InferOptions::new(model.backend.map_or_else(InferBackend::from_env, Ok)?);
-    if warmup {
-        opts.warmup_entities = uranium_env::features::N_MAX;
-    }
-    opts.max_batch = model.max_batch.max(1);
-    opts.max_wait = Duration::from_millis(model.max_wait_ms);
-    opts.zero_last_failed = model.zero_last_failed;
-    if model.surrender_chat.len() > uranium_proto::MAX_SURRENDER_CHAT {
-        anyhow::bail!("--surrender-chat is {} bytes, at most {} (020-R14)", model.surrender_chat.len(), uranium_proto::MAX_SURRENDER_CHAT);
-    }
-    let surrender = model.surrender.unwrap_or(surrender);
-    Ok(PolicySpec::Model(InferenceHandle::start(&dir, model.sample, opts)?.with_surrender(surrender.into(), &model.surrender_chat)))
 }
 
 fn main() -> Result<()> {
     load_env();
     match Cli::parse().cmd {
-        Cmd::Serve { listen, policy, out, respond_delay_ms, sessions, model } => {
-            let default = match policy {
-                PolicyKind::ScriptedT0 => PolicySpec::ScriptedT0,
-                PolicyKind::Model => model_policy(&model, SurrenderArg::Shadow, false)?,
-            };
-            let opts = ServeOptions { delay_ms: respond_delay_ms, max_sessions: sessions, ..ServeOptions::new(default) };
+        Cmd::Serve { listen, policy, out, respond_delay_ms, sessions } => {
+            if policy == PolicyKind::Model {
+                bail!("model players run in Python: python -m uranium serve --checkpoint <ckpt> (AMB-000-4)");
+            }
+            let opts = ServeOptions { delay_ms: respond_delay_ms, max_sessions: sessions, ..ServeOptions::new(PolicySpec::ScriptedT0) };
             serve_addr(&listen, opts, out)
         }
-        Cmd::Scr { listen, out, model } => serve_addr(&listen, ServeOptions::new(model_policy(&model, SurrenderArg::On, true)?), out),
         Cmd::Summarize { input, out, title } => summary::summarize(&input, &out, &title),
-        Cmd::RandomCheckpoint { out, core, win_open } => {
-            let kind = match core {
-                CoreArg::Lstm => uranium_model::config::CoreKind::Lstm,
-                CoreArg::Gtrxl => uranium_model::config::CoreKind::Gtrxl,
-            };
-            let cfg = default_config(kind);
-            let cfg = cfg.clone().with_value(cfg.value.clone().with_win_open(win_open));
-            write_random_checkpoint(&out, &cfg, &burn::tensor::Device::flex())?;
-            println!("{}", uranium_agent::infer::checkpoint_id(&out)?);
-            Ok(())
-        }
     }
 }

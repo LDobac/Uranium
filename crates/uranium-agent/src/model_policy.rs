@@ -15,7 +15,7 @@ use uranium_env::features::extract::action_table;
 use uranium_env::maps::{MapFamilies, PrecomputeSource, family_index, live_precompute_for_session, maps_dir};
 use uranium_env::reward::{Outcome, RewardParts, RewardTracker};
 use uranium_env::surrender::{SurrenderJudge, SurrenderMode, rule_holds};
-use uranium_model::HostState;
+use crate::infer::HostState;
 use uranium_proto::{Act, GameInfo, RawFrame};
 
 use crate::infer::{InferSession, InferenceHandle, SampleMode};
@@ -59,7 +59,7 @@ pub struct Decision<'a> {
     pub obs: &'a uranium_env::features::Observation,
     pub action: &'a uranium_env::features::executor::HostAction,
     pub log_prob: f32,
-    pub head_log_prob: [f32; uranium_model::heads::HEADS],
+    pub head_log_prob: [f32; crate::infer::HEADS],
     pub value: [f32; 4],
     /// The executor refused the action (031-R4): no command was sent.
     pub rejected: bool,

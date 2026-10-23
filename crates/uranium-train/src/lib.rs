@@ -10,6 +10,7 @@ pub mod bc;
 pub mod bc_eval;
 pub mod bc_prof;
 pub mod bc_run;
+pub mod burn_infer;
 pub mod ckpt;
 pub mod clip;
 pub mod rl;

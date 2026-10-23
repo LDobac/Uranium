@@ -19,7 +19,8 @@ use anyhow::{Context, Result};
 use burn::module::Module;
 use burn::tensor::Device;
 use serde::{Deserialize, Serialize};
-use uranium_agent::infer::{InferBackend, InferOptions, InferenceHandle, SampleMode};
+use uranium_agent::infer::{InferOptions, InferenceHandle, SampleMode};
+use crate::burn_infer::InferBackend;
 use uranium_agent::model_policy::{LearnerHook, SessionObserver};
 use uranium_agent::{EndBoard, PolicySpec, Routes, T0Build, T0Builds, game_result};
 use uranium_env::features::Strategy;
@@ -93,6 +94,7 @@ struct Shared {
     handles: Vec<InferenceHandle>,
     snapshots: Mutex<SnapshotPool>,
     infer: InferOptions,
+    backend: InferBackend,
     games_csv: Mutex<std::fs::File>,
     agent_steps: AtomicU64,
     games_done: AtomicU64,
@@ -112,14 +114,14 @@ struct SnapshotPool {
 }
 
 impl SnapshotPool {
-    fn handle(&mut self, id: &str, opts: InferOptions) -> Result<InferenceHandle> {
+    fn handle(&mut self, id: &str, opts: InferOptions, backend: InferBackend) -> Result<InferenceHandle> {
         if let Some(i) = self.live.iter().position(|(k, _)| k == id) {
             let e = self.live.remove(i).unwrap();
             self.live.push_back(e.clone());
             return Ok(e.1);
         }
         let dir = self.dirs.get(id).with_context(|| format!("unknown snapshot {id}"))?;
-        let h = InferenceHandle::start(dir, SampleMode::Stochastic, opts)?;
+        let h = crate::burn_infer::start(dir, SampleMode::Stochastic, opts, backend)?;
         self.live.push_back((id.to_string(), h.clone()));
         while self.live.len() > self.cap {
             self.live.pop_front();
@@ -209,7 +211,7 @@ impl LeagueSource {
                 (bridge(Race::Terran), Race::Terran, pick.key.clone())
             }
             Opponent::Snapshot { id } => {
-                let h = s.snapshots.lock().unwrap().handle(id, s.infer)?;
+                let h = s.snapshots.lock().unwrap().handle(id, s.infer, s.backend)?;
                 policies[1] = Some(PolicySpec::Model(h));
                 (bridge(Race::Terran), Race::Terran, id.clone())
             }
@@ -538,7 +540,7 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
     }
 
     // Inference servers start from the learners' current weights (written to the cache).
-    let mut infer = InferOptions::new(args.backend);
+    let mut infer = InferOptions::default();
     infer.max_batch = args.max_batch.max(1);
     infer.max_wait = Duration::from_millis(args.max_wait_ms);
     let infer_root = run.cache_dir().join("infer");
@@ -547,7 +549,7 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
         let dir = infer_root.join(AgentKind::ALL[i].name());
         let meta = CheckpointMeta::new(&net_cfg, fv, av)?;
         checkpoint::save(&dir, &l.net.valid(), &meta)?;
-        let h = InferenceHandle::start(&dir, SampleMode::Stochastic, infer)?;
+        let h = crate::burn_infer::start(&dir, SampleMode::Stochastic, infer, args.backend)?;
         h.swap(l.snapshot(), l.update)?;
         handles.push(h);
     }
@@ -585,6 +587,7 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
         handles: handles.clone(),
         snapshots: Mutex::new(SnapshotPool { dirs: snap_dirs, live: VecDeque::new(), cap: 8 }),
         infer,
+        backend: args.backend,
         games_csv: Mutex::new(games_csv),
         // 042-R12: agent steps continue from the checkpoint (TrainState.step).
         agent_steps: AtomicU64::new(step),

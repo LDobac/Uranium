@@ -10,6 +10,8 @@ pub use uranium_env::actions::ACTION_SCHEMA_VERSION;
 pub use uranium_env::features::FEATURE_SCHEMA_VERSION;
 /// Delay bucket values in frames (031-R11).
 pub use uranium_env::features::DELAY_BUCKETS;
+/// Largest entity count of an observation (030-R7).
+pub use uranium_env::features::N_MAX;
 
 pub const TARGET_NONE: i32 = 0;
 pub const TARGET_UNIT: i32 = 1;

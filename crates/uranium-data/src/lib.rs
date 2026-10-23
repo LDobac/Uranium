@@ -13,6 +13,7 @@ pub mod data;
 pub mod eval;
 pub mod pack;
 pub mod split;
+pub mod state;
 pub mod table;
 #[cfg(feature = "testkit")]
 pub mod testkit;

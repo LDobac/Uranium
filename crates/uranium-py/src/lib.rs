@@ -3,6 +3,8 @@
 //! released and hands each lane group to Python as numpy arrays (ownership moves, no copy), so
 //! the Python trainer reads exactly the batches the Rust code defines.
 
+mod agent;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -109,6 +111,33 @@ impl Feeder {
     }
 }
 
+/// The observation arrays of a host collate in the 030 §1 shapes (ownership moves, no copy).
+pub(crate) fn put_obs(py: Python<'_>, d: &Bound<'_, PyDict>, o: uranium_data::collate::HostObsBatch) -> PyResult<()> {
+    use uranium_data::collate::{ENTITY_CAT, ENTITY_CONT, MAP, SPATIAL, Z_BUILD};
+    let (r, n) = (o.b, o.n);
+    macro_rules! put {
+        ($k:expr, $v:expr, $s:expr) => {
+            d.set_item($k, $v.into_pyarray(py).reshape($s)?)?
+        };
+    }
+    put!("entity_cat", o.entity_cat, vec![r, n, ENTITY_CAT]);
+    put!("entity_cont", o.entity_cont, vec![r, n, ENTITY_CONT]);
+    put!("entity_mask", o.entity_mask, vec![r, n]);
+    put!("entity_cell", o.entity_cell, vec![r, n]);
+    put!("entity_pos", o.entity_pos, vec![r, n, 2]);
+    put!("spatial", o.spatial, vec![r, SPATIAL, MAP, MAP]);
+    put!("scalar", o.scalar, vec![r, o.fs]);
+    put!("scalar_cat", o.scalar_cat, vec![r, 3]);
+    put!("z_build", o.z_build, vec![r, Z_BUILD]);
+    put!("z_units", o.z_units, vec![r, o.u]);
+    put!("z_present", o.z_present, vec![r]);
+    put!("type_mask", o.type_mask, vec![r, o.a]);
+    put!("unit_cap", o.unit_cap, vec![r, n, o.k]);
+    put!("loc_class_mask", o.loc_class_mask, vec![r, o.l, MAP, MAP]);
+    put!("is_building", o.is_building, vec![r, n]);
+    Ok(())
+}
+
 /// One BC batch: B lanes x T steps (041-R2) and the data state after it (061-R10).
 #[pyclass(module = "uranium._core", frozen)]
 struct Batch {
@@ -160,28 +189,14 @@ impl Batch {
         let inner = &self.inner;
         let g = py.detach(move || inner.group(start..end, t, pad, max_select));
         let d = PyDict::new(py);
-        let (o, l, p) = (g.obs, g.labels, g.privileged);
-        let (r, n) = (o.b, o.n);
+        let (l, p) = (g.labels, g.privileged);
+        let (r, n) = (g.obs.b, g.obs.n);
+        put_obs(py, &d, g.obs)?;
         macro_rules! put {
             ($k:expr, $v:expr, $s:expr) => {
                 d.set_item($k, $v.into_pyarray(py).reshape($s)?)?
             };
         }
-        put!("entity_cat", o.entity_cat, vec![r, n, uranium_data::collate::ENTITY_CAT]);
-        put!("entity_cont", o.entity_cont, vec![r, n, uranium_data::collate::ENTITY_CONT]);
-        put!("entity_mask", o.entity_mask, vec![r, n]);
-        put!("entity_cell", o.entity_cell, vec![r, n]);
-        put!("entity_pos", o.entity_pos, vec![r, n, 2]);
-        put!("spatial", o.spatial, vec![r, uranium_data::collate::SPATIAL, uranium_data::collate::MAP, uranium_data::collate::MAP]);
-        put!("scalar", o.scalar, vec![r, o.fs]);
-        put!("scalar_cat", o.scalar_cat, vec![r, 3]);
-        put!("z_build", o.z_build, vec![r, uranium_data::collate::Z_BUILD]);
-        put!("z_units", o.z_units, vec![r, o.u]);
-        put!("z_present", o.z_present, vec![r]);
-        put!("type_mask", o.type_mask, vec![r, o.a]);
-        put!("unit_cap", o.unit_cap, vec![r, n, o.k]);
-        put!("loc_class_mask", o.loc_class_mask, vec![r, o.l, uranium_data::collate::MAP, uranium_data::collate::MAP]);
-        put!("is_building", o.is_building, vec![r, n]);
         put!("action", l.action, vec![r]);
         put!("delay", l.delay, vec![r]);
         put!("queued", l.queued, vec![r]);
@@ -433,7 +448,7 @@ fn feature_dims() -> PyResult<String> {
     serde_json::to_string(&serde_json::json!({
         "entity_cat": c::ENTITY_CAT, "entity_cont": c::ENTITY_CONT, "spatial": c::SPATIAL, "map": c::MAP, "z_build": c::Z_BUILD,
         "actions": d.0, "scalar": d.1, "z_units": d.2, "caps": d.3, "loc_classes": d.4, "privileged": d.5,
-        "delay_buckets": uranium_data::table::DELAY_BUCKETS, "feature_version": uranium_data::table::FEATURE_SCHEMA_VERSION, "action_version": uranium_data::table::ACTION_SCHEMA_VERSION,
+        "delay_buckets": uranium_data::table::DELAY_BUCKETS, "n_max": uranium_data::table::N_MAX, "feature_version": uranium_data::table::FEATURE_SCHEMA_VERSION, "action_version": uranium_data::table::ACTION_SCHEMA_VERSION,
     }))
     .map_err(|e| err(e.into()))
 }
@@ -481,6 +496,12 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Feeder>()?;
     m.add_class::<Batch>()?;
     m.add_class::<EvalStream>()?;
+    m.add_class::<agent::Broker>()?;
+    m.add_function(wrap_pyfunction!(agent::serve, m)?)?;
+    m.add_function(wrap_pyfunction!(agent::plan_models, m)?)?;
+    m.add_function(wrap_pyfunction!(agent::run_plan, m)?)?;
+    m.add_function(wrap_pyfunction!(agent::play_sessions, m)?)?;
+    m.add_function(wrap_pyfunction!(agent::slot_states, m)?)?;
     m.add_function(wrap_pyfunction!(bc_config, m)?)?;
     m.add_function(wrap_pyfunction!(lr_at, m)?)?;
     m.add_function(wrap_pyfunction!(dataset_fingerprint, m)?)?;
