@@ -71,7 +71,7 @@
 - 방법: Burn `bc --steps 0`으로 만든 초기 체크포인트의 가중치를 `tools/burn-parity --export` → `bc_parity.py convert`로 PyTorch 체크포인트로 바꾸고, 두 학습기를 `--init`(step 0, 같은 학습률 일정)으로 같은 S1 데이터(personal shard)에서 500 update씩 돌린다. dropout은 둘 다 0으로 두어 난수 잡음을 없앴다. 설정은 `config/bc.toml`에서 lanes 4, warmup_steps 50만 바꿨다(500 update 안에 최대 학습률에 닿도록).
 - 예상: 두 손실은 float 반올림 차이만 있고, update가 쌓이며 차이가 천천히 커진다.
 - 5 update 시험(10-24 03:0x): 총 손실 상대 차이 update 1 0, 3 3.2e-7, 5 1.9e-6. 같은 5 update에 PyTorch 25초, Burn 110초(시작 시간 포함).
-- 500 update: 03:05 시작.
+- 500 update로 시작했으나(03:05) 사용자 지시("너무 많이 한다. 100번씩만 돌리고 끊어")로 PyTorch ROCm 500(완료), PyTorch CUDA 231, Burn 156에서 멈추고 앞 100 update로 비교했다. 결과는 10절.
 
 ## 7. 추론 이식 (1-7)
 - 구조: `uranium-agent`에서 Burn을 뺐다. 세션 쪽 API(`InferenceHandle`·`open`·`act`·`state`)는 그대로이고, 서버 쪽은 `uranium_agent::broker::Broker`다. Broker는 슬롯·배치 규칙(최대 배치, 활성 세션 전원 대기, `max_wait`)을 지키며 요청을 모으고 host collate한다. Python 모델 스레드(`uranium.agent.infer.InferenceServer`)는 `next()`로 배치를 받아 `[capacity, …]` core 상태(장치에 상주)에서 행을 골라 `act`를 돌리고, `reply()`로 돌려준다. 행동 해석(034 열, END = 패딩 n)은 Rust가 한다. Burn RL용 서버는 `uranium_train::burn_infer`로 옮겨 1-8까지만 쓴다.
@@ -84,3 +84,29 @@
 - 구조: Burn 없는 RL 코드(리그·궤적·세그먼트 큐·리턴 타깃·실행 루프)를 새 crate `uranium-league`로 옮겼다. 실행 루프(게임 배정, 큐, weight push, 스냅샷, 체크포인트, 061 잠금)는 Rust에 그대로 두고, 학습기는 trait `RlLearners` 뒤의 Python 객체(`uranium.rl.run.Learners`)가 맡는다. 세그먼트 묶음은 Rust가 host collate해 numpy로 넘긴다(`SegmentBatch.group`). Python 학습기(`uranium.rl.learner`)는 Burn 학습기와 같은 식: V-trace+UPGO 또는 PPO(GAE), 보상 성분별 value, win_open(v-trace 승리 타깃, 042-R13), 사용 헤드 entropy, 고정 BC 망과의 헤드별 정확한 KL(AMB-042-9), 전역 clip(win_open 분리), Adam. 리턴 타깃은 lane 묶음 torch 구현이고 Rust `returns.rs`와 대조한다. Burn RL 경로(`uranium-train rl`, Burn 추론 서버)는 지웠다.
 - 테스트: `uranium-league` 단위 테스트 23개(리그·궤적·리턴·실행 루프), pytest `test_rl.py` 8개(리턴 타깃 = Rust 기준, KL 일정, on-policy update: 학습 스텝 수·자기 KL 0·ρ 1·가중치 변화·두 번째 KL > 0, PPO, BC 리셋, 세그먼트 묶음 배치). asus에서 통과(10-24 03:3x).
 - 스모크(10-24 03:39~03:55, asus CPU, random-init BC 대신, lanes 2·seq_len 8·Main 스냅샷 10 update마다, 로컬 공유 폴더): 30 update → 정상 종료·최종 체크포인트 push → 재개(update 31부터) 30 update → 재개 12분(252 update, 누적 312). 리그 스냅샷 6개 등록, 자기 스냅샷 상대 게임(스냅샷 추론 서버를 Python이 동적으로 만듦), 끝난 게임 1판(T0에 패, r_win -1이 종료 세그먼트에 반영, 승률표 기록). C0·C1은 Main만 학습하므로(042-R7) exploiter update는 이 스모크에서 나오지 않는다. 산출물 asus `~/rlsmoke/`.
+
+## 9. CUDA 정밀도 실측 (10-24 04:1x, 학습 PC Windows CUDA, PyTorch 2.14.1+cu130)
+- 배경: 학습 PC에서 `uranium._core`를 처음 빌드하고 pytest를 돌리니 CPU 대 CUDA 비교(032-AC1·AC8) tiny-gtrxl이 gradient 상대 오차 0.23으로 실패했다. 테스트가 CUDA에서 TF32를 켜고 있었다.
+- 같은 가중치·입력(Burn 동등성 dump)으로 CPU f32와 CUDA 세 설정을 비교했다.
+
+| 설정 | forward 최대 차이 | gradient 상대 오차 중앙값 / 최대 | 손실 상대 차이 |
+|---|---|---|---|
+| f32(TF32 끔) | ≤ 4e-5 | 2e-5 / 3e-4 | 0 |
+| TF32 | ≤ 3.4e-3 | 1e-3 / 0.04~0.23(GTrXL core FFN) | 약 3e-5 |
+| bf16 autocast(032-R8 CUDA 학습·추론 설정) | ≤ 0.028 | 1.5% / 12~22% | 약 3e-4 |
+
+- 결론: 이식 수식은 CUDA에서도 맞다(f32는 ROCm과 같은 수준). bf16의 gradient 오차는 bf16 학습에서 흔한 수준이고, 실제 학습 영향은 BC 동등성 곡선으로 본다(10절).
+- 테스트 수정: f32 비교는 두 백엔드 모두 TF32 없이 forward 1e-4·gradient 1e-3. CUDA bf16은 별도 테스트로 잠정 허용치(측정의 약 2배: forward 0.06, gradient 중앙값 3%, 손실 상대 1e-3, TBD(M6))를 둔다. 학습 PC에서 tiny·full 4개 dump 모두 통과.
+- 학습 PC 환경: scoop `uv` 0.13.5, Python 3.14.9, worktree `.venv`. pytest 전체(CPU) 46 통과.
+
+## 10. BC 동등성 결과 (1-6, 10-24 04:2x, 앞 100 update)
+- 같은 초기 가중치(Burn step 0)·같은 데이터·dropout 0, 설정은 `config/bc.toml`에서 lanes 4·warmup 50만 바꿈. update당 시간: PyTorch ROCm f32 3.4초, PyTorch CUDA bf16(학습 PC) 1.5초, Burn Vulkan 11초.
+
+| 비교 | update 1~5 상대 차이 | 25 update 창 평균 손실 상대 차이(최대 창) |
+|---|---|---|
+| Burn 대 PyTorch ROCm f32 | 0 ~ 1.9e-6 | 2.3e-4(76~100) |
+| Burn 대 PyTorch CUDA bf16 | 1.2e-4 ~ 4.5e-4 | 3.4e-3(76~100) |
+| PyTorch ROCm f32 대 CUDA bf16 | — | 3.6e-3 |
+
+- 결론: ROCm f32는 Burn과 float 반올림 누적 수준(100 update 뒤 0.02%)으로 같다. CUDA bf16도 100 update 동안 0.34% 안에 있어 학습 곡선을 바꾸지 않는다. 손실은 모두 유한. 032-AC10(BC)과 계획 1-6을 통과로 본다.
+- 산출물: bc250_1 `~/parity_bc/`(torch.log, burn.log, torch_cuda.log, 초기 체크포인트·변환본).

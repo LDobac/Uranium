@@ -50,8 +50,8 @@ def losses(path: str) -> dict[int, dict]:
 
 def compare(a) -> None:
     b, t = losses(a.burn), losses(a.torch)
-    steps = sorted(set(b) & set(t))
-    print(f"updates: burn {len(b)}, torch {len(t)}, common {len(steps)}")
+    steps = sorted(s for s in set(b) & set(t) if a.max_step is None or s <= a.max_step)
+    print(f"updates: burn {len(b)}, torch {len(t)}, compared {len(steps)}")
     keys = ["total", "action", "delay", "queued", "selected", "target_unit", "target_loc", "value"]
     rel = lambda x, y: abs(x - y) / max(abs(y), 1e-6)  # noqa: E731
     for s in steps[:5]:
@@ -86,6 +86,7 @@ def main() -> None:
     m.add_argument("torch")
     m.add_argument("--window", type=int, default=50)
     m.add_argument("--first", type=int, default=10)
+    m.add_argument("--max-step", type=int, help="compare updates 1..N only")
     m.set_defaults(fn=compare)
     a = p.parse_args()
     a.fn(a)
