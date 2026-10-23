@@ -5,7 +5,7 @@
 
 ## 진행 상황
 - 시간순 기록: `reports/timeline.md`
-- BC 본학습(GTrXL) 진행 중: `reports/m6_pre_bc_review.md` I절, 실행 안내 루트 `README.md`
+- BC 본학습(GTrXL, 10-23 시작 후 중지): `reports/m6_pre_bc_review.md` I절, 실행 안내 루트 `README.md`
 - 마일스톤별 결과: `reports/` (m2~m7)
 - M7 SC:R 남은 과제: `reports/m7_scr_bridge.md` 4절
 
