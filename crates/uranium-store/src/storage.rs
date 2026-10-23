@@ -1137,3 +1137,23 @@ pub fn write_worker(cfg: &StorageConfig, priority: i32, backend: &str, run: Opti
 pub fn read_worker(cfg: &StorageConfig, host: &str) -> Option<WorkerStatus> {
     serde_json::from_slice(&fs::read(cfg.shared.join("workers").join(format!("{host}.json"))).ok()?).ok()
 }
+
+/// 041-R9 data folders of a BC command: `datasets` under `<URANIUM_SHARED_DIR>/datasets/` (with a
+/// manifest: pulled into the cache, or verified in place with URANIUM_SHARED_LOCAL=1, 061-R11-1,
+/// R12), deduplicated and sorted, then the `shards` folders read as they are. The game order
+/// (041-R13) and a run's data position (061-R10) follow the files' canonical keys, not this order.
+pub fn dataset_dirs(datasets: &[PathBuf], shards: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    ensure!(!datasets.is_empty() || !shards.is_empty(), "pass --dataset or --shards");
+    let mut dirs = Vec::new();
+    if !datasets.is_empty() {
+        let cfg = StorageConfig::from_env()?;
+        let mut names = datasets.to_vec();
+        names.sort();
+        names.dedup();
+        for d in &names {
+            dirs.push(open_dataset(&cfg, d)?);
+        }
+    }
+    dirs.extend(shards.iter().cloned());
+    Ok(dirs)
+}

@@ -7,8 +7,10 @@
 pub use uranium_store::elog;
 
 pub mod bc;
+pub mod bc_run;
 pub mod collate;
 pub mod data;
+pub mod eval;
 pub mod pack;
 pub mod split;
 pub mod table;

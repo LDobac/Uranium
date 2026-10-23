@@ -822,17 +822,20 @@ impl Batch {
         let mut value_w = Vec::with_capacity(b * t);
         let mut keep = Vec::with_capacity(b);
         let mut restored = Vec::new();
+        // A drained lane (evaluation, `Feeder::drain`) takes another lane's first step at weight 0.
+        let filler = self.chunks.iter().position(|c| !c.is_empty()).expect("a batch has a lane with steps");
         for l in lanes {
-            let chunk = &self.chunks[l];
+            let (src, chunk) = if self.chunks[l].is_empty() { (filler, &self.chunks[filler]) } else { (l, &self.chunks[l]) };
+            let real = self.chunks[l].len();
             keep.push(!self.fresh[l]);
             for k in 0..t {
-                let i = k.min(chunk.len() - 1);
+                let i = k.min(chunk.len() - 1).min(real.saturating_sub(1));
                 let s = &chunk[i];
                 if !self.planes.is_empty() {
-                    restored.push(self.planes[l][i].restore(&s.obs));
+                    restored.push(self.planes[src][i].restore(&s.obs));
                 }
                 rows.push(s);
-                let w = if k < chunk.len() { s.weight } else { 0.0 };
+                let w = if k < real { s.weight } else { 0.0 };
                 weights.push(w);
                 results.push(self.results[l]);
                 value_w.push(w * self.value_weights[l]);
@@ -845,5 +848,26 @@ impl Batch {
         let privs: Vec<_> = rows.iter().map(|s| &s.privileged).collect();
         let privileged = crate::collate::priv_batch(&privs);
         HostGroup { b, t, obs, labels, privileged, weights, results, value_w, keep }
+    }
+
+    /// Steps per lane (0 = drained lane, evaluation only).
+    pub fn lane_steps(&self) -> Vec<usize> {
+        self.chunks.iter().map(|c| c.len()).collect()
+    }
+
+    /// `bc-eval` (041-AC1) label facts the collated labels do not keep, rows as in
+    /// [`Batch::group`]: whether the label has a target location, and the full selection length
+    /// (the collate cuts it at `max_select`).
+    pub fn label_extras(&self, lanes: std::ops::Range<usize>, t: usize) -> (Vec<bool>, Vec<i32>) {
+        let (mut has_loc, mut sel_len) = (Vec::new(), Vec::new());
+        for l in lanes {
+            let c = &self.chunks[l];
+            for k in 0..t {
+                let lab = c.get(k).map(|s| &s.label);
+                has_loc.push(lab.is_some_and(|x| x.target_loc.is_some()));
+                sel_len.push(lab.map_or(0, |x| x.selected.len() as i32));
+            }
+        }
+        (has_loc, sel_len)
     }
 }

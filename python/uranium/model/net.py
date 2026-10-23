@@ -71,8 +71,26 @@ class UraniumNet(nn.Module):
         self.table = self.table.to(dev)
         return out
 
-    def encode(self, obs: dict):
-        e, e_pool = self.entity(obs)
+    def entity_chunked(self, obs: dict, rows: int):
+        """041-R17: the entity encoder over `rows`-row chunks, each recomputed in the backward
+        pass (its dropout draws replayed), so no chunk's activations stay alive. Same values as
+        one pass; device memory only."""
+        from torch.utils.checkpoint import checkpoint
+
+        n = obs["entity_cat"].shape[0]
+        es, pools = [], []
+        for s in range(0, n, rows):
+            sub = {k: v[s:s + rows] for k, v in obs.items()}
+            e, p = checkpoint(self.entity, sub, use_reentrant=False, preserve_rng_state=True)
+            es.append(e)
+            pools.append(p)
+        return torch.cat(es, 0), torch.cat(pools, 0)
+
+    def encode(self, obs: dict, entity_chunk: int = 0):
+        if entity_chunk and torch.is_grad_enabled() and obs["entity_cat"].shape[0] > entity_chunk:
+            e, e_pool = self.entity_chunked(obs, entity_chunk)
+        else:
+            e, e_pool = self.entity(obs)
         sp = self.spatial(obs, e)
         sc = self.scalar(obs)
         core_in = torch.cat([e_pool, sp["pool"].to(e_pool.dtype), sc["c"].to(e_pool.dtype)], 1)
@@ -96,9 +114,10 @@ class UraniumNet(nn.Module):
             "value": value, "win_open": win_open, "state": state,
         }
 
-    def forward_seq(self, obs: dict, labels: dict, priv, s0, t: int) -> dict:
-        """Teacher-forced training pass over `t` steps per sequence; rows b-major (032 §6)."""
-        core_in, e, sp, sc = self.encode(obs)
+    def forward_seq(self, obs: dict, labels: dict, priv, s0, t: int, entity_chunk: int = 0) -> dict:
+        """Teacher-forced training pass over `t` steps per sequence; rows b-major (032 §6).
+        `entity_chunk` > 0: the entity encoder recomputed per row chunk (041-R17)."""
+        core_in, e, sp, sc = self.encode(obs, entity_chunk)
         bt, d = core_in.shape
         assert t > 0 and bt % t == 0, "batch rows must be B*T"
         h, state = self.core.forward_seq(core_in.view(bt // t, t, d), s0)

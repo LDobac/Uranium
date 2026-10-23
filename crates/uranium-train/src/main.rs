@@ -319,22 +319,9 @@ struct DataArgs {
 }
 
 impl DataArgs {
+    /// 041-R9: pulled or verified datasets, then the shard folders ([`uranium_train::storage::dataset_dirs`]).
     fn dirs(&self) -> Result<Vec<PathBuf>> {
-        anyhow::ensure!(!self.dataset.is_empty() || !self.shards.is_empty(), "pass --dataset or --shards");
-        let mut dirs = Vec::new();
-        if !self.dataset.is_empty() {
-            let cfg = uranium_train::storage::StorageConfig::from_env()?;
-            // Deduplicated. The game order (041-R13) and a run's data position (061-R10) follow
-            // the files' canonical keys (`ShardSource::from_dirs`), not this folder order.
-            let mut names = self.dataset.clone();
-            names.sort();
-            names.dedup();
-            for d in &names {
-                dirs.push(uranium_train::storage::open_dataset(&cfg, d)?);
-            }
-        }
-        dirs.extend(self.shards.iter().cloned());
-        Ok(dirs)
+        uranium_train::storage::dataset_dirs(&self.dataset, &self.shards)
     }
 }
 

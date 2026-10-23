@@ -37,6 +37,13 @@ def main(argv: list[str] | None = None) -> int:
     fd.add_argument("--pack", action="store_true")
     fd.add_argument("--synthetic-maps", action="store_true")
     fd.set_defaults(fn=feed_digest)
+    from uranium.bc import eval as bc_eval
+    from uranium.bc import profile as bc_profile
+    from uranium.bc import run as bc_run
+
+    bc_run.add_parser(sub)
+    bc_eval.add_parser(sub)
+    bc_profile.add_parser(sub)
     a = p.parse_args(argv)
     return a.fn(a)
 

@@ -17,18 +17,13 @@ use uranium_model::{CoreInit, UraniumNet};
 use crate::bc::{BcConfig, Prefetch, RunIdent, Trainer};
 use crate::ckpt;
 use crate::data::{MapStore, ShardSource};
-use crate::storage::{LockStatus, PushOutcome, Run, StorageConfig, TakeOver};
+use crate::storage::{LockStatus, PushOutcome, Run, StorageConfig};
 
 /// What a `bc` invocation trains (041-R4, R5, R13); defined with the data side (AMB-000-4).
 pub use uranium_data::bc::BcStage;
 
-/// Where checkpoints go.
-pub enum BcOut {
-    /// A local folder: `step_<n>/` and `last/`.
-    Local(PathBuf),
-    /// 061 run `<shared>/checkpoints/<run>/` (lock, `ckpt-<step>/`, `LATEST`).
-    Run { id: String, take: TakeOver },
-}
+/// Output, exit kinds and checkpoint helpers shared with the PyTorch trainer's loop (AMB-000-4).
+pub use uranium_data::bc_run::{BcExit, BcOut, EXIT_BUSY, EXIT_YIELDED, resolve_checkpoint, resolve_init, run_checkpoint};
 
 pub struct BcArgs {
     pub dirs: Vec<PathBuf>,
@@ -48,26 +43,6 @@ pub struct BcArgs {
     pub stop: Arc<AtomicUsize>,
 }
 
-/// How a `bc` run ended (the process exit code, see `main`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BcExit {
-    /// The stage (or `--steps`) is complete; a run gets `DONE` (061-R13). Exit 0.
-    Done,
-    /// Ctrl+C clean stop after a checkpoint. Exit 0.
-    Stopped,
-    /// Lock taken over by another PC: nothing pushed (061-R5). Exit 0.
-    LockLost,
-    /// Gave the run to the host that asked (061-R14) after a checkpoint that was pushed. Exit 76.
-    Yielded,
-}
-
-/// 061-R5: exit code of a run that could not take its lock: another PC's lock (fresh or expired,
-/// without `--take-over`), a lost race for a new lock, a lock that changed since a worker saw it
-/// expire, or a run reserved by another host's yield request (R14). Watchdogs never restart it.
-pub const EXIT_BUSY: i32 = 75;
-/// Exit code after yielding the run (061-R14).
-pub const EXIT_YIELDED: i32 = 76;
-
 /// Precision actually trained in (032-R8), for the device log.
 fn precision(backend: &str) -> &'static str {
     match backend {
@@ -76,29 +51,6 @@ fn precision(backend: &str) -> &'static str {
     }
 }
 
-
-/// 061-R13 (H-1): the `--init` weights. A 061 run folder (it has `LATEST` or `DONE`) must be
-/// finished: its `DONE` names the final checkpoint. A run still training (or given up) is
-/// refused, so S2 never starts from S1's intermediate weights. Any other folder is a checkpoint.
-pub fn resolve_init(dir: &Path) -> Result<PathBuf> {
-    let done = dir.join("DONE");
-    if dir.join("LATEST").is_file() || done.exists() {
-        let name = std::fs::read_to_string(&done).with_context(|| format!("--init run {} is not finished (no DONE); S2 waits for it (061-R13)", dir.display()))?;
-        return Ok(dir.join(name.trim()));
-    }
-    Ok(dir.to_path_buf())
-}
-
-/// A checkpoint folder, or the one `LATEST` names in a 061 run folder (evaluation of a run in
-/// progress is fine; `--init` uses [`resolve_init`]).
-pub fn resolve_checkpoint(dir: &Path) -> Result<PathBuf> {
-    let latest = dir.join("LATEST");
-    if latest.is_file() {
-        let name = std::fs::read_to_string(&latest)?.trim().to_string();
-        return Ok(dir.join(name));
-    }
-    Ok(dir.to_path_buf())
-}
 
 pub fn run<C: CoreInit>(args: BcArgs, dev: Device) -> Result<BcExit> {
     let cfg = BcConfig::load(&args.config)?.for_stage(args.stage);
@@ -416,33 +368,5 @@ fn save<C: CoreInit>(t: &Trainer<C>, args: &BcArgs, run: &mut Option<Run>, last:
     };
     // 061-R8 (C-3): disk usage at every checkpoint.
     check_disks(args, run);
-    Ok(out)
-}
-
-/// One checkpoint of a run at `step`: `write` fills the stage folder, then seal → push (061-R4)
-/// → prune. B-8: when `step` was already sealed in this session (`sealed_at`, e.g. a time
-/// checkpoint whose push was deferred right before Ctrl+C), it is not written again (a second copy
-/// differs in its lineage, and a share that already got the first one would refuse it forever);
-/// its push is retried instead. B-7: a failed prune is only logged.
-pub fn run_checkpoint(r: &mut Run, step: u64, sealed_at: &mut Option<usize>, write: impl FnOnce(&Path) -> Result<()>) -> Result<PushOutcome> {
-    let out = if *sealed_at == Some(step as usize) {
-        crate::elog!("[bc] {} is already written: pushing it again instead of writing it twice (B-8)", crate::storage::ckpt_name(step));
-        r.push(step)?
-    } else {
-        let dir = r.stage_dir(step)?;
-        write(&dir)?;
-        r.seal(step)?;
-        *sealed_at = Some(step as usize);
-        r.push(step)?
-    };
-    crate::elog!("[bc] checkpoint {} {:?}", crate::storage::ckpt_name(step), out);
-    if out == PushOutcome::Pushed {
-        // B-7 / 061-R6: a failed delete is a warning; the run goes on.
-        match r.prune() {
-            Ok(0) => {}
-            Ok(n) => crate::elog!("[bc] prune: {n} checkpoint folder(s) not deleted, left for the next prune (061-R6)"),
-            Err(e) => crate::elog!("[bc] WARNING: prune failed ({e:#}); training goes on (061-R6)"),
-        }
-    }
     Ok(out)
 }

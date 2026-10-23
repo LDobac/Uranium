@@ -5,6 +5,12 @@ use anyhow::{Result, ensure};
 use serde::Serialize;
 use uranium_env::actions::{ActionTable, CAPABILITIES, LOC_CLASSES, TargetKind};
 
+/// Schema versions stored with the weights (032-R6) and checked on load.
+pub use uranium_env::actions::ACTION_SCHEMA_VERSION;
+pub use uranium_env::features::FEATURE_SCHEMA_VERSION;
+/// Delay bucket values in frames (031-R11).
+pub use uranium_env::features::DELAY_BUCKETS;
+
 pub const TARGET_NONE: i32 = 0;
 pub const TARGET_UNIT: i32 = 1;
 pub const TARGET_LOC: i32 = 2;

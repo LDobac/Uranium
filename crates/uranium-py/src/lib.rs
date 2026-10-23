@@ -9,8 +9,10 @@ use std::sync::Arc;
 use numpy::{IntoPyArray, PyArrayMethods};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyTracebackMethods};
 use uranium_data::bc::{self, BcConfig, BcStage, FeedState, Prefetch};
+use uranium_data::bc_run::{self, BcExit, BcOut, BcRunArgs, BcTrainer, Start};
+use uranium_store::storage::{self, TakeOver};
 use uranium_data::data::{MapStore, ShardSource};
 
 fn err(e: anyhow::Error) -> PyErr {
@@ -132,6 +134,18 @@ impl Batch {
         self.inner.value_valid()
     }
 
+    /// Steps per lane (0 = a drained lane, evaluation only).
+    fn lane_steps(&self) -> Vec<usize> {
+        self.inner.lane_steps()
+    }
+
+    /// `bc-eval` label facts per row of `group(start, end, t, ..)`: (has target location,
+    /// full selection length) as numpy arrays.
+    fn label_extras<'py>(&self, py: Python<'py>, start: usize, end: usize, t: usize) -> (Bound<'py, numpy::PyArray1<bool>>, Bound<'py, numpy::PyArray1<i32>>) {
+        let (a, b) = self.inner.label_extras(start..end, t);
+        (a.into_pyarray(py), b.into_pyarray(py))
+    }
+
     /// `FeedState` JSON after this batch (saved in checkpoints, 061-R10).
     fn state_json(&self) -> PyResult<String> {
         serde_json::to_string(&self.inner.state).map_err(|e| err(e.into()))
@@ -186,6 +200,192 @@ impl Batch {
     }
 }
 
+/// `bc-eval` games and the 041-AC4 surrender replay ([`uranium_data::eval::EvalStream`]).
+#[pyclass(module = "uranium._core", unsendable)]
+struct EvalStream {
+    inner: uranium_data::eval::EvalStream,
+}
+
+#[pymethods]
+impl EvalStream {
+    /// `split`: train / val / test; `games`: N games by the fixed-seed shuffle (032-R17 ②), else
+    /// every game; `has_open`: replay the surrender check with the win_open head (032-R18).
+    #[new]
+    #[pyo3(signature = (config, dirs, split = "test", games = None, seed = 1, has_open = false, maps_dir = None, synthetic_maps = false))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(py: Python<'_>, config: PathBuf, dirs: Vec<PathBuf>, split: &str, games: Option<usize>, seed: u64, has_open: bool, maps_dir: Option<PathBuf>, synthetic_maps: bool) -> PyResult<Self> {
+        use uranium_data::split::Split;
+        let split = match split {
+            "train" => Split::Train,
+            "val" => Split::Val,
+            "test" => Split::Test,
+            _ => return Err(PyValueError::new_err(format!("split {split:?}: expected train, val or test"))),
+        };
+        let cfg = BcConfig::load(&config).map_err(err)?;
+        let maps = match (synthetic_maps, maps_dir) {
+            (true, _) => Some(Arc::new(MapStore::synthetic())),
+            (false, Some(d)) => Some(Arc::new(MapStore::dir(d))),
+            (false, None) => None,
+        };
+        let sel = uranium_data::eval::EvalSelection { split, games, seed };
+        let inner = py.detach(move || uranium_data::eval::EvalStream::new(&dirs, &cfg, sel, maps, has_open)).map_err(err)?;
+        Ok(Self { inner })
+    }
+
+    /// The next batch, `None` once every lane is drained.
+    fn next(&mut self, py: Python<'_>) -> PyResult<Option<Batch>> {
+        let inner = &mut self.inner;
+        let b = py.detach(move || inner.next()).map_err(err)?;
+        Ok(b.map(|inner| Batch { inner }))
+    }
+
+    /// Feeds the win_open output of lanes `start..end` (rows lane * t + step) to the surrender
+    /// replay and the win_open MSE.
+    fn decide(&mut self, batch: &Batch, start: usize, end: usize, t: usize, open: numpy::PyReadonlyArray1<'_, f32>) -> PyResult<()> {
+        let open = open.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if open.len() != (end - start) * t {
+            return Err(PyValueError::new_err(format!("win_open has {} rows, expected {}", open.len(), (end - start) * t)));
+        }
+        self.inner.decide(&batch.inner, start..end, t, open);
+        Ok(())
+    }
+
+    #[getter]
+    fn games(&self) -> usize {
+        self.inner.games()
+    }
+
+    /// JSON {win_open_mse, surrender} (null without the head); ends the open games.
+    fn finish(&mut self) -> PyResult<String> {
+        let (mse, sur) = self.inner.finish();
+        serde_json::to_string(&serde_json::json!({ "win_open_mse": mse, "surrender": sur })).map_err(|e| err(e.into()))
+    }
+}
+
+/// A Python exception as an error of the Rust loop, with its traceback.
+fn py_error(py: Python<'_>, e: PyErr) -> anyhow::Error {
+    let tb = e.traceback(py).and_then(|t| t.format().ok()).unwrap_or_default();
+    anyhow::anyhow!("{tb}{e}")
+}
+
+/// The Python trainer object (`uranium.bc.trainer`) behind [`BcTrainer`].
+struct PyTrainer(Py<PyAny>);
+
+impl BcTrainer for PyTrainer {
+    fn train_batch(&mut self, batch: bc::Batch, lr: f64, step: usize) -> anyhow::Result<serde_json::Value> {
+        Python::attach(|py| {
+            let b = Py::new(py, Batch { inner: batch }).map_err(|e| py_error(py, e))?;
+            let out = self.0.call_method1(py, "train_batch", (b, lr, step)).map_err(|e| py_error(py, e))?;
+            let js: String = out.extract(py).map_err(|e| py_error(py, e))?;
+            Ok(serde_json::from_str(&js)?)
+        })
+    }
+
+    fn save(&mut self, dir: &std::path::Path, train: &serde_json::Value) -> anyhow::Result<()> {
+        Python::attach(|py| {
+            self.0.call_method1(py, "save", (dir.to_path_buf(), train.to_string())).map_err(|e| py_error(py, e))?;
+            Ok(())
+        })
+    }
+}
+
+/// 041 / 061: one BC stage with the Rust run loop ([`bc_run::run`]): data thread, schedule,
+/// checkpoints, run lock, heartbeat, push, yield and resume. `make(config_json, start, dir,
+/// entity_chunk)` builds the trainer once the start point is known (`start`: "new", "resume" or
+/// "init"; `dir` the checkpoint for the last two). Returns how the run ended: "done", "stopped",
+/// "lock_lost", "yielded" (exit 76) or "busy" (the lock is not ours, exit 75).
+#[pyfunction]
+#[pyo3(signature = (make, config, stage = "s1", out = None, run = None, take_over = false, take_over_if = None, datasets = Vec::new(), shards = Vec::new(), steps = None, resume = None, init = None, backend = "cpu", precision = "f32", core = "gtrxl", maps_dir = None, synthetic_maps = false))]
+#[allow(clippy::too_many_arguments)]
+fn run_bc(
+    py: Python<'_>,
+    make: Py<PyAny>,
+    config: PathBuf,
+    stage: &str,
+    out: Option<PathBuf>,
+    run: Option<String>,
+    take_over: bool,
+    take_over_if: Option<String>,
+    datasets: Vec<PathBuf>,
+    shards: Vec<PathBuf>,
+    steps: Option<usize>,
+    resume: Option<PathBuf>,
+    init: Option<PathBuf>,
+    backend: &str,
+    precision: &str,
+    core: &str,
+    maps_dir: Option<PathBuf>,
+    synthetic_maps: bool,
+) -> PyResult<&'static str> {
+    let stage = stage_of(stage)?;
+    let out = match (out, run) {
+        (Some(o), None) => BcOut::Local(o),
+        (None, Some(id)) => {
+            let take = match (take_over, take_over_if) {
+                (_, Some(seen)) => TakeOver::IfUnchanged(serde_json::from_str(&seen).map_err(|e| PyValueError::new_err(format!("take_over_if: {e}")))?),
+                (true, None) => TakeOver::Force,
+                (false, None) => TakeOver::No,
+            };
+            BcOut::Run { id, take }
+        }
+        _ => return Err(PyValueError::new_err("pass exactly one of out or run")),
+    };
+    if resume.is_some() && (init.is_some() || matches!(out, BcOut::Run { .. })) {
+        return Err(PyValueError::new_err("resume is for local runs without init (a run resumes from LATEST)"));
+    }
+    let stop = uranium_store::stop_state().unwrap_or_default();
+    let maps = match (synthetic_maps, maps_dir) {
+        (true, _) => Some(Arc::new(MapStore::synthetic())),
+        (false, Some(d)) => Some(Arc::new(MapStore::dir(d))),
+        (false, None) => None,
+    };
+    let (backend, precision, core) = (backend.to_string(), precision.to_string(), core.to_string());
+    let res = py.detach(move || -> anyhow::Result<BcExit> {
+        let dirs = storage::dataset_dirs(&datasets, &shards)?;
+        let args = BcRunArgs { dirs, out, config, stage, stop_at: steps, resume, init, backend, precision, core, stop, maps };
+        bc_run::run(args, |cfg, start, entity_chunk| {
+            let cfg_json = serde_json::to_string(cfg)?;
+            let (kind, dir) = match start {
+                Start::New => ("new", None),
+                Start::Resume(d) => ("resume", Some(d.to_path_buf())),
+                Start::Init(d) => ("init", Some(d.to_path_buf())),
+            };
+            Python::attach(|py| {
+                let t = make.call1(py, (cfg_json, kind, dir, entity_chunk)).map_err(|e| py_error(py, e))?;
+                Ok(Box::new(PyTrainer(t)) as Box<dyn BcTrainer>)
+            })
+        })
+    });
+    match res {
+        Ok(BcExit::Done) => Ok("done"),
+        Ok(BcExit::Stopped) => Ok("stopped"),
+        Ok(BcExit::LockLost) => Ok("lock_lost"),
+        Ok(BcExit::Yielded) => Ok("yielded"),
+        Err(e) if e.downcast_ref::<storage::LockBusy>().is_some() => {
+            uranium_data::elog!("{e:#}");
+            Ok("busy")
+        }
+        // Ctrl+C during the dataset pull: no lock yet, a clean stop (042-R10).
+        Err(e) if e.downcast_ref::<uranium_store::Interrupted>().is_some() => {
+            uranium_data::elog!("[bc] {e:#}");
+            Ok("stopped")
+        }
+        Err(e) => Err(err(e)),
+    }
+}
+
+/// 041-R9 data folders: `datasets` pulled or verified (061-R11-1, R12), then `shards` as they are.
+#[pyfunction]
+fn dataset_dirs(py: Python<'_>, datasets: Vec<PathBuf>, shards: Vec<PathBuf>) -> PyResult<Vec<PathBuf>> {
+    py.detach(move || storage::dataset_dirs(&datasets, &shards)).map_err(err)
+}
+
+/// Checkpoint folder of `dir`: itself, or the one `LATEST` names in a 061 run folder.
+#[pyfunction]
+fn resolve_checkpoint(dir: PathBuf) -> PyResult<PathBuf> {
+    bc_run::resolve_checkpoint(&dir).map_err(err)
+}
+
 /// Effective config of `stage` as JSON and its fingerprint (B-3).
 #[pyfunction]
 #[pyo3(signature = (config, stage = "s1"))]
@@ -233,6 +433,7 @@ fn feature_dims() -> PyResult<String> {
     serde_json::to_string(&serde_json::json!({
         "entity_cat": c::ENTITY_CAT, "entity_cont": c::ENTITY_CONT, "spatial": c::SPATIAL, "map": c::MAP, "z_build": c::Z_BUILD,
         "actions": d.0, "scalar": d.1, "z_units": d.2, "caps": d.3, "loc_classes": d.4, "privileged": d.5,
+        "delay_buckets": uranium_data::table::DELAY_BUCKETS, "feature_version": uranium_data::table::FEATURE_SCHEMA_VERSION, "action_version": uranium_data::table::ACTION_SCHEMA_VERSION,
     }))
     .map_err(|e| err(e.into()))
 }
@@ -279,6 +480,7 @@ fn write_test_shards(root: PathBuf, kind: &str, per_file: usize) -> PyResult<()>
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Feeder>()?;
     m.add_class::<Batch>()?;
+    m.add_class::<EvalStream>()?;
     m.add_function(wrap_pyfunction!(bc_config, m)?)?;
     m.add_function(wrap_pyfunction!(lr_at, m)?)?;
     m.add_function(wrap_pyfunction!(dataset_fingerprint, m)?)?;
@@ -289,5 +491,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(install_stop_handler, m)?)?;
     m.add_function(wrap_pyfunction!(stop_requested, m)?)?;
     m.add_function(wrap_pyfunction!(write_test_shards, m)?)?;
+    m.add_function(wrap_pyfunction!(run_bc, m)?)?;
+    m.add_function(wrap_pyfunction!(resolve_checkpoint, m)?)?;
+    m.add_function(wrap_pyfunction!(dataset_dirs, m)?)?;
     Ok(())
 }

@@ -49,6 +49,12 @@ pub fn stop_requested() -> bool {
     STOP.get().is_some_and(|s| stopping(s))
 }
 
+/// The installed Ctrl+C state, `None` before [`install_stop_handler`] (the Python entrypoints
+/// install it first, then hand it to the run loop).
+pub fn stop_state() -> Option<std::sync::Arc<std::sync::atomic::AtomicUsize>> {
+    STOP.get().cloned()
+}
+
 /// A long step (dataset pull) left off at Ctrl+C before any lock was taken; nothing to release.
 /// The pull resumes where it stopped next time (061-R11-2).
 #[derive(Debug)]
