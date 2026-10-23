@@ -105,3 +105,15 @@ def test_bias_grad_index_add_equals_embedding(group, monkeypatch):
     assert grads["index_add"]["bias_table"].abs().sum() > 0
     for k, g in grads["embedding"].items():
         assert torch.allclose(grads["index_add"][k], g, atol=1e-6, rtol=1e-4), k
+
+
+def test_apply_malloc_threshold(monkeypatch):
+    """URANIUM_MALLOC_MMAP_THRESHOLD: set through mallopt on Linux glibc, ignored elsewhere."""
+    import sys
+
+    from uranium import env
+
+    monkeypatch.delenv("URANIUM_MALLOC_MMAP_THRESHOLD", raising=False)
+    assert env.apply_malloc() is None
+    monkeypatch.setenv("URANIUM_MALLOC_MMAP_THRESHOLD", "1048576")
+    assert env.apply_malloc() == (1048576 if sys.platform.startswith("linux") else None)

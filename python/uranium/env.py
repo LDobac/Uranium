@@ -40,3 +40,28 @@ def load(path: Path | None = None) -> Path | None:
         if key and key not in os.environ:
             os.environ[key] = _value(raw)
     return path
+
+
+# glibc mallopt parameters (malloc.h).
+M_TRIM_THRESHOLD = -1
+M_MMAP_THRESHOLD = -3
+
+
+def apply_malloc() -> int | None:
+    """`URANIUM_MALLOC_MMAP_THRESHOLD` (bytes, Linux glibc): blocks at least this large are mapped
+    and given back to the OS when freed. glibc otherwise raises its threshold after such a free
+    and keeps the BC batches' feature blocks (MBs each) in its heap, so a process holding one
+    batch stays at the peak of two (Linux ROCm host: Feeder 8.2 -> 2.4 GB peak RSS at 1 MiB,
+    AMB-000-4 step 2). Host memory only; returns the threshold set, or None."""
+    import sys
+
+    raw = os.environ.get("URANIUM_MALLOC_MMAP_THRESHOLD", "")
+    if not raw or not sys.platform.startswith("linux"):
+        return None
+    import ctypes
+
+    n = int(raw)
+    libc = ctypes.CDLL("libc.so.6")
+    if not (libc.mallopt(M_MMAP_THRESHOLD, n) and libc.mallopt(M_TRIM_THRESHOLD, n)):
+        raise RuntimeError(f"URANIUM_MALLOC_MMAP_THRESHOLD={n}: mallopt refused")
+    return n
