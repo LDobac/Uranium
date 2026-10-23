@@ -91,20 +91,21 @@ def test_location_out_mulsum_equals_conv(group, monkeypatch):
         assert torch.allclose(grads["mulsum"][k], g, atol=1e-5, rtol=1e-4), k
 
 
-def test_bias_grad_index_add_equals_embedding(group, monkeypatch):
-    """URANIUM_BIAS_GRAD: the distance bias table gradient summed with index_add_ is the
-    embedding backward's sum (032-R13)."""
+def test_bias_gather_modes_equal_embedding(group, monkeypatch):
+    """URANIUM_BIAS_GRAD: index_add and the transposed-table gather give the embedding path's
+    bias and table gradient (032-R13)."""
     grads = {}
     obs = to_obs(group, "cpu")
-    for mode in ("embedding", "index_add"):
+    for mode in ("embedding", "index_add", "table_t"):
         monkeypatch.setenv("URANIUM_BIAS_GRAD", mode)
         net = tiny_net()
         e, pool = net.entity(obs)
         (e.square().sum() + pool.sum()).backward()
         grads[mode] = {k: p.grad.clone() for k, p in net.entity.named_parameters() if p.grad is not None}
-    assert grads["index_add"]["bias_table"].abs().sum() > 0
-    for k, g in grads["embedding"].items():
-        assert torch.allclose(grads["index_add"][k], g, atol=1e-6, rtol=1e-4), k
+    assert grads["index_add"]["bias_table"].abs().sum() > 0 and grads["table_t"]["bias_table"].abs().sum() > 0
+    for mode in ("index_add", "table_t"):
+        for k, g in grads["embedding"].items():
+            assert torch.allclose(grads[mode][k], g, atol=1e-6, rtol=1e-4), (mode, k)
 
 
 def test_apply_malloc_threshold(monkeypatch):
