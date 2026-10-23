@@ -10,7 +10,8 @@ import torch.nn as nn
 from uranium.model.config import UraniumNetConfig
 from uranium.model.core import build_core
 from uranium.model.encoders import EntityEncoder, ScalarEncoder, SpatialEncoder
-from uranium.model.heads import HEAD_NAMES, LOC_ROW_MODES, ActionTable, Heads, env_choice, location_rows
+from uranium.model.heads import HEAD_NAMES, LOC_ROW_MODES, ActionTable, Heads, location_rows
+from uranium.model.layers import env_choice
 from uranium.model.value import ValueHeads
 
 OBS_KEYS = ("entity_cat", "entity_cont", "entity_mask", "entity_cell", "entity_pos", "spatial", "scalar", "scalar_cat", "z_build", "z_units", "z_present", "type_mask", "unit_cap", "loc_class_mask", "is_building")

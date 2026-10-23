@@ -2,12 +2,22 @@
 `layers.rs`, with the same parameter names (032-AC10)."""
 
 import math
+import os
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 MASKED = -1e9  # 032-R4: masked logits
+
+
+def env_choice(key: str, choices: tuple, default: str) -> str:
+    """An implementation switch from the environment (AMB-000-4 step 2: same math, chosen per
+    device); an unknown value is an error."""
+    v = os.environ.get(key, "") or default
+    if v not in choices:
+        raise ValueError(f"{key}={v!r}: expected one of {choices}")
+    return v
 
 
 class Mlp(nn.Module):

@@ -8,7 +8,29 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from uranium.model.config import EntityConfig, InputDims, ScalarConfig, SpatialConfig
-from uranium.model.layers import Attention, FeedForward, Mlp, ResBlock, conv3x3, masked_mean
+from uranium.model.layers import Attention, FeedForward, Mlp, ResBlock, conv3x3, env_choice, masked_mean
+
+# AMB-000-4 step 2: how the distance bias table's gradient is summed (`URANIUM_BIAS_GRAD`). Same
+# sum either way; `embedding` (PyTorch's embedding backward) wins on CUDA, `index_add` (one
+# accumulate over the flattened rows) on the Linux ROCm host (64 rows x N512: 490 -> 109 ms).
+BIAS_GRAD_MODES = ("embedding", "index_add")
+
+
+class GatherIndexAdd(torch.autograd.Function):
+    """`table[idx]` whose backward accumulates the rows with `index_add_`."""
+
+    @staticmethod
+    def forward(ctx, idx, table):
+        ctx.save_for_backward(idx)
+        ctx.rows = table.shape[0]
+        return F.embedding(idx, table)
+
+    @staticmethod
+    def backward(ctx, g):
+        (idx,) = ctx.saved_tensors
+        d = g.shape[-1]
+        gt = torch.zeros(ctx.rows, d, dtype=g.dtype, device=g.device).index_add_(0, idx.reshape(-1), g.reshape(-1, d))
+        return None, gt
 
 
 class EntityLayer(nn.Module):
@@ -59,7 +81,10 @@ class EntityEncoder(nn.Module):
     def distance_bias(self, obs: dict):
         """[B, layers*heads, N, N]. The table rows gathered by bucket: the same values as Burn's
         one-hot @ table, with a gather gradient (032-R13, 2026-10-23)."""
-        return F.embedding(self.buckets(obs), self.bias_table).permute(0, 3, 1, 2)
+        idx = self.buckets(obs)
+        if env_choice("URANIUM_BIAS_GRAD", BIAS_GRAD_MODES, "embedding") == "index_add":
+            return GatherIndexAdd.apply(idx, self.bias_table).permute(0, 3, 1, 2)
+        return F.embedding(idx, self.bias_table).permute(0, 3, 1, 2)
 
     def buckets(self, obs: dict):
         """bucket(i,j) = same_owner * D + clamp(floor(log2(1 + pixel distance)), 0, D-1) (032 §2.1),

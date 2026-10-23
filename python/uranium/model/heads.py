@@ -3,7 +3,6 @@ TargetUnit | Location. One code path serves teacher forcing (labels injected) an
 (Gumbel-max inside the forward, 032-R3, 032-R9). Same math and names as Burn `heads.rs`."""
 
 import math
-import os
 
 import numpy as np
 import torch
@@ -11,7 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from uranium.model.config import HeadsConfig, InputDims, SpatialConfig
-from uranium.model.layers import GruCell, Mlp, ResMlp, entropy, gumbel_argmax, log_softmax_f32, masked_log_softmax, pick, tempered
+from uranium.model.layers import GruCell, Mlp, ResMlp, entropy, env_choice, gumbel_argmax, log_softmax_f32, masked_log_softmax, pick, tempered
 
 HEAD_NAMES = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
 TARGET_UNIT = 1
@@ -27,13 +26,6 @@ LOC_ROW_MODES = ("off", "exact", "mult8", "pow2")
 # `URANIUM_LOC_OUT`: the location head's last 1x1 conv (32 -> 1) as `conv` or as the same sum
 # written out (`mulsum`: multiply, sum the channels), which MIOpen's slow 1x1 backward avoids.
 LOC_OUT_MODES = ("conv", "mulsum")
-
-
-def env_choice(key: str, choices: tuple, default: str) -> str:
-    v = os.environ.get(key, "") or default
-    if v not in choices:
-        raise ValueError(f"{key}={v!r}: expected one of {choices}")
-    return v
 
 
 def bucket_rows(k: int, mode: str) -> int:
