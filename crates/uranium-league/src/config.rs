@@ -158,7 +158,7 @@ impl RlConfig {
 
     /// The repository's `config/rl.toml`.
     pub fn default_file() -> Self {
-        toml::from_str(include_str!("../../../../config/rl.toml")).expect("config/rl.toml parses")
+        toml::from_str(include_str!("../../../config/rl.toml")).expect("config/rl.toml parses")
     }
 }
 

@@ -10,7 +10,7 @@ use uranium_agent::T0Build;
 use uranium_env::reward::{Outcome, RewardWeights};
 use uranium_proto::Race;
 
-use super::config::RlConfig;
+use crate::config::RlConfig;
 
 /// Learning agents (042 league table).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

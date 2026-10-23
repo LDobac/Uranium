@@ -17,8 +17,7 @@ uranium-env = { path = "../uranium-env" }
 uranium-replay = { path = "../uranium-replay" }
 uranium-data = { path = "../uranium-data" }
 uranium-store = { path = "../uranium-store" }
-uranium-agent.workspace = true
-uranium-runner = { path = "../uranium-runner" }
+uranium-league = { path = "../uranium-league" }
 uranium-proto.workspace = true
 anyhow.workspace = true
 clap.workspace = true

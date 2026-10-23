@@ -21,6 +21,8 @@ extension-module = ["pyo3/extension-module"]
 uranium-data = { path = "../uranium-data", features = ["testkit"] }
 uranium-agent = { path = "../uranium-agent", features = ["testkit"] }
 uranium-runner = { path = "../uranium-runner" }
+uranium-league = { path = "../uranium-league", features = ["testkit"] }
+uranium-env = { path = "../uranium-env" }
 uranium-proto.workspace = true
 uranium-store = { path = "../uranium-store" }
 anyhow.workspace = true

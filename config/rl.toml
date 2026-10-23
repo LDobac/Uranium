@@ -1,5 +1,5 @@
 # 042 RL / league initial values (AMB-042-3, 2026-10-17). Tuning targets (042-R9):
-# read by `uranium-train rl` and copied into every checkpoint (061-R10).
+# read by `python -m uranium rl` and copied into every checkpoint (061-R10).
 # agent step = one act() call; update = one learner parameter update.
 
 # Batch: lanes x seq_len agent steps per update (042-R8: T = 64).

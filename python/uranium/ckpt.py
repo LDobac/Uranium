@@ -18,6 +18,8 @@ WEIGHTS_FILE = "model.safetensors"
 META_FILE = "meta.json"
 BURN_WEIGHTS_FILE = "model.bpk"
 OPTIM_MAIN = "main"
+# RL checkpoints: one folder per learning agent, `agents/<name>/` (061-R10, 042).
+AGENTS_DIR = "agents"
 
 
 def schema_versions() -> tuple[int, int]:

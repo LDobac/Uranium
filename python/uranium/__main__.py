@@ -47,6 +47,9 @@ def main(argv: list[str] | None = None) -> int:
     from uranium.agent import serve as agent_serve
 
     agent_serve.add_parsers(sub)
+    from uranium.rl import run as rl_run
+
+    rl_run.add_parser(sub)
     a = p.parse_args(argv)
     return a.fn(a)
 

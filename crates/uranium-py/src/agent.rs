@@ -186,6 +186,11 @@ impl Broker {
 }
 
 impl Broker {
+    /// The session handle of this server (RL: the agents' and snapshots' servers).
+    pub(crate) fn handle(&self) -> InferenceHandle {
+        self.handle.clone()
+    }
+
     fn session_handle(&self, surrender: &str, chat: &str) -> PyResult<InferenceHandle> {
         if chat.len() > uranium_proto::MAX_SURRENDER_CHAT {
             return Err(PyValueError::new_err(format!("surrender chat is {} bytes, at most {} (020-R14)", chat.len(), uranium_proto::MAX_SURRENDER_CHAT)));

@@ -86,8 +86,9 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
   - 바이너리 교체: 작업자를 먼저 멈추고(Ctrl+C, Linux 서비스는 `systemctl --user stop uranium-worker`) 다시 빌드한 뒤 띄운다. 작업자가 도는 중에 다시 빌드하면 작업자와 돌고 있는 자식 학습은 옛 바이너리로 계속 돌고 다음 자식부터 새 바이너리가 떠서 두 버전이 섞인다.
 
 ## RL(042)
-- `uranium-train rl --run <id> --bc <BC ckpt> --logs <dir> [--config config/rl.toml] [--algo vtrace|ppo] [--backend cuda|vulkan|flex] [--z-table <jsonl>] [--ac1-race terran|protoss|zerg] [--max-agent-steps N] [--max-updates N] [--max-minutes N] [--take-over]`
-  - 체크포인트·잠금은 061, 게임 호스트는 `URANIUM_HOSTS_FILE`. 로그 `train.csv`·`games.csv`(042-R2).
+- `python -m uranium rl --run <id> --bc <BC ckpt> --logs <dir> [--config config/rl.toml] [--algo vtrace|ppo] [--backend cuda|rocm|cpu] [--z-table <jsonl>] [--ac1-race terran|protoss|zerg] [--max-agent-steps N] [--max-updates N] [--max-minutes N] [--checkpoint-minutes 30] [--max-batch 32] [--max-wait-ms 5] [--take-over]`
+  - 학습기·추론은 PyTorch, 리그·게임 배정·세그먼트 큐·체크포인트·잠금은 Rust(`uranium-league`)가 한 프로세스에서 돈다(AMB-000-4). 종료 코드 75 = 다른 호스트의 잠금(061-R5).
+  - 체크포인트(`agents/<agent>/`의 `model.safetensors`·`optim-main.safetensors`·`meta.json`)·잠금은 061, 게임 호스트는 `URANIUM_HOSTS_FILE`. 로그 `train.csv`·`games.csv`(042-R2). Burn RL 체크포인트는 읽지 않는다.
   - 042-AC1·033-AC2는 `--max-agent-steps 10000000`(run 누적, 도달하면 정상 종료, 042-R12).
   - 리플레이: `[replays] sample_every`(기본 100)의 배수 게임과 승자 불일치 게임만 `runs/<run>/replays/`에 남긴다(042-R11).
   - 학습 시작과 체크포인트마다 디스크 사용률(80% 경고, 061-R8)과 `runs/*/replays/` 합계(예산 100GB 초과 시 경고, 지우지 않음, 060-R7)를 확인한다. 보존 개수는 `config/rl.toml`의 `keep_checkpoints`(없으면 5, 0이면 전부).

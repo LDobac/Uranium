@@ -1,0 +1,24 @@
+[package]
+name = "uranium-league"
+description = "Reinforcement learning without the model (spec 042): league, trajectories and segment queues, return targets, segment collate and the RL run loop around a learner (PyTorch through uranium._core, AMB-000-4)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Synthetic observations for tests of other crates (uranium-py: the PyTorch learner tests).
+testkit = []
+
+[dependencies]
+uranium-env = { path = "../uranium-env" }
+uranium-data = { path = "../uranium-data" }
+uranium-store = { path = "../uranium-store" }
+uranium-agent.workspace = true
+uranium-runner = { path = "../uranium-runner" }
+uranium-proto.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true

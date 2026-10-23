@@ -17,11 +17,11 @@ use uranium_env::features::extract::privileged;
 use uranium_env::features::PrivilegedTensors;
 use uranium_env::reward::{Outcome, RewardParts};
 use uranium_agent::model_policy::{Decision, SessionObserver};
-use uranium_model::HostState;
-use uranium_model::heads::HEADS;
+use uranium_data::state::HostState;
+use uranium_agent::infer::HEADS;
 
 /// Observations with their two large planes compressed (042), shared with BC (041-R18).
-pub use crate::pack::PackedObs;
+pub use uranium_data::pack::PackedObs;
 
 /// One decision of a learning session.
 #[derive(Clone)]
@@ -332,7 +332,7 @@ mod tests {
     use uranium_env::features::Observation;
 
     pub(crate) fn fake_obs(i: usize) -> Observation {
-        crate::rl::testkit::observations(i % 3 + 1).pop().unwrap()
+        crate::testkit::observations(i % 3 + 1).pop().unwrap()
     }
 
     fn decide(obs: &mut TrajectoryObserver, i: usize, reward: f32) {

@@ -56,8 +56,10 @@ crates/
   uranium-env            feature·마스크·보상·executor·맵 사전계산 (라이브러리)
   uranium-data           BC 데이터 공급(041): shard·게임 순서·Feeder·prefetch·host collate·지문
   uranium-store          공용 드라이브(061): 잠금·push/pull·Manifest·학습 상태 파일
+  uranium-league         RL(042): 리그·궤적·세그먼트 큐·리턴 타깃·RL 실행 루프(학습기는 Python)
+  uranium-py             PyO3 확장 `uranium._core`: 위 Rust 기능을 Python에 노출, 추론 Broker
   uranium-model          Burn 모델 (PyTorch 전환 뒤 삭제 예정)
-  uranium-train          BC·RL 학습(Burn), worker·supervise. 데이터·저장소는 위 두 crate를 다시 내보냄
+  uranium-train          BC 학습(Burn, 삭제 예정), worker·supervise, 호스트 데이터 명령
   uranium-replay         .rep 파서·데이터셋 build
   uranium-ladder         SC:R 래더 리플레이 수집 (043, Windows)
   uranium-hostd          OpenBW 인스턴스 데몬
@@ -65,6 +67,7 @@ crates/
   uranium-runner         게임 스케줄러 (바이너리 이름 uranium-env)
   uranium-bridge-openbw  브리지 Rust 절반 (C ABI)
   uranium-scripted       T0 규칙 기반 봇
+python/uranium           학습·추론(PyTorch): model/, bc/, rl/, agent/, ckpt.py. 진입점 `python -m uranium`
 bridge/openbw            BWAPI shim(C++) → liburanium_bridge
 bridge/scr               samase 플러그인 (M7, 자체 Cargo workspace, 표는 tables/)
 tools/                   bench, casc-extract, openbw/, oss/, scr/, worker/, env 로더

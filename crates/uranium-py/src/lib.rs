@@ -4,6 +4,7 @@
 //! the Python trainer reads exactly the batches the Rust code defines.
 
 mod agent;
+mod rl;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -502,6 +503,13 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(agent::run_plan, m)?)?;
     m.add_function(wrap_pyfunction!(agent::play_sessions, m)?)?;
     m.add_function(wrap_pyfunction!(agent::slot_states, m)?)?;
+    m.add_class::<rl::SegmentBatch>()?;
+    m.add_function(wrap_pyfunction!(rl::run_rl, m)?)?;
+    m.add_function(wrap_pyfunction!(rl::vtrace, m)?)?;
+    m.add_function(wrap_pyfunction!(rl::upgo, m)?)?;
+    m.add_function(wrap_pyfunction!(rl::gae, m)?)?;
+    m.add_function(wrap_pyfunction!(rl::test_segments, m)?)?;
+    m.add_function(wrap_pyfunction!(rl::rl_config, m)?)?;
     m.add_function(wrap_pyfunction!(bc_config, m)?)?;
     m.add_function(wrap_pyfunction!(lr_at, m)?)?;
     m.add_function(wrap_pyfunction!(dataset_fingerprint, m)?)?;

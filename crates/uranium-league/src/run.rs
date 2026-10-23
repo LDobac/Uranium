@@ -1,5 +1,6 @@
-//! `uranium-train rl` (042): one process runs the learner, the inference servers, the agent
-//! server, the game dispatch (`uranium-runner`, 020-R12) and the league.
+//! The RL run loop (042): one process runs the learner, the inference servers, the agent server,
+//! the game dispatch (`uranium-runner`, 020-R12) and the league. The learner and the servers are
+//! the PyTorch side (`python -m uranium rl`, AMB-000-4) behind [`RlLearners`].
 //!
 //! Game outcomes follow 020-R13: once hostd reports a game over, the GameEnd reports of its
 //! sessions are reconciled (`game_result`) and that verdict sets r_win on the learner's terminal
@@ -10,33 +11,28 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use burn::module::Module;
-use burn::tensor::Device;
 use serde::{Deserialize, Serialize};
-use uranium_agent::infer::{InferOptions, InferenceHandle, SampleMode};
-use crate::burn_infer::InferBackend;
+use uranium_agent::infer::InferenceHandle;
 use uranium_agent::model_policy::{LearnerHook, SessionObserver};
 use uranium_agent::{EndBoard, PolicySpec, Routes, T0Build, T0Builds, game_result};
 use uranium_env::features::Strategy;
 use uranium_env::reward::{Outcome, RewardWeights};
-use uranium_model::checkpoint::{self, CheckpointMeta};
-use uranium_model::CoreInit;
 use uranium_proto::control::{GameSpec, MapKey, PlayerKind, PlayerSpec};
 use uranium_proto::{EndReason, GameInfo, Race};
 use uranium_runner::{Dispatch, HostEntry, Job, JobOutcome, JobSource};
 
-use super::config::RlConfig;
-use super::league::{AgentKind, Class, League, Opponent, Pick, T1Bot};
-use super::learner::{Algo, HEAD_NAMES, Learner, UpdateStats};
-use super::trajectory::{GameResult, Segment, SegmentQueue, TrajectoryObserver};
 use crate::ckpt::{self, TrainState};
+use crate::config::RlConfig;
+use crate::league::{AgentKind, Class, League, Opponent, Pick, T1Bot};
+use crate::learner::{Algo, HEAD_NAMES, RlLearners, SnapshotServers, UpdateStats};
 use crate::storage::{LockStatus, PushOutcome, Run, StorageConfig};
+use crate::trajectory::{GameResult, Segment, SegmentQueue, TrajectoryObserver};
 
 /// One entry of the z table (033-R8): a replay's strategy statistic.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -47,10 +43,8 @@ pub struct ZEntry {
 
 pub struct RlArgs {
     pub run: String,
-    pub bc: PathBuf,
     pub config: PathBuf,
     pub algo: Algo,
-    pub backend: InferBackend,
     pub seed: u64,
     pub take_over: bool,
     /// Local log folder (train.csv, games.csv, games.jsonl, sessions).
@@ -65,10 +59,10 @@ pub struct RlArgs {
     pub max_agent_steps: u64,
     /// Checkpoint every this many minutes (061-R4: 30).
     pub checkpoint_minutes: u64,
-    pub max_batch: usize,
-    pub max_wait_ms: u64,
     /// 042-AC1 small setting: always this T0 race on Fighting Spirit, Main only.
     pub fixed_t0: Option<Race>,
+    /// Ctrl+C state (`uranium_store::install_stop_handler`, installed first by the caller).
+    pub stop: Arc<AtomicUsize>,
 }
 
 /// Per-game bookkeeping between dispatch and the end of the game.
@@ -93,8 +87,6 @@ struct Shared {
     agent_addr: String,
     handles: Vec<InferenceHandle>,
     snapshots: Mutex<SnapshotPool>,
-    infer: InferOptions,
-    backend: InferBackend,
     games_csv: Mutex<std::fs::File>,
     agent_steps: AtomicU64,
     games_done: AtomicU64,
@@ -111,17 +103,18 @@ struct SnapshotPool {
     dirs: HashMap<String, PathBuf>,
     live: VecDeque<(String, InferenceHandle)>,
     cap: usize,
+    servers: SnapshotServers,
 }
 
 impl SnapshotPool {
-    fn handle(&mut self, id: &str, opts: InferOptions, backend: InferBackend) -> Result<InferenceHandle> {
+    fn handle(&mut self, id: &str) -> Result<InferenceHandle> {
         if let Some(i) = self.live.iter().position(|(k, _)| k == id) {
             let e = self.live.remove(i).unwrap();
             self.live.push_back(e.clone());
             return Ok(e.1);
         }
         let dir = self.dirs.get(id).with_context(|| format!("unknown snapshot {id}"))?;
-        let h = crate::burn_infer::start(dir, SampleMode::Stochastic, opts, backend)?;
+        let h = (self.servers)(dir)?;
         self.live.push_back((id.to_string(), h.clone()));
         while self.live.len() > self.cap {
             self.live.pop_front();
@@ -211,7 +204,7 @@ impl LeagueSource {
                 (bridge(Race::Terran), Race::Terran, pick.key.clone())
             }
             Opponent::Snapshot { id } => {
-                let h = s.snapshots.lock().unwrap().handle(id, s.infer, s.backend)?;
+                let h = s.snapshots.lock().unwrap().handle(id)?;
                 policies[1] = Some(PolicySpec::Model(h));
                 (bridge(Race::Terran), Race::Terran, id.clone())
             }
@@ -427,18 +420,15 @@ fn load_z(path: &Option<PathBuf>) -> Result<Vec<ZEntry>> {
 /// B-8 does not apply here: every caller advances `step` first (snapshot and timed checkpoints
 /// `step += 1`, the final one `max(step, agent steps) + 1`), so one session never writes the same
 /// `ckpt-<step>` twice, whatever an earlier push did.
-fn save_checkpoint<C: CoreInit + 'static>(run: &mut Run, step: u64, learners: &[Learner<C>], league: &League, args: &RlArgs, state_extra: serde_json::Value) -> Result<PushOutcome> {
+fn save_checkpoint(run: &mut Run, step: u64, learners: &mut dyn RlLearners, cfg: &RlConfig, league: &League, args: &RlArgs, state_extra: serde_json::Value) -> Result<PushOutcome> {
     let dir = run.stage_dir(step)?;
-    for (i, l) in learners.iter().enumerate() {
-        let name = AgentKind::ALL[i].name();
-        let mut meta = CheckpointMeta::new(&l.net_cfg, uranium_env::features::FEATURE_SCHEMA_VERSION, uranium_env::actions::ACTION_SCHEMA_VERSION)?;
-        // 041-R15: Burn autotune / fusion recorded with the weights (041-R10).
-        meta.train = serde_json::json!({ "rl": l.cfg, "algo": l.algo, "update": l.update, "agent": name, "burn": uranium_model::runtime::settings_json() });
-        checkpoint::save(&ckpt::agent_dir(&dir, name)?, &l.net.valid(), &meta)?;
-        ckpt::save_optimizer(&dir, name, l.optimizer())?;
+    for a in AgentKind::ALL {
+        let i = a.index();
+        let train = serde_json::json!({ "rl": cfg, "algo": args.algo, "update": learners.version(i), "agent": a.name() });
+        learners.save(i, &ckpt::agent_dir(&dir, a.name())?, &train)?;
     }
     ckpt::save_league(&dir, &league.to_bytes())?;
-    let updates: Vec<u64> = learners.iter().map(|l| l.update).collect();
+    let updates: Vec<u64> = AgentKind::ALL.iter().map(|a| learners.version(a.index())).collect();
     ckpt::save_state(&dir, &TrainState { kind: "rl".into(), step, update: updates[0], policy_version: updates[0], rng: vec![], extra: state_extra })?;
     let reward = PathBuf::from("config/reward.toml");
     let mut files: Vec<&Path> = vec![&args.config];
@@ -470,15 +460,14 @@ fn prune_logged(run: &mut Run) {
     }
 }
 
-pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
-    // 042-R10 / 060-R6: first thing, so an early SIGINT is never lost (see install_stop_handler).
-    let stop = crate::install_stop_handler("rl")?;
+/// Runs RL until a limit or Ctrl+C. `make(cfg, resume)` builds the learners and their inference
+/// servers once the run is locked: from the BC checkpoint, or from the agent folders of the
+/// resumed checkpoint (`resume`, 061-R10), and returns the league snapshot server factory.
+pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(Box<dyn RlLearners>, SnapshotServers)>) -> Result<()> {
+    // 042-R10 / 060-R6: the caller installed the handler first, so an early SIGINT is never lost.
+    let stop = args.stop.clone();
     let cfg = RlConfig::load(&args.config)?;
     std::fs::create_dir_all(&args.log_dir)?;
-    let ad = dev.autodiff();
-    let cols = uranium_model::batch::ActionColumns::from_table(uranium_env::features::extract::action_table())?;
-    let fv = uranium_env::features::FEATURE_SCHEMA_VERSION;
-    let av = uranium_env::actions::ACTION_SCHEMA_VERSION;
 
     // 061-R3 / R5: lock the run, recover or pull LATEST.
     let storage = StorageConfig::from_env()?;
@@ -489,7 +478,7 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
     }
     let mut storage = storage;
     // 061-R6 (G-D6): the run's retention (`keep_checkpoints`, 0 = all).
-    storage.keep_latest = cfg.keep_checkpoints.unwrap_or(crate::bc::DEFAULT_KEEP_CHECKPOINTS);
+    storage.keep_latest = cfg.keep_checkpoints.unwrap_or(uranium_data::bc::DEFAULT_KEEP_CHECKPOINTS);
     let mut run = Run::acquire(storage, &args.run, args.take_over)?;
     // 061-R8 / 060-R7 (C-3): disk usage and the replay total at the start (warnings only).
     check_storage(&run);
@@ -508,24 +497,14 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
         run.release()?;
         return Ok(());
     }
-    let (bc, bc_meta) = checkpoint::load_with::<C>(&args.bc, &cols, fv, av, &ad, rl_config).context("loading the BC checkpoint (042 start / KL reference)")?;
-    let net_cfg = bc_meta.net_config()?;
-
-    let mut learners: Vec<Learner<C>> = Vec::new();
-    for a in AgentKind::ALL {
-        let mut l = Learner::new(bc.clone(), bc.clone(), net_cfg.clone(), cfg.clone(), args.algo, ad.clone());
-        if let Some(r) = &resume {
-            let dir = ckpt::agent_dir(&r.dir, a.name())?;
-            let (net, meta) = checkpoint::load_with::<C>(&dir, &cols, fv, av, &ad, rl_config)?;
-            l.net = net;
-            l.update = meta.train["update"].as_u64().unwrap_or(0);
-            if ckpt::has_optimizer(&r.dir, a.name()) {
-                let o = ckpt::load_optimizer(&r.dir, a.name(), super::learner::new_optimizer(&cfg))?;
-                l.set_optimizer(o);
-            }
+    // The learners and their inference servers (from BC, or the resumed agents' folders).
+    let (mut learners, servers) = match make(&cfg, resume.as_ref().map(|r| r.dir.as_path())) {
+        Ok(x) => x,
+        Err(e) => {
+            let _ = run.release();
+            return Err(e.context("starting the learners (042 start / KL reference)"));
         }
-        learners.push(l);
-    }
+    };
     let t1 = cfg_t1(&args.config)?;
     let mut league = match resume.as_ref().map(|r| ckpt::load_league(&r.dir)).transpose()?.flatten() {
         Some(b) => League::from_bytes(&b, cfg.clone())?,
@@ -539,20 +518,8 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
         crate::elog!("[rl] resumed {} at step {} (recovered {}), stage {:?}", args.run, r.step, r.recovered, league.stage);
     }
 
-    // Inference servers start from the learners' current weights (written to the cache).
-    let mut infer = InferOptions::default();
-    infer.max_batch = args.max_batch.max(1);
-    infer.max_wait = Duration::from_millis(args.max_wait_ms);
-    let infer_root = run.cache_dir().join("infer");
-    let mut handles = Vec::new();
-    for (i, l) in learners.iter().enumerate() {
-        let dir = infer_root.join(AgentKind::ALL[i].name());
-        let meta = CheckpointMeta::new(&net_cfg, fv, av)?;
-        checkpoint::save(&dir, &l.net.valid(), &meta)?;
-        let h = crate::burn_infer::start(&dir, SampleMode::Stochastic, infer, args.backend)?;
-        h.swap(l.snapshot(), l.update)?;
-        handles.push(h);
-    }
+    // The agents' inference servers already run the learners' current weights.
+    let handles: Vec<InferenceHandle> = AgentKind::ALL.iter().map(|a| learners.handle(a.index())).collect();
     let snap_dirs: HashMap<String, PathBuf> = league
         .snapshots
         .iter()
@@ -585,9 +552,7 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
         stopping: AtomicBool::new(false),
         agent_addr,
         handles: handles.clone(),
-        snapshots: Mutex::new(SnapshotPool { dirs: snap_dirs, live: VecDeque::new(), cap: 8 }),
-        infer,
-        backend: args.backend,
+        snapshots: Mutex::new(SnapshotPool { dirs: snap_dirs, live: VecDeque::new(), cap: 8, servers }),
         games_csv: Mutex::new(games_csv),
         // 042-R12: agent steps continue from the checkpoint (TrainState.step).
         agent_steps: AtomicU64::new(step),
@@ -655,15 +620,14 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
             continue;
         };
         let i = agent.index();
-        let Some(batch) = queues[i].try_take(cfg.lanes, learners[i].update, cfg.actors.max_policy_lag) else { continue };
+        let Some(batch) = queues[i].try_take(cfg.lanes, learners.version(i), cfg.actors.max_policy_lag) else { continue };
         let weights = shared.league.lock().unwrap().reward_weights(&base);
-        let stats = learners[i].update(&batch, weights);
-        drop(batch);
+        let stats = learners.update(i, batch, weights)?;
         updates_this_run += 1;
         let snap = shared.league.lock().unwrap().on_update(agent);
         // 042 K: weights to the actors every `weight_push_every` updates.
-        if learners[i].update % cfg.actors.weight_push_every.max(1) == 0 {
-            handles[i].swap(learners[i].snapshot(), learners[i].update)?;
+        if learners.version(i) % cfg.actors.weight_push_every.max(1) == 0 {
+            learners.push(i)?;
         }
         step = step.max(shared.agent_steps.load(Ordering::SeqCst));
         if last_rate.0.elapsed() >= Duration::from_secs(60) {
@@ -671,13 +635,13 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
             steps_per_s = (now - last_rate.1) as f64 / last_rate.0.elapsed().as_secs_f64();
             last_rate = (Instant::now(), now);
         }
-        write_row(&mut csv, started, agent, &stats, &shared, &queues, learners[i].update, steps_per_s)?;
+        write_row(&mut csv, started, agent, &stats, &shared, &queues, learners.version(i), steps_per_s)?;
         if let Some(reset) = snap {
             // A league snapshot is a pushed checkpoint copied to league/<name> (061-R2).
             let id = shared.league.lock().unwrap().add_snapshot(agent);
             let league_now = shared.league.lock().unwrap().clone();
             step += 1;
-            match save_checkpoint(&mut run, step, &learners, &league_now, &args, serde_json::json!({ "games": shared.games_done.load(Ordering::SeqCst) }))? {
+            match save_checkpoint(&mut run, step, learners.as_mut(), &cfg, &league_now, &args, serde_json::json!({ "games": shared.games_done.load(Ordering::SeqCst) }))? {
                 PushOutcome::Pushed => {
                     let dir = run.league_snapshot(step, &snapshot_name(&id))?;
                     shared.snapshots.lock().unwrap().dirs.insert(id.clone(), dir.join(ckpt::AGENTS_DIR).join(agent.name()));
@@ -686,15 +650,15 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
                 other => crate::elog!("[rl] snapshot {id} not published: {other:?}"),
             }
             if reset {
-                learners[i].reset_to_bc();
-                handles[i].swap(learners[i].snapshot(), learners[i].update)?;
+                learners.reset_to_bc(i)?;
+                learners.push(i)?;
             }
             last_ckpt = Instant::now();
         }
         if last_ckpt.elapsed() >= Duration::from_secs(args.checkpoint_minutes.max(1) * 60) {
             step += 1;
             let league_now = shared.league.lock().unwrap().clone();
-            let out = save_checkpoint(&mut run, step, &learners, &league_now, &args, serde_json::json!({ "games": shared.games_done.load(Ordering::SeqCst) }))?;
+            let out = save_checkpoint(&mut run, step, learners.as_mut(), &cfg, &league_now, &args, serde_json::json!({ "games": shared.games_done.load(Ordering::SeqCst) }))?;
             crate::elog!("[rl] checkpoint {} {:?}", crate::storage::ckpt_name(step), out);
             if out == PushOutcome::Pushed {
                 prune_logged(&mut run);
@@ -717,20 +681,13 @@ pub fn run<C: CoreInit + 'static>(args: RlArgs, dev: Device) -> Result<()> {
     }
     step = step.max(shared.agent_steps.load(Ordering::SeqCst)) + 1;
     let league_now = shared.league.lock().unwrap().clone();
-    let out = save_checkpoint(&mut run, step, &learners, &league_now, &args, serde_json::json!({ "games": shared.games_done.load(Ordering::SeqCst) }))?;
+    let out = save_checkpoint(&mut run, step, learners.as_mut(), &cfg, &league_now, &args, serde_json::json!({ "games": shared.games_done.load(Ordering::SeqCst) }))?;
     crate::elog!("[rl] final checkpoint {}: {out:?}", crate::storage::ckpt_name(step));
     match out {
         PushOutcome::Pushed => run.release()?,
         other => crate::elog!("[rl] push {other:?}: keeping the lock so the next start recovers it (061-R11-5/6)"),
     }
     Ok(())
-}
-
-/// 032 §2: dropout 0 in RL (0.1 is the BC setting). The actors run without dropout, so a
-/// learner with dropout would see π ≠ μ even on-policy (V-trace ρ, KL to π_BC).
-fn rl_config(mut c: uranium_model::UraniumNetConfig) -> uranium_model::UraniumNetConfig {
-    c.entity.dropout = 0.0;
-    c
 }
 
 /// Snapshot folder name (061-R9 forbids `/` and `@`): `<agent>-<run>-<update>`.
@@ -807,13 +764,6 @@ mod tests {
     fn rl_toml_lists_t1_bots_021() {
         let bots = cfg_t1(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/rl.toml"))).unwrap();
         assert!(bots.iter().any(|b| b.name == "zzzkbot" && b.races == vec![Race::Zerg]));
-    }
-
-    /// 032 §2: RL nets are built without dropout.
-    #[test]
-    fn rl_nets_have_no_dropout_032() {
-        let c = rl_config(uranium_model::UraniumNetConfig::new());
-        assert_eq!(c.entity.dropout, 0.0);
     }
 
     #[test]

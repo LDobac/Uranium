@@ -80,13 +80,15 @@ class InferenceServer(threading.Thread):
         self.version = 0
         self.stop = threading.Event()
         self.error: BaseException | None = None
+        # Held while a work item runs; a weight swap waits for the batch in flight.
+        self.lock = threading.Lock()
 
     def swap(self, state_dict: dict, version: int) -> None:
-        """032-R16: new weights from the next batch on (call between batches)."""
-        with torch.no_grad():
+        """032-R16: new weights from the next batch on (any thread)."""
+        with self.lock, torch.no_grad():
             self.net.load_state_dict(state_dict)
-        self.version = version
-        self.broker.set_version(version)
+            self.version = version
+            self.broker.set_version(version)
 
     @torch.no_grad()
     def warm_up(self) -> None:
@@ -108,7 +110,8 @@ class InferenceServer(threading.Thread):
                 if w is None:
                     continue
                 try:
-                    self.handle(w)
+                    with self.lock:
+                        self.handle(w)
                 except Exception as e:  # noqa: BLE001 - the sessions get the error, the server goes on
                     print(f"[infer] {self.broker.checkpoint_id}: {e!r}", file=sys.stderr, flush=True)
                     self.broker.fail(repr(e))

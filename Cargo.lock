@@ -6963,6 +6963,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "uranium-league"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "toml",
+ "uranium-agent",
+ "uranium-data",
+ "uranium-env",
+ "uranium-proto",
+ "uranium-runner",
+ "uranium-store",
+]
+
+[[package]]
 name = "uranium-model"
 version = "0.1.0"
 dependencies = [
@@ -6993,6 +7010,8 @@ dependencies = [
  "serde_json",
  "uranium-agent",
  "uranium-data",
+ "uranium-env",
+ "uranium-league",
  "uranium-proto",
  "uranium-runner",
  "uranium-store",
@@ -7069,13 +7088,12 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "toml",
- "uranium-agent",
  "uranium-data",
  "uranium-env",
+ "uranium-league",
  "uranium-model",
  "uranium-proto",
  "uranium-replay",
- "uranium-runner",
  "uranium-store",
  "windows-sys 0.61.2",
  "zstd 0.13.3",

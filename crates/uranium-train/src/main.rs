@@ -234,57 +234,6 @@ enum Cmd {
         #[arg(long)]
         verify: bool,
     },
-    /// 042 RL + league: learner, inference servers, agent server and game dispatch in one process.
-    /// Checkpoints go to the shared drive run `<run>` (061); Ctrl+C stops cleanly (042-R10).
-    Rl {
-        /// Run id (061 checkpoints/<run>/ and the lock).
-        #[arg(long)]
-        run: String,
-        /// BC checkpoint: starting policy and the KL reference (042).
-        #[arg(long)]
-        bc: PathBuf,
-        #[arg(long, default_value = "config/rl.toml")]
-        config: PathBuf,
-        #[arg(long, value_enum, default_value = "vtrace")]
-        algo: uranium_train::rl::learner::Algo,
-        #[arg(long, value_enum, default_value = "vulkan")]
-        backend: Backend,
-        #[arg(long, value_enum, default_value = "gtrxl")]
-        core: CoreArg,
-        #[arg(long, default_value_t = 1)]
-        seed: u64,
-        /// Take the run lock from another PC now, whatever its state, with a warning (061-R5):
-        /// only after checking that PC stopped.
-        #[arg(long)]
-        take_over: bool,
-        /// Local logs: train.csv, games.csv, games.jsonl, sessions.jsonl (042-R2).
-        #[arg(long, default_value = "runs/rl")]
-        logs: PathBuf,
-        /// z table from `uranium-train z-table` (033-R8); without it every game has no z.
-        #[arg(long)]
-        z_table: Option<PathBuf>,
-        /// Stop after this many updates (smoke runs).
-        #[arg(long, default_value_t = 0)]
-        max_updates: u64,
-        /// Stop after this many minutes (smoke runs).
-        #[arg(long, default_value_t = 0)]
-        max_minutes: u64,
-        /// 042-R12: clean stop once the run's agent steps (counted across resumes) reach this;
-        /// 042-AC1 / 033-AC2 use 10,000,000. 0 = no limit.
-        #[arg(long, default_value_t = 0)]
-        max_agent_steps: u64,
-        /// Checkpoint interval in minutes (061-R4).
-        #[arg(long, default_value_t = 30)]
-        checkpoint_minutes: u64,
-        /// Inference batch cap and wait (TBD(M6), 020-R11).
-        #[arg(long, default_value_t = 32)]
-        max_batch: usize,
-        #[arg(long, default_value_t = 5)]
-        max_wait_ms: u64,
-        /// 042-AC1 small setting: Main vs the standard T0 bot of this race on Fighting Spirit only.
-        #[arg(long, value_enum)]
-        ac1_race: Option<RaceArg>,
-    },
     /// 033-R8: z table (one JSON line per game: build order + unit composition) from the Terran
     /// views of target-map replays in a shard folder.
     ZTable {
@@ -296,13 +245,6 @@ enum Cmd {
         #[arg(long)]
         all_maps: bool,
     },
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum RaceArg {
-    Terran,
-    Protoss,
-    Zerg,
 }
 
 /// Shard folders to read, subfolders included (041-R9); files are read in canonical key order
@@ -360,54 +302,9 @@ fn device(b: Backend) -> Result<Device> {
     })
 }
 
-fn rl_backend(b: Backend) -> uranium_train::burn_infer::InferBackend {
-    match b {
-        Backend::Vulkan => uranium_train::burn_infer::InferBackend::Vulkan,
-        Backend::Cuda => uranium_train::burn_infer::InferBackend::Cuda,
-        Backend::Flex => uranium_train::burn_infer::InferBackend::Flex,
-    }
-}
-
 fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     match Cli::parse().cmd {
-        Cmd::Rl { run, bc, config, algo, backend, core, seed, take_over, logs, z_table, max_updates, max_minutes, max_agent_steps, checkpoint_minutes, max_batch, max_wait_ms, ac1_race } => {
-            let args = uranium_train::rl::run::RlArgs {
-                run,
-                bc,
-                config,
-                algo,
-                backend: rl_backend(backend),
-                seed,
-                take_over,
-                log_dir: logs,
-                z_table,
-                max_updates,
-                max_minutes,
-                max_agent_steps,
-                checkpoint_minutes,
-                max_batch,
-                max_wait_ms,
-                fixed_t0: ac1_race.map(|r| match r {
-                    RaceArg::Terran => uranium_proto::Race::Terran,
-                    RaceArg::Protoss => uranium_proto::Race::Protoss,
-                    RaceArg::Zerg => uranium_proto::Race::Zerg,
-                }),
-            };
-            let dev = device(backend)?;
-            let res = match core {
-                CoreArg::Lstm => uranium_train::rl::run::run::<LstmCore>(args, dev),
-                CoreArg::Gtrxl => uranium_train::rl::run::run::<GtrxlCore>(args, dev),
-            };
-            // 061-R5: a lock that could not be taken ends with 75 (the watchdog does not restart it).
-            match res {
-                Err(e) if e.downcast_ref::<uranium_train::storage::LockBusy>().is_some() => {
-                    uranium_train::elog!("{e:#}");
-                    std::process::exit(uranium_train::bc_run::EXIT_BUSY)
-                }
-                other => other,
-            }
-        }
         Cmd::ZTable { shards, out, all_maps } => {
             use std::io::Write as _;
             let families = uranium_env::maps::MapFamilies::load()?;
@@ -427,7 +324,7 @@ fn main() -> Result<()> {
                 if z.build.is_empty() {
                     continue;
                 }
-                let e = uranium_train::rl::run::ZEntry { build: z.build, units: z.units };
+                let e = uranium_league::run::ZEntry { build: z.build, units: z.units };
                 writeln!(f, "{}", serde_json::to_string(&e)?)?;
                 kept += 1;
             }
