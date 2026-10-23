@@ -18,6 +18,7 @@ from uranium import ckpt
 from uranium.bc.clip import clip_global_norm
 from uranium.device import autocast
 from uranium.model import UraniumNet, UraniumNetConfig, input_dims, to_obs
+from uranium.model.net import to_device
 
 HEADS = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
 VALUE_WIN = 0
@@ -143,11 +144,11 @@ class BcTrainer:
         t = cfg["seq_len"]
         b = hg["b"]
         obs, labels = to_obs(hg, dev), net.labels(hg, dev)
-        priv = torch.as_tensor(hg["privileged"]).to(dev, torch.float32)
-        w = torch.as_tensor(hg["weights"]).to(dev, torch.float32)
-        target = torch.as_tensor(hg["results"]).to(dev, torch.float32)
-        vw = torch.as_tensor(hg["value_w"]).to(dev, torch.float32)
-        keep = torch.as_tensor(hg["keep"]).to(dev).bool()
+        priv = to_device(hg["privileged"], dev).float()
+        w = to_device(hg["weights"], dev).float()
+        target = to_device(hg["results"], dev).float()
+        vw = to_device(hg["value_w"], dev).float()
+        keep = to_device(hg["keep"], dev).bool()
         s = self.states[group]
         s0 = net.core.init_state(b, dev) if s is None else net.core.mask_state(s, keep)
         self.tick("to_device")

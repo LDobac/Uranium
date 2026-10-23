@@ -26,12 +26,26 @@ def action_columns() -> dict:
     return json.loads(_core.action_columns())
 
 
+H2D_MODES = ("sync", "pinned")
+
+
+def to_device(x, device) -> torch.Tensor:
+    """A host array on `device`. `URANIUM_H2D=pinned` stages it in page-locked memory so the copy
+    is asynchronous: a copy from pageable memory waits for the queued GPU work first, so the host
+    cannot launch ahead (AMB-000-4 step 2). Same values either way."""
+    t = torch.as_tensor(x)
+    dev = torch.device(device)
+    if dev.type == "cuda" and env_choice("URANIUM_H2D", H2D_MODES, "sync") == "pinned":
+        t = t.pin_memory()
+    return t.to(dev, non_blocking=True)
+
+
 def to_obs(group: dict, device, dtype=torch.float32) -> dict:
     """Observation tensors from a lane group / numpy dict: masks to bool, indices to int64,
     features to `dtype`."""
     out = {}
     for k in OBS_KEYS:
-        t = torch.as_tensor(group[k]).to(device, non_blocking=True)
+        t = to_device(group[k], device)
         if k in BOOL_KEYS:
             t = t.bool()
         elif k in LONG_KEYS:
@@ -43,7 +57,7 @@ def to_obs(group: dict, device, dtype=torch.float32) -> dict:
 
 
 def to_labels(group: dict, device) -> dict:
-    return {k: torch.as_tensor(group[k]).to(device, non_blocking=True).long() for k in LABEL_KEYS}
+    return {k: to_device(group[k], device).long() for k in LABEL_KEYS}
 
 
 class UraniumNet(nn.Module):
@@ -103,7 +117,7 @@ class UraniumNet(nn.Module):
         mode = env_choice("URANIUM_LOC_ROWS", LOC_ROW_MODES, "off")
         if mode != "off":
             spec = location_rows(group["action"], self._cols["target_kind"], mode)
-            out["loc_rows"], out["loc_k"] = (None, -1) if spec is None else (torch.as_tensor(spec[0]).to(device, non_blocking=True), spec[1])
+            out["loc_rows"], out["loc_k"] = (None, -1) if spec is None else (to_device(spec[0], device), spec[1])
         return out
 
     def init_state(self, b: int, device=None):
