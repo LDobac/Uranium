@@ -27,7 +27,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
    - 레지스트리 상태는 `Deferred (Mx)`다.
    - Deferred 항목은 spec의 `Approved`를 막지 않는다. 그러나 **그 항목에 의존하는 코드는 작성할 수 없다.**
    - 해당 마일스톤을 시작하기 전에 반드시 사용자에게 다시 질문해 확정한다.
-8-2. **개인·보안 정보 금지** — 도입 2026-10-15. spec과 모든 문서에 IP 주소, 호스트 이름, 계정, 이메일, 개인 경로, 자격 증명을 쓰지 않는다. 자리표시자(`<server>`)를 쓰고 실제 값은 git에 올리지 않는 `.env`에 둔다([001-R9·R10](001-system-architecture.md)). 장비 종류·상태(보드·GPU 모델명, 장비 번호, 특정 PC 이름·사양)도 spec에 쓰지 않고 OS·백엔드(Linux/Windows, Vulkan/CUDA)로만 표기한다(2026-10-19, 001-R10).
+8-2. **개인·보안 정보 금지** — 도입 2026-10-15. spec과 모든 문서에 IP 주소, 호스트 이름, 계정, 이메일, 개인 경로, 자격 증명을 쓰지 않는다. 자리표시자(`<server>`)를 쓰고 실제 값은 git에 올리지 않는 `.env`에 둔다([001-R9·R10](001-system-architecture.md)). 장비 종류·상태(보드·GPU 모델명, 장비 번호, 특정 PC 이름·사양)도 spec에 쓰지 않고 OS·백엔드(Linux/Windows, CUDA/ROCm/CPU)로만 표기한다(2026-10-19, 001-R10. 2026-10-23 학습 백엔드 전환으로 Vulkan → ROCm).
 9. **spec 번호는 구현 순서가 아니라 영역 분류다.**
    - 앞 두 자리가 영역(대역)을 나타낸다.
    - 같은 대역 안에서는 다른 문서가 의존하는 문서에 앞번호를 주는 것을 권장한다. 강제는 아니다.
@@ -53,6 +53,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-000-1 | 승률 목표 수치 | Resolved (2026-10-15: G1 80%·G2 90% 초안 확정, M5 이후 조정 제안 가능, APM 제한 없음) |
 | AMB-000-2 | SC:R 실사용 환경(로컬/LAN vs 배틀넷)·상대 | Resolved (2026-10-15: 로컬/LAN 커스텀 한정, 상대 사람/내장 AI) |
 | AMB-000-3 | 맵 파일 버전, 상대 Random 종족 지원 | Resolved (2026-10-15: 최신 공개 버전(1.16.1 호환 검증 후 해시 고정), Random 지원) |
+| AMB-000-4 | 학습·추론 프레임워크 전환(Burn 대비 PyTorch 실측 2~4배, `reports/torch_vs_burn.md`) | Resolved (2026-10-23 사용자 결정: 학습·추론만 Python + PyTorch, 관측 추출·리플레이·proto·hostd·러너·브리지·스크립트 봇·래더 수집은 Rust 유지(PyO3 `uranium._core`로 노출). 기존 BC shard는 그대로 읽고(순서·지문 유지), Burn 체크포인트는 보관만 하고 PyTorch로 새로 학습. 직접 작성한 CUDA·HIP 커널 허용. 1단계 동등성 검증(032-AC10) 뒤 Burn과 Vulkan 학습 경로 삭제, Linux 학습 호스트는 ROCm — 000, 001, 012-R19, 020, 032, 041, 042, 060, 061) |
 | AMB-001-1 | SC:R 실전 추론 위치 | Deferred (M7) |
 | AMB-001-5 | SC:R 변환용 crate `uranium-adapter`(001·013에 M7 예정으로 적힘)를 만들지 | Resolved (2026-10-22: 만들지 않는다. SC:R 원시 ID가 BW와 같고 정규화는 브리지 안에서 끝남. 표는 `bridge/scr/tables`, 에이전트는 realtime 처리만 추가 — 001-R1, 013-R1, 012-R18·R19) |
 | AMB-001-2 | OpenBW 브리지 C++ shim 허용 여부 | Resolved (2026-10-15: 얇은 C++ shim 허용) |
@@ -91,6 +92,8 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-032-6 | 시간 축 코어 비교 절차(AMB-032-4가 "M5에서 비교"를 남긴 채 닫혀 절차·AC가 없었음, 2026-10-18 발견) | Resolved (2026-10-18: BC 본학습 전 짧은 비교. 코어마다 S1 5,300 update 1회(약 2일), 짧은 run 전용 스케줄(warmup 5% + cosine), val 500게임 bc-eval, 맞대결 맵당 50판 + 각자 T0 상대 조합당 50판(코어당 300판), 확률적 샘플링, 판정은 결과 보고 후 사용자 결정 — 032-R17·AC7. 2026-10-23: 비교 결과로 GTrXL 채택) |
 | AMB-032-7 | Burn autotune·fusion 채택(리뷰 F-2-1·G-D5)과 backward 허용 오차(리뷰 H, `cross_device.rs` 1e-3이 spec에 없음), 코어 비교 val 500게임 선정(G-D8) | Resolved (2026-10-19: CUDA·Vulkan 모두 autotune+fusion, 코어 비교·본학습 같은 설정(041-R15). backward AC Vulkan 1e-3, CUDA는 autotune·fusion을 켠 재측정 뒤 여유를 둔 값으로 확정(D-a, 032-AC8 → 2026-10-19 실측 3.7e-3~4.9e-3, CUDA 1e-2). val은 고정 seed 셔플 500게임, seed 1개 유지·한계는 리포트(032-R17 ②)) |
 | AMB-032-8 | 032-AC2 Linux Vulkan 호스트 추론 지연 기준(초안 40ms, 2026-10-20 실측 p95 f32 179~187ms)과 호스트 역할 | Resolved (2026-10-20: CUDA 호스트가 유휴일 때는 주 장비, 바쁠 때는 Linux Vulkan 호스트가 주 장비. AC2 판정은 CUDA 호스트에만(같은 호스트 Vulkan보다 빠름), Linux Vulkan 호스트는 실측 기록만·40ms 폐기. BC는 작업자 우선순위·양보(061-R13·R14)로 구현됨, RL 적용은 M6 — 032-AC2·R17, 060-R8) |
+| AMB-032-9 | PyTorch 전환 뒤 장비별 정밀도와 GPU 비결정성 | Resolved (2026-10-23 사용자 결정: CUDA 호스트 학습·추론 bf16 혼합 정밀도(마스터 가중치·옵티마이저·손실·softmax 누적 f32), Linux ROCm 호스트 f32(bf16이 3~8배 느림). GPU atomic 등 비결정 커널 허용, 비트 단위 재현은 CPU에서만 판정 — 032-R8, 061-AC1, 041-R15) |
+| AMB-032-10 | 최적화 범위(기존 학습 spec을 깨는 최적화 허용 여부) | Resolved (2026-10-23 사용자 결정: 모델 동작은 유지 — 같은 수식을 빠르게 계산하는 구현만(커널 융합·gather·그래프·K/V 캐시·레인 그룹 재구성 등), 구조·헤드 방식·해상도·distance bias·dropout·손실·하이퍼파라미터·추론 저정밀도는 제외. 학습 설정은 Linux ROCm 호스트 메모리에서 최악 모양으로 학습돼야 채택 — 032-R19, 060-R3, 041-R3) |
 | AMB-034-1 | 무력화 유닛 명령 불가 규칙이 일부 클래스에만 적용(리뷰 B-11), SetRally 다중 건물 선택(리뷰 E) | Resolved (2026-10-19: 무력화 규칙을 모든 선택 자격·executor 선택에 적용(034-R6), 건물 대상 명령은 건물 1개만 선택, SetRally max_select 1(034-R7)) |
 | AMB-040-1 | 리플레이 출처 | Resolved (2026-10-15: 공개 데이터셋·커뮤니티·공개 프로/래더·AI 봇 리플레이) |
 | AMB-040-2 | 리플레이 품질 필터 기준 | Resolved (2026-10-15: S1 APM≥80·5분+, S2 프로/상위 래더 APM≥150) — S2 기준은 AMB-040-7로 대체(2026-10-19) |
@@ -110,6 +113,8 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-041-4 | BC S1·S2 데이터 선택, 소스 혼합 가중치, 게임 순서 셔플 | Resolved (2026-10-18: S1 네 소스 train 분할 전부 가중치 없이, S2 대상 맵 train 분할만, 고정 seed 셔플 — 041-R13) |
 | AMB-041-5 | grad clip 1.0의 의미(Burn은 파라미터 텐서별 클립, 리뷰 B-9·G-D4) | Resolved (2026-10-19: 전역 L2 norm clip 1.0, micro-lane gradient 합산 뒤 적용, 직접 구현, BC·RL learner 공통 — 041-R3, 042 옵티마이저 표) |
 | AMB-041-6 | 041-R9 스트리밍 로더 미구현(리뷰 E-11) | Resolved (2026-10-19: 예산 초과 시에만 필요한 조건부 요구사항으로 — 041-R9) |
+| AMB-041-7 | 장비별 레인 그룹 크기(041-R3 레인 그룹 재구성, 결과 동일) | Deferred (M6: PyTorch 2단계 최적화에서 장비별 속도·메모리(060-R3)를 측정해 보고하고 사용자 확인. 그때까지 그룹 = 레인 1개) |
+| AMB-041-8 | 엔티티 인코더 재계산(041-R17)·호스트 batch 압축(041-R18)을 PyTorch에서 유지할지 | Deferred (M6: Linux ROCm 호스트 메모리 실측(060-AC5) 뒤 사용자 확인. 그때까지 설정 키와 동작 유지) |
 | AMB-042-1 | 학습 기간·장비 예산 | Resolved (2026-10-15: 기간 제한 없음, 전체 리그 구성) |
 | AMB-042-2 | TvP·TvZ 상대 다양성 (P/Z 상대 정책 추가 여부) | Deferred (M6) (2026-10-17 M6 시작 재확인: T0·T1 봇으로 시작, M6 중간 점검에서 정체 여부 보고 후 재확인) |
 | AMB-042-3 | RL 초기 설정값(정책 지연 임계값, 가중치 배포 K, 스냅샷 N, 커리큘럼 전환 조건, 헤드별 엔트로피, KL 감쇠, 시분할, PFSP, 종족·Random 비율, 배치·옵티마이저) | Resolved (2026-10-17: 사용자 위임으로 Claude 결정 — IMPALA·AlphaStar 기준 축소값을 042 "초기 설정값" 절·`config/rl.toml`에 기록, 전부 042-R9 튜닝 대상, 042-AC1 후 조정 제안 가능. 첫 RL 학습 호스트는 CUDA 호스트) |
@@ -119,6 +124,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-042-7 | 042-AC1 실험 규모 | Resolved (2026-10-17: V-trace·PPO 각 3 seed(6 run), 033-AC2 ablation은 본 BC·z 테이블 이후) |
 | AMB-042-8 | 첫 RL 게임 호스트 구성 | Resolved (2026-10-17: 학습 호스트 로컬 hostd로 시작, 리플레이 build 후 원격 Linux 게임 호스트 두 대 추가) |
 | AMB-042-9 | KL(π‖π_BC) 계산 방식(BC 재forward 비용 약 1.5배) | Resolved (2026-10-17: BC 모델 재forward로 정확한 분포 KL, GPU 메모리가 부족하면 사용자에게 보고) |
+| AMB-042-10 | RL 한 프로세스(Python learner·추론 + Rust 스레드)에서 GIL 경합 시 추론 프로세스 분리 | Deferred (M6: PyTorch RL 스모크에서 추론 지연·GIL 대기를 측정해 보고하고 사용자 확인. 그때까지 한 프로세스, 042) |
 | AMB-043-1 | 래더 수집: 040 데이터 정책(약관 준수) 예외 허용 여부 | Resolved (2026-10-16: EULA 해석 위험 감수하고 예외 허용, 내부 학습 전용·재배포 금지 유지) |
 | AMB-043-2 | 래더 수집: 실행 PC·배틀넷 계정 | Resolved (2026-10-16: 사용자 본계정, SC:R이 도는 Windows PC) |
 | AMB-043-3 | 래더 수집: 범위 기본값(게이트웨이·순위/MMR·매치업·맵·시즌) | Resolved (2026-10-16: 아시아(한국)만, 추적 대상 랭크 A 이상, 매치업·맵 전체, 과거 시즌 포함) |
@@ -151,7 +157,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | 021 | [Opponent Pool](021-opponent-pool.md) | 학습 상대 | **Approved** |
 | 030 | [Observation](030-observation.md) | 관측 feature | **Approved** |
 | 031 | [Action Space](031-action-space.md) | 액션·executor | **Approved** |
-| 032 | [Model Architecture](032-model-architecture.md) | Burn 모델 | **Approved** |
+| 032 | [Model Architecture](032-model-architecture.md) | PyTorch 모델(2026-10-23 전환, 이전 Burn) | **Approved** |
 | 033 | [Reward](033-reward.md) | 보상 설계 | **Approved** |
 | 034 | [Action Table](034-action-table.md) | 액션 목록·인자·마스크 클래스 | **Approved** |
 | 040 | [Replay Dataset](040-replay-dataset.md) | 리플레이 데이터 | **Approved** |
@@ -159,7 +165,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | 042 | [RL Training](042-rl-training.md) | RL·리그 | **Approved** |
 | 043 | [Ladder Replay Collector](043-ladder-replay-collector.md) | SC:R 래더 리플레이 수집 | **Approved** |
 | 050 | [Evaluation](050-evaluation.md) | 평가·게이트 | **Approved** |
-| 060 | [Infra: Training Hosts](060-infra.md) | 학습 호스트(Linux Vulkan·CUDA) | **Approved** |
+| 060 | [Infra: Training Hosts](060-infra.md) | 학습 호스트(Linux ROCm·CUDA) | **Approved** |
 | 061 | [Shared Storage](061-shared-storage.md) | 공용 드라이브 체크포인트·데이터 | **Approved** |
 
 ## 마일스톤
@@ -172,5 +178,5 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | M3 | hostd·env 스케줄러(Linux 구현, Windows는 `docs/windows.md` 체크리스트) + T0 P/Z 봇 + T1 1단계(UAlbertaBot)·2단계(5종 추가 포팅) + 동시 게임 수 측정(calibrate) | 020, 021 |
 | M4 | 리플레이 파이프라인 (SC:R 리플레이 변환 포함), SC:R 래더 리플레이 수집 | 040, 043, 013(명령 인코딩 부분) |
 | M5 | 모델 + BC. 데이터 규모가 필요 없는 부분(모델·feature·마스크·executor·보상·BC 골격)은 M4와 병행한다(2026-10-16 사용자 결정) | 030–034, 041 |
-| M6 | RL + 리그 | 042, 050 |
+| M6 | RL + 리그. RL 전에 학습·추론을 PyTorch로 전환한다(2026-10-23, AMB-000-4: 1단계 기능 이식·동등성 검증 → Burn 삭제 → 2단계 최적화, BC 본학습은 PyTorch로 새로 시작) | 042, 050, 032, 041, 060, 061 |
 | M7 | samase_scarf 분석 스파이크 + SC:R 브리지 + 실전 스모크 | 012, 013, 050 |

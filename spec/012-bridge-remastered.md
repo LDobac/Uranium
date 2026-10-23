@@ -1,6 +1,6 @@
 # 012 — Bridge: Remastered (samase plugin)
 
-- **Status**: **Approved** (2026-10-22 사용자 승인. M7 스파이크 결과와 2026-10-22 사용자 결정 AMB-012-1·2·4·5·6, AMB-001-5, AMB-030-4·5를 반영했다. 012-R15 시간 제한 없음, 012-R16 접속 실패 시 비활성 포함)
+- **Status**: **Approved** (2026-10-23 개정: R19 실행 명령 `python -m uranium scr`(PyTorch 전환, AMB-000-4). 2026-10-22 사용자 승인. M7 스파이크 결과와 2026-10-22 사용자 결정 AMB-012-1·2·4·5·6, AMB-001-5, AMB-030-4·5를 반영했다. 012-R15 시간 제한 없음, 012-R16 접속 실패 시 비활성 포함)
 - **Related**: [001](001-system-architecture.md), [010](010-game-protocol.md), [013](013-version-mapping.md), [030](030-observation.md), [050](050-evaluation.md)
 - **근거 리포트**: `reports/m7_scr_spike.md`(실게임 측정), `reports/m7_scr_field_mapping.md`(필드 대응표)
 
@@ -62,7 +62,7 @@ StarCraft: Remastered 프로세스에 samase 플러그인 DLL로 로드되는 �
 | ID | 요구사항 |
 |---|---|
 | 012-R18 | **MUST** `Hello.mode = Realtime`인 세션에서 에이전트는 다음과 같이 동작한다. `PrivilegedSummary`를 기대하지 않는다. 012-R7 유효 기한을 붙인다. `last_failed`를 0으로 고정한다(012-R14). 항복 모드 기본값은 `On`이다(031-R12) |
-| 012-R19 | **MUST** 같은 에이전트 바이너리가 백엔드 플래그만 바꿔 OpenBW와 SC:R 브리지를 모두 받는다(001-AC1). SC:R 실전 실행은 `uranium-agent`의 하위 명령으로 한다(체크포인트·샘플링·listen 주소 지정). 추론 장치는 지연 측정 뒤 정한다(AMB-001-1) |
+| 012-R19 | **MUST** 같은 에이전트(001-R6)가 백엔드 플래그만 바꿔 OpenBW와 SC:R 브리지를 모두 받는다(001-AC1). SC:R 실전 실행은 `python -m uranium scr`로 한다(체크포인트·샘플링·listen 주소 지정. 에이전트 서버는 Rust 스레드, 추론은 PyTorch. 2026-10-23 개정: 이전 `uranium-agent`의 하위 명령). 추론 장치는 지연 측정 뒤 정한다(AMB-001-1) |
 
 ## 명령 인코딩 (SC:R)
 - 유닛을 지정하는 명령은 SC:R 1.21 확장 opcode를 쓴다. 레이아웃은 [013](013-version-mapping.md) 표를 따른다.

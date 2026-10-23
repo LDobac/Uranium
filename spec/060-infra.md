@@ -1,38 +1,38 @@
-# 060 — Infra: Training Hosts (Linux Vulkan · CUDA)
+# 060 — Infra: Training Hosts (Linux ROCm · CUDA)
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: AC2·AC4 정밀도를 032-R8 호스트별 기준에 맞춤, 사용자 결정. 2026-10-18 개정: R6 감시·재시작 구현 서술(supervise·worker), AC2 닫힘. 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): R1 `--backend`, R6 자식 프로세스 그룹 분리(H-4)·자동 시작 문구·`TimeoutStopSec`, R7 RL 리플레이 삭제 제거(042-R11)·경고 기준(C-3), 장비 표기·파일 이름 중립화(001-R10, G-D9). 2026-10-20 개정(사용자 결정, AMB-032-8): R8 주 장비 규칙)
+- **Status**: Approved (2026-10-15, 2026-10-23 개정: PyTorch 전환(사용자 결정, AMB-000-4) — 환경 표, R1 백엔드·직접 작성 커널 허용, R2 Python 벤치, R3 Linux ROCm 호스트 메모리 예산(실측으로 확정, 배치 축소 대신 결과 불변 메모리 절감, AMB-032-10), R5·R6·R7 Python 진입점, R8 Vulkan → ROCm, AC1·AC4·AC5. 2026-10-17 개정: AC2·AC4 정밀도를 032-R8 호스트별 기준에 맞춤, 사용자 결정. 2026-10-18 개정: R6 감시·재시작 구현 서술(supervise·worker), AC2 닫힘. 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): R1 `--backend`, R6 자식 프로세스 그룹 분리(H-4)·자동 시작 문구·`TimeoutStopSec`, R7 RL 리플레이 삭제 제거(042-R11)·경고 기준(C-3), 장비 표기·파일 이름 중립화(001-R10, G-D9). 2026-10-20 개정(사용자 결정, AMB-032-8): R8 주 장비 규칙)
 - **Related**: [032](032-model-architecture.md), [042](042-rl-training.md), [020](020-env-orchestration.md), [061](061-shared-storage.md)
 
 ## Purpose
-학습·추론 호스트의 환경, 예산, 벤치 기준을 정의한다. 학습 호스트는 Linux Vulkan 호스트(Burn Vulkan)와 CUDA 호스트(Burn CUDA, Linux/Windows)다(2026-10-15 CUDA 추가). 호스트의 장비 종류·사양·상태는 이 spec에 쓰지 않고 리포트(`reports/bench_*.md`, `reports/vulkaninfo_*.txt`)와 추적하지 않는 설정에 둔다(001-R10, 2026-10-19).
+학습·추론 호스트의 환경, 예산, 벤치 기준을 정의한다. 학습 호스트는 Linux ROCm 호스트(PyTorch ROCm)와 CUDA 호스트(PyTorch CUDA, Linux/Windows)다(2026-10-23 전환. 이전: Linux Vulkan 호스트·CUDA 호스트, Burn). 호스트의 장비 종류·사양·상태와 설치 절차는 이 spec에 쓰지 않고 리포트(`reports/bench_*.md`, `reports/torch_vs_burn.md` 등)와 추적하지 않는 설정에 둔다(001-R10, 2026-10-19).
 
 ## 환경
 | 항목 | 값 |
 |---|---|
-| OS | Vulkan 호스트: Linux (Mesa Vulkan 드라이버). Mesa 버전은 M1(a) 통과 버전으로 고정하고 M1(a) 벤치 리포트에 기록 |
-| GPU | 장비 사양(f16 지원, subgroup, 메모리 heap, 드라이버 버전)은 M1(a) 실측 리포트(`reports/vulkaninfo_*.txt`, `reports/bench_*.md`)에 둔다 |
-| GPU API | Vulkan 호스트: Vulkan(Burn `wgpu`). CUDA 호스트: CUDA(Burn `cuda`). ROCm·HIP는 쓰지 않는다 |
-| CUDA 호스트 | Linux 또는 Windows, CUDA를 지원하는 GPU. 사양·메모리 예산은 벤치로 측정해 리포트에 둔다(TBD(M5)) |
-| Burn | **0.22.0** 고정(`Cargo.toml` `=0.22.0` + `Cargo.lock`). 업그레이드는 spec 변경으로 관리 |
+| OS | ROCm 호스트: Linux. ROCm·커널 모듈·직접 빌드한 라이브러리(PyTorch·BLAS 등)의 버전과 설치 절차는 리포트에 기록하고, 벤치를 통과한 구성으로 고정한다 |
+| GPU | 장비 사양(메모리, 지원 정밀도, 드라이버 버전)은 실측 리포트(`reports/bench_*.md`)에 둔다 |
+| GPU API | CUDA 호스트: CUDA(PyTorch CUDA 빌드). ROCm 호스트: ROCm/HIP(PyTorch ROCm 빌드). 직접 작성한 CUDA·HIP 커널을 쓸 수 있다(R1). Vulkan 학습 경로는 2026-10-23 삭제했다 |
+| CUDA 호스트 | Linux 또는 Windows, CUDA를 지원하는 GPU. 사양·메모리 예산은 벤치로 측정해 리포트에 둔다 |
+| Python·PyTorch | Python **3.14**, PyTorch **2.14.x**(CUDA 호스트는 공식 CUDA 빌드, ROCm 호스트는 그 GPU 아키텍처용 빌드). 패키지는 `pyproject.toml`·uv로 관리하고 버전 업그레이드는 spec 변경으로 관리한다. Rust 쪽은 `Cargo.lock`으로 고정한다 |
 | 메모리·CPU | 호스트별 실측값은 리포트에 둔다. 메모리를 CPU와 GPU가 공유하는 호스트는 CPU 작업(추론 서버, env feature 추출, 로컬 OpenBW)과 학습이 메모리를 나눠 쓴다(R3) |
 
 ## Requirements
 | ID | 요구사항 |
 |---|---|
-| 060-R1 | **MUST** Burn cargo feature는 `vulkan`(Vulkan 호스트), `cuda`(CUDA 호스트, 해당 호스트에서만 켬), `flex`(CPU 테스트)를 쓴다. 실행 시 `--backend vulkan\|cuda\|flex`로 고른다(GPU 0번). 직접 작성한 CUDA·ROCm 코드는 두지 않는다. (변경 이력: ndarray deprecated, 2026-10-15 CUDA 추가, 2026-10-19 옵션 이름을 실제 `--backend`로 정정) |
-| 060-R2 | **MUST** M1(a) 벤치 스위트(`tools/bench`)를 만든다. 측정 항목은 아래 표와 같다 |
-| 060-R3 | **MUST** 메모리 예산은 학습 호스트별로 지킨다(아래 표). 초과 시 배치 크기를 자동으로 줄인다 |
+| 060-R1 | **MUST** Python 진입점은 `--backend auto\|cuda\|rocm\|cpu`로 장치를 고른다(기본 `auto`: PyTorch 빌드가 ROCm이면 `rocm`, CUDA면 `cuda`, GPU가 없으면 `cpu`, GPU 0번). 백엔드에 따라 정밀도(032-R8)와 커널 경로가 정해지고 `meta.json`·`devices.jsonl`(061-R15)에 기록된다. **직접 작성한 CUDA·HIP 커널을 허용한다**(2026-10-23 사용자 결정, AMB-000-4): ① 소스는 하나(`python/uranium/kernels`)이고 CUDA 호스트는 그대로, ROCm 호스트는 hipify해서 빌드한다. ② 커널마다 순수 PyTorch 기준 구현, 기준 대비 정확도·gradcheck 테스트, 끄는 설정(환경변수)을 둔다. ③ 빌드나 로드가 실패하면 경고 후 기준 구현으로 돈다. (변경 이력: Burn cargo feature `vulkan\|cuda\|flex`와 `--backend`, 직접 작성 CUDA·ROCm 코드 금지 — 2026-10-15~22) |
+| 060-R2 | **MUST** 벤치 스위트(`python -m uranium bench`, `python/uranium/bench`)를 둔다. 측정 항목은 아래 표와 같다. 2026-10-23까지의 Burn 벤치(`tools/bench`)와 케이스 이름·리포트 형식을 맞춰 비교할 수 있게 한다 |
+| 060-R3 | **MUST** 메모리 예산은 학습 호스트별로 지킨다(아래 표). 초과하면 결과를 바꾸지 않는 메모리 절감 설정(041-R17 엔티티 재계산, 041-R18 압축 보관, 활성값 재계산)을 켠다. 배치 크기·레인 구성은 바꾸지 않는다(032-R19, 2026-10-23 개정. 이전: 초과 시 배치 크기 자동 축소). 학습 설정·최적화는 Linux ROCm 호스트 예산 안에서 최악 모양(GTrXL, 레인 그룹 1개 × T64 × 실데이터 최대 N)으로 학습돼야 채택한다(AMB-032-10) |
 | 060-R4 | **MUST** 체크포인트, 리그 스냅샷, 학습 데이터 원본은 **공용 드라이브(SMB)**에 둔다([061](061-shared-storage.md)). 학습 호스트의 로컬 디스크에는 로그와 캐시만 둔다. (변경 이력: '로컬만·백업 없음'에서 2026-10-15 변경) |
-| 060-R5 | **SHOULD** 다른 호스트의 GPU를 추론 서버로 쓰는 옵션을 둔다. 추론 서버를 별도 바이너리로 만들고 TCP로 요청을 받으며, Vulkan 또는 CUDA로 동작한다 |
-| 060-R6 | **MUST** 장시간 학습 시 학습 프로세스의 비정상 종료나 GPU 행(hang)·드라이버 리셋(진행 없음)을 감지하면 같은 run을 공용 드라이브의 `LATEST` 체크포인트 기준으로 자동 재시작한다. 구현(2026-10-18): 감시는 `uranium-train supervise -- <bc|rl …>`(단일 run)와 run 큐 작업자 `uranium-train worker`(061-R13)가 맡는다. 자식 프로세스를 감시하고, stderr 출력(또는 진행 파일 변경)이 `--hang-minutes`(기본 30분) 동안 없으면 종료 후 재시작한다. 재시작은 시간 창(기본 60분)당 횟수 제한(기본 5회)과 늘어나는 간격(기본 60초, 2배씩, 최대 10분)을 지킨다. 재시작하지 않는 경우: 종료 코드 0(완료·`--steps` 도달·Ctrl+C 정상 종료·잠금 상실), 130(두 번째 Ctrl+C), 75(잠금을 얻지 못함, 061-R5), 76(양보, 061-R14), 감시 프로세스가 Ctrl+C를 받은 뒤. 같은 호스트 재시작은 자기 잠금을 넘겨받고 미push 체크포인트를 먼저 push한다(061-R5, R11-5). **Ctrl+C 전달(2026-10-19, H-4, AMB-061-6)**: Linux에서 감시 프로세스(`supervise`·`worker`)는 자식 학습을 **별도 프로세스 그룹**으로 띄우고 SIGINT를 자기가 한 번만 전달한다. 터미널 포그라운드에서 Ctrl+C를 눌러도 자식이 SIGINT를 두 번 받아(프로세스 그룹 + 전달) 저장 없이 130으로 끝나는 일이 없게 한다. **자동 시작**: Linux는 systemd user 서비스(`tools/worker/uranium-worker.service`: `KillSignal=SIGINT`, `KillMode=process`, `TimeoutStopSec=900`)로 감시 프로세스를 띄운다. `TimeoutStopSec`은 900초(15분)로 통일하고 docs도 같은 값을 쓴다. Windows용 자동 시작 구성은 제공하지 않고 사용자가 직접 실행한다(2026-10-19 사용자 결정 D-c, AMB-060-1) |
-| 060-R7 | **MUST** 저장 총량은 **1TB 미만**이다(사용자 결정 2026-10-15). 공용 드라이브와 로컬 캐시 모두 아래 예산을 지킨다. 디스크 경고는 061-R8(물리 디스크 사용률 80%, 학습 시작·체크포인트 저장마다, 2026-10-19 사용자 결정 C-3)을 따른다. RL·평가 리플레이는 **자동으로 지우지 않는다**(042-R11). 예산을 넘으면 경고만 한다(2026-10-19 사용자 결정, AMB-061-5, 이전의 "RL 자가 대전 리플레이 자동 삭제"를 제거). 리플레이 총량은 RL 학습(`uranium-train rl`)이 학습 시작과 체크포인트 저장 때 061-R8 디스크 검사와 함께 `runs/*/replays/` 합계로 잰다 |
-| 060-R8 | **MUST** 주 장비 규칙(2026-10-20 사용자 결정, AMB-032-8): CUDA 호스트는 항상 유휴가 아니다. CUDA 호스트가 유휴일 때는 CUDA 호스트가 추론·학습(learner)의 주 장비가 되고, 바쁠 때는 Linux Vulkan 호스트가 주 장비가 된다. 추론 지연 판정은 CUDA 호스트에만 적용하고 Linux Vulkan 호스트는 실측만 기록한다(032-AC2). **BC(현재 구현)**: run 큐 작업자(061-R13)와 양보 요청(061-R14)이 이 규칙을 구현한다. CUDA 호스트 작업자에 더 높은 `--priority`를 주면, CUDA 호스트 작업자가 도는 동안 Linux Vulkan 호스트가 돌던 run을 넘겨받고, CUDA 호스트 작업자가 Ctrl+C로 멈추면(체크포인트·push·잠금 해제) Linux Vulkan 호스트 작업자가 이어받는다. 유휴·바쁨은 CUDA 호스트에서 작업자를 켜고 끄는 것으로 나타나며, 자동 유휴 감지는 없다. **RL(M6)**: RL의 추론 서버·learner(042)에 이 규칙을 적용하는 방법(장비 전환, 체크포인트 재개)은 M6 RL 구현에서 정한다. 첫 RL 실험은 CUDA 호스트에서 한다(042, 2026-10-17 사용자 결정) |
+| 060-R5 | **SHOULD** 다른 호스트의 GPU를 추론 서버로 쓰는 옵션을 둔다. 추론 서버는 Python 프로세스(`python -m uranium serve`)이고 TCP로 브리지 접속을 받으며, CUDA 또는 ROCm으로 동작한다 |
+| 060-R6 | **MUST** 장시간 학습 시 학습 프로세스의 비정상 종료나 GPU 행(hang)·드라이버 리셋(진행 없음)을 감지하면 같은 run을 공용 드라이브의 `LATEST` 체크포인트 기준으로 자동 재시작한다. 구현(2026-10-18): 감시는 `uranium-train supervise -- <bc|rl …>`(단일 run)와 run 큐 작업자 `uranium-train worker`(061-R13)가 맡는다(Rust). 2026-10-23부터 자식 학습은 Python(`URANIUM_PYTHON -m uranium bc|rl …`, 001-R9)이다. Python 자식은 stderr 쓰기 실패로 멈추지 않고, 첫 SIGINT에 체크포인트·push·잠금 해제 후 0으로 끝나며, 종료 코드 75·76의 의미를 그대로 지킨다. 자식 프로세스를 감시하고, stderr 출력(또는 진행 파일 변경)이 `--hang-minutes`(기본 30분) 동안 없으면 종료 후 재시작한다. 재시작은 시간 창(기본 60분)당 횟수 제한(기본 5회)과 늘어나는 간격(기본 60초, 2배씩, 최대 10분)을 지킨다. 재시작하지 않는 경우: 종료 코드 0(완료·`--steps` 도달·Ctrl+C 정상 종료·잠금 상실), 130(두 번째 Ctrl+C), 75(잠금을 얻지 못함, 061-R5), 76(양보, 061-R14), 감시 프로세스가 Ctrl+C를 받은 뒤. 같은 호스트 재시작은 자기 잠금을 넘겨받고 미push 체크포인트를 먼저 push한다(061-R5, R11-5). **Ctrl+C 전달(2026-10-19, H-4, AMB-061-6)**: Linux에서 감시 프로세스(`supervise`·`worker`)는 자식 학습을 **별도 프로세스 그룹**으로 띄우고 SIGINT를 자기가 한 번만 전달한다. 터미널 포그라운드에서 Ctrl+C를 눌러도 자식이 SIGINT를 두 번 받아(프로세스 그룹 + 전달) 저장 없이 130으로 끝나는 일이 없게 한다. **자동 시작**: Linux는 systemd user 서비스(`tools/worker/uranium-worker.service`: `KillSignal=SIGINT`, `KillMode=process`, `TimeoutStopSec=900`)로 감시 프로세스를 띄운다. `TimeoutStopSec`은 900초(15분)로 통일하고 docs도 같은 값을 쓴다. Windows용 자동 시작 구성은 제공하지 않고 사용자가 직접 실행한다(2026-10-19 사용자 결정 D-c, AMB-060-1) |
+| 060-R7 | **MUST** 저장 총량은 **1TB 미만**이다(사용자 결정 2026-10-15). 공용 드라이브와 로컬 캐시 모두 아래 예산을 지킨다. 디스크 경고는 061-R8(물리 디스크 사용률 80%, 학습 시작·체크포인트 저장마다, 2026-10-19 사용자 결정 C-3)을 따른다. RL·평가 리플레이는 **자동으로 지우지 않는다**(042-R11). 예산을 넘으면 경고만 한다(2026-10-19 사용자 결정, AMB-061-5, 이전의 "RL 자가 대전 리플레이 자동 삭제"를 제거). 리플레이 총량은 RL 학습(`python -m uranium rl`)이 학습 시작과 체크포인트 저장 때 061-R8 디스크 검사와 함께 `runs/*/replays/` 합계로 잰다 |
+| 060-R8 | **MUST** 주 장비 규칙(2026-10-20 사용자 결정, AMB-032-8. 2026-10-23 Linux 학습 호스트를 Vulkan에서 ROCm으로 바꿈): CUDA 호스트는 항상 유휴가 아니다. CUDA 호스트가 유휴일 때는 CUDA 호스트가 추론·학습(learner)의 주 장비가 되고, 바쁠 때는 Linux ROCm 호스트가 주 장비가 된다. 추론 지연 판정은 CUDA 호스트에만 적용하고 Linux ROCm 호스트는 실측만 기록한다(032-AC2). **BC(현재 구현)**: run 큐 작업자(061-R13)와 양보 요청(061-R14)이 이 규칙을 구현한다. CUDA 호스트 작업자에 더 높은 `--priority`를 주면, CUDA 호스트 작업자가 도는 동안 Linux ROCm 호스트가 돌던 run을 넘겨받고, CUDA 호스트 작업자가 Ctrl+C로 멈추면(체크포인트·push·잠금 해제) Linux ROCm 호스트 작업자가 이어받는다. 유휴·바쁨은 CUDA 호스트에서 작업자를 켜고 끄는 것으로 나타나며, 자동 유휴 감지는 없다. **RL(M6)**: RL의 추론 서버·learner(042)에 이 규칙을 적용하는 방법(장비 전환, 체크포인트 재개)은 M6 RL 구현에서 정한다. 첫 RL 실험은 CUDA 호스트에서 한다(042, 2026-10-17 사용자 결정) |
 
 ### 060-R2 벤치 항목
-- matmul (f32/f16, 1024–4096)
+- matmul (f32/f16/bf16, 1024–4096)
 - conv2d
-- `Lstm` (B=32, T=64, H=512) forward/backward
-- `TransformerEncoder` (N=512, d=256, L=3) forward/backward
+- LSTM (B=32, T=64, H=512) forward/backward
+- Transformer encoder (N=512, d=256, L=3) forward/backward
 - softmax / gather / scatter
 - 모델 전용 연산 ([032](032-model-architecture.md)):
   - scatter-add ([B,N,32] → [B,32,128,128])
@@ -45,14 +45,19 @@
 - 전체 모델 기준 (§4 기본 구성):
   - `act()` batch 16, N=256
   - `forward_seq` batch 32×T64 forward/backward
-- 각 항목의 수치 정확도(Flex CPU 대비)
+- 각 항목의 수치 정확도(CPU 대비)
+- 직접 작성 커널은 기준 구현 대비 정확도와 속도
 
-### 060-R3 메모리 예산 (Linux Vulkan 호스트. CUDA 호스트는 TBD(M5))
+### 060-R3 메모리 예산 (Linux ROCm 호스트, 2026-10-23 개정)
+메모리를 CPU와 GPU가 공유하는 호스트라 학습 프로세스 전체(GPU 할당 + 데이터 공급·feature 추출 등 호스트 메모리)를 함께 본다. 장비의 GPU 할당 한계와 RAM 용량은 리포트(`reports/torch_vs_burn.md`의 Linux ROCm 호스트 절)에 있다.
+
 | 용도 | 할당 |
 |---|---|
-| 학습 | ≤ 8GB GPU 가용 메모리 |
-| 추론 서버 | ≤ 1.5GB |
+| 학습 프로세스(GPU 최대 할당 + 프로세스 상주 메모리) | ≤ TBD(M6): 1단계 이식 뒤 최악 모양 실측으로 정하고 사용자 확인 |
+| 추론 서버(학습과 같은 호스트에서 돌 때) | ≤ TBD(M6) |
 | OS·env·리플레이 버퍼 | 나머지 |
+
+CUDA 호스트는 GPU 전용 메모리라 예산을 따로 두지 않고 실측만 기록한다. (이력: Linux Vulkan 호스트 학습 ≤ 8GB GPU, 추론 서버 ≤ 1.5GB)
 
 ### 060-R7 저장 예산 (초기 배분, 합계 < 1TB. 공용 드라이브 기준, 061-R8)
 | 용도 | 예산 |
@@ -63,13 +68,14 @@
 | 로그·리포트·기타 | 나머지 |
 
 ## Acceptance Criteria
-- 060-AC1: 벤치 스위트 결과가 Vulkan 호스트 벤치 리포트(기본 출력 `reports/bench_vulkan.md`, 백엔드별 이름, 2026-10-19. 2026-10-15 M1(a) 결과는 그 전 이름의 Vulkan 벤치 리포트에 있다)에 기록된다. 이 결과로 032-R2의 모델 크기와 042의 배치 크기를 확정한다.
+- 060-AC1: 벤치 스위트 결과가 백엔드별 리포트(`reports/bench_cuda.md`, `reports/bench_rocm.md`)에 기록된다. 이 결과로 032-R2의 모델 크기와 042의 배치 크기를 확정한다. (이력: Burn Vulkan 결과는 `reports/bench_vulkan.md`와 그 전 이름의 M1(a) Vulkan 벤치 리포트에 있다.)
 - 060-AC2: Vulkan 호스트의 f16 경로가 Flex(CPU) f32 대비 허용 오차(1e-2 상대) 이내이거나, 아니면 f32 전용으로 결정하고 기록한다. CUDA 호스트는 f32(TF32)가 기본이므로(032-R8, 2026-10-17) f16 판정 대상이 아니다. **닫힘(2026-10-18 사용자 결정)**: Vulkan 호스트의 BC 학습은 f32 전용으로 정했다(032-R8 예외). f16 학습 경로는 구현하지 않았다.
 - 060-AC3: 24시간 BC 학습 스모크에서 드라이버 오류 없이 완주하거나, 오류 시 자동 재시작 후 이어서 학습한다. 코어 비교 run(032-R17)의 첫 24시간으로 대신한다(2026-10-19 사용자 결정). — **통과(2026-10-23 기록 대조)**: CUDA 호스트의 `core-abl-lstm`이 22.6시간에 5,300 update를 마쳤고, 그사이 CUDA 오류 1회를 감시(060-R6)가 60초 뒤 재시작해 마지막 체크포인트부터 이어 갔다(`reports/m6_pre_bc_review.md` G-M4).
-- 060-AC4: CUDA 호스트에서 같은 벤치 스위트(`cargo run -p bench --release --features cuda -- --backend cuda`)를 돌려 `reports/bench_cuda.md`(기본 출력, 백엔드별 이름, `--out`으로 바꿀 수 있다)에 기록한다. autotune·fusion 설정(041-R15)으로 측정한다. Flex 대비 정확도 기준은 032-AC1(CUDA ≤ 1e-2, AMB-032-5)을 따르고, 정밀도는 f32(TF32)다(032-R8).
+- 060-AC4 (2026-10-23 개정): CUDA 호스트에서 벤치 스위트(`python -m uranium bench --backend cuda`)를 돌려 `reports/bench_cuda.md`(`--out`으로 바꿀 수 있다)에 기록한다. 정밀도는 학습 설정과 같은 bf16 혼합(032-R8)이고 f32(TF32)도 함께 잰다. CPU 대비 정확도 기준은 032-AC1을 따른다. (이력: Burn `cargo run -p bench --features cuda`, autotune·fusion, f32(TF32).)
+- 060-AC5 (2026-10-23): Linux ROCm 호스트에서 같은 벤치 스위트(`--backend rocm`, f32)를 돌려 `reports/bench_rocm.md`에 기록하고, 060-R3 메모리 예산을 실측으로 정한다(학습 프로세스 최대 GPU 할당과 상주 메모리, 최악 모양).
 
 ## Risks & Open Questions
-- Linux Vulkan 호스트(Mesa Vulkan 드라이버)에서 Burn/CubeCL 커널 성숙도가 불확실하다(특히 f16, subgroup 연산).
+- Linux ROCm 호스트의 ROCm 스택은 공식 지원 밖이다(2026-10-23). 드문 GPU 멈춤 뒤에는 재부팅이 필요하고, 일부 라이브러리 경로(MIOpen LSTM backward)가 실패한다. 대응: 실패 경로는 쓰지 않고(032-R1), 직접 작성 커널·그래프 캡처마다 끄는 설정을 두며(R1), 감시 프로세스(R6)와 작업자 교대(R8)로 이어 간다. (이력: Linux Vulkan 호스트의 Burn/CubeCL 커널 성숙도 위험.)
 - 060-R6 별도 프로세스 그룹: 감시 프로세스가 강제 종료(SIGKILL 등)되면 자식 학습이 고아로 남아 heartbeat를 계속 갱신할 수 있다(다른 호스트가 인수하지 못함). 대응: Linux는 자식에 `PR_SET_PDEATHSIG`(SIGINT 또는 SIGTERM)를 설정해 감시 프로세스가 강제 종료돼도 자식이 신호를 받아 멈추게 한다.
 - 체크포인트 쓰기는 원자적으로 한다(061-R4).
 

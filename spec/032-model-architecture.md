@@ -1,10 +1,10 @@
-# 032 — Model Architecture (Burn)
+# 032 — Model Architecture (PyTorch)
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: R8 호스트별 정밀도 — CUDA 호스트 f32(TF32) 허용, 사용자 결정 / 추론 서버 Core 상태 슬롯(032-R14), 샘플링 모드·헤드별 log-prob(032-R15) / 추론 서버 가중치 교체·슬롯 상태 읽기(032-R16, 3단계 계획 승인) / 2026-10-18 개정: 코어 비교 절차(032-R17, AC7, AMB-032-6). 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): AC8 backward 허용 오차(H), autotune·fusion 채택(G-D5, 041-R15), R17 ② val 고정 seed 셔플 500게임(G-D8), F_c를 030과 일치, 장비 표기 중립화(001-R10, G-D9). 2026-10-19 T7 개정(사용자 결정): §5 대상 마스크에서 선택 유닛 제외(034-R9), `self_target[A]` 상수). 2026-10-20 개정(사용자 결정, AMB-032-8): AC2 기준은 CUDA 호스트에만 적용하고 Linux Vulkan 호스트는 실측 기록만 하는 대체 장비로 둔다, R17 주 장비 규칙(CUDA 호스트가 유휴면 주, 아니면 Linux Vulkan 호스트가 주, 060-R8). 2026-10-21 개정: 032-R18 win_open 헤드(사용자 결정, AMB-031-6). 2026-10-23 개정: 코어 비교 결과로 GTrXL 채택(032-R17 ④, AC7, 사용자 결정))
+- **Status**: Approved (2026-10-15, 2026-10-23 개정: Burn에서 PyTorch로 전환(사용자 결정, AMB-000-4) — R1 PyTorch·CPU 기준, R6 형식은 061-R10, R8 장비별 정밀도(CUDA bf16 혼합·ROCm f32, AMB-032-9), R13 구현 방식 자유화, R14·R16 Python 추론 스레드·K/V 캐시 조건, R18 Burn 표현 정리, R19 최적화 원칙(AMB-032-10), §2.4·§6 Python 인터페이스, AC1·2·3·6·8·9 기준 장치 변경, AC10 Burn 동등성. 2026-10-17 개정: R8 호스트별 정밀도 — CUDA 호스트 f32(TF32) 허용, 사용자 결정 / 추론 서버 Core 상태 슬롯(032-R14), 샘플링 모드·헤드별 log-prob(032-R15) / 추론 서버 가중치 교체·슬롯 상태 읽기(032-R16, 3단계 계획 승인) / 2026-10-18 개정: 코어 비교 절차(032-R17, AC7, AMB-032-6). 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): AC8 backward 허용 오차(H), autotune·fusion 채택(G-D5, 041-R15), R17 ② val 고정 seed 셔플 500게임(G-D8), F_c를 030과 일치, 장비 표기 중립화(001-R10, G-D9). 2026-10-19 T7 개정(사용자 결정): §5 대상 마스크에서 선택 유닛 제외(034-R9), `self_target[A]` 상수). 2026-10-20 개정(사용자 결정, AMB-032-8): AC2 기준은 CUDA 호스트에만 적용하고 Linux Vulkan 호스트는 실측 기록만 하는 대체 장비로 둔다, R17 주 장비 규칙(CUDA 호스트가 유휴면 주, 아니면 Linux Vulkan 호스트가 주, 060-R8). 2026-10-21 개정: 032-R18 win_open 헤드(사용자 결정, AMB-031-6). 2026-10-23 개정: 코어 비교 결과로 GTrXL 채택(032-R17 ④, AC7, 사용자 결정))
 - **Related**: [030](030-observation.md), [031](031-action-space.md), [033](033-reward.md), [034](034-action-table.md), [041](041-imitation-learning.md), [042](042-rl-training.md), [060](060-infra.md)
 
 ## Purpose
-Linux Vulkan 호스트의 학습 예산에 맞춘 경량 AlphaStar 계열 정책·가치 네트워크를 Burn으로 정의한다. 입력 계약은 [030](030-observation.md), 액션 구조는 [031](031-action-space.md)과 [034](034-action-table.md)를 따른다.
+학습 호스트(특히 Linux ROCm 호스트의 메모리, 060-R3)의 예산에 맞춘 경량 AlphaStar 계열 정책·가치 네트워크를 PyTorch로 정의한다(2026-10-15~22는 Burn). 입력 계약은 [030](030-observation.md), 액션 구조는 [031](031-action-space.md)과 [034](034-action-table.md)를 따른다.
 
 ## 확정 사항 (2026-10-15)
 | 항목 | 결정 |
@@ -12,7 +12,7 @@ Linux Vulkan 호스트의 학습 예산에 맞춘 경량 AlphaStar 계열 정책
 | 정책 구조 | **단일 end-to-end 정책** (AMB-032-1 Resolved) |
 | 매치업 | **단일 공유 모델 + 상대 종족 임베딩** (AMB-032-2 Resolved) |
 | 전략 조건 z | **포함** (AMB-032-3 Resolved) |
-| 시간 축 코어 | **GTrXL**(2026-10-23 코어 비교로 채택, 032-R17). LSTM으로 시작해 짧은 BC 비교 학습으로 골랐고, 두 코어 모두 `Core` trait 구현으로 남긴다 (AMB-032-4·AMB-032-6 Resolved) |
+| 시간 축 코어 | **GTrXL**(2026-10-23 코어 비교로 채택, 032-R17). LSTM으로 시작해 짧은 BC 비교 학습으로 골랐고, 두 코어 모두 같은 `Core` 인터페이스 구현으로 남긴다 (AMB-032-4·AMB-032-6 Resolved) |
 | 관계 학습 | 유닛↔건물↔유닛 관계는 EntityEncoder(공간 축 트랜스포머)가 담당한다. 거리 기반 attention bias를 추가한다 |
 
 ## 1. 전체 구조
@@ -21,7 +21,7 @@ entity_* ─► EntityEncoder(Transformer 3L + distance bias) ─► E[B,N,256],
                                    └─ scatter(Linear(E)→32ch @128²) ─┐
 spatial[B,26,128,128] ─────────────────────────────────────────────►┴► SpatialEncoder(U-Net enc) ─► S8[B,128,8,8], skips{64²,32²,16²}, s_pool[B,256]
 scalar, scalar_cat, z_* ─► ScalarEncoder ─► c[B,256]
-concat[e_pool, s_pool, c](768) ─► Core (LSTM 512) ─► h[B,512]
+concat[e_pool, s_pool, c](768) ─► Core (GTrXL 2층 d512 | LSTM 512) ─► h[B,512]
 h ─► Heads (자기회귀, ar[B,256]):
       1 ActionType ─► 2 Delay ─► 3 Queued ─► 4 Selected(≤12) ─► 5 TargetUnit | 6 Location(128²)
 h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units, value}
@@ -69,15 +69,14 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
 
 ### 2.4 Core
 - 인터페이스:
-  ```rust
-  trait Core: Module {
-      type State;
-      fn init_state(&self, batch: usize, device: &Device) -> Self::State;
-      fn step(&self, x: Tensor<2>, s: Self::State) -> (Tensor<2>, Self::State);          // 추론
-      fn forward_seq(&self, x: Tensor<3>, s0: Self::State) -> (Tensor<3>, Self::State);  // 학습 [B,T,·]
-      fn select_rows(s: &Self::State, rows: Tensor<1, Int>) -> Self::State;              // 추론 서버: 슬롯 → 배치 (032-R14)
-      fn scatter_rows(s: Self::State, rows: Tensor<1, Int>, sub: Self::State) -> Self::State; // 배치 → 슬롯
-  }
+  ```python
+  class Core(nn.Module):  # 2026-10-23: Python(PyTorch). 이전 Burn trait와 같은 연산
+      def init_state(self, batch: int, device) -> State
+      def step(self, x: Tensor, s: State) -> tuple[Tensor, State]          # 추론 [B,d_in] → [B,H]
+      def forward_seq(self, x: Tensor, s0: State) -> tuple[Tensor, State]  # 학습 [B,T,d_in] → [B,T,H]
+      def select_rows(s: State, rows: Tensor) -> State                     # 추론: 슬롯 → 배치 (032-R14)
+      def scatter_rows(s: State, rows: Tensor, sub: State) -> State        # 배치 → 슬롯
+      def state_to_host(s: State) -> HostState / state_from_host(h) -> State  # 032-R16, 비트 단위 왕복
   ```
 - **채택 코어는 `GtrxlCore`다**(2026-10-23 사용자 결정, 032-R17). BC 본학습(041)과 RL(042)은 GTrXL로 한다. `LstmCore`는 처음 구현이자 비교 기준으로 남긴다.
 - `LstmCore`:
@@ -86,7 +85,7 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
   - 에피소드 시작 시 0으로 리셋한다.
 - `GtrxlCore`(M5 ablation 비교 대상, 2026-10-23 채택):
   - 최근 M=64 step의 core 입력에 causal self-attention 2층(d=512)을 쓴다.
-  - GRU-gated residual을 쓰고, 추론 시 KV cache를 유지한다.
+  - GRU-gated residual을 쓰고, 추론 시 KV cache를 유지한다. (2026-10-23 메모: Burn 구현은 층 입력 M개를 상태로 두고 K/V를 매 step 다시 계산했다. PyTorch에서는 K/V를 캐시할 수 있고, 조건은 032-R16을 따른다.)
   - 채택은 짧은 BC 비교 학습으로 정한다(032-R17, AMB-032-6). 추론 지연·메모리는 M5에서 측정했다(CUDA에서 두 코어가 거의 같다, `reports/m5_model.md`).
   - 비교가 끝나기 전까지 BC 본학습(041)은 시작하지 않는다. 비교 결과는 `reports/m6_core_ablation.md`에 기록한다.
   - 비교 결과(2026-10-23, 같은 update 수): 맞대결 100판 GTrXL 42승·LSTM 13승·무 45, T0 상대 승률 GTrXL 약 10%(274판)·LSTM 2.7%(300판), val 500게임 모든 지표 GTrXL 우세. GTrXL은 엔티티가 많은 장면에서 추론이 무거워 T0 대전 27판이 실제 시간 상한에 걸렸다(실시간 추론 부담은 060·012에서 다시 본다).
@@ -121,24 +120,25 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
 ## 3. Requirements
 | ID | 요구사항 |
 |---|---|
-| 032-R1 | **MUST** Burn 0.22의 런타임 `Device` 방식으로 작성한다. 모델 코드는 백엔드에 무관하고, 실행 시 Device로 고른다. 학습·추론은 `Device::vulkan(..)`(Vulkan 호스트) 또는 `Device::cuda(n)`(CUDA 호스트)에 `.autodiff()`를 붙여 쓴다. 테스트는 `Device::flex()`(CPU)를 쓴다. (변경 이력: 0.22에서 백엔드 제네릭 제거·ndarray deprecated, 2026-10-15 CUDA 추가) |
+| 032-R1 | **MUST** PyTorch(`python/uranium/model`)로 작성한다. 모델 코드는 장치에 무관하고 실행 시 `torch.device`로 고른다. 학습·추론은 CUDA 호스트에서 CUDA 빌드, Linux ROCm 호스트에서 ROCm 빌드의 `cuda` 장치를 쓴다(ROCm 빌드도 `torch.cuda` API를 쓴다). 기준 구현과 단위 테스트는 CPU에서 돈다. 장치별 차이가 있는 경로(예: ROCm에서 MIOpen LSTM backward 실패로 자체 LSTM 커널 사용)는 같은 수식이어야 하고 AC1·AC8로 확인한다. 직접 작성한 CUDA·HIP 커널은 같은 소스를 두 백엔드에서 빌드하고, 순수 PyTorch 기준 구현과 끄는 설정을 함께 둔다(060-R1). (변경 이력: 2026-10-15 Burn 0.22 `Device`(Vulkan·CUDA·Flex), 2026-10-23 PyTorch로 전환, AMB-000-4) |
 | 032-R2 | **MUST** 기본 크기는 약 12M 파라미터(§4)로 하고, 허용 범위는 10M–40M이다. 확장은 d_model 384, Transformer 4층 순으로 하며 M1(a) 벤치로 확정한다 |
 | 032-R3 | **MUST** 헤드는 자기회귀다. 학습에서는 teacher forcing(레이블 액션 주입), 추론에서는 샘플값을 주입한다 |
 | 032-R4 | **MUST** 모든 헤드에 마스크를 적용한다. 마스크된 logit은 `-1e9`로 둔다. 샘플링 결과는 항상 마스크를 만족해야 한다 |
 | 032-R5 | **MUST** Core 상태는 에피소드 간 리셋한다. 학습 시퀀스는 T=64 truncated BPTT로 한다 |
-| 032-R6 | **MUST** 체크포인트에 함께 저장할 항목: 가중치, `UraniumNetConfig`, feature 스키마 버전, action 스키마 버전([034](034-action-table.md)), 정규화 통계 |
+| 032-R6 | **MUST** 체크포인트에 함께 저장할 항목: 가중치, `UraniumNetConfig`, feature 스키마 버전, action 스키마 버전([034](034-action-table.md)), 정규화 통계. 파일 형식은 061-R10을 따른다(2026-10-23: 가중치는 safetensors) |
 | 032-R7 | **MUST** 추론은 batch B개 게임 동시 처리를 지원한다. 엔티티는 배치 내 최대 N으로 동적 패딩한다 |
-| 032-R8 | **MUST** 정밀도는 학습 호스트에서 **더 빠른 쪽**을 쓴다(2026-10-17 개정). **Linux Vulkan 호스트**: 학습과 추론은 **f16 혼합 정밀도**로 한다. M1(a)에서 그 호스트가 f16을 지원하고 matmul 오차가 4.5e-4, 속도가 약 1.5배임을 확인했다(2026-10-15 결정). 마스터 가중치·옵티마이저 상태·손실·softmax 누적은 f32로 두고, 손실 스케일링을 적용한다. 수치 문제가 생기면 해당 모듈만 f32로 되돌리고 기록한다. **CUDA 호스트**: f32(CUDA 내부 TF32 matmul)를 기본으로 한다. M5 실측에서 f16이 f32보다 느렸다(추론 중앙값 59 → 78ms, 학습 70 → 54 samples/s, `reports/m5_model.md`). f16 혼합 정밀도 학습 구현은 Vulkan 호스트 학습 전까지 미룬다(2026-10-17 사용자 결정). **예외**: Vulkan 호스트에서 도는 모든 BC 학습(ablation (A)·041-R5, 다른 PC에서 넘겨받아 이어 하는 S1·S2 구간 포함)은 f16 혼합 정밀도 미구현으로 f32로 학습한다(2026-10-18 사용자 결정, 처음 (A)만이던 예외를 넓힘) |
-| 032-R13 | **MUST** distance bias는 bias 테이블 gradient를 대규모 scatter-add로 모으지 않는 방식으로 구현한다. 예: bucket one-hot과 matmul, 또는 bucket별 사전 합산. M1(a)에서 기존 방식의 역전파가 정방향 대비 약 40배 느림(310ms)을 확인했다. 정방향 대비 역전파 시간이 5배 이내여야 한다 |
+| 032-R8 | **MUST** 정밀도는 장비별로 정한다(2026-10-23 사용자 결정, AMB-032-9). **CUDA 호스트**: 학습·추론 모두 **bf16 혼합 정밀도**다. 행렬곱·conv는 bf16 autocast로, 마스터 가중치·옵티마이저 상태·손실·log-softmax·softmax 누적·value 출력은 f32로 둔다. bf16은 지수 범위가 f32와 같아 손실 스케일링은 쓰지 않는다. 수치 문제가 생기면 해당 모듈만 f32로 되돌리고 기록한다. **Linux ROCm 호스트**: f32다(2026-10-23 실측에서 bf16 autocast가 f32보다 학습 2.9~3.8배·추론 3.3배 느림, `reports/torch_vs_burn.md`). 체크포인트는 정밀도와 무관하게 f32 가중치로 저장하므로 두 호스트가 서로 이어 학습할 수 있다. 정밀도는 `meta.json`과 `devices.jsonl`(061-R15)에 기록한다. GPU 계산은 비결정적일 수 있다(atomic 덧셈 순서 등, 032-R19). 비트 단위 재현은 CPU에서만 판정한다(061-AC1). 아래는 Burn 시기의 변경 이력이다. (이력) 2026-10-17 개정, 정밀도는 학습 호스트에서 **더 빠른 쪽**을 쓴다. **Linux Vulkan 호스트**: 학습과 추론은 **f16 혼합 정밀도**로 한다. M1(a)에서 그 호스트가 f16을 지원하고 matmul 오차가 4.5e-4, 속도가 약 1.5배임을 확인했다(2026-10-15 결정). 마스터 가중치·옵티마이저 상태·손실·softmax 누적은 f32로 두고, 손실 스케일링을 적용한다. 수치 문제가 생기면 해당 모듈만 f32로 되돌리고 기록한다. **CUDA 호스트**: f32(CUDA 내부 TF32 matmul)를 기본으로 한다. M5 실측에서 f16이 f32보다 느렸다(추론 중앙값 59 → 78ms, 학습 70 → 54 samples/s, `reports/m5_model.md`). f16 혼합 정밀도 학습 구현은 Vulkan 호스트 학습 전까지 미룬다(2026-10-17 사용자 결정). **예외**: Vulkan 호스트에서 도는 모든 BC 학습(ablation (A)·041-R5, 다른 PC에서 넘겨받아 이어 하는 S1·S2 구간 포함)은 f16 혼합 정밀도 미구현으로 f32로 학습한다(2026-10-18 사용자 결정, 처음 (A)만이던 예외를 넓힘) |
+| 032-R13 | **MUST** distance bias의 EntityEncoder 역전파 시간은 정방향의 5배 이내여야 한다(장비마다). 구현 방식은 자유다: bucket 인덱스로 표를 gather(embedding), bucket one-hot과 matmul, bucket별 사전 합산, 또는 attention과 bias를 합친 직접 작성 커널(커널 안에서 위치로 bucket을 계산해 [B,H,N,N] bias를 만들지 않는 방식 포함). 어느 방식이든 결과는 같은 수식이다(float 반올림과 GPU atomic 순서 차이만 허용, 032-R19). (변경 이력: 2026-10-15 Burn의 scatter-add 역전파가 정방향의 약 40배(310ms)라 "scatter-add 금지, one-hot matmul 등"으로 정했다. 2026-10-23 PyTorch에서는 gather 역전파가 빠르고 ROCm에서는 one-hot matmul 역전파가 오히려 느려서(엔티티 인코더 fwd+bwd 303.7ms 대 gather 79.9ms, `reports/torch_vs_burn.md`) 방식 제한을 풀었다) |
 | 032-R9 | **MUST** `act()`는 헤드 6개의 샘플링을 **한 번의 GPU forward 안에서** 수행한다(Gumbel-max). CPU 왕복은 없어야 한다 |
 | 032-R10 | **MUST** joint log-prob와 엔트로피는 `action_table`상 사용된 헤드만 합산한다 |
 | 032-R11 | **MUST** privileged 입력은 ValueHeads에만 연결한다. `act()` 시그니처는 privileged 텐서를 받지 않는다 |
 | 032-R12 | **MUST** Selected 헤드의 BC 레이블은 정규 순서(entity index 오름차순) 시퀀스 + END로 만든다 |
-| 032-R14 | **MUST** 추론 서버(`uranium-agent`)는 세션마다 고정 슬롯을 두고 Core 상태를 `[capacity, …]` 텐서 하나에 보관한다. 요청이 모인 세션의 행만 `select_rows`로 꺼내 `act`를 돌리고 `scatter_rows`로 되돌린다. 세션이 시작될 때 그 슬롯을 0으로 리셋한다(032-R5). 배치로 처리한 결과는 세션을 하나씩 처리한 결과와 같아야 하고(허용 오차 이내), 세션 사이에 상태가 섞이지 않는다 (2026-10-17) |
+| 032-R14 | **MUST** 추론(batch broker의 슬롯, 001-R6)은 세션마다 고정 슬롯을 두고, Python 추론 스레드가 Core 상태를 GPU의 `[capacity, …]` 텐서에 보관한다(2026-10-23: 이전에는 Rust `uranium-agent` 추론 스레드). broker는 슬롯이 열리고 닫힌 것을 배치와 함께 알린다. 요청이 모인 세션의 행만 `select_rows`로 꺼내 `act`를 돌리고 `scatter_rows`로 되돌린다. 세션이 시작될 때 그 슬롯을 0으로 리셋한다(032-R5). 배치로 처리한 결과는 세션을 하나씩 처리한 결과와 같아야 하고(허용 오차 이내), 세션 사이에 상태가 섞이지 않는다 (2026-10-17) |
 | 032-R15 | **MUST** `act()`의 샘플링 모드는 확률적(temp 1)과 결정론적(temp 0 = 헤드마다 argmax)을 둔다(050-R1). `ActOutput`은 joint log-prob과 함께 헤드별 log-prob [B,6]을 돌려준다. RL actor는 이 값을 behaviour log-prob로 기록한다(042) (2026-10-17) |
-| 032-R16 | **MUST** 추론 서버는 실행 중에 가중치를 교체할 수 있다(042 K update마다). 교체는 다음 배치부터 적용되고, 응답마다 정책 버전을 붙인다. 세션은 자기 슬롯의 Core 상태를 host 데이터로 읽을 수 있다(042 core_state0). Core는 상태를 host 데이터로 내보내고 다시 만드는 연산을 제공하며, 왕복은 비트 단위로 같다 (2026-10-17) |
-| 032-R17 | **MUST** 시간 축 코어(LSTM vs GTrXL)는 BC 본학습 전에 짧은 비교 학습으로 고른다(2026-10-18 사용자 결정, AMB-032-6). ① 학습: 코어마다 S1을 5,300 update 1회(seed 1개)씩 돌린다. 장비는 혼합 유동 운영이다(2026-10-18 사용자 결정): Linux Vulkan 호스트(f32)와 Windows CUDA 호스트(TF32 matmul)가 run 큐 작업자(061-R13·R14)로 두 run을 나눠 맡고 서로 이어받는다. 장비별 update 구간은 `runs/<id>/devices.jsonl`(061-R15)에 남고, 두 run의 장비 비율을 최종 집계해 리포트에 적는다. 두 run의 장비 비율이 크게 다르면 Vulkan f32와 CUDA TF32의 수치 차이가 비교에 섞일 수 있다(공정성 주의). 주 장비 규칙(2026-10-20 사용자 결정, AMB-032-8, 060-R8): CUDA 호스트가 유휴일 때는 CUDA 호스트가 주가 되고, 바쁠 때는 Linux Vulkan 호스트가 주가 된다. 이 규칙은 작업자 우선순위(CUDA 호스트에 더 높은 `--priority`)와 양보 요청(061-R14)으로 이미 구현돼 있다. 데이터 순서(`data.seed`)와 그 밖의 설정(Burn autotune·fusion 포함, 041-R15)은 같다. 학습률 스케줄은 짧은 run 전용으로, warmup 5%(265) 뒤 cosine이 5,300에서 끝난다(`config/bc_core_ablation.toml`). ② 오프라인 지표: `bc-eval --split val --games 500`(두 코어 같은 500게임). 500게임은 val 분할을 **고정 seed로 셔플**해 앞에서 고른다(출처 편중을 줄이기 위해, 2026-10-19 사용자 결정 G-D8, AMB-032-7). 학습 seed는 1개로 유지하고, 그 한계(seed 간 편차를 모름)는 리포트에 적는다. test 분할은 041-AC1용이라 쓰지 않는다. ③ 대전: 두 체크포인트 맞대결(TvT, 맵당 50판, 25판마다 슬롯 교대, `config/plans/core-ablation-h2h.toml`)과 각자 T0 상대 승률(상대 종족 3 × 맵 2 조합당 50판, 코어당 300판·합계 600판, 사용자 확정 2026-10-18, `config/plans/core-ablation-t0.toml`). 샘플링은 확률적(temp 1)이고 z는 없다. 대전 700판의 리플레이를 모두 저장한다(두 plan `save_replay = true`, `<out>/replays/g<id>.rep`, 2026-10-18 사용자 결정). ④ 판정: 규칙을 미리 정하지 않는다. 결과를 사용자에게 보고하고 사용자가 고른다. **결과: GTrXL 채택(2026-10-23 사용자 결정, `reports/m6_core_ablation.md` 4절).** ⑤ 비교 run의 체크포인트·로그·평가 출력은 지우지 않는다(비교 설정은 061-R6 `keep_checkpoints` 예외로 전부 보존, 2026-10-19 사용자 결정 G-D6) |
-| 032-R18 | **MUST** `win_open` 헤드(2026-10-21 사용자 결정, AMB-031-6). ① privileged 입력 경로가 없고, 코어 출력 `h`는 detach해서 받으므로 정책·인코더·코어·기존 value 헤드에 gradient가 가지 않는다. ② 설정 `value.win_open`(기본 false)이 true일 때만 만든다. 이 키가 없는 기존 설정·체크포인트(코어 비교 run 등)는 그대로 로드되고 win_open 출력이 없다(Burn `Config` derive는 모든 필드를 요구하므로, 체크포인트 메타의 설정에 없는 키는 기본값으로 채워 읽는다). ③ 파라미터는 장치 RNG를 쓰지 않고 고정 seed 생성기로 초기화한다(Burn 기본과 같은 U(−k, k), k = 1/√fan_in). Burn 파라미터는 처음 쓸 때 장치 RNG로 초기화되므로, 장치 RNG를 쓰면 다른 모듈의 초기 가중치와 이후 dropout 난수가 바뀌기 때문이다. 그래서 헤드가 있어도 기존 모듈의 초기 가중치와 학습 난수는 같다. ④ `act()`와 학습 forward는 win_open을 value와 따로 돌려준다(꺼져 있으면 없음) |
+| 032-R16 | **MUST** 추론 서버는 실행 중에 가중치를 교체할 수 있다(042 K update마다). 교체는 다음 배치부터 적용되고, 응답마다 정책 버전을 붙인다. 세션은 자기 슬롯의 Core 상태를 host 데이터로 읽을 수 있다(042 core_state0). Core는 상태를 host 데이터로 내보내고 다시 만드는 연산을 제공하며, 왕복은 비트 단위로 같다 (2026-10-17). GTrXL이 K/V를 캐시하는 경우(2026-10-23): 상태에는 층 입력도 함께 두고, 가중치를 교체하면 다음 step 전에 저장된 층 입력에서 새 가중치로 K/V를 다시 계산한다. 그래서 캐시를 쓰든 안 쓰든 출력은 같다(허용 오차 이내). host 내보내기(042 core_state0)는 층 입력과 유효 마스크만으로 상태를 다시 만들 수 있어야 한다 |
+| 032-R17 | **MUST** 시간 축 코어(LSTM vs GTrXL)는 BC 본학습 전에 짧은 비교 학습으로 고른다(2026-10-18 사용자 결정, AMB-032-6). ① 학습: 코어마다 S1을 5,300 update 1회(seed 1개)씩 돌린다. 장비는 혼합 유동 운영이다(2026-10-18 사용자 결정): Linux Vulkan 호스트(f32)와 Windows CUDA 호스트(TF32 matmul)가 run 큐 작업자(061-R13·R14)로 두 run을 나눠 맡고 서로 이어받는다. 장비별 update 구간은 `runs/<id>/devices.jsonl`(061-R15)에 남고, 두 run의 장비 비율을 최종 집계해 리포트에 적는다. 두 run의 장비 비율이 크게 다르면 Vulkan f32와 CUDA TF32의 수치 차이가 비교에 섞일 수 있다(공정성 주의). 주 장비 규칙(2026-10-20 사용자 결정, AMB-032-8, 060-R8): CUDA 호스트가 유휴일 때는 CUDA 호스트가 주가 되고, 바쁠 때는 Linux Vulkan 호스트가 주가 된다. 이 규칙은 작업자 우선순위(CUDA 호스트에 더 높은 `--priority`)와 양보 요청(061-R14)으로 이미 구현돼 있다. 데이터 순서(`data.seed`)와 그 밖의 설정(Burn autotune·fusion 포함, 041-R15)은 같다. 학습률 스케줄은 짧은 run 전용으로, warmup 5%(265) 뒤 cosine이 5,300에서 끝난다(`config/bc_core_ablation.toml`). ② 오프라인 지표: `bc-eval --split val --games 500`(두 코어 같은 500게임). 500게임은 val 분할을 **고정 seed로 셔플**해 앞에서 고른다(출처 편중을 줄이기 위해, 2026-10-19 사용자 결정 G-D8, AMB-032-7). 학습 seed는 1개로 유지하고, 그 한계(seed 간 편차를 모름)는 리포트에 적는다. test 분할은 041-AC1용이라 쓰지 않는다. ③ 대전: 두 체크포인트 맞대결(TvT, 맵당 50판, 25판마다 슬롯 교대, `config/plans/core-ablation-h2h.toml`)과 각자 T0 상대 승률(상대 종족 3 × 맵 2 조합당 50판, 코어당 300판·합계 600판, 사용자 확정 2026-10-18, `config/plans/core-ablation-t0.toml`). 샘플링은 확률적(temp 1)이고 z는 없다. 대전 700판의 리플레이를 모두 저장한다(두 plan `save_replay = true`, `<out>/replays/g<id>.rep`, 2026-10-18 사용자 결정). ④ 판정: 규칙을 미리 정하지 않는다. 결과를 사용자에게 보고하고 사용자가 고른다. **결과: GTrXL 채택(2026-10-23 사용자 결정, `reports/m6_core_ablation.md` 4절).** ⑤ 비교 run의 체크포인트·로그·평가 출력은 지우지 않는다(비교 설정은 061-R6 `keep_checkpoints` 예외로 전부 보존, 2026-10-19 사용자 결정 G-D6). (2026-10-23 메모: 이 비교는 Burn으로 했고 결과(GTrXL 채택)는 PyTorch 전환 뒤에도 유지한다. Burn 체크포인트는 보관만 하고 새 코드에서 로드하지 않는다) |
+| 032-R18 | **MUST** `win_open` 헤드(2026-10-21 사용자 결정, AMB-031-6). ① privileged 입력 경로가 없고, 코어 출력 `h`는 detach해서 받으므로 정책·인코더·코어·기존 value 헤드에 gradient가 가지 않는다. ② 설정 `value.win_open`(기본 false)이 true일 때만 만든다. 설정 로더는 이 키가 없는 설정을 false로 읽는다(체크포인트 메타의 설정에 없는 키는 기본값으로 채운다). ③ 파라미터는 전역·장치 RNG를 쓰지 않고 고정 seed 생성기로 초기화한다(U(−k, k), k = 1/√fan_in). 전역 RNG를 쓰면 다른 모듈의 초기 가중치와 이후 dropout 난수가 바뀌기 때문이다. 그래서 헤드가 있어도 기존 모듈의 초기 가중치와 학습 난수는 같다(2026-10-23: Burn 지연 초기화 설명을 장치 무관 표현으로 바꿈). ④ `act()`와 학습 forward는 win_open을 value와 따로 돌려준다(꺼져 있으면 없음) |
+| 032-R19 | **MUST** 최적화 원칙(2026-10-23 사용자 결정, AMB-032-10). ① 모델 동작은 바꾸지 않는다. 같은 수식을 더 빠르게 계산하는 구현만 쓴다: 커널 융합·직접 작성 커널, gather, CUDA/HIP graph 캡처, torch.compile, K/V 캐시(032-R16), 배치 안 레인 그룹 재구성(041-R3), 메모리 재계산 등. ② 결과 차이는 float 반올림, bf16 혼합 정밀도(032-R8), GPU atomic 덧셈 순서, dropout 난수열 배치 차이까지만 허용한다. ③ 모델 구조·헤드 방식(Selected 순차 선택 포함)·관측 해상도·distance bias·dropout 비율·손실·하이퍼파라미터·추론 저정밀도(FP8·INT8)는 이 원칙 밖이고, 바꾸려면 별도 사용자 결정이 필요하다. ④ 학습 설정은 Linux ROCm 호스트 메모리 예산(060-R3) 안에서 최악 모양으로 학습돼야 채택한다. ⑤ 채택 전에 AC1·AC8, 짧은 학습 loss 곡선(기준과 잡음 범위 안), 속도·메모리 측정을 리포트에 남긴다 |
 
 ## 4. 파라미터·연산 예산 (기본 구성, N=256)
 | 모듈 | 파라미터 | FLOPs/step (B=1) |
@@ -162,40 +162,45 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
   - `loc_mask = gather(loc_class_mask, loc_class[a])`
 
 ## 6. 학습·추론 인터페이스
-```rust
-#[derive(Config)] pub struct UraniumNetConfig { entity, spatial, scalar, core, heads, value }
-#[derive(Module)] pub struct UraniumNet<C: Core> { entity, spatial, scalar, core: C, heads, value }
+```python
+@dataclass
+class UraniumNetConfig:  # entity, spatial, scalar, core, heads, value (설정에 없는 키는 기본값)
+    ...
 
-// Burn 0.22: 백엔드는 텐서·모듈이 놓인 Device가 결정한다 (032-R1)
-impl<C: Core> UraniumNet<C> {
-    /// 추론 1 step. 샘플링은 GPU 내부(Gumbel-max), 온도 temp(0 = argmax, 032-R15). 사용된 헤드의 log-prob 합, 헤드별 log-prob, value 반환.
-    pub fn act(&self, obs: ObsBatch, state: C::State, temp: f32) -> ActOutput<C::State>;
-    /// 학습 [B,T]. teacher forcing. 헤드별 masked logits + value 반환.
-    pub fn forward_seq(&self, obs: ObsSeq, labels: ActionSeq, priv_: Option<PrivSeq>, s0: C::State) -> SeqOutput;
-}
+class UraniumNet(nn.Module):  # PyTorch (032-R1). 장치는 텐서·모듈이 놓인 torch.device가 결정한다
+    def act(self, obs: ObsBatch, state: State, temp: float) -> ActOutput:
+        """추론 1 step. 샘플링은 GPU 내부(Gumbel-max), temp 0 = argmax(032-R9·R15).
+        사용된 헤드의 log-prob 합, 헤드별 log-prob [B,6], value [B,4], win_open, 새 상태를 돌려준다."""
+    def forward_seq(self, obs: ObsBatch, labels: ActionBatch, priv: PrivBatch | None, s0: State, t: int) -> SeqOutput:
+        """학습 [B·T 행, b-major]. teacher forcing. 헤드별 log-prob·entropy·분포, value, win_open."""
 ```
+- `ObsBatch`·`ActionBatch`·`PrivBatch`는 030 §1 레이아웃의 텐서 묶음이다. 호스트 쪽 collate(패딩 포함)는 Rust(`uranium-data`)가 하고 numpy로 넘긴다(041, 001-R6).
 - 인코더와 헤드는 B×T를 펼쳐 병렬로 계산하고, Core만 T를 따라 순차 계산한다.
 - **BC**: 헤드별 CE × 사용 마스크([041](041-imitation-learning.md))
 - **RL**: `forward_seq`의 target logits와 actor behaviour log-prob로 V-trace, UPGO, 헤드별 KL(π‖π_BC)을 계산한다([042](042-rl-training.md)).
 - 처리량 구현 메모(비규범, 2026-10-18, `reports/m6_bc_preflight.md`): 결과가 같은 계산 순서 변경만 한다.
-  - LSTM Core: Burn `Lstm`과 같은 파라미터·수식을 쓰고, T step의 입력 투영과 4 게이트를 한 번의 matmul로 계산한다(step당 [B,H]×[H,4H] 1회).
-  - teacher forcing의 Location 헤드: location을 쓰는 행만 계산한다. 다른 행의 `dists.target_loc`은 0이고 R10 사용 마스크로 곱해져 결과에 영향이 없다.
-  - Burn kernel autotune·fusion은 CUDA·Vulkan 모두 켠다(2026-10-19 사용자 결정, G-D5, 041-R15, AMB-032-7). 2026-10-18 측정에서 CUDA는 일부 conv gradient가 Flex 대비 2~5% 달라졌고(끈 상태 0.13%), Vulkan은 거의 바뀌지 않았다(`reports/m6_bc_preflight.md` 4차). 판정은 AC1(forward)·AC8(backward)을 따른다.
-  - 분석 도구: `uranium-train bc-profile`(모듈별 forward 표시, gradient 절단 비교).
+  - LSTM Core: 표준 LSTM(PyTorch `nn.LSTM`과 같은 파라미터·수식)이다. CUDA는 cuDNN을 쓰고, ROCm은 MIOpen LSTM backward가 실패해 PyTorch 자체 커널 또는 직접 작성 커널을 쓴다(2026-10-23 확인). Burn 시기에는 T step의 입력 투영과 4 게이트를 한 번의 matmul로 계산했다.
+  - teacher forcing의 Location 헤드: location을 쓰는 행만 계산한다. 다른 행의 `dists.target_loc`은 0이고 R10 사용 마스크로 곱해져 결과에 영향이 없다. 호스트 동기화 없이 같은 결과를 내는 방식으로 바꿀 수 있다(032-R19).
+  - 커널 선택: CUDA는 `cudnn.benchmark`, ROCm은 MIOpen find-db를 유지한다(041-R15). Burn 시기에는 autotune·fusion을 켰다(2026-10-19, AMB-032-7).
+  - 분석 도구: `python -m uranium bc-profile`(모듈별 forward 표시, gradient 절단 비교).
 
 ## Acceptance Criteria
-- 032-AC1: Flex(CPU) 대비 같은 가중치·입력의 forward 출력(value, 헤드별 log-prob) 차이가 Vulkan에서 ≤ 1e-4(f32), CUDA에서 ≤ 1e-2다.
+- 032-AC1: CPU 대비 같은 가중치·입력의 forward 출력(value, 헤드별 log-prob) 차이가 ROCm(f32)에서 ≤ 1e-4, CUDA f32(TF32)에서 ≤ 1e-2다. CUDA bf16 혼합 정밀도(032-R8)의 기준은 TBD(M6): 1단계 이식 뒤 실측하고 여유를 둔 값을 사용자 확인으로 정한다(값 차이 외에 정책 분포 KL·greedy 액션 일치율도 기록한다). 테스트는 pytest `gpu` 마커다. (2026-10-23 개정: 기준 장치 Flex → CPU, Vulkan → ROCm. 아래 CUDA 1e-2 근거는 Burn 시기 측정이다.)
   - CUDA 허용 오차 (AMB-032-5 Resolved, 2026-10-16 사용자 결정: 허용 오차를 늘린다). Burn 0.22(cubek-matmul)는 CUDA tensor core matmul에서 f32 입력을 TF32(가수 10비트, 누적은 f32)로 계산하고 끌 설정이 없다. 실측(Windows CUDA 호스트, 기본 크기 B16·N256): value ≤ 6.0e-5, action_type ≤ 3.4e-5, delay ≤ 2.5e-4, selected(최대 12 step log-prob 합) ≤ 3.9e-3, 정책 분포 KL ≤ 1.2e-7, greedy 액션 일치 48/48. 1e-2는 최대 실측의 약 2.5배 여유다. 영향 분석은 `reports/m5_model.md`.
-- 032-AC2: 추론 지연은 batch=16, N=256 기준으로 측정한다(p95). **판정은 CUDA 호스트에만 적용한다**(2026-10-20 사용자 결정, AMB-032-8): CUDA 호스트는 추론·학습의 주 장비이고(유휴일 때, 060-R8), 같은 호스트의 Vulkan보다 빠르면 통과한다(2026-10-16 사용자 결정: 40ms를 넘더라도 Vulkan보다 빠르면 된다). **Linux Vulkan 호스트**는 CUDA 호스트가 바쁠 때 주 역할을 맡는 대체 장비로 받아들인다. 통과·실패 기준은 두지 않고 실측 지연만 리포트에 기록한다(초안 40ms는 폐기). lockstep 학습(001-R5)에서는 지연이 결과를 바꾸지 않고 속도만 늦춘다. 실측(2026-10-20, `reports/m6_unverified_ac.md`): CUDA 호스트 LSTM 51.4ms·GTrXL 57.4ms(같은 호스트 Vulkan 77.5·90.3ms보다 빠름, 통과), Linux Vulkan 호스트 f32 179.0~179.5ms·187.4ms(f16 147.3·155.7ms는 참고, f16 경로 미구현).
-- 032-AC3: 학습 처리량 batch 32×T64 기준 ≥ TBD(M1) samples/s이고, 메모리는 [060](060-infra.md) 예산 이내다. CUDA 호스트에서는 같은 호스트의 Vulkan보다 빠르면 통과한다(2026-10-16 사용자 결정).
+- 032-AC2 (2026-10-23 개정): 추론 지연은 batch=16, N=256 기준으로 측정한다(p95). 판정은 CUDA 호스트에만 적용하고, 같은 호스트의 Burn CUDA 기준선(LSTM 51.4ms·GTrXL 57.4ms, `reports/bench_cuda.md` 2026-10-20)보다 빠르면 통과한다. Linux ROCm 호스트는 실측만 기록한다. 아래는 Burn 시기 기준이다. (이력) **판정은 CUDA 호스트에만 적용한다**(2026-10-20 사용자 결정, AMB-032-8): CUDA 호스트는 추론·학습의 주 장비이고(유휴일 때, 060-R8), 같은 호스트의 Vulkan보다 빠르면 통과한다(2026-10-16 사용자 결정: 40ms를 넘더라도 Vulkan보다 빠르면 된다). **Linux Vulkan 호스트**는 CUDA 호스트가 바쁠 때 주 역할을 맡는 대체 장비로 받아들인다. 통과·실패 기준은 두지 않고 실측 지연만 리포트에 기록한다(초안 40ms는 폐기). lockstep 학습(001-R5)에서는 지연이 결과를 바꾸지 않고 속도만 늦춘다. 실측(2026-10-20, `reports/m6_unverified_ac.md`): CUDA 호스트 LSTM 51.4ms·GTrXL 57.4ms(같은 호스트 Vulkan 77.5·90.3ms보다 빠름, 통과), Linux Vulkan 호스트 f32 179.0~179.5ms·187.4ms(f16 147.3·155.7ms는 참고, f16 경로 미구현).
+- 032-AC3 (2026-10-23 개정): 학습 처리량은 batch 32×T64 기준으로 잰다. CUDA 호스트는 같은 호스트의 Burn CUDA 기준선(실데이터 11.1 s/update, `reports/bench_cuda.md`)보다 빠르면 통과한다. Linux ROCm 호스트는 메모리가 060-R3 예산 안이면 통과하고 처리량은 기록한다. (이력: 2026-10-16 CUDA 호스트는 같은 호스트의 Vulkan보다 빠르면 통과.)
 - 032-AC4: 무작위 마스크 10만 건에서 샘플링된 액션이 모두 마스크를 만족한다.
 - 032-AC5: `act()` 경로의 연산 그래프에 privileged 텐서가 없다(타입 수준 보장 + 테스트).
-- 032-AC6: `LstmCore`와 `GtrxlCore`가 같은 `Core` trait으로 교체되고, 둘 다 AC1–AC4를 통과한다.
+- 032-AC6: `LstmCore`와 `GtrxlCore`가 같은 `Core` 인터페이스로 교체되고, 둘 다 AC1–AC4를 통과한다.
 - 032-AC7: 032-R17 비교의 두 run이 같은 update 수에서 끝나고, val 지표·맞대결·T0 승률(Wilson 95%)이 `reports/m6_core_ablation.md`에 기록되며, 사용자가 채택할 코어를 정한다. — **통과(2026-10-23)**: 두 run 5,300 update, 4절에 기록, GTrXL 채택. T0 GTrXL 26판은 실제 시간 상한으로 결과가 없어 함께 기록했다(사용자 결정).
-- 032-AC8: backward(학습) 정확도(2026-10-19 사용자 결정, H·D-a, AMB-032-7): Flex(CPU) 대비 같은 가중치·입력·레이블의 BC 손실 차이가 AC1 허용 오차 안이고, 파라미터마다 gradient 차이의 상대 L2(‖g_dev − g_flex‖ ÷ ‖g_flex‖, 분모는 가장 큰 파라미터 gradient norm의 1e-3 이상으로 둔다)가 **Vulkan ≤ 1e-3**이다. **CUDA ≤ 1e-2**(2026-10-19 실측 기준(사용자 결정 D-a): autotune·fusion을 켠 이 테스트를 CUDA 호스트에서 6회 돌린 최댓값 4.9e-3(범위 3.7e-3~4.9e-3)에 약 2배 여유를 두고 올림. `reports/m6_bc_preflight.md` 5차. autotune·fusion 채택(041-R15)은 유지). dropout은 0으로 둔다. 측정은 학습과 같은 Burn 설정(autotune·fusion, 041-R15)으로 한다. 테스트는 `crates/uranium-model/tests/cross_device.rs`의 gradient 비교다. forward(AC1 Vulkan 1e-4)와 기준이 다른 이유: gradient는 반올림 누적이 많아 커널을 바꾸지 않은 Vulkan f32에서도 약 5e-4가 나온다(`reports/m6_bc_preflight.md` 4차).
-- 032-AC9: win_open 경로에 privileged 텐서가 없다(타입 + 테스트). `value.win_open` 키가 없는 설정의 체크포인트가 새 코드에서 로드된다. 같은 seed에서 win_open을 켠 모델과 끈 모델의 공통 파라미터 초기값, 그리고 같은 batch 한 update(041-R19 clip 분리 포함) 뒤의 값이 Flex에서 비트 일치한다.
+- 032-AC8 (2026-10-23 개정): backward 정확도는 CPU 대비로 판정한다. 같은 가중치·입력·레이블의 BC 손실 차이가 AC1 허용 오차 안이고, 파라미터별 gradient 상대 L2(분모 규칙은 아래와 같음)가 ROCm(f32) ≤ 1e-3, CUDA f32(TF32) ≤ 1e-2다. CUDA bf16 기준은 AC1과 같이 TBD(M6)다. dropout은 0으로 둔다. 테스트는 pytest `gpu` 마커(`tests/test_cross_device.py`)다. 아래는 Burn 시기 기준과 근거다. (이력) backward(학습) 정확도(2026-10-19 사용자 결정, H·D-a, AMB-032-7): Flex(CPU) 대비 같은 가중치·입력·레이블의 BC 손실 차이가 AC1 허용 오차 안이고, 파라미터마다 gradient 차이의 상대 L2(‖g_dev − g_flex‖ ÷ ‖g_flex‖, 분모는 가장 큰 파라미터 gradient norm의 1e-3 이상으로 둔다)가 **Vulkan ≤ 1e-3**이다. **CUDA ≤ 1e-2**(2026-10-19 실측 기준(사용자 결정 D-a): autotune·fusion을 켠 이 테스트를 CUDA 호스트에서 6회 돌린 최댓값 4.9e-3(범위 3.7e-3~4.9e-3)에 약 2배 여유를 두고 올림. `reports/m6_bc_preflight.md` 5차. autotune·fusion 채택(041-R15)은 유지). dropout은 0으로 둔다. 측정은 학습과 같은 Burn 설정(autotune·fusion, 041-R15)으로 한다. 테스트는 `crates/uranium-model/tests/cross_device.rs`의 gradient 비교다. forward(AC1 Vulkan 1e-4)와 기준이 다른 이유: gradient는 반올림 누적이 많아 커널을 바꾸지 않은 Vulkan f32에서도 약 5e-4가 나온다(`reports/m6_bc_preflight.md` 4차).
+- 032-AC9: win_open 경로에 privileged 텐서가 없다(테스트). `value.win_open` 키가 없는 설정이 로드된다(win_open 없음). 같은 seed에서 win_open을 켠 모델과 끈 모델의 공통 파라미터 초기값, 그리고 같은 batch 한 update(041-R19 clip 분리 포함) 뒤의 값이 CPU에서 비트 일치한다(2026-10-23: Flex → CPU).
+- 032-AC10 (2026-10-23, 전환 검증): Burn 삭제 전에 PyTorch 모델이 Burn 모델과 같은 가중치·입력(CPU)에서 forward 출력 최대 차이 ≤ 1e-5, 파라미터별 gradient 상대 L2 ≤ 1e-4, AdamW 한 step 뒤 가중치 차이가 같은 기준 안이다. LSTM·GTrXL 모두 확인한다. 작은 설정의 기준 출력(golden fixture)을 저장소에 남겨 Burn 삭제 뒤에도 회귀 테스트로 쓴다.
 
 ## Risks & Open Questions
+- **Linux ROCm 호스트 안정성 (2026-10-23)**: 그 호스트의 ROCm 스택은 공식 지원 밖이라 트리 밖 커널 패치와 직접 빌드한 라이브러리로 돈다. 드문 GPU 멈춤이 있을 수 있고 GPU 리셋이 되지 않아 재부팅이 필요하다. 감시 프로세스(060-R6)가 마지막 체크포인트에서 재개하고, 그동안 CUDA 호스트가 이어받을 수 있다(061-R13·R14). 장비 상세는 리포트에 둔다.
+- **CUDA bf16 수치 (2026-10-23)**: 두 호스트의 정밀도가 달라(CUDA bf16, ROCm f32) 이어 학습할 때 수치 차이가 섞인다. AC1·AC8 bf16 기준을 실측으로 정할 때 영향을 함께 기록한다.
+- 아래 M1(a)~AC8 CUDA 기준 항목은 Burn 시기 기록이다.
 - **M1(a) 실측 (2026-10-15, Linux Vulkan 호스트 f32, `reports/`의 M1(a) Vulkan 벤치 리포트)**:
   - 추론 근사(B16·N256) 87ms로 032-AC2 초안(40ms)에 미달한다. (2026-10-20: 초안 40ms는 폐기했다. Linux Vulkan 호스트는 실측 기록만 한다, AMB-032-8)
   - 학습 약 40 프레임/s로, BC 1회독에 약 34일이 걸린다.

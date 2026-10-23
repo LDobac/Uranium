@@ -8,18 +8,19 @@
 - BC 본학습(GTrXL, 10-23 시작 후 중지): `reports/m6_pre_bc_review.md` I절, 실행 안내 루트 `README.md`
 - 마일스톤별 결과: `reports/` (m2~m7)
 - M7 SC:R 남은 과제: `reports/m7_scr_bridge.md` 4절
+- PyTorch 전환(진행 중, 아래 명령어는 전환 전 기준): `spec/README.md` AMB-000-4, 근거 `reports/torch_vs_burn.md`
 
 ## 고정 조건
 | 항목 | 값 |
 |---|---|
 | 종족 | 테란 고정. 상대 T / P / Z |
 | 맵 | 투혼(Fighting Spirit), 서킷브레이커(Circuit Breaker) |
-| 학습 호스트 | Linux Vulkan 호스트 또는 CUDA 호스트(Linux/Windows). CUDA는 Burn `cuda` feature로만 쓰고(CUDA 호스트에서만 빌드), 직접 쓴 CUDA·ROCm·HIP 코드는 금지 |
-| 프레임워크 | Rust + Burn **0.22.0**, 실행 시 `Device::vulkan`/`Device::cuda`, 테스트는 `flex`. 정밀도는 032-R8(CUDA f32, Vulkan BC 학습 f32). 학습 crate는 Windows에서도 빌드 (001-R8) |
+| 학습 호스트 | Linux ROCm 호스트 또는 CUDA 호스트(Linux/Windows) (060). 직접 쓴 CUDA·HIP 커널 허용: 소스 하나를 두 백엔드에서 빌드, 기준 구현·끄는 설정 필수 (060-R1) |
+| 프레임워크 | 학습·추론은 Python **3.14** + PyTorch **2.14.x**(`python/uranium`), 게임 연동·feature·데이터 공급·저장소는 Rust(PyO3 `uranium._core`) (001, AMB-000-4). 정밀도는 032-R8(CUDA bf16 혼합, ROCm f32). 테스트 기준은 CPU, 비트 일치는 CPU에서만. Linux·Windows 모두 빌드 (001-R8) |
 | 시뮬레이터 | OpenBW + BWAPI 4.2 포크, Linux 헤드리스. 다른 LAN 호스트에서 실행될 수 있음 |
 | SC:R 연동 | samase 플러그인 DLL + samase_scarf. **로컬/LAN 커스텀 게임만**, 배틀넷 공개 게임·래더 대상 아님 |
 | 체크포인트·데이터 | 공용 드라이브(SMB, `URANIUM_SHARED_DIR`). pull → 학습 → push, run당 한 호스트(heartbeat 잠금) (061) |
-| C++ | OpenBW 브리지의 얇은 shim만. 나머지는 Rust |
+| C++ | OpenBW 브리지의 얇은 shim과 PyTorch 확장 커널(CUDA·HIP, 060-R1)만. 나머지는 Rust 또는 Python |
 
 ## Spec Driven 규칙 (필수)
 1. **`spec/`이 단일 진실 공급원.** 작업 전에 `spec/README.md`와 관련 spec을 읽는다.
@@ -72,9 +73,10 @@ reports/                 리포트, timeline.md
 ```
 
 ## 코딩 규칙
-- Burn 모델 코드는 백엔드 무관, 실행 시 `Device`로 고른다. 테스트는 `Device::flex()` (032-R1).
+- 모델 코드는 장치 무관, 실행 시 `torch.device`로 고른다. 단위 테스트는 CPU, 장치 비교는 pytest `gpu` 마커 (032-R1).
+- **최적화는 모델 동작 유지** (032-R19): 같은 수식을 빠르게 계산하는 구현만. 구조·헤드 방식·해상도·distance bias·dropout·손실·하이퍼파라미터는 바꾸지 않는다. 학습 설정은 Linux ROCm 호스트 메모리 예산(060-R3) 안에서 최악 모양으로 돌아야 채택.
 - 버전별 ID·오프셋은 데이터 테이블로만 관리한다 (013-R1).
-- **개인·보안 정보 금지** (001-R10): spec·문서·리포트·주석·커밋에 IP, 호스트 이름, 계정, 이메일, 개인 경로, 자격 증명을 쓰지 않는다. `<server>`, "Linux Vulkan 호스트" 같은 표기를 쓴다. 추적 파일(spec·코드·주석·추적 config·docs·CLAUDE.md·tools)에는 장비 종류·모델명·번호·상태를 쓰지 않고 OS·백엔드로만 적는다. 장비 표기는 추적하지 않는 config와 `reports/`에만 둔다.
+- **개인·보안 정보 금지** (001-R10): spec·문서·리포트·주석·커밋에 IP, 호스트 이름, 계정, 이메일, 개인 경로, 자격 증명을 쓰지 않는다. `<server>`, "Linux ROCm 호스트" 같은 표기를 쓴다. 추적 파일(spec·코드·주석·추적 config·docs·CLAUDE.md·tools)에는 장비 종류·모델명·번호·상태를 쓰지 않고 OS·백엔드로만 적는다. 장비 표기는 추적하지 않는 config와 `reports/`에만 둔다.
 - **설정은 `.env`** (001-R9): 저장소 루트 `.env`(git 미추적), 프로세스 환경변수 우선. 새 키는 `.env.example`에도 추가.
 - 결정론: executor와 feature 추출은 같은 입력이면 같은 출력 (031-R7, 030-R1).
 - 각 spec의 AC는 테스트나 벤치로 검증한다.

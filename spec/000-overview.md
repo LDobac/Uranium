@@ -1,6 +1,6 @@
 # 000 — Overview
 
-- **Status**: Approved (2026-10-15. 2026-10-19 개정: 맵 해시를 `config/assets.toml` 참조로, 장비 표기 중립화(001-R10))
+- **Status**: Approved (2026-10-15. 2026-10-19 개정: 맵 해시를 `config/assets.toml` 참조로, 장비 표기 중립화(001-R10). 2026-10-23 개정: 학습·추론을 Python + PyTorch로 전환, Linux 학습 호스트는 Vulkan에서 ROCm으로(사용자 결정, AMB-000-4))
 - **Related**: [001](001-system-architecture.md), [050](050-evaluation.md), [060](060-infra.md), [061](061-shared-storage.md)
 
 ## Purpose
@@ -15,7 +15,7 @@ StarCraft: Brood War 1v1 밀리에서 이기는 테란 AI 봇을 만든다. 학�
 | 게임 모드 | 1v1 Melee, 표준 시작 자원·일꾼 |
 | 학습 시뮬레이터 | OpenBW + BWAPI 4.2 포크 (1.16.1 게임 로직) |
 | 실행 대상 | StarCraft: Remastered (samase 플러그인) |
-| 학습 장비 | Linux Vulkan 호스트 **또는** CUDA 호스트(Linux/Windows). Rust + Burn (2026-10-15 변경) |
+| 학습 장비 | Linux ROCm 호스트 **또는** CUDA 호스트(Linux/Windows). 학습·추론은 Python + PyTorch, 게임 연동·feature·데이터 처리는 Rust (2026-10-23 변경: Rust + Burn에서 전환, AMB-000-4) |
 
 ## Non-goals
 - 테란 이외 종족 플레이, 2v2 이상, UMS 맵.
@@ -40,8 +40,10 @@ StarCraft: Brood War 1v1 밀리에서 이기는 테란 AI 봇을 만든다. 학�
   - 상대의 **Random 종족을 지원**한다. 정찰 전까지는 `enemy_race = unknown`으로 처리한다([030](030-observation.md)).
 
 ## 하드웨어 제약
-- Linux Vulkan 호스트는 Burn Vulkan 백엔드로 학습·추론한다(ROCm/HIP는 쓰지 않는다). 장비 사양은 M1(a) 리포트에 둔다([060](060-infra.md), 001-R10).
-- CUDA 호스트(Linux 또는 Windows)에서도 Burn `cuda` 백엔드로 학습·추론할 수 있다(2026-10-15 변경, [060](060-infra.md))
+- Linux ROCm 호스트는 PyTorch ROCm 백엔드로 학습·추론한다. 장비 사양과 설치 절차는 리포트에 둔다([060](060-infra.md), 001-R10).
+- CUDA 호스트(Linux 또는 Windows)는 PyTorch CUDA 백엔드로 학습·추론한다([060](060-infra.md)).
+- 직접 작성한 CUDA·HIP 커널을 쓸 수 있다. 같은 소스가 두 백엔드에서 빌드돼야 한다(060-R1).
+- (변경 이력: 2026-10-15 Linux Vulkan 호스트 + CUDA 호스트, Burn. 2026-10-23 PyTorch로 전환하면서 Vulkan 학습 경로와 Burn을 삭제했다. 근거 실측은 `reports/torch_vs_burn.md`.)
 - OpenBW 인스턴스는 기본적으로 **게임 전용 Linux PC 2대 이상**에서 실행한다. 학습 호스트 로컬 실행도 가능하다([020](020-env-orchestration.md)).
 - 체크포인트와 학습 데이터는 **네트워크 공용 드라이브(SMB, LAN 또는 VPN 경유)**에 두고, 학습하는 PC가 받아서 쓴다([061](061-shared-storage.md), 2026-10-15 변경). 저장 예산은 1TB 미만 기준을 공용 드라이브에 적용한다.
 - SC:R은 Windows PC에서 실행한다.
@@ -50,7 +52,7 @@ StarCraft: Brood War 1v1 밀리에서 이기는 테란 AI 봇을 만든다. 학�
 | 용어 | 정의 |
 |---|---|
 | Bridge | 게임 프로세스 안에서 상태를 읽고 명령을 실행하는 얇은 래퍼. OpenBW용 `.so`, SC:R용 `.dll` |
-| Agent | 모델 추론과 액션 결정을 맡는 Rust 프로세스. 게임 버전을 모른다 |
+| Agent | 모델 추론과 액션 결정을 맡는 프로세스. 게임 연결·feature·executor는 Rust 스레드, 모델 추론은 Python(PyTorch)이 맡는다. 게임 버전을 모른다 |
 | RawFrame | 브리지가 보내는 버전 중립 게임 상태 스냅샷 ([010](010-game-protocol.md)) |
 | Command | 에이전트가 브리지로 보내는 버전 중립 명령 |
 | Executor | 정책의 의미 단위 액션을 Command로 풀어내는 규칙 계층 ([031](031-action-space.md)) |

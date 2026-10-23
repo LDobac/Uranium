@@ -1,6 +1,6 @@
 # 042 — RL Training & League
 
-- **Status**: Approved (2026-10-15, 2026-10-16 개정: 042-R10 Ctrl+C 정상 종료, 2026-10-17 개정: 초기 설정값 확정(AMB-042-3, `config/rl.toml`), 첫 학습 호스트, AMB-042-2 M6 시작 재확인, behaviour log-prob 기록(AMB-042-4), 구현 구조·Aborted 회수(042-R3)·검증 정책·AC1 규모·게임 호스트·KL 계산(AMB-042-5~9, 사용자 결정), 2026-10-18 개정: 학습 중 리플레이 저장(042-R11)·agent step 상한 종료(042-R12), 사용자 결정. 2026-10-19 개정: 옵티마이저 clip = 041-R3 전역 norm(G-D4), R11 리플레이 보존과 060-R7 정합, 장비 표기 중립화(001-R10). 2026-10-20 개정: 주 장비 규칙 참조(060-R8, AMB-032-8). 2026-10-21 개정: 042-R13 win_open RL 학습(사용자 결정, AMB-031-6))
+- **Status**: Approved (2026-10-15, 2026-10-23 개정: PyTorch 전환(사용자 결정, AMB-000-4) — 학습 호스트 Linux ROCm·CUDA, 프로세스 구성(Python learner·추론 스레드 + Rust 에이전트·러너·리그 스레드), R1 CUDA↔ROCm 재개. 2026-10-16 개정: 042-R10 Ctrl+C 정상 종료, 2026-10-17 개정: 초기 설정값 확정(AMB-042-3, `config/rl.toml`), 첫 학습 호스트, AMB-042-2 M6 시작 재확인, behaviour log-prob 기록(AMB-042-4), 구현 구조·Aborted 회수(042-R3)·검증 정책·AC1 규모·게임 호스트·KL 계산(AMB-042-5~9, 사용자 결정), 2026-10-18 개정: 학습 중 리플레이 저장(042-R11)·agent step 상한 종료(042-R12), 사용자 결정. 2026-10-19 개정: 옵티마이저 clip = 041-R3 전역 norm(G-D4), R11 리플레이 보존과 060-R7 정합, 장비 표기 중립화(001-R10). 2026-10-20 개정: 주 장비 규칙 참조(060-R8, AMB-032-8). 2026-10-21 개정: 042-R13 win_open RL 학습(사용자 결정, AMB-031-6))
 - **Related**: [020](020-env-orchestration.md), [021](021-opponent-pool.md), [032](032-model-architecture.md), [033](033-reward.md), [050](050-evaluation.md), [060](060-infra.md)
 
 ## Purpose
@@ -14,10 +14,10 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 ```
 - **behaviour 기록 (확정 2026-10-17, AMB-042-4)**: actor는 전체 logits(target_loc 하나만 16,384개)가 아니라 **선택한 액션의 헤드별·joint behaviour log-prob**(032-R15)을 기록한다. V-trace·UPGO의 중요도 비율에는 이것으로 충분하다. KL(π‖π_BC)은 learner가 같은 관측으로 BC 모델을 다시 forward해 헤드별 분포로 계산한다.
 
-학습 호스트는 Linux Vulkan 호스트 또는 CUDA 호스트다([060](060-infra.md), 2026-10-15 변경). **첫 RL 실험(042-AC1)은 Windows CUDA 호스트에서 한다**(2026-10-17 사용자 결정). 그 뒤 RL의 추론·learner 장비는 주 장비 규칙(060-R8: CUDA 호스트가 유휴면 주, 바쁘면 Linux Vulkan 호스트가 주, 2026-10-20 사용자 결정)을 따르고, 전환 구현은 M6 RL에서 한다. 게임은 그 호스트의 로컬 hostd로 돌리고, 필요하면 원격 Linux 게임 호스트를 hosts 파일에 더한다(020). 한 호스트의 GPU 하나로 추론과 학습을 모두 하므로 GPU 시간을 분할한다. 학습 중에는 추론 지연이 늘어나지만 lockstep이라 정확성에는 영향이 없다. 게임 호스트는 LAN으로 학습 호스트의 에이전트 서버에 접속한다(001-R6). 체크포인트·리그 스냅샷·승격 체크포인트는 공용 드라이브에 저장하며, 학습 시작·재개 절차와 run 잠금은 [061](061-shared-storage.md)을 따른다.
+학습 호스트는 Linux ROCm 호스트 또는 CUDA 호스트다([060](060-infra.md), 2026-10-23 변경: 이전 Linux Vulkan 호스트). **첫 RL 실험(042-AC1)은 Windows CUDA 호스트에서 한다**(2026-10-17 사용자 결정). 그 뒤 RL의 추론·learner 장비는 주 장비 규칙(060-R8: CUDA 호스트가 유휴면 주, 바쁘면 Linux ROCm 호스트가 주, 2026-10-20 사용자 결정)을 따르고, 전환 구현은 M6 RL에서 한다. 게임은 그 호스트의 로컬 hostd로 돌리고, 필요하면 원격 Linux 게임 호스트를 hosts 파일에 더한다(020). 한 호스트의 GPU 하나로 추론과 학습을 모두 하므로 GPU 시간을 분할한다. 학습 중에는 추론 지연이 늘어나지만 lockstep이라 정확성에는 영향이 없다. 게임 호스트는 LAN으로 학습 호스트의 에이전트 서버에 접속한다(001-R6). 체크포인트·리그 스냅샷·승격 체크포인트는 공용 드라이브에 저장하며, 학습 시작·재개 절차와 run 잠금은 [061](061-shared-storage.md)을 따른다.
 
 ## 구현 구조 (2026-10-17, 3단계 계획 승인)
-- **프로세스**: 학습 호스트에서 `uranium-train rl` 하나가 learner, 추론 서버(Main 1개 + 상대 스냅샷), 에이전트 서버(001-R6), 게임 배정, 리그 관리를 모두 맡는다. 게임 배정은 `uranium-runner` 라이브러리(020 동적 Job 공급자)를 쓴다. 추론 스레드와 learner는 같은 GPU에 각자 모델 사본을 둔다. learner는 K update마다 가중치를 추론 서버에 넘기고, 추론 응답에는 정책 버전이 붙는다(042-R4).
+- **프로세스**: 학습 호스트에서 `python -m uranium rl` 하나가 learner, 추론(Main 1개 + 상대 스냅샷), 에이전트 서버(001-R6), 게임 배정, 리그 관리를 모두 맡는다(2026-10-23 개정: 이전 `uranium-train rl`). learner와 추론 스레드는 Python(PyTorch)이고, 에이전트 서버·게임 배정(`uranium-runner` 라이브러리, 020 동적 Job 공급자)·trajectory 수집·리그 관리는 `uranium._core`의 Rust 스레드가 GIL 없이 맡는다. 추론 스레드와 learner는 같은 GPU에 각자 모델 사본을 둔다. learner는 K update마다 가중치를 추론 스레드의 모델에 복사하고(같은 프로세스), 추론 응답에는 정책 버전이 붙는다(042-R4). learner의 trajectory 배치(펼치기·[B,T] 정렬)는 Rust가 만들어 numpy로 넘긴다. GIL 경합으로 추론이 느려지면 추론을 별도 프로세스로 나누는 것을 검토한다(AMB-042-10).
 - **trajectory**: 학습 중인 에이전트의 세션에만 기록한다. 한 결정의 보상은 직전 결정 뒤 받은 프레임들의 보상 합이다(033). 세그먼트는 T=64 결정이고, 시작 결정 직전의 Core 상태(core_state0)를 추론 서버 슬롯에서 읽어 함께 둔다. 게임이 끝나면 마지막 세그먼트를 마스크로 채우고 bootstrap은 0이다(γ = 1, 종료). 마지막 결정 뒤 종료까지의 dense 보상(`GameEnd.final_frame`, 010-R12)과 r_win은 마지막 transition에 더한다(033-R7, E-8, 사용자 결정 2026-10-19).
 - **손실**: 보상 항목별 value head마다 V-trace target과 advantage를 따로 구하고, 정책 gradient advantage는 033 가중치(감쇠 포함)로 더한다(033-R3). KL(π‖π_BC)은 고정된 BC 모델을 같은 입력으로 다시 forward해 헤드별 전체 분포로 계산하고 사용된 헤드만 더한다(032-R10). 정확한 분포 KL을 쓴다. GPU 메모리가 부족하면 근사로 바꾸지 않고 사용자에게 보고한다(2026-10-17 사용자 결정, AMB-042-9).
 - **스냅샷 상대 ID**: `uranium-<agent>@<run>/<update>` (agent = `main` | `main-exploiter` | `league-exploiter`, 021-R3 형식).
@@ -111,7 +111,7 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 ## Requirements
 | ID | 요구사항 |
 |---|---|
-| 042-R1 | **MUST** 학습 재개(resume)를 지원한다. 저장 대상은 가중치, 옵티마이저, 리그 상태, 승률 테이블, RNG 상태다. 다른 학습 호스트(Vulkan↔CUDA)에서도 재개할 수 있어야 한다(061-R10, 061-AC5) |
+| 042-R1 | **MUST** 학습 재개(resume)를 지원한다. 저장 대상은 가중치, 옵티마이저, 리그 상태, 승률 테이블, RNG 상태다. 다른 학습 호스트(ROCm↔CUDA, 2026-10-23. 이전 Vulkan↔CUDA)에서도 재개할 수 있어야 한다(061-R10, 061-AC5) |
 | 042-R2 | **MUST** 에피소드 결과·보상 항목·KL·엔트로피·처리량을 TensorBoard 호환 로그 또는 CSV로 남긴다 |
 | 042-R3 | **MUST** Aborted 에피소드는 학습에서 제외한다(020-R4). 세그먼트는 끝나는 대로 큐에 넣고, 게임이 Aborted로 끝나면 그 게임의 세그먼트 중 아직 학습에 쓰지 않은 것을 큐에서 회수한다(2026-10-17 사용자 결정, AMB-042-6: 게임 끝까지 붙잡으면 정책 지연으로 대부분 버려짐). Ctrl+C(R10)는 learner를 먼저 멈추므로 완전히 제외된다. 크래시처럼 드문 경우 이미 학습에 쓴 세그먼트는 되돌리지 않으며, 그 수를 로그에 남긴다 |
 | 042-R4 | **MUST** 정책 지연(behaviour vs target 버전 차이)을 모니터링하고, 임계값을 넘는 trajectory는 버린다 |
