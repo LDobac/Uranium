@@ -1404,8 +1404,8 @@ fn host_collate_matches_burn_collate_041() {
     let obs: Vec<_> = steps.iter().map(|s| &s.obs).collect();
     let labels: Vec<_> = steps.iter().map(|s| &s.label).collect();
     let privs: Vec<_> = steps.iter().map(|s| &s.privileged).collect();
-    let f = |t: burn::tensor::TensorData| t.convert::<f32>().into_vec::<f32>().unwrap();
-    let i = |t: burn::tensor::TensorData| t.convert::<i32>().into_vec::<i32>().unwrap();
+    let f = |t: burn::tensor::TensorData| t.convert::<f32>().try_into_vec::<f32>().unwrap();
+    let i = |t: burn::tensor::TensorData| t.convert::<i32>().try_into_vec::<i32>().unwrap();
     let bits = |v: &[bool]| v.iter().map(|&b| b as i32).collect::<Vec<i32>>();
     for pad in [0, 1, 64] {
         let d = obs_batch_padded(&obs, pad, &dev);
