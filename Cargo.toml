@@ -16,6 +16,7 @@ members = [
     "crates/uranium-train",
     "crates/uranium-ladder",
     "tools/bench",
+    "tools/burn-parity",
     "tools/casc-extract",
     "tools/bwapi-tables",
 ]

@@ -218,6 +218,30 @@ fn epoch_table(py: Python<'_>, config: PathBuf, dirs: Vec<PathBuf>) -> PyResult<
     serde_json::to_string(&t).map_err(|e| err(e.into()))
 }
 
+/// 034 action table columns (032 §5) as JSON: the model's mask gather constants.
+#[pyfunction]
+fn action_columns() -> PyResult<String> {
+    let c = uranium_data::table::ActionColumns::current().map_err(err)?;
+    serde_json::to_string(&c).map_err(|e| err(e.into()))
+}
+
+/// Feature schema dimensions (030) as JSON: capability and location class counts, widths.
+#[pyfunction]
+fn feature_dims() -> PyResult<String> {
+    use uranium_data::collate as c;
+    let d = uranium_env_dims();
+    serde_json::to_string(&serde_json::json!({
+        "entity_cat": c::ENTITY_CAT, "entity_cont": c::ENTITY_CONT, "spatial": c::SPATIAL, "map": c::MAP, "z_build": c::Z_BUILD,
+        "actions": d.0, "scalar": d.1, "z_units": d.2, "caps": d.3, "loc_classes": d.4, "privileged": d.5,
+    }))
+    .map_err(|e| err(e.into()))
+}
+
+fn uranium_env_dims() -> (usize, usize, usize, usize, usize, usize) {
+    let d = uranium_data::table::feature_dims();
+    (d.actions, d.scalar(), d.z_units(), d.caps(), d.loc_classes(), d.privileged())
+}
+
 /// Field order of the lane-group digest (`uranium-train feed-digest`).
 #[pyfunction]
 fn group_fields() -> Vec<&'static str> {
@@ -260,6 +284,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(dataset_fingerprint, m)?)?;
     m.add_function(wrap_pyfunction!(epoch_table, m)?)?;
     m.add_function(wrap_pyfunction!(group_fields, m)?)?;
+    m.add_function(wrap_pyfunction!(action_columns, m)?)?;
+    m.add_function(wrap_pyfunction!(feature_dims, m)?)?;
     m.add_function(wrap_pyfunction!(install_stop_handler, m)?)?;
     m.add_function(wrap_pyfunction!(stop_requested, m)?)?;
     m.add_function(wrap_pyfunction!(write_test_shards, m)?)?;

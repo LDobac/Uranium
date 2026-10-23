@@ -999,6 +999,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "burn-parity"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "burn",
+ "clap",
+ "safetensors 0.8.0",
+ "serde_json",
+ "uranium-model",
+ "uranium-train",
+]
+
+[[package]]
 name = "burn-remote"
 version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
