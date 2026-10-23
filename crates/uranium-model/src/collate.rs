@@ -83,20 +83,22 @@ pub fn obs_batch_padded(rows: &[&Observation], pad: usize, device: &Device) -> O
 /// collates lane groups there (`Batch::group`), as the Python trainer does.
 pub fn obs_from_host(h: &uranium_data::collate::HostObsBatch, device: &Device) -> ObsBatch {
     let (b, n) = (h.b, h.n);
-    let f = |v: &Vec<f32>, s: Vec<usize>| Tensor::from_data(TensorData::new(v.clone(), s), device);
+    fn ft<const D: usize>(v: &[f32], s: Vec<usize>, device: &Device) -> Tensor<D> {
+        Tensor::from_data(TensorData::new(v.to_vec(), s), device)
+    }
     let i2 = |v: &Vec<i32>, s: [usize; 2]| Tensor::<2, Int>::from_data(TensorData::new(v.clone(), s), device);
     let b2 = |v: &Vec<bool>, s: [usize; 2]| Tensor::<2, Bool>::from_data(TensorData::new(v.clone(), s), device);
     ObsBatch {
         entity_cat: Tensor::<3, Int>::from_data(TensorData::new(h.entity_cat.clone(), [b, n, ENTITY_CAT]), device),
-        entity_cont: f(&h.entity_cont, vec![b, n, ENTITY_CONT]),
+        entity_cont: ft(&h.entity_cont, vec![b, n, ENTITY_CONT], device),
         entity_mask: b2(&h.entity_mask, [b, n]),
         entity_cell: i2(&h.entity_cell, [b, n]),
-        entity_pos: f(&h.entity_pos, vec![b, n, 2]),
-        spatial: f(&h.spatial, vec![b, SPATIAL, MAP, MAP]),
-        scalar: f(&h.scalar, vec![b, h.fs]),
+        entity_pos: ft(&h.entity_pos, vec![b, n, 2], device),
+        spatial: ft(&h.spatial, vec![b, SPATIAL, MAP, MAP], device),
+        scalar: ft(&h.scalar, vec![b, h.fs], device),
         scalar_cat: i2(&h.scalar_cat, [b, 3]),
         z_build: i2(&h.z_build, [b, Z_BUILD]),
-        z_units: f(&h.z_units, vec![b, h.u]),
+        z_units: ft(&h.z_units, vec![b, h.u], device),
         z_present: Tensor::<1, Bool>::from_data(TensorData::new(h.z_present.clone(), [b]), device),
         type_mask: b2(&h.type_mask, [b, h.a]),
         unit_cap: Tensor::<3, Bool>::from_data(TensorData::new(h.unit_cap.clone(), [b, n, h.k]), device),

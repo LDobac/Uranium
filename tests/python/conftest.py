@@ -51,15 +51,14 @@ def tiny_config(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def train_bin() -> Path:
-    """The Rust `uranium-train` binary (`URANIUM_TRAIN_BIN`, else target/{release,debug})."""
-    cands = [os.environ.get("URANIUM_TRAIN_BIN")] + [str(ROOT / "target" / p / "uranium-train") for p in ("release", "debug")]
-    for c in cands:
-        if not c:
-            continue
-        for path in (c, c + ".exe"):
-            if Path(path).is_file():
-                return Path(path)
-    pytest.skip("uranium-train binary not built (set URANIUM_TRAIN_BIN)")
+    """The Rust `uranium-train` binary: `URANIUM_TRAIN_BIN`, else the newer of target/release and
+    target/debug (an old build may lack the command under test)."""
+    if os.environ.get("URANIUM_TRAIN_BIN"):
+        return Path(os.environ["URANIUM_TRAIN_BIN"])
+    found = [Path(p) for prof in ("release", "debug") for p in (ROOT / "target" / prof / "uranium-train", ROOT / "target" / prof / "uranium-train.exe") if Path(p).is_file()]
+    if not found:
+        pytest.skip("uranium-train binary not built (set URANIUM_TRAIN_BIN)")
+    return max(found, key=lambda p: p.stat().st_mtime)
 
 
 def run(cmd: list[str]) -> str:
