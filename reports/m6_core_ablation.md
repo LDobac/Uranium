@@ -157,24 +157,29 @@ uranium-env run --plan config/plans/core-ablation-t0.toml  --backend cuda --out 
 
 ## 4. 결과
 
-(실행 후 기록)
+2026-10-23 최종 실행(5절 "2026-10-23 최종 실행"): 학습 PC CUDA 추론 + 게임 호스트 네 대(동시 36판), 6fa8fbd 고정 빌드, 확률적 샘플링. 출력 `<shared>/artifacts/m6_core_ablation/final/`(`h2h/`, `t0/`의 `summary.md`·`results.jsonl`·`games.jsonl`·`replays/`, `val500/`).
 
-| 지표 (val 500게임) | LSTM | GTrXL |
+| 지표 (val 500게임, 같은 1,113,959 시점, 학습 PC CUDA) | LSTM | GTrXL |
 |---|---|---|
-| 총 loss | | |
-| action_type top-1 / top-5 | | |
-| delay MAE | | |
-| target_loc 타일 오차 | | |
-| selected F1 | | |
-| update 시간(s, GPU 단독) | | |
+| NLL action / delay / target_loc / selected (총 loss 대신 헤드별, 낮을수록 좋음) | 1.193 / 2.251 / 6.341 / 5.176 | 1.103 / 1.953 / 5.860 / 5.027 |
+| action_type top-1 / top-5 | 66.8% / 90.8% | 67.9% / 92.4% |
+| delay MAE (프레임 / bucket) | 7.81 / 4.21 | 7.57 / 3.57 |
+| target_loc 타일 오차 평균 / 중앙값 / 정확 일치 | 19.8 / 6.7 / 3.0% | 11.9 / 5.0 / 3.9% |
+| selected F1 | 0.809 | 0.822 |
+| update 시간(s, 학습 로그) | CUDA 약 12 | CUDA 약 14~17, Vulkan 약 99~108 |
 | 장비 비율 (update 수: 이 PC CUDA / BC250 1호기 Vulkan) | 5,300 / 0 (100% CUDA) | 4,474 / 826 (CUDA 84.4%) |
 
 | 대전 | 결과 (Wilson 95%) |
 |---|---|
-| 맞대결 LSTM 승률, 투혼 50판 | |
-| 맞대결 LSTM 승률, 서킷브레이커 50판 | |
-| T0 상대 승률 LSTM (T/P/Z × 2맵) | |
-| T0 상대 승률 GTrXL (T/P/Z × 2맵) | |
+| 맞대결 LSTM 승률, 투혼 50판 | 7승 25패 18무, 14% [7, 26] (GTrXL 50% [37, 63]) |
+| 맞대결 LSTM 승률, 서킷브레이커 50판 | 6승 17패 27무, 12% [6, 24] (GTrXL 34% [22, 48]) |
+| 맞대결 합계 100판 | LSTM 13승, GTrXL 42승, 무 45. 결판 난 55판 중 GTrXL 76% [64, 86] |
+| T0 상대 승률 LSTM (T/P/Z × 2맵, 300판) | 8승 164패 128무, 2.7%. 테란 4% [2, 10] · 프로토스 2% [1, 7] · 저그 2% [1, 7] |
+| T0 상대 승률 GTrXL (T/P/Z × 2맵, 274판 집계) | 28승 89패 157무, 약 10%. 테란 14% [8, 23](79판) · 프로토스 11% [6, 19](97판) · 저그 6% [3, 13](98판) |
+
+- 모든 대전에서 winner disagree·dropped·시야 위반 0. 맞대결 100판·T0 573판 모두 GameEnd.
+- **T0 GTrXL 26판 누락**: GTrXL 판 27판이 실제 시간 상한 2시간(`Timeout`)에 걸렸고(대 테란 22, 프로토스 3, 저그 2), 그중 26판은 게임 결과가 없다(대 테란 21, 프로토스 3, 저그 2, 집계표의 GTrXL 판수 274). 1판(투혼 대 테란)은 상한 직전에 결과가 기록돼 집계에 들어갔다. LSTM 판은 0판. GTrXL은 엔티티가 많은 장면에서 추론이 무거워 60분 게임이 2시간 안에 끝나지 않았다. 길고 큰 판만 빠졌으므로 GTrXL 대 T0(특히 테란) 결과는 치우쳐 있다. `summary.md`의 session errors(25·18·4·2·4)는 상한 도달 뒤 hostd가 게임을 끝내며 끊긴 연결이다. **사용자 결정(2026-10-23): 다시 돌리지 않고 누락과 함께 보고한다.**
+- 해석 주의: 학습 seed는 코어당 1개(3절 5번), GTrXL은 학습 update의 15.6%가 Vulkan f32. 맞대결 무승부(60분 제한)가 45%로, 두 코어 모두 상대를 끝내는 능력이 약하다.
 
 사용자 결정: (결과 보고 후)
 
@@ -317,3 +322,12 @@ run 배정 (작업자 큐 순서대로, 061-R13)
 - **빌드 고정(Claude 판단)**: 비교 대전·채점은 6fa8fbd 빌드로 한다. 그 뒤 master(890bf3f·e93e3a0)가 OpenBW 관측에서 상대 생산 큐와 보이지 않는 칸의 탄환을 숨긴다(AMB-030-4·5). 두 모델은 변경 전 관측으로 학습했으므로 학습 때와 같은 입력으로 비교한다. 두 코어 조건은 같다. 학습 PC는 실행 파일·Windows 브리지·BWAPI 빌드를 `%LOCALAPPDATA%\uranium-build\6fa8fbd\`에 고정 복사했다.
 - **최종 실행 준비**: `<shared>/artifacts/m6_core_ablation/final/run_final.ps1`(맞대결 100 → T0 600 → val 500 채점, 끝난 단계는 건너뜀, 끝나지 않은 단계 폴더는 보존 후 다시 시작). 고정 plan·호스트 목록·BC 설정은 같은 폴더 `plans/`에 있다. 출력은 모두 공용 드라이브(학습 PC 로컬 디스크)에 바로 쓴다. 학습 PC 재부팅 뒤 시작한다.
 - 출력 위치(지우지 않음): 1차 `<shared>/artifacts/m6_core_ablation/core-ablation-eval-20261022-abort1/`, 2차 `.../core-ablation-eval-20261022-abort2-timeout/`(맞대결 16판 리플레이·결과, 스케줄러·동기화 로그). Linux 호스트 A 원본은 `runs/core-ablation-eval-20261022{,-abort1}/`. 이전 대전 리플레이 사본 `.../earlier/`는 만들지 않았다(학습 PC 저장소 `runs/`에만 있음).
+
+### 2026-10-23 최종 실행 (학습 PC 포함, 사용자 결정)
+- **00:44·00:46 실행 스크립트 오류 2회(게임 0판)**: `cmd /c`가 명령의 첫·마지막 따옴표를 떼어 실행 파일 경로가 깨졌고, PowerShell 변수가 대소문자를 구분하지 않아 반복 변수 `$p`가 고정 빌드 경로 `$P`를 덮어썼다. 둘 다 고쳤다(로그 `final/h2h.launch-fail-0046.log`).
+- **00:48~03:22 맞대결 100판**: 동시 36판(학습 PC 24, Linux 호스트 A 5·B 4·C 3), 세션 72개 모두 연결. 100판 GameEnd, 실패 0. 판 속도는 약 26.5프레임/초(실시간 약 1.1배)로, 추론이 학습 PC GPU 하나에 몰린다(Windows 3D/계산 엔진 약 97%, nvidia-smi 사용률 12~53%·약 55 W — 작은 커널이 많아 GPU가 바쁘지만 한 번의 연산량은 작다). 게임 호스트 CPU는 거의 놀았다. 가장 긴 판은 실제 약 78분(2시간 상한 안). 배치 상한 32 → 40 변경은 제안했으나 사용자 결정으로 유지.
+- **01:12~01:35 val 채점을 Linux 호스트 A(Vulkan)로 옮겼다가 실패(사용자 요청)**: LSTM이 `can't allocate buffer of size: 2147483648`(10-20 학습 때와 같은 거리 bias one-hot 2 GiB)으로 종료. `bc-eval`에는 041-R17 엔티티 조각 재계산이 없다. GTrXL은 시작 직후 멈췄다(rc 143). 채점은 학습 PC로 되돌렸다. 출력 `final/val500-bc250_1-fail/`. `choom -n 1000`으로 그 호스트의 대전은 보호됐다.
+- **03:22~11:09 T0 600판**: 573판 GameEnd, GTrXL 판 27판 `Timeout`(4절). LSTM 300판은 실제 시간이 짧았다(맵·상대별 게임 시간 중앙값 7.7~18분, 대 프로토스 서킷 60.5분).
+- **11:09~13:26 val 500게임 채점(학습 PC CUDA)**: LSTM 67분, GTrXL 69분. 결과는 4절.
+- **13:3x 정리**: 학습 PC hostd 종료. 10-22 사용자 결정대로 staging의 scr_ladder shard 25개(`shard_00083`~`00107`)를 `scr_ladder-p0/`로 되돌리고 manifest를 다시 만들었다(106 shard, 1,565게임, 전부 디코드, `--verify` 통과). 이전 manifest는 `<shared>/staging/scr_ladder-inc-20261021/manifest.before-restore.json`.
+- **후속 제안(미구현)**: ① 브리지 시작 실패(에이전트 접속 불가) 판을 스케줄러가 `Finished`가 아니라 실패로 세기(020) ② `bc-eval`에 041-R17 엔티티 조각 재계산 적용(Linux Vulkan 채점) ③ 로컬 모드가 manifest 밖 shard를 읽지 않게 하기(061-R12) ④ GTrXL 큰 장면의 추론 속도(T0 상한 도달 원인).
