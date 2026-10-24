@@ -492,7 +492,10 @@ fn feeder_threads_give_the_same_batches() {
                 .map(|(l, t, st)| {
                     let mut st = st.clone();
                     if pack {
-                        st.obs = b.planes[l][t].restore(&st.obs);
+                        // 041-R18: a packed step holds its compressed size, not the raw plane.
+                        let p = &b.planes[l][t];
+                        assert_eq!(p.allocated(), p.bytes(), "packed planes keep only the compressed bytes");
+                        st.obs = p.restore(&st.obs);
                     }
                     format!("{st:?}")
                 })

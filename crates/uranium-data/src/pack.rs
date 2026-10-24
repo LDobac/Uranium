@@ -21,12 +21,7 @@ impl Planes {
         let (spatial_len, loc_len) = (o.obs.spatial.len(), o.masks.loc_class_mask.len());
         o.obs.spatial = Vec::new();
         o.masks.loc_class_mask = Vec::new();
-        Self {
-            spatial: zstd::bulk::compress(&spatial_bytes, 1).expect("zstd compress"),
-            loc_mask: zstd::bulk::compress(&loc_bytes, 1).expect("zstd compress"),
-            spatial_len,
-            loc_len,
-        }
+        Self { spatial: compress(&spatial_bytes), loc_mask: compress(&loc_bytes), spatial_len, loc_len }
     }
 
     /// `o` (whose planes were taken) with its planes back, bit for bit.
@@ -71,6 +66,21 @@ impl Planes {
     pub fn bytes(&self) -> usize {
         self.spatial.len() + self.loc_mask.len()
     }
+
+    /// Heap bytes held by the compressed planes (the capacity, not the length).
+    pub fn allocated(&self) -> usize {
+        self.spatial.capacity() + self.loc_mask.capacity()
+    }
+}
+
+/// zstd level 1 with the buffer trimmed to the compressed size. `bulk::compress` returns the
+/// compress bound (about the raw plane, ~1.9 MB a step) as capacity, so a packed BC batch of
+/// 2,048 steps kept ~4 GB allocated (041-R18, 2026-10-24: Windows commit and Linux heap growth
+/// per update).
+fn compress(raw: &[u8]) -> Vec<u8> {
+    let mut v = zstd::bulk::compress(raw, 1).expect("zstd compress");
+    v.shrink_to_fit();
+    v
 }
 
 /// An observation with its two large planes compressed.
