@@ -34,8 +34,8 @@ def resolve(backend: str | None) -> tuple[str, torch.device, str]:
 # one in the comparison on that backend, `reports/pytorch_opt.md` 2). A process variable or `.env`
 # key wins.
 IMPL_DEFAULTS = {
-    "rocm": {"URANIUM_LOC_ROWS": "exact", "URANIUM_LOC_OUT": "mulsum", "URANIUM_BIAS_GRAD": "table_t", "URANIUM_CONV_WGRAD": "bmm"},
-    "cuda": {},
+    "rocm": {"URANIUM_LOC_ROWS": "exact", "URANIUM_LOC_OUT": "mulsum", "URANIUM_BIAS_GRAD": "table_t", "URANIUM_CONV_WGRAD": "bmm", "URANIUM_ENTITY_ATTN": "fused"},
+    "cuda": {"URANIUM_LOC_ROWS": "pow2", "URANIUM_ENTITY_ATTN": "fused"},
     "cpu": {},
 }
 
