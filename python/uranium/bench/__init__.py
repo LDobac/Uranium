@@ -30,6 +30,7 @@ def add_parser(sub) -> None:
     b.add_argument("--stage", default="s1", choices=["s1", "s2", "ablation_a"])
     b.add_argument("--core", choices=["lstm", "gtrxl"], default="gtrxl")
     b.add_argument("--backend", choices=["cuda", "rocm", "cpu"])
+    b.add_argument("--precision", choices=["f32", "bf16"], help="default: the backend's training precision (032-R8); f32 on CUDA checks an implementation without bf16 rounding")
     b.add_argument("--groups", default="1", help="comma list of lane group sizes (micro_lanes, 0 = all lanes)")
     b.add_argument("--updates", type=int, default=20, help="measured updates after one warm-up update")
     b.add_argument("--seed", type=int, default=1, help="initial weights")
@@ -93,6 +94,7 @@ def bc_main(a) -> int:
     import torch
 
     backend, device, precision = resolve(a.backend)
+    precision = a.precision or precision
     configure(backend)
     env = environment(backend, precision, device) | {"entity_chunk": os.environ.get("URANIUM_BC_ENTITY_CHUNK", "0"), "prefetch": os.environ.get("URANIUM_BC_PREFETCH", "default")}
     cmd = "python -m uranium bench " + " ".join(sys.argv[2:])
