@@ -270,9 +270,9 @@ PyTorch 전환(AMB-000-4)으로 I절의 Burn run(`bc-s1` ckpt-132, `bc-ablation-
 |---|---|---|
 | J-1 | 장비 `.env`(git 미추적): 공통 `URANIUM_PYTHON`, 호스트 설정(레인 그룹·미리 읽기·압축·공급 스레드, `docs/commands.md` 구현 스위치 표 아래), 구현 스위치는 백엔드 기본값(설정하지 않음) | **완료(2026-10-24)**: CUDA 호스트 `URANIUM_PYTHON`(메인 작업 사본 `.venv`), `URANIUM_BC_MICRO_LANES=2`·`PREFETCH=1`·`PACK_BATCH=1`. Linux ROCm 호스트 `URANIUM_PYTHON`(그 GPU용 소스 빌드 torch venv), `MICRO_LANES=1`·`FEED_THREADS=2`, 기존 `PREFETCH=2`·`ENTITY_CHUNK=0`·`PACK_BATCH=1`·`MALLOC_MMAP_THRESHOLD=1048576` |
 | J-2 | Python 환경: CUDA 호스트 메인 작업 사본 `.venv`(torch 2.14.1+cu130, `-e ".[compile]"`로 triton-windows), Linux ROCm 호스트 소스 빌드 torch venv에 `-e .` | **완료(2026-10-24, master 2124aa7 기준)**: CUDA 호스트 CPU 테스트 통과. Linux ROCm 호스트 확장 재빌드·GPU 테스트 통과 |
-| J-3 | 작업자 바이너리 `cargo build --release -p uranium-train`(두 장비, 지금 master로) | **남음**: CUDA 호스트 메인 작업 사본에는 아직 빌드 안 됨. Linux ROCm 호스트는 10-23 빌드라 다시 빌드 |
+| J-3 | 작업자 바이너리 `cargo build --release -p uranium-train`(두 장비, 지금 master로) | **완료(2026-10-24, 2차 코어 비교 준비 중)**: 두 장비 master 1ebb654 이상으로 빌드 |
 | J-4 | 큐 파일 `<shared>/queue/bc.toml`(README 4절 TOML 그대로: 세 run, `core = "gtrxl"`) | **남음**: 공용 드라이브 `queue/`·`checkpoints/`는 지금 비어 있음 |
-| J-5 | **표본 end-to-end**(대규모 배치 전 점검): PyTorch로는 실제 큐 설정 학습 → 체크포인트 → 다른 장비 재개를 아직 해 보지 않았다. 표본 큐(예: `bc-sample-pt`)로 CUDA 호스트 S1 몇 update → Linux ROCm 호스트에서 같은 run 재개(061-R10, 장비별 레인 그룹·스위치가 달라도 이어짐) → S2 `--init` 몇 update. 시작 줄(`micro_lanes`, `prefetch` 등)과 체크포인트 메타 `kernels`(적용 스위치) 확인 | **남음** |
+| J-5 | **표본 end-to-end**(대규모 배치 전 점검): PyTorch로는 실제 큐 설정 학습 → 체크포인트 → 다른 장비 재개를 아직 해 보지 않았다. 표본 큐(예: `bc-sample-pt`)로 CUDA 호스트 S1 몇 update → Linux ROCm 호스트에서 같은 run 재개(061-R10, 장비별 레인 그룹·스위치가 달라도 이어짐) → S2 `--init` 몇 update. 시작 줄(`micro_lanes`, `prefetch` 등)과 체크포인트 메타 `kernels`(적용 스위치) 확인 | **일부 완료(2026-10-24)**: 2차 코어 비교 표본으로 Linux ROCm 호스트 S1 6 update → CUDA 호스트 재개 9 update(LSTM·GTrXL, 같은 run_ident, `m6_core_ablation_pt.md` 4절). 남음: CUDA → ROCm 방향, S2 `--init`, 메타 `kernels` 확인 |
 | J-6 | 작업자 시작: **CUDA 호스트를 먼저**(I-D3 ②), Linux ROCm 호스트는 24시간. 장시간 실행 시작을 timeline에 기록 | J-3~J-5 뒤 |
 
 - 예상 속도(실데이터, 데이터 대기 포함): CUDA 호스트 약 2.0 s/update, Linux ROCm 호스트 약 10 s/update(`reports/pytorch_opt.md` 3절). S1+S2 약 50,500 update.

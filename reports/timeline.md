@@ -178,3 +178,4 @@
 - 2026-10-24 21:1x — **결정**(사용자): BC 본학습 전에 LSTM/GTrXL 코어 비교를 PyTorch로 다시 한다. 코어마다 S1 10,000 update, 장비는 1차와 같게 학습 PC(CUDA, 유휴일 때만)와 bc250_1(ROCm). spec 032-R17 ⑥, 설정 `config/bc_core_ablation_pt.toml`, 리포트 `reports/m6_core_ablation_pt.md`
 - 2026-10-24 21:2x — **발견**(032-R17 ⑥ 표본): bc250_1 ROCm 실제 설정 6 update씩 — LSTM 약 11.2 s/update·메모리 최대 10.8 GB, GTrXL 약 10 s/update·11.5 GB, 둘 다 정상. 표본 run `core-abl-smoke-{lstm,gtrxl}-pt`(공용 드라이브)
 - 2026-10-24 21:3x — **장시간 실행 시작**(032-R17 ⑥ 2차 코어 비교): bc250_1 ROCm 작업자(우선순위 1, 큐 `<shared>/queue/core-ablation-pt.toml`, master 1ebb654)가 `core-abl-lstm-pt`부터 학습(약 11.8 s/update). 학습 PC CUDA 작업자는 유휴일 때 사용자 확인 후 시작
+- 2026-10-24 21:5x — **발견·장시간 실행 시작**(032-R17 ⑥): 학습 PC `.env`의 `URANIUM_PYTHON`이 따옴표 없는 Windows 경로라 Rust 작업자가 못 읽음 → 작은따옴표로 감쌈. 학습 PC CUDA 작업자(우선순위 10)가 `core-abl-gtrxl-pt` 시작(약 1.85 s/update). 그 전에 ROCm → CUDA 재개를 표본 run 두 개로 확인(J-5 일부)
