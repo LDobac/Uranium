@@ -42,6 +42,12 @@ def test_graphed_act_matches_eager():
         for x, y in zip(got["state"][0], want["state"][0]):
             assert x.shape == y.shape and close(x, y, exact)
     assert len(graphed.graphs) == 2  # batch 3 padded to 4 (captured once), batch 1
+    # Above URANIUM_INFER_GRAPH_MAX_BATCH the act runs eagerly (same outputs, no new graph).
+    graphed.max_batch = 2
+    obs = random_obs(3, 128, net.cfg.input, dev, torch.Generator().manual_seed(1), valid=119)
+    want, got = eager(obs, net.init_state(3, dev)), graphed(obs, net.init_state(3, dev), 0.0)
+    assert all(torch.equal(got["action"][k], want["action"][k]) for k in want["action"]) and len(graphed.graphs) == 2
+    graphed.max_batch = 0
     # A weight swap after capture is seen by the graph (parameters copied in place).
     other = UraniumNet(new_net_config("gtrxl", True), action_columns()).to(dev).eval()
     net.load_state_dict(other.state_dict())

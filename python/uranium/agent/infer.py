@@ -80,8 +80,12 @@ class GraphedAct:
     in one memory pool. The returned tensors live in the graph's memory: read or copy them before
     the next call (the server copies the state rows and reads the replies at once)."""
 
-    def __init__(self, act, device: torch.device, precision: str):
+    def __init__(self, act, device: torch.device, precision: str, max_batch: int = 0):
         self.act, self.device, self.precision = act, device, precision
+        # Batches larger than this (0 = no limit) run eagerly: every captured shape keeps its
+        # memory, and where the GPU work dominates a graph gains nothing (Linux ROCm host:
+        # batch 1 20 -> 12 ms, batch 16 and up unchanged).
+        self.max_batch = max_batch
         self.graphs: dict = {}
         self.pool = torch.cuda.graph_pool_handle()
 
@@ -91,6 +95,8 @@ class GraphedAct:
 
     def __call__(self, obs: dict, state, temp: float) -> dict:
         b = obs["entity_mask"].shape[0]
+        if self.max_batch and b > self.max_batch:
+            return self._act(obs, state, temp)
         bp = 1 << (b - 1).bit_length()
         if bp != b:
             idx = torch.cat([torch.arange(b, device=self.device), torch.zeros(bp - b, dtype=torch.long, device=self.device)])
@@ -159,7 +165,8 @@ class InferenceServer(threading.Thread):
         # `URANIUM_INFER_COMPILE`: `act` through torch.compile first (CUDA host, inside the graph:
         # batch 1 2.4 -> 1.3 ms, batch 32 9.3 -> 6.2 ms).
         self.act_fn = compiled(self.net.act, "URANIUM_INFER_COMPILE")
-        self.graphed = GraphedAct(self.act_fn, device, precision) if device.type == "cuda" and env_choice("URANIUM_INFER_GRAPH", INFER_GRAPH_MODES, "off") == "on" else None
+        graph_max = int(os.environ.get("URANIUM_INFER_GRAPH_MAX_BATCH", "") or 0)
+        self.graphed = GraphedAct(self.act_fn, device, precision, graph_max) if device.type == "cuda" and env_choice("URANIUM_INFER_GRAPH", INFER_GRAPH_MODES, "off") == "on" else None
         self.state = self.net.core.init_state(broker.capacity, device)
         self.version = 0
         self.warmed = False
