@@ -177,3 +177,4 @@
 - 2026-10-24 21:0x — **정리**(세션 종료 전 이어 하기 준비): 두 장비 `.env`에 `URANIUM_PYTHON`, CUDA 호스트 메인 작업 사본 `.venv`(torch cu130 + triton-windows) 설치. 다음 작업은 PyTorch BC 본학습 착수 체크리스트(`m6_pre_bc_review.md` J절: 작업자 빌드·큐 파일·표본 end-to-end 남음). 측정 원자료·스크립트 위치는 `pytorch_opt.md` 4절
 - 2026-10-24 21:1x — **결정**(사용자): BC 본학습 전에 LSTM/GTrXL 코어 비교를 PyTorch로 다시 한다. 코어마다 S1 10,000 update, 장비는 1차와 같게 학습 PC(CUDA, 유휴일 때만)와 bc250_1(ROCm). spec 032-R17 ⑥, 설정 `config/bc_core_ablation_pt.toml`, 리포트 `reports/m6_core_ablation_pt.md`
 - 2026-10-24 21:2x — **발견**(032-R17 ⑥ 표본): bc250_1 ROCm 실제 설정 6 update씩 — LSTM 약 11.2 s/update·메모리 최대 10.8 GB, GTrXL 약 10 s/update·11.5 GB, 둘 다 정상. 표본 run `core-abl-smoke-{lstm,gtrxl}-pt`(공용 드라이브)
+- 2026-10-24 21:3x — **장시간 실행 시작**(032-R17 ⑥ 2차 코어 비교): bc250_1 ROCm 작업자(우선순위 1, 큐 `<shared>/queue/core-ablation-pt.toml`, master 1ebb654)가 `core-abl-lstm-pt`부터 학습(약 11.8 s/update). 학습 PC CUDA 작업자는 유휴일 때 사용자 확인 후 시작

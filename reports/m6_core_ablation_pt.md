@@ -85,3 +85,4 @@ target\release\uranium-train worker --queue <shared>/queue/core-ablation-pt.toml
 
   LSTM ROCm(MIOpen 끔, `core.py`)도 GTrXL과 비슷한 속도라 1.4절 예상 시간은 그대로 쓴다. 로그 BC250 1호기 `~/build-logs/abl_pt_smoke_20261024/`(`lstm.log`, `gtrxl.log`, `mem.log`), 스크립트 `~/abl_pt_smoke.sh`.
 - 남은 사전 확인(학습 PC 유휴일 때): 메인 작업 사본 `cargo build --release -p uranium-train`(J-3의 CUDA 쪽), 표본 run을 학습 PC CUDA에서 이어 받기(ROCm → CUDA 재개, 061-R10). BC250 1호기 작업자는 먼저 시작한다(재개에 문제가 있어도 BC250 1호기 체크포인트는 유효).
+- 2026-10-24 21:3x — **학습 시작**: BC250 1호기 작업자(master 1ebb654, `~/abl_pt_worker.sh`: ROCm 실행 환경 + `uranium-train worker --backend rocm --priority 1`, 로그 `runs/worker-abl-pt.{log,out}`)가 큐 첫 run `core-abl-lstm-pt`를 잡았다. step 1·2 14.0·11.8 s. 학습 PC 작업자는 유휴일 때 시작한다(사용자 확인).
