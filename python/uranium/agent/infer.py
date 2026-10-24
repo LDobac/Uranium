@@ -25,6 +25,11 @@ from uranium.model.layers import env_choice
 # batch 1 20 -> 12 ms, from batch 16 the GPU work dominates). Batches are padded to a power of two
 # with copies of row 0, whose outputs are dropped, so few graphs are captured.
 INFER_GRAPH_MODES = ("off", "on")
+# `URANIUM_INFER_STREAM`: the server's GPU work on the thread's current stream (`shared`) or on a
+# stream of its own (`own`), so its input copies and act do not queue behind an RL learner in the
+# same process. `own` stalled learner and inference together for 20-310 s on the Linux ROCm host
+# (2 of 2 runs, cause unknown), so `shared` is the default until a backend is shown safe.
+INFER_STREAM_MODES = ("shared", "own")
 # `URANIUM_INFER_PROFILE=<path prefix>`: one JSON line per batch in `<prefix>-<checkpoint>.jsonl`
 # with the latency parts (broker wait, GIL, locks, input copy, GPU time and wait, reply), for
 # AMB-042-10. Off when unset.
@@ -159,11 +164,11 @@ class InferenceServer(threading.Thread):
         self.version = 0
         self.warmed = False
         prof = os.environ.get("URANIUM_INFER_PROFILE", "")
-        # Its own stream: in RL the learner thread queues seconds of kernels on the default
-        # stream, and the server's input copies and act would wait behind them (Linux ROCm host:
-        # input copy median 1.5 -> 8.8 ms, p95 124 ms during updates). Ordered after the setup
-        # work above, which ran on the constructing thread's stream.
-        self.stream = torch.cuda.Stream(device) if device.type == "cuda" else None
+        # `URANIUM_INFER_STREAM=own`: a stream of its own (in RL the learner queues seconds of kernels
+        # on the default stream; Linux ROCm host, shared: input copy median 1.5 -> 8.8 ms, p95
+        # 124 ms during updates). Ordered after the setup work above (the constructing thread's stream).
+        own = device.type == "cuda" and env_choice("URANIUM_INFER_STREAM", INFER_STREAM_MODES, "shared") == "own"
+        self.stream = torch.cuda.Stream(device) if own else None
         if self.stream is not None:
             self.stream.wait_stream(torch.cuda.current_stream(device))
         self.prof = open(f"{prof}-{broker.checkpoint_id.replace('@', '_').replace(':', '_')}.jsonl", "a", encoding="utf-8") if prof and device.type == "cuda" else None
