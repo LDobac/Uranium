@@ -101,8 +101,13 @@ impl Broker {
     /// `slots`, `n` and the observation arrays).
     fn next<'py>(&self, py: Python<'py>, timeout_ms: u64) -> PyResult<Option<Bound<'py, PyDict>>> {
         let inner = &self.inner;
-        let w = py.detach(move || inner.lock().unwrap().next(Duration::from_millis(timeout_ms))).map_err(err)?;
-        let Some(w) = w else { return Ok(None) };
+        let (w, returned) = py.detach(move || {
+            let w = inner.lock().unwrap().next(Duration::from_millis(timeout_ms));
+            (w, uranium_agent::broker::unix_ns())
+        });
+        // Back under the GIL: `gil_unix_ns - returned_unix_ns` is the wait for it (AMB-042-10).
+        let gil = uranium_agent::broker::unix_ns();
+        let Some(w) = w.map_err(err)? else { return Ok(None) };
         let d = PyDict::new(py);
         d.set_item("resets", w.resets)?;
         d.set_item("states", w.states)?;
@@ -112,6 +117,11 @@ impl Broker {
                 let bd = PyDict::new(py);
                 bd.set_item("slots", b.slots)?;
                 bd.set_item("n", b.obs.n)?;
+                bd.set_item("wait_mean_ns", b.wait_mean.as_nanos() as u64)?;
+                bd.set_item("wait_max_ns", b.wait_max.as_nanos() as u64)?;
+                bd.set_item("formed_unix_ns", b.formed_unix_ns)?;
+                bd.set_item("returned_unix_ns", returned)?;
+                bd.set_item("gil_unix_ns", gil)?;
                 crate::put_obs(py, &bd, b.obs)?;
                 d.set_item("batch", bd)?;
             }

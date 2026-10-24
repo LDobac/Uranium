@@ -84,8 +84,18 @@ class Learners:
     def update(self, i: int, batch, weights) -> str:
         from uranium.device import DEVICE_LOCK
 
+        import os
+        import time
+
+        t0 = time.time_ns()
         with DEVICE_LOCK.shared():
-            return json.dumps(self.learners[i].update(batch, weights))
+            t1 = time.time_ns()
+            out = json.dumps(self.learners[i].update(batch, weights))
+        prof = os.environ.get("URANIUM_INFER_PROFILE", "")
+        if prof:  # learner update spans next to the servers' batches (AMB-042-10)
+            with open(f"{prof}-learner.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"agent": i, "t0": t0, "t_lock": t1, "t1": time.time_ns()}) + "\n")
+        return out
 
     def push(self, i: int) -> None:
         l = self.learners[i]

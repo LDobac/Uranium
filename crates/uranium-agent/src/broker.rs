@@ -42,6 +42,16 @@ pub struct WorkBatch {
     /// Slot of every row.
     pub slots: Vec<usize>,
     pub obs: HostObsBatch,
+    /// Time the requests waited before the batch was formed (mean, max), and the batch's
+    /// forming time (UNIX ns): latency accounting (AMB-042-10).
+    pub wait_mean: Duration,
+    pub wait_max: Duration,
+    pub formed_unix_ns: u64,
+}
+
+/// Wall clock in UNIX nanoseconds (comparable with Python's `time.time_ns`).
+pub fn unix_ns() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64)
 }
 
 /// The model's output for a batch, rows in `WorkBatch::slots` order.
@@ -185,8 +195,11 @@ impl Broker {
             let refs: Vec<&Observation> = batch.iter().map(|p| &*p.obs).collect();
             let obs = obs_batch(&refs, self.opts.pad_entities);
             let slots = batch.iter().map(|p| p.slot).collect();
+            let waits: Vec<Duration> = batch.iter().map(|p| p.since.elapsed()).collect();
+            let wait_mean = waits.iter().sum::<Duration>() / waits.len().max(1) as u32;
+            let wait_max = waits.iter().copied().max().unwrap_or_default();
             self.inflight = Some(InFlight { n: obs.n, batch, started: Instant::now() });
-            WorkBatch { slots, obs }
+            WorkBatch { slots, obs, wait_mean, wait_max, formed_unix_ns: unix_ns() }
         });
         (!resets.is_empty() || !states.is_empty() || batch.is_some()).then_some(Work { resets, states, batch })
     }

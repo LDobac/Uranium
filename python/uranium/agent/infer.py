@@ -5,6 +5,7 @@ the forward, 032-R9), writes the rows back and replies. Opened slots start from 
 Batching changes throughput only: every row is computed as it would be alone."""
 
 import json
+import os
 import sys
 import threading
 import time
@@ -23,6 +24,9 @@ from uranium.model.layers import env_choice
 # batch 1 20 -> 12 ms, from batch 16 the GPU work dominates). Batches are padded to a power of two
 # with copies of row 0, whose outputs are dropped, so few graphs are captured.
 INFER_GRAPH_MODES = ("off", "on")
+# `URANIUM_INFER_PROFILE=<path prefix>`: one JSON line per batch in `<prefix>-<checkpoint>.jsonl`
+# with the latency parts (broker wait, GIL, locks, input copy, GPU time and wait, reply), for
+# AMB-042-10. Off when unset.
 
 
 def leaves(s) -> list[torch.Tensor]:
@@ -153,6 +157,8 @@ class InferenceServer(threading.Thread):
         self.state = self.net.core.init_state(broker.capacity, device)
         self.version = 0
         self.warmed = False
+        prof = os.environ.get("URANIUM_INFER_PROFILE", "")
+        self.prof = open(f"{prof}-{broker.checkpoint_id}.jsonl".replace("@", "_").replace(":", "_"), "a", encoding="utf-8") if prof and device.type == "cuda" else None
         self.stop = threading.Event()
         self.error: BaseException | None = None
         # Held while a work item runs; a weight swap waits for the batch in flight.
@@ -200,9 +206,10 @@ class InferenceServer(threading.Thread):
                 w = self.broker.next(self.poll_ms)
                 if w is None:
                     continue
+                t_py = time.time_ns()
                 try:
                     with self.lock, DEVICE_LOCK.shared():
-                        self.handle(w)
+                        self.handle(w, t_py)
                 except Exception as e:  # noqa: BLE001 - the sessions get the error, the server goes on
                     print(f"[infer] {self.broker.checkpoint_id}: {e!r}", file=sys.stderr, flush=True)
                     self.broker.fail(repr(e))
@@ -213,8 +220,9 @@ class InferenceServer(threading.Thread):
             self.broker.shutdown("model thread stopped")
 
     @torch.no_grad()
-    def handle(self, w: dict) -> None:
+    def handle(self, w: dict, t_py: int | None = None) -> None:
         dev = self.device
+        t_lock = time.time_ns()
         if w["resets"]:
             self.state = zero_rows(self.state, torch.tensor(w["resets"], device=dev))
         if w["states"]:
@@ -229,7 +237,16 @@ class InferenceServer(threading.Thread):
             return
         rows = torch.tensor(b["slots"], device=dev)
         obs = to_obs(b, dev)
-        out = self.act(obs, select_rows(self.state, rows))
+        st = select_rows(self.state, rows)
+        if self.prof:
+            graphs = len(self.graphed.graphs) if self.graphed else 0
+            t_prep = time.time_ns()
+            e0, e1 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+            e0.record()
+        out = self.act(obs, st)
+        if self.prof:
+            e1.record()
+            t_submit = time.time_ns()
         self.state = scatter_rows(self.state, rows, out["state"])
         a = out["action"]
         i64 = lambda t: t.reshape(-1).to(torch.int64).cpu().numpy()  # noqa: E731
@@ -239,6 +256,19 @@ class InferenceServer(threading.Thread):
             f32(out["log_prob"]), f32(out["head_log_prob"]), f32(out["value"]),
             None if out["win_open"] is None else f32(out["win_open"]),
         )
+        if self.prof:
+            t_end = time.time_ns()
+            e1.synchronize()
+            ms = lambda a, z: round((z - a) / 1e6, 3)  # noqa: E731
+            rec = {
+                "t": t_py, "rows": len(b["slots"]), "n": b["n"], "captured": (len(self.graphed.graphs) if self.graphed else 0) > graphs,
+                "queue_mean": round(b["wait_mean_ns"] / 1e6, 3), "queue_max": round(b["wait_max_ns"] / 1e6, 3),
+                "gil": ms(b["returned_unix_ns"], b["gil_unix_ns"]), "to_py": ms(b["gil_unix_ns"], t_py), "locks": ms(t_py, t_lock),
+                "prep": ms(t_lock, t_prep), "submit": ms(t_prep, t_submit), "gpu": round(e0.elapsed_time(e1), 3),
+                "sync_reply": ms(t_submit, t_end), "total": ms(b["formed_unix_ns"], t_end),
+            }
+            self.prof.write(json.dumps(rec) + "\n")
+            self.prof.flush()
 
 
 assert len(HEAD_NAMES) == 6, "032 §2.5: six heads in the broker's order"
