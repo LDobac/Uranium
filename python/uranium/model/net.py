@@ -119,9 +119,9 @@ class UraniumNet(nn.Module):
         mode = env_choice("URANIUM_LOC_ROWS", LOC_ROW_MODES, "off")
         if mode != "off":
             spec = location_rows(group["action"], self._cols["target_kind"], mode)
-            if spec is None:
-                out["loc_all"] = True
-            else:
+            # The key is always there (only its value changes): torch.compile guards on the keys.
+            out["loc_all"] = spec is None
+            if spec is not None:
                 # Weight 1 for the real rows, 0 for the padding: no Python row count reaches the
                 # forward (torch.compile would specialise on it).
                 rows, k = spec

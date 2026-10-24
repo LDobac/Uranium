@@ -43,6 +43,18 @@ def msvc_env() -> None:
             os.environ[k] = v
 
 
+def warm(device) -> None:
+    """Loads (builds once) the kernels the switches turn on for `device`, outside any traced code:
+    torch.compile cannot trace the loader's path handling."""
+    if torch.device(device).type != "cuda":
+        return
+    from uranium.model.encoders import ENTITY_ATTN_MODES
+    from uranium.model.layers import env_choice
+
+    if env_choice("URANIUM_ENTITY_ATTN", ENTITY_ATTN_MODES, "torch") == "fused":
+        load("attn_bias")
+
+
 def load(name: str):
     """The compiled module for `<name>.cu`, or None when it cannot be built (reason on stderr)."""
     if name in _LOADED:

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import torch
 
-from uranium import ckpt
+from uranium import ckpt, kernels
 from uranium.bc.clip import clip_global_norm
 from uranium.device import adam_impl, autocast, compiled
 from uranium.model import UraniumNet, UraniumNetConfig, input_dims, to_obs
@@ -64,6 +64,7 @@ class BcTrainer:
         self._ph: dict = defaultdict(float)
         self._mark = 0.0
         self._collate = ThreadPoolExecutor(max_workers=1, thread_name_prefix="collate")
+        kernels.warm(device)
         self.forward_seq = compiled(self.net.forward_seq)
         has_open, weighted = self.net.value.open is not None, cfg["value"].get("win_open") is not None
         if weighted and not has_open:
