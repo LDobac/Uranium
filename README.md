@@ -32,9 +32,10 @@ cp -n <shared>/datasets/replays/build/maps/*.toml <URANIUM_MAPS_DIR>/     # Wind
 
 **Linux ROCm 호스트**(GPU와 RAM을 나눠 씀) `.env` 메모리 설정. 값을 바꾸지 않으므로 장비 사이 재개에 영향이 없다.
 ```bash
-URANIUM_BC_PREFETCH=0        # 041-R16 미리 읽기 깊이 (2로 두면 데이터 대기가 사라지지만 RAM을 더 씀)
-URANIUM_BC_ENTITY_CHUNK=16   # 041-R17 엔티티 인코더 조각 재계산
-URANIUM_BC_PACK_BATCH=1      # 041-R18 호스트 batch 압축
+URANIUM_BC_PREFETCH=2                    # 041-R16 미리 읽기 깊이 (데이터 대기 0)
+URANIUM_BC_ENTITY_CHUNK=0                # 041-R17 엔티티 재계산 끔 (AMB-041-8, 2026-10-24)
+URANIUM_BC_PACK_BATCH=1                  # 041-R18 호스트 batch 압축
+URANIUM_MALLOC_MMAP_THRESHOLD=1048576    # 다 쓴 batch 메모리를 OS에 돌려줌 (상주 10 → 6.3 GiB)
 ```
 
 **설치·갱신**(Python 3.14 venv + PyTorch 2.14 + `uranium` 패키지)
