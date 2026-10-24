@@ -349,3 +349,56 @@
 
 - 컴파일된 상태는 eager보다 약 30% 빠르다. 재컴파일 원인 하나는 위치 헤드 실제 행 수(Python 정수)였다 → 장치 가중치로 바꿈(5ebbc9b, 값·gradient 같음). 재컴파일 한도 64, `URANIUM_COMPILE_DYNAMIC` 추가.
 - 마지막 손실이 eager와 0.13% 다르다(19.7927 대 19.816~19.819). 연산을 합치며 bf16 반올림 지점이 바뀐 것으로 보이며, 채택 전 손실 곡선 비교가 필요하다.
+
+### 2.19 conv 가중치 gradient — 직접 작성 커널(탈락)과 ResBlock bmm — bc250
+- 직접 작성 커널(블록 = 표본 × 입력 채널 32개, 스레드 = (채널, 커널 위치), 출력 채널 전부를 레지스터에 누적, 8×8 타일, 블록 부분합): 정확(오차 1e-5 이하)하지만 느렸다. 저장소에 넣지 않았다(job 임시 폴더 `conv_wgrad.cu`).
+
+  | 층(64행) | MIOpen | bmm(지금) | 직접 작성 커널 |
+  |---|---|---|---|
+  | stem 58→32 @128² | 66.8 ms | 36.0 | 31.8 |
+  | down1 32→64 s2 | 34.5 | 9.1 | 11.9 |
+  | ResBlock 64 @64² | 12.6 | 12.1 | 19.2 |
+  | down2 64→64 s2 | 9.9 | 4.1 | 5.9 |
+  | ResBlock 64 @32² | 5.1 | 3.6 | 4.9 |
+
+- 같은 측정에서 bmm 경로가 64채널 ResBlock에서도 MIOpen보다 빨랐다(128채널은 MIOpen이 빠름)
+
+  | ResBlock | MIOpen | bmm 조각 8 |
+  |---|---|---|
+  | 64 @64² | 14.4 ms | 12.2 |
+  | 64 @32² | 5.2 | 3.7 |
+  | 128 @16² | 1.2 | 2.7 |
+  | 128 @8² | 0.2 | 1.0 |
+
+- 64채널 이하 ResBlock에도 bmm 적용(f9bc602): 실데이터 10.43 → **10.04초**, 손실 같음. bc250 누적 23.5 → 10.0초(2.3배).
+- 층 모양이 바뀌면 자동으로 라이브러리 경로로 돌아간다(3×3·padding 1·stride 1·2만 bmm, 위치 출력 1×1만 mulsum, a62378b).
+
+### 2.20 CUDA torch.compile — 재컴파일·그래프 끊김 제거와 채택
+- 원인과 조치(진단 실행 `TORCH_LOGS=recompiles,graph_breaks`, CPU `aot_eager` 재현)
+
+  | 원인 | 조치 |
+  |---|---|
+  | 엔티티 커널(pybind) 호출마다 그래프 끊김 | `torch.library` 커스텀 op(`uranium::attn_bias_fwd/bwd`) |
+  | forward 안의 커널 로더 경로 처리에서 끊김 | 학습 시작 때 `kernels.warm` |
+  | 위치 행 수(Python 정수)로 재컴파일 | 장치 가중치(실제 1·패딩 0) |
+  | 라벨 키(`loc_all`·`loc_rows`) 유무로 재컴파일 | 행 목록을 항상 넘김(전부 계산 = 모든 행, 값 같음) |
+  | 선택 헤드 `F.one_hot(choice, n+1)`이 엔티티 수를 정수로 고정 | 선택한 키를 gather(값·gradient 같음, 두 장비 속도 같음) |
+  | 첫 그래프가 엔티티 수·행 수를 고정 | compile 때 `maybe_mark_dynamic` |
+  | GTrXL 상태가 첫 batch f32 → 이후 bf16 | 저장할 때 f32(사용할 때 bf16으로 바꾸므로 값 같음) |
+  | 위치 행 1개(크기 1 차원은 따로 컴파일) | `pow2` 최소 2행 |
+
+  - 엔티티 수는 이미 64의 배수로 채워진다(`pad_entities` 64). 실데이터 1,280그룹: 128 5%, 192 46%, 256 28%, 320 15%, 384 5%, 448 1%.
+- 정확성: dropout 난수 생성기를 eager와 같게 하면(`URANIUM_COMPILE_RNG=eager`, 기본값) f32 compile 대 eager 30 update 최대 상대 차이 **1.1e-7**(마지막 손실 같음). 앞서 본 0.05% 차이는 inductor 자체 난수열 때문이었다. 두 생성기의 속도는 같다.
+- 최종(bf16, 그룹 1, 30 update)
+
+  | | eager | compile(캐시 없음) | compile(캐시 있음) |
+  |---|---|---|---|
+  | 중앙값 | 3.22초 | 1.93 | 1.89 |
+  | 평균(컴파일 포함) | 3.24 | 2.88 | **2.08** |
+  | 재컴파일 / 그래프 끊김 | - | 1 / 0 | 1 / 0 |
+  | GPU 최대 / RSS | 2.48 / 5.65 GiB | 2.31 / 6.13 | 2.31 / 5.95 |
+
+  - bf16 손실 차이: 20 update 창 4.8e-6.
+  - CUDA 기본값 `URANIUM_COMPILE=default`(95dfad2). Triton이 없으면 경고 후 eager(Windows는 `.[compile]`로 triton-windows 설치). CUDA Graph 모드(`reduce-overhead`)는 레인 그룹 core 상태를 다음 batch까지 보관하는 구조와 충돌해 보류.
+  - bc250: Triton 없음, gfx1013은 Triton 공식 지원 대상이 아니라 compile 미사용.
+- 체크포인트 메타 `kernels`에 적용된 구현 스위치를 기록한다(041-R15).
