@@ -28,6 +28,7 @@ pub const STOP_CLEAN: usize = 1;
 /// if it holds one. The first Ctrl+C asks for a clean stop; a second one exits with 130 at once.
 pub fn install_stop_handler(tag: &'static str) -> anyhow::Result<std::sync::Arc<std::sync::atomic::AtomicUsize>> {
     use std::sync::atomic::Ordering;
+    accept_ctrl_c();
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let _ = STOP.set(stop.clone());
     let s = stop.clone();
@@ -39,6 +40,18 @@ pub fn install_stop_handler(tag: &'static str) -> anyhow::Result<std::sync::Arc<
         elog!("[{tag}] Ctrl+C: stopping cleanly (checkpoint, push, release; 042-R10)");
     })?;
     Ok(stop)
+}
+
+/// 042-R10 (2026-10-24): Windows lets a process ignore Ctrl+C (`SetConsoleCtrlHandler(NULL,
+/// TRUE)`) and its children inherit that. The venv `python.exe` launcher does it before starting
+/// the real interpreter, so a worker's training child never saw the console's Ctrl+C (the run
+/// kept training, no checkpoint). Clears the inherited flag; a no-op elsewhere.
+pub fn accept_ctrl_c() {
+    #[cfg(windows)]
+    // SAFETY: plain Win32 call without pointers (NULL handler = the process's Ctrl+C flag).
+    unsafe {
+        windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 0);
+    }
 }
 
 /// The process's Ctrl+C state once [`install_stop_handler`] ran (long pulls check it per file).

@@ -67,7 +67,8 @@ impl Planes {
         self.spatial.len() + self.loc_mask.len()
     }
 
-    /// Heap bytes held by the compressed planes (the capacity, not the length).
+    /// Bytes reserved by the compressed planes' buffers (their capacity, not the length; the
+    /// allocator's own rounding is not counted).
     pub fn allocated(&self) -> usize {
         self.spatial.capacity() + self.loc_mask.capacity()
     }

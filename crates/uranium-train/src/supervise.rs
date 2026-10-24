@@ -87,6 +87,7 @@ impl Watch {
         };
         let stopping = Arc::new(AtomicBool::new(false));
         let child_pid = Arc::new(Mutex::new(None::<u32>));
+        uranium_store::accept_ctrl_c();
         {
             let (stopping, child_pid) = (stopping.clone(), child_pid.clone());
             ctrlc::set_handler(move || {

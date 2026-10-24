@@ -20,4 +20,5 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 # 061-R8: GetDiskFreeSpaceExW for the disk usage warning (same windows-sys as uranium-hostd).
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+# 042-R10: SetConsoleCtrlHandler (accept_ctrl_c).
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_Console"] }
