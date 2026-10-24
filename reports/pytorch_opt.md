@@ -230,3 +230,11 @@
 - bc250의 남은 큰 과녁은 둘이고 모두 직접 작성 커널이 필요하다.
   - (1) 엔티티 attention + 거리 bias(64행 그룹당 171~872ms)
   - (2) 공간 인코더 conv wgrad(그룹당 약 135ms 이상)
+
+### 2.11 conv wgrad를 batched 행렬곱으로 — bc250
+층별 wgrad(64행, stem·stride-2만 바꿈, 조각 8): 그룹당 156 → 약 92ms. 층별 표는 2.10절 뒤 실측(`wgrad_all`)과 같다.
+- stem 67 → 37ms, down1 35 → 9ms, down2 10 → 4ms
+- ResBlock(stride 1)은 MIOpen이 빨라 그대로 둔다.
+
+실데이터(현재 bc250 설정, 그룹 1, 12 update): MIOpen 15.21초 → **`bmm` 12.94초**(−15%), 손실 같음. ROCm 기본값으로 채택(`URANIUM_CONV_WGRAD=bmm`).
+- bc250 누적: 기준선 23.5초 → **12.9초(1.82배)**
