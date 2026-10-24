@@ -49,11 +49,11 @@ M_ARENA_MAX = -8
 
 
 def apply_malloc() -> int | None:
-    """`URANIUM_MALLOC_MMAP_THRESHOLD` (bytes, Linux glibc): blocks at least this large are mapped
-    and given back to the OS when freed. glibc otherwise raises its threshold after such a free
-    and keeps the BC batches' feature blocks (MBs each) in its heap, so a process holding one
-    batch stays at the peak of two (Linux ROCm host: Feeder 8.2 -> 2.4 GB peak RSS at 1 MiB,
-    AMB-000-4 step 2). Host memory only; returns the threshold set, or None."""
+    """060-R3: `URANIUM_MALLOC_MMAP_THRESHOLD` (bytes, Linux glibc): blocks at least this large
+    are mapped and given back to the OS when freed. glibc otherwise raises its threshold after
+    such a free and keeps the BC batches' feature blocks (MBs each) in its heap, so a process
+    holding one batch stays at the peak of two (Linux ROCm host: Feeder 8.2 -> 2.4 GB peak RSS at
+    1 MiB, AMB-000-4 step 2). Host memory only; returns the threshold set, or None."""
     import sys
 
     raw = os.environ.get("URANIUM_MALLOC_MMAP_THRESHOLD", "")
@@ -69,13 +69,13 @@ def apply_malloc() -> int | None:
 
 
 def apply_malloc_arenas() -> int | None:
-    """`URANIUM_MALLOC_ARENA_MAX` (Linux glibc): at most this many malloc arenas. The BC feed
-    starts new threads per batch, and glibc gives threads their own arenas, where the batches'
-    small long-lived blocks (packed planes, features) and short-lived ones fragment the 64 MB
-    arena heaps: a long run on the Linux ROCm host grew ~25 MB per update until it swapped; at 2
-    the growth stopped (2026-10-25, `reports/m6_core_ablation_pt.md`). Set before any other
-    thread allocates (first thing in `python -m uranium`); host memory only, same values. Returns
-    the limit set, or None."""
+    """060-R3: `URANIUM_MALLOC_ARENA_MAX` (Linux glibc): at most this many malloc arenas. The BC
+    feed starts new threads per batch and glibc gives threads their own arenas. On the Linux ROCm
+    host a long BC run grew ~25 MB per update until it swapped, the growth all in 64 MB arena
+    heaps (likely small long-lived blocks such as packed planes mixed with short-lived ones); at 2
+    the resident size stayed near 6.6 GB (2026-10-25, `reports/m6_core_ablation_pt.md` 4).
+    Applied in `python -m uranium` before torch is imported or any other thread starts; host
+    memory only, same values (032-R19). Returns the limit set, or None."""
     import sys
 
     raw = os.environ.get("URANIUM_MALLOC_ARENA_MAX", "")
@@ -84,6 +84,8 @@ def apply_malloc_arenas() -> int | None:
     import ctypes
 
     n = int(raw)
+    if n < 1:
+        raise ValueError(f"URANIUM_MALLOC_ARENA_MAX={n}: must be at least 1 (glibc ignores 0 and below)")
     if not ctypes.CDLL("libc.so.6").mallopt(M_ARENA_MAX, n):
         raise RuntimeError(f"URANIUM_MALLOC_ARENA_MAX={n}: mallopt refused")
     return n

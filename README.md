@@ -36,6 +36,7 @@ URANIUM_BC_PREFETCH=2                    # 041-R16 미리 읽기 깊이 (데이�
 URANIUM_BC_ENTITY_CHUNK=0                # 041-R17 엔티티 재계산 끔 (AMB-041-8, 2026-10-24)
 URANIUM_BC_PACK_BATCH=1                  # 041-R18 호스트 batch 압축
 URANIUM_MALLOC_MMAP_THRESHOLD=1048576    # 다 쓴 batch 메모리를 OS에 돌려줌 (상주 10 → 6.3 GiB)
+URANIUM_MALLOC_ARENA_MAX=2               # glibc arena 수 제한 (긴 run에서 update마다 늘던 메모리를 막음)
 URANIUM_BC_MICRO_LANES=1                 # 041-R3 레인 그룹 (AMB-041-7)
 URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3이면 학습과 CPU를 다툼)
 ```

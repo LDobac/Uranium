@@ -185,3 +185,4 @@
 - 2026-10-24 23:5x — **실수·복구**(032-R17 ⑥): 실제 run에 측정용 `--steps`를 줘 `core-abl-gtrxl-pt`에 `DONE`이 생김(작업자들이 건너뜀) → `DONE.mistaken-20261024`로 이름 변경. 실제 run을 멈출 때는 Ctrl+C, 측정은 체크포인트 사본 로컬 재개로
 - 2026-10-25 00:4x — **발견·결정**(032-R19): CUDA 호스트 BC 데이터 대기·GPU 톱니의 원인은 Windows 힙이 공급의 큰 버퍼를 매번 OS에 돌려주는 페이지 폴트(초당 약 90만) → Windows에서 확장 할당자를 mimalloc으로(100 update 2.75 → 2.05 s/update, `URANIUM_H2D=pinned`까지 1.94 s). `pytorch_opt.md` 5절
 - 2026-10-25 00:2x — **조치**: bc250_1 BC 학습 메모리가 계속 늘어(update당 약 25 MB) 작업자에 `MALLOC_ARENA_MAX=2`를 넣어 재시작(결과 무관), 추이 확인 중
+- 2026-10-25 01:0x — **발견·결정**(060-R3): bc250_1 긴 BC run 메모리 증가는 glibc arena 단편화(smaps: 64 MB arena heap만 증가, 공급 버퍼 개수 일정). arena 2개 제한으로 상주 약 6.6 GB에서 평평 → `.env` 키 `URANIUM_MALLOC_ARENA_MAX`(시작 시 mallopt) 추가, Linux ROCm 호스트 2. `m6_core_ablation_pt.md` 4절
