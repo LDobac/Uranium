@@ -15,6 +15,14 @@ from uranium import ckpt
 from uranium.device import autocast
 from uranium.model import to_obs
 from uranium.model.heads import HEAD_NAMES
+from uranium.model.layers import env_choice
+
+# AMB-000-4 step 2: `URANIUM_INFER_GRAPH` - `act` replayed from a CUDA / HIP graph captured per
+# input shape and temperature (`on`) or run eagerly (`off`). The graph runs the same kernels, so
+# the outputs are the eager ones (CUDA host: 22-36 ms -> 2.4-9.3 ms per batch; Linux ROCm host:
+# batch 1 20 -> 12 ms, from batch 16 the GPU work dominates). Batches are padded to a power of two
+# with copies of row 0, whose outputs are dropped, so few graphs are captured.
+INFER_GRAPH_MODES = ("off", "on")
 
 
 def leaves(s) -> list[torch.Tensor]:
@@ -43,6 +51,64 @@ def scatter_rows(s, rows: torch.Tensor, sub):
 
 def zero_rows(s, rows: torch.Tensor):
     return rebuild(s, iter([t.index_fill(0, rows, 0) for t in leaves(s)]))
+
+
+def _tree(x, f):
+    """`x` (nested dicts / lists / tuples of tensors, None) with `f` applied to every tensor."""
+    if isinstance(x, torch.Tensor):
+        return f(x)
+    if isinstance(x, dict):
+        return {k: _tree(v, f) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        out = [_tree(v, f) for v in x]
+        return tuple(out) if isinstance(x, tuple) else out
+    return x
+
+
+class GraphedAct:
+    """`net.act` replayed from graphs captured per (padded batch, input shapes, temperature), all
+    in one memory pool. The returned tensors live in the graph's memory: read or copy them before
+    the next call (the server copies the state rows and reads the replies at once)."""
+
+    def __init__(self, net, device: torch.device, precision: str):
+        self.net, self.device, self.precision = net, device, precision
+        self.graphs: dict = {}
+        self.pool = torch.cuda.graph_pool_handle()
+
+    def _act(self, obs, state, temp: float):
+        with autocast(self.device, self.precision):
+            return self.net.act(obs, state, temp)
+
+    def __call__(self, obs: dict, state, temp: float) -> dict:
+        b = obs["entity_mask"].shape[0]
+        bp = 1 << (b - 1).bit_length()
+        if bp != b:
+            idx = torch.cat([torch.arange(b, device=self.device), torch.zeros(bp - b, dtype=torch.long, device=self.device)])
+            obs = {k: v.index_select(0, idx) for k, v in obs.items()}
+            state = select_rows(state, idx)
+        key = (float(temp), tuple((k, tuple(v.shape), v.dtype) for k, v in sorted(obs.items())))
+        g = self.graphs.get(key)
+        if g is None:
+            g = self.graphs[key] = self._capture(obs, state, temp)
+        for k, v in obs.items():
+            g["obs"][k].copy_(v)
+        for dst, src in zip(leaves(g["state"]), leaves(state)):
+            dst.copy_(src)
+        g["graph"].replay()
+        return g["out"] if bp == b else _tree(g["out"], lambda t: t[:b])
+
+    def _capture(self, obs: dict, state, temp: float) -> dict:
+        g = {"obs": {k: v.clone() for k, v in obs.items()}, "state": _tree(state, torch.clone), "graph": torch.cuda.CUDAGraph()}
+        # Warm-up on a side stream first (library kernel selection, MIOpen's first call).
+        side = torch.cuda.Stream()
+        side.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(side):
+            for _ in range(2):
+                self._act(g["obs"], g["state"], temp)
+        torch.cuda.current_stream().wait_stream(side)
+        with torch.cuda.graph(g["graph"], pool=self.pool):
+            g["out"] = self._act(g["obs"], g["state"], temp)
+        return g
 
 
 def dummy_obs(b: int, n: int, device, dtype=torch.float32) -> dict:
@@ -76,6 +142,7 @@ class InferenceServer(threading.Thread):
         # 032 §2: no dropout at inference.
         self.net = net.to(device).eval()
         self.temp = broker.temp
+        self.graphed = GraphedAct(self.net, device, precision) if device.type == "cuda" and env_choice("URANIUM_INFER_GRAPH", INFER_GRAPH_MODES, "off") == "on" else None
         self.state = self.net.core.init_state(broker.capacity, device)
         self.version = 0
         self.stop = threading.Event()
@@ -86,20 +153,27 @@ class InferenceServer(threading.Thread):
     def swap(self, state_dict: dict, version: int) -> None:
         """032-R16: new weights from the next batch on (any thread)."""
         with self.lock, torch.no_grad():
+            # Copied into the existing parameters: captured graphs keep reading them.
             self.net.load_state_dict(state_dict)
             self.version = version
             self.broker.set_version(version)
 
+    def act(self, obs: dict, state) -> dict:
+        """One `act` of the served net, from a captured graph when `URANIUM_INFER_GRAPH` is on."""
+        if self.graphed is not None:
+            return self.graphed(obs, state, self.temp)
+        with autocast(self.device, self.precision):
+            return self.net.act(obs, state, self.temp)
+
     @torch.no_grad()
     def warm_up(self) -> None:
         """012-R19: one batch-1 forward per padded entity count up to `warmup_entities`, so
-        kernel selection does not stall a live game."""
+        kernel selection (and the graph capture) does not stall a live game."""
         pad = max(self.broker.pad_entities, 1)
         top = self.broker.warmup_entities
         for n in range(pad, -(-top // pad) * pad + 1, pad):
             t = time.perf_counter()
-            with autocast(self.device, self.precision):
-                out = self.net.act(dummy_obs(1, n, self.device), self.net.core.init_state(1, self.device), self.temp)
+            out = self.act(dummy_obs(1, n, self.device), self.net.core.init_state(1, self.device))
             out["action"]["action"].cpu()
             print(f"[infer] warm-up N={n}: {time.perf_counter() - t:.1f}s", file=sys.stderr, flush=True)
 
@@ -138,8 +212,7 @@ class InferenceServer(threading.Thread):
             return
         rows = torch.tensor(b["slots"], device=dev)
         obs = to_obs(b, dev)
-        with autocast(dev, self.precision):
-            out = self.net.act(obs, select_rows(self.state, rows), self.temp)
+        out = self.act(obs, select_rows(self.state, rows))
         self.state = scatter_rows(self.state, rows, out["state"])
         a = out["action"]
         i64 = lambda t: t.reshape(-1).to(torch.int64).cpu().numpy()  # noqa: E731
