@@ -24,8 +24,9 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
   | `URANIUM_ENTITY_ATTN` | 엔티티 attention 직접 작성 커널(060-R1) | `fused` | `fused` |
   | `URANIUM_COMPILE` | BC forward torch.compile(Triton 필요) | `default` | `off` |
   | `URANIUM_INFER_GRAPH` | 추론 `act`를 CUDA/HIP graph로 | `on` | `on` |
+  | `URANIUM_INFER_GRAPH_MAX_BATCH` | graph로 돌리는 최대 배치(넘으면 eager) | 제한 없음 | `1`(060-R3 추론 2 GiB) |
   | `URANIUM_INFER_COMPILE` | 추론 `act` torch.compile(그래프 안) | `default` | `off` |
-  | `URANIUM_H2D`, `URANIUM_ADAM`, `URANIUM_COMPILE_DYNAMIC`, `URANIUM_COMPILE_RNG` | 비교 후 기본값 유지 | - | - |
+  | `URANIUM_H2D`, `URANIUM_ADAM`, `URANIUM_COMPILE_DYNAMIC`, `URANIUM_COMPILE_RNG`, `URANIUM_INFER_STREAM` | 비교 후 기본값 유지(`INFER_STREAM=own`은 Linux ROCm 호스트에서 멈춤) | - | - |
 
   - 호스트 설정(`.env`, 실측 근거 같은 리포트): CUDA 호스트(RAM을 평소 작업과 나눠 씀) `URANIUM_BC_MICRO_LANES=2`, `URANIUM_BC_PREFETCH=1`, `URANIUM_BC_PACK_BATCH=1`. Linux ROCm 호스트 `URANIUM_BC_MICRO_LANES=1`, `URANIUM_BC_FEED_THREADS=2`와 아래 README의 메모리 설정.
   - 장비별 기본값을 다시 고를 때(모델 구조를 바꾼 뒤 등)는 `python -m uranium bench bc --groups 1 --updates 12`를 스위치 값만 바꿔 비교하고, 손실 동등성은 `bench loss`(30 update)로 본다.

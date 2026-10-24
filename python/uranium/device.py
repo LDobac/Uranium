@@ -35,7 +35,7 @@ def resolve(backend: str | None) -> tuple[str, torch.device, str]:
 # one in the comparison on that backend, `reports/pytorch_opt.md` 2). A process variable or `.env`
 # key wins.
 IMPL_DEFAULTS = {
-    "rocm": {"URANIUM_LOC_ROWS": "exact", "URANIUM_LOC_OUT": "mulsum", "URANIUM_BIAS_GRAD": "table_t", "URANIUM_CONV_WGRAD": "bmm", "URANIUM_ENTITY_ATTN": "fused", "URANIUM_LINEAR_WGRAD": "splitk", "URANIUM_INFER_GRAPH": "on"},
+    "rocm": {"URANIUM_LOC_ROWS": "exact", "URANIUM_LOC_OUT": "mulsum", "URANIUM_BIAS_GRAD": "table_t", "URANIUM_CONV_WGRAD": "bmm", "URANIUM_ENTITY_ATTN": "fused", "URANIUM_LINEAR_WGRAD": "splitk", "URANIUM_INFER_GRAPH": "on", "URANIUM_INFER_GRAPH_MAX_BATCH": "1"},
     "cuda": {"URANIUM_LOC_ROWS": "pow2", "URANIUM_ENTITY_ATTN": "fused", "URANIUM_COMPILE": "default", "URANIUM_INFER_GRAPH": "on", "URANIUM_INFER_COMPILE": "default"},
     "cpu": {},
 }
@@ -46,7 +46,7 @@ IMPL_DEFAULTS = {
 IMPL_SWITCHES = (
     "URANIUM_LOC_ROWS", "URANIUM_LOC_OUT", "URANIUM_H2D", "URANIUM_BIAS_GRAD", "URANIUM_CONV_WGRAD", "URANIUM_LINEAR_WGRAD",
     "URANIUM_ENTITY_ATTN", "URANIUM_ADAM", "URANIUM_COMPILE", "URANIUM_COMPILE_DYNAMIC", "URANIUM_COMPILE_RNG", "URANIUM_INFER_GRAPH",
-    "URANIUM_INFER_COMPILE", "URANIUM_INFER_STREAM",
+    "URANIUM_INFER_COMPILE", "URANIUM_INFER_STREAM", "URANIUM_INFER_GRAPH_MAX_BATCH",
 )
 
 
