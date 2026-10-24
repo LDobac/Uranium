@@ -143,6 +143,38 @@ pub fn obs_batch(rows: &[&Observation], pad: usize) -> HostObsBatch {
     x
 }
 
+/// [`obs_batch`] of observations whose planes were taken (041-R18), `planes[r]` belonging to
+/// `rows[r]`: each row's planes are decompressed straight into its place in the batch (no
+/// per-step plane copy), rows on up to `threads` threads. Same buffers as restoring first.
+pub fn obs_batch_packed(rows: &[&Observation], planes: &[&crate::pack::Planes], pad: usize, threads: usize) -> HostObsBatch {
+    assert_eq!(rows.len(), planes.len(), "one plane set per row");
+    let mut x = obs_batch(rows, pad);
+    let (sc, lc) = planes.first().map_or((0, 0), |p| (p.spatial_len(), p.loc_len()));
+    x.l = lc / CELLS;
+    x.spatial = vec![0f32; rows.len() * sc];
+    x.loc_class_mask = vec![false; rows.len() * lc];
+    let (mut sp, mut lm): (&mut [f32], &mut [bool]) = (&mut x.spatial, &mut x.loc_class_mask);
+    let mut jobs = Vec::with_capacity(planes.len());
+    for p in planes {
+        let (s, rest) = std::mem::take(&mut sp).split_at_mut(sc);
+        sp = rest;
+        let (l, rest) = std::mem::take(&mut lm).split_at_mut(lc);
+        lm = rest;
+        jobs.push((*p, s, l));
+    }
+    let per = jobs.len().div_ceil(threads.clamp(1, jobs.len().max(1))).max(1);
+    std::thread::scope(|s| {
+        for run in jobs.chunks_mut(per) {
+            s.spawn(move || {
+                for (p, sp, lm) in run.iter_mut() {
+                    p.restore_into(sp, lm);
+                }
+            });
+        }
+    });
+    x
+}
+
 /// `n` is the padded entity count of the matching [`HostObsBatch`]; END = n (032-R12).
 pub fn action_batch(labels: &[&HostLabel], n: usize, max_select: usize) -> HostActionBatch {
     let b = labels.len();

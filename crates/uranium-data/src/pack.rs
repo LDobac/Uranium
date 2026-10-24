@@ -32,18 +32,40 @@ impl Planes {
     /// `o` (whose planes were taken) with its planes back, bit for bit.
     pub fn restore(&self, o: &Observation) -> Observation {
         let mut o = o.clone();
-        // Streamed through a small buffer into the f32 plane: no second plane-sized allocation.
-        let mut dec = zstd::stream::read::Decoder::with_buffer(&self.spatial[..]).expect("zstd spatial");
-        let mut spatial = Vec::with_capacity(self.spatial_len);
-        let mut buf = [0u8; 1 << 16];
-        while spatial.len() < self.spatial_len {
-            let n = ((self.spatial_len - spatial.len()) * 4).min(buf.len());
-            std::io::Read::read_exact(&mut dec, &mut buf[..n]).expect("zstd spatial");
-            spatial.extend(buf[..n].chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])));
-        }
+        let mut spatial = vec![0f32; self.spatial_len];
+        let mut loc = vec![false; self.loc_len];
+        self.restore_into(&mut spatial, &mut loc);
         o.obs.spatial = spatial;
-        o.masks.loc_class_mask = zstd::bulk::decompress(&self.loc_mask, self.loc_len).expect("zstd loc mask").into_iter().map(|b| b != 0).collect();
+        o.masks.loc_class_mask = loc;
         o
+    }
+
+    /// The planes decompressed into `spatial` ([`Planes::spatial_len`]) and `loc_mask`
+    /// ([`Planes::loc_len`]), e.g. a row of a collated batch: streamed through a small buffer, no
+    /// plane-sized temporary.
+    pub fn restore_into(&self, spatial: &mut [f32], loc_mask: &mut [bool]) {
+        assert!(spatial.len() == self.spatial_len && loc_mask.len() == self.loc_len, "plane sizes");
+        let mut dec = zstd::stream::read::Decoder::with_buffer(&self.spatial[..]).expect("zstd spatial");
+        let mut buf = [0u8; 1 << 16];
+        for out in spatial.chunks_mut(buf.len() / 4) {
+            let bytes = &mut buf[..out.len() * 4];
+            std::io::Read::read_exact(&mut dec, bytes).expect("zstd spatial");
+            for (v, c) in out.iter_mut().zip(bytes.chunks_exact(4)) {
+                *v = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+            }
+        }
+        let loc = zstd::bulk::decompress(&self.loc_mask, self.loc_len).expect("zstd loc mask");
+        for (v, b) in loc_mask.iter_mut().zip(loc) {
+            *v = b != 0;
+        }
+    }
+
+    pub fn spatial_len(&self) -> usize {
+        self.spatial_len
+    }
+
+    pub fn loc_len(&self) -> usize {
+        self.loc_len
     }
 
     pub fn bytes(&self) -> usize {

@@ -578,19 +578,6 @@ fn par_lanes<T: Send>(lanes: &mut [Lane], threads: usize, f: impl Fn(&mut Lane) 
     })
 }
 
-/// `f(item)` for every item on up to `threads` scoped threads, results in item order.
-fn par_map<I: Sync, T: Send>(items: &[I], threads: usize, f: impl Fn(&I) -> T + Sync) -> Vec<T> {
-    let threads = threads.clamp(1, items.len().max(1));
-    if threads == 1 {
-        return items.iter().map(&f).collect();
-    }
-    let per = items.len().div_ceil(threads);
-    std::thread::scope(|s| {
-        let hs: Vec<_> = items.chunks(per).map(|run| s.spawn(|| run.iter().map(&f).collect::<Vec<T>>())).collect();
-        hs.into_iter().flat_map(|h| h.join().expect("collate thread panicked")).collect()
-    })
-}
-
 /// Threads that extract one batch's lanes, `URANIUM_BC_FEED_THREADS` (001-R9); unset, empty or 0
 /// = [`FEED_THREADS_DEFAULT`]. Any value gives the same batches.
 pub fn feed_threads() -> usize {
@@ -898,10 +885,15 @@ impl Batch {
                 value_w.push(w * self.value_weights[l]);
             }
         }
-        // Decompressing is most of a packed group's collate: on `feed_threads()` threads, in order.
-        let restored = par_map(&packed, feed_threads(), |&(src, i)| self.planes[src][i].restore(&self.chunks[src][i].obs));
-        let obs: Vec<_> = if restored.is_empty() { rows.iter().map(|s| &s.obs).collect() } else { restored.iter().collect() };
-        let obs = crate::collate::obs_batch(&obs, pad);
+        let obs: Vec<_> = rows.iter().map(|s| &s.obs).collect();
+        let obs = if packed.is_empty() {
+            crate::collate::obs_batch(&obs, pad)
+        } else {
+            // Decompressing is most of a packed group's collate: straight into the batch buffers,
+            // on `feed_threads()` threads.
+            let planes: Vec<_> = packed.iter().map(|&(src, i)| &self.planes[src][i]).collect();
+            crate::collate::obs_batch_packed(&obs, &planes, pad, feed_threads())
+        };
         let labels: Vec<_> = rows.iter().map(|s| &s.label).collect();
         let labels = crate::collate::action_batch(&labels, obs.n, max_select);
         let privs: Vec<_> = rows.iter().map(|s| &s.privileged).collect();
