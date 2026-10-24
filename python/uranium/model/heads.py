@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from uranium.model.config import HeadsConfig, InputDims, SpatialConfig
-from uranium.model.layers import GruCell, Mlp, ResMlp, entropy, env_choice, gumbel_argmax, log_softmax_f32, masked_log_softmax, pick, tempered
+from uranium.model.layers import GruCell, Linear, Mlp, ResMlp, entropy, env_choice, gumbel_argmax, log_softmax_f32, masked_log_softmax, pick, tempered
 
 HEAD_NAMES = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
 TARGET_UNIT = 1
@@ -96,7 +96,7 @@ class LocationHead(nn.Module):
         side = inp.map_size // 16
         c1, c2, c3, c4 = s.stages
         up = lambda i, o: nn.ConvTranspose2d(i, o, 4, stride=2, padding=1)  # noqa: E731
-        self.ar = nn.Linear(h.ar, h.loc_ar_channels * side * side)
+        self.ar = Linear(h.ar, h.loc_ar_channels * side * side)
         self.ups = nn.ModuleList([up(h.loc_ar_channels + c4, c3), up(2 * c3, c2), up(2 * c2, c1), up(2 * c1, 32)])
         self.out = nn.Conv2d(32, 1, 1)
         self.ar_channels = h.loc_ar_channels
@@ -122,11 +122,11 @@ class Heads(nn.Module):
     def __init__(self, inp: InputDims, h: HeadsConfig, s: SpatialConfig, d_core: int, d_ctx: int, d_entity: int):
         super().__init__()
         # 1 ActionType
-        self.type_in = nn.Linear(d_core, h.ar)
+        self.type_in = Linear(d_core, h.ar)
         self.type_res = nn.ModuleList(ResMlp(h.ar) for _ in range(2))
-        self.type_gate = nn.Linear(d_ctx, h.ar)
-        self.type_out = nn.Linear(h.ar, inp.actions)
-        self.ar_h = nn.Linear(d_core, h.ar)
+        self.type_gate = Linear(d_ctx, h.ar)
+        self.type_out = Linear(h.ar, inp.actions)
+        self.ar_h = Linear(d_core, h.ar)
         self.ar_action = nn.Embedding(inp.actions, h.ar)
         # 2 Delay
         self.delay = Mlp(h.ar, 128, h.delay_buckets)
@@ -135,14 +135,14 @@ class Heads(nn.Module):
         self.queued = Mlp(h.ar, 64, 2)
         self.ar_queued = nn.Embedding(2, h.ar)
         # 4 Selected
-        self.sel_key = nn.Linear(d_entity, h.key)
+        self.sel_key = Linear(d_entity, h.key)
         self.sel_end = nn.Parameter(torch.randn(h.key) * 0.02)
-        self.sel_query = nn.Linear(h.ar, h.key)
+        self.sel_query = Linear(h.ar, h.key)
         self.sel_gru = GruCell(h.key, h.key)
-        self.ar_selected = nn.Linear(h.key, h.ar)
+        self.ar_selected = Linear(h.key, h.ar)
         # 5 TargetUnit
-        self.tgt_key = nn.Linear(d_entity, h.key)
-        self.tgt_query = nn.Linear(h.ar, h.key)
+        self.tgt_key = Linear(d_entity, h.key)
+        self.tgt_query = Linear(h.ar, h.key)
         # 6 Location
         self.location = LocationHead(inp, h, s)
         self.max_select = h.max_select

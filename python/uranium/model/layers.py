@@ -20,13 +20,68 @@ def env_choice(key: str, choices: tuple, default: str) -> str:
     return v
 
 
+# AMB-000-4 step 2: `URANIUM_LINEAR_WGRAD` - a Linear layer's weight gradient grad^T @ x from the
+# vendor GEMM (`vendor`) or split over the rows in pieces of SPLITK_CHUNK, as one batched GEMM and a
+# sum (`splitk`, the same sum in another order). The rows are batch x tokens (12,288 for one lane
+# group of 64 steps x 192 entities); rocBLAS on the Linux ROCm host is slow for that long inner
+# dimension (256x256 layer: 5.4 -> 0.35 ms).
+LINEAR_WGRAD_MODES = ("vendor", "splitk")
+SPLITK_CHUNK = 512
+
+
+def splitk_mm(a, b, chunk: int | None = None):
+    """a^T @ b for a [K, M], b [K, N] with K split in pieces of `chunk` (default SPLITK_CHUNK)."""
+    chunk = chunk or SPLITK_CHUNK
+    k = a.shape[0]
+    p = k // chunk
+    if p < 2:
+        return a.t() @ b
+    out = torch.bmm(a[:p * chunk].view(p, chunk, -1).transpose(1, 2), b[:p * chunk].view(p, chunk, -1)).sum(0)
+    if k > p * chunk:
+        out = out + a[p * chunk:].t() @ b[p * chunk:]
+    return out
+
+
+class LinearSplitK(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, w, b):
+        ctx.save_for_backward(x, w)
+        ctx.has_bias = b is not None
+        return F.linear(x, w, b)
+
+    @staticmethod
+    def backward(ctx, g):
+        x, w = ctx.saved_tensors
+        g2 = g.reshape(-1, g.shape[-1])
+        gx = (g @ w) if ctx.needs_input_grad[0] else None
+        gw = splitk_mm(g2, x.reshape(-1, x.shape[-1])) if ctx.needs_input_grad[1] else None
+        gb = g2.sum(0) if ctx.has_bias and ctx.needs_input_grad[2] else None
+        return gx, gw, gb
+
+
+class Linear(nn.Linear):
+    """`nn.Linear` (same parameters) whose weight gradient follows `URANIUM_LINEAR_WGRAD` (f32
+    training only: under autocast or without gradients the library path runs)."""
+
+    def forward(self, x):
+        if (
+            torch.is_grad_enabled()
+            and self.weight.requires_grad
+            and x.dtype == torch.float32
+            and not torch.is_autocast_enabled(x.device.type)
+            and env_choice("URANIUM_LINEAR_WGRAD", LINEAR_WGRAD_MODES, "vendor") == "splitk"
+        ):
+            return LinearSplitK.apply(x, self.weight, self.bias)
+        return super().forward(x)
+
+
 class Mlp(nn.Module):
     """Linear -> ReLU -> Linear."""
 
     def __init__(self, d_in: int, d_hidden: int, d_out: int):
         super().__init__()
-        self.l1 = nn.Linear(d_in, d_hidden)
-        self.l2 = nn.Linear(d_hidden, d_out)
+        self.l1 = Linear(d_in, d_hidden)
+        self.l2 = Linear(d_hidden, d_out)
 
     def forward(self, x):
         return self.l2(F.relu(self.l1(x)))
@@ -37,8 +92,8 @@ class ResMlp(nn.Module):
 
     def __init__(self, d: int):
         super().__init__()
-        self.l1 = nn.Linear(d, d)
-        self.l2 = nn.Linear(d, d)
+        self.l1 = Linear(d, d)
+        self.l2 = Linear(d, d)
 
     def forward(self, x):
         return x + self.l2(F.relu(self.l1(F.relu(x))))
@@ -114,8 +169,8 @@ class GruCell(nn.Module):
 
     def __init__(self, d_in: int, d: int):
         super().__init__()
-        self.x = nn.Linear(d_in, 3 * d)
-        self.h = nn.Linear(d, 3 * d)
+        self.x = Linear(d_in, 3 * d)
+        self.h = Linear(d, 3 * d)
 
     def forward(self, x, h):
         gx = self.x(x).chunk(3, 1)
@@ -133,10 +188,10 @@ class Attention(nn.Module):
     def __init__(self, d: int, heads: int):
         super().__init__()
         assert d % heads == 0, "d_model must divide by heads"
-        self.q = nn.Linear(d, d)
-        self.k = nn.Linear(d, d)
-        self.v = nn.Linear(d, d)
-        self.o = nn.Linear(d, d)
+        self.q = Linear(d, d)
+        self.k = Linear(d, d)
+        self.v = Linear(d, d)
+        self.o = Linear(d, d)
         self.heads = heads
 
     def forward(self, x_q, x_kv, bias, key_ok):
@@ -172,8 +227,8 @@ class FeedForward(nn.Module):
 
     def __init__(self, d: int, ffn: int, dropout: float):
         super().__init__()
-        self.l1 = nn.Linear(d, ffn)
-        self.l2 = nn.Linear(ffn, d)
+        self.l1 = Linear(d, ffn)
+        self.l2 = Linear(ffn, d)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):

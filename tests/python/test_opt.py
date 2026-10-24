@@ -152,3 +152,32 @@ def test_selected_key_gather_equals_onehot(group, monkeypatch):
     assert res["gather"][1].keys() == res["onehot"][1].keys()
     for k, g in res["onehot"][1].items():
         assert torch.allclose(res["gather"][1][k], g, atol=1e-6, rtol=1e-5), k
+
+
+def test_splitk_mm_equals_mm():
+    from uranium.model.layers import splitk_mm
+
+    g = torch.Generator().manual_seed(2)
+    for k in (5, 64, 100, 1037):
+        a, b = torch.randn(k, 7, generator=g), torch.randn(k, 9, generator=g)
+        for chunk in (4, 16, 512):
+            assert torch.allclose(splitk_mm(a, b, chunk), a.t() @ b, atol=1e-4, rtol=1e-5), (k, chunk)
+
+
+def test_linear_wgrad_splitk_equals_vendor(group, monkeypatch):
+    """URANIUM_LINEAR_WGRAD=splitk: every Linear weight gradient of a full update equals the
+    library path (pieces small enough that the split runs on the test group)."""
+    import uranium.model.layers as layers
+
+    monkeypatch.setattr(layers, "SPLITK_CHUNK", 8)
+    res = {}
+    for mode in ("vendor", "splitk"):
+        monkeypatch.setenv("URANIUM_LINEAR_WGRAD", mode)
+        net = tiny_net()
+        obs, labels = to_obs(group, "cpu"), net.labels(group, "cpu")
+        out = net.forward_seq(obs, labels, torch.as_tensor(group["privileged"]).float(), net.init_state(group["b"], "cpu"), 4)
+        sum(out["logp"][k].sum() for k in HEADS).backward()
+        res[mode] = {k: p.grad.clone() for k, p in net.named_parameters() if p.grad is not None}
+    assert res["splitk"].keys() == res["vendor"].keys()
+    for k, g in res["vendor"].items():
+        assert torch.allclose(res["splitk"][k], g, atol=1e-5, rtol=1e-4), k

@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from uranium.model.config import EntityConfig, InputDims, ScalarConfig, SpatialConfig
-from uranium.model.layers import Attention, FeedForward, Mlp, ResBlock, conv3x3, conv_wgrad, env_choice, masked_mean
+from uranium.model.layers import Attention, FeedForward, Linear, Mlp, ResBlock, conv3x3, conv_wgrad, env_choice, masked_mean
 
 # AMB-000-4 step 2: how the distance bias is gathered and its table gradient summed
 # (`URANIUM_BIAS_GRAD`); same values either way:
@@ -59,12 +59,12 @@ class EntityEncoder(nn.Module):
         self.owner = nn.Embedding(inp.owners, c.owner_emb)
         self.order = nn.Embedding(inp.orders, c.order_emb)
         self.last_action = nn.Embedding(inp.actions, c.last_action_emb)
-        self.input = nn.Linear(c.unit_type_emb + c.owner_emb + c.order_emb + c.last_action_emb + inp.entity_cont, d)
+        self.input = Linear(c.unit_type_emb + c.owner_emb + c.order_emb + c.last_action_emb + inp.entity_cont, d)
         self.layers = nn.ModuleList(EntityLayer(c) for _ in range(c.layers))
         self.ln_out = nn.LayerNorm(d)
         # [buckets, layers * heads]: bias[l, h, bucket] (032 §2.1).
         self.bias_table = nn.Parameter(torch.randn(2 * c.distance_buckets, c.layers * c.heads) * 0.02)
-        self.pool = nn.Linear(2 * d, d)
+        self.pool = Linear(2 * d, d)
         self.heads = c.heads
         self.dist_buckets = c.distance_buckets
 
@@ -144,11 +144,11 @@ class SpatialEncoder(nn.Module):
             downs.append(Down(c_in, c_out))
             c_in = c_out
         side = inp.map_size // 16
-        self.scatter = nn.Linear(d_entity, c.scatter_channels)
+        self.scatter = Linear(d_entity, c.scatter_channels)
         self.stem = conv3x3(inp.spatial_channels + c.scatter_channels, c.stem_channels, 1)
         self.downs = nn.ModuleList(downs)
         self.bottleneck = nn.ModuleList(ResBlock(c_in) for _ in range(2))
-        self.pool = nn.Linear(c_in * side * side, c.pool)
+        self.pool = Linear(c_in * side * side, c.pool)
 
     def forward(self, obs: dict, e):
         spatial = obs["spatial"]
@@ -187,9 +187,9 @@ class ScalarEncoder(nn.Module):
         self.start_loc = nn.Embedding(inp.start_locs, c.start_loc_emb)
         self.z_build = nn.Embedding(inp.actions, c.z_build_emb)
         self.z_build_pos = nn.Embedding(inp.z_build_len, c.z_build_emb)
-        self.z_units = nn.Linear(inp.z_units, c.z_units_emb)
-        self.z_out = nn.Linear(c.z_build_emb + c.z_units_emb, c.z_out)
-        self.out = nn.Linear(c.hidden + c.race_emb + c.map_family_emb + c.start_loc_emb + c.z_out, c.hidden)
+        self.z_units = Linear(inp.z_units, c.z_units_emb)
+        self.z_out = Linear(c.z_build_emb + c.z_units_emb, c.z_out)
+        self.out = Linear(c.hidden + c.race_emb + c.map_family_emb + c.start_loc_emb + c.z_out, c.hidden)
 
     def forward(self, obs: dict):
         sc = obs["scalar_cat"]

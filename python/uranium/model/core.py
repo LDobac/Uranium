@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from uranium.model.config import CoreConfig
-from uranium.model.layers import Attention, FeedForward
+from uranium.model.layers import Attention, FeedForward, Linear
 
 # ROCm: MIOpen's fused LSTM backward fails on the Linux ROCm host (2026-10-23), so `nn.LSTM`
 # runs PyTorch's own kernels there; CUDA keeps cuDNN (032 §6 note).
@@ -57,12 +57,12 @@ class GruGate(nn.Module):
 
     def __init__(self, d: int):
         super().__init__()
-        self.wr = nn.Linear(d, d)
-        self.ur = nn.Linear(d, d, bias=False)
-        self.wz = nn.Linear(d, d)
-        self.uz = nn.Linear(d, d, bias=False)
-        self.wg = nn.Linear(d, d)
-        self.ug = nn.Linear(d, d, bias=False)
+        self.wr = Linear(d, d)
+        self.ur = Linear(d, d, bias=False)
+        self.wz = Linear(d, d)
+        self.uz = Linear(d, d, bias=False)
+        self.wg = Linear(d, d)
+        self.ug = Linear(d, d, bias=False)
 
     def forward(self, x, y):
         r = torch.sigmoid(self.wr(y) + self.ur(x))
@@ -91,7 +91,7 @@ class GtrxlCore(nn.Module):
     def __init__(self, d_in: int, c: CoreConfig):
         super().__init__()
         d = c.hidden
-        self.input = nn.Linear(d_in, d)
+        self.input = Linear(d_in, d)
         self.layers = nn.ModuleList(GtrxlLayer(d, c.gtrxl_heads) for _ in range(c.gtrxl_layers))
         # [M+1, layers*heads] relative position bias (distance 0..=M).
         self.rel_table = nn.Parameter(torch.randn(c.gtrxl_memory + 1, c.gtrxl_layers * c.gtrxl_heads) * 0.02)

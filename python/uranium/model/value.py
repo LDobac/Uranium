@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from uranium.model.config import InputDims, ValueConfig
-from uranium.model.layers import Mlp
+from uranium.model.layers import Linear, Mlp
 
 VALUE_WIN, VALUE_BUILD, VALUE_UNITS, VALUE_VALUE = 0, 1, 2, 3
 
@@ -19,7 +19,7 @@ OPEN_SEEDS = (0x3218_0001, 0x3218_0002, 0x3218_0003)
 def fixed_linear(d_in: int, d_out: int, seed: int) -> nn.Linear:
     """032-R18 ③: a Linear initialised U(-k, k), k = 1/sqrt(d_in), from its own fixed-seed
     generator, so building the head does not move the other modules' initial weights."""
-    lin = nn.Linear(d_in, d_out)
+    lin = Linear(d_in, d_out)
     g = torch.Generator().manual_seed(seed)
     k = 1.0 / math.sqrt(d_in)
     with torch.no_grad():
@@ -42,9 +42,9 @@ class WinOpenHead(nn.Module):
 class ValueHeads(nn.Module):
     def __init__(self, inp: InputDims, c: ValueConfig, d_core: int, d_z: int, d_race: int):
         super().__init__()
-        self.privileged = nn.Linear(inp.privileged, c.privileged)
+        self.privileged = Linear(inp.privileged, c.privileged)
         self.shared = Mlp(d_core + d_z + d_race + c.privileged, c.hidden, c.hidden)
-        self.out = nn.Linear(c.hidden, 4)
+        self.out = Linear(c.hidden, 4)
         self.priv_dim = c.privileged
         # Built last (032-R18 ③), only when the config asks for it (032-R18 ②).
         self.open = WinOpenHead(d_core + d_z + d_race, c.hidden) if c.win_open else None
