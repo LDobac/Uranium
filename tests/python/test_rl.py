@@ -78,6 +78,14 @@ class OnPolicy:
     def lanes(self):
         return self.batch.lanes
 
+    @property
+    def trained(self):
+        return self.batch.trained
+
+    @property
+    def versions(self):
+        return self.batch.versions
+
     def group(self, start, end, t, max_select):
         g = self.batch.group(start, end, t, max_select)
         with torch.no_grad():
@@ -144,3 +152,12 @@ def test_segment_group_layout_042():
     assert g["terminal"].tolist() == [True, False] and g["trained"].tolist() == [4, 3]
     assert g["state0"] == [None, None]
     assert g["entity_mask"].shape[1] % 64 == 0
+
+
+def test_segment_batch_totals_match_group():
+    """The learner's step total and versions come from `SegmentBatch.trained` / `versions` before
+    collating (the groups are collated one ahead, overlapped with training): same as `group`."""
+    b = _core.test_segments(3, 4)
+    g = b.group(0, b.lanes, 4, 12)
+    assert list(b.trained) == [int(x) for x in g["trained"]]
+    assert list(b.versions) == [int(x) for x in g["versions"]]

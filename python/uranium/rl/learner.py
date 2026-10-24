@@ -12,6 +12,7 @@ learner it replaces."""
 
 import copy
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import torch
 
@@ -70,6 +71,7 @@ class Learner:
             p.requires_grad_(False)
         self.update_count = update
         self.opt = self.new_optimizer()
+        self._collate = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-collate")
 
     def new_optimizer(self) -> torch.optim.Optimizer:
         o = self.cfg["optimizer"]
@@ -133,10 +135,13 @@ class Learner:
         groups = [(s, min(s + g_size, lanes)) for s in range(0, lanes, g_size)]
         coef_kl = kl_coef(cfg, self.update_count)
         epochs = 1 if self.algo == "vtrace" else max(1, cfg["ppo"]["epochs"])
-        collated = [batch.group(s, e, t, self.net.cfg.heads.max_select) for s, e in groups]
-        steps = int(sum(int(g["trained"].sum()) for g in collated))
+        # The totals come from the batch itself; the lane groups are collated one ahead on a
+        # worker thread (the Rust collate releases the GIL) while the previous one trains, as
+        # in BC: at most two collated groups are alive (not every group of the batch at once).
+        collate = lambda gi: batch.group(groups[gi][0], groups[gi][1], t, self.net.cfg.heads.max_select)  # noqa: E731
+        steps = int(sum(batch.trained))
         n = max(steps, 1)
-        versions = [int(v) for g in collated for v in g["versions"]]
+        versions = [int(v) for v in batch.versions]
         stats = {
             "update": self.update_count + 1, "steps": steps, "kl_coef": coef_kl, "policy": 0.0, "value": 0.0, "win_open": 0.0, "kl": 0.0,
             "kl_heads": [0.0] * 6, "entropy_heads": [0.0] * 6, "rho_mean": 0.0, "adv_mean": 0.0,
@@ -148,8 +153,13 @@ class Learner:
         params = list(self.net.parameters())
         for epoch in range(epochs):
             self.opt.zero_grad(set_to_none=True)
-            for gi, g in enumerate(collated):
+            nxt = self._collate.submit(collate, 0)
+            for gi in range(len(groups)):
+                g = nxt.result()
+                if gi + 1 < len(groups):
+                    nxt = self._collate.submit(collate, gi + 1)
                 part = self.group_loss(g, n, weights, coef_kl, ppo_targets, gi)
+                del g
                 if epoch == 0:
                     for k in ("policy", "value", "win_open", "kl"):
                         stats[k] += part[k]

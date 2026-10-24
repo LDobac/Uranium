@@ -30,6 +30,18 @@ impl SegmentBatch {
         self.segs.len()
     }
 
+    /// Per lane: trained steps (what `group` puts in `trained`), without collating.
+    #[getter]
+    fn trained(&self) -> Vec<usize> {
+        self.segs.iter().map(|s| s.trained()).collect()
+    }
+
+    /// Per lane: oldest behaviour version (what `group` puts in `versions`), without collating.
+    #[getter]
+    fn versions(&self) -> Vec<u64> {
+        self.segs.iter().map(|s| s.version()).collect()
+    }
+
     /// Lanes `start..end` collated for one forward (`uranium_league::batch::group`): the
     /// observation arrays, the taken actions as labels, `privileged`, `mask`, `behaviour`,
     /// `rewards` [rows, 4], per lane `terminal`, `trained`, `versions` and `state0` (None = zero
