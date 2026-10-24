@@ -12,6 +12,24 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 - BWAPI 타입 표(013-R1): `cargo run -p bwapi-tables -- third_party/bwapi/bwapi crates/uranium-env/tables`.
 - Python(AMB-000-4, 001-R8): 학습·추론은 Python 3.14 + PyTorch 2.14(`python/uranium`). 호스트마다 venv를 만들고(`uv venv --python 3.14 .venv`) PyTorch를 설치한 뒤(CUDA 호스트 `uv pip install --python <venv python> "torch==2.14.*" --index-url https://download.pytorch.org/whl/cu130`, Linux ROCm 호스트는 그 GPU용으로 빌드한 PyTorch) 저장소 루트에서 `uv pip install --python <venv python> -e .`로 `uranium` 패키지와 Rust 확장 `uranium._core`(crate `uranium-py`, maturin)를 설치한다. Rust를 고치면 같은 명령으로 다시 설치한다. `.env`의 `URANIUM_PYTHON`에 그 venv의 python을 적는다(작업자·감시가 학습 자식을 띄울 때 씀).
 - 정밀도(032-R8): CUDA는 bf16 혼합, Linux ROCm은 f32. 커널 선택(041-R15): cuDNN benchmark는 CUDA에서만 켜고, ROCm은 MIOpen find-db(`MIOPEN_USER_DB_PATH`)만 쓴다(ROCm에서 benchmark를 켜면 모양이 바뀔 때마다 수 초~수 분 탐색).
+- 구현 스위치(AMB-000-4 2단계, 032-R19: 같은 수식, 장비별로 빠른 쪽, 근거 `reports/pytorch_opt.md`): 값을 정하지 않으면 백엔드 기본값(`python/uranium/device.py` `IMPL_DEFAULTS`)이 들어가고, 환경변수·`.env`가 이긴다. 체크포인트 메타 `kernels`에 적용 값이 남는다(041-R15). 층 모양이 가정과 다르면 해당 최적화는 자동으로 라이브러리 경로로 돌아간다.
+
+  | 키 | 내용 | CUDA 호스트 | Linux ROCm 호스트 |
+  |---|---|---|---|
+  | `URANIUM_LOC_ROWS` | 위치 헤드 사용 행: 호스트 라벨에서, 버킷 | `pow2` | `exact` |
+  | `URANIUM_LOC_OUT` | 위치 헤드 1×1 출력 | `conv` | `mulsum` |
+  | `URANIUM_BIAS_GRAD` | 거리 bias gather·표 gradient | `embedding` | `table_t` |
+  | `URANIUM_CONV_WGRAD` | stem·stride-2·64채널 이하 ResBlock conv 가중치 gradient | `vendor` | `bmm` |
+  | `URANIUM_LINEAR_WGRAD` | Linear 가중치 gradient(f32만) | `vendor` | `splitk` |
+  | `URANIUM_ENTITY_ATTN` | 엔티티 attention 직접 작성 커널(060-R1) | `fused` | `fused` |
+  | `URANIUM_COMPILE` | BC forward torch.compile(Triton 필요) | `default` | `off` |
+  | `URANIUM_INFER_GRAPH` | 추론 `act`를 CUDA/HIP graph로 | `on` | `on` |
+  | `URANIUM_INFER_COMPILE` | 추론 `act` torch.compile(그래프 안) | `default` | `off` |
+  | `URANIUM_H2D`, `URANIUM_ADAM`, `URANIUM_COMPILE_DYNAMIC`, `URANIUM_COMPILE_RNG` | 비교 후 기본값 유지 | - | - |
+
+  - 호스트 설정(`.env`, 실측 근거 같은 리포트): CUDA 호스트(RAM을 평소 작업과 나눠 씀) `URANIUM_BC_MICRO_LANES=2`, `URANIUM_BC_PREFETCH=1`, `URANIUM_BC_PACK_BATCH=1`. Linux ROCm 호스트 `URANIUM_BC_MICRO_LANES=1`, `URANIUM_BC_FEED_THREADS=2`와 아래 README의 메모리 설정.
+  - 장비별 기본값을 다시 고를 때(모델 구조를 바꾼 뒤 등)는 `python -m uranium bench bc --groups 1 --updates 12`를 스위치 값만 바꿔 비교하고, 손실 동등성은 `bench loss`(30 update)로 본다.
+  - 직접 작성 커널은 첫 사용 때 빌드해 `URANIUM_KERNEL_DIR`(기본 `~/.cache/uranium/kernels`)에 둔다. Windows는 `cl`이 PATH에 없으면 최신 Visual Studio의 vcvars64 환경을 불러온다.
 - Linux ROCm 호스트 실행 환경: 그 호스트용 rocBLAS 경로를 `LD_LIBRARY_PATH`에 두고 `HSA_ENABLE_SDMA=0`.
 - 직접 빌드한 PyTorch를 덮어쓰지 않게: torchvision·torchaudio처럼 torch에 의존하는 패키지를 그냥 설치하면 공식 torch를 끌어와 직접 빌드한 torch를 바꿀 수 있다. 필요하면 소스 빌드하거나 `--no-deps`로 설치하고(GPU 연산자는 따로 빌드), 설치 뒤 `python -c "import torch; print(torch.__version__, torch.cuda.get_arch_list())"`로 소스 빌드 버전과 그 GPU 아키텍처가 남아 있는지 확인한다. `uranium` 패키지는 torch에 의존하지 않고, `[compile]`(triton-windows)은 Windows에서만 설치된다.
 - 마지막 Burn 커밋은 태그 `burn-final`이다. Burn 체크포인트(`model.bpk`)는 보관만 하고 읽지 않는다(061-R10).

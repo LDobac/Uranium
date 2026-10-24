@@ -36,7 +36,10 @@ URANIUM_BC_PREFETCH=2                    # 041-R16 미리 읽기 깊이 (데이�
 URANIUM_BC_ENTITY_CHUNK=0                # 041-R17 엔티티 재계산 끔 (AMB-041-8, 2026-10-24)
 URANIUM_BC_PACK_BATCH=1                  # 041-R18 호스트 batch 압축
 URANIUM_MALLOC_MMAP_THRESHOLD=1048576    # 다 쓴 batch 메모리를 OS에 돌려줌 (상주 10 → 6.3 GiB)
+URANIUM_BC_MICRO_LANES=1                 # 041-R3 레인 그룹 (AMB-041-7)
+URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3이면 학습과 CPU를 다툼)
 ```
+CUDA 호스트는 `URANIUM_BC_MICRO_LANES=2`. 구현 스위치와 장비별 기본값은 `docs/commands.md`.
 
 **설치·갱신**(Python 3.14 venv + PyTorch 2.14 + `uranium` 패키지)
 ```powershell
@@ -100,7 +103,7 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
 - 장비별 update 수·비율: `uranium-train devices --run bc-s1-pt`
 - 체크포인트: `<shared>/checkpoints/bc-s1-pt/` 등(1시간마다, 끝나면 `DONE`)
 
-**예상 속도**(PyTorch 1단계 실측, GTrXL, 32레인 × T64): Linux ROCm 호스트 약 20 s/update. CUDA 호스트 값은 `reports/pytorch_port.md`. 2단계 최적화 뒤 다시 잰다.
+**예상 속도**(PyTorch 2단계 최적화 뒤 실측, GTrXL, 32레인 × T64, 데이터 대기 포함): Linux ROCm 호스트 약 10 s/update, CUDA 호스트 약 2.0 s/update(`reports/pytorch_opt.md`). S1+S2(약 50,500 update) 환산 약 140시간 / 28시간.
 
 **평가**
 - 오프라인 지표: `python -m uranium bc-eval $DATA --checkpoint <shared>/checkpoints/bc-s2-pt --split test`(ablation-a도 같이). 엔티티 조각 재계산 없이 돌므로 메모리가 큰 CUDA 호스트에서 돌린다.

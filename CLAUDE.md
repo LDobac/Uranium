@@ -8,7 +8,7 @@
 - BC 본학습(GTrXL, 10-23 시작 후 중지): `reports/m6_pre_bc_review.md` I절, 실행 안내 루트 `README.md`
 - 마일스톤별 결과: `reports/` (m2~m7)
 - M7 SC:R 남은 과제: `reports/m7_scr_bridge.md` 4절
-- PyTorch 전환(1단계 이식 완료, 2단계 최적화 남음): `spec/README.md` AMB-000-4, 진행 `reports/pytorch_port.md`, 근거 `reports/torch_vs_burn.md`
+- PyTorch 전환(1단계 이식·2단계 최적화 완료): `spec/README.md` AMB-000-4, 이식 `reports/pytorch_port.md`, 최적화 `reports/pytorch_opt.md`
 
 ## 고정 조건
 | 항목 | 값 |

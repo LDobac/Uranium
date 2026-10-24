@@ -438,3 +438,25 @@
 - CUDA는 그룹 2에서 작은 연산이 합쳐져 빨라지고, 그 이상은 데이터 공급(대기 약 0.35초)이 상한.
 - bc250은 GPU 계산이 병목이라 그룹 크기와 무관하고, 그룹 4는 메모리 한계.
 - **사용자 결정(2026-10-24): CUDA 2, bc250 1.** `.env` 키 `URANIUM_BC_MICRO_LANES`(설정 파일 값을 덮어씀, 실행 설정이라 지문 제외). spec 041-R3·AMB-041-7 Resolved.
+
+### 2.24 종단 확인과 RL — 발견한 버그 2건
+- OpenBW 1판(bc250, 무작위 GTrXL 대 T0 테란, GPU 추론·그래프): 정상(4,000프레임 시간 제한 무승부), 결정 500회, 결정 지연 중앙값 14.8ms(p95 15.3), 시야 위반 0.
+- SC:R 경로(이 PC, `python -m uranium scr`): warm-up 뒤 게임 연결 대기까지 정상(실제 게임 시작은 사람이 함).
+- RL 스모크(레인 4 × T16, 로컬 공유 폴더, 20 update → 재개 → 30 update까지)
+  - bc250: 처음 재개 구간이 실패 — **버그 1**: 추론 서버가 새 모양을 캡처하는 동안 같은 프로세스의 학습기가 GPU를 쓰면 둘 다 오류(`hipErrorStreamCaptureInvalidated`). `capture_error_mode="thread_local"`만으로는 안 됨(재현 테스트). 프로세스 단위 잠금(`DeviceLock`: 장치 작업은 공유, 캡처는 단독)으로 해결(92af173). 재실행 두 구간 정상, 재개 구간 약 68 agent steps/s.
+  - CUDA PC(게임은 bc250 hostd): 두 구간 정상. **버그 2**: RL 추론 서버가 warm-up 없이 시작해 게임 중에 컴파일(첫 update 423초 뒤, 34~57초 멈춤 3회) → 서버 스레드가 요청 전에 warm-up(115ed61). 서버 스레드 warm-up 확인: 그래프 9개 27초(컴파일 캐시 있음). 고친 뒤 게임 포함 재확인은 bc250을 사용자에게 넘겨 하지 않음.
+- AMB-042-10 자료(한 프로세스): bc250 스모크에서 모델 세션의 결정당 대기 중앙값 약 57ms(추론 B1 약 12ms + 같은 GPU의 학습기). 캡처는 새 모양이 처음 나올 때만 학습기를 잠깐 멈춘다.
+- 032-AC1 자료(CUDA bf16 기본 설정 대 CPU f32, 실제 크기 무작위 모델, 64행): 가치 최대 차이 5e-4, 헤드 log-prob 최대 차이 0.075(compile 0.071), 헤드별 KL 평균 ≤ 4e-4·최대 1.5e-3, greedy 일치 action 98.4%(64행 중 1행)·나머지 100%. 작은 fixture 모델(`test_cross_device.py`): forward ≤ 0.028, gradient 중앙 1.5%(1단계 측정).
+
+## 3. 결과 요약 (2026-10-24)
+| 장비 | 2단계 시작 | 끝 | 비고 |
+|---|---|---|---|
+| Linux ROCm 호스트(bc250), BC update | 23.5초(학습 19.5 + 대기 4) | **약 10.0초(2.3배)** | 레인 그룹 1. Burn 108초 대비 약 11배 |
+| CUDA 호스트(이 PC), BC update | 4.7초(오후 측정) | **약 2.0초(2.3배)** | 레인 그룹 2, compile. Burn 12초 대비 약 6배 |
+| CUDA 추론 `act` | 22~36ms | 1.3~6.3ms | 그래프 + compile |
+| bc250 추론 `act` B1 | 20ms | 12ms | 그래프(B16 이상은 계산 병목) |
+
+- 채택(장비별 기본값은 `docs/commands.md` 표): 위치 헤드 행(`exact`/`pow2`), 1×1 출력 곱-합, 거리 bias 전치 gather, conv·Linear 가중치 gradient(bmm·split-K), 엔티티 attention 직접 작성 커널, CUDA torch.compile, 추론 graph(+compile), 데이터 공급 병렬화·압축 batch 바로 풀기, 레인 그룹(AMB-041-7).
+- 탈락: index_add·pinned·AdamW 변형·선택 헤드 gather(속도 같음, 재컴파일 때문에 gather는 유일 경로로 남김)·conv 가중치 gradient 직접 작성 커널·커널 타일 32/128·sub-pixel/unfold conv·CUDA Graph 학습 모드.
+- 정확성: bc250 최적화 전 대 후 30 update 손실 최대 차이 2.2e-7, CUDA f32 compile 대 eager 1.1e-7, bf16 compile 대 eager 창 4.8e-6.
+- 남은 사용자 결정: 060-R3 메모리 예산 수치, 032-AC1·AC8 CUDA bf16 허용치, AMB-042-10 추론 프로세스 분리.
