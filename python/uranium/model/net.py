@@ -4,6 +4,7 @@ the core walks the time axis. Inputs are dicts of tensors in the 030 §1 layout 
 
 import json
 
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -118,7 +119,13 @@ class UraniumNet(nn.Module):
         mode = env_choice("URANIUM_LOC_ROWS", LOC_ROW_MODES, "off")
         if mode != "off":
             spec = location_rows(group["action"], self._cols["target_kind"], mode)
-            out["loc_rows"], out["loc_k"] = (None, -1) if spec is None else (to_device(spec[0], device), spec[1])
+            if spec is None:
+                out["loc_all"] = True
+            else:
+                # Weight 1 for the real rows, 0 for the padding: no Python row count reaches the
+                # forward (torch.compile would specialise on it).
+                rows, k = spec
+                out["loc_rows"], out["loc_w"] = to_device(rows, device), to_device((np.arange(len(rows)) < k).astype(np.float32), device)
         return out
 
     def init_state(self, b: int, device=None):

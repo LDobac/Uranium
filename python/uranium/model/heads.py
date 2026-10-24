@@ -198,7 +198,7 @@ class Heads(nn.Module):
         # 6 Location
         loc_ok = gather_loc(obs["loc_class_mask"], info["loc_class"])
         if labels is not None:
-            lp_loc = self.location_used_rows(ar, sp, loc_ok, info["target_loc"], labels.get("loc_rows"), labels.get("loc_k"))
+            lp_loc = self.location_used_rows(ar, sp, loc_ok, info["target_loc"], labels.get("loc_rows"), labels.get("loc_w"), labels.get("loc_all", False))
         else:
             lp_loc = tempered(masked_log_softmax(self.location(ar, sp), loc_ok), temp)
         target_loc = choose(lp_loc, "target_loc")
@@ -228,22 +228,24 @@ class Heads(nn.Module):
         }
         return {"chosen": chosen, "logp": logp, "entropy": ent, "dists": dists}
 
-    def location_used_rows(self, ar, sp: dict, loc_ok, used, rows=None, k: int | None = None):
+    def location_used_rows(self, ar, sp: dict, loc_ok, used, rows=None, w=None, all_rows: bool = False):
         """Masked location log-probs [B, M*M] for the rows whose action uses a location; other rows
         0 (their terms are multiplied by 0, 032-R10). No used row or all rows: every row. `rows` /
-        `k`: the host row list (`location_rows`, first `k` real, the rest padding; `k` -1 = every
-        row), else the rows are found on the device."""
-        if self.location_all_rows or k == -1:
+        `w`: the host row list (`location_rows`) and its weights (1 real, 0 padding: a repeat of a
+        real row, so adding it times 0 keeps the value and gradient); `all_rows`: every row; else
+        the rows are found on the device."""
+        if self.location_all_rows or all_rows:
             return masked_log_softmax(self.location(ar, sp), loc_ok)
         b, mm = loc_ok.shape
         if rows is None:
             rows = used.nonzero().squeeze(1)
-            k = rows.numel()
-            if k == b or k == 0:
+            if rows.numel() in (0, b):
                 return masked_log_softmax(self.location(ar, sp), loc_ok)
         sub = {"s8": sp["s8"][rows], "skips": [s[rows] for s in sp["skips"]], "pool": sp["pool"][rows]}
         lp = masked_log_softmax(self.location(ar[rows], sub), loc_ok[rows])
-        return torch.zeros(b, mm, dtype=lp.dtype, device=lp.device).index_add(0, rows[:k], lp[:k])
+        if w is not None:
+            lp = lp * w[:, None]
+        return torch.zeros(b, mm, dtype=lp.dtype, device=lp.device).index_add(0, rows, lp)
 
     def selected(self, ar, e, obs: dict, info: dict, labels, temp: float, generator):
         """Pointer network over own eligible units with an END key (032 §2.5 #4, 031-R3, 032-R12).

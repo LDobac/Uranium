@@ -52,17 +52,24 @@ def configure(backend: str) -> None:
 
 
 COMPILE_MODES = ("off", "default", "max-autotune", "max-autotune-no-cudagraphs", "reduce-overhead")
+# `URANIUM_COMPILE_DYNAMIC`: shapes (entity count, location rows) compiled as seen and made
+# symbolic after a change (`auto`), symbolic from the start (`on`) or one graph per shape (`off`).
+COMPILE_DYNAMIC = {"auto": None, "on": True, "off": False}
+COMPILE_RECOMPILE_LIMIT = 64
 
 
 def compiled(fn):
     """`fn` through `torch.compile` when `URANIUM_COMPILE` names a mode (AMB-000-4 step 2: same
-    math; Triton needed on GPU, `triton-windows` on Windows), else `fn` itself."""
+    math; Triton needed on GPU, `triton-windows` on Windows), else `fn` itself. The recompile
+    limit is raised so a new shape recompiles instead of falling back to eager."""
     from uranium.model.layers import env_choice
 
     mode = env_choice("URANIUM_COMPILE", COMPILE_MODES, "off")
     if mode == "off":
         return fn
-    return torch.compile(fn, mode=None if mode == "default" else mode)
+    dynamic = COMPILE_DYNAMIC[env_choice("URANIUM_COMPILE_DYNAMIC", tuple(COMPILE_DYNAMIC), "auto")]
+    torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, COMPILE_RECOMPILE_LIMIT)
+    return torch.compile(fn, mode=None if mode == "default" else mode, dynamic=dynamic)
 
 
 # `URANIUM_ADAM`: the Adam / AdamW update as PyTorch picks (`default`: multi-tensor on GPU), one
