@@ -1,8 +1,9 @@
 """032-AC1 / AC8 (pytest `gpu`): the same weights and inputs on CPU and on the GPU (CUDA or
 ROCm) give the same forward outputs and gradients within the device tolerance. The f32 check runs
 without TF32 on both backends (the port's math); the CUDA bf16 check (032-R8, training and
-inference precision there) uses provisional tolerances from the 2026-10-24 measurement
-(`reports/pytorch_port.md` 9: forward ≤ 0.028, gradient median 1.5%), TBD(M6)."""
+inference precision there) uses the 2026-10-24 tolerances (user decision, about 2x the measured
+values, `reports/pytorch_opt.md` 2.24): forward ≤ 0.15, per-head policy KL mean ≤ 1e-3, greedy
+agreement ≥ 95%, gradient relative L2 median ≤ 3%."""
 
 import json
 import os
@@ -22,8 +23,10 @@ ROCM = torch.version.hip is not None
 # 3e-4, ROCm ≤ 1e-4 / 1e-3).
 FWD_TOL = 1e-4
 GRAD_TOL = 1e-3
-# CUDA bf16 autocast, provisional (TBD(M6)), about 2x the 2026-10-24 measurement.
-BF16_FWD_TOL = 0.06
+# CUDA bf16 autocast (032-AC1 / AC8, user decision 2026-10-24).
+BF16_FWD_TOL = 0.15
+BF16_KL_MEAN_TOL = 1e-3
+BF16_GREEDY_MIN = 0.95
 BF16_GRAD_MEDIAN_TOL = 0.03
 BF16_LOSS_REL_TOL = 1e-3
 
@@ -48,7 +51,9 @@ def run(d: Path, device: str, bf16: bool = False):
     loss.backward()
     fwd = {f"logp.{k}": out["logp"][k].detach().float().cpu() for k in HEADS} | {"value": out["value"].detach().float().cpu()}
     grads = {k: p.grad.detach().float().cpu() for k, p in net.named_parameters() if p.grad is not None}
-    return fwd, grads, float(loss)
+    # Per-head log-prob rows [rows, K] (the Selected head's steps are 3-D, left out).
+    dists = {k: v.detach().float().cpu() for k, v in out["dists"].items() if v.dim() == 2}
+    return fwd, grads, float(loss), dists
 
 
 def rel_errors(gpu_g: dict, cpu_g: dict) -> list:
@@ -61,8 +66,8 @@ def rel_errors(gpu_g: dict, cpu_g: dict) -> list:
 def test_gpu_matches_cpu_032_ac1_ac8(d):
     if not torch.cuda.is_available():
         pytest.skip("no CUDA / ROCm device")
-    cpu_f, cpu_g, _ = run(d, "cpu")
-    gpu_f, gpu_g, _ = run(d, "cuda")
+    cpu_f, cpu_g, _, _ = run(d, "cpu")
+    gpu_f, gpu_g, _, _ = run(d, "cuda")
     for k, v in cpu_f.items():
         diff = (gpu_f[k] - v).abs().max().item()
         assert diff <= FWD_TOL, f"{k}: forward max diff {diff:.3g} > {FWD_TOL}"
@@ -75,8 +80,8 @@ def test_gpu_matches_cpu_032_ac1_ac8(d):
 def test_cuda_bf16_close_to_cpu_032_r8(d):
     if not torch.cuda.is_available() or ROCM:
         pytest.skip("CUDA only (ROCm trains in f32, 032-R8)")
-    cpu_f, cpu_g, cpu_loss = run(d, "cpu")
-    gpu_f, gpu_g, loss = run(d, "cuda", bf16=True)
+    cpu_f, cpu_g, cpu_loss, cpu_d = run(d, "cpu")
+    gpu_f, gpu_g, loss, gpu_d = run(d, "cuda", bf16=True)
     assert abs(loss - cpu_loss) <= BF16_LOSS_REL_TOL * abs(cpu_loss), f"loss {loss} vs {cpu_loss}"
     for k, v in cpu_f.items():
         diff = (gpu_f[k] - v).abs().max().item()
@@ -84,3 +89,9 @@ def test_cuda_bf16_close_to_cpu_032_r8(d):
     rel = [r for r, _ in rel_errors(gpu_g, cpu_g)]
     median = rel[len(rel) // 2]
     assert median <= BF16_GRAD_MEDIAN_TOL, f"gradient rel L2 median {median:.3g} > {BF16_GRAD_MEDIAN_TOL}"
+    for k, p in cpu_d.items():
+        q, ok = gpu_d[k], p > -1e8
+        kl = (p.exp() * (p - q)).masked_fill(~ok, 0).sum(1).mean().item()
+        assert kl <= BF16_KL_MEAN_TOL, f"{k}: policy KL mean {kl:.3g} > {BF16_KL_MEAN_TOL}"
+        agree = (p.argmax(1) == q.argmax(1)).float().mean().item()
+        assert agree >= BF16_GREEDY_MIN, f"{k}: greedy agreement {agree:.3f} < {BF16_GREEDY_MIN}"
