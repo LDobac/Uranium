@@ -18,6 +18,9 @@ from uranium.model.layers import Attention, FeedForward, Mlp, ResBlock, conv3x3,
 #   table_t   - indexing the transposed table, so each head's [N,N] plane is contiguous (Linux ROCm
 #               host, encoder fwd+bwd 64 rows x N512: 1129 -> 872 ms)
 BIAS_GRAD_MODES = ("embedding", "index_add", "table_t")
+# `URANIUM_ENTITY_ATTN`: the entity attention in PyTorch (`torch`) or through the fused kernel
+# with the distance bias (`fused`, uranium/kernels/attn_bias.cu, 060-R1). Same math.
+ENTITY_ATTN_MODES = ("torch", "fused")
 
 
 class GatherIndexAdd(torch.autograd.Function):
@@ -69,18 +72,36 @@ class EntityEncoder(nn.Module):
         cat = obs["entity_cat"]
         x = torch.cat([self.unit_type(cat[..., 0]), self.owner(cat[..., 1]), self.order(cat[..., 2]), self.last_action(cat[..., 3]), obs["entity_cont"]], 2)
         x = self.input(x)
-        bias = self.distance_bias(obs)
         mask = obs["entity_mask"]
-        key_ok = mask[:, None, :]
-        for l, layer in enumerate(self.layers):
-            y = layer.ln1(x)
-            x = x + layer.attn(y, y, bias[:, l * self.heads:(l + 1) * self.heads], key_ok)
-            x = x + layer.ffn(layer.ln2(x))
+        if self.use_fused(x):
+            # AMB-000-4 step 2: the fused kernel reads the bucket ids (computed here, uint8) and
+            # the layer's table columns; no [B, L*H, N, N] bias is built.
+            bucket = self.buckets(obs).to(torch.uint8)
+            for l, layer in enumerate(self.layers):
+                y = layer.ln1(x)
+                x = x + layer.attn.forward_fused(y, bucket, self.bias_table[:, l * self.heads:(l + 1) * self.heads], mask)
+                x = x + layer.ffn(layer.ln2(x))
+        else:
+            bias = self.distance_bias(obs)
+            key_ok = mask[:, None, :]
+            for l, layer in enumerate(self.layers):
+                y = layer.ln1(x)
+                x = x + layer.attn(y, y, bias[:, l * self.heads:(l + 1) * self.heads], key_ok)
+                x = x + layer.ffn(layer.ln2(x))
         e = self.ln_out(x)
         own = (cat[..., 1] == 0) & mask
         enemy = (cat[..., 1] == 1) & mask
         pool = self.pool(torch.cat([masked_mean(e, own), masked_mean(e, enemy)], 1))
         return e, pool
+
+    def use_fused(self, x) -> bool:
+        """`URANIUM_ENTITY_ATTN=fused` and the kernel can run here (GPU, built, head dim 32,
+        at most 64 buckets); otherwise the PyTorch path."""
+        if env_choice("URANIUM_ENTITY_ATTN", ENTITY_ATTN_MODES, "torch") != "fused" or x.device.type != "cuda":
+            return False
+        from uranium.kernels.attention import HEAD_DIM, available
+
+        return x.shape[-1] // self.heads == HEAD_DIM and self.bias_table.shape[0] <= 64 and available(x.device)
 
     def distance_bias(self, obs: dict):
         """[B, layers*heads, N, N]. The table rows gathered by bucket: the same values as Burn's

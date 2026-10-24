@@ -154,6 +154,18 @@ class Attention(nn.Module):
         attn = torch.softmax(scores.masked_fill(~key_ok[:, None], MASKED), 3)
         return self.o((attn @ v).transpose(1, 2).reshape(b, tq, d))
 
+    def forward_fused(self, x, bucket_u8, table, key_ok):
+        """Self-attention of `x` [B,N,d] with `bias = table[bucket]` through the fused kernel
+        (`uranium.kernels.attention`, the same math as `forward`); `key_ok` [B,N]."""
+        from uranium.kernels.attention import fused
+
+        b, n, d = x.shape
+        h, dh = self.heads, d // self.heads
+        q = self.q(x).view(b, n, h, dh).transpose(1, 2)
+        k = self.k(x).view(b, n, h, dh).transpose(1, 2)
+        v = self.v(x).view(b, n, h, dh).transpose(1, 2)
+        return self.o(fused(q, k, v, bucket_u8, table, key_ok).transpose(1, 2).reshape(b, n, d))
+
 
 class FeedForward(nn.Module):
     """Pre-LN transformer feed-forward with GELU (exact erf form, as Burn `gelu`)."""
