@@ -32,6 +32,7 @@ def main(argv: list[str] | None = None) -> int:
         ctypes.windll.kernel32.SetConsoleCtrlHandler(None, False)
     env.load()
     env.apply_malloc()
+    env.apply_malloc_arenas()
     p = argparse.ArgumentParser(prog="python -m uranium", description="Uranium training and inference (PyTorch)")
     sub = p.add_subparsers(dest="cmd", required=True)
     fd = sub.add_parser("feed-digest", help="AMB-000-4 check: SHA-256 per lane group of the first BC batches")

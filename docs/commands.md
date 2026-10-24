@@ -28,7 +28,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
   | `URANIUM_INFER_COMPILE` | 추론 `act` torch.compile(그래프 안) | `default` | `off` |
   | `URANIUM_H2D`, `URANIUM_ADAM`, `URANIUM_COMPILE_DYNAMIC`, `URANIUM_COMPILE_RNG`, `URANIUM_INFER_STREAM` | 비교 후 기본값 유지(`INFER_STREAM=own`은 Linux ROCm 호스트에서 멈춤) | - | - |
 
-  - 호스트 설정(`.env`, 실측 근거 같은 리포트): CUDA 호스트(RAM을 평소 작업과 나눠 씀) `URANIUM_BC_MICRO_LANES=2`, `URANIUM_BC_PREFETCH=1`, `URANIUM_BC_PACK_BATCH=1`. Linux ROCm 호스트 `URANIUM_BC_MICRO_LANES=1`, `URANIUM_BC_FEED_THREADS=2`와 아래 README의 메모리 설정.
+  - 호스트 설정(`.env`, 실측 근거 같은 리포트): CUDA 호스트(RAM을 평소 작업과 나눠 씀) `URANIUM_BC_MICRO_LANES=2`, `URANIUM_BC_PREFETCH=1`, `URANIUM_BC_PACK_BATCH=1`. Linux ROCm 호스트 `URANIUM_BC_MICRO_LANES=1`, `URANIUM_BC_FEED_THREADS=2`, `URANIUM_MALLOC_ARENA_MAX=2`(glibc arena 수 제한: 긴 run에서 arena 단편화로 update마다 메모리가 늘던 것을 막음, 결과 동일, `reports/m6_core_ablation_pt.md` 4절)와 아래 README의 메모리 설정.
   - 장비별 기본값을 다시 고를 때(모델 구조를 바꾼 뒤 등)는 `python -m uranium bench bc --groups 1 --updates 12`를 스위치 값만 바꿔 비교하고, 손실 동등성은 `bench loss`(30 update)로 본다.
   - 직접 작성 커널은 첫 사용 때 빌드해 `URANIUM_KERNEL_DIR`(기본 `~/.cache/uranium/kernels`)에 둔다. Windows는 `cl`이 PATH에 없으면 최신 Visual Studio의 vcvars64 환경을 불러온다.
 - Linux ROCm 호스트 실행 환경: 그 호스트용 rocBLAS 경로를 `LD_LIBRARY_PATH`에 두고 `HSA_ENABLE_SDMA=0`.

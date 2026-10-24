@@ -45,6 +45,7 @@ def load(path: Path | None = None) -> Path | None:
 # glibc mallopt parameters (malloc.h).
 M_TRIM_THRESHOLD = -1
 M_MMAP_THRESHOLD = -3
+M_ARENA_MAX = -8
 
 
 def apply_malloc() -> int | None:
@@ -64,4 +65,25 @@ def apply_malloc() -> int | None:
     libc = ctypes.CDLL("libc.so.6")
     if not (libc.mallopt(M_MMAP_THRESHOLD, n) and libc.mallopt(M_TRIM_THRESHOLD, n)):
         raise RuntimeError(f"URANIUM_MALLOC_MMAP_THRESHOLD={n}: mallopt refused")
+    return n
+
+
+def apply_malloc_arenas() -> int | None:
+    """`URANIUM_MALLOC_ARENA_MAX` (Linux glibc): at most this many malloc arenas. The BC feed
+    starts new threads per batch, and glibc gives threads their own arenas, where the batches'
+    small long-lived blocks (packed planes, features) and short-lived ones fragment the 64 MB
+    arena heaps: a long run on the Linux ROCm host grew ~25 MB per update until it swapped; at 2
+    the growth stopped (2026-10-25, `reports/m6_core_ablation_pt.md`). Set before any other
+    thread allocates (first thing in `python -m uranium`); host memory only, same values. Returns
+    the limit set, or None."""
+    import sys
+
+    raw = os.environ.get("URANIUM_MALLOC_ARENA_MAX", "")
+    if not raw or not sys.platform.startswith("linux"):
+        return None
+    import ctypes
+
+    n = int(raw)
+    if not ctypes.CDLL("libc.so.6").mallopt(M_ARENA_MAX, n):
+        raise RuntimeError(f"URANIUM_MALLOC_ARENA_MAX={n}: mallopt refused")
     return n

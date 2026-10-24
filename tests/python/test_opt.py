@@ -124,6 +124,18 @@ def test_apply_malloc_threshold(monkeypatch):
     assert env.apply_malloc() == (1048576 if sys.platform.startswith("linux") else None)
 
 
+def test_apply_malloc_arenas(monkeypatch):
+    """URANIUM_MALLOC_ARENA_MAX: set through mallopt on Linux glibc, ignored elsewhere."""
+    import sys
+
+    from uranium import env
+
+    monkeypatch.delenv("URANIUM_MALLOC_ARENA_MAX", raising=False)
+    assert env.apply_malloc_arenas() is None
+    monkeypatch.setenv("URANIUM_MALLOC_ARENA_MAX", "2")
+    assert env.apply_malloc_arenas() == (2 if sys.platform.startswith("linux") else None)
+
+
 def test_conv_wgrad_bmm_equals_vendor(group, monkeypatch):
     """URANIUM_CONV_WGRAD=bmm: the spatial encoder's gradients equal the library conv's."""
     obs = to_obs(group, "cpu")
