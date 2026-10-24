@@ -152,6 +152,7 @@ class InferenceServer(threading.Thread):
         self.graphed = GraphedAct(self.act_fn, device, precision) if device.type == "cuda" and env_choice("URANIUM_INFER_GRAPH", INFER_GRAPH_MODES, "off") == "on" else None
         self.state = self.net.core.init_state(broker.capacity, device)
         self.version = 0
+        self.warmed = False
         self.stop = threading.Event()
         self.error: BaseException | None = None
         # Held while a work item runs; a weight swap waits for the batch in flight.
@@ -181,6 +182,7 @@ class InferenceServer(threading.Thread):
         # A server of several games also runs batch 2 once: a compiled act otherwise treats the
         # batch size 1 of the warm-up as fixed and recompiles at the first larger batch.
         sizes = [(1, n) for n in range(pad, -(-top // pad) * pad + 1, pad)] + ([(2, pad)] if self.broker.capacity > 1 else [])
+        self.warmed = True
         for b, n in sizes:
             t = time.perf_counter()
             out = self.act(dummy_obs(b, n, self.device), self.net.core.init_state(b, self.device))
@@ -189,6 +191,11 @@ class InferenceServer(threading.Thread):
 
     def run(self) -> None:
         try:
+            # A server not warmed up by its starter (RL learners and league snapshots) does it here,
+            # before its first request: compiling or capturing inside a game stalls it.
+            if not self.warmed and self.broker.warmup_entities > 0:
+                with DEVICE_LOCK.shared():
+                    self.warm_up()
             while not self.stop.is_set() and not self.broker.closed():
                 w = self.broker.next(self.poll_ms)
                 if w is None:

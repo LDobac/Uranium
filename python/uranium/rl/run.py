@@ -66,7 +66,7 @@ class Learners:
             d.mkdir(parents=True, exist_ok=True)
             ckpt.save_model(d, l.net)
             ckpt.save_meta(d, l.net.cfg, {"agent": name, "update": update}, precision, impl_settings())
-            b = _core.Broker(str(d), "stochastic", max_batch=max_batch, max_wait_ms=max_wait_ms)
+            b = _core.Broker(str(d), "stochastic", max_batch=max_batch, max_wait_ms=max_wait_ms, warmup_entities=_n_max())
             s = InferenceServer(b, device, precision, net=_copy(l.net))
             s.swap(l.net.state_dict(), update)
             s.start()
@@ -116,11 +116,18 @@ class Learners:
 
         from uranium.device import DEVICE_LOCK
 
-        b = _core.Broker(str(dir), "stochastic", max_batch=self.max_batch, max_wait_ms=self.max_wait_ms)
+        b = _core.Broker(str(dir), "stochastic", max_batch=self.max_batch, max_wait_ms=self.max_wait_ms, warmup_entities=_n_max())
         with DEVICE_LOCK.shared():
             s = InferenceServer(b, self.device, self.precision)
         s.start()
         return b
+
+
+def _n_max() -> int:
+    """Entity count the servers warm up to (012-R19, the server thread does it before serving)."""
+    from uranium import _core
+
+    return json.loads(_core.feature_dims())["n_max"]
 
 
 def _no_dropout(c):
