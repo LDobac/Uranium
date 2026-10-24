@@ -402,3 +402,4 @@
   - CUDA 기본값 `URANIUM_COMPILE=default`(95dfad2). Triton이 없으면 경고 후 eager(Windows는 `.[compile]`로 triton-windows 설치). CUDA Graph 모드(`reduce-overhead`)는 레인 그룹 core 상태를 다음 batch까지 보관하는 구조와 충돌해 보류.
   - bc250: Triton 없음, gfx1013은 Triton 공식 지원 대상이 아니라 compile 미사용.
 - 체크포인트 메타 `kernels`에 적용된 구현 스위치를 기록한다(041-R15).
+- compile 켬 데이터 공급(압축 켬, prefetch 1, 30 update; 학습 중앙값 + 대기): 공급 2스레드 1.91 + 0.68 = 2.59초, 3스레드 2.01 + 0.40 = 2.41초, 4스레드 2.12 + 0.44 = 2.56초 → 차이가 잡음 수준이라 2 유지. 압축 끔은 측정 중 이 PC 메모리 부족으로 중단(남은 프로세스 RSS 13.5 GB, 종료함) → 이 PC는 압축 켬. 남은 병목은 데이터 대기 약 0.4~0.7초.
