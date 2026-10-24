@@ -458,6 +458,47 @@ fn prefetch_gives_the_feeder_batches_041_r16() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+/// Lanes extracted on several threads give the same batches (every step, planes restored when
+/// packed, 041-R18) and data states as one thread.
+#[test]
+fn feeder_threads_give_the_same_batches() {
+    let root = shard_dir("feed-threads", &varied_games(), 4);
+    let mut cfg = tiny_bc(1, 0);
+    cfg.lanes = 5;
+    cfg.data.z_drop = 0.5;
+    cfg.data.augment = true;
+    let run = |threads: usize, pack: bool| {
+        let mut f = feeder(&cfg);
+        f.set_threads(threads);
+        f.set_pack(pack);
+        let mut s = ShardSource::new(&root).unwrap().shuffled(3);
+        let mut out = Vec::new();
+        while let Some(b) = f.next_batch_from(&mut s).unwrap() {
+            let steps: Vec<String> = b
+                .chunks
+                .iter()
+                .enumerate()
+                .flat_map(|(l, c)| c.iter().enumerate().map(move |(t, st)| (l, t, st)))
+                .map(|(l, t, st)| {
+                    let mut st = st.clone();
+                    if pack {
+                        st.obs = b.planes[l][t].restore(&st.obs);
+                    }
+                    format!("{st:?}")
+                })
+                .collect();
+            out.push((steps, b.state));
+        }
+        out
+    };
+    let want = run(1, false);
+    assert!(want.len() > 2, "too few batches");
+    for (threads, pack) in [(2, false), (3, true), (8, false), (1, true)] {
+        assert!(run(threads, pack) == want, "{threads} threads, pack {pack}");
+    }
+    std::fs::remove_dir_all(&root).ok();
+}
+
 /// 041-R16: `URANIUM_BC_PREFETCH` sets the depth; unset or empty keeps the default, junk fails.
 #[test]
 fn prefetch_depth_from_env_041_r16() {

@@ -32,8 +32,16 @@ impl Planes {
     /// `o` (whose planes were taken) with its planes back, bit for bit.
     pub fn restore(&self, o: &Observation) -> Observation {
         let mut o = o.clone();
-        let s = zstd::bulk::decompress(&self.spatial, self.spatial_len * 4).expect("zstd spatial");
-        o.obs.spatial = s.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        // Streamed through a small buffer into the f32 plane: no second plane-sized allocation.
+        let mut dec = zstd::stream::read::Decoder::with_buffer(&self.spatial[..]).expect("zstd spatial");
+        let mut spatial = Vec::with_capacity(self.spatial_len);
+        let mut buf = [0u8; 1 << 16];
+        while spatial.len() < self.spatial_len {
+            let n = ((self.spatial_len - spatial.len()) * 4).min(buf.len());
+            std::io::Read::read_exact(&mut dec, &mut buf[..n]).expect("zstd spatial");
+            spatial.extend(buf[..n].chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])));
+        }
+        o.obs.spatial = spatial;
         o.masks.loc_class_mask = zstd::bulk::decompress(&self.loc_mask, self.loc_len).expect("zstd loc mask").into_iter().map(|b| b != 0).collect();
         o
     }

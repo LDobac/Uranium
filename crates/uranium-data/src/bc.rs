@@ -354,6 +354,8 @@ pub struct Feeder {
     maps: Arc<MapStore>,
     /// 041-R18: batches with their planes compressed ([`Feeder::set_pack`]).
     pack: bool,
+    /// Threads that extract a batch's lanes ([`feed_threads`], [`Feeder::set_threads`]).
+    threads: usize,
 }
 
 impl Feeder {
@@ -374,6 +376,7 @@ impl Feeder {
             drain: false,
             maps: Arc::new(MapStore::from_env()),
             pack: false,
+            threads: feed_threads(),
         }
     }
 
@@ -381,6 +384,11 @@ impl Feeder {
     /// group trains. Does not change the batches.
     pub fn set_pack(&mut self, pack: bool) {
         self.pack = pack;
+    }
+
+    /// Threads that extract a batch's lanes; any count gives the same batches.
+    pub fn set_threads(&mut self, threads: usize) {
+        self.threads = threads.max(1);
     }
 
     /// Another map precompute store (shared with a start check, or synthetic maps in tests).
@@ -430,8 +438,18 @@ impl Feeder {
         let mut results = Vec::with_capacity(self.lanes.len());
         let mut value_weights = Vec::with_capacity(self.lanes.len());
         let mut planes = Vec::new();
-        for lane in &mut self.lanes {
-            let Some(g) = lane.game.as_mut() else {
+        // Feature extraction (and packing) touches only the lane's own game: lanes run on
+        // `threads` threads, results kept in lane order, so the batch is the same.
+        let (seq_len, pack) = (self.seq_len, self.pack);
+        let made = par_lanes(&mut self.lanes, self.threads, |lane| {
+            lane.game.as_mut().map(|g| {
+                let (mut chunk, invalid) = g.next_chunk(seq_len);
+                let p: Vec<Planes> = if pack { chunk.iter_mut().map(|s| Planes::take(&mut s.obs)).collect() } else { Vec::new() };
+                (chunk, invalid, p)
+            })
+        });
+        for (lane, made) in self.lanes.iter_mut().zip(made) {
+            let (Some(g), Some((chunk, invalid, p))) = (lane.game.as_mut(), made) else {
                 // Drained lane (evaluation only).
                 if self.pack {
                     planes.push(Vec::new());
@@ -442,10 +460,9 @@ impl Feeder {
                 value_weights.push(0.0);
                 continue;
             };
-            let (mut chunk, invalid) = g.next_chunk(self.seq_len);
             self.invalid_labels += invalid;
             if self.pack {
-                planes.push(chunk.iter_mut().map(|s| Planes::take(&mut s.obs)).collect());
+                planes.push(p);
             }
             chunks.push(chunk);
             fresh.push(lane.fresh);
@@ -546,6 +563,46 @@ impl Feeder {
         }
     }
 }
+
+/// `f(lane)` for every lane on up to `threads` scoped threads (contiguous runs of lanes), results
+/// in lane order.
+fn par_lanes<T: Send>(lanes: &mut [Lane], threads: usize, f: impl Fn(&mut Lane) -> T + Sync) -> Vec<T> {
+    let threads = threads.clamp(1, lanes.len().max(1));
+    if threads == 1 {
+        return lanes.iter_mut().map(&f).collect();
+    }
+    let per = lanes.len().div_ceil(threads);
+    std::thread::scope(|s| {
+        let hs: Vec<_> = lanes.chunks_mut(per).map(|run| s.spawn(|| run.iter_mut().map(&f).collect::<Vec<T>>())).collect();
+        hs.into_iter().flat_map(|h| h.join().expect("feeder lane thread panicked")).collect()
+    })
+}
+
+/// `f(item)` for every item on up to `threads` scoped threads, results in item order.
+fn par_map<I: Sync, T: Send>(items: &[I], threads: usize, f: impl Fn(&I) -> T + Sync) -> Vec<T> {
+    let threads = threads.clamp(1, items.len().max(1));
+    if threads == 1 {
+        return items.iter().map(&f).collect();
+    }
+    let per = items.len().div_ceil(threads);
+    std::thread::scope(|s| {
+        let hs: Vec<_> = items.chunks(per).map(|run| s.spawn(|| run.iter().map(&f).collect::<Vec<T>>())).collect();
+        hs.into_iter().flat_map(|h| h.join().expect("collate thread panicked")).collect()
+    })
+}
+
+/// Threads that extract one batch's lanes, `URANIUM_BC_FEED_THREADS` (001-R9); unset, empty or 0
+/// = [`FEED_THREADS_DEFAULT`]. Any value gives the same batches.
+pub fn feed_threads() -> usize {
+    match std::env::var("URANIUM_BC_FEED_THREADS").ok().and_then(|v| v.trim().parse::<usize>().ok()) {
+        Some(n) if n > 0 => n,
+        _ => FEED_THREADS_DEFAULT,
+    }
+}
+
+/// More threads take CPU from the trainer's launch thread (CUDA host, 16 logical CPUs, packed
+/// batches: update + data wait 4.69 / 3.61 / 4.04 / 3.95 / 4.98 s at 1 / 2 / 3 / 4 / 8 threads).
+pub const FEED_THREADS_DEFAULT: usize = 2;
 
 /// 041-R16: batches built ahead of the trainer when nothing in `.env` says otherwise.
 pub const PREFETCH_DEPTH_DEFAULT: usize = 2;
@@ -821,7 +878,7 @@ impl Batch {
         let mut results = Vec::with_capacity(b * t);
         let mut value_w = Vec::with_capacity(b * t);
         let mut keep = Vec::with_capacity(b);
-        let mut restored = Vec::new();
+        let mut packed = Vec::new();
         // A drained lane (evaluation, `Feeder::drain`) takes another lane's first step at weight 0.
         let filler = self.chunks.iter().position(|c| !c.is_empty()).expect("a batch has a lane with steps");
         for l in lanes {
@@ -832,7 +889,7 @@ impl Batch {
                 let i = k.min(chunk.len() - 1).min(real.saturating_sub(1));
                 let s = &chunk[i];
                 if !self.planes.is_empty() {
-                    restored.push(self.planes[src][i].restore(&s.obs));
+                    packed.push((src, i));
                 }
                 rows.push(s);
                 let w = if k < real { s.weight } else { 0.0 };
@@ -841,6 +898,8 @@ impl Batch {
                 value_w.push(w * self.value_weights[l]);
             }
         }
+        // Decompressing is most of a packed group's collate: on `feed_threads()` threads, in order.
+        let restored = par_map(&packed, feed_threads(), |&(src, i)| self.planes[src][i].restore(&self.chunks[src][i].obs));
         let obs: Vec<_> = if restored.is_empty() { rows.iter().map(|s| &s.obs).collect() } else { restored.iter().collect() };
         let obs = crate::collate::obs_batch(&obs, pad);
         let labels: Vec<_> = rows.iter().map(|s| &s.label).collect();
