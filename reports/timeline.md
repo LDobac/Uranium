@@ -187,3 +187,4 @@
 - 2026-10-25 00:2x — **조치**: bc250_1 BC 학습 메모리가 계속 늘어(update당 약 25 MB) 작업자에 `MALLOC_ARENA_MAX=2`를 넣어 재시작(결과 무관), 추이 확인 중
 - 2026-10-25 01:0x — **발견·결정**(060-R3): bc250_1 긴 BC run 메모리 증가는 glibc arena 단편화(smaps: 64 MB arena heap만 증가, 공급 버퍼 개수 일정). arena 2개 제한으로 상주 약 6.6 GB에서 평평 → `.env` 키 `URANIUM_MALLOC_ARENA_MAX`(시작 시 mallopt) 추가, Linux ROCm 호스트 2. `m6_core_ablation_pt.md` 4절
 - 2026-10-25 01:2x — **결정**(032-R20, AMB-032-11): 구조 변형 비교 — 지형 붙이기·스칼라 토큰·attention 요약·바깥 LSTM을 하나씩 켠 4개 + 모두 켠 1개, 각 0 step부터 10,000 update(기준은 2차 GTrXL ckpt-10000), 평가는 val 500 + 7개 모델 리그전 21쌍 × 100판(T0는 고른 후보만), 잡음 seed 추가 없음·장비 혼합, 2차 코어 비교 큐에 덧붙여 이어 학습, 빌드·테스트는 asus. 리포트 `reports/m6_arch_ablation_pt.md`
+- 2026-10-25 02:2x — **장시간 실행 예약**(032-R20): 구조 변형 run 5개(`arch-abl-*-pt`, 각 10,000 update)를 2차 코어 비교 큐 `core-ablation-pt.toml` 뒤에 덧붙임. 두 학습 장비는 master 3807031로 pull만(빌드 없음), 지금 run을 끝내면 이어서 잡는다

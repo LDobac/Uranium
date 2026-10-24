@@ -84,4 +84,5 @@
   4. (낮음) `bc-profile`과 `bench bc`가 설정의 `[model]`을 무시하고 기본 모델을 측정 → **반영**.
   5. (낮음) Rust 실행 지문에 `[model]`이 없음 → **반영 안 함**. 학습 장비에 재빌드 없이 배포하려고 Python만 바꾸는 설계다. 다른 `[model]`로 재개·이어 학습하면 Python이 거부한다(032-AC11). 남는 위험(옛 코드가 변형 run을 0 step부터 잡는 것)은 2절 2번의 순서(두 장비 pull 확인 뒤 큐 추가)로 막는다.
 - 2026-10-25 02:3x — asus `pytest tests/python` 104 통과·13 건너뜀(GPU 전용).
+- 2026-10-25 02:2x — **배포·큐 추가**(2절 2~3번). master 3807031 push(fast-forward) → 두 학습 장비 작업 사본 `git pull --ff-only`(빌드 없음, 학습 venv는 editable 설치) → `<shared>/queue/core-ablation-pt.toml`에 `arch-abl-{terrain,ctx,pool,outer,all}-pt` 5개 run 추가(LSTM·GTrXL 뒤, 각자 `config`). 작업자는 재시작하지 않았다. 직후 두 학습은 그대로 진행(CUDA 호스트 GTrXL 5,189 update 1.7 s/update, Linux ROCm 호스트 LSTM 817 update 12.5 s/update). 예상: CUDA 호스트가 04:3x쯤 GTrXL을 끝내고 첫 변형을 잡는다.
 
