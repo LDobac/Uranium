@@ -146,10 +146,16 @@ class ConvBmmWgrad(torch.autograd.Function):
         return gx, gw, gb, None
 
 
+def bmm_wgrad_fits(conv: nn.Conv2d) -> bool:
+    """The batched-GEMM weight gradient is written for a 3x3, padding 1, dilation 1, ungrouped
+    conv with stride 1 or 2; any other conv keeps the library path."""
+    return conv.kernel_size == (3, 3) and conv.padding == (1, 1) and conv.dilation == (1, 1) and conv.groups == 1 and conv.stride[0] == conv.stride[1] in (1, 2) and conv.padding_mode == "zeros"
+
+
 def conv_wgrad(conv: nn.Conv2d, x):
-    """`conv(x)` for a 3x3 pad-1 conv, its weight gradient as `URANIUM_CONV_WGRAD` picks (f32
-    only: under autocast the library path runs)."""
-    if env_choice("URANIUM_CONV_WGRAD", CONV_WGRAD_MODES, "vendor") == "bmm" and x.dtype == torch.float32 and not torch.is_autocast_enabled(x.device.type):
+    """`conv(x)`, its weight gradient as `URANIUM_CONV_WGRAD` picks (f32 only: under autocast the
+    library path runs; convs other than 3x3 pad 1 too, `bmm_wgrad_fits`)."""
+    if env_choice("URANIUM_CONV_WGRAD", CONV_WGRAD_MODES, "vendor") == "bmm" and x.dtype == torch.float32 and not torch.is_autocast_enabled(x.device.type) and bmm_wgrad_fits(conv):
         return ConvBmmWgrad.apply(x, conv.weight, conv.bias, conv.stride[0])
     return conv(x)
 

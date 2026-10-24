@@ -181,3 +181,32 @@ def test_linear_wgrad_splitk_equals_vendor(group, monkeypatch):
     assert res["splitk"].keys() == res["vendor"].keys()
     for k, g in res["vendor"].items():
         assert torch.allclose(res["splitk"][k], g, atol=1e-5, rtol=1e-4), k
+
+
+def test_switches_fall_back_on_other_layer_shapes(group, monkeypatch):
+    """A layer changed away from the shape an optimisation is written for takes the library
+    path: a 5x5 / dilated / grouped / stride-3 conv under URANIUM_CONV_WGRAD=bmm, a 3x3 location
+    output conv under URANIUM_LOC_OUT=mulsum."""
+    import torch.nn as nn
+
+    from uranium.model.layers import conv_wgrad
+
+    monkeypatch.setenv("URANIUM_CONV_WGRAD", "bmm")
+    g = torch.Generator().manual_seed(4)
+    for conv in (nn.Conv2d(4, 6, 5, padding=2), nn.Conv2d(4, 6, 3, padding=2, dilation=2), nn.Conv2d(4, 6, 3, padding=1, groups=2), nn.Conv2d(4, 6, 3, stride=3, padding=1)):
+        x = torch.randn(2, 4, 9, 9, generator=g, requires_grad=True)
+        conv_wgrad(conv, x).square().sum().backward()
+        gw = conv.weight.grad.clone()
+        conv.weight.grad = None
+        conv(x).square().sum().backward()
+        assert torch.allclose(gw, conv.weight.grad, atol=1e-5, rtol=1e-4), conv
+    outs = {}
+    for mode in ("conv", "mulsum"):
+        monkeypatch.setenv("URANIUM_LOC_OUT", mode)
+        net = tiny_net()
+        torch.manual_seed(9)
+        net.heads.location.out = nn.Conv2d(32, 1, 3, padding=1)
+        _, _, sp, _ = net.encode(to_obs(group, "cpu"))
+        ar = torch.randn(sp["s8"].shape[0], net.cfg.heads.ar, generator=torch.Generator().manual_seed(1))
+        outs[mode] = net.heads.location(ar, sp).detach()
+    assert torch.equal(outs["mulsum"], outs["conv"])

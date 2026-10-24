@@ -112,7 +112,8 @@ class LocationHead(nn.Module):
             if i < 3:
                 x = torch.cat([x, skips[i]], 1)
         m = x.shape[2]
-        if self.out_mode == "mulsum":
+        # mulsum is the 1x1 conv's sum written out: only for a 1x1, single-output conv.
+        if self.out_mode == "mulsum" and self.out.kernel_size == (1, 1) and self.out.out_channels == 1 and self.out.groups == 1:
             w = self.out.weight.view(1, -1, 1, 1).to(x.dtype)
             return ((x * w).sum(1) + self.out.bias.to(x.dtype)).view(b, m * m)
         return self.out(x).view(b, m * m)
