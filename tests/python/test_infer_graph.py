@@ -25,7 +25,7 @@ def test_graphed_act_matches_eager():
     _, dev, prec = resolve(None)
     torch.manual_seed(0)
     net = UraniumNet(new_net_config("gtrxl", True), action_columns()).to(dev).eval()
-    graphed = GraphedAct(net, dev, prec)
+    graphed = GraphedAct(net.act, dev, prec)
     exact = torch.version.hip is None  # MIOpen may pick another algorithm inside the capture
 
     def eager(obs, state):

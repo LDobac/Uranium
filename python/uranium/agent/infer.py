@@ -12,7 +12,7 @@ import time
 import torch
 
 from uranium import ckpt
-from uranium.device import autocast
+from uranium.device import autocast, compiled
 from uranium.model import to_obs
 from uranium.model.heads import HEAD_NAMES
 from uranium.model.layers import env_choice
@@ -70,14 +70,14 @@ class GraphedAct:
     in one memory pool. The returned tensors live in the graph's memory: read or copy them before
     the next call (the server copies the state rows and reads the replies at once)."""
 
-    def __init__(self, net, device: torch.device, precision: str):
-        self.net, self.device, self.precision = net, device, precision
+    def __init__(self, act, device: torch.device, precision: str):
+        self.act, self.device, self.precision = act, device, precision
         self.graphs: dict = {}
         self.pool = torch.cuda.graph_pool_handle()
 
     def _act(self, obs, state, temp: float):
         with autocast(self.device, self.precision):
-            return self.net.act(obs, state, temp)
+            return self.act(obs, state, temp)
 
     def __call__(self, obs: dict, state, temp: float) -> dict:
         b = obs["entity_mask"].shape[0]
@@ -142,7 +142,10 @@ class InferenceServer(threading.Thread):
         # 032 §2: no dropout at inference.
         self.net = net.to(device).eval()
         self.temp = broker.temp
-        self.graphed = GraphedAct(self.net, device, precision) if device.type == "cuda" and env_choice("URANIUM_INFER_GRAPH", INFER_GRAPH_MODES, "off") == "on" else None
+        # `URANIUM_INFER_COMPILE`: `act` through torch.compile first (CUDA host, inside the graph:
+        # batch 1 2.4 -> 1.3 ms, batch 32 9.3 -> 6.2 ms).
+        self.act_fn = compiled(self.net.act, "URANIUM_INFER_COMPILE")
+        self.graphed = GraphedAct(self.act_fn, device, precision) if device.type == "cuda" and env_choice("URANIUM_INFER_GRAPH", INFER_GRAPH_MODES, "off") == "on" else None
         self.state = self.net.core.init_state(broker.capacity, device)
         self.version = 0
         self.stop = threading.Event()
@@ -163,7 +166,7 @@ class InferenceServer(threading.Thread):
         if self.graphed is not None:
             return self.graphed(obs, state, self.temp)
         with autocast(self.device, self.precision):
-            return self.net.act(obs, state, self.temp)
+            return self.act_fn(obs, state, self.temp)
 
     @torch.no_grad()
     def warm_up(self) -> None:
@@ -171,11 +174,14 @@ class InferenceServer(threading.Thread):
         kernel selection (and the graph capture) does not stall a live game."""
         pad = max(self.broker.pad_entities, 1)
         top = self.broker.warmup_entities
-        for n in range(pad, -(-top // pad) * pad + 1, pad):
+        # A server of several games also runs batch 2 once: a compiled act otherwise treats the
+        # batch size 1 of the warm-up as fixed and recompiles at the first larger batch.
+        sizes = [(1, n) for n in range(pad, -(-top // pad) * pad + 1, pad)] + ([(2, pad)] if self.broker.capacity > 1 else [])
+        for b, n in sizes:
             t = time.perf_counter()
-            out = self.act(dummy_obs(1, n, self.device), self.net.core.init_state(1, self.device))
+            out = self.act(dummy_obs(b, n, self.device), self.net.core.init_state(b, self.device))
             out["action"]["action"].cpu()
-            print(f"[infer] warm-up N={n}: {time.perf_counter() - t:.1f}s", file=sys.stderr, flush=True)
+            print(f"[infer] warm-up B={b} N={n}: {time.perf_counter() - t:.1f}s", file=sys.stderr, flush=True)
 
     def run(self) -> None:
         try:

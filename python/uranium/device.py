@@ -35,7 +35,7 @@ def resolve(backend: str | None) -> tuple[str, torch.device, str]:
 # key wins.
 IMPL_DEFAULTS = {
     "rocm": {"URANIUM_LOC_ROWS": "exact", "URANIUM_LOC_OUT": "mulsum", "URANIUM_BIAS_GRAD": "table_t", "URANIUM_CONV_WGRAD": "bmm", "URANIUM_ENTITY_ATTN": "fused", "URANIUM_LINEAR_WGRAD": "splitk", "URANIUM_INFER_GRAPH": "on"},
-    "cuda": {"URANIUM_LOC_ROWS": "pow2", "URANIUM_ENTITY_ATTN": "fused", "URANIUM_COMPILE": "default", "URANIUM_INFER_GRAPH": "on"},
+    "cuda": {"URANIUM_LOC_ROWS": "pow2", "URANIUM_ENTITY_ATTN": "fused", "URANIUM_COMPILE": "default", "URANIUM_INFER_GRAPH": "on", "URANIUM_INFER_COMPILE": "default"},
     "cpu": {},
 }
 
@@ -45,6 +45,7 @@ IMPL_DEFAULTS = {
 IMPL_SWITCHES = (
     "URANIUM_LOC_ROWS", "URANIUM_LOC_OUT", "URANIUM_H2D", "URANIUM_BIAS_GRAD", "URANIUM_CONV_WGRAD", "URANIUM_LINEAR_WGRAD",
     "URANIUM_ENTITY_ATTN", "URANIUM_ADAM", "URANIUM_COMPILE", "URANIUM_COMPILE_DYNAMIC", "URANIUM_COMPILE_RNG", "URANIUM_INFER_GRAPH",
+    "URANIUM_INFER_COMPILE",
 )
 
 
@@ -75,19 +76,20 @@ COMPILE_RECOMPILE_LIMIT = 64
 COMPILE_RNG_MODES = ("eager", "inductor")
 
 
-def compiled(fn):
-    """`fn` through `torch.compile` when `URANIUM_COMPILE` names a mode (AMB-000-4 step 2: same
-    math; Triton needed on GPU, `triton-windows` on Windows), else `fn` itself. The recompile
-    limit is raised so a new shape recompiles instead of falling back to eager."""
+def compiled(fn, key: str = "URANIUM_COMPILE"):
+    """`fn` through `torch.compile` when `key` (`URANIUM_COMPILE` for training,
+    `URANIUM_INFER_COMPILE` for inference) names a mode (AMB-000-4 step 2: same math; Triton
+    needed on GPU, `triton-windows` on Windows), else `fn` itself. The recompile limit is raised
+    so a new shape recompiles instead of falling back to eager."""
     from uranium.model.layers import env_choice
 
-    mode = env_choice("URANIUM_COMPILE", COMPILE_MODES, "off")
+    mode = env_choice(key, COMPILE_MODES, "off")
     if mode == "off":
         return fn
     import importlib.util
 
     if torch.cuda.is_available() and importlib.util.find_spec("triton") is None:
-        print(f"[compile] URANIUM_COMPILE={mode} needs Triton (Windows: the triton-windows package); running eager", flush=True)
+        print(f"[compile] {key}={mode} needs Triton (Windows: the triton-windows package); running eager", flush=True)
         return fn
     dynamic = COMPILE_DYNAMIC[env_choice("URANIUM_COMPILE_DYNAMIC", tuple(COMPILE_DYNAMIC), "auto")]
     torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, COMPILE_RECOMPILE_LIMIT)
