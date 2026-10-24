@@ -53,7 +53,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-000-1 | 승률 목표 수치 | Resolved (2026-10-15: G1 80%·G2 90% 초안 확정, M5 이후 조정 제안 가능, APM 제한 없음) |
 | AMB-000-2 | SC:R 실사용 환경(로컬/LAN vs 배틀넷)·상대 | Resolved (2026-10-15: 로컬/LAN 커스텀 한정, 상대 사람/내장 AI) |
 | AMB-000-3 | 맵 파일 버전, 상대 Random 종족 지원 | Resolved (2026-10-15: 최신 공개 버전(1.16.1 호환 검증 후 해시 고정), Random 지원) |
-| AMB-000-4 | 학습·추론 프레임워크 전환(Burn 대비 PyTorch 실측 2~4배, `reports/torch_vs_burn.md`) | Resolved (2026-10-23 사용자 결정: 학습·추론만 Python + PyTorch, 관측 추출·리플레이·proto·hostd·러너·브리지·스크립트 봇·래더 수집은 Rust 유지(PyO3 `uranium._core`로 노출). 기존 BC shard는 그대로 읽고(순서·지문 유지), Burn 체크포인트는 보관만 하고 PyTorch로 새로 학습. 직접 작성한 CUDA·HIP 커널 허용. 1단계 동등성 검증(032-AC10) 뒤 Burn과 Vulkan 학습 경로 삭제, Linux 학습 호스트는 ROCm — 000, 001, 012-R19, 020, 032, 041, 042, 060, 061) |
+| AMB-000-4 | 학습·추론 프레임워크 전환(Burn 대비 PyTorch 실측 2~4배, `reports/torch_vs_burn.md`) | Resolved (2026-10-23 사용자 결정: 학습·추론만 Python + PyTorch, 관측 추출·리플레이·proto·hostd·러너·브리지·스크립트 봇·래더 수집은 Rust 유지(PyO3 `uranium._core`로 노출). 기존 BC shard는 그대로 읽고(순서·지문 유지), Burn 체크포인트는 보관만 하고 PyTorch로 새로 학습. 직접 작성한 CUDA·HIP 커널 허용. 1단계 동등성 검증(032-AC10) 뒤 Burn과 Vulkan 학습 경로 삭제, Linux 학습 호스트는 ROCm. 1단계 이식(2026-10-24, `reports/pytorch_port.md`)·2단계 최적화(2026-10-24, `reports/pytorch_opt.md`) 완료 — 000, 001, 012-R19, 020, 032, 041, 042, 060, 061) |
 | AMB-001-1 | SC:R 실전 추론 위치 | Deferred (M7) |
 | AMB-001-5 | SC:R 변환용 crate `uranium-adapter`(001·013에 M7 예정으로 적힘)를 만들지 | Resolved (2026-10-22: 만들지 않는다. SC:R 원시 ID가 BW와 같고 정규화는 브리지 안에서 끝남. 표는 `bridge/scr/tables`, 에이전트는 realtime 처리만 추가 — 001-R1, 013-R1, 012-R18·R19) |
 | AMB-001-2 | OpenBW 브리지 C++ shim 허용 여부 | Resolved (2026-10-15: 얇은 C++ shim 허용) |

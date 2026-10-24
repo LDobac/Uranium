@@ -8,8 +8,8 @@
 |---|---|---|
 | 0 | 데이터 재build·검증, 벤치, 대전 경로 시험 | 완료 (`reports/m6_rebuild.md` R-5) |
 | 1 | **코어 비교**: LSTM·GTrXL을 S1 5,300 update씩 학습 → 평가 → 사용자가 코어 선택 | 완료 (2026-10-23, **GTrXL 채택**, `reports/m6_core_ablation.md` 4절) |
-| 1.5 | **PyTorch 전환**: 학습·추론 이식 | 1단계 완료 (`reports/pytorch_port.md`), 2단계 최적화 다음 |
-| 2 | **BC 본학습 S1**: 전체 맵, GTrXL. 39,096 update(2026-10-23 `bc-epoch`) | PyTorch로 새로 시작 |
+| 1.5 | **PyTorch 전환**: 학습·추론 이식, 최적화 | 완료 (2026-10-24, 이식 `reports/pytorch_port.md`, 최적화 `reports/pytorch_opt.md`) |
+| 2 | **BC 본학습 S1**: 전체 맵, GTrXL. 39,096 update(2026-10-23 `bc-epoch`) | PyTorch로 새로 시작 — 착수 체크리스트 `reports/m6_pre_bc_review.md` J절 |
 | 3 | **BC S2**: 대상 맵(투혼·서킷브레이커), S1에서 시작 + 비교용 ablation (A) | 2 뒤 |
 | 4 | 평가(오프라인 지표, T0 대전) → RL | 3 뒤 |
 
@@ -48,7 +48,7 @@ git pull --ff-only
 uv venv --python 3.14 .venv                                   # 처음 한 번
 uv pip install --python .venv\Scripts\python.exe "torch==2.14.*" --index-url https://download.pytorch.org/whl/cu130   # 처음 한 번
 uv pip install --python .venv\Scripts\python.exe numpy safetensors pytest   # 처음 한 번
-uv pip install --python .venv\Scripts\python.exe -e .          # 코드가 바뀔 때마다 (Rust 확장 빌드 포함)
+uv pip install --python .venv\Scripts\python.exe -e ".[compile]"   # 코드가 바뀔 때마다 (Rust 확장 빌드 포함, [compile] = triton-windows: CUDA 기본 torch.compile에 필요)
 cargo build --release -p uranium-train                         # 작업자·감시 바이너리
 ```
 ```bash

@@ -459,7 +459,7 @@
 - 채택(장비별 기본값은 `docs/commands.md` 표): 위치 헤드 행(`exact`/`pow2`), 1×1 출력 곱-합, 거리 bias 전치 gather, conv·Linear 가중치 gradient(bmm·split-K), 엔티티 attention 직접 작성 커널, CUDA torch.compile, 추론 graph(+compile), 데이터 공급 병렬화·압축 batch 바로 풀기, 레인 그룹(AMB-041-7).
 - 탈락: index_add·pinned·AdamW 변형·선택 헤드 gather(속도 같음, 재컴파일 때문에 gather는 유일 경로로 남김)·conv 가중치 gradient 직접 작성 커널·커널 타일 32/128·sub-pixel/unfold conv·CUDA Graph 학습 모드.
 - 정확성: bc250 최적화 전 대 후 30 update 손실 최대 차이 2.2e-7, CUDA f32 compile 대 eager 1.1e-7, bf16 compile 대 eager 창 4.8e-6.
-- 남은 사용자 결정: 060-R3 메모리 예산 수치, 032-AC1·AC8 CUDA bf16 허용치, AMB-042-10 추론 프로세스 분리.
+- 사용자 결정(2026-10-24, 모두 끝남): 060-R3 학습 ≤ 12 GiB·추론 ≤ 2 GiB, 032-AC1·AC8 CUDA bf16 기준, AMB-041-7 레인 그룹(CUDA 2, Linux ROCm 1), AMB-042-10 분리 안 함(2.25).
 
 ### 2.25 인터페이스 오버헤드·RL GPU 공유·추론 메모리 — 두 장비 (AMB-042-10)
 측정: 서브에이전트 둘(장비별, 산출물 job 임시 폴더 `iface_cuda/`, Linux ROCm 호스트 `~/iface_prof/`)과 RL 계측(`URANIUM_INFER_PROFILE`, f889aab).
@@ -492,3 +492,11 @@
 - **분리 비용(실측)**: update당 가중치 전달 CUDA IPC 0.8ms / HIP IPC 7ms(지금 같은 프로세스 4~5ms), 공유 메모리 14~39ms. 결정 왕복(공유 메모리) +0.1~0.9ms(CUDA), +0.23~3.2ms(ROCm). 프로세스 하나에 +0.4 GiB.
 - **사용자 결정(2026-10-24): 분리하지 않음**(AMB-042-10 Resolved, spec 042 프로세스 문단).
 - **추론 서버 메모리(Linux ROCm 호스트, 학습 프로세스 안, 시스템 메모리 증가분)**: warm-up 뒤 약 1.3 GiB. 배치 1~32 × 엔티티 64~256을 거친 뒤 그래프 제한 없음 3.53, 배치 4 이하 2.27, **배치 1만 1.93**, 그래프 끔 1.41 GiB. 060-R3 추론 상한을 정할 때 든 "0.2~0.4 GiB"는 torch 할당만 본 잘못된 값이었다. **사용자 결정: 상한 2 GiB, 이 호스트는 graph를 배치 1에만**(`URANIUM_INFER_GRAPH_MAX_BATCH=1`, ROCm 기본값).
+
+## 4. 산출물 위치와 이어 하기
+- 다음 작업: PyTorch BC 본학습 착수 — 체크리스트 `reports/m6_pre_bc_review.md` J절.
+- 장비별 구현 스위치·호스트 설정 표: `docs/commands.md`. 백엔드 기본값은 `python/uranium/device.py` `IMPL_DEFAULTS`, 체크포인트 메타 `kernels`에 적용 값이 남는다.
+- 다시 측정할 때: `python -m uranium bench bc --groups 1 --updates 12`(스위치만 바꿔 비교), 손실 동등성 `bench loss`(30 update), 추론 지연 분해 `URANIUM_INFER_PROFILE=<접두어>`(배치별 jsonl, RL은 학습기 update 구간도).
+- 원자료(git 미추적)
+  - CUDA 호스트 메인 작업 사본 `reports/raw/pytorch_opt_*_20261024/`(bench md·json·log), 측정·프로브 스크립트 `reports/raw/pytorch_opt_20261024_scripts/`(인터페이스 측정 `iface_cuda/`, 간섭 측정 `contention/`, 커널 시도 `conv_wgrad.cu`·`attn_bias_t*.cu` 포함).
+  - Linux ROCm 호스트 홈: `bench_out/`(후보 비교·동등성·레인 그룹), `rlprof/`(RL 지연 계측), `rlsmoke_opt/`(RL 스모크), `iface_prof/`(인터페이스·간섭·메모리 측정과 `results/`), `attn_probe/`(커널·형상 프로브), `e2e_opt/`(OpenBW 1판, 무작위 GTrXL 체크포인트).

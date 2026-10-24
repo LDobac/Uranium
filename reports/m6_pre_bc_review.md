@@ -262,3 +262,18 @@ H 절(5661ff8·695cbfe 추가 리뷰)의 본학습 전 필수 항목 H-1~H-4도 
 2. (I-D1에 따라) 증분 build → manifest → I-2 `[steps]` 재계산.
 3. I-1 재빌드 → I-3 표본 end-to-end.
 4. I-4 큐 작성 → I-5 작업자 시작(장시간 실행 시작을 timeline에 기록).
+
+## J. PyTorch BC 본학습 착수 체크리스트 (2026-10-24, PyTorch 전환·최적화 뒤)
+PyTorch 전환(AMB-000-4)으로 I절의 Burn run(`bc-s1` ckpt-132, `bc-ablation-a` ckpt-44)은 이어 가지 않는다(Burn 산출물은 공용 드라이브 `_old_burn/`). 새 run id는 `bc-s1-pt`·`bc-s2-pt`·`bc-ablation-a-pt`(루트 `README.md` 4절). 학습 설정·데이터(2,069 파일, `[steps]` s1 39,096 / s2·ablation_a 11,387)와 I-D1~D3 결정은 그대로다.
+
+| # | 항목 | 상태 |
+|---|---|---|
+| J-1 | 장비 `.env`(git 미추적): 공통 `URANIUM_PYTHON`, 호스트 설정(레인 그룹·미리 읽기·압축·공급 스레드, `docs/commands.md` 구현 스위치 표 아래), 구현 스위치는 백엔드 기본값(설정하지 않음) | **완료(2026-10-24)**: CUDA 호스트 `URANIUM_PYTHON`(메인 작업 사본 `.venv`), `URANIUM_BC_MICRO_LANES=2`·`PREFETCH=1`·`PACK_BATCH=1`. Linux ROCm 호스트 `URANIUM_PYTHON`(그 GPU용 소스 빌드 torch venv), `MICRO_LANES=1`·`FEED_THREADS=2`, 기존 `PREFETCH=2`·`ENTITY_CHUNK=0`·`PACK_BATCH=1`·`MALLOC_MMAP_THRESHOLD=1048576` |
+| J-2 | Python 환경: CUDA 호스트 메인 작업 사본 `.venv`(torch 2.14.1+cu130, `-e ".[compile]"`로 triton-windows), Linux ROCm 호스트 소스 빌드 torch venv에 `-e .` | **완료(2026-10-24, master 2124aa7 기준)**: CUDA 호스트 CPU 테스트 통과. Linux ROCm 호스트 확장 재빌드·GPU 테스트 통과 |
+| J-3 | 작업자 바이너리 `cargo build --release -p uranium-train`(두 장비, 지금 master로) | **남음**: CUDA 호스트 메인 작업 사본에는 아직 빌드 안 됨. Linux ROCm 호스트는 10-23 빌드라 다시 빌드 |
+| J-4 | 큐 파일 `<shared>/queue/bc.toml`(README 4절 TOML 그대로: 세 run, `core = "gtrxl"`) | **남음**: 공용 드라이브 `queue/`·`checkpoints/`는 지금 비어 있음 |
+| J-5 | **표본 end-to-end**(대규모 배치 전 점검): PyTorch로는 실제 큐 설정 학습 → 체크포인트 → 다른 장비 재개를 아직 해 보지 않았다. 표본 큐(예: `bc-sample-pt`)로 CUDA 호스트 S1 몇 update → Linux ROCm 호스트에서 같은 run 재개(061-R10, 장비별 레인 그룹·스위치가 달라도 이어짐) → S2 `--init` 몇 update. 시작 줄(`micro_lanes`, `prefetch` 등)과 체크포인트 메타 `kernels`(적용 스위치) 확인 | **남음** |
+| J-6 | 작업자 시작: **CUDA 호스트를 먼저**(I-D3 ②), Linux ROCm 호스트는 24시간. 장시간 실행 시작을 timeline에 기록 | J-3~J-5 뒤 |
+
+- 예상 속도(실데이터, 데이터 대기 포함): CUDA 호스트 약 2.0 s/update, Linux ROCm 호스트 약 10 s/update(`reports/pytorch_opt.md` 3절). S1+S2 약 50,500 update.
+- 메모리: Linux ROCm 호스트 학습 프로세스 ≤ 12 GiB(060-R3, 실측 GPU 약 2.6~2.8 + 상주 약 7.4 GiB). CUDA 호스트는 평소 작업과 RAM을 나눠 써 압축 켬·미리 읽기 1(압축 끔 + compile은 RAM 부족으로 측정 중단된 적 있음).
