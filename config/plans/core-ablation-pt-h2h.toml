@@ -1,0 +1,32 @@
+# 032-R17 (6) (user decision 2026-10-24): the second (PyTorch) core ablation, same games as
+# core-ablation-h2h.toml (same seeds and matchups). Checkpoints: final step of
+# `bc --run core-abl-lstm-pt` / `core-abl-gtrxl-pt` (ckpt-10000, relative to URANIUM_SHARED_DIR).
+name = "core-ablation-pt-h2h"
+seed_base = 32700
+save_replay = true
+# 032-R17 (2026-10-22): a game can take about an hour of wall time when inference is slow
+# (Linux Vulkan, 12 games: ~24 frames/s for up to 86,400 frames); the 1,800 s default cut 69 of
+# 85 head-to-head games. 2 h lets every game reach its own end or the 60-minute draw.
+wall_timeout_s = 7200
+# 030-R10 / E-5: BC checkpoints get last_failed = 0 (BC data never has a failed command).
+zero_last_failed = true
+[[matchup]]
+map = "fighting_spirit"
+games = 25
+p0 = { kind = "model", checkpoint = "checkpoints/core-abl-lstm-pt/ckpt-10000", sample = "stochastic" }
+p1 = { kind = "model", checkpoint = "checkpoints/core-abl-gtrxl-pt/ckpt-10000", sample = "stochastic" }
+[[matchup]]
+map = "fighting_spirit"
+games = 25
+p0 = { kind = "model", checkpoint = "checkpoints/core-abl-gtrxl-pt/ckpt-10000", sample = "stochastic" }
+p1 = { kind = "model", checkpoint = "checkpoints/core-abl-lstm-pt/ckpt-10000", sample = "stochastic" }
+[[matchup]]
+map = "circuit_breaker"
+games = 25
+p0 = { kind = "model", checkpoint = "checkpoints/core-abl-lstm-pt/ckpt-10000", sample = "stochastic" }
+p1 = { kind = "model", checkpoint = "checkpoints/core-abl-gtrxl-pt/ckpt-10000", sample = "stochastic" }
+[[matchup]]
+map = "circuit_breaker"
+games = 25
+p0 = { kind = "model", checkpoint = "checkpoints/core-abl-gtrxl-pt/ckpt-10000", sample = "stochastic" }
+p1 = { kind = "model", checkpoint = "checkpoints/core-abl-lstm-pt/ckpt-10000", sample = "stochastic" }

@@ -337,6 +337,16 @@ fn warmup_cosine_schedule_041_r3() {
     assert_eq!((abl.value.win_open, file.value.win_open), (None, Some(0.5)));
     same.value.win_open = file.value.win_open;
     assert_eq!(same, file, "032-R17: only the stage lengths, warmup, retention and win_open differ from bc.toml");
+    // 032-R17 (6) (user decision 2026-10-24): the second (PyTorch) ablation is today's bc.toml
+    // with a 10,000-update S1, 5% warmup and every checkpoint kept.
+    let abl2 = BcConfig::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/bc_core_ablation_pt.toml"))).unwrap();
+    assert_eq!((abl2.steps.s1, abl2.warmup_steps, abl2.keep_checkpoints()), (10000, 500, 0));
+    assert_eq!(abl2.warmup_steps, uranium_data::bc::short_stage_warmup(10000));
+    let mut same2 = abl2.clone();
+    same2.steps.s1 = file.steps.s1;
+    same2.warmup_steps = file.warmup_steps;
+    same2.keep_checkpoints = file.keep_checkpoints;
+    assert_eq!(same2, file, "032-R17 (6): only the S1 length, warmup and retention differ from bc.toml");
     // 041-R19: an absent win_open leaves the fingerprint JSON as before the key existed.
     let view = serde_json::to_value(abl.results_view()).unwrap();
     assert_eq!(view["value"], serde_json::json!({ "win": 0.5 }));
