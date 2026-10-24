@@ -499,6 +499,18 @@ fn feeder_threads_give_the_same_batches() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+/// 041-R3 / AMB-041-7: `URANIUM_BC_MICRO_LANES` replaces the config's lane group size; unset or
+/// empty keeps it, junk fails.
+#[test]
+fn micro_lanes_from_env_041_r3() {
+    use uranium_data::bc::parse_micro_lanes;
+    assert_eq!(parse_micro_lanes(None).unwrap(), None);
+    assert_eq!(parse_micro_lanes(Some(" ")).unwrap(), None);
+    assert_eq!(parse_micro_lanes(Some("2")).unwrap(), Some(2));
+    assert_eq!(parse_micro_lanes(Some("0")).unwrap(), Some(0));
+    assert!(parse_micro_lanes(Some("two")).is_err());
+}
+
 /// 041-R16: `URANIUM_BC_PREFETCH` sets the depth; unset or empty keeps the default, junk fails.
 #[test]
 fn prefetch_depth_from_env_041_r16() {

@@ -231,7 +231,7 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
     // 041-R16 / R17 / R18: per host; host and device memory only, never the batches or gradients.
     let depth = crate::bc::prefetch_depth()?;
     let (entity_chunk, pack) = (crate::bc::entity_chunk()?, crate::bc::pack_batch()?);
-    crate::elog!("{}", serde_json::json!({ "prefetch": depth, "entity_chunk": entity_chunk, "pack_batch": pack }));
+    crate::elog!("{}", serde_json::json!({ "prefetch": depth, "entity_chunk": entity_chunk, "pack_batch": pack, "micro_lanes": cfg.micro_lanes }));
     let start = match (&resume_dir, &init_dir) {
         (Some(d), _) => Start::Resume(d),
         (None, Some(d)) => Start::Init(d),

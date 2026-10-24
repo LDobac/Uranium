@@ -113,7 +113,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-041-4 | BC S1·S2 데이터 선택, 소스 혼합 가중치, 게임 순서 셔플 | Resolved (2026-10-18: S1 네 소스 train 분할 전부 가중치 없이, S2 대상 맵 train 분할만, 고정 seed 셔플 — 041-R13) |
 | AMB-041-5 | grad clip 1.0의 의미(Burn은 파라미터 텐서별 클립, 리뷰 B-9·G-D4) | Resolved (2026-10-19: 전역 L2 norm clip 1.0, micro-lane gradient 합산 뒤 적용, 직접 구현, BC·RL learner 공통 — 041-R3, 042 옵티마이저 표) |
 | AMB-041-6 | 041-R9 스트리밍 로더 미구현(리뷰 E-11) | Resolved (2026-10-19: 예산 초과 시에만 필요한 조건부 요구사항으로 — 041-R9) |
-| AMB-041-7 | 장비별 레인 그룹 크기(041-R3 레인 그룹 재구성, 결과 동일) | Deferred (M6: PyTorch 2단계 최적화에서 장비별 속도·메모리(060-R3)를 측정해 보고하고 사용자 확인. 그때까지 그룹 = 레인 1개. 2026-10-24 Linux ROCm 호스트 1차 측정: 그룹 2·4가 1보다 빠르지 않음 — 사용자 지시로 다른 최적화 뒤 다시 측정) |
+| AMB-041-7 | 장비별 레인 그룹 크기(041-R3 레인 그룹 재구성, 결과 동일) | Resolved (2026-10-24: CUDA 호스트 2, Linux ROCm 호스트 1. 호스트 `.env` 키 `URANIUM_BC_MICRO_LANES`, 없으면 설정 `micro_lanes`. 근거 `reports/pytorch_opt.md` 2.23: CUDA 그룹 1/2/4 = 2.27/2.02/2.03초, Linux ROCm 1/2 = 9.91/9.80초, 4는 메모리 한계) |
 | AMB-041-8 | 엔티티 인코더 재계산(041-R17)·호스트 batch 압축(041-R18)을 PyTorch에서 유지할지 | Resolved (2026-10-24: 두 설정 키와 동작은 PyTorch에서도 유지(호스트 `.env`). Linux ROCm 호스트는 엔티티 재계산을 끄고(`URANIUM_BC_ENTITY_CHUNK=0`) batch 압축은 켠다. 근거: 실데이터 update 17.5 → 14.9초, 최악 모양 GPU 5.7 GiB + 상주 6.3 GiB ≈ 12 GB(RAM 14 GB), `reports/pytorch_opt.md` 2.7~2.9) |
 | AMB-042-1 | 학습 기간·장비 예산 | Resolved (2026-10-15: 기간 제한 없음, 전체 리그 구성) |
 | AMB-042-2 | TvP·TvZ 상대 다양성 (P/Z 상대 정책 추가 여부) | Deferred (M6) (2026-10-17 M6 시작 재확인: T0·T1 봇으로 시작, M6 중간 점검에서 정체 여부 보고 후 재확인) |

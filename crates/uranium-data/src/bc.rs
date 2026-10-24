@@ -151,8 +151,14 @@ pub const EXECUTION_ONLY: [&str; 7] = ["micro_lanes", "grad_checkpointing", "pad
 pub const DEFAULT_KEEP_CHECKPOINTS: usize = 5;
 
 impl BcConfig {
+    /// The config file, with this host's lane group size (`URANIUM_BC_MICRO_LANES`, 041-R3,
+    /// AMB-041-7) when `.env` sets one.
     pub fn load(path: &Path) -> Result<Self> {
-        Ok(toml::from_str(&std::fs::read_to_string(path)?)?)
+        let mut cfg: Self = toml::from_str(&std::fs::read_to_string(path)?)?;
+        if let Some(m) = micro_lanes_override()? {
+            cfg.micro_lanes = m;
+        }
+        Ok(cfg)
     }
 
     /// 061-R6: checkpoints kept on the share (0 = all).
@@ -591,6 +597,21 @@ pub fn feed_threads() -> usize {
 /// host, 16 logical CPUs, packed batches, compiled forward: update + data wait 2.55 / 2.24-2.27 /
 /// 2.37 s at 2 / 3 / 4 threads).
 pub const FEED_THREADS_DEFAULT: usize = 3;
+
+/// 041-R3 / AMB-041-7: this host's lane group size, `URANIUM_BC_MICRO_LANES` (001-R9: lanes per
+/// group, 0 = all lanes); unset or empty = the config's `micro_lanes`. Execution only (same
+/// gradients, only the dropout draws are grouped differently), so hosts may differ in one run.
+pub fn micro_lanes_override() -> Result<Option<usize>> {
+    parse_micro_lanes(std::env::var("URANIUM_BC_MICRO_LANES").ok().as_deref())
+}
+
+/// [`micro_lanes_override`] of the variable's value.
+pub fn parse_micro_lanes(v: Option<&str>) -> Result<Option<usize>> {
+    match v.map(str::trim) {
+        Some(t) if !t.is_empty() => Ok(Some(t.parse().with_context(|| format!("URANIUM_BC_MICRO_LANES={t:?}: expected a lane count (0 = all lanes)"))?)),
+        _ => Ok(None),
+    }
+}
 
 /// 041-R16: batches built ahead of the trainer when nothing in `.env` says otherwise.
 pub const PREFETCH_DEPTH_DEFAULT: usize = 2;
