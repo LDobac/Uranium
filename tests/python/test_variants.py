@@ -114,6 +114,49 @@ def test_step_matches_sequence_032_ac11(name):
         assert x.dtype == y.dtype and torch.allclose(x.float(), y.float(), atol=1e-5)
 
 
+@pytest.mark.parametrize("name", ["outer", "all"])
+def test_outer_heads_inputs_match_per_decision(name):
+    """The segmented training pass hands the heads the same E, spatial and scalar outputs (back in
+    b-major rows) as encoding one decision at a time: every head's log-prob matches."""
+    cfg, b, t, obs, labels, _ = tiny(VARIANTS[name])
+    net = net_of(cfg)
+    with torch.no_grad():
+        seq = net.forward_seq(obs, labels, None, net.init_state(b), t)["logp"]
+        cs, os_ = net.init_state(b)
+        hs, es, sps, scs = [], [], [], []
+        for k in range(t):
+            core_in, e, sp, sc = net.encode(rows_at(obs, b, t, k), h_o=os_[0])
+            h, cs = net.core.step(core_in, cs)
+            os_ = net.outer.step(h, os_)
+            hs.append(h)
+            es.append(e)
+            sps.append(sp)
+            scs.append(sc)
+        rows = lambda xs: torch.stack(xs, 1).reshape(b * t, *xs[0].shape[1:])  # noqa: E731
+        sp = {"s8": rows([x["s8"] for x in sps]), "skips": [rows([x["skips"][i] for x in sps]) for i in range(3)], "pool": rows([x["pool"] for x in sps])}
+        sc = {k: rows([x[k] for x in scs]) for k in scs[0]}
+        ref = net.heads(labels, 1.0, rows(hs), sc["c"], rows(es), sp, obs, net.table)["logp"]
+    for k in HEADS:
+        assert torch.allclose(seq[k], ref[k], atol=1e-4), k
+
+
+@pytest.mark.parametrize("name", ["outer", "all"])
+def test_outer_state_carries_across_chunks(name):
+    """Two training chunks of 2 decisions (state detached and kept between them, as the BC
+    trainer does) give the values of one 4-decision pass."""
+    cfg, b, t, obs, labels, _ = tiny(VARIANTS[name])
+    net = net_of(cfg)
+    half = t // 2
+    cut = lambda d, lo: {k: x.view(b, t, *x.shape[1:])[:, lo:lo + half].reshape(b * half, *x.shape[1:]) for k, x in d.items()}  # noqa: E731
+    with torch.no_grad():
+        whole = net.forward_seq(obs, labels, None, net.init_state(b), t)["value"].view(b, t, -1)
+        first = net.forward_seq(cut(obs, 0), cut(labels, 0), None, net.init_state(b), half)
+        s = net.mask_state(net.detach_state(first["state"]), torch.ones(b, dtype=torch.bool))
+        second = net.forward_seq(cut(obs, half), cut(labels, half), None, s, half)
+    joined = torch.cat([first["value"].view(b, half, -1), second["value"].view(b, half, -1)], 1)
+    assert torch.allclose(whole, joined, atol=1e-5)
+
+
 def test_outer_state_updates_on_segments():
     """h_o changes only after every SEG decisions and the counter counts decisions."""
     cfg, b, t, obs, _, _ = tiny(VARIANTS["outer"])

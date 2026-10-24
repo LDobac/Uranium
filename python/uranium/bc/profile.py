@@ -40,7 +40,10 @@ def main(a) -> int:
     cfg = json.loads(cfg_json)
     dirs = _core.dataset_dirs(a.dataset, a.shards)
     feeder = _core.Feeder(a.config, dirs, stage="s1", synthetic_maps=a.synthetic_maps)
-    net = UraniumNet(new_net_config(a.core, cfg["value"].get("win_open") is not None))
+    from uranium.bc.run import model_variant
+
+    # 032 §2.7: the config's [model] variant, as `python -m uranium bc` builds it.
+    net = UraniumNet(new_net_config(a.core, cfg["value"].get("win_open") is not None, model_variant(a.config)))
     chunk = int(os.environ.get("URANIUM_BC_ENTITY_CHUNK", "0") or 0)
     t = BcTrainer(cfg, net, device, precision, chunk)
     rows = []

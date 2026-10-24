@@ -126,11 +126,11 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
   - `outer` (정수, 0 = 꺼짐. 비교에서는 32): **바깥 LSTM**. 단위는 결정(모델 호출 1회 = 1 step)이다.
     - Core 상태에 더하는 것(게임마다): `h_o[B,256]`, `c_o[B,256]`(`LSTMCell(512→256)`의 상태), 현재 구간의 Core 출력 합 `h_sum[B,512]`, 결정 카운터 `n[B]`.
     - 결정마다 Core 출력 `h[B,512]`를 `h_sum`에 더하고 `n`을 1 늘린다. `n`이 `outer`의 배수가 되면 `(h_o, c_o) = LSTMCell(h_sum / outer, (h_o, c_o))`, `h_sum = 0`. 새 `h_o`는 다음 결정부터 쓴다.
-    - `h_o`가 들어가는 곳: ① EntityEncoder 토큰 하나 `Linear(256→256)(h_o)` → [B,1,256](`ctx_token`과 같은 방식, 전용 bias 버킷. 두 토큰을 함께 켜면 `ctx_token`, `outer` 순) ② SpatialEncoder stem 출력 s[B,32,128,128]의 FiLM: `Linear(256→64)(h_o)` → γ[B,32]·β[B,32], s·(1+γ) + β ③ Core 입력[B,768]에 `Linear(256→768)(h_o)`를 더함.
+    - `h_o`가 들어가는 곳: ① EntityEncoder 토큰 하나 `Linear(256→256)(h_o)` → [B,1,256](`ctx_token`과 같은 방식, 전용 bias 버킷. 두 토큰을 함께 켜면 `ctx_token`, `outer` 순) ② SpatialEncoder stem 출력(ReLU 뒤) s[B,32,128,128]의 FiLM: `Linear(256→64)(h_o)` → γ[B,32]·β[B,32], s·(1+γ) + β ③ Core 입력[B,768]에 `Linear(256→768)(h_o)`를 더함.
     - 에피소드 시작 때 다른 Core 상태와 함께 0으로 리셋한다.
 - 공통 규칙
   - 모두 꺼지면 모델 구조·파라미터 목록·출력이 기본 구성과 같다(비트 동일).
-  - 새 모듈은 032-R18 ③처럼 전역 RNG를 쓰지 않는 고정 seed 생성기로 초기화한다(U(−k, k), k = 1/√fan_in). 기존 모듈은 기본 구성과 같은 순서로 만들고, 대체되는 모듈(`attn_pool`의 기존 pool Linear)도 같은 자리에서 만든 뒤 쓰지 않는다. 그래서 변형을 켜도 공유 모듈의 초기 가중치는 기본 구성과 같다.
+  - 새 모듈은 032-R18 ③처럼 전역 RNG를 쓰지 않는 고정 seed 생성기로 초기화한다. Linear는 U(−k, k), k = 1/√fan_in. 바깥 LSTM 셀은 PyTorch LSTMCell 기본과 같은 U(−k, k), k = 1/√256(모든 가중치·bias). 추가 토큰의 bias 행은 기존 bias 표와 같은 N(0, 0.02). 질문 벡터는 U(−k, k), k = 1/√d(2026-10-25 리뷰 반영, 구현과 일치시킴). 기존 모듈은 기본 구성과 같은 순서로 만들고, 대체되는 모듈(`attn_pool`의 기존 pool Linear)도 같은 자리에서 만든 뒤 쓰지 않는다. 그래서 변형을 켜도 공유 모듈의 초기 가중치는 기본 구성과 같다.
   - 학습: `outer`가 켜지면 BC 학습 묶음([B, T = 64])을 `outer` 길이 구간으로 나눠 차례로 계산한다(구간 안은 지금처럼 병렬). 구간 k는 구간 k−1 끝에서 갱신된 `h_o`를 쓰고, 그 갱신은 구간 k−1의 `h`와 기울기로 이어진다. 묶음 사이에서는 다른 Core 상태처럼 상태를 detach한다. 묶음 시작은 항상 카운터가 `outer`의 배수인 지점이다(게임 시작부터 64 step 단위, 재개는 0부터).
   - 추론: 바깥 갱신은 카운터로 정해지므로 같은 수식으로 step마다 계산할 수 있고, 추론 graph 캡처(032-R19)와 맞는다.
   - 최적화 경로(직접 작성 커널, `torch.compile`, 추론 graph, 엔티티 재계산 041-R17)는 변형에서도 같은 수식이어야 한다(032-R19).

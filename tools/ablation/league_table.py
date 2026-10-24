@@ -4,13 +4,14 @@
 
 Each `--run` is an output folder of model-vs-model games (games.jsonl, results.jsonl) with the
 plan it played; several runs are joined (the league and the second core ablation's head-to-head
-for the LSTM-GTrXL pair). Each game's two model sessions give their policy id and whether they
-won, so the in-game slot (not always the plan's p0/p1) does not matter. A policy id is named by
-the run folder of the plan checkpoint it plays as p1 (games.jsonl `opponent`; with the slot swap
-every model is p1 somewhere). Per pair: wins, losses, draws, win rate over all
-games with a Wilson 95% interval (as reports/m6_core_ablation.md 4), the decisive games' share, and
-games without a result (wall-time limit). Then a score matrix (win 1, draw 0.5) and a Bradley-Terry
-ranking with draws as half wins and a bootstrap 95% interval over games.
+for the LSTM-GTrXL pair). The winner is read from the winning session's policy id, so the
+in-game slot (not always the plan's p0/p1) does not matter; a policy id is named by the run folder
+of its plan checkpoint (games.jsonl `opponent` is p1's id, the game's other session is p0).
+Games are counted as the runner's summary.md counts them (`load`); the others are listed by
+reason. Per pair: wins, losses, draws, win rate over all counted games with a Wilson 95% interval
+(as reports/m6_core_ablation.md 4) and the decisive games' share. Then a score matrix (win 1,
+draw 0.5) and a Bradley-Terry ranking with draws as half wins and a bootstrap 95% interval over
+games.
 """
 
 import argparse
@@ -45,37 +46,79 @@ def name_of(player: dict) -> str:
     return Path(player["checkpoint"]).parent.name if player.get("kind") == "model" else player.get("kind", "?")
 
 
-def load(out: Path, plan_path: Path) -> tuple[list[tuple[str, str, int | None]], int]:
-    """(player a, player b, 0 if a won / 1 if b won / None for a draw) per game with both
-    sessions' results, and the number of games without."""
+# As the runner's own summary (crates/uranium-runner/src/report.rs, 020-R13).
+SHORT_FRAMES = 300
+
+
+def load(out: Path, plan_path: Path) -> tuple[list[tuple[str, str, int | None]], dict]:
+    """(player a, player b, 0 if a won / 1 if b won / None for a draw) per counted game, and the
+    games not counted by reason. A game counts when a session reported a real end (no error, not
+    a disconnect), whatever hostd's outcome (a result written just before the wall-time limit
+    counts, as in reports/m6_core_ablation.md 4); the deciding session is the one that ended last
+    (020-R13). Not counted: no such session (e.g. cut at the wall-time limit), a mutual leave
+    (both claim the win, a drop) and games under 300 frames (suspect), the rules of the runner's
+    summary.md."""
     plan = tomllib.loads(plan_path.read_text(encoding="utf-8"))
-    p1_of = [name_of(m["p1"]) for m in plan["matchup"]]
+    sides = [(name_of(m["p0"]), name_of(m["p1"])) for m in plan["matchup"]]
+    kinds = [(m["p0"].get("kind"), m["p1"].get("kind")) for m in plan["matchup"]]
     started = read_jsonl(out / "games.jsonl")
-    names: dict[str, str] = {}
-    for g in started:
-        n = names.setdefault(g["opponent"], p1_of[g["matchup"]])
-        if n != p1_of[g["matchup"]]:
-            raise SystemExit(f"{out}: policy {g['opponent']} plays as {n} and {p1_of[g['matchup']]}")
-    run_name = lambda s: names[s["policy"]]  # noqa: E731
-    started = {g["game_id"] for g in started}
     sessions: dict[int, list] = defaultdict(list)
     for r in read_jsonl(out / "results.jsonl"):
         sessions[r["game_id"]].append(r)
-    games, missing = [], 0
-    for gid in sorted(started | set(sessions)):
-        ss = sessions.get(gid, [])
-        if len(ss) != 2:
-            missing += 1
+    # Model policy id -> run name: p1's id is in games.jsonl, the game's other model session is p0.
+    names: dict[str, str] = {}
+
+    def name(policy: str, run: str) -> None:
+        if names.setdefault(policy, run) != run:
+            raise SystemExit(f"{out}: policy {policy} plays as {names[policy]} and {run}")
+
+    for g in started:
+        (p0, p1), (k0, k1) = sides[g["matchup"]], kinds[g["matchup"]]
+        if k1 == "model":
+            name(g["opponent"], p1)
+        for s in sessions.get(g["game_id"], []):
+            if k0 == "model" and str(s.get("policy")).startswith("model:") and s["policy"] != g["opponent"]:
+                name(s["policy"], p0)
+    games, skipped = [], defaultdict(int)
+    for g in started:
+        ss = sessions.get(g["game_id"], [])
+        usable = [s for s in ss if s.get("error") is None and s.get("reason") != "Disconnected"]
+        if not usable:
+            skipped[f"no result (outcome {g['outcome']})"] += 1
             continue
-        a, b = ss
-        if a["won"] is None and b["won"] is None:
-            w = None
-        elif a["won"] != b["won"] and None not in (a["won"], b["won"]):
-            w = 0 if a["won"] else 1
+        if len(ss) == 2 and all(s.get("reason") == "Surrender" and s.get("winner") is not None and s["winner"] == s["slot"] for s in ss):
+            skipped["mutual leave (dropped)"] += 1
+            continue
+        decide = usable[0]
+        for s in usable[1:]:
+            if (s.get("end_frame") or 0) > (decide.get("end_frame") or 0):
+                decide = s
+        if (decide.get("end_frame") or 0) < SHORT_FRAMES:
+            skipped[f"under {SHORT_FRAMES} frames (suspect)"] += 1
+            continue
+        a, b = sides[g["matchup"]]
+        w = decide.get("winner")
+        if w is None:
+            games.append((a, b, None))
+            continue
+        winner = next((s.get("policy") for s in ss if s["slot"] == w), None)
+        non_model = [x for x, k in zip((a, b), kinds[g["matchup"]]) if k != "model"]
+        if winner in names:
+            winner_run = names[winner]
+        elif winner is None or not str(winner).startswith("model:"):
+            # No session for the winning slot, or a scripted player's: the winner is the side
+            # whose session is not a known model loser.
+            loser = next((names[s["policy"]] for s in ss if s["slot"] != w and s.get("policy") in names), None)
+            if loser is not None:
+                winner_run = b if loser == a else a
+            elif len(non_model) == 1:
+                winner_run = non_model[0]
+            else:
+                raise SystemExit(f"{out}: game {g['game_id']}: cannot tell the winner's side")
         else:
-            raise SystemExit(f"{out}: game {gid}: the two sessions disagree ({a['won']}, {b['won']})")
-        games.append((run_name(a), run_name(b), w))
-    return games, missing
+            raise SystemExit(f"{out}: game {g['game_id']}: policy {winner} has no run name")
+        games.append((a, b, 0 if winner_run == a else 1))
+    return games, dict(skipped)
 
 
 def bradley_terry(games, players, iters=500) -> dict[str, float]:
@@ -108,11 +151,12 @@ def main() -> int:
     ap.add_argument("--out", help="write the markdown here (default stdout)")
     ap.add_argument("--bootstrap", type=int, default=1000)
     a = ap.parse_args()
-    games, missing = [], 0
+    games, skipped = [], defaultdict(int)
     for out, plan in a.run:
-        g, m = load(Path(out), Path(plan))
+        g, s = load(Path(out), Path(plan))
         games += g
-        missing += m
+        for k, v in s.items():
+            skipped[k] += v
     players = sorted({x for g in games for x in g[:2]})
     pair = defaultdict(lambda: [0, 0, 0])  # (a, b) with a < b: a wins, b wins, draws
     for p0, p1, w in games:
@@ -122,7 +166,8 @@ def main() -> int:
             rec[2] += 1
         else:
             rec[0 if (p0 if w == 0 else p1) == a_ else 1] += 1
-    lines = [f"games with a result: {len(games)}, without (wall-time limit or no session result): {missing}", ""]
+    left_out = ", ".join(f"{k} {v}" for k, v in sorted(skipped.items())) or "none"
+    lines = [f"games counted: {len(games)}; not counted: {left_out}", ""]
     lines += ["| A | B | A wins | B wins | draws | A win rate (Wilson 95%) | B win rate | A share of decisive |", "|---|---|---|---|---|---|---|---|"]
     for (x, y), (wa, wb, d) in sorted(pair.items()):
         n = wa + wb + d

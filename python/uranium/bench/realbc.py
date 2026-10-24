@@ -39,8 +39,11 @@ def run_group(a, group: int, device: torch.device, precision: str, log=print) ->
     cfg["micro_lanes"] = group
     dirs = _core.dataset_dirs(a.dataset, a.shards)
     feeder = _core.Feeder(a.config, dirs, stage=a.stage, synthetic_maps=a.synthetic_maps)
+    from uranium.bc.run import model_variant
+
     torch.manual_seed(a.seed)
-    net = UraniumNet(new_net_config(a.core, cfg["value"].get("win_open") is not None))
+    # 032 §2.7: the config's [model] variant, as `python -m uranium bc` builds it.
+    net = UraniumNet(new_net_config(a.core, cfg["value"].get("win_open") is not None, model_variant(a.config)))
     chunk = int(os.environ.get("URANIUM_BC_ENTITY_CHUNK", "0") or 0)
     t = BcTrainer(cfg, net, device, precision, chunk)
     reset_peak(device)
