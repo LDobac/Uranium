@@ -303,3 +303,49 @@
 
   - 스레드를 늘리면 학습 쪽 launch 스레드와 CPU를 다퉈 학습도 느려진다. 기본값 2(`URANIUM_BC_FEED_THREADS`).
 - 참고: 압축 끔(고치기 전 공급, 1스레드)은 학습 3.03 + 대기 0.18 = 3.21초지만 최대 RSS 14.4 GiB. 이 PC(RAM 31.6GB, 평소 사용 중)는 압축 켬 + 2스레드로 둔다.
+
+### 2.15 AdamW 구현·선택 헤드 gather — 두 장비, 탈락
+- `URANIUM_ADAM`(default / fused / single), `URANIUM_SEL_KEY=gather`(선택 헤드의 one-hot 행렬곱 → gather, 같은 값·gradient)
+
+  | 후보 | bc250(12 update) | CUDA(24 update) |
+  |---|---|---|
+  | 기준(지금) | 11.59초 | 3.22초 |
+  | AdamW fused | 11.62 | 3.20 |
+  | AdamW single | 11.65 | 3.27 |
+  | 선택 헤드 gather | 11.60 | 3.21 |
+
+  - 모두 잡음 범위라 기준 경로를 유지한다(스위치는 남겨 둠).
+- GTrXL attention은 레인 1개 × T64 × 키 128칸 × 2층이라 과녁이 아니다(계획의 5번 후보 제외).
+
+### 2.16 Linear 가중치 gradient split-K(`URANIUM_LINEAR_WGRAD=splitk`) — bc250
+- 입력 모양별 프로파일(업데이트 1회, 엔티티 192): Linear 가중치 gradient `[256,12288]×[12288,256]`가 384회 1.13초. 같은 층 순전파는 0.35ms인데 가중치 gradient는 2.9ms. 행(64스텝 × 엔티티)이 긴 행렬곱을 gfx1013 rocBLAS가 잘 처리하지 못한다. 같은 계열 합 약 2.1초.
+- 행을 512개씩 나눠 batched 행렬곱 후 합산(같은 합, 순서만 다름)
+
+  | K × M × N | rocBLAS | split-K 512 |
+  |---|---|---|
+  | 12288 × 256 × 256 | 5.35 ms | 0.35 ms |
+  | 12288 × 1024 × 256 | 2.94 | 1.14 |
+  | 12288 × 64 × 256 | 2.89 | 0.21 |
+  | 131072 × 32 × 522(stem) | 30.5 | 3.3 (지금 레인별 bmm 3.9) |
+
+  - 오차 3e-6~1e-5(f32 반올림).
+- 실데이터(그룹 1, 12 update): 11.73 → **10.43초**(−11%), 손실 같음. ROCm 기본값 채택. CUDA는 bf16 autocast라 라이브러리 경로.
+- 남은 bc250 상위(업데이트 장치 시간 13.4초 중): ResBlock 64@64² conv backward 1.06초, stem 가중치 gradient(bmm + im2col + resize) 1.38초, 엔티티 커널 0.76초, ResBlock 64@32² 0.40초.
+
+### 2.17 bc250 손실 동등성 — 최적화 전 구현 대 지금 기본값(30 update)
+- 같은 seed·데이터·`.env`(미리 읽기 2, 재계산 끔, 압축 켬), 구현 스위치만 다름
+  - 기준: `LOC_ROWS=off LOC_OUT=conv BIAS_GRAD=embedding CONV_WGRAD=vendor ENTITY_ATTN=torch LINEAR_WGRAD=vendor`
+  - 후보: ROCm 기본값(`exact mulsum table_t bmm fused splitk`)
+- 결과: update별 최대 상대 차이 **2.2e-7**, 20 update 창 평균 2.9e-9, 마지막 손실 같음(17.47044). 속도 18.61 → **10.49초**(1.77배), GPU 최대 3.37 → 2.81 GiB.
+- bc250 누적(같은 그룹 1): 기준선 23.5초 → **10.4초(2.25배)**
+
+### 2.18 CUDA torch.compile — 1차(24 update)
+| 모드 | 중앙값 | 평균 | 비고 |
+|---|---|---|---|
+| eager | 3.22초 | 3.27 | |
+| `default` | 2.25 | 7.02 | 재컴파일 때 최대 48초, 재컴파일 한도 8에 걸림 |
+| `max-autotune-no-cudagraphs` | 2.17 | 17.9 | 자동 튜닝 컴파일 최대 179초 |
+| `reduce-overhead`·`max-autotune` | 실패 | | CUDA Graph 출력을 다음 실행이 덮어씀(레인 그룹 core 상태를 다음 batch까지 보관) |
+
+- 컴파일된 상태는 eager보다 약 30% 빠르다. 재컴파일 원인 하나는 위치 헤드 실제 행 수(Python 정수)였다 → 장치 가중치로 바꿈(5ebbc9b, 값·gradient 같음). 재컴파일 한도 64, `URANIUM_COMPILE_DYNAMIC` 추가.
+- 마지막 손실이 eager와 0.13% 다르다(19.7927 대 19.816~19.819). 연산을 합치며 bf16 반올림 지점이 바뀐 것으로 보이며, 채택 전 손실 곡선 비교가 필요하다.
