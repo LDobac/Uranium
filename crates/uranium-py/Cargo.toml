@@ -31,5 +31,5 @@ pyo3 = "0.30"
 numpy = "0.30"
 
 [target.'cfg(windows)'.dependencies]
-# 041-R16 (2026-10-24): allocator of the extension on Windows (see lib.rs `GLOBAL`).
-mimalloc = { version = "0.1", default-features = false }
+# 032-R19: allocator of the extension on Windows (see lib.rs `GLOBAL`).
+mimalloc = "0.1"

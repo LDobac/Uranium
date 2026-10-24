@@ -500,3 +500,18 @@
 - 원자료(git 미추적)
   - CUDA 호스트 메인 작업 사본 `reports/raw/pytorch_opt_*_20261024/`(bench md·json·log), 측정·프로브 스크립트 `reports/raw/pytorch_opt_20261024_scripts/`(인터페이스 측정 `iface_cuda/`, 간섭 측정 `contention/`, 커널 시도 `conv_wgrad.cu`·`attn_bias_t*.cu` 포함).
   - Linux ROCm 호스트 홈: `bench_out/`(후보 비교·동등성·레인 그룹), `rlprof/`(RL 지연 계측), `rlsmoke_opt/`(RL 스모크), `iface_prof/`(인터페이스·간섭·메모리 측정과 `results/`), `attn_probe/`(커널·형상 프로브), `e2e_opt/`(OpenBW 1판, 무작위 GTrXL 체크포인트).
+
+## 5. 후속: CUDA 호스트 데이터 대기와 페이지 폴트 (2026-10-25)
+- 배경: 2차 코어 비교(`m6_core_ablation_pt.md`) 중 CUDA 호스트 GPU 사용률이 톱니 모양이고 update마다 데이터 대기 0.3~1초(사용자 보고). 학습 프로세스는 CPU를 코어 2.35개만 쓰는데 페이지 폴트가 초당 약 88만 건이었다. 공급만 따로 돌리면(학습 없음) batch 하나 0.85초(공급 스레드 6)·0.72초(12)로 학습보다 훨씬 빨라, 공급 속도가 아니라 학습 프로세스 안의 메모리 처리 문제로 봤다.
+- 원인: BC 공급이 update마다 큰 버퍼를 수 GB씩 새로 받고 버린다(step마다 공간 평면 약 1.9 MB × 2,048, 레인 묶음 collate 약 240 MB × 16). Windows 힙은 이 크기의 블록을 해제할 때 OS에 돌려주므로, 매 update 다시 페이지 폴트로 0을 채운다.
+- 측정(같은 조건 100 update: GTrXL `ckpt-1352` 사본에서 로컬 재개, 레인 그룹 2, 공급 스레드 6, 미리 읽기 2, 앞 10 update 제외 평균):
+
+  | 구성 | 학습 | 대기 | 합계 | 페이지 폴트/s | 최대 private |
+  |---|---|---|---|---|---|
+  | 기준(Windows 힙) | 2.67 s | 0.08 s | 2.75 s | 0.97 M | 14.8 GB |
+  | mimalloc | 2.05 s | 0.00 s | 2.05 s | 0.11 M | 16.4 GB |
+  | mimalloc + `URANIUM_H2D=pinned` | 1.94 s | 0.00 s | 1.94 s | 0.13 M | 15.4 GB |
+
+- 결정(Claude, 032-R19 같은 결과의 구현): Windows에서만 확장 `uranium._core`의 Rust 할당자를 mimalloc으로 바꿨다(Linux는 그대로). 할당만 바뀌고 계산은 같다(리뷰: 초기화 안 된 메모리를 읽는 코드 없음). `URANIUM_H2D=pinned`는 기본값을 바꾸지 않고 2차 코어 비교의 CUDA 작업자 실행 스크립트에서만 켰다(기본값 변경은 별도 결정).
+- 같은 날 앞서 고친 것: batch 압축(041-R18)의 zstd 결과 버퍼가 원본 크기(step당 약 1.9 MB)로 남던 문제(긴 run 메모리 증가, `m6_core_ablation_pt.md` 4절). 그 수정 뒤 압축기·버퍼를 스레드 작업마다 재사용하는 안도 시험했지만 공급 전용 메모리가 거의 같아(50 update 5.4 → 5.8 GB) 반영하지 않았다.
+- 원자료: CUDA 호스트 작업 임시 폴더의 `ab-*.log`(측정 스크립트 `abtest.ps1`)는 세션 임시 폴더라 지워질 수 있다. 수치는 이 표가 원본이다.
