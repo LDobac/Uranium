@@ -72,5 +72,9 @@ def test_entity_encoder_fused_matches_torch(monkeypatch):
         res[mode] = (e.detach(), {k: p.grad.clone() for k, p in net.entity.named_parameters() if p.grad is not None})
     assert rel(res["fused"][0], res["torch"][0]) < 1e-4
     assert res["fused"][1].keys() == res["torch"][1].keys()
+    # Relative L2 with the denominator floored at 1e-3 of the largest gradient norm (as the
+    # cross-device test): the key projection bias has a zero gradient up to rounding noise.
+    floor = 1e-3 * max(float(g.norm()) for g in res["torch"][1].values())
     for k, g in res["torch"][1].items():
-        assert rel(res["fused"][1][k], g) < 1e-3, k
+        err = float((res["fused"][1][k] - g).norm()) / max(float(g.norm()), floor)
+        assert err < 1e-3, (k, err)
