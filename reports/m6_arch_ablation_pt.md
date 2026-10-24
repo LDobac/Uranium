@@ -76,4 +76,4 @@
 - 2026-10-25 01:5x — asus(Linux 호스트 C) 테스트: 작업 브랜치 `arch-ablation`(ca64fdc)으로 패키지 재설치 14초, `cargo test --workspace` 통과, `pytest tests/python` 100 통과·13 건너뜀(GPU 전용), 그중 `test_variants.py` 36 통과·2 건너뜀(GPU).
 - 2026-10-25 02:0x — asus CPU 표본 end-to-end(실제 변형 설정에서 레인만 2, `personal` shard): 다섯 변형 모두 2 update → `last/` 체크포인트 → 재개 1 update, rc 0, 손실 유한, 체크포인트 메타에 `variant` 남음. 다른 `[model]` 설정으로 재개하면 거부(rc 1). asus에 맵 사전계산이 4개뿐이라 처음엔 데이터 로더가 거부했고(B-2 검사), 이 PC의 1,249개를 복사했다. 산출물 asus `~/arch_abl/smoke/`.
 - 2026-10-25 02:0x — 최악 모양(B1·T64·N512) 학습 1회의 CPU 최대 상주 메모리(f32, 재계산 없음, asus): 기본 6.16 GiB(파라미터 21,967,973), terrain 6.20(21,970,789), ctx 6.18(22,033,789), pool 6.16(22,626,149), outer 5.75(23,036,093), all 5.95(23,762,901). 변형으로 메모리가 거의 늘지 않는다(outer는 두 구간으로 나눠 계산해 더 낮음). CPU 추정이라 Linux ROCm 호스트 예산(12 GiB)은 첫 update에서 확인한다.
-
+- 2026-10-25 02:1x — 집계 스크립트 검증: 1차 비교 맞대결 출력(`<shared>/_old_burn/artifacts/m6_core_ablation/final/h2h`)에서 GTrXL 42승·LSTM 13승·무 45, 42% [33, 52]·13% [8, 21], 결판 난 판 중 76% [64, 86]으로 1차 리포트 4절과 같다. 처음에는 게임 슬롯을 plan의 p0/p1로 읽어 틀렸다(슬롯이 p0/p1과 항상 같지 않음). 그래서 세션의 정책 ID와 `games.jsonl`의 p1 정책 ID로 이름을 붙이도록 고쳤다.

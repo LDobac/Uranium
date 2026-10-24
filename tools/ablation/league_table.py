@@ -1,10 +1,13 @@
 """032-R20 ③: the league table of the architecture comparison from `python -m uranium run` outputs.
 
-    python tools/ablation/league_table.py --run <out dir> <plan.toml> [--run <out dir> <plan.toml>]... [--out table.md]
+    python tools/ablation/league_table.py --run <out dir> <plan.toml> [--run ...]... [--out table.md]
 
-Each `--run` is an output folder (games.jsonl, results.jsonl) with the plan it played; several
-runs are joined (the league and the second core ablation's head-to-head for the LSTM-GTrXL pair).
-Players are named by the checkpoint's run folder. Per pair: wins, losses, draws, win rate over all
+Each `--run` is an output folder of model-vs-model games (games.jsonl, results.jsonl) with the
+plan it played; several runs are joined (the league and the second core ablation's head-to-head
+for the LSTM-GTrXL pair). Each game's two model sessions give their policy id and whether they
+won, so the in-game slot (not always the plan's p0/p1) does not matter. A policy id is named by
+the run folder of the plan checkpoint it plays as p1 (games.jsonl `opponent`; with the slot swap
+every model is p1 somewhere). Per pair: wins, losses, draws, win rate over all
 games with a Wilson 95% interval (as reports/m6_core_ablation.md 4), the decisive games' share, and
 games without a result (wall-time limit). Then a score matrix (win 1, draw 0.5) and a Bradley-Terry
 ranking with draws as half wins and a bootstrap 95% interval over games.
@@ -32,35 +35,46 @@ def wilson(k: float, n: int) -> tuple[float, float]:
     return (max(0.0, c - h), min(1.0, c + h))
 
 
-def name_of(player: dict) -> str:
-    return Path(player["checkpoint"]).parent.name if player.get("kind") == "model" else player.get("kind", "?")
-
-
 def read_jsonl(path: Path) -> list[dict]:
     if not path.is_file():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def name_of(player: dict) -> str:
+    return Path(player["checkpoint"]).parent.name if player.get("kind") == "model" else player.get("kind", "?")
+
+
 def load(out: Path, plan_path: Path) -> tuple[list[tuple[str, str, int | None]], int]:
-    """(p0, p1, winner slot or None for a draw) per game with a result, and the number of games
-    without one."""
+    """(player a, player b, 0 if a won / 1 if b won / None for a draw) per game with both
+    sessions' results, and the number of games without."""
     plan = tomllib.loads(plan_path.read_text(encoding="utf-8"))
-    sides = [(name_of(m["p0"]), name_of(m["p1"])) for m in plan["matchup"]]
-    matchup = {g["game_id"]: g["matchup"] for g in read_jsonl(out / "games.jsonl")}
-    winners: dict[int, set] = defaultdict(set)
+    p1_of = [name_of(m["p1"]) for m in plan["matchup"]]
+    started = read_jsonl(out / "games.jsonl")
+    names: dict[str, str] = {}
+    for g in started:
+        n = names.setdefault(g["opponent"], p1_of[g["matchup"]])
+        if n != p1_of[g["matchup"]]:
+            raise SystemExit(f"{out}: policy {g['opponent']} plays as {n} and {p1_of[g['matchup']]}")
+    run_name = lambda s: names[s["policy"]]  # noqa: E731
+    started = {g["game_id"] for g in started}
+    sessions: dict[int, list] = defaultdict(list)
     for r in read_jsonl(out / "results.jsonl"):
-        winners[r["game_id"]].add(r.get("winner"))
+        sessions[r["game_id"]].append(r)
     games, missing = [], 0
-    for gid, m in sorted(matchup.items()):
-        if gid not in winners:
+    for gid in sorted(started | set(sessions)):
+        ss = sessions.get(gid, [])
+        if len(ss) != 2:
             missing += 1
             continue
-        w = winners[gid]
-        if len(w) != 1:
-            raise SystemExit(f"{out}: game {gid}: the two sessions disagree on the winner {w}")
-        p0, p1 = sides[m]
-        games.append((p0, p1, w.pop()))
+        a, b = ss
+        if a["won"] is None and b["won"] is None:
+            w = None
+        elif a["won"] != b["won"] and None not in (a["won"], b["won"]):
+            w = 0 if a["won"] else 1
+        else:
+            raise SystemExit(f"{out}: game {gid}: the two sessions disagree ({a['won']}, {b['won']})")
+        games.append((run_name(a), run_name(b), w))
     return games, missing
 
 
