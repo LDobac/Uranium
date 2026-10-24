@@ -32,7 +32,8 @@ def bucket_rows(k: int, mode: str) -> int:
     if mode == "mult8":
         return -(-k // 8) * 8
     if mode == "pow2":
-        return 1 << math.ceil(math.log2(k)) if k > 1 else k
+        # At least 2: torch.compile specialises a dimension of size 1.
+        return 1 << math.ceil(math.log2(k)) if k > 1 else 2 * k
     return k
 
 

@@ -58,7 +58,7 @@ COMPILE_DYNAMIC = {"auto": None, "on": True, "off": False}
 COMPILE_RECOMPILE_LIMIT = 64
 # `URANIUM_COMPILE_RNG`: dropout draws from Inductor's own generator (`inductor`) or from the eager
 # generator (`eager`: the draws of an uncompiled run, so hosts with and without compile agree).
-COMPILE_RNG_MODES = ("inductor", "eager")
+COMPILE_RNG_MODES = ("eager", "inductor")
 
 
 def compiled(fn):
@@ -72,7 +72,7 @@ def compiled(fn):
         return fn
     dynamic = COMPILE_DYNAMIC[env_choice("URANIUM_COMPILE_DYNAMIC", tuple(COMPILE_DYNAMIC), "auto")]
     torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, COMPILE_RECOMPILE_LIMIT)
-    torch._inductor.config.fallback_random = env_choice("URANIUM_COMPILE_RNG", COMPILE_RNG_MODES, "inductor") == "eager"
+    torch._inductor.config.fallback_random = env_choice("URANIUM_COMPILE_RNG", COMPILE_RNG_MODES, "eager") == "eager"
     return torch.compile(fn, mode=None if mode == "default" else mode, dynamic=dynamic)
 
 

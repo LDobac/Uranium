@@ -134,7 +134,10 @@ class GtrxlCore(nn.Module):
 
     @staticmethod
     def detach_state(s):
-        return ([t.detach() for t in s[0]], s[1])
+        # Stored in f32 like `init_state` (the memory is cast to the compute dtype where it is
+        # used, so the values are the same): the state's dtype does not change between batches,
+        # which torch.compile would recompile for.
+        return ([t.detach().float() for t in s[0]], s[1])
 
     @staticmethod
     def mask_state(s, keep):

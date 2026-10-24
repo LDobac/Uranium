@@ -37,6 +37,8 @@ def test_location_rows_buckets():
     assert k == 5 and rows.tolist() == list(range(5))
     rows, k = location_rows(np.array([1, 1, 1, 0, 0, 0, 0, 0]), tk, "pow2")
     assert k == 3 and len(rows) == 4
+    rows, k = location_rows(np.array([1, 0, 0, 0, 0, 0, 0, 0]), tk, "pow2")  # never one row
+    assert k == 1 and rows.tolist() == [0, 0]
 
 
 def forward(net, hg, mode, monkeypatch):
