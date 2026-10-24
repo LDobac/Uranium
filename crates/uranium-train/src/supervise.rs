@@ -79,7 +79,9 @@ impl Watch {
     /// exits is never restarted. Unix: the child runs in its own process group (see
     /// [`child_command`]), so a terminal Ctrl+C reaches only this process, which passes SIGINT on
     /// exactly once per Ctrl+C (060-R6, H-4). Windows: the console delivers Ctrl+C to the child
-    /// as well (same console), so nothing is passed on.
+    /// as well (same console), so nothing is passed on; both first clear an inherited
+    /// ignore-Ctrl+C flag ([`uranium_store::accept_ctrl_c`], 042-R10), so a watchdog started in
+    /// the background on purpose also stops on its console's Ctrl+C.
     pub fn new(tag: &'static str, log: Option<&PathBuf>) -> Result<Self> {
         let log = match log {
             Some(p) => Some(Arc::new(Mutex::new(std::fs::OpenOptions::new().create(true).append(true).open(p).with_context(|| p.display().to_string())?))),

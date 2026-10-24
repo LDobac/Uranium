@@ -43,9 +43,9 @@ pub fn install_stop_handler(tag: &'static str) -> anyhow::Result<std::sync::Arc<
 }
 
 /// 042-R10 (2026-10-24): Windows lets a process ignore Ctrl+C (`SetConsoleCtrlHandler(NULL,
-/// TRUE)`) and its children inherit that. The venv `python.exe` launcher does it before starting
-/// the real interpreter, so a worker's training child never saw the console's Ctrl+C (the run
-/// kept training, no checkpoint). Clears the inherited flag; a no-op elsewhere.
+/// TRUE)`) and every process it starts inherits that. A worker console opened from such a parent
+/// passed it down to the training child, which then never saw Ctrl+C (the run kept training, no
+/// checkpoint). Clears the inherited flag so the handlers below run; a no-op elsewhere.
 pub fn accept_ctrl_c() {
     #[cfg(windows)]
     // SAFETY: plain Win32 call without pointers (NULL handler = the process's Ctrl+C flag).

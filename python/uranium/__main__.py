@@ -24,6 +24,12 @@ def feed_digest(a: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 042-R10: a Windows process can inherit "ignore Ctrl+C" from whatever started it; clear it
+    # before the slow imports so a Ctrl+C there is a KeyboardInterrupt, not lost.
+    if sys.platform == "win32":
+        import ctypes
+
+        ctypes.windll.kernel32.SetConsoleCtrlHandler(None, False)
     env.load()
     env.apply_malloc()
     p = argparse.ArgumentParser(prog="python -m uranium", description="Uranium training and inference (PyTorch)")

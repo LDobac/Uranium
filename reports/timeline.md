@@ -179,3 +179,6 @@
 - 2026-10-24 21:2x — **발견**(032-R17 ⑥ 표본): bc250_1 ROCm 실제 설정 6 update씩 — LSTM 약 11.2 s/update·메모리 최대 10.8 GB, GTrXL 약 10 s/update·11.5 GB, 둘 다 정상. 표본 run `core-abl-smoke-{lstm,gtrxl}-pt`(공용 드라이브)
 - 2026-10-24 21:3x — **장시간 실행 시작**(032-R17 ⑥ 2차 코어 비교): bc250_1 ROCm 작업자(우선순위 1, 큐 `<shared>/queue/core-ablation-pt.toml`, master 1ebb654)가 `core-abl-lstm-pt`부터 학습(약 11.8 s/update). 학습 PC CUDA 작업자는 유휴일 때 사용자 확인 후 시작
 - 2026-10-24 21:5x — **발견·장시간 실행 시작**(032-R17 ⑥): 학습 PC `.env`의 `URANIUM_PYTHON`이 따옴표 없는 Windows 경로라 Rust 작업자가 못 읽음 → 작은따옴표로 감쌈. 학습 PC CUDA 작업자(우선순위 10)가 `core-abl-gtrxl-pt` 시작(약 1.85 s/update). 그 전에 ROCm → CUDA 재개를 표본 run 두 개로 확인(J-5 일부)
+- 2026-10-24 22:0x~23:0x — **발견·수정**(041-R18, 032-R17 ⑥ 중): 긴 BC 학습에서 호스트 메모리가 update마다 늘어 bc250_1 OOM(학습 PC는 커밋 18 GB). 원인은 batch 압축의 zstd 결과 버퍼가 원본 크기로 남는 것(batch마다 약 4 GB) → 압축 크기로 줄임(공급 전용 시험 update당 +280 MB → 약 44 MB). 이전 bc250 메모리 측정(060-R3 근거)은 이 버그가 섞인 12 update 측정이라 다시 잰다. 리포트 `m6_core_ablation_pt.md` 4절
+- 2026-10-24 22:5x — **발견·수정**(042-R10): Windows에서 작업자 Ctrl+C가 학습 자식에 안 닿음(부모에서 상속된 Ctrl+C 무시 속성, 작업자 창을 도구 프로세스에서 연 탓으로 보임) → 작업자·자식·`python -m uranium` 시작 시 해제. 학습 PC 작업자는 `ckpt-991` 직후 정지
+- 2026-10-24 — **결정**(사용자): 코드 수정이 끝나면 master 반영 전에 별개의 리뷰어 에이전트로 spec 적합성·코드 리뷰를 한다(CLAUDE.md 코딩 규칙)
