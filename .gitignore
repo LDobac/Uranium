@@ -42,3 +42,7 @@ config/hosts.toml
 /build/
 # 031 map precompute output (derived from map data, not committed)
 /assets/maps/
+
+# hipify output of the hand-written kernels (built at first use on ROCm hosts)
+python/uranium/kernels/*.hip
+python/uranium/kernels/*_hip.*
