@@ -107,9 +107,11 @@ def conv3x3(c_in: int, c_out: int, stride: int) -> nn.Conv2d:
 # stride-2 convs from the vendor library (`vendor`) or from per-sample batched GEMMs over the
 # unfolded input (`bmm`, the same sum). MIOpen's weight gradient on the Linux ROCm host is slow for
 # these shapes (64 rows: stem 67 -> 37 ms, 32->64 s2 @128 35 -> 9 ms); forward and input gradient
-# stay with the library.
+# stay with the library. ResBlocks of at most RES_BMM_MAX_CH channels take it too (64 @ 64^2:
+# 14.4 -> 12.2 ms, 64 @ 32^2: 5.2 -> 3.7 ms); with 128 channels MIOpen is faster.
 CONV_WGRAD_MODES = ("vendor", "bmm")
 WGRAD_CHUNK = 8
+RES_BMM_MAX_CH = 64
 
 
 def bmm_weight_grad(x, gy, stride: int):
@@ -161,6 +163,8 @@ class ResBlock(nn.Module):
         self.c2 = conv3x3(c, c, 1)
 
     def forward(self, x):
+        if x.shape[1] <= RES_BMM_MAX_CH:
+            return F.relu(x + conv_wgrad(self.c2, F.relu(conv_wgrad(self.c1, x))))
         return F.relu(x + self.c2(F.relu(self.c1(x))))
 
 
