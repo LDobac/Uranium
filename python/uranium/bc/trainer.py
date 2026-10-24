@@ -16,7 +16,7 @@ import torch
 
 from uranium import ckpt, kernels
 from uranium.bc.clip import clip_global_norm
-from uranium.device import adam_impl, autocast, compiled, mark_dynamic
+from uranium.device import adam_impl, autocast, compiled, impl_settings, mark_dynamic
 from uranium.model import UraniumNet, UraniumNetConfig, input_dims, to_obs
 from uranium.model.net import to_device
 
@@ -189,4 +189,4 @@ class BcTrainer:
         d.mkdir(parents=True, exist_ok=True)
         ckpt.save_model(d, self.net)
         ckpt.save_optimizer(d, ckpt.OPTIM_MAIN, self.net, self.opt)
-        ckpt.save_meta(d, self.net.cfg, json.loads(train_json), self.precision)
+        ckpt.save_meta(d, self.net.cfg, json.loads(train_json), self.precision, impl_settings())

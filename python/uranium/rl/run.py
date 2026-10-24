@@ -40,6 +40,7 @@ class Learners:
     def __init__(self, cfg: dict, bc_dir: str, resume: str | None, device, precision: str, algo: str, logs: Path, max_batch: int, max_wait_ms: int):
         from uranium import _core, ckpt
         from uranium.agent.infer import InferenceServer
+        from uranium.device import impl_settings
         from uranium.rl.learner import Learner
 
         self.device, self.precision = device, precision
@@ -64,7 +65,7 @@ class Learners:
             d = logs / "infer" / name
             d.mkdir(parents=True, exist_ok=True)
             ckpt.save_model(d, l.net)
-            ckpt.save_meta(d, l.net.cfg, {"agent": name, "update": update}, precision)
+            ckpt.save_meta(d, l.net.cfg, {"agent": name, "update": update}, precision, impl_settings())
             b = _core.Broker(str(d), "stochastic", max_batch=max_batch, max_wait_ms=max_wait_ms)
             s = InferenceServer(b, device, precision, net=_copy(l.net))
             s.swap(l.net.state_dict(), update)
@@ -90,13 +91,14 @@ class Learners:
 
     def save(self, i: int, dir: str, train_json: str) -> None:
         from uranium import ckpt
+        from uranium.device import impl_settings
 
         d = Path(dir)
         d.mkdir(parents=True, exist_ok=True)
         l = self.learners[i]
         ckpt.save_model(d, l.net)
         ckpt.save_optimizer(d, ckpt.OPTIM_MAIN, l.net, l.opt)
-        ckpt.save_meta(d, l.net.cfg, json.loads(train_json), self.precision)
+        ckpt.save_meta(d, l.net.cfg, json.loads(train_json), self.precision, impl_settings())
 
     def snapshot_server(self, dir: str):
         """A league snapshot's agent as an opponent (stochastic, 042)."""

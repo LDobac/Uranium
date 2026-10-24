@@ -35,9 +35,23 @@ def resolve(backend: str | None) -> tuple[str, torch.device, str]:
 # key wins.
 IMPL_DEFAULTS = {
     "rocm": {"URANIUM_LOC_ROWS": "exact", "URANIUM_LOC_OUT": "mulsum", "URANIUM_BIAS_GRAD": "table_t", "URANIUM_CONV_WGRAD": "bmm", "URANIUM_ENTITY_ATTN": "fused", "URANIUM_LINEAR_WGRAD": "splitk"},
-    "cuda": {"URANIUM_LOC_ROWS": "pow2", "URANIUM_ENTITY_ATTN": "fused"},
+    "cuda": {"URANIUM_LOC_ROWS": "pow2", "URANIUM_ENTITY_ATTN": "fused", "URANIUM_COMPILE": "default"},
     "cpu": {},
 }
+
+
+# Every implementation switch (same math, AMB-000-4 step 2), recorded in checkpoint metadata
+# (041-R15) with the value in effect.
+IMPL_SWITCHES = (
+    "URANIUM_LOC_ROWS", "URANIUM_LOC_OUT", "URANIUM_H2D", "URANIUM_BIAS_GRAD", "URANIUM_CONV_WGRAD", "URANIUM_LINEAR_WGRAD",
+    "URANIUM_ENTITY_ATTN", "URANIUM_ADAM", "URANIUM_COMPILE", "URANIUM_COMPILE_DYNAMIC", "URANIUM_COMPILE_RNG",
+)
+
+
+def impl_settings() -> list[str]:
+    """`KEY=value` of the implementation switches set in this process (after `configure`); unset
+    ones run their built-in default."""
+    return [f"{k}={os.environ[k]}" for k in IMPL_SWITCHES if os.environ.get(k)]
 
 
 def configure(backend: str) -> None:
@@ -69,6 +83,11 @@ def compiled(fn):
 
     mode = env_choice("URANIUM_COMPILE", COMPILE_MODES, "off")
     if mode == "off":
+        return fn
+    import importlib.util
+
+    if torch.cuda.is_available() and importlib.util.find_spec("triton") is None:
+        print(f"[compile] URANIUM_COMPILE={mode} needs Triton (Windows: the triton-windows package); running eager", flush=True)
         return fn
     dynamic = COMPILE_DYNAMIC[env_choice("URANIUM_COMPILE_DYNAMIC", tuple(COMPILE_DYNAMIC), "auto")]
     torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, COMPILE_RECOMPILE_LIMIT)
