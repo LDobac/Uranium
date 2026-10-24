@@ -167,7 +167,7 @@ class InferenceServer(threading.Thread):
         self.act_fn = compiled(self.net.act, "URANIUM_INFER_COMPILE")
         graph_max = int(os.environ.get("URANIUM_INFER_GRAPH_MAX_BATCH", "") or 0)
         self.graphed = GraphedAct(self.act_fn, device, precision, graph_max) if device.type == "cuda" and env_choice("URANIUM_INFER_GRAPH", INFER_GRAPH_MODES, "off") == "on" else None
-        self.state = self.net.core.init_state(broker.capacity, device)
+        self.state = self.net.init_state(broker.capacity, device)
         self.version = 0
         self.warmed = False
         prof = os.environ.get("URANIUM_INFER_PROFILE", "")
@@ -225,7 +225,7 @@ class InferenceServer(threading.Thread):
     def _warm_one(self, b: int, n: int) -> None:
         with self.on_stream():
             t = time.perf_counter()
-            out = self.act(dummy_obs(b, n, self.device), self.net.core.init_state(b, self.device))
+            out = self.act(dummy_obs(b, n, self.device), self.net.init_state(b, self.device))
             out["action"]["action"].cpu()
             print(f"[infer] warm-up B={b} N={n}: {time.perf_counter() - t:.1f}s", file=sys.stderr, flush=True)
 

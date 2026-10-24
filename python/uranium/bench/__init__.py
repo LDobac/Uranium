@@ -13,7 +13,7 @@ def add_parser(sub) -> None:
     bsub = p.add_subparsers(dest="bench_cmd", required=True)
 
     s = bsub.add_parser("suite", help="kernel, model and inference cases")
-    s.add_argument("--suite", default="kernels,model", help="comma list of kernels, model, infer")
+    s.add_argument("--suite", default="kernels,model", help="comma list of kernels, model, infer, variants")
     s.add_argument("--filter", help="regex on case names")
     s.add_argument("--backend", choices=["cuda", "rocm", "cpu"])
     s.add_argument("--precision", choices=["f32", "bf16"], help="default: the backend's training precision (032-R8)")

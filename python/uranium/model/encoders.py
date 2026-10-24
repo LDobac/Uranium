@@ -68,62 +68,88 @@ class EntityEncoder(nn.Module):
         self.heads = c.heads
         self.dist_buckets = c.distance_buckets
 
-    def forward(self, obs: dict):
+    def forward(self, obs: dict, add=None, tokens=None, tok_bias=None, pool=None):
+        """-> (E [B,N,d], e_pool [B,d]). The 032 §2.7 variants: `add` [B,N,d] is added to the
+        input projection (`terrain`), `tokens` [B,K,d] join the transformer with their own bias
+        rows `tok_bias` [K, layers*heads] and are dropped from E (`ctx_token`, `outer`), `pool`
+        replaces the mean pool (`attn_pool`)."""
         cat = obs["entity_cat"]
         x = torch.cat([self.unit_type(cat[..., 0]), self.owner(cat[..., 1]), self.order(cat[..., 2]), self.last_action(cat[..., 3]), obs["entity_cont"]], 2)
         x = self.input(x)
+        if add is not None:
+            x = x + add.to(x.dtype)
         mask = obs["entity_mask"]
-        if self.use_fused(x):
+        n = mask.shape[1]
+        table = self.bias_table
+        if tokens is not None:
+            x = torch.cat([x, tokens.to(x.dtype)], 1)
+            mask = torch.cat([mask, mask.new_ones(mask.shape[0], tokens.shape[1])], 1)
+            table = torch.cat([self.bias_table, tok_bias.to(self.bias_table.dtype)], 0)
+        idx = self.buckets(obs, 0 if tokens is None else tokens.shape[1])
+        if self.use_fused(x, table):
             # AMB-000-4 step 2: the fused kernel reads the bucket ids (computed here, uint8) and
             # the layer's table columns; no [B, L*H, N, N] bias is built.
-            bucket = self.buckets(obs).to(torch.uint8)
+            bucket = idx.to(torch.uint8)
             for l, layer in enumerate(self.layers):
                 y = layer.ln1(x)
-                x = x + layer.attn.forward_fused(y, bucket, self.bias_table[:, l * self.heads:(l + 1) * self.heads], mask)
+                x = x + layer.attn.forward_fused(y, bucket, table[:, l * self.heads:(l + 1) * self.heads], mask)
                 x = x + layer.ffn(layer.ln2(x))
         else:
-            bias = self.distance_bias(obs)
+            bias = self.distance_bias(idx, table)
             key_ok = mask[:, None, :]
             for l, layer in enumerate(self.layers):
                 y = layer.ln1(x)
                 x = x + layer.attn(y, y, bias[:, l * self.heads:(l + 1) * self.heads], key_ok)
                 x = x + layer.ffn(layer.ln2(x))
         e = self.ln_out(x)
+        if tokens is not None:
+            e = e[:, :n]
+        mask = obs["entity_mask"]
         own = (cat[..., 1] == 0) & mask
         enemy = (cat[..., 1] == 1) & mask
+        if pool is not None:
+            return e, pool(e, own, enemy)
         pool = self.pool(torch.cat([masked_mean(e, own), masked_mean(e, enemy)], 1))
         return e, pool
 
-    def use_fused(self, x) -> bool:
+    def use_fused(self, x, table) -> bool:
         """`URANIUM_ENTITY_ATTN=fused` and the kernel can run here (GPU, built, head dim 32,
         at most 64 buckets); otherwise the PyTorch path."""
         if env_choice("URANIUM_ENTITY_ATTN", ENTITY_ATTN_MODES, "torch") != "fused" or x.device.type != "cuda":
             return False
         from uranium.kernels.attention import HEAD_DIM, available
 
-        return x.shape[-1] // self.heads == HEAD_DIM and self.bias_table.shape[0] <= 64 and available(x.device)
+        return x.shape[-1] // self.heads == HEAD_DIM and table.shape[0] <= 64 and available(x.device)
 
-    def distance_bias(self, obs: dict):
-        """[B, layers*heads, N, N]. The table rows gathered by bucket: the same values as Burn's
-        one-hot @ table, with a gather gradient (032-R13, 2026-10-23)."""
-        idx = self.buckets(obs)
+    def distance_bias(self, idx, table):
+        """[B, layers*heads, N, N] from the bucket ids [B,N,N]. The table rows gathered by bucket:
+        the same values as Burn's one-hot @ table, with a gather gradient (032-R13, 2026-10-23)."""
         mode = env_choice("URANIUM_BIAS_GRAD", BIAS_GRAD_MODES, "embedding")
         if mode == "table_t":
-            return self.bias_table.t()[:, idx].permute(1, 0, 2, 3)
+            return table.t()[:, idx].permute(1, 0, 2, 3)
         if mode == "index_add":
-            return GatherIndexAdd.apply(idx, self.bias_table).permute(0, 3, 1, 2)
-        return F.embedding(idx, self.bias_table).permute(0, 3, 1, 2)
+            return GatherIndexAdd.apply(idx, table).permute(0, 3, 1, 2)
+        return F.embedding(idx, table).permute(0, 3, 1, 2)
 
-    def buckets(self, obs: dict):
+    def buckets(self, obs: dict, tokens: int = 0):
         """bucket(i,j) = same_owner * D + clamp(floor(log2(1 + pixel distance)), 0, D-1) (032 §2.1),
-        in f32 (squared pixel distances overflow f16, 032-R8)."""
+        in f32 (squared pixel distances overflow f16, 032-R8). With `tokens` extra tokens
+        (032 §2.7) the ids are [B,N+K,N+K]: a pair with token k (as key of an entity, or as the
+        query) takes the token's own bucket 2D + k."""
         pos = obs["entity_pos"].float()
         dist = (pos[:, :, None, :] - pos[:, None, :, :]).pow(2).sum(3).sqrt()
         log_d = torch.log(dist + 1.0) / math.log(2)
         dist_bucket = log_d.floor().clamp(0, self.dist_buckets - 1).long()
         owner = obs["entity_cat"][..., 1]
         same = owner[:, :, None] == owner[:, None, :]
-        return same.long() * self.dist_buckets + dist_bucket
+        idx = same.long() * self.dist_buckets + dist_bucket
+        if tokens == 0:
+            return idx
+        b, n, _ = idx.shape
+        tok = 2 * self.dist_buckets + torch.arange(tokens, device=idx.device)
+        top = torch.cat([idx, tok.view(1, 1, tokens).expand(b, n, tokens)], 2)
+        bottom = tok.view(1, tokens, 1).expand(b, tokens, n + tokens)
+        return torch.cat([top, bottom], 1)
 
 
 class Down(nn.Module):
@@ -150,10 +176,15 @@ class SpatialEncoder(nn.Module):
         self.bottleneck = nn.ModuleList(ResBlock(c_in) for _ in range(2))
         self.pool = Linear(c_in * side * side, c.pool)
 
-    def forward(self, obs: dict, e):
+    def forward(self, obs: dict, e, film=None):
+        """`film` = (γ, β) [B, stem channels] each: the stem output becomes x·(1+γ) + β (032 §2.7
+        `outer`)."""
         spatial = obs["spatial"]
         h, w = spatial.shape[2], spatial.shape[3]
         x = F.relu(conv_wgrad(self.stem, torch.cat([spatial, self.scatter_mean(obs, e, h, w).to(spatial.dtype)], 1)))
+        if film is not None:
+            g, b = film
+            x = x * (1.0 + g.to(x.dtype)[:, :, None, None]) + b.to(x.dtype)[:, :, None, None]
         outs = []
         for d in self.downs:
             x = d.res(F.relu(conv_wgrad(d.conv, x)))

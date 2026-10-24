@@ -52,7 +52,10 @@ def main(a) -> int:
 
     backend, device, precision = resolve(a.backend)
     configure(backend)
-    make = functools.partial(_make, BcTrainer, a.core, device, precision)
+    variant = model_variant(a.config)
+    if variant.any():
+        print(f"[bc] [model] {variant} (032 §2.7)", flush=True)
+    make = functools.partial(_make, BcTrainer, a.core, device, precision, variant)
     end = _core.run_bc(
         make, a.config, stage=stage_of(a), out=a.out, run=a.run, take_over=a.take_over, take_over_if=a.take_over_if,
         datasets=a.dataset, shards=a.shards, steps=a.steps, resume=a.resume, init=a.init,
@@ -61,5 +64,16 @@ def main(a) -> int:
     return {"busy": EXIT_BUSY, "yielded": EXIT_YIELDED}.get(end, 0)
 
 
-def _make(cls, core, device, precision, cfg_json, start, dir, entity_chunk):
-    return cls.make(cfg_json, start, None if dir is None else str(dir), entity_chunk, core, device, precision)
+def model_variant(config: str):
+    """The `[model]` table of the BC config file (032 §2.7). Read here because the Rust config
+    loader ignores tables it does not know; unknown keys are refused (032-AC11)."""
+    import tomllib
+
+    from uranium.model.config import VariantConfig
+
+    with open(config, "rb") as f:
+        return VariantConfig.from_table(tomllib.load(f).get("model"))
+
+
+def _make(cls, core, device, precision, variant, cfg_json, start, dir, entity_chunk):
+    return cls.make(cfg_json, start, None if dir is None else str(dir), entity_chunk, core, device, precision, variant)

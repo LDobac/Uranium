@@ -162,7 +162,7 @@ def evaluate(dirs: list[str], ckpt_dir: str, split: str, games, seed: int, confi
             priv = torch.as_tensor(hg["privileged"]).to(device, torch.float32)
             keep = torch.as_tensor(hg["keep"]).to(device).bool()
             s = states[gi]
-            s0 = net.core.init_state(hg["b"], device) if s is None else net.core.mask_state(s, keep)
+            s0 = net.init_state(hg["b"], device) if s is None else net.mask_state(s, keep)
             with autocast(device, precision):
                 out = net.forward_seq(obs, labels, priv, s0, t)
             states[gi] = out["state"]

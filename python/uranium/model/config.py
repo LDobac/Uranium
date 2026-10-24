@@ -95,6 +95,38 @@ class ValueConfig:
 
 
 @dataclass
+class VariantConfig:
+    """032 §2.7 / 032-R20: structure switches for the architecture comparison (the BC config's
+    `[model]` table). All off = the default model, bit for bit."""
+
+    terrain: bool = False
+    ctx_token: bool = False
+    attn_pool: bool = False
+    outer: int = 0  # outer LSTM segment length in decisions, 0 = off
+
+    def any(self) -> bool:
+        return self.terrain or self.ctx_token or self.attn_pool or self.outer > 0
+
+    @classmethod
+    def from_table(cls, table: dict | None) -> "VariantConfig":
+        """The `[model]` table of a BC config; an unknown key or a wrong type is an error
+        (032-AC11), so a typo cannot train the default model under a variant's run id."""
+        table = table or {}
+        names = {f.name: f.type for f in fields(cls)}
+        unknown = sorted(set(table) - set(names))
+        if unknown:
+            raise ValueError(f"[model]: unknown keys {unknown} (known: {sorted(names)})")
+        for k, v in table.items():
+            want = bool if names[k] in (bool, "bool") else int
+            if type(v) is not want:
+                raise ValueError(f"[model] {k} = {v!r}: expected {want.__name__}")
+        v = cls(**table)
+        if v.outer < 0:
+            raise ValueError(f"[model] outer = {v.outer}: expected 0 (off) or a segment length")
+        return v
+
+
+@dataclass
 class UraniumNetConfig:
     input: InputDims = field(default_factory=InputDims)
     entity: EntityConfig = field(default_factory=EntityConfig)
@@ -103,13 +135,18 @@ class UraniumNetConfig:
     core: CoreConfig = field(default_factory=CoreConfig)
     heads: HeadsConfig = field(default_factory=HeadsConfig)
     value: ValueConfig = field(default_factory=ValueConfig)
+    variant: VariantConfig = field(default_factory=VariantConfig)
 
     @classmethod
     def from_dict(cls, d: dict) -> "UraniumNetConfig":
         return _load(cls, d)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        if not self.variant.any():
+            # 032 §2.7: the default model's config (checkpoint meta) stays as it was.
+            del d["variant"]
+        return d
 
 
 _SUB = {
@@ -120,6 +157,7 @@ _SUB = {
     (UraniumNetConfig, "core"): CoreConfig,
     (UraniumNetConfig, "heads"): HeadsConfig,
     (UraniumNetConfig, "value"): ValueConfig,
+    (UraniumNetConfig, "variant"): VariantConfig,
 }
 
 

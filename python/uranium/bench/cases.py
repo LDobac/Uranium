@@ -15,7 +15,7 @@ from uranium.bench.inputs import random_obs, sampled_labels
 from uranium.bench.timing import Timing, measure, peak_gib, reset_peak
 from uranium.device import autocast
 from uranium.model import UraniumNet, action_columns, input_dims
-from uranium.model.config import CoreConfig, UraniumNetConfig
+from uranium.model.config import CoreConfig, UraniumNetConfig, VariantConfig
 from uranium.model.core import LstmCore
 from uranium.model.heads import gather_cap
 from uranium.model.layers import Attention, FeedForward, gumbel_argmax, masked_log_softmax
@@ -273,19 +273,31 @@ def pointer_loop(ctx: Ctx, net_cache: dict) -> Row:
 
 # --- model cases ----------------------------------------------------------------------------
 
-def model(cache: dict, kind: str, dev, seed: int = 0) -> UraniumNet:
-    key = (kind, str(dev))
+# 032-R20: the comparison runs' structure switches (`[model]` of config/bc_arch_abl_*_pt.toml).
+VARIANTS = {
+    "terrain": VariantConfig(terrain=True),
+    "ctx": VariantConfig(ctx_token=True),
+    "pool": VariantConfig(attn_pool=True),
+    "outer": VariantConfig(outer=32),
+    "all": VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=32),
+}
+
+
+def model(cache: dict, kind: str, dev, seed: int = 0, variant: str | None = None) -> UraniumNet:
+    key = (kind, str(dev), variant)
     if key not in cache:
         cfg = UraniumNetConfig()
         cfg.input = input_dims()
         cfg.core.kind = kind
+        if variant is not None:
+            cfg.variant = VARIANTS[variant]
         torch.manual_seed(seed)
         cache[key] = UraniumNet(cfg, action_columns()).to(dev)
     return cache[key]
 
 
-def net_act(ctx: Ctx, cache: dict, kind: str, b: int, n: int, name: str | None = None) -> Row:
-    net = model(cache, kind, ctx.device).eval()
+def net_act(ctx: Ctx, cache: dict, kind: str, b: int, n: int, name: str | None = None, variant: str | None = None) -> Row:
+    net = model(cache, kind, ctx.device, variant=variant).eval()
     obs = random_obs(b, n, net.cfg.input, ctx.device, seeded(20))
     state = net.init_state(b, ctx.device)
     gen = torch.Generator(device=ctx.device)
@@ -303,10 +315,10 @@ def net_act(ctx: Ctx, cache: dict, kind: str, b: int, n: int, name: str | None =
     return row
 
 
-def net_train(ctx: Ctx, cache: dict, kind: str, b: int, t: int, n: int) -> Row:
+def net_train(ctx: Ctx, cache: dict, kind: str, b: int, t: int, n: int, variant: str | None = None) -> Row:
     """One lane group's forward + loss + backward as `BcTrainer.group_loss` (041), synthetic
     data; peak device memory is the 060-R3 figure for this shape."""
-    net = model(cache, kind, ctx.device).train()
+    net = model(cache, kind, ctx.device, variant=variant).train()
     chunk = int(os.environ.get("URANIUM_BC_ENTITY_CHUNK", "0") or 0)
     obs = random_obs(b * t, n, net.cfg.input, ctx.device, seeded(30))
     labels = sampled_labels(net, obs, 30)
@@ -324,7 +336,8 @@ def net_train(ctx: Ctx, cache: dict, kind: str, b: int, t: int, n: int) -> Row:
         loss.backward()
 
     reset_peak(ctx.device)
-    row = Row(f"net_train_{kind.lower()}_b{b}_t{t}_n{n}" + (f"_chunk{chunk}" if chunk else ""), f"B={b} T={t} N={n}", fwd_bwd=measure(step, ctx.device, warmup=2, min_reps=5, budget_s=ctx.budget_s * 2))
+    name = f"net_train_{kind.lower()}_b{b}_t{t}_n{n}" + (f"_chunk{chunk}" if chunk else "") + (f"_{variant}" if variant else "")
+    row = Row(name, f"B={b} T={t} N={n}", fwd_bwd=measure(step, ctx.device, warmup=2, min_reps=5, budget_s=ctx.budget_s * 2))
     row.peak_gib = peak_gib(ctx.device)
     row.note = f"{b * t / (row.fwd_bwd.median_ms * 1e-3):.1f} samples/s"
     return row
@@ -363,7 +376,14 @@ def suite(name: str, ctx: Ctx, cache: dict):
         ]
     if name == "infer":
         return [(f"net_act_gtrxl_b{b}_n{n}", lambda b=b, n=n: net_act(ctx, cache, "Gtrxl", b, n)) for n in (128, 256, 512) for b in (1, 4, 16, 32)]
-    raise ValueError(f"suite {name!r}: expected kernels, model or infer")
+    if name == "variants":
+        # 032-R20: inference and the worst training shape (060-R3) of each comparison variant.
+        out = []
+        for v in VARIANTS:
+            out.append((f"net_act_gtrxl_{v}", lambda v=v: net_act(ctx, cache, "Gtrxl", 16, 256, f"net_act_gtrxl_{v}", v)))
+            out.append((f"net_train_gtrxl_b1_t64_n512_{v}", lambda v=v: net_train(ctx, cache, "Gtrxl", 1, 64, 512, v)))
+        return out
+    raise ValueError(f"suite {name!r}: expected kernels, model, infer or variants")
 
 
 def run_suites(names: list[str], ctx: Ctx, pattern: str | None, log=print) -> list[Row]:

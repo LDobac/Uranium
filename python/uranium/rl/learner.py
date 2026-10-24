@@ -47,7 +47,7 @@ def kl_per_head(p: dict, q: dict) -> dict:
 
 def state0_of(net, g: dict, device):
     """Core state per lane (042 core_state0); a lane without one starts from zero (032-R5)."""
-    s = net.core.init_state(g["b"], device)
+    s = net.init_state(g["b"], device)
     parts = leaves(s)
     for lane, st in enumerate(g["state0"]):
         if st is None:
@@ -61,6 +61,10 @@ class Learner:
     """One learning agent: the trained net, the frozen BC reference, Adam (042 optimizer table)."""
 
     def __init__(self, cfg: dict, net, bc, device: torch.device, precision: str, algo: str, update: int = 0):
+        if net.outer is not None:
+            # 032 §2.7: RL segments do not start on outer-segment boundaries row by row; the outer
+            # LSTM's RL support is decided only if the variant is adopted.
+            raise ValueError("RL does not support the outer LSTM variant ([model] outer, 032 §2.7)")
         self.cfg = cfg
         self.device = device
         self.precision = precision

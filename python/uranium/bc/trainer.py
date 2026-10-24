@@ -18,6 +18,7 @@ from uranium import ckpt, kernels
 from uranium.bc.clip import clip_global_norm
 from uranium.device import adam_impl, autocast, compiled, impl_settings, mark_dynamic
 from uranium.model import UraniumNet, UraniumNetConfig, input_dims, to_obs
+from uranium.model.config import VariantConfig
 from uranium.model.net import to_device
 
 HEADS = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
@@ -36,13 +37,15 @@ def dropout_seed(seed: int, step: int, group: int) -> int:
     return x & ((1 << 63) - 1)
 
 
-def new_net_config(core: str, win_open: bool) -> UraniumNetConfig:
+def new_net_config(core: str, win_open: bool, variant: VariantConfig | None = None) -> UraniumNetConfig:
     """A new run's net (032 §6 defaults, input dims from the feature schema, 032-R18 win_open
-    head when the BC config weights it, 041-R19)."""
+    head when the BC config weights it, 041-R19, the BC config's `[model]` variant, 032 §2.7)."""
     cfg = UraniumNetConfig()
     cfg.input = input_dims()
     cfg.core.kind = CORES[core]
     cfg.value.win_open = win_open
+    if variant is not None:
+        cfg.variant = variant
     return cfg
 
 
@@ -73,16 +76,23 @@ class BcTrainer:
             print("[bc] WARNING: the model has a win_open head but [value] win_open is not set: the head is not trained (041-R19)", flush=True)
 
     @classmethod
-    def make(cls, cfg_json: str, start: str, dir: str | None, entity_chunk: int, core: str, device: torch.device, precision: str) -> "BcTrainer":
+    def make(cls, cfg_json: str, start: str, dir: str | None, entity_chunk: int, core: str, device: torch.device, precision: str, variant: VariantConfig | None = None) -> "BcTrainer":
         """The `make` callback of `_core.run_bc`: a new net, or a checkpoint's weights (`init`)
-        and optimizer state (`resume`)."""
+        and optimizer state (`resume`). `variant`: the BC config's `[model]` (032 §2.7)."""
         cfg = json.loads(cfg_json)
+        variant = variant or VariantConfig()
+        if variant.outer and cfg["seq_len"] % variant.outer:
+            raise ValueError(f"[model] outer = {variant.outer} must divide seq_len {cfg['seq_len']} (032 §2.7)")
         if start == "new":
-            net = UraniumNet(new_net_config(core, cfg["value"].get("win_open") is not None))
+            net = UraniumNet(new_net_config(core, cfg["value"].get("win_open") is not None, variant))
         else:
             net, meta = ckpt.load_model(Path(dir))
             if net.cfg.core.kind != CORES[core]:
                 raise ValueError(f"checkpoint core {net.cfg.core.kind} != requested {CORES[core]}")
+            # 032-AC11: the run identity (Rust) does not hold [model], so a different structure
+            # switch is refused here.
+            if net.cfg.variant != variant:
+                raise ValueError(f"checkpoint [model] {net.cfg.variant} != requested {variant}")
         t = cls(cfg, net, device, precision, entity_chunk)
         if start == "resume":
             ckpt.load_optimizer(Path(dir), ckpt.OPTIM_MAIN, t.net, t.opt)
@@ -152,7 +162,7 @@ class BcTrainer:
         vw = to_device(hg["value_w"], dev).float()
         keep = to_device(hg["keep"], dev).bool()
         s = self.states[group]
-        s0 = net.core.init_state(b, dev) if s is None else net.core.mask_state(s, keep)
+        s0 = net.init_state(b, dev) if s is None else net.mask_state(s, keep)
         self.tick("to_device")
         torch.manual_seed(dropout_seed(cfg["data"]["seed"], step, group))
         if self.forward_seq is not self.net.forward_seq:
@@ -161,7 +171,7 @@ class BcTrainer:
             out = self.forward_seq(obs, labels, priv, s0, t, self.entity_chunk)
         self.tick("forward")
         # Detached when stored: a waiting group's state does not keep its graph alive (041-R2).
-        self.states[group] = net.core.detach_state(out["state"])
+        self.states[group] = net.detach_state(out["state"])
 
         hw = cfg["heads"]
         ce = [(-out["logp"][k].float() * w).sum() / valid for k in HEADS]

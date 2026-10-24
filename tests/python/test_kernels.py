@@ -66,7 +66,7 @@ def test_entity_encoder_fused_matches_torch(monkeypatch):
         monkeypatch.setenv("URANIUM_ENTITY_ATTN", mode)
         torch.manual_seed(5)
         net = UraniumNet(cfg, action_columns()).cuda()
-        assert net.entity.use_fused(torch.zeros(1, 1, cfg.entity.d_model, device="cuda")) == (mode == "fused")
+        assert net.entity.use_fused(torch.zeros(1, 1, cfg.entity.d_model, device="cuda"), net.entity.bias_table) == (mode == "fused")
         e, pool = net.entity(obs)
         (e.square().sum() + pool.sum()).backward()
         res[mode] = (e.detach(), {k: p.grad.clone() for k, p in net.entity.named_parameters() if p.grad is not None})
