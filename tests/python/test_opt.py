@@ -31,8 +31,10 @@ def test_location_rows_buckets():
     assert k == 4 and rows.tolist() == [0, 2, 3, 5]
     rows, k = location_rows(actions, tk, "mult8")
     assert k == 4 and rows.tolist() == [0, 2, 3, 5, 0, 0, 0, 0]
-    assert location_rows(actions[:6], tk, "mult8") is None  # the bucket covers the batch
-    assert location_rows(np.zeros(5, dtype=np.int64), tk, "pow2") is None  # no used row
+    rows, k = location_rows(actions[:6], tk, "mult8")  # the bucket covers the batch: every row
+    assert k == 6 and rows.tolist() == list(range(6))
+    rows, k = location_rows(np.zeros(5, dtype=np.int64), tk, "pow2")  # no used row: every row
+    assert k == 5 and rows.tolist() == list(range(5))
     rows, k = location_rows(np.array([1, 1, 1, 0, 0, 0, 0, 0]), tk, "pow2")
     assert k == 3 and len(rows) == 4
 

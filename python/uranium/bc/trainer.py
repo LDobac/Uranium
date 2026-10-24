@@ -16,7 +16,7 @@ import torch
 
 from uranium import ckpt, kernels
 from uranium.bc.clip import clip_global_norm
-from uranium.device import adam_impl, autocast, compiled
+from uranium.device import adam_impl, autocast, compiled, mark_dynamic
 from uranium.model import UraniumNet, UraniumNetConfig, input_dims, to_obs
 from uranium.model.net import to_device
 
@@ -155,6 +155,8 @@ class BcTrainer:
         s0 = net.core.init_state(b, dev) if s is None else net.core.mask_state(s, keep)
         self.tick("to_device")
         torch.manual_seed(dropout_seed(cfg["data"]["seed"], step, group))
+        if self.forward_seq is not self.net.forward_seq:
+            mark_dynamic(obs, labels)
         with autocast(dev, self.precision):
             out = self.forward_seq(obs, labels, priv, s0, t, self.entity_chunk)
         self.tick("forward")

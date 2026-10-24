@@ -56,6 +56,9 @@ COMPILE_MODES = ("off", "default", "max-autotune", "max-autotune-no-cudagraphs",
 # symbolic after a change (`auto`), symbolic from the start (`on`) or one graph per shape (`off`).
 COMPILE_DYNAMIC = {"auto": None, "on": True, "off": False}
 COMPILE_RECOMPILE_LIMIT = 64
+# `URANIUM_COMPILE_RNG`: dropout draws from Inductor's own generator (`inductor`) or from the eager
+# generator (`eager`: the draws of an uncompiled run, so hosts with and without compile agree).
+COMPILE_RNG_MODES = ("inductor", "eager")
 
 
 def compiled(fn):
@@ -69,6 +72,7 @@ def compiled(fn):
         return fn
     dynamic = COMPILE_DYNAMIC[env_choice("URANIUM_COMPILE_DYNAMIC", tuple(COMPILE_DYNAMIC), "auto")]
     torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, COMPILE_RECOMPILE_LIMIT)
+    torch._inductor.config.fallback_random = env_choice("URANIUM_COMPILE_RNG", COMPILE_RNG_MODES, "inductor") == "eager"
     return torch.compile(fn, mode=None if mode == "default" else mode, dynamic=dynamic)
 
 
@@ -84,6 +88,18 @@ def adam_impl() -> dict:
 
     mode = env_choice("URANIUM_ADAM", ADAM_IMPLS, "default")
     return {} if mode == "default" else {"fused": True} if mode == "fused" else {"foreach": mode == "foreach"}
+
+
+def mark_dynamic(obs: dict, labels: dict) -> None:
+    """For torch.compile: the entity count (dim 1 of the entity tensors) and the location row count
+    are symbolic from the first graph, so a new size does not recompile."""
+    n = obs["entity_mask"].shape[1]
+    for v in obs.values():
+        if isinstance(v, torch.Tensor) and v.dim() >= 2 and v.shape[1] == n:
+            torch._dynamo.maybe_mark_dynamic(v, 1)
+    for k in ("loc_rows", "loc_w"):
+        if isinstance(labels.get(k), torch.Tensor):
+            torch._dynamo.maybe_mark_dynamic(labels[k], 0)
 
 
 def autocast(device: torch.device, precision: str):

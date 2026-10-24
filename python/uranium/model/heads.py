@@ -36,16 +36,16 @@ def bucket_rows(k: int, mode: str) -> int:
     return k
 
 
-def location_rows(action, target_kind, mode: str) -> tuple[np.ndarray, int] | None:
+def location_rows(action, target_kind, mode: str) -> tuple[np.ndarray, int]:
     """Host row list for the location head from the action labels (numpy): (row indices padded
-    to the bucket, number of real rows), or None when every row is computed (no used row, or the
-    bucket covers the batch: the `location_used_rows` fallbacks)."""
+    to the bucket, number of real rows). No used row, or a bucket that covers the batch: every
+    row, all real (the values of computing every row; one code path for torch.compile)."""
     a = np.clip(np.asarray(action).astype(np.int64).reshape(-1), 0, len(target_kind) - 1)
     used = np.flatnonzero(np.asarray(target_kind)[a] == TARGET_LOC)
     k, b = len(used), len(a)
     kb = bucket_rows(k, mode)
     if k == 0 or kb >= b:
-        return None
+        return np.arange(b), b
     return np.concatenate([used, np.full(kb - k, used[0], dtype=used.dtype)]), k
 
 
@@ -196,7 +196,7 @@ class Heads(nn.Module):
         # 6 Location
         loc_ok = gather_loc(obs["loc_class_mask"], info["loc_class"])
         if labels is not None:
-            lp_loc = self.location_used_rows(ar, sp, loc_ok, info["target_loc"], labels.get("loc_rows"), labels.get("loc_w"), labels.get("loc_all", False))
+            lp_loc = self.location_used_rows(ar, sp, loc_ok, info["target_loc"], labels.get("loc_rows"), labels.get("loc_w"))
         else:
             lp_loc = tempered(masked_log_softmax(self.location(ar, sp), loc_ok), temp)
         target_loc = choose(lp_loc, "target_loc")
@@ -226,13 +226,13 @@ class Heads(nn.Module):
         }
         return {"chosen": chosen, "logp": logp, "entropy": ent, "dists": dists}
 
-    def location_used_rows(self, ar, sp: dict, loc_ok, used, rows=None, w=None, all_rows: bool = False):
+    def location_used_rows(self, ar, sp: dict, loc_ok, used, rows=None, w=None):
         """Masked location log-probs [B, M*M] for the rows whose action uses a location; other rows
         0 (their terms are multiplied by 0, 032-R10). No used row or all rows: every row. `rows` /
         `w`: the host row list (`location_rows`) and its weights (1 real, 0 padding: a repeat of a
-        real row, so adding it times 0 keeps the value and gradient); `all_rows`: every row; else
-        the rows are found on the device."""
-        if self.location_all_rows or all_rows:
+        real row, so adding it times 0 keeps the value and gradient); else the rows are found on
+        the device."""
+        if self.location_all_rows:
             return masked_log_softmax(self.location(ar, sp), loc_ok)
         b, mm = loc_ok.shape
         if rows is None:
