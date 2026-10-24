@@ -22,6 +22,9 @@ constexpr int BK = 64;        // tile of the other side kept in shared memory
 constexpr int NB_MAX = 64;    // bias buckets (2 x distance_buckets = 32)
 constexpr int BS = BK + 4;    // bucket tile row stride in bytes (odd word stride: no bank conflicts)
 constexpr float MASKED = -1e9f;
+// Every kernel runs BQ threads per block and says so (__launch_bounds__): without it HIP plans for
+// 1024 threads and caps the registers, and the per-thread row arrays spill to scratch (Linux ROCm
+// host, backward 64 rows x N256: 48 -> 10 ms).
 
 template <typename T>
 __device__ __forceinline__ float f(T x) { return static_cast<float>(x); }
@@ -29,7 +32,7 @@ __device__ __forceinline__ float f(T x) { return static_cast<float>(x); }
 // ---------------------------------------------------------------------------------------------
 // Forward: one thread per query row, online softmax over key tiles.
 template <typename scalar_t>
-__global__ void fwd_kernel(const scalar_t* __restrict__ q, const scalar_t* __restrict__ k, const scalar_t* __restrict__ v,
+__global__ void __launch_bounds__(BQ) fwd_kernel(const scalar_t* __restrict__ q, const scalar_t* __restrict__ k, const scalar_t* __restrict__ v,
                            const uint8_t* __restrict__ bucket, const float* __restrict__ table, const bool* __restrict__ key_ok,
                            scalar_t* __restrict__ out, float* __restrict__ stats, int H, int N, int NB, float scale) {
   const int bh = blockIdx.y, b = bh / H, h = bh % H;
@@ -92,7 +95,7 @@ __global__ void fwd_kernel(const scalar_t* __restrict__ q, const scalar_t* __res
 // Backward, per query row: dQ and the table gradient (block partials [grid.x, B*H, NB]).
 // delta_i = sum_d dout_i * out_i.
 template <typename scalar_t>
-__global__ void bwd_q_kernel(const scalar_t* __restrict__ q, const scalar_t* __restrict__ k, const scalar_t* __restrict__ v,
+__global__ void __launch_bounds__(BQ) bwd_q_kernel(const scalar_t* __restrict__ q, const scalar_t* __restrict__ k, const scalar_t* __restrict__ v,
                              const uint8_t* __restrict__ bucket, const float* __restrict__ table, const bool* __restrict__ key_ok,
                              const scalar_t* __restrict__ dout, const float* __restrict__ stats, const float* __restrict__ delta,
                              scalar_t* __restrict__ dq, float* __restrict__ dtab_part, int H, int N, int NB, float scale) {
@@ -161,7 +164,7 @@ __global__ void bwd_q_kernel(const scalar_t* __restrict__ q, const scalar_t* __r
 // ---------------------------------------------------------------------------------------------
 // Backward, per key row: dK and dV.
 template <typename scalar_t>
-__global__ void bwd_kv_kernel(const scalar_t* __restrict__ q, const scalar_t* __restrict__ k, const scalar_t* __restrict__ v,
+__global__ void __launch_bounds__(BQ) bwd_kv_kernel(const scalar_t* __restrict__ q, const scalar_t* __restrict__ k, const scalar_t* __restrict__ v,
                               const uint8_t* __restrict__ bucket, const float* __restrict__ table, const bool* __restrict__ key_ok,
                               const scalar_t* __restrict__ dout, const float* __restrict__ stats, const float* __restrict__ delta,
                               scalar_t* __restrict__ dk, scalar_t* __restrict__ dv, int H, int N, int NB, float scale) {
