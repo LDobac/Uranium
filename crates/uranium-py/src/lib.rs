@@ -9,6 +9,15 @@ mod rl;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// 041-R16 (2026-10-24): the BC feed allocates and frees GBs of large buffers per update (a
+/// ~1.9 MB plane per step, ~240 MB per collated lane group). The Windows heap returns blocks that
+/// large to the OS on free, so every update page-faulted them in again (~0.9 M faults/s on the
+/// CUDA host) and the feed thread stalled behind the training process. mimalloc keeps freed
+/// memory for reuse. Allocation only: the same bytes.
+#[cfg(windows)]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use numpy::{IntoPyArray, PyArrayMethods};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
