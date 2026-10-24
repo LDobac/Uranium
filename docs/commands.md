@@ -13,6 +13,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 - Python(AMB-000-4, 001-R8): 학습·추론은 Python 3.14 + PyTorch 2.14(`python/uranium`). 호스트마다 venv를 만들고(`uv venv --python 3.14 .venv`) PyTorch를 설치한 뒤(CUDA 호스트 `uv pip install --python <venv python> "torch==2.14.*" --index-url https://download.pytorch.org/whl/cu130`, Linux ROCm 호스트는 그 GPU용으로 빌드한 PyTorch) 저장소 루트에서 `uv pip install --python <venv python> -e .`로 `uranium` 패키지와 Rust 확장 `uranium._core`(crate `uranium-py`, maturin)를 설치한다. Rust를 고치면 같은 명령으로 다시 설치한다. `.env`의 `URANIUM_PYTHON`에 그 venv의 python을 적는다(작업자·감시가 학습 자식을 띄울 때 씀).
 - 정밀도(032-R8): CUDA는 bf16 혼합, Linux ROCm은 f32. 커널 선택(041-R15): cuDNN benchmark는 CUDA에서만 켜고, ROCm은 MIOpen find-db(`MIOPEN_USER_DB_PATH`)만 쓴다(ROCm에서 benchmark를 켜면 모양이 바뀔 때마다 수 초~수 분 탐색).
 - Linux ROCm 호스트 실행 환경: 그 호스트용 rocBLAS 경로를 `LD_LIBRARY_PATH`에 두고 `HSA_ENABLE_SDMA=0`.
+- 직접 빌드한 PyTorch를 덮어쓰지 않게: torchvision·torchaudio처럼 torch에 의존하는 패키지를 그냥 설치하면 공식 torch를 끌어와 직접 빌드한 torch를 바꿀 수 있다. 필요하면 소스 빌드하거나 `--no-deps`로 설치하고(GPU 연산자는 따로 빌드), 설치 뒤 `python -c "import torch; print(torch.__version__, torch.cuda.get_arch_list())"`로 소스 빌드 버전과 그 GPU 아키텍처가 남아 있는지 확인한다. `uranium` 패키지는 torch에 의존하지 않고, `[compile]`(triton-windows)은 Windows에서만 설치된다.
 - 마지막 Burn 커밋은 태그 `burn-final`이다. Burn 체크포인트(`model.bpk`)는 보관만 하고 읽지 않는다(061-R10).
 
 ## 벤치·프로파일
