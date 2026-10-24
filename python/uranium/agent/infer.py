@@ -4,6 +4,7 @@ the batch rows of the `[capacity, …]` Core state kept on the device, runs one 
 the forward, 032-R9), writes the rows back and replies. Opened slots start from zero (032-R5).
 Batching changes throughput only: every row is computed as it would be alone."""
 
+import contextlib
 import json
 import os
 import sys
@@ -158,19 +159,35 @@ class InferenceServer(threading.Thread):
         self.version = 0
         self.warmed = False
         prof = os.environ.get("URANIUM_INFER_PROFILE", "")
-        self.prof = open(f"{prof}-{broker.checkpoint_id}.jsonl".replace("@", "_").replace(":", "_"), "a", encoding="utf-8") if prof and device.type == "cuda" else None
+        # Its own stream: in RL the learner thread queues seconds of kernels on the default
+        # stream, and the server's input copies and act would wait behind them (Linux ROCm host:
+        # input copy median 1.5 -> 8.8 ms, p95 124 ms during updates). Ordered after the setup
+        # work above, which ran on the constructing thread's stream.
+        self.stream = torch.cuda.Stream(device) if device.type == "cuda" else None
+        if self.stream is not None:
+            self.stream.wait_stream(torch.cuda.current_stream(device))
+        self.prof = open(f"{prof}-{broker.checkpoint_id.replace('@', '_').replace(':', '_')}.jsonl", "a", encoding="utf-8") if prof and device.type == "cuda" else None
         self.stop = threading.Event()
         self.error: BaseException | None = None
         # Held while a work item runs; a weight swap waits for the batch in flight.
         self.lock = threading.Lock()
 
+    def on_stream(self):
+        """The server's stream as the current one (CPU: nothing)."""
+        return torch.cuda.stream(self.stream) if self.stream is not None else contextlib.nullcontext()
+
     def swap(self, state_dict: dict, version: int) -> None:
         """032-R16: new weights from the next batch on (any thread)."""
-        with self.lock, DEVICE_LOCK.shared(), torch.no_grad():
+        caller = torch.cuda.current_stream(self.device) if self.stream is not None else None
+        with self.lock, DEVICE_LOCK.shared(), torch.no_grad(), self.on_stream():
+            if caller is not None:
+                self.stream.wait_stream(caller)  # the caller's writes to `state_dict` first
             # Copied into the existing parameters: captured graphs keep reading them.
             self.net.load_state_dict(state_dict)
             self.version = version
             self.broker.set_version(version)
+        if caller is not None:
+            caller.wait_stream(self.stream)  # the caller does not overwrite the sources mid-copy
 
     def act(self, obs: dict, state) -> dict:
         """One `act` of the served net, from a captured graph when `URANIUM_INFER_GRAPH` is on."""
@@ -190,6 +207,11 @@ class InferenceServer(threading.Thread):
         sizes = [(1, n) for n in range(pad, -(-top // pad) * pad + 1, pad)] + ([(2, pad)] if self.broker.capacity > 1 else [])
         self.warmed = True
         for b, n in sizes:
+            self._warm_one(b, n)
+
+    @torch.no_grad()
+    def _warm_one(self, b: int, n: int) -> None:
+        with self.on_stream():
             t = time.perf_counter()
             out = self.act(dummy_obs(b, n, self.device), self.net.core.init_state(b, self.device))
             out["action"]["action"].cpu()
@@ -208,7 +230,7 @@ class InferenceServer(threading.Thread):
                     continue
                 t_py = time.time_ns()
                 try:
-                    with self.lock, DEVICE_LOCK.shared():
+                    with self.lock, DEVICE_LOCK.shared(), self.on_stream():
                         self.handle(w, t_py)
                 except Exception as e:  # noqa: BLE001 - the sessions get the error, the server goes on
                     print(f"[infer] {self.broker.checkpoint_id}: {e!r}", file=sys.stderr, flush=True)
