@@ -119,11 +119,11 @@ class UraniumNet(nn.Module):
         mode = env_choice("URANIUM_LOC_ROWS", LOC_ROW_MODES, "off")
         if mode != "off":
             spec = location_rows(group["action"], self._cols["target_kind"], mode)
-            # The key is always there (only its value changes): torch.compile guards on the keys.
-            out["loc_all"] = spec is None
+            # The keys are always there (only their values change): torch.compile guards on the
+            # keys. Weight 1 for the real rows, 0 for the padding: no Python row count reaches the
+            # forward (torch.compile would specialise on it).
+            out["loc_all"], out["loc_rows"], out["loc_w"] = spec is None, None, None
             if spec is not None:
-                # Weight 1 for the real rows, 0 for the padding: no Python row count reaches the
-                # forward (torch.compile would specialise on it).
                 rows, k = spec
                 out["loc_rows"], out["loc_w"] = to_device(rows, device), to_device((np.arange(len(rows)) < k).astype(np.float32), device)
         return out
