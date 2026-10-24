@@ -16,7 +16,7 @@ import torch
 
 from uranium import ckpt
 from uranium.bc.clip import clip_global_norm
-from uranium.device import autocast
+from uranium.device import autocast, compiled
 from uranium.model import UraniumNet, UraniumNetConfig, input_dims, to_obs
 from uranium.model.net import to_device
 
@@ -64,6 +64,7 @@ class BcTrainer:
         self._ph: dict = defaultdict(float)
         self._mark = 0.0
         self._collate = ThreadPoolExecutor(max_workers=1, thread_name_prefix="collate")
+        self.forward_seq = compiled(self.net.forward_seq)
         has_open, weighted = self.net.value.open is not None, cfg["value"].get("win_open") is not None
         if weighted and not has_open:
             print("[bc] WARNING: [value] win_open is set but the model has no win_open head: no win_open loss", flush=True)
@@ -154,7 +155,7 @@ class BcTrainer:
         self.tick("to_device")
         torch.manual_seed(dropout_seed(cfg["data"]["seed"], step, group))
         with autocast(dev, self.precision):
-            out = net.forward_seq(obs, labels, priv, s0, t, self.entity_chunk)
+            out = self.forward_seq(obs, labels, priv, s0, t, self.entity_chunk)
         self.tick("forward")
         # Detached when stored: a waiting group's state does not keep its graph alive (041-R2).
         self.states[group] = net.core.detach_state(out["state"])

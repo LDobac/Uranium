@@ -51,6 +51,20 @@ def configure(backend: str) -> None:
         os.environ.setdefault(k, v)
 
 
+COMPILE_MODES = ("off", "default", "max-autotune", "max-autotune-no-cudagraphs", "reduce-overhead")
+
+
+def compiled(fn):
+    """`fn` through `torch.compile` when `URANIUM_COMPILE` names a mode (AMB-000-4 step 2: same
+    math; Triton needed on GPU, `triton-windows` on Windows), else `fn` itself."""
+    from uranium.model.layers import env_choice
+
+    mode = env_choice("URANIUM_COMPILE", COMPILE_MODES, "off")
+    if mode == "off":
+        return fn
+    return torch.compile(fn, mode=None if mode == "default" else mode)
+
+
 def autocast(device: torch.device, precision: str):
     """032-R8: bf16 autocast for matmul / conv on CUDA; f32 elsewhere (a no-op context)."""
     if precision == "bf16":
