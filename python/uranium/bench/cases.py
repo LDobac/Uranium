@@ -317,7 +317,8 @@ def net_act(ctx: Ctx, cache: dict, kind: str, b: int, n: int, name: str | None =
 
 def net_train(ctx: Ctx, cache: dict, kind: str, b: int, t: int, n: int, variant: str | None = None) -> Row:
     """One lane group's forward + loss + backward as `BcTrainer.group_loss` (041), synthetic
-    data; peak device memory is the 060-R3 figure for this shape."""
+    data; peak device memory is the 060-R3 figure for this shape. The entity padding is not cut
+    for a variant's extra tokens (`trim_entity_pad`): N + K here, one tile more than training."""
     net = model(cache, kind, ctx.device, variant=variant).train()
     chunk = int(os.environ.get("URANIUM_BC_ENTITY_CHUNK", "0") or 0)
     obs = random_obs(b * t, n, net.cfg.input, ctx.device, seeded(30))

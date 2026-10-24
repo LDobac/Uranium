@@ -19,7 +19,7 @@ from uranium.bc.clip import clip_global_norm
 from uranium.device import adam_impl, autocast, compiled, impl_settings, mark_dynamic
 from uranium.model import UraniumNet, UraniumNetConfig, input_dims, to_obs
 from uranium.model.config import VariantConfig
-from uranium.model.net import to_device
+from uranium.model.net import to_device, trim_entity_pad
 
 HEADS = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
 VALUE_WIN = 0
@@ -117,7 +117,9 @@ class BcTrainer:
         parts = torch.zeros(len(HEADS) + 3, device=dev)  # total, heads..., value, win_open
         # The next group is collated on a worker thread (the Rust collate releases the GIL) while
         # this one trains, so the GPU does not wait for it; at most two collated groups are alive.
-        collate = lambda i: batch.group(i * g, min((i + 1) * g, lanes), cfg["seq_len"], cfg["pad_entities"], self.net.cfg.heads.max_select)  # noqa: E731
+        # 032 §2.7: the entity padding cut for the extra tokens there too (a host copy).
+        k = self.net.cfg.variant.tokens()
+        collate = lambda i: trim_entity_pad(batch.group(i * g, min((i + 1) * g, lanes), cfg["seq_len"], cfg["pad_entities"], self.net.cfg.heads.max_select), k)  # noqa: E731
         nxt = self._collate.submit(collate, 0)
         for i in range(groups):
             self.tick("other")

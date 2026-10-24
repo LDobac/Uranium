@@ -79,7 +79,10 @@ class EntityEncoder(nn.Module):
         if add is not None:
             x = x + add.to(x.dtype)
         mask = obs["entity_mask"]
-        n = mask.shape[1]
+        # The entity count of x itself: dropping the tokens below then needs no relation between
+        # two inputs' sizes, which torch.compile guarded as a bound on N (a recompile when a
+        # larger N came, CUDA host 2026-10-25).
+        n = x.shape[1]
         table = self.bias_table
         if tokens is not None:
             x = torch.cat([x, tokens.to(x.dtype)], 1)

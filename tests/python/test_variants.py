@@ -188,6 +188,42 @@ def test_tokens_stay_out_of_entities(name):
     assert (out["action"]["selected"] <= n).all() and (out["action"]["target_unit"] < n).all()
 
 
+@pytest.mark.parametrize("name", ["ctx", "outer", "all"])
+def test_trimmed_entity_padding_keeps_the_update_032_r19(name):
+    """The trainer drops K trailing padding slots for the K tokens (`trim_entity_pad`): the same
+    losses and gradients as the group padded by K more slots, END labels at the padded N."""
+    import numpy as np
+
+    from uranium.model.net import ENTITY_KEYS, trim_entity_pad
+
+    cfg, b, t, _, _, _ = tiny(VARIANTS[name])
+    cfg.entity.dropout = 0.0
+    inp = {k: v.numpy() for k, v in load_file(FIX / "inputs.safetensors").items()}
+    k = cfg.variant.tokens()
+    n = inp["entity_mask"].shape[1]
+    padded = dict(inp)
+    for key in ENTITY_KEYS:
+        x = inp[key]
+        padded[key] = np.concatenate([x, np.zeros((x.shape[0], k, *x.shape[2:]), x.dtype)], 1)
+    padded["selected"] = np.where(inp["selected"] == n, n + k, inp["selected"])  # END = padded n (032-R12)
+    trimmed = trim_entity_pad(padded, k)
+    assert trimmed["entity_mask"].shape[1] == n
+    keep = dict(padded, entity_mask=padded["entity_mask"].copy())
+    keep["entity_mask"][0, -1] = True
+    assert trim_entity_pad(keep, k) is keep  # a real entity in the last slots: no trim
+    res = []
+    for g in (padded, trimmed):
+        net = net_of(cfg).train()
+        out = net.forward_seq(to_obs(g, "cpu"), to_labels(g, "cpu"), torch.as_tensor(g["privileged"]), net.init_state(b), t)
+        loss = sum(out["logp"][h].sum() for h in HEADS) + out["value"].sum()
+        loss.backward()
+        res.append((torch.stack([out["logp"][h] for h in HEADS]).detach(), {p: q.grad.clone() for p, q in net.named_parameters() if q.grad is not None}))
+    torch.testing.assert_close(res[0][0], res[1][0], atol=1e-5, rtol=1e-5)
+    assert res[0][1].keys() == res[1][1].keys()
+    for p, g in res[0][1].items():
+        torch.testing.assert_close(g, res[1][1][p], atol=1e-5, rtol=1e-4, msg=p)
+
+
 def test_attn_pool_empty_set():
     """No enemy seen: the enemy queries give zeros, the pool stays finite."""
     cfg, b, t, obs, _, _ = tiny(VARIANTS["pool"])
@@ -309,9 +345,23 @@ def test_fused_entity_attention_with_tokens(monkeypatch):
         h_o = torch.randn(4, 256, generator=torch.Generator().manual_seed(4)).cuda()
         _, e, _, _ = net.encode(obs, h_o=h_o)
         e.square().sum().backward()
-        res[mode] = (e.detach(), net.variant.ctx_bias.grad.clone(), net.variant.outer.tok_bias.grad.clone())
-    for a, b in zip(res["fused"], res["torch"]):
-        assert rel(a, b) < 1e-3
+        res[mode] = (e.detach(), {k: p.grad.clone() for k, p in net.named_parameters() if p.grad is not None and k.startswith(("entity", "variant"))})
+    assert rel(res["fused"][0], res["torch"][0]) < 1e-4
+    assert res["fused"][1].keys() == res["torch"][1].keys()
+    assert {"variant.ctx_bias", "variant.outer.tok_bias"} <= res["torch"][1].keys()
+    # As test_entity_encoder_fused_matches_torch: relative L2 floored at 1e-3 of the largest
+    # gradient norm. A max-abs ratio is no measure here: against an f64 run the torch f32 path
+    # itself is off by 2-5e-3 in it on both backends (the fused kernel by the same).
+    floor = 1e-3 * max(float(g.norm()) for g in res["torch"][1].values())
+    for k, g in res["torch"][1].items():
+        err = float((res["fused"][1][k] - g).norm()) / max(float(g.norm()), floor)
+        assert err < 1e-3, (k, err)
+    # The tokens' bias rows have gradients far below the floor (norm ~7e-4 vs 5): unfloored
+    # relative L2 for them (f32 noise 1-3e-3 on both backends, a wrong kernel gradient ~1).
+    for k in ("variant.ctx_bias", "variant.outer.tok_bias"):
+        g = res["torch"][1][k]
+        err = float((res["fused"][1][k] - g).norm() / g.norm())
+        assert err < 1e-2, (k, err)
 
 
 @pytest.mark.gpu
@@ -330,15 +380,20 @@ def test_graphed_act_matches_eager_variant():
     graphed = GraphedAct(net.act, dev, prec)
     exact = torch.version.hip is None
     close = (lambda a, b: torch.equal(a, b)) if exact else (lambda a, b: torch.allclose(a.float(), b.float(), atol=1e-5, rtol=1e-5))
+    # Batch 3, which GraphedAct pads to 4 rows (the padded variant state included). Eager runs the
+    # same 4 rows: cuBLAS picks another kernel for the attention summary's 2048 -> 256 projection
+    # at 4 rows than at 3 (bf16 rounding of the value, eager alone shows it).
     obs = random_obs(3, 128, net.cfg.input, dev, torch.Generator().manual_seed(1), valid=119)
-    s_eager = s_graph = net.init_state(3, dev)
+    pad = torch.tensor([0, 1, 2, 0], device=dev)
+    obs4 = {k: v.index_select(0, pad) for k, v in obs.items()}
+    s_eager, s_graph = net.init_state(4, dev), net.init_state(3, dev)
     for _ in range(40):  # past an outer update (every 32 decisions)
         with autocast(dev, prec):
-            want = net.act(obs, s_eager, 0.0)
+            want = net.act(obs4, s_eager, 0.0)
         got = graphed(obs, s_graph, 0.0)
         for k in want["action"]:
-            assert torch.equal(got["action"][k], want["action"][k]), k
-        assert close(got["value"], want["value"])
+            assert torch.equal(got["action"][k], want["action"][k][:3]), k
+        assert close(got["value"], want["value"][:3])
         s_eager, s_graph = want["state"], got["state"]
     for x, y in zip(leaves(s_graph), leaves(s_eager)):
-        assert close(x, y)
+        assert close(x, y[:3])

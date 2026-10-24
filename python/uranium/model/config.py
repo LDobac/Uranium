@@ -107,6 +107,10 @@ class VariantConfig:
     def any(self) -> bool:
         return self.terrain or self.ctx_token or self.attn_pool or self.outer > 0
 
+    def tokens(self) -> int:
+        """Extra tokens of the entity transformer (`ctx_token`, `outer`)."""
+        return int(self.ctx_token) + int(self.outer > 0)
+
     @classmethod
     def from_table(cls, table: dict | None) -> "VariantConfig":
         """The `[model]` table of a BC config; an unknown key or a wrong type is an error

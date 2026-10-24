@@ -60,6 +60,30 @@ def to_obs(group: dict, device, dtype=torch.float32) -> dict:
     return out
 
 
+# The observations with an entity axis (dim 1, padded to `pad_entities`): the `[r, n, ...]`
+# arrays of the Rust group (`put_obs`, crates/uranium-py).
+ENTITY_KEYS = ("entity_cat", "entity_cont", "entity_mask", "entity_cell", "entity_pos", "unit_cap", "is_building")
+
+
+def trim_entity_pad(group: dict, k: int) -> dict:
+    """032 §2.7 extra tokens, same math (032-R19): the K tokens join after the N entity slots,
+    and N is a multiple of `pad_entities` (64), so N + K starts one more 64-wide tile of the fused
+    attention kernel in every group (CUDA host, B1 N512: +6 ms of 115 per pass). When the last K
+    slots are padding in every row they are dropped and N - K + K stays on the tile. Padding is
+    masked everywhere; the selection's END is index N, and its labels clamp to N. With dropout the
+    draws differ from the untrimmed group's (the dropout tensors are smaller), not their law."""
+    m = group["entity_mask"]
+    n = m.shape[1]
+    if k == 0 or n <= k or m[:, n - k:].any():
+        return group
+    out = dict(group)
+    for key in ENTITY_KEYS:
+        out[key] = np.ascontiguousarray(group[key][:, :n - k])
+    if "n" in out:
+        out["n"] = n - k
+    return out
+
+
 def to_labels(group: dict, device) -> dict:
     return {k: to_device(group[k], device).long() for k in LABEL_KEYS}
 
