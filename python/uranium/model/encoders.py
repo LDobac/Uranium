@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from uranium.model.config import EntityConfig, InputDims, ScalarConfig, SpatialConfig
-from uranium.model.layers import Attention, FeedForward, Mlp, ResBlock, conv3x3, env_choice, masked_mean
+from uranium.model.layers import Attention, FeedForward, Mlp, ResBlock, conv3x3, conv_wgrad, env_choice, masked_mean
 
 # AMB-000-4 step 2: how the distance bias is gathered and its table gradient summed
 # (`URANIUM_BIAS_GRAD`); same values either way:
@@ -132,10 +132,10 @@ class SpatialEncoder(nn.Module):
     def forward(self, obs: dict, e):
         spatial = obs["spatial"]
         h, w = spatial.shape[2], spatial.shape[3]
-        x = F.relu(self.stem(torch.cat([spatial, self.scatter_mean(obs, e, h, w).to(spatial.dtype)], 1)))
+        x = F.relu(conv_wgrad(self.stem, torch.cat([spatial, self.scatter_mean(obs, e, h, w).to(spatial.dtype)], 1)))
         outs = []
         for d in self.downs:
-            x = d.res(F.relu(d.conv(x)))
+            x = d.res(F.relu(conv_wgrad(d.conv, x)))
             outs.append(x)
         for r in self.bottleneck:
             x = r(x)

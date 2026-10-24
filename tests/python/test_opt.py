@@ -118,3 +118,19 @@ def test_apply_malloc_threshold(monkeypatch):
     assert env.apply_malloc() is None
     monkeypatch.setenv("URANIUM_MALLOC_MMAP_THRESHOLD", "1048576")
     assert env.apply_malloc() == (1048576 if sys.platform.startswith("linux") else None)
+
+
+def test_conv_wgrad_bmm_equals_vendor(group, monkeypatch):
+    """URANIUM_CONV_WGRAD=bmm: the spatial encoder's gradients equal the library conv's."""
+    obs = to_obs(group, "cpu")
+    grads = {}
+    for mode in ("vendor", "bmm"):
+        monkeypatch.setenv("URANIUM_CONV_WGRAD", mode)
+        net = tiny_net()
+        e = torch.randn(obs["entity_cat"].shape[0], obs["entity_cat"].shape[1], net.cfg.entity.d_model, generator=torch.Generator().manual_seed(2), requires_grad=True)
+        sp = net.spatial(obs, e)
+        (sp["pool"].square().sum() + sum(s.sum() for s in sp["skips"])).backward()
+        grads[mode] = {k: p.grad.clone() for k, p in net.spatial.named_parameters() if p.grad is not None} | {"e": e.grad.clone()}
+    assert grads["bmm"].keys() == grads["vendor"].keys()
+    for k, g in grads["vendor"].items():
+        assert torch.allclose(grads["bmm"][k], g, atol=1e-5, rtol=1e-4), k

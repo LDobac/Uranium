@@ -48,6 +48,55 @@ def conv3x3(c_in: int, c_out: int, stride: int) -> nn.Conv2d:
     return nn.Conv2d(c_in, c_out, 3, stride=stride, padding=1)
 
 
+# AMB-000-4 step 2: `URANIUM_CONV_WGRAD` - the weight gradient of the spatial encoder's stem and
+# stride-2 convs from the vendor library (`vendor`) or from per-sample batched GEMMs over the
+# unfolded input (`bmm`, the same sum). MIOpen's weight gradient on the Linux ROCm host is slow for
+# these shapes (64 rows: stem 67 -> 37 ms, 32->64 s2 @128 35 -> 9 ms); forward and input gradient
+# stay with the library.
+CONV_WGRAD_MODES = ("vendor", "bmm")
+WGRAD_CHUNK = 8
+
+
+def bmm_weight_grad(x, gy, stride: int):
+    """d(conv3x3 pad 1)/d(weight) [C_out, C_in, 3, 3] summed over samples in chunks."""
+    r, ci = x.shape[:2]
+    co = gy.shape[1]
+    out = torch.zeros(co, ci * 9, dtype=torch.float32, device=x.device)
+    for s in range(0, r, WGRAD_CHUNK):
+        cols = F.unfold(x[s:s + WGRAD_CHUNK], 3, padding=1, stride=stride)
+        out += torch.bmm(gy[s:s + WGRAD_CHUNK].flatten(2), cols.transpose(1, 2)).sum(0).float()
+    return out.view(co, ci, 3, 3)
+
+
+class ConvBmmWgrad(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, w, b, stride: int):
+        ctx.save_for_backward(x, w)
+        ctx.stride = stride
+        return F.conv2d(x, w, b, stride, 1)
+
+    @staticmethod
+    def backward(ctx, gy):
+        x, w = ctx.saved_tensors
+        s = ctx.stride
+        gx = gw = gb = None
+        if ctx.needs_input_grad[0]:
+            gx = torch.ops.aten.convolution_backward(gy, x, w, None, [s, s], [1, 1], [1, 1], False, [0, 0], 1, [True, False, False])[0]
+        if ctx.needs_input_grad[1]:
+            gw = bmm_weight_grad(x, gy, s).to(w.dtype)
+        if ctx.needs_input_grad[2]:
+            gb = gy.sum((0, 2, 3)).to(w.dtype)
+        return gx, gw, gb, None
+
+
+def conv_wgrad(conv: nn.Conv2d, x):
+    """`conv(x)` for a 3x3 pad-1 conv, its weight gradient as `URANIUM_CONV_WGRAD` picks (f32
+    only: under autocast the library path runs)."""
+    if env_choice("URANIUM_CONV_WGRAD", CONV_WGRAD_MODES, "vendor") == "bmm" and x.dtype == torch.float32 and not torch.is_autocast_enabled(x.device.type):
+        return ConvBmmWgrad.apply(x, conv.weight, conv.bias, conv.stride[0])
+    return conv(x)
+
+
 class ResBlock(nn.Module):
     """032 §2.2 ResBlock(2 x Conv3x3)."""
 
