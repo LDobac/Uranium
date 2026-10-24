@@ -48,3 +48,44 @@ def test_graphed_act_matches_eager():
     obs = random_obs(3, 128, net.cfg.input, dev, torch.Generator().manual_seed(5), valid=100)
     state = net.init_state(3, dev)
     assert close(graphed(obs, state, 0.0)["value"], eager(obs, state)["value"], exact)
+
+
+def test_capture_while_another_thread_trains():
+    """RL runs a learner thread and inference threads in one process: capturing a new shape must
+    not fail the learner's backward (or itself) when they overlap."""
+    if not torch.cuda.is_available():
+        pytest.skip("no CUDA / ROCm device")
+    import threading
+
+    _, dev, prec = resolve(None)
+    torch.manual_seed(0)
+    net = UraniumNet(new_net_config("gtrxl", True), action_columns()).to(dev).eval()
+    graphed = GraphedAct(net.act, dev, prec)
+    trainee = torch.nn.Sequential(torch.nn.Linear(512, 2048), torch.nn.ReLU(), torch.nn.Linear(2048, 512)).to(dev)
+    stop, errors = threading.Event(), []
+
+    from uranium.device import DEVICE_LOCK
+
+    def train():
+        try:
+            x = torch.randn(4096, 512, device=dev)
+            while not stop.is_set():
+                with DEVICE_LOCK.shared():  # as the RL learner's update
+                    trainee(x).square().mean().backward()
+                    torch.cuda.synchronize()
+        except Exception as e:  # noqa: BLE001 - reported below
+            errors.append(e)
+
+    t = threading.Thread(target=train)
+    t.start()
+    try:
+        with torch.no_grad():
+            for b, n in ((1, 64), (2, 128), (4, 192), (8, 64)):
+                with DEVICE_LOCK.shared():  # as the server's request handling; the capture takes it over
+                    obs = random_obs(b, n, net.cfg.input, dev, torch.Generator().manual_seed(b + n), valid=n - 5)
+                    graphed(obs, net.init_state(b, dev), 1.0)["action"]["action"].cpu()
+    finally:
+        stop.set()
+        t.join()
+    assert not errors, errors
+    assert len(graphed.graphs) == 4

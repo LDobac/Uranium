@@ -3,6 +3,7 @@ mixed, ROCm and CPU f32). ROCm runs through PyTorch's `cuda` device API."""
 
 import contextlib
 import os
+import threading
 
 import torch
 
@@ -121,6 +122,64 @@ def mark_dynamic(obs: dict, labels: dict) -> None:
     for k in ("loc_rows", "loc_w"):
         if isinstance(labels.get(k), torch.Tensor):
             torch._dynamo.maybe_mark_dynamic(labels[k], 0)
+
+
+class DeviceLock:
+    """CUDA / HIP graph capture against every other use of the device in this process (RL runs the
+    learner and the inference servers as threads of one process): a capture fails, and fails the
+    other thread's call, when that thread synchronises or frees device memory meanwhile.
+    `shared()` around device work (any number at once), `exclusive()` around a capture (waits
+    for the shared holders; new ones wait behind it). A thread inside `shared()` may call
+    `exclusive()`: its shared holds are released for the capture and taken back after."""
+
+    def __init__(self):
+        self._cond = threading.Condition()
+        self._readers = 0
+        self._writer = False
+        self._waiting = 0
+        self._mine = threading.local()
+
+    def _held(self) -> int:
+        return getattr(self._mine, "n", 0)
+
+    @contextlib.contextmanager
+    def shared(self):
+        with self._cond:
+            while self._writer or (self._waiting and not self._held()):
+                self._cond.wait()
+            self._readers += 1
+        self._mine.n = self._held() + 1
+        try:
+            yield
+        finally:
+            self._mine.n -= 1
+            with self._cond:
+                self._readers -= 1
+                self._cond.notify_all()
+
+    @contextlib.contextmanager
+    def exclusive(self):
+        held = self._held()
+        with self._cond:
+            self._readers -= held
+            self._waiting += 1
+            self._cond.notify_all()
+            while self._writer or self._readers:
+                self._cond.wait()
+            self._waiting -= 1
+            self._writer = True
+        self._mine.n = 0
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._writer = False
+                self._readers += held
+                self._cond.notify_all()
+            self._mine.n = held
+
+
+DEVICE_LOCK = DeviceLock()
 
 
 def autocast(device: torch.device, precision: str):

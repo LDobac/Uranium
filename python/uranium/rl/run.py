@@ -79,25 +79,34 @@ class Learners:
     def version(self, i: int) -> int:
         return self.learners[i].update_count
 
+    # Device work of the run loop's callbacks is `DEVICE_LOCK.shared()`: an inference server may
+    # be capturing a graph meanwhile (uranium.device.DeviceLock).
     def update(self, i: int, batch, weights) -> str:
-        return json.dumps(self.learners[i].update(batch, weights))
+        from uranium.device import DEVICE_LOCK
+
+        with DEVICE_LOCK.shared():
+            return json.dumps(self.learners[i].update(batch, weights))
 
     def push(self, i: int) -> None:
         l = self.learners[i]
         self.servers[i].swap(l.net.state_dict(), l.update_count)
 
     def reset_to_bc(self, i: int) -> None:
-        self.learners[i].reset_to_bc()
+        from uranium.device import DEVICE_LOCK
+
+        with DEVICE_LOCK.shared():
+            self.learners[i].reset_to_bc()
 
     def save(self, i: int, dir: str, train_json: str) -> None:
         from uranium import ckpt
-        from uranium.device import impl_settings
+        from uranium.device import DEVICE_LOCK, impl_settings
 
         d = Path(dir)
         d.mkdir(parents=True, exist_ok=True)
         l = self.learners[i]
-        ckpt.save_model(d, l.net)
-        ckpt.save_optimizer(d, ckpt.OPTIM_MAIN, l.net, l.opt)
+        with DEVICE_LOCK.shared():
+            ckpt.save_model(d, l.net)
+            ckpt.save_optimizer(d, ckpt.OPTIM_MAIN, l.net, l.opt)
         ckpt.save_meta(d, l.net.cfg, json.loads(train_json), self.precision, impl_settings())
 
     def snapshot_server(self, dir: str):
@@ -105,8 +114,12 @@ class Learners:
         from uranium import _core
         from uranium.agent.infer import InferenceServer
 
+        from uranium.device import DEVICE_LOCK
+
         b = _core.Broker(str(dir), "stochastic", max_batch=self.max_batch, max_wait_ms=self.max_wait_ms)
-        InferenceServer(b, self.device, self.precision).start()
+        with DEVICE_LOCK.shared():
+            s = InferenceServer(b, self.device, self.precision)
+        s.start()
         return b
 
 

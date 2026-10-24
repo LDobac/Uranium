@@ -11,8 +11,8 @@ import time
 
 import torch
 
-from uranium import ckpt
-from uranium.device import autocast, compiled
+from uranium import ckpt, kernels
+from uranium.device import DEVICE_LOCK, autocast, compiled
 from uranium.model import to_obs
 from uranium.model.heads import HEAD_NAMES
 from uranium.model.layers import env_choice
@@ -89,7 +89,8 @@ class GraphedAct:
         key = (float(temp), tuple((k, tuple(v.shape), v.dtype) for k, v in sorted(obs.items())))
         g = self.graphs.get(key)
         if g is None:
-            g = self.graphs[key] = self._capture(obs, state, temp)
+            with DEVICE_LOCK.exclusive():
+                g = self.graphs[key] = self._capture(obs, state, temp)
         for k, v in obs.items():
             g["obs"][k].copy_(v)
         for dst, src in zip(leaves(g["state"]), leaves(state)):
@@ -106,7 +107,9 @@ class GraphedAct:
             for _ in range(2):
                 self._act(g["obs"], g["state"], temp)
         torch.cuda.current_stream().wait_stream(side)
-        with torch.cuda.graph(g["graph"], pool=self.pool):
+        # Thread-local capture: in RL the learner (another thread of this process) keeps training
+        # on the device while a new shape is captured; global mode would fail its calls.
+        with torch.cuda.graph(g["graph"], pool=self.pool, capture_error_mode="thread_local"):
             g["out"] = self._act(g["obs"], g["state"], temp)
         return g
 
@@ -142,6 +145,7 @@ class InferenceServer(threading.Thread):
         # 032 §2: no dropout at inference.
         self.net = net.to(device).eval()
         self.temp = broker.temp
+        kernels.warm(device)  # outside the compiled act (its loader cannot be traced)
         # `URANIUM_INFER_COMPILE`: `act` through torch.compile first (CUDA host, inside the graph:
         # batch 1 2.4 -> 1.3 ms, batch 32 9.3 -> 6.2 ms).
         self.act_fn = compiled(self.net.act, "URANIUM_INFER_COMPILE")
@@ -155,7 +159,7 @@ class InferenceServer(threading.Thread):
 
     def swap(self, state_dict: dict, version: int) -> None:
         """032-R16: new weights from the next batch on (any thread)."""
-        with self.lock, torch.no_grad():
+        with self.lock, DEVICE_LOCK.shared(), torch.no_grad():
             # Copied into the existing parameters: captured graphs keep reading them.
             self.net.load_state_dict(state_dict)
             self.version = version
@@ -190,7 +194,7 @@ class InferenceServer(threading.Thread):
                 if w is None:
                     continue
                 try:
-                    with self.lock:
+                    with self.lock, DEVICE_LOCK.shared():
                         self.handle(w)
                 except Exception as e:  # noqa: BLE001 - the sessions get the error, the server goes on
                     print(f"[infer] {self.broker.checkpoint_id}: {e!r}", file=sys.stderr, flush=True)
