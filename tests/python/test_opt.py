@@ -134,3 +134,21 @@ def test_conv_wgrad_bmm_equals_vendor(group, monkeypatch):
     assert grads["bmm"].keys() == grads["vendor"].keys()
     for k, g in grads["vendor"].items():
         assert torch.allclose(grads["bmm"][k], g, atol=1e-5, rtol=1e-4), k
+
+
+def test_selected_key_gather_equals_onehot(group, monkeypatch):
+    """URANIUM_SEL_KEY: gathering the chosen key gives the one-hot matmul's log-probs and
+    gradients (032 §2.5 #4)."""
+    res = {}
+    for mode in ("onehot", "gather"):
+        monkeypatch.setenv("URANIUM_SEL_KEY", mode)
+        net = tiny_net()
+        obs, labels = to_obs(group, "cpu"), net.labels(group, "cpu")
+        out = net.forward_seq(obs, labels, torch.as_tensor(group["privileged"]).float(), net.init_state(group["b"], "cpu"), 4)
+        sum(out["logp"][k].sum() for k in HEADS).backward()
+        res[mode] = (out["logp"]["selected"].detach(), {k: p.grad.clone() for k, p in net.named_parameters() if p.grad is not None})
+    assert res["onehot"][0].abs().sum() > 0, "no selection in the test group"
+    assert torch.allclose(res["gather"][0], res["onehot"][0], atol=1e-6, rtol=1e-6)
+    assert res["gather"][1].keys() == res["onehot"][1].keys()
+    for k, g in res["onehot"][1].items():
+        assert torch.allclose(res["gather"][1][k], g, atol=1e-6, rtol=1e-5), k

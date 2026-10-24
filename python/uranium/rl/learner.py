@@ -17,7 +17,7 @@ import torch
 
 from uranium.agent.infer import leaves, rebuild
 from uranium.bc.clip import clip_global_norm
-from uranium.device import autocast
+from uranium.device import adam_impl, autocast
 from uranium.model import to_obs
 from uranium.rl.returns import gae, upgo, vtrace
 
@@ -73,7 +73,7 @@ class Learner:
 
     def new_optimizer(self) -> torch.optim.Optimizer:
         o = self.cfg["optimizer"]
-        return torch.optim.Adam(self.net.parameters(), lr=o["lr"], betas=(o["beta1"], o["beta2"]), eps=o["eps"], weight_decay=o["weight_decay"])
+        return torch.optim.Adam(self.net.parameters(), lr=o["lr"], betas=(o["beta1"], o["beta2"]), eps=o["eps"], weight_decay=o["weight_decay"], **adam_impl())
 
     def reset_to_bc(self) -> None:
         """042 Main Exploiter / League Exploiter reset to the BC policy (KL schedule restarts)."""

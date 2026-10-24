@@ -26,6 +26,9 @@ LOC_ROW_MODES = ("off", "exact", "mult8", "pow2")
 # `URANIUM_LOC_OUT`: the location head's last 1x1 conv (32 -> 1) as `conv` or as the same sum
 # written out (`mulsum`: multiply, sum the channels), which MIOpen's slow 1x1 backward avoids.
 LOC_OUT_MODES = ("conv", "mulsum")
+# `URANIUM_SEL_KEY`: the Selected head's chosen key per step as one-hot @ keys (`onehot`) or as a
+# gather of the chosen row (`gather`): the same value and gradient, without the per-step matmul.
+SEL_KEY_MODES = ("onehot", "gather")
 
 
 def bucket_rows(k: int, mode: str) -> int:
@@ -263,6 +266,7 @@ class Heads(nn.Module):
         logp = torch.zeros(b, device=dev)
         ent = torch.zeros(b, device=dev)
         true_col = torch.ones(b, 1, dtype=torch.bool, device=dev)
+        gather = env_choice("URANIUM_SEL_KEY", SEL_KEY_MODES, "onehot") == "gather"
         choices, dists, actives = [], [], []
         for k in range(self.max_select):
             active = ~ended & (info["max_select"] > k)
@@ -279,10 +283,14 @@ class Heads(nn.Module):
             ent = ent + entropy(lp) * af
             is_end = choice == n
             take = active & ~is_end
-            one_hot = F.one_hot(choice, n + 1).to(keys_all.dtype)
-            key = (one_hot[:, None, :] @ keys_all).squeeze(1)
+            if gather:
+                key = keys_all.gather(1, choice[:, None, None].expand(b, 1, kd)).squeeze(1)
+                picked = (torch.arange(n, device=dev)[None] == choice[:, None]) & take[:, None]
+            else:
+                one_hot = F.one_hot(choice, n + 1).to(keys_all.dtype)
+                key = (one_hot[:, None, :] @ keys_all).squeeze(1)
+                picked = (one_hot[:, :n] == 1) & take[:, None]
             tf = take.float()
-            picked = (one_hot[:, :n] == 1) & take[:, None]
             if k == 0:
                 first_building = (picked & obs["is_building"]).any(1, keepdim=True)
             chosen_units = chosen_units | picked

@@ -65,6 +65,20 @@ def compiled(fn):
     return torch.compile(fn, mode=None if mode == "default" else mode)
 
 
+# `URANIUM_ADAM`: the Adam / AdamW update as PyTorch picks (`default`: multi-tensor on GPU), one
+# kernel per parameter (`single`), multi-tensor (`foreach`) or the fused kernel (`fused`). Same
+# update up to float rounding.
+ADAM_IMPLS = ("default", "foreach", "fused", "single")
+
+
+def adam_impl() -> dict:
+    """Keyword arguments of `torch.optim.Adam(W)` for `URANIUM_ADAM`."""
+    from uranium.model.layers import env_choice
+
+    mode = env_choice("URANIUM_ADAM", ADAM_IMPLS, "default")
+    return {} if mode == "default" else {"fused": True} if mode == "fused" else {"foreach": mode == "foreach"}
+
+
 def autocast(device: torch.device, precision: str):
     """032-R8: bf16 autocast for matmul / conv on CUDA; f32 elsewhere (a no-op context)."""
     if precision == "bf16":

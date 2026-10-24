@@ -16,7 +16,7 @@ import torch
 
 from uranium import ckpt
 from uranium.bc.clip import clip_global_norm
-from uranium.device import autocast, compiled
+from uranium.device import adam_impl, autocast, compiled
 from uranium.model import UraniumNet, UraniumNetConfig, input_dims, to_obs
 from uranium.model.net import to_device
 
@@ -55,7 +55,7 @@ class BcTrainer:
         self.entity_chunk = entity_chunk
         self.params = list(self.net.parameters())
         self.apart = self.net.win_open_params()
-        self.opt = torch.optim.AdamW(self.params, lr=cfg["lr"], betas=ADAM_BETAS, eps=ADAM_EPS, weight_decay=cfg["weight_decay"])
+        self.opt = torch.optim.AdamW(self.params, lr=cfg["lr"], betas=ADAM_BETAS, eps=ADAM_EPS, weight_decay=cfg["weight_decay"], **adam_impl())
         # Core state per lane group (a group always holds the same lanes).
         self.states: list = []
         # URANIUM_BC_PROFILE=1: per-update phase times (device synchronised at each mark, so it
