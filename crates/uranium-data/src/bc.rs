@@ -587,9 +587,10 @@ pub fn feed_threads() -> usize {
     }
 }
 
-/// More threads take CPU from the trainer's launch thread (CUDA host, 16 logical CPUs, packed
-/// batches: update + data wait 4.69 / 3.61 / 4.04 / 3.95 / 4.98 s at 1 / 2 / 3 / 4 / 8 threads).
-pub const FEED_THREADS_DEFAULT: usize = 2;
+/// More threads take CPU from the trainer's launch thread, fewer leave it waiting for data (CUDA
+/// host, 16 logical CPUs, packed batches, compiled forward: update + data wait 2.55 / 2.24-2.27 /
+/// 2.37 s at 2 / 3 / 4 threads).
+pub const FEED_THREADS_DEFAULT: usize = 3;
 
 /// 041-R16: batches built ahead of the trainer when nothing in `.env` says otherwise.
 pub const PREFETCH_DEPTH_DEFAULT: usize = 2;
