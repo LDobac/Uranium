@@ -193,3 +193,4 @@
 - 2026-10-25 05:2x — **결정**(Claude, 032-R19 같은 수식): 학습 묶음의 끝 K칸이 패딩이면 잘라 N+K를 64 타일에 맞춤, 토큰을 뗄 때 길이를 x에서 가져와 재컴파일 제거. 수정 후 스칼라 토큰 +2.3%/+1.1%(CUDA/ROCm), 바깥 LSTM +10.5%/+9.7%. 변형 누수 없음, ROCm 메모리 예산 안
 - 2026-10-25 13:04 — **장시간 실행 중단**(사용자 허가로 다른 세션 요청: WSL FlexAttention 측정): 학습 PC 작업자만 정지, `arch-abl-terrain-pt` ckpt-7463. bc250_1 `core-abl-gtrxl-pt`는 계속. 앞서 09:22 `core-abl-lstm-pt` 10,000 완료(CUDA 92.6%·ROCm 7.4%)
 - 2026-10-25 13:3x — **발견**(032-R19, 060-R1): 학습 PC에서 엔티티 attention fwd+bwd를 Windows와 WSL2로 비교. 직접 작성 커널이 모든 모양에서 가장 빠름(FlexAttention보다 N256 이상에서 2.5~5배). Windows와 WSL의 커널 시간은 같음(64×512 bf16 8.10 / 8.07 ms) → FlexAttention 채택 안 함, 학습 PC 작업자는 Windows에서 재개 요청. 커널 bias 표 gradient는 실행마다 최대 1.5e-5 다름(shared memory atomic 순서, 출력·dq·dk·dv는 같음). `reports/flex_attention.md`, 원본 `reports/raw/flex_attention_20261025/`
+- 2026-10-25 13:5x — **장시간 실행 재개**(032-R17 ⑥ 큐): 학습 PC 작업자를 Windows에서 다시 시작, `arch-abl-terrain-pt` ckpt-7463부터(WSL FlexAttention 측정 끝, 다른 세션 요청)
