@@ -195,3 +195,4 @@
 - 2026-10-25 13:3x — **발견**(032-R19, 060-R1): 학습 PC에서 엔티티 attention fwd+bwd를 Windows와 WSL2로 비교. 직접 작성 커널이 모든 모양에서 가장 빠름(FlexAttention보다 N256 이상에서 2.5~5배). Windows와 WSL의 커널 시간은 같음(64×512 bf16 8.10 / 8.07 ms) → FlexAttention 채택 안 함, 학습 PC 작업자는 Windows에서 재개 요청. 커널 bias 표 gradient는 실행마다 최대 1.5e-5 다름(shared memory atomic 순서, 출력·dq·dk·dv는 같음). `reports/flex_attention.md`, 원본 `reports/raw/flex_attention_20261025/`
 - 2026-10-25 13:5x — **장시간 실행 재개**(032-R17 ⑥ 큐): 학습 PC 작업자를 Windows에서 다시 시작, `arch-abl-terrain-pt` ckpt-7463부터(WSL FlexAttention 측정 끝, 다른 세션 요청)
 - 2026-10-25 14:3x — **결정**(사용자): 코어 비교 평가를 7개 모델 전체로(7개 학습 완료 뒤): 맞대결 21쌍 × 100판, T0 모델당 300판, val 500 채점 7개. spec 032-R20 ③, plan `arch-abl-pt-t0.toml` 추가
+- 2026-10-25 17:25 — **장시간 실행 일부 끝**(032-R17 ⑥): `core-abl-gtrxl-pt` 10,000 완료(CUDA 59.0%·ROCm 41.0%; LSTM은 92.6%·7.4%). 14:54 `arch-abl-terrain-pt` 완료. 큐 남은 run ctx(학습 PC)·pool(bc250_1)·outer·all
