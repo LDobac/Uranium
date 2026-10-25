@@ -98,6 +98,7 @@ setsid nohup target/release/uranium-train worker --queue <shared>/queue/bc.toml 
 target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cuda --priority 10 --log runs/worker.log
 ```
 - Linux 서비스 파일 `tools/worker/uranium-worker.service`도 이 큐를 쓴다.
+- Linux ROCm 호스트가 여럿이면 `--priority`를 서로 다르게 준다(CUDA 호스트 10보다 낮게, 예: 2와 1). 작업자는 빈 run이 없을 때 자기보다 우선순위가 낮은 작업자의 run을 양보받으므로(061-R14), 높은 쪽이 쉬면 낮은 쪽 run을 넘겨받는다(2026-10-26 사용자 결정: CUDA 호스트 > 첫째 Linux ROCm 호스트 > 둘째).
 
 **진행 확인**
 - 누가 무엇을 돌리는지: `<shared>/workers/<host>.json`(1분마다 갱신)
