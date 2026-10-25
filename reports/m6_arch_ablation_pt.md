@@ -17,7 +17,7 @@
 - 사용자 결정(2026-10-25)
   - 비교 대상: 지형 붙이기, 스칼라 토큰, attention 요약, 바깥 LSTM을 하나씩 켠 4개 + 네 가지를 모두 켠 1개.
   - 이번에 하지 않는 것: 위치 헤드 보강(Linux ROCm 호스트에서 가장 느린 부분이라 비용이 큼), 크기 확대(d_model 384), 적 병력 기억(관측 spec 030 결정 번복·feature 버전 변경 필요).
-  - 평가: val 500게임 + 7개 모델 리그전(21쌍 × 100판). T0 대전은 사용자가 고른 후보만.
+  - 평가: val 500게임 + 7개 모델 리그전(21쌍 × 100판). T0 대전은 사용자가 고른 후보만. → 2026-10-25 14:3x 사용자 결정으로 변경: 7개 모델 모두 T0 300판씩, 평가는 큐의 7개 run이 모두 끝난 뒤 함께(spec 032-R20 ③, master 20c7389).
   - 잡음 측정용 추가 seed 없음, 장비는 2차 코어 비교처럼 혼합.
   - 빌드·CPU 테스트는 asus에서만 한다. 학습 장비 두 대는 2차 코어 비교를 학습 중이다. 새 run은 그 큐에 덧붙여 두 장비가 이어서 잡는다.
 
@@ -54,7 +54,7 @@
 - 평가
   - val: run당 약 1시간 이하(CUDA 호스트).
   - 리그전 2,000판: 2차 T0 실적(약 77판/시간) 기준 약 26시간.
-  - T0: 후보당 300판, 약 4시간.
+  - T0: 모델당 300판(7개, LSTM·GTrXL은 2차 코어 비교 plan, 변형 5개는 `arch-abl-pt-t0.toml` 1,500판), 2차 실적 기준 변형 5개 약 20시간(추정).
 
 ## 2. 실행 절차
 1. spec 확인 → 코드(Python만, Rust·작업자 바이너리·직접 작성 커널 소스는 그대로) → asus에서 빌드·CPU 테스트·CPU 표본 run → 리뷰어 리뷰 → master push.
@@ -64,7 +64,9 @@
 5. 학습이 끝나면 CUDA 호스트에서 GPU 테스트(그래프 act = eager)를 돌린 뒤 평가한다.
    - val: `python -m uranium bc-eval <datasets> --checkpoint <shared>/checkpoints/<run>/ckpt-10000 --split val --games 500 --backend cuda`
    - 리그전: `python -m uranium run --plan config/plans/arch-abl-pt-league.toml --backend cuda`(생성 스크립트로 만든 20쌍 × 4 matchup)
-6. 집계(쌍별 Wilson 95%, 7×7 표, Bradley–Terry 순위와 bootstrap 구간)를 보고하면 사용자가 T0 후보를 고른다.
+   - T0: `python -m uranium run --plan config/plans/arch-abl-pt-t0.toml --backend cuda`(변형 5개 × 300판, LSTM·GTrXL은 `core-ablation-pt-t0.toml`)
+   - 시점: 큐의 7개 run(LSTM·GTrXL·변형 5개)이 모두 10,000 update를 마친 뒤 한꺼번에(2026-10-25 사용자 결정).
+6. 집계(쌍별 Wilson 95%, 7×7 표, Bradley–Terry 순위와 bootstrap 구간, 모델별 T0 승률)를 보고한다. 채택은 사용자 결정.
 
 ## 3. 결과
 (학습·평가 뒤)
@@ -113,3 +115,4 @@
   - **리뷰**(별도 리뷰어 에이전트): 높음 없음. 반영 — 그래프 테스트가 배치 패딩을 다시 확인하게, 자르기를 collate 스레드로, dropout 난수 배치 설명, 자른 묶음의 `n` 키 갱신, Rust 키 목록 위치 주석, 토큰 bias gradient의 하한 없는 비교, bench 설명. 반영 안 함 — 학습기가 실제로 자르는지 보는 테스트(재측정 시간 감소로 확인).
   - 테스트: CPU `pytest tests/python` 105 통과·3 건너뜀, GPU(`-m gpu`) CUDA 12 통과, Linux ROCm 10 통과·2 건너뜀.
   - 원자료: CUDA 호스트 메인 작업 사본 `reports/raw/arch_abl_gpu_20261025/`(git 미추적, 장비별 폴더), Linux ROCm 호스트 홈 `arch_abl_gpu/`(`out/` 1차, `fix1/` 수정 후). 측정 스크립트 `varprobe.py`·`prof_outer.py`·`diag_*.py`도 같은 폴더 `scripts/`.
+- 2026-10-25 14:3x — **결정**(사용자, 다른 세션에서 반영 master 20c7389, 032-R20 ③): 평가 범위 변경 — 7개 모델(LSTM, GTrXL, 변형 5개, 모두 ckpt-10000) 평가를 큐의 7개 run 학습이 모두 끝난 뒤 함께 한다. 맞대결 21쌍 × 100판, val 500게임 7개 모두, T0는 후보만이 아니라 7개 모두 모델당 300판(변형 5개 plan `config/plans/arch-abl-pt-t0.toml`, seed_base 36000). 이 리포트 1.1·1.4·2절을 맞춰 고쳤다.
