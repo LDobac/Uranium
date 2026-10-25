@@ -196,3 +196,4 @@
 - 2026-10-25 13:5x — **장시간 실행 재개**(032-R17 ⑥ 큐): 학습 PC 작업자를 Windows에서 다시 시작, `arch-abl-terrain-pt` ckpt-7463부터(WSL FlexAttention 측정 끝, 다른 세션 요청)
 - 2026-10-25 14:3x — **결정**(사용자): 코어 비교 평가를 7개 모델 전체로(7개 학습 완료 뒤): 맞대결 21쌍 × 100판, T0 모델당 300판, val 500 채점 7개. spec 032-R20 ③, plan `arch-abl-pt-t0.toml` 추가
 - 2026-10-25 17:25 — **장시간 실행 일부 끝**(032-R17 ⑥): `core-abl-gtrxl-pt` 10,000 완료(CUDA 59.0%·ROCm 41.0%; LSTM은 92.6%·7.4%). 14:54 `arch-abl-terrain-pt` 완료. 큐 남은 run ctx(학습 PC)·pool(bc250_1)·outer·all
+- 2026-10-25 23:4x — **장시간 실행 재개**(032-R17 ⑥·032-R20 큐): 학습 PC 작업자(18:40 사용자 정지)를 `arch-abl-ctx-pt` ckpt-7482부터 다시 시작. bc250_1은 `arch-abl-pool-pt` 계속
