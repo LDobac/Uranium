@@ -293,12 +293,19 @@ impl EvalWorker {
     }
 
     /// (checkpoint, sample) of the stages with games left: the models to load for a lease period.
-    fn needed_models(&self) -> Vec<(String, String)> {
-        self.inner.needed_models().into_iter().map(|(c, s)| (c, format!("{s:?}").to_lowercase())).collect()
+    fn needed_models(&self) -> PyResult<Vec<(String, String)>> {
+        Ok(self.inner.needed_models().map_err(err)?.into_iter().map(|(c, s)| (c, format!("{s:?}").to_lowercase())).collect())
+    }
+
+    /// Before stopping this PC's hostd: waits until it runs no game (020-R15 ⑥).
+    fn wait_local_hostd_idle(&self, py: Python<'_>) {
+        let w = self.inner.clone();
+        py.detach(move || w.wait_local_hostd_idle());
     }
 
     /// Plays games with `models` (a list of (checkpoint, sample, broker)) while holding the
-    /// lease: "done", "yielded", "stopped" or "lost".
+    /// lease: "done", "yielded", "stopped", "lost" or "reload" (load `needed_models` again, the
+    /// lease is kept).
     fn dispatch(&self, py: Python<'_>, models: &Bound<'_, PyList>) -> PyResult<&'static str> {
         let mut handles = HashMap::new();
         for item in models.iter() {

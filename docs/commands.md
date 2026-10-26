@@ -55,7 +55,9 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
   - Ctrl+C 1회: 진행 중인 판을 끝까지 기록하고 종료(그 PC의 hostd는 `leaving/` 표시로 새 판을 받지 않음). 2회: 진행 중인 판을 `StopGame`으로 끝내고 같은 seed로 다시 하게 한 뒤 종료. 3회: 즉시 종료. 다시 실행하면 합류한다.
   - job의 hosts 파일은 모든 작업자가 같이 읽으므로 호스트마다 LAN 주소를 적는다(127.0.0.1은 작업자마다 다른 PC가 됨, 시작 때 경고).
   - CUDA 호스트(Windows)는 `tools\eval\eval_worker.ps1 -Job eval/<job> -LocalHostd <hosts 파일의 이 PC 주소>`(우선순위 기본 10): 작업자가 hostd를 그 주소로 listen하게 별도 콘솔 창으로 띄워 Ctrl+C가 닿지 않게 하고, 판을 다 마친 뒤 끈다. 로그는 `--log <파일>`(스크립트는 `runs\eval-worker.log`). Linux ROCm 호스트의 대기 작업자는 ROCm 실행 환경(작업자 스크립트와 같은 `LD_LIBRARY_PATH`·`HSA_ENABLE_SDMA=0`)으로 `--backend rocm --priority 2`처럼 띄운다.
-  - 다시 하는 판: 브리지 미접속(020-R4), hostd 끊김, 강제 정지. 시간 초과·게임 crash는 결과로 남는다. hostd 판 번호는 `시도 × 10,000,000 + 단계 × 100,000 + 판 번호`.
+  - 다시 하는 판: 브리지 미접속(020-R4), hostd 끊김, 강제 정지. 시간 초과·게임 crash는 결과로 남는다. hostd 판 번호는 `시도 × 10,000,000 + 단계 × 100,000 + 판 번호`. 재시도 대상으로 끝난 시도가 `max_attempts`(`job.toml`, 기본 3, AMB-020-6)에 이르면 그 판은 마지막 기록(결과 없음)으로 끝내고 경고한다.
+  - 권한을 받으면 모델마다 모든 (배치, 엔티티 수) 모양을 미리 돌린 뒤 첫 판을 배정한다(`--no-warmup`으로 끔). 공용 드라이브를 읽지 못하는 동안에는 새 판 배정만 멈춘다. 작업자 상태는 `workers/<host>.eval.json`(학습 작업자 파일과 따로).
+  - `--hostd` 작업자는 끝날 때 그 hostd에서 도는 판(다른 작업자의 판 포함)이 0이 될 때까지 기다린 뒤 hostd를 끈다(Linux는 hostd 출력이 `<log>.hostd`).
   - 기록: 장비별 `games/<host>.jsonl`(판마다 `infer_host`·`backend`)·`results/<host>.jsonl`, 진행 중 `inflight/<host>.json`, 리플레이 `<stage>/replays/g<판 번호>.rep`. `python -m uranium eval-status --job eval/<job> [--no-write]`가 단계별 진행 표를 보이고 `<stage>/games.jsonl`·`results.jsonl`(plan 판 번호, 마지막 시도만)·`summary.md`(추론 backend별 판 수 포함)·`sessions.md`를 다시 쓴다. 리그전 집계는 `tools/ablation/league_table.py --run <job>/<stage> <plan>`.
   - 플레이어 이름(020-R16): 리플레이에서 `p<i>-<run 폴더 이름>`(모델), `p<i>-T0-<종족>`, OSS 봇 이름(24바이트에서 자름). plan 플레이어의 `name`으로 바꿀 수 있다. hostd와 스케줄러는 같은 커밋으로 빌드한다(제어 프로토콜 v3).
 - 멈춘 Python 프로세스 들여다보기(Linux): `kill -USR1 <pid>`면 모든 Python 스레드의 스택을 그 프로세스의 stderr(작업자·학습 로그)에 쓰고 계속 돈다(root 불필요).

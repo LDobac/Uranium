@@ -147,13 +147,17 @@ def eval_worker(a) -> int:
         _tee_stderr(a.log)
     backend = resolve(a.backend)[0]
     w = _core.EvalWorker(a.job, a.priority, backend, a.local_hostd)
-    hostd = _start_hostd(a.hostd, a.local_hostd) if a.hostd else None
+    hostd = _start_hostd(a.hostd, a.local_hostd, a.log) if a.hostd else None
+    reload = False
     try:
         while True:
-            end = w.wait_lease()
-            if end != "lease":
-                print(f"[eval] {end}", file=sys.stderr, flush=True)
-                break
+            # "reload": games are left whose models were not loaded; the lease is still ours.
+            if not reload:
+                end = w.wait_lease()
+                if end != "lease":
+                    print(f"[eval] {end}", file=sys.stderr, flush=True)
+                    break
+            reload = False
             models, servers = [], []
             try:
                 # Every power-of-two batch up to max_batch (the graph pads to one) at every entity
@@ -180,9 +184,13 @@ def eval_worker(a) -> int:
             print(f"[eval] lease period ended: {end}", file=sys.stderr, flush=True)
             if end in ("done", "stopped"):
                 break
+            reload = end == "reload"
     finally:
         w.close()
         if hostd is not None:
+            # Another worker may be playing there (020-R15 ⑥): no new game goes there any more,
+            # the ones running finish first (Ctrl+C again: stop now).
+            w.wait_local_hostd_idle()
             hostd.terminate()
             try:
                 hostd.wait(timeout=15)
@@ -207,9 +215,14 @@ def _tee_stderr(path: str) -> None:
     sys.stderr = open(2, "w", encoding="utf-8", errors="replace", buffering=1, closefd=False)
 
     def pump() -> None:
+        # A failed write (full log disk, closed console) must not stop the pump: a full pipe would
+        # block every stderr writer, the Rust log lines included.
         while chunk := os.read(r, 65536):
-            os.write(console, chunk)
-            log.write(chunk)
+            for out in (lambda c: os.write(console, c), log.write):
+                try:
+                    out(chunk)
+                except OSError:
+                    pass
 
     t = threading.Thread(target=pump, name="stderr-tee", daemon=True)
     t.start()
@@ -225,11 +238,12 @@ def _tee_stderr(path: str) -> None:
     atexit.register(drain)
 
 
-def _start_hostd(exe: str, listen: str | None):
+def _start_hostd(exe: str, listen: str | None, log: str | None):
     """020-R15 ⑥: this PC's hostd for an eval worker, out of reach of the worker's Ctrl+C (own
     console window on Windows, own session elsewhere) so the games in flight can finish. It listens
     on `listen` (the address the job's hosts file gives this PC; every worker reads the same file,
-    so it cannot be 127.0.0.1)."""
+    so it cannot be 127.0.0.1). Elsewhere its output goes to `<log>.hostd` (not the worker's
+    stderr pipe, which ends with the worker)."""
     import os
 
     env = dict(os.environ)
@@ -239,7 +253,8 @@ def _start_hostd(exe: str, listen: str | None):
         flags = subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NEW_PROCESS_GROUP
         p = subprocess.Popen([exe, "serve"], creationflags=flags, env=env)
     else:
-        p = subprocess.Popen([exe, "serve"], start_new_session=True, env=env)
+        out = open(f"{log}.hostd" if log else os.devnull, "ab")
+        p = subprocess.Popen([exe, "serve"], start_new_session=True, env=env, stdout=out, stderr=out)
     print(f"[eval] hostd pid {p.pid}", file=sys.stderr, flush=True)
     return p
 
