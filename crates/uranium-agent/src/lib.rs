@@ -138,17 +138,37 @@ pub fn mutual_leave(ends: &[SessionEnd]) -> bool {
 
 /// GameEnd reports by game id, filled by the agent server (020-R13). The RL league reads the
 /// reconciled result from here once hostd says the game is over (042 win table, 033 r_win).
+/// It also counts the sessions that said a valid Hello, so the scheduler can tell a game whose
+/// bridge never reached the agent (020-R4).
 #[derive(Clone, Default)]
-pub struct EndBoard(Arc<Mutex<HashMap<u64, Vec<SessionEnd>>>>);
+pub struct EndBoard(Arc<Mutex<Board>>);
+
+#[derive(Default)]
+struct Board {
+    ends: HashMap<u64, Vec<SessionEnd>>,
+    hellos: HashMap<u64, usize>,
+}
 
 impl EndBoard {
     pub fn push(&self, game_id: u64, e: SessionEnd) {
-        self.0.lock().unwrap().entry(game_id).or_default().push(e);
+        self.0.lock().unwrap().ends.entry(game_id).or_default().push(e);
     }
 
-    /// Removes and returns the reports of a game.
+    /// A session of the game passed the Hello check (020-R4).
+    pub fn hello(&self, game_id: u64) {
+        *self.0.lock().unwrap().hellos.entry(game_id).or_default() += 1;
+    }
+
+    /// Sessions of the game that passed the Hello check so far.
+    pub fn connected(&self, game_id: u64) -> usize {
+        self.0.lock().unwrap().hellos.get(&game_id).copied().unwrap_or(0)
+    }
+
+    /// Removes and returns the reports of a game (and forgets its Hello count).
     pub fn take(&self, game_id: u64) -> Vec<SessionEnd> {
-        self.0.lock().unwrap().remove(&game_id).unwrap_or_default()
+        let mut b = self.0.lock().unwrap();
+        b.hellos.remove(&game_id);
+        b.ends.remove(&game_id).unwrap_or_default()
     }
 }
 
@@ -457,6 +477,7 @@ fn run_session(stream: TcpStream, opts: &ServeOptions, rec: &mut SessionRecord) 
         write_msg(&mut writer, &AgentMsg::Reject(why.clone()))?;
         bail!(why);
     }
+    opts.ends.hello(hello.game_id);
     let BridgeMsg::GameInfo(info) = read_msg(&mut reader)? else { bail!("expected GameInfo") };
     rec.map = info.map_name.clone();
     rec.map_hash = info.map_hash.iter().map(|b| format!("{b:02x}")).collect();

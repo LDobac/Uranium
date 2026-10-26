@@ -149,12 +149,34 @@ pub struct Dispatch {
     pub models: Models,
     pub t0_builds: T0Builds,
     pub inflight: InFlight,
+    /// The board of the agent this scheduler started (020-R4 bridge check); `None` when the
+    /// caller reads the board itself (042 league).
+    pub ends: Option<EndBoard>,
 }
 
 impl Dispatch {
     pub fn new(routes: Routes, models: Models, t0_builds: T0Builds) -> Self {
-        Self { routes, models, t0_builds, inflight: InFlight::default() }
+        Self { routes, models, t0_builds, inflight: InFlight::default(), ends: None }
     }
+
+    /// Checks finished games against `ends` (020-R4) and drops their reports afterwards.
+    pub fn with_ends(mut self, ends: EndBoard) -> Self {
+        self.ends = Some(ends);
+        self
+    }
+}
+
+/// 020-R4: hostd reports `Finished` for a game whose bridge gave up reaching the agent (the shim
+/// leaves, the launcher exits 0). Such a game has fewer sessions past the Hello check than bridge
+/// players; it is recorded as Aborted with this detail, and an evaluation job plays it again
+/// (020-R15).
+pub const BRIDGE_NEVER_CONNECTED: &str = "bridge never connected";
+
+fn bridge_check(spec: &GameSpec, ends: &EndBoard) -> Option<String> {
+    let bridges = spec.players.iter().filter(|p| matches!(p.kind, PlayerKind::Bridge { .. })).count();
+    let connected = ends.connected(spec.game_id);
+    ends.take(spec.game_id);
+    (connected < bridges).then(|| format!("{BRIDGE_NEVER_CONNECTED} ({connected} of {bridges} sessions)"))
 }
 
 /// One line of games.jsonl (hostd's view of a game).
@@ -229,12 +251,13 @@ pub fn run_plan(plan_path: &Path, out: Option<PathBuf>, models: Models) -> Resul
 
     let builds = T0Builds::default();
     let routes = Routes::default();
-    let public = start_agent(&env_or("URANIUM_AGENT_LISTEN", "127.0.0.1:7600"), &out.join("results.jsonl"), routes.clone(), builds.clone(), Default::default())?;
+    let ends = EndBoard::default();
+    let public = start_agent(&env_or("URANIUM_AGENT_LISTEN", "127.0.0.1:7600"), &out.join("results.jsonl"), routes.clone(), builds.clone(), ends.clone())?;
     let jobs = plan::expand(&plan, &public);
     elog!("[env] plan `{}`: {} games, agent at {public}", plan.name, jobs.len());
     let started = std::time::Instant::now();
     // Scenario builds (050) and model routes are registered per game by the workers (020-R11).
-    let dispatch = Dispatch::new(routes, models, builds);
+    let dispatch = Dispatch::new(routes, models, builds).with_ends(ends);
     let source = Arc::new(QueueSource::new(jobs).with_replays(out.join("replays")));
     run_source(source.clone(), &hosts()?, &out.join("games.jsonl"), &dispatch)?;
     let left = JobSource::left(&*source);
@@ -401,11 +424,17 @@ fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter<std::fs::F
         };
         dispatch.inflight.games.lock().unwrap().remove(&job.spec.game_id);
         let (outcome, detail) = match &fin.outcome {
-            GameOutcome::Finished => (JobOutcome::Finished, None),
+            GameOutcome::Finished => match dispatch.ends.as_ref().and_then(|e| bridge_check(&job.spec, e)) {
+                Some(why) => (JobOutcome::Aborted, Some(why)),
+                None => (JobOutcome::Finished, None),
+            },
             GameOutcome::Aborted { reason } => (JobOutcome::Aborted, Some(reason.clone())),
             GameOutcome::Timeout => (JobOutcome::Timeout, None),
             GameOutcome::Stopped => (JobOutcome::Stopped, None),
         };
+        if let Some(e) = &dispatch.ends {
+            e.take(job.spec.game_id);
+        }
         record(games, addr, &job, ids, &dispatch.models, outcome, detail, fin.wall_s)?;
         source.done(&job, outcome, fin.replay);
         let mut d = done.lock().unwrap();
@@ -614,6 +643,31 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         assert!(t.elapsed() < Duration::from_secs(4), "stop did not end the game early");
         assert_eq!(*src.outcomes.lock().unwrap(), vec![(1, JobOutcome::Stopped)]);
+    }
+
+    /// 020-R4: a Finished game with fewer agent sessions than bridge players is recorded as
+    /// Aborted "bridge never connected"; a game whose bridges all connected stays Finished.
+    #[test]
+    fn bridge_never_connected_is_not_finished_020_r4() {
+        let plan: plan::Plan = toml::from_str("name='t'\n[[matchup]]\nmap='both'\ngames=2\np0={kind='t0',race='terran'}\np1={kind='t0',race='terran'}").unwrap();
+        let hosts = vec![HostEntry { addr: fake_hostd(false, 20), max_games: None }];
+        let dir = std::env::temp_dir().join(format!("uranium-env-test-bridge-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ends = EndBoard::default();
+        // The fake hostd starts no bridges: game 1 as if both sessions said Hello, game 2 one.
+        ends.hello(1);
+        ends.hello(1);
+        ends.hello(2);
+        let dispatch = Dispatch::new(Routes::default(), Models::new(), T0Builds::default()).with_ends(ends.clone());
+        let games = dir.join("games.jsonl");
+        run_source(Arc::new(QueueSource::new(plan::expand(&plan, "x"))), &hosts, &games, &dispatch).unwrap();
+        let lines: Vec<serde_json::Value> = std::fs::read_to_string(&games).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        std::fs::remove_dir_all(&dir).ok();
+        let by_id = |id: u64| lines.iter().find(|g| g["game_id"] == id).unwrap().clone();
+        assert_eq!(by_id(1)["outcome"], "Finished");
+        assert_eq!(by_id(2)["outcome"], "Aborted");
+        assert!(by_id(2)["detail"].as_str().unwrap().starts_with(BRIDGE_NEVER_CONNECTED), "{lines:?}");
+        assert_eq!((ends.connected(1), ends.connected(2)), (0, 0), "reports dropped after the game");
     }
 
     /// 021-R3 (2026-10-17): scenario T0 builds get their own opponent id, the standard build keeps
