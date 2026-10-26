@@ -358,7 +358,11 @@ pub fn run_source(source: Arc<dyn JobSource>, hosts: &[HostEntry], games_path: &
 }
 
 fn connect(addr: &str) -> Result<(BufReader<TcpStream>, BufWriter<TcpStream>)> {
-    let s = TcpStream::connect(addr)?;
+    // A powered-off host does not refuse, it never answers: without a limit the OS waits about
+    // two minutes per try, and an evaluation job probes absent hosts every minute (020-R15 ⑥).
+    use std::net::ToSocketAddrs;
+    let target = addr.to_socket_addrs()?.next().with_context(|| format!("{addr}: no address"))?;
+    let s = TcpStream::connect_timeout(&target, Duration::from_secs(5))?;
     s.set_nodelay(true).ok();
     // A game host that powers off never closes the socket; keepalive turns that into a read
     // error within a few minutes instead of a worker blocked forever (020-R4).
