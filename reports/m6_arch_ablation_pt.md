@@ -159,3 +159,7 @@
   - **발견 3**: 같은 판(3단계 14번)이 2호기에서 두 번 돌았다. 첫 권한 구간에 기록했는데 두 번째 구간 첫 원장 읽기에서 보이지 않았다. 그 자리에 258바이트 0 구간이 있었다(Linux SMB 클라이언트가 이어 쓴 내용을 캐시에 둔 채 크기만 먼저 늘린 것으로 판단). 다른 판·다른 파일에서는 중복 없음.
     - 수정: 판 기록마다 fsync(진행 중 파일에서 지우기 전), 세션 기록도 flush마다 fsync, 한 작업자가 끝낸 판 목록을 권한 구간이 바뀌어도 유지.
   - 정정: 이 4절의 "15:1x~16:2x 리뷰" 항목과 timeline의 "16:0x 결정", "15:1x~16:2x 리뷰"는 실제로 14:4x~15:0x다(시각 어림 실수).
+- 2026-10-26 16:01~16:14 — **재시험(020-AC6 ④, bd31c87)**, job `<shared>/eval/drill2/`, 긴 판 6판. CUDA PC가 6판을 진행하는 중에 Ctrl+C 2회: 6판 모두 `Stopped`, 작업자·hostd 종료. 2호기(대기, 1)가 권한을 받아 6판을 다음 시도 번호(10100001~10100006)로 다시 돌려 모두 끝냄. 기록 12(`Stopped` 6 + `Finished` 6), 판 중복 0, 기록 파일 NUL 바이트 0(fsync 효과). `eval-status` 합친 기록·요약 생성 확인.
+  - 020-AC7: 실제 모델 대 모델 리플레이(drill-pair g1)의 이름이 `p0-core-abl-gtrxl-pt`·`p1-arch-abl-terrain-pt`(`player_names` 시험 통과).
+  - AC6의 ⑤(브리지 미접속 판 재배정)는 실제 장비에서 일부러 만들지 않았고 단위 테스트(`bridge_never_connected_is_not_finished_020_r4`, 원장 재시도 판정)로 확인.
+  - 시험 산출물(지우지 않음): `<shared>/eval/drill/`, `<shared>/eval/drill2/`, 작업자 로그 CUDA PC `runs/eval-worker.log`, bc250_1 `~/eval_drill.out`, bc250_2 `~/eval_drill.out`·`~/eval_drill2.out`.
