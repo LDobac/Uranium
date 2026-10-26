@@ -212,8 +212,16 @@ pub struct LedgerState {
     pub attempts: HashMap<Key, u32>,
     /// Records that are played again.
     pub retried: usize,
-    /// Games given up after `max_attempts` attempts.
+    /// Failed attempts per game: retried records other than `Stopped` (a user's second Ctrl+C
+    /// is not a fault of the game, AMB-020-6).
+    pub failures: HashMap<Key, u32>,
+    /// Games given up after `max_attempts` failed attempts.
     pub gave_up: Vec<Key>,
+}
+
+/// A retried record that counts toward `max_attempts` (020-R15 ④).
+fn is_failure(outcome: &str, detail: Option<&str>) -> bool {
+    retryable(outcome, detail) && outcome != JobOutcome::Stopped.as_str()
 }
 
 fn keep_latest(m: &mut HashMap<Key, u64>, k: Key, id: u64) {
@@ -233,13 +241,16 @@ pub fn ledger_state(recs: &[Rec], max_attempts: Option<u32>) -> LedgerState {
         if retryable(&r.outcome, r.detail.as_deref()) {
             st.retried += 1;
             keep_latest(&mut last_retry, k, r.id);
+            if is_failure(&r.outcome, r.detail.as_deref()) {
+                *st.failures.entry(k).or_default() += 1;
+            }
         } else {
             keep_latest(&mut st.done, k, r.id);
         }
     }
     if let Some(m) = max_attempts {
         for (k, id) in last_retry {
-            if !st.done.contains_key(&k) && st.attempts[&k] >= m {
+            if !st.done.contains_key(&k) && st.failures.get(&k).copied().unwrap_or(0) >= m {
                 st.done.insert(k, id);
                 st.gave_up.push(k);
             }
@@ -303,6 +314,9 @@ fn flights(job: &EvalJob, me: &str, obs: &mut ContentObserver<Inflight>, stale_a
     let mut f = Flights { busy: HashSet::new(), attempts: HashMap::new() };
     let now = Instant::now();
     for file in read_inflight(job)? {
+        if file.host == me && file.pid == std::process::id() {
+            continue;
+        }
         for &id in &file.games {
             let a = f.attempts.entry(key_of(id)).or_default();
             *a = (*a).max(split_id(id).0 + 1);
@@ -343,13 +357,16 @@ struct Inner {
     /// Games this process recorded as final (a refresh can read the ledger before the record).
     finished: HashSet<Key>,
     attempts: HashMap<Key, u32>,
+    failures: HashMap<Key, u32>,
     busy_elsewhere: HashSet<Key>,
+    /// A refresh read the ledger at least once: before that, "nothing queued" means nothing.
+    known: bool,
 }
 
 impl LedgerSource {
     pub fn new(job: Arc<EvalJob>, host: &str, agent_addr: &str, loaded: HashSet<usize>) -> Self {
         let jobs = job.stages.iter().map(|s| plan::expand(&s.plan, agent_addr)).collect();
-        let inner = Inner { open: true, paused: false, queue: VecDeque::new(), unloaded: 0, mine: HashMap::new(), finished: HashSet::new(), attempts: HashMap::new(), busy_elsewhere: HashSet::new() };
+        let inner = Inner { open: true, paused: false, queue: VecDeque::new(), unloaded: 0, mine: HashMap::new(), finished: HashSet::new(), attempts: HashMap::new(), failures: HashMap::new(), busy_elsewhere: HashSet::new(), known: false };
         Self { job, host: host.to_string(), jobs, loaded, inner: Mutex::new(inner), write: Mutex::new(()) }
     }
 
@@ -367,7 +384,12 @@ impl LedgerSource {
             let e = g.attempts.entry(*k).or_default();
             *e = (*e).max(*a);
         }
+        for (k, n) in &st.failures {
+            let e = g.failures.entry(*k).or_default();
+            *e = (*e).max(*n);
+        }
         g.busy_elsewhere = fl.busy;
+        g.known = true;
     }
 
     pub fn close(&self) {
@@ -393,10 +415,11 @@ impl LedgerSource {
         v
     }
 
-    /// Nothing left for this period: no game to hand out, none in flight here or elsewhere.
+    /// Nothing left for this period: the ledger was read and nothing is to hand out or in flight
+    /// here or elsewhere. While the ledger is unknown (never read, or paused) it is not complete.
     pub fn complete(&self) -> bool {
         let g = self.inner.lock().unwrap();
-        g.queue.is_empty() && g.mine.is_empty() && g.busy_elsewhere.is_empty()
+        g.known && !g.paused && g.queue.is_empty() && g.mine.is_empty() && g.busy_elsewhere.is_empty()
     }
 
     pub fn write_inflight(&self) -> Result<()> {
@@ -413,13 +436,16 @@ impl LedgerSource {
         }
     }
 
-    /// 020-R15 ④ with `max_attempts`: a retried game goes back in the queue unless it used up its
-    /// attempts (the ledger then counts it as given up, with its last record).
-    fn retry_or_give_up(&self, g: &mut Inner, k: Key) {
-        let used = g.attempts.get(&k).copied().unwrap_or(0);
+    /// 020-R15 ④ with `max_attempts`: a retried game goes back in the queue unless its failed
+    /// attempts reached the limit (the ledger then counts it as given up, without a result).
+    fn retry_or_give_up(&self, g: &mut Inner, k: Key, failed: bool) {
+        if failed {
+            *g.failures.entry(k).or_default() += 1;
+        }
+        let n = g.failures.get(&k).copied().unwrap_or(0);
         match self.job.max_attempts {
-            Some(m) if used >= m => {
-                elog!("[eval] WARNING: game {} of stage `{}` given up after {used} attempts (max_attempts)", k.1, self.job.stages[k.0].name);
+            Some(m) if n >= m => {
+                elog!("[eval] WARNING: game {} of stage `{}` given up after {n} failed attempts (max_attempts, no result)", k.1, self.job.stages[k.0].name);
                 g.finished.insert(k);
             }
             _ => g.queue.push_front(k),
@@ -447,7 +473,7 @@ impl JobSource for LedgerSource {
                     self.write_inflight_logged();
                     return Some(job);
                 }
-                if !g.paused && g.queue.is_empty() && g.mine.is_empty() && g.busy_elsewhere.is_empty() {
+                if g.known && !g.paused && g.queue.is_empty() && g.mine.is_empty() && g.busy_elsewhere.is_empty() {
                     return None;
                 }
             }
@@ -484,7 +510,7 @@ impl JobSource for LedgerSource {
         let mut g = self.inner.lock().unwrap();
         g.mine.remove(&k);
         if retryable(outcome.as_str(), detail) {
-            self.retry_or_give_up(&mut g, k);
+            self.retry_or_give_up(&mut g, k, is_failure(outcome.as_str(), detail));
         } else {
             g.finished.insert(k);
         }
@@ -526,8 +552,10 @@ pub fn run_hosts(source: Arc<LedgerSource>, games_path: &Path, dispatch: &Dispat
             }
         }
         live.retain(|_, hs| !hs.is_empty());
-        let leaving = read_leaving(&source.job);
-        *dispatch.leaving.lock().unwrap() = leaving.clone();
+        if let Some(l) = read_leaving(&source.job) {
+            *dispatch.leaving.lock().unwrap() = l;
+        }
+        let leaving = dispatch.leaving.lock().unwrap().clone();
         if !active() {
             if live.is_empty() {
                 break;
@@ -569,7 +597,9 @@ pub fn run_hosts(source: Arc<LedgerSource>, games_path: &Path, dispatch: &Dispat
             std::thread::sleep(Duration::from_millis(200));
             if marks.elapsed() >= Duration::from_secs(5) {
                 marks = Instant::now();
-                *dispatch.leaving.lock().unwrap() = read_leaving(&source.job);
+                if let Some(l) = read_leaving(&source.job) {
+                    *dispatch.leaving.lock().unwrap() = l;
+                }
             }
         }
     }
@@ -585,15 +615,19 @@ fn leaving_file(addr: &str) -> String {
     addr.replace([':', '/', '\\'], "_")
 }
 
-fn read_leaving(job: &EvalJob) -> HashSet<String> {
+/// Hosts marked as leaving; `None` when the folder or a marker cannot be read (the caller keeps
+/// the set it had: unknown is not "nobody leaves", 061-R13).
+fn read_leaving(job: &EvalJob) -> Option<HashSet<String>> {
     let mut set = HashSet::new();
-    let Ok(rd) = std::fs::read_dir(job.sub("leaving")) else { return set };
-    for e in rd.flatten() {
-        if let Ok(addr) = std::fs::read_to_string(e.path()) {
-            set.insert(addr.trim().to_string());
-        }
+    let rd = match std::fs::read_dir(job.sub("leaving")) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(set),
+        Err(_) => return None,
+    };
+    for e in rd {
+        set.insert(std::fs::read_to_string(e.ok()?.path()).ok()?.trim().to_string());
     }
-    set
+    Some(set)
 }
 
 pub fn mark_leaving(job: &EvalJob, addr: &str) -> Result<()> {
@@ -1117,7 +1151,7 @@ pub fn status(job_dir: &Path, write_summaries: bool) -> Result<String> {
     for f in &files {
         writeln!(out, "in flight on {}'s inference: {} games", f.host, f.games.len())?;
     }
-    let leaving = read_leaving(&job);
+    let leaving = read_leaving(&job).unwrap_or_default();
     if !leaving.is_empty() {
         let mut l: Vec<_> = leaving.into_iter().collect();
         l.sort();
@@ -1148,12 +1182,17 @@ fn merge_stage(job: &EvalJob, si: usize, recs: &[Rec], st: &LedgerState) -> Resu
     let dir = job.sub(&s.name);
     std::fs::create_dir_all(&dir)?;
     let finals: HashMap<u64, u64> = st.done.iter().filter(|(k, _)| k.0 == si).map(|(k, id)| (*id, k.1)).collect();
+    // Given-up games (AMB-020-6) end without a result: their last attempt's sessions stay out.
+    let gave_up: HashSet<u64> = st.gave_up.iter().filter(|k| k.0 == si).map(|k| st.done[k]).collect();
     let mut games: Vec<(u64, serde_json::Value)> = Vec::new();
     let mut backends: HashMap<String, usize> = HashMap::new();
     for r in recs.iter().filter(|r| finals.contains_key(&r.id)) {
         let mut v = r.line.clone();
         v["hostd_id"] = r.id.into();
         v["game_id"] = finals[&r.id].into();
+        if gave_up.contains(&r.id) {
+            v["gave_up"] = true.into();
+        }
         games.push((finals[&r.id], v));
     }
     games.sort_by_key(|(g, _)| *g);
@@ -1170,7 +1209,9 @@ fn merge_stage(job: &EvalJob, si: usize, recs: &[Rec], st: &LedgerState) -> Resu
     let mut text = String::new();
     for mut v in read_dir_lines(&job.sub("results"))? {
         let Some(id) = v["game_id"].as_u64() else { continue };
-        if let Some(g) = finals.get(&id) {
+        if let Some(g) = finals.get(&id)
+            && !gave_up.contains(&id)
+        {
             v["hostd_id"] = id.into();
             v["game_id"] = (*g).into();
             writeln!(text, "{v}")?;
@@ -1178,7 +1219,11 @@ fn merge_stage(job: &EvalJob, si: usize, recs: &[Rec], st: &LedgerState) -> Resu
     }
     std::fs::write(dir.join("results.jsonl"), text)?;
     crate::report::write(&dir, &s.plan)?;
-    let mut table = String::from("\n## Inference backend (020-R15 ⑧)\n\n| backend (host) | games |\n|---|---|\n");
+    let mut table = String::new();
+    if !gave_up.is_empty() {
+        writeln!(table, "\nGiven up after max_attempts failed attempts (no result, 020-R15 ④): {} games", gave_up.len())?;
+    }
+    table.push_str("\n## Inference backend (020-R15 ⑧)\n\n| backend (host) | games |\n|---|---|\n");
     let mut rows: Vec<_> = backends.into_iter().collect();
     rows.sort();
     for (b, n) in rows {
@@ -1239,10 +1284,12 @@ mod tests {
         assert_eq!(pending(&keys, &st, &busy), vec![(0, 2), (0, 4), (1, 2)]);
         let mut recs2 = recs.clone();
         recs2.push(rec(hostd_id(0, 2, 1), "Stopped", None));
+        assert!(ledger_state(&recs2, Some(2)).gave_up.is_empty(), "a user's forced stop is not a failed attempt");
+        recs2.push(rec(hostd_id(0, 2, 2), "Aborted", Some("hostd connection lost: io")));
         let st = ledger_state(&recs2, Some(2));
-        assert_eq!(st.gave_up, vec![(0, 2)], "two retried attempts of game 2 reach max_attempts 2");
-        assert_eq!(st.done[&(0, 2)], hostd_id(0, 2, 1));
-        assert!(!st.done.contains_key(&(0, 4)), "one attempt of game 4 is below the limit");
+        assert_eq!(st.gave_up, vec![(0, 2)], "two failed attempts of game 2 reach max_attempts 2");
+        assert_eq!(st.done[&(0, 2)], hostd_id(0, 2, 2));
+        assert!(!st.done.contains_key(&(0, 4)), "one failure of game 4 is below the limit");
     }
 
     fn job_dir(tag: &str, games: u32) -> PathBuf {
@@ -1268,6 +1315,7 @@ mod tests {
         let job = Arc::new(EvalJob::load(&dir).unwrap());
         assert_eq!(job.lease_id, format!("eval-{}", dir.file_name().unwrap().to_string_lossy()));
         let src = LedgerSource::new(job.clone(), "h", "127.0.0.1:1", all_stages());
+        assert!(!src.complete(), "not complete before the ledger was read");
         src.refresh(&LedgerState::default(), no_flights());
         let a = src.next().unwrap();
         assert_eq!(a.spec.game_id, hostd_id(0, 1, 0));
@@ -1336,12 +1384,16 @@ mod tests {
         };
         write("dead", vec![hostd_id(0, 1, 0)]);
         write("me", vec![hostd_id(0, 2, 3)]);
+        // This process's own live file does not move its attempts.
+        let f = Inflight { host: "me".into(), pid: std::process::id(), time: 5, games: vec![hostd_id(1, 1, 5)] };
+        std::fs::write(dir.join("inflight/me-live.json"), serde_json::to_vec(&f).unwrap()).unwrap();
         let mut obs = ContentObserver::default();
         // Watched in steps shorter than half the limit, as 061-R5 expiry requires.
         let stale = Duration::from_millis(400);
         let f = flights(&job, "me", &mut obs, stale).unwrap();
         assert_eq!(f.busy, HashSet::from([(0, 1)]), "this host's own old file is not busy");
         assert_eq!((f.attempts[&(0, 1)], f.attempts[&(0, 2)]), (1, 4));
+        assert!(!f.attempts.contains_key(&(1, 1)));
         std::thread::sleep(Duration::from_millis(150));
         assert!(flights(&job, "me", &mut obs, stale).unwrap().busy.contains(&(0, 1)));
         std::thread::sleep(Duration::from_millis(150));

@@ -164,7 +164,7 @@ def eval_worker(a) -> int:
                 # count: a shape first met in a game stalls every game of the server for its
                 # capture (seconds to minutes with several models).
                 batches = [1 << i for i in range(max(a.max_batch, 1).bit_length())]
-                for ckpt, sample in w.needed_models():
+                for ckpt, sample in _needed_models(w):
                     if w.stop_level() > 0:
                         break
                     broker, server = start_server(ckpt, sample, a.backend, a.max_batch, a.max_wait_ms, warmup=not a.no_warmup, warm_batches=batches)
@@ -198,6 +198,21 @@ def eval_worker(a) -> int:
                 hostd.kill()
             print("[eval] hostd stopped", file=sys.stderr, flush=True)
     return 0
+
+
+def _needed_models(w) -> list:
+    """`needed_models`, retried while the shared drive cannot be read (the lease heartbeat goes
+    on meanwhile; 061-R13 workers wait out share trouble); empty after Ctrl+C."""
+    import time
+
+    while True:
+        try:
+            return w.needed_models()
+        except RuntimeError as e:
+            if w.stop_level() > 0:
+                return []
+            print(f"[eval] cannot list the models to load ({e}); retrying in 10 s", file=sys.stderr, flush=True)
+            time.sleep(10)
 
 
 def _tee_stderr(path: str) -> None:

@@ -443,8 +443,8 @@ pub(crate) fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter
                     std::thread::sleep(Duration::from_secs(2));
                     continue;
                 }
-                record_retry(games, addr, &job, ids, dispatch, JobOutcome::Rejected, Some(reason.clone()), 0);
-                source.done_with(&job, JobOutcome::Rejected, Some(&reason), None);
+                let ok = record_retry(games, addr, &job, ids, dispatch, JobOutcome::Rejected, Some(reason.clone()), 0);
+                report_done(source, &job, ok, JobOutcome::Rejected, Some(&reason), None);
                 continue;
             }
             other => {
@@ -465,8 +465,8 @@ pub(crate) fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter
                     dispatch.inflight.games.lock().unwrap().remove(&job.spec.game_id);
                     // 020-R4: a game in flight on a lost host is Aborted, not silently dropped.
                     let why = format!("{}: {e}", eval::HOSTD_LOST);
-                    record_retry(games, addr, &job, ids, dispatch, JobOutcome::Aborted, Some(why.clone()), 0);
-                    source.done_with(&job, JobOutcome::Aborted, Some(&why), None);
+                    let ok = record_retry(games, addr, &job, ids, dispatch, JobOutcome::Aborted, Some(why.clone()), 0);
+                    report_done(source, &job, ok, JobOutcome::Aborted, Some(&why), None);
                     *done.lock().unwrap() += 1;
                     elog!("[env] game {} Aborted: hostd {addr} lost", job.spec.game_id);
                     return Err(anyhow::Error::from(e).context(format!("hostd {addr} lost")));
@@ -486,8 +486,8 @@ pub(crate) fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter
         if let Some(e) = &dispatch.ends {
             e.take(job.spec.game_id);
         }
-        record_retry(games, addr, &job, ids, dispatch, outcome, detail.clone(), fin.wall_s);
-        source.done_with(&job, outcome, detail.as_deref(), fin.replay);
+        let ok = record_retry(games, addr, &job, ids, dispatch, outcome, detail.clone(), fin.wall_s);
+        report_done(source, &job, ok, outcome, detail.as_deref(), fin.replay);
         let mut d = done.lock().unwrap();
         *d += 1;
         elog!("[env] {} game {} {} ({}s)", *d, job.spec.game_id, outcome.as_str(), fin.wall_s);
@@ -513,19 +513,31 @@ pub fn opponent_id(p: &PlayerSpec, build: T0Build, model: Option<&PolicySpec>, i
     }
 }
 
-/// [`record`] tried a few times (games.jsonl may sit on a shared drive, 061): the source hears
-/// the outcome either way, so a game handed out is never left in flight by a failed write.
+/// [`record`] tried a few times (games.jsonl may sit on a shared drive, 061). Returns whether it
+/// was written; the caller tells the source either way, so a game handed out is never left in
+/// flight by a failed write.
 #[allow(clippy::too_many_arguments)]
-fn record_retry(games: &Mutex<BufWriter<std::fs::File>>, host: &str, job: &Job, ids: &HashMap<String, String>, dispatch: &Dispatch, outcome: JobOutcome, detail: Option<String>, wall_s: u32) {
+fn record_retry(games: &Mutex<BufWriter<std::fs::File>>, host: &str, job: &Job, ids: &HashMap<String, String>, dispatch: &Dispatch, outcome: JobOutcome, detail: Option<String>, wall_s: u32) -> bool {
     for attempt in 1..=5 {
         match record(games, host, job, ids, dispatch, outcome, detail.clone(), wall_s) {
-            Ok(()) => return,
+            Ok(()) => return true,
             Err(e) if attempt < 5 => {
                 elog!("[env] writing the record of game {} failed ({e:#}); retrying", job.spec.game_id);
                 std::thread::sleep(Duration::from_secs(2 * attempt));
             }
             Err(e) => elog!("[env] ERROR: the record of game {} ({}) was not written: {e:#}", job.spec.game_id, outcome.as_str()),
         }
+    }
+    false
+}
+
+/// The source hears a game's end; a game whose record could not be written is reported as
+/// stopped, so an evaluation job plays it again under a new id (020-R15 ④ ⑦).
+fn report_done(source: &dyn JobSource, job: &Job, written: bool, outcome: JobOutcome, detail: Option<&str>, replay: Option<Vec<u8>>) {
+    if written {
+        source.done_with(job, outcome, detail, replay);
+    } else {
+        source.done_with(job, JobOutcome::Stopped, Some("record not written"), None);
     }
 }
 
@@ -554,9 +566,12 @@ fn record(games: &Mutex<BufWriter<std::fs::File>>, host: &str, job: &Job, ids: &
         infer_host: dispatch.infer.as_ref().map(|t| t.host.clone()),
         backend: dispatch.infer.as_ref().map(|t| t.backend.clone()),
     };
+    // The whole line in one write past the buffer: a failed try leaves nothing buffered that a
+    // later flush would write again.
+    let line = format!("{}\n", serde_json::to_string(&rec)?);
     let mut g = games.lock().unwrap();
-    writeln!(g, "{}", serde_json::to_string(&rec)?)?;
     g.flush()?;
+    g.get_mut().write_all(line.as_bytes())?;
     Ok(())
 }
 
