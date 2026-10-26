@@ -510,6 +510,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(agent::serve, m)?)?;
     m.add_function(wrap_pyfunction!(agent::plan_models, m)?)?;
     m.add_function(wrap_pyfunction!(agent::run_plan, m)?)?;
+    m.add_class::<agent::EvalWorker>()?;
+    m.add_function(wrap_pyfunction!(agent::eval_status, m)?)?;
     m.add_function(wrap_pyfunction!(agent::play_sessions, m)?)?;
     m.add_function(wrap_pyfunction!(agent::slot_states, m)?)?;
     m.add_class::<rl::SegmentBatch>()?;

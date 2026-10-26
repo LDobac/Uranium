@@ -17,6 +17,7 @@ cuda = []
 [dependencies]
 uranium-proto.workspace = true
 uranium-agent.workspace = true
+uranium-store = { path = "../uranium-store" }
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true

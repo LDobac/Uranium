@@ -183,7 +183,7 @@ pub fn verify_dir(dir: &Path) -> Result<Manifest> {
 
 /// Writes through a temporary file unique to this process and call (threads of one process may
 /// write the same file, e.g. the worker status, 061-R13), then renames it over `path`.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = path.with_file_name(format!("{}.tmp-{}-{n}", path.file_name().unwrap().to_string_lossy(), std::process::id()));
@@ -354,6 +354,110 @@ fn ckpt_steps(dir: &Path) -> Result<Vec<u64>> {
     Ok(v)
 }
 
+/// 061-R5: writes this process's lock `locks/<id>.json`, returning it and the lock it replaced
+/// (same host after a crash, or a taken-over one). A lock of another PC is refused with
+/// [`LockBusy`] unless `take` allows it; no file time or clock is compared (061-AC3).
+fn take_lock(cfg: &StorageConfig, id: &str, take: &TakeOver) -> Result<(LockInfo, Option<LockInfo>)> {
+    let locks = cfg.shared.join("locks");
+    fs::create_dir_all(&locks).with_context(|| format!("creating {}", locks.display()))?;
+    let now = now_secs();
+    let me = LockInfo { host: cfg.host.clone(), pid: std::process::id(), started: now, heartbeat: now };
+    let path = locks.join(format!("{id}.json"));
+    match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(mut f) => {
+            f.write_all(&serde_json::to_vec_pretty(&me)?)?;
+            f.sync_all()?;
+            return Ok((me, None));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(anyhow!(e).context(format!("creating lock {}", path.display()))),
+    }
+    let bytes = fs::read(&path).with_context(|| format!("reading lock {}", path.display()))?;
+    let Ok(held) = serde_json::from_slice::<LockInfo>(&bytes) else {
+        // Another process created it a moment ago and has not written it yet.
+        return Err(anyhow::Error::new(LockBusy(format!("run {id}: lock {} is being written by another process (061-R5)", path.display()))));
+    };
+    if held.host != me.host {
+        match take {
+            TakeOver::No => {
+                return Err(anyhow::Error::new(LockBusy(format!(
+                    "run {id} is locked by {} (pid {}); a lock of another PC is taken only with --take-over (061-R5)",
+                    held.host, held.pid
+                ))));
+            }
+            TakeOver::Force => crate::elog!(
+                "WARNING: --take-over: taking run {id} from {} (pid {}) now (061-R5). If that training is still alive it stops without a push at its next heartbeat, and checkpoints only it had (not pushed) may be lost (061-R11-4).",
+                held.host, held.pid
+            ),
+            TakeOver::IfUnchanged(seen) if *seen == held => {
+                crate::elog!("taking over run {id}: the lock of {} (pid {}) did not change for {} min (061-R5, R13)", held.host, held.pid, cfg.stale_after.as_secs() / 60)
+            }
+            TakeOver::IfUnchanged(_) => {
+                return Err(anyhow::Error::new(LockBusy(format!("run {id}: the lock of {} changed since it was seen expired; not taken (061-R5)", held.host))));
+            }
+        }
+    }
+    write_atomic(&path, &serde_json::to_vec_pretty(&me)?)?;
+    // Two takers at once both rename their lock in; the last rename wins. Reading it back
+    // narrows the double-ownership window but does not close it: a loser whose read comes
+    // before the winner's rename still starts, and stops (Lost, no push) at its next
+    // heartbeat, within a minute (061-R5, R11-4). A loser that reads after it exits 75 now.
+    let now: LockInfo = fs::read(&path).map_err(anyhow::Error::from).and_then(|b| Ok(serde_json::from_slice(&b)?)).with_context(|| format!("reading back lock {}", path.display()))?;
+    if !(now.host == me.host && now.pid == me.pid) {
+        return Err(anyhow::Error::new(LockBusy(format!("run {id}: {} (pid {}) took the lock at the same moment (061-R5)", now.host, now.pid))));
+    }
+    Ok((me, Some(held)))
+}
+
+/// 061-R16: the lease of an evaluation job (020-R15), the R5 lock under `locks/<id>.json`
+/// without a checkpoint folder. Same heartbeat and expiry as a run lock.
+pub struct Lease {
+    pub cfg: StorageConfig,
+    pub id: String,
+    me: LockInfo,
+}
+
+impl Lease {
+    pub fn acquire(cfg: StorageConfig, id: &str, take: TakeOver) -> Result<Self> {
+        check_name(id)?;
+        check_name(&cfg.host)?;
+        let (me, _) = take_lock(&cfg, id, &take)?;
+        Ok(Self { cfg, id: id.to_string(), me })
+    }
+
+    fn path(&self) -> PathBuf {
+        self.cfg.shared.join("locks").join(format!("{}.json", self.id))
+    }
+
+    fn read(&self) -> Result<LockInfo> {
+        Ok(serde_json::from_slice(&fs::read(self.path())?)?)
+    }
+
+    /// Refreshes the lease, as [`Run::heartbeat`].
+    pub fn heartbeat(&mut self) -> LockStatus {
+        let held = match self.read() {
+            Ok(l) => l,
+            Err(e) => return LockStatus::Unreachable(format!("{e:#}")),
+        };
+        if !(held.host == self.me.host && held.pid == self.me.pid) {
+            return LockStatus::Lost(held);
+        }
+        self.me.heartbeat = now_secs();
+        match serde_json::to_vec_pretty(&self.me).map_err(anyhow::Error::from).and_then(|b| write_atomic(&self.path(), &b)) {
+            Ok(()) => LockStatus::Held,
+            Err(e) => LockStatus::Unreachable(format!("{e:#}")),
+        }
+    }
+
+    /// Removes the lock if it is still ours.
+    pub fn release(self) -> Result<()> {
+        if self.read().is_ok_and(|l| l.host == self.me.host && l.pid == self.me.pid) {
+            fs::remove_file(self.path())?;
+        }
+        Ok(())
+    }
+}
+
 /// One training run holding its lock (061-R5). Dropping it without [`Run::release`] keeps the
 /// lock file, as a crash would: the same host takes it back on restart, a worker elsewhere after
 /// watching it unchanged for `stale_after` (061-R5), anyone with `--take-over`.
@@ -401,58 +505,9 @@ impl Run {
     pub fn acquire_with(cfg: StorageConfig, run_id: &str, take: TakeOver) -> Result<Self> {
         check_name(run_id)?;
         check_name(&cfg.host)?;
-        let locks = cfg.shared.join("locks");
-        fs::create_dir_all(&locks).with_context(|| format!("creating {}", locks.display()))?;
         fs::create_dir_all(cfg.shared.join("checkpoints").join(run_id))?;
-        let now = now_secs();
-        let me = LockInfo { host: cfg.host.clone(), pid: std::process::id(), started: now, heartbeat: now };
-        let path = locks.join(format!("{run_id}.json"));
-        let mut run = Self { cfg, run_id: run_id.to_string(), me, previous: None, lineage: Vec::new(), remove_dir: |p| fs::remove_dir_all(p) };
-        match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(mut f) => {
-                f.write_all(&serde_json::to_vec_pretty(&run.me)?)?;
-                f.sync_all()?;
-                return Ok(run);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(anyhow!(e).context(format!("creating lock {}", path.display()))),
-        }
-        let bytes = fs::read(&path).with_context(|| format!("reading lock {}", path.display()))?;
-        let Ok(held) = serde_json::from_slice::<LockInfo>(&bytes) else {
-            // Another process created it a moment ago and has not written it yet.
-            return Err(anyhow::Error::new(LockBusy(format!("run {run_id}: lock {} is being written by another process (061-R5)", path.display()))));
-        };
-        if held.host != run.me.host {
-            match &take {
-                TakeOver::No => {
-                    return Err(anyhow::Error::new(LockBusy(format!(
-                        "run {run_id} is locked by {} (pid {}); a lock of another PC is taken only with --take-over (061-R5)",
-                        held.host, held.pid
-                    ))));
-                }
-                TakeOver::Force => crate::elog!(
-                    "WARNING: --take-over: taking run {run_id} from {} (pid {}) now (061-R5). If that training is still alive it stops without a push at its next heartbeat, and checkpoints only it had (not pushed) may be lost (061-R11-4).",
-                    held.host, held.pid
-                ),
-                TakeOver::IfUnchanged(seen) if *seen == held => {
-                    crate::elog!("taking over run {run_id}: the lock of {} (pid {}) did not change for {} min (061-R5, R13)", held.host, held.pid, run.cfg.stale_after.as_secs() / 60)
-                }
-                TakeOver::IfUnchanged(_) => {
-                    return Err(anyhow::Error::new(LockBusy(format!("run {run_id}: the lock of {} changed since it was seen expired; not taken (061-R5)", held.host))));
-                }
-            }
-        }
-        run.previous = Some(held);
-        write_atomic(&path, &serde_json::to_vec_pretty(&run.me)?)?;
-        // Two takers at once both rename their lock in; the last rename wins. Reading it back
-        // narrows the double-ownership window but does not close it: a loser whose read comes
-        // before the winner's rename still starts, and stops (Lost, no push) at its next
-        // heartbeat, within a minute (061-R5, R11-4). A loser that reads after it exits 75 now.
-        let now = run.read_lock().with_context(|| format!("reading back lock {}", path.display()))?;
-        if !run.owns(&now) {
-            return Err(anyhow::Error::new(LockBusy(format!("run {run_id}: {} (pid {}) took the lock at the same moment (061-R5)", now.host, now.pid))));
-        }
-        Ok(run)
+        let (me, previous) = take_lock(&cfg, run_id, &take)?;
+        Ok(Self { cfg, run_id: run_id.to_string(), me, previous, lineage: Vec::new(), remove_dir: |p| fs::remove_dir_all(p) })
     }
 
     pub fn lock_path(&self) -> PathBuf {

@@ -179,6 +179,23 @@ def test_bc_eval_scores_every_game_once_041(tiny_config, shards, tmp_path):
     assert total == 5 and steps > 0
 
 
+def test_bc_eval_out_writes_the_report_032_r20(tiny_config, shards, tmp_path, capsys):
+    """032-R20 ③ val scoring: `bc-eval --out` writes the printed JSON report to a file too."""
+    import argparse
+
+    from uranium.bc import eval as bc_eval
+
+    make = functools.partial(_tiny_make, "Gtrxl")
+    out = tmp_path / "out"
+    assert _core.run_bc(make, str(tiny_config), out=str(out), shards=[str(shards)], steps=1, synthetic_maps=True) == "done"
+    report = tmp_path / "val" / "r.json"
+    a = argparse.Namespace(dataset=[], shards=[str(shards)], checkpoint=str(out / "last"), split="train", backend="cpu", core=None, games=None, seed=1, config=str(tiny_config), maps_dir=None, synthetic_maps=True, out=str(report))
+    assert bc_eval.main(a) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert json.loads(report.read_text(encoding="utf-8")) == printed
+    assert printed["games"] > 0
+
+
 def test_run_bc_refuses_another_run_ident(tiny_config, shards, tmp_path):
     """B-3: a resume with another config is refused before training."""
     make = functools.partial(_tiny_make, "Lstm")

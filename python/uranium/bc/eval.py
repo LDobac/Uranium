@@ -39,6 +39,7 @@ def add_parser(sub) -> None:
     p.add_argument("--games", type=int, help="score this many games by a fixed-seed shuffle of the split (032-R17 ②)")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--config", default="config/bc.toml")
+    p.add_argument("--out", help="also write the JSON report to this file (032-R20 ③ val scoring)")
     p.add_argument("--maps-dir", help=argparse.SUPPRESS)
     p.add_argument("--synthetic-maps", action="store_true", help=argparse.SUPPRESS)
     p.set_defaults(fn=main)
@@ -185,5 +186,12 @@ def main(a) -> int:
     backend, device, precision = resolve(a.backend)
     configure(backend)
     rep = evaluate(dirs, ckpt_dir, a.split, a.games, a.seed, a.config, device, precision, a.core, a.maps_dir, a.synthetic_maps)
-    print(json.dumps(rep, indent=2))
+    text = json.dumps(rep, indent=2)
+    print(text)
+    if a.out:
+        out = Path(a.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_name(out.name + ".tmp")
+        tmp.write_text(text + "\n", encoding="utf-8")
+        tmp.replace(out)
     return 0

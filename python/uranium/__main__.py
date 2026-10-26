@@ -30,6 +30,15 @@ def main(argv: list[str] | None = None) -> int:
         import ctypes
 
         ctypes.windll.kernel32.SetConsoleCtrlHandler(None, False)
+    # `kill -USR1 <pid>` prints every Python thread's stack to stderr (the worker or job log)
+    # and the process goes on: a hung training or inference process can be looked at without
+    # root (ptrace) or stopping it. Not on Windows (no SIGUSR1).
+    import signal
+
+    if hasattr(signal, "SIGUSR1"):
+        import faulthandler
+
+        faulthandler.register(signal.SIGUSR1, all_threads=True)
     env.load()
     env.apply_malloc()
     env.apply_malloc_arenas()

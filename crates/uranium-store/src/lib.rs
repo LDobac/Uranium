@@ -42,6 +42,26 @@ pub fn install_stop_handler(tag: &'static str) -> anyhow::Result<std::sync::Arc<
     Ok(stop)
 }
 
+/// 020-R15 ⑤: Ctrl+C handler of an evaluation worker. It only counts: the first press asks the
+/// worker to finish its games and stop, the second to stop the games now (both handled by the
+/// worker loop); a third exits with 130 at once in case the loop is stuck.
+pub fn install_drain_handler(tag: &'static str) -> anyhow::Result<std::sync::Arc<std::sync::atomic::AtomicUsize>> {
+    use std::sync::atomic::Ordering;
+    accept_ctrl_c();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let _ = STOP.set(stop.clone());
+    let s = stop.clone();
+    ctrlc::set_handler(move || match s.fetch_add(1, Ordering::SeqCst) {
+        0 => elog!("[{tag}] Ctrl+C: finishing the games in flight, then stopping (Ctrl+C again: stop them now; 020-R15)"),
+        1 => elog!("[{tag}] second Ctrl+C: stopping the games in flight now, they are played again later (020-R15)"),
+        _ => {
+            elog!("[{tag}] third Ctrl+C: exiting at once");
+            std::process::exit(130);
+        }
+    })?;
+    Ok(stop)
+}
+
 /// 042-R10 (2026-10-24): Windows lets a process ignore Ctrl+C (`SetConsoleCtrlHandler(NULL,
 /// TRUE)`) and every process it starts inherits that. A worker console opened from such a parent
 /// passed it down to the training child, which then never saw Ctrl+C (the run kept training, no

@@ -14,10 +14,11 @@ macro_rules! elog {
 }
 
 pub mod calibrate;
+pub mod eval;
 pub mod plan;
 pub mod report;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -68,6 +69,10 @@ pub trait JobSource: Send + Sync {
     /// hostd's outcome for a game that was started (or rejected), with the replay hostd sent
     /// back for a `save_replay` game (020-R1).
     fn done(&self, _job: &Job, _outcome: JobOutcome, _replay: Option<Vec<u8>>) {}
+    /// [`JobSource::done`] with the recorded detail (020-R15 retries depend on it).
+    fn done_with(&self, job: &Job, outcome: JobOutcome, _detail: Option<&str>, replay: Option<Vec<u8>>) {
+        self.done(job, outcome, replay)
+    }
     /// Games still waiting (reported as "not run" when the workers stop).
     fn left(&self) -> usize {
         0
@@ -152,11 +157,25 @@ pub struct Dispatch {
     /// The board of the agent this scheduler started (020-R4 bridge check); `None` when the
     /// caller reads the board itself (042 league).
     pub ends: Option<EndBoard>,
+    /// 020-R15 ⑥: hosts that get no new game (their worker is leaving); a slot worker on one of
+    /// them ends after its game.
+    pub leaving: Arc<Mutex<HashSet<String>>>,
+    /// 020-R15 ⑧: what games.jsonl records about the games' inference (evaluation jobs).
+    pub infer: Option<InferTag>,
+}
+
+/// 020-R15 ⑧ / ⑦: the inference host and backend of an evaluation job's games, and its stage
+/// names (a game's stage comes from its hostd id, [`eval::split_id`]).
+#[derive(Clone, Debug)]
+pub struct InferTag {
+    pub host: String,
+    pub backend: String,
+    pub stages: Arc<Vec<String>>,
 }
 
 impl Dispatch {
     pub fn new(routes: Routes, models: Models, t0_builds: T0Builds) -> Self {
-        Self { routes, models, t0_builds, inflight: InFlight::default(), ends: None }
+        Self { routes, models, t0_builds, inflight: InFlight::default(), ends: None, leaving: Arc::default(), infer: None }
     }
 
     /// Checks finished games against `ends` (020-R4) and drops their reports afterwards.
@@ -196,6 +215,13 @@ struct GameRecord {
     outcome: String,
     detail: Option<String>,
     wall_s: u32,
+    /// 020-R15: evaluation jobs only (stage name, inference host and backend).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stage: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    infer_host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    backend: Option<String>,
 }
 
 pub fn env_or(name: &str, default: &str) -> String {
@@ -356,14 +382,19 @@ pub fn capabilities(addr: &str) -> Result<Capabilities> {
     }
 }
 
-fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter<std::fs::File>>, done: &Mutex<usize>, ids: &HashMap<String, String>, dispatch: &Dispatch) -> Result<()> {
+pub(crate) fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter<std::fs::File>>, done: &Mutex<usize>, ids: &HashMap<String, String>, dispatch: &Dispatch) -> Result<()> {
     let (mut r, w) = connect(addr)?;
     let w = Arc::new(Mutex::new(w));
     loop {
-        if dispatch.inflight.stopping.load(Ordering::SeqCst) {
+        if dispatch.inflight.stopping.load(Ordering::SeqCst) || dispatch.leaving.lock().unwrap().contains(addr) {
             return Ok(());
         }
         let Some(job) = source.next() else { return Ok(()) };
+        // 020-R15 ⑥: the host started leaving while this slot waited for a game.
+        if dispatch.leaving.lock().unwrap().contains(addr) {
+            source.requeue(job);
+            return Ok(());
+        }
         // 020-R11: model players are routed by (game_id, slot) before the bridges connect.
         for slot in 0..2 {
             let spec = job.policies[slot].clone().or_else(|| job.models[slot].as_ref().and_then(|k| dispatch.models.get(k)).cloned());
@@ -396,8 +427,8 @@ fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter<std::fs::F
                     std::thread::sleep(Duration::from_secs(2));
                     continue;
                 }
-                record(games, addr, &job, ids, &dispatch.models, JobOutcome::Rejected, Some(reason), 0)?;
-                source.done(&job, JobOutcome::Rejected, None);
+                record(games, addr, &job, ids, dispatch, JobOutcome::Rejected, Some(reason.clone()), 0)?;
+                source.done_with(&job, JobOutcome::Rejected, Some(&reason), None);
                 continue;
             }
             other => bail!("unexpected {other:?}"),
@@ -414,8 +445,9 @@ fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter<std::fs::F
                 Err(e) => {
                     dispatch.inflight.games.lock().unwrap().remove(&job.spec.game_id);
                     // 020-R4: a game in flight on a lost host is Aborted, not silently dropped.
-                    record(games, addr, &job, ids, &dispatch.models, JobOutcome::Aborted, Some(format!("hostd connection lost: {e}")), 0)?;
-                    source.done(&job, JobOutcome::Aborted, None);
+                    let why = format!("{}: {e}", eval::HOSTD_LOST);
+                    record(games, addr, &job, ids, dispatch, JobOutcome::Aborted, Some(why.clone()), 0)?;
+                    source.done_with(&job, JobOutcome::Aborted, Some(&why), None);
                     *done.lock().unwrap() += 1;
                     elog!("[env] game {} Aborted: hostd {addr} lost", job.spec.game_id);
                     return Err(anyhow::Error::from(e).context(format!("hostd {addr} lost")));
@@ -435,8 +467,8 @@ fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter<std::fs::F
         if let Some(e) = &dispatch.ends {
             e.take(job.spec.game_id);
         }
-        record(games, addr, &job, ids, &dispatch.models, outcome, detail, fin.wall_s)?;
-        source.done(&job, outcome, fin.replay);
+        record(games, addr, &job, ids, dispatch, outcome, detail.clone(), fin.wall_s)?;
+        source.done_with(&job, outcome, detail.as_deref(), fin.replay);
         let mut d = done.lock().unwrap();
         *d += 1;
         elog!("[env] {} game {} {} ({}s)", *d, job.spec.game_id, outcome.as_str(), fin.wall_s);
@@ -463,7 +495,8 @@ pub fn opponent_id(p: &PlayerSpec, build: T0Build, model: Option<&PolicySpec>, i
 }
 
 #[allow(clippy::too_many_arguments)]
-fn record(games: &Mutex<BufWriter<std::fs::File>>, host: &str, job: &Job, ids: &HashMap<String, String>, models: &Models, outcome: JobOutcome, detail: Option<String>, wall_s: u32) -> Result<()> {
+fn record(games: &Mutex<BufWriter<std::fs::File>>, host: &str, job: &Job, ids: &HashMap<String, String>, dispatch: &Dispatch, outcome: JobOutcome, detail: Option<String>, wall_s: u32) -> Result<()> {
+    let models = &dispatch.models;
     let model1 = job.policies[1].as_ref().or_else(|| job.models[1].as_ref().and_then(|k| models.get(k)));
     let p1_kind = match (&job.spec.players[1].kind, model1) {
         (PlayerKind::Bridge { .. }, Some(_)) => "model".to_string(),
@@ -482,6 +515,9 @@ fn record(games: &Mutex<BufWriter<std::fs::File>>, host: &str, job: &Job, ids: &
         outcome: outcome.as_str().to_string(),
         detail,
         wall_s,
+        stage: dispatch.infer.as_ref().and_then(|t| t.stages.get(eval::split_id(job.spec.game_id).1).cloned()),
+        infer_host: dispatch.infer.as_ref().map(|t| t.host.clone()),
+        backend: dispatch.infer.as_ref().map(|t| t.backend.clone()),
     };
     let mut g = games.lock().unwrap();
     writeln!(g, "{}", serde_json::to_string(&rec)?)?;

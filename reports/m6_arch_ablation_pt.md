@@ -66,6 +66,12 @@
    - 리그전: `python -m uranium run --plan config/plans/arch-abl-pt-league.toml --backend cuda`(생성 스크립트로 만든 20쌍 × 4 matchup)
    - T0: `python -m uranium run --plan config/plans/arch-abl-pt-t0.toml --backend cuda`(변형 5개 × 300판, LSTM·GTrXL은 `core-ablation-pt-t0.toml`)
    - 시점: 큐의 7개 run(LSTM·GTrXL·변형 5개)이 모두 10,000 update를 마친 뒤 한꺼번에(2026-10-25 사용자 결정).
+   - **실행 방식(2026-10-26 사용자 결정, 020-R15, 위 `run --plan` 명령 대신)**
+     - val 7개: 대전과 병행해 Linux ROCm 호스트 첫째에서 `bc-eval ... --backend rocm`. 7개가 같은 장비라 서로 공정하다.
+     - 대전: 평가 작업 하나(`<shared>/eval/abl-pt/`). 단계는 맞대결(`core-ablation-pt-h2h`) → 리그전 20쌍 → 코어 T0 → 변형 T0 차례다.
+     - CUDA 호스트: `tools\eval\eval_worker.ps1`(우선순위 10). 대기 작업자: Linux ROCm 호스트 첫째(2), 둘째(1, 멈춤 조사·재현 시험 뒤).
+     - CUDA 호스트가 빠지면 대기 작업자가 새 판부터 추론한다. 판마다 추론 장비를 기록하고, 결과에 모델·단계별 추론 장비 비율을 함께 적는다.
+     - 진행·집계: `python -m uranium eval-status --job eval/abl-pt`. 단계 폴더의 합친 기록으로 `league_table.py`를 돌린다.
 6. 집계(쌍별 Wilson 95%, 7×7 표, Bradley–Terry 순위와 bootstrap 구간, 모델별 T0 승률)를 보고한다. 채택은 사용자 결정.
 
 ## 3. 결과

@@ -249,6 +249,85 @@ pub fn run_plan(py: Python<'_>, plan: PathBuf, models: &Bound<'_, PyList>, out: 
     py.detach(move || uranium_runner::run_plan(&plan, out, policies)).map_err(err)
 }
 
+/// A job folder as given, else under URANIUM_SHARED_DIR (061).
+fn job_dir(job: PathBuf) -> PathBuf {
+    if job.is_absolute() || job.exists() {
+        return job;
+    }
+    match std::env::var("URANIUM_SHARED_DIR") {
+        Ok(s) if !s.is_empty() => PathBuf::from(s).join(job),
+        _ => job,
+    }
+}
+
+/// 020-R15 evaluation worker: `wait_lease` → load `needed_models` → `dispatch` → unload, until
+/// it says done or stopped. Installs the evaluation Ctrl+C handler (first press: finish the
+/// games in flight; second: stop them) and starts the agent server (`URANIUM_AGENT_LISTEN`,
+/// `URANIUM_AGENT_PUBLIC_ADDR`).
+#[pyclass(module = "uranium._core")]
+pub struct EvalWorker {
+    inner: std::sync::Arc<uranium_runner::eval::EvalWorker>,
+}
+
+#[pymethods]
+impl EvalWorker {
+    #[new]
+    #[pyo3(signature = (job, priority, backend, local_hostd = None))]
+    fn new(job: PathBuf, priority: i32, backend: String, local_hostd: Option<String>) -> PyResult<Self> {
+        let stop = uranium_store::install_drain_handler("eval").map_err(err)?;
+        let cfg = uranium_store::storage::StorageConfig::from_env().map_err(err)?;
+        let listen = std::env::var("URANIUM_AGENT_LISTEN").ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| "127.0.0.1:7600".into());
+        let w = uranium_runner::eval::EvalWorker::start(&job_dir(job), cfg, priority, &backend, local_hostd, stop, &listen).map_err(err)?;
+        Ok(Self { inner: std::sync::Arc::new(w) })
+    }
+
+    /// Blocks until this worker holds the lease: "lease", "done" (nothing left) or "stopped".
+    fn wait_lease(&self, py: Python<'_>) -> PyResult<&'static str> {
+        let w = self.inner.clone();
+        let end = py.detach(move || w.wait_lease()).map_err(err)?;
+        Ok(match end {
+            uranium_runner::eval::WaitEnd::Lease => "lease",
+            uranium_runner::eval::WaitEnd::Done => "done",
+            uranium_runner::eval::WaitEnd::Stopped => "stopped",
+        })
+    }
+
+    /// (checkpoint, sample) of the stages with games left: the models to load for a lease period.
+    fn needed_models(&self) -> Vec<(String, String)> {
+        self.inner.needed_models().into_iter().map(|(c, s)| (c, format!("{s:?}").to_lowercase())).collect()
+    }
+
+    /// Plays games with `models` (a list of (checkpoint, sample, broker)) while holding the
+    /// lease: "done", "yielded", "stopped" or "lost".
+    fn dispatch(&self, py: Python<'_>, models: &Bound<'_, PyList>) -> PyResult<&'static str> {
+        let mut handles = HashMap::new();
+        for item in models.iter() {
+            let (ckpt, sample, b): (String, String, PyRef<'_, Broker>) = item.extract()?;
+            handles.insert((ckpt, sample_of(&sample)?), b.handle.clone());
+        }
+        let w = self.inner.clone();
+        py.detach(move || w.dispatch(&handles)).map(|e| e.as_str()).map_err(err)
+    }
+
+    /// Ctrl+C presses so far.
+    fn stop_level(&self) -> usize {
+        self.inner.stop.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Lease, yield request and in-flight file go away (call once at exit).
+    fn close(&self) {
+        self.inner.close()
+    }
+}
+
+/// 020-R15 ⑨: progress of an evaluation job (markdown); with `write`, also the merged per-stage
+/// records and summaries.
+#[pyfunction]
+#[pyo3(signature = (job, write = true))]
+pub fn eval_status(job: PathBuf, write: bool) -> PyResult<String> {
+    uranium_runner::eval::status(&job_dir(job), write).map_err(err)
+}
+
 /// Tests (032-R14, 031-R4): `sessions` model sessions playing the synthetic frames of
 /// `uranium_agent::testkit` at once; per session the (command count, advance) of each step and
 /// the session stats as JSON.
