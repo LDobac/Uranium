@@ -576,6 +576,11 @@ fn record(games: &Mutex<BufWriter<std::fs::File>>, host: &str, job: &Job, ids: &
     let mut g = games.lock().unwrap();
     g.flush()?;
     g.get_mut().write_all(line.as_bytes())?;
+    // On the shared drive (020-R15) the line must be on the server before the game leaves the
+    // in-flight file: a Linux SMB client keeps appended data in its cache, and another worker (or
+    // this one's next lease period) reading the ledger meanwhile would see the game neither in
+    // flight nor recorded and play it again (2026-10-26 drill: a 258-byte zero gap, one game twice).
+    g.get_ref().sync_data()?;
     Ok(())
 }
 

@@ -389,7 +389,23 @@ pub fn open_sink(out: &Path) -> Result<RecordSink> {
         std::fs::create_dir_all(dir)?;
     }
     let file = OpenOptions::new().create(true).append(true).open(out).with_context(|| format!("opening {}", out.display()))?;
-    Ok(Arc::new(Mutex::new(BufWriter::new(file))))
+    Ok(Arc::new(Mutex::new(BufWriter::new(SyncFile(file)))))
+}
+
+/// A file whose flush also reaches the disk, or the server of a shared drive (020-R15: session
+/// records are read by other PCs; a Linux SMB client otherwise keeps appended lines in its cache
+/// and readers see zeros).
+struct SyncFile(std::fs::File);
+
+impl Write for SyncFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()?;
+        self.0.sync_data()
+    }
 }
 
 pub fn serve_addr(listen: &str, opts: ServeOptions, out: PathBuf) -> Result<()> {

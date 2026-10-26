@@ -396,6 +396,16 @@ impl LedgerSource {
         self.inner.lock().unwrap().open = false;
     }
 
+    /// Games recorded as final by this process in earlier lease periods (never handed out again).
+    pub fn remember_finished(&self, keys: &HashSet<Key>) {
+        self.inner.lock().unwrap().finished.extend(keys.iter().copied());
+    }
+
+    /// Games recorded as final in this period (and remembered ones).
+    pub fn finished(&self) -> HashSet<Key> {
+        self.inner.lock().unwrap().finished.clone()
+    }
+
     pub fn is_open(&self) -> bool {
         self.inner.lock().unwrap().open
     }
@@ -718,6 +728,9 @@ pub struct EvalWorker {
     builds: T0Builds,
     ends: EndBoard,
     lease: Arc<Mutex<Option<Lease>>>,
+    /// Games this process recorded as final, kept across lease periods: a period's first ledger
+    /// read must not hand them out again even if the share does not show the record yet.
+    recorded: Mutex<HashSet<Key>>,
     /// Set by the heartbeat thread when another worker took the lease (061-R5 Lost).
     lost: Arc<AtomicBool>,
     /// The last heartbeat could not reach the share: whether the lease is still ours is unknown.
@@ -761,6 +774,7 @@ impl EvalWorker {
             builds,
             ends,
             lease: Arc::new(Mutex::new(None)),
+            recorded: Mutex::new(HashSet::new()),
             lost: Arc::new(AtomicBool::new(false)),
             lease_unknown: Arc::new(AtomicBool::new(false)),
             marked: AtomicBool::new(false),
@@ -990,6 +1004,7 @@ impl EvalWorker {
         let mut dispatch = Dispatch::new(self.routes.clone(), models, self.builds.clone()).with_ends(self.ends.clone());
         dispatch.infer = Some(InferTag { host: self.cfg.host.clone(), backend: self.backend.clone(), stages: self.job.stage_names() });
         let source = Arc::new(LedgerSource::new(self.job.clone(), &self.cfg.host, &self.agent_addr, loaded));
+        source.remember_finished(&self.recorded.lock().unwrap());
         let mut obs = ContentObserver::<Inflight>::default();
         match self.snapshot(&mut obs) {
             Ok((st, fl)) => source.refresh(&st, fl),
@@ -1008,6 +1023,7 @@ impl EvalWorker {
             run_hosts(source.clone(), &games, &dispatch, self.every)
         });
         source.write_inflight_logged();
+        self.recorded.lock().unwrap().extend(source.finished());
         res?;
         let end = end.lock().unwrap().unwrap_or(if self.stop_level() > 0 {
             DispatchEnd::Stopped
@@ -1342,6 +1358,11 @@ mod tests {
         src.refresh(&LedgerState::default(), no_flights());
         assert!(src.next().is_none());
         assert!(src.complete());
+        // Nor the next lease period of this worker, whose first read may miss them as well.
+        let next_period = LedgerSource::new(job.clone(), "h", "127.0.0.1:1", all_stages());
+        next_period.remember_finished(&src.finished());
+        next_period.refresh(&LedgerState::default(), no_flights());
+        assert!(next_period.next().is_none(), "games recorded in an earlier period are not played again");
         std::fs::remove_dir_all(&dir).ok();
     }
 
