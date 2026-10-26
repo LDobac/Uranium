@@ -542,7 +542,11 @@ pub struct EvalWorker {
     routes: Routes,
     builds: T0Builds,
     ends: EndBoard,
-    lease: Mutex<Option<Lease>>,
+    lease: Arc<Mutex<Option<Lease>>>,
+    /// Set by the heartbeat thread when another worker took the lease (061-R5 Lost).
+    lost: Arc<AtomicBool>,
+    /// Ends the heartbeat thread.
+    closed: Arc<AtomicBool>,
     /// How often hosts are probed, the ledger re-read and files rewritten (tests shorten them).
     pub every: Duration,
     pub tick: Duration,
@@ -560,7 +564,49 @@ impl EvalWorker {
             // Coming back: this host takes games again (020-R15 ⑥).
             clear_leaving(&job, addr)?;
         }
-        Ok(Self { job, cfg, priority, backend: backend.to_string(), local_hostd, stop, agent_addr, routes, builds, ends, lease: Mutex::new(None), every: Duration::from_secs(60), tick: Duration::from_secs(5) })
+        // Every worker reads the same hosts file: a loopback entry is a different PC for each.
+        for h in plan::load_hosts(&job.hosts_file).unwrap_or_default() {
+            if h.addr.starts_with("127.") || h.addr.starts_with("localhost") {
+                elog!("[eval] WARNING: hosts file entry {} is a loopback address; with workers on several PCs give every host its LAN address (020-R15 ①)", h.addr);
+            }
+        }
+        let (lease, lost, closed) = (Arc::new(Mutex::new(None)), Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let w = Self { job, cfg, priority, backend: backend.to_string(), local_hostd, stop, agent_addr, routes, builds, ends, lease, lost, closed, every: Duration::from_secs(60), tick: Duration::from_secs(5) };
+        w.start_heartbeat();
+        Ok(w)
+    }
+
+    /// 061-R5: the lease is refreshed every `heartbeat_every` for as long as it is held, also
+    /// while the caller loads and warms up models (minutes), not only while games are handed out.
+    fn start_heartbeat(&self) {
+        let (lease, lost, closed, cfg) = (self.lease.clone(), self.lost.clone(), self.closed.clone(), self.cfg.clone());
+        let (priority, backend, id) = (self.priority, self.backend.clone(), self.job.lease_id.clone());
+        std::thread::spawn(move || {
+            let mut last = Instant::now();
+            while !closed.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(500));
+                if last.elapsed() < cfg.heartbeat_every {
+                    continue;
+                }
+                last = Instant::now();
+                let mut g = lease.lock().unwrap();
+                let Some(l) = g.as_mut() else { continue };
+                match l.heartbeat() {
+                    LockStatus::Lost(by) => {
+                        *g = None;
+                        lost.store(true, Ordering::SeqCst);
+                        elog!("[eval] the lease went to {} (pid {}): no new game here", by.host, by.pid);
+                    }
+                    LockStatus::Unreachable(e) => elog!("[eval] lease heartbeat failed ({e}); retrying"),
+                    LockStatus::Held => {
+                        drop(g);
+                        if let Err(e) = storage::write_worker(&cfg, priority, &backend, Some(id.as_str())) {
+                            elog!("[eval] could not write the worker status ({e:#})");
+                        }
+                    }
+                }
+            }
+        });
     }
 
     fn stop_level(&self) -> usize {
@@ -676,6 +722,7 @@ impl EvalWorker {
                     Ok(lease) => {
                         let _ = storage::clear_yield(&self.cfg, &self.job.lease_id);
                         *self.lease.lock().unwrap() = Some(lease);
+                        self.lost.store(false, Ordering::SeqCst);
                         self.status(true);
                         elog!("[eval] holding the lease of {}", self.job.lease_id);
                         return Ok(WaitEnd::Lease);
@@ -742,11 +789,10 @@ impl EvalWorker {
         Ok(end)
     }
 
-    /// The lease holder's side loop: Ctrl+C, yield requests, lease heartbeat, ledger refresh,
+    /// The lease holder's side loop: Ctrl+C, yield requests, a lost lease, ledger refresh,
     /// in-flight file.
     fn watch(&self, source: &LedgerSource, dispatch: &Dispatch, end: &Mutex<Option<DispatchEnd>>, quit: &AtomicBool, flights: &mut ContentObserver<Inflight>) {
         let mut forced = false;
-        let mut last_beat = Instant::now();
         let mut last_refresh = Instant::now();
         let set_end = |e: DispatchEnd| {
             let mut g = end.lock().unwrap();
@@ -777,19 +823,9 @@ impl EvalWorker {
                     set_end(DispatchEnd::Yielded);
                     self.release(&format!("yield to {} (priority {})", y.host, y.priority));
                     elog!("[eval] finishing {} games in flight here; {} plays the next games (061-R16)", source.in_flight().len(), y.host);
-                } else if last_beat.elapsed() >= self.cfg.heartbeat_every {
-                    last_beat = Instant::now();
-                    let status = self.lease.lock().unwrap().as_mut().map(|l| l.heartbeat());
-                    match status {
-                        Some(LockStatus::Lost(by)) => {
-                            source.close();
-                            set_end(DispatchEnd::Lost);
-                            *self.lease.lock().unwrap() = None;
-                            elog!("[eval] the lease went to {} (pid {}): no new game here", by.host, by.pid);
-                        }
-                        Some(LockStatus::Unreachable(e)) => elog!("[eval] lease heartbeat failed ({e}); retrying"),
-                        _ => self.status(true),
-                    }
+                } else if self.lost.load(Ordering::SeqCst) {
+                    source.close();
+                    set_end(DispatchEnd::Lost);
                 }
             }
             if last_refresh.elapsed() >= self.tick * 6 {
@@ -807,6 +843,7 @@ impl EvalWorker {
 
     /// Exit: lease, yield request and in-flight file of this worker go away.
     pub fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
         self.release("worker stops");
         let _ = storage::clear_yield(&self.cfg, &self.job.lease_id);
         let _ = std::fs::remove_file(self.job.sub("inflight").join(format!("{}.json", self.cfg.host)));

@@ -22,5 +22,5 @@ $Python = if ($env:URANIUM_PYTHON) { $env:URANIUM_PYTHON } else { "$Root\.venv\S
 $Hostd = "$Root\target\release\uranium-hostd.exe"
 if (-not (Test-Path $Hostd)) { throw "no $Hostd`: cargo build --release -p uranium-hostd" }
 Set-Location $Root
-& $Python -m uranium eval-worker --job $Job --priority $Priority --backend $Backend --local-hostd $LocalHostd --hostd $Hostd
+& $Python -m uranium eval-worker --job $Job --priority $Priority --backend $Backend --local-hostd $LocalHostd --hostd $Hostd --log "$Root\runs\eval-worker.log"
 Write-Host "[eval] worker exited ($LASTEXITCODE)"

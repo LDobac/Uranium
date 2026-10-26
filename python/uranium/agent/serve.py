@@ -52,6 +52,7 @@ def add_parsers(sub) -> None:
     e.add_argument("--local-hostd", help="this PC's hostd address in the hosts file: no new game goes there once this worker stops")
     e.add_argument("--hostd", help="uranium-hostd binary to run for this worker (own console and process group, so Ctrl+C here leaves it to finish the games; stopped after them)")
     e.add_argument("--log", help="also append everything written to stderr (Rust and Python) to this file")
+    e.add_argument("--no-warmup", action="store_true", help="skip the warm-up of every (batch, entity count) shape before the first game of a lease period")
     e.add_argument("--max-batch", type=int, default=32)
     e.add_argument("--max-wait-ms", type=int, default=5)
     e.set_defaults(fn=eval_worker)
@@ -67,8 +68,9 @@ def add_parsers(sub) -> None:
     k.set_defaults(fn=random_checkpoint)
 
 
-def start_server(checkpoint: str, sample: str, backend: str | None, max_batch: int, max_wait_ms: int, zero_last_failed: bool = False, warmup: bool = False):
-    """A broker for `checkpoint` and its model thread (started)."""
+def start_server(checkpoint: str, sample: str, backend: str | None, max_batch: int, max_wait_ms: int, zero_last_failed: bool = False, warmup: bool = False, warm_batches: list[int] | None = None):
+    """A broker for `checkpoint` and its model thread (started). `warm_batches`: the warm-up also
+    runs these batch sizes (see `InferenceServer.warm_up`)."""
     from uranium import _core
     from uranium.agent.infer import InferenceServer
     from uranium.device import configure, resolve
@@ -79,7 +81,7 @@ def start_server(checkpoint: str, sample: str, backend: str | None, max_batch: i
     broker = _core.Broker(checkpoint, sample, max_batch=max_batch, max_wait_ms=max_wait_ms, zero_last_failed=zero_last_failed, warmup_entities=n_max)
     server = InferenceServer(broker, device, precision)
     if warmup:
-        server.warm_up()
+        server.warm_up(warm_batches)
     server.start()
     print(f"[infer] {broker.checkpoint_id} ready ({backend}, {precision}, {sample}, max_batch {max_batch})", file=sys.stderr, flush=True)
     return broker, server
@@ -145,7 +147,7 @@ def eval_worker(a) -> int:
         _tee_stderr(a.log)
     backend = resolve(a.backend)[0]
     w = _core.EvalWorker(a.job, a.priority, backend, a.local_hostd)
-    hostd = _start_hostd(a.hostd) if a.hostd else None
+    hostd = _start_hostd(a.hostd, a.local_hostd) if a.hostd else None
     try:
         while True:
             end = w.wait_lease()
@@ -154,10 +156,14 @@ def eval_worker(a) -> int:
                 break
             models, servers = [], []
             try:
+                # Every power-of-two batch up to max_batch (the graph pads to one) at every entity
+                # count: a shape first met in a game stalls every game of the server for its
+                # capture (seconds to minutes with several models).
+                batches = [1 << i for i in range(max(a.max_batch, 1).bit_length())]
                 for ckpt, sample in w.needed_models():
                     if w.stop_level() > 0:
                         break
-                    broker, server = start_server(ckpt, sample, a.backend, a.max_batch, a.max_wait_ms)
+                    broker, server = start_server(ckpt, sample, a.backend, a.max_batch, a.max_wait_ms, warmup=not a.no_warmup, warm_batches=batches)
                     models.append((ckpt, sample, broker))
                     servers.append(server)
                 # Ctrl+C while loading: no game was handed out, `close` lets the lease go.
@@ -219,14 +225,21 @@ def _tee_stderr(path: str) -> None:
     atexit.register(drain)
 
 
-def _start_hostd(exe: str):
+def _start_hostd(exe: str, listen: str | None):
     """020-R15 ⑥: this PC's hostd for an eval worker, out of reach of the worker's Ctrl+C (own
-    console window on Windows, own session elsewhere) so the games in flight can finish."""
+    console window on Windows, own session elsewhere) so the games in flight can finish. It listens
+    on `listen` (the address the job's hosts file gives this PC; every worker reads the same file,
+    so it cannot be 127.0.0.1)."""
+    import os
+
+    env = dict(os.environ)
+    if listen:
+        env["URANIUM_HOSTD_LISTEN"] = listen
     if sys.platform == "win32":
         flags = subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NEW_PROCESS_GROUP
-        p = subprocess.Popen([exe, "serve"], creationflags=flags)
+        p = subprocess.Popen([exe, "serve"], creationflags=flags, env=env)
     else:
-        p = subprocess.Popen([exe, "serve"], start_new_session=True)
+        p = subprocess.Popen([exe, "serve"], start_new_session=True, env=env)
     print(f"[eval] hostd pid {p.pid}", file=sys.stderr, flush=True)
     return p
 

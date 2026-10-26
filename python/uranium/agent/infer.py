@@ -209,14 +209,19 @@ class InferenceServer(threading.Thread):
             return self.act_fn(obs, state, self.temp)
 
     @torch.no_grad()
-    def warm_up(self) -> None:
+    def warm_up(self, batches: list[int] | None = None) -> None:
         """012-R19: one batch-1 forward per padded entity count up to `warmup_entities`, so
-        kernel selection (and the graph capture) does not stall a live game."""
+        kernel selection (and the graph capture) does not stall a live game. `batches`: every
+        listed batch size for every entity count (020-R15 evaluation: dozens of games share a
+        server, and each new (batch, entity count) shape is captured once)."""
         pad = max(self.broker.pad_entities, 1)
         top = self.broker.warmup_entities
+        counts = list(range(pad, -(-top // pad) * pad + 1, pad))
         # A server of several games also runs batch 2 once: a compiled act otherwise treats the
         # batch size 1 of the warm-up as fixed and recompiles at the first larger batch.
-        sizes = [(1, n) for n in range(pad, -(-top // pad) * pad + 1, pad)] + ([(2, pad)] if self.broker.capacity > 1 else [])
+        sizes = [(1, n) for n in counts] + ([(2, pad)] if self.broker.capacity > 1 else [])
+        if batches:
+            sizes = [(b, n) for b in batches for n in counts]
         self.warmed = True
         for b, n in sizes:
             self._warm_one(b, n)
