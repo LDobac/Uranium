@@ -108,6 +108,9 @@ pub enum Side {
         race: RaceSel,
         #[serde(default)]
         build: T0Build,
+        /// 020-R16 display name (default `T0-<race>[-<build>]`).
+        #[serde(default)]
+        name: Option<String>,
     },
     /// Registered third-party bot on the host (021 T1).
     Oss { name: String, race: RaceSel },
@@ -116,6 +119,9 @@ pub enum Side {
         checkpoint: String,
         #[serde(default)]
         sample: SampleMode,
+        /// 020-R16 display name (default: the checkpoint's run folder name).
+        #[serde(default)]
+        name: Option<String>,
     },
 }
 
@@ -130,9 +136,38 @@ impl Side {
     /// The (checkpoint, sampling mode) a model side needs a server for.
     pub fn model(&self) -> Option<ModelKey> {
         match self {
-            Side::Model { checkpoint, sample } => Some((checkpoint.clone(), *sample)),
+            Side::Model { checkpoint, sample, .. } => Some((checkpoint.clone(), *sample)),
             _ => None,
         }
+    }
+
+    /// 020-R16: the player name shown in replays. A model is named after its run folder
+    /// (`checkpoints/<run>/ckpt-N` -> `<run>`), a T0 bot `T0-<race>` (`-<build>` for a scenario
+    /// build, `random` when the lobby race is Random), an OSS bot by its bot name.
+    pub fn display_name(&self, random: bool) -> String {
+        match self {
+            Side::Model { name: Some(n), .. } | Side::T0 { name: Some(n), .. } => n.clone(),
+            Side::Model { checkpoint, .. } => run_name(checkpoint),
+            Side::T0 { race, build, .. } => {
+                let race = if random { "random".to_string() } else { format!("{race:?}").to_lowercase() };
+                match *build {
+                    T0Build::Standard => format!("T0-{race}"),
+                    b => format!("T0-{race}-{}", b.name()),
+                }
+            }
+            Side::Oss { name, .. } => name.clone(),
+        }
+    }
+}
+
+/// The run folder of a checkpoint path: its parent when the last part is a checkpoint folder
+/// (`ckpt-N`, `last`), else the last part itself (a run folder resolved by LATEST, 061).
+pub fn run_name(checkpoint: &str) -> String {
+    let parts: Vec<&str> = checkpoint.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
+    match parts.as_slice() {
+        [.., run, last] if last.starts_with("ckpt-") || *last == "last" => run.to_string(),
+        [.., last] => last.to_string(),
+        [] => checkpoint.to_string(),
     }
 }
 
@@ -172,7 +207,7 @@ pub fn load_plan(path: &Path) -> Result<Plan> {
     check_surrender_chat(&plan.surrender_chat)?;
     for (i, m) in plan.matchups.iter().enumerate() {
         for side in [&m.p0, &m.p1] {
-            if let Side::T0 { race, build } = side {
+            if let Side::T0 { race, build, .. } = side {
                 if build.race().is_some_and(|r| r != Race::from(*race)) {
                     bail!("matchup {i}: T0 build `{}` plays {:?}, not {race:?}", build.name(), build.race().unwrap());
                 }
@@ -233,7 +268,7 @@ pub fn expand(plan: &Plan, agent_addr: &str) -> Vec<Job> {
                     Side::Model { .. } => (RaceSel::Terran, PlayerKind::Bridge { agent_addr: agent_addr.to_string() }),
                     Side::Oss { name, race } => (*race, PlayerKind::OssBot { name: name.clone() }),
                 };
-                PlayerSpec { race: if random { Race::Random } else { race.into() }, kind }
+                PlayerSpec { race: if random { Race::Random } else { race.into() }, kind, name: Some(s.display_name(random)) }
             };
             // 021-R7 Random applies to bots only; the model plays Terran (020-R11).
             let random = unit_hash(id) < m.p1_random_ratio && m.p1.model().is_none();
@@ -298,6 +333,33 @@ games = 1
 p0 = { kind = "t0", race = "zerg" }
 p1 = { kind = "t0", race = "protoss" }
 "#;
+
+    /// 020-R16: default player names, the plan `name` wins.
+    #[test]
+    fn display_names_020_r16() {
+        assert_eq!(run_name("checkpoints/core-abl-gtrxl-pt/ckpt-10000"), "core-abl-gtrxl-pt");
+        assert_eq!(run_name(r"D:\shared\checkpoints\arch-abl-all-pt\last"), "arch-abl-all-pt");
+        assert_eq!(run_name("checkpoints/bc-s1"), "bc-s1");
+        let text = "name='x'
+[[matchup]]
+map='both'
+games=1
+p0={kind='model',checkpoint='checkpoints/arch-abl-pool-pt/ckpt-10000'}
+p1={kind='t0',race='zerg',build='zerg_muta'}
+[[matchup]]
+map='both'
+games=1
+p0={kind='model',checkpoint='c/r/ckpt-1',name='mine'}
+p1={kind='oss',name='iron',race='terran'}";
+        let plan: Plan = toml::from_str(text).unwrap();
+        let jobs = expand(&plan, "a");
+        let names = |j: &Job| j.spec.players.clone().map(|p| p.name.unwrap());
+        assert_eq!(names(&jobs[0]), ["arch-abl-pool-pt".to_string(), "T0-zerg-zerg_muta".to_string()]);
+        assert_eq!(names(&jobs[1]), ["mine".to_string(), "iron".to_string()]);
+        let plan: Plan = toml::from_str(PLAN).unwrap();
+        assert_eq!(expand(&plan, "a")[4].spec.players[0].name.as_deref(), Some("T0-zerg"));
+        assert_eq!(Side::T0 { race: RaceSel::Zerg, build: T0Build::Standard, name: None }.display_name(true), "T0-random");
+    }
 
     #[test]
     fn plan_expands_to_jobs() {

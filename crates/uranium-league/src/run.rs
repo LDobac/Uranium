@@ -190,7 +190,7 @@ impl LeagueSource {
     fn job(&self, pick: Pick) -> Result<Job> {
         let s = &self.shared;
         let id = s.next_id.fetch_add(1, Ordering::SeqCst);
-        let bridge = |race| PlayerSpec { race, kind: PlayerKind::Bridge { agent_addr: s.agent_addr.clone() } };
+        let bridge = |race| PlayerSpec { race, kind: PlayerKind::Bridge { agent_addr: s.agent_addr.clone() }, name: None };
         let mut t0_builds = [T0Build::Standard; 2];
         let mut policies: [Option<PolicySpec>; 2] = [Some(PolicySpec::Learner(self.hooks[pick.agent.index()].clone())), None];
         let (p1, enemy_race, opponent) = match &pick.opponent {
@@ -198,7 +198,7 @@ impl LeagueSource {
                 t0_builds[1] = *build;
                 (bridge(*race), *race, format!("{}@{}", pick.key, env!("CARGO_PKG_VERSION")))
             }
-            Opponent::T1 { name, race } => (PlayerSpec { race: *race, kind: PlayerKind::OssBot { name: name.clone() } }, *race, pick.key.clone()),
+            Opponent::T1 { name, race } => (PlayerSpec { race: *race, kind: PlayerKind::OssBot { name: name.clone() }, name: None }, *race, pick.key.clone()),
             Opponent::SelfPlay => {
                 policies[1] = Some(PolicySpec::Model(s.handles[AgentKind::Main.index()].clone()));
                 (bridge(Race::Terran), Race::Terran, pick.key.clone())

@@ -156,11 +156,21 @@ impl EndBoard {
 /// The scheduler fills it before games start; players not listed play the standard build.
 pub type T0Builds = Arc<Mutex<HashMap<(u64, u8), T0Build>>>;
 
-/// Our `GameSpec.players` index: uranium-hostd names each player `uranium-p<index>` because
-/// the BWAPI player id (`Hello.slot`) need not follow launch order. Falls back to the slot.
+/// Our `GameSpec.players` index: uranium-hostd names each player `p<index>-<name>` (020-R16)
+/// or `uranium-p<index>` because the BWAPI player id (`Hello.slot`) need not follow launch
+/// order. Falls back to the slot.
 pub fn spec_index(info: &GameInfo, slot: u8) -> u8 {
     let name = info.players.iter().find(|p| p.is_self).map(|p| p.name.as_str()).unwrap_or("");
-    name.strip_prefix("uranium-p").and_then(|i| i.parse().ok()).unwrap_or(slot)
+    name_index(name).unwrap_or(slot)
+}
+
+/// The `GameSpec.players` index in a hostd player name (020-R11, 020-R16).
+pub fn name_index(name: &str) -> Option<u8> {
+    if let Some(i) = name.strip_prefix("uranium-p") {
+        return i.parse().ok();
+    }
+    let (i, _) = name.strip_prefix('p')?.split_once('-')?;
+    i.parse().ok()
 }
 
 /// 012-R7: a realtime Act is valid until the observed frame plus this many frames (about 1 s,
@@ -579,6 +589,18 @@ mod tests {
 
     fn end(slot: u8, winner: Option<u8>, frame: u32) -> SessionEnd {
         SessionEnd { slot, winner, frame, reason: EndReason::Elimination }
+    }
+
+    /// 020-R11 / 020-R16: the spec index comes from both hostd name forms, nothing from others.
+    #[test]
+    fn name_index_reads_both_forms_020_r16() {
+        assert_eq!(name_index("uranium-p1"), Some(1));
+        assert_eq!(name_index("p0-core-abl-gtrxl-pt"), Some(0));
+        assert_eq!(name_index("p1-T0-zerg"), Some(1));
+        assert_eq!(name_index("p1-"), Some(1));
+        assert_eq!(name_index("player"), None);
+        assert_eq!(name_index("pX-a"), None);
+        assert_eq!(name_index("Iron"), None);
     }
 
     /// 020-R13: on disagreement the session with the larger end frame decides.

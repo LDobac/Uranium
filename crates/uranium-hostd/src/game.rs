@@ -47,8 +47,26 @@ fn take_replay(cfg: &Config, spec: &GameSpec, dir: &Path) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-/// Player name prefix; the suffix is the `GameSpec.players` index.
+/// Player name prefix when the spec has no display name; the suffix is the `GameSpec.players`
+/// index.
 pub const PLAYER_NAME_PREFIX: &str = "uranium-p";
+
+/// BWAPI cuts `auto_menu.character_name` to 24 bytes (AutoMenuManager.cpp).
+pub const MAX_PLAYER_NAME: usize = 24;
+
+/// 020-R16: `p<i>-<name>` cut to [`MAX_PLAYER_NAME`] bytes (the index is never cut), or
+/// `uranium-p<i>` without a display name. The agent reads the index back (020-R11).
+pub fn player_name(spec: &GameSpec, slot: usize) -> String {
+    let Some(name) = spec.players[slot].name.as_deref() else { return format!("{PLAYER_NAME_PREFIX}{slot}") };
+    let mut out = format!("p{slot}-");
+    for c in name.chars() {
+        if out.len() + c.len_utf8() > MAX_PLAYER_NAME {
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
 
 /// Environment for one launcher (mirrors tools/openbw/selfmatch.sh).
 pub fn launcher_env(cfg: &Config, spec: &GameSpec, slot: usize, module: &Path, replay_dir: &Path) -> Vec<(String, String)> {
@@ -75,7 +93,7 @@ pub fn launcher_env(cfg: &Config, spec: &GameSpec, slot: usize, module: &Path, r
         ("URANIUM_LAN_SLOT", slot.to_string()),
         // The BWAPI player id need not follow launch order; the name tells the agent which
         // GameSpec player it is (050 scenario builds are looked up by it).
-        ("BWAPI_CONFIG_AUTO_MENU__CHARACTER_NAME", format!("{PLAYER_NAME_PREFIX}{slot}")),
+        ("BWAPI_CONFIG_AUTO_MENU__CHARACTER_NAME", player_name(spec, slot)),
         ("URANIUM_MAX_FRAMES", spec.max_frames.to_string()),
         ("URANIUM_PRIVILEGED", if spec.privileged { "1" } else { "0" }.to_string()),
     ];
@@ -296,8 +314,8 @@ mod tests {
             game_id: 3,
             map: MapKey::FightingSpirit,
             players: [
-                PlayerSpec { race: Race::Terran, kind: PlayerKind::Bridge { agent_addr: "127.0.0.1:7600".into() } },
-                PlayerSpec { race: Race::Random, kind: PlayerKind::OssBot { name: "ub".into() } },
+                PlayerSpec { race: Race::Terran, kind: PlayerKind::Bridge { agent_addr: "127.0.0.1:7600".into() }, name: None },
+                PlayerSpec { race: Race::Random, kind: PlayerKind::OssBot { name: "ub".into() }, name: Some("ub".into()) },
             ],
             seed,
             max_frames: 1000,
@@ -359,6 +377,23 @@ mod tests {
         assert!(env1.iter().any(|(k, v)| k == "URANIUM_OPENBW_DROP_TIMEOUT_MS" && v == "600000"));
         assert!(env1.iter().all(|(k, _)| k != "URANIUM_AGENT_ADDR" && k != "URANIUM_SEED"));
         assert!(env1.iter().any(|(k, v)| k == "BWAPI_CONFIG_AUTO_MENU__RACE" && v == "Random"));
+    }
+
+    /// 020-R16: `p<i>-<name>` cut to 24 bytes without cutting the index, legacy name without one.
+    #[test]
+    fn player_names_020_r16() {
+        let mut s = spec(None);
+        assert_eq!(player_name(&s, 0), "uranium-p0");
+        assert_eq!(player_name(&s, 1), "p1-ub");
+        s.players[0].name = Some("core-abl-gtrxl-pt".into());
+        assert_eq!(player_name(&s, 0), "p0-core-abl-gtrxl-pt");
+        s.players[0].name = Some("a-very-long-checkpoint-run-name".into());
+        let n = player_name(&s, 0);
+        assert_eq!((n.len(), n.as_str()), (MAX_PLAYER_NAME, "p0-a-very-long-checkpoin"));
+        s.players[0].name = Some("é".repeat(15));
+        assert!(player_name(&s, 0).len() <= MAX_PLAYER_NAME);
+        let env = launcher_env(&cfg(), &s, 1, Path::new("/o/module.so"), Path::new("/w/g3"));
+        assert!(env.iter().any(|(k, v)| k == "BWAPI_CONFIG_AUTO_MENU__CHARACTER_NAME" && v == "p1-ub"));
     }
 
     #[test]

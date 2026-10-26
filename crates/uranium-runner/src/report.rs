@@ -26,7 +26,7 @@ pub struct PolicyInfo {
 /// checkpoint cannot be read. The latter is warned about: the report then shows the plan path
 /// only, and a model-vs-model matchup lands in the mirror row without per-policy tables.
 fn model_info(side: &Side) -> Option<PolicyInfo> {
-    let Side::Model { checkpoint, sample } = side else { return None };
+    let Side::Model { checkpoint, sample, .. } = side else { return None };
     match read_model_info(Path::new(checkpoint), *sample) {
         Ok(i) => Some(i),
         Err(e) => {
@@ -71,10 +71,10 @@ fn policy_name(s: &Side, info: Option<&PolicyInfo>) -> String {
 
 fn plan_side_name(s: &Side) -> String {
     match s {
-        Side::T0 { race, build } if *build != Default::default() => format!("T0 {race:?} `{}`", build.name()),
+        Side::T0 { race, build, .. } if *build != Default::default() => format!("T0 {race:?} `{}`", build.name()),
         Side::T0 { race, .. } => format!("T0 {race:?}"),
         Side::Oss { name, race } => format!("{name} ({race:?})"),
-        Side::Model { checkpoint, sample } => format!("model `{checkpoint}` ({sample:?})"),
+        Side::Model { checkpoint, sample, .. } => format!("model `{checkpoint}` ({sample:?})"),
     }
 }
 

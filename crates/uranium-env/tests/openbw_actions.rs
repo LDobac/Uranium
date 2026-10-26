@@ -1079,7 +1079,7 @@ fn play(seed: u32, max_frames: u32, stop_when_done: bool, tag: &str) -> Box<Stat
     });
     let game_id = 0x031A_C100_0000 + (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() & 0xFFFF_FFFF);
     let _ = tag;
-    let player = PlayerSpec { race: Race::Terran, kind: PlayerKind::Bridge { agent_addr: agent_addr.clone() } };
+    let player = PlayerSpec { race: Race::Terran, kind: PlayerKind::Bridge { agent_addr: agent_addr.clone() }, name: None };
     let spec = GameSpec {
         game_id,
         map: MapKey::FightingSpirit,

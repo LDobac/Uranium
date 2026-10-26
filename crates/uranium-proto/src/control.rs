@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::Race;
 
 /// Bumped on incompatible control-schema changes.
-pub const CONTROL_VERSION: u32 = 2;
+pub const CONTROL_VERSION: u32 = 3;
 
 /// Target map families (`config/assets.toml`).
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -39,6 +39,9 @@ pub struct PlayerSpec {
     /// Race picked in the lobby (`Race::Random` allowed, 021-R7).
     pub race: Race,
     pub kind: PlayerKind,
+    /// 020-R16 (control version 3): display name; hostd names the player `p<i>-<name>` (cut to
+    /// the BW limit), `uranium-p<i>` without it.
+    pub name: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -150,8 +153,8 @@ mod tests {
             game_id: 7,
             map: MapKey::CircuitBreaker,
             players: [
-                PlayerSpec { race: Race::Terran, kind: PlayerKind::Bridge { agent_addr: "127.0.0.1:7600".into() } },
-                PlayerSpec { race: Race::Random, kind: PlayerKind::OssBot { name: "ualbertabot".into() } },
+                PlayerSpec { race: Race::Terran, kind: PlayerKind::Bridge { agent_addr: "127.0.0.1:7600".into() }, name: Some("core-abl-gtrxl-pt".into()) },
+                PlayerSpec { race: Race::Random, kind: PlayerKind::OssBot { name: "ualbertabot".into() }, name: None },
             ],
             seed: Some(42),
             max_frames: 86_400,

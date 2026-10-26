@@ -621,7 +621,7 @@ mod tests {
     #[test]
     fn opponent_id_021_r3_separates_t0_builds() {
         use uranium_proto::Race;
-        let t0 = |race| PlayerSpec { race, kind: PlayerKind::Bridge { agent_addr: String::new() } };
+        let t0 = |race| PlayerSpec { race, kind: PlayerKind::Bridge { agent_addr: String::new() }, name: None };
         let v = env!("CARGO_PKG_VERSION");
         let ids = HashMap::new();
         assert_eq!(opponent_id(&t0(Race::Zerg), T0Build::Standard, None, &ids), format!("t0-zerg@{v}"));
