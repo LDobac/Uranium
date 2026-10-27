@@ -13,7 +13,7 @@ from uranium.model.config import UraniumNetConfig
 from uranium.model.core import build_core
 from uranium.model.encoders import EntityEncoder, ScalarEncoder, SpatialEncoder
 from uranium.model.heads import HEAD_NAMES, LOC_ROW_MODES, ActionTable, Heads, location_rows
-from uranium.model.layers import env_choice
+from uranium.model.layers import CHANNELS_LAST_MODES, env_choice
 from uranium.model.value import ValueHeads
 from uranium.model.variants import Variants
 
@@ -138,6 +138,10 @@ class UraniumNet(nn.Module):
         assert len(cols["uses_select"]) == cfg.input.actions, "action table size != config.input.actions"
         self._cols = cols
         self.table = ActionTable(cols, "cpu")
+        if env_choice("URANIUM_CHANNELS_LAST", CHANNELS_LAST_MODES, "off") == "on":
+            # The conv weights in the activations' memory order too (`conv_layout`), so cuDNN does
+            # not convert them at every call. Checkpoints store the logical order (`ckpt`).
+            self.to(memory_format=torch.channels_last)
 
     @property
     def outer(self):

@@ -249,3 +249,20 @@ def test_spatial_bf16_is_bit_identical_under_autocast_032_r19(group, monkeypatch
     assert res[0][1].keys() == res[1][1].keys()
     for k, g in res[0][1].items():
         assert torch.equal(res[1][1][k], g), k
+
+
+def test_stem_pad_keeps_the_result_032_r19(group, monkeypatch):
+    """URANIUM_STEM_PAD=on: the stem conv over zero-padded input channels (and zero weight
+    columns) gives the plain conv's log-probs and gradients."""
+    res = {}
+    for mode in ("off", "on"):
+        monkeypatch.setenv("URANIUM_STEM_PAD", mode)
+        net = tiny_net()
+        obs, labels = to_obs(group, "cpu"), net.labels(group, "cpu")
+        out = net.forward_seq(obs, labels, torch.as_tensor(group["privileged"]).float(), net.init_state(group["b"], "cpu"), 4)
+        sum(out["logp"][k].sum() for k in HEADS).backward()
+        res[mode] = (torch.stack([out["logp"][k] for k in HEADS]).detach(), {k: p.grad.clone() for k, p in net.named_parameters() if p.grad is not None})
+    assert torch.allclose(res["on"][0], res["off"][0], atol=1e-5, rtol=1e-5)
+    assert res["on"][1].keys() == res["off"][1].keys()
+    for k, g in res["off"][1].items():
+        assert torch.allclose(res["on"][1][k], g, atol=1e-5, rtol=1e-4), k

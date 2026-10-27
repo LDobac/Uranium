@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from uranium.model.config import EntityConfig, InputDims, ScalarConfig, SpatialConfig
-from uranium.model.layers import Attention, FeedForward, Linear, Mlp, ResBlock, conv3x3, conv_layout, conv_wgrad, env_choice, masked_mean
+from uranium.model.layers import Attention, FeedForward, Linear, Mlp, ResBlock, conv3x3, conv_layout, conv_wgrad, env_choice, masked_mean, stem_pad
 
 # AMB-000-4 step 2: how the distance bias is gathered and its table gradient summed
 # (`URANIUM_BIAS_GRAD`); same values either way:
@@ -184,7 +184,17 @@ class SpatialEncoder(nn.Module):
         `outer`)."""
         spatial = obs["spatial"]
         h, w = spatial.shape[2], spatial.shape[3]
-        x = F.relu(conv_wgrad(self.stem, conv_layout(torch.cat([spatial, self.scatter_mean(obs, e, h, w).to(spatial.dtype)], 1))))
+        parts = [spatial, self.scatter_mean(obs, e, h, w).to(spatial.dtype)]
+        pad = stem_pad(self.stem)
+        if pad:
+            # 032-R19 `URANIUM_STEM_PAD`: zero input channels up to a multiple of 8, written by
+            # this cat, and zero weight columns for them (0 x w = 0: same conv). cuDNN's NHWC
+            # kernels want 8-channel multiples and otherwise pad in a pass of their own.
+            parts.append(spatial.new_zeros(spatial.shape[0], pad, h, w))
+            x = F.conv2d(conv_layout(torch.cat(parts, 1)), F.pad(self.stem.weight, (0, 0, 0, 0, 0, pad)), self.stem.bias, self.stem.stride, self.stem.padding)
+        else:
+            x = conv_wgrad(self.stem, conv_layout(torch.cat(parts, 1)))
+        x = F.relu(x)
         if film is not None:
             g, b = film
             x = x * (1.0 + g.to(x.dtype)[:, :, None, None]) + b.to(x.dtype)[:, :, None, None]

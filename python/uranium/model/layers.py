@@ -110,6 +110,17 @@ def conv3x3(c_in: int, c_out: int, stride: int) -> nn.Conv2d:
 CHANNELS_LAST_MODES = ("off", "on")
 
 
+STEM_PAD_MODES = ("off", "on")
+
+
+def stem_pad(conv: nn.Conv2d) -> int:
+    """Zero input channels the stem conv gets under `URANIUM_STEM_PAD=on` (to a multiple of 8;
+    0 when it already is, or the switch is off)."""
+    if env_choice("URANIUM_STEM_PAD", STEM_PAD_MODES, "off") != "on":
+        return 0
+    return -conv.in_channels % 8
+
+
 def conv_layout(x: torch.Tensor) -> torch.Tensor:
     """`x` [B,C,H,W] in the memory order `URANIUM_CHANNELS_LAST` picks (a no-op when it is already)."""
     if env_choice("URANIUM_CHANNELS_LAST", CHANNELS_LAST_MODES, "off") == "on":

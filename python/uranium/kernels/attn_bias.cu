@@ -105,13 +105,25 @@ __global__ void __launch_bounds__(BQ) bwd_q_kernel(const scalar_t* __restrict__ 
   __shared__ float ks[BK][DH];
   __shared__ float vs[BK][DH];
   __shared__ float tab[NB_MAX];
-  __shared__ float hist[NB_MAX];
   __shared__ bool ok[BK];
   __shared__ uint8_t bk[BQ * BS];
+#ifdef __HIP_PLATFORM_AMD__
+  // Table gradient: one shared histogram, atomics (the Linux ROCm host: bucket crowding made no
+  // difference there, AMB-000-4 step 2).
+  __shared__ float hist[NB_MAX];
   for (int t = threadIdx.x; t < NB; t += BQ) {
     tab[t] = table[t * H + h];
     hist[t] = 0.f;
   }
+#else
+  // Table gradient: every thread owns a column of slots[warp][bucket][lane] (bank = lane: no
+  // conflicts, no atomics). Real buckets crowd into a few values, and a shared atomic on one
+  // address serialises the warp on CUDA hosts (bwd_q 3.7x the forward, bwd_kv 1.5x).
+  __shared__ float slots[(BQ / 32) * NB_MAX * 32];
+  for (int t = threadIdx.x; t < NB; t += BQ) tab[t] = table[t * H + h];
+  for (int t = threadIdx.x; t < (BQ / 32) * NB_MAX * 32; t += BQ) slots[t] = 0.f;
+  float* mine = slots + (threadIdx.x / 32) * NB_MAX * 32 + threadIdx.x % 32;
+#endif
   const size_t base = (size_t)bh * N * DH;
   float qr[DH], dor[DH], dqa[DH];
 #pragma unroll
@@ -150,7 +162,11 @@ __global__ void __launch_bounds__(BQ) bwd_q_kernel(const scalar_t* __restrict__ 
       const float ds = p * (dp - D);
 #pragma unroll
       for (int d = 0; d < DH; ++d) dqa[d] += ds * ks[jj][d];
+#ifdef __HIP_PLATFORM_AMD__
       atomicAdd(&hist[bu], ds);
+#else
+      mine[bu * 32] += ds;
+#endif
     }
   }
   if (row) {
@@ -158,7 +174,17 @@ __global__ void __launch_bounds__(BQ) bwd_q_kernel(const scalar_t* __restrict__ 
     for (int d = 0; d < DH; ++d) dq[base + (size_t)i * DH + d] = static_cast<scalar_t>(dqa[d] * scale);
   }
   __syncthreads();
+#ifdef __HIP_PLATFORM_AMD__
   for (int t = threadIdx.x; t < NB; t += BQ) dtab_part[((size_t)blockIdx.x * gridDim.y + bh) * NB + t] = hist[t];
+#else
+  for (int t = threadIdx.x; t < NB; t += BQ) {
+    float s = 0.f;
+    for (int w = 0; w < BQ / 32; ++w)
+#pragma unroll
+      for (int l = 0; l < 32; ++l) s += slots[(w * NB_MAX + t) * 32 + l];
+    dtab_part[((size_t)blockIdx.x * gridDim.y + bh) * NB + t] = s;
+  }
+#endif
 }
 
 // ---------------------------------------------------------------------------------------------
