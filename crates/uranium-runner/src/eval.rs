@@ -1190,8 +1190,18 @@ pub fn status(job_dir: &Path, write_summaries: bool) -> Result<String> {
     Ok(out)
 }
 
+/// 020-R15 ⑨ (user decision 2026-10-27): a game hostd ended normally in which a bridge session
+/// did not report its end (its connection broke mid-game: a host's network, a client crash) has
+/// no result. The other side would otherwise count a win "by the opponent leaving". Bridge
+/// players are p0 and, unless the record names an OSS bot, p1.
+pub fn session_lost(record: &serde_json::Value, ended_sessions: usize) -> bool {
+    let bridges = if record["p1_kind"].as_str().is_some_and(|k| k.starts_with("oss:")) { 1 } else { 2 };
+    record["outcome"].as_str() == Some(JobOutcome::Finished.as_str()) && ended_sessions < bridges
+}
+
 /// Writes `<stage>/games.jsonl` / `results.jsonl` with plan ids (the last final attempt of each
-/// game, `hostd_id` kept) and the 020-R13/R14 summary, plus the inference backend table.
+/// game, `hostd_id` kept) and the 020-R13/R14 summary, plus the inference backend table. Given-up
+/// games and games with a lost session ([`session_lost`]) count as results-less `Aborted`.
 fn merge_stage(job: &EvalJob, si: usize, recs: &[Rec], st: &LedgerState) -> Result<()> {
     use std::fmt::Write as _;
     let s = &job.stages[si];
@@ -1200,6 +1210,14 @@ fn merge_stage(job: &EvalJob, si: usize, recs: &[Rec], st: &LedgerState) -> Resu
     let finals: HashMap<u64, u64> = st.done.iter().filter(|(k, _)| k.0 == si).map(|(k, id)| (*id, k.1)).collect();
     // Given-up games (AMB-020-6) end without a result: their last attempt's sessions stay out.
     let gave_up: HashSet<u64> = st.gave_up.iter().filter(|k| k.0 == si).map(|k| st.done[k]).collect();
+    let sessions: Vec<serde_json::Value> = read_dir_lines(&job.sub("results"))?.into_iter().filter(|v| v["game_id"].as_u64().is_some_and(|id| finals.contains_key(&id))).collect();
+    let mut ended: HashMap<u64, usize> = HashMap::new();
+    for v in &sessions {
+        if v["error"].is_null() {
+            *ended.entry(v["game_id"].as_u64().unwrap()).or_default() += 1;
+        }
+    }
+    let mut lost: HashSet<u64> = HashSet::new();
     let mut games: Vec<(u64, serde_json::Value)> = Vec::new();
     let mut backends: HashMap<String, usize> = HashMap::new();
     for r in recs.iter().filter(|r| finals.contains_key(&r.id)) {
@@ -1208,6 +1226,12 @@ fn merge_stage(job: &EvalJob, si: usize, recs: &[Rec], st: &LedgerState) -> Resu
         v["game_id"] = finals[&r.id].into();
         if gave_up.contains(&r.id) {
             v["gave_up"] = true.into();
+        }
+        if session_lost(&v, ended.get(&r.id).copied().unwrap_or(0)) {
+            v["hostd_outcome"] = v["outcome"].clone();
+            v["outcome"] = JobOutcome::Aborted.as_str().into();
+            v["no_result"] = "session lost".into();
+            lost.insert(r.id);
         }
         games.push((finals[&r.id], v));
     }
@@ -1223,13 +1247,11 @@ fn merge_stage(job: &EvalJob, si: usize, recs: &[Rec], st: &LedgerState) -> Resu
     }
     std::fs::write(dir.join("games.jsonl"), text)?;
     let mut text = String::new();
-    for mut v in read_dir_lines(&job.sub("results"))? {
-        let Some(id) = v["game_id"].as_u64() else { continue };
-        if let Some(g) = finals.get(&id)
-            && !gave_up.contains(&id)
-        {
+    for mut v in sessions {
+        let id = v["game_id"].as_u64().unwrap();
+        if !gave_up.contains(&id) && !lost.contains(&id) {
             v["hostd_id"] = id.into();
-            v["game_id"] = (*g).into();
+            v["game_id"] = finals[&id].into();
             writeln!(text, "{v}")?;
         }
     }
@@ -1238,6 +1260,9 @@ fn merge_stage(job: &EvalJob, si: usize, recs: &[Rec], st: &LedgerState) -> Resu
     let mut table = String::new();
     if !gave_up.is_empty() {
         writeln!(table, "\nGiven up after max_attempts failed attempts (no result, 020-R15 ④): {} games", gave_up.len())?;
+    }
+    if !lost.is_empty() {
+        writeln!(table, "\nA session lost mid-game (no result, 020-R15 ⑨): {} games", lost.len())?;
     }
     table.push_str("\n## Inference backend (020-R15 ⑧)\n\n| backend (host) | games |\n|---|---|\n");
     let mut rows: Vec<_> = backends.into_iter().collect();
@@ -1262,6 +1287,19 @@ mod tests {
 
     fn no_flights() -> Flights {
         Flights { busy: HashSet::new(), attempts: HashMap::new() }
+    }
+
+    /// 020-R15 ⑨: a normally ended game with fewer ended bridge sessions than bridges has no
+    /// result; an OSS bot opponent has no session of its own.
+    #[test]
+    fn session_lost_games_have_no_result_020_r15() {
+        let g = |outcome: &str, p1: &str| serde_json::json!({"outcome": outcome, "p1_kind": p1});
+        assert!(session_lost(&g("Finished", "t0"), 1));
+        assert!(session_lost(&g("Finished", "model"), 0));
+        assert!(!session_lost(&g("Finished", "t0"), 2));
+        assert!(!session_lost(&g("Finished", "oss:iron"), 1));
+        assert!(session_lost(&g("Finished", "oss:iron"), 0));
+        assert!(!session_lost(&g("Timeout", "t0"), 1), "only games hostd called Finished");
     }
 
     /// 020-R15 ⑦: ids keep stages and attempts apart and split back.

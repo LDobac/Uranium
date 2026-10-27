@@ -163,3 +163,9 @@
   - 020-AC7: 실제 모델 대 모델 리플레이(drill-pair g1)의 이름이 `p0-core-abl-gtrxl-pt`·`p1-arch-abl-terrain-pt`(`player_names` 시험 통과).
   - AC6의 ⑤(브리지 미접속 판 재배정)는 실제 장비에서 일부러 만들지 않았고 단위 테스트(`bridge_never_connected_is_not_finished_020_r4`, 원장 재시도 판정)로 확인.
   - 시험 산출물(지우지 않음): `<shared>/eval/drill/`, `<shared>/eval/drill2/`, 작업자 로그 CUDA PC `runs/eval-worker.log`, bc250_1 `~/eval_drill.out`, bc250_2 `~/eval_drill.out`·`~/eval_drill2.out`.
+- 2026-10-27 12:2x — **발견**(평가 중): hostd가 정상 종료로 보고한 판 중, 판 도중 한쪽 브리지 세션의 연결이 끊긴 판이 있다.
+  - 원인: bc250_1 네트워크 끊김(00:0x·10:3x 두 번, 재부팅 2회), CUDA 호스트 클라이언트 접근 위반 crash.
+  - 결과가 남은 쪽의 "상대 나감" 항복승으로 셌다. 12:25 기준 16판(리그전 1, 코어 T0 1, 변형 T0 14: 가짜 승리 9·결과 없음 5).
+  - 같은 시각 이 PC hostd에서 두 클라이언트가 함께 crash한 판(0xC0000005) 3판은 spec대로 `Aborted` 최종 기록이다.
+  - **결정**(사용자): 다시 돌리지 않고 집계에서 결과 없음으로만 뺀다. `eval-status` 합친 기록에서 `Aborted`·`no_result = "session lost"`로 바꾸고 세션을 요약에서 뺀다(020-R15 ⑨). 작업자는 재시작하지 않았다(규칙은 집계 단계에서만 적용).
+- 2026-10-27 00:00~ — CUDA 호스트 합류(사용자 "이 PC 유휴"). bc250_2는 00:11 재부팅으로 작업자·hostd가 내려가 09:4x에 다시 띄움. bc250_1은 네트워크 문제로 00:09~00:39, 10:39~10:42에 `leaving/`으로 뺐다가 복귀.
