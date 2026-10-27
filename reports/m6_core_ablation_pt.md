@@ -1,6 +1,6 @@
 # M6 — 시간 축 코어 2차 비교 (PyTorch, LSTM vs GTrXL, 032-R17 ⑥)
 
-- 상태: **학습 중** (2026-10-24 시작)
+- 상태: **평가 끝, 결정 대기** (2026-10-27)
 - spec: [032](../spec/032-model-architecture.md) 032-R17 ⑥, 032-AC7
 - 1차 비교(Burn, 5,300 update, GTrXL 채택): [`m6_core_ablation.md`](m6_core_ablation.md)
 
@@ -66,7 +66,22 @@ target\release\uranium-train worker --queue <shared>/queue/core-ablation-pt.toml
 
 ## 3. 결과
 
-(학습·평가 뒤)
+평가는 구조 변형 비교와 함께 평가 작업 하나로 했다(032-R20 ③, 상세는 [`m6_arch_ablation_pt.md`](m6_arch_ablation_pt.md) 3절). 두 run 모두 10,000 update, 장비 비율 LSTM CUDA 92.6% / ROCm 7.4%, GTrXL 59.0% / 41.0%(4절).
+
+| | LSTM | GTrXL |
+|---|---|---|
+| val 행동 top-1 | 69.22% | 69.46% |
+| val 행동 NLL | 1.038 | 1.025 |
+| val delay NLL | 1.887 | 1.867 |
+| val 위치 오차 중앙(타일) | 4.47 | 4.47 |
+| val 선택 F1 | 0.8265 | 0.8257 |
+| 맞대결 100판 (ROCm 추론) | 27승 | 26승 (무 47) |
+| T0 300판 승률 (Wilson 95%) | 14.7% [11.1, 19.1] (44·98·158) | 14.7% [11.1, 19.2] (44·90·165, 결과 없음 1) |
+| 리그전 순위 (7개 중, Bradley–Terry) | 6위 −15 | 3위 +10 |
+
+- 1차 비교(Burn, 5,300 update: 맞대결 GTrXL 42:13, T0 GTrXL 약 10% · LSTM 2.7%, val 전부 GTrXL 우세)와 달리, 2차에서는 두 코어가 val·맞대결·T0 모두 거의 같다.
+- val은 GTrXL이 근소하게 앞선다(행동 NLL 1.2%).
+- 판정 전까지 채택 코어는 GTrXL이다(032-R17 ④). 채택 여부는 사용자 결정이다.
 
 ## 4. 진행 기록
 

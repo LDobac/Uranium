@@ -217,7 +217,7 @@ class UraniumNet(nn.Module):  # PyTorch (032-R1). 장치는 텐서·모듈이 �
 - 032-AC9: win_open 경로에 privileged 텐서가 없다(테스트). `value.win_open` 키가 없는 설정이 로드된다(win_open 없음). 같은 seed에서 win_open을 켠 모델과 끈 모델의 공통 파라미터 초기값, 그리고 같은 batch 한 update(041-R19 clip 분리 포함) 뒤의 값이 CPU에서 비트 일치한다(2026-10-23: Flex → CPU).
 - 032-AC10 (2026-10-23, 전환 검증): Burn 삭제 전에 PyTorch 모델이 Burn 모델과 같은 가중치·입력(CPU)에서 forward 출력 최대 차이 ≤ 1e-5, 파라미터별 gradient 상대 L2 ≤ 1e-4, AdamW 한 step 뒤 가중치 차이가 같은 기준 안이다. LSTM·GTrXL 모두 확인한다. 작은 설정의 기준 출력(golden fixture)을 저장소에 남겨 Burn 삭제 뒤에도 회귀 테스트로 쓴다.
 - 032-AC11 (2026-10-25, 032-R20): §2.7 스위치가 모두 꺼진 모델은 기본 구성과 파라미터 목록·출력이 같다(기존 테스트 그대로 통과, AC10 포함). 각 변형과 네 스위치를 모두 켠 조합에서 ① 공유 모듈 초기 가중치가 기본 구성과 같고 ② step 실행이 시퀀스 실행과 같으며(032-R5, `outer` 구간 경계 포함) ③ 마스크(AC4)·privileged 경로 없음(AC5)·엔티티 재계산 동일(041-R17)·체크포인트 왕복이 성립한다(CPU 테스트). 추론 graph act = eager는 GPU 테스트로 확인한다. 다른 `[model]` 설정으로 재개하면 거부하고, `[model]`에 모르는 키가 있으면 시작을 거부한다.
-- 032-AC12 (2026-10-25, 032-R20): 변형 run 5개가 10,000 update에서 끝나고, val 지표, 리그전 쌍별 승률(Wilson 95%)·7×7 표·전체 순위, run별 장비 비율·update 시간이 `reports/m6_arch_ablation_pt.md`에 기록되며, 사용자가 채택 여부를 정한다.
+- 032-AC12 (2026-10-25, 032-R20): 변형 run 5개가 10,000 update에서 끝나고, val 지표, 리그전 쌍별 승률(Wilson 95%)·7×7 표·전체 순위, run별 장비 비율·update 시간이 `reports/m6_arch_ablation_pt.md`에 기록되며, 사용자가 채택 여부를 정한다. — 기록 완료(2026-10-27, 3절), 채택 여부 사용자 결정 대기.
 
 ## Risks & Open Questions
 - **구조 변형 비교 (2026-10-25, 032-R20)**:
