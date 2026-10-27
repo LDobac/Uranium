@@ -583,3 +583,5 @@ GPU 복사 0.338 → 0.096, forward 0.471 → 0.454, backward 0.876 → 0.756, �
 - 중간 3 → **반영**: `.env.example`에 새 키·기본값(001-R9); 재개할 때 옵티마이저 모멘트를 파라미터의 메모리 배치로 복원(channels-last conv 가중치가 재개 뒤에도 multi-tensor Adam 경로를 타게); `URANIUM_STEM_PAD`는 bmm 가중치 gradient 경로(ROCm)가 도는 호출에서는 패딩하지 않음.
 - 낮음 → 반영: `to_device`의 pinned 확인 순서(환경 스위치 먼저). 반영 안 함: 커널 마지막 합산의 bank 충돌(블록당 2·32·NB 읽기, 본 루프 대비 무시할 크기), 레인 묶음이 1개일 때도 첫 gradient를 복사하는 것(묶음 1개는 `micro_lanes = 0` 설정뿐이고 복사 한 번), 모양마다 그래프를 따로 녹화하는 경고(100 update에 4회로 확인).
 - 그래프 재생과 dropout 난수: 묶음마다 `manual_seed`는 그대로 효과가 있고(재생이 생성기의 seed·offset을 읽음), offset 기록만 eager와 다르다(032-R19 ② 안, GPU 재개는 허용 오차 판정 061-AC1).
+- 리뷰 반영 뒤 재검증(학습 PC): 환경변수 없이 기본값만으로 30 update 중앙값 **1.32초**(B 1.31과 같음, 그래프 모드 적용 확인), `pytest -m gpu` 12 통과, 실제 `bc` 루프 4 update → 재개 → 7 update rc 0(재개가 channels-last 옵티마이저 복원을 거침). asus CPU 129 통과·13 건너뜀.
+- 아직 안 한 것: Linux ROCm 호스트에서의 확인(ROCm 경로는 바꾸지 않았지만 사용자 지시로 두 호스트 중 하나에서 `pytest -m gpu`·`bench bc` 12 update를 돌린 뒤 master에 반영한다). 두 호스트가 모두 학습 중이라 교대가 필요하다.
