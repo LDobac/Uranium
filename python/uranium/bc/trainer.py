@@ -16,10 +16,10 @@ import torch
 
 from uranium import ckpt, kernels
 from uranium.bc.clip import clip_global_norm
-from uranium.device import adam_impl, autocast, compiled, impl_settings, mark_dynamic
+from uranium.device import adam_impl, autocast, compile_graphs, compiled, impl_settings, mark_dynamic
 from uranium.model import UraniumNet, UraniumNetConfig, input_dims, to_obs
 from uranium.model.config import VariantConfig
-from uranium.model.net import to_device, trim_entity_pad
+from uranium.model.net import stage, to_device, trim_entity_pad
 
 HEADS = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
 VALUE_WIN = 0
@@ -69,6 +69,7 @@ class BcTrainer:
         self._collate = ThreadPoolExecutor(max_workers=1, thread_name_prefix="collate")
         kernels.warm(device)
         self.forward_seq = compiled(self.net.forward_seq)
+        self.graphs = self.forward_seq is not self.net.forward_seq and compile_graphs()
         has_open, weighted = self.net.value.open is not None, cfg["value"].get("win_open") is not None
         if weighted and not has_open:
             print("[bc] WARNING: [value] win_open is set but the model has no win_open head: no win_open loss", flush=True)
@@ -119,7 +120,7 @@ class BcTrainer:
         # this one trains, so the GPU does not wait for it; at most two collated groups are alive.
         # 032 §2.7: the entity padding cut for the extra tokens there too (a host copy).
         k = self.net.cfg.variant.tokens()
-        collate = lambda i: trim_entity_pad(batch.group(i * g, min((i + 1) * g, lanes), cfg["seq_len"], cfg["pad_entities"], self.net.cfg.heads.max_select), k)  # noqa: E731
+        collate = lambda i: stage(trim_entity_pad(batch.group(i * g, min((i + 1) * g, lanes), cfg["seq_len"], cfg["pad_entities"], self.net.cfg.heads.max_select), k), dev, self.precision)  # noqa: E731
         nxt = self._collate.submit(collate, 0)
         for i in range(groups):
             self.tick("other")
@@ -169,11 +170,18 @@ class BcTrainer:
         torch.manual_seed(dropout_seed(cfg["data"]["seed"], step, group))
         if self.forward_seq is not self.net.forward_seq:
             mark_dynamic(obs, labels)
+        if self.graphs:
+            # 032-R19 CUDA graph replay: this group's forward and backward are one new step; the
+            # previous group's outputs are no longer read.
+            torch.compiler.cudagraph_mark_step_begin()
         with autocast(dev, self.precision):
             out = self.forward_seq(obs, labels, priv, s0, t, self.entity_chunk)
         self.tick("forward")
         # Detached when stored: a waiting group's state does not keep its graph alive (041-R2).
-        self.states[group] = net.detach_state(out["state"])
+        # Copied under graph replay: the state outlives the next replay, which overwrites the
+        # graph's output buffers (same values).
+        state = net.detach_state(out["state"])
+        self.states[group] = torch.utils._pytree.tree_map(torch.clone, state) if self.graphs else state
 
         hw = cfg["heads"]
         ce = [(-out["logp"][k].float() * w).sum() / valid for k in HEADS]
@@ -190,7 +198,14 @@ class BcTrainer:
             open_loss = ((out["win_open"].float() - target) ** 2 * vw).sum() / value_valid
             loss = loss + open_loss * k_open
         self.tick("loss")
+        fresh = [p for p in self.params if p.grad is None] if self.graphs else ()
         loss.backward()
+        # Under graph replay the compiled backward's gradient outputs live in the graph's memory,
+        # which the next group's replay overwrites: a gradient first set by this group gets its
+        # own buffer, and the later groups add into it (the same sum, 041-R3).
+        for p in fresh:
+            if p.grad is not None:
+                p.grad = p.grad.clone()
         self.tick("backward")
         return torch.stack([loss, *ce, value_loss, open_loss]).detach()
 

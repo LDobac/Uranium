@@ -46,7 +46,7 @@ IMPL_DEFAULTS = {
 IMPL_SWITCHES = (
     "URANIUM_LOC_ROWS", "URANIUM_LOC_OUT", "URANIUM_H2D", "URANIUM_BIAS_GRAD", "URANIUM_CONV_WGRAD", "URANIUM_LINEAR_WGRAD",
     "URANIUM_ENTITY_ATTN", "URANIUM_ADAM", "URANIUM_COMPILE", "URANIUM_COMPILE_DYNAMIC", "URANIUM_COMPILE_RNG", "URANIUM_INFER_GRAPH",
-    "URANIUM_INFER_COMPILE", "URANIUM_INFER_STREAM", "URANIUM_INFER_GRAPH_MAX_BATCH",
+    "URANIUM_INFER_COMPILE", "URANIUM_INFER_STREAM", "URANIUM_INFER_GRAPH_MAX_BATCH", "URANIUM_CHANNELS_LAST", "URANIUM_SPATIAL_BF16",
 )
 
 
@@ -75,6 +75,15 @@ COMPILE_RECOMPILE_LIMIT = 64
 # `URANIUM_COMPILE_RNG`: dropout draws from Inductor's own generator (`inductor`) or from the eager
 # generator (`eager`: the draws of an uncompiled run, so hosts with and without compile agree).
 COMPILE_RNG_MODES = ("eager", "inductor")
+
+
+def compile_graphs(key: str = "URANIUM_COMPILE") -> bool:
+    """`key` names a compile mode that replays CUDA graphs (`reduce-overhead`, `max-autotune`):
+    the caller marks each new step (`torch.compiler.cudagraph_mark_step_begin`) and copies the
+    outputs it keeps past the next call, which the next replay overwrites."""
+    from uranium.model.layers import env_choice
+
+    return env_choice(key, COMPILE_MODES, "off") in ("reduce-overhead", "max-autotune")
 
 
 def compiled(fn, key: str = "URANIUM_COMPILE"):

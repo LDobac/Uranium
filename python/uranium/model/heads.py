@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from uranium.model.config import HeadsConfig, InputDims, SpatialConfig
-from uranium.model.layers import GruCell, Linear, Mlp, ResMlp, entropy, env_choice, gumbel_argmax, log_softmax_f32, masked_log_softmax, pick, tempered
+from uranium.model.layers import GruCell, Linear, Mlp, ResMlp, conv_layout, entropy, env_choice, gumbel_argmax, log_softmax_f32, masked_log_softmax, pick, tempered
 
 HEAD_NAMES = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
 TARGET_UNIT = 1
@@ -103,18 +103,18 @@ class LocationHead(nn.Module):
     def forward(self, ar, sp: dict):
         """-> logits [B, M*M]"""
         b, _, s, _ = sp["s8"].shape
-        x = torch.cat([F.relu(self.ar(ar)).view(b, self.ar_channels, s, s), sp["s8"]], 1)
+        x = conv_layout(torch.cat([F.relu(self.ar(ar)).view(b, self.ar_channels, s, s), sp["s8"]], 1))
         skips = [sp["skips"][2], sp["skips"][1], sp["skips"][0]]
         for i, up in enumerate(self.ups):
             x = F.relu(up(x))
             if i < 3:
-                x = torch.cat([x, skips[i]], 1)
+                x = conv_layout(torch.cat([x, skips[i]], 1))
         m = x.shape[2]
         # mulsum is the 1x1 conv's sum written out: only for a 1x1, single-output conv.
         if self.out_mode == "mulsum" and self.out.kernel_size == (1, 1) and self.out.out_channels == 1 and self.out.groups == 1:
             w = self.out.weight.view(1, -1, 1, 1).to(x.dtype)
-            return ((x * w).sum(1) + self.out.bias.to(x.dtype)).view(b, m * m)
-        return self.out(x).view(b, m * m)
+            return ((x * w).sum(1) + self.out.bias.to(x.dtype)).reshape(b, m * m)
+        return self.out(x).reshape(b, m * m)
 
 
 class Heads(nn.Module):

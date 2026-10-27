@@ -39,14 +39,14 @@ def to_device(x, device) -> torch.Tensor:
     cannot launch ahead (AMB-000-4 step 2). Same values either way."""
     t = torch.as_tensor(x)
     dev = torch.device(device)
-    if dev.type == "cuda" and env_choice("URANIUM_H2D", H2D_MODES, "sync") == "pinned":
+    if dev.type == "cuda" and not t.is_pinned() and env_choice("URANIUM_H2D", H2D_MODES, "sync") == "pinned":
         t = t.pin_memory()
     return t.to(dev, non_blocking=True)
 
 
 def to_obs(group: dict, device, dtype=torch.float32) -> dict:
     """Observation tensors from a lane group / numpy dict: masks to bool, indices to int64,
-    features to `dtype`."""
+    features to `dtype`; a `spatial` the host already rounded to bf16 (`spatial_bf16`) stays bf16."""
     out = {}
     for k in OBS_KEYS:
         t = to_device(group[k], device)
@@ -54,9 +54,39 @@ def to_obs(group: dict, device, dtype=torch.float32) -> dict:
             t = t.bool()
         elif k in LONG_KEYS:
             t = t.long()
-        else:
+        elif not (k == "spatial" and t.dtype == torch.bfloat16):
             t = t.to(dtype)
         out[k] = t
+    return out
+
+
+# 032-R19: `URANIUM_SPATIAL_BF16` - under bf16 autocast (032-R8, CUDA host) the spatial planes go to
+# the device as f32 (`off`) or rounded to bf16 on the host (`on`, half the bytes: about 3.5 of the
+# 3.8 GB a BC update copies). Their only consumers are autocast convs / Linears (the stem, the
+# terrain variant's Linear) that round them to bf16 the same way (round to nearest even), after
+# dtype-keeping cat / gather, so the result is the same. Not used with f32 compute.
+SPATIAL_BF16_MODES = ("off", "on")
+
+
+def stage(group: dict, device, precision: str) -> dict:
+    """`group` ready for the copy to `device`, on the collate thread (torch copies release the GIL):
+    with `URANIUM_H2D=pinned` every observation array is copied into page-locked memory here, not in
+    `to_device` on the training thread, and with `URANIUM_SPATIAL_BF16=on` under bf16 autocast
+    `spatial` is rounded to bf16 in that same copy. Otherwise `group` itself."""
+    bf16 = precision == "bf16" and env_choice("URANIUM_SPATIAL_BF16", SPATIAL_BF16_MODES, "off") == "on"
+    pinned = torch.device(device).type == "cuda" and env_choice("URANIUM_H2D", H2D_MODES, "sync") == "pinned"
+    if not (bf16 or pinned):
+        return group
+    out = dict(group)
+    # The observations only (nearly all the bytes); the labels are also read on the host.
+    for k in OBS_KEYS:
+        v = group[k]
+        if not isinstance(v, np.ndarray) or (not pinned and k != "spatial"):
+            continue
+        dtype = torch.bfloat16 if bf16 and k == "spatial" else None
+        src = torch.from_numpy(np.ascontiguousarray(v))
+        dst = torch.empty(src.shape, dtype=dtype or src.dtype, pin_memory=pinned)
+        out[k] = dst.copy_(src)
     return out
 
 
@@ -280,7 +310,8 @@ class UraniumNet(nn.Module):
         part = torch.where(pos < first, torch.zeros_like(pos), 1 + torch.div(pos - first, seg, rounding_mode="floor")).reshape(-1)
         core_in = cs = None
         idxs, hs, es, sps, scs = [], [], [], [], []
-        for k in range((t + seg - 1) // seg + 1):
+        last = int(part.max())
+        for k in range(last + 1):
             idx = (part == k).nonzero().squeeze(1)
             if idx.numel() == 0:
                 continue
@@ -288,8 +319,13 @@ class UraniumNet(nn.Module):
             sub = {key: x.index_select(0, idx) for key, x in obs.items()}
             ci, e, sp, sc = self.encode(sub, entity_chunk, os_[0].index_select(0, row))
             core_in = (ci.new_zeros(bt, ci.shape[1]) if core_in is None else core_in).index_copy(0, idx, ci)
-            h_all, cs = self.core.forward_seq(core_in.view(b, t, -1), cs0)
-            h = h_all.reshape(bt, -1).index_select(0, idx)
+            # The core is causal, so the steps up to this segment's last one are exact from that
+            # prefix alone (032-R19); the last segment runs it over all `t` steps for the final
+            # state (every input is in by then).
+            tk = t if k == last else int(torch.remainder(idx, t).max()) + 1
+            h_all, cs = self.core.forward_seq(core_in.view(b, t, -1)[:, :tk], cs0)
+            pos = torch.remainder(idx, t)
+            h = h_all.reshape(b, tk, -1)[row, pos]
             total = torch.zeros(b, h.shape[1], device=dev).index_add(0, row, h.float())
             count = torch.zeros(b, device=dev).index_add(0, row, torch.ones(idx.numel(), device=dev))
             os_ = self.outer.after_rows(total, count, os_)

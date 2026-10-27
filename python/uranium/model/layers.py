@@ -103,6 +103,20 @@ def conv3x3(c_in: int, c_out: int, stride: int) -> nn.Conv2d:
     return nn.Conv2d(c_in, c_out, 3, stride=stride, padding=1)
 
 
+# 032-R19: `URANIUM_CHANNELS_LAST` - the activations of the spatial encoder and the location head
+# in NCHW (`off`) or channels-last (`on`) memory order. Same values; cuDNN runs its NHWC kernels
+# without converting every conv's input and output (CUDA host, one update: about 180 ms of
+# layout kernels).
+CHANNELS_LAST_MODES = ("off", "on")
+
+
+def conv_layout(x: torch.Tensor) -> torch.Tensor:
+    """`x` [B,C,H,W] in the memory order `URANIUM_CHANNELS_LAST` picks (a no-op when it is already)."""
+    if env_choice("URANIUM_CHANNELS_LAST", CHANNELS_LAST_MODES, "off") == "on":
+        return x.contiguous(memory_format=torch.channels_last)
+    return x
+
+
 # AMB-000-4 step 2: `URANIUM_CONV_WGRAD` - the weight gradient of the spatial encoder's stem and
 # stride-2 convs from the vendor library (`vendor`) or from per-sample batched GEMMs over the
 # unfolded input (`bmm`, the same sum). MIOpen's weight gradient on the Linux ROCm host is slow for

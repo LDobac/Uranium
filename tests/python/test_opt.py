@@ -208,3 +208,44 @@ def test_switches_fall_back_on_other_layer_shapes(group, monkeypatch):
         ar = torch.randn(sp["s8"].shape[0], net.cfg.heads.ar, generator=torch.Generator().manual_seed(1))
         outs[mode] = net.heads.location(ar, sp).detach()
     assert torch.equal(outs["mulsum"], outs["conv"])
+
+
+def test_channels_last_keeps_the_result_032_r19(group, monkeypatch):
+    """URANIUM_CHANNELS_LAST=on: the spatial encoder and location head on channels-last
+    activations give the NCHW path's log-probs and gradients."""
+    res = {}
+    for mode in ("off", "on"):
+        monkeypatch.setenv("URANIUM_CHANNELS_LAST", mode)
+        net = tiny_net()
+        obs, labels = to_obs(group, "cpu"), net.labels(group, "cpu")
+        out = net.forward_seq(obs, labels, torch.as_tensor(group["privileged"]).float(), net.init_state(group["b"], "cpu"), 4)
+        sum(out["logp"][k].sum() for k in HEADS).backward()
+        res[mode] = (torch.stack([out["logp"][k] for k in HEADS]).detach(), {k: p.grad.clone() for k, p in net.named_parameters() if p.grad is not None})
+    assert torch.allclose(res["on"][0], res["off"][0], atol=1e-5, rtol=1e-5)
+    assert res["on"][1].keys() == res["off"][1].keys()
+    for k, g in res["off"][1].items():
+        assert torch.allclose(res["on"][1][k], g, atol=1e-5, rtol=1e-4), k
+
+
+def test_spatial_bf16_is_bit_identical_under_autocast_032_r19(group, monkeypatch):
+    """URANIUM_SPATIAL_BF16=on rounds the spatial planes to bf16 on the host; under bf16 autocast
+    their consumers round them the same way, so log-probs and gradients are bit-identical (CPU
+    autocast stands in for the CUDA host). With f32 compute the switch does nothing."""
+    from uranium.device import autocast
+    from uranium.model.net import stage
+
+    monkeypatch.setenv("URANIUM_SPATIAL_BF16", "on")
+    staged = stage(group, "cpu", "bf16")
+    assert staged["spatial"].dtype == torch.bfloat16 and stage(group, "cpu", "f32") is group
+    res = []
+    for hg in (group, staged):
+        net = tiny_net()
+        obs, labels = to_obs(hg, "cpu"), net.labels(hg, "cpu")
+        with autocast(torch.device("cpu"), "bf16"):
+            out = net.forward_seq(obs, labels, torch.as_tensor(group["privileged"]).float(), net.init_state(group["b"], "cpu"), 4)
+        sum(out["logp"][k].float().sum() for k in HEADS).backward()
+        res.append((torch.stack([out["logp"][k].float() for k in HEADS]).detach(), {k: p.grad.clone() for k, p in net.named_parameters() if p.grad is not None}))
+    assert torch.equal(res[0][0], res[1][0])
+    assert res[0][1].keys() == res[1][1].keys()
+    for k, g in res[0][1].items():
+        assert torch.equal(res[1][1][k], g), k

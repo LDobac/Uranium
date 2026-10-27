@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from uranium.model.config import EntityConfig, InputDims, ScalarConfig, SpatialConfig
-from uranium.model.layers import Attention, FeedForward, Linear, Mlp, ResBlock, conv3x3, conv_wgrad, env_choice, masked_mean
+from uranium.model.layers import Attention, FeedForward, Linear, Mlp, ResBlock, conv3x3, conv_layout, conv_wgrad, env_choice, masked_mean
 
 # AMB-000-4 step 2: how the distance bias is gathered and its table gradient summed
 # (`URANIUM_BIAS_GRAD`); same values either way:
@@ -184,7 +184,7 @@ class SpatialEncoder(nn.Module):
         `outer`)."""
         spatial = obs["spatial"]
         h, w = spatial.shape[2], spatial.shape[3]
-        x = F.relu(conv_wgrad(self.stem, torch.cat([spatial, self.scatter_mean(obs, e, h, w).to(spatial.dtype)], 1)))
+        x = F.relu(conv_wgrad(self.stem, conv_layout(torch.cat([spatial, self.scatter_mean(obs, e, h, w).to(spatial.dtype)], 1))))
         if film is not None:
             g, b = film
             x = x * (1.0 + g.to(x.dtype)[:, :, None, None]) + b.to(x.dtype)[:, :, None, None]
