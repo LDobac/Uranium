@@ -120,6 +120,7 @@ def load_optimizer(dir: Path, name: str, net: torch.nn.Module, opt: torch.optim.
         p = params[pname]
         opt.state[p] = {
             "step": t[f"{pname}.step"].reshape(()).to(p.device if fused else "cpu"),
-            "exp_avg": t[f"{pname}.exp_avg"].to(p.device, p.dtype),
-            "exp_avg_sq": t[f"{pname}.exp_avg_sq"].to(p.device, p.dtype),
+            # In the parameter's memory format (channels-last conv weights, 032-R19).
+            "exp_avg": torch.empty_like(p).copy_(t[f"{pname}.exp_avg"]),
+            "exp_avg_sq": torch.empty_like(p).copy_(t[f"{pname}.exp_avg_sq"]),
         }

@@ -39,6 +39,16 @@ IMPL_DEFAULTS = {
     "cuda": {"URANIUM_LOC_ROWS": "pow2", "URANIUM_ENTITY_ATTN": "fused", "URANIUM_COMPILE": "default", "URANIUM_INFER_GRAPH": "on", "URANIUM_INFER_COMPILE": "default"},
     "cpu": {},
 }
+# The BC trainer's extra defaults (`configure(train=True)`, `reports/pytorch_opt.md` 6, 2026-10-28):
+# channels-last activations and weights, the spatial planes rounded to bf16 on the host, the stem
+# input padded to 8-channel multiples, CUDA graph replay of the compiled forward / backward. Not
+# for inference processes (eval jobs, SC:R, RL): channels-last makes torch.compile several times
+# slower per shape, which a per-shape compiled `act` would pay at every warm-up.
+TRAIN_DEFAULTS = {
+    "rocm": {},
+    "cuda": {"URANIUM_H2D": "pinned", "URANIUM_CHANNELS_LAST": "on", "URANIUM_SPATIAL_BF16": "on", "URANIUM_STEM_PAD": "on", "URANIUM_COMPILE": "reduce-overhead"},
+    "cpu": {},
+}
 
 
 # Every implementation switch (same math, AMB-000-4 step 2), recorded in checkpoint metadata
@@ -56,14 +66,15 @@ def impl_settings() -> list[str]:
     return [f"{k}={os.environ[k]}" for k in IMPL_SWITCHES if os.environ.get(k)]
 
 
-def configure(backend: str) -> None:
+def configure(backend: str, train: bool = False) -> None:
     """041-R15 kernel selection: cuDNN benchmark mode on CUDA hosts only. ROCm keeps MIOpen's
     immediate mode with its find-db (`MIOPEN_USER_DB_PATH`): benchmark mode there runs a MIOpen
     search for every new shape (4.6 s to 2 min per shape on the Linux ROCm host, 2026-10-24), and
     the location head's row count changes every call (032-R10). Then the backend's implementation
-    defaults (`IMPL_DEFAULTS`); call before building the network."""
+    defaults (`IMPL_DEFAULTS`, and `TRAIN_DEFAULTS` first for the BC trainer); call before
+    building the network."""
     torch.backends.cudnn.benchmark = backend == "cuda"
-    for k, v in IMPL_DEFAULTS[backend].items():
+    for k, v in (IMPL_DEFAULTS[backend] | (TRAIN_DEFAULTS[backend] if train else {})).items():
         os.environ.setdefault(k, v)
 
 

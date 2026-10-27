@@ -39,7 +39,7 @@ def to_device(x, device) -> torch.Tensor:
     cannot launch ahead (AMB-000-4 step 2). Same values either way."""
     t = torch.as_tensor(x)
     dev = torch.device(device)
-    if dev.type == "cuda" and not t.is_pinned() and env_choice("URANIUM_H2D", H2D_MODES, "sync") == "pinned":
+    if dev.type == "cuda" and env_choice("URANIUM_H2D", H2D_MODES, "sync") == "pinned" and not t.is_pinned():
         t = t.pin_memory()
     return t.to(dev, non_blocking=True)
 
@@ -314,8 +314,7 @@ class UraniumNet(nn.Module):
         part = torch.where(pos < first, torch.zeros_like(pos), 1 + torch.div(pos - first, seg, rounding_mode="floor")).reshape(-1)
         core_in = cs = None
         idxs, hs, es, sps, scs = [], [], [], [], []
-        last = int(part.max())
-        for k in range(last + 1):
+        for k in range((t + seg - 1) // seg + 1):
             idx = (part == k).nonzero().squeeze(1)
             if idx.numel() == 0:
                 continue
@@ -323,13 +322,8 @@ class UraniumNet(nn.Module):
             sub = {key: x.index_select(0, idx) for key, x in obs.items()}
             ci, e, sp, sc = self.encode(sub, entity_chunk, os_[0].index_select(0, row))
             core_in = (ci.new_zeros(bt, ci.shape[1]) if core_in is None else core_in).index_copy(0, idx, ci)
-            # The core is causal, so the steps up to this segment's last one are exact from that
-            # prefix alone (032-R19); the last segment runs it over all `t` steps for the final
-            # state (every input is in by then).
-            tk = t if k == last else int(torch.remainder(idx, t).max()) + 1
-            h_all, cs = self.core.forward_seq(core_in.view(b, t, -1)[:, :tk], cs0)
-            pos = torch.remainder(idx, t)
-            h = h_all.reshape(b, tk, -1)[row, pos]
+            h_all, cs = self.core.forward_seq(core_in.view(b, t, -1), cs0)
+            h = h_all.reshape(bt, -1).index_select(0, idx)
             total = torch.zeros(b, h.shape[1], device=dev).index_add(0, row, h.float())
             count = torch.zeros(b, device=dev).index_add(0, row, torch.ones(idx.numel(), device=dev))
             os_ = self.outer.after_rows(total, count, os_)

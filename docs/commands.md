@@ -12,7 +12,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 - BWAPI 타입 표(013-R1): `cargo run -p bwapi-tables -- third_party/bwapi/bwapi crates/uranium-env/tables`.
 - Python(AMB-000-4, 001-R8): 학습·추론은 Python 3.14 + PyTorch 2.14(`python/uranium`). 호스트마다 venv를 만들고(`uv venv --python 3.14 .venv`) PyTorch를 설치한 뒤(CUDA 호스트 `uv pip install --python <venv python> "torch==2.14.*" --index-url https://download.pytorch.org/whl/cu130`, Linux ROCm 호스트는 그 GPU용으로 빌드한 PyTorch) 저장소 루트에서 `uv pip install --python <venv python> -e .`로 `uranium` 패키지와 Rust 확장 `uranium._core`(crate `uranium-py`, maturin)를 설치한다. Rust를 고치면 같은 명령으로 다시 설치한다. `.env`의 `URANIUM_PYTHON`에 그 venv의 python을 적는다(작업자·감시가 학습 자식을 띄울 때 씀).
 - 정밀도(032-R8): CUDA는 bf16 혼합, Linux ROCm은 f32. 커널 선택(041-R15): cuDNN benchmark는 CUDA에서만 켜고, ROCm은 MIOpen find-db(`MIOPEN_USER_DB_PATH`)만 쓴다(ROCm에서 benchmark를 켜면 모양이 바뀔 때마다 수 초~수 분 탐색).
-- 구현 스위치(AMB-000-4 2단계, 032-R19: 같은 수식, 장비별로 빠른 쪽, 근거 `reports/pytorch_opt.md`): 값을 정하지 않으면 백엔드 기본값(`python/uranium/device.py` `IMPL_DEFAULTS`)이 들어가고, 환경변수·`.env`가 이긴다. 체크포인트 메타 `kernels`에 적용 값이 남는다(041-R15). 층 모양이 가정과 다르면 해당 최적화는 자동으로 라이브러리 경로로 돌아간다.
+- 구현 스위치(AMB-000-4 2단계, 032-R19: 같은 수식, 장비별로 빠른 쪽, 근거 `reports/pytorch_opt.md`): 값을 정하지 않으면 백엔드 기본값(`python/uranium/device.py` `IMPL_DEFAULTS`, 표의 "학습"은 BC 학습 진입점(`bc`·`bench bc`·`bc-profile`)에서만 들어가는 `TRAIN_DEFAULTS`: 추론 프로세스는 컴파일이 느려지는 스위치를 켜지 않는다)이 들어가고, 환경변수·`.env`가 이긴다. 체크포인트 메타 `kernels`에 적용 값이 남는다(041-R15). 층 모양이 가정과 다르면 해당 최적화는 자동으로 라이브러리 경로로 돌아간다.
 
   | 키 | 내용 | CUDA 호스트 | Linux ROCm 호스트 |
   |---|---|---|---|
@@ -22,11 +22,15 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
   | `URANIUM_CONV_WGRAD` | stem·stride-2·64채널 이하 ResBlock conv 가중치 gradient | `vendor` | `bmm` |
   | `URANIUM_LINEAR_WGRAD` | Linear 가중치 gradient(f32만) | `vendor` | `splitk` |
   | `URANIUM_ENTITY_ATTN` | 엔티티 attention 직접 작성 커널(060-R1) | `fused` | `fused` |
-  | `URANIUM_COMPILE` | BC forward torch.compile(Triton 필요) | `default` | `off` |
   | `URANIUM_INFER_GRAPH` | 추론 `act`를 CUDA/HIP graph로 | `on` | `on` |
   | `URANIUM_INFER_GRAPH_MAX_BATCH` | graph로 돌리는 최대 배치(넘으면 eager) | 제한 없음 | `1`(060-R3 추론 2 GiB) |
   | `URANIUM_INFER_COMPILE` | 추론 `act` torch.compile(그래프 안) | `default` | `off` |
-  | `URANIUM_H2D`, `URANIUM_ADAM`, `URANIUM_COMPILE_DYNAMIC`, `URANIUM_COMPILE_RNG`, `URANIUM_INFER_STREAM` | 비교 후 기본값 유지(`INFER_STREAM=own`은 Linux ROCm 호스트에서 멈춤) | - | - |
+  | `URANIUM_H2D` | 호스트→GPU 복사를 page-locked 메모리에서 비동기로(BC는 collate 스레드에서 준비) | 학습 `pinned` | `sync` |
+  | `URANIUM_CHANNELS_LAST` | 공간 인코더·위치 헤드의 activation과 conv 가중치를 channels-last로(cuDNN 배치 변환 제거) | 학습 `on` | `off` |
+  | `URANIUM_SPATIAL_BF16` | 관측 평면을 호스트에서 bf16으로 바꿔 보냄(bf16 autocast에서만, 소비처가 같은 반올림이라 비트 동일) | 학습 `on` | `off`(f32) |
+  | `URANIUM_STEM_PAD` | stem conv 입력 채널을 0으로 8의 배수까지 채움(cuDNN 패딩 패스 제거) | 학습 `on` | `off` |
+  | `URANIUM_COMPILE` | BC forward torch.compile(Triton 필요); `reduce-overhead`는 CUDA graph 재생(묶음마다 새 step, 보관 상태·첫 gradient 복사) | 학습 `reduce-overhead` | `off` |
+  | `URANIUM_ADAM`, `URANIUM_COMPILE_DYNAMIC`, `URANIUM_COMPILE_RNG`, `URANIUM_INFER_STREAM` | 비교 후 기본값 유지(`INFER_STREAM=own`은 Linux ROCm 호스트에서 멈춤, `COMPILE_DYNAMIC=on`은 재컴파일을 없애지 못함) | - | - |
 
   - 호스트 설정(`.env`, 실측 근거 같은 리포트): CUDA 호스트(RAM을 평소 작업과 나눠 씀) `URANIUM_BC_MICRO_LANES=2`, `URANIUM_BC_PREFETCH=1`, `URANIUM_BC_PACK_BATCH=1`. Linux ROCm 호스트 `URANIUM_BC_MICRO_LANES=1`, `URANIUM_BC_FEED_THREADS=2`, `URANIUM_MALLOC_ARENA_MAX=2`(glibc arena 수 제한: 긴 run에서 arena 단편화로 update마다 메모리가 늘던 것을 막음, 결과 동일, `reports/m6_core_ablation_pt.md` 4절)와 아래 README의 메모리 설정.
   - 장비별 기본값을 다시 고를 때(모델 구조를 바꾼 뒤 등)는 `python -m uranium bench bc --groups 1 --updates 12`를 스위치 값만 바꿔 비교하고, 손실 동등성은 `bench loss`(30 update)로 본다.

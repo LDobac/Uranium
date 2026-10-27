@@ -51,7 +51,7 @@ def main(a) -> int:
     from uranium.device import configure, resolve
 
     backend, device, precision = resolve(a.backend)
-    configure(backend)
+    configure(backend, train=True)
     variant = model_variant(a.config)
     if variant.any():
         print(f"[bc] [model] {variant} (032 §2.7)", flush=True)

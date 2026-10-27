@@ -35,7 +35,7 @@ def main(a) -> int:
 
     os.environ["URANIUM_BC_PROFILE"] = "1"
     backend, device, precision = resolve(a.backend)
-    configure(backend)
+    configure(backend, train=True)
     cfg_json, _ = _core.bc_config(a.config, "s1")
     cfg = json.loads(cfg_json)
     dirs = _core.dataset_dirs(a.dataset, a.shards)

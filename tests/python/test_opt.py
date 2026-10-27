@@ -3,6 +3,7 @@ list from the host labels (exact / bucketed) gives the same log-probs and gradie
 `nonzero` path, and the 1x1 output written as multiply-and-sum equals the conv."""
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -266,3 +267,20 @@ def test_stem_pad_keeps_the_result_032_r19(group, monkeypatch):
     assert res["on"][1].keys() == res["off"][1].keys()
     for k, g in res["off"][1].items():
         assert torch.allclose(res["on"][1][k], g, atol=1e-5, rtol=1e-4), k
+
+
+def test_training_defaults_win_over_backend_defaults(monkeypatch):
+    """`configure(train=True)` puts the BC trainer's CUDA defaults (`TRAIN_DEFAULTS`) in front of
+    the backend ones; `configure()` alone leaves the inference defaults."""
+    from uranium.device import IMPL_DEFAULTS, TRAIN_DEFAULTS, configure
+
+    for k in set(IMPL_DEFAULTS["cuda"]) | set(TRAIN_DEFAULTS["cuda"]):
+        monkeypatch.delenv(k, raising=False)
+    configure("cuda")
+    assert os.environ["URANIUM_COMPILE"] == "default" and "URANIUM_CHANNELS_LAST" not in os.environ
+    for k in set(IMPL_DEFAULTS["cuda"]) | set(TRAIN_DEFAULTS["cuda"]):
+        monkeypatch.delenv(k, raising=False)
+    configure("cuda", train=True)
+    for k, v in TRAIN_DEFAULTS["cuda"].items():
+        assert os.environ[k] == v, k
+    assert os.environ["URANIUM_COMPILE"] == "reduce-overhead"

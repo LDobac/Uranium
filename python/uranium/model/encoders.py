@@ -185,7 +185,7 @@ class SpatialEncoder(nn.Module):
         spatial = obs["spatial"]
         h, w = spatial.shape[2], spatial.shape[3]
         parts = [spatial, self.scatter_mean(obs, e, h, w).to(spatial.dtype)]
-        pad = stem_pad(self.stem)
+        pad = stem_pad(self.stem, spatial)
         if pad:
             # 032-R19 `URANIUM_STEM_PAD`: zero input channels up to a multiple of 8, written by
             # this cat, and zero weight columns for them (0 x w = 0: same conv). cuDNN's NHWC

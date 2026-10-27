@@ -113,10 +113,11 @@ CHANNELS_LAST_MODES = ("off", "on")
 STEM_PAD_MODES = ("off", "on")
 
 
-def stem_pad(conv: nn.Conv2d) -> int:
+def stem_pad(conv: nn.Conv2d, x) -> int:
     """Zero input channels the stem conv gets under `URANIUM_STEM_PAD=on` (to a multiple of 8;
-    0 when it already is, or the switch is off)."""
-    if env_choice("URANIUM_STEM_PAD", STEM_PAD_MODES, "off") != "on":
+    0 when it already is, the switch is off, or the call takes the bmm weight-gradient path,
+    which `conv_wgrad` keeps)."""
+    if env_choice("URANIUM_STEM_PAD", STEM_PAD_MODES, "off") != "on" or bmm_wgrad_active(conv, x):
         return 0
     return -conv.in_channels % 8
 
@@ -177,10 +178,15 @@ def bmm_wgrad_fits(conv: nn.Conv2d) -> bool:
     return conv.kernel_size == (3, 3) and conv.padding == (1, 1) and conv.dilation == (1, 1) and conv.groups == 1 and conv.stride[0] == conv.stride[1] in (1, 2) and conv.padding_mode == "zeros"
 
 
-def conv_wgrad(conv: nn.Conv2d, x):
-    """`conv(x)`, its weight gradient as `URANIUM_CONV_WGRAD` picks (f32 only: under autocast the
+def bmm_wgrad_active(conv: nn.Conv2d, x) -> bool:
+    """`conv_wgrad` takes the bmm weight-gradient path for this call (f32 only: under autocast the
     library path runs; convs other than 3x3 pad 1 too, `bmm_wgrad_fits`)."""
-    if env_choice("URANIUM_CONV_WGRAD", CONV_WGRAD_MODES, "vendor") == "bmm" and x.dtype == torch.float32 and not torch.is_autocast_enabled(x.device.type) and bmm_wgrad_fits(conv):
+    return env_choice("URANIUM_CONV_WGRAD", CONV_WGRAD_MODES, "vendor") == "bmm" and x.dtype == torch.float32 and not torch.is_autocast_enabled(x.device.type) and bmm_wgrad_fits(conv)
+
+
+def conv_wgrad(conv: nn.Conv2d, x):
+    """`conv(x)`, its weight gradient as `URANIUM_CONV_WGRAD` picks (`bmm_wgrad_active`)."""
+    if bmm_wgrad_active(conv, x):
         return ConvBmmWgrad.apply(x, conv.weight, conv.bias, conv.stride[0])
     return conv(x)
 

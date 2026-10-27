@@ -95,7 +95,7 @@ def bc_main(a) -> int:
 
     backend, device, precision = resolve(a.backend)
     precision = a.precision or precision
-    configure(backend)
+    configure(backend, train=True)
     env = environment(backend, precision, device) | {"entity_chunk": os.environ.get("URANIUM_BC_ENTITY_CHUNK", "0"), "prefetch": os.environ.get("URANIUM_BC_PREFETCH", "default")}
     cmd = "python -m uranium bench " + " ".join(sys.argv[2:])
     groups = []

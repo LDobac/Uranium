@@ -515,3 +515,71 @@
 - 결정(Claude, 032-R19 같은 결과의 구현): Windows에서만 확장 `uranium._core`의 Rust 할당자를 mimalloc으로 바꿨다(Linux는 그대로). 할당만 바뀌고 계산은 같다(리뷰: 초기화 안 된 메모리를 읽는 코드 없음). `URANIUM_H2D=pinned`는 기본값을 바꾸지 않고 2차 코어 비교의 CUDA 작업자 실행 스크립트에서만 켰다(기본값 변경은 별도 결정).
 - 같은 날 앞서 고친 것: batch 압축(041-R18)의 zstd 결과 버퍼가 원본 크기(step당 약 1.9 MB)로 남던 문제(긴 run 메모리 증가, `m6_core_ablation_pt.md` 4절). 그 수정 뒤 압축기·버퍼를 스레드 작업마다 재사용하는 안도 시험했지만 공급 전용 메모리가 거의 같아(50 update 5.4 → 5.8 GB) 반영하지 않았다.
 - 원자료: CUDA 호스트 작업 임시 폴더의 `ab-*.log`(측정 스크립트 `abtest.ps1`)는 세션 임시 폴더라 지워질 수 있다. 수치는 이 표가 원본이다.
+
+## 6. 후속: 본학습 모델(모두 켬)의 CUDA 학습 최적화 (2026-10-28)
+### 6.0 배경과 예상
+- BC 본학습(모두 켬, GTrXL + 지형·스칼라 토큰·attention 요약·바깥 LSTM 32)이 10-27 시작됐고 이 구조로 끝까지 간다. 학습 PC CUDA 작업자는 step 2,500 부근에서 약 2.25 s/update, Linux ROCm 호스트는 12.3(1호기)·16.6(2호기) s/update였다.
+- 사용자 지시: 학습·추론 시간을 최대한 줄인다(같은 수식, 032-R19). 학습 PC를 측정에 쓰는 동안 S1·(A)는 두 Linux ROCm 호스트가 맡았다(01:15 교대, S1 `ckpt-2730`).
+- 예상: 10-24 2단계에서 CPU 호출 비용이 큰 과녁이라 봤으므로 학습 그래프 캡처가 가장 큰 후보, 그다음 update에서 모델 바깥 시간(복사·옵티마이저)이라고 예상했다. **실측은 달랐다**: 장치 시간이 update의 약 75~80%라 GPU 계산 자체가 병목이었고, 그래프 캡처 단독 이득은 6%였다. 큰 이득은 conv의 메모리 배치, 복사 바이트, attention 커널의 역전파에서 나왔다.
+- 측정: `python -m uranium bench bc`(실데이터, 같은 seed·같은 batch, 레인 묶음 2, 30 update; 짝지은 update별 비율의 중앙값, 앞 3 update 제외), `config/bc.toml`(모두 켬), 학습 PC CUDA bf16. 원자료는 메인 작업 사본 `reports/raw/train_opt_20261028/`(json·log·스크립트, git 미추적).
+
+### 6.1 기준선과 단계별 시간 (모두 켬, 레인 묶음 2)
+- 기준(지금 작업자 설정, 동기 복사): 중앙값 **1.87초**(run 안에서 1.47 → 1.9초로 늘어남: 게임이 진행되며 엔티티 수가 느는 데이터 쪽 원인. GPU는 2,760 MHz·184 W/285 W·45 °C로 열·전력 제한 없음).
+- 단계별(매 단계 동기화, 12 update 중앙값): GPU 복사 0.338, forward 0.471, backward 0.876, 옵티마이저 0.031, 손실 0.017, collate 대기 0.029, 합 1.765초.
+- 연산별 장치 시간(한 update): conv backward 320 ms, 호스트→GPU 복사 300(pageable), 엔티티 attention 역전파 259(`bwd_q` 186 + `bwd_kv` 73), **conv 앞뒤 NCHW↔NHWC 변환 3,500회 195 ms**, cuDNN conv 126, mm·addmm 9,000회 130, attention 순전파 50, transposed conv 41.
+
+### 6.2 후보와 결과 (짝지은 중앙값 비율, 손실 차이는 모두 ≤ 1e-4 — 설정을 바꾸지 않은 재실행끼리의 차이와 같은 수준, cuDNN 커널 선택의 run 간 잡음)
+| 후보 | 비교 대상 | 비율 | 중앙값 | 판단 |
+|---|---|---|---|---|
+| `URANIUM_H2D=pinned`(10-25 측정값 재확인) | 기준 1.87 | 0.934 | 1.74 | 채택(CUDA 기본값) |
+| 학습 그래프 캡처 `URANIUM_COMPILE=reduce-overhead` 단독 | 기준 | 0.940 | 1.79 | 아래 조합에서 다시 봄 |
+| `URANIUM_CHANNELS_LAST=on`(activation만) | pinned | 0.930 | 1.64 | 가중치까지로 확장 |
+| `URANIUM_SPATIAL_BF16=on`(collate 스레드에서 bf16 변환·pinned 복사) | pinned | 0.959 | 1.67 | 채택 |
+| pinned를 collate 스레드로(관측 배열 전부) | pinned | 1.015 | 1.77 | 효과 없음(bf16 변환과 함께일 때만 의미) |
+| A = pinned + bf16 평면 + channels-last(가중치 포함) + 커널(6.3) | pinned | 0.815 | 1.42 | 채택 |
+| A + `URANIUM_STEM_PAD=on` | A | 0.977 | 1.40 | 채택(cuDNN의 채널 패딩 패스 44 ms 제거) |
+| B = A + stem pad + 그래프 캡처 | A | 0.890 | **1.31** | 채택(아래 조건) |
+| A + stem pad, 레인 묶음 4 | A + stem pad | 0.938 | 1.30 | 그래프 없이면 −6%, GPU 8.7 GiB(2배) |
+| B, 레인 묶음 4 | A + stem pad | 0.909 | 1.33 | **그래프 모드 위에서는 이득 없음**(B 1.31과 잡음 범위) → 묶음 2 유지(AMB-041-7 그대로). 사용자가 10-28에 OOM만 없으면 메모리 증가를 허용했지만 속도가 같아 쓰지 않는다. 묶음을 바꾸면 dropout 난수 배치가 달라진다(손실 차이 2.3e-3) |
+| stem 입력 채널 58→64를 `F.pad`로 | - | 느림(15.1 → 18.6 ms) | - | 탈락(입력 복사 한 번 더). `cat`에 0 채널을 붙이는 형태가 위 STEM_PAD |
+| A + stem pad, `URANIUM_COMPILE_DYNAMIC=on` | A + stem pad | 1.00 | 1.40 | 탈락: 첫 컴파일 710초(캐시 없음)에 update 14 재컴파일 144초가 그대로 남음 |
+
+- 100 update 비교(10번째 이후 중앙값): 기준 2.03 → A(커널 전) 1.74 → B(커널 전) 1.64초. 그래프 캡처의 모양별 녹화는 100 update 중 2.3~5초짜리 4회(합 약 12초)뿐.
+- channels-last의 비용: torch.compile 첫 컴파일 18 → 92초(inductor 캐시 없으면 604초), update 14의 재컴파일(엔티티 수 guard) 7 → 50~98초. 프로세스당 한 번이다.
+
+### 6.3 엔티티 attention 커널 역전파 — CUDA의 공유 메모리 atomic
+- `bwd_q`가 순전파의 3.7배였다(`bwd_kv`는 1.5배, 같은 계산량). 원인: 표 gradient를 `atomicAdd(&hist[bucket], ds)`로 모으는데 실데이터 bucket은 몇 값에 몰려 NVIDIA에서는 같은 주소를 친 warp의 스레드가 직렬화된다(Linux ROCm 호스트에서는 몰림·균일 차이가 없었다, 2.12절).
+- 조치(CUDA 빌드만, `#ifdef __HIP_PLATFORM_AMD__`로 ROCm 경로는 그대로): 스레드마다 `slots[warp][bucket][lane]` 열을 소유해(bank = lane, 충돌·atomic 없음) 누적하고 블록 끝에서 lane·warp를 합친다. 덧셈 순서만 다르다.
+- 마이크로 벤치(B128·H8, 몰린 bucket, 옛 → 새): 역전파 N128 1.95 → 1.08 ms, N192 4.12 → 2.19, N256 6.94 → 3.46, N448 20.5 → 9.8. 순전파 같음. 표 gradient의 f32 기준 대비 상대 L2 1e-3 수준(옛 커널과 같음). 실데이터 update에서 attention 역전파 259 → 152 ms.
+
+### 6.4 검증
+- CPU `pytest tests/python`(asus): 128 통과·13 건너뜀. 새 테스트: channels-last·stem pad의 값·gradient 일치, bf16 평면의 비트 일치(CPU autocast), RL 위상별 경로(기존 테스트 유지).
+- GPU `pytest -m gpu`(학습 PC): 기본 스위치 12 통과, 새 스위치 모두 켬 12 통과(커널 대 기준 구현, CUDA bf16 대 CPU, 그래프 act, 변형).
+- 실제 `bc` 루프(Rust run 루프, 로컬 모드, B 설정): 4 update → `last/` → 재개 → 7 update, rc 0, 메타 `kernels`에 스위치 기록.
+- 그래프 재생의 전제: 묶음마다 `cudagraph_mark_step_begin`, 다음 batch까지 보관하는 core·바깥 상태는 복사, 묶음의 첫 gradient는 그래프 메모리 밖으로 복사(이후 묶음은 거기에 누적, 041-R3). 없으면 다음 재생이 덮어쓴다(10-24에 막힌 이유).
+
+### 6.5 조합 A + 커널의 단계별 시간 (12 update 중앙값)
+GPU 복사 0.338 → 0.096, forward 0.471 → 0.454, backward 0.876 → 0.756, 합 1.765 → 1.445초. 배치 변환 커널은 사라졌고, 남은 큰 항목은 conv backward 219 ms, attention 역전파 152, 복사 88(pinned, 겹침), mm·addmm 130(CPU 쪽 launch 150 ms → 그래프 캡처가 가져감), cuDNN conv 79, transposed conv 38.
+
+### 6.6 결과 요약 (2026-10-28)
+| 장비 | 전 | 후 | 비고 |
+|---|---|---|---|
+| CUDA 호스트 BC update(모두 켬, 레인 묶음 2, bench 30 update 중앙값) | 1.87초 | **1.29~1.31초(−30%)** | 작업자 실측 약 2.25초 → 약 1.55초 예상. S1 남은 약 36,000 update + S2 11,387 기준 약 30 → 21시간 |
+| Linux ROCm 호스트 | 12.3초(1호기)·16.6초(2호기) | 변경 없음 | 커널 ROCm 경로·기본값 그대로. 2호기가 35% 느린 원인은 GPU 클럭 설정(최대 1,500 MHz·열 제한 80 °C, 학습 중 1,230~1,490 MHz·76~80 °C; 1호기 1,700 MHz·85 °C·55~60 °C): `/etc/cyan-skillfish-governor-smu/config.toml`을 1호기와 맞추면 되지만 sudo가 필요하고 2호기의 발열 의심(10-26 멈춤)을 보며 해야 한다 — 사용자 결정 |
+
+- CUDA 학습 기본값(`TRAIN_DEFAULTS`, BC 학습 진입점만): `URANIUM_H2D=pinned`, `URANIUM_CHANNELS_LAST=on`, `URANIUM_SPATIAL_BF16=on`, `URANIUM_STEM_PAD=on`, `URANIUM_COMPILE=reduce-overhead`. 엔티티 attention 커널의 CUDA 역전파는 코드 변경(스위치 없음, ROCm 경로 그대로).
+- 추론 프로세스(평가 작업·SC:R·RL)는 바꾸지 않았다: CUDA 추론은 1.3~6 ms로 launch 비용이 지배하고, channels-last는 모양마다 compile을 몇 배 느리게 한다.
+- 탈락: stem 입력 `F.pad`, `COMPILE_DYNAMIC=on`, 레인 묶음 4(그래프 모드 위에서 이득 없음), pinned만 collate 스레드로.
+- 비용: channels-last로 torch.compile이 프로세스당 첫 컴파일 약 90초(캐시 없으면 약 10분) + update 14 재컴파일 50~100초. CUDA 작업자는 장비 교대마다 재시작하므로 교대마다 2~3분이 든다.
+- 남은 과녁(장치 시간, 1.45초 중): conv backward 219 ms, attention 역전파 152(순전파의 2.9배, 텐서코어 미사용), mm·addmm 130, cuDNN conv 79. 모두 커널 수준 재작성(텐서코어 attention, cuDNN 밖 conv)이라 이번 범위 밖.
+
+### 6.7 RL 학습기 위상별 경로 (032 §2.7) — 이득 없음
+- 10-27 측정에서 RL의 위상별 경로(구간 안 시작)가 BC 경로보다 32% 느렸다. 같은 수식 후보: 구간 k에서 코어를 시퀀스 전체(T = 64)가 아니라 그 구간의 마지막 step까지만 돌리기(코어는 인과적이라 앞 step은 같음).
+- 실측(학습 PC, 10-27 스크립트 `<shared>/artifacts/rl_outer_phased_20261027/phased_bench.py`, 합성 2줄 × 64 step·엔티티 128·bf16, fwd+bwd 중앙값): 구간 안 시작 133.3 → 138.9 ms(잡음 범위, 이득 없음). 비용은 코어(묶음당 약 10 ms)가 아니라 인코더 3종을 구간마다 부르는 호출 비용이라 코어 접두 계산은 의미가 없다. 되돌렸다(master 코드 유지).
+- 남은 방법은 10-25에 적은 대로 구조 변경(h_o를 코어 입력에만)이라 사용자 결정 사항이고, RL 착수 전에 다시 본다.
+
+### 6.8 리뷰 (별도 리뷰어 에이전트)
+- 높음 1 → **반영**: `configure(train=True)`의 dict 합치기 순서가 뒤집혀 `URANIUM_COMPILE=reduce-overhead`가 들어가지 않았다(기본값만으로 돌린 20 update 측정은 그래프 모드가 아니었다). 순서를 고치고 CPU 테스트를 추가했으며, 기본값만으로 30 update를 다시 쟀다(아래).
+- 중간 3 → **반영**: `.env.example`에 새 키·기본값(001-R9); 재개할 때 옵티마이저 모멘트를 파라미터의 메모리 배치로 복원(channels-last conv 가중치가 재개 뒤에도 multi-tensor Adam 경로를 타게); `URANIUM_STEM_PAD`는 bmm 가중치 gradient 경로(ROCm)가 도는 호출에서는 패딩하지 않음.
+- 낮음 → 반영: `to_device`의 pinned 확인 순서(환경 스위치 먼저). 반영 안 함: 커널 마지막 합산의 bank 충돌(블록당 2·32·NB 읽기, 본 루프 대비 무시할 크기), 레인 묶음이 1개일 때도 첫 gradient를 복사하는 것(묶음 1개는 `micro_lanes = 0` 설정뿐이고 복사 한 번), 모양마다 그래프를 따로 녹화하는 경고(100 update에 4회로 확인).
+- 그래프 재생과 dropout 난수: 묶음마다 `manual_seed`는 그대로 효과가 있고(재생이 생성기의 seed·offset을 읽음), offset 기록만 eager와 다르다(032-R19 ② 안, GPU 재개는 허용 오차 판정 061-AC1).
