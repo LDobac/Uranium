@@ -217,9 +217,10 @@ class UraniumNet(nn.Module):
             "value": value, "win_open": win_open, "state": state,
         }
 
-    def forward_seq(self, obs: dict, labels: dict, priv, s0, t: int, entity_chunk: int = 0) -> dict:
+    def forward_seq(self, obs: dict, labels: dict, priv, s0, t: int, entity_chunk: int = 0, phased: bool = False) -> dict:
         """Teacher-forced training pass over `t` steps per sequence; rows b-major (032 §6).
-        `entity_chunk` > 0: the entity encoder recomputed per row chunk (041-R17)."""
+        `entity_chunk` > 0: the entity encoder recomputed per row chunk (041-R17). `phased`: with
+        `outer`, the sequences may start anywhere inside an outer segment (RL, 032 §2.7)."""
         if self.outer is None:
             core_in, e, sp, sc = self.encode(obs, entity_chunk)
             bt, d = core_in.shape
@@ -227,7 +228,7 @@ class UraniumNet(nn.Module):
             h, state = self.core.forward_seq(core_in.view(bt // t, t, d), s0)
             h = h.reshape(bt, -1)
         else:
-            h, e, sp, sc, state = self._outer_seq(obs, s0, t, entity_chunk)
+            h, e, sp, sc, state = (self._outer_seq_phased if phased else self._outer_seq)(obs, s0, t, entity_chunk)
         out = self.heads(labels, 1.0, h, sc["c"], e, sp, obs, self.table)
         value = self.value(h, sc["z"], sc["race"], priv)
         win_open = self.value.win_open(h, sc["z"], sc["race"])
@@ -256,6 +257,51 @@ class UraniumNet(nn.Module):
             scs.append(sc)
         # Back to b-major rows over the whole sequence, as the heads and labels expect.
         join = lambda xs: torch.cat([x.view(b, seg, *x.shape[1:]) for x in xs], 1).reshape(bt, *xs[0].shape[1:])  # noqa: E731
+        skips = [join([x["skips"][i] for x in sps]) for i in range(len(sps[0]["skips"]))]
+        sp = {"s8": join([x["s8"] for x in sps]), "skips": skips, "pool": join([x["pool"] for x in sps])}
+        sc = {key: join([x[key] for x in scs]) for key in scs[0]}
+        return join(hs), join(es), sp, sc, (cs, os_)
+
+    def _outer_seq_phased(self, obs: dict, s0, t: int, entity_chunk: int):
+        """032 §2.7 `outer` for sequences that start at any decision (RL segments overlap by one
+        step, 042): row r's first outer segment is `outer - n0 mod outer` steps long, then whole
+        segments, then the rest. Segment k gathers every row's steps of its k-th segment, encodes
+        them with that row's h_o, runs the core over the whole sequence (inputs of later steps
+        still zero; the core is causal, so the steps up to segment k are exact) and updates each
+        row's outer state. Same values as one decision at a time (032-R5)."""
+        seg = self.outer.segment
+        bt = obs["entity_cat"].shape[0]
+        assert t > 0 and bt % t == 0, "batch rows must be B*T"
+        b = bt // t
+        cs0, os_ = s0
+        dev = obs["entity_cat"].device
+        pos = torch.arange(t, device=dev)[None]
+        first = (seg - torch.fmod(os_[3], float(seg))).long()[:, None]
+        part = torch.where(pos < first, torch.zeros_like(pos), 1 + torch.div(pos - first, seg, rounding_mode="floor")).reshape(-1)
+        core_in = cs = None
+        idxs, hs, es, sps, scs = [], [], [], [], []
+        for k in range((t + seg - 1) // seg + 1):
+            idx = (part == k).nonzero().squeeze(1)
+            if idx.numel() == 0:
+                continue
+            row = torch.div(idx, t, rounding_mode="floor")
+            sub = {key: x.index_select(0, idx) for key, x in obs.items()}
+            ci, e, sp, sc = self.encode(sub, entity_chunk, os_[0].index_select(0, row))
+            core_in = (ci.new_zeros(bt, ci.shape[1]) if core_in is None else core_in).index_copy(0, idx, ci)
+            h_all, cs = self.core.forward_seq(core_in.view(b, t, -1), cs0)
+            h = h_all.reshape(bt, -1).index_select(0, idx)
+            total = torch.zeros(b, h.shape[1], device=dev).index_add(0, row, h.float())
+            count = torch.zeros(b, device=dev).index_add(0, row, torch.ones(idx.numel(), device=dev))
+            os_ = self.outer.after_rows(total, count, os_)
+            idxs.append(idx)
+            hs.append(h)
+            es.append(e)
+            sps.append(sp)
+            scs.append(sc)
+        # Back to b-major rows over the whole sequence, as the heads and labels expect.
+        perm = torch.cat(idxs)
+        inv = torch.empty_like(perm).index_copy(0, perm, torch.arange(bt, device=dev))
+        join = lambda xs: torch.cat(xs, 0).index_select(0, inv)  # noqa: E731
         skips = [join([x["skips"][i] for x in sps]) for i in range(len(sps[0]["skips"]))]
         sp = {"s8": join([x["s8"] for x in sps]), "skips": skips, "pool": join([x["pool"] for x in sps])}
         sc = {key: join([x[key] for x in scs]) for key in scs[0]}

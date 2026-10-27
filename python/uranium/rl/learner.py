@@ -61,10 +61,6 @@ class Learner:
     """One learning agent: the trained net, the frozen BC reference, Adam (042 optimizer table)."""
 
     def __init__(self, cfg: dict, net, bc, device: torch.device, precision: str, algo: str, update: int = 0):
-        if net.outer is not None:
-            # 032 §2.7: RL segments do not start on outer-segment boundaries row by row; the outer
-            # LSTM's RL support is decided only if the variant is adopted.
-            raise ValueError("RL does not support the outer LSTM variant ([model] outer, 032 §2.7)")
         self.cfg = cfg
         self.device = device
         self.precision = precision
@@ -196,7 +192,8 @@ class Learner:
         mask = torch.as_tensor(g["mask"]).to(dev, torch.float32)
         s0 = state0_of(net, g, dev)
         with autocast(dev, self.precision):
-            out = net.forward_seq(obs, labels, priv, s0, t)
+            # 032 §2.7: RL segments start at any decision, so an outer model runs phased.
+            out = net.forward_seq(obs, labels, priv, s0, t, phased=True)
         logp = sum(out["logp"][k].float() for k in HEADS)
         values = out["value"].float()
         tg = ppo_targets[gi]
@@ -224,7 +221,7 @@ class Learner:
         entropy = sum(e[h] * term for h, term in zip(HEADS, ent_terms))
         # KL(π ‖ π_BC) with the frozen BC net on the same inputs (AMB-042-9).
         with torch.no_grad(), autocast(dev, self.precision):
-            bc = self.bc.forward_seq(obs, labels, priv, s0, t)
+            bc = self.bc.forward_seq(obs, labels, priv, s0, t, phased=True)
         kl = kl_per_head({k: (v.float() if v.is_floating_point() else v) for k, v in out["dists"].items()}, {k: (v.float() if v.is_floating_point() else v) for k, v in bc["dists"].items()})
         kl_terms = [(kl[h] * mask).sum() / n for h in HEADS]
         kl_total = sum(kl_terms)

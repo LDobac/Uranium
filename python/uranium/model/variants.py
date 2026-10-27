@@ -106,12 +106,16 @@ class OuterLstm(nn.Module):
         g, b = self.film(h_o).chunk(2, 1)
         return g, b
 
-    def _update(self, s, total, n):
+    def _update(self, s, total, n, active=None):
         """The cell where the counter `n` reached a multiple of the segment (no host branch, so
-        it is graph-capture safe, 032-R19)."""
+        it is graph-capture safe, 032-R19). `active` [B]: rows that took decisions (others keep
+        their state even on a multiple)."""
         h_o, c_o, _, _ = s
         hn, cn = self.cell((total / self.segment).to(h_o.dtype), h_o, c_o)
-        upd = (torch.fmod(n, float(self.segment)) == 0)[:, None]
+        upd = torch.fmod(n, float(self.segment)) == 0
+        if active is not None:
+            upd = upd & active
+        upd = upd[:, None]
         return (torch.where(upd, hn, h_o), torch.where(upd, cn, c_o), torch.where(upd, torch.zeros_like(total), total), n)
 
     def step(self, h, s):
@@ -122,6 +126,12 @@ class OuterLstm(nn.Module):
         """After a whole segment h [B,segment,d_core] that started on a segment boundary (BC
         chunks start at multiples of 64 decisions from the game start, 032 §2.7)."""
         return self._update(s, s[2] + h.float().sum(1), s[3] + float(h.shape[1]))
+
+    def after_rows(self, total, count, s):
+        """After `count` [B] decisions per row whose core outputs sum to `total` [B,d_core], each
+        row inside one segment from its own phase (RL segments, 032 §2.7); a row with no decision
+        keeps its state."""
+        return self._update(s, s[2] + total, s[3] + count, count > 0)
 
     @staticmethod
     def mask(s, keep):

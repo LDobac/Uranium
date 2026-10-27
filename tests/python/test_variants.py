@@ -31,9 +31,9 @@ VARIANTS = {
 }
 
 
-def tiny(variant: VariantConfig | None = None):
-    meta = json.loads((FIX / "meta.json").read_text())
-    inp = load_file(FIX / "inputs.safetensors")
+def tiny(variant: VariantConfig | None = None, fixture: Path = FIX):
+    meta = json.loads((fixture / "meta.json").read_text())
+    inp = load_file(fixture / "inputs.safetensors")
     cfg = UraniumNetConfig.from_dict(meta["config"])
     if variant is not None:
         cfg.variant = variant
@@ -315,13 +315,84 @@ def test_outer_segment_must_divide_seq_len():
         BcTrainer.make(cfg_json, "new", None, 0, "gtrxl", torch.device("cpu"), "f32", VariantConfig(outer=48))
 
 
-def test_rl_refuses_outer():
-    from uranium.rl.learner import Learner
+def state_after(net, obs, b: int, t: int, counts) -> tuple:
+    """Row r's recurrent state after its first `counts[r]` decisions, one `act` at a time (an RL
+    segment's core_state0, 042)."""
+    from uranium.agent.infer import leaves, rebuild
 
-    cfg, *_ = tiny(VARIANTS["outer"])
+    s = net.init_state(b)
+    snaps = [s]
+    with torch.no_grad():
+        for k in range(max(counts)):
+            s = net.act(rows_at(obs, b, t, k % t), s, 0.0)["state"]
+            snaps.append(s)
+    parts = [leaves(snaps[c]) for c in counts]
+    return rebuild(snaps[0], iter([torch.stack([parts[r][i][r] for r in range(b)]) for i in range(len(parts[0]))]))
+
+
+def per_decision(net, obs, labels, s0, b: int, t: int):
+    """Head log-probs, values and final state from encoding one decision at a time."""
+    cs, os_ = s0
+    hs, es, sps, scs = [], [], [], []
+    for k in range(t):
+        core_in, e, sp, sc = net.encode(rows_at(obs, b, t, k), h_o=os_[0])
+        h, cs = net.core.step(core_in, cs)
+        os_ = net.outer.step(h, os_)
+        hs.append(h)
+        es.append(e)
+        sps.append(sp)
+        scs.append(sc)
+    rows = lambda xs: torch.stack(xs, 1).reshape(b * t, *xs[0].shape[1:])  # noqa: E731
+    sp = {"s8": rows([x["s8"] for x in sps]), "skips": [rows([x["skips"][i] for x in sps]) for i in range(3)], "pool": rows([x["pool"] for x in sps])}
+    sc = {k: rows([x[k] for x in scs]) for k in scs[0]}
+    logp = net.heads(labels, 1.0, rows(hs), sc["c"], rows(es), sp, obs, net.table)["logp"]
+    return logp, net.value(rows(hs), sc["z"], sc["race"], None), (cs, os_)
+
+
+@pytest.mark.parametrize("core", ["tiny-gtrxl", "tiny-lstm"])
+@pytest.mark.parametrize("name", ["outer", "all"])
+@pytest.mark.parametrize("counts", [(1, 2), (3, 0), (5, 1)])
+def test_phased_matches_per_decision_032_ac11(name, counts, core):
+    """032 §2.7 RL path: sequences starting at different decisions inside an outer segment (row 1
+    of (1, 2) also ends on a multiple with an empty last segment, which must not update again)
+    give the per-decision log-probs, values, final state and gradients."""
+    from uranium.agent.infer import leaves
+
+    cfg, b, t, obs, labels, _ = tiny(VARIANTS[name], FIX.parent / core)
     net = net_of(cfg)
-    with pytest.raises(ValueError, match="outer"):
-        Learner({}, net, net, torch.device("cpu"), "f32", "vtrace")
+    s0 = state_after(net, obs, b, t, counts)
+    seq = net.forward_seq(obs, labels, None, s0, t, phased=True)
+    logp, value, state = per_decision(net, obs, labels, s0, b, t)
+    for k in HEADS:
+        assert torch.allclose(seq["logp"][k], logp[k], atol=1e-4), k
+    assert torch.allclose(seq["value"], value, atol=1e-5)
+    for x, y in zip(leaves(seq["state"]), leaves(state)):
+        assert torch.allclose(x.float(), y.float(), atol=1e-5)
+    params = [net.outer.weight_ih, next(net.core.parameters()), next(net.entity.parameters())]
+    loss = lambda lp, v: sum(lp[k].sum() for k in HEADS) + v.sum()  # noqa: E731
+    ga = torch.autograd.grad(loss(seq["logp"], seq["value"]), params)
+    gb = torch.autograd.grad(loss(logp, value), params)
+    for x, y in zip(ga, gb):
+        assert torch.allclose(x, y, atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.parametrize("name", ["outer", "all"])
+@pytest.mark.parametrize("counts", [(0, 0), (2, 4)])
+def test_phased_zero_phase_matches_bc_path_032_ac11(name, counts):
+    """Sequences that start on segment boundaries give the BC path's values (032 §2.7)."""
+    from uranium.agent.infer import leaves
+
+    cfg, b, t, obs, labels, _ = tiny(VARIANTS[name])
+    net = net_of(cfg)
+    s0 = state_after(net, obs, b, t, counts)
+    with torch.no_grad():
+        bc = net.forward_seq(obs, labels, None, s0, t)
+        rl = net.forward_seq(obs, labels, None, s0, t, phased=True)
+    for k in HEADS:
+        assert torch.allclose(bc["logp"][k], rl["logp"][k], atol=1e-5), k
+    assert torch.allclose(bc["value"], rl["value"], atol=1e-6)
+    for x, y in zip(leaves(bc["state"]), leaves(rl["state"])):
+        assert torch.allclose(x.float(), y.float(), atol=1e-6)
 
 
 # --- GPU (pytest -m gpu): the fused attention kernel with the extra tokens' bias buckets and the

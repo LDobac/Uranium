@@ -126,6 +126,55 @@ def test_vtrace_update_042():
     assert s2["entropy_heads"][0] > 0.0
 
 
+class PhasedOnPolicy(OnPolicy):
+    """Lanes whose core_state0 sits inside an outer segment and on its boundary (counters 3 and 0,
+    h_sum 0 there as after an update, 032 §2.7)."""
+
+    def __init__(self, batch, net):
+        super().__init__(batch, net)
+        g = torch.Generator().manual_seed(7)
+        cs, (h_o, c_o, h_sum, _) = net.init_state(2, CPU)
+        self.state = (cs, (torch.randn(h_o.shape, generator=g), torch.randn(c_o.shape, generator=g), torch.randn(h_sum.shape, generator=g) * torch.tensor([[1.0], [0.0]]), torch.tensor([3.0, 0.0])))
+
+    def group(self, start, end, t, max_select):
+        from uranium.agent.infer import leaves
+        from uranium.rl.learner import state0_of
+
+        g = self.batch.group(start, end, t, max_select)
+        g["state0"] = [[(tuple(x[lane:lane + 1].shape), x[lane:lane + 1].numpy().ravel()) for x in leaves(self.state)] for lane in range(start, end)]
+        with torch.no_grad():
+            out = self.net.forward_seq(to_obs(g, CPU), to_labels(g, CPU), torch.as_tensor(g["privileged"]).float(), state0_of(self.net, g, CPU), t, phased=True)
+        g["behaviour"] = sum(out["logp"][k] for k in HEADS).numpy().astype(np.float32)
+        return g
+
+
+@pytest.mark.parametrize("algo", ["vtrace", "ppo"])
+def test_outer_update_from_inside_a_segment_042(algo):
+    """032 §2.7 / 042: the learner trains an outer-LSTM model on segments that start inside an
+    outer segment (on-policy: KL to itself 0, ρ 1) and changes the weights."""
+    from uranium.model.config import VariantConfig
+
+    cfg = json.loads(_core.rl_config(str(ROOT / "config" / "rl.toml")))
+    cfg.update(lanes=2, seq_len=4, micro_lanes=1)
+    cfg["optimizer"]["lr"] = 1e-3
+
+    def outer_net():
+        net = tiny_net()
+        cfg_v = net.cfg
+        cfg_v.variant = VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=2)
+        torch.manual_seed(5)
+        return UraniumNet(cfg_v, action_columns())
+
+    l = Learner(cfg, outer_net(), outer_net(), CPU, "f32", algo)
+    batch = PhasedOnPolicy(_core.test_segments(2, 4), outer_net())
+    before = params(l.net)
+    s = l.update(batch, [1.0, 0.3, 0.3, 0.05])
+    assert all(np.isfinite([s["loss"], s["policy"], s["value"]])), s
+    assert abs(s["kl"]) < 1e-4 and abs(s["rho_mean"] - 1.0) < 1e-3, s
+    after = params(l.net)
+    assert any(not torch.equal(before[k], after[k]) for k in before), "weights changed"
+
+
 def test_ppo_update_042():
     l, batch = learner("ppo")
     s = l.update(batch, [1.0, 0.0, 0.0, 0.0])

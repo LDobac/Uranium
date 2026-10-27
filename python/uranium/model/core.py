@@ -146,6 +146,8 @@ class GtrxlCore(nn.Module):
 
 
 def build_core(d_in: int, c: CoreConfig) -> nn.Module:
+    """Every core is causal in time: the phased outer pass (032 §2.7, `UraniumNet._outer_seq_phased`)
+    zero-fills later inputs and relies on that."""
     if c.kind == "Lstm":
         return LstmCore(d_in, c)
     if c.kind == "Gtrxl":
