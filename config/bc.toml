@@ -67,3 +67,11 @@ seed = 1
 checkpoint_every = 5000
 # Also checkpoint at least this often in wall time (061-R10; ~2 updates/min on CUDA).
 checkpoint_minutes = 60
+
+# 032 section 2.7 / 032-R20 (4) (user decision 2026-10-27): the main BC model turns on all four
+# structure switches (same as the comparison run arch-abl-all-pt). Absent keys would mean off.
+[model]
+terrain = true
+ctx_token = true
+attn_pool = true
+outer = 32

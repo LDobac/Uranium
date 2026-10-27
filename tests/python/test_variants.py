@@ -73,6 +73,8 @@ def test_comparison_configs_032_r20():
         assert cfg.pop("model") is not None and cfg == base, name
         assert model_variant(str(path)) == v, name
     assert not model_variant(str(ROOT / "config" / "bc_core_ablation_pt.toml")).any()
+    # 032-R20 (4) (user decision 2026-10-27): the main BC config trains the all-on structure.
+    assert model_variant(str(ROOT / "config" / "bc.toml")) == want["all"]
 
 
 @pytest.mark.parametrize("name", VARIANTS)

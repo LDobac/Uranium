@@ -1,6 +1,6 @@
 # M6 — 시간 축 코어 2차 비교 (PyTorch, LSTM vs GTrXL, 032-R17 ⑥)
 
-- 상태: **평가 끝, 결정 대기** (2026-10-27)
+- 상태: **평가 끝, 코어 GTrXL 유지** (2026-10-27 사용자 결정, 구조 변형 모두 켬 채택에 포함)
 - spec: [032](../spec/032-model-architecture.md) 032-R17 ⑥, 032-AC7
 - 1차 비교(Burn, 5,300 update, GTrXL 채택): [`m6_core_ablation.md`](m6_core_ablation.md)
 
@@ -131,3 +131,4 @@ target\release\uranium-train worker --queue <shared>/queue/core-ablation-pt.toml
 - 2026-10-26 05:47~06:05 — **발견: BC250 2호기 학습 프로세스 멈춤**(`arch-abl-all-pt` step 389 뒤 update 없음, 감시가 15분 정지로 알림). 프로세스는 살아 있고 메인 스레드 CPU 100%, 두 스레드가 GPU 완료 대기(`kfd_wait_on_events`), MIOpen 캐시 변화 없음(컴파일 아님), 잠금 heartbeat도 21분 정지. 같은 장비에서 새 프로세스의 작은 GPU 연산은 정상(0.1 s) → 장치 전체가 아니라 그 프로세스의 GPU 작업 하나가 끝나지 않음. GPU 63 W·1,500 MHz(같은 학습 중인 1호기 103~118 W·1,700 MHz). 스택은 ptrace 제한(root 필요)으로 못 봄. 조치: 2호기 작업자 정지·학습 프로세스 강제 종료(SIGKILL), 죽은 프로세스의 잠금 파일은 사본을 남기고 삭제(남아 있으면 학습 PC가 1호기 pool을 대신 가져감). 잃은 update: 마지막 체크포인트 `ckpt-175` 뒤 214개.
 - 2026-10-26 06:16~06:25 — 학습 PC가 outer 완료(`ckpt-10000`, 06:16) 뒤 큐 순서대로 `arch-abl-all-pt`를 `ckpt-175`부터 이어받음. 데이터 순서가 같은 step 385~395를 1.87~1.99 s로 정상 통과 → 2호기 멈춤은 데이터·모델 코드가 아니라 2호기(수리 복귀 장비) 또는 ROCm 쪽 문제. 2호기를 다시 학습에 넣기 전에 같은 체크포인트로 짧게 재현 시험을 권함. BC250 1호기는 pool 계속, 7개 전체 끝 예상 13:45쯤.
 - 2026-10-26 13:49 — **학습 끝(큐 7개 모두 `ckpt-10000`, DONE)**. 06:16 outer, 11:36 all(학습 PC가 06:16에 `ckpt-175`부터 이어받음), 13:49 pool(학습 PC가 11:37에 1호기의 `ckpt-5676`부터 이어받음). 장비 비율(update, 학습 PC CUDA bf16 / ROCm f32): LSTM 92.6% / 7.4%(1호기), GTrXL 59.0% / 41.0%(1호기), terrain·ctx·outer 100% / 0, pool 43.2% / 56.8%(1호기), all 98.2% / 1.8%(2호기). GTrXL·pool은 ROCm f32 비율이 커서 평가 해석 때 정밀도 차이를 함께 적는다. 작업자 셋 모두 정지(13:50).
+- 2026-10-27 — **판정(사용자 결정)**: 코어는 GTrXL 유지(구조 변형 모두 켬 채택이 GTrXL 코어, `m6_arch_ablation_pt.md` 4절).

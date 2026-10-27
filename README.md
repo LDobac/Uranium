@@ -63,7 +63,7 @@ cargo build --release -p uranium-train
 
 ## 4. BC 본학습 (041)
 
-**큐 파일** `<shared>/queue/bc.toml`. 코어는 **GTrXL**(2026-10-23 결정).
+**큐 파일** `<shared>/queue/bc.toml`. 코어는 **GTrXL**(2026-10-23 결정), 구조 변형은 **네 가지 모두 켬**(2026-10-27 결정, `config/bc.toml` `[model]`, 032 §2.7).
 ```toml
 [defaults]
 datasets = ["replays/shards/stardata", "replays/shards/community", "replays/shards/scr_ladder", "replays/shards/personal"]

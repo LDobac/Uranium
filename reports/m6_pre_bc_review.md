@@ -264,7 +264,7 @@ H 절(5661ff8·695cbfe 추가 리뷰)의 본학습 전 필수 항목 H-1~H-4도 
 4. I-4 큐 작성 → I-5 작업자 시작(장시간 실행 시작을 timeline에 기록).
 
 ## J. PyTorch BC 본학습 착수 체크리스트 (2026-10-24, PyTorch 전환·최적화 뒤)
-PyTorch 전환(AMB-000-4)으로 I절의 Burn run(`bc-s1` ckpt-132, `bc-ablation-a` ckpt-44)은 이어 가지 않는다(Burn 산출물은 공용 드라이브 `_old_burn/`). 새 run id는 `bc-s1-pt`·`bc-s2-pt`·`bc-ablation-a-pt`(루트 `README.md` 4절). 학습 설정·데이터(2,069 파일, `[steps]` s1 39,096 / s2·ablation_a 11,387)와 I-D1~D3 결정은 그대로다.
+PyTorch 전환(AMB-000-4)으로 I절의 Burn run(`bc-s1` ckpt-132, `bc-ablation-a` ckpt-44)은 이어 가지 않는다(Burn 산출물은 공용 드라이브 `_old_burn/`). 새 run id는 `bc-s1-pt`·`bc-s2-pt`·`bc-ablation-a-pt`(루트 `README.md` 4절). 학습 설정·데이터(2,069 파일, `[steps]` s1 39,096 / s2·ablation_a 11,387)와 I-D1~D3 결정은 그대로다. 모델 구조는 2026-10-27 결정으로 구조 변형 네 가지 모두 켬(`config/bc.toml` `[model]`, 032-R20 ④)이고, J-5 표본도 이 설정으로 돌린다(update 시간은 기본 구성보다 약 15% 길다).
 
 | # | 항목 | 상태 |
 |---|---|---|
