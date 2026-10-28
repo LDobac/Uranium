@@ -105,7 +105,7 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
 - 장비별 update 수·비율: `uranium-train devices --run bc-s1-pt`
 - 체크포인트: `<shared>/checkpoints/bc-s1-pt/` 등(1시간마다, 끝나면 `DONE`)
 
-**예상 속도**(PyTorch 2단계 최적화 뒤 실측, GTrXL, 32레인 × T64, 데이터 대기 포함): Linux ROCm 호스트 약 10 s/update, CUDA 호스트 약 2.0 s/update(`reports/pytorch_opt.md`). S1+S2(약 50,500 update) 환산 약 140시간 / 28시간.
+**예상 속도**(실측, 모두 켬 모델, 32레인 × T64, 데이터 대기 포함): Linux ROCm 호스트 약 12~13 s/update, CUDA 호스트 약 1.3 s/update(2026-10-28 최적화 뒤, `reports/pytorch_opt.md` 6절; 그 전 약 2.0~2.25 s). S1+S2(약 50,500 update) 환산 약 175시간 / 18시간.
 
 **평가**
 - 오프라인 지표: `python -m uranium bc-eval $DATA --checkpoint <shared>/checkpoints/bc-s2-pt --split test`(ablation-a도 같이). 엔티티 조각 재계산 없이 돌므로 메모리가 큰 CUDA 호스트에서 돌린다.
