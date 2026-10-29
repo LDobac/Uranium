@@ -1,0 +1,18 @@
+--- a/sync.h
++++ b/sync.h
+@@ -862,8 +862,13 @@
+ 							}
+ 							funcs.read_action(client->player_slot, r);
+ 							if (st.players.at(client->player_slot).controller != player_t::controller_occupied) {
+-								if (client != sync_st.local_client) this->kill_client(client);
+-								else this->clear_scheduled_actions(client);
++								// Uranium patch: a remote client whose player was just defeated still has the
++								// actions it sent before the end (2-3 frames of latency). Upstream kills that
++								// client here; the defeated side then sees this process drop out and reports a
++								// win or no winner before its own defeat is processed. Drop only its scheduled
++								// actions, as for the local client; it disconnects when it leaves the game.
++								// See spec 011-R22.
++								this->clear_scheduled_actions(client);
+ 								return false;
+ 							}
+ 						}
