@@ -10,7 +10,7 @@
 +								// actions it sent before the end (2-3 frames of latency). Upstream kills that
 +								// client here; the defeated side then sees this process drop out and reports a
 +								// win or no winner before its own defeat is processed. Drop only its scheduled
-+								// actions, as for the local client; it disconnects when it leaves the game.
++								// actions, as for the local client; the connection closes when its process exits.
 +								// See spec 011-R22.
 +								this->clear_scheduled_actions(client);
  								return false;
