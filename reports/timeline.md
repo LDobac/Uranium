@@ -242,3 +242,4 @@
 - 2026-10-29 00:35~00:40 — **장비 교대**(041 BC 본학습, 사용자 지시: 학습 PC 다시 투입): 학습 PC CUDA 작업자 시작 → 첫째 Linux ROCm 호스트가 S1 양보(`ckpt-24889`) → 우선순위로 둘째 호스트의 (A)를 넘겨받음, 둘째 호스트 대기. S1 update당 약 1.42초(남은 약 14,100 update, 약 5.6시간), (A) 약 13.6초(남은 약 4,250, 약 16시간)
 - 2026-10-29 06:09 — 041 BC 본학습 S1 끝(`bc-s1-pt` `ckpt-39096` DONE, 학습 PC CUDA) → 학습 PC가 바로 S2(`bc-s2-pt`, 11,387 update, update당 약 1.42초) 시작. (A)는 첫째 Linux ROCm 호스트가 계속(10:40 기준 9,979/11,387)
 - 2026-10-29 11:11 — 041 BC 본학습 S2 끝(`bc-s2-pt` `ckpt-11387` DONE, 학습 PC CUDA) → 학습 PC가 첫째 Linux ROCm 호스트의 (A)를 양보받아(`ckpt-10124`부터) 계속, 두 ROCm 호스트 대기
+- 2026-10-29 11:46 — **장시간 실행 끝**(041 BC 본학습, 모두 켬): (A) `bc-ablation-a-pt` `ckpt-11387` DONE(마지막 1,263 update는 학습 PC CUDA). S1 `bc-s1-pt` `ckpt-39096`, S2 `bc-s2-pt` `ckpt-11387`, (A) 모두 `<shared>/checkpoints/`. 큐의 run 모두 끝, 세 작업자 대기
