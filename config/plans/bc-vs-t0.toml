@@ -1,67 +1,71 @@
 # 041-AC2 (AMB-041-2): BC policy vs T0 per matchup, 50 games per race x map, no z,
 # argmax and stochastic sampling both reported (050-R1), Wilson 95% in summary.md (050-R2).
-# `checkpoint`: the final checkpoint of the S2 run `bc --run bc-s2` (ckpt-<[steps] s2>, relative to URANIUM_SHARED_DIR, 061).
+# `checkpoint`: the final checkpoint of the S2 run `bc-s2-pt` (ckpt-11387, relative to URANIUM_SHARED_DIR, 061).
 name = "bc-vs-t0"
 seed_base = 41000
+save_replay = true
+# 2 h wall limit as in the ablation T0 plans (the 1,800 s default cuts games that reach the
+# 60-minute draw when inference is slow).
+wall_timeout_s = 7200
 # 030-R10 / E-5: BC checkpoints get last_failed = 0 (BC data never has a failed command).
 zero_last_failed = true
 [[matchup]]
 map = "fighting_spirit"
 games = 50
-p0 = { kind = "model", checkpoint = "checkpoints/bc-s2/ckpt-7915", sample = "argmax" }
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2-pt/ckpt-11387", sample = "argmax" }
 p1 = { kind = "t0", race = "terran" }
 [[matchup]]
 map = "circuit_breaker"
 games = 50
-p0 = { kind = "model", checkpoint = "checkpoints/bc-s2/ckpt-7915", sample = "argmax" }
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2-pt/ckpt-11387", sample = "argmax" }
 p1 = { kind = "t0", race = "terran" }
 [[matchup]]
 map = "fighting_spirit"
 games = 50
-p0 = { kind = "model", checkpoint = "checkpoints/bc-s2/ckpt-7915", sample = "argmax" }
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2-pt/ckpt-11387", sample = "argmax" }
 p1 = { kind = "t0", race = "protoss" }
 [[matchup]]
 map = "circuit_breaker"
 games = 50
-p0 = { kind = "model", checkpoint = "checkpoints/bc-s2/ckpt-7915", sample = "argmax" }
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2-pt/ckpt-11387", sample = "argmax" }
 p1 = { kind = "t0", race = "protoss" }
 [[matchup]]
 map = "fighting_spirit"
 games = 50
-p0 = { kind = "model", checkpoint = "checkpoints/bc-s2/ckpt-7915", sample = "argmax" }
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2-pt/ckpt-11387", sample = "argmax" }
 p1 = { kind = "t0", race = "zerg" }
 [[matchup]]
 map = "circuit_breaker"
 games = 50
-p0 = { kind = "model", checkpoint = "checkpoints/bc-s2/ckpt-7915", sample = "argmax" }
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2-pt/ckpt-11387", sample = "argmax" }
 p1 = { kind = "t0", race = "zerg" }
 [[matchup]]
 map = "fighting_spirit"
 games = 50
-p0 = { kind = "model", checkpoint = "checkpoints/bc-s2/ckpt-7915", sample = "stochastic" }
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2-pt/ckpt-11387", sample = "stochastic" }
 p1 = { kind = "t0", race = "terran" }
 [[matchup]]
 map = "circuit_breaker"
 games = 50
-p0 = { kind = "model", checkpoint = "checkpoints/bc-s2/ckpt-7915", sample = "stochastic" }
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2-pt/ckpt-11387", sample = "stochastic" }
 p1 = { kind = "t0", race = "terran" }
 [[matchup]]
 map = "fighting_spirit"
 games = 50
-p0 = { kind = "model", checkpoint = "checkpoints/bc-s2/ckpt-7915", sample = "stochastic" }
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2-pt/ckpt-11387", sample = "stochastic" }
 p1 = { kind = "t0", race = "protoss" }
 [[matchup]]
 map = "circuit_breaker"
 games = 50
-p0 = { kind = "model", checkpoint = "checkpoints/bc-s2/ckpt-7915", sample = "stochastic" }
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2-pt/ckpt-11387", sample = "stochastic" }
 p1 = { kind = "t0", race = "protoss" }
 [[matchup]]
 map = "fighting_spirit"
 games = 50
-p0 = { kind = "model", checkpoint = "checkpoints/bc-s2/ckpt-7915", sample = "stochastic" }
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2-pt/ckpt-11387", sample = "stochastic" }
 p1 = { kind = "t0", race = "zerg" }
 [[matchup]]
 map = "circuit_breaker"
 games = 50
-p0 = { kind = "model", checkpoint = "checkpoints/bc-s2/ckpt-7915", sample = "stochastic" }
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2-pt/ckpt-11387", sample = "stochastic" }
 p1 = { kind = "t0", race = "zerg" }
