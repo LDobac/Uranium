@@ -1,7 +1,7 @@
 """032-R19 ⑥ / 042 learner optimisation, CPU: the optimised learner gives the update of the learner
 before it (`uranium.rl.reference`) bit for bit where the operations are the same (targets, phase
 indices, core_state0, statistics, read-back order), within float rounding where the 032 §2.7
-entity padding is cut; lane groups of 1, 2 and all lanes give the same update (float rounding);
+entity padding is cut (`trim_pad`, off by default); lane groups of 1, 2 and all lanes give the same update (float rounding);
 `URANIUM_RL_MICRO_LANES` overrides the config's group size."""
 
 import json
@@ -132,9 +132,11 @@ def test_entity_pad_cut_keeps_the_update_032_r19():
     slots are padding), the update equals the reference within float rounding."""
     l = Learner(rl_cfg(lanes=4), tiny_net(2), tiny_net(2), CPU, "f32", "vtrace", micro_lanes=1)
     batch = Segments(4, 4, tiny_net(2, seed=6), 2)
-    assert l.prepare(batch, 0, 1, 4)["entity_mask"].shape[1] == batch.group(0, 1, 4, 12)["entity_mask"].shape[1] - 2, "no padding cut"
-    l.trim_pad = False
+    # Off by default (no measured gain, 032-R19).
+    assert not l.trim_pad
     assert l.prepare(batch, 0, 1, 4)["entity_mask"].shape[1] == batch.group(0, 1, 4, 12)["entity_mask"].shape[1]
+    l.trim_pad = True
+    assert l.prepare(batch, 0, 1, 4)["entity_mask"].shape[1] == batch.group(0, 1, 4, 12)["entity_mask"].shape[1] - 2, "no padding cut"
     new, ref = run(Learner, "vtrace", 2, 1), run(ReferenceLearner, "vtrace", 2, 1)
     for s_new, s_ref in zip(new[0], ref[0]):
         close_stats(s_new, s_ref, 1e-5, 1e-6)
@@ -242,14 +244,15 @@ def test_bench_rl_runs_both_learners_032_r19():
     assert g["entity_mask"].shape[1] % 64 == 0 and g["selected"].max() <= g["n"]
     assert g["state0"][0] is None and all(s is not None for s in g["state0"][1:])
     cfg = rl_cfg(lanes=4)
-    runs = [run_learner(kind, m, net, cfg, batch, CPU, "f32", "vtrace", 1, True, log=lambda m: None) for kind, m in (("reference", 1), ("new", 1), ("new", 2))]
+    runs = [run_learner(kind, m, net, cfg, batch, CPU, "f32", "vtrace", 1, True, log=lambda m: None, trim=trim) for kind, m, trim in (("reference", 1, False), ("new", 1, True), ("new", 2, False))]
     assert all(r["median_s"] is not None and "backward" in r["phase_median_s"] for r in runs)
+    assert runs[1]["trim"] and not runs[2]["trim"]
     for r in runs[1:]:
         c = compare(runs[0], r)
         assert c["updates"] == 2 and c["finite"]
         assert c["loss"]["max_rel"] < 1e-4 and c["grad_norm"]["max_rel"] < 1e-4, c
-    # `--off trim`: the new learner without the padding cut is the reference bit for bit (CPU).
-    same = compare(runs[0], run_learner("new", 1, net, cfg, batch, CPU, "f32", "vtrace", 1, False, log=lambda m: None, off=("trim",)))
+    # Default (no padding cut): the new learner is the reference bit for bit (CPU).
+    same = compare(runs[0], run_learner("new", 1, net, cfg, batch, CPU, "f32", "vtrace", 1, False, log=lambda m: None))
     assert all(v["max_abs"] == 0.0 for k, v in same.items() if isinstance(v, dict)), same
 
 

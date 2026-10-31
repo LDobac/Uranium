@@ -12,8 +12,7 @@ optimizer step, like BC (041). The same math as the Burn learner it replaces.
 
 032-R19 ⑥ (042 learner optimisation, same formulas): the collate thread also stages a group for
 the copy (page-locked on the CUDA host, the spatial planes rounded to bf16 under bf16 autocast,
-the entity padding cut for the 032 §2.7 extra tokens, core_state0 and the outer segments' row
-indices built on the host), so the training thread's copies do not wait for the GPU there; the
+core_state0 and the outer segments' row indices built on the host), so the training thread's copies do not wait for the GPU there; the
 host computes the targets from the detached log-probs and values while the device runs the BC
 forward (queued before the targets on every backend), and the targets of the 4 reward
 components are one recursion; the statistics stay on the device until one read per update. The
@@ -118,9 +117,11 @@ class Learner:
         # host under bf16 autocast (their consumers round them the same way, `net.stage`).
         self.pinned = device.type == "cuda" and torch.version.hip is None
         self.spatial_bf16 = precision == "bf16"
-        # The 032 §2.7 entity padding cut (`trim_entity_pad`). These three are attributes so
-        # `bench rl --off` measures each alone and the tests compare without the cut.
-        self.trim_pad = True
+        # The 032 §2.7 entity padding cut (`trim_entity_pad`): off. Equal only within float
+        # rounding (shorter reductions) and no measured gain on the CUDA host (`bench rl`,
+        # 2026-10-31, groups 1 and 4), so not used (032-R19: only changes with a measured gain);
+        # `bench rl --trim` measures it again. These three are attributes so `bench rl` sets them.
+        self.trim_pad = False
         self.opt = self.new_optimizer()
         self._collate = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-collate")
         # Per-phase times of an update (`bench rl --phases`): the device synchronised at each mark.
@@ -154,8 +155,8 @@ class Learner:
         self._mark = now
 
     def prepare(self, batch, start: int, end: int, t: int) -> dict:
-        """Lanes `start..end` collated and staged for the copy (on the collate thread): the 032 §2.7
-        entity padding cut (`trim_entity_pad`, dropout 0 in RL), the copied arrays page-locked
+        """Lanes `start..end` collated and staged for the copy (on the collate thread): with
+        `trim_pad` the 032 §2.7 entity padding cut (`trim_entity_pad`, dropout 0 in RL), the copied arrays page-locked
         (CUDA host) with the spatial planes in bf16 (bf16 autocast), core_state0 on the host and the
         outer segments' row indices from its counter (`phase_split`)."""
         net = self.net

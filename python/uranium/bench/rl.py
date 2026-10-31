@@ -25,8 +25,9 @@ from uranium.model.net import ENTITY_KEYS, LABEL_KEYS, OBS_KEYS
 WEIGHTS = [1.0, 0.3, 0.3, 0.05]
 STAT_KEYS = ("loss", "policy", "value", "kl", "win_open", "rho_mean", "adv_mean", "grad_norm", "kl_heads", "entropy_heads")
 PAD = 64  # entity padding of learner batches (uranium_league::batch::PAD_ENTITIES, 030-R7)
-# `--off` names: the new learner's attribute each one clears.
-OFF = {"trim": "trim_pad", "pinned": "pinned", "spatial_bf16": "spatial_bf16"}
+# `--off` names: the new learner's attribute each one clears (the entity padding cut is off by
+# default; `--trim` turns it on).
+OFF = {"pinned": "pinned", "spatial_bf16": "spatial_bf16"}
 
 
 class SyntheticSegments:
@@ -143,9 +144,10 @@ def profile_update(learner, batch, device: torch.device, n_ops: int, trace: str 
     return {"ops": [{"name": e.key, "calls": e.count, "self_ms": round(getattr(e, key, 0.0) / 1e3, 3), "cpu_ms": round(e.self_cpu_time_total / 1e3, 3)} for e in ev], "runtime_calls": calls}
 
 
-def run_learner(kind: str, group: int, net, cfg: dict, batch, device: torch.device, precision: str, algo: str, updates: int, phases: bool, n_ops: int = 0, trace: str | None = None, log=print, off: tuple = ()) -> dict:
+def run_learner(kind: str, group: int, net, cfg: dict, batch, device: torch.device, precision: str, algo: str, updates: int, phases: bool, n_ops: int = 0, trace: str | None = None, log=print, off: tuple = (), trim: bool = False) -> dict:
     """`updates` + 1 updates of a fresh learner (`new` or `reference`) from `net`'s weights;
-    `off`: staging steps of the new learner left out (`OFF`), to measure each alone."""
+    `off`: staging steps of the new learner left out (`OFF`), to measure each alone; `trim`: the
+    new learner with the 032 §2.7 entity padding cut (off by default)."""
     from uranium.rl.learner import Learner
     from uranium.rl.reference import ReferenceLearner
 
@@ -154,6 +156,8 @@ def run_learner(kind: str, group: int, net, cfg: dict, batch, device: torch.devi
     l.phases = phases
     for k in off if kind == "new" else ():
         setattr(l, OFF[k], False)
+    if kind == "new":
+        l.trim_pad = trim
     reset_peak(device)
     res: list[dict] = []
     for step in range(updates + 1):
@@ -166,7 +170,7 @@ def run_learner(kind: str, group: int, net, cfg: dict, batch, device: torch.devi
         log(f"[bench rl] {kind} group {group} update {step}: {wall:.2f}s loss {s['loss']:.6f} kl {s['kl']:.3e}")
     walls = [x["wall_s"] for x in res[1:]]
     out = {
-        "learner": kind, "group": group, "off": list(off) if kind == "new" else [], "lanes": batch.lanes, "seq_len": batch.t, "algo": algo, "updates": res,
+        "learner": kind, "group": group, "off": list(off) if kind == "new" else [], "trim": trim and kind == "new", "lanes": batch.lanes, "seq_len": batch.t, "algo": algo, "updates": res,
         "median_s": statistics.median(walls) if walls else None, "mean_s": statistics.fmean(walls) if walls else None,
         "p95_s": sorted(walls)[min(len(walls) - 1, math.ceil(0.95 * len(walls)) - 1)] if walls else None,
         "peak_gib": peak_gib(device), "peak_rss_gib": peak_rss_gib(),
@@ -215,7 +219,7 @@ def markdown(runs: list[dict], env: dict, command: str) -> str:
             out.append(f"| {r['learner']} | {r['group']} | – | **failed**: `{r['failed']}` | | | | |")
             continue
         last = r["updates"][-1]["stats"]["loss"] if r["updates"] else None
-        name = r["learner"] + (f" (off: {', '.join(r['off'])})" if r.get("off") else "")
+        name = r["learner"] + (f" (off: {', '.join(r['off'])})" if r.get("off") else "") + (" (trim)" if r.get("trim") else "")
         out.append(f"| {name} | {r['group']} | {max(len(r['updates']) - 1, 0)} | {fmt(r['median_s'], '.2f')} ({fmt(r['p95_s'], '.2f')}) | {fmt(r['mean_s'], '.2f')} | {fmt(r['peak_gib'], '.2f')} | {fmt(r['peak_rss_gib'], '.2f')} | {fmt(last, '.6f')} |")
     phased = [r for r in runs if r.get("phase_median_s")]
     if phased:

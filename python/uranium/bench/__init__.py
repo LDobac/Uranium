@@ -50,7 +50,8 @@ def add_parser(sub) -> None:
     r.add_argument("--backend", choices=["cuda", "rocm", "cpu"])
     r.add_argument("--learner", default="new", help="comma list of new, reference (the learner before the 032-R19 changes)")
     r.add_argument("--groups", default="1", help="comma list of lane group sizes (micro_lanes, 0 = all lanes)")
-    r.add_argument("--off", default="", help="comma list of the new learner's staging steps left out: trim, pinned, spatial_bf16 (each measured alone; pinned also turns the CUDA read-back into the plain synchronous copy)")
+    r.add_argument("--off", default="", help="comma list of the new learner's staging steps left out: pinned, spatial_bf16 (each measured alone; pinned also turns the CUDA read-back into the plain synchronous copy)")
+    r.add_argument("--trim", action="store_true", help="the new learner with the 032 §2.7 entity padding cut (off by default: no measured gain, equal only within rounding)")
     r.add_argument("--updates", type=int, default=10, help="measured updates after one warm-up update")
     r.add_argument("--lanes", type=int, help="default: the config's lanes")
     r.add_argument("--entities", default="64:192", help="lo:hi entities per synthetic step block")
@@ -198,9 +199,9 @@ def rl_main(a) -> int:
                 write(a.json, json.dumps({"env": env, "runs": runs}, indent=1))
                 continue
             try:
-                runs.append(run_learner(kind, int(g), net, cfg, batch, device, precision, a.algo, a.updates, a.phases, a.ops, a.trace, log, off))
+                runs.append(run_learner(kind, int(g), net, cfg, batch, device, precision, a.algo, a.updates, a.phases, a.ops, a.trace, log, off, a.trim))
             except torch.OutOfMemoryError as e:  # a group size over the device memory is a result (060-R3)
-                runs.append({"learner": kind, "group": int(g), "off": list(off), "updates": [], "median_s": None, "mean_s": None, "p95_s": None, "peak_gib": None, "peak_rss_gib": None, "failed": str(e).splitlines()[0][:160]})
+                runs.append({"learner": kind, "group": int(g), "off": list(off), "trim": a.trim and kind == "new", "updates": [], "median_s": None, "mean_s": None, "p95_s": None, "peak_gib": None, "peak_rss_gib": None, "failed": str(e).splitlines()[0][:160]})
                 torch.cuda.empty_cache()
             # Written after every run: a long sweep that is stopped keeps the runs it finished.
             md = markdown(runs, env, cmd)
@@ -220,13 +221,13 @@ def _rl_child(a, kind: str, group: int, log) -> dict:
         out = Path(d) / "run.json"
         argv = [sys.executable, "-m", "uranium", "bench", "rl", "--checkpoint", a.checkpoint, "--config", a.config, "--algo", a.algo, "--learner", kind, "--groups", str(group),
                 "--updates", str(a.updates), "--entities", a.entities, "--templates", str(a.templates), "--seed", str(a.seed), "--off", a.off, "--ops", str(a.ops), "--json", str(out)]
-        argv += (["--backend", a.backend] if a.backend else []) + (["--lanes", str(a.lanes)] if a.lanes else []) + (["--phases"] if a.phases else []) + (["--trace", a.trace] if a.trace else [])
+        argv += (["--backend", a.backend] if a.backend else []) + (["--lanes", str(a.lanes)] if a.lanes else []) + (["--phases"] if a.phases else []) + (["--trim"] if a.trim else []) + (["--trace", a.trace] if a.trace else [])
         log(f"[bench rl] child: {kind} group {group}")
         rc = subprocess.run(argv, stdout=subprocess.DEVNULL).returncode
         if rc != 0 or not out.is_file():
             # As the in-process path records a failed run: with the requested --off list.
             off = [x.strip() for x in a.off.split(",") if x.strip()]
-            return {"learner": kind, "group": group, "off": off, "updates": [], "median_s": None, "mean_s": None, "p95_s": None, "peak_gib": None, "peak_rss_gib": None, "failed": f"child exit {rc}"}
+            return {"learner": kind, "group": group, "off": off, "trim": a.trim and kind == "new", "updates": [], "median_s": None, "mean_s": None, "p95_s": None, "peak_gib": None, "peak_rss_gib": None, "failed": f"child exit {rc}"}
         return json.loads(out.read_text(encoding="utf-8"))["runs"][0]
 
 
