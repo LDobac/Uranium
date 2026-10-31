@@ -128,6 +128,8 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | AMB-042-8 | 첫 RL 게임 호스트 구성 | Resolved (2026-10-17: 학습 호스트 로컬 hostd로 시작, 리플레이 build 후 원격 Linux 게임 호스트 두 대 추가) |
 | AMB-042-9 | KL(π‖π_BC) 계산 방식(BC 재forward 비용 약 1.5배) | Resolved (2026-10-17: BC 모델 재forward로 정확한 분포 KL, GPU 메모리가 부족하면 사용자에게 보고) |
 | AMB-042-10 | RL 한 프로세스(Python learner·추론 + Rust 스레드)에서 GIL 경합 시 추론 프로세스 분리 | Resolved (2026-10-24: 분리하지 않음 — 한 프로세스, 추론은 학습기와 같은 GPU 스트림. 근거 `reports/pytorch_opt.md` 2.25: GIL 대기 ≈ 0, Linux ROCm 호스트 분리 시 추론 3배 느림·전용 스트림은 수 분 멈춤, CUDA 호스트 차이 몇 ms) |
+| AMB-042-11 | trajectory 큐 역압(2026-10-31 사용자 결정 ②)에서 한 번 기다리는 시간의 상한 `queue_wait_max_s`. 넘으면 가장 오래된 세그먼트를 버림. OpenBW 드롭 시간(011-R18, 600초)보다 충분히 작아야 함 | Open (기본안(미확정): 120초 — 042 정책 지연·가중치 배포·큐 표) |
+| AMB-042-12 | RL 판 벽시계 제한 `[actors] game_wall_timeout_s`(지금 코드에 3,600초 고정, 역압 대기 시간도 포함됨) | Open (기본안(미확정): 7,200초 — BC 평가 plan과 같음, `reports/m6_pre_rl_review.md` 5-1절 C1, `reports/m6_rl_sample.md` ROCm 진행 중 판 2,845초) |
 | AMB-043-1 | 래더 수집: 040 데이터 정책(약관 준수) 예외 허용 여부 | Resolved (2026-10-16: EULA 해석 위험 감수하고 예외 허용, 내부 학습 전용·재배포 금지 유지) |
 | AMB-043-2 | 래더 수집: 실행 PC·배틀넷 계정 | Resolved (2026-10-16: 사용자 본계정, SC:R이 도는 Windows PC) |
 | AMB-043-3 | 래더 수집: 범위 기본값(게이트웨이·순위/MMR·매치업·맵·시즌) | Resolved (2026-10-16: 아시아(한국)만, 추적 대상 랭크 A 이상, 매치업·맵 전체, 과거 시즌 포함) |
@@ -165,7 +167,7 @@ Uranium은 스타크래프트1 **테란 밀리 AI 봇** 프로젝트다. 이 폴
 | 034 | [Action Table](034-action-table.md) | 액션 목록·인자·마스크 클래스 | **Approved** |
 | 040 | [Replay Dataset](040-replay-dataset.md) | 리플레이 데이터 | **Approved** |
 | 041 | [Imitation Learning](041-imitation-learning.md) | BC 학습 | **Approved** |
-| 042 | [RL Training](042-rl-training.md) | RL·리그 | **Approved** |
+| 042 | [RL Training](042-rl-training.md) | RL·리그 | **Review** (2026-10-31 개정안 사용자 확인 대기, AMB-042-11·12. 개정 전 본문은 Approved) |
 | 043 | [Ladder Replay Collector](043-ladder-replay-collector.md) | SC:R 래더 리플레이 수집 | **Approved** |
 | 050 | [Evaluation](050-evaluation.md) | 평가·게이트 | **Approved** |
 | 060 | [Infra: Training Hosts](060-infra.md) | 학습 호스트(Linux ROCm·CUDA) | **Approved** |
