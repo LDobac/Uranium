@@ -10,6 +10,8 @@
 //!   `hosts` (020-R6 hosts file, re-read every minute).
 //! - `games/<host>.jsonl`, `results/<host>.jsonl`: what each worker's scheduler and agent wrote
 //!   (hostd ids, [`hostd_id`]); one writer per file.
+//! - `results/unit_rejections/<host>.jsonl`: each worker's per-unit rejection details (031-R10),
+//!   never merged into the stage records.
 //! - `inflight/<host>.json`: the games a worker has in flight, rewritten every few seconds.
 //! - `leaving/<host addr>`: a game host that gets no new game (its worker is stopping).
 //! - `<stage>/replays/g<plan id>.rep`; `<stage>/games.jsonl`, `results.jsonl`, `summary.md`,
@@ -175,9 +177,7 @@ fn read_dir_lines(dir: &Path) -> Result<Vec<serde_json::Value>> {
     let mut files = Vec::new();
     for e in rd {
         let p = e.with_context(|| format!("listing {}", dir.display()))?.path();
-        // 031-R10: `<host>.unit_rejections.jsonl` beside the session records is not a record file.
-        let rejections = p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".unit_rejections.jsonl"));
-        if p.extension().is_some_and(|x| x == "jsonl") && !rejections {
+        if p.extension().is_some_and(|x| x == "jsonl") {
             files.push(p);
         }
     }
@@ -187,6 +187,13 @@ fn read_dir_lines(dir: &Path) -> Result<Vec<serde_json::Value>> {
         out.extend(text.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()));
     }
     Ok(out)
+}
+
+/// 031-R10: a worker's per-unit rejection details, `results/unit_rejections/<host>.jsonl` (the
+/// agent creates the folder on the first rejection). A subfolder, so the non-recursive
+/// [`read_dir_lines`] of `results/` never takes them for session records (020-R15 ⑨).
+fn unit_rejections_file(job: &EvalJob, host: &str) -> PathBuf {
+    job.sub("results").join("unit_rejections").join(format!("{host}.jsonl"))
 }
 
 /// The job's game records. A record whose stage name differs from the stage at its index means
@@ -752,9 +759,7 @@ impl EvalWorker {
         storage::check_name(&cfg.host)?;
         let (routes, builds, ends) = (Routes::default(), T0Builds::default(), EndBoard::default());
         let results = job.sub("results").join(format!("{}.jsonl", cfg.host));
-        // 031-R10: per-unit rejections per host, never merged into the stage records (020-R15 ⑨).
-        let rejections = job.sub("results").join(format!("{}.unit_rejections.jsonl", cfg.host));
-        let agent_addr = crate::start_agent(listen, &results, &rejections, routes.clone(), builds.clone(), ends.clone())?;
+        let agent_addr = crate::start_agent(listen, &results, &unit_rejections_file(&job, &cfg.host), routes.clone(), builds.clone(), ends.clone())?;
         elog!("[eval] job {} ({} stages, {} games), host {} priority {} backend {}, agent at {agent_addr}", job.dir.display(), job.stages.len(), job.keys().len(), cfg.host, priority, backend);
         if let Some(addr) = &local_hostd {
             // Coming back: this host takes games again (020-R15 ⑥).
@@ -1350,16 +1355,18 @@ mod tests {
         assert!(!st.done.contains_key(&(0, 4)), "one failure of game 4 is below the limit");
     }
 
-    /// 031-R10 / 020-R15 ⑨: a host's `<host>.unit_rejections.jsonl` lives beside its session
-    /// records but is not read as one (it is not merged into the stage records).
+    /// 031-R10 / 020-R15 ⑨: a host's rejection details go to `results/unit_rejections/<host>.jsonl`
+    /// and are not read as session records (not merged into the stage records).
     #[test]
     fn results_skip_unit_rejection_files_031_r10() {
-        let dir = std::env::temp_dir().join(format!("uranium-eval-rej-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("h.jsonl"), "{\"game_id\": 1}\n").unwrap();
-        std::fs::write(dir.join("h.unit_rejections.jsonl"), "{\"game_id\": 1, \"unit\": 5}\n").unwrap();
-        let lines = read_dir_lines(&dir).unwrap();
+        let dir = job_dir("rej", 1);
+        let job = EvalJob::load(&dir).unwrap();
+        let file = unit_rejections_file(&job, "h");
+        assert_eq!(file, dir.join("results").join("unit_rejections").join("h.jsonl"));
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(job.sub("results").join("h.jsonl"), "{\"game_id\": 1}\n").unwrap();
+        std::fs::write(&file, "{\"game_id\": 1, \"unit\": 5}\n").unwrap();
+        let lines = read_dir_lines(&job.sub("results")).unwrap();
         assert_eq!(lines, vec![serde_json::json!({"game_id": 1})]);
         let _ = std::fs::remove_dir_all(&dir);
     }

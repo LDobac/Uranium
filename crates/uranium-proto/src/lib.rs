@@ -192,10 +192,13 @@ pub enum GameEvent {
     /// 031-R10: command `cmd_index` of the previous `Act` failed with BWAPI error `error`.
     CommandFailed { cmd_index: u16, error: u16 },
     /// 010-R14: unit `unit` of `Command::Unit` `cmd_index` of the previous `Act` did not take the
-    /// command. `unit_type` is its canonical unit type (`None` when the unit was not found),
-    /// `command` the BWAPI `UnitCommandType` id the bridge actually sent to it (after the per-unit
-    /// adjustment, 011-R20 ③), `error` the BWAPI error id. Diagnostic only: `CommandFailed` keeps
-    /// its meaning (031-R10). Last variant so stored frames keep their postcard indices.
+    /// command. `unit_type` is its canonical unit type (`None` when the unit was not found).
+    /// `command` is the BWAPI `UnitCommandType` id the bridge attempted for that unit: for an issued
+    /// unit after the per-unit rewrite (011-R20 ③); for a unit not found after target resolution
+    /// (a gone resource → Move included, 011-R20 ①-1) but before any per-unit rewrite; for a
+    /// fog-ghost command (011-R20 ①-2) Attack_Unit / Right_Click_Unit. `error` is the BWAPI error
+    /// id. Diagnostic only: `CommandFailed` keeps its meaning (031-R10). Last variant so stored
+    /// frames keep their postcard indices.
     UnitRejected { cmd_index: u16, unit: UnitId, unit_type: Option<u16>, command: u8, error: u16 },
 }
 

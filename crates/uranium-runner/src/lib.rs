@@ -274,6 +274,8 @@ pub fn run_plan(plan_path: &Path, out: Option<PathBuf>, models: Models) -> Resul
     std::fs::copy(plan_path, out.join("plan.toml"))?;
     let _ = std::fs::remove_file(out.join("games.jsonl"));
     let _ = std::fs::remove_file(out.join("results.jsonl"));
+    // 031-R10: a fresh plan run starts its per-unit rejection details with its session records.
+    let _ = std::fs::remove_file(out.join("unit_rejections.jsonl"));
 
     let builds = T0Builds::default();
     let routes = Routes::default();

@@ -17,7 +17,7 @@ use common::*;
 use uranium_agent::broker::{BatchOut, Broker};
 use uranium_agent::infer::{HEADS, HostState, InferOptions, InferenceHandle, SampleMode};
 use uranium_agent::model_policy::ModelPolicy;
-use uranium_agent::{PolicySpec, Routes, ServeOptions, serve};
+use uranium_agent::{PolicySpec, RejectionLog, Routes, ServeOptions, serve};
 use uranium_env::features::DELAY_BUCKETS;
 use uranium_proto::*;
 
@@ -337,4 +337,62 @@ fn surrender_modes_031_r12() {
     assert!(acts[2].cmds.is_empty(), "010-R13: no commands with a surrender");
     let s = p.stats();
     assert_eq!((s.surrender.as_str(), s.surrender_frame, s.decisions), ("on", Some(49), 3));
+}
+
+/// 031-R10 / 010-R14 / 010-R12: `play` counts `UnitRejected` from observations and from
+/// `GameEnd.final_frame`; a session that ends in an error (bridge gone mid-game) still keeps its
+/// counts in the record and its detail lines in the file.
+#[test]
+fn unit_rejections_in_sessions_031_r10() {
+    let h = mock(1, None);
+    let dir = std::env::temp_dir().join(format!("uranium-agent-rej-session-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("unit_rejections.jsonl");
+    let opts = ServeOptions { unit_rejections: RejectionLog::new(path.clone()), ..ServeOptions::new(PolicySpec::Model(h.clone())) };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let rej = |cmd_index: u16, unit: u32, unit_type: Option<u16>| GameEvent::UnitRejected { cmd_index, unit, unit_type, command: 14, error: 10 };
+    // Two observations (the second with one rejection), then a GameEnd whose final frame carries
+    // two more (`finish`), or the bridge drops the connection after the second Act.
+    let run = |game_id: u64, finish: bool| {
+        let bridge = std::thread::spawn(move || {
+            let s = TcpStream::connect(addr).unwrap();
+            let mut r = BufReader::new(s.try_clone().unwrap());
+            let mut w = BufWriter::new(s);
+            let hello = Hello { protocol_version: PROTOCOL_VERSION, backend: Backend::OpenBw, game_version: "test".into(), mode: Mode::Lockstep, game_id, slot: 0, replay: false };
+            write_msg(&mut w, &BridgeMsg::Hello(hello)).unwrap();
+            write_msg(&mut w, &BridgeMsg::GameInfo(Box::new(game_info()))).unwrap();
+            let mut fr = frames(0, 3);
+            fr[1].events.push(rej(0, 5, Some(0)));
+            let mut last = fr.pop().unwrap();
+            for f in fr {
+                write_msg(&mut w, &BridgeMsg::Frame(Box::new(f))).unwrap();
+                w.flush().unwrap();
+                let AgentMsg::Act(_) = read_msg::<AgentMsg>(&mut r).unwrap() else { panic!("expected Act") };
+            }
+            if finish {
+                last.events.extend([rej(0, 6, Some(0)), rej(1, 7, None)]);
+                write_msg(&mut w, &BridgeMsg::End(GameEnd { winner: Some(0), frame: 100, reason: EndReason::Elimination, stats: None, final_frame: Some(Box::new(last)) })).unwrap();
+                w.flush().unwrap();
+            }
+        });
+        let (stream, _) = listener.accept().unwrap();
+        let rec = uranium_agent::session(stream, &opts);
+        bridge.join().unwrap();
+        rec
+    };
+    let ended = run(1, true);
+    assert!(ended.error.is_none(), "{:?}", ended.error);
+    assert_eq!(ended.unit_rejections, 3, "the final frame's rejections count too");
+    assert_eq!(ended.unit_rejections_by.get("14/0/10"), Some(&2));
+    assert_eq!(ended.unit_rejections_by.get("14/none/10"), Some(&1));
+    let dropped = run(2, false);
+    assert!(dropped.error.is_some(), "the bridge left without GameEnd");
+    assert_eq!(dropped.unit_rejections, 1);
+    let lines: Vec<serde_json::Value> = std::fs::read_to_string(&path).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let games: Vec<u64> = lines.iter().map(|l| l["game_id"].as_u64().unwrap()).collect();
+    assert_eq!(games, vec![1, 1, 1, 2]);
+    assert_eq!(lines[1]["frame"], lines[2]["frame"], "both final-frame lines carry its frame");
+    assert_eq!(lines[3]["unit"], 5);
+    let _ = std::fs::remove_dir_all(&dir);
 }

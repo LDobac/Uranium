@@ -99,7 +99,9 @@ pub fn event(e: &UrEvent) -> Option<GameEvent> {
         // 010-R14, 011 "C ABI 이벤트": unit_type 0xFFFF = unit not found.
         UR_EV_UNIT_REJECTED => GameEvent::UnitRejected {
             cmd_index: e.x.max(0) as u16,
-            unit: id()?,
+            // The requested id as the agent sent it: `commands` pools ids with `as i32`, so this
+            // is its exact inverse (an id above i32::MAX arrives negative and is not dropped).
+            unit: e.unit as u32,
             unit_type: (e.unit_type != NO_UNIT_TYPE).then_some(e.unit_type),
             command: e.command,
             error: e.y.max(0) as u16,
@@ -359,6 +361,11 @@ mod tests {
         let missing = event(&ev(UR_EV_UNIT_REJECTED, 43, 1, 0, 0xFFFF, 6)).unwrap();
         assert_eq!(missing, GameEvent::UnitRejected { cmd_index: 1, unit: 43, unit_type: None, command: 6, error: 0 });
         assert_eq!(event(&ev(UR_EV_CMD_FAILED, 2, 10, 0, 0xFFFF, 0)), Some(GameEvent::CommandFailed { cmd_index: 2, error: 10 }));
+        // A requested id that the pool cast to a negative i32 comes back unchanged, not dropped.
+        let (mut cmds, mut pool) = (Vec::new(), Vec::new());
+        commands(&[Command::Unit { units: vec![u32::MAX - 1], order: CmdOrder::Stop, queued: false }], &mut cmds, &mut pool);
+        let high = event(&ev(UR_EV_UNIT_REJECTED, pool[0], 0, 0, 0xFFFF, 0)).unwrap();
+        assert_eq!(high, GameEvent::UnitRejected { cmd_index: 0, unit: u32::MAX - 1, unit_type: None, command: 0, error: 0 });
         let mut evs = [
             GameEvent::UnitRejected { cmd_index: 3, unit: 1, unit_type: None, command: 0, error: 0 },
             found.clone(),

@@ -103,9 +103,24 @@ pub struct UrEvent {
     pub y: i32,
     /// UR_EV_UNIT_REJECTED: BWAPI UnitType id, 0xFFFF when the unit was not found (and for other kinds).
     pub unit_type: u16,
-    /// UR_EV_UNIT_REJECTED: BWAPI UnitCommandType id actually sent (after per-unit adjustment). 0 otherwise.
+    /// UR_EV_UNIT_REJECTED: BWAPI UnitCommandType id the bridge attempted for that unit. Issued
+    /// units: after the per-unit rewrite. Units not found: after target resolution (a gone
+    /// resource → Move included) but before any per-unit rewrite. Fog-ghost commands:
+    /// Attack_Unit / Right_Click_Unit. 0 for other kinds.
     pub command: u8,
 }
+
+// 011 "C ABI 이벤트": the C layout is kind@0, unit@4, x@8, y@12, unit_type@16, command@18, size 20
+// (the shim asserts the same on the C side).
+const _: () = {
+    assert!(std::mem::size_of::<UrEvent>() == 20);
+    assert!(std::mem::align_of::<UrEvent>() == 4);
+    assert!(std::mem::offset_of!(UrEvent, unit) == 4);
+    assert!(std::mem::offset_of!(UrEvent, x) == 8);
+    assert!(std::mem::offset_of!(UrEvent, y) == 12);
+    assert!(std::mem::offset_of!(UrEvent, unit_type) == 16);
+    assert!(std::mem::offset_of!(UrEvent, command) == 18);
+};
 
 #[repr(C)]
 pub struct UrEffect {

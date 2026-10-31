@@ -71,7 +71,7 @@ typedef struct {
   int32_t unit;        /* 유닛 id. UR_EV_CMD_FAILED: 명령 index. UR_EV_UNIT_REJECTED: 거절된 유닛 id(찾지 못했으면 요청한 id) */
   int32_t x, y;        /* UR_EV_NUKE: 위치. UR_EV_CMD_FAILED: x = BWAPI 오류. UR_EV_UNIT_REJECTED: x = 명령 index, y = BWAPI 오류 */
   uint16_t unit_type;  /* UR_EV_UNIT_REJECTED: BWAPI UnitType id, 유닛을 찾지 못했으면 0xFFFF. 다른 kind는 0xFFFF */
-  uint8_t command;     /* UR_EV_UNIT_REJECTED: BWAPI UnitCommandType id(보정 뒤). 다른 kind는 0 */
+  uint8_t command;     /* UR_EV_UNIT_REJECTED: 브리지가 그 유닛에 시도한 BWAPI UnitCommandType id. 보낸 유닛: 유닛별 보정 뒤. 찾지 못한 유닛: 대상 해석 뒤(사라진 자원 → Move 포함), 유닛별 보정 전. 잔상 명령: Attack_Unit / Right_Click_Unit. 다른 kind는 0 */
 } UrEvent;
 
 typedef struct {

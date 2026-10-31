@@ -261,7 +261,8 @@ impl Policy for ModelPolicy {
 }
 
 /// One JSONL record (one player of one game).
-#[derive(Serialize, Default)]
+#[derive(Serialize)]
+#[cfg_attr(test, derive(Default))]
 pub struct SessionRecord {
     pub game_id: u64,
     pub slot: u8,
