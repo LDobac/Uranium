@@ -6,6 +6,9 @@
 lanes = 32
 seq_len = 64
 micro_lanes = 1
+# 061-R6 (G-D6): checkpoints kept on the share, 0 = all (user decision 2026-10-31: keep every
+# RL checkpoint so learning curves can be evaluated afterwards).
+keep_checkpoints = 0
 
 [optimizer]
 # Adam (AlphaStar RL stage), 1/10 of the BC learning rate.
