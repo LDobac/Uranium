@@ -157,10 +157,10 @@ index bfe64cd5..5f4bce46 100755
          return false;
 diff --git a/bwapi/Shared/UraniumBridgeExt.h b/bwapi/Shared/UraniumBridgeExt.h
 new file mode 100644
-index 00000000..46f7761f
+index 00000000..30d564d0
 --- /dev/null
 +++ b/bwapi/Shared/UraniumBridgeExt.h
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,39 @@
 +#pragma once
 +// Uranium patch 0016 (spec 011-R23): extensions for the Uranium bridge. They act only in a process
 +// started with URANIUM_BRIDGE_EXT=1 (hostd sets it for the bridge's launcher alone, 020-R17);
@@ -188,6 +188,9 @@ index 00000000..46f7761f
 +    // are the position, extra = (unit type << 1) | queued. It goes to the game as a TargetedOrder
 +    // MoveToAttack (Attack2) or a RightClick action that carries the unit type and no unit, as when
 +    // a player clicks a building's ghost in the fog. Without the extension BWAPI rejects it (no target).
++    // extra is never 0 for a building type, so BWAPI also takes a ghost command as queued
++    // (isQueued() is !!extra): lastImmediateCommand and the command optimizer skip it, which is
++    // harmless (the shim reads neither; the optimizer is off at level 0).
 +    inline bool isGhost(const UnitCommand& c)
 +    {
 +      return enabled() && c.target == nullptr &&

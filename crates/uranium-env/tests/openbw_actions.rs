@@ -1209,13 +1209,35 @@ fn same_seed_same_acts_same_game_011_ac4() {
 /// What one command of the last `PreRl` Act checks.
 #[derive(Clone, Debug)]
 enum Check {
-    /// Train_SCV with the supply full and the CC queue not empty (queue length before).
-    SupplyTrain(usize),
+    /// Train_SCV with the supply full on this producer, its queue length and our completed SCVs.
+    SupplyTrain { producer: UnitId, queue: usize, done: usize },
     /// Attack_Unit / Smart_Unit on the remembered enemy building, issued to this unit.
     Ghost(&'static str, UnitId),
     /// A group command with an unmovable and an unknown unit (011-R20 (4)).
     Group,
     Other,
+}
+
+/// One supply-blocked Train_SCV (034-R3, 011-R23 (1)).
+#[derive(Clone, Debug)]
+struct SupplyTry {
+    /// Sent and no CommandFailed (false: masked, skipped or failed).
+    accepted: bool,
+    queue_before: usize,
+    /// Producer queue length at the next observation plus the SCVs completed meanwhile.
+    queue_after_plus_done: Option<usize>,
+}
+
+/// One command on the remembered enemy building (011-R20 (1)-2).
+#[derive(Clone, Debug)]
+struct GhostTry {
+    action: &'static str,
+    accepted: bool,
+    rejections: usize,
+    /// The unit's order at the next observation.
+    order_after: Option<u16>,
+    /// The selected unit can attack and move (the 0016 unit-side check passes, 011-R23 (2)).
+    attacker: bool,
 }
 
 /// 2026-10-31 decisions (034, 011-R20, 011-R23) in one short game: player 0 trains SCVs without
@@ -1231,11 +1253,12 @@ struct PreRl {
     /// The enemy building the scout saw.
     seen: Option<UnitId>,
     last: Vec<Check>,
+    /// Ghost commands sent and not settled yet (action, unit).
     ghost_pending: Vec<(&'static str, UnitId)>,
-    /// (frame, accepted, queue length before) per supply-blocked Train_SCV.
-    supply: Vec<(u32, bool, usize)>,
-    /// (action, accepted, UnitRejected count, the unit's order next observation).
-    ghost: Vec<(&'static str, bool, usize, Option<u16>)>,
+    /// Units whose ghost command is settled: stopped on the next frame.
+    ghost_stop: Vec<UnitId>,
+    supply: Vec<SupplyTry>,
+    ghost: Vec<GhostTry>,
     /// (CommandFailed, UnitRejected (unit, unit type, command, error)) of the group command.
     group: Option<(bool, Vec<(UnitId, Option<u16>, u8, u16)>)>,
     group_cc: Option<UnitId>,
@@ -1244,6 +1267,19 @@ struct PreRl {
 
 /// An id no unit has (011-R20 (4): a selected unit the bridge cannot find).
 const MISSING_UNIT: UnitId = 0x00FF_FFF0;
+
+const GHOST_ACTIONS: [&str; 2] = ["Attack_Unit", "Smart_Unit"];
+
+fn own_units<'a>(f: &'a RawFrame, me: u8, name: &str) -> Vec<&'a UnitState> {
+    let tt = TypeTables::get();
+    let mut v: Vec<_> = f.units.iter().filter(|u| u.owner == me && tt.unit(u.unit_type).is_some_and(|t| t.name == name)).collect();
+    v.sort_by_key(|u| u.id);
+    v
+}
+
+fn completed_scvs(f: &RawFrame, me: u8) -> usize {
+    own_units(f, me, "Terran_SCV").iter().filter(|u| u.has(flags::COMPLETED)).count()
+}
 
 impl PreRl {
     fn new(info: &GameInfo) -> Self {
@@ -1262,6 +1298,7 @@ impl PreRl {
             seen: None,
             last: vec![],
             ghost_pending: vec![],
+            ghost_stop: vec![],
             supply: vec![],
             ghost: vec![],
             group: None,
@@ -1283,6 +1320,7 @@ impl PreRl {
     }
 
     fn settle(&mut self, f: &RawFrame) {
+        let me = self.mem.self_player;
         let failed: HashSet<usize> = f.events.iter().filter_map(|e| if let GameEvent::CommandFailed { cmd_index, .. } = e { Some(*cmd_index as usize) } else { None }).collect();
         let mut rejected: HashMap<usize, Vec<(UnitId, Option<u16>, u8, u16)>> = HashMap::new();
         for e in &f.events {
@@ -1290,13 +1328,21 @@ impl PreRl {
                 rejected.entry(*cmd_index as usize).or_default().push((*unit, *unit_type, *command, *error));
             }
         }
+        let tt = TypeTables::get();
         for (i, c) in std::mem::take(&mut self.last).into_iter().enumerate() {
             let rej = rejected.remove(&i).unwrap_or_default();
             match c {
-                Check::SupplyTrain(q) => self.supply.push((f.frame, !failed.contains(&i), q)),
-                Check::Ghost(name, unit) => {
-                    let order = f.units.iter().find(|u| u.id == unit).map(|u| u.order);
-                    self.ghost.push((name, !failed.contains(&i), rej.len(), order));
+                Check::SupplyTrain { producer, queue, done } => {
+                    // The queue grows by one; an SCV completing meanwhile takes one off its head.
+                    let after = f.units.iter().find(|u| u.id == producer).map(|p| queue_len(p) + completed_scvs(f, me).saturating_sub(done));
+                    self.supply.push(SupplyTry { accepted: !failed.contains(&i), queue_before: queue, queue_after_plus_done: after });
+                }
+                Check::Ghost(action, unit) => {
+                    let u = f.units.iter().find(|u| u.id == unit);
+                    let attacker = u.and_then(|u| tt.unit(u.unit_type)).is_some_and(|t| (t.ground_weapon >= 0 || t.air_weapon >= 0) && t.top_speed > 0.0);
+                    self.ghost.push(GhostTry { action, accepted: !failed.contains(&i), rejections: rej.len(), order_after: u.map(|u| u.order), attacker });
+                    self.ghost_pending.retain(|g| *g != (action, unit));
+                    self.ghost_stop.push(unit);
                 }
                 Check::Group => self.group = Some((failed.contains(&i), rej)),
                 Check::Other => {}
@@ -1305,7 +1351,7 @@ impl PreRl {
     }
 
     fn checked(&self) -> bool {
-        !self.supply.is_empty() && self.ghost.len() >= 2 && self.group.is_some()
+        !self.supply.is_empty() && GHOST_ACTIONS.iter().all(|a| self.ghost.iter().any(|g| g.action == *a)) && self.group.is_some()
     }
 }
 
@@ -1317,13 +1363,8 @@ impl Script for PreRl {
         let tt = TypeTables::get();
         let me = self.mem.self_player;
         let name = |u: &UnitState| tt.unit(u.unit_type).map_or("", |t| t.name.as_str());
-        let own = |n: &str| -> Vec<&UnitState> {
-            let mut v: Vec<_> = f.units.iter().filter(|u| u.owner == me && name(u) == n).collect();
-            v.sort_by_key(|u| u.id);
-            v
-        };
-        let scvs = own("Terran_SCV");
-        let cc = own("Terran_Command_Center").first().copied();
+        let scvs = own_units(f, me, "Terran_SCV");
+        let cc = own_units(f, me, "Terran_Command_Center").first().copied();
         let mut plan: Vec<(HostAction, Check)> = vec![];
         let mut raw: Vec<(Command, Check)> = vec![];
 
@@ -1342,10 +1383,11 @@ impl Script for PreRl {
             let train = table().by_name("Train_SCV").unwrap();
             if f.self_state.minerals >= 50 && q < 5 {
                 if blocked && q > 0 && self.supply.len() < 3 {
+                    let check = Check::SupplyTrain { producer: c.id, queue: q, done: completed_scvs(f, me) };
                     match valid_action(&o, train, &|_, _| Some(0), &|_| Some(0)) {
-                        Some(a) => plan.push((a, Check::SupplyTrain(q))),
+                        Some(a) => plan.push((a, check)),
                         // The mask is closed: recorded as not accepted.
-                        None => self.supply.push((f.frame, false, q)),
+                        None => self.supply.push(SupplyTry { accepted: false, queue_before: q, queue_after_plus_done: None }),
                     }
                 } else if !blocked && q < 2 {
                     plan.extend(valid_action(&o, train, &|_, _| Some(0), &|_| Some(0)).map(|a| (a, Check::Other)));
@@ -1373,25 +1415,25 @@ impl Script for PreRl {
             }
         }
 
+        // Units whose ghost command is settled stop (the miner goes back to mining when idle).
+        if !self.ghost_stop.is_empty() {
+            raw.push((Command::Unit { units: std::mem::take(&mut self.ghost_stop), order: CmdOrder::Stop, queued: false }, Check::Other));
+        }
         // 011-R20 (1)-2: the building is out of vision and remembered: Attack_Unit (scout) and
-        // Smart_Unit (a miner) on it are ghost commands; both must be accepted with no rejection.
+        // Smart_Unit (a busy miner, so the idle-gather order above never takes it) on it are ghost
+        // commands; each is (re)sent until it is settled.
         let remembered = self.seen.filter(|id| !f.units.iter().any(|u| u.id == *id) && w.entities.iter().any(|e| e.remembered && e.unit.id == *id));
-        if let (Some(b), Some(s), true) = (remembered, self.scout, self.ghost.is_empty() && self.ghost_pending.is_empty()) {
-            let miner = scvs.iter().map(|u| u.id).find(|&id| Some(id) != self.scout);
-            for (action, unit) in [("Attack_Unit", Some(s)), ("Smart_Unit", miner)] {
+        if let (Some(b), Some(s)) = (remembered, self.scout) {
+            let miner = scvs.iter().find(|u| u.has(flags::COMPLETED) && !u.has(flags::IDLE) && !u.has(flags::CONSTRUCTING) && Some(u.id) != self.scout).map(|u| u.id);
+            for (action, unit) in [(GHOST_ACTIONS[0], Some(s)), (GHOST_ACTIONS[1], miner)] {
                 let Some(unit) = unit else { continue };
-                match Self::host(&o, action, &[unit], Some(b), None) {
-                    Some(a) => {
-                        plan.push((a, Check::Ghost(action, unit)));
-                        self.ghost_pending.push((action, unit));
-                    }
-                    None => self.ghost.push((action, false, 0, None)),
+                if self.ghost.iter().any(|g| g.action == action) || self.ghost_pending.iter().any(|g| g.0 == action) {
+                    continue;
+                }
+                if let Some(a) = Self::host(&o, action, &[unit], Some(b), None) {
+                    plan.push((a, Check::Ghost(action, unit)));
                 }
             }
-        } else if !self.ghost.is_empty() && !self.ghost_pending.is_empty() {
-            // Checked: stop both (the miner goes back to mining when idle).
-            let units: Vec<UnitId> = std::mem::take(&mut self.ghost_pending).into_iter().map(|(_, u)| u).collect();
-            raw.push((Command::Unit { units, order: CmdOrder::Stop, queued: false }, Check::Other));
         }
 
         // 011-R20 (4): one group command a miner takes and the CC (cannot move) and an unknown unit
@@ -1406,22 +1448,31 @@ impl Script for PreRl {
         let mut cmds = vec![];
         let mut busy: HashSet<UnitId> = HashSet::new();
         for (a, check) in plan {
-            if let Ok(e) = execute(&w, &o, &a) {
-                if e.commands.is_empty() || e.units.iter().any(|u| busy.contains(u)) {
-                    if let Check::SupplyTrain(q) = check {
-                        self.supply.push((f.frame, false, q));
+            let sent = match execute(&w, &o, &a) {
+                Ok(e) if !e.commands.is_empty() && !e.units.iter().any(|u| busy.contains(u)) => {
+                    busy.extend(e.units.iter().copied());
+                    for c in e.commands {
+                        cmds.push(c);
+                        self.last.push(check.clone());
+                    }
+                    true
+                }
+                // Masked (031-R4) for a ghost command: recorded as not accepted.
+                Err(_) if matches!(check, Check::Ghost(..)) => {
+                    if let Check::Ghost(action, _) = check {
+                        self.ghost.push(GhostTry { action, accepted: false, rejections: 0, order_after: None, attacker: false });
                     }
                     continue;
                 }
-                busy.extend(e.units.iter().copied());
-                for c in e.commands {
-                    cmds.push(c);
-                    self.last.push(check.clone());
+                // Busy (or empty) this frame: a ghost command is planned again next frame.
+                _ => false,
+            };
+            match check {
+                Check::Ghost(action, unit) if sent => self.ghost_pending.push((action, unit)),
+                Check::SupplyTrain { queue, .. } if !sent => {
+                    self.supply.push(SupplyTry { accepted: false, queue_before: queue, queue_after_plus_done: None })
                 }
-            } else if let Check::SupplyTrain(q) = check {
-                self.supply.push((f.frame, false, q));
-            } else if let Check::Ghost(name, _) = check {
-                self.ghost.push((name, false, 0, None));
+                _ => {}
             }
         }
         for (c, check) in raw {
@@ -1448,9 +1499,11 @@ impl Script for PreRl {
 }
 
 /// 034-R3 / 011-R23 (1), 011-R20 (1)-2 / 011-R23 (2), 011-R20 (4) (2026-10-31 decisions, 031-AC1):
-/// - a supply-blocked Train on a building whose queue is not empty is accepted;
-/// - Attack_Unit and Smart_Unit on a remembered enemy building out of vision are accepted with no
-///   UnitRejected, and the attacker's order becomes MoveToAttack (BWAPI `Attack2`, order 9);
+/// - a supply-blocked Train on a building whose queue is not empty is accepted and the queue grows
+///   by one (allowing for a unit completing in between);
+/// - Attack_Unit and Smart_Unit on a remembered enemy building out of vision are accepted, with no
+///   UnitRejected for units that can attack and move, and the attacker's order becomes
+///   MoveToAttack (BWAPI `Attack2`, order 9);
 /// - a group command is accepted with one UnitRejected per unit it could not give the order to.
 ///
 /// Needs the bridge built with BWAPI patch 0016 and hostd setting `URANIUM_BRIDGE_EXT=1` (020-R17).
@@ -1458,20 +1511,25 @@ impl Script for PreRl {
 #[ignore = "needs a running uranium-hostd with OpenBW (URANIUM_TEST_HOSTD)"]
 fn supply_queue_ghost_commands_and_unit_rejections_011_r23() {
     let s = play_script(23, 24 * 60 * 8, true, "011_r23", PreRl::new);
-    eprintln!("[011-R23] supply-blocked Train (frame, accepted, queue before): {:?}", s.supply);
-    eprintln!("[011-R23] ghost (action, accepted, UnitRejected, order after): {:?} (Attack2 = {:?})", s.ghost, order_id("Attack2"));
+    eprintln!("[011-R23] supply-blocked Train: {:?}", s.supply);
+    eprintln!("[011-R23] ghost: {:?} (Attack2 = {:?})", s.ghost, order_id("Attack2"));
     eprintln!("[011-R23] group (CommandFailed, UnitRejected): {:?}; end {:?}", s.group, s.end);
 
     assert!(!s.supply.is_empty(), "never supply blocked with a queue");
-    assert!(s.supply.iter().all(|&(_, ok, _)| ok), "supply-blocked Train with a queue rejected: {:?}", s.supply);
+    for t in &s.supply {
+        assert!(t.accepted, "supply-blocked Train with a queue rejected: {t:?}");
+        assert_eq!(t.queue_after_plus_done, Some(t.queue_before + 1), "the producer's queue grew by one: {t:?}");
+    }
 
     let attack = order_id("Attack2").expect("Attack2 order");
-    for action in ["Attack_Unit", "Smart_Unit"] {
-        let g = s.ghost.iter().find(|g| g.0 == action).unwrap_or_else(|| panic!("{action} on the remembered building never sent"));
-        assert!(g.1, "{action} on a remembered building: CommandFailed or masked ({g:?})");
-        assert_eq!(g.2, 0, "{action} ghost command: no UnitRejected ({g:?})");
+    for action in GHOST_ACTIONS {
+        let g = s.ghost.iter().find(|g| g.action == action).unwrap_or_else(|| panic!("{action} on the remembered building never sent"));
+        assert!(g.accepted, "{action} on a remembered building: CommandFailed or masked ({g:?})");
+        if g.attacker {
+            assert_eq!(g.rejections, 0, "{action} ghost command to a unit that can attack and move: no UnitRejected ({g:?})");
+        }
         if action == "Attack_Unit" {
-            assert_eq!(g.3, Some(attack), "ghost Attack_Unit: the unit's order is MoveToAttack");
+            assert_eq!(g.order_after, Some(attack), "ghost Attack_Unit: the unit's order is MoveToAttack");
         }
     }
 

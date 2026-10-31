@@ -71,6 +71,9 @@ const Seen* ghost_of(int32_t id) {
   return it == g_enemy_building_seen.end() ? nullptr : &it->second;
 }
 
+// The Rust side (crates/uranium-bridge-openbw ffi.rs) asserts the same layout: 1 + 3 padding,
+// three int32, uint16, uint8 + 1 padding.
+static_assert(sizeof(UrEvent) == 20, "UrEvent layout (spec 011 C ABI events)");
 // Spec 011 C ABI events: kinds other than UR_EV_UNIT_REJECTED carry unit_type 0xFFFF, command 0.
 UrEvent ev(uint8_t kind, int32_t unit, int32_t x, int32_t y, uint16_t type = 0xFFFF, uint8_t command = 0) {
   return UrEvent{kind, unit, x, y, type, command};
