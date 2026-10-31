@@ -23,17 +23,22 @@ pub const CHAT_TEXT: usize = 80;
 /// BWAPI neutral player.
 const NEUTRAL: u8 = 11;
 
+/// A player hostile to us: not ourselves, not neutral, not allied.
+fn is_enemy(s: &Snapshot, player: u8) -> bool {
+    player != s.local && player != NEUTRAL && !s.allied(player)
+}
+
 /// Enemy buildings observed this game: tag -> (last position, BWAPI unit type) (012-R17,
 /// 011-R20 ①-2).
 pub type BuildingMemory = HashMap<u32, (Pos, u16)>;
 
-/// 012-R17: refresh the enemy-building record from this frame's observed units. An observed enemy
-/// building records its position and type; a tag observed as anything else (a dead refinery's
-/// neutral geyser, a unit reusing the tag) is dropped. Units not observed keep their entry.
+/// 012-R17: refresh the enemy-building record from the units of an observation sent to the agent
+/// (the caller calls it once per observation, not per game frame). An observed enemy building
+/// records its position and type; a tag observed as anything else (a dead refinery's neutral
+/// geyser, a unit reusing the tag) is dropped. Units not observed keep their entry.
 pub fn remember_buildings(s: &Snapshot, d: &[Derived], record: &mut BuildingMemory) {
     for (u, du) in s.units.iter().zip(d).filter(|(_, du)| du.observed) {
-        let enemy = u.player != s.local && u.player != NEUTRAL && !s.allied(u.player);
-        if enemy && unit_type(du.bwapi_type).is_some_and(|x| x.is_building()) {
+        if is_enemy(s, u.player) && unit_type(du.bwapi_type).is_some_and(|x| x.is_building()) {
             record.insert(u.tag, (pos_of(u, du), du.bwapi_type));
         } else {
             record.remove(&u.tag);
@@ -203,8 +208,8 @@ fn unit_packet(c: &Ctx, me: (&RawUnit, &Derived), order: &CmdOrder, target: Opti
             Some((tu, td)) => {
                 // Audit F17 (shim:177-183): an enemy the unit cannot attack -> follow; a medic
                 // attack-moves to the target's position.
-                let enemy = tu.player != u.player && tu.player != 11 && !c.s.allied(tu.player);
-                if enemy && can_move(ty) && !can_attack_unit(c, me, (tu, td)) {
+                // `u` is ours (only local units are commanded), so "enemy of u" is `is_enemy`.
+                if is_enemy(c.s, tu.player) && can_move(ty) && !can_attack_unit(c, me, (tu, td)) {
                     if ty == t.units.medic && can_attack_move(ty, t) {
                         targeted(t, o.attack_move, pos_of(tu, td), 0, NO_UNIT_TYPE, q)
                     } else {

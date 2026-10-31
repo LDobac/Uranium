@@ -281,6 +281,25 @@ fn game_keeps_a_building_record_012_r17() {
     assert!(o.packets.is_empty(), "never observed in this game");
 }
 
+/// 012-R17: the record follows the observations sent to the agent (012-R3 관측마다, as the OpenBW
+/// shim's observe()). A building seen only on a frame without an observation is not recorded; the
+/// next observation that contains it is.
+#[test]
+fn building_record_follows_observations_012_r17() {
+    let marine = || unit(0x100, 10, ME, "Terran_Marine", (100, 100));
+    let rax = || unit(0x500, 77, ENEMY, "Terran_Barracks", (640, 480));
+    let attack = || vec![Command::Unit { units: vec![10], order: CmdOrder::Attack(Target::Unit(77)), queued: false }];
+    let mut g = Game::new(t(), ME, Some(ENEMY));
+    assert_eq!(g.frame(&snapshot(1, vec![marine()]), None).to_agent.len(), 1, "observation at frame 1");
+    assert!(g.frame(&snapshot(2, vec![marine(), rax()]), None).to_agent.is_empty(), "frame 2 is not an observation");
+    let o = g.frame(&snapshot(3, vec![marine(), fogged(rax())]), Some(act(attack(), 25)));
+    assert!(o.packets.is_empty(), "seen between observations only: not remembered");
+    // The Act moved the next observation to 1 + 8 = 9; there the barracks is in sight.
+    assert_eq!(g.frame(&snapshot(9, vec![marine(), rax()]), None).to_agent.len(), 1);
+    let o = g.frame(&snapshot(10, vec![marine(), fogged(rax())]), Some(act(attack(), 30)));
+    assert_eq!(hexes(&o.packets), ["63 01 0a 00 00 00".to_string(), format!("61 80 02 e0 01 00 00 00 00 {} 09 00", le16(ty("Terran_Barracks")))]);
+}
+
 /// 012-R3 / 010-R5: own units always; others only when their sprite is visible to us, a
 /// footprint tile is visible, and (cloaked or burrowed) they are detected.
 #[test]

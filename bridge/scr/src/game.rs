@@ -37,8 +37,8 @@ pub struct Game {
     pub schedule: Schedule,
     /// Position of every map resource seen alive (011-R20).
     remembered: HashMap<u32, Pos>,
-    /// Enemy buildings observed this game, for fog-ghost commands (012-R17). A new `Game` per game
-    /// starts it empty.
+    /// Enemy buildings observed this game, for fog-ghost commands (012-R17), refreshed with each
+    /// observation sent. A new `Game` per game starts it empty.
     buildings: BuildingMemory,
     /// Surrendered or ended: nothing more is sent (012-R11).
     pub done: bool,
@@ -116,8 +116,10 @@ impl Game {
                 self.remembered.insert(u.tag, (d[i].pos.0.max(0) as u16, d[i].pos.1.max(0) as u16));
             }
         }
-        commands::remember_buildings(s, &d, &mut self.buildings);
         let snapshot_frame = |game: &mut Self| {
+            // 012-R17: the enemy-building record follows the observations sent to the agent (as the
+            // OpenBW shim's observe()), not every game frame.
+            commands::remember_buildings(s, &d, &mut game.buildings);
             let units = observe_units(s, &d, t, &game.observe);
             raw_frame(s, t, units, &dots, game.events.take())
         };
