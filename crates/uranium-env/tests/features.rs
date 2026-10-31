@@ -85,9 +85,9 @@ fn hidden_enemies_do_not_leak_030_ac2() {
     let enemy_ground = &o.obs.spatial[ch::ENEMY_GROUND * CELLS..(ch::ENEMY_GROUND + 1) * CELLS];
     assert!(enemy_ground.iter().all(|&v| v == 0.0), "hidden unit in the density channel");
     assert_eq!(o.obs.spatial[ch::VISIBLE_NOW * CELLS + 40 * MAP + 40], 0.0);
-    // The remembered building is not attackable while unseen.
-    let k = CAPABILITIES.iter().position(|c| *c == "attackable_enemy").unwrap();
-    assert!(!o.masks.unit_cap[i * CAPABILITIES.len() + k]);
+    // 034 target classes (2026-10-31, U-2): the remembered building stays an Attack_Unit target
+    // (the bridge sends a ghost-click command, 011-R20 ①-2).
+    assert!(cap_of(&o, i, "attackable_enemy") && cap_of(&o, i, "any_unit"));
 
     // Once its tile is visible again and it is gone, it is forgotten.
     let mut b2 = Builder::new();
@@ -612,6 +612,8 @@ fn geyser_morphed_into_refinery_is_forgotten_030_r2() {
     assert_eq!(at_tile(&o), 1, "only the remembered enemy refinery");
     assert_eq!(o.obs.entity_cat[index_of(&o, g) * 4 + 1], OWNER_ENEMY);
     assert!(!refinery_slot(&o));
+    // 034 target classes (U-2): the remembered refinery is a remembered enemy building.
+    assert!(cap_of(&o, index_of(&o, g), "attackable_enemy"));
 
     // The refinery dies and the geyser is seen again (a new unit, or the same id): memory is back.
     for new_id in [999, g] {
@@ -626,8 +628,11 @@ fn geyser_morphed_into_refinery_is_forgotten_030_r2() {
         let o = extract(&f, &mut mem, &map, None);
         let i = index_of(&o, new_id);
         assert!(!o.entity_ids.contains(&g) || new_id == g, "refinery forgotten");
+        assert_eq!(o.entity_ids.iter().filter(|&&id| id == new_id).count(), 1, "one entity for the id");
         assert_eq!((o.obs.entity_cat[i * 4 + 1], at_tile(&o)), (OWNER_NEUTRAL, 1));
         assert_eq!(o.obs.entity_cont[i * ENTITY_CONT + 73], 10.0 / 2048.0, "seen at frame 40");
+        // 034-AC4 ⑤: the geyser with the refinery's id is no remembered enemy building.
+        assert!(!cap_of(&o, i, "attackable_enemy") && (0..o.obs.n).all(|j| !cap_of(&o, j, "attackable_enemy")));
     }
 }
 
@@ -1121,4 +1126,90 @@ fn siege_transition_live_blocked_labels_valid_u4() {
     let o = extract(&f, &mut replay, &map, None);
     assert!(cap_of(&o, index_of(&o, tank), "can_siege"));
     assert_eq!(host_label_check(&label, &o).1, None);
+}
+
+/// 034-AC4 ①②③ (034-R3, 031-R1, user decision 2026-10-31, action audit U-1): Train supply follows
+/// the engine (`build_queue_push` checks supply only for an empty queue). With supply short the
+/// Train stays open while a producer has a queue, and only such producers are candidates, in
+/// (queue length, id) order; with every queue empty it is closed; with supply room nothing changes.
+#[test]
+fn train_supply_short_queues_on_busy_producers_034_ac4() {
+    use uranium_env::features::masks::pick_building_candidates;
+    let map = map_info();
+    let a = action_table().by_name("Train_Marine").unwrap();
+    let mut b = Builder::new();
+    b.add(SELF, "Terran_Command_Center", (10, 10));
+    b.add(SELF, "Terran_SCV", (16, 16));
+    let idle = b.add(SELF, "Terran_Barracks", (30, 10));
+    let two = b.add(SELF, "Terran_Barracks", (30, 20));
+    let one = b.add(SELF, "Terran_Barracks", (30, 30));
+    let full = b.add(SELF, "Terran_Barracks", (30, 40));
+    let marine = ty("Terran_Marine");
+    b.get(two).build_queue[..2].fill(marine);
+    b.get(one).build_queue[0] = marine;
+    b.get(full).build_queue.fill(marine);
+    let run = |units: &[uranium_proto::UnitState], used: u16, total: u16| {
+        let mut f = frame(10, units.to_vec(), false);
+        (f.self_state.supply_used, f.self_state.supply_total) = (used, total);
+        let mut mem = AgentMemory::new(&game_info());
+        let o = extract(&f, &mut mem, &map, None);
+        let w = World::new(&f, &mem, &map);
+        let ids: Vec<u32> = pick_building_candidates(&w, a).iter().map(|u| u.id).collect();
+        let picked = execute(&w, &o, &host("Train_Marine", vec![], None, None)).ok().map(|out| match out.commands[0] {
+            Command::Train { building, .. } => building,
+            ref c => panic!("{c:?}"),
+        });
+        (o.masks.type_mask[a.id as usize], ids, picked)
+    };
+    // ③ Supply room: every barracks with a free queue slot, the idle one first.
+    assert_eq!(run(&b.units, 40, 200), (true, vec![idle, one, two], Some(idle)));
+    // ① Supply short (no room, or the 200 cap the engine also skips for a non-empty queue): only
+    // the barracks with 1..4 queued, shortest first; the full one (5) never.
+    for (used, total) in [(200, 200), (199, 200), (400, 400), (399, 420)] {
+        assert_eq!(run(&b.units, used, total), (true, vec![one, two], Some(one)), "{used}/{total}");
+    }
+    // ② Supply short and every queue empty: closed, and the executor finds no building.
+    let mut empty = b.units.clone();
+    empty.retain(|u| u.id != full);
+    for u in &mut empty {
+        u.build_queue.fill(ty("None"));
+    }
+    assert_eq!(run(&empty, 200, 200), (false, vec![], None));
+    assert_eq!(run(&empty, 40, 200), (true, vec![idle, two, one], Some(idle)), "all empty: by id");
+}
+
+/// 034-AC4 ④ (034 target classes, 030-R2, user decision 2026-10-31, action audit U-2): an enemy
+/// building out of vision that was seen before is an `attackable_enemy` and `any_unit` target and
+/// no other class's; an invincible one is no `attackable_enemy`.
+#[test]
+fn remembered_enemy_building_is_attack_and_click_target_034_ac4() {
+    let map = map_info();
+    let mut mem = AgentMemory::new(&game_info());
+    let mut b = Builder::new();
+    b.add(SELF, "Terran_Command_Center", (10, 10));
+    b.add(SELF, "Terran_Marine", (16, 16));
+    let own = b.units.clone();
+    let factory = b.add(ENEMY, "Terran_Factory", (60, 60));
+    let hatch = b.add(ENEMY, "Zerg_Hatchery", (70, 60));
+    let beacon = b.add(ENEMY, "Special_Zerg_Beacon", (60, 70));
+    extract(&frame(10, b.units.clone(), true), &mut mem, &map, None);
+    let mut f = frame(20, own, true);
+    for y in 50..H {
+        for x in 50..W {
+            f.visibility.set(x, y, false);
+        }
+    }
+    let o = extract(&f, &mut mem, &map, None);
+    let target_classes = CAPABILITIES.iter().skip_while(|c| **c != "attackable_enemy").take_while(|c| **c != "can_right_click_unit").chain(&["loaded_unit"]);
+    for id in [factory, hatch] {
+        let i = index_of(&o, id);
+        assert_eq!(o.obs.entity_cont[i * ENTITY_CONT + 72], 1.0, "remembered");
+        for c in target_classes.clone() {
+            assert_eq!(cap_of(&o, i, c), ["attackable_enemy", "any_unit"].contains(c), "{id}: {c}");
+        }
+    }
+    let i = index_of(&o, beacon);
+    assert!(!cap_of(&o, i, "attackable_enemy") && cap_of(&o, i, "any_unit"), "invincible stays no attack target");
+    // The remembered buildings are the only enemies: Attack_Unit opens on them alone.
+    assert!(o.masks.type_mask[action_table().by_name("Attack_Unit").unwrap().id as usize]);
 }

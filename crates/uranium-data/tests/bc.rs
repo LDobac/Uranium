@@ -188,6 +188,33 @@ fn game_with_invalid(steps: usize, invalid: usize) -> ShardGame {
     g
 }
 
+/// 034-AC4 ⑥ (034-R3, user decision 2026-10-31, action audit U-1): `label-check` judges Train
+/// supply like the mask. Supply short: a Train label is valid while the producer has a queue, and
+/// one with every queue empty fails `type_mask` with the cause `supply`.
+#[test]
+fn label_check_train_supply_matches_mask_034_ac4() {
+    use uranium_data::data::{LabelStats, label_check};
+    let scv = TypeTables::get().unit_by_name("Terran_SCV").unwrap().id as u16;
+    for queued in [false, true] {
+        let mut g = game();
+        for s in &mut g.steps {
+            s.raw_frame.self_state.supply_used = 20;
+            if queued {
+                s.raw_frame.units[0].build_queue[0] = scv;
+            }
+        }
+        let mut st = LabelStats::default();
+        label_check(&g, &mut st, &MapStore::synthetic()).unwrap();
+        let fails = st.fails.get(&("Train_SCV".to_string(), "type_mask")).copied().unwrap_or(0);
+        let supply: usize = st.type_detail.iter().filter(|(k, _)| k.starts_with("Train_SCV <- supply")).map(|(_, n)| n).sum();
+        if queued {
+            assert_eq!((fails, supply), (0, 0), "queued producer: valid");
+        } else {
+            assert_eq!((fails, supply), (4, 4), "every queue empty: supply");
+        }
+    }
+}
+
 /// 040-R19 / 040-AC7 (user decision 2026-10-19): the build rejects a perspective whose invalid labels are
 /// at least 20% of its labeled steps, and keeps one below that.
 #[test]

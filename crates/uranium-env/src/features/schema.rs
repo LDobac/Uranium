@@ -19,7 +19,15 @@ use crate::types::TypeTables;
 ///    can_unload_pos (K 48 -> 50); target classes drop units in production and loaded units;
 ///    can_attack drops the bunker; constructing SCVs and siege transitions lose every selection
 ///    class but can_stop; Build_* open only with a `pick_worker` candidate.
-pub const FEATURE_SCHEMA_VERSION: u32 = 6;
+/// 7 (2026-10-31, 액션 감사 U-1·U-2, 사용자 결정): masks only. Train opens while supply is short
+///    if a producer has a queue (034-R3, 031-R1); remembered enemy buildings are
+///    `attackable_enemy` / `any_unit` targets (034 target classes, 030-R2). Loads version 6.
+pub const FEATURE_SCHEMA_VERSION: u32 = 7;
+
+/// 030-R5 / 032-R6 load compatibility: earlier feature schemas whose checkpoints this version
+/// loads as they are, because they differ only in mask meaning (`type_mask`, `unit_cap`,
+/// `loc_class_mask`), not in model inputs or mask sizes. Any other version is refused.
+pub const FEATURE_SCHEMA_LOAD_COMPAT: &[u32] = &[6];
 
 /// 030-R6: spatial side in build tiles.
 pub const MAP: usize = 128;

@@ -1,7 +1,7 @@
 //! 034 masks: `unit_cap` capability classes per entity, `loc_class_mask` location classes and
 //! `type_mask` (034-R3..R5). Computed from the same `World` as the features (030-R8).
 
-use uranium_proto::{UnitState, flags};
+use uranium_proto::{PlayerState, UnitState, flags};
 
 use super::schema::{CELLS, MAP, OWNER_ENEMY, OWNER_NEUTRAL, OWNER_SELF};
 use super::world::{Entity, World, is_disabled, is_unseen_resource_id, queue_len, top_left};
@@ -200,8 +200,14 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     // target, like a fogged mineral field a player right-clicks; one never seen (map-only, no id)
     // is not.
     let known_resource = e.remembered && e.owner == OWNER_NEUTRAL && t.is_resource() && !is_unseen_resource_id(u.id);
-    set("attackable_enemy", enemy && targetable && !t.has(crate::types::flag::INVINCIBLE));
-    set("any_unit", targetable || known_resource);
+    // 034 target classes / 030-R2 (사용자 결정 2026-10-31, 액션 감사 U-2): an enemy building out
+    // of vision that was seen before stays clickable, like the ghost a player attacks or
+    // right-clicks in the fog. Judged from the last seen state only; the bridge commands its last
+    // position and type, not the real unit (011-R20 ①-2), so nothing new leaks. Only Attack_Unit
+    // and the `any_unit` actions take it; the other target classes need a visible unit.
+    let known_building = e.remembered && e.owner == OWNER_ENEMY && building;
+    set("attackable_enemy", ((enemy && targetable) || known_building) && !t.has(crate::types::flag::INVINCIBLE));
+    set("any_unit", targetable || known_resource || known_building);
     set("own_unit", own_target);
     set("target_resource", (visible || known_resource) && ((t.is_resource() && ty != ids.geyser) || (own && ty == ids.refinery && done)));
     set("repairable", own_target && (t.is_mechanical() || building) && hurt && done);
@@ -343,6 +349,20 @@ pub fn producer_for(w: &World, a: &Action) -> Option<(u16, Option<u16>)> {
     Some((p, need_addon))
 }
 
+/// Supply room for one more `t` (OpenBW `has_available_supply_for`, half-supply units): under the
+/// supply total and the 200 cap.
+fn supply_free(me: &PlayerState, t: &crate::types::UnitType) -> bool {
+    t.supply_required == 0 || (me.supply_total as i32 - me.supply_used as i32 >= t.supply_required && me.supply_used as i32 + t.supply_required <= 400)
+}
+
+/// 034-R3 Train supply as the engine checks it (OpenBW `build_queue_push`, 사용자 결정
+/// 2026-10-31, 액션 감사 U-1): supply is checked only for a producer with an empty queue, so a
+/// Train is open while supply is short if a candidate already has 1..4 queued (then
+/// `pick_building_candidates` keeps only those). The 200 cap is skipped the same way.
+pub fn train_supply_ok(w: &World, a: &Action) -> bool {
+    a.unit_type.and_then(|ut| w.types.unit(ut)).is_none_or(|t| supply_free(&w.frame.self_state, t)) || !pick_building_candidates(w, a).is_empty()
+}
+
 /// Candidate buildings for a `pick_building` action, best first (031-R1).
 pub fn pick_building_candidates<'w>(w: &'w World, a: &Action) -> Vec<&'w UnitState> {
     let Some((p, addon)) = producer_for(w, a) else { return vec![] };
@@ -358,6 +378,11 @@ pub fn pick_building_candidates<'w>(w: &'w World, a: &Action) -> Vec<&'w UnitSta
     let mut v = w.producers(p, addon, research);
     if a.unit_type == Some(w.ids.nuke) {
         v.retain(|s| !s.nuke_armed && queue_len(s) == 0);
+    }
+    // 031-R1 / 034-R3 (U-1): with supply short only a producer with a non-empty queue takes the
+    // Train (the engine checks supply for an empty queue only); same (queue_len, id) order.
+    if a.command == "Train" && a.unit_type.and_then(|ut| w.types.unit(ut)).is_some_and(|t| !supply_free(&w.frame.self_state, t)) {
+        v.retain(|s| queue_len(s) > 0);
     }
     v
 }
@@ -379,8 +404,7 @@ fn prereq_ok(w: &World, a: &Action) -> bool {
         "Train" => {
             let ut = a.unit_type.unwrap();
             let t = w.types.unit(ut).unwrap();
-            let supply_ok = t.supply_required == 0 || (me.supply_total as i32 - me.supply_used as i32 >= t.supply_required && me.supply_used as i32 + t.supply_required <= 400);
-            afford(t.minerals, t.gas) && supply_ok && required_ok(ut, None)
+            afford(t.minerals, t.gas) && train_supply_ok(w, a) && required_ok(ut, None)
         }
         "Research" => {
             let tech = a.tech.unwrap();

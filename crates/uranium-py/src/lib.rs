@@ -459,6 +459,8 @@ fn feature_dims() -> PyResult<String> {
         "entity_cat": c::ENTITY_CAT, "entity_cont": c::ENTITY_CONT, "spatial": c::SPATIAL, "map": c::MAP, "z_build": c::Z_BUILD,
         "actions": d.0, "scalar": d.1, "z_units": d.2, "caps": d.3, "loc_classes": d.4, "privileged": d.5,
         "delay_buckets": uranium_data::table::DELAY_BUCKETS, "n_max": uranium_data::table::N_MAX, "feature_version": uranium_data::table::FEATURE_SCHEMA_VERSION, "action_version": uranium_data::table::ACTION_SCHEMA_VERSION,
+        // 030-R5: earlier feature schemas whose checkpoints load as they are.
+        "feature_load_compat": uranium_env::features::FEATURE_SCHEMA_LOAD_COMPAT,
     }))
     .map_err(|e| err(e.into()))
 }

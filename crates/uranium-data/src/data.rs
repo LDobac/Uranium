@@ -855,14 +855,17 @@ fn loc_cause(w: &uranium_env::features::world::World, o: &Observation, a: &urani
     format!("{}{shift}", causes.join("+"))
 }
 
-/// First failing Train / Research / Upgrade prerequisite of `a` in `me` (034-R3 order).
-fn prereq_fail(a: &uranium_env::actions::Action, me: &uranium_proto::PlayerState) -> Option<&'static str> {
+/// First failing Train / Research / Upgrade prerequisite of `a` in `w` (034-R3 order).
+fn prereq_fail(a: &uranium_env::actions::Action, w: &uranium_env::features::world::World) -> Option<&'static str> {
     let t = uranium_env::types::TypeTables::get();
+    let me = &w.frame.self_state;
     let afford = |m: i32, g: i32| me.minerals >= m && me.gas >= g;
     match a.command.as_str() {
         "Train" => {
             let u = t.unit(a.unit_type?)?;
-            let supply = u.supply_required == 0 || me.supply_total as i32 - me.supply_used as i32 >= u.supply_required;
+            // 034-R3 / 034-AC4 ⑥ (U-1): the mask's engine rule (supply is checked only while every
+            // candidate's queue is empty), from the same function.
+            let supply = uranium_env::features::masks::train_supply_ok(w, a);
             if !afford(u.minerals, u.gas) {
                 Some("afford")
             } else if !supply {
@@ -910,7 +913,7 @@ pub fn label_check(game: &ShardGame, st: &mut LabelStats, maps: &MapStore) -> Re
     // 030-R11: a lobby-Random enemy stays unknown until seen.
     let mut walker = LabelWalker::new(&game.game_info, family_index(&game.meta.map_family), maps.get(&game.meta.map_hash)?.as_deref(), game.meta.enemy_random)?;
     let k = CAPABILITIES.len();
-    let mut prev: Option<&uranium_proto::PlayerState> = None;
+    let mut prev: Option<&uranium_proto::RawFrame> = None;
     // 액션 감사 F23: last frame, owner and type each unit id was observed at (earlier steps).
     let mut seen: HashMap<u32, (u32, u8, u16)> = HashMap::new();
     let tt = uranium_env::types::TypeTables::get();
@@ -992,9 +995,11 @@ pub fn label_check(game: &ShardGame, st: &mut LabelStats, maps: &MapStore) -> Re
             *st.cause_detail.entry(format!("{name} [target_loc] {ty} -> {cause}{}", if built { " [built there]" } else { " [not built there]" })).or_default() += 1;
         }
         if let (Some(a), Some("type_mask")) = (a, why) {
-            let me = &s.raw_frame.self_state;
-            let cond = prereq_fail(a, me).unwrap_or("producer_or_required");
-            let age = match prev.and_then(|p| prereq_fail(a, p)) {
+            // The previous step's verdict uses its own frame (own units and player state) with
+            // the current memory; only own producers of that frame matter for Train supply.
+            let world = |f| uranium_env::features::world::World::new(f, &walker.mem, &walker.map);
+            let cond = prereq_fail(a, &world(&s.raw_frame)).unwrap_or("producer_or_required");
+            let age = match prev.and_then(|p| prereq_fail(a, &world(p))) {
                 Some(c) if c == cond => "old",
                 _ if cond == "producer_or_required" => "-",
                 _ => "new",
@@ -1010,7 +1015,7 @@ pub fn label_check(game: &ShardGame, st: &mut LabelStats, maps: &MapStore) -> Re
             g.5 += (w == "target_loc") as usize;
             *st.fails.entry((name, w)).or_default() += 1;
         }
-        prev = Some(&s.raw_frame.self_state);
+        prev = Some(&s.raw_frame);
         for u in &s.raw_frame.units {
             seen.insert(u.id, (s.raw_frame.frame, u.owner, u.unit_type));
         }

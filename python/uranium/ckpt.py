@@ -30,6 +30,14 @@ def schema_versions() -> tuple[int, int]:
     return d["feature_version"], d["action_version"]
 
 
+def feature_load_compat() -> list[int]:
+    """030-R5: earlier feature schemas whose checkpoints this build loads as they are (they differ
+    only in mask meaning, not in model inputs)."""
+    from uranium import _core
+
+    return list(json.loads(_core.feature_dims())["feature_load_compat"])
+
+
 def optim_file(name: str) -> str:
     return f"optim-{name}.safetensors"
 
@@ -63,8 +71,10 @@ def read_meta(dir: Path) -> dict:
         raise FileNotFoundError(f"{dir}: no {WEIGHTS_FILE}")
     meta = json.loads((dir / META_FILE).read_text(encoding="utf-8"))
     fv, av = schema_versions()
-    if meta["feature_version"] != fv:
-        raise ValueError(f"{dir}: feature schema {meta['feature_version']} != {fv}")
+    # 032-R6 / 030-R5: the current feature schema or one on its load-compatible list.
+    compat = feature_load_compat()
+    if meta["feature_version"] != fv and meta["feature_version"] not in compat:
+        raise ValueError(f"{dir}: feature schema {meta['feature_version']} != {fv} (load-compatible: {compat})")
     if meta["action_version"] != av:
         raise ValueError(f"{dir}: action schema {meta['action_version']} != {av}")
     return meta

@@ -125,6 +125,29 @@ def test_burn_checkpoint_is_refused_061_r10(tmp_path):
         ckpt.read_meta(tmp_path)
 
 
+def test_feature_schema_6_checkpoint_loads_030_r5(tmp_path):
+    """030-R5 / 032-R6 (2026-10-31): feature schema 7 changed masks only, so a schema-6 checkpoint
+    (the BC runs) loads as it is; any other schema difference is refused. A new save writes 7."""
+    fv, av = ckpt.schema_versions()
+    assert (fv, ckpt.feature_load_compat()) == (7, [6])
+    net = tiny_net()
+    ckpt.save_model(tmp_path, net)
+    ckpt.save_meta(tmp_path, net.cfg, {}, "f32")
+    meta_path = tmp_path / ckpt.META_FILE
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert meta["feature_version"] == fv
+    for v, ok in [(fv, True), (6, True), (5, False), (fv + 1, False)]:
+        meta_path.write_text(json.dumps({**meta, "feature_version": v}), encoding="utf-8")
+        if ok:
+            loaded, m = ckpt.load_model(tmp_path)
+            assert m["feature_version"] == v
+            pa, pl = params_of(net), params_of(loaded)
+            assert pa.keys() == pl.keys() and all(torch.equal(pa[k], pl[k]) for k in pa)
+        else:
+            with pytest.raises(ValueError, match="feature schema"):
+                ckpt.read_meta(tmp_path)
+
+
 def _tiny_make(kind, cfg_json, start, dir, entity_chunk):
     cfg = json.loads(cfg_json)
     if start == "new":
