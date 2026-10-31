@@ -1,6 +1,6 @@
 # 012 — Bridge: Remastered (samase plugin)
 
-- **Status**: **Approved** (2026-10-23 개정: R19 실행 명령 `python -m uranium scr`(PyTorch 전환, AMB-000-4). 2026-10-22 사용자 승인. M7 스파이크 결과와 2026-10-22 사용자 결정 AMB-012-1·2·4·5·6, AMB-001-5, AMB-030-4·5를 반영했다. 012-R15 시간 제한 없음, 012-R16 접속 실패 시 비활성 포함)
+- **Status**: **Approved** (2026-10-31 개정(사용자 결정, `reports/m6_action_audit.md` §11 U-2·U-6, AMB-012-6 방향): R17 기억 적 건물 잔상 명령, R14 명령 실패 감지 방향과 `UnitRejected` 없음. 2026-10-23 개정: R19 실행 명령 `python -m uranium scr`(PyTorch 전환, AMB-000-4). 2026-10-22 사용자 승인. M7 스파이크 결과와 2026-10-22 사용자 결정 AMB-012-1·2·4·5·6, AMB-001-5, AMB-030-4·5를 반영했다. 012-R15 시간 제한 없음, 012-R16 접속 실패 시 비활성 포함)
 - **Related**: [001](001-system-architecture.md), [010](010-game-protocol.md), [013](013-version-mapping.md), [030](030-observation.md), [050](050-evaluation.md)
 - **근거 리포트**: `reports/m7_scr_spike.md`(실게임 측정), `reports/m7_scr_field_mapping.md`(필드 대응표)
 
@@ -18,7 +18,7 @@ StarCraft: Remastered 프로세스에 samase 플러그인 DLL로 로드되는 �
   - 게임 나가기 자동화(AMB-012-4). 항복은 채팅 뒤 멈춘다(012-R11).
   - 배틀넷 공개 게임·래더, 안티치트 우회(AMB-012-3).
   - `PrivilegedSummary`. realtime에서는 만들지 않는다(010-R10).
-  - 명령 실패(`CommandFailed`) 이벤트. 보류 항목이다(AMB-012-6, 012-R14).
+  - 명령 실패(`CommandFailed`)·유닛별 거절(`UnitRejected`, 010-R14) 이벤트. 실패를 감지하도록 바꾸는 방향은 정했고(2026-10-31), 방법은 보류다(AMB-012-6, 012-R14).
 
 ## 구조
 - `bridge/scr`: Rust `cdylib`, 타깃 `x86_64-pc-windows-msvc`. 루트 Cargo workspace에 넣지 않고 자기 workspace를 갖는다. 그래야 Linux 학습 호스트의 `cargo build/test --workspace`에 영향이 없다(001-R8).
@@ -53,10 +53,10 @@ StarCraft: Remastered 프로세스에 samase 플러그인 DLL로 로드되는 �
 | 012-R11 | **MUST** 항복(2026-10-21 사용자 결정, AMB-031-6. 2026-10-22 개정, AMB-012-4): `Act.surrender`(010-R13)를 받으면 012-R4 경로로 채팅을 보낸다(비어 있지 않을 때, `0x5C` + 자기 플레이어 번호 1바이트 + 80바이트 문구, 0 채움, 스파이크에서 동작 확인). 그 뒤 브리지는 **명령을 더 실행하지 않고** `GameEnd`(winner = 상대, reason = `Surrender`)를 보내고 연결을 닫는다. **게임에서 나가지는 않는다.** 게임 창은 사람이 닫는다. 이유: 스파이크에서 `0x57` 나가기 명령은 게임이 처리했지만 로컬 클라이언트가 게임에서 빠지지 않았고, samase API에는 클라이언트를 게임에서 빼는 수단이 없다. SC:R 실전 설정의 항복 모드 기본값은 `On`, 채팅 기본값은 `"gg"`이고 설정으로 바꿀 수 있다(020-R14와 같은 키) |
 | 012-R12 | **MUST** `RawFrame`·`GameInfo`·`GameEnd` 각 필드는 OpenBW 브리지와 같은 의미로 채운다(`reports/m7_scr_field_mapping.md` §1). 학습 데이터에 굳어진 OpenBW 쪽 특성도 그대로 따른다: Discover는 Create와, Evade는 Destroy와 같은 프레임에 나간다. `UNDER_ATTACK`은 항상 0이다. 다른 플레이어 유닛의 내부 정보는 OpenBW처럼 보내고 에이전트가 지운다(AMB-030-5). 일부러 다르게 둔 것은 013 차이 목록에 적는다 |
 | 012-R13 | **MUST** `GameInfo`: `map_hash`는 OpenBW와 같은 정의(게임이 연 맵 파일 전체의 SHA-256, `Game.map_path`)로 만든다. 맵 사전계산 키(031, AMB-031-4)가 같아야 하기 때문이다. `latency_frames`는 싱글 1, LAN 2로 보낸다(스파이크 실측: 보낸 프레임 대비 처리 프레임). 브리지는 자기 첫 명령이 처리된 프레임으로 실제 지연을 재서 다르면 로그와 `BridgeStats`에 남긴다. 에이전트는 이 값을 기록에만 쓴다(AMB-012-5, 013-R3) |
-| 012-R14 | **MUST NOT** `CommandFailed` 이벤트를 만들지 않는다. 에이전트는 SC:R 세션에서 `last_failed`를 0으로 고정한다(030-R10과 같은 처리). RL 모델을 SC:R에 배포하기 전에 방법을 다시 정한다(**[SPEC DEFERRED(M7)] AMB-012-6**: M7 안에서 RL 모델을 SC:R에 올리기 전에 다시 묻는다. 후보는 BWAPI 명령 가능 검사 이식, 게임 오류 메시지·order 변화로 근사) |
+| 012-R14 | **MUST NOT**(구현 전까지) `CommandFailed`·`UnitRejected`(010-R14) 이벤트를 만들지 않는다. 그동안 에이전트는 SC:R 세션에서 `last_failed`를 0으로 고정한다(030-R10과 같은 처리). **방향(2026-10-31 사용자 결정)**: RL 모델은 실제 `last_failed`로 학습하므로(030-R10) 실전에서 실패 신호가 없으면 실패에 대응하는 법을 쓸 수 없다. 그래서 SC:R 브리지도 명령 실패를 감지해 OpenBW와 같은 의미의 `CommandFailed`를 보내도록 바꾼다. 방법(BWAPI 명령 가능 검사 이식, 또는 게임 오류 문구·order 변화로 근사)과 `last_failed` 고정을 푸는 시점은 M7 안에서 RL 모델을 SC:R에 올리기 전에 정한다(**[SPEC DEFERRED(M7)] AMB-012-6**). `UnitRejected`는 진단용이라 이 방향에 들지 않는다 |
 | 012-R15 | **MUST** 게임 종료 판정: `Game.victory_state`가 3이면 승리, 1·2·4·6이면 패배다. `Player.player_type`이 10·11이 되거나 중립(7)으로 바뀐 플레이어는 나간 것이다. 승자 판정은 011과 같은 규칙(둘 다 패배면 무승부)이다. 실게임에서 이 전이를 확인하는 것은 012-AC2에 포함한다. 브리지는 시간 제한으로 게임을 끝내지 않는다(020의 60분 무승부는 OpenBW 학습·평가 규칙) |
 | 012-R16 | **MUST** 에이전트에 접속할 수 없으면 그 게임에서 봇은 아무 명령도 내리지 않는다. 화면 문구(`print_text`)와 로그로 알리고, 게임은 그대로 진행된다 |
-| 012-R17 | **MUST** 유닛 id는 SC:R 유닛 태그(배열 index 13비트 + 재사용 카운터, 배열 길이 3400, 스파이크 실측)를 u32로 쓴다. 에이전트에게는 불투명한 값이다. 명령의 대상은 같은 태그로 유닛을 찾아 보낸다 |
+| 012-R17 | **MUST** 유닛 id는 SC:R 유닛 태그(배열 index 13비트 + 재사용 카운터, 배열 길이 3400, 스파이크 실측)를 u32로 쓴다. 에이전트에게는 불투명한 값이다. 명령의 대상은 같은 태그로 유닛을 찾아 보낸다. 대상 해석 규칙(관측 유닛, 맵 자원, 사라진 자원)은 011-R20 ①·①-1과 같다. **기억 적 건물(2026-10-31 사용자 결정, 011-R20 ①-2와 같은 규칙)**: 브리지는 게임마다 관측한 적 건물 기록(태그 → 마지막 위치, 유닛 종류)을 둔다. 게임 시작 때 비우고, 012-R3 관측마다 적 건물로 갱신하며, 같은 태그가 적 건물이 아닌 유닛으로 관측되면 지운다. 대상 태그가 이번 관측 유닛이 아니고 이 기록에 있으면 실제 유닛을 찾지 않고(유닛 배열에서 찾을 수 있어도) 다음으로 보낸다. 맵 자원 해석보다 먼저 본다. Attack → `0x61` TargetedOrder(order MoveToAttack, 태그 0, 마지막 위치, 유닛 종류). RightClick → `0x60` RightClick(태그 0, 마지막 위치, 유닛 종류). Move → 마지막 위치로 이동. SetRally → 마지막 위치로 랠리. 건물의 실제 현재 상태에 따라 명령을 바꾸지 않는다. 유닛 종류 값은 SC:R과 1.16.1이 같다(013). MoveToAttack order 값은 `bridge/scr/tables/orders.toml`에 둔다(012-R5) |
 
 ### 에이전트 측 (uranium-agent)
 | ID | 요구사항 |
@@ -69,6 +69,7 @@ StarCraft: Remastered 프로세스에 samase 플러그인 DLL로 로드되는 �
   - Select `0x63`(count + u32 태그 × count)
   - RightClick `0x60`(x u16, y u16, u32 태그, u16 unit_type, queued u8)
   - TargetedOrder `0x61`(위와 같고 order u8 추가)
+  - `unit_type` 필드는 보통 None(`0xe4`)이다. 기억 적 건물 잔상 명령(012-R17)만 그 건물 종류를 싣고 태그는 0이다(2026-10-31).
   - Unload `0x62`(u32 태그)
 - 그 밖의 명령(Build, Train, Research, Upgrade, Siege, Unsiege, Stim, Lift, Land, Hold, Stop, ReturnCargo, Cloak, Decloak, Cancel 계열, 채팅 `0x5C`)은 1.16.1과 같은 opcode와 레이아웃이다.
 - 스파이크에서 Select·RightClick·채팅을 실게임으로 확인했다. 나머지 명령은 012-AC5에서 확인한다.
@@ -88,7 +89,7 @@ StarCraft: Remastered 프로세스에 samase 플러그인 DLL로 로드되는 �
 - **samase 로더는 비공개 바이너리이고 제3자 저장소에서 받는다.** SHA-256을 고정했다. 다른 빌드로 바꾸려면 사용자 확인을 받는다.
 - **계정 위험**: 사용자가 본계정 사용과 위험 감수를 결정했다(2026-10-22).
 - **자동 업데이트**: 배틀넷 런처가 SC:R을 패치하면 012-R6에 따라 비활성이 된다. 지원 빌드 추가는 그때 사용자에게 묻는다(AMB-012-2).
-- **명령 실패 신호 없음**(AMB-012-6): RL 모델이 `last_failed` 입력을 쓰므로 RL 모델을 SC:R에 배포하기 전에 정해야 한다.
+- **명령 실패 신호 없음**(AMB-012-6): RL 모델이 `last_failed` 입력을 쓰므로 SC:R 브리지가 실패를 감지하도록 바꾼다(2026-10-31 방향 결정, 012-R14). 방법은 RL 모델을 SC:R에 배포하기 전에 정한다. 그 전에 RL 모델을 SC:R에서 돌리면 `last_failed`가 학습 때와 달리 항상 0이다.
 - **지연**: LAN에서 관측부터 명령 처리까지 추론 시간 + 2프레임이 걸린다. 보정하지 않는다(AMB-012-5). 012-AC6 분포를 보고 다시 정할 수 있다.
 - **사람이 시작해야 함**: 012-AC2와 050 E-SCR-Smoke(최소 18판)는 판마다 사람이 게임을 시작해야 한다.
 - 맵 이름 인코딩(CP949/UTF-8), 로비 Random 종족 위치는 구현 때 확인한다(필드 대응표 §4-8).

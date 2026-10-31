@@ -1,6 +1,6 @@
 # 013 — Version Mapping (1.16.1 ↔ Remastered)
 
-- **Status**: **Approved** (2026-10-22 사용자 승인, M7 개정: 차이표 실측 반영, 013-R1 SC:R 표 위치(AMB-001-5), 013-R3 지연 보정 없음(AMB-012-5), "SC:R 브리지 정규화" 절 추가). **"리플레이 명령 인코딩 (M4)" 절과 013-R6~R8은 Approved (2026-10-16, M4 계획 승인. 2026-10-17 개정: 맵 CHK 정규화, opcode 0x5D)**. 2026-10-19 표기 정정: 013-R1에 현재 테이블 위치를 적고 `uranium-adapter`를 M7 예정으로 표시.
+- **Status**: **Approved** (2026-10-22 사용자 승인, M7 개정: 차이표 실측 반영, 013-R1 SC:R 표 위치(AMB-001-5), 013-R3 지연 보정 없음(AMB-012-5), "SC:R 브리지 정규화" 절 추가). **"리플레이 명령 인코딩 (M4)" 절과 013-R6~R8은 Approved (2026-10-16, M4 계획 승인. 2026-10-17 개정: 맵 CHK 정규화, opcode 0x5D)**. 2026-10-19 표기 정정: 013-R1에 현재 테이블 위치를 적고 `uranium-adapter`를 M7 예정으로 표시. 2026-10-31 개정: 차이 목록에 `UnitRejected`(010-R14) 없음 추가.
 - **Related**: [010](010-game-protocol.md), [011](011-bridge-openbw.md), [012](012-bridge-remastered.md)
 
 ## Purpose
@@ -74,7 +74,7 @@ SC:R 리플레이를 OpenBW(1.16.1 로더, `third_party/openbw/replay.h`)로 재
   - `MOVING`은 직전 프레임 order 기준
   - 다른 플레이어 유닛 내부 정보는 보내고 에이전트가 지움(AMB-030-5)
 - 일부러 다르게 둔 것(차이 목록, 013-R5):
-  - `CommandFailed` 없음(012-R14, AMB-012-6)
+  - `CommandFailed`·`UnitRejected` 없음(012-R14, AMB-012-6. 실패 감지는 M7 RL 배포 전에 넣는다, 2026-10-31 방향 결정)
   - `PrivilegedSummary` 없음(010-R10)
 - 브리지 표(`bridge/scr/tables`): order 원시→BWAPI 변환, 명령 opcode·레이아웃, 효과(탄환 flingy id → `EffectKind`), 테크 연구 건물 표(BWAPI `whatResearches`). 각 표에 버전 키(`scr-1.23.10.13515`)를 둔다.
 
