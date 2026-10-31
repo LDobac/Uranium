@@ -11,10 +11,11 @@ the conditionals along the taken action (042, AMB-042-4). Lanes run in groups of
 optimizer step, like BC (041). The same math as the Burn learner it replaces.
 
 032-R19 ⑥ (042 learner optimisation, same formulas): the collate thread also stages a group for
-the copy (page-locked on CUDA, the spatial planes rounded to bf16 under bf16 autocast, the
-entity padding cut for the 032 §2.7 extra tokens, core_state0 and the outer segments' row indices
-built on the host), so the training thread's copies do not wait for the GPU; the detached
-log-probs and values are read back while the BC forward runs, and the targets of the 4 reward
+the copy (page-locked on the CUDA host, the spatial planes rounded to bf16 under bf16 autocast,
+the entity padding cut for the 032 §2.7 extra tokens, core_state0 and the outer segments' row
+indices built on the host), so the training thread's copies do not wait for the GPU there; the
+host computes the targets from the detached log-probs and values while the device runs the BC
+forward (queued before the targets on every backend), and the targets of the 4 reward
 components are one recursion; the statistics stay on the device until one read per update. The
 learner as it was before is `uranium.rl.reference` (equivalence tests, `bench rl`)."""
 
@@ -52,8 +53,8 @@ def host_micro_lanes(cfg: dict) -> int:
     v = os.environ.get(MICRO_LANES_ENV, "").strip()
     if not v:
         return int(cfg["micro_lanes"])
-    if not v.isdigit():
-        raise ValueError(f"{MICRO_LANES_ENV}={v!r}: expected a lane count (0 = all lanes)")
+    if not v.isdecimal():
+        raise ValueError(f"{MICRO_LANES_ENV}={v!r} (host .env, 042 learner lane groups): expected a lane count, 0 = all lanes")
     return int(v)
 
 
@@ -112,9 +113,10 @@ class Learner:
         self.update_count = update
         self.micro_lanes = host_micro_lanes(cfg) if micro_lanes is None else micro_lanes
         # 032-R19 ⑥ for this learner only (not process switches: the inference servers share the
-        # process): page-locked staging on CUDA, the spatial planes rounded to bf16 on the host
-        # under bf16 autocast (their consumers round them the same way, `net.stage`).
-        self.pinned = device.type == "cuda"
+        # process): page-locked staging on the CUDA host only (the Linux ROCm host's GPU shares
+        # its RAM, 060-R3: no page-locked buffers there), the spatial planes rounded to bf16 on the
+        # host under bf16 autocast (their consumers round them the same way, `net.stage`).
+        self.pinned = device.type == "cuda" and torch.version.hip is None
         self.spatial_bf16 = precision == "bf16"
         # The 032 §2.7 entity padding cut (`trim_entity_pad`). These three are attributes so
         # `bench rl --off` measures each alone and the tests compare without the cut.
@@ -154,7 +156,7 @@ class Learner:
     def prepare(self, batch, start: int, end: int, t: int) -> dict:
         """Lanes `start..end` collated and staged for the copy (on the collate thread): the 032 §2.7
         entity padding cut (`trim_entity_pad`, dropout 0 in RL), the copied arrays page-locked
-        (CUDA) with the spatial planes in bf16 (bf16 autocast), core_state0 on the host and the
+        (CUDA host) with the spatial planes in bf16 (bf16 autocast), core_state0 on the host and the
         outer segments' row indices from its counter (`phase_split`)."""
         net = self.net
         g = trim_entity_pad(batch.group(start, end, t, net.cfg.heads.max_select), net.cfg.variant.tokens() if self.trim_pad else 0)
@@ -169,11 +171,15 @@ class Learner:
         return x.pin_memory() if self.pinned else x
 
     def readback(self, logp: torch.Tensor, values: torch.Tensor):
-        """Starts the copy of the detached log-probs and values to the host; the returned function
-        waits for it and gives them (the work queued after the copy keeps running)."""
+        """The detached log-probs and values for the host targets, called before the BC forward is
+        queued; the returned function gives them. CUDA host: an asynchronous copy into page-locked
+        memory, waited for by an event after the BC forward is queued. Otherwise (CPU, Linux ROCm
+        host) a plain copy now: it waits for the forward only, and the BC forward is queued right
+        after, so the device runs it while the host computes the targets on either backend."""
         lp, v = logp.detach(), values.detach()
-        if self.device.type != "cuda":
-            return lambda: (lp, v)
+        if not self.pinned:
+            host = (lp.cpu(), v.cpu())
+            return lambda: host
         host = [torch.empty(x.shape, dtype=x.dtype, pin_memory=True).copy_(x, non_blocking=True) for x in (lp, v)]
         done = torch.cuda.Event()
         done.record()
@@ -257,18 +263,23 @@ class Learner:
         for epoch in range(epochs):
             self.opt.zero_grad(set_to_none=True)
             nxt = self._collate.submit(collate, 0)
-            for gi in range(len(groups)):
-                self.tick("other")
-                g = nxt.result()
-                self.tick("collate_wait")
-                if gi + 1 < len(groups):
-                    nxt = self._collate.submit(collate, gi + 1)
-                part, rho, adv = self.group_loss(g, n, weights, coef_kl, ppo_targets, gi)
-                del g
-                if epoch == 0:
-                    parts += part
-                    rho_sum += rho
-                    adv_sum += adv
+            try:
+                for gi in range(len(groups)):
+                    self.tick("other")
+                    g = nxt.result()
+                    self.tick("collate_wait")
+                    if gi + 1 < len(groups):
+                        nxt = self._collate.submit(collate, gi + 1)
+                    part, rho, adv = self.group_loss(g, n, weights, coef_kl, ppo_targets, gi)
+                    del g
+                    if epoch == 0:
+                        parts += part
+                        rho_sum += rho
+                        adv_sum += adv
+            finally:
+                # On an error: no collate job of this batch outlives the update (it would pin
+                # memory and read the batch after the caller moved on).
+                nxt.exception()
             # 042 optimizer table / 041-R3: global L2 clip after the lane-group sum; 042-R13: the
             # win_open head apart (041-R19).
             clipped = clip_global_norm(params, cfg["optimizer"]["grad_clip"], apart)

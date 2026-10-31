@@ -61,6 +61,7 @@ def add_parser(sub) -> None:
     r.add_argument("--trace", help="Chrome trace of the profiled update (the last run's)")
     r.add_argument("--out", help="markdown report")
     r.add_argument("--json", help="raw results (the parity log for `bench rl-parity`)")
+    r.add_argument("--isolate", action="store_true", help="each learner x group in its own process, so its peak RSS (060-R3) is its own, not the process peak so far")
     r.set_defaults(fn=rl_main)
 
     rp = bsub.add_parser("rl-parity", help="parity of two `bench rl` runs (042 lane-group equivalence)")
@@ -178,16 +179,24 @@ def rl_main(a) -> int:
     cfg = json.loads(_core.rl_config(a.config))
     if a.lanes:
         cfg["lanes"] = a.lanes
-    net, _ = ckpt.load_model(Path(a.checkpoint), device, adjust=_no_dropout)
     lo, hi = (int(x) for x in a.entities.split(":"))
-    batch = SyntheticSegments(net, cfg["lanes"], cfg["seq_len"], (lo, hi), a.templates, a.seed)
-    net = net.cpu()  # each run copies it to the device
+    net = batch = None
+    if not a.isolate:  # --isolate: the children load the net and build the batch
+        net, _ = ckpt.load_model(Path(a.checkpoint), device, adjust=_no_dropout)
+        batch = SyntheticSegments(net, cfg["lanes"], cfg["seq_len"], (lo, hi), a.templates, a.seed)
+        net = net.cpu()  # each run copies it to the device
     env = environment(backend, precision, device) | {"checkpoint": Path(a.checkpoint).name, "lanes": cfg["lanes"], "seq_len": cfg["seq_len"], "entities": a.entities}
     cmd = "python -m uranium bench " + " ".join(sys.argv[2:])
     runs: list = []
     md = ""
     for kind in [x.strip() for x in a.learner.split(",") if x.strip()]:
         for g in a.groups.split(","):
+            if a.isolate:
+                runs.append(_rl_child(a, kind, int(g), log))
+                md = markdown(runs, env, cmd)
+                write(a.out, md)
+                write(a.json, json.dumps({"env": env, "runs": runs}, indent=1))
+                continue
             try:
                 runs.append(run_learner(kind, int(g), net, cfg, batch, device, precision, a.algo, a.updates, a.phases, a.ops, a.trace, log, off))
             except torch.OutOfMemoryError as e:  # a group size over the device memory is a result (060-R3)
@@ -199,6 +208,24 @@ def rl_main(a) -> int:
             write(a.json, json.dumps({"env": env, "runs": runs}, indent=1))
     emit(md)
     return 0
+
+
+def _rl_child(a, kind: str, group: int, log) -> dict:
+    """One `bench rl` run (learner x group) in a child process (`--isolate`): its peak RSS is the
+    child's own (the synthetic batch, the nets and the run; 060-R3)."""
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / "run.json"
+        argv = [sys.executable, "-m", "uranium", "bench", "rl", "--checkpoint", a.checkpoint, "--config", a.config, "--algo", a.algo, "--learner", kind, "--groups", str(group),
+                "--updates", str(a.updates), "--entities", a.entities, "--templates", str(a.templates), "--seed", str(a.seed), "--off", a.off, "--ops", str(a.ops), "--json", str(out)]
+        argv += (["--backend", a.backend] if a.backend else []) + (["--lanes", str(a.lanes)] if a.lanes else []) + (["--phases"] if a.phases else []) + (["--trace", a.trace] if a.trace else [])
+        log(f"[bench rl] child: {kind} group {group}")
+        rc = subprocess.run(argv, stdout=subprocess.DEVNULL).returncode
+        if rc != 0 or not out.is_file():
+            return {"learner": kind, "group": group, "off": [], "updates": [], "median_s": None, "mean_s": None, "p95_s": None, "peak_gib": None, "peak_rss_gib": None, "failed": f"child exit {rc}"}
+        return json.loads(out.read_text(encoding="utf-8"))["runs"][0]
 
 
 def rl_parity_main(a) -> int:

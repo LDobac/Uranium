@@ -46,12 +46,13 @@ def test_targets_are_bit_identical_to_the_reference_032_r19(seed):
         assert torch.equal(new, old)
 
 
-def tiny_net(outer: bool, seed: int = 5) -> UraniumNet:
-    """The tiny LSTM test model; `outer`: with every 032 §2.7 variant (outer segment 2)."""
+def tiny_net(outer: int, seed: int = 5) -> UraniumNet:
+    """The tiny LSTM test model; `outer` > 0: with every 032 §2.7 variant, outer segments of that
+    many decisions."""
     cfg = UraniumNetConfig.from_dict(json.loads((FIX / "tiny-lstm" / "meta.json").read_text())["config"])
     cfg.input = input_dims()
     if outer:
-        cfg.variant = VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=2)
+        cfg.variant = VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=outer)
     torch.manual_seed(seed)
     return UraniumNet(cfg, action_columns())
 
@@ -59,9 +60,10 @@ def tiny_net(outer: bool, seed: int = 5) -> UraniumNet:
 class Segments:
     """`_core.test_segments` with behaviour log-probs from another network (off-policy) and a
     core_state0 on every lane but the first (a game's first segment starts from zero); for an
-    outer model the outer state inside an outer segment and on its boundary (032 §2.7)."""
+    outer model the outer counter puts lanes inside an outer segment at every phase and on its
+    boundary (032 §2.7: 5, 4, 3, 7, ... decisions so far; segments of 2 and 3)."""
 
-    def __init__(self, lanes: int, t: int, net, outer: bool):
+    def __init__(self, lanes: int, t: int, net, outer: int):
         self.batch, self.net = _core.test_segments(lanes, t), net
         g = torch.Generator().manual_seed(7)
         s = net.init_state(lanes, CPU)
@@ -69,7 +71,7 @@ class Segments:
         self.state = cs
         if outer:
             h_o, c_o, h_sum, _ = s[1]
-            counter = torch.tensor([float(3 + 5 * i) if i % 2 else 0.0 for i in range(lanes)])
+            counter = torch.tensor([0.0] + [(5.0, 4.0, 3.0, 7.0)[(i - 1) % 4] for i in range(1, lanes)])
             self.state = (cs, (torch.randn(h_o.shape, generator=g), torch.randn(c_o.shape, generator=g), torch.randn(h_sum.shape, generator=g), counter))
 
     lanes = property(lambda self: self.batch.lanes)
@@ -93,7 +95,7 @@ def rl_cfg(**over) -> dict:
     return cfg
 
 
-def run(cls, algo: str, outer: bool, group: int, lanes: int = 4, updates: int = 2, trim: bool = True):
+def run(cls, algo: str, outer: int, group: int, lanes: int = 4, updates: int = 2, trim: bool = True):
     l = cls(rl_cfg(lanes=lanes), tiny_net(outer), tiny_net(outer), CPU, "f32", algo, micro_lanes=group)
     l.trim_pad = trim
     batch = Segments(lanes, 4, tiny_net(outer, seed=6), outer)
@@ -103,7 +105,7 @@ def run(cls, algo: str, outer: bool, group: int, lanes: int = 4, updates: int = 
 
 
 @pytest.mark.parametrize("algo", ["vtrace", "ppo"])
-@pytest.mark.parametrize("outer", [False, True])
+@pytest.mark.parametrize("outer", [0, 2, 3])
 def test_update_is_bit_identical_to_the_reference_032_r19(algo, outer):
     """Without the padding cut, the optimised update (host core_state0 and phase indices, staged
     groups, targets of the 4 components in one recursion, device-summed statistics, BC forward
@@ -128,14 +130,19 @@ def close_stats(a: dict, b: dict, rtol: float, atol: float) -> None:
 def test_entity_pad_cut_keeps_the_update_032_r19():
     """With the 032 §2.7 padding cut (outer model: 2 extra tokens, the synthetic games' last 2
     slots are padding), the update equals the reference within float rounding."""
-    new, ref = run(Learner, "vtrace", True, 1), run(ReferenceLearner, "vtrace", True, 1)
+    l = Learner(rl_cfg(lanes=4), tiny_net(2), tiny_net(2), CPU, "f32", "vtrace", micro_lanes=1)
+    batch = Segments(4, 4, tiny_net(2, seed=6), 2)
+    assert l.prepare(batch, 0, 1, 4)["entity_mask"].shape[1] == batch.group(0, 1, 4, 12)["entity_mask"].shape[1] - 2, "no padding cut"
+    l.trim_pad = False
+    assert l.prepare(batch, 0, 1, 4)["entity_mask"].shape[1] == batch.group(0, 1, 4, 12)["entity_mask"].shape[1]
+    new, ref = run(Learner, "vtrace", 2, 1), run(ReferenceLearner, "vtrace", 2, 1)
     for s_new, s_ref in zip(new[0], ref[0]):
         close_stats(s_new, s_ref, 1e-5, 1e-6)
     for k in new[1]:
         assert torch.allclose(new[1][k], ref[1][k], atol=1e-6, rtol=1e-5), k
 
 
-@pytest.mark.parametrize("outer", [False, True])
+@pytest.mark.parametrize("outer", [0, 2])
 def test_lane_groups_give_the_same_update_042(outer):
     """042 learner lane groups (032-R19 ②): groups of 1, 2 and all lanes give the same statistics,
     gradient norm, gradients and weights after one Adam step, up to the order of the sums."""
@@ -158,10 +165,10 @@ def test_micro_lanes_override_042(monkeypatch):
     assert host_micro_lanes(cfg) == 1
     monkeypatch.setenv(MICRO_LANES_ENV, "4")
     assert host_micro_lanes(cfg) == 4
-    l = Learner(cfg, tiny_net(False), tiny_net(False), CPU, "f32", "vtrace")
+    l = Learner(cfg, tiny_net(0), tiny_net(0), CPU, "f32", "vtrace")
     assert l.micro_lanes == 4 and l.group_size(32) == 4 and l.group_size(3) == 3
     monkeypatch.setenv(MICRO_LANES_ENV, "0")
-    assert Learner(cfg, tiny_net(False), tiny_net(False), CPU, "f32", "vtrace").group_size(32) == 32
+    assert Learner(cfg, tiny_net(0), tiny_net(0), CPU, "f32", "vtrace").group_size(32) == 32
     for bad in ("-1", "two", "1.5"):
         monkeypatch.setenv(MICRO_LANES_ENV, bad)
         with pytest.raises(ValueError, match=MICRO_LANES_ENV):
@@ -175,11 +182,11 @@ def test_spatial_bf16_staging_is_bit_identical_for_the_rl_model_032_r19():
     from uranium.device import autocast
     from uranium.model.net import stage
 
-    seg = Segments(2, 4, tiny_net(True, seed=6), True)
+    seg = Segments(2, 4, tiny_net(2, seed=6), 2)
     g = seg.group(0, 2, 4, 12)
     res = []
     for hg in (g, stage(g, CPU, "bf16", pinned=False, spatial_bf16=True)):
-        net = tiny_net(True)
+        net = tiny_net(2)
         with autocast(CPU, "bf16"):
             out = net.forward_seq(to_obs(hg, CPU), net.labels(hg, CPU), torch.as_tensor(g["privileged"]).float(), state0_of(net, g, CPU), 4, phased=True)
         (sum(out["logp"][k].float().sum() for k in HEADS) + out["value"].float().sum()).backward()
@@ -223,7 +230,7 @@ def test_bench_rl_runs_both_learners_032_r19():
     from uranium.bench.rl import SyntheticSegments, compare, run_learner
     from uranium.model.net import ENTITY_KEYS
 
-    net = tiny_net(True, seed=6)
+    net = tiny_net(2, seed=6)
     batch = SyntheticSegments(net, 4, 4, (3, 70), templates=2, seed=3)
     g, ref = batch.group(0, 4, 4, 12), _core.test_segments(1, 4).group(0, 1, 4, 12)
     assert set(ref) <= set(g)
@@ -256,14 +263,34 @@ def test_update_on_the_device_matches_the_reference_032_r19(precision):
     dev = torch.device("cuda")
     res = []
     for cls in (Learner, ReferenceLearner):
-        l = cls(rl_cfg(lanes=4), tiny_net(True), tiny_net(True), dev, precision, "vtrace", micro_lanes=2)
+        l = cls(rl_cfg(lanes=4), tiny_net(2), tiny_net(2), dev, precision, "vtrace", micro_lanes=2)
         l.trim_pad = False
-        batch = Segments(4, 4, tiny_net(True, seed=6), True)
+        batch = Segments(4, 4, tiny_net(2, seed=6), 2)
         stats = [l.update(batch, WEIGHTS) for _ in range(2)]
         res.append((stats, {k: v.detach().cpu() for k, v in l.net.state_dict().items()}))
     if precision == "bf16":
-        assert Learner(rl_cfg(), tiny_net(True), tiny_net(True), dev, precision, "vtrace").spatial_bf16
+        assert Learner(rl_cfg(), tiny_net(2), tiny_net(2), dev, precision, "vtrace").spatial_bf16
     for a, b in zip(res[0][0], res[1][0]):
         close_stats(a, b, 1e-3, 1e-5)
     for k in res[0][1]:
         assert torch.allclose(res[0][1][k], res[1][1][k], atol=1e-5, rtol=1e-4), k
+
+
+@pytest.mark.parametrize("algo", ["vtrace", "ppo"])
+def test_update_on_sampled_actions_is_bit_identical_to_the_reference_032_r19(algo):
+    """The same on `bench rl`'s synthetic batch, whose actions the network sampled (selection,
+    target unit and location heads used, entity counts padded per group, outer counters at varied
+    phases): statistics and weights after two updates equal the reference's bit for bit."""
+    from uranium.bench.rl import SyntheticSegments
+
+    batch = SyntheticSegments(tiny_net(3, seed=6), 6, 4, (3, 120), templates=3, seed=4)
+    res = []
+    for cls in (Learner, ReferenceLearner):
+        l = cls(rl_cfg(lanes=6), tiny_net(3), tiny_net(3), CPU, "f32", algo, micro_lanes=2)
+        l.trim_pad = False
+        res.append(([l.update(batch, WEIGHTS) for _ in range(2)], {k: v.detach().clone() for k, v in l.net.state_dict().items()}))
+    used = res[0][0][0]["entropy_heads"]
+    assert used[3] > 0 and (used[4] > 0 or used[5] > 0), f"selection / target heads unused: {used}"
+    assert res[0][0] == res[1][0]
+    for k in res[0][1]:
+        assert torch.equal(res[0][1][k], res[1][1][k]), k

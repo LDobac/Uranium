@@ -172,13 +172,15 @@ def main(a) -> int:
     _core.install_stop_handler("rl")
     from uranium.device import configure, resolve
 
-    from uranium.rl.learner import MICRO_LANES_ENV
+    from uranium.rl.learner import MICRO_LANES_ENV, host_micro_lanes
 
     backend, device, precision = resolve(a.backend)
     configure(backend)
     a.logs = str(logs_dir(a.logs))
-    group = os.environ.get(MICRO_LANES_ENV, "").strip() or "config micro_lanes"
-    print(f"[rl] {backend} ({precision}), algo {a.algo}, learner lane group {group}, logs {a.logs}", file=sys.stderr, flush=True)
+    # The learners read the same value (an invalid override fails here, before the lock is taken).
+    m = host_micro_lanes(json.loads(_core.rl_config(a.config)))
+    src = MICRO_LANES_ENV if os.environ.get(MICRO_LANES_ENV, "").strip() else "config micro_lanes"
+    print(f"[rl] {backend} ({precision}), algo {a.algo}, learner lane group {m if m else 'all'} lanes ({src}), logs {a.logs}", file=sys.stderr, flush=True)
     end = _core.run_rl(
         functools.partial(_make, a, device, precision), a.run, a.config, algo=a.algo, seed=a.seed, take_over=a.take_over, logs=a.logs,
         z_table=a.z_table, max_updates=a.max_updates, max_minutes=a.max_minutes, max_agent_steps=a.max_agent_steps,
