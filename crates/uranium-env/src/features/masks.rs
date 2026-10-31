@@ -205,8 +205,10 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     // right-clicks in the fog. Judged from the last seen state only; the bridge commands its last
     // position and type, not the real unit (011-R20 ①-2), so nothing new leaks. Only Attack_Unit
     // and the `any_unit` actions take it; the other target classes need a visible unit.
-    // 034-AC4 ⑤: not when its id was seen since as a neutral resource (`seen_as_neutral`).
-    let known_building = e.remembered && e.owner == OWNER_ENEMY && building && !seen_as_neutral(w, u.id);
+    // 034-AC4 ⑤: not when its id was seen since as a neutral resource (`seen_as_neutral`). Not a
+    // building last seen lifted either: a floating building leaves no clickable ghost (interim
+    // main-session decision 2026-10-31, 034 target classes).
+    let known_building = e.remembered && e.owner == OWNER_ENEMY && building && !lifted && !seen_as_neutral(w, u.id);
     set("attackable_enemy", ((enemy && targetable) || known_building) && !t.has(crate::types::flag::INVINCIBLE));
     set("any_unit", targetable || known_resource || known_building);
     set("own_unit", own_target);

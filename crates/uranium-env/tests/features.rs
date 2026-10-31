@@ -1240,3 +1240,65 @@ fn remembered_enemy_building_is_attack_and_click_target_034_ac4() {
     // The remembered buildings are the only enemies: Attack_Unit opens on them alone.
     assert!(o.masks.type_mask[action_table().by_name("Attack_Unit").unwrap().id as usize]);
 }
+
+/// 034 target classes (U-2) with one own unit, so that besides the selection itself (034-R9) the
+/// only targets are remembered enemy buildings: Attack_Unit, Smart_Unit, Move_Unit (a marine) and
+/// SetRally_Unit (a barracks) open, and the executor sends the remembered id as `Target::Unit`
+/// (the bridge turns it into a ghost command, 011-R20 ①-2). A building last seen lifted leaves no
+/// clickable ghost (interim main-session decision 2026-10-31).
+#[test]
+fn remembered_enemy_building_takes_unit_commands_034_ac4() {
+    use uranium_proto::{CmdOrder, Target};
+    let map = map_info();
+    for (own_name, actions) in [("Terran_Marine", &["Attack_Unit", "Smart_Unit", "Move_Unit"][..]), ("Terran_Barracks", &["SetRally_Unit"][..])] {
+        let mut mem = AgentMemory::new(&game_info());
+        let mut b = Builder::new();
+        let me = b.add(SELF, own_name, (16, 16));
+        let own = b.units.clone();
+        let factory = b.add(ENEMY, "Terran_Factory", (60, 60));
+        let lifted = b.add(ENEMY, "Terran_Barracks", (70, 70));
+        b.get(lifted).flags |= uranium_proto::flags::LIFTED;
+        extract(&frame(10, b.units.clone(), true), &mut mem, &map, None);
+        let mut f = frame(20, own, true);
+        for y in 50..H {
+            for x in 50..W {
+                f.visibility.set(x, y, false);
+            }
+        }
+        let o = extract(&f, &mut mem, &map, None);
+        let fi = index_of(&o, factory);
+        let li = index_of(&o, lifted);
+        assert_eq!(o.obs.entity_cont[li * ENTITY_CONT + 72], 1.0, "lifted barracks remembered");
+        assert!(!cap_of(&o, li, "attackable_enemy") && !cap_of(&o, li, "any_unit"), "lifted: no ghost target");
+        let others: Vec<u32> = (0..o.obs.n).filter(|&i| cap_of(&o, i, "any_unit") && o.entity_ids[i] != me).map(|i| o.entity_ids[i]).collect();
+        assert_eq!(others, vec![factory], "{own_name}: the remembered factory is the only other target");
+        let w = World::new(&f, &mem, &map);
+        let mi = index_of(&o, me);
+        for name in actions {
+            assert!(o.masks.type_mask[action_table().by_name(name).unwrap().id as usize], "{name}");
+            let out = execute(&w, &o, &host(name, vec![mi], Some(fi), None)).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+            let target = match &out.commands[0] {
+                Command::Unit { order: CmdOrder::Attack(t) | CmdOrder::RightClick(t) | CmdOrder::Move(t), .. } => t.clone(),
+                Command::SetRally { target, .. } => target.clone(),
+                c => panic!("{name}: {c:?}"),
+            };
+            assert_eq!(target, Target::Unit(factory), "{name}");
+            assert_eq!(execute(&w, &o, &host(name, vec![mi], Some(li), None)).err(), Some(uranium_env::features::executor::Rejected::BadTarget), "{name} on the lifted one");
+        }
+    }
+}
+
+/// 034-R3 / 031-R1 (U-1): a nuke needs an empty silo (the engine checks supply for it), so
+/// Train_NuclearMissile stays closed during a supply block.
+#[test]
+fn train_nuke_closed_during_supply_block_034_r3() {
+    let map = map_info();
+    let nuke = action_table().by_name("Train_NuclearMissile").unwrap().id as usize;
+    let units = rich_units().units;
+    let mut f = frame(10, units.clone(), true);
+    let o = extract(&f, &mut AgentMemory::new(&game_info()), &map, None);
+    assert!(o.masks.type_mask[nuke], "open with supply room");
+    (f.self_state.supply_used, f.self_state.supply_total) = (200, 200);
+    let o = extract(&f, &mut AgentMemory::new(&game_info()), &map, None);
+    assert!(!o.masks.type_mask[nuke], "closed while supply is blocked");
+}
