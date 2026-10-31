@@ -55,6 +55,26 @@ bool is_map_resource(Unit u) {
   UnitType t = u->getType();
   return u->getPlayer() && u->getPlayer()->isNeutral() && (t.isMineralField() || t == UnitTypes::Resource_Vespene_Geyser);
 }
+// 011-R20 (1)-2 (user decision 2026-10-31): enemy buildings this player observed, by replay id:
+// last position and type (kept per game, updated each observation). A command on one that is not
+// in the observation goes out as a ghost command built from this record and never from the real
+// unit, so neither CommandFailed nor our units' orders tell whether it still stands or moved.
+struct Seen {
+  Position pos;
+  UnitType type;
+};
+std::unordered_map<int32_t, Seen> g_enemy_building_seen;
+// The record of `id` when it is not observed now (checked before map resources), or null.
+const Seen* ghost_of(int32_t id) {
+  if (id == UR_NONE || find_unit(id)) return nullptr;
+  auto it = g_enemy_building_seen.find(id);
+  return it == g_enemy_building_seen.end() ? nullptr : &it->second;
+}
+
+// Spec 011 C ABI events: kinds other than UR_EV_UNIT_REJECTED carry unit_type 0xFFFF, command 0.
+UrEvent ev(uint8_t kind, int32_t unit, int32_t x, int32_t y, uint16_t type = 0xFFFF, uint8_t command = 0) {
+  return UrEvent{kind, unit, x, y, type, command};
+}
 
 void fill_player_state(Player p, UrPlayerState& s) {
   std::memset(&s, 0, sizeof s);
@@ -157,7 +177,8 @@ bool visible_to_self(Unit u) {
 Position pos(const UrCmd& c) { return Position(c.x, c.y); }
 
 // The command one unit of a selection gets. The unit is left null so that equal commands compare
-// equal and go to the game as one group. `t` is the resolved unit target.
+// equal and go to the game as one group. `t` is the resolved unit target. Without `u` (a unit not
+// found) it is the command before the per-unit adjustments.
 UnitCommand unit_command(Unit u, const UrCmd& c, Unit t) {
   bool q = c.queued != 0;
   Position p = pos(c);
@@ -167,7 +188,7 @@ UnitCommand unit_command(Unit u, const UrCmd& c, Unit t) {
       if (t) return UnitCommand::attack(nullptr, t, q);
       // 034 Attack_Pos: the game attack-moves any unit that can move, and unarmed ones just
       // move; BWAPI only lets armed units and medics attack-move, so send those the move.
-      if (!u->canAttackMove() && u->canMove()) return UnitCommand::move(nullptr, p, q);
+      if (u && !u->canAttackMove() && u->canMove()) return UnitCommand::move(nullptr, p, q);
       return UnitCommand::attack(nullptr, p, q);
     case UR_ORD_PATROL: return UnitCommand::patrol(nullptr, p, q);
     case UR_ORD_HOLD: return UnitCommand::holdPosition(nullptr, q);
@@ -177,7 +198,7 @@ UnitCommand unit_command(Unit u, const UrCmd& c, Unit t) {
       // Audit F17 (as AMB-041-1): the game turns the right click of a unit that cannot attack the
       // enemy target into a follow, and a medic's into a heal-move; BWAPI rejects both, so send a
       // follow, and the medic an attack-move to the target's position (the game makes it HealMove).
-      if (t->getPlayer() && g_me->isEnemy(t->getPlayer()) && !u->canAttackUnit(t)) {
+      if (u && t->getPlayer() && g_me->isEnemy(t->getPlayer()) && !u->canAttackUnit(t)) {
         if (u->getType() == UnitTypes::Terran_Medic && u->canAttackMove()) return UnitCommand::attack(nullptr, t->getPosition(), q);
         if (u->canFollow(t)) return UnitCommand::follow(nullptr, t, q);
       }
@@ -216,8 +237,26 @@ bool needs_pos(uint8_t o) { return o == UR_ORD_PATROL || o == UR_ORD_LAND; }
 // group (lifted buildings) get it one by one. The command succeeds when at least one unit took it;
 // otherwise the error is the first rejected unit's. A unit target that is neither observed nor a
 // map resource, or a missing position, fails the command at once (no silent move to (-1, -1)).
-bool exec_units(const UrCmd& c_in, const int32_t* pool) {
+// 011-R20 (4) (user decision 2026-10-31): each unit that does not take the command (not found, or
+// rejected when issued alone) gets a UR_EV_UNIT_REJECTED in `rejected`, diagnostics only.
+bool exec_units(const UrCmd& c_in, const int32_t* pool, int32_t index, std::vector<UrEvent>& rejected) {
   UrCmd c = c_in;
+  // 011-R20 (1)-2: a recorded enemy building out of the observation. Attack and RightClick become a
+  // ghost command (BWAPI patch 0016, 011-R23 (2)) that every unit gets as is (no per-unit
+  // adjustment: the engine picks each unit's order), Move a move to its last position; any other
+  // order fails at once (034 masks never open it).
+  bool ghost = false;
+  UnitCommand ghost_cmd;
+  if (const Seen* s = ghost_of(c.target_unit)) {
+    ghost = c.order == UR_ORD_ATTACK || c.order == UR_ORD_RIGHT_CLICK;
+    if (!ghost && c.order != UR_ORD_MOVE) return Broodwar->setLastError(Errors::Unit_Does_Not_Exist);
+    c.target_unit = UR_NONE;
+    c.x = s->pos.x;
+    c.y = s->pos.y;
+    // 0016 encoding: no target unit, extra = (unit type << 1) | queued.
+    ghost_cmd = UnitCommand(nullptr, c.order == UR_ORD_ATTACK ? UnitCommandTypes::Attack_Unit : UnitCommandTypes::Right_Click_Unit,
+                            nullptr, c.x, c.y, (s->type.getID() << 1) | (c.queued ? 1 : 0));
+  }
   Unit t = find_target(c.target_unit);
   auto gone = g_resource_pos.find(c.target_unit);
   if (c.target_unit != UR_NONE && !t && gone != g_resource_pos.end() &&
@@ -233,13 +272,18 @@ bool exec_units(const UrCmd& c_in, const int32_t* pool) {
   std::vector<std::pair<UnitCommand, Unitset>> groups;
   Error first = Errors::None;
   bool accepted = false;
+  auto reject = [&](int32_t id, Unit u, const UnitCommand& cmd, Error e) {
+    if (first == Errors::None) first = e;
+    rejected.push_back(ev(UR_EV_UNIT_REJECTED, id, index, e.getID(), u ? (uint16_t)u->getType().getID() : 0xFFFF, (uint8_t)cmd.type.getID()));
+  };
   for (uint32_t i = 0; i < c.n_units; ++i) {
-    Unit u = find_unit(pool[c.units_offset + i]);
+    int32_t id = pool[c.units_offset + i];
+    Unit u = find_unit(id);
     if (!u) {
-      if (first == Errors::None) first = Errors::Unit_Does_Not_Exist;
+      reject(id, nullptr, ghost ? ghost_cmd : unit_command(nullptr, c, t), Errors::Unit_Does_Not_Exist);
       continue;
     }
-    UnitCommand cmd = unit_command(u, c, t);
+    UnitCommand cmd = ghost ? ghost_cmd : unit_command(u, c, t);
     if (u->canIssueCommandGrouped(cmd)) {
       auto g = std::find_if(groups.begin(), groups.end(), [&](const std::pair<UnitCommand, Unitset>& x) { return x.first == cmd; });
       if (g == groups.end()) {
@@ -251,11 +295,8 @@ bool exec_units(const UrCmd& c_in, const int32_t* pool) {
       continue;
     }
     cmd.unit = u;
-    if (u->issueCommand(cmd)) {
-      accepted = true;
-    } else if (first == Errors::None) {
-      first = Broodwar->getLastError();
-    }
+    if (u->issueCommand(cmd)) accepted = true;
+    else reject(id, u, cmd, Broodwar->getLastError());
   }
   // BWAPI's Unitset iterates by pointer hash, so the game may see the units in another order than
   // the pool; OpenBW's group handling does not depend on it (`action_order` and `calc_group_move`
@@ -268,8 +309,8 @@ bool exec_units(const UrCmd& c_in, const int32_t* pool) {
   return Broodwar->setLastError(accepted ? Errors::None : first == Errors::None ? Errors::Unit_Does_Not_Exist : first);
 }
 
-bool exec(const UrCmd& c, const int32_t* pool) {
-  if (c.kind == UR_CMD_UNIT) return exec_units(c, pool);
+bool exec(const UrCmd& c, const int32_t* pool, int32_t index, std::vector<UrEvent>& rejected) {
+  if (c.kind == UR_CMD_UNIT) return exec_units(c, pool, index, rejected);
   Unit u = find_unit(c.unit);
   if (!u) return Broodwar->setLastError(Errors::Unit_Does_Not_Exist);
   switch (c.kind) {
@@ -280,6 +321,8 @@ bool exec(const UrCmd& c, const int32_t* pool) {
     case UR_CMD_RESEARCH: return u->research(TechType(c.type));
     case UR_CMD_UPGRADE: return u->upgrade(UpgradeType(c.type));
     case UR_CMD_SET_RALLY: {
+      // 011-R20 (1)-2: a recorded enemy building out of the observation: rally to its last position.
+      if (const Seen* s = ghost_of(c.target_unit)) return u->setRallyPoint(s->pos);
       Unit t = find_target(c.target_unit);
       auto gone = g_resource_pos.find(c.target_unit);
       if (c.target_unit != UR_NONE && !t && gone != g_resource_pos.end()) return u->setRallyPoint(gone->second);
@@ -308,6 +351,7 @@ class UraniumModule : public AIModule {
     g_observed.clear();
     g_resources.clear();
     g_resource_pos.clear();
+    g_enemy_building_seen.clear();
     // The game seed is applied to every client at game start by OpenBW patch 0002
     // (URANIUM_SEED). Do not call setRandomSeed() here: reseeding only our own client
     // desyncs LAN games against any other AI module (M3 finding).
@@ -474,7 +518,7 @@ class UraniumModule : public AIModule {
   void onUnitEvade(Unit u) override { event(UR_EV_EVADE, u); }
   void onNukeDetect(Position p) override {
     if (p == Positions::Unknown) return;  // not visible to us
-    events_.push_back(UrEvent{UR_EV_NUKE, UR_NONE, p.x, p.y});
+    events_.push_back(ev(UR_EV_NUKE, UR_NONE, p.x, p.y));
   }
 
  private:
@@ -482,7 +526,7 @@ class UraniumModule : public AIModule {
     // With CompleteMapInformation (privileged mode) events fire for hidden units too; drop those.
     if (kind != UR_EV_DESTROY && kind != UR_EV_EVADE && !visible_to_self(u)) return;
     if ((kind == UR_EV_DESTROY || kind == UR_EV_EVADE) && u->getPlayer() != g_me && !u->isVisible(g_me)) return;
-    events_.push_back(UrEvent{kind, uid(u), UR_NONE, UR_NONE});
+    events_.push_back(ev(kind, uid(u), UR_NONE, UR_NONE));
   }
 
   // Own-vision state of `frame` (010-R5) with the events since the last step, into the buffers.
@@ -499,6 +543,10 @@ class UraniumModule : public AIModule {
       if (!visible_to_self(u)) continue;
       g_units[uid(u)] = u;
       g_observed.insert(u);
+      // 011-R20 (1)-2: an id seen as anything but an enemy building (a geyser where a refinery
+      // was destroyed) leaves the record.
+      if (g_me->isEnemy(u->getPlayer()) && u->getType().isBuilding()) g_enemy_building_seen[uid(u)] = Seen{u->getPosition(), u->getType()};
+      else g_enemy_building_seen.erase(uid(u));
     }
     // Second pass: references are resolved against the complete observed set.
     for (Unit u : Broodwar->getAllUnits()) {
@@ -567,9 +615,10 @@ class UraniumModule : public AIModule {
       surrender_at_ = frame + UR_SURRENDER_LEAVE_FRAMES;
       return;
     }
+    // 011-R20 (4): per-unit rejections go to the next observation with the CommandFailed events.
     for (uint32_t i = 0; i < act.n_cmds; ++i) {
-      if (!exec(act.cmds[i], act.unit_pool))
-        events_.push_back(UrEvent{UR_EV_CMD_FAILED, (int32_t)i, Broodwar->getLastError().getID(), UR_NONE});
+      if (!exec(act.cmds[i], act.unit_pool, (int32_t)i, events_))
+        events_.push_back(ev(UR_EV_CMD_FAILED, (int32_t)i, Broodwar->getLastError().getID(), UR_NONE));
     }
   }
 

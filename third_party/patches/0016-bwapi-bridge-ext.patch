@@ -1,0 +1,199 @@
+diff --git a/bwapi/BWAPI/Source/BW/OrderTypes.cpp b/bwapi/BWAPI/Source/BW/OrderTypes.cpp
+index cdbfeaa2..f4b476b5 100755
+--- a/bwapi/BWAPI/Source/BW/OrderTypes.cpp
++++ b/bwapi/BWAPI/Source/BW/OrderTypes.cpp
+@@ -37,6 +37,13 @@ namespace BW
+         , type(queued ? 1 : 0)
+     {
+     }
++    Attack::Attack(int x, int y, BWAPI::UnitType targetType, BWAPI::Order OrderID, bool queued)
++        : target(x,y)
++        , always0xe4(static_cast<u16>(targetType.getID()))
++        , order(static_cast<u8>(OrderID))
++        , type(queued ? 1 : 0)
++    {
++    }
+     //--------------------------------------- RIGHT CLICK CONSTRUCTOR ---------------------------------------
+     RightClick::RightClick(BWAPI::Unit target, bool queued)
+         : target(target)
+@@ -60,6 +67,12 @@ namespace BW
+         , type(queued ? 1 : 0)
+     {
+     }
++    RightClick::RightClick(int x, int y, BWAPI::UnitType targetType, bool queued)
++        : target(x,y)
++        , always0xe4(static_cast<u16>(targetType.getID()))
++        , type(queued ? 1 : 0)
++    {
++    }
+     //--------------------------------------- SHIFT SELECT CONSTRUCTOR ---------------------------------------
+     SelectAdd::SelectAdd(int count, const BWAPI::Unit *units)
+     {
+diff --git a/bwapi/BWAPI/Source/BW/OrderTypes.h b/bwapi/BWAPI/Source/BW/OrderTypes.h
+index fee1626f..0afe6ccc 100755
+--- a/bwapi/BWAPI/Source/BW/OrderTypes.h
++++ b/bwapi/BWAPI/Source/BW/OrderTypes.h
+@@ -40,9 +40,11 @@ namespace BW
+       Attack(BWAPI::Unit target, BWAPI::Order order, bool queued = false);
+       // Attack Location on general target. 
+       Attack(const PositionUnitTarget& target, BWAPI::Order order, bool queued = false);
++      // Uranium 0016 (011-R23 (2)): position and unit type without a unit (a ghost in the fog).
++      Attack(int x, int y, BWAPI::UnitType targetType, BWAPI::Order order, bool queued);
+     private:
+       BW::PositionUnitTarget target;
+-      u16 always0xe4 = BWAPI::UnitTypes::Enum::None;
++      u16 always0xe4 = BWAPI::UnitTypes::Enum::None;  // target unit type (0016)
+       u8 order;
+       u8 type;
+     };
+@@ -58,9 +60,11 @@ namespace BW
+       RightClick(BWAPI::Unit target, bool queued = false);
+       // Right-click on general target. 
+       RightClick(const PositionUnitTarget& target, bool queued = false);
++      // Uranium 0016 (011-R23 (2)): position and unit type without a unit (a ghost in the fog).
++      RightClick(int x, int y, BWAPI::UnitType targetType, bool queued);
+     private:
+       BW::PositionUnitTarget target;
+-      u16 always0xe4 = BWAPI::UnitTypes::Enum::None;
++      u16 always0xe4 = BWAPI::UnitTypes::Enum::None;  // target unit type (0016)
+       u8  type;
+     };
+ 
+diff --git a/bwapi/BWAPI/Source/BWAPI/CommandTemp.h b/bwapi/BWAPI/Source/BWAPI/CommandTemp.h
+index baf98583..6ad2ee36 100755
+--- a/bwapi/BWAPI/Source/BWAPI/CommandTemp.h
++++ b/bwapi/BWAPI/Source/BWAPI/CommandTemp.h
+@@ -6,6 +6,7 @@
+ #include <BWAPI/TechType.h>
+ #include <BWAPI/UnitCommand.h>
+ #include <BWAPI/UnitCommandType.h>
++#include "UraniumBridgeExt.h"
+ 
+ namespace BWAPI
+ {
+@@ -37,6 +38,8 @@ namespace BWAPI
+   template <class UnitImpl, class PlayerImpl>
+   void CommandTemp<UnitImpl, PlayerImpl>::execute(int frame)
+   {
++    // Uranium 0016 (011-R23 (2)): the engine picks each unit's order for a ghost command; no guess.
++    if ( UraniumExt::isGhost(command) ) return;
+     // Immediately return if latency compensation is disabled or if the command was queued
+     if ( !Broodwar->isLatComEnabled() || command.isQueued() ) return;
+     UnitImpl* unit   = static_cast<UnitImpl*>(command.unit);
+diff --git a/bwapi/BWAPI/Source/BWAPI/GameCommands.cpp b/bwapi/BWAPI/Source/BWAPI/GameCommands.cpp
+index eb919fc1..6d1274cd 100755
+--- a/bwapi/BWAPI/Source/BWAPI/GameCommands.cpp
++++ b/bwapi/BWAPI/Source/BWAPI/GameCommands.cpp
+@@ -6,6 +6,8 @@
+ 
+ #include <BW/OrderTypes.h>
+ 
++#include "UraniumBridgeExt.h"
++
+ #include "../../../Debug.h"
+ 
+ namespace BWAPI
+@@ -40,6 +42,15 @@ namespace BWAPI
+ 
+     UnitCommandType ct = command.type;
+     bool queued = command.isQueued();
++    // Uranium 0016 (011-R23 (2)): a ghost command carries the position and unit type, no unit.
++    if (UraniumExt::isGhost(command))
++    {
++      if (ct == UnitCommandTypes::Attack_Unit)
++        bwgame.QueueCommand<BW::Orders::Attack>(command.x, command.y, UraniumExt::ghostUnitType(command), Orders::Enum::Attack2, UraniumExt::ghostQueued(command));
++      else
++        bwgame.QueueCommand<BW::Orders::RightClick>(command.x, command.y, UraniumExt::ghostUnitType(command), UraniumExt::ghostQueued(command));
++      return;
++    }
+     if (ct == UnitCommandTypes::Attack_Move)
+     {
+       if ( command.unit && command.unit->getType() == UnitTypes::Zerg_Infested_Terran )
+diff --git a/bwapi/Shared/Templates.h b/bwapi/Shared/Templates.h
+index bfe64cd5..5f4bce46 100755
+--- a/bwapi/Shared/Templates.h
++++ b/bwapi/Shared/Templates.h
+@@ -4,6 +4,7 @@
+ 
+ #include "UnitImpl.h"
+ #include "GameImpl.h"
++#include "UraniumBridgeExt.h"
+ 
+ namespace BWAPI
+ {
+@@ -368,7 +369,10 @@ namespace BWAPI
+       // Check if player has enough supplies
+       BWAPI::Race typeRace = type.getRace();
+       const int supplyRequired = type.supplyRequired() * (type.isTwoUnitsInOneEgg() ? 2 : 1);
+-      if (supplyRequired > 0 && pSelf->supplyTotal(typeRace) < pSelf->supplyUsed(typeRace) + supplyRequired - (requiredType.getRace() == typeRace ? requiredType.supplyRequired() : 0))
++      // Uranium 0016 (011-R23 (1)): as in the engine's build_queue_push, a builder whose training
++      // queue is not empty takes the order without a supply check (resources are still checked).
++      const bool queueSkipsSupply = UraniumExt::enabled() && builder && !builder->getTrainingQueue().empty();
++      if (supplyRequired > 0 && !queueSkipsSupply && pSelf->supplyTotal(typeRace) < pSelf->supplyUsed(typeRace) + supplyRequired - (requiredType.getRace() == typeRace ? requiredType.supplyRequired() : 0))
+         return Broodwar->setLastError(Errors::Insufficient_Supply);
+ 
+       UnitType addon = UnitTypes::None;
+@@ -2794,6 +2798,11 @@ namespace BWAPI
+       else if ( !canCommand(thisUnit) )
+         return false;
+ 
++      // Uranium 0016 (011-R23 (2)): a ghost command gets the unit-side checks of the position
++      // command it amounts to: MoveToAttack those of an attack-move, a ghost right click those of a
++      // position right click. There is no target unit to check.
++      if ( UraniumExt::isGhost(c) )
++        c.type = c.type == UnitCommandTypes::Attack_Unit ? UnitCommandTypes::Attack_Move : UnitCommandTypes::Right_Click_Position;
+       BWAPI::UnitCommandType ct = c.type;
+       if ( checkCanIssueCommandType && !canIssueCommandType(thisUnit, ct, false) )
+         return false;
+@@ -2945,6 +2954,9 @@ namespace BWAPI
+       if ( checkCommandibilityGrouped && !canCommandGrouped(thisUnit, false) )
+         return false;
+ 
++      // Uranium 0016 (011-R23 (2)): as in canIssueCommand.
++      if ( UraniumExt::isGhost(c) )
++        c.type = c.type == UnitCommandTypes::Attack_Unit ? UnitCommandTypes::Attack_Move : UnitCommandTypes::Right_Click_Position;
+       BWAPI::UnitCommandType ct = c.type;
+       if ( checkCanIssueCommandType && !canIssueCommandTypeGrouped(thisUnit, ct, false, false) )
+         return false;
+diff --git a/bwapi/Shared/UraniumBridgeExt.h b/bwapi/Shared/UraniumBridgeExt.h
+new file mode 100644
+index 00000000..46f7761f
+--- /dev/null
++++ b/bwapi/Shared/UraniumBridgeExt.h
+@@ -0,0 +1,36 @@
++#pragma once
++// Uranium patch 0016 (spec 011-R23): extensions for the Uranium bridge. They act only in a process
++// started with URANIUM_BRIDGE_EXT=1 (hostd sets it for the bridge's launcher alone, 020-R17);
++// otherwise BWAPI behaves as the original, which matters because OSS bots run on this same build.
++#include <cstdlib>
++#include <cstring>
++
++#include <BWAPI/UnitCommand.h>
++#include <BWAPI/UnitCommandType.h>
++#include <BWAPI/UnitType.h>
++
++namespace BWAPI
++{
++  namespace UraniumExt
++  {
++    inline bool enabled()
++    {
++      static const bool on = [] {
++        const char* v = std::getenv("URANIUM_BRIDGE_EXT");
++        return v != nullptr && std::strcmp(v, "1") == 0;
++      }();
++      return on;
++    }
++    // 011-R23 (2): a ghost command is Attack_Unit or Right_Click_Unit without a target unit: x, y
++    // are the position, extra = (unit type << 1) | queued. It goes to the game as a TargetedOrder
++    // MoveToAttack (Attack2) or a RightClick action that carries the unit type and no unit, as when
++    // a player clicks a building's ghost in the fog. Without the extension BWAPI rejects it (no target).
++    inline bool isGhost(const UnitCommand& c)
++    {
++      return enabled() && c.target == nullptr &&
++             (c.type == UnitCommandTypes::Attack_Unit || c.type == UnitCommandTypes::Right_Click_Unit);
++    }
++    inline UnitType ghostUnitType(const UnitCommand& c) { return UnitType(c.extra >> 1); }
++    inline bool ghostQueued(const UnitCommand& c) { return (c.extra & 1) != 0; }
++  }
++}

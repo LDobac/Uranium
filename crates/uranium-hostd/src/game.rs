@@ -68,6 +68,9 @@ pub fn player_name(spec: &GameSpec, slot: usize) -> String {
     out
 }
 
+/// 011-R23 / 020-R17: turns on BWAPI patch 0016 (Train supply rule, ghost commands).
+pub const BRIDGE_EXT_VAR: &str = "URANIUM_BRIDGE_EXT";
+
 /// Environment for one launcher (mirrors tools/openbw/selfmatch.sh).
 pub fn launcher_env(cfg: &Config, spec: &GameSpec, slot: usize, module: &Path, replay_dir: &Path) -> Vec<(String, String)> {
     let p = &spec.players[slot];
@@ -99,6 +102,8 @@ pub fn launcher_env(cfg: &Config, spec: &GameSpec, slot: usize, module: &Path, r
     ];
     if let PlayerKind::Bridge { agent_addr } = &p.kind {
         env.push(("URANIUM_AGENT_ADDR", agent_addr.clone()));
+        // 020-R17: only the launcher that runs our bridge gets the BWAPI extension.
+        env.push((BRIDGE_EXT_VAR, "1".to_string()));
     }
     let mut env: Vec<(String, String)> = env.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
     // 0002 patch: every client must see the same seed for a deterministic setup (011-AC4).
@@ -106,6 +111,15 @@ pub fn launcher_env(cfg: &Config, spec: &GameSpec, slot: usize, module: &Path, r
         env.push(("URANIUM_SEED".into(), seed.to_string()));
     }
     env
+}
+
+/// [`launcher_env`] on `cmd`. 020-R17: an OSS bot launcher never inherits [`BRIDGE_EXT_VAR`] from
+/// hostd's own environment, so BWAPI patch 0016 stays off for it.
+fn set_launcher_env(cmd: &mut Command, cfg: &Config, spec: &GameSpec, slot: usize, module: &Path, replay_dir: &Path) {
+    cmd.envs(launcher_env(cfg, spec, slot, module, replay_dir));
+    if !matches!(spec.players[slot].kind, PlayerKind::Bridge { .. }) {
+        cmd.env_remove(BRIDGE_EXT_VAR);
+    }
 }
 
 fn module_for(cfg: &Config, kind: &PlayerKind) -> Result<(PathBuf, Option<PathBuf>)> {
@@ -158,7 +172,7 @@ pub fn run(cfg: &Config, platform: &dyn Platform, spec: &GameSpec, stop: &dyn Fn
             let out = std::fs::File::create(&log)?;
             let mut cmd = Command::new(cfg.launcher());
             cmd.current_dir(&pdir).stdin(Stdio::null()).stdout(out.try_clone()?).stderr(out);
-            cmd.envs(launcher_env(cfg, spec, slot, &module, cfg.replay_dir.as_deref().unwrap_or(&dir)));
+            set_launcher_env(&mut cmd, cfg, spec, slot, &module, cfg.replay_dir.as_deref().unwrap_or(&dir));
             cmd.envs(lan.env[slot].iter().map(|(k, v)| (k, v)));
             children.push(platform.spawn(cmd).with_context(|| format!("spawning launcher {slot}"))?);
             logs.push(log);
@@ -377,6 +391,23 @@ mod tests {
         assert!(env1.iter().any(|(k, v)| k == "URANIUM_OPENBW_DROP_TIMEOUT_MS" && v == "600000"));
         assert!(env1.iter().all(|(k, _)| k != "URANIUM_AGENT_ADDR" && k != "URANIUM_SEED"));
         assert!(env1.iter().any(|(k, v)| k == "BWAPI_CONFIG_AUTO_MENU__RACE" && v == "Random"));
+    }
+
+    /// 011-AC11 / 020-R17: `URANIUM_BRIDGE_EXT=1` reaches the bridge launcher only; the OSS bot
+    /// launcher gets it removed even when hostd itself has it.
+    #[test]
+    fn bridge_ext_only_for_bridge_launcher_020_r17() {
+        let s = spec(None);
+        let ext = |slot: usize| {
+            let mut cmd = Command::new("launcher");
+            set_launcher_env(&mut cmd, &cfg(), &s, slot, Path::new("/m.so"), Path::new("/w/g3"));
+            cmd.get_envs()
+                .filter(|(k, _)| *k == BRIDGE_EXT_VAR)
+                .map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ext(0), vec![Some("1".to_string())], "bridge launcher (slot 0)");
+        assert_eq!(ext(1), vec![None], "OSS bot launcher: removed, not inherited");
     }
 
     /// 020-R16: `p<i>-<name>` cut to 24 bytes without cutting the index, legacy name without one.

@@ -3,7 +3,10 @@
 //! 감사), Smart_Unit / Gather_Unit on a resource out
 //! of vision (011-R20, 액션 감사 F2), and the Attack_Pos -> move substitution
 //! for unarmed units (034 이동·전투 비고, AMB-041-1: the bridge sends a move, the unit's order
-//! becomes Move).
+//! becomes Move). `supply_queue_ghost_commands_and_unit_rejections_011_r23` checks the 2026-10-31
+//! decisions in a short game of its own: a supply-blocked Train on a building with a queue (034-R3,
+//! 011-R23), commands on a remembered enemy building out of vision (011-R20 ①-2) and per-unit
+//! rejections of a group command (011-R20 ④).
 //!
 //! Needs a running `uranium-hostd` with OpenBW and Fighting Spirit, so it is ignored by default:
 //!
@@ -33,7 +36,7 @@ use common::{Role, valid_action};
 use uranium_env::actions::{Action, CAPABILITIES};
 use uranium_env::features::executor::{HostAction, execute};
 use uranium_env::features::extract::action_table;
-use uranium_env::features::world::{World, top_left};
+use uranium_env::features::world::{World, queue_len, top_left};
 use uranium_env::features::*;
 use uranium_env::types::{TypeTables, UnitType, order_id};
 use uranium_proto::control::{ControlRequest, ControlResponse, GameOutcome, GameSpec, MapKey, PlayerKind, PlayerSpec, CONTROL_VERSION};
@@ -921,12 +924,37 @@ fn f_frame(cx: &Ctx) -> u32 {
     cx.f.frame
 }
 
-enum Report {
-    Coverage(Box<State>),
-    Idle,
+/// The script player 0 (`uranium-p0`) runs in a hostd game; player 1 idles.
+trait Script: Send + 'static {
+    fn on_frame(&mut self, f: &RawFrame) -> Act;
+    fn on_end(&mut self, end: &GameEnd);
+    fn on_closed(&mut self, why: String);
+    /// Everything checked: the game is stopped (`StopGame`).
+    fn done(&self) -> bool;
 }
 
-/// One bridge connection: player 0 runs the coverage script, player 1 idles.
+impl Script for Coverage {
+    fn on_frame(&mut self, f: &RawFrame) -> Act {
+        Coverage::on_frame(self, f)
+    }
+
+    fn on_end(&mut self, end: &GameEnd) {
+        if let Some(ff) = &end.final_frame {
+            self.st.settle(&ff.events);
+        }
+        let me = self.st.info.self_player;
+        self.st.end = Some(format!("{:?} at frame {}, winner {:?} (we are {me})", end.reason, end.frame, end.winner));
+    }
+
+    fn on_closed(&mut self, why: String) {
+        self.st.end.get_or_insert(why);
+    }
+
+    fn done(&self) -> bool {
+        self.st.done()
+    }
+}
+
 /// FNV-1a over the observed units (id order): id, type, position, hp, shield, energy, order,
 /// order target, flags. Equal sequences = the two games played the same (011-AC4).
 fn frame_checksum(f: &RawFrame) -> u64 {
@@ -950,59 +978,51 @@ fn frame_checksum(f: &RawFrame) -> u64 {
     h
 }
 
-fn session(stream: TcpStream, hostd: String, game_id: u64, stop_when_done: bool) -> Result<Report, String> {
+/// One bridge connection: player 0 runs the script (`None` for the idle player 1).
+fn session<S: Script>(stream: TcpStream, hostd: String, game_id: u64, stop_when_done: bool, make: fn(&GameInfo) -> S) -> Result<Option<S>, String> {
     let e = |x: ProtoError| x.to_string();
     let mut r = BufReader::new(stream.try_clone().map_err(|x| x.to_string())?);
     let mut w = stream;
     let BridgeMsg::Hello(_) = read_msg(&mut r).map_err(e)? else { return Err("expected Hello".into()) };
     let BridgeMsg::GameInfo(info) = read_msg(&mut r).map_err(e)? else { return Err("expected GameInfo".into()) };
     let me = info.players.iter().find(|p| p.is_self).map(|p| p.name.clone()).unwrap_or_default();
-    let mut cov = (me == "uranium-p0").then(|| Coverage::new(&info));
+    let mut script = (me == "uranium-p0").then(|| make(&info));
     let mut stopped = !stop_when_done;
     loop {
         let msg = match read_msg::<BridgeMsg>(&mut r) {
             Ok(m) => m,
             Err(x) => {
-                if let Some(c) = &mut cov {
-                    c.st.end.get_or_insert(format!("connection closed: {x}"));
+                if let Some(s) = &mut script {
+                    s.on_closed(format!("connection closed: {x}"));
                 }
                 break;
             }
         };
         match msg {
             BridgeMsg::Frame(f) => {
-                let act = match &mut cov {
-                    Some(c) => c.on_frame(&f),
+                let act = match &mut script {
+                    Some(s) => s.on_frame(&f),
                     None => Act { cmds: vec![], advance_frames: 96, valid_until_frame: None, surrender: None },
                 };
                 if write_msg(&mut w, &AgentMsg::Act(act)).is_err() {
                     break;
                 }
-                if let Some(c) = &cov {
-                    if c.st.done() && !stopped {
-                        // Every type is covered: stop the game instead of playing to the limit.
-                        stopped = true;
-                        let _ = control(&hostd, ControlRequest::StopGame { game_id }, false);
-                    }
+                if script.as_ref().is_some_and(|s| s.done()) && !stopped {
+                    // Everything is covered: stop the game instead of playing to the limit.
+                    stopped = true;
+                    let _ = control(&hostd, ControlRequest::StopGame { game_id }, false);
                 }
             }
             BridgeMsg::End(end) => {
-                if let Some(c) = &mut cov {
-                    if let Some(ff) = &end.final_frame {
-                        c.st.settle(&ff.events);
-                    }
-                    let me = c.st.info.self_player;
-                    c.st.end = Some(format!("{:?} at frame {}, winner {:?} (we are {me})", end.reason, end.frame, end.winner));
+                if let Some(s) = &mut script {
+                    s.on_end(&end);
                 }
                 break;
             }
             _ => {}
         }
     }
-    Ok(match cov {
-        Some(c) => Report::Coverage(Box::new(c.st)),
-        None => Report::Idle,
-    })
+    Ok(script)
 }
 
 /// One request on a fresh hostd control connection; returns the first reply when `reply` (hostd
@@ -1067,6 +1087,11 @@ fn report(st: &State) -> String {
 /// One scripted game on hostd: player 0 runs the coverage script (stopping the game once every
 /// type is covered when `stop_when_done`), player 1 idles. Returns the script state.
 fn play(seed: u32, max_frames: u32, stop_when_done: bool, tag: &str) -> Box<State> {
+    Box::new(play_script(seed, max_frames, stop_when_done, tag, Coverage::new).st)
+}
+
+/// [`play`] with any script for player 0.
+fn play_script<S: Script>(seed: u32, max_frames: u32, stop_when_done: bool, tag: &str, make: fn(&GameInfo) -> S) -> S {
     let hostd = std::env::var("URANIUM_TEST_HOSTD").expect("URANIUM_TEST_HOSTD=<hostd control address>");
     let listen = std::env::var("URANIUM_TEST_AGENT_LISTEN").unwrap_or_else(|_| "127.0.0.1:0".into());
     let listener = TcpListener::bind(&listen).expect("agent listener");
@@ -1099,7 +1124,7 @@ fn play(seed: u32, max_frames: u32, stop_when_done: bool, tag: &str) -> Box<Stat
                 let (s, _) = listener.accept().expect("bridge connection");
                 s.set_nodelay(true).ok();
                 let hostd = hostd.clone();
-                handles.push(std::thread::spawn(move || session(s, hostd, game_id, stop_when_done)));
+                handles.push(std::thread::spawn(move || session(s, hostd, game_id, stop_when_done, make)));
             }
             handles.into_iter().map(|h| h.join().expect("session panicked")).collect::<Vec<_>>()
         })
@@ -1123,14 +1148,7 @@ fn play(seed: u32, max_frames: u32, stop_when_done: bool, tag: &str) -> Box<Stat
     assert!(matches!(finished.outcome, GameOutcome::Finished | GameOutcome::Stopped), "game did not run: {:?}", finished.outcome);
 
     let reports = sessions.join().expect("agent thread");
-    let st = reports
-        .into_iter()
-        .find_map(|r| match r {
-            Ok(Report::Coverage(s)) => Some(s),
-            _ => None,
-        })
-        .expect("no coverage session (player uranium-p0)");
-    st
+    reports.into_iter().find_map(|r| r.ok().flatten()).expect("no script session (player uranium-p0)")
 }
 
 #[test]
@@ -1186,4 +1204,283 @@ fn same_seed_same_acts_same_game_011_ac4() {
     assert!(sent(&a) > 100, "the script sent commands");
     eprintln!("[011-AC4] multi-unit group commands a {} b {}", a.group_cmds, b.group_cmds);
     assert!(a.group_cmds > 0 && a.group_cmds == b.group_cmds, "multi-unit group commands were issued (011-R20)");
+}
+
+/// What one command of the last `PreRl` Act checks.
+#[derive(Clone, Debug)]
+enum Check {
+    /// Train_SCV with the supply full and the CC queue not empty (queue length before).
+    SupplyTrain(usize),
+    /// Attack_Unit / Smart_Unit on the remembered enemy building, issued to this unit.
+    Ghost(&'static str, UnitId),
+    /// A group command with an unmovable and an unknown unit (011-R20 (4)).
+    Group,
+    Other,
+}
+
+/// 2026-10-31 decisions (034, 011-R20, 011-R23) in one short game: player 0 trains SCVs without
+/// depots until supply blocks, scouts the idle enemy's base and leaves it, then commands the
+/// remembered building out of vision, and sends one group command that two units cannot take.
+struct PreRl {
+    mem: AgentMemory,
+    map: MapInfo,
+    start: (i32, i32),
+    enemy_starts: Vec<(i32, i32)>,
+    scout: Option<UnitId>,
+    scout_target: usize,
+    /// The enemy building the scout saw.
+    seen: Option<UnitId>,
+    last: Vec<Check>,
+    ghost_pending: Vec<(&'static str, UnitId)>,
+    /// (frame, accepted, queue length before) per supply-blocked Train_SCV.
+    supply: Vec<(u32, bool, usize)>,
+    /// (action, accepted, UnitRejected count, the unit's order next observation).
+    ghost: Vec<(&'static str, bool, usize, Option<u16>)>,
+    /// (CommandFailed, UnitRejected (unit, unit type, command, error)) of the group command.
+    group: Option<(bool, Vec<(UnitId, Option<u16>, u8, u16)>)>,
+    group_cc: Option<UnitId>,
+    end: Option<String>,
+}
+
+/// An id no unit has (011-R20 (4): a selected unit the bridge cannot find).
+const MISSING_UNIT: UnitId = 0x00FF_FFF0;
+
+impl PreRl {
+    fn new(info: &GameInfo) -> Self {
+        let pre = uranium_env::maps::maps_dir().ok().and_then(|d| uranium_env::maps::live_precompute(&d, info).0);
+        let me = info.players.iter().find(|p| p.is_self).expect("self player");
+        let start = me.start_tile.map(|t| (t.0 as i32, t.1 as i32)).unwrap_or((0, 0));
+        let known: Vec<_> = info.players.iter().filter(|p| p.is_enemy).filter_map(|p| p.start_tile).collect();
+        let all = if known.is_empty() { info.static_map.start_locations.clone() } else { known };
+        Self {
+            mem: AgentMemory::new(info),
+            map: MapInfo::new(info, 0, pre.as_ref()).expect("map"),
+            start,
+            enemy_starts: all.into_iter().map(|t| (t.0 as i32, t.1 as i32)).filter(|&t| d2(t, start) > 100).collect(),
+            scout: None,
+            scout_target: 0,
+            seen: None,
+            last: vec![],
+            ghost_pending: vec![],
+            supply: vec![],
+            ghost: vec![],
+            group: None,
+            group_cc: None,
+            end: None,
+        }
+    }
+
+    /// A host action through the real masks and executor, by unit ids (031-R4).
+    fn host(o: &Observation, name: &str, sel: &[UnitId], target: Option<UnitId>, loc: Option<(i32, i32)>) -> Option<HostAction> {
+        let a = table().by_name(name)?;
+        let idx = |id: &UnitId| o.entity_ids.iter().position(|e| e == id);
+        let selected: Vec<usize> = sel.iter().filter_map(idx).collect();
+        let target_unit = match target {
+            Some(t) => Some(idx(&t)?),
+            None => None,
+        };
+        Some(HostAction { action: a.id, delay_bucket: 0, queued: false, selected, target_unit, target_loc: loc.map(tile_index) })
+    }
+
+    fn settle(&mut self, f: &RawFrame) {
+        let failed: HashSet<usize> = f.events.iter().filter_map(|e| if let GameEvent::CommandFailed { cmd_index, .. } = e { Some(*cmd_index as usize) } else { None }).collect();
+        let mut rejected: HashMap<usize, Vec<(UnitId, Option<u16>, u8, u16)>> = HashMap::new();
+        for e in &f.events {
+            if let GameEvent::UnitRejected { cmd_index, unit, unit_type, command, error } = e {
+                rejected.entry(*cmd_index as usize).or_default().push((*unit, *unit_type, *command, *error));
+            }
+        }
+        for (i, c) in std::mem::take(&mut self.last).into_iter().enumerate() {
+            let rej = rejected.remove(&i).unwrap_or_default();
+            match c {
+                Check::SupplyTrain(q) => self.supply.push((f.frame, !failed.contains(&i), q)),
+                Check::Ghost(name, unit) => {
+                    let order = f.units.iter().find(|u| u.id == unit).map(|u| u.order);
+                    self.ghost.push((name, !failed.contains(&i), rej.len(), order));
+                }
+                Check::Group => self.group = Some((failed.contains(&i), rej)),
+                Check::Other => {}
+            }
+        }
+    }
+
+    fn checked(&self) -> bool {
+        !self.supply.is_empty() && self.ghost.len() >= 2 && self.group.is_some()
+    }
+}
+
+impl Script for PreRl {
+    fn on_frame(&mut self, f: &RawFrame) -> Act {
+        self.settle(f);
+        let o = extract(f, &mut self.mem, &self.map, None);
+        let w = World::new(f, &self.mem, &self.map);
+        let tt = TypeTables::get();
+        let me = self.mem.self_player;
+        let name = |u: &UnitState| tt.unit(u.unit_type).map_or("", |t| t.name.as_str());
+        let own = |n: &str| -> Vec<&UnitState> {
+            let mut v: Vec<_> = f.units.iter().filter(|u| u.owner == me && name(u) == n).collect();
+            v.sort_by_key(|u| u.id);
+            v
+        };
+        let scvs = own("Terran_SCV");
+        let cc = own("Terran_Command_Center").first().copied();
+        let mut plan: Vec<(HostAction, Check)> = vec![];
+        let mut raw: Vec<(Command, Check)> = vec![];
+
+        // Miners: idle SCVs (not the scout) gather from the mineral field nearest the CC.
+        let idle: Vec<UnitId> = scvs.iter().filter(|u| u.has(flags::COMPLETED) && u.has(flags::IDLE) && Some(u.id) != self.scout).map(|u| u.id).collect();
+        let mineral = cc.and_then(|c| f.units.iter().filter(|u| name(u).starts_with("Resource_Mineral_Field")).min_by_key(|u| d2(unit_tile(u), unit_tile(c))));
+        if let (Some(m), false) = (mineral, idle.is_empty()) {
+            plan.extend(Self::host(&o, "Gather_Unit", &idle, Some(m.id), None).map(|a| (a, Check::Other)));
+        }
+
+        // 034-R3 / 011-R23 (1): SCVs without depots until supply blocks; then Train_SCV again on
+        // the CC whose queue is not empty (the engine accepts it, so do the masks and BWAPI).
+        if let Some(c) = cc {
+            let q = queue_len(c);
+            let blocked = f.self_state.supply_used + 2 > f.self_state.supply_total;
+            let train = table().by_name("Train_SCV").unwrap();
+            if f.self_state.minerals >= 50 && q < 5 {
+                if blocked && q > 0 && self.supply.len() < 3 {
+                    match valid_action(&o, train, &|_, _| Some(0), &|_| Some(0)) {
+                        Some(a) => plan.push((a, Check::SupplyTrain(q))),
+                        // The mask is closed: recorded as not accepted.
+                        None => self.supply.push((f.frame, false, q)),
+                    }
+                } else if !blocked && q < 2 {
+                    plan.extend(valid_action(&o, train, &|_, _| Some(0), &|_| Some(0)).map(|a| (a, Check::Other)));
+                }
+            }
+        }
+
+        // Scout: an SCV walks to the enemy start until it sees an enemy building, then goes home.
+        if self.scout.is_none() && f.frame > 24 * 20 {
+            self.scout = scvs.iter().filter(|u| u.has(flags::COMPLETED) && !u.has(flags::CONSTRUCTING)).map(|u| u.id).next_back();
+        }
+        let enemy_building = f.units.iter().find(|u| self.mem.is_enemy(u.owner) && tt.unit(u.unit_type).is_some_and(|t| t.is_building()));
+        if let Some(s) = self.scout.and_then(|id| f.units.iter().find(|u| u.id == id)) {
+            if self.seen.is_none() {
+                if let Some(b) = enemy_building {
+                    self.seen = Some(b.id);
+                    plan.extend(Self::host(&o, "Move_Pos", &[s.id], None, Some(self.start)).map(|a| (a, Check::Other)));
+                } else if let Some(&t) = self.enemy_starts.get(self.scout_target % self.enemy_starts.len().max(1)) {
+                    if d2(unit_tile(s), t) < 25 {
+                        self.scout_target += 1;
+                    } else if !s.has(flags::MOVING) {
+                        plan.extend(Self::host(&o, "Move_Pos", &[s.id], None, Some(t)).map(|a| (a, Check::Other)));
+                    }
+                }
+            }
+        }
+
+        // 011-R20 (1)-2: the building is out of vision and remembered: Attack_Unit (scout) and
+        // Smart_Unit (a miner) on it are ghost commands; both must be accepted with no rejection.
+        let remembered = self.seen.filter(|id| !f.units.iter().any(|u| u.id == *id) && w.entities.iter().any(|e| e.remembered && e.unit.id == *id));
+        if let (Some(b), Some(s), true) = (remembered, self.scout, self.ghost.is_empty() && self.ghost_pending.is_empty()) {
+            let miner = scvs.iter().map(|u| u.id).find(|&id| Some(id) != self.scout);
+            for (action, unit) in [("Attack_Unit", Some(s)), ("Smart_Unit", miner)] {
+                let Some(unit) = unit else { continue };
+                match Self::host(&o, action, &[unit], Some(b), None) {
+                    Some(a) => {
+                        plan.push((a, Check::Ghost(action, unit)));
+                        self.ghost_pending.push((action, unit));
+                    }
+                    None => self.ghost.push((action, false, 0, None)),
+                }
+            }
+        } else if !self.ghost.is_empty() && !self.ghost_pending.is_empty() {
+            // Checked: stop both (the miner goes back to mining when idle).
+            let units: Vec<UnitId> = std::mem::take(&mut self.ghost_pending).into_iter().map(|(_, u)| u).collect();
+            raw.push((Command::Unit { units, order: CmdOrder::Stop, queued: false }, Check::Other));
+        }
+
+        // 011-R20 (4): one group command a miner takes and the CC (cannot move) and an unknown unit
+        // do not: accepted, with one UnitRejected for each of the two.
+        if self.group.is_none() && f.frame > 24 * 10 {
+            if let (Some(c), Some(s)) = (cc, scvs.iter().find(|u| u.has(flags::COMPLETED) && !u.has(flags::IDLE) && Some(u.id) != self.scout)) {
+                self.group_cc = Some(c.id);
+                raw.push((Command::Unit { units: vec![s.id, c.id, MISSING_UNIT], order: CmdOrder::Move(Target::Pos(s.pos)), queued: false }, Check::Group));
+            }
+        }
+
+        let mut cmds = vec![];
+        let mut busy: HashSet<UnitId> = HashSet::new();
+        for (a, check) in plan {
+            if let Ok(e) = execute(&w, &o, &a) {
+                if e.commands.is_empty() || e.units.iter().any(|u| busy.contains(u)) {
+                    if let Check::SupplyTrain(q) = check {
+                        self.supply.push((f.frame, false, q));
+                    }
+                    continue;
+                }
+                busy.extend(e.units.iter().copied());
+                for c in e.commands {
+                    cmds.push(c);
+                    self.last.push(check.clone());
+                }
+            } else if let Check::SupplyTrain(q) = check {
+                self.supply.push((f.frame, false, q));
+            } else if let Check::Ghost(name, _) = check {
+                self.ghost.push((name, false, 0, None));
+            }
+        }
+        for (c, check) in raw {
+            cmds.push(c);
+            self.last.push(check);
+        }
+        Act { cmds, advance_frames: STEP, valid_until_frame: None, surrender: None }
+    }
+
+    fn on_end(&mut self, end: &GameEnd) {
+        if let Some(ff) = &end.final_frame {
+            self.settle(ff);
+        }
+        self.end = Some(format!("{:?} at frame {}", end.reason, end.frame));
+    }
+
+    fn on_closed(&mut self, why: String) {
+        self.end.get_or_insert(why);
+    }
+
+    fn done(&self) -> bool {
+        self.checked()
+    }
+}
+
+/// 034-R3 / 011-R23 (1), 011-R20 (1)-2 / 011-R23 (2), 011-R20 (4) (2026-10-31 decisions, 031-AC1):
+/// - a supply-blocked Train on a building whose queue is not empty is accepted;
+/// - Attack_Unit and Smart_Unit on a remembered enemy building out of vision are accepted with no
+///   UnitRejected, and the attacker's order becomes MoveToAttack (BWAPI `Attack2`, order 9);
+/// - a group command is accepted with one UnitRejected per unit it could not give the order to.
+///
+/// Needs the bridge built with BWAPI patch 0016 and hostd setting `URANIUM_BRIDGE_EXT=1` (020-R17).
+#[test]
+#[ignore = "needs a running uranium-hostd with OpenBW (URANIUM_TEST_HOSTD)"]
+fn supply_queue_ghost_commands_and_unit_rejections_011_r23() {
+    let s = play_script(23, 24 * 60 * 8, true, "011_r23", PreRl::new);
+    eprintln!("[011-R23] supply-blocked Train (frame, accepted, queue before): {:?}", s.supply);
+    eprintln!("[011-R23] ghost (action, accepted, UnitRejected, order after): {:?} (Attack2 = {:?})", s.ghost, order_id("Attack2"));
+    eprintln!("[011-R23] group (CommandFailed, UnitRejected): {:?}; end {:?}", s.group, s.end);
+
+    assert!(!s.supply.is_empty(), "never supply blocked with a queue");
+    assert!(s.supply.iter().all(|&(_, ok, _)| ok), "supply-blocked Train with a queue rejected: {:?}", s.supply);
+
+    let attack = order_id("Attack2").expect("Attack2 order");
+    for action in ["Attack_Unit", "Smart_Unit"] {
+        let g = s.ghost.iter().find(|g| g.0 == action).unwrap_or_else(|| panic!("{action} on the remembered building never sent"));
+        assert!(g.1, "{action} on a remembered building: CommandFailed or masked ({g:?})");
+        assert_eq!(g.2, 0, "{action} ghost command: no UnitRejected ({g:?})");
+        if action == "Attack_Unit" {
+            assert_eq!(g.3, Some(attack), "ghost Attack_Unit: the unit's order is MoveToAttack");
+        }
+    }
+
+    let (failed, rej) = s.group.clone().expect("group command sent");
+    assert!(!failed, "one unit took the group command: no CommandFailed");
+    let cc_type = TypeTables::get().unit_by_name("Terran_Command_Center").unwrap().id as u16;
+    let mut units: Vec<(UnitId, Option<u16>)> = rej.iter().map(|r| (r.0, r.1)).collect();
+    units.sort();
+    let mut want = vec![(s.group_cc.unwrap(), Some(cc_type)), (MISSING_UNIT, None)];
+    want.sort();
+    assert_eq!(units, want, "UnitRejected: the CC (cannot move) and the unknown unit: {rej:?}");
 }
