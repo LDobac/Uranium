@@ -33,23 +33,28 @@ def action_columns() -> dict:
 H2D_MODES = ("sync", "pinned")
 
 
-def to_device(x, device) -> torch.Tensor:
+def to_device(x, device, pinned: bool | None = None) -> torch.Tensor:
     """A host array on `device`. `URANIUM_H2D=pinned` stages it in page-locked memory so the copy
     is asynchronous: a copy from pageable memory waits for the queued GPU work first, so the host
-    cannot launch ahead (AMB-000-4 step 2). Same values either way."""
+    cannot launch ahead (AMB-000-4 step 2). Same values either way. `pinned` overrides the switch
+    for one caller (the RL learner, 032-R19 ⑥: not a process setting, the inference servers share
+    the process)."""
     t = torch.as_tensor(x)
     dev = torch.device(device)
-    if dev.type == "cuda" and env_choice("URANIUM_H2D", H2D_MODES, "sync") == "pinned" and not t.is_pinned():
+    if pinned is None:
+        pinned = env_choice("URANIUM_H2D", H2D_MODES, "sync") == "pinned"
+    if dev.type == "cuda" and pinned and not t.is_pinned():
         t = t.pin_memory()
     return t.to(dev, non_blocking=True)
 
 
-def to_obs(group: dict, device, dtype=torch.float32) -> dict:
+def to_obs(group: dict, device, dtype=torch.float32, pinned: bool | None = None) -> dict:
     """Observation tensors from a lane group / numpy dict: masks to bool, indices to int64,
-    features to `dtype`; a `spatial` the host already rounded to bf16 (`spatial_bf16`) stays bf16."""
+    features to `dtype`; a `spatial` the host already rounded to bf16 (`spatial_bf16`) stays bf16.
+    `pinned`: see `to_device`."""
     out = {}
     for k in OBS_KEYS:
-        t = to_device(group[k], device)
+        t = to_device(group[k], device, pinned)
         if k in BOOL_KEYS:
             t = t.bool()
         elif k in LONG_KEYS:
@@ -68,18 +73,23 @@ def to_obs(group: dict, device, dtype=torch.float32) -> dict:
 SPATIAL_BF16_MODES = ("off", "on")
 
 
-def stage(group: dict, device, precision: str) -> dict:
+def stage(group: dict, device, precision: str, pinned: bool | None = None, spatial_bf16: bool | None = None, keys=OBS_KEYS) -> dict:
     """`group` ready for the copy to `device`, on the collate thread (torch copies release the GIL):
     with `URANIUM_H2D=pinned` every observation array is copied into page-locked memory here, not in
     `to_device` on the training thread, and with `URANIUM_SPATIAL_BF16=on` under bf16 autocast
-    `spatial` is rounded to bf16 in that same copy. Otherwise `group` itself."""
-    bf16 = precision == "bf16" and env_choice("URANIUM_SPATIAL_BF16", SPATIAL_BF16_MODES, "off") == "on"
-    pinned = torch.device(device).type == "cuda" and env_choice("URANIUM_H2D", H2D_MODES, "sync") == "pinned"
+    `spatial` is rounded to bf16 in that same copy. Otherwise `group` itself. `pinned` and
+    `spatial_bf16` override the switches for one caller and `keys` names the arrays (the RL
+    learner, 032-R19 ⑥: its labels, privileged input and mask too; host readers of a staged array
+    get a CPU tensor)."""
+    bf16 = precision == "bf16" and (env_choice("URANIUM_SPATIAL_BF16", SPATIAL_BF16_MODES, "off") == "on" if spatial_bf16 is None else spatial_bf16)
+    if pinned is None:
+        pinned = env_choice("URANIUM_H2D", H2D_MODES, "sync") == "pinned"
+    pinned = pinned and torch.device(device).type == "cuda"
     if not (bf16 or pinned):
         return group
     out = dict(group)
-    # The observations only (nearly all the bytes); the labels are also read on the host.
-    for k in OBS_KEYS:
+    # By default the observations only (nearly all the bytes); the labels are also read on the host.
+    for k in keys:
         v = group[k]
         if not isinstance(v, np.ndarray) or (not pinned and k != "spatial"):
             continue
@@ -114,8 +124,26 @@ def trim_entity_pad(group: dict, k: int) -> dict:
     return out
 
 
-def to_labels(group: dict, device) -> dict:
-    return {k: to_device(group[k], device).long() for k in LABEL_KEYS}
+def phase_split(counter: torch.Tensor, t: int, seg: int) -> list[torch.Tensor]:
+    """032 §2.7 `outer`, sequences that start at any decision (`UraniumNet._outer_seq_phased`):
+    the b-major row indices [rows] of each outer segment that has rows, in order, from the outer
+    decision counter [B] before step 0 (row r's first segment is `seg - counter mod seg` steps
+    long). Computed where `counter` is: on the device it reads the row counts back (a host sync),
+    so the RL learner computes it from its host copy of core_state0 (032-R19 ⑥, same indices)."""
+    dev = counter.device
+    pos = torch.arange(t, device=dev)[None]
+    first = (seg - torch.fmod(counter, float(seg))).long()[:, None]
+    part = torch.where(pos < first, torch.zeros_like(pos), 1 + torch.div(pos - first, seg, rounding_mode="floor")).reshape(-1)
+    out = []
+    for k in range((t + seg - 1) // seg + 1):
+        idx = (part == k).nonzero().squeeze(1)
+        if idx.numel():
+            out.append(idx)
+    return out
+
+
+def to_labels(group: dict, device, pinned: bool | None = None) -> dict:
+    return {k: to_device(group[k], device, pinned).long() for k in LABEL_KEYS}
 
 
 class UraniumNet(nn.Module):
@@ -200,16 +228,17 @@ class UraniumNet(nn.Module):
             core_in = core_in + self.outer.core_add(h_o).to(core_in.dtype)
         return core_in, e, sp, sc
 
-    def labels(self, group: dict, device) -> dict:
+    def labels(self, group: dict, device, pinned: bool | None = None) -> dict:
         """`to_labels` plus the location head's row list from the host labels when
-        `URANIUM_LOC_ROWS` is not `off` (no device sync, bucketed shapes, AMB-000-4 step 2)."""
-        out = to_labels(group, device)
+        `URANIUM_LOC_ROWS` is not `off` (no device sync, bucketed shapes, AMB-000-4 step 2).
+        `pinned`: see `to_device`."""
+        out = to_labels(group, device, pinned)
         mode = env_choice("URANIUM_LOC_ROWS", LOC_ROW_MODES, "off")
         if mode != "off":
             # Weight 1 for the real rows, 0 for the padding: no Python row count reaches the
             # forward (torch.compile would specialise on it), and always the same keys and types.
             rows, k = location_rows(group["action"], self._cols["target_kind"], mode)
-            out["loc_rows"], out["loc_w"] = to_device(rows, device), to_device((np.arange(len(rows)) < k).astype(np.float32), device)
+            out["loc_rows"], out["loc_w"] = to_device(rows, device, pinned), to_device((np.arange(len(rows)) < k).astype(np.float32), device, pinned)
         return out
 
     # The recurrent state of B games: the core's, and with `outer` (032 §2.7) the pair
@@ -251,10 +280,11 @@ class UraniumNet(nn.Module):
             "value": value, "win_open": win_open, "state": state,
         }
 
-    def forward_seq(self, obs: dict, labels: dict, priv, s0, t: int, entity_chunk: int = 0, phased: bool = False) -> dict:
+    def forward_seq(self, obs: dict, labels: dict, priv, s0, t: int, entity_chunk: int = 0, phased: bool = False, phases: list | None = None) -> dict:
         """Teacher-forced training pass over `t` steps per sequence; rows b-major (032 §6).
         `entity_chunk` > 0: the entity encoder recomputed per row chunk (041-R17). `phased`: with
-        `outer`, the sequences may start anywhere inside an outer segment (RL, 032 §2.7)."""
+        `outer`, the sequences may start anywhere inside an outer segment (RL, 032 §2.7);
+        `phases`: their `phase_split` of s0's counter, on this device, when the caller has it."""
         if self.outer is None:
             core_in, e, sp, sc = self.encode(obs, entity_chunk)
             bt, d = core_in.shape
@@ -262,7 +292,7 @@ class UraniumNet(nn.Module):
             h, state = self.core.forward_seq(core_in.view(bt // t, t, d), s0)
             h = h.reshape(bt, -1)
         else:
-            h, e, sp, sc, state = (self._outer_seq_phased if phased else self._outer_seq)(obs, s0, t, entity_chunk)
+            h, e, sp, sc, state = self._outer_seq_phased(obs, s0, t, entity_chunk, phases) if phased else self._outer_seq(obs, s0, t, entity_chunk)
         out = self.heads(labels, 1.0, h, sc["c"], e, sp, obs, self.table)
         value = self.value(h, sc["z"], sc["race"], priv)
         win_open = self.value.win_open(h, sc["z"], sc["race"])
@@ -296,28 +326,23 @@ class UraniumNet(nn.Module):
         sc = {key: join([x[key] for x in scs]) for key in scs[0]}
         return join(hs), join(es), sp, sc, (cs, os_)
 
-    def _outer_seq_phased(self, obs: dict, s0, t: int, entity_chunk: int):
+    def _outer_seq_phased(self, obs: dict, s0, t: int, entity_chunk: int, phases: list | None = None):
         """032 §2.7 `outer` for sequences that start at any decision (RL segments overlap by one
         step, 042): row r's first outer segment is `outer - n0 mod outer` steps long, then whole
         segments, then the rest. Segment k gathers every row's steps of its k-th segment, encodes
         them with that row's h_o, runs the core over the whole sequence (inputs of later steps
         still zero; the core is causal, so the steps up to segment k are exact) and updates each
-        row's outer state. Same values as one decision at a time (032-R5)."""
+        row's outer state. Same values as one decision at a time (032-R5). `phases`: the segments'
+        row indices (`phase_split`), else computed here from s0's counter."""
         seg = self.outer.segment
         bt = obs["entity_cat"].shape[0]
         assert t > 0 and bt % t == 0, "batch rows must be B*T"
         b = bt // t
         cs0, os_ = s0
         dev = obs["entity_cat"].device
-        pos = torch.arange(t, device=dev)[None]
-        first = (seg - torch.fmod(os_[3], float(seg))).long()[:, None]
-        part = torch.where(pos < first, torch.zeros_like(pos), 1 + torch.div(pos - first, seg, rounding_mode="floor")).reshape(-1)
         core_in = cs = None
         idxs, hs, es, sps, scs = [], [], [], [], []
-        for k in range((t + seg - 1) // seg + 1):
-            idx = (part == k).nonzero().squeeze(1)
-            if idx.numel() == 0:
-                continue
+        for idx in phase_split(os_[3], t, seg) if phases is None else phases:
             row = torch.div(idx, t, rounding_mode="floor")
             sub = {key: x.index_select(0, idx) for key, x in obs.items()}
             ci, e, sp, sc = self.encode(sub, entity_chunk, os_[0].index_select(0, row))

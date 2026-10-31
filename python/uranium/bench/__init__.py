@@ -1,6 +1,7 @@
 """`python -m uranium bench` (060-R2): `suite` (kernel / model / inference cases with errors vs
-CPU), `bc` (real-data BC updates per lane group size, parity log) and `loss` (parity of two `bc`
-logs). Candidates of an optimisation are compared by running these under each candidate's setting
+CPU), `bc` (real-data BC updates per lane group size, parity log), `loss` (parity of two `bc`
+logs), `rl` (RL learner updates per lane group size and learner, 042) and `rl-parity` (parity of
+two `rl` runs). Candidates of an optimisation are compared by running these under each candidate's setting
 and comparing the JSON (AMB-000-4 step 2)."""
 
 import json
@@ -41,6 +42,33 @@ def add_parser(sub) -> None:
     b.add_argument("--json", help="raw results (the parity log for `bench loss`)")
     b.add_argument("--synthetic-maps", action="store_true", help="tests only")
     b.set_defaults(fn=bc_main)
+
+    r = bsub.add_parser("rl", help="RL learner updates on a fixed synthetic batch per lane group size (042, 032-R19)")
+    r.add_argument("--checkpoint", required=True, help="BC checkpoint directory (weights; dropout 0 as in RL)")
+    r.add_argument("--config", default="config/rl.toml")
+    r.add_argument("--algo", choices=["vtrace", "ppo"], default="vtrace")
+    r.add_argument("--backend", choices=["cuda", "rocm", "cpu"])
+    r.add_argument("--learner", default="new", help="comma list of new, reference (the learner before the 032-R19 changes)")
+    r.add_argument("--groups", default="1", help="comma list of lane group sizes (micro_lanes, 0 = all lanes)")
+    r.add_argument("--off", default="", help="comma list of the new learner's staging steps left out: trim, pinned, spatial_bf16 (each measured alone)")
+    r.add_argument("--updates", type=int, default=10, help="measured updates after one warm-up update")
+    r.add_argument("--lanes", type=int, help="default: the config's lanes")
+    r.add_argument("--entities", default="64:192", help="lo:hi entities per synthetic step block")
+    r.add_argument("--templates", type=int, default=8, help="distinct step blocks the lanes cycle through (host memory)")
+    r.add_argument("--seed", type=int, default=1, help="synthetic batch")
+    r.add_argument("--phases", action="store_true", help="per-phase times (device synchronised at each mark)")
+    r.add_argument("--ops", type=int, default=0, help="operators listed from one extra profiled update per run")
+    r.add_argument("--trace", help="Chrome trace of the profiled update (the last run's)")
+    r.add_argument("--out", help="markdown report")
+    r.add_argument("--json", help="raw results (the parity log for `bench rl-parity`)")
+    r.set_defaults(fn=rl_main)
+
+    rp = bsub.add_parser("rl-parity", help="parity of two `bench rl` runs (042 lane-group equivalence)")
+    rp.add_argument("base", help="JSON of `bench rl`")
+    rp.add_argument("cand", nargs="?", help="second JSON (default: the base file)")
+    rp.add_argument("--base-run", default="reference:1", help="learner:group of the base")
+    rp.add_argument("--cand-run", default="new:1", help="learner:group of the candidate")
+    rp.set_defaults(fn=rl_parity_main)
 
     lo = bsub.add_parser("loss", help="parity of two `bench bc` logs (same group size)")
     lo.add_argument("base")
@@ -122,4 +150,64 @@ def loss_main(a) -> int:
     for w in res["windows"]:
         print(f"  {w['from']:5d}-{w['to']:5d}  base {w['base']:.5f}  cand {w['cand']:.5f}  rel {w['rel']:.2e}")
     print(json.dumps({k: v for k, v in res.items() if k != "windows"}))
+    return 0
+
+
+def rl_main(a) -> int:
+    import os
+
+    import torch
+
+    from uranium import _core, ckpt
+    from uranium.bench.report import environment
+    from uranium.bench.rl import OFF, SyntheticSegments, markdown, run_learner
+    from uranium.device import configure, resolve
+    from uranium.rl.learner import MICRO_LANES_ENV
+    from uranium.rl.run import _no_dropout
+
+    backend, device, precision = resolve(a.backend)
+    # As `python -m uranium rl`: the backend's defaults only, not the BC trainer's process switches.
+    configure(backend)
+    log = lambda m: print(m, file=sys.stderr, flush=True)  # noqa: E731
+    if os.environ.get(MICRO_LANES_ENV, "").strip():
+        log(f"[bench rl] {MICRO_LANES_ENV} is not used here: --groups sets the lane group sizes")
+    cfg = json.loads(_core.rl_config(a.config))
+    if a.lanes:
+        cfg["lanes"] = a.lanes
+    net, _ = ckpt.load_model(Path(a.checkpoint), device, adjust=_no_dropout)
+    lo, hi = (int(x) for x in a.entities.split(":"))
+    batch = SyntheticSegments(net, cfg["lanes"], cfg["seq_len"], (lo, hi), a.templates, a.seed)
+    net = net.cpu()  # each run copies it to the device
+    env = environment(backend, precision, device) | {"checkpoint": Path(a.checkpoint).name, "lanes": cfg["lanes"], "seq_len": cfg["seq_len"], "entities": a.entities}
+    cmd = "python -m uranium bench " + " ".join(sys.argv[2:])
+    off = tuple(x.strip() for x in a.off.split(",") if x.strip())
+    bad = [x for x in off if x not in OFF]
+    if bad:
+        raise SystemExit(f"--off {bad}: expected some of {list(OFF)}")
+    runs: list = []
+    md = ""
+    for kind in [x.strip() for x in a.learner.split(",") if x.strip()]:
+        for g in a.groups.split(","):
+            try:
+                runs.append(run_learner(kind, int(g), net, cfg, batch, device, precision, a.algo, a.updates, a.phases, a.ops, a.trace, log, off))
+            except torch.OutOfMemoryError as e:  # a group size over the device memory is a result (060-R3)
+                runs.append({"learner": kind, "group": int(g), "off": list(off), "updates": [], "median_s": None, "mean_s": None, "p95_s": None, "peak_gib": None, "peak_rss_gib": None, "failed": str(e).splitlines()[0][:160]})
+                torch.cuda.empty_cache()
+            # Written after every run: a long sweep that is stopped keeps the runs it finished.
+            md = markdown(runs, env, cmd)
+            write(a.out, md)
+            write(a.json, json.dumps({"env": env, "runs": runs}, indent=1))
+    emit(md)
+    return 0
+
+
+def rl_parity_main(a) -> int:
+    from uranium.bench.rl import compare
+
+    def pick(path: str, run: str) -> dict:
+        kind, group = run.split(":")
+        d = json.loads(Path(path).read_text(encoding="utf-8"))
+        return next(r for r in d["runs"] if r["learner"] == kind and r["group"] == int(group))
+
+    print(json.dumps(compare(pick(a.base, a.base_run), pick(a.cand or a.base, a.cand_run)), indent=1))
     return 0

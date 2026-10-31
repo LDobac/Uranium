@@ -134,6 +134,9 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
   - 042-AC1·033-AC2는 `--max-agent-steps 10000000`(run 누적, 도달하면 정상 종료, 042-R12).
   - 리플레이: `[replays] sample_every`(기본 100)의 배수 게임과 승자 불일치 게임만 `runs/<run>/replays/`에 남긴다(042-R11).
   - 학습 시작과 체크포인트마다 디스크 사용률(80% 경고, 061-R8)과 `runs/*/replays/` 합계(예산 100GB 초과 시 경고, 지우지 않음, 060-R7)를 확인한다. 보존 개수는 `config/rl.toml`의 `keep_checkpoints`(없으면 5, 0이면 전부).
+  - `--logs`가 상대 경로면 현재 작업 폴더 기준 절대 경로로 바꿔 쓴다(추론 서버 모델 폴더 `<logs>/infer/<agent>`).
+  - learner 레인 그룹: 호스트 `.env` `URANIUM_RL_MICRO_LANES`(레인 수, 0 = 전체, 없으면 `config/rl.toml` `micro_lanes`). 결과는 gradient 합산 순서만 다르다(042 learner 레인 그룹, 032-R19).
+- learner 벤치(042, 032-R19): `python -m uranium bench rl --checkpoint <BC ckpt> [--groups 1,2,4] [--learner new,reference] [--updates 10] [--lanes 32] [--entities 64:192] [--phases] [--ops 25] [--json <log>] [--out <md>]`. 게임 없이 고정 합성 세그먼트 묶음(레인 템플릿을 망이 직접 샘플한 라벨로 채움)으로 `Learner.update`를 돌려 update 시간·단계별 시간·최대 GPU 할당·상주 메모리, update별 손실·KL·gradient norm을 남긴다. `reference`는 최적화 전 learner(`uranium.rl.reference`). 동등성은 `python -m uranium bench rl-parity <a.json> [<b.json>] --base-run reference:1 --cand-run new:2`(항목별 최대 절대·상대 차이).
 - z 테이블 `uranium-train z-table`(033-R8).
 
 ## 래더 리플레이 수집(043, Windows, SC:R 로그인 상태)

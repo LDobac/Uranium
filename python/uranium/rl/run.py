@@ -5,6 +5,7 @@ process (AMB-000-4). Exit codes as before: 75 when the run's lock is another hos
 import argparse
 import functools
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -84,7 +85,6 @@ class Learners:
     def update(self, i: int, batch, weights) -> str:
         from uranium.device import DEVICE_LOCK
 
-        import os
         import time
 
         t0 = time.time_ns()
@@ -133,6 +133,14 @@ class Learners:
         return b
 
 
+def logs_dir(logs: str) -> Path:
+    """`--logs` as an absolute path (042 `--logs` path, 2026-10-31 fix): the inference servers'
+    model folders `<logs>/infer/<agent>` go to the Rust Broker, which resolves a relative
+    checkpoint path against `URANIUM_SHARED_DIR` (020-R11), so a relative `--logs` is made
+    absolute against the working directory first."""
+    return Path(logs).absolute()
+
+
 def _n_max() -> int:
     """Entity count the servers warm up to (012-R19, the server thread does it before serving)."""
     from uranium import _core
@@ -164,9 +172,13 @@ def main(a) -> int:
     _core.install_stop_handler("rl")
     from uranium.device import configure, resolve
 
+    from uranium.rl.learner import MICRO_LANES_ENV
+
     backend, device, precision = resolve(a.backend)
     configure(backend)
-    print(f"[rl] {backend} ({precision}), algo {a.algo}", file=sys.stderr, flush=True)
+    a.logs = str(logs_dir(a.logs))
+    group = os.environ.get(MICRO_LANES_ENV, "").strip() or "config micro_lanes"
+    print(f"[rl] {backend} ({precision}), algo {a.algo}, learner lane group {group}, logs {a.logs}", file=sys.stderr, flush=True)
     end = _core.run_rl(
         functools.partial(_make, a, device, precision), a.run, a.config, algo=a.algo, seed=a.seed, take_over=a.take_over, logs=a.logs,
         z_table=a.z_table, max_updates=a.max_updates, max_minutes=a.max_minutes, max_agent_steps=a.max_agent_steps,
