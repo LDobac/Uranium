@@ -221,7 +221,9 @@ pub fn serve(py: Python<'_>, listen: String, out: PathBuf, broker: Option<PyRef<
         None => PolicySpec::ScriptedT0,
     };
     drop(broker);
-    let opts = ServeOptions { delay_ms: respond_delay_ms, max_sessions: sessions, ..ServeOptions::new(default) };
+    // 031-R10: per-unit rejection details beside the session records (none from SC:R, 012-R14).
+    let unit_rejections = uranium_agent::RejectionLog::beside(&out);
+    let opts = ServeOptions { delay_ms: respond_delay_ms, max_sessions: sessions, unit_rejections, ..ServeOptions::new(default) };
     py.detach(move || uranium_agent::serve_addr(&listen, opts, out)).map_err(err)
 }
 

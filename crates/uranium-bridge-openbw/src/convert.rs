@@ -13,6 +13,8 @@ const BULLET_PSIONIC_STORM: u16 = 157;
 const BULLET_PLAGUE_CLOUD: u16 = 168;
 const BULLET_ENSNARE: u16 = 170;
 const NUKE_DOT: u16 = 0xFFFF;
+/// `UrEvent.unit_type` when the rejected unit was not found (011 "C ABI 이벤트").
+const NO_UNIT_TYPE: u16 = 0xFFFF;
 
 pub fn race(r: u8) -> Race {
     match r {
@@ -94,11 +96,20 @@ pub fn event(e: &UrEvent) -> Option<GameEvent> {
         UR_EV_EVADE => GameEvent::UnitEvade(id()?),
         UR_EV_NUKE => GameEvent::NukeDetect((e.x.max(0) as u16, e.y.max(0) as u16)),
         UR_EV_CMD_FAILED => GameEvent::CommandFailed { cmd_index: e.unit.max(0) as u16, error: e.x.max(0) as u16 },
+        // 010-R14, 011 "C ABI 이벤트": unit_type 0xFFFF = unit not found.
+        UR_EV_UNIT_REJECTED => GameEvent::UnitRejected {
+            cmd_index: e.x.max(0) as u16,
+            unit: id()?,
+            unit_type: (e.unit_type != NO_UNIT_TYPE).then_some(e.unit_type),
+            command: e.command,
+            error: e.y.max(0) as u16,
+        },
         _ => return None,
     })
 }
 
-/// Deterministic ordering key for events within one observation.
+/// Deterministic ordering key for events within one observation (011-R15). `UnitRejected` comes
+/// after the other kinds, ordered by (command index, unit id) (011 "C ABI 이벤트").
 pub fn event_order(e: &GameEvent) -> (u8, u32, u32) {
     match *e {
         GameEvent::UnitCreated(id) => (0, id, 0),
@@ -108,6 +119,7 @@ pub fn event_order(e: &GameEvent) -> (u8, u32, u32) {
         GameEvent::UnitEvade(id) => (4, id, 0),
         GameEvent::NukeDetect((x, y)) => (5, x as u32, y as u32),
         GameEvent::CommandFailed { cmd_index, error } => (6, cmd_index as u32, error as u32),
+        GameEvent::UnitRejected { cmd_index, unit, .. } => (7, cmd_index as u32, unit),
     }
 }
 
@@ -335,6 +347,38 @@ mod tests {
             assert_eq!((c.target_unit, c.x, c.y), (9, UR_NONE, UR_NONE));
         }
         assert_eq!((out[3].target_unit, out[3].x, out[3].y), (UR_NONE, 5, 6));
+    }
+
+    /// 010-R14, 011-R20 ④: UR_EV_UNIT_REJECTED maps x/y to cmd_index/error, 0xFFFF to no unit
+    /// type, and sorts after every other kind by (cmd_index, unit).
+    #[test]
+    fn unit_rejected_event_and_order_010_r14() {
+        let ev = |kind, unit, x, y, unit_type, command| UrEvent { kind, unit, x, y, unit_type, command };
+        let found = event(&ev(UR_EV_UNIT_REJECTED, 42, 3, 10, 0, 14)).unwrap();
+        assert_eq!(found, GameEvent::UnitRejected { cmd_index: 3, unit: 42, unit_type: Some(0), command: 14, error: 10 });
+        let missing = event(&ev(UR_EV_UNIT_REJECTED, 43, 1, 0, 0xFFFF, 6)).unwrap();
+        assert_eq!(missing, GameEvent::UnitRejected { cmd_index: 1, unit: 43, unit_type: None, command: 6, error: 0 });
+        assert_eq!(event(&ev(UR_EV_CMD_FAILED, 2, 10, 0, 0xFFFF, 0)), Some(GameEvent::CommandFailed { cmd_index: 2, error: 10 }));
+        let mut evs = [
+            GameEvent::UnitRejected { cmd_index: 3, unit: 1, unit_type: None, command: 0, error: 0 },
+            found.clone(),
+            GameEvent::UnitRejected { cmd_index: 3, unit: 7, unit_type: Some(1), command: 0, error: 0 },
+            missing.clone(),
+            GameEvent::CommandFailed { cmd_index: 9, error: 1 },
+            GameEvent::UnitCreated(5),
+        ];
+        evs.sort_by_key(event_order);
+        assert_eq!(evs[0], GameEvent::UnitCreated(5));
+        assert_eq!(evs[1], GameEvent::CommandFailed { cmd_index: 9, error: 1 });
+        assert_eq!(evs[2], missing);
+        let order: Vec<(u16, u32)> = evs[3..]
+            .iter()
+            .map(|e| match *e {
+                GameEvent::UnitRejected { cmd_index, unit, .. } => (cmd_index, unit),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(order, vec![(3, 1), (3, 7), (3, 42)]);
     }
 
     #[test]

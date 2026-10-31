@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
-use uranium_agent::{PolicyKind, PolicySpec, ServeOptions, load_env, serve_addr, summary};
+use uranium_agent::{PolicyKind, PolicySpec, RejectionLog, ServeOptions, load_env, serve_addr, summary};
 
 #[derive(Parser)]
 struct Cli {
@@ -50,7 +50,8 @@ fn main() -> Result<()> {
             if policy == PolicyKind::Model {
                 bail!("model players run in Python: python -m uranium serve --checkpoint <ckpt> (AMB-000-4)");
             }
-            let opts = ServeOptions { delay_ms: respond_delay_ms, max_sessions: sessions, ..ServeOptions::new(PolicySpec::ScriptedT0) };
+            // 031-R10: per-unit rejection details beside the session records.
+            let opts = ServeOptions { delay_ms: respond_delay_ms, max_sessions: sessions, unit_rejections: RejectionLog::beside(&out), ..ServeOptions::new(PolicySpec::ScriptedT0) };
             serve_addr(&listen, opts, out)
         }
         Cmd::Summarize { input, out, title } => summary::summarize(&input, &out, &title),

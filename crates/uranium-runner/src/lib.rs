@@ -29,7 +29,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use uranium_agent::infer::InferenceHandle;
-use uranium_agent::{EndBoard, PolicySpec, Routes, ServeOptions, T0Build, T0Builds, open_sink, serve};
+use uranium_agent::{EndBoard, PolicySpec, RejectionLog, Routes, ServeOptions, T0Build, T0Builds, open_sink, serve};
 use uranium_proto::control::*;
 use uranium_proto::{read_msg, write_msg};
 
@@ -278,7 +278,7 @@ pub fn run_plan(plan_path: &Path, out: Option<PathBuf>, models: Models) -> Resul
     let builds = T0Builds::default();
     let routes = Routes::default();
     let ends = EndBoard::default();
-    let public = start_agent(&env_or("URANIUM_AGENT_LISTEN", "127.0.0.1:7600"), &out.join("results.jsonl"), routes.clone(), builds.clone(), ends.clone())?;
+    let public = start_agent(&env_or("URANIUM_AGENT_LISTEN", "127.0.0.1:7600"), &out.join("results.jsonl"), &out.join("unit_rejections.jsonl"), routes.clone(), builds.clone(), ends.clone())?;
     let jobs = plan::expand(&plan, &public);
     elog!("[env] plan `{}`: {} games, agent at {public}", plan.name, jobs.len());
     let started = std::time::Instant::now();
@@ -297,14 +297,16 @@ pub fn run_plan(plan_path: &Path, out: Option<PathBuf>, models: Models) -> Resul
 }
 
 /// Starts the embedded agent server (001-R6) and returns the address bridges connect to.
-/// Bridges on every host must reach it (`URANIUM_AGENT_PUBLIC_ADDR` when it differs).
-pub fn start_agent(listen: &str, results: &Path, routes: Routes, t0_builds: T0Builds, ends: EndBoard) -> Result<String> {
+/// Bridges on every host must reach it (`URANIUM_AGENT_PUBLIC_ADDR` when it differs). Session
+/// records go to `results`, per-unit rejection details to `unit_rejections` (031-R10).
+pub fn start_agent(listen: &str, results: &Path, unit_rejections: &Path, routes: Routes, t0_builds: T0Builds, ends: EndBoard) -> Result<String> {
     let listener = TcpListener::bind(listen).with_context(|| format!("binding agent {listen}"))?;
     let bound = listener.local_addr()?.to_string();
     let public = std::env::var("URANIUM_AGENT_PUBLIC_ADDR").ok().filter(|v| !v.trim().is_empty()).unwrap_or(bound);
     let sink = open_sink(results)?;
+    let unit_rejections = RejectionLog::new(unit_rejections.to_path_buf());
     std::thread::spawn(move || {
-        if let Err(e) = serve(listener, ServeOptions { routes, t0_builds, ends, ..ServeOptions::new(PolicySpec::ScriptedT0) }, sink) {
+        if let Err(e) = serve(listener, ServeOptions { routes, t0_builds, ends, unit_rejections, ..ServeOptions::new(PolicySpec::ScriptedT0) }, sink) {
             elog!("[env] agent server stopped: {e:#}");
         }
     });

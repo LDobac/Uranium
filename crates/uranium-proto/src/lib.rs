@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped on any incompatible schema change (010-R2). 2: `GameEnd.final_frame` (010-R12).
 /// 3: `CmdOrder::Unload` (034 `Unload_Unit`, 010-R11, 2026-10-19). 4: `Act.surrender` (010-R13,
-/// 2026-10-21).
-pub const PROTOCOL_VERSION: u32 = 4;
+/// 2026-10-21). 5: `GameEvent::UnitRejected` (010-R14, 2026-10-31).
+pub const PROTOCOL_VERSION: u32 = 5;
 
 pub type UnitId = u32;
 /// Pixel position.
@@ -191,6 +191,12 @@ pub enum GameEvent {
     NukeDetect(Pos),
     /// 031-R10: command `cmd_index` of the previous `Act` failed with BWAPI error `error`.
     CommandFailed { cmd_index: u16, error: u16 },
+    /// 010-R14: unit `unit` of `Command::Unit` `cmd_index` of the previous `Act` did not take the
+    /// command. `unit_type` is its canonical unit type (`None` when the unit was not found),
+    /// `command` the BWAPI `UnitCommandType` id the bridge actually sent to it (after the per-unit
+    /// adjustment, 011-R20 ③), `error` the BWAPI error id. Diagnostic only: `CommandFailed` keeps
+    /// its meaning (031-R10). Last variant so stored frames keep their postcard indices.
+    UnitRejected { cmd_index: u16, unit: UnitId, unit_type: Option<u16>, command: u8, error: u16 },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]

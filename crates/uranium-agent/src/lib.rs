@@ -20,7 +20,7 @@ pub mod summary;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::OpenOptions;
 use std::io::{BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};
@@ -261,7 +261,7 @@ impl Policy for ModelPolicy {
 }
 
 /// One JSONL record (one player of one game).
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 pub struct SessionRecord {
     pub game_id: u64,
     pub slot: u8,
@@ -287,6 +287,11 @@ pub struct SessionRecord {
     pub first_frame_units: usize,
     pub commands: u64,
     pub failed_commands: u64,
+    /// 031-R10 (031 "유닛별 거절 기록"): `UnitRejected` events of the session (010-R14). Named apart
+    /// from the executor refusals of `ModelStats` (031-R4).
+    pub unit_rejections: u64,
+    /// `"<command>/<unit_type>/<error>"` (decimal BWAPI ids, `none` for a unit not found) -> count.
+    pub unit_rejections_by: BTreeMap<String, u64>,
     /// FNV-1a over every observation's encoded bytes: identical runs give identical digests
     /// (011-AC4); privileged mode on/off must not change it (010-AC6).
     pub frame_digest: String,
@@ -373,11 +378,82 @@ pub struct ServeOptions {
     pub t0_builds: T0Builds,
     /// Every session's GameEnd report (020-R13).
     pub ends: EndBoard,
+    /// 031-R10: per-unit rejection details (031 "유닛별 거절 기록"); disabled by default.
+    pub unit_rejections: RejectionLog,
 }
 
 impl ServeOptions {
     pub fn new(default: PolicySpec) -> Self {
-        Self { default, routes: Routes::default(), delay_ms: 0, max_sessions: 0, t0_builds: T0Builds::default(), ends: EndBoard::default() }
+        Self { default, routes: Routes::default(), delay_ms: 0, max_sessions: 0, t0_builds: T0Builds::default(), ends: EndBoard::default(), unit_rejections: RejectionLog::default() }
+    }
+}
+
+/// 031-R10: one line of the per-unit rejection file (031 "유닛별 거절 기록").
+#[derive(Serialize)]
+struct UnitRejectionLine<'a> {
+    game_id: u64,
+    slot: u8,
+    /// `RawFrame.frame` of the observation that carried the event.
+    frame: u32,
+    cmd_index: u16,
+    /// `CmdOrder` of `Command::Unit` `cmd_index` of the previous `Act` (null if there is none).
+    order: Option<&'a CmdOrder>,
+    unit: UnitId,
+    unit_type: Option<u16>,
+    command: u8,
+    error: u16,
+}
+
+/// 031-R10: the per-unit rejection file shared by every session of a server (`unit_rejections.jsonl`
+/// beside the session records; an eval job's `results/<host>.unit_rejections.jsonl`). Opened for
+/// append on the first rejection, so a server that never sees one (SC:R, 012-R14) writes no file.
+/// Each session's lines are appended together when it ends. Lines are never removed.
+#[derive(Clone, Default)]
+pub struct RejectionLog(Option<Arc<(PathBuf, Mutex<Option<RecordSink>>)>>);
+
+impl RejectionLog {
+    pub fn new(path: PathBuf) -> Self {
+        Self(Some(Arc::new((path, Mutex::new(None)))))
+    }
+
+    /// `unit_rejections.jsonl` in the folder of the session record file `records`.
+    pub fn beside(records: &Path) -> Self {
+        Self::new(records.with_file_name("unit_rejections.jsonl"))
+    }
+
+    fn append(&self, lines: &[String]) -> Result<()> {
+        let Some(inner) = &self.0 else { return Ok(()) };
+        if lines.is_empty() {
+            return Ok(());
+        }
+        let mut slot = inner.1.lock().unwrap();
+        if slot.is_none() {
+            *slot = Some(open_sink(&inner.0)?);
+        }
+        let sink = slot.as_ref().expect("opened above");
+        let mut w = sink.lock().unwrap();
+        for l in lines {
+            writeln!(w, "{l}")?;
+        }
+        w.flush()?;
+        Ok(())
+    }
+}
+
+/// 031-R10: counts the `UnitRejected` events of `f` into `rec` and adds one detail line each,
+/// resolving `cmd_index` against the previous Act's commands `last_cmds`.
+fn record_unit_rejections(f: &RawFrame, last_cmds: &[Command], hello: &Hello, rec: &mut SessionRecord, lines: &mut Vec<String>) {
+    for e in &f.events {
+        let GameEvent::UnitRejected { cmd_index, unit, unit_type, command, error } = *e else { continue };
+        rec.unit_rejections += 1;
+        let ty = unit_type.map_or_else(|| "none".to_string(), |t| t.to_string());
+        *rec.unit_rejections_by.entry(format!("{command}/{ty}/{error}")).or_default() += 1;
+        let order = match last_cmds.get(cmd_index as usize) {
+            Some(Command::Unit { order, .. }) => Some(order),
+            _ => None,
+        };
+        let line = UnitRejectionLine { game_id: hello.game_id, slot: hello.slot, frame: f.frame, cmd_index, order, unit, unit_type, command, error };
+        lines.push(serde_json::to_string(&line).expect("rejection line serializes"));
     }
 }
 
@@ -466,6 +542,8 @@ pub fn session(stream: TcpStream, opts: &ServeOptions) -> SessionRecord {
         first_frame_units: 0,
         commands: 0,
         failed_commands: 0,
+        unit_rejections: 0,
+        unit_rejections_by: BTreeMap::new(),
         frame_digest: String::new(),
         privileged_msgs: 0,
         visibility_violations: 0,
@@ -474,15 +552,20 @@ pub fn session(stream: TcpStream, opts: &ServeOptions) -> SessionRecord {
         model: None,
         error: None,
     };
-    if let Err(e) = run_session(stream, opts, &mut rec) {
+    let mut rejections = Vec::new();
+    if let Err(e) = run_session(stream, opts, &mut rec, &mut rejections) {
         elog!("[agent] game {} slot {}: {e:#}", rec.game_id, rec.slot);
         rec.error = Some(format!("{e:#}"));
     }
     rec.wall_s = started.elapsed().as_secs_f64();
+    // 031-R10: diagnostics only; a write failure is logged, the session record still goes out.
+    if let Err(e) = opts.unit_rejections.append(&rejections) {
+        elog!("[agent] game {} slot {}: writing unit rejections: {e:#}", rec.game_id, rec.slot);
+    }
     rec
 }
 
-fn run_session(stream: TcpStream, opts: &ServeOptions, rec: &mut SessionRecord) -> Result<()> {
+fn run_session(stream: TcpStream, opts: &ServeOptions, rec: &mut SessionRecord, rejections: &mut Vec<String>) -> Result<()> {
     let delay_ms = opts.delay_ms;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::new(stream);
@@ -510,7 +593,7 @@ fn run_session(stream: TcpStream, opts: &ServeOptions, rec: &mut SessionRecord) 
     let build = opts.t0_builds.lock().unwrap().get(&(hello.game_id, index)).copied().unwrap_or_default();
     rec.t0_build = build.name().to_string();
     let mut policy = make_policy(&spec, hello.game_id, &info, build, hello.mode == Mode::Realtime)?;
-    let res = play(&mut reader, &mut writer, &mut *policy, &hello, rec, delay_ms, &opts.ends);
+    let res = play(&mut reader, &mut writer, &mut *policy, &hello, rec, rejections, delay_ms, &opts.ends);
     if res.is_err() {
         // Disconnected or failed mid-game: not a finished episode (042-R3).
         policy.on_end(None, None);
@@ -519,7 +602,7 @@ fn run_session(stream: TcpStream, opts: &ServeOptions, rec: &mut SessionRecord) 
 }
 
 #[allow(clippy::too_many_arguments)]
-fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, policy: &mut dyn Policy, hello: &Hello, rec: &mut SessionRecord, delay_ms: u64, ends: &EndBoard) -> Result<()> {
+fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, policy: &mut dyn Policy, hello: &Hello, rec: &mut SessionRecord, rejections: &mut Vec<String>, delay_ms: u64, ends: &EndBoard) -> Result<()> {
     let (mut reader, mut writer) = (reader, writer);
     let realtime = hello.mode == Mode::Realtime;
     let mut policy_time = Duration::ZERO;
@@ -564,6 +647,8 @@ fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, po
                 }
                 rec.visibility_violations += visibility_violations(&f, hello.slot);
                 rec.failed_commands += f.events.iter().filter(|e| matches!(e, GameEvent::CommandFailed { .. })).count() as u64;
+                // 031-R10: per-unit rejections go to the session record only (not to features).
+                record_unit_rejections(&f, &last_cmds, hello, rec, rejections);
                 // Debug aid: with URANIUM_AGENT_DUMP set, failed commands go to g<id>-s<slot>-failed.txt at any frame.
                 if let Ok(dir) = std::env::var("URANIUM_AGENT_DUMP") {
                     for e in &f.events {
@@ -611,6 +696,8 @@ fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, po
                     // 010-AC6 also holds for the final frame (010-R12 keeps 010-R5).
                     rec.visibility_violations += visibility_violations(last, hello.slot);
                     rec.final_frame = Some((last.frame, last.units.len(), last.events.len()));
+                    // 010-R12: the final frame carries the events of the last Act too.
+                    record_unit_rejections(last, &last_cmds, hello, rec, rejections);
                 }
                 policy.on_end(outcome, end.final_frame.as_deref());
                 return Ok(());
@@ -668,5 +755,50 @@ mod tests {
         let (r, _) = game_result(&[end(0, Some(0), 8000), left(1, Some(1), 8031)]).unwrap();
         assert_eq!((r.reason, r.winner), (EndReason::Surrender, Some(1)));
         assert!(!mutual_leave(&[left(0, Some(0), 1615)]));
+    }
+
+    /// 031-R10 / 010-R14: `UnitRejected` events are counted per "<command>/<unit_type>/<error>"
+    /// (`none` for a unit not found), resolved against the previous Act's `Command::Unit`, and
+    /// written as detail lines on session end; a server without rejections writes no file.
+    #[test]
+    fn unit_rejections_are_counted_and_logged_031_r10() {
+        let hello = Hello { protocol_version: PROTOCOL_VERSION, backend: Backend::OpenBw, game_version: "x".into(), mode: Mode::Lockstep, game_id: 12, slot: 1, replay: false };
+        let rejected = |cmd_index, unit, unit_type| GameEvent::UnitRejected { cmd_index, unit, unit_type, command: 14, error: 10 };
+        let frame = RawFrame {
+            frame: 96,
+            self_state: PlayerState::default(),
+            units: vec![],
+            visibility: BitGrid::new(1, 1),
+            explored: BitGrid::new(1, 1),
+            creep: BitGrid::new(1, 1),
+            events: vec![GameEvent::CommandFailed { cmd_index: 1, error: 10 }, rejected(0, 5, Some(0)), rejected(0, 6, Some(0)), rejected(1, 7, None)],
+            effects: vec![],
+        };
+        let last_cmds = vec![
+            Command::Unit { units: vec![5, 6], order: CmdOrder::Attack(Target::Unit(99)), queued: false },
+            Command::Build { worker: 7, unit_type: 109, tile: (3, 4) },
+        ];
+        let (mut rec, mut lines) = (SessionRecord::default(), Vec::new());
+        record_unit_rejections(&frame, &last_cmds, &hello, &mut rec, &mut lines);
+        assert_eq!(rec.unit_rejections, 3);
+        assert_eq!(rec.unit_rejections_by, BTreeMap::from([("14/0/10".to_string(), 2), ("14/none/10".to_string(), 1)]));
+        // CommandFailed keeps its own count; rejections do not add to it.
+        assert_eq!(rec.failed_commands, 0);
+        let first: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(first, serde_json::json!({"game_id": 12, "slot": 1, "frame": 96, "cmd_index": 0, "order": {"Attack": {"Unit": 99}}, "unit": 5, "unit_type": 0, "command": 14, "error": 10}));
+        let third: serde_json::Value = serde_json::from_str(&lines[2]).unwrap();
+        assert_eq!((&third["order"], &third["unit_type"]), (&serde_json::Value::Null, &serde_json::Value::Null));
+
+        let dir = std::env::temp_dir().join(format!("uranium-agent-rejections-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let log = RejectionLog::beside(&dir.join("results.jsonl"));
+        log.append(&[]).unwrap();
+        assert!(!dir.join("unit_rejections.jsonl").exists());
+        log.append(&lines[..2]).unwrap();
+        log.clone().append(&lines[2..]).unwrap();
+        let text = std::fs::read_to_string(dir.join("unit_rejections.jsonl")).unwrap();
+        assert_eq!(text.lines().collect::<Vec<_>>(), lines);
+        RejectionLog::default().append(&lines).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

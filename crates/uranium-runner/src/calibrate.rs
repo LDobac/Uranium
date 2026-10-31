@@ -205,7 +205,7 @@ pub fn run(max: Option<u32>, frames: u32) -> Result<()> {
     std::fs::create_dir_all(&work)?;
 
     let results = work.join("results.jsonl");
-    let agent = crate::start_agent("127.0.0.1:0", &results, Default::default(), Default::default(), Default::default())?;
+    let agent = crate::start_agent("127.0.0.1:0", &results, &work.join("unit_rejections.jsonl"), Default::default(), Default::default(), Default::default())?;
     eprintln!("[calibrate] {cores} logical cores, trying 1..={max} concurrent games, {frames} frames per game");
 
     let mut steps = Vec::new();

@@ -64,11 +64,14 @@ typedef struct {
 } UrUnit;
 
 enum { UR_EV_CREATE = 0, UR_EV_DESTROY, UR_EV_MORPH, UR_EV_DISCOVER, UR_EV_EVADE, UR_EV_NUKE, UR_EV_CMD_FAILED };
+#define UR_EV_UNIT_REJECTED 7
 
 typedef struct {
   uint8_t kind;
-  int32_t unit;                   /* or command index for UR_EV_CMD_FAILED */
-  int32_t x, y;                   /* or error code in x for UR_EV_CMD_FAILED */
+  int32_t unit;        /* 유닛 id. UR_EV_CMD_FAILED: 명령 index. UR_EV_UNIT_REJECTED: 거절된 유닛 id(찾지 못했으면 요청한 id) */
+  int32_t x, y;        /* UR_EV_NUKE: 위치. UR_EV_CMD_FAILED: x = BWAPI 오류. UR_EV_UNIT_REJECTED: x = 명령 index, y = BWAPI 오류 */
+  uint16_t unit_type;  /* UR_EV_UNIT_REJECTED: BWAPI UnitType id, 유닛을 찾지 못했으면 0xFFFF. 다른 kind는 0xFFFF */
+  uint8_t command;     /* UR_EV_UNIT_REJECTED: BWAPI UnitCommandType id(보정 뒤). 다른 kind는 0 */
 } UrEvent;
 
 typedef struct {

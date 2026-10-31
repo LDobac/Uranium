@@ -78,6 +78,9 @@ fn arb_event() -> impl Strategy<Value = GameEvent> {
         any::<u32>().prop_map(GameEvent::UnitDestroyed),
         arb_pos().prop_map(GameEvent::NukeDetect),
         (any::<u16>(), any::<u16>()).prop_map(|(cmd_index, error)| GameEvent::CommandFailed { cmd_index, error }),
+        // 010-AC9: unit_type present and absent.
+        (any::<u16>(), any::<u32>(), prop::option::of(any::<u16>()), any::<u8>(), any::<u16>())
+            .prop_map(|(cmd_index, unit, unit_type, command, error)| GameEvent::UnitRejected { cmd_index, unit, unit_type, command, error }),
     ]
 }
 
@@ -210,6 +213,24 @@ fn ac2_version_mismatch_is_rejected() {
     // 010-R12: a peer still on version 1 (GameEnd without final_frame) is rejected too.
     h.protocol_version = 1;
     assert!(PROTOCOL_VERSION >= 2 && check_hello(&h).unwrap_err().contains("protocol version mismatch"));
+}
+
+/// 010-AC9 (010-R14): `UnitRejected` is protocol 5, a version-4 peer is rejected, and the new
+/// variant is appended last so frames stored before it decode unchanged.
+#[test]
+fn ac9_unit_rejected_version_and_variant_order() {
+    assert_eq!(PROTOCOL_VERSION, 5);
+    let h = Hello { protocol_version: 4, backend: Backend::OpenBw, game_version: "x".into(), mode: Mode::Lockstep, game_id: 0, slot: 0, replay: false };
+    assert!(check_hello(&h).unwrap_err().contains("protocol version mismatch"));
+    // Existing variants keep their postcard index (CommandFailed is 6), UnitRejected is 7.
+    let failed = postcard::to_allocvec(&GameEvent::CommandFailed { cmd_index: 1, error: 2 }).unwrap();
+    assert_eq!(failed[0], 6);
+    for unit_type in [Some(0u16), None] {
+        let ev = GameEvent::UnitRejected { cmd_index: 3, unit: 77, unit_type, command: 14, error: 10 };
+        let bytes = postcard::to_allocvec(&ev).unwrap();
+        assert_eq!(bytes[0], 7);
+        assert_eq!(postcard::from_bytes::<GameEvent>(&bytes).unwrap(), ev);
+    }
 }
 
 /// 010-AC3: 200 units ≤ 64 KB, encode+decode ≤ 1 ms.

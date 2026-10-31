@@ -532,7 +532,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     let builds = T0Builds::default();
     let ends = EndBoard::default();
     let listen = uranium_runner::env_or("URANIUM_AGENT_LISTEN", "127.0.0.1:7600");
-    let agent_addr = uranium_runner::start_agent(&listen, &args.log_dir.join("sessions.jsonl"), routes.clone(), builds.clone(), ends.clone())?;
+    let agent_addr = uranium_runner::start_agent(&listen, &args.log_dir.join("sessions.jsonl"), &args.log_dir.join("unit_rejections.jsonl"), routes.clone(), builds.clone(), ends.clone())?;
     let games_csv_path = args.log_dir.join("games.csv");
     let new_games = !games_csv_path.exists();
     let mut games_csv = std::fs::OpenOptions::new().create(true).append(true).open(&games_csv_path)?;

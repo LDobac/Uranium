@@ -89,13 +89,22 @@ pub const UR_EV_DISCOVER: u8 = 3;
 pub const UR_EV_EVADE: u8 = 4;
 pub const UR_EV_NUKE: u8 = 5;
 pub const UR_EV_CMD_FAILED: u8 = 6;
+/// 011-R20 ④, 010-R14: one unit of a `Command::Unit` did not take the command.
+pub const UR_EV_UNIT_REJECTED: u8 = 7;
 
 #[repr(C)]
 pub struct UrEvent {
     pub kind: u8,
+    /// Unit id. UR_EV_CMD_FAILED: command index. UR_EV_UNIT_REJECTED: rejected (requested) unit id.
     pub unit: i32,
+    /// UR_EV_NUKE: position. UR_EV_CMD_FAILED: x = BWAPI error. UR_EV_UNIT_REJECTED: x = command
+    /// index, y = BWAPI error.
     pub x: i32,
     pub y: i32,
+    /// UR_EV_UNIT_REJECTED: BWAPI UnitType id, 0xFFFF when the unit was not found (and for other kinds).
+    pub unit_type: u16,
+    /// UR_EV_UNIT_REJECTED: BWAPI UnitCommandType id actually sent (after per-unit adjustment). 0 otherwise.
+    pub command: u8,
 }
 
 #[repr(C)]
