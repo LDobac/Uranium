@@ -453,20 +453,27 @@ fn train_header() -> String {
 
 /// Opens train.csv for appending. A file whose header differs (an older version with other
 /// columns) is kept under a new name and a fresh file is started, so a file's rows always match
-/// its header.
+/// its header. When it cannot be moved (e.g. open in a viewer on Windows), it stays as is and
+/// the rows go to `train-<unix>-new.csv` instead.
 fn open_train_csv(path: &Path) -> Result<std::fs::File> {
     let header = train_header();
+    let mut target = path.to_path_buf();
     if let Ok(f) = std::fs::File::open(path) {
         let mut first = String::new();
         std::io::BufRead::read_line(&mut std::io::BufReader::new(f), &mut first)?;
         if !first.is_empty() && first.trim_end() != header.trim_end() {
             let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
             let old = path.with_file_name(format!("train-{secs}.csv"));
-            std::fs::rename(path, &old).with_context(|| format!("moving {} aside", path.display()))?;
-            crate::elog!("[rl] train.csv has other columns: kept as {}, new file started (042-R2)", old.display());
+            match std::fs::rename(path, &old) {
+                Ok(()) => crate::elog!("[rl] train.csv has other columns: kept as {}, new file started (042-R2)", old.display()),
+                Err(e) => {
+                    target = path.with_file_name(format!("train-{secs}-new.csv"));
+                    crate::elog!("[rl] WARNING: train.csv has other columns and cannot be moved ({e}); writing {} instead (042-R2)", target.display());
+                }
+            }
         }
     }
-    let mut csv = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let mut csv = std::fs::OpenOptions::new().create(true).append(true).open(&target).with_context(|| format!("opening {}", target.display()))?;
     if csv.metadata()?.len() == 0 {
         csv.write_all(header.as_bytes())?;
     }
@@ -659,13 +666,14 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     let halt = Halt { shared: shared.clone(), inflight: dispatch.inflight.clone(), done: AtomicBool::new(false) };
     let hosts: Vec<HostEntry> = uranium_runner::hosts()?;
 
+    // Before the first game: a failure here starts nothing.
+    let base = RewardWeights::load()?;
+    let mut csv = open_train_csv(&args.log_dir.join("train.csv"))?;
     let games_thread = {
         let (source, dispatch, games) = (source.clone(), dispatch.clone(), args.log_dir.join("games.jsonl"));
         std::thread::spawn(move || uranium_runner::run_source(source, &hosts, &games, &dispatch))
     };
 
-    let base = RewardWeights::load()?;
-    let mut csv = open_train_csv(&args.log_dir.join("train.csv"))?;
     let started = Instant::now();
     // Each agent's queue wait total at its previous train.csv row (042-R2 `queue_wait_s`).
     let mut wait_seen = [0.0f64; 3];
@@ -740,6 +748,8 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
             }
             if reset {
                 learners.reset_to_bc(i)?;
+                // 042-R4: the reset learner never trains the previous policy's segments.
+                queues[i].reset_policy();
                 learners.push(i)?;
             }
             last_ckpt = Instant::now();
@@ -865,6 +875,7 @@ mod tests {
     #[test]
     fn train_csv_with_other_columns_is_kept_aside_042_r2() {
         let dir = std::env::temp_dir().join(format!("uranium-rl-csv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("train.csv");
         std::fs::write(&path, "time_s,agent\n1,main\n").unwrap();

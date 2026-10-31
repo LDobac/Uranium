@@ -192,6 +192,10 @@ impl RlConfig {
         if self.actors.queue_batches < 1 {
             bail!("[actors] queue_batches must be at least 1 (042 queue table)");
         }
+        // A waiting game's OpenBW client is paused too: stay below its drop time (011-R18, 600 s).
+        if !(1..600).contains(&self.actors.queue_wait_max_s) {
+            bail!("[actors] queue_wait_max_s must be at least 1 and below 600 (042 queue table, 011-R18)");
+        }
         if self.actors.game_wall_timeout_s < 1 {
             bail!("[actors] game_wall_timeout_s must be at least 1 (042, 020-R3)");
         }
@@ -233,8 +237,8 @@ mod tests {
         Ok(c)
     }
 
-    /// 042 queue table: `queue_batches` 0, `game_wall_timeout_s` 0 and unknown `queue_full`
-    /// values are load errors; absent new keys (configs copied into older checkpoints) take the
+    /// 042 queue table: `queue_batches` 0, `game_wall_timeout_s` 0, `queue_wait_max_s` outside
+    /// 1..600 and unknown `queue_full` values are load errors; absent new keys (configs copied into older checkpoints) take the
     /// defaults.
     #[test]
     fn actors_queue_settings_are_checked_042() {
@@ -246,5 +250,8 @@ mod tests {
         assert!(with_actors(&format!("{base}queue_batches = 0")).is_err());
         assert!(with_actors(&format!("{base}queue_batches = 4\nqueue_full = \"block\"")).is_err());
         assert!(with_actors(&format!("{base}queue_batches = 4\ngame_wall_timeout_s = 0")).is_err());
+        assert!(with_actors(&format!("{base}queue_batches = 4\nqueue_wait_max_s = 0")).is_err());
+        assert!(with_actors(&format!("{base}queue_batches = 4\nqueue_wait_max_s = 600")).is_err());
+        assert_eq!(with_actors(&format!("{base}queue_batches = 4\nqueue_wait_max_s = 599")).unwrap().actors.queue_wait_max_s, 599);
     }
 }

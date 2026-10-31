@@ -58,6 +58,11 @@ impl Segment {
         self.steps.iter().map(|s| s.version).min().unwrap_or(0)
     }
 
+    /// Newest behaviour version in the segment (042-R4, exploiter reset).
+    pub fn newest_version(&self) -> u64 {
+        self.steps.iter().map(|s| s.version).max().unwrap_or(0)
+    }
+
     /// Steps the learner trains on.
     pub fn trained(&self) -> usize {
         if self.terminal { self.steps.len() } else { self.steps.len().saturating_sub(1) }
@@ -101,6 +106,8 @@ struct QueueInner {
     /// insert, so waiting games go FIFO (a Condvar alone wakes in no particular order).
     line: VecDeque<u64>,
     next_ticket: u64,
+    /// Bumped by `reset_policy`: a push waiting from an older generation is not queued.
+    generation: u64,
     stats: QueueStats,
     closed: bool,
 }
@@ -147,8 +154,10 @@ impl SegmentQueue {
             let ticket = q.next_ticket;
             q.next_ticket += 1;
             q.line.push_back(ticket);
+            let generation = q.generation;
             let started = Instant::now();
-            let deadline = started + self.wait_max;
+            // `None` (a cap too far to represent) = no cap; never panics under the lock.
+            let deadline = started.checked_add(self.wait_max);
             let admitted = loop {
                 if q.closed {
                     break false;
@@ -157,13 +166,19 @@ impl SegmentQueue {
                     q.stats.revoked += 1;
                     break false;
                 }
+                if q.generation != generation {
+                    // 042-R4: the learner was reset; this segment is the previous policy's.
+                    q.stats.dropped_lag += 1;
+                    break false;
+                }
                 let now = Instant::now();
-                if q.line.front() == Some(&ticket) && (q.segs.len() < self.capacity || now >= deadline) {
+                let expired = deadline.is_some_and(|d| now >= d);
+                if q.line.front() == Some(&ticket) && (q.segs.len() < self.capacity || expired) {
                     break true;
                 }
                 // Past its deadline but not first: the waiter ahead has an earlier deadline and
                 // wakes this one when it leaves the line; the timeout is only a safety net.
-                let wait = deadline.saturating_duration_since(now).max(Duration::from_millis(100));
+                let wait = deadline.map_or(Duration::from_secs(1), |d| d.saturating_duration_since(now)).max(Duration::from_millis(100));
                 q = self.space.wait_timeout(q, wait).unwrap().0;
             };
             q.line.retain(|t| *t != ticket);
@@ -205,11 +220,24 @@ impl SegmentQueue {
         self.inner.lock().unwrap().taken.remove(&game_id);
     }
 
+    /// 042 exploiter reset / 042-R4: the learner went back to the BC weights (version 0). Every
+    /// queued segment and every waiting push is the previous policy's: dropped (`dropped_lag`),
+    /// the waiting games released without queueing. Later segments of that policy carry
+    /// versions above the learner's and are dropped by `take`.
+    pub fn reset_policy(&self) {
+        let mut q = self.inner.lock().unwrap();
+        q.stats.dropped_lag += q.segs.len() as u64;
+        q.segs.clear();
+        q.generation += 1;
+        self.space.notify_all();
+    }
+
     /// 042-R4 lag drop, then `lanes` segments in FIFO order if there are that many. Every freed
-    /// place wakes the waiting pushes.
+    /// place wakes the waiting pushes. A step newer than the learner can only come from the
+    /// policy before an exploiter reset (actors never run weights the learner has not reached).
     fn take_locked(&self, q: &mut QueueInner, lanes: usize, learner_version: u64, max_lag: u64) -> Option<Vec<Segment>> {
         let before = q.segs.len();
-        q.segs.retain(|s| learner_version.saturating_sub(s.version()) <= max_lag);
+        q.segs.retain(|s| learner_version.saturating_sub(s.version()) <= max_lag && s.newest_version() <= learner_version);
         q.stats.dropped_lag += (before - q.segs.len()) as u64;
         let batch = (q.segs.len() >= lanes).then(|| q.segs.drain(..lanes).collect::<Vec<Segment>>());
         if let Some(b) = &batch {
@@ -703,6 +731,79 @@ mod tests {
         let st = q.stats();
         assert_eq!((st.pushed, st.dropped_full, st.waits), (3, 1, 1));
         assert!(st.wait_s >= 0.05);
+    }
+
+    /// AMB-042-11: with several waiters the caps expire in arrival order, each dropping the then
+    /// oldest segment; a waiter behind the front whose deadline already passed still waits for
+    /// the front one to go first.
+    #[test]
+    fn chained_wait_caps_keep_fifo_order_042() {
+        let q = Arc::new(SegmentQueue::with_policy(2, QueueFull::Wait, Duration::from_millis(100)));
+        q.push(seg(1, 0));
+        q.push(seg(2, 0));
+        let mut waiters = Vec::new();
+        for (n, id) in [10u64, 11, 12].into_iter().enumerate() {
+            waiters.push(push_in_thread(&q, id, 0));
+            until_waiting(&q, n + 1);
+        }
+        for (h, rx) in waiters {
+            rx.recv_timeout(RELEASED).unwrap();
+            h.join().unwrap();
+        }
+        // 10 dropped 1, 11 dropped 2, 12 dropped 10.
+        let b = q.try_take(2, 0, 100).unwrap();
+        assert_eq!(b.iter().map(|s| s.game_id).collect::<Vec<_>>(), vec![11, 12]);
+        let st = q.stats();
+        assert_eq!((st.pushed, st.dropped_full, st.waits), (5, 3, 3));
+    }
+
+    /// AMB-042-11: a waiter whose deadline passed while it was behind the front does not jump
+    /// the line. The test holds the queue lock until both deadlines have passed, so both wake
+    /// expired in any order; had the second gone first, game 10 (not 11) would survive.
+    #[test]
+    fn expired_waiter_behind_the_front_does_not_jump_042() {
+        let q = Arc::new(SegmentQueue::with_policy(1, QueueFull::Wait, Duration::from_millis(200)));
+        q.push(seg(1, 0));
+        let (ha, rxa) = push_in_thread(&q, 10, 0);
+        until_waiting(&q, 1);
+        let (hb, rxb) = push_in_thread(&q, 11, 0);
+        until_waiting(&q, 2);
+        {
+            let _hold = q.inner.lock().unwrap();
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        for rx in [rxa, rxb] {
+            rx.recv_timeout(RELEASED).unwrap();
+        }
+        ha.join().unwrap();
+        hb.join().unwrap();
+        // 10 dropped 1, then 11 dropped 10.
+        assert_eq!(q.try_take(1, 0, 100).unwrap()[0].game_id, 11);
+        let st = q.stats();
+        assert_eq!((st.dropped_full, st.waits), (2, 2));
+    }
+
+    /// 042-R4 exploiter reset: queued and waiting segments of the previous policy are dropped
+    /// (`dropped_lag`), the waiting game is released, and a later segment of that policy
+    /// (version above the reset learner's) is dropped when a batch is taken.
+    #[test]
+    fn reset_policy_drops_the_previous_policy_042_r4() {
+        let q = wait_queue(2);
+        q.push(seg(1, 4_000));
+        q.push(seg(2, 4_000));
+        let (h, rx) = push_in_thread(&q, 3, 4_000);
+        until_waiting(&q, 1);
+        q.reset_policy();
+        assert_eq!(rx.recv_timeout(RELEASED).unwrap(), 3);
+        h.join().unwrap();
+        assert!(q.is_empty());
+        assert_eq!(q.stats().dropped_lag, 3);
+        // In-flight games keep sending the old policy's segments for a while.
+        q.push(seg(4, 4_000));
+        q.push(seg(5, 0));
+        assert_eq!(q.try_take(1, 0, 32).unwrap()[0].game_id, 5);
+        assert!(q.is_empty());
+        assert_eq!(q.stats().dropped_lag, 4);
     }
 
     /// `queue_full = "drop_oldest"`: the previous behaviour, no waiting.
