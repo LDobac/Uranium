@@ -546,13 +546,15 @@ mod tests {
         assert_eq!(q.stats().dropped_lag, 2);
     }
 
-    /// A one-step terminal segment of `game_id` with behaviour version `version`.
+    /// A one-step terminal segment of `game_id` with behaviour version `version`. The packed
+    /// observation is built once and cloned.
     fn seg(game_id: u64, version: u64) -> Segment {
+        static OBS: std::sync::OnceLock<PackedObs> = std::sync::OnceLock::new();
         Segment {
             agent: 0,
             game_id,
             steps: vec![Step {
-                obs: PackedObs::pack(&fake_obs(0)),
+                obs: OBS.get_or_init(|| PackedObs::pack(&fake_obs(0))).clone(),
                 action: HostAction { action: 0, delay_bucket: 0, queued: false, selected: vec![], target_unit: None, target_loc: None },
                 log_prob: 0.0,
                 head_log_prob: [0.0; HEADS],
@@ -570,13 +572,15 @@ mod tests {
         Arc::new(SegmentQueue::with_policy(capacity, QueueFull::Wait, Duration::from_secs(60)))
     }
 
-    /// Pushes `seg(game_id, version)` from another thread; the receiver gets the id once the
-    /// push returned.
-    fn push_in_thread(q: &Arc<SegmentQueue>, game_id: u64, version: u64) -> (std::thread::JoinHandle<()>, mpsc::Receiver<u64>) {
+    /// Pushes a segment built by the caller from another thread (building one packs an
+    /// observation, slow in a debug build on a slow host, so it must not eat into a wait cap);
+    /// the receiver gets the game id once the push returned.
+    fn push_in_thread(q: &Arc<SegmentQueue>, s: Segment) -> (std::thread::JoinHandle<()>, mpsc::Receiver<u64>) {
         let (tx, rx) = mpsc::channel();
         let q = q.clone();
+        let game_id = s.game_id;
         let h = std::thread::spawn(move || {
-            q.push(seg(game_id, version));
+            q.push(s);
             tx.send(game_id).unwrap();
         });
         (h, rx)
@@ -601,7 +605,7 @@ mod tests {
         let q = wait_queue(2);
         q.push(seg(1, 0));
         q.push(seg(2, 0));
-        let (h, rx) = push_in_thread(&q, 3, 0);
+        let (h, rx) = push_in_thread(&q, seg(3, 0));
         until_waiting(&q, 1);
         assert!(rx.recv_timeout(BLOCKED).is_err(), "the push must wait while the queue is full");
         assert_eq!(q.try_take(1, 0, 100).unwrap()[0].game_id, 1);
@@ -622,7 +626,7 @@ mod tests {
         q.push(seg(0, 0));
         let mut waiters = Vec::new();
         for (n, id) in [10u64, 11, 12, 13].into_iter().enumerate() {
-            waiters.push(push_in_thread(&q, id, 0));
+            waiters.push(push_in_thread(&q, seg(id, 0)));
             until_waiting(&q, n + 1);
         }
         let mut order = Vec::new();
@@ -647,9 +651,9 @@ mod tests {
     fn revoke_cancels_a_waiting_push_042_r3() {
         let q = wait_queue(1);
         q.push(seg(1, 0));
-        let (ha, rxa) = push_in_thread(&q, 5, 0);
+        let (ha, rxa) = push_in_thread(&q, seg(5, 0));
         until_waiting(&q, 1);
-        let (hb, rxb) = push_in_thread(&q, 6, 0);
+        let (hb, rxb) = push_in_thread(&q, seg(6, 0));
         until_waiting(&q, 2);
         q.revoke(5);
         assert_eq!(rxa.recv_timeout(RELEASED).unwrap(), 5);
@@ -687,7 +691,7 @@ mod tests {
         q.push(seg(1, 0));
         let mut waiters = Vec::new();
         for id in 2..5u64 {
-            waiters.push(push_in_thread(&q, id, 0));
+            waiters.push(push_in_thread(&q, seg(id, 0)));
             until_waiting(&q, id as usize - 1);
         }
         q.close();
@@ -706,7 +710,7 @@ mod tests {
     fn lag_drop_wakes_a_waiting_push_042_r4() {
         let q = wait_queue(1);
         q.push(seg(1, 0));
-        let (h, rx) = push_in_thread(&q, 2, 90);
+        let (h, rx) = push_in_thread(&q, seg(2, 90));
         until_waiting(&q, 1);
         // Not enough segments for 2 lanes, but the stale one is dropped.
         assert!(q.try_take(2, 100, 32).is_none());
@@ -738,12 +742,15 @@ mod tests {
     /// the front one to go first.
     #[test]
     fn chained_wait_caps_keep_fifo_order_042() {
-        let q = Arc::new(SegmentQueue::with_policy(2, QueueFull::Wait, Duration::from_millis(100)));
+        // The cap leaves a slow host ample time to line up all three waiters before the first
+        // one's cap expires; the segments are built before the first waiter starts.
+        let q = Arc::new(SegmentQueue::with_policy(2, QueueFull::Wait, Duration::from_secs(1)));
         q.push(seg(1, 0));
         q.push(seg(2, 0));
+        let segs: Vec<Segment> = [10u64, 11, 12].into_iter().map(|id| seg(id, 0)).collect();
         let mut waiters = Vec::new();
-        for (n, id) in [10u64, 11, 12].into_iter().enumerate() {
-            waiters.push(push_in_thread(&q, id, 0));
+        for (n, s) in segs.into_iter().enumerate() {
+            waiters.push(push_in_thread(&q, s));
             until_waiting(&q, n + 1);
         }
         for (h, rx) in waiters {
@@ -762,15 +769,16 @@ mod tests {
     /// expired in any order; had the second gone first, game 10 (not 11) would survive.
     #[test]
     fn expired_waiter_behind_the_front_does_not_jump_042() {
-        let q = Arc::new(SegmentQueue::with_policy(1, QueueFull::Wait, Duration::from_millis(200)));
+        let q = Arc::new(SegmentQueue::with_policy(1, QueueFull::Wait, Duration::from_secs(1)));
         q.push(seg(1, 0));
-        let (ha, rxa) = push_in_thread(&q, 10, 0);
+        let (s10, s11) = (seg(10, 0), seg(11, 0));
+        let (ha, rxa) = push_in_thread(&q, s10);
         until_waiting(&q, 1);
-        let (hb, rxb) = push_in_thread(&q, 11, 0);
+        let (hb, rxb) = push_in_thread(&q, s11);
         until_waiting(&q, 2);
         {
             let _hold = q.inner.lock().unwrap();
-            std::thread::sleep(Duration::from_millis(400));
+            std::thread::sleep(Duration::from_millis(1_500));
         }
         for rx in [rxa, rxb] {
             rx.recv_timeout(RELEASED).unwrap();
@@ -791,7 +799,7 @@ mod tests {
         let q = wait_queue(2);
         q.push(seg(1, 4_000));
         q.push(seg(2, 4_000));
-        let (h, rx) = push_in_thread(&q, 3, 4_000);
+        let (h, rx) = push_in_thread(&q, seg(3, 4_000));
         until_waiting(&q, 1);
         q.reset_policy();
         assert_eq!(rx.recv_timeout(RELEASED).unwrap(), 3);
