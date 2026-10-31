@@ -166,6 +166,10 @@ def rl_main(a) -> int:
     from uranium.rl.run import _no_dropout
 
     backend, device, precision = resolve(a.backend)
+    off = tuple(x.strip() for x in a.off.split(",") if x.strip())
+    bad = [x for x in off if x not in OFF]
+    if bad:
+        raise SystemExit(f"--off {bad}: expected some of {list(OFF)}")
     # As `python -m uranium rl`: the backend's defaults only, not the BC trainer's process switches.
     configure(backend)
     log = lambda m: print(m, file=sys.stderr, flush=True)  # noqa: E731
@@ -180,10 +184,6 @@ def rl_main(a) -> int:
     net = net.cpu()  # each run copies it to the device
     env = environment(backend, precision, device) | {"checkpoint": Path(a.checkpoint).name, "lanes": cfg["lanes"], "seq_len": cfg["seq_len"], "entities": a.entities}
     cmd = "python -m uranium bench " + " ".join(sys.argv[2:])
-    off = tuple(x.strip() for x in a.off.split(",") if x.strip())
-    bad = [x for x in off if x not in OFF]
-    if bad:
-        raise SystemExit(f"--off {bad}: expected some of {list(OFF)}")
     runs: list = []
     md = ""
     for kind in [x.strip() for x in a.learner.split(",") if x.strip()]:
