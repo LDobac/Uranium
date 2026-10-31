@@ -472,6 +472,8 @@ pub fn event_order(e: &GameEvent) -> (u8, u32, u32) {
         GameEvent::UnitEvade(id) => (4, id, 0),
         GameEvent::NukeDetect((x, y)) => (5, x as u32, y as u32),
         GameEvent::CommandFailed { cmd_index, error } => (6, cmd_index as u32, error as u32),
+        // 010-R14: never emitted by SC:R sessions (012-R14); same key as the OpenBW bridge.
+        GameEvent::UnitRejected { cmd_index, unit, .. } => (7, cmd_index as u32, unit),
     }
 }
 

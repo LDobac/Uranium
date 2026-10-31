@@ -15,10 +15,31 @@ use crate::tables::{Tables, has_weapon, unit_type};
 
 /// BWAPI 031-R3 / shim: at most 12 units per command.
 pub const MAX_UNITS: usize = 12;
-/// `UnitTypes::None` in targeted packets (BW::Orders "always0xe4").
+/// `UnitTypes::None` in targeted packets (BW::Orders "always0xe4"); only fog-ghost commands carry
+/// a real unit type (012-R17).
 const NO_UNIT_TYPE: u16 = 0xe4;
 /// SC:R chat text field (80 bytes, NUL padded) after the sender byte.
 pub const CHAT_TEXT: usize = 80;
+/// BWAPI neutral player.
+const NEUTRAL: u8 = 11;
+
+/// Enemy buildings observed this game: tag -> (last position, BWAPI unit type) (012-R17,
+/// 011-R20 ①-2).
+pub type BuildingMemory = HashMap<u32, (Pos, u16)>;
+
+/// 012-R17: refresh the enemy-building record from this frame's observed units. An observed enemy
+/// building records its position and type; a tag observed as anything else (a dead refinery's
+/// neutral geyser, a unit reusing the tag) is dropped. Units not observed keep their entry.
+pub fn remember_buildings(s: &Snapshot, d: &[Derived], record: &mut BuildingMemory) {
+    for (u, du) in s.units.iter().zip(d).filter(|(_, du)| du.observed) {
+        let enemy = u.player != s.local && u.player != NEUTRAL && !s.allied(u.player);
+        if enemy && unit_type(du.bwapi_type).is_some_and(|x| x.is_building()) {
+            record.insert(u.tag, (pos_of(u, du), du.bwapi_type));
+        } else {
+            record.remove(&u.tag);
+        }
+    }
+}
 
 /// What the commands may refer to this frame.
 pub struct Ctx<'a> {
@@ -31,6 +52,8 @@ pub struct Ctx<'a> {
     pub resources: &'a HashMap<u32, usize>,
     /// Position of every map resource seen alive (never cleared, 011-R20).
     pub remembered: &'a HashMap<u32, Pos>,
+    /// Enemy buildings observed this game (012-R17, [`remember_buildings`]).
+    pub buildings: &'a BuildingMemory,
 }
 
 impl Ctx<'_> {
@@ -41,30 +64,38 @@ impl Ctx<'_> {
     fn target(&self, tag: u32) -> Option<(&RawUnit, &Derived)> {
         self.unit(tag).or_else(|| self.resources.get(&tag).map(|&i| (&self.s.units[i], &self.d[i])))
     }
+
+    /// 012-R17: a target that is not observed now but is a remembered enemy building -> its last
+    /// position and type. Checked before the map resources (a dead refinery's geyser keeps its
+    /// tag) and never looked up among the live units.
+    fn ghost(&self, tag: u32) -> Option<(Pos, u16)> {
+        if self.observed.contains_key(&tag) { None } else { self.buildings.get(&tag).copied() }
+    }
 }
 
 fn push_u16(v: &mut Vec<u8>, x: u16) {
     v.extend_from_slice(&x.to_le_bytes());
 }
 
-/// `0x61` TargetedOrder (BW::Orders::Attack): position, unit tag (0 = none), order, queued.
-fn targeted(t: &Tables, order: u8, pos: Pos, tag: u32, queued: bool) -> Vec<u8> {
+/// `0x61` TargetedOrder (BW::Orders::Attack): position, unit tag (0 = none), unit type, order,
+/// queued.
+fn targeted(t: &Tables, order: u8, pos: Pos, tag: u32, unit_type: u16, queued: bool) -> Vec<u8> {
     let mut v = vec![t.op.targeted_order];
     push_u16(&mut v, pos.0);
     push_u16(&mut v, pos.1);
     v.extend_from_slice(&tag.to_le_bytes());
-    push_u16(&mut v, NO_UNIT_TYPE);
+    push_u16(&mut v, unit_type);
     v.extend([order, queued as u8]);
     v
 }
 
-/// `0x60` RightClick.
-fn right_click(t: &Tables, pos: Pos, tag: u32, queued: bool) -> Vec<u8> {
+/// `0x60` RightClick: position, unit tag (0 = none), unit type, queued.
+fn right_click(t: &Tables, pos: Pos, tag: u32, unit_type: u16, queued: bool) -> Vec<u8> {
     let mut v = vec![t.op.right_click];
     push_u16(&mut v, pos.0);
     push_u16(&mut v, pos.1);
     v.extend_from_slice(&tag.to_le_bytes());
-    push_u16(&mut v, NO_UNIT_TYPE);
+    push_u16(&mut v, unit_type);
     v.push(queued as u8);
     v
 }
@@ -135,8 +166,8 @@ fn unit_packet(c: &Ctx, me: (&RawUnit, &Derived), order: &CmdOrder, target: Opti
     let o = &t.orders;
     let (u, du) = me;
     let ty = du.bwapi_type;
-    let tgt = |order: u8| target.map(|(tu, td)| targeted(t, order, pos_of(tu, td), tu.tag, q));
-    let at = |order: u8| pos.map(|p| targeted(t, order, p, 0, q));
+    let tgt = |order: u8| target.map(|(tu, td)| targeted(t, order, pos_of(tu, td), tu.tag, NO_UNIT_TYPE, q));
+    let at = |order: u8| pos.map(|p| targeted(t, order, p, 0, NO_UNIT_TYPE, q));
     Some(match order {
         CmdOrder::Move(_) => match target {
             Some(_) => tgt(o.follow)?,
@@ -168,19 +199,19 @@ fn unit_packet(c: &Ctx, me: (&RawUnit, &Derived), order: &CmdOrder, target: Opti
             }
         }
         CmdOrder::RightClick(_) => match target {
-            None => right_click(t, pos?, 0, q),
+            None => right_click(t, pos?, 0, NO_UNIT_TYPE, q),
             Some((tu, td)) => {
                 // Audit F17 (shim:177-183): an enemy the unit cannot attack -> follow; a medic
                 // attack-moves to the target's position.
                 let enemy = tu.player != u.player && tu.player != 11 && !c.s.allied(tu.player);
                 if enemy && can_move(ty) && !can_attack_unit(c, me, (tu, td)) {
                     if ty == t.units.medic && can_attack_move(ty, t) {
-                        targeted(t, o.attack_move, pos_of(tu, td), 0, q)
+                        targeted(t, o.attack_move, pos_of(tu, td), 0, NO_UNIT_TYPE, q)
                     } else {
-                        targeted(t, o.follow, pos_of(tu, td), tu.tag, q)
+                        targeted(t, o.follow, pos_of(tu, td), tu.tag, NO_UNIT_TYPE, q)
                     }
                 } else {
-                    right_click(t, pos_of(tu, td), tu.tag, q)
+                    right_click(t, pos_of(tu, td), tu.tag, NO_UNIT_TYPE, q)
                 }
             }
         },
@@ -200,7 +231,7 @@ fn unit_packet(c: &Ctx, me: (&RawUnit, &Derived), order: &CmdOrder, target: Opti
             } else if transports.contains(&ty) {
                 tgt(o.pickup_transport)?
             } else if td.bwapi_type == t.units.bunker || transports.contains(&td.bwapi_type) {
-                right_click(t, pos_of(tu, td), tu.tag, q)
+                right_click(t, pos_of(tu, td), tu.tag, NO_UNIT_TYPE, q)
             } else {
                 return None;
             }
@@ -209,7 +240,7 @@ fn unit_packet(c: &Ctx, me: (&RawUnit, &Derived), order: &CmdOrder, target: Opti
             if ty == t.units.bunker {
                 vec![t.op.unload_all, 0]
             } else {
-                targeted(t, o.move_unload, p.unwrap_or(pos_of(u, du)), 0, q)
+                targeted(t, o.move_unload, p.unwrap_or(pos_of(u, du)), 0, NO_UNIT_TYPE, q)
             }
         }
         CmdOrder::Unload(_) => {
@@ -230,11 +261,11 @@ fn unit_packet(c: &Ctx, me: (&RawUnit, &Derived), order: &CmdOrder, target: Opti
                 } else if tech == k.dark_archon_meld {
                     vec![t.op.merge_dark_archon]
                 } else {
-                    targeted(t, t.tech_order(tech)?, pos_of(tu, td), tu.tag, false)
+                    targeted(t, t.tech_order(tech)?, pos_of(tu, td), tu.tag, NO_UNIT_TYPE, false)
                 }
             } else if let Some(p) = pos {
                 let order = if tech == k.healing { o.heal_move } else { t.tech_order(tech)? };
-                targeted(t, order, p, 0, false)
+                targeted(t, order, p, 0, NO_UNIT_TYPE, false)
             } else if tech == k.stim_packs {
                 vec![t.op.stim]
             } else if tech == k.tank_siege_mode {
@@ -268,19 +299,38 @@ fn args(order: &CmdOrder) -> (Option<u32>, Option<Pos>) {
     }
 }
 
-/// shim `exec_units` (011-R20): resolve the target, fall back to a move for a remembered resource,
-/// then one packet group per distinct packet (units of one group share a select).
+/// 012-R17 / 011-R20 ①-2: a command on a remembered enemy building out of sight, sent like a click
+/// on its fog ghost: last position and unit type, no tag. Attack -> MoveToAttack for the units
+/// that can attack-move (the unit-side check of 011-R23 ②), RightClick -> a typed right click,
+/// Move -> a move to the position. Other orders on such a target send nothing (011-R20 ②). The
+/// building's real current state is never consulted, and the per-unit corrections of 011-R20 ③
+/// do not apply (the game picks each unit's order).
+fn exec_ghost(c: &Ctx, units: &[u32], order: &CmdOrder, (pos, ty): (Pos, u16), q: bool, out: &mut Vec<Vec<u8>>) {
+    let t = c.t;
+    match order {
+        CmdOrder::Attack(_) => send_grouped(c, units, out, |(_, du)| can_attack_move(du.bwapi_type, t).then(|| targeted(t, t.orders.move_to_attack, pos, 0, ty, q))),
+        CmdOrder::RightClick(_) => send_grouped(c, units, out, |_| Some(right_click(t, pos, 0, ty, q))),
+        CmdOrder::Move(_) => exec_units(c, units, &CmdOrder::Move(Target::Pos(pos)), q, out),
+        _ => {}
+    }
+}
+
+/// shim `exec_units` (011-R20): resolve the target (a remembered enemy building first, 012-R17),
+/// fall back to a move for a remembered resource, then one packet group per distinct packet.
 fn exec_units(c: &Ctx, units: &[u32], order: &CmdOrder, queued: bool, out: &mut Vec<Vec<u8>>) {
     let (target_id, mut pos) = args(order);
+    if let Some(ghost) = target_id.and_then(|id| c.ghost(id)) {
+        return exec_ghost(c, units, order, ghost, queued, out);
+    }
     let mut order = order.clone();
     let target = target_id.and_then(|id| c.target(id));
     let mut target_id = target_id;
-    if let (Some(id), None) = (target_id, target) {
-        if let Some(&p) = c.remembered.get(&id).filter(|_| matches!(order, CmdOrder::Move(_) | CmdOrder::RightClick(_) | CmdOrder::Gather(_))) {
-            order = CmdOrder::Move(Target::Pos(p));
-            target_id = None;
-            pos = Some(p);
-        }
+    if let (Some(id), None) = (target_id, target)
+        && let Some(&p) = c.remembered.get(&id).filter(|_| matches!(order, CmdOrder::Move(_) | CmdOrder::RightClick(_) | CmdOrder::Gather(_)))
+    {
+        order = CmdOrder::Move(Target::Pos(p));
+        target_id = None;
+        pos = Some(p);
     }
     let needs_unit = matches!(order, CmdOrder::Load(_) | CmdOrder::Repair(_) | CmdOrder::Gather(_) | CmdOrder::Unload(_));
     let target = target_id.and_then(|id| c.target(id));
@@ -293,10 +343,16 @@ fn exec_units(c: &Ctx, units: &[u32], order: &CmdOrder, queued: bool, out: &mut 
     if (needs_unit_or_pos && target.is_none() && pos.is_none()) || (needs_pos && pos.is_none()) {
         return;
     }
+    send_grouped(c, units, out, |me| unit_packet(c, me, &order, target, pos, queued));
+}
+
+/// Our units' packets: one select + packet per distinct packet (units of one group share a
+/// select); buildings and critters are sent alone (011-R20 ③).
+fn send_grouped<'a>(c: &'a Ctx, units: &[u32], out: &mut Vec<Vec<u8>>, packet_of: impl Fn((&'a RawUnit, &'a Derived)) -> Option<Vec<u8>>) {
     let mut groups: Vec<(Vec<u8>, Vec<u32>)> = Vec::new();
     for &id in units.iter().take(MAX_UNITS) {
         let Some(me) = c.unit(id).filter(|(u, _)| u.player == c.s.local) else { continue };
-        let Some(packet) = unit_packet(c, me, &order, target, pos, queued) else { continue };
+        let Some(packet) = packet_of(me) else { continue };
         let grouped = !unit_type(me.1.bwapi_type).is_some_and(|x| x.is_building() || x.has("Critter"));
         if !grouped {
             out.push(select(c.t, &[id]));
@@ -386,13 +442,17 @@ fn exec_single(c: &Ctx, cmd: &Command, out: &mut Vec<Vec<u8>>) {
             CancelKind::Morph => vec![if unit_type(ty).is_some_and(|x| x.is_building()) { t.op.cancel_construction } else { t.op.cancel_unit_morph }],
         },
         Command::SetRally { target, .. } => match *target {
-            Target::Pos(p) => targeted(t, o.rally_point_tile, p, 0, false),
-            Target::Unit(id) => match c.target(id) {
-                Some((tu, td)) => targeted(t, o.rally_point_unit, pos_of(tu, td), tu.tag, false),
-                // 011-R20: a remembered resource that is gone -> rally to where it was.
-                None => match c.remembered.get(&id) {
-                    Some(&p) => targeted(t, o.rally_point_tile, p, 0, false),
-                    None => return,
+            Target::Pos(p) => targeted(t, o.rally_point_tile, p, 0, NO_UNIT_TYPE, false),
+            // 012-R17: a remembered enemy building out of sight -> rally to its last position.
+            Target::Unit(id) => match c.ghost(id) {
+                Some((p, _)) => targeted(t, o.rally_point_tile, p, 0, NO_UNIT_TYPE, false),
+                None => match c.target(id) {
+                    Some((tu, td)) => targeted(t, o.rally_point_unit, pos_of(tu, td), tu.tag, NO_UNIT_TYPE, false),
+                    // 011-R20: a remembered resource that is gone -> rally to where it was.
+                    None => match c.remembered.get(&id) {
+                        Some(&p) => targeted(t, o.rally_point_tile, p, 0, NO_UNIT_TYPE, false),
+                        None => return,
+                    },
                 },
             },
         },

@@ -19,6 +19,7 @@ const COMMANDS_TOML: &str = include_str!("../tables/commands.toml");
 #[derive(Deserialize)]
 struct OrdersFile {
     version: String,
+    move_to_attack: String,
     overrides: Vec<(String, String)>,
 }
 
@@ -84,6 +85,8 @@ pub struct Orders {
     pub move_: u8,
     pub follow: u8,
     pub attack1: u8,
+    /// Order of a fog-ghost attack (012-R17): the engine's MoveToAttack, named in orders.toml.
+    pub move_to_attack: u8,
     pub attack_move: u8,
     pub tower_attack: u8,
     pub carrier_attack: u8,
@@ -245,6 +248,7 @@ impl Tables {
             move_: order("Move")?,
             follow: order("Follow")?,
             attack1: order("Attack1")?,
+            move_to_attack: order(&o.move_to_attack)?,
             attack_move: order("AttackMove")?,
             tower_attack: order("TowerAttack")?,
             carrier_attack: order("CarrierAttack")?,
@@ -427,6 +431,8 @@ mod tests {
         assert_eq!(t.bwapi_order(order("NukePaint").unwrap()), order("CastNuclearStrike").unwrap());
         assert_eq!(t.bwapi_order(o.move_), o.move_, "unlisted orders keep their id");
         assert_eq!((o.move_, o.follow, o.attack_move, o.harvest1), (6, 49, 14, 79));
+        // 012-R17: the fog-ghost attack is the engine's MoveToAttack, raw order 9.
+        assert_eq!(o.move_to_attack, 9);
         assert_eq!(t.bullet_effect(157), EffectKind::PsionicStorm);
         assert_eq!(t.bullet_effect(99), EffectKind::Other(99));
         assert_eq!(t.spell_unit_effect(202), Some(EffectKind::DarkSwarm));

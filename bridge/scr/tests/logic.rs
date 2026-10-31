@@ -1,8 +1,8 @@
-//! SC:R bridge logic on synthetic snapshots (012-R3, R4, R7, R8, R10, R11, R12, R15, 011-R20).
+//! SC:R bridge logic on synthetic snapshots (012-R3, R4, R7, R8, R10, R11, R12, R15, R17, 011-R20).
 
 use std::collections::HashMap;
 
-use uranium_bridge_scr::commands::{self, Ctx};
+use uranium_bridge_scr::commands::{self, BuildingMemory, Ctx};
 use uranium_bridge_scr::end::EndTracker;
 use uranium_bridge_scr::events::EventTracker;
 use uranium_bridge_scr::game::Game;
@@ -80,18 +80,32 @@ fn command_bytes_match_the_spike_013_ac3() {
     let d = derive(&s, t);
     let observed = HashMap::from([(0x2ccb, 0)]);
     let empty = HashMap::new();
-    let ctx = Ctx { s: &s, d: &d, t, observed: &observed, resources: &empty, remembered: &HashMap::new() };
+    let ctx = Ctx { s: &s, d: &d, t, observed: &observed, resources: &empty, remembered: &HashMap::new(), buildings: &BuildingMemory::new() };
     let out = commands::encode(&ctx, &[Command::Unit { units: vec![0x2ccb], order: CmdOrder::RightClick(Target::Pos((3992, 3848))), queued: false }]);
     assert_eq!(out.iter().map(|p| hex(p)).collect::<Vec<_>>(), ["63 01 cb 2c 00 00", "60 98 0f 08 0f 00 00 00 00 e4 00 00"]);
 }
 
 fn ctx_encode(s: &Snapshot, cmds: &[Command], remembered: HashMap<u32, Pos>) -> Vec<Vec<u8>> {
+    ctx_encode_with(s, cmds, remembered, &BuildingMemory::new())
+}
+
+fn ctx_encode_with(s: &Snapshot, cmds: &[Command], remembered: HashMap<u32, Pos>, buildings: &BuildingMemory) -> Vec<Vec<u8>> {
     let t = t();
     let d = derive(s, t);
     let observed: HashMap<u32, usize> = s.units.iter().enumerate().filter(|(i, _)| d[*i].observed).map(|(i, u)| (u.tag, i)).collect();
     let resources: HashMap<u32, usize> = s.units.iter().enumerate().filter(|(_, u)| u.player == NEUTRAL).map(|(i, u)| (u.tag, i)).collect();
-    let ctx = Ctx { s, d: &d, t, observed: &observed, resources: &resources, remembered: &remembered };
+    let ctx = Ctx { s, d: &d, t, observed: &observed, resources: &resources, remembered: &remembered, buildings };
     commands::encode(&ctx, cmds)
+}
+
+/// A unit whose sprite we do not see (in the fog for the observation filter, 012-R3).
+fn fogged(mut u: RawUnit) -> RawUnit {
+    u.visibility_mask = 0;
+    u
+}
+
+fn le16(x: u16) -> String {
+    hex(&x.to_le_bytes())
 }
 
 /// 012-R4: one select (at most 12 units) then one order per packet group; buildings alone;
@@ -139,6 +153,132 @@ fn remembered_resource_011_r20() {
     hide_tile(&mut s2, 28, 28);
     let out = ctx_encode(&s2, &gather(97), HashMap::new());
     assert_eq!((out[1][11], out[1][5]), (order("Harvest1"), 97));
+}
+
+fn hexes(out: &[Vec<u8>]) -> Vec<String> {
+    out.iter().map(|p| hex(p)).collect()
+}
+
+/// 012-R17 / 011-R20 ①-2: a remembered enemy building out of sight is commanded through its fog
+/// ghost (last position, unit type, tag 0). The bytes do not depend on the real building: gone,
+/// still there in the fog, or moved in the fog.
+#[test]
+fn fog_ghost_commands_012_r17() {
+    let rax = ty("Terran_Barracks");
+    let record = BuildingMemory::from([(77, ((640, 480), rax))]);
+    let mine = || {
+        vec![
+            unit(0x100, 10, ME, "Terran_Marine", (100, 100)),
+            unit(0x110, 11, ME, "Terran_Marine", (110, 100)),
+            unit(0x200, 50, ME, "Terran_Dropship", (200, 200)),
+            unit(0x300, 60, ME, "Terran_Barracks", (300, 300)),
+            unit(0x400, 70, ME, "Terran_SCV", (120, 100)),
+        ]
+    };
+    let cmd = |order, queued| [Command::Unit { units: vec![10, 11, 50], order, queued }];
+    // x 640, y 480, tag 0, then the unit type.
+    let ghost = format!("80 02 e0 01 00 00 00 00 {}", le16(rax));
+    let three = "63 03 0a 00 00 00 0b 00 00 00 32 00 00 00";
+    let worlds = [
+        mine(),
+        [mine(), vec![fogged(unit(0x500, 77, ENEMY, "Terran_Barracks", (640, 480)))]].concat(),
+        [mine(), vec![fogged(unit(0x500, 77, ENEMY, "Terran_Barracks", (1200, 900)))]].concat(),
+    ];
+    for units in worlds {
+        let s = snapshot(10, units);
+        let enc = |cmds: &[Command]| hexes(&ctx_encode_with(&s, cmds, HashMap::new(), &record));
+        // Attack -> MoveToAttack (9) for the units that can attack-move; the dropship gets nothing.
+        assert_eq!(enc(&cmd(CmdOrder::Attack(Target::Unit(77)), false)), ["63 02 0a 00 00 00 0b 00 00 00".to_string(), format!("61 {ghost} 09 00")]);
+        assert_eq!(enc(&cmd(CmdOrder::Attack(Target::Unit(77)), true))[1], format!("61 {ghost} 09 01"), "queued");
+        // RightClick -> a typed right click for every unit (the game picks each unit's order).
+        assert_eq!(enc(&cmd(CmdOrder::RightClick(Target::Unit(77)), false)), [three.to_string(), format!("60 {ghost} 00")]);
+        // Move -> a move to the last position.
+        assert_eq!(enc(&cmd(CmdOrder::Move(Target::Unit(77)), false)), [three, "61 80 02 e0 01 00 00 00 00 e4 00 06 00"]);
+        // SetRally -> a rally to the last position.
+        let rally = enc(&[Command::SetRally { building: 60, target: Target::Unit(77) }]);
+        assert_eq!(rally, ["63 01 3c 00 00 00".to_string(), format!("61 80 02 e0 01 00 00 00 00 e4 00 {:02x} 00", order("RallyPointTile"))]);
+        // Other orders on a record-only target send nothing (011-R20 ②).
+        assert!(enc(&[Command::Unit { units: vec![70], order: CmdOrder::Repair(77), queued: false }]).is_empty());
+        assert!(enc(&[Command::Unit { units: vec![70], order: CmdOrder::Gather(77), queued: false }]).is_empty());
+    }
+    // In sight, the building is an observed unit: the ordinary attack with its tag.
+    let s = snapshot(10, [mine(), vec![unit(0x500, 77, ENEMY, "Terran_Barracks", (1200, 900))]].concat());
+    let out = ctx_encode_with(&s, &cmd(CmdOrder::Attack(Target::Unit(77)), false), HashMap::new(), &record);
+    assert_eq!((out[1][11], hex(&out[1][1..9])), (order("Attack1"), "b0 04 84 03 4d 00 00 00".to_string()));
+    // Not observed and not remembered: nothing (no map hack).
+    let s = snapshot(10, [mine(), vec![fogged(unit(0x500, 77, ENEMY, "Terran_Barracks", (640, 480)))]].concat());
+    assert!(ctx_encode(&s, &cmd(CmdOrder::Attack(Target::Unit(77)), false), HashMap::new()).is_empty());
+}
+
+/// 012-R17: a dead enemy refinery leaves a neutral geyser with the same tag. Remembered as a
+/// refinery, the target stays a fog ghost: resolving it as the live geyser first would tell the
+/// refinery is gone.
+#[test]
+fn refinery_turned_geyser_stays_a_ghost_012_r17() {
+    let refinery = ty("Terran_Refinery");
+    let record = BuildingMemory::from([(99, ((900, 900), refinery))]);
+    let s = snapshot(10, vec![unit(0x100, 10, ME, "Terran_SCV", (100, 100)), fogged(unit(0x500, 99, NEUTRAL, "Resource_Vespene_Geyser", (900, 900)))]);
+    let right = [Command::Unit { units: vec![10], order: CmdOrder::RightClick(Target::Unit(99)), queued: false }];
+    let out = ctx_encode_with(&s, &right, HashMap::new(), &record);
+    assert_eq!(hex(&out[1]), format!("60 84 03 84 03 00 00 00 00 {} 00", le16(refinery)));
+    let gather = [Command::Unit { units: vec![10], order: CmdOrder::Gather(99), queued: false }];
+    assert!(ctx_encode_with(&s, &gather, HashMap::new(), &record).is_empty());
+    // Without the record the same tag is the map's geyser (011-R20 ①).
+    let out = ctx_encode(&s, &gather, HashMap::new());
+    assert_eq!((out[1][11], out[1][5]), (order("Harvest1"), 99));
+}
+
+/// 012-R17: the record holds observed enemy buildings (last position, type); a building in the
+/// fog keeps its entry; a tag observed as anything else is dropped; own, allied, neutral and
+/// unobserved units are never added.
+#[test]
+fn building_record_rules_012_r17() {
+    let t = t();
+    let rax = ty("Terran_Barracks");
+    let step = |rec: &mut BuildingMemory, s: Snapshot| commands::remember_buildings(&s, &derive(&s, t), rec);
+    let mut rec = BuildingMemory::new();
+    let mut s = snapshot(
+        1,
+        vec![
+            unit(0x100, 1, ME, "Terran_Supply_Depot", (100, 100)),
+            unit(0x200, 77, ENEMY, "Terran_Barracks", (640, 480)),
+            unit(0x300, 78, ENEMY, "Terran_Marine", (300, 300)),
+            unit(0x400, 99, NEUTRAL, "Resource_Vespene_Geyser", (900, 900)),
+            fogged(unit(0x500, 79, ENEMY, "Terran_Factory", (1000, 1000))),
+            unit(0x700, 80, 1, "Terran_Barracks", (800, 800)),
+        ],
+    );
+    s.allies[1] = true;
+    step(&mut rec, s);
+    assert_eq!(rec, BuildingMemory::from([(77, ((640, 480), rax))]));
+    // Lifted and moved in the fog: still the last position seen.
+    step(&mut rec, snapshot(2, vec![fogged(unit(0x200, 77, ENEMY, "Terran_Barracks", (1200, 900)))]));
+    assert_eq!(rec, BuildingMemory::from([(77, ((640, 480), rax))]));
+    step(&mut rec, snapshot(3, vec![]));
+    assert_eq!(rec.len(), 1, "a building that disappears in the fog stays");
+    // Seen again: updated.
+    step(&mut rec, snapshot(4, vec![unit(0x200, 77, ENEMY, "Terran_Barracks", (1200, 900))]));
+    assert_eq!(rec, BuildingMemory::from([(77, ((1200, 900), rax))]));
+    // The same tag seen as a neutral geyser: dropped.
+    step(&mut rec, snapshot(5, vec![unit(0x200, 77, NEUTRAL, "Resource_Vespene_Geyser", (1200, 900))]));
+    assert!(rec.is_empty());
+}
+
+/// 012-R17 through `Game`: the record fills from observed enemy buildings and drives a ghost
+/// attack once the building is in the fog; a new game starts with an empty record.
+#[test]
+fn game_keeps_a_building_record_012_r17() {
+    let marine = || unit(0x100, 10, ME, "Terran_Marine", (100, 100));
+    let rax = || unit(0x500, 77, ENEMY, "Terran_Barracks", (640, 480));
+    let attack = || vec![Command::Unit { units: vec![10], order: CmdOrder::Attack(Target::Unit(77)), queued: false }];
+    let mut g = Game::new(t(), ME, Some(ENEMY));
+    g.frame(&snapshot(1, vec![marine(), rax()]), None);
+    let o = g.frame(&snapshot(3, vec![marine(), fogged(rax())]), Some(act(attack(), 25)));
+    assert_eq!(hexes(&o.packets), ["63 01 0a 00 00 00".to_string(), format!("61 80 02 e0 01 00 00 00 00 {} 09 00", le16(ty("Terran_Barracks")))]);
+    let mut g = Game::new(t(), ME, Some(ENEMY));
+    g.frame(&snapshot(1, vec![marine(), fogged(rax())]), None);
+    let o = g.frame(&snapshot(3, vec![marine(), fogged(rax())]), Some(act(attack(), 25)));
+    assert!(o.packets.is_empty(), "never observed in this game");
 }
 
 /// 012-R3 / 010-R5: own units always; others only when their sprite is visible to us, a

@@ -4,6 +4,10 @@
 # names (crates/uranium-env/tables/order_types.toml).
 version = "scr-1.23.10.13515"
 
+# 012-R17: order of a fog-ghost attack (TargetedOrder with no tag and the remembered building's unit
+# type). Raw order 9 is the engine's MoveToAttack (OpenBW bwenums.h), named "Attack2" in BWAPI.
+move_to_attack = "Attack2"
+
 overrides = [
     ["ReaverStop", "Stop"],
     ["CarrierStop", "Stop"],

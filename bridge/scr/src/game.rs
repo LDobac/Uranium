@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use uranium_proto::*;
 
-use crate::commands::{self, Ctx};
+use crate::commands::{self, BuildingMemory, Ctx};
 use crate::end::EndTracker;
 use crate::events::EventTracker;
 use crate::observe::{NukeState, ObserveState, derive, observe_units, raw_frame};
@@ -37,6 +37,9 @@ pub struct Game {
     pub schedule: Schedule,
     /// Position of every map resource seen alive (011-R20).
     remembered: HashMap<u32, Pos>,
+    /// Enemy buildings observed this game, for fog-ghost commands (012-R17). A new `Game` per game
+    /// starts it empty.
+    buildings: BuildingMemory,
     /// Surrendered or ended: nothing more is sent (012-R11).
     pub done: bool,
     pub observations: u32,
@@ -66,6 +69,7 @@ impl Game {
             // Unit tags are ready from frame 1, like the OpenBW bridge's first observation (011-R15).
             schedule: Schedule::new(1),
             remembered: HashMap::new(),
+            buildings: BuildingMemory::new(),
             done: false,
             observations: 0,
             started: Instant::now(),
@@ -112,6 +116,7 @@ impl Game {
                 self.remembered.insert(u.tag, (d[i].pos.0.max(0) as u16, d[i].pos.1.max(0) as u16));
             }
         }
+        commands::remember_buildings(s, &d, &mut self.buildings);
         let snapshot_frame = |game: &mut Self| {
             let units = observe_units(s, &d, t, &game.observe);
             raw_frame(s, t, units, &dots, game.events.take())
@@ -144,7 +149,7 @@ impl Game {
                     }
                 } else if ok {
                     let observed: HashMap<u32, usize> = s.units.iter().enumerate().filter(|(i, _)| d[*i].observed).map(|(i, u)| (u.tag, i)).collect();
-                    let ctx = Ctx { s, d: &d, t, observed: &observed, resources: &resources, remembered: &self.remembered };
+                    let ctx = Ctx { s, d: &d, t, observed: &observed, resources: &resources, remembered: &self.remembered, buildings: &self.buildings };
                     out.packets.extend(commands::encode(&ctx, &a.cmds));
                 } else {
                     out.log.push(format!("012-R7: Act for an observation expired at frame {} (valid until {:?})", s.frame, a.valid_until_frame));
