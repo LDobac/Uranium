@@ -1,6 +1,6 @@
 # 031 — Action Space & Executor
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: 라이브 게임 맵 사전계산 키(AMB-031-4), executor 거부 시 동작(031-R4, AMB-031-5). 2026-10-19: 맵 사전계산 생성 경로 표기를 실제(`uranium-replay`)로 정정. 2026-10-19: AC3 미분류 명령 처리 구체화(사용자 결정, 액션 감사 F7). 2026-10-19 액션 감사: 031-R10 다수 유닛 명령의 실패 판정 명시(011-R20, 사용자 결정 2026-10-19), 031-AC1 판정 강화. 2026-10-21 개정: 031-R12 GG 항복 판정(사용자 결정, AMB-031-6). 2026-10-31 개정(사용자 결정, `reports/m6_action_audit.md` §11 U-1·U-2·U-6): R1 서플라이 부족 시 Train 후보, R10 유닛별 거절 기록과 "유닛별 거절 기록" 절, AC1 시나리오 추가)
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: 라이브 게임 맵 사전계산 키(AMB-031-4), executor 거부 시 동작(031-R4, AMB-031-5). 2026-10-19: 맵 사전계산 생성 경로 표기를 실제(`uranium-replay`)로 정정. 2026-10-19: AC3 미분류 명령 처리 구체화(사용자 결정, 액션 감사 F7). 2026-10-19 액션 감사: 031-R10 다수 유닛 명령의 실패 판정 명시(011-R20, 사용자 결정 2026-10-19), 031-AC1 판정 강화. 2026-10-21 개정: 031-R12 GG 항복 판정(사용자 결정, AMB-031-6). 2026-10-31 개정(사용자 결정, `reports/m6_action_audit.md` §11 U-1·U-2·U-6): R1 서플라이 부족 시 Train 후보, R10 유닛별 거절 기록과 "유닛별 거절 기록" 절, AC1 시나리오 추가. 2026-10-31 리뷰 반영(메인 결정): 유닛별 거절 파일 위치(plan 실행은 시작 때 비움, 평가 작업은 `results/unit_rejections/<host>.jsonl`), AC1 ①·③ 판정 구체화)
 - **Related**: [010](010-game-protocol.md), [030](030-observation.md), [032](032-model-architecture.md), [034](034-action-table.md), [040](040-replay-dataset.md)
 
 ## Purpose
@@ -50,7 +50,10 @@
   - `unit_rejections_by`: 키 `"<command>/<unit_type>/<error>"` → 수. 세 값은 10진 BWAPI id다(`UnitCommandType`, `UnitType`, `Error`). 유닛을 찾지 못한 거절의 `unit_type`은 `none`이다.
   - executor 거부 수(031-R4, 모델 통계의 거부 항목)와 이름이 겹치지 않게 둔다. SC:R 세션은 0과 빈 표다.
 - **상세 파일**: 거절마다 JSON 한 줄을 덧붙인다. 필드는 `game_id`, `slot`(`Hello` 값), `frame`(이벤트가 실린 `RawFrame.frame`), `cmd_index`, `order`(그 `Command::Unit`에 에이전트가 넣은 `CmdOrder`, serde JSON), `unit`, `unit_type`(없으면 null), `command`, `error`다.
-- **파일 위치**: 세션 기록 파일과 같은 폴더의 `unit_rejections.jsonl`(plan 실행은 `results.jsonl` 옆, RL은 `sessions.jsonl` 옆). 평가 작업(020-R15)은 세션 기록이 장비별이므로 `results/<host>.unit_rejections.jsonl`로 장비마다 따로 쓴다(같은 파일에 두 장비가 덧붙이지 않는다, 020-R15 ①). 평가 단계의 합친 기록(020-R15 ⑨)에는 넣지 않는다. 지우지 않는다.
+- **파일 위치**(2026-10-31 리뷰 반영, 메인 결정):
+  - plan 실행(`run_plan`): `results.jsonl` 옆 `unit_rejections.jsonl`. plan 실행은 시작할 때 이전 `results.jsonl`·`games.jsonl`을 지우고 새로 쓰므로, 이 파일도 그때 함께 지운다(한 폴더의 세 파일이 같은 실행의 기록이 되도록). 실행 중에는 덧붙인다.
+  - RL: `sessions.jsonl` 옆 `unit_rejections.jsonl`. 덧붙이기만 하고 비우지 않는다.
+  - 평가 작업(020-R15): 세션 기록이 장비별이므로 job 폴더의 `results/unit_rejections/<host>.jsonl`로 장비마다 따로 쓴다(같은 파일에 두 장비가 덧붙이지 않는다, 020-R15 ①). 하위 폴더에 두는 것은 `results/*.jsonl`을 장비별 세션 기록으로 읽는 쪽이 이 파일을 세션 기록으로 잘못 읽지 않게 하기 위해서다. 덧붙이기만 한다. 평가 단계의 합친 기록(020-R15 ⑨)에는 넣지 않는다.
 - 진단 전용이다. 관측 feature, `last_failed`(030 §4), 보상, 학습 데이터에 쓰지 않는다.
 
 ## 맵 사전계산 (모든 맵)
@@ -68,7 +71,7 @@
   - 맵 계열(`map_family`, 040-R15)은 BC와 같은 `config/map_families.toml` 규칙(제목 패턴)으로 `GameInfo.map_name`에서 정한다. 판정 코드는 `uranium-env` 라이브러리에 둔다.
 
 ## Acceptance Criteria
-- 031-AC1: [034](034-action-table.md)의 모든 action_type이 OpenBW에서 실제로 실행되는지 시나리오 테스트로 확인한다. 판정(2026-10-19 액션 감사 강화): 모든 action_type이 1회 이상 받아들여지고, 거절은 정당화된 것만 있다: 현재 관측 기준 위치 마스크라 건물 자리에 서 있는 유닛 때문에 생기는 Build_*·BuildAddon_*·Land_*의 Unbuildable_Location, 시나리오가 한 Act에 경제·커버리지 명령을 함께 보내 생기는 자원 부족(에이전트는 결정당 명령 1개, 031-R3). 그 밖의 BWAPI 오류는 마스크·executor·브리지 불일치로 보고 실패다. 시야 밖 한 번 본 미네랄에 Smart_Unit·Gather_Unit이 받아들여지고 SCV가 채취 order로 바뀌는지도 본다(011-R20). 2026-10-31 추가(사용자 결정, 액션 감사 U-1·U-2·U-6): ① 서플라이가 막힌 상태에서 대기열이 있는 배럭에 Train이 받아들여진다(034-R3, 011-R23). ② 한 번 본 뒤 시야 밖이 된 적 건물에 Attack_Unit·Smart_Unit이 받아들여지고 `CommandFailed`가 없으며, Attack_Unit을 받은 유닛의 order는 MoveToAttack(9)이다(011-R20 ①-2). ③ `UnitRejected`를 명령·유닛 종류·오류별로 보고하고, 잔상 명령(②)에는 `UnitRejected`가 없다. 그 밖의 유닛별 거절은 판정 기준에 넣지 않고 보고만 한다.
+- 031-AC1: [034](034-action-table.md)의 모든 action_type이 OpenBW에서 실제로 실행되는지 시나리오 테스트로 확인한다. 판정(2026-10-19 액션 감사 강화): 모든 action_type이 1회 이상 받아들여지고, 거절은 정당화된 것만 있다: 현재 관측 기준 위치 마스크라 건물 자리에 서 있는 유닛 때문에 생기는 Build_*·BuildAddon_*·Land_*의 Unbuildable_Location, 시나리오가 한 Act에 경제·커버리지 명령을 함께 보내 생기는 자원 부족(에이전트는 결정당 명령 1개, 031-R3). 그 밖의 BWAPI 오류는 마스크·executor·브리지 불일치로 보고 실패다. 시야 밖 한 번 본 미네랄에 Smart_Unit·Gather_Unit이 받아들여지고 SCV가 채취 order로 바뀌는지도 본다(011-R20). 2026-10-31 추가(사용자 결정, 액션 감사 U-1·U-2·U-6): ① 서플라이가 막힌 상태에서 대기열이 있는 생산 건물(CC·배럭 등)에 Train이 받아들여진다. `CommandFailed`가 없는 것만으로는 부족하고, 다음 관측에서 그 건물의 생산 대기열 길이가 늘어야 한다(034-R3, 011-R23). ② 한 번 본 뒤 시야 밖이 된 적 건물에 Attack_Unit·Smart_Unit이 받아들여지고 `CommandFailed`가 없으며, Attack_Unit을 받은 유닛의 order는 MoveToAttack(9)이다(011-R20 ①-2). ③ `UnitRejected`를 명령·유닛 종류·오류별로 보고한다. 선택이 공격도 이동도 할 수 있는 유닛만인 잔상 명령(②)에는 `UnitRejected`가 없다(2026-10-31 리뷰 반영: 공격은 하되 이동하지 못하는 유닛의 잔상 Attack_Unit은 거절될 수 있다, 034 Risks). 그 밖의 유닛별 거절은 판정 기준에 넣지 않고 보고만 한다.
 - 031-AC2: 마스크된 액션이 실행되지 않는다(property test).
 - 031-AC3: 리플레이 사람 명령을 의미 단위 액션으로 역변환할 때 커버리지 ≥ 95%다. 미분류는 `Unknown`으로 기록하고 학습에서 제외한다. 구체적으로(2026-10-19 사용자 결정, 액션 감사 F7, 레이블러 버전 2) 미분류 명령은 다음 명령까지의 delay를 가진 자기 스텝(`unknown` 레이블)이 되고 BC 가중치는 0이다. 그 시간을 `NoOp` 레이블로 채우지 않는다(레이블러 버전 1은 채웠다, 040 "Shard 포맷"). 에이전트 기억에는 `NoOp`으로 기록한다.
 - 031-AC4: Build 액션 실행 시 건설 위치가 정책이 고른 타일과 정확히 같다.
