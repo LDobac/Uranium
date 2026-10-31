@@ -634,6 +634,33 @@ fn geyser_morphed_into_refinery_is_forgotten_030_r2() {
         // 034-AC4 ⑤: the geyser with the refinery's id is no remembered enemy building.
         assert!(!cap_of(&o, i, "attackable_enemy") && (0..o.obs.n).all(|j| !cap_of(&o, j, "attackable_enemy")));
     }
+
+    // 034-AC4 ⑤ live path: BWAPI reports the refinery's death as UnitMorph back to the geyser
+    // (same id, no UnitDestroyed). Memory keeps the refinery while the id is visible, so out of
+    // vision both share the id (pre-existing, kept for BC consistency, see masks
+    // `seen_as_neutral`); the stale refinery is no target, the geyser stays as before.
+    let mut mem = mem.clone();
+    let o = extract(&frame(40, [own.clone(), vec![geyser.clone()]].concat(), false), &mut mem, &map, None);
+    let ids: Vec<usize> = (0..o.obs.n).filter(|&i| o.entity_ids[i] == g).collect();
+    assert_eq!(ids.len(), 1, "visible geyser: one entity");
+    assert_eq!(o.obs.entity_cat[ids[0] * 4 + 1], OWNER_NEUTRAL);
+    assert!(cap_of(&o, ids[0], "any_unit") && !cap_of(&o, ids[0], "attackable_enemy"));
+    let mut f = frame(50, own.clone(), false);
+    blind(&mut f);
+    let o = extract(&f, &mut mem, &map, None);
+    let ids: Vec<usize> = (0..o.obs.n).filter(|&i| o.entity_ids[i] == g).collect();
+    let owner = |i: usize| o.obs.entity_cat[i * 4 + 1];
+    let mut owners: Vec<_> = ids.iter().map(|&i| owner(i)).collect();
+    owners.sort_unstable();
+    let mut expect = vec![OWNER_ENEMY, OWNER_NEUTRAL];
+    expect.sort_unstable();
+    assert_eq!(owners, expect, "stale refinery and remembered geyser share the id");
+    for &i in &ids {
+        let neutral = owner(i) == OWNER_NEUTRAL;
+        assert!(!cap_of(&o, i, "attackable_enemy"), "owner {}", owner(i));
+        assert_eq!(cap_of(&o, i, "any_unit"), neutral, "owner {}: only the geyser is clickable", owner(i));
+        assert!(!cap_of(&o, i, "target_resource"), "a geyser is no gather target");
+    }
 }
 
 /// 030-R7 / 030 §2 (Q3, 2026-10-19): past N_MAX the remembered (out-of-vision) resources go first;

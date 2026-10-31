@@ -205,7 +205,8 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     // right-clicks in the fog. Judged from the last seen state only; the bridge commands its last
     // position and type, not the real unit (011-R20 ①-2), so nothing new leaks. Only Attack_Unit
     // and the `any_unit` actions take it; the other target classes need a visible unit.
-    let known_building = e.remembered && e.owner == OWNER_ENEMY && building;
+    // 034-AC4 ⑤: not when its id was seen since as a neutral resource (`seen_as_neutral`).
+    let known_building = e.remembered && e.owner == OWNER_ENEMY && building && !seen_as_neutral(w, u.id);
     set("attackable_enemy", ((enemy && targetable) || known_building) && !t.has(crate::types::flag::INVINCIBLE));
     set("any_unit", targetable || known_resource || known_building);
     set("own_unit", own_target);
@@ -229,6 +230,19 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     // "loaded".
     set("loaded_unit", own && loaded);
     c
+}
+
+/// 034-AC4 ⑤ / 030-R2: the id is also a neutral entity of this observation (a visible or
+/// remembered resource). A destroyed refinery turns back into the geyser with the same id, which
+/// BWAPI reports as UnitMorph, not UnitDestroyed; `AgentMemory::update` then keeps the refinery in
+/// `enemy_buildings` while that id is visible, so once it leaves vision the observation holds both
+/// the stale refinery and the remembered geyser under one id. That duplicate entity is
+/// pre-existing and kept so the entity features stay as in the BC data (feature schema 7 changes
+/// masks only, 030-R5); candidate for the next feature rebuild. Until then the mask keeps the
+/// stale refinery out of every target class. Scans the entities only for remembered enemy
+/// buildings, which are few.
+fn seen_as_neutral(w: &World, id: uranium_proto::UnitId) -> bool {
+    w.entities.iter().any(|n| n.owner == OWNER_NEUTRAL && n.unit.id == id)
 }
 
 /// The 2x2 addon slot to the right of the footprint is buildable and free (034 addon_capable).
