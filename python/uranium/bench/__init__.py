@@ -50,7 +50,7 @@ def add_parser(sub) -> None:
     r.add_argument("--backend", choices=["cuda", "rocm", "cpu"])
     r.add_argument("--learner", default="new", help="comma list of new, reference (the learner before the 032-R19 changes)")
     r.add_argument("--groups", default="1", help="comma list of lane group sizes (micro_lanes, 0 = all lanes)")
-    r.add_argument("--off", default="", help="comma list of the new learner's staging steps left out: trim, pinned, spatial_bf16 (each measured alone)")
+    r.add_argument("--off", default="", help="comma list of the new learner's staging steps left out: trim, pinned, spatial_bf16 (each measured alone; pinned also turns the CUDA read-back into the plain synchronous copy)")
     r.add_argument("--updates", type=int, default=10, help="measured updates after one warm-up update")
     r.add_argument("--lanes", type=int, help="default: the config's lanes")
     r.add_argument("--entities", default="64:192", help="lo:hi entities per synthetic step block")
@@ -224,7 +224,9 @@ def _rl_child(a, kind: str, group: int, log) -> dict:
         log(f"[bench rl] child: {kind} group {group}")
         rc = subprocess.run(argv, stdout=subprocess.DEVNULL).returncode
         if rc != 0 or not out.is_file():
-            return {"learner": kind, "group": group, "off": [], "updates": [], "median_s": None, "mean_s": None, "p95_s": None, "peak_gib": None, "peak_rss_gib": None, "failed": f"child exit {rc}"}
+            # As the in-process path records a failed run: with the requested --off list.
+            off = [x.strip() for x in a.off.split(",") if x.strip()]
+            return {"learner": kind, "group": group, "off": off, "updates": [], "median_s": None, "mean_s": None, "p95_s": None, "peak_gib": None, "peak_rss_gib": None, "failed": f"child exit {rc}"}
         return json.loads(out.read_text(encoding="utf-8"))["runs"][0]
 
 
