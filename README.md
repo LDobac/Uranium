@@ -9,9 +9,11 @@
 | 0 | 데이터 재build·검증, 벤치, 대전 경로 시험 | 완료 (`reports/m6_rebuild.md` R-5) |
 | 1 | **코어 비교**: LSTM·GTrXL을 S1 5,300 update씩 학습 → 평가 → 사용자가 코어 선택 | 완료 (2026-10-23, **GTrXL 채택**, `reports/m6_core_ablation.md` 4절) |
 | 1.5 | **PyTorch 전환**: 학습·추론 이식, 최적화 | 완료 (2026-10-24, 이식 `reports/pytorch_port.md`, 최적화 `reports/pytorch_opt.md`) |
-| 2 | **BC 본학습 S1**: 전체 맵, GTrXL. 39,096 update(2026-10-23 `bc-epoch`) | PyTorch로 새로 시작 — 착수 체크리스트 `reports/m6_pre_bc_review.md` J절 |
-| 3 | **BC S2**: 대상 맵(투혼·서킷브레이커), S1에서 시작 + 비교용 ablation (A) | 2 뒤 |
-| 4 | 평가(오프라인 지표, T0 대전) → RL | 3 뒤 |
+| 2 | **BC 본학습 S1**: 전체 맵, GTrXL. 39,096 update(2026-10-23 `bc-epoch`) | 완료 (`bc-s1-pt`) |
+| 3 | **BC S2**: 대상 맵(투혼·서킷브레이커), S1에서 시작 + 비교용 ablation (A) | 완료 (`bc-s2-pt`, `reports/bc_ablation.md`) |
+| 4 | 평가(오프라인 지표, T0 대전) | 완료 (`reports/m6_bc_eval.md` 1~4절) |
+| 5 | **두 번째 epoch**(041-R20): S1 한 번 더(`config/bc_e2.toml`) → S2 다시 | 완료 (`bc-s1e2-pt` → `bc-s2e2-pt`, `reports/m6_bc_eval.md` 5절) |
+| 6 | RL | 착수 점검 `reports/m6_pre_rl_review.md` |
 
 ## 2. 장비 운영 규칙 (060-R8)
 
