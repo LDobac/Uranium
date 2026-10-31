@@ -406,9 +406,10 @@ struct UnitRejectionLine<'a> {
 }
 
 /// 031-R10: the per-unit rejection file shared by every session of a server (`unit_rejections.jsonl`
-/// beside the session records; an eval job's `results/<host>.unit_rejections.jsonl`). Opened for
+/// beside the session records; an eval job's `results/unit_rejections/<host>.jsonl`). Opened for
 /// append on the first rejection, so a server that never sees one (SC:R, 012-R14) writes no file.
-/// Each session's lines are appended together when it ends. Lines are never removed.
+/// Each session's lines are appended together when it ends. This type never removes lines: a plan
+/// run clears its `unit_rejections.jsonl` when it starts fresh, RL and eval jobs keep appending.
 #[derive(Clone, Default)]
 pub struct RejectionLog(Option<Arc<(PathBuf, Mutex<Option<RecordSink>>)>>);
 
