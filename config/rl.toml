@@ -51,8 +51,18 @@ half_life_updates = 20000
 weight_push_every = 4
 # 042-R4: drop trajectories whose behaviour version lags by more than this.
 max_policy_lag = 32
-# Trajectory queue capacity in batches; oldest dropped first.
+# Trajectory queue capacity per agent in batches of `lanes` segments (at least 1).
 queue_batches = 4
+# Full queue (user decision 2026-10-31): "wait" = backpressure, the pushing game waits for a
+# place (FIFO across games; a game in lockstep simply pauses); "drop_oldest" = previous
+# behaviour, never wait and drop the oldest segment.
+queue_full = "wait"
+# Longest single wait for a place (AMB-042-11); then the oldest segment is dropped
+# (`dropped_full`). Keep well below the OpenBW drop time (011-R18, 600 s).
+queue_wait_max_s = 120
+# Wall-clock limit of one RL game (AMB-042-12, 020-R3), queue waits included; the game ends as
+# Timeout and is left out of training like an Aborted one (042-R3).
+game_wall_timeout_s = 7200
 
 [league]
 # 042-R7 time share, applied from C2. C0/C1 train Main only.

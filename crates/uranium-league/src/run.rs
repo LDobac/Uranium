@@ -32,7 +32,7 @@ use crate::config::RlConfig;
 use crate::league::{AgentKind, Class, League, Opponent, Pick, T1Bot};
 use crate::learner::{Algo, HEAD_NAMES, RlLearners, SnapshotServers, UpdateStats};
 use crate::storage::{LockStatus, PushOutcome, Run, StorageConfig};
-use crate::trajectory::{GameResult, Segment, SegmentQueue, TrajectoryObserver};
+use crate::trajectory::{GameResult, Segment, SegmentQueue, TrajectoryObserver, trained_steps as trained_steps_of};
 
 /// One entry of the z table (033-R8): a replay's strategy statistic.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -93,9 +93,38 @@ struct Shared {
     disagree: AtomicU64,
     aborted: AtomicU64,
     max_frames: u32,
+    /// `[actors] game_wall_timeout_s` (AMB-042-12).
+    game_wall_timeout_s: u32,
     /// 042-R11: `<shared>/runs/<run>/replays` and the regular sample interval.
     replay_dir: PathBuf,
     replay_every: u64,
+}
+
+/// 042-R10 ①② and the queue close (042-R3), once: run by the clean stop, and by `Drop` when the
+/// run loop returns early with an error, so no game is left waiting for a queue place.
+struct Halt {
+    shared: Arc<Shared>,
+    inflight: uranium_runner::InFlight,
+    done: AtomicBool,
+}
+
+impl Halt {
+    fn stop(&self) {
+        if self.done.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        self.shared.stopping.store(true, Ordering::SeqCst);
+        self.inflight.stop_all();
+        for q in &self.shared.queues {
+            q.close();
+        }
+    }
+}
+
+impl Drop for Halt {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 /// Inference servers of league snapshots, least recently used first out.
@@ -219,7 +248,8 @@ impl LeagueSource {
             privileged: true,
             // 042-R11: every game is recorded; `done` keeps the sample and disagreements.
             save_replay: true,
-            wall_timeout_s: 3600,
+            // AMB-042-12 / 020-R3: queue waits count too; Timeout is left out like Aborted.
+            wall_timeout_s: s.game_wall_timeout_s,
         };
         s.games.lock().unwrap().insert(id, GameMeta { pick, self_player: None, enemy_race });
         Ok(Job { matchup: 0, spec, t0_builds, models: [None, None], policies, opponent: Some(opponent) })
@@ -271,6 +301,14 @@ impl JobSource for LeagueSource {
         let id = job.spec.game_id;
         let Some(mut meta) = s.games.lock().unwrap().remove(&id) else { return };
         let agent = meta.pick.agent.index();
+        if outcome != JobOutcome::Finished {
+            // 042-R3: Aborted / Timeout / Stopped is never trained. Revoke before waiting for the
+            // session's report: a session blocked on a full queue (backpressure) can report only
+            // once its waiting push is cancelled.
+            s.queues[agent].revoke(id);
+        }
+        // No lock of `shared` is held from here to the queue push below: a terminal segment that
+        // waits for a place blocks only this host slot's worker (042 queue table).
         let (result, held) = self.collect(id);
         // 030-R11: a Random enemy reaches the agent as Unknown; the race its memory saw is the race
         // played, which the per-race league windows and games.csv need.
@@ -397,7 +435,10 @@ fn keep_replay(dir: &Path, game_id: u64, reason: &str, bytes: &[u8]) -> Result<S
 /// games.csv header (042-R2, R11).
 const GAMES_HEADER: &str = "game_id,agent,opponent,class,enemy_race,map,hostd_outcome,outcome,winner_disagree,decisions,r_win,r_build,r_units,r_value,replay,replay_reason\n";
 
-/// 042-R2 train.csv header / row.
+/// 042-R2 train.csv header / row. `trained_steps`: agent steps the learners trained on, run
+/// total (continued from the checkpoint). `queue_wait_s`: seconds the games waited for a place
+/// in this agent's queue (backpressure) since this agent's previous row, counted when each wait
+/// ends.
 fn train_header() -> String {
     let mut h = String::from("time_s,agent,update,policy_version,agent_steps,games,steps,loss,policy,value,kl,kl_coef,rho_mean,adv_mean,lag_mean");
     for n in HEAD_NAMES {
@@ -406,8 +447,40 @@ fn train_header() -> String {
     for n in HEAD_NAMES {
         h += &format!(",entropy_{n}");
     }
-    h += ",dropped_lag,dropped_full,revoked,used_aborted,winner_disagree,aborted_games,steps_per_s,stage,win_open\n";
+    h += ",dropped_lag,dropped_full,revoked,used_aborted,winner_disagree,aborted_games,steps_per_s,stage,win_open,trained_steps,queue_wait_s\n";
     h
+}
+
+/// Opens train.csv for appending. A file whose header differs (an older version with other
+/// columns) is kept under a new name and a fresh file is started, so a file's rows always match
+/// its header.
+fn open_train_csv(path: &Path) -> Result<std::fs::File> {
+    let header = train_header();
+    if let Ok(f) = std::fs::File::open(path) {
+        let mut first = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(f), &mut first)?;
+        if !first.is_empty() && first.trim_end() != header.trim_end() {
+            let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let old = path.with_file_name(format!("train-{secs}.csv"));
+            std::fs::rename(path, &old).with_context(|| format!("moving {} aside", path.display()))?;
+            crate::elog!("[rl] train.csv has other columns: kept as {}, new file started (042-R2)", old.display());
+        }
+    }
+    let mut csv = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    if csv.metadata()?.len() == 0 {
+        csv.write_all(header.as_bytes())?;
+    }
+    Ok(csv)
+}
+
+/// TrainState.extra of an RL checkpoint (061-R10): games and trained agent steps (042-R2).
+fn state_extra(shared: &Shared, trained_steps: u64) -> serde_json::Value {
+    serde_json::json!({ "games": shared.games_done.load(Ordering::SeqCst), "trained_steps": trained_steps })
+}
+
+/// 042-R2: `trained_steps` of a resumed checkpoint; 0 for one written before it was recorded.
+fn resumed_trained_steps(extra: &serde_json::Value) -> u64 {
+    extra.get("trained_steps").and_then(|v| v.as_u64()).unwrap_or(0)
 }
 
 fn load_z(path: &Option<PathBuf>) -> Result<Vec<ZEntry>> {
@@ -514,6 +587,11 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         league.fixed_t0 = args.fixed_t0;
     }
     let mut step = resume.as_ref().map_or(0, |r| r.step);
+    // 042-R2: trained agent steps continue from the checkpoint too (0 for one written before).
+    let mut trained_steps = match &resume {
+        Some(r) => ckpt::load_state(&r.dir)?.map_or(0, |s| resumed_trained_steps(&s.extra)),
+        None => 0,
+    };
     if let Some(r) = &resume {
         crate::elog!("[rl] resumed {} at step {} (recovered {}), stage {:?}", args.run, r.step, r.recovered, league.stage);
     }
@@ -526,7 +604,10 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         .map(|(a, id)| (id.clone(), run.shared_dir().join("league").join(snapshot_name(id)).join(ckpt::AGENTS_DIR).join(a.name())))
         .collect();
 
-    let queues: Vec<Arc<SegmentQueue>> = (0..3).map(|_| Arc::new(SegmentQueue::new(cfg.actors.queue_batches * cfg.lanes))).collect();
+    // 042 queue table: `queue_batches` x `lanes` per agent (>= lanes, so a full queue is always
+    // ready for the learner and a waiting game is never stuck behind it), backpressure when full.
+    let wait_max = Duration::from_secs(cfg.actors.queue_wait_max_s);
+    let queues: Vec<Arc<SegmentQueue>> = (0..3).map(|_| Arc::new(SegmentQueue::with_policy(cfg.actors.queue_batches * cfg.lanes, cfg.actors.queue_full, wait_max))).collect();
     let (tx, rx) = mpsc::channel();
     let routes = Routes::default();
     let builds = T0Builds::default();
@@ -560,6 +641,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         disagree: AtomicU64::new(0),
         aborted: AtomicU64::new(0),
         max_frames: 86_400,
+        game_wall_timeout_s: cfg.actors.game_wall_timeout_s,
         replay_dir,
         replay_every: cfg.replays.sample_every,
     });
@@ -573,6 +655,8 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         .collect();
     let source = Arc::new(LeagueSource { shared: shared.clone(), hooks });
     let dispatch = Dispatch::new(routes, Default::default(), builds);
+    // 042-R3: from here on any return, an error included, stops the games and closes the queues.
+    let halt = Halt { shared: shared.clone(), inflight: dispatch.inflight.clone(), done: AtomicBool::new(false) };
     let hosts: Vec<HostEntry> = uranium_runner::hosts()?;
 
     let games_thread = {
@@ -581,11 +665,10 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     };
 
     let base = RewardWeights::load()?;
-    let mut csv = std::fs::OpenOptions::new().create(true).append(true).open(args.log_dir.join("train.csv"))?;
-    if csv.metadata()?.len() == 0 {
-        csv.write_all(train_header().as_bytes())?;
-    }
+    let mut csv = open_train_csv(&args.log_dir.join("train.csv"))?;
     let started = Instant::now();
+    // Each agent's queue wait total at its previous train.csv row (042-R2 `queue_wait_s`).
+    let mut wait_seen = [0.0f64; 3];
     let (mut last_ckpt, mut last_beat) = (Instant::now(), Instant::now());
     let mut lock_lost = false;
     let mut updates_this_run = 0u64;
@@ -622,7 +705,10 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         let i = agent.index();
         let Some(batch) = queues[i].try_take(cfg.lanes, learners.version(i), cfg.actors.max_policy_lag) else { continue };
         let weights = shared.league.lock().unwrap().reward_weights(&base);
+        let trained = trained_steps_of(&batch);
         let stats = learners.update(i, batch, weights)?;
+        // 042-R2 / R12: agent steps the learners trained on, run total.
+        trained_steps += trained;
         updates_this_run += 1;
         let snap = shared.league.lock().unwrap().on_update(agent);
         // 042 K: weights to the actors every `weight_push_every` updates.
@@ -635,13 +721,16 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
             steps_per_s = (now - last_rate.1) as f64 / last_rate.0.elapsed().as_secs_f64();
             last_rate = (Instant::now(), now);
         }
-        write_row(&mut csv, started, agent, &stats, &shared, &queues, learners.version(i), steps_per_s)?;
+        let wait_total = queues[i].stats().wait_s;
+        let queue_wait_s = wait_total - wait_seen[i];
+        wait_seen[i] = wait_total;
+        write_row(&mut csv, started, agent, &stats, &shared, &queues, learners.version(i), steps_per_s, trained_steps, queue_wait_s)?;
         if let Some(reset) = snap {
             // A league snapshot is a pushed checkpoint copied to league/<name> (061-R2).
             let id = shared.league.lock().unwrap().add_snapshot(agent);
             let league_now = shared.league.lock().unwrap().clone();
             step += 1;
-            match save_checkpoint(&mut run, step, learners.as_mut(), &cfg, &league_now, &args, serde_json::json!({ "games": shared.games_done.load(Ordering::SeqCst) }))? {
+            match save_checkpoint(&mut run, step, learners.as_mut(), &cfg, &league_now, &args, state_extra(&shared, trained_steps))? {
                 PushOutcome::Pushed => {
                     let dir = run.league_snapshot(step, &snapshot_name(&id))?;
                     shared.snapshots.lock().unwrap().dirs.insert(id.clone(), dir.join(ckpt::AGENTS_DIR).join(agent.name()));
@@ -658,7 +747,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         if last_ckpt.elapsed() >= Duration::from_secs(args.checkpoint_minutes.max(1) * 60) {
             step += 1;
             let league_now = shared.league.lock().unwrap().clone();
-            let out = save_checkpoint(&mut run, step, learners.as_mut(), &cfg, &league_now, &args, serde_json::json!({ "games": shared.games_done.load(Ordering::SeqCst) }))?;
+            let out = save_checkpoint(&mut run, step, learners.as_mut(), &cfg, &league_now, &args, state_extra(&shared, trained_steps))?;
             crate::elog!("[rl] checkpoint {} {:?}", crate::storage::ckpt_name(step), out);
             if out == PushOutcome::Pushed {
                 prune_logged(&mut run);
@@ -669,11 +758,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
 
     // 042-R10: ① no new games ② stop games in flight (Aborted, revoked) ③ checkpoint + push
     // ④ release the lock only when the push went through (061-R11-5/6).
-    shared.stopping.store(true, Ordering::SeqCst);
-    dispatch.inflight.stop_all();
-    for q in &queues {
-        q.close();
-    }
+    halt.stop();
     let _ = games_thread.join();
     if lock_lost {
         crate::elog!("[rl] lock lost: no final push, lock left as is (061-R11-4)");
@@ -681,7 +766,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     }
     step = step.max(shared.agent_steps.load(Ordering::SeqCst)) + 1;
     let league_now = shared.league.lock().unwrap().clone();
-    let out = save_checkpoint(&mut run, step, learners.as_mut(), &cfg, &league_now, &args, serde_json::json!({ "games": shared.games_done.load(Ordering::SeqCst) }))?;
+    let out = save_checkpoint(&mut run, step, learners.as_mut(), &cfg, &league_now, &args, state_extra(&shared, trained_steps))?;
     crate::elog!("[rl] final checkpoint {}: {out:?}", crate::storage::ckpt_name(step));
     match out {
         PushOutcome::Pushed => run.release()?,
@@ -696,7 +781,7 @@ pub fn snapshot_name(id: &str) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn write_row(csv: &mut std::fs::File, started: Instant, agent: AgentKind, s: &UpdateStats, shared: &Shared, queues: &[Arc<SegmentQueue>], version: u64, steps_per_s: f64) -> Result<()> {
+fn write_row(csv: &mut std::fs::File, started: Instant, agent: AgentKind, s: &UpdateStats, shared: &Shared, queues: &[Arc<SegmentQueue>], version: u64, steps_per_s: f64, trained_steps: u64, queue_wait_s: f64) -> Result<()> {
     let q = queues[agent.index()].stats();
     let mut row = format!(
         "{:.0},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
@@ -724,7 +809,7 @@ fn write_row(csv: &mut std::fs::File, started: Instant, agent: AgentKind, s: &Up
     }
     let stage = shared.league.lock().unwrap().stage;
     row += &format!(
-        ",{},{},{},{},{},{},{:.2},{:?},{}\n",
+        ",{},{},{},{},{},{},{:.2},{:?},{},{},{:.3}\n",
         q.dropped_lag,
         q.dropped_full,
         q.revoked,
@@ -733,7 +818,9 @@ fn write_row(csv: &mut std::fs::File, started: Instant, agent: AgentKind, s: &Up
         shared.aborted.load(Ordering::SeqCst),
         steps_per_s,
         stage,
-        s.win_open
+        s.win_open,
+        trained_steps,
+        queue_wait_s
     );
     csv.write_all(row.as_bytes())?;
     Ok(())
@@ -766,9 +853,39 @@ mod tests {
         assert!(bots.iter().any(|b| b.name == "zzzkbot" && b.races == vec![Race::Zerg]));
     }
 
+    /// 042-R2: train.csv ends with `trained_steps` and `queue_wait_s` (2026-10-31).
     #[test]
-    fn train_csv_header_columns() {
-        assert_eq!(train_header().trim().split(',').count(), 15 + 12 + 9);
+    fn train_csv_header_columns_042_r2() {
+        assert_eq!(train_header().trim().split(',').count(), 15 + 12 + 11);
+        assert!(train_header().trim().ends_with(",win_open,trained_steps,queue_wait_s"));
+    }
+
+    /// 042-R2: a train.csv with an older header is kept aside, the new file gets the current
+    /// header; a current file is appended to as is.
+    #[test]
+    fn train_csv_with_other_columns_is_kept_aside_042_r2() {
+        let dir = std::env::temp_dir().join(format!("uranium-rl-csv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("train.csv");
+        std::fs::write(&path, "time_s,agent\n1,main\n").unwrap();
+        drop(open_train_csv(&path).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), train_header());
+        let kept: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).filter(|n| n.starts_with("train-")).collect();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(std::fs::read_to_string(dir.join(&kept[0])).unwrap(), "time_s,agent\n1,main\n");
+        let mut f = open_train_csv(&path).unwrap();
+        f.write_all(b"row\n").unwrap();
+        drop(f);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), format!("{}row\n", train_header()));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 042-R2: `trained_steps` continues from the checkpoint; older checkpoints start at 0.
+    #[test]
+    fn trained_steps_resume_from_checkpoint_042_r2() {
+        assert_eq!(resumed_trained_steps(&serde_json::json!({ "games": 3, "trained_steps": 12_345 })), 12_345);
+        assert_eq!(resumed_trained_steps(&serde_json::json!({ "games": 3 })), 0);
+        assert_eq!(resumed_trained_steps(&serde_json::Value::Null), 0);
     }
 
     /// 042-R11: one regular sample per `every` game ids, every disagreement, nothing else.

@@ -7,10 +7,13 @@
 //! 042-R3 (AMB-042-6): segments are queued as soon as they are complete; when the game turns out
 //! Aborted, the ones still in the queue are revoked. 042-R4: segments whose behaviour version
 //! lags the learner by more than `max_policy_lag` updates are dropped when a batch is taken.
+//! A full queue applies backpressure (042 queue table, `queue_full = "wait"`): the game whose
+//! segment does not fit waits for a place, in arrival order, at most `queue_wait_max_s`.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use uranium_env::features::executor::HostAction;
 use uranium_env::features::extract::privileged;
@@ -22,6 +25,8 @@ use uranium_agent::infer::HEADS;
 
 /// Observations with their two large planes compressed (042), shared with BC (041-R18).
 pub use uranium_data::pack::PackedObs;
+
+use crate::config::QueueFull;
 
 /// One decision of a learning session.
 #[derive(Clone)]
@@ -59,18 +64,30 @@ impl Segment {
     }
 }
 
+/// 042-R2 `trained_steps`: agent steps a batch trains on (each decision once, the overlap
+/// step of a non-terminal segment only bootstraps).
+pub fn trained_steps(batch: &[Segment]) -> u64 {
+    batch.iter().map(|s| s.trained() as u64).sum()
+}
+
 /// Counters of the queue (042-R2 logging).
 #[derive(Debug, Clone, Copy, Default, serde::Serialize)]
 pub struct QueueStats {
     pub pushed: u64,
     /// 042-R4: behaviour version too old.
     pub dropped_lag: u64,
-    /// Queue full: oldest dropped.
+    /// Queue full: oldest dropped (`drop_oldest`, or a wait that reached `queue_wait_max_s`).
     pub dropped_full: u64,
-    /// 042-R3: revoked because their game was Aborted.
+    /// 042-R3: revoked because their game was Aborted (queued, waiting, or arriving late).
     pub revoked: u64,
     /// 042-R3: segments of an Aborted game that the learner had already used.
     pub used_aborted: u64,
+    /// Pushes that waited for a place (042 queue table, backpressure).
+    pub waits: u64,
+    /// 042-R2 `queue_wait_s`: seconds those pushes waited, summed (counted when a wait ends).
+    pub wait_s: f64,
+    /// Longest single wait in seconds.
+    pub wait_max_s: f64,
 }
 
 #[derive(Default)]
@@ -78,6 +95,12 @@ struct QueueInner {
     segs: VecDeque<Segment>,
     /// Segments already taken per game still running (for `used_aborted`).
     taken: HashMap<u64, u64>,
+    /// 042-R3: games revoked so far; their pushes (waiting or late) are discarded.
+    revoked_games: HashSet<u64>,
+    /// Tickets of the pushes waiting for a place, in arrival order: only the front one may
+    /// insert, so waiting games go FIFO (a Condvar alone wakes in no particular order).
+    line: VecDeque<u64>,
+    next_ticket: u64,
     stats: QueueStats,
     closed: bool,
 }
@@ -85,19 +108,74 @@ struct QueueInner {
 /// One queue per learning agent.
 pub struct SegmentQueue {
     inner: Mutex<QueueInner>,
+    /// Segments arrived (learner `take`).
     ready: Condvar,
+    /// A place freed up, the line moved, a game was revoked or the queue closed (waiting pushes).
+    space: Condvar,
     capacity: usize,
+    full: QueueFull,
+    wait_max: Duration,
 }
 
 impl SegmentQueue {
+    /// A queue that drops the oldest segment when full (`queue_full = "drop_oldest"`).
     pub fn new(capacity: usize) -> Self {
-        Self { inner: Mutex::new(QueueInner::default()), ready: Condvar::new(), capacity: capacity.max(1) }
+        Self::with_policy(capacity, QueueFull::DropOldest, Duration::ZERO)
     }
 
+    /// 042 queue table: `full` decides what a push into a full queue does, `wait_max` caps one
+    /// wait (`queue_wait_max_s`).
+    pub fn with_policy(capacity: usize, full: QueueFull, wait_max: Duration) -> Self {
+        Self { inner: Mutex::new(QueueInner::default()), ready: Condvar::new(), space: Condvar::new(), capacity: capacity.max(1), full, wait_max }
+    }
+
+    /// Queues a segment. A full queue in `wait` mode blocks the calling thread, which belongs to
+    /// this game only (its session thread, or the runner worker of its host slot for the
+    /// terminal segment), until a place frees up: waiting games go in arrival order; after
+    /// `wait_max` the oldest queued segment is dropped (`dropped_full`) and this one goes in.
+    /// 042-R3: nothing is queued for a revoked game (also while it waits) or a closed queue.
     pub fn push(&self, s: Segment) {
         let mut q = self.inner.lock().unwrap();
         if q.closed {
             return;
+        }
+        if q.revoked_games.contains(&s.game_id) {
+            q.stats.revoked += 1;
+            return;
+        }
+        if self.full == QueueFull::Wait && (q.segs.len() >= self.capacity || !q.line.is_empty()) {
+            let ticket = q.next_ticket;
+            q.next_ticket += 1;
+            q.line.push_back(ticket);
+            let started = Instant::now();
+            let deadline = started + self.wait_max;
+            let admitted = loop {
+                if q.closed {
+                    break false;
+                }
+                if q.revoked_games.contains(&s.game_id) {
+                    q.stats.revoked += 1;
+                    break false;
+                }
+                let now = Instant::now();
+                if q.line.front() == Some(&ticket) && (q.segs.len() < self.capacity || now >= deadline) {
+                    break true;
+                }
+                // Past its deadline but not first: the waiter ahead has an earlier deadline and
+                // wakes this one when it leaves the line; the timeout is only a safety net.
+                let wait = deadline.saturating_duration_since(now).max(Duration::from_millis(100));
+                q = self.space.wait_timeout(q, wait).unwrap().0;
+            };
+            q.line.retain(|t| *t != ticket);
+            let waited = started.elapsed().as_secs_f64();
+            q.stats.waits += 1;
+            q.stats.wait_s += waited;
+            q.stats.wait_max_s = q.stats.wait_max_s.max(waited);
+            // The next game in line may go now.
+            self.space.notify_all();
+            if !admitted {
+                return;
+            }
         }
         q.stats.pushed += 1;
         q.segs.push_back(s);
@@ -108,15 +186,18 @@ impl SegmentQueue {
         self.ready.notify_all();
     }
 
-    /// 042-R3: the game was Aborted; drop its queued segments.
+    /// 042-R3: the game was Aborted (or stopped); drop its queued segments, cancel its waiting
+    /// push and refuse the ones that arrive later.
     pub fn revoke(&self, game_id: u64) {
         let mut q = self.inner.lock().unwrap();
+        q.revoked_games.insert(game_id);
         let before = q.segs.len();
         q.segs.retain(|s| s.game_id != game_id);
         q.stats.revoked += (before - q.segs.len()) as u64;
         if let Some(n) = q.taken.remove(&game_id) {
             q.stats.used_aborted += n;
         }
+        self.space.notify_all();
     }
 
     /// The game finished normally.
@@ -124,42 +205,43 @@ impl SegmentQueue {
         self.inner.lock().unwrap().taken.remove(&game_id);
     }
 
+    /// 042-R4 lag drop, then `lanes` segments in FIFO order if there are that many. Every freed
+    /// place wakes the waiting pushes.
+    fn take_locked(&self, q: &mut QueueInner, lanes: usize, learner_version: u64, max_lag: u64) -> Option<Vec<Segment>> {
+        let before = q.segs.len();
+        q.segs.retain(|s| learner_version.saturating_sub(s.version()) <= max_lag);
+        q.stats.dropped_lag += (before - q.segs.len()) as u64;
+        let batch = (q.segs.len() >= lanes).then(|| q.segs.drain(..lanes).collect::<Vec<Segment>>());
+        if let Some(b) = &batch {
+            for s in b {
+                *q.taken.entry(s.game_id).or_default() += 1;
+            }
+        }
+        if q.segs.len() < before {
+            self.space.notify_all();
+        }
+        batch
+    }
+
     /// `lanes` segments not older than `max_lag` updates behind `learner_version` (042-R4), or
     /// `None` when the queue was closed. Blocks until enough segments are queued.
     pub fn take(&self, lanes: usize, learner_version: u64, max_lag: u64) -> Option<Vec<Segment>> {
         let mut q = self.inner.lock().unwrap();
         loop {
-            let before = q.segs.len();
-            q.segs.retain(|s| learner_version.saturating_sub(s.version()) <= max_lag);
-            q.stats.dropped_lag += (before - q.segs.len()) as u64;
             if q.closed {
                 return None;
             }
-            if q.segs.len() >= lanes {
-                let batch: Vec<Segment> = q.segs.drain(..lanes).collect();
-                for s in &batch {
-                    *q.taken.entry(s.game_id).or_default() += 1;
-                }
-                return Some(batch);
+            if let Some(b) = self.take_locked(&mut q, lanes, learner_version, max_lag) {
+                return Some(b);
             }
-            q = self.ready.wait_timeout(q, std::time::Duration::from_millis(500)).unwrap().0;
+            q = self.ready.wait_timeout(q, Duration::from_millis(500)).unwrap().0;
         }
     }
 
     /// Non-blocking variant of `take` (tests, time-shared learners).
     pub fn try_take(&self, lanes: usize, learner_version: u64, max_lag: u64) -> Option<Vec<Segment>> {
         let mut q = self.inner.lock().unwrap();
-        let before = q.segs.len();
-        q.segs.retain(|s| learner_version.saturating_sub(s.version()) <= max_lag);
-        q.stats.dropped_lag += (before - q.segs.len()) as u64;
-        if q.segs.len() < lanes {
-            return None;
-        }
-        let batch: Vec<Segment> = q.segs.drain(..lanes).collect();
-        for s in &batch {
-            *q.taken.entry(s.game_id).or_default() += 1;
-        }
-        Some(batch)
+        self.take_locked(&mut q, lanes, learner_version, max_lag)
     }
 
     pub fn len(&self) -> usize {
@@ -170,16 +252,23 @@ impl SegmentQueue {
         self.len() == 0
     }
 
+    /// Pushes waiting for a place now.
+    pub fn waiting(&self) -> usize {
+        self.inner.lock().unwrap().line.len()
+    }
+
     pub fn stats(&self) -> QueueStats {
         self.inner.lock().unwrap().stats
     }
 
-    /// 042-R10 ①: stop accepting segments and wake a waiting learner.
+    /// 042-R10 ① / 042-R3: stop accepting segments, release every waiting push (its segment is
+    /// not queued) and wake a waiting learner.
     pub fn close(&self) {
         let mut q = self.inner.lock().unwrap();
         q.closed = true;
         q.segs.clear();
         self.ready.notify_all();
+        self.space.notify_all();
     }
 }
 
@@ -391,6 +480,9 @@ mod tests {
         let r = rx.recv().unwrap();
         assert_eq!(r.outcome, Some(Outcome::Win));
         assert_eq!(r.decisions, 6);
+        // 042-R2 `trained_steps`: a finished game's segments train each decision once.
+        let (a, b) = (std::slice::from_ref(&a), std::slice::from_ref(&b));
+        assert_eq!(trained_steps(a) + trained_steps(b), r.decisions);
         assert_eq!(r.reward_sum, [1.0, 0.0, 0.0, 15.5]);
         // 030-R11: the race the agent's memory knew is reported for the per-race league tables.
         assert_eq!(r.enemy_race, Some(uranium_proto::Race::Zerg));
@@ -418,9 +510,19 @@ mod tests {
     #[test]
     fn stale_segments_are_dropped_042_r4() {
         let q = SegmentQueue::new(16);
-        let seg = |v: u64| Segment {
+        for v in [0, 5, 40, 41] {
+            q.push(seg(v, v));
+        }
+        let b = q.try_take(2, 72, 32).unwrap();
+        assert_eq!(b.iter().map(|s| s.game_id).collect::<Vec<_>>(), vec![40, 41]);
+        assert_eq!(q.stats().dropped_lag, 2);
+    }
+
+    /// A one-step terminal segment of `game_id` with behaviour version `version`.
+    fn seg(game_id: u64, version: u64) -> Segment {
+        Segment {
             agent: 0,
-            game_id: v,
+            game_id,
             steps: vec![Step {
                 obs: PackedObs::pack(&fake_obs(0)),
                 action: HostAction { action: 0, delay_bucket: 0, queued: false, selected: vec![], target_unit: None, target_loc: None },
@@ -428,16 +530,191 @@ mod tests {
                 head_log_prob: [0.0; HEADS],
                 reward: [0.0; 4],
                 privileged: PrivilegedTensors { summary: vec![] },
-                version: v,
+                version,
             }],
             state0: HostState::default(),
             terminal: true,
-        };
-        for v in [0, 5, 40, 41] {
-            q.push(seg(v));
         }
-        let b = q.try_take(2, 72, 32).unwrap();
-        assert_eq!(b.iter().map(|s| s.game_id).collect::<Vec<_>>(), vec![40, 41]);
-        assert_eq!(q.stats().dropped_lag, 2);
+    }
+
+    /// A `wait` queue whose waits never reach the cap within a test.
+    fn wait_queue(capacity: usize) -> Arc<SegmentQueue> {
+        Arc::new(SegmentQueue::with_policy(capacity, QueueFull::Wait, Duration::from_secs(60)))
+    }
+
+    /// Pushes `seg(game_id, version)` from another thread; the receiver gets the id once the
+    /// push returned.
+    fn push_in_thread(q: &Arc<SegmentQueue>, game_id: u64, version: u64) -> (std::thread::JoinHandle<()>, mpsc::Receiver<u64>) {
+        let (tx, rx) = mpsc::channel();
+        let q = q.clone();
+        let h = std::thread::spawn(move || {
+            q.push(seg(game_id, version));
+            tx.send(game_id).unwrap();
+        });
+        (h, rx)
+    }
+
+    /// Waits (bounded) until `n` pushes wait in line.
+    fn until_waiting(q: &SegmentQueue, n: usize) {
+        let end = Instant::now() + Duration::from_secs(10);
+        while q.waiting() != n {
+            assert!(Instant::now() < end, "expected {n} waiting pushes, have {}", q.waiting());
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    const BLOCKED: Duration = Duration::from_millis(100);
+    const RELEASED: Duration = Duration::from_secs(10);
+
+    /// 042 queue table (backpressure): a push into a full queue waits until the learner takes a
+    /// batch, then goes in; nothing is dropped and the wait is counted for `queue_wait_s`.
+    #[test]
+    fn full_queue_push_waits_until_take_042() {
+        let q = wait_queue(2);
+        q.push(seg(1, 0));
+        q.push(seg(2, 0));
+        let (h, rx) = push_in_thread(&q, 3, 0);
+        until_waiting(&q, 1);
+        assert!(rx.recv_timeout(BLOCKED).is_err(), "the push must wait while the queue is full");
+        assert_eq!(q.try_take(1, 0, 100).unwrap()[0].game_id, 1);
+        assert_eq!(rx.recv_timeout(RELEASED).unwrap(), 3);
+        h.join().unwrap();
+        let b = q.try_take(2, 0, 100).unwrap();
+        assert_eq!(b.iter().map(|s| s.game_id).collect::<Vec<_>>(), vec![2, 3]);
+        let st = q.stats();
+        assert_eq!((st.pushed, st.dropped_full, st.waits), (3, 0, 1));
+        assert!(st.wait_s > 0.0 && st.wait_max_s == st.wait_s);
+    }
+
+    /// 042 queue table: waiting games go in the order they arrived (FIFO), one per freed place,
+    /// and a later push queues behind the waiting ones.
+    #[test]
+    fn waiting_pushes_go_in_fifo_order_042() {
+        let q = wait_queue(1);
+        q.push(seg(0, 0));
+        let mut waiters = Vec::new();
+        for (n, id) in [10u64, 11, 12, 13].into_iter().enumerate() {
+            waiters.push(push_in_thread(&q, id, 0));
+            until_waiting(&q, n + 1);
+        }
+        let mut order = Vec::new();
+        let end = Instant::now() + RELEASED;
+        while order.len() < 5 {
+            assert!(Instant::now() < end, "taken so far {order:?}");
+            match q.try_take(1, 0, 100) {
+                Some(b) => order.push(b[0].game_id),
+                None => std::thread::sleep(Duration::from_millis(2)),
+            }
+        }
+        assert_eq!(order, vec![0, 10, 11, 12, 13]);
+        for (h, _) in waiters {
+            h.join().unwrap();
+        }
+        assert_eq!(q.stats().dropped_full, 0);
+    }
+
+    /// 042-R3: revoking a game cancels its waiting push (counted as revoked, not queued), lets
+    /// the next waiter keep its place, and a later push of that game is refused.
+    #[test]
+    fn revoke_cancels_a_waiting_push_042_r3() {
+        let q = wait_queue(1);
+        q.push(seg(1, 0));
+        let (ha, rxa) = push_in_thread(&q, 5, 0);
+        until_waiting(&q, 1);
+        let (hb, rxb) = push_in_thread(&q, 6, 0);
+        until_waiting(&q, 2);
+        q.revoke(5);
+        assert_eq!(rxa.recv_timeout(RELEASED).unwrap(), 5);
+        ha.join().unwrap();
+        assert!(rxb.recv_timeout(BLOCKED).is_err(), "game 6 still waits for a place");
+        assert_eq!(q.len(), 1);
+        assert_eq!(q.stats().revoked, 1);
+        assert_eq!(q.try_take(1, 0, 100).unwrap()[0].game_id, 1);
+        assert_eq!(rxb.recv_timeout(RELEASED).unwrap(), 6);
+        hb.join().unwrap();
+        // A late segment of the revoked game: refused at once, even with a free place.
+        q.push(seg(5, 0));
+        assert_eq!(q.try_take(1, 0, 100).unwrap()[0].game_id, 6);
+        assert!(q.is_empty());
+        assert_eq!(q.stats().revoked, 2);
+    }
+
+    /// 042-R3: a game revoked before its segment arrives never gets it queued (drop_oldest too).
+    #[test]
+    fn push_of_a_revoked_game_is_ignored_042_r3() {
+        for q in [wait_queue(4), Arc::new(SegmentQueue::new(4))] {
+            q.revoke(9);
+            q.push(seg(9, 0));
+            q.push(seg(8, 0));
+            assert_eq!(q.len(), 1);
+            let st = q.stats();
+            assert_eq!((st.pushed, st.revoked), (1, 1));
+        }
+    }
+
+    /// 042-R10 / R3: closing the queue releases every waiting push without queueing it.
+    #[test]
+    fn close_releases_waiting_pushes_042_r10() {
+        let q = wait_queue(1);
+        q.push(seg(1, 0));
+        let mut waiters = Vec::new();
+        for id in 2..5u64 {
+            waiters.push(push_in_thread(&q, id, 0));
+            until_waiting(&q, id as usize - 1);
+        }
+        q.close();
+        for (h, rx) in waiters {
+            rx.recv_timeout(RELEASED).unwrap();
+            h.join().unwrap();
+        }
+        assert!(q.is_empty());
+        assert_eq!(q.waiting(), 0);
+        q.push(seg(7, 0));
+        assert!(q.is_empty(), "closed queue accepts nothing");
+    }
+
+    /// 042-R4 + backpressure: segments dropped for lag free places and wake a waiting push.
+    #[test]
+    fn lag_drop_wakes_a_waiting_push_042_r4() {
+        let q = wait_queue(1);
+        q.push(seg(1, 0));
+        let (h, rx) = push_in_thread(&q, 2, 90);
+        until_waiting(&q, 1);
+        // Not enough segments for 2 lanes, but the stale one is dropped.
+        assert!(q.try_take(2, 100, 32).is_none());
+        assert_eq!(rx.recv_timeout(RELEASED).unwrap(), 2);
+        h.join().unwrap();
+        assert_eq!(q.try_take(1, 100, 32).unwrap()[0].game_id, 2);
+        assert_eq!(q.stats().dropped_lag, 1);
+    }
+
+    /// AMB-042-11: a wait that reaches `queue_wait_max_s` drops the oldest segment
+    /// (`dropped_full`) and queues the waiting one.
+    #[test]
+    fn wait_cap_drops_the_oldest_042() {
+        let q = SegmentQueue::with_policy(2, QueueFull::Wait, Duration::from_millis(50));
+        q.push(seg(1, 0));
+        q.push(seg(2, 0));
+        let t = Instant::now();
+        q.push(seg(3, 0));
+        assert!(t.elapsed() >= Duration::from_millis(50));
+        let b = q.try_take(2, 0, 100).unwrap();
+        assert_eq!(b.iter().map(|s| s.game_id).collect::<Vec<_>>(), vec![2, 3]);
+        let st = q.stats();
+        assert_eq!((st.pushed, st.dropped_full, st.waits), (3, 1, 1));
+        assert!(st.wait_s >= 0.05);
+    }
+
+    /// `queue_full = "drop_oldest"`: the previous behaviour, no waiting.
+    #[test]
+    fn drop_oldest_mode_never_waits_042() {
+        let q = SegmentQueue::with_policy(2, QueueFull::DropOldest, Duration::from_secs(60));
+        for id in 1..=3 {
+            q.push(seg(id, 0));
+        }
+        let b = q.try_take(2, 0, 100).unwrap();
+        assert_eq!(b.iter().map(|s| s.game_id).collect::<Vec<_>>(), vec![2, 3]);
+        let st = q.stats();
+        assert_eq!((st.dropped_full, st.waits), (1, 0));
     }
 }

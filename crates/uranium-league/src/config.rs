@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -61,11 +61,40 @@ impl KlConfig {
     }
 }
 
+/// 042 queue table: what a push into a full trajectory queue does.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueFull {
+    /// Backpressure: the pushing game waits for a place, FIFO, at most `queue_wait_max_s`.
+    #[default]
+    Wait,
+    /// Previous behaviour: never wait, drop the oldest segment.
+    DropOldest,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ActorsConfig {
     pub weight_push_every: u64,
     pub max_policy_lag: u64,
+    /// Queue capacity in batches of `lanes` segments; at least 1 (042 queue table).
     pub queue_batches: usize,
+    /// Absent in configs copied into checkpoints before 2026-10-31: `wait`.
+    #[serde(default)]
+    pub queue_full: QueueFull,
+    /// Longest single wait for a queue place before the oldest segment is dropped (AMB-042-11).
+    #[serde(default = "default_queue_wait_max_s")]
+    pub queue_wait_max_s: u64,
+    /// Wall-clock limit of one RL game, `StartGame.wall_timeout_s` (AMB-042-12, 020-R3); at least 1.
+    #[serde(default = "default_game_wall_timeout_s")]
+    pub game_wall_timeout_s: u32,
+}
+
+fn default_queue_wait_max_s() -> u64 {
+    120
+}
+
+fn default_game_wall_timeout_s() -> u32 {
+    7_200
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -153,7 +182,20 @@ pub struct RlConfig {
 
 impl RlConfig {
     pub fn load(path: &Path) -> Result<Self> {
-        Ok(toml::from_str(&std::fs::read_to_string(path)?)?)
+        let c: Self = toml::from_str(&std::fs::read_to_string(path)?)?;
+        c.validate().with_context(|| format!("{}", path.display()))?;
+        Ok(c)
+    }
+
+    /// Values the 042 queue table forbids.
+    pub fn validate(&self) -> Result<()> {
+        if self.actors.queue_batches < 1 {
+            bail!("[actors] queue_batches must be at least 1 (042 queue table)");
+        }
+        if self.actors.game_wall_timeout_s < 1 {
+            bail!("[actors] game_wall_timeout_s must be at least 1 (042, 020-R3)");
+        }
+        Ok(())
     }
 
     /// The repository's `config/rl.toml`.
@@ -175,5 +217,34 @@ mod tests {
         assert!((c.kl.coef(20_000) - 0.05).abs() < 1e-6);
         assert!((c.kl.coef(10_000_000) - 0.01).abs() < 1e-6);
         assert_eq!(c.replays.sample_every, 100, "042-R11");
+        // 042 queue table, AMB-042-11 / 12.
+        assert_eq!(c.actors.queue_full, QueueFull::Wait);
+        assert_eq!(c.actors.queue_wait_max_s, 120);
+        assert_eq!(c.actors.game_wall_timeout_s, 7_200);
+        c.validate().unwrap();
+    }
+
+    fn with_actors(actors: &str) -> Result<RlConfig> {
+        let text = include_str!("../../../config/rl.toml");
+        let start = text.find("[actors]").unwrap();
+        let end = start + text[start..].find("\n[league]").unwrap();
+        let c: RlConfig = toml::from_str(&format!("{}[actors]\n{actors}\n{}", &text[..start], &text[end..]))?;
+        c.validate()?;
+        Ok(c)
+    }
+
+    /// 042 queue table: `queue_batches` 0, `game_wall_timeout_s` 0 and unknown `queue_full`
+    /// values are load errors; absent new keys (configs copied into older checkpoints) take the
+    /// defaults.
+    #[test]
+    fn actors_queue_settings_are_checked_042() {
+        let base = "weight_push_every = 4\nmax_policy_lag = 32\n";
+        let c = with_actors(&format!("{base}queue_batches = 4")).unwrap();
+        assert_eq!((c.actors.queue_full, c.actors.queue_wait_max_s, c.actors.game_wall_timeout_s), (QueueFull::Wait, 120, 7_200));
+        let c = with_actors(&format!("{base}queue_batches = 1\nqueue_full = \"drop_oldest\"")).unwrap();
+        assert_eq!(c.actors.queue_full, QueueFull::DropOldest);
+        assert!(with_actors(&format!("{base}queue_batches = 0")).is_err());
+        assert!(with_actors(&format!("{base}queue_batches = 4\nqueue_full = \"block\"")).is_err());
+        assert!(with_actors(&format!("{base}queue_batches = 4\ngame_wall_timeout_s = 0")).is_err());
     }
 }
