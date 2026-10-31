@@ -1211,8 +1211,9 @@ fn same_seed_same_acts_same_game_011_ac4() {
 enum Check {
     /// Train_SCV with the supply full on this producer, its queue length and our completed SCVs.
     SupplyTrain { producer: UnitId, queue: usize, done: usize },
-    /// Attack_Unit / Smart_Unit on the remembered enemy building, issued to this unit.
-    Ghost(&'static str, UnitId),
+    /// Attack_Unit / Smart_Unit on the remembered enemy building, issued to this unit; the
+    /// building's remembered position.
+    Ghost(&'static str, UnitId, Pos),
     /// A group command with an unmovable and an unknown unit (011-R20 (4)).
     Group,
     Other,
@@ -1234,8 +1235,14 @@ struct GhostTry {
     action: &'static str,
     accepted: bool,
     rejections: usize,
-    /// The unit's order at the next observation.
+    /// The unit's order, order target and order position at the next observation.
     order_after: Option<u16>,
+    order_target: Option<UnitId>,
+    order_pos: Option<Pos>,
+    /// The remembered position the ghost command was sent to.
+    building_pos: Pos,
+    /// The building's tile was visible at the next observation.
+    building_visible: bool,
     /// The selected unit can attack and move (the 0016 unit-side check passes, 011-R23 (2)).
     attacker: bool,
 }
@@ -1337,10 +1344,20 @@ impl PreRl {
                     let after = f.units.iter().find(|u| u.id == producer).map(|p| queue_len(p) + completed_scvs(f, me).saturating_sub(done));
                     self.supply.push(SupplyTry { accepted: !failed.contains(&i), queue_before: queue, queue_after_plus_done: after });
                 }
-                Check::Ghost(action, unit) => {
+                Check::Ghost(action, unit, pos) => {
                     let u = f.units.iter().find(|u| u.id == unit);
                     let attacker = u.and_then(|u| tt.unit(u.unit_type)).is_some_and(|t| (t.ground_weapon >= 0 || t.air_weapon >= 0) && t.top_speed > 0.0);
-                    self.ghost.push(GhostTry { action, accepted: !failed.contains(&i), rejections: rej.len(), order_after: u.map(|u| u.order), attacker });
+                    self.ghost.push(GhostTry {
+                        action,
+                        accepted: !failed.contains(&i),
+                        rejections: rej.len(),
+                        order_after: u.map(|u| u.order),
+                        order_target: u.and_then(|u| u.order_target),
+                        order_pos: u.and_then(|u| u.order_pos),
+                        building_pos: pos,
+                        building_visible: f.visibility.get(pos.0 / 32, pos.1 / 32),
+                        attacker,
+                    });
                     self.ghost_pending.retain(|g| *g != (action, unit));
                     self.ghost_stop.push(unit);
                 }
@@ -1424,6 +1441,7 @@ impl Script for PreRl {
         // commands; each is (re)sent until it is settled.
         let remembered = self.seen.filter(|id| !f.units.iter().any(|u| u.id == *id) && w.entities.iter().any(|e| e.remembered && e.unit.id == *id));
         if let (Some(b), Some(s)) = (remembered, self.scout) {
+            let b_pos = w.entities.iter().find(|e| e.remembered && e.unit.id == b).map_or((0, 0), |e| e.unit.pos);
             let miner = scvs.iter().find(|u| u.has(flags::COMPLETED) && !u.has(flags::IDLE) && !u.has(flags::CONSTRUCTING) && Some(u.id) != self.scout).map(|u| u.id);
             for (action, unit) in [(GHOST_ACTIONS[0], Some(s)), (GHOST_ACTIONS[1], miner)] {
                 let Some(unit) = unit else { continue };
@@ -1431,7 +1449,7 @@ impl Script for PreRl {
                     continue;
                 }
                 if let Some(a) = Self::host(&o, action, &[unit], Some(b), None) {
-                    plan.push((a, Check::Ghost(action, unit)));
+                    plan.push((a, Check::Ghost(action, unit, b_pos)));
                 }
             }
         }
@@ -1459,8 +1477,18 @@ impl Script for PreRl {
                 }
                 // Masked (031-R4) for a ghost command: recorded as not accepted.
                 Err(_) if matches!(check, Check::Ghost(..)) => {
-                    if let Check::Ghost(action, _) = check {
-                        self.ghost.push(GhostTry { action, accepted: false, rejections: 0, order_after: None, attacker: false });
+                    if let Check::Ghost(action, _, pos) = check {
+                        self.ghost.push(GhostTry {
+                            action,
+                            accepted: false,
+                            rejections: 0,
+                            order_after: None,
+                            order_target: None,
+                            order_pos: None,
+                            building_pos: pos,
+                            building_visible: false,
+                            attacker: false,
+                        });
                     }
                     continue;
                 }
@@ -1468,7 +1496,7 @@ impl Script for PreRl {
                 _ => false,
             };
             match check {
-                Check::Ghost(action, unit) if sent => self.ghost_pending.push((action, unit)),
+                Check::Ghost(action, unit, _) if sent => self.ghost_pending.push((action, unit)),
                 Check::SupplyTrain { queue, .. } if !sent => {
                     self.supply.push(SupplyTry { accepted: false, queue_before: queue, queue_after_plus_done: None })
                 }
@@ -1502,8 +1530,10 @@ impl Script for PreRl {
 /// - a supply-blocked Train on a building whose queue is not empty is accepted and the queue grows
 ///   by one (allowing for a unit completing in between);
 /// - Attack_Unit and Smart_Unit on a remembered enemy building out of vision are accepted, with no
-///   UnitRejected for units that can attack and move, and the attacker's order becomes
-///   MoveToAttack (BWAPI `Attack2`, order 9);
+///   UnitRejected for units that can attack and move. The engine gives the attacker order
+///   MoveToAttack (9), which BWAPI reports as AttackUnit (10, BWtoBWAPI.cpp, UnitUpdate.cpp):
+///   while the building's tile is out of vision the unit shows order 10, no order target (vision
+///   filter) and the remembered position as order position;
 /// - a group command is accepted with one UnitRejected per unit it could not give the order to.
 ///
 /// Needs the bridge built with BWAPI patch 0016 and hostd setting `URANIUM_BRIDGE_EXT=1` (020-R17).
@@ -1512,7 +1542,7 @@ impl Script for PreRl {
 fn supply_queue_ghost_commands_and_unit_rejections_011_r23() {
     let s = play_script(23, 24 * 60 * 8, true, "011_r23", PreRl::new);
     eprintln!("[011-R23] supply-blocked Train: {:?}", s.supply);
-    eprintln!("[011-R23] ghost: {:?} (Attack2 = {:?})", s.ghost, order_id("Attack2"));
+    eprintln!("[011-R23] ghost: {:?} (AttackUnit = {:?})", s.ghost, order_id("AttackUnit"));
     eprintln!("[011-R23] group (CommandFailed, UnitRejected): {:?}; end {:?}", s.group, s.end);
 
     assert!(!s.supply.is_empty(), "never supply blocked with a queue");
@@ -1521,7 +1551,8 @@ fn supply_queue_ghost_commands_and_unit_rejections_011_r23() {
         assert_eq!(t.queue_after_plus_done, Some(t.queue_before + 1), "the producer's queue grew by one: {t:?}");
     }
 
-    let attack = order_id("Attack2").expect("Attack2 order");
+    // The engine's MoveToAttack (9) reads back from BWAPI as AttackUnit (10).
+    let attack = order_id("AttackUnit").expect("AttackUnit order");
     for action in GHOST_ACTIONS {
         let g = s.ghost.iter().find(|g| g.action == action).unwrap_or_else(|| panic!("{action} on the remembered building never sent"));
         assert!(g.accepted, "{action} on a remembered building: CommandFailed or masked ({g:?})");
@@ -1529,7 +1560,11 @@ fn supply_queue_ghost_commands_and_unit_rejections_011_r23() {
             assert_eq!(g.rejections, 0, "{action} ghost command to a unit that can attack and move: no UnitRejected ({g:?})");
         }
         if action == "Attack_Unit" {
-            assert_eq!(g.order_after, Some(attack), "ghost Attack_Unit: the unit's order is MoveToAttack");
+            assert_eq!(g.order_after, Some(attack), "ghost Attack_Unit: MoveToAttack, reported as AttackUnit ({g:?})");
+            if !g.building_visible {
+                assert_eq!(g.order_target, None, "ghost Attack_Unit: no order target out of vision ({g:?})");
+                assert_eq!(g.order_pos, Some(g.building_pos), "ghost Attack_Unit: order position = remembered position ({g:?})");
+            }
         }
     }
 
