@@ -11,12 +11,18 @@ from pathlib import Path
 
 AGENTS = ("main", "main-exploiter", "league-exploiter")
 EXIT_BUSY = 75
+# Key of the start record in each agent's train JSON (`meta.json` "train"): where its weights
+# started, {"from": "init" | "bc", "path", and for init "update" / "step"} (042, AMB-042-13).
+START_KEY = "start"
+# Written by the Rust run loop at a checkpoint's root (uranium_store::ckpt::STATE_FILE, 061).
+STATE_FILE = "train_state.json"
 
 
 def add_parser(sub) -> None:
     p = sub.add_parser("rl", help="RL + league: learners, inference servers, agent server and game dispatch (042)")
     p.add_argument("--run", required=True, help="run id (061 checkpoints/<run>/ and the lock)")
-    p.add_argument("--bc", required=True, help="BC checkpoint: starting policy and the KL reference")
+    p.add_argument("--bc", required=True, help="BC checkpoint: the KL reference, the exploiters' start and reset policy, and Main's start without --init")
+    p.add_argument("--init", help="042 (AMB-042-13): Main's start weights (only) from an RL checkpoint folder `ckpt-<step>` (its agents/main) or that agents/main folder; new runs only, a run with a LATEST resumes from it")
     p.add_argument("--config", default="config/rl.toml")
     p.add_argument("--algo", choices=["vtrace", "ppo"], default="vtrace")
     p.add_argument("--backend", choices=["cuda", "rocm", "cpu"], help="default: this host's GPU, else cpu")
@@ -38,7 +44,7 @@ class Learners:
     """The three learning agents and their inference servers, for the Rust run loop
     (`uranium_league::learner::RlLearners`)."""
 
-    def __init__(self, cfg: dict, bc_dir: str, resume: str | None, device, precision: str, algo: str, logs: Path, max_batch: int, max_wait_ms: int):
+    def __init__(self, cfg: dict, bc_dir: str, init: str | None, resume: str | None, device, precision: str, algo: str, logs: Path, max_batch: int, max_wait_ms: int):
         from uranium import _core, ckpt
         from uranium.agent.infer import InferenceServer
         from uranium.device import impl_settings
@@ -46,22 +52,19 @@ class Learners:
 
         self.device, self.precision = device, precision
         self.max_batch, self.max_wait_ms = max_batch, max_wait_ms
-        no_dropout = lambda c: _no_dropout(c)  # noqa: E731
-        bc, _ = ckpt.load_model(Path(bc_dir), device, adjust=no_dropout)
+        # KL reference (AMB-042-9) and exploiter reset policy: always --bc, also with --init (042).
+        bc, _ = ckpt.load_model(Path(bc_dir), device, adjust=_no_dropout)
         self.learners: list = []
         self.servers: list = []
         self.brokers_: list = []
-        for name in AGENTS:
-            net, _ = ckpt.load_model(Path(bc_dir), device, adjust=no_dropout)
-            update = 0
-            if resume is not None:
-                d = Path(resume) / ckpt.AGENTS_DIR / name
-                net, meta = ckpt.load_model(d, device, adjust=no_dropout)
-                update = int(meta["train"].get("update", 0))
+        # Per agent: where its weights started (042, AMB-042-13), written into every checkpoint.
+        self.starts: list = []
+        for name, (net, update, optim_dir, start) in zip(AGENTS, start_policies(bc_dir, init, resume, bc.cfg, device), strict=True):
             l = Learner(cfg, net, _copy(bc), device, precision, algo, update)
-            if resume is not None and (Path(resume) / ckpt.AGENTS_DIR / name / ckpt.optim_file(ckpt.OPTIM_MAIN)).is_file():
-                ckpt.load_optimizer(Path(resume) / ckpt.AGENTS_DIR / name, ckpt.OPTIM_MAIN, l.net, l.opt)
+            if optim_dir is not None:
+                ckpt.load_optimizer(optim_dir, ckpt.OPTIM_MAIN, l.net, l.opt)
             self.learners.append(l)
+            self.starts.append(start)
             # The server starts from the learner's current weights (folder for the 020-R5 id).
             d = logs / "infer" / name
             d.mkdir(parents=True, exist_ok=True)
@@ -117,7 +120,10 @@ class Learners:
         with DEVICE_LOCK.shared():
             ckpt.save_model(d, l.net)
             ckpt.save_optimizer(d, ckpt.OPTIM_MAIN, l.net, l.opt)
-        ckpt.save_meta(d, l.net.cfg, json.loads(train_json), self.precision, impl_settings())
+        train = json.loads(train_json)
+        if self.starts[i] is not None:  # None: resumed from a checkpoint written before the record
+            train[START_KEY] = self.starts[i]
+        ckpt.save_meta(d, l.net.cfg, train, self.precision, impl_settings())
 
     def snapshot_server(self, dir: str):
         """A league snapshot's agent as an opponent (stochastic, 042)."""
@@ -131,6 +137,82 @@ class Learners:
             s = InferenceServer(b, self.device, self.precision)
         s.start()
         return b
+
+
+def start_policies(bc_dir: str, init: str | None, resume: str | None, bc_cfg, device) -> list[tuple]:
+    """042 출발 정책 `--init` (AMB-042-13): per agent of `AGENTS`, (net, update, optimizer folder
+    or None, start record or None).
+
+    - `resume` (the run's LATEST, 042-R1 / 061) wins over `init`: every agent continues its own
+      folder (weights, optimizer, update) and keeps the start record written there.
+    - otherwise Main starts from `init` when given (weights only: new optimizer, update 0) and
+      the other agents from `bc_dir`."""
+    from uranium import ckpt
+
+    out = []
+    if resume is not None:
+        if init is not None:
+            print(f"[rl] resuming {resume}: --init ignored (042, AMB-042-13)", file=sys.stderr, flush=True)
+        for name in AGENTS:
+            d = Path(resume) / ckpt.AGENTS_DIR / name
+            net, meta = ckpt.load_model(d, device, adjust=_no_dropout)
+            optim = d if (d / ckpt.optim_file(ckpt.OPTIM_MAIN)).is_file() else None
+            out.append((net, int(meta["train"].get("update", 0)), optim, meta["train"].get(START_KEY)))
+        return out
+    for name in AGENTS:
+        if name == AGENTS[0] and init is not None:
+            net, start = load_init(init, bc_cfg, device)
+            print(f"[rl] {name} starts from --init {init} (update {start['update']}, step {start.get('step')}); KL reference and exploiters from --bc {bc_dir} (042)", file=sys.stderr, flush=True)
+        else:
+            net, _ = ckpt.load_model(Path(bc_dir), device, adjust=_no_dropout)
+            start = {"from": "bc", "path": str(bc_dir)}
+        out.append((net, 0, None, start))
+    return out
+
+
+def init_agent_dir(init: str) -> Path:
+    """`--init` as Main's model folder: an RL checkpoint folder (`ckpt-<step>`, its
+    `agents/main`) or that `agents/main` folder itself (042, AMB-042-13)."""
+    from uranium import ckpt
+
+    p = Path(init)
+    main = p / ckpt.AGENTS_DIR / AGENTS[0]
+    if (main / ckpt.WEIGHTS_FILE).is_file():
+        return main
+    if p.name == AGENTS[0] and p.parent.name == ckpt.AGENTS_DIR and (p / ckpt.WEIGHTS_FILE).is_file():
+        return p
+    raise FileNotFoundError(f"--init {init}: no {ckpt.AGENTS_DIR}/{AGENTS[0]}/{ckpt.WEIGHTS_FILE} (expected an RL checkpoint folder `ckpt-<step>` or its `{ckpt.AGENTS_DIR}/{AGENTS[0]}`, 042)")
+
+
+def load_init(init: str, bc_cfg, device) -> tuple:
+    """Main's start net from `--init` (weights only) and its start record: the path as given, the
+    update in its train JSON and its checkpoint's step (`train_state.json`) when present.
+    A model config other than the BC model's (`bc_cfg`) is a start error: the KL compares the same
+    heads' distributions (042, 032-R10). Both pass the schema check of `ckpt.read_meta`, so a
+    feature version on the load-compatible list (030-R5) is not a model difference (same inputs)."""
+    from uranium import ckpt
+
+    d = init_agent_dir(init)
+    net, meta = ckpt.load_model(d, device, adjust=_no_dropout)
+    want, got = _flat(bc_cfg.to_dict()), _flat(net.cfg.to_dict())
+    if got != want:
+        diff = sorted(k for k in want.keys() | got.keys() if want.get(k) != got.get(k))
+        raise ValueError(f"--init {init}: model config differs from the --bc model ({', '.join(diff)}); the KL to the BC policy needs the same model (042, 032-R10)")
+    start = {"from": "init", "path": str(init), "update": meta["train"].get("update")}
+    state = d.parent.parent / STATE_FILE
+    if state.is_file():
+        start["step"] = json.loads(state.read_text(encoding="utf-8")).get("step")
+    return net, start
+
+
+def _flat(d: dict, prefix: str = "") -> dict:
+    out = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            out.update(_flat(v, f"{prefix}{k}."))
+        else:
+            out[f"{prefix}{k}"] = v
+    return out
 
 
 def logs_dir(logs: str) -> Path:
@@ -162,7 +244,7 @@ def _copy(net):
 
 
 def _make(a, device, precision, cfg_json, resume):
-    return Learners(json.loads(cfg_json), a.bc, None if resume is None else str(resume), device, precision, a.algo, Path(a.logs), a.max_batch, a.max_wait_ms)
+    return Learners(json.loads(cfg_json), a.bc, a.init, None if resume is None else str(resume), device, precision, a.algo, Path(a.logs), a.max_batch, a.max_wait_ms)
 
 
 def main(a) -> int:

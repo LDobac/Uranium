@@ -210,3 +210,130 @@ def test_segment_batch_totals_match_group():
     g = b.group(0, b.lanes, 4, 12)
     assert list(b.trained) == [int(x) for x in g["trained"]]
     assert list(b.versions) == [int(x) for x in g["versions"]]
+
+
+# --- 042 출발 정책 `--init` (AMB-042-13) ---------------------------------------------------
+
+
+def save_ckpt(d: Path, net: UraniumNet, train: dict) -> Path:
+    from uranium import ckpt
+
+    d.mkdir(parents=True, exist_ok=True)
+    ckpt.save_model(d, net)
+    ckpt.save_meta(d, net.cfg, train, "f32")
+    return d
+
+
+def rl_ckpt(root: Path, step: int, nets: dict, update: int) -> Path:
+    """An RL checkpoint folder as the run loop writes it: `agents/<name>/` and `train_state.json`."""
+    from uranium import ckpt
+    from uranium.rl.run import STATE_FILE
+
+    d = root / f"ckpt-{step}"
+    for name, net in nets.items():
+        save_ckpt(d / ckpt.AGENTS_DIR / name, net, {"update": update, "agent": name})
+    (d / STATE_FILE).write_text(json.dumps({"kind": "rl", "step": step, "update": update}), encoding="utf-8")
+    return d
+
+
+def make_learners(monkeypatch, tmp_path: Path, bc: Path, init, resume):
+    """`Learners` as `_make` builds it, on CPU; its inference servers are stopped right away."""
+    from uranium.rl import run
+
+    monkeypatch.setattr(run, "_n_max", lambda: 0)  # no server warm-up (tiny net, CPU)
+    cfg = json.loads(_core.rl_config(str(ROOT / "config" / "rl.toml")))
+    cfg.update(lanes=2, seq_len=4, micro_lanes=1)
+    ls = run.Learners(cfg, str(bc), None if init is None else str(init), None if resume is None else str(resume), CPU, "f32", "vtrace", tmp_path / "logs", 4, 5)
+    for s in ls.servers:
+        s.stop.set()
+        s.join(timeout=10)
+        assert s.error is None
+    return ls
+
+
+def same(net, other) -> bool:
+    a, b = net.state_dict(), other.state_dict()
+    return a.keys() == b.keys() and all(torch.equal(a[k].cpu(), b[k].cpu()) for k in a)
+
+
+def saved_train(ls, i: int, d: Path) -> dict:
+    """The train JSON `Learners.save` writes for agent `i` (the run loop's fields plus the start)."""
+    from uranium import ckpt
+    from uranium.rl.run import AGENTS
+
+    ls.save(i, str(d), json.dumps({"update": ls.version(i), "agent": AGENTS[i]}))
+    return ckpt.read_meta(d)["train"]
+
+
+@pytest.mark.parametrize("agent_folder", [False, True])
+def test_init_main_from_rl_checkpoint_042(monkeypatch, tmp_path, agent_folder):
+    """042 (AMB-042-13): `--init` gives Main its start weights only (update 0, empty optimizer);
+    the KL reference and the exploiters stay the BC model; the start is in the train JSON. The
+    checkpoint folder and its `agents/main` both work."""
+    from uranium import ckpt
+
+    bc_net, init_net = tiny_net(5), tiny_net(9)
+    bc = save_ckpt(tmp_path / "bc" / "ckpt-11", bc_net, {"step": 11})
+    root = rl_ckpt(tmp_path / "ac1", 3133569, {"main": init_net, "main-exploiter": tiny_net(13), "league-exploiter": tiny_net(13)}, update=1234)
+    init = root / ckpt.AGENTS_DIR / "main" if agent_folder else root
+    ls = make_learners(monkeypatch, tmp_path, bc, init, None)
+    main, mx, lx = ls.learners
+    assert same(main.net, init_net) and not same(main.net, bc_net)
+    assert same(mx.net, bc_net) and same(lx.net, bc_net)
+    assert all(same(l.bc, bc_net) for l in ls.learners), "KL reference is --bc"
+    assert all(l.update_count == 0 for l in ls.learners) and not main.opt.state
+    t = saved_train(ls, 0, tmp_path / "save" / "main")
+    assert t["start"] == {"from": "init", "path": str(init), "update": 1234, "step": 3133569}
+    assert t["update"] == 0 and t["agent"] == "main"
+    assert saved_train(ls, 1, tmp_path / "save" / "mx")["start"] == {"from": "bc", "path": str(bc)}
+    # An exploiter reset goes back to BC, not to --init (042).
+    lx.reset_to_bc()
+    assert same(lx.net, bc_net)
+
+
+def test_no_init_starts_all_from_bc_042(monkeypatch, tmp_path):
+    bc_net = tiny_net(5)
+    bc = save_ckpt(tmp_path / "bc", bc_net, {})
+    ls = make_learners(monkeypatch, tmp_path, bc, None, None)
+    assert all(same(l.net, bc_net) for l in ls.learners)
+    assert saved_train(ls, 0, tmp_path / "save")["start"] == {"from": "bc", "path": str(bc)}
+
+
+def test_resume_ignores_init_042(monkeypatch, tmp_path):
+    """042-R1 / 061 over AMB-042-13: with a LATEST every agent continues its own folder (weights,
+    update, optimizer) whatever `--init` says, and the start record written there is kept."""
+    from uranium import ckpt
+    from uranium.rl.run import AGENTS
+
+    bc_net, init_net = tiny_net(5), tiny_net(9)
+    bc = save_ckpt(tmp_path / "bc", bc_net, {})
+    first = rl_ckpt(tmp_path / "ac1", 100, {"main": init_net}, update=7)
+    ls = make_learners(monkeypatch, tmp_path / "a", bc, first, None)
+    resume = tmp_path / "run" / "ckpt-500"
+    for i, name in enumerate(AGENTS):
+        ls.learners[i].update_count = 3 + i
+        ls.save(i, str(resume / ckpt.AGENTS_DIR / name), json.dumps({"update": ls.version(i), "agent": name}))
+    other = rl_ckpt(tmp_path / "other", 200, {"main": tiny_net(21)}, update=9)
+    again = make_learners(monkeypatch, tmp_path / "b", bc, other, resume)
+    assert same(again.learners[0].net, init_net), "resumed Main, not the new --init"
+    assert [l.update_count for l in again.learners] == [3, 4, 5]
+    assert saved_train(again, 0, tmp_path / "save" / "main")["start"] == {"from": "init", "path": str(first), "update": 7, "step": 100}
+    assert saved_train(again, 2, tmp_path / "save" / "lx")["start"] == {"from": "bc", "path": str(bc)}
+
+
+def test_init_config_mismatch_is_a_start_error_042(monkeypatch, tmp_path):
+    """042 / 032-R10: an `--init` model other than the BC model fails at start."""
+    bc = save_ckpt(tmp_path / "bc", tiny_net(5), {})
+    cfg = tiny_net().cfg
+    cfg.core.kind = "Gtrxl" if cfg.core.kind != "Gtrxl" else "Lstm"
+    torch.manual_seed(3)
+    root = rl_ckpt(tmp_path / "ac1", 1, {"main": UraniumNet(cfg, action_columns())}, update=1)
+    with pytest.raises(ValueError, match=r"model config differs from the --bc model \(core\.kind"):
+        make_learners(monkeypatch, tmp_path, bc, root, None)
+
+
+def test_init_without_main_agent_is_an_error_042(monkeypatch, tmp_path):
+    """A BC checkpoint (no `agents/main`) is not an `--init` (042)."""
+    bc = save_ckpt(tmp_path / "bc", tiny_net(5), {})
+    with pytest.raises(FileNotFoundError, match="agents/main"):
+        make_learners(monkeypatch, tmp_path, bc, bc, None)
