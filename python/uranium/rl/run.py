@@ -12,7 +12,8 @@ from pathlib import Path
 AGENTS = ("main", "main-exploiter", "league-exploiter")
 EXIT_BUSY = 75
 # Key of the start record in each agent's train JSON (`meta.json` "train"): where its weights
-# started, {"from": "init" | "bc", "path", and for init "update" / "step"} (042, AMB-042-13).
+# started, {"from": "init" | "bc", "path" (as given), "abs_path", and for init "update" /
+# "step"} (042, AMB-042-13).
 START_KEY = "start"
 # Written by the Rust run loop at a checkpoint's root (uranium_store::ckpt::STATE_FILE, 061).
 STATE_FILE = "train_state.json"
@@ -59,7 +60,7 @@ class Learners:
         self.brokers_: list = []
         # Per agent: where its weights started (042, AMB-042-13), written into every checkpoint.
         self.starts: list = []
-        for name, (net, update, optim_dir, start) in zip(AGENTS, start_policies(bc_dir, init, resume, bc.cfg, device), strict=True):
+        for name, (net, update, optim_dir, start) in zip(AGENTS, start_policies(bc_dir, bc, init, resume, device), strict=True):
             l = Learner(cfg, net, _copy(bc), device, precision, algo, update)
             if optim_dir is not None:
                 ckpt.load_optimizer(optim_dir, ckpt.OPTIM_MAIN, l.net, l.opt)
@@ -139,9 +140,9 @@ class Learners:
         return b
 
 
-def start_policies(bc_dir: str, init: str | None, resume: str | None, bc_cfg, device) -> list[tuple]:
+def start_policies(bc_dir: str, bc, init: str | None, resume: str | None, device) -> list[tuple]:
     """042 출발 정책 `--init` (AMB-042-13): per agent of `AGENTS`, (net, update, optimizer folder
-    or None, start record or None).
+    or None, start record or None). `bc` is the net loaded from `bc_dir` (copied, not re-read).
 
     - `resume` (the run's LATEST, 042-R1 / 061) wins over `init`: every agent continues its own
       folder (weights, optimizer, update) and keeps the start record written there.
@@ -161,11 +162,11 @@ def start_policies(bc_dir: str, init: str | None, resume: str | None, bc_cfg, de
         return out
     for name in AGENTS:
         if name == AGENTS[0] and init is not None:
-            net, start = load_init(init, bc_cfg, device)
-            print(f"[rl] {name} starts from --init {init} (update {start['update']}, step {start.get('step')}); KL reference and exploiters from --bc {bc_dir} (042)", file=sys.stderr, flush=True)
+            net, start = load_init(init, bc.cfg, device)
+            print(f"[rl] {name} starts from --init {start['abs_path']} (update {start['update']}, step {start.get('step')}); KL reference and exploiters from --bc {bc_dir} (042)", file=sys.stderr, flush=True)
         else:
-            net, _ = ckpt.load_model(Path(bc_dir), device, adjust=_no_dropout)
-            start = {"from": "bc", "path": str(bc_dir)}
+            net = _copy(bc)
+            start = {"from": "bc", "path": str(bc_dir), "abs_path": str(Path(bc_dir).resolve())}
         out.append((net, 0, None, start))
     return out
 
@@ -185,8 +186,8 @@ def init_agent_dir(init: str) -> Path:
 
 
 def load_init(init: str, bc_cfg, device) -> tuple:
-    """Main's start net from `--init` (weights only) and its start record: the path as given, the
-    update in its train JSON and its checkpoint's step (`train_state.json`) when present.
+    """Main's start net from `--init` (weights only) and its start record: the path as given and
+    resolved to an absolute path, the update in its train JSON and its checkpoint's step (`train_state.json`) when present.
     A model config other than the BC model's (`bc_cfg`) is a start error: the KL compares the same
     heads' distributions (042, 032-R10). Both pass the schema check of `ckpt.read_meta`, so a
     feature version on the load-compatible list (030-R5) is not a model difference (same inputs)."""
@@ -198,7 +199,7 @@ def load_init(init: str, bc_cfg, device) -> tuple:
     if got != want:
         diff = sorted(k for k in want.keys() | got.keys() if want.get(k) != got.get(k))
         raise ValueError(f"--init {init}: model config differs from the --bc model ({', '.join(diff)}); the KL to the BC policy needs the same model (042, 032-R10)")
-    start = {"from": "init", "path": str(init), "update": meta["train"].get("update")}
+    start = {"from": "init", "path": str(init), "abs_path": str(Path(init).resolve()), "update": meta["train"].get("update")}
     state = d.parent.parent / STATE_FILE
     if state.is_file():
         start["step"] = json.loads(state.read_text(encoding="utf-8")).get("step")

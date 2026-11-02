@@ -265,6 +265,11 @@ def saved_train(ls, i: int, d: Path) -> dict:
     return ckpt.read_meta(d)["train"]
 
 
+def rec(frm: str, path: Path, **kw) -> dict:
+    """An expected start record: the path as given and resolved (042, AMB-042-13)."""
+    return {"from": frm, "path": str(path), "abs_path": str(Path(path).resolve()), **kw}
+
+
 @pytest.mark.parametrize("agent_folder", [False, True])
 def test_init_main_from_rl_checkpoint_042(monkeypatch, tmp_path, agent_folder):
     """042 (AMB-042-13): `--init` gives Main its start weights only (update 0, empty optimizer);
@@ -283,9 +288,9 @@ def test_init_main_from_rl_checkpoint_042(monkeypatch, tmp_path, agent_folder):
     assert all(same(l.bc, bc_net) for l in ls.learners), "KL reference is --bc"
     assert all(l.update_count == 0 for l in ls.learners) and not main.opt.state
     t = saved_train(ls, 0, tmp_path / "save" / "main")
-    assert t["start"] == {"from": "init", "path": str(init), "update": 1234, "step": 3133569}
+    assert t["start"] == rec("init", init, update=1234, step=3133569)
     assert t["update"] == 0 and t["agent"] == "main"
-    assert saved_train(ls, 1, tmp_path / "save" / "mx")["start"] == {"from": "bc", "path": str(bc)}
+    assert saved_train(ls, 1, tmp_path / "save" / "mx")["start"] == rec("bc", bc)
     # An exploiter reset goes back to BC, not to --init (042).
     lx.reset_to_bc()
     assert same(lx.net, bc_net)
@@ -296,7 +301,7 @@ def test_no_init_starts_all_from_bc_042(monkeypatch, tmp_path):
     bc = save_ckpt(tmp_path / "bc", bc_net, {})
     ls = make_learners(monkeypatch, tmp_path, bc, None, None)
     assert all(same(l.net, bc_net) for l in ls.learners)
-    assert saved_train(ls, 0, tmp_path / "save")["start"] == {"from": "bc", "path": str(bc)}
+    assert saved_train(ls, 0, tmp_path / "save")["start"] == rec("bc", bc)
 
 
 def test_resume_ignores_init_042(monkeypatch, tmp_path):
@@ -317,8 +322,33 @@ def test_resume_ignores_init_042(monkeypatch, tmp_path):
     again = make_learners(monkeypatch, tmp_path / "b", bc, other, resume)
     assert same(again.learners[0].net, init_net), "resumed Main, not the new --init"
     assert [l.update_count for l in again.learners] == [3, 4, 5]
-    assert saved_train(again, 0, tmp_path / "save" / "main")["start"] == {"from": "init", "path": str(first), "update": 7, "step": 100}
-    assert saved_train(again, 2, tmp_path / "save" / "lx")["start"] == {"from": "bc", "path": str(bc)}
+    assert saved_train(again, 0, tmp_path / "save" / "main")["start"] == rec("init", first, update=7, step=100)
+    assert saved_train(again, 2, tmp_path / "save" / "lx")["start"] == rec("bc", bc)
+
+
+def test_init_bc_dropout_and_compat_feature_version_042(monkeypatch, tmp_path):
+    """The real pair (042, AMB-042-13): a BC checkpoint with entity dropout 0.1 and an older
+    load-compatible feature schema (030-R5), and an RL `--init` at dropout 0 (032 §2) and the
+    current schema. Same model, so `--init` loads and Main gets its weights."""
+    from uranium import ckpt
+
+    compat = ckpt.feature_load_compat()
+    if not compat:
+        pytest.skip("this build has no load-compatible feature schema (030-R5)")
+    bc_net = tiny_net(5)
+    bc_net.cfg.entity.dropout = 0.1
+    bc = save_ckpt(tmp_path / "bc", bc_net, {})
+    meta = json.loads((bc / ckpt.META_FILE).read_text(encoding="utf-8"))
+    meta["feature_version"] = compat[0]
+    (bc / ckpt.META_FILE).write_text(json.dumps(meta), encoding="utf-8")
+    init_net = tiny_net(9)
+    init_net.cfg.entity.dropout = 0.0
+    root = rl_ckpt(tmp_path / "ac1", 42, {"main": init_net}, update=3)
+    assert ckpt.read_meta(root / ckpt.AGENTS_DIR / "main")["feature_version"] == ckpt.schema_versions()[0] != compat[0]
+    ls = make_learners(monkeypatch, tmp_path, bc, root, None)
+    assert same(ls.learners[0].net, init_net)
+    assert same(ls.learners[1].net, bc_net) and same(ls.learners[0].bc, bc_net)
+    assert all(l.net.cfg.entity.dropout == 0.0 for l in ls.learners)
 
 
 def test_init_config_mismatch_is_a_start_error_042(monkeypatch, tmp_path):

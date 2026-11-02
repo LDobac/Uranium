@@ -22,9 +22,9 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 - **손실**: 보상 항목별 value head마다 V-trace target과 advantage를 따로 구하고, 정책 gradient advantage는 033 가중치(감쇠 포함)로 더한다(033-R3). KL(π‖π_BC)은 고정된 BC 모델을 같은 입력으로 다시 forward해 헤드별 전체 분포로 계산하고 사용된 헤드만 더한다(032-R10). 정확한 분포 KL을 쓴다. GPU 메모리가 부족하면 근사로 바꾸지 않고 사용자에게 보고한다(2026-10-17 사용자 결정, AMB-042-9).
 - **출발 정책 `--init` (2026-11-03 사용자 결정, AMB-042-13)**: `--bc` 체크포인트는 KL 참조 모델(AMB-042-9)과 Exploiter 리셋 대상이고, `--init`이 없으면 세 에이전트의 출발 정책도 된다(지금 동작). `--init <ckpt>`를 주면 Main의 출발 가중치를 그 체크포인트의 `agents/main`에서 읽는다. Main Exploiter·League Exploiter는 그대로 BC에서 시작한다.
   - run에 LATEST가 없을 때(새 run)만 적용한다. 재시작·재개는 `--init`과 상관없이 항상 그 run의 LATEST에서 이어 간다(042-R1, 061).
-  - 모델 설정(schema·구조)이 `--bc` 모델과 다르면 시작 오류다. KL은 같은 헤드 분포끼리 계산하기 때문이다(032-R10).
+  - 모델 구조 설정(dropout 같은 가중치 없는 설정은 RL 값 0으로 맞춘 뒤)이 `--bc` 모델과 다르면 시작 오류다. KL은 같은 헤드 분포끼리 계산하기 때문이다(032-R10). feature schema 버전은 따로 같을 필요가 없고 빌드의 로드 호환(030-R5)을 따른다(모델 입력이 같다).
   - 가중치만 가져온다. 옵티마이저는 새로 만들고, step·update는 새 run id에서 0부터 센다(KL 계수도 0.1부터, 메인 임시 결정 2026-11-03).
-  - 출발 출처(`--init` 체크포인트, 없으면 `--bc`)를 체크포인트의 학습 상태(train state)에 기록한다.
+  - 출발 출처(`--init` 체크포인트, 없으면 `--bc`)를 체크포인트의 에이전트별 `meta.json` `train.start`에 기록한다(준 경로와 절대 경로, `--init`이면 그 체크포인트의 update·step). 재개해도 유지한다.
 - **스냅샷 상대 ID**: `uranium-<agent>@<run>/<update>` (agent = `main` | `main-exploiter` | `league-exploiter`, 021-R3 형식).
 - **로그 (042-R2)**: CSV 두 개. `train.csv`(update별 손실 항목, KL, 헤드별 엔트로피, 정책 지연, 버린·회수한 trajectory 수, 학습한 agent step 누계 `trained_steps`, 직전 행 이후 게임들이 큐 자리를 기다린 시간 합 `queue_wait_s`(2026-10-31), 처리량, 추론 p50·p95)와 `games.csv`(게임별 결과, 보상 항목 합, 상대 ID, 종족, 맵, 저장한 리플레이 경로·사유(042-R11)).
   - **`--logs` 경로(2026-10-31 버그 수정)**: `--logs`(기본 `runs/rl`)가 상대 경로면 시작할 때 현재 작업 폴더 기준 절대 경로로 바꾼 뒤 로그와 추론 서버 모델 폴더(`<logs>/infer/<이름>`)를 만든다. 추론 서버(Rust Broker)는 상대 체크포인트 경로를 `URANIUM_SHARED_DIR` 기준으로 찾으므로(020-R11), 상대 경로를 그대로 넘기면 모델 파일을 찾지 못해 시작에 실패했다(`reports/m6_rl_sample.md` 발견 1). 고치기 전에는 절대 경로를 준다.
