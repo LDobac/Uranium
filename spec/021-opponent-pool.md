@@ -1,6 +1,6 @@
 # 021 — Opponent Pool
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: R7 Random 적용 범위를 여러 종족 지원 봇으로 한정, R3 T0 시나리오 빌드 상대 ID 분리, 사용자 결정. 2026-10-19: McRave 종족 표기를 실측(T/P/Z)과 `config/rl.toml`·040에 맞춤)
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: R7 Random 적용 범위를 여러 종족 지원 봇으로 한정, R3 T0 시나리오 빌드 상대 ID 분리, 사용자 결정. 2026-10-19: McRave 종족 표기를 실측(T/P/Z)과 `config/rl.toml`·040에 맞춤. 2026-11-03: run별 T1 학습 풀에서 봇 제외 가능(021-R4 유지), AMB-042-13)
 - **Related**: [020](020-env-orchestration.md), [042](042-rl-training.md), [050](050-evaluation.md)
 
 ## Purpose
@@ -36,6 +36,7 @@ OpenBW에는 내장 컴퓨터 AI가 없다. 그래서 RL과 평가에 쓸 상대
 
 - 실제 값과 포팅 내역은 `reports/oss_bot_porting.md`에 기록한다. 봇 하나가 막히면 사용자에게 보고하고 다음 봇으로 넘어간다.
 - JVM 기반(JBWAPI) 봇은 제외한다.
+- RL run의 T1 학습 풀은 그 run 설정 파일의 `[[t1]]` 목록이다. 처리량 등의 이유로 봇을 뺄 수 있으나 종족마다 2개 이상(021-R4)은 지킨다. 2026-11-03 T1·셀프 run은 McRave를 뺐다(lockstep에서 10~40배 느림, 메인 임시 결정, [042](042-rl-training.md) AMB-042-13).
 - 상대 ID(021-R3): OSS 봇은 빌드 스크립트가 쓰는 `<bot>/VERSION`(`<bot>@<커밋 또는 버전>`), T0 표준 빌드는 `t0-<race>@<uranium-scripted 버전>`이다. [050](050-evaluation.md) E-Regression용 시나리오 빌드는 빌드 태그를 붙여 `t0-<race>-<build>@<버전>`으로 따로 구분한다(2026-10-17 사용자 결정): `t0-zerg-rush`, `t0-terran-drop`, `t0-protoss-dt`, `t0-zerg-muta`. 승률 표·PFSP·E-Elo는 이 ID를 상대 단위로 쓴다.
 
 ## Acceptance Criteria
