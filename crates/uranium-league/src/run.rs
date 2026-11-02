@@ -29,7 +29,7 @@ use uranium_runner::{Dispatch, HostEntry, Job, JobOutcome, JobSource};
 
 use crate::ckpt::{self, TrainState};
 use crate::config::RlConfig;
-use crate::league::{AgentKind, Class, League, Opponent, Pick, T1Bot};
+use crate::league::{AgentKind, Class, League, Opponent, Pick};
 use crate::learner::{Algo, HEAD_NAMES, RlLearners, SnapshotServers, UpdateStats};
 use crate::storage::{LockStatus, PushOutcome, Run, StorageConfig};
 use crate::trajectory::{GameResult, Segment, SegmentQueue, TrajectoryObserver, trained_steps as trained_steps_of};
@@ -585,10 +585,12 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
             return Err(e.context("starting the learners (042 start / KL reference)"));
         }
     };
-    let t1 = cfg_t1(&args.config)?;
+    // 042 "재개 시 설정" (AMB-042-13): stage, win tables, windows and snapshots come from the
+    // checkpoint; ratios, auto_advance, r_value_stages and `[[t1]]` from the current config. A
+    // new league starts in `[curriculum] start_stage` (042-R5).
     let mut league = match resume.as_ref().map(|r| ckpt::load_league(&r.dir)).transpose()?.flatten() {
         Some(b) => League::from_bytes(&b, cfg.clone())?,
-        None => League::new(&args.run, t1, args.seed, cfg.clone()),
+        None => League::new(&args.run, args.seed, args.fixed_t0, cfg.clone()),
     };
     if args.fixed_t0.is_some() {
         league.fixed_t0 = args.fixed_t0;
@@ -599,9 +601,12 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         Some(r) => ckpt::load_state(&r.dir)?.map_or(0, |s| resumed_trained_steps(&s.extra)),
         None => 0,
     };
-    if let Some(r) = &resume {
-        crate::elog!("[rl] resumed {} at step {} (recovered {}), stage {:?}", args.run, r.step, r.recovered, league.stage);
+    let cc = &cfg.curriculum;
+    match &resume {
+        Some(r) => crate::elog!("[rl] resumed {} at step {} (recovered {}), stage {:?}", args.run, r.step, r.recovered, league.stage),
+        None => crate::elog!("[rl] new league {}, stage {:?}", args.run, league.stage),
     }
+    crate::elog!("[rl] curriculum: auto_advance {}, r_value in {:?}, {} T1 bot(s) (042-R5, 033)", cc.auto_advance, cc.r_value_stages, cfg.t1.len());
 
     // The agents' inference servers already run the learners' current weights.
     let handles: Vec<InferenceHandle> = AgentKind::ALL.iter().map(|a| learners.handle(a.index())).collect();
@@ -836,16 +841,6 @@ fn write_row(csv: &mut std::fs::File, started: Instant, agent: AgentKind, s: &Up
     Ok(())
 }
 
-/// `[[t1]]` of rl.toml: T1 bots and the races they play (021).
-fn cfg_t1(path: &Path) -> Result<Vec<T1Bot>> {
-    #[derive(Deserialize)]
-    struct F {
-        #[serde(default)]
-        t1: Vec<T1Bot>,
-    }
-    Ok(toml::from_str::<F>(&std::fs::read_to_string(path)?)?.t1)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -859,7 +854,7 @@ mod tests {
 
     #[test]
     fn rl_toml_lists_t1_bots_021() {
-        let bots = cfg_t1(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/rl.toml"))).unwrap();
+        let bots = RlConfig::load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/rl.toml"))).unwrap().t1;
         assert!(bots.iter().any(|b| b.name == "zzzkbot" && b.races == vec![Race::Zerg]));
     }
 

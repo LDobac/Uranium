@@ -105,6 +105,15 @@ c1_self = 0.3
 c1_to_c2_win_rate_vs_t1 = 0.5
 # Pseudo-reward (033 r_build, r_units) linear decay to 0 after entering C2.
 pseudo_reward_decay_updates = 20000
+# 042-R5 (AMB-042-13). Stage of a new league (no LATEST): "C0" or "C1"; a resumed run keeps
+# the stage of its checkpoint.
+start_stage = "C0"
+# false = never change stage on the win-rate bars above (windows are still recorded).
+auto_advance = true
+# 033: stages that use r_value; weight 0 in the others.
+r_value_stages = ["C0"]
+# On resume the ratios above, auto_advance, r_value_stages and [[t1]] follow this file; stage,
+# win tables, windows and snapshots come from the checkpoint (042).
 
 [ppo]
 # Comparison baseline (042 algorithm alternatives).
@@ -119,8 +128,9 @@ adopt_margin = 0.03
 # game (020-R13), under <URANIUM_SHARED_DIR>/runs/<run>/replays/. Never deleted.
 sample_every = 100
 
-# T1 bots (021) and the races they play (measured in M3, config/plans/m3-t1.toml). League picks
-# only bots the game hosts list; Random applies to multi-race bots (021-R7).
+# T1 bots (021) and the races they play (measured in M3, config/plans/m3-t1.toml). The league
+# picks from this list as is (it does not check which bots the game hosts have), so every bot
+# listed must be installed on every game host; Random applies to multi-race bots (021-R7).
 [[t1]]
 name = "ualbertabot"
 races = ["Terran", "Protoss", "Zerg"]

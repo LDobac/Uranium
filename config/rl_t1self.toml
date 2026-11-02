@@ -1,0 +1,156 @@
+# 042 "T1·셀프 run" (AMB-042-13, 2026-11-03): `config/rl.toml` with only these changes —
+# [curriculum] start_stage = "C1", auto_advance = false, c1_t0 = 0, c1_t1 = 0.5, c1_self = 0.5,
+# r_value_stages = ["C0", "C1"], and McRave left out of [[t1]] (three T1 bots per race, 021-R4).
+# Keep every other value equal to rl.toml.
+#
+# 042 RL / league initial values (AMB-042-3, 2026-10-17). Tuning targets (042-R9):
+# read by `python -m uranium rl` and copied into every checkpoint (061-R10).
+# agent step = one act() call; update = one learner parameter update.
+
+# Batch: lanes x seq_len agent steps per update (042-R8: T = 64).
+lanes = 32
+seq_len = 64
+micro_lanes = 1
+# 061-R6 (G-D6): checkpoints kept on the share, 0 = all (user decision 2026-10-31: keep every
+# RL checkpoint so learning curves can be evaluated afterwards).
+keep_checkpoints = 0
+
+[optimizer]
+# Adam (AlphaStar RL stage), 1/10 of the BC learning rate.
+lr = 3e-5
+beta1 = 0.0
+beta2 = 0.99
+eps = 1e-5
+weight_decay = 0.0
+# Global L2-norm clip over all parameter gradients after the lane-group sum (041-R3, G-D4).
+grad_clip = 1.0
+
+[loss]
+gamma = 1.0
+td_lambda = 0.8
+vtrace_rho_bar = 1.0
+vtrace_c_bar = 1.0
+pg = 1.0
+upgo = 1.0
+value = 0.5
+# 042-R13: win_open head (when the model has one) regresses the win v-trace target, same form.
+win_open = 0.5
+
+[entropy]
+# Per-head coefficients, summed over used heads only (032-R10).
+action = 3e-3
+delay = 1e-3
+queued = 1e-3
+selected = 1e-3
+target_unit = 1e-3
+target_loc = 1e-3
+
+[kl]
+# coef = max(floor, init * 0.5^(update / half_life_updates))
+init = 0.1
+floor = 0.01
+half_life_updates = 20000
+
+[actors]
+# Push weights to the inference server every K updates.
+weight_push_every = 4
+# 042-R4: drop trajectories whose behaviour version lags by more than this.
+max_policy_lag = 32
+# Trajectory queue capacity per agent in batches of `lanes` segments (at least 1).
+queue_batches = 4
+# Full queue (user decision 2026-10-31): "wait" = backpressure, the pushing game waits for a
+# place (FIFO across games; a game in lockstep simply pauses); "drop_oldest" = previous
+# behaviour, never wait and drop the oldest segment.
+queue_full = "wait"
+# Longest single wait for a place (AMB-042-11); then the oldest segment is dropped
+# (`dropped_full`). Keep well below the OpenBW drop time (011-R18, 600 s).
+queue_wait_max_s = 120
+# Wall-clock limit of one RL game (AMB-042-12, 020-R3), queue waits included; the game ends as
+# Timeout and is left out of training like an Aborted one (042-R3).
+game_wall_timeout_s = 7200
+
+[league]
+# 042-R7 time share, applied from C2. C0/C1 train Main only.
+share_main = 0.5
+share_main_exploiter = 0.25
+share_league_exploiter = 0.25
+# Main opponents in C2.
+main_pfsp = 0.5
+main_self = 0.35
+main_t1 = 0.15
+# PFSP f_hard(x) = (1 - x)^p
+pfsp_power = 2.0
+# Main Exploiter falls back to f_var over Main snapshots below this win rate.
+main_exploiter_fallback_win_rate = 0.2
+main_exploiter_fallback_share = 0.5
+# Win-rate table: per-game EMA decay, prior for unseen opponents.
+win_rate_decay = 0.99
+win_rate_prior = 0.5
+# p_race = uniform_mix / 3 + (1 - uniform_mix) * (1 - w_r) / sum(1 - w)
+race_uniform_mix = 0.5
+# 021-R7: Random race share for multi-race T0/T1 bots.
+bot_random_race = 0.2
+
+[snapshot]
+main_every_updates = 2000
+exploiter_win_rate = 0.7
+exploiter_win_window = 200
+exploiter_max_updates = 4000
+league_exploiter_reset_prob = 0.25
+
+[curriculum]
+# 042-R5. Window = most recent games per opponent race.
+window_games = 300
+c0_t0 = 0.8
+c0_self = 0.2
+c0_to_c1_win_rate_vs_t0 = 0.7
+# T1·셀프 run: no T0 bots (user decision, AMB-042-13).
+c1_t0 = 0.0
+c1_t1 = 0.5
+c1_self = 0.5
+c1_to_c2_win_rate_vs_t1 = 0.5
+# Pseudo-reward (033 r_build, r_units) linear decay to 0 after entering C2.
+pseudo_reward_decay_updates = 20000
+# 042-R5 (AMB-042-13). Stage of a new league (no LATEST): "C0" or "C1"; a resumed run keeps
+# the stage of its checkpoint.
+start_stage = "C1"
+# false = never change stage on the win-rate bars above (windows are still recorded).
+# T1·셀프 run: stage changes are the user's decision.
+auto_advance = false
+# 033: stages that use r_value; weight 0 in the others. T1·셀프 run: on in C1 as in AC1.
+r_value_stages = ["C0", "C1"]
+# On resume the ratios above, auto_advance, r_value_stages and [[t1]] follow this file; stage,
+# win tables, windows and snapshots come from the checkpoint (042).
+
+[ppo]
+# Comparison baseline (042 algorithm alternatives).
+clip = 0.2
+gae_lambda = 0.95
+epochs = 2
+# Adopt PPO only if 3-seed mean final win rate beats V-trace by more than this.
+adopt_margin = 0.03
+
+[replays]
+# 042-R11: keep 1 replay per this many games (game id multiple) plus every winner-disagreement
+# game (020-R13), under <URANIUM_SHARED_DIR>/runs/<run>/replays/. Never deleted.
+sample_every = 100
+
+# T1 bots (021) and the races they play (measured in M3, config/plans/m3-t1.toml). The league
+# picks from this list as is (it does not check which bots the game hosts have), so every bot
+# listed must be installed on every game host; Random applies to multi-race bots (021-R7).
+# T1·셀프 run: McRave left out (10-40x slower than the other T1 bots in lockstep, AMB-042-13).
+[[t1]]
+name = "ualbertabot"
+races = ["Terran", "Protoss", "Zerg"]
+[[t1]]
+name = "steamhammer"
+races = ["Terran", "Protoss", "Zerg"]
+[[t1]]
+name = "stardust"
+races = ["Protoss"]
+[[t1]]
+name = "zzzkbot"
+races = ["Zerg"]
+[[t1]]
+name = "iron"
+races = ["Terran"]

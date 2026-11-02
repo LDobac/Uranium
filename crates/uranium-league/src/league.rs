@@ -129,7 +129,9 @@ pub struct League {
     windows: BTreeMap<String, Window>,
     /// Snapshot ids by the agent that produced them.
     pub snapshots: Vec<(AgentKind, String)>,
-    pub t1: Vec<T1Bot>,
+    // The T1 list is not league state any more: it is `[[t1]]` of the current config
+    // (`RlConfig::t1`, 042 "재개 시 설정", AMB-042-13). The `t1` field of older league.bin
+    // files is ignored on load.
     /// 042-AC1 small setting: Main only, always the standard T0 bot of this race on Fighting
     /// Spirit (no self-play, no curriculum change).
     #[serde(default)]
@@ -169,16 +171,17 @@ fn t0_builds(race: Race) -> Vec<T0Build> {
 }
 
 impl League {
-    pub fn new(run: &str, t1: Vec<T1Bot>, seed: u64, cfg: RlConfig) -> Self {
+    /// A new league (no LATEST in the run). It starts in `[curriculum] start_stage` (042-R5,
+    /// AMB-042-13); the 042-AC1 small setting (`fixed_t0`) always starts in C0 as before.
+    pub fn new(run: &str, seed: u64, fixed_t0: Option<Race>, cfg: RlConfig) -> Self {
         Self {
             run: run.to_string(),
-            stage: Stage::C0,
+            stage: if fixed_t0.is_some() { Stage::C0 } else { cfg.curriculum.start_stage },
             c2_start: None,
             agents: vec![AgentState::default(); 3],
             windows: BTreeMap::new(),
             snapshots: Vec::new(),
-            t1,
-            fixed_t0: None,
+            fixed_t0,
             rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
             cfg: Some(cfg),
         }
@@ -188,6 +191,9 @@ impl League {
         serde_json::to_vec_pretty(self).expect("league serialises")
     }
 
+    /// A resumed league (042-R1). Stage, win tables, curriculum windows and snapshots come from
+    /// `b`; opponent ratios, `auto_advance`, `r_value_stages` and the T1 list follow `cfg`, the
+    /// current config file (042 "재개 시 설정", AMB-042-13).
     pub fn from_bytes(b: &[u8], cfg: RlConfig) -> anyhow::Result<Self> {
         let mut l: League = serde_json::from_slice(b)?;
         l.cfg = Some(cfg);
@@ -283,12 +289,13 @@ impl League {
     }
 
     fn t1_pick(&mut self) -> Option<(Opponent, String, Class)> {
-        if self.t1.is_empty() {
+        if self.cfg().t1.is_empty() {
             return None;
         }
         let race = self.pick_race();
-        let bots: Vec<T1Bot> = self.t1.iter().filter(|b| b.races.contains(&race)).cloned().collect();
-        let bots = if bots.is_empty() { self.t1.clone() } else { bots };
+        let all = &self.cfg().t1;
+        let bots: Vec<T1Bot> = all.iter().filter(|b| b.races.contains(&race)).cloned().collect();
+        let bots = if bots.is_empty() { all.clone() } else { bots };
         let bot = bots[(self.unit() * bots.len() as f64) as usize % bots.len()].clone();
         let race = if bot.races.contains(&race) { race } else { bot.races[0] };
         let random = bot.races.len() > 1 && self.unit() < self.cfg().league.bot_random_race;
@@ -314,7 +321,7 @@ impl League {
                     v.push((Opponent::T0 { race: r, build: b }, key, Class::T0));
                 }
             }
-            for bot in &self.t1 {
+            for bot in &self.cfg().t1 {
                 for &r in &bot.races {
                     v.push((Opponent::T1 { name: bot.name.clone(), race: r }, format!("{}-{}", bot.name, race_name(r)), Class::T1));
                 }
@@ -426,11 +433,16 @@ impl League {
     }
 
     /// 042-R5: every race's last `window_games` against T0 (C0→C1) or T1 (C1→C2) at the bar.
+    /// Never with `[curriculum] auto_advance = false` (AMB-042-13); `record` keeps filling the
+    /// windows either way.
     fn advance(&mut self) -> bool {
         if self.fixed_t0.is_some() {
             return false;
         }
         let cc = self.cfg().curriculum.clone();
+        if !cc.auto_advance {
+            return false;
+        }
         let all = |class: Class, bar: f64| RACES.iter().all(|&r| self.windows.get(&Self::window_key(class, r)).and_then(|w| w.full_mean(cc.window_games)).is_some_and(|m| m >= bar));
         let next = match self.stage {
             Stage::C0 if all(Class::T0, cc.c0_to_c1_win_rate_vs_t0) => Some(Stage::C1),
@@ -446,10 +458,11 @@ impl League {
         next.is_some()
     }
 
-    /// 033 weights for an agent's advantage: r_value only in C0, r_build / r_units decay to 0
-    /// over `pseudo_reward_decay_updates` Main updates after C2 starts.
+    /// 033 weights for an agent's advantage: r_value only in the `[curriculum] r_value_stages`
+    /// stages (default C0, AMB-042-13), r_build / r_units decay to 0 over
+    /// `pseudo_reward_decay_updates` Main updates after C2 starts.
     pub fn reward_weights(&self, base: &RewardWeights) -> [f32; 4] {
-        let value = if self.stage == Stage::C0 { base.value } else { 0.0 };
+        let value = if self.cfg().curriculum.r_value_stages.contains(&self.stage) { base.value } else { 0.0 };
         let decay = match self.c2_start {
             Some(s) => (1.0 - (self.updates(AgentKind::Main) - s) as f64 / self.cfg().curriculum.pseudo_reward_decay_updates).max(0.0) as f32,
             None => 1.0,
@@ -519,8 +532,14 @@ mod tests {
         ]
     }
 
+    fn cfg() -> RlConfig {
+        let mut c = RlConfig::default_file();
+        c.t1 = t1();
+        c
+    }
+
     fn league() -> League {
-        League::new("r1", t1(), 7, RlConfig::default_file())
+        League::new("r1", 7, None, cfg())
     }
 
     /// 042 C0: T0 80% / self 20%, races and builds spread, Random only on the standard build.
@@ -678,7 +697,150 @@ mod tests {
             l.next();
         }
         let b = l.to_bytes();
-        let mut m = League::from_bytes(&b, RlConfig::default_file()).unwrap();
+        let mut m = League::from_bytes(&b, cfg()).unwrap();
         assert_eq!(l.next(), m.next());
+    }
+
+    /// The 042 "T1·셀프 run" league (config/rl_t1self.toml values, McRave left out).
+    fn t1self_cfg() -> RlConfig {
+        let mut c = cfg();
+        c.curriculum.start_stage = Stage::C1;
+        c.curriculum.auto_advance = false;
+        (c.curriculum.c1_t0, c.curriculum.c1_t1, c.curriculum.c1_self) = (0.0, 0.5, 0.5);
+        c.curriculum.r_value_stages = vec![Stage::C0, Stage::C1];
+        c
+    }
+
+    fn t1_pick(name: &str, race: Race) -> Pick {
+        Pick { agent: AgentKind::Main, opponent: Opponent::T1 { name: name.into(), race }, key: format!("{name}-{}", race_name(race)), class: Class::T1, fighting_spirit: true }
+    }
+
+    /// 042-R5 `start_stage = "C1"` (AMB-042-13): a new league starts in C1, trains Main only and,
+    /// with `c1_t0 = 0`, never picks a T0 bot: about half T1, half self-play.
+    #[test]
+    fn start_stage_c1_t1_self_mix_042_r5() {
+        let mut l = League::new("r1", 7, None, t1self_cfg());
+        assert_eq!(l.stage, Stage::C1);
+        let n = 4000;
+        let (mut bots, mut selfp) = (0, 0);
+        for _ in 0..n {
+            let p = l.next();
+            assert_eq!(p.agent, AgentKind::Main, "042-R7: C1 trains Main only");
+            match p.opponent {
+                Opponent::T1 { name, .. } => {
+                    assert!(t1().iter().any(|b| b.name == name));
+                    bots += 1;
+                }
+                Opponent::SelfPlay => selfp += 1,
+                other => panic!("c1_t0 = 0 picked {other:?}"),
+            }
+        }
+        assert_eq!(bots + selfp, n);
+        let f = bots as f64 / n as f64;
+        assert!((0.47..0.53).contains(&f), "T1 share {f}");
+        // Default config: C0 as before; the AC1 small setting stays C0 whatever start_stage says.
+        assert_eq!(league().stage, Stage::C0);
+        assert_eq!(League::new("r1", 7, Some(Race::Zerg), t1self_cfg()).stage, Stage::C0);
+    }
+
+    /// 042-R5 `auto_advance = false` (AMB-042-13): full winning windows never change the stage,
+    /// but the windows are still recorded (they drive race sampling).
+    #[test]
+    fn auto_advance_off_keeps_stage_042_r5() {
+        let mut l = League::new("r1", 7, None, t1self_cfg());
+        let before = l.race_probs();
+        for _ in 0..400 {
+            for (name, race) in [("ualbertabot", Race::Terran), ("ualbertabot", Race::Protoss), ("zzzkbot", Race::Zerg)] {
+                assert!(!l.record(&t1_pick(name, race), race, if race == Race::Zerg { Outcome::Loss } else { Outcome::Win }));
+            }
+        }
+        assert_eq!(l.stage, Stage::C1);
+        assert_eq!(l.windows.get("T1/zerg").map(|w| w.games.len()), Some(l.cfg().curriculum.window_games));
+        assert_ne!(l.race_probs(), before, "windows recorded");
+        // The same windows advance a league with auto_advance on.
+        let mut c = t1self_cfg();
+        c.curriculum.auto_advance = true;
+        let mut on = League::from_bytes(&l.to_bytes(), c).unwrap();
+        assert!(!on.record(&t1_pick("zzzkbot", Race::Zerg), Race::Zerg, Outcome::Loss), "zerg below 50%");
+        for _ in 0..300 {
+            on.record(&t1_pick("zzzkbot", Race::Zerg), Race::Zerg, Outcome::Win);
+        }
+        assert_eq!(on.stage, Stage::C2);
+    }
+
+    /// 033 r_value (AMB-042-13): non-zero in the `r_value_stages` stages only.
+    #[test]
+    fn r_value_follows_r_value_stages_033() {
+        let base = RewardWeights { win: 1.0, build: 0.3, units: 0.3, value: 0.05 };
+        let mut l = League::new("r1", 7, None, t1self_cfg());
+        assert_eq!(l.reward_weights(&base), [1.0, 0.3, 0.3, 0.05], "C1 listed");
+        l.stage = Stage::C0;
+        assert_eq!(l.reward_weights(&base)[3], 0.05);
+        l.stage = Stage::C2;
+        l.c2_start = Some(0);
+        assert_eq!(l.reward_weights(&base)[3], 0.0, "C2 not listed");
+        let mut c = cfg();
+        c.curriculum.start_stage = Stage::C1;
+        let l = League::new("r1", 7, None, c);
+        assert_eq!(l.reward_weights(&base)[3], 0.0, "default: C0 only");
+        let mut c = cfg();
+        c.curriculum.r_value_stages = vec![];
+        assert_eq!(League::new("r1", 7, None, c).reward_weights(&base)[3], 0.0);
+    }
+
+    /// 042 "재개 시 설정" (AMB-042-13): a resumed league keeps its stage, windows and snapshots
+    /// from league.bin and takes ratios, auto_advance, r_value_stages and T1 list from the
+    /// current config.
+    #[test]
+    fn resume_follows_current_config_042_r1() {
+        let mut l = league();
+        l.stage = Stage::C1;
+        let id = l.add_snapshot(AgentKind::Main);
+        for _ in 0..20 {
+            l.record(&t1_pick("zzzkbot", Race::Zerg), Race::Zerg, Outcome::Win);
+        }
+        let bytes = l.to_bytes();
+        // New config: no T0, only T1 (one new bot), r_value in C1, start_stage ignored.
+        let mut c = cfg();
+        c.curriculum.start_stage = Stage::C0;
+        (c.curriculum.c1_t0, c.curriculum.c1_t1, c.curriculum.c1_self) = (0.0, 1.0, 0.0);
+        c.curriculum.r_value_stages = vec![Stage::C1];
+        c.curriculum.auto_advance = false;
+        c.t1 = vec![T1Bot { name: "iron".into(), races: vec![Race::Terran] }];
+        let mut m = League::from_bytes(&bytes, c).unwrap();
+        assert_eq!(m.stage, Stage::C1);
+        assert_eq!(m.snapshots, vec![(AgentKind::Main, id)]);
+        assert_eq!(m.windows.get("T1/zerg").map(|w| w.games.len()), Some(20));
+        for _ in 0..200 {
+            match m.next().opponent {
+                Opponent::T1 { name, .. } => assert_eq!(name, "iron"),
+                other => panic!("only T1 iron, got {other:?}"),
+            }
+        }
+        let base = RewardWeights { win: 1.0, build: 0.3, units: 0.3, value: 0.05 };
+        assert_eq!(m.reward_weights(&base)[3], 0.05);
+        assert_eq!(m.cfg().t1.len(), 1);
+    }
+
+    /// 042-R1: a league.bin written before AMB-042-13 (with the T1 list inside) still loads; the
+    /// list in it is ignored for the config's.
+    #[test]
+    fn old_league_bin_loads_042_r1() {
+        let mut l = league();
+        l.stage = Stage::C1;
+        let mut v: serde_json::Value = serde_json::from_slice(&l.to_bytes()).unwrap();
+        assert!(v.get("t1").is_none(), "not written any more");
+        v["t1"] = serde_json::json!([{ "name": "mcrave", "races": ["Terran", "Protoss", "Zerg"] }]);
+        let old = serde_json::to_vec(&v).unwrap();
+        let mut m = League::from_bytes(&old, cfg()).unwrap();
+        assert_eq!(m.stage, Stage::C1);
+        for _ in 0..500 {
+            if let Opponent::T1 { name, .. } = m.next().opponent {
+                assert_ne!(name, "mcrave");
+            }
+        }
+        // And the 042-AC1 league.bin shape (fixed_t0 absent from the oldest ones).
+        v.as_object_mut().unwrap().remove("fixed_t0");
+        assert!(League::from_bytes(&serde_json::to_vec(&v).unwrap(), cfg()).unwrap().fixed_t0.is_none());
     }
 }
