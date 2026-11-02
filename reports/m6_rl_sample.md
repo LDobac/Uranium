@@ -105,3 +105,15 @@
 - V-trace: 게임 쪽 속도(약 250 step/s)로 정해져 run당 약 11시간이다.
 - PPO, 그룹 2: learner가 병목이라 run당 약 15~18시간이다.
 - 합계 약 3.3~3.7일. 기준선·사후 평가 시간은 별도다.
+
+## T1·셀프 run 리허설 (2026-11-03, 042 "T1·셀프 run", AMB-042-13)
+- 배경: 본 run 전 표본 end-to-end(대규모 배치 전 점검). 예상: C1 시작, T0 0판, 셀프·T1 약 반반, r_value 켬, 첫 KL이 AC1 끝 수준(약 0.02).
+- 구성: run `t1self-rh1`, `config/rl_t1self.toml`, `--init ac1-vtrace-s1/ckpt-3133569`, `--bc bc-s2e2-pt/ckpt-11387`, V-trace, Windows CUDA 호스트 learner·추론(레인 그룹 2) + 게임 로컬 hostd 9판·Linux 호스트 3판, 목표 6만 step. 드라이버 `runs/t1self_20261103/`(리허설 출력 `rehearsal/`).
+- 결과(02:16~02:33):
+  - 시작 로그: Main은 `--init`(update 1625)에서, KL 참조·Exploiter는 `--bc`에서. 리그 새로 생성, stage C1. 52 update 내내 C1.
+  - 첫 update KL 0.019(BC 출발이면 0 근처) → init 적용 확인. kl_coef 0.1부터.
+  - 게임 28판(끝난 16판 + 멈출 때 진행 중 12판): 셀프 17·T1 11, T0 0. T1은 T/P/Z 세 종족, 봇 5종 중 Iron·Stardust·Steamhammer·UAlbertaBot 등장, 두 맵, 두 호스트 모두 T1 판 진행. 거부·격리 0.
+  - r_value가 0이 아닌 판 26/28(C1에서 켜짐 확인).
+  - 처리량: 학습한 step 약 155 step/s(시작 78초 제외). AC1 V-trace(약 300)보다 느리다. T1 봇 계산과 셀프플레이 양쪽 추론이 늘어난 영향으로 보이며 따로 확인하지 않았다. 이 속도면 100만 step 약 1.8시간 + 점검 평가.
+  - 멈춤 step 111,975(목표 6만): agent step은 끝난 판의 결정으로 세고, 멈출 때 진행 중이던 판의 결정도 더해져(042-R12) 목표를 넘는다. 100만 단위에서도 단위마다 수만 step 넘을 수 있다.
+  - 점검 평가(봇당 1판, `<shared>/eval/t1self-20261103-rehearsal/c60k/`): ZZZKBot 5분 패, Steamhammer 30분 패, UAlbertaBot 60분 무승부. 평가 job 작성·실행·요약 경로 정상.
