@@ -148,6 +148,7 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 | 종족·Random | T/P/Z 모두, 위 종족 샘플링 그대로. 여러 종족 봇 Random 20%(021-R7) |
 | 맵 | 투혼·서킷브레이커 균등(`--ac1-race` 없음) |
 | 보상 | `r_value_stages = ["C0", "C1"]`: AC1처럼 r_value(가중치 0.05) 켬(033) |
+| z | 없음(2026-11-03 사용자 결정): AC1·출발 체크포인트와 같은 조건, z 테이블 없이 모든 게임 z 없음(033-R8 pseudo-reward 꺼짐) |
 | 상한 | agent step 상한 없음(`--max-agent-steps` 안 줌). 중단은 사용자 결정 |
 | 점검 | 100만 agent step마다 T1 저그 3종(Steamhammer·ZZZKBot·UAlbertaBot) 각 10판, stochastic, 투혼, seed_base 43000(11-03 측정과 같음). 첫 중간 보고는 500만 step |
 | 단계 전환 | 자동 전환 없음. T1 비중을 올릴지는 점검 추이를 보고 사용자가 정한다 |
