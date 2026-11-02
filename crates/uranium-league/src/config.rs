@@ -233,6 +233,13 @@ impl RlConfig {
         if !matches!(self.curriculum.start_stage, Stage::C0 | Stage::C1) {
             bail!("[curriculum] start_stage must be \"C0\" or \"C1\" (042-R5)");
         }
+        // 021 / 042: a T1 share needs T1 bots, and every bot plays at least one race.
+        if self.t1.is_empty() && (self.curriculum.c1_t1 > 0.0 || self.league.main_t1 > 0.0) {
+            bail!("[[t1]] is empty but [curriculum] c1_t1 or [league] main_t1 is above 0 (042, 021)");
+        }
+        if let Some(b) = self.t1.iter().find(|b| b.races.is_empty()) {
+            bail!("[[t1]] {} has no races (021)", b.name);
+        }
         Ok(())
     }
 
@@ -343,10 +350,31 @@ mod tests {
         for r in [uranium_proto::Race::Terran, uranium_proto::Race::Protoss, uranium_proto::Race::Zerg] {
             assert_eq!(t.t1.iter().filter(|b| b.races.contains(&r)).count(), 3, "{r:?}");
         }
-        // Everything else as in rl.toml.
+        // Everything else (other curriculum values included) as in rl.toml.
         let mut d = RlConfig::default_file();
-        d.curriculum = t.curriculum.clone();
+        let dc = &mut d.curriculum;
+        (dc.start_stage, dc.auto_advance, dc.r_value_stages) = (cc.start_stage, cc.auto_advance, cc.r_value_stages.clone());
+        (dc.c1_t0, dc.c1_t1, dc.c1_self) = (cc.c1_t0, cc.c1_t1, cc.c1_self);
         d.t1.retain(|b| b.name != "mcrave");
         assert_eq!(d, t);
+    }
+
+    /// 042 / 021: an empty `[[t1]]` with a T1 share above 0, or a T1 bot without races, is a
+    /// load error; an empty list with no T1 share is fine.
+    #[test]
+    fn t1_list_is_checked_021() {
+        let mut c = RlConfig::default_file();
+        c.validate().unwrap();
+        c.t1[0].races.clear();
+        assert!(c.validate().is_err(), "bot without races");
+        let mut c = RlConfig::default_file();
+        c.t1.clear();
+        assert!(c.validate().is_err(), "c1_t1 and main_t1 above 0");
+        c.curriculum.c1_t1 = 0.0;
+        assert!(c.validate().is_err(), "main_t1 above 0");
+        c.league.main_t1 = 0.0;
+        c.validate().unwrap();
+        c.curriculum.c1_t1 = 0.5;
+        assert!(c.validate().is_err(), "c1_t1 above 0");
     }
 }
