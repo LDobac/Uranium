@@ -78,12 +78,15 @@
 
 ## T1 설정 변형 (021 "T1 설정 변형", 2026-11-03, AMB-042-15)
 
-원본 봇 폴더를 복사해 오프닝 설정만 바꾼 상대다. 라이선스·원본 BWAPI·포팅·빌드 스크립트·고정은 원본 봇 것을 따른다. 바이너리(`module.dll`·`.so`)는 원본과 해시가 같다. 만들기: `tools/oss/make_variant.py`(`docs/commands.md`). 아래 두 변형은 이 스크립트로 다시 만들어 배포된 폴더와 바이트까지 같음을 확인했다(Windows 빌드, 2026-11-03). 오프닝 실측은 `reports/m6_rush_ladder.md` 3절.
+원본 봇 폴더를 복사해 오프닝 설정만 바꾼 상대다. 라이선스·원본 BWAPI·포팅·빌드 스크립트·고정은 원본 봇 것을 따른다. 바이너리(`module.dll`·`.so`)는 원본과 해시가 같다. 만들기: `tools/oss/make_variant.py`(`docs/commands.md`). 아래 네 변형은 이 스크립트로 다시 만들어 배포된 폴더와 바이트까지 같음을 확인했다(Windows 빌드, 2026-11-03). 오프닝 실측은 `reports/m6_rush_ladder.md` 3절(9풀·오버풀)과 10절(12풀 저글링·9풀 저글링). 원본 기록은 `runs/rushladder_20261103/variants.md`.
 
 | 변형 (상대 ID, 021-R3) | 원본 상대 ID | 바꾼 파일·줄 | 이전 → 이후 | 바꾼 파일 sha256 |
 |---|---|---|---|---|
 | `ualbertabot9pool@558899d-9pool` | `ualbertabot@558899d` | `bwapi-data/AI/UAlbertaBot_Config.txt` 85행(Strategy) | `"Zerg" : "Zerg_ZerglingRush",` → `"Zerg" : "Zerg_9Pool",` | `a7f68d12750b5f6b1b37d737b0fcb3ec9b1a148c1252d91004c95eea5b2923f0` |
 | `steamhammeroverpool@5.3.6-overpool` | `steamhammer@5.3.6` | `bwapi-data/AI/Steamhammer_5.3.6.json` 230~249행(`ZvT` 오프닝 가중치 20개) | 20개 항목 → `{ "Weight" : 100, "Strategy" : "OverpoolSpeed" }` 한 줄 | `1d776917e8f6439de9cc6293ec409af82836c7b607c737d5d674e14d6d1e191a` |
+| `ualbertabot12poollings@558899d-12poollings` | `ualbertabot@558899d` | `bwapi-data/AI/UAlbertaBot_Config.txt` 111행(`Zerg_ZerglingRush` 정의, 85행 Strategy는 그대로) | `"OpeningBuildOrder" : ["Drone", "Spawning Pool", "Zergling", "Zergling", "Zergling", "Zergling"]` → `["Drone", "Drone", "Drone", "Drone", "Drone", "Overlord", "Drone", "Drone", "Drone", "Spawning Pool", "Drone", "Drone", "Zergling", "Zergling", "Zergling"]` | `15277a9eef9580451291282e19c523319dda83551bbb1e9ac5fd5a48b8cdaf94` |
+| `ualbertabot9poollings@558899d-9poollings` | `ualbertabot@558899d` | 같은 파일 111행 | 같은 이전 값 → `["Drone", "Drone", "Drone", "Drone", "Drone", "Spawning Pool", "Drone", "Overlord", "Zergling", "Zergling", "Zergling"]` | `9eba66805d94d1511b823ecc325fe503625c86e63c959abe5ec16f654860de36` |
 
 - 명령: `make_variant.py --bot ualbertabot --variant 9pool --file bwapi-data/AI/UAlbertaBot_Config.txt --replace '"Zerg_ZerglingRush",' '"Zerg_9Pool",'`, `make_variant.py --bot steamhammer --variant overpool --file bwapi-data/AI/Steamhammer_5.3.6.json --lines 230-249 --text '            { "Weight" : 100, "Strategy" : "OverpoolSpeed" }'`.
+- 12풀·9풀 저글링 변형: `make_variant.py --bot ualbertabot --variant 12poollings`(또는 `9poollings`) `--file bwapi-data/AI/UAlbertaBot_Config.txt --lines 111 --text '<새 111행 전체, 들여쓰기 12칸>'`. 전략 이름(85행)을 그대로 두는 이유: UAlbertaBot은 오프닝 뒤 생산 목표를 전략 이름으로 고른다(`StrategyManager.cpp` `getZergBuildOrderGoal`, `Zerg_ZerglingRush` = 저글링 계속). 그래서 오프닝 정의만 바꾸면 오프닝 뒤 기본 러시처럼 저글링만 나온다(9풀 변형이 저글링 4기에서 멈춘 이유).
 - 변형은 설정을 바꾼 종족(저그)으로만 쓴다. 학습·점검에 쓰는 변형은 그 게임을 돌리는 모든 게임 호스트에 같은 내용으로 둔다(위 sha256으로 확인).

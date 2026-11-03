@@ -653,7 +653,7 @@ mod tests {
         assert_eq!(cc.ladder_pick, LadderPick::FVar);
         assert_eq!(t.concede, ConcedeConfig { enabled: true, ..ConcedeConfig::default() });
         let keys: Vec<String> = t.ladder.iter().map(|e| e.opponent().unwrap().1).collect();
-        assert_eq!(keys, ["t0-zerg-rush", "ualbertabot-zerg", "steamhammeroverpool-zerg", "zzzkbot-zerg"]);
+        assert_eq!(keys, ["ualbertabot9pool-zerg", "t0-zerg-rush", "ualbertabot12poollings-zerg", "ualbertabot-zerg", "ualbertabot9poollings-zerg", "steamhammeroverpool-zerg", "zzzkbot-zerg"], "user decision 2026-11-03");
         assert!(t.ladder.iter().all(|e| e.race == Race::Zerg));
         let mut d: RlConfig = toml::from_str(include_str!("../../../config/rl_t1self2.toml")).unwrap();
         let dc = &mut d.curriculum;

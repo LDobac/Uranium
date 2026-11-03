@@ -205,15 +205,32 @@ races = ["Terran"]
 # 042 C1 rush ladder (AMB-042-15): zerg rush opponents with a fixed race each (no race sampling,
 # no Random, 021-R7). kind = "t0" + build (T0 build name) or kind = "t1" + name (T1 bot folder,
 # 021 config variants `<bot><variant>` included). Win-table keys: t0-zerg-rush, <name>-zerg. Every
-# T1 entry must be installed on every game host (the league does not check). More variants may be
-# appended after the variant measurement (042 러시 커리큘럼 run).
+# T1 entry must be installed on every game host (the league does not check; variants are made with
+# tools/oss/make_variant.py, records in reports/oss_bot_porting.md).
+# rush-s1 list (user decision 2026-11-03, reports/m6_rush_ladder.md 7 / 10-5), easy to hard by the
+# start checkpoint's win rate / held share: ualbertabot9pool (warm-up, 87% / 87%), T0 zerg_rush
+# (47% / 33%), ualbertabot12poollings (37% / 33%), ualbertabot (27% / 13%), ualbertabot9poollings
+# (27% / 13%), steamhammeroverpool (3% / 3%), zzzkbot (0/10). The order is documentation only:
+# f_var picks by win rate, not by position.
+[[ladder]]
+kind = "t1"
+name = "ualbertabot9pool"
+race = "Zerg"
 [[ladder]]
 kind = "t0"
 build = "zerg_rush"
 race = "Zerg"
 [[ladder]]
 kind = "t1"
+name = "ualbertabot12poollings"
+race = "Zerg"
+[[ladder]]
+kind = "t1"
 name = "ualbertabot"
+race = "Zerg"
+[[ladder]]
+kind = "t1"
+name = "ualbertabot9poollings"
 race = "Zerg"
 [[ladder]]
 kind = "t1"

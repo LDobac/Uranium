@@ -222,7 +222,7 @@ T1·셀프 run 다음 RL run이다. 러시 상대 기준 측정(`reports/m6_rush
 | step·update | 새 run id로 0부터. KL 계수 0.1부터, 옵티마이저 새로(1·2차와 같음) |
 | 단계 | `start_stage = "C1"`, `auto_advance = false`. 사다리는 C1 상대 몫으로 두고 단계 변경은 사용자 결정이다(메인 임시 결정). C1이라 Main만 학습한다(042-R7) |
 | 상대 비율 | `c1_ladder = 0.70`, `c1_anchor = 0.10`, `c1_snapshot = 0.15`, `c1_self = 0.05`(현재 Main), `c1_t0 = 0`, `c1_t1 = 0`. 스냅샷이 아직 없으면 스냅샷 몫은 anchor로 간다(2차와 같음) |
-| 러시 사다리 | 저그 러시 상대만(`race = "Zerg"`): T0 `zerg_rush` 빌드(T0는 고치지 않는다, 021)와 T1 러시 봇·그 설정 변형(021 "T1 설정 변형"). 후보는 UAlbertaBot 기본(저그 `Zerg_ZerglingRush`), UAlbertaBot 9풀 변형, Steamhammer 오버풀 변형, ZZZKBot과 진행 중인 변형 측정에서 나온 변형이다. 정확한 목록은 그 측정 뒤 run 설정 `[[ladder]]`에 정하고 이 절에 덧붙인다. 사다리 안 선택은 PFSP f_var(`ladder_pick = "f_var"`) |
+| 러시 사다리 | 저그 러시 상대만(`race = "Zerg"`): T0 `zerg_rush` 빌드(T0는 고치지 않는다, 021)와 T1 러시 봇·그 설정 변형(021 "T1 설정 변형"). 후보는 UAlbertaBot 기본(저그 `Zerg_ZerglingRush`), UAlbertaBot 9풀 변형, Steamhammer 오버풀 변형, ZZZKBot과 진행 중인 변형 측정에서 나온 변형이다. 목록(2026-11-03 사용자 결정, `config/rl_rush1.toml` `[[ladder]]`, 쉬운 것부터, 출발 체크포인트의 승률 / 막음 비율, `reports/m6_rush_ladder.md` 7절·10절): T1 `ualbertabot9pool`(준비, 87% / 87%), T0 `zerg_rush`(47% / 33%), T1 `ualbertabot12poollings`(37% / 33%), T1 `ualbertabot`(기본 `Zerg_ZerglingRush`, 27% / 13%), T1 `ualbertabot9poollings`(27% / 13%), T1 `steamhammeroverpool`(3% / 3%), T1 `zzzkbot`(10판 0승) 7개. Steamhammer `11Pool`·`9HatchExpo9Pool9Gas` 변형은 오버풀만큼 어려워(0~3%) 넣지 않았다. 순서는 기록용이고 선택은 PFSP f_var(`ladder_pick = "f_var"`)가 승률로 한다 |
 | 저그가 아닌 T1 | 이번 단계에서는 쓰지 않는다(`c1_t1 = 0`, 사용자 결정). 021-R4의 run 풀 조건(종족마다 2개 이상)의 예외다. 이 run의 상대 종족은 사다리의 저그와 모델 상대(TvT)뿐이다 |
 | anchor | 2차와 같다(`[league] anchor = "checkpoints/ac1-vtrace-s1/ckpt-3133569"`, 출발 체크포인트) |
 | 스냅샷 | 2차와 같다: `main_every_updates = 250`, `main_candidates = 4`, 후보 안 PFSP f_hard |
