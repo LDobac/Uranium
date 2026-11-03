@@ -858,14 +858,22 @@ impl Run {
         if tmp.exists() {
             fs::remove_dir_all(&tmp)?;
         }
-        for rel in sub.files.keys() {
-            let to = tmp.join(rel);
-            fs::create_dir_all(to.parent().expect("a file under agents/<agent>"))?;
-            fs::copy(src.join(rel), &to).with_context(|| format!("copying {}", src.join(rel).display()))?;
+        let copied = (|| -> Result<()> {
+            for rel in sub.files.keys() {
+                let to = tmp.join(rel);
+                fs::create_dir_all(to.parent().expect("a file under agents/<agent>"))?;
+                fs::copy(src.join(rel), &to).with_context(|| format!("copying {}", src.join(rel).display()))?;
+            }
+            sub.write(&tmp)?;
+            verify_dir(&tmp)?;
+            fs::rename(&tmp, &dst)?;
+            Ok(())
+        })();
+        if let Err(e) = copied {
+            // Best effort: only this publish's temporary folder (never `dst`, a published one).
+            let _ = fs::remove_dir_all(&tmp);
+            return Err(e);
         }
-        sub.write(&tmp)?;
-        verify_dir(&tmp)?;
-        fs::rename(&tmp, &dst)?;
         Ok(dst)
     }
 

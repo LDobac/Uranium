@@ -68,6 +68,9 @@ pub struct SnapshotServer {
     /// Stops the server and frees its device memory (042 스냅샷 추론 서버, AMB-042-14). Called
     /// once no game uses it any more; sessions still holding `handle` get errors after.
     pub close: Box<dyn FnOnce() + Send>,
+    /// The server still serves: false once its model thread ended (e.g. a failed warm-up after
+    /// the start returned), so a cached handle is never given to a new game.
+    pub alive: Box<dyn Fn() -> bool + Send>,
 }
 
 /// Starts an inference server (stochastic sampling) for a league snapshot's or the anchor's

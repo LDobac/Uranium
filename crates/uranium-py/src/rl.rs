@@ -98,7 +98,8 @@ impl SegmentBatch {
 
 /// The Python learner object behind [`RlLearners`]: `brokers()`, `version(i)`,
 /// `update(i, batch, weights) -> json`, `push(i)`, `reset_to_bc(i)`, `save(i, dir, train_json)`,
-/// `snapshot_server(dir) -> Broker`.
+/// `snapshot_server(dir) -> (Broker, token)`, `snapshot_server_alive(token)`,
+/// `close_snapshot_server(token)`.
 struct PyLearners {
     obj: Py<PyAny>,
     handles: Vec<InferenceHandle>,
@@ -187,18 +188,22 @@ pub fn run_rl(
                 let snap = obj.clone_ref(py);
                 let servers: SnapshotServers = Arc::new(move |dir: &Path| {
                     Python::attach(|py| {
-                        let b = snap.bind(py).call_method1("snapshot_server", (dir.to_path_buf(),)).map_err(|e| py_error(py, e))?;
+                        let out = snap.bind(py).call_method1("snapshot_server", (dir.to_path_buf(),)).map_err(|e| py_error(py, e))?;
+                        let (b, token): (Bound<'_, PyAny>, u64) = out.extract().map_err(|e| py_error(py, e))?;
                         let handle = broker_handle(&b).map_err(|e| py_error(py, e))?;
-                        // 042 스냅샷 추론 서버 (AMB-042-14): stops the model thread, frees its memory.
-                        let (obj, dir) = (snap.clone_ref(py), dir.to_path_buf());
+                        // 042 스냅샷 추론 서버 (AMB-042-14): this server instance (`token`), not
+                        // whatever serves the folder later: stops its model thread, frees its memory.
+                        let (obj, path) = (snap.clone_ref(py), dir.to_path_buf());
                         let close = Box::new(move || {
                             Python::attach(|py| {
-                                if let Err(e) = obj.bind(py).call_method1("close_snapshot_server", (dir.clone(),)) {
-                                    uranium_data::elog!("[rl] closing the inference server of {}: {:#}", dir.display(), py_error(py, e));
+                                if let Err(e) = obj.bind(py).call_method1("close_snapshot_server", (token,)) {
+                                    uranium_data::elog!("[rl] closing the inference server of {}: {:#}", path.display(), py_error(py, e));
                                 }
                             })
                         });
-                        Ok(SnapshotServer { handle, close })
+                        let obj = snap.clone_ref(py);
+                        let alive = Box::new(move || Python::attach(|py| obj.bind(py).call_method1("snapshot_server_alive", (token,)).and_then(|v| v.extract::<bool>()).unwrap_or(false)));
+                        Ok(SnapshotServer { handle, close, alive })
                     })
                 });
                 Ok((Box::new(PyLearners { obj, handles }), servers))

@@ -215,6 +215,14 @@ fn league_snapshot_publishes_agent_model_files_only_042() {
     top.sort();
     assert_eq!(top, ["agents", "manifest.json"]);
     assert!(run.league_snapshot(5, "main-run1-250", "main").is_err(), "already published");
+    assert_eq!(verify_dir(&dir).unwrap(), m, "a failed publish never touches a published snapshot");
+    // A source that fails its check publishes nothing (and leaves no temporary folder, below).
+    write_rl_ckpt(&mut run, 6);
+    assert_eq!(run.push(6).unwrap(), PushOutcome::Pushed);
+    let gone = run.shared_dir().join(ckpt_name(6)).join("agents").join("main").join("model.safetensors");
+    fs::remove_file(&gone).unwrap();
+    assert!(run.league_snapshot(6, "main-run1-500", "main").is_err());
+    assert!(!run.shared_dir().join("league").join("main-run1-500").exists());
     assert!(run.league_snapshot(5, "x-250", "league-exploiter").is_err(), "no such agent");
     let leftovers: Vec<String> = fs::read_dir(run.shared_dir().join("league")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.contains(".tmp-")).collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");

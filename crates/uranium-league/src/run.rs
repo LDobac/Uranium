@@ -71,8 +71,8 @@ struct GameMeta {
     /// Our learner's BWAPI player id and the enemy race it saw (set at session start).
     self_player: Option<u8>,
     enemy_race: Race,
-    /// Key of the snapshot / anchor server this game holds (`SnapshotPool::acquire`).
-    server: Option<String>,
+    /// Id of the snapshot / anchor server this game holds (`SnapshotPool::acquire`).
+    server: Option<u64>,
 }
 
 struct Shared {
@@ -133,11 +133,18 @@ impl Drop for Halt {
 /// down first); servers with games in flight are never shut down.
 const SNAPSHOT_SERVERS_MAX: usize = 8;
 
+/// A snapshot / anchor whose server failed (start error, or its thread died) is not tried again
+/// for this long: its picks become current-Main self-play without reloading under the pool lock.
+const SNAPSHOT_RETRY_AFTER: Duration = Duration::from_secs(300);
+
 /// One running snapshot / anchor inference server.
 struct LiveServer {
     key: String,
+    /// Unique per started server: a game releases the server it got, not a later one of the key.
+    id: u64,
     handle: InferenceHandle,
     close: Box<dyn FnOnce() + Send>,
+    alive: Box<dyn Fn() -> bool + Send>,
     /// Games dispatched against it and not done yet.
     games: usize,
 }
@@ -155,31 +162,59 @@ struct SnapshotPool {
     cap: usize,
     pinned: Option<String>,
     servers: SnapshotServers,
+    /// Keys whose server failed, and when (`retry_after`).
+    failed: HashMap<String, Instant>,
+    retry_after: Duration,
+    next_id: u64,
 }
 
 /// A shut-down function with the server's key, run without the pool's lock.
 type Closer = (String, Box<dyn FnOnce() + Send>);
 
 impl SnapshotPool {
-    /// The server of `key` for one more game (started if needed); pair with `release`.
-    fn acquire(&mut self, key: &str) -> Result<InferenceHandle> {
-        if let Some(i) = self.live.iter().position(|l| l.key == key) {
-            let mut l = self.live.remove(i).unwrap();
-            l.games += 1;
-            let h = l.handle.clone();
-            self.live.push_back(l);
-            return Ok(h);
-        }
-        let dir = self.dirs.get(key).with_context(|| format!("no published model folder for {key}"))?;
-        let s = (self.servers)(dir)?;
-        let h = s.handle.clone();
-        self.live.push_back(LiveServer { key: key.to_string(), handle: s.handle, close: s.close, games: 1 });
-        Ok(h)
+    fn new(dirs: HashMap<String, PathBuf>, pinned: Option<String>, servers: SnapshotServers) -> Self {
+        Self { dirs, live: VecDeque::new(), cap: SNAPSHOT_SERVERS_MAX, pinned, servers, failed: HashMap::new(), retry_after: SNAPSHOT_RETRY_AFTER, next_id: 0 }
     }
 
-    /// A game dispatched with `acquire(key)` is done (or never started).
-    fn release(&mut self, key: &str) {
-        if let Some(l) = self.live.iter_mut().find(|l| l.key == key) {
+    /// The server of `key` for one more game (started if needed) and its id; pair with
+    /// `release`. A cached server whose thread died is closed and counts as a failure: an error
+    /// (the caller's self-play fallback), and no new start for `retry_after`.
+    fn acquire(&mut self, key: &str) -> Result<(InferenceHandle, u64)> {
+        if let Some(at) = self.failed.get(key) {
+            if at.elapsed() < self.retry_after {
+                anyhow::bail!("its server failed {:.0} s ago (retried after {} s)", at.elapsed().as_secs_f64(), self.retry_after.as_secs());
+            }
+            self.failed.remove(key);
+        }
+        if let Some(i) = self.live.iter().position(|l| l.key == key) {
+            let mut l = self.live.remove(i).unwrap();
+            if !(l.alive)() {
+                (l.close)();
+                self.failed.insert(key.to_string(), Instant::now());
+                anyhow::bail!("its inference server stopped (model thread ended)");
+            }
+            l.games += 1;
+            let out = (l.handle.clone(), l.id);
+            self.live.push_back(l);
+            return Ok(out);
+        }
+        let dir = self.dirs.get(key).with_context(|| format!("no published model folder for {key}"))?;
+        let s = match (self.servers)(dir) {
+            Ok(s) => s,
+            Err(e) => {
+                self.failed.insert(key.to_string(), Instant::now());
+                return Err(e);
+            }
+        };
+        self.next_id += 1;
+        let out = (s.handle.clone(), self.next_id);
+        self.live.push_back(LiveServer { key: key.to_string(), id: self.next_id, handle: s.handle, close: s.close, alive: s.alive, games: 1 });
+        Ok(out)
+    }
+
+    /// A game dispatched with `acquire` (server `id`) is done (or never started).
+    fn release(&mut self, id: u64) {
+        if let Some(l) = self.live.iter_mut().find(|l| l.id == id) {
             l.games = l.games.saturating_sub(1);
         }
     }
@@ -300,9 +335,9 @@ impl LeagueSource {
         if matches!(pick.opponent, Opponent::Snapshot { .. } | Opponent::Anchor { .. }) {
             let got = s.snapshots.lock().unwrap().acquire(&pick.key);
             match got {
-                Ok(h) => {
+                Ok((h, server_id)) => {
                     policies[1] = Some(PolicySpec::Model(h));
-                    server = Some(pick.key.clone());
+                    server = Some(server_id);
                 }
                 Err(e) => {
                     // 042 모델 상대 실패 (AMB-042-14): the game becomes current-Main self-play;
@@ -345,8 +380,8 @@ impl LeagueSource {
 
     /// The game no longer holds its snapshot / anchor server; servers nobody can pick go down.
     fn release_server(&self, meta: &GameMeta) {
-        if let Some(k) = &meta.server {
-            self.shared.snapshots.lock().unwrap().release(k);
+        if let Some(id) = meta.server {
+            self.shared.snapshots.lock().unwrap().release(id);
         }
         prune_servers(&self.shared);
     }
@@ -767,7 +802,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         stopping: AtomicBool::new(false),
         agent_addr,
         handles: handles.clone(),
-        snapshots: Mutex::new(SnapshotPool { dirs: snap_dirs, live: VecDeque::new(), cap: SNAPSHOT_SERVERS_MAX, pinned: anchor_key, servers }),
+        snapshots: Mutex::new(SnapshotPool::new(snap_dirs, anchor_key, servers)),
         games_csv: Mutex::new(games_csv),
         // 042-R12: agent steps continue from the checkpoint (TrainState.step).
         agent_steps: AtomicU64::new(step),
@@ -1054,20 +1089,30 @@ mod tests {
         InferenceHandle::new(tx, id.into(), SampleMode::Stochastic, &InferOptions::default())
     }
 
-    /// Snapshot servers for tests: `fail` = every start fails; the started folders and the
-    /// number of closes are counted.
+    /// Snapshot servers for tests: `fail` = every start fails; the started folders, the number
+    /// of closes and each started server's liveness flag (in start order, set false to "kill"
+    /// its model thread) are kept.
     fn fake_servers(fail: bool) -> (SnapshotServers, Arc<Mutex<Vec<PathBuf>>>, Arc<AtomicUsize>) {
-        let (opened, closed) = (Arc::new(Mutex::new(Vec::new())), Arc::new(AtomicUsize::new(0)));
-        let (o, c) = (opened.clone(), closed.clone());
+        let (s, o, c, _) = fake_servers_with(Arc::new(AtomicBool::new(fail)));
+        (s, o, c)
+    }
+
+    type Alive = Arc<Mutex<Vec<Arc<AtomicBool>>>>;
+
+    fn fake_servers_with(fail: Arc<AtomicBool>) -> (SnapshotServers, Arc<Mutex<Vec<PathBuf>>>, Arc<AtomicUsize>, Alive) {
+        let (opened, closed, alive) = (Arc::new(Mutex::new(Vec::new())), Arc::new(AtomicUsize::new(0)), Alive::default());
+        let (o, c, a) = (opened.clone(), closed.clone(), alive.clone());
         let servers: SnapshotServers = Arc::new(move |dir: &Path| {
-            anyhow::ensure!(!fail, "model files unreadable");
+            anyhow::ensure!(!fail.load(Ordering::SeqCst), "model files unreadable");
             o.lock().unwrap().push(dir.to_path_buf());
-            let c = c.clone();
-            Ok(SnapshotServer { handle: fake_handle(&dir.display().to_string()), close: Box::new(move || {
-                    c.fetch_add(1, Ordering::SeqCst);
-                }) })
+            let (c, up) = (c.clone(), Arc::new(AtomicBool::new(true)));
+            a.lock().unwrap().push(up.clone());
+            let close = Box::new(move || {
+                c.fetch_add(1, Ordering::SeqCst);
+            });
+            Ok(SnapshotServer { handle: fake_handle(&dir.display().to_string()), close, alive: Box::new(move || up.load(Ordering::SeqCst)) })
         });
-        (servers, opened, closed)
+        (servers, opened, closed, alive)
     }
 
     /// A league source over a league in C1 with these model shares (no T0 / T1 / current Main
@@ -1099,7 +1144,7 @@ mod tests {
             stopping: AtomicBool::new(false),
             agent_addr: "127.0.0.1:1".into(),
             handles: AgentKind::ALL.iter().map(|a| fake_handle(a.name())).collect(),
-            snapshots: Mutex::new(SnapshotPool { dirs, live: VecDeque::new(), cap: SNAPSHOT_SERVERS_MAX, pinned, servers }),
+            snapshots: Mutex::new(SnapshotPool::new(dirs, pinned, servers)),
             games_csv: Mutex::new(std::fs::OpenOptions::new().write(true).open(csv).unwrap()),
             agent_steps: AtomicU64::new(0),
             games_done: AtomicU64::new(0),
@@ -1136,7 +1181,7 @@ mod tests {
             assert_eq!(opponent_handle(&job), "main", "the current Main's server");
             let games = src.shared.games.lock().unwrap();
             let m = &games[&job.spec.game_id];
-            assert_eq!((&m.pick.opponent, m.pick.class, m.server.as_deref()), (&Opponent::SelfPlay, Class::Model, None));
+            assert_eq!((&m.pick.opponent, m.pick.class, m.server), (&Opponent::SelfPlay, Class::Model, None));
         }
         // A snapshot that was never published (no model folder): the same.
         let (servers, opened, _) = fake_servers(false);
@@ -1198,12 +1243,11 @@ mod tests {
     fn snapshot_pool_cap_spares_busy_and_pinned_servers() {
         let (servers, _, closed) = fake_servers(false);
         let dirs = (0..4).map(|i| (format!("s{i}"), PathBuf::from(format!("d{i}")))).collect();
-        let mut pool = SnapshotPool { dirs, live: VecDeque::new(), cap: 2, pinned: Some("s0".into()), servers };
-        for i in 0..4 {
-            pool.acquire(&format!("s{i}")).unwrap();
-        }
-        pool.release("s0");
-        pool.release("s1");
+        let mut pool = SnapshotPool::new(dirs, Some("s0".into()), servers);
+        pool.cap = 2;
+        let ids: Vec<u64> = (0..4).map(|i| pool.acquire(&format!("s{i}")).unwrap().1).collect();
+        pool.release(ids[0]);
+        pool.release(ids[1]);
         let all: BTreeSet<String> = (0..4).map(|i| format!("s{i}")).collect();
         let out = pool.prune(&all);
         assert_eq!(out.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["s1"]);
@@ -1212,9 +1256,49 @@ mod tests {
         }
         assert_eq!(closed.load(Ordering::SeqCst), 1);
         assert_eq!(pool.live_keys(), ["s0", "s2", "s3"], "busy ones stay above the cap");
-        pool.release("s2");
+        pool.release(ids[2]);
         assert_eq!(pool.prune(&BTreeSet::new()).iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["s2"], "unused and idle");
         assert!(pool.acquire("nope").is_err());
+    }
+
+    /// A server whose model thread died after its start returned (e.g. a failed warm-up) is
+    /// never handed out again: the pick that finds it closes it and becomes current-Main
+    /// self-play, as do the picks of that key for `retry_after`; then the key starts afresh. A
+    /// game of the dead server releasing later never touches the new one. Failed starts are not
+    /// retried for `retry_after` either.
+    #[test]
+    fn dead_and_failing_servers_are_not_reused_042() {
+        let fail = Arc::new(AtomicBool::new(false));
+        let (servers, opened, closed, alive) = fake_servers_with(fail.clone());
+        // The anchor only (pinned, never pruned).
+        let src = source([0.0, 0.0, 1.0], "checkpoints/x/ckpt-9", 4, servers);
+        let first = src.next().unwrap();
+        assert_eq!(first.opponent.as_deref(), Some("anchor@ckpt-9"));
+        alive.lock().unwrap()[0].store(false, Ordering::SeqCst);
+        for _ in 0..3 {
+            let j = src.next().unwrap();
+            assert_eq!(j.opponent.as_deref(), Some("uranium-main@r1"), "dead anchor server: self-play");
+        }
+        assert_eq!((closed.load(Ordering::SeqCst), opened.lock().unwrap().len()), (1, 1), "closed once, not restarted at once");
+        // After the back-off: a new server.
+        src.shared.snapshots.lock().unwrap().retry_after = Duration::ZERO;
+        let again = src.next().unwrap();
+        assert_eq!(again.opponent.as_deref(), Some("anchor@ckpt-9"));
+        assert_eq!(opened.lock().unwrap().len(), 2);
+        let new_id = src.shared.games.lock().unwrap()[&again.spec.game_id].server.unwrap();
+        // The dead server's game ends: the new server's count is untouched.
+        src.requeue(first);
+        assert_eq!(src.shared.snapshots.lock().unwrap().live.iter().find(|l| l.id == new_id).unwrap().games, 1);
+        // A start that fails is not retried at every pick.
+        let mut pool = src.shared.snapshots.lock().unwrap();
+        pool.retry_after = Duration::from_secs(300);
+        pool.live.clear();
+        fail.store(true, Ordering::SeqCst);
+        assert!(pool.acquire("anchor@ckpt-9").is_err());
+        fail.store(false, Ordering::SeqCst);
+        let err = pool.acquire("anchor@ckpt-9").unwrap_err();
+        assert!(format!("{err:#}").contains("failed"), "{err:#}");
+        assert_eq!(opened.lock().unwrap().len(), 2, "no reload within the back-off");
     }
 
     #[test]

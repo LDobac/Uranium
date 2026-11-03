@@ -58,8 +58,9 @@ class Learners:
         self.learners: list = []
         self.servers: list = []
         self.brokers_: list = []
-        # League snapshot / anchor servers by model folder (042, AMB-042-14).
+        # League snapshot / anchor servers by instance token (042, AMB-042-14).
         self.snapshot_servers: dict = {}
+        self.snapshot_tokens = 0
         # Per agent: where its weights started (042, AMB-042-13), written into every checkpoint.
         self.starts: list = []
         for name, (net, update, optim_dir, start) in zip(AGENTS, start_policies(bc_dir, bc, init, resume, device), strict=True):
@@ -128,9 +129,10 @@ class Learners:
             train[START_KEY] = self.starts[i]
         ckpt.save_meta(d, l.net.cfg, train, self.precision, impl_settings())
 
-    def snapshot_server(self, dir: str):
-        """A league snapshot's or the anchor's agent as an opponent (stochastic, 042); kept by
-        `dir` until `close_snapshot_server(dir)`."""
+    def snapshot_server(self, dir: str) -> tuple:
+        """A league snapshot's or the anchor's agent as an opponent (stochastic, 042): (broker,
+        token). The token names this server instance for `snapshot_server_alive` and
+        `close_snapshot_server` (another server of the same folder is a different instance)."""
         from uranium import _core
         from uranium.agent.infer import InferenceServer
 
@@ -140,15 +142,22 @@ class Learners:
         with DEVICE_LOCK.shared():
             s = InferenceServer(b, self.device, self.precision)
         s.start()
-        self.close_snapshot_server(dir)  # an older server of the same folder (not expected)
-        self.snapshot_servers[str(dir)] = s
-        return b
+        self.snapshot_tokens += 1
+        self.snapshot_servers[self.snapshot_tokens] = s
+        return b, self.snapshot_tokens
 
-    def close_snapshot_server(self, dir: str) -> None:
+    def snapshot_server_alive(self, token: int) -> bool:
+        """The server still serves: its model thread runs without an error (a failed warm-up
+        ends it after `snapshot_server` returned), and it was not closed."""
+        s = self.snapshot_servers.get(token)
+        return s is not None and s.is_alive() and s.error is None and not s.stop.is_set()
+
+    def close_snapshot_server(self, token: int) -> None:
         """042 스냅샷 추론 서버 (AMB-042-14): the run loop calls this once no game uses the server
-        and no opponent choice can pick it; its thread stops and frees the model's device memory
-        (the snapshot's files stay)."""
-        s = self.snapshot_servers.pop(str(dir), None)
+        and no opponent choice can pick it (or its thread died); its thread stops and frees the
+        model's device memory (the snapshot's files stay). Only this instance: a newer server of
+        the same folder has another token."""
+        s = self.snapshot_servers.pop(token, None)
         if s is not None:
             s.close()
 

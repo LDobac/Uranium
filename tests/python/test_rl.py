@@ -270,24 +270,48 @@ def rec(frm: str, path: Path, **kw) -> dict:
     return {"from": frm, "path": str(path), "abs_path": str(Path(path).resolve()), **kw}
 
 
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")  # the broken warm-up
 def test_snapshot_server_close_042(monkeypatch, tmp_path):
     """042 스냅샷 추론 서버 (AMB-042-14): `Learners.snapshot_server(dir)` serves a snapshot's
-    agent folder; `close_snapshot_server(dir)` stops its thread and frees its model; closing an
-    unknown folder does nothing."""
+    agent folder and names the instance by a token; `close_snapshot_server(token)` stops that
+    thread and frees its model, never a newer server of the same folder (a stale close after a
+    restart); a dead thread reads as not alive; closing again does nothing."""
     from uranium import ckpt
 
     bc = save_ckpt(tmp_path / "bc" / "ckpt-11", tiny_net(5), {"step": 11})
     ls = make_learners(monkeypatch, tmp_path, bc, None, None)
     snap = rl_ckpt(tmp_path / "league", 250, {"main": tiny_net(9)}, update=250) / ckpt.AGENTS_DIR / "main"
-    b = ls.snapshot_server(str(snap))
-    s = ls.snapshot_servers[str(snap)]
-    assert s.is_alive() and b.checkpoint_id.startswith("main@")
+    b, token = ls.snapshot_server(str(snap))
+    s = ls.snapshot_servers[token]
+    assert s.is_alive() and ls.snapshot_server_alive(token) and b.checkpoint_id.startswith("main@")
     _core.play_sessions(b, 1, 2)
-    ls.close_snapshot_server(str(snap))
+    b2, token2 = ls.snapshot_server(str(snap))
+    s2 = ls.snapshot_servers[token2]
+    assert token2 != token
+    ls.close_snapshot_server(token)
     s.join(timeout=10)
     assert not s.is_alive() and s.error is None and s.net is None
-    assert str(snap) not in ls.snapshot_servers
-    ls.close_snapshot_server(str(snap))
+    assert token not in ls.snapshot_servers and not ls.snapshot_server_alive(token)
+    ls.close_snapshot_server(token)
+    assert s2.is_alive() and ls.snapshot_server_alive(token2), "the newer server of the folder stays"
+    _core.play_sessions(b2, 1, 2)
+    ls.close_snapshot_server(token2)
+    s2.join(timeout=10)
+    assert not s2.is_alive()
+    # A server whose warm-up fails after `snapshot_server` returned: its thread dies, not alive.
+    from uranium.agent.infer import InferenceServer
+    from uranium.rl import run
+
+    def broken(self, batches=None):
+        raise RuntimeError("warm-up failed")
+
+    monkeypatch.setattr(run, "_n_max", lambda: 64)
+    monkeypatch.setattr(InferenceServer, "warm_up", broken)
+    _, token3 = ls.snapshot_server(str(snap))
+    s3 = ls.snapshot_servers[token3]
+    s3.join(timeout=10)
+    assert not s3.is_alive() and isinstance(s3.error, RuntimeError)
+    assert not ls.snapshot_server_alive(token3)
 
 
 @pytest.mark.parametrize("agent_folder", [False, True])
