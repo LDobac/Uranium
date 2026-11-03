@@ -17,7 +17,8 @@ Run with the stdlib only (Linux game hosts: `python3 -I`, Windows: the venv pyth
       --text '            { "Weight" : 100, "Strategy" : "OverpoolSpeed" }'
 
 The bots folder is `--bots`, else `URANIUM_OSS_BOTS_DIR`, else `build/oss_bots` of the repository.
-An existing variant folder is left alone unless `--force` (then it is rebuilt).
+An existing variant folder is left alone unless `--force` (then it is rebuilt in a `.part` folder
+and replaced only once that is complete).
 """
 
 import argparse
@@ -58,10 +59,8 @@ def main() -> int:
     name, _, ver = version.partition("@")
     if name != a.bot or not ver:
         sys.exit(f"{src / 'VERSION'}: expected '{a.bot}@<version>', got {version!r}")
-    if dst.exists():
-        if not a.force:
-            sys.exit(f"{dst} exists (use --force to rebuild it)")
-        shutil.rmtree(dst)
+    if dst.exists() and not a.force:
+        sys.exit(f"{dst} exists (use --force to rebuild it)")
 
     tmp = dst.with_name(dst.name + ".part")
     if tmp.exists():
@@ -99,7 +98,15 @@ def main() -> int:
         if (src / b).exists() and sha256(src / b) != sha256(tmp / b):
             shutil.rmtree(tmp)
             sys.exit(f"{b} differs from the original after the copy")
+    # Swap only once the new folder is complete: an existing variant is kept until then.
+    old = dst.with_name(dst.name + ".old")
+    if old.exists():
+        shutil.rmtree(old)
+    if dst.exists():
+        dst.rename(old)
     tmp.rename(dst)
+    if old.exists():
+        shutil.rmtree(old)
 
     print(f"[oss] variant {variant_id} from {version} in {dst}")
     print(f"  file: {a.file} ({where})")

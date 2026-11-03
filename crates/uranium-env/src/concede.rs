@@ -105,16 +105,28 @@ impl CollapseJudge {
     }
 }
 
-/// Who conceded a game (042-R14 log): the `GameSpec.players` index of the session and the frame.
+/// Which rule made a model session leave an RL league game.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeaveRule {
+    /// 042-R14 collapse concede.
+    Concede,
+    /// 031-R12 surrender in On mode (020-R14); RL games run Shadow, so normally never.
+    Surrender,
+}
+
+/// Who left a game (042-R14 log): the `GameSpec.players` index of the session, the frame and the
+/// rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Conceded {
     pub side: u8,
     pub frame: u32,
+    pub rule: LeaveRule,
 }
 
-/// 042-R14 per game: the config and the one concede of the game. The first session that holds
-/// claims it; the other model session of the game then stops judging (both leaving would make
-/// each report the other's win and 020-R13 could turn the result around).
+/// 042-R14 per game: the config and the one leave of the game. The first session that leaves
+/// (collapse concede, or a 031-R12 On-mode surrender) claims it; the other model session of the
+/// game then neither judges nor surrenders (both leaving would make each report the other's win
+/// and 020-R13 could turn the result around).
 #[derive(Debug)]
 pub struct ConcedeGame {
     pub cfg: ConcedeConfig,
@@ -131,13 +143,13 @@ impl ConcedeGame {
         *self.done.lock().unwrap()
     }
 
-    /// True for the first claim of the game only.
-    pub fn claim(&self, side: u8, frame: u32) -> bool {
+    /// True for the first claim of the game only, whatever the rule.
+    pub fn claim(&self, side: u8, frame: u32, rule: LeaveRule) -> bool {
         let mut d = self.done.lock().unwrap();
         if d.is_some() {
             return false;
         }
-        *d = Some(Conceded { side, frame });
+        *d = Some(Conceded { side, frame, rule });
         true
     }
 }
@@ -237,10 +249,14 @@ mod tests {
     fn once_per_game_042_ac5() {
         let g = ConcedeGame::new(on());
         assert_eq!(g.conceded(), None);
-        assert!(g.claim(1, 7_300));
-        assert!(!g.claim(0, 7_300));
-        assert!(!g.claim(1, 7_400));
-        assert_eq!(g.conceded(), Some(Conceded { side: 1, frame: 7_300 }));
+        assert!(g.claim(1, 7_300, LeaveRule::Concede));
+        assert!(!g.claim(0, 7_300, LeaveRule::Concede));
+        assert!(!g.claim(1, 7_400, LeaveRule::Concede));
+        assert!(!g.claim(0, 7_400, LeaveRule::Surrender), "no surrender after a concede");
+        assert_eq!(g.conceded(), Some(Conceded { side: 1, frame: 7_300, rule: LeaveRule::Concede }));
+        let g = ConcedeGame::new(on());
+        assert!(g.claim(0, 20_000, LeaveRule::Surrender));
+        assert!(!g.claim(1, 20_000, LeaveRule::Concede), "no concede after a surrender");
     }
 
     /// 042-AC5 config check: `max_supply` 0..=200, `hold_s` >= 1; negative values and unknown keys

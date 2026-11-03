@@ -112,7 +112,7 @@ c1_t1 = 0.4
 c1_self = 0.3
 # 042 (AMB-042-14): C1 shares of past Main snapshots (PFSP f_hard over the [snapshot]
 # main_candidates latest published) and of the [league] anchor; c1_self is the current Main.
-# C1 picks in proportion to the five c1_* values.
+# C1 picks in proportion to the six c1_* values (t0, t1, ladder, self, snapshot, anchor).
 c1_snapshot = 0.0
 c1_anchor = 0.0
 # 042 C1 rush ladder (AMB-042-15): share of the [[ladder]] opponents (also part of the

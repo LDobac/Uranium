@@ -415,7 +415,7 @@ fn supply_frames(at: &[(u32, u16)]) -> Vec<RawFrame> {
 /// (plans, evaluation) never concede.
 #[test]
 fn collapse_concede_is_not_a_decision_042_r14() {
-    use uranium_env::concede::{ConcedeConfig, ConcedeGame, Conceded};
+    use uranium_env::concede::{ConcedeConfig, ConcedeGame, Conceded, LeaveRule};
     use uranium_env::reward::{Outcome, RewardParts};
     type Seen = Arc<Mutex<(usize, Vec<(RewardParts, Option<Outcome>)>)>>;
     struct Obs(Seen);
@@ -450,7 +450,7 @@ fn collapse_concede_is_not_a_decision_042_r14() {
     let s = p.stats();
     assert_eq!((s.decisions, s.concede_frame), (5, Some(7_200)), "the concede is not a decision");
     assert_eq!(seen.lock().unwrap().0, 5);
-    assert_eq!(game.conceded(), Some(Conceded { side: 0, frame: 7_200 }));
+    assert_eq!(game.conceded(), Some(Conceded { side: 0, frame: 7_200, rule: LeaveRule::Concede }));
     // The leave: GameEnd's final frame without new events.
     let mut last = fs[5].clone();
     last.frame = 7_201;
@@ -473,6 +473,35 @@ fn collapse_concede_is_not_a_decision_042_r14() {
     for f in supply_frames(&[(4_320, 0), (7_200, 0), (9_000, 0)]) {
         assert!(e.on_frame(&f).unwrap().surrender.is_none());
     }
+}
+
+/// 042-R14 / 031-R12: in an RL league game the leave is claimed once per game, so an On-mode
+/// 031-R12 surrender never follows a concede of the other side (nor a concede a surrender); in a
+/// fresh game the same session surrenders as before. The 031-R12 rule holds for real here (P(win)
+/// 2.5%, after 10 minutes for 30 s, no own production building = collapse).
+#[test]
+fn surrender_and_concede_share_one_leave_042_r14() {
+    use uranium_env::concede::{ConcedeConfig, ConcedeGame, Conceded, LeaveRule};
+    let h = mock(1, Some(-0.95)).with_surrender(uranium_agent::infer::SurrenderMode::On, "gg");
+    // Healthy supply (no concede), no own units (031-R12 ③ collapse).
+    let fs: Vec<RawFrame> = supply_frames(&[(15_000, 40), (15_800, 40), (16_000, 40)])
+        .into_iter()
+        .map(|mut f| {
+            f.units.retain(|u| u.owner != SELF);
+            f
+        })
+        .collect();
+    let new_game = || Arc::new(ConcedeGame::new(ConcedeConfig { enabled: true, ..Default::default() }));
+    let play = |game: Arc<ConcedeGame>| {
+        let mut p = ModelPolicy::new(&h, &game_info()).unwrap().with_concede(game, 0);
+        fs.iter().map(|f| p.on_frame(f).unwrap().surrender.is_some()).collect::<Vec<bool>>()
+    };
+    let fresh = new_game();
+    assert_eq!(play(fresh.clone()), [false, true, false], "031-R12 surrender at 15,800");
+    assert_eq!(fresh.conceded(), Some(Conceded { side: 0, frame: 15_800, rule: LeaveRule::Surrender }));
+    let taken = new_game();
+    assert!(taken.claim(1, 7_200, LeaveRule::Concede));
+    assert_eq!(play(taken), [false, false, false], "the other side conceded: no second leave");
 }
 
 /// 042-R14 through the agent server: a lockstep game on the concede board gets the surrender Act

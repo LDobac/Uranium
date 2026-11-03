@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use uranium_agent::infer::InferenceHandle;
 use uranium_agent::model_policy::{LearnerHook, SessionObserver};
 use uranium_agent::{ConcedeBoard, EndBoard, PolicySpec, Routes, T0Build, T0Builds, game_result};
-use uranium_env::concede::{ConcedeConfig, ConcedeGame};
+use uranium_env::concede::{ConcedeConfig, ConcedeGame, LeaveRule};
 use uranium_env::features::Strategy;
 use uranium_env::reward::{Outcome, RewardWeights};
 use uranium_proto::control::{GameSpec, MapKey, PlayerKind, PlayerSpec};
@@ -438,6 +438,8 @@ impl JobSource for LeagueSource {
     fn done(&self, job: &Job, outcome: JobOutcome, replay: Option<Vec<u8>>) {
         let s = &self.shared;
         let id = job.spec.game_id;
+        // 042-R14: off the concede board whatever happens below.
+        let concede = s.concede.take(id);
         let Some(mut meta) = s.games.lock().unwrap().remove(&id) else { return };
         let agent = meta.pick.agent.index();
         if outcome != JobOutcome::Finished {
@@ -458,7 +460,8 @@ impl JobSource for LeagueSource {
         }
         let ends = s.ends.take(id);
         // 042-R14: who conceded, if a session did (players index 0 = the learning agent).
-        let conceded = s.concede.take(id).and_then(|g| g.conceded());
+        let left = concede.and_then(|g| g.conceded());
+        let conceded = left.filter(|c| c.rule == LeaveRule::Concede);
         // 020-R13: the session that ended last decides.
         let verdict = (outcome == JobOutcome::Finished).then(|| game_result(&ends)).flatten();
         let decided = match (&verdict, meta.self_player) {
@@ -1368,7 +1371,7 @@ mod tests {
             let id = job.spec.game_id;
             let game = src.shared.concede.get(id).expect("on the board from dispatch");
             if let Some(side) = conceded {
-                assert!(game.claim(side, 7_200));
+                assert!(game.claim(side, 7_200, LeaveRule::Concede));
             }
             src.shared.games.lock().unwrap().get_mut(&id).unwrap().self_player = Some(0);
             for &(slot, winner, reason) in ends {

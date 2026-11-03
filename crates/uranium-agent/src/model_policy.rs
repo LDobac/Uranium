@@ -15,7 +15,7 @@ use uranium_env::features::Strategy;
 use uranium_env::features::extract::action_table;
 use uranium_env::maps::{MapFamilies, PrecomputeSource, family_index, live_precompute_for_session, maps_dir};
 use uranium_env::reward::{Outcome, RewardParts, RewardTracker};
-use uranium_env::concede::{CollapseJudge, ConcedeGame};
+use uranium_env::concede::{CollapseJudge, ConcedeGame, LeaveRule};
 use uranium_env::surrender::{DEFAULT_CHAT, SurrenderJudge, SurrenderMode, rule_holds};
 use crate::infer::HostState;
 use uranium_proto::{Act, GameInfo, RawFrame};
@@ -281,6 +281,13 @@ impl ModelPolicy {
         if mode != SurrenderMode::On || !(held || forced) {
             return None;
         }
+        // 042-R14: in an RL league game the leave is claimed once per game, so the other model
+        // session never leaves too (a concede or a surrender of the other side came first).
+        if let Some((_, game, side)) = &self.concede {
+            if !game.claim(*side, f.frame, LeaveRule::Surrender) {
+                return None;
+            }
+        }
         if forced && self.stats.surrender_frame.is_none() {
             self.stats.surrender_frame = Some(f.frame);
         }
@@ -298,7 +305,7 @@ impl ModelPolicy {
         if self.surrendered || game.conceded().is_some() {
             return None;
         }
-        if !judge.decide(f.frame, f.self_state.supply_used) || !game.claim(*side, f.frame) {
+        if !judge.decide(f.frame, f.self_state.supply_used) || !game.claim(*side, f.frame, LeaveRule::Concede) {
             return None;
         }
         let side = *side;
