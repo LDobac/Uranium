@@ -244,7 +244,7 @@ pub fn make_policy(spec: &PolicySpec, game_id: u64, info: &GameInfo, build: T0Bu
         PolicySpec::Learner(l) => {
             terran()?;
             let (z, observer) = l.session(game_id, info);
-            Box::new(model(ModelPolicy::new(l.handle(), info)?.with_observer(z, observer)))
+            Box::new(model(ModelPolicy::new(l.handle(), info)?.with_observer(z, l.reward_config(), observer)))
         }
     })
 }

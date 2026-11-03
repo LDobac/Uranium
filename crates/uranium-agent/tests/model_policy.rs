@@ -246,7 +246,7 @@ fn observer_sees_behaviour_log_probs_042() {
     }
     let h = mock(1, None);
     let seen = Arc::new(Mutex::new(vec![]));
-    let mut p = ModelPolicy::new(&h, &game_info()).unwrap().with_observer(None, Box::new(Obs(seen.clone())));
+    let mut p = ModelPolicy::new(&h, &game_info()).unwrap().with_observer(None, Default::default(), Box::new(Obs(seen.clone())));
     for f in frames(2, 5) {
         p.on_frame(&f).unwrap();
     }
@@ -272,7 +272,7 @@ fn final_frame_reward_reaches_the_last_decision_010_r12() {
     let h = mock(1, None);
     let run = |with_final: bool| {
         let seen = Arc::new(Mutex::new(vec![]));
-        let mut p = ModelPolicy::new(&h, &game_info()).unwrap().with_observer(None, Box::new(Obs(seen.clone())));
+        let mut p = ModelPolicy::new(&h, &game_info()).unwrap().with_observer(None, Default::default(), Box::new(Obs(seen.clone())));
         let fs = frames(0, 3);
         for f in &fs {
             p.on_frame(f).unwrap();
@@ -294,6 +294,56 @@ fn final_frame_reward_reaches_the_last_decision_010_r12() {
     assert!(cost > 0.0 && (with.value - cost).abs() < 1e-6, "value {} vs kill {cost}", with.value);
     let (without, _) = run(false);
     assert_eq!((without.win, without.value), (1.0, 0.0));
+}
+
+/// 033-R9 / R10 / 042 (AMB-042-16): an RL session's rewards carry r_scout / r_survive from its
+/// own observations, with the hook's settings, and the 042 metrics reach the observer right
+/// before the end.
+#[test]
+fn scout_rewards_and_metrics_reach_the_observer_033_r9() {
+    use uranium_env::reward::{Outcome, RewardParts};
+    use uranium_env::scout::{RewardConfig, ScoutMetrics};
+    #[derive(Default)]
+    struct Seen {
+        scout: f32,
+        metrics: Option<ScoutMetrics>,
+        ended_after_metrics: bool,
+    }
+    struct Obs(Arc<Mutex<Seen>>);
+    impl uranium_agent::model_policy::SessionObserver for Obs {
+        fn on_decision(&mut self, d: &uranium_agent::model_policy::Decision<'_>) {
+            self.0.lock().unwrap().scout += d.reward_before.scout;
+        }
+        fn on_scout(&mut self, m: &ScoutMetrics) {
+            self.0.lock().unwrap().metrics = Some(*m);
+        }
+        fn on_end(&mut self, after: RewardParts, _o: Option<Outcome>) {
+            let mut s = self.0.lock().unwrap();
+            s.scout += after.scout;
+            s.ended_after_metrics = s.metrics.is_some();
+        }
+    }
+    let h = mock(1, None);
+    let run = |cfg: RewardConfig| {
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        let mut p = ModelPolicy::new(&h, &game_info()).unwrap().with_observer(None, cfg, Box::new(Obs(seen.clone())));
+        let fs = frames(0, 3);
+        for f in &fs {
+            p.on_frame(f).unwrap();
+        }
+        p.on_end(Some(Outcome::Win), fs.last());
+        let s = seen.lock().unwrap();
+        (s.scout, s.metrics, s.ended_after_metrics)
+    };
+    let (scout, m, ordered) = run(RewardConfig::default());
+    assert!(scout > 0.0, "visible enemy units pay r_scout");
+    let m = m.expect("metrics");
+    assert!(ordered);
+    assert_eq!(m.barracks_frame, Some(1), "own barracks in the first observation");
+    assert!(m.types_4m >= 1);
+    let mut none = RewardConfig::default();
+    (none.scout.main, none.scout.building_type, none.scout.expansion, none.scout.workers, none.scout.army) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    assert_eq!(run(none).0, 0.0, "the hook's settings are used");
 }
 
 struct SinkWriter(Arc<Mutex<Vec<u8>>>);
@@ -431,7 +481,7 @@ fn collapse_concede_is_not_a_decision_042_r14() {
     let cfg = ConcedeConfig { enabled: true, ..Default::default() };
     let game = Arc::new(ConcedeGame::new(cfg));
     let seen: Seen = Arc::new(Mutex::new((0, vec![])));
-    let mut p = ModelPolicy::new(&h, &game_info()).unwrap().with_observer(None, Box::new(Obs(seen.clone()))).with_concede(game.clone(), 0);
+    let mut p = ModelPolicy::new(&h, &game_info()).unwrap().with_observer(None, Default::default(), Box::new(Obs(seen.clone()))).with_concede(game.clone(), 0);
     // 4,000 healthy; collapse (supply 8 = screen 4) counted from 4,320; 7,199 is 2,879 later.
     let mut fs = supply_frames(&[(4_000, 40), (4_319, 8), (4_320, 8), (5_760, 8), (7_199, 8), (7_200, 8)]);
     // An enemy unit seen at every decision dies in sight between the last decision and the concede.

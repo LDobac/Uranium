@@ -19,6 +19,7 @@ use uranium_env::features::executor::HostAction;
 use uranium_env::features::extract::privileged;
 use uranium_env::features::PrivilegedTensors;
 use uranium_env::reward::{Outcome, RewardParts};
+use uranium_env::scout::{PseudoMode, ScoutMetrics};
 use uranium_agent::model_policy::{Decision, SessionObserver};
 use uranium_data::state::HostState;
 use uranium_agent::infer::HEADS;
@@ -35,7 +36,8 @@ pub struct Step {
     pub action: HostAction,
     pub log_prob: f32,
     pub head_log_prob: [f32; HEADS],
-    /// win, build, units, value (033-R3); known once the next decision (or the end) arrives.
+    /// win, build, units, value channels (033-R3; build / units carry r_scout / r_survive in the
+    /// 033-R11 `"scout"` mode); known once the next decision (or the end) arrives.
     pub reward: [f32; 4],
     pub privileged: PrivilegedTensors,
     pub version: u64,
@@ -54,6 +56,10 @@ pub struct Segment {
     /// UPGO) in this segment's game; `false` = weight 0 (a model opponent with
     /// `r_value_vs_model = false`). The value head learns r_value either way.
     pub r_value_policy: bool,
+    /// 033-R11 (AMB-042-16): per-game multiplier of the build and units channels' policy
+    /// weights (PG and UPGO): `"scout"` games against a model get `[reward.scout] vs_model` and
+    /// `[reward.survive] vs_model`, every other game 1. The value head learns the raw values.
+    pub pseudo_scale: [f32; 2],
 }
 
 impl Segment {
@@ -311,8 +317,14 @@ pub struct GameResult {
     pub game_id: u64,
     /// `None` = Aborted (042-R3).
     pub outcome: Option<Outcome>,
-    /// Sum of each reward component over the game (033-R3 logging).
+    /// Sum of r_win, r_build, r_units, r_value over the game (033-R3 logging; r_build / r_units
+    /// are the z rewards, 0 in the `"scout"` mode, 033-R11).
     pub reward_sum: [f32; 4],
+    /// 033-R9 / R10 raw sums over the game (042-R2 `r_scout`, `r_survive`).
+    pub scout_sum: f32,
+    pub survive_sum: f32,
+    /// 042 정찰·대응 지표 (`None` without a reward tracker, e.g. no end report).
+    pub scout: Option<ScoutMetrics>,
     pub decisions: u64,
     /// Enemy race the agent's memory knew at its last decision (030-R11: a lobby-Random enemy is
     /// unknown until seen); `None` if never revealed. Per-race league statistics use it.
@@ -338,17 +350,28 @@ pub struct TrajectoryObserver {
     hold: Option<Box<dyn Fn(Segment) + Send>>,
     /// `Segment::r_value_policy` of this game's segments (AMB-042-14).
     r_value_policy: bool,
+    /// 033-R11 channel mode and `Segment::pseudo_scale` of this game (AMB-042-16).
+    pseudo: PseudoMode,
+    pseudo_scale: [f32; 2],
+    scout_sum: f32,
+    survive_sum: f32,
+    scout: Option<ScoutMetrics>,
 }
 
-fn parts(r: &RewardParts) -> [f32; 4] {
-    [r.win, r.build, r.units, r.value]
+/// The four value-head channels of a step's reward (033-R3 / 033-R11): win, build, units, value;
+/// build / units = r_build / r_units in `"z"`, r_scout / r_survive in `"scout"`.
+pub fn channels(r: &RewardParts, mode: PseudoMode) -> [f32; 4] {
+    match mode {
+        PseudoMode::Z => [r.win, r.build, r.units, r.value],
+        PseudoMode::Scout => [r.win, r.scout, r.survive, r.value],
+    }
 }
 
 impl TrajectoryObserver {
     pub fn new(agent: usize, game_id: u64, seq_len: usize, queue: Arc<SegmentQueue>, results: Sender<GameResult>) -> Self {
         assert!(seq_len >= 2, "segments overlap by one step");
         let privileged = PrivilegedTensors { summary: vec![0.0; uranium_env::features::extract::dims().privileged()] };
-        Self { agent, game_id, seq_len, queue, results, steps: Vec::new(), state0: None, next_state0: None, privileged, reward_sum: [0.0; 4], decisions: 0, enemy_race: None, hold: None, r_value_policy: true }
+        Self { agent, game_id, seq_len, queue, results, steps: Vec::new(), state0: None, next_state0: None, privileged, reward_sum: [0.0; 4], decisions: 0, enemy_race: None, hold: None, r_value_policy: true, pseudo: PseudoMode::Z, pseudo_scale: [1.0, 1.0], scout_sum: 0.0, survive_sum: 0.0, scout: None }
     }
 
     /// Hands the terminal segment to `sink` without r_win instead of queueing it: the caller
@@ -365,12 +388,29 @@ impl TrajectoryObserver {
         self
     }
 
-    fn add_reward(&mut self, r: [f32; 4]) {
+    /// 033-R11 (AMB-042-16): the channel mode of this game's rewards and the build / units
+    /// policy-weight multipliers of its segments (default `"z"`, 1 and 1).
+    pub fn pseudo(mut self, mode: PseudoMode, scale: [f32; 2]) -> Self {
+        self.pseudo = mode;
+        self.pseudo_scale = scale;
+        self
+    }
+
+    /// Rewards since the previous decision land on that decision (033-R7); the sums log every
+    /// component by its reward name (r_build / r_units = z rewards, r_scout / r_survive apart).
+    fn add_reward(&mut self, r: &RewardParts, with_win: bool) {
+        let mut c = channels(r, self.pseudo);
+        let mut named = [r.win, r.build, r.units, r.value];
+        if !with_win {
+            (c[0], named[0]) = (0.0, 0.0);
+        }
         if let Some(last) = self.steps.last_mut() {
             for k in 0..4 {
-                last.reward[k] += r[k];
-                self.reward_sum[k] += r[k];
+                last.reward[k] += c[k];
+                self.reward_sum[k] += named[k];
             }
+            self.scout_sum += r.scout;
+            self.survive_sum += r.survive;
         }
     }
 }
@@ -398,7 +438,7 @@ impl SessionObserver for TrajectoryObserver {
             }
         }
         // 033-R7: the frames since the previous decision are that decision's reward.
-        self.add_reward(parts(&d.reward_before));
+        self.add_reward(&d.reward_before, true);
         if self.steps.is_empty() {
             self.state0 = d.state.clone();
         } else if self.steps.len() == self.seq_len - 1 {
@@ -420,8 +460,12 @@ impl SessionObserver for TrajectoryObserver {
             let steps = std::mem::replace(&mut self.steps, vec![last]);
             let state0 = self.state0.take().unwrap_or_default();
             self.state0 = self.next_state0.take();
-            self.queue.push(Segment { agent: self.agent, game_id: self.game_id, steps, state0, terminal: false, r_value_policy: self.r_value_policy });
+            self.queue.push(Segment { agent: self.agent, game_id: self.game_id, steps, state0, terminal: false, r_value_policy: self.r_value_policy, pseudo_scale: self.pseudo_scale });
         }
+    }
+
+    fn on_scout(&mut self, m: &ScoutMetrics) {
+        self.scout = Some(*m);
     }
 
     fn on_end(&mut self, reward_after: RewardParts, outcome: Option<Outcome>) {
@@ -432,15 +476,12 @@ impl SessionObserver for TrajectoryObserver {
                 self.queue.revoke(self.game_id);
             }
             Some(_) => {
-                let mut after = parts(&reward_after);
-                if self.hold.is_some() {
-                    after[0] = 0.0;
-                }
-                self.add_reward(after);
+                // 020-R13: with a held terminal segment the caller adds r_win.
+                self.add_reward(&reward_after, self.hold.is_none());
                 if !self.steps.is_empty() {
                     let steps = std::mem::take(&mut self.steps);
                     let state0 = self.state0.take().unwrap_or_default();
-                    let seg = Segment { agent: self.agent, game_id: self.game_id, steps, state0, terminal: true, r_value_policy: self.r_value_policy };
+                    let seg = Segment { agent: self.agent, game_id: self.game_id, steps, state0, terminal: true, r_value_policy: self.r_value_policy, pseudo_scale: self.pseudo_scale };
                     match &self.hold {
                         Some(sink) => sink(seg),
                         None => self.queue.push(seg),
@@ -451,7 +492,17 @@ impl SessionObserver for TrajectoryObserver {
                 }
             }
         }
-        let _ = self.results.send(GameResult { agent: self.agent, game_id: self.game_id, outcome, reward_sum: self.reward_sum, decisions: self.decisions, enemy_race: self.enemy_race });
+        let _ = self.results.send(GameResult {
+            agent: self.agent,
+            game_id: self.game_id,
+            outcome,
+            reward_sum: self.reward_sum,
+            scout_sum: self.scout_sum,
+            survive_sum: self.survive_sum,
+            scout: self.scout,
+            decisions: self.decisions,
+            enemy_race: self.enemy_race,
+        });
     }
 }
 
@@ -552,6 +603,59 @@ mod tests {
         assert_eq!(g.r_value_policy, [false, false, true, true]);
     }
 
+    fn decide_parts(obs: &mut TrajectoryObserver, i: usize, r: RewardParts) {
+        let o = fake_obs(i);
+        let a = HostAction { action: 0, delay_bucket: 0, queued: false, selected: vec![], target_unit: None, target_loc: None };
+        let state = obs.wants_state().then(|| HostState { parts: vec![(vec![1, 1], vec![i as f32])] });
+        obs.on_decision(&Decision { frame: i as u32, obs: &o, action: &a, log_prob: -1.0, head_log_prob: [0.0; HEADS], value: [0.0; 4], rejected: false, version: 0, reward_before: r, state });
+    }
+
+    /// 033-R11 / 033-AC3 (AMB-042-16): in "scout" the build / units channels carry r_scout /
+    /// r_survive (r_build / r_units stay out), in "z" the earlier r_build / r_units; the sums log
+    /// each reward by its name; every segment of the game carries its `pseudo_scale`, and the
+    /// learner batch gets it per lane.
+    #[test]
+    fn scout_mode_channels_and_scale_033_r11() {
+        let r = |k: f32| RewardParts { win: 0.0, build: 0.5 * k, units: 0.25 * k, value: 0.01 * k, scout: 0.1 * k, survive: 0.02 * k };
+        let run = |mode: PseudoMode, scale: [f32; 2], game: u64| {
+            let q = Arc::new(SegmentQueue::new(16));
+            let (tx, rx) = mpsc::channel();
+            let mut o = TrajectoryObserver::new(0, game, 3, q.clone(), tx).pseudo(mode, scale);
+            for i in 0..4 {
+                decide_parts(&mut o, i, r(i as f32));
+            }
+            let m = ScoutMetrics { main_frame: Some(4_000), types_4m: 3, ..Default::default() };
+            o.on_scout(&m);
+            o.on_end(RewardParts { win: 1.0, ..r(4.0) }, Some(Outcome::Win));
+            let segs = std::iter::from_fn(|| q.try_take(1, 0, 100).map(|mut v| v.remove(0))).collect::<Vec<_>>();
+            (segs, rx.recv().unwrap())
+        };
+        let (segs, res) = run(PseudoMode::Scout, [0.5, 0.0], 1);
+        // Step k's reward = decision k + 1's reward_before (033-R7); the last gets the end.
+        let steps: Vec<[f32; 4]> = segs.iter().flat_map(|s| s.steps[..s.trained()].iter().map(|st| st.reward)).collect();
+        let want = |k: f32, win: f32| [win, 0.1 * k, 0.02 * k, 0.01 * k];
+        assert_eq!(steps, [want(1.0, 0.0), want(2.0, 0.0), want(3.0, 0.0), want(4.0, 1.0)]);
+        assert!(segs.iter().all(|s| s.pseudo_scale == [0.5, 0.0]));
+        assert_eq!(crate::batch::group(&segs, 3, 12).pseudo_scale, [0.5, 0.0, 0.5, 0.0]);
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-6;
+        assert!(close(res.reward_sum[1], 5.0) && close(res.reward_sum[2], 2.5), "r_build / r_units logged by name: {:?}", res.reward_sum);
+        assert!(close(res.scout_sum, 1.0) && close(res.survive_sum, 0.2), "{} {}", res.scout_sum, res.survive_sum);
+        assert_eq!(res.scout.map(|m| (m.main_frame, m.types_4m)), Some((Some(4_000), 3)));
+        let (segs, res) = run(PseudoMode::Z, [1.0, 1.0], 2);
+        let steps: Vec<[f32; 4]> = segs.iter().flat_map(|s| s.steps[..s.trained()].iter().map(|st| st.reward)).collect();
+        assert_eq!(steps[0], [0.0, 0.5, 0.25, 0.01], "z: r_build / r_units");
+        assert!(segs.iter().all(|s| s.pseudo_scale == [1.0, 1.0]));
+        assert!(close(res.scout_sum, 1.0), "the raw sums are kept in z too (games.csv leaves them empty)");
+        // Default observer: z, 1 and 1.
+        let q = Arc::new(SegmentQueue::new(4));
+        let (tx, _rx) = mpsc::channel();
+        let mut o = TrajectoryObserver::new(0, 3, 3, q.clone(), tx);
+        decide_parts(&mut o, 0, r(1.0));
+        o.on_end(r(1.0), Some(Outcome::Draw));
+        let s = q.try_take(1, 0, 100).unwrap().remove(0);
+        assert_eq!((s.pseudo_scale, s.steps[0].reward), ([1.0, 1.0], [0.0, 0.5, 0.25, 0.01]));
+    }
+
     /// 042-R3: an Aborted game's queued segments are revoked; taken ones are counted.
     #[test]
     fn aborted_game_is_revoked_042_r3() {
@@ -601,6 +705,7 @@ mod tests {
             state0: HostState::default(),
             terminal: true,
             r_value_policy: true,
+            pseudo_scale: [1.0, 1.0],
         }
     }
 

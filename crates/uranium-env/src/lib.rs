@@ -6,5 +6,6 @@ pub mod concede;
 pub mod features;
 pub mod maps;
 pub mod reward;
+pub mod scout;
 pub mod surrender;
 pub mod types;

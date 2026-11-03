@@ -81,12 +81,22 @@ def component_weights(g: dict, weights) -> list:
     """The 033 weight of each reward component for the advantage of a lane group: a scalar, but
     r_value (component 3) per lane [b, 1] when some lane's game gives it no policy weight (042
     "r_value의 게임별 적용", AMB-042-14: `r_value_policy` false = a model opponent with
-    `r_value_vs_model = false`). With every lane on, the scalars as before (same results bit for
-    bit)."""
+    `r_value_vs_model = false`), and the build / units channels (components 1, 2) per lane [b, 1]
+    when some lane's game scales them (033-R11 "scout", AMB-042-16: `pseudo_scale` [b, 2] =
+    `[reward.scout]` / `[reward.survive]` `vs_model` in games against a model). With every lane on
+    and every multiplier 1, the scalars as before (same results bit for bit). Only the policy
+    gradient (V-trace PG, UPGO, PPO advantage) uses these; the value targets do not."""
     w = list(weights)
     on = g.get("r_value_policy")
     if on is not None and not bool(torch.as_tensor(on, dtype=torch.bool).all()):
         w[3] = torch.where(torch.as_tensor(on, dtype=torch.bool), w[3], 0.0)[:, None]
+    scale = g.get("pseudo_scale")
+    if scale is not None:
+        scale = torch.as_tensor(scale, dtype=torch.float32).reshape(-1, 2)
+        for c in (1, 2):
+            col = scale[:, c - 1]
+            if not bool((col == 1.0).all()):
+                w[c] = (w[c] * col)[:, None]
     return w
 
 

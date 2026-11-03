@@ -125,6 +125,8 @@ class SyntheticSegments:
         g["versions"] = np.zeros(len(lanes), dtype=self.dtypes["versions"])
         # Every lane's game keeps r_value's policy weight (AMB-042-14): the measured update as before.
         g["r_value_policy"] = np.ones(len(lanes), dtype=self.dtypes["r_value_policy"])
+        # Build / units multipliers 1 (033-R11, AMB-042-16): the measured update as before.
+        g["pseudo_scale"] = np.ones((len(lanes), 2), dtype=self.dtypes["pseudo_scale"])
         g["state0"] = [x["state0"] for x in lanes]
         g |= {"b": len(lanes), "t": t, "n": n}
         return g

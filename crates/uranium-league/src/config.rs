@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use uranium_env::concede::ConcedeConfig;
+use uranium_env::scout::{PseudoMode, RewardConfig};
 
 use crate::league::{LadderEntry, LadderPick, Stage, T1Bot};
 
@@ -112,6 +113,8 @@ pub struct LeagueConfig {
     pub pfsp_power: f64,
     pub main_exploiter_fallback_win_rate: f64,
     pub main_exploiter_fallback_share: f64,
+    /// 042 승률 표: per-game EMA decay d of every win-table pick (ladder f_var, C1 snapshot
+    /// f_hard, C2 PFSP, Main Exploiter f_var); `rush-s2` 0.97 (AMB-042-16).
     pub win_rate_decay: f64,
     pub win_rate_prior: f64,
     pub race_uniform_mix: f64,
@@ -219,6 +222,11 @@ pub struct CurriculumConfig {
     /// 042 사다리 안 상대 선택 (AMB-042-15): only `"f_var"`; other values are load errors.
     #[serde(default)]
     pub ladder_pick: LadderPick,
+    /// 042 사다리 그룹 (AMB-042-16): group name → share. Non-empty: a ladder game first draws a
+    /// group by the shares, then an entry of that group by `ladder_pick`. Absent / empty = one
+    /// pool of every entry (the earlier picks; `group` is then only recorded).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub ladder_groups: std::collections::BTreeMap<String, f64>,
 }
 
 fn default_r_value_vs_model() -> bool {
@@ -290,6 +298,11 @@ pub struct RlConfig {
     /// `[concede]`: 042-R14 collapse concede of RL training games (AMB-042-15). Absent = off.
     #[serde(default)]
     pub concede: ConcedeConfig,
+    /// `[reward]`: 033-R11 channel mode and the r_scout / r_survive settings (033-R9 / R10,
+    /// AMB-042-16), from the current config file on each start. Absent = `"z"` with the default
+    /// settings (the earlier behaviour).
+    #[serde(default)]
+    pub reward: RewardConfig,
 }
 
 impl RlConfig {
@@ -337,9 +350,32 @@ impl RlConfig {
                 bail!("[[ladder]] entry {}: win-table key {key} appears twice (042, AMB-042-15)", i + 1);
             }
         }
+        // 042 사다리 그룹 설정 검사 (AMB-042-16).
+        let groups = &self.curriculum.ladder_groups;
+        if !groups.is_empty() {
+            if let Some((g, x)) = groups.iter().find(|(_, x)| !(**x >= 0.0 && x.is_finite())) {
+                bail!("[curriculum] ladder_groups share of {g:?} must be a finite value >= 0, got {x} (042, AMB-042-16)");
+            }
+            if groups.values().sum::<f64>() <= 0.0 {
+                bail!("[curriculum] ladder_groups shares must sum to more than 0 (042, AMB-042-16)");
+            }
+            if let Some(g) = groups.keys().find(|g| !self.ladder.iter().any(|e| &e.group == *g)) {
+                bail!("[curriculum] ladder_groups lists {g:?} but no [[ladder]] entry has group = {g:?} (042, AMB-042-16)");
+            }
+            if let Some((i, e)) = self.ladder.iter().enumerate().find(|(_, e)| !groups.contains_key(&e.group)) {
+                bail!("[[ladder]] entry {}: group {:?} is not in [curriculum] ladder_groups (042, AMB-042-16)", i + 1, e.group);
+            }
+        }
         // 042-R14 (AMB-042-15).
         self.concede.validate().map_err(anyhow::Error::msg)?;
+        // 033-R11 (AMB-042-16).
+        self.reward.validate()?;
         Ok(())
+    }
+
+    /// 033-R11: the reward channel mode.
+    pub fn pseudo(&self) -> PseudoMode {
+        self.reward.pseudo
     }
 
     /// The repository's `config/rl.toml`.
@@ -661,5 +697,124 @@ mod tests {
         d.ladder = t.ladder.clone();
         d.concede.enabled = true;
         assert_eq!(d, t, "everything else as in t1self-s2 ([[t1]] included)");
+    }
+
+    /// 042 "러시·운영 혼합 run" (AMB-042-16): `config/rl_rush2.toml` is `rl_rush1.toml` with the
+    /// decided changes only — win_rate_decay 0.97, ladder groups rush 0.5 / macro 0.5 (the 7
+    /// rush-s1 entries as "rush"), `[reward] pseudo = "scout"` at the confirmed values, the anchor
+    /// unchanged; the "macro" entries are a placeholder (T0 standard zerg) until AMB-042-16 is
+    /// decided.
+    #[test]
+    fn rush2_config_042_amb_042_16() {
+        use uranium_env::scout::{ScoutConfig, SurviveConfig};
+        let t: RlConfig = toml::from_str(include_str!("../../../config/rl_rush2.toml")).unwrap();
+        t.validate().unwrap();
+        assert_eq!(t.league.win_rate_decay, 0.97);
+        assert_eq!(t.league.anchor, "checkpoints/ac1-vtrace-s1/ckpt-3133569", "AC1 anchor kept");
+        let groups: Vec<(&str, f64)> = t.curriculum.ladder_groups.iter().map(|(g, x)| (g.as_str(), *x)).collect();
+        assert_eq!(groups, [("macro", 0.5), ("rush", 0.5)]);
+        assert_eq!(t.reward, RewardConfig { pseudo: PseudoMode::Scout, scout: ScoutConfig::default(), survive: SurviveConfig::default() });
+        let s = &t.reward.scout;
+        assert_eq!((s.weight, s.cap, s.vs_model, s.full_until_s, s.zero_at_s, s.main_radius_tiles, s.workers_min), (0.15, 1.0, 0.5, 240.0, 480.0, 10.0, 4));
+        assert_eq!((s.main, s.building_type, s.expansion, s.workers, s.army), (0.3, 0.1, 0.1, 0.1, 0.1));
+        let v = &t.reward.survive;
+        assert_eq!((v.weight, v.vs_model, v.from_s, v.until_s, v.scv_target), (0.1, 0.0, 180.0, 480.0, 20));
+        let rush1: RlConfig = toml::from_str(include_str!("../../../config/rl_rush1.toml")).unwrap();
+        let rush: Vec<&LadderEntry> = t.ladder.iter().filter(|e| e.group == "rush").collect();
+        assert_eq!(rush.len(), 7);
+        for (a, b) in rush.iter().zip(&rush1.ladder) {
+            assert_eq!(LadderEntry { group: String::new(), ..(*a).clone() }, *b, "the rush-s1 entries as they were");
+        }
+        // Placeholder until the macro list is decided (AMB-042-16).
+        let macro_keys: Vec<String> = t.ladder.iter().filter(|e| e.group == "macro").map(|e| e.opponent().unwrap().1).collect();
+        assert_eq!(macro_keys, ["t0-zerg"]);
+        let mut d = rush1;
+        d.league.win_rate_decay = 0.97;
+        d.curriculum.ladder_groups = t.curriculum.ladder_groups.clone();
+        d.ladder = t.ladder.clone();
+        d.reward = t.reward.clone();
+        assert_eq!(d, t, "everything else as in rush-s1");
+    }
+
+    /// 033-R11 / 042 (AMB-042-16): rl.toml lists `[reward]` at the defaults ("z", the confirmed
+    /// r_scout / r_survive values) and no ladder groups; a config without `[reward]` (the earlier
+    /// files, configs copied into older checkpoints) gets the same values, `[[ladder]]` entries
+    /// without `group` get the empty name.
+    #[test]
+    fn reward_and_group_keys_default_amb_042_16() {
+        let c = RlConfig::default_file();
+        assert_eq!(c.reward, RewardConfig::default());
+        assert_eq!(c.pseudo(), PseudoMode::Z);
+        assert!(c.curriculum.ladder_groups.is_empty());
+        let full = include_str!("../../../config/rl.toml");
+        let at = full.find("\n[reward]").unwrap() + 1;
+        let end = at + full[at..].find("\n[concede]").unwrap() + 1;
+        let old: RlConfig = toml::from_str(&format!("{}{}", &full[..at], &full[end..])).unwrap();
+        assert_eq!(old, c, "absent = defaults");
+        for f in [include_str!("../../../config/rl_rush1.toml"), include_str!("../../../config/rl_t1self2.toml")] {
+            let o: RlConfig = toml::from_str(f).unwrap();
+            o.validate().unwrap();
+            assert_eq!((o.reward.clone(), o.curriculum.ladder_groups.is_empty()), (RewardConfig::default(), true));
+            assert!(o.ladder.iter().all(|e| e.group.is_empty()));
+        }
+        // The serialised config (checkpoint meta.json) reads back the same.
+        let t: RlConfig = toml::from_str(include_str!("../../../config/rl_rush2.toml")).unwrap();
+        let back: RlConfig = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert_eq!(back, t);
+    }
+
+    /// 042 사다리 그룹 설정 검사 (AMB-042-16): negative or non-finite shares, shares summing to 0, a
+    /// listed group without entries and an entry of a group that is not listed are load errors;
+    /// without `ladder_groups` any `group` is fine.
+    #[test]
+    fn ladder_groups_are_checked_042_amb_042_16() {
+        let ladder = |groups: &[&str]| groups.iter().map(|g| format!("[[ladder]]\nkind = \"t0\"\nbuild = \"standard\"\nrace = \"Zerg\"\ngroup = \"{g}\"\n[[ladder]]\nkind = \"t1\"\nname = \"bot-{g}\"\nrace = \"Zerg\"\ngroup = \"{g}\"\n")).collect::<String>().replacen("build = \"standard\"", "build = \"zerg_rush\"", 1);
+        let two = ladder(&["rush", "macro"]);
+        let ok = with_ladder("c1_ladder = 0.7\nladder_groups = { rush = 0.5, macro = 0.5 }", &two, "").unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(ok.ladder.iter().map(|e| e.group.as_str()).collect::<Vec<_>>(), ["rush", "rush", "macro", "macro"]);
+        with_ladder("c1_ladder = 0.7\nladder_groups = { rush = 1.0, macro = 0.0 }", &two, "").unwrap();
+        with_ladder("c1_ladder = 0.7", &two, "").unwrap();
+        with_ladder("c1_ladder = 0.7\nladder_groups = {}", &ladder(&[""]), "").unwrap();
+        for (groups, why) in [
+            ("{ rush = -0.5, macro = 0.5 }", "negative share"),
+            ("{ rush = 0.0, macro = 0.0 }", "sum 0"),
+            ("{ rush = 0.5, macro = 0.5, late = 0.2 }", "group without entries"),
+            ("{ rush = 1.0 }", "macro entries not listed"),
+            ("{ rush = nan, macro = 0.5 }", "not finite"),
+        ] {
+            assert!(with_ladder(&format!("c1_ladder = 0.7\nladder_groups = {groups}"), &two, "").is_err(), "{why}");
+        }
+        // An entry without `group` (the empty name) needs "" listed.
+        let mixed = format!("{two}[[ladder]]\nkind = \"t1\"\nname = \"nogroup\"\nrace = \"Zerg\"\n");
+        assert!(with_ladder("c1_ladder = 0.7\nladder_groups = { rush = 0.5, macro = 0.5 }", &mixed, "").is_err());
+        with_ladder("c1_ladder = 0.7\nladder_groups = { rush = 0.5, macro = 0.5, \"\" = 0.1 }", &mixed, "").unwrap();
+    }
+
+    /// 033-R11 설정 키 검사 through the RL config: unknown modes and keys and out-of-range values
+    /// are load errors.
+    #[test]
+    fn reward_settings_are_load_errors_033_r11() {
+        let full = include_str!("../../../config/rl.toml");
+        let load = |from: &str, to: &str| -> Result<RlConfig> {
+            assert!(full.contains(from), "{from}");
+            let c: RlConfig = toml::from_str(&full.replacen(from, to, 1))?;
+            c.validate()?;
+            Ok(c)
+        };
+        assert_eq!(load("pseudo = \"z\"", "pseudo = \"scout\"").unwrap().pseudo(), PseudoMode::Scout);
+        for (from, to) in [
+            ("pseudo = \"z\"", "pseudo = \"zscout\""),
+            ("weight = 0.15", "weight = -0.15"),
+            ("weight = 0.15", "wieght = 0.15"),
+            ("vs_model = 0.5", "vs_model = 2.0"),
+            ("zero_at_s = 480.0", "zero_at_s = 200.0"),
+            ("until_s = 480.0", "until_s = 100.0"),
+            ("scv_target = 20", "scv_target = 0"),
+            ("workers_min = 4", "workers_min = 0"),
+            ("main_radius_tiles = 10.0", "main_radius_tiles = 0.0"),
+            ("army = 0.1", "army = -1.0"),
+        ] {
+            assert!(load(from, to).is_err(), "{to}");
+        }
     }
 }

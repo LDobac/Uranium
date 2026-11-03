@@ -1,6 +1,7 @@
 //! Reward (spec 033). Components are kept apart for logging and per-component value heads
 //! (033-R3); weights live in a config file (033-R4). Pseudo-rewards are active only when the
-//! episode has a strategy z (033-R2). Only observed destructions count (033-R5).
+//! episode has a strategy z (033-R2). Only observed destructions count (033-R5). r_scout /
+//! r_survive and the 042 scouting metrics come from [`crate::scout`] (033-R9 / R10, AMB-042-16).
 
 use std::collections::HashMap;
 
@@ -9,6 +10,7 @@ use uranium_proto::{GameEvent, RawFrame, UnitId};
 
 use crate::features::Strategy;
 use crate::features::extract::dims;
+use crate::scout::{ScoutMetrics, ScoutTracker};
 use crate::types::TypeTables;
 
 pub const REWARD_TOML: &str = include_str!("../../../config/reward.toml");
@@ -28,18 +30,32 @@ impl RewardWeights {
     }
 }
 
-/// One step's reward, unweighted per component (033-R3).
+/// One step's reward, unweighted per component (033-R3). `scout` / `survive` are 033-R9 / R10
+/// (raw, after r_scout's decay and cap); which value-head channel they feed is the 033-R11 mode
+/// (the RL trajectory decides, `"z"` leaves them out).
 #[derive(Serialize, Debug, Clone, Copy, PartialEq, Default)]
 pub struct RewardParts {
     pub win: f32,
     pub build: f32,
     pub units: f32,
     pub value: f32,
+    pub scout: f32,
+    pub survive: f32,
 }
 
 impl RewardParts {
+    /// The z-mode weighted sum (033 r_win, r_build, r_units, r_value).
     pub fn weighted(&self, w: &RewardWeights) -> f32 {
         w.win * self.win + w.build * self.build + w.units * self.units + w.value * self.value
+    }
+
+    /// Adds the dense parts of `o` (every part but r_win).
+    pub fn add_dense(&mut self, o: &RewardParts) {
+        self.build += o.build;
+        self.units += o.units;
+        self.value += o.value;
+        self.scout += o.scout;
+        self.survive += o.survive;
     }
 }
 
@@ -80,6 +96,8 @@ pub struct RewardTracker {
     prev_build: f32,
     prev_units: f32,
     prev_value: f32,
+    /// 033-R9 / R10 and the 042 metrics; `None` = both 0, no metrics.
+    scout: Option<ScoutTracker>,
 }
 
 impl RewardTracker {
@@ -96,10 +114,22 @@ impl RewardTracker {
             prev_build: 0.0,
             prev_units: 0.0,
             prev_value: 0.0,
+            scout: None,
         };
         t.prev_build = t.build_distance();
         t.prev_units = t.units_distance();
         t
+    }
+
+    /// Adds r_scout / r_survive and the 042 scouting metrics of the game (AMB-042-16).
+    pub fn with_scout(mut self, scout: ScoutTracker) -> Self {
+        self.scout = Some(scout);
+        self
+    }
+
+    /// 042 정찰·대응 지표 of the observations so far (`None` without a scout tracker).
+    pub fn scout_metrics(&self) -> Option<ScoutMetrics> {
+        self.scout.as_ref().map(|s| s.metrics())
     }
 
     fn build_distance(&self) -> f32 {
@@ -152,11 +182,14 @@ impl RewardTracker {
         }
         let (b, n) = (self.build_distance(), self.units_distance());
         let value = (self.killed_value - self.lost_value) / 1000.0;
+        let s = self.scout.as_mut().map(|t| t.step(frame)).unwrap_or_default();
         let parts = RewardParts {
             win: 0.0,
             build: if self.z.is_some() { self.prev_build - b } else { 0.0 },
             units: if self.z.is_some() { self.prev_units - n } else { 0.0 },
             value: value - self.prev_value,
+            scout: s.scout,
+            survive: s.survive,
         };
         (self.prev_build, self.prev_units, self.prev_value) = (b, n, value);
         parts

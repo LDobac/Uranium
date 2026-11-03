@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use serde::{Deserialize, Serialize};
 use uranium_agent::T0Build;
 use uranium_env::reward::{Outcome, RewardWeights};
+use uranium_env::scout::PseudoMode;
 use uranium_proto::Race;
 
 use crate::config::RlConfig;
@@ -73,6 +74,10 @@ pub struct LadderEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub race: Race,
+    /// 042 사다리 그룹 (AMB-042-16): the entry's group (`rush`, `macro`, ...); absent = the empty
+    /// name. Drawn by `[curriculum] ladder_groups` when that is set, recorded in `games.csv`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
 }
 
 impl LadderEntry {
@@ -141,6 +146,9 @@ pub struct Pick {
     pub class: Class,
     /// Fighting Spirit (true) or Circuit Breaker.
     pub fighting_spirit: bool,
+    /// 042 사다리 그룹 (AMB-042-16): the `[[ladder]]` entry's `group` for a ladder game, `None`
+    /// for any other game (`games.csv` `ladder_group`).
+    pub ladder_group: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -417,13 +425,31 @@ impl League {
     }
 
     /// 042 C1 러시 사다리 (AMB-042-15): an entry of `[[ladder]]` by `[curriculum] ladder_pick`
-    /// (f_var over Main's win-table values, unseen = the prior; all weights 0 = uniform). `None`
-    /// for an empty list (a load error when `c1_ladder > 0`).
-    fn ladder_pick(&mut self, agent: AgentKind) -> Option<(Opponent, String, Class)> {
-        let pool: Vec<(Opponent, String, Class)> = self.cfg().ladder.iter().filter_map(|e| e.opponent().ok()).collect();
-        match self.cfg().curriculum.ladder_pick {
+    /// (f_var over Main's win-table values, unseen = the prior; all weights 0 = uniform), with the
+    /// entry's group. 042 사다리 그룹 (AMB-042-16): with `ladder_groups` set, a group is drawn by
+    /// the shares first and the pick is among that group's entries; without it no extra draw is
+    /// made (the earlier picks). `None` for an empty list (a load error when `c1_ladder > 0`).
+    fn ladder_pick(&mut self, agent: AgentKind) -> Option<((Opponent, String, Class), String)> {
+        let groups: Vec<(String, f64)> = self.cfg().curriculum.ladder_groups.iter().map(|(g, x)| (g.clone(), *x)).collect();
+        let group = if groups.is_empty() {
+            None
+        } else {
+            let shares: Vec<f64> = groups.iter().map(|(_, x)| *x).collect();
+            Some(groups[self.weighted(&shares)].0.clone())
+        };
+        let entries: Vec<(Opponent, String, Class, String)> = self
+            .cfg()
+            .ladder
+            .iter()
+            .filter(|e| group.as_ref().is_none_or(|g| &e.group == g))
+            .filter_map(|e| e.opponent().ok().map(|(o, k, c)| (o, k, c, e.group.clone())))
+            .collect();
+        let pool: Vec<(Opponent, String, Class)> = entries.iter().map(|(o, k, c, _)| (o.clone(), k.clone(), *c)).collect();
+        let picked = match self.cfg().curriculum.ladder_pick {
             LadderPick::FVar => self.pfsp(agent, pool, true),
-        }
+        }?;
+        let g = entries.iter().find(|(_, k, _, _)| *k == picked.1).map(|(_, _, _, g)| g.clone()).unwrap_or_default();
+        Some((picked, g))
     }
 
     /// Win-table key of the current Main as an opponent (self-play).
@@ -494,7 +520,7 @@ impl League {
     pub fn next(&mut self) -> Pick {
         if let Some(race) = self.fixed_t0 {
             let opponent = Opponent::T0 { race, build: T0Build::Standard };
-            return Pick { agent: AgentKind::Main, opponent, key: format!("t0-{}", race_name(race)), class: Class::T0, fighting_spirit: true };
+            return Pick { agent: AgentKind::Main, opponent, key: format!("t0-{}", race_name(race)), class: Class::T0, fighting_spirit: true, ladder_group: None };
         }
         let agent = self.pick_agent();
         let fighting_spirit = self.unit() < 0.5;
@@ -502,6 +528,7 @@ impl League {
         let selfplay = (Opponent::SelfPlay, main_key.clone(), Class::Model);
         let cc = self.cfg().curriculum.clone();
         let lc = self.cfg().league.clone();
+        let mut ladder_group = None;
         let (opponent, key, class) = match agent {
             AgentKind::Main => match self.stage {
                 Stage::C0 => {
@@ -520,7 +547,13 @@ impl League {
                     } else if u < cc.c1_t0 + cc.c1_t1 {
                         self.t1_pick().unwrap_or_else(|| self.t0_pick())
                     } else if u < bots {
-                        self.ladder_pick(agent).unwrap_or(selfplay)
+                        match self.ladder_pick(agent) {
+                            Some((p, g)) => {
+                                ladder_group = Some(g);
+                                p
+                            }
+                            None => selfplay,
+                        }
                     } else if models <= 0.0 || u < bots + cc.c1_self {
                         selfplay
                     } else if cc.c1_anchor <= 0.0 || u < bots + cc.c1_self + cc.c1_snapshot {
@@ -561,7 +594,7 @@ impl League {
                 self.pfsp(agent, pool, false).unwrap_or(selfplay)
             }
         };
-        Pick { agent, opponent, key, class, fighting_spirit }
+        Pick { agent, opponent, key, class, fighting_spirit, ladder_group }
     }
 
     /// A finished game (outcome judged with 020-R13). `enemy_race` is the race actually played.
@@ -611,9 +644,17 @@ impl League {
 
     /// 033 weights for an agent's advantage: r_value only in the `[curriculum] r_value_stages`
     /// stages (default C0, AMB-042-13), r_build / r_units decay to 0 over
-    /// `pseudo_reward_decay_updates` Main updates after C2 starts.
+    /// `pseudo_reward_decay_updates` Main updates after C2 starts. 033-R11 `"scout"`
+    /// (AMB-042-16): the build / units channels carry r_scout / r_survive at `[reward.scout]` /
+    /// `[reward.survive]` `weight` (the per-game `vs_model` multiplier is per lane,
+    /// `Segment::pseudo_scale`); the C2 decay applies to `"z"` only (`"scout"` in C2 is asked
+    /// again before C2, the weights stay).
     pub fn reward_weights(&self, base: &RewardWeights) -> [f32; 4] {
         let value = if self.cfg().curriculum.r_value_stages.contains(&self.stage) { base.value } else { 0.0 };
+        if self.cfg().reward.pseudo == PseudoMode::Scout {
+            let r = &self.cfg().reward;
+            return [base.win, r.scout.weight as f32, r.survive.weight as f32, value];
+        }
         let decay = match self.c2_start {
             Some(s) => (1.0 - (self.updates(AgentKind::Main) - s) as f64 / self.cfg().curriculum.pseudo_reward_decay_updates).max(0.0) as f32,
             None => 1.0,
@@ -734,7 +775,7 @@ mod tests {
     #[test]
     fn curriculum_advances_on_full_windows_042_r5() {
         let mut l = league();
-        let pick = |race: Race| Pick { agent: AgentKind::Main, opponent: Opponent::T0 { race, build: T0Build::Standard }, key: format!("t0-{}", race_name(race)), class: Class::T0, fighting_spirit: true };
+        let pick = |race: Race| Pick { agent: AgentKind::Main, opponent: Opponent::T0 { race, build: T0Build::Standard }, key: format!("t0-{}", race_name(race)), class: Class::T0, fighting_spirit: true, ladder_group: None };
         for _ in 0..300 {
             assert!(!l.record(&pick(Race::Terran), Race::Terran, Outcome::Win));
             assert!(!l.record(&pick(Race::Protoss), Race::Protoss, Outcome::Win));
@@ -753,7 +794,7 @@ mod tests {
     fn pfsp_prefers_hard_opponents_042() {
         let mut l = league();
         l.stage = Stage::C2;
-        let mut lose = Pick { agent: AgentKind::LeagueExploiter, opponent: Opponent::T1 { name: "zzzkbot".into(), race: Race::Zerg }, key: "zzzkbot-zerg".into(), class: Class::T1, fighting_spirit: true };
+        let mut lose = Pick { agent: AgentKind::LeagueExploiter, opponent: Opponent::T1 { name: "zzzkbot".into(), race: Race::Zerg }, key: "zzzkbot-zerg".into(), class: Class::T1, fighting_spirit: true, ladder_group: None };
         for _ in 0..400 {
             l.record(&lose, Race::Zerg, Outcome::Loss);
         }
@@ -870,7 +911,7 @@ mod tests {
     }
 
     fn t1_pick(name: &str, race: Race) -> Pick {
-        Pick { agent: AgentKind::Main, opponent: Opponent::T1 { name: name.into(), race }, key: format!("{name}-{}", race_name(race)), class: Class::T1, fighting_spirit: true }
+        Pick { agent: AgentKind::Main, opponent: Opponent::T1 { name: name.into(), race }, key: format!("{name}-{}", race_name(race)), class: Class::T1, fighting_spirit: true, ladder_group: None }
     }
 
     /// 042-R5 `start_stage = "C1"` (AMB-042-13): a new league starts in C1, trains Main only and,
@@ -1087,7 +1128,7 @@ mod tests {
                 id
             })
             .collect();
-        let pick = |id: &str| Pick { agent: AgentKind::Main, opponent: Opponent::Snapshot { id: id.into() }, key: id.into(), class: Class::Model, fighting_spirit: true };
+        let pick = |id: &str| Pick { agent: AgentKind::Main, opponent: Opponent::Snapshot { id: id.into() }, key: id.into(), class: Class::Model, fighting_spirit: true, ladder_group: None };
         for _ in 0..300 {
             l.record(&pick(&ids[0]), Race::Terran, Outcome::Win);
             l.record(&pick(&ids[1]), Race::Terran, Outcome::Loss);
@@ -1225,11 +1266,11 @@ mod tests {
     }
 
     fn t0_entry(build: T0Build, race: Race) -> LadderEntry {
-        LadderEntry { kind: LadderKind::T0, build: Some(build), name: None, race }
+        LadderEntry { kind: LadderKind::T0, build: Some(build), name: None, race, group: String::new() }
     }
 
     fn t1_entry(name: &str, race: Race) -> LadderEntry {
-        LadderEntry { kind: LadderKind::T1, build: None, name: Some(name.into()), race }
+        LadderEntry { kind: LadderKind::T1, build: None, name: Some(name.into()), race, group: String::new() }
     }
 
     /// The 042 "러시 커리큘럼 run" league (config/rl_rush1.toml shares, AMB-042-15).
@@ -1279,7 +1320,7 @@ mod tests {
         assert_eq!(keys, RUSH_KEYS.iter().map(|k| k.to_string()).collect::<BTreeSet<_>>());
         // r_value (bot games) and the curriculum windows follow the class rules.
         assert!(l.r_value_in_policy(Class::T0) && l.r_value_in_policy(Class::T1) && !l.r_value_in_policy(Class::Model));
-        let p = Pick { agent: AgentKind::Main, opponent: Opponent::T0 { race: Race::Zerg, build: T0Build::ZergRush }, key: "t0-zerg-rush".into(), class: Class::T0, fighting_spirit: true };
+        let p = Pick { agent: AgentKind::Main, opponent: Opponent::T0 { race: Race::Zerg, build: T0Build::ZergRush }, key: "t0-zerg-rush".into(), class: Class::T0, fighting_spirit: true, ladder_group: None };
         l.record(&p, Race::Zerg, Outcome::Loss);
         assert_eq!(l.windows.get("T0/zerg").map(|w| w.games.len()), Some(1));
         assert!(l.win_rate(AgentKind::Main, "t0-zerg-rush") < 0.5);
@@ -1295,7 +1336,7 @@ mod tests {
         let mut l = League::new("r1", 7, None, c);
         let pick = |e: &LadderEntry| {
             let (opponent, key, class) = e.opponent().unwrap();
-            Pick { agent: AgentKind::Main, opponent, key, class, fighting_spirit: true }
+            Pick { agent: AgentKind::Main, opponent, key, class, fighting_spirit: true, ladder_group: None }
         };
         let entries = l.cfg().ladder.clone();
         for i in 0..600 {
@@ -1347,7 +1388,7 @@ mod tests {
         let mut l = League::new("r1", 7, None, rush_cfg());
         let (opponent, key, class) = t1_entry("zzzkbot", Race::Zerg).opponent().unwrap();
         for _ in 0..50 {
-            l.record(&Pick { agent: AgentKind::Main, opponent: opponent.clone(), key: key.clone(), class, fighting_spirit: true }, Race::Zerg, Outcome::Win);
+            l.record(&Pick { agent: AgentKind::Main, opponent: opponent.clone(), key: key.clone(), class, fighting_spirit: true, ladder_group: None }, Race::Zerg, Outcome::Win);
         }
         let w = l.win_rate(AgentKind::Main, "zzzkbot-zerg");
         let mut c = rush_cfg();
@@ -1377,8 +1418,133 @@ mod tests {
         assert!(t1_entry("zzzkbot", Race::Random).opponent().is_err());
         assert!(t1_entry("zzzkbot", Race::Unknown).opponent().is_err());
         assert!(t1_entry(" ", Race::Zerg).opponent().is_err());
-        assert!(LadderEntry { kind: LadderKind::T0, build: Some(T0Build::ZergRush), name: Some("x".into()), race: Race::Zerg }.opponent().is_err());
-        assert!(LadderEntry { kind: LadderKind::T0, build: None, name: None, race: Race::Zerg }.opponent().is_err());
-        assert!(LadderEntry { kind: LadderKind::T1, build: Some(T0Build::ZergRush), name: Some("x".into()), race: Race::Zerg }.opponent().is_err());
+        assert!(LadderEntry { kind: LadderKind::T0, build: Some(T0Build::ZergRush), name: Some("x".into()), race: Race::Zerg, group: String::new() }.opponent().is_err());
+        assert!(LadderEntry { kind: LadderKind::T0, build: None, name: None, race: Race::Zerg, group: String::new() }.opponent().is_err());
+        assert!(LadderEntry { kind: LadderKind::T1, build: Some(T0Build::ZergRush), name: Some("x".into()), race: Race::Zerg, group: String::new() }.opponent().is_err());
+    }
+
+    fn grouped(e: LadderEntry, g: &str) -> LadderEntry {
+        LadderEntry { group: g.into(), ..e }
+    }
+
+    /// The `rush-s2` league shape (AMB-042-16): the rush entries of `rush_cfg` as "rush", two
+    /// macro entries, ladder only (no model shares) and groups `rush` / `macro` by `shares`.
+    fn grouped_cfg(shares: &[(&str, f64)]) -> RlConfig {
+        let mut c = rush_cfg();
+        (c.curriculum.c1_self, c.curriculum.c1_snapshot, c.curriculum.c1_anchor) = (0.0, 0.0, 0.0);
+        c.ladder = c.ladder.into_iter().map(|e| grouped(e, "rush")).collect();
+        c.ladder.push(grouped(t0_entry(T0Build::Standard, Race::Zerg), "macro"));
+        c.ladder.push(grouped(t1_entry("ualbertabot2hatchhydra", Race::Zerg), "macro"));
+        c.curriculum.ladder_groups = shares.iter().map(|(g, x)| (g.to_string(), *x)).collect();
+        c
+    }
+
+    const MACRO_KEYS: [&str; 2] = ["t0-zerg", "ualbertabot2hatchhydra-zerg"];
+
+    /// 042 사다리 그룹 / 042-AC6 (AMB-042-16): ladder games draw the group by `ladder_groups`
+    /// (fixed seed sample ratio), whatever the win rates; the pick names its group.
+    #[test]
+    fn ladder_groups_share_games_042_amb_042_16() {
+        for (rush, mac) in [(0.5, 0.5), (0.8, 0.2), (1.0, 0.0)] {
+            let mut l = League::new("r1", 11, None, grouped_cfg(&[("rush", rush), ("macro", mac)]));
+            // Main beats the macro entries every time: f_var weights 0 there, uniform inside the group.
+            for k in MACRO_KEYS {
+                l.agents[0].win.insert(k.to_string(), 1.0);
+            }
+            let n = 8000;
+            let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+            for _ in 0..n {
+                let p = l.next();
+                let g = p.ladder_group.clone().expect("a ladder game names its group");
+                let want = if MACRO_KEYS.contains(&p.key.as_str()) { "macro" } else { "rush" };
+                assert_eq!(g, want, "{}", p.key);
+                *counts.entry(g).or_default() += 1;
+            }
+            let share = counts.get("macro").copied().unwrap_or(0) as f64 / n as f64;
+            assert!((share - mac).abs() < 0.02, "{rush}/{mac}: {counts:?}");
+        }
+        // Not a ladder game: no group.
+        let mut c = grouped_cfg(&[("rush", 0.5), ("macro", 0.5)]);
+        (c.curriculum.c1_ladder, c.curriculum.c1_self) = (0.0, 1.0);
+        let mut l = League::new("r1", 11, None, c);
+        assert!((0..200).all(|_| l.next().ladder_group.is_none()));
+    }
+
+    /// 042 사다리 그룹 / 042-AC6 (AMB-042-16): inside a group the pick is f_var over that group's
+    /// entries only.
+    #[test]
+    fn ladder_f_var_within_group_042_amb_042_16() {
+        let mut l = League::new("r1", 5, None, grouped_cfg(&[("rush", 0.0), ("macro", 1.0)]));
+        l.agents[0].win.insert("t0-zerg".into(), 0.99);
+        let mut m: BTreeMap<String, usize> = BTreeMap::new();
+        for _ in 0..4000 {
+            *m.entry(l.next().key).or_default() += 1;
+        }
+        assert_eq!(m.keys().cloned().collect::<BTreeSet<_>>(), MACRO_KEYS.iter().map(|k| k.to_string()).collect::<BTreeSet<_>>(), "macro entries only: {m:?}");
+        let get = |k: &str| m.get(k).copied().unwrap_or(0);
+        assert!(get("ualbertabot2hatchhydra-zerg") > 10 * get("t0-zerg").max(1), "{m:?}");
+    }
+
+    /// 042 사다리 그룹 (AMB-042-16): without `ladder_groups` the picks are the earlier ones (same
+    /// draws, same opponents) whatever `group` the entries carry; the group is still recorded.
+    #[test]
+    fn no_ladder_groups_keeps_earlier_picks_042_amb_042_16() {
+        let base = rush_cfg();
+        let mut tagged = base.clone();
+        tagged.ladder = tagged.ladder.into_iter().enumerate().map(|(i, e)| grouped(e, if i % 2 == 0 { "rush" } else { "macro" })).collect();
+        let (mut a, mut b) = (League::new("r1", 9, None, base), League::new("r1", 9, None, tagged.clone()));
+        for _ in 0..3000 {
+            let (x, y) = (a.next(), b.next());
+            assert_eq!((&x.opponent, &x.key, x.class, x.fighting_spirit), (&y.opponent, &y.key, y.class, y.fighting_spirit));
+            assert_eq!(x.ladder_group.is_some(), y.ladder_group.is_some());
+            if let Some(g) = &y.ladder_group {
+                assert_eq!(x.ladder_group.as_deref(), Some(""));
+                let e = tagged.ladder.iter().find(|e| e.opponent().unwrap().1 == y.key).unwrap();
+                assert_eq!(g, &e.group);
+            }
+        }
+    }
+
+    /// 042 승률 표 / 042-AC6 (AMB-042-16): the EMA decay is `[league] win_rate_decay` of the
+    /// current config (resume included); every pick reads this one table.
+    #[test]
+    fn win_rate_decay_from_config_042_amb_042_16() {
+        let pick = |key: &str| Pick { agent: AgentKind::Main, opponent: Opponent::T1 { name: "zzzkbot".into(), race: Race::Zerg }, key: key.into(), class: Class::T1, fighting_spirit: true, ladder_group: None };
+        let mut c = cfg();
+        assert_eq!(c.league.win_rate_decay, 0.99, "rl.toml default");
+        let mut l = League::new("r1", 7, None, c.clone());
+        l.record(&pick("zzzkbot-zerg"), Race::Zerg, Outcome::Loss);
+        assert!((l.win_rate(AgentKind::Main, "zzzkbot-zerg") - 0.495).abs() < 1e-12);
+        c.league.win_rate_decay = 0.97;
+        let mut m = League::from_bytes(&l.to_bytes(), c).unwrap();
+        assert!((m.win_rate(AgentKind::Main, "zzzkbot-zerg") - 0.495).abs() < 1e-12, "values go on");
+        m.record(&pick("zzzkbot-zerg"), Race::Zerg, Outcome::Win);
+        assert!((m.win_rate(AgentKind::Main, "zzzkbot-zerg") - (0.97 * 0.495 + 0.03)).abs() < 1e-12, "the new decay from the next game");
+        m.record(&pick("uranium-main@r1"), Race::Terran, Outcome::Draw);
+        assert!((m.win_rate(AgentKind::Main, "uranium-main@r1") - 0.5).abs() < 1e-12);
+    }
+
+    /// 033-R11 (AMB-042-16): in the "scout" mode the build / units channel weights are
+    /// `[reward.scout]` / `[reward.survive]` `weight`, r_value follows its stages, and no C2 decay
+    /// applies; "z" keeps the earlier schedule.
+    #[test]
+    fn scout_mode_reward_weights_033_r11() {
+        let base = RewardWeights { win: 1.0, build: 0.3, units: 0.3, value: 0.05 };
+        let mut c = cfg();
+        c.reward.pseudo = PseudoMode::Scout;
+        c.curriculum.r_value_stages = vec![Stage::C0, Stage::C1];
+        let mut l = League::new("r1", 7, None, c);
+        assert_eq!(l.reward_weights(&base), [1.0, 0.15, 0.1, 0.05]);
+        l.stage = Stage::C1;
+        assert_eq!(l.reward_weights(&base), [1.0, 0.15, 0.1, 0.05]);
+        l.stage = Stage::C2;
+        l.c2_start = Some(0);
+        l.agents[0].updates = 1_000_000;
+        assert_eq!(l.reward_weights(&base), [1.0, 0.15, 0.1, 0.0], "no C2 decay in scout");
+        let mut z = league();
+        z.stage = Stage::C2;
+        z.c2_start = Some(0);
+        z.agents[0].updates = 1_000_000;
+        assert_eq!(z.reward_weights(&base), [1.0, 0.0, 0.0, 0.0], "z: decayed as before");
     }
 }

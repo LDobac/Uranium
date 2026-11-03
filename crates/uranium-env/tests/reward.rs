@@ -104,6 +104,6 @@ fn terminal_and_weights_033() {
     assert_eq!(RewardTracker::end(Outcome::Draw).win, 0.0);
     let w = RewardWeights::load().unwrap();
     assert_eq!(w, RewardWeights { win: 1.0, build: 0.3, units: 0.3, value: 0.05 });
-    let p = RewardParts { win: 1.0, build: 1.0, units: -1.0, value: 2.0 };
+    let p = RewardParts { win: 1.0, build: 1.0, units: -1.0, value: 2.0, ..Default::default() };
     assert!((p.weighted(&w) - (1.0 + 0.3 - 0.3 + 0.1)).abs() < 1e-6);
 }

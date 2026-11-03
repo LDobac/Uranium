@@ -15,6 +15,7 @@ use uranium_env::features::Strategy;
 use uranium_env::features::extract::action_table;
 use uranium_env::maps::{MapFamilies, PrecomputeSource, family_index, live_precompute_for_session, maps_dir};
 use uranium_env::reward::{Outcome, RewardParts, RewardTracker};
+use uranium_env::scout::{RewardConfig, ScoutMetrics, ScoutTracker};
 use uranium_env::concede::{CollapseJudge, ConcedeGame, LeaveRule};
 use uranium_env::surrender::{DEFAULT_CHAT, SurrenderJudge, SurrenderMode, rule_holds};
 use crate::infer::HostState;
@@ -85,6 +86,8 @@ pub trait SessionObserver: Send {
     fn wants_state(&self) -> bool {
         false
     }
+    /// 042 정찰·대응 지표 of the game (AMB-042-16), right before `on_end`.
+    fn on_scout(&mut self, _m: &ScoutMetrics) {}
     /// Game over: reward of the frames after the last decision, the terminal r_win (033-R7) and
     /// the game outcome (`None` = Aborted / disconnected, 042-R3).
     fn on_end(&mut self, _reward_after: RewardParts, _outcome: Option<Outcome>) {}
@@ -94,6 +97,11 @@ pub trait SessionObserver: Send {
 pub trait LearnerHook: Send + Sync {
     fn handle(&self) -> &InferenceHandle;
     fn session(&self, game_id: u64, info: &GameInfo) -> (Option<Strategy>, Box<dyn SessionObserver>);
+    /// 033-R9 / R10 settings of r_scout, r_survive and the 042 metrics (`[reward]` of the RL
+    /// config, AMB-042-16).
+    fn reward_config(&self) -> RewardConfig {
+        RewardConfig::default()
+    }
 }
 
 pub struct ModelPolicy {
@@ -102,6 +110,9 @@ pub struct ModelPolicy {
     z: Option<Strategy>,
     /// 033 rewards, kept only when an observer records the trajectory.
     reward: Option<RewardTracker>,
+    /// 033-R9 / R10 tracker of this game before any observation (public game information only,
+    /// 033-R5); the observer's reward tracker gets a copy with its settings.
+    scout: ScoutTracker,
     self_player: u8,
     sess: InferSession,
     mem: AgentMemory,
@@ -192,6 +203,7 @@ impl ModelPolicy {
             observer: None,
             z: None,
             reward: None,
+            scout: ScoutTracker::for_game(info, RewardConfig::default()),
             self_player,
             sess: handle.open()?,
             mem,
@@ -226,9 +238,11 @@ impl ModelPolicy {
         self
     }
 
-    /// Records the trajectory through `o` with 033 rewards for strategy `z` (042).
-    pub fn with_observer(mut self, z: Option<Strategy>, o: Box<dyn SessionObserver>) -> Self {
-        self.reward = Some(RewardTracker::new(z.clone(), self.self_player));
+    /// Records the trajectory through `o` with 033 rewards for strategy `z` (042), r_scout /
+    /// r_survive and the 042 metrics by `reward` (033-R9 / R10, AMB-042-16).
+    pub fn with_observer(mut self, z: Option<Strategy>, reward: RewardConfig, o: Box<dyn SessionObserver>) -> Self {
+        let scout = self.scout.clone().with_config(reward);
+        self.reward = Some(RewardTracker::new(z.clone(), self.self_player).with_scout(scout));
         self.z = z;
         self.observer = Some(o);
         self
@@ -245,12 +259,13 @@ impl ModelPolicy {
             };
             // 042-R14 / 033-R7: the frames up to the concede belong to the last real decision too.
             if let (Some(_), Some(c)) = (outcome, self.concede_reward.take()) {
-                after.build += c.build;
-                after.units += c.units;
-                after.value += c.value;
+                after.add_dense(&c);
             }
             if let Some(out) = outcome {
                 after.win = RewardTracker::end(out).win;
+            }
+            if let Some(m) = self.reward.as_ref().and_then(|r| r.scout_metrics()) {
+                o.on_scout(&m);
             }
             o.on_end(after, outcome);
         }

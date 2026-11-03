@@ -24,6 +24,7 @@ use uranium_agent::{ConcedeBoard, EndBoard, PolicySpec, Routes, T0Build, T0Build
 use uranium_env::concede::{ConcedeConfig, ConcedeGame, LeaveRule};
 use uranium_env::features::Strategy;
 use uranium_env::reward::{Outcome, RewardWeights};
+use uranium_env::scout::{PseudoMode, RewardConfig, ScoutMetrics, seconds};
 use uranium_proto::control::{GameSpec, MapKey, PlayerKind, PlayerSpec};
 use uranium_proto::{EndReason, GameInfo, Race};
 use uranium_runner::{Dispatch, HostEntry, Job, JobOutcome, JobSource};
@@ -105,6 +106,8 @@ struct Shared {
     /// server); a game is listed from dispatch until it is done.
     concede_cfg: ConcedeConfig,
     concede: ConcedeBoard,
+    /// 033-R11 channel mode: `games.csv` `r_scout` / `r_survive` are empty in `"z"` (042-R2).
+    pseudo: PseudoMode,
 }
 
 /// 042-R10 ①② and the queue close (042-R3), once: run by the clean stop, and by `Drop` when the
@@ -272,6 +275,8 @@ struct Hook {
     z: Vec<ZEntry>,
     z_drop: f64,
     rng: Mutex<u64>,
+    /// `[reward]` of the config (033-R9 / R10 / R11, AMB-042-16).
+    reward: RewardConfig,
 }
 
 impl LearnerHook for Hook {
@@ -292,6 +297,8 @@ impl LearnerHook for Hook {
         }
         // 033 / 042 "r_value의 게임별 적용" (AMB-042-14): per game, by the opponent's class.
         let r_value_policy = class.is_none_or(|c| self.shared.league.lock().unwrap().r_value_in_policy(c));
+        // 033-R11 (AMB-042-16): r_scout / r_survive policy-weight multipliers, per game the same way.
+        let pseudo_scale = self.reward.pseudo_scale(class == Some(Class::Model));
         // 033-R2 / R8: z from the table; z_drop of the games (or all without a table) have none.
         let z = {
             let mut r = self.rng.lock().unwrap();
@@ -303,8 +310,12 @@ impl LearnerHook for Hook {
                 Some(Strategy { build: e.build.clone(), units: e.units.clone() })
             }
         };
-        let obs = TrajectoryObserver::new(self.agent.index(), game_id, self.seq_len, self.shared.queues[self.agent.index()].clone(), self.tx.clone()).hold_terminal(held_sink(self.shared.clone())).r_value_policy(r_value_policy);
+        let obs = TrajectoryObserver::new(self.agent.index(), game_id, self.seq_len, self.shared.queues[self.agent.index()].clone(), self.tx.clone()).hold_terminal(held_sink(self.shared.clone())).r_value_policy(r_value_policy).pseudo(self.reward.pseudo, pseudo_scale);
         (z, Box::new(obs))
+    }
+
+    fn reward_config(&self) -> RewardConfig {
+        self.reward.clone()
     }
 }
 
@@ -535,8 +546,9 @@ impl JobSource for LeagueSource {
         let (sum, decisions) = result.as_ref().map_or(([0.0; 4], 0), |r| (r.reward_sum, r.decisions));
         s.agent_steps.fetch_add(decisions, Ordering::SeqCst);
         s.games_done.fetch_add(1, Ordering::SeqCst);
+        let extra = scout_columns(s.pseudo, result.as_ref(), meta.pick.ladder_group.as_deref());
         let line = format!(
-            "{},{},{},{},{:?},{},{},{:?},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{:?},{},{},{:?},{},{},{},{},{},{},{},{},{},{}\n",
             id,
             AgentKind::ALL[agent].name(),
             job.opponent.clone().unwrap_or_default(),
@@ -557,7 +569,8 @@ impl JobSource for LeagueSource {
             sum[3],
             replay_path,
             replay_reason,
-            end_reason
+            end_reason,
+            extra
         );
         let _ = s.games_csv.lock().unwrap().write_all(line.as_bytes());
         self.release_server(&meta);
@@ -590,8 +603,65 @@ fn keep_replay(dir: &Path, game_id: u64, reason: &str, bytes: &[u8]) -> Result<S
     Ok(name)
 }
 
-/// games.csv header (042-R2, R11; `end_reason` 042-R14, 2026-11-03).
-const GAMES_HEADER: &str = "game_id,agent,opponent,class,enemy_race,map,hostd_outcome,outcome,winner_disagree,decisions,r_win,r_build,r_units,r_value,replay,replay_reason,end_reason\n";
+/// games.csv header (042-R2, R11; `end_reason` 042-R14, 2026-11-03; then the 033 raw sums
+/// `r_scout`, `r_survive` and the 042 정찰·대응 지표, AMB-042-16).
+const GAMES_HEADER: &str = "game_id,agent,opponent,class,enemy_race,map,hostd_outcome,outcome,winner_disagree,decisions,r_win,r_build,r_units,r_value,replay,replay_reason,end_reason,r_scout,r_survive,ladder_group,scout_main_s,scout_types_4m,scout_types_6m,barracks_s,bunker_s,scv_4m\n";
+
+/// 042-R2 (AMB-042-16): the games.csv columns after `end_reason`, comma-joined. `r_scout`,
+/// `r_survive`: the game's raw sums, empty in the `"z"` mode (and without a session report);
+/// `ladder_group`: the ladder entry's group, empty for other games; the metrics in game seconds
+/// (frame / 24), empty when not reached (`scv_4m`: the game ended before 4:00) or without a
+/// session report.
+fn scout_columns(mode: PseudoMode, result: Option<&GameResult>, ladder_group: Option<&str>) -> String {
+    let secs = |f: Option<u32>| f.map_or(String::new(), |f| format!("{:.1}", seconds(f)));
+    let (r_scout, r_survive) = match (mode, result) {
+        (PseudoMode::Scout, Some(r)) => (r.scout_sum.to_string(), r.survive_sum.to_string()),
+        _ => (String::new(), String::new()),
+    };
+    let m: Option<ScoutMetrics> = result.and_then(|r| r.scout);
+    let count = |x: fn(&ScoutMetrics) -> u32| m.as_ref().map_or(String::new(), |m| x(m).to_string());
+    [
+        r_scout,
+        r_survive,
+        ladder_group.unwrap_or_default().to_string(),
+        secs(m.and_then(|m| m.main_frame)),
+        count(|m| m.types_4m),
+        count(|m| m.types_6m),
+        secs(m.and_then(|m| m.barracks_frame)),
+        secs(m.and_then(|m| m.bunker_frame)),
+        m.and_then(|m| m.scv_4m).map_or(String::new(), |n| n.to_string()),
+    ]
+    .join(",")
+}
+
+/// 033-R11: the channel mode a checkpoint was trained with (`agents/main/meta.json` `train.rl`
+/// `reward.pseudo`; absent = `"z"`, the mode before the key existed). `None` without a
+/// readable `meta.json` (nothing to compare).
+fn checkpoint_pseudo(dir: &Path) -> Option<PseudoMode> {
+    let meta = dir.join(crate::ckpt::AGENTS_DIR).join(AgentKind::Main.name()).join("meta.json");
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(meta).ok()?).ok()?;
+    let rl = v.get("train")?.get("rl")?;
+    match rl.get("reward").and_then(|r| r.get("pseudo")) {
+        None => Some(PseudoMode::Z),
+        Some(p) => serde_json::from_value(p.clone()).ok(),
+    }
+}
+
+/// 033-R11 start errors: `"scout"` with a z table, and a resumed checkpoint of another mode.
+fn check_pseudo(cfg: &RlConfig, z_table: Option<&Path>, resumed: Option<PseudoMode>) -> Result<()> {
+    let mode = cfg.pseudo();
+    if mode == PseudoMode::Scout
+        && let Some(z) = z_table
+    {
+        anyhow::bail!("[reward] pseudo = \"scout\" uses no z: --z-table {} is not allowed with it (033-R11)", z.display());
+    }
+    if let Some(was) = resumed
+        && was != mode
+    {
+        anyhow::bail!("[reward] pseudo is {mode:?} but the resumed checkpoint was trained with {was:?}: the build / units value heads would change meaning; start a new run instead (033-R11)");
+    }
+    Ok(())
+}
 
 /// 042-R2 train.csv header / row. `trained_steps`: agent steps the learners trained on, run
 /// total (continued from the checkpoint). `queue_wait_s`: seconds the games waited for a place
@@ -711,6 +781,8 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     // 042-R10 / 060-R6: the caller installed the handler first, so an early SIGINT is never lost.
     let stop = args.stop.clone();
     let cfg = RlConfig::load(&args.config)?;
+    // 033-R11: "scout" with a z table is a start error (before the run lock).
+    check_pseudo(&cfg, args.z_table.as_deref(), None)?;
     std::fs::create_dir_all(&args.log_dir)?;
 
     // 061-R3 / R5: lock the run, recover or pull LATEST.
@@ -745,6 +817,11 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         crate::elog!("[rl] Ctrl+C during start: releasing the lock, nothing to save (042-R10)");
         run.release()?;
         return Ok(());
+    }
+    // 033-R11: a resumed checkpoint of another channel mode is a start error.
+    if let Err(e) = check_pseudo(&cfg, None, resume.as_ref().and_then(|r| checkpoint_pseudo(&r.dir))) {
+        let _ = run.release();
+        return Err(e);
     }
     // The learners and their inference servers (from BC, or the resumed agents' folders).
     let (mut learners, servers) = match make(&cfg, resume.as_ref().map(|r| r.dir.as_path())) {
@@ -808,8 +885,33 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     );
     let ladder: Vec<String> = cfg.ladder.iter().filter_map(|e| e.opponent().ok()).map(|(_, k, _)| k).collect();
     crate::elog!("[rl] C1 rush ladder: share {} ({:?}) {:?} (042, AMB-042-15)", cc.c1_ladder, cc.ladder_pick, ladder);
+    if !cc.ladder_groups.is_empty() {
+        let groups: Vec<String> = cc.ladder_groups.iter().map(|(g, x)| format!("{g} {x} ({} entries)", cfg.ladder.iter().filter(|e| &e.group == g).count())).collect();
+        crate::elog!("[rl] ladder groups: {} (042, AMB-042-16)", groups.join(", "));
+    }
+    crate::elog!("[rl] win table decay {} (042 승률 표)", cfg.league.win_rate_decay);
     let c = &cfg.concede;
     crate::elog!("[rl] collapse concede: {} (screen supply <= {} for {} s from {} s, 042-R14)", if c.enabled { "on" } else { "off" }, c.max_supply, c.hold_s, c.after_s);
+    let rw = &cfg.reward;
+    match rw.pseudo {
+        PseudoMode::Z => crate::elog!("[rl] reward channels: z (r_build / r_units, 033-R11)"),
+        PseudoMode::Scout => {
+            crate::elog!(
+                "[rl] reward channels: scout (033-R11) - r_scout weight {} cap {} vs models x{}, r_survive weight {} vs models x{} ({}-{} s, {} SCVs)",
+                rw.scout.weight,
+                rw.scout.cap,
+                rw.scout.vs_model,
+                rw.survive.weight,
+                rw.survive.vs_model,
+                rw.survive.from_s,
+                rw.survive.until_s,
+                rw.survive.scv_target
+            );
+            if league.stage == crate::league::Stage::C2 {
+                crate::elog!("[rl] WARNING: stage C2 with [reward] pseudo = \"scout\": no C2 decay is applied to r_scout / r_survive (033-R11: to be decided before C2)");
+            }
+        }
+    }
 
     // 042 queue table: `queue_batches` x `lanes` per agent (>= lanes, so a full queue is always
     // ready for the learner and a waiting game is never stuck behind it), backpressure when full.
@@ -850,6 +952,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         replay_every: cfg.replays.sample_every,
         concede_cfg: cfg.concede,
         concede,
+        pseudo: cfg.reward.pseudo,
     });
     let z = load_z(&args.z_table)?;
     if z.is_empty() {
@@ -857,7 +960,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     }
     let hooks: Vec<Arc<Hook>> = AgentKind::ALL
         .iter()
-        .map(|&a| Arc::new(Hook { agent: a, handle: handles[a.index()].clone(), seq_len: cfg.seq_len, shared: shared.clone(), tx: tx.clone(), z: z.clone(), z_drop: 0.25, rng: Mutex::new(args.seed ^ (a.index() as u64 + 1)) }))
+        .map(|&a| Arc::new(Hook { agent: a, handle: handles[a.index()].clone(), seq_len: cfg.seq_len, shared: shared.clone(), tx: tx.clone(), z: z.clone(), z_drop: 0.25, rng: Mutex::new(args.seed ^ (a.index() as u64 + 1)), reward: cfg.reward.clone() }))
         .collect();
     let source = Arc::new(LeagueSource { shared: shared.clone(), hooks });
     let dispatch = Dispatch::new(routes, Default::default(), builds);
@@ -1199,10 +1302,11 @@ mod tests {
             replay_every: 0,
             concede_cfg: cfg.concede,
             concede: ConcedeBoard::default(),
+            pseudo: cfg.reward.pseudo,
         });
         let hooks = AgentKind::ALL
             .iter()
-            .map(|&a| Arc::new(Hook { agent: a, handle: fake_handle(a.name()), seq_len: 4, shared: shared.clone(), tx: tx.clone(), z: vec![], z_drop: 0.25, rng: Mutex::new(1) }))
+            .map(|&a| Arc::new(Hook { agent: a, handle: fake_handle(a.name()), seq_len: 4, shared: shared.clone(), tx: tx.clone(), z: vec![], z_drop: 0.25, rng: Mutex::new(1), reward: cfg.reward.clone() }))
             .collect();
         LeagueSource { shared, hooks }
     }
@@ -1381,7 +1485,7 @@ mod tests {
                 Some(&(_, w, _)) if outcome == JobOutcome::Finished => Some(if w == 0 { Outcome::Win } else { Outcome::Loss }),
                 _ => None,
             };
-            src.hooks[0].tx.send(GameResult { agent: 0, game_id: id, outcome: result, reward_sum: [0.0; 4], decisions: 5, enemy_race: Some(Race::Terran) }).unwrap();
+            src.hooks[0].tx.send(GameResult { agent: 0, game_id: id, outcome: result, reward_sum: [0.0; 4], scout_sum: 0.0, survive_sum: 0.0, scout: None, decisions: 5, enemy_race: Some(Race::Terran) }).unwrap();
             src.done(&job, outcome, None);
             assert!(src.shared.concede.get(id).is_none(), "off the board once done");
             std::fs::read_to_string(&csv).unwrap().lines().last().unwrap().to_string()
@@ -1433,7 +1537,129 @@ mod tests {
 
     #[test]
     fn games_csv_header_matches_rows_042_r2() {
-        assert_eq!(GAMES_HEADER.trim().split(',').count(), 17);
-        assert!(GAMES_HEADER.trim().ends_with(",replay,replay_reason,end_reason"), "042-R14: end_reason last");
+        assert_eq!(GAMES_HEADER.trim().split(',').count(), 26);
+        // 042-R2 (AMB-042-16): the new columns follow end_reason in this order.
+        assert!(GAMES_HEADER.trim().ends_with(",replay,replay_reason,end_reason,r_scout,r_survive,ladder_group,scout_main_s,scout_types_4m,scout_types_6m,barracks_s,bunker_s,scv_4m"));
+    }
+
+    fn result(id: u64, scout: Option<ScoutMetrics>) -> GameResult {
+        GameResult { agent: 0, game_id: id, outcome: Some(Outcome::Win), reward_sum: [0.0, 0.0, 0.0, 0.25], scout_sum: 0.6, survive_sum: 0.375, scout, decisions: 9, enemy_race: Some(Race::Zerg) }
+    }
+
+    /// 042-R2 / 042-AC6 (AMB-042-16): the columns after `end_reason` — raw sums only in "scout",
+    /// the ladder group of a ladder game, the metrics in game seconds, empty when not reached or
+    /// without a session report.
+    #[test]
+    fn scout_columns_042_r2() {
+        let m = ScoutMetrics { main_frame: Some(3_000), types_4m: 2, types_6m: 5, barracks_frame: Some(2_412), bunker_frame: None, scv_4m: Some(14) };
+        let r = result(1, Some(m));
+        assert_eq!(scout_columns(PseudoMode::Scout, Some(&r), Some("macro")), "0.6,0.375,macro,125.0,2,5,100.5,,14");
+        assert_eq!(scout_columns(PseudoMode::Z, Some(&r), Some("rush")), ",,rush,125.0,2,5,100.5,,14", "z: r_scout / r_survive empty");
+        assert_eq!(scout_columns(PseudoMode::Scout, Some(&result(2, Some(ScoutMetrics::default()))), None), "0.6,0.375,,,0,0,,,", "nothing reached");
+        assert_eq!(scout_columns(PseudoMode::Scout, None, None), ",,,,,,,,", "no session report");
+        assert_eq!(scout_columns(PseudoMode::Z, None, None).split(',').count(), 9);
+    }
+
+    /// 033-R11 start errors: "scout" with a z table; a resumed checkpoint of the other mode (a
+    /// checkpoint without the key was "z"); `--init` / new runs are not checked.
+    #[test]
+    fn pseudo_start_errors_033_r11() {
+        let mut cfg = RlConfig::default_file();
+        let z = Path::new("z.jsonl");
+        check_pseudo(&cfg, Some(z), None).unwrap();
+        check_pseudo(&cfg, None, Some(PseudoMode::Z)).unwrap();
+        assert!(check_pseudo(&cfg, None, Some(PseudoMode::Scout)).is_err());
+        cfg.reward.pseudo = PseudoMode::Scout;
+        assert!(check_pseudo(&cfg, Some(z), None).is_err(), "scout + --z-table");
+        check_pseudo(&cfg, None, None).unwrap();
+        check_pseudo(&cfg, None, Some(PseudoMode::Scout)).unwrap();
+        assert!(check_pseudo(&cfg, None, Some(PseudoMode::Z)).is_err(), "resume a z checkpoint in scout");
+        // The checkpoint's mode from agents/main/meta.json train.rl.
+        let dir = std::env::temp_dir().join(format!("uranium-rl-pseudo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let main = dir.join(crate::ckpt::AGENTS_DIR).join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        assert_eq!(checkpoint_pseudo(&dir), None, "no meta.json");
+        let write = |rl: serde_json::Value| std::fs::write(main.join("meta.json"), serde_json::json!({ "train": { "rl": rl, "update": 3 } }).to_string()).unwrap();
+        let mut old = serde_json::to_value(RlConfig::default_file()).unwrap();
+        old.as_object_mut().unwrap().remove("reward");
+        write(old);
+        assert_eq!(checkpoint_pseudo(&dir), Some(PseudoMode::Z), "older checkpoint without [reward]");
+        write(serde_json::to_value(&cfg).unwrap());
+        assert_eq!(checkpoint_pseudo(&dir), Some(PseudoMode::Scout));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 033-R11 / 042 (AMB-042-16): a session's observer gets the mode and its game's multipliers
+    /// (model opponent: `vs_model` of each reward; bot: 1 and 1) and the hook hands the reward
+    /// settings to the session; games.csv rows carry the ladder group and the metrics.
+    #[test]
+    fn sessions_and_games_csv_in_scout_mode_042_amb_042_16() {
+        use crate::league::{LadderEntry, LadderKind};
+        use uranium_agent::T0Build;
+        use uranium_env::features::executor::HostAction;
+        use uranium_proto::EndReason;
+        let dir = std::env::temp_dir().join(format!("uranium-rl-scout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let csv = dir.join("games.csv");
+        drop(open_csv(&csv, GAMES_HEADER).unwrap());
+        let mut cfg = RlConfig::default_file();
+        cfg.curriculum.start_stage = crate::league::Stage::C1;
+        let cc = &mut cfg.curriculum;
+        (cc.c1_t0, cc.c1_t1, cc.c1_self, cc.c1_ladder) = (0.0, 0.0, 0.5, 0.5);
+        cc.ladder_groups = [("rush".to_string(), 0.5), ("macro".to_string(), 0.5)].into_iter().collect();
+        let entry = |build, group: &str| LadderEntry { kind: LadderKind::T0, build: Some(build), name: None, race: Race::Zerg, group: group.into() };
+        cfg.ladder = vec![entry(T0Build::ZergRush, "rush"), entry(T0Build::Standard, "macro")];
+        cfg.reward.pseudo = PseudoMode::Scout;
+        cfg.validate().unwrap();
+        let (servers, _, _) = fake_servers(false);
+        let src = source_cfg(cfg, servers, &csv);
+        assert_eq!(src.hooks[0].reward_config().pseudo, PseudoMode::Scout);
+        let info = crate::testkit::game_info();
+        let obs = crate::testkit::observations(2);
+        let (mut model, mut bot) = (0, 0);
+        for _ in 0..40 {
+            let job = src.next().unwrap();
+            let id = job.spec.game_id;
+            let (class, group) = {
+                let g = src.shared.games.lock().unwrap();
+                let p = &g.get(&id).unwrap().pick;
+                (p.class, p.ladder_group.clone())
+            };
+            let (z, mut o) = src.hooks[0].session(id, &info);
+            assert!(z.is_none());
+            let a = HostAction { action: 0, delay_bucket: 0, queued: false, selected: vec![], target_unit: None, target_loc: None };
+            for (i, ob) in obs.iter().enumerate() {
+                let state = o.wants_state().then(uranium_agent::infer::HostState::default);
+                o.on_decision(&uranium_agent::model_policy::Decision { frame: i as u32, obs: ob, action: &a, log_prob: 0.0, head_log_prob: [0.0; uranium_agent::infer::HEADS], value: [0.0; 4], rejected: false, version: 0, reward_before: Default::default(), state });
+            }
+            o.on_end(Default::default(), Some(Outcome::Win));
+            let seg = src.shared.held.lock().unwrap().get(&id).map(|s| s.pseudo_scale).expect("held terminal segment");
+            // The session's own report is replaced by one with metrics for the row below.
+            src.shared.results.lock().unwrap().try_iter().for_each(drop);
+            if class == Class::Model {
+                assert_eq!(seg, [0.5, 0.0], "model game: vs_model");
+                model += 1;
+            } else {
+                assert_eq!(seg, [1.0, 1.0], "bot game");
+                bot += 1;
+            }
+            src.shared.games.lock().unwrap().get_mut(&id).unwrap().self_player = Some(0);
+            for slot in [0u8, 1] {
+                src.shared.ends.push(id, uranium_agent::SessionEnd { slot, winner: Some(0), frame: 9_000, reason: EndReason::Elimination });
+            }
+            src.hooks[0].tx.send(result(id, Some(ScoutMetrics { main_frame: Some(2_400), types_4m: 1, types_6m: 3, ..Default::default() }))).unwrap();
+            src.done(&job, JobOutcome::Finished, None);
+            let line = std::fs::read_to_string(&csv).unwrap().lines().last().unwrap().to_string();
+            let r: Vec<&str> = line.split(',').collect();
+            assert_eq!(r.len(), GAMES_HEADER.trim().split(',').count(), "{line}");
+            assert_eq!(&r[17..], [&["0.6", "0.375", group.as_deref().unwrap_or("")][..], &["100.0", "1", "3", "", "", ""]].concat(), "{line}");
+            if let Some(g) = &group {
+                assert_eq!(r[2].starts_with("t0-zerg-rush"), g == "rush", "{line}");
+            }
+        }
+        assert!(model > 0 && bot > 0, "{model} {bot}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

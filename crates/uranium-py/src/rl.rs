@@ -45,7 +45,8 @@ impl SegmentBatch {
     /// Lanes `start..end` collated for one forward (`uranium_league::batch::group`): the
     /// observation arrays, the taken actions as labels, `privileged`, `mask`, `behaviour`,
     /// `rewards` [rows, 4], per lane `terminal`, `trained`, `versions`, `r_value_policy` (r_value
-    /// keeps its policy weight, AMB-042-14) and `state0` (None = zero
+    /// keeps its policy weight, AMB-042-14), `pseudo_scale` [b, 2] (build / units policy-weight
+    /// multipliers, 033-R11, AMB-042-16) and `state0` (None = zero
     /// state, else a list of (shape, float32 array)), plus `b`, `t`, `n`.
     fn group<'py>(&self, py: Python<'py>, start: usize, end: usize, t: usize, max_select: usize) -> PyResult<Bound<'py, PyDict>> {
         if start >= end || end > self.segs.len() {
@@ -76,6 +77,7 @@ impl SegmentBatch {
         put!("trained", g.trained.iter().map(|&x| x as i64).collect::<Vec<_>>(), vec![g.b]);
         put!("versions", g.versions, vec![g.b]);
         put!("r_value_policy", g.r_value_policy, vec![g.b]);
+        put!("pseudo_scale", g.pseudo_scale, vec![g.b, 2]);
         let states = PyList::empty(py);
         for s in g.state0 {
             if s.parts.is_empty() {
@@ -254,10 +256,12 @@ fn check_seq(r: &[f32], v: &[f32], l: &[f32]) -> PyResult<()> {
 /// Tests (042): `lanes` segments of `t` synthetic steps (`uranium_league::testkit`), every step
 /// a NoOp with behaviour log-prob 0; lane k is terminal when k is even; rewards: +1 win at the
 /// end, 0.01 * step on the value component. `r_value_off`: lanes whose game gives r_value no
-/// policy weight (`Segment::r_value_policy` false, AMB-042-14).
+/// policy weight (`Segment::r_value_policy` false, AMB-042-14). `pseudo_rewards`: also 0.02 *
+/// step on build and -0.015 * step + 0.05 on units; `pseudo_scale`: per lane build / units
+/// policy-weight multipliers (`Segment::pseudo_scale`, 033-R11, AMB-042-16), empty = 1 and 1.
 #[pyfunction]
-#[pyo3(signature = (lanes, t, r_value_off = Vec::new()))]
-pub fn test_segments(lanes: usize, t: usize, r_value_off: Vec<usize>) -> SegmentBatch {
+#[pyo3(signature = (lanes, t, r_value_off = Vec::new(), pseudo_rewards = false, pseudo_scale = Vec::new()))]
+pub fn test_segments(lanes: usize, t: usize, r_value_off: Vec<usize>, pseudo_rewards: bool, pseudo_scale: Vec<(f32, f32)>) -> SegmentBatch {
     use uranium_env::features::PrivilegedTensors;
     use uranium_env::features::executor::HostAction;
     use uranium_league::trajectory::{PackedObs, Step};
@@ -271,12 +275,12 @@ pub fn test_segments(lanes: usize, t: usize, r_value_off: Vec<usize>) -> Segment
                     action: HostAction { action: 0, delay_bucket: k % 4, queued: false, selected: vec![], target_unit: None, target_loc: None },
                     log_prob: 0.0,
                     head_log_prob: [0.0; uranium_agent::infer::HEADS],
-                    reward: [if k == t - 1 { 1.0 } else { 0.0 }, 0.0, 0.0, 0.01 * k as f32],
+                    reward: [if k == t - 1 { 1.0 } else { 0.0 }, if pseudo_rewards { 0.02 * k as f32 } else { 0.0 }, if pseudo_rewards { 0.05 - 0.015 * k as f32 } else { 0.0 }, 0.01 * k as f32],
                     privileged: PrivilegedTensors { summary: vec![0.0; uranium_env::features::extract::dims().privileged()] },
                     version: 0,
                 })
                 .collect();
-            Segment { agent: 0, game_id: lane as u64, steps, state0: Default::default(), terminal: lane % 2 == 0, r_value_policy: !r_value_off.contains(&lane) }
+            Segment { agent: 0, game_id: lane as u64, steps, state0: Default::default(), terminal: lane % 2 == 0, r_value_policy: !r_value_off.contains(&lane), pseudo_scale: pseudo_scale.get(lane).map_or([1.0, 1.0], |&(a, b)| [a, b]) }
         })
         .collect();
     SegmentBatch { segs }

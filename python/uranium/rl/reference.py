@@ -86,7 +86,8 @@ class ReferenceLearner(Learner):
 
     def targets(self, g: dict, logp: torch.Tensor, values: torch.Tensor, weights) -> dict:
         """Per-row coefficients of one lane group from the detached forward (on the host). r_value's
-        policy weight per lane (042 "r_value의 게임별 적용", AMB-042-14), as the learner."""
+        policy weight per lane (042 "r_value의 게임별 적용", AMB-042-14) and the build / units
+        multipliers per lane (033-R11, AMB-042-16), as the learner."""
         b, t = g["b"], g["t"]
         weights = component_weights(g, weights)
         l = self.cfg["loss"]

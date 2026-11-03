@@ -63,8 +63,8 @@ class Segments:
     outer model the outer counter puts lanes inside an outer segment at every phase and on its
     boundary (032 §2.7: 5, 4, 3, 7, ... decisions so far; segments of 2 and 3)."""
 
-    def __init__(self, lanes: int, t: int, net, outer: int, r_value_off: tuple = ()):
-        self.batch, self.net = _core.test_segments(lanes, t, list(r_value_off)), net
+    def __init__(self, lanes: int, t: int, net, outer: int, r_value_off: tuple = (), pseudo_rewards: bool = False, pseudo_scale: tuple = ()):
+        self.batch, self.net = _core.test_segments(lanes, t, list(r_value_off), pseudo_rewards, list(pseudo_scale)), net
         g = torch.Generator().manual_seed(7)
         s = net.init_state(lanes, CPU)
         cs = [torch.randn(x.shape, generator=g) * 0.1 for x in leaves(s if not outer else s[0])]
@@ -95,10 +95,10 @@ def rl_cfg(**over) -> dict:
     return cfg
 
 
-def run(cls, algo: str, outer: int, group: int, lanes: int = 4, updates: int = 2, trim: bool = True, r_value_off: tuple = (), weights=WEIGHTS):
+def run(cls, algo: str, outer: int, group: int, lanes: int = 4, updates: int = 2, trim: bool = True, r_value_off: tuple = (), weights=WEIGHTS, pseudo_rewards: bool = False, pseudo_scale: tuple = ()):
     l = cls(rl_cfg(lanes=lanes), tiny_net(outer), tiny_net(outer), CPU, "f32", algo, micro_lanes=group)
     l.trim_pad = trim
-    batch = Segments(lanes, 4, tiny_net(outer, seed=6), outer, r_value_off)
+    batch = Segments(lanes, 4, tiny_net(outer, seed=6), outer, r_value_off, pseudo_rewards, pseudo_scale)
     stats = [l.update(batch, weights) for _ in range(updates)]
     grads = {k: p.grad.clone() for k, p in l.net.named_parameters() if p.grad is not None}
     return stats, {k: v.detach().clone() for k, v in l.net.state_dict().items()}, grads
@@ -160,6 +160,61 @@ def test_r_value_lane_weight_per_lane_targets_amb_042_14(algo):
     # Without the per-lane array (a group built elsewhere): every lane on.
     del g_on["r_value_policy"]
     assert torch.equal(l.targets(g_on, logp, values, WEIGHTS)["coef"], full["coef"])
+
+
+SCOUT_WEIGHTS = [1.0, 0.15, 0.1, 0.05]
+# 033-R11 "scout" (AMB-042-16): lanes 1 and 2 are games against a model (r_scout x0.5, r_survive x0).
+MIXED_SCALE = ((1.0, 1.0), (0.5, 0.0), (0.5, 0.0), (1.0, 1.0))
+
+
+@pytest.mark.parametrize("algo", ["vtrace", "ppo"])
+def test_pseudo_lane_scale_matches_the_reference_033_r11(algo):
+    """033-R11 / 042 (AMB-042-16): with build / units multipliers per lane, the learner's update
+    equals the reference's bit for bit; it differs from the unscaled update; every multiplier 1
+    equals no multiplier array (the "z" mode and bot games), bit for bit."""
+    kw = dict(trim=False, weights=SCOUT_WEIGHTS, pseudo_rewards=True)
+    new, ref = run(Learner, algo, 0, 1, pseudo_scale=MIXED_SCALE, **kw), run(ReferenceLearner, algo, 0, 1, pseudo_scale=MIXED_SCALE, **kw)
+    assert new[0] == ref[0]
+    for k in new[1]:
+        assert torch.equal(new[1][k], ref[1][k]), k
+    plain = run(Learner, algo, 0, 1, **kw)
+    assert any(not torch.equal(plain[1][k], new[1][k]) for k in plain[1]), "the multipliers changed the update"
+    ones = run(Learner, algo, 0, 1, pseudo_scale=((1.0, 1.0),) * 4, **kw)
+    assert ones[0] == plain[0]
+    for i in (1, 2):
+        for k in plain[i]:
+            assert torch.equal(ones[i][k], plain[i][k]), k
+    # Zero multipliers on every lane = channel weights 0 for the whole batch.
+    zero = run(Learner, algo, 0, 1, pseudo_scale=((0.0, 0.0),) * 4, **kw)
+    off = run(Learner, algo, 0, 1, trim=False, weights=[1.0, 0.0, 0.0, 0.05], pseudo_rewards=True)
+    assert zero[0] == off[0]
+    for k in off[1]:
+        assert torch.equal(zero[1][k], off[1][k]), k
+
+
+@pytest.mark.parametrize("algo", ["vtrace", "ppo"])
+def test_pseudo_lane_scale_per_lane_targets_033_r11(algo):
+    """The targets of a lane group with build / units multipliers: lanes at 0 have the policy
+    coefficients of channel weights 0, lanes at 1 the full ones, a lane at 0.5 the half weight; the
+    value targets are the same in every case (the value heads learn the raw values in every game)."""
+    t, lanes = 4, 4
+    l = Learner(rl_cfg(lanes=lanes), tiny_net(0), tiny_net(0), CPU, "f32", algo, micro_lanes=0)
+    seg = lambda scale: Segments(lanes, t, tiny_net(0, seed=6), 0, pseudo_rewards=True, pseudo_scale=scale).group(0, lanes, t, 12)  # noqa: E731
+    g_on, g_mix = seg(()), seg(((1.0, 1.0), (0.0, 0.0), (0.0, 0.0), (0.5, 1.0)))
+    assert g_on["pseudo_scale"].tolist() == [[1.0, 1.0]] * 4 and g_mix["pseudo_scale"].tolist() == [[1.0, 1.0], [0.0, 0.0], [0.0, 0.0], [0.5, 1.0]]
+    gen = torch.Generator().manual_seed(3)
+    logp, values = torch.randn(lanes * t, generator=gen) - 2.0, torch.randn(lanes * t, 4, generator=gen)
+    w = SCOUT_WEIGHTS
+    full, mix, zero, half = (l.targets(g_on, logp, values, w), l.targets(g_mix, logp, values, w), l.targets(g_on, logp, values, [w[0], 0.0, 0.0, w[3]]), l.targets(g_on, logp, values, [w[0], w[1] * 0.5, w[2], w[3]]))
+    rows = lambda x, ls: x.view(lanes, t)[ls]  # noqa: E731
+    assert torch.equal(rows(mix["coef"], [1, 2]), rows(zero["coef"], [1, 2]))
+    assert torch.equal(rows(mix["coef"], [0]), rows(full["coef"], [0]))
+    torch.testing.assert_close(rows(mix["coef"], [3]), rows(half["coef"], [3]), rtol=1e-6, atol=1e-7)
+    assert not torch.equal(rows(full["coef"], [1, 2]), rows(zero["coef"], [1, 2]))
+    assert torch.equal(mix["vs"], full["vs"]) and torch.equal(zero["vs"], full["vs"])
+    # Without the per-lane array (a group built elsewhere): every multiplier 1.
+    del g_on["pseudo_scale"]
+    assert torch.equal(l.targets(g_on, logp, values, w)["coef"], full["coef"])
 
 
 def close_stats(a: dict, b: dict, rtol: float, atol: float) -> None:
