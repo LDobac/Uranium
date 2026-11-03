@@ -299,31 +299,36 @@ name = "zzzkbot"
 race = "Zerg"
 group = "rush"
 
-# 042 "rush-s2" macro (non-rush) zerg group (AMB-042-16). Candidates (user decision 2026-11-03):
-# T0 standard zerg (t0-zerg), T0 zerg_muta (t0-zerg-muta), UAlbertaBot config variants
-# ualbertabot2hatchhydra (opening Zerg_2HatchHydra) and ualbertabot3hatchmuta (Zerg_3HatchMuta),
-# 021 "T1 설정 변형" naming / records, deployed to every game host.
-# TODO(AMB-042-16, [SPEC AMBIGUOUS]): the exact list is the user's decision after the running
-# measurement. PLACEHOLDER: only the T0 standard zerg below, so the config validates (a group
-# with a share needs an entry); replace this block with the decided list before starting rush-s2.
+# 042 "rush-s2" macro (non-rush) zerg group (AMB-042-16, user decision 2026-11-04 after the
+# start-checkpoint measurement, ac1-vtrace-s1/ckpt-3133569, W-L-D over 30 games unless noted):
+# T0 standard zerg (25-2-3, 83%), T0 zerg_muta (26-2-2, 87%), UAlbertaBot config variants
+# ualbertabot2hatchhydra (opening Zerg_2HatchHydra, 21-6-3, 70%) and ualbertabot3hatchmuta
+# (Zerg_3HatchMuta, 30-0-0, 100%), Steamhammer config variant steamhammer2hatchmuta
+# (2HatchMuta, 2-8-0 over 10 games, 20%). 021 "T1 설정 변형" naming / records
+# (reports/oss_bot_porting.md), deployed to every game host. Win-table keys: t0-zerg,
+# t0-zerg-muta, <name>-zerg.
 [[ladder]]
 kind = "t0"
 build = "standard"
 race = "Zerg"
 group = "macro"
-# Further candidates, not decided:
-# [[ladder]]
-# kind = "t0"
-# build = "zerg_muta"
-# race = "Zerg"
-# group = "macro"
-# [[ladder]]
-# kind = "t1"
-# name = "ualbertabot2hatchhydra"
-# race = "Zerg"
-# group = "macro"
-# [[ladder]]
-# kind = "t1"
-# name = "ualbertabot3hatchmuta"
-# race = "Zerg"
-# group = "macro"
+[[ladder]]
+kind = "t0"
+build = "zerg_muta"
+race = "Zerg"
+group = "macro"
+[[ladder]]
+kind = "t1"
+name = "ualbertabot2hatchhydra"
+race = "Zerg"
+group = "macro"
+[[ladder]]
+kind = "t1"
+name = "ualbertabot3hatchmuta"
+race = "Zerg"
+group = "macro"
+[[ladder]]
+kind = "t1"
+name = "steamhammer2hatchmuta"
+race = "Zerg"
+group = "macro"

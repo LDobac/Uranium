@@ -90,3 +90,17 @@
 - 명령: `make_variant.py --bot ualbertabot --variant 9pool --file bwapi-data/AI/UAlbertaBot_Config.txt --replace '"Zerg_ZerglingRush",' '"Zerg_9Pool",'`, `make_variant.py --bot steamhammer --variant overpool --file bwapi-data/AI/Steamhammer_5.3.6.json --lines 230-249 --text '            { "Weight" : 100, "Strategy" : "OverpoolSpeed" }'`.
 - 12풀·9풀 저글링 변형: `make_variant.py --bot ualbertabot --variant 12poollings`(또는 `9poollings`) `--file bwapi-data/AI/UAlbertaBot_Config.txt --lines 111 --text '<새 111행 전체, 들여쓰기 12칸>'`. 전략 이름(85행)을 그대로 두는 이유: UAlbertaBot은 오프닝 뒤 생산 목표를 전략 이름으로 고른다(`StrategyManager.cpp` `getZergBuildOrderGoal`, `Zerg_ZerglingRush` = 저글링 계속). 그래서 오프닝 정의만 바꾸면 오프닝 뒤 기본 러시처럼 저글링만 나온다(9풀 변형이 저글링 4기에서 멈춘 이유).
 - 변형은 설정을 바꾼 종족(저그)으로만 쓴다. 학습·점검에 쓰는 변형은 그 게임을 돌리는 모든 게임 호스트에 같은 내용으로 둔다(위 sha256으로 확인).
+
+### 운영형 저그 변형 (042 `rush-s2` 운영형 그룹, 2026-11-04 사용자 결정, AMB-042-16)
+
+2026-11-03 운영형 저그 측정(`runs/macroladder_20261103/`, 결과 `<shared>/eval/macroladder-20261103/`)용으로 만든 세 변형이다. 셋 모두 `rush-s2` 운영형 그룹에 들어가고, `ualbertabot2hatchhydra`·`steamhammer2hatchmuta`는 100만 step 점검 상대이기도 하다(042, 050). 2026-11-04에 `tools/oss/make_variant.py`로 Windows 원본 폴더에서 다시 만들어 배포된 폴더와 바이트까지 같음을 확인했고, Linux 게임 호스트에는 그 호스트의 원본 폴더(설정 파일은 Windows 원본과 sha256 같음)에서 같은 명령으로 만들었다. 바꾼 설정 파일 sha256은 두 OS에서 같고, 바이너리는 각 OS의 원본과 같다(`module.dll`·`module.so`). Linux hostd 재시작 로그의 봇 목록에 셋 다 나온다.
+
+| 변형 (상대 ID, 021-R3) | 원본 상대 ID | 바꾼 파일·줄 | 이전 → 이후 | 바꾼 파일 sha256 |
+|---|---|---|---|---|
+| `ualbertabot2hatchhydra@558899d-2hatchhydra` | `ualbertabot@558899d` | `bwapi-data/AI/UAlbertaBot_Config.txt` 85행(Strategy) | `"Zerg" : "Zerg_ZerglingRush",` → `"Zerg" : "Zerg_2HatchHydra",` | `5ea96cb146b081f4bc6db0fe1cc3b9e8dc0699ebff256dffdc88245aa385c3ec` |
+| `ualbertabot3hatchmuta@558899d-3hatchmuta` | `ualbertabot@558899d` | 같은 파일 85행(Strategy) | `"Zerg" : "Zerg_ZerglingRush",` → `"Zerg" : "Zerg_3HatchMuta",` | `89851d4cb858ff4b8d6a004f36880ed6ec705c83ba8a8a490550726bf916c43a` |
+| `steamhammer2hatchmuta@5.3.6-2hatchmuta` | `steamhammer@5.3.6` | `bwapi-data/AI/Steamhammer_5.3.6.json` 230~249행(`ZvT` 오프닝 가중치 20개, 오버풀 변형과 같은 자리) | 20개 항목 → `{ "Weight" : 100, "Strategy" : "ZvT_2HatchMuta" }` 한 줄 | `bcb0c9a443128c3d4583adf19e718158150be35db1047d66b00a749b22a528d4` |
+
+- 명령: `make_variant.py --bot ualbertabot --variant 2hatchhydra --file bwapi-data/AI/UAlbertaBot_Config.txt --replace '"Zerg_ZerglingRush",' '"Zerg_2HatchHydra",'`, `--variant 3hatchmuta`는 같은 형식에 `'"Zerg_3HatchMuta",'`, `make_variant.py --bot steamhammer --variant 2hatchmuta --file bwapi-data/AI/Steamhammer_5.3.6.json --lines 230-249 --text '            { "Weight" : 100, "Strategy" : "ZvT_2HatchMuta" }'`.
+- UAlbertaBot 두 변형은 전략 이름(85행)을 바꾼다. 오프닝은 설정 파일의 그 전략 정의(113·114행: 2해처리 히드라, 3해처리 뮤탈 12기)를 따르고, 오프닝 뒤 생산 목표(`StrategyManager.cpp` `getZergBuildOrderGoal`)도 그 전략의 것이 된다(`Zerg_2HatchHydra`: 히드라 +8·사거리 업그레이드(Grooved Spines)·드론 +4, `Zerg_3HatchMuta`: 히드라 +12·드론 +4. 뮤탈은 오프닝에서만 나온다).
+- 원본 폴더 sha256(두 OS 같음): `UAlbertaBot_Config.txt` `8635d29c58c63f25110069cda41ca5b023a68c73d7d1b29e0eb0412dfadc6fcf`, `Steamhammer_5.3.6.json` `d4cfd34a2d311b01b115632c210189e8c6df7c223b6b3eb33c10b547faaeaca4`.

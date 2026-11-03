@@ -710,8 +710,8 @@ mod tests {
     /// 042 "러시·운영 혼합 run" (AMB-042-16): `config/rl_rush2.toml` is `rl_rush1.toml` with the
     /// decided changes only — win_rate_decay 0.97, ladder groups rush 0.5 / macro 0.5 (the 7
     /// rush-s1 entries as "rush"), `[reward] pseudo = "scout"` at the confirmed values, the anchor
-    /// unchanged; the "macro" entries are a placeholder (T0 standard zerg) until AMB-042-16 is
-    /// decided.
+    /// unchanged; the "macro" group is the 5 operational zerg opponents of the user decision
+    /// 2026-11-04 (AMB-042-16).
     #[test]
     fn rush2_config_042_amb_042_16() {
         use uranium_env::scout::{ScoutConfig, SurviveConfig};
@@ -733,9 +733,10 @@ mod tests {
         for (a, b) in rush.iter().zip(&rush1.ladder) {
             assert_eq!(LadderEntry { group: String::new(), ..(*a).clone() }, *b, "the rush-s1 entries as they were");
         }
-        // Placeholder until the macro list is decided (AMB-042-16).
         let macro_keys: Vec<String> = t.ladder.iter().filter(|e| e.group == "macro").map(|e| e.opponent().unwrap().1).collect();
-        assert_eq!(macro_keys, ["t0-zerg"]);
+        assert_eq!(macro_keys, ["t0-zerg", "t0-zerg-muta", "ualbertabot2hatchhydra-zerg", "ualbertabot3hatchmuta-zerg", "steamhammer2hatchmuta-zerg"], "user decision 2026-11-04 (AMB-042-16)");
+        assert!(t.ladder.iter().all(|e| e.race == uranium_proto::Race::Zerg));
+        assert_eq!(t.ladder.len(), 12, "7 rush + 5 macro");
         let mut d = rush1;
         d.league.win_rate_decay = 0.97;
         d.curriculum.ladder_groups = t.curriculum.ladder_groups.clone();
