@@ -834,9 +834,39 @@ impl Run {
         self.publish_copy(step, "promoted", name)
     }
 
-    /// 061-R2 `league/<name>/`: a 042 league snapshot (kept forever).
-    pub fn league_snapshot(&self, step: u64, name: &str) -> Result<PathBuf> {
-        self.publish_copy(step, "league", name)
+    /// 061-R2 `league/<name>/`: a 042 league snapshot (kept forever). 042 스냅샷 공개
+    /// (AMB-042-14): only the model files of `agents/<agent>` of the pushed checkpoint `step`
+    /// (not its optimizer state, other agents or league state), as
+    /// `league/<name>/agents/<agent>/` with a manifest of those files. Returns `league/<name>`.
+    pub fn league_snapshot(&self, step: u64, name: &str, agent: &str) -> Result<PathBuf> {
+        check_name(name)?;
+        check_name(agent)?;
+        let src = self.shared_dir().join(ckpt_name(step));
+        let prefix = format!("{}/{agent}/", crate::ckpt::AGENTS_DIR);
+        let files: BTreeMap<String, FileEntry> = Manifest::read(&src)?
+            .files
+            .into_iter()
+            .filter(|(rel, _)| rel.strip_prefix(&prefix).is_some_and(|f| !f.rsplit('/').next().unwrap_or(f).starts_with(crate::ckpt::OPTIM_PREFIX)))
+            .collect();
+        ensure!(!files.is_empty(), "{} has no files under {prefix}", src.display());
+        let sub = Manifest { files };
+        sub.verify(&src)?;
+        let parent = self.shared_dir().join("league");
+        let dst = parent.join(name);
+        ensure!(!dst.exists(), "{} already exists", dst.display());
+        let tmp = parent.join(format!("{name}.tmp-{}", self.cfg.host));
+        if tmp.exists() {
+            fs::remove_dir_all(&tmp)?;
+        }
+        for rel in sub.files.keys() {
+            let to = tmp.join(rel);
+            fs::create_dir_all(to.parent().expect("a file under agents/<agent>"))?;
+            fs::copy(src.join(rel), &to).with_context(|| format!("copying {}", src.join(rel).display()))?;
+        }
+        sub.write(&tmp)?;
+        verify_dir(&tmp)?;
+        fs::rename(&tmp, &dst)?;
+        Ok(dst)
     }
 
     /// 061-R5 / 042-R10: normal exit, after the final push. Removes the lock if it is still ours.

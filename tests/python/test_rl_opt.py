@@ -63,8 +63,8 @@ class Segments:
     outer model the outer counter puts lanes inside an outer segment at every phase and on its
     boundary (032 §2.7: 5, 4, 3, 7, ... decisions so far; segments of 2 and 3)."""
 
-    def __init__(self, lanes: int, t: int, net, outer: int):
-        self.batch, self.net = _core.test_segments(lanes, t), net
+    def __init__(self, lanes: int, t: int, net, outer: int, r_value_off: tuple = ()):
+        self.batch, self.net = _core.test_segments(lanes, t, list(r_value_off)), net
         g = torch.Generator().manual_seed(7)
         s = net.init_state(lanes, CPU)
         cs = [torch.randn(x.shape, generator=g) * 0.1 for x in leaves(s if not outer else s[0])]
@@ -95,11 +95,11 @@ def rl_cfg(**over) -> dict:
     return cfg
 
 
-def run(cls, algo: str, outer: int, group: int, lanes: int = 4, updates: int = 2, trim: bool = True):
+def run(cls, algo: str, outer: int, group: int, lanes: int = 4, updates: int = 2, trim: bool = True, r_value_off: tuple = (), weights=WEIGHTS):
     l = cls(rl_cfg(lanes=lanes), tiny_net(outer), tiny_net(outer), CPU, "f32", algo, micro_lanes=group)
     l.trim_pad = trim
-    batch = Segments(lanes, 4, tiny_net(outer, seed=6), outer)
-    stats = [l.update(batch, WEIGHTS) for _ in range(updates)]
+    batch = Segments(lanes, 4, tiny_net(outer, seed=6), outer, r_value_off)
+    stats = [l.update(batch, weights) for _ in range(updates)]
     grads = {k: p.grad.clone() for k, p in l.net.named_parameters() if p.grad is not None}
     return stats, {k: v.detach().clone() for k, v in l.net.state_dict().items()}, grads
 
@@ -118,6 +118,48 @@ def test_update_is_bit_identical_to_the_reference_032_r19(algo, outer):
         assert new[i].keys() == ref[i].keys()
         for k in new[i]:
             assert torch.equal(new[i][k], ref[i][k]), k
+
+
+@pytest.mark.parametrize("algo", ["vtrace", "ppo"])
+def test_r_value_lane_weight_matches_the_reference_amb_042_14(algo):
+    """042 "r_value의 게임별 적용" (AMB-042-14): with r_value off in some lanes' games, the
+    learner's update equals the reference's bit for bit; it differs from the all-on update, and
+    all lanes off equals r_value weight 0 for the whole batch."""
+    off = (1, 2)
+    new, ref = run(Learner, algo, 0, 1, trim=False, r_value_off=off), run(ReferenceLearner, algo, 0, 1, r_value_off=off)
+    assert new[0] == ref[0]
+    for k in new[1]:
+        assert torch.equal(new[1][k], ref[1][k]), k
+    on = run(Learner, algo, 0, 1, trim=False)
+    assert any(not torch.equal(on[1][k], new[1][k]) for k in on[1]), "r_value off changed the update"
+    all_off = run(Learner, algo, 0, 1, trim=False, r_value_off=(0, 1, 2, 3))
+    zero = run(Learner, algo, 0, 1, trim=False, weights=WEIGHTS[:3] + [0.0])
+    assert all_off[0] == zero[0]
+    for k in zero[1]:
+        assert torch.equal(all_off[1][k], zero[1][k]), k
+
+
+@pytest.mark.parametrize("algo", ["vtrace", "ppo"])
+def test_r_value_lane_weight_per_lane_targets_amb_042_14(algo):
+    """The targets of a lane group with r_value off in some lanes: those lanes' policy
+    coefficients are the ones with r_value weight 0, the other lanes' the full ones; the value
+    targets are the same in every case (the value head learns r_value in every game, 033-R3)."""
+    t, lanes = 4, 4
+    l = Learner(rl_cfg(lanes=lanes), tiny_net(0), tiny_net(0), CPU, "f32", algo, micro_lanes=0)
+    g_on = Segments(lanes, t, tiny_net(0, seed=6), 0).group(0, lanes, t, 12)
+    g_mix = Segments(lanes, t, tiny_net(0, seed=6), 0, r_value_off=(0, 3)).group(0, lanes, t, 12)
+    assert g_on["r_value_policy"].tolist() == [True] * 4 and g_mix["r_value_policy"].tolist() == [False, True, True, False]
+    gen = torch.Generator().manual_seed(3)
+    logp, values = torch.randn(lanes * t, generator=gen) - 2.0, torch.randn(lanes * t, 4, generator=gen)
+    full, mix, zero = l.targets(g_on, logp, values, WEIGHTS), l.targets(g_mix, logp, values, WEIGHTS), l.targets(g_on, logp, values, WEIGHTS[:3] + [0.0])
+    rows = lambda x, ls: x.view(lanes, t)[ls]  # noqa: E731
+    assert torch.equal(rows(mix["coef"], [0, 3]), rows(zero["coef"], [0, 3]))
+    assert torch.equal(rows(mix["coef"], [1, 2]), rows(full["coef"], [1, 2]))
+    assert not torch.equal(rows(full["coef"], [0, 3]), rows(zero["coef"], [0, 3]))
+    assert torch.equal(mix["vs"], full["vs"]) and torch.equal(zero["vs"], full["vs"])
+    # Without the per-lane array (a group built elsewhere): every lane on.
+    del g_on["r_value_policy"]
+    assert torch.equal(l.targets(g_on, logp, values, WEIGHTS)["coef"], full["coef"])
 
 
 def close_stats(a: dict, b: dict, rtol: float, atol: float) -> None:

@@ -58,6 +58,8 @@ class Learners:
         self.learners: list = []
         self.servers: list = []
         self.brokers_: list = []
+        # League snapshot / anchor servers by model folder (042, AMB-042-14).
+        self.snapshot_servers: dict = {}
         # Per agent: where its weights started (042, AMB-042-13), written into every checkpoint.
         self.starts: list = []
         for name, (net, update, optim_dir, start) in zip(AGENTS, start_policies(bc_dir, bc, init, resume, device), strict=True):
@@ -127,7 +129,8 @@ class Learners:
         ckpt.save_meta(d, l.net.cfg, train, self.precision, impl_settings())
 
     def snapshot_server(self, dir: str):
-        """A league snapshot's agent as an opponent (stochastic, 042)."""
+        """A league snapshot's or the anchor's agent as an opponent (stochastic, 042); kept by
+        `dir` until `close_snapshot_server(dir)`."""
         from uranium import _core
         from uranium.agent.infer import InferenceServer
 
@@ -137,7 +140,17 @@ class Learners:
         with DEVICE_LOCK.shared():
             s = InferenceServer(b, self.device, self.precision)
         s.start()
+        self.close_snapshot_server(dir)  # an older server of the same folder (not expected)
+        self.snapshot_servers[str(dir)] = s
         return b
+
+    def close_snapshot_server(self, dir: str) -> None:
+        """042 스냅샷 추론 서버 (AMB-042-14): the run loop calls this once no game uses the server
+        and no opponent choice can pick it; its thread stops and frees the model's device memory
+        (the snapshot's files stay)."""
+        s = self.snapshot_servers.pop(str(dir), None)
+        if s is not None:
+            s.close()
 
 
 def start_policies(bc_dir: str, bc, init: str | None, resume: str | None, device) -> list[tuple]:

@@ -38,6 +38,23 @@ fn write_ckpt(run: &mut Run, step: u64) -> PathBuf {
     run.seal(step).unwrap()
 }
 
+/// Writes a small RL checkpoint for `step`: two agents with model files and optimizer state, and
+/// the league state (042, 061-R10).
+fn write_rl_ckpt(run: &mut Run, step: u64) -> PathBuf {
+    let d = run.stage_dir(step).unwrap();
+    for agent in ["main", "main-exploiter"] {
+        let a = d.join("agents").join(agent);
+        fs::create_dir_all(&a).unwrap();
+        fs::write(a.join("model.safetensors"), format!("{agent} weights {step}")).unwrap();
+        fs::write(a.join("meta.json"), format!("{{\"agent\": \"{agent}\"}}")).unwrap();
+        fs::write(a.join("optim-main.safetensors"), format!("{agent} adam {step}")).unwrap();
+    }
+    fs::write(d.join("league.bin"), "league").unwrap();
+    fs::create_dir_all(d.join("config")).unwrap();
+    fs::write(d.join("config").join("rl.toml"), "x = 1").unwrap();
+    run.seal(step).unwrap()
+}
+
 fn latest_verified(run: &Run) -> Option<u64> {
     let step = run.latest().unwrap()?;
     verify_dir(&run.shared_dir().join(ckpt_name(step))).expect("LATEST names a complete checkpoint (061-AC2)");
@@ -158,11 +175,15 @@ fn retention_keeps_newest_promoted_and_league_061_r6() {
     let t = Tmp::new("retain");
     let mut run = Run::acquire(cfg(&t, "pc-a"), "run1", false).unwrap();
     for step in 1..=7 {
-        write_ckpt(&mut run, step);
+        if step == 3 {
+            write_rl_ckpt(&mut run, step);
+        } else {
+            write_ckpt(&mut run, step);
+        }
         run.push(step).unwrap();
     }
     run.promote(2, "gen1").unwrap();
-    run.league_snapshot(3, "main-3").unwrap();
+    run.league_snapshot(3, "main-3", "main").unwrap();
     run.prune().unwrap();
     let names = |d: &Path| {
         let mut v: Vec<String> = fs::read_dir(d).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("ckpt-")).collect();
@@ -174,6 +195,29 @@ fn retention_keeps_newest_promoted_and_league_061_r6() {
     verify_dir(&run.shared_dir().join("promoted").join("gen1")).unwrap();
     verify_dir(&run.shared_dir().join("league").join("main-3")).unwrap();
     assert_eq!(latest_verified(&run), Some(7));
+}
+
+/// 042 스냅샷 공개 (AMB-042-14): a league snapshot holds only the agent's model files (no
+/// optimizer state, other agents or league state) at `league/<name>/agents/<agent>`, with a
+/// manifest of them; a name in use or a checkpoint without the agent is an error.
+#[test]
+fn league_snapshot_publishes_agent_model_files_only_042() {
+    let t = Tmp::new("league-agent");
+    let mut run = Run::acquire(cfg(&t, "pc-a"), "run1", false).unwrap();
+    write_rl_ckpt(&mut run, 5);
+    assert_eq!(run.push(5).unwrap(), PushOutcome::Pushed);
+    let dir = run.league_snapshot(5, "main-run1-250", "main").unwrap();
+    assert_eq!(dir, run.shared_dir().join("league").join("main-run1-250"));
+    let m = verify_dir(&dir).unwrap();
+    assert_eq!(m.files.keys().cloned().collect::<Vec<_>>(), ["agents/main/meta.json", "agents/main/model.safetensors"]);
+    assert_eq!(fs::read_to_string(dir.join("agents").join("main").join("model.safetensors")).unwrap(), "main weights 5");
+    let mut top: Vec<String> = fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    top.sort();
+    assert_eq!(top, ["agents", "manifest.json"]);
+    assert!(run.league_snapshot(5, "main-run1-250", "main").is_err(), "already published");
+    assert!(run.league_snapshot(5, "x-250", "league-exploiter").is_err(), "no such agent");
+    let leftovers: Vec<String> = fs::read_dir(run.shared_dir().join("league")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.contains(".tmp-")).collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
 }
 
 fn ckpt_names(d: &Path) -> Vec<String> {

@@ -77,6 +77,19 @@ def kl_per_head(p: dict, q: dict) -> dict:
     }
 
 
+def component_weights(g: dict, weights) -> list:
+    """The 033 weight of each reward component for the advantage of a lane group: a scalar, but
+    r_value (component 3) per lane [b, 1] when some lane's game gives it no policy weight (042
+    "r_value의 게임별 적용", AMB-042-14: `r_value_policy` false = a model opponent with
+    `r_value_vs_model = false`). With every lane on, the scalars as before (same results bit for
+    bit)."""
+    w = list(weights)
+    on = g.get("r_value_policy")
+    if on is not None and not bool(torch.as_tensor(on, dtype=torch.bool).all()):
+        w[3] = torch.where(torch.as_tensor(on, dtype=torch.bool), w[3], 0.0)[:, None]
+    return w
+
+
 def state0_host(net, g: dict):
     """Core state per lane (042 core_state0) on the host; a lane without one starts from zero
     (032-R5)."""
@@ -193,8 +206,10 @@ class Learner:
 
     def targets(self, g: dict, logp: torch.Tensor, values: torch.Tensor, weights) -> dict:
         """Per-row coefficients of one lane group from the detached forward (on the host). The 4
-        reward components (033-R3) run as 4·b rows of one recursion, component-major."""
+        reward components (033-R3) run as 4·b rows of one recursion, component-major. The value
+        targets of every component are kept whatever its policy weight (AMB-042-14)."""
         b, t = g["b"], g["t"]
+        weights = component_weights(g, weights)
         l = self.cfg["loss"]
         length = torch.as_tensor(g["trained"], dtype=torch.long)
         terminal = torch.as_tensor(g["terminal"], dtype=torch.bool)

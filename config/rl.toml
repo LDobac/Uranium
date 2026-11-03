@@ -83,8 +83,13 @@ win_rate_decay = 0.99
 win_rate_prior = 0.5
 # p_race = uniform_mix / 3 + (1 - uniform_mix) * (1 - w_r) / sum(1 - w)
 race_uniform_mix = 0.5
-# 021-R7: Random race share for multi-race T0/T1 bots.
+# 021-R7: Random race share for multi-race T0/T1 bots (T1: only bots listing all three races,
+# AMB-042-14).
 bot_random_race = 0.2
+# 042 anchor (AMB-042-14): a fixed opponent, an RL checkpoint folder `ckpt-<step>` (its
+# agents/main) or that agents/main folder, relative to URANIUM_SHARED_DIR; "" = none. Needed
+# when [curriculum] c1_anchor > 0; its model files must exist at start.
+anchor = ""
 
 [snapshot]
 main_every_updates = 2000
@@ -92,6 +97,9 @@ exploiter_win_rate = 0.7
 exploiter_win_window = 200
 exploiter_max_updates = 4000
 league_exploiter_reset_prob = 0.25
+# 042 C1 snapshot candidates (AMB-042-14): the latest this many published Main snapshots,
+# 0 = all. Older snapshots stay on the share.
+main_candidates = 4
 
 [curriculum]
 # 042-R5. Window = most recent games per opponent race.
@@ -102,6 +110,11 @@ c0_to_c1_win_rate_vs_t0 = 0.7
 c1_t0 = 0.3
 c1_t1 = 0.4
 c1_self = 0.3
+# 042 (AMB-042-14): C1 shares of past Main snapshots (PFSP f_hard over the [snapshot]
+# main_candidates latest published) and of the [league] anchor; c1_self is the current Main.
+# C1 picks in proportion to the five c1_* values.
+c1_snapshot = 0.0
+c1_anchor = 0.0
 c1_to_c2_win_rate_vs_t1 = 0.5
 # Pseudo-reward (033 r_build, r_units) linear decay to 0 after entering C2.
 pseudo_reward_decay_updates = 20000
@@ -112,8 +125,12 @@ start_stage = "C0"
 auto_advance = true
 # 033: stages that use r_value; weight 0 in the others.
 r_value_stages = ["C0"]
-# On resume the ratios above, auto_advance, r_value_stages and [[t1]] follow this file; stage,
-# win tables, windows and snapshots come from the checkpoint (042).
+# 033 (AMB-042-14): false = r_value has policy weight 0 in games against a model (current Main,
+# snapshots, anchor); the value head learns r_value in every game.
+r_value_vs_model = true
+# On resume the ratios above, auto_advance, r_value_stages, r_value_vs_model, [league] anchor,
+# [snapshot] main_candidates and [[t1]] follow this file; stage, win tables, windows and
+# snapshots come from the checkpoint (042).
 
 [ppo]
 # Comparison baseline (042 algorithm alternatives).

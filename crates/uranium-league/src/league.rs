@@ -3,7 +3,7 @@
 //! weight schedule (033). Pure logic with its own RNG so it is testable and resumable (042-R1).
 //! Results are judged with 020-R13 before they reach `record`.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use uranium_agent::T0Build;
@@ -63,6 +63,9 @@ pub enum Opponent {
     SelfPlay,
     /// A frozen league snapshot (042 snapshot id `uranium-<agent>@<run>/<update>`).
     Snapshot { id: String },
+    /// The fixed anchor opponent `[league] anchor` (042, AMB-042-14); `name` = its checkpoint
+    /// name, win-table key `anchor@<name>`.
+    Anchor { name: String },
 }
 
 /// Opponent class for the curriculum windows.
@@ -139,6 +142,11 @@ pub struct League {
     rng: u64,
     #[serde(skip)]
     cfg: Option<RlConfig>,
+    /// Snapshot ids whose model files are on the share (042 스냅샷 공개, AMB-042-14): only these
+    /// are C1 snapshot candidates. Not league state: the run loop marks them after a publish and,
+    /// on resume, from the share.
+    #[serde(skip)]
+    published: BTreeSet<String>,
 }
 
 fn win_value(o: Outcome) -> f64 {
@@ -184,6 +192,7 @@ impl League {
             fixed_t0,
             rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
             cfg: Some(cfg),
+            published: BTreeSet::new(),
         }
     }
 
@@ -192,8 +201,9 @@ impl League {
     }
 
     /// A resumed league (042-R1). Stage, win tables, curriculum windows and snapshots come from
-    /// `b`; opponent ratios, `auto_advance`, `r_value_stages` and the T1 list follow `cfg`, the
-    /// current config file (042 "재개 시 설정", AMB-042-13).
+    /// `b`; opponent ratios, `auto_advance`, `r_value_stages`, `r_value_vs_model`, the anchor,
+    /// `main_candidates` and the T1 list follow `cfg`, the current config file (042 "재개 시
+    /// 설정", AMB-042-13 / 14). No snapshot counts as published until the run loop marks it.
     pub fn from_bytes(b: &[u8], cfg: RlConfig) -> anyhow::Result<Self> {
         let mut l: League = serde_json::from_slice(b)?;
         l.cfg = Some(cfg);
@@ -298,7 +308,10 @@ impl League {
         let bots = if bots.is_empty() { all.clone() } else { bots };
         let bot = bots[(self.unit() * bots.len() as f64) as usize % bots.len()].clone();
         let race = if bot.races.contains(&race) { race } else { bot.races[0] };
-        let random = bot.races.len() > 1 && self.unit() < self.cfg().league.bot_random_race;
+        // 021-R7 (AMB-042-14): Random only for a bot listing all three races; a two-race bot
+        // plays the sampled race of its list (Random could give one it does not list). The
+        // draw is made only for those bots, so three-race bots keep the earlier draw order.
+        let random = RACES.iter().all(|r| bot.races.contains(r)) && self.unit() < self.cfg().league.bot_random_race;
         let key = format!("{}-{}", bot.name, race_name(race));
         Some((Opponent::T1 { name: bot.name, race: if random { Race::Random } else { race } }, key, Class::T1))
     }
@@ -347,6 +360,60 @@ impl League {
         Some(pool[i].clone())
     }
 
+    /// Win-table key of the current Main as an opponent (self-play).
+    pub fn self_play_key(&self) -> String {
+        format!("uranium-main@{}", self.run)
+    }
+
+    /// 042 anchor (AMB-042-14): its win-table key `anchor@<checkpoint name>`, `None` without one.
+    pub fn anchor_key(&self) -> Option<String> {
+        self.cfg().league.anchor_name().map(|n| format!("anchor@{n}"))
+    }
+
+    /// The snapshot's model files are on the share (042 스냅샷 공개, AMB-042-14).
+    pub fn mark_published(&mut self, id: &str) {
+        self.published.insert(id.to_string());
+    }
+
+    /// 042 C1 snapshot candidates (AMB-042-14): the most recent `[snapshot] main_candidates`
+    /// published Main snapshots (0 = all), oldest first.
+    pub fn c1_candidates(&self) -> Vec<String> {
+        let all: Vec<&String> = self.snapshots.iter().filter(|(a, id)| *a == AgentKind::Main && self.published.contains(id)).map(|(_, id)| id).collect();
+        let n = self.cfg().snapshot.main_candidates;
+        let skip = if n == 0 { 0 } else { all.len().saturating_sub(n) };
+        all[skip..].iter().map(|id| (*id).clone()).collect()
+    }
+
+    fn anchor_pick(&self) -> Option<(Opponent, String, Class)> {
+        let name = self.cfg().league.anchor_name()?;
+        Some((Opponent::Anchor { name: name.clone() }, format!("anchor@{name}"), Class::Model))
+    }
+
+    /// The model opponents (snapshot ids, anchor key) the next picks can choose in the current
+    /// stage; the run loop shuts the inference servers of the others down (042 스냅샷 추론 서버,
+    /// AMB-042-14).
+    pub fn model_opponents(&self) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        if self.fixed_t0.is_some() {
+            return out;
+        }
+        let cc = &self.cfg().curriculum;
+        match self.stage {
+            Stage::C0 => {}
+            Stage::C1 => {
+                let cands = if cc.c1_snapshot > 0.0 { self.c1_candidates() } else { vec![] };
+                let to_anchor = cc.c1_anchor > 0.0 || (cc.c1_snapshot > 0.0 && cands.is_empty());
+                out.extend(cands);
+                if to_anchor {
+                    out.extend(self.anchor_key());
+                }
+            }
+            // C2 PFSP: every snapshot, as before.
+            Stage::C2 => out.extend(self.snapshots.iter().map(|(_, id)| id.clone())),
+        }
+        out
+    }
+
     /// 042-R7: which agent plays the next game; C0/C1 train Main only.
     fn pick_agent(&mut self) -> AgentKind {
         if self.stage < Stage::C2 {
@@ -365,7 +432,7 @@ impl League {
         }
         let agent = self.pick_agent();
         let fighting_spirit = self.unit() < 0.5;
-        let main_key = format!("uranium-main@{}", self.run);
+        let main_key = self.self_play_key();
         let selfplay = (Opponent::SelfPlay, main_key.clone(), Class::Model);
         let cc = self.cfg().curriculum.clone();
         let lc = self.cfg().league.clone();
@@ -375,13 +442,27 @@ impl League {
                     if self.unit() < cc.c0_t0 / (cc.c0_t0 + cc.c0_self) { self.t0_pick() } else { selfplay }
                 }
                 Stage::C1 => {
-                    let u = self.unit() * (cc.c1_t0 + cc.c1_t1 + cc.c1_self);
+                    // 042 C1 (AMB-042-14): proportional over T0, T1, current Main, past Main
+                    // snapshots and the anchor. With the last two at 0 (their default) the draws
+                    // and picks are the earlier ones.
+                    let models = cc.c1_snapshot + cc.c1_anchor;
+                    let u = self.unit() * (cc.c1_t0 + cc.c1_t1 + cc.c1_self + models);
                     if u < cc.c1_t0 {
                         self.t0_pick()
                     } else if u < cc.c1_t0 + cc.c1_t1 {
                         self.t1_pick().unwrap_or_else(|| self.t0_pick())
-                    } else {
+                    } else if models <= 0.0 || u < cc.c1_t0 + cc.c1_t1 + cc.c1_self {
                         selfplay
+                    } else if cc.c1_anchor <= 0.0 || u < cc.c1_t0 + cc.c1_t1 + cc.c1_self + cc.c1_snapshot {
+                        // Snapshot share (PFSP over the candidates); no published snapshot yet:
+                        // the anchor, else the current Main.
+                        let pool: Vec<(Opponent, String, Class)> = self.c1_candidates().into_iter().map(|id| (Opponent::Snapshot { id: id.clone() }, id, Class::Model)).collect();
+                        match self.pfsp(agent, pool, false) {
+                            Some(p) => p,
+                            None => self.anchor_pick().unwrap_or(selfplay),
+                        }
+                    } else {
+                        self.anchor_pick().unwrap_or(selfplay)
                     }
                 }
                 Stage::C2 => {
@@ -468,6 +549,13 @@ impl League {
             None => 1.0,
         };
         [base.win, base.build * decay, base.units * decay, value]
+    }
+
+    /// 033 / 042 "r_value의 게임별 적용" (AMB-042-14): whether r_value keeps its policy weight
+    /// in a game against an opponent of `class` (the stage gate is `reward_weights`): always
+    /// against a bot, against a model only with `r_value_vs_model`.
+    pub fn r_value_in_policy(&self, class: Class) -> bool {
+        class != Class::Model || self.cfg().curriculum.r_value_vs_model
     }
 
     /// An agent finished an update. Returns `Some(reset)` when it should be snapshotted now
@@ -820,6 +908,228 @@ mod tests {
         let base = RewardWeights { win: 1.0, build: 0.3, units: 0.3, value: 0.05 };
         assert_eq!(m.reward_weights(&base)[3], 0.05);
         assert_eq!(m.cfg().t1.len(), 1);
+    }
+
+    /// The 042 "T1·셀프 run" 2차 league (config/rl_t1self2.toml shares, AMB-042-14).
+    fn t1self2_cfg() -> RlConfig {
+        let mut c = t1self_cfg();
+        let cc = &mut c.curriculum;
+        (cc.c1_t0, cc.c1_t1, cc.c1_self, cc.c1_snapshot, cc.c1_anchor) = (0.0, 0.5, 0.15, 0.25, 0.10);
+        cc.r_value_vs_model = false;
+        c.league.anchor = "checkpoints/ac1-vtrace-s1/ckpt-3133569".into();
+        c.snapshot.main_candidates = 4;
+        c
+    }
+
+    /// Shares of `n` picks by opponent: (T1, current Main, snapshot, anchor), and the snapshot
+    /// ids picked.
+    fn c1_counts(l: &mut League, n: usize) -> ([f64; 4], BTreeMap<String, usize>) {
+        let (mut c, mut ids) = ([0usize; 4], BTreeMap::new());
+        for _ in 0..n {
+            let p = l.next();
+            assert_eq!((p.agent, p.class == Class::Model), (AgentKind::Main, !matches!(p.opponent, Opponent::T1 { .. })));
+            match p.opponent {
+                Opponent::T1 { .. } => c[0] += 1,
+                Opponent::SelfPlay => {
+                    assert_eq!(p.key, "uranium-main@r1");
+                    c[1] += 1;
+                }
+                Opponent::Snapshot { id } => {
+                    assert_eq!(p.key, id);
+                    *ids.entry(id).or_insert(0) += 1;
+                    c[2] += 1;
+                }
+                Opponent::Anchor { name } => {
+                    assert_eq!((name.as_str(), p.key.as_str()), ("ckpt-3133569", "anchor@ckpt-3133569"));
+                    c[3] += 1;
+                }
+                other => panic!("c1_t0 = 0 picked {other:?}"),
+            }
+        }
+        (c.map(|x| x as f64 / n as f64), ids)
+    }
+
+    fn near(got: [f64; 4], want: [f64; 4]) {
+        for (g, w) in got.iter().zip(want) {
+            assert!((g - w).abs() < 0.025, "got {got:?}, want {want:?}");
+        }
+    }
+
+    /// 042 C1 model opponents (AMB-042-14): T1 / current Main / snapshots / anchor in proportion
+    /// to `c1_*`; before any published snapshot the snapshot share goes to the anchor; the
+    /// snapshot share draws only among the latest `main_candidates` published Main snapshots.
+    #[test]
+    fn c1_model_opponent_shares_042_amb_042_14() {
+        let mut l = League::new("r1", 7, None, t1self2_cfg());
+        let (c, _) = c1_counts(&mut l, 8000);
+        near(c, [0.5, 0.15, 0.0, 0.35]);
+        // Six Main snapshots and one exploiter snapshot; the newest Main one is not published.
+        let mut main = vec![];
+        for i in 0..6 {
+            l.agents[0].updates = 250 * (i + 1);
+            main.push(l.add_snapshot(AgentKind::Main));
+        }
+        let other = l.add_snapshot(AgentKind::MainExploiter);
+        for id in main.iter().take(5).chain([&other]) {
+            l.mark_published(id);
+        }
+        assert_eq!(l.c1_candidates(), main[1..5].to_vec(), "latest 4 published Main snapshots");
+        let (c, ids) = c1_counts(&mut l, 8000);
+        near(c, [0.5, 0.15, 0.25, 0.10]);
+        assert_eq!(ids.keys().cloned().collect::<BTreeSet<_>>(), main[1..5].iter().cloned().collect());
+        // 0 = every published Main snapshot.
+        let mut cfg = t1self2_cfg();
+        cfg.snapshot.main_candidates = 0;
+        l.cfg = Some(cfg);
+        assert_eq!(l.c1_candidates(), main[..5].to_vec());
+    }
+
+    /// 042 (AMB-042-14): without an anchor, the anchor share and (before any snapshot) the
+    /// snapshot share go to the current Main.
+    #[test]
+    fn c1_without_anchor_falls_back_to_current_main_042() {
+        let mut cfg = t1self2_cfg();
+        cfg.curriculum.c1_anchor = 0.0;
+        cfg.league.anchor.clear();
+        let mut l = League::new("r1", 7, None, cfg);
+        let (c, _) = c1_counts(&mut l, 6000);
+        let total = 0.5 + 0.15 + 0.25;
+        near(c, [0.5 / total, 0.4 / total, 0.0, 0.0]);
+        // An anchor without its own share still takes the snapshot share before any snapshot.
+        let mut cfg = t1self2_cfg();
+        cfg.curriculum.c1_anchor = 0.0;
+        let mut l = League::new("r1", 7, None, cfg);
+        let (c, _) = c1_counts(&mut l, 6000);
+        near(c, [0.5 / total, 0.15 / total, 0.0, 0.25 / total]);
+    }
+
+    /// 042 C1 snapshot share (AMB-042-14): PFSP f_hard within the candidates (unseen = 0.5).
+    #[test]
+    fn c1_snapshot_pfsp_prefers_hard_snapshots_042() {
+        let mut cfg = t1self2_cfg();
+        (cfg.curriculum.c1_t1, cfg.curriculum.c1_self, cfg.curriculum.c1_anchor) = (0.0, 0.0, 0.0);
+        let mut l = League::new("r1", 7, None, cfg);
+        let ids: Vec<String> = (1..=3)
+            .map(|i| {
+                l.agents[0].updates = i * 250;
+                let id = l.add_snapshot(AgentKind::Main);
+                l.mark_published(&id);
+                id
+            })
+            .collect();
+        let pick = |id: &str| Pick { agent: AgentKind::Main, opponent: Opponent::Snapshot { id: id.into() }, key: id.into(), class: Class::Model, fighting_spirit: true };
+        for _ in 0..300 {
+            l.record(&pick(&ids[0]), Race::Terran, Outcome::Win);
+            l.record(&pick(&ids[1]), Race::Terran, Outcome::Loss);
+        }
+        assert!(l.windows.is_empty(), "model games stay out of the curriculum windows");
+        let (_, n) = c1_counts(&mut l, 3000);
+        let (easy, hard, unseen) = (n.get(&ids[0]).copied().unwrap_or(0), n[&ids[1]], n[&ids[2]]);
+        assert!(hard > 2 * unseen && unseen > 10 * easy.max(1), "easy {easy} hard {hard} unseen {unseen}");
+    }
+
+    /// 042 (AMB-042-14): with `c1_snapshot = c1_anchor = 0` (the defaults) the picks are those of
+    /// the earlier C1 (T0 / T1 / current Main), whatever snapshots and anchor exist.
+    #[test]
+    fn zero_model_shares_keep_earlier_c1_picks_042() {
+        let mut base = cfg();
+        base.curriculum.start_stage = Stage::C1;
+        let mut with = base.clone();
+        with.league.anchor = "checkpoints/x/ckpt-1".into();
+        let mut a = League::new("r1", 9, None, base);
+        let mut b = League::new("r1", 9, None, with);
+        let id = b.add_snapshot(AgentKind::Main);
+        b.mark_published(&id);
+        for _ in 0..2000 {
+            let (p, q) = (a.next(), b.next());
+            assert!(!matches!(p.opponent, Opponent::Snapshot { .. } | Opponent::Anchor { .. }));
+            assert_eq!(p, q);
+        }
+    }
+
+    /// 042 스냅샷 추론 서버 (AMB-042-14): the model opponents the picks can choose per stage.
+    #[test]
+    fn model_opponents_per_stage_042() {
+        let mut l = League::new("r1", 7, None, t1self2_cfg());
+        assert_eq!(l.model_opponents(), BTreeSet::from(["anchor@ckpt-3133569".to_string()]));
+        let ids: Vec<String> = (1..=6)
+            .map(|i| {
+                l.agents[0].updates = i * 250;
+                let id = l.add_snapshot(AgentKind::Main);
+                l.mark_published(&id);
+                id
+            })
+            .collect();
+        let mut want: BTreeSet<String> = ids[2..].iter().cloned().collect();
+        want.insert("anchor@ckpt-3133569".into());
+        assert_eq!(l.model_opponents(), want);
+        // No anchor share and candidates there: the anchor is not a choice.
+        let mut c = t1self2_cfg();
+        c.curriculum.c1_anchor = 0.0;
+        l.cfg = Some(c);
+        assert_eq!(l.model_opponents(), ids[2..].iter().cloned().collect());
+        l.stage = Stage::C2;
+        assert_eq!(l.model_opponents(), ids.iter().cloned().collect(), "C2 PFSP: every snapshot");
+        l.stage = Stage::C0;
+        assert!(l.model_opponents().is_empty());
+    }
+
+    /// 033 / 042 (AMB-042-14): r_value policy weight per game by opponent class.
+    #[test]
+    fn r_value_per_game_by_opponent_033() {
+        let l = League::new("r1", 7, None, t1self2_cfg());
+        assert!(l.r_value_in_policy(Class::T1) && l.r_value_in_policy(Class::T0));
+        assert!(!l.r_value_in_policy(Class::Model));
+        let l = league();
+        assert!(l.cfg().curriculum.r_value_vs_model, "default true");
+        assert!(l.r_value_in_policy(Class::Model) && l.r_value_in_policy(Class::T1));
+    }
+
+    /// 042-R1 / 스냅샷 공개 (AMB-042-14): which snapshots are published is not league state:
+    /// league.bin keeps its format and a resumed league has no candidate until the run loop marks
+    /// the snapshots it finds on the share.
+    #[test]
+    fn published_is_not_league_state_042() {
+        let mut l = League::new("r1", 7, None, t1self2_cfg());
+        let id = l.add_snapshot(AgentKind::Main);
+        l.mark_published(&id);
+        assert_eq!(l.c1_candidates(), std::slice::from_ref(&id));
+        let v: serde_json::Value = serde_json::from_slice(&l.to_bytes()).unwrap();
+        assert!(v.get("published").is_none());
+        let mut m = League::from_bytes(&l.to_bytes(), t1self2_cfg()).unwrap();
+        assert_eq!(m.snapshots, vec![(AgentKind::Main, id.clone())]);
+        assert!(m.c1_candidates().is_empty());
+        m.mark_published(&id);
+        assert_eq!(m.c1_candidates(), [id]);
+    }
+
+    /// 021-R7 (AMB-042-14): Random only for bots listing all three races; a two-race bot plays a
+    /// race of its list.
+    #[test]
+    fn random_only_for_three_race_bots_021_r7() {
+        let mut c = t1self_cfg();
+        c.curriculum.c1_self = 0.0;
+        c.t1 = vec![
+            T1Bot { name: "ualbertabot".into(), races: vec![Race::Terran, Race::Protoss, Race::Zerg] },
+            T1Bot { name: "steamhammer".into(), races: vec![Race::Terran, Race::Zerg] },
+        ];
+        let mut l = League::new("r1", 7, None, c);
+        let (mut ua, mut ua_random, mut sh) = (0, 0, 0);
+        for _ in 0..6000 {
+            match l.next().opponent {
+                Opponent::T1 { name, race } if name == "steamhammer" => {
+                    assert!(matches!(race, Race::Terran | Race::Zerg), "steamhammer {race:?}");
+                    sh += 1;
+                }
+                Opponent::T1 { race, .. } => {
+                    ua += 1;
+                    ua_random += usize::from(race == Race::Random);
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        let f = ua_random as f64 / ua as f64;
+        assert!(sh > 1000 && (0.17..0.23).contains(&f), "steamhammer {sh}, ualbertabot Random {f}");
     }
 
     /// 042-R1: a league.bin written before AMB-042-13 (with the T1 list inside) still loads; the

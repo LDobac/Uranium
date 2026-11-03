@@ -5,7 +5,8 @@ rl --learner reference`. Same loss, targets and update; per lane group it reads 
 inputs and the loss parts back (host syncs), copies core_state0 per lane, the outer segments' rows
 come from the device (`nonzero`), the copies are pageable unless `URANIUM_H2D=pinned`, and the
 targets run one reward component at a time. Only additions: the phase marks of `bench rl
---phases` and `grad_norm` in the statistics. Not used by training."""
+--phases`, `grad_norm` in the statistics and r_value's per-lane policy weight (AMB-042-14, the same
+`component_weights` as the learner). Not used by training."""
 
 import torch
 
@@ -13,7 +14,7 @@ from uranium.agent.infer import leaves, rebuild
 from uranium.bc.clip import clip_global_norm
 from uranium.device import autocast
 from uranium.model import to_obs
-from uranium.rl.learner import HEADS, Learner, kl_coef, kl_per_head
+from uranium.rl.learner import HEADS, Learner, component_weights, kl_coef, kl_per_head
 
 
 def _valid(length: torch.Tensor, t: int) -> torch.Tensor:
@@ -84,8 +85,10 @@ class ReferenceLearner(Learner):
     """`Learner` with the update of commit b9da476."""
 
     def targets(self, g: dict, logp: torch.Tensor, values: torch.Tensor, weights) -> dict:
-        """Per-row coefficients of one lane group from the detached forward (on the host)."""
+        """Per-row coefficients of one lane group from the detached forward (on the host). r_value's
+        policy weight per lane (042 "r_value의 게임별 적용", AMB-042-14), as the learner."""
         b, t = g["b"], g["t"]
+        weights = component_weights(g, weights)
         l = self.cfg["loss"]
         length = torch.as_tensor(g["trained"], dtype=torch.long)
         terminal = torch.as_tensor(g["terminal"], dtype=torch.bool)

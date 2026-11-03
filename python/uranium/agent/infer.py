@@ -180,9 +180,26 @@ class InferenceServer(threading.Thread):
             self.stream.wait_stream(torch.cuda.current_stream(device))
         self.prof = open(f"{prof}-{broker.checkpoint_id.replace('@', '_').replace(':', '_')}.jsonl", "a", encoding="utf-8") if prof and device.type == "cuda" else None
         self.stop = threading.Event()
+        # `close`: the thread frees the model when it ends (042 league snapshots, AMB-042-14).
+        self.release = False
         self.error: BaseException | None = None
         # Held while a work item runs; a weight swap waits for the batch in flight.
         self.lock = threading.Lock()
+
+    def close(self) -> None:
+        """Stops serving (any thread, no wait): the thread finishes the batch in flight, refuses
+        what is queued (`broker.shutdown`) and drops the model, its Core state and captured graphs,
+        returning their device memory (042 스냅샷 추론 서버, AMB-042-14). A server whose thread
+        never started is freed here."""
+        self.release = True
+        self.stop.set()
+        if self.ident is None:
+            self._free()
+
+    def _free(self) -> None:
+        self.net = self.act_fn = self.graphed = self.state = None
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
 
     def on_stream(self):
         """The server's stream as the current one (CPU: nothing)."""
@@ -257,6 +274,9 @@ class InferenceServer(threading.Thread):
             raise
         finally:
             self.broker.shutdown("model thread stopped")
+            if self.release:
+                with DEVICE_LOCK.shared():
+                    self._free()
 
     @torch.no_grad()
     def handle(self, w: dict, t_py: int | None = None) -> None:

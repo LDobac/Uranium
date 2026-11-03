@@ -17,6 +17,9 @@ pub const STATE_FILE: &str = "train_state.json";
 pub const LEAGUE_FILE: &str = "league.bin";
 pub const CONFIG_DIR: &str = "config";
 pub const AGENTS_DIR: &str = "agents";
+/// File name prefix of optimizer state in a weights folder (`optim-<name>.safetensors`, written
+/// by the Python trainer, `uranium.ckpt.optim_file`); a league snapshot leaves these out (042).
+pub const OPTIM_PREFIX: &str = "optim-";
 
 /// Counters and RNG of a training process (061-R10).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]

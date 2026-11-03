@@ -31,6 +31,8 @@ pub struct SegmentGroup {
     pub trained: Vec<usize>,
     /// Per lane: oldest behaviour version (042-R4).
     pub versions: Vec<u64>,
+    /// Per lane: r_value keeps its policy weight (033 / 042, AMB-042-14, `Segment::r_value_policy`).
+    pub r_value_policy: Vec<bool>,
     /// Per lane: Core state before step 0 (042 core_state0); empty parts = zero state.
     pub state0: Vec<HostState>,
 }
@@ -75,6 +77,7 @@ pub fn group(segs: &[Segment], t: usize, max_select: usize) -> SegmentGroup {
         terminal: segs.iter().map(|s| s.terminal).collect(),
         trained: segs.iter().map(|s| s.trained()).collect(),
         versions: segs.iter().map(|s| s.version()).collect(),
+        r_value_policy: segs.iter().map(|s| s.r_value_policy).collect(),
         state0: segs.iter().map(|s| s.state0.clone()).collect(),
     }
 }

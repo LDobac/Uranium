@@ -1,7 +1,7 @@
 //! `config/rl.toml` (042 initial values, AMB-042-3). Every value is a tuning target recorded in
 //! each checkpoint (042-R9).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -114,6 +114,47 @@ pub struct LeagueConfig {
     pub win_rate_prior: f64,
     pub race_uniform_mix: f64,
     pub bot_random_race: f64,
+    /// 042 anchor (AMB-042-14): a fixed opponent checkpoint, the folder `ckpt-<step>` (its
+    /// `agents/main`) or that `agents/main` folder; relative = under `URANIUM_SHARED_DIR`
+    /// (020-R11). Empty / absent = no anchor.
+    #[serde(default)]
+    pub anchor: String,
+}
+
+impl LeagueConfig {
+    /// 042 anchor (AMB-042-14): its checkpoint name (`ckpt-<step>`, also for an `agents/main`
+    /// path), the win-table key being `anchor@<name>`; `None` without an anchor.
+    pub fn anchor_name(&self) -> Option<String> {
+        let parts: Vec<&str> = self.anchor.trim().split(['/', '\\']).filter(|c| !c.is_empty() && *c != ".").collect();
+        let n = parts.len();
+        match n {
+            0 => None,
+            _ if n >= 3 && parts[n - 1] == "main" && parts[n - 2] == crate::ckpt::AGENTS_DIR => Some(parts[n - 3].to_string()),
+            _ => Some(parts[n - 1].to_string()),
+        }
+    }
+}
+
+/// An agent folder with the files the model loader reads (weights and `meta.json`).
+pub fn has_model_files(d: &Path) -> bool {
+    d.join(uranium_agent::infer::WEIGHTS_FILE).is_file() && d.join("meta.json").is_file()
+}
+
+/// 042 anchor (AMB-042-14): the anchor's model folder (`<anchor>/agents/main`, or `<anchor>`
+/// when it is that folder), relative paths under `shared` (`URANIUM_SHARED_DIR`, 020-R11). An
+/// error when neither holds the model files (weights and `meta.json`): a start error (042).
+pub fn anchor_agent_dir(shared: &Path, anchor: &str) -> Result<PathBuf> {
+    let p = Path::new(anchor.trim());
+    let p = if p.is_absolute() { p.to_path_buf() } else { shared.join(p) };
+    let main = p.join(crate::ckpt::AGENTS_DIR).join("main");
+    if has_model_files(&main) {
+        return Ok(main);
+    }
+    let is_main = p.file_name().is_some_and(|n| n == "main") && p.parent().and_then(|q| q.file_name()).is_some_and(|n| n == crate::ckpt::AGENTS_DIR);
+    if is_main && has_model_files(&p) {
+        return Ok(p);
+    }
+    bail!("[league] anchor {anchor}: no model files ({}, meta.json) in {} (expected a checkpoint folder `ckpt-<step>` or its `agents/main`, 042)", uranium_agent::infer::WEIGHTS_FILE, main.display())
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -123,6 +164,14 @@ pub struct SnapshotConfig {
     pub exploiter_win_window: usize,
     pub exploiter_max_updates: u64,
     pub league_exploiter_reset_prob: f64,
+    /// 042 C1 snapshot candidates (AMB-042-14): the most recent this many published Main
+    /// snapshots, 0 = all. Absent = 4.
+    #[serde(default = "default_main_candidates")]
+    pub main_candidates: usize,
+}
+
+fn default_main_candidates() -> usize {
+    4
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -148,6 +197,23 @@ pub struct CurriculumConfig {
     /// Absent = `["C0"]`.
     #[serde(default = "default_r_value_stages")]
     pub r_value_stages: Vec<Stage>,
+    /// 042 C1 model opponents (AMB-042-14): share of past Main snapshots (PFSP f_hard over the
+    /// `[snapshot] main_candidates` most recent published ones). `c1_self` stays the current
+    /// Main's share. Absent = 0.
+    #[serde(default)]
+    pub c1_snapshot: f64,
+    /// 042 (AMB-042-14): share of the anchor (`[league] anchor`). Absent = 0.
+    #[serde(default)]
+    pub c1_anchor: f64,
+    /// 033 / 042 "r_value의 게임별 적용" (AMB-042-14): `false` = r_value has policy weight 0 in
+    /// games against a model (current Main, snapshot, anchor); bot games follow
+    /// `r_value_stages`. The value head learns r_value in every game. Absent = `true`.
+    #[serde(default = "default_r_value_vs_model")]
+    pub r_value_vs_model: bool,
+}
+
+fn default_r_value_vs_model() -> bool {
+    true
 }
 
 fn default_start_stage() -> Stage {
@@ -239,6 +305,10 @@ impl RlConfig {
         }
         if let Some(b) = self.t1.iter().find(|b| b.races.is_empty()) {
             bail!("[[t1]] {} has no races (021)", b.name);
+        }
+        // 042 (AMB-042-14): an anchor share needs an anchor (its model files are checked at start).
+        if self.curriculum.c1_anchor > 0.0 && self.league.anchor.trim().is_empty() {
+            bail!("[curriculum] c1_anchor is above 0 but [league] anchor is empty (042, AMB-042-14)");
         }
         Ok(())
     }
@@ -356,6 +426,103 @@ mod tests {
         (dc.start_stage, dc.auto_advance, dc.r_value_stages) = (cc.start_stage, cc.auto_advance, cc.r_value_stages.clone());
         (dc.c1_t0, dc.c1_t1, dc.c1_self) = (cc.c1_t0, cc.c1_t1, cc.c1_self);
         d.t1.retain(|b| b.name != "mcrave");
+        assert_eq!(d, t);
+    }
+
+    const AMB_042_14_KEYS: [&str; 5] = ["c1_snapshot", "c1_anchor", "r_value_vs_model", "anchor", "main_candidates"];
+
+    /// 042 / 033 (AMB-042-14): rl.toml lists the new keys at their defaults (C1 as before: no
+    /// snapshot or anchor share, r_value vs models as before, no anchor, 4 candidates); a config
+    /// without them (copied into an older checkpoint) gets the same values.
+    #[test]
+    fn model_opponent_keys_default_042_amb_042_14() {
+        let c = RlConfig::default_file();
+        assert_eq!((c.curriculum.c1_snapshot, c.curriculum.c1_anchor, c.curriculum.r_value_vs_model), (0.0, 0.0, true));
+        assert_eq!((c.league.anchor.as_str(), c.league.anchor_name(), c.snapshot.main_candidates), ("", None, 4));
+        let full = include_str!("../../../config/rl.toml");
+        let key_line = |l: &str, k: &str| l.starts_with(&format!("{k} ="));
+        for k in AMB_042_14_KEYS {
+            assert_eq!(full.lines().filter(|l| key_line(l, k)).count(), 1, "rl.toml lists {k}");
+        }
+        let text: String = full.lines().filter(|l| !AMB_042_14_KEYS.iter().any(|k| key_line(l, k))).map(|l| format!("{l}\n")).collect();
+        let old: RlConfig = toml::from_str(&text).unwrap();
+        assert_eq!(old, c, "absent = defaults");
+    }
+
+    /// 042 anchor (AMB-042-14): `c1_anchor > 0` with an empty anchor is a load error.
+    #[test]
+    fn anchor_share_needs_an_anchor_042() {
+        let mut c = RlConfig::default_file();
+        c.curriculum.c1_anchor = 0.1;
+        assert!(c.validate().is_err());
+        c.league.anchor = "  ".into();
+        assert!(c.validate().is_err());
+        c.league.anchor = "checkpoints/r/ckpt-1".into();
+        c.validate().unwrap();
+        c.curriculum.c1_anchor = 0.0;
+        c.league.anchor.clear();
+        c.curriculum.c1_snapshot = 0.3;
+        c.validate().unwrap();
+    }
+
+    /// 042 anchor (AMB-042-14): the win-table name is the checkpoint folder's, for either path form.
+    #[test]
+    fn anchor_name_is_the_checkpoint_folder_042() {
+        let name = |a: &str| LeagueConfig { anchor: a.into(), ..RlConfig::default_file().league }.anchor_name();
+        assert_eq!(name("checkpoints/ac1-vtrace-s1/ckpt-3133569").as_deref(), Some("ckpt-3133569"));
+        assert_eq!(name("checkpoints/ac1-vtrace-s1/ckpt-3133569/agents/main/").as_deref(), Some("ckpt-3133569"));
+        assert_eq!(name(r"D:\share\checkpoints\r\ckpt-7\agents\main").as_deref(), Some("ckpt-7"));
+        assert_eq!(name("/abs/ckpt-9/").as_deref(), Some("ckpt-9"));
+        assert_eq!(name(""), None);
+        assert_eq!(name(" "), None);
+    }
+
+    /// 042 anchor (AMB-042-14): the model folder of a checkpoint folder or of its agents/main,
+    /// relative to the share; missing model files are an error (a start error).
+    #[test]
+    fn anchor_agent_dir_needs_model_files_042() {
+        let shared = std::env::temp_dir().join(format!("uranium-anchor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&shared);
+        let main = shared.join("checkpoints").join("r").join("ckpt-5").join("agents").join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        assert!(anchor_agent_dir(&shared, "checkpoints/r/ckpt-5").is_err(), "no files");
+        std::fs::write(main.join(uranium_agent::infer::WEIGHTS_FILE), b"w").unwrap();
+        assert!(anchor_agent_dir(&shared, "checkpoints/r/ckpt-5").is_err(), "no meta.json");
+        std::fs::write(main.join("meta.json"), b"{}").unwrap();
+        assert_eq!(anchor_agent_dir(&shared, "checkpoints/r/ckpt-5").unwrap(), main);
+        assert_eq!(anchor_agent_dir(&shared, "checkpoints/r/ckpt-5/agents/main").unwrap(), main);
+        assert_eq!(anchor_agent_dir(Path::new("unused"), main.to_str().unwrap()).unwrap(), main, "absolute");
+        assert!(anchor_agent_dir(&shared, "checkpoints/r/ckpt-6").is_err());
+        assert!(anchor_agent_dir(&shared, "checkpoints/r/ckpt-5/agents").is_err());
+        std::fs::remove_dir_all(&shared).ok();
+    }
+
+    /// 042 "T1·셀프 run" 2차 (AMB-042-14): `config/rl_t1self2.toml` is `rl_t1self.toml` with the
+    /// listed changes only.
+    #[test]
+    fn t1self2_config_042_amb_042_14() {
+        use uranium_proto::Race;
+        let t: RlConfig = toml::from_str(include_str!("../../../config/rl_t1self2.toml")).unwrap();
+        t.validate().unwrap();
+        let cc = &t.curriculum;
+        assert_eq!((cc.c1_t0, cc.c1_t1, cc.c1_self, cc.c1_snapshot, cc.c1_anchor), (0.0, 0.5, 0.15, 0.25, 0.10));
+        assert!(!cc.r_value_vs_model);
+        assert_eq!(cc.r_value_stages, vec![Stage::C0, Stage::C1]);
+        assert_eq!(t.league.anchor, "checkpoints/ac1-vtrace-s1/ckpt-3133569");
+        assert_eq!(t.league.anchor_name().as_deref(), Some("ckpt-3133569"));
+        assert_eq!((t.snapshot.main_every_updates, t.snapshot.main_candidates), (250, 4));
+        let sh = t.t1.iter().find(|b| b.name == "steamhammer").unwrap();
+        assert_eq!(sh.races, vec![Race::Terran, Race::Zerg]);
+        // 021-R4: at least two T1 bots per race (T 3, P 2, Z 3).
+        for (r, n) in [(Race::Terran, 3), (Race::Protoss, 2), (Race::Zerg, 3)] {
+            assert_eq!(t.t1.iter().filter(|b| b.races.contains(&r)).count(), n, "{r:?}");
+        }
+        let mut d: RlConfig = toml::from_str(include_str!("../../../config/rl_t1self.toml")).unwrap();
+        let dc = &mut d.curriculum;
+        (dc.c1_t1, dc.c1_self, dc.c1_snapshot, dc.c1_anchor, dc.r_value_vs_model) = (cc.c1_t1, cc.c1_self, cc.c1_snapshot, cc.c1_anchor, cc.r_value_vs_model);
+        d.league.anchor = t.league.anchor.clone();
+        (d.snapshot.main_every_updates, d.snapshot.main_candidates) = (250, 4);
+        d.t1.iter_mut().find(|b| b.name == "steamhammer").unwrap().races = sh.races.clone();
         assert_eq!(d, t);
     }
 

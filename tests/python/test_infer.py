@@ -98,6 +98,24 @@ def test_slot_state_032_r16(tmp_path, kind):
     stop(s)
 
 
+def test_close_stops_the_thread_and_frees_the_model_042(tmp_path):
+    """042 스냅샷 추론 서버 (AMB-042-14): `close` ends the model thread and drops the model (its
+    device memory); a plain `stop` keeps the model."""
+    import weakref
+
+    d = checkpoint(tmp_path, "Lstm")
+    b, s = server(d, "stochastic", 4)
+    _core.play_sessions(b, 1, 3)
+    net = weakref.ref(s.net)
+    s.close()
+    s.join(timeout=10)
+    assert not s.is_alive() and s.error is None
+    assert s.net is None and s.state is None and net() is None, "model freed"
+    _, s2 = server(d, "stochastic", 4)
+    stop(s2)
+    assert s2.net is not None
+
+
 def test_random_checkpoint_command(tmp_path, python_cmd):
     """`random-checkpoint` writes a loadable checkpoint and prints its policy version (020-R5)."""
     import subprocess

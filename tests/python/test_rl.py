@@ -270,6 +270,26 @@ def rec(frm: str, path: Path, **kw) -> dict:
     return {"from": frm, "path": str(path), "abs_path": str(Path(path).resolve()), **kw}
 
 
+def test_snapshot_server_close_042(monkeypatch, tmp_path):
+    """042 스냅샷 추론 서버 (AMB-042-14): `Learners.snapshot_server(dir)` serves a snapshot's
+    agent folder; `close_snapshot_server(dir)` stops its thread and frees its model; closing an
+    unknown folder does nothing."""
+    from uranium import ckpt
+
+    bc = save_ckpt(tmp_path / "bc" / "ckpt-11", tiny_net(5), {"step": 11})
+    ls = make_learners(monkeypatch, tmp_path, bc, None, None)
+    snap = rl_ckpt(tmp_path / "league", 250, {"main": tiny_net(9)}, update=250) / ckpt.AGENTS_DIR / "main"
+    b = ls.snapshot_server(str(snap))
+    s = ls.snapshot_servers[str(snap)]
+    assert s.is_alive() and b.checkpoint_id.startswith("main@")
+    _core.play_sessions(b, 1, 2)
+    ls.close_snapshot_server(str(snap))
+    s.join(timeout=10)
+    assert not s.is_alive() and s.error is None and s.net is None
+    assert str(snap) not in ls.snapshot_servers
+    ls.close_snapshot_server(str(snap))
+
+
 @pytest.mark.parametrize("agent_folder", [False, True])
 def test_init_main_from_rl_checkpoint_042(monkeypatch, tmp_path, agent_folder):
     """042 (AMB-042-13): `--init` gives Main its start weights only (update 0, empty optimizer);

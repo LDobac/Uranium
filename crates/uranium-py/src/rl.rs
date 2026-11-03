@@ -11,7 +11,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use uranium_agent::infer::InferenceHandle;
 use uranium_league::config::RlConfig;
-use uranium_league::learner::{Algo, RlLearners, SnapshotServers, UpdateStats};
+use uranium_league::learner::{Algo, RlLearners, SnapshotServer, SnapshotServers, UpdateStats};
 use uranium_league::trajectory::Segment;
 
 use crate::agent::Broker;
@@ -44,7 +44,8 @@ impl SegmentBatch {
 
     /// Lanes `start..end` collated for one forward (`uranium_league::batch::group`): the
     /// observation arrays, the taken actions as labels, `privileged`, `mask`, `behaviour`,
-    /// `rewards` [rows, 4], per lane `terminal`, `trained`, `versions` and `state0` (None = zero
+    /// `rewards` [rows, 4], per lane `terminal`, `trained`, `versions`, `r_value_policy` (r_value
+    /// keeps its policy weight, AMB-042-14) and `state0` (None = zero
     /// state, else a list of (shape, float32 array)), plus `b`, `t`, `n`.
     fn group<'py>(&self, py: Python<'py>, start: usize, end: usize, t: usize, max_select: usize) -> PyResult<Bound<'py, PyDict>> {
         if start >= end || end > self.segs.len() {
@@ -74,6 +75,7 @@ impl SegmentBatch {
         put!("terminal", g.terminal, vec![g.b]);
         put!("trained", g.trained.iter().map(|&x| x as i64).collect::<Vec<_>>(), vec![g.b]);
         put!("versions", g.versions, vec![g.b]);
+        put!("r_value_policy", g.r_value_policy, vec![g.b]);
         let states = PyList::empty(py);
         for s in g.state0 {
             if s.parts.is_empty() {
@@ -186,7 +188,17 @@ pub fn run_rl(
                 let servers: SnapshotServers = Arc::new(move |dir: &Path| {
                     Python::attach(|py| {
                         let b = snap.bind(py).call_method1("snapshot_server", (dir.to_path_buf(),)).map_err(|e| py_error(py, e))?;
-                        broker_handle(&b).map_err(|e| py_error(py, e))
+                        let handle = broker_handle(&b).map_err(|e| py_error(py, e))?;
+                        // 042 스냅샷 추론 서버 (AMB-042-14): stops the model thread, frees its memory.
+                        let (obj, dir) = (snap.clone_ref(py), dir.to_path_buf());
+                        let close = Box::new(move || {
+                            Python::attach(|py| {
+                                if let Err(e) = obj.bind(py).call_method1("close_snapshot_server", (dir.clone(),)) {
+                                    uranium_data::elog!("[rl] closing the inference server of {}: {:#}", dir.display(), py_error(py, e));
+                                }
+                            })
+                        });
+                        Ok(SnapshotServer { handle, close })
                     })
                 });
                 Ok((Box::new(PyLearners { obj, handles }), servers))
@@ -236,9 +248,11 @@ fn check_seq(r: &[f32], v: &[f32], l: &[f32]) -> PyResult<()> {
 
 /// Tests (042): `lanes` segments of `t` synthetic steps (`uranium_league::testkit`), every step
 /// a NoOp with behaviour log-prob 0; lane k is terminal when k is even; rewards: +1 win at the
-/// end, 0.01 * step on the value component.
+/// end, 0.01 * step on the value component. `r_value_off`: lanes whose game gives r_value no
+/// policy weight (`Segment::r_value_policy` false, AMB-042-14).
 #[pyfunction]
-pub fn test_segments(lanes: usize, t: usize) -> SegmentBatch {
+#[pyo3(signature = (lanes, t, r_value_off = Vec::new()))]
+pub fn test_segments(lanes: usize, t: usize, r_value_off: Vec<usize>) -> SegmentBatch {
     use uranium_env::features::PrivilegedTensors;
     use uranium_env::features::executor::HostAction;
     use uranium_league::trajectory::{PackedObs, Step};
@@ -257,7 +271,7 @@ pub fn test_segments(lanes: usize, t: usize) -> SegmentBatch {
                     version: 0,
                 })
                 .collect();
-            Segment { agent: 0, game_id: lane as u64, steps, state0: Default::default(), terminal: lane % 2 == 0 }
+            Segment { agent: 0, game_id: lane as u64, steps, state0: Default::default(), terminal: lane % 2 == 0, r_value_policy: !r_value_off.contains(&lane) }
         })
         .collect();
     SegmentBatch { segs }

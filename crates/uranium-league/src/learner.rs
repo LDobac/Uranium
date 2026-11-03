@@ -62,6 +62,14 @@ pub trait RlLearners {
     fn save(&mut self, agent: usize, dir: &Path, train: &serde_json::Value) -> Result<()>;
 }
 
-/// Starts an inference server (stochastic sampling) for a league snapshot's agent folder (042
-/// opponents). Called from the game threads.
-pub type SnapshotServers = Arc<dyn Fn(&Path) -> Result<InferenceHandle> + Send + Sync>;
+/// A running inference server of a league snapshot or the anchor (042 opponents).
+pub struct SnapshotServer {
+    pub handle: InferenceHandle,
+    /// Stops the server and frees its device memory (042 스냅샷 추론 서버, AMB-042-14). Called
+    /// once no game uses it any more; sessions still holding `handle` get errors after.
+    pub close: Box<dyn FnOnce() + Send>,
+}
+
+/// Starts an inference server (stochastic sampling) for a league snapshot's or the anchor's
+/// agent folder (042 opponents). Called from the game threads.
+pub type SnapshotServers = Arc<dyn Fn(&Path) -> Result<SnapshotServer> + Send + Sync>;

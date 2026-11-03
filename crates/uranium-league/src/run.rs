@@ -8,7 +8,7 @@
 //! Checkpoints go through `storage::Run` (061): stage → seal → push; a clean stop (042-R10)
 //! releases the lock only when the final push succeeded (061-R11-5/6).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -71,6 +71,8 @@ struct GameMeta {
     /// Our learner's BWAPI player id and the enemy race it saw (set at session start).
     self_player: Option<u8>,
     enemy_race: Race,
+    /// Key of the snapshot / anchor server this game holds (`SnapshotPool::acquire`).
+    server: Option<String>,
 }
 
 struct Shared {
@@ -127,28 +129,96 @@ impl Drop for Halt {
     }
 }
 
-/// Inference servers of league snapshots, least recently used first out.
+/// Most snapshot / anchor inference servers kept running while idle (least recently used shut
+/// down first); servers with games in flight are never shut down.
+const SNAPSHOT_SERVERS_MAX: usize = 8;
+
+/// One running snapshot / anchor inference server.
+struct LiveServer {
+    key: String,
+    handle: InferenceHandle,
+    close: Box<dyn FnOnce() + Send>,
+    /// Games dispatched against it and not done yet.
+    games: usize,
+}
+
+/// Inference servers of league snapshots and the anchor (042 opponents), started on first use.
+/// 042 스냅샷 추론 서버 (AMB-042-14): a server no pick can choose any more
+/// (`League::model_opponents`, e.g. a snapshot that left the C1 candidates) is shut down once its
+/// games are done, which frees its device memory; so is the least recently used idle one above
+/// `cap`. The anchor's server (`pinned`) stays. Snapshot files are never deleted.
 struct SnapshotPool {
+    /// Model folder per key (snapshot id, anchor key): published snapshots and the anchor.
     dirs: HashMap<String, PathBuf>,
-    live: VecDeque<(String, InferenceHandle)>,
+    /// Least recently used first.
+    live: VecDeque<LiveServer>,
     cap: usize,
+    pinned: Option<String>,
     servers: SnapshotServers,
 }
 
+/// A shut-down function with the server's key, run without the pool's lock.
+type Closer = (String, Box<dyn FnOnce() + Send>);
+
 impl SnapshotPool {
-    fn handle(&mut self, id: &str) -> Result<InferenceHandle> {
-        if let Some(i) = self.live.iter().position(|(k, _)| k == id) {
-            let e = self.live.remove(i).unwrap();
-            self.live.push_back(e.clone());
-            return Ok(e.1);
+    /// The server of `key` for one more game (started if needed); pair with `release`.
+    fn acquire(&mut self, key: &str) -> Result<InferenceHandle> {
+        if let Some(i) = self.live.iter().position(|l| l.key == key) {
+            let mut l = self.live.remove(i).unwrap();
+            l.games += 1;
+            let h = l.handle.clone();
+            self.live.push_back(l);
+            return Ok(h);
         }
-        let dir = self.dirs.get(id).with_context(|| format!("unknown snapshot {id}"))?;
-        let h = (self.servers)(dir)?;
-        self.live.push_back((id.to_string(), h.clone()));
-        while self.live.len() > self.cap {
-            self.live.pop_front();
-        }
+        let dir = self.dirs.get(key).with_context(|| format!("no published model folder for {key}"))?;
+        let s = (self.servers)(dir)?;
+        let h = s.handle.clone();
+        self.live.push_back(LiveServer { key: key.to_string(), handle: s.handle, close: s.close, games: 1 });
         Ok(h)
+    }
+
+    /// A game dispatched with `acquire(key)` is done (or never started).
+    fn release(&mut self, key: &str) {
+        if let Some(l) = self.live.iter_mut().find(|l| l.key == key) {
+            l.games = l.games.saturating_sub(1);
+        }
+    }
+
+    /// Takes out the idle servers that `in_use` does not list, then the least recently used idle
+    /// ones above `cap`, never the pinned one; returns their shut-down functions.
+    fn prune(&mut self, in_use: &BTreeSet<String>) -> Vec<Closer> {
+        let pinned = |l: &LiveServer| self.pinned.as_deref() == Some(l.key.as_str());
+        let (mut keep, mut out) = (VecDeque::new(), Vec::new());
+        for l in self.live.drain(..) {
+            if l.games == 0 && !in_use.contains(&l.key) && !pinned(&l) {
+                out.push((l.key, l.close));
+            } else {
+                keep.push_back(l);
+            }
+        }
+        while keep.len() > self.cap {
+            let Some(i) = keep.iter().position(|l| l.games == 0 && !pinned(l)) else { break };
+            let l = keep.remove(i).unwrap();
+            out.push((l.key, l.close));
+        }
+        self.live = keep;
+        out
+    }
+
+    #[cfg(test)]
+    fn live_keys(&self) -> Vec<&str> {
+        self.live.iter().map(|l| l.key.as_str()).collect()
+    }
+}
+
+/// 042 스냅샷 추론 서버 (AMB-042-14): shuts down the servers no pick can choose any more once
+/// their games are done (after every game and every snapshot).
+fn prune_servers(shared: &Shared) {
+    let in_use = shared.league.lock().unwrap().model_opponents();
+    let closers = shared.snapshots.lock().unwrap().prune(&in_use);
+    for (key, close) in closers {
+        close();
+        crate::elog!("[rl] inference server of {key} shut down: no opponent choice uses it (042)");
     }
 }
 
@@ -170,14 +240,18 @@ impl LearnerHook for Hook {
     }
 
     fn session(&self, game_id: u64, info: &GameInfo) -> (Option<Strategy>, Box<dyn SessionObserver>) {
+        let mut class = None;
         if let Some(m) = self.shared.games.lock().unwrap().get_mut(&game_id) {
             m.self_player = Some(info.self_player);
+            class = Some(m.pick.class);
             if let Some(e) = info.players.iter().find(|p| p.is_enemy) {
                 if m.enemy_race == Race::Random || m.enemy_race == Race::Unknown {
                     m.enemy_race = e.race;
                 }
             }
         }
+        // 033 / 042 "r_value의 게임별 적용" (AMB-042-14): per game, by the opponent's class.
+        let r_value_policy = class.is_none_or(|c| self.shared.league.lock().unwrap().r_value_in_policy(c));
         // 033-R2 / R8: z from the table; z_drop of the games (or all without a table) have none.
         let z = {
             let mut r = self.rng.lock().unwrap();
@@ -189,7 +263,7 @@ impl LearnerHook for Hook {
                 Some(Strategy { build: e.build.clone(), units: e.units.clone() })
             }
         };
-        let obs = TrajectoryObserver::new(self.agent.index(), game_id, self.seq_len, self.shared.queues[self.agent.index()].clone(), self.tx.clone()).hold_terminal(held_sink(self.shared.clone()));
+        let obs = TrajectoryObserver::new(self.agent.index(), game_id, self.seq_len, self.shared.queues[self.agent.index()].clone(), self.tx.clone()).hold_terminal(held_sink(self.shared.clone())).r_value_policy(r_value_policy);
         (z, Box::new(obs))
     }
 }
@@ -216,12 +290,29 @@ struct LeagueSource {
 }
 
 impl LeagueSource {
-    fn job(&self, pick: Pick) -> Result<Job> {
+    fn job(&self, mut pick: Pick) -> Job {
         let s = &self.shared;
         let id = s.next_id.fetch_add(1, Ordering::SeqCst);
         let bridge = |race| PlayerSpec { race, kind: PlayerKind::Bridge { agent_addr: s.agent_addr.clone() }, name: None };
         let mut t0_builds = [T0Build::Standard; 2];
         let mut policies: [Option<PolicySpec>; 2] = [Some(PolicySpec::Learner(self.hooks[pick.agent.index()].clone())), None];
+        let mut server = None;
+        if matches!(pick.opponent, Opponent::Snapshot { .. } | Opponent::Anchor { .. }) {
+            let got = s.snapshots.lock().unwrap().acquire(&pick.key);
+            match got {
+                Ok(h) => {
+                    policies[1] = Some(PolicySpec::Model(h));
+                    server = Some(pick.key.clone());
+                }
+                Err(e) => {
+                    // 042 모델 상대 실패 (AMB-042-14): the game becomes current-Main self-play;
+                    // the runner slot goes on.
+                    let key = s.league.lock().unwrap().self_play_key();
+                    crate::elog!("[rl] game {id}: opponent {} cannot be served ({e:#}); playing the current Main instead (042)", pick.key);
+                    pick = Pick { opponent: Opponent::SelfPlay, key, class: Class::Model, ..pick };
+                }
+            }
+        }
         let (p1, enemy_race, opponent) = match &pick.opponent {
             Opponent::T0 { race, build } => {
                 t0_builds[1] = *build;
@@ -232,11 +323,8 @@ impl LeagueSource {
                 policies[1] = Some(PolicySpec::Model(s.handles[AgentKind::Main.index()].clone()));
                 (bridge(Race::Terran), Race::Terran, pick.key.clone())
             }
-            Opponent::Snapshot { id } => {
-                let h = s.snapshots.lock().unwrap().handle(id)?;
-                policies[1] = Some(PolicySpec::Model(h));
-                (bridge(Race::Terran), Race::Terran, id.clone())
-            }
+            // The server was taken above (`policies[1]`).
+            Opponent::Snapshot { .. } | Opponent::Anchor { .. } => (bridge(Race::Terran), Race::Terran, pick.key.clone()),
         };
         let seed = (splitmix(&mut (id ^ 0xA5A5_5A5A)) * u32::MAX as f64) as u32;
         let spec = GameSpec {
@@ -251,8 +339,16 @@ impl LeagueSource {
             // AMB-042-12 / 020-R3: queue waits count too; Timeout is left out like Aborted.
             wall_timeout_s: s.game_wall_timeout_s,
         };
-        s.games.lock().unwrap().insert(id, GameMeta { pick, self_player: None, enemy_race });
-        Ok(Job { matchup: 0, spec, t0_builds, models: [None, None], policies, opponent: Some(opponent) })
+        s.games.lock().unwrap().insert(id, GameMeta { pick, self_player: None, enemy_race, server });
+        Job { matchup: 0, spec, t0_builds, models: [None, None], policies, opponent: Some(opponent) }
+    }
+
+    /// The game no longer holds its snapshot / anchor server; servers nobody can pick go down.
+    fn release_server(&self, meta: &GameMeta) {
+        if let Some(k) = &meta.server {
+            self.shared.snapshots.lock().unwrap().release(k);
+        }
+        prune_servers(&self.shared);
     }
 
     /// Waits for the session's report and the terminal segment (they race hostd's Finished).
@@ -282,18 +378,16 @@ impl JobSource for LeagueSource {
             return None;
         }
         let pick = self.shared.league.lock().unwrap().next();
-        match self.job(pick) {
-            Ok(j) => Some(j),
-            Err(e) => {
-                crate::elog!("[rl] cannot build a game: {e:#}");
-                None
-            }
-        }
+        // Never `None` here: that would end the runner slot (042 모델 상대 실패, AMB-042-14).
+        Some(self.job(pick))
     }
 
     fn requeue(&self, job: Job) {
         // A dynamic source simply forgets a game that never started.
-        self.shared.games.lock().unwrap().remove(&job.spec.game_id);
+        let meta = self.shared.games.lock().unwrap().remove(&job.spec.game_id);
+        if let Some(m) = meta {
+            self.release_server(&m);
+        }
     }
 
     fn done(&self, job: &Job, outcome: JobOutcome, replay: Option<Vec<u8>>) {
@@ -403,6 +497,7 @@ impl JobSource for LeagueSource {
             replay_reason
         );
         let _ = s.games_csv.lock().unwrap().write_all(line.as_bytes());
+        self.release_server(&meta);
     }
 }
 
@@ -552,6 +647,11 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     // 061-R3 / R5: lock the run, recover or pull LATEST.
     let storage = StorageConfig::from_env()?;
     let replay_dir = storage.shared.join("runs").join(&args.run).join("replays");
+    // 042 anchor (AMB-042-14): its model files must be there at start (a start error otherwise).
+    let anchor_dir = match cfg.league.anchor_name() {
+        Some(_) => Some(crate::config::anchor_agent_dir(&storage.shared, &cfg.league.anchor)?),
+        None => None,
+    };
     if crate::stopping(&stop) {
         crate::elog!("[rl] Ctrl+C before start: not started");
         return Ok(());
@@ -610,11 +710,33 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
 
     // The agents' inference servers already run the learners' current weights.
     let handles: Vec<InferenceHandle> = AgentKind::ALL.iter().map(|a| learners.handle(a.index())).collect();
-    let snap_dirs: HashMap<String, PathBuf> = league
-        .snapshots
-        .iter()
-        .map(|(a, id)| (id.clone(), run.shared_dir().join("league").join(snapshot_name(id)).join(ckpt::AGENTS_DIR).join(a.name())))
-        .collect();
+    // 042 스냅샷 공개 (AMB-042-14): a snapshot is an opponent once its model files are on the
+    // share (a failed publish never got them there).
+    let mut snap_dirs: HashMap<String, PathBuf> = HashMap::new();
+    for (a, id) in league.snapshots.clone() {
+        let d = run.shared_dir().join("league").join(snapshot_name(&id)).join(ckpt::AGENTS_DIR).join(a.name());
+        if crate::config::has_model_files(&d) {
+            league.mark_published(&id);
+            snap_dirs.insert(id, d);
+        } else {
+            crate::elog!("[rl] snapshot {id}: no model files in {}, not an opponent (042)", d.display());
+        }
+    }
+    let anchor_key = league.anchor_key();
+    if let (Some(k), Some(d)) = (&anchor_key, &anchor_dir) {
+        snap_dirs.insert(k.clone(), d.clone());
+    }
+    crate::elog!(
+        "[rl] C1 opponents: t0 {} t1 {} current Main {} snapshots {} (latest {} published, 0 = all) anchor {} ({}); r_value vs models {} (042, AMB-042-14)",
+        cc.c1_t0,
+        cc.c1_t1,
+        cc.c1_self,
+        cc.c1_snapshot,
+        cfg.snapshot.main_candidates,
+        cc.c1_anchor,
+        anchor_dir.as_ref().map_or_else(|| "none".to_string(), |d| d.display().to_string()),
+        cc.r_value_vs_model
+    );
 
     // 042 queue table: `queue_batches` x `lanes` per agent (>= lanes, so a full queue is always
     // ready for the learner and a waiting game is never stuck behind it), backpressure when full.
@@ -645,7 +767,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         stopping: AtomicBool::new(false),
         agent_addr,
         handles: handles.clone(),
-        snapshots: Mutex::new(SnapshotPool { dirs: snap_dirs, live: VecDeque::new(), cap: 8, servers }),
+        snapshots: Mutex::new(SnapshotPool { dirs: snap_dirs, live: VecDeque::new(), cap: SNAPSHOT_SERVERS_MAX, pinned: anchor_key, servers }),
         games_csv: Mutex::new(games_csv),
         // 042-R12: agent steps continue from the checkpoint (TrainState.step).
         agent_steps: AtomicU64::new(step),
@@ -739,18 +861,25 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         wait_seen[i] = wait_total;
         write_row(&mut csv, started, agent, &stats, &shared, &queues, learners.version(i), steps_per_s, trained_steps, queue_wait_s)?;
         if let Some(reset) = snap {
-            // A league snapshot is a pushed checkpoint copied to league/<name> (061-R2).
+            // A league snapshot is a pushed checkpoint whose agent model files are copied to
+            // league/<name>/agents/<agent> (061-R2; 042 스냅샷 공개, AMB-042-14). Only a published
+            // snapshot is an opponent; a failed one is logged and training goes on.
             let id = shared.league.lock().unwrap().add_snapshot(agent);
             let league_now = shared.league.lock().unwrap().clone();
             step += 1;
             match save_checkpoint(&mut run, step, learners.as_mut(), &cfg, &league_now, &args, state_extra(&shared, trained_steps))? {
-                PushOutcome::Pushed => {
-                    let dir = run.league_snapshot(step, &snapshot_name(&id))?;
-                    shared.snapshots.lock().unwrap().dirs.insert(id.clone(), dir.join(ckpt::AGENTS_DIR).join(agent.name()));
-                    crate::elog!("[rl] snapshot {id}");
-                }
+                PushOutcome::Pushed => match run.league_snapshot(step, &snapshot_name(&id), agent.name()) {
+                    Ok(dir) => {
+                        shared.snapshots.lock().unwrap().dirs.insert(id.clone(), dir.join(ckpt::AGENTS_DIR).join(agent.name()));
+                        shared.league.lock().unwrap().mark_published(&id);
+                        crate::elog!("[rl] snapshot {id}");
+                    }
+                    Err(e) => crate::elog!("[rl] snapshot {id} not published ({e:#}): not an opponent (042)"),
+                },
                 other => crate::elog!("[rl] snapshot {id} not published: {other:?}"),
             }
+            // A snapshot that left the C1 candidates: its server goes once its games are done.
+            prune_servers(&shared);
             if reset {
                 learners.reset_to_bc(i)?;
                 // 042-R4: the reset learner never trains the previous policy's segments.
@@ -915,6 +1044,177 @@ mod tests {
         assert_eq!(std::fs::read(dir.join(&name)).unwrap(), b"replay bytes");
         assert!(!dir.join("g7-disagree.rep.part").exists());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    use crate::learner::SnapshotServer;
+    use uranium_agent::infer::{InferOptions, SampleMode};
+
+    fn fake_handle(id: &str) -> InferenceHandle {
+        let (tx, _rx) = mpsc::channel();
+        InferenceHandle::new(tx, id.into(), SampleMode::Stochastic, &InferOptions::default())
+    }
+
+    /// Snapshot servers for tests: `fail` = every start fails; the started folders and the
+    /// number of closes are counted.
+    fn fake_servers(fail: bool) -> (SnapshotServers, Arc<Mutex<Vec<PathBuf>>>, Arc<AtomicUsize>) {
+        let (opened, closed) = (Arc::new(Mutex::new(Vec::new())), Arc::new(AtomicUsize::new(0)));
+        let (o, c) = (opened.clone(), closed.clone());
+        let servers: SnapshotServers = Arc::new(move |dir: &Path| {
+            anyhow::ensure!(!fail, "model files unreadable");
+            o.lock().unwrap().push(dir.to_path_buf());
+            let c = c.clone();
+            Ok(SnapshotServer { handle: fake_handle(&dir.display().to_string()), close: Box::new(move || {
+                    c.fetch_add(1, Ordering::SeqCst);
+                }) })
+        });
+        (servers, opened, closed)
+    }
+
+    /// A league source over a league in C1 with these model shares (no T0 / T1 / current Main
+    /// unless given) and fake snapshot servers.
+    fn source(c1: [f64; 3], anchor: &str, candidates: usize, servers: SnapshotServers) -> LeagueSource {
+        let mut cfg = RlConfig::default_file();
+        cfg.curriculum.start_stage = crate::league::Stage::C1;
+        let cc = &mut cfg.curriculum;
+        (cc.c1_t0, cc.c1_t1, cc.c1_self, cc.c1_snapshot, cc.c1_anchor) = (0.0, 0.0, c1[0], c1[1], c1[2]);
+        cfg.league.anchor = anchor.into();
+        cfg.snapshot.main_candidates = candidates;
+        let league = League::new("r1", 3, None, cfg.clone());
+        let mut dirs = HashMap::new();
+        let pinned = league.anchor_key();
+        if let Some(k) = &pinned {
+            dirs.insert(k.clone(), PathBuf::from("anchor/agents/main"));
+        }
+        let (tx, rx) = mpsc::channel();
+        let csv = if cfg!(windows) { "NUL" } else { "/dev/null" };
+        let shared = Arc::new(Shared {
+            league: Mutex::new(league),
+            games: Mutex::new(HashMap::new()),
+            held: Mutex::new(HashMap::new()),
+            results: Mutex::new(rx),
+            finished: Mutex::new(HashMap::new()),
+            queues: (0..3).map(|_| Arc::new(SegmentQueue::new(4))).collect(),
+            ends: EndBoard::default(),
+            next_id: AtomicU64::new(1),
+            stopping: AtomicBool::new(false),
+            agent_addr: "127.0.0.1:1".into(),
+            handles: AgentKind::ALL.iter().map(|a| fake_handle(a.name())).collect(),
+            snapshots: Mutex::new(SnapshotPool { dirs, live: VecDeque::new(), cap: SNAPSHOT_SERVERS_MAX, pinned, servers }),
+            games_csv: Mutex::new(std::fs::OpenOptions::new().write(true).open(csv).unwrap()),
+            agent_steps: AtomicU64::new(0),
+            games_done: AtomicU64::new(0),
+            disagree: AtomicU64::new(0),
+            aborted: AtomicU64::new(0),
+            max_frames: 1,
+            game_wall_timeout_s: 1,
+            replay_dir: std::env::temp_dir(),
+            replay_every: 0,
+        });
+        let hooks = AgentKind::ALL
+            .iter()
+            .map(|&a| Arc::new(Hook { agent: a, handle: fake_handle(a.name()), seq_len: 4, shared: shared.clone(), tx: tx.clone(), z: vec![], z_drop: 0.25, rng: Mutex::new(1) }))
+            .collect();
+        LeagueSource { shared, hooks }
+    }
+
+    fn opponent_handle(job: &Job) -> String {
+        match &job.policies[1] {
+            Some(PolicySpec::Model(h)) => h.checkpoint_id.to_string(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// 042 모델 상대 실패 (AMB-042-14): an anchor / snapshot whose server cannot start makes the
+    /// game current-Main self-play; the source keeps giving games (a runner slot never ends).
+    #[test]
+    fn unservable_model_opponent_becomes_self_play_042() {
+        let (servers, _, _) = fake_servers(true);
+        let src = source([0.0, 0.0, 1.0], "checkpoints/x/ckpt-9", 4, servers);
+        for _ in 0..3 {
+            let job = src.next().expect("a game, never the end of the slot");
+            assert_eq!(job.opponent.as_deref(), Some("uranium-main@r1"));
+            assert_eq!(opponent_handle(&job), "main", "the current Main's server");
+            let games = src.shared.games.lock().unwrap();
+            let m = &games[&job.spec.game_id];
+            assert_eq!((&m.pick.opponent, m.pick.class, m.server.as_deref()), (&Opponent::SelfPlay, Class::Model, None));
+        }
+        // A snapshot that was never published (no model folder): the same.
+        let (servers, opened, _) = fake_servers(false);
+        let src = source([0.0, 1.0, 0.0], "", 4, servers);
+        {
+            let mut l = src.shared.league.lock().unwrap();
+            let id = l.add_snapshot(AgentKind::Main);
+            l.mark_published(&id);
+        }
+        let job = src.next().unwrap();
+        assert_eq!(job.opponent.as_deref(), Some("uranium-main@r1"));
+        assert!(opened.lock().unwrap().is_empty());
+    }
+
+    /// 042 스냅샷 추론 서버 (AMB-042-14): a snapshot's server serves its games, goes down once it
+    /// left the candidates and its games are done; the anchor's stays.
+    #[test]
+    fn snapshot_servers_shut_down_when_unused_042() {
+        let (servers, opened, closed) = fake_servers(false);
+        let src = source([0.0, 1.0, 0.0], "checkpoints/x/ckpt-9", 1, servers);
+        let publish = |n: u64| {
+            let mut l = src.shared.league.lock().unwrap();
+            for _ in 0..n {
+                l.on_update(AgentKind::Main);
+            }
+            let id = l.add_snapshot(AgentKind::Main);
+            l.mark_published(&id);
+            src.shared.snapshots.lock().unwrap().dirs.insert(id.clone(), PathBuf::from(format!("league/{n}/agents/main")));
+            id
+        };
+        // No snapshot yet: the snapshot share goes to the anchor.
+        let a = src.next().unwrap();
+        assert_eq!(a.opponent.as_deref(), Some("anchor@ckpt-9"));
+        assert_eq!(opponent_handle(&a), "anchor/agents/main");
+        let first = publish(250);
+        let j1 = src.next().unwrap();
+        assert_eq!(j1.opponent.as_deref(), Some(first.as_str()));
+        let second = publish(500);
+        prune_servers(&src.shared);
+        assert_eq!(closed.load(Ordering::SeqCst), 0, "the first snapshot still has a game");
+        let j2 = src.next().unwrap();
+        assert_eq!(j2.opponent.as_deref(), Some(second.as_str()));
+        src.requeue(j1);
+        assert_eq!(closed.load(Ordering::SeqCst), 1, "first snapshot's server down after its game");
+        src.requeue(a);
+        src.requeue(j2);
+        assert_eq!(closed.load(Ordering::SeqCst), 1, "the candidate's and the pinned anchor's servers stay");
+        let keys = src.shared.snapshots.lock().unwrap().live_keys().iter().map(|k| k.to_string()).collect::<Vec<_>>();
+        assert_eq!(keys, ["anchor@ckpt-9".to_string(), second.clone()]);
+        assert_eq!(opened.lock().unwrap().len(), 3);
+        // The same snapshot again: no new server.
+        let j3 = src.next().unwrap();
+        assert_eq!(j3.opponent.as_deref(), Some(second.as_str()));
+        assert_eq!(opened.lock().unwrap().len(), 3);
+    }
+
+    /// The idle servers above the cap go least recently used first; busy and pinned ones stay.
+    #[test]
+    fn snapshot_pool_cap_spares_busy_and_pinned_servers() {
+        let (servers, _, closed) = fake_servers(false);
+        let dirs = (0..4).map(|i| (format!("s{i}"), PathBuf::from(format!("d{i}")))).collect();
+        let mut pool = SnapshotPool { dirs, live: VecDeque::new(), cap: 2, pinned: Some("s0".into()), servers };
+        for i in 0..4 {
+            pool.acquire(&format!("s{i}")).unwrap();
+        }
+        pool.release("s0");
+        pool.release("s1");
+        let all: BTreeSet<String> = (0..4).map(|i| format!("s{i}")).collect();
+        let out = pool.prune(&all);
+        assert_eq!(out.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["s1"]);
+        for (_, c) in out {
+            c();
+        }
+        assert_eq!(closed.load(Ordering::SeqCst), 1);
+        assert_eq!(pool.live_keys(), ["s0", "s2", "s3"], "busy ones stay above the cap");
+        pool.release("s2");
+        assert_eq!(pool.prune(&BTreeSet::new()).iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["s2"], "unused and idle");
+        assert!(pool.acquire("nope").is_err());
     }
 
     #[test]
