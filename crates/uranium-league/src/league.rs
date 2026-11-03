@@ -52,6 +52,61 @@ pub struct T1Bot {
     pub races: Vec<Race>,
 }
 
+/// Kind of a rush ladder entry (042 C1 러시 사다리, AMB-042-15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LadderKind {
+    T0,
+    T1,
+}
+
+/// One `[[ladder]]` entry (042 C1 러시 사다리, AMB-042-15): a T0 build or a T1 bot folder (021
+/// config variants included) with the one race it plays (no race sampling, no Random, 021-R7).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LadderEntry {
+    pub kind: LadderKind,
+    /// `kind = "t0"`: the T0 build (`T0Build` name, e.g. `"zerg_rush"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<T0Build>,
+    /// `kind = "t1"`: the T1 bot folder name (e.g. `"steamhammeroverpool"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub race: Race,
+}
+
+impl LadderEntry {
+    /// The opponent, its win-table key and class by the existing rules (042, 021-R3): T0
+    /// `t0-<race>[-<build tag>]` / T0, T1 `<name>-<race>` / T1. An error for the 042 사다리 설정
+    /// 검사 cases (missing or extra field, Random / Unknown race, a build of another race).
+    pub fn opponent(&self) -> Result<(Opponent, String, Class), String> {
+        let race = self.race;
+        if !RACES.contains(&race) {
+            return Err(format!("[[ladder]] race must be Terran, Protoss or Zerg, got {race:?} (042, 021-R7)"));
+        }
+        match (self.kind, self.build, self.name.as_deref()) {
+            (LadderKind::T0, Some(build), None) => {
+                if build.race().is_some_and(|r| r != race) {
+                    return Err(format!("[[ladder]] T0 build {} plays {:?}, not {race:?} (042)", build.name(), build.race().unwrap()));
+                }
+                Ok((Opponent::T0 { race, build }, t0_key(race, build), Class::T0))
+            }
+            (LadderKind::T1, None, Some(name)) if !name.trim().is_empty() => Ok((Opponent::T1 { name: name.to_string(), race }, format!("{name}-{}", race_name(race)), Class::T1)),
+            (LadderKind::T0, _, _) => Err("[[ladder]] kind = \"t0\" needs `build` and no `name` (042)".into()),
+            (LadderKind::T1, _, _) => Err("[[ladder]] kind = \"t1\" needs a non-empty `name` and no `build` (042)".into()),
+        }
+    }
+}
+
+/// How the C1 rush ladder picks among its entries (042 사다리 안 상대 선택, AMB-042-15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LadderPick {
+    /// PFSP f_var(x) = x(1 - x) on Main's win-table value; all weights 0 = uniform.
+    #[default]
+    FVar,
+}
+
 /// One opponent choice.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Opponent {
@@ -167,6 +222,14 @@ fn race_name(r: Race) -> &'static str {
 }
 
 const RACES: [Race; 3] = [Race::Terran, Race::Protoss, Race::Zerg];
+
+/// 021-R3 win-table key of a T0 build: `t0-<race>-<tag>`, `t0-<race>` for the standard build.
+fn t0_key(race: Race, build: T0Build) -> String {
+    match build.id_tag() {
+        Some(tag) => format!("t0-{}-{tag}", race_name(race)),
+        None => format!("t0-{}", race_name(race)),
+    }
+}
 
 fn t0_builds(race: Race) -> Vec<T0Build> {
     let mut v = vec![T0Build::Standard];
@@ -291,10 +354,7 @@ impl League {
         let build = builds[(self.unit() * builds.len() as f64) as usize % builds.len()];
         // 021-R7: Random only for the standard (multi-race) T0 build.
         let random = build == T0Build::Standard && self.unit() < self.cfg().league.bot_random_race;
-        let key = match build.id_tag() {
-            Some(tag) => format!("t0-{}-{tag}", race_name(race)),
-            None => format!("t0-{}", race_name(race)),
-        };
+        let key = t0_key(race, build);
         (Opponent::T0 { race: if random { Race::Random } else { race }, build }, key, Class::T0)
     }
 
@@ -327,11 +387,7 @@ impl League {
         if !only_main_snapshots {
             for r in RACES {
                 for b in t0_builds(r) {
-                    let key = match b.id_tag() {
-                        Some(tag) => format!("t0-{}-{tag}", race_name(r)),
-                        None => format!("t0-{}", race_name(r)),
-                    };
-                    v.push((Opponent::T0 { race: r, build: b }, key, Class::T0));
+                    v.push((Opponent::T0 { race: r, build: b }, t0_key(r, b), Class::T0));
                 }
             }
             for bot in &self.cfg().t1 {
@@ -358,6 +414,16 @@ impl League {
             .collect();
         let i = self.weighted(&w);
         Some(pool[i].clone())
+    }
+
+    /// 042 C1 러시 사다리 (AMB-042-15): an entry of `[[ladder]]` by `[curriculum] ladder_pick`
+    /// (f_var over Main's win-table values, unseen = the prior; all weights 0 = uniform). `None`
+    /// for an empty list (a load error when `c1_ladder > 0`).
+    fn ladder_pick(&mut self, agent: AgentKind) -> Option<(Opponent, String, Class)> {
+        let pool: Vec<(Opponent, String, Class)> = self.cfg().ladder.iter().filter_map(|e| e.opponent().ok()).collect();
+        match self.cfg().curriculum.ladder_pick {
+            LadderPick::FVar => self.pfsp(agent, pool, true),
+        }
     }
 
     /// Win-table key of the current Main as an opponent (self-play).
@@ -442,18 +508,22 @@ impl League {
                     if self.unit() < cc.c0_t0 / (cc.c0_t0 + cc.c0_self) { self.t0_pick() } else { selfplay }
                 }
                 Stage::C1 => {
-                    // 042 C1 (AMB-042-14): proportional over T0, T1, current Main, past Main
-                    // snapshots and the anchor. With the last two at 0 (their default) the draws
-                    // and picks are the earlier ones.
+                    // 042 C1 (AMB-042-14 / 15): proportional over T0, T1, the rush ladder, current
+                    // Main, past Main snapshots and the anchor. With the ladder, snapshot and
+                    // anchor shares at 0 (their default) the draws and picks are the earlier ones
+                    // (`x + 0.0 == x`).
                     let models = cc.c1_snapshot + cc.c1_anchor;
-                    let u = self.unit() * (cc.c1_t0 + cc.c1_t1 + cc.c1_self + models);
+                    let bots = cc.c1_t0 + cc.c1_t1 + cc.c1_ladder;
+                    let u = self.unit() * (bots + cc.c1_self + models);
                     if u < cc.c1_t0 {
                         self.t0_pick()
                     } else if u < cc.c1_t0 + cc.c1_t1 {
                         self.t1_pick().unwrap_or_else(|| self.t0_pick())
-                    } else if models <= 0.0 || u < cc.c1_t0 + cc.c1_t1 + cc.c1_self {
+                    } else if u < bots {
+                        self.ladder_pick(agent).unwrap_or(selfplay)
+                    } else if models <= 0.0 || u < bots + cc.c1_self {
                         selfplay
-                    } else if cc.c1_anchor <= 0.0 || u < cc.c1_t0 + cc.c1_t1 + cc.c1_self + cc.c1_snapshot {
+                    } else if cc.c1_anchor <= 0.0 || u < bots + cc.c1_self + cc.c1_snapshot {
                         // Snapshot share (PFSP over the candidates); no published snapshot yet:
                         // the anchor, else the current Main.
                         let pool: Vec<(Opponent, String, Class)> = self.c1_candidates().into_iter().map(|id| (Opponent::Snapshot { id: id.clone() }, id, Class::Model)).collect();
@@ -1152,5 +1222,163 @@ mod tests {
         // And the 042-AC1 league.bin shape (fixed_t0 absent from the oldest ones).
         v.as_object_mut().unwrap().remove("fixed_t0");
         assert!(League::from_bytes(&serde_json::to_vec(&v).unwrap(), cfg()).unwrap().fixed_t0.is_none());
+    }
+
+    fn t0_entry(build: T0Build, race: Race) -> LadderEntry {
+        LadderEntry { kind: LadderKind::T0, build: Some(build), name: None, race }
+    }
+
+    fn t1_entry(name: &str, race: Race) -> LadderEntry {
+        LadderEntry { kind: LadderKind::T1, build: None, name: Some(name.into()), race }
+    }
+
+    /// The 042 "러시 커리큘럼 run" league (config/rl_rush1.toml shares, AMB-042-15).
+    fn rush_cfg() -> RlConfig {
+        let mut c = t1self2_cfg();
+        let cc = &mut c.curriculum;
+        (cc.c1_t0, cc.c1_t1, cc.c1_ladder, cc.c1_self, cc.c1_snapshot, cc.c1_anchor) = (0.0, 0.0, 0.70, 0.05, 0.15, 0.10);
+        c.ladder = vec![t0_entry(T0Build::ZergRush, Race::Zerg), t1_entry("ualbertabot", Race::Zerg), t1_entry("steamhammeroverpool", Race::Zerg), t1_entry("zzzkbot", Race::Zerg)];
+        c
+    }
+
+    const RUSH_KEYS: [&str; 4] = ["t0-zerg-rush", "ualbertabot-zerg", "steamhammeroverpool-zerg", "zzzkbot-zerg"];
+
+    /// 042 C1 러시 사다리 (AMB-042-15): ladder / current Main / anchor shares as `c1_*` (before any
+    /// snapshot the snapshot share goes to the anchor); ladder picks use the existing keys and
+    /// classes, the entry's fixed race (never Random) and the T0 build as listed.
+    #[test]
+    fn c1_ladder_shares_and_keys_042_amb_042_15() {
+        let mut l = League::new("r1", 7, None, rush_cfg());
+        assert_eq!(l.stage, Stage::C1);
+        let n = 8000;
+        let (mut ladder, mut selfp, mut anchor) = (0, 0, 0);
+        let mut keys = BTreeSet::new();
+        for _ in 0..n {
+            let p = l.next();
+            assert_eq!(p.agent, AgentKind::Main);
+            match &p.opponent {
+                Opponent::T0 { race, build } => {
+                    assert_eq!((*race, *build, p.key.as_str(), p.class), (Race::Zerg, T0Build::ZergRush, "t0-zerg-rush", Class::T0));
+                    ladder += 1;
+                }
+                Opponent::T1 { name, race } => {
+                    assert_eq!((*race, p.class), (Race::Zerg, Class::T1), "fixed race, no Random (021-R7)");
+                    assert_eq!(p.key, format!("{name}-zerg"));
+                    ladder += 1;
+                }
+                Opponent::SelfPlay => selfp += 1,
+                Opponent::Anchor { .. } => anchor += 1,
+                other => panic!("{other:?}"),
+            }
+            if matches!(p.class, Class::T0 | Class::T1) {
+                keys.insert(p.key);
+            }
+        }
+        let f = |x: usize| x as f64 / n as f64;
+        assert!((f(ladder) - 0.70).abs() < 0.025 && (f(selfp) - 0.05).abs() < 0.015 && (f(anchor) - 0.25).abs() < 0.025, "ladder {ladder} self {selfp} anchor {anchor}");
+        assert_eq!(keys, RUSH_KEYS.iter().map(|k| k.to_string()).collect::<BTreeSet<_>>());
+        // r_value (bot games) and the curriculum windows follow the class rules.
+        assert!(l.r_value_in_policy(Class::T0) && l.r_value_in_policy(Class::T1) && !l.r_value_in_policy(Class::Model));
+        let p = Pick { agent: AgentKind::Main, opponent: Opponent::T0 { race: Race::Zerg, build: T0Build::ZergRush }, key: "t0-zerg-rush".into(), class: Class::T0, fighting_spirit: true };
+        l.record(&p, Race::Zerg, Outcome::Loss);
+        assert_eq!(l.windows.get("T0/zerg").map(|w| w.games.len()), Some(1));
+        assert!(l.win_rate(AgentKind::Main, "t0-zerg-rush") < 0.5);
+    }
+
+    /// 042 사다리 안 상대 선택 (AMB-042-15): PFSP f_var x(1 - x) — an entry near 50% (here unseen,
+    /// 0.5) is picked far more than ones Main nearly always beats or loses to; all weights 0 =
+    /// uniform.
+    #[test]
+    fn ladder_f_var_prefers_even_opponents_042_amb_042_15() {
+        let mut c = rush_cfg();
+        (c.curriculum.c1_self, c.curriculum.c1_snapshot, c.curriculum.c1_anchor) = (0.0, 0.0, 0.0);
+        let mut l = League::new("r1", 7, None, c);
+        let pick = |e: &LadderEntry| {
+            let (opponent, key, class) = e.opponent().unwrap();
+            Pick { agent: AgentKind::Main, opponent, key, class, fighting_spirit: true }
+        };
+        let entries = l.cfg().ladder.clone();
+        for i in 0..600 {
+            l.record(&pick(&entries[0]), Race::Zerg, Outcome::Win);
+            l.record(&pick(&entries[1]), Race::Zerg, Outcome::Loss);
+            l.record(&pick(&entries[2]), Race::Zerg, if i % 2 == 0 { Outcome::Win } else { Outcome::Loss });
+        }
+        let count = |l: &mut League, n: usize| {
+            let mut m: BTreeMap<String, usize> = BTreeMap::new();
+            for _ in 0..n {
+                *m.entry(l.next().key).or_default() += 1;
+            }
+            m
+        };
+        let m = count(&mut l, 4000);
+        let get = |k: &str| m.get(k).copied().unwrap_or(0);
+        assert!(get("zzzkbot-zerg") > 10 * get("t0-zerg-rush").max(1), "{m:?}");
+        assert!(get("steamhammeroverpool-zerg") > 10 * get("ualbertabot-zerg").max(1), "{m:?}");
+        // Every entry at x(1 - x) = 0: uniform.
+        for k in RUSH_KEYS {
+            l.agents[0].win.insert(k.to_string(), if k.starts_with("t0") { 0.0 } else { 1.0 });
+        }
+        let m = count(&mut l, 8000);
+        assert_eq!(m.len(), 4, "{m:?}");
+        assert!(m.values().all(|&v| (v as f64 / 8000.0 - 0.25).abs() < 0.025), "{m:?}");
+    }
+
+    /// 042 (AMB-042-15): with `c1_ladder = 0` (the default) the picks are the earlier ones,
+    /// whatever `[[ladder]]` lists; the ladder never enters the C2 PFSP pool.
+    #[test]
+    fn zero_ladder_share_keeps_earlier_picks_042() {
+        for base in [cfg(), t1self_cfg(), t1self2_cfg()] {
+            let mut with = base.clone();
+            with.ladder = rush_cfg().ladder;
+            let (mut a, mut b) = (League::new("r1", 9, None, base), League::new("r1", 9, None, with));
+            for _ in 0..3000 {
+                assert_eq!(a.next(), b.next());
+            }
+        }
+        let mut l = League::new("r1", 7, None, rush_cfg());
+        l.stage = Stage::C2;
+        assert!(!l.pfsp_pool(false).iter().any(|(_, k, _)| k.starts_with("steamhammeroverpool")));
+    }
+
+    /// 042 "재개 시 설정" (AMB-042-15): the ladder list and its share come from the current config
+    /// on resume; the entries' win rates go on through the win table keys.
+    #[test]
+    fn resume_takes_the_current_ladder_042_r1() {
+        let mut l = League::new("r1", 7, None, rush_cfg());
+        let (opponent, key, class) = t1_entry("zzzkbot", Race::Zerg).opponent().unwrap();
+        for _ in 0..50 {
+            l.record(&Pick { agent: AgentKind::Main, opponent: opponent.clone(), key: key.clone(), class, fighting_spirit: true }, Race::Zerg, Outcome::Win);
+        }
+        let w = l.win_rate(AgentKind::Main, "zzzkbot-zerg");
+        let mut c = rush_cfg();
+        c.curriculum.c1_ladder = 1.0;
+        (c.curriculum.c1_self, c.curriculum.c1_snapshot, c.curriculum.c1_anchor) = (0.0, 0.0, 0.0);
+        c.ladder = vec![t1_entry("zzzkbot", Race::Zerg), t1_entry("ualbertabot9pool", Race::Zerg)];
+        let mut m = League::from_bytes(&l.to_bytes(), c).unwrap();
+        assert_eq!(m.win_rate(AgentKind::Main, "zzzkbot-zerg"), w);
+        for _ in 0..300 {
+            let k = m.next().key;
+            assert!(k == "zzzkbot-zerg" || k == "ualbertabot9pool-zerg", "{k}");
+        }
+    }
+
+    /// 042 사다리 설정 검사 (AMB-042-15): an entry's opponent, key and class, and the entries
+    /// that are errors.
+    #[test]
+    fn ladder_entry_opponents_042() {
+        let (o, k, c) = t0_entry(T0Build::ZergRush, Race::Zerg).opponent().unwrap();
+        assert_eq!((o, k.as_str(), c), (Opponent::T0 { race: Race::Zerg, build: T0Build::ZergRush }, "t0-zerg-rush", Class::T0));
+        let (_, k, _) = t0_entry(T0Build::Standard, Race::Protoss).opponent().unwrap();
+        assert_eq!(k, "t0-protoss");
+        let (o, k, c) = t1_entry("steamhammeroverpool", Race::Zerg).opponent().unwrap();
+        assert_eq!((o, k.as_str(), c), (Opponent::T1 { name: "steamhammeroverpool".into(), race: Race::Zerg }, "steamhammeroverpool-zerg", Class::T1));
+        assert!(t0_entry(T0Build::ZergRush, Race::Terran).opponent().is_err(), "build of another race");
+        assert!(t0_entry(T0Build::Standard, Race::Random).opponent().is_err());
+        assert!(t1_entry("zzzkbot", Race::Random).opponent().is_err());
+        assert!(t1_entry("zzzkbot", Race::Unknown).opponent().is_err());
+        assert!(t1_entry(" ", Race::Zerg).opponent().is_err());
+        assert!(LadderEntry { kind: LadderKind::T0, build: Some(T0Build::ZergRush), name: Some("x".into()), race: Race::Zerg }.opponent().is_err());
+        assert!(LadderEntry { kind: LadderKind::T0, build: None, name: None, race: Race::Zerg }.opponent().is_err());
+        assert!(LadderEntry { kind: LadderKind::T1, build: Some(T0Build::ZergRush), name: Some("x".into()), race: Race::Zerg }.opponent().is_err());
     }
 }

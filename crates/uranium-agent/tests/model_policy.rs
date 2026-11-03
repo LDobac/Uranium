@@ -396,3 +396,131 @@ fn unit_rejections_in_sessions_031_r10() {
     assert_eq!(lines[3]["unit"], 5);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Frames at `at` with own `supply_used` `supply` (BWAPI units).
+fn supply_frames(at: &[(u32, u16)]) -> Vec<RawFrame> {
+    let mut fs = frames(0, at.len());
+    for (f, &(frame, supply)) in fs.iter_mut().zip(at) {
+        f.frame = frame;
+        f.self_state.supply_used = supply;
+    }
+    fs
+}
+
+/// 042-R14 / 042-AC5 integration without OpenBW: an RL league session concedes before inference
+/// at the first decision 120 s into a collapse counted from 3:00, with the chat "gg" and no
+/// command; the concede is not a decision (no inference, nothing for the observer). The reward of
+/// the frames up to the concede and r_win reach the end call (they land on the last real decision,
+/// 033-R7). The other model session of the game no longer judges; sessions without the game state
+/// (plans, evaluation) never concede.
+#[test]
+fn collapse_concede_is_not_a_decision_042_r14() {
+    use uranium_env::concede::{ConcedeConfig, ConcedeGame, Conceded};
+    use uranium_env::reward::{Outcome, RewardParts};
+    type Seen = Arc<Mutex<(usize, Vec<(RewardParts, Option<Outcome>)>)>>;
+    struct Obs(Seen);
+    impl uranium_agent::model_policy::SessionObserver for Obs {
+        fn on_decision(&mut self, _d: &uranium_agent::model_policy::Decision<'_>) {
+            self.0.lock().unwrap().0 += 1;
+        }
+        fn on_end(&mut self, after: RewardParts, o: Option<Outcome>) {
+            self.0.lock().unwrap().1.push((after, o));
+        }
+    }
+    let h = mock(1, None);
+    let cfg = ConcedeConfig { enabled: true, ..Default::default() };
+    let game = Arc::new(ConcedeGame::new(cfg));
+    let seen: Seen = Arc::new(Mutex::new((0, vec![])));
+    let mut p = ModelPolicy::new(&h, &game_info()).unwrap().with_observer(None, Box::new(Obs(seen.clone()))).with_concede(game.clone(), 0);
+    // 4,000 healthy; collapse (supply 8 = screen 4) counted from 4,320; 7,199 is 2,879 later.
+    let mut fs = supply_frames(&[(4_000, 40), (4_319, 8), (4_320, 8), (5_760, 8), (7_199, 8), (7_200, 8)]);
+    // An enemy unit seen at every decision dies in sight between the last decision and the concede.
+    let victim = fs[0].units.iter().find(|u| u.owner == ENEMY).expect("an enemy unit").clone();
+    for f in &mut fs[..5] {
+        if !f.units.iter().any(|u| u.id == victim.id) {
+            f.units.push(victim.clone());
+        }
+    }
+    fs[5].units.retain(|u| u.id != victim.id);
+    fs[5].events = vec![GameEvent::UnitDestroyed(victim.id)];
+    let acts: Vec<Act> = fs.iter().map(|f| p.on_frame(f).unwrap()).collect();
+    assert!(acts[..5].iter().all(|a| a.surrender.is_none()));
+    assert_eq!(acts[5].surrender.as_deref(), Some("gg"), "020-R14 default chat");
+    assert!(acts[5].cmds.is_empty());
+    let s = p.stats();
+    assert_eq!((s.decisions, s.concede_frame), (5, Some(7_200)), "the concede is not a decision");
+    assert_eq!(seen.lock().unwrap().0, 5);
+    assert_eq!(game.conceded(), Some(Conceded { side: 0, frame: 7_200 }));
+    // The leave: GameEnd's final frame without new events.
+    let mut last = fs[5].clone();
+    last.frame = 7_201;
+    last.events.clear();
+    p.on_end(Some(Outcome::Loss), Some(&last));
+    let cost = uranium_env::types::TypeTables::get().unit(victim.unit_type).map_or(0.0, |t| (t.minerals + t.gas) as f32) / 1000.0;
+    let ends = seen.lock().unwrap().1.clone();
+    assert_eq!(ends.len(), 1);
+    assert_eq!((ends[0].0.win, ends[0].1), (-1.0, Some(Outcome::Loss)));
+    assert!(cost > 0.0 && (ends[0].0.value - cost).abs() < 1e-6, "value {} vs kill {cost}", ends[0].0.value);
+
+    // The other model session of the same game: collapsed as long, but the game was conceded.
+    let mut q = ModelPolicy::new(&h, &game_info()).unwrap().with_concede(game.clone(), 1);
+    for f in supply_frames(&[(4_320, 0), (7_200, 0), (9_000, 0)]) {
+        assert!(q.on_frame(&f).unwrap().surrender.is_none());
+    }
+    assert_eq!(q.stats().decisions, 3);
+    // No game state (a plan / evaluation game): never.
+    let mut e = ModelPolicy::new(&h, &game_info()).unwrap();
+    for f in supply_frames(&[(4_320, 0), (7_200, 0), (9_000, 0)]) {
+        assert!(e.on_frame(&f).unwrap().surrender.is_none());
+    }
+}
+
+/// 042-R14 through the agent server: a lockstep game on the concede board gets the surrender Act
+/// and its record the concede frame; a game not on the board plays on.
+#[test]
+fn concede_board_reaches_sessions_042_r14() {
+    use uranium_env::concede::{ConcedeConfig, ConcedeGame};
+    let h = mock(1, None);
+    let board = uranium_agent::ConcedeBoard::default();
+    board.insert(9, Arc::new(ConcedeGame::new(ConcedeConfig { enabled: true, ..Default::default() })));
+    let opts = ServeOptions { concede: board.clone(), ..ServeOptions::new(PolicySpec::Model(h.clone())) };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let run = |game_id: u64| {
+        let bridge = std::thread::spawn(move || {
+            let s = TcpStream::connect(addr).unwrap();
+            let mut r = BufReader::new(s.try_clone().unwrap());
+            let mut w = BufWriter::new(s);
+            let hello = Hello { protocol_version: PROTOCOL_VERSION, backend: Backend::OpenBw, game_version: "test".into(), mode: Mode::Lockstep, game_id, slot: 0, replay: false };
+            write_msg(&mut w, &BridgeMsg::Hello(hello)).unwrap();
+            write_msg(&mut w, &BridgeMsg::GameInfo(Box::new(game_info()))).unwrap();
+            let mut left = None;
+            for f in supply_frames(&[(4_320, 6), (6_000, 6), (7_200, 6), (8_000, 6)]) {
+                let at = f.frame;
+                write_msg(&mut w, &BridgeMsg::Frame(Box::new(f))).unwrap();
+                w.flush().unwrap();
+                let AgentMsg::Act(a) = read_msg::<AgentMsg>(&mut r).unwrap() else { panic!("expected Act") };
+                if a.surrender.is_some() {
+                    left = Some(at);
+                    break;
+                }
+            }
+            // 011-R21: the leaver's GameEnd names the other player.
+            let winner = if left.is_some() { 1 } else { 0 };
+            write_msg(&mut w, &BridgeMsg::End(GameEnd { winner: Some(winner), frame: 8_001, reason: EndReason::Surrender, stats: None, final_frame: None })).unwrap();
+            w.flush().unwrap();
+            left
+        });
+        let (stream, _) = listener.accept().unwrap();
+        let rec = uranium_agent::session(stream, &opts);
+        (bridge.join().unwrap(), rec)
+    };
+    let (left, rec) = run(9);
+    assert_eq!(left, Some(7_200));
+    let m = rec.model.as_ref().unwrap();
+    assert_eq!((m.concede_frame, m.decisions), (Some(7_200), 2));
+    assert_eq!(board.get(9).unwrap().conceded().map(|c| c.frame), Some(7_200));
+    let (left, rec) = run(10);
+    assert_eq!(left, None, "not an RL league game");
+    assert_eq!(rec.model.as_ref().unwrap().concede_frame, None);
+}

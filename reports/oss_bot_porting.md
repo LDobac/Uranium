@@ -75,3 +75,15 @@
 
 - 실시간(42ms/프레임)에서는 충분히 빠르다. lockstep 학습에서는 상대를 기다려야 해서 McRave 대전이 처리량을 크게 낮춘다.
 - 줄이려면 봇 로직을 고쳐야 하는데, 그러면 원본과 다른 봇이 된다. 그래서 하지 않았다. 리그(M6)에서 출전 비율로 조절하는 것을 권장한다(미확정).
+
+## T1 설정 변형 (021 "T1 설정 변형", 2026-11-03, AMB-042-15)
+
+원본 봇 폴더를 복사해 오프닝 설정만 바꾼 상대다. 라이선스·원본 BWAPI·포팅·빌드 스크립트·고정은 원본 봇 것을 따른다. 바이너리(`module.dll`·`.so`)는 원본과 해시가 같다. 만들기: `tools/oss/make_variant.py`(`docs/commands.md`). 아래 두 변형은 이 스크립트로 다시 만들어 배포된 폴더와 바이트까지 같음을 확인했다(Windows 빌드, 2026-11-03). 오프닝 실측은 `reports/m6_rush_ladder.md` 3절.
+
+| 변형 (상대 ID, 021-R3) | 원본 상대 ID | 바꾼 파일·줄 | 이전 → 이후 | 바꾼 파일 sha256 |
+|---|---|---|---|---|
+| `ualbertabot9pool@558899d-9pool` | `ualbertabot@558899d` | `bwapi-data/AI/UAlbertaBot_Config.txt` 85행(Strategy) | `"Zerg" : "Zerg_ZerglingRush",` → `"Zerg" : "Zerg_9Pool",` | `a7f68d12750b5f6b1b37d737b0fcb3ec9b1a148c1252d91004c95eea5b2923f0` |
+| `steamhammeroverpool@5.3.6-overpool` | `steamhammer@5.3.6` | `bwapi-data/AI/Steamhammer_5.3.6.json` 230~249행(`ZvT` 오프닝 가중치 20개) | 20개 항목 → `{ "Weight" : 100, "Strategy" : "OverpoolSpeed" }` 한 줄 | `1d776917e8f6439de9cc6293ec409af82836c7b607c737d5d674e14d6d1e191a` |
+
+- 명령: `make_variant.py --bot ualbertabot --variant 9pool --file bwapi-data/AI/UAlbertaBot_Config.txt --replace '"Zerg_ZerglingRush",' '"Zerg_9Pool",'`, `make_variant.py --bot steamhammer --variant overpool --file bwapi-data/AI/Steamhammer_5.3.6.json --lines 230-249 --text '            { "Weight" : 100, "Strategy" : "OverpoolSpeed" }'`.
+- 변형은 설정을 바꾼 종족(저그)으로만 쓴다. 학습·점검에 쓰는 변형은 그 게임을 돌리는 모든 게임 호스트에 같은 내용으로 둔다(위 sha256으로 확인).

@@ -3,6 +3,7 @@
 //! sees the inputs it was trained on.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -14,7 +15,8 @@ use uranium_env::features::Strategy;
 use uranium_env::features::extract::action_table;
 use uranium_env::maps::{MapFamilies, PrecomputeSource, family_index, live_precompute_for_session, maps_dir};
 use uranium_env::reward::{Outcome, RewardParts, RewardTracker};
-use uranium_env::surrender::{SurrenderJudge, SurrenderMode, rule_holds};
+use uranium_env::concede::{CollapseJudge, ConcedeGame};
+use uranium_env::surrender::{DEFAULT_CHAT, SurrenderJudge, SurrenderMode, rule_holds};
 use crate::infer::HostState;
 use uranium_proto::{Act, GameInfo, RawFrame};
 
@@ -38,6 +40,9 @@ pub struct ModelStats {
     pub win_open: bool,
     /// First frame the 031-R12 check held (Shadow and On); in On mode the session surrendered there.
     pub surrender_frame: Option<u32>,
+    /// 042-R14: frame at which this session conceded a collapsed RL game (no decision there).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concede_frame: Option<u32>,
     pub decisions: u64,
     /// 031-R4 / AMB-031-5: executor rejections by reason.
     pub rejected: BTreeMap<String, u64>,
@@ -115,6 +120,12 @@ pub struct ModelPolicy {
     /// Test only (011-AC9 / 031-AC5 integration): `URANIUM_TEST_SURRENDER_FRAME`, in On mode the
     /// first decision at or after this frame surrenders whatever the check says.
     test_surrender_frame: Option<u32>,
+    /// 042-R14 collapse concede of an RL league game: this session's judge, the game's shared
+    /// state (one concede per game) and this session's `GameSpec.players` index.
+    concede: Option<(CollapseJudge, Arc<ConcedeGame>, u8)>,
+    /// 042-R14 / 033-R7: reward of the frames from the last real decision to the concede frame;
+    /// added with the final frame's to that last decision at the end.
+    concede_reward: Option<RewardParts>,
 }
 
 fn rejected_name(r: &Rejected) -> &'static str {
@@ -195,6 +206,8 @@ impl ModelPolicy {
             surrender_chat: handle.surrender_chat.to_string(),
             surrendered: false,
             test_surrender_frame,
+            concede: None,
+            concede_reward: None,
         })
     }
 
@@ -203,6 +216,13 @@ impl ModelPolicy {
     pub fn with_zero_last_failed(mut self) -> Self {
         self.mem.zero_last_failed = true;
         self.stats.zero_last_failed = true;
+        self
+    }
+
+    /// 042-R14: judges collapse concede before every inference for this RL league game (`side` =
+    /// this session's `GameSpec.players` index).
+    pub fn with_concede(mut self, game: Arc<ConcedeGame>, side: u8) -> Self {
+        self.concede = Some((CollapseJudge::new(game.cfg), game, side));
         self
     }
 
@@ -223,6 +243,12 @@ impl ModelPolicy {
                 (Some(_), Some(f), Some(r)) => r.step(f),
                 _ => RewardParts::default(),
             };
+            // 042-R14 / 033-R7: the frames up to the concede belong to the last real decision too.
+            if let (Some(_), Some(c)) = (outcome, self.concede_reward.take()) {
+                after.build += c.build;
+                after.units += c.units;
+                after.value += c.value;
+            }
             if let Some(out) = outcome {
                 after.win = RewardTracker::end(out).win;
             }
@@ -264,7 +290,30 @@ impl ModelPolicy {
         Some(Act { cmds: vec![], advance_frames: 1, valid_until_frame: None, surrender: Some(chat) })
     }
 
+    /// 042-R14 before inference: `Some(act)` = concede now (chat + leave, 010-R13). The concede
+    /// is not a decision: no inference, no trajectory step, not counted in `decisions`. Only the
+    /// first session of the game that holds concedes; after that the other one stops judging.
+    fn concede_check(&mut self, f: &RawFrame) -> Option<Act> {
+        let (judge, game, side) = self.concede.as_mut()?;
+        if self.surrendered || game.conceded().is_some() {
+            return None;
+        }
+        if !judge.decide(f.frame, f.self_state.supply_used) || !game.claim(*side, f.frame) {
+            return None;
+        }
+        let side = *side;
+        self.surrendered = true;
+        self.stats.concede_frame = Some(f.frame);
+        // The events of this frame happened after the last decision (033-R7).
+        self.concede_reward = self.reward.as_mut().map(|r| r.step(f));
+        elog!("[agent] 042-R14: collapse concede at frame {} (supply_used {}, players index {side})", f.frame, f.self_state.supply_used);
+        Some(Act { cmds: vec![], advance_frames: 1, valid_until_frame: None, surrender: Some(DEFAULT_CHAT.to_string()) })
+    }
+
     pub fn on_frame(&mut self, f: &RawFrame) -> Result<Act> {
+        if let Some(act) = self.concede_check(f) {
+            return Ok(act);
+        }
         let t0 = Instant::now();
         // z absent unless an RL session set one (041-AC2 / AMB-041-2, 033-R8).
         let obs = extract(f, &mut self.mem, &self.map, self.z.as_ref());

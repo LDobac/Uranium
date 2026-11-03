@@ -2,6 +2,7 @@
 //! and observation features / masks (030, 034).
 
 pub mod actions;
+pub mod concede;
 pub mod features;
 pub mod maps;
 pub mod reward;

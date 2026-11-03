@@ -20,7 +20,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use uranium_agent::infer::InferenceHandle;
 use uranium_agent::model_policy::{LearnerHook, SessionObserver};
-use uranium_agent::{EndBoard, PolicySpec, Routes, T0Build, T0Builds, game_result};
+use uranium_agent::{ConcedeBoard, EndBoard, PolicySpec, Routes, T0Build, T0Builds, game_result};
+use uranium_env::concede::{ConcedeConfig, ConcedeGame};
 use uranium_env::features::Strategy;
 use uranium_env::reward::{Outcome, RewardWeights};
 use uranium_proto::control::{GameSpec, MapKey, PlayerKind, PlayerSpec};
@@ -100,6 +101,10 @@ struct Shared {
     /// 042-R11: `<shared>/runs/<run>/replays` and the regular sample interval.
     replay_dir: PathBuf,
     replay_every: u64,
+    /// 042-R14 (AMB-042-15): `[concede]` and the games that judge it (shared with the agent
+    /// server); a game is listed from dispatch until it is done.
+    concede_cfg: ConcedeConfig,
+    concede: ConcedeBoard,
 }
 
 /// 042-R10 ①② and the queue close (042-R3), once: run by the clean stop, and by `Drop` when the
@@ -375,6 +380,10 @@ impl LeagueSource {
             wall_timeout_s: s.game_wall_timeout_s,
         };
         s.games.lock().unwrap().insert(id, GameMeta { pick, self_player: None, enemy_race, server });
+        // 042-R14: every model session of an RL league game judges collapse concede.
+        if s.concede_cfg.enabled {
+            s.concede.insert(id, Arc::new(ConcedeGame::new(s.concede_cfg)));
+        }
         Job { matchup: 0, spec, t0_builds, models: [None, None], policies, opponent: Some(opponent) }
     }
 
@@ -420,6 +429,7 @@ impl JobSource for LeagueSource {
     fn requeue(&self, job: Job) {
         // A dynamic source simply forgets a game that never started.
         let meta = self.shared.games.lock().unwrap().remove(&job.spec.game_id);
+        self.shared.concede.take(job.spec.game_id);
         if let Some(m) = meta {
             self.release_server(&m);
         }
@@ -447,6 +457,8 @@ impl JobSource for LeagueSource {
             }
         }
         let ends = s.ends.take(id);
+        // 042-R14: who conceded, if a session did (players index 0 = the learning agent).
+        let conceded = s.concede.take(id).and_then(|g| g.conceded());
         // 020-R13: the session that ended last decides.
         let verdict = (outcome == JobOutcome::Finished).then(|| game_result(&ends)).flatten();
         let decided = match (&verdict, meta.self_player) {
@@ -494,6 +506,18 @@ impl JobSource for LeagueSource {
                 s.aborted.fetch_add(1, Ordering::SeqCst);
             }
         }
+        // 042-R14 games.csv `end_reason`: `Concede` for a collapse concede, else the judged
+        // GameEnd reason (020-R13); empty for a game without a result (Aborted, Timeout).
+        let end_reason = match (&verdict, decided) {
+            (_, None) => String::new(),
+            (_, Some(_)) if conceded.is_some() => "Concede".to_string(),
+            (Some((e, _)), Some(_)) => format!("{:?}", e.reason),
+            (None, Some(_)) => String::new(),
+        };
+        if let Some(c) = conceded {
+            let who = if c.side == 0 { "learning agent" } else { "opponent" };
+            crate::elog!("[rl] game {id}: 042-R14 collapse concede by the {who} side (players index {}) at frame {}; result {:?}", c.side, c.frame, decided);
+        }
         let disagree = verdict.as_ref().is_some_and(|v| v.1);
         let (replay_path, replay_reason) = match (replay_reason(id, disagree, s.replay_every), replay) {
             (Some(why), Some(bytes)) => match keep_replay(&s.replay_dir, id, why, &bytes) {
@@ -509,7 +533,7 @@ impl JobSource for LeagueSource {
         s.agent_steps.fetch_add(decisions, Ordering::SeqCst);
         s.games_done.fetch_add(1, Ordering::SeqCst);
         let line = format!(
-            "{},{},{},{},{:?},{},{},{:?},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{:?},{},{},{:?},{},{},{},{},{},{},{},{},{}\n",
             id,
             AgentKind::ALL[agent].name(),
             job.opponent.clone().unwrap_or_default(),
@@ -529,7 +553,8 @@ impl JobSource for LeagueSource {
             sum[2],
             sum[3],
             replay_path,
-            replay_reason
+            replay_reason,
+            end_reason
         );
         let _ = s.games_csv.lock().unwrap().write_all(line.as_bytes());
         self.release_server(&meta);
@@ -562,8 +587,8 @@ fn keep_replay(dir: &Path, game_id: u64, reason: &str, bytes: &[u8]) -> Result<S
     Ok(name)
 }
 
-/// games.csv header (042-R2, R11).
-const GAMES_HEADER: &str = "game_id,agent,opponent,class,enemy_race,map,hostd_outcome,outcome,winner_disagree,decisions,r_win,r_build,r_units,r_value,replay,replay_reason\n";
+/// games.csv header (042-R2, R11; `end_reason` 042-R14, 2026-11-03).
+const GAMES_HEADER: &str = "game_id,agent,opponent,class,enemy_race,map,hostd_outcome,outcome,winner_disagree,decisions,r_win,r_build,r_units,r_value,replay,replay_reason,end_reason\n";
 
 /// 042-R2 train.csv header / row. `trained_steps`: agent steps the learners trained on, run
 /// total (continued from the checkpoint). `queue_wait_s`: seconds the games waited for a place
@@ -581,24 +606,30 @@ fn train_header() -> String {
     h
 }
 
-/// Opens train.csv for appending. A file whose header differs (an older version with other
-/// columns) is kept under a new name and a fresh file is started, so a file's rows always match
-/// its header. When it cannot be moved (e.g. open in a viewer on Windows), it stays as is and
-/// the rows go to `train-<unix>-new.csv` instead.
+/// Opens train.csv for appending (042-R2).
 fn open_train_csv(path: &Path) -> Result<std::fs::File> {
-    let header = train_header();
+    open_csv(path, &train_header())
+}
+
+/// Opens a log CSV (`<stem>.csv`: train.csv, games.csv) for appending. A file whose header differs
+/// (an older version with other columns) is kept under a new name and a fresh file is started, so
+/// a file's rows always match its header. When it cannot be moved (e.g. open in a viewer on
+/// Windows), it stays as is and the rows go to `<stem>-<unix>-new.csv` instead.
+fn open_csv(path: &Path, header: &str) -> Result<std::fs::File> {
+    let stem = path.file_stem().map_or_else(|| "log".to_string(), |s| s.to_string_lossy().into_owned());
+    let name = path.file_name().map_or_else(|| stem.clone(), |s| s.to_string_lossy().into_owned());
     let mut target = path.to_path_buf();
     if let Ok(f) = std::fs::File::open(path) {
         let mut first = String::new();
         std::io::BufRead::read_line(&mut std::io::BufReader::new(f), &mut first)?;
         if !first.is_empty() && first.trim_end() != header.trim_end() {
             let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-            let old = path.with_file_name(format!("train-{secs}.csv"));
+            let old = path.with_file_name(format!("{stem}-{secs}.csv"));
             match std::fs::rename(path, &old) {
-                Ok(()) => crate::elog!("[rl] train.csv has other columns: kept as {}, new file started (042-R2)", old.display()),
+                Ok(()) => crate::elog!("[rl] {name} has other columns: kept as {}, new file started (042-R2)", old.display()),
                 Err(e) => {
-                    target = path.with_file_name(format!("train-{secs}-new.csv"));
-                    crate::elog!("[rl] WARNING: train.csv has other columns and cannot be moved ({e}); writing {} instead (042-R2)", target.display());
+                    target = path.with_file_name(format!("{stem}-{secs}-new.csv"));
+                    crate::elog!("[rl] WARNING: {name} has other columns and cannot be moved ({e}); writing {} instead (042-R2)", target.display());
                 }
             }
         }
@@ -772,6 +803,10 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         anchor_dir.as_ref().map_or_else(|| "none".to_string(), |d| d.display().to_string()),
         cc.r_value_vs_model
     );
+    let ladder: Vec<String> = cfg.ladder.iter().filter_map(|e| e.opponent().ok()).map(|(_, k, _)| k).collect();
+    crate::elog!("[rl] C1 rush ladder: share {} ({:?}) {:?} (042, AMB-042-15)", cc.c1_ladder, cc.ladder_pick, ladder);
+    let c = &cfg.concede;
+    crate::elog!("[rl] collapse concede: {} (screen supply <= {} for {} s from {} s, 042-R14)", if c.enabled { "on" } else { "off" }, c.max_supply, c.hold_s, c.after_s);
 
     // 042 queue table: `queue_batches` x `lanes` per agent (>= lanes, so a full queue is always
     // ready for the learner and a waiting game is never stuck behind it), backpressure when full.
@@ -782,13 +817,10 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     let builds = T0Builds::default();
     let ends = EndBoard::default();
     let listen = uranium_runner::env_or("URANIUM_AGENT_LISTEN", "127.0.0.1:7600");
-    let agent_addr = uranium_runner::start_agent(&listen, &args.log_dir.join("sessions.jsonl"), &args.log_dir.join("unit_rejections.jsonl"), routes.clone(), builds.clone(), ends.clone())?;
-    let games_csv_path = args.log_dir.join("games.csv");
-    let new_games = !games_csv_path.exists();
-    let mut games_csv = std::fs::OpenOptions::new().create(true).append(true).open(&games_csv_path)?;
-    if new_games {
-        games_csv.write_all(GAMES_HEADER.as_bytes())?;
-    }
+    let concede = ConcedeBoard::default();
+    let agent_addr = uranium_runner::start_agent(&listen, &args.log_dir.join("sessions.jsonl"), &args.log_dir.join("unit_rejections.jsonl"), routes.clone(), builds.clone(), ends.clone(), concede.clone())?;
+    // 042-R2 / R14: a games.csv of an older version (without `end_reason`) is kept aside.
+    let games_csv = open_csv(&args.log_dir.join("games.csv"), GAMES_HEADER)?;
     let base_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) * 1000;
     let shared = Arc::new(Shared {
         league: Mutex::new(league),
@@ -813,6 +845,8 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         game_wall_timeout_s: cfg.actors.game_wall_timeout_s,
         replay_dir,
         replay_every: cfg.replays.sample_every,
+        concede_cfg: cfg.concede,
+        concede,
     });
     let z = load_z(&args.z_table)?;
     if z.is_empty() {
@@ -1124,6 +1158,13 @@ mod tests {
         (cc.c1_t0, cc.c1_t1, cc.c1_self, cc.c1_snapshot, cc.c1_anchor) = (0.0, 0.0, c1[0], c1[1], c1[2]);
         cfg.league.anchor = anchor.into();
         cfg.snapshot.main_candidates = candidates;
+        let csv = PathBuf::from(if cfg!(windows) { "NUL" } else { "/dev/null" });
+        source_cfg(cfg, servers, &csv)
+    }
+
+    /// A league source over a new league of `cfg`, with fake snapshot servers, writing games.csv
+    /// rows to `csv` (an existing file).
+    fn source_cfg(cfg: RlConfig, servers: SnapshotServers, csv: &Path) -> LeagueSource {
         let league = League::new("r1", 3, None, cfg.clone());
         let mut dirs = HashMap::new();
         let pinned = league.anchor_key();
@@ -1131,7 +1172,6 @@ mod tests {
             dirs.insert(k.clone(), PathBuf::from("anchor/agents/main"));
         }
         let (tx, rx) = mpsc::channel();
-        let csv = if cfg!(windows) { "NUL" } else { "/dev/null" };
         let shared = Arc::new(Shared {
             league: Mutex::new(league),
             games: Mutex::new(HashMap::new()),
@@ -1145,7 +1185,7 @@ mod tests {
             agent_addr: "127.0.0.1:1".into(),
             handles: AgentKind::ALL.iter().map(|a| fake_handle(a.name())).collect(),
             snapshots: Mutex::new(SnapshotPool::new(dirs, pinned, servers)),
-            games_csv: Mutex::new(std::fs::OpenOptions::new().write(true).open(csv).unwrap()),
+            games_csv: Mutex::new(std::fs::OpenOptions::new().append(true).open(csv).unwrap()),
             agent_steps: AtomicU64::new(0),
             games_done: AtomicU64::new(0),
             disagree: AtomicU64::new(0),
@@ -1154,6 +1194,8 @@ mod tests {
             game_wall_timeout_s: 1,
             replay_dir: std::env::temp_dir(),
             replay_every: 0,
+            concede_cfg: cfg.concede,
+            concede: ConcedeBoard::default(),
         });
         let hooks = AgentKind::ALL
             .iter()
@@ -1301,9 +1343,94 @@ mod tests {
         assert_eq!(opened.lock().unwrap().len(), 2, "no reload within the back-off");
     }
 
+    /// 042-R14 / 020-R18 (AMB-042-15) in the run loop: with `[concede] enabled` every RL game is
+    /// on the concede board from dispatch until it is done; a conceded game is judged as a normal
+    /// result (the leaver loses, not Aborted) and games.csv says `Concede`; other games give the
+    /// judged GameEnd reason, games without a result an empty `end_reason`. Off = no board entry.
+    #[test]
+    fn concede_games_in_the_run_loop_042_r14() {
+        use uranium_proto::EndReason;
+        let dir = std::env::temp_dir().join(format!("uranium-rl-concede-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let csv = dir.join("games.csv");
+        drop(open_csv(&csv, GAMES_HEADER).unwrap());
+        let mut cfg = RlConfig::default_file();
+        cfg.curriculum.start_stage = crate::league::Stage::C1;
+        let cc = &mut cfg.curriculum;
+        (cc.c1_t0, cc.c1_t1, cc.c1_self) = (0.0, 0.0, 1.0);
+        cfg.concede.enabled = true;
+        let (servers, _, _) = fake_servers(false);
+        let src = source_cfg(cfg.clone(), servers, &csv);
+        // Plays one game: the learner (players index / BWAPI id 0) against the current Main (1).
+        let play = |ends: &[(u8, u8, EndReason)], conceded: Option<u8>, outcome: JobOutcome| {
+            let job = src.next().unwrap();
+            let id = job.spec.game_id;
+            let game = src.shared.concede.get(id).expect("on the board from dispatch");
+            if let Some(side) = conceded {
+                assert!(game.claim(side, 7_200));
+            }
+            src.shared.games.lock().unwrap().get_mut(&id).unwrap().self_player = Some(0);
+            for &(slot, winner, reason) in ends {
+                src.shared.ends.push(id, uranium_agent::SessionEnd { slot, winner: Some(winner), frame: 7_210 + slot as u32, reason });
+            }
+            let result = match ends.iter().find(|e| e.0 == 0) {
+                Some(&(_, w, _)) if outcome == JobOutcome::Finished => Some(if w == 0 { Outcome::Win } else { Outcome::Loss }),
+                _ => None,
+            };
+            src.hooks[0].tx.send(GameResult { agent: 0, game_id: id, outcome: result, reward_sum: [0.0; 4], decisions: 5, enemy_race: Some(Race::Terran) }).unwrap();
+            src.done(&job, outcome, None);
+            assert!(src.shared.concede.get(id).is_none(), "off the board once done");
+            std::fs::read_to_string(&csv).unwrap().lines().last().unwrap().to_string()
+        };
+        let row = |line: &str| line.split(',').map(str::to_string).collect::<Vec<_>>();
+        // The learner conceded: it left (names the other side), the opponent model reports its win.
+        let r = row(&play(&[(0, 1, EndReason::Surrender), (1, 1, EndReason::Surrender)], Some(0), JobOutcome::Finished));
+        assert_eq!((r[7].as_str(), r[10].as_str(), r[16].as_str()), ("Some(Loss)", "-1", "Concede"), "{r:?}");
+        // The opponent model conceded: a win of the learning agent.
+        let r = row(&play(&[(1, 0, EndReason::Surrender), (0, 0, EndReason::Surrender)], Some(1), JobOutcome::Finished));
+        assert_eq!((r[7].as_str(), r[10].as_str(), r[16].as_str()), ("Some(Win)", "1", "Concede"), "{r:?}");
+        // No concede: the judged reason.
+        let r = row(&play(&[(0, 0, EndReason::Elimination), (1, 0, EndReason::Elimination)], None, JobOutcome::Finished));
+        assert_eq!((r[7].as_str(), r[16].as_str()), ("Some(Win)", "Elimination"));
+        // Aborted: no result, empty end_reason (also after a concede).
+        let r = row(&play(&[(0, 1, EndReason::Surrender)], Some(0), JobOutcome::Aborted));
+        assert_eq!((r[7].as_str(), r[16].as_str()), ("None", ""));
+        assert_eq!(r.len(), GAMES_HEADER.trim().split(',').count());
+        // Requeued games leave the board too; concede off = no board entry.
+        let job = src.next().unwrap();
+        let id = job.spec.game_id;
+        src.requeue(job);
+        assert!(src.shared.concede.get(id).is_none());
+        cfg.concede.enabled = false;
+        let (servers, _, _) = fake_servers(false);
+        let off = source_cfg(cfg, servers, &csv);
+        let job = off.next().unwrap();
+        assert!(off.shared.concede.get(job.spec.game_id).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 042-R2 / R14: a games.csv without `end_reason` (an older version) is kept aside like an
+    /// older train.csv; the new file gets the current header.
+    #[test]
+    fn games_csv_with_other_columns_is_kept_aside_042_r14() {
+        let dir = std::env::temp_dir().join(format!("uranium-rl-games-csv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("games.csv");
+        let old = "game_id,agent,opponent,class,enemy_race,map,hostd_outcome,outcome,winner_disagree,decisions,r_win,r_build,r_units,r_value,replay,replay_reason\n1,main\n";
+        std::fs::write(&path, old).unwrap();
+        drop(open_csv(&path, GAMES_HEADER).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), GAMES_HEADER);
+        let kept: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).filter(|n| n.starts_with("games-")).collect();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(std::fs::read_to_string(dir.join(&kept[0])).unwrap(), old);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn games_csv_header_matches_rows_042_r2() {
-        assert_eq!(GAMES_HEADER.trim().split(',').count(), 16);
-        assert!(GAMES_HEADER.trim().ends_with(",replay,replay_reason"));
+        assert_eq!(GAMES_HEADER.trim().split(',').count(), 17);
+        assert!(GAMES_HEADER.trim().ends_with(",replay,replay_reason,end_reason"), "042-R14: end_reason last");
     }
 }

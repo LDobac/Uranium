@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::league::{Stage, T1Bot};
+use uranium_env::concede::ConcedeConfig;
+
+use crate::league::{LadderEntry, LadderPick, Stage, T1Bot};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct OptimizerConfig {
@@ -210,6 +212,13 @@ pub struct CurriculumConfig {
     /// `r_value_stages`. The value head learns r_value in every game. Absent = `true`.
     #[serde(default = "default_r_value_vs_model")]
     pub r_value_vs_model: bool,
+    /// 042 C1 러시 사다리 (AMB-042-15): share of the `[[ladder]]` opponents. Absent = 0 (the
+    /// earlier C1 picks).
+    #[serde(default)]
+    pub c1_ladder: f64,
+    /// 042 사다리 안 상대 선택 (AMB-042-15): only `"f_var"`; other values are load errors.
+    #[serde(default)]
+    pub ladder_pick: LadderPick,
 }
 
 fn default_r_value_vs_model() -> bool {
@@ -274,6 +283,13 @@ pub struct RlConfig {
     /// current config file on each start, resume included (042 "재개 시 설정", AMB-042-13).
     #[serde(default)]
     pub t1: Vec<T1Bot>,
+    /// `[[ladder]]`: the C1 rush ladder (042, AMB-042-15), from the current config file on each
+    /// start like `[[t1]]`. Only C1 uses it (not the C2 PFSP pool).
+    #[serde(default)]
+    pub ladder: Vec<LadderEntry>,
+    /// `[concede]`: 042-R14 collapse concede of RL training games (AMB-042-15). Absent = off.
+    #[serde(default)]
+    pub concede: ConcedeConfig,
 }
 
 impl RlConfig {
@@ -310,6 +326,19 @@ impl RlConfig {
         if self.curriculum.c1_anchor > 0.0 && self.league.anchor.trim().is_empty() {
             bail!("[curriculum] c1_anchor is above 0 but [league] anchor is empty (042, AMB-042-14)");
         }
+        // 042 사다리 설정 검사 (AMB-042-15).
+        if self.curriculum.c1_ladder > 0.0 && self.ladder.is_empty() {
+            bail!("[curriculum] c1_ladder is above 0 but [[ladder]] is empty (042, AMB-042-15)");
+        }
+        let mut keys = std::collections::BTreeSet::new();
+        for (i, e) in self.ladder.iter().enumerate() {
+            let (_, key, _) = e.opponent().map_err(|why| anyhow::anyhow!("[[ladder]] entry {}: {why}", i + 1))?;
+            if !keys.insert(key.clone()) {
+                bail!("[[ladder]] entry {}: win-table key {key} appears twice (042, AMB-042-15)", i + 1);
+            }
+        }
+        // 042-R14 (AMB-042-15).
+        self.concede.validate().map_err(anyhow::Error::msg)?;
         Ok(())
     }
 
@@ -543,5 +572,94 @@ mod tests {
         c.validate().unwrap();
         c.curriculum.c1_t1 = 0.5;
         assert!(c.validate().is_err(), "c1_t1 above 0");
+    }
+
+    const AMB_042_15_KEYS: [&str; 6] = ["c1_ladder", "ladder_pick", "enabled", "max_supply", "hold_s", "after_s"];
+
+    /// 042 / 042-R14 (AMB-042-15): rl.toml lists the new keys at their defaults (no ladder share,
+    /// f_var, concede off with 4 / 120 / 180); a config without them (and without `[concede]`,
+    /// e.g. one copied into an older checkpoint) gets the same values.
+    #[test]
+    fn ladder_and_concede_keys_default_042_amb_042_15() {
+        let c = RlConfig::default_file();
+        assert_eq!((c.curriculum.c1_ladder, c.curriculum.ladder_pick), (0.0, LadderPick::FVar));
+        assert!(c.ladder.is_empty());
+        assert_eq!(c.concede, ConcedeConfig::default());
+        assert!(!c.concede.enabled);
+        let full = include_str!("../../../config/rl.toml");
+        let key_line = |l: &str, k: &str| l.starts_with(&format!("{k} ="));
+        for k in AMB_042_15_KEYS {
+            assert_eq!(full.lines().filter(|l| key_line(l, k)).count(), 1, "rl.toml lists {k}");
+        }
+        let text: String = full.lines().filter(|l| !AMB_042_15_KEYS.iter().any(|k| key_line(l, k)) && !l.starts_with("[concede]")).map(|l| format!("{l}\n")).collect();
+        let old: RlConfig = toml::from_str(&text).unwrap();
+        assert_eq!(old, c, "absent = defaults");
+    }
+
+    /// `config/rl.toml` with `extra` appended (a `[[ladder]]` list), `curriculum` in place of its
+    /// `c1_ladder` / `ladder_pick` lines and `concede` as the body of `[concede]`, validated.
+    fn with_ladder(curriculum: &str, extra: &str, concede: &str) -> Result<RlConfig> {
+        let text: String = include_str!("../../../config/rl.toml").lines().filter(|l| !l.starts_with("c1_ladder =") && !l.starts_with("ladder_pick =")).map(|l| format!("{l}\n")).collect();
+        let text = text.replace("[curriculum]\n", &format!("[curriculum]\n{curriculum}\n"));
+        let start = text.find("\n[concede]").unwrap() + 1;
+        let end = start + text[start..].find("\n# T1 bots").unwrap();
+        let text = format!("{}[concede]\n{concede}{}\n{extra}", &text[..start], &text[end..]);
+        let c: RlConfig = toml::from_str(&text)?;
+        c.validate()?;
+        Ok(c)
+    }
+
+    const RUSH_LADDER: &str = "[[ladder]]\nkind = \"t0\"\nbuild = \"zerg_rush\"\nrace = \"Zerg\"\n[[ladder]]\nkind = \"t1\"\nname = \"zzzkbot\"\nrace = \"Zerg\"\n";
+
+    /// 042 사다리 설정 검사 / 042-R14 설정 (AMB-042-15): the load errors.
+    #[test]
+    fn ladder_and_concede_settings_are_checked_042() {
+        let ok = with_ladder("c1_ladder = 0.7", RUSH_LADDER, "enabled = true\n").unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(ok.ladder.len(), 2);
+        assert!(ok.concede.enabled);
+        assert!(with_ladder("c1_ladder = 0.7", "", "").is_err(), "share without a ladder");
+        with_ladder("c1_ladder = 0.0", "", "").unwrap();
+        with_ladder("c1_ladder = 0.0", RUSH_LADDER, "").unwrap();
+        let entry = |body: &str| with_ladder("c1_ladder = 0.7", &format!("[[ladder]]\n{body}\n"), "");
+        assert!(entry("kind = \"t2\"\nname = \"x\"\nrace = \"Zerg\"").is_err(), "kind");
+        assert!(entry("kind = \"t0\"\nbuild = \"zerg_rushes\"\nrace = \"Zerg\"").is_err(), "unknown build");
+        assert!(entry("kind = \"t0\"\nbuild = \"zerg_rush\"\nrace = \"Terran\"").is_err(), "build of another race");
+        assert!(entry("kind = \"t0\"\nbuild = \"standard\"\nrace = \"Random\"").is_err(), "Random");
+        assert!(entry("kind = \"t1\"\nname = \"zzzkbot\"\nrace = \"Random\"").is_err(), "Random");
+        assert!(entry("kind = \"t1\"\nrace = \"Zerg\"").is_err(), "t1 without a name");
+        assert!(entry("kind = \"t0\"\nname = \"zzzkbot\"\nrace = \"Zerg\"").is_err(), "t0 without a build");
+        assert!(entry("kind = \"t1\"\nname = \"zzzkbot\"\nrace = \"Zerg\"\nraces = [\"Zerg\"]").is_err(), "unknown key");
+        entry("kind = \"t0\"\nbuild = \"standard\"\nrace = \"Protoss\"").unwrap();
+        assert!(with_ladder("c1_ladder = 0.7", &format!("{RUSH_LADDER}[[ladder]]\nkind = \"t1\"\nname = \"zzzkbot\"\nrace = \"Zerg\"\n"), "").is_err(), "same key twice");
+        assert!(with_ladder("c1_ladder = 0.7\nladder_pick = \"f_hard\"", RUSH_LADDER, "").is_err(), "ladder_pick");
+        let lp = with_ladder("c1_ladder = 0.7\nladder_pick = \"f_var\"", RUSH_LADDER, "").unwrap();
+        assert_eq!(lp.curriculum.ladder_pick, LadderPick::FVar);
+        for bad in ["max_supply = 201\n", "max_supply = -1\n", "hold_s = 0\n", "after_s = -5\n", "enable = true\n"] {
+            assert!(with_ladder("c1_ladder = 0.0", "", bad).is_err(), "{bad}");
+        }
+        let c = with_ladder("c1_ladder = 0.0", "", "enabled = true\nmax_supply = 0\nhold_s = 1\nafter_s = 0\n").unwrap();
+        assert_eq!(c.concede, ConcedeConfig { enabled: true, max_supply: 0, hold_s: 1, after_s: 0 });
+    }
+
+    /// 042 "러시 커리큘럼 run" (AMB-042-15): `config/rl_rush1.toml` is `rl_t1self2.toml` with the
+    /// listed changes only: shares, f_var, the zerg rush ladder and concede on at the defaults.
+    #[test]
+    fn rush1_config_042_amb_042_15() {
+        use uranium_proto::Race;
+        let t: RlConfig = toml::from_str(include_str!("../../../config/rl_rush1.toml")).unwrap();
+        t.validate().unwrap();
+        let cc = &t.curriculum;
+        assert_eq!((cc.c1_ladder, cc.c1_anchor, cc.c1_snapshot, cc.c1_self, cc.c1_t1, cc.c1_t0), (0.70, 0.10, 0.15, 0.05, 0.0, 0.0));
+        assert_eq!(cc.ladder_pick, LadderPick::FVar);
+        assert_eq!(t.concede, ConcedeConfig { enabled: true, ..ConcedeConfig::default() });
+        let keys: Vec<String> = t.ladder.iter().map(|e| e.opponent().unwrap().1).collect();
+        assert_eq!(keys, ["t0-zerg-rush", "ualbertabot-zerg", "steamhammeroverpool-zerg", "zzzkbot-zerg"]);
+        assert!(t.ladder.iter().all(|e| e.race == Race::Zerg));
+        let mut d: RlConfig = toml::from_str(include_str!("../../../config/rl_t1self2.toml")).unwrap();
+        let dc = &mut d.curriculum;
+        (dc.c1_ladder, dc.c1_anchor, dc.c1_snapshot, dc.c1_self, dc.c1_t1, dc.c1_t0) = (cc.c1_ladder, cc.c1_anchor, cc.c1_snapshot, cc.c1_self, cc.c1_t1, cc.c1_t0);
+        d.ladder = t.ladder.clone();
+        d.concede.enabled = true;
+        assert_eq!(d, t, "everything else as in t1self-s2 ([[t1]] included)");
     }
 }

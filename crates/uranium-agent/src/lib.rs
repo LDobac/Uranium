@@ -172,6 +172,27 @@ impl EndBoard {
     }
 }
 
+/// 042-R14 collapse concede by game id: the RL run loop registers each RL league game when
+/// `[concede] enabled` and takes it out when the game is over; the model sessions of a listed game
+/// judge before inference. Games not listed (plan / evaluation games, 050) never concede.
+#[derive(Clone, Default)]
+pub struct ConcedeBoard(Arc<Mutex<HashMap<u64, Arc<uranium_env::concede::ConcedeGame>>>>);
+
+impl ConcedeBoard {
+    pub fn insert(&self, game_id: u64, game: Arc<uranium_env::concede::ConcedeGame>) {
+        self.0.lock().unwrap().insert(game_id, game);
+    }
+
+    pub fn get(&self, game_id: u64) -> Option<Arc<uranium_env::concede::ConcedeGame>> {
+        self.0.lock().unwrap().get(&game_id).cloned()
+    }
+
+    /// Removes the game and returns its state (who conceded, if anyone).
+    pub fn take(&self, game_id: u64) -> Option<Arc<uranium_env::concede::ConcedeGame>> {
+        self.0.lock().unwrap().remove(&game_id)
+    }
+}
+
 /// T0 build per (game id, `GameSpec.players` index) for scenario bots (050 E-Regression).
 /// The scheduler fills it before games start; players not listed play the standard build.
 pub type T0Builds = Arc<Mutex<HashMap<(u64, u8), T0Build>>>;
@@ -197,9 +218,16 @@ pub fn name_index(name: &str) -> Option<u8> {
 /// AMB-012-5); the bridge drops it after that.
 pub const REALTIME_ACT_FRAMES: u32 = 24;
 
-/// `realtime`: the bridge said `Mode::Realtime` (SC:R, 012-R18).
-pub fn make_policy(spec: &PolicySpec, game_id: u64, info: &GameInfo, build: T0Build, realtime: bool) -> Result<Box<dyn Policy>> {
-    let model = |p: ModelPolicy| if realtime { p.with_zero_last_failed() } else { p };
+/// `realtime`: the bridge said `Mode::Realtime` (SC:R, 012-R18). `concede`: the 042-R14 state of
+/// an RL league game and this session's `GameSpec.players` index; model sessions judge with it.
+pub fn make_policy(spec: &PolicySpec, game_id: u64, info: &GameInfo, build: T0Build, realtime: bool, concede: Option<(Arc<uranium_env::concede::ConcedeGame>, u8)>) -> Result<Box<dyn Policy>> {
+    let model = |p: ModelPolicy| {
+        let p = if realtime { p.with_zero_last_failed() } else { p };
+        match concede.clone() {
+            Some((game, side)) => p.with_concede(game, side),
+            None => p,
+        }
+    };
     let terran = || -> Result<()> {
         let me = info.players.iter().find(|p| p.is_self).map(|p| p.race);
         if me != Some(Race::Terran) {
@@ -381,11 +409,13 @@ pub struct ServeOptions {
     pub ends: EndBoard,
     /// 031-R10: per-unit rejection details (031 "유닛별 거절 기록"); disabled by default.
     pub unit_rejections: RejectionLog,
+    /// 042-R14: RL league games that judge collapse concede (empty = none).
+    pub concede: ConcedeBoard,
 }
 
 impl ServeOptions {
     pub fn new(default: PolicySpec) -> Self {
-        Self { default, routes: Routes::default(), delay_ms: 0, max_sessions: 0, t0_builds: T0Builds::default(), ends: EndBoard::default(), unit_rejections: RejectionLog::default() }
+        Self { default, routes: Routes::default(), delay_ms: 0, max_sessions: 0, t0_builds: T0Builds::default(), ends: EndBoard::default(), unit_rejections: RejectionLog::default(), concede: ConcedeBoard::default() }
     }
 }
 
@@ -594,7 +624,9 @@ fn run_session(stream: TcpStream, opts: &ServeOptions, rec: &mut SessionRecord, 
     rec.policy = spec.label();
     let build = opts.t0_builds.lock().unwrap().get(&(hello.game_id, index)).copied().unwrap_or_default();
     rec.t0_build = build.name().to_string();
-    let mut policy = make_policy(&spec, hello.game_id, &info, build, hello.mode == Mode::Realtime)?;
+    // 042-R14: only RL league games are on the board (never realtime SC:R games).
+    let concede = opts.concede.get(hello.game_id).filter(|_| hello.mode == Mode::Lockstep).map(|g| (g, index));
+    let mut policy = make_policy(&spec, hello.game_id, &info, build, hello.mode == Mode::Realtime, concede)?;
     let res = play(&mut reader, &mut writer, &mut *policy, &hello, rec, rejections, delay_ms, &opts.ends);
     if res.is_err() {
         // Disconnected or failed mid-game: not a finished episode (042-R3).

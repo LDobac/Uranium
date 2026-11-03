@@ -759,7 +759,7 @@ impl EvalWorker {
         storage::check_name(&cfg.host)?;
         let (routes, builds, ends) = (Routes::default(), T0Builds::default(), EndBoard::default());
         let results = job.sub("results").join(format!("{}.jsonl", cfg.host));
-        let agent_addr = crate::start_agent(listen, &results, &unit_rejections_file(&job, &cfg.host), routes.clone(), builds.clone(), ends.clone())?;
+        let agent_addr = crate::start_agent(listen, &results, &unit_rejections_file(&job, &cfg.host), routes.clone(), builds.clone(), ends.clone(), Default::default())?;
         elog!("[eval] job {} ({} stages, {} games), host {} priority {} backend {}, agent at {agent_addr}", job.dir.display(), job.stages.len(), job.keys().len(), cfg.host, priority, backend);
         if let Some(addr) = &local_hostd {
             // Coming back: this host takes games again (020-R15 ⑥).

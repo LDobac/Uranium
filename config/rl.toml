@@ -115,6 +115,11 @@ c1_self = 0.3
 # C1 picks in proportion to the five c1_* values.
 c1_snapshot = 0.0
 c1_anchor = 0.0
+# 042 C1 rush ladder (AMB-042-15): share of the [[ladder]] opponents (also part of the
+# proportional C1 draw), and how the ladder picks an entry: "f_var" (the only value) = PFSP
+# x(1 - x) on Main's win rate against it (unseen = win_rate_prior), uniform if all weights are 0.
+c1_ladder = 0.0
+ladder_pick = "f_var"
 c1_to_c2_win_rate_vs_t1 = 0.5
 # Pseudo-reward (033 r_build, r_units) linear decay to 0 after entering C2.
 pseudo_reward_decay_updates = 20000
@@ -128,9 +133,9 @@ r_value_stages = ["C0"]
 # 033 (AMB-042-14): false = r_value has policy weight 0 in games against a model (current Main,
 # snapshots, anchor); the value head learns r_value in every game.
 r_value_vs_model = true
-# On resume the ratios above, auto_advance, r_value_stages, r_value_vs_model, [league] anchor,
-# [snapshot] main_candidates and [[t1]] follow this file; stage, win tables, windows and
-# snapshots come from the checkpoint (042).
+# On resume the ratios above, auto_advance, r_value_stages, r_value_vs_model, ladder_pick,
+# [league] anchor, [snapshot] main_candidates, [[t1]], [[ladder]] and [concede] follow this file;
+# stage, win tables, windows and snapshots come from the checkpoint (042).
 
 [ppo]
 # Comparison baseline (042 algorithm alternatives).
@@ -144,6 +149,17 @@ adopt_margin = 0.03
 # 042-R11: keep 1 replay per this many games (game id multiple) plus every winner-disagreement
 # game (020-R13), under <URANIUM_SHARED_DIR>/runs/<run>/replays/. Never deleted.
 sample_every = 100
+
+[concede]
+# 042-R14 collapse concede of RL training games (AMB-042-15): a model session (learning agent or
+# model opponent) whose own supply is at most max_supply on the game screen (supply_used <=
+# 2 x max_supply, units in production included) at every decision for hold_s seconds, counted
+# from after_s, leaves with "gg"; the game is a normal loss of that side (020-R18, 033). Plan /
+# evaluation games never concede. false = the earlier behaviour.
+enabled = false
+max_supply = 4
+hold_s = 120
+after_s = 180
 
 # T1 bots (021) and the races they play (measured in M3, config/plans/m3-t1.toml). The league
 # picks from this list as is (it does not check which bots the game hosts have), so every bot
