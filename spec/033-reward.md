@@ -1,6 +1,6 @@
 # 033 — Reward
 
-- **Status**: Approved (2026-11-03 개정: r_value 적용 단계를 RL 설정 `r_value_stages`로, T1·셀프 run은 C1에서도 사용(사용자 결정, AMB-042-13). 2026-10-15, 2026-10-17 개정: AC2 비교 길이를 042-AC1 조건으로, 사용자 결정 / 결정 단위 보상·z 테이블·shard 전 z 없음(033-R7·R8, 3단계 계획 승인))
+- **Status**: Approved (2026-11-03 개정 2: r_value를 판마다 상대 종류로 적용(`r_value_vs_model`, 모델 상대 판은 끔), 사용자 결정, AMB-042-14. 2026-11-03 개정: r_value 적용 단계를 RL 설정 `r_value_stages`로, T1·셀프 run은 C1에서도 사용(사용자 결정, AMB-042-13). 2026-10-15, 2026-10-17 개정: AC2 비교 길이를 042-AC1 조건으로, 사용자 결정 / 결정 단위 보상·z 테이블·shard 전 z 없음(033-R7·R8, 3단계 계획 승인))
 - **Related**: [042](042-rl-training.md), [040](040-replay-dataset.md)
 
 ## Purpose
@@ -12,7 +12,7 @@ RL 단계의 보상 함수를 정의한다. 최종 목적은 승리이며, 보�
 | r_win | 종료 시 승 +1, 패 −1, 무 0. 60분 시간 초과는 무승부 0([020](020-env-orchestration.md)) | 1.0 | 고정 |
 | r_build | z의 빌드 순서와 현재 빌드 순서의 Levenshtein 거리 변화(감소 시 +) | 0.3 | 리그 진행에 따라 0으로 감쇠 |
 | r_units | z의 유닛 구성 누적 통계와 Hamming/L1 거리 변화 | 0.3 | 동일 |
-| r_value | (적 손실 자원 − 아군 손실 자원) / 1000 차분 | 0.05 | RL 설정 `[curriculum] r_value_stages`에 든 커리큘럼 단계에서만 사용, 나머지 단계는 0([042](042-rl-training.md) R5). 기본 `["C0"]`(**C0에서만**, C1부터 0). T1·셀프 run은 `["C0", "C1"]`(2026-11-03 사용자 결정, AMB-042-13) |
+| r_value | (적 손실 자원 − 아군 손실 자원) / 1000 차분 | 0.05 | RL 설정 `[curriculum] r_value_stages`에 든 커리큘럼 단계에서만 사용, 나머지 단계는 0([042](042-rl-training.md) R5). 기본 `["C0"]`(**C0에서만**, C1부터 0). T1·셀프 run은 `["C0", "C1"]`(2026-11-03 사용자 결정, AMB-042-13). **판별 적용(2026-11-03 사용자 결정, AMB-042-14)**: `[curriculum] r_value_vs_model = false`면 모델 상대(현재 Main·과거 스냅샷·anchor) 판에서는 정책 가중치 0, T0·T1 봇 판에서만 위 단계 규칙대로 쓴다(기본 `true` = 상대 구분 없음). T1·셀프 run 2차(`t1self-s2`)는 `false`. 가중치 0인 판에서도 value head(value↔r_value, 033-R3)는 r_value 목표를 그대로 학습한다(042 "r_value의 게임별 적용") |
 
 ## Requirements
 | ID | 요구사항 |

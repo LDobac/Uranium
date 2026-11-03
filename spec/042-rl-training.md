@@ -1,6 +1,6 @@
 # 042 — RL Training & League
 
-- **Status**: Approved (2026-11-03 개정(사용자 결정, AMB-042-13): 042-AC1 결과 기록(6 run 모두 미달, 규칙대로 V-trace 채택), Main 출발 가중치 `--init`, `[curriculum]` `start_stage`·`auto_advance`(042-R5)·`r_value_stages`(033), 재개 시 커리큘럼 비율·`[[t1]]` 목록은 지금 설정 파일, "T1·셀프 run" 구성. 2026-10-31 개정: 큐 역압·판 벽시계 설정·learner 레인 그룹, AMB-042-11·12 사용자 결정. 2026-10-15, 2026-10-23 개정: PyTorch 전환(사용자 결정, AMB-000-4) — 학습 호스트 Linux ROCm·CUDA, 프로세스 구성(Python learner·추론 스레드 + Rust 에이전트·러너·리그 스레드), R1 CUDA↔ROCm 재개. 2026-10-16 개정: 042-R10 Ctrl+C 정상 종료, 2026-10-17 개정: 초기 설정값 확정(AMB-042-3, `config/rl.toml`), 첫 학습 호스트, AMB-042-2 M6 시작 재확인, behaviour log-prob 기록(AMB-042-4), 구현 구조·Aborted 회수(042-R3)·검증 정책·AC1 규모·게임 호스트·KL 계산(AMB-042-5~9, 사용자 결정), 2026-10-18 개정: 학습 중 리플레이 저장(042-R11)·agent step 상한 종료(042-R12), 사용자 결정. 2026-10-19 개정: 옵티마이저 clip = 041-R3 전역 norm(G-D4), R11 리플레이 보존과 060-R7 정합, 장비 표기 중립화(001-R10). 2026-10-20 개정: 주 장비 규칙 참조(060-R8, AMB-032-8). 2026-10-21 개정: 042-R13 win_open RL 학습(사용자 결정, AMB-031-6). 2026-10-31 개정: AC1 상대 종족 저그(사용자 결정). 2026-10-31 개정안(사용자 결정 ②·④, `reports/m6_rl_sample.md`): trajectory 큐 가득 참 → 역압(`queue_full`, `queue_wait_max_s`, AMB-042-11), R3 기다림 취소·close, R2·R12 학습한 step 누계·대기 시간 기록, RL 판 벽시계 제한 설정(`game_wall_timeout_s`, AMB-042-12), learner 레인 그룹 호스트 덮어쓰기(`URANIUM_RL_MICRO_LANES`)·같은 수식 최적화·`bench rl`(032-R19, 060-R3), `--logs` 상대 경로 버그 수정 기록)
+- **Status**: Approved (2026-11-03 개정 2(사용자 결정, AMB-042-14, `reports/m6_t1self_stop.md`): C1 셀프 몫을 현재 Main·과거 Main 스냅샷(PFSP)·고정 상대 anchor로 나눔(`[curriculum]` `c1_snapshot`·`c1_anchor`, `[league] anchor`, `[snapshot] main_candidates`), 모델 상대 게임의 r_value 끔(`r_value_vs_model`, 033), 스냅샷은 그 에이전트 모델 파일만 공개, "T1·셀프 run" 1차 결과와 2차(`t1self-s2`) 구성. 2026-11-03 개정(사용자 결정, AMB-042-13): 042-AC1 결과 기록(6 run 모두 미달, 규칙대로 V-trace 채택), Main 출발 가중치 `--init`, `[curriculum]` `start_stage`·`auto_advance`(042-R5)·`r_value_stages`(033), 재개 시 커리큘럼 비율·`[[t1]]` 목록은 지금 설정 파일, "T1·셀프 run" 구성. 2026-10-31 개정: 큐 역압·판 벽시계 설정·learner 레인 그룹, AMB-042-11·12 사용자 결정. 2026-10-15, 2026-10-23 개정: PyTorch 전환(사용자 결정, AMB-000-4) — 학습 호스트 Linux ROCm·CUDA, 프로세스 구성(Python learner·추론 스레드 + Rust 에이전트·러너·리그 스레드), R1 CUDA↔ROCm 재개. 2026-10-16 개정: 042-R10 Ctrl+C 정상 종료, 2026-10-17 개정: 초기 설정값 확정(AMB-042-3, `config/rl.toml`), 첫 학습 호스트, AMB-042-2 M6 시작 재확인, behaviour log-prob 기록(AMB-042-4), 구현 구조·Aborted 회수(042-R3)·검증 정책·AC1 규모·게임 호스트·KL 계산(AMB-042-5~9, 사용자 결정), 2026-10-18 개정: 학습 중 리플레이 저장(042-R11)·agent step 상한 종료(042-R12), 사용자 결정. 2026-10-19 개정: 옵티마이저 clip = 041-R3 전역 norm(G-D4), R11 리플레이 보존과 060-R7 정합, 장비 표기 중립화(001-R10). 2026-10-20 개정: 주 장비 규칙 참조(060-R8, AMB-032-8). 2026-10-21 개정: 042-R13 win_open RL 학습(사용자 결정, AMB-031-6). 2026-10-31 개정: AC1 상대 종족 저그(사용자 결정). 2026-10-31 개정안(사용자 결정 ②·④, `reports/m6_rl_sample.md`): trajectory 큐 가득 참 → 역압(`queue_full`, `queue_wait_max_s`, AMB-042-11), R3 기다림 취소·close, R2·R12 학습한 step 누계·대기 시간 기록, RL 판 벽시계 제한 설정(`game_wall_timeout_s`, AMB-042-12), learner 레인 그룹 호스트 덮어쓰기(`URANIUM_RL_MICRO_LANES`)·같은 수식 최적화·`bench rl`(032-R19, 060-R3), `--logs` 상대 경로 버그 수정 기록)
 - **Related**: [020](020-env-orchestration.md), [021](021-opponent-pool.md), [032](032-model-architecture.md), [033](033-reward.md), [050](050-evaluation.md), [060](060-infra.md)
 
 ## Purpose
@@ -102,7 +102,13 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 | Main Exploiter | 현재 Main과 대전. 최근 승률이 20% 미만이면 게임의 50%를 Main 스냅샷 상대로 `f_var(x) = x(1 − x)` 가중 | AlphaStar(너무 어려운 상대에서 학습 신호 확보) |
 | 승률 표 | 상대별 지수 이동 평균(게임마다 감쇠 0.99), 처음 보는 상대는 0.5 | 오래된 결과의 영향을 줄인다 |
 | 종족 샘플링 | `p_r = 0.5 × 1/3 + 0.5 × (1 − w_r) / Σ(1 − w)`, w_r = 종족 r 상대 최근 승률. 모든 종족 최소 1/6 | 균등 + 약한 종족 가중(기존 결정)을 절반씩 |
-| Random 종족 비율 (021-R7) | 상대가 T0·T1 봇이고 여러 종족을 지원할 때 20% | 종족을 하나만 하는 T1 봇은 적용하지 않는다 |
+| Random 종족 비율 (021-R7) | 상대가 T0·T1 봇이고 세 종족을 모두 지원할 때 20%. 두 종족만 지원하면(`[[t1]] races`가 둘) Random을 주지 않고, 종족 샘플링으로 정한 종족(목록 안)으로 둔다(2026-11-03, 메인 임시 결정, AMB-042-14) | 종족을 하나만 하는 T1 봇은 적용하지 않는다. 두 종족 봇에 Random을 주면 목록에 없는 종족(예: 2차 run의 Steamhammer 프로토스)이 나올 수 있다 |
+| C1 모델 상대 (2026-11-03 사용자 결정, AMB-042-14) | C1 셀프 몫을 셋으로 나눈다: 현재 Main(`c1_self`), 과거 Main 스냅샷(`c1_snapshot`), 고정 상대 anchor(`c1_anchor`). 키는 아래 "단계 설정" | 셀프 상대가 현재 Main뿐이면 양쪽이 함께 수동적으로 바뀌어도 벌받지 않는다. 1차 T1·셀프 run은 자기끼리 9/10 무승부, 출발 체크포인트에 0-10으로 무너졌다(`reports/m6_t1self_stop.md`) |
+| C1 스냅샷 상대 선택 | 후보 = 공개에 성공한 Main 스냅샷 중 최근 `[snapshot] main_candidates`개(0 = 전체). 후보 안에서 PFSP `f_hard(x) = (1 − x)²`, x = 그 스냅샷에 대한 Main 승률(위 승률 표, 처음 보는 스냅샷은 0.5). 후보에서 빠진 스냅샷은 공용 드라이브에 그대로 둔다(지우지 않음) | AlphaStar Main의 PFSP를 C1 셀프 몫에 일부 도입. 후보 수를 묶어 추론 서버 수(GPU 메모리)를 제한 |
+| anchor | `[league] anchor`: 고정 상대 체크포인트(체크포인트 폴더 `ckpt-<step>` 또는 그 `agents/main`, 상대 경로는 `URANIUM_SHARED_DIR` 기준, 020-R11과 같음). 승률 표 키 `anchor@<체크포인트 이름>`(예: `anchor@ckpt-3133569`). `c1_anchor > 0`인데 `anchor`가 비었거나 시작할 때 그 경로에 모델 파일이 없으면 설정·시작 오류다(메인 임시 결정) | 출발점에게 지는 정책을 바로 벌한다 |
+| 스냅샷이 아직 없을 때 | `c1_snapshot` 몫은 anchor로 간다. anchor도 없으면(`c1_anchor = 0`이고 `anchor` 없음) 현재 Main으로 간다 | 사용자 결정(anchor로). anchor가 없는 경우는 메인 임시 결정 |
+| 모델 상대 실패 (메인 임시 결정) | 판을 배정할 때 뽑은 스냅샷·anchor 상대의 추론 서버를 쓸 수 없으면(띄우기 실패, 모델 파일 읽기 실패 등) 그 판은 현재 Main 셀프로 배정한다. 게임 자리를 멈추지 않고, 바꾼 사실을 로그에 남긴다. 판 도중 실패는 지금처럼 Aborted로 학습에서 뺀다(042-R3) | 상대 하나의 실패로 학습이 멈추지 않게 |
+| 모델 상대 게임과 커리큘럼 창 | 현재 Main·스냅샷·anchor 게임은 커리큘럼 전환 창(종족별 T0·T1 최근 300판)에 넣지 않는다. 승률 표에는 상대별로 기록한다(메인 임시 결정) | 전환 조건은 봇 상대 승률 기준 |
 | 맵·시작 위치 | 투혼·서킷브레이커 균등, 시작 위치 랜덤 | 기존 결정 |
 
 ### 스냅샷·리셋 (스냅샷 주기 N)
@@ -114,13 +120,18 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 
 근거: AlphaStar의 조건(승률 70%, 고정 주기, LE 리셋 확률 25%)을 이 규모 update 수로 바꿨다.
 
+- Main 스냅샷 주기는 `[snapshot] main_every_updates`(기본 2,000)다. 2차 T1·셀프 run은 250이다(2026-11-03 사용자 결정, AMB-042-14).
+- **스냅샷 공개 (2026-11-03, 메인 임시 결정, AMB-042-14)**: 스냅샷 때 체크포인트를 저장·push한 뒤, 그 에이전트의 모델 파일(`agents/<agent>`)만 `checkpoints/<run>/league/<스냅샷 이름>/agents/<agent>`로 복사한다(061 구조). 이전에는 체크포인트 전체(옵티마이저·다른 에이전트 포함)를 복사했다. 복사에 실패한 스냅샷은 공개되지 않은 것으로 보고 상대 후보에 넣지 않는다.
+- **스냅샷 C1 후보 수**: `[snapshot] main_candidates`(기본 4, 0 = 전체). C1 스냅샷 몫의 후보를 공개된 Main 스냅샷 중 최근 이 개수로 묶는다(위 "C1 스냅샷 상대 선택"). C2 PFSP는 지금처럼 전체 스냅샷이다.
+- **스냅샷 추론 서버**: 어느 상대 선택에도 쓰이지 않는 스냅샷(예: C1에서 후보에서 빠진 것)의 추론 서버는 그 서버를 쓰는 진행 중 판이 끝나면 내리고 GPU 메모리를 돌려준다. 스냅샷 파일은 지우지 않는다(메인 임시 결정).
+
 리셋하면 그 에이전트 큐에 남은 세그먼트와 자리를 기다리던 세그먼트는 리셋 전 정책의 것이므로 버리고(기다리던 게임은 넣지 않고 풀어 준다), 그 뒤 도착하는 리셋 전 정책의 세그먼트(behaviour 버전이 learner 버전보다 큰 것)도 버린다. 모두 `dropped_lag`로 센다(042-R4, 2026-10-31).
 
 ### 커리큘럼 (042-R5)
 | 단계 | 상대 구성 | 다음 단계 조건 |
 |---|---|---|
 | C0 | T0 봇 80%(종족·빌드 균등), 셀프 20%. r_value 사용(033, `r_value_stages` 기본값) | 종족마다 T0 상대 최근 300판 승률 ≥ 70% |
-| C1 | T0 30%, T1 40%, 셀프 30% | 종족마다 T1 상대 최근 300판 승률 ≥ 50% |
+| C1 | T0 30%, T1 40%, 셀프 30%. 셀프는 현재 Main·과거 Main 스냅샷·anchor로 나눌 수 있다(아래 단계 설정, 기본은 현재 Main만) | 종족마다 T1 상대 최근 300판 승률 ≥ 50% |
 | C2 | 풀 리그(위 표) | 없음(중단은 사용자 결정, AMB-042-1) |
 - 시간 기준 강제 전환은 두지 않는다. 한 단계에서 오래 정체하면 M6 중간 점검에서 사용자에게 보고한다.
 - pseudo-reward(r_build·r_units, 033)는 C0·C1에서 고정하고, C2 진입 후 Main 20,000 update에 걸쳐 0으로 선형 감쇠한다(033의 "리그 진행에 따라 감쇠"의 초기값, 033-R4).
@@ -131,10 +142,19 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
   | `start_stage` | `"C0"` | 새 리그(run에 LATEST 없음)의 시작 단계. `"C0"` \| `"C1"`, 다른 값은 설정 로드 오류다. 재개하면 리그 상태의 단계를 그대로 쓴다 |
   | `auto_advance` | `true` | `false`면 위 승률 조건을 채워도 단계를 바꾸지 않는다(단계 변경은 사용자 결정). 전환 창(종족별 최근 300판)은 그대로 기록한다. 042-R5(SHOULD)에서 벗어나는 사유: 상대 비중을 추이를 보고 사용자가 정하기로 함 |
   | `r_value_stages` | `["C0"]` | r_value(033)를 쓰는 단계. 다른 단계에서는 가중치 0 |
-- **재개 시 설정 (2026-11-03)**: 단계·승률 표·전환 창·스냅샷은 리그 상태(체크포인트)에서 이어 가고, 상대 비율(`c0_*`·`c1_*`, C2 `main_*`)·`auto_advance`·`r_value_stages`와 T1 목록(`[[t1]]`)은 지금 설정 파일을 따른다. 이전에는 T1 목록이 새 리그를 만들 때 리그 상태에 고정됐다. 상대 비중은 정상 종료(042-R10) → 설정 수정 → 재시작으로 바꾼다.
+  | `c1_self` | `0.3` | C1에서 현재 Main과 두는 몫(지금 뜻 그대로) |
+  | `c1_snapshot` | `0` | C1에서 과거 Main 스냅샷과 두는 몫(위 "C1 스냅샷 상대 선택", 2026-11-03, AMB-042-14) |
+  | `c1_anchor` | `0` | C1에서 anchor(`[league] anchor`)와 두는 몫(2026-11-03, AMB-042-14) |
+  | `r_value_vs_model` | `true` | `false`면 모델 상대(현재 Main·스냅샷·anchor) 게임에서 r_value의 정책 가중치를 0으로 하고, T0·T1 봇 게임만 `r_value_stages`를 따른다(033, 2026-11-03 사용자 결정, AMB-042-14). r_value value head는 모든 게임에서 자기 목표를 그대로 학습한다 |
 
-### T1·셀프 run (2026-11-03 사용자 결정, AMB-042-13)
+  C1 상대는 `c1_t0`·`c1_t1`·`c1_self`·`c1_snapshot`·`c1_anchor`의 합에 대한 비율로 뽑는다(지금처럼 합으로 나눈다). 새 두 키가 0이면 지금 동작과 같다. 사용자 결정의 "셀프 쪽 현재 Main 15%"는 기존 `c1_self`(현재 Main 몫)로 쓴다(메인 임시 결정: 따로 `c1_self_current` 키를 두지 않음).
+- **r_value의 게임별 적용 (2026-11-03 사용자 결정, AMB-042-14)**: r_value 정책 가중치는 판마다 정한다. 그 판의 단계가 `r_value_stages`에 있고, 상대가 봇이거나 `r_value_vs_model = true`면 033 가중치(0.05), 아니면 0이다. 한 update 배치에 두 종류 판의 세그먼트가 섞이므로 가중치는 세그먼트(판) 단위로 적용한다. V-trace PG와 UPGO 모두 같은 가중치를 쓴다. value 손실(033-R3 value↔r_value)은 가중치와 상관없이 모든 판에서 학습한다.
+- **재개 시 설정 (2026-11-03)**: 단계·승률 표·전환 창·스냅샷은 리그 상태(체크포인트)에서 이어 가고, 상대 비율(`c0_*`·`c1_*`, C2 `main_*`)·`auto_advance`·`r_value_stages`·`r_value_vs_model`·`[league] anchor`·`[snapshot] main_candidates`와 T1 목록(`[[t1]]`)은 지금 설정 파일을 따른다(새 키는 2026-11-03 개정 2, 메인 임시 결정). 이전에는 T1 목록이 새 리그를 만들 때 리그 상태에 고정됐다. 상대 비중은 정상 종료(042-R10) → 설정 수정 → 재시작으로 바꾼다.
+
+### T1·셀프 run (2026-11-03 사용자 결정, AMB-042-13·14)
 042-AC1 뒤 다음 RL run이다. AC1은 6 run 모두 기준 미달이었고(아래 AC1 결과), AC1 무승부 조사에서 T0 봇은 무너진 상대를 마무리하지 못하는 등 상대로 부족했다(`reports/m6_ac1_draws.md`). T1 저그 3종 각 10판에서 BC는 1/30승, AC1 V-trace s1은 3/30승이었다(`<shared>/eval/t1zerg-20261103/`).
+
+**1차 `t1self-s1` (실패, 2026-11-03 사용자 결정으로 정지)**
 
 | 항목 | 값 |
 |---|---|
@@ -152,6 +172,21 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 | 상한 | agent step 상한 없음(`--max-agent-steps` 안 줌). 중단은 사용자 결정 |
 | 점검 | 100만 agent step마다 T1 저그 3종(Steamhammer·ZZZKBot·UAlbertaBot) 각 10판, stochastic, 투혼, seed_base 43000(11-03 측정과 같음). 첫 중간 보고는 500만 step |
 | 단계 전환 | 자동 전환 없음. T1 비중을 올릴지는 점검 추이를 보고 사용자가 정한다 |
+
+1차 결과(`reports/m6_t1self_stop.md`): update 2,198(agent step 441만, LATEST `ckpt-4413190`)에서 정지했다. 셀프 상대가 현재 Main뿐이라 양쪽이 함께 "일꾼·터렛·확장, 병력 거의 없음"의 수동적 정책으로 무너졌다. 마지막 체크포인트는 자기끼리 10판 중 9판 시간 제한 무승부, 출발 체크포인트에게 0-10이다. 셀프 판이 학습 step의 67~76%였고, 무승부는 r_win 0이라 그 판들의 정책 신호는 r_value뿐이었다. T1 초반 러시 약점은 그대로였고 c3M에는 셀프 습관(배럭 없이 터렛·CC)이 T1 판까지 번졌다. Windows 빌드의 Steamhammer 프로토스는 8~10분에 같은 위치에서 결정적으로 크래시했다(프로토스 판 27판 중 10판). `t1self-s1` 체크포인트·로그는 실패 기록으로 보존한다.
+
+**2차 `t1self-s2` (2026-11-03 사용자 결정, AMB-042-14)**: 1차와 같은 출발에서 새 run으로 다시 시작한다. 아래만 바꾸고 나머지(V-trace, `--init`·`--bc`, step·update 0부터, C1 고정·자동 전환 없음, 두 맵, T/P/Z와 종족 샘플링, z 없음, step 상한 없음·중단은 사용자 결정, 100만 step마다 T1 저그 3종 점검을 학습과 동시에, 첫 중간 보고 500만)는 1차와 같다.
+
+| 항목 | 값 |
+|---|---|
+| run id | `t1self-s2`. 시작 `--init ac1-vtrace-s1/ckpt-3133569 --bc bc-s2e2-pt/ckpt-11387` |
+| 설정 파일 | `config/rl_t1self2.toml`(메인 임시 결정: 1차 설정 `config/rl_t1self.toml`은 기록으로 그대로 둔다) |
+| 상대 비율 | `c1_t0 = 0`, `c1_t1 = 0.5`, `c1_self = 0.15`(현재 Main), `c1_snapshot = 0.25`(과거 Main 스냅샷, PFSP f_hard), `c1_anchor = 0.10`. 스냅샷이 아직 없으면 스냅샷 몫은 anchor로 간다 |
+| anchor | 출발 체크포인트 AC1 V-trace s1 `ckpt-3133569`의 `agents/main`(`[league] anchor = "checkpoints/ac1-vtrace-s1/ckpt-3133569"`) |
+| 스냅샷 | `[snapshot] main_every_updates = 250`, `main_candidates = 4`(최근 공개 4개가 후보, 이전 것은 공용 드라이브에 남김) |
+| 보상 | `r_value_stages = ["C0", "C1"]` 그대로, `r_value_vs_model = false`: T1 판만 r_value(0.05) 켬, 모델 상대 판은 r_value 정책 가중치 0(value head는 모든 판에서 학습) |
+| T1 풀 | McRave 제외 그대로. Steamhammer는 테란·저그만(`races = ["Terran", "Zerg"]`, Windows 빌드 프로토스 크래시). 종족별 T = UAlbertaBot·Steamhammer·Iron, P = UAlbertaBot·Stardust, Z = UAlbertaBot·Steamhammer·ZZZKBot(021-R4 종족마다 2개 이상 충족) |
+| Random | 021-R7: 세 종족 봇(UAlbertaBot)만 Random 20%. Steamhammer는 Random 없이 테란·저그 판에만 나온다 |
 
 ### V-trace vs PPO 채택 기준
 - PPO 비교 설정: clip 0.2, GAE λ 0.95, 같은 배치를 2 epoch, value clip 없음. 나머지(KL·엔트로피·옵티마이저)는 같다.
@@ -182,7 +217,7 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
   - 학습 전 기준선(2026-10-31 사용자 결정): RL은 `last_failed` 실제 값을 쓰므로(030-R10), BC 체크포인트를 `last_failed` 0 고정과 실제 값으로 각 200판(같은 seed) 재고 **높은 쪽 승률**을 BC 승률로 쓴다. 학습 후 평가는 실제 값이다.
   - z(2026-10-31 사용자 결정): AC1의 6 run은 z 테이블 없이(모든 게임 z 없음, pseudo-reward 꺼짐, 033-R8) 진행한다. BC 기준선(z 없음)과 조건이 같고, z가 판 시작 때 고정돼 정찰에 따른 빌드 변경을 담지 못하므로 유연성을 위해 일단 z 없이 간다. 033-AC2·리그에서 z를 쓸지는 그 전에 다시 묻는다.
   - 규모(2026-10-17 사용자 결정, AMB-042-7): V-trace·PPO 각 3 seed(6 run)로 알고리즘을 고른다. 033-AC2 ablation 3 run은 본 BC 체크포인트와 z 테이블이 나온 뒤 실행한다. 처리량은 TBD(M6)로 측정해 run 시간을 다시 보고한다.
-  - 결과(2026-11-02, `reports/m6_ac1.md`): **6 run 모두 seed별 개선 기준 미달**(BC 68.3%, 기준 = 학습 후 Wilson 하한 > 74.4%). 판정 규칙대로 V-trace 채택(3 seed 평균 75.5% vs PPO 78.2%, 차이 2.7%p ≤ 3%p). 다음 run은 위 "T1·셀프 run"이다.
+  - 결과(2026-11-02, `reports/m6_ac1.md`): **6 run 모두 seed별 개선 기준 미달**(BC 68.3%, 기준 = 학습 후 Wilson 하한 > 74.4%). 판정 규칙대로 V-trace 채택(3 seed 평균 75.5% vs PPO 78.2%, 차이 2.7%p ≤ 3%p). 다음 run은 위 "T1·셀프 run"이다(1차 실패, 2차 `t1self-s2`).
 - 042-AC2: 72시간 연속 학습 중 크래시나 메모리 누수 없이 resume이 가능하다.
 - 042-AC3: Main이 이전 승격 체크포인트 대비 승률 ≥ 55%일 때만 승격한다.
 - 042-AC4: 학습 중 Ctrl+C 한 번이면 체크포인트 push와 잠금 해제까지 마치고 종료한다. 이어서 hosts 파일의 게임 호스트를 하나 빼거나 더해 재시작하면, `--take-over` 없이 같은 step에서 재개하고 바뀐 호스트 구성으로 게임을 배정한다(042-R10).
