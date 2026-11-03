@@ -525,6 +525,106 @@ fn collapse_concede_is_not_a_decision_042_r14() {
     }
 }
 
+/// 042-R14 / 033-R7 / 033-R9 / 033-R10 (AMB-042-16): with collapse concede, the r_scout / r_survive
+/// of the frames after the last real decision up to the concede (and the leave's final frame)
+/// reach the end call, which puts them on that last decision; none of it is lost or doubled.
+#[test]
+fn collapse_concede_with_scout_rewards_042_r14() {
+    use uranium_env::concede::{ConcedeConfig, ConcedeGame};
+    use uranium_env::reward::{Outcome, RewardParts};
+    type Seen = Arc<Mutex<(f32, f32, Vec<RewardParts>)>>;
+    struct Obs(Seen);
+    impl uranium_agent::model_policy::SessionObserver for Obs {
+        fn on_decision(&mut self, d: &uranium_agent::model_policy::Decision<'_>) {
+            let mut s = self.0.lock().unwrap();
+            s.0 += d.reward_before.scout;
+            s.1 += d.reward_before.survive;
+        }
+        fn on_end(&mut self, after: RewardParts, _o: Option<Outcome>) {
+            self.0.lock().unwrap().2.push(after);
+        }
+    }
+    let h = mock(1, None);
+    let game = Arc::new(ConcedeGame::new(ConcedeConfig { enabled: true, ..Default::default() }));
+    let seen: Seen = Arc::new(Mutex::new((0.0, 0.0, vec![])));
+    let mut p = ModelPolicy::new(&h, &game_info()).unwrap().with_observer(None, Default::default(), Box::new(Obs(seen.clone()))).with_concede(game, 0);
+    // Decisions at 4,000 .. 7,199; the concede at 7,200 (as in collapse_concede_is_not_a_decision).
+    let mut fs = supply_frames(&[(4_000, 40), (4_319, 8), (4_320, 8), (5_760, 8), (7_199, 8), (7_200, 8)]);
+    // A new enemy building type is first seen in the concede frame.
+    let mut pool = fs[0].units.iter().find(|u| u.owner == ENEMY).expect("an enemy unit").clone();
+    pool.id = 9_999;
+    pool.unit_type = uranium_env::types::TypeTables::get().unit_by_name("Zerg_Spawning_Pool").unwrap().id as u16;
+    fs[5].units.push(pool);
+    let acts: Vec<Act> = fs.iter().map(|f| p.on_frame(f).unwrap()).collect();
+    assert_eq!(acts[5].surrender.as_deref(), Some("gg"), "conceded at 7,200");
+    let mut last = fs[5].clone();
+    last.frame = 7_201;
+    p.on_end(Some(Outcome::Loss), Some(&last));
+    let (scout, survive, ends) = seen.lock().unwrap().clone();
+    assert_eq!(ends.len(), 1);
+    let scvs = fs[4].units.iter().filter(|u| u.owner == SELF && u.unit_type == 7 && u.flags & flags::COMPLETED != 0).count() as f32;
+    let rate = (scvs / 20.0).min(1.0);
+    assert!(scvs > 0.0);
+    let per_frame = rate / 24.0 / 300.0;
+    // Decisions: the window from 4,320 to the last decision (7,199); the end: 7,199 → 7,201.
+    assert!((survive - (7_199.0 - 4_320.0) * per_frame).abs() < 1e-5, "decisions {survive}");
+    assert!((ends[0].survive - 2.0 * per_frame).abs() < 1e-6, "end {}", ends[0].survive);
+    // The pool seen at 7,200: 0.1 x decay(7,200) = 0.075, on the end call only.
+    assert!((ends[0].scout - 0.075).abs() < 1e-6, "end scout {}", ends[0].scout);
+    assert!(scout > 0.0, "items seen at the decisions paid there");
+    assert_eq!(ends[0].win, -1.0);
+}
+
+/// 042 정찰·대응 지표 (AMB-042-16, 050 rush-s2 checks): a plan / evaluation model session (no RL
+/// observer) records the metrics in its results.jsonl row (`model`, after the existing keys), the
+/// final frame included; no reward is involved.
+#[test]
+fn eval_sessions_record_scout_metrics_042() {
+    let h = mock(1, None);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let sink: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let opts = ServeOptions { max_sessions: 1, ..ServeOptions::new(PolicySpec::Model(h.clone())) };
+    let server_sink = sink.clone();
+    let server = std::thread::spawn(move || serve(listener, opts, Arc::new(Mutex::new(SinkWriter(server_sink)))).unwrap());
+    let fs = frames(0, 3);
+    let mut last = fs[2].clone();
+    last.frame = 5_800;
+    let scvs = last.units.iter().filter(|u| u.owner == SELF && u.unit_type == 7).count();
+    let bridge = std::thread::spawn(move || {
+        let s = TcpStream::connect(addr).unwrap();
+        let mut r = BufReader::new(s.try_clone().unwrap());
+        let mut w = BufWriter::new(s);
+        let hello = Hello { protocol_version: PROTOCOL_VERSION, backend: Backend::OpenBw, game_version: "test".into(), mode: Mode::Lockstep, game_id: 5, slot: 0, replay: false };
+        write_msg(&mut w, &BridgeMsg::Hello(hello)).unwrap();
+        write_msg(&mut w, &BridgeMsg::GameInfo(Box::new(game_info()))).unwrap();
+        for f in fs {
+            write_msg(&mut w, &BridgeMsg::Frame(Box::new(f))).unwrap();
+            w.flush().unwrap();
+            let AgentMsg::Act(_) = read_msg::<AgentMsg>(&mut r).unwrap() else { panic!("expected Act") };
+        }
+        write_msg(&mut w, &BridgeMsg::End(GameEnd { winner: Some(0), frame: 5_800, reason: EndReason::Elimination, stats: None, final_frame: Some(Box::new(last)) })).unwrap();
+        w.flush().unwrap();
+    });
+    bridge.join().unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let _ = TcpStream::connect(addr);
+    server.join().unwrap();
+    let text = String::from_utf8(sink.lock().unwrap().clone()).unwrap();
+    let rec: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    let m = &rec["model"];
+    assert_eq!(m["decisions"], 3, "{text}");
+    // Own barracks in the first frame (frame 1), the enemy hatchery at its start location.
+    assert_eq!(m["barracks_s"].as_f64(), Some(1.0 / 24.0), "{text}");
+    assert_eq!(m["scout_main_s"].as_f64(), Some(1.0 / 24.0), "{text}");
+    assert!(m["scout_types_4m"].as_u64().unwrap() >= 1 && m["scout_types_6m"] == m["scout_types_4m"], "{text}");
+    assert_eq!(m["scv_4m"].as_u64(), Some(scvs as u64), "from the final frame (5,800 >= 4:00)");
+    // The new keys follow the existing ones.
+    let keys: Vec<&String> = m.as_object().unwrap().keys().collect();
+    let at = |k: &str| keys.iter().position(|x| x.as_str() == k).unwrap();
+    assert!(at("host_ms_p50") < at("scout_main_s") && at("scout_main_s") < at("scv_4m"), "{keys:?}");
+}
+
 /// 042-R14 / 031-R12: in an RL league game the leave is claimed once per game, so an On-mode
 /// 031-R12 surrender never follows a concede of the other side (nor a concede a surrender); in a
 /// fresh game the same session surrenders as before. The 031-R12 rule holds for real here (P(win)

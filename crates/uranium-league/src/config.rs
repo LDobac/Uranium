@@ -352,6 +352,14 @@ impl RlConfig {
         }
         // 042 사다리 그룹 설정 검사 (AMB-042-16).
         let groups = &self.curriculum.ladder_groups;
+        // Group names go into games.csv as they are: letters, digits, `_` and `-` only.
+        let name_ok = |g: &str| !g.is_empty() && g.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+        if let Some(g) = groups.keys().find(|g| !name_ok(g)) {
+            bail!("[curriculum] ladder_groups name {g:?} must be letters, digits, '_' or '-' (042, AMB-042-16)");
+        }
+        if let Some((i, e)) = self.ladder.iter().enumerate().find(|(_, e)| !e.group.is_empty() && !name_ok(&e.group)) {
+            bail!("[[ladder]] entry {}: group {:?} must be letters, digits, '_' or '-' (042, AMB-042-16)", i + 1, e.group);
+        }
         if !groups.is_empty() {
             if let Some((g, x)) = groups.iter().find(|(_, x)| !(**x >= 0.0 && x.is_finite())) {
                 bail!("[curriculum] ladder_groups share of {g:?} must be a finite value >= 0, got {x} (042, AMB-042-16)");
@@ -784,10 +792,16 @@ mod tests {
         ] {
             assert!(with_ladder(&format!("c1_ladder = 0.7\nladder_groups = {groups}"), &two, "").is_err(), "{why}");
         }
-        // An entry without `group` (the empty name) needs "" listed.
+        // With groups every entry needs one (the empty name cannot be listed).
         let mixed = format!("{two}[[ladder]]\nkind = \"t1\"\nname = \"nogroup\"\nrace = \"Zerg\"\n");
         assert!(with_ladder("c1_ladder = 0.7\nladder_groups = { rush = 0.5, macro = 0.5 }", &mixed, "").is_err());
-        with_ladder("c1_ladder = 0.7\nladder_groups = { rush = 0.5, macro = 0.5, \"\" = 0.1 }", &mixed, "").unwrap();
+        assert!(with_ladder("c1_ladder = 0.7\nladder_groups = { rush = 0.5, macro = 0.5, \"\" = 0.1 }", &mixed, "").is_err());
+        // Names: letters, digits, '_' and '-' only (they go into games.csv), with or without groups.
+        with_ladder("c1_ladder = 0.7\nladder_groups = { rush_1 = 0.5, macro-B = 0.5 }", &ladder(&["rush_1", "macro-B"]), "").unwrap();
+        for bad in ["a,b", "a b", "a\\nb", "a\\\"b", "\u{e9}"] {
+            assert!(with_ladder(&format!("c1_ladder = 0.7\nladder_groups = {{ \"{bad}\" = 1.0 }}"), &ladder(&[bad]), "").is_err(), "{bad:?}");
+            assert!(with_ladder("c1_ladder = 0.7", &ladder(&[bad]), "").is_err(), "entry {bad:?} without groups");
+        }
     }
 
     /// 033-R11 설정 키 검사 through the RL config: unknown modes and keys and out-of-range values

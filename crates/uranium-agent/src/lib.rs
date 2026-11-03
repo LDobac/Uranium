@@ -724,7 +724,6 @@ fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, po
                 rec.stats = end.stats;
                 rec.policy_ms = policy_time.as_secs_f64() * 1e3;
                 rec.frame_digest = format!("{digest:016x}");
-                rec.model = policy.model_stats();
                 ends.push(hello.game_id, session_end);
                 if let Some(last) = &end.final_frame {
                     // 010-AC6 also holds for the final frame (010-R12 keeps 010-R5).
@@ -734,6 +733,8 @@ fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, po
                     record_unit_rejections(last, &last_cmds, hello, rec, rejections);
                 }
                 policy.on_end(outcome, end.final_frame.as_deref());
+                // After `on_end`: the 042 metrics include the final frame (AMB-042-16).
+                rec.model = policy.model_stats();
                 return Ok(());
             }
             other => bail!("unexpected message {other:?}"),

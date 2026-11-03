@@ -15,7 +15,7 @@ use uranium_env::features::Strategy;
 use uranium_env::features::extract::action_table;
 use uranium_env::maps::{MapFamilies, PrecomputeSource, family_index, live_precompute_for_session, maps_dir};
 use uranium_env::reward::{Outcome, RewardParts, RewardTracker};
-use uranium_env::scout::{RewardConfig, ScoutMetrics, ScoutTracker};
+use uranium_env::scout::{RewardConfig, ScoutMetrics, ScoutTracker, seconds};
 use uranium_env::concede::{CollapseJudge, ConcedeGame, LeaveRule};
 use uranium_env::surrender::{DEFAULT_CHAT, SurrenderJudge, SurrenderMode, rule_holds};
 use crate::infer::HostState;
@@ -56,6 +56,17 @@ pub struct ModelStats {
     pub mean_batch: f64,
     /// Feature extraction + executor on the session thread, ms.
     pub host_ms_p50: f64,
+    /// 042 정찰·대응 지표 of this session's game (AMB-042-16), every model session (RL and plan /
+    /// evaluation games alike, the same definition as `games.csv`): game seconds (frame / 24) of
+    /// the enemy main found, the first own Barracks / Bunker (construction start); distinct enemy
+    /// building types seen by 4:00 / 6:00; own SCVs at the first observation from 4:00. `None` =
+    /// not reached. Metrics only: no reward in plan games.
+    pub scout_main_s: Option<f64>,
+    pub scout_types_4m: u32,
+    pub scout_types_6m: u32,
+    pub barracks_s: Option<f64>,
+    pub bunker_s: Option<f64>,
+    pub scv_4m: Option<u32>,
 }
 
 /// One model decision as an RL actor needs it (042: obs, action, behaviour log-prob per head and
@@ -110,8 +121,9 @@ pub struct ModelPolicy {
     z: Option<Strategy>,
     /// 033 rewards, kept only when an observer records the trajectory.
     reward: Option<RewardTracker>,
-    /// 033-R9 / R10 tracker of this game before any observation (public game information only,
-    /// 033-R5); the observer's reward tracker gets a copy with its settings.
+    /// 033-R9 / R10 tracker of this game (public game information only, 033-R5). An RL session's
+    /// reward tracker gets a fresh copy with its settings (`with_observer`); every other model
+    /// session (plan / evaluation games) steps this one for the 042 metrics only.
     scout: ScoutTracker,
     self_player: u8,
     sess: InferSession,
@@ -252,6 +264,10 @@ impl ModelPolicy {
     /// E-8 / 010-R12: the dense reward of those frames comes from the bridge's final frame (own
     /// vision, events since the last decision); without one only r_win is added.
     pub fn on_end(&mut self, outcome: Option<Outcome>, final_frame: Option<&RawFrame>) {
+        // 042 metrics of a session without a reward tracker: the final frame too (010-R12).
+        if let (None, Some(f)) = (self.reward.as_ref(), final_frame) {
+            self.scout.step(f);
+        }
         if let Some(o) = self.observer.as_mut() {
             let mut after = match (outcome, final_frame, self.reward.as_mut()) {
                 (Some(_), Some(f), Some(r)) => r.step(f),
@@ -333,6 +349,11 @@ impl ModelPolicy {
     }
 
     pub fn on_frame(&mut self, f: &RawFrame) -> Result<Act> {
+        // 042 metrics (AMB-042-16) of a session without a reward tracker; RL sessions count them in
+        // their reward tracker below. No reward effect.
+        if self.reward.is_none() {
+            self.scout.step(f);
+        }
         if let Some(act) = self.concede_check(f) {
             return Ok(act);
         }
@@ -404,6 +425,10 @@ impl ModelPolicy {
         s.run_ms_p95 = pct(&mut self.run, 0.95);
         s.host_ms_p50 = pct(&mut self.host, 0.5);
         s.mean_batch = if s.decisions > 0 { self.batch_sum as f64 / s.decisions as f64 } else { 0.0 };
+        let m = self.reward.as_ref().and_then(|r| r.scout_metrics()).unwrap_or_else(|| self.scout.metrics());
+        let secs = |f: Option<u32>| f.map(seconds);
+        (s.scout_main_s, s.scout_types_4m, s.scout_types_6m) = (secs(m.main_frame), m.types_4m, m.types_6m);
+        (s.barracks_s, s.bunker_s, s.scv_4m) = (secs(m.barracks_frame), secs(m.bunker_frame), m.scv_4m);
         s
     }
 }

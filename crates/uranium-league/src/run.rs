@@ -506,13 +506,15 @@ impl JobSource for LeagueSource {
                 s.queues[agent].finish(id);
                 let stage_up = s.league.lock().unwrap().record(&meta.pick, meta.enemy_race, o);
                 if stage_up {
-                    crate::elog!("[rl] curriculum advanced to {:?} (042-R5)", s.league.lock().unwrap().stage);
+                    stage_advanced(s);
                 }
             }
             (Some(o), None) => {
                 // No terminal segment (e.g. no decision): still a game for the win table.
                 s.queues[agent].finish(id);
-                s.league.lock().unwrap().record(&meta.pick, meta.enemy_race, o);
+                if s.league.lock().unwrap().record(&meta.pick, meta.enemy_race, o) {
+                    stage_advanced(s);
+                }
             }
             (None, _) => {
                 // 042-R3: Aborted / stopped / undecidable: nothing of it is trained.
@@ -575,6 +577,22 @@ impl JobSource for LeagueSource {
         let _ = s.games_csv.lock().unwrap().write_all(line.as_bytes());
         self.release_server(&meta);
     }
+}
+
+/// 042-R5 stage change log; 033-R11: the "scout" C2 warning at the C1 → C2 transition too.
+fn stage_advanced(s: &Shared) {
+    let stage = s.league.lock().unwrap().stage;
+    crate::elog!("[rl] curriculum advanced to {stage:?} (042-R5)");
+    if let Some(w) = scout_stage_warning(s.pseudo, stage) {
+        crate::elog!("{w}");
+    }
+}
+
+/// 033-R11 (AMB-042-16): C2 with `[reward] pseudo = "scout"` is to be decided before C2; until
+/// then r_scout / r_survive keep their weights (no C2 decay) and this warning is logged at start,
+/// at resume and at the C1 → C2 transition.
+fn scout_stage_warning(mode: PseudoMode, stage: crate::league::Stage) -> Option<&'static str> {
+    (mode == PseudoMode::Scout && stage == crate::league::Stage::C2).then_some("[rl] WARNING: stage C2 with [reward] pseudo = \"scout\": no C2 decay is applied to r_scout / r_survive (033-R11: to be decided before C2)")
 }
 
 /// 042-R11: why a game's replay is kept, if it is.
@@ -907,8 +925,8 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
                 rw.survive.until_s,
                 rw.survive.scv_target
             );
-            if league.stage == crate::league::Stage::C2 {
-                crate::elog!("[rl] WARNING: stage C2 with [reward] pseudo = \"scout\": no C2 decay is applied to r_scout / r_survive (033-R11: to be decided before C2)");
+            if let Some(w) = scout_stage_warning(rw.pseudo, league.stage) {
+                crate::elog!("{w}");
             }
         }
     }
@@ -1558,6 +1576,16 @@ mod tests {
         assert_eq!(scout_columns(PseudoMode::Scout, Some(&result(2, Some(ScoutMetrics::default()))), None), "0.6,0.375,,,0,0,,,", "nothing reached");
         assert_eq!(scout_columns(PseudoMode::Scout, None, None), ",,,,,,,,", "no session report");
         assert_eq!(scout_columns(PseudoMode::Z, None, None).split(',').count(), 9);
+    }
+
+    /// 033-R11 (AMB-042-16): the "scout" C2 warning (start, resume, C1 → C2 transition).
+    #[test]
+    fn scout_c2_warning_033_r11() {
+        use crate::league::Stage;
+        assert!(scout_stage_warning(PseudoMode::Scout, Stage::C2).is_some_and(|w| w.contains("WARNING")));
+        for (m, st) in [(PseudoMode::Scout, Stage::C1), (PseudoMode::Scout, Stage::C0), (PseudoMode::Z, Stage::C2)] {
+            assert!(scout_stage_warning(m, st).is_none(), "{m:?} {st:?}");
+        }
     }
 
     /// 033-R11 start errors: "scout" with a z table; a resumed checkpoint of the other mode (a
