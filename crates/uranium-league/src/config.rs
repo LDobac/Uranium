@@ -1282,7 +1282,7 @@ mod tests {
         assert_eq!(t.league.win_rate_decay, 0.9);
         assert_eq!(t.league.rush_judge, RushJudgeConfig { groups: vec!["rush".into(), "warmup".into()], at_s: 480, min_scv: 8 });
         assert_eq!(t.league.rush_judge.max_frames(), 11_520);
-        assert_eq!(t.sil, SilConfig { enabled: true, mode: SilMode::Sil, lanes: 4, w_pg: 0.05, w_v: 0.01, until_s: 480, buffer_segments: 2_048, select_group: "rush".into(), wins_only: true, ..SilConfig::default() });
+        assert_eq!(t.sil, SilConfig { enabled: true, mode: SilMode::Sil, lanes: 4, w_pg: 0.05, w_v: 0.01, until_s: 480, buffer_segments: 256, select_group: "rush".into(), wins_only: true, ..SilConfig::default() });
         let keys = |g: &str| t.ladder.iter().filter(|e| e.group == g).map(|e| e.opponent().unwrap().1).collect::<Vec<_>>();
         assert_eq!(keys("warmup"), ["ualbertabot9pool-zerg"]);
         assert_eq!(keys("rush"), ["t0-zerg-rush", "ualbertabot12poollings-zerg", "ualbertabot9pool10lings-zerg", "ualbertabot9poolhydra-zerg"]);

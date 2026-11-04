@@ -8,10 +8,13 @@
 # warmup = ualbertabot9pool, rush = T0 zerg_rush, ualbertabot12poollings, ualbertabot9pool10lings,
 # ualbertabot9poolhydra (ualbertabot9pool12lings, ualbertabot9poollings, ualbertabot (default),
 # steamhammeroverpool and zzzkbot left out), macro as in rush-s3; [sil] on (042-R16): mode "sil",
-# lanes 4, w_pg 0.05, w_v 0.01, until_s 480, buffer_segments 2048, select_group "rush",
-# wins_only = true. c1_* shares, ladder_pick, [curriculum.band], anchor, snapshots,
-# model_game_max_s, [kl], td_lambda, [reward] and [concede] as in rush-s3. Start: `--init
-# ac1-vtrace-s1/ckpt-3133569 --bc bc-s2e2-pt/ckpt-11387`, V-trace, new run id `rush-s4`.
+# lanes 4, w_pg 0.05, w_v 0.01, until_s 480, buffer_segments 256, select_group "rush",
+# wins_only = true. buffer_segments was 2048 until the user decision 2026-11-04 (042-R16,
+# AMB-042-18): about 4-6 MB per segment, so 2048 needed 8-12 GB more than the training PC has
+# while training and checks run; rush-s4 hit the RAM guard at 422 segments
+# (runs/rush4_20261104/silmem.csv). c1_* shares, ladder_pick, [curriculum.band], anchor,
+# snapshots, model_game_max_s, [kl], td_lambda, [reward] and [concede] as in rush-s3. Start:
+# `--init ac1-vtrace-s1/ckpt-3133569 --bc bc-s2e2-pt/ckpt-11387`, V-trace, new run id `rush-s4`.
 #
 # The rush-s3 header follows. 042 "신호 밀도·KL run" `rush-s3` (AMB-042-17, user decisions 2026-11-04,
 # reports/m6_rl_stall_advice2.md): `config/rl_rush2.toml` with only these changes —
@@ -258,8 +261,9 @@ sample_every = 100
 [sil]
 # 042-R16 자기 모방·막은 판 재학습, on for rush-s4 (user decision 2026-11-04, AMB-042-17 numbers
 # resolved, AMB-042-18): Main in C1 only; 4 of the 32 batch lanes are replaced by segments drawn
-# uniformly from a FIFO buffer of 2,048 segments (not in checkpoints) and train only the "sil"
-# loss w_pg * mean[-log pi * A+] + w_v * mean[0.5 * A+^2], A+ = max(R - V_win, 0). Candidates:
+# uniformly from a FIFO buffer of 256 segments (not in checkpoints; 2,048 until 2026-11-04, see
+# header) and train only the "sil" loss w_pg * mean[-log pi * A+] + w_v * mean[0.5 * A+^2],
+# A+ = max(R - V_win, 0). Candidates:
 # rush group games with a result, won games only (wins_only: the 042-R17 judged win at 8:00 or a
 # win before it; select_scv_4m is not used), segments starting before 8:00 (= the whole
 # mini-game). max_uses ("replay" only) and select_scv_4m stay at their unused defaults.
@@ -269,7 +273,7 @@ lanes = 4
 w_pg = 0.05
 w_v = 0.01
 until_s = 480
-buffer_segments = 2048
+buffer_segments = 256
 select_group = "rush"
 wins_only = true
 

@@ -205,8 +205,9 @@ adopt_margin = 0.03
 sample_every = 100
 
 # 042-R16 자기 모방·막은 판 재학습 (AMB-042-17): absent [sil] = off (the learner and league as
-# before). Its keys and default values (rush-s4 turns it on with these and wins_only = true,
-# config/rl_rush4.toml; a configuration that uses select_scv_4m or max_uses is asked first):
+# before). Its keys and default values (rush-s4 turns it on with these, wins_only = true and
+# buffer_segments = 256 (user decision 2026-11-04: RAM), config/rl_rush4.toml; a configuration
+# that uses select_scv_4m or max_uses is asked first):
 #   enabled = false; mode = "sil" ("sil": buffer lanes train only
 #   w_pg * mean[-log pi * A+] + w_v * mean[0.5 * A+^2], A+ = max(R - V_win, 0); "replay": the
 #   ordinary loss, a segment leaves after max_uses uses, not in the 042-R4 lag drop);
