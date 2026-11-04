@@ -402,7 +402,9 @@ impl League {
                 return i;
             }
         }
-        w.len() - 1
+        // Rounding left `acc` just below 1: the last index with a weight, never a weight-0 entry
+        // (042-R19 `fixed` weight 0 = never picked).
+        w.iter().rposition(|x| *x > 0.0).unwrap_or(w.len() - 1)
     }
 
     pub fn updates(&self, a: AgentKind) -> u64 {

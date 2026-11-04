@@ -828,7 +828,9 @@ fn start_columns(slots: Option<[u8; 2]>, result: Option<&GameResult>) -> String 
         b,
         hit,
         m.and_then(|m| m.scv_min_1m).map_or(String::new(), |n| n.to_string()),
-        m.and_then(|m| m.army_frame).map_or(String::new(), |f| format!("{:.1}", seconds(f))),
+        // 3 decimals: the value the [sil] select_army_before_s comparison sees (5,401 frames =
+        // 225.042 s, not "225.0").
+        m.and_then(|m| m.army_frame).map_or(String::new(), |f| format!("{:.3}", seconds(f))),
     ]
     .join(",")
 }
@@ -1928,7 +1930,9 @@ mod tests {
     fn start_columns_042_ac9() {
         let m = ScoutMetrics { scv_min_1m: Some(3), army_frame: Some(4_452), ..Default::default() };
         let slots = |seed| Some(uranium_runner::start_slots::start_slots(seed, 0));
-        assert_eq!(start_columns(slots(43_006), Some(&result(1, Some(m)))), "1,0,1,3,185.5", "c0 g6: (1, 0) is a hit");
+        assert_eq!(start_columns(slots(43_006), Some(&result(1, Some(m)))), "1,0,1,3,185.500", "c0 g6: (1, 0) is a hit");
+        let late = ScoutMetrics { army_frame: Some(5_401), ..Default::default() };
+        assert_eq!(start_columns(None, Some(&result(1, Some(late)))), ",,,,225.042", "the exact value select_army_before_s compares");
         assert_eq!(start_columns(slots(43_001), Some(&result(1, Some(ScoutMetrics::default())))), "2,3,0,,", "c0 g1: a miss, nothing reached");
         assert_eq!(start_columns(slots(43_001), None), "2,3,0,,", "no session report");
         assert_eq!(start_columns(None, None), ",,,,", "no seed");
