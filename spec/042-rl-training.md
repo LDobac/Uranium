@@ -1,6 +1,6 @@
 # 042 — RL Training & League
 
-- **Status**: Approved (2026-11-03 개정 4(사용자 결정, AMB-042-16 — 모두 확정, 구현 가능. 운영형 그룹 상대 5개와 점검 운영형 2상대는 측정 뒤 2026-11-04 사용자 결정): 러시·운영 혼합 run(`rush-s2`), 사다리 그룹(`[[ladder]] group`, `[curriculum] ladder_groups`), 승률 표 감쇠를 run 설정으로(`[league] win_rate_decay`), 정찰·대응 지표(`games.csv`, 042-R2), 033 정찰·생존 보상·채널 모드(`[reward]`), 재개 시 설정 추가, 042-AC6. 2026-11-03 개정 3(사용자 결정, AMB-042-15, `reports/m6_rush_ladder.md`): 러시 커리큘럼 run(`rush-s1`), C1 러시 사다리 상대(`[curriculum]` `c1_ladder`·`ladder_pick`, `[[ladder]]`, 사다리 안 PFSP f_var), RL 학습 게임 붕괴 항복(042-R14, `[concede]`, `games.csv` `end_reason`, 042-AC5), 2차 `t1self-s2` 정지 기록. 2026-11-03 개정 2(사용자 결정, AMB-042-14, `reports/m6_t1self_stop.md`): C1 셀프 몫을 현재 Main·과거 Main 스냅샷(PFSP)·고정 상대 anchor로 나눔(`[curriculum]` `c1_snapshot`·`c1_anchor`, `[league] anchor`, `[snapshot] main_candidates`), 모델 상대 게임의 r_value 끔(`r_value_vs_model`, 033), 스냅샷은 그 에이전트 모델 파일만 공개, "T1·셀프 run" 1차 결과와 2차(`t1self-s2`) 구성. 2026-11-03 개정(사용자 결정, AMB-042-13): 042-AC1 결과 기록(6 run 모두 미달, 규칙대로 V-trace 채택), Main 출발 가중치 `--init`, `[curriculum]` `start_stage`·`auto_advance`(042-R5)·`r_value_stages`(033), 재개 시 커리큘럼 비율·`[[t1]]` 목록은 지금 설정 파일, "T1·셀프 run" 구성. 2026-10-31 개정: 큐 역압·판 벽시계 설정·learner 레인 그룹, AMB-042-11·12 사용자 결정. 2026-10-15, 2026-10-23 개정: PyTorch 전환(사용자 결정, AMB-000-4) — 학습 호스트 Linux ROCm·CUDA, 프로세스 구성(Python learner·추론 스레드 + Rust 에이전트·러너·리그 스레드), R1 CUDA↔ROCm 재개. 2026-10-16 개정: 042-R10 Ctrl+C 정상 종료, 2026-10-17 개정: 초기 설정값 확정(AMB-042-3, `config/rl.toml`), 첫 학습 호스트, AMB-042-2 M6 시작 재확인, behaviour log-prob 기록(AMB-042-4), 구현 구조·Aborted 회수(042-R3)·검증 정책·AC1 규모·게임 호스트·KL 계산(AMB-042-5~9, 사용자 결정), 2026-10-18 개정: 학습 중 리플레이 저장(042-R11)·agent step 상한 종료(042-R12), 사용자 결정. 2026-10-19 개정: 옵티마이저 clip = 041-R3 전역 norm(G-D4), R11 리플레이 보존과 060-R7 정합, 장비 표기 중립화(001-R10). 2026-10-20 개정: 주 장비 규칙 참조(060-R8, AMB-032-8). 2026-10-21 개정: 042-R13 win_open RL 학습(사용자 결정, AMB-031-6). 2026-10-31 개정: AC1 상대 종족 저그(사용자 결정). 2026-10-31 개정안(사용자 결정 ②·④, `reports/m6_rl_sample.md`): trajectory 큐 가득 참 → 역압(`queue_full`, `queue_wait_max_s`, AMB-042-11), R3 기다림 취소·close, R2·R12 학습한 step 누계·대기 시간 기록, RL 판 벽시계 제한 설정(`game_wall_timeout_s`, AMB-042-12), learner 레인 그룹 호스트 덮어쓰기(`URANIUM_RL_MICRO_LANES`)·같은 수식 최적화·`bench rl`(032-R19, 060-R3), `--logs` 상대 경로 버그 수정 기록)
+- **Status**: Approved (2026-11-04 개정 5 초안(Review, AMB-042-17 Open — "기본안(미확정)" 수치와 `[SPEC AMBIGUOUS] AMB-042-17`이 붙은 사다리 추가 항목은 사용자 확인 전 구현 근거가 아니다. 기능(키·로그·규칙)은 사용자 결정 "권장안대로"(2026-11-04)라 구현 가능, 나머지 본문은 Approved 그대로): `rush-s3`(`reports/m6_rl_stall_advice2.md` 우선순위 1·2), 모델 상대 판 시간 상한(042-R15, 020-R3), 사다리 선택 `band`, KL 스케줄·λ run 설정과 헤드별 KL 배수(042-R9), 진단 로그(042-R2 `train.csv`), 자기 모방·막은 판 재학습 준비(042-R16, 기본 꺼짐), run 중단 규칙, 042-AC7. 2026-11-03 개정 4(사용자 결정, AMB-042-16 — 모두 확정, 구현 가능. 운영형 그룹 상대 5개와 점검 운영형 2상대는 측정 뒤 2026-11-04 사용자 결정): 러시·운영 혼합 run(`rush-s2`), 사다리 그룹(`[[ladder]] group`, `[curriculum] ladder_groups`), 승률 표 감쇠를 run 설정으로(`[league] win_rate_decay`), 정찰·대응 지표(`games.csv`, 042-R2), 033 정찰·생존 보상·채널 모드(`[reward]`), 재개 시 설정 추가, 042-AC6. 2026-11-03 개정 3(사용자 결정, AMB-042-15, `reports/m6_rush_ladder.md`): 러시 커리큘럼 run(`rush-s1`), C1 러시 사다리 상대(`[curriculum]` `c1_ladder`·`ladder_pick`, `[[ladder]]`, 사다리 안 PFSP f_var), RL 학습 게임 붕괴 항복(042-R14, `[concede]`, `games.csv` `end_reason`, 042-AC5), 2차 `t1self-s2` 정지 기록. 2026-11-03 개정 2(사용자 결정, AMB-042-14, `reports/m6_t1self_stop.md`): C1 셀프 몫을 현재 Main·과거 Main 스냅샷(PFSP)·고정 상대 anchor로 나눔(`[curriculum]` `c1_snapshot`·`c1_anchor`, `[league] anchor`, `[snapshot] main_candidates`), 모델 상대 게임의 r_value 끔(`r_value_vs_model`, 033), 스냅샷은 그 에이전트 모델 파일만 공개, "T1·셀프 run" 1차 결과와 2차(`t1self-s2`) 구성. 2026-11-03 개정(사용자 결정, AMB-042-13): 042-AC1 결과 기록(6 run 모두 미달, 규칙대로 V-trace 채택), Main 출발 가중치 `--init`, `[curriculum]` `start_stage`·`auto_advance`(042-R5)·`r_value_stages`(033), 재개 시 커리큘럼 비율·`[[t1]]` 목록은 지금 설정 파일, "T1·셀프 run" 구성. 2026-10-31 개정: 큐 역압·판 벽시계 설정·learner 레인 그룹, AMB-042-11·12 사용자 결정. 2026-10-15, 2026-10-23 개정: PyTorch 전환(사용자 결정, AMB-000-4) — 학습 호스트 Linux ROCm·CUDA, 프로세스 구성(Python learner·추론 스레드 + Rust 에이전트·러너·리그 스레드), R1 CUDA↔ROCm 재개. 2026-10-16 개정: 042-R10 Ctrl+C 정상 종료, 2026-10-17 개정: 초기 설정값 확정(AMB-042-3, `config/rl.toml`), 첫 학습 호스트, AMB-042-2 M6 시작 재확인, behaviour log-prob 기록(AMB-042-4), 구현 구조·Aborted 회수(042-R3)·검증 정책·AC1 규모·게임 호스트·KL 계산(AMB-042-5~9, 사용자 결정), 2026-10-18 개정: 학습 중 리플레이 저장(042-R11)·agent step 상한 종료(042-R12), 사용자 결정. 2026-10-19 개정: 옵티마이저 clip = 041-R3 전역 norm(G-D4), R11 리플레이 보존과 060-R7 정합, 장비 표기 중립화(001-R10). 2026-10-20 개정: 주 장비 규칙 참조(060-R8, AMB-032-8). 2026-10-21 개정: 042-R13 win_open RL 학습(사용자 결정, AMB-031-6). 2026-10-31 개정: AC1 상대 종족 저그(사용자 결정). 2026-10-31 개정안(사용자 결정 ②·④, `reports/m6_rl_sample.md`): trajectory 큐 가득 참 → 역압(`queue_full`, `queue_wait_max_s`, AMB-042-11), R3 기다림 취소·close, R2·R12 학습한 step 누계·대기 시간 기록, RL 판 벽시계 제한 설정(`game_wall_timeout_s`, AMB-042-12), learner 레인 그룹 호스트 덮어쓰기(`URANIUM_RL_MICRO_LANES`)·같은 수식 최적화·`bench rl`(032-R19, 060-R3), `--logs` 상대 경로 버그 수정 기록)
 - **Related**: [020](020-env-orchestration.md), [021](021-opponent-pool.md), [032](032-model-architecture.md), [033](033-reward.md), [050](050-evaluation.md), [060](060-infra.md)
 
 ## Purpose
@@ -23,11 +23,20 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 - **출발 정책 `--init` (2026-11-03 사용자 결정, AMB-042-13)**: `--bc` 체크포인트는 KL 참조 모델(AMB-042-9)과 Exploiter 리셋 대상이고, `--init`이 없으면 세 에이전트의 출발 정책도 된다(지금 동작). `--init <ckpt>`를 주면 Main의 출발 가중치를 그 체크포인트의 `agents/main`에서 읽는다. Main Exploiter·League Exploiter는 그대로 BC에서 시작한다.
   - run에 LATEST가 없을 때(새 run)만 적용한다. 재시작·재개는 `--init`과 상관없이 항상 그 run의 LATEST에서 이어 간다(042-R1, 061).
   - 모델 구조 설정(dropout 같은 가중치 없는 설정은 RL 값 0으로 맞춘 뒤)이 `--bc` 모델과 다르면 시작 오류다. KL은 같은 헤드 분포끼리 계산하기 때문이다(032-R10). feature schema 버전은 따로 같을 필요가 없고 빌드의 로드 호환(030-R5)을 따른다(모델 입력이 같다).
-  - 가중치만 가져온다. 옵티마이저는 새로 만들고, step·update는 새 run id에서 0부터 센다(KL 계수도 0.1부터, 메인 임시 결정 2026-11-03).
+  - 가중치만 가져온다. 옵티마이저는 새로 만들고, step·update는 새 run id에서 0부터 센다(KL 계수도 그 run의 `[kl] init`부터, 메인 임시 결정 2026-11-03. `rush-s2`까지는 모두 0.1).
   - 출발 출처(`--init` 체크포인트, 없으면 `--bc`)를 체크포인트의 에이전트별 `meta.json` `train.start`에 기록한다(준 경로와 절대 경로, `--init`이면 그 체크포인트의 update·step). 재개해도 유지한다.
 - **스냅샷 상대 ID**: `uranium-<agent>@<run>/<update>` (agent = `main` | `main-exploiter` | `league-exploiter`, 021-R3 형식).
-- **로그 (042-R2)**: CSV 두 개. `train.csv`(update별 손실 항목, KL, 헤드별 엔트로피, 정책 지연, 버린·회수한 trajectory 수, 학습한 agent step 누계 `trained_steps`, 직전 행 이후 게임들이 큐 자리를 기다린 시간 합 `queue_wait_s`(2026-10-31), 처리량, 추론 p50·p95)와 `games.csv`(게임별 결과, 보상 항목 합, 상대 ID, 종족, 맵, 저장한 리플레이 경로·사유(042-R11), 끝난 사유 `end_reason`(042-R14, 2026-11-03), 그 뒤 033 원값 합 `r_scout`·`r_survive`와 아래 "정찰·대응 지표" 열(2026-11-03, AMB-042-16)).
+- **로그 (042-R2)**: CSV 두 개. `train.csv`(update별 손실 항목, KL, 헤드별 엔트로피, 정책 지연, 버린·회수한 trajectory 수, 학습한 agent step 누계 `trained_steps`, 직전 행 이후 게임들이 큐 자리를 기다린 시간 합 `queue_wait_s`(2026-10-31), 처리량, 추론 p50·p95, 그 뒤 아래 "진단 로그" 열(2026-11-04, AMB-042-17))와 `games.csv`(게임별 결과, 보상 항목 합, 상대 ID, 종족, 맵, 저장한 리플레이 경로·사유(042-R11), 끝난 사유 `end_reason`(042-R14, 2026-11-03), 그 뒤 033 원값 합 `r_scout`·`r_survive`와 아래 "정찰·대응 지표" 열(2026-11-03, AMB-042-16)).
   - **`--logs` 경로(2026-10-31 버그 수정)**: `--logs`(기본 `runs/rl`)가 상대 경로면 시작할 때 현재 작업 폴더 기준 절대 경로로 바꾼 뒤 로그와 추론 서버 모델 폴더(`<logs>/infer/<이름>`)를 만든다. 추론 서버(Rust Broker)는 상대 체크포인트 경로를 `URANIUM_SHARED_DIR` 기준으로 찾으므로(020-R11), 상대 경로를 그대로 넘기면 모델 파일을 찾지 못해 시작에 실패했다(`reports/m6_rl_sample.md` 발견 1). 고치기 전에는 절대 경로를 준다.
+  - **진단 로그 (2026-11-04, AMB-042-17, 자문 F1)**: `train.csv` 끝(`queue_wait_s` 뒤)에 아래 열을 이 순서로 붙인다. 모두 그 행 update 배치의 유효 step(마스크 안) 전체로 구하고, 레인 그룹(위)과 상관없이 배치 전체 값이다. 통계의 호스트 동기화는 지금처럼 update당 한 번으로 모은다(032-R19). 머리글이 다른 이전 파일은 지금처럼 따로 두고 새 파일을 시작한다.
+
+    | 열 | 정의 |
+    |---|---|
+    | `adv_rms` | 정책 gradient에 실제로 쓴 결합 advantage(033 가중치·판별 배수 적용 뒤, 기존 `adv_mean`이 평균을 내는 값)의 RMS |
+    | `adv_rms_win`, `adv_rms_build`, `adv_rms_units`, `adv_rms_value` | 채널(value head, 033-R3)별 V-trace PG advantage(q_s − V(s_t))의 RMS. 033 가중치·판별 배수를 곱하기 전. 채널 모드 `"scout"`에서 build·units는 r_scout·r_survive 채널(033-R11) |
+    | `value_loss_win`, `value_loss_build`, `value_loss_units`, `value_loss_value` | 채널별 0.5 × (V − V-trace target)²의 평균. 손실 가중치(value 0.5)를 곱하기 전 |
+    | `kl_p99`, `kl_max` | step별 KL(π‖π_BC)(사용된 헤드 합, 032-R10, 헤드 배수(042-R9)를 곱하기 전)의 99번째 백분위·최댓값 |
+    | `sil_buffer`, `sil_lanes`, `sil_loss`, `sil_pos_frac` | 042-R16(자기 모방): 버퍼의 세그먼트 수, 이 update에 버퍼에서 온 레인 수, 그 손실(가중치 곱한 뒤), 양의 advantage(`max(R − V, 0) > 0`)인 step 비율. 꺼져 있으면 빈 값 |
 - **learner 레인 그룹 (2026-10-31 사용자 결정 ④, 032-R19)**: RL learner도 BC(041-R3, AMB-041-7)처럼 배치의 레인을 그룹으로 나눠 계산하고, 모든 그룹의 gradient를 합친 뒤 전역 clip과 옵티마이저를 한 번 적용한다. 그룹 크기는 호스트 `.env` 키 `URANIUM_RL_MICRO_LANES`(001-R9, 레인 수, 0 = 전체, 없거나 비면 `config/rl.toml` `micro_lanes`)로 정한다.
   - Windows CUDA 호스트: 2 또는 4 중 메모리 측정으로 고른다(TBD(M6)). 정확 KL의 BC 재forward(AMB-042-9)를 포함한 최대 GPU 할당이 GPU 메모리 안에 드는 큰 쪽이다.
   - Linux ROCm 호스트: 1 그대로다. 060-R3의 채택 기준(최악 모양, 레인 그룹 1)도 RL에서 그대로다.
@@ -46,7 +55,7 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 ## 알고리즘
 - **V-trace**(IMPALA) off-policy 보정: actor 정책 지연을 허용한다.
 - **UPGO** policy gradient를 보조로 쓴다.
-- **KL(π ‖ π_BC)** 정규화: 계수 초기값 0.1, 점진 감쇠, 하한 0.01.
+- **KL(π ‖ π_BC)** 정규화: 계수 초기값 0.1, 점진 감쇠, 하한 0.01(기본값. run 설정, 헤드별 배수, 042-R9).
 - 엔트로피 보너스를 헤드별로 둔다.
 - 대안: PPO(clip 0.2)를 같은 인터페이스로 구현해 비교한다. 초기 소규모 실험에서 더 안정적인 쪽을 채택한다.
 
@@ -73,7 +82,7 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 | 배치 | 레인 32 × T64 = 2,048 agent step/update. `micro_lanes`로 나눠 gradient를 합친다(041과 같은 방식). 호스트별 그룹 크기는 `URANIUM_RL_MICRO_LANES`로 덮어쓴다(위 "learner 레인 그룹", 2026-10-31) | T=64는 042-R8. 레인 수는 BC(`config/bc.toml`)와 같게 해 메모리 특성을 재사용 |
 | 옵티마이저 | Adam, lr 3e-5, β1 0, β2 0.99, ε 1e-5, weight decay 0, gradient-norm clip 1.0(전역 L2 norm, 041-R3과 같은 구현, 2026-10-19 사용자 결정 G-D4, AMB-041-5) | AlphaStar RL 단계 설정(사전학습 정책 미세조정). BC lr(3e-4)의 1/10 |
 | 할인 γ | 1.0 (에피소드는 020 60분 상한으로 유한) | AlphaStar는 할인 없이 λ로 분산 조절 |
-| value 목표 | TD(λ), λ = 0.8 | AlphaStar |
+| value 목표 | TD(λ), λ = 0.8. run 설정 `[loss] td_lambda`(V-trace trace 계수 c = λ·min(c̄, ρ)로 value target과 PG advantage 모두에 들어간다). `rush-s3`는 0.95(2026-11-04 사용자 결정, AMB-042-17) | AlphaStar. 0.95: 결정 간격 0.5초에서 λ 0.8의 추적 깊이(약 2.5초)가 빌드 결정과 러시 결과 사이(수백 결정)에 비해 너무 짧다는 자문(`reports/m6_rl_stall_advice2.md` A4) |
 | V-trace 절단 | ρ̄ = 1.0, c̄ = 1.0 | IMPALA 기본값 |
 | 손실 가중치 | V-trace PG 1.0, UPGO 1.0, value 0.5(헤드별 동일), KL·엔트로피는 아래 | AlphaStar(PG·UPGO 동일 가중), value 0.5는 BC `value.win`과 같음 |
 | advantage 결합 | 보상 항목별 value head(033-R3)로 advantage를 따로 구하고 [033](033-reward.md) 가중치로 더한다 | 033-R3 |
@@ -90,7 +99,8 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 | 항목 | 값 | 근거 |
 |---|---|---|
 | 헤드별 엔트로피 계수 | action_type 3e-3, delay 1e-3, queued 1e-3, selected 1e-3, target_unit 1e-3, target_loc 1e-3. 감쇠 없음 | KL(π‖π_BC)이 붕괴를 막으므로 IMPALA(1e-2)보다 작게 둔다. 행동 종류 다양성이 가장 중요해 action_type만 크게. 032-R10대로 사용된 헤드만 합산 |
-| KL 계수 스케줄 | `max(0.01, 0.1 × 0.5^(update / 20,000))` (반감기 20,000 update ≈ 4,100만 agent step) | 초기 0.1·하한 0.01은 기존 결정. 반감기는 C0~C1 동안 BC 근처를 유지하도록 정함 |
+| KL 계수 스케줄 | `max(floor, init × 0.5^(update / half_life_updates))`, run 설정 `[kl] init`·`floor`·`half_life_updates`. 기본 0.1·0.01·20,000(반감기 ≈ 4,100만 agent step). `update`는 그 에이전트의 이 run 안 learner update 수다: 새 run(`--init` 포함)은 0부터, 재개하면 체크포인트에서 이어 간다(2026-11-04 명시). `init > 0`, `0 ≤ floor ≤ init`, `half_life_updates > 0`이 아니면 설정 로드 오류다. `rush-s3`는 0.03·0.01·1,500(사용자 결정 2026-11-04, AMB-042-17: update 약 2,380(≈ 490만 step)에 하한) | 초기 0.1·하한 0.01은 기존 결정. 반감기는 C0~C1 동안 BC 근처를 유지하도록 정함. 2026-11-04: 새 run마다 0.1로 다시 시작해 실제로 감쇠한 적이 없고, β 0.1에서는 BC가 1% 주는 행동을 주 행동만큼 올리는 데 advantage 차이 약 0.39가 필요하다는 자문(`reports/m6_rl_stall_advice2.md` A1) |
+| 헤드별 KL 배수 (2026-11-04, AMB-042-17, 자문 A2) | `[kl.head_scale]` `action`·`delay`·`queued`·`selected`·`target_unit`·`target_loc`, 기본 모두 1.0(지금 동작). 헤드 h의 KL 계수 = 위 스케줄 값 × 배수_h. 사용된 헤드만 더하는 규칙(032-R10)과 정확 KL(AMB-042-9)은 그대로. 배수 < 0이면 설정 로드 오류. `train.csv` `kl_coef`는 배수 곱하기 전 값이다. `rush-s3`는 모두 1.0 기본안(미확정) — 진단(자문 F2: 빌드 결정 지점의 π_BC·π_now)에서 특정 헤드가 막는다고 나오면 바꾸자고 묻는다 | 헤드마다 KL 크기가 다르다(`rush-s2`: selected > target_loc > action) |
 | Exploiter의 KL | Main과 같은 스케줄. Exploiter를 BC로 리셋하면 스케줄도 처음부터 | AlphaStar는 Exploiter에도 KL을 적용 |
 
 ### 리그·상대 선택
@@ -108,9 +118,11 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
 | anchor | `[league] anchor`: 고정 상대 체크포인트(체크포인트 폴더 `ckpt-<step>` 또는 그 `agents/main`, 상대 경로는 `URANIUM_SHARED_DIR` 기준, 020-R11과 같음). 승률 표 키 `anchor@<체크포인트 이름>`(예: `anchor@ckpt-3133569`). `c1_anchor > 0`인데 `anchor`가 비었거나 시작할 때 그 경로에 모델 파일이 없으면 설정·시작 오류다(메인 임시 결정) | 출발점에게 지는 정책을 바로 벌한다 |
 | 스냅샷이 아직 없을 때 | `c1_snapshot` 몫은 anchor로 간다. anchor도 없으면(`c1_anchor = 0`이고 `anchor` 없음) 현재 Main으로 간다 | 사용자 결정(anchor로). anchor가 없는 경우는 메인 임시 결정 |
 | 모델 상대 실패 (메인 임시 결정) | 판을 배정할 때 뽑은 스냅샷·anchor 상대의 추론 서버를 쓸 수 없으면(띄우기 실패, 모델 파일 읽기 실패 등) 그 판은 현재 Main 셀프로 배정한다. 게임 자리를 멈추지 않고, 바꾼 사실을 로그에 남긴다. 판 도중 실패는 지금처럼 Aborted로 학습에서 뺀다(042-R3) | 상대 하나의 실패로 학습이 멈추지 않게 |
+| 모델 상대 판 시간 상한 (042-R15, 2026-11-04, AMB-042-17, 자문 B2) | `[league] model_game_max_s`(게임 초, 기본 0 = 상한 없음, 020-R3의 60분 그대로). 0보다 크면 RL 학습 게임 중 상대가 모델(현재 Main·과거 스냅샷·anchor, 모델 상대 실패로 현재 Main 셀프로 바뀐 판 포함)인 판의 최대 게임 프레임을 `min(86,400, model_game_max_s × 24)`로 둔다. 그 프레임에 이르면 020-R3 시간 초과와 같이 **무승부**(`TimeLimitDraw`, r_win 0, 종료라 bootstrap 0)다. 승률 표에는 무(0.5)로, `games.csv` `end_reason`은 `TimeLimitDraw`(상대 `class`로 60분 판과 구별)로 남는다. 봇(T0·T1·사다리) 판과 평가 게임(plan, 050)은 60분 그대로다. 붕괴 항복(042-R14)은 상한 전까지 그대로 판정한다. 값은 `GameSpec.max_frames`(011 `URANIUM_MAX_FRAMES`)로 그 판에만 보내고 제어 프로토콜·hostd·브리지는 바꾸지 않는다. 검사: 0 또는 60 ~ 3,600, 벗어나면 설정 로드 오류(메인 임시 결정) | 모델 상대 판이 판당 7,000~9,000결정이라 `rush-s2`에서 학습 step의 55.6%(그중 60분 무승부만 23.6%)를 차지했다. 러시 방어 구간(러시 판 첫 4분)은 step의 약 4.2%였다(`reports/m6_rl_stall_advice2.md` 1절) |
 | 모델 상대 게임과 커리큘럼 창 | 현재 Main·스냅샷·anchor 게임은 커리큘럼 전환 창(종족별 T0·T1 최근 300판)에 넣지 않는다. 승률 표에는 상대별로 기록한다(메인 임시 결정) | 전환 조건은 봇 상대 승률 기준 |
 | C1 러시 사다리 (2026-11-03 사용자 결정, AMB-042-15) | `[curriculum] c1_ladder`: C1에서 러시 사다리 상대와 두는 몫. 사다리는 RL 설정의 `[[ladder]]` 목록이다. 항목은 `kind = "t0"`와 `build`(T0 빌드 이름, 예: `"zerg_rush"`) 또는 `kind = "t1"`와 `name`(T1 봇 폴더 이름, 021 설정 변형 포함), 그리고 `race`(그 상대가 두는 종족, `"Terran"`·`"Protoss"`·`"Zerg"`)다. 종족이 항목마다 고정이라 종족 샘플링과 Random(021-R7)을 쓰지 않는다. 승률 표 키와 상대 클래스는 기존 규칙 그대로다: T0는 `t0-<race>-<빌드 태그>`(예: `t0-zerg-rush`, 021-R3)·T0, T1은 `<name>-<race>`(예: `steamhammeroverpool-zerg`)·T1. 그래서 r_value(봇 판, 033)와 커리큘럼 창도 그 클래스 규칙을 따른다. 사다리는 C1에서만 쓰고 C2 PFSP 풀에는 넣지 않는다 | 사다리는 종족·빌드가 고정인 상대 묶음이고 뽑는 방식(f_var)도 다르다. `[[t1]]`(종족 샘플링 → 그 종족 봇 균등, Random)에 거르기 설정을 붙이면 같은 목록이 run마다 다른 뜻이 되므로 따로 둔다. 기존 run 설정과 `[[t1]]` 선택 코드는 그대로다(메인 임시 결정) |
-| 사다리 안 상대 선택 | `[curriculum] ladder_pick = "f_var"`(기본이자 지금 유일한 값, 다른 값은 설정 로드 오류): PFSP `f_var(x) = x(1 − x)`, x = 그 항목에 대한 Main 승률 표 값(승 1·무 0.5·패 0의 지수 이동 평균, 위 "승률 표", 처음 보는 상대는 0.5). 승률이 50%에 가까운 상대가 가장 자주 뽑힌다. 가중치 합이 0이면 균등 | 사용자 결정(2026-11-03, AMB-042-15). 승률 20~70% 대역 상대의 학습 신호가 가장 강하다는 자문 권고(`reports/m6_rush_ladder.md` 1절) |
+| 사다리 안 상대 선택 | `[curriculum] ladder_pick = "f_var"`(기본): PFSP `f_var(x) = x(1 − x)`, x = 그 항목에 대한 Main 승률 표 값(승 1·무 0.5·패 0의 지수 이동 평균, 위 "승률 표", 처음 보는 상대는 0.5). 승률이 50%에 가까운 상대가 가장 자주 뽑힌다. 가중치 합이 0이면 균등 | 사용자 결정(2026-11-03, AMB-042-15). 승률 20~70% 대역 상대의 학습 신호가 가장 강하다는 자문 권고(`reports/m6_rush_ladder.md` 1절) |
+| 사다리 선택 `band` (2026-11-04, AMB-042-17, 자문 B3) | `ladder_pick = "band"`: 가중치 `f(x) = exp(−((x − center) / width)²)`, x는 위와 같은 승률 표 값(처음 보는 상대 0.5). **제외**: 같은 그룹(그룹이 없으면 전체) 안에 x ≥ `exclude_below`인 항목이 하나라도 있으면 x < `exclude_below`인 항목은 가중치 0. 모두 그 아래면 제외하지 않고 모든 항목에 f를 쓴다. 가중치 합이 0이면(모두 underflow) 남은 항목 균등. 키 `[curriculum.band]` `center`(기본 0.5)·`width`(0.15)·`exclude_below`(0.10). 검사: `0 ≤ center ≤ 1`, `width > 0`, `0 ≤ exclude_below < 1`, 벗어나면 설정 로드 오류. **그룹별 방식**: `ladder_pick`은 문자열(모든 그룹) 또는 그룹 이름 → 방식 표(예: `{ rush = "band", macro = "f_var" }`)다. 표에 없는 그룹은 `"f_var"`. 방식은 `"f_var"`·`"band"`만, 다른 값·`ladder_groups`에 없는 그룹 이름은 설정 로드 오류다. 판의 방식은 기록하지 않는다(설정에서 안다). `f_var`는 그대로 남는다 | 사용자 결정 2026-11-04(자문 권장안). `f_var`는 승률 0~30% 사이를 거의 고르게 뽑아 `rush-s2`에서 러시 7종이 13~16%로 고르게 나왔고, 승률 0%인 상대(오버풀·ZZZKBot)에 러시 판의 24%가 갔다. `center`·`width`·`exclude_below` 수치와 그룹별 방식은 아래 `rush-s3` 기본안(미확정) |
 | 사다리 그룹 (2026-11-03, AMB-042-16) | `[[ladder]]` 항목에 `group`(문자열, 없으면 빈 이름)을 둘 수 있다. `[curriculum] ladder_groups`(그룹 이름 → 몫, 예: `{ rush = 0.5, macro = 0.5 }`)가 있으면 사다리 판은 먼저 몫의 비율로 그룹을 뽑고, 그 그룹 항목 안에서 `ladder_pick`(f_var)으로 뽑는다. 없거나 비면 지금처럼 전체 항목 하나로 뽑는다(그룹은 기록에만 쓰임). 설정 검사: 몫 ≥ 0이고 합 > 0, 몫이 있는 그룹에 항목이 없거나, `ladder_groups`가 있는데 거기 없는 그룹의 항목이 있으면 설정 로드 오류다. 판의 그룹은 `games.csv` `ladder_group` 열에 남긴다(사다리 판이 아니면 빈 값) | 사용자 결정(2026-11-03): 러시와 운영형(비러시) 상대를 대략 반씩 섞는다. f_var 하나로 뽑으면 비중이 승률에 따라 흔들려 반반을 보장하지 못한다. 키 이름·검사는 메인 임시 결정 |
 | 사다리 설정 검사 | `c1_ladder > 0`인데 `[[ladder]]`가 비었을 때, `kind`가 `t0`·`t1`이 아닐 때, `t0` 항목의 빌드가 없는 이름이거나 종족과 맞지 않을 때(예: `zerg_rush`인데 `race`가 저그가 아님), `race`가 Random일 때, 같은 승률 표 키가 두 번 나올 때는 설정 로드 오류다. 봇은 `[[t1]]`처럼 모든 게임 호스트에 설치돼 있어야 한다(리그는 확인하지 않는다) | 메인 임시 결정 |
 | 맵·시작 위치 | 투혼·서킷브레이커 균등, 시작 위치 랜덤 | 기존 결정 |
@@ -150,13 +162,14 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
   | `c1_snapshot` | `0` | C1에서 과거 Main 스냅샷과 두는 몫(위 "C1 스냅샷 상대 선택", 2026-11-03, AMB-042-14) |
   | `c1_anchor` | `0` | C1에서 anchor(`[league] anchor`)와 두는 몫(2026-11-03, AMB-042-14) |
   | `c1_ladder` | `0` | C1에서 러시 사다리(`[[ladder]]`)와 두는 몫(위 "C1 러시 사다리", 2026-11-03, AMB-042-15) |
-  | `ladder_pick` | `"f_var"` | 사다리 안 상대 선택 방식. 지금은 `"f_var"`만 있다(위 "사다리 안 상대 선택") |
+  | `ladder_pick` | `"f_var"` | 사다리 안 상대 선택 방식. `"f_var"` \| `"band"`, 또는 그룹별 표(위 "사다리 안 상대 선택"·"사다리 선택 `band`", 2026-11-04) |
+  | `[curriculum.band]` | `center` 0.5, `width` 0.15, `exclude_below` 0.10 | `"band"`의 수치(2026-11-04) |
   | `ladder_groups` | 없음 | 사다리 그룹별 몫(위 "사다리 그룹", 2026-11-03, AMB-042-16). 없으면 그룹 없이 전체에서 f_var |
   | `r_value_vs_model` | `true` | `false`면 모델 상대(현재 Main·스냅샷·anchor) 게임에서 r_value의 정책 가중치를 0으로 하고, T0·T1 봇 게임만 `r_value_stages`를 따른다(033, 2026-11-03 사용자 결정, AMB-042-14). r_value value head는 모든 게임에서 자기 목표를 그대로 학습한다 |
 
   C1 상대는 `c1_t0`·`c1_t1`·`c1_ladder`·`c1_self`·`c1_snapshot`·`c1_anchor`의 합에 대한 비율로 뽑는다(지금처럼 합으로 나눈다). 새 키(`c1_snapshot`·`c1_anchor`, 2026-11-03 개정 3의 `c1_ladder`)가 0이면 지금 동작과 같다. 사용자 결정의 "셀프 쪽 현재 Main 15%"는 기존 `c1_self`(현재 Main 몫)로 쓴다(메인 임시 결정: 따로 `c1_self_current` 키를 두지 않음).
 - **r_value의 게임별 적용 (2026-11-03 사용자 결정, AMB-042-14)**: r_value 정책 가중치는 판마다 정한다. 그 판의 단계가 `r_value_stages`에 있고, 상대가 봇이거나 `r_value_vs_model = true`면 033 가중치(0.05), 아니면 0이다. 한 update 배치에 두 종류 판의 세그먼트가 섞이므로 가중치는 세그먼트(판) 단위로 적용한다. V-trace PG와 UPGO 모두 같은 가중치를 쓴다. value 손실(033-R3 value↔r_value)은 가중치와 상관없이 모든 판에서 학습한다. 채널 모드 `"scout"`(033-R11)의 r_scout·r_survive 판별 배수(`vs_model`, 모델 상대 판에 곱함)도 같은 방식으로 세그먼트 단위로 적용한다(2026-11-03, AMB-042-16).
-- **재개 시 설정 (2026-11-03)**: 단계·승률 표·전환 창·스냅샷은 리그 상태(체크포인트)에서 이어 가고, 상대 비율(`c0_*`·`c1_*`, C2 `main_*`)·`auto_advance`·`r_value_stages`·`r_value_vs_model`·`[league] anchor`·`[snapshot] main_candidates`와 T1 목록(`[[t1]]`)은 지금 설정 파일을 따른다(새 키는 2026-11-03 개정 2, 메인 임시 결정). `c1_ladder`·`ladder_pick`·러시 사다리 목록(`[[ladder]]`)·`[concede]`도 지금 설정 파일을 따른다(2026-11-03 개정 3, 메인 임시 결정). `[league] win_rate_decay`·`ladder_groups`·`[[ladder]] group`·`[reward]`(033, 단 `pseudo` 모드가 체크포인트와 다르면 시작 오류, 033-R11)도 지금 설정 파일을 따른다(2026-11-03 개정 4, 메인 임시 결정). 승률 표 값은 이어 가고 새 감쇠는 그 뒤 판부터 적용한다. 사다리 항목의 승률은 승률 표 키로 이어 간다. 이전에는 T1 목록이 새 리그를 만들 때 리그 상태에 고정됐다. 상대 비중은 정상 종료(042-R10) → 설정 수정 → 재시작으로 바꾼다.
+- **재개 시 설정 (2026-11-03)**: 단계·승률 표·전환 창·스냅샷은 리그 상태(체크포인트)에서 이어 가고, 상대 비율(`c0_*`·`c1_*`, C2 `main_*`)·`auto_advance`·`r_value_stages`·`r_value_vs_model`·`[league] anchor`·`[snapshot] main_candidates`와 T1 목록(`[[t1]]`)은 지금 설정 파일을 따른다(새 키는 2026-11-03 개정 2, 메인 임시 결정). `c1_ladder`·`ladder_pick`·러시 사다리 목록(`[[ladder]]`)·`[concede]`도 지금 설정 파일을 따른다(2026-11-03 개정 3, 메인 임시 결정). `[league] win_rate_decay`·`ladder_groups`·`[[ladder]] group`·`[reward]`(033, 단 `pseudo` 모드가 체크포인트와 다르면 시작 오류, 033-R11)도 지금 설정 파일을 따른다(2026-11-03 개정 4, 메인 임시 결정). `[kl]`·`[kl.head_scale]`·`[loss] td_lambda`·`ladder_pick`·`[curriculum.band]`·`[league] model_game_max_s`·`[sil]`(042-R16)도 지금 설정 파일을 따른다(2026-11-04 개정 5). KL 스케줄의 update 수는 체크포인트에서 이어 간다. 승률 표 값은 이어 가고 새 감쇠는 그 뒤 판부터 적용한다. 사다리 항목의 승률은 승률 표 키로 이어 간다. 이전에는 T1 목록이 새 리그를 만들 때 리그 상태에 고정됐다. 상대 비중은 정상 종료(042-R10) → 설정 수정 → 재시작으로 바꾼다.
 
 ### 붕괴 항복 (042-R14, 2026-11-03 사용자 결정, AMB-042-15)
 RL 학습 게임에서 우리 쪽이 무너지면 모델 정책이 스스로 항복해 그 판을 패배로 끝낸다. 무너진 뒤 상대가 마무리하지 못해(T0 기억·탐색 결함, UAlbertaBot 러시 뒤 정지) 60분 무승부(r_win 0)로 끌리는 판을 패배(−1)로 바로잡기 위해서다. 러시 상대 기준 측정에서 무승부 40판 중 34판이 그런 판이었다(`reports/m6_rush_ladder.md` 6절).
@@ -277,6 +290,57 @@ T1·셀프 run 다음 RL run이다. 러시 상대 기준 측정(`reports/m6_rush
 | 점검 | 100만 agent step마다 학습과 동시에: rush-s1 점검 4상대(T0 `zerg_rush`, UAlbertaBot 기본 저그, Steamhammer 오버풀 변형, ZZZKBot)와 운영형 2상대(사용자 결정 2026-11-04: `ualbertabot2hatchhydra`, `steamhammer2hatchmuta`) 각 10판, stochastic, 투혼, seed_base 43000. 평가 게임이라 붕괴 항복·정찰·생존 보상 없음(050). 승·패·무, 막음 비율(러시 상대), 위 정찰·대응 지표를 상대 종류(러시·운영형)별로 보고한다. 첫 중간 보고 500만 step(메인 임시 결정, 이전 run들과 같음) |
 | 사다리·비중 변경 | 자동 변경 없음. 점검 추이를 보고 사용자가 정한다(정상 종료 → 설정 수정 → 재시작, 재개 시 설정) |
 
+다음 run은 아래 `rush-s3`다(2026-11-04 사용자 결정, AMB-042-17). `rush-s2` 체크포인트·로그는 보존한다.
+
+### 신호 밀도·KL run (`rush-s3`) (2026-11-04 사용자 결정 "권장안대로", AMB-042-17)
+`rush-s2`까지 네 run 동안 러시 상대 실력이 움직이지 않았다. 2차 자문(`reports/m6_rl_stall_advice2.md`)의 진단은 "학습 신호가 learner에 거의 닿지 않는다"이다: 모델 상대 판이 학습 step의 55.6%, 러시 방어 구간은 약 4.2%였고, KL 0.1이 BC가 드물게 주는 방어 행동(벙커·이른 배럭)을 눌렀다. 사용자 결정(2026-11-04): 자문 우선순위 1(신호 밀도: B1·B2·B3·B5)과 2(KL·λ: A1·A4, A2는 장치만)를 한 run으로, 진단(F1 로그, F2·F3 분석)을 먼저, 우선순위 3(자기 모방, 042-R16)은 준비만 하고 1.5M step 지표를 본 뒤 켤지 정한다. 우선순위 4(스크립트 교사 시연)와 러시 판 8:00 조기 종료 미니게임(B6)은 진단 뒤 따로 정한다. 초점은 러시 방어다.
+
+| 항목 | 값 |
+|---|---|
+| run id | `rush-s3`. 시작 `--init rush-s2/ckpt-2151242 --bc bc-s2e2-pt/ckpt-11387`(사용자 결정: scout 채널 value head가 맞춰진 `rush-s2` 체크포인트). KL 참조·Exploiter 리셋 대상은 BC 그대로 |
+| 설정 파일 | `config/rl_rush3.toml`(`config/rl_rush2.toml`은 기록으로 둔다) |
+| 알고리즘·step | V-trace. 새 run id로 step·update 0부터, 옵티마이저·리그 상태(승률 표·스냅샷) 새로(이전 run들과 같음). KL 계수는 `[kl] init` 0.03부터 |
+| 단계 | `start_stage = "C1"`, `auto_advance = false`(이전과 같음) |
+| 상대 비율 | 사용자 결정(자문 B1): `c1_ladder = 0.90`, `c1_anchor = 0.05`, `c1_snapshot = 0.05`, `c1_self = 0`(현재 Main 셀프 없음), `c1_t0 = 0`, `c1_t1 = 0`. 첫 스냅샷 전 스냅샷 몫은 anchor로 간다 |
+| 사다리 그룹 | `ladder_groups = { rush = 0.5, macro = 0.5 }` 그대로(전체 판으로 러시 45%·운영형 45%). 기본안(미확정): 자문 B7(러시 0.6)은 이번에 쓰지 않는다 — 모델 상대 몫이 줄어 러시 판 수는 이미 35% → 45%로 늘고, 운영형 몫은 "항상 방어"가 손해가 되게 하는 장치라 줄이지 않는다 |
+| 러시 그룹 | `rush-s2`의 7개 그대로, 그리고 자문 B5 단: `[SPEC AMBIGUOUS] AMB-042-17` 지금 정책 기준 승률 50~60%인 UAlbertaBot 설정 변형 1~2개(021 "T1 설정 변형" 규칙). `rush-s2` 러시 판 결과로 9풀 변형 22-5(81%)와 T0 `zerg_rush` 6-17(26%) 사이가 비어 있다. 후보 오프닝·이름은 측정 전이라 정하지 않았다. 측정: 출발 체크포인트 `rush-s2/ckpt-2151242`, stochastic, 투혼·서킷브레이커 각 15판, 결과로 목록을 사용자가 정한다. 기본안(미확정): 목록이 정해지기 전에도 7개로 시작하고, 정해지면 정상 종료 → 설정 수정 → 재시작(재개 시 설정)으로 더한다 |
+| 운영형 그룹 | `rush-s2`의 5개 그대로 |
+| 사다리 선택 | 사용자 결정(자문 B3): 러시 그룹은 `band`, 제외 기준 승률 0.10, 처음 보는 상대 0.5. 기본안(미확정): `ladder_pick = { rush = "band", macro = "f_var" }`, `[curriculum.band]` `center = 0.5`, `width = 0.15`. 참고 계산(`rush-s2` `games.csv`로 다시 만든 승률 표, 감쇠 0.97): 러시 그룹 x는 9풀 0.68, T0 0.39, 기본 0.29, 12풀 0.28, 9풀링 0.26, ZZZKBot 0.26, 오버풀 0.23(상대당 약 25판이라 아직 0.5 쪽으로 끌려 있음). 이 표로 `band`는 T0 47%·9풀 18%·기본 11%·12풀 9%·9풀링 6%·ZZZKBot 6%·오버풀 3%, `f_var`는 모두 12~17%다. 운영형 그룹에 `band`를 쓰면 판의 61~67%가 `ualbertabot2hatchhydra`(0.61) 하나로 가서 운영형은 `f_var`로 둔다(운영형 몫은 "항상 방어"가 손해가 되게 하는 장치라 고르게) |
+| 승률 표 감쇠 | `[league] win_rate_decay = 0.97`(`rush-s2`와 같음) |
+| anchor | 사용자 결정: AC1 그대로(`[league] anchor = "checkpoints/ac1-vtrace-s1/ckpt-3133569"`) |
+| 스냅샷 | `rush-s2`와 같음: `main_every_updates = 250`, `main_candidates = 4`, 후보 안 f_hard |
+| 모델 상대 판 시간 상한 | 사용자 결정(자문 B2, 042-R15). 기본안(미확정): `[league] model_game_max_s = 1500`(25분 = 36,000 프레임, 자문 범위 20~25분의 긴 쪽 — 모델 상대 판에도 중반 교전이 남게) |
+| KL | 사용자 결정(자문 A1): `[kl] init = 0.03`, `floor = 0.01`, `half_life_updates = 1500`(이 run의 update 0부터). 헤드별 배수(A2) `[kl.head_scale]` 모두 1.0 기본안(미확정) |
+| λ | 사용자 결정(자문 A4): `[loss] td_lambda = 0.95` |
+| 나머지 손실·옵티마이저 | 초기 설정값 그대로(lr 3e-5, 엔트로피 계수, PG·UPGO·value 가중치) |
+| 보상 | `rush-s2`와 같음(사용자 결정): `[reward] pseudo = "scout"`, r_scout·r_survive 033 수치, r_value 봇 판만(`r_value_stages = ["C0", "C1"]`, `r_value_vs_model = false`), z 없음 |
+| 붕괴 항복 | `rush-s2`와 같음(`[concede] enabled = true`, 기본값) |
+| 자기 모방 | `[sil] enabled = false`(042-R16). 1.5M step 점검 뒤 사용자 결정 전에는 켜지 않는다 |
+| 진단 로그 | `train.csv` 진단 열(042-R2, 위 "진단 로그")을 시작 전에 구현한다. 자문 F2(빌드 결정 지점에서 π_BC·π_now의 벙커·배럭·마린 확률)·F3(러시 판 value 예측과 시각)은 `rush-s2` 체크포인트·리플레이로 따로 분석해 리포트에 남긴다(학습 코드 변경 아님) |
+| 맵·상한 | 투혼·서킷브레이커 균등. agent step 상한 없음, 중단은 사용자 결정 또는 아래 중단 규칙 |
+| 점검 | 출발 체크포인트(c0)와 1.5M agent step마다 학습과 동시에, 사용자 결정(자문 E3): T0 `zerg_rush`, `ualbertabot12poollings` 각 40판(투혼 20·서킷브레이커 20), stochastic, 고정 seed. 승·패·무(Wilson 95%)와 막음 비율(`rush-s1` 정의: 게임 1분 이후 우리 SCV가 4기 이하가 된 적이 없는 판, 리플레이 재생), 정찰·대응 지표. 평가 게임이라 붕괴 항복·시간 상한·정찰·생존 보상 없음(050). 기본안(미확정): seed_base 43000(이전 점검과 같음), c0 점검을 둠(이 run의 비교 기준), `rush-s2` 점검의 나머지 4상대(UAlbertaBot 기본, 오버풀 변형, ZZZKBot, 운영형 2)는 빼고 학습 판 지표로만 본다 |
+| 학습 판 연속 지표 | 사용자 결정(자문 E4). 드라이버(run 운영 스크립트)가 `games.csv`로 계산해 요약에 남기고 점검 때 보고한다. 대상은 결과가 있는 `ladder_group = "rush"` 판(Aborted·Timeout 제외), 창은 최근 100판: ① `scv_4m ≥ 12` 비율(빈 값은 아님으로 셈) ② 4:00 전 벙커 비율(`bunker_s ≤ 240`, 빈 값은 아님) ③ 첫 배럭 시각 `barracks_s`의 p10·p90과 그 폭(빈 값은 빼고 배럭 없는 판 수를 따로). 함께 직전 보고 이후 끝난 판의 `decisions` 합에서 그룹(rush·macro·모델 상대)별 비율(학습 step 비중)을 낸다. `rush-s2` 최근 러시 판 100판 기준값: ① 43% ② 11% ③ 90~138초(폭 48초) |
+| 중단 규칙 | 사용자 결정(자문). 드라이버가 아래 하나라도 성립하면 정상 종료(042-R10)하고 사유를 요약과 `reports/timeline.md`에 남긴 뒤 사용자에게 보고한다. 설정을 바꾸거나 자동 재시작하지 않는다. ① `train.csv` `kl_action`(action 헤드 KL)의 최근 100 update 평균 > 0.3 ② anchor 상대 결과가 있는 최근 60판의 승률 < 30% ③ `entropy_action`의 최근 100 update 평균 < 0.4. 기본안(미확정): 창 100 update(약 20만 step, ①·③은 update 100부터 판정), ②의 승률은 승 1·무 0.5·패 0의 평균(승률 표와 같은 셈. 시간 상한으로 무승부가 늘어 승만 세면 퇴보가 아니어도 걸린다. `rush-s2` anchor 최근 60판 중 결과 있는 54판은 18-27-9로 승만 33%, 무 0.5로 42%) |
+| 기대(자문, 판정 기준 아님) | 100 update 안에 러시 판 step 비중 ≥ 35%. 1.5M step에서 ① +15%p(43% → 약 58%). 1M step 안에 ② > 40%. 3M step에서 점검 막음 33% → 50%. 자문의 "첫 배럭 폭 > 30초"는 `rush-s2`에서 이미 48초라 이 지표로는 변화를 보기 어렵다 |
+| 1.5M step 뒤 결정 | 자기 모방(042-R16) 켤지, 우선순위 4(스크립트 테란 방어 교사 → BC 파인튜닝·KL 참조 교체), B6(러시 판 8:00 조기 종료 + 버팀 판정 보상, 033·020 변경 필요)는 진단·점검 결과로 사용자가 정한다 |
+| 사다리·비중 변경 | 자동 변경 없음. 정상 종료 → 설정 수정 → 재시작(재개 시 설정) |
+
+### 자기 모방·막은 판 재학습 (042-R16, 2026-11-04, AMB-042-17, 자문 A7)
+이미 있는 드문 성공(중간 단 러시 상대를 막은 판, `rush-s2` 러시 판의 약 23%가 승)을 직접 복제하는 장치다. 사용자 결정: 준비(spec·구현)만 하고 기본은 꺼 둔다. `rush-s3`에서 켤지는 1.5M step 점검 뒤 사용자가 정한다. 수치는 모두 기본안(미확정)이다.
+
+| 항목 | 기본안(미확정) |
+|---|---|
+| 설정 | `[sil]` `enabled`(기본 `false` = 지금 동작), `mode = "sil"` \| `"replay"`, 아래 키 |
+| 고를 판 | RL 학습 게임 중 사다리 그룹이 `select_group`(`"rush"`)인 판, 결과가 있는 판(Aborted·Timeout 제외), 그리고 승이거나 막음 대용(`scv_4m ≥ select_scv_4m`(12)이고 `end_reason ≠ "Concede"`)인 판. 학습 판 지표와 같은 값(042 정찰·대응 지표)으로 고른다 |
+| 담을 세그먼트 | 그 판의 학습 쪽 세그먼트 중 시작 결정 프레임 < `until_s` × 24(`until_s` 480 = 8:00, 0 = 판 전체). 판이 끝날 때까지 러시 그룹 판의 세그먼트 사본을 따로 두고(큐 흐름은 그대로), 고르지 않은 판의 사본은 버린다 |
+| 버퍼 | 세그먼트 FIFO, 용량 `buffer_segments` 2,048(약 13만 step. 8:00까지면 판당 약 15세그먼트라 약 130판). 체크포인트에 넣지 않고 재개하면 빈 버퍼에서 시작한다. 세그먼트 크기 × 용량(호스트 RAM)은 구현 때 재서 리포트에 남긴다(TBD(M6), 학습 호스트 RAM 자동 정지 기준 안이어야 함) |
+| 배치에 섞기 | 버퍼에 `lanes`(4)개 이상 있으면 update 배치 32 레인 중 `lanes`개를 버퍼에서 균등 무작위로 뽑은 세그먼트로 **바꾼다**(더하지 않음: 배치 모양·GPU 메모리(060-R3) 그대로). 나머지는 지금처럼 큐에서. Main만(C1) |
+| `"sil"` 손실 | 버퍼 레인은 V-trace PG·UPGO·value·KL·엔트로피에 쓰지 않고 이 손실만 쓴다(Oh et al. 2018 Self-Imitation Learning): `L = w_pg · mean[−log π(a_t | s_t) · A⁺] + w_v · mean[0.5 · (A⁺)²]`, `A⁺ = max(R − V_win(s_t), 0)`, R = 그 판의 r_win(γ = 1이라 win 채널 Monte-Carlo 리턴), log π = 사용된 헤드의 joint log-prob(032-R15), V_win = win head(privileged 입력 그대로). 정책 항의 A⁺는 상수로 두고(gradient 멈춤), value 항은 V_win으로 gradient가 흐른다. `w_pg` 0.05, `w_v` 0.01. 승 판은 A⁺가 최대 2로 보통 PG advantage(0.01~0.03)보다 훨씬 커서 가중치를 작게 둔다. 막았지만 진 판(R = −1)은 A⁺ = 0이라 이 모드에서는 효과가 없다 |
+| `"replay"` 손실 | 버퍼 레인을 보통 레인과 같은 손실(V-trace PG·UPGO·value·KL·엔트로피)에 쓴다. ρ는 기록된 behaviour log-prob로 구하고(ρ̄·c̄ 절단 그대로), 정책 지연 버림(042-R4)에서는 뺀다. 한 세그먼트는 `max_uses`(4)번 쓰면 버퍼에서 뺀다. 막았지만 진 판도 방어 구간의 advantage가 그대로 들어간다 |
+| 검사 | `mode` 값, `w_pg`·`w_v` ≥ 0, `1 ≤ lanes < lanes(배치)`, `buffer_segments ≥ lanes`, `until_s ≥ 0`, `max_uses ≥ 1`, `select_group`이 `ladder_groups`에 있음. 벗어나면 설정 로드 오류 |
+| 로그 | `train.csv` `sil_buffer`·`sil_lanes`·`sil_loss`·`sil_pos_frac`(위 "진단 로그") |
+| 기대(자문) | 켠 뒤 1.5M step 안에 러시 판 `scv_4m ≥ 12` 비율 추가 +10%p |
+
 ### V-trace vs PPO 채택 기준
 - PPO 비교 설정: clip 0.2, GAE λ 0.95, 같은 배치를 2 epoch, value clip 없음. 나머지(KL·엔트로피·옵티마이저)는 같다.
 - 판정: 042-AC1 설정에서 같은 agent step(아래 AC1)까지 3 seed 평균 최종 승률이 **3%p 넘게 높은 쪽**을 채택한다. 차이가 3%p 이하이면 비동기 actor와 잘 맞는 V-trace를 채택한다. 어느 seed든 발산(NaN, 또는 KL(π‖π_BC)이 계속 증가해 승률이 BC 미만으로 떨어짐)하면 그 알고리즘은 탈락한다.
@@ -286,19 +350,21 @@ T1·셀프 run 다음 RL run이다. 러시 상대 기준 측정(`reports/m6_rush
 | ID | 요구사항 |
 |---|---|
 | 042-R1 | **MUST** 학습 재개(resume)를 지원한다. 저장 대상은 가중치, 옵티마이저, 리그 상태, 승률 테이블, RNG 상태다. 다른 학습 호스트(ROCm↔CUDA, 2026-10-23. 이전 Vulkan↔CUDA)에서도 재개할 수 있어야 한다(061-R10, 061-AC5) |
-| 042-R2 | **MUST** 에피소드 결과·보상 항목·KL·엔트로피·처리량을 TensorBoard 호환 로그 또는 CSV로 남긴다. 학습한 agent step 누계(`trained_steps`, 재개해도 run 누적이라 체크포인트에 기록)와 큐 자리를 기다린 시간(`queue_wait_s`)도 `train.csv`에 남긴다(2026-10-31). `queue_wait_s`는 그 행 에이전트의 큐에서 그 에이전트의 직전 행 이후 끝난 기다림의 초 합이다(기다림은 끝날 때 센다, 게임 마지막 세그먼트의 기다림 포함). 판별 033 원값 합 `r_scout`·`r_survive`와 정찰·대응 지표(위 절)를 `games.csv`에 남긴다(2026-11-03, AMB-042-16) |
+| 042-R2 | **MUST** 에피소드 결과·보상 항목·KL·엔트로피·처리량을 TensorBoard 호환 로그 또는 CSV로 남긴다. 학습한 agent step 누계(`trained_steps`, 재개해도 run 누적이라 체크포인트에 기록)와 큐 자리를 기다린 시간(`queue_wait_s`)도 `train.csv`에 남긴다(2026-10-31). `queue_wait_s`는 그 행 에이전트의 큐에서 그 에이전트의 직전 행 이후 끝난 기다림의 초 합이다(기다림은 끝날 때 센다, 게임 마지막 세그먼트의 기다림 포함). 판별 033 원값 합 `r_scout`·`r_survive`와 정찰·대응 지표(위 절)를 `games.csv`에 남긴다(2026-11-03, AMB-042-16). 채널별 advantage RMS·value 손실, step별 KL p99·최댓값, 자기 모방 통계(위 "진단 로그")를 `train.csv`에 남긴다(2026-11-04, AMB-042-17) |
 | 042-R3 | **MUST** Aborted 에피소드는 학습에서 제외한다(020-R4). 세그먼트는 끝나는 대로 큐에 넣고, 게임이 Aborted로 끝나면 그 게임의 세그먼트 중 아직 학습에 쓰지 않은 것을 큐에서 회수한다(2026-10-17 사용자 결정, AMB-042-6: 게임 끝까지 붙잡으면 정책 지연으로 대부분 버려짐). Ctrl+C(R10)는 learner를 먼저 멈추므로 완전히 제외된다. 크래시처럼 드문 경우 이미 학습에 쓴 세그먼트는 되돌리지 않으며, 그 수를 로그에 남긴다. **역압 기다림(2026-10-31)**: 큐 자리를 기다리던 게임이 Aborted로 끝나거나 중지되면 그 기다림을 취소하고 세그먼트를 넣지 않는다(`revoked`로 센다). 회수한 게임 id는 기억해 두고, 그 뒤에 늦게 도착한 그 게임의 세그먼트도 넣지 않는다. Ctrl+C(R10)로 큐를 닫으면 기다리는 게임을 모두 풀고 세그먼트는 넣지 않는다(R10 순서는 그대로). 학습 루프가 오류로 끝날 때도 큐를 닫아 기다리는 게임이 남지 않게 한다 |
 | 042-R4 | **MUST** 정책 지연(behaviour vs target 버전 차이)을 모니터링하고, 임계값을 넘는 trajectory는 버린다 |
 | 042-R5 | **SHOULD** 커리큘럼 단계 C0(T0 봇 위주) → C1(T0+T1+셀프) → C2(풀 리그) 전환은 승률 조건으로 자동화한다. 시작 단계와 자동 전환 여부는 설정 `[curriculum] start_stage`·`auto_advance`(기본 `"C0"`·켬)로 정하고, 자동 전환을 끈 run은 사용자 결정으로만 단계를 바꾼다(2026-11-03, AMB-042-13) |
 | 042-R6 | **MUST** 체크포인트 승격은 [050](050-evaluation.md)의 회귀 게이트를 통과해야 한다 |
 | 042-R7 | **MUST** 에이전트 3개(Main, Main Exploiter, League Exploiter)는 학습 호스트의 learner를 시분할로 쓴다. Main이 학습 시간의 50% 이상을 차지한다. 비율은 설정 파일로 관리한다 |
 | 042-R8 | **MUST** RL 학습 시퀀스 길이는 T=64다(032-R5와 동일) |
-| 042-R9 | **MUST** KL 계수, 엔트로피 계수, 커리큘럼 전환 승률 기준, 스냅샷 주기는 튜닝 대상이다. 설정 파일로 관리하고 체크포인트에 기록한다 |
+| 042-R9 | **MUST** KL 계수, 엔트로피 계수, 커리큘럼 전환 승률 기준, 스냅샷 주기는 튜닝 대상이다. 설정 파일로 관리하고 체크포인트에 기록한다. KL 스케줄(`[kl] init`·`floor`·`half_life_updates`, update는 그 run 안에서 셈)과 헤드별 KL 배수(`[kl.head_scale]`, 기본 1.0), λ(`[loss] td_lambda`)도 run 설정이다(2026-11-04, AMB-042-17) |
 | 042-R10 | **MUST** 정상 종료(Ctrl+C, 2026-10-16 사용자 결정). 첫 Ctrl+C(SIGINT, Windows는 Ctrl+C 이벤트)를 받으면 다음 순서로 멈춘다. ① 새 게임 배정을 멈춘다. ② 진행 중인 게임을 중단하고 `Aborted`로 기록해 학습에서 뺀다(042-R3). ③ 체크포인트를 저장하고 push한다(061-R4 "정상 종료 시"). ④ 잠금을 해제한다(061-R5). 두 번째 Ctrl+C를 받으면 저장 없이 즉시 종료한다. 게임 호스트 구성(hosts 파일)을 바꾸려면 정상 종료 후 재시작한다. 재시작하면 hosts 파일을 새로 읽고 마지막 체크포인트에서 재개한다(R1) |
 | 042-R11 | **MUST** 학습 중 리플레이를 저장한다(2026-10-18 사용자 결정). 모든 게임을 `save_replay`로 시작하고(게임 호스트가 임시로 저장, 020-R1 `Finished.replay`로 학습 호스트에 전달), 판정 뒤 **정기 표본(게임 id가 `[replays] sample_every`(기본 100)의 배수)** 이거나 **승자 불일치 게임(020-R13)** 이면 `<URANIUM_SHARED_DIR>/runs/<run_id>/replays/g<game_id>-<sample\|disagree>.rep`에 쓴다(임시 이름으로 쓰고 다시 읽어 바이트를 대조한 뒤 이름을 바꾼다). 나머지는 버린다. run이 끝나도 지우지 않고, 저장 예산(060-R7)을 넘어도 자동 삭제하지 않는다(경고만, 2026-10-19 사용자 결정, AMB-061-5. 총량 측정은 060-R7). `games.csv`에 `replay`(run 폴더 기준 경로)와 `replay_reason` 열을 남긴다 |
 | 042-R12 | **MUST** agent step 상한(`--max-agent-steps`, 042-AC1·033-AC2는 300만(2026-11-01 사용자 결정, 이전 1,000만))에 도달하면 R10의 정상 종료 순서(①~④)로 멈춘다. agent step은 체크포인트(`TrainState.step`)에서 이어 세므로 재개해도 run 전체 누적이다. 진행 중이던 게임은 R10처럼 Aborted로 빠지므로 실제 학습량은 상한을 약간 넘거나 모자랄 수 있고, 마지막 체크포인트 step으로 기록한다 (2026-10-18). **세는 기준(2026-10-31 사용자 결정)**: 상한은 그대로 만든 act 호출 수(agent step)로 센다. 역압(기본 `queue_full = "wait"`, 큐 행)에서는 큐 넘침 버림이 기다림 상한을 넘을 때만 생기므로, 학습한 step과의 차이는 정책 지연 버림(R4), Aborted 회수(R3), 멈출 때 진행 중이던 판으로 줄어든다. 학습한 step 누계는 `train.csv` `trained_steps`(R2)로 남긴다 |
 | 042-R13 | **MUST** RL learner는 win_open(032-R18)이 있는 모델에서 win_open을 win의 v-trace target에 MSE로 학습한다(가중치 `config/rl.toml` `[loss] win_open`, 기본 0.5, value와 같은 0.5×가중치×제곱오차 형태, 2026-10-21 사용자 결정, AMB-031-6). advantage·policy gradient에는 쓰지 않고, 전역 clip은 041-R19처럼 win_open 파라미터를 따로 한다. RL 게임(OpenBW)에서 항복 모드는 plan 기본값(020-R14 `shadow`)을 따른다. 붕괴 항복(042-R14)은 이 항복 모드와 별개의 규칙이다 |
 | 042-R14 | **MUST** RL 학습 게임 붕괴 항복(2026-11-03 사용자 결정, AMB-042-15). `[concede] enabled`면 RL 학습 게임의 모델 정책 세션은 위 "붕괴 항복" 절의 조건(자기 서플라이 화면 표시 ≤ `max_supply`가 게임 `after_s` 이후 `hold_s` 연속)에서 010-R13 `surrender`로 떠나고, 그 판은 항복한 쪽 패배로 판정해 학습한다(020-R18, 033 r_win −1). 자기 상태만 쓴다(맵핵 아님). 평가 게임에는 적용하지 않는다. `games.csv` `end_reason = "Concede"`로 기록한다 |
+| 042-R15 | **MUST** 모델 상대 판 시간 상한(2026-11-04 사용자 결정, AMB-042-17). `[league] model_game_max_s > 0`이면 RL 학습 게임 중 모델 상대(현재 Main·스냅샷·anchor) 판만 그 게임 시간에서 무승부(`TimeLimitDraw`, r_win 0)로 끝낸다(위 "리그·상대 선택" 표, 020-R3). 봇 판·평가 게임은 60분 그대로다. 0(기본)이면 지금 동작과 같다 |
+| 042-R16 | **MUST** 자기 모방·막은 판 재학습(2026-11-04 사용자 결정: 준비만, AMB-042-17). `[sil] enabled = false`(기본)면 learner·리그 동작이 이 기능 전과 같다(배치·손실·로그 값, 새 열은 빈 값). 켜면 위 "자기 모방·막은 판 재학습" 절대로 고른 판의 세그먼트를 버퍼에 담아 배치 레인 일부를 바꾸고 `"sil"` 또는 `"replay"` 손실을 쓴다. 켜는 것은 사용자 결정이다 |
 
 ## Acceptance Criteria
 - 042-AC1: 작은 설정(1맵, T0 1종족)에서 BC 정책 대비 승률 개선을 재현 가능하게 보인다. 3 seed 평균으로 측정한다.
@@ -307,12 +373,13 @@ T1·셀프 run 다음 RL run이다. 러시 상대 기준 측정(`reports/m6_rush
   - 학습 전 기준선(2026-10-31 사용자 결정): RL은 `last_failed` 실제 값을 쓰므로(030-R10), BC 체크포인트를 `last_failed` 0 고정과 실제 값으로 각 200판(같은 seed) 재고 **높은 쪽 승률**을 BC 승률로 쓴다. 학습 후 평가는 실제 값이다.
   - z(2026-10-31 사용자 결정): AC1의 6 run은 z 테이블 없이(모든 게임 z 없음, pseudo-reward 꺼짐, 033-R8) 진행한다. BC 기준선(z 없음)과 조건이 같고, z가 판 시작 때 고정돼 정찰에 따른 빌드 변경을 담지 못하므로 유연성을 위해 일단 z 없이 간다. 033-AC2·리그에서 z를 쓸지는 그 전에 다시 묻는다.
   - 규모(2026-10-17 사용자 결정, AMB-042-7): V-trace·PPO 각 3 seed(6 run)로 알고리즘을 고른다. 033-AC2 ablation 3 run은 본 BC 체크포인트와 z 테이블이 나온 뒤 실행한다. 처리량은 TBD(M6)로 측정해 run 시간을 다시 보고한다.
-  - 결과(2026-11-02, `reports/m6_ac1.md`): **6 run 모두 seed별 개선 기준 미달**(BC 68.3%, 기준 = 학습 후 Wilson 하한 > 74.4%). 판정 규칙대로 V-trace 채택(3 seed 평균 75.5% vs PPO 78.2%, 차이 2.7%p ≤ 3%p). 다음 run은 위 "T1·셀프 run"이었고(1차 실패, 2차 `t1self-s2`도 정지), 그다음은 "러시 커리큘럼 run"(`rush-s1`)이고, 그 뒤는 "러시·운영 혼합 run"(`rush-s2`, 2026-11-03 개정 4, AMB-042-16)이다.
+  - 결과(2026-11-02, `reports/m6_ac1.md`): **6 run 모두 seed별 개선 기준 미달**(BC 68.3%, 기준 = 학습 후 Wilson 하한 > 74.4%). 판정 규칙대로 V-trace 채택(3 seed 평균 75.5% vs PPO 78.2%, 차이 2.7%p ≤ 3%p). 다음 run은 위 "T1·셀프 run"이었고(1차 실패, 2차 `t1self-s2`도 정지), 그다음은 "러시 커리큘럼 run"(`rush-s1`)이고, 그 뒤는 "러시·운영 혼합 run"(`rush-s2`, 2026-11-03 개정 4, AMB-042-16), 다음은 "신호 밀도·KL run"(`rush-s3`, 2026-11-04 개정 5 초안, AMB-042-17)이다.
 - 042-AC2: 72시간 연속 학습 중 크래시나 메모리 누수 없이 resume이 가능하다.
 - 042-AC3: Main이 이전 승격 체크포인트 대비 승률 ≥ 55%일 때만 승격한다.
 - 042-AC4: 학습 중 Ctrl+C 한 번이면 체크포인트 push와 잠금 해제까지 마치고 종료한다. 이어서 hosts 파일의 게임 호스트를 하나 빼거나 더해 재시작하면, `--take-over` 없이 같은 step에서 재개하고 바뀐 호스트 구성으로 게임을 배정한다(042-R10).
 - 042-AC5 (2026-11-03, 042-R14): 붕괴 항복 판정 단위 테스트 — `after_s` 경계(4,319 프레임 결정은 세지 않음·4,320부터 셈), `hold_s` 경계(2,879 불가·2,880 가능), 무너짐 아닌 결정 하나에 끊김, 서플라이 2배 단위(8 무너짐·9 아님), `enabled = false`면 판정 없음, 한 판 한 번, 설정 검사. 통합: OpenBW 1판에서 항복 판이 항복한 쪽 패배로 집계되고(Aborted 아님) `games.csv` `end_reason = Concede`, r_win −1이 마지막 실제 결정에 붙는다.
 - 042-AC6 (2026-11-03, AMB-042-16): 단위 테스트 — 사다리 그룹: `ladder_groups` 몫대로 그룹을 뽑고(고정 seed 표본 비율) 그룹 안은 f_var, `ladder_groups`가 없으면 지금 선택과 같은 결과, 설정 검사(몫 음수·합 0·빈 그룹·몫 없는 그룹 항목). 승률 표: `win_rate_decay`를 설정에서 읽어 모든 선택이 같은 값을 쓴다. 정찰·대응 지표: 4:00·6:00 경계(5,760·8,640 프레임 포함), 먼저 끝난 판의 `scv_4m` 빈 값·종류 수는 끝까지, 배럭·벙커는 건설 시작 시점, `games.csv` 머리글·열 순서, 채널 모드 `"z"`의 `r_scout`·`r_survive` 빈 값. 통합: OpenBW 1판(운영형 사다리 상대)에서 지표 열과 `ladder_group`이 채워진다.
+- 042-AC7 (2026-11-04, AMB-042-17): 단위 테스트 — `band`: 가중치 식(center·width), 제외(그룹에 기준 이상 항목이 있을 때만, 모두 아래면 제외 없음), 처음 보는 상대 0.5, 합 0이면 균등, 그룹별 방식 표(표에 없는 그룹은 f_var), `ladder_pick = "f_var"`면 지금 선택과 같은 결과, 설정 검사. 시간 상한: 모델 상대 판만 `GameSpec.max_frames = min(86,400, s × 24)`, 봇 판 86,400, `model_game_max_s = 0`이면 모두 86,400, 설정 검사. KL: 스케줄 값(새 run update 0에서 `init`, 하한), 헤드 배수가 모두 1.0이면 지금 손실과 같고 배수가 헤드별로 곱해짐. 진단 로그: `train.csv` 머리글·열 순서, 작은 모양 CPU 배치에서 advantage RMS·value 손실·KL p99·최댓값이 기준 구현(`reference.py`)과 허용 오차 안. 자기 모방(구현할 때): 판 고르기(그룹·승·`scv_4m`·항복), 담을 세그먼트(`until_s`), 버퍼 FIFO, 레인 바꾸기 수, `"sil"` 손실 식(A⁺ = 0이면 0), `"replay"`의 지연 버림 예외와 `max_uses`, `enabled = false`면 지금 update와 같은 손실. 통합: OpenBW 1판(anchor 상대, 짧은 상한)이 그 프레임에 `TimeLimitDraw`로 끝나 r_win 0, `games.csv` `end_reason = TimeLimitDraw`, 승률 표 무로 기록된다.
 
 ## Risks & Open Questions
 > **[SPEC DEFERRED(M6)] AMB-042-2**: TvP·TvZ 실력이 T0·T1 봇 수준에서 정체될 수 있다(셀프플레이는 TvT만 가능). 지금은 T0·T1 P/Z 봇으로 진행한다(2026-10-15 결정). M6 중간 점검 때 아래 내용을 사용자에게 보고하고 대응을 다시 확인받는다.
@@ -325,6 +392,8 @@ T1·셀프 run 다음 RL run이다. 러시 상대 기준 측정(`reports/m6_rush
 
 - **`rush-s2` 상대와 E-Regression(2026-11-03, AMB-042-16)**: T0 `zerg_rush`(rush-s1부터)와 운영형 T0 `zerg_muta`는 050 E-Regression 시나리오 봇과 같다. 학습 상대로 쓰면 그 회귀 시나리오는 처음 보는 상대가 아니게 된다. 승격 판정에 쓸 때 이 사실을 기록에 적는다.
 - **정찰 보상의 효과(2026-11-03, AMB-042-16)**: 정찰 정보를 얻어도 대응을 고르는 신호는 r_win과 상대 구성뿐이다. 점검의 정찰 지표만 오르고 운영형 상대 승률·러시 막음 비율이 오르지 않으면 보상 크기·상대 비중을 사용자에게 다시 묻는다.
+
+- **`rush-s3`의 위험(2026-11-04, AMB-042-17)**: ① 시간 상한 무승부는 판 끝(종료, bootstrap 0)이라 value head가 25분 무렵 모델 상대 판의 값을 0으로 배운다. 모델 상대는 테란, 봇 상대는 저그라 관측으로 구별되고 시각은 관측 스칼라(030)에 있다. ② 새 리그 상태라 승률 표가 모두 0.5에서 시작해 처음 상대당 약 20판은 `band`도 고르게 뽑는다. 승률 0% 상대가 0.10 아래로 내려가 빠지려면 연패 약 53판이 필요하다(감쇠 0.97). ③ KL을 낮추면 정책이 BC에서 빨리 멀어질 수 있어 중단 규칙을 둔다. anchor 판은 모델 상대 몫 축소로 판의 5%뿐이라 60판이 쌓이는 데 시간이 걸린다. ④ 점검이 러시 2상대뿐이라 운영형·다른 러시 상대 실력 변화는 학습 판 기록으로만 본다. ⑤ 자기 모방 `"replay"`는 오래된 세그먼트를 ρ 절단으로만 보정하고, `"sil"`은 승리 판만 복제하므로 상대 빌드에 맞춘 대응보다 이긴 판의 습관을 키울 수 있다.
 
 - **초기 설정값 (확정 2026-10-17, AMB-042-3)**: 위 "초기 설정값" 절의 수치는 사용자 위임으로 Claude가 문헌 기준으로 정했다. 042-AC1 이후 조정을 제안할 수 있다.
 
