@@ -122,12 +122,25 @@ struct SilState {
     cfg: SilConfig,
     pending: Mutex<HashMap<u64, Vec<Segment>>>,
     buffer: Mutex<SilBuffer>,
+    /// The "not in C1" notice was logged.
+    off_stage_logged: AtomicBool,
 }
 
 impl SilState {
     fn new(cfg: SilConfig, seed: u64) -> Self {
         let buffer = Mutex::new(SilBuffer::new(cfg.buffer_segments, seed ^ 0x5115_5115));
-        Self { cfg, pending: Mutex::new(HashMap::new()), buffer }
+        Self { cfg, pending: Mutex::new(HashMap::new()), buffer, off_stage_logged: AtomicBool::new(false) }
+    }
+
+    /// 042-R16 "Main만(C1)": buffer lanes only in C1; another stage is logged once.
+    fn in_stage(&self, stage: crate::league::Stage) -> bool {
+        if stage == crate::league::Stage::C1 {
+            return true;
+        }
+        if !self.off_stage_logged.swap(true, Ordering::SeqCst) {
+            crate::elog!("[rl] [sil] is on but the stage is {stage:?}: no self-imitation lanes outside C1 (042-R16)");
+        }
+        false
     }
 
     /// A copy of a candidate game's segment, kept when it starts before `until_s`.
@@ -361,12 +374,17 @@ impl LearnerHook for Hook {
         {
             let s = self.shared.clone();
             obs = obs.copy_segments(Box::new(move |seg: &Segment| {
-                // Not after the game was settled (an Aborted game's session may still push).
-                if s.games.lock().unwrap().contains_key(&seg.game_id)
+                // Not after the game was settled (an Aborted game's session may still push): the
+                // `games` guard is held across the check and the keep, and `done` / `requeue`
+                // remove the game from `games` before they settle, so no copy can recreate a
+                // settled game's pending list. Lock order: `games`, then the SIL lists.
+                let games = s.games.lock().unwrap();
+                if games.contains_key(&seg.game_id)
                     && let Some(sil) = &s.sil
                 {
                     sil.keep(seg);
                 }
+                drop(games);
             }));
         }
         (z, Box::new(obs))
@@ -1015,7 +1033,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     let sc = &cfg.sil;
     if sc.enabled {
         crate::elog!(
-            "[rl] self-imitation ON: mode {:?}, {} lanes of {} from a buffer of {} segments, group {:?} won or scv_4m >= {}, segments before {} s, w_pg {} w_v {} max_uses {} (042-R16)",
+            "[rl] self-imitation ON (Main in C1 only): mode {:?}, {} lanes of {} from a buffer of {} segments, group {:?} won or scv_4m >= {}, segments before {} s, w_pg {} w_v {} max_uses {} (042-R16)",
             sc.mode,
             sc.lanes,
             cfg.lanes,
@@ -1155,22 +1173,9 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
             continue;
         };
         let i = agent.index();
-        // 042-R16: with `[sil]` on, Main's batch takes `lanes` of its lanes from the buffer once
-        // it holds that many (the batch shape stays).
-        let sil_lanes = match &shared.sil {
-            Some(sil) if agent == AgentKind::Main && sil.buffer.lock().unwrap().len() >= sil.cfg.lanes => sil.cfg.lanes,
-            _ => 0,
-        };
-        let Some(mut batch) = queues[i].try_take(cfg.lanes - sil_lanes, learners.version(i), cfg.actors.max_policy_lag) else { continue };
+        let stage = shared.league.lock().unwrap().stage;
+        let Some((batch, trained, sil_row)) = take_batch(&queues[i], shared.sil.as_ref(), agent, stage, cfg.lanes, learners.version(i), cfg.actors.max_policy_lag) else { continue };
         let weights = shared.league.lock().unwrap().reward_weights(&base);
-        // 042-R2: the queue lanes' steps (buffer lanes are reused steps).
-        let trained = trained_steps_of(&batch);
-        let sil_row = shared.sil.as_ref().map(|sil| {
-            let mut buf = sil.buffer.lock().unwrap();
-            // The buffer lanes go last (the learner's layout); not in the 042-R4 lag drop.
-            batch.extend(buf.sample(sil_lanes, sil.cfg.mode, sil.cfg.max_uses));
-            (buf.len(), sil_lanes)
-        });
         let stats = learners.update(i, batch, weights)?;
         // 042-R2 / R12: agent steps the learners trained on, run total.
         trained_steps += trained;
@@ -1247,6 +1252,28 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         other => crate::elog!("[rl] push {other:?}: keeping the lock so the next start recovers it (061-R11-5/6)"),
     }
     Ok(())
+}
+
+/// One update batch of `agent` (042): `lanes` segments from its queue (042-R4 lag drop), or, with
+/// `[sil]` on (042-R16), for Main in C1 once the buffer holds `[sil] lanes` segments, that many
+/// fewer from the queue and the buffer's segments appended last (the batch shape stays; buffer
+/// lanes are not in the lag drop). Also the queue lanes' trained steps (042-R2 `trained_steps`:
+/// buffer lanes are reused steps) and the train.csv SIL values (buffer segments after sampling,
+/// buffer lanes), `None` with `[sil]` off. `None` when the queue has too few segments.
+#[allow(clippy::type_complexity)]
+fn take_batch(queue: &SegmentQueue, sil: Option<&SilState>, agent: AgentKind, stage: crate::league::Stage, lanes: usize, version: u64, max_lag: u64) -> Option<(Vec<Segment>, u64, Option<(usize, usize)>)> {
+    let k = match sil {
+        Some(sil) if agent == AgentKind::Main && sil.in_stage(stage) && sil.buffer.lock().unwrap().len() >= sil.cfg.lanes => sil.cfg.lanes,
+        _ => 0,
+    };
+    let mut batch = queue.try_take(lanes - k, version, max_lag)?;
+    let trained = trained_steps_of(&batch);
+    let row = sil.map(|sil| {
+        let mut buf = sil.buffer.lock().unwrap();
+        batch.extend(buf.sample(k, sil.cfg.mode, sil.cfg.max_uses));
+        (buf.len(), k)
+    });
+    Some((batch, trained, row))
 }
 
 /// Snapshot folder name (061-R9 forbids `/` and `@`): `<agent>-<run>-<update>`.
@@ -1853,6 +1880,65 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// 042-R16 / 042-AC7 (AMB-042-17) lane swap of the run loop: buffer lanes replace the last
+    /// `[sil] lanes` lanes only for Main in C1 once the buffer holds that many (the batch keeps
+    /// `lanes` segments, `trained` counts the queue lanes only); buffer lanes are outside the
+    /// 042-R4 lag drop ("replay": a segment leaves after `max_uses`); `[sil]` off = the plain take.
+    #[test]
+    fn sil_lane_swap_042_r16() {
+        use crate::league::Stage;
+        use crate::sil::SilMode;
+        use crate::trajectory::tests::seg_at;
+        let fill = |q: &SegmentQueue, ids: std::ops::Range<u64>, version: u64| ids.for_each(|i| q.push(seg_at(i, version)));
+        for mode in [SilMode::Sil, SilMode::Replay] {
+            let sil = SilState::new(SilConfig { enabled: true, mode, lanes: 2, buffer_segments: 100, max_uses: 2, ..SilConfig::default() }, 1);
+            let q = SegmentQueue::new(64);
+            // Buffer below `lanes`: the plain take.
+            sil.buffer.lock().unwrap().push_game(vec![seg_at(900, 0)], 1.0);
+            fill(&q, 0..4, 100);
+            let (b, trained, row) = take_batch(&q, Some(&sil), AgentKind::Main, Stage::C1, 4, 100, 32).unwrap();
+            assert_eq!((b.len(), trained, row), (4, 4, Some((1, 0))));
+            assert!(b.iter().all(|s| s.sil_return.is_none()));
+            // Enough: 2 queue lanes + 2 buffer lanes, last. The buffer's segments are 100 updates
+            // old (version 0 at learner version 100, max lag 32): kept; such queue segments are dropped.
+            sil.buffer.lock().unwrap().push_game(vec![seg_at(901, 0), seg_at(902, 0)], -1.0);
+            fill(&q, 10..12, 0);
+            fill(&q, 20..24, 100);
+            let (b, trained, row) = take_batch(&q, Some(&sil), AgentKind::Main, Stage::C1, 4, 100, 32).unwrap();
+            assert_eq!(b.len(), 4, "the batch shape stays");
+            assert_eq!(trained, 2, "queue lanes only");
+            assert_eq!(b.iter().map(|s| s.sil_return.is_some()).collect::<Vec<_>>(), [false, false, true, true]);
+            assert_eq!(b.iter().take(2).map(|s| s.game_id).collect::<Vec<_>>(), [20, 21], "the lagging queue segments dropped");
+            assert!(b[2..].iter().all(|s| s.game_id >= 900 && s.version() == 0), "buffer lanes outside the lag drop");
+            assert_eq!(q.stats().dropped_lag, 2);
+            assert_eq!(row.unwrap().1, 2);
+            // Other stages and agents: no buffer lanes.
+            fill(&q, 30..40, 100);
+            for (agent, stage) in [(AgentKind::Main, Stage::C2), (AgentKind::Main, Stage::C0), (AgentKind::MainExploiter, Stage::C1)] {
+                let (b, trained, row) = take_batch(&q, Some(&sil), agent, stage, 4, 100, 32).unwrap();
+                assert!(b.iter().all(|s| s.sil_return.is_none()) && b.len() == 4 && trained == 4, "{agent:?} {stage:?}");
+                assert_eq!(row.unwrap().1, 0);
+            }
+            // "replay": after max_uses (2) uses a segment leaves; "sil" keeps it.
+            let before = sil.buffer.lock().unwrap().len();
+            for _ in 0..3 {
+                fill(&q, 50..52, 100);
+                take_batch(&q, Some(&sil), AgentKind::Main, Stage::C1, 4, 100, 32);
+            }
+            let after = sil.buffer.lock().unwrap().len();
+            match mode {
+                SilMode::Sil => assert_eq!(after, before),
+                SilMode::Replay => assert!(after < before, "{before} -> {after}"),
+            }
+        }
+        // [sil] off: the plain take, no SIL values.
+        let q = SegmentQueue::new(8);
+        fill(&q, 0..4, 0);
+        let (b, trained, row) = take_batch(&q, None, AgentKind::Main, Stage::C1, 4, 0, 32).unwrap();
+        assert_eq!((b.len(), trained, row), (4, 4, None));
+        assert!(take_batch(&q, None, AgentKind::Main, Stage::C1, 4, 0, 32).is_none(), "too few");
     }
 
     /// 033-R11 (AMB-042-16): the "scout" C2 warning (start, resume, C1 → C2 transition).

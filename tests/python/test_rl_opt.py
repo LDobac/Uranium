@@ -607,16 +607,18 @@ def test_sil_loss_is_zero_without_positive_advantage_042_r16():
 @pytest.mark.parametrize("algo", ["vtrace", "ppo"])
 def test_sil_replay_mode_042_r16(algo):
     """042-R16 "replay": buffer lanes are ordinary lanes (the update equals the same lanes without
-    the buffer mark bit for bit, apart from the queue-only policy lag); `sil_loss` is empty and
-    `sil_pos_frac` is the share of the buffer lanes' steps with R − V_win > 0."""
+    the buffer mark bit for bit, apart from the queue-only policy lag and `steps`, which counts the
+    queue lanes only like the run loop's `trained_steps`); `sil_loss` is empty and `sil_pos_frac`
+    is the share of the buffer lanes' steps with R − V_win > 0."""
     rets = [1.0, -1.0]
     seg = Segments(4, 4, tiny_net(0, seed=6), 0, sil_returns=(None, None, *rets))
     plain = Segments(4, 4, tiny_net(0, seed=6), 0)
     cfg = sil_cfg("replay")
     a, b = run_cfg(cfg, seg, algo=algo), run_cfg(cfg, plain, algo=algo)
     sa, sb = a[0][0], b[0][0]
-    for k in ("loss", "policy", "value", "kl", "kl_heads", "entropy_heads", "rho_mean", "adv_mean", "steps", "adv_rms", "kl_p99"):
+    for k in ("loss", "policy", "value", "kl", "kl_heads", "entropy_heads", "rho_mean", "adv_mean", "adv_rms", "kl_p99"):
         assert sa[k] == sb[k], k
+    assert sa["steps"] == sum(list(seg.trained)[:2]) and sb["steps"] == sum(list(plain.trained))
     for k in a[1]:
         assert torch.equal(a[1][k], b[1][k]), k
     assert sa["sil_loss"] is None and sb["sil_pos_frac"] is None

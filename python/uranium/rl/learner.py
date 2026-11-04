@@ -393,8 +393,10 @@ class Learner:
         # in BC: at most two collated groups are alive (not every group of the batch at once).
         collate = lambda gi: self.prepare(batch, groups[gi][0], groups[gi][1], t)  # noqa: E731
         trained = [int(x) for x in batch.trained]
-        steps = sum(trained[:normal])
-        n = max(steps, 1)
+        # The loss terms are means over the lanes that take them ("replay" buffer lanes included);
+        # `steps` counts the queue lanes only, as the run loop's `trained_steps` (042-R2).
+        n = max(sum(trained[:normal]), 1)
+        steps = sum(trained[:lanes - k])
         n_sil = max(sum(trained[normal:]), 1)
         # Policy lag of the queue lanes (buffer lanes are older by design).
         versions = [int(v) for v in batch.versions][:lanes - k]

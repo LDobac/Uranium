@@ -33,7 +33,7 @@ learner ──► 새 가중치 (매 K 스텝) ──► inference server
     | 열 | 정의 |
     |---|---|
     | `adv_rms` | 정책 gradient에 실제로 쓴 결합 advantage(033 가중치·판별 배수 적용 뒤, 기존 `adv_mean`이 평균을 내는 값)의 RMS |
-    | `adv_rms_win`, `adv_rms_build`, `adv_rms_units`, `adv_rms_value` | 채널(value head, 033-R3)별 V-trace PG advantage(q_s − V(s_t))의 RMS. 033 가중치·판별 배수를 곱하기 전. 채널 모드 `"scout"`에서 build·units는 r_scout·r_survive 채널(033-R11) |
+    | `adv_rms_win`, `adv_rms_build`, `adv_rms_units`, `adv_rms_value` | 채널(value head, 033-R3)별 V-trace PG advantage ρ_t·(r_t + γ·v_{s,t+1} − V(s_t))(정책 gradient에 실제로 쓰는 절단 ρ 포함, `adv_rms`·`adv_mean`과 같은 셈, 2026-11-04 명시)의 RMS. 033 가중치·판별 배수를 곱하기 전. 채널 모드 `"scout"`에서 build·units는 r_scout·r_survive 채널(033-R11) |
     | `value_loss_win`, `value_loss_build`, `value_loss_units`, `value_loss_value` | 채널별 0.5 × (V − V-trace target)²의 평균. 손실 가중치(value 0.5)를 곱하기 전 |
     | `kl_p99`, `kl_max` | step별 KL(π‖π_BC)(사용된 헤드 합, 032-R10, 헤드 배수(042-R9)를 곱하기 전)의 99번째 백분위·최댓값 |
     | `sil_buffer`, `sil_lanes`, `sil_loss`, `sil_pos_frac` | 042-R16(자기 모방): 버퍼의 세그먼트 수, 이 update에 버퍼에서 온 레인 수, 그 손실(가중치 곱한 뒤), 양의 advantage(`max(R − V, 0) > 0`)인 step 비율. 꺼져 있으면 빈 값 |
