@@ -110,6 +110,86 @@ pub enum LadderPick {
     /// PFSP f_var(x) = x(1 - x) on Main's win-table value; all weights 0 = uniform.
     #[default]
     FVar,
+    /// 042 사다리 선택 `band` (AMB-042-17): `exp(-((x - center) / width)^2)` with the
+    /// `exclude_below` rule (`[curriculum.band]`).
+    Band,
+}
+
+/// `[curriculum] ladder_pick` (042, AMB-042-17): one method for every group (a string, the
+/// earlier form) or a table group name → method; groups not in the table use `"f_var"`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum LadderPickSetting {
+    All(LadderPick),
+    PerGroup(BTreeMap<String, LadderPick>),
+}
+
+impl Default for LadderPickSetting {
+    fn default() -> Self {
+        Self::All(LadderPick::FVar)
+    }
+}
+
+impl LadderPickSetting {
+    /// The method of a ladder game drawn from `group` (`None` = no `ladder_groups`).
+    pub fn for_group(&self, group: Option<&str>) -> LadderPick {
+        match self {
+            Self::All(p) => *p,
+            Self::PerGroup(m) => group.and_then(|g| m.get(g)).copied().unwrap_or(LadderPick::FVar),
+        }
+    }
+}
+
+/// `[curriculum.band]`: the numbers of `ladder_pick = "band"` (042 사다리 선택 `band`,
+/// AMB-042-17). Absent = 0.5 / 0.15 / 0.10.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct BandConfig {
+    pub center: f64,
+    pub width: f64,
+    pub exclude_below: f64,
+}
+
+impl Default for BandConfig {
+    fn default() -> Self {
+        Self { center: 0.5, width: 0.15, exclude_below: 0.10 }
+    }
+}
+
+impl BandConfig {
+    /// 042 `band` weight `exp(-((x - center) / width)^2)`.
+    pub fn weight(&self, x: f64) -> f64 {
+        let z = (x - self.center) / self.width;
+        (-z * z).exp()
+    }
+
+    /// The `band` weights of the win-table values `xs` of one group's entries (042,
+    /// AMB-042-17): entries below `exclude_below` get 0 when any entry of the group is at or above
+    /// it (none is excluded when every entry is below); when every remaining weight is 0
+    /// (underflow) the remaining entries get 1 each (uniform).
+    pub fn weights(&self, xs: &[f64]) -> Vec<f64> {
+        let any_above = xs.iter().any(|x| *x >= self.exclude_below);
+        let kept = |x: f64| !(any_above && x < self.exclude_below);
+        let w: Vec<f64> = xs.iter().map(|&x| if kept(x) { self.weight(x) } else { 0.0 }).collect();
+        if w.iter().sum::<f64>() > 0.0 {
+            return w;
+        }
+        xs.iter().map(|&x| if kept(x) { 1.0 } else { 0.0 }).collect()
+    }
+
+    /// 042 설정 검사: `0 <= center <= 1`, `width > 0`, `0 <= exclude_below < 1`.
+    pub fn validate(&self) -> Result<(), String> {
+        if !(0.0..=1.0).contains(&self.center) {
+            return Err(format!("[curriculum.band] center must be in 0..=1, got {} (042, AMB-042-17)", self.center));
+        }
+        if !(self.width > 0.0 && self.width.is_finite()) {
+            return Err(format!("[curriculum.band] width must be above 0, got {} (042, AMB-042-17)", self.width));
+        }
+        if !(0.0..1.0).contains(&self.exclude_below) {
+            return Err(format!("[curriculum.band] exclude_below must be in 0..1, got {} (042, AMB-042-17)", self.exclude_below));
+        }
+        Ok(())
+    }
 }
 
 /// One opponent choice.
@@ -424,6 +504,19 @@ impl League {
         Some(pool[i].clone())
     }
 
+    /// 042 사다리 선택 `band` (AMB-042-17): one entry of `pool` (one group's entries, or every
+    /// entry without groups) by `BandConfig::weights` over the agent's win-table values (unseen =
+    /// the prior, 0.5).
+    fn band_pick(&mut self, agent: AgentKind, pool: Vec<(Opponent, String, Class)>) -> Option<(Opponent, String, Class)> {
+        if pool.is_empty() {
+            return None;
+        }
+        let xs: Vec<f64> = pool.iter().map(|(_, k, _)| self.win_rate(agent, k)).collect();
+        let w = self.cfg().curriculum.band.weights(&xs);
+        let i = self.weighted(&w);
+        Some(pool[i].clone())
+    }
+
     /// 042 C1 러시 사다리 (AMB-042-15): an entry of `[[ladder]]` by `[curriculum] ladder_pick`
     /// (f_var over Main's win-table values, unseen = the prior; all weights 0 = uniform), with the
     /// entry's group. 042 사다리 그룹 (AMB-042-16): with `ladder_groups` set, a group is drawn by
@@ -445,8 +538,10 @@ impl League {
             .filter_map(|e| e.opponent().ok().map(|(o, k, c)| (o, k, c, e.group.clone())))
             .collect();
         let pool: Vec<(Opponent, String, Class)> = entries.iter().map(|(o, k, c, _)| (o.clone(), k.clone(), *c)).collect();
-        let picked = match self.cfg().curriculum.ladder_pick {
+        // 042 (AMB-042-17): the group's method; "f_var" is the earlier pick, draw for draw.
+        let picked = match self.cfg().curriculum.ladder_pick.for_group(group.as_deref()) {
             LadderPick::FVar => self.pfsp(agent, pool, true),
+            LadderPick::Band => self.band_pick(agent, pool),
         }?;
         let g = entries.iter().find(|(_, k, _, _)| *k == picked.1).map(|(_, _, _, g)| g.clone()).unwrap_or_default();
         Some((picked, g))
@@ -1546,5 +1641,108 @@ mod tests {
         z.c2_start = Some(0);
         z.agents[0].updates = 1_000_000;
         assert_eq!(z.reward_weights(&base), [1.0, 0.0, 0.0, 0.0], "z: decayed as before");
+    }
+
+    /// 042 사다리 선택 `band` / 042-AC7 (AMB-042-17): the weight formula (center, width), the
+    /// exclusion below `exclude_below` only when some entry is at or above it, no exclusion when
+    /// every entry is below, uniform over the remaining entries when every weight underflows.
+    #[test]
+    fn band_weights_042_amb_042_17() {
+        let b = BandConfig::default();
+        assert_eq!((b.center, b.width, b.exclude_below), (0.5, 0.15, 0.10));
+        let close = |a: f64, x: f64| (a - x).abs() < 1e-12;
+        assert!(close(b.weight(0.5), 1.0));
+        assert!(close(b.weight(0.65), (-1.0f64).exp()) && close(b.weight(0.35), (-1.0f64).exp()));
+        assert!(close(b.weight(0.2), (-4.0f64).exp()));
+        let other = BandConfig { center: 0.3, width: 0.1, exclude_below: 0.2 };
+        assert!(close(other.weight(0.5), (-4.0f64).exp()) && close(other.weight(0.3), 1.0));
+        // Exclusion: 0.05 and 0.09 drop out because 0.5 and 0.1 are at or above 0.10.
+        let w = b.weights(&[0.05, 0.5, 0.09, 0.10]);
+        assert_eq!((w[0], w[2]), (0.0, 0.0));
+        assert!(close(w[1], 1.0) && close(w[3], b.weight(0.10)));
+        // Every entry below: none excluded, the formula for all.
+        let w = b.weights(&[0.0, 0.05, 0.09]);
+        assert!(w.iter().zip([0.0, 0.05, 0.09]).all(|(a, x)| close(*a, b.weight(x)) && *a > 0.0), "{w:?}");
+        // Every remaining weight 0 (underflow): the remaining entries uniform.
+        let narrow = BandConfig { center: 0.5, width: 1e-6, exclude_below: 0.10 };
+        assert_eq!(narrow.weights(&[0.05, 0.9, 0.95]), [0.0, 1.0, 1.0]);
+        assert_eq!(narrow.weights(&[0.01, 0.02]), [1.0, 1.0]);
+        // 설정 검사.
+        b.validate().unwrap();
+        BandConfig { center: 0.0, width: 1.0, exclude_below: 0.0 }.validate().unwrap();
+        BandConfig { center: 1.0, width: 0.01, exclude_below: 0.99 }.validate().unwrap();
+        for bad in [BandConfig { center: -0.1, ..b }, BandConfig { center: 1.1, ..b }, BandConfig { width: 0.0, ..b }, BandConfig { width: -1.0, ..b }, BandConfig { exclude_below: 1.0, ..b }, BandConfig { exclude_below: -0.1, ..b }, BandConfig { width: f64::NAN, ..b }] {
+            assert!(bad.validate().is_err(), "{bad:?}");
+        }
+    }
+
+    /// 042 사다리 선택 `band` / 042-AC7 (AMB-042-17) in the league: inside the band group the picks
+    /// follow the band weights over Main's win-table values (unseen = 0.5, excluded entries never
+    /// picked); groups not in the per-group table use f_var.
+    #[test]
+    fn band_pick_per_group_042_amb_042_17() {
+        let mut c = grouped_cfg(&[("rush", 1.0), ("macro", 0.0)]);
+        c.curriculum.ladder_pick = LadderPickSetting::PerGroup(BTreeMap::from([("rush".to_string(), LadderPick::Band)]));
+        c.validate().unwrap();
+        let mut l = League::new("r1", 13, None, c.clone());
+        // t0-zerg-rush unseen (0.5), ualbertabot 0.35, steamhammeroverpool 0.05 (excluded), zzzkbot 0.8.
+        for (k, x) in [("ualbertabot-zerg", 0.35), ("steamhammeroverpool-zerg", 0.05), ("zzzkbot-zerg", 0.8)] {
+            l.agents[0].win.insert(k.to_string(), x);
+        }
+        let n = 20_000;
+        let mut m: BTreeMap<String, usize> = BTreeMap::new();
+        for _ in 0..n {
+            *m.entry(l.next().key).or_default() += 1;
+        }
+        let b = BandConfig::default();
+        let w = [b.weight(0.5), b.weight(0.35), 0.0, b.weight(0.8)];
+        let total: f64 = w.iter().sum();
+        for (k, wk) in RUSH_KEYS.iter().zip(w) {
+            let got = m.get(*k).copied().unwrap_or(0) as f64 / n as f64;
+            assert!((got - wk / total).abs() < 0.015, "{k}: {got} vs {} ({m:?})", wk / total);
+        }
+        assert_eq!(m.get("steamhammeroverpool-zerg"), None, "excluded");
+        // The macro group is not in the table: f_var, the same picks as a plain "f_var" setting.
+        let mut f = grouped_cfg(&[("rush", 0.0), ("macro", 1.0)]);
+        f.curriculum.ladder_pick = c.curriculum.ladder_pick.clone();
+        let mut plain = f.clone();
+        plain.curriculum.ladder_pick = LadderPickSetting::All(LadderPick::FVar);
+        let (mut x, mut y) = (League::new("r1", 3, None, f), League::new("r1", 3, None, plain));
+        for _ in 0..2000 {
+            assert_eq!(x.next(), y.next());
+        }
+    }
+
+    /// 042 (AMB-042-17): `ladder_pick = "f_var"` (string, table naming every group f_var, or
+    /// absent) gives the earlier picks draw for draw; `"band"` for every group differs.
+    #[test]
+    fn f_var_settings_keep_earlier_picks_042_amb_042_17() {
+        let base = grouped_cfg(&[("rush", 0.5), ("macro", 0.5)]);
+        let mut table = base.clone();
+        table.curriculum.ladder_pick = LadderPickSetting::PerGroup(BTreeMap::from([("rush".to_string(), LadderPick::FVar), ("macro".to_string(), LadderPick::FVar)]));
+        let mut empty = base.clone();
+        empty.curriculum.ladder_pick = LadderPickSetting::PerGroup(BTreeMap::new());
+        let mut band = base.clone();
+        band.curriculum.ladder_pick = LadderPickSetting::All(LadderPick::Band);
+        let wins = [("ualbertabot-zerg", 0.9), ("zzzkbot-zerg", 0.02), ("t0-zerg", 0.3)];
+        let league = |c: RlConfig| {
+            let mut l = League::new("r1", 21, None, c);
+            for (k, x) in wins {
+                l.agents[0].win.insert(k.to_string(), x);
+            }
+            l
+        };
+        let mut a = league(base.clone());
+        let (mut b, mut e, mut d) = (league(table), league(empty), league(band));
+        let mut differs = false;
+        for _ in 0..3000 {
+            let x = a.next();
+            assert_eq!(x, b.next());
+            assert_eq!(x, e.next());
+            differs |= x != d.next();
+        }
+        assert!(differs, "band picks differently");
+        assert_eq!(base.curriculum.ladder_pick, LadderPickSetting::default());
+        assert_eq!(LadderPickSetting::default().for_group(Some("rush")), LadderPick::FVar);
     }
 }

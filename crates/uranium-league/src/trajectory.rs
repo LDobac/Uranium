@@ -44,6 +44,7 @@ pub struct Step {
 }
 
 /// T steps (or fewer at the end of a game) for one lane of a learner batch.
+#[derive(Clone)]
 pub struct Segment {
     pub agent: usize,
     pub game_id: u64,
@@ -60,6 +61,11 @@ pub struct Segment {
     /// weights (PG and UPGO): `"scout"` games against a model get `[reward.scout] vs_model` and
     /// `[reward.survive] vs_model`, every other game 1. The value head learns the raw values.
     pub pseudo_scale: [f32; 2],
+    /// Game frame of `steps[0]` (042-R16 담을 세그먼트, `[sil] until_s`).
+    pub start_frame: u32,
+    /// 042-R16 (AMB-042-17): `Some(R)` = a lane from the self-imitation buffer, R = its game's
+    /// r_win; `None` = a lane from the queue (every segment the queue ever holds).
+    pub sil_return: Option<f32>,
 }
 
 impl Segment {
@@ -356,7 +362,15 @@ pub struct TrajectoryObserver {
     scout_sum: f32,
     survive_sum: f32,
     scout: Option<ScoutMetrics>,
+    /// Frame of the first step of the segment being built (`Segment::start_frame`).
+    seg_frame: u32,
+    /// 042-R16: gets a copy of every non-terminal segment before it is queued (the terminal one is
+    /// copied by the caller once r_win is set); `None` = no copies.
+    copies: Option<SegmentSink>,
 }
+
+/// 042-R16: receives a copy of each non-terminal segment of a game (`copy_segments`).
+pub type SegmentSink = Box<dyn Fn(&Segment) + Send>;
 
 /// The four value-head channels of a step's reward (033-R3 / 033-R11): win, build, units, value;
 /// build / units = r_build / r_units in `"z"`, r_scout / r_survive in `"scout"`.
@@ -371,7 +385,14 @@ impl TrajectoryObserver {
     pub fn new(agent: usize, game_id: u64, seq_len: usize, queue: Arc<SegmentQueue>, results: Sender<GameResult>) -> Self {
         assert!(seq_len >= 2, "segments overlap by one step");
         let privileged = PrivilegedTensors { summary: vec![0.0; uranium_env::features::extract::dims().privileged()] };
-        Self { agent, game_id, seq_len, queue, results, steps: Vec::new(), state0: None, next_state0: None, privileged, reward_sum: [0.0; 4], decisions: 0, enemy_race: None, hold: None, r_value_policy: true, pseudo: PseudoMode::Z, pseudo_scale: [1.0, 1.0], scout_sum: 0.0, survive_sum: 0.0, scout: None }
+        Self { agent, game_id, seq_len, queue, results, steps: Vec::new(), state0: None, next_state0: None, privileged, reward_sum: [0.0; 4], decisions: 0, enemy_race: None, hold: None, r_value_policy: true, pseudo: PseudoMode::Z, pseudo_scale: [1.0, 1.0], scout_sum: 0.0, survive_sum: 0.0, scout: None, seg_frame: 0, copies: None }
+    }
+
+    /// 042-R16 (AMB-042-17): `sink` gets a copy of each non-terminal segment of this game before
+    /// it is queued (the queue flow is unchanged).
+    pub fn copy_segments(mut self, sink: SegmentSink) -> Self {
+        self.copies = Some(sink);
+        self
     }
 
     /// Hands the terminal segment to `sink` without r_win instead of queueing it: the caller
@@ -441,6 +462,7 @@ impl SessionObserver for TrajectoryObserver {
         self.add_reward(&d.reward_before, true);
         if self.steps.is_empty() {
             self.state0 = d.state.clone();
+            self.seg_frame = d.frame;
         } else if self.steps.len() == self.seq_len - 1 {
             self.next_state0 = d.state.clone();
         }
@@ -460,7 +482,13 @@ impl SessionObserver for TrajectoryObserver {
             let steps = std::mem::replace(&mut self.steps, vec![last]);
             let state0 = self.state0.take().unwrap_or_default();
             self.state0 = self.next_state0.take();
-            self.queue.push(Segment { agent: self.agent, game_id: self.game_id, steps, state0, terminal: false, r_value_policy: self.r_value_policy, pseudo_scale: self.pseudo_scale });
+            let seg = Segment { agent: self.agent, game_id: self.game_id, steps, state0, terminal: false, r_value_policy: self.r_value_policy, pseudo_scale: self.pseudo_scale, start_frame: self.seg_frame, sil_return: None };
+            // The next segment starts with this decision.
+            self.seg_frame = d.frame;
+            if let Some(sink) = &self.copies {
+                sink(&seg);
+            }
+            self.queue.push(seg);
         }
     }
 
@@ -481,7 +509,7 @@ impl SessionObserver for TrajectoryObserver {
                 if !self.steps.is_empty() {
                     let steps = std::mem::take(&mut self.steps);
                     let state0 = self.state0.take().unwrap_or_default();
-                    let seg = Segment { agent: self.agent, game_id: self.game_id, steps, state0, terminal: true, r_value_policy: self.r_value_policy, pseudo_scale: self.pseudo_scale };
+                    let seg = Segment { agent: self.agent, game_id: self.game_id, steps, state0, terminal: true, r_value_policy: self.r_value_policy, pseudo_scale: self.pseudo_scale, start_frame: self.seg_frame, sil_return: None };
                     match &self.hold {
                         Some(sink) => sink(seg),
                         None => self.queue.push(seg),
@@ -507,7 +535,7 @@ impl SessionObserver for TrajectoryObserver {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::mpsc;
     use uranium_env::features::Observation;
@@ -689,6 +717,11 @@ mod tests {
     /// A one-step terminal segment of `game_id` with behaviour version `version`. The packed
     /// observation is built once and cloned.
     fn seg(game_id: u64, version: u64) -> Segment {
+        seg_at(game_id, version)
+    }
+
+    /// `seg` (behaviour version = `version`, first decision at frame 0).
+    pub(crate) fn seg_at(game_id: u64, version: u64) -> Segment {
         static OBS: std::sync::OnceLock<PackedObs> = std::sync::OnceLock::new();
         Segment {
             agent: 0,
@@ -706,7 +739,28 @@ mod tests {
             terminal: true,
             r_value_policy: true,
             pseudo_scale: [1.0, 1.0],
+            start_frame: 0,
+            sil_return: None,
         }
+    }
+
+    /// 042-R16: each segment carries the frame of its first decision; the copy sink gets every
+    /// non-terminal segment (the queued ones unchanged), none without a sink.
+    #[test]
+    fn segments_carry_start_frames_and_copies_042_r16() {
+        let q = Arc::new(SegmentQueue::new(16));
+        let (tx, _rx) = mpsc::channel();
+        let copied = Arc::new(Mutex::new(Vec::new()));
+        let c = copied.clone();
+        let mut o = TrajectoryObserver::new(0, 5, 3, q.clone(), tx).copy_segments(Box::new(move |s: &Segment| c.lock().unwrap().push((s.start_frame, s.steps.len(), s.terminal))));
+        // decide() puts decision i at frame i.
+        for i in 0..6 {
+            decide(&mut o, i, 0.0);
+        }
+        o.on_end(RewardParts::default(), Some(Outcome::Loss));
+        let segs = q.try_take(3, 0, 100).unwrap();
+        assert_eq!(segs.iter().map(|s| (s.start_frame, s.terminal, s.sil_return)).collect::<Vec<_>>(), [(0, false, None), (2, false, None), (4, true, None)]);
+        assert_eq!(*copied.lock().unwrap(), [(0, 3, false), (2, 3, false)], "terminal not copied here");
     }
 
     /// A `wait` queue whose waits never reach the cap within a test.

@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use uranium_env::concede::ConcedeConfig;
 use uranium_env::scout::{PseudoMode, RewardConfig};
 
-use crate::league::{LadderEntry, LadderPick, Stage, T1Bot};
+use crate::league::{BandConfig, LadderEntry, LadderPickSetting, Stage, T1Bot};
+pub use crate::sil::{SilConfig, SilMode};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct OptimizerConfig {
@@ -52,17 +53,63 @@ pub struct EntropyConfig {
     pub target_loc: f32,
 }
 
+/// `[kl]` (042 KL 계수 스케줄, 042-R9). `update` is the agent's learner updates in this run: a
+/// new run (`--init` included) starts at 0, a resumed one continues from its checkpoint
+/// (AMB-042-17).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct KlConfig {
     pub init: f32,
     pub floor: f32,
     pub half_life_updates: f32,
+    /// `[kl.head_scale]` (042-R9, AMB-042-17): per-head multiplier of the KL coefficient.
+    /// Absent = 1.0 each (the earlier loss).
+    #[serde(default)]
+    pub head_scale: KlHeadScale,
 }
 
 impl KlConfig {
     /// `max(floor, init * 0.5^(update / half_life))` (042 KL schedule).
     pub fn coef(&self, update: u64) -> f32 {
         (self.init * 0.5f32.powf(update as f32 / self.half_life_updates)).max(self.floor)
+    }
+
+    /// 042 KL 설정 검사 (AMB-042-17): `init > 0`, `0 <= floor <= init`, `half_life_updates > 0`,
+    /// every head multiplier >= 0.
+    pub fn validate(&self) -> Result<()> {
+        let finite = [self.init, self.floor, self.half_life_updates].iter().all(|x| x.is_finite());
+        if !finite || self.init <= 0.0 || self.floor < 0.0 || self.floor > self.init || self.half_life_updates <= 0.0 {
+            bail!("[kl] needs init > 0, 0 <= floor <= init and half_life_updates > 0, got init {} floor {} half_life_updates {} (042-R9, AMB-042-17)", self.init, self.floor, self.half_life_updates);
+        }
+        if let Some((h, x)) = self.head_scale.by_head().into_iter().find(|(_, x)| !(*x >= 0.0 && x.is_finite())) {
+            bail!("[kl.head_scale] {h} must be a finite value >= 0, got {x} (042-R9, AMB-042-17)");
+        }
+        Ok(())
+    }
+}
+
+/// `[kl.head_scale]` (042-R9, AMB-042-17): head h's KL coefficient = the schedule value x its
+/// multiplier; the used-heads rule (032-R10) and the exact KL (AMB-042-9) stay.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct KlHeadScale {
+    pub action: f32,
+    pub delay: f32,
+    pub queued: f32,
+    pub selected: f32,
+    pub target_unit: f32,
+    pub target_loc: f32,
+}
+
+impl Default for KlHeadScale {
+    fn default() -> Self {
+        Self { action: 1.0, delay: 1.0, queued: 1.0, selected: 1.0, target_unit: 1.0, target_loc: 1.0 }
+    }
+}
+
+impl KlHeadScale {
+    /// The multipliers in the 032-R15 head order (`learner::HEAD_NAMES`).
+    pub fn by_head(&self) -> [(&'static str, f32); 6] {
+        [("action", self.action), ("delay", self.delay), ("queued", self.queued), ("selected", self.selected), ("target_unit", self.target_unit), ("target_loc", self.target_loc)]
     }
 }
 
@@ -124,9 +171,24 @@ pub struct LeagueConfig {
     /// (020-R11). Empty / absent = no anchor.
     #[serde(default)]
     pub anchor: String,
+    /// 042-R15 (AMB-042-17): game seconds after which an RL training game against a model
+    /// (current Main, snapshot, anchor) ends as a draw (`TimeLimitDraw`, 020-R3); 0 = no cap
+    /// (the 60-minute limit). 0 or 60..=3600.
+    #[serde(default)]
+    pub model_game_max_s: u32,
 }
 
+/// 020-R3: the 60-minute game limit in frames (24 per game second).
+pub const GAME_MAX_FRAMES: u32 = 86_400;
+
 impl LeagueConfig {
+    /// 042-R15 / 020-R3 (AMB-042-17): `GameSpec.max_frames` of an RL training game; a game
+    /// against a model gets `min(86,400, model_game_max_s x 24)` when the cap is set, every other
+    /// game the 60-minute limit.
+    pub fn game_max_frames(&self, vs_model: bool) -> u32 {
+        if vs_model && self.model_game_max_s > 0 { GAME_MAX_FRAMES.min(self.model_game_max_s.saturating_mul(24)) } else { GAME_MAX_FRAMES }
+    }
+
     /// 042 anchor (AMB-042-14): its checkpoint name (`ckpt-<step>`, also for an `agents/main`
     /// path), the win-table key being `anchor@<name>`; `None` without an anchor.
     pub fn anchor_name(&self) -> Option<String> {
@@ -219,9 +281,13 @@ pub struct CurriculumConfig {
     /// earlier C1 picks).
     #[serde(default)]
     pub c1_ladder: f64,
-    /// 042 사다리 안 상대 선택 (AMB-042-15): only `"f_var"`; other values are load errors.
+    /// 042 사다리 안 상대 선택 (AMB-042-15 / 17): `"f_var"` or `"band"` for every group, or a
+    /// table group name → method (groups not listed: `"f_var"`); other values are load errors.
     #[serde(default)]
-    pub ladder_pick: LadderPick,
+    pub ladder_pick: LadderPickSetting,
+    /// `[curriculum.band]`: the numbers of `"band"` (042, AMB-042-17).
+    #[serde(default)]
+    pub band: BandConfig,
     /// 042 사다리 그룹 (AMB-042-16): group name → share. Non-empty: a ladder game first draws a
     /// group by the shares, then an entry of that group by `ladder_pick`. Absent / empty = one
     /// pool of every entry (the earlier picks; `group` is then only recorded).
@@ -303,6 +369,9 @@ pub struct RlConfig {
     /// settings (the earlier behaviour).
     #[serde(default)]
     pub reward: RewardConfig,
+    /// `[sil]`: 042-R16 self-imitation / held-game replay (AMB-042-17). Absent = off.
+    #[serde(default)]
+    pub sil: SilConfig,
 }
 
 impl RlConfig {
@@ -374,6 +443,22 @@ impl RlConfig {
                 bail!("[[ladder]] entry {}: group {:?} is not in [curriculum] ladder_groups (042, AMB-042-16)", i + 1, e.group);
             }
         }
+        // 042 사다리 선택 (AMB-042-17): group methods only for listed groups, band numbers.
+        if let LadderPickSetting::PerGroup(m) = &self.curriculum.ladder_pick
+            && let Some(g) = m.keys().find(|g| !groups.contains_key(*g))
+        {
+            bail!("[curriculum] ladder_pick names group {g:?}, which is not in ladder_groups (042, AMB-042-17)");
+        }
+        self.curriculum.band.validate().map_err(anyhow::Error::msg)?;
+        // 042-R9 KL schedule and head multipliers (AMB-042-17).
+        self.kl.validate()?;
+        // 042-R15 (AMB-042-17): 0 or 60 s ..= 60 min (메인 임시 결정).
+        let cap = self.league.model_game_max_s;
+        if cap != 0 && !(60..=3_600).contains(&cap) {
+            bail!("[league] model_game_max_s must be 0 (no cap) or 60..=3600 game seconds, got {cap} (042-R15, AMB-042-17)");
+        }
+        // 042-R16 (AMB-042-17).
+        self.sil.validate(self.lanes, groups).map_err(anyhow::Error::msg)?;
         // 042-R14 (AMB-042-15).
         self.concede.validate().map_err(anyhow::Error::msg)?;
         // 033-R11 (AMB-042-16).
@@ -395,6 +480,7 @@ impl RlConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::league::LadderPick;
 
     #[test]
     fn repository_rl_toml_parses_042_r9() {
@@ -626,7 +712,7 @@ mod tests {
     #[test]
     fn ladder_and_concede_keys_default_042_amb_042_15() {
         let c = RlConfig::default_file();
-        assert_eq!((c.curriculum.c1_ladder, c.curriculum.ladder_pick), (0.0, LadderPick::FVar));
+        assert_eq!((c.curriculum.c1_ladder, c.curriculum.ladder_pick.clone()), (0.0, LadderPickSetting::All(LadderPick::FVar)));
         assert!(c.ladder.is_empty());
         assert_eq!(c.concede, ConcedeConfig::default());
         assert!(!c.concede.enabled);
@@ -677,7 +763,7 @@ mod tests {
         assert!(with_ladder("c1_ladder = 0.7", &format!("{RUSH_LADDER}[[ladder]]\nkind = \"t1\"\nname = \"zzzkbot\"\nrace = \"Zerg\"\n"), "").is_err(), "same key twice");
         assert!(with_ladder("c1_ladder = 0.7\nladder_pick = \"f_hard\"", RUSH_LADDER, "").is_err(), "ladder_pick");
         let lp = with_ladder("c1_ladder = 0.7\nladder_pick = \"f_var\"", RUSH_LADDER, "").unwrap();
-        assert_eq!(lp.curriculum.ladder_pick, LadderPick::FVar);
+        assert_eq!(lp.curriculum.ladder_pick, LadderPickSetting::All(LadderPick::FVar));
         for bad in ["max_supply = 201\n", "max_supply = -1\n", "hold_s = 0\n", "after_s = -5\n", "enable = true\n"] {
             assert!(with_ladder("c1_ladder = 0.0", "", bad).is_err(), "{bad}");
         }
@@ -694,7 +780,7 @@ mod tests {
         t.validate().unwrap();
         let cc = &t.curriculum;
         assert_eq!((cc.c1_ladder, cc.c1_anchor, cc.c1_snapshot, cc.c1_self, cc.c1_t1, cc.c1_t0), (0.70, 0.10, 0.15, 0.05, 0.0, 0.0));
-        assert_eq!(cc.ladder_pick, LadderPick::FVar);
+        assert_eq!(cc.ladder_pick, LadderPickSetting::All(LadderPick::FVar));
         assert_eq!(t.concede, ConcedeConfig { enabled: true, ..ConcedeConfig::default() });
         let keys: Vec<String> = t.ladder.iter().map(|e| e.opponent().unwrap().1).collect();
         assert_eq!(keys, ["ualbertabot9pool-zerg", "t0-zerg-rush", "ualbertabot12poollings-zerg", "ualbertabot-zerg", "ualbertabot9poollings-zerg", "steamhammeroverpool-zerg", "zzzkbot-zerg"], "user decision 2026-11-03");
@@ -831,5 +917,180 @@ mod tests {
         ] {
             assert!(load(from, to).is_err(), "{to}");
         }
+    }
+
+    /// `config/rl.toml` with `from` replaced by `to` (once), validated.
+    fn rl_with(from: &str, to: &str) -> Result<RlConfig> {
+        // A Windows checkout may have CRLF line ends; `from` / `to` use LF.
+        let full = include_str!("../../../config/rl.toml").replace("\r\n", "\n");
+        assert!(full.contains(from), "{from}");
+        let c: RlConfig = toml::from_str(&full.replacen(from, to, 1))?;
+        c.validate()?;
+        Ok(c)
+    }
+
+    /// 042-R9 / R15 / R16, 042 사다리 선택 (AMB-042-17): rl.toml lists the new settings at their
+    /// defaults (head multipliers 1.0, no model-game cap, band 0.5 / 0.15 / 0.10, f_var, `[sil]`
+    /// off); a config without them (the earlier files, configs copied into older checkpoints) gets
+    /// the same values.
+    #[test]
+    fn amb_042_17_keys_default() {
+        let c = RlConfig::default_file();
+        assert_eq!(c.kl.head_scale, KlHeadScale::default());
+        assert!(c.kl.head_scale.by_head().iter().all(|(_, x)| *x == 1.0));
+        assert_eq!(c.league.model_game_max_s, 0);
+        assert_eq!(c.curriculum.band, BandConfig { center: 0.5, width: 0.15, exclude_below: 0.10 });
+        assert_eq!(c.curriculum.ladder_pick, LadderPickSetting::All(LadderPick::FVar));
+        assert_eq!(c.sil, SilConfig::default());
+        assert!(!c.sil.enabled);
+        let s = &c.sil;
+        assert_eq!((s.mode, s.select_group.as_str(), s.select_scv_4m, s.until_s, s.buffer_segments, s.lanes, s.w_pg, s.w_v, s.max_uses), (SilMode::Sil, "rush", 12, 480, 2_048, 4, 0.05, 0.01, 4), "042-R16 기본안(미확정)");
+        let full = include_str!("../../../config/rl.toml");
+        let cut = |text: &str, from: &str| {
+            let at = text.find(from).unwrap();
+            let end = at + 1 + text[at + 1..].find("\n[").unwrap();
+            format!("{}{}", &text[..at], &text[end..])
+        };
+        let old = cut(&cut(full, "\n[kl.head_scale]"), "\n[curriculum.band]");
+        let old: String = old.lines().filter(|l| !l.starts_with("model_game_max_s =")).map(|l| format!("{l}\n")).collect();
+        assert!(!old.lines().any(|l| !l.starts_with('#') && (l.contains("head_scale") || l.starts_with("center =") || l.starts_with("model_game_max_s ="))));
+        let o: RlConfig = toml::from_str(&old).unwrap();
+        assert_eq!(o, c, "absent = defaults");
+        for f in [include_str!("../../../config/rl_rush2.toml"), include_str!("../../../config/rl_rush1.toml")] {
+            let o: RlConfig = toml::from_str(f).unwrap();
+            o.validate().unwrap();
+            assert_eq!((o.kl.head_scale.clone(), o.league.model_game_max_s, o.curriculum.band, o.sil.clone()), (KlHeadScale::default(), 0, BandConfig::default(), SilConfig::default()));
+        }
+    }
+
+    /// 042-R9 KL 설정 검사 (AMB-042-17): init > 0, 0 <= floor <= init, half_life_updates > 0,
+    /// head multipliers >= 0 (unknown head names are errors); the schedule from update 0.
+    #[test]
+    fn kl_settings_are_checked_042_r9() {
+        for (to, ok) in [
+            ("init = 0.03\nfloor = 0.01\nhalf_life_updates = 1500", true),
+            ("init = 0.01\nfloor = 0.01\nhalf_life_updates = 1", true),
+            ("init = 0.1\nfloor = 0.0\nhalf_life_updates = 20000", true),
+            ("init = 0.0\nfloor = 0.0\nhalf_life_updates = 20000", false),
+            ("init = -0.1\nfloor = 0.01\nhalf_life_updates = 20000", false),
+            ("init = 0.1\nfloor = 0.2\nhalf_life_updates = 20000", false),
+            ("init = 0.1\nfloor = -0.01\nhalf_life_updates = 20000", false),
+            ("init = 0.1\nfloor = 0.01\nhalf_life_updates = 0", false),
+            ("init = 0.1\nfloor = 0.01\nhalf_life_updates = nan", false),
+        ] {
+            assert_eq!(rl_with("init = 0.1\nfloor = 0.01\nhalf_life_updates = 20000", to).is_ok(), ok, "{to}");
+        }
+        let c = rl_with("init = 0.1\nfloor = 0.01\nhalf_life_updates = 20000", "init = 0.03\nfloor = 0.01\nhalf_life_updates = 1500").unwrap();
+        assert!((c.kl.coef(0) - 0.03).abs() < 1e-9, "a new run's update 0 = init");
+        assert!((c.kl.coef(1500) - 0.015).abs() < 1e-7);
+        assert!((c.kl.coef(2_000) - 0.03 * 0.5f32.powf(2_000.0 / 1_500.0)).abs() < 1e-7 && c.kl.coef(2_000) > 0.01);
+        assert!((c.kl.coef(2_400) - 0.01).abs() < 1e-9 && (c.kl.coef(1_000_000) - 0.01).abs() < 1e-9, "floor from about update 2,380");
+        // `action = 1.0` is only in [kl.head_scale] ([entropy] action is 3e-3).
+        let scale = "action = 1.0";
+        assert_eq!(rl_with(scale, "action = 2.5").unwrap().kl.head_scale.action, 2.5);
+        assert_eq!(rl_with(scale, "action = 0.0").unwrap().kl.head_scale.action, 0.0);
+        assert!(rl_with(scale, "action = -0.5").is_err());
+        assert!(rl_with(scale, "actions = 1.0").is_err(), "unknown head");
+        let partial = rl_with("action = 1.0\ndelay = 1.0\nqueued = 1.0\nselected = 1.0", "selected = 0.5").unwrap();
+        assert_eq!(partial.kl.head_scale, KlHeadScale { selected: 0.5, ..KlHeadScale::default() }, "absent heads 1.0");
+    }
+
+    /// 042-R15 설정 검사 (AMB-042-17, 메인 임시 결정): 0 or 60..=3600.
+    #[test]
+    fn model_game_max_s_is_checked_042_r15() {
+        for (s, ok) in [(0, true), (60, true), (1_500, true), (3_600, true), (59, false), (1, false), (3_601, false)] {
+            assert_eq!(rl_with("model_game_max_s = 0", &format!("model_game_max_s = {s}")).is_ok(), ok, "{s}");
+        }
+        assert!(rl_with("model_game_max_s = 0", "model_game_max_s = -5").is_err());
+    }
+
+    const GROUPED_LADDER: &str = "[[ladder]]\nkind = \"t0\"\nbuild = \"zerg_rush\"\nrace = \"Zerg\"\ngroup = \"rush\"\n[[ladder]]\nkind = \"t0\"\nbuild = \"standard\"\nrace = \"Zerg\"\ngroup = \"macro\"\n";
+
+    /// 042 사다리 선택 (AMB-042-17): `ladder_pick` is a method for every group or a group table
+    /// ("f_var" / "band" only, groups in `ladder_groups` only); `[curriculum.band]` ranges.
+    #[test]
+    fn ladder_pick_settings_are_checked_042_amb_042_17() {
+        let groups = "c1_ladder = 0.7\nladder_groups = { rush = 0.5, macro = 0.5 }";
+        let load = |pick: &str| with_ladder(&format!("{groups}\nladder_pick = {pick}"), GROUPED_LADDER, "");
+        assert_eq!(load("\"band\"").unwrap().curriculum.ladder_pick, LadderPickSetting::All(LadderPick::Band));
+        let t = load("{ rush = \"band\", macro = \"f_var\" }").unwrap().curriculum.ladder_pick;
+        assert_eq!((t.for_group(Some("rush")), t.for_group(Some("macro")), t.for_group(None)), (LadderPick::Band, LadderPick::FVar, LadderPick::FVar));
+        let t = load("{ rush = \"band\" }").unwrap().curriculum.ladder_pick;
+        assert_eq!(t.for_group(Some("macro")), LadderPick::FVar, "not in the table: f_var");
+        for bad in ["\"f_hard\"", "{ rush = \"pfsp\" }", "{ late = \"band\" }", "{ rush = 1 }", "1"] {
+            assert!(load(bad).is_err(), "{bad}");
+        }
+        // Without ladder_groups a table may not name a group.
+        assert!(with_ladder("c1_ladder = 0.7\nladder_pick = { rush = \"band\" }", RUSH_LADDER, "").is_err());
+        with_ladder("c1_ladder = 0.7\nladder_pick = \"band\"", RUSH_LADDER, "").unwrap();
+        let band = "center = 0.5\nwidth = 0.15\nexclude_below = 0.10";
+        assert_eq!(rl_with(band, "center = 0.4\nwidth = 0.2\nexclude_below = 0.0").unwrap().curriculum.band, BandConfig { center: 0.4, width: 0.2, exclude_below: 0.0 });
+        for bad in ["center = 1.5\nwidth = 0.15\nexclude_below = 0.10", "center = 0.5\nwidth = 0.0\nexclude_below = 0.10", "center = 0.5\nwidth = 0.15\nexclude_below = 1.0", "center = 0.5\nwidth = 0.15\nexclude = 0.1"] {
+            assert!(rl_with(band, bad).is_err(), "{bad}");
+        }
+        // The serialised config (checkpoint meta.json) reads back the same, string or table.
+        for pick in ["\"f_var\"", "{ rush = \"band\", macro = \"f_var\" }"] {
+            let c = load(pick).unwrap();
+            let back: RlConfig = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+            assert_eq!(back, c);
+        }
+    }
+
+    /// 042-R16 설정 검사 (AMB-042-17): the mode and unknown keys always; the values only when
+    /// enabled (select_group in ladder_groups, lanes below the batch lanes, ...).
+    #[test]
+    fn sil_settings_load_042_r16() {
+        let groups = "c1_ladder = 0.7\nladder_groups = { rush = 0.5, macro = 0.5 }";
+        let load = |sil: &str| -> Result<RlConfig> {
+            let text: String = include_str!("../../../config/rl.toml").lines().filter(|l| !l.starts_with("c1_ladder =")).map(|l| format!("{l}\n")).collect();
+            let text = text.replacen("[curriculum]\n", &format!("[curriculum]\n{groups}\n"), 1).replacen("\n[reward]\n", &format!("\n[sil]\n{sil}\n\n[reward]\n"), 1);
+            let c: RlConfig = toml::from_str(&format!("{text}\n{GROUPED_LADDER}"))?;
+            c.validate()?;
+            Ok(c)
+        };
+        assert!(!load("enabled = false").unwrap().sil.enabled);
+        let on = load("enabled = true").unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(on.sil, SilConfig { enabled: true, ..SilConfig::default() });
+        assert_eq!(load("enabled = true\nmode = \"replay\"").unwrap().sil.mode, SilMode::Replay);
+        for bad in ["mode = \"imitate\"", "enable = true", "enabled = true\nselect_group = \"late\"", "enabled = true\nlanes = 32", "enabled = true\nlanes = 0", "enabled = true\nbuffer_segments = 2", "enabled = true\nw_pg = -1.0", "enabled = true\nmax_uses = 0", "enabled = true\nuntil_s = -1"] {
+            assert!(load(bad).is_err(), "{bad}");
+        }
+        // Off: the values are not checked (they are confirmed when it is turned on).
+        load("enabled = false\nlanes = 0\nselect_group = \"late\"").unwrap();
+    }
+
+    /// 042 "신호 밀도·KL run" (AMB-042-17): `config/rl_rush3.toml` is `rl_rush2.toml` with the
+    /// decided changes only — shares ladder 0.90 / anchor 0.05 / snapshots 0.05 / no current Main,
+    /// rush `band` (0.5, 0.15, 0.10) and macro `f_var`, model games capped at 1,500 s, KL 0.03 /
+    /// 0.01 / 1,500 with every head multiplier 1.0, λ 0.95, `[sil]` off; the 7 rush and 5 macro
+    /// entries as in rush-s2 (the 50-60% rung variants come after the measurement).
+    #[test]
+    fn rush3_config_042_amb_042_17() {
+        let t: RlConfig = toml::from_str(include_str!("../../../config/rl_rush3.toml")).unwrap();
+        t.validate().unwrap();
+        let cc = &t.curriculum;
+        assert_eq!((cc.c1_ladder, cc.c1_anchor, cc.c1_snapshot, cc.c1_self, cc.c1_t1, cc.c1_t0), (0.90, 0.05, 0.05, 0.0, 0.0, 0.0));
+        assert_eq!(cc.ladder_pick, LadderPickSetting::PerGroup([("rush".to_string(), LadderPick::Band), ("macro".to_string(), LadderPick::FVar)].into_iter().collect()));
+        assert_eq!(cc.band, BandConfig { center: 0.5, width: 0.15, exclude_below: 0.10 });
+        assert_eq!(t.league.model_game_max_s, 1_500);
+        assert_eq!(t.league.game_max_frames(true), 36_000);
+        assert_eq!((t.kl.init, t.kl.floor, t.kl.half_life_updates), (0.03, 0.01, 1_500.0));
+        assert_eq!(t.kl.head_scale, KlHeadScale::default());
+        assert_eq!(t.loss.td_lambda, 0.95);
+        assert!(!t.sil.enabled);
+        assert_eq!(t.sil, SilConfig::default());
+        let rush2: RlConfig = toml::from_str(include_str!("../../../config/rl_rush2.toml")).unwrap();
+        assert_eq!(t.ladder, rush2.ladder, "7 rush + 5 macro as in rush-s2");
+        assert_eq!(t.ladder.iter().filter(|e| e.group == "rush").count(), 7);
+        let mut d = rush2;
+        let dc = &mut d.curriculum;
+        (dc.c1_ladder, dc.c1_anchor, dc.c1_snapshot, dc.c1_self) = (0.90, 0.05, 0.05, 0.0);
+        dc.ladder_pick = cc.ladder_pick.clone();
+        d.league.model_game_max_s = 1_500;
+        (d.kl.init, d.kl.floor, d.kl.half_life_updates) = (0.03, 0.01, 1_500.0);
+        d.loss.td_lambda = 0.95;
+        assert_eq!(d, t, "everything else as in rush-s2");
+        let back: RlConfig = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert_eq!(back, t);
     }
 }

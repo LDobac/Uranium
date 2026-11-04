@@ -6,7 +6,10 @@ inputs and the loss parts back (host syncs), copies core_state0 per lane, the ou
 come from the device (`nonzero`), the copies are pageable unless `URANIUM_H2D=pinned`, and the
 targets run one reward component at a time. Only additions: the phase marks of `bench rl
 --phases`, `grad_norm` in the statistics and r_value's per-lane policy weight (AMB-042-14, the same
-`component_weights` as the learner). Not used by training."""
+`component_weights` as the learner). AMB-042-17 additions: the per-head KL multipliers (042-R9) and
+the 042-R2 진단 로그 statistics (advantage RMS per channel, value loss per channel, per-step KL p99
+/ max from the trained steps picked out on the host), the reference for the learner's. No
+self-imitation lanes (042-R16). Not used by training."""
 
 import torch
 
@@ -14,7 +17,7 @@ from uranium.agent.infer import leaves, rebuild
 from uranium.bc.clip import clip_global_norm
 from uranium.device import autocast
 from uranium.model import to_obs
-from uranium.rl.learner import HEADS, Learner, component_weights, kl_coef, kl_per_head
+from uranium.rl.learner import HEADS, Learner, component_weights, diagnostics, kl_coef, kl_per_head, scaled_kl, sil_settings, sil_stats, value_channels
 
 
 def _valid(length: torch.Tensor, t: int) -> torch.Tensor:
@@ -103,6 +106,8 @@ class ReferenceLearner(Learner):
         up = torch.zeros(b, t)
         vs = torch.zeros(b, t, 4)
         rho_sum = 0.0
+        # 042-R2 진단 로그: each channel's PG advantage squared over the trained steps.
+        adv_sq_c = [0.0] * 4
         for c in range(4):
             ext = torch.cat([v[:, :, c], torch.zeros(b, 1)], 1)
             # Bootstrap after the trained steps: 0 after a terminal step, else the value there.
@@ -113,17 +118,19 @@ class ReferenceLearner(Learner):
                 pg += weights[c] * vt_pg
                 up += weights[c] * upgo(rewards[:, :, c], ext, log_rho, length, l["gamma"], l["vtrace_rho_bar"])
                 vs[:, :, c] = vt_vs
+                adv_sq_c[c] = float((vt_pg * vt_pg * valid).sum())
                 if c == 0:
                     rho_sum += float(rho.sum())
             else:
                 adv, ret = gae(rewards[:, :, c], ext, length, l["gamma"], self.cfg["ppo"]["gae_lambda"])
                 pg += weights[c] * adv
                 vs[:, :, c] = ret
+                adv_sq_c[c] = float((adv * adv * valid).sum())
                 if c == 0:
                     rho_sum += float((log_rho.exp() * valid).sum())
         coef = l["pg"] * pg + l["upgo"] * up if self.algo == "vtrace" else pg
         dev = self.device
-        return {"coef": coef.reshape(-1).to(dev), "vs": vs.reshape(-1, 4).to(dev), "rho_sum": rho_sum, "adv_sum": float((pg * valid).sum())}
+        return {"coef": coef.reshape(-1).to(dev), "vs": vs.reshape(-1, 4).to(dev), "rho_sum": rho_sum, "adv_sum": float((pg * valid).sum()), "adv_sq": float((pg * pg * valid).sum()), "adv_sq_c": adv_sq_c}
 
     def update(self, batch, weights) -> dict:
         """One update over `batch` (a `_core.SegmentBatch`, lanes x T); returns the statistics."""
@@ -152,6 +159,7 @@ class ReferenceLearner(Learner):
         apart = self.net.win_open_params()
         params = list(self.net.parameters())
         norm = None
+        adv_sq, adv_sq_c, value_ch, kl_valid = 0.0, [0.0] * 4, [0.0] * 4, []
         for epoch in range(epochs):
             self.opt.zero_grad(set_to_none=True)
             nxt = self._collate.submit(collate, 0)
@@ -171,6 +179,11 @@ class ReferenceLearner(Learner):
                     for h in range(6):
                         stats["kl_heads"][h] += part["kl_heads"][h]
                         stats["entropy_heads"][h] += part["entropy_heads"][h]
+                    adv_sq += part["adv_sq"]
+                    for c in range(4):
+                        adv_sq_c[c] += part["adv_sq_c"][c]
+                        value_ch[c] += part["value_ch"][c]
+                    kl_valid.append(part["kl_valid"])
             clipped = clip_global_norm(params, cfg["optimizer"]["grad_clip"], apart)
             if epoch == 0:
                 norm = clipped
@@ -180,10 +193,15 @@ class ReferenceLearner(Learner):
             self.tick("optimizer")
         e = cfg["entropy"]
         bonus = sum(e[h] * stats["entropy_heads"][i] for i, h in enumerate(HEADS))
-        stats["loss"] = stats["policy"] + stats["value"] + stats["win_open"] + stats["kl"] * coef_kl - bonus
+        stats["loss"] = stats["policy"] + stats["value"] + stats["win_open"] + scaled_kl(stats["kl_heads"], stats["kl"], self.kl_scale) * coef_kl - bonus
         stats["rho_mean"] /= n
         stats["adv_mean"] /= n
         stats["grad_norm"] = None if norm is None else float(norm)
+        # 042-R2 진단 로그 (AMB-042-17): KL p99 / max over the trained steps picked out here.
+        x = torch.cat(kl_valid) if kl_valid else torch.zeros(0)
+        kl_q = [float(torch.quantile(x, 0.99)), float(x.max())] if x.numel() else [float("nan")] * 2
+        stats.update(diagnostics(adv_sq, adv_sq_c, value_ch, kl_q, n))
+        stats.update(sil_stats(sil_settings(cfg), [0.0, 0.0, 0.0], 0.0, 0.0))
         self.tick("stats")
         if self.phases:
             self._ph["python_total"] = time.perf_counter() - started
@@ -235,11 +253,15 @@ class ReferenceLearner(Learner):
         kl_terms = [(kl[h] * mask).sum() / n for h in HEADS]
         kl_total = sum(kl_terms)
         self.tick("kl")
-        loss = policy + value - entropy + kl_total * coef_kl
+        loss = policy + value - entropy + scaled_kl(kl_terms, kl_total, self.kl_scale) * coef_kl
         if win_open is not None:
             loss = loss + win_open
         self.tick("loss")
         loss.backward()
         self.tick("backward")
         vals = torch.stack([policy.detach(), value.detach(), kl_total.detach(), torch.zeros((), device=dev) if win_open is None else win_open.detach(), *[x.detach() for x in kl_terms], *[x.detach() for x in ent_terms]]).tolist()
-        return {"policy": vals[0], "value": vals[1], "kl": vals[2], "win_open": vals[3], "kl_heads": vals[4:10], "entropy_heads": vals[10:16], "rho_sum": tg["rho_sum"], "adv_sum": tg["adv_sum"]}
+        kl_valid = sum(kl[h] for h in HEADS).detach()[mask > 0].cpu()
+        return {
+            "policy": vals[0], "value": vals[1], "kl": vals[2], "win_open": vals[3], "kl_heads": vals[4:10], "entropy_heads": vals[10:16], "rho_sum": tg["rho_sum"], "adv_sum": tg["adv_sum"],
+            "adv_sq": tg["adv_sq"], "adv_sq_c": tg["adv_sq_c"], "value_ch": value_channels(values.detach(), vs, mask, n).tolist(), "kl_valid": kl_valid,
+        }

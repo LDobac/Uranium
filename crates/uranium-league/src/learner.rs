@@ -42,6 +42,29 @@ pub struct UpdateStats {
     pub lag_mean: f32,
     /// 042-R13 win_open loss (0 without the head).
     pub win_open: f32,
+    /// 042-R2 진단 로그 (AMB-042-17), over the batch's trained queue-lane steps: RMS of the
+    /// combined policy-gradient advantage (the value `adv_mean` averages).
+    #[serde(default)]
+    pub adv_rms: f32,
+    /// RMS of each channel's V-trace PG advantage (win, build, units, value) before the 033
+    /// weights and per-game multipliers.
+    #[serde(default)]
+    pub adv_rms_channels: [f32; 4],
+    /// Each channel's mean 0.5 (V - target)^2, before the value loss weight.
+    #[serde(default)]
+    pub value_loss_channels: [f32; 4],
+    /// 99th percentile and maximum of the per-step KL(π ‖ π_BC) (used heads summed, before the
+    /// head multipliers); `None` without a trained step.
+    #[serde(default)]
+    pub kl_p99: Option<f32>,
+    #[serde(default)]
+    pub kl_max: Option<f32>,
+    /// 042-R16: the self-imitation loss (weights applied; `"sil"` mode) and the share of the
+    /// buffer lanes' steps with `max(R - V, 0) > 0`; `None` when off / not measured.
+    #[serde(default)]
+    pub sil_loss: Option<f32>,
+    #[serde(default)]
+    pub sil_pos_frac: Option<f32>,
 }
 
 /// The learning agents (042: Main, Main Exploiter, League Exploiter; index = `AgentKind::index`).

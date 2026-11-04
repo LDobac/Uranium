@@ -42,11 +42,19 @@ impl SegmentBatch {
         self.segs.iter().map(|s| s.version()).collect()
     }
 
+    /// Per lane: 042-R16 self-imitation buffer lane's r_win, `None` for a queue lane (buffer
+    /// lanes come last), without collating.
+    #[getter]
+    fn sil_returns(&self) -> Vec<Option<f32>> {
+        self.segs.iter().map(|s| s.sil_return).collect()
+    }
+
     /// Lanes `start..end` collated for one forward (`uranium_league::batch::group`): the
     /// observation arrays, the taken actions as labels, `privileged`, `mask`, `behaviour`,
     /// `rewards` [rows, 4], per lane `terminal`, `trained`, `versions`, `r_value_policy` (r_value
     /// keeps its policy weight, AMB-042-14), `pseudo_scale` [b, 2] (build / units policy-weight
-    /// multipliers, 033-R11, AMB-042-16) and `state0` (None = zero
+    /// multipliers, 033-R11, AMB-042-16), `sil_return` [b] (042-R16 buffer lane's r_win, NaN for
+    /// a queue lane) and `state0` (None = zero
     /// state, else a list of (shape, float32 array)), plus `b`, `t`, `n`.
     fn group<'py>(&self, py: Python<'py>, start: usize, end: usize, t: usize, max_select: usize) -> PyResult<Bound<'py, PyDict>> {
         if start >= end || end > self.segs.len() {
@@ -78,6 +86,7 @@ impl SegmentBatch {
         put!("versions", g.versions, vec![g.b]);
         put!("r_value_policy", g.r_value_policy, vec![g.b]);
         put!("pseudo_scale", g.pseudo_scale, vec![g.b, 2]);
+        put!("sil_return", g.sil_return, vec![g.b]);
         let states = PyList::empty(py);
         for s in g.state0 {
             if s.parts.is_empty() {
@@ -259,9 +268,10 @@ fn check_seq(r: &[f32], v: &[f32], l: &[f32]) -> PyResult<()> {
 /// policy weight (`Segment::r_value_policy` false, AMB-042-14). `pseudo_rewards`: also 0.02 *
 /// step on build and -0.015 * step + 0.05 on units; `pseudo_scale`: per lane build / units
 /// policy-weight multipliers (`Segment::pseudo_scale`, 033-R11, AMB-042-16), empty = 1 and 1.
+/// `sil_returns`: per lane `Segment::sil_return` (042-R16 buffer lanes, last), empty = none.
 #[pyfunction]
-#[pyo3(signature = (lanes, t, r_value_off = Vec::new(), pseudo_rewards = false, pseudo_scale = Vec::new()))]
-pub fn test_segments(lanes: usize, t: usize, r_value_off: Vec<usize>, pseudo_rewards: bool, pseudo_scale: Vec<(f32, f32)>) -> SegmentBatch {
+#[pyo3(signature = (lanes, t, r_value_off = Vec::new(), pseudo_rewards = false, pseudo_scale = Vec::new(), sil_returns = Vec::new()))]
+pub fn test_segments(lanes: usize, t: usize, r_value_off: Vec<usize>, pseudo_rewards: bool, pseudo_scale: Vec<(f32, f32)>, sil_returns: Vec<Option<f32>>) -> SegmentBatch {
     use uranium_env::features::PrivilegedTensors;
     use uranium_env::features::executor::HostAction;
     use uranium_league::trajectory::{PackedObs, Step};
@@ -280,7 +290,7 @@ pub fn test_segments(lanes: usize, t: usize, r_value_off: Vec<usize>, pseudo_rew
                     version: 0,
                 })
                 .collect();
-            Segment { agent: 0, game_id: lane as u64, steps, state0: Default::default(), terminal: lane % 2 == 0, r_value_policy: !r_value_off.contains(&lane), pseudo_scale: pseudo_scale.get(lane).map_or([1.0, 1.0], |&(a, b)| [a, b]) }
+            Segment { agent: 0, game_id: lane as u64, steps, state0: Default::default(), terminal: lane % 2 == 0, r_value_policy: !r_value_off.contains(&lane), pseudo_scale: pseudo_scale.get(lane).map_or([1.0, 1.0], |&(a, b)| [a, b]), start_frame: 0, sil_return: sil_returns.get(lane).copied().flatten() }
         })
         .collect();
     SegmentBatch { segs }

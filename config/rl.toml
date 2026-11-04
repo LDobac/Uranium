@@ -22,6 +22,8 @@ grad_clip = 1.0
 
 [loss]
 gamma = 1.0
+# TD(λ): V-trace trace coefficient c = λ min(c̄, ρ) in the value target and the PG advantage
+# (042-R9 run setting; rush-s3 0.95, AMB-042-17).
 td_lambda = 0.8
 vtrace_rho_bar = 1.0
 vtrace_c_bar = 1.0
@@ -41,10 +43,23 @@ target_unit = 1e-3
 target_loc = 1e-3
 
 [kl]
-# coef = max(floor, init * 0.5^(update / half_life_updates))
+# coef = max(floor, init * 0.5^(update / half_life_updates)); `update` = the agent's learner
+# updates in this run (a new run, --init included, starts at 0; a resume continues from its
+# checkpoint). Load errors unless init > 0, 0 <= floor <= init, half_life_updates > 0 (042-R9,
+# AMB-042-17).
 init = 0.1
 floor = 0.01
 half_life_updates = 20000
+
+[kl.head_scale]
+# 042-R9 (AMB-042-17): head h's KL coefficient = the schedule value x this (>= 0); 1.0 each =
+# the earlier loss. train.csv kl_coef is the schedule value before these.
+action = 1.0
+delay = 1.0
+queued = 1.0
+selected = 1.0
+target_unit = 1.0
+target_loc = 1.0
 
 [actors]
 # Push weights to the inference server every K updates.
@@ -92,6 +107,11 @@ bot_random_race = 0.2
 # agents/main) or that agents/main folder, relative to URANIUM_SHARED_DIR; "" = none. Needed
 # when [curriculum] c1_anchor > 0; its model files must exist at start.
 anchor = ""
+# 042-R15 (AMB-042-17): game seconds after which an RL training game against a model (current
+# Main, snapshot, anchor) ends as a draw (TimeLimitDraw, r_win 0, 020-R3) through
+# GameSpec.max_frames = min(86400, x * 24); 0 = no cap (60 minutes). 0 or 60..3600. Bot games and
+# evaluation games keep 60 minutes.
+model_game_max_s = 0
 
 [snapshot]
 main_every_updates = 2000
@@ -118,8 +138,11 @@ c1_self = 0.3
 c1_snapshot = 0.0
 c1_anchor = 0.0
 # 042 C1 rush ladder (AMB-042-15): share of the [[ladder]] opponents (also part of the
-# proportional C1 draw), and how the ladder picks an entry: "f_var" (the only value) = PFSP
-# x(1 - x) on Main's win rate against it (unseen = win_rate_prior), uniform if all weights are 0.
+# proportional C1 draw), and how the ladder picks an entry: "f_var" = PFSP x(1 - x) on Main's
+# win rate against it (unseen = win_rate_prior), uniform if all weights are 0; "band"
+# (AMB-042-17) = exp(-((x - center) / width)^2) with [curriculum.band] below. A table picks per
+# group, e.g. ladder_pick = { rush = "band", macro = "f_var" } (groups not listed: "f_var"; every
+# group named must be in ladder_groups).
 c1_ladder = 0.0
 ladder_pick = "f_var"
 # 042 사다리 그룹 (AMB-042-16): absent = one pool of every [[ladder]] entry. When set, e.g.
@@ -143,6 +166,18 @@ r_value_vs_model = true
 # ladder_groups, [league] anchor and win_rate_decay, [snapshot] main_candidates, [[t1]],
 # [[ladder]], [reward] and [concede] follow this file; stage, win tables, windows and snapshots
 # come from the checkpoint (042). A [reward] pseudo other than the checkpoint's is a start error.
+# So do [kl] (the update count continues from the checkpoint), [kl.head_scale], [loss]
+# td_lambda, [curriculum.band], [league] model_game_max_s and [sil] (AMB-042-17).
+
+[curriculum.band]
+# 042 사다리 선택 band (AMB-042-17): weight exp(-((x - center) / width)^2), x = Main's win-table
+# value (unseen 0.5). Inside a group (all entries without groups), entries with x < exclude_below
+# get weight 0 when some entry is at or above it (none excluded when all are below); all weights
+# 0 = the remaining entries uniform. Load errors unless 0 <= center <= 1, width > 0,
+# 0 <= exclude_below < 1.
+center = 0.5
+width = 0.15
+exclude_below = 0.10
 
 [ppo]
 # Comparison baseline (042 algorithm alternatives).
@@ -156,6 +191,17 @@ adopt_margin = 0.03
 # 042-R11: keep 1 replay per this many games (game id multiple) plus every winner-disagreement
 # game (020-R13), under <URANIUM_SHARED_DIR>/runs/<run>/replays/. Never deleted.
 sample_every = 100
+
+# 042-R16 자기 모방·막은 판 재학습 (AMB-042-17): absent [sil] = off (the learner and league as
+# before). Its keys and default values (기본안(미확정): confirmed by the user before turning it on):
+#   enabled = false; mode = "sil" ("sil": buffer lanes train only
+#   w_pg * mean[-log pi * A+] + w_v * mean[0.5 * A+^2], A+ = max(R - V_win, 0); "replay": the
+#   ordinary loss, a segment leaves after max_uses uses, not in the 042-R4 lag drop);
+#   select_group = "rush" (a [[ladder]] group; games with a result that were won, or with
+#   scv_4m >= select_scv_4m and no collapse concede); select_scv_4m = 12; until_s = 480
+#   (segments starting before it, 0 = whole game); buffer_segments = 2048 (FIFO, not in
+#   checkpoints); lanes = 4 (of the batch lanes, replaced, Main only); w_pg = 0.05; w_v = 0.01;
+#   max_uses = 4.
 
 [reward]
 # 033-R11 reward channel mode (AMB-042-16): "z" = the build / units value heads and channels

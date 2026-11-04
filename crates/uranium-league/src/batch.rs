@@ -36,6 +36,9 @@ pub struct SegmentGroup {
     /// [b*2] per lane: build / units policy-weight multipliers (033-R11, AMB-042-16,
     /// `Segment::pseudo_scale`).
     pub pseudo_scale: Vec<f32>,
+    /// Per lane: 042-R16 self-imitation buffer lane's r_win (`Segment::sil_return`), NaN for a
+    /// queue lane.
+    pub sil_return: Vec<f32>,
     /// Per lane: Core state before step 0 (042 core_state0); empty parts = zero state.
     pub state0: Vec<HostState>,
 }
@@ -82,6 +85,7 @@ pub fn group(segs: &[Segment], t: usize, max_select: usize) -> SegmentGroup {
         versions: segs.iter().map(|s| s.version()).collect(),
         r_value_policy: segs.iter().map(|s| s.r_value_policy).collect(),
         pseudo_scale: segs.iter().flat_map(|s| s.pseudo_scale).collect(),
+        sil_return: segs.iter().map(|s| s.sil_return.unwrap_or(f32::NAN)).collect(),
         state0: segs.iter().map(|s| s.state0.clone()).collect(),
     }
 }

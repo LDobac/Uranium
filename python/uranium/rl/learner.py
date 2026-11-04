@@ -16,7 +16,13 @@ core_state0 and the outer segments' row indices built on the host), so the train
 host computes the targets from the detached log-probs and values while the device runs the BC
 forward (queued before the targets on every backend), and the targets of the 4 reward
 components are one recursion; the statistics stay on the device until one read per update. The
-learner as it was before is `uranium.rl.reference` (equivalence tests, `bench rl`)."""
+learner as it was before is `uranium.rl.reference` (equivalence tests, `bench rl`).
+
+AMB-042-17: the KL schedule is a run setting counted from the run's update 0 and each head's KL
+term has a multiplier `[kl.head_scale]` (042-R9; all 1.0 = the earlier loss, bit for bit); the
+statistics add the 042-R2 진단 로그 (per-channel advantage RMS and value loss, per-step KL p99 /
+max); 042-R16 self-imitation buffer lanes (`sil_returns`, last in the batch) train the "sil" loss
+apart or ride along as ordinary lanes ("replay"). Without buffer lanes the update is as before."""
 
 import copy
 import json
@@ -41,8 +47,10 @@ MICRO_LANES_ENV = "URANIUM_RL_MICRO_LANES"
 # The arrays of a lane group the learner copies to the device (staged on the collate thread).
 STAGE_KEYS = OBS_KEYS + LABEL_KEYS + ("privileged", "mask", "behaviour")
 # Per lane group, the loss parts summed on the device (042-R2): policy, value, KL, win_open,
-# KL per head, entropy per head.
-PARTS = 16
+# KL per head, entropy per head, then the value loss per channel (진단 로그, AMB-042-17).
+PARTS = 20
+# 042-R16 "sil" lane-group parts: the weighted loss, steps with A+ > 0, trained steps.
+SIL_PARTS = 3
 
 
 def host_micro_lanes(cfg: dict) -> int:
@@ -58,9 +66,58 @@ def host_micro_lanes(cfg: dict) -> int:
 
 
 def kl_coef(cfg: dict, update: int) -> float:
-    """`max(floor, init * 0.5^(update / half_life))` (042 KL schedule)."""
+    """`max(floor, init * 0.5^(update / half_life))` (042 KL schedule, 042-R9); `update` = the
+    learner's updates in this run (a new run, `--init` included, starts at 0, AMB-042-17)."""
     k = cfg["kl"]
     return max(k["floor"], k["init"] * 0.5 ** (update / k["half_life_updates"]))
+
+
+def kl_head_scale(cfg: dict) -> list | None:
+    """`[kl.head_scale]` in `HEADS` order (042-R9, AMB-042-17); `None` when every multiplier is
+    1.0 (absent included): the KL term is then the plain sum, as before, bit for bit."""
+    s = cfg["kl"].get("head_scale") or {}
+    scale = [float(s.get(h, 1.0)) for h in HEADS]
+    return None if all(x == 1.0 for x in scale) else scale
+
+
+def scaled_kl(kl_terms: list, kl_total, scale: list | None):
+    """The KL term the loss multiplies by the schedule coefficient: Σ_h scale_h · KL_h, or
+    `kl_total` (the unscaled sum) without multipliers."""
+    return kl_total if scale is None else sum(s * x for s, x in zip(scale, kl_terms))
+
+
+def sil_settings(cfg: dict) -> dict:
+    """`[sil]` (042-R16) with the defaults of an absent table (off)."""
+    return {"enabled": False, "mode": "sil", "w_pg": 0.05, "w_v": 0.01, **(cfg.get("sil") or {})}
+
+
+def sil_lane_count(batch) -> int:
+    """042-R16 buffer lanes of `batch` (`sil_returns`, `None` = a queue lane); they must be the
+    last lanes. A batch without the attribute has none."""
+    rets = getattr(batch, "sil_returns", None)
+    if rets is None:
+        return 0
+    rets = list(rets)
+    k = sum(r is not None for r in rets)
+    if any(r is not None for r in rets[:len(rets) - k]):
+        raise ValueError("042-R16: self-imitation buffer lanes must come after the queue lanes")
+    return k
+
+
+def finite_or_none(x: float):
+    """A statistic for the Rust run loop's JSON (NaN / inf is not JSON): `None` when not finite."""
+    return x if math.isfinite(x) else None
+
+
+def kl_tail(kl_steps: list, device) -> torch.Tensor:
+    """042-R2 진단 로그: [p99, max] of the per-step KL over the trained steps (NaN elsewhere in
+    `kl_steps`), on the device (read with the other statistics); not finite (NaN / -inf, `None` in
+    the statistics) without a trained step."""
+    if not kl_steps:
+        return torch.full((2,), float("nan"), dtype=torch.float64, device=device)
+    x = torch.cat(kl_steps).float()
+    hi = torch.nan_to_num(x, nan=float("-inf")).max()
+    return torch.stack([torch.nanquantile(x, 0.99), hi]).double()
 
 
 def kl_per_head(p: dict, q: dict) -> dict:
@@ -100,6 +157,53 @@ def component_weights(g: dict, weights) -> list:
     return w
 
 
+def advantage_squares(pg: torch.Tensor, chan: list, valid: torch.Tensor) -> dict:
+    """042-R2 진단 로그 (AMB-042-17), host sums over the trained steps of a lane group: the
+    combined policy-gradient advantage squared (`pg`, the value `adv_mean` averages) and each
+    channel's (win, build, units, value) PG advantage squared before the 033 weights (V-trace: ρ
+    (r + γ v_s' − V) per channel; PPO: the channel's GAE)."""
+    return {"adv_sq": float((pg * pg * valid).sum()), "adv_sq_c": [float((x * x * valid).sum()) for x in chan]}
+
+
+def sil_positive(g: dict, v: torch.Tensor, valid: torch.Tensor) -> dict:
+    """042-R16 `sil_pos_frac` of buffer lanes trained as ordinary lanes ("replay"): trained steps
+    of lanes with a finite `sil_return` R, and those with R − V_win > 0 (`v` [b, t, 4] host)."""
+    ret = g.get("sil_return")
+    if ret is None:
+        return {"sil_pos": 0.0, "sil_steps": 0.0}
+    r = torch.as_tensor(ret, dtype=torch.float32).reshape(-1)
+    sel = valid & torch.isfinite(r)[:, None]
+    pos = sel & ((r[:, None] - v[:, :, 0]) > 0)
+    return {"sil_pos": float(pos.sum()), "sil_steps": float(sel.sum())}
+
+
+def diagnostics(adv_sq: float, adv_sq_c: list, value_ch: list, kl_q: list, n: int) -> dict:
+    """042-R2 진단 로그 (AMB-042-17) of an update over `n` trained steps: RMS of the combined and
+    per-channel advantages, the per-channel value loss 0.5 (V − target)^2 mean (before the value
+    loss weight), the per-step KL p99 and maximum (`None` without a trained step)."""
+    return {
+        "adv_rms": math.sqrt(adv_sq / n), "adv_rms_channels": [math.sqrt(x / n) for x in adv_sq_c],
+        "value_loss_channels": list(value_ch), "kl_p99": finite_or_none(kl_q[0]), "kl_max": finite_or_none(kl_q[1]),
+    }
+
+
+def sil_stats(sil: dict, parts: list, pos: float, pos_steps: float) -> dict:
+    """042-R16 statistics: `None` when off. "sil": the weighted loss of the buffer lanes (0 without
+    them) and their share of steps with A+ > 0; "replay": no separate loss, the share from the
+    ordinary targets."""
+    if not sil["enabled"]:
+        return {"sil_loss": None, "sil_pos_frac": None}
+    if sil["mode"] == "sil":
+        loss, pos, pos_steps = parts
+        return {"sil_loss": loss, "sil_pos_frac": pos / pos_steps if pos_steps > 0 else None}
+    return {"sil_loss": None, "sil_pos_frac": pos / pos_steps if pos_steps > 0 else None}
+
+
+def value_channels(values: torch.Tensor, vs: torch.Tensor, mask: torch.Tensor, n: int) -> torch.Tensor:
+    """042-R2 진단 로그: each channel's Σ 0.5 (V − target)^2 over the trained rows / `n` [4]."""
+    return ((values - vs) ** 2 * mask[:, None]).sum(0) * (0.5 / n)
+
+
 def state0_host(net, g: dict):
     """Core state per lane (042 core_state0) on the host; a lane without one starts from zero
     (032-R5)."""
@@ -133,6 +237,8 @@ class Learner:
         for p in self.bc.parameters():
             p.requires_grad_(False)
         self.update_count = update
+        # 042-R9 (AMB-042-17): per-head KL multipliers, None = all 1.0.
+        self.kl_scale = kl_head_scale(cfg)
         self.micro_lanes = host_micro_lanes(cfg) if micro_lanes is None else micro_lanes
         # 032-R19 ⑥ for this learner only (not process switches: the inference servers share the
         # process): page-locked staging on the CUDA host only (the Linux ROCm host's GPU shares
@@ -248,15 +354,20 @@ class Learner:
                 pg += weights[c] * x
                 up += weights[c] * y
             rho_sum = float(rho4[:b].sum())
+            chan = comp(pg4)
         else:
             adv4, vs4 = gae_valid(r4, ext, valid4, l["gamma"], self.cfg["ppo"]["gae_lambda"])
             for c, x in enumerate(comp(adv4)):
                 pg += weights[c] * x
             rho_sum = float((ratio * valid).sum())
+            chan = comp(adv4)
         vs = vs4.view(4, b, t).permute(1, 2, 0)
         coef = l["pg"] * pg + l["upgo"] * up if self.algo == "vtrace" else pg
         dev = self.device
-        return {"coef": to_device(coef.reshape(-1), dev, self.pinned), "vs": to_device(vs.reshape(-1, 4), dev, self.pinned), "rho_sum": rho_sum, "adv_sum": float((pg * valid).sum())}
+        out = {"coef": to_device(coef.reshape(-1), dev, self.pinned), "vs": to_device(vs.reshape(-1, 4), dev, self.pinned), "rho_sum": rho_sum, "adv_sum": float((pg * valid).sum())}
+        out.update(advantage_squares(pg, chan, valid))
+        out.update(sil_positive(g, v, valid))
+        return out
 
     def update(self, batch, weights) -> dict:
         """One update over `batch` (a `_core.SegmentBatch`, lanes x T); returns the statistics."""
@@ -267,20 +378,33 @@ class Learner:
         t = cfg["seq_len"]
         lanes = batch.lanes
         g_size = self.group_size(lanes)
-        groups = [(s, min(s + g_size, lanes)) for s in range(0, lanes, g_size)]
+        # 042-R16: buffer lanes (last) train only the "sil" loss in their own lane groups; in
+        # "replay" they are ordinary lanes. Without buffer lanes: the earlier groups.
+        sil = sil_settings(cfg)
+        k = sil_lane_count(batch)
+        apart_lanes = k if sil["mode"] == "sil" else 0
+        normal = lanes - apart_lanes
+        groups = [(s, min(s + g_size, normal), False) for s in range(0, normal, g_size)]
+        groups += [(s, min(s + g_size, lanes), True) for s in range(normal, lanes, g_size)]
         coef_kl = kl_coef(cfg, self.update_count)
         epochs = 1 if self.algo == "vtrace" else max(1, cfg["ppo"]["epochs"])
         # The totals come from the batch itself; the lane groups are collated one ahead on a
         # worker thread (the Rust collate releases the GIL) while the previous one trains, as
         # in BC: at most two collated groups are alive (not every group of the batch at once).
         collate = lambda gi: self.prepare(batch, groups[gi][0], groups[gi][1], t)  # noqa: E731
-        steps = int(sum(batch.trained))
+        trained = [int(x) for x in batch.trained]
+        steps = sum(trained[:normal])
         n = max(steps, 1)
-        versions = [int(v) for v in batch.versions]
+        n_sil = max(sum(trained[normal:]), 1)
+        # Policy lag of the queue lanes (buffer lanes are older by design).
+        versions = [int(v) for v in batch.versions][:lanes - k]
         # The loss parts of every group summed on the device in f64 (the sums of the host floats
         # they were before, bit for bit), read once after the optimizer step.
         parts = torch.zeros(PARTS, dtype=torch.float64, device=dev)
-        rho_sum = adv_sum = 0.0
+        sil_parts = torch.zeros(SIL_PARTS, dtype=torch.float64, device=dev)
+        host = defaultdict(float)
+        adv_sq_c = [0.0] * 4
+        kl_steps: list = []
         norm = None
         # PPO keeps the first epoch's advantages and returns (computed before any change).
         ppo_targets: list = [None] * len(groups)
@@ -296,12 +420,20 @@ class Learner:
                     self.tick("collate_wait")
                     if gi + 1 < len(groups):
                         nxt = self._collate.submit(collate, gi + 1)
-                    part, rho, adv = self.group_loss(g, n, weights, coef_kl, ppo_targets, gi)
+                    if groups[gi][2]:
+                        part = self.sil_group_loss(g, n_sil, sil)
+                        if epoch == 0:
+                            sil_parts += part
+                        del g
+                        continue
+                    part, tg, kl_step = self.group_loss(g, n, weights, coef_kl, ppo_targets, gi)
                     del g
                     if epoch == 0:
                         parts += part
-                        rho_sum += rho
-                        adv_sum += adv
+                        for key in ("rho_sum", "adv_sum", "adv_sq", "sil_pos", "sil_steps"):
+                            host[key] += tg[key]
+                        adv_sq_c = [a + x for a, x in zip(adv_sq_c, tg["adv_sq_c"])]
+                        kl_steps.append(kl_step)
             finally:
                 # On an error: no collate job of this batch outlives the update (it would pin
                 # memory and read the batch after the caller moved on).
@@ -316,29 +448,36 @@ class Learner:
             self.opt.step()
             self.tick("optimizer")
         nan = torch.full((1,), float("nan"), dtype=torch.float64, device=dev)
-        vals = torch.cat([parts, nan if norm is None else norm.detach().double().reshape(1)]).tolist()
+        # One read of every statistic (032-R19): the parts, the gradient norm, KL p99 / max, SIL.
+        vals = torch.cat([parts, nan if norm is None else norm.detach().double().reshape(1), kl_tail(kl_steps, dev), sil_parts]).tolist()
         self.tick("stats")
         stats = {
             "update": self.update_count + 1, "steps": steps, "kl_coef": coef_kl, "policy": vals[0], "value": vals[1], "win_open": vals[3], "kl": vals[2],
-            "kl_heads": vals[4:10], "entropy_heads": vals[10:16], "rho_mean": rho_sum / n, "adv_mean": adv_sum / n,
+            "kl_heads": vals[4:10], "entropy_heads": vals[10:16], "rho_mean": host["rho_sum"] / n, "adv_mean": host["adv_sum"] / n,
             "lag_mean": sum(max(self.update_count - v, 0) for v in versions) / max(len(versions), 1),
             # The global gradient norm before the clip (first epoch; the 042 lane-group equivalence
             # check). Not in train.csv; null when not finite (the stats are JSON for the Rust loop).
-            "grad_norm": vals[16] if math.isfinite(vals[16]) else None,
+            "grad_norm": finite_or_none(vals[PARTS]),
         }
+        stats.update(diagnostics(host["adv_sq"], adv_sq_c, vals[16:PARTS], vals[PARTS + 1:PARTS + 3], n))
+        stats.update(sil_stats(sil, vals[PARTS + 3:], host["sil_pos"], host["sil_steps"]))
         e = cfg["entropy"]
         bonus = sum(e[h] * stats["entropy_heads"][i] for i, h in enumerate(HEADS))
-        stats["loss"] = stats["policy"] + stats["value"] + stats["win_open"] + stats["kl"] * coef_kl - bonus
+        kl_loss = scaled_kl(stats["kl_heads"], stats["kl"], self.kl_scale)
+        stats["loss"] = stats["policy"] + stats["value"] + stats["win_open"] + kl_loss * coef_kl - bonus
+        if stats["sil_loss"] is not None:
+            stats["loss"] += stats["sil_loss"]
         if self.phases:
             self._ph["python_total"] = time.perf_counter() - started
             stats["phases"] = {k: round(x, 4) for k, x in self._ph.items()}
         self.update_count += 1
         return stats
 
-    def group_loss(self, g: dict, n: int, weights, coef_kl: float, ppo_targets: list, gi: int) -> tuple[torch.Tensor, float, float]:
+    def group_loss(self, g: dict, n: int, weights, coef_kl: float, ppo_targets: list, gi: int) -> tuple[torch.Tensor, dict, torch.Tensor]:
         """Forward, targets, loss and backward of one lane group (divided by the batch's trained
-        steps `n`); returns the detached loss parts (a device tensor, `PARTS`) and the host sums
-        of ρ and of the advantage."""
+        steps `n`); returns the detached loss parts (a device tensor, `PARTS`), the targets' host
+        sums (ρ, advantage, the 진단 로그 squares, `sil_positive`) and the per-step KL (NaN on
+        untrained rows, a device tensor)."""
         cfg, dev, net, pin = self.cfg, self.device, self.net, self.pinned
         t = g["t"]
         obs, labels = to_obs(g, dev, pinned=pin), net.labels(g, dev, pinned=pin)
@@ -366,6 +505,8 @@ class Learner:
         kl = kl_per_head({k: (v.float() if v.is_floating_point() else v) for k, v in out["dists"].items()}, {k: (v.float() if v.is_floating_point() else v) for k, v in bc["dists"].items()})
         kl_terms = [(kl[h] * mask).sum() / n for h in HEADS]
         kl_total = sum(kl_terms)
+        # 042-R2 진단 로그: the per-step KL (used heads summed, before the head multipliers).
+        kl_step = torch.where(mask > 0, sum(kl[h] for h in HEADS).detach(), float("nan"))
         self.tick("kl")
         if tg is None:
             tg = self.targets(g, *read(), weights)
@@ -386,15 +527,45 @@ class Learner:
         win_open = None
         if out["win_open"] is not None:
             win_open = ((out["win_open"].float() - vs[:, 0]) ** 2 * mask).sum() * (0.5 * cfg["loss"]["win_open"] / n)
-        loss = policy + value - entropy + kl_total * coef_kl
+        # 042-R9 (AMB-042-17): head multipliers on the KL terms (none = the plain sum).
+        loss = policy + value - entropy + scaled_kl(kl_terms, kl_total, self.kl_scale) * coef_kl
         if win_open is not None:
             loss = loss + win_open
         self.tick("loss")
         loss.backward()
         self.tick("backward")
         zero = torch.zeros((), device=dev)
-        part = torch.stack([policy.detach(), value.detach(), kl_total.detach(), zero if win_open is None else win_open.detach(), *[x.detach() for x in kl_terms], *[x.detach() for x in ent_terms]]).double()
-        return part, tg["rho_sum"], tg["adv_sum"]
+        value_ch = value_channels(values.detach(), vs, mask, n)
+        part = torch.cat([torch.stack([policy.detach(), value.detach(), kl_total.detach(), zero if win_open is None else win_open.detach(), *[x.detach() for x in kl_terms], *[x.detach() for x in ent_terms]]), value_ch]).double()
+        return part, tg, kl_step
+
+    def sil_group_loss(self, g: dict, n_sil: int, sil: dict) -> torch.Tensor:
+        """042-R16 "sil" (Oh et al. 2018) on a lane group of buffer lanes, divided by the buffer
+        lanes' trained steps `n_sil`: `w_pg · Σ[−log π(a|s) · A⁺] + w_v · Σ[0.5 · (A⁺)²]`,
+        `A⁺ = max(R − V_win, 0)`, R = the lane's `sil_return`, log π the used heads' joint log-prob
+        (032-R15), V_win the win head (privileged input as usual). The policy term holds A⁺ fixed;
+        the value term's gradient flows into V_win. These lanes take no other loss term. Returns
+        [loss, steps with A⁺ > 0, trained steps] (device, f64)."""
+        dev, net, pin = self.device, self.net, self.pinned
+        t = g["t"]
+        obs, labels = to_obs(g, dev, pinned=pin), net.labels(g, dev, pinned=pin)
+        priv = to_device(g["privileged"], dev, pin).float()
+        mask = to_device(g["mask"], dev, pin).float()
+        s0 = state0_of(net, g, dev, pin)
+        phases = [to_device(i, dev, pin) for i in g["phases"]] if "phases" in g else None
+        with autocast(dev, self.precision):
+            out = net.forward_seq(obs, labels, priv, s0, t, phased=True, phases=phases)
+        logp = sum(out["logp"][k].float() for k in HEADS)
+        v_win = out["value"].float()[:, 0]
+        ret = torch.as_tensor(g["sil_return"], dtype=torch.float32).reshape(-1).repeat_interleave(t).to(dev)
+        adv = (ret - v_win).clamp(min=0.0)
+        a = adv.detach()
+        pg = (-(logp * a) * mask).sum() / n_sil
+        vl = (0.5 * adv * adv * mask).sum() / n_sil
+        loss = sil["w_pg"] * pg + sil["w_v"] * vl
+        loss.backward()
+        self.tick("sil")
+        return torch.stack([loss.detach(), ((a > 0).float() * mask).sum(), mask.sum()]).double()
 
 
 def frozen_copy(net):

@@ -33,6 +33,7 @@ use crate::ckpt::{self, TrainState};
 use crate::config::RlConfig;
 use crate::league::{AgentKind, Class, League, Opponent, Pick};
 use crate::learner::{Algo, HEAD_NAMES, RlLearners, SnapshotServers, UpdateStats};
+use crate::sil::{SilBuffer, SilConfig};
 use crate::storage::{LockStatus, PushOutcome, Run, StorageConfig};
 use crate::trajectory::{GameResult, Segment, SegmentQueue, TrajectoryObserver, trained_steps as trained_steps_of};
 
@@ -96,7 +97,12 @@ struct Shared {
     games_done: AtomicU64,
     disagree: AtomicU64,
     aborted: AtomicU64,
+    /// `GameSpec.max_frames` of games against a bot (020-R3, 60 minutes) and against a model
+    /// (042-R15 `[league] model_game_max_s`, AMB-042-17).
     max_frames: u32,
+    model_max_frames: u32,
+    /// 042-R16 (AMB-042-17): `Some` when `[sil] enabled`.
+    sil: Option<SilState>,
     /// `[actors] game_wall_timeout_s` (AMB-042-12).
     game_wall_timeout_s: u32,
     /// 042-R11: `<shared>/runs/<run>/replays` and the regular sample interval.
@@ -108,6 +114,40 @@ struct Shared {
     concede: ConcedeBoard,
     /// 033-R11 channel mode: `games.csv` `r_scout` / `r_survive` are empty in `"z"` (042-R2).
     pseudo: PseudoMode,
+}
+
+/// 042-R16 self-imitation state of a run (AMB-042-17): the copies of the candidate games still
+/// playing and the buffer of the selected ones (not in checkpoints).
+struct SilState {
+    cfg: SilConfig,
+    pending: Mutex<HashMap<u64, Vec<Segment>>>,
+    buffer: Mutex<SilBuffer>,
+}
+
+impl SilState {
+    fn new(cfg: SilConfig, seed: u64) -> Self {
+        let buffer = Mutex::new(SilBuffer::new(cfg.buffer_segments, seed ^ 0x5115_5115));
+        Self { cfg, pending: Mutex::new(HashMap::new()), buffer }
+    }
+
+    /// A copy of a candidate game's segment, kept when it starts before `until_s`.
+    fn keep(&self, seg: &Segment) {
+        if self.cfg.keeps_segment(seg.start_frame) {
+            self.pending.lock().unwrap().entry(seg.game_id).or_default().push(seg.clone());
+        }
+    }
+
+    /// The game is over: its copies go to the buffer when it is selected (with its r_win), else
+    /// they are dropped. Returns the number of segments added.
+    fn settle(&self, game_id: u64, selected: bool, r_win: f32) -> usize {
+        let segs = self.pending.lock().unwrap().remove(&game_id).unwrap_or_default();
+        if !selected || segs.is_empty() {
+            return 0;
+        }
+        let n = segs.len();
+        self.buffer.lock().unwrap().push_game(segs, r_win);
+        n
+    }
 }
 
 /// 042-R10 ①② and the queue close (042-R3), once: run by the clean stop, and by `Drop` when the
@@ -286,9 +326,11 @@ impl LearnerHook for Hook {
 
     fn session(&self, game_id: u64, info: &GameInfo) -> (Option<Strategy>, Box<dyn SessionObserver>) {
         let mut class = None;
+        let mut ladder_group = None;
         if let Some(m) = self.shared.games.lock().unwrap().get_mut(&game_id) {
             m.self_player = Some(info.self_player);
             class = Some(m.pick.class);
+            ladder_group = m.pick.ladder_group.clone();
             if let Some(e) = info.players.iter().find(|p| p.is_enemy) {
                 if m.enemy_race == Race::Random || m.enemy_race == Race::Unknown {
                     m.enemy_race = e.race;
@@ -310,7 +352,23 @@ impl LearnerHook for Hook {
                 Some(Strategy { build: e.build.clone(), units: e.units.clone() })
             }
         };
-        let obs = TrajectoryObserver::new(self.agent.index(), game_id, self.seq_len, self.shared.queues[self.agent.index()].clone(), self.tx.clone()).hold_terminal(held_sink(self.shared.clone())).r_value_policy(r_value_policy).pseudo(self.reward.pseudo, pseudo_scale);
+        let mut obs = TrajectoryObserver::new(self.agent.index(), game_id, self.seq_len, self.shared.queues[self.agent.index()].clone(), self.tx.clone()).hold_terminal(held_sink(self.shared.clone())).r_value_policy(r_value_policy).pseudo(self.reward.pseudo, pseudo_scale);
+        // 042-R16 (AMB-042-17): Main's games of the selected ladder group keep segment copies
+        // until the game is judged.
+        if let Some(sil) = &self.shared.sil
+            && self.agent == AgentKind::Main
+            && ladder_group.as_deref() == Some(sil.cfg.select_group.as_str())
+        {
+            let s = self.shared.clone();
+            obs = obs.copy_segments(Box::new(move |seg: &Segment| {
+                // Not after the game was settled (an Aborted game's session may still push).
+                if s.games.lock().unwrap().contains_key(&seg.game_id)
+                    && let Some(sil) = &s.sil
+                {
+                    sil.keep(seg);
+                }
+            }));
+        }
         (z, Box::new(obs))
     }
 
@@ -383,7 +441,9 @@ impl LeagueSource {
             map: if pick.fighting_spirit { MapKey::FightingSpirit } else { MapKey::CircuitBreaker },
             players: [bridge(Race::Terran), p1],
             seed: Some(seed),
-            max_frames: s.max_frames,
+            // 042-R15 / 020-R3 (AMB-042-17): a game against a model (a failed model opponent's
+            // current-Main self-play included) has the model-game cap; bots the 60 minutes.
+            max_frames: if pick.class == Class::Model { s.model_max_frames } else { s.max_frames },
             privileged: true,
             // 042-R11: every game is recorded; `done` keeps the sample and disagreements.
             save_replay: true,
@@ -441,6 +501,9 @@ impl JobSource for LeagueSource {
         // A dynamic source simply forgets a game that never started.
         let meta = self.shared.games.lock().unwrap().remove(&job.spec.game_id);
         self.shared.concede.take(job.spec.game_id);
+        if let Some(sil) = &self.shared.sil {
+            sil.settle(job.spec.game_id, false, 0.0);
+        }
         if let Some(m) = meta {
             self.release_server(&m);
         }
@@ -502,6 +565,13 @@ impl JobSource for LeagueSource {
                 if let Some(last) = seg.steps.last_mut() {
                     last.reward[0] += r_win;
                 }
+                // 042-R16: the terminal segment's copy (with r_win), for a candidate game.
+                if let Some(sil) = &s.sil
+                    && meta.pick.agent == AgentKind::Main
+                    && meta.pick.ladder_group.as_deref() == Some(sil.cfg.select_group.as_str())
+                {
+                    sil.keep(&seg);
+                }
                 s.queues[agent].push(seg);
                 s.queues[agent].finish(id);
                 let stage_up = s.league.lock().unwrap().record(&meta.pick, meta.enemy_race, o);
@@ -533,6 +603,12 @@ impl JobSource for LeagueSource {
         if let Some(c) = conceded {
             let who = if c.side == 0 { "learning agent" } else { "opponent" };
             crate::elog!("[rl] game {id}: 042-R14 collapse concede by the {who} side (players index {}) at frame {}; result {:?}", c.side, c.frame, decided);
+        }
+        // 042-R16 고를 판 (AMB-042-17): a won or held game of the group goes to the buffer.
+        if let Some(sil) = &s.sil {
+            let scv_4m = result.as_ref().and_then(|r| r.scout).and_then(|m| m.scv_4m);
+            let selected = meta.pick.agent == AgentKind::Main && sil.cfg.selects(meta.pick.ladder_group.as_deref(), decided, scv_4m, conceded.is_some());
+            sil.settle(id, selected, r_win);
         }
         let disagree = verdict.as_ref().is_some_and(|v| v.1);
         let (replay_path, replay_reason) = match (replay_reason(id, disagree, s.replay_every), replay) {
@@ -693,8 +769,28 @@ fn train_header() -> String {
     for n in HEAD_NAMES {
         h += &format!(",entropy_{n}");
     }
-    h += ",dropped_lag,dropped_full,revoked,used_aborted,winner_disagree,aborted_games,steps_per_s,stage,win_open,trained_steps,queue_wait_s\n";
+    h += ",dropped_lag,dropped_full,revoked,used_aborted,winner_disagree,aborted_games,steps_per_s,stage,win_open,trained_steps,queue_wait_s";
+    h += DIAG_COLUMNS;
+    h += "\n";
     h
+}
+
+/// 042-R2 진단 로그 (AMB-042-17): the train.csv columns after `queue_wait_s`, in this order.
+const DIAG_COLUMNS: &str = ",adv_rms,adv_rms_win,adv_rms_build,adv_rms_units,adv_rms_value,value_loss_win,value_loss_build,value_loss_units,value_loss_value,kl_p99,kl_max,sil_buffer,sil_lanes,sil_loss,sil_pos_frac";
+
+/// The 진단 로그 values of a row (leading comma). `sil`: (buffer segments, buffer lanes of this
+/// update) when `[sil]` is on; every SIL column is empty when it is off (042-R16), a value the
+/// learner did not measure is empty too.
+fn diag_columns(s: &UpdateStats, sil: Option<(usize, usize)>) -> String {
+    let opt = |x: Option<f32>| x.map_or(String::new(), |v| v.to_string());
+    let mut row = format!(",{}", s.adv_rms);
+    for v in s.adv_rms_channels.iter().chain(&s.value_loss_channels) {
+        row += &format!(",{v}");
+    }
+    let (buffer, lanes) = sil.map_or((String::new(), String::new()), |(b, l)| (b.to_string(), l.to_string()));
+    let (loss, pos) = if sil.is_some() { (opt(s.sil_loss), opt(s.sil_pos_frac)) } else { (String::new(), String::new()) };
+    row += &format!(",{},{},{buffer},{lanes},{loss},{pos}", opt(s.kl_p99), opt(s.kl_max));
+    row
 }
 
 /// Opens train.csv for appending (042-R2).
@@ -908,6 +1004,32 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         crate::elog!("[rl] ladder groups: {} (042, AMB-042-16)", groups.join(", "));
     }
     crate::elog!("[rl] win table decay {} (042 승률 표)", cfg.league.win_rate_decay);
+    let b = &cfg.curriculum.band;
+    crate::elog!("[rl] ladder pick {:?}, band center {} width {} exclude below {} (042, AMB-042-17)", cc.ladder_pick, b.center, b.width, b.exclude_below);
+    match cfg.league.model_game_max_s {
+        0 => crate::elog!("[rl] games against a model: no time cap (60 minutes, 020-R3)"),
+        s => crate::elog!("[rl] games against a model end as a draw at {s} game seconds ({} frames, 042-R15)", cfg.league.game_max_frames(true)),
+    }
+    let k = &cfg.kl;
+    crate::elog!("[rl] KL coefficient max({}, {} x 0.5^(update / {})) from this run's update 0, head multipliers {:?}; td_lambda {} (042-R9)", k.floor, k.init, k.half_life_updates, k.head_scale.by_head(), cfg.loss.td_lambda);
+    let sc = &cfg.sil;
+    if sc.enabled {
+        crate::elog!(
+            "[rl] self-imitation ON: mode {:?}, {} lanes of {} from a buffer of {} segments, group {:?} won or scv_4m >= {}, segments before {} s, w_pg {} w_v {} max_uses {} (042-R16)",
+            sc.mode,
+            sc.lanes,
+            cfg.lanes,
+            sc.buffer_segments,
+            sc.select_group,
+            sc.select_scv_4m,
+            sc.until_s,
+            sc.w_pg,
+            sc.w_v,
+            sc.max_uses
+        );
+    } else {
+        crate::elog!("[rl] self-imitation off (042-R16)");
+    }
     let c = &cfg.concede;
     crate::elog!("[rl] collapse concede: {} (screen supply <= {} for {} s from {} s, 042-R14)", if c.enabled { "on" } else { "off" }, c.max_supply, c.hold_s, c.after_s);
     let rw = &cfg.reward;
@@ -964,7 +1086,9 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         games_done: AtomicU64::new(0),
         disagree: AtomicU64::new(0),
         aborted: AtomicU64::new(0),
-        max_frames: 86_400,
+        max_frames: cfg.league.game_max_frames(false),
+        model_max_frames: cfg.league.game_max_frames(true),
+        sil: cfg.sil.enabled.then(|| SilState::new(cfg.sil.clone(), args.seed)),
         game_wall_timeout_s: cfg.actors.game_wall_timeout_s,
         replay_dir,
         replay_every: cfg.replays.sample_every,
@@ -1031,9 +1155,22 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
             continue;
         };
         let i = agent.index();
-        let Some(batch) = queues[i].try_take(cfg.lanes, learners.version(i), cfg.actors.max_policy_lag) else { continue };
+        // 042-R16: with `[sil]` on, Main's batch takes `lanes` of its lanes from the buffer once
+        // it holds that many (the batch shape stays).
+        let sil_lanes = match &shared.sil {
+            Some(sil) if agent == AgentKind::Main && sil.buffer.lock().unwrap().len() >= sil.cfg.lanes => sil.cfg.lanes,
+            _ => 0,
+        };
+        let Some(mut batch) = queues[i].try_take(cfg.lanes - sil_lanes, learners.version(i), cfg.actors.max_policy_lag) else { continue };
         let weights = shared.league.lock().unwrap().reward_weights(&base);
+        // 042-R2: the queue lanes' steps (buffer lanes are reused steps).
         let trained = trained_steps_of(&batch);
+        let sil_row = shared.sil.as_ref().map(|sil| {
+            let mut buf = sil.buffer.lock().unwrap();
+            // The buffer lanes go last (the learner's layout); not in the 042-R4 lag drop.
+            batch.extend(buf.sample(sil_lanes, sil.cfg.mode, sil.cfg.max_uses));
+            (buf.len(), sil_lanes)
+        });
         let stats = learners.update(i, batch, weights)?;
         // 042-R2 / R12: agent steps the learners trained on, run total.
         trained_steps += trained;
@@ -1052,7 +1189,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         let wait_total = queues[i].stats().wait_s;
         let queue_wait_s = wait_total - wait_seen[i];
         wait_seen[i] = wait_total;
-        write_row(&mut csv, started, agent, &stats, &shared, &queues, learners.version(i), steps_per_s, trained_steps, queue_wait_s)?;
+        write_row(&mut csv, started, agent, &stats, &shared, &queues, learners.version(i), steps_per_s, trained_steps, queue_wait_s, sil_row)?;
         if let Some(reset) = snap {
             // A league snapshot is a pushed checkpoint whose agent model files are copied to
             // league/<name>/agents/<agent> (061-R2; 042 스냅샷 공개, AMB-042-14). Only a published
@@ -1118,7 +1255,7 @@ pub fn snapshot_name(id: &str) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn write_row(csv: &mut std::fs::File, started: Instant, agent: AgentKind, s: &UpdateStats, shared: &Shared, queues: &[Arc<SegmentQueue>], version: u64, steps_per_s: f64, trained_steps: u64, queue_wait_s: f64) -> Result<()> {
+fn write_row(csv: &mut std::fs::File, started: Instant, agent: AgentKind, s: &UpdateStats, shared: &Shared, queues: &[Arc<SegmentQueue>], version: u64, steps_per_s: f64, trained_steps: u64, queue_wait_s: f64, sil: Option<(usize, usize)>) -> Result<()> {
     let q = queues[agent.index()].stats();
     let mut row = format!(
         "{:.0},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
@@ -1146,7 +1283,7 @@ fn write_row(csv: &mut std::fs::File, started: Instant, agent: AgentKind, s: &Up
     }
     let stage = shared.league.lock().unwrap().stage;
     row += &format!(
-        ",{},{},{},{},{},{},{:.2},{:?},{},{},{:.3}\n",
+        ",{},{},{},{},{},{},{:.2},{:?},{},{},{:.3}",
         q.dropped_lag,
         q.dropped_full,
         q.revoked,
@@ -1159,6 +1296,8 @@ fn write_row(csv: &mut std::fs::File, started: Instant, agent: AgentKind, s: &Up
         trained_steps,
         queue_wait_s
     );
+    row += &diag_columns(s, sil);
+    row += "\n";
     csv.write_all(row.as_bytes())?;
     Ok(())
 }
@@ -1180,11 +1319,71 @@ mod tests {
         assert!(bots.iter().any(|b| b.name == "zzzkbot" && b.races == vec![Race::Zerg]));
     }
 
-    /// 042-R2: train.csv ends with `trained_steps` and `queue_wait_s` (2026-10-31).
+    /// 042-R2: `trained_steps` and `queue_wait_s` (2026-10-31), then the 진단 로그 columns in the
+    /// spec's order (AMB-042-17).
     #[test]
     fn train_csv_header_columns_042_r2() {
-        assert_eq!(train_header().trim().split(',').count(), 15 + 12 + 11);
-        assert!(train_header().trim().ends_with(",win_open,trained_steps,queue_wait_s"));
+        assert_eq!(train_header().trim().split(',').count(), 15 + 12 + 11 + 15);
+        assert!(train_header().trim().ends_with(
+            ",win_open,trained_steps,queue_wait_s,adv_rms,adv_rms_win,adv_rms_build,adv_rms_units,adv_rms_value,value_loss_win,value_loss_build,value_loss_units,value_loss_value,kl_p99,kl_max,sil_buffer,sil_lanes,sil_loss,sil_pos_frac"
+        ));
+    }
+
+    /// 042-R2 진단 로그 / 042-R16 (AMB-042-17): the row values; SIL columns empty when `[sil]` is
+    /// off, a value not measured is empty; the row has as many values as the header.
+    #[test]
+    fn train_csv_diag_columns_042_r2() {
+        let s = UpdateStats { adv_rms: 0.5, adv_rms_channels: [0.25, 1.0, 2.0, 0.125], value_loss_channels: [0.5, 0.75, 0.0, 3.0], kl_p99: Some(0.375), kl_max: Some(4.0), sil_loss: Some(0.5), sil_pos_frac: Some(0.25), ..Default::default() };
+        assert_eq!(diag_columns(&s, None), ",0.5,0.25,1,2,0.125,0.5,0.75,0,3,0.375,4,,,,");
+        assert_eq!(diag_columns(&s, Some((100, 4))), ",0.5,0.25,1,2,0.125,0.5,0.75,0,3,0.375,4,100,4,0.5,0.25");
+        let none = UpdateStats { sil_loss: Some(0.0), ..Default::default() };
+        assert_eq!(diag_columns(&none, Some((2, 0))), ",0,0,0,0,0,0,0,0,0,,,2,0,0,");
+        assert_eq!(diag_columns(&none, None).split(',').count() - 1, DIAG_COLUMNS.split(',').count() - 1);
+        // The learner's JSON without the new keys (an older learner) still reads.
+        let old: UpdateStats = serde_json::from_str(r#"{"update":1,"steps":2,"loss":0.1,"policy":0.1,"value":0.0,"kl":0.0,"kl_coef":0.1,"kl_heads":[0,0,0,0,0,0],"entropy_heads":[0,0,0,0,0,0],"rho_mean":1,"adv_mean":0,"lag_mean":0,"win_open":0}"#).unwrap();
+        assert_eq!((old.kl_p99, old.sil_loss, old.adv_rms), (None, None, 0.0));
+        let new: UpdateStats = serde_json::from_str(r#"{"update":1,"steps":2,"loss":0.1,"policy":0.1,"value":0.0,"kl":0.0,"kl_coef":0.1,"kl_heads":[0,0,0,0,0,0],"entropy_heads":[0,0,0,0,0,0],"rho_mean":1,"adv_mean":0,"lag_mean":0,"win_open":0,"adv_rms":0.5,"adv_rms_channels":[1,2,3,4],"value_loss_channels":[1,2,3,4],"kl_p99":null,"kl_max":2.5,"sil_loss":null,"sil_pos_frac":null,"grad_norm":1.0}"#).unwrap();
+        assert_eq!((new.kl_p99, new.kl_max, new.adv_rms_channels), (None, Some(2.5), [1.0, 2.0, 3.0, 4.0]));
+    }
+
+    /// 042-R15 / 020-R3 (AMB-042-17): with the cap, only games against a model (current Main,
+    /// snapshot, anchor, and a failed model opponent's self-play) get `min(86,400, s x 24)`;
+    /// bot games 86,400; `model_game_max_s = 0`: every game 86,400.
+    #[test]
+    fn model_game_time_cap_042_r15() {
+        let lc = |s: u32| crate::config::LeagueConfig { model_game_max_s: s, ..RlConfig::default_file().league };
+        assert_eq!((lc(0).game_max_frames(true), lc(0).game_max_frames(false)), (86_400, 86_400));
+        assert_eq!((lc(1_500).game_max_frames(true), lc(1_500).game_max_frames(false)), (36_000, 86_400));
+        assert_eq!(lc(3_600).game_max_frames(true), 86_400);
+        assert_eq!(lc(60).game_max_frames(true), 1_440);
+        // Through the job source: current Main, anchor, snapshot, T0 bots.
+        let frames = |cap: u32, c1: [f64; 3], t0: f64, fail: bool| {
+            let mut cfg = RlConfig::default_file();
+            cfg.curriculum.start_stage = crate::league::Stage::C1;
+            let cc = &mut cfg.curriculum;
+            (cc.c1_t0, cc.c1_t1, cc.c1_self, cc.c1_snapshot, cc.c1_anchor) = (t0, 0.0, c1[0], c1[1], c1[2]);
+            cfg.league.anchor = "checkpoints/x/ckpt-9".into();
+            cfg.league.model_game_max_s = cap;
+            cfg.validate().unwrap();
+            let csv = PathBuf::from(if cfg!(windows) { "NUL" } else { "/dev/null" });
+            let src = source_cfg(cfg, fake_servers(fail).0, &csv);
+            (0..30)
+                .map(|_| {
+                    let j = src.next().unwrap();
+                    let class = src.shared.games.lock().unwrap()[&j.spec.game_id].pick.class;
+                    (class, j.spec.max_frames)
+                })
+                .collect::<Vec<_>>()
+        };
+        for (c1, fail) in [([1.0, 0.0, 0.0], false), ([0.0, 0.0, 1.0], false), ([0.0, 0.0, 1.0], true), ([0.0, 1.0, 0.0], false)] {
+            assert!(frames(1_500, c1, 0.0, fail).iter().all(|&(c, f)| c == Class::Model && f == 36_000), "{c1:?} {fail}");
+            assert!(frames(0, c1, 0.0, fail).iter().all(|&(_, f)| f == 86_400));
+        }
+        let mixed = frames(1_500, [0.5, 0.0, 0.0], 0.5, false);
+        assert!(mixed.iter().any(|&(c, _)| c == Class::T0) && mixed.iter().any(|&(c, _)| c == Class::Model));
+        for (c, f) in mixed {
+            assert_eq!(f, if c == Class::Model { 36_000 } else { 86_400 }, "{c:?}");
+        }
     }
 
     /// 042-R2: a train.csv with an older header is kept aside, the new file gets the current
@@ -1314,7 +1513,9 @@ mod tests {
             games_done: AtomicU64::new(0),
             disagree: AtomicU64::new(0),
             aborted: AtomicU64::new(0),
-            max_frames: 1,
+            max_frames: cfg.league.game_max_frames(false),
+            model_max_frames: cfg.league.game_max_frames(true),
+            sil: cfg.sil.enabled.then(|| SilState::new(cfg.sil.clone(), 1)),
             game_wall_timeout_s: 1,
             replay_dir: std::env::temp_dir(),
             replay_every: 0,
@@ -1576,6 +1777,82 @@ mod tests {
         assert_eq!(scout_columns(PseudoMode::Scout, Some(&result(2, Some(ScoutMetrics::default()))), None), "0.6,0.375,,,0,0,,,", "nothing reached");
         assert_eq!(scout_columns(PseudoMode::Scout, None, None), ",,,,,,,,", "no session report");
         assert_eq!(scout_columns(PseudoMode::Z, None, None).split(',').count(), 9);
+    }
+
+    /// 042-R16 / 042-AC7 (AMB-042-17) in the run loop: Main's games of `select_group` keep segment
+    /// copies (those starting before `until_s`, the terminal one with r_win) until the game is
+    /// judged; a won or held (`scv_4m >= 12`) game's copies go to the buffer with its r_win, the
+    /// others' (lost and not held, another group, Aborted) are dropped; nothing stays pending.
+    #[test]
+    fn sil_buffer_takes_selected_games_042_r16() {
+        use crate::league::{LadderEntry, LadderKind};
+        use uranium_agent::T0Build;
+        use uranium_env::features::executor::HostAction;
+        use uranium_proto::EndReason;
+        let csv = PathBuf::from(if cfg!(windows) { "NUL" } else { "/dev/null" });
+        for until_s in [0u32, 2] {
+            let mut cfg = RlConfig::default_file();
+            cfg.curriculum.start_stage = crate::league::Stage::C1;
+            let cc = &mut cfg.curriculum;
+            (cc.c1_t0, cc.c1_t1, cc.c1_self, cc.c1_ladder) = (0.0, 0.0, 0.0, 1.0);
+            cc.ladder_groups = [("rush".to_string(), 0.5), ("macro".to_string(), 0.5)].into_iter().collect();
+            let entry = |build, group: &str| LadderEntry { kind: LadderKind::T0, build: Some(build), name: None, race: Race::Zerg, group: group.into() };
+            cfg.ladder = vec![entry(T0Build::ZergRush, "rush"), entry(T0Build::Standard, "macro")];
+            cfg.sil = SilConfig { enabled: true, until_s, lanes: 2, buffer_segments: 1_000, ..SilConfig::default() };
+            cfg.validate().unwrap();
+            let src = source_cfg(cfg, fake_servers(false).0, &csv);
+            let info = crate::testkit::game_info();
+            // 10 decisions at frames 0, 10, ..., 90; segments of 4 (seq_len 4 in the test hooks)
+            // start at decisions 0, 3, 6, 9 = frames 0, 30, 60, 90 (the last is terminal).
+            let obs = crate::testkit::observations(10);
+            let cases = [(Outcome::Win, None, false), (Outcome::Loss, Some(12), false), (Outcome::Loss, Some(5), false), (Outcome::Win, Some(20), true)];
+            let (mut want, mut groups) = (0usize, BTreeSet::new());
+            for g in 0..24 {
+                let (outcome, scv_4m, aborted) = cases[g % cases.len()];
+                let job = src.next().unwrap();
+                let id = job.spec.game_id;
+                let group = src.shared.games.lock().unwrap()[&id].pick.ladder_group.clone();
+                groups.insert(group.clone());
+                let (_, mut o) = src.hooks[0].session(id, &info);
+                let a = HostAction { action: 0, delay_bucket: 0, queued: false, selected: vec![], target_unit: None, target_loc: None };
+                for (i, ob) in obs.iter().enumerate() {
+                    let state = o.wants_state().then(uranium_agent::infer::HostState::default);
+                    o.on_decision(&uranium_agent::model_policy::Decision { frame: 10 * i as u32, obs: ob, action: &a, log_prob: 0.0, head_log_prob: [0.0; uranium_agent::infer::HEADS], value: [0.0; 4], rejected: false, version: 0, reward_before: Default::default(), state });
+                }
+                o.on_end(Default::default(), Some(outcome));
+                src.shared.results.lock().unwrap().try_iter().for_each(drop);
+                src.shared.games.lock().unwrap().get_mut(&id).unwrap().self_player = Some(0);
+                let winner = if outcome == Outcome::Win { 0 } else { 1 };
+                for slot in [0u8, 1] {
+                    src.shared.ends.push(id, uranium_agent::SessionEnd { slot, winner: Some(winner), frame: 9_000, reason: EndReason::Elimination });
+                }
+                let m = ScoutMetrics { scv_4m, ..Default::default() };
+                src.hooks[0].tx.send(GameResult { outcome: Some(outcome), ..result(id, Some(m)) }).unwrap();
+                src.done(&job, if aborted { JobOutcome::Aborted } else { JobOutcome::Finished }, None);
+                let selected = group.as_deref() == Some("rush") && !aborted && (outcome == Outcome::Win || scv_4m.is_some_and(|n| n >= 12));
+                if selected {
+                    want += if until_s == 0 { 4 } else { 2 };
+                }
+            }
+            assert!(groups.contains(&Some("rush".to_string())) && groups.contains(&Some("macro".to_string())), "{groups:?}");
+            let sil = src.shared.sil.as_ref().unwrap();
+            assert!(sil.pending.lock().unwrap().is_empty(), "nothing left pending");
+            let mut buf = sil.buffer.lock().unwrap();
+            assert!(want > 0);
+            assert_eq!(buf.len(), want, "until_s {until_s}");
+            let segs = buf.sample(want, crate::sil::SilMode::Sil, 4);
+            assert_eq!(segs.iter().filter(|s| s.terminal).count(), if until_s == 0 { want / 4 } else { 0 });
+            for s in &segs {
+                let r = s.sil_return.unwrap();
+                assert!(r == 1.0 || r == -1.0, "{r}");
+                if until_s > 0 {
+                    assert!(s.start_frame < until_s * 24, "{}", s.start_frame);
+                }
+                if s.terminal {
+                    assert_eq!(s.steps.last().unwrap().reward[0], r, "terminal copy carries r_win");
+                }
+            }
+        }
     }
 
     /// 033-R11 (AMB-042-16): the "scout" C2 warning (start, resume, C1 → C2 transition).
