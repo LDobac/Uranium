@@ -12,7 +12,9 @@
 # wins_only = true. buffer_segments was 2048 until the user decision 2026-11-04 (042-R16,
 # AMB-042-18): about 4-6 MB per segment, so 2048 needed 8-12 GB more than the training host has
 # while training and checks run; rush-s4 hit the RAM guard at 422 segments
-# (runs/rush4_20261104/silmem.csv). c1_* shares, ladder_pick, [curriculum.band], anchor,
+# (runs/rush4_20261104/silmem.csv); [curriculum.band] width 0.30, exclude_below 0 (center 0.5;
+# rush-s3 0.15 / 0.10 until the user decision 2026-11-04 at the 0.75M check, see the section).
+# c1_* shares, ladder_pick, anchor,
 # snapshots, model_game_max_s, [kl], td_lambda, [reward] and [concede] as in rush-s3. Start:
 # `--init ac1-vtrace-s1/ckpt-3133569 --bc bc-s2e2-pt/ckpt-11387`, V-trace, new run id `rush-s4`.
 #
@@ -241,9 +243,14 @@ r_value_vs_model = false
 # 042 사다리 선택 band (user decision 2026-11-04, AMB-042-17): exp(-((x - 0.5) / 0.15)^2) over
 # Main's win-table value x (unseen 0.5); entries below 0.10 are left out while some entry of the
 # group is at or above 0.10.
+# rush-s4 (user decision 2026-11-04 at the 0.75M check, AMB-042-18): width 0.15 -> 0.30 and
+# exclude_below 0.10 -> 0 (no entry is left out). With win_rate_decay 0.9 an entry fell below
+# 0.10 within a few losses and, left out, got no new games, so its value never came back
+# (last 100 rush games: ualbertabot12poollings 2, ualbertabot9pool10lings 6). At width 0.30 an
+# entry at x = 0 keeps exp(-(0.5 / 0.30)^2) ~ 0.062 of the center weight (0.15: ~1.5e-5).
 center = 0.5
-width = 0.15
-exclude_below = 0.10
+width = 0.30
+exclude_below = 0.0
 
 [ppo]
 # Comparison baseline (042 algorithm alternatives).

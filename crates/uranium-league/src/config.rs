@@ -1269,7 +1269,8 @@ mod tests {
     /// decided changes only — groups warmup 0.05 / rush 0.65 / macro 0.20 (warmup =
     /// ualbertabot9pool; rush = T0 zerg_rush and three UAlbertaBot variants; five rush opponents
     /// left out; macro as before), win_rate_decay 0.9, `[league.rush_judge]` rush + warmup at 480 s
-    /// and 8 SCVs, `[sil]` on with the confirmed numbers and `wins_only`.
+    /// and 8 SCVs, `[sil]` on with the confirmed numbers and `wins_only`, `[curriculum.band]`
+    /// width 0.30 and no exclusion (user decision 2026-11-04 at the 0.75M check).
     #[test]
     fn rush4_config_042_amb_042_18() {
         let t: RlConfig = toml::from_str(include_str!("../../../config/rl_rush4.toml")).unwrap();
@@ -1280,6 +1281,9 @@ mod tests {
         assert_eq!((cc.c1_ladder, cc.c1_anchor, cc.c1_snapshot, cc.c1_self, cc.c1_t1, cc.c1_t0), (0.90, 0.05, 0.05, 0.0, 0.0, 0.0));
         assert_eq!(cc.ladder_pick.for_group(Some("warmup")), LadderPick::FVar);
         assert_eq!(t.league.win_rate_decay, 0.9);
+        // rush-s4 band (user decision 2026-11-04 at 0.75M, AMB-042-18): width 0.30, no exclusion
+        // (exclude_below 0 passes validate's 0 <= x < 1).
+        assert_eq!(cc.band, BandConfig { center: 0.5, width: 0.30, exclude_below: 0.0 });
         assert_eq!(t.league.rush_judge, RushJudgeConfig { groups: vec!["rush".into(), "warmup".into()], at_s: 480, min_scv: 8 });
         assert_eq!(t.league.rush_judge.max_frames(), 11_520);
         assert_eq!(t.sil, SilConfig { enabled: true, mode: SilMode::Sil, lanes: 4, w_pg: 0.05, w_v: 0.01, until_s: 480, buffer_segments: 256, select_group: "rush".into(), wins_only: true, ..SilConfig::default() });
@@ -1295,6 +1299,7 @@ mod tests {
         d.ladder.iter_mut().filter(|e| e.name.as_deref() == Some("ualbertabot9pool")).for_each(|e| e.group = "warmup".into());
         d.curriculum.ladder_groups = t.curriculum.ladder_groups.clone();
         d.league.win_rate_decay = 0.9;
+        d.curriculum.band = BandConfig { center: 0.5, width: 0.30, exclude_below: 0.0 };
         d.league.rush_judge = t.league.rush_judge.clone();
         d.sil = t.sil.clone();
         assert_eq!(d, t);
