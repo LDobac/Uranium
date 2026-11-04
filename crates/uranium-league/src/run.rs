@@ -584,15 +584,20 @@ impl JobSource for LeagueSource {
         let decided = match decided {
             Some(o) if timed_out && s.league_cfg.rush_judged(meta.pick.class == Class::Model, meta.pick.ladder_group.as_deref()) => {
                 let judge = &s.league_cfg.rush_judge;
-                match result.as_ref().and_then(|r| r.scout).and_then(|m| m.scv_last) {
-                    Some(n) => {
+                match result.as_ref().map(|r| r.scout.and_then(|m| m.scv_last)) {
+                    Some(Some(n)) => {
                         let judged = judge.judge(n);
                         judge_scv = Some(n);
                         crate::elog!("[rl] game {id}: 042-R17 rush judge at {} s: {n} own SCVs (win at >= {}) -> {judged:?} (bridge {o:?})", judge.at_s, judge.min_scv);
                         Some(judged)
                     }
-                    None => {
+                    // 메인 임시 결정 (2026-11-04): a missing session report counts like no observation.
+                    Some(None) => {
                         crate::elog!("[rl] game {id}: 042-R17 rush judge at {} s: no observation of the learning session to count SCVs; no result, not trained (042-R3)", judge.at_s);
+                        None
+                    }
+                    None => {
+                        crate::elog!("[rl] game {id}: 042-R17 rush judge at {} s: no session report of the learning session (timeout); no result, not trained (042-R3)", judge.at_s);
                         None
                     }
                 }
@@ -638,7 +643,8 @@ impl JobSource for LeagueSource {
         }
         // 042-R14 games.csv `end_reason`: `Concede` for a collapse concede, else the judged
         // GameEnd reason (020-R13); empty for a game without a result (Aborted, Timeout).
-        // 042-R17 (AMB-042-18): `RushJudge` for a judged rush mini-game.
+        // 042-R17 (AMB-042-18): `RushJudge` for a judged rush mini-game, also when a collapse
+        // concede coincided with the frame cap (메인 임시 결정, 2026-11-04).
         let end_reason = match (&verdict, decided) {
             (_, None) => String::new(),
             (_, Some(_)) if judge_scv.is_some() => "RushJudge".to_string(),
@@ -2225,6 +2231,8 @@ mod tests {
         assert_eq!(won.terminal_r_win, Some(1.0), "r_win on the last decision");
         assert!((won.win_delta - 0.05).abs() < 1e-9, "win table: a win (0.9 x 0.5 + 0.1 x 1)");
         assert_eq!(won.buffer, 1, "a won game: selected (its terminal segment)");
+        let sampled = src.shared.sil.as_ref().unwrap().buffer.lock().unwrap().sample(1, crate::sil::SilMode::Sil, 4);
+        assert_eq!(sampled[0].sil_return, Some(1.0), "the SIL return R is the judged r_win");
         let lost = play("rush", 2, EndReason::TimeLimitDraw, None, m(Some(7), Some(12)), false);
         assert_eq!(cols(&lost), (s("Some(Loss)"), s("-1"), s("RushJudge"), s("7")));
         assert_eq!(lost.terminal_r_win, Some(-1.0));
@@ -2242,6 +2250,10 @@ mod tests {
         assert_eq!(cols(&gg), (s("Some(Loss)"), s("-1"), s("Surrender"), s("")));
         let conceded = play("rush", 2, EndReason::Surrender, Some(1), m(Some(20), Some(15)), true);
         assert_eq!(cols(&conceded), (s("Some(Loss)"), s("-1"), s("Concede"), s("")));
+        // A collapse concede that coincides with the frame cap: RushJudge wins (메인 임시 결정).
+        let both = play("rush", 2, EndReason::TimeLimitDraw, None, m(Some(3), Some(15)), true);
+        assert_eq!(cols(&both), (s("Some(Loss)"), s("-1"), s("RushJudge"), s("3")));
+        assert_eq!(both.buffer, 2, "a judged loss is not selected");
         // Another group's TimeLimitDraw stays a draw.
         let macro_draw = play("macro", 2, EndReason::TimeLimitDraw, None, m(Some(20), Some(15)), false);
         assert_eq!(cols(&macro_draw), (s("Some(Draw)"), s("0"), s("TimeLimitDraw"), s("")));

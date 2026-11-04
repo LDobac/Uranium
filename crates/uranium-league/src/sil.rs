@@ -35,7 +35,9 @@ pub struct SilConfig {
     /// "Held" stand-in: `scv_4m` at least this (and no collapse concede).
     pub select_scv_4m: u32,
     /// 042-R16 고를 판 (AMB-042-18): `true` = won games only (the held stand-in and
-    /// `select_scv_4m` are not used); `false` = won or held, as before.
+    /// `select_scv_4m` are not used); `false` = won or held, as before. Left out of the serialised
+    /// config when false, so checkpoints of earlier configs record the same config as before.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub wins_only: bool,
     /// Segments whose first decision frame is below `until_s × 24`; 0 = the whole game.
     pub until_s: u32,
@@ -255,6 +257,11 @@ mod tests {
         assert!(parse("wins_only = true").unwrap().wins_only);
         assert!(parse("wins_only = 1").is_err());
         assert!(parse("win_only = true").is_err(), "unknown key");
+        // Serialised (checkpoint config): absent when false, as before the key; read back the same.
+        assert!(serde_json::to_value(SilConfig::default()).unwrap().get("wins_only").is_none());
+        let on = serde_json::to_value(&c).unwrap();
+        assert_eq!(on["wins_only"], true);
+        assert_eq!(serde_json::from_value::<SilConfig>(on).unwrap(), c);
     }
 
     /// 042-R16 담을 세그먼트: first decision before `until_s`, 0 = all.
