@@ -112,6 +112,17 @@ anchor = ""
 # GameSpec.max_frames = min(86400, x * 24); 0 = no cap (60 minutes). 0 or 60..3600. Bot games and
 # evaluation games keep 60 minutes.
 model_game_max_s = 0
+# 042-R17 러시 미니게임 (AMB-042-18): absent [league.rush_judge] (or groups = []) = off, the earlier
+# game lengths and results. Its keys and defaults: groups = [] ([[ladder]] group names, each in
+# [curriculum] ladder_groups); at_s = 480 (60..3600 game seconds); min_scv = 8 (>= 1). RL training
+# games of those groups (not games against a model, not evaluation games) end at
+# GameSpec.max_frames = min(86400, at_s * 24); one that ends there as TimeLimitDraw is a win when
+# the learning session's own SCVs at its last observation (GameEnd final frame, else the last
+# frame; the 033-R10 count) are >= min_scv, else a loss (no observation = no result, not trained).
+# It sets r_win, the win table, the curriculum windows and the [sil] selection; games.csv
+# end_reason = RushJudge and judge_scv. Earlier ends keep their result. Example (rush-s4):
+#   [league.rush_judge]
+#   groups = ["rush", "warmup"]
 
 [snapshot]
 main_every_updates = 2000
@@ -167,7 +178,8 @@ r_value_vs_model = true
 # [[ladder]], [reward] and [concede] follow this file; stage, win tables, windows and snapshots
 # come from the checkpoint (042). A [reward] pseudo other than the checkpoint's is a start error.
 # So do [kl] (the update count continues from the checkpoint), [kl.head_scale], [loss]
-# td_lambda, [curriculum.band], [league] model_game_max_s and [sil] (AMB-042-17).
+# td_lambda, [curriculum.band], [league] model_game_max_s and [sil] (AMB-042-17), and
+# [league.rush_judge] and [sil] wins_only (AMB-042-18).
 
 [curriculum.band]
 # 042 사다리 선택 band (AMB-042-17): weight exp(-((x - center) / width)^2), x = Main's win-table
@@ -193,12 +205,15 @@ adopt_margin = 0.03
 sample_every = 100
 
 # 042-R16 자기 모방·막은 판 재학습 (AMB-042-17): absent [sil] = off (the learner and league as
-# before). Its keys and default values (기본안(미확정): confirmed by the user before turning it on):
+# before). Its keys and default values (rush-s4 turns it on with these and wins_only = true,
+# config/rl_rush4.toml; a configuration that uses select_scv_4m or max_uses is asked first):
 #   enabled = false; mode = "sil" ("sil": buffer lanes train only
 #   w_pg * mean[-log pi * A+] + w_v * mean[0.5 * A+^2], A+ = max(R - V_win, 0); "replay": the
 #   ordinary loss, a segment leaves after max_uses uses, not in the 042-R4 lag drop);
 #   select_group = "rush" (a [[ladder]] group; games with a result that were won, or with
-#   scv_4m >= select_scv_4m and no collapse concede); select_scv_4m = 12; until_s = 480
+#   scv_4m >= select_scv_4m and no collapse concede); select_scv_4m = 12; wins_only = false
+#   (true = won games only, after the 042-R17 judgement; select_scv_4m unused, AMB-042-18);
+#   until_s = 480
 #   (segments starting before it, 0 = whole game); buffer_segments = 2048 (FIFO, not in
 #   checkpoints); lanes = 4 (of the batch lanes, replaced, Main only); w_pg = 0.05; w_v = 0.01;
 #   max_uses = 4.

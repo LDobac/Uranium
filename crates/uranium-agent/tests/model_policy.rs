@@ -346,6 +346,45 @@ fn scout_rewards_and_metrics_reach_the_observer_033_r9() {
     assert_eq!(run(none).0, 0.0, "the hook's settings are used");
 }
 
+/// 042-R17 / 042-AC8 판정 SCV 수 (AMB-042-18): the metrics an RL session hands its observer carry
+/// the own SCVs of `GameEnd.final_frame` (010-R12), or of the last `RawFrame` without one.
+#[test]
+fn judge_scv_from_final_or_last_frame_042_r17() {
+    use uranium_env::reward::Outcome;
+    use uranium_env::scout::{RewardConfig, ScoutMetrics};
+    struct Obs(Arc<Mutex<Option<ScoutMetrics>>>);
+    impl uranium_agent::model_policy::SessionObserver for Obs {
+        fn on_decision(&mut self, _d: &uranium_agent::model_policy::Decision<'_>) {}
+        fn on_scout(&mut self, m: &ScoutMetrics) {
+            *self.0.lock().unwrap() = Some(*m);
+        }
+    }
+    let h = mock(1, None);
+    let fs = frames(0, 3);
+    let scv = ty("Terran_SCV");
+    let count = |f: &RawFrame| f.units.iter().filter(|u| u.owner == SELF && u.unit_type == scv && u.has(flags::COMPLETED)).count() as u32;
+    // The final frame at 8:00 with two more own SCVs than the last decision frame.
+    let mut last = fs[2].clone();
+    last.frame = 11_520;
+    let one = last.units.iter().find(|u| u.owner == SELF && u.unit_type == scv && u.has(flags::COMPLETED)).cloned().expect("an own SCV");
+    for id in [9_001, 9_002] {
+        last.units.push(UnitState { id, ..one.clone() });
+    }
+    assert_eq!(count(&last), count(&fs[2]) + 2);
+    let run = |end: Option<&RawFrame>| {
+        let seen = Arc::new(Mutex::new(None));
+        let mut p = ModelPolicy::new(&h, &game_info()).unwrap().with_observer(None, RewardConfig::default(), Box::new(Obs(seen.clone())));
+        for f in &fs {
+            p.on_frame(f).unwrap();
+        }
+        p.on_end(Some(Outcome::Draw), end);
+        let m = seen.lock().unwrap().expect("metrics");
+        m.scv_last
+    };
+    assert_eq!(run(Some(&last)), Some(count(&last)), "the final frame");
+    assert_eq!(run(None), Some(count(&fs[2])), "no final frame: the last RawFrame");
+}
+
 struct SinkWriter(Arc<Mutex<Vec<u8>>>);
 
 impl Write for SinkWriter {

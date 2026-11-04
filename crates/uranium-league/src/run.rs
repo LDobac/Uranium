@@ -4,7 +4,8 @@
 //!
 //! Game outcomes follow 020-R13: once hostd reports a game over, the GameEnd reports of its
 //! sessions are reconciled (`game_result`) and that verdict sets r_win on the learner's terminal
-//! segment (033) and feeds the league win table (042). Aborted games are revoked (042-R3).
+//! segment (033) and feeds the league win table (042); a rush mini-game that reached its frame
+//! cap is judged by the learner's SCVs first (042-R17). Aborted games are revoked (042-R3).
 //! Checkpoints go through `storage::Run` (061): stage → seal → push; a clean stop (042-R10)
 //! releases the lock only when the final push succeeded (061-R11-5/6).
 
@@ -30,7 +31,7 @@ use uranium_proto::{EndReason, GameInfo, Race};
 use uranium_runner::{Dispatch, HostEntry, Job, JobOutcome, JobSource};
 
 use crate::ckpt::{self, TrainState};
-use crate::config::RlConfig;
+use crate::config::{LeagueConfig, RlConfig};
 use crate::league::{AgentKind, Class, League, Opponent, Pick};
 use crate::learner::{Algo, HEAD_NAMES, RlLearners, SnapshotServers, UpdateStats};
 use crate::sil::{SilBuffer, SilConfig};
@@ -97,10 +98,10 @@ struct Shared {
     games_done: AtomicU64,
     disagree: AtomicU64,
     aborted: AtomicU64,
-    /// `GameSpec.max_frames` of games against a bot (020-R3, 60 minutes) and against a model
-    /// (042-R15 `[league] model_game_max_s`, AMB-042-17).
-    max_frames: u32,
-    model_max_frames: u32,
+    /// `[league]` of the config: `GameSpec.max_frames` by opponent (020-R3 60 minutes, 042-R15
+    /// `model_game_max_s`, AMB-042-17; 042-R17 rush mini-games, AMB-042-18) and the
+    /// `[league.rush_judge]` settings.
+    league_cfg: LeagueConfig,
     /// 042-R16 (AMB-042-17): `Some` when `[sil] enabled`.
     sil: Option<SilState>,
     /// `[actors] game_wall_timeout_s` (AMB-042-12).
@@ -460,8 +461,9 @@ impl LeagueSource {
             players: [bridge(Race::Terran), p1],
             seed: Some(seed),
             // 042-R15 / 020-R3 (AMB-042-17): a game against a model (a failed model opponent's
-            // current-Main self-play included) has the model-game cap; bots the 60 minutes.
-            max_frames: if pick.class == Class::Model { s.model_max_frames } else { s.max_frames },
+            // current-Main self-play included) has the model-game cap; 042-R17 (AMB-042-18): a
+            // ladder game of a `[league.rush_judge]` group ends at `at_s`; other bots the 60 minutes.
+            max_frames: s.league_cfg.game_max_frames_of(pick.class == Class::Model, pick.ladder_group.as_deref()),
             privileged: true,
             // 042-R11: every game is recorded; `done` keeps the sample and disagreements.
             save_replay: true,
@@ -573,6 +575,30 @@ impl JobSource for LeagueSource {
             }
             _ => None,
         };
+        // 042-R17 / 020-R19 (AMB-042-18): a rush mini-game that ended at its frame cap
+        // (`TimeLimitDraw` after 020-R13) is a win with at least `min_scv` own SCVs at the
+        // learning session's last observation, else a loss; with no observation it has no result
+        // (left out of training like an Aborted game, 042-R3). Earlier ends keep their outcome.
+        let timed_out = verdict.as_ref().is_some_and(|(e, _)| e.reason == EndReason::TimeLimitDraw);
+        let mut judge_scv = None;
+        let decided = match decided {
+            Some(o) if timed_out && s.league_cfg.rush_judged(meta.pick.class == Class::Model, meta.pick.ladder_group.as_deref()) => {
+                let judge = &s.league_cfg.rush_judge;
+                match result.as_ref().and_then(|r| r.scout).and_then(|m| m.scv_last) {
+                    Some(n) => {
+                        let judged = judge.judge(n);
+                        judge_scv = Some(n);
+                        crate::elog!("[rl] game {id}: 042-R17 rush judge at {} s: {n} own SCVs (win at >= {}) -> {judged:?} (bridge {o:?})", judge.at_s, judge.min_scv);
+                        Some(judged)
+                    }
+                    None => {
+                        crate::elog!("[rl] game {id}: 042-R17 rush judge at {} s: no observation of the learning session to count SCVs; no result, not trained (042-R3)", judge.at_s);
+                        None
+                    }
+                }
+            }
+            other => other,
+        };
         let r_win = match decided {
             Some(Outcome::Win) => 1.0,
             Some(Outcome::Loss) => -1.0,
@@ -612,8 +638,10 @@ impl JobSource for LeagueSource {
         }
         // 042-R14 games.csv `end_reason`: `Concede` for a collapse concede, else the judged
         // GameEnd reason (020-R13); empty for a game without a result (Aborted, Timeout).
+        // 042-R17 (AMB-042-18): `RushJudge` for a judged rush mini-game.
         let end_reason = match (&verdict, decided) {
             (_, None) => String::new(),
+            (_, Some(_)) if judge_scv.is_some() => "RushJudge".to_string(),
             (_, Some(_)) if conceded.is_some() => "Concede".to_string(),
             (Some((e, _)), Some(_)) => format!("{:?}", e.reason),
             (None, Some(_)) => String::new(),
@@ -644,7 +672,7 @@ impl JobSource for LeagueSource {
         s.games_done.fetch_add(1, Ordering::SeqCst);
         let extra = scout_columns(s.pseudo, result.as_ref(), meta.pick.ladder_group.as_deref());
         let line = format!(
-            "{},{},{},{},{:?},{},{},{:?},{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{:?},{},{},{:?},{},{},{},{},{},{},{},{},{},{},{}\n",
             id,
             AgentKind::ALL[agent].name(),
             job.opponent.clone().unwrap_or_default(),
@@ -666,7 +694,9 @@ impl JobSource for LeagueSource {
             replay_path,
             replay_reason,
             end_reason,
-            extra
+            extra,
+            // 042-R2 / R17 (AMB-042-18): the judged SCV count, empty for games not judged.
+            judge_scv.map_or(String::new(), |n| n.to_string())
         );
         let _ = s.games_csv.lock().unwrap().write_all(line.as_bytes());
         self.release_server(&meta);
@@ -716,8 +746,9 @@ fn keep_replay(dir: &Path, game_id: u64, reason: &str, bytes: &[u8]) -> Result<S
 }
 
 /// games.csv header (042-R2, R11; `end_reason` 042-R14, 2026-11-03; then the 033 raw sums
-/// `r_scout`, `r_survive` and the 042 정찰·대응 지표, AMB-042-16).
-const GAMES_HEADER: &str = "game_id,agent,opponent,class,enemy_race,map,hostd_outcome,outcome,winner_disagree,decisions,r_win,r_build,r_units,r_value,replay,replay_reason,end_reason,r_scout,r_survive,ladder_group,scout_main_s,scout_types_4m,scout_types_6m,barracks_s,bunker_s,scv_4m\n";
+/// `r_scout`, `r_survive` and the 042 정찰·대응 지표, AMB-042-16; then the 042-R17 `judge_scv`,
+/// AMB-042-18).
+const GAMES_HEADER: &str = "game_id,agent,opponent,class,enemy_race,map,hostd_outcome,outcome,winner_disagree,decisions,r_win,r_build,r_units,r_value,replay,replay_reason,end_reason,r_scout,r_survive,ladder_group,scout_main_s,scout_types_4m,scout_types_6m,barracks_s,bunker_s,scv_4m,judge_scv\n";
 
 /// 042-R2 (AMB-042-16): the games.csv columns after `end_reason`, comma-joined. `r_scout`,
 /// `r_survive`: the game's raw sums, empty in the `"z"` mode (and without a session report);
@@ -1028,18 +1059,24 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         0 => crate::elog!("[rl] games against a model: no time cap (60 minutes, 020-R3)"),
         s => crate::elog!("[rl] games against a model end as a draw at {s} game seconds ({} frames, 042-R15)", cfg.league.game_max_frames(true)),
     }
+    let rj = &cfg.league.rush_judge;
+    if rj.groups.is_empty() {
+        crate::elog!("[rl] rush mini-game off (042-R17)");
+    } else {
+        crate::elog!("[rl] rush mini-game: ladder groups {:?} end at {} game seconds ({} frames); a TimeLimitDraw there is a win with >= {} own SCVs, else a loss (042-R17)", rj.groups, rj.at_s, rj.max_frames(), rj.min_scv);
+    }
     let k = &cfg.kl;
     crate::elog!("[rl] KL coefficient max({}, {} x 0.5^(update / {})) from this run's update 0, head multipliers {:?}; td_lambda {} (042-R9)", k.floor, k.init, k.half_life_updates, k.head_scale.by_head(), cfg.loss.td_lambda);
     let sc = &cfg.sil;
     if sc.enabled {
         crate::elog!(
-            "[rl] self-imitation ON (Main in C1 only): mode {:?}, {} lanes of {} from a buffer of {} segments, group {:?} won or scv_4m >= {}, segments before {} s, w_pg {} w_v {} max_uses {} (042-R16)",
+            "[rl] self-imitation ON (Main in C1 only): mode {:?}, {} lanes of {} from a buffer of {} segments, group {:?} {}, segments before {} s, w_pg {} w_v {} max_uses {} (042-R16)",
             sc.mode,
             sc.lanes,
             cfg.lanes,
             sc.buffer_segments,
             sc.select_group,
-            sc.select_scv_4m,
+            if sc.wins_only { "won games only (wins_only)".to_string() } else { format!("won or scv_4m >= {}", sc.select_scv_4m) },
             sc.until_s,
             sc.w_pg,
             sc.w_v,
@@ -1104,8 +1141,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         games_done: AtomicU64::new(0),
         disagree: AtomicU64::new(0),
         aborted: AtomicU64::new(0),
-        max_frames: cfg.league.game_max_frames(false),
-        model_max_frames: cfg.league.game_max_frames(true),
+        league_cfg: cfg.league.clone(),
         sil: cfg.sil.enabled.then(|| SilState::new(cfg.sil.clone(), args.seed)),
         game_wall_timeout_s: cfg.actors.game_wall_timeout_s,
         replay_dir,
@@ -1540,8 +1576,7 @@ mod tests {
             games_done: AtomicU64::new(0),
             disagree: AtomicU64::new(0),
             aborted: AtomicU64::new(0),
-            max_frames: cfg.league.game_max_frames(false),
-            model_max_frames: cfg.league.game_max_frames(true),
+            league_cfg: cfg.league.clone(),
             sil: cfg.sil.enabled.then(|| SilState::new(cfg.sil.clone(), 1)),
             game_wall_timeout_s: 1,
             replay_dir: std::env::temp_dir(),
@@ -1783,9 +1818,10 @@ mod tests {
 
     #[test]
     fn games_csv_header_matches_rows_042_r2() {
-        assert_eq!(GAMES_HEADER.trim().split(',').count(), 26);
-        // 042-R2 (AMB-042-16): the new columns follow end_reason in this order.
-        assert!(GAMES_HEADER.trim().ends_with(",replay,replay_reason,end_reason,r_scout,r_survive,ladder_group,scout_main_s,scout_types_4m,scout_types_6m,barracks_s,bunker_s,scv_4m"));
+        assert_eq!(GAMES_HEADER.trim().split(',').count(), 27);
+        // 042-R2 (AMB-042-16): the new columns follow end_reason in this order; 042-R17
+        // (AMB-042-18): `judge_scv` is the last column, after scv_4m.
+        assert!(GAMES_HEADER.trim().ends_with(",replay,replay_reason,end_reason,r_scout,r_survive,ladder_group,scout_main_s,scout_types_4m,scout_types_6m,barracks_s,bunker_s,scv_4m,judge_scv"));
     }
 
     fn result(id: u64, scout: Option<ScoutMetrics>) -> GameResult {
@@ -1797,7 +1833,7 @@ mod tests {
     /// without a session report.
     #[test]
     fn scout_columns_042_r2() {
-        let m = ScoutMetrics { main_frame: Some(3_000), types_4m: 2, types_6m: 5, barracks_frame: Some(2_412), bunker_frame: None, scv_4m: Some(14) };
+        let m = ScoutMetrics { main_frame: Some(3_000), types_4m: 2, types_6m: 5, barracks_frame: Some(2_412), bunker_frame: None, scv_4m: Some(14), scv_last: Some(9) };
         let r = result(1, Some(m));
         assert_eq!(scout_columns(PseudoMode::Scout, Some(&r), Some("macro")), "0.6,0.375,macro,125.0,2,5,100.5,,14");
         assert_eq!(scout_columns(PseudoMode::Z, Some(&r), Some("rush")), ",,rush,125.0,2,5,100.5,,14", "z: r_scout / r_survive empty");
@@ -2045,12 +2081,173 @@ mod tests {
             let line = std::fs::read_to_string(&csv).unwrap().lines().last().unwrap().to_string();
             let r: Vec<&str> = line.split(',').collect();
             assert_eq!(r.len(), GAMES_HEADER.trim().split(',').count(), "{line}");
-            assert_eq!(&r[17..], [&["0.6", "0.375", group.as_deref().unwrap_or("")][..], &["100.0", "1", "3", "", "", ""]].concat(), "{line}");
+            assert_eq!(&r[17..], [&["0.6", "0.375", group.as_deref().unwrap_or("")][..], &["100.0", "1", "3", "", "", "", ""]].concat(), "{line}");
             if let Some(g) = &group {
                 assert_eq!(r[2].starts_with("t0-zerg-rush"), g == "rush", "{line}");
             }
         }
         assert!(model > 0 && bot > 0, "{model} {bot}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 042-R17 / 042-AC8 판 길이 (AMB-042-18): through the job source with config/rl_rush4.toml,
+    /// ladder games of the judged groups (rush, warmup) get `min(86,400, at_s x 24)` = 11,520,
+    /// macro games 86,400 and games against a model the 042-R15 36,000; with rl_rush3.toml (no
+    /// `[league.rush_judge]`) every ladder game keeps 86,400 as before.
+    #[test]
+    fn rush_judge_game_lengths_042_r17() {
+        let frames = |file: &str| {
+            let cfg: RlConfig = toml::from_str(file).unwrap();
+            cfg.validate().unwrap();
+            let csv = PathBuf::from(if cfg!(windows) { "NUL" } else { "/dev/null" });
+            let src = source_cfg(cfg, fake_servers(false).0, &csv);
+            (0..400)
+                .map(|_| {
+                    let j = src.next().unwrap();
+                    let games = src.shared.games.lock().unwrap();
+                    let p = &games[&j.spec.game_id].pick;
+                    (p.class, p.ladder_group.clone(), j.spec.max_frames)
+                })
+                .collect::<Vec<_>>()
+        };
+        let seen = frames(include_str!("../../../config/rl_rush4.toml"));
+        for g in ["warmup", "rush", "macro"] {
+            assert!(seen.iter().any(|(_, x, _)| x.as_deref() == Some(g)), "{g}");
+        }
+        assert!(seen.iter().any(|(c, _, _)| *c == Class::Model));
+        for (class, group, f) in &seen {
+            let want = match (class, group.as_deref()) {
+                (Class::Model, _) => 36_000,
+                (_, Some("rush" | "warmup")) => 11_520,
+                _ => 86_400,
+            };
+            assert_eq!(*f, want, "{class:?} {group:?}");
+        }
+        let rush3 = frames(include_str!("../../../config/rl_rush3.toml"));
+        assert!(rush3.iter().any(|(_, g, _)| g.as_deref() == Some("rush")));
+        for (class, group, f) in rush3 {
+            assert_eq!(f, if class == Class::Model { 36_000 } else { 86_400 }, "rush-s3 as before: {class:?} {group:?}");
+        }
+    }
+
+    /// 042-R17 / 020-R19 / 042-AC8 판정 (AMB-042-18) in the run loop: a judged group's game that
+    /// ends as `TimeLimitDraw` is a win at `min_scv` (8) own SCVs and a loss at 7 — games.csv
+    /// `outcome`, `r_win` (also on the terminal decision), `end_reason = RushJudge`, `judge_scv`,
+    /// the win table and the self-imitation selection (`wins_only`: the won one only, not the
+    /// lost one with `scv_4m >= 12`) use the judged result; with no observation to count the game
+    /// has no result (not trained, counted with Aborted); earlier ends (Elimination, Surrender,
+    /// collapse Concede) and another group's `TimeLimitDraw` keep their outcome, `judge_scv` empty.
+    #[test]
+    fn rush_judge_results_in_the_run_loop_042_r17() {
+        use crate::config::RushJudgeConfig;
+        use crate::league::{LadderEntry, LadderKind};
+        use uranium_agent::T0Build;
+        use uranium_env::features::executor::HostAction;
+        let dir = std::env::temp_dir().join(format!("uranium-rl-rushjudge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let csv = dir.join("games.csv");
+        drop(open_csv(&csv, GAMES_HEADER).unwrap());
+        let mut cfg = RlConfig::default_file();
+        cfg.curriculum.start_stage = crate::league::Stage::C1;
+        let cc = &mut cfg.curriculum;
+        (cc.c1_t0, cc.c1_t1, cc.c1_self, cc.c1_ladder) = (0.0, 0.0, 0.0, 1.0);
+        cc.ladder_groups = [("rush".to_string(), 0.5), ("macro".to_string(), 0.5)].into_iter().collect();
+        let entry = |build, group: &str| LadderEntry { kind: LadderKind::T0, build: Some(build), name: None, race: Race::Zerg, group: group.into() };
+        cfg.ladder = vec![entry(T0Build::ZergRush, "rush"), entry(T0Build::Standard, "macro")];
+        cfg.league.win_rate_decay = 0.9;
+        cfg.league.rush_judge = RushJudgeConfig { groups: vec!["rush".into()], ..RushJudgeConfig::default() };
+        cfg.sil = SilConfig { enabled: true, wins_only: true, lanes: 2, buffer_segments: 100, ..SilConfig::default() };
+        cfg.concede.enabled = true;
+        cfg.validate().unwrap();
+        let src = source_cfg(cfg, fake_servers(false).0, &csv);
+        let info = crate::testkit::game_info();
+        let obs = crate::testkit::observations(2);
+        struct Played {
+            row: Vec<String>,
+            /// Main's win-table value against the opponent after the game minus before.
+            win_delta: f64,
+            /// r_win on the terminal decision as queued for the learner (`None`: nothing queued).
+            terminal_r_win: Option<f32>,
+            buffer: usize,
+            aborted: u64,
+        }
+        // One game of `group`: `decisions` decisions (one terminal segment), the session's report
+        // with `scout` (metrics with `scv_last`), both sessions' GameEnd, optionally a collapse
+        // concede of the learning agent.
+        let play = |group: &str, decisions: usize, reason: EndReason, winner: Option<u8>, scout: ScoutMetrics, concede: bool| {
+            let job = loop {
+                let j = src.next().unwrap();
+                if src.shared.games.lock().unwrap()[&j.spec.game_id].pick.ladder_group.as_deref() == Some(group) {
+                    break j;
+                }
+                src.requeue(j);
+            };
+            let id = job.spec.game_id;
+            let key = src.shared.games.lock().unwrap()[&id].pick.key.clone();
+            let before = src.shared.league.lock().unwrap().win_rate(AgentKind::Main, &key);
+            let (_, mut o) = src.hooks[0].session(id, &info);
+            let a = HostAction { action: 0, delay_bucket: 0, queued: false, selected: vec![], target_unit: None, target_loc: None };
+            for (i, ob) in obs.iter().take(decisions).enumerate() {
+                let state = o.wants_state().then(uranium_agent::infer::HostState::default);
+                o.on_decision(&uranium_agent::model_policy::Decision { frame: 24 * i as u32, obs: ob, action: &a, log_prob: 0.0, head_log_prob: [0.0; uranium_agent::infer::HEADS], value: [0.0; 4], rejected: false, version: 0, reward_before: Default::default(), state });
+            }
+            let session_view = match winner {
+                Some(0) => Outcome::Win,
+                Some(_) => Outcome::Loss,
+                None => Outcome::Draw,
+            };
+            o.on_end(Default::default(), Some(session_view));
+            src.shared.results.lock().unwrap().try_iter().for_each(drop);
+            src.shared.games.lock().unwrap().get_mut(&id).unwrap().self_player = Some(0);
+            if concede {
+                assert!(src.shared.concede.get(id).unwrap().claim(0, 7_200, LeaveRule::Concede));
+            }
+            for slot in [0u8, 1] {
+                src.shared.ends.push(id, uranium_agent::SessionEnd { slot, winner, frame: 11_520, reason });
+            }
+            src.hooks[0].tx.send(GameResult { outcome: Some(session_view), ..result(id, Some(scout)) }).unwrap();
+            let aborted = src.shared.aborted.load(Ordering::SeqCst);
+            src.done(&job, JobOutcome::Finished, None);
+            let row: Vec<String> = std::fs::read_to_string(&csv).unwrap().lines().last().unwrap().split(',').map(str::to_string).collect();
+            assert_eq!(row.len(), GAMES_HEADER.trim().split(',').count(), "{row:?}");
+            let terminal_r_win = src.shared.queues[0].try_take(1, 0, 1_000).map(|b| b[0].steps.last().unwrap().reward[0]);
+            let win_delta = src.shared.league.lock().unwrap().win_rate(AgentKind::Main, &key) - before;
+            let buffer = src.shared.sil.as_ref().unwrap().buffer.lock().unwrap().len();
+            Played { row, win_delta, terminal_r_win, buffer, aborted: src.shared.aborted.load(Ordering::SeqCst) - aborted }
+        };
+        let m = |scv_last: Option<u32>, scv_4m: Option<u32>| ScoutMetrics { scv_last, scv_4m, ..Default::default() };
+        let cols = |p: &Played| (p.row[7].clone(), p.row[10].clone(), p.row[16].clone(), p.row[26].clone());
+        let s = |x: &str| x.to_string();
+        // min_scv boundary: 8 own SCVs win, 7 lose.
+        let won = play("rush", 2, EndReason::TimeLimitDraw, None, m(Some(8), Some(12)), false);
+        assert_eq!(cols(&won), (s("Some(Win)"), s("1"), s("RushJudge"), s("8")));
+        assert_eq!(won.terminal_r_win, Some(1.0), "r_win on the last decision");
+        assert!((won.win_delta - 0.05).abs() < 1e-9, "win table: a win (0.9 x 0.5 + 0.1 x 1)");
+        assert_eq!(won.buffer, 1, "a won game: selected (its terminal segment)");
+        let lost = play("rush", 2, EndReason::TimeLimitDraw, None, m(Some(7), Some(12)), false);
+        assert_eq!(cols(&lost), (s("Some(Loss)"), s("-1"), s("RushJudge"), s("7")));
+        assert_eq!(lost.terminal_r_win, Some(-1.0));
+        assert!(lost.win_delta < 0.0, "win table: a loss");
+        assert_eq!(lost.buffer, 1, "wins_only: a lost game with scv_4m >= 12 is not selected");
+        // No observation to count: no result, nothing trained, the win table untouched.
+        let none = play("rush", 0, EndReason::TimeLimitDraw, None, m(None, None), false);
+        assert_eq!(cols(&none), (s("None"), s("0"), s(""), s("")));
+        assert_eq!((none.terminal_r_win, none.win_delta, none.aborted), (None, 0.0, 1));
+        // Ended before the cap: the original outcome.
+        let elim = play("rush", 2, EndReason::Elimination, Some(0), m(Some(3), None), false);
+        assert_eq!(cols(&elim), (s("Some(Win)"), s("1"), s("Elimination"), s("")));
+        assert_eq!((elim.terminal_r_win, elim.buffer), (Some(1.0), 2), "a win before 8:00 is selected too");
+        let gg = play("rush", 2, EndReason::Surrender, Some(1), m(Some(20), None), false);
+        assert_eq!(cols(&gg), (s("Some(Loss)"), s("-1"), s("Surrender"), s("")));
+        let conceded = play("rush", 2, EndReason::Surrender, Some(1), m(Some(20), Some(15)), true);
+        assert_eq!(cols(&conceded), (s("Some(Loss)"), s("-1"), s("Concede"), s("")));
+        // Another group's TimeLimitDraw stays a draw.
+        let macro_draw = play("macro", 2, EndReason::TimeLimitDraw, None, m(Some(20), Some(15)), false);
+        assert_eq!(cols(&macro_draw), (s("Some(Draw)"), s("0"), s("TimeLimitDraw"), s("")));
+        assert_eq!((macro_draw.terminal_r_win, macro_draw.buffer), (Some(0.0), 2));
+        assert!(macro_draw.win_delta.abs() < 1e-9, "a draw from the 0.5 prior");
+        assert!(src.shared.sil.as_ref().unwrap().pending.lock().unwrap().is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

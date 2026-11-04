@@ -176,10 +176,73 @@ pub struct LeagueConfig {
     /// (the 60-minute limit). 0 or 60..=3600.
     #[serde(default)]
     pub model_game_max_s: u32,
+    /// `[league.rush_judge]` (042-R17, AMB-042-18): the rush mini-game. Absent / `groups = []` =
+    /// off (the earlier game lengths and results). Left out of the serialised config at its
+    /// defaults, so checkpoints of runs without it record the same config as before.
+    #[serde(default, skip_serializing_if = "RushJudgeConfig::is_default")]
+    pub rush_judge: RushJudgeConfig,
 }
 
 /// 020-R3: the 60-minute game limit in frames (24 per game second).
 pub const GAME_MAX_FRAMES: u32 = 86_400;
+
+/// `[league.rush_judge]` (042-R17, 020-R19, AMB-042-18): RL training games of these ladder groups
+/// end at `at_s` game seconds (`GameSpec.max_frames`); a game that ends there as `TimeLimitDraw`
+/// is a win when the learning session's own SCVs at its last observation are at least `min_scv`,
+/// else a loss. Key names and ranges: 메인 임시 결정.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct RushJudgeConfig {
+    /// `[[ladder]] group` names; empty = off (`at_s`, `min_scv` unused).
+    pub groups: Vec<String>,
+    pub at_s: u32,
+    pub min_scv: u32,
+}
+
+impl Default for RushJudgeConfig {
+    fn default() -> Self {
+        Self { groups: Vec::new(), at_s: 480, min_scv: 8 }
+    }
+}
+
+impl RushJudgeConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Whether a game of this ladder group (`None` = not a ladder game) is judged.
+    pub fn judges(&self, ladder_group: Option<&str>) -> bool {
+        ladder_group.is_some_and(|g| self.groups.iter().any(|x| x == g))
+    }
+
+    /// `min(86,400, at_s x 24)` (042-R15's 24 fps; 480 s = 11,520 frames = 8:00).
+    pub fn max_frames(&self) -> u32 {
+        GAME_MAX_FRAMES.min(self.at_s.saturating_mul(24))
+    }
+
+    /// 042-R17 판정: own SCVs at the last observation >= `min_scv` = win, else loss.
+    pub fn judge(&self, scv: u32) -> uranium_env::reward::Outcome {
+        if scv >= self.min_scv { uranium_env::reward::Outcome::Win } else { uranium_env::reward::Outcome::Loss }
+    }
+
+    /// 042-R17 검사 (only with `groups` set): every name in `[curriculum] ladder_groups`,
+    /// `at_s` 60..=3600 (042-R15's range), `min_scv >= 1`.
+    pub fn validate(&self, ladder_groups: &std::collections::BTreeMap<String, f64>) -> Result<()> {
+        if self.groups.is_empty() {
+            return Ok(());
+        }
+        if let Some(g) = self.groups.iter().find(|g| !ladder_groups.contains_key(*g)) {
+            bail!("[league.rush_judge] groups names {g:?}, which is not in [curriculum] ladder_groups (042-R17, AMB-042-18)");
+        }
+        if !(60..=3_600).contains(&self.at_s) {
+            bail!("[league.rush_judge] at_s must be 60..=3600 game seconds, got {} (042-R17, AMB-042-18)", self.at_s);
+        }
+        if self.min_scv < 1 {
+            bail!("[league.rush_judge] min_scv must be at least 1 (042-R17, AMB-042-18)");
+        }
+        Ok(())
+    }
+}
 
 impl LeagueConfig {
     /// 042-R15 / 020-R3 (AMB-042-17): `GameSpec.max_frames` of an RL training game; a game
@@ -187,6 +250,19 @@ impl LeagueConfig {
     /// game the 60-minute limit.
     pub fn game_max_frames(&self, vs_model: bool) -> u32 {
         if vs_model && self.model_game_max_s > 0 { GAME_MAX_FRAMES.min(self.model_game_max_s.saturating_mul(24)) } else { GAME_MAX_FRAMES }
+    }
+
+    /// 042-R17 (AMB-042-18): whether an RL training game is a rush mini-game — a ladder game of a
+    /// `[league.rush_judge]` group; games against a model never are.
+    pub fn rush_judged(&self, vs_model: bool, ladder_group: Option<&str>) -> bool {
+        !vs_model && self.rush_judge.judges(ladder_group)
+    }
+
+    /// 042-R15 / R17 / 020-R3: `GameSpec.max_frames` of an RL training game by its opponent:
+    /// against a model the 042-R15 value, a rush mini-game `min(86,400, at_s x 24)`, any other
+    /// game 86,400.
+    pub fn game_max_frames_of(&self, vs_model: bool, ladder_group: Option<&str>) -> u32 {
+        if self.rush_judged(vs_model, ladder_group) { self.rush_judge.max_frames() } else { self.game_max_frames(vs_model) }
     }
 
     /// 042 anchor (AMB-042-14): its checkpoint name (`ckpt-<step>`, also for an `agents/main`
@@ -457,6 +533,8 @@ impl RlConfig {
         if cap != 0 && !(60..=3_600).contains(&cap) {
             bail!("[league] model_game_max_s must be 0 (no cap) or 60..=3600 game seconds, got {cap} (042-R15, AMB-042-17)");
         }
+        // 042-R17 (AMB-042-18, 메인 임시 결정).
+        self.league.rush_judge.validate(groups)?;
         // 042-R16 (AMB-042-17).
         self.sil.validate(self.lanes, groups).map_err(anyhow::Error::msg)?;
         // 042-R14 (AMB-042-15).
@@ -1103,5 +1181,123 @@ mod tests {
         assert_eq!(d, t, "everything else as in rush-s2");
         let back: RlConfig = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
         assert_eq!(back, t);
+    }
+
+    /// 042-R17 / 042-AC8 (AMB-042-18): rl.toml and the earlier run files have no
+    /// `[league.rush_judge]` (off: every game length as before, the serialised config without the
+    /// key) and `[sil] wins_only` false; the defaults are groups [] / 480 / 8.
+    #[test]
+    fn rush_judge_and_wins_only_default_042_r17() {
+        assert_eq!(RushJudgeConfig::default(), RushJudgeConfig { groups: vec![], at_s: 480, min_scv: 8 });
+        for f in [
+            include_str!("../../../config/rl.toml"),
+            include_str!("../../../config/rl_rush3.toml"),
+            include_str!("../../../config/rl_rush2.toml"),
+            include_str!("../../../config/rl_rush1.toml"),
+        ] {
+            let c: RlConfig = toml::from_str(f).unwrap();
+            c.validate().unwrap();
+            assert_eq!(c.league.rush_judge, RushJudgeConfig::default());
+            assert!(!c.sil.wins_only);
+            for g in [None, Some("rush"), Some("macro"), Some("warmup")] {
+                assert!(!c.league.rush_judged(false, g));
+                assert_eq!(c.league.game_max_frames_of(false, g), GAME_MAX_FRAMES, "{g:?}");
+                assert_eq!(c.league.game_max_frames_of(true, g), c.league.game_max_frames(true));
+            }
+            let json = serde_json::to_value(&c).unwrap();
+            assert!(json["league"].get("rush_judge").is_none(), "checkpoint config as before");
+            assert_eq!(serde_json::from_value::<RlConfig>(json).unwrap(), c);
+        }
+        assert!(!include_str!("../../../config/rl.toml").lines().any(|l| l.starts_with("[league.rush_judge]") || l.starts_with("wins_only")), "rl.toml: comments only");
+    }
+
+    /// 042-R17 설정 검사 / 042-AC8 (AMB-042-18, 메인 임시 결정): with groups set, every name in
+    /// `ladder_groups`, `at_s` 60..=3600, `min_scv >= 1`; unknown keys are load errors; groups []
+    /// checks nothing. The per-game frame cap and the SCV boundary.
+    #[test]
+    fn rush_judge_settings_are_checked_042_r17() {
+        let base: RlConfig = toml::from_str(include_str!("../../../config/rl_rush4.toml")).unwrap();
+        base.validate().unwrap();
+        let with = |groups: &[&str], at_s: u32, min_scv: u32| {
+            let mut c = base.clone();
+            c.league.rush_judge = RushJudgeConfig { groups: groups.iter().map(|g| g.to_string()).collect(), at_s, min_scv };
+            c.validate()
+        };
+        for (groups, at_s, min_scv, ok) in [
+            (&["rush"][..], 480, 8, true),
+            (&["rush", "warmup", "macro"][..], 480, 8, true),
+            (&["rush"][..], 60, 1, true),
+            (&["rush"][..], 3_600, 8, true),
+            (&["rush"][..], 59, 8, false),
+            (&["rush"][..], 3_601, 8, false),
+            (&["rush"][..], 0, 8, false),
+            (&["rush"][..], 480, 0, false),
+            (&["late"][..], 480, 8, false),
+            (&["rush", ""][..], 480, 8, false),
+            (&[][..], 0, 0, true),
+        ] {
+            assert_eq!(with(groups, at_s, min_scv).is_ok(), ok, "{groups:?} {at_s} {min_scv}");
+        }
+        // Not without ladder groups either.
+        let mut c = RlConfig::default_file();
+        c.league.rush_judge.groups = vec!["rush".into()];
+        assert!(c.validate().is_err());
+        let text = include_str!("../../../config/rl_rush4.toml").replace("\r\n", "\n");
+        for (from, to) in [("min_scv = 8", "min_scvs = 8"), ("at_s = 480\nmin_scv", "at_s = -1\nmin_scv"), ("groups = [\"rush\", \"warmup\"]", "groups = \"rush\"")] {
+            assert!(text.contains(from), "{from}");
+            assert!(toml::from_str::<RlConfig>(&text.replacen(from, to, 1)).is_err(), "{to}");
+        }
+        // Absent keys take the defaults.
+        let only_groups: RlConfig = toml::from_str(&text.replacen("at_s = 480\nmin_scv = 8\n", "", 1)).unwrap();
+        assert_eq!(only_groups.league.rush_judge, base.league.rush_judge);
+        // Frame caps: judged groups min(86,400, at_s x 24), models 042-R15, the rest 86,400.
+        let l = &base.league;
+        for (vs_model, g, want) in [(false, Some("rush"), 11_520), (false, Some("warmup"), 11_520), (false, Some("macro"), 86_400), (false, None, 86_400), (true, None, 36_000), (true, Some("rush"), 36_000)] {
+            assert_eq!(l.game_max_frames_of(vs_model, g), want, "{vs_model} {g:?}");
+            assert_eq!(l.rush_judged(vs_model, g), want == 11_520);
+        }
+        let at = |s: u32| RushJudgeConfig { groups: vec!["rush".into()], at_s: s, min_scv: 8 }.max_frames();
+        assert_eq!((at(60), at(480), at(3_600)), (1_440, 11_520, 86_400));
+        // min_scv boundary.
+        use uranium_env::reward::Outcome;
+        let j = &l.rush_judge;
+        assert_eq!((j.judge(8), j.judge(7), j.judge(0), j.judge(50)), (Outcome::Win, Outcome::Loss, Outcome::Loss, Outcome::Win));
+    }
+
+    /// 042 "러시 미니게임 run" (AMB-042-18): `config/rl_rush4.toml` is `rl_rush3.toml` with the
+    /// decided changes only — groups warmup 0.05 / rush 0.65 / macro 0.20 (warmup =
+    /// ualbertabot9pool; rush = T0 zerg_rush and three UAlbertaBot variants; five rush opponents
+    /// left out; macro as before), win_rate_decay 0.9, `[league.rush_judge]` rush + warmup at 480 s
+    /// and 8 SCVs, `[sil]` on with the confirmed numbers and `wins_only`.
+    #[test]
+    fn rush4_config_042_amb_042_18() {
+        let t: RlConfig = toml::from_str(include_str!("../../../config/rl_rush4.toml")).unwrap();
+        t.validate().unwrap();
+        let groups: Vec<(&str, f64)> = t.curriculum.ladder_groups.iter().map(|(g, x)| (g.as_str(), *x)).collect();
+        assert_eq!(groups, [("macro", 0.20), ("rush", 0.65), ("warmup", 0.05)]);
+        let cc = &t.curriculum;
+        assert_eq!((cc.c1_ladder, cc.c1_anchor, cc.c1_snapshot, cc.c1_self, cc.c1_t1, cc.c1_t0), (0.90, 0.05, 0.05, 0.0, 0.0, 0.0));
+        assert_eq!(cc.ladder_pick.for_group(Some("warmup")), LadderPick::FVar);
+        assert_eq!(t.league.win_rate_decay, 0.9);
+        assert_eq!(t.league.rush_judge, RushJudgeConfig { groups: vec!["rush".into(), "warmup".into()], at_s: 480, min_scv: 8 });
+        assert_eq!(t.league.rush_judge.max_frames(), 11_520);
+        assert_eq!(t.sil, SilConfig { enabled: true, mode: SilMode::Sil, lanes: 4, w_pg: 0.05, w_v: 0.01, until_s: 480, buffer_segments: 2_048, select_group: "rush".into(), wins_only: true, ..SilConfig::default() });
+        let keys = |g: &str| t.ladder.iter().filter(|e| e.group == g).map(|e| e.opponent().unwrap().1).collect::<Vec<_>>();
+        assert_eq!(keys("warmup"), ["ualbertabot9pool-zerg"]);
+        assert_eq!(keys("rush"), ["t0-zerg-rush", "ualbertabot12poollings-zerg", "ualbertabot9pool10lings-zerg", "ualbertabot9poolhydra-zerg"]);
+        assert_eq!(keys("macro"), ["t0-zerg", "t0-zerg-muta", "ualbertabot2hatchhydra-zerg", "ualbertabot3hatchmuta-zerg", "steamhammer2hatchmuta-zerg"]);
+        assert_eq!(t.ladder.len(), 10);
+        // Everything else as in rush-s3.
+        let mut d: RlConfig = toml::from_str(include_str!("../../../config/rl_rush3.toml")).unwrap();
+        let left_out = ["ualbertabot9pool12lings", "ualbertabot9poollings", "ualbertabot", "steamhammeroverpool", "zzzkbot"];
+        d.ladder.retain(|e| !e.name.as_deref().is_some_and(|n| left_out.contains(&n)));
+        d.ladder.iter_mut().filter(|e| e.name.as_deref() == Some("ualbertabot9pool")).for_each(|e| e.group = "warmup".into());
+        d.curriculum.ladder_groups = t.curriculum.ladder_groups.clone();
+        d.league.win_rate_decay = 0.9;
+        d.league.rush_judge = t.league.rush_judge.clone();
+        d.sil = t.sil.clone();
+        assert_eq!(d, t);
+        let back: RlConfig = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert_eq!(back, t, "the serialised config (checkpoint) reads back the same");
     }
 }

@@ -1,8 +1,8 @@
 //! 042-R16 자기 모방·막은 판 재학습 (AMB-042-17, off by default): segments of selected RL
 //! training games (a ladder group's held or won games) wait in a FIFO buffer and replace some
 //! lanes of Main's update batches. The learner trains those lanes with the self-imitation loss
-//! (`"sil"`, Oh et al. 2018) or as ordinary lanes (`"replay"`). The numbers are the spec's
-//! 기본안(미확정): the user confirms them before turning it on.
+//! (`"sil"`, Oh et al. 2018) or as ordinary lanes (`"replay"`). The defaults are the spec's
+//! numbers; `rush-s4` turns it on with them and `wins_only` (AMB-042-18).
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -34,6 +34,9 @@ pub struct SilConfig {
     pub select_group: String,
     /// "Held" stand-in: `scv_4m` at least this (and no collapse concede).
     pub select_scv_4m: u32,
+    /// 042-R16 고를 판 (AMB-042-18): `true` = won games only (the held stand-in and
+    /// `select_scv_4m` are not used); `false` = won or held, as before.
+    pub wins_only: bool,
     /// Segments whose first decision frame is below `until_s × 24`; 0 = the whole game.
     pub until_s: u32,
     /// Buffer capacity in segments (FIFO).
@@ -48,7 +51,7 @@ pub struct SilConfig {
 
 impl Default for SilConfig {
     fn default() -> Self {
-        Self { enabled: false, mode: SilMode::Sil, select_group: "rush".into(), select_scv_4m: 12, until_s: 480, buffer_segments: 2_048, lanes: 4, w_pg: 0.05, w_v: 0.01, max_uses: 4 }
+        Self { enabled: false, mode: SilMode::Sil, select_group: "rush".into(), select_scv_4m: 12, wins_only: false, until_s: 480, buffer_segments: 2_048, lanes: 4, w_pg: 0.05, w_v: 0.01, max_uses: 4 }
     }
 }
 
@@ -84,7 +87,9 @@ impl SilConfig {
     }
 
     /// 042-R16 고를 판: a game of `select_group` with a result (Aborted / Timeout have none) that
-    /// was won, or held (`scv_4m >= select_scv_4m`, unknown = no) without a collapse concede.
+    /// was won, or held (`scv_4m >= select_scv_4m`, unknown = no) without a collapse concede;
+    /// with `wins_only` (AMB-042-18) won only. The outcome is the one after the 042-R17 rush
+    /// judgement.
     pub fn selects(&self, ladder_group: Option<&str>, outcome: Option<Outcome>, scv_4m: Option<u32>, conceded: bool) -> bool {
         if ladder_group != Some(self.select_group.as_str()) {
             return false;
@@ -92,7 +97,7 @@ impl SilConfig {
         match outcome {
             None => false,
             Some(Outcome::Win) => true,
-            Some(_) => !conceded && scv_4m.is_some_and(|n| n >= self.select_scv_4m),
+            Some(_) => !self.wins_only && !conceded && scv_4m.is_some_and(|n| n >= self.select_scv_4m),
         }
     }
 }
@@ -225,6 +230,31 @@ mod tests {
         assert!(!c.selects(rush, None, Some(15), false), "Aborted / Timeout");
         assert!(!c.selects(Some("macro"), Some(Outcome::Win), Some(15), false), "other group");
         assert!(!c.selects(None, Some(Outcome::Win), Some(15), false), "not a ladder game");
+    }
+
+    /// 042-R16 `wins_only` / 042-AC8 (AMB-042-18): `true` selects won games of the group only — a
+    /// lost or drawn game with `scv_4m >= select_scv_4m` is not selected; `false` (the default)
+    /// is the selection above.
+    #[test]
+    fn wins_only_selection_042_r16() {
+        assert!(!SilConfig::default().wins_only, "default false");
+        let c = SilConfig { wins_only: true, ..SilConfig::default() };
+        let rush = Some("rush");
+        assert!(c.selects(rush, Some(Outcome::Win), None, false));
+        assert!(c.selects(rush, Some(Outcome::Win), Some(3), true));
+        for o in [Outcome::Loss, Outcome::Draw] {
+            assert!(!c.selects(rush, Some(o), Some(12), false), "{o:?} held: not with wins_only");
+            assert!(!c.selects(rush, Some(o), Some(40), false));
+            assert!(SilConfig::default().selects(rush, Some(o), Some(12), false), "{o:?} held: default");
+        }
+        assert!(!c.selects(rush, None, Some(20), false), "no result");
+        assert!(!c.selects(Some("warmup"), Some(Outcome::Win), None, false), "other group");
+        // Absent key = false; any other value is a load error.
+        let parse = |t: &str| toml::from_str::<SilConfig>(t);
+        assert!(!parse("enabled = true").unwrap().wins_only);
+        assert!(parse("wins_only = true").unwrap().wins_only);
+        assert!(parse("wins_only = 1").is_err());
+        assert!(parse("win_only = true").is_err(), "unknown key");
     }
 
     /// 042-R16 담을 세그먼트: first decision before `until_s`, 0 = all.

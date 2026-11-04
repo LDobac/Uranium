@@ -161,6 +161,11 @@ pub struct ScoutMetrics {
     pub bunker_frame: Option<u32>,
     /// Own SCVs (033 r_survive count) at the first observation at or after 4:00.
     pub scv_4m: Option<u32>,
+    /// 042-R17 / 020-R19 판정 SCV 수 (AMB-042-18): own SCVs (the same 033-R10 count: completed,
+    /// loaded ones included, in production excluded; own units only, 033-R5) at the latest
+    /// observation folded — the final frame (`GameEnd.final_frame`, 010-R12) when the session got
+    /// one, else its last `RawFrame`; `None` before the first observation.
+    pub scv_last: Option<u32>,
 }
 
 /// Game seconds of a frame (042-R14 24 fps).
@@ -348,6 +353,8 @@ impl ScoutTracker {
         if self.metrics.scv_4m.is_none() && f >= FRAME_4M {
             self.metrics.scv_4m = Some(scvs);
         }
+        // 042-R17: frames arrive in order, so this ends as the last observation's count.
+        self.metrics.scv_last = Some(scvs);
         // 033-R10: the seconds of (prev, f] inside the window, at this observation's SCV count.
         let v = &self.cfg.survive;
         let (lo, hi) = (v.from_s * FPS, v.until_s * FPS);
@@ -591,6 +598,25 @@ mod tests {
         let m = t.metrics();
         assert_eq!((m.types_4m, m.types_6m, m.scv_4m, m.barracks_frame, m.bunker_frame), (2, 2, None, None, None));
         assert_eq!(seconds(5_760), 240.0);
+    }
+
+    /// 042-R17 / 042-AC8 판정 SCV 수 (AMB-042-18): the latest observation's own SCVs with the
+    /// 033-R10 count — completed ones, loaded ones (in a bunker) included, in production excluded,
+    /// enemy SCVs never; `None` before any observation.
+    #[test]
+    fn judge_scv_is_the_last_observation_042_r17() {
+        let mut t = tracker(RewardConfig::default());
+        assert_eq!(t.metrics().scv_last, None, "no observation");
+        t.step(&frame(5_000, scvs(12)));
+        assert_eq!(t.metrics().scv_last, Some(12));
+        let mut loaded = unit(2_000, ME, "Terran_SCV", OURS, true);
+        loaded.flags |= flags::LOADED;
+        loaded.loaded_in = Some(21);
+        let extra = vec![loaded, unit(2_001, ME, "Terran_SCV", OURS, false), unit(2_002, ENEMY, "Terran_SCV", (60, 60), true), unit(21, ME, "Terran_Bunker", OURS, true)];
+        t.step(&frame(11_520, [scvs(7), extra].concat()));
+        let m = t.metrics();
+        assert_eq!(m.scv_last, Some(8), "7 + 1 loaded; the one in production and the enemy's not counted");
+        assert_eq!(m.scv_4m, Some(12), "scv_4m stays the 4:00 value");
     }
 
     /// 033-R11 설정 키 검사 and the per-game multipliers.
