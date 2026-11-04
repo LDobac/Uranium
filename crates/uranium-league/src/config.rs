@@ -1243,7 +1243,8 @@ mod tests {
         c.league.rush_judge.groups = vec!["rush".into()];
         assert!(c.validate().is_err());
         let text = include_str!("../../../config/rl_rush4.toml").replace("\r\n", "\n");
-        for (from, to) in [("min_scv = 8", "min_scvs = 8"), ("at_s = 480\nmin_scv", "at_s = -1\nmin_scv"), ("groups = [\"rush\", \"warmup\"]", "groups = \"rush\"")] {
+        // (`min_scv = 8` also appears in the file's header comment.)
+        for (from, to) in [("\nmin_scv = 8\n", "\nmin_scvs = 8\n"), ("at_s = 480\nmin_scv", "at_s = -1\nmin_scv"), ("groups = [\"rush\", \"warmup\"]", "groups = \"rush\"")] {
             assert!(text.contains(from), "{from}");
             assert!(toml::from_str::<RlConfig>(&text.replacen(from, to, 1)).is_err(), "{to}");
         }
