@@ -345,11 +345,13 @@ impl LearnerHook for Hook {
         let mut class = None;
         let mut ladder_group = None;
         let mut key = String::new();
+        let mut start_hit = None;
         if let Some(m) = self.shared.games.lock().unwrap().get_mut(&game_id) {
             m.self_player = Some(info.self_player);
             class = Some(m.pick.class);
             ladder_group = m.pick.ladder_group.clone();
             key = m.pick.key.clone();
+            start_hit = slots_start_hit(m.slots);
             if let Some(e) = info.players.iter().find(|p| p.is_enemy) {
                 if m.enemy_race == Race::Random || m.enemy_race == Race::Unknown {
                     m.enemy_race = e.race;
@@ -373,12 +375,13 @@ impl LearnerHook for Hook {
         };
         let mut obs = TrajectoryObserver::new(self.agent.index(), game_id, self.seq_len, self.shared.queues[self.agent.index()].clone(), self.tx.clone()).hold_terminal(held_sink(self.shared.clone())).r_value_policy(r_value_policy).pseudo(self.reward.pseudo, pseudo_scale);
         // 042-R16 (AMB-042-17): Main's games of the selected ladder group keep segment copies
-        // until the game is judged; with `select_keys` (AMB-042-19) only games against a listed
-        // opponent (the others can never be selected).
+        // until the game is judged; with `select_keys` / `select_start_hit` (AMB-042-19) only
+        // games against a listed opponent with the wanted start condition (the others can never
+        // be selected).
         if let Some(sil) = &self.shared.sil
             && self.agent == AgentKind::Main
             && ladder_group.as_deref() == Some(sil.cfg.select_group.as_str())
-            && sil.cfg.select_keys.as_ref().is_none_or(|ks| ks.contains(&key))
+            && sil.cfg.may_select(&key, start_hit)
         {
             let s = self.shared.clone();
             obs = obs.copy_segments(Box::new(move |seg: &Segment| {
@@ -665,7 +668,7 @@ impl JobSource for LeagueSource {
                 if let Some(sil) = &s.sil
                     && meta.pick.agent == AgentKind::Main
                     && meta.pick.ladder_group.as_deref() == Some(sil.cfg.select_group.as_str())
-                    && sil.cfg.select_keys.as_ref().is_none_or(|ks| ks.contains(&meta.pick.key))
+                    && sil.cfg.may_select(&meta.pick.key, slots_start_hit(meta.slots))
                 {
                     sil.keep(&seg);
                 }
@@ -705,13 +708,13 @@ impl JobSource for LeagueSource {
             crate::elog!("[rl] game {id}: 042-R14 collapse concede by the {who} side (players index {}) at frame {}; result {:?}", c.side, c.frame, decided);
         }
         // 042-R16 고를 판 (AMB-042-17): a won or held game of the group goes to the buffer.
-        // 042-R16 상대·접촉 거르기 (AMB-042-19): and its opponent key / first army sighting pass
-        // `select_keys` / `select_army_before_s`.
+        // 042-R16 상대·접촉 거르기 (AMB-042-19): and its opponent key / first army sighting / 020-R21
+        // start hit pass `select_keys` / `select_army_before_s` / `select_start_hit`.
         if let Some(sil) = &s.sil {
             let scout = result.as_ref().and_then(|r| r.scout);
             let scv_4m = scout.and_then(|m| m.scv_4m);
             let army_s = scout.and_then(|m| m.army_frame).map(seconds);
-            let selected = meta.pick.agent == AgentKind::Main && sil.cfg.selects(meta.pick.ladder_group.as_deref(), decided, scv_4m, conceded.is_some()) && sil.cfg.passes_filters(&meta.pick.key, army_s);
+            let selected = meta.pick.agent == AgentKind::Main && sil.cfg.selects(meta.pick.ladder_group.as_deref(), decided, scv_4m, conceded.is_some()) && sil.cfg.passes_filters(&meta.pick.key, army_s, slots_start_hit(meta.slots));
             sil.settle(id, selected, r_win);
         }
         let disagree = verdict.as_ref().is_some_and(|v| v.1);
@@ -811,6 +814,12 @@ fn keep_replay(dir: &Path, game_id: u64, reason: &str, bytes: &[u8]) -> Result<S
 /// AMB-042-18; then the 시작 슬롯·접촉 지표 `slot_self`, `slot_enemy`, `start_hit`, `scv_min_1m`,
 /// `army_s`, AMB-042-19).
 const GAMES_HEADER: &str = "game_id,agent,opponent,class,enemy_race,map,hostd_outcome,outcome,winner_disagree,decisions,r_win,r_build,r_units,r_value,replay,replay_reason,end_reason,r_scout,r_survive,ladder_group,scout_main_s,scout_types_4m,scout_types_6m,barracks_s,bunker_s,scv_4m,judge_scv,slot_self,slot_enemy,start_hit,scv_min_1m,army_s\n";
+
+/// 020-R21 `start_hit` of a game's start slots (`players[0]`, `players[1]`); `None` without slots.
+/// The value `games.csv` `start_hit` writes and `[sil] select_start_hit` (042-R16) compares.
+fn slots_start_hit(slots: Option<[u8; 2]>) -> Option<bool> {
+    slots.map(|[a, b]| uranium_runner::start_slots::start_hit(a, b))
+}
 
 /// 042-R2 시작 슬롯·접촉 지표 (AMB-042-19): `slot_self`, `slot_enemy` (020-R21 slots of
 /// `players[0]` / `players[1]` from the game's seed, empty without one), `start_hit` (`1` / `0`,
@@ -1164,7 +1173,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     let sc = &cfg.sil;
     if sc.enabled {
         crate::elog!(
-            "[rl] self-imitation ON (Main in C1 only): mode {:?}, {} lanes of {} from a buffer of {} segments, group {:?} {}{}{}, segments before {} s, w_pg {} w_v {} max_uses {} (042-R16)",
+            "[rl] self-imitation ON (Main in C1 only): mode {:?}, {} lanes of {} from a buffer of {} segments, group {:?} {}{}{}{}, segments before {} s, w_pg {} w_v {} max_uses {} (042-R16)",
             sc.mode,
             sc.lanes,
             cfg.lanes,
@@ -1173,6 +1182,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
             if sc.wins_only { "won games only (wins_only)".to_string() } else { format!("won or scv_4m >= {}", sc.select_scv_4m) },
             sc.select_keys.as_ref().map_or(String::new(), |k| format!(", opponents {k:?}")),
             sc.select_army_before_s.map_or(String::new(), |t| format!(", first enemy army seen by {t} s")),
+            sc.select_start_hit.map_or(String::new(), |w| format!(", first-target hit = {w}")),
             sc.until_s,
             sc.w_pg,
             sc.w_v,
@@ -2071,9 +2081,17 @@ mod tests {
     /// 042-R16 상대·접촉 거르기 / 042-AC9 (AMB-042-19) in the run loop: with `select_keys` and
     /// `select_army_before_s` only won games against a listed opponent whose first enemy army
     /// sighting is known and at most the limit reach the buffer (an unlisted opponent's games keep
-    /// no copies at all); nothing stays pending.
+    /// no copies at all); nothing stays pending. With `select_start_hit = true` (사용자 위임
+    /// 2026-11-05, 5차 자문) also only first-target hits by the game's start slots (a miss keeps no
+    /// copies either); without it the same games as before.
     #[test]
     fn sil_opponent_and_contact_filters_in_the_run_loop_042_r16() {
+        for select_start_hit in [None, Some(true)] {
+            sil_filters_in_the_run_loop(select_start_hit);
+        }
+    }
+
+    fn sil_filters_in_the_run_loop(select_start_hit: Option<bool>) {
         use crate::league::{LadderEntry, LadderKind};
         use uranium_agent::T0Build;
         use uranium_env::features::executor::HostAction;
@@ -2086,19 +2104,24 @@ mod tests {
         cc.ladder_groups = [("rush".to_string(), 0.8), ("macro".to_string(), 0.2)].into_iter().collect();
         let entry = |build, group: &str| LadderEntry { kind: LadderKind::T0, build: Some(build), name: None, race: Race::Zerg, group: group.into(), weight: None };
         cfg.ladder = vec![entry(T0Build::ZergRush, "rush"), entry(T0Build::ZergMuta, "rush"), entry(T0Build::Standard, "macro")];
-        cfg.sil = SilConfig { enabled: true, until_s: 0, lanes: 2, buffer_segments: 1_000, wins_only: true, select_keys: Some(vec!["t0-zerg-rush".into()]), select_army_before_s: Some(225.0), ..SilConfig::default() };
+        cfg.sil = SilConfig { enabled: true, until_s: 0, lanes: 2, buffer_segments: 1_000, wins_only: true, select_keys: Some(vec!["t0-zerg-rush".into()]), select_army_before_s: Some(225.0), select_start_hit, ..SilConfig::default() };
         cfg.validate().unwrap();
         let src = source_cfg(cfg, fake_servers(false).0, &csv);
         let info = crate::testkit::game_info();
         let obs = crate::testkit::observations(10);
         // army_frame: 5,400 = 225.0 s (selected), 5,401 (not), never seen (not), 2,000 (selected).
         let armies = [Some(5_400u32), Some(5_401), None, Some(2_000)];
-        let (mut want, mut keys) = (0usize, BTreeSet::new());
-        for g in 0..40 {
+        let (mut want, mut keys, mut misses) = (0usize, BTreeSet::new(), 0);
+        for g in 0..120 {
             let army_frame = armies[g % armies.len()];
             let job = src.next().unwrap();
             let id = job.spec.game_id;
-            let key = src.shared.games.lock().unwrap()[&id].pick.key.clone();
+            let (key, hit) = {
+                let games = src.shared.games.lock().unwrap();
+                (games[&id].pick.key.clone(), slots_start_hit(games[&id].slots))
+            };
+            assert!(hit.is_some(), "every league game has start slots");
+            let start_ok = select_start_hit.is_none_or(|w| hit == Some(w));
             keys.insert(key.clone());
             let (_, mut o) = src.hooks[0].session(id, &info);
             let a = HostAction { action: 0, delay_bucket: 0, queued: false, selected: vec![], target_unit: None, target_loc: None };
@@ -2107,6 +2130,10 @@ mod tests {
                 o.on_decision(&uranium_agent::model_policy::Decision { frame: 10 * i as u32, obs: ob, action: &a, log_prob: 0.0, head_log_prob: [0.0; uranium_agent::infer::HEADS], value: [0.0; 4], rejected: false, version: 0, reward_before: Default::default(), state });
             }
             o.on_end(Default::default(), Some(Outcome::Win));
+            if key == "t0-zerg-rush" && !start_ok {
+                misses += 1;
+                assert!(!src.shared.sil.as_ref().unwrap().pending.lock().unwrap().contains_key(&id), "a miss keeps no copies");
+            }
             src.shared.results.lock().unwrap().try_iter().for_each(drop);
             src.shared.games.lock().unwrap().get_mut(&id).unwrap().self_player = Some(0);
             for slot in [0u8, 1] {
@@ -2114,11 +2141,12 @@ mod tests {
             }
             src.hooks[0].tx.send(result(id, Some(ScoutMetrics { army_frame, ..Default::default() }))).unwrap();
             src.done(&job, JobOutcome::Finished, None);
-            if key == "t0-zerg-rush" && army_frame.is_some_and(|f| f <= 5_400) {
+            if key == "t0-zerg-rush" && army_frame.is_some_and(|f| f <= 5_400) && start_ok {
                 want += 4;
             }
         }
         assert!(keys.len() == 3, "{keys:?}");
+        assert_eq!(misses > 0, select_start_hit.is_some(), "{misses} listed-opponent misses");
         let sil = src.shared.sil.as_ref().unwrap();
         assert!(sil.pending.lock().unwrap().is_empty(), "nothing left pending");
         assert!(want > 0);

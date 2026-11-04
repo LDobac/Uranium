@@ -15,6 +15,8 @@
 # Start: `--init rush-s4/ckpt-<first checkpoint at or after 3.0M steps> --bc
 # bc-s2e2-pt/ckpt-11387`, V-trace, new run id `rush-s5`. games.csv gains slot_self, slot_enemy,
 # start_hit, scv_min_1m, army_s (042-R2). Checks: config/plans/rush5_check.toml (050-R6).
+# Added 2026-11-05 (user delegation, fifth advisory reports/m6_rl_stall_advice5.md, AMB-042-19):
+# [sil] select_start_hit = true (042-R16), applied by resuming rush-s5 from its LATEST.
 #
 # The rush-s4 header follows. 042 "러시 미니게임 run" `rush-s4` (AMB-042-18, user decision 2026-11-04 "3차 자문 권장안 전부",
 # reports/m6_rl_stall_advice3.md): `config/rl_rush3.toml` with only these changes —
@@ -318,6 +320,13 @@ wins_only = true
 # buffer holds early rushes that were held.
 select_keys = ["t0-zerg-rush", "ualbertabot12poollings-zerg", "ualbertabot9pool10lings-zerg"]
 select_army_before_s = 225
+# 042-R16 select_start_hit (user delegation 2026-11-05, fifth advisory
+# reports/m6_rl_stall_advice5.md, AMB-042-19): and only 020-R21 first-target hits (games.csv
+# start_hit = 1; a game without start slots is not selected). army_s <= 225 alone did not split
+# the conditions (582 of 605 rush games); select_keys and the 225 s limit stay as guards (a hit
+# whose army came after 225 s is a late rush). On resume it follows this file; the buffer starts
+# empty.
+select_start_hit = true
 
 [reward]
 # 033-R11 (AMB-042-16, user decision 2026-11-03): the build / units value heads and channels learn

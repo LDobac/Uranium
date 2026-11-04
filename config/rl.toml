@@ -192,7 +192,8 @@ r_value_vs_model = true
 # So do [kl] (the update count continues from the checkpoint), [kl.head_scale], [loss]
 # td_lambda, [curriculum.band], [league] model_game_max_s and [sil] (AMB-042-17), and
 # [league.rush_judge] and [sil] wins_only (AMB-042-18), and [league.start_mix], ladder_pick
-# "fixed" with [[ladder]] weight, [sil] select_keys and select_army_before_s (AMB-042-19).
+# "fixed" with [[ladder]] weight, [sil] select_keys, select_army_before_s and select_start_hit
+# (AMB-042-19).
 
 [curriculum.band]
 # 042 사다리 선택 band (AMB-042-17): weight exp(-((x - center) / width)^2), x = Main's win-table
@@ -236,6 +237,9 @@ sample_every = 100
 #   select_army_before_s (game seconds >= 0: only games whose first enemy army sighting, army_s of
 #   050-R7, is known and at most this). rush-s5 (config/rl_rush5.toml): T0 zerg_rush,
 #   ualbertabot12poollings and ualbertabot9pool10lings, 225.
+#   select_start_hit (true | false, absent = no filter; user delegation 2026-11-05, fifth
+#   advisory): only games whose 020-R21 start_hit (games.csv start_hit) equals it, a game without
+#   start slots is not selected. rush-s5: true.
 
 [reward]
 # 033-R11 reward channel mode (AMB-042-16): "z" = the build / units value heads and channels

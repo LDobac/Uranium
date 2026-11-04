@@ -1394,7 +1394,7 @@ mod tests {
 
     /// 042-AC9 (AMB-042-19): rl.toml and the earlier run files (rl_rush1..4) have no
     /// `[league.start_mix]`, no "fixed" pick, no `[[ladder]] weight`, no `[sil] select_keys` /
-    /// `select_army_before_s`, and their serialised config (checkpoint) has none of these keys —
+    /// `select_army_before_s` / `select_start_hit`, and their serialised config (checkpoint) has none of these keys —
     /// they run as before.
     #[test]
     fn amb_042_19_keys_default() {
@@ -1414,13 +1414,13 @@ mod tests {
                 assert_ne!(c.curriculum.ladder_pick.for_group(g), LadderPick::Fixed);
             }
             assert!(c.ladder.iter().all(|e| e.weight.is_none()));
-            assert_eq!((c.sil.select_keys.as_ref(), c.sil.select_army_before_s), (None, None));
+            assert_eq!((c.sil.select_keys.as_ref(), c.sil.select_army_before_s, c.sil.select_start_hit), (None, None, None));
             let json = serde_json::to_value(&c).unwrap();
-            assert!(json["league"].get("start_mix").is_none() && json["sil"].get("select_keys").is_none() && json["sil"].get("select_army_before_s").is_none());
+            assert!(json["league"].get("start_mix").is_none() && json["sil"].get("select_keys").is_none() && json["sil"].get("select_army_before_s").is_none() && json["sil"].get("select_start_hit").is_none());
             assert!(json["ladder"].as_array().unwrap().iter().all(|e| e.get("weight").is_none()), "checkpoint config as before");
         }
         let rl = include_str!("../../../config/rl.toml");
-        assert!(!rl.lines().any(|l| ["[league.start_mix]", "rush_hit_share", "select_keys", "select_army_before_s", "[[ladder]]"].iter().any(|k| l.starts_with(k))), "rl.toml: comments only");
+        assert!(!rl.lines().any(|l| ["[league.start_mix]", "rush_hit_share", "select_keys", "select_army_before_s", "select_start_hit", "[[ladder]]"].iter().any(|k| l.starts_with(k))), "rl.toml: comments only");
     }
 
     /// 042-R18 / R19 / R16 설정 검사 / 042-AC9 (AMB-042-19): `rush_hit_share` 0..=1, `groups` not
@@ -1485,7 +1485,8 @@ mod tests {
     /// rush-s5 table's changes only — groups rush 0.70 / macro 0.20 (warmup entry deleted), rush
     /// "fixed" with weights 0.35 / 0.30 / 0.20 / 0.15 and macro f_var, `[league.start_mix]
     /// rush_hit_share = 0.5` (groups default rush), rush judge groups `["rush"]`, `[sil]
-    /// select_keys` (T0, UAB12, 9-pool 10 lings) and `select_army_before_s = 225`.
+    /// select_keys` (T0, UAB12, 9-pool 10 lings), `select_army_before_s = 225` and (2026-11-05, 5차
+    /// 자문) `select_start_hit = true`.
     #[test]
     fn rush5_config_042_amb_042_19() {
         let t: RlConfig = toml::from_str(include_str!("../../../config/rl_rush5.toml")).unwrap();
@@ -1503,6 +1504,7 @@ mod tests {
         assert_eq!(t.league.rush_judge, RushJudgeConfig { groups: vec!["rush".into()], at_s: 480, min_scv: 8 });
         assert_eq!(t.sil.select_keys, Some(vec!["t0-zerg-rush".to_string(), "ualbertabot12poollings-zerg".into(), "ualbertabot9pool10lings-zerg".into()]));
         assert_eq!(t.sil.select_army_before_s, Some(225.0));
+        assert_eq!(t.sil.select_start_hit, Some(true));
         assert_eq!(t.ladder.len(), 9);
         // Everything else as in rush-s4.
         let mut d: RlConfig = toml::from_str(include_str!("../../../config/rl_rush4.toml")).unwrap();
@@ -1514,7 +1516,7 @@ mod tests {
         d.curriculum.ladder_pick = t.curriculum.ladder_pick.clone();
         d.league.start_mix = t.league.start_mix.clone();
         d.league.rush_judge.groups = vec!["rush".into()];
-        (d.sil.select_keys, d.sil.select_army_before_s) = (t.sil.select_keys.clone(), t.sil.select_army_before_s);
+        (d.sil.select_keys, d.sil.select_army_before_s, d.sil.select_start_hit) = (t.sil.select_keys.clone(), t.sil.select_army_before_s, t.sil.select_start_hit);
         assert_eq!(d, t);
         let back: RlConfig = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
         assert_eq!(back, t, "the serialised config (checkpoint) reads back the same");

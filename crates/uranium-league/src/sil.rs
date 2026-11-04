@@ -47,6 +47,11 @@ pub struct SilConfig {
     /// sighting, game seconds) is known and at most this (>= 0); absent = no filter.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub select_army_before_s: Option<f64>,
+    /// 042-R16 상대·접촉 거르기 (AMB-042-19, 사용자 위임 2026-11-05, 5차 자문): only games whose
+    /// 020-R21 `start_hit` equals this; a game without start slots is not selected; absent = no
+    /// filter (and left out of the serialised config, as before the key).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select_start_hit: Option<bool>,
     /// Segments whose first decision frame is below `until_s × 24`; 0 = the whole game.
     pub until_s: u32,
     /// Buffer capacity in segments (FIFO).
@@ -61,7 +66,7 @@ pub struct SilConfig {
 
 impl Default for SilConfig {
     fn default() -> Self {
-        Self { enabled: false, mode: SilMode::Sil, select_group: "rush".into(), select_scv_4m: 12, wins_only: false, select_keys: None, select_army_before_s: None, until_s: 480, buffer_segments: 2_048, lanes: 4, w_pg: 0.05, w_v: 0.01, max_uses: 4 }
+        Self { enabled: false, mode: SilMode::Sil, select_group: "rush".into(), select_scv_4m: 12, wins_only: false, select_keys: None, select_army_before_s: None, select_start_hit: None, until_s: 480, buffer_segments: 2_048, lanes: 4, w_pg: 0.05, w_v: 0.01, max_uses: 4 }
     }
 }
 
@@ -102,10 +107,23 @@ impl SilConfig {
     }
 
     /// 042-R16 상대·접촉 거르기 (AMB-042-19), on top of `selects`: the game's opponent win-table
-    /// key is in `select_keys` (when set) and its `army_s` is known and at most
-    /// `select_army_before_s` (when set; never seen = not selected).
-    pub fn passes_filters(&self, key: &str, army_s: Option<f64>) -> bool {
-        self.select_keys.as_ref().is_none_or(|ks| ks.iter().any(|k| k == key)) && self.select_army_before_s.is_none_or(|t| army_s.is_some_and(|a| a <= t))
+    /// key is in `select_keys` (when set), its `army_s` is known and at most
+    /// `select_army_before_s` (when set; never seen = not selected), and its 020-R21 `start_hit`
+    /// passes [`Self::passes_start_hit`].
+    pub fn passes_filters(&self, key: &str, army_s: Option<f64>, start_hit: Option<bool>) -> bool {
+        self.may_select(key, start_hit) && self.select_army_before_s.is_none_or(|t| army_s.is_some_and(|a| a <= t))
+    }
+
+    /// 042-R16 상대·접촉 거르기: the part of [`Self::passes_filters`] known when the game starts
+    /// (opponent key and start slots), so games that can never be selected keep no segment copies.
+    pub fn may_select(&self, key: &str, start_hit: Option<bool>) -> bool {
+        self.select_keys.as_ref().is_none_or(|ks| ks.iter().any(|k| k == key)) && self.passes_start_hit(start_hit)
+    }
+
+    /// 042-R16 `select_start_hit` (사용자 위임 2026-11-05, 5차 자문): absent = every game; set =
+    /// the game's `start_hit` is known (start slots from its seed) and equal to it.
+    pub fn passes_start_hit(&self, start_hit: Option<bool>) -> bool {
+        self.select_start_hit.is_none_or(|w| start_hit == Some(w))
     }
 
     /// 042-R16 담을 세그먼트: its first decision is before `until_s` (0 = every segment).
@@ -296,18 +314,18 @@ mod tests {
     #[test]
     fn opponent_and_contact_filters_042_r16() {
         let off = SilConfig::default();
-        assert!(off.passes_filters("ualbertabot9poolhydra-zerg", None), "no keys: every game");
-        assert!(off.passes_filters("t0-zerg-rush", Some(400.0)));
+        assert!(off.passes_filters("ualbertabot9poolhydra-zerg", None, None), "no keys: every game");
+        assert!(off.passes_filters("t0-zerg-rush", Some(400.0), None));
         let c = SilConfig { select_keys: Some(vec!["t0-zerg-rush".into(), "ualbertabot12poollings-zerg".into()]), select_army_before_s: Some(225.0), ..SilConfig::default() };
-        assert!(c.passes_filters("t0-zerg-rush", Some(190.0)));
-        assert!(c.passes_filters("ualbertabot12poollings-zerg", Some(225.0)), "225 s itself");
-        assert!(!c.passes_filters("ualbertabot12poollings-zerg", Some(225.04)));
-        assert!(!c.passes_filters("t0-zerg-rush", None), "army never seen");
-        assert!(!c.passes_filters("ualbertabot9poolhydra-zerg", Some(150.0)), "opponent not listed");
+        assert!(c.passes_filters("t0-zerg-rush", Some(190.0), None));
+        assert!(c.passes_filters("ualbertabot12poollings-zerg", Some(225.0), None), "225 s itself");
+        assert!(!c.passes_filters("ualbertabot12poollings-zerg", Some(225.04), None));
+        assert!(!c.passes_filters("t0-zerg-rush", None, None), "army never seen");
+        assert!(!c.passes_filters("ualbertabot9poolhydra-zerg", Some(150.0), None), "opponent not listed");
         let keys_only = SilConfig { select_army_before_s: None, ..c.clone() };
-        assert!(keys_only.passes_filters("t0-zerg-rush", None));
+        assert!(keys_only.passes_filters("t0-zerg-rush", None, None));
         let time_only = SilConfig { select_keys: None, ..c.clone() };
-        assert!(time_only.passes_filters("anything-zerg", Some(10.0)) && !time_only.passes_filters("anything-zerg", Some(300.0)));
+        assert!(time_only.passes_filters("anything-zerg", Some(10.0), None) && !time_only.passes_filters("anything-zerg", Some(300.0), None));
         let on = SilConfig { enabled: true, ..c.clone() };
         on.validate(32, &groups()).unwrap();
         assert!(SilConfig { select_keys: Some(vec![]), ..on.clone() }.validate(32, &groups()).is_err(), "empty list");
@@ -320,6 +338,41 @@ mod tests {
         let v = serde_json::to_value(SilConfig::default()).unwrap();
         assert!(v.get("select_keys").is_none() && v.get("select_army_before_s").is_none(), "absent when unset");
         assert_eq!(serde_json::from_value::<SilConfig>(serde_json::to_value(&c).unwrap()).unwrap(), c);
+    }
+
+    /// 042-R16 `select_start_hit` / 042-AC9 (AMB-042-19, 사용자 위임 2026-11-05, 5차 자문):
+    /// `true` selects only first-target hits, `false` only misses, a game without start slots
+    /// neither; absent = every game (the earlier selection). With the other filters it is one more
+    /// condition (`rush-s5`: three keys, 225 s, hits). Parse, and absent from the serialised config
+    /// when unset (earlier checkpoints' config unchanged).
+    #[test]
+    fn start_hit_filter_042_r16() {
+        let off = SilConfig::default();
+        for h in [Some(true), Some(false), None] {
+            assert!(off.passes_start_hit(h) && off.may_select("t0-zerg-rush", h) && off.passes_filters("t0-zerg-rush", None, h), "absent: every game ({h:?})");
+        }
+        let hit = SilConfig { select_start_hit: Some(true), ..SilConfig::default() };
+        assert!(hit.passes_start_hit(Some(true)));
+        assert!(!hit.passes_start_hit(Some(false)), "a miss");
+        assert!(!hit.passes_start_hit(None), "no start slots");
+        let miss = SilConfig { select_start_hit: Some(false), ..SilConfig::default() };
+        assert!(miss.passes_start_hit(Some(false)) && !miss.passes_start_hit(Some(true)) && !miss.passes_start_hit(None));
+        let rush5 = SilConfig { select_keys: Some(vec!["t0-zerg-rush".into()]), select_army_before_s: Some(225.0), select_start_hit: Some(true), ..SilConfig::default() };
+        assert!(rush5.passes_filters("t0-zerg-rush", Some(174.0), Some(true)));
+        assert!(!rush5.passes_filters("t0-zerg-rush", Some(174.0), Some(false)), "early contact but a miss");
+        assert!(!rush5.passes_filters("t0-zerg-rush", Some(260.0), Some(true)), "a hit whose army came late (the 225 s guard)");
+        assert!(!rush5.passes_filters("ualbertabot9poolhydra-zerg", Some(174.0), Some(true)), "opponent not listed");
+        assert!(rush5.may_select("t0-zerg-rush", Some(true)) && !rush5.may_select("t0-zerg-rush", Some(false)) && !rush5.may_select("ualbertabot9poolhydra-zerg", Some(true)));
+        SilConfig { enabled: true, ..rush5.clone() }.validate(32, &groups()).unwrap();
+        let parse = |t: &str| toml::from_str::<SilConfig>(t);
+        assert_eq!(parse("select_start_hit = true").unwrap().select_start_hit, Some(true));
+        assert_eq!(parse("select_start_hit = false").unwrap().select_start_hit, Some(false));
+        assert_eq!(parse("").unwrap().select_start_hit, None);
+        assert!(parse("select_start_hit = 1").is_err() && parse("select_start_hits = true").is_err());
+        assert!(serde_json::to_value(SilConfig::default()).unwrap().get("select_start_hit").is_none(), "absent when unset");
+        let v = serde_json::to_value(&rush5).unwrap();
+        assert_eq!(v["select_start_hit"], true);
+        assert_eq!(serde_json::from_value::<SilConfig>(v).unwrap(), rush5);
     }
 
     /// 042-R16 담을 세그먼트: first decision before `until_s`, 0 = all.
