@@ -2,12 +2,14 @@
 # reports/m6_rl_stall_advice2.md): `config/rl_rush2.toml` with only these changes —
 # [curriculum] c1_ladder = 0.90, c1_anchor = 0.05, c1_snapshot = 0.05, c1_self = 0 (no current-Main
 # self-play); ladder_pick = { rush = "band", macro = "f_var" } with [curriculum.band] center 0.5,
-# width 0.15, exclude_below 0.10; [league] model_game_max_s = 1500 (25 min, 042-R15); [kl] init
-# 0.03, floor 0.01, half_life_updates 1500 from this run's update 0, [kl.head_scale] all 1.0;
+# width 0.15, exclude_below 0.10; [league] model_game_max_s = 1500 (25 min, 042-R15); [kl] the
+# rl.toml schedule 0.1 / 0.01 / 20,000 (first decided 0.03 / 0.01 / 1,500, reverted 2026-11-04
+# after the F2 diagnostics), [kl.head_scale] all 1.0;
 # [loss] td_lambda = 0.95; [sil] enabled = false (042-R16, off until the user decides after the
-# 1.5M-step check). Groups, ladder lists (7 rush + 5 macro), anchor, snapshots, rewards, concede
-# as in rush-s2. Start: `--init rush-s2/ckpt-2151242 --bc bc-s2e2-pt/ckpt-11387`, V-trace, new
-# run id `rush-s3`. The train.csv diagnostics columns (042-R2) need no setting.
+# 1.5M-step check); three 50-60% rung UAlbertaBot variants added to the rush group (user decision
+# 2026-11-04 after the measurement, 10 rush + 5 macro). Groups, the other ladder entries, anchor,
+# snapshots, rewards, concede as in rush-s2. Start: `--init rush-s2/ckpt-2151242 --bc
+# bc-s2e2-pt/ckpt-11387`, V-trace, new run id `rush-s3`. The train.csv diagnostics columns (042-R2) need no setting.
 #
 # The rush-s2 header follows. 042 "러시·운영 혼합 run" `rush-s2` (AMB-042-16, 2026-11-03): `config/rl_rush1.toml` with only
 # these changes — [league] win_rate_decay = 0.97; [curriculum] ladder_groups = { rush = 0.5,
@@ -78,11 +80,13 @@ target_loc = 1e-3
 
 [kl]
 # coef = max(floor, init * 0.5^(update / half_life_updates)), update counted from this run's
-# update 0 (042-R9). rush-s3 (user decision 2026-11-04, AMB-042-17, advice A1): 0.03 / 0.01 /
-# 1,500 (the floor from about update 2,380).
-init = 0.03
+# update 0 (042-R9). rush-s3 (user decision 2026-11-04, AMB-042-17): the rl.toml schedule
+# 0.1 / 0.01 / 20,000. The advice A1 values 0.03 / 0.01 / 1,500 were reverted after the F2
+# diagnostics (runs/diag_20261104/notes.md): the KL penalty is about 0.001 per decision and RL
+# barely moved the rare build actions (x1.0-1.25 of BC), so "KL holds rare actions" is rejected.
+init = 0.1
 floor = 0.01
-half_life_updates = 1500
+half_life_updates = 20000
 
 [kl.head_scale]
 # 042-R9 (AMB-042-17, advice A2): all 1.0 for rush-s3 (user decision 2026-11-04).
@@ -294,10 +298,12 @@ races = ["Zerg"]
 name = "iron"
 races = ["Terran"]
 
-# rush-s3 (AMB-042-17): the rush-s2 lists as they are. The 50-60% UAlbertaBot config-variant
-# rung(s) for the rush group ([SPEC AMBIGUOUS] AMB-042-17, 021 "T1 설정 변형") are added only
-# after the measurement and the user's decision (clean stop -> edit this list -> restart);
-# until then the 7 rush entries below.
+# rush-s3 (AMB-042-17): the rush-s2 lists plus the 50-60% rush rung (advice B5, 021 "T1 설정
+# 변형"), user decision 2026-11-04 after the measurement (start ckpt rush-s2/ckpt-2151242,
+# stochastic, Fighting Spirit 15 + Circuit Breaker 15, W-L-D, <shared>/eval/rushrung-20261104/):
+# ualbertabot9pool10lings 19-7-4 (63%), ualbertabot9pool12lings 17-7-6 (57%),
+# ualbertabot9poolhydra 13-15-2 (43%) added (the last three rush entries below);
+# ualbertabot9pool8lings 23-2-5 (77%) not added. 10 rush entries.
 #
 # rush-s2 (AMB-042-16): the rush-s1 list below is the "rush" group as is (user decision
 # 2026-11-03); the "macro" group follows it.
@@ -345,6 +351,23 @@ group = "rush"
 [[ladder]]
 kind = "t1"
 name = "zzzkbot"
+race = "Zerg"
+group = "rush"
+# rush-s3 rung (AMB-042-17, records reports/oss_bot_porting.md): 9-pool capped at 10 / 12
+# lings, 9-pool 6 lings into 2-hatch hydras.
+[[ladder]]
+kind = "t1"
+name = "ualbertabot9pool10lings"
+race = "Zerg"
+group = "rush"
+[[ladder]]
+kind = "t1"
+name = "ualbertabot9pool12lings"
+race = "Zerg"
+group = "rush"
+[[ladder]]
+kind = "t1"
+name = "ualbertabot9poolhydra"
 race = "Zerg"
 group = "rush"
 

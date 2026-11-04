@@ -1061,9 +1061,11 @@ mod tests {
 
     /// 042 "신호 밀도·KL run" (AMB-042-17): `config/rl_rush3.toml` is `rl_rush2.toml` with the
     /// decided changes only — shares ladder 0.90 / anchor 0.05 / snapshots 0.05 / no current Main,
-    /// rush `band` (0.5, 0.15, 0.10) and macro `f_var`, model games capped at 1,500 s, KL 0.03 /
-    /// 0.01 / 1,500 with every head multiplier 1.0, λ 0.95, `[sil]` off; the 7 rush and 5 macro
-    /// entries as in rush-s2 (the 50-60% rung variants come after the measurement).
+    /// rush `band` (0.5, 0.15, 0.10) and macro `f_var`, model games capped at 1,500 s, KL the
+    /// rl.toml schedule 0.1 / 0.01 / 20,000 (the 0.03 / 0.01 / 1,500 decision reverted after the F2
+    /// diagnostics, 2026-11-04) with every head multiplier 1.0, λ 0.95, `[sil]` off; the rush-s2 ladder (7 rush
+    /// and 5 macro) plus the three 50-60% rung UAlbertaBot variants in the rush group (user
+    /// decision 2026-11-04 after the measurement).
     #[test]
     fn rush3_config_042_amb_042_17() {
         let t: RlConfig = toml::from_str(include_str!("../../../config/rl_rush3.toml")).unwrap();
@@ -1074,20 +1076,29 @@ mod tests {
         assert_eq!(cc.band, BandConfig { center: 0.5, width: 0.15, exclude_below: 0.10 });
         assert_eq!(t.league.model_game_max_s, 1_500);
         assert_eq!(t.league.game_max_frames(true), 36_000);
-        assert_eq!((t.kl.init, t.kl.floor, t.kl.half_life_updates), (0.03, 0.01, 1_500.0));
+        assert_eq!((t.kl.init, t.kl.floor, t.kl.half_life_updates), (0.1, 0.01, 20_000.0), "rl.toml schedule (reverted 2026-11-04)");
+        assert_eq!(t.kl, RlConfig::default_file().kl, "KL as in rl.toml");
         assert_eq!(t.kl.head_scale, KlHeadScale::default());
         assert_eq!(t.loss.td_lambda, 0.95);
         assert!(!t.sil.enabled);
         assert_eq!(t.sil, SilConfig::default());
         let rush2: RlConfig = toml::from_str(include_str!("../../../config/rl_rush2.toml")).unwrap();
-        assert_eq!(t.ladder, rush2.ladder, "7 rush + 5 macro as in rush-s2");
-        assert_eq!(t.ladder.iter().filter(|e| e.group == "rush").count(), 7);
+        // The rush rung (user decision 2026-11-04, AMB-042-17): 9pool10lings 63%, 9pool12lings 57%,
+        // 9poolhydra 43% (9pool8lings 77% not added); every rush-s2 entry kept, in order.
+        let rung = ["ualbertabot9pool10lings", "ualbertabot9pool12lings", "ualbertabot9poolhydra"];
+        let added: Vec<&LadderEntry> = t.ladder.iter().filter(|e| !rush2.ladder.contains(e)).collect();
+        let keys: Vec<String> = added.iter().map(|e| e.opponent().unwrap().1).collect();
+        assert_eq!(keys, rung.map(|n| format!("{n}-zerg")));
+        assert!(added.iter().all(|e| e.group == "rush" && e.race == uranium_proto::Race::Zerg && e.kind == crate::league::LadderKind::T1));
+        let kept: Vec<LadderEntry> = t.ladder.iter().filter(|e| rush2.ladder.contains(e)).cloned().collect();
+        assert_eq!(kept, rush2.ladder, "the rush-s2 entries as they were");
+        assert_eq!((t.ladder.iter().filter(|e| e.group == "rush").count(), t.ladder.iter().filter(|e| e.group == "macro").count()), (10, 5));
         let mut d = rush2;
+        d.ladder = t.ladder.clone();
         let dc = &mut d.curriculum;
         (dc.c1_ladder, dc.c1_anchor, dc.c1_snapshot, dc.c1_self) = (0.90, 0.05, 0.05, 0.0);
         dc.ladder_pick = cc.ladder_pick.clone();
         d.league.model_game_max_s = 1_500;
-        (d.kl.init, d.kl.floor, d.kl.half_life_updates) = (0.03, 0.01, 1_500.0);
         d.loss.td_lambda = 0.95;
         assert_eq!(d, t, "everything else as in rush-s2");
         let back: RlConfig = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
