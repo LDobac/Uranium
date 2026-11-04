@@ -607,7 +607,7 @@ mod tests {
     fn judge_scv_is_the_last_observation_042_r17() {
         let mut t = tracker(RewardConfig::default());
         assert_eq!(t.metrics().scv_last, None, "no observation");
-        t.step(&frame(5_000, scvs(12)));
+        t.step(&frame(6_000, scvs(12)));
         assert_eq!(t.metrics().scv_last, Some(12));
         let mut loaded = unit(2_000, ME, "Terran_SCV", OURS, true);
         loaded.flags |= flags::LOADED;
