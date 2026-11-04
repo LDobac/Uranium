@@ -18,6 +18,11 @@ pub struct Plan {
     /// Every game uses `seed_base` (determinism check, 011-AC4).
     #[serde(default)]
     pub same_seed: bool,
+    /// 020-R20 (AMB-042-19): the seed of every game — plan game n (1-based, counted on across the
+    /// matchups) uses `seeds[n - 1]`; absent = `seed_base + n`. Its length is the plan's game
+    /// count and it does not go with `same_seed` (load errors); `seed_base` is then unused.
+    #[serde(default)]
+    pub seeds: Option<Vec<u32>>,
     #[serde(default = "d_max_frames")]
     pub max_frames: u32,
     #[serde(default = "d_wall_timeout")]
@@ -205,6 +210,7 @@ pub fn load_plan(path: &Path) -> Result<Plan> {
         bail!("plan has no [[matchup]]");
     }
     check_surrender_chat(&plan.surrender_chat)?;
+    plan.validate_seeds()?;
     for (i, m) in plan.matchups.iter().enumerate() {
         for side in [&m.p0, &m.p1] {
             if let Side::T0 { race, build, .. } = side {
@@ -219,6 +225,37 @@ pub fn load_plan(path: &Path) -> Result<Plan> {
         }
     }
     Ok(plan)
+}
+
+impl Plan {
+    /// Games of all matchups.
+    pub fn games(&self) -> u64 {
+        self.matchups.iter().map(|m| u64::from(m.games)).sum()
+    }
+
+    /// 020-R20 검사 (메인 임시 결정): `seeds` has one seed per game and is not used with
+    /// `same_seed`.
+    pub fn validate_seeds(&self) -> Result<()> {
+        if let Some(seeds) = &self.seeds {
+            if self.same_seed {
+                bail!("plan has both `seeds` and `same_seed = true` (020-R20)");
+            }
+            if seeds.len() as u64 != self.games() {
+                bail!("plan `seeds` has {} seeds for {} games (020-R20)", seeds.len(), self.games());
+            }
+        }
+        Ok(())
+    }
+
+    /// The `GameSpec.seed` of plan game `id` (1-based): `seeds[id - 1]` (020-R20), else
+    /// `seed_base` with `same_seed`, else `seed_base + id`.
+    pub fn seed_of(&self, id: u64) -> u32 {
+        match &self.seeds {
+            Some(seeds) => seeds[(id - 1) as usize],
+            None if self.same_seed => self.seed_base,
+            None => self.seed_base.wrapping_add(id as u32),
+        }
+    }
 }
 
 pub fn load_hosts(path: &Path) -> Result<Vec<HostEntry>> {
@@ -286,7 +323,7 @@ pub fn expand(plan: &Plan, agent_addr: &str) -> Vec<Job> {
                     game_id: id,
                     map,
                     players: [side(&m.p0, false), side(&m.p1, random)],
-                    seed: Some(if plan.same_seed { plan.seed_base } else { plan.seed_base.wrapping_add(id as u32) }),
+                    seed: Some(plan.seed_of(id)),
                     max_frames: plan.max_frames,
                     privileged: plan.privileged,
                     save_replay: plan.save_replay,
@@ -419,6 +456,58 @@ p1={kind='oss',name='iron',race='terran'}";
         assert_eq!(jobs[0].t0_builds, [T0Build::Standard, T0Build::Standard]);
         let argmax: Plan = toml::from_str("name='m'\n[[matchup]]\nmap='both'\ngames=1\np0={kind='model',checkpoint='c'}\np1={kind='t0',race='terran'}").unwrap();
         assert_eq!(expand(&argmax, "a:1")[0].models[0], Some(("c".to_string(), SampleMode::Argmax)));
+    }
+
+    /// 020-R20 / 020-AC8: with `seeds`, game n uses `seeds[n - 1]` counted on across the matchups;
+    /// without it `seed_base + n` (`same_seed`: `seed_base`) as before; a list of another length
+    /// or with `same_seed` is a load error.
+    #[test]
+    fn plan_seeds_020_r20() {
+        let base = "[[matchup]]\nmap='fighting_spirit'\ngames=2\np0={kind='t0',race='terran'}\np1={kind='t0',race='zerg'}\n[[matchup]]\nmap='circuit_breaker'\ngames=1\np0={kind='t0',race='terran'}\np1={kind='t0',race='zerg'}";
+        let seeds = |text: &str| expand(&toml::from_str::<Plan>(text).unwrap(), "a").iter().map(|j| j.spec.seed.unwrap()).collect::<Vec<_>>();
+        assert_eq!(seeds(&format!("name='x'\nseeds=[45001, 7, 45003]\n{base}")), [45_001, 7, 45_003]);
+        assert_eq!(seeds(&format!("name='x'\nseed_base=10\nseeds=[1, 2, 3]\n{base}")), [1, 2, 3], "seed_base unused");
+        assert_eq!(seeds(&format!("name='x'\nseed_base=10\n{base}")), [11, 12, 13], "no seeds: seed_base + n");
+        assert_eq!(seeds(&format!("name='x'\nseed_base=10\nsame_seed=true\n{base}")), [10, 10, 10]);
+        assert_eq!(seeds(&format!("name='x'\n{base}")), [1_001, 1_002, 1_003], "default seed_base");
+        let dir = std::env::temp_dir().join(format!("uranium-plan-seeds-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("p.toml");
+        let load = |head: &str| {
+            std::fs::write(&path, format!("name='x'\n{head}\n{base}")).unwrap();
+            load_plan(&path)
+        };
+        assert_eq!(load("seeds=[5, 6, 7]").unwrap().seeds, Some(vec![5, 6, 7]));
+        assert!(load("seeds=[5, 6]").is_err(), "too short");
+        assert!(load("seeds=[5, 6, 7, 8]").is_err(), "too long");
+        assert!(load("seeds=[]").is_err());
+        assert!(load("seeds=[5, 6, 7]\nsame_seed=true").is_err(), "with same_seed");
+        assert!(load("seeds=[5, -6, 7]").is_err(), "u32");
+        load("same_seed=true").unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 050-R6 / 050-AC3: the tracked check plan `config/plans/rush5_check.toml` — 4 matchups x 32
+    /// games (T0 `zerg_rush` and `ualbertabot12poollings`, Fighting Spirit then Circuit Breaker),
+    /// its 128 seeds the 050-R6 list of the 020-R21 generator.
+    #[test]
+    fn rush5_check_plan_050_r6() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/plans/rush5_check.toml");
+        let plan = load_plan(&path).unwrap();
+        assert_eq!(plan.seeds.as_deref(), Some(&crate::start_slots::check_seeds(4, crate::start_slots::CHECK_FIRST_SEED)[..]));
+        let blocks: Vec<(MapSel, Side)> = plan.matchups.iter().map(|m| (m.map, m.p1.clone())).collect();
+        let t0 = Side::T0 { race: RaceSel::Zerg, build: T0Build::ZergRush, name: None };
+        let uab = Side::Oss { name: "ualbertabot12poollings".into(), race: RaceSel::Zerg };
+        assert_eq!(blocks, [(MapSel::FightingSpirit, t0.clone()), (MapSel::CircuitBreaker, t0), (MapSel::FightingSpirit, uab.clone()), (MapSel::CircuitBreaker, uab)]);
+        for m in &plan.matchups {
+            assert_eq!((m.games, m.p1_random_ratio), (32, 0.0));
+            assert!(matches!(&m.p0, Side::Model { sample: SampleMode::Stochastic, .. }), "{:?}", m.p0);
+        }
+        assert!(plan.save_replay && !plan.zero_last_failed && !plan.privileged);
+        assert_eq!((plan.max_frames, plan.surrender), (86_400, SurrenderMode::Shadow));
+        let jobs = expand(&plan, "a");
+        assert_eq!(jobs.len(), 128);
+        assert!(jobs.iter().zip(plan.seeds.as_ref().unwrap()).all(|(j, s)| j.spec.seed == Some(*s) && j.spec.players[1].race == Race::Zerg));
     }
 
     #[test]

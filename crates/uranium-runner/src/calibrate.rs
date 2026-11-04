@@ -103,6 +103,7 @@ fn step_plan(n: u32, frames: u32) -> Plan {
         name: format!("calibrate-n{n}"),
         seed_base: 50_000,
         same_seed: false,
+        seeds: None,
         max_frames: frames,
         wall_timeout_s: 600,
         privileged: false,

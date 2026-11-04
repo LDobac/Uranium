@@ -489,6 +489,24 @@ fn stop_requested() -> bool {
     uranium_store::stop_requested()
 }
 
+/// 020-R21 시드 → 시작 슬롯 (AMB-042-19): `(slot_self, slot_enemy, start_hit)` — the start slots
+/// (0..3) of `GameSpec.players[0]` (ours) and `players[1]` for an OpenBW melee game with this
+/// seed after `random_players` Random race draws, and the first-target hit. The same generator as
+/// the RL league and the check plan (`uranium_runner::start_slots`).
+#[pyfunction]
+#[pyo3(signature = (seed, random_players = 0))]
+fn start_slots(seed: u32, random_players: u32) -> (u8, u8, bool) {
+    uranium_runner::start_slots::start_condition(seed, random_players)
+}
+
+/// 050-R6 (AMB-042-19): the seed list of the condition-controlled rush check — `blocks` blocks
+/// of 32 games (16 first-target hits, 16 misses, all twelve slot pairs) from candidate `first`.
+#[pyfunction]
+#[pyo3(signature = (blocks = 4, first = uranium_runner::start_slots::CHECK_FIRST_SEED))]
+fn rush_check_seeds(blocks: usize, first: u32) -> Vec<u32> {
+    uranium_runner::start_slots::check_seeds(blocks, first)
+}
+
 /// Tests: writes synthetic shards (`uranium_data::testkit`) under `root`: `kind` is "varied"
 /// (15 games of 1..16 steps), "mixed" (games with different entity counts and void labels).
 #[pyfunction]
@@ -532,6 +550,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(feature_dims, m)?)?;
     m.add_function(wrap_pyfunction!(install_stop_handler, m)?)?;
     m.add_function(wrap_pyfunction!(stop_requested, m)?)?;
+    m.add_function(wrap_pyfunction!(start_slots, m)?)?;
+    m.add_function(wrap_pyfunction!(rush_check_seeds, m)?)?;
     m.add_function(wrap_pyfunction!(write_test_shards, m)?)?;
     m.add_function(wrap_pyfunction!(run_bc, m)?)?;
     m.add_function(wrap_pyfunction!(resolve_checkpoint, m)?)?;

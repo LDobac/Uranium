@@ -18,6 +18,25 @@ def test_group_fields_match_rust():
     assert _core.group_fields() == GROUP_FIELDS
 
 
+def test_start_slots_generator_020_r21():
+    """020-R21 / 020-AC8 (AMB-042-19): the Rust generator through `uranium._core` — the rush-s4 c0
+    replay headers (seed, our slot, enemy slot), Random draws first, and the 050-R6 check list as
+    in the tracked plan config/plans/rush5_check.toml."""
+    headers = [(43001, 2, 3), (43002, 1, 3), (43003, 1, 3), (43004, 0, 3), (43005, 1, 3), (43006, 1, 0), (43007, 0, 1), (43008, 1, 0)]
+    for seed, a, b in headers:
+        assert _core.start_slots(seed) == (a, b, a == min(i for i in range(4) if i != b))
+    assert _core.start_slots(43006) == (1, 0, True)
+    assert any(_core.start_slots(s, 1) != _core.start_slots(s) for s in range(100))
+    seeds = _core.rush_check_seeds()
+    assert seeds == _core.rush_check_seeds(4, 45001) and len(seeds) == 128 and seeds[0] == 45001
+    for k in range(4):
+        assert sum(_core.start_slots(s)[2] for s in seeds[32 * k:32 * (k + 1)]) == 16
+    import tomllib
+
+    plan = tomllib.loads((Path(__file__).resolve().parents[2] / "config" / "plans" / "rush5_check.toml").read_text(encoding="utf-8"))
+    assert plan["seeds"] == seeds
+
+
 def test_feeder_groups_have_the_030_layout(tiny_config, tmp_path):
     shards = tmp_path / "shards"
     _core.write_test_shards(str(shards), "mixed")

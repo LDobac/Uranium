@@ -17,6 +17,7 @@ pub mod calibrate;
 pub mod eval;
 pub mod plan;
 pub mod report;
+pub mod start_slots;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufReader, BufWriter, Write};
