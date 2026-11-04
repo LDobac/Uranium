@@ -1,6 +1,6 @@
 # 021 — Opponent Pool
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: R7 Random 적용 범위를 여러 종족 지원 봇으로 한정, R3 T0 시나리오 빌드 상대 ID 분리, 사용자 결정. 2026-10-19: McRave 종족 표기를 실측(T/P/Z)과 `config/rl.toml`·040에 맞춤. 2026-11-03: run별 T1 학습 풀에서 봇 제외 가능(021-R4 유지), AMB-042-13. 2026-11-03 개정 2: R7 Random은 세 종족 봇에만, run별 봇 종족 제한(T1·셀프 run 2차 Steamhammer 프로토스 제외), AMB-042-14. 2026-11-03 개정 3(사용자 결정, AMB-042-15): 러시 커리큘럼 run에서 T0 `zerg_rush`를 RL 상대로 다시 씀(T0 그대로), 저그가 아닌 T1 제외, T1 설정 변형의 이름·기록, R7 러시 사다리 항목은 종족 고정. 2026-11-04(사용자 결정, AMB-042-17 Open): `rush-s3` 러시 단 UAlbertaBot 설정 변형 추가, 목록은 측정 뒤)
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: R7 Random 적용 범위를 여러 종족 지원 봇으로 한정, R3 T0 시나리오 빌드 상대 ID 분리, 사용자 결정. 2026-10-19: McRave 종족 표기를 실측(T/P/Z)과 `config/rl.toml`·040에 맞춤. 2026-11-03: run별 T1 학습 풀에서 봇 제외 가능(021-R4 유지), AMB-042-13. 2026-11-03 개정 2: R7 Random은 세 종족 봇에만, run별 봇 종족 제한(T1·셀프 run 2차 Steamhammer 프로토스 제외), AMB-042-14. 2026-11-03 개정 3(사용자 결정, AMB-042-15): 러시 커리큘럼 run에서 T0 `zerg_rush`를 RL 상대로 다시 씀(T0 그대로), 저그가 아닌 T1 제외, T1 설정 변형의 이름·기록, R7 러시 사다리 항목은 종족 고정. 2026-11-04(사용자 결정, AMB-042-17): `rush-s3` 러시 단 UAlbertaBot 설정 변형 추가, 목록은 측정 뒤(`[SPEC AMBIGUOUS]`, 그 전에는 기존 7개))
 - **Related**: [020](020-env-orchestration.md), [042](042-rl-training.md), [050](050-evaluation.md)
 
 ## Purpose

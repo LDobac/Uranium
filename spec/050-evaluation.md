@@ -1,6 +1,6 @@
 # 050 — Evaluation
 
-- **Status**: Approved (2026-10-15, 2026-10-17 개정: 승격 게이트 단계별 구현 범위(AMB-050-2, 사용자 결정). 2026-11-03: RL 학습 게임 붕괴 항복(042-R14)은 평가 게임에 적용하지 않음(메인 임시 결정, AMB-042-15). 2026-11-03 개정(사용자 결정, AMB-042-16): `rush-s2` 점검에 운영형 저그 2상대 추가(2026-11-04 사용자 결정: `ualbertabot2hatchhydra`, `steamhammer2hatchmuta`), 정찰·대응 지표 보고, 정찰·생존 보상은 평가에 쓰지 않음). 2026-11-04 개정 초안(사용자 결정, AMB-042-17 Open, seed·c0·뺀 상대는 기본안(미확정)): `rush-s3` 점검(1.5M step마다 T0 `zerg_rush`·`ualbertabot12poollings` 각 40판, 두 맵, 막음 비율), RL 모델 상대 판 시간 상한은 평가에 쓰지 않음)
+- **Status**: Approved (2026-10-15, 2026-10-17 개정: 승격 게이트 단계별 구현 범위(AMB-050-2, 사용자 결정). 2026-11-03: RL 학습 게임 붕괴 항복(042-R14)은 평가 게임에 적용하지 않음(메인 임시 결정, AMB-042-15). 2026-11-03 개정(사용자 결정, AMB-042-16): `rush-s2` 점검에 운영형 저그 2상대 추가(2026-11-04 사용자 결정: `ualbertabot2hatchhydra`, `steamhammer2hatchmuta`), 정찰·대응 지표 보고, 정찰·생존 보상은 평가에 쓰지 않음). 2026-11-04 개정(사용자 결정, AMB-042-17, 구현 가능): `rush-s3` 점검(1.5M step마다 T0 `zerg_rush`·`ualbertabot12poollings` 각 40판, 두 맵, 막음 비율), RL 모델 상대 판 시간 상한은 평가에 쓰지 않음)
 - **Related**: [000](000-overview.md), [021](021-opponent-pool.md), [042](042-rl-training.md), [012](012-bridge-remastered.md)
 
 ## Purpose
@@ -38,7 +38,7 @@
 
 - **RL run 점검 `rush-s2` (2026-11-03 사용자 결정, AMB-042-16)**: 100만 agent step마다 rush-s1 점검 4상대(T0 `zerg_rush`, UAlbertaBot 기본 저그, Steamhammer 오버풀 변형, ZZZKBot)에 운영형(비러시) 저그 2상대 UAlbertaBot 설정 변형 `ualbertabot2hatchhydra`·Steamhammer 설정 변형 `steamhammer2hatchmuta`(2026-11-04 사용자 결정, 042 `rush-s2` 운영형 그룹 중. 출발 체크포인트 측정 승률 70%·20%)를 더해 각 10판(stochastic, 투혼, seed_base 43000). 승·패·무(Wilson 95%, 050-R2)와 막음 비율(러시 상대), 042 정찰·대응 지표(적 본진 발견 시각, 4:00·6:00까지 본 적 건물 종류 수, 첫 배럭·벙커 시각, 4:00 SCV 수)를 상대 종류(러시·운영형)별로 보고한다. 033 정찰·생존 보상(r_scout·r_survive)은 학습 전용이며 평가·승격 판정에는 쓰지 않는다(033-R1, r_win만).
 
-- **RL run 점검 `rush-s3` (2026-11-04 사용자 결정, AMB-042-17, 자문 E3)**: 출발 체크포인트(c0)와 1.5M agent step마다 학습과 동시에 T0 `zerg_rush`·UAlbertaBot 설정 변형 `ualbertabot12poollings` 각 40판(투혼 20·서킷브레이커 20), stochastic, 고정 seed. 승·패·무(Wilson 95%, 050-R2), 막음 비율(042 `rush-s1` 정의, 리플레이 재생), 042 정찰·대응 지표를 보고한다. 10판 점검의 95% 범위(약 ±25%p)로는 ±15%p 변화를 못 봐서 판 수를 늘리고 상대를 둘로 줄였다(`reports/m6_rl_stall_advice2.md` 1절). 기본안(미확정): seed_base 43000, c0 점검 포함, `rush-s2` 점검의 나머지 4상대는 뺌(학습 판 지표로만 봄). RL 모델 상대 판 시간 상한(042-R15)과 붕괴 항복은 평가 게임에 쓰지 않는다(60분 그대로).
+- **RL run 점검 `rush-s3` (2026-11-04 사용자 결정, AMB-042-17, 자문 E3)**: 출발 체크포인트(c0)와 1.5M agent step마다 학습과 동시에 T0 `zerg_rush`·UAlbertaBot 설정 변형 `ualbertabot12poollings` 각 40판(투혼 20·서킷브레이커 20), stochastic, seed_base 43000. 승·패·무(Wilson 95%, 050-R2), 막음 비율(042 `rush-s1` 정의, 리플레이 재생), 042 정찰·대응 지표를 보고한다. 10판 점검의 95% 범위(약 ±25%p)로는 ±15%p 변화를 못 봐서 판 수를 늘리고 상대를 둘로 줄였다(`reports/m6_rl_stall_advice2.md` 1절). c0 점검 포함, `rush-s2` 점검의 나머지 4상대는 뺌(학습 판 지표로만 봄, 사용자 결정 2026-11-04 확인). RL 모델 상대 판 시간 상한(042-R15)과 붕괴 항복은 평가 게임에 쓰지 않는다(60분 그대로).
 
 - **평가 기준 (확정 2026-10-15, AMB-050-1)**
   - 아래 초안 값을 그대로 확정한다. M5 기준선 측정 후 조정을 제안할 수 있고, 조정하려면 사용자 확인이 필요하다.
