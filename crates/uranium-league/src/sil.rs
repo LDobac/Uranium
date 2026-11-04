@@ -39,6 +39,14 @@ pub struct SilConfig {
     /// config when false, so checkpoints of earlier configs record the same config as before.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub wins_only: bool,
+    /// 042-R16 상대·접촉 거르기 (AMB-042-19): only games against these win-table keys (each the
+    /// key of a `select_group` `[[ladder]]` entry, not empty); absent = every opponent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select_keys: Option<Vec<String>>,
+    /// 042-R16 상대·접촉 거르기 (AMB-042-19): only games whose `army_s` (050-R7, first enemy army
+    /// sighting, game seconds) is known and at most this (>= 0); absent = no filter.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select_army_before_s: Option<f64>,
     /// Segments whose first decision frame is below `until_s × 24`; 0 = the whole game.
     pub until_s: u32,
     /// Buffer capacity in segments (FIFO).
@@ -53,7 +61,7 @@ pub struct SilConfig {
 
 impl Default for SilConfig {
     fn default() -> Self {
-        Self { enabled: false, mode: SilMode::Sil, select_group: "rush".into(), select_scv_4m: 12, wins_only: false, until_s: 480, buffer_segments: 2_048, lanes: 4, w_pg: 0.05, w_v: 0.01, max_uses: 4 }
+        Self { enabled: false, mode: SilMode::Sil, select_group: "rush".into(), select_scv_4m: 12, wins_only: false, select_keys: None, select_army_before_s: None, until_s: 480, buffer_segments: 2_048, lanes: 4, w_pg: 0.05, w_v: 0.01, max_uses: 4 }
     }
 }
 
@@ -80,7 +88,24 @@ impl SilConfig {
         if !ladder_groups.contains_key(&self.select_group) {
             return Err(format!("[sil] select_group {:?} is not in [curriculum] ladder_groups (042-R16)", self.select_group));
         }
+        // AMB-042-19 (메인 임시 결정); the keys themselves are checked against `[[ladder]]` by
+        // `RlConfig::validate`.
+        if self.select_keys.as_ref().is_some_and(|k| k.is_empty()) {
+            return Err("[sil] select_keys is empty (042-R16, AMB-042-19)".into());
+        }
+        if let Some(s) = self.select_army_before_s
+            && !(s >= 0.0 && s.is_finite())
+        {
+            return Err(format!("[sil] select_army_before_s must be a finite value >= 0, got {s} (042-R16, AMB-042-19)"));
+        }
         Ok(())
+    }
+
+    /// 042-R16 상대·접촉 거르기 (AMB-042-19), on top of `selects`: the game's opponent win-table
+    /// key is in `select_keys` (when set) and its `army_s` is known and at most
+    /// `select_army_before_s` (when set; never seen = not selected).
+    pub fn passes_filters(&self, key: &str, army_s: Option<f64>) -> bool {
+        self.select_keys.as_ref().is_none_or(|ks| ks.iter().any(|k| k == key)) && self.select_army_before_s.is_none_or(|t| army_s.is_some_and(|a| a <= t))
     }
 
     /// 042-R16 담을 세그먼트: its first decision is before `until_s` (0 = every segment).
@@ -262,6 +287,39 @@ mod tests {
         let on = serde_json::to_value(&c).unwrap();
         assert_eq!(on["wins_only"], true);
         assert_eq!(serde_json::from_value::<SilConfig>(on).unwrap(), c);
+    }
+
+    /// 042-R16 상대·접촉 거르기 / 042-AC9 (AMB-042-19): with `select_keys` an opponent outside
+    /// the list is not selected; with `select_army_before_s` a game whose `army_s` is above it or
+    /// empty is not; without the two keys every game passes (the earlier selection); the checks
+    /// (empty list, negative or NaN seconds) and the serialised config without them as before.
+    #[test]
+    fn opponent_and_contact_filters_042_r16() {
+        let off = SilConfig::default();
+        assert!(off.passes_filters("ualbertabot9poolhydra-zerg", None), "no keys: every game");
+        assert!(off.passes_filters("t0-zerg-rush", Some(400.0)));
+        let c = SilConfig { select_keys: Some(vec!["t0-zerg-rush".into(), "ualbertabot12poollings-zerg".into()]), select_army_before_s: Some(225.0), ..SilConfig::default() };
+        assert!(c.passes_filters("t0-zerg-rush", Some(190.0)));
+        assert!(c.passes_filters("ualbertabot12poollings-zerg", Some(225.0)), "225 s itself");
+        assert!(!c.passes_filters("ualbertabot12poollings-zerg", Some(225.04)));
+        assert!(!c.passes_filters("t0-zerg-rush", None), "army never seen");
+        assert!(!c.passes_filters("ualbertabot9poolhydra-zerg", Some(150.0)), "opponent not listed");
+        let keys_only = SilConfig { select_army_before_s: None, ..c.clone() };
+        assert!(keys_only.passes_filters("t0-zerg-rush", None));
+        let time_only = SilConfig { select_keys: None, ..c.clone() };
+        assert!(time_only.passes_filters("anything-zerg", Some(10.0)) && !time_only.passes_filters("anything-zerg", Some(300.0)));
+        let on = SilConfig { enabled: true, ..c.clone() };
+        on.validate(32, &groups()).unwrap();
+        assert!(SilConfig { select_keys: Some(vec![]), ..on.clone() }.validate(32, &groups()).is_err(), "empty list");
+        assert!(SilConfig { select_army_before_s: Some(-1.0), ..on.clone() }.validate(32, &groups()).is_err());
+        assert!(SilConfig { select_army_before_s: Some(f64::NAN), ..on.clone() }.validate(32, &groups()).is_err());
+        SilConfig { select_army_before_s: Some(0.0), ..on.clone() }.validate(32, &groups()).unwrap();
+        let parse = |t: &str| toml::from_str::<SilConfig>(t);
+        let p = parse("select_keys = [\"t0-zerg-rush\"]\nselect_army_before_s = 225").unwrap();
+        assert_eq!((p.select_keys, p.select_army_before_s), (Some(vec!["t0-zerg-rush".to_string()]), Some(225.0)));
+        let v = serde_json::to_value(SilConfig::default()).unwrap();
+        assert!(v.get("select_keys").is_none() && v.get("select_army_before_s").is_none(), "absent when unset");
+        assert_eq!(serde_json::from_value::<SilConfig>(serde_json::to_value(&c).unwrap()).unwrap(), c);
     }
 
     /// 042-R16 담을 세그먼트: first decision before `until_s`, 0 = all.

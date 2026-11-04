@@ -181,10 +181,63 @@ pub struct LeagueConfig {
     /// defaults, so checkpoints of runs without it record the same config as before.
     #[serde(default, skip_serializing_if = "RushJudgeConfig::is_default")]
     pub rush_judge: RushJudgeConfig,
+    /// `[league.start_mix]` (042-R18, AMB-042-19): first-target-hit share of the start condition
+    /// of some ladder groups' games. Absent / no `rush_hit_share` = off (the earlier seeds). Left
+    /// out of the serialised config at its defaults.
+    #[serde(default, skip_serializing_if = "StartMixConfig::is_default")]
+    pub start_mix: StartMixConfig,
 }
 
 /// 020-R3: the 60-minute game limit in frames (24 per game second).
 pub const GAME_MAX_FRAMES: u32 = 86_400;
+
+/// `[league.start_mix]` (042-R18, AMB-042-19): RL training games whose ladder group is in
+/// `groups` (default `["rush"]`, 메인 임시 결정) draw their seed again, deterministically from the
+/// game id, until the 020-R21 first-target hit matches a target condition that is a hit with
+/// probability `rush_hit_share`. Other games, games against a model and evaluation games keep
+/// their seed.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct StartMixConfig {
+    /// 0..=1; `None` = off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rush_hit_share: Option<f64>,
+    pub groups: Vec<String>,
+}
+
+impl Default for StartMixConfig {
+    fn default() -> Self {
+        Self { rush_hit_share: None, groups: vec!["rush".into()] }
+    }
+}
+
+impl StartMixConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The hit share when a ladder game of this group (`None` = not a ladder game) is mixed.
+    pub fn share_for(&self, ladder_group: Option<&str>) -> Option<f64> {
+        let g = ladder_group?;
+        self.rush_hit_share.filter(|_| self.groups.iter().any(|x| x == g))
+    }
+
+    /// 042-R18 검사 (only with `rush_hit_share` set): `0 <= rush_hit_share <= 1`, `groups` not
+    /// empty and every name in `[curriculum] ladder_groups`.
+    pub fn validate(&self, ladder_groups: &std::collections::BTreeMap<String, f64>) -> Result<()> {
+        let Some(x) = self.rush_hit_share else { return Ok(()) };
+        if !(0.0..=1.0).contains(&x) {
+            bail!("[league.start_mix] rush_hit_share must be in 0..=1, got {x} (042-R18, AMB-042-19)");
+        }
+        if self.groups.is_empty() {
+            bail!("[league.start_mix] groups is empty (042-R18, AMB-042-19)");
+        }
+        if let Some(g) = self.groups.iter().find(|g| !ladder_groups.contains_key(*g)) {
+            bail!("[league.start_mix] groups names {g:?}, which is not in [curriculum] ladder_groups (042-R18, AMB-042-19)");
+        }
+        Ok(())
+    }
+}
 
 /// `[league.rush_judge]` (042-R17, 020-R19, AMB-042-18): RL training games of these ladder groups
 /// end at `at_s` game seconds (`GameSpec.max_frames`); a game that ends there as `TimeLimitDraw`
@@ -526,6 +579,28 @@ impl RlConfig {
             bail!("[curriculum] ladder_pick names group {g:?}, which is not in ladder_groups (042, AMB-042-17)");
         }
         self.curriculum.band.validate().map_err(anyhow::Error::msg)?;
+        // 042-R19 (AMB-042-19, 메인 임시 결정): `weight` >= 0 and only on entries of a "fixed"
+        // group, and every "fixed" group's weights sum above 0.
+        let group_of = |e: &LadderEntry| if groups.is_empty() { None } else { Some(e.group.clone()) };
+        for (i, e) in self.ladder.iter().enumerate() {
+            if let Some(w) = e.weight {
+                if !(w >= 0.0 && w.is_finite()) {
+                    bail!("[[ladder]] entry {}: weight must be a finite value >= 0, got {w} (042-R19, AMB-042-19)", i + 1);
+                }
+                if self.curriculum.ladder_pick.for_group(group_of(e).as_deref()) != crate::league::LadderPick::Fixed {
+                    bail!("[[ladder]] entry {}: weight is set but its group {:?} is not picked \"fixed\" (042-R19, AMB-042-19)", i + 1, e.group);
+                }
+            }
+        }
+        let fixed_groups: std::collections::BTreeSet<Option<String>> = self.ladder.iter().map(group_of).filter(|g| self.curriculum.ladder_pick.for_group(g.as_deref()) == crate::league::LadderPick::Fixed).collect();
+        for g in fixed_groups {
+            let sum: f64 = self.ladder.iter().filter(|e| group_of(e) == g).map(LadderEntry::fixed_weight).sum();
+            if sum <= 0.0 {
+                bail!("[[ladder]] weights of the \"fixed\" group {:?} sum to 0 (042-R19, AMB-042-19)", g.unwrap_or_default());
+            }
+        }
+        // 042-R18 (AMB-042-19).
+        self.league.start_mix.validate(groups)?;
         // 042-R9 KL schedule and head multipliers (AMB-042-17).
         self.kl.validate()?;
         // 042-R15 (AMB-042-17): 0 or 60 s ..= 60 min (메인 임시 결정).
@@ -537,6 +612,16 @@ impl RlConfig {
         self.league.rush_judge.validate(groups)?;
         // 042-R16 (AMB-042-17).
         self.sil.validate(self.lanes, groups).map_err(anyhow::Error::msg)?;
+        // 042-R16 상대·접촉 거르기 (AMB-042-19): every `select_keys` key is the win-table key of a
+        // `select_group` entry.
+        if self.sil.enabled
+            && let Some(keys) = &self.sil.select_keys
+        {
+            let group_keys: Vec<String> = self.ladder.iter().filter(|e| e.group == self.sil.select_group).filter_map(|e| e.opponent().ok().map(|(_, k, _)| k)).collect();
+            if let Some(k) = keys.iter().find(|k| !group_keys.contains(k)) {
+                bail!("[sil] select_keys names {k:?}, which is not the win-table key of a [[ladder]] entry of select_group {:?} ({}) (042-R16, AMB-042-19)", self.sil.select_group, group_keys.join(", "));
+            }
+        }
         // 042-R14 (AMB-042-15).
         self.concede.validate().map_err(anyhow::Error::msg)?;
         // 033-R11 (AMB-042-16).
@@ -1302,6 +1387,134 @@ mod tests {
         d.curriculum.band = BandConfig { center: 0.5, width: 0.30, exclude_below: 0.0 };
         d.league.rush_judge = t.league.rush_judge.clone();
         d.sil = t.sil.clone();
+        assert_eq!(d, t);
+        let back: RlConfig = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert_eq!(back, t, "the serialised config (checkpoint) reads back the same");
+    }
+
+    /// 042-AC9 (AMB-042-19): rl.toml and the earlier run files (rl_rush1..4) have no
+    /// `[league.start_mix]`, no "fixed" pick, no `[[ladder]] weight`, no `[sil] select_keys` /
+    /// `select_army_before_s`, and their serialised config (checkpoint) has none of these keys —
+    /// they run as before.
+    #[test]
+    fn amb_042_19_keys_default() {
+        assert_eq!(StartMixConfig::default(), StartMixConfig { rush_hit_share: None, groups: vec!["rush".into()] });
+        for f in [
+            include_str!("../../../config/rl.toml"),
+            include_str!("../../../config/rl_rush1.toml"),
+            include_str!("../../../config/rl_rush2.toml"),
+            include_str!("../../../config/rl_rush3.toml"),
+            include_str!("../../../config/rl_rush4.toml"),
+        ] {
+            let c: RlConfig = toml::from_str(f).unwrap();
+            c.validate().unwrap();
+            assert_eq!(c.league.start_mix, StartMixConfig::default());
+            for g in [None, Some("rush"), Some("macro"), Some("warmup")] {
+                assert_eq!(c.league.start_mix.share_for(g), None);
+                assert_ne!(c.curriculum.ladder_pick.for_group(g), LadderPick::Fixed);
+            }
+            assert!(c.ladder.iter().all(|e| e.weight.is_none()));
+            assert_eq!((c.sil.select_keys.as_ref(), c.sil.select_army_before_s), (None, None));
+            let json = serde_json::to_value(&c).unwrap();
+            assert!(json["league"].get("start_mix").is_none() && json["sil"].get("select_keys").is_none() && json["sil"].get("select_army_before_s").is_none());
+            assert!(json["ladder"].as_array().unwrap().iter().all(|e| e.get("weight").is_none()), "checkpoint config as before");
+        }
+        let rl = include_str!("../../../config/rl.toml");
+        assert!(!rl.lines().any(|l| ["[league.start_mix]", "rush_hit_share", "select_keys", "select_army_before_s", "[[ladder]]"].iter().any(|k| l.starts_with(k))), "rl.toml: comments only");
+    }
+
+    /// 042-R18 / R19 / R16 설정 검사 / 042-AC9 (AMB-042-19): `rush_hit_share` 0..=1, `groups` not
+    /// empty and in `ladder_groups`; `weight` >= 0, only on "fixed" groups, a "fixed" group's sum
+    /// above 0; `select_keys` keys of `select_group` entries, `select_army_before_s` >= 0; unknown
+    /// keys are load errors.
+    #[test]
+    fn amb_042_19_settings_are_checked() {
+        let base: RlConfig = toml::from_str(include_str!("../../../config/rl_rush5.toml")).unwrap();
+        base.validate().unwrap();
+        let check = |f: &dyn Fn(&mut RlConfig)| {
+            let mut c = base.clone();
+            f(&mut c);
+            c.validate()
+        };
+        // [league.start_mix]
+        for (share, ok) in [(0.0, true), (1.0, true), (0.5, true), (-0.01, false), (1.01, false), (f64::NAN, false)] {
+            assert_eq!(check(&|c| c.league.start_mix.rush_hit_share = Some(share)).is_ok(), ok, "{share}");
+        }
+        assert!(check(&|c| c.league.start_mix.groups = vec![]).is_err(), "empty groups");
+        assert!(check(&|c| c.league.start_mix.groups = vec!["late".into()]).is_err(), "not in ladder_groups");
+        check(&|c| c.league.start_mix.groups = vec!["rush".into(), "macro".into()]).unwrap();
+        check(&|c| (c.league.start_mix.rush_hit_share, c.league.start_mix.groups) = (None, vec![])).unwrap();
+        let mut no_groups = RlConfig::default_file();
+        no_groups.league.start_mix.rush_hit_share = Some(0.5);
+        assert!(no_groups.validate().is_err(), "no ladder_groups");
+        // [[ladder]] weight and "fixed".
+        fn rush(c: &mut RlConfig) -> Vec<&mut LadderEntry> {
+            c.ladder.iter_mut().filter(|e| e.group == "rush").collect()
+        }
+        assert!(check(&|c| rush(c)[0].weight = Some(-0.1)).is_err(), "negative weight");
+        assert!(check(&|c| rush(c)[0].weight = Some(f64::INFINITY)).is_err());
+        assert!(check(&|c| rush(c).into_iter().for_each(|e| e.weight = Some(0.0))).is_err(), "fixed group sums to 0");
+        check(&|c| rush(c)[0].weight = Some(0.0)).unwrap();
+        check(&|c| rush(c).into_iter().for_each(|e| e.weight = None)).unwrap();
+        assert!(check(&|c| c.ladder.iter_mut().find(|e| e.group == "macro").unwrap().weight = Some(1.0)).is_err(), "weight on a f_var group");
+        assert!(check(&|c| c.curriculum.ladder_pick = LadderPickSetting::PerGroup([("rush".to_string(), LadderPick::Band)].into_iter().collect())).is_err(), "weights without fixed");
+        check(&|c| c.curriculum.ladder_pick = LadderPickSetting::All(LadderPick::Fixed)).unwrap();
+        // One "fixed" pick without groups: weights over every entry.
+        let mut flat = RlConfig::default_file();
+        flat.curriculum.c1_ladder = 0.5;
+        flat.ladder = base.ladder.iter().map(|e| LadderEntry { group: String::new(), ..e.clone() }).collect();
+        assert!(flat.validate().is_err(), "weights with the default f_var");
+        flat.curriculum.ladder_pick = LadderPickSetting::All(LadderPick::Fixed);
+        flat.validate().unwrap();
+        // [sil] select_keys / select_army_before_s.
+        assert!(check(&|c| c.sil.select_keys = Some(vec!["t0-zerg".into()])).is_err(), "a macro key");
+        assert!(check(&|c| c.sil.select_keys = Some(vec!["nobody-zerg".into()])).is_err());
+        assert!(check(&|c| c.sil.select_keys = Some(vec![])).is_err());
+        assert!(check(&|c| c.sil.select_army_before_s = Some(-1.0)).is_err());
+        check(&|c| c.sil.select_keys = Some(vec!["ualbertabot9poolhydra-zerg".into()])).unwrap();
+        check(&|c| (c.sil.select_keys, c.sil.select_army_before_s) = (None, None)).unwrap();
+        // Unknown keys and types.
+        let text = include_str!("../../../config/rl_rush5.toml").replace("\r\n", "\n");
+        for (from, to) in [("\nrush_hit_share = 0.5\n", "\nrush_hit_shares = 0.5\n"), ("\nrush_hit_share = 0.5\n", "\nrush_hit_share = \"half\"\n"), ("\nselect_army_before_s = 225\n", "\nselect_army_before = 225\n"), ("\nweight = 0.35\n", "\nweight = \"0.35\"\n"), ("\nladder_pick = { rush = \"fixed\"", "\nladder_pick = { rush = \"fix\"")] {
+            assert!(text.contains(from), "{from}");
+            assert!(toml::from_str::<RlConfig>(&text.replacen(from, to, 1)).is_err(), "{to}");
+        }
+    }
+
+    /// 042 "조건 통제 run" `rush-s5` (AMB-042-19): `config/rl_rush5.toml` is `rl_rush4.toml` with the
+    /// rush-s5 table's changes only — groups rush 0.70 / macro 0.20 (warmup entry deleted), rush
+    /// "fixed" with weights 0.35 / 0.30 / 0.20 / 0.15 and macro f_var, `[league.start_mix]
+    /// rush_hit_share = 0.5` (groups default rush), rush judge groups `["rush"]`, `[sil]
+    /// select_keys` (T0, UAB12, 9-pool 10 lings) and `select_army_before_s = 225`.
+    #[test]
+    fn rush5_config_042_amb_042_19() {
+        let t: RlConfig = toml::from_str(include_str!("../../../config/rl_rush5.toml")).unwrap();
+        t.validate().unwrap();
+        let groups: Vec<(&str, f64)> = t.curriculum.ladder_groups.iter().map(|(g, x)| (g.as_str(), *x)).collect();
+        assert_eq!(groups, [("macro", 0.20), ("rush", 0.70)]);
+        let cc = &t.curriculum;
+        assert_eq!((cc.c1_ladder, cc.c1_anchor, cc.c1_snapshot, cc.c1_self, cc.c1_t1, cc.c1_t0), (0.90, 0.05, 0.05, 0.0, 0.0, 0.0));
+        assert_eq!((cc.ladder_pick.for_group(Some("rush")), cc.ladder_pick.for_group(Some("macro"))), (LadderPick::Fixed, LadderPick::FVar));
+        let weights: Vec<(String, Option<f64>)> = t.ladder.iter().filter(|e| e.group == "rush").map(|e| (e.opponent().unwrap().1, e.weight)).collect();
+        assert_eq!(weights, [("t0-zerg-rush".to_string(), Some(0.35)), ("ualbertabot12poollings-zerg".into(), Some(0.30)), ("ualbertabot9pool10lings-zerg".into(), Some(0.20)), ("ualbertabot9poolhydra-zerg".into(), Some(0.15))]);
+        assert!(t.ladder.iter().filter(|e| e.group == "macro").all(|e| e.weight.is_none()));
+        assert_eq!(t.league.start_mix, StartMixConfig { rush_hit_share: Some(0.5), groups: vec!["rush".into()] });
+        assert_eq!((t.league.start_mix.share_for(Some("rush")), t.league.start_mix.share_for(Some("macro")), t.league.start_mix.share_for(None)), (Some(0.5), None, None));
+        assert_eq!(t.league.rush_judge, RushJudgeConfig { groups: vec!["rush".into()], at_s: 480, min_scv: 8 });
+        assert_eq!(t.sil.select_keys, Some(vec!["t0-zerg-rush".to_string(), "ualbertabot12poollings-zerg".into(), "ualbertabot9pool10lings-zerg".into()]));
+        assert_eq!(t.sil.select_army_before_s, Some(225.0));
+        assert_eq!(t.ladder.len(), 9);
+        // Everything else as in rush-s4.
+        let mut d: RlConfig = toml::from_str(include_str!("../../../config/rl_rush4.toml")).unwrap();
+        d.ladder.retain(|e| e.group != "warmup");
+        for e in d.ladder.iter_mut() {
+            e.weight = t.ladder.iter().find(|x| x.opponent().unwrap().1 == e.opponent().unwrap().1).unwrap().weight;
+        }
+        d.curriculum.ladder_groups = t.curriculum.ladder_groups.clone();
+        d.curriculum.ladder_pick = t.curriculum.ladder_pick.clone();
+        d.league.start_mix = t.league.start_mix.clone();
+        d.league.rush_judge.groups = vec!["rush".into()];
+        (d.sil.select_keys, d.sil.select_army_before_s) = (t.sil.select_keys.clone(), t.sil.select_army_before_s);
         assert_eq!(d, t);
         let back: RlConfig = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
         assert_eq!(back, t, "the serialised config (checkpoint) reads back the same");

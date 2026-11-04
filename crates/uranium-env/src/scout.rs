@@ -23,6 +23,9 @@ pub const FPS: f64 = 24.0;
 /// 4:00 and 6:00 in frames (042 정찰·대응 지표).
 pub const FRAME_4M: u32 = 5_760;
 pub const FRAME_6M: u32 = 8_640;
+/// 1:00 and 8:00 in frames (050-R7 세션 지표, AMB-042-19).
+pub const FRAME_1M: u32 = 1_440;
+pub const FRAME_8M: u32 = 11_520;
 
 /// 033-R11 reward channel mode `[reward] pseudo` (AMB-042-16).
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -166,6 +169,17 @@ pub struct ScoutMetrics {
     /// observation folded — the final frame (`GameEnd.final_frame`, 010-R12) when the session got
     /// one, else its last `RawFrame`; `None` before the first observation.
     pub scv_last: Option<u32>,
+    /// 050-R7 `scv_min_1m` (AMB-042-19): the least own SCVs (the same 033-R10 count) over the
+    /// observations at or after 1:00 (frame 1,440); `None` when the game ended before 1:00. Held
+    /// (050-R7 막음) = `> 4`.
+    pub scv_min_1m: Option<u32>,
+    /// 050-R7 `army_s` (AMB-042-19): the observation at which 033-R9 "병력 첫 목격" held (the
+    /// `army_found` item: an enemy unit that is not a worker, building, larva, egg, cocoon,
+    /// overlord or spell); `None` = never seen.
+    pub army_frame: Option<u32>,
+    /// 050-R7 `scv_8m` (AMB-042-19, 메인 임시 결정): own SCVs (the same count) at the first
+    /// observation at or after 8:00 (frame 11,520); `None` when the game ended before.
+    pub scv_8m: Option<u32>,
 }
 
 /// Game seconds of a frame (042-R14 24 fps).
@@ -337,6 +351,7 @@ impl ScoutTracker {
         }
         if army_now && !self.army_found {
             self.army_found = true;
+            self.metrics.army_frame = Some(f);
             raw += s.army;
         }
         // 033-R9: decay at the observation's frame, then the per-game cap.
@@ -355,6 +370,13 @@ impl ScoutTracker {
         }
         // 042-R17: frames arrive in order, so this ends as the last observation's count.
         self.metrics.scv_last = Some(scvs);
+        // 050-R7 (AMB-042-19): the least count from 1:00, the first count from 8:00.
+        if f >= FRAME_1M {
+            self.metrics.scv_min_1m = Some(self.metrics.scv_min_1m.map_or(scvs, |m| m.min(scvs)));
+        }
+        if self.metrics.scv_8m.is_none() && f >= FRAME_8M {
+            self.metrics.scv_8m = Some(scvs);
+        }
         // 033-R10: the seconds of (prev, f] inside the window, at this observation's SCV count.
         let v = &self.cfg.survive;
         let (lo, hi) = (v.from_s * FPS, v.until_s * FPS);
@@ -617,6 +639,50 @@ mod tests {
         let m = t.metrics();
         assert_eq!(m.scv_last, Some(8), "7 + 1 loaded; the one in production and the enemy's not counted");
         assert_eq!(m.scv_4m, Some(12), "scv_4m stays the 4:00 value");
+    }
+
+    /// 050-R7 / 050-AC3 세션 지표 (AMB-042-19): `scv_min_1m` counts from 1:00 (an observation at
+    /// 1,439 is not counted, 1,440 is), is the least count, counts loaded SCVs and not ones in
+    /// production, and is empty for a game over before 1:00; `army_frame` is the first observation
+    /// with an enemy army unit (workers, buildings, larvae, eggs, cocoons, overlords not), empty
+    /// when never seen; `scv_8m` is the first count at or after 11,520 and empty for a game over
+    /// before 8:00.
+    #[test]
+    fn session_metrics_050_r7() {
+        let mut t = tracker(RewardConfig::default());
+        t.step(&frame(1_000, scvs(2)));
+        t.step(&frame(1_439, scvs(3)));
+        assert_eq!(t.metrics().scv_min_1m, None, "before 1:00 nothing counts");
+        t.step(&frame(1_440, scvs(9)));
+        assert_eq!(t.metrics().scv_min_1m, Some(9), "1,440 counts");
+        let mut loaded = unit(2_000, ME, "Terran_SCV", OURS, true);
+        loaded.flags |= flags::LOADED;
+        loaded.loaded_in = Some(21);
+        let mixed = vec![loaded, unit(2_001, ME, "Terran_SCV", OURS, false), unit(2_002, ENEMY, "Terran_SCV", (60, 60), true), unit(21, ME, "Terran_Bunker", OURS, true)];
+        t.step(&frame(3_000, [scvs(4), mixed].concat()));
+        assert_eq!(t.metrics().scv_min_1m, Some(5), "4 + 1 loaded; production and the enemy's SCV not counted");
+        t.step(&frame(4_000, scvs(12)));
+        assert_eq!(t.metrics().scv_min_1m, Some(5), "the least, not the last");
+        assert_eq!(t.metrics().scv_8m, None);
+        t.step(&frame(11_519, scvs(13)));
+        assert_eq!(t.metrics().scv_8m, None, "11,519 is before 8:00");
+        t.step(&frame(11_520, scvs(14)));
+        t.step(&frame(11_544, scvs(3)));
+        let m = t.metrics();
+        assert_eq!((m.scv_8m, m.scv_min_1m), (Some(14), Some(3)), "scv_8m at 11,520; the minimum goes on after 8:00");
+        // A game over before 1:00: both empty.
+        let mut t = tracker(RewardConfig::default());
+        t.step(&frame(1_200, scvs(4)));
+        assert_eq!((t.metrics().scv_min_1m, t.metrics().scv_8m), (None, None));
+        // army: not for workers, buildings, larvae, eggs, cocoons, overlords; the first army unit.
+        let mut t = tracker(RewardConfig::default());
+        let not_army = vec![unit(1, ENEMY, "Zerg_Drone", (60, 60), true), unit(2, ENEMY, "Zerg_Spawning_Pool", (60, 60), true), unit(3, ENEMY, "Zerg_Larva", (60, 60), true), unit(4, ENEMY, "Zerg_Egg", (60, 60), true), unit(5, ENEMY, "Zerg_Cocoon", (60, 60), true), unit(6, ENEMY, "Zerg_Overlord", (60, 60), true), unit(7, ME, "Terran_Marine", OURS, true)];
+        t.step(&frame(2_000, not_army));
+        assert_eq!(t.metrics().army_frame, None, "never seen");
+        t.step(&frame(4_440, vec![unit(8, ENEMY, "Zerg_Zergling", (30, 30), true)]));
+        t.step(&frame(4_500, vec![unit(9, ENEMY, "Zerg_Zergling", (30, 30), true)]));
+        assert_eq!(t.metrics().army_frame, Some(4_440), "the first sighting");
+        assert_eq!(seconds(4_440), 185.0);
     }
 
     /// 033-R11 설정 키 검사 and the per-game multipliers.

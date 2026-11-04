@@ -78,9 +78,19 @@ pub struct LadderEntry {
     /// name. Drawn by `[curriculum] ladder_groups` when that is set, recorded in `games.csv`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub group: String,
+    /// 042-R19 (AMB-042-19): the entry's weight in a `"fixed"` group (>= 0, absent = 1.0); only
+    /// for entries of a `"fixed"` group (load error otherwise). Left out of the serialised config
+    /// when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<f64>,
 }
 
 impl LadderEntry {
+    /// 042-R19: the `"fixed"` weight (absent = 1.0).
+    pub fn fixed_weight(&self) -> f64 {
+        self.weight.unwrap_or(1.0)
+    }
+
     /// The opponent, its win-table key and class by the existing rules (042, 021-R3): T0
     /// `t0-<race>[-<build tag>]` / T0, T1 `<name>-<race>` / T1. An error for the 042 사다리 설정
     /// 검사 cases (missing or extra field, Random / Unknown race, a build of another race).
@@ -113,6 +123,9 @@ pub enum LadderPick {
     /// 042 사다리 선택 `band` (AMB-042-17): `exp(-((x - center) / width)^2)` with the
     /// `exclude_below` rule (`[curriculum.band]`).
     Band,
+    /// 042-R19 사다리 선택 `fixed` (AMB-042-19): in proportion to `[[ladder]] weight` (absent
+    /// 1.0); the win table is not read.
+    Fixed,
 }
 
 /// `[curriculum] ladder_pick` (042, AMB-042-17): one method for every group (a string, the
@@ -530,20 +543,26 @@ impl League {
             let shares: Vec<f64> = groups.iter().map(|(_, x)| *x).collect();
             Some(groups[self.weighted(&shares)].0.clone())
         };
-        let entries: Vec<(Opponent, String, Class, String)> = self
+        let entries: Vec<(Opponent, String, Class, String, f64)> = self
             .cfg()
             .ladder
             .iter()
             .filter(|e| group.as_ref().is_none_or(|g| &e.group == g))
-            .filter_map(|e| e.opponent().ok().map(|(o, k, c)| (o, k, c, e.group.clone())))
+            .filter_map(|e| e.opponent().ok().map(|(o, k, c)| (o, k, c, e.group.clone(), e.fixed_weight())))
             .collect();
-        let pool: Vec<(Opponent, String, Class)> = entries.iter().map(|(o, k, c, _)| (o.clone(), k.clone(), *c)).collect();
+        let pool: Vec<(Opponent, String, Class)> = entries.iter().map(|(o, k, c, _, _)| (o.clone(), k.clone(), *c)).collect();
         // 042 (AMB-042-17): the group's method; "f_var" is the earlier pick, draw for draw.
         let picked = match self.cfg().curriculum.ladder_pick.for_group(group.as_deref()) {
             LadderPick::FVar => self.pfsp(agent, pool, true),
             LadderPick::Band => self.band_pick(agent, pool),
+            // 042-R19 (AMB-042-19): by `[[ladder]] weight`, the win table not read.
+            LadderPick::Fixed if pool.is_empty() => None,
+            LadderPick::Fixed => {
+                let w: Vec<f64> = entries.iter().map(|e| e.4).collect();
+                Some(pool[self.weighted(&w)].clone())
+            }
         }?;
-        let g = entries.iter().find(|(_, k, _, _)| *k == picked.1).map(|(_, _, _, g)| g.clone()).unwrap_or_default();
+        let g = entries.iter().find(|(_, k, _, _, _)| *k == picked.1).map(|(_, _, _, g, _)| g.clone()).unwrap_or_default();
         Some((picked, g))
     }
 
@@ -1361,11 +1380,11 @@ mod tests {
     }
 
     fn t0_entry(build: T0Build, race: Race) -> LadderEntry {
-        LadderEntry { kind: LadderKind::T0, build: Some(build), name: None, race, group: String::new() }
+        LadderEntry { kind: LadderKind::T0, build: Some(build), name: None, race, group: String::new(), weight: None }
     }
 
     fn t1_entry(name: &str, race: Race) -> LadderEntry {
-        LadderEntry { kind: LadderKind::T1, build: None, name: Some(name.into()), race, group: String::new() }
+        LadderEntry { kind: LadderKind::T1, build: None, name: Some(name.into()), race, group: String::new(), weight: None }
     }
 
     /// The 042 "러시 커리큘럼 run" league (config/rl_rush1.toml shares, AMB-042-15).
@@ -1513,9 +1532,9 @@ mod tests {
         assert!(t1_entry("zzzkbot", Race::Random).opponent().is_err());
         assert!(t1_entry("zzzkbot", Race::Unknown).opponent().is_err());
         assert!(t1_entry(" ", Race::Zerg).opponent().is_err());
-        assert!(LadderEntry { kind: LadderKind::T0, build: Some(T0Build::ZergRush), name: Some("x".into()), race: Race::Zerg, group: String::new() }.opponent().is_err());
-        assert!(LadderEntry { kind: LadderKind::T0, build: None, name: None, race: Race::Zerg, group: String::new() }.opponent().is_err());
-        assert!(LadderEntry { kind: LadderKind::T1, build: Some(T0Build::ZergRush), name: Some("x".into()), race: Race::Zerg, group: String::new() }.opponent().is_err());
+        assert!(LadderEntry { kind: LadderKind::T0, build: Some(T0Build::ZergRush), name: Some("x".into()), race: Race::Zerg, group: String::new(), weight: None }.opponent().is_err());
+        assert!(LadderEntry { kind: LadderKind::T0, build: None, name: None, race: Race::Zerg, group: String::new(), weight: None }.opponent().is_err());
+        assert!(LadderEntry { kind: LadderKind::T1, build: Some(T0Build::ZergRush), name: Some("x".into()), race: Race::Zerg, group: String::new(), weight: None }.opponent().is_err());
     }
 
     fn grouped(e: LadderEntry, g: &str) -> LadderEntry {
@@ -1578,6 +1597,77 @@ mod tests {
         assert_eq!(m.keys().cloned().collect::<BTreeSet<_>>(), MACRO_KEYS.iter().map(|k| k.to_string()).collect::<BTreeSet<_>>(), "macro entries only: {m:?}");
         let get = |k: &str| m.get(k).copied().unwrap_or(0);
         assert!(get("ualbertabot2hatchhydra-zerg") > 10 * get("t0-zerg").max(1), "{m:?}");
+    }
+
+    /// 042-R19 / 042-AC9 (AMB-042-19): in a `"fixed"` group the entries come in proportion to
+    /// `[[ladder]] weight` (absent 1.0) on a fixed-seed sample whatever the win table says; the
+    /// other group keeps its method (f_var); a resumed league uses the current file's weights.
+    #[test]
+    fn ladder_fixed_by_weight_042_r19() {
+        let fixed = |rush_weights: &[Option<f64>]| {
+            let mut c = grouped_cfg(&[("rush", 1.0), ("macro", 0.0)]);
+            for (e, w) in c.ladder.iter_mut().zip(rush_weights) {
+                e.weight = *w;
+            }
+            c.curriculum.ladder_pick = LadderPickSetting::PerGroup([("rush".to_string(), LadderPick::Fixed), ("macro".to_string(), LadderPick::FVar)].into_iter().collect());
+            c
+        };
+        let count = |l: &mut League, n: usize| {
+            let mut m: BTreeMap<String, usize> = BTreeMap::new();
+            for _ in 0..n {
+                *m.entry(l.next().key).or_default() += 1;
+            }
+            m
+        };
+        let n = 20_000;
+        let ws = [Some(0.35), Some(0.30), Some(0.20), Some(0.15)];
+        for win in [0.0, 0.5, 1.0] {
+            let mut l = League::new("r1", 13, None, fixed(&ws));
+            // The win table is not read: an extreme table changes nothing.
+            for k in RUSH_KEYS {
+                l.agents[0].win.insert(k.to_string(), win);
+            }
+            let m = count(&mut l, n);
+            for (k, w) in RUSH_KEYS.iter().zip(ws) {
+                let share = m.get(*k).copied().unwrap_or(0) as f64 / n as f64;
+                assert!((share - w.unwrap()).abs() < 0.015, "win {win}: {k} {share} vs {w:?} ({m:?})");
+            }
+        }
+        // Absent weight = 1.0; weight 0 = never.
+        let mut l = League::new("r1", 13, None, fixed(&[None, Some(2.0), Some(0.0), None]));
+        let m = count(&mut l, n);
+        let share = |k: &str| m.get(k).copied().unwrap_or(0) as f64 / n as f64;
+        assert!((share("t0-zerg-rush") - 0.25).abs() < 0.015 && (share("ualbertabot-zerg") - 0.5).abs() < 0.015 && (share("zzzkbot-zerg") - 0.25).abs() < 0.015, "{m:?}");
+        assert_eq!(share("steamhammeroverpool-zerg"), 0.0);
+        // The macro group keeps f_var.
+        let mut c = fixed(&ws);
+        c.curriculum.ladder_groups = [("rush".to_string(), 0.0), ("macro".to_string(), 1.0)].into_iter().collect();
+        let mut l = League::new("r1", 5, None, c.clone());
+        l.agents[0].win.insert("t0-zerg".into(), 0.99);
+        let m = count(&mut l, 4000);
+        assert!(m.get("ualbertabot2hatchhydra-zerg").copied().unwrap_or(0) > 10 * m.get("t0-zerg").copied().unwrap_or(1).max(1), "{m:?}");
+        // 042 "재개 시 설정": the resumed league picks by the current file's weights.
+        let l = League::new("r1", 13, None, fixed(&ws));
+        let mut r = League::from_bytes(&l.to_bytes(), fixed(&[Some(0.0), Some(0.0), Some(0.0), Some(1.0)])).unwrap();
+        assert!((0..500).all(|_| r.next().key == "zzzkbot-zerg"));
+    }
+
+    /// 042-R19 / 042-AC9: `f_var` and `band` never read `weight` (the same draws with and without
+    /// it), and an entry without `weight` serialises as before (no key).
+    #[test]
+    fn no_fixed_keeps_earlier_picks_042_r19() {
+        let base = grouped_cfg(&[("rush", 0.7), ("macro", 0.3)]);
+        let mut band = base.clone();
+        band.curriculum.ladder_pick = LadderPickSetting::PerGroup([("rush".to_string(), LadderPick::Band)].into_iter().collect());
+        for c in [base, band] {
+            assert!(!serde_json::to_string(&c.ladder).unwrap().contains("weight"), "no weight in the serialised entries");
+            let mut weighted = c.clone();
+            for (i, e) in weighted.ladder.iter_mut().enumerate() {
+                e.weight = Some(0.1 + i as f64);
+            }
+            let (mut a, mut b) = (League::new("r1", 9, None, c), League::new("r1", 9, None, weighted));
+            assert!((0..3000).all(|_| a.next() == b.next()));
+        }
     }
 
     /// 042 사다리 그룹 (AMB-042-16): without `ladder_groups` the picks are the earlier ones (same

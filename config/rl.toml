@@ -123,6 +123,16 @@ model_game_max_s = 0
 # end_reason = RushJudge and judge_scv. Earlier ends keep their result. Example (rush-s4):
 #   [league.rush_judge]
 #   groups = ["rush", "warmup"]
+# 042-R18 시작 조건 섞기 (AMB-042-19): absent [league.start_mix] (or no rush_hit_share) = off, every
+# RL game keeps its hash seed. Its keys: rush_hit_share (0..1), groups = ["rush"] (default;
+# [[ladder]] group names, each in [curriculum] ladder_groups). RL training games of those groups
+# draw a target start condition from the game id (020-R21 first-target hit with probability
+# rush_hit_share; natural 1/3) and take the first of up to 64 seeds derived from the game id whose
+# hit matches it (none: the hash seed, logged). Other groups, games against a model and evaluation
+# games keep their seed; the bots are unchanged. games.csv slot_self, slot_enemy and start_hit
+# are written for every game either way. Example (rush-s5):
+#   [league.start_mix]
+#   rush_hit_share = 0.5
 
 [snapshot]
 main_every_updates = 2000
@@ -153,7 +163,9 @@ c1_anchor = 0.0
 # win rate against it (unseen = win_rate_prior), uniform if all weights are 0; "band"
 # (AMB-042-17) = exp(-((x - center) / width)^2) with [curriculum.band] below. A table picks per
 # group, e.g. ladder_pick = { rush = "band", macro = "f_var" } (groups not listed: "f_var"; every
-# group named must be in ladder_groups).
+# group named must be in ladder_groups). "fixed" (042-R19, AMB-042-19) = in proportion to the
+# entries' [[ladder]] weight (>= 0, absent 1.0; the win table is not read). weight is a load error
+# on an entry whose group is not "fixed", as is a "fixed" group whose weights sum to 0.
 c1_ladder = 0.0
 ladder_pick = "f_var"
 # 042 사다리 그룹 (AMB-042-16): absent = one pool of every [[ladder]] entry. When set, e.g.
@@ -179,7 +191,8 @@ r_value_vs_model = true
 # come from the checkpoint (042). A [reward] pseudo other than the checkpoint's is a start error.
 # So do [kl] (the update count continues from the checkpoint), [kl.head_scale], [loss]
 # td_lambda, [curriculum.band], [league] model_game_max_s and [sil] (AMB-042-17), and
-# [league.rush_judge] and [sil] wins_only (AMB-042-18).
+# [league.rush_judge] and [sil] wins_only (AMB-042-18), and [league.start_mix], ladder_pick
+# "fixed" with [[ladder]] weight, [sil] select_keys and select_army_before_s (AMB-042-19).
 
 [curriculum.band]
 # 042 사다리 선택 band (AMB-042-17): weight exp(-((x - center) / width)^2), x = Main's win-table
@@ -218,6 +231,11 @@ sample_every = 100
 #   (segments starting before it, 0 = whole game); buffer_segments = 2048 (FIFO, not in
 #   checkpoints); lanes = 4 (of the batch lanes, replaced, Main only); w_pg = 0.05; w_v = 0.01;
 #   max_uses = 4.
+#   042-R16 상대·접촉 거르기 (AMB-042-19), both absent = no filter: select_keys = [...] (win-table
+#   keys, each of a select_group [[ladder]] entry, not empty: only games against them);
+#   select_army_before_s (game seconds >= 0: only games whose first enemy army sighting, army_s of
+#   050-R7, is known and at most this). rush-s5 (config/rl_rush5.toml): T0 zerg_rush,
+#   ualbertabot12poollings and ualbertabot9pool10lings, 225.
 
 [reward]
 # 033-R11 reward channel mode (AMB-042-16): "z" = the build / units value heads and channels

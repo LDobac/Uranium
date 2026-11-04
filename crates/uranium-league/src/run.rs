@@ -77,6 +77,9 @@ struct GameMeta {
     enemy_race: Race,
     /// Id of the snapshot / anchor server this game holds (`SnapshotPool::acquire`).
     server: Option<u64>,
+    /// 020-R21 start slots of `players[0]` / `players[1]` from the game's seed (`games.csv`
+    /// `slot_self`, `slot_enemy`, AMB-042-19); `None` without a seed.
+    slots: Option<[u8; 2]>,
 }
 
 struct Shared {
@@ -341,10 +344,12 @@ impl LearnerHook for Hook {
     fn session(&self, game_id: u64, info: &GameInfo) -> (Option<Strategy>, Box<dyn SessionObserver>) {
         let mut class = None;
         let mut ladder_group = None;
+        let mut key = String::new();
         if let Some(m) = self.shared.games.lock().unwrap().get_mut(&game_id) {
             m.self_player = Some(info.self_player);
             class = Some(m.pick.class);
             ladder_group = m.pick.ladder_group.clone();
+            key = m.pick.key.clone();
             if let Some(e) = info.players.iter().find(|p| p.is_enemy) {
                 if m.enemy_race == Race::Random || m.enemy_race == Race::Unknown {
                     m.enemy_race = e.race;
@@ -368,10 +373,12 @@ impl LearnerHook for Hook {
         };
         let mut obs = TrajectoryObserver::new(self.agent.index(), game_id, self.seq_len, self.shared.queues[self.agent.index()].clone(), self.tx.clone()).hold_terminal(held_sink(self.shared.clone())).r_value_policy(r_value_policy).pseudo(self.reward.pseudo, pseudo_scale);
         // 042-R16 (AMB-042-17): Main's games of the selected ladder group keep segment copies
-        // until the game is judged.
+        // until the game is judged; with `select_keys` (AMB-042-19) only games against a listed
+        // opponent (the others can never be selected).
         if let Some(sil) = &self.shared.sil
             && self.agent == AgentKind::Main
             && ladder_group.as_deref() == Some(sil.cfg.select_group.as_str())
+            && sil.cfg.select_keys.as_ref().is_none_or(|ks| ks.contains(&key))
         {
             let s = self.shared.clone();
             obs = obs.copy_segments(Box::new(move |seg: &Segment| {
@@ -409,6 +416,41 @@ fn splitmix(state: &mut u64) -> f64 {
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^= z >> 31;
     (z >> 11) as f64 / (1u64 << 53) as f64
+}
+
+/// The seed of RL game `id` (no RNG state: the same id gives the same seed, resumes included).
+fn base_seed(id: u64) -> u32 {
+    (splitmix(&mut (id ^ 0xA5A5_5A5A)) * u32::MAX as f64) as u32
+}
+
+/// 042-R18 candidates beyond `s_0`: up to 64 seeds of a game.
+const START_MIX_TRIES: u64 = 64;
+
+/// 042-R18 시작 조건 섞기 (AMB-042-19): the `GameSpec.seed` of RL game `id`. Without a share (not
+/// a `[league.start_mix]` group's ladder game) it is the earlier hash seed `s_0`. With one, the
+/// game's target condition is a first-target hit when a uniform value of the id is below the
+/// share; the first of `s_0`, `s_1`..`s_63` (hashes of the id and k) whose 020-R21 hit (ours
+/// `players[0]`, the enemy `players[1]`, `random_players` Random draws first) is the target is
+/// the seed, else `s_0` with a log line (about (2/3)^64, 메인 임시 결정). Hash constants:
+/// implementation choice.
+fn game_seed(id: u64, share: Option<f64>, random_players: u32) -> u32 {
+    let Some(share) = share else { return base_seed(id) };
+    mixed_seed(id, share, |s| {
+        let [a, b] = uranium_runner::start_slots::start_slots(s, random_players);
+        uranium_runner::start_slots::start_hit(a, b)
+    })
+}
+
+/// 042-R18: the seed search of [`game_seed`] with the hit of a seed given by `hit`.
+fn mixed_seed(id: u64, share: f64, hit: impl Fn(u32) -> bool) -> u32 {
+    let s0 = base_seed(id);
+    let target = splitmix(&mut (id ^ 0x5EED_0042_0018_0000)) < share;
+    let candidate = |k: u64| if k == 0 { s0 } else { (splitmix(&mut (id.wrapping_mul(START_MIX_TRIES) ^ k ^ 0x51A7_1E5E_ED00_0000)) * u32::MAX as f64) as u32 };
+    if let Some(s) = (0..START_MIX_TRIES).map(candidate).find(|&s| hit(s) == target) {
+        return s;
+    }
+    crate::elog!("[rl] game {id}: 042-R18 none of {START_MIX_TRIES} seeds gives the target start condition (first-target hit = {target}); keeping the game's seed {s0}");
+    s0
 }
 
 /// League-driven job source (020-R12).
@@ -454,11 +496,16 @@ impl LeagueSource {
             // The server was taken above (`policies[1]`).
             Opponent::Snapshot { .. } | Opponent::Anchor { .. } => (bridge(Race::Terran), Race::Terran, pick.key.clone()),
         };
-        let seed = (splitmix(&mut (id ^ 0xA5A5_5A5A)) * u32::MAX as f64) as u32;
+        let players = [bridge(Race::Terran), p1];
+        // 020-R21: the Random race draws come before the slot shuffle.
+        let random_players = players.iter().filter(|p| p.race == Race::Random).count() as u32;
+        let share = if pick.class == Class::Model { None } else { s.league_cfg.start_mix.share_for(pick.ladder_group.as_deref()) };
+        let seed = game_seed(id, share, random_players);
+        let slots = uranium_runner::start_slots::start_slots(seed, random_players);
         let spec = GameSpec {
             game_id: id,
             map: if pick.fighting_spirit { MapKey::FightingSpirit } else { MapKey::CircuitBreaker },
-            players: [bridge(Race::Terran), p1],
+            players,
             seed: Some(seed),
             // 042-R15 / 020-R3 (AMB-042-17): a game against a model (a failed model opponent's
             // current-Main self-play included) has the model-game cap; 042-R17 (AMB-042-18): a
@@ -470,7 +517,7 @@ impl LeagueSource {
             // AMB-042-12 / 020-R3: queue waits count too; Timeout is left out like Aborted.
             wall_timeout_s: s.game_wall_timeout_s,
         };
-        s.games.lock().unwrap().insert(id, GameMeta { pick, self_player: None, enemy_race, server });
+        s.games.lock().unwrap().insert(id, GameMeta { pick, self_player: None, enemy_race, server, slots: Some(slots) });
         // 042-R14: every model session of an RL league game judges collapse concede.
         if s.concede_cfg.enabled {
             s.concede.insert(id, Arc::new(ConcedeGame::new(s.concede_cfg)));
@@ -618,6 +665,7 @@ impl JobSource for LeagueSource {
                 if let Some(sil) = &s.sil
                     && meta.pick.agent == AgentKind::Main
                     && meta.pick.ladder_group.as_deref() == Some(sil.cfg.select_group.as_str())
+                    && sil.cfg.select_keys.as_ref().is_none_or(|ks| ks.contains(&meta.pick.key))
                 {
                     sil.keep(&seg);
                 }
@@ -657,9 +705,13 @@ impl JobSource for LeagueSource {
             crate::elog!("[rl] game {id}: 042-R14 collapse concede by the {who} side (players index {}) at frame {}; result {:?}", c.side, c.frame, decided);
         }
         // 042-R16 고를 판 (AMB-042-17): a won or held game of the group goes to the buffer.
+        // 042-R16 상대·접촉 거르기 (AMB-042-19): and its opponent key / first army sighting pass
+        // `select_keys` / `select_army_before_s`.
         if let Some(sil) = &s.sil {
-            let scv_4m = result.as_ref().and_then(|r| r.scout).and_then(|m| m.scv_4m);
-            let selected = meta.pick.agent == AgentKind::Main && sil.cfg.selects(meta.pick.ladder_group.as_deref(), decided, scv_4m, conceded.is_some());
+            let scout = result.as_ref().and_then(|r| r.scout);
+            let scv_4m = scout.and_then(|m| m.scv_4m);
+            let army_s = scout.and_then(|m| m.army_frame).map(seconds);
+            let selected = meta.pick.agent == AgentKind::Main && sil.cfg.selects(meta.pick.ladder_group.as_deref(), decided, scv_4m, conceded.is_some()) && sil.cfg.passes_filters(&meta.pick.key, army_s);
             sil.settle(id, selected, r_win);
         }
         let disagree = verdict.as_ref().is_some_and(|v| v.1);
@@ -677,8 +729,9 @@ impl JobSource for LeagueSource {
         s.agent_steps.fetch_add(decisions, Ordering::SeqCst);
         s.games_done.fetch_add(1, Ordering::SeqCst);
         let extra = scout_columns(s.pseudo, result.as_ref(), meta.pick.ladder_group.as_deref());
+        let start = start_columns(meta.slots, result.as_ref());
         let line = format!(
-            "{},{},{},{},{:?},{},{},{:?},{},{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{:?},{},{},{:?},{},{},{},{},{},{},{},{},{},{},{},{}\n",
             id,
             AgentKind::ALL[agent].name(),
             job.opponent.clone().unwrap_or_default(),
@@ -702,7 +755,9 @@ impl JobSource for LeagueSource {
             end_reason,
             extra,
             // 042-R2 / R17 (AMB-042-18): the judged SCV count, empty for games not judged.
-            judge_scv.map_or(String::new(), |n| n.to_string())
+            judge_scv.map_or(String::new(), |n| n.to_string()),
+            // 042-R2 시작 슬롯·접촉 지표 (AMB-042-19).
+            start
         );
         let _ = s.games_csv.lock().unwrap().write_all(line.as_bytes());
         self.release_server(&meta);
@@ -753,8 +808,30 @@ fn keep_replay(dir: &Path, game_id: u64, reason: &str, bytes: &[u8]) -> Result<S
 
 /// games.csv header (042-R2, R11; `end_reason` 042-R14, 2026-11-03; then the 033 raw sums
 /// `r_scout`, `r_survive` and the 042 정찰·대응 지표, AMB-042-16; then the 042-R17 `judge_scv`,
-/// AMB-042-18).
-const GAMES_HEADER: &str = "game_id,agent,opponent,class,enemy_race,map,hostd_outcome,outcome,winner_disagree,decisions,r_win,r_build,r_units,r_value,replay,replay_reason,end_reason,r_scout,r_survive,ladder_group,scout_main_s,scout_types_4m,scout_types_6m,barracks_s,bunker_s,scv_4m,judge_scv\n";
+/// AMB-042-18; then the 시작 슬롯·접촉 지표 `slot_self`, `slot_enemy`, `start_hit`, `scv_min_1m`,
+/// `army_s`, AMB-042-19).
+const GAMES_HEADER: &str = "game_id,agent,opponent,class,enemy_race,map,hostd_outcome,outcome,winner_disagree,decisions,r_win,r_build,r_units,r_value,replay,replay_reason,end_reason,r_scout,r_survive,ladder_group,scout_main_s,scout_types_4m,scout_types_6m,barracks_s,bunker_s,scv_4m,judge_scv,slot_self,slot_enemy,start_hit,scv_min_1m,army_s\n";
+
+/// 042-R2 시작 슬롯·접촉 지표 (AMB-042-19): `slot_self`, `slot_enemy` (020-R21 slots of
+/// `players[0]` / `players[1]` from the game's seed, empty without one), `start_hit` (`1` / `0`,
+/// the same rule for every game, empty without slots), the learning session's `scv_min_1m` and
+/// `army_s` (050-R7, game seconds; empty when not reached / never seen or without a session
+/// report), comma-joined.
+fn start_columns(slots: Option<[u8; 2]>, result: Option<&GameResult>) -> String {
+    let m: Option<ScoutMetrics> = result.and_then(|r| r.scout);
+    let (a, b, hit) = match slots {
+        Some([a, b]) => (a.to_string(), b.to_string(), (uranium_runner::start_slots::start_hit(a, b) as u8).to_string()),
+        None => (String::new(), String::new(), String::new()),
+    };
+    [
+        a,
+        b,
+        hit,
+        m.and_then(|m| m.scv_min_1m).map_or(String::new(), |n| n.to_string()),
+        m.and_then(|m| m.army_frame).map_or(String::new(), |f| format!("{:.1}", seconds(f))),
+    ]
+    .join(",")
+}
 
 /// 042-R2 (AMB-042-16): the games.csv columns after `end_reason`, comma-joined. `r_scout`,
 /// `r_survive`: the game's raw sums, empty in the `"z"` mode (and without a session report);
@@ -1071,18 +1148,29 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     } else {
         crate::elog!("[rl] rush mini-game: ladder groups {:?} end at {} game seconds ({} frames); a TimeLimitDraw there is a win with >= {} own SCVs, else a loss (042-R17)", rj.groups, rj.at_s, rj.max_frames(), rj.min_scv);
     }
+    let weights: Vec<String> = cfg.ladder.iter().filter(|e| e.weight.is_some()).filter_map(|e| e.opponent().ok().map(|(_, k, _)| format!("{k} {}", e.fixed_weight()))).collect();
+    if !weights.is_empty() {
+        crate::elog!("[rl] \"fixed\" ladder weights: {} (absent = 1.0, 042-R19)", weights.join(", "));
+    }
+    let sm = &cfg.league.start_mix;
+    match sm.rush_hit_share {
+        None => crate::elog!("[rl] start condition mix off: every game keeps its hash seed (042-R18)"),
+        Some(x) => crate::elog!("[rl] start condition mix: ladder groups {:?} take a seed whose first-target hit (020-R21) matches a target drawn with hit share {x} (042-R18)", sm.groups),
+    }
     let k = &cfg.kl;
     crate::elog!("[rl] KL coefficient max({}, {} x 0.5^(update / {})) from this run's update 0, head multipliers {:?}; td_lambda {} (042-R9)", k.floor, k.init, k.half_life_updates, k.head_scale.by_head(), cfg.loss.td_lambda);
     let sc = &cfg.sil;
     if sc.enabled {
         crate::elog!(
-            "[rl] self-imitation ON (Main in C1 only): mode {:?}, {} lanes of {} from a buffer of {} segments, group {:?} {}, segments before {} s, w_pg {} w_v {} max_uses {} (042-R16)",
+            "[rl] self-imitation ON (Main in C1 only): mode {:?}, {} lanes of {} from a buffer of {} segments, group {:?} {}{}{}, segments before {} s, w_pg {} w_v {} max_uses {} (042-R16)",
             sc.mode,
             sc.lanes,
             cfg.lanes,
             sc.buffer_segments,
             sc.select_group,
             if sc.wins_only { "won games only (wins_only)".to_string() } else { format!("won or scv_4m >= {}", sc.select_scv_4m) },
+            sc.select_keys.as_ref().map_or(String::new(), |k| format!(", opponents {k:?}")),
+            sc.select_army_before_s.map_or(String::new(), |t| format!(", first enemy army seen by {t} s")),
             sc.until_s,
             sc.w_pg,
             sc.w_v,
@@ -1824,10 +1912,62 @@ mod tests {
 
     #[test]
     fn games_csv_header_matches_rows_042_r2() {
-        assert_eq!(GAMES_HEADER.trim().split(',').count(), 27);
+        assert_eq!(GAMES_HEADER.trim().split(',').count(), 32);
         // 042-R2 (AMB-042-16): the new columns follow end_reason in this order; 042-R17
-        // (AMB-042-18): `judge_scv` is the last column, after scv_4m.
-        assert!(GAMES_HEADER.trim().ends_with(",replay,replay_reason,end_reason,r_scout,r_survive,ladder_group,scout_main_s,scout_types_4m,scout_types_6m,barracks_s,bunker_s,scv_4m,judge_scv"));
+        // (AMB-042-18): `judge_scv` after scv_4m; 042-AC9 (AMB-042-19): the five start-slot and
+        // contact columns last. The earlier 27 columns are unchanged (rl.toml / rl_rush1..4 rows
+        // only gain the trailing columns).
+        assert!(GAMES_HEADER.trim().ends_with(",replay,replay_reason,end_reason,r_scout,r_survive,ladder_group,scout_main_s,scout_types_4m,scout_types_6m,barracks_s,bunker_s,scv_4m,judge_scv,slot_self,slot_enemy,start_hit,scv_min_1m,army_s"));
+        assert!(GAMES_HEADER.starts_with("game_id,agent,opponent,class,enemy_race,map,hostd_outcome,outcome,winner_disagree,decisions,r_win,r_build,r_units,r_value,replay,"));
+    }
+
+    /// 042-AC9 / 042-R2 (AMB-042-19): `slot_self`, `slot_enemy` = the 020-R21 generator's values,
+    /// `start_hit` 1 / 0 / empty, `scv_min_1m`, `army_s` in game seconds, empty when not reached
+    /// or without a session report.
+    #[test]
+    fn start_columns_042_ac9() {
+        let m = ScoutMetrics { scv_min_1m: Some(3), army_frame: Some(4_452), ..Default::default() };
+        let slots = |seed| Some(uranium_runner::start_slots::start_slots(seed, 0));
+        assert_eq!(start_columns(slots(43_006), Some(&result(1, Some(m)))), "1,0,1,3,185.5", "c0 g6: (1, 0) is a hit");
+        assert_eq!(start_columns(slots(43_001), Some(&result(1, Some(ScoutMetrics::default())))), "2,3,0,,", "c0 g1: a miss, nothing reached");
+        assert_eq!(start_columns(slots(43_001), None), "2,3,0,,", "no session report");
+        assert_eq!(start_columns(None, None), ",,,,", "no seed");
+    }
+
+    /// 042-R18 / 042-AC9 (AMB-042-19): without a share the seed is the earlier hash seed; with one
+    /// it is the same for the same game id, its 020-R21 hit is the target, about `rush_hit_share`
+    /// of the games are hits, and when no candidate fits the game keeps `s_0`.
+    #[test]
+    fn start_mix_seeds_042_r18() {
+        use uranium_runner::start_slots::{start_hit, start_slots};
+        let hit = |s: u32| {
+            let [a, b] = start_slots(s, 0);
+            start_hit(a, b)
+        };
+        for id in 1..200u64 {
+            assert_eq!(game_seed(id, None, 0), base_seed(id), "no share: the earlier seed");
+            assert_eq!(base_seed(id), (splitmix(&mut (id ^ 0xA5A5_5A5A)) * u32::MAX as f64) as u32);
+        }
+        for share in [0.0, 0.5, 1.0, 0.7] {
+            let n = 4_000u64;
+            let hits = (1..=n).filter(|&id| hit(game_seed(id, Some(share), 0))).count() as f64 / n as f64;
+            assert!((hits - share).abs() < 0.03, "share {share}: {hits}");
+        }
+        for id in [1u64, 77, 1_000_000] {
+            assert_eq!(game_seed(id, Some(0.5), 0), game_seed(id, Some(0.5), 0), "deterministic");
+            assert!(hit(game_seed(id, Some(1.0), 0)));
+            assert!(!hit(game_seed(id, Some(0.0), 0)));
+            // A candidate is kept as soon as it fits: s_0 when it already does.
+            let s0 = base_seed(id);
+            assert_eq!(game_seed(id, Some(if hit(s0) { 1.0 } else { 0.0 }), 0), s0);
+            // No candidate fits: s_0.
+            assert_eq!(mixed_seed(id, 1.0, |_| false), s0);
+            assert_eq!(mixed_seed(id, 0.0, |_| true), s0);
+        }
+        // Random players draw first: the search uses the same generator input.
+        let s = game_seed(5, Some(1.0), 1);
+        let [a, b] = start_slots(s, 1);
+        assert!(start_hit(a, b));
     }
 
     fn result(id: u64, scout: Option<ScoutMetrics>) -> GameResult {
@@ -1839,7 +1979,7 @@ mod tests {
     /// without a session report.
     #[test]
     fn scout_columns_042_r2() {
-        let m = ScoutMetrics { main_frame: Some(3_000), types_4m: 2, types_6m: 5, barracks_frame: Some(2_412), bunker_frame: None, scv_4m: Some(14), scv_last: Some(9) };
+        let m = ScoutMetrics { main_frame: Some(3_000), types_4m: 2, types_6m: 5, barracks_frame: Some(2_412), bunker_frame: None, scv_4m: Some(14), scv_last: Some(9), ..Default::default() };
         let r = result(1, Some(m));
         assert_eq!(scout_columns(PseudoMode::Scout, Some(&r), Some("macro")), "0.6,0.375,macro,125.0,2,5,100.5,,14");
         assert_eq!(scout_columns(PseudoMode::Z, Some(&r), Some("rush")), ",,rush,125.0,2,5,100.5,,14", "z: r_scout / r_survive empty");
@@ -1865,7 +2005,7 @@ mod tests {
             let cc = &mut cfg.curriculum;
             (cc.c1_t0, cc.c1_t1, cc.c1_self, cc.c1_ladder) = (0.0, 0.0, 0.0, 1.0);
             cc.ladder_groups = [("rush".to_string(), 0.5), ("macro".to_string(), 0.5)].into_iter().collect();
-            let entry = |build, group: &str| LadderEntry { kind: LadderKind::T0, build: Some(build), name: None, race: Race::Zerg, group: group.into() };
+            let entry = |build, group: &str| LadderEntry { kind: LadderKind::T0, build: Some(build), name: None, race: Race::Zerg, group: group.into(), weight: None };
             cfg.ladder = vec![entry(T0Build::ZergRush, "rush"), entry(T0Build::Standard, "macro")];
             cfg.sil = SilConfig { enabled: true, until_s, lanes: 2, buffer_segments: 1_000, ..SilConfig::default() };
             cfg.validate().unwrap();
@@ -1922,6 +2062,104 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// 042-R16 상대·접촉 거르기 / 042-AC9 (AMB-042-19) in the run loop: with `select_keys` and
+    /// `select_army_before_s` only won games against a listed opponent whose first enemy army
+    /// sighting is known and at most the limit reach the buffer (an unlisted opponent's games keep
+    /// no copies at all); nothing stays pending.
+    #[test]
+    fn sil_opponent_and_contact_filters_in_the_run_loop_042_r16() {
+        use crate::league::{LadderEntry, LadderKind};
+        use uranium_agent::T0Build;
+        use uranium_env::features::executor::HostAction;
+        use uranium_proto::EndReason;
+        let csv = PathBuf::from(if cfg!(windows) { "NUL" } else { "/dev/null" });
+        let mut cfg = RlConfig::default_file();
+        cfg.curriculum.start_stage = crate::league::Stage::C1;
+        let cc = &mut cfg.curriculum;
+        (cc.c1_t0, cc.c1_t1, cc.c1_self, cc.c1_ladder) = (0.0, 0.0, 0.0, 1.0);
+        cc.ladder_groups = [("rush".to_string(), 0.8), ("macro".to_string(), 0.2)].into_iter().collect();
+        let entry = |build, group: &str| LadderEntry { kind: LadderKind::T0, build: Some(build), name: None, race: Race::Zerg, group: group.into(), weight: None };
+        cfg.ladder = vec![entry(T0Build::ZergRush, "rush"), entry(T0Build::ZergMuta, "rush"), entry(T0Build::Standard, "macro")];
+        cfg.sil = SilConfig { enabled: true, until_s: 0, lanes: 2, buffer_segments: 1_000, wins_only: true, select_keys: Some(vec!["t0-zerg-rush".into()]), select_army_before_s: Some(225.0), ..SilConfig::default() };
+        cfg.validate().unwrap();
+        let src = source_cfg(cfg, fake_servers(false).0, &csv);
+        let info = crate::testkit::game_info();
+        let obs = crate::testkit::observations(10);
+        // army_frame: 5,400 = 225.0 s (selected), 5,401 (not), never seen (not), 2,000 (selected).
+        let armies = [Some(5_400u32), Some(5_401), None, Some(2_000)];
+        let (mut want, mut keys) = (0usize, BTreeSet::new());
+        for g in 0..40 {
+            let army_frame = armies[g % armies.len()];
+            let job = src.next().unwrap();
+            let id = job.spec.game_id;
+            let key = src.shared.games.lock().unwrap()[&id].pick.key.clone();
+            keys.insert(key.clone());
+            let (_, mut o) = src.hooks[0].session(id, &info);
+            let a = HostAction { action: 0, delay_bucket: 0, queued: false, selected: vec![], target_unit: None, target_loc: None };
+            for (i, ob) in obs.iter().enumerate() {
+                let state = o.wants_state().then(uranium_agent::infer::HostState::default);
+                o.on_decision(&uranium_agent::model_policy::Decision { frame: 10 * i as u32, obs: ob, action: &a, log_prob: 0.0, head_log_prob: [0.0; uranium_agent::infer::HEADS], value: [0.0; 4], rejected: false, version: 0, reward_before: Default::default(), state });
+            }
+            o.on_end(Default::default(), Some(Outcome::Win));
+            src.shared.results.lock().unwrap().try_iter().for_each(drop);
+            src.shared.games.lock().unwrap().get_mut(&id).unwrap().self_player = Some(0);
+            for slot in [0u8, 1] {
+                src.shared.ends.push(id, uranium_agent::SessionEnd { slot, winner: Some(0), frame: 9_000, reason: EndReason::Elimination });
+            }
+            src.hooks[0].tx.send(result(id, Some(ScoutMetrics { army_frame, ..Default::default() }))).unwrap();
+            src.done(&job, JobOutcome::Finished, None);
+            if key == "t0-zerg-rush" && army_frame.is_some_and(|f| f <= 5_400) {
+                want += 4;
+            }
+        }
+        assert!(keys.len() == 3, "{keys:?}");
+        let sil = src.shared.sil.as_ref().unwrap();
+        assert!(sil.pending.lock().unwrap().is_empty(), "nothing left pending");
+        assert!(want > 0);
+        assert_eq!(sil.buffer.lock().unwrap().len(), want);
+    }
+
+    /// 042-R18 / 042-AC9 (AMB-042-19) through the job source with config/rl_rush5.toml: rush games
+    /// take the `[league.start_mix]` seed (hits about 0.5), macro games and games against a model
+    /// keep the earlier hash seed; config/rl_rush4.toml (no `[league.start_mix]`) keeps every seed.
+    #[test]
+    fn start_mix_in_the_job_source_042_r18() {
+        let seeds = |file: &str| {
+            let cfg: RlConfig = toml::from_str(file).unwrap();
+            cfg.validate().unwrap();
+            let csv = PathBuf::from(if cfg!(windows) { "NUL" } else { "/dev/null" });
+            let src = source_cfg(cfg, fake_servers(false).0, &csv);
+            (0..3_000)
+                .map(|_| {
+                    let j = src.next().unwrap();
+                    let games = src.shared.games.lock().unwrap();
+                    let m = &games[&j.spec.game_id];
+                    assert_eq!(m.slots, Some(uranium_runner::start_slots::start_slots(j.spec.seed.unwrap(), 0)), "slots of the seed");
+                    (j.spec.game_id, m.pick.class, m.pick.ladder_group.clone(), j.spec.seed.unwrap())
+                })
+                .collect::<Vec<_>>()
+        };
+        let hit = |s: u32| {
+            let [a, b] = uranium_runner::start_slots::start_slots(s, 0);
+            uranium_runner::start_slots::start_hit(a, b)
+        };
+        let five = seeds(include_str!("../../../config/rl_rush5.toml"));
+        let (mut rush, mut rush_hits, mut other) = (0, 0, 0);
+        for (id, class, group, seed) in &five {
+            if group.as_deref() == Some("rush") {
+                assert_eq!(*seed, game_seed(*id, Some(0.5), 0));
+                rush += 1;
+                rush_hits += hit(*seed) as usize;
+            } else {
+                assert_eq!(*seed, base_seed(*id), "{class:?} {group:?}: the earlier seed");
+                other += 1;
+            }
+        }
+        let share = rush_hits as f64 / rush as f64;
+        assert!((share - 0.5).abs() < 0.04 && other > 0, "{rush_hits} / {rush}, others {other}");
+        assert!(seeds(include_str!("../../../config/rl_rush4.toml")).iter().all(|(id, _, _, s)| *s == base_seed(*id)));
     }
 
     /// 042-R16 / 042-AC7 (AMB-042-17) lane swap of the run loop: buffer lanes replace the last
@@ -2042,7 +2280,7 @@ mod tests {
         let cc = &mut cfg.curriculum;
         (cc.c1_t0, cc.c1_t1, cc.c1_self, cc.c1_ladder) = (0.0, 0.0, 0.5, 0.5);
         cc.ladder_groups = [("rush".to_string(), 0.5), ("macro".to_string(), 0.5)].into_iter().collect();
-        let entry = |build, group: &str| LadderEntry { kind: LadderKind::T0, build: Some(build), name: None, race: Race::Zerg, group: group.into() };
+        let entry = |build, group: &str| LadderEntry { kind: LadderKind::T0, build: Some(build), name: None, race: Race::Zerg, group: group.into(), weight: None };
         cfg.ladder = vec![entry(T0Build::ZergRush, "rush"), entry(T0Build::Standard, "macro")];
         cfg.reward.pseudo = PseudoMode::Scout;
         cfg.validate().unwrap();
@@ -2087,7 +2325,11 @@ mod tests {
             let line = std::fs::read_to_string(&csv).unwrap().lines().last().unwrap().to_string();
             let r: Vec<&str> = line.split(',').collect();
             assert_eq!(r.len(), GAMES_HEADER.trim().split(',').count(), "{line}");
-            assert_eq!(&r[17..], [&["0.6", "0.375", group.as_deref().unwrap_or("")][..], &["100.0", "1", "3", "", "", "", ""]].concat(), "{line}");
+            assert_eq!(&r[17..27], [&["0.6", "0.375", group.as_deref().unwrap_or("")][..], &["100.0", "1", "3", "", "", "", ""]].concat(), "{line}");
+            // 042-AC9 (AMB-042-19): the slots of the game's seed, no scv_min_1m / army_s reached.
+            let [a, b] = uranium_runner::start_slots::start_slots(job.spec.seed.unwrap(), 0);
+            let hit = if uranium_runner::start_slots::start_hit(a, b) { "1" } else { "0" };
+            assert_eq!(&r[27..], [a.to_string().as_str(), b.to_string().as_str(), hit, "", ""], "{line}");
             if let Some(g) = &group {
                 assert_eq!(r[2].starts_with("t0-zerg-rush"), g == "rush", "{line}");
             }
@@ -2159,7 +2401,7 @@ mod tests {
         let cc = &mut cfg.curriculum;
         (cc.c1_t0, cc.c1_t1, cc.c1_self, cc.c1_ladder) = (0.0, 0.0, 0.0, 1.0);
         cc.ladder_groups = [("rush".to_string(), 0.5), ("macro".to_string(), 0.5)].into_iter().collect();
-        let entry = |build, group: &str| LadderEntry { kind: LadderKind::T0, build: Some(build), name: None, race: Race::Zerg, group: group.into() };
+        let entry = |build, group: &str| LadderEntry { kind: LadderKind::T0, build: Some(build), name: None, race: Race::Zerg, group: group.into(), weight: None };
         cfg.ladder = vec![entry(T0Build::ZergRush, "rush"), entry(T0Build::Standard, "macro")];
         cfg.league.win_rate_decay = 0.9;
         cfg.league.rush_judge = RushJudgeConfig { groups: vec!["rush".into()], ..RushJudgeConfig::default() };

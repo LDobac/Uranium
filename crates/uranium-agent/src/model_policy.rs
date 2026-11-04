@@ -67,6 +67,12 @@ pub struct ModelStats {
     pub barracks_s: Option<f64>,
     pub bunker_s: Option<f64>,
     pub scv_4m: Option<u32>,
+    /// 050-R7 세션 지표 (AMB-042-19), after `scv_4m` in this order: the least own SCVs from 1:00
+    /// (held = `> 4`), the game seconds of the first enemy army sighting, own SCVs at the first
+    /// observation from 8:00. `None` = not reached / never seen.
+    pub scv_min_1m: Option<u32>,
+    pub army_s: Option<f64>,
+    pub scv_8m: Option<u32>,
 }
 
 /// One model decision as an RL actor needs it (042: obs, action, behaviour log-prob per head and
@@ -429,6 +435,7 @@ impl ModelPolicy {
         let secs = |f: Option<u32>| f.map(seconds);
         (s.scout_main_s, s.scout_types_4m, s.scout_types_6m) = (secs(m.main_frame), m.types_4m, m.types_6m);
         (s.barracks_s, s.bunker_s, s.scv_4m) = (secs(m.barracks_frame), secs(m.bunker_frame), m.scv_4m);
+        (s.scv_min_1m, s.army_s, s.scv_8m) = (m.scv_min_1m, secs(m.army_frame), m.scv_8m);
         s
     }
 }
@@ -438,4 +445,19 @@ fn live_rebuild(info: &GameInfo) -> Option<uranium_env::features::MapPrecompute>
     let hash: String = info.map_hash.iter().map(|b| format!("{b:02x}")).collect();
     let r = uranium_env::maps::load_resources(&maps_dir().ok()?, &hash)?;
     Some(uranium_env::features::mapgen::precompute(&info.static_map, &r.resources))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 050-R7 / 050-AC3 (AMB-042-19): the `results.jsonl` model row (a session record's `model`,
+    /// written in field order) has `scv_min_1m`, `army_s`, `scv_8m` right after `scv_4m`, empty
+    /// values as `null`.
+    #[test]
+    fn model_row_keys_050_r7() {
+        let s = ModelStats { scv_4m: Some(20), scv_min_1m: Some(5), army_s: Some(185.0), scv_8m: None, ..Default::default() };
+        let text = serde_json::to_string(&s).unwrap();
+        assert!(text.ends_with(r#""scv_4m":20,"scv_min_1m":5,"army_s":185.0,"scv_8m":null}"#), "{text}");
+    }
 }
