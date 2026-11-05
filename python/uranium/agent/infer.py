@@ -14,7 +14,7 @@ import time
 import torch
 
 from uranium import ckpt, kernels
-from uranium.device import DEVICE_LOCK, autocast, compiled
+from uranium.device import DEVICE_LOCK, autocast, compiled, exit_if_device_fatal
 from uranium.model import to_obs
 from uranium.model.heads import HEAD_NAMES
 from uranium.model.layers import env_choice
@@ -197,9 +197,26 @@ class InferenceServer(threading.Thread):
             self._free()
 
     def _free(self) -> None:
-        self.net = self.act_fn = self.graphed = self.state = None
-        if self.device.type == "cuda":
-            torch.cuda.empty_cache()
+        """042-R20 (AMB-042-20, 6th advisory): the device memory goes back only when nothing else
+        of this process runs on the device: `DEVICE_LOCK.exclusive()` (waits for the learner's
+        update and the other servers' batches), `torch.cuda.synchronize()` (work already queued),
+        then the captured graphs are destroyed and the cache emptied. A fatal device error here
+        ends the process (042-R20)."""
+        with DEVICE_LOCK.exclusive():
+            try:
+                cuda = self.device.type == "cuda"
+                if cuda:
+                    torch.cuda.synchronize(self.device)
+                if self.graphed is not None:
+                    for g in self.graphed.graphs.values():
+                        g["graph"].reset()
+                    self.graphed.graphs.clear()
+                self.net = self.act_fn = self.graphed = self.state = None
+                if cuda:
+                    torch.cuda.empty_cache()
+            except Exception as e:
+                exit_if_device_fatal(e, f"inference server {self.broker.checkpoint_id} close")
+                raise
 
     def on_stream(self):
         """The server's stream as the current one (CPU: nothing)."""
@@ -267,16 +284,19 @@ class InferenceServer(threading.Thread):
                     with self.lock, DEVICE_LOCK.shared(), self.on_stream():
                         self.handle(w, t_py)
                 except Exception as e:  # noqa: BLE001 - the sessions get the error, the server goes on
+                    # 042-R20: not after a fatal device error (every later batch fails the same
+                    # way): the process exits 70 for the watchdog.
+                    exit_if_device_fatal(e, f"inference server {self.broker.checkpoint_id}")
                     print(f"[infer] {self.broker.checkpoint_id}: {e!r}", file=sys.stderr, flush=True)
                     self.broker.fail(repr(e))
         except BaseException as e:  # noqa: BLE001
+            exit_if_device_fatal(e, f"inference server {self.broker.checkpoint_id} warm-up")
             self.error = e
             raise
         finally:
             self.broker.shutdown("model thread stopped")
             if self.release:
-                with DEVICE_LOCK.shared():
-                    self._free()
+                self._free()
 
     @torch.no_grad()
     def handle(self, w: dict, t_py: int | None = None) -> None:

@@ -139,10 +139,27 @@ pub struct ActorsConfig {
     /// Wall-clock limit of one RL game, `StartGame.wall_timeout_s` (AMB-042-12, 020-R3); at least 1.
     #[serde(default = "default_game_wall_timeout_s")]
     pub game_wall_timeout_s: u32,
+    /// 042-R20 (AMB-042-20): the run loop ends abnormally when at least 20 games finished but no
+    /// learner update came for this many minutes, or 10 finished games in a row had a learning
+    /// session without a decision. 0 = both checks off. Absent = 15 (half the 060-R6 30-minute
+    /// hang); left out of the serialised config at that default.
+    #[serde(default = "default_dead_learner_minutes", skip_serializing_if = "is_default_dead_learner_minutes")]
+    pub dead_learner_minutes: u64,
 }
 
 fn default_queue_wait_max_s() -> u64 {
     120
+}
+
+/// 042-R20 `[actors] dead_learner_minutes` default.
+pub const DEFAULT_DEAD_LEARNER_MINUTES: u64 = 15;
+
+fn default_dead_learner_minutes() -> u64 {
+    DEFAULT_DEAD_LEARNER_MINUTES
+}
+
+fn is_default_dead_learner_minutes(m: &u64) -> bool {
+    *m == DEFAULT_DEAD_LEARNER_MINUTES
 }
 
 fn default_game_wall_timeout_s() -> u32 {
@@ -686,6 +703,21 @@ mod tests {
         assert!(with_actors(&format!("{base}queue_batches = 4\nqueue_wait_max_s = 0")).is_err());
         assert!(with_actors(&format!("{base}queue_batches = 4\nqueue_wait_max_s = 600")).is_err());
         assert_eq!(with_actors(&format!("{base}queue_batches = 4\nqueue_wait_max_s = 599")).unwrap().actors.queue_wait_max_s, 599);
+    }
+
+    /// 042-R20 (AMB-042-20): `dead_learner_minutes` absent = 15, 0 = off; left out of the
+    /// serialised config at the default (checkpoint configs of runs without it stay the same).
+    #[test]
+    fn dead_learner_minutes_default_042_r20() {
+        let base = "weight_push_every = 4\nmax_policy_lag = 32\nqueue_batches = 4\n";
+        let c = with_actors(base).unwrap();
+        assert_eq!(c.actors.dead_learner_minutes, DEFAULT_DEAD_LEARNER_MINUTES);
+        assert_eq!(DEFAULT_DEAD_LEARNER_MINUTES, 15);
+        assert!(!serde_json::to_string(&c).unwrap().contains("dead_learner_minutes"));
+        let c = with_actors(&format!("{base}dead_learner_minutes = 0")).unwrap();
+        assert_eq!(c.actors.dead_learner_minutes, 0);
+        assert!(serde_json::to_string(&c).unwrap().contains("\"dead_learner_minutes\":0"));
+        assert_eq!(RlConfig::default_file().actors.dead_learner_minutes, 15);
     }
 
     const NEW_CURRICULUM_KEYS: [&str; 3] = ["start_stage", "auto_advance", "r_value_stages"];

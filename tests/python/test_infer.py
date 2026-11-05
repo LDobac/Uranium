@@ -116,6 +116,154 @@ def test_close_stops_the_thread_and_frees_the_model_042(tmp_path):
     assert s2.net is not None
 
 
+CUDA_FATAL = "CUDA error: an illegal memory access was encountered
+CUDA kernel errors might be asynchronously reported"
+
+
+def test_device_fatal_classification_042_r20():
+    """042-R20: which errors end the process. `torch.AcceleratorError`, a message naming a sticky
+    CUDA / HIP error (also through a cause, or as text in a Rust error carrying a traceback) are
+    fatal; out of memory and ordinary errors are not."""
+    from uranium.device import is_device_fatal
+
+    assert is_device_fatal(RuntimeError(CUDA_FATAL))
+    assert is_device_fatal(RuntimeError("Sticky error detected"))
+    assert is_device_fatal(RuntimeError("HIP error: an illegal memory access was encountered"))
+    assert is_device_fatal(RuntimeError("Traceback (most recent call last):
+...
+AcceleratorError: CUDA error: an illegal memory access"))
+    if hasattr(torch, "AcceleratorError"):
+        assert is_device_fatal(torch.AcceleratorError("unspecified launch failure"))
+    try:
+        try:
+            raise RuntimeError(CUDA_FATAL)
+        except RuntimeError as inner:
+            raise ValueError("while copying the reply") from inner
+    except ValueError as outer:
+        assert is_device_fatal(outer), "a fatal error as the cause"
+    assert not is_device_fatal(torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB"))
+    assert not is_device_fatal(RuntimeError("warm-up failed"))
+    assert not is_device_fatal(ValueError("bad observation"))
+    assert not is_device_fatal(None)
+
+
+class ExitCalled(BaseException):
+    pass
+
+
+def test_device_fatal_guard_exits_70_042_r20(monkeypatch, capsys):
+    """042-R20: `device_fatal_guard` turns a fatal device error into one stderr line and
+    `os._exit(70)`; another exception propagates unchanged and nothing exits."""
+    import os
+
+    from uranium import device
+
+    codes = []
+
+    def fake_exit(code):
+        codes.append(code)
+        raise ExitCalled
+
+    monkeypatch.setattr(os, "_exit", fake_exit)
+    with pytest.raises(ExitCalled):
+        with device.device_fatal_guard("learner main update"):
+            raise RuntimeError(CUDA_FATAL)
+    assert codes == [device.EXIT_DEVICE_FATAL] == [70]
+    err = capsys.readouterr().err.strip().splitlines()
+    assert len(err) == 1 and err[0].startswith("[device] learner main update: fatal device error") and "042-R20" in err[0]
+    with pytest.raises(ValueError):
+        with device.device_fatal_guard("learner main update"):
+            raise ValueError("not a device error")
+    assert codes == [70]
+
+
+def test_server_exits_70_on_a_fatal_device_error_042_r20(tmp_path, monkeypatch):
+    """042-R20: an inference server whose batch fails with a fatal device error exits the process
+    (70) at once instead of failing every later batch; an ordinary error is still sent to the
+    sessions and the server goes on."""
+    import os
+    import threading
+
+    codes, called = [], threading.Event()
+
+    def fake_exit(code):  # records and returns: the server then handles the error as before
+        codes.append(code)
+        called.set()
+
+    monkeypatch.setattr(os, "_exit", fake_exit)
+    d = checkpoint(tmp_path, "Lstm")
+    b, s = server(d, "stochastic", 4)
+    errors = iter([ValueError("bad batch"), RuntimeError(CUDA_FATAL)])
+
+    def failing(w, t_py=None):
+        if w["batch"] is not None:
+            raise next(errors)
+
+    monkeypatch.setattr(s, "handle", failing)
+    with pytest.raises(Exception):
+        _core.play_sessions(b, 1, 1)
+    assert codes == [], "an ordinary error does not exit"
+    assert s.is_alive()
+    with pytest.raises(Exception):
+        _core.play_sessions(b, 1, 1)
+    assert called.wait(10) and codes == [70]
+    stop(s)
+
+
+def test_free_waits_for_the_device_then_drops_graphs_042_r20(tmp_path, monkeypatch):
+    """042-R20 (6th advisory): closing a server frees its device memory only under
+    `DEVICE_LOCK.exclusive()`, after `torch.cuda.synchronize()`, destroying the captured graphs
+    before `empty_cache()`; nothing of it while a shared holder (learner update) still runs."""
+    import contextlib
+    import threading
+    import types
+
+    from uranium import device
+
+    d = checkpoint(tmp_path, "Lstm")
+    _, s = server(d, "stochastic", 4)
+    stop(s)
+    calls = []
+    real = device.DEVICE_LOCK.exclusive
+
+    @contextlib.contextmanager
+    def exclusive():
+        with real():
+            calls.append("lock")
+            yield
+            calls.append("unlock")
+
+    class Graph:
+        def reset(self):
+            calls.append("graph reset")
+
+    monkeypatch.setattr(device.DEVICE_LOCK, "exclusive", exclusive)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *a: calls.append("synchronize"))
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append("empty_cache"))
+    s.device = torch.device("cuda")  # only the calls above touch it
+    s.graphed = types.SimpleNamespace(graphs={"a": {"graph": Graph()}, "b": {"graph": Graph()}})
+    learner_in, learner_out = threading.Event(), threading.Event()
+
+    def learner():
+        with device.DEVICE_LOCK.shared():
+            learner_in.set()
+            learner_out.wait(10)
+            calls.append("learner done")
+
+    t = threading.Thread(target=learner)
+    t.start()
+    assert learner_in.wait(10)
+    f = threading.Thread(target=s._free)
+    f.start()
+    f.join(0.3)
+    assert f.is_alive() and calls == [], "waits for the learner's shared hold"
+    learner_out.set()
+    t.join(10)
+    f.join(10)
+    assert calls == ["learner done", "lock", "synchronize", "graph reset", "graph reset", "empty_cache", "unlock"]
+    assert s.net is None and s.graphed is None and s.state is None
+
+
 def test_random_checkpoint_command(tmp_path, python_cmd):
     """`random-checkpoint` writes a loadable checkpoint and prints its policy version (020-R5)."""
     import subprocess

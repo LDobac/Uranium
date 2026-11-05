@@ -3,6 +3,7 @@ mixed, ROCm and CPU f32). ROCm runs through PyTorch's `cuda` device API."""
 
 import contextlib
 import os
+import sys
 import threading
 
 import torch
@@ -200,6 +201,58 @@ class DeviceLock:
 
 
 DEVICE_LOCK = DeviceLock()
+
+# 042-R20 (AMB-042-20): a fatal device error (CUDA / HIP "sticky" errors such as an illegal memory
+# access) leaves the process's device context unusable: every later call fails the same way. The
+# process exits at once with this code, without a checkpoint save (it would fail or write garbage),
+# so the 060-R6 watchdog restarts the run from LATEST.
+EXIT_DEVICE_FATAL = 70
+DEVICE_FATAL_TEXT = ("illegal memory access", "Sticky error", "CUDA error", "HIP error")
+
+
+def is_device_fatal(e: BaseException | None) -> bool:
+    """`e` (or an exception it was raised from) is a fatal device error (042-R20):
+    `torch.AcceleratorError`, or a message naming one (`DEVICE_FATAL_TEXT`, e.g. a Rust error
+    carrying a Python traceback). Out of memory is not fatal (the context stays usable)."""
+    acc = getattr(torch, "AcceleratorError", None)
+    oom = getattr(torch, "OutOfMemoryError", None)
+    seen: set[int] = set()
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        if oom is not None and isinstance(e, oom):
+            return False
+        if acc is not None and isinstance(e, acc):
+            return True
+        msg = str(e)
+        if any(t in msg for t in DEVICE_FATAL_TEXT):
+            return True
+        e = e.__cause__ or e.__context__
+    return False
+
+
+def exit_if_device_fatal(e: BaseException, where: str) -> None:
+    """042-R20: on a fatal device error, one line on stderr and `os._exit(70)` (no cleanup, no
+    checkpoint save, any thread); otherwise returns and the caller handles `e` as before."""
+    if not is_device_fatal(e):
+        return
+    lines = str(e).strip().splitlines()
+    first = lines[0] if lines else ""
+    try:
+        print(f"[device] {where}: fatal device error ({type(e).__name__}: {first}); exiting {EXIT_DEVICE_FATAL} without saving, the watchdog restarts from LATEST (042-R20, 060-R6)", file=sys.stderr, flush=True)
+    except Exception:  # noqa: BLE001 - a closed stderr must not keep the process alive
+        pass
+    os._exit(EXIT_DEVICE_FATAL)
+
+
+@contextlib.contextmanager
+def device_fatal_guard(where: str):
+    """042-R20 around device work: a fatal device error ends the process (`exit_if_device_fatal`),
+    any other exception propagates unchanged."""
+    try:
+        yield
+    except BaseException as e:
+        exit_if_device_fatal(e, where)
+        raise
 
 
 def autocast(device: torch.device, precision: str):

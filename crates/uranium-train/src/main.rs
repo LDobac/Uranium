@@ -60,8 +60,9 @@ enum Cmd {
         synthetic_maps: bool,
     },
     /// 060-R6 watchdog: run `bc` / `rl` arguments as a child and restart the same run after an
-    /// abnormal exit or a hang (it resumes from its last checkpoint). Exit 0 (done, step limit,
-    /// Ctrl+C clean stop, lock lost) and 130 (second Ctrl+C) are not restarted.
+    /// abnormal exit, a hang or a fatal stderr line (it resumes from its last checkpoint). Exit 0
+    /// (done, step limit, Ctrl+C clean stop, lock lost) and 130 (second Ctrl+C) are not
+    /// restarted; 70 (fatal device error, 042-R20) is.
     /// Example: `uranium-train supervise -- bc --run bc-s1 --dataset ... --backend cuda`.
     Supervise {
         /// Restarts allowed within --window-minutes; then give up.
@@ -72,12 +73,18 @@ enum Cmd {
         /// Delay before a restart (doubles per restart in the window, at most 10 min).
         #[arg(long, default_value = "60")]
         delay_seconds: u64,
-        /// No stderr line (and no progress-file change) for this long = hang: kill and restart.
+        /// No progress for this long = hang: kill and restart. Progress = a --progress-file change
+        /// when one is given, else any stderr line (060-R6).
         #[arg(long, default_value = "30")]
         hang_minutes: u64,
-        /// File whose changes count as progress (rl: <logs>/train.csv).
+        /// File whose changes alone count as progress (rl: <logs>/train.csv); stderr lines then
+        /// do not (060-R6, AMB-042-20).
         #[arg(long)]
         progress_file: Option<PathBuf>,
+        /// Regex (repeatable): a child stderr line matching it kills the child and restarts the
+        /// run like a crash (060-R6, AMB-042-20), e.g. `--fatal-pattern "illegal memory access"`.
+        #[arg(long = "fatal-pattern", value_parser = parse_regex)]
+        fatal_pattern: Vec<regex::Regex>,
         /// Also append the child's stderr and the restart notes to this file.
         #[arg(long)]
         log: Option<PathBuf>,
@@ -183,8 +190,10 @@ enum StageArg {
     S2,
 }
 
-
-
+/// `--fatal-pattern` (060-R6): a regex, checked when the command line is read.
+fn parse_regex(s: &str) -> std::result::Result<regex::Regex, String> {
+    regex::Regex::new(s).map_err(|e| e.to_string())
+}
 
 fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -314,7 +323,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Supervise { max_restarts, window_minutes, delay_seconds, hang_minutes, progress_file, log, args } => {
+        Cmd::Supervise { max_restarts, window_minutes, delay_seconds, hang_minutes, progress_file, fatal_pattern, log, args } => {
             anyhow::ensure!(matches!(args.first().map(String::as_str), Some("bc" | "rl")), "supervise runs `bc ...` or `rl ...`");
             let code = uranium_train::supervise::run(uranium_train::supervise::SuperviseArgs {
                 max_restarts,
@@ -322,6 +331,7 @@ fn main() -> Result<()> {
                 delay: std::time::Duration::from_secs(delay_seconds),
                 hang: std::time::Duration::from_secs(hang_minutes * 60),
                 progress_file,
+                fatal_patterns: fatal_pattern,
                 log,
                 args,
             })?;
@@ -341,6 +351,7 @@ fn main() -> Result<()> {
                     delay: std::time::Duration::from_secs(delay_seconds),
                     hang: std::time::Duration::from_secs(hang_minutes * 60),
                     progress_file: None,
+                    fatal_patterns: Vec::new(),
                     log,
                     args: Vec::new(),
                 },

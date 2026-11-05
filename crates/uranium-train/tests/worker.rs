@@ -88,7 +88,7 @@ fn args(queue: PathBuf, priority: i32) -> WorkerArgs {
         preempt: true,
         poll: Duration::from_millis(100),
         status_every: Duration::from_secs(60),
-        supervise: SuperviseArgs { max_restarts: 3, window: Duration::from_secs(3600), delay: Duration::from_millis(10), hang: Duration::from_secs(600), progress_file: None, log: None, args: vec![] },
+        supervise: SuperviseArgs { max_restarts: 3, window: Duration::from_secs(3600), delay: Duration::from_millis(10), hang: Duration::from_secs(600), progress_file: None, fatal_patterns: vec![], log: None, args: vec![] },
     }
 }
 

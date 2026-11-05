@@ -101,6 +101,9 @@ struct Shared {
     games_done: AtomicU64,
     disagree: AtomicU64,
     aborted: AtomicU64,
+    /// 042-R20 (AMB-042-20): finished games in a row whose learning session made no decision
+    /// ([`bad_learning_session`]).
+    bad_sessions: AtomicU64,
     /// `[league]` of the config: `GameSpec.max_frames` by opponent (020-R3 60 minutes, 042-R15
     /// `model_game_max_s`, AMB-042-17; 042-R17 rush mini-games, AMB-042-18) and the
     /// `[league.rush_judge]` settings.
@@ -595,6 +598,14 @@ impl JobSource for LeagueSource {
         // No lock of `shared` is held from here to the queue push below: a terminal segment that
         // waits for a place blocks only this host slot's worker (042 queue table).
         let (result, held) = self.collect(id);
+        // 042-R20 (AMB-042-20): the run loop's dead-inference streak.
+        match bad_learning_session(outcome, result.as_ref()) {
+            Some(true) => {
+                s.bad_sessions.fetch_add(1, Ordering::SeqCst);
+            }
+            Some(false) => s.bad_sessions.store(0, Ordering::SeqCst),
+            None => {}
+        }
         // 030-R11: a Random enemy reaches the agent as Unknown; the race its memory saw is the race
         // played, which the per-race league windows and games.csv need.
         if matches!(meta.enemy_race, Race::Random | Race::Unknown) {
@@ -764,6 +775,58 @@ impl JobSource for LeagueSource {
         );
         let _ = s.games_csv.lock().unwrap().write_all(line.as_bytes());
         self.release_server(&meta);
+    }
+}
+
+/// 042-R20 (AMB-042-20): finished games since the last learner update before a missing update
+/// counts as a dead learner.
+const DEAD_LEARNER_GAMES: u64 = 20;
+/// 042-R20: finished games in a row whose learning session made no decision = dead inference.
+const BAD_SESSION_STREAK: u64 = 10;
+
+/// 042-R20: a finished game whose learning session reported no decision (inference failed for
+/// every request) or no report at all is bad (`Some(true)`), one with decisions is good; a game
+/// that did not finish (Aborted, Timeout, Stopped, Rejected) does not count either way.
+fn bad_learning_session(outcome: JobOutcome, result: Option<&GameResult>) -> Option<bool> {
+    (outcome == JobOutcome::Finished).then(|| result.is_none_or(|r| r.decisions == 0))
+}
+
+/// 042-R20 (AMB-042-20): the run loop's stall check (pure; the caller passes the clock). In the
+/// 6th advisory's CUDA fault the inference failed for every game, games kept finishing with no
+/// decision and the learner waited for a batch for 40 minutes: an abnormal end lets the 060-R6
+/// watchdog restart the run from LATEST.
+struct StallWatch {
+    /// `[actors] dead_learner_minutes`; zero = off.
+    after: Duration,
+    last: Instant,
+    games_at_last: u64,
+}
+
+impl StallWatch {
+    fn new(minutes: u64, now: Instant, games: u64) -> Self {
+        Self { after: Duration::from_secs(minutes * 60), last: now, games_at_last: games }
+    }
+
+    /// A learner update, or the end of the loop's own long work (checkpoint, snapshot).
+    fn progress(&mut self, now: Instant, games: u64) {
+        (self.last, self.games_at_last) = (now, games);
+    }
+
+    /// Why the run should end abnormally, if it should: `games` finished in total, `bad_streak`
+    /// finished games in a row without a decision of the learning session.
+    fn check(&self, now: Instant, games: u64, bad_streak: u64) -> Option<String> {
+        if self.after.is_zero() {
+            return None;
+        }
+        let since = now.saturating_duration_since(self.last);
+        let finished = games.saturating_sub(self.games_at_last);
+        if finished >= DEAD_LEARNER_GAMES && since >= self.after {
+            return Some(format!("{finished} games finished but no learner update for {} min (dead learner)", since.as_secs() / 60));
+        }
+        if bad_streak >= BAD_SESSION_STREAK {
+            return Some(format!("{bad_streak} finished games in a row without a decision of the learning session (inference failing)"));
+        }
+        None
     }
 }
 
@@ -1247,6 +1310,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         games_done: AtomicU64::new(0),
         disagree: AtomicU64::new(0),
         aborted: AtomicU64::new(0),
+        bad_sessions: AtomicU64::new(0),
         league_cfg: cfg.league.clone(),
         sil: cfg.sil.enabled.then(|| SilState::new(cfg.sil.clone(), args.seed)),
         game_wall_timeout_s: cfg.actors.game_wall_timeout_s,
@@ -1286,6 +1350,12 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     let mut updates_this_run = 0u64;
     let mut last_rate = (Instant::now(), shared.agent_steps.load(Ordering::SeqCst));
     let mut steps_per_s = 0.0f64;
+    // 042-R20 (AMB-042-20): dead learner / dead inference check.
+    let mut stall = StallWatch::new(cfg.actors.dead_learner_minutes, Instant::now(), 0);
+    match cfg.actors.dead_learner_minutes {
+        0 => crate::elog!("[rl] dead learner check off ([actors] dead_learner_minutes = 0, 042-R20)"),
+        m => crate::elog!("[rl] dead learner check: abnormal end after {DEAD_LEARNER_GAMES}+ finished games without an update for {m} min, or {BAD_SESSION_STREAK} finished games in a row without a learning-session decision (042-R20)"),
+    }
     loop {
         let steps_hit = args.max_agent_steps > 0 && shared.agent_steps.load(Ordering::SeqCst) >= args.max_agent_steps;
         if steps_hit {
@@ -1307,6 +1377,13 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
                 }
                 LockStatus::Unreachable(e) => crate::elog!("[rl] heartbeat: share unreachable ({e}), continuing (061-R11-3)"),
             }
+        }
+        // 042-R20: an error return (no checkpoint: after a device fault it would fail or write
+        // garbage); `halt` stops the games, the process exits non-zero and the 060-R6 watchdog
+        // restarts the run from LATEST.
+        if let Some(why) = stall.check(Instant::now(), shared.games_done.load(Ordering::SeqCst), shared.bad_sessions.load(Ordering::SeqCst)) {
+            crate::elog!("[rl] {why}: ending abnormally without a checkpoint, the watchdog restarts from LATEST (042-R20)");
+            anyhow::bail!("042-R20 stall: {why}");
         }
         let ready: Vec<AgentKind> = AgentKind::ALL.iter().copied().filter(|a| queues[a.index()].len() >= cfg.lanes).collect();
         let turn = shared.league.lock().unwrap().learner_turn(&ready);
@@ -1375,6 +1452,9 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
             }
             last_ckpt = Instant::now();
         }
+        // 042-R20: an update (and the snapshot / checkpoint after it, which may take minutes) is
+        // progress.
+        stall.progress(Instant::now(), shared.games_done.load(Ordering::SeqCst));
     }
 
     // 042-R10: ① no new games ② stop games in flight (Aborted, revoked) ③ checkpoint + push
@@ -1682,6 +1762,7 @@ mod tests {
             games_done: AtomicU64::new(0),
             disagree: AtomicU64::new(0),
             aborted: AtomicU64::new(0),
+            bad_sessions: AtomicU64::new(0),
             league_cfg: cfg.league.clone(),
             sil: cfg.sil.enabled.then(|| SilState::new(cfg.sil.clone(), 1)),
             game_wall_timeout_s: 1,
@@ -1902,6 +1983,72 @@ mod tests {
         let job = off.next().unwrap();
         assert!(off.shared.concede.get(job.spec.game_id).is_none());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 042-R20 (AMB-042-20): the run loop's stall check with a fake clock — 20 finished games and
+    /// `dead_learner_minutes` without an update end the run, either alone does not; progress
+    /// (an update, a checkpoint after it) restarts both counts; 10 finished games in a row without
+    /// a learning-session decision end it at once; 0 turns both off.
+    #[test]
+    fn stall_watch_dead_learner_042_r20() {
+        let t0 = Instant::now();
+        let at = |m: u64| t0 + Duration::from_secs(m * 60);
+        let mut w = StallWatch::new(15, t0, 100);
+        assert!(w.check(at(14), 100 + DEAD_LEARNER_GAMES, 0).is_none(), "under 15 min");
+        assert!(w.check(at(60), 100 + DEAD_LEARNER_GAMES - 1, 0).is_none(), "under 20 games: no games, no batch expected");
+        let why = w.check(at(15), 120, 0).expect("20 games, 15 min");
+        assert!(why.contains("20 games") && why.contains("dead learner"), "{why}");
+        w.progress(at(15), 120);
+        assert!(w.check(at(29), 400, 0).is_none());
+        assert!(w.check(at(30), 139, 0).is_none());
+        assert!(w.check(at(30), 140, 0).is_some());
+        // Dead inference: the streak alone, whatever the clock.
+        assert!(w.check(at(15), 120, BAD_SESSION_STREAK - 1).is_none());
+        let why = w.check(at(15), 120, BAD_SESSION_STREAK).expect("10 in a row");
+        assert!(why.contains("without a decision"), "{why}");
+        // Off.
+        let off = StallWatch::new(0, t0, 0);
+        assert!(off.check(at(600), 10_000, 1_000).is_none());
+        // What counts toward the streak: finished games only.
+        let r = |d: u64| GameResult { agent: 0, game_id: 1, outcome: None, reward_sum: [0.0; 4], scout_sum: 0.0, survive_sum: 0.0, scout: None, decisions: d, enemy_race: None };
+        assert_eq!(bad_learning_session(JobOutcome::Finished, Some(&r(0))), Some(true));
+        assert_eq!(bad_learning_session(JobOutcome::Finished, None), Some(true), "no report of the learning session");
+        assert_eq!(bad_learning_session(JobOutcome::Finished, Some(&r(3))), Some(false));
+        for o in [JobOutcome::Aborted, JobOutcome::Timeout, JobOutcome::Stopped, JobOutcome::Rejected] {
+            assert_eq!(bad_learning_session(o, Some(&r(0))), None, "{o:?}");
+        }
+    }
+
+    /// 042-R20 (AMB-042-20): `done` keeps the streak of finished games without a learning-session
+    /// decision; a game with decisions resets it, an Aborted game leaves it.
+    #[test]
+    fn bad_session_streak_in_the_run_loop_042_r20() {
+        use uranium_proto::EndReason;
+        let mut cfg = RlConfig::default_file();
+        cfg.curriculum.start_stage = crate::league::Stage::C1;
+        let cc = &mut cfg.curriculum;
+        (cc.c1_t0, cc.c1_t1, cc.c1_self) = (0.0, 0.0, 1.0);
+        let (servers, _, _) = fake_servers(false);
+        let csv = PathBuf::from(if cfg!(windows) { "NUL" } else { "/dev/null" });
+        let src = source_cfg(cfg, servers, &csv);
+        let play = |decisions: u64, outcome: JobOutcome| {
+            let job = src.next().unwrap();
+            let id = job.spec.game_id;
+            src.shared.games.lock().unwrap().get_mut(&id).unwrap().self_player = Some(0);
+            for slot in [0u8, 1] {
+                src.shared.ends.push(id, uranium_agent::SessionEnd { slot, winner: Some(0), frame: 100 + slot as u32, reason: EndReason::Elimination });
+            }
+            src.hooks[0].tx.send(GameResult { agent: 0, game_id: id, outcome: None, reward_sum: [0.0; 4], scout_sum: 0.0, survive_sum: 0.0, scout: None, decisions, enemy_race: Some(Race::Terran) }).unwrap();
+            src.done(&job, outcome, None);
+            src.shared.bad_sessions.load(Ordering::SeqCst)
+        };
+        assert_eq!(play(0, JobOutcome::Finished), 1);
+        assert_eq!(play(0, JobOutcome::Finished), 2);
+        assert_eq!(play(0, JobOutcome::Aborted), 2, "not finished: neither");
+        assert_eq!(play(7, JobOutcome::Finished), 0, "a decision resets");
+        for k in 1..=BAD_SESSION_STREAK {
+            assert_eq!(play(0, JobOutcome::Finished), k);
+        }
     }
 
     /// 042-R2 / R14: a games.csv without `end_reason` (an older version) is kept aside like an

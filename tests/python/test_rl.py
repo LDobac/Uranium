@@ -314,6 +314,55 @@ def test_snapshot_server_close_042(monkeypatch, tmp_path):
     assert not ls.snapshot_server_alive(token3)
 
 
+class ExitCalled(BaseException):
+    pass
+
+
+def test_learner_calls_exit_70_on_a_fatal_device_error_042_r20(monkeypatch, tmp_path):
+    """042-R20: a fatal device error in the run loop's calls into the learners (update, weight
+    push, checkpoint save, snapshot server) ends the process with 70 right away, without writing
+    the checkpoint; an ordinary error still reaches the run loop as an exception."""
+    import os
+
+    from uranium import ckpt
+
+    bc = save_ckpt(tmp_path / "bc" / "ckpt-11", tiny_net(5), {"step": 11})
+    ls = make_learners(monkeypatch, tmp_path, bc, None, None)
+    codes = []
+
+    def fake_exit(code):
+        codes.append(code)
+        raise ExitCalled
+
+    monkeypatch.setattr(os, "_exit", fake_exit)
+    fatal = RuntimeError("CUDA error: an illegal memory access was encountered")
+
+    def raise_(e):
+        def f(*a, **k):
+            raise e
+
+        return f
+
+    monkeypatch.setattr(ls.learners[0], "update", raise_(fatal))
+    with pytest.raises(ExitCalled):
+        ls.update(0, None, None)
+    assert codes == [70]
+    monkeypatch.setattr(ls.learners[1], "update", raise_(ValueError("bad batch")))
+    with pytest.raises(ValueError):
+        ls.update(1, None, None)
+    assert codes == [70], "an ordinary error does not exit"
+    monkeypatch.setattr(ls.servers[0], "swap", raise_(fatal))
+    with pytest.raises(ExitCalled):
+        ls.push(0)
+    assert codes == [70, 70]
+    # A checkpoint save that meets the error: exit before anything of the agent is written.
+    monkeypatch.setattr(ckpt, "save_model", raise_(fatal))
+    d = tmp_path / "ckpt-99" / "agents" / "main"
+    with pytest.raises(ExitCalled):
+        ls.save(0, str(d), json.dumps({"update": 0, "agent": "main"}))
+    assert codes == [70, 70, 70] and not (d / "meta.json").exists()
+
+
 @pytest.mark.parametrize("agent_folder", [False, True])
 def test_init_main_from_rl_checkpoint_042(monkeypatch, tmp_path, agent_folder):
     """042 (AMB-042-13): `--init` gives Main its start weights only (update 0, empty optimizer);

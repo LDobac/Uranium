@@ -22,6 +22,8 @@ toml.workspace = true
 sha2.workspace = true
 zstd = "0.13"
 ctrlc = "3.5"
+# 060-R6 `--fatal-pattern` (AMB-042-20).
+regex = "1"
 
 [target.'cfg(unix)'.dependencies]
 # 060-R6 (H-4): child training in its own process group, PR_SET_PDEATHSIG, SIGINT forwarding.

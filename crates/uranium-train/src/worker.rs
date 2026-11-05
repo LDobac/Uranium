@@ -467,7 +467,7 @@ struct BcLauncher<'a> {
 
 impl Launcher for BcLauncher<'_> {
     fn launch(&self, r: &QueueRun, d: &Defaults, take: &TakeOver) -> Result<Ending> {
-        self.watch.run_child(&bc_args(r, d, &self.backend, &self.shared, take), self.hang, None)
+        self.watch.run_child(&bc_args(r, d, &self.backend, &self.shared, take), self.hang, None, &[])
     }
 }
 

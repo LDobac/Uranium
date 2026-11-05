@@ -7,6 +7,11 @@
 //! another PC), 130 (second Ctrl+C), 75 (the lock could not be taken, 061-R5) and 76 (yielded,
 //! 061-R14), or anything after this supervisor got Ctrl+C. Restarts are limited per time window
 //! and spaced with a growing delay.
+//!
+//! Progress and fatal lines (060-R6, AMB-042-20, 6th advisory): with a progress file only its
+//! changes count as progress (a child that keeps logging errors is still hung); a stderr line
+//! matching a `--fatal-pattern` kills the child and restarts it like a crash; exit 70 (fatal
+//! device error, 042-R20) restarts like any abnormal exit.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -16,6 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
+use regex::Regex;
 
 pub struct SuperviseArgs {
     /// Restarts allowed within `window`.
@@ -25,8 +31,12 @@ pub struct SuperviseArgs {
     pub delay: Duration,
     /// No progress for this long = hang: the child is killed and restarted.
     pub hang: Duration,
-    /// File whose modification also counts as progress (RL: `<logs>/train.csv`).
+    /// 060-R6 (AMB-042-20): when given, only this file's modification counts as progress (RL:
+    /// `<logs>/train.csv`); stderr lines then do not. Without it every stderr line does.
     pub progress_file: Option<PathBuf>,
+    /// 060-R6 (AMB-042-20): a stderr line matching one of these kills the child, which is then
+    /// restarted like a crash ([`Ending::Fatal`]).
+    pub fatal_patterns: Vec<Regex>,
     /// Appends the child's stderr and the supervisor's notes here as well.
     pub log: Option<PathBuf>,
     pub args: Vec<String>,
@@ -39,7 +49,13 @@ pub enum Ending {
     Exited(Option<i32>),
     /// Killed by the supervisor after `hang` without progress.
     Hung,
+    /// Killed by the supervisor after a stderr line matched a `--fatal-pattern` (060-R6).
+    Fatal,
 }
+
+/// Exit code of a child that hit a fatal device error (042-R20: `os._exit(70)` without a save);
+/// restarted from LATEST like any abnormal exit (060-R6).
+pub const EXIT_DEVICE_FATAL: i32 = 70;
 
 /// What to do after a child ended (pure, for tests).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +72,8 @@ pub fn decide(ending: Ending, stopping: bool, recent: usize, a: &SuperviseArgs) 
     }
     match ending {
         // 0 done / clean stop, 130 second Ctrl+C, 75 run held by another PC, 76 yielded (061-R14).
+        // Everything else restarts within the limit: crashes, `Hung`, `Fatal` and
+        // `EXIT_DEVICE_FATAL` (042-R20).
         Ending::Exited(Some(0 | 130 | 75 | 76)) => Decision::Stop,
         _ if recent >= a.max_restarts => Decision::GiveUp,
         _ => Decision::Restart((a.delay * 2u32.saturating_pow(recent as u32)).min(Duration::from_secs(600))),
@@ -64,6 +82,48 @@ pub fn decide(ending: Ending, stopping: bool, recent: usize, a: &SuperviseArgs) 
 
 fn modified(p: &PathBuf) -> Option<SystemTime> {
     std::fs::metadata(p).and_then(|m| m.modified()).ok()
+}
+
+/// 060-R6 hang clock of one child (pure, for tests). With a progress file only its modification
+/// time moving counts as progress (AMB-042-20: in the 6th advisory's CUDA fault the child kept
+/// printing inference errors for 40 minutes without an update); without one, any stderr line.
+#[derive(Clone, Debug)]
+pub struct Liveness {
+    last: Instant,
+    by_file: bool,
+    file_seen: Option<SystemTime>,
+}
+
+impl Liveness {
+    /// `file`: `Some(modification time now)` when a progress file is watched (`Some(None)` = it
+    /// does not exist yet), `None` without one.
+    pub fn new(now: Instant, file: Option<Option<SystemTime>>) -> Self {
+        Self { last: now, by_file: file.is_some(), file_seen: file.flatten() }
+    }
+
+    /// A stderr line: progress only without a progress file.
+    pub fn line(&mut self, now: Instant) {
+        if !self.by_file {
+            self.last = now;
+        }
+    }
+
+    /// The progress file's modification time as just read: progress when it changed.
+    pub fn file(&mut self, m: Option<SystemTime>, now: Instant) {
+        if m.is_some() && m != self.file_seen {
+            self.file_seen = m;
+            self.last = now;
+        }
+    }
+
+    pub fn hung(&self, now: Instant, hang: Duration) -> bool {
+        now.saturating_duration_since(self.last) >= hang
+    }
+}
+
+/// 060-R6 `--fatal-pattern`: the first pattern `line` matches.
+pub fn fatal_match<'a>(patterns: &'a [Regex], line: &str) -> Option<&'a Regex> {
+    patterns.iter().find(|p| p.is_match(line))
 }
 
 /// A process that watches training children: Ctrl+C state, notes, and one child at a time.
@@ -83,15 +143,10 @@ impl Watch {
     /// ignore-Ctrl+C flag ([`uranium_store::accept_ctrl_c`], 042-R10), so a watchdog started in
     /// the background on purpose also stops on its console's Ctrl+C.
     pub fn new(tag: &'static str, log: Option<&PathBuf>) -> Result<Self> {
-        let log = match log {
-            Some(p) => Some(Arc::new(Mutex::new(std::fs::OpenOptions::new().create(true).append(true).open(p).with_context(|| p.display().to_string())?))),
-            None => None,
-        };
-        let stopping = Arc::new(AtomicBool::new(false));
-        let child_pid = Arc::new(Mutex::new(None::<u32>));
+        let w = Self::without_ctrl_c(tag, log)?;
         uranium_store::accept_ctrl_c();
         {
-            let (stopping, child_pid) = (stopping.clone(), child_pid.clone());
+            let (stopping, child_pid) = (w.stopping.clone(), w.child_pid.clone());
             ctrlc::set_handler(move || {
                 stopping.store(true, Ordering::SeqCst);
                 #[cfg(unix)]
@@ -105,7 +160,16 @@ impl Watch {
                 let _ = &child_pid;
             })?;
         }
-        Ok(Self { stopping, child_pid, log, tag })
+        Ok(w)
+    }
+
+    /// A watch without the Ctrl+C handler (tests; the handler can be installed once per process).
+    pub fn without_ctrl_c(tag: &'static str, log: Option<&PathBuf>) -> Result<Self> {
+        let log = match log {
+            Some(p) => Some(Arc::new(Mutex::new(std::fs::OpenOptions::new().create(true).append(true).open(p).with_context(|| p.display().to_string())?))),
+            None => None,
+        };
+        Ok(Self { stopping: Arc::new(AtomicBool::new(false)), child_pid: Arc::new(Mutex::new(None)), log, tag })
     }
 
     pub fn stopping(&self) -> bool {
@@ -133,46 +197,67 @@ impl Watch {
     }
 
     /// Runs `URANIUM_PYTHON -m uranium <args>` (the PyTorch trainer, 060-R6, AMB-000-4) to its
-    /// end; a hang (no stderr line and no `progress_file` change for `hang`) kills it.
-    pub fn run_child(&self, args: &[String], hang: Duration, progress_file: Option<&PathBuf>) -> Result<Ending> {
+    /// end, watched by [`Watch::watch_child`].
+    pub fn run_child(&self, args: &[String], hang: Duration, progress_file: Option<&PathBuf>, fatal: &[Regex]) -> Result<Ending> {
         let python = python()?;
         self.note(&format!("start: {} -m uranium {}", python.display(), args.join(" ")));
         let mut cmd = child_command(&python);
-        let mut child = cmd.args(["-m", "uranium"]).args(args).stderr(Stdio::piped()).spawn().context("starting the training command")?;
+        cmd.args(["-m", "uranium"]).args(args);
+        self.watch_child(cmd, hang, progress_file, fatal, Duration::from_secs(2))
+    }
+
+    /// Runs `cmd` (its stderr passed through) to its end. A hang kills it ([`Ending::Hung`]): no
+    /// progress for `hang` ([`Liveness`]: `progress_file` changes when given, else stderr lines).
+    /// A stderr line matching `fatal` kills it too ([`Ending::Fatal`]). `poll`: how often the
+    /// child is looked at.
+    pub fn watch_child(&self, mut cmd: Command, hang: Duration, progress_file: Option<&PathBuf>, fatal: &[Regex], poll: Duration) -> Result<Ending> {
+        let mut child = cmd.stderr(Stdio::piped()).spawn().context("starting the training command")?;
         *self.child_pid.lock().unwrap() = Some(child.id());
-        let last = Arc::new(Mutex::new(Instant::now()));
+        let live = Arc::new(Mutex::new(Liveness::new(Instant::now(), progress_file.map(modified))));
+        let fatal_line = Arc::new(Mutex::new(None::<String>));
         let reader = {
-            let (last, log) = (last.clone(), self.log.clone());
+            let (live, log, fatal_line, patterns) = (live.clone(), self.log.clone(), fatal_line.clone(), fatal.to_vec());
             let err = child.stderr.take().unwrap();
             std::thread::spawn(move || {
                 for line in BufReader::new(err).lines().map_while(|l| l.ok()) {
-                    *last.lock().unwrap() = Instant::now();
+                    live.lock().unwrap().line(Instant::now());
                     eprintln!("{line}");
                     if let Some(l) = &log {
                         let _ = writeln!(l.lock().unwrap(), "{line}");
                     }
+                    if let Some(p) = fatal_match(&patterns, &line) {
+                        let mut f = fatal_line.lock().unwrap();
+                        if f.is_none() {
+                            *f = Some(format!("{line} (pattern {})", p.as_str()));
+                        }
+                    }
                 }
             })
         };
-        let mut file_seen = progress_file.and_then(modified);
         let ending = loop {
             if let Some(st) = child.try_wait()? {
                 break Ending::Exited(st.code());
             }
-            if let Some(p) = progress_file {
-                let m = modified(p);
-                if m.is_some() && m != file_seen {
-                    file_seen = m;
-                    *last.lock().unwrap() = Instant::now();
-                }
+            let fatal_seen = fatal_line.lock().unwrap().clone();
+            if let Some(line) = fatal_seen
+                && !self.stopping()
+            {
+                self.note(&format!("fatal stderr line: killing pid {} (060-R6): {line}", child.id()));
+                let _ = child.kill();
+                let _ = child.wait();
+                break Ending::Fatal;
             }
-            if !self.stopping() && last.lock().unwrap().elapsed() >= hang {
-                self.note(&format!("no progress for {} min: killing pid {} (060-R6)", hang.as_secs() / 60, child.id()));
+            if let Some(p) = progress_file {
+                live.lock().unwrap().file(modified(p), Instant::now());
+            }
+            if !self.stopping() && live.lock().unwrap().hung(Instant::now(), hang) {
+                let what = if progress_file.is_some() { "no progress-file change" } else { "no stderr line" };
+                self.note(&format!("{what} for {} min: killing pid {} (060-R6)", hang.as_secs() / 60, child.id()));
                 let _ = child.kill();
                 let _ = child.wait();
                 break Ending::Hung;
             }
-            std::thread::sleep(Duration::from_secs(2));
+            std::thread::sleep(poll);
         };
         let _ = reader.join();
         *self.child_pid.lock().unwrap() = None;
@@ -231,7 +316,7 @@ pub fn run(a: SuperviseArgs) -> Result<i32> {
     let w = Watch::new("supervise", a.log.as_ref())?;
     let mut restarts: Vec<Instant> = Vec::new();
     loop {
-        let ending = w.run_child(&a.args, a.hang, a.progress_file.as_ref())?;
+        let ending = w.run_child(&a.args, a.hang, a.progress_file.as_ref(), &a.fatal_patterns)?;
         restarts.retain(|t| t.elapsed() < a.window);
         match decide(ending, w.stopping(), restarts.len(), &a) {
             Decision::Stop => {

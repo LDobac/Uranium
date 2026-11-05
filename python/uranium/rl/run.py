@@ -1,6 +1,8 @@
 """`python -m uranium rl` (042): the Rust run loop (league, games, segment queues, snapshots,
 checkpoints, 061 lock) with the PyTorch learners and the agents' inference servers in this
-process (AMB-000-4). Exit codes as before: 75 when the run's lock is another host's (061-R5)."""
+process (AMB-000-4). Exit codes as before: 75 when the run's lock is another host's (061-R5);
+70 (`os._exit`, no save) on a fatal device error in any of the learners' or servers' calls
+(042-R20), so the 060-R6 watchdog restarts the run from LATEST."""
 
 import argparse
 import functools
@@ -90,12 +92,12 @@ class Learners:
     # Device work of the run loop's callbacks is `DEVICE_LOCK.shared()`: an inference server may
     # be capturing a graph meanwhile (uranium.device.DeviceLock).
     def update(self, i: int, batch, weights) -> str:
-        from uranium.device import DEVICE_LOCK
+        from uranium.device import DEVICE_LOCK, device_fatal_guard
 
         import time
 
         t0 = time.time_ns()
-        with DEVICE_LOCK.shared():
+        with device_fatal_guard(f"learner {AGENTS[i]} update"), DEVICE_LOCK.shared():
             t1 = time.time_ns()
             out = json.dumps(self.learners[i].update(batch, weights))
         prof = os.environ.get("URANIUM_INFER_PROFILE", "")
@@ -105,23 +107,27 @@ class Learners:
         return out
 
     def push(self, i: int) -> None:
+        from uranium.device import device_fatal_guard
+
         l = self.learners[i]
-        self.servers[i].swap(l.net.state_dict(), l.update_count)
+        with device_fatal_guard(f"learner {AGENTS[i]} weight push"):
+            self.servers[i].swap(l.net.state_dict(), l.update_count)
 
     def reset_to_bc(self, i: int) -> None:
-        from uranium.device import DEVICE_LOCK
+        from uranium.device import DEVICE_LOCK, device_fatal_guard
 
-        with DEVICE_LOCK.shared():
+        with device_fatal_guard(f"learner {AGENTS[i]} reset"), DEVICE_LOCK.shared():
             self.learners[i].reset_to_bc()
 
     def save(self, i: int, dir: str, train_json: str) -> None:
         from uranium import ckpt
-        from uranium.device import DEVICE_LOCK, impl_settings
+        from uranium.device import DEVICE_LOCK, device_fatal_guard, impl_settings
 
         d = Path(dir)
         d.mkdir(parents=True, exist_ok=True)
         l = self.learners[i]
-        with DEVICE_LOCK.shared():
+        # 042-R20: a checkpoint after a fatal device error is never written (exit 70).
+        with device_fatal_guard(f"learner {AGENTS[i]} save"), DEVICE_LOCK.shared():
             ckpt.save_model(d, l.net)
             ckpt.save_optimizer(d, ckpt.OPTIM_MAIN, l.net, l.opt)
         train = json.loads(train_json)
@@ -136,10 +142,10 @@ class Learners:
         from uranium import _core
         from uranium.agent.infer import InferenceServer
 
-        from uranium.device import DEVICE_LOCK
+        from uranium.device import DEVICE_LOCK, device_fatal_guard
 
         b = _core.Broker(str(dir), "stochastic", max_batch=self.max_batch, max_wait_ms=self.max_wait_ms, warmup_entities=_n_max())
-        with DEVICE_LOCK.shared():
+        with device_fatal_guard(f"snapshot server {dir}"), DEVICE_LOCK.shared():
             s = InferenceServer(b, self.device, self.precision)
         s.start()
         self.snapshot_tokens += 1
@@ -286,9 +292,14 @@ def main(a) -> int:
     m = host_micro_lanes(json.loads(_core.rl_config(a.config)))
     src = MICRO_LANES_ENV if os.environ.get(MICRO_LANES_ENV, "").strip() else "config micro_lanes"
     print(f"[rl] {backend} ({precision}), algo {a.algo}, learner lane group {m if m else 'all'} lanes ({src}), logs {a.logs}", file=sys.stderr, flush=True)
-    end = _core.run_rl(
-        functools.partial(_make, a, device, precision), a.run, a.config, algo=a.algo, seed=a.seed, take_over=a.take_over, logs=a.logs,
-        z_table=a.z_table, max_updates=a.max_updates, max_minutes=a.max_minutes, max_agent_steps=a.max_agent_steps,
-        checkpoint_minutes=a.checkpoint_minutes, fixed_t0=a.ac1_race,
-    )
+    from uranium.device import device_fatal_guard
+
+    # 042-R20: a fatal device error that reached the run loop as an error (its message carries the
+    # Python traceback) exits 70 too, like one caught in the learners' calls.
+    with device_fatal_guard("rl run loop"):
+        end = _core.run_rl(
+            functools.partial(_make, a, device, precision), a.run, a.config, algo=a.algo, seed=a.seed, take_over=a.take_over, logs=a.logs,
+            z_table=a.z_table, max_updates=a.max_updates, max_minutes=a.max_minutes, max_agent_steps=a.max_agent_steps,
+            checkpoint_minutes=a.checkpoint_minutes, fixed_t0=a.ac1_race,
+        )
     return EXIT_BUSY if end == "busy" else 0
