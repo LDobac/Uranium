@@ -15,7 +15,7 @@ use uranium_store::ckpt;
 
 use crate::data::{GameId, GameStream, GameSummary, MapStore, Rng, ShardSource, SourcePos, StepSource, TrainStep, epoch_updates, sample_games};
 use crate::pack::Planes;
-use crate::split::Selection;
+use crate::split::{Selection, Subsample};
 
 /// The clip semantics, part of the BC config fingerprint (B-3): one global L2 norm (041-R3), not
 /// Burn's per-tensor clip used before 2026-10-19.
@@ -54,6 +54,10 @@ pub struct DataConfig {
     /// `unknown` until first seen (per game, hash of replay SHA-256 + `seed`). Default 0.05.
     #[serde(default = "default_enemy_race_mask")]
     pub enemy_race_mask: f64,
+    /// 041-R21: keep a share of the stage's games (`[data.subsample]`). Absent = every game; then
+    /// the B-3 fingerprint is the one from before the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subsample: Option<Subsample>,
 }
 
 fn default_enemy_race_mask() -> f64 {
@@ -134,6 +138,9 @@ pub struct ResultSettings {
     pub augment: bool,
     pub seed: u64,
     pub enemy_race_mask: f64,
+    /// 041-R21; left out when absent so older configs keep their fingerprint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subsample: Option<Subsample>,
     /// Not a config field: the gradient clip semantics (041-R3 global L2 norm since 2026-10-19,
     /// [`CLIP_MODE`]), so runs from before the change do not match the fingerprint.
     pub clip_mode: &'static str,
@@ -158,7 +165,17 @@ impl BcConfig {
         if let Some(m) = micro_lanes_override()? {
             cfg.micro_lanes = m;
         }
+        if let Some(s) = &cfg.data.subsample {
+            s.check().with_context(|| path.display().to_string())?;
+        }
         Ok(cfg)
+    }
+
+    /// The games a `stage` run of this config reads from `dirs`, in training order: the stage
+    /// selection (041-R13), the game subsample (041-R21) and the `data.seed` shuffle. The trainer,
+    /// `bc-epoch` and `feed-digest` all read through this.
+    pub fn train_source(&self, dirs: &[PathBuf], sel: Selection) -> Result<ShardSource> {
+        Ok(ShardSource::from_dirs(dirs)?.select(sel).subsample(self.data.subsample.clone(), self.data.seed).shuffled(self.data.seed))
     }
 
     /// 061-R6: checkpoints kept on the share (0 = all).
@@ -196,6 +213,7 @@ impl BcConfig {
             augment: self.data.augment,
             seed: self.data.seed,
             enemy_race_mask: self.data.enemy_race_mask,
+            subsample: self.data.subsample.clone(),
             clip_mode: CLIP_MODE,
         }
     }
@@ -770,7 +788,7 @@ pub fn epoch_table(dirs: &[PathBuf], cfg: &BcConfig) -> Result<EpochTable> {
     let scan = crate::data::scan_cached(&base)?;
     let by_path: std::collections::HashMap<&PathBuf, &Vec<GameSummary>> = base.files().iter().zip(scan.iter()).collect();
     let count = |sel: Selection| -> Result<EpochCount> {
-        let src = ShardSource::from_dirs(dirs)?.select(sel).shuffled(cfg.data.seed);
+        let src = cfg.train_source(dirs, sel)?;
         let mut lens = Vec::new();
         for (k, f) in src.files().iter().enumerate() {
             lens.extend(src.order_file(k, by_path[f].clone()).into_iter().map(|i| i.steps));

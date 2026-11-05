@@ -62,6 +62,8 @@ pub struct ShardSource {
     cur_file: usize,
     last: Option<GameId>,
     select: Option<crate::split::Selection>,
+    /// 041-R21: share of each source's games kept (after `select`), with its seed.
+    subsample: Option<(crate::split::Subsample, u64)>,
     seed: Option<u64>,
     /// Files to read (by index); the others are skipped without being read (032-R17 ② evaluation
     /// of chosen games). `None` = every file.
@@ -102,11 +104,18 @@ impl ShardSource {
             );
         }
         let (keys, files) = found.into_iter().unzip();
-        Ok(Self { files, keys, next_file: 0, games: VecDeque::new(), cur_file: 0, last: None, select: None, seed: None, only_files: None, dirs: dirs.to_vec() })
+        Ok(Self { files, keys, next_file: 0, games: VecDeque::new(), cur_file: 0, last: None, select: None, subsample: None, seed: None, only_files: None, dirs: dirs.to_vec() })
     }
 
     pub fn select(mut self, sel: crate::split::Selection) -> Self {
         self.select = Some(sel);
+        self
+    }
+
+    /// 041-R21: keeps only the games [`crate::split::Subsample::keeps`] picks with `seed` (after
+    /// `select`, before the per-file shuffle). `None` keeps every game.
+    pub fn subsample(mut self, sub: Option<crate::split::Subsample>, seed: u64) -> Self {
+        self.subsample = sub.map(|s| (s, seed));
         self
     }
 
@@ -166,6 +175,9 @@ impl ShardSource {
     pub fn order_file<T: HasMeta>(&self, k: usize, mut games: Vec<T>) -> Vec<T> {
         if let Some(sel) = self.select {
             games.retain(|g| crate::split::selects(sel, g.meta()));
+        }
+        if let Some((sub, seed)) = &self.subsample {
+            games.retain(|g| sub.keeps(g.meta(), *seed));
         }
         if let Some(seed) = self.seed {
             shuffle(&mut games, &mut Rng::new(seed ^ (k as u64 + 1).wrapping_mul(0xD1B5_4A32_D192_ED03)));
@@ -1058,16 +1070,28 @@ pub fn enemy_race_masked(replay_sha256: &str, seed: u64, ratio: f64) -> bool {
     if ratio <= 0.0 {
         return false;
     }
+    game_unit(replay_sha256, seed, RACE_MASK_SALT) < ratio
+}
+
+/// Salt of [`enemy_race_masked`] ("RACEMASK").
+const RACE_MASK_SALT: u64 = 0x5241_4345_4D41_534B;
+/// Salt of the 041-R21 game subsample ("SUBSAMPL"), so it does not follow the race mask.
+pub(crate) const SUBSAMPLE_SALT: u64 = 0x5355_4253_414D_504C;
+
+/// A per-game number in [0, 1) from the replay SHA-256, a seed and a salt: the same on every PC
+/// and outside the data RNG stream (resume, 061-R10). Both perspectives of a TvT game share the
+/// replay hash, so they get the same number.
+pub(crate) fn game_unit(replay_sha256: &str, seed: u64, salt: u64) -> f64 {
     // FNV-1a over the hash text, then a splitmix64 finaliser with the seed.
     let mut h: u64 = 0xCBF2_9CE4_8422_2325;
     for b in replay_sha256.bytes() {
         h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01B3);
     }
-    let mut z = h ^ seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0x5241_4345_4D41_534B;
+    let mut z = h ^ seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ salt;
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^= z >> 31;
-    ((z >> 11) as f64 / (1u64 << 53) as f64) < ratio
+    (z >> 11) as f64 / (1u64 << 53) as f64
 }
 
 /// Feature extraction over one game in order (memory carries across steps), producing training

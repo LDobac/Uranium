@@ -305,7 +305,7 @@ fn tiny_bc(micro_lanes: usize, pad_entities: usize) -> BcConfig {
         s2_lr_scale: 0.1,
         heads: HeadWeights { action: 1.0, delay: 0.5, queued: 0.2, selected: 1.0, target_unit: 1.0, target_loc: 1.0 },
         value: ValueWeights { win: 0.5, win_open: None },
-        data: DataConfig { z_drop: 0.0, augment: false, seed: 1, checkpoint_every: 1000, checkpoint_minutes: 0, enemy_race_mask: 0.0 },
+        data: DataConfig { z_drop: 0.0, augment: false, seed: 1, checkpoint_every: 1000, checkpoint_minutes: 0, enemy_race_mask: 0.0, subsample: None },
         keep_checkpoints: None,
     }
 }
@@ -328,7 +328,7 @@ fn warmup_cosine_schedule_041_r3() {
         s2_lr_scale: 0.1,
         heads: HeadWeights { action: 1.0, delay: 0.5, queued: 0.2, selected: 1.0, target_unit: 1.0, target_loc: 1.0 },
         value: ValueWeights { win: 0.5, win_open: None },
-        data: DataConfig { z_drop: 0.25, augment: true, seed: 1, checkpoint_every: 1, checkpoint_minutes: 0, enemy_race_mask: 0.05 },
+        data: DataConfig { z_drop: 0.25, augment: true, seed: 1, checkpoint_every: 1, checkpoint_minutes: 0, enemy_race_mask: 0.05, subsample: None },
         keep_checkpoints: None,
     };
     assert!((cfg.lr_at(0, 1.0) - 1e-4).abs() < 1e-12);
@@ -778,11 +778,29 @@ fn scan_cache_follows_the_dataset_fingerprint() {
 #[test]
 fn config_fingerprint_fields_are_classified_b3() {
     use uranium_data::bc::EXECUTION_ONLY;
-    const RESULT: [&str; 15] = [
-        "lanes", "seq_len", "lr", "min_lr", "warmup_steps", "total_steps", "weight_decay", "grad_clip", "s2_lr_scale", "heads", "value", "data.z_drop", "data.augment", "data.seed", "data.enemy_race_mask",
+    const RESULT: [&str; 16] = [
+        "lanes",
+        "seq_len",
+        "lr",
+        "min_lr",
+        "warmup_steps",
+        "total_steps",
+        "weight_decay",
+        "grad_clip",
+        "s2_lr_scale",
+        "heads",
+        "value",
+        "data.z_drop",
+        "data.augment",
+        "data.seed",
+        "data.enemy_race_mask",
+        "data.subsample",
     ];
     let mut cfg = tiny_bc(1, 0);
+    // 041-R21: an absent subsample is left out of the fingerprint JSON (older configs keep theirs).
+    assert!(serde_json::to_value(cfg.results_view()).unwrap().get("subsample").is_none());
     cfg.keep_checkpoints = Some(3);
+    cfg.data.subsample = Some(uranium_data::split::Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()] });
     let v = serde_json::to_value(&cfg).unwrap();
     let mut keys: Vec<String> = Vec::new();
     for (k, x) in v.as_object().unwrap() {
@@ -811,7 +829,7 @@ fn config_fingerprint_fields_are_classified_b3() {
     c.data.checkpoint_every = 7;
     c.data.checkpoint_minutes = 3;
     assert_eq!(c.fingerprint(), base, "execution-only settings");
-    let changes: [fn(&mut BcConfig); 15] = [
+    let changes: [fn(&mut BcConfig); 16] = [
         |c| c.lanes += 1,
         |c| c.seq_len += 1,
         |c| c.lr *= 2.0,
@@ -827,12 +845,121 @@ fn config_fingerprint_fields_are_classified_b3() {
         |c| c.data.augment = !c.data.augment,
         |c| c.data.seed += 1,
         |c| c.data.enemy_race_mask += 0.01,
+        |c| c.data.subsample.as_mut().unwrap().fraction = 0.5,
     ];
     for (i, f) in changes.iter().enumerate() {
         let mut c = cfg.clone();
         f(&mut c);
         assert_ne!(c.fingerprint(), base, "{} changes the fingerprint", RESULT[i]);
     }
+    for f in [|c: &mut BcConfig| c.data.subsample.as_mut().unwrap().keep_sources.clear(), |c: &mut BcConfig| c.data.subsample = None] {
+        let mut c = cfg.clone();
+        f(&mut c);
+        assert_ne!(c.fingerprint(), base, "041-R21: the subsample's sources and presence change the fingerprint");
+    }
+}
+
+/// 041-R21: the empty fine-tune config is config/bc.toml with the fine-tune learning rate
+/// (1.5e-5 peak, 1.5e-7 floor after the S2 scale), data seed 3, the 1/4 game subsample (teacher
+/// games whole) and its own counted S2 length with a 5% warmup.
+#[test]
+fn fine_tune_config_041_r21() {
+    use uranium_data::bc::{BcStage, short_stage_warmup};
+    use uranium_data::split::Subsample;
+    let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config"));
+    let file = BcConfig::load(&dir.join("bc.toml")).unwrap();
+    let ft = BcConfig::load(&dir.join("bc_ft_empty.toml")).unwrap();
+    assert!((ft.lr * ft.s2_lr_scale - 1.5e-5).abs() < 1e-12, "peak {}", ft.lr * ft.s2_lr_scale);
+    assert!((ft.min_lr * ft.s2_lr_scale - 1.5e-7).abs() < 1e-14, "floor {}", ft.min_lr * ft.s2_lr_scale);
+    assert_eq!(ft.data.seed, 3);
+    assert_eq!(ft.data.subsample, Some(Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()] }));
+    assert!(ft.steps.s2 > 0);
+    assert_eq!(ft.steps.s2_warmup, short_stage_warmup(ft.steps.s2));
+    let s2 = ft.clone().for_stage(BcStage::S2);
+    assert_eq!((s2.total_steps, s2.warmup_steps), (ft.steps.s2, ft.steps.s2_warmup));
+    assert!((s2.lr_at(s2.total_steps, s2.s2_lr_scale) - 1.5e-7).abs() < 1e-14, "the cosine ends at the floor");
+    let mut same = ft.clone();
+    same.lr = file.lr;
+    same.min_lr = file.min_lr;
+    same.data.seed = file.data.seed;
+    same.data.subsample = None;
+    same.steps = file.steps.clone();
+    assert_eq!(same, file, "041-R21: only the learning rates, data seed, subsample and length differ from bc.toml");
+}
+
+/// 041-R21: the game subsample keeps about `fraction` of the games, per game from the replay hash
+/// and the data seed (both TvT perspectives alike), every game of `keep_sources`, and does not
+/// follow the 030-R11 race mask.
+#[test]
+fn subsample_keeps_a_share_per_game_041_r21() {
+    use uranium_data::data::enemy_race_masked;
+    use uranium_data::split::Subsample;
+    let sub = Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()] };
+    let meta = |i: u32, src: &str| {
+        let mut m = game().meta;
+        m.replay_sha256 = format!("{:064x}", u64::from(i).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        m.src = src.into();
+        m
+    };
+    let metas: Vec<GameMeta> = (0..20_000).map(|i| meta(i, "community")).collect();
+    let kept: Vec<&GameMeta> = metas.iter().filter(|m| sub.keeps(m, 3)).collect();
+    let share = kept.len() as f64 / metas.len() as f64;
+    assert!((0.24..0.26).contains(&share), "kept share {share}");
+    assert!(metas.iter().all(|m| sub.keeps(m, 3) == sub.keeps(m, 3)), "deterministic");
+    assert!(metas.iter().any(|m| sub.keeps(m, 3) != sub.keeps(m, 4)), "the seed matters");
+    let mut other = metas[0].clone();
+    other.perspective_slot = 1;
+    assert_eq!(sub.keeps(&other, 3), sub.keeps(&metas[0], 3), "both perspectives of a game");
+    assert!((0..2_000).all(|i| sub.keeps(&meta(i, "botgen"), 3)), "teacher games are kept whole");
+    let all = Subsample { fraction: 1.0, keep_sources: vec![] };
+    assert!(metas.iter().all(|m| all.keeps(m, 3)));
+    // Independent of the race mask drawn from the same hash and seed (other salt).
+    let masked = kept.iter().filter(|m| enemy_race_masked(&m.replay_sha256, 3, 0.05)).count() as f64 / kept.len() as f64;
+    assert!((0.035..0.065).contains(&masked), "race mask share among kept games {masked}");
+    assert!(Subsample { fraction: 0.0, keep_sources: vec![] }.check().is_err());
+    assert!(Subsample { fraction: 1.5, keep_sources: vec![] }.check().is_err());
+    assert!(sub.check().is_ok());
+}
+
+/// 041-R21: the trainer's source (`BcConfig::train_source`) and `bc-epoch` read the same subset:
+/// the epoch count is the lane walk over the subsampled source and every teacher game stays.
+#[test]
+fn subsampled_source_and_epoch_count_agree_041_r21() {
+    use uranium_data::split::{Selection, Subsample};
+    let mut games: Vec<ShardGame> = (0..60).map(|i| game_len(1 + (i % 16) as usize, i + 1)).collect();
+    for g in games.iter_mut().skip(40) {
+        g.meta.src = "botgen".into();
+    }
+    let root = shard_dir("subsample", &games, 7);
+    let mut cfg = tiny_bc(1, 0);
+    cfg.lanes = 2;
+    cfg.data.subsample = Some(Subsample { fraction: 0.5, keep_sources: vec!["botgen".into()] });
+    let src = cfg.train_source(std::slice::from_ref(&root), Selection::S1).unwrap();
+    let mut read: Vec<GameMeta> = Vec::new();
+    for k in 0..src.files().len() {
+        read.extend(src.file_games(k).unwrap().into_iter().map(|g| g.meta));
+    }
+    let train: Vec<&ShardGame> = games.iter().filter(|g| uranium_data::split::selects(Selection::S1, &g.meta)).collect();
+    let teacher = train.iter().filter(|g| g.meta.src == "botgen").count();
+    assert_eq!(read.iter().filter(|m| m.src == "botgen").count(), teacher, "every teacher train game");
+    let replays = read.iter().filter(|m| m.src == "test").count();
+    let all_replays = train.len() - teacher;
+    assert!(replays > 0 && replays < all_replays, "a part of the other games ({replays} of {all_replays})");
+    // The lane walk over that source makes the counted epoch.
+    let mut f = feeder(&cfg);
+    let mut s = cfg.train_source(std::slice::from_ref(&root), Selection::S1).unwrap();
+    let mut n = 0u64;
+    while f.next_batch_from(&mut s).unwrap().is_some() {
+        n += 1;
+    }
+    let table = uranium_data::bc::epoch_table(std::slice::from_ref(&root), &cfg).unwrap();
+    assert_eq!(table.s1.updates, n, "bc-epoch counts the subsampled walk");
+    assert_eq!(table.s1.games, read.len());
+    // Without the subsample there are more games.
+    let mut whole = cfg.clone();
+    whole.data.subsample = None;
+    assert!(uranium_data::bc::epoch_table(std::slice::from_ref(&root), &whole).unwrap().s1.games > read.len());
+    std::fs::remove_dir_all(&root).ok();
 }
 
 /// Copies the folder `src` to `dst` (files and subfolders), with or without the manifests.

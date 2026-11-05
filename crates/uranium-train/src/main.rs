@@ -304,7 +304,7 @@ fn main() -> Result<()> {
                 StageArg::S2 => BcStage::S2,
             };
             let cfg = BcConfig::load(&config)?.for_stage(stage);
-            let src = ShardSource::from_dirs(&data.dirs()?)?.select(stage.selection()).shuffled(cfg.data.seed);
+            let src = cfg.train_source(&data.dirs()?, stage.selection())?;
             let mut feeder = uranium_train::bc::Feeder::new(&cfg);
             if synthetic_maps {
                 feeder.set_maps(std::sync::Arc::new(uranium_train::data::MapStore::synthetic()));

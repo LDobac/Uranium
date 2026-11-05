@@ -16,7 +16,7 @@ use uranium_store::ckpt::{self, TrainState};
 use uranium_store::storage::{self, LockStatus, PushOutcome, Run, StorageConfig, TakeOver};
 
 use crate::bc::{Batch, BcConfig, BcStage, FeedState, Feeder, Prefetch, RunIdent, check_ident, write_ident};
-use crate::data::{MapStore, ShardSource};
+use crate::data::MapStore;
 
 /// The model side of a BC run.
 pub trait BcTrainer {
@@ -152,8 +152,12 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
     // B-2: every selected game's map must have its precompute here, checked before the lock and
     // the model. The loader also refuses such a game (`MapStore::get`).
     let maps = args.maps.clone().unwrap_or_else(|| Arc::new(MapStore::from_env()));
-    let src = ShardSource::from_dirs(&args.dirs)?.select(args.stage.selection()).shuffled(cfg.data.seed);
+    // 041-R21: the map check covers the whole stage selection (a superset of a subsample).
+    let src = cfg.train_source(&args.dirs, args.stage.selection())?;
     crate::data::check_maps(&src, Some(args.stage.selection()), &maps)?;
+    if let Some(s) = &cfg.data.subsample {
+        crate::elog!("{}", serde_json::json!({ "subsample": s, "seed": cfg.data.seed, "note": "041-R21" }));
+    }
     // B-3: what this run trains; stored in every checkpoint and compared on resume.
     let ident = RunIdent { stage: format!("{:?}", args.stage), config: cfg.fingerprint(), dataset: crate::data::dataset_fingerprint(&src)? };
     crate::elog!("{}", serde_json::json!({ "run_ident": ident, "keep_checkpoints": cfg.keep_checkpoints() }));

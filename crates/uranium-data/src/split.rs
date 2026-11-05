@@ -26,6 +26,32 @@ pub fn selects(sel: Selection, meta: &GameMeta) -> bool {
     }
 }
 
+/// 041-R21 game subsample (BC config `[data.subsample]`): keeps a `fraction` share of the games
+/// of every source except `keep_sources`, which are kept whole (the teacher games of the
+/// fine-tune). Per game: [`crate::data::game_unit`] of the replay SHA-256 and the data seed, so
+/// both perspectives of a TvT game are kept or dropped together and the subset is the same on
+/// every PC and on resume. Applied after the stage selection, so it never moves a game between
+/// the train / val / test splits (041-R12).
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct Subsample {
+    /// Share of games kept, in (0, 1].
+    pub fraction: f64,
+    /// Sources (`GameMeta.src`, 040-R14) kept whole.
+    #[serde(default)]
+    pub keep_sources: Vec<String>,
+}
+
+impl Subsample {
+    pub fn check(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(self.fraction > 0.0 && self.fraction <= 1.0, "[data.subsample] fraction must be in (0, 1], got {} (041-R21)", self.fraction);
+        Ok(())
+    }
+
+    pub fn keeps(&self, meta: &GameMeta, seed: u64) -> bool {
+        self.keep_sources.iter().any(|s| *s == meta.src) || crate::data::game_unit(&meta.replay_sha256, seed, crate::data::SUBSAMPLE_SALT) < self.fraction
+    }
+}
+
 /// Per source: games and steps without a privileged summary (E-10: the value head then sees all
 /// zeros), and games per `result_source` (040-R8; `none` = value weight 0, 041-R7 / A-3).
 #[derive(serde::Serialize, Debug, Default, Clone, PartialEq)]

@@ -45,7 +45,7 @@ fn config(path: &PathBuf, stage: &str) -> PyResult<BcConfig> {
 }
 
 fn source(dirs: &[PathBuf], stage: BcStage, cfg: &BcConfig) -> anyhow::Result<ShardSource> {
-    Ok(ShardSource::from_dirs(dirs)?.select(stage.selection()).shuffled(cfg.data.seed))
+    cfg.train_source(dirs, stage.selection())
 }
 
 /// BC batches from shard folders (041), built ahead on a Rust thread (041-R16).

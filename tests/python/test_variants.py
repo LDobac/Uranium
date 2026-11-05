@@ -75,6 +75,9 @@ def test_comparison_configs_032_r20():
     assert not model_variant(str(ROOT / "config" / "bc_core_ablation_pt.toml")).any()
     # 032-R20 (4) (user decision 2026-10-27): the main BC config trains the all-on structure.
     assert model_variant(str(ROOT / "config" / "bc.toml")) == want["all"]
+    # 041-R21: the fine-tune starts from bc-s2e2-pt, so its config keeps that structure (a
+    # different [model] is refused at --init, 032-AC11).
+    assert model_variant(str(ROOT / "config" / "bc_ft_empty.toml")) == want["all"]
 
 
 @pytest.mark.parametrize("name", VARIANTS)
