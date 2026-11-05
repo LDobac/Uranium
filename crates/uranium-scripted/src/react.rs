@@ -6,15 +6,17 @@
 //! current observation (rush rule R, 021-R8 ①–④). Without R it stays in the macro branch M: it
 //! expands to the natural and plays the `terran()` macro (3 barracks, 10-marine waves, home guard,
 //! one natural bunker after 4:00). R switches it at that very observation to the defence branch D:
-//! a bunker toward the main choke, marines load / hold beside it, SCVs pull and repair; D returns
-//! to M once it has 8 marines and 60 s without contact.
+//! a bunker toward the main ramp (the natural's side), marines load / hold beside it, SCVs pull
+//! and repair; D returns to M once it has 8 marines and 60 s without contact.
 //!
 //! Every action is one 010 `Command` the model can also issue (034: Build_Bunker,
 //! Build_CommandCenter, Build_*, Train_*, Load_Unit, Move_Pos, Hold, Attack_Pos, Attack_Unit,
-//! Repair_Unit, Gather_Unit), at most 12 units each. What the teacher carries between
-//! observations is what the model also has (030 §2): remembered enemy buildings (enemy main
-//! found), its own units (the bunker shows the defence) and elapsed time; the rush rules read
-//! only the current observation. No randomness: the same observations give the same commands.
+//! Repair_Unit, Gather_Unit), at most 12 units each. The rush rules read only the current
+//! observation and the enemy main only remembered enemy buildings (030 §2). The teacher also keeps
+//! hidden state the model does not observe directly: the branch, the last contact frame, the
+//! pulled / repairing SCVs and holding marines, the scout's progress. The defence is made visible
+//! as early as it can be: the bunker order and the second barracks come first in D (021-R8).
+//! No randomness: the same observations give the same commands.
 
 use std::collections::BTreeSet;
 
@@ -30,6 +32,12 @@ pub const FPS: u32 = 24;
 const TILE: i64 = 32;
 /// Bunker hit points (BWAPI type table, 350).
 pub const BUNKER_HP: u16 = 350;
+/// A choke tile nearer than this (tiles) to the command center does not set the bunker
+/// direction (021-R8 review: such tiles are narrow spots inside the main).
+const CHOKE_MIN: i64 = 8;
+/// Fallback bunker sites stay within this many tiles of the command center (inside the 10 tiles
+/// that count as "has a bunker").
+const BUNKER_SEARCH_MAX: i64 = 9;
 
 /// 021-R8 numbers (6th advisory §2 values, AMB-021-4). Frames are game frames (24 per second),
 /// distances tiles.
@@ -183,15 +191,20 @@ pub(crate) struct ReactState {
     pub natural: Option<Tile>,
     /// Start tile of the enemy main once found.
     pub enemy_main: Option<Tile>,
-    /// Last frame with enemy army within `army_radius` / `release_radius` of a command center.
+    /// Last frame with enemy army within `army_radius` of a command center (contact), and with
+    /// a pull target (enemy ground army, not burrowed) within `release_radius`.
     pub last_contact: u32,
     pub last_near: u32,
     pub pulled: Vec<UnitId>,
+    /// The pulled SCVs were sent back to mining (no target within `release_radius`); they stay
+    /// pulled until the release time and attack again if a target comes back.
+    pub pulled_mining: bool,
     pub repairers: Vec<UnitId>,
     pub holding: BTreeSet<UnitId>,
-    /// Frame of the last marine (load / hold) and SCV (pull / repair) orders.
+    /// Frame of the last marine (load / hold), pull and repair orders (separate 48-frame timers).
     pub last_marines: Option<u32>,
-    pub last_scvs: Option<u32>,
+    pub last_pull: Option<u32>,
+    pub last_repair: Option<u32>,
     pub stats: ReactStats,
 }
 
@@ -216,10 +229,12 @@ impl ReactState {
             last_contact: 0,
             last_near: 0,
             pulled: Vec::new(),
+            pulled_mining: false,
             repairers: Vec::new(),
             holding: BTreeSet::new(),
             last_marines: None,
-            last_scvs: None,
+            last_pull: None,
+            last_repair: None,
             stats: ReactStats::default(),
         }
     }
@@ -344,7 +359,9 @@ impl Brain {
         if army.iter().any(|a| depots.iter().any(|d| within(*a, *d, p.army_radius))) {
             r.last_contact = f.frame;
         }
-        if army.iter().any(|a| depots.iter().any(|d| within(*a, *d, p.release_radius))) {
+        // ④ release timer: the same units the SCVs are pulled against (ground army, not burrowed).
+        let ground = f.units.iter().filter(|u| is_enemy(u, me) && is_ground_army_type(u.unit_type) && !u.has(flags::BURROWED));
+        if ground.map(|u| u.pos).any(|a| depots.iter().any(|d| within(a, *d, p.release_radius))) {
             r.last_near = f.frame;
         }
         if r.branch == Branch::Macro {
@@ -388,12 +405,14 @@ impl Brain {
     }
 
     /// Barracks cap of the branch: 1 in the opening and before the expansion, 2 in D, 3 in M once
-    /// the natural is started. The first barracks waits for 11 supply.
+    /// the natural is started — or, with no natural (no map precompute), once the first barracks
+    /// is complete. The first barracks waits for 11 supply.
     pub(crate) fn react_production(&self, f: &RawFrame, mine: &[&UnitState], prod_count: usize) -> Option<(usize, bool)> {
         let r = self.react.as_ref()?;
+        let rax_done = mine.iter().any(|u| u.unit_type == BARRACKS && done(u));
         let cap = match r.branch {
             Branch::Defence => 2,
-            Branch::Macro if self.natural_started(mine) => 3,
+            Branch::Macro if self.natural_started(mine) || (r.natural.is_none() && rax_done) => 3,
             Branch::Macro => 1,
         };
         let ready = prod_count > 0 || f.self_state.supply_used as u32 >= 2 * r.p.barracks_supply;
@@ -443,8 +462,10 @@ impl Brain {
     }
 
     /// Bunker site: the Placer spiral around the point 5 tiles from `center` toward `to`, first
-    /// footprint whose centre is `bunker_min`..=`bunker_max` tiles from `center`; any free spot
-    /// near that point when none is.
+    /// footprint without units on it whose centre is `bunker_min`..=`bunker_max` tiles from
+    /// `center`; when none is, any such free spot up to `BUNKER_SEARCH_MAX` tiles from `center`
+    /// (inside the 10-tile radius that counts as "has a bunker", so an order is never repeated
+    /// for a bunker that does not count).
     pub(crate) fn bunker_site(&self, f: &RawFrame, center: Pos, to: Pos, reserved: &[(Tile, u16)]) -> Option<Tile> {
         let p = &self.react.as_ref()?.p;
         let (lo, hi) = (p.bunker_min * TILE, p.bunker_max * TILE);
@@ -454,16 +475,28 @@ impl Brain {
                 let d2 = dist2(bunker_center(t), center);
                 d2 >= lo * lo && d2 <= hi * hi && clear_of_units(f, t)
             })
-            .or_else(|| self.placer.find_where(BUNKER, near, &f.units, reserved, 24, |t| clear_of_units(f, t)))
+            .or_else(|| self.placer.find_where(BUNKER, near, &f.units, reserved, 2 * BUNKER_SEARCH_MAX as i32, |t| within(bunker_center(t), center, BUNKER_SEARCH_MAX) && clear_of_units(f, t)))
     }
 
-    /// Where a bunker at `center` faces: the nearest choke tile (for the natural, the nearest one
-    /// farther from the main than the natural, so not the main ramp), else the map centre.
+    /// Where a bunker at `center` faces (021-R8, 메인 임시 결정 after the review): among choke
+    /// tiles at least `CHOKE_MIN` tiles from `center` (nearer ones are narrow spots inside the
+    /// base on 5 of the 8 target-map starts), the one with the smallest d(center, c) + d(c, via),
+    /// nearest to `center` on ties — for the main bunker `via` is the natural, so the bunker faces
+    /// the way out of the main toward the natural; else toward `via`, else the map centre. For the
+    /// natural bunker (`outer_of` = the main) only chokes farther from the main than the natural
+    /// count, nearest first, so it does not face back up the main ramp.
     fn bunker_facing(&self, center: Pos, outer_of: Option<Pos>) -> Pos {
-        let chokes = self.react.as_ref().map(|r| r.chokes.as_slice()).unwrap_or_default();
+        let Some(r) = self.react.as_ref() else { return self.map_center };
         let tile = |t: &Tile| (t.0 * 32 + 16, t.1 * 32 + 16);
-        let pick = chokes.iter().map(tile).filter(|c| outer_of.is_none_or(|m| dist2(*c, m) > dist2(center, m))).min_by_key(|c| (dist2(*c, center), *c));
-        pick.unwrap_or(self.map_center)
+        let far = r.chokes.iter().map(tile).filter(|c| dist2(*c, center) >= (CHOKE_MIN * TILE).pow(2));
+        let len = |a: Pos, b: Pos| (dist2(a, b) as f64).sqrt().round() as i64;
+        match outer_of {
+            Some(m) => far.filter(|c| dist2(*c, m) > dist2(center, m)).min_by_key(|c| (dist2(*c, center), *c)).unwrap_or(self.map_center),
+            None => match r.natural.map(depot_center) {
+                Some(via) => far.min_by_key(|c| (len(center, *c) + len(*c, via), dist2(*c, center), *c)).unwrap_or(via),
+                None => far.min_by_key(|c| (dist2(*c, center), *c)).unwrap_or(self.map_center),
+            },
+        }
     }
 
     /// D bunker and M expansion / natural bunker orders, before production buildings. Returns
@@ -584,7 +617,7 @@ impl Brain {
     /// release of every D job.
     pub(crate) fn react_scvs(&mut self, f: &RawFrame, mine: &[&UnitState], minerals: &[&UnitState], cmds: &mut Vec<Command>) {
         let Some(r) = self.react.as_ref() else { return };
-        let (p, branch, last_s) = (r.p.clone(), r.branch, r.last_scvs);
+        let (p, branch) = (r.p.clone(), r.branch);
         let home = self.home_depot(mine).or(self.home);
         let gather_home = |ids: Vec<UnitId>, cmds: &mut Vec<Command>| {
             if ids.is_empty() {
@@ -607,13 +640,10 @@ impl Brain {
             gather_home(ids, cmds);
             let r = self.react.as_mut().expect("checked above");
             r.pulled.clear();
+            r.pulled_mining = false;
             r.repairers.clear();
             return;
         }
-        if !ReactState::due(last_s, f.frame, p.retarget) {
-            return;
-        }
-        let mut acted = false;
         // SCV pull (D ③): enemy ground army within `pull_radius` of a command center.
         let me = self.me;
         let depots = Self::own_depots(mine);
@@ -622,68 +652,89 @@ impl Brain {
         let threats: Vec<&UnitState> = ground.iter().copied().filter(|u| near(u, p.pull_radius)).collect();
         let targets: Vec<&UnitState> = ground.iter().copied().filter(|u| near(u, p.release_radius)).collect();
         let scvs: Vec<&&UnitState> = mine.iter().filter(|u| u.unit_type == SCV && u.has(flags::COMPLETED)).collect();
-        let (last_near, mut pulled, repairers) = {
+        let (last_near, mut pulled, mut mining, mut repairers, last_pull, last_repair) = {
             let r = self.react.as_ref().expect("checked above");
-            (r.last_near, r.pulled.clone(), r.repairers.clone())
+            (r.last_near, r.pulled.clone(), r.pulled_mining, r.repairers.clone(), r.last_pull, r.last_repair)
         };
-        if !threats.is_empty() {
-            let want = p.pull_max.min(scvs.len().saturating_sub(p.pull_keep));
-            let at = threats.iter().copied().min_by_key(|u| (depots.iter().map(|d| dist2(u.pos, *d)).min().unwrap_or(0), u.id)).map(|u| u.pos).unwrap_or_default();
-            let jobs: Vec<UnitId> = self.pending.iter().map(|q| q.worker).chain(self.scout).chain(repairers.iter().copied()).collect();
-            let mut free: Vec<&&&UnitState> = scvs.iter().filter(|u| !u.has(flags::CONSTRUCTING) && !jobs.contains(&u.id) && !pulled.contains(&u.id)).collect();
-            free.sort_by_key(|u| (dist2(u.pos, at), u.id));
-            for u in free.into_iter().take(want.saturating_sub(pulled.len())) {
-                pulled.push(u.id);
+        let mut pull_acted = false;
+        if ReactState::due(last_pull, f.frame, p.retarget) {
+            if !threats.is_empty() {
+                let want = p.pull_max.min(scvs.len().saturating_sub(p.pull_keep));
+                let at = threats.iter().copied().min_by_key(|u| (depots.iter().map(|d| dist2(u.pos, *d)).min().unwrap_or(0), u.id)).map(|u| u.pos).unwrap_or_default();
+                let jobs: Vec<UnitId> = self.pending.iter().map(|q| q.worker).chain(self.scout).chain(repairers.iter().copied()).collect();
+                let mut free: Vec<&&&UnitState> = scvs.iter().filter(|u| !u.has(flags::CONSTRUCTING) && !jobs.contains(&u.id) && !pulled.contains(&u.id)).collect();
+                free.sort_by_key(|u| (dist2(u.pos, at), u.id));
+                for u in free.into_iter().take(want.saturating_sub(pulled.len())) {
+                    pulled.push(u.id);
+                }
+                if pulled.len() > want {
+                    let extra = pulled.split_off(want);
+                    gather_home(extra, cmds);
+                }
             }
-            if pulled.len() > want {
-                let extra = pulled.split_off(want);
-                gather_home(extra, cmds);
-            }
-        }
-        if !pulled.is_empty() {
-            if f.frame >= last_near + p.release_after {
-                // ④ no enemy army within `release_radius` for `release_after`: back to mining.
-                gather_home(std::mem::take(&mut pulled), cmds);
-                acted = true;
-            } else {
-                let group: Vec<&UnitState> = pulled.iter().filter_map(|id| mine.iter().copied().find(|u| u.id == *id)).collect();
-                let c = crate::centroid(&group);
-                if let Some(t) = targets.iter().min_by_key(|u| (dist2(u.pos, c), u.id)) {
-                    cmds.push(Command::Unit { units: pulled.clone(), order: CmdOrder::Attack(Target::Unit(t.id)), queued: false });
-                    acted = true;
+            if !pulled.is_empty() {
+                if f.frame >= last_near + p.release_after {
+                    // ④ no pull target within `release_radius` for `release_after`: released.
+                    if !mining {
+                        gather_home(pulled.clone(), cmds);
+                    }
+                    pulled.clear();
+                    mining = false;
+                    pull_acted = true;
+                } else {
+                    let group: Vec<&UnitState> = pulled.iter().filter_map(|id| mine.iter().copied().find(|u| u.id == *id)).collect();
+                    let c = crate::centroid(&group);
+                    match targets.iter().min_by_key(|u| (dist2(u.pos, c), u.id)) {
+                        Some(t) => {
+                            cmds.push(Command::Unit { units: pulled.clone(), order: CmdOrder::Attack(Target::Unit(t.id)), queued: false });
+                            mining = false;
+                            pull_acted = true;
+                        }
+                        // No target within `release_radius`: mine (no chase) until released.
+                        None if !mining => {
+                            gather_home(pulled.clone(), cmds);
+                            mining = true;
+                            pull_acted = true;
+                        }
+                        None => {}
+                    }
                 }
             }
         }
         // Repair (D): a completed bunker below `repair_below_pct` gets `repairers` SCVs until full.
-        let mut repairers = repairers;
-        let mut bunkers: Vec<&&UnitState> = mine.iter().filter(|u| u.unit_type == BUNKER && done(u) && u.hp < BUNKER_HP).collect();
-        bunkers.sort_by_key(|b| (b.hp, b.id));
-        let damaged = bunkers.iter().find(|b| (b.hp as u32) * 100 < BUNKER_HP as u32 * p.repair_below_pct).or(if repairers.is_empty() { None } else { bunkers.first() });
-        match damaged {
-            Some(b) => {
-                let jobs: Vec<UnitId> = self.pending.iter().map(|q| q.worker).chain(self.scout).chain(pulled.iter().copied()).collect();
-                let mut free: Vec<&&&UnitState> = scvs.iter().filter(|u| !u.has(flags::CONSTRUCTING) && !jobs.contains(&u.id) && !repairers.contains(&u.id)).collect();
-                free.sort_by_key(|u| (dist2(u.pos, b.pos), u.id));
-                for u in free.into_iter().take(p.repairers.saturating_sub(repairers.len())) {
-                    repairers.push(u.id);
+        let mut repair_acted = false;
+        if ReactState::due(last_repair, f.frame, p.retarget) {
+            let mut bunkers: Vec<&&UnitState> = mine.iter().filter(|u| u.unit_type == BUNKER && done(u) && u.hp < BUNKER_HP).collect();
+            bunkers.sort_by_key(|b| (b.hp, b.id));
+            let damaged = bunkers.iter().find(|b| (b.hp as u32) * 100 < BUNKER_HP as u32 * p.repair_below_pct).or(if repairers.is_empty() { None } else { bunkers.first() });
+            match damaged {
+                Some(b) => {
+                    let jobs: Vec<UnitId> = self.pending.iter().map(|q| q.worker).chain(self.scout).chain(pulled.iter().copied()).collect();
+                    let mut free: Vec<&&&UnitState> = scvs.iter().filter(|u| !u.has(flags::CONSTRUCTING) && !jobs.contains(&u.id) && !repairers.contains(&u.id)).collect();
+                    free.sort_by_key(|u| (dist2(u.pos, b.pos), u.id));
+                    for u in free.into_iter().take(p.repairers.saturating_sub(repairers.len())) {
+                        repairers.push(u.id);
+                    }
+                    if !repairers.is_empty() {
+                        cmds.push(Command::Unit { units: repairers.clone(), order: CmdOrder::Repair(b.id), queued: false });
+                        repair_acted = true;
+                    }
                 }
-                if !repairers.is_empty() {
-                    cmds.push(Command::Unit { units: repairers.clone(), order: CmdOrder::Repair(b.id), queued: false });
-                    acted = true;
-                }
-            }
-            None => {
-                if !repairers.is_empty() {
-                    gather_home(std::mem::take(&mut repairers), cmds);
-                    acted = true;
+                None => {
+                    if !repairers.is_empty() {
+                        gather_home(std::mem::take(&mut repairers), cmds);
+                        repair_acted = true;
+                    }
                 }
             }
         }
         let r = self.react.as_mut().expect("checked above");
-        r.pulled = pulled;
-        r.repairers = repairers;
-        if acted {
-            r.last_scvs = Some(f.frame);
+        (r.pulled, r.pulled_mining, r.repairers) = (pulled, mining, repairers);
+        if pull_acted {
+            r.last_pull = Some(f.frame);
+        }
+        if repair_acted {
+            r.last_repair = Some(f.frame);
         }
     }
 
@@ -1048,17 +1099,131 @@ mod tests {
         // Pulled SCVs are not sent back to mining by the idle rule.
         let pulled = attack[0].0.clone();
         assert!(unit_orders(&act, |o| matches!(o, CmdOrder::Gather(_))).iter().all(|g| g.iter().all(|u| !pulled.contains(u))));
-        // Enemies gone (still D: no 60 s quiet yet), bunker full: the repairers mine again; 10 s
-        // after the last enemy army within 16 tiles the pulled SCVs do too.
-        let quiet: Vec<UnitState> = units.iter().filter(|u| u.owner != 1).cloned().map(|u| if u.unit_type == BUNKER { UnitState { hp: BUNKER_HP, ..u } } else { u }).collect();
-        let act = b.act(&frame(3_048, quiet.clone(), 0, 40));
-        assert!(unit_orders(&act, |o| matches!(o, CmdOrder::Gather(_))).iter().any(|g| *g == repair[0]), "{:?}", act.cmds);
-        let act = b.act(&frame(3_000 + 239, quiet.clone(), 0, 40));
+        // The zerglings run to 20 tiles (no target within 16), bunker full: the repairers and the
+        // pulled SCVs mine at once (no chase); the pulled ones stay pulled until 10 s after the
+        // last target within 16 tiles.
+        let away: Vec<UnitState> = units
+            .iter()
+            .cloned()
+            .map(|u| match (u.owner, u.unit_type) {
+                (1, _) => UnitState { pos: (home().0 + 20 * 32, u.pos.1), ..u },
+                (_, BUNKER) => UnitState { hp: BUNKER_HP, ..u },
+                _ => u,
+            })
+            .collect();
+        let act = b.act(&frame(3_048, away.clone(), 0, 40));
+        let gathers = unit_orders(&act, |o| matches!(o, CmdOrder::Gather(_)));
+        assert!(gathers.contains(&repair[0]) && gathers.contains(&pulled), "{:?}", act.cmds);
+        assert!(unit_orders(&act, |o| matches!(o, CmdOrder::Attack(Target::Unit(_)))).is_empty(), "no chase: {:?}", act.cmds);
+        assert_eq!(b.react_busy(), pulled);
+        let act = b.act(&frame(3_000 + 239, away.clone(), 0, 40));
         assert!(!unit_orders(&act, |o| matches!(o, CmdOrder::Gather(_))).contains(&pulled), "{:?}", act.cmds);
-        let act = b.act(&frame(3_000 + 240, quiet, 0, 40));
-        assert!(unit_orders(&act, |o| matches!(o, CmdOrder::Gather(_))).contains(&pulled), "{:?}", act.cmds);
+        assert_eq!(b.react_busy(), pulled);
+        b.act(&frame(3_000 + 240, away, 0, 40));
         assert_eq!(branch(&b), Branch::Defence);
         assert!(b.react_busy().is_empty());
+    }
+
+    /// 021-R8 (review): a choke tile inside the main (2–3 tiles from the command center) does
+    /// not set the bunker direction; the main bunker faces the way out toward the natural.
+    #[test]
+    fn main_bunker_faces_out_of_the_main_021_r8() {
+        let hints = MapHints { base_locs: vec![OURS, THEIRS, NATURAL], chokes: vec![(13, 12), (12, 13), (10, 20)] };
+        let b = Brain::with_hints(&info(), Kit::for_build(Race::Terran, T0Build::TerranReact), &hints);
+        assert_eq!(b.bunker_facing(home(), None), (10 * 32 + 16, 20 * 32 + 16));
+        let t = b.bunker_site(&frame(3_000, base(10), 0, 40), home(), b.bunker_facing(home(), None), &[]).unwrap();
+        assert!(bunker_center(t).1 > home().1 + 3 * 32, "south, toward the natural: {t:?}");
+        // No choke 8 tiles out: toward the natural itself.
+        let hints = MapHints { base_locs: vec![OURS, THEIRS, NATURAL], chokes: vec![(13, 12)] };
+        let b = Brain::with_hints(&info(), Kit::for_build(Race::Terran, T0Build::TerranReact), &hints);
+        assert_eq!(b.bunker_facing(home(), None), depot_center(NATURAL));
+    }
+
+    /// 021-R8 (review): when every 4–6 tile site is taken the fallback stays within 9 tiles of
+    /// the command center, inside the 10 tiles that count as "has a bunker".
+    #[test]
+    fn fallback_bunker_site_stays_within_nine_tiles_021_r8() {
+        let b = teacher();
+        let mut f = frame(3_000, base(10), 0, 40);
+        let (hx, hy) = ((home().0 / 32) as i32, (home().1 / 32) as i32);
+        let mut id = 400;
+        for y in hy - 8..=hy + 8 {
+            for x in hx - 8..=hx + 8 {
+                let d2 = (x - hx).pow(2) + (y - hy).pow(2);
+                if x >= 0 && y >= 0 && (9..=49).contains(&d2) {
+                    f.units.push(enemy(id, ZERGLING, (x as u16 * 32 + 16, y as u16 * 32 + 16)));
+                    id += 1;
+                }
+            }
+        }
+        if let Some(t) = b.bunker_site(&f, home(), b.bunker_facing(home(), None), &[]) {
+            assert!(within(bunker_center(t), home(), BUNKER_SEARCH_MAX), "{t:?}");
+        }
+        f.units.retain(|u| u.owner != 1 || dist2(u.pos, home()) < 5 * 5 * 32 * 32);
+        let t = b.bunker_site(&f, home(), b.bunker_facing(home(), None), &[]).expect("a site beyond 5 tiles");
+        assert!(within(bunker_center(t), home(), BUNKER_SEARCH_MAX), "{t:?}");
+    }
+
+    /// 021-R8 user constraint (review regression guard): a macro game with no rush evidence —
+    /// the enemy main seen with 10 drones and no pool, overlords over the base — issues no bunker
+    /// order from 0:00 to 4:00 and expands.
+    #[test]
+    fn no_bunker_before_four_minutes_without_rush_evidence_021_r8() {
+        let mut b = teacher();
+        let mut bunkers = 0;
+        let mut expanded = false;
+        for n in (8..=5_760).step_by(8) {
+            let scvs = (4 + n / 300).min(22);
+            let mut u = if n < 1_600 {
+                let mut v = vec![unit(1, CC, home()), UnitState { owner: 11, ..unit(3, 176, (home().0 - 200, home().1)) }];
+                v.extend((0..scvs).map(|i| unit(100 + i, SCV, (home().0 - 100, home().1 + 4 * i as u16))));
+                v
+            } else {
+                base(scvs)
+            };
+            if (2_800..3_100).contains(&n) {
+                let m = depot_center(THEIRS);
+                u.push(enemy(80, HATCHERY, m));
+                u.extend((0..10).map(|i| enemy(81 + i, DRONE, (m.0 - 100, m.1 + 8 * i as u16))));
+            }
+            if n >= 4_000 {
+                u.push(enemy(95, OVERLORD, (home().0 + 64, home().1 + 64)));
+            }
+            let supply = (2 * scvs) as u16;
+            let act = b.act(&frame(n, u, 450, supply));
+            bunkers += builds(&act, BUNKER).len();
+            expanded |= builds(&act, CC).contains(&NATURAL);
+        }
+        assert_eq!((bunkers, branch(&b)), (0, Branch::Macro));
+        assert!(expanded);
+    }
+
+    /// 021-R8 (review): with the real 031 precompute of the two target maps (`URANIUM_MAPS_DIR`,
+    /// the replay-build files the live session reads), the main bunker of every start location
+    /// faces a point at least 8 tiles out, roughly toward the natural.
+    #[test]
+    #[ignore = "needs URANIUM_MAPS_DIR with the target-map precomputes"]
+    fn target_map_bunker_direction_021_r8() {
+        let dir = std::path::PathBuf::from(std::env::var("URANIUM_MAPS_DIR").expect("URANIUM_MAPS_DIR"));
+        let maps = [
+            ("175b118cc1ab70c95e9bfc90cc5640ed300b7370443e9394aeb0d1dce6dbb0bc", [(117, 7), (7, 6), (7, 116), (117, 117)]),
+            ("8109bae22de8e79ca9ddc9ca4bad343dbf5ac676747d7805f043cd8080bfdf56", [(117, 118), (7, 118), (7, 9), (117, 9)]),
+        ];
+        for (hash, starts) in maps {
+            let pre = uranium_env::maps::load_precompute(&dir, hash).expect("precompute");
+            let hints = MapHints { base_locs: pre.base_locs.clone(), chokes: pre.chokes.clone() };
+            for s in starts {
+                let mut i = info();
+                i.static_map.start_locations = starts.to_vec();
+                i.players[0].start_tile = Some(s);
+                let b = Brain::with_hints(&i, Kit::for_build(Race::Terran, T0Build::TerranReact), &hints);
+                let (h, nat) = (depot_center(s), depot_center(b.react.as_ref().unwrap().natural.unwrap()));
+                let to = b.bunker_facing(h, None);
+                let (v, w) = ((to.0 as f64 - h.0 as f64, to.1 as f64 - h.1 as f64), (nat.0 as f64 - h.0 as f64, nat.1 as f64 - h.1 as f64));
+                let cos = (v.0 * w.0 + v.1 * w.1) / ((v.0.hypot(v.1)) * (w.0.hypot(w.1)));
+                assert!(dist2(to, h) >= (8 * 32) * (8 * 32) && cos > 0.5, "{hash:.8} start {s:?}: faces {to:?}, natural {nat:?}, cos {cos:.2}");
+            }
+        }
     }
 
     /// 021-R8 opening: first depot at 9 supply, barracks at 11, second depot at 15; the scout

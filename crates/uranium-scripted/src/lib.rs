@@ -607,13 +607,17 @@ impl Bot for Brain {
         let workers = count(k.worker);
         let (cap, ready) = self.react_production(f, &mine, prod_count).unwrap_or((k.production_cap, workers >= k.production_at_workers[prod_count.min(2)]));
         let budget = if prod_count > 0 { minerals - hold_all } else { minerals };
+        let mut prod_after = prod_count;
         if prod_count < cap && ready && budget >= cost(k.production) {
             if let Some(b) = base {
                 if self.order_build(k.production, f, &mine, b, &busy, &mut cmds) {
                     minerals -= cost(k.production);
+                    prod_after += 1;
                 }
             }
         }
+        // 021-R8 D: the second barracks (visible defence) comes before more SCVs.
+        let hold_workers = if branch == Some(Branch::Defence) && prod_after < cap { cost(k.production) } else { 0 };
 
         // Tech path (050 scenario builds): the first unfinished step is started, or its price
         // is held back from unit production until it can be.
@@ -673,7 +677,7 @@ impl Bot for Brain {
             }
             Supply::Building(_) => {
                 for d in mine.iter().filter(|u| is_resource_depot(u.unit_type) && u.has(flags::COMPLETED) && !u.has(flags::TRAINING)) {
-                    if workers < k.max_workers && minerals >= 50 && supply_free >= 2 {
+                    if workers < k.max_workers && minerals - hold_workers >= 50 && supply_free >= 2 {
                         cmds.push(Command::Train { building: d.id, unit_type: k.worker });
                         minerals -= 50;
                         supply_free -= 2;
