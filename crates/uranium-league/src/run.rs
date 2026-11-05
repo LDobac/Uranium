@@ -104,6 +104,9 @@ struct Shared {
     /// 042-R20 (AMB-042-20): finished games in a row whose learning session made no decision
     /// ([`bad_learning_session`]).
     bad_sessions: AtomicU64,
+    /// 042-R20: games that ended `Finished` (the stall check counts these, not Aborted /
+    /// Rejected games of a game host outage, which leave the learner without data anyway).
+    finished_games: AtomicU64,
     /// `[league]` of the config: `GameSpec.max_frames` by opponent (020-R3 60 minutes, 042-R15
     /// `model_game_max_s`, AMB-042-17; 042-R17 rush mini-games, AMB-042-18) and the
     /// `[league.rush_judge]` settings.
@@ -598,7 +601,10 @@ impl JobSource for LeagueSource {
         // No lock of `shared` is held from here to the queue push below: a terminal segment that
         // waits for a place blocks only this host slot's worker (042 queue table).
         let (result, held) = self.collect(id);
-        // 042-R20 (AMB-042-20): the run loop's dead-inference streak.
+        // 042-R20 (AMB-042-20): the run loop's stall count and dead-inference streak.
+        if outcome == JobOutcome::Finished {
+            s.finished_games.fetch_add(1, Ordering::SeqCst);
+        }
         match bad_learning_session(outcome, result.as_ref()) {
             Some(true) => {
                 s.bad_sessions.fetch_add(1, Ordering::SeqCst);
@@ -778,7 +784,7 @@ impl JobSource for LeagueSource {
     }
 }
 
-/// 042-R20 (AMB-042-20): finished games since the last learner update before a missing update
+/// 042-R20 (AMB-042-20): `Finished` games since the last learner update before a missing update
 /// counts as a dead learner.
 const DEAD_LEARNER_GAMES: u64 = 20;
 /// 042-R20: finished games in a row whose learning session made no decision = dead inference.
@@ -812,8 +818,8 @@ impl StallWatch {
         (self.last, self.games_at_last) = (now, games);
     }
 
-    /// Why the run should end abnormally, if it should: `games` finished in total, `bad_streak`
-    /// finished games in a row without a decision of the learning session.
+    /// Why the run should end abnormally, if it should: `games` = `Finished` games in total,
+    /// `bad_streak` = finished games in a row without a decision of the learning session.
     fn check(&self, now: Instant, games: u64, bad_streak: u64) -> Option<String> {
         if self.after.is_zero() {
             return None;
@@ -1311,6 +1317,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         disagree: AtomicU64::new(0),
         aborted: AtomicU64::new(0),
         bad_sessions: AtomicU64::new(0),
+        finished_games: AtomicU64::new(0),
         league_cfg: cfg.league.clone(),
         sil: cfg.sil.enabled.then(|| SilState::new(cfg.sil.clone(), args.seed)),
         game_wall_timeout_s: cfg.actors.game_wall_timeout_s,
@@ -1381,7 +1388,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         // 042-R20: an error return (no checkpoint: after a device fault it would fail or write
         // garbage); `halt` stops the games, the process exits non-zero and the 060-R6 watchdog
         // restarts the run from LATEST.
-        if let Some(why) = stall.check(Instant::now(), shared.games_done.load(Ordering::SeqCst), shared.bad_sessions.load(Ordering::SeqCst)) {
+        if let Some(why) = stall.check(Instant::now(), shared.finished_games.load(Ordering::SeqCst), shared.bad_sessions.load(Ordering::SeqCst)) {
             crate::elog!("[rl] {why}: ending abnormally without a checkpoint, the watchdog restarts from LATEST (042-R20)");
             anyhow::bail!("042-R20 stall: {why}");
         }
@@ -1454,7 +1461,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         }
         // 042-R20: an update (and the snapshot / checkpoint after it, which may take minutes) is
         // progress.
-        stall.progress(Instant::now(), shared.games_done.load(Ordering::SeqCst));
+        stall.progress(Instant::now(), shared.finished_games.load(Ordering::SeqCst));
     }
 
     // 042-R10: ① no new games ② stop games in flight (Aborted, revoked) ③ checkpoint + push
@@ -1763,6 +1770,7 @@ mod tests {
             disagree: AtomicU64::new(0),
             aborted: AtomicU64::new(0),
             bad_sessions: AtomicU64::new(0),
+            finished_games: AtomicU64::new(0),
             league_cfg: cfg.league.clone(),
             sil: cfg.sil.enabled.then(|| SilState::new(cfg.sil.clone(), 1)),
             game_wall_timeout_s: 1,
@@ -2049,6 +2057,9 @@ mod tests {
         for k in 1..=BAD_SESSION_STREAK {
             assert_eq!(play(0, JobOutcome::Finished), k);
         }
+        // The stall check counts `Finished` games only (not the Aborted one).
+        assert_eq!(src.shared.finished_games.load(Ordering::SeqCst), 3 + BAD_SESSION_STREAK);
+        assert_eq!(src.shared.games_done.load(Ordering::SeqCst), 4 + BAD_SESSION_STREAK);
     }
 
     /// 042-R2 / R14: a games.csv without `end_reason` (an older version) is kept aside like an

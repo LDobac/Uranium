@@ -259,7 +259,11 @@ impl Watch {
             }
             std::thread::sleep(poll);
         };
-        let _ = reader.join();
+        // After a kill a grandchild may still hold the stderr pipe (e.g. a `cmd` or compile
+        // worker): the reader is left to end on its own instead of blocking the restart.
+        if let Ending::Exited(_) = ending {
+            let _ = reader.join();
+        }
         *self.child_pid.lock().unwrap() = None;
         Ok(ending)
     }

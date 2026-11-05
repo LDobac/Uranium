@@ -116,8 +116,7 @@ def test_close_stops_the_thread_and_frees_the_model_042(tmp_path):
     assert s2.net is not None
 
 
-CUDA_FATAL = "CUDA error: an illegal memory access was encountered
-CUDA kernel errors might be asynchronously reported"
+CUDA_FATAL = "CUDA error: an illegal memory access was encountered\nCUDA kernel errors might be asynchronously reported"
 
 
 def test_device_fatal_classification_042_r20():
@@ -129,9 +128,7 @@ def test_device_fatal_classification_042_r20():
     assert is_device_fatal(RuntimeError(CUDA_FATAL))
     assert is_device_fatal(RuntimeError("Sticky error detected"))
     assert is_device_fatal(RuntimeError("HIP error: an illegal memory access was encountered"))
-    assert is_device_fatal(RuntimeError("Traceback (most recent call last):
-...
-AcceleratorError: CUDA error: an illegal memory access"))
+    assert is_device_fatal(RuntimeError("Traceback (most recent call last):\n...\nAcceleratorError: CUDA error: an illegal memory access"))
     if hasattr(torch, "AcceleratorError"):
         assert is_device_fatal(torch.AcceleratorError("unspecified launch failure"))
     try:

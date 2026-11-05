@@ -149,3 +149,22 @@ fn watched_children_fatal_line_and_progress_file_060_r6() {
     let e = w.watch_child(sh("for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do echo x >&2; sleep 0.1; done"), Duration::from_millis(700), None, &[], poll).unwrap();
     assert_eq!(e, Ending::Exited(Some(0)), "lines are progress without a progress file");
 }
+
+/// 060-R6 (AMB-042-20) on Windows (the CUDA host's watchdog): a fatal stderr line kills the child
+/// at once, also while a grandchild (`ping`) still holds the stderr pipe.
+#[cfg(windows)]
+#[test]
+fn watched_child_fatal_line_windows_060_r6() {
+    use std::process::Command;
+    use std::time::Instant;
+    use uranium_train::supervise::Watch;
+
+    let w = Watch::without_ctrl_c("test", None).unwrap();
+    let mut c = Command::new("cmd");
+    c.args(["/C", "echo CUDA error: an illegal memory access was encountered 1>&2 & ping -n 30 127.0.0.1 >NUL"]);
+    let fatal = vec![regex::Regex::new("illegal memory access").unwrap()];
+    let t = Instant::now();
+    let e = w.watch_child(c, Duration::from_secs(600), None, &fatal, Duration::from_millis(50)).unwrap();
+    assert_eq!(e, Ending::Fatal);
+    assert!(t.elapsed() < Duration::from_secs(10), "killed at the line, not after the ping");
+}
