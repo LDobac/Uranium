@@ -254,6 +254,21 @@ fn toward(from: Pos, to: Pos, tiles: f64) -> Pos {
     ((from.0 as f64 + dx * k).round().max(0.0) as u16, (from.1 as f64 + dy * k).round().max(0.0) as u16)
 }
 
+/// No visible ground unit (own or enemy, not loaded, no building or resource) stands on the bunker
+/// footprint at `t` (8 px margin): the game refuses a site with units in the way (OpenBW smoke
+/// game: zerglings and pulled SCVs on the choke-side site, 021-R8 메인 임시 결정).
+fn clear_of_units(f: &RawFrame, t: Tile) -> bool {
+    let (w, h) = tile_size(BUNKER);
+    let (x0, y0) = (t.0 as i32 * 32 - 8, t.1 as i32 * 32 - 8);
+    let (x1, y1) = ((t.0 + w) as i32 * 32 + 8, (t.1 + h) as i32 * 32 + 8);
+    let table = uranium_env::types::TypeTables::get();
+    !f.units.iter().any(|u| {
+        let ground = u.loaded_in.is_none() && !is_building(u.unit_type) && !is_resource(u.unit_type) && table.unit(u.unit_type).is_none_or(|t| !t.is_flyer());
+        let (x, y) = (u.pos.0 as i32, u.pos.1 as i32);
+        ground && x >= x0 && x < x1 && y >= y0 && y < y1
+    })
+}
+
 fn is_enemy(u: &UnitState, me: u8) -> bool {
     u.owner != me && !is_neutral_owner(u.owner)
 }
@@ -437,9 +452,9 @@ impl Brain {
         self.placer
             .find_where(BUNKER, near, &f.units, reserved, p.bunker_max as i32 + 2, |t| {
                 let d2 = dist2(bunker_center(t), center);
-                d2 >= lo * lo && d2 <= hi * hi
+                d2 >= lo * lo && d2 <= hi * hi && clear_of_units(f, t)
             })
-            .or_else(|| self.placer.find(BUNKER, near, &f.units, reserved))
+            .or_else(|| self.placer.find_where(BUNKER, near, &f.units, reserved, 24, |t| clear_of_units(f, t)))
     }
 
     /// Where a bunker at `center` faces: the nearest choke tile (for the natural, the nearest one
@@ -904,6 +919,25 @@ mod tests {
         assert_eq!(branch(&b), Branch::Defence);
         let s = b.teacher_stats().unwrap();
         assert_eq!((s.rush_frame, s.rush_rule, s.defences, s.macro_frame, s.branch), (Some(2_008), Some(RushRule::Lings), 2, Some(3_448), Branch::Defence));
+    }
+
+    /// 021-R8 bunker site: a footprint with a ground unit on it (a zergling, a pulled SCV) is
+    /// skipped for the next spiral spot that is still 4–6 tiles out; flyers and loaded units do
+    /// not block.
+    #[test]
+    fn bunker_site_skips_units_in_the_way_021_r8() {
+        let b = teacher();
+        let mut f = frame(3_000, base(10), 0, 40);
+        let to = b.bunker_facing(home(), None);
+        let first = b.bunker_site(&f, home(), to, &[]).unwrap();
+        f.units.push(UnitState { flags: flags::COMPLETED, ..unit(300, OVERLORD, bunker_center(first)) });
+        assert_eq!(b.bunker_site(&f, home(), to, &[]), Some(first), "a flyer does not block");
+        f.units.push(enemy(301, ZERGLING, bunker_center(first)));
+        let second = b.bunker_site(&f, home(), to, &[]).unwrap();
+        assert_ne!(second, first);
+        let d = (dist2(bunker_center(second), home()) as f64).sqrt() / 32.0;
+        assert!((4.0..=6.0).contains(&d), "{second:?} {d}");
+        assert!(clear_of_units(&f, second) && !clear_of_units(&f, first));
     }
 
     /// 021-R8 M: with the enemy main found and no R, the natural command center at 400 minerals;
