@@ -98,6 +98,10 @@ pub trait Policy: Send {
     fn model_stats(&mut self) -> Option<ModelStats> {
         None
     }
+    /// T0 Terran sessions report the 042 / 050-R7 metrics and the teacher record (050-R8).
+    fn scripted_stats(&mut self) -> Option<ScriptedStats> {
+        None
+    }
     /// Game over; `None` = Aborted or disconnected (042-R3). `final_frame`: the own-vision state at
     /// the end with the events since the last frame (010-R12), when the bridge sent one.
     fn on_end(&mut self, _outcome: Option<uranium_env::reward::Outcome>, _final_frame: Option<&RawFrame>) {}
@@ -236,7 +240,7 @@ pub fn make_policy(spec: &PolicySpec, game_id: u64, info: &GameInfo, build: T0Bu
         Ok(())
     };
     Ok(match spec {
-        PolicySpec::ScriptedT0 => Box::new(uranium_scripted::for_game_build(info, build)),
+        PolicySpec::ScriptedT0 => Box::new(ScriptedPolicy::new(info, build)?),
         PolicySpec::Model(h) => {
             terran()?;
             Box::new(model(ModelPolicy::new(h, info)?))
@@ -267,6 +271,111 @@ pub fn end_outcome(end: &GameEnd, me: u8) -> Option<uranium_env::reward::Outcome
 impl Policy for Box<dyn uranium_scripted::Bot> {
     fn on_frame(&mut self, f: &RawFrame) -> Result<Act> {
         Ok(self.act(f))
+    }
+}
+
+/// 050-R8 session record part of a T0 Terran session (`scripted`): the 042 정찰·대응 지표 and
+/// 050-R7 세션 지표 with the same keys, definitions and code (`ScoutTracker`) as the model row,
+/// folded over every observation of the session and its final frame, plus the 021-R8 teacher's
+/// record (`react`, `terran_react` only). Game seconds (frame / 24).
+#[derive(Serialize, Debug, Clone, Default, PartialEq)]
+pub struct ScriptedStats {
+    pub scout_main_s: Option<f64>,
+    pub scout_types_4m: u32,
+    pub scout_types_6m: u32,
+    pub barracks_s: Option<f64>,
+    pub bunker_s: Option<f64>,
+    pub scv_4m: Option<u32>,
+    pub scv_min_1m: Option<u32>,
+    pub army_s: Option<f64>,
+    pub scv_8m: Option<u32>,
+    pub react: Option<ReactRecord>,
+}
+
+/// 021-R8 teacher record in game seconds (`uranium_scripted::ReactStats`).
+#[derive(Serialize, Debug, Clone, Default, PartialEq)]
+pub struct ReactRecord {
+    /// Enemy main found (the teacher's rule: an enemy building within 10 tiles of a start location).
+    pub main_s: Option<f64>,
+    /// First rush identification (021-R8 R) and its rule (`pool`, `lings`, `army`, `main`).
+    pub rush_s: Option<f64>,
+    pub rush_rule: Option<uranium_scripted::RushRule>,
+    /// Macro → defence switches.
+    pub defences: u32,
+    /// First defence → macro switch.
+    pub macro_s: Option<f64>,
+    /// Natural command center ordered.
+    pub expand_s: Option<f64>,
+    /// Branch at the end (`macro` / `defence`).
+    pub branch: uranium_scripted::Branch,
+}
+
+/// A T0 session (021): the scripted bot, and for a Terran bot the 042 / 050-R7 metrics tracker.
+pub struct ScriptedPolicy {
+    bot: Box<dyn uranium_scripted::Bot>,
+    scout: Option<uranium_env::scout::ScoutTracker>,
+}
+
+impl ScriptedPolicy {
+    /// 021-R8: the teacher build reads the 031 map precompute (base locations, chokes) with the
+    /// model's session rule: a target map without one refuses the session, any other map plays on
+    /// without (no expansion, bunkers toward the map centre).
+    pub fn new(info: &GameInfo, build: T0Build) -> Result<Self> {
+        let race = info.players.iter().find(|p| p.is_self).map(|p| p.race);
+        let hints = if build.needs_map_hints() && race == Some(Race::Terran) {
+            let family = uranium_env::maps::MapFamilies::load()?.classify(&info.map_name, "");
+            let (pre, _) = uranium_env::maps::live_precompute_for_session(uranium_env::maps::maps_dir(), info, &family)?;
+            if pre.is_none() {
+                elog!("[agent] WARNING: no map precompute for {:?}; the 021-R8 teacher does not expand", info.map_name);
+            }
+            pre.map(|p| uranium_scripted::MapHints { base_locs: p.base_locs, chokes: p.chokes }).unwrap_or_default()
+        } else {
+            uranium_scripted::MapHints::default()
+        };
+        let scout = (race == Some(Race::Terran)).then(|| uranium_env::scout::ScoutTracker::for_game(info, uranium_env::scout::RewardConfig::default()));
+        Ok(Self { bot: uranium_scripted::for_game_hints(info, build, hints), scout })
+    }
+}
+
+impl Policy for ScriptedPolicy {
+    fn on_frame(&mut self, f: &RawFrame) -> Result<Act> {
+        if let Some(s) = self.scout.as_mut() {
+            s.step(f);
+        }
+        Ok(self.bot.act(f))
+    }
+
+    fn on_end(&mut self, _outcome: Option<uranium_env::reward::Outcome>, final_frame: Option<&RawFrame>) {
+        // 010-R12: the final frame counts like the model row's (050-R7).
+        if let (Some(s), Some(f)) = (self.scout.as_mut(), final_frame) {
+            s.step(f);
+        }
+    }
+
+    fn scripted_stats(&mut self) -> Option<ScriptedStats> {
+        let m = self.scout.as_ref()?.metrics();
+        let secs = |f: Option<u32>| f.map(uranium_env::scout::seconds);
+        let react = self.bot.react_stats().map(|r| ReactRecord {
+            main_s: secs(r.main_frame),
+            rush_s: secs(r.rush_frame),
+            rush_rule: r.rush_rule,
+            defences: r.defences,
+            macro_s: secs(r.macro_frame),
+            expand_s: secs(r.expand_frame),
+            branch: r.branch,
+        });
+        Some(ScriptedStats {
+            scout_main_s: secs(m.main_frame),
+            scout_types_4m: m.types_4m,
+            scout_types_6m: m.types_6m,
+            barracks_s: secs(m.barracks_frame),
+            bunker_s: secs(m.bunker_frame),
+            scv_4m: m.scv_4m,
+            scv_min_1m: m.scv_min_1m,
+            army_s: secs(m.army_frame),
+            scv_8m: m.scv_8m,
+            react,
+        })
     }
 }
 
@@ -333,6 +442,9 @@ pub struct SessionRecord {
     pub policy: String,
     pub model: Option<ModelStats>,
     pub error: Option<String>,
+    /// 050-R8: T0 Terran session metrics (`model` keys) and the 021-R8 teacher record; `None` for
+    /// model sessions and non-Terran T0 bots.
+    pub scripted: Option<ScriptedStats>,
 }
 
 /// BWAPI neutral player id.
@@ -583,6 +695,7 @@ pub fn session(stream: TcpStream, opts: &ServeOptions) -> SessionRecord {
         policy: String::new(),
         model: None,
         error: None,
+        scripted: None,
     };
     let mut rejections = Vec::new();
     if let Err(e) = run_session(stream, opts, &mut rec, &mut rejections) {
@@ -735,6 +848,7 @@ fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, po
                 policy.on_end(outcome, end.final_frame.as_deref());
                 // After `on_end`: the 042 metrics include the final frame (AMB-042-16).
                 rec.model = policy.model_stats();
+                rec.scripted = policy.scripted_stats();
                 return Ok(());
             }
             other => bail!("unexpected message {other:?}"),
@@ -748,6 +862,60 @@ mod tests {
 
     fn end(slot: u8, winner: Option<u8>, frame: u32) -> SessionEnd {
         SessionEnd { slot, winner, frame, reason: EndReason::Elimination }
+    }
+
+    fn t0_info(race: Race) -> GameInfo {
+        let n = 64usize * 64;
+        GameInfo {
+            map_name: "Python".into(),
+            map_hash: [0; 32],
+            map_size_tiles: (64, 64),
+            self_player: 0,
+            players: vec![
+                PlayerInfo { id: 0, name: "p0-T0".into(), race, start_tile: Some((4, 4)), is_self: true, is_enemy: false },
+                PlayerInfo { id: 1, name: "p1-x".into(), race: Race::Zerg, start_tile: None, is_self: false, is_enemy: true },
+            ],
+            static_map: StaticMap {
+                width_tiles: 64,
+                height_tiles: 64,
+                walkable: BitGrid::from_bytes(256, 256, &vec![1; n * 16]),
+                buildable: BitGrid::from_bytes(64, 64, &vec![1; n]),
+                ground_height: vec![0; n],
+                start_locations: vec![(4, 4), (56, 56)],
+            },
+            latency_frames: 0,
+        }
+    }
+
+    fn scv_frame(frame: u32, scvs: u32) -> RawFrame {
+        let units = (0..scvs).map(|i| UnitState { id: 10 + i, owner: 0, unit_type: 7, pos: (200, 200), flags: flags::COMPLETED, ..Default::default() }).collect();
+        RawFrame { frame, self_state: PlayerState::default(), units, visibility: BitGrid::new(64, 64), explored: BitGrid::new(64, 64), creep: BitGrid::new(64, 64), events: vec![], effects: vec![] }
+    }
+
+    /// 050-R8: a T0 Terran session folds every observation and the final frame into the 050-R7
+    /// metrics (`scripted`, the model row's keys in the same order); the teacher adds `react`;
+    /// a non-Terran T0 bot has no record. Off a target map the teacher plays without a precompute.
+    #[test]
+    fn scripted_row_050_r8() {
+        let mut p = ScriptedPolicy::new(&t0_info(Race::Terran), T0Build::Standard).unwrap();
+        p.on_frame(&scv_frame(1_440, 6)).unwrap();
+        p.on_frame(&scv_frame(5_000, 3)).unwrap();
+        p.on_end(None, Some(&scv_frame(11_520, 9)));
+        let s = p.scripted_stats().unwrap();
+        assert_eq!((s.scv_min_1m, s.scv_4m, s.scv_8m, s.react.clone()), (Some(3), Some(9), Some(9), None));
+        let text = serde_json::to_string(&s).unwrap();
+        assert!(text.starts_with(r#"{"scout_main_s":null,"scout_types_4m":0,"scout_types_6m":0,"barracks_s":null,"bunker_s":null,"scv_4m":9,"scv_min_1m":3,"army_s":null,"scv_8m":9,"react":null}"#), "{text}");
+
+        let mut t = ScriptedPolicy::new(&t0_info(Race::Terran), T0Build::TerranReact).unwrap();
+        t.on_frame(&scv_frame(100, 4)).unwrap();
+        let r = t.scripted_stats().unwrap().react.expect("teacher record");
+        assert_eq!((r.rush_s, r.defences, r.branch), (None, 0, uranium_scripted::Branch::Macro));
+        let text = serde_json::to_string(&r).unwrap();
+        assert_eq!(text, r#"{"main_s":null,"rush_s":null,"rush_rule":null,"defences":0,"macro_s":null,"expand_s":null,"branch":"macro"}"#);
+
+        let mut z = ScriptedPolicy::new(&t0_info(Race::Zerg), T0Build::ZergRush).unwrap();
+        z.on_frame(&scv_frame(100, 0)).unwrap();
+        assert!(z.scripted_stats().is_none());
     }
 
     /// 020-R11 / 020-R16: the spec index comes from both hostd name forms, nothing from others.

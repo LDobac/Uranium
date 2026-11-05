@@ -228,6 +228,17 @@ fn is_army(t: &UnitType) -> bool {
     !(t.is_worker() || t.is_building() || t.name.starts_with("Spell_") || matches!(t.name.as_str(), "Zerg_Larva" | "Zerg_Egg" | "Zerg_Lurker_Egg" | "Zerg_Cocoon" | "Zerg_Overlord"))
 }
 
+/// 033 "적 병력" by unit type id (an id missing from the type table is not army). The 021-R8
+/// teacher (`uranium-scripted`) reads its rush rule ③ and contact with this same definition.
+pub fn is_army_type(id: u16) -> bool {
+    TypeTables::get().unit(id).is_some_and(is_army)
+}
+
+/// [`is_army_type`] and not a flyer: what SCVs can hit (021-R8 SCV pull targets).
+pub fn is_ground_army_type(id: u16) -> bool {
+    TypeTables::get().unit(id).is_some_and(|t| is_army(t) && !t.is_flyer())
+}
+
 impl ScoutTracker {
     /// `self_player`, the enemy players' ids and the map start locations other than ours (`own`).
     pub fn new(self_player: u8, enemies: Vec<u8>, start_locations: &[Tile], own: Option<Tile>, cfg: RewardConfig) -> Self {

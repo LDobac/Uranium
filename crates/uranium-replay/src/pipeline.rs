@@ -222,6 +222,9 @@ pub struct Record {
     pub view: Option<View>,
     /// `label::LABELER_VERSION` of this build (2026-10-19); records without it are version 1.
     pub labeler_version: u32,
+    /// 040-R21: the build's `--until-frame` (absent = the whole game).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until_frame: Option<u32>,
     #[serde(flatten)]
     pub outcome: Outcome,
 }
@@ -262,7 +265,7 @@ pub struct ViewGame {
 }
 
 /// Processes one view of one replay into a shard game.
-fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, recorded_winner: Option<u8>) -> Result<std::result::Result<ViewGame, Outcome>> {
+fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, recorded_winner: Option<u8>, until_frame: Option<u32>) -> Result<std::result::Result<ViewGame, Outcome>> {
     let me = slot_of(rep, view.perspective)?;
     // Replay A: own unit types at each command frame + desync signals.
     let mut units_at: HashMap<u32, HashMap<u32, crate::label::Own>> = HashMap::new();
@@ -282,7 +285,10 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
         .filter(|c| cmd::openbw(c.op) == cmd::OpenBw::Supported)
         .collect();
     let empty = HashMap::new();
-    let (labels, coverage) = labeler.label(&cmds, rep.header.frames, |f| units_at.get(&f).unwrap_or(&empty));
+    let (mut labels, coverage) = labeler.label(&cmds, rep.header.frames, |f| units_at.get(&f).unwrap_or(&empty));
+    // 040-R21: `--until-frame n` keeps only the steps observed at frames <= n (the label coverage
+    // still counts the whole game; the result is the game's).
+    cut_after(&mut labels, until_frame, |l| l.frame);
     let frames: Vec<u32> = labels.iter().map(|l| l.frame).collect();
     // Replay B: decision-time observations. B stops at every frame A stopped at, so A and B
     // form the 040-R8 double-replay check (check_digest ignores B's extra stops).
@@ -309,6 +315,13 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
         return Ok(Err(Outcome::Error { reason: "bridge sent no GameInfo (AMB-040-6)".into() }));
     };
     Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info }))
+}
+
+/// 040-R21: drops the items (labels / steps) observed after frame `until`; `None` keeps all.
+pub fn cut_after<T>(items: &mut Vec<T>, until: Option<u32>, frame: impl Fn(&T) -> u32) {
+    if let Some(n) = until {
+        items.retain(|i| frame(i) <= n);
+    }
 }
 
 /// Writes `<maps_dir>/<map_hash>.toml` unless a current one exists (031, AMB-031-3). A file of an
@@ -370,6 +383,9 @@ pub struct BuildOptions {
     pub done: ResumeDone,
     /// 040-R20: later copies of identical files in the whole source.
     pub duplicates: Duplicates,
+    /// 040-R21: steps after this frame are not stored (`--until-frame`; the 021-R8 teacher data
+    /// cut at 8:00 = 11,520). `None` = the whole game.
+    pub until_frame: Option<u32>,
 }
 
 /// Resume state from earlier records, per perspective (040-R17 / 040-R19 review): a written
@@ -513,6 +529,7 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
             recorded_winner: *recorded_cell.borrow(),
             view,
             labeler_version: crate::label::LABELER_VERSION,
+            until_frame: opt.until_frame,
             outcome,
         };
         (r, None)
@@ -573,7 +590,7 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
             out.push(rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Filtered { reason: "storage budget reached (040-R12)".into() }));
             continue;
         }
-        let outcome = match build_view(&rep, &view, cfg, labeler, recorded_winner) {
+        let outcome = match build_view(&rep, &view, cfg, labeler, recorded_winner, opt.until_frame) {
             Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info })) => {
                 let n = steps.len();
                 // 031 / AMB-031-3: map precompute once per map (observation channels only).
@@ -629,6 +646,16 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
 mod tests {
     use super::*;
 
+    /// 040-R21: `--until-frame 11520` keeps the steps at frames <= 11,520 (8:00 included).
+    #[test]
+    fn until_frame_cuts_later_steps_040_r21() {
+        let mut v = vec![1u32, 11_519, 11_520, 11_521, 20_000];
+        cut_after(&mut v, None, |f| *f);
+        assert_eq!(v.len(), 5);
+        cut_after(&mut v, Some(11_520), |f| *f);
+        assert_eq!(v, vec![1, 11_519, 11_520]);
+    }
+
     #[test]
     fn map_families_classify_040_r15() {
         let f = MapFamilies::load().unwrap();
@@ -653,7 +680,7 @@ mod tests {
 
     fn written_record(n: u32) -> Record {
         let coverage = Coverage::default();
-        Record { index: n as usize, replay_sha256: format!("{n:064x}"), src: "t".into(), map_family: "other".into(), map_name: String::new(), map_hash: String::new(), recorded_winner: None, view: None, labeler_version: crate::label::LABELER_VERSION, outcome: Outcome::Written { steps: 3, coverage, result: 0, result_source: "none".into() } }
+        Record { index: n as usize, replay_sha256: format!("{n:064x}"), src: "t".into(), map_family: "other".into(), map_name: String::new(), map_hash: String::new(), recorded_winner: None, view: None, labeler_version: crate::label::LABELER_VERSION, until_frame: None, outcome: Outcome::Written { steps: 3, coverage, result: 0, result_source: "none".into() } }
     }
 
     /// 040-R17 (review M1): a shard whose copy fails verification stops the build. Its records
@@ -779,7 +806,7 @@ mod tests {
         let excludes = MapExcludes::load(&families).unwrap();
         let labeler = Labeler::new().unwrap();
         let cfg = PlayConfig { launcher: dir.join("none"), bridge_lib: dir.join("none"), data_dir: dir.join("none"), work_dir: dir.join("w") };
-        let opt = BuildOptions { src: "t".into(), shards_dir: dir.join("s"), staging_dir: dir.join("l"), recorded_winners: HashMap::new(), jobs: 1, shard_target_bytes: 1, budget_bytes: 1 << 30, first_shard_index: 0, skip_sha256: Default::default(), done: ResumeDone::default(), duplicates: part1 };
+        let opt = BuildOptions { src: "t".into(), shards_dir: dir.join("s"), staging_dir: dir.join("l"), recorded_winners: HashMap::new(), jobs: 1, shard_target_bytes: 1, budget_bytes: 1 << 30, first_shard_index: 0, skip_sha256: Default::default(), done: ResumeDone::default(), duplicates: part1, until_frame: None };
         let out = process(1, &files[3], &opt, &cfg, &families, &excludes, &labeler, &Mutex::new(0));
         assert_eq!(out.len(), 1);
         let (r, game) = &out[0];

@@ -6,8 +6,12 @@
 //!
 //! E-Regression scenario bots (050) reuse the brain with a tech path, gas, a special unit and
 //! (Terran) a drop tactic: each one plays only its strategy (`T0Build`).
+//!
+//! The 021-R8 scouting-reactive Terran teacher (`T0Build::TerranReact`) is the Terran brain plus
+//! the `react` module: it scouts, identifies a rush from its own vision and defends only then.
 
 pub mod placement;
+pub mod react;
 pub mod types;
 
 use std::collections::BTreeMap;
@@ -15,6 +19,8 @@ use std::collections::BTreeMap;
 use uranium_proto::*;
 
 use crate::placement::Placer;
+pub use crate::react::{Branch, MapHints, ReactParams, ReactStats, RushRule};
+use crate::react::ReactState;
 use crate::types::*;
 
 const STEP_FRAMES: u32 = 8;
@@ -32,6 +38,10 @@ const DEFEND_RADIUS: i64 = 20 * 32;
 /// A scripted bot controlling one player.
 pub trait Bot: Send {
     fn act(&mut self, f: &RawFrame) -> Act;
+    /// 021-R8 teacher record of the game so far (050-R8 session record); other builds have none.
+    fn react_stats(&self) -> Option<ReactStats> {
+        None
+    }
 }
 
 /// Which T0 bot plays: the standard M3 build of the race, or an E-Regression scenario bot
@@ -49,6 +59,8 @@ pub enum T0Build {
     ProtossDt,
     /// Mutalisks.
     ZergMuta,
+    /// 021-R8 scouting-reactive Terran teacher (AMB-021-4): defends only after it sees a rush.
+    TerranReact,
 }
 
 impl T0Build {
@@ -63,6 +75,7 @@ impl T0Build {
             T0Build::TerranDrop => Some("drop"),
             T0Build::ProtossDt => Some("dt"),
             T0Build::ZergMuta => Some("muta"),
+            T0Build::TerranReact => Some("react"),
         }
     }
 
@@ -71,7 +84,7 @@ impl T0Build {
         match self {
             T0Build::Standard => None,
             T0Build::ZergRush | T0Build::ZergMuta => Some(Race::Zerg),
-            T0Build::TerranDrop => Some(Race::Terran),
+            T0Build::TerranDrop | T0Build::TerranReact => Some(Race::Terran),
             T0Build::ProtossDt => Some(Race::Protoss),
         }
     }
@@ -83,7 +96,13 @@ impl T0Build {
             T0Build::TerranDrop => "terran_drop",
             T0Build::ProtossDt => "protoss_dt",
             T0Build::ZergMuta => "zerg_muta",
+            T0Build::TerranReact => "terran_react",
         }
+    }
+
+    /// 021-R8: the build reads the map precompute (base locations, chokes).
+    pub fn needs_map_hints(self) -> bool {
+        self == T0Build::TerranReact
     }
 }
 
@@ -95,8 +114,14 @@ pub fn for_game(info: &GameInfo) -> Box<dyn Bot> {
 /// Like `for_game` with a build. A scenario build whose race we did not get (Random lobby
 /// pick) falls back to the standard build of the race we got.
 pub fn for_game_build(info: &GameInfo, build: T0Build) -> Box<dyn Bot> {
+    for_game_hints(info, build, MapHints::default())
+}
+
+/// Like `for_game_build` with the map precompute hints the 021-R8 teacher uses (other builds
+/// ignore them).
+pub fn for_game_hints(info: &GameInfo, build: T0Build, hints: MapHints) -> Box<dyn Bot> {
     let race = info.players.iter().find(|p| p.is_self).map(|p| p.race).unwrap_or(Race::Terran);
-    Box::new(Brain::new(info, Kit::for_build(race, build)))
+    Box::new(Brain::with_hints(info, Kit::for_build(race, build), &hints))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,6 +169,9 @@ pub struct Kit {
     pub scout: bool,
     /// The home guard (`army` units outside waves and drops) attack-moves on enemies near the base.
     pub defend: bool,
+    /// 021-R8 teacher: opening, scouting, rush rule and branches (`react` module). `None` for
+    /// every other build.
+    pub react: Option<ReactParams>,
 }
 
 impl Kit {
@@ -155,6 +183,7 @@ impl Kit {
             (T0Build::ZergMuta, _) => Kit::zerg_muta(),
             (T0Build::TerranDrop, _) => Kit::terran_drop(),
             (T0Build::ProtossDt, _) => Kit::protoss_dt(),
+            (T0Build::TerranReact, _) => Kit::terran_react(),
             (T0Build::Standard, Race::Protoss) => Kit::protoss(),
             (T0Build::Standard, Race::Zerg) => Kit::zerg(),
             (T0Build::Standard, _) => Kit::terran(),
@@ -180,6 +209,7 @@ impl Kit {
             tactic: Tactic::Waves,
             scout: false,
             defend: false,
+            react: None,
         }
     }
     pub fn protoss() -> Self {
@@ -201,6 +231,7 @@ impl Kit {
             tactic: Tactic::Waves,
             scout: false,
             defend: false,
+            react: None,
         }
     }
     pub fn zerg() -> Self {
@@ -222,6 +253,7 @@ impl Kit {
             tactic: Tactic::Waves,
             scout: false,
             defend: false,
+            react: None,
         }
     }
 
@@ -277,6 +309,13 @@ impl Kit {
             ..Self::terran()
         }
     }
+
+    /// 021-R8 scouting-reactive teacher (AMB-021-4): the `terran()` macro (marines, 3 barracks,
+    /// 10-marine waves) with a home guard; the opening, barracks cap per branch, scouting, rush
+    /// rule, bunkers and SCV jobs come from `react` (`ReactParams`, 6th advisory values).
+    pub fn terran_react() -> Self {
+        Self { defend: true, react: Some(ReactParams::default()), ..Self::terran() }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -323,17 +362,33 @@ pub struct Brain {
     scout_order: u32,
     drops: Vec<Drop>,
     last_defend: u32,
+    /// Centre of the own start command center (public map information).
+    home: Option<Pos>,
+    map_center: Pos,
+    /// 021-R8 teacher state (`Kit::react`).
+    react: Option<ReactState>,
 }
 
 impl Brain {
     pub fn new(info: &GameInfo, kit: Kit) -> Self {
+        Self::with_hints(info, kit, &MapHints::default())
+    }
+
+    /// `hints`: the 031 map precompute's base locations and chokes (the 021-R8 teacher's natural
+    /// and bunker direction; other kits ignore them).
+    pub fn with_hints(info: &GameInfo, kit: Kit, hints: &MapHints) -> Self {
         let me = info.self_player;
         let my_start = info.players.iter().find(|p| p.is_self).and_then(|p| p.start_tile);
         let starts = info.static_map.start_locations.clone();
         let scouted = starts.iter().map(|s| Some(*s) == my_start).collect();
         let (w, h) = info.map_size_tiles;
         let (cells_w, cells_h) = (w.div_ceil(CELL), h.div_ceil(CELL));
+        let home = my_start.map(react::depot_center);
+        let react = kit.react.clone().map(|p| ReactState::new(p, hints, home, &starts));
         Self {
+            home,
+            map_center: (w * 16, h * 16),
+            react,
             kit,
             me,
             starts,
@@ -463,9 +518,13 @@ impl Bot for Brain {
         let mut minerals = f.self_state.minerals - self.pending.iter().map(|p| cost(p.ty)).sum::<i32>();
         let mut gas = f.self_state.gas - self.pending.iter().map(|p| gas_cost(p.ty)).sum::<i32>();
         let mut supply_free = f.self_state.supply_total as i32 - f.self_state.supply_used as i32;
-        let base = mine.iter().find(|u| is_resource_depot(u.unit_type)).map(|u| u.pos);
+        // 021-R8: the teacher's base is the command center at its start location (it expands).
+        let base = if k.react.is_some() { self.home_depot(&mine) } else { mine.iter().find(|u| is_resource_depot(u.unit_type)).map(|u| u.pos) };
         let mut larvae: Vec<&UnitState> = mine.iter().copied().filter(|u| u.unit_type == LARVA).collect();
         let prod_count = count(k.production) + self.pending.iter().filter(|p| p.ty == k.production).count();
+        // 021-R8: rush rule R and the branch switches, at this observation.
+        self.react_observe(f, &mine);
+        let branch = self.react_branch();
 
         // Gas crew and scout (scenario bots only): workers with a job other than minerals.
         self.gas_crew.retain(|id| mine.iter().any(|u| u.id == *id));
@@ -481,13 +540,19 @@ impl Bot for Brain {
                 self.gas_crew.push(w);
             }
         }
-        if k.scout && !self.scout_done && self.scout.is_none() && prod_count > 0 {
-            self.scout = self.free_worker(&mine);
+        if k.react.is_some() {
+            self.react_scouting(f, &mine, &minerals_vis, &mut cmds);
+            // 021-R8 SCV pull / repair before the idle-worker rule below.
+            self.react_scvs(f, &mine, &minerals_vis, &mut cmds);
+        } else {
+            if k.scout && !self.scout_done && self.scout.is_none() && prod_count > 0 {
+                self.scout = self.free_worker(&mine);
+            }
+            if let Some(id) = self.scout {
+                self.scouting(f, &mine, id, &minerals_vis, &mut cmds);
+            }
         }
-        if let Some(id) = self.scout {
-            self.scouting(f, &mine, id, &minerals_vis, &mut cmds);
-        }
-        let busy: Vec<UnitId> = self.pending.iter().map(|p| p.worker).chain(self.gas_crew.iter().copied()).chain(self.scout).collect();
+        let busy: Vec<UnitId> = self.pending.iter().map(|p| p.worker).chain(self.gas_crew.iter().copied()).chain(self.scout).chain(self.react_busy()).collect();
 
         // Workers: idle ones mine (or return cargo); the gas crew goes back to gas.
         for w in mine.iter().filter(|u| u.unit_type == k.worker && u.has(flags::COMPLETED) && u.has(flags::IDLE)) {
@@ -509,6 +574,9 @@ impl Bot for Brain {
         match k.supply {
             Supply::Building(ty) => {
                 let in_progress = mine.iter().filter(|u| u.unit_type == ty && !u.has(flags::COMPLETED)).count() + self.pending.iter().filter(|p| p.ty == ty).count();
+                // 021-R8 opening: 9 and 15 supply, then the rule above.
+                let depots = count(ty) + self.pending.iter().filter(|p| p.ty == ty).count();
+                let supply_low = self.react_supply_low(f, depots).unwrap_or(supply_low);
                 if supply_low && in_progress == 0 && minerals >= cost(ty) {
                     if let Some(b) = base {
                         if self.order_build(ty, f, &mine, b, &busy, &mut cmds) {
@@ -528,9 +596,18 @@ impl Bot for Brain {
             }
         }
 
+        // 021-R8: D bunker, M natural command center and natural bunker. `hold_all` is held from
+        // everything after the first barracks, `hold_army` (the expansion's price) from marines.
+        let (hold_all, hold_army) = match base {
+            Some(b) => self.react_build(f, &mine, b, &busy, &mut cmds, &mut minerals),
+            None => (0, 0),
+        };
+
         // Production buildings.
         let workers = count(k.worker);
-        if prod_count < k.production_cap && workers >= k.production_at_workers[prod_count.min(2)] && minerals >= cost(k.production) {
+        let (cap, ready) = self.react_production(f, &mine, prod_count).unwrap_or((k.production_cap, workers >= k.production_at_workers[prod_count.min(2)]));
+        let budget = if prod_count > 0 { minerals - hold_all } else { minerals };
+        if prod_count < cap && ready && budget >= cost(k.production) {
             if let Some(b) = base {
                 if self.order_build(k.production, f, &mine, b, &busy, &mut cmds) {
                     minerals -= cost(k.production);
@@ -563,6 +640,7 @@ impl Bot for Brain {
         let tech_ready = tech_done || k.tech.iter().filter(|t| !is_refinery(**t)).all(|&t| mine.iter().any(|u| u.unit_type == t && done(u)));
         let special = k.special.filter(|_| tech_ready);
         let mut army_n = count(k.army);
+        minerals -= hold_all;
         match k.supply {
             Supply::Larva(_) => {
                 while let Some(l) = larvae.pop() {
@@ -617,7 +695,7 @@ impl Bot for Brain {
                     }
                 }
                 for p in mine.iter().filter(|u| u.unit_type == k.production && u.has(flags::COMPLETED) && !u.has(flags::TRAINING) && !used.contains(&u.id)) {
-                    if army_n < k.army_cap && minerals >= cost(k.army) && supply_free >= 2 {
+                    if army_n < k.army_cap && minerals - hold_army >= cost(k.army) && supply_free >= 2 {
                         cmds.push(Command::Train { building: p.id, unit_type: k.army });
                         minerals -= cost(k.army);
                         supply_free -= 2;
@@ -627,10 +705,13 @@ impl Bot for Brain {
             }
         }
 
+        // 021-R8: marines that load or hold (D) or fill a bunker (M) stay out of waves and the guard.
+        let kept = self.react_reserved_marines(&mine);
         match k.tactic {
-            // Attack-move waves.
+            // Attack-move waves (none in the teacher's defence branch).
+            Tactic::Waves if branch == Some(Branch::Defence) => {}
             Tactic::Waves => {
-                let army: Vec<&UnitState> = mine.iter().copied().filter(|u| u.unit_type == k.attacker && u.has(flags::COMPLETED)).collect();
+                let army: Vec<&UnitState> = mine.iter().copied().filter(|u| u.unit_type == k.attacker && u.has(flags::COMPLETED) && u.loaded_in.is_none() && !kept.contains(&u.id)).collect();
                 if army.len() >= k.first_wave && f.frame >= self.last_wave + WAVE_PERIOD {
                     let from = centroid(&army);
                     if let Some(target) = self.attack_target(f, from) {
@@ -648,13 +729,18 @@ impl Bot for Brain {
                 }
             }
         }
-        if k.defend {
+        if k.defend && branch != Some(Branch::Defence) {
             if let Some(b) = base {
-                self.defend(f, &mine, b, &mut cmds);
+                self.defend(f, &mine, b, &kept, &mut cmds);
             }
         }
+        self.react_marines(f, &mine, &mut cmds);
 
         Act { cmds, advance_frames: STEP_FRAMES, valid_until_frame: None, surrender: None }
+    }
+
+    fn react_stats(&self) -> Option<ReactStats> {
+        self.teacher_stats()
     }
 }
 
@@ -698,7 +784,8 @@ impl Brain {
 
     /// The lowest-id completed worker without a job (not building, on gas or scouting).
     fn free_worker(&self, mine: &[&UnitState]) -> Option<UnitId> {
-        let busy = |id: UnitId| self.pending.iter().any(|p| p.worker == id) || self.gas_crew.contains(&id) || self.scout == Some(id);
+        let jobs = self.react_busy();
+        let busy = |id: UnitId| self.pending.iter().any(|p| p.worker == id) || self.gas_crew.contains(&id) || self.scout == Some(id) || jobs.contains(&id);
         mine.iter()
             .filter(|u| u.unit_type == self.kit.worker && u.has(flags::COMPLETED) && !u.has(flags::CARRYING) && !u.has(flags::CONSTRUCTING) && !busy(u.id))
             .min_by_key(|u| u.id)
@@ -797,23 +884,29 @@ impl Brain {
     }
 
     /// Home guard: `army` units that are not attackers or on a drop attack-move on the
-    /// nearest enemy close to the base.
-    fn defend(&mut self, f: &RawFrame, mine: &[&UnitState], base: Pos, cmds: &mut Vec<Command>) {
+    /// nearest enemy close to the base. 021-R8 teacher (waves of every marine): the marines
+    /// within `DEFEND_RADIUS` of an own command center guard every command center, except those
+    /// `kept` for a bunker.
+    fn defend(&mut self, f: &RawFrame, mine: &[&UnitState], base: Pos, kept: &[UnitId], cmds: &mut Vec<Command>) {
         // With plain waves every army unit attacks; there is no separate guard.
-        let has_guard = self.kit.tactic == Tactic::Drop || self.kit.attacker != self.kit.army;
+        let react = self.kit.react.is_some();
+        let has_guard = self.kit.tactic == Tactic::Drop || self.kit.attacker != self.kit.army || react;
         if !has_guard || f.frame < self.last_defend + WAVE_PERIOD {
             return;
         }
+        let bases: Vec<Pos> = if react { mine.iter().filter(|u| is_resource_depot(u.unit_type)).map(|u| u.pos).collect() } else { vec![base] };
+        let near_base = |p: Pos| bases.iter().map(|b| dist2(p, *b)).min().unwrap_or(i64::MAX);
         let threat = f
             .units
             .iter()
-            .filter(|u| u.owner != self.me && !is_neutral_owner(u.owner) && dist2(u.pos, base) < DEFEND_RADIUS * DEFEND_RADIUS)
-            .min_by_key(|u| (dist2(u.pos, base), u.id));
+            .filter(|u| u.owner != self.me && !is_neutral_owner(u.owner) && near_base(u.pos) < DEFEND_RADIUS * DEFEND_RADIUS)
+            .min_by_key(|u| (near_base(u.pos), u.id));
         let Some(t) = threat else { return };
         let on_drop: Vec<UnitId> = self.drops.iter().flat_map(|d| d.squad.iter().copied()).collect();
         let guards: Vec<UnitId> = mine
             .iter()
-            .filter(|u| u.unit_type == self.kit.army && u.has(flags::COMPLETED) && u.loaded_in.is_none() && !on_drop.contains(&u.id))
+            .filter(|u| u.unit_type == self.kit.army && u.has(flags::COMPLETED) && u.loaded_in.is_none() && !on_drop.contains(&u.id) && !kept.contains(&u.id))
+            .filter(|u| !react || near_base(u.pos) < DEFEND_RADIUS * DEFEND_RADIUS)
             .map(|u| u.id)
             .collect();
         for chunk in guards.chunks(12) {

@@ -355,6 +355,7 @@ pub fn write_with(out: &Path, plan: &Plan, infos: &[[Option<PolicyInfo>; 2]]) ->
             )?;
         }
     }
+    scripted_section(&mut md, &games, &by_game)?;
     let aborted: Vec<&Value> = games.iter().filter(|g| g["outcome"] == "Aborted").collect();
     if !aborted.is_empty() {
         writeln!(md, "\n## Aborted games\n")?;
@@ -365,6 +366,61 @@ pub fn write_with(out: &Path, plan: &Plan, infos: &[[Option<PolicyInfo>; 2]]) ->
     std::fs::write(out.join("summary.md"), &md)?;
     // Engine/bridge statistics in the M2 format.
     uranium_agent::summary::summarize(&out.join("results.jsonl"), &out.join("sessions.md"), &plan.name)?;
+    Ok(())
+}
+
+/// 050-R8: T0 Terran sessions with a `scripted` record (the 021-R8 teacher validation plans), per
+/// matchup and map: held (050-R7 `scv_min_1m > 4`), the session's wins, a bunker started before
+/// 4:00 (`bunker_s < 240`), `scv_8m ≥ 16` among sessions that reached 8:00 and its median, rush
+/// identifications by rule and the median expansion time.
+fn scripted_section(md: &mut String, games: &[Value], by_game: &BTreeMap<u64, Vec<&Value>>) -> Result<()> {
+    #[derive(Default)]
+    struct Cell {
+        sessions: u32,
+        held: u32,
+        won: u32,
+        bunker_4m: u32,
+        scv8: Vec<f64>,
+        rules: BTreeMap<String, u32>,
+        expand: Vec<f64>,
+    }
+    let mut cells: BTreeMap<(u64, String, String), Cell> = BTreeMap::new();
+    for g in games {
+        let Some(ss) = by_game.get(&g["game_id"].as_u64().unwrap_or(0)) else { continue };
+        for s in ss.iter().filter(|s| s["scripted"].is_object()) {
+            let key = (g["matchup"].as_u64().unwrap_or(0), s["t0_build"].as_str().unwrap_or("?").to_string(), g["map"].as_str().unwrap_or("?").to_string());
+            let c = cells.entry(key).or_default();
+            let m = &s["scripted"];
+            c.sessions += 1;
+            c.held += u32::from(m["scv_min_1m"].as_u64().is_some_and(|v| v > 4));
+            c.won += u32::from(s["won"].as_bool() == Some(true));
+            c.bunker_4m += u32::from(m["bunker_s"].as_f64().is_some_and(|v| v < 240.0));
+            if let Some(v) = m["scv_8m"].as_f64() {
+                c.scv8.push(v);
+            }
+            match m["react"]["rush_rule"].as_str() {
+                Some(r) => *c.rules.entry(r.to_string()).or_default() += 1,
+                None if m["react"].is_object() => *c.rules.entry("none".into()).or_default() += 1,
+                None => {}
+            }
+            if let Some(v) = m["react"]["expand_s"].as_f64() {
+                c.expand.push(v);
+            }
+        }
+    }
+    if cells.is_empty() {
+        return Ok(());
+    }
+    writeln!(md, "\n## T0 Terran sessions (050-R8)\n")?;
+    writeln!(md, "| # | build | map | sessions | held (scv_min_1m > 4) | won | bunker < 4:00 | scv_8m ≥ 16 / reached 8:00 | scv_8m p50 | rush rule (021-R8) | expand s p50 |")?;
+    writeln!(md, "|---|---|---|---|---|---|---|---|---|---|---|")?;
+    for ((mi, build, map), mut c) in cells {
+        let scv16 = c.scv8.iter().filter(|v| **v >= 16.0).count();
+        let reached = c.scv8.len();
+        let (scv_p50, exp_p50) = (median(&mut c.scv8), median(&mut c.expand));
+        let fmt = |v: f64| if v.is_nan() { "-".to_string() } else { format!("{v:.0}") };
+        writeln!(md, "| {mi} | {build} | {map} | {} | {} | {} | {} | {scv16} / {reached} | {} | {:?} | {} |", c.sessions, c.held, c.won, c.bunker_4m, fmt(scv_p50), c.rules, fmt(exp_p50))?;
+    }
     Ok(())
 }
 
@@ -391,6 +447,25 @@ mod tests {
         let refs: Vec<&Value> = v.iter().collect();
         assert_eq!(surrender_cells(&refs), ("shadow".to_string(), 3, "1 (33%)".to_string()));
         assert_eq!(surrender_cells(&[]), ("-".to_string(), 0, "-".to_string()));
+    }
+
+    /// 050-R8: the T0 Terran session table counts held, wins, bunkers before 4:00, 8:00 SCVs and
+    /// the teacher's rush rules per matchup and map; sessions without `scripted` are left out.
+    #[test]
+    fn scripted_section_050_r8() {
+        let games = vec![serde_json::json!({"game_id": 1, "matchup": 0, "map": "fs"}), serde_json::json!({"game_id": 2, "matchup": 0, "map": "fs"})];
+        let s1 = serde_json::json!({"game_id": 1, "won": true, "t0_build": "terran_react", "scripted": {"scv_min_1m": 9, "bunker_s": 150.0, "scv_8m": 18, "react": {"rush_rule": "pool", "expand_s": null}}});
+        let s2 = serde_json::json!({"game_id": 2, "won": false, "t0_build": "terran_react", "scripted": {"scv_min_1m": 4, "bunker_s": 250.0, "scv_8m": null, "react": {"rush_rule": null, "expand_s": 170.0}}});
+        let z = serde_json::json!({"game_id": 2, "t0_build": "zerg_rush", "scripted": null});
+        let mut by_game: BTreeMap<u64, Vec<&Value>> = BTreeMap::new();
+        by_game.insert(1, vec![&s1]);
+        by_game.insert(2, vec![&s2, &z]);
+        let mut md = String::new();
+        scripted_section(&mut md, &games, &by_game).unwrap();
+        assert!(md.contains("| 0 | terran_react | fs | 2 | 1 | 1 | 1 | 1 / 1 | 18 | {\"none\": 1, \"pool\": 1} | 170 |"), "{md}");
+        let mut empty = String::new();
+        scripted_section(&mut empty, &games, &BTreeMap::new()).unwrap();
+        assert!(empty.is_empty());
     }
 
     /// 020-R13: the report of the session that ended last decides a disagreement.

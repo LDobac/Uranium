@@ -510,6 +510,42 @@ p1={kind='oss',name='iron',race='terran'}";
         assert!(jobs.iter().zip(plan.seeds.as_ref().unwrap()).all(|(j, s)| j.spec.seed == Some(*s) && j.spec.players[1].race == Race::Zerg));
     }
 
+    /// 050-R8 (AMB-021-4): `config/plans/teacher_check.toml` is the 050-R6 check (same 128 seeds
+    /// and opponent / map blocks) with the 021-R8 teacher as players[0]; it plays Terran and needs
+    /// no model server. `teacher_macro_check.toml`: the teacher against the 5 macro opponents of
+    /// `config/rl_rush5.toml`, 10 games each on both maps.
+    #[test]
+    fn teacher_check_plans_050_r8() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/plans");
+        let rush = load_plan(&dir.join("rush5_check.toml")).unwrap();
+        let plan = load_plan(&dir.join("teacher_check.toml")).unwrap();
+        assert_eq!(plan.seeds, rush.seeds);
+        let teacher = Side::T0 { race: RaceSel::Terran, build: T0Build::TerranReact, name: None };
+        for (m, r) in plan.matchups.iter().zip(&rush.matchups) {
+            assert_eq!((m.map, &m.p1, m.games, m.p0.clone()), (r.map, &r.p1, 32, teacher.clone()));
+        }
+        assert_eq!(plan.matchups.len(), 4);
+        assert!(plan.save_replay && plan.matchups.iter().all(|m| m.p0.model().is_none() && m.p1.model().is_none()));
+        let jobs = expand(&plan, "a");
+        assert!(jobs.iter().all(|j| j.t0_builds[0] == T0Build::TerranReact && j.spec.players[0].race == Race::Terran));
+
+        let mac = load_plan(&dir.join("teacher_macro_check.toml")).unwrap();
+        let opponents: Vec<Side> = mac.matchups.iter().map(|m| m.p1.clone()).collect();
+        let oss = |n: &str| Side::Oss { name: n.into(), race: RaceSel::Zerg };
+        assert_eq!(
+            opponents,
+            [
+                Side::T0 { race: RaceSel::Zerg, build: T0Build::Standard, name: None },
+                Side::T0 { race: RaceSel::Zerg, build: T0Build::ZergMuta, name: None },
+                oss("ualbertabot2hatchhydra"),
+                oss("ualbertabot3hatchmuta"),
+                oss("steamhammer2hatchmuta"),
+            ]
+        );
+        assert!(mac.matchups.iter().all(|m| m.p0 == teacher && m.games == 10 && m.map == MapSel::Both && m.p1_random_ratio == 0.0));
+        assert_eq!(expand(&mac, "a").len(), 50);
+    }
+
     #[test]
     fn unknown_fields_are_rejected() {
         assert!(toml::from_str::<Plan>("name='x'\nbogus=1\n[[matchup]]\nmap='both'\ngames=1\np0={kind='t0',race='terran'}\np1={kind='t0',race='zerg'}").is_err());

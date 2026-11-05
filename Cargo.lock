@@ -1582,6 +1582,7 @@ name = "uranium-scripted"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "uranium-env",
  "uranium-proto",
 ]
 

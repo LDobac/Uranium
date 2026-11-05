@@ -80,7 +80,7 @@ enum Cmd {
     /// 040: build BC shards from a replay folder (filter, desync check, labels, shards).
     Build {
         dir: PathBuf,
-        /// 040-R14 source tag (stardata, scr_public, community, personal, user, bot).
+        /// 040-R14 source tag (stardata, scr_public, community, personal, user, bot, botgen, scr_ladder).
         #[arg(long)]
         src: String,
         /// Shard output folder (default `<URANIUM_SHARED_DIR>/datasets/replays/shards/<src>`, 040-R13).
@@ -109,6 +109,10 @@ enum Cmd {
         /// `--src scr_ladder`: `<URANIUM_SHARED_DIR>/datasets/replays/ladder/collect.jsonl` if present.
         #[arg(long)]
         ladder_records: Option<PathBuf>,
+        /// 040-R21: store only the steps observed at frames <= this (the 021-R8 teacher data cut
+        /// at 8:00 = 11520). Default: the whole game.
+        #[arg(long)]
+        until_frame: Option<u32>,
     },
     CheckScrep {
         dir: PathBuf,
@@ -237,7 +241,7 @@ fn main() -> Result<()> {
             }
         }
         Cmd::CheckScrep { dir, screp, limit } => check_screp(&dir, &screp, limit)?,
-        Cmd::Build { dir, src, out, records, jobs, limit, budget_gb, skip_hashes, part, parts, ladder_records } => {
+        Cmd::Build { dir, src, out, records, jobs, limit, budget_gb, skip_hashes, part, parts, ladder_records, until_frame } => {
             anyhow::ensure!(parts >= 1 && part < parts, "--part must be below --parts");
             let skip_sha256 = match skip_hashes {
                 Some(p) => std::fs::read_to_string(&p)?.lines().filter_map(|l| l.split_whitespace().next().map(str::to_string)).collect(),
@@ -291,7 +295,7 @@ fn main() -> Result<()> {
             // without one, so the build refuses to start.
             uranium_env::maps::maps_dir()?;
             let staging_dir = uranium_replay::shard::staging_dir();
-            let opt = uranium_replay::pipeline::BuildOptions { src, shards_dir, staging_dir, recorded_winners, jobs, shard_target_bytes: 512 << 20, budget_bytes: budget_gb << 30, first_shard_index: first, skip_sha256, done, duplicates };
+            let opt = uranium_replay::pipeline::BuildOptions { src, shards_dir, staging_dir, recorded_winners, jobs, shard_target_bytes: 512 << 20, budget_bytes: budget_gb << 30, first_shard_index: first, skip_sha256, done, duplicates, until_frame };
             let out_file = std::sync::Mutex::new(std::fs::OpenOptions::new().create(true).append(true).open(&records)?);
             let counts = std::sync::Mutex::new(std::collections::BTreeMap::<String, usize>::new());
             uranium_replay::pipeline::build(&files, &opt, &cfg, &|r| {

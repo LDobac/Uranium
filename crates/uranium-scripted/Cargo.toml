@@ -8,4 +8,6 @@ publish.workspace = true
 
 [dependencies]
 uranium-proto.workspace = true
+# 021-R8: the teacher reads 033 "적 병력" with the same type definition as the 042 metrics.
+uranium-env = { path = "../uranium-env" }
 serde.workspace = true

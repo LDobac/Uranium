@@ -13,6 +13,7 @@ pub const BARRACKS: u16 = 111;
 pub const FACTORY: u16 = 113;
 pub const STARPORT: u16 = 114;
 pub const CONTROL_TOWER: u16 = 115;
+pub const BUNKER: u16 = 125;
 // Zerg
 pub const ZERGLING: u16 = 37;
 pub const MUTALISK: u16 = 43;
@@ -73,7 +74,7 @@ pub fn cost(ty: u16) -> i32 {
         SPAWNING_POOL => 200,
         CC | NEXUS => 400,
         HATCHERY => 300,
-        REFINERY | ASSIMILATOR => 100,
+        REFINERY | ASSIMILATOR | BUNKER => 100,
         ZEALOT => 100,
         FACTORY | SPIRE | CYBERNETICS_CORE => 200,
         STARPORT | LAIR | CITADEL | TEMPLAR_ARCHIVES => 150,
@@ -107,7 +108,7 @@ pub fn supply_cost(ty: u16) -> i32 {
 pub fn tile_size(ty: u16) -> (u16, u16) {
     match ty {
         CC | BARRACKS | NEXUS | GATEWAY | HATCHERY | LAIR | HIVE => (4, 3),
-        DEPOT | SPAWNING_POOL | CYBERNETICS_CORE | CITADEL | TEMPLAR_ARCHIVES => (3, 2),
+        DEPOT | BUNKER | SPAWNING_POOL | CYBERNETICS_CORE | CITADEL | TEMPLAR_ARCHIVES => (3, 2),
         PYLON | SPIRE | CONTROL_TOWER => (2, 2),
         REFINERY | EXTRACTOR | ASSIMILATOR | GEYSER => (4, 2),
         t if is_mineral(t) => (2, 1),
