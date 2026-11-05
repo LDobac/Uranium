@@ -1026,9 +1026,12 @@ mod tests {
         // ①a an unfinished pool started by 1:40 (2,400), seen at any time before 8:00.
         assert_eq!(at(2_600, vec![building(9, 188)]), vec![RushRule::PoolStart]);
         assert_eq!(at(2_600, vec![building(9, 187)]), vec![]);
-        // ①b a finished pool before 2:30.
+        // ①b a finished pool before 2:30; ①a never on a finished pool.
         assert_eq!(at(3_599, vec![enemy(9, SPAWNING_POOL, far)]), vec![RushRule::PoolDone]);
         assert_eq!(at(3_600, vec![enemy(9, SPAWNING_POOL, far)]), vec![]);
+        let finished = UnitState { hp: 750, ..enemy(9, SPAWNING_POOL, far) };
+        assert_eq!(at(3_600, vec![finished.clone()]), vec![]);
+        assert_eq!(at(3_000, vec![finished]), vec![RushRule::PoolDone]);
         // ② 2 zerglings before 2:50 (4,080), 6 before 3:10 (4,560), in one observation.
         let lings = |n: u32| (0..n).map(|i| enemy(30 + i, ZERGLING, far)).collect::<Vec<_>>();
         assert_eq!(at(4_079, lings(2)), vec![RushRule::Lings]);
@@ -1089,6 +1092,32 @@ mod tests {
         let s = b.teacher_stats().unwrap();
         assert_eq!((s.pool_start_frame, s.pool_seen_frame, s.lings_max, s.contact_frame, s.rush_rule), (Some(3_000 - 400), Some(3_000), 2, Some(6_000), Some(RushRule::Army)));
         assert_eq!(s.rule_frames.get(&RushRule::Army), Some(&6_000));
+    }
+
+    /// 021-R8 defence base fallbacks (rule advisory §3, 메인 임시 결정): with the natural standing
+    /// and no enemy army in sight (R from a finished pool) the defence is at the natural; with
+    /// enemy army next to the main it is at the main.
+    #[test]
+    fn defence_base_fallbacks_021_r8() {
+        let nat = depot_center(NATURAL);
+        let mut units = base(16);
+        units.push(unit(4, CC, nat));
+        let mut b = teacher();
+        let mut u = units.clone();
+        u.push(enemy(70, SPAWNING_POOL, depot_center((60, 60))));
+        let act = b.act(&frame(3_000, u, 100, 40));
+        assert_eq!(b.teacher_stats().unwrap().rush_rule, Some(RushRule::PoolDone));
+        let t = builds(&act, BUNKER);
+        assert!(t.len() == 1 && within(bunker_center(t[0]), nat, 10) && !within(bunker_center(t[0]), home(), 10), "{t:?} {:?}", act.cmds);
+
+        let mut b = teacher();
+        let mut u = units;
+        u.push(enemy(90, ZERGLING, (home().0 + 5 * 32, home().1 - 3 * 32)));
+        u.push(enemy(91, ZERGLING, (home().0 + 6 * 32, home().1 - 3 * 32)));
+        let act = b.act(&frame(6_000, u, 100, 40));
+        assert_eq!(b.teacher_stats().unwrap().rush_rule, Some(RushRule::Army));
+        let t = builds(&act, BUNKER);
+        assert!(t.len() == 1 && within(bunker_center(t[0]), home(), 10), "{t:?} {:?}", act.cmds);
     }
 
     /// 021-R8: M is the start; R switches to D at that observation (bunker toward the main
