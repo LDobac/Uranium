@@ -39,7 +39,7 @@ const CHOKE_MIN: i64 = 8;
 /// that count as "has a bunker").
 const BUNKER_SEARCH_MAX: i64 = 9;
 
-/// 021-R8 numbers (6th advisory §2 values, AMB-021-4). Frames are game frames (24 per second),
+/// 021-R8 numbers (6th advisory §2 and rule advisory values, AMB-021-4). Frames are game frames (24 per second),
 /// distances tiles.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReactParams {
@@ -47,18 +47,29 @@ pub struct ReactParams {
     pub first_depot_supply: u32,
     pub barracks_supply: u32,
     pub second_depot_supply: u32,
-    /// R ① spawning pool seen before this frame (2:30).
-    pub pool_before: u32,
-    /// R ② at least `lings_min` zerglings in one observation before `lings_before` (3:30).
+    /// R ①a an unfinished spawning pool whose estimated start (`pool_start_frame`) is at most
+    /// this frame (1:40); ①b a finished pool seen before `pool_done_before` (2:30).
+    pub pool_start_max: u32,
+    pub pool_done_before: u32,
+    /// R ② at least `lings_min` zerglings in one observation before `lings_before` (2:50), or at
+    /// least `lings_many` before `lings_many_before` (3:10), anywhere.
     pub lings_min: usize,
     pub lings_before: u32,
-    /// R ③ enemy army (033) within this many tiles of an own command center.
+    pub lings_many: usize,
+    pub lings_many_before: u32,
+    /// R ③ at least `army_min` enemy army units (033) in one observation within `army_radius`
+    /// tiles of an own command center (after 4:00 too). One unit there is contact (D → M timer).
     pub army_radius: i64,
-    /// R ④ the enemy main (a depot within `main_radius` tiles of a start location) seen with a
-    /// spawning pool and at most `main_drones_max` drones there, before `main_before` (3:30,
-    /// AMB-021-4 메인 임시 결정: the scouting window).
+    pub army_min: usize,
+    /// The enemy main is found when an enemy building is remembered within `main_radius` tiles
+    /// of a start location.
     pub main_radius: i64,
-    pub main_drones_max: usize,
+    /// R ④′ the scout within `main_look` tiles of the enemy start hatchery centre sees at most
+    /// `drones_max` drones within `main_drones_radius` tiles of it and a spawning pool, that
+    /// hatchery is the only remembered enemy hatchery, before `main_before` (3:30).
+    pub main_look: i64,
+    pub main_drones_radius: i64,
+    pub drones_max: usize,
     pub main_before: u32,
     /// R is judged only before this frame (8:00 = the teacher data cut, 040-R21).
     pub judge_until: u32,
@@ -102,12 +113,18 @@ impl Default for ReactParams {
             first_depot_supply: 9,
             barracks_supply: 11,
             second_depot_supply: 15,
-            pool_before: 150 * FPS,
+            pool_start_max: 100 * FPS,
+            pool_done_before: 150 * FPS,
             lings_min: 2,
-            lings_before: 210 * FPS,
+            lings_before: 170 * FPS,
+            lings_many: 6,
+            lings_many_before: 190 * FPS,
             army_radius: 20,
+            army_min: 2,
             main_radius: 10,
-            main_drones_max: 8,
+            main_look: 3,
+            main_drones_radius: 12,
+            drones_max: 6,
             main_before: 210 * FPS,
             judge_until: 480 * FPS,
             expand_hold_until: 220 * FPS,
@@ -126,8 +143,8 @@ impl Default for ReactParams {
             macro_marines: 8,
             macro_quiet: 60 * FPS,
             natural_bunker_from: 240 * FPS,
-            scout_look: 5,
-            scout_look_max: 10 * FPS,
+            scout_look: 3,
+            scout_look_max: 15 * FPS,
         }
     }
 }
@@ -143,18 +160,20 @@ pub enum Branch {
     Defence,
 }
 
-/// Which 021-R8 rush rule held.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+/// Which 021-R8 rush rule held (rule advisory `reports/m6_teacher_rush_rule_advice.md`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RushRule {
-    /// ① spawning pool before 2:30.
-    Pool,
-    /// ② two or more zerglings in one observation before 3:30.
+    /// ①a an unfinished pool started by 1:40 (estimated from its hit points).
+    PoolStart,
+    /// ①b a finished pool before 2:30.
+    PoolDone,
+    /// ② 2 zerglings before 2:50 or 6 before 3:10, in one observation.
     Lings,
-    /// ③ enemy army within 20 tiles of a command center.
+    /// ③ 2 enemy army units in one observation within 20 tiles of a command center.
     Army,
-    /// ④ enemy main with a pool and at most 8 drones.
-    Main,
+    /// ④′ the scout at the enemy start hatchery sees a pool and at most 6 drones, one hatchery.
+    Drones,
 }
 
 /// What the teacher did in one game (session record `scripted.react`, 050-R8). Frames.
@@ -173,6 +192,17 @@ pub struct ReactStats {
     pub expand_frame: Option<u32>,
     /// Branch at the last observation.
     pub branch: Branch,
+    /// First estimated start of an enemy spawning pool (from the first unfinished pool seen),
+    /// the first observation with a pool, the most zerglings in one observation (before 8:00),
+    /// the first observation with enemy army within `army_radius` of a command center, the first
+    /// observation with an own bunker.
+    pub pool_start_frame: Option<u32>,
+    pub pool_seen_frame: Option<u32>,
+    pub lings_max: u32,
+    pub contact_frame: Option<u32>,
+    pub bunker_frame: Option<u32>,
+    /// First observation (before 8:00) at which each rule held, in any branch.
+    pub rule_frames: std::collections::BTreeMap<RushRule, u32>,
 }
 
 /// Map precompute hints (031 `MapPrecompute`): resource-depot top-left tiles of every base and
@@ -195,6 +225,9 @@ pub(crate) struct ReactState {
     /// free of the Brain's other buildings (the barracks / depot spiral would otherwise fill the
     /// 4–6 tile ring of a corner main, OpenBW smoke game on Circuit Breaker).
     pub main_site: Option<Tile>,
+    /// D: the command center the defence is built around (bunker site, hold point, "has a
+    /// bunker"), chosen when D starts (rule advisory §3); `None` = the main.
+    pub def_base: Option<Pos>,
     /// Last frame with enemy army within `army_radius` of a command center (contact), and with
     /// a pull target (enemy ground army, not burrowed) within `release_radius`.
     pub last_contact: u32,
@@ -231,6 +264,7 @@ impl ReactState {
             natural,
             enemy_main: None,
             main_site: None,
+            def_base: None,
             last_contact: 0,
             last_near: 0,
             pulled: Vec::new(),
@@ -293,35 +327,55 @@ fn is_enemy(u: &UnitState, me: u8) -> bool {
     u.owner != me && !is_neutral_owner(u.owner)
 }
 
-/// The 021-R8 rush rule that holds in this observation (own vision only), if any.
-/// `depots`: own command centers; `starts`: start locations other than ours.
-pub fn rush_rule(p: &ReactParams, f: &RawFrame, me: u8, depots: &[Pos], starts: &[Tile]) -> Option<RushRule> {
+/// Estimated start frame of an unfinished spawning pool seen at `frame` with `hp` hit points
+/// (OpenBW: 750 HP over 1,200 frames from a tenth, HP = 75 + 0.5625 × elapsed; enemy
+/// `remaining_build` is always 0, rule advisory).
+pub fn pool_start_frame(frame: u32, hp: u16) -> u32 {
+    frame.saturating_sub(u32::from(hp.saturating_sub(75)) * 16 / 9)
+}
+
+/// What the 021-R8 rule needs besides the observation: own command centers, the start locations
+/// other than ours, the scout's position and the remembered enemy hatcheries (030 §2).
+pub struct RuleContext<'a> {
+    pub depots: &'a [Pos],
+    pub starts: &'a [Tile],
+    pub scout: Option<Pos>,
+    pub known_hatcheries: &'a [Pos],
+}
+
+/// Every 021-R8 rush rule that holds in this observation (own vision only), in rule order.
+pub fn rush_rules(p: &ReactParams, f: &RawFrame, me: u8, cx: &RuleContext<'_>) -> Vec<RushRule> {
+    let mut out = Vec::new();
     if f.frame >= p.judge_until {
-        return None;
+        return out;
     }
     let enemies: Vec<&UnitState> = f.units.iter().filter(|u| is_enemy(u, me)).collect();
-    if f.frame < p.pool_before && enemies.iter().any(|u| u.unit_type == SPAWNING_POOL) {
-        return Some(RushRule::Pool);
+    let pools: Vec<&&UnitState> = enemies.iter().filter(|u| u.unit_type == SPAWNING_POOL).collect();
+    if pools.iter().any(|u| !u.has(flags::COMPLETED) && pool_start_frame(f.frame, u.hp) <= p.pool_start_max) {
+        out.push(RushRule::PoolStart);
     }
-    if f.frame < p.lings_before && enemies.iter().filter(|u| u.unit_type == ZERGLING).count() >= p.lings_min {
-        return Some(RushRule::Lings);
+    if f.frame < p.pool_done_before && pools.iter().any(|u| u.has(flags::COMPLETED)) {
+        out.push(RushRule::PoolDone);
     }
-    if enemies.iter().any(|u| is_army_type(u.unit_type) && depots.iter().any(|d| within(u.pos, *d, p.army_radius))) {
-        return Some(RushRule::Army);
+    let lings = enemies.iter().filter(|u| u.unit_type == ZERGLING).count();
+    if (f.frame < p.lings_before && lings >= p.lings_min) || (f.frame < p.lings_many_before && lings >= p.lings_many) {
+        out.push(RushRule::Lings);
     }
-    if f.frame < p.main_before {
-        for s in starts {
-            let c = depot_center(*s);
-            let near = |u: &&&UnitState| within(u.pos, c, p.main_radius);
-            let depot = enemies.iter().filter(near).any(|u| is_resource_depot(u.unit_type));
-            let pool = enemies.iter().filter(near).any(|u| u.unit_type == SPAWNING_POOL);
-            let drones = enemies.iter().filter(near).filter(|u| u.unit_type == DRONE).count();
-            if depot && pool && drones <= p.main_drones_max {
-                return Some(RushRule::Main);
+    let near_army = enemies.iter().filter(|u| is_army_type(u.unit_type) && cx.depots.iter().any(|d| within(u.pos, *d, p.army_radius))).count();
+    if near_army >= p.army_min {
+        out.push(RushRule::Army);
+    }
+    if f.frame < p.main_before && !pools.is_empty() {
+        let start_hatchery = enemies.iter().filter(|u| is_resource_depot(u.unit_type)).find(|h| cx.starts.iter().any(|s| within(h.pos, depot_center(*s), p.main_radius)));
+        if let (Some(h), Some(scout)) = (start_hatchery, cx.scout) {
+            let drones = enemies.iter().filter(|u| u.unit_type == DRONE && within(u.pos, h.pos, p.main_drones_radius)).count();
+            let only = cx.known_hatcheries.iter().all(|k| within(*k, h.pos, 2));
+            if within(scout, h.pos, p.main_look) && drones <= p.drones_max && only {
+                out.push(RushRule::Drones);
             }
         }
     }
-    None
+    out
 }
 
 impl Brain {
@@ -349,6 +403,9 @@ impl Brain {
     pub(crate) fn react_observe(&mut self, f: &RawFrame, mine: &[&UnitState]) {
         let others = self.other_starts();
         let me = self.me;
+        let scout = self.scout.and_then(|id| mine.iter().find(|u| u.id == id)).map(|u| u.pos);
+        let known_hatcheries: Vec<Pos> = self.enemy_buildings.values().filter(|(_, ty)| is_resource_depot(*ty)).map(|(pos, _)| *pos).collect();
+        let home = self.home;
         let Some(r) = self.react.as_mut() else { return };
         let p = r.p.clone();
         if r.enemy_main.is_none() {
@@ -363,14 +420,33 @@ impl Brain {
         let army: Vec<Pos> = f.units.iter().filter(|u| is_enemy(u, me) && is_army_type(u.unit_type)).map(|u| u.pos).collect();
         if army.iter().any(|a| depots.iter().any(|d| within(*a, *d, p.army_radius))) {
             r.last_contact = f.frame;
+            r.stats.contact_frame.get_or_insert(f.frame);
+        }
+        // 050-R8 record (rule advisory §2).
+        for u in f.units.iter().filter(|u| is_enemy(u, me) && u.unit_type == SPAWNING_POOL) {
+            r.stats.pool_seen_frame.get_or_insert(f.frame);
+            if !u.has(flags::COMPLETED) && r.stats.pool_start_frame.is_none() {
+                r.stats.pool_start_frame = Some(pool_start_frame(f.frame, u.hp));
+            }
+        }
+        if f.frame < p.judge_until {
+            let lings = f.units.iter().filter(|u| is_enemy(u, me) && u.unit_type == ZERGLING).count() as u32;
+            r.stats.lings_max = r.stats.lings_max.max(lings);
+        }
+        if r.stats.bunker_frame.is_none() && mine.iter().any(|u| u.unit_type == BUNKER) {
+            r.stats.bunker_frame = Some(f.frame);
         }
         // ④ release timer: the same units the SCVs are pulled against (ground army, not burrowed).
         let ground = f.units.iter().filter(|u| is_enemy(u, me) && is_ground_army_type(u.unit_type) && !u.has(flags::BURROWED));
         if ground.map(|u| u.pos).any(|a| depots.iter().any(|d| within(a, *d, p.release_radius))) {
             r.last_near = f.frame;
         }
+        let rules = rush_rules(&p, f, me, &RuleContext { depots: &depots, starts: &others, scout, known_hatcheries: &known_hatcheries });
+        for rule in &rules {
+            r.stats.rule_frames.entry(*rule).or_insert(f.frame);
+        }
         if r.branch == Branch::Macro {
-            if let Some(rule) = rush_rule(&p, f, me, &depots, &others) {
+            if let Some(&rule) = rules.first() {
                 r.branch = Branch::Defence;
                 r.last_contact = f.frame;
                 r.stats.defences += 1;
@@ -378,6 +454,12 @@ impl Brain {
                     r.stats.rush_frame = Some(f.frame);
                     r.stats.rush_rule = Some(rule);
                 }
+                // The defence base (rule advisory §3): the own command center nearest the enemy
+                // army seen; without army in sight the natural once it stands, else the main.
+                let main = home.and_then(|h| depots.iter().copied().min_by_key(|d| (dist2(*d, h), *d)));
+                let natural = r.natural.and_then(|n| depots.iter().copied().find(|d| within(*d, depot_center(n), 1)));
+                let by_army = army.iter().flat_map(|a| depots.iter().map(move |d| (dist2(*a, *d), *d))).min().map(|(_, d)| d);
+                r.def_base = by_army.or(natural).or(main);
             }
         } else {
             let marines = mine.iter().filter(|u| u.unit_type == MARINE && u.has(flags::COMPLETED)).count();
@@ -525,13 +607,13 @@ impl Brain {
         }
         match branch {
             Branch::Defence => {
-                if bunker_near(base) {
+                let (dbase, to) = self.defence_base(mine, base);
+                if bunker_near(dbase) {
                     return (0, 0);
                 }
                 if rax_done && *minerals >= cost(BUNKER) {
-                    let to = self.bunker_facing(base, None);
                     let res = reserved(self);
-                    if let Some(t) = self.bunker_site(f, base, to, &res) {
+                    if let Some(t) = self.bunker_site(f, dbase, to, &res) {
                         if self.order_build_at(BUNKER, t, f, mine, busy, cmds) {
                             *minerals -= cost(BUNKER);
                             return (0, 0);
@@ -569,6 +651,18 @@ impl Brain {
                 }
                 (0, 0)
             }
+        }
+    }
+
+    /// D reference command center and the point its bunker faces: the defence base chosen when D
+    /// started if it still stands (rule advisory §3), else `main`. The main bunker faces the way
+    /// out toward the natural, any other base's bunker an outer choke (not back toward the main).
+    pub(crate) fn defence_base(&self, mine: &[&UnitState], main: Pos) -> (Pos, Pos) {
+        let depots = Self::own_depots(mine);
+        let chosen = self.react.as_ref().and_then(|r| r.def_base).and_then(|b| depots.iter().copied().find(|d| within(*d, b, 1)));
+        match chosen {
+            Some(b) if !within(b, main, 1) => (b, self.bunker_facing(b, Some(main))),
+            _ => (main, self.bunker_facing(main, None)),
         }
     }
 
@@ -757,13 +851,14 @@ impl Brain {
     /// D ②: marines not picked to load walk beside the bunker (2 tiles behind it, toward the main)
     /// and hold position there. Returns whether a command was issued.
     fn hold_marines(&mut self, mine: &[&UnitState], cmds: &mut Vec<Command>) -> bool {
-        let Some(home) = self.home_depot(mine).or(self.home) else { return false };
+        let Some(main) = self.home_depot(mine).or(self.home) else { return false };
+        let (home, facing) = self.defence_base(mine, main);
         let loading: BTreeSet<UnitId> = self.garrison(mine).into_iter().flat_map(|(_, ids)| ids).collect();
         let bunker = mine.iter().filter(|u| u.unit_type == BUNKER && within(u.pos, home, 10)).min_by_key(|u| (dist2(u.pos, home), u.id)).map(|u| u.pos);
         let planned = self.pending.iter().find(|q| q.ty == BUNKER && within(bunker_center(q.tile), home, 10)).map(|q| bunker_center(q.tile));
         let spot = match bunker.or(planned) {
             Some(b) => toward(b, home, 2.0),
-            None => toward(home, self.bunker_facing(home, None), 3.0),
+            None => toward(home, facing, 3.0),
         };
         let r = self.react.as_mut().expect("react kit");
         let marines: Vec<&&UnitState> = mine.iter().filter(|u| u.unit_type == MARINE && u.has(flags::COMPLETED) && u.loaded_in.is_none() && !loading.contains(&u.id)).collect();
@@ -915,38 +1010,85 @@ mod tests {
         b.react_branch().unwrap()
     }
 
-    /// 021-R8 R ①–④ read the current observation only, with their time limits.
+    /// 021-R8 R (rule advisory): ①a–④′ read the current observation only, at their boundaries.
     #[test]
     fn rush_rules_021_r8() {
         let p = ReactParams::default();
         let depots = [home()];
         let others = [THEIRS];
-        let at = |n: u32, units: Vec<UnitState>| rush_rule(&p, &frame(n, units, 0, 0), 0, &depots, &others);
+        let none: [Pos; 0] = [];
+        let cx = RuleContext { depots: &depots, starts: &others, scout: None, known_hatcheries: &none };
+        let at = |n: u32, units: Vec<UnitState>| rush_rules(&p, &frame(n, units, 0, 0), 0, &cx);
         let far = depot_center((60, 60));
-        // ① pool before 2:30 only.
-        assert_eq!(at(3_599, vec![enemy(9, SPAWNING_POOL, far)]), Some(RushRule::Pool));
-        assert_eq!(at(3_600, vec![enemy(9, SPAWNING_POOL, far)]), None);
-        // ② two zerglings in one observation before 3:30; one is not enough.
-        assert_eq!(at(5_039, vec![enemy(9, ZERGLING, far), enemy(10, ZERGLING, far)]), Some(RushRule::Lings));
-        assert_eq!(at(5_039, vec![enemy(9, ZERGLING, far)]), None);
-        assert_eq!(at(5_040, vec![enemy(9, ZERGLING, far), enemy(10, ZERGLING, far)]), None);
-        // ③ enemy army (033) within 20 tiles of a command center, until 8:00; an overlord or a
-        // drone is no army.
-        let near = (home().0 + 19 * 32, home().1);
-        assert_eq!(at(9_000, vec![enemy(9, ZERGLING, near)]), Some(RushRule::Army));
-        assert_eq!(at(9_000, vec![enemy(9, ZERGLING, (home().0 + 21 * 32, home().1))]), None);
-        assert_eq!(at(9_000, vec![enemy(9, OVERLORD, near), enemy(10, DRONE, near)]), None);
-        assert_eq!(at(11_520, vec![enemy(9, ZERGLING, near)]), None);
-        // ④ enemy main seen with its depot, a pool and at most 8 drones, before 3:30.
+        let building = |id: u32, hp: u16| UnitState { hp, flags: flags::BEING_CONSTRUCTED, ..enemy(id, SPAWNING_POOL, far) };
+        // Pool start estimate: 750 HP over 1,200 frames from 75.
+        assert_eq!((pool_start_frame(2_600, 188), pool_start_frame(2_600, 187), pool_start_frame(100, 750)), (2_400, 2_401, 0));
+        // ①a an unfinished pool started by 1:40 (2,400), seen at any time before 8:00.
+        assert_eq!(at(2_600, vec![building(9, 188)]), vec![RushRule::PoolStart]);
+        assert_eq!(at(2_600, vec![building(9, 187)]), vec![]);
+        // ①b a finished pool before 2:30.
+        assert_eq!(at(3_599, vec![enemy(9, SPAWNING_POOL, far)]), vec![RushRule::PoolDone]);
+        assert_eq!(at(3_600, vec![enemy(9, SPAWNING_POOL, far)]), vec![]);
+        // ② 2 zerglings before 2:50 (4,080), 6 before 3:10 (4,560), in one observation.
+        let lings = |n: u32| (0..n).map(|i| enemy(30 + i, ZERGLING, far)).collect::<Vec<_>>();
+        assert_eq!(at(4_079, lings(2)), vec![RushRule::Lings]);
+        assert_eq!(at(4_079, lings(1)), vec![]);
+        assert_eq!(at(4_080, lings(2)), vec![]);
+        assert_eq!(at(4_559, lings(6)), vec![RushRule::Lings]);
+        assert_eq!(at(4_559, lings(5)), vec![]);
+        assert_eq!(at(4_560, lings(6)), vec![]);
+        // ③ 2 enemy army units (033) within 20 tiles of a command center, after 4:00 too; one is
+        // contact only; overlords and drones are no army; nothing from 8:00.
+        let near = |id: u32, ty: u16| enemy(id, ty, (home().0 + 19 * 32, home().1 + id as u16));
+        assert_eq!(at(9_000, vec![near(9, HYDRALISK), near(10, ZERGLING)]), vec![RushRule::Army]);
+        assert_eq!(at(9_000, vec![near(9, ZERGLING)]), vec![]);
+        assert_eq!(at(9_000, vec![near(9, ZERGLING), enemy(10, ZERGLING, (home().0 + 21 * 32, home().1))]), vec![]);
+        assert_eq!(at(9_000, vec![near(9, OVERLORD), near(10, DRONE), near(11, ZERGLING)]), vec![]);
+        assert_eq!(at(11_520, vec![near(9, ZERGLING), near(10, ZERGLING)]), vec![]);
+        // ④′ the scout within 3 tiles of the enemy start hatchery: a pool, at most 6 drones within
+        // 12 tiles, that hatchery the only remembered one, before 3:30.
         let main = depot_center(THEIRS);
         let mut v = vec![enemy(9, HATCHERY, main), enemy(10, SPAWNING_POOL, (main.0 + 160, main.1))];
-        v.extend((0..8).map(|i| enemy(20 + i, DRONE, (main.0 - 100, main.1 + i as u16 * 8))));
-        assert_eq!(at(4_000, v.clone()), Some(RushRule::Main));
-        v.push(enemy(40, DRONE, (main.0 - 100, main.1 + 90)));
-        assert_eq!(at(4_000, v.clone()), None, "9 drones");
-        v.truncate(10);
-        assert_eq!(at(5_040, v.clone()), None, "after 3:30");
-        assert_eq!(at(4_000, vec![enemy(9, HATCHERY, main)]), None, "no pool");
+        v.extend((0..6).map(|i| enemy(20 + i, DRONE, (main.0 - 100, main.1 + i as u16 * 8))));
+        let known = [main];
+        let two = [main, depot_center(NATURAL)];
+        let scout_at = |tiles: u16| Some((main.0 - tiles * 32, main.1));
+        let main_at = |n: u32, units: Vec<UnitState>, scout: Option<Pos>, known: &[Pos]| {
+            rush_rules(&p, &frame(n, units, 0, 0), 0, &RuleContext { depots: &depots, starts: &others, scout, known_hatcheries: known })
+        };
+        assert_eq!(main_at(4_000, v.clone(), scout_at(3), &known), vec![RushRule::Drones]);
+        assert_eq!(main_at(4_000, v.clone(), scout_at(4), &known), vec![], "scout 4 tiles away");
+        assert_eq!(main_at(4_000, v.clone(), None, &known), vec![], "no scout");
+        assert_eq!(main_at(4_000, v.clone(), scout_at(3), &two), vec![], "a second hatchery");
+        assert_eq!(main_at(5_040, v.clone(), scout_at(3), &known), vec![], "after 3:30");
+        let mut seven = v.clone();
+        seven.push(enemy(40, DRONE, (main.0 - 100, main.1 + 90)));
+        assert_eq!(main_at(4_000, seven, scout_at(3), &known), vec![], "7 drones");
+        assert_eq!(main_at(4_000, v[..1].to_vec(), scout_at(3), &known), vec![], "no pool");
+    }
+
+    /// 021-R8 (rule advisory §3): after the expansion a rush seen at the natural is defended at
+    /// the natural — its bunker within 10 tiles of the natural command center, facing away from
+    /// the main; the record keeps the pool estimate, the zergling count and the contact time.
+    #[test]
+    fn defence_at_the_natural_and_record_021_r8() {
+        let mut b = teacher();
+        let nat = depot_center(NATURAL);
+        let mut units = base(16);
+        units.push(unit(4, CC, nat));
+        units.push(UnitState { hp: 300, flags: flags::BEING_CONSTRUCTED, ..enemy(70, SPAWNING_POOL, depot_center((60, 60))) });
+        b.act(&frame(3_000, units.clone(), 0, 40));
+        assert_eq!(branch(&b), Branch::Macro, "pool started at {}", pool_start_frame(3_000, 300));
+        units.push(enemy(90, ZERGLING, (nat.0, nat.1 + 8 * 32)));
+        units.push(enemy(91, ZERGLING, (nat.0 + 20, nat.1 + 8 * 32)));
+        let act = b.act(&frame(6_000, units, 100, 40));
+        assert_eq!(branch(&b), Branch::Defence);
+        let t = builds(&act, BUNKER);
+        assert_eq!(t.len(), 1, "{:?}", act.cmds);
+        assert!(within(bunker_center(t[0]), nat, 10) && bunker_center(t[0]).1 > nat.1, "{t:?}");
+        let s = b.teacher_stats().unwrap();
+        assert_eq!((s.pool_start_frame, s.pool_seen_frame, s.lings_max, s.contact_frame, s.rush_rule), (Some(3_000 - 400), Some(3_000), 2, Some(6_000), Some(RushRule::Army)));
+        assert_eq!(s.rule_frames.get(&RushRule::Army), Some(&6_000));
     }
 
     /// 021-R8: M is the start; R switches to D at that observation (bunker toward the main
@@ -980,8 +1122,9 @@ mod tests {
         assert_eq!(branch(&b), Branch::Defence);
         b.act(&frame(2_008 + 1_440, u.clone(), 0, 40));
         assert_eq!(branch(&b), Branch::Macro);
-        // Contact (③) again: D.
+        // Two zerglings at the base (③) again: D.
         u.push(enemy(92, ZERGLING, (home().0 + 300, home().1)));
+        u.push(enemy(93, ZERGLING, (home().0 + 330, home().1)));
         b.act(&frame(5_000, u, 0, 40));
         assert_eq!(branch(&b), Branch::Defence);
         let s = b.teacher_stats().unwrap();

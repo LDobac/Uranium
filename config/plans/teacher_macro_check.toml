@@ -1,23 +1,18 @@
 # 050-R8 / 021-R8 (AMB-021-4): "not always defend" check of the scouting-reactive teacher
-# t0-terran-react against the 5 macro (non-rush) zerg opponents of config/rl_rush5.toml (042
-# "rush-s2" macro group), 10 games each, map "both" (Fighting Spirit / Circuit Breaker 5 + 5),
-# 60 min, replays kept; scripted players and OSS bots only (uranium-env run).
-# Pass (050-R8): per opponent, no bunker started before 4:00 (`scripted.bunker_s < 240` in 0 of 10
-# teacher sessions) and 8:00 SCV >= 16 (`scripted.scv_8m`) — summary.md "T0 Terran sessions".
+# t0-terran-react against the macro (non-rush) zerg opponents of config/rl_rush5.toml (042
+# "rush-s2" macro group) without T0 standard zerg (a one-base 12-zergling all-in, its own plan
+# config/plans/teacher_t0zerg_check.toml; rule advisory reports/m6_teacher_rush_rule_advice.md
+# §1), 10 games each, map "both" (Fighting Spirit / Circuit Breaker 5 + 5), 60 min, replays kept;
+# scripted players and OSS bots only (uranium-env run).
+# Pass (050-R8, per opponent, summary.md "T0 Terran sessions"):
+# - ualbertabot2hatchhydra, ualbertabot3hatchmuta: bunker before 4:00 0/10, ①②④′ held 0/10,
+#   expand by 4:00 >= 9/10, scv_8m >= 16 >= 9/10.
+# - steamhammer2hatchmuta, T0 zerg_muta: pre-emptive bunker 0/10, ①②④′ held 0/10 (③ allowed),
+#   scv_8m >= 16 >= 8/10, expanded >= 8/10.
 name = "teacher-macro-check"
 seed_base = 46000
 save_replay = true
 wall_timeout_s = 7200
-[[matchup]]
-map = "both"
-games = 10
-p0 = { kind = "t0", race = "terran", build = "terran_react" }
-p1 = { kind = "t0", race = "zerg" }
-[[matchup]]
-map = "both"
-games = 10
-p0 = { kind = "t0", race = "terran", build = "terran_react" }
-p1 = { kind = "t0", race = "zerg", build = "zerg_muta" }
 [[matchup]]
 map = "both"
 games = 10
@@ -33,3 +28,8 @@ map = "both"
 games = 10
 p0 = { kind = "t0", race = "terran", build = "terran_react" }
 p1 = { kind = "oss", name = "steamhammer2hatchmuta", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 10
+p0 = { kind = "t0", race = "terran", build = "terran_react" }
+p1 = { kind = "t0", race = "zerg", build = "zerg_muta" }

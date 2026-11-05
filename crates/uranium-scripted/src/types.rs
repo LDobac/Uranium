@@ -16,6 +16,7 @@ pub const CONTROL_TOWER: u16 = 115;
 pub const BUNKER: u16 = 125;
 // Zerg
 pub const ZERGLING: u16 = 37;
+pub const HYDRALISK: u16 = 38;
 pub const MUTALISK: u16 = 43;
 pub const LARVA: u16 = 35;
 pub const DRONE: u16 = 41;

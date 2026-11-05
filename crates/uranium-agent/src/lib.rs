@@ -297,7 +297,8 @@ pub struct ScriptedStats {
 pub struct ReactRecord {
     /// Enemy main found (the teacher's rule: an enemy building within 10 tiles of a start location).
     pub main_s: Option<f64>,
-    /// First rush identification (021-R8 R) and its rule (`pool`, `lings`, `army`, `main`).
+    /// First rush identification (021-R8 R) and its rule (`pool_start`, `pool_done`, `lings`,
+    /// `army`, `drones`).
     pub rush_s: Option<f64>,
     pub rush_rule: Option<uranium_scripted::RushRule>,
     /// Macro → defence switches.
@@ -308,6 +309,16 @@ pub struct ReactRecord {
     pub expand_s: Option<f64>,
     /// Branch at the end (`macro` / `defence`).
     pub branch: uranium_scripted::Branch,
+    /// 050-R8 (rule advisory §2): estimated start of the first unfinished enemy pool seen, the
+    /// first pool sighting, the most zerglings in one observation before 8:00, the first enemy
+    /// army within 20 tiles of an own command center, the first own bunker (construction start).
+    pub pool_start_s: Option<f64>,
+    pub pool_seen_s: Option<f64>,
+    pub lings_max: u32,
+    pub contact_s: Option<f64>,
+    pub bunker_s: Option<f64>,
+    /// First time each rule held (before 8:00, in any branch), e.g. `{"army": 250.3}`.
+    pub rules_s: BTreeMap<uranium_scripted::RushRule, f64>,
 }
 
 /// A T0 session (021): the scripted bot, and for a Terran bot the 042 / 050-R7 metrics tracker.
@@ -363,6 +374,12 @@ impl Policy for ScriptedPolicy {
             macro_s: secs(r.macro_frame),
             expand_s: secs(r.expand_frame),
             branch: r.branch,
+            pool_start_s: secs(r.pool_start_frame),
+            pool_seen_s: secs(r.pool_seen_frame),
+            lings_max: r.lings_max,
+            contact_s: secs(r.contact_frame),
+            bunker_s: secs(r.bunker_frame),
+            rules_s: r.rule_frames.iter().map(|(k, f)| (*k, uranium_env::scout::seconds(*f))).collect(),
         });
         Some(ScriptedStats {
             scout_main_s: secs(m.main_frame),
@@ -911,7 +928,7 @@ mod tests {
         let r = t.scripted_stats().unwrap().react.expect("teacher record");
         assert_eq!((r.rush_s, r.defences, r.branch), (None, 0, uranium_scripted::Branch::Macro));
         let text = serde_json::to_string(&r).unwrap();
-        assert_eq!(text, r#"{"main_s":null,"rush_s":null,"rush_rule":null,"defences":0,"macro_s":null,"expand_s":null,"branch":"macro"}"#);
+        assert_eq!(text, r#"{"main_s":null,"rush_s":null,"rush_rule":null,"defences":0,"macro_s":null,"expand_s":null,"branch":"macro","pool_start_s":null,"pool_seen_s":null,"lings_max":0,"contact_s":null,"bunker_s":null,"rules_s":{}}"#);
 
         let mut z = ScriptedPolicy::new(&t0_info(Race::Zerg), T0Build::ZergRush).unwrap();
         z.on_frame(&scv_frame(100, 0)).unwrap();

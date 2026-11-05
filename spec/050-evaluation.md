@@ -67,10 +67,16 @@
   | plan | 내용 | 목표(자문 값) |
   |---|---|---|
   | `config/plans/teacher_check.toml` | 050-R6 점검과 같은 128판(같은 시드 목록·상대·맵 블록, `tools/eval/rush_check_plan.py --teacher`), `players[0]` = 교사 `{ kind = "t0", race = "terran", build = "terran_react" }`. 조건(적중·빗나감)은 050-R6과 같은 생성기 판정 | 막음(050-R7, `scripted.scv_min_1m > 4`) 이른(적중) 조건 ≥ 32/64, 늦은(빗나감) 조건 ≥ 40/64 |
-  | `config/plans/teacher_macro_check.toml` | "항상 방어 아님" 확인: 교사 대 `config/rl_rush5.toml` 운영형 그룹 5상대(T0 표준 저그, T0 `zerg_muta`, `ualbertabot2hatchhydra`, `ualbertabot3hatchmuta`, `steamhammer2hatchmuta`) 각 10판, 맵 `both`(투혼 5·서킷브레이커 5), seed_base 46000 | 상대마다 10판 모두: 4:00 전 벙커 착공 0판(`scripted.bunker_s`가 없거나 ≥ 240), 8:00에 이른 판의 `scv_8m ≥ 16` |
+  | `config/plans/teacher_macro_check.toml` | "항상 방어 아님" 확인: 교사 대 운영형 4상대(`ualbertabot2hatchhydra`, `ualbertabot3hatchmuta`, `steamhammer2hatchmuta`, T0 `zerg_muta`) 각 10판, 맵 `both`(투혼 5·서킷브레이커 5), seed_base 46000. T0 표준 저그는 운영형이 아니라(1해처리·드론 14·저글링 12기 웨이브의 원베이스 올인) 따로 뺐다(규칙 자문 1절) | 아래 상대별 기준 |
+  | `config/plans/teacher_t0zerg_check.toml` | 교사 대 T0 표준 저그 10판, 맵 `both`, seed_base 47000 | 아래 상대별 기준 |
 
   - 판정·다음 단계: 두 목표를 모두 채우면 botgen(040 `botgen`)·BC 파인튜닝으로 간다(규모·비율·게이트는 그때 자문 2절 값을 기본안으로 사용자 위임 범위에서 정한다). 채우지 못하면 결과(러시 식별 규칙별 판 수·실패 판 리플레이)와 함께 `ReactParams` 수정안을 보고한다(021-R8 수치는 레지스트리 AMB-021-4와 함께 고친다).
-  - 알려진 위험(구현 때 확인, 보고만): T0 표준 저그는 9드론 풀·저글링만 하는 빌드라 정찰에서 풀이 2:30 전에 보이면 ①로 방어 가지에 들어간다. `zerg_muta`도 같은 풀 시점과 저글링 홈 가드가 있어 ①·②가 성립할 수 있다. 그러면 운영형 점검의 "4:00 전 벙커 0"을 못 채울 수 있다 — 자문 규칙대로 구현했고 점검 결과로 판단한다.
+  - **상대별 기준(2026-11-05 규칙 자문 2절, 사용자 위임, AMB-021-4)**, 상대마다 10판, 값은 세션 `scripted`(`react` 포함)와 `summary.md` "T0 Terran sessions" 열: "선제 벙커" = `bunker_s < 240`이고 그 전에 ③(`react.rules_s.army`)이 없음. "①②④′ 발화" = `react.rules_s`에 `pool_start`·`pool_done`·`lings`·`drones` 중 하나라도 있음.
+    - `ualbertabot2hatchhydra`·`ualbertabot3hatchmuta`(운영, 엄격): 4:00 전 벙커 0/10, ①②④′ 발화 0/10, `expand_s ≤ 240` ≥ 9/10, `scv_8m ≥ 16` ≥ 9/10.
+    - `steamhammer2hatchmuta`·T0 `zerg_muta`(운영, 증거 조건부): 선제 벙커 0/10, ①②④′ 발화 0/10(③만 허용), `scv_8m ≥ 16` ≥ 8/10, 확장 ≥ 8/10.
+    - T0 표준 저그: 선제 벙커 0/10, ① 발화(`pool_start`·`pool_done`) 0/10, 막음(`scv_min_1m > 4`) ≥ 8/10, `scv_8m ≥ 14` ≥ 8/10.
+    - 러시 128판(`teacher_check.toml`)은 위 표 그대로.
+    - 측정하지 않은 풀 착공 두 값(T0 표준·`steamhammer2hatchmuta`)은 점검 첫 판들의 `pool_start_s`로 확인하고, 1:46 아래가 나오면 `pool_start_max`를 1:35(2,280프레임)로, `lings_many_before`를 3:00으로 내린다(자문 3절, 내릴 때 021-R8·AMB-021-4도 고친다).
 
 - **세션 지표 정의 (050-R7, 2026-11-05)**: 042 정찰·대응 지표와 같은 코드(`crates/uranium-env/src/scout.rs` `ScoutMetrics`)·같은 입력 제한(033-R5: 자기 시야와 맵 공개 정보만)으로 모든 모델 세션(RL·plan·평가 게임)이 세고, 세션 결과 `results.jsonl` model 행에 `scv_4m` 뒤로 `scv_min_1m`, `army_s`, `scv_8m` 순서로 남긴다(RL은 042 `games.csv` 열로도, `scv_8m`은 세션 결과에만). 시간은 게임 초(프레임 ÷ 24).
 
@@ -93,4 +99,4 @@
 - 050-AC1: 평가 파이프라인 하나로 E-Matrix 리포트가 자동 생성된다.
 - 050-AC2: 000-G1~G3 목표 달성 여부가 리포트 상단 요약에 표시된다.
 - 050-AC3 (2026-11-05, 050-R6·R7, AMB-042-19): 단위 테스트 — 점검 plan 생성: 128판, 블록마다 적중 16·빗나감 16, 적중 쌍마다 4판·빗나감 쌍마다 2판(12쌍 모두), 같은 입력이면 같은 목록, 목록 안 seed 중복 없음, 생성기(020-R21) 조건과 일치. 세션 지표: `scv_min_1m`의 1:00 경계(1,439 관측은 세지 않음·1,440부터), 최솟값, 탑승 포함·생산 중 제외, 1:00 전에 끝난 판 빈 값. `army_s`는 병력 첫 목격(일꾼·건물·라바·알·오버로드 제외, 033-R9와 같은 셈), 못 보면 빈 값. `scv_8m`의 8:00 경계(11,520 포함)와 먼저 끝난 판 빈 값. `results.jsonl` model 행의 키(`scv_4m` 뒤 `scv_min_1m`, `army_s`, `scv_8m`). 보고: 조건별 비율·자연 분포 가중 합산·단측 Fisher p를 작은 표로 확인. 리허설: `rush-s4` c0 80판(`runs/rush4_20261104/held/c0`, `held.py` 결과)의 리플레이를 재생 관측(020-R1 `StartReplay`, 우리 시점)으로 같은 `ScoutTracker`에 흘려 센 막음이 `held.py`와 판별로 ≥ 95% 일치한다.
-- 050-AC4 (2026-11-05, 050-R8, AMB-021-4): 단위 테스트 — T0 테란 세션이 관측·최종 관측으로 `scripted`를 모델 행과 같은 키·순서로 남기고(교사는 `react` 포함, 테란이 아닌 T0는 없음), `summary.md` T0 테란 표가 막음·승·4:00 전 벙커·8:00 SCV ≥ 16·러시 규칙을 센다. plan: `teacher_check.toml`이 `rush5_check.toml`과 시드·상대·맵 블록이 같고 p0만 교사, `teacher_macro_check.toml`이 운영형 5상대 × 10판 `both`. 실게임: 두 plan을 끝까지 돌려 결과를 보고한다(목표 판정은 위 표).
+- 050-AC4 (2026-11-05, 050-R8, AMB-021-4): 단위 테스트 — T0 테란 세션이 관측·최종 관측으로 `scripted`를 모델 행과 같은 키·순서로 남기고(교사는 `react` 포함, 테란이 아닌 T0는 없음), `summary.md` T0 테란 표가 막음·승·4:00 전 벙커·8:00 SCV ≥ 16·러시 규칙을 센다. plan: `teacher_check.toml`이 `rush5_check.toml`과 시드·상대·맵 블록이 같고 p0만 교사, `teacher_macro_check.toml`이 운영형 4상대 × 10판 `both`, `teacher_t0zerg_check.toml`이 T0 표준 저그 10판 `both`. 보고 표: 선제 벙커·①②④′ 발화·4:00까지 확장·`scv_8m ≥ 16`/`≥ 14` 열. 실게임: 두 plan을 끝까지 돌려 결과를 보고한다(목표 판정은 위 표).

@@ -512,8 +512,9 @@ p1={kind='oss',name='iron',race='terran'}";
 
     /// 050-R8 (AMB-021-4): `config/plans/teacher_check.toml` is the 050-R6 check (same 128 seeds
     /// and opponent / map blocks) with the 021-R8 teacher as players[0]; it plays Terran and needs
-    /// no model server. `teacher_macro_check.toml`: the teacher against the 5 macro opponents of
-    /// `config/rl_rush5.toml`, 10 games each on both maps.
+    /// no model server. `teacher_macro_check.toml`: the teacher against 4 macro opponents of
+    /// `config/rl_rush5.toml` (T0 standard zerg left out), 10 games each on both maps;
+    /// `teacher_t0zerg_check.toml`: T0 standard zerg, 10 games (rule advisory §2).
     #[test]
     fn teacher_check_plans_050_r8() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/plans");
@@ -534,16 +535,15 @@ p1={kind='oss',name='iron',race='terran'}";
         let oss = |n: &str| Side::Oss { name: n.into(), race: RaceSel::Zerg };
         assert_eq!(
             opponents,
-            [
-                Side::T0 { race: RaceSel::Zerg, build: T0Build::Standard, name: None },
-                Side::T0 { race: RaceSel::Zerg, build: T0Build::ZergMuta, name: None },
-                oss("ualbertabot2hatchhydra"),
-                oss("ualbertabot3hatchmuta"),
-                oss("steamhammer2hatchmuta"),
-            ]
+            [oss("ualbertabot2hatchhydra"), oss("ualbertabot3hatchmuta"), oss("steamhammer2hatchmuta"), Side::T0 { race: RaceSel::Zerg, build: T0Build::ZergMuta, name: None }]
         );
         assert!(mac.matchups.iter().all(|m| m.p0 == teacher && m.games == 10 && m.map == MapSel::Both && m.p1_random_ratio == 0.0));
-        assert_eq!(expand(&mac, "a").len(), 50);
+        assert_eq!(expand(&mac, "a").len(), 40);
+        // T0 standard zerg (a one-base all-in, rule advisory §1) has its own 10-game plan.
+        let t0 = load_plan(&dir.join("teacher_t0zerg_check.toml")).unwrap();
+        assert_eq!(t0.matchups.len(), 1);
+        let m = &t0.matchups[0];
+        assert_eq!((&m.p0, &m.p1, m.games, m.map), (&teacher, &Side::T0 { race: RaceSel::Zerg, build: T0Build::Standard, name: None }, 10, MapSel::Both));
     }
 
     #[test]
