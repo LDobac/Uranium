@@ -945,6 +945,11 @@ fn subsampled_source_and_epoch_count_agree_041_r21() {
     let replays = read.iter().filter(|m| m.src == "test").count();
     let all_replays = train.len() - teacher;
     assert!(replays > 0 && replays < all_replays, "a part of the other games ({replays} of {all_replays})");
+    // The start log's per-source counts (041-R21) are the same selection.
+    let scan = uranium_data::data::scan_files(src.files()).unwrap();
+    let per = uranium_data::bc::subsample_counts(&scan, Selection::S1, cfg.data.subsample.as_ref().unwrap(), cfg.data.seed);
+    assert_eq!(per["botgen"], (teacher, teacher));
+    assert_eq!(per["test"], (all_replays, replays));
     // The lane walk over that source makes the counted epoch.
     let mut f = feeder(&cfg);
     let mut s = cfg.train_source(std::slice::from_ref(&root), Selection::S1).unwrap();

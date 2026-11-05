@@ -762,6 +762,18 @@ pub fn check_ident(dir: &Path, want: &RunIdent) -> Result<()> {
     Ok(())
 }
 
+/// 041-R21 start log: per source (`GameMeta.src`), the games `sel` selects in `scan` and how many
+/// of them `sub` keeps with `seed`.
+pub fn subsample_counts(scan: &[Vec<GameSummary>], sel: Selection, sub: &Subsample, seed: u64) -> std::collections::BTreeMap<String, (usize, usize)> {
+    let mut per = std::collections::BTreeMap::<String, (usize, usize)>::new();
+    for g in scan.iter().flatten().filter(|g| crate::split::selects(sel, &g.meta)) {
+        let e = per.entry(g.meta.src.clone()).or_default();
+        e.0 += 1;
+        e.1 += sub.keeps(&g.meta, seed) as usize;
+    }
+    per
+}
+
 /// One-epoch length of a stage (041-R13): updates the trainer's lane walk makes.
 #[derive(Serialize, Debug, Clone, Copy, Default)]
 pub struct EpochCount {

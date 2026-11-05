@@ -154,9 +154,14 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
     let maps = args.maps.clone().unwrap_or_else(|| Arc::new(MapStore::from_env()));
     // 041-R21: the map check covers the whole stage selection (a superset of a subsample).
     let src = cfg.train_source(&args.dirs, args.stage.selection())?;
-    crate::data::check_maps(&src, Some(args.stage.selection()), &maps)?;
+    let scan = crate::data::check_maps(&src, Some(args.stage.selection()), &maps)?;
     if let Some(s) = &cfg.data.subsample {
-        crate::elog!("{}", serde_json::json!({ "subsample": s, "seed": cfg.data.seed, "note": "041-R21" }));
+        // Per source: stage games and the ones kept, and `keep_sources` names no game carries
+        // (a typo would silently subsample the teacher games, 041-R21).
+        let per = crate::bc::subsample_counts(&scan, args.stage.selection(), s, cfg.data.seed);
+        let absent: Vec<&String> = s.keep_sources.iter().filter(|k| !per.contains_key(*k)).collect();
+        let games: serde_json::Map<String, serde_json::Value> = per.iter().map(|(k, (n, kept))| (k.clone(), serde_json::json!({ "selected": n, "kept": kept }))).collect();
+        crate::elog!("{}", serde_json::json!({ "subsample": s, "seed": cfg.data.seed, "games": games, "keep_sources_absent": absent, "note": "041-R21" }));
     }
     // B-3: what this run trains; stored in every checkpoint and compared on resume.
     let ident = RunIdent { stage: format!("{:?}", args.stage), config: cfg.fingerprint(), dataset: crate::data::dataset_fingerprint(&src)? };
