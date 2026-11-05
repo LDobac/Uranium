@@ -115,7 +115,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 
 ## 감시·작업자(060-R6, 061-R13~R15)
 - `uranium-train supervise [--hang-minutes 30 --max-restarts 5 --window-minutes 60 --delay-seconds 60 --progress-file <file> --fatal-pattern <regex>... --log <file>] -- <bc|rl 인자>`: 자식은 `URANIUM_PYTHON -m uranium <bc|rl 인자>`다(`.env`에 없으면 시작하지 않는다). 비정상 종료·멈춤이면 같은 run을 재시작한다. 종료 코드 0·130·75(잠금을 얻지 못함: 다른 호스트 잠금, 획득 경쟁에서 짐, 양보 예약)·76(양보)은 재시작하지 않는다. 70(장치 치명 오류, 저장 없이 끝남, 042-R20)은 재시작한다.
-  - 멈춤 판정(060-R6, AMB-042-20): `--progress-file`이 있으면 그 파일 변경만 진행으로 본다(stderr 줄은 진행이 아니다). 없으면 stderr 줄이 진행이다. RL은 `--progress-file <logs>/train.csv`를 쓴다.
+  - 멈춤 판정(060-R6, AMB-042-20): `--progress-file`이 있으면 그 파일 변경만 진행으로 본다(stderr 줄은 진행이 아니다). 없으면 stderr 줄이 진행이다. RL은 `--progress-file <logs>/train.csv`를 쓴다. 이때 `--hang-minutes`는 정상 run에서 train.csv 갱신 사이 가장 긴 간격(게임 슬롯이 적고 판이 길면 약 26분까지 관찰)보다 커야 하므로 **60**을 권한다.
   - `--fatal-pattern <regex>`(여러 번 가능): 자식 stderr 줄이 맞으면 자식을 죽이고 비정상 종료처럼 재시작한다(재시작 횟수 제한 그대로). 예: `--fatal-pattern "illegal memory access" --fatal-pattern "Sticky error"`.
   - Linux: 자식 학습은 별도 프로세스 그룹으로 뜨고 `PR_SET_PDEATHSIG`(SIGINT)가 걸린다. 터미널 포그라운드 Ctrl+C도 감시 프로세스가 한 번만 전달하므로 저장 후 끝난다. 감시 프로세스가 강제 종료돼도 자식은 SIGINT를 받아 저장·push·잠금 해제 후 끝난다(060-R6). 이때 자식의 stderr 파이프는 닫혀 있어서 그 뒤 로그는 남지 않는다(학습 코드는 stderr 쓰기 실패를 무시한다). `bc`·`rl`의 Ctrl+C 처리는 데이터셋 pull·모델 로드보다 먼저 설치되므로, 시작 중 Ctrl+C도 잠금이 있으면 해제하고, 없으면 그냥 끝난다(pull은 다음에 이어서 받는다). Windows: 같은 콘솔이라 Ctrl+C가 자식에게 직접 간다. 감시 프로세스와 자식은 시작할 때 부모에게서 물려받은 "Ctrl+C 무시" 설정을 지운다(042-R10, 지우기 전에는 Ctrl+C가 자식에게 닿지 않아 저장 없이 계속 학습했다).
 - `uranium-train worker --queue <shared>/queue/<이름>.toml --backend <cuda|rocm|cpu> --priority <n> [--poll-seconds 60] [--log <file>]`(자식 `URANIUM_PYTHON -m uranium bc --run ...`)

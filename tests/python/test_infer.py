@@ -139,6 +139,31 @@ def test_device_fatal_classification_042_r20():
     except ValueError as outer:
         assert is_device_fatal(outer), "a fatal error as the cause"
     assert not is_device_fatal(torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB"))
+    # Out of memory in any form, and CUDA graph capture errors, are never fatal.
+    assert not is_device_fatal(RuntimeError("CUDA error: out of memory"))
+    assert not is_device_fatal(RuntimeError("HIP error: out of memory"))
+    if hasattr(torch, "AcceleratorError"):
+        assert not is_device_fatal(torch.AcceleratorError("CUDA error: out of memory"))
+    assert not is_device_fatal(RuntimeError("CUDA error: operation not permitted when stream is capturing"))
+    assert not is_device_fatal(RuntimeError("CUDA error: operation failed due to a previous error during capture (capture invalidated)"))
+
+    class Coded(RuntimeError):
+        def __init__(self, msg, code):
+            super().__init__(msg)
+            self.error_code = code
+
+    assert not is_device_fatal(Coded("CUDA error: allocation failed", 2))
+    assert not is_device_fatal(Coded("CUDA error: stream capture unsupported", 900))
+    assert not is_device_fatal(Coded("CUDA error: stream capture wrong thread", 908))
+    assert is_device_fatal(Coded("CUDA error: an illegal memory access was encountered", 700))
+    try:
+        try:
+            raise RuntimeError("CUDA error: out of memory")
+        except RuntimeError as inner:
+            raise RuntimeError("CUDA error: while copying the reply") from inner
+    except RuntimeError as outer:
+        assert not is_device_fatal(outer), "out of memory anywhere in the chain"
+    assert is_device_fatal(RuntimeError("CUDA error: an illegal memory access was encountered")), "still fatal"
     assert not is_device_fatal(RuntimeError("warm-up failed"))
     assert not is_device_fatal(ValueError("bad observation"))
     assert not is_device_fatal(None)
@@ -150,8 +175,10 @@ class ExitCalled(BaseException):
 
 def test_device_fatal_guard_exits_70_042_r20(monkeypatch, capsys):
     """042-R20: `device_fatal_guard` turns a fatal device error into one stderr line and
-    `os._exit(70)`; another exception propagates unchanged and nothing exits."""
+    `os._exit(70)` after flushing and a 0.2 s pause (so a tee keeps the line); another exception
+    propagates unchanged and nothing exits."""
     import os
+    import time
 
     from uranium import device
 
@@ -162,10 +189,14 @@ def test_device_fatal_guard_exits_70_042_r20(monkeypatch, capsys):
         raise ExitCalled
 
     monkeypatch.setattr(os, "_exit", fake_exit)
+    monkeypatch.setattr(time, "sleep", lambda s: codes.append(("sleep", s)))
     with pytest.raises(ExitCalled):
         with device.device_fatal_guard("learner main update"):
             raise RuntimeError(CUDA_FATAL)
-    assert codes == [device.EXIT_DEVICE_FATAL] == [70]
+    assert codes == [("sleep", 0.2), device.EXIT_DEVICE_FATAL]
+    assert device.EXIT_DEVICE_FATAL == 70
+    codes.clear()
+    codes.append(70)
     err = capsys.readouterr().err.strip().splitlines()
     assert len(err) == 1 and err[0].startswith("[device] learner main update: fatal device error") and "042-R20" in err[0]
     with pytest.raises(ValueError):

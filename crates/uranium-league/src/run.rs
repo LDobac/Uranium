@@ -604,6 +604,9 @@ impl JobSource for LeagueSource {
         // 042-R20 (AMB-042-20): the run loop's stall count and dead-inference streak.
         if outcome == JobOutcome::Finished {
             s.finished_games.fetch_add(1, Ordering::SeqCst);
+            if result.is_none() {
+                crate::elog!("[rl] game {id}: finished without a report of the learning session; not counted for the no-decision streak (042-R20)");
+            }
         }
         match bad_learning_session(outcome, result.as_ref()) {
             Some(true) => {
@@ -791,10 +794,14 @@ const DEAD_LEARNER_GAMES: u64 = 20;
 const BAD_SESSION_STREAK: u64 = 10;
 
 /// 042-R20: a finished game whose learning session reported no decision (inference failed for
-/// every request) or no report at all is bad (`Some(true)`), one with decisions is good; a game
-/// that did not finish (Aborted, Timeout, Stopped, Rejected) does not count either way.
+/// every request) is bad (`Some(true)`), one with decisions is good; a game that did not finish
+/// (Aborted, Timeout, Stopped, Rejected) or whose learning session sent no report (the caller
+/// logs a warning) does not count either way.
 fn bad_learning_session(outcome: JobOutcome, result: Option<&GameResult>) -> Option<bool> {
-    (outcome == JobOutcome::Finished).then(|| result.is_none_or(|r| r.decisions == 0))
+    match (outcome, result) {
+        (JobOutcome::Finished, Some(r)) => Some(r.decisions == 0),
+        _ => None,
+    }
 }
 
 /// 042-R20 (AMB-042-20): the run loop's stall check (pure; the caller passes the clock). In the
@@ -2020,7 +2027,7 @@ mod tests {
         // What counts toward the streak: finished games only.
         let r = |d: u64| GameResult { agent: 0, game_id: 1, outcome: None, reward_sum: [0.0; 4], scout_sum: 0.0, survive_sum: 0.0, scout: None, decisions: d, enemy_race: None };
         assert_eq!(bad_learning_session(JobOutcome::Finished, Some(&r(0))), Some(true));
-        assert_eq!(bad_learning_session(JobOutcome::Finished, None), Some(true), "no report of the learning session");
+        assert_eq!(bad_learning_session(JobOutcome::Finished, None), None, "no report of the learning session: not counted");
         assert_eq!(bad_learning_session(JobOutcome::Finished, Some(&r(3))), Some(false));
         for o in [JobOutcome::Aborted, JobOutcome::Timeout, JobOutcome::Stopped, JobOutcome::Rejected] {
             assert_eq!(bad_learning_session(o, Some(&r(0))), None, "{o:?}");

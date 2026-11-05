@@ -5,6 +5,7 @@ import contextlib
 import os
 import sys
 import threading
+import time
 
 import torch
 
@@ -208,31 +209,52 @@ DEVICE_LOCK = DeviceLock()
 # so the 060-R6 watchdog restarts the run from LATEST.
 EXIT_DEVICE_FATAL = 70
 DEVICE_FATAL_TEXT = ("illegal memory access", "Sticky error", "CUDA error", "HIP error")
+# Not fatal whatever else the message says (the context stays usable): out of memory (CUDA / HIP
+# "out of memory", cudaErrorMemoryAllocation = 2) and CUDA graph capture errors (a capture that
+# failed or was invalidated, cudaErrorStreamCapture* = 900-908).
+DEVICE_NONFATAL_TEXT = ("out of memory", "operation not permitted when stream is capturing", "capture invalidated")
+DEVICE_NONFATAL_CODES = frozenset([2, *range(900, 909)])
+
+
+def _chain(e: BaseException | None):
+    """`e` and the exceptions it was raised from (cause, else context), each once."""
+    seen: set[int] = set()
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        yield e
+        e = e.__cause__ or e.__context__
 
 
 def is_device_fatal(e: BaseException | None) -> bool:
     """`e` (or an exception it was raised from) is a fatal device error (042-R20):
     `torch.AcceleratorError`, or a message naming one (`DEVICE_FATAL_TEXT`, e.g. a Rust error
-    carrying a Python traceback). Out of memory is not fatal (the context stays usable)."""
+    carrying a Python traceback). Never fatal: out of memory (`torch.OutOfMemoryError`, a message
+    with "out of memory", error code 2) and CUDA graph capture errors (their messages, error codes
+    900-908) anywhere in the chain."""
     acc = getattr(torch, "AcceleratorError", None)
     oom = getattr(torch, "OutOfMemoryError", None)
-    seen: set[int] = set()
-    while e is not None and id(e) not in seen:
-        seen.add(id(e))
-        if oom is not None and isinstance(e, oom):
+    chain = list(_chain(e))
+    for x in chain:
+        if oom is not None and isinstance(x, oom):
             return False
-        if acc is not None and isinstance(e, acc):
+        if getattr(x, "error_code", None) in DEVICE_NONFATAL_CODES:
+            return False
+        msg = str(x)
+        if any(t in msg for t in DEVICE_NONFATAL_TEXT):
+            return False
+    for x in chain:
+        if acc is not None and isinstance(x, acc):
             return True
-        msg = str(e)
-        if any(t in msg for t in DEVICE_FATAL_TEXT):
+        if any(t in str(x) for t in DEVICE_FATAL_TEXT):
             return True
-        e = e.__cause__ or e.__context__
     return False
 
 
 def exit_if_device_fatal(e: BaseException, where: str) -> None:
     """042-R20: on a fatal device error, one line on stderr and `os._exit(70)` (no cleanup, no
-    checkpoint save, any thread); otherwise returns and the caller handles `e` as before."""
+    checkpoint save, any thread); otherwise returns and the caller handles `e` as before. The
+    streams are flushed and the exit waits 0.2 s, so a tee or the watchdog's pipe still gets the
+    line."""
     if not is_device_fatal(e):
         return
     lines = str(e).strip().splitlines()
@@ -241,6 +263,12 @@ def exit_if_device_fatal(e: BaseException, where: str) -> None:
         print(f"[device] {where}: fatal device error ({type(e).__name__}: {first}); exiting {EXIT_DEVICE_FATAL} without saving, the watchdog restarts from LATEST (042-R20, 060-R6)", file=sys.stderr, flush=True)
     except Exception:  # noqa: BLE001 - a closed stderr must not keep the process alive
         pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:  # noqa: BLE001
+            pass
+    time.sleep(0.2)
     os._exit(EXIT_DEVICE_FATAL)
 
 
