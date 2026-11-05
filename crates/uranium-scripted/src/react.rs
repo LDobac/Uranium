@@ -191,6 +191,10 @@ pub(crate) struct ReactState {
     pub natural: Option<Tile>,
     /// Start tile of the enemy main once found.
     pub enemy_main: Option<Tile>,
+    /// The main bunker site planned at the first observation with a command center and kept
+    /// free of the Brain's other buildings (the barracks / depot spiral would otherwise fill the
+    /// 4–6 tile ring of a corner main, OpenBW smoke game on Circuit Breaker).
+    pub main_site: Option<Tile>,
     /// Last frame with enemy army within `army_radius` of a command center (contact), and with
     /// a pull target (enemy ground army, not burrowed) within `release_radius`.
     pub last_contact: u32,
@@ -226,6 +230,7 @@ impl ReactState {
             chokes: hints.chokes.clone(),
             natural,
             enemy_main: None,
+            main_site: None,
             last_contact: 0,
             last_near: 0,
             pulled: Vec::new(),
@@ -384,6 +389,12 @@ impl Brain {
         r.stats.branch = r.branch;
     }
 
+    /// Footprints the Brain's generic placement leaves free: the planned main bunker site and the
+    /// natural command center.
+    pub(crate) fn react_reserved_sites(&self) -> Vec<(Tile, u16)> {
+        self.react.as_ref().map(|r| r.main_site.map(|t| (t, BUNKER)).into_iter().chain(r.natural.map(|n| (n, CC))).collect()).unwrap_or_default()
+    }
+
     pub(crate) fn react_branch(&self) -> Option<Branch> {
         self.react.as_ref().map(|r| r.branch)
     }
@@ -507,6 +518,11 @@ impl Brain {
         let rax_done = mine.iter().any(|u| u.unit_type == BARRACKS && done(u));
         let bunker_near = |c: Pos| mine.iter().any(|u| u.unit_type == BUNKER && within(u.pos, c, 10)) || self.pending.iter().any(|q| q.ty == BUNKER && within(bunker_center(q.tile), c, 10));
         let reserved = |s: &Self| -> Vec<(Tile, u16)> { s.pending.iter().map(|q| (q.tile, q.ty)).chain(natural.map(|n| (n, CC))).collect() };
+        if self.react.as_ref().is_some_and(|r| r.main_site.is_none()) {
+            let (to, res) = (self.bunker_facing(base, None), reserved(self));
+            let site = self.bunker_site(f, base, to, &res);
+            self.react.as_mut().expect("checked above").main_site = site;
+        }
         match branch {
             Branch::Defence => {
                 if bunker_near(base) {
@@ -1137,6 +1153,36 @@ mod tests {
         let hints = MapHints { base_locs: vec![OURS, THEIRS, NATURAL], chokes: vec![(13, 12)] };
         let b = Brain::with_hints(&info(), Kit::for_build(Race::Terran, T0Build::TerranReact), &hints);
         assert_eq!(b.bunker_facing(home(), None), depot_center(NATURAL));
+    }
+
+    /// 021-R8: the main bunker site is planned at the first observation and kept free: depots
+    /// and barracks placed afterwards never cover it (OpenBW smoke game: a corner main had no free
+    /// site left within 9 tiles when the rush came).
+    #[test]
+    fn main_bunker_site_is_kept_free_021_r8() {
+        let mut b = teacher();
+        let units = base(12);
+        b.act(&frame(100, units.clone(), 0, 24));
+        let site = b.react.as_ref().unwrap().main_site.expect("planned");
+        let f = frame(200, units.clone(), 2_000, 24);
+        let mine: Vec<&UnitState> = f.units.iter().filter(|u| u.owner == 0).collect();
+        let mut cmds = Vec::new();
+        for ty in [DEPOT, BARRACKS, DEPOT, BARRACKS, DEPOT, BARRACKS, DEPOT, DEPOT] {
+            assert!(b.order_build(ty, &f, &mine, home(), &[], &mut cmds));
+        }
+        let (bx, by) = (site.0 as i32, site.1 as i32);
+        for p in &b.pending {
+            let (w, h) = tile_size(p.ty);
+            let (x, y) = (p.tile.0 as i32, p.tile.1 as i32);
+            assert!(x + w as i32 <= bx || bx + 3 <= x || y + h as i32 <= by || by + 2 <= y, "{:?} at {:?} covers the bunker site {site:?}", p.ty, p.tile);
+            assert!(p.tile != NATURAL);
+        }
+        // In D the bunker goes to the kept site.
+        let mut u = units;
+        u.push(enemy(90, ZERGLING, depot_center((60, 60))));
+        u.push(enemy(91, ZERGLING, depot_center((60, 60))));
+        let act = b.act(&frame(3_000, u, 100, 24));
+        assert_eq!(builds(&act, BUNKER), vec![site], "{:?}", act.cmds);
     }
 
     /// 021-R8 (review): when every 4–6 tile site is taken the fallback stays within 9 tiles of

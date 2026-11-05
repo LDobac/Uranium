@@ -751,7 +751,8 @@ impl Bot for Brain {
 impl Brain {
     /// Picks a site and the nearest free worker; records the pending build.
     fn order_build(&mut self, ty: u16, f: &RawFrame, mine: &[&UnitState], base: Pos, busy: &[UnitId], cmds: &mut Vec<Command>) -> bool {
-        let reserved: Vec<(Tile, u16)> = self.pending.iter().map(|p| (p.tile, p.ty)).collect();
+        // 021-R8: the teacher keeps its planned main bunker site and the natural free.
+        let reserved: Vec<(Tile, u16)> = self.pending.iter().map(|p| (p.tile, p.ty)).chain(self.react_reserved_sites()).collect();
         let Some(tile) = self.place(ty, f, mine, base, &reserved) else { return false };
         let center = (tile.0 * 32 + 16, tile.1 * 32 + 16);
         // Scenario bots skip SCVs still constructing (BWAPI Unit_Busy); the standard M3
