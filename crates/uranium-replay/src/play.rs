@@ -92,6 +92,24 @@ impl PlayResult {
         }
     }
 
+    /// 040-R21 time limit (`uranium-replay build --time-limit n`): a replay of at least n frames
+    /// (the generating plan's `max_frames`; every bridge leaves there, 011 shim, and the leave
+    /// commands land a frame or so before the replay's last frame) ended by the time limit, not by
+    /// a player, since a leave in a 1v1 ends the game. Its first leave is then no leave (no 040-R8
+    /// ③ leaver-ahead signal, no result rule (b)) and the bridge winner is dropped too (in replay
+    /// mode it is the player that did not leave first): the result is undecided. `None` keeps all.
+    pub fn drop_time_limit_leave(&mut self, limit: Option<u32>) {
+        if let Some(n) = limit {
+            if self.header_frames >= n {
+                self.winner = None;
+                self.first_leaver = None;
+                self.first_leaver_slot = None;
+                self.pre_leave_self_supply = None;
+                self.pre_leave_enemy_supply = None;
+            }
+        }
+    }
+
     /// 040-R8 desync reasons (empty = keep). `recorded_winner` is the recorded winner of an SC:R
     /// replay (BWAPI id, 043-R8) when there is one; ④ compares it with `decided_winner`.
     pub fn desync_reasons(&self, recorded_winner: Option<u8>) -> Vec<String> {
@@ -445,6 +463,26 @@ mod tests {
         assert_eq!(PlayResult { first_leaver_slot: Some(1), ..two.clone() }.decided_winner(), Some((0, result_source::LEAVE)));
         // A leaver that is not one of the two players decides nothing.
         assert_eq!(PlayResult { first_leaver_slot: Some(3), ..two.clone() }.decided_winner(), None);
+        // 040-R21 time limit: a leave at or after the limit is no leave (no ③, no rule (b)).
+        let timed = PlayResult { header_frames: 14_400, end_frame: Some(14_400), first_leaver: Some(0), first_leaver_slot: Some(0), pre_leave_self_supply: Some(138), pre_leave_enemy_supply: Some(20), ..two.clone() };
+        assert_eq!(timed.desync_reasons(None).len(), 1);
+        let mut t = timed.clone();
+        t.drop_time_limit_leave(None);
+        assert_eq!((t.desync_reasons(None).len(), t.decided_winner()), (1, Some((1, result_source::LEAVE))));
+        t.drop_time_limit_leave(Some(14_401));
+        assert_eq!(t.decided_winner(), Some((1, result_source::LEAVE)));
+        t.drop_time_limit_leave(Some(14_400));
+        assert!(t.desync_reasons(None).is_empty());
+        assert_eq!(t.decided_winner(), None);
+        // The replay-mode bridge winner of a time-limit game is the player that left second.
+        let mut won = PlayResult { winner: Some(1), ..timed.clone() };
+        assert_eq!(won.decided_winner(), Some((1, result_source::BRIDGE)));
+        won.drop_time_limit_leave(Some(14_400));
+        assert_eq!(won.decided_winner(), None);
+        // A shorter game (a leave before the limit) keeps its leave and winner.
+        let mut short = PlayResult { header_frames: 9_923, end_frame: Some(9_923), winner: Some(1), ..timed };
+        short.drop_time_limit_leave(Some(14_400));
+        assert_eq!(short.decided_winner(), Some((1, result_source::BRIDGE)));
         // ④: the recorded winner must match the leave-decided winner too.
         assert!(left.desync_reasons(Some(1)).is_empty());
         assert_eq!(left.desync_reasons(Some(0)).len(), 1);

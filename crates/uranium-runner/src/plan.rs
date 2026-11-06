@@ -550,6 +550,37 @@ p1={kind='oss',name='iron',race='terran'}";
         assert_eq!((&m.p0, &m.p1, m.games, m.map), (&teacher, &Side::T0 { race: RaceSel::Zerg, build: T0Build::Standard, name: None }, 10, MapSel::Both));
     }
 
+    /// 040-R14 / 050-R8 (AMB-021-4, user delegation 2026-11-06): the teacher botgen plans — 4 rush
+    /// opponents x 2 maps x 200 and 5 macro opponents x 2 maps x 40, the teacher players[0], 10
+    /// min, replays kept, no model; hash seeds that repeat neither each other nor a check plan's.
+    #[test]
+    fn teacher_botgen_plans_040_r14() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/plans");
+        let teacher = Side::T0 { race: RaceSel::Terran, build: T0Build::TerranReact, name: None };
+        let oss = |n: &str| Side::Oss { name: n.into(), race: RaceSel::Zerg };
+        let t0 = |build| Side::T0 { race: RaceSel::Zerg, build, name: None };
+        let rush = load_plan(&dir.join("teacher_botgen_rush.toml")).unwrap();
+        let macro_ = load_plan(&dir.join("teacher_botgen_macro.toml")).unwrap();
+        let blocks = |p: &Plan| p.matchups.iter().map(|m| (m.p1.clone(), m.map, m.games)).collect::<Vec<_>>();
+        let both = |opps: Vec<Side>, n: u32| opps.into_iter().flat_map(|o| [(o.clone(), MapSel::FightingSpirit, n), (o, MapSel::CircuitBreaker, n)]).collect::<Vec<_>>();
+        assert_eq!(blocks(&rush), both(vec![t0(T0Build::ZergRush), oss("ualbertabot12poollings"), oss("ualbertabot9pool10lings"), oss("ualbertabot9poolhydra")], 200));
+        assert_eq!(
+            blocks(&macro_),
+            both(vec![oss("ualbertabot2hatchhydra"), oss("ualbertabot3hatchmuta"), oss("steamhammer2hatchmuta"), t0(T0Build::ZergMuta), t0(T0Build::Standard)], 40)
+        );
+        let mut seen = std::collections::HashSet::new();
+        for p in ["teacher_check.toml", "teacher_macro_check.toml", "teacher_t0zerg_check.toml"] {
+            let c = load_plan(&dir.join(p)).unwrap();
+            seen.extend(expand(&c, "c").iter().map(|j| j.spec.seed.unwrap()));
+        }
+        for (p, n) in [(&rush, 1_600), (&macro_, 400)] {
+            assert!(p.save_replay && p.max_frames == 14_400 && p.matchups.iter().all(|m| m.p0 == teacher && m.p1_random_ratio == 0.0));
+            let jobs = expand(p, "b");
+            assert_eq!(jobs.len(), n);
+            assert!(jobs.iter().all(|j| seen.insert(j.spec.seed.unwrap())), "a botgen seed repeats");
+        }
+    }
+
     #[test]
     fn unknown_fields_are_rejected() {
         assert!(toml::from_str::<Plan>("name='x'\nbogus=1\n[[matchup]]\nmap='both'\ngames=1\np0={kind='t0',race='terran'}\np1={kind='t0',race='zerg'}").is_err());

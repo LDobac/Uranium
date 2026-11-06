@@ -225,6 +225,9 @@ pub struct Record {
     /// 040-R21: the build's `--until-frame` (absent = the whole game).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub until_frame: Option<u32>,
+    /// 040-R21: the build's `--time-limit` (absent = none).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_limit: Option<u32>,
     #[serde(flatten)]
     pub outcome: Outcome,
 }
@@ -265,13 +268,15 @@ pub struct ViewGame {
 }
 
 /// Processes one view of one replay into a shard game.
-fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, recorded_winner: Option<u8>, until_frame: Option<u32>) -> Result<std::result::Result<ViewGame, Outcome>> {
+fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, recorded_winner: Option<u8>, until_frame: Option<u32>, time_limit: Option<u32>) -> Result<std::result::Result<ViewGame, Outcome>> {
     let me = slot_of(rep, view.perspective)?;
     // Replay A: own unit types at each command frame + desync signals.
     let mut units_at: HashMap<u32, HashMap<u32, crate::label::Own>> = HashMap::new();
     let a = play_with(rep, view.perspective, cfg, &[], &mut |f, _| {
         units_at.insert(f.frame, f.units.iter().filter(|u| u.owner == me).map(|u| (u.id, crate::label::Own::from_state(u))).collect());
     })?;
+    let mut a = a;
+    a.drop_time_limit_leave(time_limit);
     let reasons = a.desync_reasons(recorded_winner);
     if !reasons.is_empty() {
         return Ok(Err(Outcome::Desync { reasons }));
@@ -310,6 +315,8 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
     if let Some(&f) = frames.first().filter(|_| steps.is_empty()) {
         return Ok(Err(Outcome::Error { reason: format!("no observation at the first step frame {f} (040-R18)") }));
     }
+    let mut res = res;
+    res.drop_time_limit_leave(time_limit);
     let (result, result_source) = judge(&res, recorded_winner, me);
     let Some(game_info) = res.game_info else {
         return Ok(Err(Outcome::Error { reason: "bridge sent no GameInfo (AMB-040-6)".into() }));
@@ -386,6 +393,9 @@ pub struct BuildOptions {
     /// 040-R21: steps after this frame are not stored (`--until-frame`; the 021-R8 teacher data
     /// cut at 8:00 = 11,520). `None` = the whole game.
     pub until_frame: Option<u32>,
+    /// 040-R21: in a replay of at least this many frames the first leave is the generating plan's
+    /// time limit (`--time-limit`, the teacher botgen plans' `max_frames` 14,400), not a player.
+    pub time_limit: Option<u32>,
 }
 
 /// Resume state from earlier records, per perspective (040-R17 / 040-R19 review): a written
@@ -530,6 +540,7 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
             view,
             labeler_version: crate::label::LABELER_VERSION,
             until_frame: opt.until_frame,
+            time_limit: opt.time_limit,
             outcome,
         };
         (r, None)
@@ -590,7 +601,7 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
             out.push(rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Filtered { reason: "storage budget reached (040-R12)".into() }));
             continue;
         }
-        let outcome = match build_view(&rep, &view, cfg, labeler, recorded_winner, opt.until_frame) {
+        let outcome = match build_view(&rep, &view, cfg, labeler, recorded_winner, opt.until_frame, opt.time_limit) {
             Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info })) => {
                 let n = steps.len();
                 // 031 / AMB-031-3: map precompute once per map (observation channels only).
@@ -680,7 +691,7 @@ mod tests {
 
     fn written_record(n: u32) -> Record {
         let coverage = Coverage::default();
-        Record { index: n as usize, replay_sha256: format!("{n:064x}"), src: "t".into(), map_family: "other".into(), map_name: String::new(), map_hash: String::new(), recorded_winner: None, view: None, labeler_version: crate::label::LABELER_VERSION, until_frame: None, outcome: Outcome::Written { steps: 3, coverage, result: 0, result_source: "none".into() } }
+        Record { index: n as usize, replay_sha256: format!("{n:064x}"), src: "t".into(), map_family: "other".into(), map_name: String::new(), map_hash: String::new(), recorded_winner: None, view: None, labeler_version: crate::label::LABELER_VERSION, until_frame: None, time_limit: None, outcome: Outcome::Written { steps: 3, coverage, result: 0, result_source: "none".into() } }
     }
 
     /// 040-R17 (review M1): a shard whose copy fails verification stops the build. Its records
@@ -806,7 +817,7 @@ mod tests {
         let excludes = MapExcludes::load(&families).unwrap();
         let labeler = Labeler::new().unwrap();
         let cfg = PlayConfig { launcher: dir.join("none"), bridge_lib: dir.join("none"), data_dir: dir.join("none"), work_dir: dir.join("w") };
-        let opt = BuildOptions { src: "t".into(), shards_dir: dir.join("s"), staging_dir: dir.join("l"), recorded_winners: HashMap::new(), jobs: 1, shard_target_bytes: 1, budget_bytes: 1 << 30, first_shard_index: 0, skip_sha256: Default::default(), done: ResumeDone::default(), duplicates: part1, until_frame: None };
+        let opt = BuildOptions { src: "t".into(), shards_dir: dir.join("s"), staging_dir: dir.join("l"), recorded_winners: HashMap::new(), jobs: 1, shard_target_bytes: 1, budget_bytes: 1 << 30, first_shard_index: 0, skip_sha256: Default::default(), done: ResumeDone::default(), duplicates: part1, until_frame: None, time_limit: None };
         let out = process(1, &files[3], &opt, &cfg, &families, &excludes, &labeler, &Mutex::new(0));
         assert_eq!(out.len(), 1);
         let (r, game) = &out[0];
