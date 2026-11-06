@@ -6,7 +6,9 @@ the whole batch, so the summed group gradients equal one pass over all lanes. Th
 (schedule, data, checkpoints, locks) is Rust (`uranium._core.run_bc`)."""
 
 import json
+import math
 import os
+import sys
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -22,6 +24,8 @@ from uranium.model.config import VariantConfig
 from uranium.model.net import stage, to_device, trim_entity_pad
 
 HEADS = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
+# The loss parts of one update, in `group_loss` order.
+PARTS = ("total", *HEADS, "value", "win_open")
 VALUE_WIN = 0
 # Burn AdamW defaults kept (032-AC10 parity): betas (0.9, 0.999), eps 1e-5, decoupled decay.
 ADAM_BETAS = (0.9, 0.999)
@@ -61,6 +65,8 @@ class BcTrainer:
         self.opt = torch.optim.AdamW(self.params, lr=cfg["lr"], betas=ADAM_BETAS, eps=ADAM_EPS, weight_decay=cfg["weight_decay"], **adam_impl())
         # Core state per lane group (a group always holds the same lanes).
         self.states: list = []
+        # 041-R3 (2026-11-06): updates skipped for a non-finite loss part since this process started.
+        self.skipped = 0
         # URANIUM_BC_PROFILE=1: per-update phase times (device synchronised at each mark, so it
         # slows the update a little) in the step log, to measure the Rust bridge's share.
         self.phases = os.environ.get("URANIUM_BC_PROFILE", "") not in ("", "0")
@@ -129,18 +135,45 @@ class BcTrainer:
             if i + 1 < groups:
                 nxt = self._collate.submit(collate, i + 1)
             parts += self.group_loss(hg, i, valid, value_valid, step)
-        # 041-R3: one global L2 clip over the summed gradients; 041-R19: win_open apart.
-        clip_global_norm(self.params, cfg["grad_clip"], self.apart)
-        for pg in self.opt.param_groups:
-            pg["lr"] = lr
-        self.opt.step()
-        self.tick("optimizer")
+        # Read back before the step (one host sync): a non-finite loss part skips it (041-R3).
         v = parts.tolist()
-        out = {"total": v[0], **{k: v[1 + j] for j, k in enumerate(HEADS)}, "value": v[-2], "win_open": v[-1], "valid": valid}
+        skip = not all(math.isfinite(x) for x in v)
+        if skip:
+            self.skip_update(step, v)
+        else:
+            # 041-R3: one global L2 clip over the summed gradients; 041-R19: win_open apart.
+            clip_global_norm(self.params, cfg["grad_clip"], self.apart)
+            for pg in self.opt.param_groups:
+                pg["lr"] = lr
+            self.opt.step()
+        self.tick("optimizer")
+        # Non-finite parts are null: the Rust loop parses this with serde_json, which rejects NaN.
+        out = {k: x if math.isfinite(x) else None for k, x in zip(PARTS, v)} | {"valid": valid}
+        if skip:
+            out["skipped"] = True
+        if self.skipped:
+            out["skipped_steps"] = self.skipped
         if self.phases:
             self._ph["python_total"] = time.perf_counter() - started
             out["phases"] = {k: round(x, 4) for k, x in self._ph.items()}
         return json.dumps(out)
+
+    def skip_update(self, step: int, v: list) -> None:
+        """041-R3 (2026-11-06): a batch with a non-finite loss part leaves the weights and the
+        optimizer state as they were (no AdamW step, so no moment or weight decay either); the
+        schedule and the data position still move on (the Rust loop counts the update). A lane
+        group whose stored core state is non-finite restarts from the initial state, as at a new
+        game, so the NaN does not carry on through the rest of its games."""
+        self.skipped += 1
+        self.opt.zero_grad(set_to_none=True)
+        reset = 0
+        for i, s in enumerate(self.states):
+            leaves = [x for x in torch.utils._pytree.tree_leaves(s) if isinstance(x, torch.Tensor)]
+            if not all(bool(torch.isfinite(x).all()) for x in leaves):
+                self.states[i] = None
+                reset += 1
+        bad = [k for k, x in zip(PARTS, v) if not math.isfinite(x)]
+        print(f"[bc] update {step + 1}: non-finite loss {bad}: optimizer step skipped ({self.skipped} so far), {reset} lane group core state(s) reset (041-R3)", file=sys.stderr, flush=True)
 
     def tick(self, phase: str) -> None:
         """Adds the time since the last mark to `phase` (URANIUM_BC_PROFILE only)."""

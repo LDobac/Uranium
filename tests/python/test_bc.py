@@ -230,6 +230,85 @@ def test_run_bc_refuses_another_run_ident(tiny_config, shards, tmp_path):
         _core.run_bc(make, str(other), out=str(tmp_path / "o2"), shards=[str(shards)], steps=2, resume=str(out / "last"), synthetic_maps=True)
 
 
+def _strict_json(s: str) -> dict:
+    """JSON as the Rust loop's serde_json reads it: NaN / Infinity are refused."""
+
+    def refuse(c):
+        raise ValueError(f"non-JSON constant {c}")
+
+    return json.loads(s, parse_constant=refuse)
+
+
+def _poison(t: BcTrainer, at_step: int) -> None:
+    """Update `at_step` of `t` goes non-finite as an overflowing forward would: NaN total and
+    value loss, NaN gradients and NaN core state (the other parts stay finite)."""
+    orig = t.group_loss
+    nan = float("nan")
+
+    def group_loss(hg, group, valid, value_valid, step):
+        parts = orig(hg, group, valid, value_valid, step)
+        if step != at_step:
+            return parts
+        for p in t.params:
+            if p.grad is not None:
+                p.grad.fill_(nan)
+        t.states[group] = torch.utils._pytree.tree_map(lambda x: torch.full_like(x, nan) if isinstance(x, torch.Tensor) else x, t.states[group])
+        return parts.clone().index_fill_(0, torch.tensor([0, 7]), nan)  # total, value
+
+    t.group_loss = group_loss
+
+
+def _opt_tensors(opt) -> list:
+    return [(k, x.clone()) for st in opt.state.values() for k, x in sorted(st.items())]
+
+
+def test_non_finite_loss_skips_the_update_041_r3(tiny_config, shards):
+    """041-R3 (2026-11-06): a non-finite loss part skips the optimizer step (weights and optimizer
+    state untouched), the JSON has null for it and counts the skip, NaN core states restart, and
+    the finite updates before and after are those of a run without the bad batch."""
+    cfg = bc_cfg(tiny_config)
+    f = feeder(tiny_config, shards)
+    b0, b1, b2 = f.next(), f.next(), f.next()
+    t, ref = BcTrainer(cfg, tiny_net(), CPU, "f32"), BcTrainer(cfg, tiny_net(), CPU, "f32")
+    _poison(t, 1)
+
+    first = t.train_batch(b0, 3e-3, 0)
+    assert first == ref.train_batch(b0, 3e-3, 0)
+    assert not {"skipped", "skipped_steps"} & _strict_json(first).keys()
+
+    before, opt_before = params_of(t.net), _opt_tensors(t.opt)
+    out = _strict_json(t.train_batch(b1, 3e-3, 1))
+    assert out["total"] is None and out["value"] is None
+    assert all(isinstance(out[k], float) for k in ("action", "delay", "selected", "win_open"))
+    assert out["skipped"] is True and out["skipped_steps"] == 1 and t.skipped == 1
+    after = params_of(t.net)
+    assert all(torch.equal(before[k], after[k]) for k in before)
+    opt_after = _opt_tensors(t.opt)
+    assert len(opt_after) == len(opt_before) and all(k == j and torch.equal(x, y) for (k, x), (j, y) in zip(opt_before, opt_after))
+    assert t.states and all(s is None for s in t.states)
+
+    # The next finite batch: the same update as a run that never saw the bad batch (its lanes
+    # restarted the same way).
+    ref.states = [None] * len(ref.states)
+    later = _strict_json(t.train_batch(b2, 3e-3, 2))
+    assert later == _strict_json(ref.train_batch(b2, 3e-3, 2)) | {"skipped_steps": 1}
+    pt, pr = params_of(t.net), params_of(ref.net)
+    assert all(torch.equal(pt[k], pr[k]) for k in pt)
+
+
+def test_run_bc_continues_past_a_non_finite_loss_041_r3(tiny_config, shards, tmp_path):
+    """The Rust loop reads the null loss parts of a skipped update and runs on to the end."""
+
+    def make(*a):
+        t = _tiny_make("Lstm", *a)
+        _poison(t, 1)
+        return t
+
+    out = tmp_path / "out"
+    assert _core.run_bc(make, str(tiny_config), out=str(out), shards=[str(shards)], steps=3, synthetic_maps=True) == "done"
+    assert json.loads((out / "last" / "train_state.json").read_text())["step"] == 3
+
+
 def test_entity_recompute_keeps_the_update_041_r17(tiny_config, shards):
     """041-R17: the entity encoder in recomputed row chunks gives the same update (dropout 0 in
     the tiny net, so the replayed draws do not matter)."""
