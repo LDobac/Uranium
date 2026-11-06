@@ -1,10 +1,13 @@
 # 041-R21 production mix (사용자 위임 2026-11-07, 9th advisory reports/m6_rl_stall_advice9.md section 2
 # item 1): epoch 5 of 7 of bc-mix (bc-mix-e1 ... e7), chained with `--init` (e1 from
 # bc-s2e2-pt/ckpt-11387, eN from bc-mix-e(N-1)), `--s2`. Data: the four human sources' target-map
-# train games (S2) subsampled to 0.036 per game plus every teacher game (botgen), teacher about
+# train games (S2) subsampled to 0.043 per game plus every teacher game (botgen), teacher about
 # half of the steps. The configs of the chain differ only in data.seed (3 ... 9, so each epoch keeps
 # other human games and a new order) and the [steps] counted for it. Peak / floor learning rate
 # 3e-4 / 3e-6 x s2_lr_scale 0.1 = 3e-5 / 3e-7, warmup 5%, cosine to the end of the epoch.
+# From epoch 2 the teacher source also has teacher-20261107-macro2 (400 teacher-vs-macro games added
+# 2026-11-07, main interim decision), so the human fraction is 0.043 instead of epoch 1's 0.036 to keep
+# the teacher about half of the steps.
 # 041 behaviour cloning hyper-parameters (041-R3, R10: tuning targets, recorded in checkpoints).
 
 # Parallel games per batch (B) and truncated-BPTT length (T, 041-R2 / 032-R5).
@@ -44,13 +47,13 @@ target_loc = 1.0
 [steps]
 # Only the S2 stage runs with this file. One epoch, counted by `uranium-train bc-epoch --config
 # config/bc_mix_e5.toml` with --dataset replays/shards/{stardata,community,scr_ladder,personal,botgen}
-# (lanes 32, seq_len 64, data.seed 7; 2026-11-07: 1,762 games, 1,630,164 steps, of which the teacher
-# 1,420 games, 818,041 steps = 50.2%). s1 / ablation_a are unused (0 = total_steps).
+# (lanes 32, seq_len 64, data.seed 7; 2026-11-07 with teacher-20261107-macro2: 2,161 games, 2,038,561 steps, of which
+# the teacher 1,740 games, 1,013,935 steps = 49.7%). s1 / ablation_a are unused (0 = total_steps).
 s1 = 0
-s2 = 817
+s2 = 1022
 ablation_a = 0
-# 041-R14: 5% of the epoch, rounded half up (817 x 0.05 = 40.85 -> 41).
-s2_warmup = 41
+# 041-R14: 5% of the epoch, rounded half up (1022 x 0.05 = 51.10 -> 51).
+s2_warmup = 51
 
 [value]
 # win head MSE weight (041-R7)
@@ -74,10 +77,10 @@ checkpoint_every = 5000
 # Also checkpoint at least this often in wall time (061-R10; ~2 updates/min on CUDA).
 checkpoint_minutes = 60
 
-# 041-R21 (9th advisory): keep 0.036 of the human target-map train games (per game, hash of replay
+# 041-R21 (9th advisory): keep 0.043 of the human target-map train games (per game, hash of replay
 # sha256 + data.seed; both TvT perspectives together), every game of the teacher source `botgen`.
 [data.subsample]
-fraction = 0.036
+fraction = 0.043
 keep_sources = ["botgen"]
 
 # 032 section 2.7 / 032-R20 (4) (user decision 2026-10-27): the main BC model turns on all four
