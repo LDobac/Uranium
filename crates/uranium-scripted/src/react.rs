@@ -54,7 +54,9 @@ pub struct ReactParams {
     pub second_depot_supply: u32,
     /// R ①a an unfinished spawning pool whose estimated start (`pool_start_frame`) is at most
     /// this frame (1:35, rule advisory §3 lowered value, 7th advisory E); ①b a finished pool seen
-    /// before `pool_done_before` (2:30).
+    /// before `pool_done_before` (2:25 = `pool_start_max` + the pool's 1,200 build frames, the
+    /// same evidence as ①a; 메인 임시 결정 2026-11-06 after T0 zerg_muta's pool seen finished at
+    /// 2:29–2:30 fired the earlier 2:30).
     pub pool_start_max: u32,
     pub pool_done_before: u32,
     /// R ② at least `lings_min` zerglings in one observation before `lings_before` (2:50), or at
@@ -152,7 +154,7 @@ impl Default for ReactParams {
             barracks_supply: 11,
             second_depot_supply: 15,
             pool_start_max: 95 * FPS,
-            pool_done_before: 150 * FPS,
+            pool_done_before: 95 * FPS + 1_200,
             lings_min: 2,
             lings_before: 170 * FPS,
             lings_many: 6,
@@ -216,7 +218,7 @@ pub enum Branch {
 pub enum RushRule {
     /// ①a an unfinished pool started by 1:40 (estimated from its hit points).
     PoolStart,
-    /// ①b a finished pool before 2:30.
+    /// ①b a finished pool before 2:25.
     PoolDone,
     /// ② 2 zerglings before 2:50 or 6 before 3:10, in one observation.
     Lings,
@@ -1344,11 +1346,14 @@ mod tests {
         assert_eq!(at(2_480, vec![building(9, 188)]), vec![RushRule::PoolStart]);
         assert_eq!(at(2_480, vec![building(9, 187)]), vec![]);
         assert_eq!(at(2_600, vec![building(9, 188)]), vec![], "started at 1:40");
-        // ①b a finished pool before 2:30; ①a never on a finished pool.
-        assert_eq!(at(3_599, vec![enemy(9, SPAWNING_POOL, far)]), vec![RushRule::PoolDone]);
-        assert_eq!(at(3_600, vec![enemy(9, SPAWNING_POOL, far)]), vec![]);
+        // ①b a finished pool before 2:25 (3,480 = 2,280 + 1,200 build frames, the same evidence as
+        // ①a); ①a never on a finished pool.
+        assert_eq!(p.pool_done_before, p.pool_start_max + 1_200);
+        assert_eq!(at(3_479, vec![enemy(9, SPAWNING_POOL, far)]), vec![RushRule::PoolDone]);
+        assert_eq!(at(3_480, vec![enemy(9, SPAWNING_POOL, far)]), vec![]);
+        assert_eq!(at(3_576, vec![enemy(9, SPAWNING_POOL, far)]), vec![], "T0 zerg_muta's pool seen at 2:29");
         let finished = UnitState { hp: 750, ..enemy(9, SPAWNING_POOL, far) };
-        assert_eq!(at(3_600, vec![finished.clone()]), vec![]);
+        assert_eq!(at(3_480, vec![finished.clone()]), vec![]);
         assert_eq!(at(3_000, vec![finished]), vec![RushRule::PoolDone]);
         // ② 2 zerglings before 2:50 (4,080), 6 before 3:00 (4,320, 7th advisory E), in one
         // observation.
@@ -1398,7 +1403,8 @@ mod tests {
         };
         assert_eq!(one(3_600, w.clone(), scout_at(3), &known, false), vec![RushRule::OneBase]);
         assert_eq!(one(5_759, w.clone(), scout_at(3), &known, false), vec![RushRule::OneBase]);
-        assert_eq!(one(3_599, w.clone(), scout_at(3), &known, false), vec![RushRule::PoolDone], "before 2:30 (①b instead)");
+        assert_eq!(one(3_599, w.clone(), scout_at(3), &known, false), vec![], "before 2:30");
+        assert_eq!(one(3_479, w.clone(), scout_at(3), &known, false), vec![RushRule::PoolDone], "before 2:25: ①b");
         assert_eq!(one(5_760, w.clone(), scout_at(3), &known, false), vec![], "from 4:00");
         assert_eq!(one(4_000, w.clone(), scout_at(4), &known, false), vec![], "scout 4 tiles away");
         assert_eq!(one(4_000, w.clone(), None, &known, false), vec![], "no scout");
