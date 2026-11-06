@@ -2,12 +2,15 @@
 //! AMB-021-4, 6th advisory `reports/m6_rl_stall_advice6.md` §2).
 //!
 //! The teacher opens 9 depot / 11 barracks / 15 depot, sends one SCV to the start locations once
-//! the barracks is under construction, and identifies a rush only from the units it sees in the
-//! current observation (rush rule R, 021-R8 ①–④). Without R it stays in the macro branch M: it
-//! expands to the natural and plays the `terran()` macro (3 barracks, 10-marine waves, home guard,
-//! one natural bunker after 4:00). R switches it at that very observation to the defence branch D:
-//! a bunker toward the main ramp (the natural's side), marines load / hold beside it, SCVs pull
-//! and repair; D returns to M once it has 8 marines and 60 s without contact.
+//! the first depot is ordered, and identifies a rush only from the units it sees in the current
+//! observation (rush rule R, 021-R8 ①–④″). Without R it stays in the macro branch M: it expands
+//! to the natural and plays the `terran()` macro (3 barracks, 10-marine waves, home guard, one
+//! natural bunker after 4:00). R switches it at that very observation to the defence branch D: a
+//! bunker on the ground path from the main to the natural, marines load / hold beside it (or
+//! attack-move when they outnumber the enemy 2:1), SCVs pull against enemies at the bunker or the
+//! mineral line and repair; D returns to M with 8 marines and 60 s without contact, or with 12
+//! marines. In both branches SCVs answer a worker hitting a builder and resume an abandoned
+//! building (7th advisory `reports/m6_rl_stall_advice7.md` §2).
 //!
 //! Every action is one 010 `Command` the model can also issue (034: Build_Bunker,
 //! Build_CommandCenter, Build_*, Train_*, Load_Unit, Move_Pos, Hold, Attack_Pos, Attack_Unit,
@@ -38,6 +41,8 @@ const CHOKE_MIN: i64 = 8;
 /// Fallback bunker sites stay within this many tiles of the command center (inside the 10 tiles
 /// that count as "has a bunker").
 const BUNKER_SEARCH_MAX: i64 = 9;
+/// BWAPI order `ConstructingBuilding`: an SCV building (its order target is the building).
+const ORDER_CONSTRUCTING: u16 = 33;
 
 /// 021-R8 numbers (6th advisory §2 and rule advisory values, AMB-021-4). Frames are game frames (24 per second),
 /// distances tiles.
@@ -48,11 +53,13 @@ pub struct ReactParams {
     pub barracks_supply: u32,
     pub second_depot_supply: u32,
     /// R ①a an unfinished spawning pool whose estimated start (`pool_start_frame`) is at most
-    /// this frame (1:40); ①b a finished pool seen before `pool_done_before` (2:30).
+    /// this frame (1:35, rule advisory §3 lowered value, 7th advisory E); ①b a finished pool seen
+    /// before `pool_done_before` (2:30).
     pub pool_start_max: u32,
     pub pool_done_before: u32,
     /// R ② at least `lings_min` zerglings in one observation before `lings_before` (2:50), or at
-    /// least `lings_many` before `lings_many_before` (3:10), anywhere.
+    /// least `lings_many` before `lings_many_before` (3:00, lowered like `pool_start_max`),
+    /// anywhere.
     pub lings_min: usize,
     pub lings_before: u32,
     pub lings_many: usize,
@@ -71,33 +78,64 @@ pub struct ReactParams {
     pub main_drones_radius: i64,
     pub drones_max: usize,
     pub main_before: u32,
+    /// R ④″ (7th advisory E): the scout within `main_look` tiles of the enemy start hatchery
+    /// sees a finished spawning pool, that hatchery is the only remembered one and no extractor
+    /// was ever seen, from `one_base_from` (2:30) to before `one_base_before` (4:00).
+    pub one_base_from: u32,
+    pub one_base_before: u32,
     /// R is judged only before this frame (8:00 = the teacher data cut, 040-R21).
     pub judge_until: u32,
     /// M: without the enemy main found the expansion waits until this frame (3:40).
     pub expand_hold_until: u32,
     pub expand_minerals: i32,
-    /// D bunker: centre 4–6 tiles from the command center centre, toward the nearest choke.
+    /// Bunker by direction (natural bunker, no map path): centre 4–6 tiles from the command
+    /// center centre, toward the facing point.
     pub bunker_min: i64,
     pub bunker_max: i64,
+    /// Main bunker (7th advisory A): centre `path_min`–`path_max` tiles (5–7) from the command
+    /// center centre and within `path_near` tiles (2) of a tile of the walkable ground path from
+    /// the main command center to the natural, the first buildable such site along the path; it
+    /// keeps `bunker_resource_pad` tiles (1) from resources.
+    pub path_min: i64,
+    pub path_max: i64,
+    pub path_near: i64,
+    pub bunker_resource_pad: i32,
     /// Marines loaded into each bunker.
     pub load_max: usize,
-    /// D SCV pull: enemy army within `pull_radius` tiles of a command center pulls
-    /// min(`pull_max`, SCVs − `pull_keep`) SCVs; targets are re-picked every `retarget` frames.
-    pub pull_radius: i64,
+    /// D SCV pull (7th advisory B): only while enemy ground army is within `pull_bunker` tiles
+    /// (3) of an own bunker or within `pull_base` tiles (5) of a command center or its mineral
+    /// line centre; min(`pull_max`, SCVs − `pull_keep`) SCVs attack the one nearest the bunker,
+    /// re-picked every `retarget` frames; none there = they gather at once (no chase).
+    pub pull_bunker: i64,
+    pub pull_base: i64,
     pub pull_max: usize,
     pub pull_keep: usize,
     pub retarget: u32,
+    /// Both branches (7th advisory B): an SCV constructing a building that is under attack with
+    /// an enemy worker within `harass_radius` tiles (3) sends `harass_guards` (2) mining SCVs at
+    /// that worker; they mine again once it is more than `harass_release` tiles (6) from the
+    /// builder.
+    pub harass_radius: i64,
+    pub harass_guards: usize,
+    pub harass_release: i64,
     /// D repair: a bunker below this percentage of its hit points gets `repairers` SCVs until full.
     pub repair_below_pct: u32,
     pub repairers: usize,
-    /// D: pulled SCVs gather again after no enemy army within `release_radius` tiles of a
-    /// command center for `release_after` frames (10 s).
-    pub release_radius: i64,
-    pub release_after: u32,
+    /// D marines (7th advisory C): with at least `marine_ratio` × (enemy ground army within
+    /// `marine_radius` tiles of a command center) marines outside bunkers they attack-move on
+    /// enemies within `marine_radius` tiles (the home guard), else they hold beside the bunker.
+    pub marine_ratio: usize,
+    pub marine_radius: i64,
     /// D → M: at least `macro_marines` marines and `macro_quiet` frames (60 s) without contact
-    /// (enemy army within `army_radius` tiles of a command center).
+    /// (enemy army within `army_radius` tiles of a command center), or at least
+    /// `macro_marines_any` (12) marines whatever the contact (7th advisory C). With that many
+    /// marines R no longer switches M → D (메인 임시 결정: no M ↔ D flapping every observation).
     pub macro_marines: usize,
     pub macro_quiet: u32,
+    pub macro_marines_any: usize,
+    /// Both branches (7th advisory D): an own unfinished building without a constructing SCV
+    /// for `resume_after` frames (48) gets the nearest free SCV (right click, 034 Smart_Unit).
+    pub resume_after: u32,
     /// M: the natural bunker once the natural command center is complete and not before this
     /// frame (4:00, the user constraint: no pre-emptive bunker).
     pub natural_bunker_from: u32,
@@ -113,12 +151,12 @@ impl Default for ReactParams {
             first_depot_supply: 9,
             barracks_supply: 11,
             second_depot_supply: 15,
-            pool_start_max: 100 * FPS,
+            pool_start_max: 95 * FPS,
             pool_done_before: 150 * FPS,
             lings_min: 2,
             lings_before: 170 * FPS,
             lings_many: 6,
-            lings_many_before: 190 * FPS,
+            lings_many_before: 180 * FPS,
             army_radius: 20,
             army_min: 2,
             main_radius: 10,
@@ -126,22 +164,34 @@ impl Default for ReactParams {
             main_drones_radius: 12,
             drones_max: 6,
             main_before: 210 * FPS,
+            one_base_from: 150 * FPS,
+            one_base_before: 240 * FPS,
             judge_until: 480 * FPS,
             expand_hold_until: 220 * FPS,
             expand_minerals: 400,
             bunker_min: 4,
             bunker_max: 6,
+            path_min: 5,
+            path_max: 7,
+            path_near: 2,
+            bunker_resource_pad: 1,
             load_max: 4,
-            pull_radius: 12,
-            pull_max: 8,
+            pull_bunker: 3,
+            pull_base: 5,
+            pull_max: 6,
             pull_keep: 4,
             retarget: 48,
+            harass_radius: 3,
+            harass_guards: 2,
+            harass_release: 6,
             repair_below_pct: 90,
             repairers: 2,
-            release_radius: 16,
-            release_after: 10 * FPS,
+            marine_ratio: 2,
+            marine_radius: 12,
             macro_marines: 8,
             macro_quiet: 60 * FPS,
+            macro_marines_any: 12,
+            resume_after: 48,
             natural_bunker_from: 240 * FPS,
             scout_look: 3,
             scout_look_max: 15 * FPS,
@@ -174,6 +224,9 @@ pub enum RushRule {
     Army,
     /// ④′ the scout at the enemy start hatchery sees a pool and at most 6 drones, one hatchery.
     Drones,
+    /// ④″ the scout at the enemy start hatchery sees a finished pool, one hatchery and no
+    /// extractor ever, 2:30–4:00 (7th advisory E).
+    OneBase,
 }
 
 /// What the teacher did in one game (session record `scripted.react`, 050-R8). Frames.
@@ -228,21 +281,41 @@ pub(crate) struct ReactState {
     /// D: the command center the defence is built around (bunker site, hold point, "has a
     /// bunker"), chosen when D starts (rule advisory §3); `None` = the main.
     pub def_base: Option<Pos>,
-    /// Last frame with enemy army within `army_radius` of a command center (contact), and with
-    /// a pull target (enemy ground army, not burrowed) within `release_radius`.
+    /// Main bunker path (7th advisory A): tiles of the walkable ground path from the main command
+    /// center to the natural, from the main outward; planned with the main site (`None` = not
+    /// yet, empty = no path).
+    pub main_path: Option<Vec<Tile>>,
+    /// Last frame with enemy army within `army_radius` of a command center (contact).
     pub last_contact: u32,
-    pub last_near: u32,
     pub pulled: Vec<UnitId>,
-    /// The pulled SCVs were sent back to mining (no target within `release_radius`); they stay
-    /// pulled until the release time and attack again if a target comes back.
-    pub pulled_mining: bool,
     pub repairers: Vec<UnitId>,
     pub holding: BTreeSet<UnitId>,
+    /// D marines attack (home guard) instead of holding, decided per observation (7th advisory C).
+    pub marines_attack: bool,
+    /// An enemy extractor was seen in some observation (R ④″).
+    pub extractor_seen: bool,
+    /// Worker harass answer (both branches): guard SCVs, the enemy worker and the builder's
+    /// last position.
+    pub harass: Option<Harass>,
+    /// Own unfinished buildings without a constructing SCV: first frame seen so; the SCV sent to
+    /// resume each and when (7th advisory D).
+    pub orphan_since: std::collections::BTreeMap<UnitId, u32>,
+    pub resumers: std::collections::BTreeMap<UnitId, (UnitId, u32)>,
     /// Frame of the last marine (load / hold), pull and repair orders (separate 48-frame timers).
     pub last_marines: Option<u32>,
     pub last_pull: Option<u32>,
     pub last_repair: Option<u32>,
     pub stats: ReactStats,
+}
+
+/// Two mining SCVs sent at an enemy worker that hits a builder (7th advisory B).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Harass {
+    pub guards: Vec<UnitId>,
+    pub target: UnitId,
+    pub builder: UnitId,
+    pub at: Pos,
+    pub last_order: u32,
 }
 
 impl ReactState {
@@ -265,12 +338,16 @@ impl ReactState {
             enemy_main: None,
             main_site: None,
             def_base: None,
+            main_path: None,
             last_contact: 0,
-            last_near: 0,
             pulled: Vec::new(),
-            pulled_mining: false,
             repairers: Vec::new(),
             holding: BTreeSet::new(),
+            marines_attack: false,
+            extractor_seen: false,
+            harass: None,
+            orphan_since: Default::default(),
+            resumers: Default::default(),
             last_marines: None,
             last_pull: None,
             last_repair: None,
@@ -334,13 +411,72 @@ pub fn pool_start_frame(frame: u32, hp: u16) -> u32 {
     frame.saturating_sub(u32::from(hp.saturating_sub(75)) * 16 / 9)
 }
 
+/// Tiles of a shortest walkable ground path from tile `from` to tile `to` (`from` first, `to`
+/// last; 8 neighbours, a diagonal step only when both side tiles are walkable), 7th advisory A.
+/// A tile is walkable when all 16 of its 8-pixel walk cells are (the 031 precompute's rule) and
+/// it is not in `solid` (resources); when no such path exists, one walk cell suffices. `from` and
+/// `to` always count as walkable. Empty when there is no path at all.
+pub fn ground_path(walk: &BitGrid, from: Tile, to: Tile, solid: &BTreeSet<Tile>) -> Vec<Tile> {
+    let (w, h) = ((walk.width / 4) as i32, (walk.height / 4) as i32);
+    if w == 0 || h == 0 {
+        return Vec::new();
+    }
+    let idx = |x: i32, y: i32| (y * w + x) as usize;
+    for strict in [true, false] {
+        let ok = |x: i32, y: i32| -> bool {
+            if x < 0 || y < 0 || x >= w || y >= h {
+                return false;
+            }
+            let t = (x as u16, y as u16);
+            if t == from || t == to {
+                return true;
+            }
+            if solid.contains(&t) {
+                return false;
+            }
+            let mut cells = (0..4u16).flat_map(|dy| (0..4u16).map(move |dx| (dx, dy))).map(|(dx, dy)| walk.get(t.0 * 4 + dx, t.1 * 4 + dy));
+            if strict { cells.all(|c| c) } else { cells.any(|c| c) }
+        };
+        let (fx, fy, tx, ty) = (from.0 as i32, from.1 as i32, to.0 as i32, to.1 as i32);
+        if !ok(fx, fy) || !ok(tx, ty) {
+            return Vec::new();
+        }
+        let mut prev = vec![u32::MAX; (w * h) as usize];
+        prev[idx(fx, fy)] = idx(fx, fy) as u32;
+        let mut q = std::collections::VecDeque::from([(fx, fy)]);
+        while let Some((x, y)) = q.pop_front() {
+            if (x, y) == (tx, ty) {
+                let mut out = vec![to];
+                let mut i = idx(x, y);
+                while i != idx(fx, fy) {
+                    i = prev[i] as usize;
+                    out.push(((i as i32 % w) as u16, (i as i32 / w) as u16));
+                }
+                out.reverse();
+                return out;
+            }
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
+                let (nx, ny) = (x + dx, y + dy);
+                if !ok(nx, ny) || prev[idx(nx, ny)] != u32::MAX || (dx != 0 && dy != 0 && !(ok(x + dx, y) && ok(x, y + dy))) {
+                    continue;
+                }
+                prev[idx(nx, ny)] = idx(x, y) as u32;
+                q.push_back((nx, ny));
+            }
+        }
+    }
+    Vec::new()
+}
+
 /// What the 021-R8 rule needs besides the observation: own command centers, the start locations
-/// other than ours, the scout's position and the remembered enemy hatcheries (030 §2).
+/// other than ours, the scout's position, the remembered enemy hatcheries and whether an enemy
+/// extractor was ever seen (030 §2 memory).
 pub struct RuleContext<'a> {
     pub depots: &'a [Pos],
     pub starts: &'a [Tile],
     pub scout: Option<Pos>,
     pub known_hatcheries: &'a [Pos],
+    pub extractor_seen: bool,
 }
 
 /// Every 021-R8 rush rule that holds in this observation (own vision only), in rule order.
@@ -365,13 +501,18 @@ pub fn rush_rules(p: &ReactParams, f: &RawFrame, me: u8, cx: &RuleContext<'_>) -
     if near_army >= p.army_min {
         out.push(RushRule::Army);
     }
-    if f.frame < p.main_before && !pools.is_empty() {
-        let start_hatchery = enemies.iter().filter(|u| is_resource_depot(u.unit_type)).find(|h| cx.starts.iter().any(|s| within(h.pos, depot_center(*s), p.main_radius)));
-        if let (Some(h), Some(scout)) = (start_hatchery, cx.scout) {
+    // ④′ / ④″: the scout next to the enemy start hatchery, that hatchery the only remembered one.
+    let start_hatchery = enemies.iter().filter(|u| is_resource_depot(u.unit_type)).find(|h| cx.starts.iter().any(|s| within(h.pos, depot_center(*s), p.main_radius)));
+    if let (Some(h), Some(scout), false) = (start_hatchery, cx.scout, pools.is_empty()) {
+        let only = cx.known_hatcheries.iter().all(|k| within(*k, h.pos, 2));
+        if within(scout, h.pos, p.main_look) && only {
             let drones = enemies.iter().filter(|u| u.unit_type == DRONE && within(u.pos, h.pos, p.main_drones_radius)).count();
-            let only = cx.known_hatcheries.iter().all(|k| within(*k, h.pos, 2));
-            if within(scout, h.pos, p.main_look) && drones <= p.drones_max && only {
+            if f.frame < p.main_before && drones <= p.drones_max {
                 out.push(RushRule::Drones);
+            }
+            let pool_done = pools.iter().any(|u| u.has(flags::COMPLETED));
+            if (p.one_base_from..p.one_base_before).contains(&f.frame) && pool_done && !cx.extractor_seen {
+                out.push(RushRule::OneBase);
             }
         }
     }
@@ -436,17 +577,16 @@ impl Brain {
         if r.stats.bunker_frame.is_none() && mine.iter().any(|u| u.unit_type == BUNKER) {
             r.stats.bunker_frame = Some(f.frame);
         }
-        // ④ release timer: the same units the SCVs are pulled against (ground army, not burrowed).
-        let ground = f.units.iter().filter(|u| is_enemy(u, me) && is_ground_army_type(u.unit_type) && !u.has(flags::BURROWED));
-        if ground.map(|u| u.pos).any(|a| depots.iter().any(|d| within(a, *d, p.release_radius))) {
-            r.last_near = f.frame;
-        }
-        let rules = rush_rules(&p, f, me, &RuleContext { depots: &depots, starts: &others, scout, known_hatcheries: &known_hatcheries });
+        r.extractor_seen |= f.units.iter().any(|u| is_enemy(u, me) && u.unit_type == EXTRACTOR);
+        let rules = rush_rules(&p, f, me, &RuleContext { depots: &depots, starts: &others, scout, known_hatcheries: &known_hatcheries, extractor_seen: r.extractor_seen });
         for rule in &rules {
             r.stats.rule_frames.entry(*rule).or_insert(f.frame);
         }
+        let marines = mine.iter().filter(|u| u.unit_type == MARINE && u.has(flags::COMPLETED)).count();
         if r.branch == Branch::Macro {
-            if let Some(&rule) = rules.first() {
+            // With `macro_marines_any` marines R does not switch to D (it would switch back at the
+            // next observation, 메인 임시 결정); M's home guard answers.
+            if let Some(&rule) = rules.first().filter(|_| marines < p.macro_marines_any) {
                 r.branch = Branch::Defence;
                 r.last_contact = f.frame;
                 r.stats.defences += 1;
@@ -461,14 +601,31 @@ impl Brain {
                 let by_army = army.iter().flat_map(|a| depots.iter().map(move |d| (dist2(*a, *d), *d))).min().map(|(_, d)| d);
                 r.def_base = by_army.or(natural).or(main);
             }
-        } else {
-            let marines = mine.iter().filter(|u| u.unit_type == MARINE && u.has(flags::COMPLETED)).count();
-            if marines >= p.macro_marines && f.frame >= r.last_contact + p.macro_quiet {
-                r.branch = Branch::Macro;
-                r.stats.macro_frame.get_or_insert(f.frame);
-            }
+        } else if (marines >= p.macro_marines && f.frame >= r.last_contact + p.macro_quiet) || marines >= p.macro_marines_any {
+            r.branch = Branch::Macro;
+            r.stats.macro_frame.get_or_insert(f.frame);
+        }
+        // D marines (7th advisory C): attack-move (home guard within `marine_radius`) while the
+        // marines outside bunkers are at least `marine_ratio` × the enemy ground army there; with
+        // no enemy there they hold beside the bunker (메인 임시 결정: nothing to attack).
+        let outside = mine.iter().filter(|u| u.unit_type == MARINE && u.has(flags::COMPLETED) && u.loaded_in.is_none()).count();
+        let close = f.units.iter().filter(|u| is_enemy(u, me) && is_ground_army_type(u.unit_type) && depots.iter().any(|d| within(u.pos, *d, p.marine_radius))).count();
+        r.marines_attack = r.branch == Branch::Defence && close > 0 && outside >= p.marine_ratio * close;
+        if r.marines_attack {
+            r.holding.clear();
         }
         r.stats.branch = r.branch;
+    }
+
+    /// D marines attack-move on enemies near the bases this observation (7th advisory C).
+    pub(crate) fn react_marines_attack(&self) -> bool {
+        self.react.as_ref().is_some_and(|r| r.marines_attack)
+    }
+
+    /// Home-guard radius (tiles) of the teacher: `marine_radius` while D marines attack, else the
+    /// Brain's.
+    pub(crate) fn react_guard_radius(&self) -> Option<i64> {
+        self.react.as_ref().filter(|r| r.marines_attack).map(|r| r.p.marine_radius)
     }
 
     /// Footprints the Brain's generic placement leaves free: the planned main bunker site and the
@@ -481,9 +638,13 @@ impl Brain {
         self.react.as_ref().map(|r| r.branch)
     }
 
-    /// SCVs with a teacher job (pulled, repairing): not mining, not picked to build.
+    /// SCVs with a teacher job (pulled, repairing, guarding a builder, resuming a building): not
+    /// mining, not picked to build.
     pub(crate) fn react_busy(&self) -> Vec<UnitId> {
-        self.react.as_ref().map(|r| r.pulled.iter().chain(&r.repairers).copied().collect()).unwrap_or_default()
+        self.react
+            .as_ref()
+            .map(|r| r.pulled.iter().chain(&r.repairers).chain(r.harass.iter().flat_map(|h| &h.guards)).copied().chain(r.resumers.values().map(|(scv, _)| *scv)).collect())
+            .unwrap_or_default()
     }
 
     /// Opening supply rule: the first depot at 9 supply, the second at 15, then the standard rule.
@@ -517,13 +678,15 @@ impl Brain {
         mine.iter().any(|u| is_resource_depot(u.unit_type) && building_tile(u) == n) || self.pending.iter().any(|p| p.ty == CC && p.tile == n)
     }
 
-    /// The scout leaves when the first barracks is under construction (the barracks SCV itself
-    /// keeps building, a Terran rule), walks to the nearest unscouted start locations, looks at
-    /// the enemy main from `scout_look` tiles and goes back to mining at home.
+    /// The scout (another SCV than the depot's builder) leaves once the first depot is ordered
+    /// (9 supply, 7th advisory E), walks to the nearest unscouted start locations, looks at the
+    /// enemy main from `scout_look` tiles and goes back to mining at home.
     pub(crate) fn react_scouting(&mut self, f: &RawFrame, mine: &[&UnitState], minerals: &[&UnitState], cmds: &mut Vec<Command>) {
         let Some(r) = self.react.as_ref() else { return };
         let (look, look_max, main, main_frame) = (r.p.scout_look, r.p.scout_look_max, r.enemy_main, r.stats.main_frame);
-        if !self.scout_done && self.scout.is_none() && mine.iter().any(|u| u.unit_type == BARRACKS) {
+        // 7th advisory E: the scout leaves once the first depot is ordered (9 supply).
+        let depot_ordered = self.pending.iter().any(|q| q.ty == DEPOT) || mine.iter().any(|u| matches!(u.unit_type, DEPOT | BARRACKS));
+        if !self.scout_done && self.scout.is_none() && depot_ordered {
             self.scout = self.free_worker(mine);
         }
         let Some(id) = self.scout else { return };
@@ -561,14 +724,87 @@ impl Brain {
     /// for a bunker that does not count).
     pub(crate) fn bunker_site(&self, f: &RawFrame, center: Pos, to: Pos, reserved: &[(Tile, u16)]) -> Option<Tile> {
         let p = &self.react.as_ref()?.p;
-        let (lo, hi) = (p.bunker_min * TILE, p.bunker_max * TILE);
+        let (lo, hi, pad) = (p.bunker_min * TILE, p.bunker_max * TILE, p.bunker_resource_pad);
         let near = toward(center, to, (p.bunker_min + p.bunker_max) as f64 / 2.0);
         self.placer
-            .find_where(BUNKER, near, &f.units, reserved, p.bunker_max as i32 + 2, |t| {
+            .find_padded(BUNKER, near, &f.units, reserved, p.bunker_max as i32 + 2, pad, |t| {
                 let d2 = dist2(bunker_center(t), center);
                 d2 >= lo * lo && d2 <= hi * hi && clear_of_units(f, t)
             })
-            .or_else(|| self.placer.find_where(BUNKER, near, &f.units, reserved, 2 * BUNKER_SEARCH_MAX as i32, |t| within(bunker_center(t), center, BUNKER_SEARCH_MAX) && clear_of_units(f, t)))
+            .or_else(|| self.placer.find_padded(BUNKER, near, &f.units, reserved, 2 * BUNKER_SEARCH_MAX as i32, pad, |t| within(bunker_center(t), center, BUNKER_SEARCH_MAX) && clear_of_units(f, t)))
+    }
+
+    /// Main bunker site (7th advisory A): along the walkable ground path from the main command
+    /// center at `center` to the natural (`ReactState::main_path`, planned at the first
+    /// observation), the first buildable footprint without units whose centre is
+    /// `path_min`..=`path_max` tiles from `center` and within `path_near` tiles of a path tile —
+    /// path tiles from the main outward, nearer footprints first. Without a path or such a site,
+    /// `bunker_site` toward `to`.
+    pub(crate) fn main_bunker_site(&self, f: &RawFrame, center: Pos, to: Pos, reserved: &[(Tile, u16)]) -> Option<Tile> {
+        let r = self.react.as_ref()?;
+        let p = &r.p;
+        let path = r.main_path.as_deref().unwrap_or_default();
+        let near = p.path_near * TILE;
+        let tile_center = |t: Tile| (t.0 * 32 + 16, t.1 * 32 + 16);
+        let reach = p.path_near as i32 + 2;
+        let candidates = |lo: i64, hi: i64| {
+            let mut seen = BTreeSet::new();
+            let mut cands = Vec::new();
+            for &pt in path {
+                let pc = tile_center(pt);
+                let mut ring: Vec<(i64, Tile)> = Vec::new();
+                for dy in -reach..=reach {
+                    for dx in -reach..=reach {
+                        let (x, y) = (pt.0 as i32 + dx - 1, pt.1 as i32 + dy);
+                        if x < 0 || y < 0 {
+                            continue;
+                        }
+                        let t = (x as u16, y as u16);
+                        let c = bunker_center(t);
+                        let d2 = dist2(c, center);
+                        if dist2(c, pc) <= near * near && d2 >= lo * lo && d2 <= hi * hi {
+                            ring.push((dist2(c, pc), t));
+                        }
+                    }
+                }
+                ring.sort();
+                cands.extend(ring.into_iter().map(|(_, t)| t).filter(|t| seen.insert(*t)));
+            }
+            cands
+        };
+        // No such site (투혼 5시·서킷브레이커 아래 본진: the path runs through the 3-tile gap
+        // between the geyser and the minerals, too narrow for a bunker 5–7 tiles out): the
+        // direction rule. A site on the path up to 9 tiles out was tried and held fewer games on
+        // those starts (2026-11-06 validation, 메인 임시 결정).
+        self.placer
+            .first_fit(BUNKER, candidates(p.path_min * TILE, p.path_max * TILE), &f.units, reserved, p.bunker_resource_pad, |t| clear_of_units(f, t))
+            .or_else(|| self.bunker_site(f, center, to, reserved))
+    }
+
+    /// Plans the main bunker path once: command center centre tile → natural centre tile over
+    /// the static walkability (public map information), resources in the observation blocking.
+    fn plan_main_path(&mut self, f: &RawFrame, base: Pos) {
+        let Some(r) = self.react.as_ref() else { return };
+        if r.main_path.is_some() {
+            return;
+        }
+        let path = match r.natural {
+            Some(n) => {
+                let solid: BTreeSet<Tile> = f
+                    .units
+                    .iter()
+                    .filter(|u| is_resource(u.unit_type))
+                    .flat_map(|u| {
+                        let (t, (w, h)) = (building_tile(u), tile_size(u.unit_type));
+                        (t.1..t.1 + h).flat_map(move |y| (t.0..t.0 + w).map(move |x| (x, y)))
+                    })
+                    .collect();
+                let nat = depot_center(n);
+                ground_path(&self.walkable, (base.0 / 32, base.1 / 32), (nat.0 / 32, nat.1 / 32), &solid)
+            }
+            None => Vec::new(),
+        };
+        self.react.as_mut().expect("checked above").main_path = Some(path);
     }
 
     /// Where a bunker at `center` faces (021-R8, 메인 임시 결정 after the review): among choke
@@ -595,6 +831,7 @@ impl Brain {
     /// D bunker and M expansion / natural bunker orders, before production buildings. Returns
     /// (minerals held from everything but the first barracks, minerals held from marines).
     pub(crate) fn react_build(&mut self, f: &RawFrame, mine: &[&UnitState], base: Pos, busy: &[UnitId], cmds: &mut Vec<Command>, minerals: &mut i32) -> (i32, i32) {
+        self.plan_main_path(f, base);
         let Some(r) = self.react.as_ref() else { return (0, 0) };
         let (p, branch, natural, main_known) = (r.p.clone(), r.branch, r.natural, r.enemy_main.is_some());
         let rax_done = mine.iter().any(|u| u.unit_type == BARRACKS && done(u));
@@ -602,7 +839,7 @@ impl Brain {
         let reserved = |s: &Self| -> Vec<(Tile, u16)> { s.pending.iter().map(|q| (q.tile, q.ty)).chain(natural.map(|n| (n, CC))).collect() };
         if self.react.as_ref().is_some_and(|r| r.main_site.is_none()) {
             let (to, res) = (self.bunker_facing(base, None), reserved(self));
-            let site = self.bunker_site(f, base, to, &res);
+            let site = self.main_bunker_site(f, base, to, &res);
             self.react.as_mut().expect("checked above").main_site = site;
         }
         match branch {
@@ -613,7 +850,8 @@ impl Brain {
                 }
                 if rax_done && *minerals >= cost(BUNKER) {
                     let res = reserved(self);
-                    if let Some(t) = self.bunker_site(f, dbase, to, &res) {
+                    let site = if dbase == base { self.main_bunker_site(f, dbase, to, &res) } else { self.bunker_site(f, dbase, to, &res) };
+                    if let Some(t) = site {
                         if self.order_build_at(BUNKER, t, f, mine, busy, cmds) {
                             *minerals -= cost(BUNKER);
                             return (0, 0);
@@ -666,13 +904,13 @@ impl Brain {
         }
     }
 
-    /// Marines kept out of waves and the home guard: in D all of them (they load and hold), in
-    /// M the ones picked to fill a bunker.
+    /// Marines kept out of waves and the home guard: in D while they hold all of them (they load
+    /// and hold), else (M, or D marines attacking, 7th advisory C) the ones picked to fill a bunker.
     pub(crate) fn react_reserved_marines(&self, mine: &[&UnitState]) -> Vec<UnitId> {
         match self.react_branch() {
             None => Vec::new(),
-            Some(Branch::Defence) => mine.iter().filter(|u| u.unit_type == MARINE).map(|u| u.id).collect(),
-            Some(Branch::Macro) => self.garrison(mine).into_iter().flat_map(|(_, ids)| ids).collect(),
+            Some(Branch::Defence) if !self.react_marines_attack() => mine.iter().filter(|u| u.unit_type == MARINE).map(|u| u.id).collect(),
+            Some(_) => self.garrison(mine).into_iter().flat_map(|(_, ids)| ids).collect(),
         }
     }
 
@@ -714,7 +952,7 @@ impl Brain {
             cmds.push(Command::Unit { units: ids, order: CmdOrder::Load(bunker), queued: false });
             acted = true;
         }
-        if branch == Branch::Defence {
+        if branch == Branch::Defence && !self.react_marines_attack() {
             acted |= self.hold_marines(mine, cmds);
         }
         if acted {
@@ -723,8 +961,9 @@ impl Brain {
     }
 
     /// SCV jobs, before the Brain's idle-worker rule so a pulled or repairing SCV is not sent to
-    /// mine in the same step: in D the pull (③), re-targeting, release (④) and repair; in M the
-    /// release of every D job.
+    /// mine in the same step: in both branches the answer to a worker hitting a builder and the
+    /// resumption of unfinished buildings; in D the pull (③, mining at once when no threat is in
+    /// reach) and repair; in M the release of every D job.
     pub(crate) fn react_scvs(&mut self, f: &RawFrame, mine: &[&UnitState], minerals: &[&UnitState], cmds: &mut Vec<Command>) {
         let Some(r) = self.react.as_ref() else { return };
         let (p, branch) = (r.p.clone(), r.branch);
@@ -743,6 +982,9 @@ impl Brain {
         let r = self.react.as_mut().expect("checked above");
         r.pulled.retain(alive);
         r.repairers.retain(alive);
+        // Both branches: builders hit by an enemy worker, unfinished buildings without a builder.
+        self.react_harass(f, mine, minerals, cmds);
+        self.react_resume(f, mine, cmds);
 
         let r = self.react.as_ref().expect("checked above");
         if branch == Branch::Macro {
@@ -750,65 +992,54 @@ impl Brain {
             gather_home(ids, cmds);
             let r = self.react.as_mut().expect("checked above");
             r.pulled.clear();
-            r.pulled_mining = false;
             r.repairers.clear();
             return;
         }
-        // SCV pull (D ③): enemy ground army within `pull_radius` of a command center.
+        // SCV pull (D ③, 7th advisory B): enemy ground army within `pull_bunker` tiles of an own
+        // bunker or `pull_base` tiles of a command center or its mineral line centre.
         let me = self.me;
         let depots = Self::own_depots(mine);
-        let ground: Vec<&UnitState> = f.units.iter().filter(|u| is_enemy(u, me) && is_ground_army_type(u.unit_type) && !u.has(flags::BURROWED)).collect();
-        let near = |u: &&UnitState, tiles: i64| depots.iter().any(|d| within(u.pos, *d, tiles));
-        let threats: Vec<&UnitState> = ground.iter().copied().filter(|u| near(u, p.pull_radius)).collect();
-        let targets: Vec<&UnitState> = ground.iter().copied().filter(|u| near(u, p.release_radius)).collect();
+        let bunkers: Vec<Pos> = mine.iter().filter(|u| u.unit_type == BUNKER).map(|u| u.pos).collect();
+        let mut bases = depots.clone();
+        for d in &depots {
+            let line: Vec<&UnitState> = minerals.iter().copied().filter(|m| within(m.pos, *d, 10)).collect();
+            if !line.is_empty() {
+                bases.push(crate::centroid(&line));
+            }
+        }
+        let threats: Vec<&UnitState> = f
+            .units
+            .iter()
+            .filter(|u| is_enemy(u, me) && is_ground_army_type(u.unit_type) && !u.has(flags::BURROWED))
+            .filter(|u| bunkers.iter().any(|b| within(u.pos, *b, p.pull_bunker)) || bases.iter().any(|b| within(u.pos, *b, p.pull_base)))
+            .collect();
         let scvs: Vec<&&UnitState> = mine.iter().filter(|u| u.unit_type == SCV && u.has(flags::COMPLETED)).collect();
-        let (last_near, mut pulled, mut mining, mut repairers, last_pull, last_repair) = {
+        let (mut pulled, mut repairers, last_pull, last_repair) = {
             let r = self.react.as_ref().expect("checked above");
-            (r.last_near, r.pulled.clone(), r.pulled_mining, r.repairers.clone(), r.last_pull, r.last_repair)
+            (r.pulled.clone(), r.repairers.clone(), r.last_pull, r.last_repair)
         };
         let mut pull_acted = false;
-        if ReactState::due(last_pull, f.frame, p.retarget) {
-            if !threats.is_empty() {
-                let want = p.pull_max.min(scvs.len().saturating_sub(p.pull_keep));
-                let at = threats.iter().copied().min_by_key(|u| (depots.iter().map(|d| dist2(u.pos, *d)).min().unwrap_or(0), u.id)).map(|u| u.pos).unwrap_or_default();
-                let jobs: Vec<UnitId> = self.pending.iter().map(|q| q.worker).chain(self.scout).chain(repairers.iter().copied()).collect();
-                let mut free: Vec<&&&UnitState> = scvs.iter().filter(|u| !u.has(flags::CONSTRUCTING) && !jobs.contains(&u.id) && !pulled.contains(&u.id)).collect();
-                free.sort_by_key(|u| (dist2(u.pos, at), u.id));
-                for u in free.into_iter().take(want.saturating_sub(pulled.len())) {
-                    pulled.push(u.id);
-                }
-                if pulled.len() > want {
-                    let extra = pulled.split_off(want);
-                    gather_home(extra, cmds);
-                }
+        if threats.is_empty() {
+            // Nothing in reach: the pulled SCVs mine at once (no chase).
+            gather_home(std::mem::take(&mut pulled), cmds);
+        } else if ReactState::due(last_pull, f.frame, p.retarget) {
+            // The target: the threat nearest an own bunker (none: nearest a command center).
+            let anchors = if bunkers.is_empty() { &depots } else { &bunkers };
+            let target = threats.iter().copied().min_by_key(|u| (anchors.iter().map(|a| dist2(u.pos, *a)).min().unwrap_or(0), u.id)).expect("non-empty");
+            let want = p.pull_max.min(scvs.len().saturating_sub(p.pull_keep));
+            let jobs: Vec<UnitId> = self.pending.iter().map(|q| q.worker).chain(self.scout).chain(repairers.iter().copied()).chain(self.react_busy().into_iter().filter(|id| !pulled.contains(id))).collect();
+            let mut free: Vec<&&&UnitState> = scvs.iter().filter(|u| !u.has(flags::CONSTRUCTING) && !jobs.contains(&u.id) && !pulled.contains(&u.id)).collect();
+            free.sort_by_key(|u| (dist2(u.pos, target.pos), u.id));
+            for u in free.into_iter().take(want.saturating_sub(pulled.len())) {
+                pulled.push(u.id);
+            }
+            if pulled.len() > want {
+                let extra = pulled.split_off(want);
+                gather_home(extra, cmds);
             }
             if !pulled.is_empty() {
-                if f.frame >= last_near + p.release_after {
-                    // ④ no pull target within `release_radius` for `release_after`: released.
-                    if !mining {
-                        gather_home(pulled.clone(), cmds);
-                    }
-                    pulled.clear();
-                    mining = false;
-                    pull_acted = true;
-                } else {
-                    let group: Vec<&UnitState> = pulled.iter().filter_map(|id| mine.iter().copied().find(|u| u.id == *id)).collect();
-                    let c = crate::centroid(&group);
-                    match targets.iter().min_by_key(|u| (dist2(u.pos, c), u.id)) {
-                        Some(t) => {
-                            cmds.push(Command::Unit { units: pulled.clone(), order: CmdOrder::Attack(Target::Unit(t.id)), queued: false });
-                            mining = false;
-                            pull_acted = true;
-                        }
-                        // No target within `release_radius`: mine (no chase) until released.
-                        None if !mining => {
-                            gather_home(pulled.clone(), cmds);
-                            mining = true;
-                            pull_acted = true;
-                        }
-                        None => {}
-                    }
-                }
+                cmds.push(Command::Unit { units: pulled.clone(), order: CmdOrder::Attack(Target::Unit(target.id)), queued: false });
+                pull_acted = true;
             }
         }
         // Repair (D): a completed bunker below `repair_below_pct` gets `repairers` SCVs until full.
@@ -819,7 +1050,7 @@ impl Brain {
             let damaged = bunkers.iter().find(|b| (b.hp as u32) * 100 < BUNKER_HP as u32 * p.repair_below_pct).or(if repairers.is_empty() { None } else { bunkers.first() });
             match damaged {
                 Some(b) => {
-                    let jobs: Vec<UnitId> = self.pending.iter().map(|q| q.worker).chain(self.scout).chain(pulled.iter().copied()).collect();
+                    let jobs: Vec<UnitId> = self.pending.iter().map(|q| q.worker).chain(self.scout).chain(pulled.iter().copied()).chain(self.react_busy().into_iter().filter(|id| !repairers.contains(id))).collect();
                     let mut free: Vec<&&&UnitState> = scvs.iter().filter(|u| !u.has(flags::CONSTRUCTING) && !jobs.contains(&u.id) && !repairers.contains(&u.id)).collect();
                     free.sort_by_key(|u| (dist2(u.pos, b.pos), u.id));
                     for u in free.into_iter().take(p.repairers.saturating_sub(repairers.len())) {
@@ -839,12 +1070,97 @@ impl Brain {
             }
         }
         let r = self.react.as_mut().expect("checked above");
-        (r.pulled, r.pulled_mining, r.repairers) = (pulled, mining, repairers);
+        (r.pulled, r.repairers) = (pulled, repairers);
         if pull_acted {
             r.last_pull = Some(f.frame);
         }
         if repair_acted {
             r.last_repair = Some(f.frame);
+        }
+    }
+
+    /// Both branches (7th advisory B): an own SCV constructing (or sent to build) that is under
+    /// attack with an enemy worker within `harass_radius` tiles sends the `harass_guards` mining
+    /// SCVs nearest that worker at it (re-ordered every `retarget` frames); they mine again once
+    /// the worker is gone or more than `harass_release` tiles from the builder.
+    fn react_harass(&mut self, f: &RawFrame, mine: &[&UnitState], minerals: &[&UnitState], cmds: &mut Vec<Command>) {
+        let me = self.me;
+        let builders: Vec<UnitId> = self.pending.iter().map(|q| q.worker).collect();
+        let Some(r) = self.react.as_mut() else { return };
+        let p = r.p.clone();
+        let workers: Vec<&UnitState> = f.units.iter().filter(|u| is_enemy(u, me) && is_worker(u.unit_type)).collect();
+        if let Some(h) = r.harass.as_mut() {
+            h.guards.retain(|id| mine.iter().any(|u| u.id == *id));
+            if let Some(b) = mine.iter().find(|u| u.id == h.builder) {
+                h.at = b.pos;
+            }
+            let target = workers.iter().find(|w| w.id == h.target).filter(|w| within(w.pos, h.at, p.harass_release));
+            match target {
+                Some(t) if !h.guards.is_empty() => {
+                    if f.frame >= h.last_order + p.retarget {
+                        cmds.push(Command::Unit { units: h.guards.clone(), order: CmdOrder::Attack(Target::Unit(t.id)), queued: false });
+                        h.last_order = f.frame;
+                    }
+                    return;
+                }
+                _ => {
+                    let guards = std::mem::take(&mut h.guards);
+                    r.harass = None;
+                    if let Some(m) = self.home.and_then(|h| nearest(h, minerals)).filter(|_| !guards.is_empty()) {
+                        cmds.push(Command::Unit { units: guards, order: CmdOrder::Gather(m.id), queued: false });
+                    }
+                }
+            }
+        }
+        // A new harass: a builder under attack with an enemy worker next to it.
+        let hit = mine
+            .iter()
+            .filter(|u| u.unit_type == SCV && u.has(flags::UNDER_ATTACK) && (u.has(flags::CONSTRUCTING) || u.order == ORDER_CONSTRUCTING || builders.contains(&u.id)))
+            .find_map(|b| workers.iter().filter(|w| within(w.pos, b.pos, p.harass_radius)).min_by_key(|w| (dist2(w.pos, b.pos), w.id)).map(|w| (*b, *w)));
+        let Some((builder, worker)) = hit else { return };
+        let jobs: BTreeSet<UnitId> = self.react_busy().into_iter().chain(builders).chain(self.scout).collect();
+        let mut free: Vec<&&UnitState> = mine.iter().filter(|u| u.unit_type == SCV && u.has(flags::COMPLETED) && u.has(flags::GATHERING) && !u.has(flags::CONSTRUCTING) && !jobs.contains(&u.id)).collect();
+        free.sort_by_key(|u| (dist2(u.pos, worker.pos), u.id));
+        let guards: Vec<UnitId> = free.iter().take(p.harass_guards).map(|u| u.id).collect();
+        if guards.is_empty() {
+            return;
+        }
+        cmds.push(Command::Unit { units: guards.clone(), order: CmdOrder::Attack(Target::Unit(worker.id)), queued: false });
+        let r = self.react.as_mut().expect("checked above");
+        r.harass = Some(Harass { guards, target: worker.id, builder: builder.id, at: builder.pos, last_order: f.frame });
+    }
+
+    /// Both branches (7th advisory D): an own unfinished building with no SCV constructing it
+    /// (BWAPI order ConstructingBuilding targeting it) for `resume_after` frames gets the nearest
+    /// free SCV, which right-clicks it (034 Smart_Unit) to resume; again every `resume_after`
+    /// frames while it still has no builder.
+    fn react_resume(&mut self, f: &RawFrame, mine: &[&UnitState], cmds: &mut Vec<Command>) {
+        let pending: Vec<UnitId> = self.pending.iter().map(|q| q.worker).chain(self.scout).collect();
+        let busy = self.react_busy();
+        let Some(r) = self.react.as_mut() else { return };
+        let after = r.p.resume_after;
+        let unfinished: Vec<&&UnitState> = mine.iter().filter(|u| is_building(u.unit_type) && !u.has(flags::COMPLETED)).collect();
+        let building = |id: UnitId| mine.iter().any(|u| u.unit_type == SCV && u.order == ORDER_CONSTRUCTING && u.order_target == Some(id));
+        r.orphan_since.retain(|id, _| unfinished.iter().any(|u| u.id == *id && !building(u.id)));
+        r.resumers.retain(|id, (scv, _)| r.orphan_since.contains_key(id) && mine.iter().any(|u| u.id == *scv));
+        let mut taken: BTreeSet<UnitId> = r.resumers.values().map(|(scv, _)| *scv).collect();
+        for b in unfinished.iter().filter(|u| !building(u.id)) {
+            let since = *r.orphan_since.entry(b.id).or_insert(f.frame);
+            let last = r.resumers.get(&b.id).map(|(_, at)| *at);
+            if f.frame < since + after || last.is_some_and(|at| f.frame < at + after) {
+                continue;
+            }
+            let prev = r.resumers.get(&b.id).map(|(scv, _)| *scv);
+            let scv = mine
+                .iter()
+                .filter(|u| u.unit_type == SCV && u.has(flags::COMPLETED) && !u.has(flags::CONSTRUCTING) && u.order != ORDER_CONSTRUCTING && !pending.contains(&u.id))
+                .filter(|u| Some(u.id) == prev || (!busy.contains(&u.id) && !taken.contains(&u.id)))
+                .min_by_key(|u| (dist2(u.pos, b.pos), u.id));
+            if let Some(s) = scv {
+                cmds.push(Command::Unit { units: vec![s.id], order: CmdOrder::RightClick(Target::Unit(b.id)), queued: false });
+                taken.insert(s.id);
+                r.resumers.insert(b.id, (s.id, f.frame));
+            }
         }
     }
 
@@ -1017,29 +1333,32 @@ mod tests {
         let depots = [home()];
         let others = [THEIRS];
         let none: [Pos; 0] = [];
-        let cx = RuleContext { depots: &depots, starts: &others, scout: None, known_hatcheries: &none };
+        let cx = RuleContext { depots: &depots, starts: &others, scout: None, known_hatcheries: &none, extractor_seen: false };
         let at = |n: u32, units: Vec<UnitState>| rush_rules(&p, &frame(n, units, 0, 0), 0, &cx);
         let far = depot_center((60, 60));
         let building = |id: u32, hp: u16| UnitState { hp, flags: flags::BEING_CONSTRUCTED, ..enemy(id, SPAWNING_POOL, far) };
         // Pool start estimate: 750 HP over 1,200 frames from 75.
         assert_eq!((pool_start_frame(2_600, 188), pool_start_frame(2_600, 187), pool_start_frame(100, 750)), (2_400, 2_401, 0));
-        // ①a an unfinished pool started by 1:40 (2,400), seen at any time before 8:00.
-        assert_eq!(at(2_600, vec![building(9, 188)]), vec![RushRule::PoolStart]);
-        assert_eq!(at(2_600, vec![building(9, 187)]), vec![]);
+        assert_eq!((pool_start_frame(2_480, 188), pool_start_frame(2_480, 187)), (2_280, 2_281));
+        // ①a an unfinished pool started by 1:35 (2,280, 7th advisory E), seen any time before 8:00.
+        assert_eq!(at(2_480, vec![building(9, 188)]), vec![RushRule::PoolStart]);
+        assert_eq!(at(2_480, vec![building(9, 187)]), vec![]);
+        assert_eq!(at(2_600, vec![building(9, 188)]), vec![], "started at 1:40");
         // ①b a finished pool before 2:30; ①a never on a finished pool.
         assert_eq!(at(3_599, vec![enemy(9, SPAWNING_POOL, far)]), vec![RushRule::PoolDone]);
         assert_eq!(at(3_600, vec![enemy(9, SPAWNING_POOL, far)]), vec![]);
         let finished = UnitState { hp: 750, ..enemy(9, SPAWNING_POOL, far) };
         assert_eq!(at(3_600, vec![finished.clone()]), vec![]);
         assert_eq!(at(3_000, vec![finished]), vec![RushRule::PoolDone]);
-        // ② 2 zerglings before 2:50 (4,080), 6 before 3:10 (4,560), in one observation.
+        // ② 2 zerglings before 2:50 (4,080), 6 before 3:00 (4,320, 7th advisory E), in one
+        // observation.
         let lings = |n: u32| (0..n).map(|i| enemy(30 + i, ZERGLING, far)).collect::<Vec<_>>();
         assert_eq!(at(4_079, lings(2)), vec![RushRule::Lings]);
         assert_eq!(at(4_079, lings(1)), vec![]);
         assert_eq!(at(4_080, lings(2)), vec![]);
-        assert_eq!(at(4_559, lings(6)), vec![RushRule::Lings]);
-        assert_eq!(at(4_559, lings(5)), vec![]);
-        assert_eq!(at(4_560, lings(6)), vec![]);
+        assert_eq!(at(4_319, lings(6)), vec![RushRule::Lings]);
+        assert_eq!(at(4_319, lings(5)), vec![]);
+        assert_eq!(at(4_320, lings(6)), vec![]);
         // ③ 2 enemy army units (033) within 20 tiles of a command center, after 4:00 too; one is
         // contact only; overlords and drones are no army; nothing from 8:00.
         let near = |id: u32, ty: u16| enemy(id, ty, (home().0 + 19 * 32, home().1 + id as u16));
@@ -1051,13 +1370,14 @@ mod tests {
         // ④′ the scout within 3 tiles of the enemy start hatchery: a pool, at most 6 drones within
         // 12 tiles, that hatchery the only remembered one, before 3:30.
         let main = depot_center(THEIRS);
-        let mut v = vec![enemy(9, HATCHERY, main), enemy(10, SPAWNING_POOL, (main.0 + 160, main.1))];
+        // An unfinished pool started at 2,889 (no ①a, and no ④″ which needs a finished pool).
+        let mut v = vec![enemy(9, HATCHERY, main), UnitState { hp: 700, flags: flags::BEING_CONSTRUCTED, ..enemy(10, SPAWNING_POOL, (main.0 + 160, main.1)) }];
         v.extend((0..6).map(|i| enemy(20 + i, DRONE, (main.0 - 100, main.1 + i as u16 * 8))));
         let known = [main];
         let two = [main, depot_center(NATURAL)];
         let scout_at = |tiles: u16| Some((main.0 - tiles * 32, main.1));
         let main_at = |n: u32, units: Vec<UnitState>, scout: Option<Pos>, known: &[Pos]| {
-            rush_rules(&p, &frame(n, units, 0, 0), 0, &RuleContext { depots: &depots, starts: &others, scout, known_hatcheries: known })
+            rush_rules(&p, &frame(n, units, 0, 0), 0, &RuleContext { depots: &depots, starts: &others, scout, known_hatcheries: known, extractor_seen: false })
         };
         assert_eq!(main_at(4_000, v.clone(), scout_at(3), &known), vec![RushRule::Drones]);
         assert_eq!(main_at(4_000, v.clone(), scout_at(4), &known), vec![], "scout 4 tiles away");
@@ -1068,6 +1388,51 @@ mod tests {
         seven.push(enemy(40, DRONE, (main.0 - 100, main.1 + 90)));
         assert_eq!(main_at(4_000, seven, scout_at(3), &known), vec![], "7 drones");
         assert_eq!(main_at(4_000, v[..1].to_vec(), scout_at(3), &known), vec![], "no pool");
+        // ④″ (7th advisory E): the scout within 3 tiles of the enemy start hatchery, a finished
+        // pool, that hatchery the only remembered one, no extractor ever seen, 2:30 ≤ t < 4:00
+        // (drones do not matter).
+        let mut w = vec![enemy(9, HATCHERY, main), enemy(10, SPAWNING_POOL, (main.0 + 160, main.1))];
+        w.extend((0..12).map(|i| enemy(20 + i, DRONE, (main.0 - 100, main.1 + i as u16 * 8))));
+        let one = |n: u32, units: Vec<UnitState>, scout: Option<Pos>, known: &[Pos], extractor_seen: bool| {
+            rush_rules(&p, &frame(n, units, 0, 0), 0, &RuleContext { depots: &depots, starts: &others, scout, known_hatcheries: known, extractor_seen })
+        };
+        assert_eq!(one(3_600, w.clone(), scout_at(3), &known, false), vec![RushRule::OneBase]);
+        assert_eq!(one(5_759, w.clone(), scout_at(3), &known, false), vec![RushRule::OneBase]);
+        assert_eq!(one(3_599, w.clone(), scout_at(3), &known, false), vec![RushRule::PoolDone], "before 2:30 (①b instead)");
+        assert_eq!(one(5_760, w.clone(), scout_at(3), &known, false), vec![], "from 4:00");
+        assert_eq!(one(4_000, w.clone(), scout_at(4), &known, false), vec![], "scout 4 tiles away");
+        assert_eq!(one(4_000, w.clone(), None, &known, false), vec![], "no scout");
+        assert_eq!(one(4_000, w.clone(), scout_at(3), &two, false), vec![], "a second hatchery");
+        assert_eq!(one(4_000, w.clone(), scout_at(3), &known, true), vec![], "an extractor seen");
+        assert_eq!(one(4_000, v.clone(), scout_at(3), &known, false), vec![RushRule::Drones], "unfinished pool: ④′ only");
+        assert_eq!(one(4_000, w[..1].to_vec(), scout_at(3), &known, false), vec![], "no pool");
+    }
+
+    /// 021-R8 ④″ (7th advisory E): an extractor seen in an earlier observation keeps ④″ off.
+    #[test]
+    fn one_base_rule_remembers_extractors_021_r8() {
+        let main = depot_center(THEIRS);
+        let scout_units = || -> Vec<UnitState> {
+            let mut u = base(12);
+            u.push(UnitState { flags: flags::COMPLETED | flags::MOVING, ..unit(150, SCV, (main.0 - 64, main.1)) });
+            u.push(enemy(9, HATCHERY, main));
+            u.push(enemy(10, SPAWNING_POOL, (main.0 + 160, main.1)));
+            u
+        };
+        let mut b = teacher();
+        b.scout = Some(150);
+        b.scout_done = false;
+        let mut first = scout_units();
+        first.push(enemy(11, EXTRACTOR, (main.0 + 200, main.1 + 200)));
+        b.act(&frame(3_500, first, 0, 24));
+        // The extractor out of sight later: still no ④″.
+        b.act(&frame(3_700, scout_units(), 0, 24));
+        assert!(!b.teacher_stats().unwrap().rule_frames.contains_key(&RushRule::OneBase));
+        let mut c = teacher();
+        c.scout = Some(150);
+        c.act(&frame(3_700, scout_units(), 0, 24));
+        assert_eq!(c.teacher_stats().unwrap().rule_frames.get(&RushRule::OneBase), Some(&3_700));
+        assert_eq!(branch(&c), Branch::Defence);
     }
 
     /// 021-R8 (rule advisory §3): after the expansion a rush seen at the natural is defended at
@@ -1135,10 +1500,11 @@ mod tests {
         assert_eq!(branch(&b), Branch::Defence);
         let bunker = builds(&act, BUNKER);
         assert_eq!(bunker.len(), 1, "{:?}", act.cmds);
-        // 4–6 tiles from the command center, on the choke side (east).
+        // 5–7 tiles from the command center, on the ground path to the natural (south, 7th
+        // advisory A).
         let c = bunker_center(bunker[0]);
-        let d = ((dist2(c, home()) as f64).sqrt() / 32.0, c.0 as i64 - home().0 as i64);
-        assert!(d.0 >= 4.0 && d.0 <= 6.0 && d.1 > 0, "{bunker:?} {d:?}");
+        let d = ((dist2(c, home()) as f64).sqrt() / 32.0, c.1 as i64 - home().1 as i64);
+        assert!(d.0 >= 5.0 && d.0 <= 7.0 && d.1 > 0, "{bunker:?} {d:?}");
         // Seven marines: still D. Eight marines, 60 s after the last contact: M.
         let marines = |n: u32| (0..n).map(|i| unit(200 + i, MARINE, (home().0 + 100, home().1 + 4 * i as u16))).collect::<Vec<_>>();
         let mut u = base(12);
@@ -1257,19 +1623,26 @@ mod tests {
         assert!(unit_orders(&act, |o| matches!(o, CmdOrder::Attack(Target::Pos(_)))).is_empty(), "no waves in D: {:?}", act.cmds);
     }
 
-    /// 021-R8 D ③ / ④: enemy army within 12 tiles pulls min(8, n − 4) SCVs onto the nearest
-    /// zergling; a bunker below 90% gets 2 repairers until full; 10 s without enemy army within
-    /// 16 tiles sends the pulled SCVs back to mining.
+    /// 021-R8 D ③ (7th advisory B): enemy ground army within 3 tiles of a bunker or 5 tiles of a
+    /// command center / mineral line centre pulls min(6, n − 4) SCVs onto the threat nearest the
+    /// bunker; army farther out pulls nobody; a bunker below 90% gets 2 repairers until full; once
+    /// no threat is in reach the pulled SCVs mine at once (no chase) and are released.
     #[test]
     fn defence_pulls_repairs_and_releases_scvs_021_r8() {
         let mut b = teacher();
         // No scout trip in this test (it would mine again at once: every start is visible).
         b.scout_done = true;
-        let mut units = base(10);
-        units.push(enemy(90, ZERGLING, (home().0 + 8 * 32, home().1)));
-        units.push(enemy(91, ZERGLING, (home().0 + 11 * 32, home().1 + 64)));
-        units.push(UnitState { hp: 300, ..unit(5, BUNKER, (home().0 + 5 * 32, home().1 + 64)) });
+        let mut units = base(20);
+        let bunker = (home().0 + 5 * 32, home().1 + 64);
+        units.push(UnitState { hp: 300, ..unit(5, BUNKER, bunker) });
+        // 90: 2 tiles from the bunker (7.8 from the command center); 91: by the mineral line
+        // (4.8 tiles from the command center, farther from the bunker); 92: 5.7 tiles from the
+        // command center and 4.5 from the bunker — out of reach.
+        units.push(enemy(90, ZERGLING, (bunker.0, bunker.1 + 64)));
+        units.push(enemy(91, ZERGLING, (home().0 - 150, home().1 + 40)));
+        units.push(enemy(92, ZERGLING, (home().0 + 2 * 32, home().1 + 6 * 32 - 20)));
         let act = b.act(&frame(3_000, units.clone(), 0, 40));
+        assert_eq!(branch(&b), Branch::Defence);
         let attack: Vec<(Vec<UnitId>, UnitId)> = act
             .cmds
             .iter()
@@ -1279,37 +1652,40 @@ mod tests {
             })
             .collect();
         assert_eq!(attack.len(), 1, "{:?}", act.cmds);
-        assert_eq!(attack[0].0.len(), 6, "min(8, 10 - 4)");
-        assert!(attack[0].1 == 90 || attack[0].1 == 91);
+        assert_eq!((attack[0].0.len(), attack[0].1), (6, 90), "min(6, 20 - 4) onto the zergling nearest the bunker");
         let repair = unit_orders(&act, |o| *o == CmdOrder::Repair(5));
         assert_eq!(repair.iter().map(Vec::len).collect::<Vec<_>>(), vec![2], "{:?}", act.cmds);
         assert!(repair[0].iter().all(|id| !attack[0].0.contains(id)));
-        // Pulled SCVs are not sent back to mining by the idle rule.
         let pulled = attack[0].0.clone();
         assert!(unit_orders(&act, |o| matches!(o, CmdOrder::Gather(_))).iter().all(|g| g.iter().all(|u| !pulled.contains(u))));
-        // The zerglings run to 20 tiles (no target within 16), bunker full: the repairers and the
-        // pulled SCVs mine at once (no chase); the pulled ones stay pulled until 10 s after the
-        // last target within 16 tiles.
-        let away: Vec<UnitState> = units
-            .iter()
-            .cloned()
-            .map(|u| match (u.owner, u.unit_type) {
-                (1, _) => UnitState { pos: (home().0 + 20 * 32, u.pos.1), ..u },
-                (_, BUNKER) => UnitState { hp: BUNKER_HP, ..u },
-                _ => u,
-            })
-            .collect();
-        let act = b.act(&frame(3_048, away.clone(), 0, 40));
+
+        // Only the out-of-reach zergling left: nobody pulled, the pulled SCVs mine at once.
+        let mut away: Vec<UnitState> = units.iter().filter(|u| u.owner != 1 || u.id == 92).cloned().collect();
+        for u in away.iter_mut().filter(|u| u.unit_type == BUNKER) {
+            u.hp = BUNKER_HP;
+        }
+        let act = b.act(&frame(3_008, away.clone(), 0, 40));
         let gathers = unit_orders(&act, |o| matches!(o, CmdOrder::Gather(_)));
-        assert!(gathers.contains(&repair[0]) && gathers.contains(&pulled), "{:?}", act.cmds);
+        assert!(gathers.contains(&pulled), "{:?}", act.cmds);
         assert!(unit_orders(&act, |o| matches!(o, CmdOrder::Attack(Target::Unit(_)))).is_empty(), "no chase: {:?}", act.cmds);
-        assert_eq!(b.react_busy(), pulled);
-        let act = b.act(&frame(3_000 + 239, away.clone(), 0, 40));
-        assert!(!unit_orders(&act, |o| matches!(o, CmdOrder::Gather(_))).contains(&pulled), "{:?}", act.cmds);
-        assert_eq!(b.react_busy(), pulled);
-        b.act(&frame(3_000 + 240, away, 0, 40));
-        assert_eq!(branch(&b), Branch::Defence);
+        assert!(!b.react_busy().iter().any(|id| pulled.contains(id)));
+        // The repairers mine once the bunker is full (their 48-frame timer).
+        let act = b.act(&frame(3_048, away, 0, 40));
+        assert!(unit_orders(&act, |o| matches!(o, CmdOrder::Gather(_))).contains(&repair[0]), "{:?}", act.cmds);
         assert!(b.react_busy().is_empty());
+
+        // Army 6 tiles from the command center and no bunker: nobody is pulled; at 5 tiles: pulled.
+        let mut c = teacher();
+        c.scout_done = true;
+        let mut u = base(20);
+        u.push(enemy(93, ZERGLING, (home().0 + 6 * 32, home().1)));
+        u.push(enemy(94, ZERGLING, (home().0 + 6 * 32, home().1 + 10)));
+        let act = c.act(&frame(3_000, u.clone(), 0, 40));
+        assert_eq!(branch(&c), Branch::Defence);
+        assert!(unit_orders(&act, |o| matches!(o, CmdOrder::Attack(Target::Unit(_)))).is_empty(), "{:?}", act.cmds);
+        u.iter_mut().filter(|x| x.id == 93).for_each(|x| x.pos = (home().0 + 5 * 32 - 4, home().1));
+        let act = c.act(&frame(3_048, u, 0, 40));
+        assert_eq!(unit_orders(&act, |o| *o == CmdOrder::Attack(Target::Unit(93))).iter().map(Vec::len).collect::<Vec<_>>(), vec![6], "{:?}", act.cmds);
     }
 
     /// 021-R8 (review): a choke tile inside the main (2–3 tiles from the command center) does
@@ -1416,6 +1792,77 @@ mod tests {
         assert!(expanded);
     }
 
+    /// 021-R8 (7th advisory A) on the real target maps: the static map (walkability,
+    /// buildability) of each map comes from the bridge GameInfo stored in replay-build shards
+    /// (`URANIUM_TEST_SHARDS`: a folder of `*.bin.zst` shards holding at least one Fighting Spirit
+    /// and one Circuit Breaker game, e.g. built from teacher replays with `uranium-replay build`),
+    /// the precompute from `URANIUM_MAPS_DIR`. For every start location the ground path reaches
+    /// the natural and the main bunker site stands 5–7 tiles from the command center within 2
+    /// tiles of it — or, where the path has no such site, 4–6 tiles out by the direction rule;
+    /// at least 5 of the 8 starts are on the path. Map-derived data is game data and is not committed
+    /// (CLAUDE.md), so the test is ignored.
+    #[test]
+    #[ignore = "needs URANIUM_MAPS_DIR and URANIUM_TEST_SHARDS with target-map games"]
+    fn target_map_bunker_on_the_ground_path_021_r8() {
+        let maps = std::path::PathBuf::from(std::env::var("URANIUM_MAPS_DIR").expect("URANIUM_MAPS_DIR"));
+        let shards = std::path::PathBuf::from(std::env::var("URANIUM_TEST_SHARDS").expect("URANIUM_TEST_SHARDS"));
+        let families = uranium_env::maps::MapFamilies::load().unwrap();
+        // CHK hashes of the replay-build precomputes (투혼 1.3 the plans play, another 투혼 version,
+        // 서킷브레이커), used when the live lookup by the GameInfo map hash finds none.
+        let hashes = [
+            ("fighting_spirit", "226b8267504ef85938621f604e99e74d195a8c87b5beb8ec59542d8d5d218ace"),
+            ("fighting_spirit", "175b118cc1ab70c95e9bfc90cc5640ed300b7370443e9394aeb0d1dce6dbb0bc"),
+            ("circuit_breaker", "8109bae22de8e79ca9ddc9ca4bad343dbf5ac676747d7805f043cd8080bfdf56"),
+        ];
+        let mut found = BTreeSet::new();
+        let mut on_path_starts = 0u32;
+        let mut files: Vec<_> = std::fs::read_dir(&shards).unwrap().filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.to_string_lossy().ends_with(".bin.zst")).collect();
+        files.sort();
+        for path in files {
+            for g in uranium_replay::shard::read(&path).unwrap().games {
+                let family = families.classify(&g.game_info.map_name, "");
+                if !hashes.iter().any(|(f, _)| *f == family) || !found.insert(family.clone()) {
+                    continue;
+                }
+                let pre = uranium_env::maps::live_precompute(&maps, &g.game_info)
+                    .0
+                    .or_else(|| hashes.iter().filter(|(f, _)| *f == family).find_map(|(_, h)| uranium_env::maps::load_precompute(&maps, h)))
+                    .expect("precompute");
+                let hints = MapHints { base_locs: pre.base_locs.clone(), chokes: pre.chokes.clone() };
+                let starts = g.game_info.static_map.start_locations.clone();
+                for s in starts.iter().copied() {
+                    let mut i = info();
+                    i.static_map = g.game_info.static_map.clone();
+                    i.map_size_tiles = (i.static_map.width_tiles, i.static_map.height_tiles);
+                    i.players[0].start_tile = Some(s);
+                    let mut b = Brain::with_hints(&i, Kit::for_build(Race::Terran, T0Build::TerranReact), &hints);
+                    let h = depot_center(s);
+                    // The command center and the visible start resources (from the precompute).
+                    let mut units = vec![unit(1, CC, h)];
+                    for (k, r) in pre.resources.iter().enumerate().filter(|(_, r)| within(r.pos, h, 14)) {
+                        units.push(UnitState { owner: 11, ..unit(1_000 + k as u32, r.unit_type, r.pos) });
+                    }
+                    b.act(&frame(100, units, 0, 8));
+                    let r = b.react.as_ref().unwrap();
+                    let (path, site, nat) = (r.main_path.clone().unwrap(), r.main_site, depot_center(r.natural.unwrap()));
+                    assert!(path.last().is_some_and(|t| *t == (nat.0 / 32, nat.1 / 32)), "{family} {s:?}: no path to the natural");
+                    let c = bunker_center(site.unwrap_or_else(|| panic!("{family} {s:?}: no main site")));
+                    let d = (dist2(c, h) as f64).sqrt() / 32.0;
+                    let on_path = path.iter().any(|t| within(c, (t.0 * 32 + 16, t.1 * 32 + 16), 2));
+                    eprintln!("{family} start {s:?}: bunker {site:?} at {d:.1} tiles, on the path {on_path}, path {} tiles", path.len());
+                    // On the path 5–7 tiles out; where the path has no such site (the geyser /
+                    // mineral gap of 투혼 5시 and the lower 서킷브레이커 mains) the direction rule's
+                    // 4–6 tiles.
+                    assert!(if on_path { (5.0..=7.0).contains(&d) } else { (4.0..=6.0).contains(&d) }, "{family} {s:?}: site {site:?} {d:.1} tiles");
+                    on_path_starts += u32::from(on_path);
+                }
+            }
+        }
+        assert_eq!(found.len(), 2, "both target maps in the shards: {found:?}");
+        // 2026-11-06: 5 of the 8 starts have a site on the path.
+        assert!(on_path_starts >= 5, "{on_path_starts} starts on the path");
+    }
+
     /// 021-R8 (review): with the real 031 precompute of the two target maps (`URANIUM_MAPS_DIR`,
     /// the replay-build files the live session reads), the main bunker of every start location
     /// faces a point at least 8 tiles out, roughly toward the natural.
@@ -1445,7 +1892,7 @@ mod tests {
     }
 
     /// 021-R8 opening: first depot at 9 supply, barracks at 11, second depot at 15; the scout
-    /// leaves once the barracks is under construction.
+    /// leaves once the first depot is ordered (7th advisory E).
     #[test]
     fn opening_and_scout_021_r8() {
         let cc_only = |scvs: u32| {
@@ -1453,25 +1900,28 @@ mod tests {
             v.extend((0..scvs).map(|i| unit(100 + i, SCV, (home().0 - 100, home().1 + 10 * i as u16))));
             v
         };
-        let act = teacher().act(&frame(500, cc_only(8), 200, 16));
+        // Fog everywhere so the enemy start stays unscouted.
+        let dark = |f: RawFrame| RawFrame { visibility: BitGrid::new(128, 128), ..f };
+        let mut b = teacher();
+        let act = b.act(&dark(frame(500, cc_only(8), 200, 16)));
         assert!(builds(&act, DEPOT).is_empty(), "8 supply: {:?}", act.cmds);
-        let act = teacher().act(&frame(500, cc_only(9), 200, 18));
+        assert!(b.scout.is_none(), "no scout before the first depot order");
+        let act = b.act(&dark(frame(508, cc_only(9), 200, 18)));
         assert_eq!(builds(&act, DEPOT).len(), 1, "9 supply");
+        // 7th advisory E: the first depot ordered, one SCV (not its builder) scouts toward the
+        // enemy start at the next observation.
+        let builder = b.pending[0].worker;
+        let act = b.act(&dark(frame(516, cc_only(9), 100, 18)));
+        let scout = b.scout.expect("scout");
+        assert_ne!(scout, builder);
+        assert!(act.cmds.contains(&Command::Unit { units: vec![scout], order: CmdOrder::Move(Target::Pos(depot_center(THEIRS))), queued: false }), "{:?}", act.cmds);
         let mut units = cc_only(10);
         units.push(unit(6, DEPOT, (home().0, home().1 - 160)));
         let act = teacher().act(&frame(1_500, units.clone(), 200, 20));
         assert!(builds(&act, BARRACKS).is_empty(), "10 supply: {:?}", act.cmds);
-        let mut b = teacher();
-        // Fog everywhere so the enemy start stays unscouted.
-        let dark = |f: RawFrame| RawFrame { visibility: BitGrid::new(128, 128), ..f };
-        let act = b.act(&dark(frame(1_500, units.clone(), 200, 22)));
+        let act = teacher().act(&dark(frame(1_500, units.clone(), 200, 22)));
         assert_eq!(builds(&act, BARRACKS).len(), 1, "11 supply");
-        assert!(b.scout.is_none(), "the barracks is only ordered");
-        // Barracks under construction: one SCV scouts toward the enemy start.
         units.push(UnitState { flags: flags::BEING_CONSTRUCTED, ..unit(2, BARRACKS, (home().0 + 200, home().1 + 160)) });
-        let act = b.act(&dark(frame(1_600, units.clone(), 0, 24)));
-        let scout = b.scout.expect("scout");
-        assert!(act.cmds.contains(&Command::Unit { units: vec![scout], order: CmdOrder::Move(Target::Pos(depot_center(THEIRS))), queued: false }), "{:?}", act.cmds);
         let act = teacher().act(&frame(1_600, units.clone(), 200, 28));
         assert!(builds(&act, DEPOT).is_empty(), "14 supply: {:?}", act.cmds);
         let act = teacher().act(&frame(1_600, units, 200, 30));
@@ -1483,7 +1933,7 @@ mod tests {
     fn same_observations_same_commands_021_r8() {
         let script = |b: &mut Brain| {
             let mut out = Vec::new();
-            let lings = vec![enemy(90, ZERGLING, (home().0 + 300, home().1)), enemy(91, ZERGLING, (home().0 + 330, home().1))];
+            let lings = vec![enemy(90, ZERGLING, (home().0 + 100, home().1)), enemy(91, ZERGLING, (home().0 + 130, home().1))];
             for (i, extra) in [vec![], lings, vec![]].into_iter().enumerate() {
                 let mut u = base(12);
                 u.extend(extra);
@@ -1495,6 +1945,152 @@ mod tests {
         let (a, c) = (script(&mut teacher()), script(&mut teacher()));
         assert_eq!(a, c);
         assert!(a.iter().flatten().any(|c| matches!(c, Command::Unit { order: CmdOrder::Attack(Target::Unit(_)), .. })));
+    }
+
+    /// A map with a cliff row (tiles y 17–18 across the map, unwalkable and unbuildable) and a ramp gap
+    /// at x 24–27 between our main (10, 10) and the natural (10, 26).
+    fn walled_info() -> GameInfo {
+        let mut i = info();
+        for y in 17..=18u16 {
+            for x in (0..128u16).filter(|x| !(24..=27).contains(x)) {
+                i.static_map.buildable.set(x, y, false);
+                for c in 0..16 {
+                    i.static_map.walkable.set(x * 4 + c % 4, y * 4 + c / 4, false);
+                }
+            }
+        }
+        i
+    }
+
+    /// 7th advisory A: the walkable ground path goes around the cliff through the ramp, and the
+    /// main bunker stands 5–7 tiles from the command center within 2 tiles of that path (here
+    /// east, toward the ramp, not straight south toward the natural).
+    #[test]
+    fn main_bunker_site_on_the_ground_path_021_r8() {
+        let i = walled_info();
+        let solid = BTreeSet::new();
+        let path = ground_path(&i.static_map.walkable, (12, 11), (12, 27), &solid);
+        assert_eq!((path.first(), path.last()), (Some(&(12, 11)), Some(&(12, 27))));
+        assert!(path.iter().any(|t| (17..=18).contains(&t.1) && (24..=27).contains(&t.0)), "{path:?}");
+        assert!(path.windows(2).all(|w| (w[0].0 as i32 - w[1].0 as i32).abs() <= 1 && (w[0].1 as i32 - w[1].1 as i32).abs() <= 1));
+        assert!(path.iter().all(|t| !(17..=18).contains(&t.1) || (24..=27).contains(&t.0)));
+        // Resources block the path; no path at all gives an empty one.
+        let all: BTreeSet<Tile> = (24..=27).flat_map(|x| (17..=18).map(move |y| (x, y))).collect();
+        assert!(ground_path(&i.static_map.walkable, (12, 11), (12, 27), &all).is_empty());
+
+        let mut b = Brain::with_hints(&i, Kit::for_build(Race::Terran, T0Build::TerranReact), &hints());
+        let mut units = vec![unit(1, CC, home()), UnitState { owner: 11, ..unit(3, 176, (home().0 - 200, home().1)) }];
+        units.extend((0..10).map(|n| unit(100 + n, SCV, (home().0 - 100, home().1 + 10 * n as u16))));
+        b.act(&frame(100, units, 0, 20));
+        let r = b.react.as_ref().unwrap();
+        let path = r.main_path.clone().expect("planned");
+        let site = r.main_site.expect("main site");
+        let c = bunker_center(site);
+        let d = (dist2(c, home()) as f64).sqrt() / 32.0;
+        assert!((5.0..=7.0).contains(&d), "{site:?} {d}");
+        assert!(path.iter().any(|t| within(c, (t.0 * 32 + 16, t.1 * 32 + 16), 2)), "{site:?} {path:?}");
+        assert!(c.0 > home().0, "toward the ramp (east), not straight south: {site:?}");
+    }
+
+    /// 7th advisory C: in D, marines outside bunkers attack-move (home guard) when they are at
+    /// least twice the enemy ground army within 12 tiles of a command center, else they walk to
+    /// the bunker side and hold.
+    #[test]
+    fn defence_marines_attack_or_hold_021_r8() {
+        let run = |marines: u32| {
+            let mut b = teacher();
+            b.scout_done = true;
+            let mut u = base(12);
+            u.extend((0..marines).map(|n| unit(200 + n, MARINE, (home().0 + 100, home().1 + 100 + 4 * n as u16))));
+            u.push(enemy(90, ZERGLING, (home().0 + 8 * 32, home().1)));
+            u.push(enemy(91, ZERGLING, (home().0 + 8 * 32, home().1 + 20)));
+            let act = b.act(&frame(3_000, u, 0, 40));
+            assert_eq!(branch(&b), Branch::Defence);
+            let attack: usize = unit_orders(&act, |o| matches!(o, CmdOrder::Attack(Target::Pos(_)))).iter().map(Vec::len).sum();
+            let walk: usize = unit_orders(&act, |o| matches!(o, CmdOrder::Move(_))).iter().flatten().filter(|id| **id >= 200).count();
+            (attack, walk, b.react_marines_attack())
+        };
+        assert_eq!(run(4), (4, 0, true), "4 marines vs 2 zerglings: attack");
+        assert_eq!(run(3), (0, 3, false), "3 marines vs 2 zerglings: hold beside the bunker");
+    }
+
+    /// 7th advisory C: D returns to M with 12 marines even under contact; with 11 it stays; with
+    /// 12 marines R does not switch M back to D.
+    #[test]
+    fn macro_return_at_twelve_marines_021_r8() {
+        let at = |b: &mut Brain, n: u32, marines: u32| {
+            let mut u = base(12);
+            u.extend((0..marines).map(|k| unit(200 + k, MARINE, (home().0 + 100, home().1 + 4 * k as u16))));
+            u.push(enemy(90, ZERGLING, (home().0 + 9 * 32, home().1)));
+            u.push(enemy(91, ZERGLING, (home().0 + 9 * 32, home().1 + 20)));
+            b.act(&frame(n, u, 0, 40));
+            branch(b)
+        };
+        let mut b = teacher();
+        b.scout_done = true;
+        assert_eq!(at(&mut b, 3_000, 2), Branch::Defence);
+        assert_eq!(at(&mut b, 3_048, 11), Branch::Defence, "11 marines under contact");
+        assert_eq!(at(&mut b, 3_096, 12), Branch::Macro, "12 marines whatever the contact");
+        assert_eq!(at(&mut b, 3_144, 12), Branch::Macro, "R with 12 marines keeps M");
+        assert_eq!(b.teacher_stats().unwrap().macro_frame, Some(3_096));
+        assert_eq!(at(&mut b, 3_192, 11), Branch::Defence, "fewer than 12 again: R switches to D");
+    }
+
+    /// 7th advisory D: an own unfinished building without a constructing SCV (order
+    /// ConstructingBuilding on it) for 48 frames gets the nearest free SCV, which right-clicks it;
+    /// a builder on it stops the resumption.
+    #[test]
+    fn construction_resumes_without_a_builder_021_r8() {
+        let mut b = teacher();
+        b.scout_done = true;
+        let rax = (home().0 + 7 * 32, home().1 - 4 * 32);
+        let mut u = base(12);
+        u.push(UnitState { hp: 900, flags: flags::BEING_CONSTRUCTED, ..unit(50, BARRACKS, rax) });
+        let right_click = |act: &Act| unit_orders(act, |o| *o == CmdOrder::RightClick(Target::Unit(50)));
+        assert!(right_click(&b.act(&frame(3_000, u.clone(), 0, 30))).is_empty());
+        assert!(right_click(&b.act(&frame(3_047, u.clone(), 0, 30))).is_empty());
+        let act = b.act(&frame(3_048, u.clone(), 0, 30));
+        let nearest = u.iter().filter(|x| x.unit_type == SCV).min_by_key(|x| (dist2(x.pos, rax), x.id)).unwrap().id;
+        assert_eq!(right_click(&act), vec![vec![nearest]], "{:?}", act.cmds);
+        assert!(b.react_busy().contains(&nearest));
+        // Not again within 48 frames; again after them while it still has no builder.
+        assert!(right_click(&b.act(&frame(3_090, u.clone(), 0, 30))).is_empty());
+        assert_eq!(right_click(&b.act(&frame(3_096, u.clone(), 0, 30))), vec![vec![nearest]]);
+        // The SCV constructs it: done.
+        for x in u.iter_mut().filter(|x| x.id == nearest) {
+            (x.order, x.order_target, x.flags) = (ORDER_CONSTRUCTING, Some(50), flags::COMPLETED | flags::CONSTRUCTING);
+        }
+        assert!(right_click(&b.act(&frame(3_200, u.clone(), 0, 30))).is_empty());
+        assert!(b.react.as_ref().unwrap().resumers.is_empty() && !b.react_busy().contains(&nearest));
+    }
+
+    /// 7th advisory B (both branches): a constructing SCV under attack with an enemy worker
+    /// within 3 tiles sends the 2 mining SCVs nearest that worker at it; they mine again once it
+    /// is more than 6 tiles from the builder.
+    #[test]
+    fn builder_harassed_by_a_worker_021_r8() {
+        let mut b = teacher();
+        b.scout_done = true;
+        let mut u = base(12);
+        for x in u.iter_mut().filter(|x| x.unit_type == SCV) {
+            x.flags = flags::COMPLETED | flags::GATHERING;
+        }
+        let at = (home().0 + 6 * 32, home().1 - 3 * 32);
+        u.push(UnitState { flags: flags::COMPLETED | flags::CONSTRUCTING | flags::UNDER_ATTACK, ..unit(99, SCV, at) });
+        u.push(enemy(80, DRONE, (at.0 + 40, at.1)));
+        let act = b.act(&frame(1_500, u.clone(), 0, 24));
+        assert_eq!(branch(&b), Branch::Macro);
+        let guards = unit_orders(&act, |o| *o == CmdOrder::Attack(Target::Unit(80)));
+        assert_eq!(guards.iter().map(Vec::len).collect::<Vec<_>>(), vec![2], "{:?}", act.cmds);
+        assert!(!guards[0].contains(&99));
+        // Within 6 tiles: they keep at it; beyond: back to mining.
+        u.iter_mut().filter(|x| x.id == 80).for_each(|x| x.pos = (at.0 + 5 * 32, at.1));
+        b.act(&frame(1_548, u.clone(), 0, 24));
+        assert!(b.react_busy().contains(&guards[0][0]));
+        u.iter_mut().filter(|x| x.id == 80).for_each(|x| x.pos = (at.0 + 7 * 32, at.1));
+        let act = b.act(&frame(1_556, u, 0, 24));
+        assert!(unit_orders(&act, |o| matches!(o, CmdOrder::Gather(_))).contains(&guards[0]), "{:?}", act.cmds);
+        assert!(b.react_busy().is_empty());
     }
 
     /// 021-R3 / 021-R8: `t0-terran-react`, plan name `terran_react`, Terran only; another race

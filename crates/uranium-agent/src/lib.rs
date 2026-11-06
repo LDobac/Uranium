@@ -298,7 +298,7 @@ pub struct ReactRecord {
     /// Enemy main found (the teacher's rule: an enemy building within 10 tiles of a start location).
     pub main_s: Option<f64>,
     /// First rush identification (021-R8 R) and its rule (`pool_start`, `pool_done`, `lings`,
-    /// `army`, `drones`).
+    /// `army`, `drones`, `one_base`).
     pub rush_s: Option<f64>,
     pub rush_rule: Option<uranium_scripted::RushRule>,
     /// Macro → defence switches.

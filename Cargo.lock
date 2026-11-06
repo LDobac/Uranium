@@ -1584,6 +1584,7 @@ dependencies = [
  "serde",
  "uranium-env",
  "uranium-proto",
+ "uranium-replay",
 ]
 
 [[package]]

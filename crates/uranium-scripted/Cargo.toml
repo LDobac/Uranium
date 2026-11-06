@@ -11,3 +11,8 @@ uranium-proto.workspace = true
 # 021-R8: the teacher reads 033 "적 병력" with the same type definition as the 042 metrics.
 uranium-env = { path = "../uranium-env" }
 serde.workspace = true
+
+[dev-dependencies]
+# 021-R8 (7th advisory A): the ignored real-map test reads the bridge GameInfo (static map) of the
+# target maps from replay-build shards (040, AMB-040-6).
+uranium-replay = { path = "../uranium-replay" }

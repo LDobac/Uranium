@@ -4,6 +4,9 @@ use uranium_proto::{BitGrid, Pos, StaticMap, Tile, UnitState};
 
 use crate::types::*;
 
+/// Tiles kept free around resources by default so mining paths stay open.
+pub const RESOURCE_PAD: i32 = 3;
+
 pub struct Placer {
     buildable: BitGrid,
     w: u16,
@@ -25,28 +28,15 @@ impl Placer {
     /// Like `find`, but only within `max_r` tiles and where `ok(top_left)` holds
     /// (pylon power for Protoss, creep for Zerg).
     pub fn find_where(&self, ty: u16, near: Pos, units: &[UnitState], reserved: &[(Tile, u16)], max_r: i32, ok: impl Fn(Tile) -> bool) -> Option<Tile> {
-        let mut blocked = vec![false; self.w as usize * self.h as usize];
-        let mut mark = |x0: i32, y0: i32, w: i32, h: i32, pad: i32| {
-            for y in (y0 - pad)..(y0 + h + pad) {
-                for x in (x0 - pad)..(x0 + w + pad) {
-                    if x >= 0 && y >= 0 && (x as u16) < self.w && (y as u16) < self.h {
-                        blocked[y as usize * self.w as usize + x as usize] = true;
-                    }
-                }
-            }
-        };
-        for u in units {
-            if is_resource(u.unit_type) || is_building(u.unit_type) {
-                let (tx, ty_) = building_tile(u);
-                let (w, h) = footprint(u.unit_type);
-                let pad = if is_resource(u.unit_type) { 3 } else { 1 };
-                mark(tx as i32, ty_ as i32, w as i32, h as i32, pad);
-            }
-        }
-        for &((tx, ty_), rty) in reserved {
-            let (w, h) = footprint(rty);
-            mark(tx as i32, ty_ as i32, w as i32, h as i32, 1);
-        }
+        self.find_padded(ty, near, units, reserved, max_r, RESOURCE_PAD, ok)
+    }
+
+    /// Like `find_where` with `resource_pad` tiles kept free around resources instead of
+    /// `RESOURCE_PAD` (021-R8 bunker: 1, so the main bunker can stand next to a geyser, 7th
+    /// advisory A).
+    #[allow(clippy::too_many_arguments)]
+    pub fn find_padded(&self, ty: u16, near: Pos, units: &[UnitState], reserved: &[(Tile, u16)], max_r: i32, resource_pad: i32, ok: impl Fn(Tile) -> bool) -> Option<Tile> {
+        let blocked = self.blocked(units, reserved, resource_pad);
         let (fw, fh) = footprint(ty);
         let (cx, cy) = ((near.0 / 32) as i32, (near.1 / 32) as i32);
         for r in 2..max_r {
@@ -63,6 +53,41 @@ impl Placer {
             }
         }
         None
+    }
+
+    /// The first top-left tile of `candidates` (in their order) where `ty` fits, with
+    /// `resource_pad` tiles kept free around resources, and `ok` holds.
+    pub fn first_fit(&self, ty: u16, candidates: impl IntoIterator<Item = Tile>, units: &[UnitState], reserved: &[(Tile, u16)], resource_pad: i32, ok: impl Fn(Tile) -> bool) -> Option<Tile> {
+        let blocked = self.blocked(units, reserved, resource_pad);
+        let (fw, fh) = footprint(ty);
+        candidates.into_iter().find(|&(x, y)| self.fits(x as i32, y as i32, fw, fh, &blocked) && ok((x, y)))
+    }
+
+    /// Tiles taken: buildings (+1 gap), resources (+`resource_pad`), reserved footprints (+1).
+    fn blocked(&self, units: &[UnitState], reserved: &[(Tile, u16)], resource_pad: i32) -> Vec<bool> {
+        let mut blocked = vec![false; self.w as usize * self.h as usize];
+        let mut mark = |x0: i32, y0: i32, w: i32, h: i32, pad: i32| {
+            for y in (y0 - pad)..(y0 + h + pad) {
+                for x in (x0 - pad)..(x0 + w + pad) {
+                    if x >= 0 && y >= 0 && (x as u16) < self.w && (y as u16) < self.h {
+                        blocked[y as usize * self.w as usize + x as usize] = true;
+                    }
+                }
+            }
+        };
+        for u in units {
+            if is_resource(u.unit_type) || is_building(u.unit_type) {
+                let (tx, ty_) = building_tile(u);
+                let (w, h) = footprint(u.unit_type);
+                let pad = if is_resource(u.unit_type) { resource_pad } else { 1 };
+                mark(tx as i32, ty_ as i32, w as i32, h as i32, pad);
+            }
+        }
+        for &((tx, ty_), rty) in reserved {
+            let (w, h) = footprint(rty);
+            mark(tx as i32, ty_ as i32, w as i32, h as i32, 1);
+        }
+        blocked
     }
 
     fn fits(&self, x: i32, y: i32, w: u16, h: u16, blocked: &[bool]) -> bool {
@@ -123,6 +148,18 @@ mod tests {
         let (ax, ay) = addon_tile(t);
         let hits_addon = next.0 < ax + 2 && next.0 + 4 > ax && next.1 < ay + 2 && next.1 + 3 > ay;
         assert!(!hits_addon, "starport {t:?} barracks {next:?}");
+    }
+
+    /// 021-R8 (7th advisory A): the bunker keeps 1 tile from resources instead of 3.
+    #[test]
+    fn resource_pad_021_r8() {
+        let p = Placer::new(&map(64, 64));
+        let units = vec![unit(GEYSER, (30, 30))];
+        // A bunker (3x2) right below the geyser (4x2) with a 1-tile gap.
+        let site = (30, 33);
+        assert!(p.first_fit(BUNKER, [site], &units, &[], RESOURCE_PAD, |_| true).is_none());
+        assert_eq!(p.first_fit(BUNKER, [site], &units, &[], 1, |_| true), Some(site));
+        assert!(p.first_fit(BUNKER, [(30, 32)], &units, &[], 1, |_| true).is_none(), "no gap");
     }
 
     #[test]

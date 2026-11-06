@@ -5,14 +5,16 @@
 # §1), 10 games each, map "both" (Fighting Spirit / Circuit Breaker 5 + 5), 60 min, replays kept;
 # scripted players and OSS bots only (uranium-env run).
 # Pass (050-R8, per opponent, summary.md "T0 Terran sessions"):
-# - ualbertabot2hatchhydra, ualbertabot3hatchmuta: bunker before 4:00 0/10, ①②④′ held 0/10,
+# - ualbertabot2hatchhydra, ualbertabot3hatchmuta: bunker before 4:00 0/10, ①②④′④″ held 0/10,
 #   expand by 4:00 >= 9/10, scv_8m >= 16 >= 9/10.
-# - steamhammer2hatchmuta, T0 zerg_muta: pre-emptive bunker 0/10, ①②④′ held 0/10 (③ allowed),
+# - steamhammer2hatchmuta, T0 zerg_muta: pre-emptive bunker 0/10, ①②④′④″ held 0/10 (③ allowed),
 #   scv_8m >= 16 >= 8/10, expanded >= 8/10.
+# 10 min (max_frames 14,400; the teacher data is cut at 8:00, 7th advisory F).
 name = "teacher-macro-check"
 seed_base = 46000
 save_replay = true
 wall_timeout_s = 7200
+max_frames = 14400
 [[matchup]]
 map = "both"
 games = 10

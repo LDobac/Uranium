@@ -527,6 +527,10 @@ p1={kind='oss',name='iron',race='terran'}";
         }
         assert_eq!(plan.matchups.len(), 4);
         assert!(plan.save_replay && plan.matchups.iter().all(|m| m.p0.model().is_none() && m.p1.model().is_none()));
+        // 7th advisory F: teacher games stop at 10:00 (the data is cut at 8:00).
+        for p in ["teacher_check.toml", "teacher_macro_check.toml", "teacher_t0zerg_check.toml"] {
+            assert_eq!(load_plan(&dir.join(p)).unwrap().max_frames, 14_400, "{p}");
+        }
         let jobs = expand(&plan, "a");
         assert!(jobs.iter().all(|j| j.t0_builds[0] == T0Build::TerranReact && j.spec.players[0].race == Race::Terran));
 

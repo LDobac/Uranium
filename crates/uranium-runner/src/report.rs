@@ -371,9 +371,10 @@ pub fn write_with(out: &Path, plan: &Plan, infos: &[[Option<PolicyInfo>; 2]]) ->
 
 /// 050-R8: T0 Terran sessions with a `scripted` record (the 021-R8 teacher validation plans), per
 /// matchup and map: held (050-R7 `scv_min_1m > 4`), the session's wins, a bunker started before
-/// 4:00 (`bunker_s < 240`) and a pre-emptive one (also no ③ `army` rule before it), sessions where
-/// ①②④′ (`pool_start`, `pool_done`, `lings`, `drones`) ever held, expanded by 4:00, `scv_8m ≥ 16`
-/// and `≥ 14` among the judged sessions — those that reached 8:00, plus those that ended before
+/// 4:00 (`bunker_s < 240`) and a pre-emptive one (also no ③ `army` or ④″ `one_base` rule at or
+/// before it, 7th advisory E), sessions where ①②④′④″ (`pool_start`, `pool_done`, `lings`,
+/// `drones`, `one_base`) ever held, expanded by 4:00, `scv_8m ≥ 16`, `≥ 14` and `≥ 8` (the RL
+/// mini-game criterion, 7th advisory F) among the judged sessions — those that reached 8:00, plus those that ended before
 /// it, our win passing and our loss failing (050-R8, 메인 임시 결정) — and the median of the real
 /// `scv_8m` values, the first rule (D entry) by rule and the median expansion time (rule
 /// advisory §2 criteria).
@@ -388,8 +389,8 @@ fn scripted_section(md: &mut String, games: &[Value], by_game: &BTreeMap<u64, Ve
         evidence: u32,
         expand_4m: u32,
         scv8: Vec<f64>,
-        /// (passes ≥ 16, passes ≥ 14, judged).
-        judged: (u32, u32, u32),
+        /// (passes ≥ 16, passes ≥ 14, passes ≥ 8, judged).
+        judged: (u32, u32, u32, u32),
         early_wins: u32,
         rules: BTreeMap<String, u32>,
         expand: Vec<f64>,
@@ -406,21 +407,24 @@ fn scripted_section(md: &mut String, games: &[Value], by_game: &BTreeMap<u64, Ve
             c.won += u32::from(s["won"].as_bool() == Some(true));
             let bunker = m["bunker_s"].as_f64().filter(|v| *v < 240.0);
             c.bunker_4m += u32::from(bunker.is_some());
-            let army = m["react"]["rules_s"]["army"].as_f64();
-            c.preemptive += u32::from(bunker.is_some_and(|b| army.is_none_or(|a| a > b)));
-            c.evidence += u32::from(["pool_start", "pool_done", "lings", "drones"].iter().any(|k| m["react"]["rules_s"][k].is_number()));
+            // Pre-emptive: no ③ (`army`) and no ④″ (`one_base`, 7th advisory E) at or before it.
+            let after = |k: &str| m["react"]["rules_s"][k].as_f64();
+            c.preemptive += u32::from(bunker.is_some_and(|b| ["army", "one_base"].iter().all(|k| after(k).is_none_or(|a| a > b))));
+            c.evidence += u32::from(["pool_start", "pool_done", "lings", "drones", "one_base"].iter().any(|k| m["react"]["rules_s"][k].is_number()));
             c.expand_4m += u32::from(m["react"]["expand_s"].as_f64().is_some_and(|v| v <= 240.0));
             let early = s["end_frame"].as_u64().is_some_and(|f| f < 11_520);
             match (m["scv_8m"].as_f64(), s["won"].as_bool()) {
                 (Some(v), _) => {
                     c.scv8.push(v);
-                    c.judged = (c.judged.0 + u32::from(v >= 16.0), c.judged.1 + u32::from(v >= 14.0), c.judged.2 + 1);
+                    let j = c.judged;
+                    c.judged = (j.0 + u32::from(v >= 16.0), j.1 + u32::from(v >= 14.0), j.2 + u32::from(v >= 8.0), j.3 + 1);
                 }
                 (None, Some(true)) if early => {
                     c.early_wins += 1;
-                    c.judged = (c.judged.0 + 1, c.judged.1 + 1, c.judged.2 + 1);
+                    let j = c.judged;
+                    c.judged = (j.0 + 1, j.1 + 1, j.2 + 1, j.3 + 1);
                 }
-                (None, Some(false)) if early => c.judged.2 += 1,
+                (None, Some(false)) if early => c.judged.3 += 1,
                 _ => {}
             }
             match m["react"]["rush_rule"].as_str() {
@@ -437,16 +441,16 @@ fn scripted_section(md: &mut String, games: &[Value], by_game: &BTreeMap<u64, Ve
         return Ok(());
     }
     writeln!(md, "\n## T0 Terran sessions (050-R8)\n")?;
-    writeln!(md, "| # | build | map | sessions | held (scv_min_1m > 4) | won | bunker < 4:00 | pre-emptive bunker | ①②④′ held | expand ≤ 4:00 | scv_8m ≥ 16 / ≥ 14 / judged (early wins) | scv_8m p50 | first rule (021-R8) | expand s p50 |")?;
+    writeln!(md, "| # | build | map | sessions | held (scv_min_1m > 4) | won | bunker < 4:00 | pre-emptive bunker | ①②④′④″ held | expand ≤ 4:00 | scv_8m ≥ 16 / ≥ 14 / ≥ 8 / judged (early wins) | scv_8m p50 | first rule (021-R8) | expand s p50 |")?;
     writeln!(md, "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")?;
     for ((mi, build, map), mut c) in cells {
-        let (scv16, scv14, judged) = c.judged;
+        let (scv16, scv14, scv8, judged) = c.judged;
         let early_wins = c.early_wins;
         let (scv_p50, exp_p50) = (median(&mut c.scv8), median(&mut c.expand));
         let fmt = |v: f64| if v.is_nan() { "-".to_string() } else { format!("{v:.0}") };
         writeln!(
             md,
-            "| {mi} | {build} | {map} | {} | {} | {} | {} | {} | {} | {} | {scv16} / {scv14} / {judged} ({early_wins}) | {} | {:?} | {} |",
+            "| {mi} | {build} | {map} | {} | {} | {} | {} | {} | {} | {} | {scv16} / {scv14} / {scv8} / {judged} ({early_wins}) | {} | {:?} | {} |",
             c.sessions, c.held, c.won, c.bunker_4m, c.preemptive, c.evidence, c.expand_4m, fmt(scv_p50), c.rules, fmt(exp_p50)
         )?;
     }
@@ -495,14 +499,25 @@ mod tests {
         by2.insert(4, vec![&l]);
         let mut md2 = String::new();
         scripted_section(&mut md2, &games2, &by2).unwrap();
-        assert!(md2.contains("| 1 | terran_react | cb | 2 | 1 | 1 | 0 | 0 | 0 | 1 | 1 / 1 / 2 (1) | - | {\"none\": 2} | 200 |"), "{md2}");
+        assert!(md2.contains("| 1 | terran_react | cb | 2 | 1 | 1 | 0 | 0 | 0 | 1 | 1 / 1 / 1 / 2 (1) | - | {\"none\": 2} | 200 |"), "{md2}");
+        // 7th advisory E: a bunker after ④″ (`one_base`) is not pre-emptive; ④″ counts as held
+        // evidence; scv_8m 10 passes only ≥ 8.
+        let o = serde_json::json!({"game_id": 5, "won": false, "t0_build": "terran_react", "scripted": {"scv_min_1m": 8, "bunker_s": 200.0, "scv_8m": 10, "react": {"rush_rule": "one_base", "expand_s": null, "rules_s": {"one_base": 190.0}}}});
+        let o2 = serde_json::json!({"game_id": 6, "won": false, "t0_build": "terran_react", "scripted": {"scv_min_1m": 8, "bunker_s": 180.0, "scv_8m": 7, "react": {"rush_rule": "one_base", "expand_s": null, "rules_s": {"one_base": 190.0}}}});
+        let games3 = vec![serde_json::json!({"game_id": 5, "matchup": 2, "map": "fs"}), serde_json::json!({"game_id": 6, "matchup": 2, "map": "fs"})];
+        let mut by3: BTreeMap<u64, Vec<&Value>> = BTreeMap::new();
+        by3.insert(5, vec![&o]);
+        by3.insert(6, vec![&o2]);
+        let mut md3 = String::new();
+        scripted_section(&mut md3, &games3, &by3).unwrap();
+        assert!(md3.contains("| 2 | terran_react | fs | 2 | 2 | 0 | 2 | 1 | 2 | 0 | 0 / 0 / 1 / 2 (0) | 10 | {\"one_base\": 2} | - |"), "{md3}");
         let mut by_game: BTreeMap<u64, Vec<&Value>> = BTreeMap::new();
         by_game.insert(1, vec![&s1]);
         by_game.insert(2, vec![&s2, &z]);
         let mut md = String::new();
         scripted_section(&mut md, &games, &by_game).unwrap();
         // s1: bunker 150 before its army rule (200) = pre-emptive, ①a held; s2: bunker after ③.
-        assert!(md.contains("| 0 | terran_react | fs | 2 | 1 | 1 | 2 | 1 | 1 | 1 | 1 / 2 / 2 (0) | 18 | {\"army\": 1, \"pool_start\": 1} | 170 |"), "{md}");
+        assert!(md.contains("| 0 | terran_react | fs | 2 | 1 | 1 | 2 | 1 | 1 | 1 | 1 / 2 / 2 / 2 (0) | 18 | {\"army\": 1, \"pool_start\": 1} | 170 |"), "{md}");
         let mut empty = String::new();
         scripted_section(&mut empty, &games, &BTreeMap::new()).unwrap();
         assert!(empty.is_empty());

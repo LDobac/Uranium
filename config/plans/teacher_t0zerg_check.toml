@@ -3,12 +3,15 @@
 # reports/m6_teacher_rush_rule_advice.md §1 — defending it after ② / ③ is right, ① must not fire),
 # 10 games, map "both" (Fighting Spirit / Circuit Breaker 5 + 5), 60 min, replays kept; scripted
 # players only (uranium-env run).
-# Pass (050-R8, summary.md "T0 Terran sessions"): pre-emptive bunker 0/10, ① (pool_start /
-# pool_done) held 0/10, held (scv_min_1m > 4) >= 8/10, scv_8m >= 14 >= 8/10.
+# Pass (050-R8, summary.md "T0 Terran sessions"): pre-emptive bunker 0/10 (a bunker after ④″
+# one_base is not pre-emptive, 7th advisory E), ① (pool_start / pool_done) held 0/10, held
+# (scv_min_1m > 4) >= 8/10, scv_8m >= 14 >= 8/10.
+# 10 min (max_frames 14,400; the teacher data is cut at 8:00, 7th advisory F).
 name = "teacher-t0zerg-check"
 seed_base = 47000
 save_replay = true
 wall_timeout_s = 7200
+max_frames = 14400
 [[matchup]]
 map = "both"
 games = 10

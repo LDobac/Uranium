@@ -733,7 +733,8 @@ impl Bot for Brain {
                 }
             }
         }
-        if k.defend && branch != Some(Branch::Defence) {
+        // 021-R8 D: the home guard only while the marines attack (7th advisory C).
+        if k.defend && (branch != Some(Branch::Defence) || self.react_marines_attack()) {
             if let Some(b) = base {
                 self.defend(f, &mine, b, &kept, &mut cmds);
             }
@@ -901,10 +902,12 @@ impl Brain {
         }
         let bases: Vec<Pos> = if react { mine.iter().filter(|u| is_resource_depot(u.unit_type)).map(|u| u.pos).collect() } else { vec![base] };
         let near_base = |p: Pos| bases.iter().map(|b| dist2(p, *b)).min().unwrap_or(i64::MAX);
+        // 021-R8 D marines attack enemies within `marine_radius` only (7th advisory C).
+        let reach = self.react_guard_radius().map_or(DEFEND_RADIUS, |t| t * 32);
         let threat = f
             .units
             .iter()
-            .filter(|u| u.owner != self.me && !is_neutral_owner(u.owner) && near_base(u.pos) < DEFEND_RADIUS * DEFEND_RADIUS)
+            .filter(|u| u.owner != self.me && !is_neutral_owner(u.owner) && near_base(u.pos) < reach * reach)
             .min_by_key(|u| (near_base(u.pos), u.id));
         let Some(t) = threat else { return };
         let on_drop: Vec<UnitId> = self.drops.iter().flat_map(|d| d.squad.iter().copied()).collect();
