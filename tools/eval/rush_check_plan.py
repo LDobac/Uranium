@@ -223,7 +223,10 @@ def write_dagger(out_dir: Path, rnd: int, checkpoint: str, out: Path | None, hal
     """One DAgger round plan (041-R22): rush 4 x 2 maps x 40 + macro 5 x 2 maps x 28 = 600 model
     games, or with `half` rush x 20 + macro x 14 = 300 (11th advisory section 2)."""
     assert rnd >= 1, "--round starts at 1"
-    rush_games, macro_games = (DAGGER_HALF_RUSH_GAMES, DAGGER_HALF_MACRO_GAMES) if half else (DAGGER_RUSH_GAMES, DAGGER_MACRO_GAMES)
+    if half:
+        rush_games, macro_games = DAGGER_HALF_RUSH_GAMES, DAGGER_HALF_MACRO_GAMES
+    else:
+        rush_games, macro_games = DAGGER_RUSH_GAMES, DAGGER_MACRO_GAMES
     blocks = [(o, m, rush_games) for o in BOTGEN_RUSH for m in MAPS]
     blocks += [(o, m, macro_games) for o in BOTGEN_MACRO for m in MAPS]
     n = sum(g for _, _, g in blocks)
