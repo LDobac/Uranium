@@ -1,7 +1,8 @@
 # Checkpoint 1 T1 evaluation (user decision 2026-11-07: 50 games per T1 bot; 11th advisory
 # reports/m6_rl_stall_advice11.md section 2): BC baseline bc-s2e2-pt/ckpt-11387, stochastic,
-# vs UAlbertaBot / Steamhammer (Z 18, P 16, T 16), ZZZKBot Z 50, Stardust P 50, Iron T 50 = 250 games.
-# McRave excluded (throughput, as in config/rl_t1self.toml). map = both splits each matchup over the two maps.
+# vs UAlbertaBot / Steamhammer / McRave (Z 18, P 16, T 16), ZZZKBot Z 50, Stardust P 50, Iron T 50 = 300 games: every
+# implemented T1 bot (021, config variants are not separate bots). McRave added 2026-11-08 (user question: all T1 bots;
+# 50 evaluation games cost about an hour, unlike its RL throughput cost). map = both splits each matchup over the two maps.
 # The final model uses the same plan with only the checkpoint changed (same seeds).
 name = "t1-eval-bc"
 seed_base = 46000
@@ -53,3 +54,18 @@ map = "both"
 games = 50
 p0 = { kind = "model", checkpoint = "checkpoints/bc-s2e2-pt/ckpt-11387", sample = "stochastic" }
 p1 = { kind = "oss", name = "iron", race = "terran" }
+[[matchup]]
+map = "both"
+games = 18
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2e2-pt/ckpt-11387", sample = "stochastic" }
+p1 = { kind = "oss", name = "mcrave", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 16
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2e2-pt/ckpt-11387", sample = "stochastic" }
+p1 = { kind = "oss", name = "mcrave", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 16
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2e2-pt/ckpt-11387", sample = "stochastic" }
+p1 = { kind = "oss", name = "mcrave", race = "terran" }
