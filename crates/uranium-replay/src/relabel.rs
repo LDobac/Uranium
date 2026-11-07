@@ -265,12 +265,37 @@ pub struct Shadow {
     pub units_at: HashMap<u32, HashMap<u32, crate::label::Own>>,
     /// Teacher observations (diagnostics).
     pub observations: u32,
+    /// Teacher commands dropped as repeats (`REPEAT_WINDOW`, diagnostics in the build records).
+    pub repeats_dropped: u32,
+    /// Frame of the last kept label of each command (order opcode and payload, select payload).
+    last_kept: HashMap<RepeatKey, u32>,
 }
+
+/// A teacher command as the game receives it: order opcode, order payload, select payload.
+type RepeatKey = (u8, Vec<u8>, Vec<u8>);
+
+/// 041-R22 (11th advisory, AMB-041-12 메인 임시 결정): a teacher command equal to one kept less
+/// than this many frames earlier is dropped. The model does not carry out the shadow's commands,
+/// so the teacher repeats them at every observation (8 frames) while the state lasts (an idle
+/// command center with minerals: Train_SCV every 8 frames); 32 is the largest delay bucket
+/// (031-R11), so the kept labels of such a run are 32 frames apart with no NoOp decision between
+/// them. A live teacher never repeats a command within 32 frames (its commands are executed).
+pub const REPEAT_WINDOW: u32 = 32;
 
 impl Shadow {
     /// `player`: the perspective's replay command id; `last`: the last frame the teacher is fed.
     pub fn new(info: &uranium_proto::GameInfo, build: T0Build, hints: uranium_scripted::MapHints, player: u8, last: u32) -> Self {
-        Self { bot: uranium_scripted::for_game_hints(info, build, hints), me: info.self_player, player, last, cmds: Vec::new(), units_at: HashMap::new(), observations: 0 }
+        Self {
+            bot: uranium_scripted::for_game_hints(info, build, hints),
+            me: info.self_player,
+            player,
+            last,
+            cmds: Vec::new(),
+            units_at: HashMap::new(),
+            observations: 0,
+            repeats_dropped: 0,
+            last_kept: HashMap::new(),
+        }
     }
 
     /// One observation of the playback; frames that are not a live teacher observation are skipped.
@@ -285,7 +310,20 @@ impl Shadow {
         let at = live + RECORD_DELAY;
         let start = self.cmds.len();
         for c in &act.cmds {
-            self.cmds.extend(command_cmds(c, &seen, self.me, self.player).into_iter().map(|c| Cmd { frame: at, ..c }));
+            // `command_cmds` gives (select, order) pairs.
+            let cmds = command_cmds(c, &seen, self.me, self.player);
+            for pair in cmds.chunks(2) {
+                let [select, order] = pair else { unreachable!("command_cmds gives (select, order) pairs") };
+                // 041-R22 (11th advisory): the same command again within `REPEAT_WINDOW` of the last
+                // kept one is dropped whole (no label, no NoOp: its time joins the previous delay).
+                let key = (order.op, order.data.clone(), select.data.clone());
+                if self.last_kept.get(&key).is_some_and(|&k| at - k < REPEAT_WINDOW) {
+                    self.repeats_dropped += 1;
+                    continue;
+                }
+                self.last_kept.insert(key, at);
+                self.cmds.extend(pair.iter().map(|c| Cmd { frame: at, ..c.clone() }));
+            }
         }
         if self.cmds.len() > start {
             self.units_at.insert(at, own_units(f, self.me));
@@ -389,10 +427,44 @@ mod tests {
         assert_eq!(first.iter().filter(|n| **n == "Train_SCV").count(), 1, "{got:?}");
         // Every teacher command is recorded 2 frames after its live observation (1, 9, 17, 25).
         assert!(a.cmds.iter().all(|c| [3, 11, 19, 27].contains(&c.frame)));
-        assert!(a.cmds.iter().any(|c| c.frame == 3) && a.cmds.iter().any(|c| c.frame == 27));
+        assert!(a.cmds.iter().any(|c| c.frame == 3));
+        // The same observation four times: the later identical commands are repeats (dropped).
+        assert!(a.repeats_dropped > 0 && a.repeats_dropped == b.repeats_dropped);
         // The steps tile the game from the game-start observation.
         assert_eq!(la[0].frame, GAME_START_FRAME);
         assert!(la.windows(2).all(|w| w[1].frame == w[0].frame + w[0].delay));
+    }
+
+    /// 041-R22 (11th advisory, AMB-041-12): a teacher command equal to one kept less than 32
+    /// frames earlier (same order and payload, same selection) is dropped whole — no label and no
+    /// NoOp, its time joins the previous label's delay — so a command the model never carries out
+    /// is labelled every 32 frames; a different command (another unit, another order) is kept.
+    #[test]
+    fn repeated_teacher_commands_are_thinned_041_r22() {
+        assert_eq!(REPEAT_WINDOW, *crate::label::DELAY_BUCKETS.last().unwrap());
+        // An idle command center with minerals and nothing else to do: the teacher trains an SCV
+        // at every observation (live frames 1, 9, ..., 65 = playback 1, 7, ..., 63).
+        let cc_only = || vec![unit(10, 0, CC, (192, 176))];
+        let frames: Vec<RawFrame> = teacher_frames(63).into_iter().map(|n| frame_at(n, cc_only(), 50)).collect();
+        let mut s = Shadow::new(&info(), T0Build::TerranReact, uranium_scripted::MapHints::default(), 3, 63);
+        frames.iter().for_each(|f| s.observe(f));
+        let trains: Vec<u32> = s.cmds.iter().filter(|c| c.op == op::TRAIN).map(|c| c.frame).collect();
+        // Recorded at live + 2 = 3, 11, ..., 67: kept at 3, 35 (32 later) and 67; 6 dropped.
+        assert_eq!(trains, vec![3, 35, 67]);
+        assert_eq!((s.observations, s.repeats_dropped), (9, 6));
+        let lab = Labeler::new().unwrap();
+        let (labels, _) = s.labels(&lab, 100);
+        let got = names(&labels);
+        let kept: Vec<(u32, u32)> = labels.iter().filter(|l| got.iter().any(|(f, n)| *f == l.frame && n == "Train_SCV")).map(|l| (l.frame, l.delay)).collect();
+        // No NoOp decision between the kept labels: each Train_SCV's delay reaches the next one.
+        assert_eq!(kept, vec![(3, 32), (35, 32), (67, 32)]);
+        assert!(!got.iter().any(|(f, n)| (3..67).contains(f) && n == "NoOp"), "{got:?}");
+        // Another command center (another selection) is another command: kept.
+        let two = || vec![unit(10, 0, CC, (192, 176)), unit(11, 0, CC, (800, 800))];
+        let mut s = Shadow::new(&info(), T0Build::TerranReact, uranium_scripted::MapHints::default(), 3, 7);
+        s.observe(&frame_at(1, two(), 100));
+        assert_eq!(s.cmds.iter().filter(|c| c.op == op::TRAIN).count(), 2);
+        assert_eq!(s.repeats_dropped, 0);
     }
 
     /// The live T0 session's observation frames 1, 9, 17, ... (011-R15, `Act.advance_frames` 8)

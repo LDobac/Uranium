@@ -197,7 +197,15 @@ pub fn filter(rep: &Replay, family: &str, bot: bool, any_length: bool) -> std::r
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum Outcome {
     /// `result` / `result_source`: 040-R8 result of the view (dataset statistics, 040-R6).
-    Written { steps: usize, coverage: Coverage, result: i8, result_source: String },
+    /// `repeats_dropped`: 041-R22 teacher commands dropped as repeats (relabelled views only).
+    Written {
+        steps: usize,
+        coverage: Coverage,
+        result: i8,
+        result_source: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        repeats_dropped: Option<u32>,
+    },
     Filtered { reason: String },
     Desync { reasons: Vec<String> },
     /// 013: opcode or command OpenBW cannot run; kept for review, not discarded.
@@ -271,6 +279,8 @@ pub struct ViewGame {
     pub result: i8,
     pub result_source: &'static str,
     pub game_info: uranium_proto::GameInfo,
+    /// 041-R22: teacher commands dropped as repeats (`relabel::REPEAT_WINDOW`); `None` = not relabelled.
+    pub repeats_dropped: Option<u32>,
 }
 
 /// How one view is labelled (040-R21 cut and time limit, 041-R22 relabelling).
@@ -287,7 +297,7 @@ struct ViewOptions<'a> {
 fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, recorded_winner: Option<u8>, o: ViewOptions) -> Result<std::result::Result<ViewGame, Outcome>> {
     let (until_frame, time_limit) = (o.until_frame, o.time_limit);
     let me = slot_of(rep, view.perspective)?;
-    let (mut a, mut labels, coverage) = match o.relabel {
+    let (mut a, mut labels, coverage, repeats_dropped) = match o.relabel {
         // Replay A: own unit types at each command frame + desync signals.
         None => {
             let mut units_at: HashMap<u32, HashMap<u32, crate::label::Own>> = HashMap::new();
@@ -304,7 +314,7 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
                 .collect();
             let empty = HashMap::new();
             let (labels, coverage) = labeler.label(&cmds, rep.header.frames, |f| units_at.get(&f).unwrap_or(&empty));
-            (a, labels, coverage)
+            (a, labels, coverage, None)
         }
         // 041-R22 replay T: the same desync signals as replay A, and the teacher run as a shadow
         // on the perspective's observations; its commands are the labels (the player's own
@@ -338,7 +348,7 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
                 return Ok(Err(Outcome::Error { reason: "bridge sent no GameInfo: no teacher to relabel with (041-R22)".into() }));
             };
             let (labels, coverage) = shadow.labels(labeler, rep.header.frames);
-            (a, labels, coverage)
+            (a, labels, coverage, Some(shadow.repeats_dropped))
         }
     };
     a.drop_time_limit_leave(time_limit);
@@ -377,7 +387,7 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
     let Some(game_info) = res.game_info else {
         return Ok(Err(Outcome::Error { reason: "bridge sent no GameInfo (AMB-040-6)".into() }));
     };
-    Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info }))
+    Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info, repeats_dropped }))
 }
 
 /// 040-R21: drops the items (labels / steps) observed after frame `until`; `None` keeps all.
@@ -663,7 +673,7 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
         }
         let vo = ViewOptions { until_frame: opt.until_frame, time_limit: opt.time_limit, relabel: opt.relabel, map_hash: &map_hash };
         let outcome = match build_view(&rep, &view, cfg, labeler, recorded_winner, vo) {
-            Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info })) => {
+            Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info, repeats_dropped })) => {
                 let n = steps.len();
                 // 031 / AMB-031-3: map precompute once per map (observation channels only).
                 let pre = match write_map_precompute(&map_hash, &game_info, &rep.map) {
@@ -701,7 +711,7 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
                     }
                 }
                 *written.lock().unwrap() += postcard::experimental::serialized_size(&game).unwrap_or(0) as u64;
-                let (r, _) = rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Written { steps: n, coverage, result, result_source: result_source.to_string() });
+                let (r, _) = rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Written { steps: n, coverage, result, result_source: result_source.to_string(), repeats_dropped });
                 out.push((r, Some(game)));
                 continue;
             }
@@ -752,7 +762,7 @@ mod tests {
 
     fn written_record(n: u32) -> Record {
         let coverage = Coverage::default();
-        Record { index: n as usize, replay_sha256: format!("{n:064x}"), src: "t".into(), map_family: "other".into(), map_name: String::new(), map_hash: String::new(), recorded_winner: None, view: None, labeler_version: crate::label::LABELER_VERSION, until_frame: None, time_limit: None, relabel: None, outcome: Outcome::Written { steps: 3, coverage, result: 0, result_source: "none".into() } }
+        Record { index: n as usize, replay_sha256: format!("{n:064x}"), src: "t".into(), map_family: "other".into(), map_name: String::new(), map_hash: String::new(), recorded_winner: None, view: None, labeler_version: crate::label::LABELER_VERSION, until_frame: None, time_limit: None, relabel: None, outcome: Outcome::Written { steps: 3, coverage, result: 0, result_source: "none".into(), repeats_dropped: None } }
     }
 
     /// 040-R17 (review M1): a shard whose copy fails verification stops the build. Its records
