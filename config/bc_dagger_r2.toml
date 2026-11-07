@@ -1,0 +1,88 @@
+# 041-R22 DAgger round 2 (user delegation 2026-11-07, 10th / 11th advisory reports/m6_rl_stall_advice10.md,
+# reports/m6_rl_stall_advice11.md section 2): one epoch from `--init bc-dagger-r1/ckpt-1137`, `--s2`. Data: every
+# teacher game (botgen), every DAgger game so far (dagger/r1: bc-mix-e10's 600 games, dagger/r2: bc-dagger-r1's 300
+# games, relabelled by the 021-R8 teacher, repeated commands thinned within 32 frames) and the four human sources'
+# target-map train games subsampled to 0.043 per game (seed 14, new subsample and order). Learning rate as
+# bc-mix-e10: 3e-4 / 3e-6 x s2_lr_scale 0.1 = 3e-5 / 3e-7, warmup 5%, cosine to the end of the epoch.
+# 041 behaviour cloning hyper-parameters (041-R3, R10: tuning targets, recorded in checkpoints).
+
+# Parallel games per batch (B) and truncated-BPTT length (T, 041-R2 / 032-R5).
+lanes = 32
+seq_len = 64
+# Lanes per forward/backward pass. Group gradients are summed into one update (same result as one
+# pass over all lanes), so peak GPU memory follows the group, not `lanes`. 0 = all lanes at once.
+micro_lanes = 1
+# Burn balanced gradient checkpointing: recompute memory-bound activations during backward.
+grad_checkpointing = false
+# Round the batch entity count N up to a multiple of this (masked padding, same result). Fewer
+# distinct tensor shapes; ~9% faster per update on the 13-game CUDA sample (2026-10-17).
+pad_entities = 64
+# AdamW + linear warmup + cosine decay, gradient-norm clip 1.0 (041-R3): one global L2 norm over
+# all parameter gradients after the micro-lane sum (not Burn's per-tensor clip, G-D4).
+# 9th advisory: x s2_lr_scale = 3e-5 peak, 3e-7 floor.
+lr = 3e-4
+min_lr = 3e-6
+warmup_steps = 2000
+# Schedule length when no stage length applies (smoke runs). `bc` uses [steps] below.
+total_steps = 500000
+weight_decay = 1e-4
+grad_clip = 1.0
+# S2 fine-tuning uses 1/10 of the learning rate (041-R4).
+s2_lr_scale = 0.1
+# 061-R6 (G-D6): checkpoints kept per run on the shared drive. Absent = 5; 0 = keep all.
+# keep_checkpoints = 5
+# Head loss weights (041-R1).
+[heads]
+action = 1.0
+delay = 0.5
+queued = 0.2
+selected = 1.0
+target_unit = 1.0
+target_loc = 1.0
+
+[steps]
+# Only the S2 stage runs with this file. One epoch, counted by `uranium-train bc-epoch --config
+# config/bc_dagger_r2.toml` with --dataset replays/shards/{stardata,community,scr_ladder,personal,botgen,dagger}
+# (lanes 32, seq_len 64, data.seed 14; 2026-11-08: 2,838 games, 2,443,069 steps; dagger/r2 296 relabelled games,
+# 191,248 steps before the 041-R12 val split). s1 / ablation_a are unused (0 = total_steps).
+s1 = 0
+s2 = 1218
+ablation_a = 0
+# 041-R14: 5% of the epoch, rounded half up (1218 x 0.05 = 60.9 -> 61).
+s2_warmup = 61
+
+[value]
+# win head MSE weight (041-R7)
+win = 0.5
+# 041-R19 (2026-10-21): win_open head MSE weight. Present = a new run builds the head (032-R18,
+# win estimate without privileged input for the 031-R12 surrender rule). Clipped apart from the
+# other parameters, so they update as without it. Not in bc_core_ablation.toml.
+win_open = 0.5
+
+[data]
+# Fraction of games trained with z_present = false (041-R8 / 033-R2).
+z_drop = 0.25
+# Random dihedral symmetry per game at load time (030-R4, 040-R7).
+augment = true
+# 030-R11 (user decision 2026-10-19): share of games whose enemy race is masked as unknown until
+# the first enemy unit is seen (per game, hash of replay sha256 + seed; no extra copies).
+enemy_race_mask = 0.05
+# 11th advisory: round 1 uses seed 13, round 2 seed 14.
+seed = 14
+checkpoint_every = 5000
+# Also checkpoint at least this often in wall time (061-R10; ~2 updates/min on CUDA).
+checkpoint_minutes = 60
+
+# 041-R21 / 041-R22: keep 0.043 of the human target-map train games (per game, hash of replay
+# sha256 + data.seed; both TvT perspectives together), every game of the teacher sources `botgen` and `dagger`.
+[data.subsample]
+fraction = 0.043
+keep_sources = ["botgen", "dagger"]
+
+# 032 section 2.7 / 032-R20 (4) (user decision 2026-10-27): the main BC model turns on all four
+# structure switches (same as the comparison run arch-abl-all-pt). Absent keys would mean off.
+[model]
+terrain = true
+ctx_token = true
+attn_pool = true
+outer = 32
