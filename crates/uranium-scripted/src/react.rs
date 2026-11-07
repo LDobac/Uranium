@@ -1843,11 +1843,11 @@ mod tests {
     fn lifted_buildings_train_nothing_041_r22() {
         let mut b = teacher();
         b.scout_done = true;
-        let act = b.act(&frame(3_000, base(12), 400, 24));
+        let act = b.act(&frame(3_000, base(12), 1_000, 24));
         assert_eq!((trains(&act, SCV), trains(&act, MARINE)), (1, 1), "{:?}", act.cmds);
         let mut units = base(12);
         units.iter_mut().filter(|u| matches!(u.unit_type, CC | BARRACKS)).for_each(|u| u.flags |= flags::LIFTED);
-        let act = teacher().act(&frame(3_000, units, 400, 24));
+        let act = teacher().act(&frame(3_000, units, 1_000, 24));
         assert_eq!((trains(&act, SCV), trains(&act, MARINE)), (0, 0), "{:?}", act.cmds);
     }
 
