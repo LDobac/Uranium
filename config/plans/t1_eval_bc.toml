@@ -1,0 +1,55 @@
+# Checkpoint 1 T1 evaluation (user decision 2026-11-07: 50 games per T1 bot; 11th advisory
+# reports/m6_rl_stall_advice11.md section 2): BC baseline bc-s2e2-pt/ckpt-11387, stochastic,
+# vs UAlbertaBot / Steamhammer (Z 18, P 16, T 16), ZZZKBot Z 50, Stardust P 50, Iron T 50 = 250 games.
+# McRave excluded (throughput, as in config/rl_t1self.toml). map = both splits each matchup over the two maps.
+# The final model uses the same plan with only the checkpoint changed (same seeds).
+name = "t1-eval-bc"
+seed_base = 46000
+save_replay = true
+wall_timeout_s = 7200
+zero_last_failed = true
+[[matchup]]
+map = "both"
+games = 18
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2e2-pt/ckpt-11387", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 16
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2e2-pt/ckpt-11387", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 16
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2e2-pt/ckpt-11387", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot", race = "terran" }
+[[matchup]]
+map = "both"
+games = 18
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2e2-pt/ckpt-11387", sample = "stochastic" }
+p1 = { kind = "oss", name = "steamhammer", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 16
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2e2-pt/ckpt-11387", sample = "stochastic" }
+p1 = { kind = "oss", name = "steamhammer", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 16
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2e2-pt/ckpt-11387", sample = "stochastic" }
+p1 = { kind = "oss", name = "steamhammer", race = "terran" }
+[[matchup]]
+map = "both"
+games = 50
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2e2-pt/ckpt-11387", sample = "stochastic" }
+p1 = { kind = "oss", name = "zzzkbot", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 50
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2e2-pt/ckpt-11387", sample = "stochastic" }
+p1 = { kind = "oss", name = "stardust", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 50
+p0 = { kind = "model", checkpoint = "checkpoints/bc-s2e2-pt/ckpt-11387", sample = "stochastic" }
+p1 = { kind = "oss", name = "iron", race = "terran" }
