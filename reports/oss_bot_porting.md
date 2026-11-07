@@ -77,6 +77,19 @@
 - 실시간(42ms/프레임)에서는 충분히 빠르다. lockstep 학습에서는 상대를 기다려야 해서 McRave 대전이 처리량을 크게 낮춘다.
 - 줄이려면 봇 로직을 고쳐야 하는데, 그러면 원본과 다른 봇이 된다. 그래서 하지 않았다. 리그(M6)에서 출전 비율로 조절하는 것을 권장한다(미확정).
 
+## NDEBUG 확인 (2026-11-07, Linux 호스트 C)
+- 배경: BC 기준선 T1 평가에서 상대 봇이 판 도중 죽은 판(Iron 18·Steamhammer 5)이 `Surrender`·우리 승으로 기록됐다. 예상: assert를 끄면 원본·Windows처럼 Iron은 예외를 잡고 계속 두고, Steamhammer는 범위 밖 입력을 그대로 쓰고 계속 둔다.
+- 재현: T0 테란 상대로는 24판 모두 정상 종료(T0가 대부분 일찍 져서 그 상황까지 가지 않음)라, 크래시가 난 조건과 같은 BC 모델 상대(`bc-s2e2-pt/ckpt-11387` stochastic, CPU 추론)로 Iron 12·Steamhammer 테란 6·저그 6판(맵 반반, 15분 상한, seed_base 47100)을 고치기 전·뒤 바이너리로 돌렸다.
+
+| 빌드 | Iron | Steamhammer 테란 | Steamhammer 저그 | 우리 기록 |
+|---|---|---|---|---|
+| 고치기 전 | assert 크래시 6/12 | assert 크래시 1/6 | 0/6 | 크래시 7판 모두 `Surrender` 승 |
+| 고친 뒤 (`-DNDEBUG`) | 0/12 | 0/6 | 0/6 | 24판 정상 종료(Elimination 패 12, 시간 상한 무승부 12), 우리 승 0 |
+
+- 새 빌드로 나머지 봇도 다시 빌드하고 T0 테란 상대 스모크(McRave 제외 봇·종족 9종 × 2판, 맵 반반) 18판 모두 정상 종료
+- 산출물(추적 안 함): 호스트 C `~/ndebug-fix/`(plan·`before`·`before_model`·`after_model`·`smoke`·빌드 로그).
+- 배포: 호스트 C만 새 바이너리(설정 변형 폴더 포함). 다른 Linux 게임 호스트는 이 커밋을 pull한 뒤 `tools/oss/build_<bot>.sh`와 변형 폴더 바이너리 복사가 필요하다. Windows 빌드는 원래 `NDEBUG`라 바뀌지 않는다.
+
 ## T1 설정 변형 (021 "T1 설정 변형", 2026-11-03, AMB-042-15)
 
 원본 봇 폴더를 복사해 오프닝 설정만 바꾼 상대다. 라이선스·원본 BWAPI·포팅·빌드 스크립트·고정은 원본 봇 것을 따른다. 바이너리(`module.dll`·`.so`)는 원본과 해시가 같다. 만들기: `tools/oss/make_variant.py`(`docs/commands.md`). 아래 네 변형은 이 스크립트로 다시 만들어 배포된 폴더와 바이트까지 같음을 확인했다(Windows 빌드, 2026-11-03). 오프닝 실측은 `reports/m6_rush_ladder.md` 3절(9풀·오버풀)과 10절(12풀 저글링·9풀 저글링). 원본 기록은 `runs/rushladder_20261103/variants.md`.
