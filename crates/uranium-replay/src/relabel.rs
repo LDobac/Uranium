@@ -117,6 +117,7 @@ fn select(ids: &[UnitId]) -> (u8, Vec<u8>) {
 /// would not find (not own, not observed) are left out like the bridge rejects them; a command
 /// left without units sends nothing. Buildings in a unit command get it one by one (BWAPI
 /// `canIssueCommandGrouped`), the other units as one group (the bridge's `Game::issueCommand`).
+/// The result is always (select, order) pairs (`Shadow::observe` relies on it).
 pub fn command_cmds(c: &Command, f: &RawFrame, me: u8, player: u8) -> Vec<Cmd> {
     let unit = |id: UnitId| f.units.iter().find(|u| u.id == id);
     let own = |id: UnitId| unit(id).filter(|u| u.owner == me);
@@ -265,7 +266,8 @@ pub struct Shadow {
     pub units_at: HashMap<u32, HashMap<u32, crate::label::Own>>,
     /// Teacher observations (diagnostics).
     pub observations: u32,
-    /// Teacher commands dropped as repeats (`REPEAT_WINDOW`, diagnostics in the build records).
+    /// Teacher replay command pairs (select, order) dropped as repeats (`REPEAT_WINDOW`, build
+    /// records).
     pub repeats_dropped: u32,
     /// Frame of the last kept label of each command (order opcode and payload, select payload).
     last_kept: HashMap<RepeatKey, u32>,
@@ -279,7 +281,8 @@ type RepeatKey = (u8, Vec<u8>, Vec<u8>);
 /// so the teacher repeats them at every observation (8 frames) while the state lasts (an idle
 /// command center with minerals: Train_SCV every 8 frames); 32 is the largest delay bucket
 /// (031-R11), so the kept labels of such a run are 32 frames apart with no NoOp decision between
-/// them. A live teacher never repeats a command within 32 frames (its commands are executed).
+/// them. A live teacher rarely repeats a command within 32 frames (its commands are executed and
+/// it re-orders on 48-frame timers; relabelling teacher botgen games is unchanged by this rule).
 pub const REPEAT_WINDOW: u32 = 32;
 
 impl Shadow {
@@ -317,7 +320,7 @@ impl Shadow {
                 // 041-R22 (11th advisory): the same command again within `REPEAT_WINDOW` of the last
                 // kept one is dropped whole (no label, no NoOp: its time joins the previous delay).
                 let key = (order.op, order.data.clone(), select.data.clone());
-                if self.last_kept.get(&key).is_some_and(|&k| at - k < REPEAT_WINDOW) {
+                if self.last_kept.get(&key).is_some_and(|&k| at.saturating_sub(k) < REPEAT_WINDOW) {
                     self.repeats_dropped += 1;
                     continue;
                 }

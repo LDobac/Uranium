@@ -168,10 +168,9 @@ pub struct ReactParams {
     pub scout_look: i64,
     pub scout_look_max: u32,
     /// 10th advisory (`reports/m6_rl_stall_advice10.md` §2 1, 041-R22): a bunker order is
-    /// forgotten this many frames (2 s; 11th advisory: 144 → 48) after it when no own bunker
-    /// (built or under construction) stands within 10 tiles of its site and its SCV is not on its
-    /// way to build it, so the teacher orders it again (DAgger: the model did not build the bunker
-    /// the shadow ordered).
+    /// forgotten this many frames (6 s) after it when no own bunker (built or under construction)
+    /// stands within 10 tiles of its site and its SCV is not on its way to build it, so the
+    /// teacher orders it again (DAgger: the model did not build the bunker the shadow ordered).
     pub bunker_order_expiry: u32,
 }
 
@@ -225,7 +224,7 @@ impl Default for ReactParams {
             natural_bunker_from: 240 * FPS,
             scout_look: 3,
             scout_look_max: 15 * FPS,
-            bunker_order_expiry: 48,
+            bunker_order_expiry: 144,
         }
     }
 }
@@ -1799,14 +1798,14 @@ mod tests {
     }
 
     /// 021-R8 10th advisory (041-R22): the "bunker ordered" memory expires `bunker_order_expiry`
-    /// (48) frames after the order when no own bunker (built or under construction) stands within
+    /// (144) frames after the order when no own bunker (built or under construction) stands within
     /// 10 tiles of its site and its SCV is not on its way to build (BWAPI PlaceBuilding): D orders
-    /// the bunker again. Before 48 frames, with the SCV walking to the site, or with a bunker
+    /// the bunker again. Before 144 frames, with the SCV walking to the site, or with a bunker
     /// under construction near the site, it does not.
     #[test]
     fn bunker_order_expires_without_a_bunker_041_r22() {
         let p = ReactParams::default();
-        assert_eq!(p.bunker_order_expiry, 48);
+        assert_eq!(p.bunker_order_expiry, 144);
         let mut b = teacher();
         b.scout_done = true;
         let act = b.act(&defence_frame(2_008, vec![], 100));
@@ -1814,20 +1813,20 @@ mod tests {
         let site = builds(&act, BUNKER);
         assert_eq!(site.len(), 1, "{:?}", act.cmds);
         let worker = b.pending.iter().find(|q| q.ty == BUNKER).unwrap().worker;
-        let act = b.act(&defence_frame(2_008 + 47, vec![], 100));
-        assert!(builds(&act, BUNKER).is_empty(), "47 frames: still ordered: {:?}", act.cmds);
+        let act = b.act(&defence_frame(2_008 + 143, vec![], 100));
+        assert!(builds(&act, BUNKER).is_empty(), "143 frames: still ordered: {:?}", act.cmds);
         // The SCV is on its way (PlaceBuilding): kept.
         let mut walking = teacher();
         walking.scout_done = true;
         walking.act(&defence_frame(2_008, vec![], 100));
-        let mut f = defence_frame(2_008 + 48, vec![], 100);
+        let mut f = defence_frame(2_008 + 144, vec![], 100);
         f.units.iter_mut().filter(|u| u.id == worker).for_each(|u| u.order = ORDER_PLACE_BUILDING);
         assert!(builds(&walking.act(&f), BUNKER).is_empty(), "the builder walks to the site");
         // Placing another building far from the site (the model's own order in DAgger): expired.
         let mut elsewhere = teacher();
         elsewhere.scout_done = true;
         elsewhere.act(&defence_frame(2_008, vec![], 100));
-        let mut f = defence_frame(2_008 + 48, vec![], 100);
+        let mut f = defence_frame(2_008 + 144, vec![], 100);
         f.units.iter_mut().filter(|u| u.id == worker).for_each(|u| (u.order, u.order_pos) = (ORDER_PLACE_BUILDING, Some((10, 10))));
         assert_eq!(builds(&elsewhere.act(&f), BUNKER).len(), 1, "placing something else: ordered again");
         // A bunker under construction 1 tile off the site: kept (and "has a bunker" anyway).
@@ -1835,13 +1834,13 @@ mod tests {
         started.scout_done = true;
         started.act(&defence_frame(2_008, vec![], 100));
         let near = (bunker_center(site[0]).0 + 32, bunker_center(site[0]).1);
-        let act = started.act(&defence_frame(2_008 + 48, vec![UnitState { flags: flags::BEING_CONSTRUCTED, ..unit(60, BUNKER, near) }], 100));
+        let act = started.act(&defence_frame(2_008 + 144, vec![UnitState { flags: flags::BEING_CONSTRUCTED, ..unit(60, BUNKER, near) }], 100));
         assert!(builds(&act, BUNKER).is_empty(), "{:?}", act.cmds);
         assert!(started.pending.iter().any(|q| q.ty == BUNKER));
-        // 48 frames, no bunker, the SCV mining: ordered again.
-        let act = b.act(&defence_frame(2_008 + 48, vec![], 100));
+        // 144 frames, no bunker, the SCV mining: ordered again.
+        let act = b.act(&defence_frame(2_008 + 144, vec![], 100));
         assert_eq!(builds(&act, BUNKER).len(), 1, "{:?}", act.cmds);
-        assert!(b.pending.iter().filter(|q| q.ty == BUNKER).all(|q| q.issued == 2_056));
+        assert!(b.pending.iter().filter(|q| q.ty == BUNKER).all(|q| q.issued == 2_152));
         // Other buildings keep the old timeout (`PENDING_TIMEOUT`).
         assert!(!bunker_order_stale(&p, &crate::Pending { ty: DEPOT, tile: (0, 0), worker: 1, issued: 0 }, &defence_frame(10_000, vec![], 0), &[]));
     }

@@ -197,7 +197,8 @@ pub fn filter(rep: &Replay, family: &str, bot: bool, any_length: bool) -> std::r
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum Outcome {
     /// `result` / `result_source`: 040-R8 result of the view (dataset statistics, 040-R6).
-    /// `repeats_dropped`: 041-R22 teacher commands dropped as repeats (relabelled views only).
+    /// `repeats_dropped`: 041-R22 teacher (select, order) command pairs dropped as repeats
+    /// (relabelled views only).
     Written {
         steps: usize,
         coverage: Coverage,
@@ -279,7 +280,8 @@ pub struct ViewGame {
     pub result: i8,
     pub result_source: &'static str,
     pub game_info: uranium_proto::GameInfo,
-    /// 041-R22: teacher commands dropped as repeats (`relabel::REPEAT_WINDOW`); `None` = not relabelled.
+    /// 041-R22: teacher (select, order) command pairs dropped as repeats (`relabel::REPEAT_WINDOW`);
+    /// `None` = not relabelled.
     pub repeats_dropped: Option<u32>,
 }
 
