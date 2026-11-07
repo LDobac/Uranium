@@ -1837,6 +1837,20 @@ mod tests {
         assert!(!bunker_order_stale(&p, &crate::Pending { ty: DEPOT, tile: (0, 0), worker: 1, issued: 0 }, &defence_frame(10_000, vec![], 0), &[]));
     }
 
+    /// 041-R22: a lifted command center or barracks trains nothing (BWAPI refuses it; the model
+    /// lifts buildings against rushes, the shadow teacher saw them every observation).
+    #[test]
+    fn lifted_buildings_train_nothing_041_r22() {
+        let mut b = teacher();
+        b.scout_done = true;
+        let act = b.act(&frame(3_000, base(12), 400, 24));
+        assert_eq!((trains(&act, SCV), trains(&act, MARINE)), (1, 1), "{:?}", act.cmds);
+        let mut units = base(12);
+        units.iter_mut().filter(|u| matches!(u.unit_type, CC | BARRACKS)).for_each(|u| u.flags |= flags::LIFTED);
+        let act = teacher().act(&frame(3_000, units, 400, 24));
+        assert_eq!((trains(&act, SCV), trains(&act, MARINE)), (0, 0), "{:?}", act.cmds);
+    }
+
     /// 021-R8 10th advisory (041-R22): the scout is chosen again at each observation. A scout that
     /// visibly scouts (moving to the enemy start) stays; one that never left (mining, the model's
     /// SCV in DAgger) is replaced 48 frames after its order by the free SCV of `free_worker`; an

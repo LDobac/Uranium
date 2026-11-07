@@ -681,7 +681,7 @@ impl Bot for Brain {
                 }
             }
             Supply::Building(_) => {
-                for d in mine.iter().filter(|u| is_resource_depot(u.unit_type) && u.has(flags::COMPLETED) && !u.has(flags::TRAINING)) {
+                for d in mine.iter().filter(|u| is_resource_depot(u.unit_type) && u.has(flags::COMPLETED) && !u.has(flags::TRAINING) && !u.has(flags::LIFTED)) {
                     if workers < k.max_workers && minerals - hold_workers >= 50 && supply_free >= 2 {
                         cmds.push(Command::Train { building: d.id, unit_type: k.worker });
                         minerals -= 50;
@@ -692,7 +692,7 @@ impl Bot for Brain {
                 if let Some((producer, sp, cap)) = special.filter(|s| s.0 != LARVA) {
                     let queued: usize = mine.iter().filter(|u| u.unit_type == producer).map(|u| u.build_queue.iter().filter(|&&q| q == sp).count()).sum();
                     let mut have = count(sp) + queued;
-                    for p in mine.iter().filter(|u| u.unit_type == producer && done(u) && !u.has(flags::TRAINING)) {
+                    for p in mine.iter().filter(|u| u.unit_type == producer && done(u) && !u.has(flags::TRAINING) && !u.has(flags::LIFTED)) {
                         if have < cap && minerals >= cost(sp) && gas >= gas_cost(sp) && supply_free >= supply_cost(sp) {
                             cmds.push(Command::Train { building: p.id, unit_type: sp });
                             minerals -= cost(sp);
@@ -703,7 +703,7 @@ impl Bot for Brain {
                         }
                     }
                 }
-                for p in mine.iter().filter(|u| u.unit_type == k.production && u.has(flags::COMPLETED) && !u.has(flags::TRAINING) && !used.contains(&u.id)) {
+                for p in mine.iter().filter(|u| u.unit_type == k.production && u.has(flags::COMPLETED) && !u.has(flags::TRAINING) && !u.has(flags::LIFTED) && !used.contains(&u.id)) {
                     if army_n < k.army_cap && minerals - hold_army >= cost(k.army) && supply_free >= 2 {
                         cmds.push(Command::Train { building: p.id, unit_type: k.army });
                         minerals -= cost(k.army);
