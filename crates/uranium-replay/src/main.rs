@@ -80,7 +80,8 @@ enum Cmd {
     /// 040: build BC shards from a replay folder (filter, desync check, labels, shards).
     Build {
         dir: PathBuf,
-        /// 040-R14 source tag (stardata, scr_public, community, personal, user, bot, botgen, scr_ladder).
+        /// 040-R14 source tag (stardata, scr_public, community, personal, user, bot, botgen, scr_ladder,
+        /// dagger).
         #[arg(long)]
         src: String,
         /// Shard output folder (default `<URANIUM_SHARED_DIR>/datasets/replays/shards/<src>`, 040-R13).
@@ -118,6 +119,11 @@ enum Cmd {
         /// leaver-ahead signal; the result is undecided, 0).
         #[arg(long)]
         time_limit: Option<u32>,
+        /// 041-R22 DAgger (source `dagger`, required with it): label each Terran view with this
+        /// teacher's commands on the view's observations instead of the replay's own commands
+        /// (`terran_react`, the 021-R8 teacher). No 5-minute filter.
+        #[arg(long)]
+        relabel: Option<String>,
     },
     CheckScrep {
         dir: PathBuf,
@@ -246,8 +252,11 @@ fn main() -> Result<()> {
             }
         }
         Cmd::CheckScrep { dir, screp, limit } => check_screp(&dir, &screp, limit)?,
-        Cmd::Build { dir, src, out, records, jobs, limit, budget_gb, skip_hashes, part, parts, ladder_records, until_frame, time_limit } => {
+        Cmd::Build { dir, src, out, records, jobs, limit, budget_gb, skip_hashes, part, parts, ladder_records, until_frame, time_limit, relabel } => {
             anyhow::ensure!(parts >= 1 && part < parts, "--part must be below --parts");
+            // 041-R22: relabelled games are their own source (040 `dagger`), and only they.
+            anyhow::ensure!((src == "dagger") == relabel.is_some(), "--relabel goes with --src dagger and only with it (041-R22)");
+            let relabel = relabel.as_deref().map(uranium_replay::relabel::teacher_build).transpose()?;
             let skip_sha256 = match skip_hashes {
                 Some(p) => std::fs::read_to_string(&p)?.lines().filter_map(|l| l.split_whitespace().next().map(str::to_string)).collect(),
                 None => Default::default(),
@@ -300,7 +309,7 @@ fn main() -> Result<()> {
             // without one, so the build refuses to start.
             uranium_env::maps::maps_dir()?;
             let staging_dir = uranium_replay::shard::staging_dir();
-            let opt = uranium_replay::pipeline::BuildOptions { src, shards_dir, staging_dir, recorded_winners, jobs, shard_target_bytes: 512 << 20, budget_bytes: budget_gb << 30, first_shard_index: first, skip_sha256, done, duplicates, until_frame, time_limit };
+            let opt = uranium_replay::pipeline::BuildOptions { src, shards_dir, staging_dir, recorded_winners, jobs, shard_target_bytes: 512 << 20, budget_bytes: budget_gb << 30, first_shard_index: first, skip_sha256, done, duplicates, until_frame, time_limit, relabel };
             let out_file = std::sync::Mutex::new(std::fs::OpenOptions::new().create(true).append(true).open(&records)?);
             let counts = std::sync::Mutex::new(std::collections::BTreeMap::<String, usize>::new());
             uranium_replay::pipeline::build(&files, &opt, &cfg, &|r| {

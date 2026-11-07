@@ -514,6 +514,10 @@ impl Bot for Brain {
         let count = |ty: u16| mine.iter().filter(|u| u.unit_type == ty).count();
         let minerals_vis: Vec<&UnitState> = f.units.iter().filter(|u| is_mineral(u.unit_type)).collect();
         self.pending.retain(|p| f.frame < p.issued + PENDING_TIMEOUT && !mine.iter().any(|u| u.unit_type == p.ty && building_tile(u) == p.tile));
+        // 021-R8 (10th advisory, 041-R22): a bunker order without a bunker to show for it expires.
+        if let Some(rp) = k.react.as_ref() {
+            self.pending.retain(|p| !react::bunker_order_stale(rp, p, f, &mine));
+        }
 
         let mut minerals = f.self_state.minerals - self.pending.iter().map(|p| cost(p.ty)).sum::<i32>();
         let mut gas = f.self_state.gas - self.pending.iter().map(|p| gas_cost(p.ty)).sum::<i32>();
@@ -528,7 +532,8 @@ impl Bot for Brain {
 
         // Gas crew and scout (scenario bots only): workers with a job other than minerals.
         self.gas_crew.retain(|id| mine.iter().any(|u| u.id == *id));
-        if self.scout.is_some_and(|id| !mine.iter().any(|u| u.id == id)) {
+        // The 021-R8 teacher re-chooses its scout from each observation (`react_scouting`).
+        if k.react.is_none() && self.scout.is_some_and(|id| !mine.iter().any(|u| u.id == id)) {
             self.scout = None;
             self.scout_done = true;
         }

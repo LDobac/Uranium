@@ -1559,6 +1559,7 @@ dependencies = [
  "toml",
  "uranium-env",
  "uranium-proto",
+ "uranium-scripted",
  "zstd",
 ]
 

@@ -142,10 +142,18 @@ pub fn play(rep: &Replay, perspective: u8, cfg: &PlayConfig) -> Result<PlayResul
 
 /// Observation callback: the RawFrame and the PrivilegedSummary sent with it (011-R12).
 pub type OnFrame<'a> = dyn FnMut(&RawFrame, Option<&PrivilegedSummary>) + 'a;
+/// GameInfo callback: the bridge's GameInfo, before the first observation (041-R22: the DAgger
+/// teacher is built from it like a live T0 session).
+pub type OnInfo<'a> = dyn FnMut(&uranium_proto::GameInfo) + 'a;
 
 /// Like `play`, also stopping at `extra_stops` and handing every observation to `on_frame`
 /// (labels and shard steps, 040).
 pub fn play_with(rep: &Replay, perspective: u8, cfg: &PlayConfig, extra_stops: &[u32], on_frame: &mut OnFrame) -> Result<PlayResult> {
+    play_observe(rep, perspective, cfg, extra_stops, &mut |_| {}, on_frame)
+}
+
+/// Like `play_with`, also handing the bridge's GameInfo to `on_info` before the first observation.
+pub fn play_observe(rep: &Replay, perspective: u8, cfg: &PlayConfig, extra_stops: &[u32], on_info: &mut OnInfo, on_frame: &mut OnFrame) -> Result<PlayResult> {
     let t0 = Instant::now();
     std::fs::create_dir_all(&cfg.work_dir)?;
     let name = format!("r{}-{}-{perspective}.rep", std::process::id(), t0.elapsed().as_nanos() ^ rand_salt());
@@ -178,7 +186,7 @@ pub fn play_with(rep: &Replay, perspective: u8, cfg: &PlayConfig, extra_stops: &
         .stderr(log)
         .spawn()
         .with_context(|| format!("starting {}", cfg.launcher.display()))?;
-    let res = accept(&listener, Some(&mut child), Duration::from_secs(60)).and_then(|s| session(rep, perspective, s, extra_stops, on_frame));
+    let res = accept(&listener, Some(&mut child), Duration::from_secs(60)).and_then(|s| session(rep, perspective, s, extra_stops, on_info, on_frame));
     let deadline = Instant::now() + Duration::from_secs(10);
     while child.try_wait()?.is_none() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
@@ -221,7 +229,7 @@ pub fn play_hostd(rep: &Replay, perspective: u8, hostd: &str, agent_ip: &str, ex
         other => bail!("hostd did not start the replay: {other:?}"),
     }
     let mut none: Option<std::process::Child> = None;
-    let mut res = accept(&listener, none.as_mut(), Duration::from_secs(60)).and_then(|s| session(rep, perspective, s, extra_stops, on_frame))?;
+    let mut res = accept(&listener, none.as_mut(), Duration::from_secs(60)).and_then(|s| session(rep, perspective, s, extra_stops, &mut |_| {}, on_frame))?;
     // Wait for the job to finish so the next job does not hit the capacity limit.
     loop {
         match read_msg::<ControlResponse>(&mut cr)? {
@@ -275,7 +283,7 @@ fn fnv1a(mut h: u64, bytes: &[u8]) -> u64 {
     h
 }
 
-fn session(rep: &Replay, perspective: u8, stream: TcpStream, extra_stops: &[u32], on_frame: &mut OnFrame) -> Result<PlayResult> {
+fn session(rep: &Replay, perspective: u8, stream: TcpStream, extra_stops: &[u32], on_info: &mut OnInfo, on_frame: &mut OnFrame) -> Result<PlayResult> {
     stream.set_read_timeout(Some(Duration::from_secs(60)))?;
     let mut r = BufReader::new(stream.try_clone()?);
     let mut w = BufWriter::new(stream);
@@ -333,6 +341,7 @@ fn session(rep: &Replay, perspective: u8, stream: TcpStream, extra_stops: &[u32]
                     let unmatched = gi.players.iter().filter(|q| !rep.header.players.iter().any(|p| p.name == q.name.as_bytes())).map(|q| q.id).collect::<Vec<_>>();
                     eprintln!("[debug] bwapi ids without a header name match: {unmatched:?}");
                 }
+                on_info(&gi);
                 out.game_info = Some(*gi);
             }
             BridgeMsg::Privileged(p) => {

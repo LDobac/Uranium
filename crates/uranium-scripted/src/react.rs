@@ -43,6 +43,27 @@ const CHOKE_MIN: i64 = 8;
 const BUNKER_SEARCH_MAX: i64 = 9;
 /// BWAPI order `ConstructingBuilding`: an SCV building (its order target is the building).
 const ORDER_CONSTRUCTING: u16 = 33;
+/// BWAPI order `PlaceBuilding`: an SCV on its way to place a building.
+const ORDER_PLACE_BUILDING: u16 = 30;
+/// BWAPI order `Move`.
+const ORDER_MOVE: u16 = 6;
+/// BWAPI attack orders a pulled SCV shows (`Attack1`, `Attack2`, `AttackUnit`,
+/// `AttackFixedRange`, `AttackMove`).
+const ATTACK_ORDERS: [u16; 5] = [8, 9, 10, 11, 14];
+/// 10th advisory (041-R22): an SCV farther than this (tiles) from the main command center is out
+/// of the main (the scout has left).
+const MAIN_RADIUS: i64 = 12;
+
+/// 021-R8 (10th advisory §2 1, 041-R22): the bunker order `q` is stale — `bunker_order_expiry`
+/// frames old, no own bunker (built or under construction) within 10 tiles of its site (the
+/// "has a bunker" radius), and its SCV is not on its way to place a building — so it is
+/// forgotten and the defence orders the bunker again.
+pub(crate) fn bunker_order_stale(p: &ReactParams, q: &crate::Pending, f: &RawFrame, mine: &[&UnitState]) -> bool {
+    q.ty == BUNKER
+        && f.frame >= q.issued + p.bunker_order_expiry
+        && !mine.iter().any(|u| u.unit_type == BUNKER && within(u.pos, bunker_center(q.tile), 10))
+        && !mine.iter().any(|u| u.id == q.worker && u.order == ORDER_PLACE_BUILDING)
+}
 
 /// 021-R8 numbers (6th advisory §2 and rule advisory values, AMB-021-4). Frames are game frames (24 per second),
 /// distances tiles.
@@ -145,6 +166,11 @@ pub struct ReactParams {
     /// finding it (frames), then mines again.
     pub scout_look: i64,
     pub scout_look_max: u32,
+    /// 10th advisory (`reports/m6_rl_stall_advice10.md` §2 1, 041-R22): a bunker order is
+    /// forgotten this many frames (6 s) after it when no own bunker (built or under construction)
+    /// stands within 10 tiles of its site and its SCV is not on its way to build it, so the
+    /// teacher orders it again (DAgger: the model did not build the bunker the shadow ordered).
+    pub bunker_order_expiry: u32,
 }
 
 impl Default for ReactParams {
@@ -197,6 +223,7 @@ impl Default for ReactParams {
             natural_bunker_from: 240 * FPS,
             scout_look: 3,
             scout_look_max: 15 * FPS,
+            bunker_order_expiry: 144,
         }
     }
 }
@@ -307,6 +334,9 @@ pub(crate) struct ReactState {
     pub last_marines: Option<u32>,
     pub last_pull: Option<u32>,
     pub last_repair: Option<u32>,
+    /// The scout was out of the main at its last observation (10th advisory: a scout lost out
+    /// there ends the scouting; one lost in the main is replaced).
+    pub scout_out: bool,
     pub stats: ReactStats,
 }
 
@@ -353,6 +383,7 @@ impl ReactState {
             last_marines: None,
             last_pull: None,
             last_repair: None,
+            scout_out: false,
             stats: ReactStats::default(),
         }
     }
@@ -688,8 +719,8 @@ impl Brain {
         let (look, look_max, main, main_frame) = (r.p.scout_look, r.p.scout_look_max, r.enemy_main, r.stats.main_frame);
         // 7th advisory E: the scout leaves once the first depot is ordered (9 supply).
         let depot_ordered = self.pending.iter().any(|q| q.ty == DEPOT) || mine.iter().any(|u| matches!(u.unit_type, DEPOT | BARRACKS));
-        if !self.scout_done && self.scout.is_none() && depot_ordered {
-            self.scout = self.free_worker(mine);
+        if !self.scout_done && depot_ordered {
+            self.pick_scout(f, mine);
         }
         let Some(id) = self.scout else { return };
         let Some(s) = mine.iter().find(|u| u.id == id) else { return };
@@ -716,6 +747,52 @@ impl Brain {
                 self.scout = None;
                 self.scout_done = true;
             }
+        }
+    }
+
+    /// 10th advisory (`reports/m6_rl_stall_advice10.md` §2 1, 041-R22): the scout is chosen again
+    /// at each observation instead of kept by id. The current scout stays while it visibly scouts
+    /// (ordered within the last 48 frames, moving to another start location or standing near one,
+    /// or out of the main); otherwise the own SCV heading to or standing near another start
+    /// location (lowest id), else the lowest-id free SCV (`free_worker`, as the first pick). A
+    /// scout lost out of the main ends the scouting as before; one lost in the main is replaced.
+    /// In a live game the teacher's scout always scouts, so the pick does not change; in DAgger
+    /// (041-R22) the model's own scout is taken over, and a scout the model never sent is picked
+    /// again instead of being ordered forever.
+    fn pick_scout(&mut self, f: &RawFrame, mine: &[&UnitState]) {
+        let Some(r) = self.react.as_ref() else { return };
+        let (main_radius, was_out) = (r.p.main_radius, r.scout_out);
+        let others: Vec<Pos> = self.other_starts().into_iter().map(depot_center).collect();
+        let home = self.home;
+        let out_of_main = |u: &UnitState| home.is_some_and(|h| !within(u.pos, h, MAIN_RADIUS));
+        let heading_out = |u: &UnitState| {
+            (u.order == ORDER_MOVE && u.order_pos.is_some_and(|p| others.iter().any(|c| within(p, *c, main_radius)))) || others.iter().any(|c| within(u.pos, *c, MAIN_RADIUS))
+        };
+        let current = self.scout.and_then(|id| mine.iter().copied().find(|u| u.id == id));
+        if self.scout.is_some() && current.is_none() && was_out {
+            self.scout = None;
+            self.scout_done = true;
+            return;
+        }
+        let just_ordered = f.frame < self.scout_order + crate::WAVE_PERIOD;
+        let keep = current.filter(|u| just_ordered || heading_out(u) || out_of_main(u)).map(|u| u.id);
+        let jobs: Vec<UnitId> = self.pending.iter().map(|q| q.worker).chain(self.react_busy()).collect();
+        let taken_over = || mine.iter().filter(|u| u.unit_type == SCV && u.has(flags::COMPLETED) && !u.has(flags::CONSTRUCTING) && !jobs.contains(&u.id) && heading_out(u)).min_by_key(|u| u.id).map(|u| u.id);
+        let pick = match keep.or_else(taken_over) {
+            Some(id) => Some(id),
+            None => {
+                self.scout = None;
+                self.free_worker(mine)
+            }
+        };
+        if pick != keep {
+            // A new scout gets its order at this observation.
+            self.scout_order = 0;
+        }
+        self.scout = pick;
+        let out = pick.and_then(|id| mine.iter().copied().find(|u| u.id == id)).is_some_and(out_of_main);
+        if let Some(r) = self.react.as_mut() {
+            r.scout_out = out;
         }
     }
 
@@ -1020,6 +1097,22 @@ impl Brain {
             let r = self.react.as_ref().expect("checked above");
             (r.pulled.clone(), r.repairers.clone(), r.last_pull, r.last_repair)
         };
+        // 10th advisory (§2 1, 041-R22): the pulled SCVs are chosen again from this observation.
+        // An SCV stays pulled while it visibly is (not gathering or building once the last pull
+        // order is `retarget` frames old); an own SCV attacking a threat is pulled. In a live
+        // game the pulled SCVs attack (or stand idle after their target died) and no other SCV
+        // attacks a threat, so nothing changes; in DAgger the model's SCVs the shadow picked but
+        // the model left mining are dropped, and the ones the model pulled are taken over.
+        let others: BTreeSet<UnitId> = {
+            let r = self.react.as_ref().expect("checked above");
+            r.repairers.iter().chain(r.harass.iter().flat_map(|h| &h.guards)).chain(r.resumers.values().map(|(scv, _)| scv)).copied().chain(self.pending.iter().map(|q| q.worker)).chain(self.scout).collect()
+        };
+        let fresh = !ReactState::due(last_pull, f.frame, p.retarget);
+        let threat_ids: BTreeSet<UnitId> = threats.iter().map(|u| u.id).collect();
+        let attacking = |u: &UnitState| ATTACK_ORDERS.contains(&u.order) && u.order_target.is_some_and(|t| threat_ids.contains(&t));
+        pulled.retain(|id| mine.iter().copied().find(|u| u.id == *id).is_some_and(|u| fresh || attacking(u) || !(u.has(flags::GATHERING) || u.has(flags::CONSTRUCTING))));
+        let joined: Vec<UnitId> = scvs.iter().map(|u| **u).filter(|u| attacking(u) && !others.contains(&u.id) && !pulled.contains(&u.id)).map(|u| u.id).collect();
+        pulled.extend(joined);
         let mut pull_acted = false;
         if threats.is_empty() {
             // Nothing in reach: the pulled SCVs mine at once (no chase).
@@ -1692,6 +1785,184 @@ mod tests {
         u.iter_mut().filter(|x| x.id == 93).for_each(|x| x.pos = (home().0 + 5 * 32 - 4, home().1));
         let act = c.act(&frame(3_048, u, 0, 40));
         assert_eq!(unit_orders(&act, |o| *o == CmdOrder::Attack(Target::Unit(93))).iter().map(Vec::len).collect::<Vec<_>>(), vec![6], "{:?}", act.cmds);
+    }
+
+    /// Lings far away (R ②) at `n`: the teacher is in D with `minerals`, base(12).
+    fn defence_frame(n: u32, extra: Vec<UnitState>, minerals: i32) -> RawFrame {
+        let mut units = base(12);
+        units.push(enemy(90, ZERGLING, depot_center((60, 60))));
+        units.push(enemy(91, ZERGLING, depot_center((60, 60))));
+        units.extend(extra);
+        frame(n, units, minerals, 24)
+    }
+
+    /// 021-R8 10th advisory (041-R22): the "bunker ordered" memory expires `bunker_order_expiry`
+    /// (144) frames after the order when no own bunker (built or under construction) stands within
+    /// 10 tiles of its site and its SCV is not on its way to build (BWAPI PlaceBuilding): D orders
+    /// the bunker again. Before 144 frames, with the SCV walking to the site, or with a bunker
+    /// under construction near the site, it does not.
+    #[test]
+    fn bunker_order_expires_without_a_bunker_041_r22() {
+        let p = ReactParams::default();
+        assert_eq!(p.bunker_order_expiry, 144);
+        let mut b = teacher();
+        b.scout_done = true;
+        let act = b.act(&defence_frame(2_008, vec![], 100));
+        assert_eq!(branch(&b), Branch::Defence);
+        let site = builds(&act, BUNKER);
+        assert_eq!(site.len(), 1, "{:?}", act.cmds);
+        let worker = b.pending.iter().find(|q| q.ty == BUNKER).unwrap().worker;
+        let act = b.act(&defence_frame(2_008 + 143, vec![], 100));
+        assert!(builds(&act, BUNKER).is_empty(), "143 frames: still ordered: {:?}", act.cmds);
+        // The SCV is on its way (PlaceBuilding): kept.
+        let mut walking = teacher();
+        walking.scout_done = true;
+        walking.act(&defence_frame(2_008, vec![], 100));
+        let mut f = defence_frame(2_008 + 144, vec![], 100);
+        f.units.iter_mut().filter(|u| u.id == worker).for_each(|u| u.order = ORDER_PLACE_BUILDING);
+        assert!(builds(&walking.act(&f), BUNKER).is_empty(), "the builder walks to the site");
+        // A bunker under construction 1 tile off the site: kept (and "has a bunker" anyway).
+        let mut started = teacher();
+        started.scout_done = true;
+        started.act(&defence_frame(2_008, vec![], 100));
+        let near = (bunker_center(site[0]).0 + 32, bunker_center(site[0]).1);
+        let act = started.act(&defence_frame(2_008 + 144, vec![UnitState { flags: flags::BEING_CONSTRUCTED, ..unit(60, BUNKER, near) }], 100));
+        assert!(builds(&act, BUNKER).is_empty(), "{:?}", act.cmds);
+        assert!(started.pending.iter().any(|q| q.ty == BUNKER));
+        // 144 frames, no bunker, the SCV mining: ordered again.
+        let act = b.act(&defence_frame(2_008 + 144, vec![], 100));
+        assert_eq!(builds(&act, BUNKER).len(), 1, "{:?}", act.cmds);
+        assert!(b.pending.iter().filter(|q| q.ty == BUNKER).all(|q| q.issued == 2_152));
+        // Other buildings keep the old timeout (`PENDING_TIMEOUT`).
+        assert!(!bunker_order_stale(&p, &crate::Pending { ty: DEPOT, tile: (0, 0), worker: 1, issued: 0 }, &defence_frame(10_000, vec![], 0), &[]));
+    }
+
+    /// 021-R8 10th advisory (041-R22): the scout is chosen again at each observation. A scout that
+    /// visibly scouts (moving to the enemy start) stays; one that never left (mining, the model's
+    /// SCV in DAgger) is replaced 48 frames after its order by the free SCV of `free_worker`; an
+    /// own SCV heading to another start is taken over; a scout lost in the main is replaced, one
+    /// lost out of it ends the scouting.
+    #[test]
+    fn scout_is_chosen_again_from_each_observation_041_r22() {
+        let cc_only = |scvs: u32| {
+            let mut v = vec![unit(1, CC, home()), UnitState { owner: 11, ..unit(3, 176, (home().0 - 200, home().1)) }];
+            v.extend((0..scvs).map(|i| unit(100 + i, SCV, (home().0 - 100, home().1 + 10 * i as u16))));
+            v
+        };
+        let dark = |f: RawFrame| RawFrame { visibility: BitGrid::new(128, 128), ..f };
+        let start = |b: &mut Brain| {
+            b.act(&dark(frame(508, cc_only(9), 200, 18)));
+            b.act(&dark(frame(516, cc_only(9), 100, 18)));
+            b.scout.expect("scout")
+        };
+        let with = |n: u32, f: &dyn Fn(&mut UnitState)| {
+            let mut u = cc_only(9);
+            u.iter_mut().for_each(f);
+            dark(frame(n, u, 100, 18))
+        };
+        let moves = |act: &Act| unit_orders(act, |o| *o == CmdOrder::Move(Target::Pos(depot_center(THEIRS))));
+        // Live: the scout walks toward the enemy start (order Move there, not idle): kept.
+        let mut b = teacher();
+        let s = start(&mut b);
+        let walking = |u: &mut UnitState| {
+            if u.id == s {
+                (u.order, u.order_pos, u.flags) = (ORDER_MOVE, Some(depot_center(THEIRS)), flags::COMPLETED);
+            }
+        };
+        for n in [524, 564, 600, 700] {
+            let act = b.act(&with(n, &walking));
+            assert_eq!(b.scout, Some(s), "frame {n}");
+            assert!(moves(&act).iter().all(|m| m == &vec![s]), "{:?}", act.cmds);
+        }
+        // DAgger: the picked SCV keeps mining (and carries at 564): replaced by the next free SCV.
+        let mut b = teacher();
+        let s = start(&mut b);
+        let mining = |u: &mut UnitState| {
+            if u.id == s {
+                u.flags = flags::COMPLETED | flags::GATHERING | flags::CARRYING;
+            }
+        };
+        b.act(&with(524, &mining));
+        assert_eq!(b.scout, Some(s), "within 48 frames of the order");
+        let act = b.act(&with(564, &mining));
+        let t = b.scout.expect("scout");
+        assert_ne!(t, s);
+        assert_eq!(moves(&act), vec![vec![t]], "the new scout is ordered at once");
+        // The model's own SCV heads for the enemy start: taken over.
+        let model_scout = |u: &mut UnitState| {
+            mining(u);
+            if u.id == 108 {
+                (u.order, u.order_pos, u.flags) = (ORDER_MOVE, Some(depot_center(THEIRS)), flags::COMPLETED);
+            }
+        };
+        let act = b.act(&with(620, &model_scout));
+        assert_eq!(b.scout, Some(108));
+        assert_eq!(moves(&act), vec![vec![108]], "{:?}", act.cmds);
+        // Lost in the main: replaced. Lost out of the main: scouting ends.
+        let mut b = teacher();
+        let s = start(&mut b);
+        let mut u = cc_only(9);
+        u.retain(|x| x.id != s);
+        b.act(&dark(frame(530, u, 100, 18)));
+        assert!(b.scout.is_some_and(|t| t != s) && !b.scout_done);
+        let t = b.scout.unwrap();
+        let far = |u: &mut UnitState| {
+            if u.id == t {
+                (u.pos, u.flags) = ((2_000, 2_000), flags::COMPLETED);
+            }
+        };
+        b.act(&with(540, &far));
+        let mut u = cc_only(9);
+        u.retain(|x| x.id != t);
+        b.act(&dark(frame(548, u, 100, 18)));
+        assert!(b.scout.is_none() && b.scout_done);
+    }
+
+    /// 021-R8 10th advisory (041-R22): the pulled SCVs are chosen again from each observation. In
+    /// a live game they attack and the pull is unchanged; SCVs the teacher pulled that are seen
+    /// mining after the 48-frame pull timer are dropped (re-picked only if still nearest), and own
+    /// SCVs attacking a threat (the model's pull in DAgger) are taken over.
+    #[test]
+    fn pulled_scvs_are_chosen_again_from_each_observation_041_r22() {
+        let setup = || {
+            let mut b = teacher();
+            b.scout_done = true;
+            let mut units = base(20);
+            let bunker = (home().0 + 5 * 32, home().1 + 64);
+            units.push(UnitState { hp: BUNKER_HP, ..unit(5, BUNKER, bunker) });
+            units.push(enemy(90, ZERGLING, (bunker.0, bunker.1 + 64)));
+            units.push(enemy(91, ZERGLING, (bunker.0 + 40, bunker.1 + 70)));
+            let act = b.act(&frame(3_000, units.clone(), 0, 40));
+            let first = unit_orders(&act, |o| *o == CmdOrder::Attack(Target::Unit(90)));
+            assert_eq!(first.iter().map(Vec::len).collect::<Vec<_>>(), vec![6], "{:?}", act.cmds);
+            (b, units, first[0].clone())
+        };
+        let attack_at = |act: &Act| unit_orders(act, |o| *o == CmdOrder::Attack(Target::Unit(90)));
+        // Live: the pulled SCVs attack the zergling; the same six at the next pull order.
+        let (mut b, mut units, pulled) = setup();
+        for u in units.iter_mut().filter(|u| pulled.contains(&u.id)) {
+            (u.order, u.order_target, u.flags) = (10, Some(90), flags::COMPLETED);
+        }
+        let act = b.act(&frame(3_048, units, 0, 40));
+        assert_eq!(attack_at(&act), vec![pulled.clone()], "{:?}", act.cmds);
+        // DAgger: the six stayed mining far away; two other SCVs attack the zergling.
+        let (mut b, mut units, pulled) = setup();
+        for u in units.iter_mut() {
+            if pulled.contains(&u.id) {
+                (u.pos, u.flags) = ((home().0 - 300, home().1), flags::COMPLETED | flags::GATHERING);
+            } else if u.id == 100 || u.id == 101 {
+                (u.order, u.order_target, u.flags) = (10, Some(90), flags::COMPLETED);
+            }
+        }
+        // Within the 48-frame timer they still count as pulled.
+        let act = b.act(&frame(3_008, units.clone(), 0, 40));
+        assert!(attack_at(&act).is_empty() && pulled.iter().all(|id| b.react_busy().contains(id)), "{:?}", act.cmds);
+        let act = b.act(&frame(3_048, units, 0, 40));
+        let now = attack_at(&act);
+        assert_eq!(now.len(), 1, "{:?}", act.cmds);
+        assert_eq!(now[0].len(), 6);
+        assert!(now[0].contains(&100) && now[0].contains(&101), "taken over: {now:?}");
+        assert!(now[0].iter().all(|id| !pulled.contains(id)), "the mining ones are dropped: {now:?}");
     }
 
     /// 021-R8 (review): a choke tile inside the main (2–3 tiles from the command center) does

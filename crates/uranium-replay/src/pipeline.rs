@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::label::{Coverage, Labeler};
-use crate::play::{PlayConfig, PlayResult, play_with, slot_of};
+use crate::play::{PlayConfig, PlayResult, play_observe, play_with, slot_of};
 use crate::shard::{GameMeta, ShardGame, ShardWriter, Step, result_source};
 use crate::{Replay, cmd, header};
 
@@ -156,12 +156,14 @@ fn race_letter(r: u8) -> char {
 /// Terran player is a view (040-R2) with S2 on target maps at APM >= 150, S1 at APM >= 80.
 /// The game type is not filtered: many ladder 1v1 replays are recorded as "use map settings"
 /// and play fine; maps OpenBW cannot open show up as `Outcome::Unplayable` (M4 spike).
-pub fn filter(rep: &Replay, family: &str, bot: bool) -> std::result::Result<Vec<View>, String> {
+/// `any_length` (041-R22 `dagger`): no 5-minute bar (a model game lost early to a rush is the
+/// state DAgger relabels, not a player leaving).
+pub fn filter(rep: &Replay, family: &str, bot: bool, any_length: bool) -> std::result::Result<Vec<View>, String> {
     let active = rep.active_players();
     if active.len() != 2 {
         return Err(format!("{} active players", active.len()));
     }
-    if (rep.header.frames as u64) * crate::MS_PER_FRAME < MIN_GAME_MS {
+    if !any_length && (rep.header.frames as u64) * crate::MS_PER_FRAME < MIN_GAME_MS {
         return Err("shorter than 5 minutes".into());
     }
     if rep.header.map_width > MAX_MAP_TILES || rep.header.map_height > MAX_MAP_TILES {
@@ -228,6 +230,10 @@ pub struct Record {
     /// 040-R21: the build's `--time-limit` (absent = none).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_limit: Option<u32>,
+    /// 041-R22: the teacher whose commands are the labels (`--relabel`; absent = the replay's own
+    /// commands).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relabel: Option<&'static str>,
     #[serde(flatten)]
     pub outcome: Outcome,
 }
@@ -267,30 +273,79 @@ pub struct ViewGame {
     pub game_info: uranium_proto::GameInfo,
 }
 
+/// How one view is labelled (040-R21 cut and time limit, 041-R22 relabelling).
+#[derive(Clone, Copy)]
+struct ViewOptions<'a> {
+    until_frame: Option<u32>,
+    time_limit: Option<u32>,
+    relabel: Option<uranium_scripted::T0Build>,
+    /// CHK SHA-256 (map precompute file name, 031).
+    map_hash: &'a str,
+}
+
 /// Processes one view of one replay into a shard game.
-fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, recorded_winner: Option<u8>, until_frame: Option<u32>, time_limit: Option<u32>) -> Result<std::result::Result<ViewGame, Outcome>> {
+fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, recorded_winner: Option<u8>, o: ViewOptions) -> Result<std::result::Result<ViewGame, Outcome>> {
+    let (until_frame, time_limit) = (o.until_frame, o.time_limit);
     let me = slot_of(rep, view.perspective)?;
-    // Replay A: own unit types at each command frame + desync signals.
-    let mut units_at: HashMap<u32, HashMap<u32, crate::label::Own>> = HashMap::new();
-    let a = play_with(rep, view.perspective, cfg, &[], &mut |f, _| {
-        units_at.insert(f.frame, f.units.iter().filter(|u| u.owner == me).map(|u| (u.id, crate::label::Own::from_state(u))).collect());
-    })?;
-    let mut a = a;
+    let (mut a, mut labels, coverage) = match o.relabel {
+        // Replay A: own unit types at each command frame + desync signals.
+        None => {
+            let mut units_at: HashMap<u32, HashMap<u32, crate::label::Own>> = HashMap::new();
+            let a = play_with(rep, view.perspective, cfg, &[], &mut |f, _| {
+                units_at.insert(f.frame, f.units.iter().filter(|u| u.owner == me).map(|u| (u.id, crate::label::Own::from_state(u))).collect());
+            })?;
+            let cmds: Vec<cmd::Cmd> = rep
+                .cmds()
+                .filter(|c| c.player == view.perspective)
+                .map(|c| cmd::to_legacy(c, rep.unit_limit))
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|c| cmd::openbw(c.op) == cmd::OpenBw::Supported)
+                .collect();
+            let empty = HashMap::new();
+            let (labels, coverage) = labeler.label(&cmds, rep.header.frames, |f| units_at.get(&f).unwrap_or(&empty));
+            (a, labels, coverage)
+        }
+        // 041-R22 replay T: the same desync signals as replay A, and the teacher run as a shadow
+        // on the perspective's observations; its commands are the labels (the player's own
+        // commands only feed the 040-R8 checks).
+        Some(build) => {
+            // The last label before a cut takes its delay from up to 32 frames later (031-R11).
+            let last = until_frame.map_or(rep.header.frames, |u| u.saturating_add(32)).min(rep.header.frames);
+            let stops = crate::relabel::teacher_frames(last);
+            let shadow: std::cell::RefCell<Option<crate::relabel::Shadow>> = std::cell::RefCell::new(None);
+            let failed: std::cell::RefCell<Option<anyhow::Error>> = std::cell::RefCell::new(None);
+            let a = play_observe(
+                rep,
+                view.perspective,
+                cfg,
+                &stops,
+                &mut |gi| match write_map_precompute(o.map_hash, gi, &rep.map) {
+                    // The live T0 session's hints (021-R8 맵 정보): base locations and chokes.
+                    Ok(pre) => *shadow.borrow_mut() = Some(crate::relabel::Shadow::new(gi, build, uranium_scripted::MapHints { base_locs: pre.base_locs, chokes: pre.chokes }, view.perspective, last)),
+                    Err(e) => *failed.borrow_mut() = Some(e),
+                },
+                &mut |f, _| {
+                    if let Some(s) = shadow.borrow_mut().as_mut() {
+                        s.observe(f);
+                    }
+                },
+            )?;
+            if let Some(e) = failed.into_inner() {
+                return Err(e.context("map precompute for the relabelling teacher (041-R22)"));
+            }
+            let Some(shadow) = shadow.into_inner() else {
+                return Ok(Err(Outcome::Error { reason: "bridge sent no GameInfo: no teacher to relabel with (041-R22)".into() }));
+            };
+            let (labels, coverage) = shadow.labels(labeler, rep.header.frames);
+            (a, labels, coverage)
+        }
+    };
     a.drop_time_limit_leave(time_limit);
     let reasons = a.desync_reasons(recorded_winner);
     if !reasons.is_empty() {
         return Ok(Err(Outcome::Desync { reasons }));
     }
-    let cmds: Vec<cmd::Cmd> = rep
-        .cmds()
-        .filter(|c| c.player == view.perspective)
-        .map(|c| cmd::to_legacy(c, rep.unit_limit))
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .filter(|c| cmd::openbw(c.op) == cmd::OpenBw::Supported)
-        .collect();
-    let empty = HashMap::new();
-    let (mut labels, coverage) = labeler.label(&cmds, rep.header.frames, |f| units_at.get(&f).unwrap_or(&empty));
     // 040-R21: `--until-frame n` keeps only the steps observed at frames <= n (the label coverage
     // still counts the whole game; the result is the game's).
     cut_after(&mut labels, until_frame, |l| l.frame);
@@ -396,6 +451,9 @@ pub struct BuildOptions {
     /// 040-R21: in a replay of at least this many frames the first leave is the generating plan's
     /// time limit (`--time-limit`, the teacher botgen plans' `max_frames` 14,400), not a player.
     pub time_limit: Option<u32>,
+    /// 041-R22 (`--relabel`, source `dagger`): the labels are this teacher's commands on the
+    /// perspective's observations instead of the replay's own commands.
+    pub relabel: Option<uranium_scripted::T0Build>,
 }
 
 /// Resume state from earlier records, per perspective (040-R17 / 040-R19 review): a written
@@ -541,6 +599,7 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
             labeler_version: crate::label::LABELER_VERSION,
             until_frame: opt.until_frame,
             time_limit: opt.time_limit,
+            relabel: opt.relabel.map(|b| b.name()),
             outcome,
         };
         (r, None)
@@ -572,7 +631,7 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
     if let Some(name) = excludes.matches(&rep.header.map_name, &map_hash) {
         return vec![rec(&sha, &rep.header.map_name, &family, None, Outcome::Filtered { reason: format!("excluded map (040-R16): {name}") })];
     }
-    let views = match filter(&rep, &family, matches!(opt.src.as_str(), "bot" | "botgen")) {
+    let views = match filter(&rep, &family, matches!(opt.src.as_str(), "bot" | "botgen" | "dagger"), opt.relabel.is_some()) {
         Ok(v) => v,
         Err(reason) => return vec![rec(&sha, &rep.header.map_name, &family, None, Outcome::Filtered { reason })],
     };
@@ -601,7 +660,8 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
             out.push(rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Filtered { reason: "storage budget reached (040-R12)".into() }));
             continue;
         }
-        let outcome = match build_view(&rep, &view, cfg, labeler, recorded_winner, opt.until_frame, opt.time_limit) {
+        let vo = ViewOptions { until_frame: opt.until_frame, time_limit: opt.time_limit, relabel: opt.relabel, map_hash: &map_hash };
+        let outcome = match build_view(&rep, &view, cfg, labeler, recorded_winner, vo) {
             Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info })) => {
                 let n = steps.len();
                 // 031 / AMB-031-3: map precompute once per map (observation channels only).
@@ -691,7 +751,7 @@ mod tests {
 
     fn written_record(n: u32) -> Record {
         let coverage = Coverage::default();
-        Record { index: n as usize, replay_sha256: format!("{n:064x}"), src: "t".into(), map_family: "other".into(), map_name: String::new(), map_hash: String::new(), recorded_winner: None, view: None, labeler_version: crate::label::LABELER_VERSION, until_frame: None, time_limit: None, outcome: Outcome::Written { steps: 3, coverage, result: 0, result_source: "none".into() } }
+        Record { index: n as usize, replay_sha256: format!("{n:064x}"), src: "t".into(), map_family: "other".into(), map_name: String::new(), map_hash: String::new(), recorded_winner: None, view: None, labeler_version: crate::label::LABELER_VERSION, until_frame: None, time_limit: None, relabel: None, outcome: Outcome::Written { steps: 3, coverage, result: 0, result_source: "none".into() } }
     }
 
     /// 040-R17 (review M1): a shard whose copy fails verification stops the build. Its records
@@ -817,7 +877,7 @@ mod tests {
         let excludes = MapExcludes::load(&families).unwrap();
         let labeler = Labeler::new().unwrap();
         let cfg = PlayConfig { launcher: dir.join("none"), bridge_lib: dir.join("none"), data_dir: dir.join("none"), work_dir: dir.join("w") };
-        let opt = BuildOptions { src: "t".into(), shards_dir: dir.join("s"), staging_dir: dir.join("l"), recorded_winners: HashMap::new(), jobs: 1, shard_target_bytes: 1, budget_bytes: 1 << 30, first_shard_index: 0, skip_sha256: Default::default(), done: ResumeDone::default(), duplicates: part1, until_frame: None, time_limit: None };
+        let opt = BuildOptions { src: "t".into(), shards_dir: dir.join("s"), staging_dir: dir.join("l"), recorded_winners: HashMap::new(), jobs: 1, shard_target_bytes: 1, budget_bytes: 1 << 30, first_shard_index: 0, skip_sha256: Default::default(), done: ResumeDone::default(), duplicates: part1, until_frame: None, time_limit: None, relabel: None };
         let out = process(1, &files[3], &opt, &cfg, &families, &excludes, &labeler, &Mutex::new(0));
         assert_eq!(out.len(), 1);
         let (r, game) = &out[0];
@@ -845,5 +905,127 @@ mod tests {
         assert_eq!(x.matches("Attitude SE 2.2", ""), None);
         assert_eq!(x.matches("\u{7}투혼 \u{5}1.4", ""), None);
         assert_eq!(x.matches("Octagon SE 2.0", ""), None);
+    }
+
+    /// 041-R22: `dagger` games have no 5-minute bar and are bot data (stage B, no APM bar).
+    #[test]
+    fn dagger_views_have_no_length_bar_041_r22() {
+        let player = |id: u8, race: u8| crate::Player { index: id, slot: id as u16, id, kind: 2, race, team: id, name: vec![b'p', b'0' + id] };
+        let train = |p: u8| cmd::Cmd { frame: 10, player: p, op: cmd::op::TRAIN, data: vec![7, 0] };
+        let short = Replay {
+            format: crate::Format::Legacy,
+            header: crate::Header { frames: 3 * 60 * 24, map_width: 128, map_height: 112, game_type: 2, map_name: "t".into(), players: vec![player(0, header::RACE_TERRAN), player(1, header::RACE_ZERG)] },
+            raw_header: vec![],
+            blocks: vec![cmd::Block { frame: 10, cmds: vec![train(0), train(1)] }],
+            map: vec![],
+            unit_limit: None,
+        };
+        assert_eq!(filter(&short, "fighting_spirit", true, false).unwrap_err(), "shorter than 5 minutes");
+        let views = filter(&short, "fighting_spirit", true, true).unwrap();
+        assert!(!views.is_empty() && views.iter().all(|v| v.stage == "B"));
+    }
+
+    /// 041-R22 (OpenBW, ignored): relabelling a model game (`URANIUM_TEST_DAGGER_REP`, an OpenBW
+    /// replay of a model game; `.env` launcher, bridge and `URANIUM_MAPS_DIR`) twice gives the same
+    /// steps, and the labels are the 021-R8 teacher's (only the actions of its 034 table, the
+    /// "모델 표현" row) rather than the model's own commands.
+    #[test]
+    #[ignore = "needs OpenBW (.env) and URANIUM_TEST_DAGGER_REP"]
+    fn relabel_is_deterministic_and_from_the_teacher_041_r22() {
+        let _ = dotenvy::dotenv();
+        let path = std::env::var("URANIUM_TEST_DAGGER_REP").expect("URANIUM_TEST_DAGGER_REP");
+        let bytes = std::fs::read(&path).unwrap();
+        let rep = crate::parse(&bytes).unwrap();
+        let map_hash = hex(&Sha256::digest(&rep.map));
+        let families = MapFamilies::load().unwrap();
+        let family = families.classify(&rep.header.map_name, &map_hash);
+        let view = filter(&rep, &family, true, true).unwrap().remove(0);
+        let cfg = PlayConfig::from_env(crate::play::work_dir_default().join("relabel-test")).unwrap();
+        let labeler = Labeler::new().unwrap();
+        let run = |relabel| {
+            let vo = ViewOptions { until_frame: Some(11_520), time_limit: Some(14_400), relabel, map_hash: &map_hash };
+            match build_view(&rep, &view, &cfg, &labeler, None, vo).unwrap() {
+                Ok(g) => g,
+                Err(o) => panic!("{o:?}"),
+            }
+        };
+        let (a, b) = (run(Some(uranium_scripted::T0Build::TerranReact)), run(Some(uranium_scripted::T0Build::TerranReact)));
+        assert_eq!(a.steps.len(), b.steps.len());
+        assert!(a.steps == b.steps, "the same replay gives the same steps");
+        let own = run(None);
+        let table = uranium_env::actions::ActionTable::load().unwrap();
+        let name = |s: &Step| table.actions.get(s.action_label.action as usize).map_or("unknown", |a| a.name.as_str()).to_string();
+        let teacher = [
+            "NoOp", "Build_SupplyDepot", "Build_Barracks", "Build_CommandCenter", "Build_Bunker", "Train_SCV", "Train_Marine", "Move_Pos", "Smart_Unit", "Hold", "Attack_Pos", "Attack_Unit", "Repair_Unit",
+            "Gather_Unit", "ReturnCargo",
+        ];
+        let off: Vec<String> = a.steps.iter().map(name).filter(|n| !teacher.contains(&n.as_str())).collect();
+        assert!(off.is_empty(), "labels outside the teacher's actions: {off:?}");
+        assert!(a.steps.iter().any(|s| name(s) == "Train_SCV") && a.steps.iter().any(|s| name(s) == "Move_Pos"));
+        let labels = |g: &ViewGame| g.steps.iter().map(|s| s.action_label.clone()).collect::<Vec<_>>();
+        assert_ne!(labels(&a), labels(&own), "not the model's own commands");
+        eprintln!("teacher steps {} vs own {}; coverage {:?}", a.steps.len(), own.steps.len(), a.coverage);
+    }
+
+    /// 041-R22 (OpenBW, ignored): relabelling a teacher botgen game (`URANIUM_TEST_TEACHER_REP`,
+    /// the teacher as a Terran player) with the teacher gives its botgen labels: the shadow sees
+    /// the same observations the live teacher saw, so its commands are the live ones and the
+    /// BWAPI path (`relabel::command_cmds`) gives the same labels as the recorded commands.
+    #[test]
+    #[ignore = "needs OpenBW (.env) and URANIUM_TEST_TEACHER_REP"]
+    fn relabel_of_a_teacher_game_gives_its_botgen_labels_041_r22() {
+        let _ = dotenvy::dotenv();
+        let path = std::env::var("URANIUM_TEST_TEACHER_REP").expect("URANIUM_TEST_TEACHER_REP");
+        let rep = crate::parse(&std::fs::read(&path).unwrap()).unwrap();
+        let map_hash = hex(&Sha256::digest(&rep.map));
+        let family = MapFamilies::load().unwrap().classify(&rep.header.map_name, &map_hash);
+        let view = filter(&rep, &family, true, true).unwrap().remove(0);
+        let cfg = PlayConfig::from_env(crate::play::work_dir_default().join("relabel-test")).unwrap();
+        let labeler = Labeler::new().unwrap();
+        let run = |relabel| {
+            let vo = ViewOptions { until_frame: Some(11_520), time_limit: Some(14_400), relabel, map_hash: &map_hash };
+            match build_view(&rep, &view, &cfg, &labeler, None, vo).unwrap() {
+                Ok(g) => g,
+                Err(o) => panic!("{o:?}"),
+            }
+        };
+        let (shadow, botgen) = (run(Some(uranium_scripted::T0Build::TerranReact)), run(None));
+        // (action, sorted selection, target unit, target tile)
+        type Key = (u16, Vec<u32>, Option<u32>, Option<(u16, u16)>);
+        let key = |s: &Step| -> Key {
+            let l = &s.action_label;
+            let mut sel = l.selected.clone();
+            sel.sort_unstable();
+            (l.action, sel, l.target_unit, l.target_tile)
+        };
+        let acts = |g: &ViewGame| g.steps.iter().filter(|s| s.action_label.action != 0).map(|s| (s.action_label.frame, key(s))).collect::<Vec<_>>();
+        let (a, b) = (acts(&shadow), acts(&botgen));
+        // Each botgen label matched by an unused equal shadow label within 8 frames.
+        let mut used = vec![false; a.len()];
+        let mut offsets: std::collections::BTreeMap<i64, usize> = Default::default();
+        let mut matched = 0;
+        for (fb, kb) in &b {
+            if let Some(i) = (0..a.len()).find(|&i| !used[i] && a[i].1 == *kb && (a[i].0 as i64 - *fb as i64).abs() <= 8) {
+                used[i] = true;
+                matched += 1;
+                *offsets.entry(*fb as i64 - a[i].0 as i64).or_default() += 1;
+            }
+        }
+        eprintln!("botgen actions {} shadow actions {} matched {} offsets {offsets:?}", b.len(), a.len(), matched);
+        if std::env::var_os("URANIUM_TEST_VERBOSE").is_some() {
+            let table = uranium_env::actions::ActionTable::load().unwrap();
+            let show = |(f, k): &(u32, Key)| format!("{f} {} {:?} {:?} {:?}", table.actions[k.0 as usize].name, k.1, k.2, k.3);
+            for (i, x) in a.iter().enumerate().filter(|(i, _)| !used[*i]) {
+                eprintln!("shadow only #{i}: {}", show(x));
+            }
+            let mut used_b = vec![false; a.len()];
+            for x in &b {
+                match (0..a.len()).find(|&i| !used_b[i] && a[i].1 == x.1 && (a[i].0 as i64 - x.0 as i64).abs() <= 8) {
+                    Some(i) => used_b[i] = true,
+                    None => eprintln!("botgen only: {}", show(x)),
+                }
+            }
+        }
+        assert!(matched as f64 >= 0.95 * b.len() as f64 && matched as f64 >= 0.95 * a.len() as f64);
     }
 }

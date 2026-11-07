@@ -16,6 +16,8 @@ flate2 = "1"
 uranium-proto.workspace = true
 dotenvy.workspace = true
 uranium-env = { path = "../uranium-env" }
+# 041-R22: DAgger relabelling runs the 021-R8 teacher on replay observations.
+uranium-scripted = { path = "../uranium-scripted" }
 toml.workspace = true
 postcard.workspace = true
 zstd = "0.13"

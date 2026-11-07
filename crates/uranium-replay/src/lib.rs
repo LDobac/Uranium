@@ -9,6 +9,7 @@ pub mod label;
 pub mod mpq;
 pub mod pipeline;
 pub mod play;
+pub mod relabel;
 pub mod shard;
 pub mod share_io;
 pub mod split;
