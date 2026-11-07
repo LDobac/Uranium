@@ -20,11 +20,12 @@ oss_patch "$SRC" "$ROOT/third_party/patches/0008-stardust-linux-bwapi42.patch"
 
 # Vendored zstd (C) for zstdstream, which the mining-path serializer links against.
 Z="$SRC/3rdparty/zstd/lib"
-mkdir -p "$OBJ/zstd"
+zflags=(-O2 -fPIC -DNDEBUG -DZSTD_DISABLE_ASM -I"$Z" -I"$Z/common")
+oss_flags_stamp "$OBJ/zstd" "${zflags[@]}"
 zobjs=()
 for f in "$Z"/common/*.c "$Z"/compress/*.c "$Z"/decompress/*.c; do
   o="$OBJ/zstd/$(basename "$f" .c).o"
-  [[ -f "$o" && "$o" -nt "$f" ]] || gcc -O2 -fPIC -DZSTD_DISABLE_ASM -I"$Z" -I"$Z/common" -c "$f" -o "$o"
+  [[ -f "$o" && "$o" -nt "$f" ]] || gcc "${zflags[@]}" -c "$f" -o "$o"
   zobjs+=("$o")
 done
 

@@ -54,14 +54,31 @@ oss_stale() {
   return 1
 }
 
+# oss_flags_stamp <obj dir> <flags...>: drop the directory's objects when the compile flags differ
+# from the last build (oss_stale only compares timestamps).
+oss_flags_stamp() {
+  local obj="$1"; shift
+  local stamp="$obj/.flags" want
+  want="$(printf '%s\n' "$@")"
+  mkdir -p "$obj"
+  if [[ ! -f "$stamp" || "$(cat "$stamp")" != "$want" ]]; then
+    rm -f "$obj"/*.o "$obj"/*.d
+    printf '%s\n' "$want" > "$stamp"
+  fi
+}
+
 # oss_compile <obj dir> <cxx flags...> -- <sources...>: parallel incremental g++ -c with header
 # dependency tracking. Prints the object list (one per line) on stdout.
+# -DNDEBUG is always added, as in the bots' own Release projects and the Windows build (CMake
+# Release): their asserts are debug-only traps. Without it Iron's onAssertThrowFailed aborts the
+# process instead of throwing to its per-frame exceptionHandler, and Steamhammer's RC insist()
+# (= assert) aborts on an out-of-range Evaluator input (Linux T1 crashes, 2026-11-07).
 oss_compile() {
   local obj="$1"; shift
-  local flags=()
+  local flags=(-DNDEBUG)
   while [[ "$1" != "--" ]]; do flags+=("$1"); shift; done
   shift
-  mkdir -p "$obj"
+  oss_flags_stamp "$obj" "${flags[@]}"
   local f o todo=()
   for f in "$@"; do
     o="$obj/$(echo "${f#$ROOT/third_party/}" | tr '/ ' '__').o"
