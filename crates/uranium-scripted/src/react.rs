@@ -52,17 +52,18 @@ const ORDER_MOVE: u16 = 6;
 const ATTACK_ORDERS: [u16; 5] = [8, 9, 10, 11, 14];
 /// 10th advisory (041-R22): an SCV farther than this (tiles) from the main command center is out
 /// of the main (the scout has left).
-const MAIN_RADIUS: i64 = 12;
+const SCOUT_AWAY_TILES: i64 = 12;
 
 /// 021-R8 (10th advisory §2 1, 041-R22): the bunker order `q` is stale — `bunker_order_expiry`
 /// frames old, no own bunker (built or under construction) within 10 tiles of its site (the
-/// "has a bunker" radius), and its SCV is not on its way to place a building — so it is
+/// "has a bunker" radius), and its SCV is not on its way to place a building there (order
+/// PlaceBuilding toward a point within 3 tiles of the site) — so it is
 /// forgotten and the defence orders the bunker again.
 pub(crate) fn bunker_order_stale(p: &ReactParams, q: &crate::Pending, f: &RawFrame, mine: &[&UnitState]) -> bool {
     q.ty == BUNKER
         && f.frame >= q.issued + p.bunker_order_expiry
         && !mine.iter().any(|u| u.unit_type == BUNKER && within(u.pos, bunker_center(q.tile), 10))
-        && !mine.iter().any(|u| u.id == q.worker && u.order == ORDER_PLACE_BUILDING)
+        && !mine.iter().any(|u| u.id == q.worker && u.order == ORDER_PLACE_BUILDING && u.order_pos.is_none_or(|p| within(p, bunker_center(q.tile), 3)))
 }
 
 /// 021-R8 numbers (6th advisory §2 and rule advisory values, AMB-021-4). Frames are game frames (24 per second),
@@ -764,9 +765,9 @@ impl Brain {
         let (main_radius, was_out) = (r.p.main_radius, r.scout_out);
         let others: Vec<Pos> = self.other_starts().into_iter().map(depot_center).collect();
         let home = self.home;
-        let out_of_main = |u: &UnitState| home.is_some_and(|h| !within(u.pos, h, MAIN_RADIUS));
+        let out_of_main = |u: &UnitState| home.is_some_and(|h| !within(u.pos, h, SCOUT_AWAY_TILES));
         let heading_out = |u: &UnitState| {
-            (u.order == ORDER_MOVE && u.order_pos.is_some_and(|p| others.iter().any(|c| within(p, *c, main_radius)))) || others.iter().any(|c| within(u.pos, *c, MAIN_RADIUS))
+            (u.order == ORDER_MOVE && u.order_pos.is_some_and(|p| others.iter().any(|c| within(p, *c, main_radius)))) || others.iter().any(|c| within(u.pos, *c, SCOUT_AWAY_TILES))
         };
         let current = self.scout.and_then(|id| mine.iter().copied().find(|u| u.id == id));
         if self.scout.is_some() && current.is_none() && was_out {
@@ -1821,6 +1822,13 @@ mod tests {
         let mut f = defence_frame(2_008 + 144, vec![], 100);
         f.units.iter_mut().filter(|u| u.id == worker).for_each(|u| u.order = ORDER_PLACE_BUILDING);
         assert!(builds(&walking.act(&f), BUNKER).is_empty(), "the builder walks to the site");
+        // Placing another building far from the site (the model's own order in DAgger): expired.
+        let mut elsewhere = teacher();
+        elsewhere.scout_done = true;
+        elsewhere.act(&defence_frame(2_008, vec![], 100));
+        let mut f = defence_frame(2_008 + 144, vec![], 100);
+        f.units.iter_mut().filter(|u| u.id == worker).for_each(|u| (u.order, u.order_pos) = (ORDER_PLACE_BUILDING, Some((10, 10))));
+        assert_eq!(builds(&elsewhere.act(&f), BUNKER).len(), 1, "placing something else: ordered again");
         // A bunker under construction 1 tile off the site: kept (and "has a bunker" anyway).
         let mut started = teacher();
         started.scout_done = true;

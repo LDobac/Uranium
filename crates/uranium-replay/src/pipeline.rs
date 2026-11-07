@@ -350,8 +350,9 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
     // still counts the whole game; the result is the game's).
     cut_after(&mut labels, until_frame, |l| l.frame);
     let frames: Vec<u32> = labels.iter().map(|l| l.frame).collect();
-    // Replay B: decision-time observations. B stops at every frame A stopped at, so A and B
-    // form the 040-R8 double-replay check (check_digest ignores B's extra stops).
+    // Replay B: decision-time observations. B stops at every base stop of A (or T, 041-R22), so
+    // they form the 040-R8 double-replay check (check_digest hashes the base stops only and
+    // ignores the extra stops: B's label frames, T's teacher observations).
     let mut by_frame: HashMap<u32, (uranium_proto::RawFrame, Option<uranium_proto::PrivilegedSummary>)> = HashMap::new();
     let res = play_with(rep, view.perspective, cfg, &frames, &mut |f, p| {
         if frames.binary_search(&f.frame).is_ok() {

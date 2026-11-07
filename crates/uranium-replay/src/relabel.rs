@@ -358,9 +358,8 @@ mod tests {
         v
     }
 
-    fn names(lab: &Labeler, labels: &[crate::label::Label]) -> Vec<(u32, String)> {
+    fn names(labels: &[crate::label::Label]) -> Vec<(u32, String)> {
         let table = uranium_env::actions::ActionTable::load().unwrap();
-        let _ = lab;
         labels.iter().map(|l| (l.frame, table.actions[l.action as usize].name.clone())).collect()
     }
 
@@ -383,7 +382,7 @@ mod tests {
         let lab = Labeler::new().unwrap();
         let (la, _) = a.labels(&lab, 60);
         assert_eq!(la, b.labels(&lab, 60).0);
-        let got = names(&lab, &la);
+        let got = names(&la);
         // Frame 1: the teacher trains an SCV and sends the four idle SCVs to mine, one label each.
         let first: Vec<&str> = got.iter().filter(|(f, n)| *f < 9 && n != "NoOp").map(|(_, n)| n.as_str()).collect();
         assert_eq!(first.iter().filter(|n| **n == "Gather_Unit").count(), 4, "{got:?}");
