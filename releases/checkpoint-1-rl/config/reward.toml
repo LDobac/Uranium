@@ -1,0 +1,6 @@
+# 033 reward weights (initial values, 033-R4). Tuning target, recorded in every checkpoint.
+# Decay schedules for build / units (league) and the C0-only value term are applied by RL (042).
+win = 1.0
+build = 0.3
+units = 0.3
+value = 0.05

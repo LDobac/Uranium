@@ -1,0 +1,187 @@
+{
+  "config": {
+    "input": {
+      "unit_types": 234,
+      "owners": 3,
+      "orders": 190,
+      "actions": 101,
+      "entity_cont": 76,
+      "spatial_channels": 26,
+      "map_size": 128,
+      "scalar": 567,
+      "races": 4,
+      "map_families": 3,
+      "start_locs": 8,
+      "z_build_len": 20,
+      "z_units": 44,
+      "caps": 50,
+      "loc_classes": 8,
+      "privileged": 383
+    },
+    "entity": {
+      "d_model": 256,
+      "layers": 3,
+      "heads": 8,
+      "ffn": 1024,
+      "dropout": 0.0,
+      "unit_type_emb": 64,
+      "owner_emb": 8,
+      "order_emb": 32,
+      "last_action_emb": 16,
+      "distance_buckets": 16
+    },
+    "spatial": {
+      "scatter_channels": 32,
+      "stem_channels": 32,
+      "stages": [
+        64,
+        64,
+        128,
+        128
+      ],
+      "pool": 256
+    },
+    "scalar": {
+      "hidden": 256,
+      "race_emb": 32,
+      "map_family_emb": 16,
+      "start_loc_emb": 8,
+      "z_build_emb": 32,
+      "z_units_emb": 32,
+      "z_out": 64
+    },
+    "core": {
+      "kind": "Gtrxl",
+      "hidden": 512,
+      "gtrxl_layers": 2,
+      "gtrxl_heads": 8,
+      "gtrxl_memory": 64
+    },
+    "heads": {
+      "ar": 256,
+      "key": 64,
+      "max_select": 12,
+      "delay_buckets": 16,
+      "loc_ar_channels": 16
+    },
+    "value": {
+      "hidden": 256,
+      "privileged": 128,
+      "win_open": true
+    },
+    "variant": {
+      "terrain": true,
+      "ctx_token": true,
+      "attn_pool": true,
+      "outer": 32
+    }
+  },
+  "feature_version": 7,
+  "action_version": 2,
+  "norm": {
+    "scalar_mean": [],
+    "scalar_std": []
+  },
+  "train": {
+    "agent": "main",
+    "algo": "vtrace",
+    "rl": {
+      "actors": {
+        "game_wall_timeout_s": 7200,
+        "max_policy_lag": 32,
+        "queue_batches": 4,
+        "queue_full": "wait",
+        "queue_wait_max_s": 120,
+        "weight_push_every": 4
+      },
+      "curriculum": {
+        "c0_self": 0.2,
+        "c0_t0": 0.8,
+        "c0_to_c1_win_rate_vs_t0": 0.7,
+        "c1_self": 0.3,
+        "c1_t0": 0.3,
+        "c1_t1": 0.4,
+        "c1_to_c2_win_rate_vs_t1": 0.5,
+        "pseudo_reward_decay_updates": 20000.0,
+        "window_games": 300
+      },
+      "entropy": {
+        "action": 0.003000000026077032,
+        "delay": 0.0010000000474974513,
+        "queued": 0.0010000000474974513,
+        "selected": 0.0010000000474974513,
+        "target_loc": 0.0010000000474974513,
+        "target_unit": 0.0010000000474974513
+      },
+      "keep_checkpoints": 0,
+      "kl": {
+        "floor": 0.009999999776482582,
+        "half_life_updates": 20000.0,
+        "init": 0.10000000149011612
+      },
+      "lanes": 32,
+      "league": {
+        "bot_random_race": 0.2,
+        "main_exploiter_fallback_share": 0.5,
+        "main_exploiter_fallback_win_rate": 0.2,
+        "main_pfsp": 0.5,
+        "main_self": 0.35,
+        "main_t1": 0.15,
+        "pfsp_power": 2.0,
+        "race_uniform_mix": 0.5,
+        "share_league_exploiter": 0.25,
+        "share_main": 0.5,
+        "share_main_exploiter": 0.25,
+        "win_rate_decay": 0.99,
+        "win_rate_prior": 0.5
+      },
+      "loss": {
+        "gamma": 1.0,
+        "pg": 1.0,
+        "td_lambda": 0.800000011920929,
+        "upgo": 1.0,
+        "value": 0.5,
+        "vtrace_c_bar": 1.0,
+        "vtrace_rho_bar": 1.0,
+        "win_open": 0.5
+      },
+      "micro_lanes": 1,
+      "optimizer": {
+        "beta1": 0.0,
+        "beta2": 0.9900000095367432,
+        "eps": 9.999999747378752e-06,
+        "grad_clip": 1.0,
+        "lr": 3e-05,
+        "weight_decay": 0.0
+      },
+      "ppo": {
+        "adopt_margin": 0.03,
+        "clip": 0.20000000298023224,
+        "epochs": 2,
+        "gae_lambda": 0.949999988079071
+      },
+      "replays": {
+        "sample_every": 100
+      },
+      "seq_len": 64,
+      "snapshot": {
+        "exploiter_max_updates": 4000,
+        "exploiter_win_rate": 0.7,
+        "exploiter_win_window": 200,
+        "league_exploiter_reset_prob": 0.25,
+        "main_every_updates": 2000
+      }
+    },
+    "update": 1625
+  },
+  "framework": "pytorch",
+  "torch": "2.14.1+cu130",
+  "precision": "bf16",
+  "kernels": [
+    "URANIUM_LOC_ROWS=pow2",
+    "URANIUM_ENTITY_ATTN=fused",
+    "URANIUM_COMPILE=default",
+    "URANIUM_INFER_GRAPH=on",
+    "URANIUM_INFER_COMPILE=default"
+  ]
+}
