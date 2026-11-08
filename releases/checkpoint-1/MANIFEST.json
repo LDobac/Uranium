@@ -1,0 +1,44 @@
+{
+  "checkpoint": "checkpoint-1",
+  "date": "2026-11-08",
+  "model": "bc-dagger-r1/ckpt-1137",
+  "source": "<shared>/checkpoints/bc-dagger-r1/ckpt-1137 (061 checkpoint; optim-main.safetensors stays there, not released)",
+  "lineage": [
+    "bc-s2e2-pt/ckpt-11387 (BC, 041)",
+    "bc-mix-e1 ... bc-mix-e10/ckpt-1053 (041-R21 6 mix)",
+    "bc-dagger-r1/ckpt-1137 (041-R22 DAgger round 1)"
+  ],
+  "training": {
+    "stage": "S2",
+    "updates": 1137,
+    "games": 2593,
+    "steps": 2270677,
+    "config": "config/bc_dagger_r1.toml",
+    "init": "bc-mix-e10/ckpt-1053"
+  },
+  "selection": "reports/m6_rl_stall_advice12.md section 3 (qualification TvZ >= 16/32 and late held >= 24/64, then held sum, then economy sum)",
+  "report": "reports/checkpoint1.md",
+  "load": "uranium.ckpt.load_model(\"releases/checkpoint-1\") (model.safetensors + meta.json; checked 2026-11-08 on CPU); plans name checkpoints under the shared drive, so copy this folder there to play it",
+  "files": {
+    "lineage.json": {
+      "sha256": "2b451cbcaad45c3416d2cdf4207eb01ca6707140bc5ce5e35aca9f4465f9ab4e",
+      "bytes": 202
+    },
+    "meta.json": {
+      "sha256": "96912cf26fd1276052ffc409aa5c3279e0791b2ef3c908d6fafeed615bb705c1",
+      "bytes": 3184
+    },
+    "model.safetensors": {
+      "sha256": "a51c8c2b79ea3d515fe4fa42ba1012bb2019aa429597216df58f70ba67f52ff5",
+      "bytes": 95077420
+    },
+    "train_state.json": {
+      "sha256": "24b6bdb2a0bfdfa69f2e4951d89cf95fbc43b8066922c4633bb80a27dc61eeb5",
+      "bytes": 5462
+    },
+    "config/bc_dagger_r1.toml": {
+      "sha256": "fa964bf9be00f126c5d0ae3ad41078fc6a8f2c87652c0951a008b145c562f514",
+      "bytes": 4121
+    }
+  }
+}

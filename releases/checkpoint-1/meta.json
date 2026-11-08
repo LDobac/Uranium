@@ -1,0 +1,153 @@
+{
+  "config": {
+    "input": {
+      "unit_types": 234,
+      "owners": 3,
+      "orders": 190,
+      "actions": 101,
+      "entity_cont": 76,
+      "spatial_channels": 26,
+      "map_size": 128,
+      "scalar": 567,
+      "races": 4,
+      "map_families": 3,
+      "start_locs": 8,
+      "z_build_len": 20,
+      "z_units": 44,
+      "caps": 50,
+      "loc_classes": 8,
+      "privileged": 383
+    },
+    "entity": {
+      "d_model": 256,
+      "layers": 3,
+      "heads": 8,
+      "ffn": 1024,
+      "dropout": 0.1,
+      "unit_type_emb": 64,
+      "owner_emb": 8,
+      "order_emb": 32,
+      "last_action_emb": 16,
+      "distance_buckets": 16
+    },
+    "spatial": {
+      "scatter_channels": 32,
+      "stem_channels": 32,
+      "stages": [
+        64,
+        64,
+        128,
+        128
+      ],
+      "pool": 256
+    },
+    "scalar": {
+      "hidden": 256,
+      "race_emb": 32,
+      "map_family_emb": 16,
+      "start_loc_emb": 8,
+      "z_build_emb": 32,
+      "z_units_emb": 32,
+      "z_out": 64
+    },
+    "core": {
+      "kind": "Gtrxl",
+      "hidden": 512,
+      "gtrxl_layers": 2,
+      "gtrxl_heads": 8,
+      "gtrxl_memory": 64
+    },
+    "heads": {
+      "ar": 256,
+      "key": 64,
+      "max_select": 12,
+      "delay_buckets": 16,
+      "loc_ar_channels": 16
+    },
+    "value": {
+      "hidden": 256,
+      "privileged": 128,
+      "win_open": true
+    },
+    "variant": {
+      "terrain": true,
+      "ctx_token": true,
+      "attn_pool": true,
+      "outer": 32
+    }
+  },
+  "feature_version": 7,
+  "action_version": 2,
+  "norm": {
+    "scalar_mean": [],
+    "scalar_std": []
+  },
+  "train": {
+    "bc": {
+      "data": {
+        "augment": true,
+        "checkpoint_every": 5000,
+        "checkpoint_minutes": 60,
+        "enemy_race_mask": 0.05,
+        "seed": 13,
+        "subsample": {
+          "fraction": 0.043,
+          "keep_sources": [
+            "botgen",
+            "dagger"
+          ]
+        },
+        "z_drop": 0.25
+      },
+      "grad_checkpointing": false,
+      "grad_clip": 1.0,
+      "heads": {
+        "action": 1.0,
+        "delay": 0.5,
+        "queued": 0.20000000298023224,
+        "selected": 1.0,
+        "target_loc": 1.0,
+        "target_unit": 1.0
+      },
+      "keep_checkpoints": null,
+      "lanes": 32,
+      "lr": 0.0003,
+      "micro_lanes": 1,
+      "min_lr": 3e-06,
+      "pad_entities": 64,
+      "s2_lr_scale": 0.1,
+      "seq_len": 64,
+      "steps": {
+        "ablation_a": 0,
+        "ablation_a_warmup": 0,
+        "s1": 0,
+        "s2": 1137,
+        "s2_warmup": 57
+      },
+      "total_steps": 1137,
+      "value": {
+        "win": 0.5,
+        "win_open": 0.5
+      },
+      "warmup_steps": 57,
+      "weight_decay": 9.999999747378752e-05
+    },
+    "games": 2592,
+    "invalid_labels": 45416,
+    "lr_scale": 0.1,
+    "step": 1137
+  },
+  "framework": "pytorch",
+  "torch": "2.14.1a0+git5c48869",
+  "precision": "f32",
+  "kernels": [
+    "URANIUM_LOC_ROWS=exact",
+    "URANIUM_LOC_OUT=mulsum",
+    "URANIUM_BIAS_GRAD=table_t",
+    "URANIUM_CONV_WGRAD=bmm",
+    "URANIUM_LINEAR_WGRAD=splitk",
+    "URANIUM_ENTITY_ATTN=fused",
+    "URANIUM_INFER_GRAPH=on",
+    "URANIUM_INFER_GRAPH_MAX_BATCH=1"
+  ]
+}
