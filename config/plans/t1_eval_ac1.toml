@@ -1,0 +1,73 @@
+# Checkpoint 1 RL T1 evaluation (user request 2026-11-08: evaluate the AC1 RL model like Checkpoint 1): AC1 V-trace
+# s1 ac1-vtrace-s1/ckpt-3133569 (Main agent), stochastic,
+# vs UAlbertaBot / Steamhammer / McRave (Z 18, P 16, T 16), ZZZKBot Z 50, Stardust P 50, Iron T 50 = 300 games: every
+# implemented T1 bot (021, config variants are not separate bots). McRave added 2026-11-08 (user question: all T1 bots;
+# 50 evaluation games cost about an hour, unlike its RL throughput cost). map = both splits each matchup over the two maps.
+# Same seeds as config/plans/t1_eval_bc.toml and t1_eval_ck1.toml.
+# zero_last_failed = false: an RL model keeps the real last-failed input it was trained with (030-R10 / E-5;
+# BC-family plans set true), as the AC1 rush check rush5-20261105/c0-ac1 did.
+name = "t1-eval-ac1"
+seed_base = 46000
+save_replay = true
+wall_timeout_s = 7200
+zero_last_failed = false
+[[matchup]]
+map = "both"
+games = 18
+p0 = { kind = "model", checkpoint = "checkpoints/ac1-vtrace-s1/ckpt-3133569/agents/main", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 16
+p0 = { kind = "model", checkpoint = "checkpoints/ac1-vtrace-s1/ckpt-3133569/agents/main", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 16
+p0 = { kind = "model", checkpoint = "checkpoints/ac1-vtrace-s1/ckpt-3133569/agents/main", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot", race = "terran" }
+[[matchup]]
+map = "both"
+games = 18
+p0 = { kind = "model", checkpoint = "checkpoints/ac1-vtrace-s1/ckpt-3133569/agents/main", sample = "stochastic" }
+p1 = { kind = "oss", name = "steamhammer", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 16
+p0 = { kind = "model", checkpoint = "checkpoints/ac1-vtrace-s1/ckpt-3133569/agents/main", sample = "stochastic" }
+p1 = { kind = "oss", name = "steamhammer", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 16
+p0 = { kind = "model", checkpoint = "checkpoints/ac1-vtrace-s1/ckpt-3133569/agents/main", sample = "stochastic" }
+p1 = { kind = "oss", name = "steamhammer", race = "terran" }
+[[matchup]]
+map = "both"
+games = 50
+p0 = { kind = "model", checkpoint = "checkpoints/ac1-vtrace-s1/ckpt-3133569/agents/main", sample = "stochastic" }
+p1 = { kind = "oss", name = "zzzkbot", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 50
+p0 = { kind = "model", checkpoint = "checkpoints/ac1-vtrace-s1/ckpt-3133569/agents/main", sample = "stochastic" }
+p1 = { kind = "oss", name = "stardust", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 50
+p0 = { kind = "model", checkpoint = "checkpoints/ac1-vtrace-s1/ckpt-3133569/agents/main", sample = "stochastic" }
+p1 = { kind = "oss", name = "iron", race = "terran" }
+[[matchup]]
+map = "both"
+games = 18
+p0 = { kind = "model", checkpoint = "checkpoints/ac1-vtrace-s1/ckpt-3133569/agents/main", sample = "stochastic" }
+p1 = { kind = "oss", name = "mcrave", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 16
+p0 = { kind = "model", checkpoint = "checkpoints/ac1-vtrace-s1/ckpt-3133569/agents/main", sample = "stochastic" }
+p1 = { kind = "oss", name = "mcrave", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 16
+p0 = { kind = "model", checkpoint = "checkpoints/ac1-vtrace-s1/ckpt-3133569/agents/main", sample = "stochastic" }
+p1 = { kind = "oss", name = "mcrave", race = "terran" }
