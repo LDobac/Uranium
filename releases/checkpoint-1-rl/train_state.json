@@ -1,0 +1,11 @@
+{
+  "kind": "rl",
+  "step": 3133569,
+  "update": 1625,
+  "policy_version": 1625,
+  "rng": [],
+  "extra": {
+    "games": 704,
+    "trained_steps": 3254654
+  }
+}
