@@ -2,3 +2,5 @@
 *.patch -text
 # Shell scripts run on Linux hosts.
 *.sh text eol=lf
+# Release checkpoints are stored byte-for-byte (sha256 in their MANIFEST.json must hold on every OS).
+releases/** -text
