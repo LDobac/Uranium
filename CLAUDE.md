@@ -7,6 +7,7 @@
 - BC 본학습: 끝(두 번째 epoch까지), 결과 `reports/m6_bc_eval.md`, 실행 안내 루트 `README.md`
 - RL 착수 점검(남은 결정·작업): `reports/m6_pre_rl_review.md`
 - RL 042-AC1 결과: `reports/m6_ac1.md`
+- Checkpoint 1(모델·종합 리포트): `reports/checkpoint1.md`, `releases/checkpoint-1/`(태그 `checkpoint-1`)
 - 마일스톤별 결과: `reports/` (m2~m7)
 - M7 SC:R 남은 과제: `reports/m7_scr_bridge.md` 4절
 - PyTorch 전환(1단계 이식·2단계 최적화 완료): `spec/README.md` AMB-000-4, 이식 `reports/pytorch_port.md`, 최적화 `reports/pytorch_opt.md`
