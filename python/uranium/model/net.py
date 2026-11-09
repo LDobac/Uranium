@@ -142,6 +142,13 @@ def phase_split(counter: torch.Tensor, t: int, seg: int) -> list[torch.Tensor]:
     return out
 
 
+def join_parts(parts: list[dict], join) -> dict:
+    """The encoder output dicts of the outer segments (032 §2.7) back in one: every key, a tensor
+    joined with `join`, a list of tensors joined item by item. Generic, so an added key (e.g.
+    `pool`, the 032-R24 JEPA target, or 032-R25 statistics) survives the outer paths."""
+    return {k: [join([p[k][i] for p in parts]) for i in range(len(v))] if isinstance(v, list) else join([p[k] for p in parts]) for k, v in parts[0].items()}
+
+
 def to_labels(group: dict, device, pinned: bool | None = None) -> dict:
     return {k: to_device(group[k], device, pinned).long() for k in LABEL_KEYS}
 
@@ -204,8 +211,10 @@ class UraniumNet(nn.Module):
         return torch.cat(es, 0), torch.cat(pools, 0)
 
     def encode(self, obs: dict, entity_chunk: int = 0, h_o=None):
-        """Encoders over all rows -> (core input [rows,768], E, spatial outputs, scalar outputs).
-        `h_o` [rows,256]: the outer LSTM output each row uses (032 §2.7 `outer`)."""
+        """Encoders over all rows -> (core input [rows,768], E, spatial outputs, scalar outputs,
+        e_pool [rows,256]). `h_o` [rows,256]: the outer LSTM output each row uses (032 §2.7
+        `outer`). `e_pool` and `sp["pool"]` are the encoder summaries before the outer LSTM's
+        core input addition (`core_add`): the JEPA targets (032-R24)."""
         v = self.variant
         sc = film = None
         extra = {}
@@ -226,7 +235,36 @@ class UraniumNet(nn.Module):
         core_in = torch.cat([e_pool, sp["pool"].to(e_pool.dtype), sc["c"].to(e_pool.dtype)], 1)
         if self.outer is not None:
             core_in = core_in + self.outer.core_add(h_o).to(core_in.dtype)
-        return core_in, e, sp, sc
+        return core_in, e, sp, sc, e_pool
+
+    # 032 §2.8 hooks (`Variants` docstring): with the switch off each returns its input / None,
+    # so the default model's computation is unchanged (032-AC13).
+    def _skip(self, h, core_in):
+        """032-R23 F1 `core_skip`: h' = h + Linear(core input). h' is what the heads, value,
+        win_open and aux read; the outer LSTM's h_sum keeps the core output h (pre-skip, user
+        decision 2026-11-09 on the core fix set) and the core's recurrent state is not touched."""
+        m = None if self.variant is None else self.variant.core_skip
+        return h if m is None else h + m(core_in).to(h.dtype)
+
+    def _bypass(self, h, sc: dict, e, obs: dict):
+        """032-R21 `bypass`: the ActionType head's addition u [rows, heads.ar], or None."""
+        m = None if self.variant is None else self.variant.bypass
+        return None if m is None else m(h, sc["c"], e, obs)
+
+    def _aux(self, h, e_pool, sp_pool) -> dict:
+        """032-R24 (training only, `forward_seq(aux=True)`): `aux_priv` [rows, P], `aux_jepa`
+        {k: [rows, 512]} and `jepa_target` [rows, 512] = [e_pool, s_pool] before `core_add`,
+        detached (stop-grad). Keys only for the modules the model has."""
+        v = self.variant
+        out = {}
+        if v is None:
+            return out
+        if v.aux_priv is not None:
+            out["aux_priv"] = v.aux_priv(h)
+        if v.aux_jepa is not None:
+            out["aux_jepa"] = {int(k): g(h) for k, g in v.aux_jepa.items()}
+            out["jepa_target"] = torch.cat([e_pool, sp_pool.to(e_pool.dtype)], 1).detach()
+        return out
 
     def labels(self, group: dict, device, pinned: bool | None = None) -> dict:
         """`to_labels` plus the location head's row list from the host labels when
@@ -263,14 +301,17 @@ class UraniumNet(nn.Module):
         """One inference step for B games; sampling inside this forward (032-R9). No privileged
         input (032-R11). `temp` 0 picks the argmax of every head (032-R15, 050-R1)."""
         if self.outer is None:
-            core_in, e, sp, sc = self.encode(obs)
+            core_in, e, sp, sc, _ = self.encode(obs)
             h, state = self.core.step(core_in, state)
+            h = self._skip(h, core_in)
         else:
             cs, os_ = state
-            core_in, e, sp, sc = self.encode(obs, h_o=os_[0])
+            core_in, e, sp, sc, _ = self.encode(obs, h_o=os_[0])
             h, cs = self.core.step(core_in, cs)
-            state = (cs, self.outer.step(h, os_))
-        out = self.heads(None, temp, h, sc["c"], e, sp, obs, self.table, generator)
+            state = (cs, self.outer.step(h, os_))  # the pre-skip h (032-R23 F1)
+            h = self._skip(h, core_in)
+        # 032-R24 / AC14: no aux module and no privileged input on this path.
+        out = self.heads(None, temp, h, sc["c"], e, sp, obs, self.table, generator, u=self._bypass(h, sc, e, obs))
         value = self.value(h, sc["z"], sc["race"], None)
         win_open = self.value.win_open(h, sc["z"], sc["race"])  # 032-R18 ③: last
         head_logp = torch.stack([out["logp"][k] for k in HEAD_NAMES], 1)
@@ -280,23 +321,29 @@ class UraniumNet(nn.Module):
             "value": value, "win_open": win_open, "state": state,
         }
 
-    def forward_seq(self, obs: dict, labels: dict, priv, s0, t: int, entity_chunk: int = 0, phased: bool = False, phases: list | None = None) -> dict:
+    def forward_seq(self, obs: dict, labels: dict, priv, s0, t: int, entity_chunk: int = 0, phased: bool = False, phases: list | None = None, aux: bool = False) -> dict:
         """Teacher-forced training pass over `t` steps per sequence; rows b-major (032 §6).
         `entity_chunk` > 0: the entity encoder recomputed per row chunk (041-R17). `phased`: with
         `outer`, the sequences may start anywhere inside an outer segment (RL, 032 §2.7);
-        `phases`: their `phase_split` of s0's counter, on this device, when the caller has it."""
+        `phases`: their `phase_split` of s0's counter, on this device, when the caller has it.
+        `aux` (032 §6, 032-R24): also run the training-only aux modules the model has and return
+        `aux_priv`, `aux_jepa` and `jepa_target` (`_aux`); false (the default: RL BC reference
+        pass, self-imitation lanes, diagnostics, `bc-eval`) never runs them and the keys are absent."""
         if self.outer is None:
-            core_in, e, sp, sc = self.encode(obs, entity_chunk)
+            core_in, e, sp, sc, e_pool = self.encode(obs, entity_chunk)
             bt, d = core_in.shape
             assert t > 0 and bt % t == 0, "batch rows must be B*T"
             h, state = self.core.forward_seq(core_in.view(bt // t, t, d), s0)
-            h = h.reshape(bt, -1)
+            h = self._skip(h.reshape(bt, -1), core_in)
         else:
-            h, e, sp, sc, state = self._outer_seq_phased(obs, s0, t, entity_chunk, phases) if phased else self._outer_seq(obs, s0, t, entity_chunk)
-        out = self.heads(labels, 1.0, h, sc["c"], e, sp, obs, self.table)
+            h, e, sp, sc, e_pool, state = self._outer_seq_phased(obs, s0, t, entity_chunk, phases) if phased else self._outer_seq(obs, s0, t, entity_chunk)
+        out = self.heads(labels, 1.0, h, sc["c"], e, sp, obs, self.table, u=self._bypass(h, sc, e, obs))
         value = self.value(h, sc["z"], sc["race"], priv)
         win_open = self.value.win_open(h, sc["z"], sc["race"])
-        return {"logp": out["logp"], "entropy": out["entropy"], "dists": out["dists"], "value": value, "win_open": win_open, "state": state}
+        res = {"logp": out["logp"], "entropy": out["entropy"], "dists": out["dists"], "value": value, "win_open": win_open, "state": state}
+        if aux:
+            res.update(self._aux(h, e_pool, sp["pool"]))
+        return res
 
     def _outer_seq(self, obs: dict, s0, t: int, entity_chunk: int):
         """032 §2.7 `outer`: the `t` steps in segments of `outer` decisions, one after another
@@ -309,22 +356,21 @@ class UraniumNet(nn.Module):
         b = bt // t
         part = lambda x, k: x.view(b, t, *x.shape[1:])[:, k * seg:(k + 1) * seg].reshape(b * seg, *x.shape[1:])  # noqa: E731
         cs, os_ = s0
-        hs, es, sps, scs = [], [], [], []
+        hs, es, sps, scs, eps = [], [], [], [], []
         for k in range(t // seg):
             sub = {key: part(x, k) for key, x in obs.items()}
-            core_in, e, sp, sc = self.encode(sub, entity_chunk, os_[0].repeat_interleave(seg, 0))
+            core_in, e, sp, sc, e_pool = self.encode(sub, entity_chunk, os_[0].repeat_interleave(seg, 0))
             h, cs = self.core.forward_seq(core_in.view(b, seg, -1), cs)
+            # 032-R23 F1: the outer h_sum sums the pre-skip core output; the consumers get h'.
             os_ = self.outer.after_segment(h, os_)
-            hs.append(h.reshape(b * seg, -1))
+            hs.append(self._skip(h, core_in.view(b, seg, -1)).reshape(b * seg, -1))
             es.append(e)
             sps.append(sp)
             scs.append(sc)
+            eps.append(e_pool)
         # Back to b-major rows over the whole sequence, as the heads and labels expect.
         join = lambda xs: torch.cat([x.view(b, seg, *x.shape[1:]) for x in xs], 1).reshape(bt, *xs[0].shape[1:])  # noqa: E731
-        skips = [join([x["skips"][i] for x in sps]) for i in range(len(sps[0]["skips"]))]
-        sp = {"s8": join([x["s8"] for x in sps]), "skips": skips, "pool": join([x["pool"] for x in sps])}
-        sc = {key: join([x[key] for x in scs]) for key in scs[0]}
-        return join(hs), join(es), sp, sc, (cs, os_)
+        return join(hs), join(es), join_parts(sps, join), join_parts(scs, join), join(eps), (cs, os_)
 
     def _outer_seq_phased(self, obs: dict, s0, t: int, entity_chunk: int, phases: list | None = None):
         """032 §2.7 `outer` for sequences that start at any decision (RL segments overlap by one
@@ -341,11 +387,11 @@ class UraniumNet(nn.Module):
         cs0, os_ = s0
         dev = obs["entity_cat"].device
         core_in = cs = None
-        idxs, hs, es, sps, scs = [], [], [], [], []
+        idxs, hs, es, sps, scs, eps = [], [], [], [], [], []
         for idx in phase_split(os_[3], t, seg) if phases is None else phases:
             row = torch.div(idx, t, rounding_mode="floor")
             sub = {key: x.index_select(0, idx) for key, x in obs.items()}
-            ci, e, sp, sc = self.encode(sub, entity_chunk, os_[0].index_select(0, row))
+            ci, e, sp, sc, e_pool = self.encode(sub, entity_chunk, os_[0].index_select(0, row))
             core_in = (ci.new_zeros(bt, ci.shape[1]) if core_in is None else core_in).index_copy(0, idx, ci)
             h_all, cs = self.core.forward_seq(core_in.view(b, t, -1), cs0)
             h = h_all.reshape(bt, -1).index_select(0, idx)
@@ -353,18 +399,18 @@ class UraniumNet(nn.Module):
             count = torch.zeros(b, device=dev).index_add(0, row, torch.ones(idx.numel(), device=dev))
             os_ = self.outer.after_rows(total, count, os_)
             idxs.append(idx)
-            hs.append(h)
+            # 032-R23 F1: the outer h_sum above took the pre-skip h; the consumers get h' (these
+            # rows' own core input).
+            hs.append(self._skip(h, ci))
             es.append(e)
             sps.append(sp)
             scs.append(sc)
+            eps.append(e_pool)
         # Back to b-major rows over the whole sequence, as the heads and labels expect.
         perm = torch.cat(idxs)
         inv = torch.empty_like(perm).index_copy(0, perm, torch.arange(bt, device=dev))
         join = lambda xs: torch.cat(xs, 0).index_select(0, inv)  # noqa: E731
-        skips = [join([x["skips"][i] for x in sps]) for i in range(len(sps[0]["skips"]))]
-        sp = {"s8": join([x["s8"] for x in sps]), "skips": skips, "pool": join([x["pool"] for x in sps])}
-        sc = {key: join([x[key] for x in scs]) for key in scs[0]}
-        return join(hs), join(es), sp, sc, (cs, os_)
+        return join(hs), join(es), join_parts(sps, join), join_parts(scs, join), join(eps), (cs, os_)
 
     def win_open_params(self) -> list[nn.Parameter]:
         """032-R18: the win_open head's parameters (041-R19 clips them apart)."""

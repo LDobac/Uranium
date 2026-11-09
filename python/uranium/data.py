@@ -9,7 +9,8 @@ import numpy as np
 # Same order as `uranium_data::bc::GROUP_FIELDS` (checked against `_core.group_fields()`).
 GROUP_FIELDS = [
     "entity_cat", "entity_cont", "entity_mask", "entity_cell", "entity_pos", "spatial", "scalar", "scalar_cat", "z_build", "z_units", "z_present", "type_mask", "unit_cap",
-    "loc_class_mask", "is_building", "action", "delay", "queued", "selected", "target_unit", "target_loc", "privileged", "weights", "results", "value_w", "keep",
+    "loc_class_mask", "is_building", "action", "delay", "queued", "selected", "target_unit", "target_loc", "privileged", "weights", "results", "value_w", "keep", "real",
+    "priv_present",
 ]
 
 

@@ -21,6 +21,11 @@ pub struct SegmentGroup {
     pub privileged: HostPrivBatch,
     /// [b*t] 1 on trained steps.
     pub mask: Vec<f32>,
+    /// [b*t] 042-R21 ①: a real step of the segment (k < its length), false on the fill of a short
+    /// (terminal) segment. The bootstrap step of a non-terminal segment is real (mask 0, real true).
+    pub real: Vec<bool>,
+    /// [b*t] 042-R21 ① / 032-R24: the row's step had a privileged summary (`Step::has_privileged`).
+    pub priv_present: Vec<bool>,
     /// [b*t] behaviour log-prob of the taken action (032-R10 joint).
     pub behaviour: Vec<f32>,
     /// [b*t*4] win, build, units, value rewards (033-R3), 0 past the segment.
@@ -50,6 +55,8 @@ pub fn group(segs: &[Segment], t: usize, max_select: usize) -> SegmentGroup {
     let mut labels = Vec::with_capacity(b * t);
     let mut privs = Vec::with_capacity(b * t);
     let mut mask = Vec::with_capacity(b * t);
+    let mut real = Vec::with_capacity(b * t);
+    let mut priv_present = Vec::with_capacity(b * t);
     let mut behaviour = Vec::with_capacity(b * t);
     let mut rewards = Vec::with_capacity(b * t * 4);
     for seg in segs {
@@ -63,6 +70,8 @@ pub fn group(segs: &[Segment], t: usize, max_select: usize) -> SegmentGroup {
             privs.push(&s.privileged);
             behaviour.push(s.log_prob);
             mask.push(if k < trained { 1.0 } else { 0.0 });
+            real.push(k < n);
+            priv_present.push(s.has_privileged);
             rewards.extend_from_slice(if k < n { &s.reward } else { &[0.0; 4] });
         }
     }
@@ -78,6 +87,8 @@ pub fn group(segs: &[Segment], t: usize, max_select: usize) -> SegmentGroup {
         labels,
         privileged,
         mask,
+        real,
+        priv_present,
         behaviour,
         rewards,
         terminal: segs.iter().map(|s| s.terminal).collect(),

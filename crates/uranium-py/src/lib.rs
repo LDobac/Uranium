@@ -218,6 +218,9 @@ impl Batch {
         put!("results", g.results, vec![r]);
         put!("value_w", g.value_w, vec![r]);
         put!("keep", g.keep, vec![g.b]);
+        // 032 §2.8 / 041-R23: real (non-padding) steps and steps with a privileged summary.
+        put!("real", g.real, vec![r]);
+        put!("priv_present", g.priv_present, vec![r]);
         d.set_item("b", g.b)?;
         d.set_item("t", g.t)?;
         d.set_item("n", n)?;

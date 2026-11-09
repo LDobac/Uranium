@@ -39,16 +39,40 @@ pub struct Subsample {
     /// Sources (`GameMeta.src`, 040-R14) kept whole.
     #[serde(default)]
     pub keep_sources: Vec<String>,
+    /// 041-R26: the share kept per enemy race (`"T"`, `"P"`, `"Z"`: the race after the `v` of
+    /// `GameMeta.matchup`) for the games outside `keep_sources`; a race not listed keeps
+    /// `fraction`. Same per-game hash rule, so both TvT perspectives stay together. Absent =
+    /// `fraction` for every game and the B-3 fingerprint (`bc_mix_*`, `bc_dagger_*` included) from
+    /// before the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fraction_by_race: Option<std::collections::BTreeMap<String, f64>>,
+}
+
+/// 041-R26 races of `Subsample::fraction_by_race`.
+pub const SUBSAMPLE_RACES: [&str; 3] = ["T", "P", "Z"];
+
+/// The enemy race letter of a matchup ("TvZ" -> "Z"), from the perspective player's side.
+pub fn enemy_race(matchup: &str) -> Option<&str> {
+    matchup.split_once('v').map(|(_, e)| e)
 }
 
 impl Subsample {
     pub fn check(&self) -> anyhow::Result<()> {
         anyhow::ensure!(self.fraction > 0.0 && self.fraction <= 1.0, "[data.subsample] fraction must be in (0, 1], got {} (041-R21)", self.fraction);
+        for (r, f) in self.fraction_by_race.iter().flatten() {
+            anyhow::ensure!(SUBSAMPLE_RACES.contains(&r.as_str()), "[data.subsample] fraction_by_race key {r:?} must be one of {SUBSAMPLE_RACES:?} (041-R26)");
+            anyhow::ensure!(*f > 0.0 && *f <= 1.0, "[data.subsample] fraction_by_race {r} must be in (0, 1], got {f} (041-R26)");
+        }
         Ok(())
     }
 
+    /// The share kept of `meta`'s games outside `keep_sources` (041-R21, R26).
+    pub fn fraction_of(&self, meta: &GameMeta) -> f64 {
+        self.fraction_by_race.as_ref().and_then(|m| enemy_race(&meta.matchup).and_then(|r| m.get(r))).copied().unwrap_or(self.fraction)
+    }
+
     pub fn keeps(&self, meta: &GameMeta, seed: u64) -> bool {
-        self.keep_sources.iter().any(|s| *s == meta.src) || crate::data::game_unit(&meta.replay_sha256, seed, crate::data::SUBSAMPLE_SALT) < self.fraction
+        self.keep_sources.iter().any(|s| *s == meta.src) || crate::data::game_unit(&meta.replay_sha256, seed, crate::data::SUBSAMPLE_SALT) < self.fraction_of(meta)
     }
 }
 

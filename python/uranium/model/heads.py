@@ -148,10 +148,11 @@ class Heads(nn.Module):
         # Tests only: teacher forcing computes the location head on every row.
         self.location_all_rows = False
 
-    def forward(self, labels: dict | None, temp: float, h, c, e, sp: dict, obs: dict, table: ActionTable, generator=None) -> dict:
+    def forward(self, labels: dict | None, temp: float, h, c, e, sp: dict, obs: dict, table: ActionTable, generator=None, u=None) -> dict:
         """`labels` None = sample (temp 0 = argmax); else teacher forcing (032-R3). Returns
         `chosen` (labels or samples), per-head `logp` / `entropy` [B] (already times the head's
-        use, 032-R10), and the distributions `dists`."""
+        use, 032-R10), and the distributions `dists`. `u` [B, ar]: the 032-R21 bypass output,
+        added to the ActionType GLU output and to `ar`; None (bypass off) changes nothing."""
         b, n, _ = e.shape
         temp = 1.0 if labels is not None else temp
 
@@ -165,10 +166,14 @@ class Heads(nn.Module):
         for r in self.type_res:
             x = r(x)
         x = F.relu(x) * torch.sigmoid(self.type_gate(c))
+        if u is not None:
+            x = x + u.to(x.dtype)  # 032-R21
         lp_action = tempered(masked_log_softmax(self.type_out(x), obs["type_mask"]), temp)
         action = choose(lp_action, "action")
         info = table.info(action)
         ar = self.ar_h(h) + self.ar_action(action)
+        if u is not None:
+            ar = ar + u.to(ar.dtype)  # 032-R21: ar = Linear(h) + Emb(a) + u
 
         # 2 Delay (always used)
         lp_delay = tempered(log_softmax_f32(self.delay(ar)), temp)
