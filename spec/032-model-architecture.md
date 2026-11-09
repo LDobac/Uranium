@@ -1,6 +1,6 @@
 # 032 — Model Architecture (PyTorch)
 
-- **Status**: Approved (2026-10-15, 2026-11-03 개정(사용자 결정, AMB-042-16): §2.6 build·units 출력이 033 채널 모드 `"scout"`에서 r_scout·r_survive를 배움, 구조 변경 없음. 2026-10-31 개정: R6 feature 스키마 로드 호환(030-R5, 7은 6을 받음, 사용자 결정). 2026-10-27 개정: §2.7 RL 학습기의 `outer` 지원 방식(사용자 확인), AC11 RL 경로 추가. 2026-10-27 개정: 032-R20 ④ 구조 변형 판정 — 네 스위치 모두 켬 채택(사용자 결정), §2.7 본학습·RL 모델 문장, R17 ⑥ 판정, AC12 통과. 2026-10-23 개정: Burn에서 PyTorch로 전환(사용자 결정, AMB-000-4) — R1 PyTorch·CPU 기준, R6 형식은 061-R10, R8 장비별 정밀도(CUDA bf16 혼합·ROCm f32, AMB-032-9), R13 구현 방식 자유화, R14·R16 Python 추론 스레드·K/V 캐시 조건, R18 Burn 표현 정리, R19 최적화 원칙(AMB-032-10), §2.4·§6 Python 인터페이스, AC1·2·3·6·8·9 기준 장치 변경, AC10 Burn 동등성. 2026-10-17 개정: R8 호스트별 정밀도 — CUDA 호스트 f32(TF32) 허용, 사용자 결정 / 추론 서버 Core 상태 슬롯(032-R14), 샘플링 모드·헤드별 log-prob(032-R15) / 추론 서버 가중치 교체·슬롯 상태 읽기(032-R16, 3단계 계획 승인) / 2026-10-18 개정: 코어 비교 절차(032-R17, AC7, AMB-032-6). 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): AC8 backward 허용 오차(H), autotune·fusion 채택(G-D5, 041-R15), R17 ② val 고정 seed 셔플 500게임(G-D8), F_c를 030과 일치, 장비 표기 중립화(001-R10, G-D9). 2026-10-19 T7 개정(사용자 결정): §5 대상 마스크에서 선택 유닛 제외(034-R9), `self_target[A]` 상수). 2026-10-20 개정(사용자 결정, AMB-032-8): AC2 기준은 CUDA 호스트에만 적용하고 Linux Vulkan 호스트는 실측 기록만 하는 대체 장비로 둔다, R17 주 장비 규칙(CUDA 호스트가 유휴면 주, 아니면 Linux Vulkan 호스트가 주, 060-R8). 2026-10-21 개정: 032-R18 win_open 헤드(사용자 결정, AMB-031-6). 2026-10-23 개정: 코어 비교 결과로 GTrXL 채택(032-R17 ④, AC7, 사용자 결정); 2026-10-24 개정: R17 ⑥ PyTorch 2차 코어 비교(사용자 결정); 2026-10-25 개정: §2.7·R20 구조 변형 비교(지형 붙이기·스칼라 토큰·attention 요약·바깥 LSTM과 그 조합, 사용자 결정, AMB-032-11), AC11·AC12. 2026-10-31 개정: R19 RL learner 적용(042 learner 레인 그룹·최적화, 사용자 결정))
+- **Status**: Approved (2026-10-15, **2026-11-09 개정 초안(사용자 확인 대기)**: 모델 2 개선 스위치 §2.8 — 헤드 우회로·스칼라 직접 입력(032-R21), 공간 ResBlock pre-activation(032-R22, §2.2에 지금 끝 ReLU 명시), 코어 수정 F1·F2(032-R23), 학습 전용 보조 모듈 privileged 예측·JEPA형 예측(032-R24), 죽은 채널 통계(032-R25), R11 privileged는 학습 정답으로도 허용(사용자 결정 2026-11-09), §1·§4·§6, AC13~AC15, AMB-032-12~14. 이 개정의 요구사항은 확인 전까지 구현하지 않고, 기존 요구사항·AC는 스위치 기본값(꺼짐)에서 그대로 유효하다. 2026-11-03 개정(사용자 결정, AMB-042-16): §2.6 build·units 출력이 033 채널 모드 `"scout"`에서 r_scout·r_survive를 배움, 구조 변경 없음. 2026-10-31 개정: R6 feature 스키마 로드 호환(030-R5, 7은 6을 받음, 사용자 결정). 2026-10-27 개정: §2.7 RL 학습기의 `outer` 지원 방식(사용자 확인), AC11 RL 경로 추가. 2026-10-27 개정: 032-R20 ④ 구조 변형 판정 — 네 스위치 모두 켬 채택(사용자 결정), §2.7 본학습·RL 모델 문장, R17 ⑥ 판정, AC12 통과. 2026-10-23 개정: Burn에서 PyTorch로 전환(사용자 결정, AMB-000-4) — R1 PyTorch·CPU 기준, R6 형식은 061-R10, R8 장비별 정밀도(CUDA bf16 혼합·ROCm f32, AMB-032-9), R13 구현 방식 자유화, R14·R16 Python 추론 스레드·K/V 캐시 조건, R18 Burn 표현 정리, R19 최적화 원칙(AMB-032-10), §2.4·§6 Python 인터페이스, AC1·2·3·6·8·9 기준 장치 변경, AC10 Burn 동등성. 2026-10-17 개정: R8 호스트별 정밀도 — CUDA 호스트 f32(TF32) 허용, 사용자 결정 / 추론 서버 Core 상태 슬롯(032-R14), 샘플링 모드·헤드별 log-prob(032-R15) / 추론 서버 가중치 교체·슬롯 상태 읽기(032-R16, 3단계 계획 승인) / 2026-10-18 개정: 코어 비교 절차(032-R17, AC7, AMB-032-6). 2026-10-19 개정(BC 전 리뷰 결정, 사용자 확정): AC8 backward 허용 오차(H), autotune·fusion 채택(G-D5, 041-R15), R17 ② val 고정 seed 셔플 500게임(G-D8), F_c를 030과 일치, 장비 표기 중립화(001-R10, G-D9). 2026-10-19 T7 개정(사용자 결정): §5 대상 마스크에서 선택 유닛 제외(034-R9), `self_target[A]` 상수). 2026-10-20 개정(사용자 결정, AMB-032-8): AC2 기준은 CUDA 호스트에만 적용하고 Linux Vulkan 호스트는 실측 기록만 하는 대체 장비로 둔다, R17 주 장비 규칙(CUDA 호스트가 유휴면 주, 아니면 Linux Vulkan 호스트가 주, 060-R8). 2026-10-21 개정: 032-R18 win_open 헤드(사용자 결정, AMB-031-6). 2026-10-23 개정: 코어 비교 결과로 GTrXL 채택(032-R17 ④, AC7, 사용자 결정); 2026-10-24 개정: R17 ⑥ PyTorch 2차 코어 비교(사용자 결정); 2026-10-25 개정: §2.7·R20 구조 변형 비교(지형 붙이기·스칼라 토큰·attention 요약·바깥 LSTM과 그 조합, 사용자 결정, AMB-032-11), AC11·AC12. 2026-10-31 개정: R19 RL learner 적용(042 learner 레인 그룹·최적화, 사용자 결정))
 - **Related**: [030](030-observation.md), [031](031-action-space.md), [033](033-reward.md), [034](034-action-table.md), [041](041-imitation-learning.md), [042](042-rl-training.md), [060](060-infra.md)
 
 ## Purpose
@@ -26,6 +26,13 @@ h ─► Heads (자기회귀, ar[B,256]):
       1 ActionType ─► 2 Delay ─► 3 Queued ─► 4 Selected(≤12) ─► 5 TargetUnit | 6 Location(128²)
 h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units, value}
 ```
+- 2026-11-09 개정 초안(사용자 확인 대기, §2.8): 아래 스위치를 켜면 위 그림에 다음이 더해진다. 모두 꺼지면 위 그림 그대로다.
+  ```
+  [h, c, scalar 일부] ─► 질문 ─► E에 교차 어텐션 ─► Linear(0 초기화) ─► ActionType 로짓 직전 + ar   (bypass, 032-R21)
+  Core 입력 x_in ─► Linear(0 초기화) ─► h에 더함                                                     (core_skip, 032-R23)
+  h ─► AuxPriv ─► privileged 예측 (학습 전용, 정답 = privileged)                                     (aux_priv, 032-R24)
+  h_t ─► JEPA 예측기_k ─► [e_pool, s_pool]_{t+k} 예측 (학습 전용, 정답은 기울기 끊음)                 (aux_jepa, 032-R24)
+  ```
 
 ## 2. 모듈 상세
 
@@ -48,10 +55,11 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
 ### 2.2 SpatialEncoder
 - **scatter**: `Linear(256→32)(E)`를 `entity_cell`에 scatter-add하고 셀별 개수로 나눈다(평균) → [B,32,128,128]
 - **stem**: concat(spatial, scatter) → `Conv3x3(58→32)` @128²
+- **활성 함수 위치(2026-11-09 명시, 기존 구현 그대로)**: stem conv 뒤 ReLU. 다운샘플 conv 뒤 ReLU. `ResBlock(x) = ReLU(x + Conv3x3(ReLU(Conv3x3(x))))`로 **끝에 ReLU가 있다**(post-activation). 그래서 각 단계 출력·skip·`S8`은 모두 0 이상이다. `spatial_preact`(§2.8, 032-R22)를 켜면 ResBlock만 바뀐다.
 - **다운샘플**:
-  - 각 단계는 `Conv3x3 stride2 + ResBlock(2×Conv3x3)`
+  - 각 단계는 `ReLU(Conv3x3 stride2)` → `ResBlock(2×Conv3x3)`
   - 128²→64²(64ch) → 32²(64ch) → 16²(128ch) → 8²(128ch)
-  - 64², 32², 16² 출력은 skip으로 보관한다.
+  - 64², 32², 16² 출력은 skip으로 보관한다. 8² 단계 출력은 bottleneck에만 들어간다.
 - **bottleneck**: ResBlock×2 @8²×128 → `S8`
 - **풀링**: `s_pool` = `Linear(8192→256)`(flatten(S8))
 
@@ -103,6 +111,7 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
 
 - 헤드 5와 6은 `target` 종류에 따라 하나만 쓴다([034](034-action-table.md)).
 - 모든 헤드의 마스크는 [034](034-action-table.md) 테이블로 GPU에서 gather해 만든다(§5).
+- ActionType 행의 GLU는 `x = ReLU(x) ⊙ σ(Linear(c))`이고 그 뒤 `Linear(256→A)`가 로짓이다. 헤드 우회로(`bypass`, §2.8, 032-R21)를 켜면 이 `x`와 `ar`에 우회로 출력이 더해진다(2026-11-09 개정 초안, 사용자 확인 대기).
 
 ### 2.6 ValueHeads
 - 입력:
@@ -114,7 +123,7 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
   - win: tanh
   - build, units, value: 선형
   - 보상 성분과의 대응은 [033](033-reward.md)을 따른다. RL 보상 채널 모드 `"scout"`(033-R11, 2026-11-03, AMB-042-16)에서는 build 출력이 r_scout, units 출력이 r_survive의 value를 배운다. 출력 이름·개수·구조·초기화는 그대로이고(체크포인트 호환), 바뀌는 것은 RL learner가 그 출력에 주는 목표뿐이다.
-- privileged 입력이 정책 헤드로 흘러가는 경로가 그래프 상 존재하지 않아야 한다(032-R11).
+- privileged 입력이 정책 헤드로 흘러가는 경로가 그래프 상 존재하지 않아야 한다(032-R11). 2026-11-09 개정 초안(사용자 확인 대기): privileged는 학습 전용 보조 목표 `aux_priv`(§2.8, 032-R24)의 **정답**으로도 쓸 수 있다. 정답은 손실에만 들어가고 어떤 모듈의 입력도 아니다.
 - **win_open**(2026-10-21, 032-R18): 상대 정보 없이 추정한 승패 기대값(tanh, −1 패 ~ +1 승). 입력은 detach한 `h`, z 임베딩, enemy_race 임베딩뿐이고 공유 MLP와 별도인 `MLP(→256)→1`을 쓴다. 031-R12 항복 판정에만 쓰고 RL advantage에는 쓰지 않는다. win 헤드는 학습 때 항상 privileged를 받는데 실전에는 그 입력이 없어(0 벡터) 실전 승률로 쓸 수 없기 때문에 둔다.
 
 ### 2.7 구조 변형 (비교용, 032-R20)
@@ -134,7 +143,26 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
   - 학습: `outer`가 켜지면 BC 학습 묶음([B, T = 64])을 `outer` 길이 구간으로 나눠 차례로 계산한다(구간 안은 지금처럼 병렬). 구간 k는 구간 k−1 끝에서 갱신된 `h_o`를 쓰고, 그 갱신은 구간 k−1의 `h`와 기울기로 이어진다. 묶음 사이에서는 다른 Core 상태처럼 상태를 detach한다. 묶음 시작은 항상 카운터가 `outer`의 배수인 지점이다(게임 시작부터 64 step 단위, 재개는 0부터).
   - 추론: 바깥 갱신은 카운터로 정해지므로 같은 수식으로 step마다 계산할 수 있고, 추론 graph 캡처(032-R19)와 맞는다.
   - 최적화 경로(직접 작성 커널, `torch.compile`, 추론 graph, 엔티티 재계산 041-R17)는 변형에서도 같은 수식이어야 한다(032-R19).
+  - §2.8의 모델 2 스위치도 이 공통 규칙을 따른다(2026-11-09 개정 초안, 사용자 확인 대기).
   - RL 학습기(042, 2026-10-27 사용자 확인): RL 세그먼트는 64 step이고 한 step씩 겹치므로 게임의 아무 결정에서나 시작한다. 세그먼트 시작 상태(042 core_state0)에는 바깥 상태(`h_o`, `c_o`, `h_sum`, `n`)가 들어 있다. 줄마다 첫 구간 길이는 `outer − (n mod outer)`이고, 그 뒤는 `outer` 길이, 마지막은 남은 길이다. 구간 k는 줄마다 k번째 구간의 step을 모아 그 줄의 `h_o`로 인코딩하고, Core를 시퀀스 전체에 돌려(아직 계산하지 않은 step의 입력은 0이고, Core는 인과적이라 앞 step은 정확함) 그 step의 출력으로 줄마다 바깥 상태를 갱신한다. 구간에 step이 없는 줄은 카운터가 `outer`의 배수여도 갱신하지 않는다. 결과는 한 결정씩 계산한 것과 같다(032-R5, 허용 오차). 엔티티·공간 인코더 비용은 BC와 같고 Core는 최대 구간 수(T = 64, `outer` = 32면 3)만큼 돈다. BC 경로는 바꾸지 않는다. RL의 T·겹침(042-R8)은 그대로다.
+
+### 2.8 모델 2 개선 스위치 (2026-11-09 개정 초안, 사용자 확인 대기, 032-R21~R25)
+- **배경**: JEPA 진단(`reports/jepa_survey.md` 10절)에서 Checkpoint 1의 구조 문제가 드러났다. ① 적 빌드 단서(건물 HP·수)가 e_pool과 GTrXL 1층 GRU 게이트에서 사라져 h_t에 남지 않고 행동에 쓰이지 않는다(10.1~10.3). ② 스칼라 인코더 출력 `c`가 입력 스칼라(적 최대 관측 수)를 보존하지 못한다(10.2.2·10.2.3). ③ 공간 인코더 깊은 단계가 죽은 ReLU로 0이 되어 `s_pool`이 상수다(10.4). 사용자 결정(2026-11-09): 이 문제를 고친 모델(모델 2)을 BC부터 다시 학습한다(041-R29).
+- **설정**: 모두 BC 설정 TOML의 `[model]` 표 키다(키가 없으면 꺼짐). §2.7처럼 만들 모델 구조를 고르는 스위치이고 체크포인트 메타의 모델 설정(061-R10)에 남는다. 서로 독립이고 §2.7 스위치와도 조합할 수 있다. 공통 규칙은 §2.7과 같다: 모두 꺼지면 지금 모델과 파라미터 목록·출력이 비트 동일하고(Checkpoint 1이 그대로 로드·측정된다), 켜도 새 모듈은 전역 RNG를 쓰지 않는 고정 seed 생성기로 만들어 공유 모듈의 초기 가중치가 같다. 새 모듈은 win_open처럼 기존 모듈을 모두 만든 뒤에 만든다.
+- **`bypass` (bool) — 헤드 우회로 + 스칼라 직접 입력(032-R21)**: ActionType 헤드가 Core를 거치지 않고 유닛 토큰 E를 직접 읽는다.
+  - 질문: `q = Linear([h, c, s_raw] → d_b)`. `s_raw`는 모델 입력 스칼라(030 §4, 정규화 뒤 값) 중 고른 부분집합이다. 스칼라 인코더를 거치지 않으므로 `c`가 보존하지 못한 값(적 최대 관측 수 등)이 헤드에 그대로 닿는다.
+  - 교차 어텐션: K = `Linear(256→d_b)(E)`, V = `Linear(256→d_b)(E)`, multi-head, 점수를 유닛 축으로 masked softmax한다. 대상은 `entity_mask` 안의 엔티티 전부(아군·적·중립)이고 추가 토큰(`ctx_token`·`outer`)은 들어가지 않는다(Heads가 받는 E와 같다). 집합이 비면 출력은 0이다(`attn_pool`과 같은 처리, CUDA graph에 안전한 방식).
+  - 출력: `u = Linear([어텐션 출력, s_raw] → 256)`. 이 투영은 **가중치·bias 모두 0으로 초기화**한다. `u`를 ActionType GLU 출력 `x`(로짓 `Linear(256→A)` 직전)와 자기회귀 임베딩 `ar`(`ar = Linear(h) + Emb(a) + u`) 양쪽에 더한다. 그래서 켠 직후의 출력은 끈 모델과 같고, 학습이 진행되며 우회로가 쓰인다.
+  - 크기(d_b, head 수)와 `s_raw` 부분집합은 [SPEC AMBIGUOUS] AMB-032-12다.
+- **`spatial_preact` (bool) — 공간 ResBlock pre-activation(032-R22)**: 공간 인코더의 ResBlock 6개(내려가는 단계 4개, bottleneck 2개)를 `ResBlock(x) = x + Conv3x3(ReLU(Conv3x3(ReLU(x))))`로 바꾼다. 끝 ReLU가 없어져 블록 출력이 음수일 수 있고, 항등 경로로 기울기가 늘 흐른다(10.4의 붕괴 원인은 끝 ReLU 뒤 모든 채널이 0이 되어 기울기가 정확히 0이 된 것). stem·다운샘플 conv 뒤 ReLU, skip·`S8`·`s_pool`·Location 헤드의 연결, 파라미터 목록·모양은 그대로다(초기 가중치도 같다).
+- **`core_skip` (bool) — 코어 입력 skip, F1(032-R23)**: `h ← h + Linear(768→512)(x_in)`. `x_in`은 Core 입력(§2.7 `outer`의 더하기 뒤)이고 이 Linear는 가중치·bias 모두 0으로 초기화한다. 바뀐 `h`를 Core 출력을 쓰는 모든 곳(헤드, value, win_open, `outer`의 `h_sum`, aux)이 쓴다. GTrXL 첫 층 게이트가 지금 step 정보를 지우는 문제(10.3)를 Core 밖으로 돌아가게 한다. LSTM·GTrXL 모두에 쓸 수 있다.
+- **`recency_init` (bool) — 최근 step 선호 초기화, F2(032-R23)**: GTrXL 상대 위치 bias 표(`rel_table`, [M+1, 층 × head], 지금 N(0, 0.02) 초기화)를 지금과 같은 난수로 만든 뒤, 거리 d(step 차이)에 따라 정해지는 결정론적 항 `b(d)`를 더해 초기화한다. 1층 어텐션이 지금 step에 0.9%만 주는 문제(10.3)를 겨냥한다. 초기값만 바꾸고 학습은 자유다. GTrXL 전용이다. `b(d)`의 꼴·크기와 적용 층은 AMB-032-14다.
+- **`aux_priv` (bool) — 전체 정보 보조 목표(032-R24)**: 학습 전용 모듈 `AuxPriv = MLP(512 → 256 → P)`(은닉 ReLU)가 h_t(detach 안 함)로 그 step의 privileged 벡터(010 `PrivilegedSummary`로 만든 `PrivilegedTensors`, 030-R9, 지금 P = 383)를 예측한다. 손실은 041-R23·042-R21이 정한다. privileged는 정답으로만 쓰이고 어떤 모듈의 입력도 아니다(032-R11).
+- **`aux_jepa` (정수 목록, 비면 꺼짐) — JEPA형 자기 예측 손실(032-R24)**: 목록의 k마다 학습 전용 예측기 `g_k`가 h_t로 같은 레인 t+k step의 인코더 요약 `y_{t+k} = [e_pool, s_pool]_{t+k}`(Core 입력에 들어가는 값, 512)를 예측한다. 정답은 같은 forward에서 계산한 값에 **기울기를 끊은 것(stop-grad)**이다. 그래서 인코더는 예측 쪽(h_t를 거친 경로)으로만 기울기를 받는다. 유효 쌍은 t와 t+k가 모두 마스크 안이고, 같은 게임이며, t+k가 학습 묶음(BC [B, T = 64], RL 세그먼트) 안인 것뿐이다. 게임 끝·묶음 끝을 넘는 쌍은 빠진다. k 목록(기본안 {1, 8, 32}), 예측기 크기, 정답 정규화, 손실 꼴(코사인 또는 정규화 L2)은 AMB-032-13이다.
+- **추론**: aux 모듈(`aux_priv`, `aux_jepa`)은 `forward_seq`(학습)에서만 계산한다. `act()`와 추론 graph(032-R19)에는 aux 모듈도 privileged도 없고, aux 출력은 행동 선택·value·항복 판정에 쓰지 않는다. `bypass`·`spatial_preact`·`core_skip`·`recency_init`은 정책 구조이므로 추론에도 그대로 쓴다.
+- **step = sequence**: `bypass`·`spatial_preact`·`core_skip`은 시간 축이 없는 변경이라 step 실행과 시퀀스 실행이 같다(032-R5, `outer` 구간 경계 포함). `recency_init`은 초기값만 바꾼다.
+- **죽은 채널 통계(032-R25)**: 학습 중 공간 인코더 붕괴를 일찍 보기 위한 감시 통계다. 정의는 032-R25, 기록 주기와 경보 규칙은 041-R25·042-R21이다.
+- **G1(선택 상한 확대)**: 결정 단위 측정(G0) 결과에 따라 Selected 헤드 상한을 바꿀 수도 있다. 측정 전에는 정하지 않고 spec 문안도 쓰지 않는다([031](031-action-space.md) AMB-031-7).
 
 ## 3. Requirements
 | ID | 요구사항 |
@@ -150,7 +178,7 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
 | 032-R13 | **MUST** distance bias의 EntityEncoder 역전파 시간은 정방향의 5배 이내여야 한다(장비마다). 구현 방식은 자유다: bucket 인덱스로 표를 gather(embedding), bucket one-hot과 matmul, bucket별 사전 합산, 또는 attention과 bias를 합친 직접 작성 커널(커널 안에서 위치로 bucket을 계산해 [B,H,N,N] bias를 만들지 않는 방식 포함). 어느 방식이든 결과는 같은 수식이다(float 반올림과 GPU atomic 순서 차이만 허용, 032-R19). (변경 이력: 2026-10-15 Burn의 scatter-add 역전파가 정방향의 약 40배(310ms)라 "scatter-add 금지, one-hot matmul 등"으로 정했다. 2026-10-23 PyTorch에서는 gather 역전파가 빠르고 ROCm에서는 one-hot matmul 역전파가 오히려 느려서(엔티티 인코더 fwd+bwd 303.7ms 대 gather 79.9ms, `reports/torch_vs_burn.md`) 방식 제한을 풀었다) |
 | 032-R9 | **MUST** `act()`는 헤드 6개의 샘플링을 **한 번의 GPU forward 안에서** 수행한다(Gumbel-max). CPU 왕복은 없어야 한다 |
 | 032-R10 | **MUST** joint log-prob와 엔트로피는 `action_table`상 사용된 헤드만 합산한다 |
-| 032-R11 | **MUST** privileged 입력은 ValueHeads에만 연결한다. `act()` 시그니처는 privileged 텐서를 받지 않는다 |
+| 032-R11 | **MUST** privileged 입력은 ValueHeads에만 연결한다. `act()` 시그니처는 privileged 텐서를 받지 않는다. **2026-11-09 개정 초안(사용자 결정 2026-11-09, 문안은 사용자 확인 대기)**: privileged는 학습 전용 보조 목표(032-R24 `aux_priv`)의 **정답**으로도 쓸 수 있다. 정답은 학습 손실에만 들어가고 인코더·Core·정책 헤드·aux 모듈의 입력이 되지 않는다. 추론 입력은 자기 시야 그대로다(010-R5, 030-R2). privileged가 학습 신호로 가중치에 영향을 주는 것은 허용하고, 추론 때 privileged를 받거나 만드는 경로는 없다 |
 | 032-R12 | **MUST** Selected 헤드의 BC 레이블은 정규 순서(entity index 오름차순) 시퀀스 + END로 만든다 |
 | 032-R14 | **MUST** 추론(batch broker의 슬롯, 001-R6)은 세션마다 고정 슬롯을 두고, Python 추론 스레드가 Core 상태를 GPU의 `[capacity, …]` 텐서에 보관한다(2026-10-23: 이전에는 Rust `uranium-agent` 추론 스레드). broker는 슬롯이 열리고 닫힌 것을 배치와 함께 알린다. 요청이 모인 세션의 행만 `select_rows`로 꺼내 `act`를 돌리고 `scatter_rows`로 되돌린다. 세션이 시작될 때 그 슬롯을 0으로 리셋한다(032-R5). 배치로 처리한 결과는 세션을 하나씩 처리한 결과와 같아야 하고(허용 오차 이내), 세션 사이에 상태가 섞이지 않는다 (2026-10-17) |
 | 032-R15 | **MUST** `act()`의 샘플링 모드는 확률적(temp 1)과 결정론적(temp 0 = 헤드마다 argmax)을 둔다(050-R1). `ActOutput`은 joint log-prob과 함께 헤드별 log-prob [B,6]을 돌려준다. RL actor는 이 값을 behaviour log-prob로 기록한다(042) (2026-10-17) |
@@ -159,6 +187,11 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
 | 032-R18 | **MUST** `win_open` 헤드(2026-10-21 사용자 결정, AMB-031-6). ① privileged 입력 경로가 없고, 코어 출력 `h`는 detach해서 받으므로 정책·인코더·코어·기존 value 헤드에 gradient가 가지 않는다. ② 설정 `value.win_open`(기본 false)이 true일 때만 만든다. 설정 로더는 이 키가 없는 설정을 false로 읽는다(체크포인트 메타의 설정에 없는 키는 기본값으로 채운다). ③ 파라미터는 전역·장치 RNG를 쓰지 않고 고정 seed 생성기로 초기화한다(U(−k, k), k = 1/√fan_in). 전역 RNG를 쓰면 다른 모듈의 초기 가중치와 이후 dropout 난수가 바뀌기 때문이다. 그래서 헤드가 있어도 기존 모듈의 초기 가중치와 학습 난수는 같다(2026-10-23: Burn 지연 초기화 설명을 장치 무관 표현으로 바꿈). ④ `act()`와 학습 forward는 win_open을 value와 따로 돌려준다(꺼져 있으면 없음) |
 | 032-R19 | **MUST** 최적화 원칙(2026-10-23 사용자 결정, AMB-032-10). ① 모델 동작은 바꾸지 않는다. 같은 수식을 더 빠르게 계산하는 구현만 쓴다: 커널 융합·직접 작성 커널, gather, CUDA/HIP graph 캡처, torch.compile, K/V 캐시(032-R16), 배치 안 레인 그룹 재구성(041-R3), 메모리 재계산 등. ② 결과 차이는 float 반올림, bf16 혼합 정밀도(032-R8), GPU atomic 덧셈 순서, dropout 난수열 배치 차이까지만 허용한다. ③ 모델 구조·헤드 방식(Selected 순차 선택 포함)·관측 해상도·distance bias·dropout 비율·손실·하이퍼파라미터·추론 저정밀도(FP8·INT8)는 이 원칙 밖이고, 바꾸려면 별도 사용자 결정이 필요하다. ④ 학습 설정은 Linux ROCm 호스트 메모리 예산(060-R3) 안에서 최악 모양으로 학습돼야 채택한다. ⑤ 채택 전에 AC1·AC8, 짧은 학습 loss 곡선(기준과 잡음 범위 안), 속도·메모리 측정을 리포트에 남긴다. ⑥ RL learner(042)에도 같은 원칙을 적용한다(2026-10-31 사용자 결정): 호스트별 레인 그룹(`URANIUM_RL_MICRO_LANES`)과 같은 수식의 learner 최적화만 쓰고, 동등성은 30 update 비교, 속도는 `python -m uranium bench rl`로 잰다(042 구현 구조) |
 | 032-R20 | **MUST** 구조 변형 비교(2026-10-25 사용자 결정, AMB-032-11, §2.7). ① 변형은 §2.7의 `[model]` 스위치 4개(`terrain`, `ctx_token`, `attn_pool`, `outer`)이고 서로 조합할 수 있다. 기본은 모두 꺼짐이며, 꺼지면 기본 구성과 비트 동일, 켜도 공유 모듈 초기 가중치는 기본 구성과 같다. ② 비교 run은 5개다: 하나씩 켠 4개(`arch-abl-terrain-pt`, `arch-abl-ctx-pt`, `arch-abl-pool-pt`, `arch-abl-outer-pt`(`outer` = 32))와 네 가지를 모두 켠 1개(`arch-abl-all-pt`). 코어는 GTrXL이고, 설정은 `config/bc_core_ablation_pt.toml`에 `[model]`만 더한 `config/bc_arch_abl_<변형>_pt.toml`이다. 각 run은 기준 체크포인트에서 이어 학습하지 않고 0 step부터 S1 10,000 update를 1회(seed 1개, `data.seed` 1) 학습한다. 기준은 R17 ⑥의 `core-abl-gtrxl-pt` `ckpt-10000`이다(다시 학습하지 않음). 장비는 R17 ⑥과 같은 혼합 운영이고, R17 ⑥이 쓰는 큐(`<shared>/queue/core-ablation-pt.toml`)에 run을 덧붙여 두 작업자가 R17 ⑥ run을 끝낸 뒤 이어서 잡는다. run별 장비 비율(`uranium-train devices`)을 리포트에 적는다. 잡음 측정용 추가 seed는 두지 않는다. ③ 평가: run마다 `bc-eval --split val --games 500`(R17 ②와 같은 500게임). **리그전**: 7개 모델(기준 GTrXL, R17 ⑥ LSTM, 변형 5개, 모두 `ckpt-10000`)의 21쌍, 쌍당 100판(맵 2 × 50판, 25판마다 슬롯 교대, 확률적 샘플링, z 없음, 리플레이 저장, R17 ③ 맞대결과 같은 방식). LSTM–GTrXL 쌍은 R17 ⑥ 맞대결 결과를 그대로 쓴다. 쌍별 승·패·무와 승률(Wilson 95%), 7×7 승률표, 전체 순위(Bradley–Terry, 무승부 0.5, bootstrap 95% 구간)를 낸다. T0 대전(R17 ③ 방식)은 7개 모델 모두 모델당 300판(종족 3 × 맵 2 × 50판)이다(2026-10-25 사용자 결정, 이전: 리그전 뒤 고른 후보만). LSTM·GTrXL은 `config/plans/core-ablation-pt-t0.toml`, 변형 5개는 `config/plans/arch-abl-pt-t0.toml`이다. 평가(val 500게임 채점·리그전·T0)는 큐의 7개 run 학습이 모두 끝난 뒤 함께 한다(2026-10-25 사용자 결정, R17 ⑥ 평가도 이때 한다). **실행(2026-10-26 사용자 결정, AMB-020-5)**: 대전은 평가 작업(020-R15) 하나로 돌린다. 단계 순서는 R17 ⑥ 맞대결 → 리그전 20쌍 → R17 ⑥ T0 → 변형 T0다. 추론은 CUDA 호스트(bf16 혼합)가 주 장비이고, CUDA 호스트가 빠진 동안에는 Linux ROCm 호스트(f32, 첫째 > 둘째)가 새 판부터 맡는다. 판마다 추론 장비를 기록하고(020-R15 ⑧), 결과 보고에 모델·단계별 추론 장비 비율을 함께 적는다(정밀도 차이가 섞일 수 있음). val 500게임 채점은 대전과 병행해 7개 모두 첫째 Linux ROCm 호스트(f32)에서 한다(같은 장비라 7개끼리 비교 공정). 리플레이 플레이어 이름은 020-R16이다. ④ 판정 규칙은 미리 정하지 않는다. 결과를 보고 사용자가 채택 여부를 고르고, 그 전까지 BC 본학습(041)은 시작하지 않는다. **결과: 모두 켬(`arch-abl-all-pt` 구성) 채택(2026-10-27 사용자 결정, `reports/m6_arch_ablation_pt.md` 3·4절)**. 평가 결과는 val 7개 중 1위, 리그전 7위, T0 3위(16.7%)였고, 독립 검토(`reports/m6_arch_ablation_review.md`)는 대전 약세를 잡음 밖 신호로 보고 기준 GTrXL을 권고했다. 사용자는 이 검토를 본 뒤 정했다. ⑤ 체크포인트·로그·평가 출력은 지우지 않는다(`keep_checkpoints = 0`). 결과는 `reports/m6_arch_ablation_pt.md` |
+| 032-R21 | **MUST** (2026-11-09 초안, 사용자 확인 대기) 헤드 우회로와 스칼라 직접 입력(사용자 결정 2026-11-09, §2.8 `bypass`). ① ActionType 헤드가 질문 `[h, c, s_raw]`로 E에 교차 어텐션하고, 출력 투영(입력은 어텐션 출력과 `s_raw`)은 0으로 초기화해 GLU 출력과 `ar`에 더한다. ② 켠 직후(학습 전) 출력은 끈 모델과 같다. ③ 빈 엔티티 집합은 0 출력이고 CUDA graph 캡처(032-R19)에서 다시 컴파일하지 않는다. ④ 크기·head 수·`s_raw` 부분집합은 [SPEC AMBIGUOUS] AMB-032-12이고, 확정 전에는 이 수치에 의존하는 코드를 쓰지 않는다 |
+| 032-R22 | **MUST** (2026-11-09 초안, 사용자 확인 대기) 공간 ResBlock pre-activation 스위치(사용자 결정 2026-11-09, §2.8 `spatial_preact`). 켜면 공간 인코더 ResBlock 6개가 `x + Conv(ReLU(Conv(ReLU(x))))`이다. 끄면 지금 구조(§2.2, 끝 ReLU)와 비트 동일하다. 파라미터 목록·모양·초기 가중치는 켜도 같다 |
+| 032-R23 | **MUST** (2026-11-09 초안, 사용자 확인 대기) 코어 수정 스위치(§2.8). F1 `core_skip`: Core 입력을 0 초기화 Linear로 Core 출력에 더한다. F2 `recency_init`: GTrXL `rel_table`을 지금과 같은 난수 뒤에 최근 step 선호 항을 더해 초기화한다. 경로 2(041-R29)에서 어느 것을 켤지, F2 항의 꼴·크기, 그 밖의 후보(F3 게이트 교체 등, 쓰려면 별도 spec 문안)는 코어 어텐션 조사 뒤 정하는 [SPEC AMBIGUOUS] AMB-032-14다 |
+| 032-R24 | **MUST** (2026-11-09 초안, 사용자 확인 대기) 학습 전용 보조 모듈(사용자 결정 2026-11-09, §2.8 `aux_priv`·`aux_jepa`). ① `aux_priv`: h_t로 privileged 벡터 전체를 예측한다. ② `aux_jepa`: k마다 h_t로 t+k의 `[e_pool, s_pool]`(stop-grad)를 예측하고, 게임 경계·학습 묶음 끝을 넘는 쌍은 마스크한다. ③ 두 모듈 모두 h_t를 detach하지 않는다(Core·인코더에 학습 압력을 주는 것이 목적). ④ `forward_seq`만 계산하고 `act()`·추론 graph에는 없다(AC5 확장). ⑤ 구조 세부(예측기 크기, k 목록, 정답 정규화, 손실 꼴, privileged 차원 가중)는 [SPEC AMBIGUOUS] AMB-032-13이다. 손실 세기는 041-R23·042-R21 |
+| 032-R25 | **MUST** (2026-11-09 초안, 사용자 확인 대기) 죽은 채널 통계(사용자 결정 2026-11-09). 대상 층은 공간 인코더의 stem 출력(FiLM 뒤), 내려가는 단계 출력 4개, bottleneck 출력 2개(둘째가 `S8`), 각 ResBlock 안 첫 conv 뒤 ReLU 출력(6개)이다. 층마다 ① `pos`: 측정 묶음의 그 층 원소 중 0보다 큰 비율 ② `dead`: 측정 묶음 전체에서 한 번도 0보다 크지 않은 채널 수를 낸다. 측정 묶음은 그 update의 학습 묶음 중 유효 step(마스크 안) 행이다. 계산은 학습 결과를 바꾸지 않는다: 학습 forward의 활성값을 읽거나, 따로 no_grad로 계산하면 dropout을 끄고 학습 RNG를 쓰지 않는다(켜고 끈 학습이 CPU에서 비트 동일). `spatial_preact`를 켜면 블록 출력은 음수가 정상이라 블록 안 ReLU 출력의 `dead`가 죽은 유닛 지표다. 기록 주기와 경보는 041-R25·042-R21이다 |
 
 ## 4. 파라미터·연산 예산 (기본 구성, N=256)
 | 모듈 | 파라미터 | FLOPs/step (B=1) |
@@ -172,6 +205,8 @@ h, z, enemy_race, privileged(학습 전용) ─► ValueHeads {win, build, units
 | **합계** | **~12M** | **~2.5 GFLOP** |
 
 배치 16 추론 시 약 40 GFLOP이 필요하다. 실효 처리량 1–2 TFLOPS를 가정하면 20–40ms다. 실측은 M1(a)에서 한다.
+
+- §2.8 스위치의 추가 파라미터(2026-11-09 개정 초안, 기본안 크기 기준 어림): `bypass` 약 0.4M, `core_skip` 약 0.4M, `aux_priv` 약 0.2M, `aux_jepa` k 3개 약 1.6M. aux는 학습 전용이라 추론 비용에 들어가지 않는다. 합쳐도 032-R2 범위(10M–40M) 안이다. 학습 메모리는 060-R3 최악 모양(ROCm BC 레인 그룹 1·T64·최대 N, RL learner는 BC 재forward 포함)으로 확인하고, 넘으면 결과를 바꾸지 않는 방법(재계산 등, 032-R19)만 쓴다.
 
 ## 5. 마스크 파이프라인
 - CPU(env)가 계산하는 것: `type_mask[B,A]`, `unit_cap[B,N,K]`, `loc_class_mask[B,L,128,128]` ([030](030-observation.md), [034](034-action-table.md))
@@ -196,6 +231,7 @@ class UraniumNet(nn.Module):  # PyTorch (032-R1). 장치는 텐서·모듈이 �
 ```
 - `ObsBatch`·`ActionBatch`·`PrivBatch`는 030 §1 레이아웃의 텐서 묶음이다. 호스트 쪽 collate(패딩 포함)는 Rust(`uranium-data`)가 하고 numpy로 넘긴다(041, 001-R6).
 - 인코더와 헤드는 B×T를 펼쳐 병렬로 계산하고, Core만 T를 따라 순차 계산한다.
+- `forward_seq`는 aux 모듈이 있으면(§2.8, 2026-11-09 개정 초안) `SeqOutput`에 aux 예측(`aux_priv` [B·T, P], `aux_jepa` k별 [B·T, 512])과 JEPA 정답(기울기 끊은 `[e_pool, s_pool]` [B·T, 512])을 함께 돌려준다. 없으면 이 키가 없다. `act()`의 시그니처·출력은 바뀌지 않는다.
 - **BC**: 헤드별 CE × 사용 마스크([041](041-imitation-learning.md))
 - **RL**: `forward_seq`의 target logits와 actor behaviour log-prob로 V-trace, UPGO, 헤드별 KL(π‖π_BC)을 계산한다([042](042-rl-training.md)).
 - 처리량 구현 메모(비규범, 2026-10-18, `reports/m6_bc_preflight.md`): 결과가 같은 계산 순서 변경만 한다.
@@ -219,7 +255,27 @@ class UraniumNet(nn.Module):  # PyTorch (032-R1). 장치는 텐서·모듈이 �
 - 032-AC11 (2026-10-25, 032-R20): §2.7 스위치가 모두 꺼진 모델은 기본 구성과 파라미터 목록·출력이 같다(기존 테스트 그대로 통과, AC10 포함). 각 변형과 네 스위치를 모두 켠 조합에서 ① 공유 모듈 초기 가중치가 기본 구성과 같고 ② step 실행이 시퀀스 실행과 같으며(032-R5, `outer` 구간 경계 포함) ③ 마스크(AC4)·privileged 경로 없음(AC5)·엔티티 재계산 동일(041-R17)·체크포인트 왕복이 성립한다(CPU 테스트). 추론 graph act = eager는 GPU 테스트로 확인한다. RL 경로(2026-10-27, §2.7): 줄마다 다른 결정 수에서 시작한 시퀀스의 head log-prob·value·마지막 상태·기울기가 한 결정씩 계산한 것과 같고, 시작이 구간 경계면 BC 경로와 같으며, RL 학습기가 이 모델로 update한다(CPU 테스트). 다른 `[model]` 설정으로 재개하면 거부하고, `[model]`에 모르는 키가 있으면 시작을 거부한다.
 - 032-AC12 (2026-10-25, 032-R20): 변형 run 5개가 10,000 update에서 끝나고, val 지표, 리그전 쌍별 승률(Wilson 95%)·7×7 표·전체 순위, run별 장비 비율·update 시간이 `reports/m6_arch_ablation_pt.md`에 기록되며, 사용자가 채택 여부를 정한다. — 통과(2026-10-27: 기록 3절, 사용자 결정 모두 켬 채택).
 
+- 032-AC13 (2026-11-09 초안, 사용자 확인 대기, 032-R21~R24): §2.8 스위치가 모두 꺼진 모델은 지금 모델과 파라미터 목록·출력이 같다(AC10·AC11 테스트 그대로 통과, Checkpoint 1 체크포인트 로드와 같은 출력). 각 스위치와 모두 켠 조합(§2.7 네 스위치 켬 포함)에서 ① 공유 모듈 초기 가중치가 꺼진 모델과 같고(`recency_init`은 `rel_table`에 더한 항만 다름) ② `bypass`·`core_skip`을 켠 직후의 출력이 끈 모델과 같으며(0 초기화) ③ step 실행이 시퀀스 실행과 같고(`outer` 구간 경계, RL 위상별 구간 포함) ④ 마스크(AC4)·엔티티 재계산 동일(041-R17)·체크포인트 왕복이 성립한다(CPU 테스트). `spatial_preact`를 켠 ResBlock은 정의식과 같은 출력을 낸다. 추론 graph act = eager와 재컴파일 없음은 GPU 테스트로 확인한다. `[model]`에 모르는 키가 있거나 다른 `[model]`로 재개하면 거부한다(AC11과 같음).
+- 032-AC14 (2026-11-09 초안, 사용자 확인 대기, 032-R11·R24): `act()`와 추론 graph에 aux 모듈과 privileged 텐서가 없다(AC5 확장, 테스트). `aux_jepa` 정답은 기울기가 없고(정답 쪽 파라미터 gradient 0), 게임 경계와 학습 묶음 끝을 넘는 쌍은 마스크된다(경계 테스트). aux 모듈을 켜고 손실 세기가 0이거나 키가 없으면 aux 손실을 더하지 않고, 공통 파라미터의 기울기가 aux 없는 모델과 CPU에서 비트 일치한다.
+- 032-AC15 (2026-11-09 초안, 사용자 확인 대기, 032-R25): 알려진 활성값에서 층별 `pos`·`dead`가 정의와 같고, 통계 계산을 켜고 끈 학습(BC·RL 각 몇 update)이 CPU에서 비트 일치한다.
+
 ## Risks & Open Questions
+- **모델 2 스위치 (2026-11-09 개정 초안, 사용자 확인 대기, §2.8)**:
+  > **[SPEC AMBIGUOUS] AMB-032-12**: 헤드 우회로(`bypass`) 크기와 `s_raw` 부분집합.
+  > - 기본안(미확정): d_b = 256, 8 head × 32(`attn_pool`과 같은 꼴), K·V는 `Linear(256→256)`, 질문 입력 `[h(512), c(256), s_raw]`. `s_raw` = 030 §4의 시간 2개, 자원(미네랄·가스·supply 3개), 관측된 적 유닛 타입별 최대 동시 관측 수 전부(진단에서 `c`가 보존하지 못한 값, 10.2.2·10.2.3). 업그레이드·테크·아군 수·직전 액션은 넣지 않음.
+  > - 대안: `s_raw` = 스칼라 전체(030 §4), 또는 적 최대 관측 수만.
+
+  > **[SPEC AMBIGUOUS] AMB-032-13**: 학습 전용 보조 모듈(`aux_priv`·`aux_jepa`) 구조 세부.
+  > - 기본안(미확정): `aux_priv` = `MLP(512→256→P)`, 손실은 차원 평균 MSE, privileged 차원 가중은 모두 1(텐서는 030·010이 이미 정규화한 값). `aux_jepa` k = {1, 8, 32}, 예측기 `g_k` = k마다 따로 `MLP(512→512→512)`(은닉 ReLU), 정답 정규화는 학습 파라미터 없는 LayerNorm(차원 방향), 손실은 1 − 코사인 유사도, k별 유효 쌍 평균을 k 사이 평균. 정답은 같은 forward의 온라인 인코더 값(EMA 사본 없음). 붕괴 감시로 정답 차원별 표준편차 평균을 기록(041-R25·042-R21 로그).
+  > - 대안: 정규화 L2 손실, 예측기 공유 + k 임베딩, privileged 차원 묶음별(자원·업그레이드·테크·유닛 구성) 같은 몫 가중, EMA 정답 인코더.
+
+  > **[SPEC AMBIGUOUS] AMB-032-14**: 경로 2에 쓸 코어 수정 세트와 F2 항.
+  > - 기본안(미확정): 코어 어텐션 조사(가중치 분석·헤드별 엔트로피·오프라인 개입) 결과를 보고 정한다. 조사 전 기본안은 F1(`core_skip`) 켬, F2(`recency_init`)는 041-R24 λ 비교 run의 "F1 대 F1+F2" 결과로 정함. F2 항은 `b(d) = −α·ln(1 + d)`, α = 1, 모든 층·head.
+  > - 대안: F1·F2 둘 다 끔(지금 코어 그대로), F3(GRU 게이트를 잔차 더하기로 교체 등, 쓰려면 별도 spec 문안과 사용자 확인).
+  - **JEPA 붕괴**: stop-grad 정답을 같은 인코더로 만들면 인코더가 요약을 상수에 가깝게 만들어 예측 손실을 줄이는 붕괴가 가능하다. 인코더는 정책 손실도 받으므로 막힐 것으로 보지만, 정답 표준편차를 감시하고 줄어들면 보고한다(AMB-032-13 기본안).
+  - **privileged 보조 목표의 범위**: 정답은 상대의 실제 상태라 h_t가 "보지 못한 것"을 추정하도록 학습된다. 추론 입력은 자기 시야 그대로이고 실전(SC:R)에는 privileged가 없다(010-R10). 맵핵 금지(010-R5, 030-R2)는 관측 제한이므로 유지된다(사용자 결정 2026-11-09, `reports/jepa_survey.md` 8절).
+  - **pre-activation 뒤 재붕괴**: 블록 안 ReLU가 여전히 죽을 수 있다. 죽은 채널 통계와 경보(041-R25)로 일찍 본다.
+  - **비교 가능성**: 스위치는 체크포인트 메타에 남으므로 Checkpoint 1(모두 꺼짐)과 모델 2 경로를 같은 측정 프로토콜(050-R9)로 비교한다.
 - **구조 변형 비교 (2026-10-25, 032-R20)**:
   - 바깥 LSTM(`outer`)은 학습 묶음(T = 64) 안의 구간 전환(`outer` = 32면 1회)에서만 학습 신호를 받는다. 묶음을 넘는 보존은 forward로만 이어지고 "무엇을 오래 들고 갈지"는 배우지 못한다. 더 긴 학습 시퀀스는 Linux ROCm 호스트 메모리(060-R3) 측정 뒤 별도로 정한다. → 2026-10-27 사용자 결정: 모두 켬 채택 뒤 BC 본학습도 T = 64(032-R5, `config/bc.toml` `seq_len`) 그대로 한다. 이 한계는 남는다.
   - 잡음 측정용 추가 seed가 없고, run마다 장비 비율(CUDA bf16 / ROCm f32)이 다르다. 작은 차이는 판정을 보류한다.
