@@ -1,0 +1,102 @@
+# 041-R24 loss-weight selection run 1 base: every 032 section 2.8 switch on (core fix F1), lambda_priv 0.2, lambda_jepa 0.1, model seed 1.
+# PENDING P3: the lambda values are [SPEC DEFERRED(P3)] AMB-041-13b; these runs use the AMB-041-13a design
+# (Resolved 2026-11-09): the 032 section 2.8 model from update 0 on the first 3,000 updates of the S1
+# schedule of config/bc.toml (lr 3e-4, warmup 2,000, cosine 39,096, data.seed 1), seven runs that change
+# one factor each (base, lambda = 0, lambda_priv x2, lambda_jepa x2, F1 off, F1 off + aux off, model seed 2).
+# Run: python -m uranium bc --run m2-lam-base --config config/bc_m2_lambda_base.toml --dataset <S1 datasets> --steps 3000
+# (--steps ends the run at 3,000 with DONE, as intended here). Everything is kept (keep_checkpoints = 0).
+# The rest is config/bc.toml (S1) except checkpoint_every (execution only). Needs every 032 section 2.8
+# module merged (bypass, spatial_preact, core_skip, aux): a switch not implemented yet refuses to build.
+
+# Parallel games per batch (B) and truncated-BPTT length (T, 041-R2 / 032-R5).
+lanes = 32
+seq_len = 64
+# Lanes per forward/backward pass. Group gradients are summed into one update (same result as one
+# pass over all lanes), so peak GPU memory follows the group, not `lanes`. 0 = all lanes at once.
+micro_lanes = 1
+# Burn balanced gradient checkpointing: recompute memory-bound activations during backward.
+grad_checkpointing = false
+# Round the batch entity count N up to a multiple of this (masked padding, same result). Fewer
+# distinct tensor shapes; ~9% faster per update on the 13-game CUDA sample (2026-10-17).
+pad_entities = 64
+# AdamW + linear warmup + cosine decay, gradient-norm clip 1.0 (041-R3): one global L2 norm over
+# all parameter gradients after the micro-lane sum (not Burn's per-tensor clip, G-D4).
+lr = 3e-4
+min_lr = 3e-6
+warmup_steps = 2000
+# Schedule length when no stage length applies (smoke runs). `bc` uses [steps] below.
+total_steps = 500000
+weight_decay = 1e-4
+grad_clip = 1.0
+# S2 fine-tuning uses 1/10 of the learning rate (041-R4).
+s2_lr_scale = 0.1
+# 061-R6 (G-D6): checkpoints kept per run on the shared drive. Absent = 5; 0 = keep all.
+keep_checkpoints = 0
+# Head loss weights (041-R1).
+[heads]
+action = 1.0
+delay = 0.5
+queued = 0.2
+selected = 1.0
+target_unit = 1.0
+target_loc = 1.0
+
+[steps]
+# 041-R14 (2026-10-18): S1, S2 and ablation (A) train one epoch each; the cosine schedule ends
+# there. Counted by `uranium-train bc-epoch` on the frozen main-run data (2026-10-23, I-D1:
+# 2,069 files with the 25 scr_ladder shards back; S1 33,183 views / S2 9,653) with lanes 32,
+# seq_len 64, data.seed 1. Before: s1 38584, s2 11319 (2,044 files); s1 36985, s2 7915
+# (pre-rebuild data).
+s1 = 39096
+s2 = 11387
+ablation_a = 11387
+# 041-R14 (2026-10-18): S2 and (A) warm up over 5% of their epoch, rounded half up
+# (11387 x 0.05 = 569.35 -> 569). S1 keeps warmup_steps above.
+s2_warmup = 569
+ablation_a_warmup = 569
+
+[value]
+# win head MSE weight (041-R7)
+win = 0.5
+# 041-R19 (2026-10-21): win_open head MSE weight. Present = a new run builds the head (032-R18,
+# win estimate without privileged input for the 031-R12 surrender rule). Clipped apart from the
+# other parameters, so they update as without it. Not in bc_core_ablation.toml.
+win_open = 0.5
+
+[data]
+# Fraction of games trained with z_present = false (041-R8 / 033-R2).
+z_drop = 0.25
+# Random dihedral symmetry per game at load time (030-R4, 040-R7).
+augment = true
+# 030-R11 (user decision 2026-10-19): share of games whose enemy race is masked as unknown until
+# the first enemy unit is seen (per game, hash of replay sha256 + seed; no extra copies).
+enemy_race_mask = 0.05
+seed = 1
+checkpoint_every = 1000
+# Also checkpoint at least this often in wall time (061-R10; ~2 updates/min on CUDA).
+checkpoint_minutes = 60
+
+# 032 section 2.7 (the main BC model's four switches, as config/bc.toml) and section 2.8 (model 2).
+[model]
+terrain = true
+ctx_token = true
+attn_pool = true
+outer = 32
+bypass = true
+spatial_preact = true
+core_skip = true
+aux_priv = true
+aux_jepa = [1, 8, 32]
+
+# 041-R23: aux loss weights (PENDING P3, AMB-041-13b default proposal: priv 0.2, jepa 0.1).
+[aux]
+priv = 0.2
+jepa = 0.1
+
+# 041-R25 (AMB-041-14): spatial dead-channel statistics every 100 updates.
+[monitor]
+spatial_every = 100
+
+# 041-R24 7: the new run's initial weights (main-session interim decision 2026-11-09).
+[train]
+model_seed = 1
