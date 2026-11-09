@@ -25,9 +25,12 @@ enum Cmd {
     Convert { rep: PathBuf, out: PathBuf },
     /// Parse every `.rep` below a folder and print one JSON line per replay (no names, 040-R14).
     Scan { dir: PathBuf },
-    /// 050-R6 / 050-R7 measurement (`tools/eval/tables.py`): print each replay's command stream as
+    /// 050-R9 measurement protocol (`tools/eval/tables.py`): print each replay's command stream as
     /// one JSON line `{"rep", "frames", "players", "cmds": [[frame, player, opcode, payload hex]]}`.
-    Cmddump { reps: Vec<PathBuf> },
+    Cmddump {
+        #[arg(required = true)]
+        reps: Vec<PathBuf>,
+    },
     /// 040-AC1: compare per-player command counts and APM with the screp reference parser.
     /// Play a replay in OpenBW replay mode and report the 040-R8 desync signals as JSON.
     Play {
