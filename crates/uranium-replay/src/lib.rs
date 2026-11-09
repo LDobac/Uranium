@@ -141,7 +141,7 @@ impl Replay {
         self.header.players.iter().cloned().zip(stats).filter(|(p, s)| p.kind == 2 && s.train_build > 0).collect()
     }
 
-    /// `uranium-replay cmddump` (050-R6 / 050-R7 measurement, `tools/eval/tables.py`): the replay's
+    /// `uranium-replay cmddump` (050-R9 measurement protocol, `tools/eval/tables.py`): the replay's
     /// command stream as stored (no 013 conversion), so orders the model issued can be told apart
     /// from automatic unit behaviour: `{"rep", "frames", "players": [{"id", "race"}], "cmds":
     /// [[frame, player, opcode, payload hex], ...]}`. Same output as the untracked `rl-cmddump`
@@ -184,10 +184,10 @@ mod tests {
         assert_eq!(back.player_stats()[0].cmds, 2);
     }
 
-    /// 050-R6 / 050-R7 measurement tools: `cmddump` lists every command as
+    /// 050-R9 measurement tools: `cmddump` lists every command as
     /// `[frame, player, opcode, payload hex]` with the header players' ids and races.
     #[test]
-    fn cmddump_json_050_r6() {
+    fn cmddump_json_050_r9() {
         let mut h = vec![0u8; container::HEADER_SIZE];
         h[1..5].copy_from_slice(&100u32.to_le_bytes());
         h[0xa1 + 4] = 0;
