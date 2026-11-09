@@ -1,6 +1,7 @@
-"""Per-lineage-point diagnostic summary (the measurement protocol records one per checkpoint):
+"""Per-lineage-point diagnostic summary (050-R9: the measurement protocol records one per checkpoint):
 `python -m uranium diag summary` merges the outputs of `probes`, `intervene`, `spatial` and
-`core-split` into one small JSON of the headline numbers.
+`core-split` into one small JSON of the headline numbers. All inputs must be of one checkpoint
+(sha256); the spatial entry is picked by it.
 
 Schema `uranium.diag.summary/1` (every section optional except the header; a missing input is
 `null`):
@@ -25,7 +26,10 @@ Schema `uranium.diag.summary/1` (every section optional except the header; a mis
                effect: {metric: {"n", "mean", "lo", "hi", "share_ge_0.15"}}}},
                                           # effect in start / start_unf / count_sc / count_tok / real,
                                           # metric in bunker_any / marine_sum / rax2_any / label_p
-      "dead_channels": {point: {"pos_frac": float, "never_active": int, "channels": int}},
+      "dead_channels": {point: {"pos_frac": float, "never_active": int, "channels": int},
+                        "spatial.s8.const" | "spatial.pool.const":
+                            {"const": int, "channels": int, "threshold": float, "dtype": str}},
+                                          # 032-R25 ①②③ of the summarised checkpoint (by sha256)
       "core_split": {race: {"hp_r2": {stage: float}, "gates": {gate: {"z_mean", "var_share_keep",
                                                                        "r2_x", "r2_keep", "r2_write", "r2_g"}}}}
     }
@@ -89,12 +93,28 @@ def intervention_section(iv: dict) -> dict:
     return out
 
 
-def dead_section(sp: dict) -> dict:
-    cks = list(sp.get("checkpoints", {}).values())
-    if not cks:
-        return {}
-    pts = cks[0]["points"]
-    return {k: {"pos_frac": v["pos_frac"], "never_active": v["never_active"], "channels": v["channels"]} for k, v in pts.items()}
+def spatial_entry(sp: dict, sha: str | None) -> tuple[str, dict]:
+    """The `diag spatial` entry of checkpoint `sha` (or its only entry when `sha` is None)."""
+    cks = sp.get("checkpoints", {})
+    if sha is None:
+        if len(cks) != 1:
+            raise ValueError(f"spatial JSON has {len(cks)} checkpoints and no other input names one")
+        return next(iter(cks.items()))
+    hit = [(k, v) for k, v in cks.items() if v.get("sha256") == sha]
+    if not hit:
+        raise ValueError(f"spatial JSON has no checkpoint with sha256 {sha}")
+    return hit[0]
+
+
+def dead_section(entry: dict) -> dict:
+    """032-R25 per point: pos / dead (`never_active`), and the S8 / s_pool `const` counts."""
+    out = {}
+    for k, v in entry["points"].items():
+        if "const" in v:
+            out[k] = _pick(v, ("const", "channels", "threshold", "dtype"))
+        else:
+            out[k] = _pick(v, ("pos_frac", "never_active", "channels"))
+    return out
 
 
 def core_section(cs: dict) -> dict:
@@ -114,13 +134,20 @@ def git_commit() -> str | None:
 
 
 def build(point: str, probes=None, intervene=None, spatial=None, core_split=None, commit: str | None = None) -> dict:
-    """The summary dict from the loaded command outputs (each may be None)."""
-    src = next((d["dump"] for d in (probes, intervene, core_split) if d and d.get("dump")), None)
+    """The summary dict from the loaded command outputs (each may be None). Every input must be of
+    the same checkpoint (sha256); the spatial entry is picked by it. Raises ValueError otherwise."""
+    dumps = [d["dump"] for d in (probes, intervene, core_split) if d and d.get("dump")]
+    shas = {d.get("checkpoint_sha256") for d in dumps}
+    if len(shas) > 1:
+        raise ValueError(f"inputs of different checkpoints: {sorted(map(str, shas))}")
+    src = dumps[0] if dumps else None
     ck = src.get("checkpoint") if src else None
     sha = src.get("checkpoint_sha256") if src else None
-    if ck is None and spatial and spatial.get("checkpoints"):
-        ck, v = next(iter(spatial["checkpoints"].items()))
-        sha = v.get("sha256")
+    entry = None
+    if spatial:
+        sck, entry = spatial_entry(spatial, sha)
+        if src is None:
+            ck, sha = sck, entry.get("sha256")
     dev = None
     if src and src.get("backend"):
         dev = {"backend": src["backend"], "precision": src.get("precision")}
@@ -134,7 +161,7 @@ def build(point: str, probes=None, intervene=None, spatial=None, core_split=None
         "gain_method": probes.get("gain_method") if probes else None,
         "cue_probes": cue_section(probes) if probes else None,
         "intervention": intervention_section(intervene) if intervene else None,
-        "dead_channels": dead_section(spatial) if spatial else None,
+        "dead_channels": dead_section(entry) if entry else None,
         "core_split": core_section(core_split) if core_split else None,
     }
 
@@ -159,14 +186,21 @@ def validate(s: dict) -> list[str]:
                 if not all(k in v for k in PT + ("gain",)):
                     errs.append(f"cue_probes.{race}.{tn}.stages.{st}")
     for p, v in (s.get("dead_channels") or {}).items():
-        if not (0.0 <= float(v["pos_frac"]) <= 1.0 and 0 <= int(v["never_active"]) <= int(v["channels"])):
+        if "const" in v:
+            ok = 0 <= int(v["const"]) <= int(v["channels"])
+        else:
+            ok = 0.0 <= float(v["pos_frac"]) <= 1.0 and 0 <= int(v["never_active"]) <= int(v["channels"])
+        if not ok:
             errs.append(f"dead_channels.{p}")
     return errs
 
 
 def run(a) -> int:
     load = lambda p: None if not p else json.loads(Path(p).read_text(encoding="utf-8"))  # noqa: E731
-    s = build(a.point, load(a.probes), load(a.intervene), load(a.spatial), load(a.core_split), git_commit())
+    try:
+        s = build(a.point, load(a.probes), load(a.intervene), load(a.spatial), load(a.core_split), git_commit())
+    except ValueError as e:
+        raise SystemExit(f"summary: {e}") from None
     errs = validate(s)
     if errs:
         raise SystemExit("summary does not match the schema: " + "; ".join(errs))

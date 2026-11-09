@@ -10,7 +10,8 @@ token, every `--act-every`-th step.
 Counterfactual passes (`--cf`), the anchor = the game's first-seen focus token, edited in every
 row that has it (visible or remembered, at the token's last-seen frame):
   early / late: the anchor started at the race's early / late frame (`--cf-starts`): HP (and
-      Protoss shield) ratio and sqrt, COMPLETED, CONSTRUCTING, order (Nothing / IncompleteBuilding);
+      Protoss shield) ratio and sqrt, COMPLETED, CONSTRUCTING, order (Nothing / the race's unfinished
+      order, UNFINISHED_ORDER);
       a token seen before the counterfactual start is masked. Spatial channels are left as they are.
   sc+1 / sc-1: the enemy max-seen count of the focus type +-1 (rows where it is >= 1), scalar only
   tok+1 / tok-1: the same, and one focus token duplicated into an extra slot / masked
@@ -27,13 +28,23 @@ import numpy as np
 
 from uranium.diag import tables as tb
 from uranium.diag.features import fill_race_cols, lane_features, race_of
+from uranium.diag.stream import lane_groups
 
 PASSES = ("real", "early", "late", "sc+1", "sc-1", "tok+1", "tok-1")
 # early / late start frames per race: the rush / macro class medians of the earlier runs (10.1, 10.2.2)
 CF_STARTS = {"T": (1280, 2080), "P": (1720, 3030), "Z": (1800, 3240)}
 # Protoss shield of an unfinished building: (a + b (hp_ratio - 0.1) / 0.9) * max (fit on 978 rows, corr 0.994)
 SHIELD_A, SHIELD_B = 0.104, 0.925
+# The order an unfinished enemy focus building carries in the observations, per race (as observed:
+# Terran / Protoss model games, 10.2.2 counterfactual setup; Zerg teacher holdout, 37,149 unfinished
+# pool rows, 2026-11-09: all IncompleteBuilding, not IncompleteWarping / ZergBuildingMorph). The
+# dump records the observed orders in its manifest (`focus_orders`) and warns when they differ.
+UNFINISHED_ORDER = {"T": "IncompleteBuilding", "P": "IncompleteBuilding", "Z": "IncompleteBuilding"}
 ENT_KEYS = ("entity_cat", "entity_cont", "entity_mask", "entity_cell", "entity_pos", "unit_cap", "is_building")
+
+
+def unfinished_order(race: str) -> int:
+    return tb.order_id(UNFINISHED_ORDER[race])
 STAGES = ("token", "e_pool", "sp_pool", "c", "h")
 
 
@@ -104,7 +115,7 @@ def edit_start(g: dict, frame, anc, race: str, start: float) -> dict:
             cont[r, k, tb.SH_SQRT] = np.sqrt(sh) / 16.0
         cont[r, k, tb.COMPLETED] = done.astype(np.float32)
         cont[r, k, tb.CONSTRUCTING] = (~done).astype(np.float32)
-        cat[r, k, 2] = np.where(done, tb.order_id("Nothing"), tb.order_id("IncompleteBuilding"))
+        cat[r, k, 2] = np.where(done, tb.order_id("Nothing"), unfinished_order(race))
         gone = el < 0
         mask[r[gone], k[gone]] = False
     out = dict(g)
@@ -238,6 +249,7 @@ def run(a) -> int:
     gid_next = 0
     t0 = time.time()
     stats = {"batches": 0, "groups_forwarded": 0, "rows": 0, "act_rows": 0, "frame_resets": 0}
+    focus_orders: dict = {}
     splits = [s for s in a.splits.split(",") if s]
     for si, split in enumerate(splits):
         try:
@@ -247,112 +259,123 @@ def run(a) -> int:
                 raise
             print(f"[{split}] skipped: {e}", flush=True)
             continue
-        groups = -(-LANES // G)
-        states = {p: [None] * groups for p in passes}
+        # per lane group: {pass: recurrent state}, None = fresh (a drained group, lane_groups)
+        gstate: list = [None] * -(-LANES // G)
         lane_game: dict[int, dict] = {}
         nb = 0
-        while (b := stream.next()) is not None:
-            nb += 1
-            if a.limit_batches and nb > a.limit_batches:
-                break
+
+        def batch_done(n_done):
             stats["batches"] += 1
-            steps = b.lane_steps()
-            for gi in range(groups):
-                start, end = gi * G, min((gi + 1) * G, LANES)
-                if all(steps[l] == 0 for l in range(start, end)):
-                    for p in passes:
-                        states[p][gi] = None
-                    continue
-                hg = b.group(start, end, T, cfg["pad_entities"], max_sel)
-                bsz = hg["b"]
-                keep = np.asarray(hg["keep"]).astype(bool)
-                frame_all = np.asarray(hg["scalar"])[:, 0] * tb.FRAME_SCALE
-                lane_rows = []  # (li, features, tok_k, a_k, n, race)
-                for li in range(bsz):
-                    lane = start + li
-                    n = steps[lane]
-                    if n == 0:
-                        continue
-                    fr = frame_all[li * T:li * T + n]
-                    lg = lane_game.get(lane)
-                    if lg is None or not keep[li] or fr[0] < lg["last"] - 1:
-                        sub = lane_slice(hg, li, T)
-                        race = race_of(sub, np.arange(n))
-                        lg = {"gid": gid_next, "race": race, "last": -1.0, "anchor": None}
-                        lane_game[lane] = lg
-                        games[gid_next] = {"split": split, "race": race, "lane": lane}
-                        gid_next += 1
-                    if (np.diff(fr) < -1).any():
-                        stats["frame_resets"] += 1  # a new game inside a chunk: not expected (one game per chunk)
-                    lg["last"] = float(fr[-1])
-                    f, tok, anc = lane_features(lane_slice(hg, li, T), lg["race"], lg, n)
-                    fill_race_cols(f, T)
-                    lane_rows.append((li, f, tok, anc, n, lg))
-                fwd = net is not None and any(frame_all[li * T] < a.act_until for li, *_ in lane_rows)
-                pb = np.full((bsz * T, len(passes), 3), np.nan, np.float32)
-                acts = None
-                if fwd:
-                    stats["groups_forwarded"] += 1
-                    keep_t = torch.as_tensor(keep, device=device)
-                    labels = net.labels(hg, device)
-                    priv = torch.as_tensor(hg["privileged"]).to(device, torch.float32)
-                    for pi, p in enumerate(passes):
-                        g = hg
-                        if p != "real":
-                            g = dict(hg)
-                            if p == "tok+1":
-                                g = pad_one(g)
-                            ent = {k: np.array(g[k], copy=True) for k in ENT_KEYS + ("scalar",)}
-                            for li, f, tok, anc, n, lg in lane_rows:
-                                if lg["race"] not in tb.RACES:
-                                    continue
-                                sub = {k: v[li * T:(li + 1) * T] for k, v in ent.items()}
-                                if p in ("early", "late"):
-                                    e = edit_start(sub, f["frame"], anc, lg["race"], starts[lg["race"]][0 if p == "early" else 1])
-                                else:
-                                    e = edit_count(sub, lg["race"], 1 if p.endswith("+1") else -1, p.startswith("tok"))
-                                for k in ent:
-                                    ent[k][li * T:(li + 1) * T] = e[k]
-                            g.update(ent)
-                        obs = to_obs(g, device)
-                        st = states[p][gi]
-                        s0 = net.init_state(bsz, device) if st is None else net.mask_state(st, keep_t)
-                        with torch.no_grad(), autocast(device, precision):
-                            if p == "real":
-                                o, acts = cap.run(obs, labels, priv, s0, T)
-                            else:
-                                o = net.forward_seq(obs, labels, priv, s0, T)
-                        states[p][gi] = o["state"]
-                        pb[:, pi] = o["dists"]["action"].float().exp()[:, act_cols].cpu().numpy()
-                for li, f, tok, anc, n, lg in lane_rows:
-                    sel = np.nonzero((np.arange(T) < n) & (f["frame"] < a.row_until))[0]
-                    if not len(sel):
-                        continue
-                    f["game"] = np.full(T, lg["gid"], np.int64)
-                    f["split"] = np.full(T, si, np.int8)
-                    f["step"] = np.arange(T, dtype=np.int16)
-                    f["pb"] = pb[li * T:(li + 1) * T]  # f32: counterfactual differences are small
-                    base = parts.add_rows(f, sel)
-                    stats["rows"] += len(sel)
-                    if acts is None:
-                        continue
-                    arow = sel[(tok[sel] >= 0) & (f["frame"][sel] < a.act_until)]
-                    if a.act_every > 1:
-                        arow = arow[(arow % a.act_every) == 0]
-                    if not len(arow):
-                        continue
-                    at = torch.as_tensor(li * T + arow, device=device)
-                    kk = torch.as_tensor(tok[arow], device=device)
-                    rec = {"token": acts["E"][at, kk], "e_pool": acts["e_pool"][at], "sp_pool": acts["sp_pool"][at], "c": acts["c"][at], "h": acts["h"][at]}
-                    for k in cap.keys():
-                        if k in acts:
-                            rec[k] = acts[k][at]
-                    parts.add_acts(base + np.searchsorted(sel, arow), {k: v.float().half().cpu().numpy() for k, v in rec.items()})
-                    stats["act_rows"] += len(arow)
-            if nb % a.part_batches == 0:
+            if n_done % a.part_batches == 0:
                 parts.flush()
-            if nb % 50 == 0:
-                print(f"[{split}] batch {nb} games {gid_next} rows {stats['rows']} act_rows {stats['act_rows']} {time.time() - t0:.0f}s", flush=True)
+            if n_done % 50 == 0:
+                print(f"[{split}] batch {n_done} games {gid_next} rows {stats['rows']} act_rows {stats['act_rows']} {time.time() - t0:.0f}s", flush=True)
+
+        for bi, b, gi, start, steps, hg in lane_groups(stream, LANES, G, T, cfg["pad_entities"], max_sel, gstate, a.limit_batches):
+            if bi + 1 > nb:
+                if nb:
+                    batch_done(nb)
+                nb = bi + 1
+            if gstate[gi] is None:
+                gstate[gi] = {p: None for p in passes}
+            states = gstate[gi]
+            bsz = hg["b"]
+            keep = np.asarray(hg["keep"]).astype(bool)
+            frame_all = np.asarray(hg["scalar"])[:, 0] * tb.FRAME_SCALE
+            lane_rows = []  # (li, features, tok_k, a_k, n, race)
+            for li in range(bsz):
+                lane = start + li
+                n = steps[lane]
+                if n == 0:
+                    continue
+                fr = frame_all[li * T:li * T + n]
+                lg = lane_game.get(lane)
+                if lg is None or not keep[li] or fr[0] < lg["last"] - 1:
+                    sub = lane_slice(hg, li, T)
+                    race = race_of(sub, np.arange(n))
+                    lg = {"gid": gid_next, "race": race, "last": -1.0, "anchor": None}
+                    lane_game[lane] = lg
+                    games[gid_next] = {"split": split, "race": race, "lane": lane}
+                    gid_next += 1
+                if (np.diff(fr) < -1).any():
+                    stats["frame_resets"] += 1  # a new game inside a chunk: not expected (one game per chunk)
+                lg["last"] = float(fr[-1])
+                f, tok, anc = lane_features(lane_slice(hg, li, T), lg["race"], lg, n)
+                fill_race_cols(f, T)
+                lane_rows.append((li, f, tok, anc, n, lg))
+            fwd = net is not None and any(frame_all[li * T] < a.act_until for li, *_ in lane_rows)
+            pb = np.full((bsz * T, len(passes), 3), np.nan, np.float32)
+            acts = None
+            if fwd:
+                stats["groups_forwarded"] += 1
+                keep_t = torch.as_tensor(keep, device=device)
+                labels = net.labels(hg, device)
+                priv = torch.as_tensor(hg["privileged"]).to(device, torch.float32)
+                for pi, p in enumerate(passes):
+                    g = hg
+                    if p != "real":
+                        g = dict(hg)
+                        if p == "tok+1":
+                            g = pad_one(g)
+                        ent = {k: np.array(g[k], copy=True) for k in ENT_KEYS + ("scalar",)}
+                        for li, f, tok, anc, n, lg in lane_rows:
+                            if lg["race"] not in tb.RACES:
+                                continue
+                            sub = {k: v[li * T:(li + 1) * T] for k, v in ent.items()}
+                            if p in ("early", "late"):
+                                e = edit_start(sub, f["frame"], anc, lg["race"], starts[lg["race"]][0 if p == "early" else 1])
+                            else:
+                                e = edit_count(sub, lg["race"], 1 if p.endswith("+1") else -1, p.startswith("tok"))
+                            for k in ent:
+                                ent[k][li * T:(li + 1) * T] = e[k]
+                        g.update(ent)
+                    obs = to_obs(g, device)
+                    st = states[p]
+                    s0 = net.init_state(bsz, device) if st is None else net.mask_state(st, keep_t)
+                    with torch.no_grad(), autocast(device, precision):
+                        if p == "real":
+                            o, acts = cap.run(obs, labels, priv, s0, T)
+                        else:
+                            o = net.forward_seq(obs, labels, priv, s0, T)
+                    states[p] = o["state"]
+                    pb[:, pi] = o["dists"]["action"].float().exp()[:, act_cols].cpu().numpy()
+                for li, *_ in lane_rows:
+                    if frame_all[li * T] >= a.act_until:
+                        pb[li * T:(li + 1) * T] = np.nan  # outside the model-pass window, like an unforwarded group
+            for li, f, tok, anc, n, lg in lane_rows:
+                if lg["race"] in tb.RACES:
+                    # the order ids the focus tokens carry (the counterfactual's per-race order, manifest)
+                    real = (np.arange(T) < n) & ~np.isnan(f["foc_comp"])
+                    for done, key in ((False, "unfinished"), (True, "finished")):
+                        c = focus_orders.setdefault(lg["race"], {}).setdefault(key, {})
+                        for o_, k_ in zip(*np.unique(f["foc_order"][real & ((f["foc_comp"] > 0.5) == done)], return_counts=True)):
+                            c[int(o_)] = c.get(int(o_), 0) + int(k_)
+                sel = np.nonzero((np.arange(T) < n) & (f["frame"] < a.row_until))[0]
+                if not len(sel):
+                    continue
+                f["game"] = np.full(T, lg["gid"], np.int64)
+                f["split"] = np.full(T, si, np.int8)
+                f["step"] = np.arange(T, dtype=np.int16)
+                f["pb"] = pb[li * T:(li + 1) * T]  # f32: counterfactual differences are small
+                base = parts.add_rows(f, sel)
+                stats["rows"] += len(sel)
+                if acts is None:
+                    continue
+                arow = sel[(tok[sel] >= 0) & (f["frame"][sel] < a.act_until)]
+                if a.act_every > 1:
+                    arow = arow[(arow % a.act_every) == 0]
+                if not len(arow):
+                    continue
+                at = torch.as_tensor(li * T + arow, device=device)
+                kk = torch.as_tensor(tok[arow], device=device)
+                rec = {"token": acts["E"][at, kk], "e_pool": acts["e_pool"][at], "sp_pool": acts["sp_pool"][at], "c": acts["c"][at], "h": acts["h"][at]}
+                for k in cap.keys():
+                    if k in acts:
+                        rec[k] = acts[k][at]
+                parts.add_acts(base + np.searchsorted(sel, arow), {k: v.float().half().cpu().numpy() for k, v in rec.items()})
+                stats["act_rows"] += len(arow)
+        if nb:
+            batch_done(nb)
         stream.finish()
         print(f"[{split}] done: batches {nb} games {gid_next} rows {stats['rows']} {time.time() - t0:.0f}s", flush=True)
     parts.flush()
@@ -366,7 +389,12 @@ def run(a) -> int:
         "pb_actions": ["Build_Bunker", "Train_Marine", "Build_Barracks"], "stages": list(STAGES) + ([] if cap is None else cap.keys()),
         "core": None if net is None else net.cfg.core.kind, "outer": None if net is None else (net.outer is not None),
         "backend": backend, "precision": precision, "games": gid_next, "parts": parts.part, "stats": stats, "secs": round(time.time() - t0, 1),
+        "focus_orders": focus_orders, "cf_orders": {r: {"unfinished": unfinished_order(r), "finished": tb.order_id("Nothing")} for r in tb.RACES},
     }
+    for r, d in focus_orders.items():
+        seen = d.get("unfinished", {})
+        if seen and max(seen, key=seen.get) != unfinished_order(r):
+            print(f"warning: unfinished {r} focus tokens mostly carry order {max(seen, key=seen.get)}, the counterfactual writes {unfinished_order(r)} (UNFINISHED_ORDER)", flush=True)
     (out / "manifest.json").write_text(json.dumps(man, indent=1), encoding="utf-8")
     print(json.dumps({k: v for k, v in man.items() if k not in ("data",)}), flush=True)
     if cap is not None:

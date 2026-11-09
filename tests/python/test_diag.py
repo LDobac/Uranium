@@ -317,11 +317,46 @@ def test_diag_chain_on_synthetic_shards(tiny_config, shards, tmp_path, kind, mon
     assert main(["diag", "summary", *args, "--out", str(tmp_path / "summary.json")]) == 0
     s = json.loads((tmp_path / "summary.json").read_text())
     assert s["schema"] == SCHEMA and validate(s) == [] and s["checkpoint_sha256"] == ckpt.policy_version(ck)
+    assert {"spatial.s8.const", "spatial.pool.const"} <= set(s["dead_channels"]) and s["dead_channels"]["spatial.s8.const"]["dtype"] == "float32"
+    # the order ids the focus tokens carried, per race, in the manifest
+    assert man["focus_orders"]["Z"]["unfinished"] == {str(tb.order_id("IncompleteBuilding")): int((R["foc_comp"] < 0.5).sum())}
+    assert man["cf_orders"]["Z"]["unfinished"] == tb.order_id("IncompleteBuilding")
+
+    # S7: chunks that start at or after --act-until get no probabilities, and intervene refuses a
+    # window past it
+    late = tmp_path / "late"
+    assert main(["diag", "dump", "--checkpoint", str(ck), "--out", str(late), "--splits", "train", "--cf", "--act-until", "40", "--row-until", "1e9", *common]) == 0
+    R2, _, _, _ = load(late)
+    chunk_start = np.zeros(len(R2["frame"]))
+    for i, st in enumerate(R2["step"]):  # rows are written chunk by chunk, step 0 first
+        chunk_start[i] = R2["frame"][i] if st == 0 else chunk_start[i - 1]
+    lates = chunk_start >= 40
+    assert lates.any() and (~lates).any()
+    assert np.isnan(R2["pb"][lates]).all() and np.isfinite(R2["pb"][~lates]).all()
+    with pytest.raises(SystemExit, match="act_until"):
+        main(["diag", "intervene", str(late)])
 
 
 def test_summary_schema_validation():
     s = build("p")
     assert validate(s) == []
-    bad = dict(s, schema="x", gain_method="stack", dead_channels={"spatial.s8": {"pos_frac": 0.0, "never_active": 9, "channels": 8}})
+    bad = dict(s, schema="x", gain_method="stack", dead_channels={"spatial.s8": {"pos_frac": 0.0, "never_active": 9, "channels": 8},
+                                                                    "spatial.s8.const": {"const": 9, "channels": 8, "threshold": 1e-4, "dtype": "float32"}})
     errs = validate(bad)
-    assert any("schema" in e for e in errs) and any("gain_method" in e for e in errs) and any("dead_channels" in e for e in errs)
+    assert any("schema" in e for e in errs) and any("gain_method" in e for e in errs)
+    assert "dead_channels.spatial.s8" in errs and "dead_channels.spatial.s8.const" in errs
+
+
+def test_summary_inputs_must_be_one_checkpoint():
+    """S6: inputs of different checkpoints are refused; the spatial entry is picked by sha256."""
+    entry = lambda sha: {"sha256": sha, "points": {"spatial.s8": {"pos_frac": 0.0, "never_active": 8, "channels": 8, "elements": 64}}}  # noqa: E731
+    spatial = {"backend": "cpu", "precision": "f32", "checkpoints": {"a": entry("aa"), "b": entry("bb")}}
+    probes = {"dump": {"checkpoint": "b", "checkpoint_sha256": "bb"}, "gain_method": "resid", "races": {}}
+    s = build("p", probes=probes, spatial=spatial)
+    assert s["checkpoint_sha256"] == "bb" and validate(s) == []
+    with pytest.raises(ValueError, match="different checkpoints"):
+        build("p", probes=probes, intervene={"dump": {"checkpoint": "a", "checkpoint_sha256": "aa"}, "races": {}})
+    with pytest.raises(ValueError, match="no checkpoint with sha256"):
+        build("p", probes={"dump": {"checkpoint_sha256": "cc"}, "races": {}}, spatial=spatial)
+    with pytest.raises(ValueError, match="2 checkpoints"):
+        build("p", spatial=spatial)

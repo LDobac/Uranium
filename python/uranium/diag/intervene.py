@@ -86,6 +86,8 @@ def run(a) -> int:
     if "early" not in passes:
         raise SystemExit(f"{a.dump}: dumped without --cf")
     w0, w1 = (float(x) for x in a.window.split(","))
+    if w1 > float(man["act_until"]):
+        raise SystemExit(f"--window ends at {w1:g}, after the dump's model passes (act_until {man['act_until']:g}): dump again with a later --act-until")
     gt = game_table(R, games)
     rng = np.random.default_rng(a.seed)
     order = np.lexsort((R["frame"], R["game"]))

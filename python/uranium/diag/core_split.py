@@ -65,7 +65,7 @@ def gate_split(gate, x, y):
 def run(a) -> int:
     import torch
 
-    from uranium import ckpt
+    from uranium import _core, ckpt
     from uranium.diag.dump import load
     from uranium.diag.probes import game_table, select_rows
 
@@ -75,8 +75,9 @@ def run(a) -> int:
     cdir = a.checkpoint or man.get("checkpoint")
     if not cdir or str(cdir).startswith("<shared>"):
         raise SystemExit("core-split: pass --checkpoint (the manifest's path is redacted)")
-    net, _ = ckpt.load_model(Path(cdir), torch.device("cpu"))
-    if ckpt.policy_version(Path(cdir)) != man.get("checkpoint_sha256"):
+    cdir = Path(_core.resolve_checkpoint(str(cdir)))
+    net, _ = ckpt.load_model(cdir, torch.device("cpu"))
+    if ckpt.policy_version(cdir) != man.get("checkpoint_sha256"):
         raise SystemExit("core-split: --checkpoint is not the dump's checkpoint (sha256 differs)")
     gt = game_table(R, games)
     rng = np.random.default_rng(a.seed)

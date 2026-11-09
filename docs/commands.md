@@ -127,14 +127,15 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
   - 판마다 순환 상태를 이어 한 번 돈다. 행 특징과 정답은 `--row-until`(기본 6:00) 전까지 남긴다. 모델 pass와 활성값은 `--act-until`(기본 4:00) 전이고, 활성값은 적 기준 건물 토큰이 있는 행만 남긴다.
   - 기준 건물: 테란 배럭, 프로토스 게이트웨이, 저그 스포닝 풀. 적 종족은 첫 행의 privileged 일꾼·본진 수로 정한다.
   - 지점: 토큰, e_pool, sp_pool, c, h_t, GTrXL 하위 지점(`gate`: x_in, 층마다 a·g1·f·out. `full`은 core_in, a_pre, f_pre도).
-  - `--cf`: 판 전체 반사실 pass 6개를 더한다(착공 이름·늦음, 최대 관측 수 ±1 스칼라만, ±1 스칼라+토큰). 각 pass는 자기 순환 상태를 쓴다.
+  - `--cf`: 판 전체 반사실 pass 6개를 더한다(이른 착공·늦은 착공, 최대 관측 수 ±1 스칼라만, ±1 스칼라+토큰). 각 pass는 자기 순환 상태를 쓴다. 미완성 건물의 명령 id는 종족별 관측값(`UNFINISHED_ORDER`)을 쓰고, 실제 관측 분포를 manifest `focus_orders`에 남긴다. `--act-until` 뒤에 시작하는 chunk의 확률은 비워 둔다(`intervene`은 그보다 늦은 창을 거부한다).
   - 출력: `rows_pNNN.npz`, `acts_pNNN.npz`, `games.json`, `manifest.json`(체크포인트 sha256 포함, 공용 드라이브 경로는 `<shared>/...`).
 - 회귀: `python -m uranium diag probes <dump> [--races T,P,Z] [--stages token,e_pool,sp_pool,c,x_in,L1.g1,L1.out,h,hc] [--gain resid|joint] [--boot 500] [--cap 0] [--no-mlp]`.
   - 종족별로 따로 낸다. 정답은 HP 비율, 착공 시각, 러시·운영 분류, 적 최대 관측 수, 3:00 전 기준 건물 2개다.
   - 지점마다 ridge와 MLP(64), 판 단위 5겹 교차검증, 판 bootstrap 신뢰구간, 정답 섞기 대조군, 방해 변수 기준선을 낸다.
   - "방해 변수 대비 향상"은 기본 `resid`다. 방해 변수 ridge를 먼저 맞추고, 그 잔차에 지점 ridge를 맞춘다(벌점 따로). `joint`는 [지점, 방해 변수]를 한 ridge로 맞추는 예전 저그 방식이다(`python/uranium/diag/probe.py`).
-- 반사실 개입: `python -m uranium diag intervene <dump(--cf)> [--window 2160,5760]`. 1:30~4:00 마스크 가능 step에서 판마다 P(벙커 ≥ 1), 마린 기대 주문 수, 두 번째 배럭 P를 낸다. 착공 이름 − 늦음, 개수 +1 − −1의 평균과 판 bootstrap 구간을 낸다.
-- 죽은 채널: `python -m uranium diag spatial --checkpoint <ckpt>... (--dataset|--shards)... --out <json> [--split val] [--batches 2] [--skip-batches 2] [--precision auto|f32]`. 공간 단계(stem·stride-2 conv·ResBlock 안팎·bottleneck·s8), 엔티티 FFN, 헤드 ResMlp, 코어 FFN마다 0보다 큰 비율과 한 번도 안 켜진 채널 수를 낸다. 같은 계산을 `python/uranium/model/monitor.py`(`relu_stats`, `ReluMonitor`)로 학습기에서도 쓸 수 있다.
+- 반사실 개입: `python -m uranium diag intervene <dump(--cf)> [--window 2160,5760]`. 1:30~4:00 마스크 가능 step에서 판마다 P(벙커 ≥ 1), 마린 기대 주문 수, 두 번째 배럭 P를 낸다. 이른 착공 − 늦은 착공, 개수 +1 − −1의 평균과 판 bootstrap 구간을 낸다.
+- 죽은 채널(032-R25): `python -m uranium diag spatial --checkpoint <ckpt> [--checkpoint <ckpt> ...] (--dataset|--shards)... --out <json> [--split val] [--batches 2] [--skip-batches 2] [--precision auto|f32] [--const-threshold 1e-4]`. 공간 단계(stem·stride-2 conv·ResBlock 안팎·bottleneck·s8), 엔티티 FFN, 헤드 ResMlp, 코어 FFN마다 0보다 큰 비율(`pos`)과 한 번도 안 켜진 채널 수(`dead`)를 낸다. `S8` 채널과 `s_pool` 차원 중 측정 묶음 안 표준편차가 문턱(AMB-041-14) 아래인 수(`const`)와 정밀도도 낸다(bf16 autocast에서는 반올림 잡음이 1e-4 근처일 수 있다).
+  - 학습기 연동(041-R25·042-R21)은 `python/uranium/model/monitor.py`의 `relu_stats(points="spatial")`·`packed`(열 순서 `SPEC_COLUMNS`)를 쓴다. 계약(update 전 s0, 상태 저장 안 함, no_grad·eval, RNG 미사용, 032-AC15)은 그 파일 머리말에 있다.
 - 코어 분해: `python -m uranium diag core-split <dump> --checkpoint <ckpt>`. 미완성 기준 건물 행에서 지점별 HP R²를 낸다. GRU 게이트마다 (1−z)·x와 z·h~로 나눈 분산 비율과 R²를 내고, 변수별 x_in→h_t 잔존 비율도 낸다.
 - 요약: `python -m uranium diag summary --point <경로 지점> [--probes <json>] [--intervene <json>] [--spatial <json>] [--core-split <json>] --out <json>`. 측정 프로토콜이 지점마다 남기는 스키마 `uranium.diag.summary/1`이다(`python/uranium/diag/summary.py`).
 

@@ -10,10 +10,13 @@ Gain over nuisance (one definition, `GAIN_METHODS`):
 - `joint`: one ridge on [stage, nuisance] with a single penalty (the earlier Zerg run, 10.1). A
   strong penalty for a wide stage also shrinks the nuisance, so the gain can go negative.
 The two earlier workers used one each (10.2.3 note); `resid` is the default.
+
+Confidence intervals resample games of the out-of-fold predictions: they cover the sampling of the
+evaluated games only, not the variance of refitting the probe on other training games. The cue
+regression R² of 041-R24's comparison runs and 050-R9's lineage points comes from here.
 """
 
 import numpy as np
-import torch
 
 ALPHAS = [1e-1, 1e0, 1e1, 1e2, 1e3, 1e4, 1e5]
 ALPHAS_RESID = ALPHAS + [1e6, 1e7, 1e9]  # the top values switch the stage off (gain 0)
@@ -95,6 +98,8 @@ def ridge_cv_multi(x, Y, groups, fold):
         err = np.zeros((len(ALPHAS), Y.shape[1]))
         for i in range(3):
             a, b = inner != i, inner == i
+            if not a.any() or not b.any():
+                continue
             xa, xb = standardize(xtr[a], xtr[b])
             err += ((ridge_fit_pred(xa, Y[tr][a], xb, ALPHAS) - Y[tr][b][None]) ** 2).mean(1)
         best = err.argmin(0)
@@ -133,6 +138,8 @@ def ridge_cv_gain(x, nz, y, groups, fold, method: str = "resid"):
 def mlp_cv(x, y, fold, cls: bool, device="cpu", epochs: int = 30, hidden: int = 64, seed: int = 0):
     """Out-of-fold predictions of Linear(64) -> ReLU -> Dropout(0.2) -> Linear(1), AdamW 3e-3,
     batch 2048 (logits for a class target, standardised regression otherwise)."""
+    import torch
+
     dev = torch.device(device)
     pred = np.zeros(len(y))
     for f in range(int(fold.max()) + 1):
