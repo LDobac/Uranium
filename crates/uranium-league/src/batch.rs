@@ -25,6 +25,8 @@ pub struct SegmentGroup {
     /// (terminal) segment. The bootstrap step of a non-terminal segment is real (mask 0, real true).
     pub real: Vec<bool>,
     /// [b*t] 042-R21 ① / 032-R24: the row's step had a privileged summary (`Step::has_privileged`).
+    /// A fill row repeats the segment's last step and copies its flag, so the `aux_priv` mask is
+    /// `real & priv_present` (as the BC host group).
     pub priv_present: Vec<bool>,
     /// [b*t] behaviour log-prob of the taken action (032-R10 joint).
     pub behaviour: Vec<f32>,

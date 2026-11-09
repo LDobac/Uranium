@@ -71,7 +71,7 @@ def test_points_match_direct_computation_032_r25():
     st = relu_stats(net, obs, labels, priv, net.init_state(b), t, points="all")
     sp_ = net.spatial
     with torch.no_grad():
-        _, e, sp, _ = net.encode(obs)
+        _, e, sp, _, _ = net.encode(obs)
         spatial = obs["spatial"]
         x = F.relu(sp_.stem(conv_layout(torch.cat([spatial, sp_.scatter_mean(obs, e, spatial.shape[2], spatial.shape[3])], 1))))
         stem = x
@@ -116,7 +116,7 @@ def test_row_mask_drops_rows():
     rows[: t] = True  # the first sequence only
     st = relu_stats(net, obs, labels, priv, net.init_state(b), t, rows=rows, points="all")
     with torch.no_grad():
-        _, _, sp, _ = net.encode(obs)
+        _, _, sp, _, _ = net.encode(obs)
     want = channel_stats(sp["s8"][:t], channel_dim=1)
     assert float(st["spatial.s8"]["pos_frac"]) == pytest.approx(float(want["pos_frac"]))
     assert int(st["spatial.s8"]["elements"]) == int(want["elements"])
@@ -141,7 +141,7 @@ def test_phased_pass_counts_each_row_once():
             st = mon.stats()
         assert mon.core_skipped > 0 and not any(k.startswith("core.") for k in st)
         with torch.no_grad():
-            _, _, sp, _, _ = net._outer_seq_phased(obs, s0, t, 0)
+            _, _, sp, _, _, _ = net._outer_seq_phased(obs, s0, t, 0)
         want = channel_stats(sp["s8"], rows=r, channel_dim=1)
         assert int(st["spatial.s8"]["elements"]) == int(want["elements"])
         assert float(st["spatial.s8"]["pos_frac"]) == pytest.approx(float(want["pos_frac"]))

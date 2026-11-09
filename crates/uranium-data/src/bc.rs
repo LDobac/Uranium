@@ -81,7 +81,10 @@ pub struct AuxWeights {
 }
 
 impl AuxWeights {
+    /// Also refuses an empty `[aux]` table: it would put `"aux": {}` in the B-3 fingerprint while
+    /// training the same as no table.
     pub fn check(&self) -> Result<()> {
+        anyhow::ensure!(self.privileged.is_some() || self.jepa.is_some(), "[aux] has neither priv nor jepa: remove the empty table (041-R23)");
         for (k, v) in [("priv", self.privileged), ("jepa", self.jepa)] {
             if let Some(x) = v {
                 anyhow::ensure!(x.is_finite() && x >= 0.0, "[aux] {k} must be a finite weight >= 0, got {x} (041-R23)");
