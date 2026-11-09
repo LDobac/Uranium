@@ -138,6 +138,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
   - 학습기 연동(041-R25·042-R21)은 `python/uranium/model/monitor.py`의 `relu_stats(points="spatial")`·`packed`(열 순서 `SPEC_COLUMNS`)를 쓴다. 계약(update 전 s0, 상태 저장 안 함, no_grad·eval, RNG 미사용, 032-AC15)은 그 파일 머리말에 있다.
 - 코어 분해: `python -m uranium diag core-split <dump> --checkpoint <ckpt>`. 미완성 기준 건물 행에서 지점별 HP R²를 낸다. GRU 게이트마다 (1−z)·x와 z·h~로 나눈 분산 비율과 R²를 내고, 변수별 x_in→h_t 잔존 비율도 낸다.
 - 요약: `python -m uranium diag summary --point <경로 지점> [--probes <json>] [--intervene <json>] [--spatial <json>] [--core-split <json>] --out <json>`. 측정 프로토콜이 지점마다 남기는 스키마 `uranium.diag.summary/1`이다(`python/uranium/diag/summary.py`).
+- 기본값은 10.1 저그 진단 설정(활성값 4:00까지, 판당 상한 없음)이다. 테란·프로토스 사람 리플레이(10.2.3)는 `dump --act-until 8640 --act-every 4`와 `probes --cap 60 --boot 300`이다. 재현 확인(2026-11-09, Checkpoint 1, 교사 보관분 433판, Linux ROCm 호스트 f32): 미완성 풀 HP R² 토큰 0.991·e_pool 0.868·h_t 0.227(10절 0.99·0.86·0.186, 신뢰구간 안), s8 양수 0%·128/128, `const` S8 128/128·`s_pool` 256/256.
 
 ## 감시·작업자(060-R6, 061-R13~R15)
 - `uranium-train supervise [--hang-minutes 30 --max-restarts 5 --window-minutes 60 --delay-seconds 60 --progress-file <file> --fatal-pattern <regex>... --log <file>] -- <bc|rl 인자>`: 자식은 `URANIUM_PYTHON -m uranium <bc|rl 인자>`다(`.env`에 없으면 시작하지 않는다). 비정상 종료·멈춤이면 같은 run을 재시작한다. 종료 코드 0·130·75(잠금을 얻지 못함: 다른 호스트 잠금, 획득 경쟁에서 짐, 양보 예약)·76(양보)은 재시작하지 않는다. 70(장치 치명 오류, 저장 없이 끝남, 042-R20)은 재시작한다.
