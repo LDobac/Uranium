@@ -1,8 +1,10 @@
-"""`python -m uranium diag spatial`: dead-channel check (reports/jepa_survey.md 10.4). Per checkpoint,
-teacher-forced passes over a few batches of real rows: every ReLU-bearing point's positive fraction
-and never-active channel count (`uranium.model.monitor`: spatial stages incl. the bottleneck / s8,
-entity FFN, head ResMlp, core FFN), plus the spatial convs' weight sums (a filter whose weights sum
-far below zero on a non-negative input is what killed s8)."""
+"""`python -m uranium diag spatial`: dead-channel check (032-R25, reports/jepa_survey.md 10.4). Per
+checkpoint, teacher-forced passes over a few batches of real steps: every ReLU-bearing point's
+positive fraction and never-active channel count (`uranium.model.monitor` with `points="all"`:
+spatial stages incl. the bottleneck / s8, entity FFN, head ResMlp, core FFN), the near-constant S8
+channels and s_pool dimensions (`const`, std below `--const-threshold`), and the spatial convs'
+weight sums (a filter whose weights sum far below zero on a non-negative input is what killed s8).
+The same games for every checkpoint (a fresh stream each)."""
 
 import json
 import time
@@ -23,6 +25,7 @@ def add_args(p) -> None:
     p.add_argument("--skip-batches", type=int, default=2, help="batches run first without recording (recurrent state warm-up)")
     p.add_argument("--lanes-per-group", type=int, default=8)
     p.add_argument("--no-inner", action="store_true", help="skip the ResBlocks' inner ReLU (one conv recomputed per block)")
+    p.add_argument("--const-threshold", type=float, default=1e-4, help="032-R25 ③ const: std below this (AMB-041-14)")
     p.add_argument("--out", required=True, help="output JSON")
     p.add_argument("--maps-dir", help="map folder (else from .env)")
     p.add_argument("--synthetic-maps", action="store_true", help="tests: synthetic maps")
@@ -49,18 +52,20 @@ def run(a) -> int:
     from uranium import _core, ckpt
     from uranium.device import autocast, configure, resolve
     from uranium.diag.dump import redact
+    from uranium.diag.stream import lane_groups, real_rows
     from uranium.model import to_obs
     from uranium.model.monitor import ROWS_KEY, ReluMonitor, stats_to_host
 
     dirs = [str(p) for p in _core.dataset_dirs(a.dataset, a.shards)]
     backend, device, precision = resolve(a.backend)
     configure(backend)
+    torch.backends.cudnn.benchmark = False  # a short read-only pass: no per-shape search
     cfg = json.loads(_core.bc_config(a.config, "s1")[0])
     T, LANES = cfg["seq_len"], cfg["lanes"]
     G = min(a.lanes_per_group, LANES)
+    prec = "f32" if a.precision == "f32" else precision
     res = {"data": [redact(d) for d in dirs], "split": a.split, "batches": a.batches, "skip_batches": a.skip_batches, "backend": backend,
-           "precision": "f32" if a.precision == "f32" else precision, "checkpoints": {}}
-    ngroups = -(-LANES // G)
+           "precision": prec, "const_threshold": a.const_threshold, "checkpoints": {}}
     for spec in a.checkpoint:
         t0 = time.time()
         cdir = Path(_core.resolve_checkpoint(spec))
@@ -70,25 +75,15 @@ def run(a) -> int:
             p.requires_grad_(False)
         # the same games for every checkpoint: a fresh stream each, one lane group in memory at a time
         stream = _core.EvalStream(a.config, dirs, split=a.split, games=None, seed=1, has_open=False, maps_dir=a.maps_dir, synthetic_maps=a.synthetic_maps)
-        states = [None] * ngroups
-        mon = ReluMonitor(net, inner=not a.no_inner)
+        states = [None] * -(-LANES // G)
         rows = 0
-        bi = 0
-        while bi < a.skip_batches + a.batches and (b := stream.next()) is not None:
-            record = bi >= a.skip_batches
-            bi += 1
-            if record and not mon.handles:
-                mon.__enter__()
-            steps = b.lane_steps()
-            for gi in range(ngroups):
-                s, e = gi * G, min((gi + 1) * G, LANES)
-                if all(steps[l] == 0 for l in range(s, e)):
-                    states[gi] = None
-                    continue
-                hg = b.group(s, e, T, cfg["pad_entities"], net.cfg.heads.max_select)
-                m = np.zeros(hg["b"] * T, bool)
-                for li in range(hg["b"]):
-                    m[li * T:li * T + steps[s + li]] = True
+        recording = False
+        with ReluMonitor(net, inner=not a.no_inner, points="all", threshold=a.const_threshold) as mon:
+            for bi, b, gi, s, steps, hg in lane_groups(stream, LANES, G, T, cfg["pad_entities"], net.cfg.heads.max_select, states, a.skip_batches + a.batches):
+                if bi >= a.skip_batches and not recording:
+                    mon.reset()  # the warm-up batches only carry the recurrent state
+                    recording = True
+                m = real_rows(hg, steps, s, T)
                 keep = np.asarray(hg["keep"]).astype(bool)
                 obs = to_obs(hg, device)
                 obs[ROWS_KEY] = torch.as_tensor(m, device=device)
@@ -99,17 +94,21 @@ def run(a) -> int:
                     out = net.forward_seq(obs, net.labels(hg, device), torch.as_tensor(hg["privileged"]).to(device, torch.float32), s0, T)
                 states[gi] = out["state"]
                 del out, obs
-                if record:
+                if recording:
                     rows += int(m.sum())
-        stream.finish()
-        st = stats_to_host(mon.stats())
-        mon.close()
-        print(f"[{bi} batches, {a.skip_batches} warm-up] {time.time() - t0:.1f}s", flush=True)
-        res["checkpoints"][redact(cdir)] = {"sha256": ckpt.policy_version(cdir), "rows": rows, "points": st, "weights": weight_stats(net)}
-        s8 = st.get("spatial.s8", {})
-        print(f"{redact(cdir)}: s8 pos_frac {s8.get('pos_frac', float('nan')):.6f} never_active {s8.get('never_active')}/{s8.get('channels')} rows {rows}", flush=True)
+            stream.finish()
+            if not recording:
+                raise SystemExit(f"{spec}: fewer than {a.skip_batches + 1} batches in the split")
+            st = stats_to_host(mon.stats())
+        print(f"[{a.skip_batches} warm-up + {a.batches} batches] {time.time() - t0:.1f}s", flush=True)
+        res["checkpoints"][redact(cdir)] = {"sha256": ckpt.policy_version(cdir), "rows": rows, "precision": prec, "points": st, "weights": weight_stats(net)}
+        s8 = st["spatial.s8"]
+        c8, cp = st["spatial.s8.const"], st["spatial.pool.const"]
+        print(f"{redact(cdir)}: s8 pos_frac {s8['pos_frac']:.6f} never_active {s8['never_active']}/{s8['channels']} | const s8 {c8['const']}/{c8['channels']} "
+              f"pool {cp['const']}/{cp['channels']} (std < {a.const_threshold:g}, {c8['dtype']}) rows {rows}", flush=True)
         for k, v in st.items():
-            print(f"  {k:28} pos {v['pos_frac']:.4f} never {v['never_active']}/{v['channels']}")
+            if "pos_frac" in v:
+                print(f"  {k:28} pos {v['pos_frac']:.4f} never {v['never_active']}/{v['channels']}")
         del net
         if device.type == "cuda":
             torch.cuda.empty_cache()

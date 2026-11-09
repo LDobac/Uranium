@@ -199,10 +199,17 @@ class ResBlock(nn.Module):
         self.c1 = conv3x3(c, c, 1)
         self.c2 = conv3x3(c, c, 1)
 
+    def inner_act(self, x):
+        """The block's inner ReLU output relu(c1(x)) (032-R25 ①, read by `uranium.model.monitor`;
+        one definition for the forward and the monitor)."""
+        if x.shape[1] <= RES_BMM_MAX_CH:
+            return F.relu(conv_wgrad(self.c1, x))
+        return F.relu(self.c1(x))
+
     def forward(self, x):
         if x.shape[1] <= RES_BMM_MAX_CH:
-            return F.relu(x + conv_wgrad(self.c2, F.relu(conv_wgrad(self.c1, x))))
-        return F.relu(x + self.c2(F.relu(self.c1(x))))
+            return F.relu(x + conv_wgrad(self.c2, self.inner_act(x)))
+        return F.relu(x + self.c2(self.inner_act(x)))
 
 
 class GruCell(nn.Module):
