@@ -371,7 +371,8 @@ ck1_checkpoint = "checkpoints/bc-dagger-r1/ckpt-1137"
 # T1 300 of Checkpoint 1 ran on the Windows host (eval/t1-ck1-20261108).
 t1_platforms = ["windows"]
 metrics = ["val500", "rush", "macro", "tvz", "t1", "cue_diag", "dead_channels"]
-optional = ["per_action", "t0_100"]
+# test: 050-R9 point table (Checkpoint 1 counterpart model: test 1,199).
+optional = ["per_action", "t0_100", "test"]
 ck1_outputs = { val500 = "artifacts/bc_e2_val/val500/bc-dagger-r1__ckpt-1137.json", rush = "eval/dagger-test-r1-20261107", macro = "eval/dagger-test-r1-20261107", tvz = "eval/dagger-tvz-r1-20261108", t1 = "eval/t1-ck1-20261108" }
 
 [[point]]
