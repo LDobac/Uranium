@@ -84,7 +84,7 @@ def test_location_out_mulsum_equals_conv(group, monkeypatch):
         net = tiny_net()
         h = net.heads.location
         assert h.out_mode == mode
-        _, _, sp, _ = net.encode(to_obs(group, "cpu"))
+        _, _, sp, _, _ = net.encode(to_obs(group, "cpu"))
         ar = torch.randn(sp["s8"].shape[0], net.cfg.heads.ar, generator=torch.Generator().manual_seed(1))
         y = h(ar, sp)
         y.square().sum().backward()
@@ -205,7 +205,7 @@ def test_switches_fall_back_on_other_layer_shapes(group, monkeypatch):
         net = tiny_net()
         torch.manual_seed(9)
         net.heads.location.out = nn.Conv2d(32, 1, 3, padding=1)
-        _, _, sp, _ = net.encode(to_obs(group, "cpu"))
+        _, _, sp, _, _ = net.encode(to_obs(group, "cpu"))
         ar = torch.randn(sp["s8"].shape[0], net.cfg.heads.ar, generator=torch.Generator().manual_seed(1))
         outs[mode] = net.heads.location(ar, sp).detach()
     assert torch.equal(outs["mulsum"], outs["conv"])

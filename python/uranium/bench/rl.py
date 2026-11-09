@@ -129,6 +129,9 @@ class SyntheticSegments:
         g["pseudo_scale"] = np.ones((len(lanes), 2), dtype=self.dtypes["pseudo_scale"])
         # Queue lanes only, no self-imitation buffer lanes (042-R16, AMB-042-17).
         g["sil_return"] = np.full(len(lanes), np.nan, dtype=self.dtypes["sil_return"])
+        # 042-R21 ①: whole segments (every row a real step) with a privileged summary each.
+        g["real"] = np.ones(len(lanes) * t, dtype=self.dtypes["real"])
+        g["priv_present"] = np.ones(len(lanes) * t, dtype=self.dtypes["priv_present"])
         g["state0"] = [x["state0"] for x in lanes]
         g |= {"b": len(lanes), "t": t, "n": n}
         return g

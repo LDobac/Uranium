@@ -39,7 +39,11 @@ pub struct Step {
     /// win, build, units, value channels (033-R3; build / units carry r_scout / r_survive in the
     /// 033-R11 `"scout"` mode); known once the next decision (or the end) arrives.
     pub reward: [f32; 4],
+    /// The last privileged summary of the game so far, zeros before the first one arrives.
     pub privileged: PrivilegedTensors,
+    /// 032-R24 / 042-R21 ①: a privileged summary had arrived (`privileged` is not the zero fill),
+    /// so the step can be an `aux_priv` target.
+    pub has_privileged: bool,
     pub version: u64,
 }
 
@@ -349,6 +353,8 @@ pub struct TrajectoryObserver {
     /// State before the step that will start the next segment.
     next_state0: Option<HostState>,
     privileged: PrivilegedTensors,
+    /// A privileged summary arrived in this game (042-R21 ① presence mask).
+    has_privileged: bool,
     reward_sum: [f32; 4],
     decisions: u64,
     enemy_race: Option<uranium_proto::Race>,
@@ -385,7 +391,7 @@ impl TrajectoryObserver {
     pub fn new(agent: usize, game_id: u64, seq_len: usize, queue: Arc<SegmentQueue>, results: Sender<GameResult>) -> Self {
         assert!(seq_len >= 2, "segments overlap by one step");
         let privileged = PrivilegedTensors { summary: vec![0.0; uranium_env::features::extract::dims().privileged()] };
-        Self { agent, game_id, seq_len, queue, results, steps: Vec::new(), state0: None, next_state0: None, privileged, reward_sum: [0.0; 4], decisions: 0, enemy_race: None, hold: None, r_value_policy: true, pseudo: PseudoMode::Z, pseudo_scale: [1.0, 1.0], scout_sum: 0.0, survive_sum: 0.0, scout: None, seg_frame: 0, copies: None }
+        Self { agent, game_id, seq_len, queue, results, steps: Vec::new(), state0: None, next_state0: None, privileged, has_privileged: false, reward_sum: [0.0; 4], decisions: 0, enemy_race: None, hold: None, r_value_policy: true, pseudo: PseudoMode::Z, pseudo_scale: [1.0, 1.0], scout_sum: 0.0, survive_sum: 0.0, scout: None, seg_frame: 0, copies: None }
     }
 
     /// 042-R16 (AMB-042-17): `sink` gets a copy of each non-terminal segment of this game before
@@ -444,6 +450,7 @@ impl SessionObserver for TrajectoryObserver {
 
     fn on_privileged(&mut self, p: &uranium_proto::PrivilegedSummary) {
         self.privileged = privileged(p);
+        self.has_privileged = true;
     }
 
     fn on_decision(&mut self, d: &Decision<'_>) {
@@ -473,6 +480,7 @@ impl SessionObserver for TrajectoryObserver {
             head_log_prob: d.head_log_prob,
             reward: [0.0; 4],
             privileged: self.privileged.clone(),
+            has_privileged: self.has_privileged,
             version: d.version,
         };
         self.steps.push(step);
@@ -608,6 +616,27 @@ pub(crate) mod tests {
         assert_eq!(r.enemy_race, Some(uranium_proto::Race::Zerg));
     }
 
+    /// 042-R21 ① / 032-R24: steps before the game's first privileged summary have no summary
+    /// (zero fill, `has_privileged` false); the learner batch hands it on as `priv_present`, and
+    /// `real` is false only on the fill rows of a short segment.
+    #[test]
+    fn privileged_presence_reaches_the_batch_042_r21() {
+        let q = Arc::new(SegmentQueue::new(16));
+        let (tx, _rx) = mpsc::channel();
+        let mut o = TrajectoryObserver::new(0, 7, 4, q.clone(), tx);
+        decide(&mut o, 0, 0.0);
+        o.on_privileged(&uranium_proto::PrivilegedSummary::default());
+        decide(&mut o, 1, 0.0);
+        decide(&mut o, 2, 0.0);
+        o.on_end(RewardParts::default(), Some(Outcome::Win));
+        let seg = q.try_take(1, 0, 100).unwrap().remove(0);
+        assert_eq!(seg.steps.iter().map(|s| s.has_privileged).collect::<Vec<_>>(), vec![false, true, true]);
+        assert!(seg.steps[0].privileged.summary.iter().all(|&x| x == 0.0));
+        let g = crate::batch::group(std::slice::from_ref(&seg), 4, 12);
+        assert_eq!(g.priv_present, vec![false, true, true, true]);
+        assert_eq!(g.real, vec![true, true, true, false]);
+    }
+
     /// 033 / 042 (AMB-042-14): every segment of a game carries its r_value policy flag, and the
     /// learner batch gets it per lane; the rewards (r_value included) are kept as they are.
     #[test]
@@ -733,6 +762,7 @@ pub(crate) mod tests {
                 head_log_prob: [0.0; HEADS],
                 reward: [0.0; 4],
                 privileged: PrivilegedTensors { summary: vec![] },
+                has_privileged: false,
                 version,
             }],
             state0: HostState::default(),

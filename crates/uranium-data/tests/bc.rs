@@ -2,7 +2,7 @@
 //! fingerprints and the game order (moved from uranium-train with the Burn trainer's removal,
 //! AMB-000-4; the update tests are tests/python/test_bc.py).
 
-use uranium_data::bc::{Batch, BcConfig, DataConfig, Feeder, HeadWeights, Prefetch, ValueWeights};
+use uranium_data::bc::{AuxWeights, Batch, BcConfig, DataConfig, Feeder, HeadWeights, MonitorConfig, Prefetch, ValueWeights};
 use uranium_data::data::{MapStore, ShardSource, VecSource, epoch_updates, prepare};
 use uranium_env::actions::LOC_CLASSES;
 use uranium_env::features::CELLS;
@@ -288,6 +288,44 @@ fn labeler_v1_v2_train_the_same_except_unknown_steps_040() {
     assert_eq!((v.labeled, v.invalid, v.unknown), (v1.steps.len() - 1, 0, 1));
 }
 
+/// 032 §2.8 / 041-R23 / 041-AC6: the host group's `real` mask is false exactly on chunk padding,
+/// apart from the label weights (an `unknown`-label step is weight 0 but real); `priv_present` is
+/// false exactly where the shard step has no privileged summary (its `privileged` row is the zero
+/// fill); a drained lane (evaluation) has no real row.
+#[test]
+fn group_real_and_privileged_masks_041_r23() {
+    use uranium_env::features::label::UNKNOWN_ACTION;
+    let mut short = game_len(3, 1);
+    short.steps[1].privileged = None;
+    short.steps[2].action_label.action = UNKNOWN_ACTION;
+    let long = game_len(16, 2);
+    let cfg = tiny_bc(1, 0);
+    let (lanes, t) = (cfg.lanes, cfg.seq_len);
+    let mut f = feeder(&cfg);
+    let mut src = VecSource(vec![short, long].into());
+    let b = f.next_batch(&mut src, None).unwrap().unwrap();
+    let g = b.group(0..lanes, t, 0, 12);
+    let steps = b.lane_steps();
+    let s = steps.iter().position(|&n| n == 3).expect("the short game's lane");
+    let rows = |v: &[bool], l: usize| v[l * t..(l + 1) * t].to_vec();
+    assert_eq!(rows(&g.real, s), [true, true, true, false]);
+    assert_eq!(rows(&g.priv_present, s), [true, false, true, true], "the padding row repeats step 2 (has a summary)");
+    assert_eq!(&g.weights[s * t..(s + 1) * t], &[1.0, 1.0, 0.0, 0.0], "unknown label: weight 0 but real");
+    let p = g.privileged.p;
+    assert!(g.privileged.summary[(s * t + 1) * p..(s * t + 2) * p].iter().all(|&x| x == 0.0), "no summary: zero fill");
+    assert_eq!(rows(&g.real, 1 - s), [true; 4]);
+    assert_eq!(rows(&g.priv_present, 1 - s), [true; 4]);
+    // A drained lane takes another lane's first step at weight 0: no real row.
+    let mut f = feeder(&cfg);
+    f.drain = true;
+    let mut src = VecSource(vec![game_len(2, 3)].into());
+    let b = f.next_batch(&mut src, None).unwrap().unwrap();
+    let g = b.group(0..lanes, t, 0, 12);
+    let e = b.lane_steps().iter().position(|&n| n == 0).expect("a drained lane");
+    assert_eq!(rows(&g.real, e), [false; 4]);
+    assert_eq!(rows(&g.real, 1 - e), [true, true, false, false]);
+}
+
 fn tiny_bc(micro_lanes: usize, pad_entities: usize) -> BcConfig {
     BcConfig {
         lanes: 2,
@@ -307,6 +345,8 @@ fn tiny_bc(micro_lanes: usize, pad_entities: usize) -> BcConfig {
         value: ValueWeights { win: 0.5, win_open: None },
         data: DataConfig { z_drop: 0.0, augment: false, seed: 1, checkpoint_every: 1000, checkpoint_minutes: 0, enemy_race_mask: 0.0, subsample: None },
         keep_checkpoints: None,
+        aux: None,
+        monitor: None,
     }
 }
 
@@ -330,6 +370,8 @@ fn warmup_cosine_schedule_041_r3() {
         value: ValueWeights { win: 0.5, win_open: None },
         data: DataConfig { z_drop: 0.25, augment: true, seed: 1, checkpoint_every: 1, checkpoint_minutes: 0, enemy_race_mask: 0.05, subsample: None },
         keep_checkpoints: None,
+        aux: None,
+        monitor: None,
     };
     assert!((cfg.lr_at(0, 1.0) - 1e-4).abs() < 1e-12);
     assert!((cfg.lr_at(9, 1.0) - 1e-3).abs() < 1e-12);
@@ -778,7 +820,7 @@ fn scan_cache_follows_the_dataset_fingerprint() {
 #[test]
 fn config_fingerprint_fields_are_classified_b3() {
     use uranium_data::bc::EXECUTION_ONLY;
-    const RESULT: [&str; 16] = [
+    const RESULT: [&str; 17] = [
         "lanes",
         "seq_len",
         "lr",
@@ -795,12 +837,19 @@ fn config_fingerprint_fields_are_classified_b3() {
         "data.seed",
         "data.enemy_race_mask",
         "data.subsample",
+        "aux",
     ];
     let mut cfg = tiny_bc(1, 0);
-    // 041-R21: an absent subsample is left out of the fingerprint JSON (older configs keep theirs).
+    // 041-R21 / 041-R23: an absent subsample or [aux] is left out of the fingerprint JSON and of
+    // the config JSON (older configs keep theirs).
     assert!(serde_json::to_value(cfg.results_view()).unwrap().get("subsample").is_none());
+    assert!(serde_json::to_value(cfg.results_view()).unwrap().get("aux").is_none());
+    let json = serde_json::to_value(&cfg).unwrap();
+    assert!(json.get("aux").is_none() && json.get("monitor").is_none(), "041-R23 / R25: absent tables stay out of the config JSON");
     cfg.keep_checkpoints = Some(3);
-    cfg.data.subsample = Some(uranium_data::split::Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()] });
+    cfg.data.subsample = Some(uranium_data::split::Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()], fraction_by_race: None });
+    cfg.aux = Some(AuxWeights { privileged: Some(0.2), jepa: Some(0.1) });
+    cfg.monitor = Some(MonitorConfig { spatial_every: 100 });
     let v = serde_json::to_value(&cfg).unwrap();
     let mut keys: Vec<String> = Vec::new();
     for (k, x) in v.as_object().unwrap() {
@@ -828,8 +877,11 @@ fn config_fingerprint_fields_are_classified_b3() {
     c.keep_checkpoints = None;
     c.data.checkpoint_every = 7;
     c.data.checkpoint_minutes = 3;
+    c.monitor = None;
     assert_eq!(c.fingerprint(), base, "execution-only settings");
-    let changes: [fn(&mut BcConfig); 16] = [
+    c.monitor = Some(MonitorConfig { spatial_every: 7 });
+    assert_eq!(c.fingerprint(), base, "041-R25: [monitor] is execution only");
+    let changes: [fn(&mut BcConfig); 17] = [
         |c| c.lanes += 1,
         |c| c.seq_len += 1,
         |c| c.lr *= 2.0,
@@ -846,6 +898,7 @@ fn config_fingerprint_fields_are_classified_b3() {
         |c| c.data.seed += 1,
         |c| c.data.enemy_race_mask += 0.01,
         |c| c.data.subsample.as_mut().unwrap().fraction = 0.5,
+        |c| c.aux.as_mut().unwrap().jepa = Some(0.3),
     ];
     for (i, f) in changes.iter().enumerate() {
         let mut c = cfg.clone();
@@ -857,6 +910,60 @@ fn config_fingerprint_fields_are_classified_b3() {
         f(&mut c);
         assert_ne!(c.fingerprint(), base, "041-R21: the subsample's sources and presence change the fingerprint");
     }
+    // 041-R26: per-race shares are in the fingerprint when present.
+    let mut c = cfg.clone();
+    c.data.subsample.as_mut().unwrap().fraction_by_race = Some([("P".to_string(), 0.5)].into());
+    assert_ne!(c.fingerprint(), base, "041-R26: fraction_by_race changes the fingerprint");
+    // 041-R23 ①: each [aux] key and the table's presence (a key at 0 is still a key, 041-R23 ④).
+    for f in [|c: &mut BcConfig| c.aux = None, |c: &mut BcConfig| c.aux.as_mut().unwrap().privileged = None, |c: &mut BcConfig| c.aux.as_mut().unwrap().jepa = Some(0.0)] {
+        let mut c = cfg.clone();
+        f(&mut c);
+        assert_ne!(c.fingerprint(), base, "041-R23: [aux] keys and presence change the fingerprint");
+    }
+}
+
+/// 041-AC6 / B-3: the keys added for model 2 (`[aux]`, `[monitor]`, `fraction_by_race`) leave an
+/// existing config's fingerprint byte-identical when absent: Checkpoint 1's S2 config gives the run
+/// identity stored in its train state (releases/checkpoint-1, written before the keys existed).
+#[test]
+fn checkpoint1_fingerprint_unchanged_041_ac6() {
+    use uranium_data::bc::BcStage;
+    let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../releases/checkpoint-1"));
+    let cfg = BcConfig::load(&root.join("config/bc_dagger_r1.toml")).unwrap().for_stage(BcStage::S2);
+    let state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("train_state.json")).unwrap()).unwrap();
+    let want = state["extra"]["run"]["config"].as_str().expect("train_state.json extra.run.config");
+    assert_eq!(cfg.fingerprint(), want);
+    assert!(cfg.aux.is_none() && cfg.monitor.is_none());
+    // The same file with the new tables: [monitor] keeps the fingerprint, [aux] does not.
+    let text = std::fs::read_to_string(root.join("config/bc_dagger_r1.toml")).unwrap();
+    let with = |extra: &str| -> BcConfig {
+        let path = std::env::temp_dir().join(format!("uranium-041-ac6-{}-{}.toml", std::process::id(), extra.len()));
+        std::fs::write(&path, format!("{text}\n{extra}\n")).unwrap();
+        let c = BcConfig::load(&path).unwrap().for_stage(BcStage::S2);
+        std::fs::remove_file(&path).ok();
+        c
+    };
+    let mon = with("[monitor]\nspatial_every = 100");
+    assert_eq!(mon.monitor, Some(MonitorConfig { spatial_every: 100 }));
+    assert_eq!(mon.fingerprint(), want, "041-R25: [monitor] is not in the fingerprint");
+    let aux = with("[aux]\npriv = 0.2\njepa = 0.1");
+    assert_eq!(aux.aux, Some(AuxWeights { privileged: Some(0.2), jepa: Some(0.1) }));
+    assert_ne!(aux.fingerprint(), want, "041-R23: [aux] is in the fingerprint");
+    let json = serde_json::to_value(&aux).unwrap();
+    assert_eq!(json["aux"], serde_json::json!({ "priv": 0.2f32, "jepa": 0.1f32 }), "the Python trainer reads [aux] priv / jepa");
+}
+
+/// 041-R23: `[aux]` weights must be finite and >= 0, and an unknown `[aux]` / `[monitor]` key is
+/// an error (not silently a run without that loss).
+#[test]
+fn aux_and_monitor_tables_are_checked_041_r23() {
+    assert!(AuxWeights { privileged: Some(-0.1), jepa: None }.check().is_err());
+    assert!(AuxWeights { privileged: None, jepa: Some(f32::NAN) }.check().is_err());
+    assert!(AuxWeights { privileged: Some(0.0), jepa: Some(0.1) }.check().is_ok());
+    assert!(toml::from_str::<AuxWeights>("prv = 0.2").is_err());
+    assert!(toml::from_str::<MonitorConfig>("spatial = 100").is_err());
+    assert_eq!(toml::from_str::<AuxWeights>("priv = 0.2").unwrap(), AuxWeights { privileged: Some(0.2), jepa: None });
+    assert_eq!(toml::from_str::<MonitorConfig>("").unwrap(), MonitorConfig { spatial_every: 0 });
 }
 
 /// 041-R21: the empty fine-tune config is config/bc.toml with the fine-tune learning rate
@@ -872,7 +979,7 @@ fn fine_tune_config_041_r21() {
     assert!((ft.lr * ft.s2_lr_scale - 1.5e-5).abs() < 1e-12, "peak {}", ft.lr * ft.s2_lr_scale);
     assert!((ft.min_lr * ft.s2_lr_scale - 1.5e-7).abs() < 1e-14, "floor {}", ft.min_lr * ft.s2_lr_scale);
     assert_eq!(ft.data.seed, 3);
-    assert_eq!(ft.data.subsample, Some(Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()] }));
+    assert_eq!(ft.data.subsample, Some(Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()], fraction_by_race: None }));
     assert!(ft.steps.s2 > 0);
     assert_eq!(ft.steps.s2_warmup, short_stage_warmup(ft.steps.s2));
     let s2 = ft.clone().for_stage(BcStage::S2);
@@ -894,7 +1001,7 @@ fn fine_tune_config_041_r21() {
 fn subsample_keeps_a_share_per_game_041_r21() {
     use uranium_data::data::enemy_race_masked;
     use uranium_data::split::Subsample;
-    let sub = Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()] };
+    let sub = Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()], fraction_by_race: None };
     let meta = |i: u32, src: &str| {
         let mut m = game().meta;
         m.replay_sha256 = format!("{:064x}", u64::from(i).wrapping_mul(0x9E37_79B9_7F4A_7C15));
@@ -911,14 +1018,54 @@ fn subsample_keeps_a_share_per_game_041_r21() {
     other.perspective_slot = 1;
     assert_eq!(sub.keeps(&other, 3), sub.keeps(&metas[0], 3), "both perspectives of a game");
     assert!((0..2_000).all(|i| sub.keeps(&meta(i, "botgen"), 3)), "teacher games are kept whole");
-    let all = Subsample { fraction: 1.0, keep_sources: vec![] };
+    let all = Subsample { fraction: 1.0, keep_sources: vec![], fraction_by_race: None };
     assert!(metas.iter().all(|m| all.keeps(m, 3)));
     // Independent of the race mask drawn from the same hash and seed (other salt).
     let masked = kept.iter().filter(|m| enemy_race_masked(&m.replay_sha256, 3, 0.05)).count() as f64 / kept.len() as f64;
     assert!((0.035..0.065).contains(&masked), "race mask share among kept games {masked}");
-    assert!(Subsample { fraction: 0.0, keep_sources: vec![] }.check().is_err());
-    assert!(Subsample { fraction: 1.5, keep_sources: vec![] }.check().is_err());
+    assert!(Subsample { fraction: 0.0, keep_sources: vec![], fraction_by_race: None }.check().is_err());
+    assert!(Subsample { fraction: 1.5, keep_sources: vec![], fraction_by_race: None }.check().is_err());
     assert!(sub.check().is_ok());
+}
+
+/// 041-R26 / 041-AC6: per-enemy-race shares (`fraction_by_race`) keep about that share of each
+/// race's games by the same per-game hash rule (deterministic, both TvT perspectives together),
+/// other races keep `fraction`, the kept sources stay whole, and an absent field is the 041-R21
+/// subsample unchanged.
+#[test]
+fn subsample_by_enemy_race_041_r26() {
+    use uranium_data::split::{Subsample, enemy_race};
+    assert_eq!((enemy_race("TvZ"), enemy_race("TvT"), enemy_race("T")), (Some("Z"), Some("T"), None));
+    let by = Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()], fraction_by_race: Some([("T".to_string(), 0.5), ("Z".to_string(), 0.1)].into()) };
+    let plain = Subsample { fraction_by_race: None, ..by.clone() };
+    let meta = |i: u32, src: &str, mu: &str| {
+        let mut m = game().meta;
+        m.replay_sha256 = format!("{:064x}", u64::from(i).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        m.src = src.into();
+        m.matchup = mu.into();
+        m
+    };
+    for (mu, want) in [("TvT", 0.5), ("TvP", 0.25), ("TvZ", 0.1)] {
+        let metas: Vec<GameMeta> = (0..20_000).map(|i| meta(i, "community", mu)).collect();
+        let share = metas.iter().filter(|m| by.keeps(m, 3)).count() as f64 / metas.len() as f64;
+        assert!((share - want).abs() < 0.01, "{mu}: kept share {share}, want {want}");
+        assert!(metas.iter().all(|m| by.keeps(m, 3) == by.keeps(m, 3)), "deterministic");
+        assert!(metas.iter().all(|m| by.fraction_of(m) == want));
+        assert!((0..500).all(|i| by.keeps(&meta(i, "botgen", mu), 3)), "teacher games are kept whole");
+    }
+    let tvt = meta(7, "community", "TvT");
+    let mut other = tvt.clone();
+    other.perspective_slot = 1;
+    assert_eq!(by.keeps(&other, 3), by.keeps(&tvt, 3), "both perspectives of a TvT game");
+    let metas: Vec<GameMeta> = (0..2_000).map(|i| meta(i, "community", "TvP")).collect();
+    assert!(metas.iter().all(|m| plain.keeps(m, 3) == Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()], fraction_by_race: Some([("P".to_string(), 0.25)].into()) }.keeps(m, 3)));
+    assert!(by.check().is_ok());
+    assert!(Subsample { fraction_by_race: Some([("X".to_string(), 0.5)].into()), ..plain.clone() }.check().is_err());
+    assert!(Subsample { fraction_by_race: Some([("P".to_string(), 0.0)].into()), ..plain.clone() }.check().is_err());
+    // TOML form: `[data.subsample.fraction_by_race]` T / P / Z.
+    let s: Subsample = toml::from_str("fraction = 0.25\nkeep_sources = [\"botgen\"]\n[fraction_by_race]\nT = 0.5\nZ = 0.1\n").unwrap();
+    assert_eq!(s, by);
+    assert!(serde_json::to_value(&plain).unwrap().get("fraction_by_race").is_none(), "absent: the 041-R21 fingerprint JSON");
 }
 
 /// 041-R21: the trainer's source (`BcConfig::train_source`) and `bc-epoch` read the same subset:
@@ -933,7 +1080,7 @@ fn subsampled_source_and_epoch_count_agree_041_r21() {
     let root = shard_dir("subsample", &games, 7);
     let mut cfg = tiny_bc(1, 0);
     cfg.lanes = 2;
-    cfg.data.subsample = Some(Subsample { fraction: 0.5, keep_sources: vec!["botgen".into()] });
+    cfg.data.subsample = Some(Subsample { fraction: 0.5, keep_sources: vec!["botgen".into()], fraction_by_race: None });
     let src = cfg.train_source(std::slice::from_ref(&root), Selection::S1).unwrap();
     let mut read: Vec<GameMeta> = Vec::new();
     for k in 0..src.files().len() {

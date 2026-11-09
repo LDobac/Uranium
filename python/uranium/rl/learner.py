@@ -38,6 +38,7 @@ from uranium.agent.infer import leaves, rebuild
 from uranium.bc.clip import clip_global_norm
 from uranium.device import adam_impl, autocast
 from uranium.model import to_obs
+from uranium.model.config import check_aux
 from uranium.model.net import LABEL_KEYS, OBS_KEYS, phase_split, stage, to_device, trim_entity_pad
 from uranium.rl.returns import gae_valid, upgo_ratio, vtrace_ratio
 
@@ -229,6 +230,9 @@ class Learner:
 
     def __init__(self, cfg: dict, net, bc, device: torch.device, precision: str, algo: str, update: int = 0, micro_lanes: int | None = None):
         self.cfg = cfg
+        # 042-R21 ①: `[aux]` keys and the trained model's aux modules must match (start error).
+        # The BC reference's aux modules never run (`forward_seq(aux=False)`, 042-R21 ②).
+        self.aux = check_aux(net.cfg.variant, cfg.get("aux"))
         self.device = device
         self.precision = precision
         self.algo = algo

@@ -375,7 +375,12 @@ pub fn epoch_updates(lens: impl IntoIterator<Item = usize>, lanes: usize, seq_le
 pub struct TrainStep {
     pub obs: Observation,
     pub label: HostLabel,
+    /// The shard step's privileged summary, or zeros when it has none (the value head's input,
+    /// E-10); `has_privileged` tells the two apart.
     pub privileged: PrivilegedTensors,
+    /// 032-R24 / 041-R23: the shard step has a privileged summary (`privileged` is not the zero
+    /// fill), so it can be an `aux_priv` target.
+    pub has_privileged: bool,
     pub weight: f32,
     /// Game frame of the step's observation.
     pub frame: u32,
@@ -1189,7 +1194,8 @@ impl GameStream {
                 transform_with_starts(&o, self.sym, &self.walker.map.start_locations)
             };
             let privileged = s.privileged.as_ref().map_or_else(|| self.zero_priv.clone(), privileged);
-            steps.push(TrainStep { obs: o, label, privileged, weight: if ok { 1.0 } else { 0.0 }, frame: s.raw_frame.frame, surrender_rule });
+            let has_privileged = s.privileged.is_some();
+            steps.push(TrainStep { obs: o, label, privileged, has_privileged, weight: if ok { 1.0 } else { 0.0 }, frame: s.raw_frame.frame, surrender_rule });
         }
         self.pos = end;
         (steps, invalid)

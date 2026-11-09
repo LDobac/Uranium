@@ -64,6 +64,43 @@ fn default_enemy_race_mask() -> f64 {
     0.05
 }
 
+/// 041-R23 ① / 042-R21 ①: `[aux]`, the training-only aux loss weights (λ before the loss sum) of
+/// the 032-R24 modules. A key present needs its `[model]` module and a module needs its key (the
+/// Python trainer refuses the run otherwise, 041-R23 ④); 0 = that loss is not added. The values
+/// are [SPEC DEFERRED(P3)] AMB-041-13b / AMB-042-21, so no tracked config sets them yet. Shared by
+/// the BC and RL configs (same table name, 041-R23 ①).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct AuxWeights {
+    /// λ_priv of `aux_priv` (TOML key `priv`).
+    #[serde(rename = "priv", default, skip_serializing_if = "Option::is_none")]
+    pub privileged: Option<f32>,
+    /// λ_jepa of `aux_jepa`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jepa: Option<f32>,
+}
+
+impl AuxWeights {
+    pub fn check(&self) -> Result<()> {
+        for (k, v) in [("priv", self.privileged), ("jepa", self.jepa)] {
+            if let Some(x) = v {
+                anyhow::ensure!(x.is_finite() && x >= 0.0, "[aux] {k} must be a finite weight >= 0, got {x} (041-R23)");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 041-R25 ① / 042-R21 ③: `[monitor]`, the 032-R25 dead-channel statistics. Execution only: the
+/// statistics do not change the updates (032-AC15), so not in the B-3 fingerprint.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct MonitorConfig {
+    /// Updates between two spatial statistics records; 0 (or the table absent) = never computed.
+    #[serde(default)]
+    pub spatial_every: usize,
+}
+
 /// Updates of one epoch per stage (041-R13, 2026-10-18: S1, S2 and ablation (A) train one epoch
 /// each and the cosine schedule ends there). `uranium-train bc-epoch` counts them.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
@@ -117,6 +154,13 @@ pub struct BcConfig {
     /// (061-R6 default); 0 = keep every checkpoint (the core ablation, 032-R17 ⑤).
     #[serde(default)]
     pub keep_checkpoints: Option<usize>,
+    /// 041-R23: `[aux]` loss weights. Absent = no aux loss and the fingerprint (and the config
+    /// JSON the Python trainer gets) from before the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aux: Option<AuxWeights>,
+    /// 041-R25: `[monitor]` (execution only). Absent = off, the JSON as before the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor: Option<MonitorConfig>,
 }
 
 /// B-3: the `BcConfig` settings that change what a run learns; [`BcConfig::fingerprint`] hashes
@@ -141,6 +185,9 @@ pub struct ResultSettings {
     /// 041-R21; left out when absent so older configs keep their fingerprint.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subsample: Option<Subsample>,
+    /// 041-R23 ①: in the fingerprint when present, left out when absent (older configs keep theirs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aux: Option<AuxWeights>,
     /// Not a config field: the gradient clip semantics (041-R3 global L2 norm since 2026-10-19,
     /// [`CLIP_MODE`]), so runs from before the change do not match the fingerprint.
     pub clip_mode: &'static str,
@@ -152,7 +199,8 @@ pub struct ResultSettings {
 /// stage's share is already in `total_steps` / `warmup_steps` (`steps`). New fields that do not
 /// change results must be listed here, result-affecting ones go into [`ResultSettings`]; a field
 /// in neither fails `config_fingerprint_fields_are_classified_b3`.
-pub const EXECUTION_ONLY: [&str; 7] = ["micro_lanes", "grad_checkpointing", "pad_entities", "steps", "keep_checkpoints", "data.checkpoint_every", "data.checkpoint_minutes"];
+/// `monitor` (041-R25 ①): statistics only, the updates are the same (032-AC15).
+pub const EXECUTION_ONLY: [&str; 8] = ["micro_lanes", "grad_checkpointing", "pad_entities", "steps", "keep_checkpoints", "data.checkpoint_every", "data.checkpoint_minutes", "monitor"];
 
 /// 061-R6 default number of checkpoints kept per run.
 pub const DEFAULT_KEEP_CHECKPOINTS: usize = 5;
@@ -167,6 +215,9 @@ impl BcConfig {
         }
         if let Some(s) = &cfg.data.subsample {
             s.check().with_context(|| path.display().to_string())?;
+        }
+        if let Some(a) = &cfg.aux {
+            a.check().with_context(|| path.display().to_string())?;
         }
         Ok(cfg)
     }
@@ -214,6 +265,7 @@ impl BcConfig {
             seed: self.data.seed,
             enemy_race_mask: self.data.enemy_race_mask,
             subsample: self.data.subsample.clone(),
+            aux: self.aux.clone(),
             clip_mode: CLIP_MODE,
         }
     }
@@ -842,12 +894,22 @@ pub struct HostGroup {
     pub value_w: Vec<f32>,
     /// [b] true when the lane continues a game from the last batch (core state kept, 041-R2).
     pub keep: Vec<bool>,
+    /// [b * t] 032 §2.8 / 041-R23: a real step of the lane's game, false on chunk padding (a copy
+    /// of the last step) and on a drained lane. Apart from `weights`: an aux target does not need
+    /// a valid label, so a real step with a void or `unknown` label is still true.
+    pub real: Vec<bool>,
+    /// [b * t] 032-R24 / 041-R23: the row's step has a privileged summary (`privileged` is not the
+    /// zero fill of a step without one). The `aux_priv` mask is `real & priv_present`.
+    pub priv_present: Vec<bool>,
 }
 
 /// Field order of [`HostGroup::digest`] (the Python side hashes its arrays in the same order).
-pub const GROUP_FIELDS: [&str; 26] = [
+/// `real` and `priv_present` (032 §2.8, 041-R23) came last on 2026-11-09, so the digest of a
+/// group changed then (it is compared between the Rust and Python readers, never stored).
+pub const GROUP_FIELDS: [&str; 28] = [
     "entity_cat", "entity_cont", "entity_mask", "entity_cell", "entity_pos", "spatial", "scalar", "scalar_cat", "z_build", "z_units", "z_present", "type_mask", "unit_cap",
-    "loc_class_mask", "is_building", "action", "delay", "queued", "selected", "target_unit", "target_loc", "privileged", "weights", "results", "value_w", "keep",
+    "loc_class_mask", "is_building", "action", "delay", "queued", "selected", "target_unit", "target_loc", "privileged", "weights", "results", "value_w", "keep", "real",
+    "priv_present",
 ];
 
 impl HostGroup {
@@ -886,6 +948,8 @@ impl HostGroup {
         f(&mut h, &self.results);
         f(&mut h, &self.value_w);
         b(&mut h, &self.keep);
+        b(&mut h, &self.real);
+        b(&mut h, &self.priv_present);
         h.finalize().iter().map(|x| format!("{x:02x}")).collect()
     }
 }
@@ -917,6 +981,8 @@ impl Batch {
         let mut results = Vec::with_capacity(b * t);
         let mut value_w = Vec::with_capacity(b * t);
         let mut keep = Vec::with_capacity(b);
+        let mut real_rows = Vec::with_capacity(b * t);
+        let mut priv_present = Vec::with_capacity(b * t);
         let mut packed = Vec::new();
         // A drained lane (evaluation, `Feeder::drain`) takes another lane's first step at weight 0.
         let filler = self.chunks.iter().position(|c| !c.is_empty()).expect("a batch has a lane with steps");
@@ -935,6 +1001,8 @@ impl Batch {
                 weights.push(w);
                 results.push(self.results[l]);
                 value_w.push(w * self.value_weights[l]);
+                real_rows.push(k < real);
+                priv_present.push(s.has_privileged);
             }
         }
         let obs: Vec<_> = rows.iter().map(|s| &s.obs).collect();
@@ -950,7 +1018,7 @@ impl Batch {
         let labels = crate::collate::action_batch(&labels, obs.n, max_select);
         let privs: Vec<_> = rows.iter().map(|s| &s.privileged).collect();
         let privileged = crate::collate::priv_batch(&privs);
-        HostGroup { b, t, obs, labels, privileged, weights, results, value_w, keep }
+        HostGroup { b, t, obs, labels, privileged, weights, results, value_w, keep, real: real_rows, priv_present }
     }
 
     /// Steps per lane (0 = drained lane, evaluation only).

@@ -20,7 +20,7 @@ from uranium import ckpt, kernels
 from uranium.bc.clip import clip_global_norm
 from uranium.device import adam_impl, autocast, compile_graphs, compiled, impl_settings, mark_dynamic
 from uranium.model import UraniumNet, UraniumNetConfig, input_dims, to_obs
-from uranium.model.config import VariantConfig
+from uranium.model.config import VariantConfig, check_aux
 from uranium.model.net import stage, to_device, trim_entity_pad
 
 HEADS = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
@@ -56,6 +56,9 @@ def new_net_config(core: str, win_open: bool, variant: VariantConfig | None = No
 class BcTrainer:
     def __init__(self, cfg: dict, net: UraniumNet, device: torch.device, precision: str, entity_chunk: int = 0):
         self.cfg = cfg
+        # 041-R23 ④: `[aux]` keys and the model's aux modules must match (start error); the
+        # weights per present module (0 = loss not added). No aux module: {} (the earlier update).
+        self.aux = check_aux(net.cfg.variant, cfg.get("aux"))
         self.net = net.to(device).train()
         self.device = device
         self.precision = precision

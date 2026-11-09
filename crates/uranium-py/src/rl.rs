@@ -79,6 +79,9 @@ impl SegmentBatch {
         put!("target_loc", l.target_loc, vec![r]);
         put!("privileged", g.privileged.summary, vec![r, g.privileged.p]);
         put!("mask", g.mask, vec![r]);
+        // 042-R21 ①: real (non-fill) steps and steps with a privileged summary (aux masks).
+        put!("real", g.real, vec![r]);
+        put!("priv_present", g.priv_present, vec![r]);
         put!("behaviour", g.behaviour, vec![r]);
         put!("rewards", g.rewards, vec![r, 4]);
         put!("terminal", g.terminal, vec![g.b]);
@@ -269,9 +272,12 @@ fn check_seq(r: &[f32], v: &[f32], l: &[f32]) -> PyResult<()> {
 /// step on build and -0.015 * step + 0.05 on units; `pseudo_scale`: per lane build / units
 /// policy-weight multipliers (`Segment::pseudo_scale`, 033-R11, AMB-042-16), empty = 1 and 1.
 /// `sil_returns`: per lane `Segment::sil_return` (042-R16 buffer lanes, last), empty = none.
+/// `priv_from`: the first step with a privileged summary (`Step::has_privileged`, 042-R21 ①;
+/// earlier steps have none), 0 = every step.
 #[pyfunction]
-#[pyo3(signature = (lanes, t, r_value_off = Vec::new(), pseudo_rewards = false, pseudo_scale = Vec::new(), sil_returns = Vec::new()))]
-pub fn test_segments(lanes: usize, t: usize, r_value_off: Vec<usize>, pseudo_rewards: bool, pseudo_scale: Vec<(f32, f32)>, sil_returns: Vec<Option<f32>>) -> SegmentBatch {
+#[pyo3(signature = (lanes, t, r_value_off = Vec::new(), pseudo_rewards = false, pseudo_scale = Vec::new(), sil_returns = Vec::new(), priv_from = 0))]
+#[allow(clippy::too_many_arguments)]
+pub fn test_segments(lanes: usize, t: usize, r_value_off: Vec<usize>, pseudo_rewards: bool, pseudo_scale: Vec<(f32, f32)>, sil_returns: Vec<Option<f32>>, priv_from: usize) -> SegmentBatch {
     use uranium_env::features::PrivilegedTensors;
     use uranium_env::features::executor::HostAction;
     use uranium_league::trajectory::{PackedObs, Step};
@@ -287,6 +293,7 @@ pub fn test_segments(lanes: usize, t: usize, r_value_off: Vec<usize>, pseudo_rew
                     head_log_prob: [0.0; uranium_agent::infer::HEADS],
                     reward: [if k == t - 1 { 1.0 } else { 0.0 }, if pseudo_rewards { 0.02 * k as f32 } else { 0.0 }, if pseudo_rewards { 0.05 - 0.015 * k as f32 } else { 0.0 }, 0.01 * k as f32],
                     privileged: PrivilegedTensors { summary: vec![0.0; uranium_env::features::extract::dims().privileged()] },
+                    has_privileged: k >= priv_from,
                     version: 0,
                 })
                 .collect();

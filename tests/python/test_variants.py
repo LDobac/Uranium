@@ -130,7 +130,7 @@ def test_outer_heads_inputs_match_per_decision(name):
         cs, os_ = net.init_state(b)
         hs, es, sps, scs = [], [], [], []
         for k in range(t):
-            core_in, e, sp, sc = net.encode(rows_at(obs, b, t, k), h_o=os_[0])
+            core_in, e, sp, sc, _ = net.encode(rows_at(obs, b, t, k), h_o=os_[0])
             h, cs = net.core.step(core_in, cs)
             os_ = net.outer.step(h, os_)
             hs.append(h)
@@ -187,7 +187,7 @@ def test_tokens_stay_out_of_entities(name):
     net = net_of(cfg)
     n = obs["entity_mask"].shape[1]
     with torch.no_grad():
-        _, e, _, _ = net.encode(rows_at(obs, b, t, 0), h_o=torch.zeros(b, 256) if net.outer is not None else None)
+        _, e, _, _, _ = net.encode(rows_at(obs, b, t, 0), h_o=torch.zeros(b, 256) if net.outer is not None else None)
         assert e.shape[1] == n
         out = net.act(rows_at(obs, b, t, 0), net.init_state(b), 1.0, torch.Generator().manual_seed(1))
     assert (out["action"]["selected"] <= n).all() and (out["action"]["target_unit"] < n).all()
@@ -338,7 +338,7 @@ def per_decision(net, obs, labels, s0, b: int, t: int):
     cs, os_ = s0
     hs, es, sps, scs = [], [], [], []
     for k in range(t):
-        core_in, e, sp, sc = net.encode(rows_at(obs, b, t, k), h_o=os_[0])
+        core_in, e, sp, sc, _ = net.encode(rows_at(obs, b, t, k), h_o=os_[0])
         h, cs = net.core.step(core_in, cs)
         os_ = net.outer.step(h, os_)
         hs.append(h)
@@ -419,7 +419,7 @@ def test_fused_entity_attention_with_tokens(monkeypatch):
         net = UraniumNet(cfg, action_columns()).cuda()
         obs = random_obs(4, 40, cfg.input, "cuda", torch.Generator().manual_seed(3), valid=33)
         h_o = torch.randn(4, 256, generator=torch.Generator().manual_seed(4)).cuda()
-        _, e, _, _ = net.encode(obs, h_o=h_o)
+        _, e, _, _, _ = net.encode(obs, h_o=h_o)
         e.square().sum().backward()
         res[mode] = (e.detach(), {k: p.grad.clone() for k, p in net.named_parameters() if p.grad is not None and k.startswith(("entity", "variant"))})
     assert rel(res["fused"][0], res["torch"][0]) < 1e-4

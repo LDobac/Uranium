@@ -11,6 +11,7 @@ use uranium_env::scout::{PseudoMode, RewardConfig};
 
 use crate::league::{BandConfig, LadderEntry, LadderPickSetting, Stage, T1Bot};
 pub use crate::sil::{SilConfig, SilMode};
+pub use uranium_data::bc::{AuxWeights, MonitorConfig};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct OptimizerConfig {
@@ -518,6 +519,14 @@ pub struct RlConfig {
     /// `[sil]`: 042-R16 self-imitation / held-game replay (AMB-042-17). Absent = off.
     #[serde(default)]
     pub sil: SilConfig,
+    /// `[aux]`: 042-R21 ① aux loss weights (same table as the BC config, 041-R23). Absent = no aux
+    /// loss and the config JSON (checkpoint copy, the Python learner's config) as before the key.
+    /// The values are [SPEC DEFERRED(P3)] AMB-042-21.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aux: Option<AuxWeights>,
+    /// `[monitor]`: 042-R21 ③ / 041-R25 spatial dead-channel statistics. Absent = off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor: Option<MonitorConfig>,
 }
 
 impl RlConfig {
@@ -618,6 +627,11 @@ impl RlConfig {
         }
         // 042-R18 (AMB-042-19).
         self.league.start_mix.validate(groups)?;
+        // 042-R21 ①: [aux] weights finite and >= 0 (the key / module match is checked by the
+        // Python learner, which knows the model).
+        if let Some(a) = &self.aux {
+            a.check()?;
+        }
         // 042-R9 KL schedule and head multipliers (AMB-042-17).
         self.kl.validate()?;
         // 042-R15 (AMB-042-17): 0 or 60 s ..= 60 min (메인 임시 결정).
@@ -1112,6 +1126,32 @@ mod tests {
         ] {
             assert!(load(from, to).is_err(), "{to}");
         }
+    }
+
+    /// 042-R21 ① ③ / 042-AC11: `[aux]` and `[monitor]` are absent from config/rl.toml and from
+    /// Checkpoint 1 RL's config copy, so the serialised config (checkpoint copy, the Python
+    /// learner's JSON) has no such keys; present, they parse, reach the JSON as `aux.priv` /
+    /// `aux.jepa` / `monitor.spatial_every`, and a negative weight or unknown key is refused.
+    #[test]
+    fn aux_and_monitor_tables_042_r21() {
+        let c = RlConfig::default_file();
+        assert!(c.aux.is_none() && c.monitor.is_none());
+        let json = serde_json::to_value(&c).unwrap();
+        assert!(json.get("aux").is_none() && json.get("monitor").is_none());
+        let ck: RlConfig = toml::from_str(include_str!("../../../releases/checkpoint-1-rl/config/rl.toml")).unwrap();
+        assert!(ck.aux.is_none() && ck.monitor.is_none());
+        let back: RlConfig = serde_json::from_str(&serde_json::to_string(&ck).unwrap()).unwrap();
+        assert_eq!(back, ck);
+        let full = include_str!("../../../config/rl.toml").replace("\r\n", "\n");
+        let on: RlConfig = toml::from_str(&format!("{full}\n[aux]\npriv = 0.2\njepa = 0.1\n\n[monitor]\nspatial_every = 100\n")).unwrap();
+        on.validate().unwrap();
+        assert_eq!(on.aux, Some(AuxWeights { privileged: Some(0.2), jepa: Some(0.1) }));
+        assert_eq!(on.monitor, Some(MonitorConfig { spatial_every: 100 }));
+        let json = serde_json::to_value(&on).unwrap();
+        assert_eq!((json["aux"]["priv"].as_f64().map(|x| x as f32), json["monitor"]["spatial_every"].as_u64()), (Some(0.2), Some(100)));
+        let bad: RlConfig = toml::from_str(&format!("{full}\n[aux]\npriv = -0.2\n")).unwrap();
+        assert!(bad.validate().is_err());
+        assert!(toml::from_str::<RlConfig>(&format!("{full}\n[aux]\nprivileged = 0.2\n")).is_err());
     }
 
     /// `config/rl.toml` with `from` replaced by `to` (once), validated.
