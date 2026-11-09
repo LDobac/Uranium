@@ -1,0 +1,81 @@
+# Accepted OSS bot binaries for protocol measurements (021, reports/checkpoint1.md 7.3 "NDEBUG"): sha256 of
+# <URANIUM_OSS_BOTS_DIR>/<bot>/module.so (Linux) or module.dll (Windows). tools/eval/protocol.py `job` / `bots`
+# refuses a game host whose binary of a bot in the job is not listed here.
+#
+# Recorded 2026-11-09 from the game hosts (U0). Linux: the -DNDEBUG rebuilds of 2026-11-07 (after the assert
+# crash fix, tools/oss/common.sh) on the three Linux hosts; the builds are not bit-reproducible across hosts
+# (the two Linux ROCm hosts agree except ZZZKBot, the third Linux host differs throughout and has no McRave).
+# Windows: the CMake Release builds of 2026-10-16 (NDEBUG is part of Release). Checkpoint 1 played its T1 300
+# on the Windows host and the BC baseline's T1 300 on the two Linux ROCm hosts.
+# A new build gets its hashes added here (with a note) before it is used for a protocol measurement.
+
+[bot.ualbertabot]
+sha256 = [
+  "1eb0bc7a09d68ffbb5b9d950638fbf368a5ba8a467b9f1cf0a81d8a5837d0a4b",  # Linux ROCm hosts
+  "c240513c6c22106310167511a61fbafc6f6b694b815f0684d163e8688f192f2e",  # third Linux host
+  "6795a0322088900cc718ace2477f5ae3da6efe9025bd7a080a38ea36d404c6bc",  # Windows
+]
+
+[bot.steamhammer]
+sha256 = [
+  "0aa10f1fb709fe8b9e2bc33291fcc8f2c8e62d2a5cdbfeec1ec1125a88eb8bfa",  # Linux ROCm hosts
+  "a5d48bb8b291df88d694740ab1afe395517339811c0272a6feba3016a9a379b8",  # third Linux host
+  "2ffe0530c082f02fa4148ab8b2bd80d2fca4e3298c128aa32a2be7fb9ad57777",  # Windows
+]
+
+[bot.zzzkbot]
+sha256 = [
+  "05be11a7eb180c872bf62c13cbac1ba65ded42639264c568b8e32124d311428a",  # Linux ROCm host 1
+  "3f1397c195ac485336941a56a016597f8a7c7455b1fb41962c5e9119542d4673",  # Linux ROCm host 2
+  "404d1e144512b105eb3378fa3afaf82d814a8aab7d672b99664a036b78e648f5",  # third Linux host
+  "e0a2f8291e04e72ce5ac3e285f66c9034adf60e522dc3060c4a868aa3664b46b",  # Windows
+]
+
+[bot.stardust]
+sha256 = [
+  "87db4aaf53c2879abe4f0a2fd3349b00233a4841451ae3a6bfb2d2694ee0fb4a",  # Linux ROCm hosts
+  "f73a3e5cb1c91fdd47dff5aeb259260ab4f8be4aa02281cd877550eba1d0569a",  # third Linux host
+  "08823aa8a99842523c8eece6e40bc84805745885c81b808e081e94f77a9db71c",  # Windows
+]
+
+[bot.iron]
+sha256 = [
+  "f49ee4e7394137d0b209c649503bd44393ffa05b6ccfacac22e58c61a9fd4bca",  # Linux ROCm hosts
+  "d0de6145a73151bc2b84ab1ce901da2a895022d816531b0e88d9559c1a44464e",  # third Linux host
+  "bcc11c179348248203019705cf0d132468f8b6976e87cf4e292381a4258a23b1",  # Windows
+]
+
+[bot.mcrave]
+sha256 = [
+  "2b28159b7438c85aad87ce94b0bf66e1aeba84f6cff36e61783e9b3677a21d56",  # Linux ROCm hosts
+  "e99d397ec99c503c5144f8e3d950da5fe0482577e602914f4277b9ef1885a287",  # Windows
+]
+
+# Configuration variants (tools/oss/make_variant.py) share their base bot's binary.
+[bot.ualbertabot12poollings]
+sha256 = [
+  "1eb0bc7a09d68ffbb5b9d950638fbf368a5ba8a467b9f1cf0a81d8a5837d0a4b",
+  "c240513c6c22106310167511a61fbafc6f6b694b815f0684d163e8688f192f2e",
+  "6795a0322088900cc718ace2477f5ae3da6efe9025bd7a080a38ea36d404c6bc",
+]
+
+[bot.ualbertabot2hatchhydra]
+sha256 = [
+  "1eb0bc7a09d68ffbb5b9d950638fbf368a5ba8a467b9f1cf0a81d8a5837d0a4b",
+  "c240513c6c22106310167511a61fbafc6f6b694b815f0684d163e8688f192f2e",
+  "6795a0322088900cc718ace2477f5ae3da6efe9025bd7a080a38ea36d404c6bc",
+]
+
+[bot.ualbertabot3hatchmuta]
+sha256 = [
+  "1eb0bc7a09d68ffbb5b9d950638fbf368a5ba8a467b9f1cf0a81d8a5837d0a4b",
+  "c240513c6c22106310167511a61fbafc6f6b694b815f0684d163e8688f192f2e",
+  "6795a0322088900cc718ace2477f5ae3da6efe9025bd7a080a38ea36d404c6bc",
+]
+
+[bot.steamhammer2hatchmuta]
+sha256 = [
+  "0aa10f1fb709fe8b9e2bc33291fcc8f2c8e62d2a5cdbfeec1ec1125a88eb8bfa",
+  "a5d48bb8b291df88d694740ab1afe395517339811c0272a6feba3016a9a379b8",
+  "2ffe0530c082f02fa4148ab8b2bd80d2fca4e3298c128aa32a2be7fb9ad57777",
+]

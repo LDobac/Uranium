@@ -1,0 +1,50 @@
+# Measurement protocol plan template `rush_check` (config/protocol/lineage.toml, tools/eval/protocol.py).
+# 050-R6 128-game condition-controlled rush check: T0 zerg_rush and ualbertabot12poollings x Fighting Spirit /
+# Circuit Breaker x 32, model players[0] stochastic, real last_failed (zero_last_failed false for BC and RL
+# checkpoints alike), 60 min (max_frames default 86,400), replays kept. Seeds: the 020-R21 generator's list from 45,001.
+# Snapshot of the Checkpoint 1 plan <shared>/eval/bc-check-20261105/plans/01-rush5check.toml (= config/plans/rush5_check.toml seeds): only the name and the model checkpoint are
+# placeholders (@NAME@, @CHECKPOINT@); everything else is what Checkpoint 1 was measured with. Do not edit:
+# protocol.py refuses a template whose conditions hash differs from lineage.toml.
+name = "@NAME@"
+save_replay = true
+wall_timeout_s = 7200
+zero_last_failed = false
+seeds = [
+  45001, 45002, 45003, 45004, 45005, 45006, 45009, 45012, 45028, 45029,
+  45030, 45033, 45036, 45039, 45040, 45041, 45064, 45065, 45066, 45067,
+  45068, 45069, 45078, 45079, 45088, 45089, 45090, 45092, 45135, 45136,
+  45137, 45139, 45140, 45141, 45142, 45145, 45159, 45160, 45161, 45163,
+  45166, 45169, 45182, 45183, 45184, 45187, 45190, 45193, 45253, 45254,
+  45277, 45278, 45279, 45281, 45282, 45283, 45284, 45285, 45286, 45287,
+  45288, 45332, 45333, 45382, 45383, 45384, 45385, 45388, 45419, 45420,
+  45421, 45424, 45443, 45444, 45445, 45447, 45450, 45453, 45466, 45467,
+  45468, 45469, 45470, 45471, 45474, 45477, 45484, 45485, 45486, 45489,
+  45492, 45495, 45514, 45515, 45537, 45538, 45539, 45540, 45561, 45562,
+  45563, 45566, 45585, 45586, 45587, 45588, 45589, 45590, 45593, 45596,
+  45608, 45609, 45610, 45613, 45632, 45633, 45634, 45637, 45640, 45643,
+  45655, 45656, 45657, 45658, 45661, 45664, 45797, 45798,
+]
+
+[[matchup]]
+map = "fighting_spirit"
+games = 32
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "t0", race = "zerg", build = "zerg_rush" }
+
+[[matchup]]
+map = "circuit_breaker"
+games = 32
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "t0", race = "zerg", build = "zerg_rush" }
+
+[[matchup]]
+map = "fighting_spirit"
+games = 32
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot12poollings", race = "zerg" }
+
+[[matchup]]
+map = "circuit_breaker"
+games = 32
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot12poollings", race = "zerg" }
