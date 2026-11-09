@@ -1,15 +1,21 @@
-"""Result tables of eval jobs (050-R6 / 050-R7 / 050-R8, docs/measurement_protocol.md): every stage of each
-job, by the protocol plan its conditions match (config/protocol/lineage.toml):
+"""Result tables of eval jobs (050-R9 / 050-AC5 measurement protocol, 050-R6 / 050-R7 / 050-R8,
+docs/measurement_protocol.md): every stage of each job, by the protocol plan its conditions match
+(config/protocol/lineage.toml; a plan outside the protocol is refused unless --kind names its table):
 
   rush     050-R6 128-game rush check by start condition: held_8m (scv_8m >= 8), held_s (scv_min_1m > 4,
            session held), scout before 3:00 (command stream), bunker_order_3m / _4m (first Build_Bunker
-           command), bunker_unit_3m / _4m (bunker_s), scv_4m p50, wins
-  macro    050-R8 macro 40 by opponent: bunker_order_4m, bunker_unit_4m, CC order by 5:00, scv_8m >= 16, W/D/L
+           command), bunker_unit_3m / _4m (bunker_s), scv_4m p50, wins; JSON also held_8m_winpass
+           (rush_summary.py: a win before 8:00 passes) and scv_4m_p50_known (g3.py)
+  macro    050-R8 macro 40 by opponent: bunker_order_4m, bunker_unit_4m, CC order by 5:00, scv_8m >= 16
+           (a game over before 8:00 fails, as the Checkpoint 1 model tables), W/D/L; JSON also
+           scv_8m_16_winpass (annihilation win before 8:00 passes, the teacher-table rule)
   t1       T1 300 by bot and race: W/D/L, surrender wins, minutes p50
   winrate  T0 / TvZ / AC1: W/D/L per matchup and opponent race, Wilson 95%
 
-Opponent-crash games (an Aborted attempt whose opponent launcher did not exit with 0, eval_common.
-opponent_crashes) are invalid in every table. Both held and both bunker definitions are always printed.
+Opponent-crash games (an Aborted attempt where our launcher exited with 0 and the opponent's did not,
+eval_common.opponent_crashes) are invalid in every table. Both held and both bunker definitions are always
+printed. A job with protocol.json also shows its checkpoint sha256, git commit, uncommitted-file flag and
+host platforms.
 Command streams come from `uranium-replay cmddump` (cached as <cache>/<job>/<stage>/g<n>.json).
 
     python tools/eval/tables.py <job dir>... [--json out.json] [--cache DIR] [--kind <stage name>=<kind>]
@@ -45,7 +51,11 @@ def rush_table(stage: int, plan: dict, rows: dict[int, dict], invalid: set[int],
         bunker_s = [x.get("bunker_s") for x in m]
         out[c] = {
             "n": len(g),
+            # 050-R7: scv_8m >= 8, a game over before 8:00 fails (runs/dagger/test_table.py, the DAgger tests and
+            # the final gate). held_8m_winpass (JSON only): such a game passes when won (runs/bc_ft_teacher/
+            # rush_summary.py, the earlier gates).
             "held_8m": sum(1 for x in m if (x.get("scv_8m") or 0) >= 8),
+            "held_8m_winpass": sum(1 for x, (_, r) in zip(m, g) if (x["scv_8m"] >= 8 if x.get("scv_8m") is not None else bool(r.get("won")))),
             "held_s": sum(1 for x in m if (x.get("scv_min_1m") or 0) > 4),
             "scout_3m": sum(1 for n, _ in g if an[n][1] is not None),
             "bunker_order_3m": sum(1 for f in first if f and f.get(ec.BUNKER, INF) < 3 * 60 * ec.FPS),
@@ -76,11 +86,15 @@ def macro_table(stage: int, plan: dict, rows: dict[int, dict], invalid: set[int]
             "bunker_order_4m": sum(1 for f in first if f and f.get(ec.BUNKER, INF) < 4 * 60 * ec.FPS),
             "bunker_unit_4m": sum(1 for x in m if x.get("bunker_s") is not None and x["bunker_s"] < 240),
             "cc_order_5m": sum(1 for f in first if f and f.get(ec.CC, INF) <= 5 * 60 * ec.FPS),
+            # As the Checkpoint 1 model tables (runs/dagger/test_table.py): a game over before 8:00 fails. The
+            # interim rule "an annihilation win before 8:00 passes" (reports/checkpoint1.md 9.2) was applied to
+            # the teacher session tables (summary.md T0 Terran sessions) only; scv_8m_16_winpass (JSON) has it.
             "scv_8m_16": sum(1 for x in m if (x.get("scv_8m") or 0) >= 16),
+            "scv_8m_16_winpass": sum(1 for x, (_, r) in zip(m, g) if (x["scv_8m"] >= 16 if x.get("scv_8m") is not None else r.get("won") is True)),
             "won": w, "draw": d, "lost": len(g) - w - d,
             "dumped": sum(1 for f in first if f is not None),
         }
-    tot = {k: sum(v[k] for v in out.values()) for k in ("n", "bunker_order_4m", "bunker_unit_4m", "cc_order_5m", "scv_8m_16", "won", "draw", "lost", "dumped")}
+    tot = {k: sum(v[k] for v in out.values()) for k in ("n", "bunker_order_4m", "bunker_unit_4m", "cc_order_5m", "scv_8m_16", "scv_8m_16_winpass", "won", "draw", "lost", "dumped")}
     out["total"] = tot
     return out
 
@@ -130,13 +144,24 @@ def winrate_table(stage: int, plan: dict, rows: dict[int, dict], invalid: set[in
     return {"blocks": blocks, "by_race": by_race, "total": tot}
 
 
+KINDS = ("rush", "macro", "t1", "winrate")
+
+
+class UnknownPlan(Exception):
+    pass
+
+
 def stage_kind(lin: dict, plan: dict, override: dict[str, str]) -> tuple[str, str | None]:
-    if plan["name"] in override:
-        return override[plan["name"]], None
+    """The protocol plan a stage's conditions match (050-R9); a plan outside the protocol needs --kind."""
     pid = protocol.identify(lin, plan)
+    if plan["name"] in override:
+        if override[plan["name"]] not in KINDS:
+            raise UnknownPlan(f"--kind {plan['name']}={override[plan['name']]}: one of {', '.join(KINDS)}")
+        return override[plan["name"]], pid
     if pid is not None:
         return lin["plan"][pid]["kind"], pid
-    return "winrate", None
+    raise UnknownPlan(f"stage {plan['name']}: its conditions match no protocol plan (config/protocol/lineage.toml); "
+                      f"pass --kind {plan['name']}=<{'|'.join(KINDS)}> to tabulate it anyway")
 
 
 def job_tables(job: Path, cache: Path, override: dict[str, str] | None = None, lin: dict | None = None) -> dict:
@@ -144,11 +169,16 @@ def job_tables(job: Path, cache: Path, override: dict[str, str] | None = None, l
     rows_all = ec.read_results(job)
     ledger = ec.read_ledger(job)
     invalid = ec.opponent_crashes(ledger)
+    rec = protocol.read_record(job)
     out = {}
     for k, f, plan in ec.job_stages(job):
         kind, pid = stage_kind(lin, plan, override or {})
         rows = ec.model_rows(rows_all, k)
         res = {"job": job.name, "stage": k, "plan_file": f.name, "plan": pid, "kind": kind,
+               "protocol": None if rec is None else {
+                   "lineage": rec.get("lineage"), "point": rec.get("point"), "checkpoint_sha256": rec.get("checkpoint_sha256"),
+                   "git_commit": rec.get("git", {}).get("commit"), "protocol_files_dirty": rec.get("git", {}).get("protocol_files_dirty"),
+                   "platforms": sorted({h.get("platform") or "?" for h in rec.get("hosts", [])}), "t1_platforms": rec.get("t1_platforms")},
                "conditions_sha256": protocol.conditions_sha256(plan), "plan_sha256": protocol.file_sha256(f),
                "games_planned": sum(m["games"] for m in plan["matchup"]), "rows": len(rows),
                "invalid_games": sorted(g for g in invalid if ec.stage_of(g) == k),
@@ -185,6 +215,13 @@ def print_tables(res: dict) -> None:
         t = s["table"]
         print(f"## {key}: {s['kind']} (plan {s['plan'] or 'not a protocol plan'}), {s['rows']} / {s['games_planned']} games with a model row, "
               f"invalid {len(s['invalid_games'])}, checkpoint {', '.join(map(str, s['checkpoints']))}, zero_last_failed {s['zero_last_failed']}")
+        p = s.get("protocol")
+        if p is None:
+            print("protocol.json: none (a job made before the protocol, or by hand)")
+        else:
+            dirty = "UNCOMMITTED protocol files" if p["protocol_files_dirty"] else "clean"
+            print(f"protocol.json: {p['lineage']} / {p['point']}, checkpoint sha256 {p['checkpoint_sha256']}, git {str(p['git_commit'])[:12]} ({dirty}), "
+                  f"host platforms {', '.join(p['platforms'])}" + (f", T1 on {', '.join(p['t1_platforms'])}" if p.get("t1_platforms") else ""))
         if s["kind"] == "rush":
             print("cond | n | held_8m (scv_8m>=8) | held_s (scv_min_1m>4) | scout<3:00 | bunker_order<3:00 | bunker_order<4:00 | bunker_unit<3:00 | bunker_unit<4:00 | scv_4m p50 | won | dumped | invalid")
             for c, v in t.items():
@@ -228,8 +265,11 @@ def main(argv=None) -> None:
     override = dict(k.split("=", 1) for k in a.kind)
     lin = protocol.load_lineage()
     res = {}
-    for j in a.jobs:
-        res.update(job_tables(j, cache, override, lin))
+    try:
+        for j in a.jobs:
+            res.update(job_tables(j, cache, override, lin))
+    except UnknownPlan as e:
+        raise SystemExit(f"REFUSED: {e}")
     print_tables(res)
     if a.json:
         a.json.write_text(json.dumps(res, indent=1), encoding="utf-8")

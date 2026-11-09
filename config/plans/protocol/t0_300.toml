@@ -1,4 +1,4 @@
-# Measurement protocol plan template `t0_300` (config/protocol/lineage.toml, tools/eval/protocol.py).
+# 050-R9 measurement protocol plan template `t0_300` (config/protocol/lineage.toml, tools/eval/protocol.py).
 # T0 300 games: 3 races x 2 maps x 50, seed_base 41300 (the stochastic half of the 041-AC2 plan), stochastic,
 # zero_last_failed true (BC family).
 # Snapshot of the Checkpoint 1 plan <shared>/eval/bc-e2-final/plans/01-e2-final-vs-t0.toml: only the name and the model checkpoint are

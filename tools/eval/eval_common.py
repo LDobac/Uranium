@@ -1,4 +1,5 @@
-"""Shared helpers of the measurement tools in tools/eval (050-R6 / 050-R7, docs/measurement_protocol.md).
+"""Shared helpers of the measurement tools in tools/eval (050-R9 measurement protocol, 050-R6 / 050-R7,
+docs/measurement_protocol.md).
 
 Moved from the untracked Checkpoint 1 scripts (runs/dagger/test_table.py, t1_table.py, ac1_table.py,
 runs/tclone_macro/macro_table.py, runs/bc_ft_teacher/rush_summary.py) with their counting rules kept
@@ -109,16 +110,28 @@ def stage_of(game_id: int) -> int:
     return game_key(game_id) // STAGE_BASE
 
 
+def attempt_of(game_id: int) -> int:
+    return int(game_id) // ATTEMPT_BASE
+
+
 def model_rows(rows: list[dict], stage: int) -> dict[int, dict]:
     """Model-player rows of one stage by plan game number n (runs/dagger/test_table.py stage_rows: the
-    row has a `model` object, it belongs to the stage, the last row of a game wins). A replayed game's
-    row has the attempt in its id; the old scripts read game_id // 100000 and missed those rows (no
-    Checkpoint 1 table job had one; the AC1 baseline (a) job has one)."""
-    out = {}
+    row has a `model` object and belongs to the stage). Of several rows of a game the one of the highest
+    attempt wins, then the later one in file order.
+
+    Retries (050-R9): a replayed game's row has the attempt in its id. runs/dagger/test_table.py and
+    ac1_table.py picked the stage with game_id // 100000 and so dropped those rows; runs/dagger/
+    t1_table.py (game_id % 100000, no stage filter), rush_summary.py (% 100000) and the eval worker's
+    summary.md counted them. Checkpoint 1 jobs with retried model rows: bc-check-20261105 (6 games) and
+    ac1-20261101/baseline/ac1-base-lf0 (1 game); their reported values (rush_summary.py, summary.md)
+    already include the retries, as this function does."""
+    best: dict[int, tuple[int, dict]] = {}
     for r in rows:
         if r.get("model") and stage_of(r["game_id"]) == stage:
-            out[game_key(r["game_id"]) % STAGE_BASE] = r
-    return out
+            n, a = game_key(r["game_id"]) % STAGE_BASE, attempt_of(r["game_id"])
+            if n not in best or a >= best[n][0]:
+                best[n] = (a, r)
+    return {n: r for n, (_, r) in best.items()}
 
 
 def read_ledger(job: Path) -> list[dict]:
@@ -134,10 +147,11 @@ _EXITS = re.compile(r"launcher exit codes \[([^\]]*)\]")
 
 
 def opponent_crashes(ledger: list[dict]) -> set[int]:
-    """Game ids with an Aborted attempt whose second launcher (players[1], the opponent) did not exit
-    with code 0 (`Some(0)`): the opponent crashed during the game. Checkpoint 1 counted these games as
-    invalid (reports/checkpoint1.md 7.3: BC McRave 1 game, AC1 Steamhammer protoss 5 games), whatever
-    the game's later row says (a replayed game or a Surrender win)."""
+    """Game ids (attempt dropped) with an Aborted attempt where our launcher (players[0]) exited with
+    code 0 and the opponent's (players[1]) did not (`Some(0)`): the opponent crashed during the game.
+    Checkpoint 1 counted these games as invalid (050-R9; reports/checkpoint1.md 7.3: BC McRave 1 game,
+    AC1 Steamhammer protoss 5 games), whatever the game's later row says (a replayed game or a
+    Surrender win). An abort where our side failed too is a normal retry, not an opponent crash."""
     out = set()
     for g in ledger:
         if g.get("outcome") != "Aborted":
@@ -146,7 +160,7 @@ def opponent_crashes(ledger: list[dict]) -> set[int]:
         if not m:
             continue
         codes = [c.strip() for c in m.group(1).split(",")]
-        if len(codes) >= 2 and codes[1] != "Some(0)":
+        if len(codes) >= 2 and codes[0] == "Some(0)" and codes[1] != "Some(0)":
             out.add(game_key(g["game_id"]))
     return out
 

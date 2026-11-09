@@ -1,4 +1,4 @@
-# Measurement protocol plan template `t1_rl` (config/protocol/lineage.toml, tools/eval/protocol.py).
+# 050-R9 measurement protocol plan template `t1_rl` (config/protocol/lineage.toml, tools/eval/protocol.py).
 # T1 300 games of an RL checkpoint: as t1_bc with zero_last_failed false.
 # Snapshot of the Checkpoint 1 plan config/plans/t1_eval_ac1.toml: only the name and the model checkpoint are
 # placeholders (@NAME@, @CHECKPOINT@); everything else is what Checkpoint 1 was measured with. Do not edit:

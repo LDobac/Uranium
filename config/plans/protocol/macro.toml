@@ -1,4 +1,4 @@
-# Measurement protocol plan template `macro` (config/protocol/lineage.toml, tools/eval/protocol.py).
+# 050-R9 measurement protocol plan template `macro` (config/protocol/lineage.toml, tools/eval/protocol.py).
 # 050-R8 macro-opponent check of a model: 4 macro zerg opponents x 10 games, map both, seed_base 46000 (the
 # teacher run's seeds), 10 min (max_frames 14,400), stochastic, zero_last_failed false (the plan default; written out
 # here), replays kept. Same seeds for BC and RL checkpoints.

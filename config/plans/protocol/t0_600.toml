@@ -1,4 +1,4 @@
-# Measurement protocol plan template `t0_600` (config/protocol/lineage.toml, tools/eval/protocol.py).
+# 050-R9 measurement protocol plan template `t0_600` (config/protocol/lineage.toml, tools/eval/protocol.py).
 # T0 600 games (041-AC2): 3 races x 2 maps x 50, argmax then stochastic, seed_base 41000, zero_last_failed true.
 # Snapshot of the Checkpoint 1 plan config/plans/bc-vs-t0.toml: only the name and the model checkpoint are
 # placeholders (@NAME@, @CHECKPOINT@); everything else is what Checkpoint 1 was measured with. Do not edit:

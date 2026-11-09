@@ -1,4 +1,4 @@
-# Accepted OSS bot binaries for protocol measurements (021, reports/checkpoint1.md 7.3 "NDEBUG"): sha256 of
+# Accepted OSS bot binaries for protocol measurements (050-R9, 021, reports/checkpoint1.md 7.3 "NDEBUG"): sha256 of
 # <URANIUM_OSS_BOTS_DIR>/<bot>/module.so (Linux) or module.dll (Windows). tools/eval/protocol.py `job` / `bots`
 # refuses a game host whose binary of a bot in the job is not listed here.
 #
@@ -6,7 +6,8 @@
 # crash fix, tools/oss/common.sh) on the three Linux hosts; the builds are not bit-reproducible across hosts
 # (the two Linux ROCm hosts agree except ZZZKBot, the third Linux host differs throughout and has no McRave).
 # Windows: the CMake Release builds of 2026-10-16 (NDEBUG is part of Release). Checkpoint 1 played its T1 300
-# on the Windows host and the BC baseline's T1 300 on the two Linux ROCm hosts.
+# on the Windows host and the BC baseline's T1 300 on the two Linux ROCm hosts; T1 of a later lineage runs on
+# the same platform as its Checkpoint 1 counterpart (lineage.toml t1_platforms, user decision 2026-11-09).
 # A new build gets its hashes added here (with a note) before it is used for a protocol measurement.
 
 [bot.ualbertabot]
@@ -25,8 +26,8 @@ sha256 = [
 
 [bot.zzzkbot]
 sha256 = [
-  "05be11a7eb180c872bf62c13cbac1ba65ded42639264c568b8e32124d311428a",  # Linux ROCm host 1
-  "3f1397c195ac485336941a56a016597f8a7c7455b1fb41962c5e9119542d4673",  # Linux ROCm host 2
+  "05be11a7eb180c872bf62c13cbac1ba65ded42639264c568b8e32124d311428a",  # one Linux ROCm host
+  "3f1397c195ac485336941a56a016597f8a7c7455b1fb41962c5e9119542d4673",  # the other Linux ROCm host
   "404d1e144512b105eb3378fa3afaf82d814a8aab7d672b99664a036b78e648f5",  # third Linux host
   "e0a2f8291e04e72ce5ac3e285f66c9034adf60e522dc3060c4a868aa3664b46b",  # Windows
 ]

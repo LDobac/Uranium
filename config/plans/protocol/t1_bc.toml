@@ -1,4 +1,4 @@
-# Measurement protocol plan template `t1_bc` (config/protocol/lineage.toml, tools/eval/protocol.py).
+# 050-R9 measurement protocol plan template `t1_bc` (config/protocol/lineage.toml, tools/eval/protocol.py).
 # T1 300 games of a BC-family checkpoint: every T1 bot x 50 (multi-race bots Z 18 / P 16 / T 16), map both,
 # seed_base 46000, stochastic, zero_last_failed true. T1 bots must be the NDEBUG builds (config/protocol/t1_bots.toml).
 # Snapshot of the Checkpoint 1 plan config/plans/t1_eval_ck1.toml (= t1_eval_bc.toml): only the name and the model checkpoint are
