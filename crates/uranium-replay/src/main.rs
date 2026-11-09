@@ -83,6 +83,43 @@ enum Cmd {
     },
     /// 013: opcode histogram of a corpus with the OpenBW class of each opcode (JSON).
     Ophist { dir: PathBuf },
+    /// Analysis (G0 decision granularity, `tools/eval/granularity.py`): per game the labels and a
+    /// compact own/enemy state in an early window as gzipped JSON lines, from shards or (with
+    /// `--replays`) from replays through the 040 labeler without the 5-minute bar. Writes no
+    /// dataset.
+    Granularity {
+        /// Shard / replay files or folders (searched recursively).
+        inputs: Vec<PathBuf>,
+        /// File with one more input path per line.
+        #[arg(long)]
+        list: Option<PathBuf>,
+        /// Inputs are replays (default: shards).
+        #[arg(long)]
+        replays: bool,
+        /// Output `.jsonl.gz`.
+        #[arg(long)]
+        out: PathBuf,
+        /// Source tag written into replay games.
+        #[arg(long, default_value = "")]
+        source: String,
+        /// Shard filters: matchup (e.g. TvZ), stage (S1 / S2 / B), map families (comma list).
+        #[arg(long)]
+        matchup: Option<String>,
+        #[arg(long)]
+        stage: Option<String>,
+        #[arg(long, value_delimiter = ',')]
+        families: Vec<String>,
+        #[arg(long, default_value_t = 1440)]
+        lo: u32,
+        #[arg(long, default_value_t = 6480)]
+        hi: u32,
+        #[arg(long, default_value_t = 24)]
+        period: u32,
+        #[arg(long, default_value_t = 11520)]
+        at: u32,
+        #[arg(long, default_value_t = 4)]
+        jobs: usize,
+    },
     /// 040: build BC shards from a replay folder (filter, desync check, labels, shards).
     Build {
         dir: PathBuf,
@@ -444,6 +481,19 @@ fn main() -> Result<()> {
             for p in views {
                 println!("{}", serde_json::to_string_pretty(&uranium_replay::trace::trace(&r, p, &cfg)?)?);
             }
+        }
+        Cmd::Granularity { inputs, list, replays, out, source, matchup, stage, families, lo, hi, period, at, jobs } => {
+            use uranium_replay::granularity::{ShardFilter, Window, expand, run};
+            let mut inputs = inputs;
+            if let Some(l) = list {
+                let text = std::fs::read_to_string(&l).with_context(|| format!("reading {}", l.display()))?;
+                inputs.extend(text.lines().map(str::trim).filter(|s| !s.is_empty()).map(PathBuf::from));
+            }
+            anyhow::ensure!(period > 0 && lo <= hi, "--period must be > 0 and --lo <= --hi");
+            let files = expand(&inputs, replays)?;
+            let w = Window { lo, hi, period, at };
+            let (games, failed) = run(&files, replays, &out, &source, w, &ShardFilter { matchup, stage, families }, jobs)?;
+            println!("{{\"files\":{},\"games\":{games},\"failed\":{failed}}}", files.len());
         }
         Cmd::Ophist { dir } => {
             let mut files = Vec::new();

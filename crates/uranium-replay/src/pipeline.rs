@@ -143,7 +143,7 @@ pub struct View {
     pub enemy_random: bool,
 }
 
-fn race_letter(r: u8) -> char {
+pub(crate) fn race_letter(r: u8) -> char {
     match r {
         header::RACE_ZERG => 'Z',
         header::RACE_TERRAN => 'T',
