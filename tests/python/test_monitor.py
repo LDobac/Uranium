@@ -114,6 +114,22 @@ def test_monitor_leaves_the_forward_and_mode_unchanged():
         assert torch.equal(ref["logp"][k], got["logp"][k]), k
 
 
+def test_row_chunks_give_the_same_counts(monkeypatch):
+    """The counts and the recomputed points (stem, ResBlock inner) are taken in row chunks to
+    bound scratch memory; tiny chunks give the same numbers."""
+    from uranium.model import monitor
+
+    net, b, t, obs, labels, priv = tiny()
+    rows = torch.tensor([True, False, True, True] * (b * t // 4))
+    whole = stats_to_host(relu_stats(net, obs, labels, priv, net.init_state(b), t, rows=rows))
+    monkeypatch.setattr(monitor, "CHUNK_ELEMENTS", 7)
+    chunked = stats_to_host(relu_stats(net, obs, labels, priv, net.init_state(b), t, rows=rows))
+    assert chunked.keys() == whole.keys()
+    for k in whole:
+        assert chunked[k]["elements"] == whole[k]["elements"] and chunked[k]["never_active"] == whole[k]["never_active"], k
+        assert chunked[k]["pos_frac"] == pytest.approx(whole[k]["pos_frac"], abs=1e-6), k
+
+
 def test_channel_stats_of_given_activations():
     x = torch.tensor([[[1.0, -1.0, 0.0], [2.0, -3.0, 0.0]], [[0.5, -1.0, 0.0], [-1.0, -2.0, 0.0]]])  # [r=2, n=2, C=3]
     st = channel_stats(x)
