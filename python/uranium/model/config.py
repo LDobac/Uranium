@@ -97,7 +97,7 @@ class ValueConfig:
 
 # 032 §2.8 (032-R21..R24): the model 2 switches of `[model]`, all off by default. Kept out of
 # `to_dict` while off, so the checkpoint meta of a model without them (Checkpoint 1) is unchanged.
-MODEL2_KEYS = ("bypass", "spatial_preact", "core_skip", "recency_init", "aux_priv", "aux_jepa")
+MODEL2_KEYS = ("bypass", "spatial_preact", "core_skip", "aux_priv", "aux_jepa")
 # 041-R23 ⑤ / 042-R21 ③: the logs have three fixed `aux_jepa_slot<i>` columns, one per k.
 AUX_JEPA_SLOTS = 3
 
@@ -116,9 +116,10 @@ class VariantConfig:
     bypass: bool = False  # 032-R21 head bypass + raw scalars into the ActionType head
     spatial_preact: bool = False  # 032-R22 pre-activation spatial ResBlocks (no new parameters)
     core_skip: bool = False  # 032-R23 F1: zero-initialised Linear(core input) added to h
-    recency_init: bool = False  # 032-R23 F2: rel_table init term b(d), [SPEC DEFERRED(U2)] AMB-032-14
     aux_priv: bool = False  # 032-R24 training-only privileged prediction from h_t
-    aux_jepa: list = field(default_factory=list)  # 032-R24 JEPA-style predictors, one per k; [] = off
+    # 032-R24 JEPA-style predictors, one per k; [] = off. Compared as a list (order included) when a
+    # run resumes or inits from a checkpoint (032-AC11): [1, 8, 32] and [8, 1, 32] are different.
+    aux_jepa: list = field(default_factory=list)
 
     def arch(self) -> bool:
         """Any 032 §2.7 switch on."""
@@ -126,7 +127,7 @@ class VariantConfig:
 
     def model2(self) -> bool:
         """Any 032 §2.8 switch on."""
-        return self.bypass or self.spatial_preact or self.core_skip or self.recency_init or self.aux_priv or bool(self.aux_jepa)
+        return self.bypass or self.spatial_preact or self.core_skip or self.aux_priv or bool(self.aux_jepa)
 
     def any(self) -> bool:
         return self.arch() or self.model2()
@@ -160,10 +161,6 @@ class VariantConfig:
             raise ValueError(f"[model] aux_jepa = {ks!r}: a k appears twice (032-R24)")
         if len(ks) > AUX_JEPA_SLOTS:
             raise ValueError(f"[model] aux_jepa = {ks!r}: at most {AUX_JEPA_SLOTS} k (the logs' aux_jepa_slot1..{AUX_JEPA_SLOTS}, 041-R23 ⑤)")
-        if self.recency_init:
-            # 032-R23: the F2 term b(d) waits for the core attention study (U2); no code may
-            # depend on it before AMB-032-14 is resolved.
-            raise ValueError("[model] recency_init: the F2 term b(d) is [SPEC DEFERRED(U2)] AMB-032-14, not available yet (032-R23)")
         return self
 
     @classmethod

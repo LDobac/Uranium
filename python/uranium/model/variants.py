@@ -5,6 +5,7 @@ created after the default model, under a saved global RNG and from their own fix
 generators (as 032-R18 ③), so the shared modules start from the default model's weights."""
 
 import math
+from typing import NoReturn
 
 import torch
 import torch.nn as nn
@@ -36,7 +37,7 @@ def seed_aux_jepa(k: int) -> int:
     return SEED + 0x1000 + 0x10 * k
 
 
-def pending(switch: str, unit: str):
+def pending(switch: str, unit: str) -> NoReturn:
     """A 032 §2.8 switch whose module is not implemented yet: refuse to build a model that would
     silently be the default one."""
     raise NotImplementedError(f"[model] {switch}: not implemented yet ({unit})")
@@ -177,8 +178,7 @@ class Variants(nn.Module):
     - `aux_priv` (032-R24): `aux_priv(h) -> [rows, input.privileged]`, training only.
     - `aux_jepa` (032-R24): `nn.ModuleDict` keyed by `str(k)`, `aux_jepa[str(k)](h) -> [rows, d]`
       with d = entity.d_model + spatial.pool, training only.
-    `spatial_preact` (032-R22) has no module here: it is a flag of the spatial encoder.
-    `recency_init` (032-R23 F2) is refused until AMB-032-14 is resolved (`VariantConfig.check`)."""
+    `spatial_preact` (032-R22) has no module here: it is a flag of the spatial encoder."""
 
     def __init__(self, cfg: UraniumNetConfig, d_core_in: int):
         super().__init__()

@@ -960,6 +960,7 @@ fn aux_and_monitor_tables_are_checked_041_r23() {
     assert!(AuxWeights { privileged: Some(-0.1), jepa: None }.check().is_err());
     assert!(AuxWeights { privileged: None, jepa: Some(f32::NAN) }.check().is_err());
     assert!(AuxWeights { privileged: Some(0.0), jepa: Some(0.1) }.check().is_ok());
+    assert!(AuxWeights::default().check().is_err(), "an empty [aux] table would change the fingerprint only");
     assert!(toml::from_str::<AuxWeights>("prv = 0.2").is_err());
     assert!(toml::from_str::<MonitorConfig>("spatial = 100").is_err());
     assert_eq!(toml::from_str::<AuxWeights>("priv = 0.2").unwrap(), AuxWeights { privileged: Some(0.2), jepa: None });

@@ -336,7 +336,7 @@ class UraniumNet(nn.Module):
             h, state = self.core.forward_seq(core_in.view(bt // t, t, d), s0)
             h = self._skip(h.reshape(bt, -1), core_in)
         else:
-            h, e, sp, sc, e_pool, state = self._outer_seq_phased(obs, s0, t, entity_chunk, phases) if phased else self._outer_seq(obs, s0, t, entity_chunk)
+            h, e, sp, sc, e_pool, state = self._outer_seq_phased(obs, s0, t, entity_chunk, phases, aux) if phased else self._outer_seq(obs, s0, t, entity_chunk, aux)
         out = self.heads(labels, 1.0, h, sc["c"], e, sp, obs, self.table, u=self._bypass(h, sc, e, obs))
         value = self.value(h, sc["z"], sc["race"], priv)
         win_open = self.value.win_open(h, sc["z"], sc["race"])
@@ -345,7 +345,7 @@ class UraniumNet(nn.Module):
             res.update(self._aux(h, e_pool, sp["pool"]))
         return res
 
-    def _outer_seq(self, obs: dict, s0, t: int, entity_chunk: int):
+    def _outer_seq(self, obs: dict, s0, t: int, entity_chunk: int, aux: bool = False):
         """032 §2.7 `outer`: the `t` steps in segments of `outer` decisions, one after another
         (each segment's rows in parallel). Segment k uses the outer state updated at the end of
         segment k-1, through which its loss reaches segment k-1. The sequences start on a segment
@@ -367,12 +367,13 @@ class UraniumNet(nn.Module):
             es.append(e)
             sps.append(sp)
             scs.append(sc)
-            eps.append(e_pool)
+            if aux:  # 032-R24: the JEPA target rows, kept only when the aux outputs are asked for
+                eps.append(e_pool)
         # Back to b-major rows over the whole sequence, as the heads and labels expect.
         join = lambda xs: torch.cat([x.view(b, seg, *x.shape[1:]) for x in xs], 1).reshape(bt, *xs[0].shape[1:])  # noqa: E731
-        return join(hs), join(es), join_parts(sps, join), join_parts(scs, join), join(eps), (cs, os_)
+        return join(hs), join(es), join_parts(sps, join), join_parts(scs, join), join(eps) if aux else None, (cs, os_)
 
-    def _outer_seq_phased(self, obs: dict, s0, t: int, entity_chunk: int, phases: list | None = None):
+    def _outer_seq_phased(self, obs: dict, s0, t: int, entity_chunk: int, phases: list | None = None, aux: bool = False):
         """032 §2.7 `outer` for sequences that start at any decision (RL segments overlap by one
         step, 042): row r's first outer segment is `outer - n0 mod outer` steps long, then whole
         segments, then the rest. Segment k gathers every row's steps of its k-th segment, encodes
@@ -405,12 +406,13 @@ class UraniumNet(nn.Module):
             es.append(e)
             sps.append(sp)
             scs.append(sc)
-            eps.append(e_pool)
+            if aux:  # 032-R24: the JEPA target rows, kept only when the aux outputs are asked for
+                eps.append(e_pool)
         # Back to b-major rows over the whole sequence, as the heads and labels expect.
         perm = torch.cat(idxs)
         inv = torch.empty_like(perm).index_copy(0, perm, torch.arange(bt, device=dev))
         join = lambda xs: torch.cat(xs, 0).index_select(0, inv)  # noqa: E731
-        return join(hs), join(es), join_parts(sps, join), join_parts(scs, join), join(eps), (cs, os_)
+        return join(hs), join(es), join_parts(sps, join), join_parts(scs, join), join(eps) if aux else None, (cs, os_)
 
     def win_open_params(self) -> list[nn.Parameter]:
         """032-R18: the win_open head's parameters (041-R19 clips them apart)."""

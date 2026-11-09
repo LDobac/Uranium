@@ -39,8 +39,8 @@ def test_switches_default_off_032_ac13():
 
 def test_model_table_032_r21_r24():
     """`[model]` accepts the 032 §2.8 keys (bool, and the `aux_jepa` integer list) and refuses
-    wrong types, bad k lists and the deferred F2 switch (032-AC13: unknown key / bad value =
-    start error)."""
+    wrong types, bad k lists and keys outside the spec (032-AC13: unknown key / bad value = start
+    error), F2 `recency_init` included (not adopted, 032-R23)."""
     v = VariantConfig.from_table({"terrain": True, "outer": 32, "bypass": True, "spatial_preact": True, "core_skip": True, "aux_priv": True, "aux_jepa": [1, 8, 32]})
     assert v == VariantConfig(terrain=True, outer=32, bypass=True, spatial_preact=True, core_skip=True, aux_priv=True, aux_jepa=[1, 8, 32])
     assert VariantConfig.from_table({"aux_jepa": []}) == VariantConfig()
@@ -52,10 +52,9 @@ def test_model_table_032_r21_r24():
         with pytest.raises(ValueError):
             VariantConfig.from_table(t)
     assert len(VariantConfig.from_table({"aux_jepa": list(range(1, AUX_JEPA_SLOTS + 1))}).aux_jepa) == AUX_JEPA_SLOTS
-    # 032-R23 F2: [SPEC DEFERRED(U2)] AMB-032-14 - the key is known, turning it on is refused.
-    with pytest.raises(ValueError, match="AMB-032-14"):
-        VariantConfig.from_table({"recency_init": True})
-    assert VariantConfig.from_table({"recency_init": False}) == VariantConfig()
+    for k in ({"recency_init": True}, {"recency_init": False}):
+        with pytest.raises(ValueError, match="unknown"):
+            VariantConfig.from_table(k)
 
 
 def test_config_dict_keeps_old_forms_032_ac13():
@@ -193,12 +192,6 @@ def test_unimplemented_switch_is_refused(switch):
         net_of(cfg)
 
 
-def test_recency_init_refused_at_build_amb_032_14():
-    cfg, *_ = tiny(VariantConfig(recency_init=True))
-    with pytest.raises(ValueError, match="AMB-032-14"):
-        net_of(cfg)
-
-
 # --- Hook points, with stand-in modules for the model 2 modules (032 §2.8, `Variants` docstring).
 
 
@@ -253,9 +246,9 @@ def test_zero_hooks_keep_outputs_032_ac13(name):
 
 @pytest.mark.parametrize("name", ["pool", "outer", "all"])
 def test_hooks_step_matches_sequence_032_ac13(name):
-    """With non-zero stand-ins the hooks act on h before every consumer, the outer h_sum
-    included: one decision at a time = the training pass (032-R5, outer segments), and the
-    phased RL pass gives the same (032 §2.7)."""
+    """With non-zero stand-ins the hooks act where 032-R23 puts them (heads, value and aux read
+    h' = h + skip; the outer h_sum takes the pre-skip h): one decision at a time = the training
+    pass (032-R5, outer segments), and the phased RL pass gives the same (032 §2.7)."""
     from uranium.agent.infer import leaves
 
     cfg, b, t, obs, labels, _ = tiny(VARIANTS[name])

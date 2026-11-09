@@ -1151,6 +1151,10 @@ mod tests {
         assert_eq!((json["aux"]["priv"].as_f64().map(|x| x as f32), json["monitor"]["spatial_every"].as_u64()), (Some(0.2), Some(100)));
         let bad: RlConfig = toml::from_str(&format!("{full}\n[aux]\npriv = -0.2\n")).unwrap();
         assert!(bad.validate().is_err());
+        let empty: RlConfig = toml::from_str(&format!("{full}
+[aux]
+")).unwrap();
+        assert!(empty.validate().is_err(), "an empty [aux] table is refused");
         assert!(toml::from_str::<RlConfig>(&format!("{full}\n[aux]\nprivileged = 0.2\n")).is_err());
     }
 
