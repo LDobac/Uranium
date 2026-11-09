@@ -415,9 +415,11 @@ fn surrender_modes_031_r12() {
     assert_eq!((s.surrender.as_str(), s.surrender_frame, s.decisions), ("shadow", None, 6));
 
     // On, forced from frame 49 (the third frame): one surrender Act, then the bridge leaves.
+    // 041-R28 ①: the surrender decision is not recorded in memory, so not in the decision log.
+    let log = std::env::temp_dir().join(format!("uranium-agent-memlog-surrender-{}", std::process::id())).join("g1.jsonl");
     // SAFETY: only this test sets the variable, and only On-mode sessions read it.
     unsafe { std::env::set_var("URANIUM_TEST_SURRENDER_FRAME", "49") };
-    let h = h.with_surrender(uranium_agent::infer::SurrenderMode::On, "good game");
+    let h = h.with_surrender(uranium_agent::infer::SurrenderMode::On, "good game").with_memory_log(log.clone());
     let mut p = ModelPolicy::new(&h, &game_info()).unwrap();
     unsafe { std::env::remove_var("URANIUM_TEST_SURRENDER_FRAME") };
     let acts: Vec<Act> = fs[..3].iter().map(|f| p.on_frame(f).unwrap()).collect();
@@ -426,6 +428,50 @@ fn surrender_modes_031_r12() {
     assert!(acts[2].cmds.is_empty(), "010-R13: no commands with a surrender");
     let s = p.stats();
     assert_eq!((s.surrender.as_str(), s.surrender_frame, s.decisions), ("on", Some(49), 3));
+    p.on_end(None, None);
+    let lines = decision_log_lines(&log);
+    assert_eq!(lines.len(), 3, "two decisions and the end line: {lines:?}");
+    assert_eq!(lines[2], DecisionLogLine::End { decisions: 2, end_frame: None });
+    std::fs::remove_dir_all(log.parent().unwrap()).ok();
+}
+
+fn decision_log_lines(path: &std::path::Path) -> Vec<uranium_env::features::label::DecisionLogLine> {
+    std::fs::read_to_string(path).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+}
+
+use uranium_env::features::label::DecisionLogLine;
+
+/// 041-R28 ① (AMB-041-17): a handle with `memory_log` makes its session write each decision as
+/// memory records it (live frame, sampled action, delay bucket, selected unit ids) in order, then
+/// the end line with the count and the final frame; without it nothing is written.
+#[test]
+fn decision_log_lines_match_memory_records_041_r28() {
+    let dir = std::env::temp_dir().join(format!("uranium-agent-memlog-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let log = dir.join("memory").join("g7.jsonl");
+    let fs = frames(1, 6);
+    let h = mock(1, None);
+    assert!(h.memory_log.is_none(), "off by default");
+    let mut p = ModelPolicy::new(&h.clone().with_memory_log(log.clone()), &game_info()).unwrap();
+    for f in &fs {
+        p.on_frame(f).unwrap();
+    }
+    p.on_end(Some(uranium_env::reward::Outcome::Win), fs.last());
+    let lines = decision_log_lines(&log);
+    let want: Vec<DecisionLogLine> = fs
+        .iter()
+        .enumerate()
+        // The mock samples NoOp with an empty selection and delay bucket = decisions so far.
+        .map(|(t, f)| DecisionLogLine::Decision { frame: f.frame, action: 0, delay_bucket: (t % DELAY_BUCKETS.len()) as u32, units: vec![] })
+        .chain([DecisionLogLine::End { decisions: 6, end_frame: Some(fs.last().unwrap().frame) }])
+        .collect();
+    assert_eq!(lines, want);
+    // A session without the key writes no file.
+    let mut q = ModelPolicy::new(&h, &game_info()).unwrap();
+    q.on_frame(&fs[0]).unwrap();
+    q.on_end(None, None);
+    assert_eq!(std::fs::read_dir(dir.join("memory")).unwrap().count(), 1);
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// 031-R10 / 010-R14 / 010-R12: `play` counts `UnitRejected` from observations and from

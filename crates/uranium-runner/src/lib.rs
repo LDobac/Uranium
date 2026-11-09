@@ -78,6 +78,17 @@ pub trait JobSource: Send + Sync {
     fn left(&self) -> usize {
         0
     }
+    /// 041-R28 ①: the decision log file of `job`'s model player (named like its replay), when its
+    /// plan has `memory_log = true`; `None` = no log (the default).
+    fn memory_log(&self, _job: &Job) -> Option<PathBuf> {
+        None
+    }
+}
+
+/// 041-R28 ① (AMB-041-17): file name of the decision log of the game whose replay is
+/// `g<id>.rep` (same game id; `uranium-replay build --memory-log` looks it up by the replay stem).
+pub fn memory_log_name(id: u64) -> String {
+    format!("g{id}.jsonl")
 }
 
 /// A fixed list of games (matchup plans).
@@ -86,11 +97,13 @@ pub struct QueueSource {
     jobs: Mutex<VecDeque<Job>>,
     /// Where replays hostd sends back are written (`g<id>.rep`); `None` drops them.
     replay_dir: Option<PathBuf>,
+    /// 041-R28 ①: where model players write their decision logs (`g<id>.jsonl`); `None` = none.
+    memory_dir: Option<PathBuf>,
 }
 
 impl QueueSource {
     pub fn new(jobs: Vec<Job>) -> Self {
-        Self { jobs: Mutex::new(VecDeque::from(jobs)), replay_dir: None }
+        Self { jobs: Mutex::new(VecDeque::from(jobs)), replay_dir: None, memory_dir: None }
     }
 
     /// 020-R5: replays of `save_replay` games land in `dir` on the scheduler's PC, wherever the
@@ -99,9 +112,18 @@ impl QueueSource {
         self.replay_dir = Some(dir);
         self
     }
+
+    /// 041-R28 ①: model players write one decision log per game to `dir/g<id>.jsonl`.
+    pub fn with_memory_logs(mut self, dir: PathBuf) -> Self {
+        self.memory_dir = Some(dir);
+        self
+    }
 }
 
 impl JobSource for QueueSource {
+    fn memory_log(&self, job: &Job) -> Option<PathBuf> {
+        self.memory_dir.as_ref().map(|d| d.join(memory_log_name(job.spec.game_id)))
+    }
     fn next(&self) -> Option<Job> {
         self.jobs.lock().unwrap().pop_front()
     }
@@ -287,7 +309,11 @@ pub fn run_plan(plan_path: &Path, out: Option<PathBuf>, models: Models) -> Resul
     let started = std::time::Instant::now();
     // Scenario builds (050) and model routes are registered per game by the workers (020-R11).
     let dispatch = Dispatch::new(routes, models, builds).with_ends(ends);
-    let source = Arc::new(QueueSource::new(jobs).with_replays(out.join("replays")));
+    let mut source = QueueSource::new(jobs).with_replays(out.join("replays"));
+    if plan.memory_log {
+        source = source.with_memory_logs(out.join("memory"));
+    }
+    let source = Arc::new(source);
     run_source(source.clone(), &hosts()?, &out.join("games.jsonl"), &dispatch)?;
     let left = JobSource::left(&*source);
     elog!("[env] finished in {:.0}s ({left} games not run)", started.elapsed().as_secs_f64());
@@ -422,8 +448,15 @@ pub(crate) fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter
             bail!("no inference server for {k:?} (020-R11)");
         }
         // 020-R11: model players are routed by (game_id, slot) before the bridges connect.
+        let memory_log = source.memory_log(&job);
         for slot in 0..2 {
             let spec = job.policies[slot].clone().or_else(|| job.models[slot].as_ref().and_then(|k| dispatch.models.get(k)).cloned());
+            // 041-R28 ①: the plan's model player logs its decisions (one model player per game,
+            // checked when the plan loads).
+            let spec = match (spec, &memory_log) {
+                (Some(PolicySpec::Model(h)), Some(p)) => Some(PolicySpec::Model(h.with_memory_log(p.clone()))),
+                (s, _) => s,
+            };
             if let Some(spec) = spec {
                 dispatch.routes.insert(job.spec.game_id, slot as u8, spec);
             }

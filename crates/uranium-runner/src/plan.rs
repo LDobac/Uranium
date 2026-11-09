@@ -44,6 +44,12 @@ pub struct Plan {
     /// 79 UTF-8 bytes, 010-R13).
     #[serde(default = "d_surrender_chat")]
     pub surrender_chat: String,
+    /// 041-R28 ① (AMB-041-17): the model player writes every decision it records in agent memory
+    /// to `memory/g<id>.jsonl` beside `replays/g<id>.rep` (the DAgger games, 041-R22, whose
+    /// relabel build reads it with `--memory-log`). Off by default; needs `save_replay` and one
+    /// model player per game.
+    #[serde(default)]
+    pub memory_log: bool,
     #[serde(rename = "matchup")]
     pub matchups: Vec<Matchup>,
 }
@@ -223,6 +229,13 @@ pub fn load_plan(path: &Path) -> Result<Plan> {
         if m.p1_random_ratio > 0.0 && matches!(m.p1, Side::T0 { build, .. } if build != T0Build::Standard) {
             bail!("matchup {i}: p1_random_ratio needs a multi-race bot, not a scenario build (021-R7)");
         }
+        // 041-R28 ①: one decision log per game, named like its replay.
+        if plan.memory_log && m.p0.model().is_some() && m.p1.model().is_some() {
+            bail!("matchup {i}: memory_log needs one model player per game (one log per game, 041-R28)");
+        }
+    }
+    if plan.memory_log && !plan.save_replay {
+        bail!("memory_log goes with save_replay: the relabel build reads the log beside the replay (041-R28)");
     }
     Ok(plan)
 }
@@ -443,6 +456,32 @@ p1={kind='oss',name='iron',race='terran'}";
         assert!(load_plan(&path).is_err());
         std::fs::write(&path, format!("{base}p1={{kind='t0',race='zerg',build='zerg_rush'}}")).unwrap();
         assert!(load_plan(&path).is_ok());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 041-R28 ①: `memory_log` is off by default; on, it needs `save_replay` and one model player
+    /// per game; the log of game `g<id>.rep` is `memory/g<id>.jsonl` (plain plan runs).
+    #[test]
+    fn memory_log_plan_key_041_r28() {
+        let dir = std::env::temp_dir().join(format!("uranium-plan-memlog-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("p.toml");
+        let model = "{kind='model',checkpoint='c',sample='stochastic'}";
+        let plan = |head: &str, p1: &str| format!("name='x'\n{head}\n[[matchup]]\nmap='both'\ngames=1\np0={model}\np1={p1}\n");
+        std::fs::write(&path, plan("save_replay=true", "{kind='t0',race='zerg'}")).unwrap();
+        assert!(!load_plan(&path).unwrap().memory_log, "off by default");
+        std::fs::write(&path, plan("save_replay=true\nmemory_log=true", "{kind='t0',race='zerg'}")).unwrap();
+        assert!(load_plan(&path).unwrap().memory_log);
+        std::fs::write(&path, plan("memory_log=true", "{kind='t0',race='zerg'}")).unwrap();
+        assert!(format!("{:#}", load_plan(&path).unwrap_err()).contains("save_replay"));
+        std::fs::write(&path, plan("save_replay=true\nmemory_log=true", model)).unwrap();
+        assert!(format!("{:#}", load_plan(&path).unwrap_err()).contains("one model player"));
+        let jobs = expand(&toml::from_str::<Plan>(&plan("save_replay=true\nmemory_log=true", "{kind='t0',race='zerg'}")).unwrap(), "a:1");
+        use crate::JobSource;
+        let q = crate::QueueSource::new(jobs.clone()).with_replays(dir.join("replays"));
+        assert_eq!(q.memory_log(&jobs[0]), None, "no log without with_memory_logs");
+        let q = q.with_memory_logs(dir.join("memory"));
+        assert_eq!(q.memory_log(&jobs[0]), Some(dir.join("memory").join("g1.jsonl")));
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -219,9 +219,11 @@ DAGGER_SEED_KEY = 70000
 DAGGER_ROUND_STRIDE = 600
 
 
-def write_dagger(out_dir: Path, rnd: int, checkpoint: str, out: Path | None, half: bool = False) -> None:
+def write_dagger(out_dir: Path, rnd: int, checkpoint: str, out: Path | None, half: bool = False, memory_log: bool = False) -> None:
     """One DAgger round plan (041-R22): rush 4 x 2 maps x 40 + macro 5 x 2 maps x 28 = 600 model
-    games, or with `half` rush x 20 + macro x 14 = 300 (11th advisory section 2)."""
+    games, or with `half` rush x 20 + macro x 14 = 300 (11th advisory section 2). `memory_log`:
+    the model writes its decision logs for the 040-R22 `memory_action` relabel (041-R28, model 2
+    path); off, the plan is the Checkpoint 1 path's byte for byte."""
     assert rnd >= 1, "--round starts at 1"
     if half:
         rush_games, macro_games = DAGGER_HALF_RUSH_GAMES, DAGGER_HALF_MACRO_GAMES
@@ -262,6 +264,7 @@ def write_dagger(out_dir: Path, rnd: int, checkpoint: str, out: Path | None, hal
         "# natural start slots, none of another plan's seeds (botgen, check, dagger; asserted by the generator).",
         f'name = "{name}"',
         "save_replay = true",
+        *(("# 041-R28: decision logs memory/g<id>.jsonl beside replays/ (uranium-replay build --memory-log).", "memory_log = true") if memory_log else ()),
         "wall_timeout_s = 7200",
         "zero_last_failed = false",
         f"max_frames = {TEACHER_MAX_FRAMES}",
@@ -353,10 +356,12 @@ if __name__ == "__main__":
     ap.add_argument("--dagger", action="store_true", help="write a DAgger round plan (10th advisory 2.2)")
     ap.add_argument("--round", type=int, default=1, help="--dagger: round number (seeds per round disjoint)")
     ap.add_argument("--half", action="store_true", help="--dagger: half-size round plan, 300 games (11th advisory 2)")
+    ap.add_argument("--memory-log", action="store_true", help="--dagger: the model writes decision logs for the memory_action relabel (041-R28)")
     a = ap.parse_args()
     assert a.dagger or not a.half, "--half needs --dagger"
+    assert a.dagger or not a.memory_log, "--memory-log needs --dagger"
     if a.dagger:
-        write_dagger(a.out_dir, a.round, a.checkpoint or DAGGER_CHECKPOINT, a.out, a.half)
+        write_dagger(a.out_dir, a.round, a.checkpoint or DAGGER_CHECKPOINT, a.out, a.half, a.memory_log)
         raise SystemExit(0)
     if a.first_game is not None:
         assert a.botgen and a.name, "--first-game needs --botgen and --name"

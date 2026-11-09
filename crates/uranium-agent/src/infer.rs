@@ -125,6 +125,9 @@ pub struct InferenceHandle {
     pub surrender: SurrenderMode,
     /// 020-R14: chat line sent before leaving (default `gg`, empty = no chat).
     pub surrender_chat: Arc<str>,
+    /// 041-R28 ①: the decision log file of the one game a session opened from this handle plays
+    /// (the scheduler sets it per game for plans with `memory_log = true`); `None` = no log.
+    pub memory_log: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for InferenceHandle {
@@ -166,7 +169,13 @@ pub fn model_policy_label(checkpoint_id: &str, sample: SampleMode) -> String {
 impl InferenceHandle {
     /// A handle on the server that reads `tx` (its other end).
     pub fn new(tx: Sender<Req>, checkpoint_id: String, sample: SampleMode, opts: &InferOptions) -> Self {
-        Self { tx, checkpoint_id: checkpoint_id.into(), sample, zero_last_failed: opts.zero_last_failed, surrender: SurrenderMode::Shadow, surrender_chat: DEFAULT_CHAT.into() }
+        Self { tx, checkpoint_id: checkpoint_id.into(), sample, zero_last_failed: opts.zero_last_failed, surrender: SurrenderMode::Shadow, surrender_chat: DEFAULT_CHAT.into(), memory_log: None }
+    }
+
+    /// 041-R28 ①: sessions opened from this handle write their decisions to `path` (one game).
+    pub fn with_memory_log(mut self, path: PathBuf) -> Self {
+        self.memory_log = Some(path);
+        self
     }
 
     /// 031-R12 / 020-R14: surrender mode and chat line for the sessions opened from this handle.
