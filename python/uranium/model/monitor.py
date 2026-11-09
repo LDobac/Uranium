@@ -69,7 +69,10 @@ SPEC_LAYERS = (
     ("b0", "spatial.bottleneck0"),
     ("b1", "spatial.bottleneck1"),
 )
-SPEC_COLUMNS = tuple(c for name, _ in SPEC_LAYERS for c in (f"sp_pos_{name}", f"sp_dead_{name}")) + ("sp_const_s8", "sp_const_pool")
+# 042-R21 ③ train.csv columns, grouped: every sp_pos_<layer> in SPEC_LAYERS order, then every
+# sp_dead_<layer> in the same order, then sp_const_s8, sp_const_pool (041-R25 BC log, same order)
+SPEC_COLUMNS = (tuple(f"sp_pos_{name}" for name, _ in SPEC_LAYERS) + tuple(f"sp_dead_{name}" for name, _ in SPEC_LAYERS)
+                + ("sp_const_s8", "sp_const_pool"))
 CONST_POINTS = ("spatial.s8.const", "spatial.pool.const")
 
 
@@ -409,13 +412,12 @@ def relu_stats(net, obs: dict, labels: dict, priv, s0, t: int, rows: torch.Tenso
 
 
 def packed(stats: dict) -> torch.Tensor:
-    """041-R25 / 042-R21 columns (`SPEC_COLUMNS` order) as one 1-D f64 tensor on the stats'
-    device: per layer pos then dead, then const S8, const pool. The trainer appends it to the
-    update's stats tensor and reads everything in one host transfer."""
-    vals = []
-    for _, point in SPEC_LAYERS:
-        v = stats[point]
-        vals += [v["pos_frac"].to(torch.float64), v["never_active"].to(torch.float64)]
+    """041-R25 / 042-R21 ③ columns (`SPEC_COLUMNS` order) as one 1-D f64 tensor on the stats'
+    device: every layer's pos (041-R25 layer order), then every layer's dead (same order), then
+    const S8, const pool. The trainer appends it to the update's stats tensor and reads
+    everything in one host transfer."""
+    vals = [stats[point]["pos_frac"].to(torch.float64) for _, point in SPEC_LAYERS]
+    vals += [stats[point]["never_active"].to(torch.float64) for _, point in SPEC_LAYERS]
     vals += [stats[k]["const"].to(torch.float64) for k in CONST_POINTS]
     return torch.stack(vals)
 
