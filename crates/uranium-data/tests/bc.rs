@@ -90,6 +90,7 @@ fn game() -> ShardGame {
             },
             privileged: Some(PrivilegedSummary::default()),
             action_label: label(k as u32 * 8, k),
+            memory_action: None,
         })
         .collect();
     let meta = GameMeta {
@@ -512,6 +513,115 @@ fn feeder_resume_continues_the_data_061_r10() {
         assert_eq!(&batch_key(&x), key);
         assert_eq!(&x.state, state);
     }
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// SHA-256 over the digests of every lane group of every batch of one epoch over `root`
+/// (symmetry, z_drop and the race mask on, so their paths are covered too).
+fn epoch_digest(root: &std::path::Path) -> String {
+    use sha2::{Digest, Sha256};
+    let mut cfg = tiny_bc(1, 0);
+    cfg.data.z_drop = 0.5;
+    cfg.data.augment = true;
+    cfg.data.enemy_race_mask = 0.5;
+    let mut f = feeder(&cfg);
+    let mut s = ShardSource::new(root).unwrap().shuffled(3);
+    let mut h = Sha256::new();
+    while let Some(b) = f.next_batch_from(&mut s).unwrap() {
+        for l in 0..b.lanes() {
+            h.update(b.group(l..l + 1, cfg.seq_len, 0, 12).digest().as_bytes());
+        }
+    }
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// 041-R28 ③ / 040-R22 default off: shards without `memory_action` (every step `None`, as schema 6
+/// and 5 read) give the batches they gave before schema 7, bit for bit. The digest was computed
+/// with the master code before the change (50a8994) on the same games and is pinned here.
+#[test]
+fn memory_action_none_keeps_batches_bit_identical_041_r28() {
+    let root = shard_dir("memory-none", &varied_games(), 4);
+    assert_eq!(epoch_digest(&root), MEMORY_NONE_DIGEST);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+const MEMORY_NONE_DIGEST: &str = "6f5f4b068ce79a7f107ad978578b23eed0fbbda5527517048c5b9d2f562a617f";
+
+/// What the label path records in agent memory after each step of `g` (041-R11), as 040-R22
+/// decisions: the host action, delay bucket and acting unit ids.
+fn label_records(g: &ShardGame) -> Vec<uranium_replay::shard::MemoryAction> {
+    use uranium_env::features::label::{LabelWalker, acting_ids};
+    let maps = MapStore::synthetic();
+    let pre = maps.get(&g.meta.map_hash).unwrap();
+    let mut w = LabelWalker::new(&g.game_info, uranium_env::maps::family_index(&g.meta.map_family), pre.as_deref(), g.meta.enemy_random).unwrap();
+    g.steps
+        .iter()
+        .map(|s| {
+            let (o, h, _) = w.step(&s.raw_frame, &s.action_label, None);
+            uranium_replay::shard::MemoryAction { action: h.action, delay_bucket: h.delay_bucket as u32, units: acting_ids(&h, &o) }
+        })
+        .collect()
+}
+
+/// `g` with each step's `memory_action` = what the label path recorded after the step before.
+fn with_label_memory(mut g: ShardGame) -> ShardGame {
+    let rec = label_records(&g);
+    for (i, s) in g.steps.iter_mut().enumerate() {
+        s.memory_action = Some(if i == 0 { vec![] } else { vec![rec[i - 1].clone()] });
+    }
+    g
+}
+
+/// 041-R28 ③: the loader puts a step's `memory_action` into memory before its observation and
+/// not its label: memory equal to what the label path recorded gives the same training steps,
+/// other memory (here none at all) other observations with the same labels and weights.
+#[test]
+fn loader_reads_memory_action_041_r28() {
+    use uranium_data::data::TrainStep;
+    let maps = MapStore::synthetic();
+    let key = |s: &[TrainStep]| s.iter().map(|t| (t.label.clone(), t.weight, t.frame)).collect::<Vec<_>>();
+    let g = game();
+    let same = with_label_memory(g.clone());
+    let mut empty = g.clone();
+    empty.steps.iter_mut().for_each(|s| s.memory_action = Some(vec![]));
+    for sym in [Sym::IDENTITY, Sym::all()[5]] {
+        for z in [false, true] {
+            let a = prepare(&g, z, sym, &maps).unwrap();
+            let b = prepare(&same, z, sym, &maps).unwrap();
+            let c = prepare(&empty, z, sym, &maps).unwrap();
+            assert!(a.steps.iter().zip(&b.steps).all(|(x, y)| x.obs == y.obs), "{sym:?} z={z}");
+            assert_eq!(key(&a.steps), key(&b.steps));
+            assert_eq!(key(&a.steps), key(&c.steps), "labels and weights do not depend on memory");
+            assert_eq!(a.steps[0].obs, c.steps[0].obs, "nothing recorded before the first step either way");
+            assert!(a.steps.iter().zip(&c.steps).any(|(x, y)| x.obs != y.obs), "memory inputs follow memory_action");
+        }
+    }
+}
+
+/// 040-R22 / 041-R28 end to end on synthetic games: schema-7 shards whose `memory_action` equals
+/// the label path's records give the batches of the shards without it (the pinned digest); empty
+/// memory changes them; a mixed dataset (some games with the field, some without) reads each game
+/// its own way.
+#[test]
+fn memory_action_shards_end_to_end_041_r28() {
+    let same: Vec<ShardGame> = varied_games().into_iter().map(with_label_memory).collect();
+    let root = shard_dir("memory-same", &same, 4);
+    assert_eq!(uranium_replay::shard::read(&root.join("p0/shard_00000.bin.zst")).unwrap().header.schema_version, 7);
+    assert_eq!(epoch_digest(&root), MEMORY_NONE_DIGEST);
+    std::fs::remove_dir_all(&root).ok();
+    let mixed: Vec<ShardGame> = varied_games().into_iter().enumerate().map(|(i, g)| if i % 2 == 0 { with_label_memory(g) } else { g }).collect();
+    let root = shard_dir("memory-mixed", &mixed, 4);
+    assert_eq!(epoch_digest(&root), MEMORY_NONE_DIGEST);
+    std::fs::remove_dir_all(&root).ok();
+    let empty: Vec<ShardGame> = varied_games()
+        .into_iter()
+        .map(|mut g| {
+            g.steps.iter_mut().for_each(|s| s.memory_action = Some(vec![]));
+            g
+        })
+        .collect();
+    let root = shard_dir("memory-empty", &empty, 4);
+    assert_ne!(epoch_digest(&root), MEMORY_NONE_DIGEST);
     std::fs::remove_dir_all(&root).ok();
 }
 

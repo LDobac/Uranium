@@ -167,6 +167,13 @@ enum Cmd {
         /// (`terran_react`, the 021-R8 teacher). No 5-minute filter.
         #[arg(long)]
         relabel: Option<String>,
+        /// 041-R28 (with `--relabel` only): folder of the DAgger games' model decision logs
+        /// (`<replay stem>.jsonl`; a plan with `memory_log = true` writes `memory/` beside
+        /// `replays/`). Each relabelled step gets the 040-R22 `memory_action` (shard schema 7); a
+        /// game without a complete log, or with more than 1% decisions naming units that are not
+        /// its own, gets none (records `memory`).
+        #[arg(long)]
+        memory_log: Option<PathBuf>,
     },
     CheckScrep {
         dir: PathBuf,
@@ -300,10 +307,14 @@ fn main() -> Result<()> {
                 println!("{}", load(p)?.cmddump(&p.to_string_lossy()));
             }
         }
-        Cmd::Build { dir, src, out, records, jobs, limit, budget_gb, skip_hashes, part, parts, ladder_records, until_frame, time_limit, relabel } => {
+        Cmd::Build { dir, src, out, records, jobs, limit, budget_gb, skip_hashes, part, parts, ladder_records, until_frame, time_limit, relabel, memory_log } => {
             anyhow::ensure!(parts >= 1 && part < parts, "--part must be below --parts");
             // 041-R22: relabelled games are their own source (040 `dagger`), and only they.
             anyhow::ensure!((src == "dagger") == relabel.is_some(), "--relabel goes with --src dagger and only with it (041-R22)");
+            anyhow::ensure!(memory_log.is_none() || relabel.is_some(), "--memory-log goes with --relabel (041-R28)");
+            if let Some(d) = &memory_log {
+                anyhow::ensure!(d.is_dir(), "--memory-log {}: not a folder (041-R28)", d.display());
+            }
             let relabel = relabel.as_deref().map(uranium_replay::relabel::teacher_build).transpose()?;
             let skip_sha256 = match skip_hashes {
                 Some(p) => std::fs::read_to_string(&p)?.lines().filter_map(|l| l.split_whitespace().next().map(str::to_string)).collect(),
@@ -357,7 +368,7 @@ fn main() -> Result<()> {
             // without one, so the build refuses to start.
             uranium_env::maps::maps_dir()?;
             let staging_dir = uranium_replay::shard::staging_dir();
-            let opt = uranium_replay::pipeline::BuildOptions { src, shards_dir, staging_dir, recorded_winners, jobs, shard_target_bytes: 512 << 20, budget_bytes: budget_gb << 30, first_shard_index: first, skip_sha256, done, duplicates, until_frame, time_limit, relabel };
+            let opt = uranium_replay::pipeline::BuildOptions { src, shards_dir, staging_dir, recorded_winners, jobs, shard_target_bytes: 512 << 20, budget_bytes: budget_gb << 30, first_shard_index: first, skip_sha256, done, duplicates, until_frame, time_limit, relabel, memory_log };
             let out_file = std::sync::Mutex::new(std::fs::OpenOptions::new().create(true).append(true).open(&records)?);
             let counts = std::sync::Mutex::new(std::collections::BTreeMap::<String, usize>::new());
             uranium_replay::pipeline::build(&files, &opt, &cfg, &|r| {

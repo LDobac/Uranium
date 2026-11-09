@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use uranium_proto::{GameInfo, PrivilegedSummary, RawFrame};
 
 use crate::label::Label;
+pub use uranium_env::features::label::MemoryAction;
 
 /// 2: games carry the bridge GameInfo (AMB-040-6); version-1 shards must be rebuilt.
 /// 3: label selections follow the game's selection rules (040-R3, 2026-10-17); rebuild 2.
@@ -20,7 +21,9 @@ use crate::label::Label;
 /// 6: the header carries `labeler_version` (2026-10-19 user decision, action audit F7 / F12).
 /// Schema 5 differs only in the header and is still read, as labeler version 1, because the
 /// full rebuild G-D1 is part schema 5 and part schema 6 (040 "Shard 포맷").
-pub const SCHEMA_VERSION: u32 = 6;
+/// 7: steps carry the optional `memory_action` (040-R22, 2026-11-09). Schemas 6 and 5 are still
+/// read, every step with `memory_action = None`; existing shards are not rebuilt.
+pub const SCHEMA_VERSION: u32 = 7;
 /// Oldest schema [`read`] accepts.
 pub const MIN_SCHEMA_VERSION: u32 = 5;
 /// Labeler version of schema-5 shards (040 "Shard 포맷").
@@ -80,7 +83,36 @@ struct ShardHeaderV5 {
 #[derive(Serialize, Deserialize)]
 struct ShardV5 {
     header: ShardHeaderV5,
-    games: Vec<ShardGame>,
+    games: Vec<ShardGameV6>,
+}
+
+/// Schema-6 (and 5) step: no `memory_action` (040-R22).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+struct StepV6 {
+    raw_frame: RawFrame,
+    privileged: Option<PrivilegedSummary>,
+    action_label: Label,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+struct ShardGameV6 {
+    meta: GameMeta,
+    game_info: GameInfo,
+    steps: Vec<StepV6>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ShardV6 {
+    header: ShardHeader,
+    games: Vec<ShardGameV6>,
+}
+
+impl From<ShardGameV6> for ShardGame {
+    /// 040-R22: a schema-6 / 5 step reads as `memory_action = None`, the rest unchanged.
+    fn from(g: ShardGameV6) -> Self {
+        let steps = g.steps.into_iter().map(|s| Step { raw_frame: s.raw_frame, privileged: s.privileged, action_label: s.action_label, memory_action: None }).collect();
+        ShardGame { meta: g.meta, game_info: g.game_info, steps }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -115,6 +147,12 @@ pub struct Step {
     pub raw_frame: RawFrame,
     pub privileged: Option<PrivilegedSummary>,
     pub action_label: Label,
+    /// 040-R22 (schema 7): the decisions the model that played the game made in the playback
+    /// frames [previous step's observation, this step's observation), in order (041-R28 ②), which
+    /// BC puts into agent memory before this step's observation (041-R28 ③). `None` = not known
+    /// (every step of a game without a usable decision log, every source but `dagger`, schema 6 / 5
+    /// shards); `Some(vec![])` = no decision in between. A game has it on every step or on none.
+    pub memory_action: Option<Vec<MemoryAction>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -151,8 +189,9 @@ pub fn write(path: &Path, shard: &Shard) -> Result<u64> {
     Ok(packed.len() as u64)
 }
 
-/// Reads a shard of schema 6, or of schema 5 as labeler version 1 (040 "Shard 포맷": the G-D1
-/// rebuild mixes both). Older schemas are refused.
+/// Reads a shard of schema 7, of schema 6 (every `memory_action` `None`, 040-R22), or of schema 5
+/// as labeler version 1 (040 "Shard 포맷": the G-D1 rebuild mixes 5 and 6). Older schemas are
+/// refused.
 pub fn read(path: &Path) -> Result<Shard> {
     let packed = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let bytes = zstd::decode_all(packed.as_slice())?;
@@ -162,14 +201,20 @@ pub fn read(path: &Path) -> Result<Shard> {
 fn decode(bytes: &[u8]) -> Result<Shard> {
     // The schema version is the first field of every header version.
     let (schema, _) = postcard::take_from_bytes::<u32>(bytes).context("decoding shard header")?;
-    ensure!((MIN_SCHEMA_VERSION..=SCHEMA_VERSION).contains(&schema), "shard schema {schema} != {SCHEMA_VERSION} (schema {MIN_SCHEMA_VERSION} is also read)");
-    if schema == 5 {
-        let s: ShardV5 = postcard::from_bytes(bytes).context("decoding schema-5 shard")?;
-        let h = s.header;
-        let header = ShardHeader { schema_version: h.schema_version, feature_version: h.feature_version, action_version: h.action_version, labeler_version: SCHEMA5_LABELER_VERSION };
-        return Ok(Shard { header, games: s.games });
+    ensure!((MIN_SCHEMA_VERSION..=SCHEMA_VERSION).contains(&schema), "shard schema {schema} != {SCHEMA_VERSION} (schemas {MIN_SCHEMA_VERSION}..{SCHEMA_VERSION} are read)");
+    match schema {
+        5 => {
+            let s: ShardV5 = postcard::from_bytes(bytes).context("decoding schema-5 shard")?;
+            let h = s.header;
+            let header = ShardHeader { schema_version: h.schema_version, feature_version: h.feature_version, action_version: h.action_version, labeler_version: SCHEMA5_LABELER_VERSION };
+            Ok(Shard { header, games: s.games.into_iter().map(ShardGame::from).collect() })
+        }
+        6 => {
+            let s: ShardV6 = postcard::from_bytes(bytes).context("decoding schema-6 shard")?;
+            Ok(Shard { header: s.header, games: s.games.into_iter().map(ShardGame::from).collect() })
+        }
+        _ => postcard::from_bytes(bytes).context("decoding shard"),
     }
-    postcard::from_bytes(bytes).context("decoding shard")
 }
 
 /// 040-R17 (R-5): every finished shard (`shard_NNNNN.bin.zst`) below `dir` decompresses and
@@ -377,6 +422,7 @@ pub(crate) mod tests {
             },
             privileged: None,
             action_label: Label { frame: n, action: 4, delay: 8, queued: false, selected: vec![1, 2], target_unit: Some(9), target_tile: None },
+            memory_action: None,
         };
         let game_info = GameInfo {
             map_name: "m".into(),
@@ -484,7 +530,7 @@ pub(crate) mod tests {
         let dir = tmp_dir("schema5");
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("shard_00000.bin.zst");
-        let v5 = ShardV5 { header: ShardHeaderV5 { schema_version: 5, feature_version: 0, action_version: 1 }, games: vec![game(1), game(2)] };
+        let v5 = ShardV5 { header: ShardHeaderV5 { schema_version: 5, feature_version: 0, action_version: 1 }, games: vec![v6(&game(1)), v6(&game(2))] };
         std::fs::write(&p, zstd::encode_all(postcard::to_stdvec(&v5).unwrap().as_slice(), 3).unwrap()).unwrap();
         let s = read(&p).unwrap();
         assert_eq!(s.header, ShardHeader { schema_version: 5, feature_version: 0, action_version: 1, labeler_version: SCHEMA5_LABELER_VERSION });
@@ -492,6 +538,42 @@ pub(crate) mod tests {
         // New shards carry the current labeler version.
         write(&p, &Shard { header: ShardHeader::default(), games: vec![game(3)] }).unwrap();
         assert_eq!(read(&p).unwrap().header.labeler_version, crate::label::LABELER_VERSION);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A schema-6 / 5 game as the old writers laid it out (no `memory_action`).
+    fn v6(g: &ShardGame) -> ShardGameV6 {
+        let steps = g.steps.iter().map(|s| StepV6 { raw_frame: s.raw_frame.clone(), privileged: s.privileged.clone(), action_label: s.action_label.clone() }).collect();
+        ShardGameV6 { meta: g.meta.clone(), game_info: g.game_info.clone(), steps }
+    }
+
+    /// 040-AC9 (040-R22): a schema-7 shard round-trips steps with and without `memory_action`
+    /// (`None`, an empty list, decisions); a schema-6 shard reads with every step `None` and its
+    /// other content as the schema-6 reader read it.
+    #[test]
+    fn schema7_memory_action_round_trip_and_schema6_reads_none_040_ac9() {
+        let dir = tmp_dir("schema7");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("shard_00000.bin.zst");
+        let mut with = game(1);
+        with.steps[0].memory_action = Some(vec![]);
+        with.steps[1].memory_action = Some(vec![MemoryAction { action: 4, delay_bucket: 2, units: vec![7, 9] }, MemoryAction { action: 0, delay_bucket: 5, units: vec![] }]);
+        with.steps[2].memory_action = Some(vec![MemoryAction { action: 12, delay_bucket: 0, units: vec![3] }]);
+        let shard = Shard { header: ShardHeader::default(), games: vec![with.clone(), game(2)] };
+        assert_eq!(shard.header.schema_version, 7);
+        write(&p, &shard).unwrap();
+        let back = read(&p).unwrap();
+        assert_eq!(back, shard);
+        assert_eq!(back.games[0].steps[0].memory_action, Some(vec![]), "an empty list stays an empty list, not None");
+        assert!(back.games[1].steps.iter().all(|s| s.memory_action.is_none()));
+        // Schema 6: same games without the field.
+        let old = ShardV6 { header: ShardHeader { schema_version: 6, ..ShardHeader::default() }, games: vec![v6(&with), v6(&game(2))] };
+        std::fs::write(&p, zstd::encode_all(postcard::to_stdvec(&old).unwrap().as_slice(), 3).unwrap()).unwrap();
+        let s = read(&p).unwrap();
+        assert_eq!(s.header.schema_version, 6);
+        let mut want = with.clone();
+        want.steps.iter_mut().for_each(|st| st.memory_action = None);
+        assert_eq!(s.games, vec![want, game(2)]);
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -554,6 +554,10 @@ pub fn check_maps(src: &ShardSource, sel: Option<crate::split::Selection>, maps:
 const CACHE_DIR_ENV: &str = "URANIUM_CACHE_DIR";
 /// Bump when [`GameSummary`] changes.
 const SCAN_CACHE_VERSION: u32 = 1;
+/// Shard schema the cached summaries were made under. Schema 7 (040-R22) only adds a step field a
+/// [`GameSummary`] does not read, so the caches written under schema 6 stay valid (no rescan of
+/// every dataset); change this when a schema changes what a summary holds.
+const SCAN_SHARD_SCHEMA: u32 = 6;
 
 /// Folder of scan caches: `<URANIUM_CACHE_DIR>/scans`, or `None` (no cache) when not set.
 pub fn scan_cache_dir() -> Option<PathBuf> {
@@ -589,7 +593,7 @@ pub fn scan_cached_in(src: &ShardSource, cache: Option<&Path>) -> Result<Vec<Vec
     let path = cache.map(|d| d.join(format!("scan-{key}.json")));
     let cached = path.as_ref().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice::<ScanCache>(&b).ok()).filter(|c| {
         c.version == SCAN_CACHE_VERSION
-            && c.shard_schema == uranium_replay::shard::SCHEMA_VERSION
+            && c.shard_schema == SCAN_SHARD_SCHEMA
             && c.key == key
             && c.files.len() == keys.len()
             && c.files.iter().zip(&keys).all(|((k, _), want)| k == want)
@@ -602,7 +606,7 @@ pub fn scan_cached_in(src: &ShardSource, cache: Option<&Path>) -> Result<Vec<Vec
         None => {
             let scan = scan_files(&sorted)?;
             if let Some(p) = &path {
-                let c = ScanCache { version: SCAN_CACHE_VERSION, shard_schema: uranium_replay::shard::SCHEMA_VERSION, key: key.clone(), files: keys.iter().cloned().zip(scan.iter().cloned()).collect() };
+                let c = ScanCache { version: SCAN_CACHE_VERSION, shard_schema: SCAN_SHARD_SCHEMA, key: key.clone(), files: keys.iter().cloned().zip(scan.iter().cloned()).collect() };
                 let write = || -> Result<()> {
                     std::fs::create_dir_all(p.parent().unwrap())?;
                     let tmp = p.with_extension(format!("json.tmp-{}", std::process::id()));
@@ -937,7 +941,7 @@ pub fn label_check(game: &ShardGame, st: &mut LabelStats, maps: &MapStore) -> Re
     let type_name = |t: u16| tt.unit(t).map_or("?", |t| t.name.as_str());
     let mut g = (game.meta.src.clone(), format!("{} {} map {} {}x{}", game.meta.replay_sha256.chars().take(12).collect::<String>(), game.meta.matchup, game.meta.map_hash.chars().take(8).collect::<String>(), game.game_info.map_size_tiles.0, game.game_info.map_size_tiles.1), 0usize, 0usize, 0usize, 0usize);
     for (si, s) in game.steps.iter().enumerate() {
-        let (o, label, why) = walker.step(&s.raw_frame, &s.action_label, None);
+        let (o, label, why) = walker.step_with_memory(&s.raw_frame, &s.action_label, None, s.memory_action.as_deref());
         // 031-AC3 `unknown` steps (labeler version 2) are counted under their own name.
         let a = action_table().actions.get(label.action as usize).filter(|_| !s.action_label.is_unknown());
         let name = if s.action_label.is_unknown() { "Unknown".to_string() } else { a.map_or_else(|| format!("#{}", label.action), |a| a.name.clone()) };
@@ -1191,8 +1195,10 @@ impl GameStream {
         let mut invalid = 0;
         for s in &self.game.steps[self.pos..end] {
             // Memory sees what the policy did, like in RL (030 §4 previous action, §1 last action):
-            // the units that act on the command (041-R11); `LabelWalker::step` records it.
-            let (o, mut label, why) = self.walker.step(&s.raw_frame, &s.action_label, self.z.as_ref());
+            // the units that act on the command (041-R11); `LabelWalker::step` records it. A DAgger
+            // step with 040-R22 `memory_action` gets the model's own decisions instead, before the
+            // observation (041-R28 ③); without it (`None`) this is the label, as before.
+            let (o, mut label, why) = self.walker.step_with_memory(&s.raw_frame, &s.action_label, self.z.as_ref(), s.memory_action.as_deref());
             // 031-R12 ③ after memory saw this frame, as in the live check (041-AC4).
             let surrender_rule = uranium_env::surrender::rule_holds(&s.raw_frame, &self.walker.mem);
             let ok = why.is_none();

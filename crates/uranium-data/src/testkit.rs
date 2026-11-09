@@ -84,6 +84,7 @@ pub fn game() -> ShardGame {
             },
             privileged: Some(PrivilegedSummary::default()),
             action_label: label(k as u32 * 8, k),
+            memory_action: None,
         })
         .collect();
     let meta = GameMeta {

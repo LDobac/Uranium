@@ -206,6 +206,10 @@ pub enum Outcome {
         result_source: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         repeats_dropped: Option<u32>,
+        /// 041-R28 ④ / ⑤: the model decision log check of a `--memory-log` build (`ok` = every
+        /// step has `memory_action`, otherwise none has).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        memory: Option<crate::relabel::MemoryCheck>,
     },
     Filtered { reason: String },
     Desync { reasons: Vec<String> },
@@ -299,6 +303,8 @@ pub struct ViewGame {
     /// 041-R22: teacher (select, order) command pairs dropped as repeats (`relabel::REPEAT_WINDOW`);
     /// `None` = not relabelled.
     pub repeats_dropped: Option<u32>,
+    /// 041-R28 ④ / ⑤: the decision log check (`--memory-log` builds only).
+    pub memory: Option<crate::relabel::MemoryCheck>,
 }
 
 /// How one view is labelled (040-R21 cut and time limit, 041-R22 relabelling).
@@ -309,12 +315,19 @@ struct ViewOptions<'a> {
     relabel: Option<uranium_scripted::T0Build>,
     /// CHK SHA-256 (map precompute file name, 031).
     map_hash: &'a str,
+    /// 041-R28: the replay's model decision log (`--memory-log`, relabelled views only).
+    memory: Option<&'a crate::relabel::DecisionLogRead>,
 }
 
 /// Processes one view of one replay into a shard game.
 fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, recorded_winner: Option<u8>, o: ViewOptions) -> Result<std::result::Result<ViewGame, Outcome>> {
     let (until_frame, time_limit) = (o.until_frame, o.time_limit);
     let me = slot_of(rep, view.perspective)?;
+    // The last frame the relabelling teacher is fed: the last label before a cut takes its delay
+    // from up to 32 frames later (031-R11).
+    let last = until_frame.map_or(rep.header.frames, |u| u.saturating_add(32)).min(rep.header.frames);
+    // 041-R28 ⑤: own unit ids of the perspective at the playback frames of the model's decisions.
+    let mut own_at: HashMap<u32, std::collections::HashSet<u32>> = HashMap::new();
     let (mut a, mut labels, coverage, repeats_dropped) = match o.relabel {
         // Replay A: own unit types at each command frame + desync signals.
         None => {
@@ -329,9 +342,17 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
         // on the perspective's observations; its commands are the labels (the player's own
         // commands only feed the 040-R8 checks).
         Some(build) => {
-            // The last label before a cut takes its delay from up to 32 frames later (031-R11).
-            let last = until_frame.map_or(rep.header.frames, |u| u.saturating_add(32)).min(rep.header.frames);
-            let stops = crate::relabel::teacher_frames(last);
+            let mut stops = crate::relabel::teacher_frames(last);
+            // 041-R28 ⑤: T also stops at the model decisions' playback frames for the unit check.
+            // Extra stops only split the events between observations (the 040-R8 check ignores
+            // them) and the teacher reads no events, so its labels are the same.
+            let check_frames = match o.memory {
+                Some(crate::relabel::DecisionLogRead::Complete(log)) => crate::relabel::decision_frames(log, last),
+                _ => Vec::new(),
+            };
+            stops.extend(&check_frames);
+            stops.sort_unstable();
+            stops.dedup();
             let shadow: std::cell::RefCell<Option<crate::relabel::Shadow>> = std::cell::RefCell::new(None);
             let failed: std::cell::RefCell<Option<anyhow::Error>> = std::cell::RefCell::new(None);
             let a = play_observe(
@@ -345,6 +366,9 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
                     Err(e) => *failed.borrow_mut() = Some(e),
                 },
                 &mut |f, _| {
+                    if check_frames.binary_search(&f.frame).is_ok() {
+                        own_at.insert(f.frame, f.units.iter().filter(|u| u.owner == me).map(|u| u.id).collect());
+                    }
                     if let Some(s) = shadow.borrow_mut().as_mut() {
                         s.observe(f);
                     }
@@ -384,7 +408,7 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
     let mut steps = Vec::with_capacity(labels.len());
     for l in labels {
         let Some((raw_frame, privileged)) = by_frame.remove(&l.frame) else { break };
-        steps.push(Step { raw_frame, privileged, action_label: l });
+        steps.push(Step { raw_frame, privileged, action_label: l, memory_action: None });
     }
     // 040-R18: the sequence must start with the game-start observation.
     if let Some(&f) = frames.first().filter(|_| steps.is_empty()) {
@@ -396,7 +420,32 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
     let Some(game_info) = res.game_info else {
         return Ok(Err(Outcome::Error { reason: "bridge sent no GameInfo (AMB-040-6)".into() }));
     };
-    Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info, repeats_dropped }))
+    let memory = o.memory.map(|read| attach_memory(&mut steps, read, last, &own_at));
+    Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info, repeats_dropped, memory }))
+}
+
+/// 041-R28 ② / ④ / ⑤: fills every step's `memory_action` from a complete decision log whose unit
+/// check passes, and leaves every step `None` otherwise (all or none per game). `last`: the last
+/// frame checked (the teacher's range); `own_at`: own unit ids at the decisions' playback frames.
+pub fn attach_memory(steps: &mut [Step], read: &crate::relabel::DecisionLogRead, last: u32, own_at: &HashMap<u32, std::collections::HashSet<u32>>) -> crate::relabel::MemoryCheck {
+    use crate::relabel::{DecisionLogRead, MemoryCheck, step_memory, unit_check};
+    let DecisionLogRead::Complete(log) = read else { return MemoryCheck::without_log(read) };
+    let (checked, mismatched) = unit_check(log, last, own_at);
+    let m = MemoryCheck::checked(log.len(), checked, mismatched);
+    if m.ok() {
+        let frames: Vec<u32> = steps.iter().map(|s| s.raw_frame.frame).collect();
+        for (s, mem) in steps.iter_mut().zip(step_memory(log, &frames)) {
+            s.memory_action = Some(mem);
+        }
+    }
+    m
+}
+
+/// 041-R28 (AMB-041-17): the decision log of replay `file` in the `--memory-log` folder `dir`:
+/// the same game id, `g<id>.rep` -> `g<id>.jsonl` (`uranium_runner::memory_log_name`).
+pub fn memory_log_path(dir: &Path, file: &Path) -> PathBuf {
+    let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    dir.join(format!("{stem}.jsonl"))
 }
 
 /// 040-R21: drops the items (labels / steps) observed after frame `until`; `None` keeps all.
@@ -437,12 +486,12 @@ pub fn write_map_precompute(map_hash: &str, info: &uranium_proto::GameInfo, chk:
 /// invalid labels (the BC label check, `uranium_env::features::label`) is at least
 /// `INVALID_LABEL_MAX` (20%), else `None`.
 pub fn invalid_label_filter(game: &ShardGame, pre: Option<&uranium_env::features::MapPrecompute>) -> Result<Option<String>> {
-    let v = uranium_env::features::label::label_validity(
+    let v = uranium_env::features::label::label_validity_with_memory(
         &game.game_info,
         uranium_env::maps::family_index(&game.meta.map_family),
         pre,
         game.meta.enemy_random,
-        game.steps.iter().map(|s| (&s.raw_frame, &s.action_label)),
+        game.steps.iter().map(|s| (&s.raw_frame, &s.action_label, s.memory_action.as_deref())),
     )?;
     Ok(v.rejected().then(|| v.filter_reason()))
 }
@@ -474,6 +523,9 @@ pub struct BuildOptions {
     /// 041-R22 (`--relabel`, source `dagger`): the labels are this teacher's commands on the
     /// perspective's observations instead of the replay's own commands.
     pub relabel: Option<uranium_scripted::T0Build>,
+    /// 041-R28 (`--memory-log <dir>`, relabelled builds only): folder of the model decision logs,
+    /// `<replay file stem>.jsonl` per replay (040-R22 `memory_action`). `None` = every step `None`.
+    pub memory_log: Option<PathBuf>,
 }
 
 /// Resume state from earlier records, per perspective (040-R17 / 040-R19 review): a written
@@ -674,15 +726,17 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
     if recorded_name.is_some() && recorded_winner.is_none() {
         eprintln!("040-R8: recorded winner of {} matches no player name", &sha[..12]);
     }
+    // 041-R28: the model's decision log of this game, named like the replay file.
+    let memory = opt.memory_log.as_ref().map(|d| crate::relabel::read_decision_log(&memory_log_path(d, file)));
     let mut out = Vec::new();
     for view in views {
         if *written.lock().unwrap() >= opt.budget_bytes {
             out.push(rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Filtered { reason: "storage budget reached (040-R12)".into() }));
             continue;
         }
-        let vo = ViewOptions { until_frame: opt.until_frame, time_limit: opt.time_limit, relabel: opt.relabel, map_hash: &map_hash };
+        let vo = ViewOptions { until_frame: opt.until_frame, time_limit: opt.time_limit, relabel: opt.relabel, map_hash: &map_hash, memory: memory.as_ref() };
         let outcome = match build_view(&rep, &view, cfg, labeler, recorded_winner, vo) {
-            Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info, repeats_dropped })) => {
+            Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info, repeats_dropped, memory })) => {
                 let n = steps.len();
                 // 031 / AMB-031-3: map precompute once per map (observation channels only).
                 let pre = match write_map_precompute(&map_hash, &game_info, &rep.map) {
@@ -720,7 +774,7 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
                     }
                 }
                 *written.lock().unwrap() += postcard::experimental::serialized_size(&game).unwrap_or(0) as u64;
-                let (r, _) = rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Written { steps: n, coverage, result, result_source: result_source.to_string(), repeats_dropped });
+                let (r, _) = rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Written { steps: n, coverage, result, result_source: result_source.to_string(), repeats_dropped, memory });
                 out.push((r, Some(game)));
                 continue;
             }
@@ -747,6 +801,47 @@ mod tests {
         assert_eq!(v, vec![1, 11_519, 11_520]);
     }
 
+    /// 040-AC9 / 041-R28 ④ ⑤: a complete log whose unit check passes fills every step (an empty
+    /// list included); no log, an incomplete log or more than 1% unit mismatches leave every step
+    /// `None` (never mixed within a game), and the record counts the check.
+    #[test]
+    fn memory_action_is_all_or_none_per_game_041_r28() {
+        use crate::relabel::DecisionLogRead;
+        use crate::shard::MemoryAction;
+        let steps = || {
+            let mut s = crate::shard::tests::game(1).steps;
+            for (st, f) in s.iter_mut().zip([1u32, 11, 19]) {
+                st.raw_frame.frame = f;
+            }
+            s
+        };
+        let m = |action, units: Vec<u32>| MemoryAction { action, delay_bucket: 0, units };
+        let own: HashMap<u32, std::collections::HashSet<u32>> = HashMap::from([(7, [5].into()), (15, [5].into())]);
+        // Playback frames 7 and 15 (live 9 and 17).
+        let log = DecisionLogRead::Complete(vec![(9, m(4, vec![5])), (17, m(0, vec![]))]);
+        let mut s = steps();
+        let r = attach_memory(&mut s, &log, 100, &own);
+        assert_eq!((r.status, r.decisions, r.checked, r.mismatched), ("ok", 2, 1, 0));
+        let got: Vec<Option<Vec<MemoryAction>>> = s.iter().map(|x| x.memory_action.clone()).collect();
+        assert_eq!(got, vec![Some(vec![]), Some(vec![m(4, vec![5])]), Some(vec![m(0, vec![])])]);
+        // Not all or more than 1% of the selections are own units: every step None.
+        let bad = DecisionLogRead::Complete(vec![(9, m(4, vec![5])), (17, m(4, vec![6]))]);
+        let mut s = steps();
+        let r = attach_memory(&mut s, &bad, 100, &own);
+        assert_eq!((r.status, r.checked, r.mismatched), ("unit_mismatch", 2, 1));
+        assert!(s.iter().all(|x| x.memory_action.is_none()));
+        for read in [DecisionLogRead::Missing, DecisionLogRead::Incomplete("no end line".into())] {
+            let mut s = steps();
+            let r = attach_memory(&mut s, &read, 100, &own);
+            assert_ne!(r.status, "ok");
+            assert!(s.iter().all(|x| x.memory_action.is_none()));
+        }
+        // The record's `memory` object.
+        let text = serde_json::to_string(&Outcome::Written { steps: 3, coverage: Default::default(), result: 0, result_source: "none".into(), repeats_dropped: Some(0), memory: Some(r) }).unwrap();
+        assert!(text.contains(r#""memory":{"status":"unit_mismatch","decisions":2,"checked":2,"mismatched":1}"#), "{text}");
+        assert_eq!(memory_log_path(Path::new("m"), Path::new("x/replays/g12.rep")), Path::new("m").join("g12.jsonl"));
+    }
+
     #[test]
     fn map_families_classify_040_r15() {
         let f = MapFamilies::load().unwrap();
@@ -771,7 +866,7 @@ mod tests {
 
     fn written_record(n: u32) -> Record {
         let coverage = Coverage::default();
-        Record { index: n as usize, replay_sha256: format!("{n:064x}"), src: "t".into(), map_family: "other".into(), map_name: String::new(), map_hash: String::new(), recorded_winner: None, view: None, labeler_version: crate::label::LABELER_VERSION, until_frame: None, time_limit: None, relabel: None, outcome: Outcome::Written { steps: 3, coverage, result: 0, result_source: "none".into(), repeats_dropped: None } }
+        Record { index: n as usize, replay_sha256: format!("{n:064x}"), src: "t".into(), map_family: "other".into(), map_name: String::new(), map_hash: String::new(), recorded_winner: None, view: None, labeler_version: crate::label::LABELER_VERSION, until_frame: None, time_limit: None, relabel: None, outcome: Outcome::Written { steps: 3, coverage, result: 0, result_source: "none".into(), repeats_dropped: None, memory: None } }
     }
 
     /// 040-R17 (review M1): a shard whose copy fails verification stops the build. Its records
@@ -897,7 +992,7 @@ mod tests {
         let excludes = MapExcludes::load(&families).unwrap();
         let labeler = Labeler::new().unwrap();
         let cfg = PlayConfig { launcher: dir.join("none"), bridge_lib: dir.join("none"), data_dir: dir.join("none"), work_dir: dir.join("w") };
-        let opt = BuildOptions { src: "t".into(), shards_dir: dir.join("s"), staging_dir: dir.join("l"), recorded_winners: HashMap::new(), jobs: 1, shard_target_bytes: 1, budget_bytes: 1 << 30, first_shard_index: 0, skip_sha256: Default::default(), done: ResumeDone::default(), duplicates: part1, until_frame: None, time_limit: None, relabel: None };
+        let opt = BuildOptions { src: "t".into(), shards_dir: dir.join("s"), staging_dir: dir.join("l"), recorded_winners: HashMap::new(), jobs: 1, shard_target_bytes: 1, budget_bytes: 1 << 30, first_shard_index: 0, skip_sha256: Default::default(), done: ResumeDone::default(), duplicates: part1, until_frame: None, time_limit: None, relabel: None, memory_log: None };
         let out = process(1, &files[3], &opt, &cfg, &families, &excludes, &labeler, &Mutex::new(0));
         assert_eq!(out.len(), 1);
         let (r, game) = &out[0];
@@ -963,7 +1058,7 @@ mod tests {
         let cfg = PlayConfig::from_env(crate::play::work_dir_default().join("relabel-test")).unwrap();
         let labeler = Labeler::new().unwrap();
         let run = |relabel| {
-            let vo = ViewOptions { until_frame: Some(11_520), time_limit: Some(14_400), relabel, map_hash: &map_hash };
+            let vo = ViewOptions { until_frame: Some(11_520), time_limit: Some(14_400), relabel, map_hash: &map_hash, memory: None };
             match build_view(&rep, &view, &cfg, &labeler, None, vo).unwrap() {
                 Ok(g) => g,
                 Err(o) => panic!("{o:?}"),
@@ -1003,7 +1098,7 @@ mod tests {
         let cfg = PlayConfig::from_env(crate::play::work_dir_default().join("relabel-test")).unwrap();
         let labeler = Labeler::new().unwrap();
         let run = |relabel| {
-            let vo = ViewOptions { until_frame: Some(11_520), time_limit: Some(14_400), relabel, map_hash: &map_hash };
+            let vo = ViewOptions { until_frame: Some(11_520), time_limit: Some(14_400), relabel, map_hash: &map_hash, memory: None };
             match build_view(&rep, &view, &cfg, &labeler, None, vo).unwrap() {
                 Ok(g) => g,
                 Err(o) => panic!("{o:?}"),
