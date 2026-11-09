@@ -1,5 +1,5 @@
 //! `uranium-replay` CLI (040): `inspect` one replay, `convert` SC:R -> 1.16.1 (013-R6),
-//! `scan` a folder for parse errors and counts.
+//! `scan` a folder for parse errors and counts, `cmddump` command streams for the 050 tables.
 
 use std::path::{Path, PathBuf};
 
@@ -25,6 +25,9 @@ enum Cmd {
     Convert { rep: PathBuf, out: PathBuf },
     /// Parse every `.rep` below a folder and print one JSON line per replay (no names, 040-R14).
     Scan { dir: PathBuf },
+    /// 050-R6 / 050-R7 measurement (`tools/eval/tables.py`): print each replay's command stream as
+    /// one JSON line `{"rep", "frames", "players", "cmds": [[frame, player, opcode, payload hex]]}`.
+    Cmddump { reps: Vec<PathBuf> },
     /// 040-AC1: compare per-player command counts and APM with the screp reference parser.
     /// Play a replay in OpenBW replay mode and report the 040-R8 desync signals as JSON.
     Play {
@@ -252,6 +255,11 @@ fn main() -> Result<()> {
             }
         }
         Cmd::CheckScrep { dir, screp, limit } => check_screp(&dir, &screp, limit)?,
+        Cmd::Cmddump { reps } => {
+            for p in &reps {
+                println!("{}", load(p)?.cmddump(&p.to_string_lossy()));
+            }
+        }
         Cmd::Build { dir, src, out, records, jobs, limit, budget_gb, skip_hashes, part, parts, ladder_records, until_frame, time_limit, relabel } => {
             anyhow::ensure!(parts >= 1 && part < parts, "--part must be below --parts");
             // 041-R22: relabelled games are their own source (040 `dagger`), and only they.
