@@ -247,7 +247,23 @@ pub struct Record {
     pub outcome: Outcome,
 }
 
-fn hex(b: &[u8]) -> String {
+/// 040-R3 / R4: the perspective's own replay commands (1.16.1 form, the opcodes OpenBW runs) as
+/// labels, each against the own units observed at its command frame (`units_at`: frame -> unit id
+/// -> `Own`). Shared by `build` (replay A) and `granularity` (G0 measurement).
+pub(crate) fn own_labels(rep: &Replay, perspective: u8, labeler: &Labeler, units_at: &HashMap<u32, HashMap<u32, crate::label::Own>>) -> Result<(Vec<crate::label::Label>, Coverage)> {
+    let cmds: Vec<cmd::Cmd> = rep
+        .cmds()
+        .filter(|c| c.player == perspective)
+        .map(|c| cmd::to_legacy(c, rep.unit_limit))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|c| cmd::openbw(c.op) == cmd::OpenBw::Supported)
+        .collect();
+    let empty = HashMap::new();
+    Ok(labeler.label(&cmds, rep.header.frames, |f| units_at.get(&f).unwrap_or(&empty)))
+}
+
+pub(crate) fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
@@ -306,16 +322,7 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
             let a = play_with(rep, view.perspective, cfg, &[], &mut |f, _| {
                 units_at.insert(f.frame, f.units.iter().filter(|u| u.owner == me).map(|u| (u.id, crate::label::Own::from_state(u))).collect());
             })?;
-            let cmds: Vec<cmd::Cmd> = rep
-                .cmds()
-                .filter(|c| c.player == view.perspective)
-                .map(|c| cmd::to_legacy(c, rep.unit_limit))
-                .collect::<Result<Vec<_>>>()?
-                .into_iter()
-                .filter(|c| cmd::openbw(c.op) == cmd::OpenBw::Supported)
-                .collect();
-            let empty = HashMap::new();
-            let (labels, coverage) = labeler.label(&cmds, rep.header.frames, |f| units_at.get(&f).unwrap_or(&empty));
+            let (labels, coverage) = own_labels(rep, view.perspective, labeler, &units_at)?;
             (a, labels, coverage, None)
         }
         // 041-R22 replay T: the same desync signals as replay A, and the teacher run as a shadow

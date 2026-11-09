@@ -86,7 +86,7 @@ enum Cmd {
     /// Analysis (G0 decision granularity, `tools/eval/granularity.py`): per game the labels and a
     /// compact own/enemy state in an early window as gzipped JSON lines, from shards or (with
     /// `--replays`) from replays through the 040 labeler without the 5-minute bar. Writes no
-    /// dataset.
+    /// dataset. Input of AMB-031-7 (does the 031-R3 12-unit cap bind).
     Granularity {
         /// Shard / replay files or folders (searched recursively).
         inputs: Vec<PathBuf>,
