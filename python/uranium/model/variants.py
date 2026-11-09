@@ -43,6 +43,18 @@ def pending(switch: str, unit: str) -> NoReturn:
     raise NotImplementedError(f"[model] {switch}: not implemented yet ({unit})")
 
 
+def core_skip_linear(d_core_in: int, d_core: int) -> nn.Linear:
+    """032-R23 F1 `core_skip`: Linear(core input -> core.hidden) with weight and bias at 0, so the
+    model with it starts with the outputs of the model without it (032-AC13 ②). Built from its
+    reserved seed like the other §2.8 modules (`fixed_linear`, under `fork_rng` in `Variants`),
+    then zeroed."""
+    lin = fixed_linear(d_core_in, d_core, SEED_CORE_SKIP)
+    with torch.no_grad():
+        lin.weight.zero_()
+        lin.bias.zero_()
+    return lin
+
+
 def fixed_param(shape, seed: int, scale: float, normal: bool = False) -> nn.Parameter:
     """A parameter drawn from its own generator: U(-scale, scale), or N(0, scale) for bias tables
     (the default model's tables use N(0, 0.02))."""
@@ -195,7 +207,7 @@ class Variants(nn.Module):
             self.outer = OuterLstm(cfg, d_core_in, vc.outer, SEED + 0x40) if vc.outer > 0 else None
             # 032 §2.8 (model 2): after the §2.7 modules, from their reserved seeds (above).
             self.bypass = pending("bypass", "032-R21") if vc.bypass else None
-            self.core_skip = pending("core_skip", "032-R23") if vc.core_skip else None
+            self.core_skip = core_skip_linear(d_core_in, cfg.core.hidden) if vc.core_skip else None
             self.aux_priv = pending("aux_priv", "032-R24") if vc.aux_priv else None
             self.aux_jepa = pending("aux_jepa", "032-R24") if vc.aux_jepa else None
 
