@@ -866,12 +866,16 @@ pub fn subsample_counts(scan: &[Vec<GameSummary>], sel: Selection, sub: &Subsamp
 }
 
 /// One-epoch length of a stage (041-R13): updates the trainer's lane walk makes.
-#[derive(Serialize, Debug, Clone, Copy, Default)]
+#[derive(Serialize, Debug, Clone, Default)]
 pub struct EpochCount {
     pub updates: u64,
     pub games: usize,
     /// Every step of the games, the game-start NoOp steps (040-R18, E-2) included.
     pub steps: u64,
+    /// 041-R26 ③: the same games and steps per source (`GameMeta.src`) and enemy race (`T`, `P`,
+    /// `Z`: [`crate::split::enemy_race`]). Every step of an epoch is trained once, so a step share
+    /// here is the share of the epoch's update steps.
+    pub by_source: crate::mix::SourceRaceCounts,
 }
 
 #[derive(Serialize, Debug)]
@@ -883,26 +887,59 @@ pub struct EpochTable {
     pub s2: EpochCount,
     /// Ablation (A) reads the S2 games in the same order.
     pub ablation_a: EpochCount,
+    /// 041-R21 ⑥ / R26 ③ (AMB-041-15): with `[data.subsample]`, the S2 mix shares and their checks
+    /// (teacher = `keep_sources`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub s2_mix: Option<crate::mix::MixShares>,
 }
 
 /// Reads every shard once (in parallel) and counts the updates of one epoch per stage.
 pub fn epoch_table(dirs: &[PathBuf], cfg: &BcConfig) -> Result<EpochTable> {
-    let base = ShardSource::from_dirs(dirs)?;
-    let scan = crate::data::scan_cached(&base)?;
-    let by_path: std::collections::HashMap<&PathBuf, &Vec<GameSummary>> = base.files().iter().zip(scan.iter()).collect();
+    epoch_table_groups(&[dirs.to_vec()], cfg)
+}
+
+/// The scans of the folders of each group, one scan cache per group (`scan_cached`), by file: a
+/// group read together before (e.g. the four human sources) reuses its cache when another group
+/// (a teacher folder with a new part) has changed. The scan of a file does not depend on its group.
+pub fn scan_groups(groups: &[Vec<PathBuf>]) -> Result<std::collections::HashMap<PathBuf, Vec<GameSummary>>> {
+    let mut out = std::collections::HashMap::new();
+    for g in groups.iter().filter(|g| !g.is_empty()) {
+        let src = ShardSource::from_dirs(g)?;
+        let scan = crate::data::scan_cached(&src)?;
+        out.extend(src.files().iter().cloned().zip(scan));
+    }
+    Ok(out)
+}
+
+/// [`epoch_table`] over the folders of `groups` read as one dataset, scanned per group
+/// ([`scan_groups`]); the counts are the same as with one group.
+pub fn epoch_table_groups(groups: &[Vec<PathBuf>], cfg: &BcConfig) -> Result<EpochTable> {
+    let dirs: Vec<PathBuf> = groups.iter().flatten().cloned().collect();
+    // The dataset's checks (a file given twice, duplicate keys) over all folders at once.
+    let base = ShardSource::from_dirs(&dirs)?;
+    let by_path = scan_groups(groups)?;
+    let scan: Vec<&Vec<GameSummary>> = base.files().iter().map(|f| &by_path[f]).collect();
+    let dirs = &dirs[..];
     let count = |sel: Selection| -> Result<EpochCount> {
         let src = cfg.train_source(dirs, sel)?;
-        let mut lens = Vec::new();
+        let mut kept: Vec<GameSummary> = Vec::new();
         for (k, f) in src.files().iter().enumerate() {
-            lens.extend(src.order_file(k, by_path[f].clone()).into_iter().map(|i| i.steps));
+            kept.extend(src.order_file(k, by_path[f].clone()));
         }
+        let lens: Vec<usize> = kept.iter().map(|g| g.steps).collect();
         let games = lens.iter().filter(|&&l| l > 0).count();
         let steps = lens.iter().map(|&l| l as u64).sum();
-        Ok(EpochCount { updates: epoch_updates(lens, cfg.lanes, cfg.seq_len), games, steps })
+        let by_source = crate::mix::count_by_source(&kept);
+        Ok(EpochCount { updates: epoch_updates(lens, cfg.lanes, cfg.seq_len), games, steps, by_source })
     };
     let s1 = count(Selection::S1)?;
     let s2 = count(Selection::S2)?;
-    Ok(EpochTable { lanes: cfg.lanes, seq_len: cfg.seq_len, seed: cfg.data.seed, s1, s2, ablation_a: s2 })
+    let s2_mix = cfg.data.subsample.as_ref().map(|sub| {
+        // The reference: the S2 human games without the subsample (041-R26 "S2 사람 데이터의 비율").
+        let all: Vec<GameSummary> = scan.iter().copied().flatten().filter(|g| crate::split::selects(Selection::S2, &g.meta)).cloned().collect();
+        crate::mix::MixShares::new(&s2.by_source, &crate::mix::count_by_source(&all), &sub.keep_sources)
+    });
+    Ok(EpochTable { lanes: cfg.lanes, seq_len: cfg.seq_len, seed: cfg.data.seed, s1, ablation_a: s2.clone(), s2, s2_mix })
 }
 
 /// 032-R17 ② (G-D8): the games `bc-eval --games n` scores: a fixed-seed shuffle over every game

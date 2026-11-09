@@ -1239,6 +1239,116 @@ fn subsampled_source_and_epoch_count_agree_041_r21() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+/// Synthetic S2-like scan: teacher `botgen` TvZ games and human games of three enemy races with
+/// varied lengths; TvT games come as two perspectives of one replay.
+fn mix_scan() -> Vec<uranium_data::data::GameSummary> {
+    use uranium_data::data::GameSummary;
+    let summary = |i: u64, src: &str, mu: &str, slot: u8, steps: usize| {
+        let mut m = game().meta;
+        m.replay_sha256 = format!("{:064x}", i.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        (m.src, m.matchup, m.perspective_slot, m.map_family) = (src.into(), mu.into(), slot, "fighting_spirit".into());
+        GameSummary { meta: m, steps, privileged_none: 0 }
+    };
+    let mut v = Vec::new();
+    for i in 0..300 {
+        v.push(summary(i, "botgen", "TvZ", 0, 400 + (i as usize * 37) % 300));
+    }
+    for i in 1_000..2_000 {
+        let steps = 300 + (i as usize * 53) % 900;
+        v.push(summary(i, "community", "TvT", 0, steps));
+        v.push(summary(i, "community", "TvT", 1, steps + (i as usize % 7) * 10));
+    }
+    for i in 3_000..6_000 {
+        v.push(summary(i, if i % 3 == 0 { "stardata" } else { "scr_ladder" }, "TvP", 0, 300 + (i as usize * 71) % 1_000));
+    }
+    for i in 7_000..8_000 {
+        v.push(summary(i, "personal", "TvZ", 0, 250 + (i as usize * 29) % 800));
+    }
+    v
+}
+
+/// 041-R26 ② / ③ (AMB-041-15): the per-race fractions keep the teacher at 50% of the steps and
+/// each enemy race at its share of the human data, within far less than the 3% / 3%p bounds;
+/// the counts and checks see the kept games, TvT perspectives stay together, the result is the
+/// same on every call, and an off mix fails the checks.
+#[test]
+fn race_fractions_hit_the_mix_shares_041_r26() {
+    use uranium_data::mix::{MixShares, count_by_source, race_fractions};
+    use uranium_data::split::Subsample;
+    let scan = mix_scan();
+    let teacher = vec!["botgen".to_string()];
+    let all = count_by_source(&scan);
+    assert_eq!(all["community"]["T"].games, 2_000);
+    assert_eq!(all["botgen"]["Z"].steps, scan.iter().filter(|g| g.meta.src == "botgen").map(|g| g.steps as u64).sum::<u64>());
+    for seed in [3u64, 4, 10] {
+        let f = race_fractions(&scan, &teacher, seed, 0.5).unwrap();
+        assert_eq!(f, race_fractions(&scan, &teacher, seed, 0.5).unwrap(), "deterministic");
+        assert_eq!(f.fraction_by_race.keys().collect::<Vec<_>>(), ["P", "T", "Z"]);
+        let sub = Subsample { fraction: f.fraction, keep_sources: teacher.clone(), fraction_by_race: Some(f.fraction_by_race.clone()) };
+        sub.check().unwrap();
+        let kept: Vec<_> = scan.iter().filter(|g| sub.keeps(&g.meta, seed)).cloned().collect();
+        let mix = MixShares::new(&count_by_source(&kept), &all, &teacher);
+        assert!(mix.teacher_ok && mix.race_ok, "seed {seed}: {mix:?}");
+        assert!((mix.teacher_share - 0.5).abs() < 0.01, "seed {seed}: teacher {}", mix.teacher_share);
+        for (r, s) in &mix.human_race_share {
+            assert!((s - mix.reference_human_race_share[r]).abs() < 0.01, "seed {seed} {r}: {s} vs {}", mix.reference_human_race_share[r]);
+        }
+        assert_eq!(mix.human_race_steps, f.kept_human_race_steps, "the fractions keep what they say");
+        assert_eq!(mix.teacher_steps, f.teacher_steps, "every teacher game");
+        // Both perspectives of every TvT replay together.
+        let tvt: Vec<_> = kept.iter().filter(|g| g.meta.matchup == "TvT").collect();
+        assert_eq!(tvt.iter().filter(|g| g.meta.perspective_slot == 0).count(), tvt.iter().filter(|g| g.meta.perspective_slot == 1).count());
+    }
+    // Off mixes fail: too much human data, or one race over its share.
+    let f = race_fractions(&scan, &teacher, 3, 0.5).unwrap();
+    let wide = Subsample { fraction: f.fraction * 3.0, keep_sources: teacher.clone(), fraction_by_race: None };
+    let mix = MixShares::new(&count_by_source(&scan.iter().filter(|g| wide.keeps(&g.meta, 3)).cloned().collect::<Vec<_>>()), &all, &teacher);
+    assert!(!mix.teacher_ok, "{}", mix.teacher_share);
+    let mut by = f.fraction_by_race.clone();
+    *by.get_mut("T").unwrap() *= 3.0;
+    let skew = Subsample { fraction: f.fraction, keep_sources: teacher.clone(), fraction_by_race: Some(by) };
+    let mix = MixShares::new(&count_by_source(&scan.iter().filter(|g| skew.keeps(&g.meta, 3)).cloned().collect::<Vec<_>>()), &all, &teacher);
+    assert!(!mix.race_ok, "{:?}", mix.human_race_share);
+    assert!(race_fractions(&scan, &["nothing".to_string()], 3, 0.5).is_err(), "no teacher steps");
+}
+
+/// 041-R26 ③: `bc-epoch` counts each stage's games and steps per source and enemy race (they add
+/// up to the stage totals) and, with `[data.subsample]`, reports the S2 mix shares against the S2
+/// data without the subsample.
+#[test]
+fn bc_epoch_counts_by_source_and_race_041_r26() {
+    use uranium_data::split::Subsample;
+    let mut games: Vec<ShardGame> = (0..80).map(|i| game_len(1 + (i % 16) as usize, i + 1)).collect();
+    for (i, g) in games.iter_mut().enumerate() {
+        g.meta.map_family = if i % 5 == 0 { "other".into() } else { "fighting_spirit".into() };
+        (g.meta.src, g.meta.matchup) = match i % 4 {
+            0 => ("botgen".into(), "TvZ".into()),
+            1 => ("community".into(), "TvT".into()),
+            2 => ("community".into(), "TvP".into()),
+            _ => ("stardata".into(), "TvZ".into()),
+        };
+    }
+    let root = shard_dir("mix-count", &games, 9);
+    let mut cfg = tiny_bc(1, 0);
+    let t = uranium_data::bc::epoch_table(std::slice::from_ref(&root), &cfg).unwrap();
+    assert!(t.s2_mix.is_none(), "no subsample, no mix");
+    for c in [&t.s1, &t.s2] {
+        let steps: u64 = c.by_source.values().flat_map(|r| r.values()).map(|x| x.steps).sum();
+        let n: usize = c.by_source.values().flat_map(|r| r.values()).map(|x| x.games).sum();
+        assert_eq!((steps, n), (c.steps, c.games));
+    }
+    assert!(t.s2.by_source["community"].contains_key("T") && t.s2.by_source["community"].contains_key("P"));
+    cfg.data.subsample = Some(Subsample { fraction: 0.5, keep_sources: vec!["botgen".into()], fraction_by_race: None });
+    let t = uranium_data::bc::epoch_table(std::slice::from_ref(&root), &cfg).unwrap();
+    let mix = t.s2_mix.as_ref().unwrap();
+    let botgen: u64 = t.s2.by_source["botgen"].values().map(|x| x.steps).sum();
+    assert_eq!((mix.teacher_steps, mix.human_steps), (botgen, t.s2.steps - botgen));
+    assert!((mix.teacher_share - botgen as f64 / t.s2.steps as f64).abs() < 1e-12);
+    let json = serde_json::to_value(&t).unwrap();
+    assert!(json["s2_mix"]["reference_human_race_share"].is_object() && json["s2"]["by_source"]["botgen"]["Z"]["steps"].is_u64());
+    std::fs::remove_dir_all(&root).ok();
+}
+
 /// Copies the folder `src` to `dst` (files and subfolders), with or without the manifests.
 fn copy_dir(src: &std::path::Path, dst: &std::path::Path, with_manifests: bool) {
     std::fs::create_dir_all(dst).unwrap();
