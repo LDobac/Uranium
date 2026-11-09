@@ -143,6 +143,10 @@ def probe_race(R, A, gt, race, a, rng) -> dict:
         if sel.sum() < a.min_rows or len(np.unique(g[sel])) < a.min_games:
             tasks[name] = {"rows": int(sel.sum()), "skipped": "too few rows or games"}
             return
+        if not np.nanstd(y) > 0:
+            # e.g. the Zerg max-seen pool count, always 1 once a pool token exists
+            tasks[name] = {"rows": int(sel.sum()), "skipped": f"constant target {float(np.nanmean(y)):g}"}
+            return
         if cls_:
             pos = len(np.unique(g[sel][y > 0.5]))
             if pos < 5 or pos > len(np.unique(g[sel])) - 5:

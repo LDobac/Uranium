@@ -126,7 +126,7 @@ def run(a) -> int:
             ret = {}
             for i, v in enumerate(RETENTION_VARS):
                 rx, rh = r2(Y[:, i], px[:, i]), r2(Y[:, i], ph[:, i])
-                ret[v] = {"r2_x_in": rx, "r2_h": rh, "kept": rh / rx if rx and rx > 0.05 else None}
+                ret[v] = {"constant": True} if not np.std(Y[:, i]) > 0 else {"r2_x_in": rx, "r2_h": rh, "kept": rh / rx if rx > 0.05 else None}
             res["retention"] = {"rows": int(len(sel)), "vars": ret}
         out["races"][race] = res
         print(f"[{race}] rows {res['rows']}", flush=True)
