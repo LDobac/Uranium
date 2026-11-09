@@ -1,15 +1,20 @@
-# Measurement protocol of the Checkpoint 1 lineage (plan "측정 프로토콜", docs/measurement_protocol.md).
+# 050-R9 / 050-AC5 measurement protocol of the Checkpoint 1 lineage (plan "측정 프로토콜", docs/measurement_protocol.md).
 # Every lineage point with its metric menu and the conditions pinned to what Checkpoint 1 was measured with
 # (reports/checkpoint1.md 7, checkpoint1_rl.md). tools/eval/protocol.py generates eval jobs from this file and
 # refuses a request that differs: another plan, seed list, sampling mode, zero_last_failed or max_frames, a
 # metric outside the point's menu, a plan of the other family, a run without the lineage prefix, T1 / OSS bots
-# that are not the recorded NDEBUG builds (config/protocol/t1_bots.toml). Paths are relative to the repository
-# (templates) or to URANIUM_SHARED_DIR (checkpoints, ck1_outputs); `repo:` = this checkout's git-ignored runs/.
+# that are not the recorded NDEBUG builds (config/protocol/t1_bots.toml), T1 hosts of another platform than the
+# point's Checkpoint 1 counterpart. Paths are relative to the repository (templates) or to URANIUM_SHARED_DIR
+# (checkpoints, ck1_outputs).
 schema = 1
 
 [lineage.ck1]
 description = "Checkpoint 1 lineage: BC S1 / S2, teacher mix e1..e10, DAgger r1 / r2, AC1 V-trace RL"
 run_prefix = ""
+# Measured already (user decision 2026-11-09, 050-R9): no new game jobs or teacher-forced runs. New for it are
+# only the diagnostics below and its existing eval jobs re-tabulated with both held / bunker definitions
+# (`protocol.py tables`, no new games).
+new_metrics = ["cue_diag", "dead_channels"]
 
 [lineage.m2]
 description = "model 2 lineage (BC retrained with the fixes, the same points and metrics)"
@@ -243,40 +248,19 @@ max_frames = 86400
 source = "<shared>/eval/ac1-20261101/plans/02-bc-argmax-real.toml"
 conditions_sha256 = "d6419d130914f07aad97e99e480b0e72a4fab12180cfa9f99dada8902a688917"
 
-# DAgger model-game generation (041-R22): not a metric, rendered with `protocol.py render --plan dagger_rN`.
-[plan.dagger_r1]
-template = "config/plans/protocol/dagger_r1.toml"
-kind = "generation"
-families = ["bc"]
-games = 600
-sample = ["stochastic"]
-zero_last_failed = false
-max_frames = 14400
-source = "config/plans/dagger_r1.toml"
-conditions_sha256 = "332c71d1cc6e9e027331905e00e3ddf977a1ff4efb1809cf172c9ff34d9aea55"
-
-[plan.dagger_r2]
-template = "config/plans/protocol/dagger_r2.toml"
-kind = "generation"
-families = ["bc"]
-games = 300
-sample = ["stochastic"]
-zero_last_failed = false
-max_frames = 14400
-source = "config/plans/dagger_r2.toml"
-conditions_sha256 = "f8d6684f7d3173eba848d77e140af719dc4b9855dfe3c4629ff8986e4e64b54f"
-
 # ------------------------------------------------------------------ lineage points
 # metrics  = measured on the Checkpoint 1 lineage (comparable at this point) + the diagnostics every point gets
-# optional = allowed at this point, no Checkpoint 1 number yet (measure the Checkpoint 1 point too to compare)
+# optional = allowed at this point, no Checkpoint 1 number (reported for the new lineage only; Checkpoint 1 gets no new game jobs)
 # ck1_outputs = where the Checkpoint 1 numbers are (eval jobs under <shared>/eval, scores under <shared>/artifacts)
+# t1_platforms = platform(s) of the point's Checkpoint 1 T1 games: T1 jobs of every lineage run there only
+#   (user decision 2026-11-09); a point without it takes no T1 job.
 
 [[point]]
 id = "s1e1"
 family = "bc"
 ck1_checkpoint = "checkpoints/bc-s1-pt/ckpt-39096"
 metrics = ["val500", "t0_100", "cue_diag", "dead_channels"]
-optional = ["test", "rush", "macro", "tvz", "t0_300", "t1", "per_action"]
+optional = ["test", "rush", "macro", "tvz", "t0_300", "per_action"]
 ck1_outputs = { val500 = "artifacts/bc_e2_val/val500/bc-s1-pt__ckpt-39096.json", t0_100 = "eval/bc-e2-games/bc-s1-pt__ckpt-39096" }
 
 [[point]]
@@ -284,7 +268,7 @@ id = "s1e2"
 family = "bc"
 ck1_checkpoint = "checkpoints/bc-s1e2-pt/ckpt-39094"
 metrics = ["val500", "t0_100", "cue_diag", "dead_channels"]
-optional = ["test", "rush", "macro", "tvz", "t0_300", "t1", "per_action"]
+optional = ["test", "rush", "macro", "tvz", "t0_300", "per_action"]
 ck1_outputs = { val500 = "artifacts/bc_e2_val/val500/bc-s1e2-pt__ckpt-39094.json", t0_100 = "eval/bc-e2-games/bc-s1e2-pt__ckpt-39094" }
 
 [[point]]
@@ -292,9 +276,11 @@ id = "s2e2"
 family = "bc"
 note = "BC baseline (RL start point, BC column of the per-action table, T1 BC row)"
 ck1_checkpoint = "checkpoints/bc-s2e2-pt/ckpt-11387"
+# T1 300 of the BC baseline ran on the Linux ROCm hosts (eval/t1-bc2-20261108).
+t1_platforms = ["linux"]
 metrics = ["val500", "test", "per_action", "rush", "t0_300", "t1", "ac1", "cue_diag", "dead_channels"]
 optional = ["macro", "tvz", "t0_100", "t0_600"]
-ck1_outputs = { val500 = "artifacts/bc_e2_val/val500/bc-s2e2-pt__ckpt-11387.json", test = "artifacts/bc_main_eval/test_cuda/bc-s2e2-pt.json", per_action = "repo:runs/adv8/per_action_bc.json", rush = "eval/bc-check-20261105", t0_300 = "eval/bc-e2-final", t1 = "eval/t1-bc2-20261108", ac1 = ["eval/ac1-20261101/baseline/ac1-base-lf0", "eval/ac1-20261101/baseline/ac1-base-real"] }
+ck1_outputs = { val500 = "artifacts/bc_e2_val/val500/bc-s2e2-pt__ckpt-11387.json", test = "artifacts/bc_main_eval/test_cuda/bc-s2e2-pt.json", per_action = "artifacts/per_action/ck1/bc-s2e2-pt__ckpt-11387.json", rush = "eval/bc-check-20261105", t0_300 = "eval/bc-e2-final", t1 = "eval/t1-bc2-20261108", ac1 = ["eval/ac1-20261101/baseline/ac1-base-lf0", "eval/ac1-20261101/baseline/ac1-base-real"] }
 
 [[point]]
 id = "mix-e1"
@@ -302,7 +288,7 @@ family = "bc"
 ck1_checkpoint = "checkpoints/bc-mix-e1/ckpt-801"
 metrics = ["per_action", "cue_diag", "dead_channels"]
 optional = ["val500", "rush", "macro", "tvz", "t0_100"]
-ck1_outputs = { per_action = "repo:runs/mix/per_action_e1.json" }
+ck1_outputs = { per_action = "artifacts/per_action/ck1/bc-mix-e1__ckpt-801.json" }
 
 [[point]]
 id = "mix-e2"
@@ -310,7 +296,7 @@ family = "bc"
 ck1_checkpoint = "checkpoints/bc-mix-e2/ckpt-986"
 metrics = ["per_action", "cue_diag", "dead_channels"]
 optional = ["val500", "rush", "macro", "tvz", "t0_100"]
-ck1_outputs = { per_action = "repo:runs/mix/per_action_e2.json" }
+ck1_outputs = { per_action = "artifacts/per_action/ck1/bc-mix-e2__ckpt-986.json" }
 
 [[point]]
 id = "mix-e3"
@@ -318,7 +304,7 @@ family = "bc"
 ck1_checkpoint = "checkpoints/bc-mix-e3/ckpt-963"
 metrics = ["per_action", "cue_diag", "dead_channels"]
 optional = ["val500", "rush", "macro", "tvz", "t0_100"]
-ck1_outputs = { per_action = "repo:runs/mix/per_action_e3.json" }
+ck1_outputs = { per_action = "artifacts/per_action/ck1/bc-mix-e3__ckpt-963.json" }
 
 [[point]]
 id = "mix-e4"
@@ -326,7 +312,7 @@ family = "bc"
 ck1_checkpoint = "checkpoints/bc-mix-e4/ckpt-1034"
 metrics = ["per_action", "cue_diag", "dead_channels"]
 optional = ["val500", "rush", "macro", "tvz", "t0_100"]
-ck1_outputs = { per_action = "repo:runs/mix/per_action_e4.json" }
+ck1_outputs = { per_action = "artifacts/per_action/ck1/bc-mix-e4__ckpt-1034.json" }
 
 [[point]]
 id = "mix-e5"
@@ -334,7 +320,7 @@ family = "bc"
 ck1_checkpoint = "checkpoints/bc-mix-e5/ckpt-1022"
 metrics = ["per_action", "cue_diag", "dead_channels"]
 optional = ["val500", "rush", "macro", "tvz", "t0_100"]
-ck1_outputs = { per_action = "repo:runs/mix/per_action_e5.json" }
+ck1_outputs = { per_action = "artifacts/per_action/ck1/bc-mix-e5__ckpt-1022.json" }
 
 [[point]]
 id = "mix-e6"
@@ -342,7 +328,7 @@ family = "bc"
 ck1_checkpoint = "checkpoints/bc-mix-e6/ckpt-1017"
 metrics = ["per_action", "cue_diag", "dead_channels"]
 optional = ["val500", "rush", "macro", "tvz", "t0_100"]
-ck1_outputs = { per_action = "repo:runs/mix/per_action_e6.json" }
+ck1_outputs = { per_action = "artifacts/per_action/ck1/bc-mix-e6__ckpt-1017.json" }
 
 [[point]]
 id = "mix-e7"
@@ -350,7 +336,7 @@ family = "bc"
 ck1_checkpoint = "checkpoints/bc-mix-e7/ckpt-1071"
 metrics = ["per_action", "val500", "rush", "macro", "cue_diag", "dead_channels"]
 optional = ["tvz", "t0_100"]
-ck1_outputs = { per_action = "repo:runs/mix/per_action_e7.json", val500 = "artifacts/bc_e2_val/val500/bc-mix-e7__ckpt-1071.json", rush = "eval/bc-mix-check-e7-20261107", macro = "eval/bc-mix-macro-e7-20261107" }
+ck1_outputs = { per_action = "artifacts/per_action/ck1/bc-mix-e7__ckpt-1071.json", val500 = "artifacts/bc_e2_val/val500/bc-mix-e7__ckpt-1071.json", rush = "eval/bc-mix-check-e7-20261107", macro = "eval/bc-mix-macro-e7-20261107" }
 
 [[point]]
 id = "mix-e8"
@@ -358,7 +344,7 @@ family = "bc"
 ck1_checkpoint = "checkpoints/bc-mix-e8/ckpt-968"
 metrics = ["per_action", "cue_diag", "dead_channels"]
 optional = ["val500", "rush", "macro", "tvz", "t0_100"]
-ck1_outputs = { per_action = "repo:runs/mix/per_action_e8.json" }
+ck1_outputs = { per_action = "artifacts/per_action/ck1/bc-mix-e8__ckpt-968.json" }
 
 [[point]]
 id = "mix-e9"
@@ -366,7 +352,7 @@ family = "bc"
 ck1_checkpoint = "checkpoints/bc-mix-e9/ckpt-1018"
 metrics = ["per_action", "cue_diag", "dead_channels"]
 optional = ["val500", "rush", "macro", "tvz", "t0_100"]
-ck1_outputs = { per_action = "repo:runs/mix/per_action_e9.json" }
+ck1_outputs = { per_action = "artifacts/per_action/ck1/bc-mix-e9__ckpt-1018.json" }
 
 [[point]]
 id = "mix-e10"
@@ -374,14 +360,16 @@ family = "bc"
 note = "TvZ 18/32 of Checkpoint 1 is games 69..100 of its T0 100 job (the TvZ 32 seeds)"
 ck1_checkpoint = "checkpoints/bc-mix-e10/ckpt-1053"
 metrics = ["per_action", "val500", "rush", "macro", "t0_100", "cue_diag", "dead_channels"]
-optional = ["tvz", "t1"]
-ck1_outputs = { per_action = "repo:runs/mix/per_action_e10.json", val500 = "artifacts/bc_e2_val/val500/bc-mix-e10__ckpt-1053.json", rush = "eval/bc-mix-check-e10-20261107", macro = "eval/bc-mix-macro-e10-20261107", t0_100 = "eval/bc-mix-t0-e10-20261107" }
+optional = ["tvz"]
+ck1_outputs = { per_action = "artifacts/per_action/ck1/bc-mix-e10__ckpt-1053.json", val500 = "artifacts/bc_e2_val/val500/bc-mix-e10__ckpt-1053.json", rush = "eval/bc-mix-check-e10-20261107", macro = "eval/bc-mix-macro-e10-20261107", t0_100 = "eval/bc-mix-t0-e10-20261107" }
 
 [[point]]
 id = "r1"
 family = "bc"
 note = "Checkpoint 1"
 ck1_checkpoint = "checkpoints/bc-dagger-r1/ckpt-1137"
+# T1 300 of Checkpoint 1 ran on the Windows host (eval/t1-ck1-20261108).
+t1_platforms = ["windows"]
 metrics = ["val500", "rush", "macro", "tvz", "t1", "cue_diag", "dead_channels"]
 optional = ["per_action", "t0_100"]
 ck1_outputs = { val500 = "artifacts/bc_e2_val/val500/bc-dagger-r1__ckpt-1137.json", rush = "eval/dagger-test-r1-20261107", macro = "eval/dagger-test-r1-20261107", tvz = "eval/dagger-tvz-r1-20261108", t1 = "eval/t1-ck1-20261108" }
@@ -391,7 +379,7 @@ id = "r2"
 family = "bc"
 ck1_checkpoint = "checkpoints/bc-dagger-r2/ckpt-1218"
 metrics = ["val500", "rush", "macro", "tvz", "cue_diag", "dead_channels"]
-optional = ["per_action", "t0_100", "t1"]
+optional = ["per_action", "t0_100"]
 ck1_outputs = { val500 = "artifacts/bc_e2_val/val500/bc-dagger-r2__ckpt-1218.json", rush = "eval/dagger-test-r2-20261108", macro = "eval/dagger-test-r2-20261108", tvz = "eval/dagger-tvz-r2-20261108" }
 
 [[point]]
@@ -399,6 +387,8 @@ id = "rl-s1"
 family = "rl"
 note = "Checkpoint 1 RL (AC1 V-trace s1 at 3.13M agent steps, Main agent), from s2e2"
 ck1_checkpoint = "checkpoints/ac1-vtrace-s1/ckpt-3133569/agents/main"
+# T1 300 of Checkpoint 1 RL ran on both platforms (Windows host 158, Linux ROCm hosts 136; eval/ac1-ck-20261108).
+t1_platforms = ["windows", "linux"]
 metrics = ["ac1", "rush", "macro", "tvz", "t1", "cue_diag", "dead_channels"]
 optional = []
 ck1_outputs = { ac1 = "eval/ac1-20261101/ac1-vtrace-s1-3m", rush = "eval/rush5-20261105/c0-ac1", macro = "eval/ac1-ck-20261108", tvz = "eval/ac1-ck-20261108", t1 = "eval/ac1-ck-20261108" }
@@ -408,7 +398,7 @@ id = "rl-s2"
 family = "rl"
 ck1_checkpoint = "checkpoints/ac1-vtrace-s2/ckpt-3104451/agents/main"
 metrics = ["ac1", "cue_diag", "dead_channels"]
-optional = ["rush", "macro", "tvz", "t1"]
+optional = ["rush", "macro", "tvz"]
 ck1_outputs = { ac1 = "eval/ac1-20261101/ac1-vtrace-s2" }
 
 [[point]]
@@ -417,5 +407,5 @@ family = "rl"
 note = "AC1 argmax was not run for s3 (user decision 2026-11-02, 050-R1 exception)"
 ck1_checkpoint = "checkpoints/ac1-vtrace-s3/ckpt-3061641/agents/main"
 metrics = ["ac1", "cue_diag", "dead_channels"]
-optional = ["rush", "macro", "tvz", "t1"]
+optional = ["rush", "macro", "tvz"]
 ck1_outputs = { ac1 = "eval/ac1-20261101/ac1-vtrace-s3" }

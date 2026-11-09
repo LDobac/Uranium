@@ -1,21 +1,28 @@
-"""Measurement protocol of the Checkpoint 1 lineage and its successors (plan "측정 프로토콜",
-docs/measurement_protocol.md): config/protocol/lineage.toml pins, per lineage point, the metric menu and
-the conditions Checkpoint 1 was measured with; this tool turns a (point, checkpoint) into eval jobs and
-refuses anything that differs (plan conditions, sampling, zero_last_failed, family, run prefix, T1 bot
-builds). Every job gets a `protocol.json` record: checkpoint sha256, git commit, plan content hashes.
+"""Lineage measurement protocol (050-R9, 050-AC5; plan "측정 프로토콜", docs/measurement_protocol.md):
+config/protocol/lineage.toml pins, per lineage point, the metric menu and the conditions Checkpoint 1 was
+measured with; this tool turns a (point, checkpoint) into eval jobs and refuses anything that differs (plan
+conditions, sampling, zero_last_failed, family, run prefix, T1 platform, OSS bot builds). Every job gets a
+`protocol.json` record: checkpoint sha256, git commit and uncommitted protocol files (paths, diff hash), plan
+content hashes, host platforms and bot hashes; `verify` checks a job against it.
+
+The Checkpoint 1 lineage (`--lineage ck1`) is measured already: no new game jobs or teacher-forced runs for
+it. Its new metrics are the diagnostics (cue_diag, dead_channels, other work units) and the tables of its
+existing eval jobs recomputed with both held / bunker definitions (`tables`).
 
     python tools/eval/protocol.py list
     python tools/eval/protocol.py job --lineage m2 --point s2e2 --checkpoint checkpoints/m2-s2e2/ckpt-N \\
         --metrics rush,macro,tvz --job m2-s2e2-20261112
-    python tools/eval/protocol.py render --plan dagger_r1 --checkpoint checkpoints/<run>/ckpt-N --name dagger-r1 --out <file>
-    python tools/eval/protocol.py verify <job dir> --lineage ck1 --point r1
+    python tools/eval/protocol.py tables --lineage ck1 --point r1 [--json out.json]
+    python tools/eval/protocol.py render --plan rush_check --checkpoint checkpoints/<run>/ckpt-N --name <stage>
+    python tools/eval/protocol.py verify <job dir> --lineage m2 --point s2e2
     python tools/eval/protocol.py bc-eval --metric val500 --lineage m2 --point s2e2 --checkpoint <dir>
     python tools/eval/protocol.py check-bc-eval <output json> --metric val500
     python tools/eval/protocol.py bots [--hosts tools/eval/hosts.toml]
     python tools/eval/protocol.py compare <tables json A> <tables json B>
 
-Host lists (addresses, ssh aliases) live in the git-ignored tools/eval/hosts.toml (template
-tools/eval/hosts.example.toml, 001-R10). Relative checkpoints are under URANIUM_SHARED_DIR (061).
+Host lists (addresses, platforms, ssh aliases, bot folders) live in the git-ignored tools/eval/hosts.toml
+(template tools/eval/hosts.example.toml, 001-R10). Relative checkpoints are under URANIUM_SHARED_DIR (061).
+DAgger generation plans are written by tools/eval/rush_check_plan.py --dagger (docs/commands.md).
 """
 
 from __future__ import annotations
@@ -39,6 +46,9 @@ LINEAGE = ROOT / "config" / "protocol" / "lineage.toml"
 BOTS = ROOT / "config" / "protocol" / "t1_bots.toml"
 HOSTS = Path(__file__).resolve().parent / "hosts.toml"
 WEIGHTS = "model.safetensors"
+RECORD = "protocol.json"
+PROTOCOL_PATHS = ("tools/eval", "config/plans/protocol", "config/protocol")
+PLATFORMS = ("windows", "linux")
 # Plan defaults of crates/uranium-runner/src/plan.rs (Plan, Matchup, Side) for the normalised form.
 PLAN_DEFAULTS = {"seed_base": 1000, "same_seed": False, "max_frames": 86_400, "wall_timeout_s": 1800, "privileged": False,
                  "save_replay": False, "zero_last_failed": False, "surrender": "shadow", "surrender_chat": "gg"}
@@ -48,7 +58,7 @@ PRECISION = {"cuda": "bf16-mixed", "rocm": "f32", "cpu": "f32"}
 
 
 class Refused(Exception):
-    """A request that differs from the pinned protocol."""
+    """A request that differs from the pinned protocol (050-R9)."""
 
 
 # ---------------------------------------------------------------- lineage and templates
@@ -58,9 +68,17 @@ def load_lineage(path: Path = LINEAGE) -> dict:
     return tomllib.loads(path.read_text(encoding="utf-8"))
 
 
+def model_sides(plan: dict):
+    for m in plan["matchup"]:
+        for s in ("p0", "p1"):
+            if m[s]["kind"] == "model":
+                yield m[s]
+
+
 def normalize(plan: dict) -> dict:
-    """The plan's conditions: defaults filled in, the name dropped, every model checkpoint replaced by
-    @CHECKPOINT@ (sampling mode kept), seed_base / same_seed dropped when an explicit seed list is used."""
+    """The plan's conditions: defaults filled in, the name dropped, every model checkpoint (p0 or p1)
+    replaced by @CHECKPOINT@ (sampling mode kept), seed_base / same_seed dropped when an explicit seed
+    list is used."""
     p = {**PLAN_DEFAULTS, **{k: v for k, v in plan.items() if k not in ("name", "matchup")}}
     if "seeds" in p:
         p.pop("seed_base")
@@ -95,14 +113,15 @@ def check_template(lin: dict, plan_id: str) -> dict:
     """The template still has the pinned conditions (lineage.toml) and placeholders; returns the plan."""
     spec = lin["plan"][plan_id]
     text, plan = template(lin, plan_id)
-    if plan.get("name") != NAME or any(m["p0"].get("checkpoint") != CKPT for m in plan["matchup"]):
-        raise Refused(f"template {spec['template']}: name / every p0 checkpoint must be the placeholders")
+    sides = list(model_sides(plan))
+    if plan.get("name") != NAME or not sides or any(s.get("checkpoint") != CKPT for s in sides):
+        raise Refused(f"template {spec['template']}: name / every model checkpoint (p0 and p1) must be the placeholders")
     h = conditions_sha256(plan)
     if h != spec["conditions_sha256"]:
         raise Refused(f"template {spec['template']} conditions {h[:12]} differ from lineage.toml {spec['conditions_sha256'][:12]}")
     n = normalize(plan)
     pinned = {"zero_last_failed": n["zero_last_failed"], "max_frames": n["max_frames"], "games": sum(m["games"] for m in n["matchup"]),
-              "sample": sorted({m["p0"]["sample"] for m in n["matchup"]})}
+              "sample": sorted({s["sample"] for s in model_sides(n)})}
     want = {"zero_last_failed": spec["zero_last_failed"], "max_frames": spec["max_frames"], "games": spec["games"], "sample": sorted(spec["sample"])}
     if pinned != want:
         raise Refused(f"template {spec['template']}: {pinned} differs from lineage.toml {want}")
@@ -113,7 +132,12 @@ def render(lin: dict, plan_id: str, checkpoint: str, name: str) -> str:
     check_template(lin, plan_id)
     text, _ = template(lin, plan_id)
     out = text.replace(f'name = "{NAME}"', f'name = "{name}"', 1).replace(f'"{CKPT}"', f'"{checkpoint}"')
-    tomllib.loads(out)
+    plan = tomllib.loads(out)
+    body = "\n".join(l for l in out.splitlines() if not l.lstrip().startswith("#"))
+    if plan["name"] != name or any(s["checkpoint"] != checkpoint for s in model_sides(plan)) or CKPT in body or NAME in body:
+        raise Refused(f"template {plan_id}: substitution of the name / checkpoint failed")
+    if conditions_sha256(plan) != lin["plan"][plan_id]["conditions_sha256"]:
+        raise Refused(f"template {plan_id}: rendered plan changed its conditions")
     return out
 
 
@@ -158,6 +182,16 @@ def check_metric(lin: dict, pt: dict, metric: str) -> dict:
     return m
 
 
+def check_new_measurement(lin: dict, lineage: str, metric: str) -> None:
+    """050-R9: a lineage that is already measured (Checkpoint 1) takes only its listed new metrics."""
+    if lineage not in lin["lineage"]:
+        raise Refused(f"no lineage {lineage!r}")
+    allowed = lin["lineage"][lineage].get("new_metrics")
+    if allowed is not None and metric not in allowed:
+        raise Refused(f"lineage {lineage} is measured already: no new {metric} measurement (only {', '.join(allowed)}; "
+                      "its existing jobs are re-tabulated with `protocol.py tables`)")
+
+
 def run_of(checkpoint: str) -> str:
     parts = [s for s in checkpoint.replace("\\", "/").split("/") if s]
     i = next((k for k, s in enumerate(parts) if s.startswith("ckpt-")), len(parts) - 1)
@@ -165,11 +199,11 @@ def run_of(checkpoint: str) -> str:
 
 
 def check_checkpoint(lin: dict, lineage: str, pt: dict, checkpoint: str) -> None:
-    """Checkpoint 1 points take exactly their recorded checkpoint; other lineages a run with their prefix."""
+    """Checkpoint 1 points take exactly their recorded checkpoint (or a copy with the same weights); other
+    lineages a run with their prefix."""
     if lineage not in lin["lineage"]:
         raise Refused(f"no lineage {lineage!r}")
     if lineage == "ck1":
-        # A job-folder copy of the checkpoint (eval/bc-e2-games/<run>__<ckpt>/ckpt) counts when its weights are the same.
         if checkpoint.replace("\\", "/").rstrip("/") != pt["ck1_checkpoint"] and checkpoint_sha256(checkpoint) != checkpoint_sha256(pt["ck1_checkpoint"]):
             raise Refused(f"point {pt['id']} of the Checkpoint 1 lineage is {pt['ck1_checkpoint']}, not {checkpoint}")
         return
@@ -206,19 +240,44 @@ def checkpoint_sha256(checkpoint: str) -> str:
     return h.hexdigest()
 
 
-def git_state() -> dict:
-    def git(*a: str) -> str:
-        return subprocess.run(["git", *a], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+def _git(*a: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *a], cwd=ROOT, capture_output=True)
 
-    dirty = git("status", "--porcelain", "--", "tools/eval", "config/plans/protocol", "config/protocol")
-    return {"commit": git("rev-parse", "HEAD"), "protocol_files_dirty": bool(dirty)}
+
+def git_state() -> dict:
+    """Commit of this checkout and the uncommitted changes of the protocol files (paths and a sha256 of
+    `git diff HEAD` plus the untracked files' contents). Refused outside a git checkout."""
+    try:
+        head = _git("rev-parse", "HEAD")
+    except OSError as e:
+        raise Refused(f"git is not available: {e}")
+    if head.returncode != 0:
+        raise Refused(f"{ROOT} is not a git checkout (git rev-parse HEAD: {head.stderr.decode(errors='replace').strip()})")
+    st = _git("status", "--porcelain", "--untracked-files=all", "--", *PROTOCOL_PATHS)
+    diff = _git("diff", "HEAD", "--", *PROTOCOL_PATHS)
+    if st.returncode != 0 or diff.returncode != 0:
+        raise Refused("git status / diff of the protocol files failed")
+    lines = [l for l in st.stdout.decode().splitlines() if l.strip()]
+    paths = sorted(l[3:] for l in lines)
+    h = hashlib.sha256(diff.stdout)
+    for l in sorted(lines):
+        if l.startswith("??"):
+            f = ROOT / l[3:]
+            h.update(l[3:].encode() + b"\0" + (f.read_bytes() if f.is_file() else b""))
+    return {"commit": head.stdout.decode().strip(), "protocol_files_dirty": bool(paths), "dirty_paths": paths,
+            "dirty_diff_sha256": h.hexdigest() if paths else None}
 
 
 def file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-# ---------------------------------------------------------------- T1 / OSS bot builds
+def read_record(job: Path) -> dict | None:
+    f = job / RECORD
+    return json.loads(f.read_text(encoding="utf-8")) if f.is_file() else None
+
+
+# ---------------------------------------------------------------- hosts, T1 platform, OSS bot builds
 
 
 def load_hosts(path: Path) -> list[dict]:
@@ -239,6 +298,19 @@ def job_hosts_toml(hosts: list[dict]) -> str:
     return "\n".join(out)
 
 
+def check_t1_platform(pt: dict, hosts: list[dict]) -> list[str]:
+    """User decision 2026-11-09 (050-R9): T1 games run on the platform of the point's Checkpoint 1
+    counterpart (BC baseline on the Linux ROCm hosts, Checkpoint 1 on the Windows host), because the
+    OSS bot binaries differ between platforms. Every host of a T1 job needs `platform` in the host list."""
+    allowed = pt.get("t1_platforms")
+    if not allowed:
+        raise Refused(f"point {pt['id']} has no Checkpoint 1 T1 counterpart platform (lineage.toml t1_platforms)")
+    bad = [f"{h['addr']} ({h.get('platform', 'no platform')})" for h in hosts if h.get("platform") not in allowed]
+    if bad:
+        raise Refused(f"T1 of point {pt['id']} runs on {', '.join(allowed)} hosts only; host list has " + ", ".join(bad))
+    return sorted({h["platform"] for h in hosts})
+
+
 def local_bot_hashes(bots: list[str]) -> dict[str, str]:
     ec.load_env()
     d = Path(os.environ.get("URANIUM_OSS_BOTS_DIR") or ROOT / "build" / "oss_bots")
@@ -253,7 +325,7 @@ def local_bot_hashes(bots: list[str]) -> dict[str, str]:
 
 
 def remote_bot_hashes(ssh: str, bots_dir: str, bots: list[str]) -> dict[str, str]:
-    cmd = "; ".join(f'f={bots_dir}/{b}/module.so; [ -f "$f" ] && echo "{b} $(sha256sum < "$f" | cut -c1-64)"' for b in bots)
+    cmd = "; ".join(f'f="{bots_dir}/{b}/module.so"; [ -f "$f" ] && echo "{b} $(sha256sum < "$f" | cut -c1-64)"' for b in bots)
     p = subprocess.run(["ssh", "-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", ssh, cmd], capture_output=True, text=True, timeout=120)
     out = {}
     for line in p.stdout.splitlines():
@@ -265,12 +337,13 @@ def remote_bot_hashes(ssh: str, bots_dir: str, bots: list[str]) -> dict[str, str
 
 def check_bots(hosts: list[dict], bots: list[str], given: Path | None = None) -> dict:
     """Every game host's OSS bot binaries of this job are accepted NDEBUG builds (t1_bots.toml). Hashes
-    come from `local = true` (this PC's URANIUM_OSS_BOTS_DIR), `ssh = "<alias>"` (module.so under
-    `oss_bots_dir`, default ~/Workspace/Uranium/build/oss_bots) or a file of `<addr> <bot> <sha256>` lines."""
+    come from a file of `<addr> <bot> <sha256>` lines, `local = true` (this PC's URANIUM_OSS_BOTS_DIR) or
+    `ssh = "<alias>"` with `oss_bots_dir` (the host's URANIUM_OSS_BOTS_DIR, module.so)."""
     accepted = tomllib.loads(BOTS.read_text(encoding="utf-8"))["bot"]
     seen: dict[str, dict[str, str]] = {}
+    problems = []
     if given is not None:
-        for line in given.read_text(encoding="utf-8").splitlines():
+        for line in given.read_text(encoding="utf-8-sig").splitlines():
             parts = line.split()
             if len(parts) == 3 and not line.startswith("#"):
                 seen.setdefault(parts[0], {})[parts[1]] = parts[2]
@@ -280,12 +353,15 @@ def check_bots(hosts: list[dict], bots: list[str], given: Path | None = None) ->
         if h.get("local"):
             seen[h["addr"]] = local_bot_hashes(bots)
         elif h.get("ssh"):
-            seen[h["addr"]] = remote_bot_hashes(h["ssh"], h.get("oss_bots_dir", "~/Workspace/Uranium/build/oss_bots"), bots)
-    problems = []
+            if not h.get("oss_bots_dir"):
+                problems.append(f"{h['addr']}: ssh host without oss_bots_dir (its URANIUM_OSS_BOTS_DIR) in the host list")
+                continue
+            seen[h["addr"]] = remote_bot_hashes(h["ssh"], h["oss_bots_dir"], bots)
     for h in hosts:
         got = seen.get(h["addr"])
         if got is None:
-            problems.append(f"{h['addr']}: no way to read its bot hashes (set local / ssh in the host list or pass --bot-hashes)")
+            if not any(p.startswith(h["addr"] + ":") for p in problems):
+                problems.append(f"{h['addr']}: no way to read its bot hashes (local / ssh + oss_bots_dir in the host list, or --bot-hashes)")
             continue
         for b in bots:
             if b not in got:
@@ -294,7 +370,7 @@ def check_bots(hosts: list[dict], bots: list[str], given: Path | None = None) ->
                 problems.append(f"{h['addr']}: {b} {got[b][:12]} is not an accepted NDEBUG build (config/protocol/t1_bots.toml)")
     if problems:
         raise Refused("bot builds:\n  " + "\n  ".join(problems))
-    return seen
+    return {h["addr"]: seen[h["addr"]] for h in hosts}
 
 
 def oss_bots(plans: list[dict]) -> list[str]:
@@ -307,17 +383,18 @@ def oss_bots(plans: list[dict]) -> list[str]:
 def cmd_job(a) -> None:
     lin = load_lineage()
     pt = point(lin, a.point)
-    check_checkpoint(lin, a.lineage, pt, a.checkpoint)
     metrics = [m.strip() for m in a.metrics.split(",") if m.strip()]
     stages: list[tuple[str, str]] = []  # (metric, plan id)
     for m in metrics:
+        check_new_measurement(lin, a.lineage, m)
         spec = check_metric(lin, pt, m)
         if spec["kind"] != "games":
             raise Refused(f"metric {m} is not a game metric (use the bc-eval command)")
         stages += [(m, p) for p in metric_plans(lin, pt, m)]
+    check_checkpoint(lin, a.lineage, pt, a.checkpoint)
     git = git_state()
     if git["protocol_files_dirty"] and not a.allow_dirty:
-        raise Refused("tools/eval, config/plans/protocol or config/protocol has uncommitted changes (--allow-dirty to record anyway)")
+        raise Refused("uncommitted protocol files (" + ", ".join(git["dirty_paths"]) + "); --allow-dirty records them in protocol.json")
     sha = checkpoint_sha256(a.checkpoint)
     label = a.label or run_of(a.checkpoint)
     # A job's stages that share the model must agree on zero_last_failed (crates/uranium-runner eval.rs):
@@ -327,6 +404,8 @@ def cmd_job(a) -> None:
         text = render(lin, p, a.checkpoint.replace("\\", "/"), f"{label}-{p.replace('_', '-')}")
         groups.setdefault(lin["plan"][p]["zero_last_failed"], []).append((m, p, text))
     hosts = load_hosts(Path(a.hosts))
+    has_t1 = any(lin["plan"][p]["kind"] == "t1" for _, p in stages)
+    platforms = check_t1_platform(pt, hosts) if has_t1 else None
     plans = [tomllib.loads(t) for g in groups.values() for _, _, t in g]
     bots = oss_bots(plans)
     bot_hashes = check_bots(hosts, bots, Path(a.bot_hashes) if a.bot_hashes else None) if bots else {}
@@ -340,6 +419,7 @@ def cmd_job(a) -> None:
             continue
         (d / "plans").mkdir(parents=True, exist_ok=False)
         gbots = oss_bots([tomllib.loads(t) for _, _, t in items])
+        g_t1 = any(lin["plan"][p]["kind"] == "t1" for _, p, _ in items)
         rec_plans = []
         stage_files = []
         for i, (m, p, text) in enumerate(items, start=1):
@@ -351,13 +431,15 @@ def cmd_job(a) -> None:
         (d / "job.toml").write_text("stages = [" + ", ".join(f'"{s}"' for s in stage_files) + ']\nhosts = "hosts.toml"\n', encoding="utf-8")
         (d / "hosts.toml").write_text(job_hosts_toml(hosts), encoding="utf-8")
         rec = {
-            "protocol": "config/protocol/lineage.toml", "lineage": a.lineage, "point": pt["id"], "family": pt["family"],
+            "protocol": "config/protocol/lineage.toml (050-R9)", "lineage": a.lineage, "point": pt["id"], "family": pt["family"],
             "checkpoint": a.checkpoint, "checkpoint_sha256": sha, "checkpoint_id": f"{Path(a.checkpoint).name}@{sha[:12]}",
             "zero_last_failed": zlf, "git": git, "plans": rec_plans,
+            "hosts": [{"addr": h["addr"], "platform": h.get("platform")} for h in hosts],
+            "t1_platforms": platforms if g_t1 else None,
             "bot_hashes": {h: {b: v for b, v in hs.items() if b in gbots} for h, hs in bot_hashes.items()} if gbots else {},
             "created": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
         }
-        (d / "protocol.json").write_text(json.dumps(rec, indent=1), encoding="utf-8")
+        (d / RECORD).write_text(json.dumps(rec, indent=1), encoding="utf-8")
         print("wrote", d)
 
 
@@ -372,8 +454,23 @@ def cmd_render(a) -> None:
 
 
 def verify_job(lin: dict, job: Path, lineage: str, pt: dict) -> list[str]:
-    """Problems of an eval job against the protocol (empty = conforms)."""
+    """Problems of an eval job against the protocol (050-AC5; empty = conforms). Jobs of a lineage measured
+    after the protocol must carry protocol.json; Checkpoint 1 jobs predate it."""
     problems = []
+    rec = read_record(job)
+    if rec is None:
+        if lineage != "ck1":
+            problems.append(f"no {RECORD} (jobs of lineage {lineage} are made by protocol.py job)")
+    else:
+        if (rec.get("lineage"), rec.get("point")) != (lineage, pt["id"]):
+            problems.append(f"{RECORD} is for {rec.get('lineage')} / {rec.get('point')}")
+        for p in rec.get("plans", []):
+            f = job / p["file"]
+            if not f.is_file() or file_sha256(f) != p["content_sha256"]:
+                problems.append(f"{p['file']} differs from its recorded content_sha256")
+        git = rec.get("git", {})
+        if git.get("protocol_files_dirty"):
+            problems.append(f"made with uncommitted protocol files {git.get('dirty_paths')} (diff {str(git.get('dirty_diff_sha256'))[:12]})")
     allowed = {}
     for m in pt["metrics"] + pt.get("optional", []):
         if lin["metric"][m]["kind"] == "games":
@@ -387,7 +484,11 @@ def verify_job(lin: dict, job: Path, lineage: str, pt: dict) -> list[str]:
             continue
         if pid not in allowed:
             problems.append(f"stage {k} {f.name}: plan {pid} is not in the menu of point {pt['id']} ({pt['family']})")
-        cks = {m["p0"]["checkpoint"] for m in plan["matchup"]}
+        if lin["plan"][pid]["kind"] == "t1" and rec is not None:
+            got = rec.get("t1_platforms") or []
+            if not got or set(got) - set(pt.get("t1_platforms") or []):
+                problems.append(f"stage {k}: T1 ran on {got}, point {pt['id']} pins {pt.get('t1_platforms')}")
+        cks = {s["checkpoint"] for s in model_sides(plan)}
         for ck in cks:
             try:
                 check_checkpoint(lin, lineage, pt, ck)
@@ -419,13 +520,36 @@ def cmd_verify(a) -> None:
     print(f"{a.job}: conforms to point {pt['id']} ({a.lineage})")
 
 
+def cmd_tables(a) -> None:
+    """050-R9: the point's existing Checkpoint 1 eval jobs (ck1_outputs) re-tabulated with both held and
+    both bunker definitions."""
+    import tables
+
+    lin = load_lineage()
+    pt = point(lin, a.point)
+    if a.lineage != "ck1":
+        raise Refused("tables of other lineages: run tools/eval/tables.py on their jobs")
+    jobs = []
+    for m, out in pt.get("ck1_outputs", {}).items():
+        if lin["metric"][m]["kind"] != "games":
+            continue
+        for o in [out] if isinstance(out, str) else out:
+            j = ec.shared_dir() / o
+            if j not in jobs:
+                jobs.append(j)
+    if not jobs:
+        raise Refused(f"point {pt['id']} has no Checkpoint 1 game jobs")
+    tables.main([str(j) for j in jobs] + (["--json", a.json] if a.json else []) + (["--cache", a.cache] if a.cache else []))
+
+
 def cmd_bc_eval(a) -> None:
     """Prints the pinned bc-eval / per_action command of a teacher-forced metric (run it on a host of the
     pinned backend)."""
     lin = load_lineage()
     pt = point(lin, a.point)
-    check_checkpoint(lin, a.lineage, pt, a.checkpoint)
+    check_new_measurement(lin, a.lineage, a.metric)
     m = check_metric(lin, pt, a.metric)
+    check_checkpoint(lin, a.lineage, pt, a.checkpoint)
     if m["kind"] == "bc_eval":
         args = ["python", "-m", "uranium", "bc-eval"]
         for d in m["datasets"]:
@@ -447,7 +571,9 @@ def cmd_bc_eval(a) -> None:
 
 def cmd_check_bc_eval(a) -> None:
     lin = load_lineage()
-    m = lin["metric"][a.metric]
+    m = lin["metric"].get(a.metric)
+    if m is None or m["kind"] != "bc_eval":
+        raise Refused(f"{a.metric} is not a bc-eval metric ({', '.join(k for k, v in lin['metric'].items() if v['kind'] == 'bc_eval')})")
     d = json.loads(Path(a.output).read_text(encoding="utf-8"))
     want = {"split": m["split"], "games": m.get("expect_games", m.get("games")), "selection_seed": m.get("seed")}
     got = {k: d.get(k) for k in want}
@@ -467,7 +593,8 @@ def cmd_bots(a) -> None:
 def cmd_list(a) -> None:
     lin = load_lineage()
     for p in lin["point"]:
-        print(f"{p['id']:8} {p['family']:3} {p['ck1_checkpoint']:48} metrics {','.join(p['metrics'])}  optional {','.join(p.get('optional', []))}")
+        t1 = f"  T1 on {'/'.join(p['t1_platforms'])}" if p.get("t1_platforms") else ""
+        print(f"{p['id']:8} {p['family']:3} {p['ck1_checkpoint']:48} metrics {','.join(p['metrics'])}  optional {','.join(p.get('optional', []))}{t1}")
 
 
 def cmd_compare(a) -> None:
@@ -498,16 +625,22 @@ def main(argv=None) -> None:
     s.add_argument("--hosts", default=str(HOSTS))
     s.add_argument("--bot-hashes", default=None, help="file of `<addr> <bot> <sha256>` lines for hosts without local / ssh")
     s.add_argument("--out-root", default=None, help="default <shared>/eval")
-    s.add_argument("--allow-dirty", action="store_true")
+    s.add_argument("--allow-dirty", action="store_true", help="record uncommitted protocol files (paths, diff hash) instead of refusing")
     s.add_argument("--dry-run", action="store_true")
     s.set_defaults(f=cmd_job)
-    s = sub.add_parser("render", help="one plan from its template (e.g. a DAgger generation plan)")
+    s = sub.add_parser("tables", help="re-tabulate a Checkpoint 1 point's existing eval jobs")
+    s.add_argument("--lineage", required=True)
+    s.add_argument("--point", required=True)
+    s.add_argument("--json", default=None)
+    s.add_argument("--cache", default=None)
+    s.set_defaults(f=cmd_tables)
+    s = sub.add_parser("render", help="one measurement plan from its template")
     s.add_argument("--plan", required=True)
     s.add_argument("--checkpoint", required=True)
     s.add_argument("--name", required=True)
     s.add_argument("--out", default=None)
     s.set_defaults(f=cmd_render)
-    s = sub.add_parser("verify", help="check an eval job against the protocol")
+    s = sub.add_parser("verify", help="check an eval job against the protocol (050-AC5)")
     s.add_argument("job")
     s.add_argument("--lineage", required=True)
     s.add_argument("--point", required=True)

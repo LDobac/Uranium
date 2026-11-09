@@ -1,4 +1,4 @@
-# Measurement protocol plan template `ac1_stoch_real` (config/protocol/lineage.toml, tools/eval/protocol.py).
+# 050-R9 measurement protocol plan template `ac1_stoch_real` (config/protocol/lineage.toml, tools/eval/protocol.py).
 # 042-AC1 200 games, stochastic, real last_failed (the RL judgement; BC baseline (b)).
 # Snapshot of the Checkpoint 1 plan <shared>/eval/ac1-20261101/plans/01-bc-stoch-real.toml (= the RL runs' stoch plans): only the name and the model checkpoint are
 # placeholders (@NAME@, @CHECKPOINT@); everything else is what Checkpoint 1 was measured with. Do not edit:

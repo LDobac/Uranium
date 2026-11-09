@@ -1,5 +1,5 @@
-"""Per-action teacher-forced accuracy of a checkpoint on the teacher hold-out (041-R21; protocol metric
-`per_action`, config/protocol/lineage.toml): the val split of the botgen teacher games, scored with the
+"""Per-action teacher-forced accuracy of a checkpoint on the teacher hold-out (050-R9 protocol metric
+`per_action`, config/protocol/lineage.toml; 041-R21): the val split of the botgen teacher games, scored with the
 same loop as python/uranium/bc/eval.py evaluate() plus per-label-action counts, top-1 / top-5, mean
 p(label), delay MAE, target tile / unit accuracy, selection F1 and the argmax confusion of key actions.
 Read-only; writes one JSON (input of tools/eval/per_action_table.py).

@@ -1,4 +1,4 @@
-# Measurement protocol plan template `tvz_bc` (config/protocol/lineage.toml, tools/eval/protocol.py).
+# 050-R9 measurement protocol plan template `tvz_bc` (config/protocol/lineage.toml, tools/eval/protocol.py).
 # TvZ 32 of a BC-family checkpoint: T0 zerg (standard) x Fighting Spirit 16 + Circuit Breaker 16, seeds 42069..42100
 # (= T0 100 games 69..100), stochastic, zero_last_failed true (030-R10, BC family).
 # Snapshot of the Checkpoint 1 plan <shared>/eval/dagger-tvz-r1-20261108/plans/01-tvz.toml: only the name and the model checkpoint are

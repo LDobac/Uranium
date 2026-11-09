@@ -1,4 +1,4 @@
-# Measurement protocol plan template `rush_check` (config/protocol/lineage.toml, tools/eval/protocol.py).
+# 050-R9 measurement protocol plan template `rush_check` (config/protocol/lineage.toml, tools/eval/protocol.py).
 # 050-R6 128-game condition-controlled rush check: T0 zerg_rush and ualbertabot12poollings x Fighting Spirit /
 # Circuit Breaker x 32, model players[0] stochastic, real last_failed (zero_last_failed false for BC and RL
 # checkpoints alike), 60 min (max_frames default 86,400), replays kept. Seeds: the 020-R21 generator's list from 45,001.
