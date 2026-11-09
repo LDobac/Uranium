@@ -103,7 +103,7 @@
   | 벙커 두 정의 | `bunker_order` = 모델 명령 스트림의 4:00 전 첫 `Build_Bunker` 지시(041-R22 ④·12차 자문 "지시 기준", Checkpoint 1 경로 표가 쓴 정의), `bunker_unit` = 세션 지표 `bunker_s < 240`(벙커 유닛이 관측에 처음 나온 게임 초, `bc-mix-e10` 게이트가 쓴 정의. 042 학습 판 연속 지표의 `≤ 240`이 아니라 `< 240`). 항상 둘 다 낸다 |
   | T1 | 상대 봇 바이너리가 NDEBUG 빌드인지 해시로 확인한다. 상대 크래시 판은 무효로 뺀다(Checkpoint 1 경로의 메인 임시 결정 `reports/checkpoint1.md` 9.2절, 경로 2 적용은 2026-11-09 사용자 확인). **플랫폼**(2026-11-09 사용자 확인): 비교마다 T1은 Checkpoint 1 경로 대응 지점과 같은 플랫폼에서 돈다. BC 기준선의 T1은 Linux ROCm 호스트에서, Checkpoint 1의 T1은 Windows 호스트에서 돌았으므로 `m2-s2e2`는 Linux, Checkpoint 1 대응 모델은 Windows에서 잰다. 결과에 게임 플랫폼과 봇 바이너리 해시를 남긴다 |
   | 기록 | 결과마다 체크포인트 sha256, git 커밋, 판·채점별 호스트 백엔드(CUDA·ROCm)와 정밀도. 재현이 안 되는 표집 잡음은 Wilson 95%(050-R2)와 Fisher 정확 검정 p로 보고 |
-  | 리포트 | 지점마다 "Checkpoint 1 경로 대 모델 2 경로" 표를 `reports/model2.md`에 갱신. 의도한 차이(041-R29 ⑧)를 함께 적는다. 행동 공간이 바뀌면(AMB-031-7 G1) 선택 헤드 NLL은 "강제 END 제외"판도 낸다 |
+  | 리포트 | 지점마다 "Checkpoint 1 경로 대 모델 2 경로" 표를 `reports/model2.md`에 갱신. 의도한 차이(041-R29 ⑧)를 함께 적는다. 행동 공간은 바뀌지 않으므로(AMB-031-7 Resolved 2026-11-09, G1 채택 안 함) 선택 헤드 NLL도 그대로 비교한다 |
 
   지점 × 측정(Checkpoint 1 경로가 그 지점에서 잰 것을 그대로 옮김, 모든 지점에 위 추가 지표. "새 지표"는 Checkpoint 1 경로에 값이 없는 칸이고, 비교가 필요하면 Checkpoint 1 쪽을 같은 plan으로 보충 측정한다):
 
