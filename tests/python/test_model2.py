@@ -193,6 +193,8 @@ def test_unimplemented_switch_is_refused(switch):
 
 
 # --- Hook points, with stand-in modules for the model 2 modules (032 §2.8, `Variants` docstring).
+# These check the hook contract only; the real `core_skip` module (032-R23) is tested in
+# test_core_skip.py.
 
 
 class Bypass(nn.Module):
@@ -277,7 +279,8 @@ def test_hooks_step_matches_sequence_032_ac13(name):
 @pytest.mark.parametrize("phased", [False, True])
 def test_core_skip_leaves_recurrent_and_outer_state_032_r23(phased):
     """F1 (user decision 2026-11-09): h' = h + skip feeds the heads and value only; the core state
-    and the outer LSTM state (its h_sum takes the pre-skip h) are those of the model without it."""
+    and the outer LSTM state (its h_sum takes the pre-skip h) are those of the model without it.
+    Hook contract with a stand-in Linear; the real module is tested in test_core_skip.py."""
     from uranium.agent.infer import leaves
 
     cfg, b, t, obs, labels, _ = tiny(ALL_ARCH)

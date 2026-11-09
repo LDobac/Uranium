@@ -48,6 +48,8 @@ def core_skip_linear(d_core_in: int, d_core: int) -> nn.Linear:
     model with it starts with the outputs of the model without it (032-AC13 ②). Built from its
     reserved seed like the other §2.8 modules (`fixed_linear`, under `fork_rng` in `Variants`),
     then zeroed."""
+    # §2.8 construction rule: every new module is drawn from its own reserved seed (never the
+    # global RNG); the zero init then overwrites the draw.
     lin = fixed_linear(d_core_in, d_core, SEED_CORE_SKIP)
     with torch.no_grad():
         lin.weight.zero_()

@@ -49,7 +49,8 @@ def paths(net):
 
 
 def test_core_skip_linear_is_zero_032_r23():
-    lin = core_skip_linear(7, 5)
+    with torch.random.fork_rng(devices=[]):  # as inside `Variants`
+        lin = core_skip_linear(7, 5)
     assert lin.weight.shape == (5, 7) and lin.bias.shape == (5,)
     assert not lin.weight.any() and not lin.bias.any()
 
@@ -227,6 +228,41 @@ def test_outer_h_sum_is_the_pre_skip_h_032_r23(core):
 
 @pytest.mark.parametrize("core", CORES)
 @pytest.mark.parametrize("arch", ON)
+def test_entity_recompute_keeps_the_update_041_r17(core, arch):
+    """032-AC13 ④ / 041-R17 with a trained skip: the entity encoder recomputed per 3-row chunk
+    gives the gradients of one pass, the skip's and the entity encoder's included."""
+    cfg, b, t, obs, labels, priv = setup(core, arch)
+    grads = []
+    for chunk in (0, 3):
+        net = trained_skip(net_of(cfg)).train()
+        out = net.forward_seq(obs, labels, priv, net.init_state(b), t, chunk)
+        loss = sum(out["logp"][k].sum() for k in HEADS) + out["value"].sum()
+        loss.backward()
+        grads.append({k: p.grad.clone() for k, p in net.named_parameters() if p.grad is not None})
+    assert grads[0].keys() == grads[1].keys()
+    assert SKIP_KEYS <= grads[0].keys() and any(k.startswith("entity.") for k in grads[0])
+    for k, g in grads[0].items():
+        assert torch.allclose(g, grads[1][k], atol=1e-5, rtol=1e-4), k
+
+
+@pytest.mark.parametrize("core", CORES)
+@pytest.mark.parametrize("arch", ON)
+def test_masks_hold_032_ac4(core, arch):
+    """032-AC4 with a trained skip: sampled action types stay inside the type mask."""
+    cfg, b, t, obs, _, _ = setup(core, arch)
+    net = trained_skip(net_of(cfg))
+    g = torch.Generator().manual_seed(5)
+    o = rows_at(obs, b, t, 0)
+    s = net.init_state(b)
+    with torch.no_grad():
+        for _ in range(20):
+            out = net.act(o, s, 1.0, g)
+            assert o["type_mask"][torch.arange(b), out["action"]["action"]].all()
+            s = out["state"]
+
+
+@pytest.mark.parametrize("core", CORES)
+@pytest.mark.parametrize("arch", ON)
 def test_checkpoint_round_trip_032_ac13(core, arch, tmp_path):
     """032-AC13 ④: the trained skip and the switch survive save and load."""
     cfg, b, t, obs, labels, _ = setup(core, arch)
@@ -250,7 +286,7 @@ def test_checkpoint_round_trip_032_ac13(core, arch, tmp_path):
 
 @pytest.mark.gpu
 @torch.no_grad()
-def test_graphed_act_matches_eager_core_skip():
+def test_graphed_act_matches_eager_core_skip_032_ac13():
     from uranium.agent.infer import GraphedAct
     from uranium.bc.trainer import new_net_config
     from uranium.bench.inputs import random_obs
