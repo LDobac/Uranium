@@ -1,0 +1,15 @@
+# Measurement protocol plan template `ac1_argmax_real` (config/protocol/lineage.toml, tools/eval/protocol.py).
+# 042-AC1 200 games, argmax, seed_base 42200, real last_failed (reported only).
+# Snapshot of the Checkpoint 1 plan <shared>/eval/ac1-20261101/plans/02-bc-argmax-real.toml (= the RL runs' argmax plans): only the name and the model checkpoint are
+# placeholders (@NAME@, @CHECKPOINT@); everything else is what Checkpoint 1 was measured with. Do not edit:
+# protocol.py refuses a template whose conditions hash differs from lineage.toml.
+name = "@NAME@"
+seed_base = 42200
+save_replay = true
+wall_timeout_s = 7200
+zero_last_failed = false
+[[matchup]]
+map = "fighting_spirit"
+games = 200
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "argmax" }
+p1 = { kind = "t0", race = "zerg" }

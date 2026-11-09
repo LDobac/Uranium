@@ -1,0 +1,70 @@
+# Measurement protocol plan template `t1_rl` (config/protocol/lineage.toml, tools/eval/protocol.py).
+# T1 300 games of an RL checkpoint: as t1_bc with zero_last_failed false.
+# Snapshot of the Checkpoint 1 plan config/plans/t1_eval_ac1.toml: only the name and the model checkpoint are
+# placeholders (@NAME@, @CHECKPOINT@); everything else is what Checkpoint 1 was measured with. Do not edit:
+# protocol.py refuses a template whose conditions hash differs from lineage.toml.
+name = "@NAME@"
+seed_base = 46000
+save_replay = true
+wall_timeout_s = 7200
+zero_last_failed = false
+[[matchup]]
+map = "both"
+games = 18
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 16
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 16
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot", race = "terran" }
+[[matchup]]
+map = "both"
+games = 18
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "steamhammer", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 16
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "steamhammer", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 16
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "steamhammer", race = "terran" }
+[[matchup]]
+map = "both"
+games = 50
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "zzzkbot", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 50
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "stardust", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 50
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "iron", race = "terran" }
+[[matchup]]
+map = "both"
+games = 18
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "mcrave", race = "zerg" }
+[[matchup]]
+map = "both"
+games = 16
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "mcrave", race = "protoss" }
+[[matchup]]
+map = "both"
+games = 16
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "mcrave", race = "terran" }

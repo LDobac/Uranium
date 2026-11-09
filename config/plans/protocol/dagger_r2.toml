@@ -1,0 +1,164 @@
+# Measurement protocol plan template `dagger_r2` (config/protocol/lineage.toml, tools/eval/protocol.py).
+# 041-R22 DAgger round 2 model games (half round, 300, 10 min, replays kept).
+# Snapshot of the Checkpoint 1 plan config/plans/dagger_r2.toml: only the name and the model checkpoint are
+# placeholders (@NAME@, @CHECKPOINT@); everything else is what Checkpoint 1 was measured with. Do not edit:
+# protocol.py refuses a template whose conditions hash differs from lineage.toml.
+name = "@NAME@"
+save_replay = true
+wall_timeout_s = 7200
+zero_last_failed = false
+max_frames = 14400
+seeds = [
+  # games 1..20: T0 zerg_rush, fighting_spirit
+  555107282, 842882243, 1642401729, 2617762787, 2161161420, 1329363308, 3178003148, 1220698531,
+  2282526835, 2134808787, 670821019, 974018990, 2205339593, 835625038, 3458302474, 4294805165,
+  2001758220, 3272508153, 895700811, 1785463454,
+  # games 21..40: T0 zerg_rush, circuit_breaker
+  2058446640, 391955796, 914240861, 4227050215, 2094248388, 4154775369, 1890101813, 2954511374,
+  2680888829, 861292918, 1800988179, 2712553296, 3428189495, 2113153094, 3261488234, 4255719983,
+  3902612935, 2077530056, 2033129986, 566514898,
+  # games 41..60: ualbertabot12poollings, fighting_spirit
+  3297226136, 2188000547, 847575312, 4046107415, 598080917, 472871837, 2193047862, 855138820,
+  1939094775, 2619891814, 3678667267, 2985516290, 673411628, 114034818, 3852098146, 482050666,
+  2420822117, 2776749733, 2232666534, 4055055883,
+  # games 61..80: ualbertabot12poollings, circuit_breaker
+  1482001386, 1354406825, 1627280870, 897326938, 257131227, 2137223963, 2165556948, 4142832164,
+  3686636033, 3234354747, 3877866932, 95380045, 1863968988, 3271491392, 457712753, 2636628050,
+  3410320847, 1110942232, 3039197817, 1522816160,
+  # games 81..100: ualbertabot9pool10lings, fighting_spirit
+  312171030, 3109089468, 483176091, 3063905062, 655188695, 3797450611, 3609615339, 2131305545,
+  1233928095, 2489766588, 733698725, 2471361053, 2222459977, 727526150, 3778233218, 3358286596,
+  3464944838, 3247453470, 3421558951, 172504635,
+  # games 101..120: ualbertabot9pool10lings, circuit_breaker
+  3256489643, 1007034390, 1851623151, 1465041333, 1934188584, 549803213, 448971578, 3222952086,
+  1970981079, 1649342440, 3327733646, 1516036112, 258291583, 873423148, 2087906704, 2770954860,
+  1992631533, 2960356721, 2098087845, 3951223792,
+  # games 121..140: ualbertabot9poolhydra, fighting_spirit
+  3315693364, 1039328981, 2815154006, 2822293988, 2004359107, 4034426557, 571272030, 1123786989,
+  3208758658, 3293734085, 3118326632, 1651197233, 3957434612, 513109077, 3250254343, 174964675,
+  3107348798, 29104634, 1347837865, 3725537833,
+  # games 141..160: ualbertabot9poolhydra, circuit_breaker
+  3798330430, 1012676969, 944288680, 945600051, 2354914304, 2978324490, 2236444975, 1391891627,
+  2693694000, 567886078, 2033475716, 3021365918, 4133156080, 1236634480, 877246813, 3838244222,
+  2775485386, 132390232, 1224820336, 274828666,
+  # games 161..174: ualbertabot2hatchhydra, fighting_spirit
+  3893533630, 3891318662, 2535890675, 2846884177, 2677580603, 161015928, 1123898910, 4155387799,
+  2997343331, 2735603052, 2799960945, 729530217, 531385466, 219750635,
+  # games 175..188: ualbertabot2hatchhydra, circuit_breaker
+  1477626736, 358467843, 3347652097, 4222748029, 1028452209, 345981921, 3092407568, 2002129982,
+  1962855683, 2163419935, 1771498315, 3543304713, 3555290720, 242289318,
+  # games 189..202: ualbertabot3hatchmuta, fighting_spirit
+  4243393772, 1162576681, 984382178, 4088881259, 3975686608, 576718641, 2512566771, 587742314,
+  1702569093, 2280581489, 1664359681, 3755039549, 1368429413, 3894484716,
+  # games 203..216: ualbertabot3hatchmuta, circuit_breaker
+  3812150420, 296458542, 4035883787, 3923810914, 287060954, 244334738, 4105038190, 899767417,
+  58395786, 3776422536, 4089765505, 330774086, 2082204232, 2059179812,
+  # games 217..230: steamhammer2hatchmuta, fighting_spirit
+  1250708876, 1610925056, 1433272380, 3601465017, 306232505, 1447483968, 1186063986, 2567091523,
+  1389602214, 3280946353, 1309385267, 1546085023, 590251018, 1696509651,
+  # games 231..244: steamhammer2hatchmuta, circuit_breaker
+  1773615969, 3641372697, 3378262226, 1524160635, 539707694, 3603143395, 633546991, 994466937,
+  557262088, 221203614, 1103728746, 3576115761, 184487277, 3932302617,
+  # games 245..258: T0 zerg_muta, fighting_spirit
+  1151154670, 2072072272, 3356157454, 1434276902, 2586243427, 3871511710, 301248682, 3044335251,
+  3107038082, 4248421968, 1516698222, 1812954087, 3089300095, 1047574282,
+  # games 259..272: T0 zerg_muta, circuit_breaker
+  427455333, 1184437529, 2790034355, 585658398, 2845352629, 451030254, 3053147545, 3207108381,
+  3182775495, 1038333432, 9453103, 18165728, 288924069, 3640382797,
+  # games 273..286: T0 zerg standard, fighting_spirit
+  4141049389, 3657514565, 2281413497, 573652590, 3860166165, 3039715400, 3655624163, 1842489112,
+  2953418114, 1242021040, 2537883791, 69528523, 2594629073, 2778226794,
+  # games 287..300: T0 zerg standard, circuit_breaker
+  1495224149, 2790023134, 788789758, 2736505288, 115092365, 4244509458, 4006608726, 2666731295,
+  3217948554, 4013564026, 4209576704, 3488787668, 3213028765, 2504343374,
+]
+[[matchup]]
+map = "fighting_spirit"
+games = 20
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "t0", race = "zerg", build = "zerg_rush" }
+[[matchup]]
+map = "circuit_breaker"
+games = 20
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "t0", race = "zerg", build = "zerg_rush" }
+[[matchup]]
+map = "fighting_spirit"
+games = 20
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot12poollings", race = "zerg" }
+[[matchup]]
+map = "circuit_breaker"
+games = 20
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot12poollings", race = "zerg" }
+[[matchup]]
+map = "fighting_spirit"
+games = 20
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot9pool10lings", race = "zerg" }
+[[matchup]]
+map = "circuit_breaker"
+games = 20
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot9pool10lings", race = "zerg" }
+[[matchup]]
+map = "fighting_spirit"
+games = 20
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot9poolhydra", race = "zerg" }
+[[matchup]]
+map = "circuit_breaker"
+games = 20
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot9poolhydra", race = "zerg" }
+[[matchup]]
+map = "fighting_spirit"
+games = 14
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot2hatchhydra", race = "zerg" }
+[[matchup]]
+map = "circuit_breaker"
+games = 14
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot2hatchhydra", race = "zerg" }
+[[matchup]]
+map = "fighting_spirit"
+games = 14
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot3hatchmuta", race = "zerg" }
+[[matchup]]
+map = "circuit_breaker"
+games = 14
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot3hatchmuta", race = "zerg" }
+[[matchup]]
+map = "fighting_spirit"
+games = 14
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "steamhammer2hatchmuta", race = "zerg" }
+[[matchup]]
+map = "circuit_breaker"
+games = 14
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "oss", name = "steamhammer2hatchmuta", race = "zerg" }
+[[matchup]]
+map = "fighting_spirit"
+games = 14
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "t0", race = "zerg", build = "zerg_muta" }
+[[matchup]]
+map = "circuit_breaker"
+games = 14
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "t0", race = "zerg", build = "zerg_muta" }
+[[matchup]]
+map = "fighting_spirit"
+games = 14
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "t0", race = "zerg" }
+[[matchup]]
+map = "circuit_breaker"
+games = 14
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "t0", race = "zerg" }

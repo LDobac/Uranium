@@ -1,0 +1,21 @@
+# Measurement protocol plan template `tvz_bc` (config/protocol/lineage.toml, tools/eval/protocol.py).
+# TvZ 32 of a BC-family checkpoint: T0 zerg (standard) x Fighting Spirit 16 + Circuit Breaker 16, seeds 42069..42100
+# (= T0 100 games 69..100), stochastic, zero_last_failed true (030-R10, BC family).
+# Snapshot of the Checkpoint 1 plan <shared>/eval/dagger-tvz-r1-20261108/plans/01-tvz.toml: only the name and the model checkpoint are
+# placeholders (@NAME@, @CHECKPOINT@); everything else is what Checkpoint 1 was measured with. Do not edit:
+# protocol.py refuses a template whose conditions hash differs from lineage.toml.
+name = "@NAME@"
+save_replay = true
+wall_timeout_s = 7200
+zero_last_failed = true
+seeds = [42069, 42070, 42071, 42072, 42073, 42074, 42075, 42076, 42077, 42078, 42079, 42080, 42081, 42082, 42083, 42084, 42085, 42086, 42087, 42088, 42089, 42090, 42091, 42092, 42093, 42094, 42095, 42096, 42097, 42098, 42099, 42100]
+[[matchup]]
+map = "fighting_spirit"
+games = 16
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "t0", race = "zerg" }
+[[matchup]]
+map = "circuit_breaker"
+games = 16
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "t0", race = "zerg" }

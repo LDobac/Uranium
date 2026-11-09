@@ -39,6 +39,7 @@ __pycache__/
 .env.*
 !.env.example
 config/hosts.toml
+tools/eval/hosts.toml
 /build/
 # 031 map precompute output (derived from map data, not committed)
 /assets/maps/

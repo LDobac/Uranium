@@ -1,0 +1,40 @@
+# Measurement protocol plan template `t0_100` (config/protocol/lineage.toml, tools/eval/protocol.py).
+# T0 100 games: 3 races x 2 maps (17 x 4 + 16 x 2), seed_base 42000, stochastic, zero_last_failed true (BC family).
+# Snapshot of the Checkpoint 1 plan <shared>/eval/bc-e2-games/plan.template.toml (= eval/bc-mix-t0-e10-20261107): only the name and the model checkpoint are
+# placeholders (@NAME@, @CHECKPOINT@); everything else is what Checkpoint 1 was measured with. Do not edit:
+# protocol.py refuses a template whose conditions hash differs from lineage.toml.
+name = "@NAME@"
+seed_base = 42000
+save_replay = true
+wall_timeout_s = 7200
+zero_last_failed = true
+[[matchup]]
+map = "fighting_spirit"
+games = 17
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "t0", race = "terran" }
+[[matchup]]
+map = "circuit_breaker"
+games = 17
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "t0", race = "terran" }
+[[matchup]]
+map = "fighting_spirit"
+games = 17
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "t0", race = "protoss" }
+[[matchup]]
+map = "circuit_breaker"
+games = 17
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "t0", race = "protoss" }
+[[matchup]]
+map = "fighting_spirit"
+games = 16
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "t0", race = "zerg" }
+[[matchup]]
+map = "circuit_breaker"
+games = 16
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "t0", race = "zerg" }
