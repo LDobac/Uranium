@@ -35,6 +35,7 @@ FROZEN = {
     "ac1_stoch_lf0": "10c933d68c30d1d9537aa32814ddb81ce030933d1c51b0934a2e310e3cacc8f9",
     "ac1_stoch_real": "26b945e09943581885a45e4cde93f65fd8af45d48c830e0574a12fcf9076d849",
     "ac1_argmax_real": "d6419d130914f07aad97e99e480b0e72a4fab12180cfa9f99dada8902a688917",
+    "t0_tp": "0e033d973095d2fa73d140c1385c0daa74a94b7e1173dbf09c108c07f5a9d4a5",
 }
 
 # The Checkpoint 1 plans on the shared drive the templates were taken from (relative to URANIUM_SHARED_DIR).
@@ -53,6 +54,7 @@ SHARED_PLANS = [
     ("ac1_stoch_lf0", "eval/ac1-20261101/plans/01-bc-stoch-lf0.toml"),
     ("ac1_stoch_real", "eval/ac1-20261101/ac1-vtrace-s1-3m/plans/01-ac1-vtrace-s1-3m-stoch.toml"),
     ("ac1_argmax_real", "eval/ac1-20261101/ac1-vtrace-s1-3m/plans/02-ac1-vtrace-s1-3m-argmax.toml"),
+    ("t0_tp", "eval/jepa-diag-tp-20261109/plans/02-t0.toml"),
 ]
 
 CLEAN_GIT = {"commit": "0" * 40, "protocol_files_dirty": False, "dirty_paths": [], "dirty_diff_sha256": None}
@@ -177,10 +179,106 @@ def test_ck1_lineage_takes_no_new_measurements_050_r9(tmp_path):
                            "--job", "j", "--hosts", str(hosts), "--out-root", str(tmp_path)])
     with pytest.raises(SystemExit, match="REFUSED: lineage ck1 is measured already"):
         protocol.main(["bc-eval", "--metric", "val500", "--lineage", "ck1", "--point", "r1", "--checkpoint", "checkpoints/bc-dagger-r1/ckpt-1137"])
-    protocol.check_new_measurement(LIN, "ck1", "cue_diag")
-    protocol.check_new_measurement(LIN, "ck1", "dead_channels")
-    protocol.check_new_measurement(LIN, "m2", "rush")
+    for pt in LIN["point"]:
+        protocol.check_new_measurement(LIN, "ck1", "cue_diag", pt)
+        protocol.check_new_measurement(LIN, "ck1", "dead_channels", pt)
+    protocol.check_new_measurement(LIN, "m2", "rush", protocol.point(LIN, "r1"))
     assert not (tmp_path / "j").exists()
+
+
+def test_lineage_menus_consistent_050_r9():
+    """Every Checkpoint 1 output and supplement is on the point's menu; a supplement is a cell Checkpoint 1 lacks."""
+    for pt in LIN["point"]:
+        menu = set(pt["metrics"]) | set(pt.get("optional", []))
+        outs, sup = set(pt.get("ck1_outputs", {})), set(pt.get("ck1_supplement", []))
+        assert outs <= menu and sup <= menu, pt["id"]
+        assert not outs & sup, pt["id"]
+        assert set(pt["metrics"]) - {"cue_diag", "dead_channels"} <= outs, pt["id"]
+        if "t1" in menu:
+            assert pt.get("t1_platforms"), pt["id"]
+    assert protocol.point(LIN, "s2e2")["ck1_supplement"] == ["t0_600", "val500_race"]
+
+
+def test_ck1_supplement_only_for_missing_cells_050_r9(tmp_path, monkeypatch):
+    """050-R9: Checkpoint 1 is measured with the same plan only where the point table has no Checkpoint 1 value."""
+    monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
+    monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: "a" * 64)
+    hosts = tmp_path / "hosts.toml"
+    hosts.write_text('[[host]]\naddr = "h:7700"\n', encoding="utf-8")
+    base = ["job", "--lineage", "ck1", "--point", "s2e2", "--checkpoint", "checkpoints/bc-s2e2-pt/ckpt-11387", "--job", "j",
+            "--hosts", str(hosts), "--out-root", str(tmp_path / "eval")]
+    protocol.main(base + ["--metrics", "t0_600"])
+    rec = json.loads((tmp_path / "eval" / "j" / "protocol.json").read_text(encoding="utf-8"))
+    assert (rec["lineage"], rec["point"], rec["plans"][0]["plan"]) == ("ck1", "s2e2", "t0_600")
+    for metric in ("rush", "t0_tp", "t0_300"):
+        with pytest.raises(SystemExit, match=rf"no new {metric} measurement at point s2e2 \(it has {metric}: `protocol.py tables`\)"):
+            protocol.main(base[:-1] + ["j2", "--metrics", metric])
+    with pytest.raises(SystemExit, match="no new macro measurement at point s2e2; allowed there: cue_diag, dead_channels, t0_600, val500_race"):
+        protocol.main(base[:-1] + ["j2", "--metrics", "macro"])
+    r1 = ["--lineage", "ck1", "--point", "r1", "--checkpoint", "checkpoints/bc-dagger-r1/ckpt-1137"]
+    protocol.main(["bc-eval", "--metric", "val500_race"] + r1)
+    protocol.main(["bc-eval", "--metric", "test"] + r1)
+    with pytest.raises(SystemExit, match="no new val500 measurement at point r1"):
+        protocol.main(["bc-eval", "--metric", "val500"] + r1)
+    protocol.check_new_measurement(LIN, "ck1", "t0_tp", protocol.point(LIN, "r2"))
+    protocol.check_new_measurement(LIN, "ck1", "t0_tp", protocol.point(LIN, "mix-e10"))
+    with pytest.raises(protocol.Refused):
+        protocol.check_new_measurement(LIN, "ck1", "t0_tp", protocol.point(LIN, "r1"))
+
+
+def test_t0_tp_template_050_r10():
+    """T0 standard Terran / Protoss 32 + 32: the first 16 seeds of each map block of the T0 300 (seed_base 41300)."""
+    plan = tomllib.loads(protocol.render(LIN, "t0_tp", "c", "n"))
+    assert plan["seeds"] == [*range(41301, 41317), *range(41351, 41367), *range(41401, 41417), *range(41451, 41467)]
+    assert [(m["map"], m["games"], m["p1"]) for m in plan["matchup"]] == [
+        ("fighting_spirit", 16, {"kind": "t0", "race": "terran"}), ("circuit_breaker", 16, {"kind": "t0", "race": "terran"}),
+        ("fighting_spirit", 16, {"kind": "t0", "race": "protoss"}), ("circuit_breaker", 16, {"kind": "t0", "race": "protoss"})]
+    n = protocol.normalize(plan)
+    assert n["zero_last_failed"] is True and n["max_frames"] == 86400 and n["wall_timeout_s"] == 7200
+    assert {m["p0"]["sample"] for m in n["matchup"]} == {"stochastic"}
+    # the same games as the T0 300's: seed_base + game number, same map and opponent
+    t300 = tables.game_keys(tomllib.loads(protocol.render(LIN, "t0_300", "c", "n")))
+    assert set(tables.game_keys(plan)) <= set(t300)
+
+
+def test_subset_tables_t0_tp_inside_t0_300_050_r9(tmp_path):
+    """The BC baseline's T0 T / P 32 + 32 is counted from its T0 300 job by seed / map / opponent."""
+    rows = [{**row(1, True), "model": {**row(1, True)["model"], "zero_last_failed": True}},     # T FS seed 41301: in
+            {**row(17, True), "model": {**row(17, True)["model"], "zero_last_failed": True}},   # T FS seed 41317: out
+            {**row(51, None), "model": {**row(51, None)["model"], "zero_last_failed": True}},   # T CB seed 41351: in
+            {**row(116, False), "model": {**row(116, False)["model"], "zero_last_failed": True}}]  # P FS seed 41416: in
+    ledger = [{"game_id": 100151, "outcome": "Aborted", "detail": "launcher exit codes [Some(0), None]"}]  # P CB 41451: invalid
+    job = make_job(tmp_path, "t0_300", rows, ledger)
+    res = tables.subset_tables(job, "t0_tp", LIN)
+    (t,) = res.values()
+    assert t["plan"] == "t0_tp" and t["games_planned"] == 64 and t["rows"] == 3 and t["invalid_games"] == [100049]
+    tot = t["table"]["by_race"]
+    assert tot["stochastic vs terran"]["won"] == 1 and tot["stochastic vs terran"]["draw"] == 1 and tot["stochastic vs terran"]["n"] == 2
+    assert tot["stochastic vs protoss"]["lost"] == 1 and tot["stochastic vs protoss"]["invalid"] == 1
+    bad = make_job(tmp_path / "b", "t0_300", rows, plan_text=protocol.render(LIN, "t0_300", "c", "t0_300").replace("zero_last_failed = true", "zero_last_failed = false"))
+    with pytest.raises(protocol.Refused, match="zero_last_failed differs"):
+        tables.subset_tables(bad, "t0_tp", LIN)
+    with pytest.raises(protocol.Refused, match="no stage holds every game"):
+        tables.subset_tables(make_job(tmp_path / "c", "macro", []), "t0_tp", LIN)
+
+
+def test_job_tables_stage_filter_050_r9(tmp_path):
+    job = make_job(tmp_path, "tvz_bc", [row(1, True)])
+    assert tables.job_tables(job, tmp_path / "cache", lin=LIN, stages={"other"}) == {}
+    assert list(tables.job_tables(job, tmp_path / "cache", lin=LIN, stages={"tvz_bc"})) == ["tvz_bc/tvz_bc"]
+
+
+def test_val500_race_needs_per_race_output_050_r9(tmp_path):
+    f = tmp_path / "v.json"
+    base = {"split": "val", "games": 500, "selection_seed": 1, "action_top1": 0.72}
+    f.write_text(json.dumps(base), encoding="utf-8")
+    with pytest.raises(SystemExit, match="no `by_enemy_race` with terran, protoss, zerg"):
+        protocol.main(["check-bc-eval", str(f), "--metric", "val500_race"])
+    per = {r: {"steps": 10, "action_top1": 0.7, "nll": {"action": 0.9}} for r in ("terran", "protoss", "zerg")}
+    f.write_text(json.dumps({**base, "by_enemy_race": per}), encoding="utf-8")
+    protocol.main(["check-bc-eval", str(f), "--metric", "val500_race"])
+    v, r = LIN["metric"]["val500"], LIN["metric"]["val500_race"]
+    assert {k: v[k] for k in ("datasets", "split", "games", "seed", "backend", "config")} == {k: r[k] for k in ("datasets", "split", "games", "seed", "backend", "config")}
 
 
 def fake_checkpoint(tmp_path: Path, run: str = "m2-s2e2") -> Path:

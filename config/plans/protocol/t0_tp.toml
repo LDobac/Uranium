@@ -1,0 +1,45 @@
+# 050-R9 measurement protocol plan template `t0_tp` (config/protocol/lineage.toml, tools/eval/protocol.py).
+# 050-R10 regression gate: T0 standard Terran and Protoss, 32 games each = the first 16 seeds of each map block of
+# the BC baseline's T0 300 (eval/bc-e2-final, seed_base 41300): T 41301-41316 / 41351-41366, P 41401-41416 /
+# 41451-41466. Conditions of that measurement: stochastic, zero_last_failed true (BC family), 60 min, wall 7,200 s.
+# Snapshot of the Checkpoint 1 plan <shared>/eval/jepa-diag-tp-20261109/plans/02-t0.toml: only the name and the
+# model checkpoint are placeholders (@NAME@, @CHECKPOINT@). Do not edit: protocol.py refuses a template whose
+# conditions hash differs from lineage.toml.
+name = "@NAME@"
+save_replay = true
+wall_timeout_s = 7200
+zero_last_failed = true
+seeds = [
+  # games 1..16: T0 terran, fighting_spirit (seeds 41301..41316)
+  41301, 41302, 41303, 41304, 41305, 41306, 41307, 41308,
+  41309, 41310, 41311, 41312, 41313, 41314, 41315, 41316,
+  # games 17..32: T0 terran, circuit_breaker (seeds 41351..41366)
+  41351, 41352, 41353, 41354, 41355, 41356, 41357, 41358,
+  41359, 41360, 41361, 41362, 41363, 41364, 41365, 41366,
+  # games 33..48: T0 protoss, fighting_spirit (seeds 41401..41416)
+  41401, 41402, 41403, 41404, 41405, 41406, 41407, 41408,
+  41409, 41410, 41411, 41412, 41413, 41414, 41415, 41416,
+  # games 49..64: T0 protoss, circuit_breaker (seeds 41451..41466)
+  41451, 41452, 41453, 41454, 41455, 41456, 41457, 41458,
+  41459, 41460, 41461, 41462, 41463, 41464, 41465, 41466,
+]
+[[matchup]]
+map = "fighting_spirit"
+games = 16
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "t0", race = "terran" }
+[[matchup]]
+map = "circuit_breaker"
+games = 16
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "t0", race = "terran" }
+[[matchup]]
+map = "fighting_spirit"
+games = 16
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "t0", race = "protoss" }
+[[matchup]]
+map = "circuit_breaker"
+games = 16
+p0 = { kind = "model", checkpoint = "@CHECKPOINT@", sample = "stochastic" }
+p1 = { kind = "t0", race = "protoss" }

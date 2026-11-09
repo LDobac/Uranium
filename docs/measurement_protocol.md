@@ -6,8 +6,8 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 
 | 파일 | 내용 |
 |---|---|
-| `config/protocol/lineage.toml` | 경로 지점(`s1e1` … `rl-s3`), 지점별 지표 메뉴, 지표별 고정 조건, plan 템플릿의 조건 해시, Checkpoint 1 결과 위치(`ck1_outputs`), T1 플랫폼(`t1_platforms`) |
-| `config/plans/protocol/*.toml` | Checkpoint 1 측정 plan 사본 12개. 바뀌는 것은 이름(`@NAME@`)과 체크포인트(`@CHECKPOINT@`)뿐 |
+| `config/protocol/lineage.toml` | 경로 지점(`s1e1` … `rl-s3`), 지점별 지표 메뉴, 지표별 고정 조건, plan 템플릿의 조건 해시, Checkpoint 1 결과 위치(`ck1_outputs`), Checkpoint 1 보충 측정 칸(`ck1_supplement`), T1 플랫폼(`t1_platforms`) |
+| `config/plans/protocol/*.toml` | Checkpoint 1 측정 plan 사본 13개. 바뀌는 것은 이름(`@NAME@`)과 체크포인트(`@CHECKPOINT@`)뿐 |
 | `config/protocol/t1_bots.toml` | 허용하는 OSS 봇 바이너리 sha256(NDEBUG 빌드) |
 | `tools/eval/protocol.py` | job 생성·조건 검사·기록, Checkpoint 1 job 재집계, teacher-forced 명령, 봇 해시 확인, 비교 |
 | `tools/eval/tables.py` | 평가 job 결과 표(러시·운영형·T1·승률) |
@@ -20,18 +20,20 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 ## 지점과 지표
 
 - 지점: `s1e1`, `s1e2`, `s2e2`(BC 기준선), `mix-e1` … `mix-e10`, `r1`(Checkpoint 1), `r2`, `rl-s1`(Checkpoint 1 RL) … `rl-s3`. `python tools/eval/protocol.py list`로 본다.
-- `metrics`는 Checkpoint 1 경로에서 잰 지표다. 이 지표는 바로 비교할 수 있다. `optional`은 Checkpoint 1 값이 없는 지표로, 새 경로에서만 낸다.
+- `metrics`는 Checkpoint 1 경로에서 잰 지표다. 이 지표는 바로 비교할 수 있다. `optional`은 Checkpoint 1 값이 없는 지표다. 그중 050-R9 지점 표가 요구하는 칸은 `ck1_supplement`로 Checkpoint 1 쪽도 보충 측정할 수 있다.
 - 지표
 
 | 지표 | 내용 | 고정 조건 |
 |---|---|---|
 | `val500` | 대상 맵 val 500게임 teacher forcing | seed 1, ROCm f32, `config/bc.toml` |
+| `val500_race` | `val500`을 상대 종족별로(050-R10 ②) | `val500`과 같은 실행. bc-eval 출력에 `by_enemy_race`(종족별 step·top-1·NLL)가 있어야 한다. 지금 bc-eval은 이 필드를 쓰지 않으므로 `python/uranium/bc/eval.py`에 추가가 필요하다. 없으면 `check-bc-eval`이 거부한다 |
 | `test` | 대상 맵 test 전체(1,199게임) | CUDA, BC 기준선 |
 | `per_action` | 교사 보관분(2026-11-06 교사 판 val 165게임) 행동별 top-1 | CUDA, `--holdout orig` |
 | `rush` | 050-R6 러시 128판 | seed 목록 45,001…, stochastic, `zero_last_failed` false, 60분 |
 | `macro` | 운영형 40판 | seed_base 46000, stochastic, false, 10분 |
 | `tvz` | T0 저그 32판 | seed 42069…42100, BC 계열 true / RL false |
 | `t0_100`·`t0_300`·`t0_600` | T0 3종족 | seed_base 42000 / 41300 / 41000, true(BC 계열만) |
+| `t0_tp` | T0 표준 테란·프로토스 각 32판(050-R10 ①) | T0 300의 맵 블록마다 첫 16 seed: T 41301–41316·41351–41366, P 41401–41416·41451–41466. stochastic, 60분, true |
 | `t1` | T1 봇 6종 × 50판 | seed_base 46000, BC 계열 true / RL false, NDEBUG 봇, 플랫폼 고정 |
 | `ac1` | 042-AC1 200판 | seed_base 42000(argmax 42200), BC 기준선은 a·b·c 세 plan |
 | `cue_diag`, `dead_channels` | 단서 진단, 죽은 채널 통계 | 다른 작업 단위가 채운다(지금은 자리만) |
@@ -66,14 +68,21 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
    - `python tools/eval/protocol.py bc-eval --metric val500 --lineage m2 --point s2e2 --checkpoint <ckpt>`가 고정 명령을 출력한다. 그 backend 장비에서 돌린다.
    - 출력은 `protocol.py check-bc-eval <json> --metric val500`로 확인한다(split·게임 수·selection seed).
    - 행동별: `python tools/eval/per_action.py --checkpoint <ckpt> --out <json>` → `python tools/eval/per_action_table.py BC=<json> m2-e1=<json> ...`
-3. **Checkpoint 1 경로**: 이미 잰 경로라 새 게임 job과 새 teacher-forced 채점은 거부한다(`--lineage ck1`). 새로 내는 것은 다음 둘뿐이다.
-   - `cue_diag`·`dead_channels`: 다른 작업 단위의 진단 도구
-   - 두 held·bunker 정의: 기존 job을 다시 집계해서 낸다(`python tools/eval/protocol.py tables --lineage ck1 --point r1 [--json <파일>]`). `ck1_outputs`의 job을 `tables.py`로 다시 센다. 게임은 새로 돌리지 않는다.
-   - teacher-forced 값은 `ck1_outputs`의 기존 출력을 쓴다. 행동별 출력 사본은 `<shared>/artifacts/per_action/ck1/`에 있다.
+3. **Checkpoint 1 경로**(`--lineage ck1`): 이미 잰 칸은 다시 재지 않는다(050-R9).
+   - 이미 있는 칸: `ck1_outputs`의 기존 출력을 쓴다.
+     - 게임 칸은 `python tools/eval/protocol.py tables --lineage ck1 --point r1 [--json <파일>]`로 다시 집계해 두 held·bunker 정의를 낸다. 게임은 새로 돌리지 않는다.
+     - `ck1_outputs` 값은 job 폴더, job 폴더 목록, `{ job, stage }`(job의 한 단계), `{ job, as_plan }`(큰 job 안에서 seed·맵·상대로 찾은 프로토콜 plan의 판) 중 하나다.
+     - 예: BC 기준선의 `t0_tp`는 T0 300 job(`bc-e2-final`) 안의 64판(T 12/32, P 5/32), e10의 `tvz`는 T0 100 job의 69~100번 판(18/32), Checkpoint 1의 `t0_tp`는 `jepa-diag-tp-20261109`의 `t0-tp` 단계(T 9/32, P 2/32)다.
+     - teacher-forced 값은 기존 출력이다. 행동별 출력 사본은 `<shared>/artifacts/per_action/ck1/`에 있다.
+   - 새로 재는 것: `cue_diag`·`dead_channels`(모든 지점, 다른 작업 단위의 진단 도구)와, 050-R9 지점 표에 있지만 Checkpoint 1이 재지 않은 칸(`ck1_supplement`)이다. 이 칸은 새 경로와 같은 `job`·`bc-eval` 명령에 `--lineage ck1`로 잰다("비교가 필요하면 Checkpoint 1 쪽을 같은 plan으로 보충 측정한다").
+     - `s2e2`: `t0_600`(041-AC2 T0 600은 계보 밖 `bc-s2-pt`만 쟀다), `val500_race`
+     - `mix-e10`(채택 epoch): `t0_tp`
+     - `r1`(Checkpoint 1): `test`, `val500_race`, `per_action`
+     - `r2`: `per_action`, `t0_tp`
 
 ## 거부하는 경우
 
-- Checkpoint 1 경로의 새 게임 job·teacher-forced 채점
+- Checkpoint 1 경로에서 이미 잰 칸의 재측정(그 지점의 `ck1_supplement`와 진단 지표만 받는다)
 - 지점 메뉴에 없는 지표, 다른 계열의 plan(예: BC 지점에 `tvz_rl`)
 - 템플릿 조건 해시나 고정값(판 수·표집·`zero_last_failed`·`max_frames`)이 `lineage.toml`과 다를 때. 이름·체크포인트(p0·p1의 모델 모두)가 자리표시가 아닐 때
 - `m2` 경로인데 run 이름이 `m2-`로 시작하지 않을 때

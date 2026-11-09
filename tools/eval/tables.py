@@ -30,6 +30,7 @@ import argparse
 import json
 import os
 import sys
+import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -164,7 +165,51 @@ def stage_kind(lin: dict, plan: dict, override: dict[str, str]) -> tuple[str, st
                       f"pass --kind {plan['name']}=<{'|'.join(KINDS)}> to tabulate it anyway")
 
 
-def job_tables(job: Path, cache: Path, override: dict[str, str] | None = None, lin: dict | None = None) -> dict:
+def game_keys(plan: dict) -> dict[tuple, int]:
+    """(seed, map, opponent, sampling) -> plan game number n."""
+    seeds = ec.plan_seeds(plan)
+    out, n = {}, 0
+    for m in plan["matchup"]:
+        p1 = json.dumps(m["p1"], sort_keys=True)
+        for _ in range(m["games"]):
+            n += 1
+            out[(seeds[n - 1], m["map"], p1, m["p0"].get("sample", "argmax"))] = n
+    return out
+
+
+def subset_tables(job: Path, plan_id: str, lin: dict | None = None) -> dict:
+    """050-R9: a protocol plan's games found inside a larger Checkpoint 1 job by (seed, map, opponent,
+    sampling), e.g. the T0 Terran / Protoss 32 + 32 (t0_tp) inside the BC baseline's T0 300, or the TvZ 32
+    inside a T0 100. The source stage must have the plan's zero_last_failed and max_frames."""
+    lin = lin or protocol.load_lineage()
+    target = tomllib.loads(protocol.render(lin, plan_id, "checkpoints/subset/ckpt-0", plan_id))
+    want = game_keys(target)
+    rows_all = ec.read_results(job)
+    invalid = ec.opponent_crashes(ec.read_ledger(job))
+    for k, f, plan in ec.job_stages(job):
+        have = game_keys(plan)
+        if not set(want) <= set(have):
+            continue
+        for key in ("zero_last_failed", "max_frames"):
+            if protocol.normalize(plan)[key] != protocol.normalize(target)[key]:
+                raise protocol.Refused(f"{job.name} stage {plan['name']}: {key} differs from plan {plan_id}")
+        src = ec.model_rows(rows_all, k)
+        rows = {m: src[have[key]] for key, m in want.items() if have[key] in src}
+        bad = {ec.STAGE_BASE + m for key, m in want.items() if k * ec.STAGE_BASE + have[key] in invalid}
+        res = {"job": job.name, "stage": k, "plan_file": f.name, "plan": plan_id, "kind": "winrate", "subset_of": plan["name"],
+               "protocol": None, "conditions_sha256": lin["plan"][plan_id]["conditions_sha256"], "plan_sha256": protocol.file_sha256(f),
+               "games_planned": len(want), "rows": len(rows), "invalid_games": sorted(bad),
+               "checkpoints": sorted({r["model"].get("checkpoint") for r in rows.values()}),
+               "zero_last_failed": sorted({r["model"].get("zero_last_failed") for r in rows.values()}),
+               "sample": sorted({r["model"].get("sample") for r in rows.values()}), "inference": {}}
+        res["table"] = winrate_table(1, target, rows, bad)
+        res["counts"] = {r: {"won": [v["won"], v["n"]]} for r, v in {**res["table"]["by_race"], "total": res["table"]["total"]}.items()}
+        return {f"{job.name}/{plan['name']}[{plan_id}]": res}
+    raise protocol.Refused(f"{job.name}: no stage holds every game of plan {plan_id}")
+
+
+def job_tables(job: Path, cache: Path, override: dict[str, str] | None = None, lin: dict | None = None,
+               stages: set[str] | None = None) -> dict:
     lin = lin or protocol.load_lineage()
     rows_all = ec.read_results(job)
     ledger = ec.read_ledger(job)
@@ -172,6 +217,8 @@ def job_tables(job: Path, cache: Path, override: dict[str, str] | None = None, l
     rec = protocol.read_record(job)
     out = {}
     for k, f, plan in ec.job_stages(job):
+        if stages is not None and plan["name"] not in stages:
+            continue
         kind, pid = stage_kind(lin, plan, override or {})
         rows = ec.model_rows(rows_all, k)
         res = {"job": job.name, "stage": k, "plan_file": f.name, "plan": pid, "kind": kind,

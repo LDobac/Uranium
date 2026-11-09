@@ -5,9 +5,10 @@ conditions, sampling, zero_last_failed, family, run prefix, T1 platform, OSS bot
 `protocol.json` record: checkpoint sha256, git commit and uncommitted protocol files (paths, diff hash), plan
 content hashes, host platforms and bot hashes; `verify` checks a job against it.
 
-The Checkpoint 1 lineage (`--lineage ck1`) is measured already: no new game jobs or teacher-forced runs for
-it. Its new metrics are the diagnostics (cue_diag, dead_channels, other work units) and the tables of its
-existing eval jobs recomputed with both held / bunker definitions (`tables`).
+The Checkpoint 1 lineage (`--lineage ck1`) is measured already: cells it has are not measured again but
+re-tabulated from its existing outputs with both held / bunker definitions (`tables`, also games of a
+protocol plan inside a larger job). It takes the diagnostics (cue_diag, dead_channels, other work units) and,
+per point, the 050-R9 point-table cells it never measured (`ck1_supplement`), with the same plans.
 
     python tools/eval/protocol.py list
     python tools/eval/protocol.py job --lineage m2 --point s2e2 --checkpoint checkpoints/m2-s2e2/ckpt-N \\
@@ -182,14 +183,21 @@ def check_metric(lin: dict, pt: dict, metric: str) -> dict:
     return m
 
 
-def check_new_measurement(lin: dict, lineage: str, metric: str) -> None:
-    """050-R9: a lineage that is already measured (Checkpoint 1) takes only its listed new metrics."""
+def check_new_measurement(lin: dict, lineage: str, metric: str, pt: dict) -> None:
+    """050-R9: a lineage that is already measured (Checkpoint 1) is not measured again. It takes its new
+    metrics (lineage `new_metrics`: the diagnostics) and, per point, the cells of the 050-R9 point table it
+    never measured (`ck1_supplement`, "비교가 필요하면 Checkpoint 1 쪽을 같은 plan으로 보충 측정한다");
+    cells it has are re-tabulated from its existing outputs (`protocol.py tables`)."""
     if lineage not in lin["lineage"]:
         raise Refused(f"no lineage {lineage!r}")
     allowed = lin["lineage"][lineage].get("new_metrics")
-    if allowed is not None and metric not in allowed:
-        raise Refused(f"lineage {lineage} is measured already: no new {metric} measurement (only {', '.join(allowed)}; "
-                      "its existing jobs are re-tabulated with `protocol.py tables`)")
+    if allowed is None:
+        return
+    allowed = list(allowed) + pt.get(f"{lineage}_supplement", [])
+    if metric not in allowed:
+        have = f" (it has {metric}: `protocol.py tables`)" if metric in pt.get(f"{lineage}_outputs", {}) else ""
+        raise Refused(f"lineage {lineage} is measured already: no new {metric} measurement at point {pt['id']}{have}; "
+                      f"allowed there: {', '.join(allowed)}")
 
 
 def run_of(checkpoint: str) -> str:
@@ -386,7 +394,7 @@ def cmd_job(a) -> None:
     metrics = [m.strip() for m in a.metrics.split(",") if m.strip()]
     stages: list[tuple[str, str]] = []  # (metric, plan id)
     for m in metrics:
-        check_new_measurement(lin, a.lineage, m)
+        check_new_measurement(lin, a.lineage, m, pt)
         spec = check_metric(lin, pt, m)
         if spec["kind"] != "games":
             raise Refused(f"metric {m} is not a game metric (use the bc-eval command)")
@@ -522,24 +530,51 @@ def cmd_verify(a) -> None:
 
 def cmd_tables(a) -> None:
     """050-R9: the point's existing Checkpoint 1 eval jobs (ck1_outputs) re-tabulated with both held and
-    both bunker definitions."""
+    both bunker definitions (no new games)."""
     import tables
 
     lin = load_lineage()
     pt = point(lin, a.point)
     if a.lineage != "ck1":
         raise Refused("tables of other lineages: run tools/eval/tables.py on their jobs")
-    jobs = []
+    ec.load_env()
+    cache = Path(a.cache) if a.cache else Path(os.environ.get("URANIUM_CACHE_DIR") or ROOT / "runs") / "eval_cmddump"
+    res = ck1_game_tables(lin, pt, ec.shared_dir(), cache)
+    tables.print_tables(res)
+    if a.json:
+        Path(a.json).write_text(json.dumps(res, indent=1), encoding="utf-8")
+        print("wrote", a.json)
+
+
+def output_entries(out) -> list[dict]:
+    """A ck1_outputs value as entries {job, stage?, as_plan?}: a job folder, a list of them, or an inline
+    table naming one stage of a job (`stage`) or a protocol plan whose games lie inside the job (`as_plan`)."""
+    items = out if isinstance(out, list) else [out]
+    return [{"job": o} if isinstance(o, str) else dict(o) for o in items]
+
+
+def ck1_game_tables(lin: dict, pt: dict, shared: Path, cache: Path) -> dict:
+    """050-R9: the tables of a Checkpoint 1 point's existing game outputs (both held / bunker definitions)."""
+    import tables
+
+    res: dict = {}
+    seen = set()
     for m, out in pt.get("ck1_outputs", {}).items():
         if lin["metric"][m]["kind"] != "games":
             continue
-        for o in [out] if isinstance(out, str) else out:
-            j = ec.shared_dir() / o
-            if j not in jobs:
-                jobs.append(j)
-    if not jobs:
-        raise Refused(f"point {pt['id']} has no Checkpoint 1 game jobs")
-    tables.main([str(j) for j in jobs] + (["--json", a.json] if a.json else []) + (["--cache", a.cache] if a.cache else []))
+        for e in output_entries(out):
+            key = (e["job"], e.get("stage"), e.get("as_plan"))
+            if key in seen:
+                continue
+            seen.add(key)
+            job = shared / e["job"]
+            if e.get("as_plan"):
+                res.update(tables.subset_tables(job, e["as_plan"], lin))
+            else:
+                res.update(tables.job_tables(job, cache, lin=lin, stages={e["stage"]} if e.get("stage") else None))
+    if not res:
+        raise Refused(f"point {pt['id']} has no Checkpoint 1 game outputs")
+    return res
 
 
 def cmd_bc_eval(a) -> None:
@@ -547,7 +582,7 @@ def cmd_bc_eval(a) -> None:
     pinned backend)."""
     lin = load_lineage()
     pt = point(lin, a.point)
-    check_new_measurement(lin, a.lineage, a.metric)
+    check_new_measurement(lin, a.lineage, a.metric, pt)
     m = check_metric(lin, pt, a.metric)
     check_checkpoint(lin, a.lineage, pt, a.checkpoint)
     if m["kind"] == "bc_eval":
@@ -579,6 +614,15 @@ def cmd_check_bc_eval(a) -> None:
     got = {k: d.get(k) for k in want}
     if got != want:
         raise SystemExit(f"MISMATCH {a.output}: {got} != pinned {want}")
+    field = m.get("requires_field")
+    if field:
+        # val500_race (050-R9 / 050-R10 ②): per-enemy-race scores in the bc-eval output.
+        per = d.get(field)
+        if not isinstance(per, dict) or not set(m["races"]) <= set(per):
+            raise SystemExit(f"MISMATCH {a.output}: no `{field}` with {', '.join(m['races'])} ({m['note']})")
+        for r in m["races"]:
+            print(f"{a.output}: {a.metric} vs {r}: action_top1 {per[r]['action_top1'] * 100:.2f}%, action NLL {per[r]['nll']['action']:.4f}, steps {per[r]['steps']}")
+        return
     print(f"{a.output}: {a.metric} conditions ok, action_top1 {d['action_top1'] * 100:.2f}%")
 
 
@@ -594,6 +638,7 @@ def cmd_list(a) -> None:
     lin = load_lineage()
     for p in lin["point"]:
         t1 = f"  T1 on {'/'.join(p['t1_platforms'])}" if p.get("t1_platforms") else ""
+        t1 += f"  ck1 supplement {','.join(p['ck1_supplement'])}" if p.get("ck1_supplement") else ""
         print(f"{p['id']:8} {p['family']:3} {p['ck1_checkpoint']:48} metrics {','.join(p['metrics'])}  optional {','.join(p.get('optional', []))}{t1}")
 
 
