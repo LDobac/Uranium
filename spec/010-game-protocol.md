@@ -1,6 +1,6 @@
 # 010 — Game Protocol
 
-- **Status**: Approved (2026-10-15. **2026-11-09 개정 초안(Review — 사용자 확인 대기)**: R10 privileged를 학습 전용 보조 목표의 정답으로도 허용(사용자 결정 2026-11-09, 032-R24). 2026-10-19 개정: R5 맵 공개 자원 예외(E-3, 사용자 결정, AMB-030-2·AMB-030-3). 같은 날 개정: R12 `GameEnd.final_frame`, `PROTOCOL_VERSION` 2(E-8, 사용자 결정 2026-10-19). 같은 날 개정: 034 `Unload_Unit` 추가로 `CmdOrder::Unload`, `PROTOCOL_VERSION` 3(R11, 사용자 결정 2026-10-19, 액션 감사 F7). 2026-10-22 개정: R5 효과는 중심 타일이 보이는 것만(AMB-030-4, 스키마 변경 없음). 2026-10-21 개정: 010-R13 `Act.surrender`, `PROTOCOL_VERSION` 4(사용자 결정, AMB-031-6). 2026-10-31 개정(사용자 결정, `reports/m6_action_audit.md` §11 U-2·U-6): R5 시야 밖 기억 적 건물 명령, 010-R14 `GameEvent::UnitRejected`, `PROTOCOL_VERSION` 5. 2026-10-31 리뷰 반영(메인 결정): R14 `command` 정의를 경우별(보낸 유닛·찾지 못한 유닛·잔상 명령)로 하나로 정함, 스키마 변경 없음)
+- **Status**: Approved (2026-10-15. **2026-11-09 개정(모델 2)**: R10 privileged를 학습 전용 보조 목표의 정답으로도 허용(사용자 결정 2026-11-09, 032-R24), 사용자 확인 2026-11-09. 2026-10-19 개정: R5 맵 공개 자원 예외(E-3, 사용자 결정, AMB-030-2·AMB-030-3). 같은 날 개정: R12 `GameEnd.final_frame`, `PROTOCOL_VERSION` 2(E-8, 사용자 결정 2026-10-19). 같은 날 개정: 034 `Unload_Unit` 추가로 `CmdOrder::Unload`, `PROTOCOL_VERSION` 3(R11, 사용자 결정 2026-10-19, 액션 감사 F7). 2026-10-22 개정: R5 효과는 중심 타일이 보이는 것만(AMB-030-4, 스키마 변경 없음). 2026-10-21 개정: 010-R13 `Act.surrender`, `PROTOCOL_VERSION` 4(사용자 결정, AMB-031-6). 2026-10-31 개정(사용자 결정, `reports/m6_action_audit.md` §11 U-2·U-6): R5 시야 밖 기억 적 건물 명령, 010-R14 `GameEvent::UnitRejected`, `PROTOCOL_VERSION` 5. 2026-10-31 리뷰 반영(메인 결정): R14 `command` 정의를 경우별(보낸 유닛·찾지 못한 유닛·잔상 명령)로 하나로 정함, 스키마 변경 없음)
 - **Related**: [001](001-system-architecture.md), [011](011-bridge-openbw.md), [012](012-bridge-remastered.md), [013](013-version-mapping.md)
 
 ## Purpose
@@ -22,7 +22,7 @@
 | 010-R7 | **MUST** realtime 모드에서는 각 `Act`에 `valid_until_frame`을 붙이고, 지난 명령은 버리고 로그로 남긴다 |
 | 010-R8 | **SHOULD** 메시지 크기는 프레임당 평균 64KB 이하로 유지한다 |
 | 010-R9 | **MUST** `Hello`에 `game_id`와 `slot`(플레이어 위치)을 포함한다. 셀프플레이에서는 두 브리지가 같은 에이전트 서버에 접속하므로, 서버가 이 값으로 게임과 플레이어를 구분한다 |
-| 010-R10 | **MUST** `PrivilegedSummary`는 **lockstep 학습 모드에서만** 송신한다. realtime(실전) 모드에서는 생성 코드가 동작하지 않아야 한다. 수신 측은 이 메시지를 value head 학습 입력으로만 쓴다(030-R9, 032-R11). **2026-11-09 개정 초안(사용자 결정 2026-11-09, 문안은 사용자 확인 대기)**: 학습 전용 보조 목표의 정답(032-R24 `aux_priv`)으로도 쓸 수 있다. 정책·인코더·Core의 입력으로는 쓰지 않고, 추론(realtime·평가 대전의 `act()`)에는 쓰지 않는다 |
+| 010-R10 | **MUST** `PrivilegedSummary`는 **lockstep 학습 모드에서만** 송신한다. realtime(실전) 모드에서는 생성 코드가 동작하지 않아야 한다. 수신 측은 이 메시지를 value head 학습 입력으로만 쓴다(030-R9, 032-R11). **2026-11-09 개정(사용자 결정 2026-11-09, 문안 사용자 확인 2026-11-09)**: 학습 전용 보조 목표의 정답(032-R24 `aux_priv`)으로도 쓸 수 있다. 정책·인코더·Core의 입력으로는 쓰지 않고, 추론(realtime·평가 대전의 `act()`)에는 쓰지 않는다 |
 | 010-R12 | **MUST** `GameEnd`에 마지막 `RawFrame` 이후의 최종 관측 `final_frame: Option<RawFrame>`을 싣는다(E-8, 사용자 결정 2026-10-19). 내용은 게임이 끝난 프레임의 자기 시야 상태(보이는 유닛, 시야·탐색 격자, 효과)와 마지막 `RawFrame` 뒤에 생긴 이벤트이고, 010-R5(맵핵 금지)를 그대로 따른다. `PrivilegedSummary` 정보는 넣지 않는다. 브리지가 만들 수 없을 때(shim 실패)와 리플레이 모드(011-R11)에서는 `None`이다. 에이전트는 이 프레임으로 마지막 결정 뒤의 dense 보상을 계산해 마지막 결정에 더한다(033-R7, 042 trajectory). 에이전트에 결정을 요구하지 않으므로 `Act` 응답은 없다. 스키마가 바뀌므로 `PROTOCOL_VERSION`을 2로 올리고, 버전 1인 상대는 010-R2로 거부된다. SC:R 브리지도 같은 필드를 보내야 한다(012-R10) |
 | 010-R11 | **MUST** `Command`는 [034](034-action-table.md) 액션 테이블의 모든 `command` 매핑을 표현할 수 있어야 한다 |
 | 010-R13 | **MUST** `Act.surrender: Option<String>`(2026-10-21 사용자 결정, AMB-031-6). `Some(text)`이면 에이전트가 항복한다(031-R12): `cmds`는 비어 있어야 하고(아니면 브리지가 거부), 브리지는 `text`가 비어 있지 않으면 채팅으로 보낸 뒤 게임을 떠난다(011-R21, 012-R11). `text`는 UTF-8 79바이트 이하이고(게임 채팅 버퍼 80바이트에 NUL 포함, BWAPI `sendText`와 같다) 넘으면 브리지가 거부한다. 떠난 쪽 `GameEnd`는 winner = 상대, reason = `Surrender`다. 떠난 쪽은 자기 승리를 보고하지 않으므로 020-R13 상호 퇴장 판정에 걸리지 않는다. 스크립트 봇과 재생 모드는 항상 `None`이다. 스키마가 바뀌므로 `PROTOCOL_VERSION`을 4로 올린다 |
@@ -92,7 +92,7 @@ enum CmdOrder { Move(Pos), Attack(Target), Patrol(Pos), Hold, Stop, RightClick(T
 
 struct Act { cmds: Vec<Command>, advance_frames: u32, valid_until_frame: Option<u32>, surrender: Option<String> /* 010-R13, PROTOCOL_VERSION 4 */ }
 
-/// 학습(lockstep) 모드 전용. 정책 입력에 쓰지 않는다 (010-R10). value head 입력과 학습 전용 보조 목표의 정답에만 쓴다(2026-11-09 초안).
+/// 학습(lockstep) 모드 전용. 정책 입력에 쓰지 않는다 (010-R10). value head 입력과 학습 전용 보조 목표의 정답에만 쓴다(2026-11-09).
 struct PrivilegedSummary {
     frame: u32,
     enemy: PlayerState,                    // 상대 실제 자원, 서플라이, 업그레이드, 테크
