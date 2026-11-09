@@ -245,8 +245,8 @@ def _poison(t: BcTrainer, at_step: int) -> None:
     orig = t.group_loss
     nan = float("nan")
 
-    def group_loss(hg, group, valid, value_valid, step):
-        parts = orig(hg, group, valid, value_valid, step)
+    def group_loss(hg, group, valid, value_valid, step, *rest):
+        parts = orig(hg, group, valid, value_valid, step, *rest)
         if step != at_step:
             return parts
         for p in t.params:

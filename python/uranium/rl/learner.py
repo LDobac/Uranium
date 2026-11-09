@@ -22,7 +22,12 @@ AMB-042-17: the KL schedule is a run setting counted from the run's update 0 and
 term has a multiplier `[kl.head_scale]` (042-R9; all 1.0 = the earlier loss, bit for bit); the
 statistics add the 042-R2 진단 로그 (per-channel advantage RMS and value loss, per-step KL p99 /
 max); 042-R16 self-imitation buffer lanes (`sil_returns`, last in the batch) train the "sil" loss
-apart or ride along as ordinary lanes ("replay"). Without buffer lanes the update is as before."""
+apart or ride along as ordinary lanes ("replay"). Without buffer lanes the update is as before.
+
+042-R21 (model 2): with the 032-R24 aux modules the loss adds λ_priv L_priv + λ_jepa L_jepa (`[aux]`,
+queue lanes only, batch-wide divisors from the host), and `[monitor] spatial_every` adds the 032-R25
+dead-channel statistics (a separate no_grad eval pass per lane group, read with the update's other
+statistics). Without them the update and its statistics are as before (aux keys `None`)."""
 
 import copy
 import json
@@ -38,7 +43,9 @@ from uranium.agent.infer import leaves, rebuild
 from uranium.bc.clip import clip_global_norm
 from uranium.device import adam_impl, autocast
 from uranium.model import to_obs
-from uranium.model.config import check_aux
+from uranium.model.auxiliary import jepa_mean, jepa_moments, jepa_std, jepa_sums, priv_sum
+from uranium.model.config import AUX_JEPA_SLOTS, check_aux
+from uranium.model.monitor import SPEC_COLUMNS, ReluMonitor, channel_counts_of, packed, relu_stats, spatial_alarm, spatial_due, spatial_every
 from uranium.model.net import LABEL_KEYS, OBS_KEYS, phase_split, stage, to_device, trim_entity_pad
 from uranium.rl.returns import gae_valid, upgo_ratio, vtrace_ratio
 
@@ -48,8 +55,11 @@ MICRO_LANES_ENV = "URANIUM_RL_MICRO_LANES"
 # The arrays of a lane group the learner copies to the device (staged on the collate thread).
 STAGE_KEYS = OBS_KEYS + LABEL_KEYS + ("privileged", "mask", "behaviour")
 # Per lane group, the loss parts summed on the device (042-R2): policy, value, KL, win_open,
-# KL per head, entropy per head, then the value loss per channel (진단 로그, AMB-042-17).
-PARTS = 20
+# KL per head, entropy per head, the value loss per channel (진단 로그, AMB-042-17), then the aux
+# losses before λ (042-R21 ③: aux_priv, aux_jepa, one per configured k; 0 without the modules).
+BASE_PARTS = 20
+AUX_PARTS = 2 + AUX_JEPA_SLOTS
+PARTS = BASE_PARTS + AUX_PARTS
 # 042-R16 "sil" lane-group parts: the weighted loss, steps with A+ > 0, trained steps.
 SIL_PARTS = 3
 
@@ -200,6 +210,38 @@ def sil_stats(sil: dict, parts: list, pos: float, pos_steps: float) -> dict:
     return {"sil_loss": None, "sil_pos_frac": pos / pos_steps if pos_steps > 0 else None}
 
 
+def aux_stats(weights: dict, ks: list, vals: list | None = None, counts: dict | None = None, tgt_std: float | None = None) -> dict:
+    """042-R21 ③ statistics (before λ, batch means): `aux_priv`, `aux_jepa` (mean over k),
+    `jepa_tgt_std`, `aux_jepa_slots` (the configured k in order) and `spatial` (the 032-R25
+    statistics of a `[monitor]` update, set by the caller). `None` for a module the model does not
+    have, a slot past the k list or a k without a pair in the batch; all `None` without aux
+    modules (the reference learner's statistics too)."""
+    out = {"aux_priv": None, "aux_jepa": None, "jepa_tgt_std": None, "aux_jepa_slots": [None] * AUX_JEPA_SLOTS, "spatial": None}
+    if not weights or vals is None:
+        return out
+    fin = lambda x: finite_or_none(x) if x is not None else None  # noqa: E731
+    jepa = "jepa" in weights
+    if "priv" in weights:
+        out["aux_priv"] = fin(vals[0])
+    if jepa and any(c > 0 for c in counts["pairs"]):
+        out["aux_jepa"] = fin(vals[1])
+    if jepa:
+        out["jepa_tgt_std"] = fin(tgt_std)
+    out["aux_jepa_slots"] = [fin(vals[2 + i]) if jepa and i < len(ks) and counts["pairs"][i] > 0 else None for i in range(AUX_JEPA_SLOTS)]
+    return out
+
+
+def rl_aux_counts(batch, t: int, queue: int, ks: list) -> dict:
+    """042-R21 ①: the whole batch's aux divisors on the host (no collate, no sync), over the
+    queue lanes `0..queue` (042-R16 buffer lanes take no aux): `priv` trained steps with a
+    privileged summary, `pairs` per k (source t a trained step, target t+k a real step of the same
+    segment, the bootstrap step included), `real` real steps (the JEPA target spread)."""
+    trained = [int(x) for x in batch.trained][:queue]
+    real = [min(int(x), t) for x in batch.real_steps][:queue]
+    priv = [int(x) for x in batch.priv_trained][:queue]
+    return {"priv": sum(priv), "real": sum(real), "pairs": [sum(max(0, min(tr, r - k)) for tr, r in zip(trained, real)) for k in ks]}
+
+
 def value_channels(values: torch.Tensor, vs: torch.Tensor, mask: torch.Tensor, n: int) -> torch.Tensor:
     """042-R2 진단 로그: each channel's Σ 0.5 (V − target)^2 over the trained rows / `n` [4]."""
     return ((values - vs) ** 2 * mask[:, None]).sum(0) * (0.5 / n)
@@ -233,6 +275,9 @@ class Learner:
         # 042-R21 ①: `[aux]` keys and the trained model's aux modules must match (start error).
         # The BC reference's aux modules never run (`forward_seq(aux=False)`, 042-R21 ②).
         self.aux = check_aux(net.cfg.variant, cfg.get("aux"))
+        self.ks = list(net.cfg.variant.aux_jepa)
+        # 042-R21 ③ / 041-R25: dead-channel statistics every `spatial_every` updates (0 = never).
+        self.monitor_every = spatial_every(cfg)
         self.device = device
         self.precision = precision
         self.algo = algo
@@ -416,6 +461,12 @@ class Learner:
         ppo_targets: list = [None] * len(groups)
         apart = self.net.win_open_params()
         params = list(self.net.parameters())
+        # 042-R21: aux divisors over the queue lanes (buffer lanes take no aux), the JEPA target
+        # sums and the update's dead-channel monitor (first epoch, the weights before the step).
+        aux = rl_aux_counts(batch, t, lanes - k, self.ks) if self.aux else None
+        net_cfg = self.net.cfg
+        moments = torch.zeros(2, net_cfg.entity.d_model + net_cfg.spatial.pool, dtype=torch.float64, device=dev) if "jepa" in self.aux else None
+        mon = ReluMonitor(self.net, points="spatial") if spatial_due(self.monitor_every, self.update_count + 1) else None
         for epoch in range(epochs):
             self.opt.zero_grad(set_to_none=True)
             nxt = self._collate.submit(collate, 0)
@@ -432,7 +483,8 @@ class Learner:
                             sil_parts += part
                         del g
                         continue
-                    part, tg, kl_step = self.group_loss(g, n, weights, coef_kl, ppo_targets, gi)
+                    first = epoch == 0
+                    part, tg, kl_step = self.group_loss(g, n, weights, coef_kl, ppo_targets, gi, aux, moments if first else None, mon if first else None)
                     del g
                     if epoch == 0:
                         parts += part
@@ -454,8 +506,17 @@ class Learner:
             self.opt.step()
             self.tick("optimizer")
         nan = torch.full((1,), float("nan"), dtype=torch.float64, device=dev)
-        # One read of every statistic (032-R19): the parts, the gradient norm, KL p99 / max, SIL.
-        vals = torch.cat([parts, nan if norm is None else norm.detach().double().reshape(1), kl_tail(kl_steps, dev), sil_parts]).tolist()
+        # One read of every statistic (032-R19): the parts, the gradient norm, KL p99 / max, SIL,
+        # then (042-R21 ③) the JEPA target spread and the monitor's statistics when taken.
+        extra, channels = [], None
+        if moments is not None:
+            extra.append(jepa_std(moments, aux["real"]).reshape(1))
+        if mon is not None:
+            st = mon.stats()
+            channels = channel_counts_of(st)
+            extra.append(packed(st))
+        vals = torch.cat([parts, nan if norm is None else norm.detach().double().reshape(1), kl_tail(kl_steps, dev), sil_parts, *extra]).tolist()
+        tail = vals[PARTS + 3 + SIL_PARTS:]
         self.tick("stats")
         stats = {
             "update": self.update_count + 1, "steps": steps, "kl_coef": coef_kl, "policy": vals[0], "value": vals[1], "win_open": vals[3], "kl": vals[2],
@@ -465,25 +526,39 @@ class Learner:
             # check). Not in train.csv; null when not finite (the stats are JSON for the Rust loop).
             "grad_norm": finite_or_none(vals[PARTS]),
         }
-        stats.update(diagnostics(host["adv_sq"], adv_sq_c, vals[16:PARTS], vals[PARTS + 1:PARTS + 3], n))
-        stats.update(sil_stats(sil, vals[PARTS + 3:], host["sil_pos"], host["sil_steps"]))
+        stats.update(diagnostics(host["adv_sq"], adv_sq_c, vals[16:BASE_PARTS], vals[PARTS + 1:PARTS + 3], n))
+        stats.update(sil_stats(sil, vals[PARTS + 3:PARTS + 3 + SIL_PARTS], host["sil_pos"], host["sil_steps"]))
+        stats.update(aux_stats(self.aux, self.ks, vals[BASE_PARTS:PARTS], aux, tail[0] if moments is not None else None))
+        if mon is not None:
+            rec = dict(zip(SPEC_COLUMNS, tail[-len(SPEC_COLUMNS):]))
+            stats["spatial"] = list(rec.values())
+            alarm = spatial_alarm(stats["update"], rec, channels)
+            if alarm:
+                print(f"[rl] WARNING: update {stats['update']}: spatial encoder collapse alarm (041-R25, 042-R21): {'; '.join(alarm)}", flush=True)
         e = cfg["entropy"]
         bonus = sum(e[h] * stats["entropy_heads"][i] for i, h in enumerate(HEADS))
         kl_loss = scaled_kl(stats["kl_heads"], stats["kl"], self.kl_scale)
         stats["loss"] = stats["policy"] + stats["value"] + stats["win_open"] + kl_loss * coef_kl - bonus
         if stats["sil_loss"] is not None:
             stats["loss"] += stats["sil_loss"]
+        # 042-R21 ①: the aux terms the loss added (λ > 0).
+        for key, name in (("priv", "aux_priv"), ("jepa", "aux_jepa")):
+            if self.aux.get(key, 0.0) > 0 and stats[name] is not None:
+                stats["loss"] += self.aux[key] * stats[name]
         if self.phases:
             self._ph["python_total"] = time.perf_counter() - started
             stats["phases"] = {k: round(x, 4) for k, x in self._ph.items()}
         self.update_count += 1
         return stats
 
-    def group_loss(self, g: dict, n: int, weights, coef_kl: float, ppo_targets: list, gi: int) -> tuple[torch.Tensor, dict, torch.Tensor]:
+    def group_loss(self, g: dict, n: int, weights, coef_kl: float, ppo_targets: list, gi: int, aux: dict | None = None, moments: torch.Tensor | None = None,
+                   mon: ReluMonitor | None = None) -> tuple[torch.Tensor, dict, torch.Tensor]:
         """Forward, targets, loss and backward of one lane group (divided by the batch's trained
         steps `n`); returns the detached loss parts (a device tensor, `PARTS`), the targets' host
         sums (ρ, advantage, the 진단 로그 squares, `sil_positive`) and the per-step KL (NaN on
-        untrained rows, a device tensor)."""
+        untrained rows, a device tensor). `aux`: the batch's aux divisors (`rl_aux_counts`) when
+        the model has an aux module (042-R21 ①); `moments`: the JEPA target sums it adds to;
+        `mon`: the update's dead-channel monitor, run on this group after its backward."""
         cfg, dev, net, pin = self.cfg, self.device, self.net, self.pinned
         t = g["t"]
         obs, labels = to_obs(g, dev, pinned=pin), net.labels(g, dev, pinned=pin)
@@ -493,8 +568,9 @@ class Learner:
         phases = [to_device(i, dev, pin) for i in g["phases"]] if "phases" in g else None
         self.tick("h2d")
         with autocast(dev, self.precision):
-            # 032 §2.7: RL segments start at any decision, so an outer model runs phased.
-            out = net.forward_seq(obs, labels, priv, s0, t, phased=True, phases=phases)
+            # 032 §2.7: RL segments start at any decision, so an outer model runs phased. 032-R24:
+            # the aux outputs only with an aux module (the call is as before without one).
+            out = net.forward_seq(obs, labels, priv, s0, t, phased=True, phases=phases, **({"aux": True} if aux else {}))
         logp = sum(out["logp"][k].float() for k in HEADS)
         values = out["value"].float()
         tg = ppo_targets[gi]
@@ -537,13 +613,56 @@ class Learner:
         loss = policy + value - entropy + scaled_kl(kl_terms, kl_total, self.kl_scale) * coef_kl
         if win_open is not None:
             loss = loss + win_open
+        # 042-R21 ①: queue lanes only (a 042-R16 buffer lane riding as an ordinary lane, "replay",
+        # takes no aux loss and is not measured).
+        lane_rows = None
+        if aux is not None or mon is not None:
+            queue = torch.as_tensor(~torch.isfinite(torch.as_tensor(g["sil_return"], dtype=torch.float32)))
+            lane_rows = to_device(queue.repeat_interleave(t), dev, pin).bool()
+            real = to_device(g["real"], dev, pin).bool()
+        aux_part = torch.zeros(AUX_PARTS, device=dev)
+        if aux is not None:
+            loss, aux_part = self.aux_loss(out, g, priv, mask, real, lane_rows, t, aux, moments, loss)
         self.tick("loss")
         loss.backward()
         self.tick("backward")
+        if mon is not None:
+            # 042-R21 ③ / 032-AC15: eval mode, no gradient, no RNG, the group's s0 and phases, the
+            # learner's autocast; the returned state is dropped. Rows: the queue lanes' real steps.
+            with mon:
+                relu_stats(net, obs, labels, priv, s0, t, rows=real & lane_rows, points="spatial", phased=True, phases=phases, ctx=autocast(dev, self.precision), monitor=mon)
+            self.tick("monitor")
         zero = torch.zeros((), device=dev)
         value_ch = value_channels(values.detach(), vs, mask, n)
-        part = torch.cat([torch.stack([policy.detach(), value.detach(), kl_total.detach(), zero if win_open is None else win_open.detach(), *[x.detach() for x in kl_terms], *[x.detach() for x in ent_terms]]), value_ch]).double()
+        part = torch.cat([torch.stack([policy.detach(), value.detach(), kl_total.detach(), zero if win_open is None else win_open.detach(), *[x.detach() for x in kl_terms], *[x.detach() for x in ent_terms]]), value_ch, aux_part.detach()]).double()
         return part, tg, kl_step
+
+    def aux_loss(self, out: dict, g: dict, priv, mask, real, lane_rows, t: int, aux: dict, moments, loss):
+        """042-R21 ①: λ_priv · L_priv + λ_jepa · L_jepa added to `loss` (a weight of 0 adds
+        nothing). Rows (main-session interim decision 2026-11-09, U3 review): L_priv the trained
+        steps (`mask` > 0, the bootstrap row out) with a privileged summary; L_jepa the pairs whose
+        source t is a trained step and target t+k a real step of the same segment (the bootstrap
+        step included; one segment = one game). Divided by the batch's counts over the queue lanes.
+        Returns the new loss and the aux parts [AUX_PARTS] (before λ)."""
+        dev = self.device
+        b = g["b"]
+        trained = (mask > 0) & lane_rows
+        zero = torch.zeros((), device=dev)
+        l_priv, l_jepa, per = zero, zero, [zero] * AUX_JEPA_SLOTS
+        if "priv" in self.aux:
+            rows = (trained & to_device(g["priv_present"], dev, self.pinned).bool()).float()
+            l_priv = priv_sum(out["aux_priv"], priv, rows) / max(aux["priv"], 1)
+            if self.aux["priv"] > 0:
+                loss = loss + l_priv * self.aux["priv"]
+        if "jepa" in self.aux:
+            sums = jepa_sums(out["aux_jepa"], out["jepa_target"], trained.view(b, t), real.view(b, t), self.ks)
+            l_jepa, per_k = jepa_mean(sums, aux["pairs"])
+            per = per_k + [zero] * (AUX_JEPA_SLOTS - len(per_k))
+            if moments is not None:
+                moments += jepa_moments(out["jepa_target"], (real & lane_rows).float())
+            if self.aux["jepa"] > 0:
+                loss = loss + l_jepa * self.aux["jepa"]
+        return loss, torch.stack([l_priv, l_jepa, *per])
 
     def sil_group_loss(self, g: dict, n_sil: int, sil: dict) -> torch.Tensor:
         """042-R16 "sil" (Oh et al. 2018) on a lane group of buffer lanes, divided by the buffer

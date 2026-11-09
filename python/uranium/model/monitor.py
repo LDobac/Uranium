@@ -425,6 +425,48 @@ def packed(stats: dict) -> torch.Tensor:
     return torch.stack(vals)
 
 
+# 041-R25 ③ alarm (AMB-041-14 Resolved): from update ALARM_FROM on, a ReLU output layer with `dead`
+# >= ALARM_SHARE of its channels, or `sp_const_s8` / `sp_const_pool` >= ALARM_SHARE of the S8
+# channels / s_pool dimensions. Block outputs (d*, b*) are not watched (meaningless with
+# `spatial_preact`).
+ALARM_FROM = 600
+ALARM_SHARE = 0.5
+ALARM_LAYERS = ("stem", "c0", "c1", "c2", "c3", "r0", "r1", "r2", "r3", "r4", "r5")
+
+
+def spatial_every(cfg: dict) -> int:
+    """041-R25 ① / 042-R21 ③ `[monitor] spatial_every` of a trainer config (absent or 0 = off)."""
+    return int((cfg.get("monitor") or {}).get("spatial_every") or 0)
+
+
+def spatial_due(every: int, update: int) -> bool:
+    """The statistics are taken on updates `every`, 2 `every`, ... (`update` 1-based)."""
+    return every > 0 and update % every == 0
+
+
+def channel_counts_of(stats: dict) -> dict:
+    """{SPEC_COLUMNS name: channels} for the `sp_dead_*` and `sp_const_*` columns, host integers
+    (no sync): the alarm's denominators."""
+    out = {f"sp_dead_{name}": int(stats[point]["channels"]) for name, point in SPEC_LAYERS}
+    out["sp_const_s8"] = int(stats["spatial.s8.const"]["channels"])
+    out["sp_const_pool"] = int(stats["spatial.pool.const"]["channels"])
+    return out
+
+
+def spatial_alarm(update: int, record: dict, channels: dict) -> list[str]:
+    """041-R25 ③: the alarm reasons of one record ({SPEC_COLUMNS name: value}, as logged); empty
+    before update ALARM_FROM or when nothing crosses. Training goes on; the caller logs them."""
+    if update < ALARM_FROM:
+        return []
+    keys = [f"sp_dead_{n}" for n in ALARM_LAYERS] + ["sp_const_s8", "sp_const_pool"]
+    out = []
+    for k in keys:
+        v, c = record.get(k), channels.get(k, 0)
+        if v is not None and c > 0 and v >= ALARM_SHARE * c:
+            out.append(f"{k} = {v:g} of {c}")
+    return out
+
+
 def stats_to_host(stats: dict) -> dict:
     """The statistics as Python numbers (one host sync per tensor; for reports)."""
     out = {}

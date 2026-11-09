@@ -63,8 +63,8 @@ class Segments:
     outer model the outer counter puts lanes inside an outer segment at every phase and on its
     boundary (032 §2.7: 5, 4, 3, 7, ... decisions so far; segments of 2 and 3)."""
 
-    def __init__(self, lanes: int, t: int, net, outer: int, r_value_off: tuple = (), pseudo_rewards: bool = False, pseudo_scale: tuple = (), sil_returns: tuple = ()):
-        self.batch, self.net = _core.test_segments(lanes, t, list(r_value_off), pseudo_rewards, list(pseudo_scale), list(sil_returns)), net
+    def __init__(self, lanes: int, t: int, net, outer: int, r_value_off: tuple = (), pseudo_rewards: bool = False, pseudo_scale: tuple = (), sil_returns: tuple = (), priv_from: int = 0):
+        self.batch, self.net = _core.test_segments(lanes, t, list(r_value_off), pseudo_rewards, list(pseudo_scale), list(sil_returns), priv_from), net
         g = torch.Generator().manual_seed(7)
         s = net.init_state(lanes, CPU)
         cs = [torch.randn(x.shape, generator=g) * 0.1 for x in leaves(s if not outer else s[0])]
@@ -78,6 +78,8 @@ class Segments:
     trained = property(lambda self: self.batch.trained)
     versions = property(lambda self: self.batch.versions)
     sil_returns = property(lambda self: self.batch.sil_returns)
+    real_steps = property(lambda self: self.batch.real_steps)
+    priv_trained = property(lambda self: self.batch.priv_trained)
 
     def group(self, start, end, t, max_select):
         g = self.batch.group(start, end, t, max_select)

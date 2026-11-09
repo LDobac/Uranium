@@ -5,11 +5,11 @@ created after the default model, under a saved global RNG and from their own fix
 generators (as 032-R18 ③), so the shared modules start from the default model's weights."""
 
 import math
-from typing import NoReturn
 
 import torch
 import torch.nn as nn
 
+from uranium.model.auxiliary import aux_jepa_modules, aux_priv_module
 from uranium.model.config import UraniumNetConfig
 from uranium.model.layers import MASKED
 from uranium.model.value import fixed_linear
@@ -27,20 +27,14 @@ SEED = 0x3220_0000
 # ctx_token 0x20 / 0x21, attn_pool 0x30.., outer 0x40... §2.8 (model 2, reserved here):
 SEED_BYPASS = SEED + 0x50  # 032-R21: query, K, V, output projection (the output starts at 0)
 SEED_CORE_SKIP = SEED + 0x60  # 032-R23 F1: Linear(core input -> h), starts at 0
-SEED_AUX_PRIV = SEED + 0x70  # 032-R24: AuxPriv MLP layers
+SEED_AUX_PRIV = SEED + 0x70  # 032-R24: AuxPriv MLP layers (+0, +1)
 
 
 def seed_aux_jepa(k: int) -> int:
-    """032-R24: base of the JEPA predictor g_k, keyed by k (not by list position), so a k starts
-    from the same weights whatever the other k in `aux_jepa` are. 0x1000 + 0x10 k never meets the
-    bases above."""
+    """032-R24: base of the JEPA predictor g_k (its two layers +0, +1), keyed by k (not by list
+    position), so a k starts from the same weights whatever the other k in `aux_jepa` are.
+    0x1000 + 0x10 k never meets the bases above."""
     return SEED + 0x1000 + 0x10 * k
-
-
-def pending(switch: str, unit: str) -> NoReturn:
-    """A 032 §2.8 switch whose module is not implemented yet: refuse to build a model that would
-    silently be the default one."""
-    raise NotImplementedError(f"[model] {switch}: not implemented yet ({unit})")
 
 
 def core_skip_linear(d_core_in: int, d_core: int) -> nn.Linear:
@@ -316,8 +310,10 @@ class Variants(nn.Module):
             # 032 §2.8 (model 2): after the §2.7 modules, from their reserved seeds (above).
             self.bypass = HeadBypass(cfg, SEED_BYPASS) if vc.bypass else None
             self.core_skip = core_skip_linear(d_core_in, cfg.core.hidden) if vc.core_skip else None
-            self.aux_priv = pending("aux_priv", "032-R24") if vc.aux_priv else None
-            self.aux_jepa = pending("aux_jepa", "032-R24") if vc.aux_jepa else None
+            # 032-R24 (AMB-032-13): training-only aux modules, read h (h' with core_skip).
+            d_y = d + cfg.spatial.pool
+            self.aux_priv = aux_priv_module(cfg.core.hidden, cfg.input.privileged, SEED_AUX_PRIV) if vc.aux_priv else None
+            self.aux_jepa = aux_jepa_modules(cfg.core.hidden, d_y, vc.aux_jepa, seed_aux_jepa) if vc.aux_jepa else None
 
     def entity_inputs(self, obs: dict, c, h_o):
         """(added to the input projection [B,N,d] or None, extra tokens [B,K,d] or None, their bias

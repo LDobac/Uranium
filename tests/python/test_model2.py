@@ -184,14 +184,6 @@ def test_rl_group_has_the_aux_masks_042_r21():
     assert g["mask"].reshape(2, t)[1, -1] == 0 and g["real"].reshape(2, t)[1, -1]
 
 
-@pytest.mark.parametrize("switch", ["aux_priv", "aux_jepa"])
-def test_unimplemented_switch_is_refused(switch):
-    """Until a 032 §2.8 module exists, turning its switch on builds no silently-default model."""
-    cfg, *_ = tiny(VariantConfig(**{switch: [1] if switch == "aux_jepa" else True}))
-    with pytest.raises(NotImplementedError, match=switch):
-        net_of(cfg)
-
-
 # --- Hook points, with stand-in modules for the model 2 modules (032 §2.8, `Variants` docstring).
 # These check the hook contract only; the real `core_skip` module (032-R23) is tested in
 # test_core_skip.py.
