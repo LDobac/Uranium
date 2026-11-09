@@ -167,13 +167,19 @@ def test_dead_block_reads_dead_and_constant():
     assert st["spatial.bottleneck0"]["pos_frac"] > 0.0
 
 
-def test_packed_follows_the_041_r25_columns():
+def test_packed_follows_the_042_r21_columns():
+    """042-R21 ③: every sp_pos in 041-R25 layer order, then every sp_dead in the same order,
+    then sp_const_s8, sp_const_pool (grouped, not interleaved)."""
     net, b, t, obs, labels, priv = tiny()
     st = relu_stats(net, obs, labels, priv, net.init_state(b), t)
     v = packed(st)
     assert v.dtype == torch.float64 and v.shape == (len(SPEC_COLUMNS),) == (2 * len(SPEC_LAYERS) + 2,)
     names = [n for n, _ in SPEC_LAYERS]
     assert names == ["stem", "c0", "c1", "c2", "c3", "r0", "r1", "r2", "r3", "r4", "r5", "d0", "d1", "d2", "d3", "b0", "b1"]
+    assert list(SPEC_COLUMNS) == [f"sp_pos_{n}" for n in names] + [f"sp_dead_{n}" for n in names] + ["sp_const_s8", "sp_const_pool"]
+    pts = [p for _, p in SPEC_LAYERS]
+    assert v[:17].tolist() == pytest.approx([float(st[p]["pos_frac"]) for p in pts])
+    assert v[17:34].tolist() == [int(st[p]["never_active"]) for p in pts]
     col = dict(zip(SPEC_COLUMNS, v.tolist()))
     assert col["sp_pos_b1"] == pytest.approx(float(st["spatial.bottleneck1"]["pos_frac"]))
     assert col["sp_dead_c2"] == int(st["spatial.down2.conv"]["never_active"])
