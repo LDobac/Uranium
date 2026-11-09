@@ -29,14 +29,52 @@ VARIANTS = {
     "outer": VariantConfig(outer=SEG),
     "all": VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=SEG),
 }
+# 032 §2.8 `bypass` (032-R21) alone and with the four §2.7 switches, for the tests below that also
+# cover it (inputs widened by `widen_scalar`, output projection made non-zero by `perturb`).
+BYPASS_VARIANTS = {
+    "bypass": VariantConfig(bypass=True),
+    "bypass_all": VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=SEG, bypass=True),
+}
+WITH_BYPASS = {**VARIANTS, **BYPASS_VARIANTS}
+SEEN = 6  # enemy max-seen columns of the widened tiny scalar (`widen_scalar`)
 
 
-def tiny(variant: VariantConfig | None = None, fixture: Path = FIX):
+def widen_scalar(cfg, inp: dict) -> dict:
+    """The tiny batch's 10-wide scalar widened to the 030 §4 layout the 032-R21 bypass reads (SEEN
+    enemy max-seen columns): the fixture's columns first, then fixed pseudo-random values in
+    [0, 1). Sets `cfg.input.scalar`; `inp` values are torch tensors or numpy arrays."""
+    from uranium.model.variants import SCALAR_BLOCKS, SCALAR_COLUMNS
+
+    fixed = sum(w for _, w in SCALAR_BLOCKS) + len(SCALAR_COLUMNS) + 2 * cfg.input.z_units
+    width = fixed + SEEN + cfg.input.actions + cfg.heads.delay_buckets + 1
+    sc = torch.as_tensor(inp["scalar"])
+    extra = torch.rand(sc.shape[0], width - sc.shape[1], generator=torch.Generator().manual_seed(21)).to(sc.dtype)
+    wide = torch.cat([sc, extra], 1)
+    cfg.input.scalar = width
+    return dict(inp, scalar=wide if isinstance(inp["scalar"], torch.Tensor) else wide.numpy())
+
+
+def perturb(net, scale: float = 0.05):
+    """A non-zero bypass output projection (as after training), so the bypass changes the outputs
+    (032-R21 starts it at 0). No-op without the bypass."""
+    if net.variant is None or net.variant.bypass is None:
+        return net
+    g = torch.Generator().manual_seed(17)
+    with torch.no_grad():
+        for p in net.variant.bypass.out.parameters():
+            p.copy_(torch.randn(p.shape, generator=g) * scale)
+    return net
+
+
+def tiny(variant: VariantConfig | None = None, fixture: Path = FIX, wide: bool = False):
+    """`wide` (implied by the bypass): the scalar widened to the 030 §4 layout (`widen_scalar`)."""
     meta = json.loads((fixture / "meta.json").read_text())
     inp = load_file(fixture / "inputs.safetensors")
     cfg = UraniumNetConfig.from_dict(meta["config"])
     if variant is not None:
         cfg.variant = variant
+    if wide or cfg.variant.bypass:
+        inp = widen_scalar(cfg, inp)
     return cfg, meta["b"], meta["t"], to_obs(inp, "cpu"), to_labels(inp, "cpu"), inp["privileged"]
 
 
@@ -193,7 +231,7 @@ def test_tokens_stay_out_of_entities(name):
     assert (out["action"]["selected"] <= n).all() and (out["action"]["target_unit"] < n).all()
 
 
-@pytest.mark.parametrize("name", ["ctx", "outer", "all"])
+@pytest.mark.parametrize("name", ["ctx", "outer", "all", "bypass_all"])
 def test_trimmed_entity_padding_keeps_the_update_032_r19(name):
     """The trainer drops K trailing padding slots for the K tokens (`trim_entity_pad`): the same
     losses and gradients as the group padded by K more slots, END labels at the padded N."""
@@ -201,9 +239,11 @@ def test_trimmed_entity_padding_keeps_the_update_032_r19(name):
 
     from uranium.model.net import ENTITY_KEYS, trim_entity_pad
 
-    cfg, b, t, _, _, _ = tiny(VARIANTS[name])
+    cfg, b, t, _, _, _ = tiny(WITH_BYPASS[name])
     cfg.entity.dropout = 0.0
     inp = {k: v.numpy() for k, v in load_file(FIX / "inputs.safetensors").items()}
+    if cfg.variant.bypass:
+        inp = widen_scalar(cfg, inp)
     k = cfg.variant.tokens()
     n = inp["entity_mask"].shape[1]
     padded = dict(inp)
@@ -218,7 +258,7 @@ def test_trimmed_entity_padding_keeps_the_update_032_r19(name):
     assert trim_entity_pad(keep, k) is keep  # a real entity in the last slots: no trim
     res = []
     for g in (padded, trimmed):
-        net = net_of(cfg).train()
+        net = perturb(net_of(cfg)).train()
         out = net.forward_seq(to_obs(g, "cpu"), to_labels(g, "cpu"), torch.as_tensor(g["privileged"]), net.init_state(b), t)
         loss = sum(out["logp"][h].sum() for h in HEADS) + out["value"].sum()
         loss.backward()
@@ -259,10 +299,10 @@ def test_masks_hold_032_ac4(name):
             s = out["state"]
 
 
-@pytest.mark.parametrize("name", VARIANTS)
+@pytest.mark.parametrize("name", WITH_BYPASS)
 def test_privileged_only_reaches_value_032_r11(name):
-    cfg, b, t, obs, labels, priv = tiny(VARIANTS[name])
-    net = net_of(cfg)
+    cfg, b, t, obs, labels, priv = tiny(WITH_BYPASS[name])
+    net = perturb(net_of(cfg))
     priv = priv.clone().requires_grad_(True)
     out = net.forward_seq(obs, labels, priv, net.init_state(b), t)
     policy = sum(v.sum() for v in out["logp"].values())

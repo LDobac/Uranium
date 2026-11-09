@@ -15,9 +15,9 @@ import torch
 from uranium import ckpt
 from uranium.model import UraniumNetConfig
 from uranium.model.config import VariantConfig, input_dims
-from uranium.model.variants import BYPASS_DIM, S_RAW, SCALAR_BLOCKS, SCALAR_COLUMNS, SEED_BYPASS, scalar_layout, s_raw_slices
+from uranium.model.variants import BYPASS_DIM, PRIVILEGED_FIXED, S_RAW, SCALAR_BLOCKS, SCALAR_COLUMNS, SEED_BYPASS, HeadBypass, Variants, scalar_layout, s_raw_slices
 
-from test_variants import HEADS, SEG, net_of, rows_at, tiny
+from test_variants import HEADS, SEEN, SEG, net_of, perturb, rows_at, tiny
 
 ROOT = Path(__file__).resolve().parents[2]
 EXTRACT = ROOT / "crates" / "uranium-env" / "src" / "features" / "extract.rs"
@@ -31,7 +31,6 @@ WITH = {
     "outer": VariantConfig(outer=SEG),
     "all": VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=SEG),
 }
-SEEN = 6  # enemy max-seen columns of the widened tiny scalar
 
 
 def on(v: VariantConfig) -> VariantConfig:
@@ -39,25 +38,9 @@ def on(v: VariantConfig) -> VariantConfig:
 
 
 def tiny_b(variant: VariantConfig | None = None):
-    """The tiny batch with its scalar widened to the 030 §4 layout (SEEN enemy columns): the
-    fixture's 10 columns first, then fixed pseudo-random values in [0, 1)."""
-    cfg, b, t, obs, labels, priv = tiny(variant)
-    fixed = sum(w for _, w in SCALAR_BLOCKS) + len(SCALAR_COLUMNS) + 2 * cfg.input.z_units
-    width = fixed + SEEN + cfg.input.actions + cfg.heads.delay_buckets + 1
-    s = obs["scalar"]
-    extra = torch.rand(s.shape[0], width - s.shape[1], generator=torch.Generator().manual_seed(21))
-    obs = dict(obs, scalar=torch.cat([s, extra.to(s.dtype)], 1))
-    cfg.input.scalar = width
-    return cfg, b, t, obs, labels, priv
-
-
-def perturb(net, scale: float = 0.05):
-    """Non-zero output projection (as after training), so the bypass changes the outputs."""
-    g = torch.Generator().manual_seed(17)
-    with torch.no_grad():
-        for p in net.variant.bypass.out.parameters():
-            p.copy_(torch.randn(p.shape, generator=g) * scale)
-    return net
+    """The tiny batch with its scalar widened to the 030 §4 layout (test_variants `widen_scalar`,
+    SEEN enemy columns), also for the models without the bypass they are compared with."""
+    return tiny(variant, wide=True)
 
 
 # --- s_raw columns (032-R21 ④, AMB-032-12; supply total / max left out, main interim decision).
@@ -107,11 +90,47 @@ def test_scalar_layout_matches_the_extractor_032_r21():
 
 
 def test_scalar_layout_refuses_a_narrow_scalar():
-    cfg, *_ = tiny(BYPASS)
+    cfg, *_ = tiny()  # the fixture's 10-wide scalar
+    cfg.variant = BYPASS
     with pytest.raises(ValueError, match="030"):
         scalar_layout(cfg)
     with pytest.raises(ValueError, match="030"):
         net_of(cfg)
+
+
+def test_scalar_layout_checks_the_privileged_width_030_r9():
+    """The enemy max-seen width (what the scalar leaves) is the observed-type count the privileged
+    width gives (`FeatureDims::privileged`); a disagreement is refused, a privileged width outside
+    its layout (tiny models) is not checked."""
+    from uranium import _core
+
+    d = json.loads(_core.feature_dims())
+    cfg = UraniumNetConfig(input=input_dims())
+    seen = scalar_layout(cfg)["enemy_seen"]
+    assert d["privileged"] == PRIVILEGED_FIXED + 2 * (seen.stop - seen.start)
+    assert "5 + 63 + 47 + 2 * self.observed_types.len()" in SCHEMA.read_text(encoding="utf-8")
+    cfg.input.privileged += 2
+    with pytest.raises(ValueError, match="observed types"):
+        scalar_layout(cfg)
+    small, *_ = tiny_b(BYPASS)
+    assert small.input.privileged < PRIVILEGED_FIXED and scalar_layout(small)["enemy_seen"].stop - scalar_layout(small)["enemy_seen"].start == SEEN
+
+
+def test_bypass_draws_no_global_rng_032_r21():
+    """032 §2.7 rule / 032-R18 ③: building the variant modules with the bypass leaves the global RNG
+    where it was, and the bypass weights do not depend on it. (`fixed_linear` constructs an
+    `nn.Linear`, whose default init draws from the global RNG before the fixed-seed values
+    overwrite it; `Variants` runs that under `fork_rng`, so the draw does not leak.)"""
+    cfg, *_ = tiny_b(BYPASS)
+    d_in = cfg.entity.d_model + cfg.spatial.pool + cfg.scalar.hidden
+    torch.manual_seed(123)
+    before = torch.get_rng_state()
+    a = Variants(cfg, d_in)
+    assert torch.equal(torch.get_rng_state(), before)
+    torch.manual_seed(456)
+    b = HeadBypass(cfg, SEED_BYPASS)
+    for k, v in a.bypass.state_dict().items():
+        assert torch.equal(v, b.state_dict()[k]), k
 
 
 def test_bypass_module_shapes_and_seeds_032_r21():
@@ -189,7 +208,13 @@ def test_gradient_reaches_the_bypass_032_r21():
         assert g[k] is not None and not g[k].any(), k
     g = grads(perturb(net_of(cfg)))
     for k, v in g.items():
-        assert v is not None and v.abs().sum() > 0 and torch.isfinite(v).all(), k
+        assert v is not None and torch.isfinite(v).all(), k
+        if k == "k.bias":
+            # A K bias shifts every unit's score of a head by the same q . b_k: the softmax cancels
+            # it, so its gradient is 0 up to rounding.
+            assert v.abs().max() < 1e-6, k
+        else:
+            assert v.abs().sum() > 0, k
 
 
 def test_empty_entity_set_gives_zero_attention_032_r21():
@@ -256,6 +281,21 @@ def test_bypass_step_matches_sequence_032_ac13(name):
         assert torch.allclose(x.float(), y.float(), atol=1e-5)
 
 
+def test_masks_hold_with_the_bypass_032_ac4():
+    """Sampling (temperature 1) with a non-zero bypass never picks a masked action type (as
+    test_variants `test_masks_hold_032_ac4`)."""
+    cfg, b, t, obs, _, _ = tiny_b(on(WITH["all"]))
+    net = perturb(net_of(cfg))
+    g = torch.Generator().manual_seed(5)
+    o = rows_at(obs, b, t, 0)
+    s = net.init_state(b)
+    with torch.no_grad():
+        for _ in range(20):
+            out = net.act(o, s, 1.0, g)
+            assert o["type_mask"][torch.arange(b), out["action"]["action"]].all()
+            s = out["state"]
+
+
 @pytest.mark.parametrize("name", ["only", "all"])
 def test_entity_recompute_keeps_the_bypass_update_041_r17(name):
     cfg, b, t, obs, labels, priv = tiny_b(on(WITH[name]))
@@ -307,17 +347,25 @@ def test_graphed_act_matches_eager_bypass():
     graphed = GraphedAct(net.act, dev, prec)
     exact = torch.version.hip is None
     close = (lambda a, b: torch.equal(a, b)) if exact else (lambda a, b: torch.allclose(a.float(), b.float(), atol=1e-5, rtol=1e-5))
+    from uranium.agent.infer import leaves
+
     obs = random_obs(4, 128, net.cfg.input, dev, torch.Generator().manual_seed(1), valid=119)
-    obs["entity_mask"][1] = False  # an empty entity set inside the captured graph
+    row1 = obs["entity_mask"][1].clone()
     s_eager, s_graph = net.init_state(4, dev), net.init_state(4, dev)
-    for _ in range(3):
+    for i in range(4):
+        # Row 1's entity set empty on even steps, back on odd ones: one captured graph serves both.
+        obs["entity_mask"][1] = row1 & (i % 2 == 1)
+        assert obs["entity_mask"][1].any() == (i % 2 == 1)
         with autocast(dev, prec):
             want = net.act(obs, s_eager, 0.0)
         got = graphed(obs, s_graph, 0.0)
         assert len(graphed.graphs) == 1
         for k in want["action"]:
-            assert torch.equal(got["action"][k], want["action"][k]), k
+            assert torch.equal(got["action"][k], want["action"][k]), (i, k)
         assert close(got["log_prob"], want["log_prob"]) and torch.isfinite(got["log_prob"]).all()
+        assert close(got["value"], want["value"])
+        for x, y in zip(leaves(got["state"]), leaves(want["state"])):
+            assert close(x, y)
         s_eager, s_graph = want["state"], got["state"]
 
 
