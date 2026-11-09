@@ -140,6 +140,17 @@ impl Replay {
         let stats = self.player_stats();
         self.header.players.iter().cloned().zip(stats).filter(|(p, s)| p.kind == 2 && s.train_build > 0).collect()
     }
+
+    /// `uranium-replay cmddump` (050-R6 / 050-R7 measurement, `tools/eval/tables.py`): the replay's
+    /// command stream as stored (no 013 conversion), so orders the model issued can be told apart
+    /// from automatic unit behaviour: `{"rep", "frames", "players": [{"id", "race"}], "cmds":
+    /// [[frame, player, opcode, payload hex], ...]}`. Same output as the untracked `rl-cmddump`
+    /// tool the Checkpoint 1 tables used.
+    pub fn cmddump(&self, rep: &str) -> serde_json::Value {
+        let cmds: Vec<_> = self.cmds().map(|c| serde_json::json!([c.frame, c.player, c.op, c.data.iter().map(|b| format!("{b:02x}")).collect::<String>()])).collect();
+        let players: Vec<_> = self.header.players.iter().map(|p| serde_json::json!({"id": p.id, "race": p.race})).collect();
+        serde_json::json!({"rep": rep, "frames": self.header.frames, "players": players, "cmds": cmds})
+    }
 }
 
 #[cfg(test)]
@@ -171,5 +182,24 @@ mod tests {
         assert_eq!(back.map, rep.map);
         assert_eq!(back.active_players().len(), 1);
         assert_eq!(back.player_stats()[0].cmds, 2);
+    }
+
+    /// 050-R6 / 050-R7 measurement tools: `cmddump` lists every command as
+    /// `[frame, player, opcode, payload hex]` with the header players' ids and races.
+    #[test]
+    fn cmddump_json_050_r6() {
+        let mut h = vec![0u8; container::HEADER_SIZE];
+        h[1..5].copy_from_slice(&100u32.to_le_bytes());
+        h[0xa1 + 4] = 0;
+        h[0xa1 + 8] = 2;
+        h[0xa1 + 9] = header::RACE_TERRAN;
+        h[0xa1 + 11] = b'p';
+        let blocks = vec![cmd::Block {
+            frame: 3,
+            cmds: vec![cmd::Cmd { frame: 3, player: 0, op: cmd::op::BUILD, data: vec![0x1e, 0x10, 0x00, 0x20, 0x00, 0x7d, 0x00] }],
+        }];
+        let rep = Replay { format: Format::Legacy, header: header::parse(&h), raw_header: h, blocks, map: vec![], unit_limit: None };
+        let v = rep.cmddump("g1.rep");
+        assert_eq!(v, serde_json::json!({"rep": "g1.rep", "frames": 100, "players": [{"id": 0, "race": 1}], "cmds": [[3, 0, cmd::op::BUILD, "1e100020007d00"]]}));
     }
 }
