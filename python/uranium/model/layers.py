@@ -192,24 +192,32 @@ def conv_wgrad(conv: nn.Conv2d, x):
 
 
 class ResBlock(nn.Module):
-    """032 §2.2 ResBlock(2 x Conv3x3)."""
+    """032 §2.2 ResBlock(2 x Conv3x3): `relu(x + c2(relu(c1(x))))` (post-activation, the default),
+    or with `preact` (032-R22 `spatial_preact`) `x + c2(relu(c1(relu(x))))` (no final ReLU, so the
+    output may be negative). `preact` is a plain attribute: the parameters are the same."""
 
-    def __init__(self, c: int):
+    def __init__(self, c: int, preact: bool = False):
         super().__init__()
         self.c1 = conv3x3(c, c, 1)
         self.c2 = conv3x3(c, c, 1)
+        self.preact = preact
 
     def inner_act(self, x):
-        """The block's inner ReLU output relu(c1(x)) (032-R25 ①, read by `uranium.model.monitor`;
-        one definition for the forward and the monitor)."""
+        """The block's inner ReLU output, relu(c1(x)), or relu(c1(relu(x))) under `preact`
+        (032-R25 ①, read by `uranium.model.monitor`; one definition for the forward and the
+        monitor)."""
+        if self.preact:
+            x = F.relu(x)
         if x.shape[1] <= RES_BMM_MAX_CH:
             return F.relu(conv_wgrad(self.c1, x))
         return F.relu(self.c1(x))
 
     def forward(self, x):
         if x.shape[1] <= RES_BMM_MAX_CH:
-            return F.relu(x + conv_wgrad(self.c2, self.inner_act(x)))
-        return F.relu(x + self.c2(self.inner_act(x)))
+            y = x + conv_wgrad(self.c2, self.inner_act(x))
+        else:
+            y = x + self.c2(self.inner_act(x))
+        return y if self.preact else F.relu(y)
 
 
 class GruCell(nn.Module):

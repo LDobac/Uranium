@@ -161,7 +161,7 @@ class UraniumNet(nn.Module):
         d_e = cfg.entity.d_model
         d_in = d_e + cfg.spatial.pool + cfg.scalar.hidden
         self.entity = EntityEncoder(cfg.input, cfg.entity)
-        self.spatial = SpatialEncoder(cfg.input, cfg.spatial, d_e)
+        self.spatial = SpatialEncoder(cfg.input, cfg.spatial, d_e, preact=cfg.variant.spatial_preact)  # 032-R22
         self.scalar = ScalarEncoder(cfg.input, cfg.scalar)
         self.core = build_core(d_in, cfg.core)
         self.heads = Heads(cfg.input, cfg.heads, cfg.spatial, cfg.core.hidden, cfg.scalar.hidden, d_e)

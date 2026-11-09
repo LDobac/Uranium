@@ -156,27 +156,29 @@ class EntityEncoder(nn.Module):
 
 
 class Down(nn.Module):
-    def __init__(self, c_in: int, c_out: int):
+    def __init__(self, c_in: int, c_out: int, preact: bool = False):
         super().__init__()
         self.conv = conv3x3(c_in, c_out, 2)
-        self.res = ResBlock(c_out)
+        self.res = ResBlock(c_out, preact)
 
 
 class SpatialEncoder(nn.Module):
-    """032 §2.2: entity scatter-mean + stem + U-Net encoder with skips."""
+    """032 §2.2: entity scatter-mean + stem + U-Net encoder with skips. `preact` (032-R22
+    `spatial_preact`): the 6 ResBlocks (4 stages, 2 bottleneck) are pre-activation blocks; the stem
+    and stride-2 conv ReLUs, the skips / S8 / pool wiring and the parameters stay as they are."""
 
-    def __init__(self, inp: InputDims, c: SpatialConfig, d_entity: int):
+    def __init__(self, inp: InputDims, c: SpatialConfig, d_entity: int, preact: bool = False):
         super().__init__()
         c_in = c.stem_channels
         downs = []
         for c_out in c.stages:
-            downs.append(Down(c_in, c_out))
+            downs.append(Down(c_in, c_out, preact))
             c_in = c_out
         side = inp.map_size // 16
         self.scatter = Linear(d_entity, c.scatter_channels)
         self.stem = conv3x3(inp.spatial_channels + c.scatter_channels, c.stem_channels, 1)
         self.downs = nn.ModuleList(downs)
-        self.bottleneck = nn.ModuleList(ResBlock(c_in) for _ in range(2))
+        self.bottleneck = nn.ModuleList(ResBlock(c_in, preact) for _ in range(2))
         self.pool = Linear(c_in * side * side, c.pool)
 
     def forward(self, obs: dict, e, film=None):

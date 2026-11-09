@@ -178,7 +178,8 @@ class Variants(nn.Module):
     - `aux_priv` (032-R24): `aux_priv(h) -> [rows, input.privileged]`, training only.
     - `aux_jepa` (032-R24): `nn.ModuleDict` keyed by `str(k)`, `aux_jepa[str(k)](h) -> [rows, d]`
       with d = entity.d_model + spatial.pool, training only.
-    `spatial_preact` (032-R22) has no module here: it is a flag of the spatial encoder."""
+    `spatial_preact` (032-R22) has no module here: it is a flag of the spatial encoder's ResBlocks
+    (`SpatialEncoder(preact=...)`, no parameters)."""
 
     def __init__(self, cfg: UraniumNetConfig, d_core_in: int):
         super().__init__()
@@ -193,8 +194,6 @@ class Variants(nn.Module):
             self.pool = AttnPool(d, cfg.entity.heads, SEED + 0x30) if vc.attn_pool else None
             self.outer = OuterLstm(cfg, d_core_in, vc.outer, SEED + 0x40) if vc.outer > 0 else None
             # 032 §2.8 (model 2): after the §2.7 modules, from their reserved seeds (above).
-            if vc.spatial_preact:
-                pending("spatial_preact", "032-R22")
             self.bypass = pending("bypass", "032-R21") if vc.bypass else None
             self.core_skip = pending("core_skip", "032-R23") if vc.core_skip else None
             self.aux_priv = pending("aux_priv", "032-R24") if vc.aux_priv else None

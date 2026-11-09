@@ -6,9 +6,12 @@ Points (`ReluMonitor(points=...)`):
   - ① ReLU outputs: `spatial.stem` relu(stem conv), before the outer FiLM;
     `spatial.down{i}.conv` relu(stride-2 conv), the input of the stage's ResBlock;
     `spatial.down{i}.inner`, `spatial.bottleneck{j}.inner`: the ResBlocks' inner ReLU
-    (`ResBlock.inner_act`, the same function the forward uses)
+    (`ResBlock.inner_act`, the same function the forward uses: relu(c1(relu(x))) under
+    `spatial_preact`, 032-R22)
   - ② block outputs: `spatial.down{i}.res` (stage outputs, the first three are the skips),
-    `spatial.bottleneck{j}`; `spatial.s8` repeats the last bottleneck block
+    `spatial.bottleneck{j}`; `spatial.s8` repeats the last bottleneck block. Under
+    `spatial_preact` the blocks have no final ReLU and negative outputs are normal: these points
+    are then reference values only (032-R25 ②)
   - ③ `spatial.s8.const`, `spatial.pool.const`: the S8 channels / s_pool dimensions whose
     standard deviation over the measured rows is below `threshold` (AMB-041-14: 1e-4). Measured
     rows: for S8, real rows x H x W per channel; for s_pool, real rows per dimension. Counts, sums
