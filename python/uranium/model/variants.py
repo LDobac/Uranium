@@ -179,13 +179,111 @@ class OuterLstm(nn.Module):
         return tuple(t.detach().float() for t in s)
 
 
+# 030 §4 scalar layout, as `FeatureDims::scalar` and the extractor's `scalar` build it
+# (crates/uranium-env/src/features/schema.rs, extract.rs; tests/python/test_bypass.py checks it
+# against them and against the 013 type tables): single named columns, fixed blocks, the own
+# (done, in production) counts per Terran type, the enemy max-seen count per observed type (the
+# width that remains), then the previous action (one-hot A, delay bucket, failed).
+SCALAR_COLUMNS = ("frame", "log_frame", "minerals", "gas", "supply_used", "supply_total", "supply_max")
+SCALAR_BLOCKS = (("upgrades", 63), ("tech", 47), ("researching", 47), ("upgrading", 63))
+# 032-R21 ④ (AMB-032-12): s_raw = time 2, resources 3 (supply total / max left out, main-session
+# interim decision 2026-11-09) and every enemy max-seen count, in this order.
+S_RAW = ("frame", "log_frame", "minerals", "gas", "supply_used", "enemy_seen")
+# 032-R21 ④: the bypass attention width and heads (d_b 256, 8 x 32, as `attn_pool`).
+BYPASS_DIM = 256
+BYPASS_HEADS = 8
+
+
+def scalar_layout(cfg: UraniumNetConfig) -> dict[str, slice]:
+    """Name -> columns of the model's scalar input (030 §4), from the config's input widths. A
+    width too small for the layout (the tiny test models) is an error."""
+    inp = cfg.input
+    out, at = {}, 0
+    blocks = [*((n, 1) for n in SCALAR_COLUMNS), *SCALAR_BLOCKS, ("own", 2 * inp.z_units)]
+    last = inp.actions + cfg.heads.delay_buckets + 1
+    seen = inp.scalar - sum(w for _, w in blocks) - last
+    if seen < 1:
+        raise ValueError(f"scalar width {inp.scalar} does not hold the 030 §4 layout (z_units {inp.z_units}, actions {inp.actions})")
+    for name, w in [*blocks, ("enemy_seen", seen), ("last_action", last)]:
+        out[name] = slice(at, at + w)
+        at += w
+    return out
+
+
+def s_raw_slices(cfg: UraniumNetConfig) -> list[slice]:
+    """032-R21: the s_raw columns of `scalar` as contiguous slices (adjacent names merged), so the
+    gather is static slicing (no index tensor, no data-dependent shape: 032-R19 graph capture)."""
+    layout = scalar_layout(cfg)
+    out = []
+    for name in S_RAW:
+        s = layout[name]
+        if out and out[-1].stop == s.start:
+            out[-1] = slice(out[-1].start, s.stop)
+        else:
+            out.append(s)
+    return out
+
+
+def zero_linear(d_in: int, d_out: int, seed: int) -> nn.Linear:
+    """A Linear whose weight and bias start at 0 (032-R21 output projection; built as
+    `fixed_linear`, so no global RNG draw, then zeroed)."""
+    lin = fixed_linear(d_in, d_out, seed)
+    with torch.no_grad():
+        lin.weight.zero_()
+        lin.bias.zero_()
+    return lin
+
+
+class HeadBypass(nn.Module):
+    """032 §2.8 `bypass` (032-R21): the ActionType head reads the entity tokens E directly.
+    q = Linear([h, c, s_raw] -> 256); K, V = Linear(E -> 256); 8 heads x 32 over the real entities
+    (`entity_mask`; E as the heads get it, no extra tokens), masked softmax over the units; an
+    empty set gives a zero attention output (as `AttnPool`, no branch). u = Linear([attention
+    output, s_raw] -> heads.ar), weight and bias zero at the start, so the model starts as the one
+    without it (032-R21 ②). Per row, no time axis: step = sequence (032 §2.8)."""
+
+    def __init__(self, cfg: UraniumNetConfig, seed: int):
+        super().__init__()
+        self.cols = s_raw_slices(cfg)
+        n_s = sum(s.stop - s.start for s in self.cols)
+        d_q = cfg.core.hidden + cfg.scalar.hidden + n_s
+        # Parameters numbered from the seed base: query +0, K +1, V +2, output +3 (zeroed).
+        self.query = fixed_linear(d_q, BYPASS_DIM, seed)
+        self.k = fixed_linear(cfg.entity.d_model, BYPASS_DIM, seed + 1)
+        self.v = fixed_linear(cfg.entity.d_model, BYPASS_DIM, seed + 2)
+        self.out = zero_linear(BYPASS_DIM + n_s, cfg.heads.ar, seed + 3)
+        self.heads = BYPASS_HEADS
+
+    def s_raw(self, scalar):
+        """[rows, scalar] (030 §4, normalised as the extractor writes it) -> [rows, n_s]."""
+        return torch.cat([scalar[:, s] for s in self.cols], 1)
+
+    def attend(self, q, e, mask):
+        """q [B, 256], E [B, N, d], mask [B, N] -> [B, 256]; 0 where the mask is empty."""
+        b, n, _ = e.shape
+        h, dh = self.heads, BYPASS_DIM // self.heads
+        k = self.k(e).view(b, n, h, dh).transpose(1, 2)  # [B,H,N,dh]
+        v = self.v(e).view(b, n, h, dh).transpose(1, 2)
+        q = q.to(k.dtype).view(b, h, 1, dh)
+        scores = (q @ k.transpose(2, 3)).float() / math.sqrt(dh)  # [B,H,1,N]
+        w = torch.softmax(scores.masked_fill(~mask[:, None, None], MASKED), 3)
+        w = w * mask.any(1).to(w.dtype)[:, None, None, None]
+        return (w.to(v.dtype) @ v).reshape(b, BYPASS_DIM)
+
+    def forward(self, h, c, e, obs):
+        s = self.s_raw(obs["scalar"])
+        q = self.query(torch.cat([h, c.to(h.dtype), s.to(h.dtype)], 1))
+        att = self.attend(q, e, obs["entity_mask"])
+        return self.out(torch.cat([att, s.to(att.dtype)], 1))
+
+
 class Variants(nn.Module):
     """The modules of the switches that are on (032 §2.7, §2.8). Built last by `UraniumNet`.
 
     032 §2.8 hook points (each None when its switch is off; `UraniumNet` calls them):
-    - `bypass` (032-R21): `bypass(h, c, e, obs) -> u [rows, heads.ar]`, added to the ActionType
-      GLU output and to `ar` (`Heads.forward(..., u=u)`). Reads E as the heads get it (no extra
-      tokens) and `obs["entity_mask"]`; `s_raw` it takes from `obs["scalar"]`.
+    - `bypass` (032-R21, `HeadBypass`): `bypass(h, c, e, obs) -> u [rows, heads.ar]`, added to the
+      ActionType GLU output and to `ar` (`Heads.forward(..., u=u)`). Reads E as the heads get it
+      (no extra tokens) and `obs["entity_mask"]`; `s_raw` it takes from `obs["scalar"]`.
     - `core_skip` (032-R23 F1): `core_skip(core_in) -> [rows, core.hidden]`, h' = h + it
       (`UraniumNet._skip`). Heads, value, win_open and aux read h'; the outer LSTM's h_sum keeps
       the pre-skip h and the core's recurrent state is untouched (user decision 2026-11-09).
@@ -208,7 +306,7 @@ class Variants(nn.Module):
             self.pool = AttnPool(d, cfg.entity.heads, SEED + 0x30) if vc.attn_pool else None
             self.outer = OuterLstm(cfg, d_core_in, vc.outer, SEED + 0x40) if vc.outer > 0 else None
             # 032 §2.8 (model 2): after the §2.7 modules, from their reserved seeds (above).
-            self.bypass = pending("bypass", "032-R21") if vc.bypass else None
+            self.bypass = HeadBypass(cfg, SEED_BYPASS) if vc.bypass else None
             self.core_skip = core_skip_linear(d_core_in, cfg.core.hidden) if vc.core_skip else None
             self.aux_priv = pending("aux_priv", "032-R24") if vc.aux_priv else None
             self.aux_jepa = pending("aux_jepa", "032-R24") if vc.aux_jepa else None
