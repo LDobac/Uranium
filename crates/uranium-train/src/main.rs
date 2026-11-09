@@ -31,8 +31,24 @@ enum Cmd {
     BcEpoch {
         #[command(flatten)]
         data: DataArgs,
+        #[command(flatten)]
+        groups: GroupArgs,
         #[arg(long, default_value = "config/bc.toml")]
         config: PathBuf,
+    },
+    /// 041-R26 ② (AMB-041-15): `[data.subsample] fraction_by_race` for a mix config's data seed and
+    /// `keep_sources` (the teacher): the human S2 games per enemy race kept so the teacher is
+    /// `--teacher-share` of the epoch's steps and every race keeps its share of the S2 human data;
+    /// then the S2 epoch with those fractions (`[steps] s2` and the `s2_mix` checks of `bc-epoch`).
+    MixFractions {
+        #[command(flatten)]
+        data: DataArgs,
+        #[command(flatten)]
+        groups: GroupArgs,
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long, default_value = "0.5")]
+        teacher_share: f64,
     },
     /// AMB-000-4 check: SHA-256 of every lane group of the first BC batches (`Batch::group`, the
     /// host collate). The Python side hashes the `uranium._core` arrays the same way, so the two
@@ -184,6 +200,28 @@ impl DataArgs {
     }
 }
 
+/// Shard folders read as is (like `--shards`) and scanned as a group with one scan cache
+/// (`bc::scan_groups`): `--group a,b,c --group d` reuses the cache of an earlier run that read
+/// `a,b,c` together when `d` has changed. Read-only: no manifest is checked or written.
+#[derive(clap::Args)]
+struct GroupArgs {
+    #[arg(long = "group")]
+    group: Vec<String>,
+}
+
+impl GroupArgs {
+    /// The `--dataset` / `--shards` folders as one group (when given), then each `--group`.
+    fn groups(&self, data: &DataArgs) -> Result<Vec<Vec<PathBuf>>> {
+        let mut out = Vec::new();
+        if !data.dataset.is_empty() || !data.shards.is_empty() {
+            out.push(data.dirs()?);
+        }
+        out.extend(self.group.iter().map(|g| g.split(',').filter(|s| !s.is_empty()).map(PathBuf::from).collect::<Vec<_>>()));
+        anyhow::ensure!(out.iter().any(|g| !g.is_empty()), "pass --dataset, --shards or --group");
+        Ok(out)
+    }
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum StageArg {
     S1,
@@ -291,11 +329,25 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
-        Cmd::BcEpoch { data, config } => {
+        Cmd::BcEpoch { data, groups, config } => {
             let cfg = BcConfig::load(&config)?;
-            let dirs = data.dirs()?;
-            let out = uranium_train::bc::epoch_table(&dirs, &cfg)?;
+            let out = uranium_train::bc::epoch_table_groups(&groups.groups(&data)?, &cfg)?;
             println!("{}", serde_json::to_string_pretty(&out)?);
+            Ok(())
+        }
+        Cmd::MixFractions { data, groups, config, teacher_share } => {
+            let cfg = BcConfig::load(&config)?;
+            let sub = cfg.data.subsample.clone().ok_or_else(|| anyhow::anyhow!("{}: no [data.subsample] (its keep_sources are the teacher, 041-R21 ⑥)", config.display()))?;
+            let groups = groups.groups(&data)?;
+            let scan = uranium_train::bc::scan_groups(&groups)?;
+            let s2: Vec<uranium_train::data::GameSummary> = scan.into_values().flatten().filter(|g| uranium_train::split::selects(uranium_train::split::Selection::S2, &g.meta)).collect();
+            let f = uranium_train::mix::race_fractions(&s2, &sub.keep_sources, cfg.data.seed, teacher_share)?;
+            let mut with = cfg.clone();
+            with.data.subsample = Some(uranium_train::split::Subsample { fraction: f.fraction, keep_sources: sub.keep_sources.clone(), fraction_by_race: Some(f.fraction_by_race.clone()) });
+            let t = uranium_train::bc::epoch_table_groups(&groups, &with)?;
+            // 041-R14: warmup = 5% of the epoch, rounded half up.
+            let warmup = (t.s2.updates as f64 * 0.05 + 0.5).floor() as u64;
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "config": config, "fractions": f, "s2": t.s2, "s2_warmup": warmup, "s2_mix": t.s2_mix }))?);
             Ok(())
         }
         Cmd::FeedDigest { data, config, stage, batches, group, max_select, pack, synthetic_maps } => {
