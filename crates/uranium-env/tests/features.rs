@@ -1302,3 +1302,56 @@ fn train_nuke_closed_during_supply_block_034_r3() {
     let o = extract(&f, &mut AgentMemory::new(&game_info()), &map, None);
     assert!(!o.masks.type_mask[nuke], "closed while supply is blocked");
 }
+
+/// 041-R28 ③ (040-R22): with a step's `memory_action` the walker records those decisions before
+/// the observation and not the label; `None` keeps the label-after-observation path. Recording
+/// before step i what the label path recorded after step i - 1 gives the same observations, a
+/// different decision gives other memory inputs, and `last_failed` still comes from the frame's
+/// `CommandFailed` events.
+#[test]
+fn label_walker_memory_action_041_r28() {
+    use uranium_env::features::label::{Label, LabelWalker, MemoryAction, acting_ids};
+    let f0 = frame(10, rich_units().units, true);
+    let marine = f0.units.iter().find(|u| u.owner == SELF && u.unit_type == ty("Terran_Marine")).unwrap().id;
+    let mut f1 = frame(18, f0.units.clone(), true);
+    f1.events.push(GameEvent::CommandFailed { cmd_index: 0, error: 1 });
+    let f2 = frame(26, f0.units.clone(), true);
+    let mv = action_table().by_name("Move_Pos").unwrap().id;
+    let hold = action_table().by_name("Hold").unwrap().id;
+    let lab = |frame, action, delay| Label { frame, action, delay, queued: false, selected: vec![marine], target_unit: None, target_tile: Some((10, 10)) };
+    let labels = [lab(10, mv, 8), lab(18, hold, 2), lab(26, mv, 8)];
+    let frames = [&f0, &f1, &f2];
+    let walker = || LabelWalker::new(&game_info(), 0, None, false).unwrap();
+    // Label path (None): what memory records after each step.
+    let mut a = walker();
+    let mut recorded = Vec::new();
+    let mut obs_a = Vec::new();
+    for (f, l) in frames.iter().zip(&labels) {
+        let (o, h, _) = a.step(f, l, None);
+        recorded.push(MemoryAction { action: h.action, delay_bucket: h.delay_bucket as u32, units: acting_ids(&h, &o) });
+        obs_a.push(o);
+    }
+    assert!(!a.mem.last_failed, "f2 has no CommandFailed");
+    // The same records as memory_action (step i gets what step i - 1 recorded): same observations.
+    let mut b = walker();
+    for (i, (f, l)) in frames.iter().zip(&labels).enumerate() {
+        let m: Vec<MemoryAction> = if i == 0 { vec![] } else { vec![recorded[i - 1].clone()] };
+        let (o, _, _) = b.step_with_memory(f, l, None, Some(&m));
+        assert_eq!(o, obs_a[i], "step {i}");
+        if i == 1 {
+            assert!(b.mem.last_failed, "last_failed from the frame's CommandFailed event (030-R10)");
+        }
+    }
+    // The label is not recorded: after the last step memory holds step 1's record, not step 2's.
+    assert_eq!(b.mem.last_action, Some((hold, recorded[1].delay_bucket as usize)));
+    assert_eq!(a.mem.last_action, Some((mv, recorded[2].delay_bucket as usize)));
+    // Another decision (the model's own) before step 1: other memory inputs than the label path.
+    let mut c = walker();
+    c.step_with_memory(&f0, &labels[0], None, Some(&[]));
+    let (o1, h1, why1) = c.step_with_memory(&f1, &labels[1], None, Some(&[MemoryAction { action: hold, delay_bucket: 4, units: vec![marine] }]));
+    assert_ne!(o1, obs_a[1]);
+    assert_eq!(c.mem.last_action, Some((hold, 4)));
+    // The label check itself does not depend on memory.
+    let (_, h1a, why1a) = walker().step(&f1, &labels[1], None);
+    assert_eq!((h1, why1), (h1a, why1a));
+}

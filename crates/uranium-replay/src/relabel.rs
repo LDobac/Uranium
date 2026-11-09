@@ -21,6 +21,8 @@ use uranium_scripted::types::{BUNKER, DROPSHIP, OVERLORD, building_tile, is_buil
 
 use crate::cmd::{Cmd, op};
 use crate::label::GAME_START_FRAME;
+use crate::shard::MemoryAction;
+use uranium_env::features::label::DecisionLogLine;
 
 /// Teacher builds `uranium-replay build --relabel` accepts (041-R22): the 021-R8 teacher only.
 pub fn teacher_build(name: &str) -> Result<T0Build> {
@@ -54,6 +56,160 @@ pub fn live_frame(f: u32) -> Option<u32> {
 /// The playback frames of the shadow observations up to playback frame `last` (inclusive).
 pub fn teacher_frames(last: u32) -> Vec<u32> {
     (GAME_START_FRAME..=last.max(GAME_START_FRAME)).filter(|&f| live_frame(f).is_some()).collect()
+}
+
+/// 041-R28 ②: the playback frame of a decision the model made on its live observation of frame
+/// `live`: `live - LIVE_LAG` (the rule of [`live_frame`], its inverse on the teacher cadence), the
+/// game-start observation (live frame 1) and the frames before `1 + LIVE_LAG` at the first playback
+/// frame.
+pub fn playback_frame(live: u32) -> u32 {
+    live.saturating_sub(LIVE_LAG).max(GAME_START_FRAME)
+}
+
+/// 041-R28 ⑤ (AMB-041-17): a game whose decisions name a unit that is not an own unit at their
+/// playback frame more often than this share is `None` on every step.
+pub const MEMORY_MISMATCH_MAX: f64 = 0.01;
+
+/// One model decision of a decision log (041-R28 ①): live observation frame and the decision.
+pub type LoggedDecision = (u32, MemoryAction);
+
+/// A game's decision log as the relabel build reads it (041-R28 ④).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DecisionLogRead {
+    /// No log file for the replay.
+    Missing,
+    /// Unreadable, a line that does not parse, decisions out of frame order, no end line, lines
+    /// after it, or an end line counting other decisions than the log holds.
+    Incomplete(String),
+    /// Every decision in order.
+    Complete(Vec<LoggedDecision>),
+}
+
+/// Parses a decision log (`DecisionLogLine` JSON lines, 041-R28 ①).
+pub fn parse_decision_log(text: &str) -> DecisionLogRead {
+    let mut out: Vec<LoggedDecision> = Vec::new();
+    let mut ended = false;
+    for (i, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
+        if ended {
+            return DecisionLogRead::Incomplete(format!("line {} after the end line", i + 1));
+        }
+        match serde_json::from_str::<DecisionLogLine>(line) {
+            Ok(DecisionLogLine::Decision { frame, action, delay_bucket, units }) => {
+                if out.last().is_some_and(|(f, _)| *f > frame) {
+                    return DecisionLogRead::Incomplete(format!("line {}: frame {frame} before the previous decision's", i + 1));
+                }
+                out.push((frame, MemoryAction { action, delay_bucket, units }));
+            }
+            Ok(DecisionLogLine::End { decisions, .. }) => {
+                if decisions != out.len() as u64 {
+                    return DecisionLogRead::Incomplete(format!("end line counts {decisions} decisions, the log has {}", out.len()));
+                }
+                ended = true;
+            }
+            Err(e) => return DecisionLogRead::Incomplete(format!("line {}: {e}", i + 1)),
+        }
+    }
+    if !ended {
+        return DecisionLogRead::Incomplete("no end line (the game did not end in the session)".into());
+    }
+    DecisionLogRead::Complete(out)
+}
+
+/// Reads the decision log at `path` (041-R28 ④: absent = `Missing`).
+pub fn read_decision_log(path: &std::path::Path) -> DecisionLogRead {
+    match std::fs::read_to_string(path) {
+        Ok(t) => parse_decision_log(&t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DecisionLogRead::Missing,
+        Err(e) => DecisionLogRead::Incomplete(format!("reading {}: {e}", path.display())),
+    }
+}
+
+/// The playback frames at which the unit check (041-R28 ⑤) needs the perspective's own units:
+/// those of the decisions up to playback frame `last`, sorted, each once.
+pub fn decision_frames(log: &[LoggedDecision], last: u32) -> Vec<u32> {
+    let mut v: Vec<u32> = log.iter().map(|(l, _)| playback_frame(*l)).filter(|&p| p <= last).collect();
+    v.dedup(); // the log is in frame order, so the playback frames are too
+    v
+}
+
+/// 041-R28 ⑤: (checked, mismatched): decisions up to playback frame `last` with a selection, and
+/// those naming a unit that is not an own unit at their playback frame (`own_at`: own unit ids of
+/// the perspective at a playback frame; a frame without an observation mismatches).
+pub fn unit_check(log: &[LoggedDecision], last: u32, own_at: &HashMap<u32, std::collections::HashSet<u32>>) -> (usize, usize) {
+    let (mut checked, mut mismatched) = (0, 0);
+    for (live, d) in log {
+        let p = playback_frame(*live);
+        if p > last || d.units.is_empty() {
+            continue;
+        }
+        checked += 1;
+        let ok = own_at.get(&p).is_some_and(|own| d.units.iter().all(|u| own.contains(u)));
+        mismatched += (!ok) as usize;
+    }
+    (checked, mismatched)
+}
+
+/// 041-R28 ②: each step's `memory_action` for steps observed at the playback frames `step_frames`
+/// (increasing): the decisions whose playback frame is in [previous step's frame, this step's
+/// frame), in order; the first step gets an empty list and decisions at or after the last step's
+/// frame belong to no step.
+pub fn step_memory(log: &[LoggedDecision], step_frames: &[u32]) -> Vec<Vec<MemoryAction>> {
+    let mut out = Vec::with_capacity(step_frames.len());
+    let mut k = 0;
+    for (i, &obs) in step_frames.iter().enumerate() {
+        if i == 0 {
+            // Nothing is before the game-start observation; skip anything mapped before it.
+            while k < log.len() && playback_frame(log[k].0) < obs {
+                k += 1;
+            }
+            out.push(Vec::new());
+            continue;
+        }
+        let mut here = Vec::new();
+        while k < log.len() && playback_frame(log[k].0) < obs {
+            here.push(log[k].1.clone());
+            k += 1;
+        }
+        out.push(here);
+    }
+    out
+}
+
+/// 041-R28 ④ / ⑤ record (`memory` of a written relabelled perspective, build records).
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct MemoryCheck {
+    /// `ok` (every step has `memory_action`), `missing` (no log), `incomplete` (see
+    /// [`DecisionLogRead::Incomplete`]), `unit_mismatch` (more than [`MEMORY_MISMATCH_MAX`]).
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Decision lines of the log.
+    pub decisions: usize,
+    /// Decisions with a selection up to the last relabelled frame, and those whose selection is
+    /// not the perspective's own units at their playback frame (041-R28 ⑤).
+    pub checked: usize,
+    pub mismatched: usize,
+}
+
+impl MemoryCheck {
+    pub fn without_log(read: &DecisionLogRead) -> Self {
+        let (status, reason) = match read {
+            DecisionLogRead::Missing => ("missing", None),
+            DecisionLogRead::Incomplete(r) => ("incomplete", Some(r.clone())),
+            DecisionLogRead::Complete(_) => unreachable!("a complete log is checked"),
+        };
+        Self { status, reason, decisions: 0, checked: 0, mismatched: 0 }
+    }
+
+    /// The unit check of a complete log: `ok` unless more than 1% mismatch.
+    pub fn checked(decisions: usize, checked: usize, mismatched: usize) -> Self {
+        let bad = checked > 0 && mismatched as f64 / checked as f64 > MEMORY_MISMATCH_MAX;
+        Self { status: if bad { "unit_mismatch" } else { "ok" }, reason: None, decisions, checked, mismatched }
+    }
+
+    pub fn ok(&self) -> bool {
+        self.status == "ok"
+    }
 }
 
 /// Replay opcode for a teacher command BWAPI's path is not modelled for (none of the 021-R8
@@ -480,6 +636,69 @@ mod tests {
         assert_eq!((live_frame(1), live_frame(7), live_frame(15), live_frame(9), live_frame(3)), (Some(1), Some(9), Some(17), None, None));
         assert!(teacher_build("zerg_rush").is_err());
         assert_eq!(teacher_build("terran_react").unwrap(), T0Build::TerranReact);
+    }
+
+    fn dec(live: u32, action: u16, units: Vec<u32>) -> LoggedDecision {
+        (live, MemoryAction { action, delay_bucket: 1, units })
+    }
+
+    /// 041-R28 ②: a model decision on live frame L is at playback frame L - 2 (the inverse of
+    /// `live_frame` on the teacher cadence); the first live frames map to the game-start frame.
+    #[test]
+    fn decisions_move_to_playback_frames_041_r28() {
+        for f in teacher_frames(400) {
+            assert_eq!(playback_frame(live_frame(f).unwrap()), f);
+        }
+        assert_eq!([1, 2, 3, 4, 9, 100].map(playback_frame), [1, 1, 1, 2, 7, 98]);
+    }
+
+    /// 041-R28 ②: each step gets the decisions whose playback frame is in [previous step frame,
+    /// this step frame), in order; the first step an empty list; decisions at or after the last
+    /// step belong to no step.
+    #[test]
+    fn step_memory_takes_the_half_open_interval_041_r28() {
+        // Playback frames 1, 7, 11, 18, 19, 38.
+        let log = vec![dec(1, 1, vec![]), dec(9, 2, vec![5]), dec(13, 3, vec![]), dec(20, 4, vec![]), dec(21, 5, vec![6, 7]), dec(40, 6, vec![])];
+        let got = step_memory(&log, &[1, 11, 19, 35]);
+        let actions: Vec<Vec<u16>> = got.iter().map(|v| v.iter().map(|a| a.action).collect()).collect();
+        assert_eq!(actions, vec![vec![], vec![1, 2], vec![3, 4], vec![5]]);
+        assert_eq!(got[3][0].units, vec![6, 7]);
+        // Steps with no decision in between get an empty list, not nothing.
+        assert_eq!(step_memory(&log, &[1, 2, 3]), vec![vec![], vec![log[0].1.clone()], vec![]]);
+        assert!(step_memory(&[], &[1, 9]).iter().all(Vec::is_empty));
+    }
+
+    /// 041-R28 ① / ④: a complete log has its end line with the right count and frames in order;
+    /// anything else is incomplete, and no file is missing.
+    #[test]
+    fn decision_log_completeness_041_r28() {
+        let d = |f: u32| format!(r#"{{"frame":{f},"action":4,"delay_bucket":2,"units":[3,9]}}"#);
+        let end = |n: u64| format!(r#"{{"decisions":{n},"end_frame":900}}"#);
+        let ok = format!("{}\n{}\n{}\n", d(1), d(9), end(2));
+        let DecisionLogRead::Complete(log) = parse_decision_log(&ok) else { panic!("complete") };
+        assert_eq!(log, vec![(1, MemoryAction { action: 4, delay_bucket: 2, units: vec![3, 9] }), (9, MemoryAction { action: 4, delay_bucket: 2, units: vec![3, 9] })]);
+        assert_eq!(parse_decision_log(&end(0)), DecisionLogRead::Complete(vec![]));
+        for bad in [format!("{}\n{}\n", d(1), d(9)), format!("{}\n{}\n", d(1), end(2)), format!("{}\n{}\n{}\n", d(9), d(1), end(2)), format!("{}\nnot json\n{}\n", d(1), end(1)), format!("{}\n{}\n{}\n", d(1), end(1), d(9))] {
+            assert!(matches!(parse_decision_log(&bad), DecisionLogRead::Incomplete(_)), "{bad}");
+        }
+        assert_eq!(read_decision_log(std::path::Path::new("no/such/g1.jsonl")), DecisionLogRead::Missing);
+    }
+
+    /// 041-R28 ⑤: decisions with a selection up to `last` are checked against the own units at
+    /// their playback frame (no observation = mismatch); more than 1% mismatched fails the game.
+    #[test]
+    fn unit_check_counts_and_one_percent_041_r28() {
+        let own: HashMap<u32, std::collections::HashSet<u32>> = HashMap::from([(7, [5, 6].into()), (11, [5].into())]);
+        // Playback 7: own; 11: unit 6 gone; 18: no observation; NoOp without units: not checked;
+        // playback 98 after `last`: not checked.
+        let log = vec![dec(9, 1, vec![5, 6]), dec(13, 2, vec![5, 6]), dec(20, 3, vec![5]), dec(21, 0, vec![]), dec(100, 4, vec![99])];
+        assert_eq!(unit_check(&log, 50, &own), (3, 2));
+        assert_eq!(decision_frames(&log, 50), vec![7, 11, 18, 19]);
+        assert_eq!(MemoryCheck::checked(200, 100, 1).status, "ok", "1% is allowed");
+        assert_eq!(MemoryCheck::checked(200, 100, 2).status, "unit_mismatch");
+        assert_eq!(MemoryCheck::checked(0, 0, 0).status, "ok");
+        assert_eq!(MemoryCheck::without_log(&DecisionLogRead::Missing).status, "missing");
+        assert_eq!(MemoryCheck::without_log(&DecisionLogRead::Incomplete("x".into())).reason.as_deref(), Some("x"));
     }
 
     /// 041-R22: every 021-R8 teacher command maps to the 034 action of its "모델 표현" row

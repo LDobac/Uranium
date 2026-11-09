@@ -30,6 +30,31 @@ pub struct Label {
     pub target_tile: Option<(u16, u16)>,
 }
 
+/// 040-R22 / 041-R28: one decision of the policy that actually played the game (the model of a
+/// DAgger game) as its session recorded it in agent memory: the sampled 034 action, the 031 delay
+/// bucket and the unit ids of the selection (whether or not the executor refused it, 031-R4). No
+/// failure flag: `last_failed` comes from the observation's `CommandFailed` events (030-R10).
+/// The model session's decision log line (041-R28 ①) adds the live observation frame.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct MemoryAction {
+    pub action: u16,
+    pub delay_bucket: u32,
+    pub units: Vec<u32>,
+}
+
+/// 041-R28 ① (AMB-041-17): one line of a model session's decision log (JSON lines, one file per
+/// game, named like the game's replay). A decision line per recorded decision, in order, then one
+/// end line written when the game ends; a log without its end line, or whose end line counts
+/// other decisions than it holds, is incomplete (041-R28 ④).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum DecisionLogLine {
+    /// `frame`: the live observation frame the decision was made on (`RawFrame.frame`).
+    Decision { frame: u32, action: u16, delay_bucket: u32, units: Vec<u32> },
+    /// Decision lines written; `end_frame`: the final frame of the game when the bridge sent one.
+    End { decisions: u64, end_frame: Option<u32> },
+}
+
 /// `Label::action` of a game-affecting human command without a 034 action (031-AC3, 2026-10-19
 /// user decision, action audit F7): the step is kept with its delay but never learned (reason
 /// [`UNKNOWN_REASON`], BC weight 0). Labeler version 2 only; version 1 filled that time with NoOp.
@@ -187,12 +212,25 @@ impl LabelWalker {
 
     /// Observation of `frame`, the label as entity indices and why it is invalid (`None` = valid).
     pub fn step(&mut self, frame: &RawFrame, l: &Label, z: Option<&Strategy>) -> (Observation, HostLabel, Option<&'static str>) {
+        self.step_with_memory(frame, l, z, None)
+    }
+
+    /// [`LabelWalker::step`] with the step's 040-R22 `memory_action` (041-R28 ③). `Some` (an
+    /// empty list included): those decisions go into agent memory in order **before** the
+    /// observation is built and the label is not recorded (it stays the training target only).
+    /// `None`: the label is recorded after the observation, as before.
+    pub fn step_with_memory(&mut self, frame: &RawFrame, l: &Label, z: Option<&Strategy>, memory: Option<&[MemoryAction]>) -> (Observation, HostLabel, Option<&'static str>) {
+        for a in memory.unwrap_or_default() {
+            self.mem.record_action(a.action, a.delay_bucket as usize, &a.units);
+        }
         let o = extract(frame, &mut self.mem, &self.map, z);
         let (label, mut why) = host_label_check(l, &o);
         if why.is_none() {
             why = unload_target_check(&label, &o, frame);
         }
-        self.mem.record_action(label.action, label.delay_bucket, &acting_ids(&label, &o));
+        if memory.is_none() {
+            self.mem.record_action(label.action, label.delay_bucket, &acting_ids(&label, &o));
+        }
         (o, label, why)
     }
 }
@@ -230,10 +268,15 @@ pub const INVALID_LABEL_PREFIX: &str = "invalid_labels";
 
 /// [`LabelValidity`] of one game's steps (040-R19), with the same extraction and check as BC.
 pub fn label_validity<'a>(info: &GameInfo, map_family: i32, pre: Option<&MapPrecompute>, enemy_random: bool, steps: impl IntoIterator<Item = (&'a RawFrame, &'a Label)>) -> Result<LabelValidity> {
+    label_validity_with_memory(info, map_family, pre, enemy_random, steps.into_iter().map(|(f, l)| (f, l, None)))
+}
+
+/// [`label_validity`] with each step's 040-R22 `memory_action`, read the way BC reads it (041-R28 ③).
+pub fn label_validity_with_memory<'a>(info: &GameInfo, map_family: i32, pre: Option<&MapPrecompute>, enemy_random: bool, steps: impl IntoIterator<Item = (&'a RawFrame, &'a Label, Option<&'a [MemoryAction]>)>) -> Result<LabelValidity> {
     let mut w = LabelWalker::new(info, map_family, pre, enemy_random)?;
     let mut v = LabelValidity::default();
-    for (frame, l) in steps {
-        let (_, _, why) = w.step(frame, l, None);
+    for (frame, l, m) in steps {
+        let (_, _, why) = w.step_with_memory(frame, l, None, m);
         if why == Some(UNKNOWN_REASON) {
             v.unknown += 1;
             continue;
