@@ -10,6 +10,9 @@
 //!   5-minute bar and no desync check, so a model game lost early to a rush is kept.
 //!
 //! Selected unit ids in the labels are the observation's unit ids, as in the shards.
+//!
+//! Input of the AMB-031-7 decision (031 "결정 단위", [SPEC DEFERRED(G0)]): whether the 031-R3
+//! 12-unit selection cap binds in rush defence. The measurement changes no action space.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
@@ -21,7 +24,6 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use uranium_proto::{GameInfo, RawFrame};
 
-use crate::cmd;
 use crate::header::RACE_TERRAN;
 use crate::label::{Labeler, Own};
 use crate::play::{PlayConfig, play_with, slot_of};
@@ -217,24 +219,18 @@ pub fn dump_replay(path: &Path, cfg: &PlayConfig, labeler: &Labeler, w: Window, 
     if end_frame + 32 < w.at {
         scv_at = None;
     }
-    let cmds: Vec<cmd::Cmd> = rep
-        .cmds()
-        .filter(|c| c.player == view.id)
-        .map(|c| cmd::to_legacy(c, rep.unit_limit))
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .filter(|c| cmd::openbw(c.op) == cmd::OpenBw::Supported)
-        .collect();
-    let empty = HashMap::new();
-    let (labels, _) = labeler.label(&cmds, rep.header.frames, |f| units_at.get(&f).unwrap_or(&empty));
+    let (labels, _) = crate::pipeline::own_labels(&rep, view.id, labeler, &units_at)?;
     let commands: Vec<u32> = labels.iter().filter(|l| l.action != noop && l.frame >= w.lo && l.frame <= w.hi).map(|l| l.frame).collect();
+    // 040-R8 result without `drop_time_limit_leave`: the plan games here (botgen / eval, 10-minute
+    // `max_frames`) are only split by the 8:00 SCV count, and `result` matters only for a game that
+    // ended before 8:00, which no time limit ends.
     let (result, _) = crate::pipeline::judge(&res, None, me);
     let info = res.game_info.as_ref();
     use sha2::Digest;
     Ok(GameDump {
         source: source.to_string(),
         game: path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned()),
-        replay_sha256: sha2::Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect(),
+        replay_sha256: crate::pipeline::hex(&sha2::Sha256::digest(&bytes)),
         matchup: format!("Tv{}", crate::pipeline::race_letter(other.race)),
         map_family: String::new(),
         stage: String::new(),
@@ -337,12 +333,55 @@ mod tests {
         State { f, own: vec![], enemy: vec![] }
     }
 
-    /// One state per period in the window plus the state each command was decided on.
+    /// One state per period in the window plus the state each command was decided on (G0 input of
+    /// AMB-031-7, 031-R3 cap measurement).
     #[test]
-    fn pick_states_keeps_period_and_command_states() {
+    fn pick_states_keeps_period_and_command_states_031_r3() {
         let w = Window { lo: 100, hi: 300, period: 50, at: 1000 };
         let frames: BTreeMap<u32, State> = [100, 110, 120, 151, 160, 230, 260].into_iter().map(|f| (f, st(f))).collect();
         let kept: Vec<u32> = pick_states(w, &frames, &[125, 160]).iter().map(|s| s.f).collect();
         assert_eq!(kept, vec![100, 120, 151, 160, 230, 260]);
+    }
+
+    /// A shard game at `frames`, with `scvs` completed own SCVs at every step.
+    fn shard_game(frames: &[u32], scvs: u32) -> ShardGame {
+        let mut g = crate::shard::tests::game(0);
+        let step = g.steps[0].clone();
+        let scv = scv_type();
+        g.steps = frames
+            .iter()
+            .map(|&f| {
+                let mut s = step.clone();
+                s.raw_frame.frame = f;
+                s.action_label.frame = f;
+                s.raw_frame.units = (0..scvs).map(|i| uranium_proto::UnitState { id: i, owner: g.game_info.self_player, unit_type: scv, flags: uranium_proto::flags::COMPLETED, ..Default::default() }).collect();
+                s
+            })
+            .collect();
+        g
+    }
+
+    /// Shard games: the matchup / stage / family filter, and the 8:00 SCV count only for a game that
+    /// reached it (AMB-031-7 G0 measurement, 031-R3).
+    #[test]
+    fn dump_shard_game_filters_and_scv_at_031_r3() {
+        let w = Window { lo: 100, hi: 300, period: 50, at: 1000 };
+        let noop = 0;
+        let g = shard_game(&[100, 200, 1000, 1200], 9);
+        let any = ShardFilter::default();
+        let d = dump_shard_game(&g, "x".into(), w, &any, noop).unwrap();
+        assert_eq!((d.scv_at, d.end_frame, d.labels.len()), (Some(9), 1200, 2));
+        let tvz = ShardFilter { matchup: Some("TvZ".into()), stage: Some("S2".into()), families: vec!["fighting_spirit".into()] };
+        assert!(dump_shard_game(&g, "x".into(), w, &tvz, noop).is_some());
+        for f in [
+            ShardFilter { matchup: Some("TvP".into()), ..Default::default() },
+            ShardFilter { stage: Some("S1".into()), ..Default::default() },
+            ShardFilter { families: vec!["circuit_breaker".into()], ..Default::default() },
+        ] {
+            assert!(dump_shard_game(&g, "x".into(), w, &f, noop).is_none(), "{f:?}");
+        }
+        // Ended (last step) more than 32 frames before `at`: no 8:00 count.
+        let short = shard_game(&[100, 200, 900], 9);
+        assert_eq!(dump_shard_game(&short, "x".into(), w, &any, noop).unwrap().scv_at, None);
     }
 }
