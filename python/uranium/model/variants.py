@@ -186,6 +186,9 @@ class OuterLstm(nn.Module):
 # width that remains), then the previous action (one-hot A, delay bucket, failed).
 SCALAR_COLUMNS = ("frame", "log_frame", "minerals", "gas", "supply_used", "supply_total", "supply_max")
 SCALAR_BLOCKS = (("upgrades", 63), ("tech", 47), ("researching", 47), ("upgrading", 63))
+# `FeatureDims::privileged` (030-R9): enemy resources 5, upgrades 63, tech 47, then (done, in
+# production) per observed type, the same types as the scalar's enemy max-seen block.
+PRIVILEGED_FIXED = 5 + 63 + 47
 # 032-R21 ④ (AMB-032-12): s_raw = time 2, resources 3 (supply total / max left out, main-session
 # interim decision 2026-11-09) and every enemy max-seen count, in this order.
 S_RAW = ("frame", "log_frame", "minerals", "gas", "supply_used", "enemy_seen")
@@ -204,6 +207,11 @@ def scalar_layout(cfg: UraniumNetConfig) -> dict[str, slice]:
     seen = inp.scalar - sum(w for _, w in blocks) - last
     if seen < 1:
         raise ValueError(f"scalar width {inp.scalar} does not hold the 030 §4 layout (z_units {inp.z_units}, actions {inp.actions})")
+    # The observed-type count a second way, from the privileged width; skipped where that width
+    # does not hold its layout (the tiny test models).
+    priv_seen, odd = divmod(inp.privileged - PRIVILEGED_FIXED, 2)
+    if priv_seen >= 1 and not odd and priv_seen != seen:
+        raise ValueError(f"scalar width {inp.scalar} gives {seen} enemy max-seen columns, privileged width {inp.privileged} gives {priv_seen} observed types (030 §4, 030-R9)")
     for name, w in [*blocks, ("enemy_seen", seen), ("last_action", last)]:
         out[name] = slice(at, at + w)
         at += w
