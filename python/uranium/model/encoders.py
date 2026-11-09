@@ -159,7 +159,7 @@ class Down(nn.Module):
     def __init__(self, c_in: int, c_out: int, preact: bool = False):
         super().__init__()
         self.conv = conv3x3(c_in, c_out, 2)
-        self.res = ResBlock(c_out, preact)
+        self.res = ResBlock(c_out, preact, nonneg_input=True)  # its input is relu(self.conv(x))
 
 
 class SpatialEncoder(nn.Module):

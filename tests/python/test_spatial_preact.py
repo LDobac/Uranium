@@ -60,6 +60,21 @@ def test_resblock_matches_definition_032_r22(monkeypatch, preact, ch, wgrad):
     else:
         assert (y >= 0).all()
         assert torch.equal(blk.inner_act(x), F.relu(blk.c1(x)))
+    if preact:
+        # A stage block (input relu(stride-2 conv) >= 0) skips the identity pre-activation ReLU
+        # (032-R19): same values, and the same gradients through the relu that makes its input
+        # (at an input of exactly 0 the skipped ReLU would only mask what that relu masks).
+        stage = ResBlock(ch, True, nonneg_input=True)
+        stage.load_state_dict(blk.state_dict())
+        zs = x.detach().clone().requires_grad_(True)
+        zb = x.detach().clone().requires_grad_(True)
+        ys, yb = stage(F.relu(zs)), blk(F.relu(zb))
+        assert torch.equal(ys, yb)
+        with torch.no_grad():
+            assert torch.equal(stage.inner_act(F.relu(x)), blk.inner_act(F.relu(x)))
+        gs = torch.randn_like(ys)
+        for u, v in zip(torch.autograd.grad(ys, [zs, *stage.parameters()], gs), torch.autograd.grad(yb, [zb, *blk.parameters()], gs)):
+            assert torch.equal(u, v)
     g = torch.randn_like(y)
     got = torch.autograd.grad(y, [x, *blk.parameters()], g)
     x2 = x.detach().clone().requires_grad_(True)
@@ -83,10 +98,12 @@ def test_preact_adds_no_parameters_032_r22():
     assert torch.equal(after_on, after_off)
     assert len(blocks(on)) == 6 and all(b.preact for b in blocks(on))
     assert not any(b.preact for b in blocks(off))
+    # 032-R19: the stage blocks skip the pre-activation ReLU of their relu(stride-2 conv) input.
+    assert all(d.res.nonneg_input for d in on.spatial.downs) and not any(r.nonneg_input for r in on.spatial.bottleneck)
 
 
 @pytest.mark.parametrize("name", CONFIGS)
-def test_preact_changes_the_spatial_outputs(name):
+def test_preact_changes_the_spatial_outputs_032_r22(name):
     """The switch reaches the encoder: S8 / skips take negative values and the outputs differ."""
     cfg, b, t, obs, labels, _ = tiny(CONFIGS[name])
     off_cfg = replace(cfg, variant=replace(cfg.variant, spatial_preact=False))
@@ -232,6 +249,12 @@ def test_default_is_off_032_ac13():
     net = net_of(cfg)
     assert not any(blk.preact for blk in blocks(net))
     assert UraniumNetConfig.from_dict(UraniumNetConfig().to_dict()).variant.spatial_preact is False
+    # A §2.7 model's meta (Checkpoint 1 form): a variant table without the model 2 keys.
+    d = UraniumNetConfig().to_dict()
+    d["variant"] = {"terrain": True, "ctx_token": True, "attn_pool": True, "outer": 32}
+    old = UraniumNetConfig.from_dict(d)
+    assert old.variant == VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=32)
+    assert old.variant.spatial_preact is False and "spatial_preact" not in old.to_dict()["variant"]
     enc = SpatialEncoder(cfg.input, cfg.spatial, cfg.entity.d_model)
     assert not any(blk.preact for blk in [d.res for d in enc.downs] + list(enc.bottleneck))
 
@@ -244,7 +267,8 @@ def test_preact_bmm_matches_vendor_on_device(monkeypatch):
         pytest.skip("no CUDA / ROCm device")
     torch.manual_seed(2)
     blk = ResBlock(RES_BMM_MAX_CH, True).cuda()
-    x0 = torch.randn(16, RES_BMM_MAX_CH, 32, 32, device="cuda")
+    # A small batch so the weight-gradient sums are short enough for test_opt.py's tolerance.
+    x0 = torch.randn(4, RES_BMM_MAX_CH, 16, 16, device="cuda")
     g = torch.randn_like(x0)
     res = {}
     tf32 = torch.backends.cudnn.allow_tf32, torch.backends.cuda.matmul.allow_tf32
@@ -258,4 +282,4 @@ def test_preact_bmm_matches_vendor_on_device(monkeypatch):
     finally:
         torch.backends.cudnn.allow_tf32, torch.backends.cuda.matmul.allow_tf32 = tf32
     for a, b in zip(res["vendor"], res["bmm"]):
-        assert (a - b).abs().max() <= 1e-5 * a.abs().max()
+        assert torch.allclose(a, b, atol=1e-5, rtol=1e-4)

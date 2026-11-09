@@ -194,19 +194,23 @@ def conv_wgrad(conv: nn.Conv2d, x):
 class ResBlock(nn.Module):
     """032 §2.2 ResBlock(2 x Conv3x3): `relu(x + c2(relu(c1(x))))` (post-activation, the default),
     or with `preact` (032-R22 `spatial_preact`) `x + c2(relu(c1(relu(x))))` (no final ReLU, so the
-    output may be negative). `preact` is a plain attribute: the parameters are the same."""
+    output may be negative). `preact` is a plain attribute: the parameters are the same.
+    `nonneg_input`: the caller guarantees x >= 0 (a spatial stage's block input is
+    relu(stride-2 conv)), so the pre-activation ReLU is the identity and is skipped (032-R19: same
+    values and gradients, bit for bit)."""
 
-    def __init__(self, c: int, preact: bool = False):
+    def __init__(self, c: int, preact: bool = False, nonneg_input: bool = False):
         super().__init__()
         self.c1 = conv3x3(c, c, 1)
         self.c2 = conv3x3(c, c, 1)
         self.preact = preact
+        self.nonneg_input = nonneg_input
 
     def inner_act(self, x):
         """The block's inner ReLU output, relu(c1(x)), or relu(c1(relu(x))) under `preact`
         (032-R25 ①, read by `uranium.model.monitor`; one definition for the forward and the
         monitor)."""
-        if self.preact:
+        if self.preact and not self.nonneg_input:
             x = F.relu(x)
         if x.shape[1] <= RES_BMM_MAX_CH:
             return F.relu(conv_wgrad(self.c1, x))
