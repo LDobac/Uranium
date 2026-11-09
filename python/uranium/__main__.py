@@ -70,6 +70,9 @@ def main(argv: list[str] | None = None) -> int:
     from uranium import bench
 
     bench.add_parser(sub)
+    from uranium.diag import cli as diag_cli
+
+    diag_cli.add_parser(sub)
     a = p.parse_args(argv)
     return a.fn(a)
 

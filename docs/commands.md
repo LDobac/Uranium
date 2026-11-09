@@ -121,6 +121,23 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
   - `split-stats` 출력: `splits`(소스·맵 그룹·분할별 게임 수), `sources`(소스별 `privileged` 없는 게임·스텝 수와 비율(E-10), `result_source`별 게임 수(040-R8)).
 - 하이퍼파라미터 `config/bc.toml`(GPU 메모리는 `micro_lanes`, `pad_entities`, `grad_checkpointing`), 코어 비교 `config/bc_core_ablation.toml`, 보상 `config/reward.toml`. `grad_clip`은 모든 파라미터 gradient를 한 벡터로 본 전역 L2 norm 기준이고, 레인 그룹 gradient를 합친 뒤 optimizer step 전에 한 번 적용한다(041-R3, RL `config/rl.toml`도 같음).
 
+## 단서 진단(`reports/jepa_survey.md` 7·10절)
+읽기 전용이다. teacher forcing만 하고, 정답은 privileged 열에서 오프라인으로 계산한다. 모델 입력은 자기 시야 그대로다. 데이터 경로는 인자로만 받는다(`--dataset`은 공용 드라이브 기준, `--shards`는 폴더).
+- 덤프: `python -m uranium diag dump --checkpoint <ckpt|run|none> (--dataset <rel> | --shards <dir>)... --out <dir> [--splits val,test] [--games N] [--backend cuda|rocm|cpu] [--lanes-per-group 8] [--row-until 8640] [--act-until 5760] [--act-every 1] [--core-points none|gate|full] [--cf [--cf-starts T:1280,2080;P:1720,3030;Z:1800,3240]]`.
+  - 판마다 순환 상태를 이어 한 번 돈다. 행 특징과 정답은 `--row-until`(기본 6:00) 전까지 남긴다. 모델 pass와 활성값은 `--act-until`(기본 4:00) 전이고, 활성값은 적 기준 건물 토큰이 있는 행만 남긴다.
+  - 기준 건물: 테란 배럭, 프로토스 게이트웨이, 저그 스포닝 풀. 적 종족은 첫 행의 privileged 일꾼·본진 수로 정한다.
+  - 지점: 토큰, e_pool, sp_pool, c, h_t, GTrXL 하위 지점(`gate`: x_in, 층마다 a·g1·f·out. `full`은 core_in, a_pre, f_pre도).
+  - `--cf`: 판 전체 반사실 pass 6개를 더한다(착공 이름·늦음, 최대 관측 수 ±1 스칼라만, ±1 스칼라+토큰). 각 pass는 자기 순환 상태를 쓴다.
+  - 출력: `rows_pNNN.npz`, `acts_pNNN.npz`, `games.json`, `manifest.json`(체크포인트 sha256 포함, 공용 드라이브 경로는 `<shared>/...`).
+- 회귀: `python -m uranium diag probes <dump> [--races T,P,Z] [--stages token,e_pool,sp_pool,c,x_in,L1.g1,L1.out,h,hc] [--gain resid|joint] [--boot 500] [--cap 0] [--no-mlp]`.
+  - 종족별로 따로 낸다. 정답은 HP 비율, 착공 시각, 러시·운영 분류, 적 최대 관측 수, 3:00 전 기준 건물 2개다.
+  - 지점마다 ridge와 MLP(64), 판 단위 5겹 교차검증, 판 bootstrap 신뢰구간, 정답 섞기 대조군, 방해 변수 기준선을 낸다.
+  - "방해 변수 대비 향상"은 기본 `resid`다. 방해 변수 ridge를 먼저 맞추고, 그 잔차에 지점 ridge를 맞춘다(벌점 따로). `joint`는 [지점, 방해 변수]를 한 ridge로 맞추는 예전 저그 방식이다(`python/uranium/diag/probe.py`).
+- 반사실 개입: `python -m uranium diag intervene <dump(--cf)> [--window 2160,5760]`. 1:30~4:00 마스크 가능 step에서 판마다 P(벙커 ≥ 1), 마린 기대 주문 수, 두 번째 배럭 P를 낸다. 착공 이름 − 늦음, 개수 +1 − −1의 평균과 판 bootstrap 구간을 낸다.
+- 죽은 채널: `python -m uranium diag spatial --checkpoint <ckpt>... (--dataset|--shards)... --out <json> [--split val] [--batches 2] [--skip-batches 2] [--precision auto|f32]`. 공간 단계(stem·stride-2 conv·ResBlock 안팎·bottleneck·s8), 엔티티 FFN, 헤드 ResMlp, 코어 FFN마다 0보다 큰 비율과 한 번도 안 켜진 채널 수를 낸다. 같은 계산을 `python/uranium/model/monitor.py`(`relu_stats`, `ReluMonitor`)로 학습기에서도 쓸 수 있다.
+- 코어 분해: `python -m uranium diag core-split <dump> --checkpoint <ckpt>`. 미완성 기준 건물 행에서 지점별 HP R²를 낸다. GRU 게이트마다 (1−z)·x와 z·h~로 나눈 분산 비율과 R²를 내고, 변수별 x_in→h_t 잔존 비율도 낸다.
+- 요약: `python -m uranium diag summary --point <경로 지점> [--probes <json>] [--intervene <json>] [--spatial <json>] [--core-split <json>] --out <json>`. 측정 프로토콜이 지점마다 남기는 스키마 `uranium.diag.summary/1`이다(`python/uranium/diag/summary.py`).
+
 ## 감시·작업자(060-R6, 061-R13~R15)
 - `uranium-train supervise [--hang-minutes 30 --max-restarts 5 --window-minutes 60 --delay-seconds 60 --progress-file <file> --fatal-pattern <regex>... --log <file>] -- <bc|rl 인자>`: 자식은 `URANIUM_PYTHON -m uranium <bc|rl 인자>`다(`.env`에 없으면 시작하지 않는다). 비정상 종료·멈춤이면 같은 run을 재시작한다. 종료 코드 0·130·75(잠금을 얻지 못함: 다른 호스트 잠금, 획득 경쟁에서 짐, 양보 예약)·76(양보)은 재시작하지 않는다. 70(장치 치명 오류, 저장 없이 끝남, 042-R20)은 재시작한다.
   - 멈춤 판정(060-R6, AMB-042-20): `--progress-file`이 있으면 그 파일 변경만 진행으로 본다(stderr 줄은 진행이 아니다). 없으면 stderr 줄이 진행이다. RL은 `--progress-file <logs>/train.csv`를 쓴다. 이때 `--hang-minutes`는 정상 run에서 train.csv 갱신 사이 가장 긴 간격(게임 슬롯이 적고 판이 길면 약 26분까지 관찰)보다 커야 하므로 **60**을 권한다.
