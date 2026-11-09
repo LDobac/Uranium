@@ -266,14 +266,14 @@ def test_bc_training_with_and_without_statistics_is_bit_identical_032_ac15(tiny_
     seen = []
 
     class Monitored(BcTrainer):
-        def group_loss(self, hg, group, valid, value_valid, step):
+        def group_loss(self, hg, group, valid, value_valid, step, *rest):
             net, dev, t = self.net, self.device, self.cfg["seq_len"]
             s = self.states[group]
             keep = torch.as_tensor(hg["keep"]).bool()
             s0 = net.init_state(hg["b"], dev) if s is None else net.mask_state(s, keep)
             st = relu_stats(net, to_obs(hg, dev), net.labels(hg, dev), torch.as_tensor(hg["privileged"]).float(), s0, t, rows=torch.as_tensor(hg["weights"]) > 0)
             seen.append(packed(st))
-            return super().group_loss(hg, group, valid, value_valid, step)
+            return super().group_loss(hg, group, valid, value_valid, step, *rest)
 
     params = {}
     for cls in (BcTrainer, Monitored):
