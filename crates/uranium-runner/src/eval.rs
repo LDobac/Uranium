@@ -540,6 +540,14 @@ impl JobSource for LedgerSource {
     fn left(&self) -> usize {
         self.inner.lock().unwrap().queue.len()
     }
+
+    /// 041-R28 ①: `<stage>/memory/g<plan id>.jsonl` beside `<stage>/replays/g<plan id>.rep` for a
+    /// stage whose plan has `memory_log = true`. A game played again overwrites its log.
+    fn memory_log(&self, job: &Job) -> Option<PathBuf> {
+        let k = key_of(job.spec.game_id);
+        let stage = self.job.stages.get(k.0)?;
+        stage.plan.memory_log.then(|| self.job.sub(&stage.name).join("memory").join(crate::memory_log_name(k.1)))
+    }
 }
 
 /// 020-R15 ⑥: plays the source's games on the job's hosts until the source ends. The hosts file
@@ -1426,6 +1434,25 @@ mod tests {
         next_period.remember_finished(&src.finished());
         next_period.refresh(&LedgerState::default(), no_flights());
         assert!(next_period.next().is_none(), "games recorded in an earlier period are not played again");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 041-R28 ①: a stage whose plan has `memory_log = true` puts each game's decision log at
+    /// `<stage>/memory/g<plan id>.jsonl` beside `<stage>/replays/g<plan id>.rep`, the same for
+    /// every attempt; other stages have none.
+    #[test]
+    fn memory_log_beside_the_stage_replay_041_r28() {
+        let dir = job_dir("memlog", 2);
+        let p = dir.join("plans/1.toml");
+        let text = std::fs::read_to_string(&p).unwrap().replace("save_replay=true\n", "save_replay=true\nmemory_log=true\n");
+        std::fs::write(&p, text).unwrap();
+        let job = Arc::new(EvalJob::load(&dir).unwrap());
+        let src = LedgerSource::new(job.clone(), "h", "127.0.0.1:1", all_stages());
+        let mut j = plan::expand(&job.stages[1].plan, "x").remove(1);
+        j.spec.game_id = hostd_id(1, 2, 3);
+        assert_eq!(src.memory_log(&j), Some(dir.join("b/memory/g2.jsonl")));
+        j.spec.game_id = hostd_id(0, 2, 0);
+        assert_eq!(src.memory_log(&j), None, "stage a has no memory_log");
         std::fs::remove_dir_all(&dir).ok();
     }
 

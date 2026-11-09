@@ -13,6 +13,7 @@ use uranium_env::features::world::World;
 use uranium_env::features::{AgentMemory, DELAY_BUCKETS, MapInfo, extract};
 use uranium_env::features::Strategy;
 use uranium_env::features::extract::action_table;
+use uranium_env::features::label::DecisionLogLine;
 use uranium_env::maps::{MapFamilies, PrecomputeSource, family_index, live_precompute_for_session, maps_dir};
 use uranium_env::reward::{Outcome, RewardParts, RewardTracker};
 use uranium_env::scout::{RewardConfig, ScoutMetrics, ScoutTracker, seconds};
@@ -155,6 +156,65 @@ pub struct ModelPolicy {
     /// 042-R14 / 033-R7: reward of the frames from the last real decision to the concede frame;
     /// added with the final frame's to that last decision at the end.
     concede_reward: Option<RewardParts>,
+    /// 041-R28 ①: this game's decision log (`InferenceHandle::memory_log`); off by default.
+    decision_log: Option<DecisionLog>,
+}
+
+/// 041-R28 ① (AMB-041-17): the JSON-lines file of one game's model decisions, written exactly as
+/// the session records them in agent memory (`DecisionLogLine`), then an end line. A file that
+/// cannot be opened or written is reported once and left without its end line, so the relabel
+/// build sees it as incomplete (041-R28 ④); the game itself is never affected.
+pub struct DecisionLog {
+    path: std::path::PathBuf,
+    w: Option<std::io::BufWriter<std::fs::File>>,
+    decisions: u64,
+}
+
+impl DecisionLog {
+    /// Creates (truncates: a game played again overwrites its earlier attempt) the file at `path`.
+    pub fn create(path: &std::path::Path) -> Self {
+        let open = || -> std::io::Result<std::fs::File> {
+            if let Some(d) = path.parent() {
+                std::fs::create_dir_all(d)?;
+            }
+            std::fs::File::create(path)
+        };
+        let w = match open() {
+            Ok(f) => Some(std::io::BufWriter::new(f)),
+            Err(e) => {
+                elog!("[agent] WARNING: decision log {} not written (041-R28): {e}", path.display());
+                None
+            }
+        };
+        Self { path: path.to_path_buf(), w, decisions: 0 }
+    }
+
+    fn line(&mut self, l: &DecisionLogLine) {
+        use std::io::Write as _;
+        let Some(w) = self.w.as_mut() else { return };
+        let text = serde_json::to_string(l).expect("decision log line serializes");
+        if let Err(e) = writeln!(w, "{text}") {
+            elog!("[agent] WARNING: decision log {} stopped (041-R28): {e}", self.path.display());
+            self.w = None;
+        }
+    }
+
+    pub fn decision(&mut self, frame: u32, action: u16, delay_bucket: usize, units: &[u32]) {
+        self.line(&DecisionLogLine::Decision { frame, action, delay_bucket: delay_bucket as u32, units: units.to_vec() });
+        self.decisions += 1;
+    }
+
+    /// The end line, then flush and sync (the file may be on the shared drive, 020-R15).
+    pub fn end(&mut self, end_frame: Option<u32>) {
+        use std::io::Write as _;
+        let decisions = self.decisions;
+        self.line(&DecisionLogLine::End { decisions, end_frame });
+        if let Some(mut w) = self.w.take() {
+            if let Err(e) = w.flush().and_then(|_| w.get_ref().sync_data()) {
+                elog!("[agent] WARNING: decision log {} not flushed (041-R28): {e}", self.path.display());
+            }
+        }
+    }
 }
 
 fn rejected_name(r: &Rejected) -> &'static str {
@@ -238,6 +298,7 @@ impl ModelPolicy {
             test_surrender_frame,
             concede: None,
             concede_reward: None,
+            decision_log: handle.memory_log.as_deref().map(DecisionLog::create),
         })
     }
 
@@ -270,6 +331,9 @@ impl ModelPolicy {
     /// E-8 / 010-R12: the dense reward of those frames comes from the bridge's final frame (own
     /// vision, events since the last decision); without one only r_win is added.
     pub fn on_end(&mut self, outcome: Option<Outcome>, final_frame: Option<&RawFrame>) {
+        if let Some(l) = self.decision_log.as_mut() {
+            l.end(final_frame.map(|f| f.frame));
+        }
         // 042 metrics of a session without a reward tracker: the final frame too (010-R12).
         if let (None, Some(f)) = (self.reward.as_ref(), final_frame) {
             self.scout.step(f);
@@ -417,6 +481,11 @@ impl ModelPolicy {
         // Memory records the sampled action like BC records its label (030 §4, 041-R11).
         let ids: Vec<u32> = a.selected.iter().filter_map(|&i| r.obs.entity_ids.get(i).copied()).collect();
         self.mem.record_action(a.action, a.delay_bucket, &ids);
+        // 041-R28 ①: the same decision, executor refusal or not (surrender decisions return
+        // above and are never recorded in memory, so never logged).
+        if let Some(l) = self.decision_log.as_mut() {
+            l.decision(f.frame, a.action, a.delay_bucket, &ids);
+        }
         self.stats.decisions += 1;
         self.host.push((host_extract + t2.elapsed()).as_secs_f32() * 1e3);
         let bucket = a.delay_bucket.min(DELAY_BUCKETS.len() - 1);
