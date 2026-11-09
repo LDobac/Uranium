@@ -621,7 +621,10 @@ def cmd_check_bc_eval(a) -> None:
         if not isinstance(per, dict) or not set(m["races"]) <= set(per):
             raise SystemExit(f"MISMATCH {a.output}: no `{field}` with {', '.join(m['races'])} ({m['note']})")
         for r in m["races"]:
-            print(f"{a.output}: {a.metric} vs {r}: action_top1 {per[r]['action_top1'] * 100:.2f}%, action NLL {per[r]['nll']['action']:.4f}, steps {per[r]['steps']}")
+            x = per[r]
+            if not isinstance(x, dict) or not x.get("steps") or x.get("action_top1") is None:
+                raise SystemExit(f"MISMATCH {a.output}: `{field}.{r}` has no scored step ({m['note']})")
+            print(f"{a.output}: {a.metric} vs {r}: action_top1 {x['action_top1'] * 100:.2f}%, action NLL {x['nll']['action']:.4f}, steps {x['steps']}")
         return
     print(f"{a.output}: {a.metric} conditions ok, action_top1 {d['action_top1'] * 100:.2f}%")
 

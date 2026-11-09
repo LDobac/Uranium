@@ -5,7 +5,9 @@ error, selected F1 (argmax of every selection step against the label set) and th
 over the steps that use the head. Games are read without z, symmetry or the race mask; with
 `--games N` the N games come from a fixed-seed shuffle (032-R17 ②). With a win_open head
 (032-R18) also its MSE and the 031-R12 surrender check replayed per game (041-AC4, in Rust).
-Same report as the Burn `uranium-train bc-eval`."""
+Same report as the Burn `uranium-train bc-eval`, plus `by_enemy_race` (050-R9 `val500_race`: the
+steps, action top-1 and per-head NLL per enemy race of the view's game) and, for a model with the
+032-R24 aux modules, the aux losses as the training log names them (041-R23 ⑤)."""
 
 import argparse
 import json
@@ -14,6 +16,8 @@ from pathlib import Path
 import torch
 
 HEADS = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
+# 050-R9 `val500_race`: the enemy race letter of a game's matchup -> the report key.
+RACES = {"T": "terran", "P": "protoss", "Z": "zerg"}
 
 # Output fields and their units (E-9), printed with every report.
 UNITS = {
@@ -25,6 +29,8 @@ UNITS = {
     "steps": "steps with a usable label (041-R11 weight 1); padding and void labels are not scored",
     "win_open_mse": "mean (win_open - result)^2 over the steps of decided games (032-R18, result +1 / -1)",
     "surrender.*": "031-R12 check replayed per game (041-AC4): games, games where it held, the share of those won, first frame it held",
+    "by_enemy_race.<race>": "steps, action_top1 and nll.<head> (as above) over the steps of games against that race (the view's matchup, 050-R9 val500_race)",
+    "aux_*, jepa_tgt_std": "032-R24 aux losses before the loss weight over the split (models with the modules only, 041-R23 5)",
 }
 
 
@@ -55,10 +61,13 @@ class Acc:
         self.sel_n = self.sel_tp = self.sel_fp = self.sel_fn = 0
         self.nll = [0.0] * len(HEADS)
         self.nll_n = [0] * len(HEADS)
+        # 050-R9 `val500_race`: {race: {"steps", "top1", "nll", "nll_n"}}.
+        self.by_race: dict = {}
 
     @torch.no_grad()
-    def score(self, out: dict, g: dict, has_loc, sel_len) -> None:
-        """Adds one lane group (rows with weight 0 are skipped: padding, 041-R11 void labels)."""
+    def score(self, out: dict, g: dict, has_loc, sel_len, races: dict | None = None) -> None:
+        """Adds one lane group (rows with weight 0 are skipped: padding, 041-R11 void labels).
+        `races`: {race name: bool rows} of the group (050-R9 `val500_race`)."""
         d, lp = out["dists"], out["logp"]
         dev = d["action"].device
         ok = torch.as_tensor(g["weights"], device=dev) > 0
@@ -107,6 +116,28 @@ class Acc:
             used = ok if k in ("action", "delay") else ok & uses[k].bool()
             self.nll[h] -= float((lp[k].double() * used).sum())
             self.nll_n[h] += int(used.sum())
+        for name, rows in (races or {}).items():
+            r_ok = ok & torch.as_tensor(rows, device=dev)
+            acc = self.by_race.setdefault(name, {"steps": 0, "top1": 0, "nll": [0.0] * len(HEADS), "nll_n": [0] * len(HEADS)})
+            acc["steps"] += int(r_ok.sum())
+            acc["top1"] += int(((better == 0) & r_ok).sum())
+            for h, k in enumerate(HEADS):
+                used = r_ok if k in ("action", "delay") else r_ok & uses[k].bool()
+                acc["nll"][h] -= float((lp[k].double() * used).sum())
+                acc["nll_n"][h] += int(used.sum())
+
+    def race_report(self) -> dict:
+        """050-R9 `val500_race`: the three races always (top-1 null without a step), and any other
+        key the data had."""
+        out = {}
+        for name in [*RACES.values(), *sorted(set(self.by_race) - set(RACES.values()))]:
+            a = self.by_race.get(name, {"steps": 0, "top1": 0, "nll": [0.0] * len(HEADS), "nll_n": [0] * len(HEADS)})
+            out[name] = {
+                "steps": a["steps"], "action_top1": a["top1"] / a["steps"] if a["steps"] else None,
+                "nll": {k: a["nll"][h] / max(a["nll_n"][h], 1) for h, k in enumerate(HEADS)},
+                "nll_steps": {k: a["nll_n"][h] for h, k in enumerate(HEADS)},
+            }
+        return out
 
     def report(self, ckpt: str, split: str, games: int, seed) -> dict:
         n = max(self.steps, 1)
@@ -127,6 +158,7 @@ class Acc:
             "nll": {k: self.nll[h] / max(self.nll_n[h], 1) for h, k in enumerate(HEADS)},
             "nll_steps": {k: self.nll_n[h] for h, k in enumerate(HEADS)},
             "ac1_pass": top1 >= 0.5 if split == "test" else None,
+            "by_enemy_race": self.race_report(),
             "win_open_mse": None, "surrender": None,
             "units": UNITS,
         }
@@ -151,8 +183,10 @@ def evaluate(dirs: list[str], ckpt_dir: str, split: str, games, seed: int, confi
     groups = -(-lanes // g)
     states = [None] * groups
     acc = Acc(json.loads(_core.feature_dims())["delay_buckets"])
+    aux = AuxAcc(net) if net.cfg.variant.aux() else None
     while (b := stream.next()) is not None:
         steps = b.lane_steps()
+        lane_race = [RACES.get(r, r.lower() or "unknown") for r in b.lane_enemy_races()]
         for gi in range(groups):
             start, end = gi * g, min((gi + 1) * g, lanes)
             if all(steps[l] == 0 for l in range(start, end)):
@@ -165,16 +199,69 @@ def evaluate(dirs: list[str], ckpt_dir: str, split: str, games, seed: int, confi
             s = states[gi]
             s0 = net.init_state(hg["b"], device) if s is None else net.mask_state(s, keep)
             with autocast(device, precision):
-                out = net.forward_seq(obs, labels, priv, s0, t)
+                out = net.forward_seq(obs, labels, priv, s0, t, **({"aux": True} if aux else {}))
             states[gi] = out["state"]
             has_loc, sel_len = b.label_extras(start, end, t)
-            acc.score(out, hg, has_loc, sel_len)
+            rows = [lane_race[l] for l in range(start, end) for _ in range(t)]
+            acc.score(out, hg, has_loc, sel_len, {r: torch.tensor([x == r for x in rows]) for r in set(rows)})
+            if aux is not None:
+                aux.add(out, hg, priv, hg["b"], t)
             if out["win_open"] is not None:
                 stream.decide(b, start, end, t, out["win_open"].float().cpu().numpy())
     rep = acc.report(ckpt_dir, split, stream.games, seed if games is not None else None)
     tail = json.loads(stream.finish())
     rep["win_open_mse"], rep["surrender"] = tail["win_open_mse"], tail["surrender"]
+    if aux is not None:
+        rep.update(aux.report())
     return rep
+
+
+class AuxAcc:
+    """041-R23 ⑤: the aux losses of a model with the 032-R24 modules over the scored split, as the
+    training log names them (means over every masked row / pair of the split, the same masks as
+    the BC trainer: real steps with a privileged summary; pairs of real steps inside a chunk)."""
+
+    def __init__(self, net):
+        v = net.cfg.variant
+        self.priv, self.ks = v.aux_priv, list(v.aux_jepa)
+        self.priv_sum = 0.0
+        self.priv_n = 0
+        self.sums = [0.0] * len(self.ks)
+        self.pairs = [0] * len(self.ks)
+        self.moments = None
+        self.real = 0
+
+    @torch.no_grad()
+    def add(self, out: dict, hg: dict, priv, b: int, t: int) -> None:
+        from uranium.model.auxiliary import jepa_moments, jepa_sums, priv_sum
+
+        dev = priv.device
+        real = torch.as_tensor(hg["real"], device=dev).bool()
+        if self.priv:
+            rows = real & torch.as_tensor(hg["priv_present"], device=dev).bool()
+            self.priv_sum += float(priv_sum(out["aux_priv"], priv, rows.float()))
+            self.priv_n += int(rows.sum())
+        if self.ks:
+            r = real.view(b, t)
+            for i, (k, s) in enumerate(zip(self.ks, jepa_sums(out["aux_jepa"], out["jepa_target"], r, r, self.ks))):
+                self.sums[i] += float(s)
+                self.pairs[i] += int((r[:, :t - k] & r[:, k:]).sum()) if k < t else 0
+            m = jepa_moments(out["jepa_target"], real.float()).cpu()
+            self.moments = m if self.moments is None else self.moments + m
+            self.real += int(real.sum())
+
+    def report(self) -> dict:
+        from uranium.model.auxiliary import jepa_std
+        from uranium.model.config import AUX_JEPA_SLOTS
+
+        per = [s / c if c else None for s, c in zip(self.sums, self.pairs)]
+        live = [x for x in per if x is not None]
+        out = {"aux_priv": self.priv_sum / self.priv_n if self.priv and self.priv_n else None,
+               "aux_jepa": sum(live) / len(live) if live else None,
+               "jepa_tgt_std": float(jepa_std(self.moments, self.real)) if self.moments is not None and self.real else None}
+        for i in range(AUX_JEPA_SLOTS):
+            out[f"aux_jepa_slot{i + 1}"] = per[i] if i < len(per) else None
+        return out
 
 
 def main(a) -> int:

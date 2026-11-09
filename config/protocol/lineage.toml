@@ -43,12 +43,12 @@ games = 500
 seed = 1
 backend = "rocm"
 config = "config/bc.toml"
-# The same run as val500; the per-race numbers must be in its output. bc-eval does not write them yet
-# (python/uranium/bc/eval.py): it needs `by_enemy_race = {terran|protoss|zerg: {steps, action_top1, nll}}` keyed by
-# the view's enemy race (GameInfo), and check-bc-eval refuses an output without it.
+# The same run as val500; the per-race numbers are in its output (python/uranium/bc/eval.py writes
+# `by_enemy_race = {terran|protoss|zerg: {steps, action_top1, nll}}` keyed by the enemy race of the view's
+# matchup), and check-bc-eval refuses an output without it or with a race that has no scored step.
 requires_field = "by_enemy_race"
 races = ["terran", "protoss", "zerg"]
-note = "bc-eval must add by_enemy_race (per enemy race steps / action_top1 / nll) to its JSON"
+note = "bc-eval writes by_enemy_race (per enemy race steps / action_top1 / nll) in its JSON; an older output lacks it"
 output = "artifacts/bc_e2_val/val500/<run>__<ckpt>.json"
 
 [metric.test]
