@@ -65,6 +65,37 @@ pub struct UpdateStats {
     pub sil_loss: Option<f32>,
     #[serde(default)]
     pub sil_pos_frac: Option<f32>,
+    /// 042-R21 ③: the aux losses before λ, batch means (`None` without the module): `aux_priv`,
+    /// `aux_jepa` (the mean over k), the JEPA target's mean per-dimension standard deviation and
+    /// one value per configured k (`[model] aux_jepa` order, `None` past the list or without a
+    /// pair in the batch).
+    #[serde(default)]
+    pub aux_priv: Option<f32>,
+    #[serde(default)]
+    pub aux_jepa: Option<f32>,
+    #[serde(default)]
+    pub jepa_tgt_std: Option<f32>,
+    #[serde(default)]
+    pub aux_jepa_slots: [Option<f32>; 3],
+    /// 042-R21 ③ / 032-R25: the spatial statistics of a `[monitor] spatial_every` update in
+    /// [`SPATIAL_COLUMNS`] order (`None` on the other updates and when off).
+    #[serde(default)]
+    pub spatial: Option<Vec<f32>>,
+}
+
+/// 041-R25 ② layer names in order (the Python `uranium.model.monitor.SPEC_LAYERS`): ReLU outputs
+/// `stem`, `c0`..`c3` (stride-2 convs), `r0`..`r5` (the ResBlocks' inner ReLU, four down then two
+/// bottleneck), then the block outputs `d0`..`d3`, `b0`, `b1`.
+pub const SPATIAL_LAYERS: [&str; 17] = ["stem", "c0", "c1", "c2", "c3", "r0", "r1", "r2", "r3", "r4", "r5", "d0", "d1", "d2", "d3", "b0", "b1"];
+
+/// 042-R21 ③: the spatial statistics columns, grouped: every `sp_pos_<layer>`, every
+/// `sp_dead_<layer>` (same order), then `sp_const_s8`, `sp_const_pool`.
+pub fn spatial_columns() -> Vec<String> {
+    let mut c: Vec<String> = SPATIAL_LAYERS.iter().map(|l| format!("sp_pos_{l}")).collect();
+    c.extend(SPATIAL_LAYERS.iter().map(|l| format!("sp_dead_{l}")));
+    c.push("sp_const_s8".into());
+    c.push("sp_const_pool".into());
+    c
 }
 
 /// The learning agents (042: Main, Main Exploiter, League Exploiter; index = `AgentKind::index`).

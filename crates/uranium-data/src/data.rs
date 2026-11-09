@@ -1143,6 +1143,11 @@ impl GameStream {
         self
     }
 
+    /// The enemy race letter of the game's matchup (`T`, `P`, `Z`; 050-R9 `val500_race`).
+    pub fn enemy_race(&self) -> Option<&str> {
+        crate::split::enemy_race(&self.game.meta.matchup)
+    }
+
     /// Steps not yet produced.
     pub fn remaining(&self) -> usize {
         self.game.steps.len() - self.pos

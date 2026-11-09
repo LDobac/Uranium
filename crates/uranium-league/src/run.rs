@@ -33,7 +33,7 @@ use uranium_runner::{Dispatch, HostEntry, Job, JobOutcome, JobSource};
 use crate::ckpt::{self, TrainState};
 use crate::config::{LeagueConfig, RlConfig};
 use crate::league::{AgentKind, Class, League, Opponent, Pick};
-use crate::learner::{Algo, HEAD_NAMES, RlLearners, SnapshotServers, UpdateStats};
+use crate::learner::{Algo, HEAD_NAMES, RlLearners, SnapshotServers, UpdateStats, spatial_columns};
 use crate::sil::{SilBuffer, SilConfig};
 use crate::storage::{LockStatus, PushOutcome, Run, StorageConfig};
 use crate::trajectory::{GameResult, Segment, SegmentQueue, TrajectoryObserver, trained_steps as trained_steps_of};
@@ -990,8 +990,32 @@ fn train_header() -> String {
     }
     h += ",dropped_lag,dropped_full,revoked,used_aborted,winner_disagree,aborted_games,steps_per_s,stage,win_open,trained_steps,queue_wait_s";
     h += DIAG_COLUMNS;
+    h += AUX_COLUMNS;
+    for c in spatial_columns() {
+        h += &format!(",{c}");
+    }
     h += "\n";
     h
+}
+
+/// 042-R21 ③ (2026-11-09): the aux loss columns after `sil_pos_frac`, in this order, then the
+/// spatial statistics ([`spatial_columns`]). In the header whatever the config (as `sil_*`).
+const AUX_COLUMNS: &str = ",aux_priv,aux_jepa,jepa_tgt_std,aux_jepa_slot1,aux_jepa_slot2,aux_jepa_slot3";
+
+/// The aux and spatial statistics values of a row (leading comma): empty when off, not measured
+/// (a k without a pair in the batch) or not a `[monitor] spatial_every` update (042-R21 ③).
+fn aux_columns(s: &UpdateStats) -> String {
+    let opt = |x: Option<f32>| x.map_or(String::new(), |v| v.to_string());
+    let mut row = format!(",{},{},{}", opt(s.aux_priv), opt(s.aux_jepa), opt(s.jepa_tgt_std));
+    for v in s.aux_jepa_slots {
+        row += &format!(",{}", opt(v));
+    }
+    let n = spatial_columns().len();
+    match &s.spatial {
+        Some(v) if v.len() == n => v.iter().for_each(|x| row += &format!(",{x}")),
+        _ => row += &",".repeat(n),
+    }
+    row
 }
 
 /// 042-R2 진단 로그 (AMB-042-17): the train.csv columns after `queue_wait_s`, in this order.
@@ -1560,6 +1584,7 @@ fn write_row(csv: &mut std::fs::File, started: Instant, agent: AgentKind, s: &Up
         queue_wait_s
     );
     row += &diag_columns(s, sil);
+    row += &aux_columns(s);
     row += "\n";
     csv.write_all(row.as_bytes())?;
     Ok(())
@@ -1586,10 +1611,40 @@ mod tests {
     /// spec's order (AMB-042-17).
     #[test]
     fn train_csv_header_columns_042_r2() {
-        assert_eq!(train_header().trim().split(',').count(), 15 + 12 + 11 + 15);
-        assert!(train_header().trim().ends_with(
-            ",win_open,trained_steps,queue_wait_s,adv_rms,adv_rms_win,adv_rms_build,adv_rms_units,adv_rms_value,value_loss_win,value_loss_build,value_loss_units,value_loss_value,kl_p99,kl_max,sil_buffer,sil_lanes,sil_loss,sil_pos_frac"
+        assert_eq!(train_header().trim().split(',').count(), 15 + 12 + 11 + 15 + 6 + 36);
+        assert!(train_header().contains(
+            ",win_open,trained_steps,queue_wait_s,adv_rms,adv_rms_win,adv_rms_build,adv_rms_units,adv_rms_value,value_loss_win,value_loss_build,value_loss_units,value_loss_value,kl_p99,kl_max,sil_buffer,sil_lanes,sil_loss,sil_pos_frac,aux_priv,"
         ));
+    }
+
+    /// 042-R21 ③ (2026-11-09): after `sil_pos_frac` the aux columns, then the spatial statistics
+    /// grouped (every `sp_pos_<layer>`, every `sp_dead_<layer>` in the 041-R25 layer order, then
+    /// `sp_const_s8`, `sp_const_pool`), last.
+    #[test]
+    fn train_csv_aux_and_spatial_columns_042_r21() {
+        let layers = "stem,c0,c1,c2,c3,r0,r1,r2,r3,r4,r5,d0,d1,d2,d3,b0,b1";
+        let pos: Vec<String> = layers.split(',').map(|l| format!("sp_pos_{l}")).collect();
+        let dead: Vec<String> = layers.split(',').map(|l| format!("sp_dead_{l}")).collect();
+        let tail = format!(",sil_pos_frac,aux_priv,aux_jepa,jepa_tgt_std,aux_jepa_slot1,aux_jepa_slot2,aux_jepa_slot3,{},{},sp_const_s8,sp_const_pool", pos.join(","), dead.join(","));
+        assert!(train_header().trim().ends_with(&tail));
+        // Off (the defaults): every aux and spatial value empty, as many values as the columns.
+        let off = aux_columns(&UpdateStats::default());
+        assert_eq!(off, ",".repeat(6 + 36));
+        // On, a spatial update: the values in order; a k without a pair stays empty.
+        let mut spatial: Vec<f32> = (0..17).map(|i| i as f32 / 32.0).collect();
+        spatial.extend((0..17).map(|i| i as f32));
+        spatial.extend([3.0, 5.0]);
+        let s = UpdateStats { aux_priv: Some(0.5), aux_jepa: Some(0.25), jepa_tgt_std: Some(0.75), aux_jepa_slots: [Some(0.125), Some(0.375), None], spatial: Some(spatial.clone()), ..Default::default() };
+        let row = aux_columns(&s);
+        let want: Vec<String> = ["0.5", "0.25", "0.75", "0.125", "0.375", ""].iter().map(|x| x.to_string()).chain(spatial.iter().map(|x| x.to_string())).collect();
+        assert_eq!(row, format!(",{}", want.join(",")));
+        assert!(row.ends_with(",16,3,5"));
+        // Not a spatial update: the aux values, the spatial columns empty.
+        let s = UpdateStats { spatial: None, ..s };
+        assert!(aux_columns(&s).ends_with(&",".repeat(36)) && aux_columns(&s).starts_with(",0.5,0.25,0.75,0.125,0.375,,"));
+        // The learner's JSON: the aux keys read; an older learner's JSON without them still reads.
+        let js: UpdateStats = serde_json::from_str(r#"{"update":1,"steps":2,"loss":0.1,"policy":0.1,"value":0.0,"kl":0.0,"kl_coef":0.1,"kl_heads":[0,0,0,0,0,0],"entropy_heads":[0,0,0,0,0,0],"rho_mean":1,"adv_mean":0,"lag_mean":0,"win_open":0,"aux_priv":0.5,"aux_jepa":null,"jepa_tgt_std":null,"aux_jepa_slots":[0.25,null,null],"spatial":null}"#).unwrap();
+        assert_eq!((js.aux_priv, js.aux_jepa, js.aux_jepa_slots, js.spatial), (Some(0.5), None, [Some(0.25), None, None], None));
     }
 
     /// 042-R2 진단 로그 / 042-R16 (AMB-042-17): the row values; SIL columns empty when `[sil]` is
@@ -1605,6 +1660,7 @@ mod tests {
         // The learner's JSON without the new keys (an older learner) still reads.
         let old: UpdateStats = serde_json::from_str(r#"{"update":1,"steps":2,"loss":0.1,"policy":0.1,"value":0.0,"kl":0.0,"kl_coef":0.1,"kl_heads":[0,0,0,0,0,0],"entropy_heads":[0,0,0,0,0,0],"rho_mean":1,"adv_mean":0,"lag_mean":0,"win_open":0}"#).unwrap();
         assert_eq!((old.kl_p99, old.sil_loss, old.adv_rms), (None, None, 0.0));
+        assert_eq!((old.aux_priv, old.aux_jepa_slots, old.spatial), (None, [None; 3], None));
         let new: UpdateStats = serde_json::from_str(r#"{"update":1,"steps":2,"loss":0.1,"policy":0.1,"value":0.0,"kl":0.0,"kl_coef":0.1,"kl_heads":[0,0,0,0,0,0],"entropy_heads":[0,0,0,0,0,0],"rho_mean":1,"adv_mean":0,"lag_mean":0,"win_open":0,"adv_rms":0.5,"adv_rms_channels":[1,2,3,4],"value_loss_channels":[1,2,3,4],"kl_p99":null,"kl_max":2.5,"sil_loss":null,"sil_pos_frac":null,"grad_norm":1.0}"#).unwrap();
         assert_eq!((new.kl_p99, new.kl_max, new.adv_rms_channels), (None, Some(2.5), [1.0, 2.0, 3.0, 4.0]));
     }
