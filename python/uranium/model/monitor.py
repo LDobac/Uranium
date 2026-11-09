@@ -64,11 +64,15 @@ class _Acc:
         }
 
 
+CHUNK_ELEMENTS = 1 << 24  # counted in row chunks of at most this many elements (bounded scratch memory)
+
+
 def channel_counts(x: torch.Tensor, rows: torch.Tensor | None = None, mask: torch.Tensor | None = None, channel_dim: int = -1):
     """(positive elements, counted elements, per-channel positive counts) of `x`, all tensors on
     x's device (float64 / float64 / float64 [C]). `rows` [r] bool keeps rows (dim 0); `mask` bool
     over the leading dims of a token tensor (e.g. [r, n] for [r, n, C]) keeps tokens. Multiplies by
-    the masks instead of indexing, so there is no host sync."""
+    the masks instead of indexing, so there is no host sync; counts row chunks (one byte per
+    element of scratch, never a full-size wider copy)."""
     cd = channel_dim % x.dim()
     keep = None
     if rows is not None:
@@ -76,14 +80,25 @@ def channel_counts(x: torch.Tensor, rows: torch.Tensor | None = None, mask: torc
     if mask is not None:
         m = mask.reshape(*mask.shape, *([1] * (x.dim() - mask.dim()))).to(torch.bool)
         keep = m if keep is None else keep & m
-    pos = x > 0
-    if keep is not None:
-        pos = pos & keep
-        n = keep.expand_as(x).sum(dtype=torch.float64)
-    else:
-        n = torch.tensor(float(x.numel()), dtype=torch.float64, device=x.device)
     dims = [d for d in range(x.dim()) if d != cd]
-    ch = pos.sum(dim=dims, dtype=torch.float64)
+    if keep is None:
+        n = torch.tensor(float(x.numel()), dtype=torch.float64, device=x.device)
+    else:
+        # elements per kept entry of `keep`: the product of the dims it broadcasts over
+        per = 1
+        for d in range(x.dim()):
+            if keep.shape[d] == 1:
+                per *= x.shape[d]
+        n = keep.sum().to(torch.float64) * per
+    step = max(1, CHUNK_ELEMENTS // max(1, x[:1].numel()))
+    ch = None
+    for s in range(0, x.shape[0], step):
+        pos = x[s:s + step] > 0
+        if keep is not None:
+            pos = pos & keep[s:s + step]
+        c = pos.sum(dim=dims)  # int64, accumulated without a widened copy
+        ch = c if ch is None else ch + c
+    ch = torch.zeros(x.shape[cd], dtype=torch.float64, device=x.device) if ch is None else ch.to(torch.float64)
     return ch.sum(), n, ch
 
 
@@ -172,8 +187,13 @@ class ReluMonitor:
             with torch.no_grad():
                 spatial = obs["spatial"]
                 h, w = spatial.shape[2], spatial.shape[3]
-                x = torch.cat([spatial, m.scatter_mean(obs, e, h, w).to(spatial.dtype)], 1)
-                self._add("spatial.stem", F.relu(m.stem(conv_layout(x))), rows, channel_dim=1)
+                # recomputed in row chunks: a full-batch copy of the stem output is the largest
+                # activation of the model
+                step = max(1, CHUNK_ELEMENTS // max(1, m.stem.out_channels * h * w))
+                for s in range(0, spatial.shape[0], step):
+                    sub = {k: obs[k][s:s + step] for k in ("entity_mask", "entity_cell")}
+                    x = torch.cat([spatial[s:s + step], m.scatter_mean(sub, e[s:s + step], h, w).to(spatial.dtype)], 1)
+                    self._add("spatial.stem", F.relu(m.stem(conv_layout(x))), None if rows is None else rows[s:s + step], channel_dim=1)
 
         self._hook(sp, spatial_pre, pre=True, with_kwargs=True)
 
@@ -185,7 +205,10 @@ class ReluMonitor:
                     self._add(f"{name}.conv", x, self._sp_rows, channel_dim=1)
                 if self.inner:
                     with torch.no_grad():
-                        self._add(f"{name}.inner", F.relu(m.c1(x)), self._sp_rows, channel_dim=1)
+                        step = max(1, CHUNK_ELEMENTS // max(1, x[:1].numel()))
+                        for s in range(0, x.shape[0], step):
+                            r = None if self._sp_rows is None else self._sp_rows[s:s + step]
+                            self._add(f"{name}.inner", F.relu(m.c1(x[s:s + step])), r, channel_dim=1)
             return fn
 
         for i, d in enumerate(sp.downs):

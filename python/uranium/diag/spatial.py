@@ -58,47 +58,38 @@ def run(a) -> int:
     cfg = json.loads(_core.bc_config(a.config, "s1")[0])
     T, LANES = cfg["seq_len"], cfg["lanes"]
     G = min(a.lanes_per_group, LANES)
-    t0 = time.time()
-    stream = _core.EvalStream(a.config, dirs, split=a.split, games=None, seed=1, has_open=False, maps_dir=a.maps_dir, synthetic_maps=a.synthetic_maps)
-    data = []  # per batch: per group (hg, real rows, keep) or None
-    nb = 0
-    while (b := stream.next()) is not None and nb < a.skip_batches + a.batches:
-        nb += 1
-        steps = b.lane_steps()
-        groups = []
-        for gi in range(-(-LANES // G)):
-            s, e = gi * G, min((gi + 1) * G, LANES)
-            if all(steps[l] == 0 for l in range(s, e)):
-                groups.append(None)
-                continue
-            hg = b.group(s, e, T, cfg["pad_entities"], 64)
-            m = np.zeros(hg["b"] * T, bool)
-            for li in range(hg["b"]):
-                m[li * T:li * T + steps[s + li]] = True
-            groups.append((hg, m, np.asarray(hg["keep"]).astype(bool)))
-        data.append(groups)
-    stream.finish()
-    print(f"[data] {len(data)} batches ({a.skip_batches} warm-up) in {time.time() - t0:.1f}s", flush=True)
     res = {"data": [redact(d) for d in dirs], "split": a.split, "batches": a.batches, "skip_batches": a.skip_batches, "backend": backend,
            "precision": "f32" if a.precision == "f32" else precision, "checkpoints": {}}
+    ngroups = -(-LANES // G)
     for spec in a.checkpoint:
+        t0 = time.time()
         cdir = Path(_core.resolve_checkpoint(spec))
         net, _ = ckpt.load_model(cdir, device)
         net.eval()
         for p in net.parameters():
             p.requires_grad_(False)
-        states = [None] * len(data[0])
+        # the same games for every checkpoint: a fresh stream each, one lane group in memory at a time
+        stream = _core.EvalStream(a.config, dirs, split=a.split, games=None, seed=1, has_open=False, maps_dir=a.maps_dir, synthetic_maps=a.synthetic_maps)
+        states = [None] * ngroups
         mon = ReluMonitor(net, inner=not a.no_inner)
         rows = 0
-        for bi, groups in enumerate(data):
+        bi = 0
+        while bi < a.skip_batches + a.batches and (b := stream.next()) is not None:
             record = bi >= a.skip_batches
+            bi += 1
             if record and not mon.handles:
                 mon.__enter__()
-            for gi, g in enumerate(groups):
-                if g is None:
+            steps = b.lane_steps()
+            for gi in range(ngroups):
+                s, e = gi * G, min((gi + 1) * G, LANES)
+                if all(steps[l] == 0 for l in range(s, e)):
                     states[gi] = None
                     continue
-                hg, m, keep = g
+                hg = b.group(s, e, T, cfg["pad_entities"], net.cfg.heads.max_select)
+                m = np.zeros(hg["b"] * T, bool)
+                for li in range(hg["b"]):
+                    m[li * T:li * T + steps[s + li]] = True
+                keep = np.asarray(hg["keep"]).astype(bool)
                 obs = to_obs(hg, device)
                 obs[ROWS_KEY] = torch.as_tensor(m, device=device)
                 st = states[gi]
@@ -107,10 +98,13 @@ def run(a) -> int:
                 with torch.no_grad(), ctx:
                     out = net.forward_seq(obs, net.labels(hg, device), torch.as_tensor(hg["privileged"]).to(device, torch.float32), s0, T)
                 states[gi] = out["state"]
+                del out, obs
                 if record:
                     rows += int(m.sum())
+        stream.finish()
         st = stats_to_host(mon.stats())
         mon.close()
+        print(f"[{bi} batches, {a.skip_batches} warm-up] {time.time() - t0:.1f}s", flush=True)
         res["checkpoints"][redact(cdir)] = {"sha256": ckpt.policy_version(cdir), "rows": rows, "points": st, "weights": weight_stats(net)}
         s8 = st.get("spatial.s8", {})
         print(f"{redact(cdir)}: s8 pos_frac {s8.get('pos_frac', float('nan')):.6f} never_active {s8.get('never_active')}/{s8.get('channels')} rows {rows}", flush=True)
