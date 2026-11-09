@@ -2,7 +2,7 @@
 //! fingerprints and the game order (moved from uranium-train with the Burn trainer's removal,
 //! AMB-000-4; the update tests are tests/python/test_bc.py).
 
-use uranium_data::bc::{AuxWeights, Batch, BcConfig, DataConfig, Feeder, HeadWeights, MonitorConfig, Prefetch, ValueWeights};
+use uranium_data::bc::{AuxWeights, Batch, BcConfig, DataConfig, Feeder, HeadWeights, MonitorConfig, Prefetch, TrainSettings, ValueWeights};
 use uranium_data::data::{MapStore, ShardSource, VecSource, epoch_updates, prepare};
 use uranium_env::actions::LOC_CLASSES;
 use uranium_env::features::CELLS;
@@ -347,6 +347,7 @@ fn tiny_bc(micro_lanes: usize, pad_entities: usize) -> BcConfig {
         keep_checkpoints: None,
         aux: None,
         monitor: None,
+        train: None,
     }
 }
 
@@ -372,6 +373,7 @@ fn warmup_cosine_schedule_041_r3() {
         keep_checkpoints: None,
         aux: None,
         monitor: None,
+        train: None,
     };
     assert!((cfg.lr_at(0, 1.0) - 1e-4).abs() < 1e-12);
     assert!((cfg.lr_at(9, 1.0) - 1e-3).abs() < 1e-12);
@@ -820,7 +822,7 @@ fn scan_cache_follows_the_dataset_fingerprint() {
 #[test]
 fn config_fingerprint_fields_are_classified_b3() {
     use uranium_data::bc::EXECUTION_ONLY;
-    const RESULT: [&str; 17] = [
+    const RESULT: [&str; 18] = [
         "lanes",
         "seq_len",
         "lr",
@@ -838,18 +840,21 @@ fn config_fingerprint_fields_are_classified_b3() {
         "data.enemy_race_mask",
         "data.subsample",
         "aux",
+        "train",
     ];
     let mut cfg = tiny_bc(1, 0);
     // 041-R21 / 041-R23: an absent subsample or [aux] is left out of the fingerprint JSON and of
     // the config JSON (older configs keep theirs).
     assert!(serde_json::to_value(cfg.results_view()).unwrap().get("subsample").is_none());
     assert!(serde_json::to_value(cfg.results_view()).unwrap().get("aux").is_none());
+    assert!(serde_json::to_value(cfg.results_view()).unwrap().get("train").is_none());
     let json = serde_json::to_value(&cfg).unwrap();
-    assert!(json.get("aux").is_none() && json.get("monitor").is_none(), "041-R23 / R25: absent tables stay out of the config JSON");
+    assert!(json.get("aux").is_none() && json.get("monitor").is_none() && json.get("train").is_none(), "041-R23 / R24 / R25: absent tables stay out of the config JSON");
     cfg.keep_checkpoints = Some(3);
     cfg.data.subsample = Some(uranium_data::split::Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()], fraction_by_race: None });
     cfg.aux = Some(AuxWeights { privileged: Some(0.2), jepa: Some(0.1) });
     cfg.monitor = Some(MonitorConfig { spatial_every: 100 });
+    cfg.train = Some(TrainSettings { model_seed: Some(1) });
     let v = serde_json::to_value(&cfg).unwrap();
     let mut keys: Vec<String> = Vec::new();
     for (k, x) in v.as_object().unwrap() {
@@ -881,7 +886,7 @@ fn config_fingerprint_fields_are_classified_b3() {
     assert_eq!(c.fingerprint(), base, "execution-only settings");
     c.monitor = Some(MonitorConfig { spatial_every: 7 });
     assert_eq!(c.fingerprint(), base, "041-R25: [monitor] is execution only");
-    let changes: [fn(&mut BcConfig); 17] = [
+    let changes: [fn(&mut BcConfig); 18] = [
         |c| c.lanes += 1,
         |c| c.seq_len += 1,
         |c| c.lr *= 2.0,
@@ -899,6 +904,7 @@ fn config_fingerprint_fields_are_classified_b3() {
         |c| c.data.enemy_race_mask += 0.01,
         |c| c.data.subsample.as_mut().unwrap().fraction = 0.5,
         |c| c.aux.as_mut().unwrap().jepa = Some(0.3),
+        |c| c.train.as_mut().unwrap().model_seed = Some(2),
     ];
     for (i, f) in changes.iter().enumerate() {
         let mut c = cfg.clone();
@@ -920,6 +926,10 @@ fn config_fingerprint_fields_are_classified_b3() {
         f(&mut c);
         assert_ne!(c.fingerprint(), base, "041-R23: [aux] keys and presence change the fingerprint");
     }
+    // 041-R24 ⑦: `[train] model_seed` present is in the fingerprint, absent is left out.
+    let mut c = cfg.clone();
+    c.train = None;
+    assert_ne!(c.fingerprint(), base, "041-R24: model_seed changes the fingerprint");
 }
 
 /// 041-AC6 / B-3: the keys added for model 2 (`[aux]`, `[monitor]`, `fraction_by_race`) leave an
@@ -963,6 +973,10 @@ fn aux_and_monitor_tables_are_checked_041_r23() {
     assert!(AuxWeights::default().check().is_err(), "an empty [aux] table would change the fingerprint only");
     assert!(toml::from_str::<AuxWeights>("prv = 0.2").is_err());
     assert!(toml::from_str::<MonitorConfig>("spatial = 100").is_err());
+    // 041-R24 ⑦: `[train]` holds `model_seed` only; an empty table would change the fingerprint only.
+    assert!(toml::from_str::<TrainSettings>("seed = 1").is_err());
+    assert!(TrainSettings::default().check().is_err());
+    assert_eq!(toml::from_str::<TrainSettings>("model_seed = 2").unwrap(), TrainSettings { model_seed: Some(2) });
     assert_eq!(toml::from_str::<AuxWeights>("priv = 0.2").unwrap(), AuxWeights { privileged: Some(0.2), jepa: None });
     assert_eq!(toml::from_str::<MonitorConfig>("").unwrap(), MonitorConfig { spatial_every: 0 });
 }

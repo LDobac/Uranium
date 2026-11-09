@@ -94,6 +94,25 @@ impl AuxWeights {
     }
 }
 
+/// 041-R24 ⑦ (main-session interim decision 2026-11-09, U3 review): `[train]`, run settings of a
+/// new run. `model_seed` seeds the global RNG right before a new net is built (its initial
+/// weights); absent = the earlier initialisation. A resumed run or `--init` builds no new net and
+/// ignores it. It changes the initial weights, so it is in the B-3 fingerprint when present.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct TrainSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_seed: Option<u64>,
+}
+
+impl TrainSettings {
+    /// Refuses an empty `[train]` table (it would change the fingerprint only, as an empty `[aux]`).
+    pub fn check(&self) -> Result<()> {
+        anyhow::ensure!(self.model_seed.is_some(), "[train] has no model_seed: remove the empty table (041-R24)");
+        Ok(())
+    }
+}
+
 /// 041-R25 ① / 042-R21 ③: `[monitor]`, the 032-R25 dead-channel statistics. Execution only: the
 /// statistics do not change the updates (032-AC15), so not in the B-3 fingerprint.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
@@ -164,6 +183,9 @@ pub struct BcConfig {
     /// 041-R25: `[monitor]` (execution only). Absent = off, the JSON as before the key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub monitor: Option<MonitorConfig>,
+    /// 041-R24 ⑦: `[train]` (`model_seed`). Absent = the JSON and fingerprint as before the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub train: Option<TrainSettings>,
 }
 
 /// B-3: the `BcConfig` settings that change what a run learns; [`BcConfig::fingerprint`] hashes
@@ -191,6 +213,9 @@ pub struct ResultSettings {
     /// 041-R23 ①: in the fingerprint when present, left out when absent (older configs keep theirs).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aux: Option<AuxWeights>,
+    /// 041-R24 ⑦: `[train] model_seed` (new runs' initial weights); left out when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub train: Option<TrainSettings>,
     /// Not a config field: the gradient clip semantics (041-R3 global L2 norm since 2026-10-19,
     /// [`CLIP_MODE`]), so runs from before the change do not match the fingerprint.
     pub clip_mode: &'static str,
@@ -221,6 +246,9 @@ impl BcConfig {
         }
         if let Some(a) = &cfg.aux {
             a.check().with_context(|| path.display().to_string())?;
+        }
+        if let Some(t) = &cfg.train {
+            t.check().with_context(|| path.display().to_string())?;
         }
         Ok(cfg)
     }
@@ -269,6 +297,7 @@ impl BcConfig {
             enemy_race_mask: self.data.enemy_race_mask,
             subsample: self.data.subsample.clone(),
             aux: self.aux.clone(),
+            train: self.train.clone(),
             clip_mode: CLIP_MODE,
         }
     }
@@ -392,6 +421,9 @@ pub struct Batch {
     pub results: Vec<f32>,
     /// 041-R7 / A-3: per lane, the value-loss weight of its game (0 = undecided result).
     pub value_weights: Vec<f32>,
+    /// 050-R9 `val500_race`: per lane, the enemy race letter of its game's matchup (`T`, `P`,
+    /// `Z`, from the perspective player's side as 041-R26); empty for a drained lane.
+    pub enemy_races: Vec<String>,
     pub state: FeedState,
 }
 
@@ -516,6 +548,7 @@ impl Feeder {
         let mut fresh = Vec::with_capacity(self.lanes.len());
         let mut results = Vec::with_capacity(self.lanes.len());
         let mut value_weights = Vec::with_capacity(self.lanes.len());
+        let mut enemy_races = Vec::with_capacity(self.lanes.len());
         let mut planes = Vec::new();
         // Feature extraction (and packing) touches only the lane's own game: lanes run on
         // `threads` threads, results kept in lane order, so the batch is the same.
@@ -537,6 +570,7 @@ impl Feeder {
                 fresh.push(true);
                 results.push(0.0);
                 value_weights.push(0.0);
+                enemy_races.push(String::new());
                 continue;
             };
             self.invalid_labels += invalid;
@@ -547,13 +581,14 @@ impl Feeder {
             fresh.push(lane.fresh);
             results.push(g.result);
             value_weights.push(g.value_weight);
+            enemy_races.push(g.enemy_race().unwrap_or_default().to_string());
             lane.fresh = false;
             if g.remaining() == 0 {
                 lane.game = None;
                 lane.id = None;
             }
         }
-        Ok(Some(Batch { chunks, planes, fresh, results, value_weights, state: self.state(pos) }))
+        Ok(Some(Batch { chunks, planes, fresh, results, value_weights, enemy_races, state: self.state(pos) }))
     }
 
     /// [`Feeder::next_batch`] from a shard source, with its read position in the batch's state.
@@ -1027,6 +1062,13 @@ impl Batch {
     /// Steps per lane (0 = drained lane, evaluation only).
     pub fn lane_steps(&self) -> Vec<usize> {
         self.chunks.iter().map(|c| c.len()).collect()
+    }
+
+    /// 041-R23: per lane, the real steps of the first `t` with a privileged summary (the rows
+    /// `real & priv_present` of [`Batch::group`] count), so the trainer divides `aux_priv` by the
+    /// whole batch's count without collating every group first.
+    pub fn lane_priv_steps(&self, t: usize) -> Vec<usize> {
+        self.chunks.iter().map(|c| c.iter().take(t).filter(|s| s.has_privileged).count()).collect()
     }
 
     /// `bc-eval` (041-AC1) label facts the collated labels do not keep, rows as in

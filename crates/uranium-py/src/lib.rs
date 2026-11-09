@@ -178,6 +178,18 @@ impl Batch {
         self.inner.lane_steps()
     }
 
+    /// 041-R23: per lane, the real steps of the first `t` with a privileged summary (the batch-wide
+    /// `aux_priv` divisor, without collating).
+    fn lane_priv_steps(&self, t: usize) -> Vec<usize> {
+        self.inner.lane_priv_steps(t)
+    }
+
+    /// 050-R9 `val500_race`: per lane, the enemy race letter (`T`, `P`, `Z`) of its game's
+    /// matchup; empty for a drained lane.
+    fn lane_enemy_races(&self) -> Vec<String> {
+        self.inner.enemy_races.clone()
+    }
+
     /// `bc-eval` label facts per row of `group(start, end, t, ..)`: (has target location,
     /// full selection length) as numpy arrays.
     fn label_extras<'py>(&self, py: Python<'py>, start: usize, end: usize, t: usize) -> (Bound<'py, numpy::PyArray1<bool>>, Bound<'py, numpy::PyArray1<i32>>) {

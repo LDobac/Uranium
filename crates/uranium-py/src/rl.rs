@@ -49,6 +49,20 @@ impl SegmentBatch {
         self.segs.iter().map(|s| s.sil_return).collect()
     }
 
+    /// Per lane: the segment's steps (the `real` rows of `group` are the first `min(len, t)`,
+    /// the bootstrap step included), without collating (042-R21 ① batch-wide aux divisors).
+    #[getter]
+    fn real_steps(&self) -> Vec<usize> {
+        self.segs.iter().map(|s| s.steps.len()).collect()
+    }
+
+    /// Per lane: trained steps with a privileged summary (the `aux_priv` rows `mask > 0 &
+    /// priv_present`, 042-R21 ①), without collating.
+    #[getter]
+    fn priv_trained(&self) -> Vec<usize> {
+        self.segs.iter().map(|s| s.steps.iter().take(s.trained()).filter(|x| x.has_privileged).count()).collect()
+    }
+
     /// Lanes `start..end` collated for one forward (`uranium_league::batch::group`): the
     /// observation arrays, the taken actions as labels, `privileged`, `mask`, `behaviour`,
     /// `rewards` [rows, 4], per lane `terminal`, `trained`, `versions`, `r_value_policy` (r_value
