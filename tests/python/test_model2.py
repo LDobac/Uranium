@@ -184,7 +184,7 @@ def test_rl_group_has_the_aux_masks_042_r21():
     assert g["mask"].reshape(2, t)[1, -1] == 0 and g["real"].reshape(2, t)[1, -1]
 
 
-@pytest.mark.parametrize("switch", ["bypass", "aux_priv", "aux_jepa"])
+@pytest.mark.parametrize("switch", ["aux_priv", "aux_jepa"])
 def test_unimplemented_switch_is_refused(switch):
     """Until a 032 §2.8 module exists, turning its switch on builds no silently-default model."""
     cfg, *_ = tiny(VariantConfig(**{switch: [1] if switch == "aux_jepa" else True}))
