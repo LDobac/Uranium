@@ -47,9 +47,10 @@ target_loc = 1.0
 
 [steps]
 # Only the S2 stage runs with this file. One epoch, counted by `uranium-train mix-fractions --config
-# config/bc_m2_mix_e1.toml --group <shards>/stardata,<shards>/community,<shards>/scr_ladder,<shards>/personal
-# --group <shards>/botgen` (<shards> = URANIUM_SHARED_DIR/datasets/replays/shards, read as is; lanes 32,
-# seq_len 64, data.seed 3; 2026-11-09 with teacher-20261109-macro3, botgen manifest not yet updated:
+# config/bc_m2_mix_e1.toml --dataset-group replays/shards/stardata,replays/shards/community,replays/shards/scr_ladder,replays/shards/personal
+# --dataset-group replays/shards/botgen` (the datasets through their manifests, as the trainer's
+# --dataset reads them; lanes 32, seq_len 64, data.seed 3; 2026-11-10, botgen manifest with
+# teacher-20261109-macro3, the Checkpoint 1 one kept as botgen/manifest.ck1-20261107.json):
 # 2,578 games, 2,413,419 steps, of which the teacher 2,057 games, 1,207,759 steps = 50.04%; human
 # TvT : TvP : TvZ steps 14.8 : 49.2 : 36.0% against the S2 human data's 14.9 : 49.2 : 35.9%).
 # s1 / ablation_a are unused (0 = total_steps). Recount when the datasets change.
