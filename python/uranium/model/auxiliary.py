@@ -13,8 +13,9 @@ loss of one pass over every lane, 041-R3):
 - `jepa_sums`: per k, Σ over the valid pairs (t, t+k) of the same lane (same chunk / segment, so
   the same game) of 1 − cos(g_k(h_t), LN(y_{t+k})), LN a LayerNorm without parameters over the
   dimensions and y the detached `jepa_target` (stop-grad, before `core_add`).
-- `jepa_moments`: per dimension Σ LN(y) and Σ LN(y)² over the target rows, for `jepa_tgt_std`
-  (the mean over dimensions of the per-dimension standard deviation, the collapse watch).
+- `jepa_moments`: per dimension Σ LN(y), Σ LN(y)², Σ y and Σ y² over the target rows, for
+  `jepa_tgt_std` (the mean over dimensions of the per-dimension standard deviation of the
+  normalised target, the collapse watch) and `jepa_tgt_std_raw` (the same before the LayerNorm).
 
 Everything stays on the device (masks multiply, no indexing, no host sync, 032-R19)."""
 
@@ -82,14 +83,17 @@ def jepa_sums(preds: dict, y: torch.Tensor, src: torch.Tensor, tgt: torch.Tensor
 
 
 def jepa_moments(y: torch.Tensor, rows: torch.Tensor) -> torch.Tensor:
-    """[2, d] f64: Σ LN(y) and Σ LN(y)² over `rows` [r] (0 / 1) per dimension."""
-    yn = jepa_target(y.detach()).double() * rows.double()[:, None]
-    return torch.stack([yn.sum(0), (yn * yn).sum(0)])
+    """[4, d] f64 per dimension over `rows` [r] (0 / 1): Σ LN(y), Σ LN(y)², Σ y, Σ y² (raw)."""
+    r = rows.double()[:, None]
+    yn = jepa_target(y.detach()).double() * r
+    yr = y.detach().double() * r
+    return torch.stack([yn.sum(0), (yn * yn).sum(0), yr.sum(0), (yr * yr).sum(0)])
 
 
 def jepa_std(moments: torch.Tensor, n: int) -> torch.Tensor:
     """`jepa_tgt_std`: mean over dimensions of the per-dimension standard deviation (population)
-    from `jepa_moments` summed over `n` rows; NaN without a row."""
+    from the first two rows of `jepa_moments` summed over `n` rows (`moments[2:]`: the raw
+    target's, `jepa_tgt_std_raw`); NaN without a row."""
     if n <= 0:
         return torch.full((), float("nan"), dtype=torch.float64, device=moments.device)
     mean = moments[0] / n
