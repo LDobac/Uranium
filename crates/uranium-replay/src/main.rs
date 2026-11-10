@@ -328,6 +328,12 @@ fn main() -> Result<()> {
             reps(&dir, &mut files)?;
             files.sort();
             files.truncate(limit.unwrap_or(usize::MAX));
+            // 041-R28: a decision log is found by its replay's file stem, so two replays with the
+            // same stem (two plan folders' g1.rep) could take each other's log: build one plan
+            // folder (with its own memory folder) at a time.
+            if memory_log.is_some() {
+                uranium_replay::pipeline::unique_stems(&files)?;
+            }
             // Several hosts split one source by sorted-file position (each writes its own shards
             // folder and records file).
             let mine: Vec<usize> = (0..files.len()).filter(|i| i % parts == part).collect();

@@ -428,10 +428,11 @@ fn surrender_modes_031_r12() {
     assert!(acts[2].cmds.is_empty(), "010-R13: no commands with a surrender");
     let s = p.stats();
     assert_eq!((s.surrender.as_str(), s.surrender_frame, s.decisions), ("on", Some(49), 3));
-    p.on_end(None, None);
+    // The bridge leaves and reports the GameEnd (the End path writes the end line).
+    p.on_end(Some(uranium_env::reward::Outcome::Loss), Some(&fs[2]));
     let lines = decision_log_lines(&log);
     assert_eq!(lines.len(), 3, "two decisions and the end line: {lines:?}");
-    assert_eq!(lines[2], DecisionLogLine::End { decisions: 2, end_frame: None });
+    assert_eq!(lines[2], DecisionLogLine::End { decisions: 2, end_frame: Some(fs[2].frame), player: SELF });
     std::fs::remove_dir_all(log.parent().unwrap()).ok();
 }
 
@@ -463,7 +464,7 @@ fn decision_log_lines_match_memory_records_041_r28() {
         .enumerate()
         // The mock samples NoOp with an empty selection and delay bucket = decisions so far.
         .map(|(t, f)| DecisionLogLine::Decision { frame: f.frame, action: 0, delay_bucket: (t % DELAY_BUCKETS.len()) as u32, units: vec![] })
-        .chain([DecisionLogLine::End { decisions: 6, end_frame: Some(fs.last().unwrap().frame) }])
+        .chain([DecisionLogLine::End { decisions: 6, end_frame: Some(fs.last().unwrap().frame), player: SELF }])
         .collect();
     assert_eq!(lines, want);
     // A session without the key writes no file.
@@ -483,7 +484,13 @@ fn unit_rejections_in_sessions_031_r10() {
     let dir = std::env::temp_dir().join(format!("uranium-agent-rej-session-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let path = dir.join("unit_rejections.jsonl");
-    let opts = ServeOptions { unit_rejections: RejectionLog::new(path.clone()), ..ServeOptions::new(PolicySpec::Model(h.clone())) };
+    // 041-R28 ①: each game's model session also writes its decision log.
+    let routes = Routes::default();
+    let slot = uranium_agent::spec_index(&game_info(), 0);
+    for g in [1u64, 2] {
+        routes.insert(g, slot, PolicySpec::Model(h.clone().with_memory_log(dir.join(format!("memory/g{g}.jsonl")))));
+    }
+    let opts = ServeOptions { routes, unit_rejections: RejectionLog::new(path.clone()), ..ServeOptions::new(PolicySpec::Model(h.clone())) };
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let rej = |cmd_index: u16, unit: u32, unit_type: Option<u16>| GameEvent::UnitRejected { cmd_index, unit, unit_type, command: 14, error: 10 };
@@ -529,6 +536,14 @@ fn unit_rejections_in_sessions_031_r10() {
     assert_eq!(games, vec![1, 1, 1, 2]);
     assert_eq!(lines[1]["frame"], lines[2]["frame"], "both final-frame lines carry its frame");
     assert_eq!(lines[3]["unit"], 5);
+    // 041-R28 ④: only the GameEnd path completes a decision log; a session that failed mid-game
+    // leaves its decisions without the end line (incomplete for the relabel build).
+    let done = decision_log_lines(&dir.join("memory/g1.jsonl"));
+    assert_eq!(done.len(), 3);
+    assert_eq!(done[2], DecisionLogLine::End { decisions: 2, end_frame: Some(frames(0, 3)[2].frame), player: SELF });
+    let cut = decision_log_lines(&dir.join("memory/g2.jsonl"));
+    assert_eq!(cut.len(), 2);
+    assert!(cut.iter().all(|l| matches!(l, DecisionLogLine::Decision { .. })), "{cut:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

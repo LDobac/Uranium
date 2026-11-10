@@ -58,39 +58,58 @@ pub fn teacher_frames(last: u32) -> Vec<u32> {
     (GAME_START_FRAME..=last.max(GAME_START_FRAME)).filter(|&f| live_frame(f).is_some()).collect()
 }
 
-/// 041-R28 ②: the playback frame of a decision the model made on its live observation of frame
-/// `live`: `live - LIVE_LAG` (the rule of [`live_frame`], its inverse on the teacher cadence), the
-/// game-start observation (live frame 1) and the frames before `1 + LIVE_LAG` at the first playback
-/// frame.
+/// 041-R28 ⑤: the playback frame whose observation the model saw on its live observation of
+/// frame `live` (the unit check looks there): `live - LIVE_LAG` (the rule of [`live_frame`], its
+/// inverse on the teacher cadence); the game-start observation (live frame 1) and the frames
+/// before `1 + LIVE_LAG` at the first playback frame.
 pub fn playback_frame(live: u32) -> u32 {
     live.saturating_sub(LIVE_LAG).max(GAME_START_FRAME)
+}
+
+/// 041-R28 ②: the live frame of the observation a playback frame `obs` shows: `obs + LIVE_LAG`,
+/// the game-start observation (playback frame 1) at live frame 1 (as [`live_frame`]).
+pub fn live_of_playback(obs: u32) -> u32 {
+    if obs <= GAME_START_FRAME { GAME_START_FRAME } else { obs + LIVE_LAG }
 }
 
 /// 041-R28 ⑤ (AMB-041-17): a game whose decisions name a unit that is not an own unit at their
 /// playback frame more often than this share is `None` on every step.
 pub const MEMORY_MISMATCH_MAX: f64 = 0.01;
+/// 041-R28 ④ (review fix, main interim decision): the log's end frame (the bridge's final frame)
+/// and the replay's frame count may differ by at most this many frames, or the log is taken for
+/// another game. Not measured on a real game yet: the records show both values on a mismatch.
+pub const MEMORY_END_TOLERANCE: u32 = 8;
 
 /// One model decision of a decision log (041-R28 ①): live observation frame and the decision.
 pub type LoggedDecision = (u32, MemoryAction);
+
+/// A complete decision log (041-R28 ①): the decisions in order and the end line's game end
+/// frame and own player id.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelLog {
+    pub decisions: Vec<LoggedDecision>,
+    pub end_frame: Option<u32>,
+    pub player: u8,
+}
 
 /// A game's decision log as the relabel build reads it (041-R28 ④).
 #[derive(Debug, Clone, PartialEq)]
 pub enum DecisionLogRead {
     /// No log file for the replay.
     Missing,
-    /// Unreadable, a line that does not parse, decisions out of frame order, no end line, lines
-    /// after it, or an end line counting other decisions than the log holds.
+    /// Unreadable, a line that does not parse, decisions out of frame order, no end line (the
+    /// session failed mid-game), lines after it, or an end line counting other decisions than the
+    /// log holds.
     Incomplete(String),
-    /// Every decision in order.
-    Complete(Vec<LoggedDecision>),
+    Complete(ModelLog),
 }
 
 /// Parses a decision log (`DecisionLogLine` JSON lines, 041-R28 ①).
 pub fn parse_decision_log(text: &str) -> DecisionLogRead {
     let mut out: Vec<LoggedDecision> = Vec::new();
-    let mut ended = false;
+    let mut end = None;
     for (i, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
-        if ended {
+        if end.is_some() {
             return DecisionLogRead::Incomplete(format!("line {} after the end line", i + 1));
         }
         match serde_json::from_str::<DecisionLogLine>(line) {
@@ -100,19 +119,19 @@ pub fn parse_decision_log(text: &str) -> DecisionLogRead {
                 }
                 out.push((frame, MemoryAction { action, delay_bucket, units }));
             }
-            Ok(DecisionLogLine::End { decisions, .. }) => {
+            Ok(DecisionLogLine::End { decisions, end_frame, player }) => {
                 if decisions != out.len() as u64 {
                     return DecisionLogRead::Incomplete(format!("end line counts {decisions} decisions, the log has {}", out.len()));
                 }
-                ended = true;
+                end = Some((end_frame, player));
             }
             Err(e) => return DecisionLogRead::Incomplete(format!("line {}: {e}", i + 1)),
         }
     }
-    if !ended {
+    let Some((end_frame, player)) = end else {
         return DecisionLogRead::Incomplete("no end line (the game did not end in the session)".into());
-    }
-    DecisionLogRead::Complete(out)
+    };
+    DecisionLogRead::Complete(ModelLog { decisions: out, end_frame, player })
 }
 
 /// Reads the decision log at `path` (041-R28 ④: absent = `Missing`).
@@ -121,6 +140,23 @@ pub fn read_decision_log(path: &std::path::Path) -> DecisionLogRead {
         Ok(t) => parse_decision_log(&t),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => DecisionLogRead::Missing,
         Err(e) => DecisionLogRead::Incomplete(format!("reading {}: {e}", path.display())),
+    }
+}
+
+/// 041-R28 ④ (review fix): the log of the view of BWAPI player `me` in a replay of
+/// `replay_frames` frames, or why it is not used there: no complete log, the log of the other
+/// player (`other_player`), or a game end more than [`MEMORY_END_TOLERANCE`] frames from the
+/// replay's (`incomplete`: another game's log, or no final frame to tell).
+pub fn bind_log(read: &DecisionLogRead, me: u8, replay_frames: u32) -> Result<&ModelLog, MemoryCheck> {
+    let DecisionLogRead::Complete(log) = read else { return Err(MemoryCheck::without_log(read)) };
+    let not = |status, reason: String| Err(MemoryCheck { status, reason: Some(reason), decisions: log.decisions.len(), checked: 0, mismatched: 0 });
+    if log.player != me {
+        return not("other_player", format!("the log is player {}'s, this view is player {me}'s", log.player));
+    }
+    match log.end_frame {
+        Some(e) if e.abs_diff(replay_frames) <= MEMORY_END_TOLERANCE => Ok(log),
+        Some(e) => not("incomplete", format!("log end frame {e}, replay {replay_frames} frames (more than {MEMORY_END_TOLERANCE} apart)")),
+        None => not("incomplete", format!("log without an end frame (replay {replay_frames} frames)")),
     }
 }
 
@@ -150,24 +186,22 @@ pub fn unit_check(log: &[LoggedDecision], last: u32, own_at: &HashMap<u32, std::
 }
 
 /// 041-R28 ②: each step's `memory_action` for steps observed at the playback frames `step_frames`
-/// (increasing): the decisions whose playback frame is in [previous step's frame, this step's
-/// frame), in order; the first step gets an empty list and decisions at or after the last step's
-/// frame belong to no step.
+/// (increasing). Step i's observation is what the live game showed at live frame
+/// `live_i` = [`live_of_playback`]`(obs_i)`; the model then had in memory exactly its decisions
+/// made on live observations strictly before `live_i` (a decision made on live frame `live_i`
+/// itself is recorded after that observation). So step i gets, in order, the decisions with live
+/// frame L, `live_{i-1} <= L < live_i`; step 0 gets an empty list and decisions at or after
+/// `live` of the last step belong to no step.
 pub fn step_memory(log: &[LoggedDecision], step_frames: &[u32]) -> Vec<Vec<MemoryAction>> {
     let mut out = Vec::with_capacity(step_frames.len());
     let mut k = 0;
     for (i, &obs) in step_frames.iter().enumerate() {
-        if i == 0 {
-            // Nothing is before the game-start observation; skip anything mapped before it.
-            while k < log.len() && playback_frame(log[k].0) < obs {
-                k += 1;
-            }
-            out.push(Vec::new());
-            continue;
-        }
+        let live = live_of_playback(obs);
         let mut here = Vec::new();
-        while k < log.len() && playback_frame(log[k].0) < obs {
-            here.push(log[k].1.clone());
+        while k < log.len() && log[k].0 < live {
+            if i > 0 {
+                here.push(log[k].1.clone());
+            }
             k += 1;
         }
         out.push(here);
@@ -179,7 +213,8 @@ pub fn step_memory(log: &[LoggedDecision], step_frames: &[u32]) -> Vec<Vec<Memor
 #[derive(serde::Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct MemoryCheck {
     /// `ok` (every step has `memory_action`), `missing` (no log), `incomplete` (see
-    /// [`DecisionLogRead::Incomplete`]), `unit_mismatch` (more than [`MEMORY_MISMATCH_MAX`]).
+    /// [`DecisionLogRead::Incomplete`] and [`bind_log`]), `other_player` (the log is the other
+    /// player's), `unit_mismatch` (more than [`MEMORY_MISMATCH_MAX`]).
     pub status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -652,17 +687,26 @@ mod tests {
         assert_eq!([1, 2, 3, 4, 9, 100].map(playback_frame), [1, 1, 1, 2, 7, 98]);
     }
 
-    /// 041-R28 ②: each step gets the decisions whose playback frame is in [previous step frame,
-    /// this step frame), in order; the first step an empty list; decisions at or after the last
-    /// step belong to no step.
+    /// 041-R28 ②: step i (playback observation obs_i, live frame live_i = obs_i + 2, the game
+    /// start at 1) gets the decisions made on live frames L with live_{i-1} <= L < live_i, in
+    /// order: a decision made on the live observation live_i itself is recorded after that
+    /// observation, so it belongs to the next step. The first step gets an empty list; decisions
+    /// at or after the last step's live frame belong to no step.
     #[test]
     fn step_memory_takes_the_half_open_interval_041_r28() {
-        // Playback frames 1, 7, 11, 18, 19, 38.
+        assert_eq!([1, 2, 11, 19].map(live_of_playback), [1, 4, 13, 21]);
+        // Live frames 1, 9, 13 (= live of step 1's obs 11), 20, 21 (= live of step 2's obs 19), 40.
         let log = vec![dec(1, 1, vec![]), dec(9, 2, vec![5]), dec(13, 3, vec![]), dec(20, 4, vec![]), dec(21, 5, vec![6, 7]), dec(40, 6, vec![])];
         let got = step_memory(&log, &[1, 11, 19, 35]);
         let actions: Vec<Vec<u16>> = got.iter().map(|v| v.iter().map(|a| a.action).collect()).collect();
         assert_eq!(actions, vec![vec![], vec![1, 2], vec![3, 4], vec![5]]);
         assert_eq!(got[3][0].units, vec![6, 7]);
+        // The decision made exactly on step 1's live observation (13) is not in step 1's memory
+        // (the model had not decided it yet when it saw that observation), but in step 2's.
+        assert!(!got[1].iter().any(|a| a.action == 3) && got[2][0].action == 3);
+        // One frame earlier it is before the observation: step 1.
+        let early = vec![dec(12, 3, vec![])];
+        assert_eq!(step_memory(&early, &[1, 11, 19]).iter().map(Vec::len).collect::<Vec<_>>(), vec![0, 1, 0]);
         // Steps with no decision in between get an empty list, not nothing.
         assert_eq!(step_memory(&log, &[1, 2, 3]), vec![vec![], vec![log[0].1.clone()], vec![]]);
         assert!(step_memory(&[], &[1, 9]).iter().all(Vec::is_empty));
@@ -673,15 +717,41 @@ mod tests {
     #[test]
     fn decision_log_completeness_041_r28() {
         let d = |f: u32| format!(r#"{{"frame":{f},"action":4,"delay_bucket":2,"units":[3,9]}}"#);
-        let end = |n: u64| format!(r#"{{"decisions":{n},"end_frame":900}}"#);
+        let end = |n: u64| format!(r#"{{"decisions":{n},"end_frame":900,"player":1}}"#);
         let ok = format!("{}\n{}\n{}\n", d(1), d(9), end(2));
         let DecisionLogRead::Complete(log) = parse_decision_log(&ok) else { panic!("complete") };
-        assert_eq!(log, vec![(1, MemoryAction { action: 4, delay_bucket: 2, units: vec![3, 9] }), (9, MemoryAction { action: 4, delay_bucket: 2, units: vec![3, 9] })]);
-        assert_eq!(parse_decision_log(&end(0)), DecisionLogRead::Complete(vec![]));
-        for bad in [format!("{}\n{}\n", d(1), d(9)), format!("{}\n{}\n", d(1), end(2)), format!("{}\n{}\n{}\n", d(9), d(1), end(2)), format!("{}\nnot json\n{}\n", d(1), end(1)), format!("{}\n{}\n{}\n", d(1), end(1), d(9))] {
+        assert_eq!(log.decisions, vec![(1, MemoryAction { action: 4, delay_bucket: 2, units: vec![3, 9] }), (9, MemoryAction { action: 4, delay_bucket: 2, units: vec![3, 9] })]);
+        assert_eq!((log.end_frame, log.player), (Some(900), 1));
+        assert_eq!(parse_decision_log(&end(0)), DecisionLogRead::Complete(ModelLog { decisions: vec![], end_frame: Some(900), player: 1 }));
+        // No end line (a session that failed mid-game), a wrong count, frames out of order, a bad
+        // line, a line after the end line, an end line without the player.
+        for bad in [
+            format!("{}\n{}\n", d(1), d(9)),
+            format!("{}\n{}\n", d(1), end(2)),
+            format!("{}\n{}\n{}\n", d(9), d(1), end(2)),
+            format!("{}\nnot json\n{}\n", d(1), end(1)),
+            format!("{}\n{}\n{}\n", d(1), end(1), d(9)),
+            format!("{}\n{}\n", d(1), r#"{"decisions":1,"end_frame":900}"#),
+        ] {
             assert!(matches!(parse_decision_log(&bad), DecisionLogRead::Incomplete(_)), "{bad}");
         }
         assert_eq!(read_decision_log(std::path::Path::new("no/such/g1.jsonl")), DecisionLogRead::Missing);
+    }
+
+    /// 041-R28 ④ (review fix): a complete log is used only for its own player's view of the game
+    /// that ends where the replay ends (within `MEMORY_END_TOLERANCE` frames).
+    #[test]
+    fn decision_log_binds_to_player_and_game_041_r28() {
+        let read = |end_frame, player| DecisionLogRead::Complete(ModelLog { decisions: vec![dec(1, 0, vec![])], end_frame, player });
+        assert!(bind_log(&read(Some(14_400), 0), 0, 14_398).is_ok());
+        assert!(bind_log(&read(Some(14_400), 0), 0, 14_400 + MEMORY_END_TOLERANCE).is_ok());
+        let other = bind_log(&read(Some(14_400), 1), 0, 14_400).unwrap_err();
+        assert_eq!((other.status, other.decisions), ("other_player", 1));
+        let far = bind_log(&read(Some(9_000), 0), 0, 14_400).unwrap_err();
+        assert_eq!(far.status, "incomplete");
+        assert!(far.reason.unwrap().contains("9000"));
+        assert_eq!(bind_log(&read(None, 0), 0, 14_400).unwrap_err().status, "incomplete");
+        assert_eq!(bind_log(&DecisionLogRead::Missing, 0, 14_400).unwrap_err().status, "missing");
     }
 
     /// 041-R28 ⑤: decisions with a selection up to `last` are checked against the own units at

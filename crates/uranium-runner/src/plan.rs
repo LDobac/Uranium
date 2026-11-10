@@ -237,6 +237,9 @@ pub fn load_plan(path: &Path) -> Result<Plan> {
     if plan.memory_log && !plan.save_replay {
         bail!("memory_log goes with save_replay: the relabel build reads the log beside the replay (041-R28)");
     }
+    if plan.memory_log && plan.matchups.iter().all(|m| m.p0.model().is_none() && m.p1.model().is_none()) {
+        elog!("[env] WARNING: plan `{}` has memory_log = true but no model player: no decision log is written (041-R28)", plan.name);
+    }
     Ok(plan)
 }
 
