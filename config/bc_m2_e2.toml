@@ -99,7 +99,7 @@ jepa = 0.1
 [monitor]
 spatial_every = 100
 
-# 041-R29 ① (main-session interim decision 2026-11-10): a new run (m2-s1) builds its initial weights
+# 041-R29 ① (user confirmed 2026-11-10): a new run (m2-s1) builds its initial weights
 # with model seed 1, the same initial weights as the lambda base run m2-lam-base (041-R24 ①). An
 # --init run (m2-s1e2, m2-s2e2) builds no new net and does not use it (it stays in the fingerprint).
 [train]
