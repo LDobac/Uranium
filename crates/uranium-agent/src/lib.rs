@@ -105,6 +105,11 @@ pub trait Policy: Send {
     /// Game over; `None` = Aborted or disconnected (042-R3). `final_frame`: the own-vision state at
     /// the end with the events since the last frame (010-R12), when the bridge sent one.
     fn on_end(&mut self, _outcome: Option<uranium_env::reward::Outcome>, _final_frame: Option<&RawFrame>) {}
+    /// The session failed or the bridge disconnected mid-game (no `GameEnd`): `on_end(None, None)`
+    /// for the 042-R3 bookkeeping, and a model's 041-R28 decision log is left without its end line.
+    fn on_abort(&mut self) {
+        self.on_end(None, None)
+    }
 }
 
 pub use uranium_scripted::T0Build;
@@ -411,6 +416,10 @@ impl Policy for ModelPolicy {
 
     fn on_end(&mut self, outcome: Option<uranium_env::reward::Outcome>, final_frame: Option<&RawFrame>) {
         ModelPolicy::on_end(self, outcome, final_frame)
+    }
+
+    fn on_abort(&mut self) {
+        ModelPolicy::on_abort(self)
     }
 }
 
@@ -759,8 +768,8 @@ fn run_session(stream: TcpStream, opts: &ServeOptions, rec: &mut SessionRecord, 
     let mut policy = make_policy(&spec, hello.game_id, &info, build, hello.mode == Mode::Realtime, concede)?;
     let res = play(&mut reader, &mut writer, &mut *policy, &hello, rec, rejections, delay_ms, &opts.ends);
     if res.is_err() {
-        // Disconnected or failed mid-game: not a finished episode (042-R3).
-        policy.on_end(None, None);
+        // Disconnected or failed mid-game: not a finished episode (042-R3), no complete 041-R28 log.
+        policy.on_abort();
     }
     res
 }

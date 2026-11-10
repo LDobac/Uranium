@@ -51,8 +51,10 @@ pub struct MemoryAction {
 pub enum DecisionLogLine {
     /// `frame`: the live observation frame the decision was made on (`RawFrame.frame`).
     Decision { frame: u32, action: u16, delay_bucket: u32, units: Vec<u32> },
-    /// Decision lines written; `end_frame`: the final frame of the game when the bridge sent one.
-    End { decisions: u64, end_frame: Option<u32> },
+    /// Written only when the game ended (`GameEnd`): decision lines written, `end_frame` the
+    /// final frame the bridge sent (if any) and `player` the session's own BWAPI player id, so the
+    /// relabel build applies the log only to that player's view of the same game.
+    End { decisions: u64, end_frame: Option<u32>, player: u8 },
 }
 
 /// `Label::action` of a game-affecting human command without a 034 action (031-AC3, 2026-10-19

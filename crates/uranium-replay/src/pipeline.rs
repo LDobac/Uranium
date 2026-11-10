@@ -328,6 +328,8 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
     let last = until_frame.map_or(rep.header.frames, |u| u.saturating_add(32)).min(rep.header.frames);
     // 041-R28 ⑤: own unit ids of the perspective at the playback frames of the model's decisions.
     let mut own_at: HashMap<u32, std::collections::HashSet<u32>> = HashMap::new();
+    // 041-R28 ④: the log is used only for its own player's view of the game it was written for.
+    let bound = o.memory.map(|read| crate::relabel::bind_log(read, me, rep.header.frames));
     let (mut a, mut labels, coverage, repeats_dropped) = match o.relabel {
         // Replay A: own unit types at each command frame + desync signals.
         None => {
@@ -346,8 +348,8 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
             // 041-R28 ⑤: T also stops at the model decisions' playback frames for the unit check.
             // Extra stops only split the events between observations (the 040-R8 check ignores
             // them) and the teacher reads no events, so its labels are the same.
-            let check_frames = match o.memory {
-                Some(crate::relabel::DecisionLogRead::Complete(log)) => crate::relabel::decision_frames(log, last),
+            let check_frames = match &bound {
+                Some(Ok(log)) => crate::relabel::decision_frames(&log.decisions, last),
                 _ => Vec::new(),
             };
             stops.extend(&check_frames);
@@ -420,16 +422,20 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
     let Some(game_info) = res.game_info else {
         return Ok(Err(Outcome::Error { reason: "bridge sent no GameInfo (AMB-040-6)".into() }));
     };
-    let memory = o.memory.map(|read| attach_memory(&mut steps, read, last, &own_at));
+    let memory = bound.map(|b| attach_memory(&mut steps, b, last, &own_at));
     Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info, repeats_dropped, memory }))
 }
 
-/// 041-R28 ② / ④ / ⑤: fills every step's `memory_action` from a complete decision log whose unit
-/// check passes, and leaves every step `None` otherwise (all or none per game). `last`: the last
-/// frame checked (the teacher's range); `own_at`: own unit ids at the decisions' playback frames.
-pub fn attach_memory(steps: &mut [Step], read: &crate::relabel::DecisionLogRead, last: u32, own_at: &HashMap<u32, std::collections::HashSet<u32>>) -> crate::relabel::MemoryCheck {
-    use crate::relabel::{DecisionLogRead, MemoryCheck, step_memory, unit_check};
-    let DecisionLogRead::Complete(log) = read else { return MemoryCheck::without_log(read) };
+/// 041-R28 ② / ④ / ⑤: fills every step's `memory_action` from a decision log bound to this view
+/// ([`crate::relabel::bind_log`]) whose unit check passes, and leaves every step `None` otherwise
+/// (all or none per game). `last`: the last frame checked (the teacher's range); `own_at`: own
+/// unit ids at the decisions' playback frames.
+pub fn attach_memory(steps: &mut [Step], bound: Result<&crate::relabel::ModelLog, crate::relabel::MemoryCheck>, last: u32, own_at: &HashMap<u32, std::collections::HashSet<u32>>) -> crate::relabel::MemoryCheck {
+    use crate::relabel::{MemoryCheck, step_memory, unit_check};
+    let log = match bound {
+        Ok(l) => &l.decisions,
+        Err(m) => return m,
+    };
     let (checked, mismatched) = unit_check(log, last, own_at);
     let m = MemoryCheck::checked(log.len(), checked, mismatched);
     if m.ok() {
@@ -439,6 +445,18 @@ pub fn attach_memory(steps: &mut [Step], read: &crate::relabel::DecisionLogRead,
         }
     }
     m
+}
+
+/// 041-R28: `--memory-log` refuses a build whose replays share a file stem (the log is found by it).
+pub fn unique_stems(files: &[PathBuf]) -> Result<()> {
+    let mut seen: HashMap<String, &PathBuf> = HashMap::new();
+    for f in files {
+        let stem = f.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        if let Some(first) = seen.insert(stem.clone(), f) {
+            anyhow::bail!("--memory-log: {} and {} have the same name {stem}: build one plan folder (with its memory folder) at a time (041-R28)", first.display(), f.display());
+        }
+    }
+    Ok(())
 }
 
 /// 041-R28 (AMB-041-17): the decision log of replay `file` in the `--memory-log` folder `dir`:
@@ -806,7 +824,7 @@ mod tests {
     /// `None` (never mixed within a game), and the record counts the check.
     #[test]
     fn memory_action_is_all_or_none_per_game_041_r28() {
-        use crate::relabel::DecisionLogRead;
+        use crate::relabel::{DecisionLogRead, ModelLog, bind_log};
         use crate::shard::MemoryAction;
         let steps = || {
             let mut s = crate::shard::tests::game(1).steps;
@@ -816,26 +834,39 @@ mod tests {
             s
         };
         let m = |action, units: Vec<u32>| MemoryAction { action, delay_bucket: 0, units };
+        let complete = |decisions, player| DecisionLogRead::Complete(ModelLog { decisions, end_frame: Some(500), player });
+        // Player 0's view of a replay of 502 frames.
+        let run = |read: &DecisionLogRead, own: &HashMap<u32, std::collections::HashSet<u32>>| {
+            let mut s = steps();
+            let r = attach_memory(&mut s, bind_log(read, 0, 502), 100, own);
+            (r, s.into_iter().map(|x| x.memory_action).collect::<Vec<_>>())
+        };
         let own: HashMap<u32, std::collections::HashSet<u32>> = HashMap::from([(7, [5].into()), (15, [5].into())]);
-        // Playback frames 7 and 15 (live 9 and 17).
-        let log = DecisionLogRead::Complete(vec![(9, m(4, vec![5])), (17, m(0, vec![]))]);
-        let mut s = steps();
-        let r = attach_memory(&mut s, &log, 100, &own);
+        // Live frames 9 and 17 (playback 7 and 15); the steps' live frames are 1, 13 and 21.
+        let (r, got) = run(&complete(vec![(9, m(4, vec![5])), (17, m(0, vec![]))], 0), &own);
         assert_eq!((r.status, r.decisions, r.checked, r.mismatched), ("ok", 2, 1, 0));
-        let got: Vec<Option<Vec<MemoryAction>>> = s.iter().map(|x| x.memory_action.clone()).collect();
         assert_eq!(got, vec![Some(vec![]), Some(vec![m(4, vec![5])]), Some(vec![m(0, vec![])])]);
         // Not all or more than 1% of the selections are own units: every step None.
-        let bad = DecisionLogRead::Complete(vec![(9, m(4, vec![5])), (17, m(4, vec![6]))]);
-        let mut s = steps();
-        let r = attach_memory(&mut s, &bad, 100, &own);
+        let (r, got) = run(&complete(vec![(9, m(4, vec![5])), (17, m(4, vec![6]))], 0), &own);
         assert_eq!((r.status, r.checked, r.mismatched), ("unit_mismatch", 2, 1));
-        assert!(s.iter().all(|x| x.memory_action.is_none()));
-        for read in [DecisionLogRead::Missing, DecisionLogRead::Incomplete("no end line".into())] {
-            let mut s = steps();
-            let r = attach_memory(&mut s, &read, 100, &own);
-            assert_ne!(r.status, "ok");
-            assert!(s.iter().all(|x| x.memory_action.is_none()));
+        assert!(got.iter().all(Option::is_none));
+        // No log, an incomplete log, the other player's log, another game's log: every step None.
+        let other_game = DecisionLogRead::Complete(ModelLog { decisions: vec![(9, m(4, vec![5]))], end_frame: Some(9_000), player: 0 });
+        for (read, status) in [
+            (DecisionLogRead::Missing, "missing"),
+            (DecisionLogRead::Incomplete("no end line".into()), "incomplete"),
+            (complete(vec![(9, m(4, vec![5]))], 1), "other_player"),
+            (other_game, "incomplete"),
+        ] {
+            let (x, got) = run(&read, &own);
+            assert_eq!(x.status, status);
+            assert!(got.iter().all(Option::is_none));
         }
+        let mut s = steps();
+        let r = attach_memory(&mut s, bind_log(&complete(vec![(9, m(4, vec![5])), (17, m(4, vec![6]))], 0), 0, 502), 100, &own);
+        // Replays with the same stem cannot share one --memory-log folder.
+        assert!(unique_stems(&[PathBuf::from("a/replays/g1.rep"), PathBuf::from("a/replays/g2.rep")]).is_ok());
+        assert!(unique_stems(&[PathBuf::from("a/replays/g1.rep"), PathBuf::from("b/replays/g1.rep")]).is_err());
         // The record's `memory` object.
         let text = serde_json::to_string(&Outcome::Written { steps: 3, coverage: Default::default(), result: 0, result_source: "none".into(), repeats_dropped: Some(0), memory: Some(r) }).unwrap();
         assert!(text.contains(r#""memory":{"status":"unit_mismatch","decisions":2,"checked":2,"mismatched":1}"#), "{text}");

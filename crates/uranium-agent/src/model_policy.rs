@@ -168,11 +168,13 @@ pub struct DecisionLog {
     path: std::path::PathBuf,
     w: Option<std::io::BufWriter<std::fs::File>>,
     decisions: u64,
+    /// The session's own BWAPI player id (end line).
+    player: u8,
 }
 
 impl DecisionLog {
     /// Creates (truncates: a game played again overwrites its earlier attempt) the file at `path`.
-    pub fn create(path: &std::path::Path) -> Self {
+    pub fn create(path: &std::path::Path, player: u8) -> Self {
         let open = || -> std::io::Result<std::fs::File> {
             if let Some(d) = path.parent() {
                 std::fs::create_dir_all(d)?;
@@ -186,7 +188,7 @@ impl DecisionLog {
                 None
             }
         };
-        Self { path: path.to_path_buf(), w, decisions: 0 }
+        Self { path: path.to_path_buf(), w, decisions: 0, player }
     }
 
     fn line(&mut self, l: &DecisionLogLine) {
@@ -204,11 +206,22 @@ impl DecisionLog {
         self.decisions += 1;
     }
 
-    /// The end line, then flush and sync (the file may be on the shared drive, 020-R15).
+    /// The game ended (`GameEnd`): the end line, then flush and sync (the file may be on the
+    /// shared drive, 020-R15). Later calls write nothing.
     pub fn end(&mut self, end_frame: Option<u32>) {
-        use std::io::Write as _;
         let decisions = self.decisions;
-        self.line(&DecisionLogLine::End { decisions, end_frame });
+        self.line(&DecisionLogLine::End { decisions, end_frame, player: self.player });
+        self.close();
+    }
+
+    /// The session failed or the bridge disconnected mid-game: the decisions so far are flushed
+    /// without the end line, so the relabel build reads the log as incomplete (041-R28 ④).
+    pub fn abort(&mut self) {
+        self.close();
+    }
+
+    fn close(&mut self) {
+        use std::io::Write as _;
         if let Some(mut w) = self.w.take() {
             if let Err(e) = w.flush().and_then(|_| w.get_ref().sync_data()) {
                 elog!("[agent] WARNING: decision log {} not flushed (041-R28): {e}", self.path.display());
@@ -298,7 +311,7 @@ impl ModelPolicy {
             test_surrender_frame,
             concede: None,
             concede_reward: None,
-            decision_log: handle.memory_log.as_deref().map(DecisionLog::create),
+            decision_log: handle.memory_log.as_deref().map(|p| DecisionLog::create(p, self_player)),
         })
     }
 
@@ -355,6 +368,15 @@ impl ModelPolicy {
             }
             o.on_end(after, outcome);
         }
+    }
+
+    /// Mid-game failure or disconnect (no `GameEnd`): the 041-R28 decision log stays incomplete,
+    /// then `on_end(None, None)` as before (042-R3).
+    pub fn on_abort(&mut self) {
+        if let Some(l) = self.decision_log.as_mut() {
+            l.abort();
+        }
+        self.on_end(None, None);
     }
 
     pub fn on_privileged(&mut self, p: &uranium_proto::PrivilegedSummary) {
