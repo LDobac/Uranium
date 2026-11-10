@@ -696,32 +696,81 @@ pub fn sample_games(counts: &[usize], n: usize, seed: u64) -> Vec<GameId> {
     ids
 }
 
+/// Files [`ChosenGames`] decodes ahead of the one being read: whole games, and games cut at a
+/// frame (`with_until`: about one batch of lanes, since games cut at the same frame end, and need
+/// their successors, together; a cut game is a fraction of a whole one).
+pub const CHOSEN_PREFETCH_FILES: usize = 3;
+pub const CHOSEN_PREFETCH_FILES_CUT: usize = 24;
+
 /// The games `ids` of a [`ShardSource`] (in source order), skipping the rest; files with none of
-/// them are not read.
+/// them are not read. A thread decodes the files ahead ([`CHOSEN_PREFETCH_FILES`]) and keeps
+/// only the chosen games, so the reader does not wait for a whole shard's decode per game (050-R9
+/// `diag dump`, 032-R17 ② evaluation: a human shard holds about 20 games, of which a 500-game
+/// selection takes about one). The order and the games are the same as reading in place.
 pub struct ChosenGames {
-    src: ShardSource,
-    ids: HashSet<GameId>,
+    rx: std::sync::mpsc::Receiver<Result<ChosenFile>>,
+    cur: VecDeque<(usize, ShardGame)>,
+    cur_file: usize,
+    last: Option<GameId>,
+}
+
+/// A decoded file of [`ChosenGames`]: its index and its chosen games with their index in it.
+type ChosenFile = (usize, Vec<(usize, ShardGame)>);
+
+/// `game` with its steps at frame >= `until` dropped, the first step always kept (the
+/// [`crate::eval::EvalSelection::until_frame`] cut).
+pub fn cut_game(game: &mut ShardGame, until: u32) {
+    let keep = game.steps.partition_point(|s| s.raw_frame.frame < until).max(1);
+    game.steps.truncate(keep);
+    game.steps.shrink_to_fit();
 }
 
 impl ChosenGames {
     pub fn new(src: ShardSource, ids: &[GameId]) -> Self {
-        let files = ids.iter().map(|g| g.file).collect();
-        Self { src: src.only_files(files), ids: ids.iter().copied().collect() }
+        Self::with_until(src, ids, None)
+    }
+
+    /// `until`: the chosen games are cut there ([`cut_game`]) as they are decoded, so the games
+    /// waiting ahead hold only the steps that are read.
+    pub fn with_until(src: ShardSource, ids: &[GameId], until: Option<u32>) -> Self {
+        let ids: HashSet<GameId> = ids.iter().copied().collect();
+        let files: std::collections::BTreeSet<usize> = ids.iter().map(|g| g.file).collect();
+        let (tx, rx) = std::sync::mpsc::sync_channel(if until.is_some() { CHOSEN_PREFETCH_FILES_CUT } else { CHOSEN_PREFETCH_FILES });
+        // The reader dropping `rx` (an evaluation stopped early) ends the thread at its next send.
+        std::thread::spawn(move || {
+            for k in files {
+                let r = src.file_games(k).map(|games| {
+                    let mut kept: Vec<(usize, ShardGame)> = games.into_iter().enumerate().filter(|(i, _)| ids.contains(&GameId { file: k, game: *i })).collect();
+                    if let Some(f) = until {
+                        kept.iter_mut().for_each(|(_, g)| cut_game(g, f));
+                    }
+                    (k, kept)
+                });
+                let failed = r.is_err();
+                if tx.send(r).is_err() || failed {
+                    return;
+                }
+            }
+        });
+        Self { rx, cur: VecDeque::new(), cur_file: 0, last: None }
     }
 }
 
 impl StepSource for ChosenGames {
     fn next_game(&mut self) -> Result<Option<ShardGame>> {
-        while let Some(g) = self.src.next_game()? {
-            if self.src.last_id().is_some_and(|id| self.ids.contains(&id)) {
-                return Ok(Some(g));
-            }
+        while self.cur.is_empty() {
+            let Ok(r) = self.rx.recv() else { return Ok(None) };
+            let (k, games) = r?;
+            self.cur_file = k;
+            self.cur = games.into();
         }
-        Ok(None)
+        let (i, g) = self.cur.pop_front().expect("a game");
+        self.last = Some(GameId { file: self.cur_file, game: i });
+        Ok(Some(g))
     }
 
     fn last_id(&self) -> Option<GameId> {
-        self.src.last_id()
+        self.last
     }
 }
 

@@ -899,6 +899,37 @@ fn eval_games_are_a_fixed_seed_sample_032_r17() {
     assert_eq!(first.len(), ids.len());
     assert!(!first.is_empty());
     assert_eq!(pick().1, first, "same games on every call");
+    // 050-R9: the prefetching reader gives the games and ids of reading the source in place
+    let src = || ShardSource::new(&root).unwrap().select(uranium_data::split::Selection::Only(uranium_data::split::split_of(&game().meta)));
+    let mut whole = src();
+    let mut want = Vec::new();
+    while let Some(g) = whole.next_game().unwrap() {
+        let id = whole.last_id().unwrap();
+        if ids.contains(&id) {
+            want.push((id, g.meta.replay_sha256.clone(), g.steps.len()));
+        }
+    }
+    let mut chosen = ChosenGames::new(src(), &ids);
+    let mut got = Vec::new();
+    while let Some(g) = chosen.next_game().unwrap() {
+        got.push((chosen.last_id().unwrap(), g.meta.replay_sha256.clone(), g.steps.len()));
+    }
+    assert_eq!(got, want);
+    // cut as decoded (`with_until`): the same games, each the first steps before the frame (at least one)
+    let f = 50;
+    let mut cut = ChosenGames::with_until(src(), &ids, Some(f));
+    let mut whole = ChosenGames::new(src(), &ids);
+    let mut n = 0;
+    while let Some(mut g) = whole.next_game().unwrap() {
+        let c = cut.next_game().unwrap().expect("the same games");
+        assert_eq!(cut.last_id(), whole.last_id());
+        assert!(c.steps.len() >= 1 && c.steps.iter().skip(1).all(|s| s.raw_frame.frame < f));
+        uranium_data::data::cut_game(&mut g, f);
+        assert_eq!(c, g);
+        n += 1;
+    }
+    assert!(cut.next_game().unwrap().is_none() && n == ids.len());
+    drop(ChosenGames::new(src(), &ids)); // dropped unread: its thread ends
     std::fs::remove_dir_all(&root).ok();
 }
 

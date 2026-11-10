@@ -337,6 +337,73 @@ def test_diag_chain_on_synthetic_shards(tiny_config, shards, tmp_path, kind, mon
         main(["diag", "intervene", str(late)])
 
 
+@pytest.mark.parametrize("kind", ["Gtrxl", "Lstm"])
+def test_action_seq_is_forward_seq_action_head_050_r9(tiny_config, shards, tmp_path, kind):
+    """050-R9 `diag dump` runs the trunk and the ActionType head only (`action_seq`): the same log-probs, state and
+    head inputs as `forward_seq` (which also runs the location head over a varying row count)."""
+    from uranium.diag.capture import Capture
+    from uranium.model import to_obs
+
+    net, _ = ckpt.load_model(tiny_checkpoint(tmp_path / "ck", kind), torch.device("cpu"))
+    net.eval()
+    cfg = json.loads(_core.bc_config(str(tiny_config), "s1")[0])
+    t = cfg["seq_len"]
+    stream = _core.EvalStream(str(tiny_config), [str(shards)], split="train", synthetic_maps=True)
+    cap = Capture(net, "gate")
+    st_f = st_a = None
+    checked = 0
+    while (b := stream.next()) is not None and checked < 4:
+        hg = b.group(0, cfg["lanes"], t, cfg["pad_entities"], net.cfg.heads.max_select)
+        keep = torch.as_tensor(np.asarray(hg["keep"]).astype(bool))
+        obs = to_obs(hg, torch.device("cpu"))
+        with torch.no_grad():
+            s0 = net.init_state(hg["b"]) if st_f is None else net.mask_state(st_f, keep)
+            o = net.forward_seq(obs, net.labels(hg, torch.device("cpu")), torch.as_tensor(hg["privileged"]).float(), s0, t)
+            s1 = net.init_state(hg["b"]) if st_a is None else net.mask_state(st_a, keep)
+            a, acts = cap.run(obs, s1, t)
+        assert torch.equal(o["dists"]["action"], a["action"])
+        for x, y in zip(torch.utils._pytree.tree_leaves(o["state"]), torch.utils._pytree.tree_leaves(a["state"])):
+            assert torch.equal(x, y)
+        st_f, st_a = o["state"], a["state"]
+        assert {"h", "c", "E", "sp_pool"} <= set(acts) and acts["h"].shape[0] == hg["b"] * t
+        checked += 1
+    assert checked == 4
+    cap.close()
+
+
+def test_dump_read_until_keeps_the_rows_050_r9(tiny_config, shards, tmp_path, monkeypatch):
+    """`diag dump --read-until`: each game read only up to that frame; the rows (and their game ids) are the
+    dumped rows without it, in another order (the lanes run shorter games); a cut before the row window is refused."""
+    from uranium.__main__ import main
+    from uranium.diag.dump import load
+
+    monkeypatch.setattr(_core, "EvalStream", _PoolStream)
+    ck = tiny_checkpoint(tmp_path / "ck")
+    common = ["--checkpoint", str(ck), "--config", str(tiny_config), "--backend", "cpu", "--synthetic-maps", "--shards", str(shards),
+              "--splits", "train,val,test", "--row-until", "50", "--act-until", "40"]
+    assert main(["diag", "dump", *common, "--out", str(tmp_path / "whole")]) == 0
+    assert main(["diag", "dump", *common, "--read-until", "50", "--out", str(tmp_path / "cut")]) == 0
+    R0, A0, g0, m0 = load(tmp_path / "whole")
+    R1, A1, g1, m1 = load(tmp_path / "cut")
+    assert m1["read_until"] == 50 and m0["read_until"] is None
+    lane_free = lambda g: {k: {f: v for f, v in e.items() if f != "lane"} for k, e in g.items()}  # noqa: E731
+    assert lane_free(g0) == lane_free(g1) and {e["lane"] for e in g0.values()} != {None}  # the same game ids; lanes may differ
+    assert m0["stats"]["rows"] == m1["stats"]["rows"] and m0["stats"]["act_rows"] == m1["stats"]["act_rows"]
+    assert m1["stats"]["batches"] < m0["stats"]["batches"]  # the steps after the cut were not read
+    o0, o1 = np.argsort(R0["game"], kind="stable"), np.argsort(R1["game"], kind="stable")
+    for k in R0:
+        a, b = R0[k][o0], R1[k][o1]
+        if k == "pb":
+            assert np.allclose(a, b, atol=1e-6, equal_nan=True)
+        else:
+            assert np.array_equal(a, b, equal_nan=a.dtype.kind == "f"), k
+    # activation rows: the same (game, step) rows
+    key = lambda R, A: sorted(zip(R["game"][A["idx"]].tolist(), R["frame"][A["idx"]].tolist()))  # noqa: E731
+    assert key(R0, A0) == key(R1, A1)
+    with pytest.raises(SystemExit, match="cuts rows before"):
+        main(["diag", "dump", *common, "--read-until", "45", "--out", str(tmp_path / "bad")])
+
+
 def test_summary_schema_validation():
     s = build("p")
     assert validate(s) == []

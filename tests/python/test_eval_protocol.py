@@ -655,7 +655,7 @@ def test_diag_commands_pinned_050_r9(tmp_path):
     hdump, hprobes = protocol.cue_commands(LIN, "human", "CK", ho, hd, dump=tmp_path / "local" / "dump")
     assert hdump == ["python", "-m", "uranium", "diag", "dump", "--checkpoint", "CK", *hd, "--splits", "val,test", "--games", "500", "--seed", "1",
                      "--config", "config/bc.toml", "--backend", "rocm", "--lanes-per-group", "4", "--row-until", "8640", "--act-until", "8640",
-                     "--act-every", "4", "--core-points", "gate", "--out", str(tmp_path / "local" / "dump")]
+                     "--act-every", "4", "--core-points", "gate", "--read-until", "8640", "--out", str(tmp_path / "local" / "dump")]
     assert hprobes == ["python", "-m", "uranium", "diag", "probes", str(tmp_path / "local" / "dump"), "--races", "T,P", "--stages", "token,e_pool,sp_pool,c,x_in,L1.g1,L1.out,h,hc",
                        "--gain", "resid", "--boot", "300", "--cap", "60", "--seed", "7", "--device", "cpu", "--out", str(ho / "probes.json")]
     assert protocol.cue_commands(LIN, "teacher", "CK", out, data) == [dump, probes_c, inter]
@@ -740,6 +740,7 @@ def set_outputs(d: Path, name: str, sha: str = SHA, **edit) -> Path:
     data = [f"/h/diag_holdout/{t}" for t in TAILS] if name == "teacher" else [f"<shared>/datasets/{x}" for x in HUMAN_DS]
     man = {"checkpoint": "<shared>/checkpoints/m2-s1/ckpt-9", "checkpoint_sha256": sha, "data": data, "splits": ["val", "test"], "games_per_split": s.get("games"),
            "seed": 1, "config": "config/bc.toml", "lanes_per_group": 4, "row_until": 8640.0, "act_until": float(dm["act_until"]), "act_every": dm["act_every"],
+           "read_until": float(dm["read_until"]) if dm.get("read_until") else None,
            "passes": ["real", "early", "late", "sc+1", "sc-1", "tok+1", "tok-1"] if dm["cf"] else ["real"],
            "cf_starts": {r: [float(x) for x in v] for r, v in dm["cf_starts"].items()} if dm["cf"] else None,
            "stages": ["token", "e_pool", "sp_pool", "c", "h", "x_in", "L1.a", "L1.g1", "L1.f", "L1.out"], "backend": "rocm", "precision": "f32",
@@ -815,6 +816,8 @@ def test_check_diag_accepts_the_pinned_outputs_050_r9(tmp_path, capsys):
     ("human", {"manifest": {"games_per_split": None}}, "human dump games_per_split: None, pinned 500"),
     ("human", {"manifest": {"seed": 2}}, "human dump seed"),
     ("human", {"manifest": {"act_every": 1, "act_until": 5760.0}}, "human dump act_until"),
+    ("human", {"manifest": {"read_until": None}}, "human dump read_until: None, pinned 8640"),
+    ("teacher", {"manifest": {"read_until": 8640.0}}, "teacher dump read_until: 8640.0, pinned None"),  # another row order
     ("human", {"manifest": {"passes": ["real", "early"]}}, "counterfactual passes not pinned"),
     ("human", {"manifest": {"data": [f"<shared>/datasets/{x}" for x in HUMAN_DS[:3]]}}, "not the pinned hold-out"),
     ("human", {"probes": {"races": {"T": {}}}}, "human probes races"),
@@ -1008,6 +1011,75 @@ def test_diag_run_records_retries_and_checks_050_r9(tmp_path, monkeypatch):
     monkeypatch.setattr(protocol, "git_state", lambda: {**CLEAN_GIT, "protocol_files_dirty": True, "dirty_paths": ["tools/eval/protocol.py"]})
     with pytest.raises(SystemExit, match="REFUSED: uncommitted protocol files"):
         protocol.main(base + ["checkpoints/m2-s1/ckpt-11"])
+
+
+def test_diag_run_split_over_two_hosts_050_r9(tmp_path, monkeypatch):
+    """--part gpu (the ROCm host: dumps and their copies, running.json kept) then --part cpu on another host at the
+    same commit (dumps fetched into its cache, probes / intervene / summaries / training log, protocol.json, check);
+    every step records its host. The cpu part is refused before the gpu part finished, at another commit or for
+    another checkpoint; the commands recorded are the same as one --part all attempt."""
+    shared = tmp_path / "shared"
+    monkeypatch.setenv("URANIUM_SHARED_DIR", str(shared))
+    monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: SHA)
+    monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
+    fake_set_data.calls = []
+    monkeypatch.setattr(protocol, "set_data", fake_set_data)
+    log = tmp_path / "s1.log"
+    log.write_text("{}\n", encoding="utf-8")
+    ran = []
+
+    def fake_run(cmd, cwd=None, check=None):
+        step = protocol.step_name(cmd)
+        ran.append((protocol.socket.gethostname(), step))
+        o = Path(cmd[cmd.index("--out") + 1])
+        if step == "dump":
+            set_outputs(tmp_path / "staged" / o.parent.name, o.parent.name)
+            shutil.copytree(tmp_path / "staged" / o.parent.name / "dump", o)
+        elif step in ("probes", "intervene"):
+            assert Path(cmd[5]).is_dir() and str(cmd[5]).startswith(str(tmp_path / "cache_cpu"))  # the fetched copy
+            shutil.copy(tmp_path / "staged" / o.parent.name / f"{step}.json", o)
+        elif step == "spatial_logs":
+            train_log_output(o.parent)
+
+    monkeypatch.setattr(protocol.subprocess, "run", fake_run)
+    base = ["diag", "--lineage", "m2", "--point", "s1e1", "--run", "--checkpoint", "checkpoints/m2-s1/ckpt-9"]
+    out = shared / "artifacts" / "diag" / "m2-s1__ckpt-9"
+
+    def as_host(name):
+        monkeypatch.setattr(protocol.socket, "gethostname", lambda: name)
+        monkeypatch.setenv("URANIUM_CACHE_DIR", str(tmp_path / f"cache_{name}"))
+
+    as_host("cpu")
+    with pytest.raises(SystemExit, match="REFUSED: no .*running.json: run `diag --run --part gpu` first"):
+        protocol.main(base + ["--part", "cpu", "--train-log", str(log)])
+    as_host("gpu")
+    protocol.main(base + ["--part", "gpu"])  # no --train-log needed here
+    assert ran == [("gpu", "dump"), ("gpu", "dump")] and fake_set_data.calls[-2:] == [("teacher", True), ("human", True)]
+    rec = json.loads((out / "running.json").read_text(encoding="utf-8"))
+    assert [(s["step"], s["host"]) for s in rec["steps"]] == [("dump", "gpu"), ("copy", "gpu"), ("dump", "gpu"), ("copy", "gpu")]
+    assert rec["parts"]["gpu"]["finished"] and rec["finished"] is None and not (out / "protocol.json").exists()
+    assert (out / "human" / "dump" / "manifest.json").is_file()
+    with pytest.raises(SystemExit, match="an attempt in progress"):  # the dumps are kept: no new attempt over them
+        protocol.main(base + ["--part", "gpu"])
+    as_host("cpu")
+    monkeypatch.setattr(protocol, "git_state", lambda: {**CLEAN_GIT, "commit": "1" * 40})
+    with pytest.raises(SystemExit, match="REFUSED: .*same commit on both parts"):
+        protocol.main(base + ["--part", "cpu", "--train-log", str(log)])
+    monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
+    monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: "a" * 64)
+    with pytest.raises(SystemExit, match="REFUSED: .*dumps of checkpoint sha256"):
+        protocol.main(base + ["--part", "cpu", "--train-log", str(log)])
+    monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: SHA)
+    ran.clear()
+    protocol.main(base + ["--part", "cpu", "--train-log", str(log)])
+    assert ran == [("cpu", "probes"), ("cpu", "intervene"), ("cpu", "summary"), ("cpu", "probes"), ("cpu", "summary"), ("cpu", "spatial_logs")]
+    assert fake_set_data.calls[-2:] == [("teacher", False), ("human", False)]  # no link trees on the cpu host
+    rec = json.loads((out / "protocol.json").read_text(encoding="utf-8"))
+    assert [(s["step"], s["host"]) for s in rec["steps"]][4:] == [("fetch", "cpu"), ("probes", "cpu"), ("intervene", "cpu"), ("summary", "cpu"),
+                                                                  ("fetch", "cpu"), ("probes", "cpu"), ("summary", "cpu"), ("spatial_logs", "cpu")]
+    assert rec["finished"] and rec["check"] == [] and rec["parts"]["cpu"]["host"] == "cpu" and rec["train_log"]["file"] == "s1.log"
+    assert ["fetch", "<shared>/artifacts/diag/m2-s1__ckpt-9/teacher/dump", "<cache>/diag_dump/m2-s1__ckpt-9/teacher/dump"] in rec["commands"]
+    assert not (out / "running.json").exists() and (tmp_path / "cache_cpu" / "diag_dump" / "m2-s1__ckpt-9" / "teacher" / "dump" / "manifest.json").is_file()
 
 
 def test_diag_run_in_progress_needs_takeover_050_r9(tmp_path, monkeypatch):

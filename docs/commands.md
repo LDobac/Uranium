@@ -123,7 +123,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 
 ## 단서 진단(`reports/jepa_survey.md` 7·10절)
 읽기 전용이다. teacher forcing만 하고, 정답은 privileged 열에서 오프라인으로 계산한다. 모델 입력은 자기 시야 그대로다. 데이터 경로는 인자로만 받는다(`--dataset`은 공용 드라이브 기준, `--shards`는 폴더).
-- 덤프: `python -m uranium diag dump --checkpoint <ckpt|run|none> (--dataset <rel> | --shards <dir>)... --out <dir> [--splits val,test] [--games N] [--backend cuda|rocm|cpu] [--lanes-per-group 8] [--row-until 8640] [--act-until 5760] [--act-every 1] [--core-points none|gate|full] [--cf [--cf-starts T:1280,2080;P:1720,3030;Z:1800,3240]]`.
+- 덤프: `python -m uranium diag dump --checkpoint <ckpt|run|none> (--dataset <rel> | --shards <dir>)... --out <dir> [--splits val,test] [--games N] [--backend cuda|rocm|cpu] [--lanes-per-group 8] [--row-until 8640] [--act-until 5760] [--act-every 1] [--read-until F] [--core-points none|gate|full] [--cf [--cf-starts T:1280,2080;P:1720,3030;Z:1800,3240]]`. `--read-until`은 판을 그 프레임까지만 읽는다(`--row-until`·`--act-until` 이상, 행은 같고 parts 안 순서만 다름). 모델은 trunk와 행동 종류 헤드만 돈다(`forward_seq`의 `dists["action"]`과 같은 값).
   - 판마다 순환 상태를 이어 한 번 돈다. 행 특징과 정답은 `--row-until`(기본 6:00) 전까지 남긴다. 모델 pass와 활성값은 `--act-until`(기본 4:00) 전이고, 활성값은 적 기준 건물 토큰이 있는 행만 남긴다.
   - 기준 건물: 테란 배럭, 프로토스 게이트웨이, 저그 스포닝 풀. 적 종족은 첫 행의 privileged 일꾼·본진 수로 정한다.
   - 지점: 토큰, e_pool, sp_pool, c, h_t, GTrXL 하위 지점(`gate`: x_in, 층마다 a·g1·f·out. `full`은 core_in, a_pre, f_pre도).
