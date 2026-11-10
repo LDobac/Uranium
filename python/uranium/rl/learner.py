@@ -33,6 +33,7 @@ import copy
 import json
 import math
 import os
+import sys
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -213,20 +214,21 @@ def sil_stats(sil: dict, parts: list, pos: float, pos_steps: float) -> dict:
 def aux_stats(weights: dict, ks: list, vals: list | None = None, counts: dict | None = None, tgt_std: float | None = None) -> dict:
     """042-R21 ③ statistics (before λ, batch means): `aux_priv`, `aux_jepa` (mean over k),
     `jepa_tgt_std`, `aux_jepa_slots` (the configured k in order) and `spatial` (the 032-R25
-    statistics of a `[monitor]` update, set by the caller). `None` for a module the model does not
-    have, a slot past the k list or a k without a pair in the batch; all `None` without aux
-    modules (the reference learner's statistics too)."""
-    out = {"aux_priv": None, "aux_jepa": None, "jepa_tgt_std": None, "aux_jepa_slots": [None] * AUX_JEPA_SLOTS, "spatial": None}
+    statistics of a `[monitor]` update, set by the caller); `jepa_tgt_std_raw` (before the
+    target's LayerNorm, not a train.csv column). `None` for a module the model does not have, a
+    batch without a row for it (no privileged summary, a k without a pair) or a slot past the k
+    list; all `None` without aux modules (the reference learner's statistics too)."""
+    out = {"aux_priv": None, "aux_jepa": None, "jepa_tgt_std": None, "jepa_tgt_std_raw": None, "aux_jepa_slots": [None] * AUX_JEPA_SLOTS, "spatial": None}
     if not weights or vals is None:
         return out
     fin = lambda x: finite_or_none(x) if x is not None else None  # noqa: E731
     jepa = "jepa" in weights
-    if "priv" in weights:
+    if "priv" in weights and counts["priv"] > 0:
         out["aux_priv"] = fin(vals[0])
     if jepa and any(c > 0 for c in counts["pairs"]):
         out["aux_jepa"] = fin(vals[1])
     if jepa:
-        out["jepa_tgt_std"] = fin(tgt_std)
+        out["jepa_tgt_std"], out["jepa_tgt_std_raw"] = fin(tgt_std[0]), fin(tgt_std[1])
     out["aux_jepa_slots"] = [fin(vals[2 + i]) if jepa and i < len(ks) and counts["pairs"][i] > 0 else None for i in range(AUX_JEPA_SLOTS)]
     return out
 
@@ -465,7 +467,7 @@ class Learner:
         # sums and the update's dead-channel monitor (first epoch, the weights before the step).
         aux = rl_aux_counts(batch, t, lanes - k, self.ks) if self.aux else None
         net_cfg = self.net.cfg
-        moments = torch.zeros(2, net_cfg.entity.d_model + net_cfg.spatial.pool, dtype=torch.float64, device=dev) if "jepa" in self.aux else None
+        moments = torch.zeros(4, net_cfg.entity.d_model + net_cfg.spatial.pool, dtype=torch.float64, device=dev) if "jepa" in self.aux else None
         mon = ReluMonitor(self.net, points="spatial") if spatial_due(self.monitor_every, self.update_count + 1) else None
         for epoch in range(epochs):
             self.opt.zero_grad(set_to_none=True)
@@ -510,7 +512,7 @@ class Learner:
         # then (042-R21 ③) the JEPA target spread and the monitor's statistics when taken.
         extra, channels = [], None
         if moments is not None:
-            extra.append(jepa_std(moments, aux["real"]).reshape(1))
+            extra.append(torch.stack([jepa_std(moments[:2], aux["real"]), jepa_std(moments[2:], aux["real"])]))
         if mon is not None:
             st = mon.stats()
             channels = channel_counts_of(st)
@@ -528,13 +530,13 @@ class Learner:
         }
         stats.update(diagnostics(host["adv_sq"], adv_sq_c, vals[16:BASE_PARTS], vals[PARTS + 1:PARTS + 3], n))
         stats.update(sil_stats(sil, vals[PARTS + 3:PARTS + 3 + SIL_PARTS], host["sil_pos"], host["sil_steps"]))
-        stats.update(aux_stats(self.aux, self.ks, vals[BASE_PARTS:PARTS], aux, tail[0] if moments is not None else None))
+        stats.update(aux_stats(self.aux, self.ks, vals[BASE_PARTS:PARTS], aux, tail[:2] if moments is not None else (None, None)))
         if mon is not None:
             rec = dict(zip(SPEC_COLUMNS, tail[-len(SPEC_COLUMNS):]))
             stats["spatial"] = list(rec.values())
             alarm = spatial_alarm(stats["update"], rec, channels)
             if alarm:
-                print(f"[rl] WARNING: update {stats['update']}: spatial encoder collapse alarm (041-R25, 042-R21): {'; '.join(alarm)}", flush=True)
+                print(f"[rl] WARNING: update {stats['update']}: spatial encoder collapse alarm (041-R25, 042-R21): {'; '.join(alarm)}", file=sys.stderr, flush=True)
         e = cfg["entropy"]
         bonus = sum(e[h] * stats["entropy_heads"][i] for i, h in enumerate(HEADS))
         kl_loss = scaled_kl(stats["kl_heads"], stats["kl"], self.kl_scale)

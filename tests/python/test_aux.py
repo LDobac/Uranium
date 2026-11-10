@@ -147,7 +147,9 @@ def test_jepa_pairs_stay_inside_a_row_and_the_masks_032_ac14():
     assert float(per[2]) == 0.0
     m = jepa_moments(y, tgt.reshape(-1).float())
     sel = yn[tgt.reshape(-1)].double()
-    assert torch.allclose(jepa_std(m, int(tgt.sum())), sel.std(0, unbiased=False).mean())
+    assert torch.allclose(jepa_std(m[:2], int(tgt.sum())), sel.std(0, unbiased=False).mean())
+    raw = y[tgt.reshape(-1)].double()
+    assert torch.allclose(jepa_std(m[2:], int(tgt.sum())), raw.std(0, unbiased=False).mean())
 
 
 # --- BC trainer (041-R23) ----------------------------------------------------------------------
@@ -173,6 +175,7 @@ def manual_bc_aux(net, batch, t: int, ks: list) -> dict:
     res["aux_jepa"] = sum(live) / len(live)
     res.update({f"aux_jepa_slot{i + 1}": x for i, x in enumerate(per)})
     res["jepa_tgt_std"] = float(yn[real].std(0, unbiased=False).mean())
+    res["jepa_tgt_std_raw"] = float(out["jepa_target"][real].std(0, unbiased=False).mean())
     return res
 
 
@@ -224,7 +227,7 @@ def test_bc_aux_loss_masks_padding_and_missing_privileged_041_ac6():
     priv = torch.randn(b * t, p, generator=g)
     hg = {"real": np.array([1, 1, 1, 1, 0, 0], bool), "priv_present": np.array([0, 1, 1, 1, 1, 1], bool), "weights": np.array([1, 0, 1, 1, 0, 0], np.float32)}
     aux = {"real": 4, "priv": 3, "pairs": [3, 1, 0]}
-    moments = torch.zeros(2, d, dtype=torch.float64)
+    moments = torch.zeros(4, d, dtype=torch.float64)
     loss, parts = tr.aux_loss(out, hg, priv, b, t, aux, moments, torch.zeros(()))
     rows = [1, 2, 3]  # real & priv_present; row 1 has a void label and still counts
     want_priv = sum(((out["aux_priv"][i] - priv[i]) ** 2).mean() for i in rows) / 3
@@ -274,6 +277,24 @@ def test_bc_non_finite_aux_part_skips_the_update_041_r3(tiny_config, shards):
     assert out["skipped"] is True and out["aux_priv"] is None
     after = params_of(tr.net)
     assert all(torch.equal(before[k], after[k]) for k in before)
+    # λ_priv = 0: the part is only logged (null), the update is not skipped.
+    tr0 = BcTrainer(bc_cfg(tiny_config, aux={"priv": 0.0, "jepa": 0.1}), make_net(AUX), CPU, "f32")
+    orig0 = tr0.aux_loss
+    tr0.aux_loss = lambda *a: (lambda r: (r[0], [r[1][0] * float("nan"), *r[1][1:]]))(orig0(*a))
+    out = json.loads(tr0.train_batch(b, 3e-3, 0))
+    assert "skipped" not in out and out["aux_priv"] is None and out["aux_jepa"] is not None
+
+
+def test_aux_log_nulls_without_rows_041_r23(tiny_config):
+    """A batch without a privileged step (or a k without a pair) logs null, not 0 (BC and RL)."""
+    from uranium.rl.learner import aux_stats
+
+    tr = BcTrainer(bc_cfg(tiny_config, aux={"priv": 0.2, "jepa": 0.1}), make_net(AUX), CPU, "f32")
+    log = tr.aux_log([0.0, 0.5, 0.5, 0.0, 0.0], {"priv": 0, "pairs": [4, 0, 0]}, (1.0, 2.0))
+    assert log["aux_priv"] is None and log["aux_jepa"] == 0.5 and log["aux_jepa_slot2"] is None
+    assert (log["jepa_tgt_std"], log["jepa_tgt_std_raw"]) == (1.0, 2.0)
+    st = aux_stats({"priv": 0.2, "jepa": 0.1}, KS, [0.0, 0.5, 0.5, 0.0, 0.0], {"priv": 0, "pairs": [4, 0, 0]}, (1.0, 2.0))
+    assert st["aux_priv"] is None and st["aux_jepa"] == 0.5 and st["aux_jepa_slots"] == [0.5, None, None] and st["jepa_tgt_std_raw"] == 2.0
 
 
 # --- monitor in the BC trainer (041-R25, 032-AC15) ----------------------------------------------
@@ -312,7 +333,9 @@ def test_bc_monitor_alarm_line_041_r25(tiny_config, shards, capsys):
     channels = {f"sp_dead_{n}": 16 for n in ("stem", "c0", "c1", "c2", "c3", "r0", "r1", "r2", "r3", "r4", "r5")} | {"sp_const_s8": 16, "sp_const_pool": 32}
     tr.monitor_log(ALARM_FROM - 1, list(rec.values()), channels)
     assert "WARNING" not in capsys.readouterr().err
-    tr.monitor_log(ALARM_FROM, list(rec.values()), channels)
+    assert "spatial_alarm" not in tr.monitor_log(ALARM_FROM - 1, list(rec.values()), channels)
+    logged = tr.monitor_log(ALARM_FROM, list(rec.values()), channels)
+    assert logged["spatial_alarm"] == ["sp_dead_c3 = 16 of 16"]
     assert "spatial encoder collapse alarm (041-R25): sp_dead_c3 = 16 of 16" in capsys.readouterr().err
     json.loads(tr.train_batch(b, 3e-3, ALARM_FROM - 1))  # an update at 600 runs (alarm or not)
 
@@ -331,18 +354,18 @@ def test_spatial_alarm_thresholds_041_r25():
 # --- RL learner (042-R21) -----------------------------------------------------------------------
 
 
-def rl_net(variant: VariantConfig | None, outer: bool = False, seed: int = 5) -> UraniumNet:
+def rl_net(variant: VariantConfig | None, outer: bool = False, seed: int = 5, dropout: float | None = None) -> UraniumNet:
     v = variant if variant is not None else VariantConfig()
     if outer:
         v = VariantConfig(**{**v.__dict__, **ARCH})
     torch.manual_seed(seed)
-    return UraniumNet(net_cfg(v if v.any() else None), action_columns())
+    return UraniumNet(net_cfg(v if v.any() else None, dropout=dropout), action_columns())
 
 
-def rl_run(variant, cfg_over: dict, outer: bool = False, updates: int = 2, lanes: int = 4, group: int = 1, sil_returns: tuple = (), priv_from: int = 1, net=None):
+def rl_run(variant, cfg_over: dict, outer: bool = False, updates: int = 2, lanes: int = 4, group: int = 1, sil_returns: tuple = (), priv_from: int = 1, net=None, dropout=None):
     cfg = rl_cfg(lanes=lanes)
     cfg.update(cfg_over)
-    net = net if net is not None else rl_net(variant, outer)
+    net = net if net is not None else rl_net(variant, outer, dropout=dropout)
     l = Learner(cfg, net, copy.deepcopy(net), CPU, "f32", "vtrace", micro_lanes=group)
     batch = Segments(lanes, 4, rl_net(None, outer, seed=6), 2 if outer else 0, sil_returns=sil_returns, priv_from=priv_from)
     stats = [l.update(batch, WEIGHTS) for _ in range(updates)]
@@ -373,6 +396,7 @@ def manual_rl_aux(net, batch, t: int, ks: list) -> dict:
     res["aux_jepa"] = sum(live) / len(live)
     res["aux_jepa_slots"] = per
     res["jepa_tgt_std"] = float(yn[real & queue].std(0, unbiased=False).mean())
+    res["jepa_tgt_std_raw"] = float(out["jepa_target"][real & queue].std(0, unbiased=False).mean())
     return res
 
 
@@ -395,6 +419,7 @@ def test_rl_aux_losses_match_the_definition_042_r21(sil):
     assert s["aux_priv"] == pytest.approx(want["aux_priv"], rel=1e-5)
     assert s["aux_jepa"] == pytest.approx(want["aux_jepa"], rel=1e-5)
     assert s["jepa_tgt_std"] == pytest.approx(want["jepa_tgt_std"], rel=1e-5)
+    assert s["jepa_tgt_std_raw"] == pytest.approx(want["jepa_tgt_std_raw"], rel=1e-5)
     for x, y in zip(s["aux_jepa_slots"], want["aux_jepa_slots"]):
         assert (x is None and y is None) or x == pytest.approx(y, rel=1e-5)
     assert s["aux_jepa_slots"][2] is None and s["spatial"] is None
@@ -431,7 +456,7 @@ def test_rl_aux_loss_masks_fill_bootstrap_and_buffer_rows_042_r21():
     g = {"b": b, "priv_present": np.array([0, 1, 1, 1, 1, 1, 1, 1, 1], bool)}
     lane_rows = torch.tensor([1, 1, 1, 1, 1, 1, 0, 0, 0], dtype=torch.bool)
     aux = {"priv": 3, "real": 5, "pairs": [3, 1, 0]}
-    moments = torch.zeros(2, d, dtype=torch.float64)
+    moments = torch.zeros(4, d, dtype=torch.float64)
     loss, parts = l.aux_loss(out, g, priv, mask, real, lane_rows, t, aux, moments, torch.zeros(()))
     want_priv = sum(((out["aux_priv"][i] - priv[i]) ** 2).mean() for i in (1, 3, 4)) / 3
     assert torch.allclose(parts[0], want_priv)
@@ -442,7 +467,7 @@ def test_rl_aux_loss_masks_fill_bootstrap_and_buffer_rows_042_r21():
     assert torch.allclose(parts[2], j1) and torch.allclose(parts[3], j2) and float(parts[4]) == 0.0
     assert torch.allclose(parts[1], (j1 + j2) / 2) and torch.allclose(loss, parts[0] + parts[1])
     sel = yn[torch.tensor([0, 1, 3, 4, 5])].double()
-    assert torch.allclose(jepa_std(moments, 5), sel.std(0, unbiased=False).mean())
+    assert torch.allclose(jepa_std(moments[:2], 5), sel.std(0, unbiased=False).mean())
 
 
 @pytest.mark.parametrize("outer", [False, True])
@@ -452,7 +477,8 @@ def test_rl_aux_weight_zero_equals_no_module_042_r21(outer):
     plain, p_plain, _ = rl_run(None, {}, outer)
     zero, p_zero, _ = rl_run(AUX, {"aux": {"priv": 0.0, "jepa": 0.0}}, outer)
     for a, z in zip(plain, zero):
-        assert {k: z[k] for k in a if not k.startswith("aux_") and k not in ("jepa_tgt_std",)} == {k: a[k] for k in a if not k.startswith("aux_") and k != "jepa_tgt_std"}
+        shared = [k for k in a if not k.startswith(("aux_", "jepa_"))]
+        assert {k: z[k] for k in shared} == {k: a[k] for k in shared}
         assert a["aux_priv"] is None and a["aux_jepa_slots"] == [None] * 3 and a["spatial"] is None
         assert z["aux_priv"] is not None and z["aux_jepa"] is not None
     assert all(torch.equal(p_plain[k], p_zero[k]) for k in p_plain)
@@ -460,11 +486,11 @@ def test_rl_aux_weight_zero_equals_no_module_042_r21(outer):
 
 @pytest.mark.parametrize("outer", [False, True])
 def test_rl_monitor_on_off_is_bit_identical_032_ac15(outer):
-    """[monitor] spatial_every = 1 vs off: the same update bit for bit, `spatial` filled (in
-    SPEC_COLUMNS order, phased RL pass), with the aux losses on too."""
+    """[monitor] spatial_every = 1 vs off: the same update bit for bit (dropout on in the trained
+    net), `spatial` filled (in SPEC_COLUMNS order, phased RL pass), with the aux losses on too."""
     over = {"aux": {"priv": 0.2, "jepa": 0.1}}
-    off, p_off, _ = rl_run(AUX, over, outer)
-    on, p_on, _ = rl_run(AUX, over | {"monitor": {"spatial_every": 1}}, outer)
+    off, p_off, _ = rl_run(AUX, over, outer, dropout=0.1)
+    on, p_on, _ = rl_run(AUX, over | {"monitor": {"spatial_every": 1}}, outer, dropout=0.1)
     for a, b in zip(off, on):
         assert {k: v for k, v in a.items() if k != "spatial"} == {k: v for k, v in b.items() if k != "spatial"}
         assert a["spatial"] is None and len(b["spatial"]) == len(SPEC_COLUMNS)
@@ -487,6 +513,31 @@ def test_rl_aux_off_matches_the_reference_042_r21():
     cfg2 = dict(cfg, monitor={"spatial_every": 1})
     with pytest.raises(NotImplementedError):
         ReferenceLearner(cfg2, copy.deepcopy(net), copy.deepcopy(net), CPU, "f32", "vtrace", micro_lanes=1).update(batch, WEIGHTS)
+
+
+# --- every 032 §2.8 switch with the §2.7 ones (032-AC13 ①) -------------------------------------
+
+ALL_ON = VariantConfig(**ARCH, bypass=True, spatial_preact=True, core_skip=True, aux_priv=True, aux_jepa=KS)
+
+
+def test_all_switches_train_bc_and_rl_032_ac13(tiny_config, shards):
+    """Every §2.8 switch (bypass, spatial_preact, core_skip, aux_priv, aux_jepa) and the four §2.7
+    ones: the shared modules start from the all-off model's weights (032-AC13 ①), a BC update with
+    aux and the monitor and an RL update run, with finite losses and the logs filled."""
+    on, off = make_net(ALL_ON), make_net()
+    base = off.state_dict()
+    for k, x in on.state_dict().items():
+        if k in base:
+            assert torch.equal(x, base[k]), k
+    assert any(k.startswith("variant.aux_") for k in on.state_dict()) and set(base) <= set(on.state_dict())
+    cfg = bc_cfg(tiny_config, aux={"priv": 0.2, "jepa": 0.1}, monitor={"spatial_every": 1}, seq_len=4)
+    tr = BcTrainer(cfg, on, CPU, "f32")
+    log = json.loads(tr.train_batch(feeder(tiny_config, shards).next(), 3e-3, 0))
+    assert math.isfinite(log["total"]) and log["aux_priv"] is not None and log["aux_jepa"] is not None
+    assert set(SPEC_COLUMNS) <= log.keys()
+    stats, _, _ = rl_run(ALL_ON, {"aux": {"priv": 0.2, "jepa": 0.1}, "monitor": {"spatial_every": 1}}, updates=1)
+    s = stats[0]
+    assert math.isfinite(s["loss"]) and s["aux_priv"] is not None and s["aux_jepa"] is not None and len(s["spatial"]) == len(SPEC_COLUMNS)
 
 
 # --- [train] model_seed (041-R24 ⑦) ------------------------------------------------------------

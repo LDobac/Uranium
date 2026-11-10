@@ -153,7 +153,7 @@ class BcTrainer:
         # 041-R23: with an aux module the aux parts follow (batch-wide divisors from the host).
         aux = bc_aux_counts(batch, cfg["seq_len"], self.ks) if self.aux else None
         parts = torch.zeros(len(PARTS) + (len(AUX_PARTS) if aux else 0), device=dev)  # total, heads..., value, win_open[, aux]
-        moments = torch.zeros(2, self.net.cfg.entity.d_model + self.net.cfg.spatial.pool, dtype=torch.float64, device=dev) if "jepa" in self.aux else None
+        moments = torch.zeros(4, self.net.cfg.entity.d_model + self.net.cfg.spatial.pool, dtype=torch.float64, device=dev) if "jepa" in self.aux else None
         # 041-R25: one monitor summed over the lane groups (each group's pass in `group_loss`).
         mon = ReluMonitor(self.net, points="spatial") if spatial_due(self.monitor_every, step + 1) else None
         # The next group is collated on a worker thread (the Rust collate releases the GIL) while
@@ -174,7 +174,7 @@ class BcTrainer:
         # statistics (041-R25) ride on the same read.
         extra = []
         if moments is not None:
-            extra.append(jepa_std(moments, aux["real"]).reshape(1))
+            extra.append(torch.stack([jepa_std(moments[:2], aux["real"]), jepa_std(moments[2:], aux["real"])]))
         channels = None
         if mon is not None:
             st = mon.stats()
@@ -183,7 +183,9 @@ class BcTrainer:
         v = parts.tolist() if not extra else torch.cat([parts.double(), *extra]).tolist()
         tail = v[len(parts):]
         v = v[:len(parts)]
-        skip = not all(math.isfinite(x) for x in v)
+        # 041-R3: the loss parts that reach the loss; an aux part with λ = 0 is only logged, so a
+        # non-finite one there (null in the log) does not skip the update.
+        skip = not all(math.isfinite(x) for x in v[:len(PARTS)] + [x for x, w in zip(v[len(PARTS):], self.aux_weights_of_parts()) if w > 0])
         if skip:
             self.skip_update(step, v)
         else:
@@ -196,7 +198,7 @@ class BcTrainer:
         # Non-finite parts are null: the Rust loop parses this with serde_json, which rejects NaN.
         out = {k: x if math.isfinite(x) else None for k, x in zip(PARTS, v)} | {"valid": valid}
         if aux:
-            out.update(self.aux_log(v[len(PARTS):], aux, tail[0] if moments is not None else None))
+            out.update(self.aux_log(v[len(PARTS):], aux, tail[:2] if moments is not None else (None, None)))
         if mon is not None:
             out.update(self.monitor_log(step + 1, tail[-len(SPEC_COLUMNS):], channels))
         if skip:
@@ -208,14 +210,20 @@ class BcTrainer:
             out["phases"] = {k: round(x, 4) for k, x in self._ph.items()}
         return json.dumps(out)
 
+    def aux_weights_of_parts(self) -> list:
+        """The λ of each `AUX_PARTS` entry (0 for a module the model does not have)."""
+        lp, lj = self.aux.get("priv", 0.0), self.aux.get("jepa", 0.0)
+        return [lp, lj, *[lj] * AUX_JEPA_SLOTS]
+
     def aux_log(self, v: list, aux: dict, tgt_std) -> dict:
-        """041-R23 ⑤ log keys (before λ, batch means): `aux_priv`, `aux_jepa`, `jepa_tgt_std` and
-        `aux_jepa_slot1..3` (the configured k in order); a key without its module, a slot past the
-        k list or a k without a pair in the batch is null."""
+        """041-R23 ⑤ log keys (before λ, batch means): `aux_priv`, `aux_jepa`, `jepa_tgt_std`
+        (`jepa_tgt_std_raw`: before the target's LayerNorm) and `aux_jepa_slot1..3` (the
+        configured k in order); a key without its module, a batch without a row for it (no
+        privileged summary, a k without a pair) or a slot past the k list is null."""
         fin = lambda x: x if x is not None and math.isfinite(x) else None  # noqa: E731
         jepa = "jepa" in self.aux
-        out = {"aux_priv": fin(v[0]) if "priv" in self.aux else None, "aux_jepa": fin(v[1]) if jepa and any(c > 0 for c in aux["pairs"]) else None,
-               "jepa_tgt_std": fin(tgt_std)}
+        out = {"aux_priv": fin(v[0]) if "priv" in self.aux and aux["priv"] > 0 else None, "aux_jepa": fin(v[1]) if jepa and any(c > 0 for c in aux["pairs"]) else None,
+               "jepa_tgt_std": fin(tgt_std[0]), "jepa_tgt_std_raw": fin(tgt_std[1])}
         for i in range(AUX_JEPA_SLOTS):
             live = jepa and i < len(self.ks) and aux["pairs"][i] > 0
             out[f"aux_jepa_slot{i + 1}"] = fin(v[2 + i]) if live else None
@@ -227,6 +235,7 @@ class BcTrainer:
         alarm = spatial_alarm(update, rec, channels)
         if alarm:
             print(f"[bc] WARNING: update {update}: spatial encoder collapse alarm (041-R25): {'; '.join(alarm)}", file=sys.stderr, flush=True)
+            rec["spatial_alarm"] = alarm
         return rec
 
     def skip_update(self, step: int, v: list) -> None:
