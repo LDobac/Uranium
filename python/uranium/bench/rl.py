@@ -103,8 +103,10 @@ class SyntheticSegments:
     def versions(self) -> list[int]:
         return [0] * self.lanes
 
-    # 042-R21 ①: the host-side aux divisors (`rl_aux_counts`), as `group` lays the lanes out:
-    # every row a real step, every trained step with a privileged summary.
+    # 042-R21 ①: the host-side aux divisors (`rl_aux_counts`), as `group` lays the lanes out.
+    # The synthetic layout keeps every row real (no fill rows past a short segment: `real` all 1,
+    # the bootstrap step included) and gives every trained step a privileged summary
+    # (`priv_present` all 1), unlike real segments.
     @property
     def real_steps(self) -> list[int]:
         return [self.t] * self.lanes

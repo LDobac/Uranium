@@ -1,4 +1,4 @@
-"""032-AC13 GPU half, model-2 integration (pytest `gpu`): every 032 §2.7 switch (terrain, ctx_token,
+"""032-AC13 GPU half, model-2 integration (the device tests are pytest `gpu`; the config check is CPU): every 032 §2.7 switch (terrain, ctx_token,
 attn_pool, outer 32) and every §2.8 switch (bypass, spatial_preact, core_skip, aux_priv,
 aux_jepa [1, 8, 32]) on together, on the full-size network (032 §6 defaults, the main-run config
 `config/bc_m2_lambda_base.toml` `[model]`).
@@ -27,8 +27,6 @@ from uranium.device import IMPL_DEFAULTS, TRAIN_DEFAULTS, autocast, compiled, re
 from uranium.model import UraniumNet, action_columns
 from uranium.model.config import VariantConfig
 from uranium.model.monitor import SPEC_COLUMNS
-
-pytestmark = pytest.mark.gpu
 
 ROOT = Path(__file__).resolve().parents[2]
 # 032 §2.7 four (main BC model) + every 032 §2.8 switch, as config/bc_m2_lambda_base.toml.
@@ -82,6 +80,7 @@ def run_steps(net, act, dev, prec, steps: int, exact: bool, check=None):
         s_eager, s_graph = want["state"], copied(got["state"])
 
 
+@pytest.mark.gpu
 @torch.no_grad()
 def test_graphed_act_matches_eager_all_switches_032_ac13():
     if not torch.cuda.is_available():
@@ -94,6 +93,7 @@ def test_graphed_act_matches_eager_all_switches_032_ac13():
     assert len(graphed.graphs) == 1
 
 
+@pytest.mark.gpu
 @torch.no_grad()
 def test_compiled_graphed_act_no_recompile_032_ac13(monkeypatch):
     """The inference server's path on a CUDA host (`URANIUM_INFER_COMPILE` = default inside the
@@ -170,9 +170,19 @@ seed = 1
 checkpoint_every = 1000
 checkpoint_minutes = 0
 enemy_race_mask = 0.05
+
+# 041-R23 aux loss weights (AMB-041-13b default proposal, as config/bc_m2_lambda_base.toml).
+[aux]
+priv = 0.2
+jepa = 0.1
+
+# 041-R25: the dead-channel monitor every 2nd update.
+[monitor]
+spatial_every = 2
 """
 
 
+@pytest.mark.gpu
 def test_bc_compiled_all_switches_no_recompile_per_batch_032_ac13(tmp_path, shards, monkeypatch):
     """The CUDA BC trainer (TRAIN_DEFAULTS: reduce-overhead graphs, channels-last, spatial bf16,
     stem pad, pinned H2D) on the full-size all-on net, T = 64 (two outer segments), aux losses on
@@ -183,12 +193,13 @@ def test_bc_compiled_all_switches_no_recompile_per_batch_032_ac13(tmp_path, shar
 
     for k, v in (IMPL_DEFAULTS["cuda"] | TRAIN_DEFAULTS["cuda"]).items():
         monkeypatch.setenv(k, v)
+    monkeypatch.setenv("URANIUM_BC_MICRO_LANES", "2")  # the CUDA host's lane group (.env)
     assert TRAIN_DEFAULTS["cuda"]["URANIUM_COMPILE"] == "reduce-overhead"
     torch._dynamo.reset()
     config = tmp_path / "bc_full.toml"
     config.write_text(BC_FULL, encoding="utf-8")
     cfg = json.loads(_core.bc_config(str(config), "s1")[0])
-    cfg.update(aux={"priv": 0.2, "jepa": 0.1}, monitor={"spatial_every": 2})
+    assert cfg["micro_lanes"] == 2 and cfg["aux"] == {"priv": 0.2, "jepa": 0.1} and cfg["monitor"] == {"spatial_every": 2}, cfg
     dev = torch.device("cuda")
     torch.manual_seed(1)
     tr = BcTrainer(cfg, UraniumNet(new_net_config("gtrxl", True, ALL_ON), action_columns()), dev, "bf16")
