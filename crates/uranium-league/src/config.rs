@@ -521,7 +521,8 @@ pub struct RlConfig {
     pub sil: SilConfig,
     /// `[aux]`: 042-R21 ① aux loss weights (same table as the BC config, 041-R23). Absent = no aux
     /// loss and the config JSON (checkpoint copy, the Python learner's config) as before the key.
-    /// The values are [SPEC DEFERRED(P3)] AMB-042-21.
+    /// λ resolved 2026-11-10 (AMB-041-13b, AMB-042-21): priv 0.2, jepa 0.1 in config/rl_m2.toml;
+    /// config/rl.toml has no [aux].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aux: Option<AuxWeights>,
     /// `[monitor]`: 042-R21 ③ / 041-R25 spatial dead-channel statistics. Absent = off.
