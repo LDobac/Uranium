@@ -439,6 +439,27 @@ def test_rl_aux_counts_match_the_group_masks_042_r21():
     assert not mask[1, -1] and real[1, -1]
 
 
+def test_bench_rl_synthetic_batch_runs_the_aux_learner_042_r21():
+    """`bench rl` (060-AC7 ②) with an aux model: the synthetic batch gives the host-side aux
+    divisors as its `group` lays the lanes out (every row real, every trained step with a summary),
+    and the learner's aux losses reach the bench log."""
+    from uranium.bench.rl import SyntheticSegments, run_learner
+
+    net = rl_net(AUX, outer=True)
+    t = 4
+    batch = SyntheticSegments(net, 4, t, (3, 70), templates=2, seed=3)
+    g = batch.group(0, 4, t, 12)
+    mask, real, pp = g["mask"].reshape(4, t) > 0, g["real"].reshape(4, t), g["priv_present"].reshape(4, t)
+    c = rl_aux_counts(batch, t, 4, KS)
+    assert c["priv"] == (mask & pp).sum() and c["real"] == real.sum()
+    assert c["pairs"] == [int((mask[:, :t - k] & real[:, k:]).sum()) if k < t else 0 for k in KS]
+    cfg = rl_cfg(lanes=4)
+    cfg["aux"] = {"priv": 0.2, "jepa": 0.1}
+    run = run_learner("new", 1, net, cfg, batch, CPU, "f32", "vtrace", 1, False, log=lambda m: None)
+    for u in run["updates"]:
+        assert math.isfinite(u["stats"]["aux_priv"]) and math.isfinite(u["stats"]["aux_jepa"]), u["stats"]
+
+
 def test_rl_aux_loss_masks_fill_bootstrap_and_buffer_rows_042_r21():
     """`Learner.aux_loss` on crafted rows: fill rows (real false), the bootstrap row (mask 0, real),
     a step without a summary and a buffer lane."""
