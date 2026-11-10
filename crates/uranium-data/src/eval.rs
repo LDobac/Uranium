@@ -10,9 +10,10 @@ use std::sync::Arc;
 use anyhow::Result;
 use serde::Serialize;
 use uranium_env::surrender::SurrenderJudge;
+use uranium_replay::shard::ShardGame;
 
 use crate::bc::{Batch, BcConfig, Feeder, eval_games};
-use crate::data::{ChosenGames, MapStore, ShardSource, StepSource};
+use crate::data::{ChosenGames, GameId, MapStore, ShardSource, StepSource, cut_game};
 use crate::split::{Selection, Split};
 
 /// 041-AC4: the 031-R12 surrender check replayed over the evaluated games (Shadow mode).
@@ -39,8 +40,35 @@ pub struct EvalSelection {
     /// `Some(n)`: n games by the fixed-seed shuffle (032-R17 ②); `None`: every game.
     pub games: Option<usize>,
     pub seed: u64,
+    /// `Some(f)`: each game is read only up to frame `f` (its steps at frame >= f are dropped as
+    /// it is read; the first step is always kept, so every game still enters a lane in the same
+    /// order). Feature extraction is causal, so the steps kept are the same; the lanes run shorter
+    /// games, so the batches differ (050-R9 `diag dump --read-until`: the rows after it are not
+    /// used). `None`: whole games.
+    pub until_frame: Option<u32>,
 }
 
+/// [`EvalSelection::until_frame`] over a source.
+struct Until<'a> {
+    src: &'a mut dyn StepSource,
+    frame: Option<u32>,
+}
+
+impl StepSource for Until<'_> {
+    fn next_game(&mut self) -> Result<Option<ShardGame>> {
+        let mut g = self.src.next_game()?;
+        if let (Some(g), Some(f)) = (g.as_mut(), self.frame) {
+            cut_game(g, f); // a no-op for the chosen games, already cut as they were decoded
+        }
+        Ok(g)
+    }
+
+    fn last_id(&self) -> Option<GameId> {
+        self.src.last_id()
+    }
+}
+
+#[allow(clippy::large_enum_variant)] // one per stream
 enum Source {
     All(ShardSource),
     Chosen(ChosenGames),
@@ -58,6 +86,7 @@ impl Source {
 pub struct EvalStream {
     feeder: Feeder,
     source: Source,
+    until_frame: Option<u32>,
     has_open: bool,
     /// Per lane, the surrender check of its current game and the game's result (041-AC4).
     judges: Vec<Option<(SurrenderJudge, f32)>>,
@@ -85,16 +114,17 @@ impl EvalStream {
         let source = match sel.games {
             Some(n) => {
                 let ids = eval_games(&src, &scan, n, sel.seed);
-                Source::Chosen(ChosenGames::new(src, &ids))
+                Source::Chosen(ChosenGames::with_until(src, &ids, sel.until_frame))
             }
             None => Source::All(src),
         };
-        Ok(Self { feeder, source, has_open, judges: vec![None; cfg.lanes], sur: SurrenderEval::default(), held_frames: Vec::new(), open_se: 0.0, open_n: 0 })
+        Ok(Self { feeder, source, until_frame: sel.until_frame, has_open, judges: vec![None; cfg.lanes], sur: SurrenderEval::default(), held_frames: Vec::new(), open_se: 0.0, open_n: 0 })
     }
 
     /// The next batch; `None` once every lane is drained.
     pub fn next(&mut self) -> Result<Option<Batch>> {
-        let Some(batch) = self.feeder.next_batch(self.source.get(), None)? else { return Ok(None) };
+        let mut src = Until { src: self.source.get(), frame: self.until_frame };
+        let Some(batch) = self.feeder.next_batch(&mut src, None)? else { return Ok(None) };
         if self.has_open {
             for l in 0..batch.chunks.len() {
                 if batch.fresh[l] || batch.chunks[l].is_empty() {

@@ -1,5 +1,7 @@
-"""Activations at the cue-flow stages during one `UraniumNet.forward_seq` (forward hooks only, the
-model is not changed):
+"""Activations at the cue-flow stages during one teacher-forced pass, `UraniumNet.action_seq` (the
+trunk of `forward_seq` and its ActionType head; the other heads, whose location head runs
+convolutions over a varying row count, are not needed). Forward hooks only, the model is not
+changed:
 
 - `E`: entity encoder output [rows, N, d] (the focus token is picked from it), `e_pool` its pool
 - `sp_pool`: the spatial path into the core input, `c`: the scalar encoder output
@@ -28,11 +30,9 @@ class Capture:
         self.want = set(CORE_SETS[core])
         self.on = False
         self.cap: dict[str, list] = {}
-        self.head_args = None
         self.handles = []
         hk = self.handles
         hk.append(net.entity.register_forward_hook(lambda m, i, o: self._put("e_pool", o[1])))
-        hk.append(net.heads.register_forward_pre_hook(self._heads_pre))
         core = net.core
         inp = getattr(core, "input", None)
         if inp is not None and self.want & {"core_in", "x_in"}:
@@ -59,30 +59,27 @@ class Capture:
         if self.on:
             self.cap.setdefault(k, []).append(v.detach())
 
-    def _heads_pre(self, m, args):
-        if self.on:
-            # Heads(labels, temp, h, c, e, sp, obs, ...)
-            self.head_args = {"h": args[2].detach(), "c": args[3].detach(), "E": args[4].detach(), "sp_pool": args[5]["pool"].detach()}
-
     def close(self):
         for h in self.handles:
             h.remove()
         self.handles.clear()
 
-    def run(self, obs, labels, priv, s0, t: int):
-        """forward_seq with the hooks on; -> (out, {key: [rows, ...] b-major})."""
+    def run(self, obs, s0, t: int):
+        """`UraniumNet.action_seq` (the trunk and the ActionType head, as `forward_seq` computes
+        them) with the hooks on; -> ({"state", "action": ActionType log-probs}, {key: [rows, ...]
+        b-major})."""
         self.cap = {}
-        self.head_args = None
         self.on = True
         try:
-            out = self.net.forward_seq(obs, labels, priv, s0, t)
+            tr, lp = self.net.action_seq(obs, s0, t)
         finally:
             self.on = False
         bt = obs["entity_cat"].shape[0]
         b = bt // t
-        acts = dict(self.head_args)
+        # what the heads read (forward_seq: Heads(labels, temp, h, c, e, sp, ...))
+        acts = {"h": tr["h"].detach(), "c": tr["sc"]["c"].detach(), "E": tr["e"].detach(), "sp_pool": tr["sp"]["pool"].detach()}
         for k, lst in self.cap.items():
             # each piece is [b*seg, d] (encoders) or [b, seg, d] (core): back to b-major [b*t, d]
             acts[k] = torch.cat([x.reshape(b, -1, x.shape[-1]) for x in lst], 1).reshape(bt, -1)
         self.cap = {}
-        return out, acts
+        return {"state": tr["state"], "action": lp}, acts

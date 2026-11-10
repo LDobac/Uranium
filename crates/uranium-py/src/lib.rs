@@ -255,11 +255,12 @@ struct EvalStream {
 #[pymethods]
 impl EvalStream {
     /// `split`: train / val / test; `games`: N games by the fixed-seed shuffle (032-R17 ②), else
-    /// every game; `has_open`: replay the surrender check with the win_open head (032-R18).
+    /// every game; `has_open`: replay the surrender check with the win_open head (032-R18);
+    /// `until_frame`: each game read only up to that frame (`EvalSelection::until_frame`).
     #[new]
-    #[pyo3(signature = (config, dirs, split = "test", games = None, seed = 1, has_open = false, maps_dir = None, synthetic_maps = false))]
+    #[pyo3(signature = (config, dirs, split = "test", games = None, seed = 1, has_open = false, maps_dir = None, synthetic_maps = false, until_frame = None))]
     #[allow(clippy::too_many_arguments)]
-    fn new(py: Python<'_>, config: PathBuf, dirs: Vec<PathBuf>, split: &str, games: Option<usize>, seed: u64, has_open: bool, maps_dir: Option<PathBuf>, synthetic_maps: bool) -> PyResult<Self> {
+    fn new(py: Python<'_>, config: PathBuf, dirs: Vec<PathBuf>, split: &str, games: Option<usize>, seed: u64, has_open: bool, maps_dir: Option<PathBuf>, synthetic_maps: bool, until_frame: Option<u32>) -> PyResult<Self> {
         use uranium_data::split::Split;
         let split = match split {
             "train" => Split::Train,
@@ -273,7 +274,7 @@ impl EvalStream {
             (false, Some(d)) => Some(Arc::new(MapStore::dir(d))),
             (false, None) => None,
         };
-        let sel = uranium_data::eval::EvalSelection { split, games, seed };
+        let sel = uranium_data::eval::EvalSelection { split, games, seed, until_frame };
         let inner = py.detach(move || uranium_data::eval::EvalStream::new(&dirs, &cfg, sel, maps, has_open)).map_err(err)?;
         Ok(Self { inner })
     }

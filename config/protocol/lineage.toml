@@ -237,6 +237,10 @@ act_until = 8640
 act_every = 4
 core_points = "gate"
 cf = false
+# Each game read only up to 6:00 (`diag dump --read-until`): the rows and activations are the same (all before
+# 8640), the steps after it are not extracted (human games run 15-20 min). Without it a 32-lane batch held whole
+# human games (about 8 GB resident on the 14 GB ROCm host) and spent most of its time on steps it drops.
+read_until = 8640
 # data fingerprint: TBD, pinned after the first run (`check-diag` prints the values while they are unset)
 
 [metric.cue_diag.human.probes]

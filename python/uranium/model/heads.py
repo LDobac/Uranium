@@ -162,13 +162,7 @@ class Heads(nn.Module):
             return gumbel_argmax(logp, temp, generator)
 
         # 1 ActionType
-        x = F.relu(self.type_in(h))
-        for r in self.type_res:
-            x = r(x)
-        x = F.relu(x) * torch.sigmoid(self.type_gate(c))
-        if u is not None:
-            x = x + u.to(x.dtype)  # 032-R21
-        lp_action = tempered(masked_log_softmax(self.type_out(x), obs["type_mask"]), temp)
+        lp_action = tempered(self.action_logp(h, c, obs["type_mask"], u), temp)
         action = choose(lp_action, "action")
         info = table.info(action)
         ar = self.ar_h(h) + self.ar_action(action)
@@ -231,6 +225,17 @@ class Heads(nn.Module):
             "uses_target_unit": info["target_unit"], "uses_target_loc": info["target_loc"],
         }
         return {"chosen": chosen, "logp": logp, "entropy": ent, "dists": dists}
+
+    def action_logp(self, h, c, type_mask, u=None):
+        """Head 1 (ActionType): masked log-probs [B, actions] before the temperature; `u` the
+        032-R21 bypass addition (None: off)."""
+        x = F.relu(self.type_in(h))
+        for r in self.type_res:
+            x = r(x)
+        x = F.relu(x) * torch.sigmoid(self.type_gate(c))
+        if u is not None:
+            x = x + u.to(x.dtype)  # 032-R21
+        return masked_log_softmax(self.type_out(x), type_mask)
 
     def location_used_rows(self, ar, sp: dict, loc_ok, used, rows=None, w=None):
         """Masked location log-probs [B, M*M] for the rows whose action uses a location; other rows

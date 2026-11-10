@@ -5,7 +5,9 @@ recurrent state from the game start.
 
 Rows: every real row before `--row-until` (labels need the first minutes). Model passes: chunks
 that start before `--act-until`. Activations: rows before `--act-until` with an enemy focus
-token, every `--act-every`-th step.
+token, every `--act-every`-th step. `--read-until`: each game is read only up to that frame (the
+same rows; the lanes run shorter games, so the rows' order in the parts differs). A model pass is
+the trunk and the ActionType head (`UraniumNet.action_seq`, the values of `forward_seq`).
 
 Counterfactual passes (`--cf`), the anchor = the game's first-seen focus token, edited in every
 row that has it (visible or remembered, at the token's last-seen frame):
@@ -61,6 +63,9 @@ def add_args(p) -> None:
     p.add_argument("--row-until", type=float, default=8640, help="rows before this frame (default 6:00)")
     p.add_argument("--act-until", type=float, default=5760, help="model passes and activations before this frame (default 4:00)")
     p.add_argument("--act-every", type=int, default=1, help="activations of every k-th step")
+    p.add_argument("--read-until", type=float, default=0,
+                   help="read each game only up to this frame (0 = whole games; at least --row-until and --act-until): the same rows, "
+                        "fewer steps to extract (the rows' order in the parts differs)")
     p.add_argument("--lanes-per-group", type=int, default=8)
     p.add_argument("--core-points", choices=["none", "gate", "full"], default="gate", help="GTrXL sub-points to keep")
     p.add_argument("--cf", action="store_true", help="also run the counterfactual passes (`diag intervene`)")
@@ -219,6 +224,8 @@ def run(a) -> int:
     from uranium.diag.capture import Capture
     from uranium.model import to_obs
 
+    if a.read_until and a.read_until < max(a.row_until, a.act_until):
+        raise SystemExit(f"diag dump: --read-until {a.read_until:g} cuts rows before --row-until {a.row_until:g} / --act-until {a.act_until:g}")
     dirs = [str(p) for p in _core.dataset_dirs(a.dataset, a.shards)]
     if not dirs:
         raise SystemExit("diag dump: no data (--dataset / --shards)")
@@ -253,7 +260,11 @@ def run(a) -> int:
     splits = [s for s in a.splits.split(",") if s]
     for si, split in enumerate(splits):
         try:
-            stream = _core.EvalStream(a.config, dirs, split=split, games=a.games, seed=a.seed, has_open=False, maps_dir=a.maps_dir, synthetic_maps=a.synthetic_maps)
+            # --read-until: a game's steps from that frame on are dropped as it is read (features
+            # are causal, so the kept steps are the same); its lane takes the next game sooner
+            # (one frame of margin over the float frame the rows are cut by)
+            until = {"until_frame": int(np.ceil(a.read_until)) + 1} if a.read_until else {}
+            stream = _core.EvalStream(a.config, dirs, split=split, games=a.games, seed=a.seed, has_open=False, maps_dir=a.maps_dir, synthetic_maps=a.synthetic_maps, **until)
         except RuntimeError as e:
             if "no game" not in str(e).lower() and "empty" not in str(e).lower():
                 raise
@@ -309,8 +320,6 @@ def run(a) -> int:
             if fwd:
                 stats["groups_forwarded"] += 1
                 keep_t = torch.as_tensor(keep, device=device)
-                labels = net.labels(hg, device)
-                priv = torch.as_tensor(hg["privileged"]).to(device, torch.float32)
                 for pi, p in enumerate(passes):
                     g = hg
                     if p != "real":
@@ -332,13 +341,18 @@ def run(a) -> int:
                     obs = to_obs(g, device)
                     st = states[p]
                     s0 = net.init_state(bsz, device) if st is None else net.mask_state(st, keep_t)
+                    # The trunk and the ActionType head only (`action_seq`: the numbers of
+                    # forward_seq's dists["action"]; the other heads are not needed, and the
+                    # location head's convolutions over a varying row count made the ROCm
+                    # backend search a new kernel for every new count, 050-R9 human hold-out).
                     with torch.no_grad(), autocast(device, precision):
                         if p == "real":
-                            o, acts = cap.run(obs, labels, priv, s0, T)
+                            o, acts = cap.run(obs, s0, T)
                         else:
-                            o = net.forward_seq(obs, labels, priv, s0, T)
+                            tr, lp = net.action_seq(obs, s0, T)
+                            o = {"state": tr["state"], "action": lp}
                     states[p] = o["state"]
-                    pb[:, pi] = o["dists"]["action"].float().exp()[:, act_cols].cpu().numpy()
+                    pb[:, pi] = o["action"].float().exp()[:, act_cols].cpu().numpy()
                 for li, *_ in lane_rows:
                     if frame_all[li * T] >= a.act_until:
                         pb[li * T:(li + 1) * T] = np.nan  # outside the model-pass window, like an unforwarded group
@@ -385,7 +399,7 @@ def run(a) -> int:
         "checkpoint_sha256": None if ckpt_dir is None else ckpt.policy_version(ckpt_dir),
         "data": [redact(d) for d in dirs], "splits": splits, "games_per_split": a.games, "seed": a.seed, "config": Path(a.config).as_posix(),
         "seq_len": T, "lanes": LANES, "lanes_per_group": G, "row_until": a.row_until, "act_until": a.act_until, "act_every": a.act_every,
-        "passes": list(passes), "cf_starts": {k: list(v) for k, v in starts.items()} if len(passes) > 1 else None,
+        "read_until": a.read_until or None, "passes": list(passes), "cf_starts": {k: list(v) for k, v in starts.items()} if len(passes) > 1 else None,
         "pb_actions": ["Build_Bunker", "Train_Marine", "Build_Barracks"], "stages": list(STAGES) + ([] if cap is None else cap.keys()),
         "core": None if net is None else net.cfg.core.kind, "outer": None if net is None else (net.outer is not None),
         "backend": backend, "precision": precision, "games": gid_next, "parts": parts.part, "stats": stats, "secs": round(time.time() - t0, 1),

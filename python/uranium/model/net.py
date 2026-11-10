@@ -329,14 +329,7 @@ class UraniumNet(nn.Module):
         `aux` (032 §6, 032-R24): also run the training-only aux modules the model has and return
         `aux_priv`, `aux_jepa` and `jepa_target` (`_aux`); false (the default: RL BC reference
         pass, self-imitation lanes, diagnostics, `bc-eval`) never runs them and the keys are absent."""
-        if self.outer is None:
-            core_in, e, sp, sc, e_pool = self.encode(obs, entity_chunk)
-            bt, d = core_in.shape
-            assert t > 0 and bt % t == 0, "batch rows must be B*T"
-            h, state = self.core.forward_seq(core_in.view(bt // t, t, d), s0)
-            h = self._skip(h.reshape(bt, -1), core_in)
-        else:
-            h, e, sp, sc, e_pool, state = self._outer_seq_phased(obs, s0, t, entity_chunk, phases, aux) if phased else self._outer_seq(obs, s0, t, entity_chunk, aux)
+        h, e, sp, sc, e_pool, state = self.trunk_seq(obs, s0, t, entity_chunk, phased, phases, aux)
         out = self.heads(labels, 1.0, h, sc["c"], e, sp, obs, self.table, u=self._bypass(h, sc, e, obs))
         value = self.value(h, sc["z"], sc["race"], priv)
         win_open = self.value.win_open(h, sc["z"], sc["race"])
@@ -344,6 +337,27 @@ class UraniumNet(nn.Module):
         if aux:
             res.update(self._aux(h, e_pool, sp["pool"]))
         return res
+
+    def trunk_seq(self, obs: dict, s0, t: int, entity_chunk: int = 0, phased: bool = False, phases: list | None = None, aux: bool = False):
+        """The part of `forward_seq` before the heads: (h' [rows, d], E, spatial outputs, scalar
+        outputs, e_pool (with `outer`: None unless `aux`), state). Same arguments as `forward_seq`."""
+        if self.outer is None:
+            core_in, e, sp, sc, e_pool = self.encode(obs, entity_chunk)
+            bt, d = core_in.shape
+            assert t > 0 and bt % t == 0, "batch rows must be B*T"
+            h, state = self.core.forward_seq(core_in.view(bt // t, t, d), s0)
+            h = self._skip(h.reshape(bt, -1), core_in)
+            return h, e, sp, sc, e_pool, state
+        return self._outer_seq_phased(obs, s0, t, entity_chunk, phases, aux) if phased else self._outer_seq(obs, s0, t, entity_chunk, aux)
+
+    def action_seq(self, obs: dict, s0, t: int) -> tuple[dict, torch.Tensor]:
+        """The ActionType log-probs of a teacher-forced pass without the other heads, the value
+        or win_open (`diag dump`: the same numbers as `forward_seq(...)["dists"]["action"]`, the
+        location head's row-count-dependent convolutions not run): ((h', E, spatial, scalar,
+        state), log-probs [rows, actions])."""
+        h, e, sp, sc, _, state = self.trunk_seq(obs, s0, t)
+        lp = self.heads.action_logp(h, sc["c"], obs["type_mask"], self._bypass(h, sc, e, obs))
+        return {"h": h, "e": e, "sp": sp, "sc": sc, "state": state}, lp
 
     def _outer_seq(self, obs: dict, s0, t: int, entity_chunk: int, aux: bool = False):
         """032 §2.7 `outer`: the `t` steps in segments of `outer` decisions, one after another

@@ -410,6 +410,8 @@ DIAG_KINDS = ("diag_cue", "diag_train_log")
 DIAG_RECORD = "protocol.json"
 RUNNING = "running.json"  # the attempt marker of `diag --run` (becomes protocol.json when it finishes)
 COPY = "copy"  # the step that copies a local dump to <out>/<set>/dump (.part, then rename)
+FETCH = "fetch"  # `--part cpu`: <out>/<set>/dump to this host's cache (.part, then rename)
+GPU_STEPS = ("dump", COPY)  # `diag --run --part gpu`; the rest is `--part cpu`
 HOLDOUT_DIR = "diag_holdout"  # under ec.cache_dir(): the hold-out link trees
 LOCAL_DUMP_DIR = "diag_dump"  # under ec.cache_dir(): the dumps before their copy to the shared drive
 TRAIN_LOG = "spatial_log.json"
@@ -508,6 +510,8 @@ def cue_commands(lin: dict, name: str, ckpt: str, out: Path, data: list[str], py
         cmd += ["--games", str(s["games"]), "--seed", str(s["seed"])]
     cmd += ["--config", m["config"], "--backend", m["backend"], "--lanes-per-group", str(d["lanes_per_group"]), "--row-until", f"{d['row_until']:g}",
             "--act-until", f"{d['act_until']:g}", "--act-every", str(d["act_every"]), "--core-points", d["core_points"]]
+    if d.get("read_until"):
+        cmd += ["--read-until", f"{d['read_until']:g}"]
     if d["cf"]:
         cmd += ["--cf", "--cf-starts", ";".join(f"{r}:{a:g},{b:g}" for r, (a, b) in d["cf_starts"].items())]
     cmd += ["--out", str(dump)]
@@ -540,7 +544,7 @@ def train_log_command(lin: dict, pt: dict, checkpoint: str, log: str, ckpt: str,
 
 
 def step_name(c: list[str]) -> str:
-    return COPY if c[0] == COPY else c[4] if c[2:4] == ["uranium", "diag"] else Path(c[1]).stem
+    return c[0] if c[0] in (COPY, FETCH) else c[4] if c[2:4] == ["uranium", "diag"] else Path(c[1]).stem
 
 
 def _ends_with(path: str, tail: str) -> bool:
@@ -579,7 +583,7 @@ def check_cue_set(lin: dict, name: str, d: Path, sha: str | None) -> list[str]:
         data("dump", man.get("data"))
         for k, want in (("splits", s["splits"]), ("games_per_split", s.get("games")), ("config", m["config"]), ("backend", m["backend"]),
                         ("precision", PRECISION[m["backend"]]), ("lanes_per_group", dm["lanes_per_group"]), ("row_until", dm["row_until"]),
-                        ("act_until", dm["act_until"]), ("act_every", dm["act_every"])):
+                        ("act_until", dm["act_until"]), ("act_every", dm["act_every"]), ("read_until", dm.get("read_until"))):
             same(f"dump {k}", man.get(k), want)
         if s.get("games"):
             same("dump seed", man.get("seed"), s["seed"])
@@ -753,7 +757,7 @@ def copy_dump(src: Path, dst: Path) -> None:
 
 def diag_record_cmd(c: list[str], roots: dict[str, Path]) -> list[str]:
     """A command as protocol.json keeps it: `python` for the interpreter, host paths as <shared> / <cache>."""
-    return redact_cmd(c if c[0] == COPY else ["python", *c[1:]], roots)
+    return redact_cmd(c if c[0] in (COPY, FETCH) else ["python", *c[1:]], roots)
 
 
 def check_final_only(pt: dict, checkpoint: str) -> None:
@@ -768,13 +772,43 @@ def check_final_only(pt: dict, checkpoint: str) -> None:
         raise Refused(f"point {pt['id']}: cue diagnostics at the run's final checkpoint only (AMB-050-6); {checkpoint} is not (DONE {'present' if (run / 'DONE').is_file() else 'missing'}, last ckpt-{steps[-1] if steps else '?'})")
 
 
+def step_part_name(step: str) -> str:
+    """`gpu` for the steps of `diag --run --part gpu` (the dumps and their copies), else `cpu`."""
+    return "gpu" if step in GPU_STEPS else "cpu"
+
+
+def step_part(c: list[str]) -> str:
+    return step_part_name(step_name(c))
+
+
+def cpu_order(cmds: list[list[str]], out: Path, local: Path) -> list[list[str]]:
+    """The cpu steps of `cmds` for `--part cpu`: per cue set, the dump fetched from <out>/<set>/dump into this
+    host's cache (the path the probes / intervene commands read) before its first analysis."""
+    todo, fetched = [], set()
+    for c in cmds:
+        if step_part(c) != "cpu":
+            continue
+        if c[2:4] == ["uranium", "diag"] and c[4] in ("probes", "intervene"):
+            name = Path(c[5]).parent.name
+            if name not in fetched:
+                fetched.add(name)
+                todo.append([FETCH, str(out / name / "dump"), str(local / name / "dump")])
+        todo.append(c)
+    return todo
+
+
 def cmd_diag(a) -> None:
     """050-R9 diagnostics of a lineage point's checkpoint. Without --run: the pinned commands for this host
     (paths of this host; nothing is written). With --run: builds the hold-out link trees, marks the attempt
     (<out>/running.json), runs the commands with the dumps in this host's cache, copies each dump to
     <out>/<set>/dump, writes <out>/protocol.json and runs `check-diag`. A folder without a finished
     protocol.json (an earlier attempt that failed) is renamed to <out>.failed-<k> first. Run it on a Linux
-    ROCm host (the pinned backend)."""
+    ROCm host (the pinned backend).
+
+    `--part gpu` / `--part cpu` split one attempt over two hosts at the same git commit: `gpu` (the Linux ROCm
+    host) runs the dumps and their copies to the shared drive and leaves running.json; `cpu` (any Linux host,
+    the probes run on the CPU: `--device cpu`) fetches the dumps into its cache, runs the probes,
+    interventions, summaries and the training-log step, and finishes the record. Every step records its host."""
     lin = load_lineage()
     pt = point(lin, a.point)
     metrics = [x.strip() for x in a.metrics.split(",") if x.strip()]
@@ -785,7 +819,7 @@ def cmd_diag(a) -> None:
     check_checkpoint(lin, a.lineage, pt, a.checkpoint)
     if "cue_diag" in metrics:  # AMB-050-6 restricts the cue diagnostics (단서 진단) only
         check_final_only(pt, a.checkpoint)
-    if "dead_channels" in metrics and not a.train_log:
+    if "dead_channels" in metrics and not a.train_log and a.part != "gpu":
         raise Refused(f"dead_channels reads the run's training log: --train-log <BC stderr log | RL train.csv> of {run_of(a.checkpoint)}")
     outs = {diag_out(lin, metric, a.checkpoint) for metric in metrics}
     if len(outs) != 1:
@@ -800,24 +834,30 @@ def cmd_diag(a) -> None:
     cmds = []
     if "cue_diag" in metrics:
         for name in diag_metric(lin, "cue_diag")["sets"]:
-            cmds += cue_commands(lin, name, ck, out / name, set_data(lin, name, shared, create=a.run), py, dump=local / name / "dump")
+            # the cpu part reads the dumps, not the shards: no link trees there
+            cmds += cue_commands(lin, name, ck, out / name, set_data(lin, name, shared, create=a.run and a.part != "cpu"), py, dump=local / name / "dump")
             cmds.append([COPY, str(local / name / "dump"), str(out / name / "dump")])
             cmds.append(summary_command(lin, pt, name, out / name, py))
     log_sha = None
-    if "dead_channels" in metrics:
+    if "dead_channels" in metrics and a.part != "gpu":
         log = Path(a.train_log)
         if not log.is_file():
             raise Refused(f"no training log {log}")
         log_sha = file_sha256(log)
         cmds.append(train_log_command(lin, pt, a.checkpoint, str(log), ck, out, py))
+    if a.part == "cpu":
+        cmds = cpu_order(cmds, out, local)
+    elif a.part == "gpu":
+        cmds = [c for c in cmds if step_part(c) == "gpu"]
     if not a.run:
         for c in cmds:
-            if c[0] == COPY:
+            if c[0] in (COPY, FETCH):
                 part = c[2] + ".part"
                 print(f"cp -r {shlex.quote(c[1])} {shlex.quote(part)} && mv {shlex.quote(part)} {shlex.quote(c[2])}")
             else:
                 print(show(c))
-        print(f"python tools/eval/protocol.py check-diag {out} --metrics {','.join(metrics)} --checkpoint {a.checkpoint}")
+        if a.part != "gpu":
+            print(f"python tools/eval/protocol.py check-diag {out} --metrics {','.join(metrics)} --checkpoint {a.checkpoint}")
         print(f"# pinned: backend {diag_metric(lin, 'cue_diag')['backend']}; checkpoint sha256 {sha}; git {git_state()['commit']}")
         print(f"# --run also makes the hold-out link trees under {cache / HOLDOUT_DIR}, writes {out / RUNNING} at the start and {out / DIAG_RECORD} at the end")
         return
@@ -826,33 +866,47 @@ def cmd_diag(a) -> None:
         raise Refused("uncommitted protocol files (" + ", ".join(git["dirty_paths"]) + "); --allow-dirty records them in protocol.json")
     if (out / DIAG_RECORD).exists():
         raise Refused(f"{out / DIAG_RECORD} exists (one finished measurement per folder; --out for another)")
-    if (out / RUNNING).is_file() and not a.takeover:
-        try:
-            prev = json.loads((out / RUNNING).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            prev = {}
-        if not any("error" in s for s in prev.get("steps", [])):
-            raise Refused(f"{out / RUNNING}: an attempt in progress (host {prev.get('host', '?')}, started {prev.get('started', '?')}, "
-                          f"no failed step); --takeover when its host is gone")
-    for p in (out, local):
-        if p.exists():  # an earlier attempt without a finished record: kept under another name
-            moved = next_failed(p)
-            p.rename(moved)
-            print(f"[diag] earlier attempt kept as {moved}", flush=True)
-    out.mkdir(parents=True)
-    if "cue_diag" in metrics:
-        for name in diag_metric(lin, "cue_diag")["sets"]:
-            (out / name).mkdir()
     roots = {"<shared>": shared, "<cache>": cache}
-    rec = {"protocol": "config/protocol/lineage.toml (050-R9)", "lineage": a.lineage, "point": pt["id"], "family": pt["family"],
-           "metrics": metrics, "checkpoint": a.checkpoint, "checkpoint_sha256": sha, "checkpoint_id": f"{Path(a.checkpoint).name}@{sha[:12]}",
-           "backend": diag_metric(lin, "cue_diag")["backend"] if "cue_diag" in metrics else None,
-           "precision": PRECISION[diag_metric(lin, "cue_diag")["backend"]] if "cue_diag" in metrics else None,
-           "sets": {n: {k: v for k, v in cue_set(lin, n).items() if k in ("holdout", "datasets", "files", "files_sha256", "splits", "games", "seed")}
-                    for n in diag_metric(lin, "cue_diag")["sets"]} if "cue_diag" in metrics else None,
-           "train_log": {"file": Path(a.train_log).name, "sha256": log_sha} if log_sha else None,
-           "git": git, "host": socket.gethostname(), "platform": sys.platform, "commands": [diag_record_cmd(c, roots) for c in cmds],
-           "started": datetime.datetime.now().astimezone().isoformat(timespec="seconds"), "finished": None, "steps": []}
+    host = socket.gethostname()
+    now = lambda: datetime.datetime.now().astimezone().isoformat(timespec="seconds")  # noqa: E731
+    if a.part == "cpu":
+        rec = cpu_record(out, sha, metrics, git, a.takeover)
+        if local.exists():  # an earlier cpu attempt on this host: kept under another name
+            moved = next_failed(local)
+            local.rename(moved)
+            print(f"[diag] earlier local copy kept as {moved}", flush=True)
+        rec["parts"]["cpu"] = {"host": host, "platform": sys.platform, "git": git, "started": now(), "finished": None}
+        rec["train_log"] = {"file": Path(a.train_log).name, "sha256": log_sha} if log_sha else None
+        rec["commands"] += [diag_record_cmd(c, roots) for c in cmds]
+    else:
+        if (out / RUNNING).is_file() and not a.takeover:
+            try:
+                prev = json.loads((out / RUNNING).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                prev = {}
+            if not any("error" in s for s in prev.get("steps", [])):
+                raise Refused(f"{out / RUNNING}: an attempt in progress (host {prev.get('host', '?')}, started {prev.get('started', '?')}, "
+                              f"no failed step); --takeover when its host is gone")
+        for p in (out, local):
+            if p.exists():  # an earlier attempt without a finished record: kept under another name
+                moved = next_failed(p)
+                p.rename(moved)
+                print(f"[diag] earlier attempt kept as {moved}", flush=True)
+        out.mkdir(parents=True)
+        if "cue_diag" in metrics:
+            for name in diag_metric(lin, "cue_diag")["sets"]:
+                (out / name).mkdir()
+        rec = {"protocol": "config/protocol/lineage.toml (050-R9)", "lineage": a.lineage, "point": pt["id"], "family": pt["family"],
+               "metrics": metrics, "checkpoint": a.checkpoint, "checkpoint_sha256": sha, "checkpoint_id": f"{Path(a.checkpoint).name}@{sha[:12]}",
+               "backend": diag_metric(lin, "cue_diag")["backend"] if "cue_diag" in metrics else None,
+               "precision": PRECISION[diag_metric(lin, "cue_diag")["backend"]] if "cue_diag" in metrics else None,
+               "sets": {n: {k: v for k, v in cue_set(lin, n).items() if k in ("holdout", "datasets", "files", "files_sha256", "splits", "games", "seed")}
+                        for n in diag_metric(lin, "cue_diag")["sets"]} if "cue_diag" in metrics else None,
+               "train_log": {"file": Path(a.train_log).name, "sha256": log_sha} if log_sha else None,
+               "git": git, "host": host, "platform": sys.platform, "commands": [diag_record_cmd(c, roots) for c in cmds],
+               "started": now(), "finished": None, "steps": []}
+        if a.part == "gpu":
+            rec["parts"] = {"gpu": {"host": host, "platform": sys.platform, "git": git, "started": rec["started"], "finished": None}}
 
     def save(final: bool = False) -> None:
         (out / RUNNING).write_text(json.dumps(rec, indent=1), encoding="utf-8")
@@ -864,17 +918,26 @@ def cmd_diag(a) -> None:
         print("[diag]", show(diag_record_cmd(c, roots)), flush=True)
         t0 = datetime.datetime.now()
         try:
-            if c[0] == COPY:
+            if c[0] in (COPY, FETCH):
                 copy_dump(Path(c[1]), Path(c[2]))
             else:
                 subprocess.run(c, cwd=ROOT, check=True)
         except (subprocess.CalledProcessError, OSError) as e:
-            rec["steps"].append({"step": step_name(c), "error": str(e)})
+            rec["steps"].append({"step": step_name(c), "host": host, "error": str(e)})
             save()
             raise
-        rec["steps"].append({"step": step_name(c), "secs": round((datetime.datetime.now() - t0).total_seconds())})
+        rec["steps"].append({"step": step_name(c), "host": host, "secs": round((datetime.datetime.now() - t0).total_seconds())})
         save()
-    rec["finished"] = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    if a.part == "gpu":
+        rec["parts"]["gpu"]["finished"] = now()
+        save()
+        print(f"[diag] dumps on the shared drive; finish on a CPU host at git {git['commit']}: python tools/eval/protocol.py diag "
+              f"--lineage {a.lineage} --point {a.point} --checkpoint {a.checkpoint} --metrics {','.join(metrics)} --run --part cpu"
+              + (f" --out {a.out}" if a.out else "") + (" --train-log <log>" if "dead_channels" in metrics else ""), flush=True)
+        return
+    if a.part == "cpu":
+        rec["parts"]["cpu"]["finished"] = now()
+    rec["finished"] = now()
     save(final=True)
     problems = [p for metric in metrics for p in check_diag(lin, metric, out, sha)]
     rec["check"] = problems
@@ -887,6 +950,30 @@ def cmd_diag(a) -> None:
     if problems:
         raise SystemExit(1)
     print(f"{out}: {', '.join(metrics)} conform to the protocol")
+
+
+def cpu_record(out: Path, sha: str, metrics: list[str], git: dict, takeover: bool) -> dict:
+    """The running.json a `--part cpu` attempt continues: its gpu part finished at the same git commit, for the
+    same checkpoint and metrics; an earlier cpu attempt failed (or `--takeover`)."""
+    f = out / RUNNING
+    if not f.is_file():
+        raise Refused(f"no {f}: run `diag --run --part gpu` first (on the Linux ROCm host)")
+    rec = json.loads(f.read_text(encoding="utf-8"))
+    gpu = (rec.get("parts") or {}).get("gpu") or {}
+    if not gpu.get("finished"):
+        raise Refused(f"{f}: the gpu part has not finished (host {gpu.get('host', rec.get('host', '?'))}, steps {[s['step'] for s in rec.get('steps', [])]})")
+    if rec.get("checkpoint_sha256") != sha:
+        raise Refused(f"{f}: dumps of checkpoint sha256 {str(rec.get('checkpoint_sha256'))[:12]}, this checkpoint {sha[:12]}")
+    if rec.get("metrics") != metrics:
+        raise Refused(f"{f}: metrics {rec.get('metrics')}, this attempt {metrics}")
+    if (gpu.get("git") or {}).get("commit") != git.get("commit"):
+        raise Refused(f"{f}: the dumps were made at git {(gpu.get('git') or {}).get('commit')}, this host is at {git.get('commit')} (same commit on both parts)")
+    cpu = rec["parts"].get("cpu")
+    if cpu and not cpu.get("finished") and not takeover:
+        failed = any("error" in s for s in rec.get("steps", []) if s.get("host") == cpu.get("host") and step_part_name(s["step"]) == "cpu")
+        if not failed:
+            raise Refused(f"{f}: a cpu part in progress (host {cpu.get('host', '?')}, started {cpu.get('started', '?')}, no failed step); --takeover when its host is gone")
+    return rec
 
 
 def cmd_check_diag(a) -> None:
@@ -1266,6 +1353,8 @@ def main(argv=None) -> None:
     s.add_argument("--run", action="store_true", help="run the commands here (else print them; nothing is written, the hold-out link trees are made by --run)")
     s.add_argument("--allow-dirty", action="store_true")
     s.add_argument("--takeover", action="store_true", help="redo a folder whose running.json shows an attempt in progress (its host is gone); kept as .failed-<k>")
+    s.add_argument("--part", choices=["all", "gpu", "cpu"], default="all",
+                   help="gpu: the dumps and their copies (Linux ROCm host), leaving running.json; cpu: the rest on another host at the same commit")
     s.set_defaults(f=cmd_diag)
     s = sub.add_parser("check-diag", help="refuse diagnostic outputs made with other settings or data")
     s.add_argument("out", help="the diagnostics output folder")
