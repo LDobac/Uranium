@@ -23,7 +23,7 @@ from uranium.model.net import ENTITY_KEYS, LABEL_KEYS, OBS_KEYS
 
 # 033 reward weights of config/reward.toml (initial values, without the league's decay).
 WEIGHTS = [1.0, 0.3, 0.3, 0.05]
-STAT_KEYS = ("loss", "policy", "value", "kl", "win_open", "rho_mean", "adv_mean", "grad_norm", "kl_heads", "entropy_heads")
+STAT_KEYS = ("loss", "policy", "value", "kl", "win_open", "rho_mean", "adv_mean", "grad_norm", "kl_heads", "entropy_heads", "aux_priv", "aux_jepa")
 PAD = 64  # entity padding of learner batches (uranium_league::batch::PAD_ENTITIES, 030-R7)
 # `--off` names: the new learner's attribute each one clears (the entity padding cut is off by
 # default; `--trim` turns it on).
@@ -102,6 +102,16 @@ class SyntheticSegments:
     @property
     def versions(self) -> list[int]:
         return [0] * self.lanes
+
+    # 042-R21 ①: the host-side aux divisors (`rl_aux_counts`), as `group` lays the lanes out:
+    # every row a real step, every trained step with a privileged summary.
+    @property
+    def real_steps(self) -> list[int]:
+        return [self.t] * self.lanes
+
+    @property
+    def priv_trained(self) -> list[int]:
+        return self.trained
 
     def group(self, start: int, end: int, t: int, max_select: int) -> dict:
         assert t == self.t and 0 <= start < end <= self.lanes, (start, end, t)
