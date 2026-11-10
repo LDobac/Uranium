@@ -70,6 +70,19 @@ def test_main_lineage_configs_041_r29():
             assert cfg["keep_checkpoints"] == 0, "041-R29 ⑨: every checkpoint kept"
             assert {k: x for k, x in cfg.items() if k not in ("aux", "monitor", "train", "keep_checkpoints")} == {k: x for k, x in ref.items() if k != "keep_checkpoints"}
             assert fp != ref_fp, "[aux] / [train] are in the B-3 fingerprint"
+    # TOML level: only the model 2 keys differ (a stray table or key would show up here).
+    import tomllib
+
+    def flat(t, pre=""):
+        out = {}
+        for k, x in t.items():
+            out.update(flat(x, f"{pre}{k}.") if isinstance(x, dict) else {f"{pre}{k}": x})
+        return out
+
+    allowed = {"aux.priv", "aux.jepa", "monitor.spatial_every", "train.model_seed", "keep_checkpoints"} | {f"model.{k}" for k in ("bypass", "spatial_preact", "core_skip", "aux_priv", "aux_jepa")}
+    for new, old in (("bc_m2.toml", "bc.toml"), ("bc_m2_e2.toml", "bc_e2.toml")):
+        a, b = (flat(tomllib.loads((root / f).read_text(encoding="utf-8"))) for f in (new, old))
+        assert {k for k in a.keys() | b.keys() if a.get(k) != b.get(k)} == allowed, new
     # m2-s1 has the lambda base run's settings (041-R24 ①): only execution keys differ.
     assert _bc(root / "bc_m2.toml", "s1")[1] == _bc(root / "bc_m2_lambda_base.toml", "s1")[1]
     assert _bc(root / "bc_m2_e2.toml", "s1")[0]["data"]["seed"] == 2

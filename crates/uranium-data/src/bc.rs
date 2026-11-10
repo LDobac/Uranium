@@ -66,9 +66,10 @@ fn default_enemy_race_mask() -> f64 {
 
 /// 041-R23 ① / 042-R21 ①: `[aux]`, the training-only aux loss weights (λ before the loss sum) of
 /// the 032-R24 modules. A key present needs its `[model]` module and a module needs its key (the
-/// Python trainer refuses the run otherwise, 041-R23 ④); 0 = that loss is not added. The values
-/// are [SPEC DEFERRED(P3)] AMB-041-13b / AMB-042-21, so no tracked config sets them yet. Shared by
-/// the BC and RL configs (same table name, 041-R23 ①).
+/// Python trainer refuses the run otherwise, 041-R23 ④); 0 = that loss is not added. λ resolved
+/// 2026-11-10 (AMB-041-13b, AMB-042-21): priv 0.2, jepa 0.1 in config/bc_m2*.toml /
+/// config/rl_m2.toml; config/bc.toml and config/rl.toml have no [aux]. Shared by the BC and RL
+/// configs (same table name, 041-R23 ①).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct AuxWeights {

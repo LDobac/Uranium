@@ -1,5 +1,6 @@
-# 042-R21 ④ model 2 path (lineage 2) RL (041-R29 ⑥): config/rl.toml (the 042-AC1 settings) plus the
-# [aux] and [monitor] tables below, nothing else changed. The aux keys are not in config/rl.toml:
+# 042-R21 ④ model 2 path (lineage 2) RL (041-R29 ⑥): config/rl.toml (the config the 042-AC1 runs
+# used; their AC1 setting comes from CLI flags) plus the [aux] and [monitor] tables below, nothing
+# else changed. The aux keys are not in config/rl.toml:
 # a Checkpoint 1 lineage model has no aux modules and a present key without its module is a start
 # error (042-R21 ①). Runs as the Checkpoint 1 lineage's 042-AC1 V-trace runs, with
 # `--config config/rl_m2.toml` and `--bc` / start = the last checkpoint of m2-s2e2.
