@@ -7,8 +7,7 @@
 # within +-3%p. The chain's configs differ in data.seed (3, 4, ...), the per-race fractions and
 # [steps], all recounted with `uranium-train mix-fractions` for each seed. Peak / floor learning rate
 # 3e-4 / 3e-6 x s2_lr_scale 0.1 = 3e-5 / 3e-7, warmup 5%, cosine to the end of the epoch (041-R21 ⑥).
-# TEMPLATE: [aux] (lambda, AMB-041-13b) is decided after the P3 lambda runs; until then the trainer
-# refuses this file (aux_priv / aux_jepa without [aux], 041-R23 ④).
+# [aux]: lambda_priv 0.2, lambda_jepa 0.1 (AMB-041-13b, confirmed 2026-11-10), as config/bc_m2.toml.
 # 041 behaviour cloning hyper-parameters (041-R3, R10: tuning targets, recorded in checkpoints).
 
 # Parallel games per batch (B) and truncated-BPTT length (T, 041-R2 / 032-R5).
@@ -35,7 +34,8 @@ grad_clip = 1.0
 # S2 fine-tuning uses 1/10 of the learning rate (041-R4).
 s2_lr_scale = 0.1
 # 061-R6 (G-D6): checkpoints kept per run on the shared drive. Absent = 5; 0 = keep all.
-# keep_checkpoints = 5
+# 041-R29 ⑨: every checkpoint of the lineage is kept (execution only, not in the fingerprint).
+keep_checkpoints = 0
 # Head loss weights (041-R1).
 [heads]
 action = 1.0
@@ -114,7 +114,8 @@ aux_jepa = [1, 8, 32]
 [monitor]
 spatial_every = 100
 
-# 041-R23 (AMB-041-13b, decided after P3): the aux loss weights, e.g.
-# [aux]
-# priv = <lambda_priv>
-# jepa = <lambda_jepa>
+# 041-R23 ⑥ (AMB-041-13b, user decision 2026-11-10 after the 041-R24 lambda runs: the default
+# proposal kept): aux loss weights lambda_priv 0.2, lambda_jepa 0.1.
+[aux]
+priv = 0.2
+jepa = 0.1
