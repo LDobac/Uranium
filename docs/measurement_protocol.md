@@ -132,7 +132,7 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 5. **`s1e2` 체크포인트마다**(041-R20 ③, 050-R9 "`m2-s1e2` 체크포인트마다"): `python tools/eval/s1e2_loop.py`
    - Checkpoint 1 방식(`reports/m6_bc_eval.md` 4절) 그대로다. 채점기가 빌 때마다 아직 안 잡힌 가장 새 체크포인트를 잡고, 그 사이는 건너뛰고, 최종(run의 `DONE`)은 반드시 잰다. 기준인 S1 최종(`s1e1` 지점, `--reference`)을 먼저 잰다. 학습은 멈추지 않는다.
    - val 500(Linux ROCm 호스트): `python tools/eval/s1e2_loop.py val --run m2-s1e2 --reference checkpoints/m2-s1/ckpt-N --watch`
-     - 체크포인트마다 `protocol.py`의 고정 명령을 돌린다: `python -m uranium bc-eval --dataset replays/shards/stardata --dataset replays/shards/community --dataset replays/shards/scr_ladder --dataset replays/shards/personal --checkpoint <shared>/checkpoints/<run>/ckpt-N --split val --games 500 --seed 1 --backend rocm --config config/bc.toml --out <shared>/artifacts/bc_e2_val/val500/<run>__ckpt-N.json`
+     - 체크포인트마다 `protocol.py`의 고정 명령을 돌린다: `python -m uranium bc-eval --dataset replays/shards/stardata --dataset replays/shards/community --dataset replays/shards/scr_ladder --dataset replays/shards/personal --checkpoint <shared>/checkpoints/<run>/ckpt-N --split val --games 500 --seed 1 --backend rocm --config config/bc.toml --bunker-before 5760 --out <shared>/artifacts/bc_e2_val/val500/<run>__ckpt-N.json`
      - 2시간 제한(Checkpoint 1 규칙)을 둔다. 호스트가 여럿이면 `<...>.claim` 파일로 나눠 잡는다.
      - 결과 옆 `<...>.protocol.json`에 체크포인트 sha256, git, backend·정밀도, 종료 코드, 시도 번호, `check-bc-eval` 결과를 남긴다. 확인이 어긋나도 기록하고 다음으로 간다.
      - 실패·시간 초과·중단(Ctrl-C, 기록 전 오류)은 그 시도의 파일을 `<...>.failed-<k>.*`로 바꿔 남기고(결과 → 로그 → 기록 → claim 순), 그 체크포인트가 아직 잡을 대상이면 다시 돈다. 체크포인트마다 모두 3번까지다(메인 임시 결정: λ 채점 때 한 ROCm 호스트에서 val500이 3번 죽은 뒤 성공).

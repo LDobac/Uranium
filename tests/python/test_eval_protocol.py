@@ -1172,7 +1172,7 @@ def test_s1e2_val_commands_041_r20(tmp_path, monkeypatch, capsys):
     assert lines[0] == " ".join(["python", "-m", "uranium", "bc-eval", "--dataset", "replays/shards/stardata", "--dataset", "replays/shards/community",
                                  "--dataset", "replays/shards/scr_ladder", "--dataset", "replays/shards/personal",
                                  "--checkpoint", str(shared / "checkpoints/m2-s1/ckpt-39096"), "--split", "val", "--games", "500", "--seed", "1",
-                                 "--backend", "rocm", "--config", "config/bc.toml", "--out", str(val / "m2-s1__ckpt-39096.json")])
+                                 "--backend", "rocm", "--config", "config/bc.toml", "--bunker-before", "5760", "--out", str(val / "m2-s1__ckpt-39096.json")])
     assert lines[3].endswith(f"--out {val / 'm2-s1e2__ckpt-3000.json'}")
     with pytest.raises(SystemExit, match="REFUSED: lineage m2 runs start with"):
         s1e2_loop.main(["val", "--run", "m2-s1e2", "--reference", "checkpoints/bc-s1-pt/ckpt-39096", "--dry-run"])
