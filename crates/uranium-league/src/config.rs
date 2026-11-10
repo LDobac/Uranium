@@ -1158,6 +1158,18 @@ mod tests {
         assert!(toml::from_str::<RlConfig>(&format!("{full}\n[aux]\nprivileged = 0.2\n")).is_err());
     }
 
+    /// 042-R21 ④ (AMB-042-21 Resolved 2026-11-10): `config/rl_m2.toml`, the model 2 path RL config,
+    /// is `config/rl.toml` plus `[aux] priv 0.2 / jepa 0.1` and `[monitor] spatial_every 100` only.
+    #[test]
+    fn rl_m2_config_042_r21() {
+        let mut t: RlConfig = toml::from_str(include_str!("../../../config/rl_m2.toml")).unwrap();
+        t.validate().unwrap();
+        assert_eq!(t.aux, Some(AuxWeights { privileged: Some(0.2), jepa: Some(0.1) }), "AMB-041-13b / AMB-042-21");
+        assert_eq!(t.monitor, Some(MonitorConfig { spatial_every: 100 }), "AMB-041-14");
+        (t.aux, t.monitor) = (None, None);
+        assert_eq!(t, RlConfig::default_file(), "everything else as config/rl.toml");
+    }
+
     /// `config/rl.toml` with `from` replaced by `to` (once), validated.
     fn rl_with(from: &str, to: &str) -> Result<RlConfig> {
         // A Windows checkout may have CRLF line ends; `from` / `to` use LF.
