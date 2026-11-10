@@ -8,6 +8,8 @@ import argparse
 import copy
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -149,7 +151,7 @@ def test_family_and_menu_refusals_050_ac5():
     with pytest.raises(protocol.Refused, match="not in the menu"):
         protocol.check_metric(LIN, protocol.point(LIN, "mix-e1"), "t1")
     assert protocol.check_metric(LIN, bc, "cue_diag")["kind"] == "diag_cue"
-    assert protocol.check_metric(LIN, bc, "dead_channels")["kind"] == "diag_spatial"
+    assert protocol.check_metric(LIN, bc, "dead_channels")["kind"] == "diag_train_log"
     lin = copy.deepcopy(LIN)
     lin["plan"]["tvz_rl"]["families"] = ["bc"]
     with pytest.raises(protocol.Refused, match="not pinned for family"):
@@ -186,7 +188,9 @@ def test_ck1_lineage_takes_no_new_measurements_050_r9(tmp_path):
         protocol.main(["bc-eval", "--metric", "val500", "--lineage", "ck1", "--point", "r1", "--checkpoint", "checkpoints/bc-dagger-r1/ckpt-1137"])
     for pt in LIN["point"]:
         protocol.check_new_measurement(LIN, "ck1", "cue_diag", pt)
-        protocol.check_new_measurement(LIN, "ck1", "dead_channels", pt)
+        with pytest.raises(protocol.Refused, match="not measured"):  # AMB-050-5: no training-log statistics
+            protocol.check_new_measurement(LIN, "ck1", "dead_channels", pt)
+        protocol.check_new_measurement(LIN, "m2", "dead_channels", pt)
     protocol.check_new_measurement(LIN, "m2", "rush", protocol.point(LIN, "r1"))
     assert not (tmp_path / "j").exists()
 
@@ -218,7 +222,7 @@ def test_ck1_supplement_only_for_missing_cells_050_r9(tmp_path, monkeypatch):
     for metric in ("rush", "t0_tp", "t0_300"):
         with pytest.raises(SystemExit, match=rf"no new {metric} measurement at point s2e2 \(it has {metric}: `protocol.py tables`\)"):
             protocol.main(base[:-1] + ["j2", "--metrics", metric])
-    with pytest.raises(SystemExit, match="no new macro measurement at point s2e2; allowed there: cue_diag, dead_channels, t0_600, val500_race"):
+    with pytest.raises(SystemExit, match="no new macro measurement at point s2e2; allowed there: cue_diag, t0_600, val500_race"):
         protocol.main(base[:-1] + ["j2", "--metrics", "macro"])
     r1 = ["--lineage", "ck1", "--point", "r1", "--checkpoint", "checkpoints/bc-dagger-r1/ckpt-1137"]
     protocol.main(["bc-eval", "--metric", "val500_race"] + r1)
@@ -603,47 +607,66 @@ def test_unknown_plan_needs_kind_050_r9(tmp_path):
 # ------------------------------------------------------------------ diagnostics (050-R9 cue_diag, dead_channels)
 
 CUE, DEAD = LIN["metric"]["cue_diag"], LIN["metric"]["dead_channels"]
+TEACHER, HUMAN = CUE["teacher"], CUE["human"]
 SHA = "f" * 64
 TAILS = ["hold_orig/botgen", "hold_macro2/botgen"]
+HUMAN_DS = sorted(HUMAN["datasets"])
 
 
 def test_diag_settings_are_the_tools_050_r9():
-    """The pinned values are the diag tools' own (dump CF_STARTS, probes stages, monitor layer names and alarm)."""
+    """The pinned values are the diag tools' own (dump CF_STARTS, probes stages, monitor alarm layers / start),
+    and the user decisions of 2026-11-10 (AMB-050-4 / -5 / -6)."""
     from uranium.diag import dump, probes
     from uranium.model import monitor
 
-    assert {r: tuple(v) for r, v in CUE["dump"]["cf_starts"].items()} == dump.CF_STARTS
-    assert ",".join(CUE["probes"]["stages"]) == probes.DEFAULT_STAGES
-    assert protocol.SPEC_POINTS == dict(monitor.SPEC_LAYERS) and DEAD["layers"] == [n for n, _ in monitor.SPEC_LAYERS]
-    assert protocol.CONST_POINTS == monitor.CONST_POINTS
-    assert DEAD["train_log"]["from_update"] == monitor.ALARM_FROM and DEAD["const_threshold"] == monitor.CONST_THRESHOLD
-    assert protocol.holdout_spec(LIN, "dead_channels") == CUE["holdout"]
-    assert set(CUE["report"]["stages"]) <= set(CUE["probes"]["stages"]) and set(CUE["probes"]["expect_tasks"]) <= set(CUE["report"]["tasks"])
-    assert CUE["backend"] == DEAD["backend"] == "rocm" and DEAD["precision"] == protocol.PRECISION["rocm"]
+    assert {r: tuple(v) for r, v in TEACHER["dump"]["cf_starts"].items()} == dump.CF_STARTS
+    assert ",".join(TEACHER["probes"]["stages"]) == ",".join(HUMAN["probes"]["stages"]) == probes.DEFAULT_STAGES
+    assert DEAD["layers"] == list(monitor.ALARM_LAYERS) and DEAD["from_update"] == monitor.ALARM_FROM
+    assert CUE["sets"] == ["teacher", "human"] and CUE["backend"] == "rocm"
+    # AMB-050-4: the max-seen production-building count on human T / P games; constant (skipped) on the Zerg teacher rows
+    assert HUMAN["probes"]["races"] == ["T", "P"] and "count|focus_rows" in HUMAN["report"]["required"]
+    assert "count|focus_rows" in TEACHER["probes"]["expect_skipped"] and "intervene" in TEACHER and "intervene" not in HUMAN
+    assert (HUMAN["games"], HUMAN["seed"], HUMAN["splits"]) == (500, 1, ["val", "test"]) and HUMAN["datasets"] == LIN["metric"]["val500"]["datasets"]
+    # AMB-050-5: training-log records only, Checkpoint 1 not measured
+    assert DEAD["kind"] == "diag_train_log" and "ck1" in DEAD["not_measured"] and LIN["lineage"]["ck1"]["new_metrics"] == ["cue_diag"]
+    # AMB-050-6: s1e2 diagnostics at the final checkpoint only
+    assert [p["id"] for p in LIN["point"] if p.get("diag_final_only")] == ["s1e2"]
     for pt in LIN["point"]:
         assert {"cue_diag", "dead_channels"} <= set(pt["metrics"]), pt["id"]
+        for s in CUE["sets"]:
+            assert set(CUE[s]["report"]["stages"]) <= set(CUE[s]["probes"]["stages"])
 
 
 def test_diag_commands_pinned_050_r9(tmp_path):
     """The emitted commands carry every pinned setting (deterministic, explicit flags, not the tools' defaults)."""
-    dirs = [tmp_path / t for t in TAILS]
-    out = tmp_path / "out"
-    dump, probes_c, inter = protocol.diag_commands(LIN, "cue_diag", "CK", out, dirs)
-    assert dump == ["python", "-m", "uranium", "diag", "dump", "--checkpoint", "CK", "--shards", str(dirs[0]), "--shards", str(dirs[1]),
-                    "--splits", "val,test", "--config", "config/bc.toml", "--backend", "rocm", "--lanes-per-group", "4", "--row-until", "8640",
+    data = ["--shards", "A", "--shards", "B"]
+    out = tmp_path / "out" / "teacher"
+    dump, probes_c, inter = protocol.cue_commands(LIN, "teacher", "CK", out, data)
+    assert dump == ["python", "-m", "uranium", "diag", "dump", "--checkpoint", "CK", "--shards", "A", "--shards", "B", "--splits", "val,test",
+                    "--config", "config/bc.toml", "--backend", "rocm", "--lanes-per-group", "4", "--row-until", "8640",
                     "--act-until", "5760", "--act-every", "1", "--core-points", "gate", "--cf", "--cf-starts", "T:1280,2080;P:1720,3030;Z:1800,3240",
                     "--out", str(out / "dump")]
     assert probes_c == ["python", "-m", "uranium", "diag", "probes", str(out / "dump"), "--races", "Z", "--stages", "token,e_pool,sp_pool,c,x_in,L1.g1,L1.out,h,hc",
                         "--gain", "resid", "--boot", "500", "--cap", "0", "--seed", "7", "--device", "cpu", "--out", str(out / "probes.json")]
     assert inter == ["python", "-m", "uranium", "diag", "intervene", str(out / "dump"), "--races", "Z", "--window", "2160,5760", "--boot", "2000", "--seed", "3",
                      "--out", str(out / "intervene.json")]
-    (sp,) = protocol.diag_commands(LIN, "dead_channels", "CK", out, dirs)
-    assert sp == ["python", "-m", "uranium", "diag", "spatial", "--checkpoint", "CK", "--shards", str(dirs[0]), "--shards", str(dirs[1]), "--split", "val",
-                  "--config", "config/bc.toml", "--backend", "rocm", "--precision", "f32", "--batches", "2", "--skip-batches", "2", "--lanes-per-group", "4",
-                  "--const-threshold", "0.0001", "--out", str(out / "spatial.json")]
-    assert protocol.diag_commands(LIN, "cue_diag", "CK", out, dirs) == [dump, probes_c, inter]
-    assert protocol.summary_command(protocol.point(LIN, "s1e1"), ["cue_diag", "dead_channels"], out)[-8:] == [
-        "--probes", str(out / "probes.json"), "--intervene", str(out / "intervene.json"), "--spatial", str(out / "spatial.json"), "--out", str(out / "summary.json")]
+    hd = [x for ds in HUMAN_DS for x in ("--dataset", ds)]
+    ho = tmp_path / "out" / "human"
+    hdump, hprobes = protocol.cue_commands(LIN, "human", "CK", ho, hd, dump=tmp_path / "local" / "dump")
+    assert hdump == ["python", "-m", "uranium", "diag", "dump", "--checkpoint", "CK", *hd, "--splits", "val,test", "--games", "500", "--seed", "1",
+                     "--config", "config/bc.toml", "--backend", "rocm", "--lanes-per-group", "4", "--row-until", "8640", "--act-until", "8640",
+                     "--act-every", "4", "--core-points", "gate", "--out", str(tmp_path / "local" / "dump")]
+    assert hprobes == ["python", "-m", "uranium", "diag", "probes", str(tmp_path / "local" / "dump"), "--races", "T,P", "--stages", "token,e_pool,sp_pool,c,x_in,L1.g1,L1.out,h,hc",
+                       "--gain", "resid", "--boot", "300", "--cap", "60", "--seed", "7", "--device", "cpu", "--out", str(ho / "probes.json")]
+    assert protocol.cue_commands(LIN, "teacher", "CK", out, data) == [dump, probes_c, inter]
+    s1 = protocol.point(LIN, "s1e1")
+    assert protocol.summary_command(LIN, s1, "teacher", out)[5:] == ["--point", "s1e1", "--probes", str(out / "probes.json"), "--intervene", str(out / "intervene.json"),
+                                                                     "--out", str(out / "summary.json")]
+    assert "--intervene" not in protocol.summary_command(LIN, s1, "human", ho)
+    o = tmp_path / "out"
+    assert protocol.train_log_command(LIN, s1, "checkpoints/m2-s1/ckpt-39096", "s1.log", "CK", o) == [
+        "python", "tools/eval/spatial_logs.py", "s1.log", "--checkpoint", "CK", "--from-update", "600", "--until-update", "39096", "--out", str(o / "spatial_log.json")]
+    assert "--until-update" not in protocol.train_log_command(LIN, protocol.point(LIN, "rl-s1"), "checkpoints/m2-rl/ckpt-5/agents/main", "train.csv", "CK", o)
     assert protocol.diag_out(LIN, "cue_diag", "checkpoints/m2-s1/ckpt-39096") == "artifacts/diag/m2-s1__ckpt-39096"
     assert protocol.diag_out(LIN, "dead_channels", "checkpoints/ac1-vtrace-s1/ckpt-3133569/agents/main") == "artifacts/diag/ac1-vtrace-s1__ckpt-3133569-agents-main"
 
@@ -660,121 +683,203 @@ def test_holdout_link_trees_and_fingerprint_050_r9(tmp_path):
     shared = tmp_path / "shared"
     src = fake_source(shared / "datasets/replays/shards/botgen", {"teacher-20261106-a": [3, 4], "teacher-20261107-macro2": [5]})
     lin = copy.deepcopy(LIN)
-    lin["metric"]["cue_diag"]["holdout"] = [
+    lin["metric"]["cue_diag"]["teacher"]["holdout"] = [
         {"name": "hold_orig", "source": "datasets/replays/shards/botgen", "parts": ["teacher-20261106-a"],
          "files": 2, "files_sha256": protocol.files_fingerprint(src, ["teacher-20261106-a"])[1]},
         {"name": "hold_macro2", "source": "datasets/replays/shards/botgen", "parts": ["teacher-20261107-macro2"],
          "files": 1, "files_sha256": protocol.files_fingerprint(src, ["teacher-20261107-macro2"])[1]}]
-    dirs = protocol.holdout_dirs(lin, "dead_channels", shared, tmp_path / "work")
-    assert [d.relative_to(tmp_path / "work").as_posix() for d in dirs] == TAILS
-    assert sorted(f.name for f in (dirs[0] / "teacher-20261106-a").iterdir()) == ["shard_00000.bin.zst", "shard_00001.bin.zst"]
+    work = tmp_path / "work"
+    assert protocol.set_data(lin, "teacher", shared, work, create=False) == ["--shards", str(work / TAILS[0]), "--shards", str(work / TAILS[1])]
+    assert not work.exists()  # print mode writes nothing
+    args = protocol.set_data(lin, "teacher", shared, work)
+    assert args == ["--shards", str(work / TAILS[0]), "--shards", str(work / TAILS[1])]
+    assert sorted(f.name for f in (work / TAILS[0] / "teacher-20261106-a").iterdir()) == ["shard_00000.bin.zst", "shard_00001.bin.zst"]
+    (work / TAILS[1] / "teacher-20261107-macro2" / "shard_00009.bin.zst").write_bytes(b"z")  # a stale file in the link tree
+    with pytest.raises(protocol.Refused, match="hold-out hold_macro2 \\(link tree"):
+        protocol.set_data(lin, "teacher", shared, work)
     (src / "teacher-20261107-macro2" / "shard_00001.bin.zst").write_bytes(b"y")  # a shard added to the source
     with pytest.raises(protocol.Refused, match="hold-out hold_macro2 .*2 files"):
-        protocol.holdout_dirs(lin, "cue_diag", shared, tmp_path / "work")
+        protocol.set_data(lin, "teacher", shared, work)
 
 
-def cue_outputs(out: Path, sha: str = SHA, **edit) -> Path:
-    """A cue_diag output folder as `protocol.py diag --run` leaves it (the pinned settings and data)."""
-    d, p = CUE["dump"], CUE["probes"]
-    data = [f"/h/diag_holdout/{t}" for t in TAILS]
-    man = {"checkpoint": "<shared>/checkpoints/m2-s1/ckpt-9", "checkpoint_sha256": sha, "data": data, "splits": ["val", "test"], "games_per_split": None,
-           "seed": 1, "config": "config/bc.toml", "lanes_per_group": 4, "row_until": 8640.0, "act_until": 5760.0, "act_every": 1,
-           "passes": ["real", "early", "late", "sc+1", "sc-1", "tok+1", "tok-1"], "cf_starts": {r: [float(x) for x in v] for r, v in d["cf_starts"].items()},
+def fake_datasets(shared: Path, extra: str | None = None) -> None:
+    for i, ds in enumerate(HUMAN_DS):
+        d = shared / "datasets" / ds
+        d.mkdir(parents=True, exist_ok=True)
+        files = {f"p0/shard_{k:05d}.bin.zst": {"sha256": f"{i}{k}" * 8, "bytes": 10 + k} for k in range(2)}
+        if extra and ds == extra:
+            files["p0/shard_00099.bin.zst"] = {"sha256": "e" * 64, "bytes": 1}
+        (d / "manifest.json").write_text(json.dumps({"files": files}), encoding="utf-8")
+
+
+def test_human_holdout_manifest_fingerprint_050_r9(tmp_path):
+    """AMB-050-4: the human set is the four human datasets as their manifests list them (2,069 files when pinned)."""
+    shared = tmp_path / "shared"
+    fake_datasets(shared)
+    lin = copy.deepcopy(LIN)
+    n, sha = protocol.manifest_fingerprint(shared, HUMAN["datasets"])
+    assert n == 8
+    lin["metric"]["cue_diag"]["human"] |= {"files": n, "files_sha256": sha}
+    assert protocol.set_data(lin, "human", shared) == [x for ds in HUMAN["datasets"] for x in ("--dataset", ds)]
+    fake_datasets(shared, extra="replays/shards/scr_ladder")  # a newly collected ladder shard
+    with pytest.raises(protocol.Refused, match="hold-out human \\(dataset manifests\\): 9 files"):
+        protocol.set_data(lin, "human", shared)
+    with pytest.raises(protocol.Refused, match="2069 files"):
+        protocol.set_data(LIN, "human", shared)
+
+
+def probe_metrics(stages) -> dict:
+    m = {f"{s}|ridge": {"pt": 0.5, "lo": 0.4, "hi": 0.6} for s in stages} | {f"{s}+nuis|ridge": {"pt": 0.6, "gain": 0.1, "gain_lo": 0.05, "gain_hi": 0.15} for s in stages}
+    return m | {"nuis|ridge": {"pt": 0.3, "lo": 0.2, "hi": 0.4}, "h|mlp": {"pt": 0.45}}
+
+
+def set_outputs(d: Path, name: str, sha: str = SHA, **edit) -> Path:
+    """One cue set's outputs (<out>/<set>) as `protocol.py diag --run` leaves them (the pinned settings and data)."""
+    s = CUE[name]
+    dm, p = s["dump"], s["probes"]
+    data = [f"/h/diag_holdout/{t}" for t in TAILS] if name == "teacher" else [f"<shared>/datasets/{x}" for x in HUMAN_DS]
+    man = {"checkpoint": "<shared>/checkpoints/m2-s1/ckpt-9", "checkpoint_sha256": sha, "data": data, "splits": ["val", "test"], "games_per_split": s.get("games"),
+           "seed": 1, "config": "config/bc.toml", "lanes_per_group": 4, "row_until": 8640.0, "act_until": float(dm["act_until"]), "act_every": dm["act_every"],
+           "passes": ["real", "early", "late", "sc+1", "sc-1", "tok+1", "tok-1"] if dm["cf"] else ["real"],
+           "cf_starts": {r: [float(x) for x in v] for r, v in dm["cf_starts"].items()} if dm["cf"] else None,
            "stages": ["token", "e_pool", "sp_pool", "c", "h", "x_in", "L1.a", "L1.g1", "L1.f", "L1.out"], "backend": "rocm", "precision": "f32",
-           "games": 433, "stats": {"rows": 176873, "act_rows": 36516}} | edit.get("manifest", {})
+           "games": dm.get("expect_games", 1000), "stats": {"rows": dm.get("expect_rows", 500000), "act_rows": dm.get("expect_act_rows", 90000)}} | edit.get("manifest", {})
     head = {"checkpoint": man["checkpoint"], "checkpoint_sha256": sha, "data": data, "splits": ["val", "test"], "backend": "rocm", "precision": "f32"}
-    metric = {f"{s}|ridge": {"pt": 0.5, "lo": 0.4, "hi": 0.6} for s in p["stages"]} | {f"{s}+nuis|ridge": {"pt": 0.6, "gain": 0.1, "gain_lo": 0.05, "gain_hi": 0.15} for s in p["stages"]}
-    metric |= {"nuis|ridge": {"pt": 0.3, "lo": 0.2, "hi": 0.4}, "h|mlp": {"pt": 0.45}}
-    tasks = {t: {"metric": "r2", "rows": r, "games": g, "metrics": metric} for t, (r, g) in p["expect_tasks"].items()}
-    tasks["count|focus_rows"] = {"rows": 36516, "skipped": "constant target 1"}
-    probes_o = {"dump": head, "gain_method": "resid", "boot": 500, "cap": 0, "mlp": True, "races": {"Z": {"tasks": tasks}}} | edit.get("probes", {})
-    eff = {"n": 100, "mean": 0.01, "lo": -0.01, "hi": 0.03, "share_ge_0.15": 0.0}
-    allc = {e: {m: eff for m in ("bunker_any", "marine_sum", "rax2_any", "label_p")} for e in ("start", "start_unf", "count_sc", "count_tok", "real")}
-    inter = {"dump": head, "window": [2160.0, 5760.0], "races": {"Z": {"games": 433, "edited": 300, "edited_unf": 120, "count_edited": 310, "by_class": {"all": allc}}}} | edit.get("intervene", {})
-    (out / "dump").mkdir(parents=True, exist_ok=True)
-    (out / "dump" / "manifest.json").write_text(json.dumps(man), encoding="utf-8")
-    (out / "probes.json").write_text(json.dumps(probes_o), encoding="utf-8")
-    (out / "intervene.json").write_text(json.dumps(inter), encoding="utf-8")
-    return out
+    metric = probe_metrics(p["stages"])
+    races = {}
+    for race in p["races"]:
+        tasks = {t: {"metric": "r2", "rows": 100, "games": 20, "metrics": metric} for t in s["report"]["tasks"]}
+        tasks |= {t: {"metric": "r2", "rows": r, "games": g, "metrics": metric} for t, (r, g) in p["expect_tasks"].items()}
+        tasks |= {t: {"rows": 36516, "skipped": "constant target 1"} for t in p["expect_skipped"]}
+        races[race] = {"tasks": tasks}
+    probes_o = {"dump": head, "gain_method": "resid", "boot": p["boot"], "cap": p["cap"], "mlp": True, "races": races} | edit.get("probes", {})
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "dump").mkdir(exist_ok=True)
+    (d / "dump" / "manifest.json").write_text(json.dumps(man), encoding="utf-8")
+    (d / "probes.json").write_text(json.dumps(probes_o), encoding="utf-8")
+    if "intervene" in s:
+        eff = {"n": 100, "mean": 0.01, "lo": -0.01, "hi": 0.03, "share_ge_0.15": 0.0}
+        allc = {e: {m: eff for m in ("bunker_any", "marine_sum", "rax2_any", "label_p")} for e in ("start", "start_unf", "count_sc", "count_tok", "real")}
+        inter = {"dump": head, "window": [2160.0, 5760.0], "races": {"Z": {"games": 433, "edited": 300, "edited_unf": 120, "count_edited": 310, "by_class": {"all": allc}}}} | edit.get("intervene", {})
+        (d / "intervene.json").write_text(json.dumps(inter), encoding="utf-8")
+    return d
 
 
-def spatial_output(out: Path, sha: str = SHA, **edit) -> Path:
-    from uranium.model import monitor
-
-    pts = {pt: {"pos_frac": 0.3, "never_active": 2, "channels": 64, "elements": 1000} for _, pt in monitor.SPEC_LAYERS}
-    pts["spatial.s8"] = {"pos_frac": 0.25, "never_active": 0, "channels": 128, "elements": 1000}
-    pts |= {c: {"const": 0, "channels": 128 if "s8" in c else 256, "threshold": 1e-4, "dtype": "torch.float32"} for c in monitor.CONST_POINTS}
-    for k in edit.pop("drop", []):
-        pts.pop(k)
-    sp = {"data": [f"/h/diag_holdout/{t}" for t in TAILS], "split": "val", "batches": 2, "skip_batches": 2, "backend": "rocm", "precision": "f32",
-          "const_threshold": 1e-4, "checkpoints": {"<shared>/checkpoints/m2-s1/ckpt-9": {"sha256": sha, "rows": 4096, "precision": "f32", "points": pts}}} | edit
+def train_log_output(out: Path, **edit) -> Path:
+    r = {"log": "s1.log", "from_update": 600, "until_update": 39096, "sp_records_from": 25, "alarm_lines": [], "alarm_records": [], "crossing_records": [],
+         "dead": {k: {"max": 3, "max_share": 0.05, "at": 700, "last": 1} for k in DEAD["layers"]} | {"r4": {"max": 51, "max_share": 0.398, "at": 3000, "last": 51}},
+         "worst_dead_layer": "r4", "worst_dead_share": 0.398, "const": {"sp_const_s8": {"max": 0, "share": 0.0}, "sp_const_pool": {"max": 0, "share": 0.0}},
+         "min_pos_any": 0.2} | edit
     out.mkdir(parents=True, exist_ok=True)
-    (out / "spatial.json").write_text(json.dumps(sp), encoding="utf-8")
+    (out / "spatial_log.json").write_text(json.dumps(r), encoding="utf-8")
     return out
 
 
-def test_check_diag_accepts_the_pinned_outputs_050_r9(tmp_path):
-    out = spatial_output(cue_outputs(tmp_path / "d"))
+def record(out: Path, metrics=("cue_diag", "dead_channels"), sha: str = SHA, **edit) -> Path:
+    out.mkdir(parents=True, exist_ok=True)
+    rec = {"metrics": list(metrics), "checkpoint_sha256": sha, "git": dict(CLEAN_GIT), "finished": "2026-11-10T00:00:00+09:00"} | edit
+    (out / "protocol.json").write_text(json.dumps(rec), encoding="utf-8")
+    return out
+
+
+def all_outputs(out: Path, sha: str = SHA) -> Path:
+    for s in CUE["sets"]:
+        set_outputs(out / s, s, sha)
+    train_log_output(out)
+    return record(out, sha=sha)
+
+
+def test_check_diag_accepts_the_pinned_outputs_050_r9(tmp_path, capsys):
+    out = all_outputs(tmp_path / "d")
     assert protocol.check_diag(LIN, "cue_diag", out, SHA) == []
     assert protocol.check_diag(LIN, "dead_channels", out, SHA) == []
     protocol.main(["check-diag", str(out)])
+    text = capsys.readouterr().out
+    assert "NOTE human expect_games = 1000 (not pinned yet)" in text and "conform to the protocol" in text
 
 
-@pytest.mark.parametrize("edit, want", [
-    ({"manifest": {"passes": ["real"], "cf_starts": None}}, "made without --cf"),                     # a lambda-run dump (no counterfactual)
-    ({"manifest": {"backend": "cuda", "precision": "bf16"}}, "dump backend: 'cuda', pinned 'rocm'"),
-    ({"manifest": {"splits": ["val"]}}, "dump splits"),
-    ({"manifest": {"lanes_per_group": 8}}, "dump lanes_per_group"),
-    ({"manifest": {"games": 202, "stats": {"rows": 82148, "act_rows": 15553}}}, "dump games: 202, pinned 433"),
-    ({"manifest": {"data": ["/h/some/other"]}}, "not the pinned hold-out"),
-    ({"manifest": {"cf_starts": {"T": [1280.0, 2080.0], "P": [1720.0, 3030.0], "Z": [1500.0, 3240.0]}}}, "dump cf_starts"),
-    ({"manifest": {"stages": ["token", "e_pool", "h"]}}, "no activations at ['x_in', 'L1.out']"),
-    ({"probes": {"gain_method": "joint"}}, "probes gain_method"),
-    ({"probes": {"boot": 300}}, "probes boot: 300, pinned 500"),
-    ({"probes": {"cap": 60}}, "probes cap"),
-    ({"probes": {"races": {"T": {}, "Z": {}}}}, "probes races"),
-    ({"intervene": {"window": [2160.0, 8640.0]}}, "intervene window"),
+@pytest.mark.parametrize("name, edit, want", [
+    ("teacher", {"manifest": {"passes": ["real"], "cf_starts": None}}, "made without --cf"),       # a lambda-run dump (no counterfactual)
+    ("teacher", {"manifest": {"backend": "cuda", "precision": "bf16"}}, "teacher dump backend: 'cuda', pinned 'rocm'"),
+    ("teacher", {"manifest": {"splits": ["val"]}}, "teacher dump splits"),
+    ("teacher", {"manifest": {"lanes_per_group": 8}}, "teacher dump lanes_per_group"),
+    ("teacher", {"manifest": {"games": 202, "stats": {"rows": 82148, "act_rows": 15553}}}, "teacher dump games: 202, pinned 433"),
+    ("teacher", {"manifest": {"data": ["/h/some/other"]}}, "not the pinned hold-out"),
+    ("teacher", {"manifest": {"cf_starts": {"T": [1280.0, 2080.0], "P": [1720.0, 3030.0], "Z": [1500.0, 3240.0]}}}, "teacher dump cf_starts"),
+    ("teacher", {"manifest": {"stages": ["token", "e_pool", "h"]}}, "no activations at ['x_in', 'L1.out']"),
+    ("teacher", {"probes": {"gain_method": "joint"}}, "teacher probes gain_method"),
+    ("teacher", {"probes": {"boot": 300}}, "teacher probes boot: 300, pinned 500"),
+    ("teacher", {"probes": {"cap": 60}}, "teacher probes cap"),
+    ("teacher", {"probes": {"races": {"T": {}, "Z": {}}}}, "teacher probes races"),
+    ("teacher", {"intervene": {"window": [2160.0, 8640.0]}}, "teacher intervene window"),
+    ("human", {"manifest": {"games_per_split": None}}, "human dump games_per_split: None, pinned 500"),
+    ("human", {"manifest": {"seed": 2}}, "human dump seed"),
+    ("human", {"manifest": {"act_every": 1, "act_until": 5760.0}}, "human dump act_until"),
+    ("human", {"manifest": {"passes": ["real", "early"]}}, "counterfactual passes not pinned"),
+    ("human", {"manifest": {"data": [f"<shared>/datasets/{x}" for x in HUMAN_DS[:3]]}}, "not the pinned hold-out"),
+    ("human", {"probes": {"races": {"T": {}}}}, "human probes races"),
+    ("human", {"probes": {"boot": 500, "cap": 0}}, "human probes boot: 500, pinned 300"),
 ])
-def test_check_diag_refuses_other_settings_050_r9(tmp_path, edit, want):
-    out = cue_outputs(tmp_path / "d", **edit)
+def test_check_diag_refuses_other_settings_050_r9(tmp_path, name, edit, want):
+    out = all_outputs(tmp_path / "d")
+    set_outputs(out / name, name, **edit)
     problems = protocol.check_diag(LIN, "cue_diag", out, SHA)
     assert any(want in p for p in problems), problems
     with pytest.raises(SystemExit):
         protocol.main(["check-diag", str(out), "--metrics", "cue_diag"])
 
 
-def test_check_diag_refuses_other_checkpoint_and_tasks_050_r9(tmp_path):
-    out = cue_outputs(tmp_path / "d")
+def test_check_diag_refuses_tasks_and_checkpoint_050_r9(tmp_path):
+    out = all_outputs(tmp_path / "d")
     assert any("dump checkpoint_sha256" in p for p in protocol.check_diag(LIN, "cue_diag", out, "a" * 64))
-    pr = json.loads((out / "probes.json").read_text(encoding="utf-8"))
+    pr = json.loads((out / "teacher" / "probes.json").read_text(encoding="utf-8"))
     pr["races"]["Z"]["tasks"]["hp|unf_token"]["rows"] = 999
     pr["races"]["Z"]["tasks"]["count|focus_rows"] = {"rows": 1, "metric": "r2", "games": 1, "metrics": {}}
     pr["dump"]["checkpoint_sha256"] = "b" * 64
-    (out / "probes.json").write_text(json.dumps(pr), encoding="utf-8")
+    (out / "teacher" / "probes.json").write_text(json.dumps(pr), encoding="utf-8")
+    hp = json.loads((out / "human" / "probes.json").read_text(encoding="utf-8"))
+    hp["races"]["T"]["tasks"]["count|focus_rows"] = {"rows": 9, "skipped": "constant target 1"}  # AMB-050-4: the count must have values
+    (out / "human" / "probes.json").write_text(json.dumps(hp), encoding="utf-8")
     problems = protocol.check_diag(LIN, "cue_diag", out)
     assert any("hp|unf_token rows / games" in p for p in problems), problems
-    assert any("count|focus_rows: expected skipped" in p for p in problems), problems
-    assert any("probes dump checkpoint_sha256" in p for p in problems), problems
-    (out / "intervene.json").unlink()
+    assert any("teacher probes Z count|focus_rows: expected skipped" in p for p in problems), problems
+    assert any("teacher probes dump checkpoint_sha256" in p for p in problems), problems
+    assert any("human probes T count|focus_rows: no values (constant target 1)" in p for p in problems), problems
+    (out / "teacher" / "intervene.json").unlink()
     assert any("no " in p and "intervene.json" in p for p in protocol.check_diag(LIN, "cue_diag", out))
 
 
 @pytest.mark.parametrize("edit, want", [
-    ({"precision": "bf16"}, "spatial precision"),
-    ({"split": "test"}, "spatial split"),
-    ({"batches": 4}, "spatial batches"),
-    ({"backend": "cuda"}, "spatial backend"),
-    ({"const_threshold": 1e-3}, "spatial const_threshold"),
-    ({"data": ["/x/hold_orig/botgen"]}, "not the pinned hold-out"),
-    ({"drop": ["spatial.down2.inner", "spatial.pool.const"]}, "no statistics for ['r2', 'spatial.pool.const']"),
+    (None, "no "),                                                   # no protocol.json (e.g. made by hand / print mode)
+    ({"finished": None}, "not finished"),                            # an attempt in progress or failed
+    ({"metrics": ["dead_channels"]}, "cue_diag not among the measured metrics"),
+    ({"git": {}}, "no git commit"),
+    ({"checkpoint_sha256": "c" * 64}, "protocol.json checkpoint_sha256"),
 ])
-def test_check_dead_channels_refuses_other_settings_050_r9(tmp_path, edit, want):
-    problems = protocol.check_diag(LIN, "dead_channels", spatial_output(tmp_path / "d", **edit), SHA)
+def test_check_diag_needs_the_finished_record_050_r9(tmp_path, edit, want):
+    """050-R9 record: every result carries its checkpoint sha256 and git commit (the finished protocol.json)."""
+    out = all_outputs(tmp_path / "d")
+    if edit is None:
+        (out / "protocol.json").unlink()
+    else:
+        record(out, **edit)
+    problems = protocol.check_diag(LIN, "cue_diag", out, SHA)
     assert any(want in p for p in problems), problems
 
 
+def test_check_dead_channels_050_r9(tmp_path):
+    out = all_outputs(tmp_path / "d")
+    train_log_output(out, from_update=0)
+    assert any("from_update 0, pinned 600" in p for p in protocol.check_diag(LIN, "dead_channels", out))
+    train_log_output(out, sp_records_from=0)
+    assert any("no sp_* record" in p for p in protocol.check_diag(LIN, "dead_channels", out))
+    (out / "spatial_log.json").unlink()
+    assert any("spatial_log.json" in p for p in protocol.check_diag(LIN, "dead_channels", out))
+
+
 def test_diag_metric_refusals_050_r9(tmp_path, monkeypatch):
-    """Diagnostics only through `diag`; every point and the Checkpoint 1 lineage take them; another metric is refused."""
+    """Diagnostics only through `diag`; the Checkpoint 1 lineage takes the cue diagnostics, its dead-channel cell is
+    not measured; dead_channels needs the training log; s1e2 at the final checkpoint only."""
     monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: SHA)
     with pytest.raises(SystemExit, match="REFUSED: metric cue_diag is a diagnostic"):
         protocol.main(["bc-eval", "--metric", "cue_diag", "--lineage", "m2", "--point", "s1e1", "--checkpoint", "checkpoints/m2-s1/ckpt-1"])
@@ -783,75 +888,144 @@ def test_diag_metric_refusals_050_r9(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match="REFUSED: metric val500 is not a diagnostic"):
         protocol.main(["diag", "--lineage", "m2", "--point", "s1e1", "--checkpoint", "checkpoints/m2-s1/ckpt-1", "--metrics", "val500"])
     with pytest.raises(SystemExit, match="REFUSED: lineage m2 runs start with"):
-        protocol.main(["diag", "--lineage", "m2", "--point", "s1e1", "--checkpoint", "checkpoints/bc-s1-pt/ckpt-39096"])
+        protocol.main(["diag", "--lineage", "m2", "--point", "s1e1", "--checkpoint", "checkpoints/bc-s1-pt/ckpt-39096", "--metrics", "cue_diag"])
+    with pytest.raises(SystemExit, match=r"REFUSED: dead_channels of lineage ck1: not measured \(no training-log statistics"):
+        protocol.main(["diag", "--lineage", "ck1", "--point", "r1", "--checkpoint", "checkpoints/bc-dagger-r1/ckpt-1137"])
+    for pt in LIN["point"]:
+        protocol.check_new_measurement(LIN, "ck1", "cue_diag", pt)
+    with pytest.raises(SystemExit, match="REFUSED: dead_channels reads the run's training log: --train-log"):
+        protocol.main(["diag", "--lineage", "m2", "--point", "s1e1", "--checkpoint", "checkpoints/m2-s1/ckpt-1"])
     monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: "a" * 64 if "r1" in c else "b" * 64)
     with pytest.raises(SystemExit, match="REFUSED: point r1 of the Checkpoint 1 lineage is checkpoints/bc-dagger-r1/ckpt-1137"):
-        protocol.main(["diag", "--lineage", "ck1", "--point", "r1", "--checkpoint", "checkpoints/bc-dagger-r2/ckpt-1218"])
+        protocol.main(["diag", "--lineage", "ck1", "--point", "r1", "--checkpoint", "checkpoints/bc-dagger-r2/ckpt-1218", "--metrics", "cue_diag"])
     with pytest.raises(protocol.Refused, match="not a diagnostic metric"):
         protocol.check_diag(LIN, "val500", tmp_path)
 
 
+def test_s1e2_diagnostics_final_only_050_r9(tmp_path, monkeypatch):
+    """AMB-050-6: the s1e2 point takes the diagnostics at the run's final checkpoint only."""
+    monkeypatch.setenv("URANIUM_SHARED_DIR", str(tmp_path / "shared"))
+    run = tmp_path / "shared" / "checkpoints" / "m2-s1e2"
+    for n in (1000, 2000):
+        (run / f"ckpt-{n}").mkdir(parents=True)
+    pt = protocol.point(LIN, "s1e2")
+    with pytest.raises(protocol.Refused, match="final checkpoint only .*DONE missing"):
+        protocol.check_final_only(pt, "checkpoints/m2-s1e2/ckpt-2000")
+    (run / "DONE").write_text("", encoding="utf-8")
+    with pytest.raises(protocol.Refused, match="last ckpt-2000"):
+        protocol.check_final_only(pt, "checkpoints/m2-s1e2/ckpt-1000")
+    protocol.check_final_only(pt, "checkpoints/m2-s1e2/ckpt-2000")
+    protocol.check_final_only(protocol.point(LIN, "s1e1"), "checkpoints/m2-s1/ckpt-5")  # other points: any checkpoint
+
+
+def fake_set_data(lin, name, shared=None, work=None, create=True):
+    fake_set_data.calls.append((name, create))
+    return ["--shards", "W/hold_orig/botgen", "--shards", "W/hold_macro2/botgen"] if name == "teacher" else [x for ds in HUMAN_DS for x in ("--dataset", ds)]
+
+
 def test_diag_prints_the_commands_050_r9(tmp_path, monkeypatch, capsys):
-    """`protocol.py diag` (no --run): the commands of both metrics for this host, the summary and the check, Checkpoint 1 lineage too."""
+    """`protocol.py diag` (no --run): the commands for this host, the dump copies, the summaries and the check;
+    nothing written (the link trees are made by --run). Checkpoint 1 lineage: cue_diag."""
     monkeypatch.setenv("URANIUM_SHARED_DIR", str(tmp_path / "shared"))
     monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: SHA)
     monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
-    monkeypatch.setattr(protocol, "holdout_dirs", lambda lin, metric, shared=None, work=None: [tmp_path / "w" / t for t in TAILS])
-    protocol.main(["diag", "--lineage", "ck1", "--point", "r1", "--checkpoint", "checkpoints/bc-dagger-r1/ckpt-1137"])
+    fake_set_data.calls = []
+    monkeypatch.setattr(protocol, "set_data", fake_set_data)
+    protocol.main(["diag", "--lineage", "ck1", "--point", "r1", "--checkpoint", "checkpoints/bc-dagger-r1/ckpt-1137", "--metrics", "cue_diag"])
+    assert fake_set_data.calls == [("teacher", False), ("human", False)]
     lines = capsys.readouterr().out.splitlines()
-    cmds = [l for l in lines if l.startswith("python ")]
-    assert [c.split()[4] for c in cmds[:5]] == ["dump", "probes", "intervene", "spatial", "summary"]
+    steps = [l.split()[4] if l.startswith("python -m") else l.split()[0] for l in lines if not l.startswith("#")]
+    assert steps == ["dump", "probes", "intervene", "cp", "summary", "dump", "probes", "cp", "summary", "python"]
     out = tmp_path / "shared" / "artifacts" / "diag" / "bc-dagger-r1__ckpt-1137"
-    assert f"--checkpoint {tmp_path / 'shared' / 'checkpoints/bc-dagger-r1/ckpt-1137'}" in cmds[0] and f"--out {out / 'dump'}" in cmds[0]
-    assert cmds[4].endswith(f"--point r1 --probes {out / 'probes.json'} --intervene {out / 'intervene.json'} --spatial {out / 'spatial.json'} --out {out / 'summary.json'}")
-    assert cmds[5] == f"python tools/eval/protocol.py check-diag {out} --metrics cue_diag,dead_channels --checkpoint checkpoints/bc-dagger-r1/ckpt-1137"
+    cmds = [l for l in lines if l.startswith("python -m")]
+    assert f"--checkpoint {tmp_path / 'shared' / 'checkpoints/bc-dagger-r1/ckpt-1137'}" in cmds[0] and "--cf-starts 'T:1280,2080;P:1720,3030;Z:1800,3240'" in cmds[0]
+    assert "--games 500 --seed 1" in cmds[4] and "--races T,P" in cmds[5]
+    assert lines[-3] == f"python tools/eval/protocol.py check-diag {out} --metrics cue_diag --checkpoint checkpoints/bc-dagger-r1/ckpt-1137"
     assert not out.exists()
 
 
-def test_diag_run_records_and_checks_050_r9(tmp_path, monkeypatch):
-    """--run: protocol.json (sha256, git, backend / precision, redacted commands), the commands in order, check-diag; a second run is refused."""
-    shared = tmp_path / "shared"
+def test_diag_run_records_retries_and_checks_050_r9(tmp_path, monkeypatch):
+    """--run: running.json during the attempt, the dumps in the cache copied to the shared drive (.part, rename),
+    protocol.json at the end (sha256, git, backend / precision, `python` and <shared> / <cache> in the commands),
+    check-diag; a finished folder is refused, a failed attempt is kept as .failed-<k> and run again."""
+    shared, cache = tmp_path / "shared", tmp_path / "cache"
     monkeypatch.setenv("URANIUM_SHARED_DIR", str(shared))
+    monkeypatch.setenv("URANIUM_CACHE_DIR", str(cache))
     monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: SHA)
     monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
-    monkeypatch.setattr(protocol, "holdout_dirs", lambda lin, metric, shared=None, work=None: [tmp_path / "w" / t for t in TAILS])
-    out = shared / "artifacts" / "diag" / "m2-s1__ckpt-9"
-    ran = []
+    fake_set_data.calls = []
+    monkeypatch.setattr(protocol, "set_data", fake_set_data)
+    log = tmp_path / "s1.log"
+    log.write_text("{}\n", encoding="utf-8")
+    ran, fail = [], set()
 
     def fake_run(cmd, cwd=None, check=None):
-        ran.append(cmd[4])
-        if cmd[4] == "summary":
-            cue_outputs(out)
-            spatial_output(out)
+        step = protocol.step_name(cmd)
+        ran.append(step)
+        o = Path(cmd[cmd.index("--out") + 1])
+        if step in fail:
+            fail.discard(step)
+            raise subprocess.CalledProcessError(139, cmd)
+        if step == "dump":
+            name = o.parent.name
+            assert str(o).startswith(str(cache))  # the dump goes to this host's cache first
+            set_outputs(tmp_path / "staged" / name, name)
+            shutil.copytree(tmp_path / "staged" / name / "dump", o)
+        elif step == "probes":
+            shutil.copy(tmp_path / "staged" / o.parent.name / "probes.json", o)
+        elif step == "intervene":
+            shutil.copy(tmp_path / "staged" / o.parent.name / "intervene.json", o)
+        elif step == "spatial_logs":
+            train_log_output(o.parent)
 
     monkeypatch.setattr(protocol.subprocess, "run", fake_run)
-    protocol.main(["diag", "--lineage", "m2", "--point", "s1e1", "--checkpoint", "checkpoints/m2-s1/ckpt-9", "--run"])
-    assert ran == ["dump", "probes", "intervene", "spatial", "summary"]
+    base = ["diag", "--lineage", "m2", "--point", "s1e1", "--train-log", str(log), "--run", "--checkpoint"]
+    protocol.main(base + ["checkpoints/m2-s1/ckpt-9"])
+    assert ran == ["dump", "probes", "intervene", "summary", "dump", "probes", "summary", "spatial_logs"]
+    assert fake_set_data.calls == [("teacher", True), ("human", True)]
+    out = shared / "artifacts" / "diag" / "m2-s1__ckpt-9"
+    assert (out / "teacher" / "dump" / "manifest.json").is_file() and not (out / "teacher" / "dump.part").exists() and not (out / "running.json").exists()
     rec = json.loads((out / "protocol.json").read_text(encoding="utf-8"))
-    assert (rec["lineage"], rec["point"], rec["checkpoint_sha256"], rec["git"]) == ("m2", "s1e1", SHA, CLEAN_GIT)
-    assert rec["backend"] == {"cue_diag": "rocm", "dead_channels": "rocm"} and rec["precision"] == {"cue_diag": "f32", "dead_channels": "f32"}
-    assert rec["commands"][0][6] == "<shared>/checkpoints/m2-s1/ckpt-9" and rec["holdout"] == CUE["holdout"]
+    assert (rec["lineage"], rec["point"], rec["checkpoint_sha256"], rec["git"], rec["backend"], rec["precision"]) == ("m2", "s1e1", SHA, CLEAN_GIT, "rocm", "f32")
+    assert rec["finished"] and rec["check"] == [] and rec["train_log"] == {"file": "s1.log", "sha256": protocol.file_sha256(log)}
+    assert [s["step"] for s in rec["steps"]] == ["dump", "probes", "intervene", "copy", "summary", "dump", "probes", "copy", "summary", "spatial_logs"]
+    assert rec["commands"][0][0] == "python" and rec["commands"][0][6] == "<shared>/checkpoints/m2-s1/ckpt-9"
+    assert rec["commands"][0][-1] == "<cache>/diag_dump/m2-s1__ckpt-9/teacher/dump" and rec["commands"][3] == ["copy", "<cache>/diag_dump/m2-s1__ckpt-9/teacher/dump", "<shared>/artifacts/diag/m2-s1__ckpt-9/teacher/dump"]
+    assert rec["sets"]["human"]["files"] == 2069 and rec["unpinned"] == ["human expect_games = 1000 (not pinned yet)", "human expect_rows = 500000 (not pinned yet)",
+                                                                       "human expect_act_rows = 90000 (not pinned yet)"]
     with pytest.raises(SystemExit, match="REFUSED: .*protocol.json exists"):
-        protocol.main(["diag", "--lineage", "m2", "--point", "s1e1", "--checkpoint", "checkpoints/m2-s1/ckpt-9", "--run"])
+        protocol.main(base + ["checkpoints/m2-s1/ckpt-9"])
+    # a failed attempt: kept (running.json with the error), then run again
+    fail.add("probes")
+    with pytest.raises(subprocess.CalledProcessError):
+        protocol.main(base + ["checkpoints/m2-s1/ckpt-10"])
+    out10 = shared / "artifacts" / "diag" / "m2-s1__ckpt-10"
+    run10 = json.loads((out10 / "running.json").read_text(encoding="utf-8"))
+    assert run10["finished"] is None and run10["steps"][-1]["step"] == "probes" and "139" in run10["steps"][-1]["error"]
+    protocol.main(base + ["checkpoints/m2-s1/ckpt-10"])
+    assert (out10.parent / "m2-s1__ckpt-10.failed-1" / "running.json").is_file() and (out10 / "protocol.json").is_file()
+    assert (cache / "diag_dump" / "m2-s1__ckpt-10.failed-1" / "teacher" / "dump").is_dir()
     monkeypatch.setattr(protocol, "git_state", lambda: {**CLEAN_GIT, "protocol_files_dirty": True, "dirty_paths": ["tools/eval/protocol.py"]})
     with pytest.raises(SystemExit, match="REFUSED: uncommitted protocol files"):
-        protocol.main(["diag", "--lineage", "m2", "--point", "s1e1", "--checkpoint", "checkpoints/m2-s1/ckpt-10", "--run"])
+        protocol.main(base + ["checkpoints/m2-s1/ckpt-11"])
 
 
 def test_diag_table_050_r9(tmp_path):
-    out = spatial_output(cue_outputs(tmp_path / "d"))
-    (out / "spatial_log.json").write_text(json.dumps({"from_update": 600, "sp_records_from": 25, "alarm_lines": [], "alarm_records": [], "crossing_records": [],
-                                                       "worst_dead_layer": "r4", "worst_dead_share": 0.398, "dead": {"r4": {"max": 51, "at": 3000}},
-                                                       "const": {"sp_const_s8": {"max": 0}, "sp_const_pool": {"max": 0}}, "min_pos_any": 0.2}), encoding="utf-8")
+    out = all_outputs(tmp_path / "d")
     res = diag_table.folder_table(LIN, out, ["cue_diag", "dead_channels"])
-    hp = res["cue"]["Z"]["hp|unf_token"]
+    hp = res["cue"]["teacher"]["Z"]["hp|unf_token"]
     assert (hp["rows"], hp["games"], hp["stages"]["h"]["pt"], hp["h_mlp"]) == (17097, 154, 0.5, 0.45)
-    assert res["cue"]["Z"]["count|focus_rows"]["skipped"] == "constant target 1"
-    assert res["intervention"]["Z"]["effects"]["start"]["bunker_any"]["mean"] == 0.01
-    assert res["dead_channels"]["dead"]["r2"] == [2, 64] and res["dead_channels"]["const"]["spatial.pool.const"] == [0, 256]
+    assert res["cue"]["human"]["P"]["count|focus_rows"]["stages"]["h"]["pt"] == 0.5
+    assert res["intervention"]["teacher"]["Z"]["effects"]["start"]["bunker_any"]["mean"] == 0.01
     md = "\n".join(diag_table.markdown(LIN, {"m2-s1": res}))
-    assert "| m2-s1 | 17097 / 154 | 0.500 [0.400, 0.600]" in md and "skipped: constant target 1" in md and "r4 39.8% (51 @ 3000)" in md
-    (out / "intervene.json").write_text(json.dumps({**json.loads((out / "intervene.json").read_text(encoding="utf-8")), "window": [0.0, 1.0]}), encoding="utf-8")
+    assert "### cue probe, human hold-out, T `count|focus_rows`" in md and "| m2-s1 | 17097 / 154 | 0.500 [0.400, 0.600]" in md
+    assert "### counterfactual intervention, teacher hold-out, Z" in md and "r4 39.8% (51 @ 3000)" in md
+    ck1 = all_outputs(tmp_path / "c")
+    (ck1 / "spatial_log.json").unlink()
+    r1 = diag_table.folder_table(LIN, record(ck1, metrics=["cue_diag"]), ["cue_diag"]) | {"train_log": None}
+    assert "| ck1 | not measured (no training-log statistics) |" in "\n".join(diag_table.markdown(LIN, {"ck1": r1}))
+    iv = json.loads((out / "teacher" / "intervene.json").read_text(encoding="utf-8"))
+    (out / "teacher" / "intervene.json").write_text(json.dumps({**iv, "window": [0.0, 1.0]}), encoding="utf-8")
     with pytest.raises(SystemExit, match="REFUSED: .*intervene window"):
         diag_table.main([f"x={out}"])
 
@@ -859,28 +1033,29 @@ def test_diag_table_050_r9(tmp_path):
 LAYERS = ("stem", "c0", "c1", "c2", "c3", "r0", "r1", "r2", "r3", "r4", "r5")
 
 
-def bc_log(path: Path, records: list[tuple[int, dict]], warn: str | None = None) -> Path:
+def bc_log(path: Path, records: list[tuple[int, dict]], warn: list[str] | None = None) -> Path:
     base = {f"sp_dead_{n}": 0 for n in LAYERS} | {f"sp_pos_{n}": 0.3 for n in LAYERS} | {"sp_const_s8": 0, "sp_const_pool": 0}
     lines = [json.dumps({"step": step, "loss": {"action": 1.0, "total": 2.0, **base, **sp}}) for step, sp in records]
-    if warn:
-        lines.append(warn)
-    path.write_text("[bc] start\n" + "\n".join(lines) + "\n", encoding="utf-8")
+    path.write_text("[bc] start\n" + "\n".join(lines + (warn or [])) + "\n", encoding="utf-8")
     return path
 
 
 def test_spatial_logs_summary_041_r25(tmp_path):
-    """The training-log part of dead_channels: records from update 600, max dead share, const, the alarm rule."""
+    """dead_channels (AMB-050-5): records from update 600 to the checkpoint's, max dead share, const, the alarm rule."""
     ch = spatial_logs.channels()
     assert (ch["stem"], ch["c2"], ch["r4"], ch["r5"], ch["sp_const_s8"], ch["sp_const_pool"]) == (32, 128, 128, 128, 128, 256)
+    assert spatial_logs.default_from_update() == DEAD["from_update"]
     log = bc_log(tmp_path / "s1.log", [(500, {"sp_dead_r4": 100}), (600, {"sp_dead_r4": 51, "sp_pos_c3": 0.1}), (700, {"sp_dead_c3": 64, "sp_const_s8": 3}),
-                                       (800, {"sp_dead_r4": 10})],
-                 warn="[bc] WARNING: update 700: spatial encoder collapse alarm (041-R25): sp_dead_c3 = 64 of 128")
-    r = spatial_logs.scan(log, ch)
-    assert (r["sp_records"], r["sp_records_from"], r["last_step"]) == (4, 3, 800)
+                                       (800, {"sp_dead_r4": 10}), (900, {"sp_dead_stem": 32})],
+                 warn=["[bc] WARNING: update 700: spatial encoder collapse alarm (041-R25): sp_dead_c3 = 64 of 128",
+                       "[bc] WARNING: update 900: spatial encoder collapse alarm (041-R25): sp_dead_stem = 32 of 32"])
+    r = spatial_logs.scan(log, ch, until_update=800)
+    assert (r["sp_records"], r["sp_records_from"], r["last_step"], r["until_update"]) == (4, 3, 800, 800)
     assert r["dead"]["r4"]["max"] == 51 and r["dead"]["r4"]["at"] == 600 and r["dead"]["r4"]["last"] == 10  # update 500 is before the alarm window
     assert r["worst_dead_layer"] == "c3" and r["worst_dead_share"] == 0.5 and r["crossing_records"] == [700]
-    assert r["const"]["sp_const_s8"]["max"] == 3 and r["min_pos_any"] == 0.1 and len(r["alarm_lines"]) == 1
+    assert r["const"]["sp_const_s8"]["max"] == 3 and r["min_pos_any"] == 0.1 and len(r["alarm_lines"]) == 1  # the update 900 alarm is after the checkpoint
     assert r["train_tail100_mean"]["action"] == 1.0
+    assert spatial_logs.scan(log, ch)["crossing_records"] == [700, 900]
     cols = [f"sp_{k}_{n}" for k in ("pos", "dead") for n in LAYERS] + ["sp_const_s8", "sp_const_pool"]
     rows = ["time_s,agent,update,loss," + ",".join(cols)]
     for agent, up, dead in (("main", 600, "2"), ("exploiter", 600, "99"), ("main", 700, None), ("main", 800, "5")):
@@ -889,7 +1064,7 @@ def test_spatial_logs_summary_041_r25(tmp_path):
     csv_log = tmp_path / "train.csv"
     csv_log.write_text("\n".join(rows) + "\n", encoding="utf-8")
     rc = spatial_logs.scan(csv_log, ch)
-    assert rc["sp_records_from"] == 2 and rc["dead"]["stem"]["max"] == 5 and rc["dead_last"]["step"] == 800
+    assert rc["sp_records_from"] == 2 and rc["dead"]["stem"]["max"] == 5 and rc["dead_last"]["step"] == 800 and rc["alarm_lines"] == []
 
 
 # ------------------------------------------------------------------ s1e2 per-checkpoint loop (041-R20 ③)
@@ -958,7 +1133,79 @@ def test_s1e2_val_scores_newest_and_records_041_r20(tmp_path, monkeypatch):
     rec = json.loads((val / "m2-s1e2__ckpt-3000.protocol.json").read_text(encoding="utf-8"))
     assert (rec["point"], rec["metric"], rec["backend"], rec["precision"], rec["returncode"]) == ("s1e2", "val500", "rocm", "f32", 0)
     assert rec["checkpoint_sha256"] == protocol.file_sha256(shared / "checkpoints/m2-s1e2/ckpt-3000/model.safetensors")
+    assert (rec["attempt"], rec["check"], rec["command"][0]) == (1, "ok", "python")
     assert (val / "m2-s1e2__ckpt-3000.claim").is_file() and not (val / "m2-s1e2__ckpt-2000.claim").exists()
+
+
+def val_runner(calls: list, rcs: dict, games: int = 500):
+    """A fake bc-eval: return codes per output name in order (default 0), a val 500 report on 0."""
+    def fake_run(cmd, cwd=None, stdout=None, stderr=None, timeout=None):
+        out = Path(cmd[cmd.index("--out") + 1])
+        calls.append(out.name)
+        rc = rcs.get(out.name, [0]).pop(0) if rcs.get(out.name) else 0
+        if rc == "timeout":
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        if rc == 0:
+            out.write_text(json.dumps({"split": "val", "games": games, "selection_seed": 1, "action_top1": 0.7, "steps": 5,
+                                       "nll": {h: 1.0 for h in ("action", "delay", "selected", "target_unit", "target_loc")}}), encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, rc)
+    return fake_run
+
+
+def test_s1e2_val_retries_a_failed_final_041_r20(tmp_path, monkeypatch):
+    """041-R20 ③ "최종 체크포인트는 반드시 한다": a crashed / timed-out run is kept as .failed-<k> and run again
+    (up to VAL_ATTEMPTS in all)."""
+    shared = s1e2_shared(tmp_path, monkeypatch, done=True)
+    monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
+    calls = []
+    monkeypatch.setattr(s1e2_loop.subprocess, "run", val_runner(calls, {"m2-s1e2__ckpt-3000.json": [139, "timeout", 0]}))
+    s1e2_loop.main(["val", "--run", "m2-s1e2", "--watch", "--poll-s", "0"])
+    assert calls == ["m2-s1e2__ckpt-3000.json"] * 3
+    val = shared / "artifacts" / "bc_e2_val" / "val500"
+    assert [json.loads((val / f"m2-s1e2__ckpt-3000.failed-{k}.protocol.json").read_text(encoding="utf-8"))["returncode"] for k in (1, 2)] == [139, "timeout"]
+    assert (val / "m2-s1e2__ckpt-3000.failed-1.claim").is_file() and (val / "m2-s1e2__ckpt-3000.failed-2.log").is_file()
+    rec = json.loads((val / "m2-s1e2__ckpt-3000.protocol.json").read_text(encoding="utf-8"))
+    assert (rec["returncode"], rec["attempt"]) == (0, 3) and s1e2_loop.val_state(val / "m2-s1e2__ckpt-3000.json") == "done"
+
+
+def test_s1e2_val_gives_up_and_exits_nonzero_041_r20(tmp_path, monkeypatch):
+    shared = s1e2_shared(tmp_path, monkeypatch, done=True)
+    monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
+    calls = []
+    monkeypatch.setattr(s1e2_loop.subprocess, "run", val_runner(calls, {"m2-s1e2__ckpt-3000.json": [134, 134, 134, 134]}))
+    with pytest.raises(SystemExit, match=r"val500 without a return-code-0 record: checkpoints/m2-s1e2/ckpt-3000 \(gave_up\)"):
+        s1e2_loop.main(["val", "--run", "m2-s1e2", "--reference", "checkpoints/m2-s1/ckpt-39096", "--watch", "--poll-s", "0"])
+    assert calls == ["m2-s1__ckpt-39096.json"] + ["m2-s1e2__ckpt-3000.json"] * s1e2_loop.VAL_ATTEMPTS
+
+
+def test_s1e2_val_never_overwrites_and_records_the_check_041_r29(tmp_path, monkeypatch):
+    """041-R29 ⑨: an existing output is never overwritten (taken, and score_val refuses); a check mismatch is
+    recorded and the loop goes on."""
+    shared = s1e2_shared(tmp_path, monkeypatch, done=True)
+    monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
+    val = shared / "artifacts" / "bc_e2_val" / "val500"
+    val.mkdir(parents=True)
+    (val / "m2-s1__ckpt-39096.json").write_text("{}", encoding="utf-8")  # made by hand
+    calls = []
+    monkeypatch.setattr(s1e2_loop.subprocess, "run", val_runner(calls, {}, games=400))
+    s1e2_loop.main(["val", "--run", "m2-s1e2", "--reference", "checkpoints/m2-s1/ckpt-39096", "--watch", "--poll-s", "0"])
+    assert calls == ["m2-s1e2__ckpt-3000.json"]
+    rec = json.loads((val / "m2-s1e2__ckpt-3000.protocol.json").read_text(encoding="utf-8"))
+    assert rec["returncode"] == 0 and "MISMATCH" in rec["check"]
+    with pytest.raises(protocol.Refused, match="never overwritten"):
+        s1e2_loop.score_val(LIN, shared, "s1e1", "checkpoints/m2-s1/ckpt-39096", False, 10)
+
+
+def test_s1e2_games_job_made_elsewhere_041_r20(tmp_path, monkeypatch):
+    """A job another host made first (FileExistsError from protocol.py job) is taken, not an error."""
+    shared = s1e2_shared(tmp_path, monkeypatch, done=True)
+
+    def raise_exists(args):
+        raise FileExistsError(args)
+
+    monkeypatch.setattr(s1e2_loop.protocol, "main", raise_exists)
+    a = argparse.Namespace(games_root="eval/x", hosts="h.toml", allow_dirty=False, dry_run=False)
+    assert s1e2_loop.make_job(LIN, shared, a, "s1e2", "checkpoints/m2-s1e2/ckpt-1000") is None
 
 
 def test_s1e2_games_jobs_and_table_041_r20(tmp_path, monkeypatch, capsys):

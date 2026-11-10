@@ -1,15 +1,18 @@
-"""041-R25 dead-channel record summary of a training run log (050-R9 `dead_channels`, the training-log part;
-config/protocol/lineage.toml [metric.dead_channels.train_log], docs/measurement_protocol.md).
+"""041-R25 dead-channel record summary of a training run log (050-R9 `dead_channels`, user decision
+2026-11-10 AMB-050-5: the training-log statistics only; config/protocol/lineage.toml [metric.dead_channels],
+docs/measurement_protocol.md).
 
 A BC run logs its `[monitor] spatial_every` records as JSON lines on stderr (`{"step", "loss": {sp_*...}}`,
 041-R25 ②) and a WARNING line per alarm (041-R25 ③); an RL run has the same values as train.csv columns
-(042-R21 ③, rows of one agent). From the records at updates >= `from_update` (the alarm's start, 600): the
+(042-R21 ③, rows of one agent) while its alarm WARNING lines go to the RL process's stderr, not train.csv:
+for a train.csv the alarm lines are not counted, only the records crossing the alarm rule
+(`crossing_records`). From the records at updates `from_update` (the alarm's start, 600) .. `until_update`: the
 max dead share per ReLU output layer (stem, c0-c3, r0-r5, the alarm layers), the max const S8 / s_pool, the
 min positive share per layer, the alarm lines / records, the last record's dead counts; for a BC log also
 the training-loss mean of the last 100 updates. Channel counts come from the checkpoint's model config
 (`--checkpoint`, meta.json `config.spatial`) or the SpatialConfig defaults.
 
-    python tools/eval/spatial_logs.py <log>... [--checkpoint <ckpt dir>] [--agent main] [--out <json>]
+    python tools/eval/spatial_logs.py <log>... [--checkpoint <ckpt dir>] [--from-update N] [--until-update N] [--agent main] [--out <json>]
 
 Moved from the 041-R24 lambda-run script (<shared>/eval/m2-lambda-20261110/scripts/spatial_logs.py) with the
 same rules; the per-run JSON is the value of one log's entry.
@@ -20,6 +23,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -86,13 +90,25 @@ def read_records(path: Path, agent: str = "main") -> tuple[list[dict], list[str]
     return recs, warns
 
 
-def scan(path: Path, ch: dict[str, int], from_update: int | None = None, agent: str = "main") -> dict:
+def default_from_update() -> int:
+    """lineage.toml [metric.dead_channels] from_update (the protocol value)."""
+    import tomllib
+
+    lin = tomllib.loads((Path(__file__).resolve().parents[2] / "config" / "protocol" / "lineage.toml").read_text(encoding="utf-8"))
+    return int(lin["metric"]["dead_channels"]["from_update"])
+
+
+def scan(path: Path, ch: dict[str, int], from_update: int | None = None, agent: str = "main", until_update: int | None = None) -> dict:
     alarm_from, share, layers = alarm_rules()
     from_update = alarm_from if from_update is None else from_update
     recs, warns = read_records(Path(path), agent)
+    if until_update is not None:
+        recs = [r for r in recs if r["step"] <= until_update]
+        warns = [w for w in warns if (m := re.search(r"update (\d+):", w)) is None or int(m.group(1)) <= until_update]
     sp = [r for r in recs if "sp_dead_stem" in r["loss"]]
     late = [r for r in sp if r["step"] >= from_update]
-    out = {"log": Path(path).name, "from_update": from_update, "alarm_share": share, "channels": ch, "last_step": recs[-1]["step"] if recs else None,
+    out = {"log": Path(path).name, "from_update": from_update, "until_update": until_update, "alarm_share": share, "channels": ch,
+           "last_step": recs[-1]["step"] if recs else None,
            "sp_records": len(sp), "sp_records_from": len(late), "alarm_lines": warns,
            "alarm_records": [r["step"] for r in recs if r.get("spatial_alarm") or r["loss"].get("spatial_alarm")]}
     if late:
@@ -130,12 +146,14 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("logs", nargs="+")
     p.add_argument("--checkpoint", help="a checkpoint folder of the run (its meta.json model config gives the channel counts)")
-    p.add_argument("--from-update", type=int, default=None, help="default: the alarm's start (lineage.toml train_log from_update)")
+    p.add_argument("--from-update", type=int, default=None, help="default: lineage.toml [metric.dead_channels] from_update")
+    p.add_argument("--until-update", type=int, default=None, help="records up to this update (the checkpoint's)")
     p.add_argument("--agent", default="main", help="RL train.csv rows of this agent")
     p.add_argument("--out")
     a = p.parse_args(argv)
     ch = checkpoint_channels(Path(a.checkpoint)) if a.checkpoint else channels()
-    res = {Path(x).stem: scan(Path(x), ch, a.from_update, a.agent) for x in a.logs}
+    frm = default_from_update() if a.from_update is None else a.from_update
+    res = {Path(x).stem: scan(Path(x), ch, frm, a.agent, a.until_update) for x in a.logs}
     if a.out:
         Path(a.out).write_text(json.dumps(res if len(res) > 1 else next(iter(res.values())), indent=1) + "\n", encoding="utf-8")
     for n, r in res.items():

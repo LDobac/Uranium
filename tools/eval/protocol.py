@@ -7,11 +7,14 @@ content hashes, host platforms and bot hashes; `verify` checks a job against it.
 
 The Checkpoint 1 lineage (`--lineage ck1`) is measured already: cells it has are not measured again but
 re-tabulated from its existing outputs with both held / bunker definitions (`tables`, also games of a
-protocol plan inside a larger job). It takes the diagnostics (cue_diag, dead_channels) and, per point, the
-050-R9 point-table cells it never measured (`ck1_supplement`), with the same plans.
+protocol plan inside a larger job). It takes the cue diagnostics and, per point, the 050-R9 point-table cells
+it never measured (`ck1_supplement`), with the same plans; its dead_channels cell is not measured (no
+training-log statistics).
 
-The diagnostics (`diag`, `check-diag`) run `python -m uranium diag` on the pinned teacher hold-out with the
-pinned settings (lineage.toml [metric.cue_diag], [metric.dead_channels]); tables: tools/eval/diag_table.py.
+The diagnostics (`diag`, `check-diag`): cue_diag runs `python -m uranium diag` on the pinned hold-outs (the Zerg
+teacher hold-out and human TvT / TvP games) with the pinned settings; dead_channels summarises the run's
+041-R25 training-log records (lineage.toml [metric.cue_diag], [metric.dead_channels]); tables:
+tools/eval/diag_table.py.
 The s1e2 per-checkpoint loop (041-R20 ③): tools/eval/s1e2_loop.py.
 
     python tools/eval/protocol.py list
@@ -22,7 +25,7 @@ The s1e2 per-checkpoint loop (041-R20 ③): tools/eval/s1e2_loop.py.
     python tools/eval/protocol.py verify <job dir> --lineage m2 --point s2e2
     python tools/eval/protocol.py bc-eval --metric val500 --lineage m2 --point s2e2 --checkpoint <dir> [--out <json>]
     python tools/eval/protocol.py check-bc-eval <output json> --metric val500
-    python tools/eval/protocol.py diag --lineage m2 --point s1e1 --checkpoint checkpoints/m2-s1/ckpt-N [--metrics cue_diag,dead_channels] [--run]
+    python tools/eval/protocol.py diag --lineage m2 --point s1e1 --checkpoint checkpoints/m2-s1/ckpt-N --train-log <log> [--metrics cue_diag,dead_channels] [--run]
     python tools/eval/protocol.py check-diag <shared>/artifacts/diag/<run>__<ckpt> [--metrics ...] [--checkpoint <dir>]
     python tools/eval/protocol.py bots [--hosts tools/eval/hosts.toml]
     python tools/eval/protocol.py compare <tables json A> <tables json B>
@@ -198,6 +201,9 @@ def check_new_measurement(lin: dict, lineage: str, metric: str, pt: dict) -> Non
     cells it has are re-tabulated from its existing outputs (`protocol.py tables`)."""
     if lineage not in lin["lineage"]:
         raise Refused(f"no lineage {lineage!r}")
+    why = lin["metric"].get(metric, {}).get("not_measured", {}).get(lineage)
+    if why:
+        raise Refused(f"{metric} of lineage {lineage}: {why}")
     allowed = lin["lineage"][lineage].get("new_metrics")
     if allowed is None:
         return
@@ -394,18 +400,18 @@ def oss_bots(plans: list[dict]) -> list[str]:
 
 
 # ---------------------------------------------------------------- diagnostics (cue_diag, dead_channels)
-# 050-R9 "추가 지표": `python -m uranium diag` on the pinned teacher hold-out with the pinned settings
-# (lineage.toml [metric.cue_diag], [metric.dead_channels]). `diag` prints (or with --run, runs) the
-# commands; `check-diag` refuses outputs made with other settings or data.
+# 050-R9 "추가 지표" (user decisions 2026-11-10, AMB-050-4 / -5 / -6): cue_diag = `python -m uranium diag` on
+# the pinned hold-outs (lineage.toml [metric.cue_diag.<set>]); dead_channels = the run's 041-R25 training-log
+# records (tools/eval/spatial_logs.py). `diag` prints (or with --run, runs) the commands; `check-diag`
+# refuses outputs made with other settings, data or checkpoint, or without the finished record.
 
-DIAG_KINDS = ("diag_cue", "diag_spatial")
+DIAG_KINDS = ("diag_cue", "diag_train_log")
 DIAG_RECORD = "protocol.json"
-# 041-R25 layer name -> uranium.model.monitor point (SPEC_LAYERS; tests/python/test_eval_protocol.py checks
-# it against the module, kept here so the protocol tool needs no torch)
-SPEC_POINTS = {"stem": "spatial.stem", **{f"c{i}": f"spatial.down{i}.conv" for i in range(4)},
-               **{f"r{i}": f"spatial.down{i}.inner" for i in range(4)}, "r4": "spatial.bottleneck0.inner", "r5": "spatial.bottleneck1.inner",
-               **{f"d{i}": f"spatial.down{i}.res" for i in range(4)}, "b0": "spatial.bottleneck0", "b1": "spatial.bottleneck1"}
-CONST_POINTS = ("spatial.s8.const", "spatial.pool.const")
+RUNNING = "running.json"  # the attempt marker of `diag --run` (becomes protocol.json when it finishes)
+COPY = "copy"  # the step that copies a local dump to <out>/<set>/dump (.part, then rename)
+HOLDOUT_DIR = "diag_holdout"  # under ec.cache_dir(): the hold-out link trees
+LOCAL_DUMP_DIR = "diag_dump"  # under ec.cache_dir(): the dumps before their copy to the shared drive
+TRAIN_LOG = "spatial_log.json"
 
 
 def diag_metric(lin: dict, metric: str) -> dict:
@@ -415,41 +421,67 @@ def diag_metric(lin: dict, metric: str) -> dict:
     return m
 
 
-def holdout_spec(lin: dict, metric: str) -> list[dict]:
-    """The pinned hold-out sources of a diagnostic metric (`holdout = "<metric>"` shares another's)."""
-    h = diag_metric(lin, metric)["holdout"]
-    return holdout_spec(lin, h) if isinstance(h, str) else h
-
-
-def cache_root() -> Path:
-    ec.load_env()
-    return Path(os.environ.get("URANIUM_CACHE_DIR") or ROOT / "runs") / "diag_holdout"
+def cue_set(lin: dict, name: str) -> dict:
+    return lin["metric"]["cue_diag"][name]
 
 
 def files_fingerprint(src: Path, parts: list[str]) -> tuple[int, str]:
-    """(file count, sha256 of the sorted "<part>/<file> <bytes>" lines) of a source's shard files."""
+    """(file count, sha256 of the sorted "<part>/<file> <bytes>" lines) of the shard files under src/<part>/
+    (a source on the shared drive or a link tree of it)."""
     lines = sorted(f"{p}/{f.name} {f.stat().st_size}" for p in parts for f in (src / p).glob("shard_*.bin.zst"))
     return len(lines), hashlib.sha256("".join(l + "\n" for l in lines).encode()).hexdigest()
 
 
-def holdout_dirs(lin: dict, metric: str, shared: Path | None = None, work: Path | None = None) -> list[Path]:
-    """The hold-out shard folders on this host: link trees <work>/<name>/<source name>/<part>/ of the pinned
-    parts (per_action.link_tree). Refused when a source's files differ from the pinned fingerprint."""
+def manifest_fingerprint(shared: Path, datasets: list[str]) -> tuple[int, str]:
+    """(file count, sha256 of the sorted "<source>/<file> <sha256> <bytes>" lines) of datasets' manifest.json
+    (061-R7; <shared>/datasets/<dataset>/manifest.json, source = the dataset's folder name)."""
+    lines = []
+    for ds in datasets:
+        m = json.loads((shared / "datasets" / ds / "manifest.json").read_text(encoding="utf-8"))
+        lines += [f"{Path(ds).name}/{k} {v['sha256']} {v['bytes']}" for k, v in m["files"].items()]
+    lines.sort()
+    return len(lines), hashlib.sha256("".join(l + "\n" for l in lines).encode()).hexdigest()
+
+
+def _check_files(name: str, got: tuple[int, str], want: tuple[int, str], where) -> None:
+    if got != want:
+        raise Refused(f"hold-out {name} ({where}): {got[0]} files, fingerprint {got[1][:12]}; pinned {want[0]} files {want[1][:12]}")
+
+
+def set_data(lin: dict, name: str, shared: Path | None = None, work: Path | None = None, create: bool = True) -> list[str]:
+    """The data arguments of a cue hold-out set on this host, after its fingerprint check:
+    - `holdout` (link trees): `--shards <work>/<name>/<source name>` per entry (per_action.link_tree of the
+      pinned parts; work = <cache>/diag_holdout); the source and, once linked, the link tree are checked.
+      create=False: only the paths (and the source check), nothing written.
+    - `datasets`: `--dataset <name>` per dataset, the manifests checked."""
     import per_action
 
+    s = cue_set(lin, name)
     shared = shared or ec.shared_dir()
-    work = work or cache_root()
+    if "datasets" in s:
+        _check_files(name, manifest_fingerprint(shared, s["datasets"]), (s["files"], s["files_sha256"]), "dataset manifests")
+        return [x for ds in s["datasets"] for x in ("--dataset", ds)]
+    work = work or ec.cache_dir() / HOLDOUT_DIR
     out = []
-    for h in holdout_spec(lin, metric):
+    for h in s["holdout"]:
         src = shared / h["source"]
-        n, sha = files_fingerprint(src, h["parts"])
-        if (n, sha) != (h["files"], h["files_sha256"]):
-            raise Refused(f"hold-out {h['name']} ({src}): {n} files, fingerprint {sha[:12]}; pinned {h['files']} files {h['files_sha256'][:12]}")
-        out.append(per_action.link_tree(src, h["parts"], work / h["name"] / Path(h["source"]).name))
+        _check_files(h["name"], files_fingerprint(src, h["parts"]), (h["files"], h["files_sha256"]), src)
+        dst = work / h["name"] / Path(h["source"]).name
+        if create:
+            per_action.link_tree(src, h["parts"], dst)
+            _check_files(h["name"], files_fingerprint(dst, h["parts"]), (h["files"], h["files_sha256"]), f"link tree {dst}")
+        out += ["--shards", str(dst)]
     return out
 
 
-def diag_name(checkpoint: str) -> str:
+def data_tails(s: dict) -> list[str]:
+    """The ends of the data folders a dump of the set records (`diag dump` manifest `data`, in its order)."""
+    if "datasets" in s:
+        return sorted(s["datasets"])  # storage::dataset_dirs sorts the dataset names
+    return [f"{h['name']}/{Path(h['source']).name}" for h in s["holdout"]]
+
+
+def output_name(checkpoint: str) -> str:
     """`<run>__<ckpt>` of a checkpoint path (an RL agent folder adds its tail: ckpt-N-agents-main)."""
     parts = [s for s in checkpoint.replace("\\", "/").split("/") if s]
     i = next((k for k, s in enumerate(parts) if s.startswith("ckpt-")), len(parts) - 1)
@@ -458,148 +490,365 @@ def diag_name(checkpoint: str) -> str:
 
 def diag_out(lin: dict, metric: str, checkpoint: str) -> str:
     """The output folder of a checkpoint's diagnostics, relative to URANIUM_SHARED_DIR."""
-    run, ck = diag_name(checkpoint).split("__", 1)
+    run, ck = output_name(checkpoint).split("__", 1)
     return diag_metric(lin, metric)["output"].replace("<run>", run).replace("<ckpt>", ck)
 
 
-def _shards(dirs: list[Path]) -> list[str]:
-    return [x for d in dirs for x in ("--shards", str(d))]
+def cue_commands(lin: dict, name: str, ckpt: str, out: Path, data: list[str], py: str = "python", dump: Path | None = None) -> list[list[str]]:
+    """The pinned `python -m uranium diag` commands of a cue hold-out set for the checkpoint folder `ckpt` (a
+    path on the running host) writing into `out` (<out>/<set>); the dump goes to `dump` (default <out>/dump;
+    `diag --run` dumps into this host's cache and copies it to <out>/dump afterwards)."""
+    m = diag_metric(lin, "cue_diag")
+    s = cue_set(lin, name)
+    d, p = s["dump"], s["probes"]
+    dump = dump or out / "dump"
+    cmd = [py, "-m", "uranium", "diag", "dump", "--checkpoint", ckpt, *data, "--splits", ",".join(s["splits"])]
+    if s.get("games"):
+        cmd += ["--games", str(s["games"]), "--seed", str(s["seed"])]
+    cmd += ["--config", m["config"], "--backend", m["backend"], "--lanes-per-group", str(d["lanes_per_group"]), "--row-until", f"{d['row_until']:g}",
+            "--act-until", f"{d['act_until']:g}", "--act-every", str(d["act_every"]), "--core-points", d["core_points"]]
+    if d["cf"]:
+        cmd += ["--cf", "--cf-starts", ";".join(f"{r}:{a:g},{b:g}" for r, (a, b) in d["cf_starts"].items())]
+    cmd += ["--out", str(dump)]
+    cmds = [cmd, [py, "-m", "uranium", "diag", "probes", str(dump), "--races", ",".join(p["races"]), "--stages", ",".join(p["stages"]), "--gain", p["gain"],
+                  "--boot", str(p["boot"]), "--cap", str(p["cap"]), "--seed", str(p["seed"]), "--device", "cpu", "--out", str(out / "probes.json")]]
+    if "intervene" in s:
+        iv = s["intervene"]
+        cmds.append([py, "-m", "uranium", "diag", "intervene", str(dump), "--races", ",".join(iv["races"]), "--window", ",".join(f"{x:g}" for x in iv["window"]),
+                     "--boot", str(iv["boot"]), "--seed", str(iv["seed"]), "--out", str(out / "intervene.json")])
+    return cmds
 
 
-def diag_commands(lin: dict, metric: str, ckpt: str, out: Path, dirs: list[Path], py: str = "python") -> list[list[str]]:
-    """The pinned `python -m uranium diag` commands of a diagnostic metric for the checkpoint folder `ckpt`
-    (a path on the running host) writing into `out`."""
-    m = diag_metric(lin, metric)
-    if m["kind"] == "diag_cue":
-        d, p, iv = m["dump"], m["probes"], m["intervene"]
-        dump = out / "dump"
-        cmd = [py, "-m", "uranium", "diag", "dump", "--checkpoint", ckpt, *_shards(dirs), "--splits", ",".join(m["splits"]), "--config", m["config"],
-               "--backend", m["backend"], "--lanes-per-group", str(d["lanes_per_group"]), "--row-until", f"{d['row_until']:g}",
-               "--act-until", f"{d['act_until']:g}", "--act-every", str(d["act_every"]), "--core-points", d["core_points"]]
-        if d["cf"]:
-            cmd += ["--cf", "--cf-starts", ";".join(f"{r}:{a:g},{b:g}" for r, (a, b) in d["cf_starts"].items())]
-        cmd += ["--out", str(dump)]
-        probes = [py, "-m", "uranium", "diag", "probes", str(dump), "--races", ",".join(p["races"]), "--stages", ",".join(p["stages"]), "--gain", p["gain"],
-                  "--boot", str(p["boot"]), "--cap", str(p["cap"]), "--seed", str(p["seed"]), "--device", "cpu", "--out", str(out / "probes.json")]
-        inter = [py, "-m", "uranium", "diag", "intervene", str(dump), "--races", ",".join(iv["races"]), "--window", ",".join(f"{x:g}" for x in iv["window"]),
-                 "--boot", str(iv["boot"]), "--seed", str(iv["seed"]), "--out", str(out / "intervene.json")]
-        return [cmd, probes, inter]
-    return [[py, "-m", "uranium", "diag", "spatial", "--checkpoint", ckpt, *_shards(dirs), "--split", m["split"], "--config", m["config"],
-             "--backend", m["backend"], "--precision", m["precision"], "--batches", str(m["batches"]), "--skip-batches", str(m["skip_batches"]),
-             "--lanes-per-group", str(m["lanes_per_group"]), "--const-threshold", f"{m['const_threshold']:g}", "--out", str(out / "spatial.json")]]
-
-
-def summary_command(pt: dict, metrics: list[str], out: Path, py: str = "python") -> list[str]:
-    cmd = [py, "-m", "uranium", "diag", "summary", "--point", pt["id"]]
-    if "cue_diag" in metrics:
-        cmd += ["--probes", str(out / "probes.json"), "--intervene", str(out / "intervene.json")]
-    if "dead_channels" in metrics:
-        cmd += ["--spatial", str(out / "spatial.json")]
+def summary_command(lin: dict, pt: dict, name: str, out: Path, py: str = "python") -> list[str]:
+    """`diag summary` of one cue set (<out>/<set>/summary.json)."""
+    cmd = [py, "-m", "uranium", "diag", "summary", "--point", pt["id"], "--probes", str(out / "probes.json")]
+    if "intervene" in cue_set(lin, name):
+        cmd += ["--intervene", str(out / "intervene.json")]
     return cmd + ["--out", str(out / "summary.json")]
+
+
+def train_log_command(lin: dict, pt: dict, checkpoint: str, log: str, ckpt: str, out: Path, py: str = "python") -> list[str]:
+    """tools/eval/spatial_logs.py on the run's training log: records from the pinned update to the checkpoint's
+    (BC family: ckpt-N = update N; RL: the whole log of agent `main`)."""
+    m = diag_metric(lin, "dead_channels")
+    cmd = [py, "tools/eval/spatial_logs.py", log, "--checkpoint", ckpt, "--from-update", str(m["from_update"])]
+    n = re.match(r"ckpt-(\d+)$", Path(checkpoint).name)
+    if pt["family"] == "bc" and n:
+        cmd += ["--until-update", n.group(1)]
+    return cmd + ["--out", str(out / TRAIN_LOG)]
+
+
+def step_name(c: list[str]) -> str:
+    return COPY if c[0] == COPY else c[4] if c[2:4] == ["uranium", "diag"] else Path(c[1]).stem
 
 
 def _ends_with(path: str, tail: str) -> bool:
     return path.replace("\\", "/").rstrip("/").endswith(tail)
 
 
-def check_diag(lin: dict, metric: str, out: Path, sha: str | None = None) -> list[str]:
-    """Problems of a diagnostic output folder against the pinned settings (empty = conforms). `sha` = the
-    checkpoint's weights sha256 the outputs must be of."""
-    m = diag_metric(lin, metric)
-    hold = holdout_spec(lin, metric)
-    tails = [f"{h['name']}/{Path(h['source']).name}" for h in hold]
-    names = [h["name"] for h in hold]
-    problems: list[str] = []
+def _load(f: Path, problems: list[str]) -> dict | None:
+    if not f.is_file():
+        problems.append(f"no {f}")
+        return None
+    return json.loads(f.read_text(encoding="utf-8"))
 
-    def load(name: str) -> dict | None:
-        f = out / name
-        if not f.is_file():
-            problems.append(f"no {f}")
-            return None
-        return json.loads(f.read_text(encoding="utf-8"))
+
+def check_cue_set(lin: dict, name: str, d: Path, sha: str | None) -> list[str]:
+    """Problems of one cue set's outputs (<out>/<set>) against its pinned settings."""
+    m = diag_metric(lin, "cue_diag")
+    s = cue_set(lin, name)
+    dm, p, rep = s["dump"], s["probes"], s["report"]
+    tails = data_tails(s)
+    names = [h["name"] for h in s.get("holdout", [])] or tails
+    problems: list[str] = []
 
     def same(what: str, got, want) -> None:
         if got != want:
-            problems.append(f"{what}: {got!r}, pinned {want!r}")
+            problems.append(f"{name} {what}: {got!r}, pinned {want!r}")
 
     def data(what: str, got) -> None:
         # the folders in the pinned order: this tool's link trees (<name>/<source>) or a folder named <name>
-        # holding the same parts (the lambda runs); the row / game counts below fingerprint the content
+        # holding the same parts (the lambda runs); the row / game counts fingerprint the content
         got = list(got or [])
         if len(got) != len(tails) or not all(_ends_with(g, t) or _ends_with(g, n) for g, t, n in zip(got, tails, names)):
-            problems.append(f"{what} data {got}: not the pinned hold-out (.../{', .../'.join(tails)})")
+            problems.append(f"{name} {what} data {got}: not the pinned hold-out (.../{', .../'.join(tails)})")
 
-    if m["kind"] == "diag_cue":
-        d, p, iv = m["dump"], m["probes"], m["intervene"]
-        man = load("dump/manifest.json")
-        if man is not None:
-            data("dump", man.get("data"))
-            for k, want in (("splits", m["splits"]), ("games_per_split", None), ("config", m["config"]), ("backend", m["backend"]),
-                            ("precision", PRECISION[m["backend"]]), ("lanes_per_group", d["lanes_per_group"]), ("row_until", d["row_until"]),
-                            ("act_until", d["act_until"]), ("act_every", d["act_every"]), ("games", d["expect_games"])):
-                same(f"dump {k}", man.get(k), want)
-            st = man.get("stats", {})
-            same("dump rows", st.get("rows"), d["expect_rows"])
-            same("dump act_rows", st.get("act_rows"), d["expect_act_rows"])
-            if d["cf"]:
-                same("dump cf_starts", man.get("cf_starts"), {r: list(v) for r, v in d["cf_starts"].items()})
-                if len(man.get("passes") or []) < 2:
-                    problems.append(f"dump passes {man.get('passes')}: made without --cf (no counterfactual passes)")
-            missing = [s for s in m["report"]["stages"] if s not in (man.get("stages") or [])]
-            if missing:
-                problems.append(f"dump has no activations at {missing}")
-            if sha is not None:
-                same("dump checkpoint_sha256", man.get("checkpoint_sha256"), sha)
-            sha = sha or man.get("checkpoint_sha256")
-        pr = load("probes.json")
-        if pr is not None:
-            hd = pr.get("dump", {})
-            same("probes dump checkpoint_sha256", hd.get("checkpoint_sha256"), sha)
-            data("probes", hd.get("data"))
-            for k, want in (("gain_method", p["gain"]), ("boot", p["boot"]), ("cap", p["cap"]), ("mlp", True)):
-                same(f"probes {k}", pr.get(k), want)
-            same("probes races", sorted(pr.get("races", {})), sorted(p["races"]))
-            for race in p["races"]:
-                tasks = pr.get("races", {}).get(race, {}).get("tasks", {})
-                for t, (rows, games) in p["expect_tasks"].items():
-                    x = tasks.get(t, {})
-                    same(f"probes {race} {t} rows / games", [x.get("rows"), x.get("games")], [rows, games])
-                    have = {k.split("|")[0] for k in x.get("metrics", {})}
-                    lack = [s for s in m["report"]["stages"] if s not in have]
-                    if lack:
-                        problems.append(f"probes {race} {t}: no probe at {lack} (stages other than pinned)")
-                for t, why in p["expect_skipped"].items():
-                    if why not in str(tasks.get(t, {}).get("skipped")):
-                        problems.append(f"probes {race} {t}: expected skipped ({why}), got {tasks.get(t, {}).get('skipped')!r}")
-        ivr = load("intervene.json")
+    man = _load(d / "dump" / "manifest.json", problems)
+    if man is not None:
+        data("dump", man.get("data"))
+        for k, want in (("splits", s["splits"]), ("games_per_split", s.get("games")), ("config", m["config"]), ("backend", m["backend"]),
+                        ("precision", PRECISION[m["backend"]]), ("lanes_per_group", dm["lanes_per_group"]), ("row_until", dm["row_until"]),
+                        ("act_until", dm["act_until"]), ("act_every", dm["act_every"])):
+            same(f"dump {k}", man.get(k), want)
+        if s.get("games"):
+            same("dump seed", man.get("seed"), s["seed"])
+        st = man.get("stats", {})
+        for k, got in (("expect_games", man.get("games")), ("expect_rows", st.get("rows")), ("expect_act_rows", st.get("act_rows"))):
+            if k in dm:
+                same(f"dump {k.removeprefix('expect_')}", got, dm[k])
+        if dm["cf"]:
+            same("dump cf_starts", man.get("cf_starts"), {r: list(v) for r, v in dm["cf_starts"].items()})
+            if len(man.get("passes") or []) < 2:
+                problems.append(f"{name} dump passes {man.get('passes')}: made without --cf (no counterfactual passes)")
+        elif len(man.get("passes") or ["real"]) != 1:
+            problems.append(f"{name} dump passes {man.get('passes')}: counterfactual passes not pinned for this set")
+        missing = [x for x in rep["stages"] if x not in (man.get("stages") or [])]
+        if missing:
+            problems.append(f"{name} dump has no activations at {missing}")
+        if sha is not None:
+            same("dump checkpoint_sha256", man.get("checkpoint_sha256"), sha)
+        sha = sha or man.get("checkpoint_sha256")
+    pr = _load(d / "probes.json", problems)
+    if pr is not None:
+        hd = pr.get("dump", {})
+        same("probes dump checkpoint_sha256", hd.get("checkpoint_sha256"), sha)
+        data("probes", hd.get("data"))
+        for k, want in (("gain_method", p["gain"]), ("boot", p["boot"]), ("cap", p["cap"]), ("mlp", True)):
+            same(f"probes {k}", pr.get(k), want)
+        same("probes races", sorted(pr.get("races", {})), sorted(p["races"]))
+        for race in p["races"]:
+            tasks = pr.get("races", {}).get(race, {}).get("tasks", {})
+            for t, (rows, games) in p["expect_tasks"].items():
+                x = tasks.get(t, {})
+                same(f"probes {race} {t} rows / games", [x.get("rows"), x.get("games")], [rows, games])
+            for t in set(p["expect_tasks"]) | set(rep.get("required", [])):
+                x = tasks.get(t, {})
+                if "metrics" not in x:
+                    problems.append(f"{name} probes {race} {t}: no values ({x.get('skipped', 'not run')})")
+                    continue
+                lack = [st for st in rep["stages"] if f"{st}|ridge" not in x["metrics"]]
+                if lack:
+                    problems.append(f"{name} probes {race} {t}: no probe at {lack} (stages other than pinned)")
+            for t, why in p["expect_skipped"].items():
+                if why not in str(tasks.get(t, {}).get("skipped")):
+                    problems.append(f"{name} probes {race} {t}: expected skipped ({why}), got {tasks.get(t, {}).get('skipped')!r}")
+    if "intervene" in s:
+        iv = s["intervene"]
+        ivr = _load(d / "intervene.json", problems)
         if ivr is not None:
             hd = ivr.get("dump", {})
             same("intervene dump checkpoint_sha256", hd.get("checkpoint_sha256"), sha)
             data("intervene", hd.get("data"))
             same("intervene window", ivr.get("window"), [float(x) for x in iv["window"]])
             same("intervene races", sorted(ivr.get("races", {})), sorted(iv["races"]))
-        return problems
-    sp = load("spatial.json")
-    if sp is None:
-        return problems
-    data("spatial", sp.get("data"))
-    for k, want in (("split", m["split"]), ("batches", m["batches"]), ("skip_batches", m["skip_batches"]), ("backend", m["backend"]),
-                    ("precision", m["precision"]), ("const_threshold", m["const_threshold"])):
-        same(f"spatial {k}", sp.get(k), want)
-    cks = sp.get("checkpoints", {})
-    if len(cks) != 1:
-        problems.append(f"spatial: {len(cks)} checkpoints, one per output folder")
-        return problems
-    (e,) = cks.values()
-    if sha is not None:
-        same("spatial checkpoint sha256", e.get("sha256"), sha)
-    if not e.get("rows"):
-        problems.append("spatial: no recorded row")
-    pts = e.get("points", {})
-    lack = [lay for lay in m["layers"] if SPEC_POINTS[lay] not in pts] + [c for c in CONST_POINTS if c not in pts]
-    if lack:
-        problems.append(f"spatial: no statistics for {lack}")
     return problems
+
+
+def unpinned(lin: dict, out: Path) -> list[str]:
+    """The data fingerprints a set does not pin yet (TBD, measured on the first run): the values found."""
+    notes = []
+    for name in diag_metric(lin, "cue_diag")["sets"]:
+        dm = cue_set(lin, name)["dump"]
+        f = out / name / "dump" / "manifest.json"
+        if f.is_file():
+            man = json.loads(f.read_text(encoding="utf-8"))
+            got = {"expect_games": man.get("games"), "expect_rows": man.get("stats", {}).get("rows"), "expect_act_rows": man.get("stats", {}).get("act_rows")}
+            notes += [f"{name} {k} = {v} (not pinned yet)" for k, v in got.items() if k not in dm]
+    return notes
+
+
+def check_train_log(lin: dict, out: Path) -> list[str]:
+    m = diag_metric(lin, "dead_channels")
+    problems: list[str] = []
+    r = _load(out / TRAIN_LOG, problems)
+    if r is not None:
+        if r.get("from_update") != m["from_update"]:
+            problems.append(f"{TRAIN_LOG} from_update {r.get('from_update')!r}, pinned {m['from_update']}")
+        if not r.get("sp_records_from"):
+            problems.append(f"{TRAIN_LOG}: no sp_* record from update {m['from_update']} (a run without [monitor] spatial_every?)")
+        lack = [k for k in m["layers"] if k not in (r.get("dead") or {})]
+        if r.get("sp_records_from") and lack:
+            problems.append(f"{TRAIN_LOG}: no dead count for {lack}")
+    return problems
+
+
+def check_diag(lin: dict, metric: str, out: Path, sha: str | None = None) -> list[str]:
+    """Problems of a diagnostic output folder against the pinned settings (empty = conforms). `sha` = the
+    checkpoint's weights sha256 the outputs must be of. The folder needs the finished protocol.json of
+    `diag --run` with the checkpoint sha256, the metric and the git commit (050-R9 record)."""
+    m = diag_metric(lin, metric)
+    problems: list[str] = []
+    rec = _load(out / DIAG_RECORD, problems)
+    if rec is not None:
+        if not rec.get("finished"):
+            problems.append(f"{DIAG_RECORD}: not finished (an attempt in progress or failed)")
+        if metric not in (rec.get("metrics") or []):
+            problems.append(f"{DIAG_RECORD}: {metric} not among the measured metrics {rec.get('metrics')}")
+        if not (rec.get("git") or {}).get("commit"):
+            problems.append(f"{DIAG_RECORD}: no git commit")
+        if not rec.get("checkpoint_sha256"):
+            problems.append(f"{DIAG_RECORD}: no checkpoint sha256")
+        elif sha is not None and rec["checkpoint_sha256"] != sha:
+            problems.append(f"{DIAG_RECORD} checkpoint_sha256: {rec['checkpoint_sha256']!r}, pinned {sha!r}")
+        sha = sha or rec.get("checkpoint_sha256")
+    if m["kind"] == "diag_train_log":
+        return problems + check_train_log(lin, out)
+    for name in m["sets"]:
+        problems += check_cue_set(lin, name, out / name, sha)
+    return problems
+
+
+def next_failed(p: Path) -> Path:
+    """<p>.failed-<k> with the first free k (a failed attempt is renamed, never deleted)."""
+    k = 1
+    while p.with_name(f"{p.name}.failed-{k}").exists():
+        k += 1
+    return p.with_name(f"{p.name}.failed-{k}")
+
+
+def copy_dump(src: Path, dst: Path) -> None:
+    """A local dump to the shared drive: copy into <dst>.part, then rename (as the lambda-run scripts)."""
+    import shutil
+
+    part = dst.with_name(dst.name + ".part")
+    if part.exists():
+        part.rename(next_failed(part))
+    shutil.copytree(src, part)
+    os.replace(part, dst)
+
+
+def diag_record_cmd(c: list[str], roots: dict[str, Path]) -> list[str]:
+    """A command as protocol.json keeps it: `python` for the interpreter, host paths as <shared> / <cache>."""
+    return redact_cmd(c if c[0] == COPY else ["python", *c[1:]], roots)
+
+
+def check_final_only(pt: dict, checkpoint: str) -> None:
+    """A point with `diag_final_only` (s1e2, AMB-050-6): the diagnostics at the run's final checkpoint only
+    (the run folder has DONE and no later ckpt-N)."""
+    if not pt.get("diag_final_only"):
+        return
+    d = checkpoint_dir(checkpoint)
+    run = d.parent
+    steps = sorted(int(x.name[5:]) for x in run.glob("ckpt-*") if x.name[5:].isdigit())
+    if not (run / "DONE").is_file() or not steps or d.name != f"ckpt-{steps[-1]}":
+        raise Refused(f"point {pt['id']}: diagnostics at the run's final checkpoint only (AMB-050-6); {checkpoint} is not (DONE {'present' if (run / 'DONE').is_file() else 'missing'}, last ckpt-{steps[-1] if steps else '?'})")
+
+
+def cmd_diag(a) -> None:
+    """050-R9 diagnostics of a lineage point's checkpoint. Without --run: the pinned commands for this host
+    (paths of this host; nothing is written). With --run: builds the hold-out link trees, marks the attempt
+    (<out>/running.json), runs the commands with the dumps in this host's cache, copies each dump to
+    <out>/<set>/dump, writes <out>/protocol.json and runs `check-diag`. A folder without a finished
+    protocol.json (an earlier attempt that failed) is renamed to <out>.failed-<k> first. Run it on a Linux
+    ROCm host (the pinned backend)."""
+    lin = load_lineage()
+    pt = point(lin, a.point)
+    metrics = [x.strip() for x in a.metrics.split(",") if x.strip()]
+    for metric in metrics:
+        check_new_measurement(lin, a.lineage, metric, pt)
+        if check_metric(lin, pt, metric)["kind"] not in DIAG_KINDS:
+            raise Refused(f"metric {metric} is not a diagnostic")
+    check_checkpoint(lin, a.lineage, pt, a.checkpoint)
+    check_final_only(pt, a.checkpoint)
+    if "dead_channels" in metrics and not a.train_log:
+        raise Refused(f"dead_channels reads the run's training log: --train-log <BC stderr log | RL train.csv> of {run_of(a.checkpoint)}")
+    outs = {diag_out(lin, metric, a.checkpoint) for metric in metrics}
+    if len(outs) != 1:
+        raise Refused(f"the metrics write to different folders {sorted(outs)}")
+    shared = ec.shared_dir()
+    out = Path(a.out) if a.out else shared / outs.pop()
+    sha = checkpoint_sha256(a.checkpoint)
+    ck = str(checkpoint_dir(a.checkpoint))
+    py = sys.executable if a.run else "python"
+    cache = ec.cache_dir()
+    local = cache / LOCAL_DUMP_DIR / out.name
+    cmds = []
+    if "cue_diag" in metrics:
+        for name in diag_metric(lin, "cue_diag")["sets"]:
+            cmds += cue_commands(lin, name, ck, out / name, set_data(lin, name, shared, create=a.run), py, dump=local / name / "dump")
+            cmds.append([COPY, str(local / name / "dump"), str(out / name / "dump")])
+            cmds.append(summary_command(lin, pt, name, out / name, py))
+    log_sha = None
+    if "dead_channels" in metrics:
+        log = Path(a.train_log)
+        if not log.is_file():
+            raise Refused(f"no training log {log}")
+        log_sha = file_sha256(log)
+        cmds.append(train_log_command(lin, pt, a.checkpoint, str(log), ck, out, py))
+    if not a.run:
+        for c in cmds:
+            if c[0] == COPY:
+                part = c[2] + ".part"
+                print(f"cp -r {shlex.quote(c[1])} {shlex.quote(part)} && mv {shlex.quote(part)} {shlex.quote(c[2])}")
+            else:
+                print(show(c))
+        print(f"python tools/eval/protocol.py check-diag {out} --metrics {','.join(metrics)} --checkpoint {a.checkpoint}")
+        print(f"# pinned: backend {diag_metric(lin, 'cue_diag')['backend']}; checkpoint sha256 {sha}; git {git_state()['commit']}")
+        print(f"# --run also makes the hold-out link trees under {cache / HOLDOUT_DIR}, writes {out / RUNNING} at the start and {out / DIAG_RECORD} at the end")
+        return
+    git = git_state()
+    if git["protocol_files_dirty"] and not a.allow_dirty:
+        raise Refused("uncommitted protocol files (" + ", ".join(git["dirty_paths"]) + "); --allow-dirty records them in protocol.json")
+    if (out / DIAG_RECORD).exists():
+        raise Refused(f"{out / DIAG_RECORD} exists (one finished measurement per folder; --out for another)")
+    for p in (out, local):
+        if p.exists():  # an earlier attempt without a finished record: kept under another name
+            moved = next_failed(p)
+            p.rename(moved)
+            print(f"[diag] earlier attempt kept as {moved}", flush=True)
+    out.mkdir(parents=True)
+    if "cue_diag" in metrics:
+        for name in diag_metric(lin, "cue_diag")["sets"]:
+            (out / name).mkdir()
+    roots = {"<shared>": shared, "<cache>": cache}
+    rec = {"protocol": "config/protocol/lineage.toml (050-R9)", "lineage": a.lineage, "point": pt["id"], "family": pt["family"],
+           "metrics": metrics, "checkpoint": a.checkpoint, "checkpoint_sha256": sha, "checkpoint_id": f"{Path(a.checkpoint).name}@{sha[:12]}",
+           "backend": diag_metric(lin, "cue_diag")["backend"] if "cue_diag" in metrics else None,
+           "precision": PRECISION[diag_metric(lin, "cue_diag")["backend"]] if "cue_diag" in metrics else None,
+           "sets": {n: {k: v for k, v in cue_set(lin, n).items() if k in ("holdout", "datasets", "files", "files_sha256", "splits", "games", "seed")}
+                    for n in diag_metric(lin, "cue_diag")["sets"]} if "cue_diag" in metrics else None,
+           "train_log": {"file": Path(a.train_log).name, "sha256": log_sha} if log_sha else None,
+           "git": git, "platform": sys.platform, "commands": [diag_record_cmd(c, roots) for c in cmds],
+           "started": datetime.datetime.now().astimezone().isoformat(timespec="seconds"), "finished": None, "steps": []}
+
+    def save(final: bool = False) -> None:
+        (out / RUNNING).write_text(json.dumps(rec, indent=1), encoding="utf-8")
+        if final:
+            os.replace(out / RUNNING, out / DIAG_RECORD)
+
+    save()
+    for c in cmds:
+        print("[diag]", show(diag_record_cmd(c, roots)), flush=True)
+        t0 = datetime.datetime.now()
+        try:
+            if c[0] == COPY:
+                copy_dump(Path(c[1]), Path(c[2]))
+            else:
+                subprocess.run(c, cwd=ROOT, check=True)
+        except (subprocess.CalledProcessError, OSError) as e:
+            rec["steps"].append({"step": step_name(c), "error": str(e)})
+            save()
+            raise
+        rec["steps"].append({"step": step_name(c), "secs": round((datetime.datetime.now() - t0).total_seconds())})
+        save()
+    rec["finished"] = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    save(final=True)
+    problems = [p for metric in metrics for p in check_diag(lin, metric, out, sha)]
+    rec["check"] = problems
+    rec["unpinned"] = unpinned(lin, out) if "cue_diag" in metrics else []
+    (out / DIAG_RECORD).write_text(json.dumps(rec, indent=1), encoding="utf-8")
+    for n in rec["unpinned"]:
+        print("NOTE", n)
+    for p in problems:
+        print("MISMATCH", p)
+    if problems:
+        raise SystemExit(1)
+    print(f"{out}: {', '.join(metrics)} conform to the protocol")
+
+
+def cmd_check_diag(a) -> None:
+    lin = load_lineage()
+    sha = checkpoint_sha256(a.checkpoint) if a.checkpoint else None
+    metrics = [x.strip() for x in a.metrics.split(",") if x.strip()]
+    problems = [p for metric in metrics for p in check_diag(lin, metric, Path(a.out), sha)]
+    if "cue_diag" in metrics:
+        for n in unpinned(lin, Path(a.out)):
+            print("NOTE", n)
+    for p in problems:
+        print("MISMATCH", p)
+    if problems:
+        raise SystemExit(1)
+    print(f"{a.out}: {', '.join(metrics)} conform to the protocol")
 
 
 # ---------------------------------------------------------------- commands
@@ -755,7 +1004,7 @@ def cmd_tables(a) -> None:
     if a.lineage != "ck1":
         raise Refused("tables of other lineages: run tools/eval/tables.py on their jobs")
     ec.load_env()
-    cache = Path(a.cache) if a.cache else Path(os.environ.get("URANIUM_CACHE_DIR") or ROOT / "runs") / "eval_cmddump"
+    cache = Path(a.cache) if a.cache else ec.cache_dir() / "eval_cmddump"
     res = ck1_game_tables(lin, pt, ec.shared_dir(), cache)
     tables.print_tables(res)
     if a.json:
@@ -847,76 +1096,6 @@ def redact_cmd(cmd: list[str], roots: dict[str, Path]) -> list[str]:
                 break
         out.append(x)
     return out
-
-
-def cmd_diag(a) -> None:
-    """050-R9 diagnostics of a lineage point's checkpoint: prints the pinned commands for this host (paths
-    of this host), or with --run builds the hold-out link trees, writes <out>/protocol.json, runs them, the
-    `diag summary` and `check-diag`. Run it on a Linux ROCm host (the pinned backend)."""
-    lin = load_lineage()
-    pt = point(lin, a.point)
-    metrics = [x.strip() for x in a.metrics.split(",") if x.strip()]
-    for metric in metrics:
-        check_new_measurement(lin, a.lineage, metric, pt)
-        if check_metric(lin, pt, metric)["kind"] not in DIAG_KINDS:
-            raise Refused(f"metric {metric} is not a diagnostic")
-    check_checkpoint(lin, a.lineage, pt, a.checkpoint)
-    outs = {diag_out(lin, metric, a.checkpoint) for metric in metrics}
-    if len(outs) != 1:
-        raise Refused(f"the metrics write to different folders {sorted(outs)}")
-    shared = ec.shared_dir()
-    out = Path(a.out) if a.out else shared / outs.pop()
-    sha = checkpoint_sha256(a.checkpoint)
-    ck = str(checkpoint_dir(a.checkpoint))
-    py = sys.executable if a.run else "python"
-    if any(holdout_spec(lin, m) != holdout_spec(lin, metrics[0]) for m in metrics):
-        raise Refused("the metrics have different hold-outs")
-    dirs = holdout_dirs(lin, metrics[0], shared)
-    cmds = []
-    for metric in metrics:
-        cmds += diag_commands(lin, metric, ck, out, dirs, py)
-    cmds.append(summary_command(pt, metrics, out, py))
-    if not a.run:
-        print(f"# hold-out link trees on this host: {', '.join(map(str, dirs))}")
-        for c in cmds:
-            print(show(c))
-        print(f"python tools/eval/protocol.py check-diag {out} --metrics {','.join(metrics)} --checkpoint {a.checkpoint}")
-        print(f"# pinned: backend {lin['metric'][metrics[0]]['backend']}; checkpoint sha256 {sha}; git {git_state()['commit']}")
-        return
-    git = git_state()
-    if git["protocol_files_dirty"] and not a.allow_dirty:
-        raise Refused("uncommitted protocol files (" + ", ".join(git["dirty_paths"]) + "); --allow-dirty records them in protocol.json")
-    if (out / DIAG_RECORD).exists():
-        raise Refused(f"{out / DIAG_RECORD} exists (one measurement per folder; --out for another)")
-    out.mkdir(parents=True, exist_ok=True)
-    roots = {"<shared>": shared, "<cache>": cache_root()}
-    rec = {"protocol": "config/protocol/lineage.toml (050-R9)", "lineage": a.lineage, "point": pt["id"], "family": pt["family"],
-           "metrics": metrics, "checkpoint": a.checkpoint, "checkpoint_sha256": sha, "checkpoint_id": f"{Path(a.checkpoint).name}@{sha[:12]}",
-           "backend": {m: lin["metric"][m]["backend"] for m in metrics}, "precision": {m: PRECISION[lin["metric"][m]["backend"]] for m in metrics},
-           "holdout": holdout_spec(lin, metrics[0]), "git": git, "platform": sys.platform,
-           "commands": [redact_cmd(c, roots) for c in cmds], "created": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}
-    (out / DIAG_RECORD).write_text(json.dumps(rec, indent=1), encoding="utf-8")
-    for c in cmds:
-        print("[diag]", show(redact_cmd(c, roots)), flush=True)
-        subprocess.run(c, cwd=ROOT, check=True)
-    problems = [p for metric in metrics for p in check_diag(lin, metric, out, sha)]
-    for p in problems:
-        print("MISMATCH", p)
-    if problems:
-        raise SystemExit(1)
-    print(f"{out}: {', '.join(metrics)} conform to the protocol")
-
-
-def cmd_check_diag(a) -> None:
-    lin = load_lineage()
-    sha = checkpoint_sha256(a.checkpoint) if a.checkpoint else None
-    metrics = [x.strip() for x in a.metrics.split(",") if x.strip()]
-    problems = [p for metric in metrics for p in check_diag(lin, metric, Path(a.out), sha)]
-    for p in problems:
-        print("MISMATCH", p)
-    if problems:
-        raise SystemExit(1)
-    print(f"{a.out}: {', '.join(metrics)} conform to the protocol")
 
 
 def cmd_check_bc_eval(a) -> None:
@@ -1024,8 +1203,9 @@ def main(argv=None) -> None:
     s.add_argument("--point", required=True)
     s.add_argument("--checkpoint", required=True, help="relative to URANIUM_SHARED_DIR")
     s.add_argument("--metrics", default="cue_diag,dead_channels")
+    s.add_argument("--train-log", default=None, help="dead_channels: the run's training log (BC stderr log or RL train.csv)")
     s.add_argument("--out", default=None, help="default <shared>/<metric output>")
-    s.add_argument("--run", action="store_true", help="run the commands here (else print them)")
+    s.add_argument("--run", action="store_true", help="run the commands here (else print them; nothing is written, the hold-out link trees are made by --run)")
     s.add_argument("--allow-dirty", action="store_true")
     s.set_defaults(f=cmd_diag)
     s = sub.add_parser("check-diag", help="refuse diagnostic outputs made with other settings or data")

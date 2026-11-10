@@ -1,16 +1,15 @@
 """Tables of the 050-R9 diagnostics (cue_diag, dead_channels; config/protocol/lineage.toml, docs/
-measurement_protocol.md) from the output folders `protocol.py diag` writes: one row per checkpoint.
+measurement_protocol.md) from the output folders `protocol.py diag --run` writes: one row per checkpoint.
 
-- cue probes (per pinned race): rows / games, ridge R2 with the game-bootstrap 95% CI at the reported
-  stages for each reported task (`report.stages`, `report.tasks`), the h_t MLP(64) value, the nuisance-only
-  ridge, the gain over the nuisance at h_t; a skipped task shows its reason (the enemy max-seen count is
-  constant on the Zerg teacher hold-out)
-- intervention (per pinned race, all classes): games / edited, mean delta [CI] of every reported effect and
-  metric (`report.effects`, `report.effect_metrics`)
-- dead channels (032-R25, `diag spatial`): dead / channels per 041-R25 layer, the s8 positive share, const S8 /
-  s_pool
-- training log (041-R25, optional `spatial_log.json` in the folder, tools/eval/spatial_logs.py): alarms,
-  worst dead layer share, max const S8 / s_pool
+- cue probes, per cue hold-out set (teacher: Zerg; human: Terran / Protoss) and race: rows / games, ridge R2
+  (AUC for a class task) with the game-bootstrap 95% CI at the reported stages for each reported task
+  (`report.stages`, `report.tasks`), the h_t MLP(64) value, the nuisance-only ridge, the gain over the
+  nuisance at h_t; a skipped task shows its reason. The enemy max-seen production-building count
+  (`count|focus_rows`) has values on the human set; on the Zerg teacher rows it is constant (skipped).
+- intervention (teacher set, all classes): games / edited, mean delta [CI] of every reported effect and metric
+- dead channels (041-R25 training-log records, `spatial_log.json`, tools/eval/spatial_logs.py): alarms, worst
+  dead layer share, max const S8 / s_pool, min positive share. Checkpoint 1 lineage: not measured (no
+  training-log statistics).
 
 Every folder is checked first (`protocol.py check-diag`); a folder that does not conform is refused unless
 --no-check (then marked). Moved from the probe-table part of the 041-R24 lambda-run summary
@@ -41,11 +40,12 @@ def ci(m: dict | None, pt: str = "pt", lo: str = "lo", hi: str = "hi", d: int = 
     return f"{s} [{m[lo]:.{d}f}, {m[hi]:.{d}f}]" if m.get(lo) is not None else s
 
 
-def cue_rows(lin: dict, pr: dict) -> dict:
-    """{race: {task: cells}} of a `diag probes` output for the reported tasks / stages."""
-    rep = lin["metric"]["cue_diag"]["report"]
+def cue_rows(lin: dict, name: str, pr: dict) -> dict:
+    """{race: {task: cells}} of a `diag probes` output of one cue set for its reported tasks / stages."""
+    s = protocol.cue_set(lin, name)
+    rep = s["report"]
     out = {}
-    for race in lin["metric"]["cue_diag"]["probes"]["races"]:
+    for race in s["probes"]["races"]:
         tasks = pr.get("races", {}).get(race, {}).get("tasks", {})
         rr = {}
         for t in rep["tasks"]:
@@ -55,17 +55,18 @@ def cue_rows(lin: dict, pr: dict) -> dict:
                 continue
             m = x["metrics"]
             rr[t] = {"metric": x["metric"], "rows": x["rows"], "games": x["games"],
-                     "stages": {s: {k: m.get(f"{s}|ridge", {}).get(k) for k in ("pt", "lo", "hi")} for s in rep["stages"]},
-                     "gain": {s: {k: m.get(f"{s}+nuis|ridge", {}).get(k) for k in ("gain", "gain_lo", "gain_hi")} for s in rep["stages"]},
+                     "stages": {st: {k: m.get(f"{st}|ridge", {}).get(k) for k in ("pt", "lo", "hi")} for st in rep["stages"]},
+                     "gain": {st: {k: m.get(f"{st}+nuis|ridge", {}).get(k) for k in ("gain", "gain_lo", "gain_hi")} for st in rep["stages"]},
                      "h_mlp": m.get("h|mlp", {}).get("pt"), "nuisance": {k: m.get("nuis|ridge", {}).get(k) for k in ("pt", "lo", "hi")}}
         out[race] = rr
     return out
 
 
-def intervention_rows(lin: dict, iv: dict) -> dict:
-    rep = lin["metric"]["cue_diag"]["report"]
+def intervention_rows(lin: dict, name: str, iv: dict) -> dict:
+    s = protocol.cue_set(lin, name)
+    rep = s["report"]
     out = {}
-    for race in lin["metric"]["cue_diag"]["intervene"]["races"]:
+    for race in s["intervene"]["races"]:
         r = iv.get("races", {}).get(race)
         if r is None:
             continue
@@ -73,17 +74,6 @@ def intervention_rows(lin: dict, iv: dict) -> dict:
         out[race] = {"games": r["games"], "edited": r["edited"], "edited_unf": r.get("edited_unf"), "count_edited": r.get("count_edited"),
                      "effects": {e: {m: allc.get(e, {}).get(m) for m in rep["effect_metrics"]} for e in rep["effects"]}}
     return out
-
-
-def dead_rows(lin: dict, sp: dict) -> dict:
-    m = lin["metric"]["dead_channels"]
-    (e,) = sp["checkpoints"].values()
-    pts = e["points"]
-    return {"rows": e.get("rows"), "precision": e.get("precision"),
-            "dead": {lay: [pts[protocol.SPEC_POINTS[lay]]["never_active"], pts[protocol.SPEC_POINTS[lay]]["channels"]] for lay in m["layers"]},
-            "pos": {lay: pts[protocol.SPEC_POINTS[lay]]["pos_frac"] for lay in m["layers"]},
-            "s8_pos": pts.get("spatial.s8", {}).get("pos_frac"),
-            "const": {c: [pts[c]["const"], pts[c]["channels"]] for c in protocol.CONST_POINTS}}
 
 
 def folder_table(lin: dict, out: Path, metrics: list[str], check: bool = True) -> dict:
@@ -94,78 +84,71 @@ def folder_table(lin: dict, out: Path, metrics: list[str], check: bool = True) -
     res = {"folder": str(out), "checked": check, "protocol": None if rec is None else {k: rec.get(k) for k in ("lineage", "point", "checkpoint", "checkpoint_sha256")}
            | {"git_commit": (rec.get("git") or {}).get("commit"), "protocol_files_dirty": (rec.get("git") or {}).get("protocol_files_dirty")}}
     if "cue_diag" in metrics:
-        pr, iv = _load(out / "probes.json"), _load(out / "intervene.json")
-        res["cue"] = None if pr is None else cue_rows(lin, pr)
-        res["intervention"] = None if iv is None else intervention_rows(lin, iv)
+        res["cue"], res["intervention"] = {}, {}
+        for name in protocol.diag_metric(lin, "cue_diag")["sets"]:
+            pr = _load(out / name / "probes.json")
+            res["cue"][name] = None if pr is None else cue_rows(lin, name, pr)
+            if "intervene" in protocol.cue_set(lin, name):
+                iv = _load(out / name / "intervene.json")
+                res["intervention"][name] = None if iv is None else intervention_rows(lin, name, iv)
     if "dead_channels" in metrics:
-        sp = _load(out / "spatial.json")
-        res["dead_channels"] = None if sp is None else dead_rows(lin, sp)
-        res["train_log"] = _load(out / "spatial_log.json")
+        res["train_log"] = _load(out / protocol.TRAIN_LOG)
     return res
 
 
 def markdown(lin: dict, res: dict[str, dict]) -> list[str]:
-    rep = lin["metric"]["cue_diag"]["report"]
     L: list[str] = []
-    cue = {k: v for k, v in res.items() if v.get("cue")}
-    if cue:
-        for race in lin["metric"]["cue_diag"]["probes"]["races"]:
+    for name in protocol.diag_metric(lin, "cue_diag")["sets"]:
+        s = protocol.cue_set(lin, name)
+        rep = s["report"]
+        cue = {k: v["cue"][name] for k, v in res.items() if (v.get("cue") or {}).get(name)}
+        for race in s["probes"]["races"] if cue else []:
             for t in rep["tasks"]:
-                L += ["", f"### cue probe {race} `{t}` (ridge R2 / AUC, game bootstrap 95% CI)", ""]
-                head = ["checkpoint", "rows / games"] + [f"{s}" for s in rep["stages"]] + ["h MLP(64)", "nuisance", "gain at h"]
+                L += ["", f"### cue probe, {name} hold-out, {race} `{t}` (ridge R2 / AUC, game bootstrap 95% CI)", ""]
+                head = ["checkpoint", "rows / games"] + list(rep["stages"]) + ["h MLP(64)", "nuisance", "gain at h"]
                 L += ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
                 for lab, r in cue.items():
-                    x = r["cue"].get(race, {}).get(t, {})
+                    x = r.get(race, {}).get(t, {})
                     if "stages" not in x:
                         L.append(f"| {lab} | skipped: {x.get('skipped')} |" + " |" * (len(head) - 2))
                         continue
-                    cells = [ci(x["stages"][s]) for s in rep["stages"]]
+                    cells = [ci(x["stages"][st]) for st in rep["stages"]]
                     mlp = "-" if x["h_mlp"] is None else f"{x['h_mlp']:.3f}"
                     L.append(f"| {lab} | {x['rows']} / {x['games']} | " + " | ".join(cells) + f" | {mlp} | {ci(x['nuisance'])} | "
                              f"{ci(x['gain'].get('h'), 'gain', 'gain_lo', 'gain_hi', sign=True)} |")
-    iv = {k: v for k, v in res.items() if v.get("intervention")}
-    if iv:
-        for race in lin["metric"]["cue_diag"]["intervene"]["races"]:
-            L += ["", f"### counterfactual intervention {race} (all classes, mean delta [95% CI])", ""]
+        iv = {k: v["intervention"][name] for k, v in res.items() if (v.get("intervention") or {}).get(name)}
+        for race in s.get("intervene", {}).get("races", []) if iv else []:
+            L += ["", f"### counterfactual intervention, {name} hold-out, {race} (all classes, mean delta [95% CI])", ""]
             head = ["checkpoint", "games / edited"] + [f"{e} {m}" for e in rep["effects"] for m in rep["effect_metrics"]]
             L += ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
             for lab, r in iv.items():
-                x = r["intervention"].get(race)
+                x = r.get(race)
                 if x is None:
                     continue
                 cells = [ci(x["effects"][e][m], "mean", sign=True, d=4) if (x["effects"][e][m] or {}).get("n") else "-" for e in rep["effects"] for m in rep["effect_metrics"]]
                 L.append(f"| {lab} | {x['games']} / {x['edited']} | " + " | ".join(cells) + " |")
-    dc = {k: v for k, v in res.items() if v.get("dead_channels")}
-    if dc:
-        lay = lin["metric"]["dead_channels"]["layers"]
-        L += ["", "### dead channels (032-R25, diag spatial: never active / channels)", ""]
-        head = ["checkpoint", "rows"] + lay + ["s8 pos", "const S8", "const s_pool"]
-        L += ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
-        for lab, r in dc.items():
-            d = r["dead_channels"]
-            s8 = "-" if d["s8_pos"] is None else f"{d['s8_pos']:.3f}"
-            L.append(f"| {lab} | {d['rows']} | " + " | ".join(f"{a}/{b}" for a, b in (d["dead"][x] for x in lay)) + f" | {s8} | "
-                     + " | ".join(f"{a}/{b}" for a, b in (d["const"][c] for c in protocol.CONST_POINTS)) + " |")
-    tl = {k: v for k, v in res.items() if v.get("train_log")}
+    tl = {k: v for k, v in res.items() if "train_log" in v}
     if tl:
-        L += ["", "### training log (041-R25 records)", "", "| checkpoint | records | alarms (lines / records / crossing) | worst dead layer | max const S8 | max const s_pool | min pos |",
-              "|---|---|---|---|---|---|---|"]
+        L += ["", "### dead channels (041-R25 training-log records)", "",
+              "| checkpoint | records | alarms (lines / records / crossing) | worst dead layer | max const S8 | max const s_pool | min pos |", "|---|---|---|---|---|---|---|"]
         for lab, r in tl.items():
             s = r["train_log"]
-            if "dead" not in s:
+            if s is None:
+                L.append(f"| {lab} | not measured (no training-log statistics) ||||||")
+            elif "dead" not in s:
                 L.append(f"| {lab} | none from update {s.get('from_update')} ||||||")
-                continue
-            w = s["worst_dead_layer"]
-            L.append(f"| {lab} | {s['sp_records_from']} | {len(s['alarm_lines'])} / {len(s['alarm_records'])} / {len(s['crossing_records'])} | "
-                     f"{w} {s['worst_dead_share'] * 100:.1f}% ({s['dead'][w]['max']:g} @ {s['dead'][w]['at']}) | {s['const']['sp_const_s8']['max']:g} | "
-                     f"{s['const']['sp_const_pool']['max']:g} | {s['min_pos_any']:.3f} |")
+            else:
+                w = s["worst_dead_layer"]
+                L.append(f"| {lab} | {s['sp_records_from']} | {len(s['alarm_lines'])} / {len(s['alarm_records'])} / {len(s['crossing_records'])} | "
+                         f"{w} {s['worst_dead_share'] * 100:.1f}% ({s['dead'][w]['max']:g} @ {s['dead'][w]['at']}) | {s['const']['sp_const_s8']['max']:g} | "
+                         f"{s['const']['sp_const_pool']['max']:g} | {s['min_pos_any']:.3f} |")
     return L
 
 
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("folders", nargs="+", help="<label>=<output folder>")
-    ap.add_argument("--metrics", default="cue_diag,dead_channels")
+    ap.add_argument("--metrics", default="cue_diag,dead_channels", help="a Checkpoint 1 folder has cue_diag only")
     ap.add_argument("--json", default=None)
     ap.add_argument("--md", default=None)
     ap.add_argument("--no-check", action="store_true")
