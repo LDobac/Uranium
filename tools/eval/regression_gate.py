@@ -7,7 +7,7 @@ Checks (thresholds of AMB-050-3 = reports/jepa_survey.md 7.5 main criterion; Ter
   1  T0 standard Terran / Protoss 32 games each (protocol plan `t0_tp`): candidate win rate >= the baseline's
      win rate on the same games (wins / valid games; draws are not wins; opponent-crash games invalid).
   2  val500 per enemy race (bc-eval `by_enemy_race`, protocol metric val500_race): action top-1 >= baseline
-     - 0.5 %p and action-type NLL (`nll.action`) <= baseline + 0.01.
+     - 0.5 %p and action-type NLL (`nll.action`, user confirmed 2026-11-10) <= baseline + 0.01.
   3  bunker before 4:00 does not increase:
      3a human TvT / TvP val games: the mean teacher-forced p(Build_Bunker) over the scored steps before 4:00
         (bc-eval --bunker-before 5760 -> `bunker_before.by_enemy_race`) <= the baseline's;
@@ -16,7 +16,8 @@ Checks (thresholds of AMB-050-3 = reports/jepa_survey.md 7.5 main criterion; Ter
 Boundaries are inclusive ("within", "at least", "does not increase"). Every check also prints the numbers;
 game counts carry Wilson 95% intervals and the two-sided Fisher p (050-R2): 32 games are about +-12 %p of
 noise per condition, so a small difference is reported for the user to judge (AMB-050-3 note).
-A check whose inputs are not given is MISSING (e.g. a mix epoch without the T0 games).
+A check whose inputs are not given, or whose T0 job has unfinished games, is MISSING (e.g. a mix epoch
+without the T0 games). 3a is a step mean (main-session interim decision 2026-11-10).
 
     python tools/eval/regression_gate.py --baseline-val <bc-eval json> --candidate-val <bc-eval json> \\
         --baseline-games <eval job dir> --candidate-games <eval job dir> [--json out.json] [--cache DIR]
@@ -42,7 +43,7 @@ import tables  # noqa: E402
 RACES = ("terran", "protoss")
 TOP1_DROP = 0.005   # (2) per-race val top-1 within -0.5 %p of the baseline
 NLL_RISE = 0.01     # (2) per-race val NLL within +0.01 of the baseline
-NLL_HEAD = "nll.action"  # the action-type head, the one top-1 scores (see docs: AMB note)
+NLL_HEAD = "nll.action"  # (2) the action-type head NLL (user confirmed 2026-11-10, AMB-050-3)
 BUNKER_BEFORE = 4 * 60 * ec.FPS  # 3: before 4:00 = frame < 5,760
 # Float slack of the inclusive boundaries (the inputs are rounded JSON floats).
 EPS = 1e-9
@@ -110,13 +111,19 @@ def _rate_note(bk: int, bn: int, ck: int, cn: int) -> str:
 
 
 def judge_games(base: dict | None, cand: dict | None) -> list[dict]:
-    """(1) and (3b) from the per-race T0 counts {race: {n, won, bunker_order_4m, bunker_unit_4m, dumped}}."""
+    """(1) and (3b) from the per-race T0 counts {race: {n, won, bunker_order_4m, bunker_unit_4m, dumped, missing}}.
+    A job with planned games that have neither a result row nor an invalid mark (`missing`, an unfinished job)
+    is not judged."""
     out = []
     for r in RACES:
         b, c = (base or {}).get(r), (cand or {}).get(r)
         for chk, metric, thr in (("1", "won", ">= baseline"), ("3b", "bunker_order_4m", "<= baseline"), ("3b", "bunker_unit_4m", "<= baseline")):
             if not b or not c or not b["n"] or not c["n"]:
                 out.append(_check(chk, r, metric, None, None, thr, MISSING, "no T0 t0_tp games"))
+                continue
+            if b.get("missing") or c.get("missing"):
+                out.append(_check(chk, r, metric, [b[metric], b["n"]], [c[metric], c["n"]], thr, MISSING,
+                                  f"unfinished job: games without a result {b.get('missing', 0)} (baseline) / {c.get('missing', 0)} (candidate)"))
                 continue
             if metric == "bunker_order_4m" and (b["dumped"] < b["n"] or c["dumped"] < c["n"]):
                 out.append(_check(chk, r, metric, [b[metric], b["n"]], [c[metric], c["n"]], thr, MISSING,
@@ -131,8 +138,9 @@ def judge_games(base: dict | None, cand: dict | None) -> list[dict]:
 
 def t0_tp_counts(job: Path, cache: Path, lin: dict | None = None) -> dict:
     """Per opponent race of the job's `t0_tp` stage: valid games, wins, games with a Build_Bunker command
-    before 4:00 (bunker_order_4m), games whose bunker unit appeared before 240 s (bunker_unit_4m), and games
-    with a command stream (dumped). Opponent-crash games are invalid (tables.py)."""
+    before 4:00 (bunker_order_4m), games whose bunker unit appeared before 240 s (bunker_unit_4m), games
+    with a command stream (dumped), planned games (games) and planned games with neither a result row nor
+    an invalid mark (missing: the job has not finished them). Opponent-crash games are invalid (tables.py)."""
     lin = lin or protocol.load_lineage()
     stages = [(k, f, p) for k, f, p in ec.job_stages(job) if protocol.identify(lin, p) == "t0_tp"]
     if len(stages) != 1:
@@ -144,12 +152,14 @@ def t0_tp_counts(job: Path, cache: Path, lin: dict | None = None) -> dict:
     out: dict[str, dict] = {}
     for m, a, b in tables._blocks(plan):
         race = m["p1"]["race"]
-        c = out.setdefault(race, {"n": 0, "won": 0, "bunker_order_4m": 0, "bunker_unit_4m": 0, "dumped": 0, "invalid": 0})
+        c = out.setdefault(race, {"n": 0, "won": 0, "bunker_order_4m": 0, "bunker_unit_4m": 0, "dumped": 0, "invalid": 0, "games": 0, "missing": 0})
         for n in range(a, b + 1):
+            c["games"] += 1
             if k * ec.STAGE_BASE + n in invalid:
                 c["invalid"] += 1
                 continue
             if n not in rows:
+                c["missing"] += 1
                 continue
             r = rows[n]
             c["n"] += 1

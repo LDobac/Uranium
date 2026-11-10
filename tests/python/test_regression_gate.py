@@ -123,10 +123,31 @@ def test_t0_tp_counts_from_a_job_050_r10(tmp_path):
     dump(cache / "g3.json", [build(500, 10, 10, 109)])
     dump(cache / "g33.json", [build(500, 10, 10, 109)])
     c = rg.t0_tp_counts(job, tmp_path / "cache", LIN)
-    assert c["terran"] == {"n": 3, "won": 1, "bunker_order_4m": 1, "bunker_unit_4m": 1, "dumped": 3, "invalid": 0}
-    assert c["protoss"] == {"n": 2, "won": 1, "bunker_order_4m": 0, "bunker_unit_4m": 1, "dumped": 1, "invalid": 1}
+    assert c["terran"] == {"n": 3, "won": 1, "bunker_order_4m": 1, "bunker_unit_4m": 1, "dumped": 3, "invalid": 0, "games": 32, "missing": 29}
+    assert c["protoss"] == {"n": 2, "won": 1, "bunker_order_4m": 0, "bunker_unit_4m": 1, "dumped": 1, "invalid": 1, "games": 32, "missing": 29}
     with pytest.raises(SystemExit, match="0 stages of the protocol plan t0_tp"):
         rg.t0_tp_counts(make_job(tmp_path / "m", "macro", []), tmp_path / "cache", LIN)
+
+
+def test_unfinished_t0_job_is_missing_050_r10(tmp_path):
+    """A job with planned games that have neither a result nor an invalid mark is not judged (1 and 3b MISSING),
+    even when its finished games would pass; once every game has a result or is invalid it is judged."""
+    def job(name, rows, ledger=None):
+        j = t0_tp_job(tmp_path, name, rows, ledger)
+        for n in range(1, 65):
+            dump(tmp_path / "cache" / j.name / "t0_tp" / f"g{n}.json", [build(500, 10, 10, 109)])
+        return rg.t0_tp_counts(j, tmp_path / "cache", LIN)
+
+    base = job("base", [row(n, n % 2 == 1) for n in range(1, 65)])
+    half = job("half", [row(n, True) for n in range(1, 65) if n != 40])   # Protoss game 40 not played yet
+    assert base["protoss"]["missing"] == 0 and half["protoss"]["missing"] == 1 and half["terran"]["missing"] == 0
+    c = rg.judge_games(base, half)
+    assert {x["result"] for x in c if x["race"] == "protoss"} == {"MISSING"}
+    assert {x["result"] for x in c if x["race"] == "terran"} == {"PASS"}
+    done = job("done", [row(n, True) for n in range(1, 65) if n != 40],
+               [{"game_id": 100040, "outcome": "Aborted", "detail": "launcher exit codes [Some(0), None]"}])
+    assert done["protoss"] == {**half["protoss"], "invalid": 1, "missing": 0}
+    assert {x["result"] for x in rg.judge_games(base, done)} == {"PASS"}
 
 
 def test_gate_cli_end_to_end_050_ac5(tmp_path):
@@ -147,6 +168,7 @@ def test_gate_cli_end_to_end_050_ac5(tmp_path):
     assert g["overall"] == "FAIL"
     assert results(g["checks"], "1", "terran", "won") == "FAIL" and results(g["checks"], "1", "protoss", "won") == "PASS"
     assert g["inputs"]["baseline_t0_tp"]["terran"]["won"] == 16 and g["inputs"]["candidate_t0_tp"]["terran"]["won"] == 15
+    assert g["inputs"]["candidate_t0_tp"]["protoss"]["missing"] == 0
     assert json.loads(out.read_text(encoding="utf-8"))["overall"] == "FAIL"
 
 
@@ -180,3 +202,26 @@ def test_bc_eval_bunker_before_050_r10(tiny_config, tmp_path):
     early = ev(64)["bunker_before"]
     assert 0 < early["all"]["steps"] < full["steps"]
     assert ev(0)["bunker_before"]["all"] == {"steps": 0, "mean_p": None}
+
+
+def test_protocol_bc_eval_prints_bunker_before_050_r10(capsys, tmp_path, monkeypatch):
+    """val500_race (and val500, the same output file) run bc-eval with --bunker-before 5760; check-bc-eval warns
+    when an output lacks `bunker_before` (gate check 3a would be MISSING) and is quiet when it has it."""
+    import protocol
+
+    monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: "a" * 64)
+    monkeypatch.setattr(protocol, "git_state", lambda: {"commit": "0" * 40})
+    r1 = ["--lineage", "ck1", "--point", "r1", "--checkpoint", "checkpoints/bc-dagger-r1/ckpt-1137"]
+    protocol.main(["bc-eval", "--metric", "val500_race"] + r1)
+    cmd = capsys.readouterr().out.splitlines()[0]
+    assert cmd.startswith("python -m uranium bc-eval ") and " --bunker-before 5760" in cmd
+    assert LIN["metric"]["val500"]["extra_args"] == LIN["metric"]["val500_race"]["extra_args"] == ["--bunker-before", "5760"]
+    f = tmp_path / "v.json"
+    per = {r: {"steps": 10, "action_top1": 0.7, "nll": {"action": 0.9}} for r in ("terran", "protoss", "zerg")}
+    base = {"split": "val", "games": 500, "selection_seed": 1, "action_top1": 0.72, "by_enemy_race": per}
+    f.write_text(json.dumps(base), encoding="utf-8")
+    protocol.main(["check-bc-eval", str(f), "--metric", "val500_race"])
+    assert "no `bunker_before`" in capsys.readouterr().out
+    f.write_text(json.dumps({**base, "bunker_before": {"before_frame": 5760}}), encoding="utf-8")
+    protocol.main(["check-bc-eval", str(f), "--metric", "val500"])
+    assert "WARNING" not in capsys.readouterr().out

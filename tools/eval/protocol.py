@@ -1163,6 +1163,9 @@ def cmd_check_bc_eval(a) -> None:
     got = {k: d.get(k) for k in want}
     if got != want:
         raise SystemExit(f"MISMATCH {a.output}: {got} != pinned {want}")
+    if "--bunker-before" in [str(x) for x in m.get("extra_args", [])] and "bunker_before" not in d:
+        # 050-R10 ③a input: reported, not refused (an output made before the option still has every other field).
+        print(f"WARNING {a.output}: no `bunker_before` (run without --bunker-before 5760): regression gate check 3a will be MISSING")
     field = m.get("requires_field")
     if field:
         # val500_race (050-R9 / 050-R10 ②): per-enemy-race scores in the bc-eval output.
