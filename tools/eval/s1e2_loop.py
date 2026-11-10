@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import re
 import shlex
 import socket
@@ -49,6 +50,8 @@ VAL_TIMEOUT_S = 7200  # reports/m6_bc_eval.md 4: "이후 채점마다 2시간 �
 # all (main-session interim decision 2026-11-10: val500 crashed 3 times on one ROCm host before succeeding
 # in the lambda scoring, <shared>/eval/m2-lambda-20261110/claims/worker.log).
 VAL_ATTEMPTS = 3
+# a claim without a record is stale (its scorer is gone) this long after the run's time limit
+STALE_MARGIN_S = 900
 CKPT_RE = re.compile(r"^ckpt-(\d+)$")
 
 
@@ -104,15 +107,47 @@ def pick(items: list[tuple[str, str]], taken) -> tuple[str, str] | None:
     return None
 
 
-def claim(f: Path) -> bool:
-    """Atomic claim file (several scoring hosts share the folder)."""
+def claim(f: Path, timeout_s: int) -> bool:
+    """Atomic claim file (several scoring hosts share the folder): host, pid, start, the run's time limit."""
     f.parent.mkdir(parents=True, exist_ok=True)
     try:
         with f.open("x", encoding="utf-8") as fh:
-            fh.write(f"{socket.gethostname()} {datetime.datetime.now().astimezone().isoformat(timespec='seconds')}\n")
+            fh.write(json.dumps({"host": socket.gethostname(), "pid": os.getpid(), "timeout_s": timeout_s,
+                                 "started": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}) + "\n")
         return True
     except FileExistsError:
         return False
+
+
+def read_claim(f: Path) -> dict:
+    """A claim's content ({} for an older plain-text claim)."""
+    try:
+        d = json.loads(f.read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def pid_alive(pid: int) -> bool:
+    """Whether a process of this host with this id runs (no signal is sent)."""
+    if os.name == "nt":
+        import ctypes
+
+        k = ctypes.windll.kernel32
+        h = k.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        ok = k.GetExitCodeProcess(h, ctypes.byref(code))
+        k.CloseHandle(h)
+        return bool(ok) and code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def now() -> str:
@@ -135,26 +170,67 @@ def val_record(out: Path) -> dict | None:
     return json.loads(f.read_text(encoding="utf-8")) if f.is_file() else None
 
 
-def val_state(out: Path) -> str:
-    """done (a run with return code 0), running (claimed, no record yet: here or on another host), failed
-    (a record with another return code, not yet set aside), gave_up (VAL_ATTEMPTS failed attempts), open."""
+def claim_stale(out: Path, timeout_s: int) -> str | None:
+    """Why a claim without a record is stale (its scorer is gone), else None: older than the run's time limit
+    + STALE_MARGIN_S (a host that crashed, rebooted or was stopped), or made on this host by a process that no
+    longer runs."""
+    f = val_files(out)["claim"]
+    try:
+        age = time.time() - f.stat().st_mtime
+    except FileNotFoundError:
+        return None
+    c = read_claim(f)
+    limit = int(c.get("timeout_s") or timeout_s) + STALE_MARGIN_S
+    if age > limit:
+        return f"claim of {c.get('host', '?')} older than {limit} s"
+    if c.get("host") == socket.gethostname() and c.get("pid") not in (None, os.getpid()) and not pid_alive(c["pid"]):
+        return f"claim of this host's process {c['pid']}, which no longer runs"
+    return None
+
+
+def val_state(out: Path, timeout_s: int = VAL_TIMEOUT_S) -> str:
+    """done (a run with return code 0, or an output without a record), running (claimed, no record yet: here
+    or on another host), stale (a claim whose scorer is gone), failed (a record with another return code,
+    not yet set aside), gave_up (VAL_ATTEMPTS failed attempts), open."""
     rec = val_record(out)
     if rec is not None:
         return "done" if rec.get("returncode") == 0 else "failed"
     if out.is_file():
         return "done"  # an output without a record (made by hand): never overwritten (041-R29 ⑨)
     if val_files(out)["claim"].exists():
-        return "running"
+        return "stale" if claim_stale(out, timeout_s) else "running"
     return "gave_up" if failed_attempts(out) >= VAL_ATTEMPTS else "open"
 
 
 def set_aside(out: Path) -> int:
-    """A failed attempt's files renamed to <name>.failed-<k>.* (kept, never deleted); returns k."""
+    """A failed attempt's files renamed to <name>.failed-<k>.* (kept, never deleted); returns k. Order: the
+    output, the log, the record, the claim last, so the state goes failed -> running -> open without a gap."""
     k = failed_attempts(out) + 1
-    for kind, f in val_files(out).items():
+    files = val_files(out)
+    for kind in ("out", "log", "record", "claim"):
+        f = files[kind]
         if f.exists():
             f.rename(f.with_name(f"{out.stem}.failed-{k}{''.join(f.suffixes)}" if kind != "out" else f"{out.stem}.failed-{k}{out.suffix}"))
     return k
+
+
+def tidy(out: Path, timeout_s: int) -> None:
+    """Before picking: a leftover failed record (a scorer stopped between its record and set_aside) and a stale
+    claim (a record "stale claim" is written first; it counts as an attempt) are set aside. Another host doing
+    the same at once loses the renames (ignored)."""
+    st = val_state(out, timeout_s)
+    if st not in ("failed", "stale"):
+        return
+    try:
+        if st == "stale":
+            why = claim_stale(out, timeout_s)
+            val_files(out)["record"].write_text(json.dumps({"metric": VAL_METRIC, "returncode": "stale claim", "reason": why,
+                                                            "claim": read_claim(val_files(out)["claim"]),
+                                                            "noticed": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}, indent=1), encoding="utf-8")
+        k = set_aside(out)
+        print(f"{now()} val500 {out.stem}: {st} attempt kept as .failed-{k}", flush=True)
+    except OSError:
+        pass
 
 
 def score_val(lin: dict, shared: Path, pt_id: str, checkpoint: str, dry: bool, timeout_s: int) -> bool:
@@ -170,28 +246,35 @@ def score_val(lin: dict, shared: Path, pt_id: str, checkpoint: str, dry: bool, t
     if out.exists():
         raise protocol.Refused(f"{out} exists (an output is never overwritten, 041-R29 ⑨)")
     files = val_files(out)
-    if not claim(files["claim"]):
+    if not claim(files["claim"], timeout_s):
         return False
     rec = {"protocol": "config/protocol/lineage.toml (050-R9)", "lineage": LINEAGE, "point": pt_id, "metric": VAL_METRIC, "checkpoint": checkpoint,
-           "checkpoint_sha256": protocol.checkpoint_sha256(checkpoint), "backend": m["backend"], "precision": protocol.PRECISION[m["backend"]],
-           "git": protocol.git_state(), "command": protocol.redact_cmd(["python", *cmd[1:]], {"<shared>": shared}),
            "attempt": failed_attempts(out) + 1, "started": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}
-    print(f"{now()} start val500 {output_name(checkpoint)} (attempt {rec['attempt']})", flush=True)
-    t0 = time.time()
     try:
-        with files["log"].open("w", encoding="utf-8") as fh:
-            p = subprocess.run(cmd, cwd=protocol.ROOT, stdout=subprocess.DEVNULL, stderr=fh, timeout=timeout_s)
-        rc = p.returncode
-    except subprocess.TimeoutExpired:
-        rc = "timeout"
-    rec |= {"returncode": rc, "secs": round(time.time() - t0)}
-    if rc == 0:
+        rec |= {"checkpoint_sha256": protocol.checkpoint_sha256(checkpoint), "backend": m["backend"], "precision": protocol.PRECISION[m["backend"]],
+                "git": protocol.git_state(), "command": protocol.redact_cmd(["python", *cmd[1:]], {"<shared>": shared})}
+        print(f"{now()} start val500 {output_name(checkpoint)} (attempt {rec['attempt']})", flush=True)
+        t0 = time.time()
         try:
-            protocol.main(["check-bc-eval", str(out), "--metric", VAL_METRIC])
-            rec["check"] = "ok"
-        except SystemExit as e:  # recorded; the loop goes on (a mismatch is not fixed by running again)
-            rec["check"] = str(e.code)
-    files["record"].write_text(json.dumps(rec, indent=1), encoding="utf-8")
+            with files["log"].open("w", encoding="utf-8") as fh:
+                p = subprocess.run(cmd, cwd=protocol.ROOT, stdout=subprocess.DEVNULL, stderr=fh, timeout=timeout_s)
+            rc = p.returncode
+        except subprocess.TimeoutExpired:
+            rc = "timeout"
+        rec |= {"returncode": rc, "secs": round(time.time() - t0)}
+        if rc == 0:
+            try:
+                protocol.main(["check-bc-eval", str(out), "--metric", VAL_METRIC])
+                rec["check"] = "ok"
+            except SystemExit as e:  # recorded; the loop goes on (a mismatch is not fixed by running again)
+                rec["check"] = str(e.code)
+        files["record"].write_text(json.dumps(rec, indent=1), encoding="utf-8")
+    except BaseException as e:  # Ctrl-C, an error before the record: recorded and set aside, never an orphan claim
+        rec["returncode"] = f"error: {e!r}"
+        files["record"].write_text(json.dumps(rec, indent=1), encoding="utf-8")
+        k = set_aside(out)
+        print(f"{now()} val500 {output_name(checkpoint)}: stopped ({e!r}); attempt kept as .failed-{k}", flush=True)
+        raise
     print(f"{now()} end val500 {output_name(checkpoint)} rc={rc} secs={rec['secs']}" + (f" check: {rec['check']}" if "check" in rec else ""), flush=True)
     if rc != 0:
         k = set_aside(out)
@@ -203,7 +286,8 @@ def cmd_val(a) -> None:
     lin = protocol.load_lineage()
     shared = ec.shared_dir()
     out_of = lambda c: val_out(lin, shared, c)  # noqa: E731
-    taken = (lambda c: False) if a.dry_run else (lambda c: val_state(out_of(c)) != "open")
+    taken = (lambda c: False) if a.dry_run else (lambda c: val_state(out_of(c), a.timeout_s) != "open")
+    waiting = None
     while True:
         done = run_done(shared, a.run)  # read before picking: the final checkpoint is never missed
         items = targets(a, shared)
@@ -211,16 +295,26 @@ def cmd_val(a) -> None:
             for pt_id, c in items:
                 score_val(lin, shared, pt_id, c, True, a.timeout_s)
             return
+        for _, c in items:
+            tidy(out_of(c), a.timeout_s)
         nxt = pick(items, taken)
         if nxt is not None:
             score_val(lin, shared, *nxt, False, a.timeout_s)
             continue
-        need = {c: val_state(out_of(c)) for c in required(items, done)}
+        need = {c: val_state(out_of(c), a.timeout_s) for c in required(items, done)}
         if a.watch and (not done or "running" in need.values()):
+            msg = ", ".join(f"{c} running on {read_claim(val_files(out_of(c))['claim']).get('host', '?')}" for c, s in need.items() if s == "running")
+            msg = msg or ("the next checkpoint" if not done else "")
+            if msg != waiting:
+                print(f"{now()} val500: waiting for {msg}", flush=True)
+                waiting = msg
             time.sleep(a.poll_s)
             continue
-        bad = {c: s for c, s in need.items() if s != "done" or (val_record(out_of(c)) or {}).get("returncode", 0) != 0}
         print(f"{now()} val500: nothing left" + (" (run done)" if done else ""), flush=True)
+        for c, s in need.items():
+            if s == "done" and val_record(out_of(c)) is None:
+                print(f"NOTE val500 {c}: an output without a record (made by hand)", flush=True)
+        bad = {c: s for c, s in need.items() if s != "done" or (val_record(out_of(c)) or {}).get("returncode", 0) != 0}
         if bad:
             raise SystemExit("val500 without a return-code-0 record: " + ", ".join(f"{c} ({s})" for c, s in bad.items()))
         return
@@ -263,7 +357,13 @@ def cmd_games(a) -> None:
     lin = protocol.load_lineage()
     shared = ec.shared_dir()
     a.games_root = a.games_root or f"eval/{a.run}-games"
-    taken = (lambda c: False) if a.dry_run else (lambda c: game_job(shared, a.games_root, c).exists())
+    joined: set[str] = set()
+
+    def taken(c: str) -> bool:
+        # with --worker, an existing job that is not DONE is joined once (another host made it); else taken
+        j = game_job(shared, a.games_root, c)
+        return j.exists() and ((j / "DONE").is_file() or a.worker is None or j.name in joined)
+
     while True:
         done = run_done(shared, a.run)
         items = targets(a, shared)
@@ -273,8 +373,13 @@ def cmd_games(a) -> None:
             return
         nxt = pick(items, taken)
         if nxt is not None:
-            job = make_job(lin, shared, a, *nxt)
+            job = game_job(shared, a.games_root, nxt[1])
+            if job.exists():
+                print(f"{now()} {job.name}: joining the existing job as a worker", flush=True)
+            else:
+                job = make_job(lin, shared, a, *nxt)
             if job is not None:
+                joined.add(job.name)
                 play(job, shared, a.worker, a.poll_s)
             continue
         if not a.watch or done:

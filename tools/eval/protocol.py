@@ -45,6 +45,7 @@ import json
 import os
 import re
 import shlex
+import socket
 import subprocess
 import sys
 import tomllib
@@ -631,7 +632,50 @@ def check_cue_set(lin: dict, name: str, d: Path, sha: str | None) -> list[str]:
             data("intervene", hd.get("data"))
             same("intervene window", ivr.get("window"), [float(x) for x in iv["window"]])
             same("intervene races", sorted(ivr.get("races", {})), sorted(iv["races"]))
-    return problems
+    return problems + data_consistency(lin, name, d)
+
+
+def data_fingerprint(lin: dict, name: str, d: Path) -> dict | None:
+    """What a cue set's outputs say about its data only (the same for every checkpoint): the dump's games /
+    rows / activation rows and the reported probe tasks' rows / games per race."""
+    f = d / "dump" / "manifest.json"
+    if not f.is_file():
+        return None
+    man = json.loads(f.read_text(encoding="utf-8"))
+    fp = {"games": man.get("games"), "rows": man.get("stats", {}).get("rows"), "act_rows": man.get("stats", {}).get("act_rows")}
+    pf = d / "probes.json"
+    if pf.is_file():
+        pr = json.loads(pf.read_text(encoding="utf-8"))
+        for race, rr in sorted(pr.get("races", {}).items()):
+            for t in cue_set(lin, name)["report"]["tasks"]:
+                x = rr.get("tasks", {}).get(t, {})
+                fp[f"{race} {t}"] = [x.get("rows"), x.get("games")]
+    return fp
+
+
+def data_consistency(lin: dict, name: str, d: Path) -> list[str]:
+    """The set's data fingerprint against every other finished output folder beside this one
+    (<shared>/artifacts/diag/*/<set>): the same hold-out gives the same numbers for every checkpoint, so a
+    difference means other data (guards the sets whose fingerprint is not pinned yet)."""
+    mine = data_fingerprint(lin, name, d)
+    out = d.parent
+    if mine is None or not out.parent.is_dir():
+        return []
+    for sib in sorted(out.parent.iterdir()):
+        if sib == out or ".failed-" in sib.name or not (sib / DIAG_RECORD).is_file():
+            continue
+        try:
+            if not json.loads((sib / DIAG_RECORD).read_text(encoding="utf-8")).get("finished"):
+                continue
+        except (OSError, json.JSONDecodeError):
+            continue
+        other = data_fingerprint(lin, name, sib / name)
+        if other is None:
+            continue
+        diff = {k: (v, other.get(k)) for k, v in mine.items() if k in other and other[k] != v}
+        if diff:
+            return [f"{name} data differs from the finished {sib.name}: " + ", ".join(f"{k} {a!r} vs {b!r}" for k, (a, b) in diff.items())]
+    return []
 
 
 def unpinned(lin: dict, out: Path) -> list[str]:
@@ -713,7 +757,7 @@ def diag_record_cmd(c: list[str], roots: dict[str, Path]) -> list[str]:
 
 
 def check_final_only(pt: dict, checkpoint: str) -> None:
-    """A point with `diag_final_only` (s1e2, AMB-050-6): the diagnostics at the run's final checkpoint only
+    """A point with `diag_final_only` (s1e2, AMB-050-6): the cue diagnostics at the run's final checkpoint only
     (the run folder has DONE and no later ckpt-N)."""
     if not pt.get("diag_final_only"):
         return
@@ -721,7 +765,7 @@ def check_final_only(pt: dict, checkpoint: str) -> None:
     run = d.parent
     steps = sorted(int(x.name[5:]) for x in run.glob("ckpt-*") if x.name[5:].isdigit())
     if not (run / "DONE").is_file() or not steps or d.name != f"ckpt-{steps[-1]}":
-        raise Refused(f"point {pt['id']}: diagnostics at the run's final checkpoint only (AMB-050-6); {checkpoint} is not (DONE {'present' if (run / 'DONE').is_file() else 'missing'}, last ckpt-{steps[-1] if steps else '?'})")
+        raise Refused(f"point {pt['id']}: cue diagnostics at the run's final checkpoint only (AMB-050-6); {checkpoint} is not (DONE {'present' if (run / 'DONE').is_file() else 'missing'}, last ckpt-{steps[-1] if steps else '?'})")
 
 
 def cmd_diag(a) -> None:
@@ -739,7 +783,8 @@ def cmd_diag(a) -> None:
         if check_metric(lin, pt, metric)["kind"] not in DIAG_KINDS:
             raise Refused(f"metric {metric} is not a diagnostic")
     check_checkpoint(lin, a.lineage, pt, a.checkpoint)
-    check_final_only(pt, a.checkpoint)
+    if "cue_diag" in metrics:  # AMB-050-6 restricts the cue diagnostics (단서 진단) only
+        check_final_only(pt, a.checkpoint)
     if "dead_channels" in metrics and not a.train_log:
         raise Refused(f"dead_channels reads the run's training log: --train-log <BC stderr log | RL train.csv> of {run_of(a.checkpoint)}")
     outs = {diag_out(lin, metric, a.checkpoint) for metric in metrics}
@@ -781,6 +826,14 @@ def cmd_diag(a) -> None:
         raise Refused("uncommitted protocol files (" + ", ".join(git["dirty_paths"]) + "); --allow-dirty records them in protocol.json")
     if (out / DIAG_RECORD).exists():
         raise Refused(f"{out / DIAG_RECORD} exists (one finished measurement per folder; --out for another)")
+    if (out / RUNNING).is_file() and not a.takeover:
+        try:
+            prev = json.loads((out / RUNNING).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            prev = {}
+        if not any("error" in s for s in prev.get("steps", [])):
+            raise Refused(f"{out / RUNNING}: an attempt in progress (host {prev.get('host', '?')}, started {prev.get('started', '?')}, "
+                          f"no failed step); --takeover when its host is gone")
     for p in (out, local):
         if p.exists():  # an earlier attempt without a finished record: kept under another name
             moved = next_failed(p)
@@ -798,7 +851,7 @@ def cmd_diag(a) -> None:
            "sets": {n: {k: v for k, v in cue_set(lin, n).items() if k in ("holdout", "datasets", "files", "files_sha256", "splits", "games", "seed")}
                     for n in diag_metric(lin, "cue_diag")["sets"]} if "cue_diag" in metrics else None,
            "train_log": {"file": Path(a.train_log).name, "sha256": log_sha} if log_sha else None,
-           "git": git, "platform": sys.platform, "commands": [diag_record_cmd(c, roots) for c in cmds],
+           "git": git, "host": socket.gethostname(), "platform": sys.platform, "commands": [diag_record_cmd(c, roots) for c in cmds],
            "started": datetime.datetime.now().astimezone().isoformat(timespec="seconds"), "finished": None, "steps": []}
 
     def save(final: bool = False) -> None:
@@ -1207,6 +1260,7 @@ def main(argv=None) -> None:
     s.add_argument("--out", default=None, help="default <shared>/<metric output>")
     s.add_argument("--run", action="store_true", help="run the commands here (else print them; nothing is written, the hold-out link trees are made by --run)")
     s.add_argument("--allow-dirty", action="store_true")
+    s.add_argument("--takeover", action="store_true", help="redo a folder whose running.json shows an attempt in progress (its host is gone); kept as .failed-<k>")
     s.set_defaults(f=cmd_diag)
     s = sub.add_parser("check-diag", help="refuse diagnostic outputs made with other settings or data")
     s.add_argument("out", help="the diagnostics output folder")

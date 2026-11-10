@@ -1010,6 +1010,70 @@ def test_diag_run_records_retries_and_checks_050_r9(tmp_path, monkeypatch):
         protocol.main(base + ["checkpoints/m2-s1/ckpt-11"])
 
 
+def test_diag_run_in_progress_needs_takeover_050_r9(tmp_path, monkeypatch):
+    """A folder whose running.json has no failed step may be in progress on another host: refused unless --takeover."""
+    shared = tmp_path / "shared"
+    monkeypatch.setenv("URANIUM_SHARED_DIR", str(shared))
+    monkeypatch.setenv("URANIUM_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: SHA)
+    monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
+    monkeypatch.setattr(protocol, "set_data", fake_set_data)
+    fake_set_data.calls = []
+    out = shared / "artifacts" / "diag" / "m2-s1__ckpt-9"
+    out.mkdir(parents=True)
+    (out / "running.json").write_text(json.dumps({"host": "other-host", "started": "t", "steps": [{"step": "dump", "secs": 5}]}), encoding="utf-8")
+    base = ["diag", "--lineage", "m2", "--point", "s1e1", "--checkpoint", "checkpoints/m2-s1/ckpt-9", "--metrics", "cue_diag", "--run"]
+    with pytest.raises(SystemExit, match="an attempt in progress \\(host other-host.*--takeover"):
+        protocol.main(base)
+    ran = []
+    monkeypatch.setattr(protocol.subprocess, "run", lambda cmd, cwd=None, check=None: ran.append(cmd) or (_ for _ in ()).throw(subprocess.CalledProcessError(1, cmd)))
+    with pytest.raises(subprocess.CalledProcessError):
+        protocol.main(base + ["--takeover"])
+    assert (out.parent / "m2-s1__ckpt-9.failed-1" / "running.json").is_file() and len(ran) == 1
+    # the attempt just failed (an errored step): no --takeover needed
+    with pytest.raises(subprocess.CalledProcessError):
+        protocol.main(base)
+    assert (out.parent / "m2-s1__ckpt-9.failed-2").is_dir()
+
+
+def test_s1e2_final_only_restricts_cue_diag_only_050_r9(tmp_path, monkeypatch, capsys):
+    """AMB-050-6 restricts the cue diagnostics; dead_channels of a non-final s1e2 checkpoint is accepted."""
+    shared = tmp_path / "shared"
+    monkeypatch.setenv("URANIUM_SHARED_DIR", str(shared))
+    monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: SHA)
+    monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
+    (shared / "checkpoints" / "m2-s1e2" / "ckpt-1000").mkdir(parents=True)
+    (shared / "checkpoints" / "m2-s1e2" / "ckpt-2000").mkdir(parents=True)
+    log = tmp_path / "s1e2.log"
+    log.write_text("", encoding="utf-8")
+    base = ["diag", "--lineage", "m2", "--point", "s1e2", "--checkpoint", "checkpoints/m2-s1e2/ckpt-1000", "--train-log", str(log)]
+    with pytest.raises(SystemExit, match="cue diagnostics at the run's final checkpoint only"):
+        protocol.main(base)
+    protocol.main(base + ["--metrics", "dead_channels"])
+    assert "spatial_logs.py" in capsys.readouterr().out
+
+
+def test_human_data_consistency_across_folders_050_r9(tmp_path):
+    """The human set's fingerprint is not pinned yet: check-diag compares it with the other finished folders
+    (the same data for every checkpoint)."""
+    root = tmp_path / "diag"
+    a = all_outputs(root / "m2-s1__ckpt-1")
+    b = all_outputs(root / "bc-dagger-r1__ckpt-1137")
+    assert protocol.check_diag(LIN, "cue_diag", b) == []
+    set_outputs(b / "human", "human", manifest={"games": 999})
+    problems = protocol.check_diag(LIN, "cue_diag", b)
+    assert any("human data differs from the finished m2-s1__ckpt-1: games 999 vs 1000" in p for p in problems), problems
+    hp = json.loads((a / "human" / "probes.json").read_text(encoding="utf-8"))
+    hp["races"]["P"]["tasks"]["count|focus_rows"]["rows"] = 7
+    (a / "human" / "probes.json").write_text(json.dumps(hp), encoding="utf-8")
+    set_outputs(b / "human", "human")
+    assert any("P count|focus_rows [100, 20] vs [7, 20]" in p for p in protocol.check_diag(LIN, "cue_diag", b))
+    record(a, finished=None)  # an unfinished folder is not compared
+    assert protocol.check_diag(LIN, "cue_diag", b) == []
+    shutil.copytree(a, root / "m2-s1__ckpt-1.failed-1")  # nor a failed attempt
+    assert protocol.check_diag(LIN, "cue_diag", b) == []
+
+
 def test_diag_table_050_r9(tmp_path):
     out = all_outputs(tmp_path / "d")
     res = diag_table.folder_table(LIN, out, ["cue_diag", "dead_channels"])
@@ -1206,6 +1270,101 @@ def test_s1e2_games_job_made_elsewhere_041_r20(tmp_path, monkeypatch):
     monkeypatch.setattr(s1e2_loop.protocol, "main", raise_exists)
     a = argparse.Namespace(games_root="eval/x", hosts="h.toml", allow_dirty=False, dry_run=False)
     assert s1e2_loop.make_job(LIN, shared, a, "s1e2", "checkpoints/m2-s1e2/ckpt-1000") is None
+
+
+def test_s1e2_games_joins_an_existing_job_with_a_worker_041_r20(tmp_path, monkeypatch):
+    shared = s1e2_shared(tmp_path, monkeypatch, steps=(1000,), done=True)
+    job = shared / "eval" / "m2-s1e2-games" / "m2-s1e2__ckpt-1000"
+    job.mkdir(parents=True)  # made by another host, not DONE
+    played = []
+
+    def fake_play(j, shared_, worker, poll_s):
+        played.append((j.name, worker))
+        (j / "DONE").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(s1e2_loop, "play", fake_play)
+    monkeypatch.setattr(s1e2_loop, "make_job", lambda *a: pytest.fail("the job exists"))
+    s1e2_loop.main(["games", "--run", "m2-s1e2", "--worker", "--priority 2", "--watch", "--poll-s", "0"])
+    assert played == [("m2-s1e2__ckpt-1000", "--priority 2")]
+
+
+def test_s1e2_val_orphan_claim_on_the_final_041_r20(tmp_path, monkeypatch, capsys):
+    """An orphan claim (its scorer crashed / rebooted / was stopped) does not stall the final: a claim older than
+    the time limit + 15 min, or this host's claim whose process is gone, is recorded as "stale claim", kept as
+    .failed-<k> (one attempt) and the checkpoint is run again."""
+    shared = s1e2_shared(tmp_path, monkeypatch, done=True)
+    monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
+    val = shared / "artifacts" / "bc_e2_val" / "val500"
+    val.mkdir(parents=True)
+    old = val / "m2-s1e2__ckpt-3000.claim"
+    old.write_text("some-host 2026-11-10T01:00:00+09:00\n", encoding="utf-8")  # an older plain-text claim
+    t = old.stat().st_mtime - (s1e2_loop.VAL_TIMEOUT_S + s1e2_loop.STALE_MARGIN_S + 60)
+    os.utime(old, (t, t))
+    out = val / "m2-s1e2__ckpt-3000.json"
+    assert s1e2_loop.val_state(out) == "stale"
+    calls = []
+    monkeypatch.setattr(s1e2_loop.subprocess, "run", val_runner(calls, {}))
+    s1e2_loop.main(["val", "--run", "m2-s1e2", "--watch", "--poll-s", "0"])
+    assert calls == ["m2-s1e2__ckpt-3000.json"]
+    stale = json.loads((val / "m2-s1e2__ckpt-3000.failed-1.protocol.json").read_text(encoding="utf-8"))
+    assert stale["returncode"] == "stale claim" and "older than" in stale["reason"] and (val / "m2-s1e2__ckpt-3000.failed-1.claim").is_file()
+    assert json.loads((val / "m2-s1e2__ckpt-3000.protocol.json").read_text(encoding="utf-8"))["attempt"] == 2
+    # this host's fresh claim of a process that no longer runs
+    p = subprocess.Popen([sys.executable, "-c", "pass"])  # subprocess.run is the fake here
+    p.wait()
+    out2 = val / "m2-s1e2__ckpt-2000.json"
+    out2.with_suffix(".claim").write_text(json.dumps({"host": s1e2_loop.socket.gethostname(), "pid": p.pid, "timeout_s": 7200}), encoding="utf-8")
+    assert "no longer runs" in s1e2_loop.claim_stale(out2, 7200) and s1e2_loop.val_state(out2) == "stale"
+    out2.with_suffix(".claim").write_text(json.dumps({"host": s1e2_loop.socket.gethostname(), "pid": os.getpid() + 0, "timeout_s": 7200}), encoding="utf-8")
+    assert s1e2_loop.val_state(out2) == "running"  # a live claim of this process is not stale
+    out2.with_suffix(".claim").write_text(json.dumps({"host": "other-host", "pid": 1, "timeout_s": 7200}), encoding="utf-8")
+    assert s1e2_loop.val_state(out2) == "running"  # another host's recent claim: wait for it
+
+
+def test_s1e2_val_waits_for_a_running_final_and_says_where_041_r20(tmp_path, monkeypatch, capsys):
+    shared = s1e2_shared(tmp_path, monkeypatch, done=True)
+    val = shared / "artifacts" / "bc_e2_val" / "val500"
+    val.mkdir(parents=True)
+    claim = val / "m2-s1e2__ckpt-3000.claim"
+    claim.write_text(json.dumps({"host": "other-host", "pid": 1, "timeout_s": 7200}), encoding="utf-8")
+    sleeps = []
+
+    def fake_sleep(s):
+        sleeps.append(s)
+        if len(sleeps) == 3:  # the other host finishes
+            (val / "m2-s1e2__ckpt-3000.json").write_text("{}", encoding="utf-8")
+            (val / "m2-s1e2__ckpt-3000.protocol.json").write_text(json.dumps({"returncode": 0}), encoding="utf-8")
+
+    monkeypatch.setattr(s1e2_loop.time, "sleep", fake_sleep)
+    monkeypatch.setattr(s1e2_loop.subprocess, "run", lambda *a, **k: pytest.fail("nothing to run here"))
+    s1e2_loop.main(["val", "--run", "m2-s1e2", "--watch", "--poll-s", "5"])
+    text = capsys.readouterr().out
+    assert text.count("waiting for checkpoints/m2-s1e2/ckpt-3000 running on other-host") == 1 and len(sleeps) == 3
+
+
+def test_s1e2_val_interrupted_and_leftover_failed_041_r20(tmp_path, monkeypatch):
+    """Ctrl-C / an error between the claim and the record: recorded ("error: ...") and set aside, then re-raised.
+    A leftover failed record (a scorer stopped before setting it aside) is set aside before picking."""
+    shared = s1e2_shared(tmp_path, monkeypatch, done=True)
+    monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
+
+    def interrupted(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(s1e2_loop.subprocess, "run", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        s1e2_loop.main(["val", "--run", "m2-s1e2", "--watch", "--poll-s", "0"])
+    val = shared / "artifacts" / "bc_e2_val" / "val500"
+    rec = json.loads((val / "m2-s1e2__ckpt-3000.failed-1.protocol.json").read_text(encoding="utf-8"))
+    assert rec["returncode"] == "error: KeyboardInterrupt()" and not (val / "m2-s1e2__ckpt-3000.claim").exists()
+    (val / "m2-s1e2__ckpt-3000.claim").write_text("{}", encoding="utf-8")
+    (val / "m2-s1e2__ckpt-3000.protocol.json").write_text(json.dumps({"returncode": 139}), encoding="utf-8")
+    assert s1e2_loop.val_state(val / "m2-s1e2__ckpt-3000.json") == "failed"
+    calls = []
+    monkeypatch.setattr(s1e2_loop.subprocess, "run", val_runner(calls, {}))
+    s1e2_loop.main(["val", "--run", "m2-s1e2", "--watch", "--poll-s", "0"])
+    assert calls == ["m2-s1e2__ckpt-3000.json"] and (val / "m2-s1e2__ckpt-3000.failed-2.protocol.json").is_file()
+    assert json.loads((val / "m2-s1e2__ckpt-3000.protocol.json").read_text(encoding="utf-8"))["attempt"] == 3
 
 
 def test_s1e2_games_jobs_and_table_041_r20(tmp_path, monkeypatch, capsys):
