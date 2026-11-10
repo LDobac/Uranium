@@ -426,6 +426,9 @@ pub struct Batch {
     /// [`GameStream::enemy_race`]: `terran`, `protoss`, `zerg`, else `random` / `unknown`); empty
     /// for a drained lane.
     pub enemy_races: Vec<String>,
+    /// 041-R27: per lane, its game's replay SHA-256 ([`GameStream::replay_sha256`]); empty for a
+    /// drained lane.
+    pub game_ids: Vec<String>,
     pub state: FeedState,
 }
 
@@ -551,6 +554,7 @@ impl Feeder {
         let mut results = Vec::with_capacity(self.lanes.len());
         let mut value_weights = Vec::with_capacity(self.lanes.len());
         let mut enemy_races = Vec::with_capacity(self.lanes.len());
+        let mut game_ids = Vec::with_capacity(self.lanes.len());
         let mut planes = Vec::new();
         // Feature extraction (and packing) touches only the lane's own game: lanes run on
         // `threads` threads, results kept in lane order, so the batch is the same.
@@ -573,6 +577,7 @@ impl Feeder {
                 results.push(0.0);
                 value_weights.push(0.0);
                 enemy_races.push(String::new());
+                game_ids.push(String::new());
                 continue;
             };
             self.invalid_labels += invalid;
@@ -584,13 +589,14 @@ impl Feeder {
             results.push(g.result);
             value_weights.push(g.value_weight);
             enemy_races.push(g.enemy_race().to_string());
+            game_ids.push(g.replay_sha256().to_string());
             lane.fresh = false;
             if g.remaining() == 0 {
                 lane.game = None;
                 lane.id = None;
             }
         }
-        Ok(Some(Batch { chunks, planes, fresh, results, value_weights, enemy_races, state: self.state(pos) }))
+        Ok(Some(Batch { chunks, planes, fresh, results, value_weights, enemy_races, game_ids, state: self.state(pos) }))
     }
 
     /// [`Feeder::next_batch`] from a shard source, with its read position in the batch's state.

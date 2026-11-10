@@ -51,6 +51,9 @@ config = "config/bc.toml"
 requires_field = "by_enemy_race"
 races = ["terran", "protoss", "zerg"]
 note = "bc-eval writes by_enemy_race (per enemy race steps / action_top1 / nll) in its JSON; an older output lacks it"
+# 050-R10 3 (human TvT / TvP part): the mean p(Build_Bunker) before 4:00 per enemy race (`bunker_before`),
+# input of tools/eval/regression_gate.py. The option only adds that field.
+extra_args = ["--bunker-before", "5760"]
 output = "artifacts/bc_e2_val/val500/<run>__<ckpt>.json"
 
 [metric.test]

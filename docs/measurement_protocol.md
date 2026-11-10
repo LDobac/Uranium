@@ -211,3 +211,38 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
   - 재시도 모델 행이 있는 Checkpoint 1 job은 둘이다: `bc-check-20261105`(6판), `ac1-20261101/baseline/ac1-base-lf0`(1판).
   - 두 job의 리포트 값(`rush_summary.py`, `summary.md`)은 이미 재시도 판을 포함한다. `tables.py` 값도 같다.
 - 예외 3: `rush_summary.py`의 `scv_8m` 승리 통과는 위 "지표 정의"대로 `held_8m_winpass`로만 낸다.
+
+## 교사 보관분 러시·운영형 나누기 (041-R27)
+
+- `per_action.py`는 `--holdout orig|full`이면 판마다 상대 종류(러시·운영형)를 붙여 따로도 센다. 전체 값(`per_action`)은 그대로다. `--classes none`이면 나누지 않는다.
+- 판 분류: 판을 만든 plan의 `games.jsonl` `opponent`로 정한다.
+  - 러시 4상대(T0 `zerg_rush`, `ualbertabot12poollings`, `ualbertabot9pool10lings`, `ualbertabot9poolhydra`): plan `teacher_botgen_rush`
+  - 운영형 5상대(`ualbertabot2hatchhydra`, `ualbertabot3hatchmuta`, `steamhammer2hatchmuta`, T0 `zerg_muta`, T0 표준 저그): plan `teacher_botgen_macro`·`macro2`·`macro3`(040-R23)
+  - 리플레이 파일 SHA-256이 shard의 `replay_sha256`이라 이것으로 판을 잇는다. 원본은 `<shared>/datasets/replays/raw/botgen/teacher-*/teacher_botgen_*/`, 캐시는 `<URANIUM_CACHE_DIR>/per_action_holdout/teacher_classes.json`이다.
+  - 모르는 상대 이름이나 분류가 없는 판이 나오면 멈춘다(새 plan의 상대는 `per_action.py`에 더한다).
+- 보관분(교사 판 val, 2026-11-10): `orig` 165판 = 러시 129 + 운영형 36. macro2 37판, macro3 44판은 모두 운영형이다. `full`이면 러시 129 + 운영형 117이다.
+- 출력에 더해지는 것
+  - `by_class.rush`·`by_class.macro`: 판 수, step, 행동별 행, `bunker_p_before_4m`
+  - `r27.rush_bunker_top1`: 혼합 연장 규칙(041-R21 ⑥)의 벙커 top-1. 경로 2부터 러시 상대 판에서만 센다.
+  - `r27.macro_bunker_p_before_4m`: 운영형 판에서 4:00 전(관측 프레임 < 5,760) 채점 step의 p(Build_Bunker) 평균. 기록만 한다.
+- `per_action_table.py`는 나눈 출력이면 러시 벙커 top-1과 열 사이 변화, 운영형 p(벙커)를 행으로 더한다. 나누지 않은 열은 `-`다.
+- Checkpoint 1 경로의 `bc-mix` 벙커 top-1은 러시·운영형을 합친 보관분 값이다. 경로 2와 비교할 때 정의 차이를 표에 적는다.
+- `uranium._core`의 `Batch.lane_games`(판의 `replay_sha256`)가 필요하다. 이 변경 이후로 빌드한 확장이어야 한다.
+
+## 회귀 게이트 (050-R10)
+
+- 명령: `python tools/eval/regression_gate.py --baseline-val <m2-s2e2 val500 json> --candidate-val <지점 val500 json> --baseline-games <m2-s2e2 t0_tp job> --candidate-games <지점 t0_tp job> [--json <파일>]`
+- 입력
+  - val500 출력: `protocol.py bc-eval --metric val500_race`가 내는 명령으로 돌린다. 이 명령에 `--bunker-before 5760`이 들어 있다. 이 옵션은 `bunker_before` 필드만 더하고 나머지 출력은 같다.
+  - 게임: 프로토콜 plan `t0_tp` 단계가 있는 평가 job. 명령 스트림은 `tables.py`처럼 `uranium-replay cmddump`로 뽑는다.
+- 검사(문턱은 AMB-050-3 결정, 경계는 통과)
+
+| 검사 | 내용 | 통과 |
+|---|---|---|
+| 1 | T0 표준 테란·프로토스 각 32판 승률(승 / 유효 판, 무승부는 승 아님, 상대 크래시 판 무효) | 기준선 승률 이상 |
+| 2 | val500 상대 종족별 action top-1, action NLL(`nll.action`) | top-1 ≥ 기준선 − 0.5%p, NLL ≤ 기준선 + 0.01 |
+| 3a | 사람 TvT·TvP val 판의 4:00 전 p(Build_Bunker) 평균(teacher forcing) | 기준선 이하 |
+| 3b | T0 테란·프로토스 판의 `bunker_order_4m`·`bunker_unit_4m` 비율 | 기준선 이하 |
+
+- 판정은 테란·프로토스 상대만 한다. 하나라도 FAIL이면 그 지점 결과와 함께 사용자에게 보고한다. 학습은 멈추지 않는다. 입력이 없는 검사는 MISSING이다.
+- 게임 칸에는 Wilson 95% 구간과 Fisher p를 함께 낸다. 32판은 조건당 약 ±12%p 잡음이 있어 작은 차이는 사용자가 판단한다.

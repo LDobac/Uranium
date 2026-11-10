@@ -1128,6 +1128,8 @@ def bc_eval_args(m: dict, checkpoint: str, out: str | None = None, py: str = "py
     if m.get("seed") is not None:
         args += ["--seed", str(m["seed"])]
     args += ["--backend", m["backend"], "--config", m["config"]]
+    # 050-R10 ③: val500 / val500_race's --bunker-before 5760 (adds a field, the rest of the output is the same).
+    args += [str(x) for x in m.get("extra_args", [])]
     if out:
         args += ["--out", out]
     return args

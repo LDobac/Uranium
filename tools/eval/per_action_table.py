@@ -2,11 +2,13 @@
 tools/eval/per_action.py JSON. Rows: top-1 of the key actions (with tile accuracy for positional actions and
 target accuracy for Attack_Unit), the overall step-weighted top-1, steps / games, and the column-to-column
 change of Build_Bunker top-1 (the bc-mix extension rule input). Moved from runs/mix/table.py with the same
-cells.
+cells. A column scored with the 041-R27 rush / macro split (per_action.py `r27`) adds the Build_Bunker top-1 on
+rush-opponent games (the extension rule input from model 2 on, AMB-041-16) with its column-to-column change,
+and the macro-opponent games' mean p(Build_Bunker) before 4:00 (recorded only); other columns show "-".
 
     python tools/eval/per_action_table.py BC=<json> mix-e1=<json> ... [--json out.json]
 
---json writes {label: {"file", "steps", "games", "overall_top1", "actions": {action: per_action row}}}.
+--json writes {label: {"file", "steps", "games", "overall_top1", "actions": {action: per_action row}, "r27"}}.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ def load(p: Path) -> dict:
     tot = sum(r["n"] for r in d["per_action"])
     return {"file": str(p), "steps": d.get("steps"), "games": d.get("games"),
             "overall_top1": sum(r["top1"] * r["n"] for r in d["per_action"]) / tot,
-            "actions": {r["action"]: r for r in d["per_action"]}}
+            "actions": {r["action"]: r for r in d["per_action"]}, "r27": d.get("r27")}
 
 
 def cell(r: dict | None, action: str) -> str:
@@ -47,6 +49,20 @@ def table(data: dict[str, dict]) -> list[str]:
     bk = [data[k]["actions"]["Build_Bunker"]["top1"] * 100 for k in cols if "Build_Bunker" in data[k]["actions"]]
     if len(bk) >= 2:
         out.append(f"bunker top-1 per column {[round(b, 1) for b in bk]}, last change {bk[-1] - bk[-2]:+.1f} %p")
+    r27 = [data[k].get("r27") for k in cols]
+    if any(r27):
+        def rush(r):
+            return "-" if not r or r["rush_bunker_top1"] is None else f"{r['rush_bunker_top1'] * 100:.1f}"
+
+        def macro(r):
+            return "-" if not r or r["macro_bunker_p_before_4m"] is None else f"{r['macro_bunker_p_before_4m']:.4f}"
+        out.append("Build_Bunker top-1, rush-opponent games (041-R27) | " + " | ".join(rush(r) for r in r27))
+        out.append("rush games / bunker steps | " + " | ".join("-" if not r else f"{r['rush_games']} / {r['rush_bunker_steps']}" for r in r27))
+        out.append("macro mean p(Build_Bunker) < 4:00 (record) | " + " | ".join(macro(r) for r in r27))
+        out.append("macro games / steps < 4:00 | " + " | ".join("-" if not r else f"{r['macro_games']} / {r['macro_steps_before_4m']}" for r in r27))
+        rb = [r["rush_bunker_top1"] * 100 for r in r27 if r and r["rush_bunker_top1"] is not None]
+        if len(rb) >= 2:
+            out.append(f"041-R27 rush bunker top-1 per column {[round(b, 1) for b in rb]}, last change {rb[-1] - rb[-2]:+.1f} %p")
     return out
 
 
