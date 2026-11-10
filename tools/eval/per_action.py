@@ -126,7 +126,7 @@ def load_classes(spec: str | None, holdout: str | None) -> dict[str, str] | None
         return None
     if spec == "auto":
         raw = ec.shared_dir() / "datasets" / "replays" / "raw" / "botgen"
-        cache = Path(os.environ.get("URANIUM_CACHE_DIR") or ec.ROOT / "runs") / "per_action_holdout" / "teacher_classes.json"
+        cache = ec.cache_dir() / "per_action_holdout" / "teacher_classes.json"
         got = teacher_classes(raw, cache)
     else:
         got = json.loads(Path(spec).read_text(encoding="utf-8"))
@@ -178,7 +178,7 @@ def added_dirs() -> list[str]:
     parts = sorted(p.name for p in src.iterdir() if p.is_dir() and p.name not in ORIG)
     if not parts:
         return []
-    work = Path(os.environ.get("URANIUM_CACHE_DIR") or ec.ROOT / "runs") / "per_action_holdout_added" / "botgen"
+    work = ec.cache_dir() / "per_action_holdout_added" / "botgen"
     return [str(link_tree(src, parts, work))]
 
 

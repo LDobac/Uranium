@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -212,7 +211,7 @@ def main(argv=None) -> dict:
     ap.add_argument("--json", type=Path, default=None)
     a = ap.parse_args(argv)
     ec.load_env()
-    cache = a.cache or Path(os.environ.get("URANIUM_CACHE_DIR") or ec.ROOT / "runs") / "eval_cmddump"
+    cache = a.cache or ec.cache_dir() / "eval_cmddump"
     lin = protocol.load_lineage()
     bg = t0_tp_counts(a.baseline_games, cache, lin) if a.baseline_games else None
     cg = t0_tp_counts(a.candidate_games, cache, lin) if a.candidate_games else None
