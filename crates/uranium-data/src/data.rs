@@ -1143,9 +1143,18 @@ impl GameStream {
         self
     }
 
-    /// The enemy race letter of the game's matchup (`T`, `P`, `Z`; 050-R9 `val500_race`).
-    pub fn enemy_race(&self) -> Option<&str> {
-        crate::split::enemy_race(&self.game.meta.matchup)
+    /// 050-R9 `val500_race`: the race the view's enemy actually played, from `GameInfo` (replays
+    /// hold the played race even for a lobby Random, `AgentMemory::with_lobby`): `terran`,
+    /// `protoss`, `zerg`, else `random` / `unknown` (a bridge that did not report it).
+    pub fn enemy_race(&self) -> &'static str {
+        use uranium_proto::Race;
+        match self.game.game_info.players.iter().find(|p| p.is_enemy).map(|p| p.race) {
+            Some(Race::Terran) => "terran",
+            Some(Race::Protoss) => "protoss",
+            Some(Race::Zerg) => "zerg",
+            Some(Race::Random) => "random",
+            _ => "unknown",
+        }
     }
 
     /// Steps not yet produced.

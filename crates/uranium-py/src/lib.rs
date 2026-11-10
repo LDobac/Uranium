@@ -184,8 +184,8 @@ impl Batch {
         self.inner.lane_priv_steps(t)
     }
 
-    /// 050-R9 `val500_race`: per lane, the enemy race letter (`T`, `P`, `Z`) of its game's
-    /// matchup; empty for a drained lane.
+    /// 050-R9 `val500_race`: per lane, the race the game's enemy actually played (`GameInfo`:
+    /// `terran`, `protoss`, `zerg`, else `random` / `unknown`); empty for a drained lane.
     fn lane_enemy_races(&self) -> Vec<String> {
         self.inner.enemy_races.clone()
     }
@@ -523,16 +523,23 @@ fn rush_check_seeds(blocks: usize, first: u32) -> Vec<u32> {
 }
 
 /// Tests: writes synthetic shards (`uranium_data::testkit`) under `root`: `kind` is "varied"
-/// (15 games of 1..16 steps), "mixed" (games with different entity counts and void labels).
+/// (15 games of 1..16 steps), "mixed" (games with different entity counts and void labels),
+/// "races" (the varied games against Terran, Protoss, Zerg and a lobby Random that played
+/// Protoss, `testkit::race_games`). `only_race`: keep the games whose enemy played that race
+/// (`terran`, `protoss`, `zerg`).
 #[pyfunction]
-#[pyo3(signature = (root, kind = "varied", per_file = 4))]
-fn write_test_shards(root: PathBuf, kind: &str, per_file: usize) -> PyResult<()> {
+#[pyo3(signature = (root, kind = "varied", per_file = 4, only_race = None))]
+fn write_test_shards(root: PathBuf, kind: &str, per_file: usize, only_race: Option<String>) -> PyResult<()> {
     use uranium_data::testkit as tk;
-    let games = match kind {
+    let mut games = match kind {
         "varied" => tk::varied_games(),
         "mixed" => vec![tk::game(), tk::game_more_units(5, 2), tk::game_with_invalid(9, 3), tk::game_more_units(16, 4), tk::game_len(7, 5)],
-        _ => return Err(PyValueError::new_err(format!("kind {kind:?}: expected varied or mixed"))),
+        "races" => tk::race_games(),
+        _ => return Err(PyValueError::new_err(format!("kind {kind:?}: expected varied, mixed or races"))),
     };
+    if let Some(r) = only_race {
+        games.retain(|g| g.game_info.players.iter().any(|p| p.is_enemy && format!("{:?}", p.race).to_lowercase() == r));
+    }
     tk::write_shards(&root, &games, per_file).map_err(err)
 }
 

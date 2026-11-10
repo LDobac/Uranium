@@ -6,8 +6,10 @@ over the steps that use the head. Games are read without z, symmetry or the race
 `--games N` the N games come from a fixed-seed shuffle (032-R17 ②). With a win_open head
 (032-R18) also its MSE and the 031-R12 surrender check replayed per game (041-AC4, in Rust).
 Same report as the Burn `uranium-train bc-eval`, plus `by_enemy_race` (050-R9 `val500_race`: the
-steps, action top-1 and per-head NLL per enemy race of the view's game) and, for a model with the
-032-R24 aux modules, the aux losses as the training log names them (041-R23 ⑤)."""
+steps, action top-1 and per-head NLL per race the view's enemy played, from `GameInfo`) and, for a model with the
+032-R24 aux modules, the aux losses as the training log names them (041-R23 ⑤). Such a model runs
+one `forward_seq(aux=True)` per lane group: the aux modules only read h and add outputs, so the
+behaviour metrics are those of `aux=False` (032-AC14)."""
 
 import argparse
 import json
@@ -16,8 +18,9 @@ from pathlib import Path
 import torch
 
 HEADS = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
-# 050-R9 `val500_race`: the enemy race letter of a game's matchup -> the report key.
-RACES = {"T": "terran", "P": "protoss", "Z": "zerg"}
+# 050-R9 `val500_race`: the report keys, the race the view's enemy played (`GameInfo`,
+# `Batch.lane_enemy_races`); another value (`random`, `unknown`) gets its own key.
+RACES = ("terran", "protoss", "zerg")
 
 # Output fields and their units (E-9), printed with every report.
 UNITS = {
@@ -29,7 +32,7 @@ UNITS = {
     "steps": "steps with a usable label (041-R11 weight 1); padding and void labels are not scored",
     "win_open_mse": "mean (win_open - result)^2 over the steps of decided games (032-R18, result +1 / -1)",
     "surrender.*": "031-R12 check replayed per game (041-AC4): games, games where it held, the share of those won, first frame it held",
-    "by_enemy_race.<race>": "steps, action_top1 and nll.<head> (as above) over the steps of games against that race (the view's matchup, 050-R9 val500_race)",
+    "by_enemy_race.<race>": "steps, action_top1 and nll.<head> (as above) over the steps of games against that race (the race the view's enemy played, GameInfo; 050-R9 val500_race)",
     "aux_*, jepa_tgt_std": "032-R24 aux losses before the loss weight over the split (models with the modules only, 041-R23 5)",
 }
 
@@ -130,7 +133,7 @@ class Acc:
         """050-R9 `val500_race`: the three races always (top-1 null without a step), and any other
         key the data had."""
         out = {}
-        for name in [*RACES.values(), *sorted(set(self.by_race) - set(RACES.values()))]:
+        for name in [*RACES, *sorted(set(self.by_race) - set(RACES))]:
             a = self.by_race.get(name, {"steps": 0, "top1": 0, "nll": [0.0] * len(HEADS), "nll_n": [0] * len(HEADS)})
             out[name] = {
                 "steps": a["steps"], "action_top1": a["top1"] / a["steps"] if a["steps"] else None,
@@ -186,7 +189,7 @@ def evaluate(dirs: list[str], ckpt_dir: str, split: str, games, seed: int, confi
     aux = AuxAcc(net) if net.cfg.variant.aux() else None
     while (b := stream.next()) is not None:
         steps = b.lane_steps()
-        lane_race = [RACES.get(r, r.lower() or "unknown") for r in b.lane_enemy_races()]
+        lane_race = [r or "unknown" for r in b.lane_enemy_races()]
         for gi in range(groups):
             start, end = gi * g, min((gi + 1) * g, lanes)
             if all(steps[l] == 0 for l in range(start, end)):
@@ -258,7 +261,8 @@ class AuxAcc:
         live = [x for x in per if x is not None]
         out = {"aux_priv": self.priv_sum / self.priv_n if self.priv and self.priv_n else None,
                "aux_jepa": sum(live) / len(live) if live else None,
-               "jepa_tgt_std": float(jepa_std(self.moments, self.real)) if self.moments is not None and self.real else None}
+               "jepa_tgt_std": float(jepa_std(self.moments[:2], self.real)) if self.moments is not None and self.real else None,
+               "jepa_tgt_std_raw": float(jepa_std(self.moments[2:], self.real)) if self.moments is not None and self.real else None}
         for i in range(AUX_JEPA_SLOTS):
             out[f"aux_jepa_slot{i + 1}"] = per[i] if i < len(per) else None
         return out
