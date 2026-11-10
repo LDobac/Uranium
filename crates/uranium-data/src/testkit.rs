@@ -129,6 +129,23 @@ pub fn varied_games() -> Vec<ShardGame> {
     [16, 3, 9, 16, 5, 1, 12, 7, 16, 2, 11, 4, 16, 8, 6].iter().enumerate().map(|(i, &l)| game_len(l, i as u32 + 1)).collect()
 }
 
+/// 050-R9 `val500_race` tests: `varied_games` with the enemy's played race cycling Terran,
+/// Protoss, Zerg, and a lobby Random that played Protoss (matchup `TvR`, `enemy_random`; the
+/// replay's `GameInfo` holds the played race).
+pub fn race_games() -> Vec<ShardGame> {
+    varied_games()
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut g)| {
+            let (race, matchup) = [(Race::Terran, "TvT"), (Race::Protoss, "TvP"), (Race::Zerg, "TvZ"), (Race::Protoss, "TvR")][i % 4];
+            g.game_info.players[1].race = race;
+            g.meta.matchup = matchup.into();
+            g.meta.enemy_random = matchup == "TvR";
+            g
+        })
+        .collect()
+}
+
 /// A game with two more SCVs on every step (rows of one batch then have different entity counts).
 pub fn game_more_units(len: usize, tag: u32) -> ShardGame {
     let mut g = game_len(len, tag);

@@ -421,8 +421,9 @@ pub struct Batch {
     pub results: Vec<f32>,
     /// 041-R7 / A-3: per lane, the value-loss weight of its game (0 = undecided result).
     pub value_weights: Vec<f32>,
-    /// 050-R9 `val500_race`: per lane, the enemy race letter of its game's matchup (`T`, `P`,
-    /// `Z`, from the perspective player's side as 041-R26); empty for a drained lane.
+    /// 050-R9 `val500_race`: per lane, the race its game's enemy actually played (`GameInfo`,
+    /// [`GameStream::enemy_race`]: `terran`, `protoss`, `zerg`, else `random` / `unknown`); empty
+    /// for a drained lane.
     pub enemy_races: Vec<String>,
     pub state: FeedState,
 }
@@ -581,7 +582,7 @@ impl Feeder {
             fresh.push(lane.fresh);
             results.push(g.result);
             value_weights.push(g.value_weight);
-            enemy_races.push(g.enemy_race().unwrap_or_default().to_string());
+            enemy_races.push(g.enemy_race().to_string());
             lane.fresh = false;
             if g.remaining() == 0 {
                 lane.game = None;
