@@ -9,7 +9,11 @@ Same report as the Burn `uranium-train bc-eval`, plus `by_enemy_race` (050-R9 `v
 steps, action top-1 and per-head NLL per race the view's enemy played, from `GameInfo`) and, for a model with the
 032-R24 aux modules, the aux losses as the training log names them (041-R23 ⑤). Such a model runs
 one `forward_seq(aux=True)` per lane group: the aux modules only read h and add outputs, so the
-behaviour metrics are those of `aux=False` (032-AC14)."""
+behaviour metrics are those of `aux=False` (032-AC14).
+
+`--bunker-before F` (050-R10 ③, the regression gate's human TvT / TvP part): also the mean teacher-forced
+p(Build_Bunker) over the scored steps observed before frame F (4:00 = 5,760), per enemy race as
+`by_enemy_race` and over every game, in `bunker_before`. Without the option the report is unchanged."""
 
 import argparse
 import json
@@ -49,6 +53,8 @@ def add_parser(sub) -> None:
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--config", default="config/bc.toml")
     p.add_argument("--out", help="also write the JSON report to this file (032-R20 ③ val scoring)")
+    p.add_argument("--bunker-before", type=int, metavar="FRAME",
+                   help="also report the mean p(Build_Bunker) over the scored steps before this frame, per enemy race (050-R10 ③; 4:00 = 5760)")
     p.add_argument("--maps-dir", help=argparse.SUPPRESS)
     p.add_argument("--synthetic-maps", action="store_true", help=argparse.SUPPRESS)
     p.set_defaults(fn=main)
@@ -167,8 +173,47 @@ class Acc:
         }
 
 
+# Observation scalar 0 is frame / 86,400 (030 §1, crates/uranium-env/src/features/extract.rs).
+FRAME_SCALE = 86400.0
+
+
+class BunkerAcc:
+    """050-R10 ③: mean teacher-forced p(Build_Bunker) over the scored steps (weight > 0) observed before
+    `before` (frame), per enemy race and over every game."""
+
+    def __init__(self, before: int):
+        from uranium.diag import tables as tb
+
+        self.before = before
+        self.action = tb.action_id("Build_Bunker")
+        self.sum: dict[str, float] = {}
+        self.n: dict[str, int] = {}
+
+    @torch.no_grad()
+    def add(self, out: dict, g: dict, rows_race: list[str]) -> None:
+        dev = out["dists"]["action"].device
+        ok = torch.as_tensor(g["weights"], device=dev) > 0
+        frame = torch.round(torch.as_tensor(g["scalar"], device=dev)[:, 0].double() * FRAME_SCALE)
+        take = ok & (frame < self.before)
+        p = out["dists"]["action"][:, self.action].double().exp()
+        for name in ["all", *set(rows_race)]:
+            rows = take if name == "all" else take & torch.as_tensor([x == name for x in rows_race], device=dev)
+            self.sum[name] = self.sum.get(name, 0.0) + float((p * rows).sum())
+            self.n[name] = self.n.get(name, 0) + int(rows.sum())
+
+    def report(self) -> dict:
+        def one(k):
+            n = self.n.get(k, 0)
+            return {"steps": n, "mean_p": self.sum[k] / n if n else None}
+        races = [*RACES, *sorted(set(self.n) - set(RACES) - {"all"})]
+        return {"before_frame": self.before, "action": "Build_Bunker",
+                "unit": "mean p(Build_Bunker) of the action head over the scored steps observed before the frame",
+                "all": one("all"), "by_enemy_race": {r: one(r) for r in races}}
+
+
 @torch.no_grad()
-def evaluate(dirs: list[str], ckpt_dir: str, split: str, games, seed: int, config: str, device, precision: str, core=None, maps_dir=None, synthetic_maps=False) -> dict:
+def evaluate(dirs: list[str], ckpt_dir: str, split: str, games, seed: int, config: str, device, precision: str, core=None, maps_dir=None, synthetic_maps=False,
+             bunker_before: int | None = None) -> dict:
     from uranium import _core, ckpt
     from uranium.device import autocast
     from uranium.model import to_obs
@@ -187,6 +232,7 @@ def evaluate(dirs: list[str], ckpt_dir: str, split: str, games, seed: int, confi
     states = [None] * groups
     acc = Acc(json.loads(_core.feature_dims())["delay_buckets"])
     aux = AuxAcc(net) if net.cfg.variant.aux() else None
+    bunker = BunkerAcc(bunker_before) if bunker_before is not None else None
     while (b := stream.next()) is not None:
         steps = b.lane_steps()
         lane_race = [r or "unknown" for r in b.lane_enemy_races()]
@@ -207,6 +253,8 @@ def evaluate(dirs: list[str], ckpt_dir: str, split: str, games, seed: int, confi
             has_loc, sel_len = b.label_extras(start, end, t)
             rows = [lane_race[l] for l in range(start, end) for _ in range(t)]
             acc.score(out, hg, has_loc, sel_len, {r: torch.tensor([x == r for x in rows]) for r in set(rows)})
+            if bunker is not None:
+                bunker.add(out, hg, rows)
             if aux is not None:
                 aux.add(out, hg, priv, hg["b"], t)
             if out["win_open"] is not None:
@@ -216,6 +264,8 @@ def evaluate(dirs: list[str], ckpt_dir: str, split: str, games, seed: int, confi
     rep["win_open_mse"], rep["surrender"] = tail["win_open_mse"], tail["surrender"]
     if aux is not None:
         rep.update(aux.report())
+    if bunker is not None:
+        rep["bunker_before"] = bunker.report()
     return rep
 
 
@@ -276,7 +326,8 @@ def main(a) -> int:
     ckpt_dir = str(_core.resolve_checkpoint(a.checkpoint))
     backend, device, precision = resolve(a.backend)
     configure(backend)
-    rep = evaluate(dirs, ckpt_dir, a.split, a.games, a.seed, a.config, device, precision, a.core, a.maps_dir, a.synthetic_maps)
+    rep = evaluate(dirs, ckpt_dir, a.split, a.games, a.seed, a.config, device, precision, a.core, a.maps_dir, a.synthetic_maps,
+                   a.bunker_before)
     text = json.dumps(rep, indent=2)
     print(text)
     if a.out:

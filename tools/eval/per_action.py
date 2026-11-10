@@ -13,12 +13,25 @@ the hold-out of the BC / FT / clone / bc-mix columns of Checkpoint 1. `full` = t
 Moved from runs/mix/per_action.py (a copy of runs/adv8/per_action.py) with the loop unchanged. The
 `orig` source folder (four parts of botgen) is rebuilt from links under <URANIUM_CACHE_DIR or runs>/
 per_action_holdout/botgen, as runs/mix/holdout_orig/botgen was.
+
+041-R27 (AMB-041-16): the hold-out games are also split by the teacher game's opponent, `rush` (the
+four rush opponents of plan teacher_botgen_rush) or `macro` (the five macro opponents of plans
+teacher_botgen_macro / macro2 / macro3, 040-R23). Each game's class comes from the generating plan's
+games.jsonl (`opponent`) and the SHA-256 of its replay file, which is the shard's `replay_sha256`
+(<shared>/datasets/replays/raw/botgen/teacher-*/teacher_botgen_*/, cached in <URANIUM_CACHE_DIR or
+runs>/per_action_holdout/teacher_classes.json). The JSON then also has `by_class` (the same per-action
+rows per class, and the mean p(Build_Bunker) over the scored steps before 4:00) and `r27`: the bunker
+top-1 of the bc-mix extension rule (041-R21 6, counted on rush-opponent games only) and the macro
+games' mean p(Build_Bunker) before 4:00 (recorded only). The `per_action` list over every game is
+unchanged. `--classes none` turns the split off, `--classes <json>` ({replay_sha256: rush|macro})
+gives the classes of other shard folders. Needs `uranium._core` with `Batch.lane_games`.
 """
 
 from __future__ import annotations
 
 import argparse
 import collections
+import hashlib
 import json
 import os
 import shutil
@@ -32,6 +45,89 @@ import eval_common as ec  # noqa: E402
 ORIG = ["teacher-20261106-a", "teacher-20261106-b", "teacher-20261106-c", "teacher-20261106-d"]
 KEY = {"Build_Bunker", "Load_Unit", "Attack_Unit", "Repair_Unit", "Move_Pos", "Build_Barracks", "Build_SupplyDepot", "Build_CommandCenter", "Hold",
        "Attack_Pos", "Gather_Unit", "Smart_Unit", "Train_Marine", "Train_SCV", "NoOp"}
+
+# 041-R27 / 040 teacher botgen opponents (spec/040-replay-dataset.md, teacher botgen row; 040-R23 macro3
+# reuses the macro five), as the generating plans' games.jsonl names them (`<name>@<version>`).
+RUSH_OPPONENTS = ("t0-zerg-rush", "ualbertabot12poollings", "ualbertabot9pool10lings", "ualbertabot9poolhydra")
+MACRO_OPPONENTS = ("ualbertabot2hatchhydra", "ualbertabot3hatchmuta", "steamhammer2hatchmuta", "t0-zerg-muta", "t0-zerg")
+CLASSES = ("rush", "macro")
+# 041-R27: "before 4:00" = observation frame < 5,760 (24 frames per game second, 042-R14).
+BUNKER_BEFORE = 4 * 60 * ec.FPS
+# Observation scalar 0 is frame / 86,400 (030 §1, python/uranium/diag/tables.py FRAME_SCALE).
+FRAME_SCALE = 86400.0
+
+
+def opponent_class(opponent: str) -> str:
+    """rush / macro of a teacher botgen game's `opponent` (`<name>@<version>`); another name is an error
+    (a new plan's opponents must be added here, not guessed)."""
+    name = opponent.split("@", 1)[0]
+    if name in RUSH_OPPONENTS:
+        return "rush"
+    if name in MACRO_OPPONENTS:
+        return "macro"
+    raise SystemExit(f"041-R27: teacher opponent {opponent!r} is neither a rush ({', '.join(RUSH_OPPONENTS)}) nor a macro opponent "
+                     f"({', '.join(MACRO_OPPONENTS)}); add it to tools/eval/per_action.py")
+
+
+def file_sha256(p: Path) -> str:
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def teacher_classes(raw_root: Path, cache: Path | None = None) -> dict[str, dict]:
+    """{replay_sha256: {"class", "opponent", "plan"}} of every teacher botgen game under raw_root
+    (`teacher-*/teacher_botgen_*/games.jsonl` and `replays/g<game_id>.rep`). A plan folder is hashed again
+    only when its games.jsonl changed (cache: {plan folder: {"games_jsonl", "games"}})."""
+    old = {}
+    if cache is not None and cache.exists():
+        old = json.loads(cache.read_text(encoding="utf-8"))
+    new, out = {}, {}
+    for games in sorted(raw_root.glob("teacher-*/teacher_botgen_*/games.jsonl")):
+        plan = games.parent
+        key = plan.relative_to(raw_root).as_posix()
+        sig = file_sha256(games)
+        if old.get(key, {}).get("games_jsonl") == sig:
+            got = old[key]["games"]
+        else:
+            got = {}
+            for line in games.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                g = json.loads(line)
+                rep = plan / "replays" / f"g{g['game_id']}.rep"
+                if rep.exists():
+                    got[file_sha256(rep)] = {"class": opponent_class(g["opponent"]), "opponent": g["opponent"].split("@", 1)[0], "plan": key}
+        new[key] = {"games_jsonl": sig, "games": got}
+        out.update(got)
+    if not out:
+        raise SystemExit(f"041-R27: no teacher botgen plan folder under {raw_root}")
+    if cache is not None and new != old:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(new, indent=0), encoding="utf-8")
+    return out
+
+
+def load_classes(spec: str | None, holdout: str | None) -> dict[str, str] | None:
+    """{replay_sha256: rush|macro}: `auto` = the teacher botgen plans (only for the --holdout sets),
+    `none` = no split, else a JSON file {sha: class} (or {sha: {"class": ...}})."""
+    if spec is None:
+        spec = "auto" if holdout in ("orig", "full") else "none"
+    if spec == "none":
+        return None
+    if spec == "auto":
+        raw = ec.shared_dir() / "datasets" / "replays" / "raw" / "botgen"
+        cache = Path(os.environ.get("URANIUM_CACHE_DIR") or ec.ROOT / "runs") / "per_action_holdout" / "teacher_classes.json"
+        got = teacher_classes(raw, cache)
+    else:
+        got = json.loads(Path(spec).read_text(encoding="utf-8"))
+    out = {k: (v["class"] if isinstance(v, dict) else v) for k, v in got.items()}
+    bad = sorted({c for c in out.values() if c not in CLASSES})
+    if bad:
+        raise SystemExit(f"041-R27: classes must be {' / '.join(CLASSES)}, got {bad}")
+    return out
 
 
 def link_tree(src_root: Path, parts: list[str], dst_root: Path) -> Path:
@@ -68,7 +164,71 @@ def holdout_dirs(holdout: str) -> tuple[list[str], list[str]]:
     raise SystemExit(f"unknown --holdout {holdout}")
 
 
-def score(ckpt_dir: str, datasets: list[str], shards: list[str], backend_name: str, config: str) -> dict:
+class Tally:
+    """Per-label-action counts of a set of scored steps (the per_action report), plus the mean
+    p(Build_Bunker) over its steps before 4:00 (041-R27) and the games it saw."""
+
+    def __init__(self):
+        self.n = collections.Counter(); self.top1 = collections.Counter(); self.psum = collections.defaultdict(float); self.top5 = collections.Counter()
+        self.conf = collections.defaultdict(collections.Counter)
+        self.delay_abs = collections.defaultdict(float)
+        self.loc_exact = collections.Counter(); self.loc_n = collections.Counter(); self.loc_err = collections.defaultdict(float)
+        self.sel_tp = collections.Counter(); self.sel_fp = collections.Counter(); self.sel_fn = collections.Counter()
+        self.tu_n = collections.Counter(); self.tu_hit = collections.Counter()
+        self.early_n = 0
+        self.early_p = 0.0
+        self.games: set[str] = set()
+
+    def add_early(self, p_bunker: float) -> None:
+        self.early_n += 1
+        self.early_p += p_bunker
+
+    def report(self, names: dict, key_ids: set) -> list[dict]:
+        total = sum(self.n.values())
+        rep = []
+        for i, c in sorted(self.n.items(), key=lambda kv: -kv[1]):
+            prec = self.sel_tp[i] / max(self.sel_tp[i] + self.sel_fp[i], 1); rec = self.sel_tp[i] / max(self.sel_tp[i] + self.sel_fn[i], 1)
+            rep.append({
+                "action": names.get(i, str(i)), "n": c, "share": c / total, "top1": self.top1[i] / c, "top5": self.top5[i] / c, "mean_p": self.psum[i] / c,
+                "delay_mae": self.delay_abs[i] / c,
+                "loc_n": self.loc_n[i], "loc_exact": self.loc_exact[i] / max(self.loc_n[i], 1), "loc_err": self.loc_err[i] / max(self.loc_n[i], 1),
+                "tu_n": self.tu_n[i], "tu_top1": self.tu_hit[i] / max(self.tu_n[i], 1),
+                "sel_f1": (2 * prec * rec / (prec + rec)) if prec + rec > 0 else None, "sel_n": self.sel_tp[i] + self.sel_fn[i],
+                "confusion": {names.get(k, str(k)): v for k, v in self.conf[i].most_common(6)} if i in key_ids else None,
+            })
+        return rep
+
+    def early_report(self) -> dict:
+        """041-R27: mean p(Build_Bunker) over the scored steps observed before 4:00."""
+        return {"before_frame": BUNKER_BEFORE, "steps": self.early_n, "mean_p": self.early_p / self.early_n if self.early_n else None}
+
+
+def action_top1(rep: list[dict], action: str) -> tuple[float | None, int]:
+    """(top-1, steps) of one label action in a per_action list."""
+    for r in rep:
+        if r["action"] == action:
+            return r["top1"], r["n"]
+    return None, 0
+
+
+def class_report(tallies: dict, names: dict, key_ids: set) -> tuple[dict, dict]:
+    """(by_class, r27) of the per-class tallies (041-R27)."""
+    by = {}
+    for c in CLASSES:
+        tl = tallies[c]
+        by[c] = {"games": len(tl.games), "steps": sum(tl.n.values()), "per_action": tl.report(names, key_ids),
+                 "bunker_p_before_4m": tl.early_report()}
+    top1, n = action_top1(by["rush"]["per_action"], "Build_Bunker")
+    r27 = {"rush_bunker_top1": top1, "rush_bunker_steps": n, "rush_games": by["rush"]["games"],
+           "macro_bunker_p_before_4m": by["macro"]["bunker_p_before_4m"]["mean_p"],
+           "macro_steps_before_4m": by["macro"]["bunker_p_before_4m"]["steps"], "macro_games": by["macro"]["games"]}
+    return by, r27
+
+
+def score(ckpt_dir: str, datasets: list[str], shards: list[str], backend_name: str, config: str,
+          classes: dict[str, str] | None = None, maps_dir=None, synthetic_maps: bool = False, split: str = "val") -> dict:
+    """`classes` {replay_sha256: rush|macro}: also tally per class (041-R27); a scored game without a
+    class is an error."""
     import torch
 
     from uranium import _core, ckpt
@@ -77,6 +237,7 @@ def score(ckpt_dir: str, datasets: list[str], shards: list[str], backend_name: s
 
     names = {a["id"]: a["name"] for a in tomllib.loads((ec.ROOT / "crates/uranium-env/tables/actions.toml").read_text(encoding="utf-8"))["action"]}
     key_ids = {i for i, n in names.items() if n in KEY}
+    bunker_id = next(i for i, n in names.items() if n == "Build_Bunker")
     backend, device, precision = resolve(backend_name)
     configure(backend)
     cfg = json.loads(_core.bc_config(config, "s1")[0])
@@ -85,22 +246,30 @@ def score(ckpt_dir: str, datasets: list[str], shards: list[str], backend_name: s
     has_open = net.value.open is not None
     dirs = _core.dataset_dirs(datasets, shards)
     print("dirs", dirs, file=sys.stderr)
-    stream = _core.EvalStream(config, dirs, split="val", games=None, seed=1, has_open=has_open, maps_dir=None, synthetic_maps=False)
+    stream = _core.EvalStream(config, dirs, split=split, games=None, seed=1, has_open=has_open, maps_dir=maps_dir, synthetic_maps=synthetic_maps)
     t, lanes = cfg["seq_len"], cfg["lanes"]
     g = lanes if cfg["micro_lanes"] == 0 else min(cfg["micro_lanes"], lanes)
     groups = -(-lanes // g)
     states = [None] * groups
     delay_frames = torch.tensor(json.loads(_core.feature_dims())["delay_buckets"], dtype=torch.float64)
 
-    n = collections.Counter(); top1 = collections.Counter(); psum = collections.defaultdict(float); top5 = collections.Counter()
-    conf = collections.defaultdict(collections.Counter)
-    delay_abs = collections.defaultdict(float)
-    loc_exact = collections.Counter(); loc_n = collections.Counter(); loc_err = collections.defaultdict(float)
-    sel_tp = collections.Counter(); sel_fp = collections.Counter(); sel_fn = collections.Counter()
-    tu_n = collections.Counter(); tu_hit = collections.Counter()
+    every = Tally()
+    tallies = {c: Tally() for c in CLASSES} if classes is not None else None
     with torch.no_grad():
         while (b := stream.next()) is not None:
             steps = b.lane_steps()
+            lane_cls = None
+            if tallies is not None:
+                ids = b.lane_games()
+                lane_cls = []
+                for l, gid in enumerate(ids):
+                    if steps[l] == 0:
+                        lane_cls.append(None)
+                        continue
+                    if gid not in classes:
+                        raise SystemExit(f"041-R27: hold-out game {gid} has no rush / macro class (--classes)")
+                    lane_cls.append(classes[gid])
+                    tallies[classes[gid]].games.add(gid)
             for gi in range(groups):
                 start, end = gi * g, min((gi + 1) * g, lanes)
                 if all(steps[l] == 0 for l in range(start, end)):
@@ -147,34 +316,33 @@ def score(ckpt_dir: str, datasets: list[str], shards: list[str], backend_name: s
                     hit = ((spred[:, :, None] == slab[:, None, :]) & (slab[:, None, :] != endtok)).any(2) & take
                 rows = ok.nonzero().flatten().tolist()
                 la = lab_a.tolist(); pr = pred.tolist(); bt = better.tolist(); pp = p_lab.tolist(); da = dabs.tolist(); hll = hl.tolist(); sll = sl.tolist()
+                if tallies is not None:
+                    # 041-R27: p(Build_Bunker) and the observation frame of each row (scalar 0 = frame / 86,400).
+                    pb = d["action"][:, bunker_id].float().exp().tolist()
+                    fr = [round(x * FRAME_SCALE) for x in torch.as_tensor(hg["scalar"])[:, 0].tolist()]
                 for r in rows:
                     i = la[r]
-                    n[i] += 1; psum[i] += pp[r]; delay_abs[i] += da[r]
-                    if bt[r] == 0: top1[i] += 1
-                    if bt[r] < 5: top5[i] += 1
-                    if i in key_ids: conf[i][pr[r]] += 1
-                    if hll[r]:
-                        loc_n[i] += 1; loc_err[i] += float(lerr[r]); loc_exact[i] += int(lex[r])
-                    if bool(uses_tu[r]):
-                        tu_n[i] += 1; tu_hit[i] += int(tu_pred[r] == tu_lab[r])
-                    if sll[r] > 0:
-                        tp = int(hit[r].sum()); sel_tp[i] += tp; sel_fp[i] += int(take[r].sum()) - tp; sel_fn[i] += sll[r] - tp
+                    for ta in (every,) if tallies is None else (every, tallies[lane_cls[start + r // t]]):
+                        ta.n[i] += 1; ta.psum[i] += pp[r]; ta.delay_abs[i] += da[r]
+                        if bt[r] == 0: ta.top1[i] += 1
+                        if bt[r] < 5: ta.top5[i] += 1
+                        if i in key_ids: ta.conf[i][pr[r]] += 1
+                        if hll[r]:
+                            ta.loc_n[i] += 1; ta.loc_err[i] += float(lerr[r]); ta.loc_exact[i] += int(lex[r])
+                        if bool(uses_tu[r]):
+                            ta.tu_n[i] += 1; ta.tu_hit[i] += int(tu_pred[r] == tu_lab[r])
+                        if sll[r] > 0:
+                            tp = int(hit[r].sum()); ta.sel_tp[i] += tp; ta.sel_fp[i] += int(take[r].sum()) - tp; ta.sel_fn[i] += sll[r] - tp
+                        if tallies is not None and fr[r] < BUNKER_BEFORE:
+                            ta.add_early(pb[r])
                 if out["win_open"] is not None:
                     stream.decide(b, start, end, t, out["win_open"].float().cpu().numpy())
     stream.finish()
-    total = sum(n.values())
-    rep = []
-    for i, c in sorted(n.items(), key=lambda kv: -kv[1]):
-        prec = sel_tp[i] / max(sel_tp[i] + sel_fp[i], 1); rec = sel_tp[i] / max(sel_tp[i] + sel_fn[i], 1)
-        rep.append({
-            "action": names.get(i, str(i)), "n": c, "share": c / total, "top1": top1[i] / c, "top5": top5[i] / c, "mean_p": psum[i] / c,
-            "delay_mae": delay_abs[i] / c,
-            "loc_n": loc_n[i], "loc_exact": loc_exact[i] / max(loc_n[i], 1), "loc_err": loc_err[i] / max(loc_n[i], 1),
-            "tu_n": tu_n[i], "tu_top1": tu_hit[i] / max(tu_n[i], 1),
-            "sel_f1": (2 * prec * rec / (prec + rec)) if prec + rec > 0 else None, "sel_n": sel_tp[i] + sel_fn[i],
-            "confusion": {names.get(k, str(k)): v for k, v in conf[i].most_common(6)} if i in key_ids else None,
-        })
-    return {"checkpoint": ckpt_dir, "games": stream.games, "steps": total, "backend": backend, "precision": precision, "per_action": rep}
+    res = {"checkpoint": ckpt_dir, "games": stream.games, "steps": sum(every.n.values()), "backend": backend, "precision": precision,
+           "per_action": every.report(names, key_ids)}
+    if tallies is not None:
+        res["by_class"], res["r27"] = class_report(tallies, names, key_ids)
+    return res
 
 
 def print_report(res: dict) -> None:
@@ -187,6 +355,12 @@ def print_report(res: dict) -> None:
     for r in rep:
         if r["confusion"]:
             print(" ", r["action"], r["confusion"])
+    r27 = res.get("r27")
+    if r27:
+        bt = "-" if r27["rush_bunker_top1"] is None else f"{r27['rush_bunker_top1'] * 100:.1f}%"
+        mp = "-" if r27["macro_bunker_p_before_4m"] is None else f"{r27['macro_bunker_p_before_4m']:.4f}"
+        print(f"041-R27: rush-opponent games {r27['rush_games']}: Build_Bunker top-1 {bt} ({r27['rush_bunker_steps']} steps, the bc-mix extension rule input); "
+              f"macro-opponent games {r27['macro_games']}: mean p(Build_Bunker) before 4:00 {mp} ({r27['macro_steps_before_4m']} steps, recorded only)")
 
 
 def main(argv=None) -> None:
@@ -197,12 +371,16 @@ def main(argv=None) -> None:
     ap.add_argument("--shards", nargs="*", default=None, help="score these shard folders instead of a hold-out")
     ap.add_argument("--backend", default="cuda")
     ap.add_argument("--config", default=str(ec.ROOT / "config" / "bc.toml"))
+    ap.add_argument("--classes", default=None,
+                    help="041-R27 rush / macro split: auto (the teacher botgen plans; default for --holdout), none (default for --shards), "
+                         "or a JSON file {replay_sha256: rush|macro}")
     a = ap.parse_args(argv)
     ec.load_env()
     ck = Path(a.checkpoint)
     ck = ck if ck.is_absolute() else ec.shared_dir() / ck
     datasets, shards = ([], a.shards) if a.shards else holdout_dirs(a.holdout)
-    res = score(str(ck), datasets, shards, a.backend, a.config)
+    classes = load_classes(a.classes, None if a.shards else a.holdout)
+    res = score(str(ck), datasets, shards, a.backend, a.config, classes)
     res["holdout"] = "shards" if a.shards else a.holdout
     a.out.write_text(json.dumps(res, indent=1), encoding="utf-8")
     print_report(res)

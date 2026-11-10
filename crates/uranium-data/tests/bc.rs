@@ -759,6 +759,35 @@ fn drained_feeder_covers_every_step_041() {
     }
 }
 
+/// 041-R27: every lane carries its game's replay SHA-256 (the teacher hold-out rush / macro split
+/// keys games by it): a lane's steps per game id add up to that game's steps, every game is seen
+/// once, and a drained lane has an empty id.
+#[test]
+fn batch_lane_game_ids_041_r27() {
+    let mut cfg = tiny_bc(1, 0);
+    cfg.lanes = 3;
+    let games = varied_games();
+    let want: std::collections::BTreeMap<String, usize> = games.iter().map(|g| (g.meta.replay_sha256.clone(), g.steps.len())).collect();
+    let mut f = feeder(&cfg);
+    f.drain = true;
+    let mut src = VecSource(games.into());
+    let mut got = std::collections::BTreeMap::<String, usize>::new();
+    let mut drained = 0;
+    while let Some(b) = f.next_batch(&mut src, None).unwrap() {
+        assert_eq!(b.game_ids.len(), b.lanes());
+        for (l, c) in b.parts().0.iter().enumerate() {
+            if c.is_empty() {
+                assert!(b.game_ids[l].is_empty(), "a drained lane has no game id");
+                drained += 1;
+            } else {
+                *got.entry(b.game_ids[l].clone()).or_default() += c.len();
+            }
+        }
+    }
+    assert_eq!(got, want);
+    assert!(drained > 0, "the last batches drain lanes");
+}
+
 /// Folder with a current-version precompute for the synthetic map hash `none` (B-2).
 fn maps_dir_with_none(tag: &str) -> std::path::PathBuf {
     use uranium_env::features::{MapPrecompute, PRECOMPUTE_VERSION};

@@ -190,6 +190,12 @@ impl Batch {
         self.inner.enemy_races.clone()
     }
 
+    /// 041-R27: per lane, its game's replay SHA-256 (the game identity, 040-R5); empty for a
+    /// drained lane.
+    fn lane_games(&self) -> Vec<String> {
+        self.inner.game_ids.clone()
+    }
+
     /// `bc-eval` label facts per row of `group(start, end, t, ..)`: (has target location,
     /// full selection length) as numpy arrays.
     fn label_extras<'py>(&self, py: Python<'py>, start: usize, end: usize, t: usize) -> (Bound<'py, numpy::PyArray1<bool>>, Bound<'py, numpy::PyArray1<i32>>) {

@@ -1,0 +1,169 @@
+"""041-R27 (AMB-041-16): the teacher hold-out scoring split by opponent class (tools/eval/per_action.py): each game's
+class from the generating plan's games.jsonl and its replay file hash; per-class tallies that add up to the whole
+and match scoring only that class's games; the macro games' mean p(Build_Bunker) before 4:00. CPU, synthetic
+shards (uranium._core with Batch.lane_games)."""
+
+import functools
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools" / "eval"))
+
+import per_action as pa  # noqa: E402
+import per_action_table as pat  # noqa: E402
+
+
+def test_opponent_class_041_r27():
+    for o in ("t0-zerg-rush@0.1.0", "ualbertabot12poollings@558899d-12poollings", "ualbertabot9pool10lings@x", "ualbertabot9poolhydra@x"):
+        assert pa.opponent_class(o) == "rush"
+    for o in ("ualbertabot2hatchhydra@x", "ualbertabot3hatchmuta@x", "steamhammer2hatchmuta@5.3.6-2hatchmuta", "t0-zerg-muta@0.1.0", "t0-zerg@0.1.0"):
+        assert pa.opponent_class(o) == "macro"
+    with pytest.raises(SystemExit, match="neither a rush"):
+        pa.opponent_class("iron@1")
+
+
+def fake_plan(root: Path, folder: str, games: list[tuple[int, str]]) -> dict[str, str]:
+    """A teacher plan folder: games.jsonl rows (game_id, opponent) and replays/g<id>.rep; returns {sha: opponent}."""
+    d = root / folder
+    (d / "replays").mkdir(parents=True)
+    out = {}
+    with open(d / "games.jsonl", "w", encoding="utf-8") as f:
+        for gid, opp in games:
+            f.write(json.dumps({"game_id": gid, "opponent": opp, "outcome": "Finished"}) + "\n")
+            data = f"{folder}/{gid}".encode()
+            (d / "replays" / f"g{gid}.rep").write_bytes(data)
+            out[hashlib.sha256(data).hexdigest()] = opp
+    return out
+
+
+def test_teacher_classes_from_plans_041_r27(tmp_path):
+    raw = tmp_path / "raw"
+    rush = fake_plan(raw, "teacher-1/teacher_botgen_rush", [(1, "t0-zerg-rush@0.1.0"), (2, "ualbertabot9poolhydra@x")])
+    macro = fake_plan(raw, "teacher-1/teacher_botgen_macro", [(1, "t0-zerg@0.1.0")])
+    macro3 = fake_plan(raw, "teacher-3-macro3/teacher_botgen_macro3", [(7, "ualbertabot3hatchmuta@x")])
+    # a games.jsonl row without its replay is skipped
+    with open(raw / "teacher-1/teacher_botgen_macro/games.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps({"game_id": 9, "opponent": "t0-zerg@0.1.0"}) + "\n")
+    cache = tmp_path / "cache" / "classes.json"
+    got = pa.teacher_classes(raw, cache)
+    assert {s: v["class"] for s, v in got.items()} == {**{s: "rush" for s in rush}, **{s: "macro" for s in {**macro, **macro3}}}
+    assert got[next(iter(macro3))] == {"class": "macro", "opponent": "ualbertabot3hatchmuta", "plan": "teacher-3-macro3/teacher_botgen_macro3"}
+    # the cache is reused while games.jsonl is unchanged (a replaced replay is not re-hashed)
+    (raw / "teacher-1/teacher_botgen_rush/replays/g1.rep").write_bytes(b"changed")
+    assert pa.teacher_classes(raw, cache) == got
+    # load_classes: a JSON file of either form
+    f = tmp_path / "c.json"
+    f.write_text(json.dumps({"a": "rush", "b": {"class": "macro"}}), encoding="utf-8")
+    assert pa.load_classes(str(f), None) == {"a": "rush", "b": "macro"}
+    assert pa.load_classes(None, None) is None and pa.load_classes("none", "orig") is None
+    f.write_text(json.dumps({"a": "other"}), encoding="utf-8")
+    with pytest.raises(SystemExit, match="rush / macro"):
+        pa.load_classes(str(f), None)
+
+
+@pytest.fixture
+def scored(tiny_config, tmp_path):
+    """A tiny model and the synthetic `races` shards (15 games of 1..16 steps, enemies Terran / Protoss / Zerg),
+    with the race of each game id read from the stream."""
+    from uranium import _core
+
+    if not hasattr(_core.Batch, "lane_games"):
+        pytest.skip("uranium._core without Batch.lane_games (rebuild the extension)")
+    from test_bc_eval_race import _tiny_make
+
+    shards = tmp_path / "races"
+    _core.write_test_shards(str(shards), "races", 4)
+    out = tmp_path / "out"
+    assert _core.run_bc(functools.partial(_tiny_make, None, None), str(tiny_config), out=str(out), shards=[str(shards)], steps=1, synthetic_maps=True) == "done"
+    race = {}
+    stream = _core.EvalStream(str(tiny_config), [str(shards)], split="train", synthetic_maps=True)
+    while (b := stream.next()) is not None:
+        for gid, r, n in zip(b.lane_games(), b.lane_enemy_races(), b.lane_steps()):
+            if n:
+                race[gid] = r
+    return tiny_config, shards, out / "last", race
+
+
+def run(cfg, shards, ckpt, classes):
+    return pa.score(str(ckpt), [], [str(shards)], "cpu", str(cfg), classes, synthetic_maps=True, split="train")
+
+
+def test_rush_macro_split_041_r27(scored, tmp_path):
+    """Zerg-enemy games as `rush`, the rest `macro`: per-class steps and per-action counts add up to the whole,
+    the overall `per_action` is the same as without the split, and the rush class equals scoring only the Zerg
+    games (games, steps, per-action counts)."""
+    from uranium import _core
+
+    cfg, shards, ckpt, race = scored
+    assert len(race) == 15 and set(race.values()) == {"terran", "protoss", "zerg"}
+    classes = {g: "rush" if r == "zerg" else "macro" for g, r in race.items()}
+    res = run(cfg, shards, ckpt, classes)
+    plain = run(cfg, shards, ckpt, None)
+    assert "by_class" not in plain and "r27" not in plain
+    assert res["per_action"] == plain["per_action"] and res["steps"] == plain["steps"]
+    by = res["by_class"]
+    assert by["rush"]["games"] == sum(1 for c in classes.values() if c == "rush") and by["macro"]["games"] == 15 - by["rush"]["games"]
+    assert by["rush"]["steps"] + by["macro"]["steps"] == res["steps"]
+    whole = {r["action"]: r["n"] for r in res["per_action"]}
+    for a, n in whole.items():
+        assert sum({r["action"]: r["n"] for r in by[c]["per_action"]}.get(a, 0) for c in ("rush", "macro")) == n, a
+    # synthetic frames (0..120) are all before 4:00: every scored step of a class counts
+    assert by["macro"]["bunker_p_before_4m"]["steps"] == by["macro"]["steps"]
+    assert 0.0 <= res["r27"]["macro_bunker_p_before_4m"] <= 1.0
+    assert res["r27"]["macro_games"] == by["macro"]["games"] and res["r27"]["rush_games"] == by["rush"]["games"]
+    # Build_Bunker is not a label of the synthetic games: no rush bunker top-1
+    assert res["r27"]["rush_bunker_top1"] is None and res["r27"]["rush_bunker_steps"] == 0
+
+    only = tmp_path / "only_zerg"
+    _core.write_test_shards(str(only), "races", 4, only_race="zerg")
+    z = run(cfg, only, ckpt, None)
+    assert z["games"] == by["rush"]["games"] and z["steps"] == by["rush"]["steps"]
+    assert {r["action"]: r["n"] for r in z["per_action"]} == {r["action"]: r["n"] for r in by["rush"]["per_action"]}
+
+    # every game must have a class
+    missing = dict(classes)
+    missing.pop(next(iter(missing)))
+    with pytest.raises(SystemExit, match="has no rush / macro class"):
+        run(cfg, shards, ckpt, missing)
+
+
+def test_bunker_before_4m_boundary_041_r27(scored, monkeypatch):
+    """Only steps observed before the boundary count (frame < F; synthetic steps are 8 frames apart from 0)."""
+    cfg, shards, ckpt, race = scored
+    classes = {g: "macro" for g in race}
+    full = run(cfg, shards, ckpt, classes)["by_class"]["macro"]
+    monkeypatch.setattr(pa, "BUNKER_BEFORE", 64)
+    part = run(cfg, shards, ckpt, classes)["by_class"]["macro"]
+    assert part["steps"] == full["steps"] and 0 < part["bunker_p_before_4m"]["steps"] < full["bunker_p_before_4m"]["steps"]
+    monkeypatch.setattr(pa, "BUNKER_BEFORE", 0)
+    none = run(cfg, shards, ckpt, classes)["by_class"]["macro"]["bunker_p_before_4m"]
+    assert none["steps"] == 0 and none["mean_p"] is None
+
+
+def test_per_action_table_r27_rows_041_r27(tmp_path):
+    """per_action_table shows the rush-only bunker top-1 (extension rule input) and its change, and the macro
+    p(bunker) before 4:00; an old column without the split shows '-'."""
+    def col(name, top1, r27):
+        p = tmp_path / f"{name}.json"
+        p.write_text(json.dumps({"steps": 10, "games": 2, "per_action": [{"action": "Build_Bunker", "n": 10, "top1": top1, "loc_n": 0, "tu_n": 0}],
+                                 **({"r27": r27} if r27 else {})}), encoding="utf-8")
+        return f"{name}={p}"
+
+    def r27(t, p):
+        return {"rush_bunker_top1": t, "rush_bunker_steps": 8, "rush_games": 129, "macro_bunker_p_before_4m": p, "macro_steps_before_4m": 900, "macro_games": 117}
+
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        pat.main([col("old", 0.5, None), col("e1", 0.6, r27(0.62, 0.0123)), col("e2", 0.7, r27(0.65, 0.0101))])
+    text = buf.getvalue()
+    assert "Build_Bunker top-1, rush-opponent games (041-R27) | - | 62.0 | 65.0" in text
+    assert "macro mean p(Build_Bunker) < 4:00 (record) | - | 0.0123 | 0.0101" in text
+    assert "041-R27 rush bunker top-1 per column [62.0, 65.0], last change +3.0 %p" in text

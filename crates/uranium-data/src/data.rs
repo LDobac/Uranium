@@ -1161,6 +1161,12 @@ impl GameStream {
         }
     }
 
+    /// The game's identity, the original replay's SHA-256 (040-R5; both views of a TvT game share
+    /// it). Teacher hold-out scoring splits games by it (041-R27: rush / macro opponent games).
+    pub fn replay_sha256(&self) -> &str {
+        &self.game.meta.replay_sha256
+    }
+
     /// Steps not yet produced.
     pub fn remaining(&self) -> usize {
         self.game.steps.len() - self.pos
