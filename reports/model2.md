@@ -105,3 +105,47 @@
 ## 7. 경로 2 측정 결과
 
 (지점별 비교 표는 학습이 진행되며 여기에 덧붙입니다.)
+
+## 8. P2 통합 점검(2026-11-10, master 36b54ae)
+
+모든 P2 단위가 반영된 뒤 §2.7 네 스위치와 §2.8 스위치 전부(bypass, spatial_preact, core_skip, aux_priv, aux_jepa [1, 8, 32])를 켠 전체 크기 모델로 확인했습니다. 산출물은 `<shared>/eval/m2-integration-20261110/`에 있습니다.
+
+### 8.1 사전 예상
+- GPU 그래프·컴파일: 단위별 GPU 테스트가 이미 통과했으므로 모두 켠 조합도 통과할 것으로 봤습니다.
+- 속도: 추가 파라미터는 약 2.6M(032 §6 어림)이고 aux는 학습에서만 돕니다. CUDA update 시간은 기준보다 10% 안쪽으로 늘 것으로 봤습니다.
+- 메모리: 060-R3 예산(학습 프로세스 12 GiB) 안일 것으로 봤습니다. 근거는 지난 측정(BC 최악 모양 GPU 약 1.8~5.8 GiB, RL learner GPU 3.9 GiB·상주 2.6 GiB)입니다.
+
+### 8.2 GPU 테스트(032-AC13, CUDA 호스트)
+- `tests/python/test_model2_gpu.py`, 전체 크기 모델에 모든 스위치를 켰습니다.
+  - 추론 graph act = eager: 70 결정(바깥 갱신 2회), 짝수 결정마다 엔티티가 빈 줄 포함, graph 1개, bf16 비트 일치. 우회로와 core_skip 투영은 0이 아니게 바꿔 두 경로가 출력에 들어가게 했습니다. 통과.
+  - 추론 서버 경로(`URANIUM_INFER_COMPILE` = default를 graph 안에서): graph 1개, 첫 결정 뒤 재컴파일 없음(40 결정), value 차이 최대 4.9e-4. 통과.
+  - BC 학습(`URANIUM_COMPILE=reduce-overhead`와 CUDA 학습 기본값, T64·바깥 구간 2개, aux 손실, 감시 2 update마다): 레인 4·그룹 2, 10 update 동안 컴파일된 frame이 1개 그대로이고(새 batch마다 재컴파일 없음) 손실이 유한합니다. 통과.
+- 발견: 레인 그룹 1개로 컴파일하면 선택 헤드 log-softmax backward 커널 하나에서 ptxas가 10분 넘게 돌고 메모리를 7 GB까지 씁니다. 실제 CUDA 설정(그룹 2)은 cold 컴파일 첫 update가 약 10분이라 기준 모델과 같습니다. 그래서 테스트는 그룹 2로 돌립니다.
+
+### 8.3 CUDA BC 속도(032-R19 ⑤ 참고, CUDA 호스트, bf16, 레인 그룹 2, S1 실데이터 처음 41 update)
+
+| 설정 | s/update 중앙값(p95) | 처음 10개 뺀 중앙값 | 첫 update(cold 컴파일) | 재컴파일 1회 | 최대 GPU | 최대 상주 |
+|---|---|---|---|---|---|---|
+| 기준 `config/bc.toml` | 1.42 (2.69) | 1.44 | 613초 | 107초 | 4.56 GiB | 8.97 GiB |
+| 모두 켬 `config/bc_m2_lambda_base.toml`(λ 0.2·0.1) | 1.49 (2.47) | 1.51 | 626초 | 121초 | 4.62 GiB | 9.19 GiB |
+
+- 모두 켜면 약 5% 느려집니다. 이 PC의 상주 메모리는 `URANIUM_BC_PREFETCH=1`·`URANIUM_BC_PACK_BATCH=1`(이 PC `.env`와 같음) 기준입니다.
+- 어림(재컴파일·검증 시간 제외): λ 비교 run 3,000 update는 run당 약 75분에 컴파일 10~15분을 더해 약 1.5시간입니다. 7개면 약 10~11시간입니다. S1 본학습 39,096 update는 약 16~17시간입니다.
+
+### 8.4 Linux ROCm 호스트 최악 모양 메모리(060-AC7, 첫째 Linux ROCm 호스트, f32)
+
+| 항목 | 모양 | s/update | 최대 GPU | 최대 상주 | 합 | 예산 12 GiB |
+|---|---|---|---|---|---|---|
+| ① BC(모두 켬, aux 손실, optimizer 포함) | 레인 그룹 1 × T64 × N 512(`pad_entities = 512` 사본 설정, 그룹마다 512열 확인, 추가 토큰 2개 자르기 뒤 510 + 2) | 17.9 | 4.05 GiB | 4.27 GiB | 8.3 GiB | 통과 |
+| ② RL learner(모두 켬, aux 손실, KL용 BC 참조 재forward 포함) | 레인 그룹 1 × T64 × 엔티티 512(`bench rl --groups 1 --entities 512:512 --isolate`) | 26.1 | 3.98 GiB | 2.65 GiB | 6.6 GiB | 통과 |
+| 참고: BC 일반 설정(`bc_m2_lambda_base.toml` 그대로) | 실데이터, 그룹 1 | 12.2 | 2.79 GiB | 4.52 GiB | 7.3 GiB | – |
+
+- 절감 설정(재계산 041-R17, 압축 041-R18)은 더 켜지 않았습니다. 이 호스트 `.env`는 재계산 끔(`URANIUM_BC_ENTITY_CHUNK=0`), 압축 켬(`URANIUM_BC_PACK_BATCH=1`)입니다.
+- 상주 메모리는 짧은 측정(4~7 update)의 값입니다. 긴 run에서는 상주가 약 7.4 GiB까지 올랐던 기록이 있습니다(`reports/pytorch_opt.md` 2.17·2.23). 그 값을 넣어도 BC 최악 모양은 4.05 + 7.4 ≈ 11.5 GiB로 예산 안입니다.
+- RL 체크포인트는 모두 켠 구성의 무작위 초기화(`random-m2-allon`, 공용 드라이브 eval 폴더)입니다. RL 설정은 `config/rl.toml`에 `[aux] priv 0.2·jepa 0.1`, `[monitor] spatial_every 100`을 더한 임시 사본입니다.
+- `bench rl`의 합성 batch에 aux 분모 필드가 없어 aux 모델에서 실패하던 문제를 고쳤습니다(벤치 도구만, 모델 변경 없음).
+
+### 8.5 Linux 호스트 재빌드
+- Linux 호스트 세 대를 master 36b54ae로 맞췄습니다(`git pull --ff-only`). release 바이너리를 다시 빌드했고, Python 확장은 학습 venv에 다시 설치했습니다. 브리지·패치는 바뀌지 않아 OpenBW 브리지는 다시 빌드하지 않았습니다.
+- 둘째 Linux ROCm 호스트의 hostd는 지워진 옛 바이너리로 돌고 있어 새 바이너리로 재시작했습니다. Linux 빌드 호스트의 hostd는 디스크의 바이너리와 같아 그대로 뒀습니다. 첫째 Linux ROCm 호스트에서는 hostd가 돌고 있지 않았습니다.
+- 11-09의 `git pull` 'unable to update local ref' 실패는 다시 나지 않았습니다. 첫째 Linux ROCm 호스트의 reflog를 보면 11-09 21:17에 `fetch -q origin`이 origin/master만 옮기고 HEAD는 그대로였습니다. 그래서 같은 저장소에서 fetch 두 개가 동시에 돌아 ref 잠금이 겹친 것으로 봅니다. 남은 잠금 파일은 없고 fsck도 정상입니다. 원격에서 지워진 브랜치의 추적 ref(`tmp/…`·`integ/…` 디렉터리 포함)는 `git remote prune origin`으로 정리했습니다. 커밋 안 된 사용자 작업은 없었습니다. 추적하지 않는 파일은 확장 교체 때 남은 `_core*.so.old-*`뿐입니다.
