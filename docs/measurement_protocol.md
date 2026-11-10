@@ -91,17 +91,18 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
        - 이 보관분의 저그 풀 행에서는 적 최대 관측 수가 늘 1이라 `diag probes`가 건너뛴다. 확인은 그 건너뜀이 났는지만 본다.
      - `human`(사람 TvT·TvP): 적 최대 관측 생산 건물 수(`count|focus_rows`, 배럭·게이트웨이)를 잰다(AMB-050-4). `reports/jepa_survey.md` 10.2.3 방식이다.
        - 데이터: 사람 shard 4개(val500과 같은 `--dataset`)의 val·test에서 각 500게임(032-R17 ② 고정 seed 1). 데이터셋 manifest 지문(2,069 파일)이 다르면 거부한다.
-       - 판 수는 메인 임시 결정(2026-11-10)이다. `diag dump`에 상대 종족 필터가 없어 모든 상대의 1,000게임을 읽는다. val500 종족 비율로 TvT 약 150, TvP 약 500 관점이다(조사의 전체 패스는 497·1,142, 두 체크포인트 약 4.2시간).
+       - 판 수는 사용자 결정이다(사용자 확인 2026-11-10). `diag dump`에 상대 종족 필터가 없어 모든 상대의 1,000게임을 읽는다. val500 종족 비율로 TvT 약 150, TvP 약 500 관점이다(조사의 전체 패스는 497·1,142, 두 체크포인트 약 4.2시간).
        - 설정: 조사의 테란·프로토스 설정(`--act-until 8640 --act-every 4`, `probes --cap 60 --boot 300`), 반사실 pass 없음, ROCm f32, 레인 그룹 4. `probes --races T,P`이고 `count|focus_rows`에 값이 있어야 한다.
-       - 데이터 지문(판·행·활성값 행 수)은 TBD다. 첫 측정 값을 `check-diag`가 NOTE로 출력하면 그 값으로 고정한다.
+       - 데이터 지문(판·행·활성값 행 수)은 TBD다. 첫 측정 값을 `check-diag`가 NOTE로 출력하면 그 값으로 고정한다. 그 전에도 `check-diag`는 옆의 끝난 출력 폴더(`<shared>/artifacts/diag/*/<set>`)와 판·행·활성값 행 수, 과제별 행·판 수를 맞춰 보고 다르면 거부한다(데이터만으로 정해지는 값이라 체크포인트와 무관).
    - `dead_channels`는 그 run의 학습 로그 `sp_*` 기록(041-R25·042-R21)만 쓴다(AMB-050-5). 기록은 update 600부터 그 체크포인트의 update(BC: `ckpt-N` = update N, RL: agent `main`의 로그 전체)까지다.
      - Checkpoint 1 경로 칸은 "재지 않음(학습 기록 없음)"이다. `--lineage ck1`의 `dead_channels`는 거부한다.
      - `diag spatial`은 프로토콜에서 뺐다. 필요하면 따로 쓰는 도구다.
-   - `s1e2` 지점의 진단은 run의 최종 체크포인트(`DONE`이 있고 가장 늦은 `ckpt-N`)만 받는다(AMB-050-6).
+   - `s1e2` 지점의 단서 진단(`cue_diag`)은 run의 최종 체크포인트(`DONE`이 있고 가장 늦은 `ckpt-N`)만 받는다(AMB-050-6). `dead_channels`는 이 제한이 없다.
    - 명령: `python tools/eval/protocol.py diag --lineage m2 --point s1e1 --checkpoint checkpoints/m2-s1/ckpt-N --train-log <BC stderr 로그 | RL train.csv>`가 이 호스트 경로로 명령을 출력만 한다(아무것도 쓰지 않음). Linux ROCm 호스트에서 `--run`을 붙이면 차례로 실행한다. Checkpoint 1 경로는 `--metrics cue_diag`.
      - `--run`은 먼저 `<out>/running.json`을 쓰고, 단계마다 걸린 시간·오류를 남긴다. 덤프는 이 호스트 `<cache>/diag_dump/<run>__<ckpt>/<set>/dump`에 쓰고, 끝나면 `<out>/<set>/dump.part`로 복사한 뒤 이름을 바꾼다(λ 스크립트와 같음).
      - 다 끝나면 `running.json`이 `protocol.json`이 된다. 체크포인트 sha256, git 커밋과 미커밋 측정 파일, backend·정밀도, 보관분, 학습 로그 이름·sha256, 실행한 명령(`python`, `<shared>`·`<cache>` 표기), 단계 기록, 확인 결과가 들어간다.
-     - `protocol.json`이 있는 폴더는 거부한다. 없는 폴더(실패한 시도)는 `<out>.failed-<k>`로, 캐시의 덤프는 `<run>__<ckpt>.failed-<k>`로 이름을 바꿔 남기고 다시 잰다.
+     - `protocol.json`이 있는 폴더는 거부한다. `running.json`에 실패한 단계가 없으면(다른 호스트가 재는 중일 수 있음) 거부하고, 그 호스트가 없어졌으면 `--takeover`로 다시 잰다. 실패한 시도의 폴더는 `<out>.failed-<k>`로, 캐시의 덤프는 `<run>__<ckpt>.failed-<k>`로 이름을 바꿔 남기고 다시 잰다.
+     - 이 호스트 캐시에 지점마다 덤프가 남는다. 교사 덤프는 약 0.4 GB(λ run, `--cf` 없이), 반사실 pass와 사람 1,000게임 덤프의 크기는 첫 측정에서 잰다. 공용 드라이브에도 같은 크기가 복사된다.
      - 출력하는 명령(경로는 실행 호스트 것, `<out>` = `<shared>/artifacts/diag/<run>__<ckpt>`):
        ```
        python -m uranium diag dump --checkpoint <ckpt> --shards <cache>/diag_holdout/hold_orig/botgen --shards <cache>/diag_holdout/hold_macro2/botgen --splits val,test --config config/bc.toml --backend rocm --lanes-per-group 4 --row-until 8640 --act-until 5760 --act-every 1 --core-points gate --cf --cf-starts 'T:1280,2080;P:1720,3030;Z:1800,3240' --out <cache>/diag_dump/<run>__<ckpt>/teacher/dump
@@ -134,13 +135,14 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
      - 체크포인트마다 `protocol.py`의 고정 명령을 돌린다: `python -m uranium bc-eval --dataset replays/shards/stardata --dataset replays/shards/community --dataset replays/shards/scr_ladder --dataset replays/shards/personal --checkpoint <shared>/checkpoints/<run>/ckpt-N --split val --games 500 --seed 1 --backend rocm --config config/bc.toml --out <shared>/artifacts/bc_e2_val/val500/<run>__ckpt-N.json`
      - 2시간 제한(Checkpoint 1 규칙)을 둔다. 호스트가 여럿이면 `<...>.claim` 파일로 나눠 잡는다.
      - 결과 옆 `<...>.protocol.json`에 체크포인트 sha256, git, backend·정밀도, 종료 코드, 시도 번호, `check-bc-eval` 결과를 남긴다. 확인이 어긋나도 기록하고 다음으로 간다.
-     - 실패·시간 초과는 그 시도의 파일을 `<...>.failed-<k>.*`로 바꿔 남기고, 그 체크포인트가 아직 잡을 대상이면 다시 돈다. 체크포인트마다 모두 3번까지다(메인 임시 결정: λ 채점 때 한 ROCm 호스트에서 val500이 3번 죽은 뒤 성공).
+     - 실패·시간 초과·중단(Ctrl-C, 기록 전 오류)은 그 시도의 파일을 `<...>.failed-<k>.*`로 바꿔 남기고(결과 → 로그 → 기록 → claim 순), 그 체크포인트가 아직 잡을 대상이면 다시 돈다. 체크포인트마다 모두 3번까지다(메인 임시 결정: λ 채점 때 한 ROCm 호스트에서 val500이 3번 죽은 뒤 성공).
+     - 기록 없는 claim은 그 채점기가 사라진 것으로 보고(claim에 호스트·pid·시간 제한을 적는다) "stale claim" 기록을 쓴 뒤 같은 방식으로 남기고 다시 돈다(시도 1번으로 센다): 시간 제한 + 15분보다 오래됐거나, 이 호스트의 claim인데 그 프로세스가 없을 때. 기다리는 동안 어느 체크포인트가 어느 호스트에서 도는지 출력한다.
      - 이미 있는 결과는 덮어쓰지 않는다(041-R29 ⑨). 손으로 만든 결과도 잡힌 것으로 본다.
-     - 끝날 때 기준·최종에 종료 코드 0 기록이 없으면 그 목록과 함께 0이 아닌 코드로 끝난다.
+     - 끝날 때 기준·최종에 종료 코드 0 기록이 없으면 그 목록과 함께 0이 아닌 코드로 끝난다. 기록 없이 손으로 만든 결과는 NOTE로 알린다.
      - `--dry-run`은 모든 체크포인트의 명령을 출력만 한다.
    - T0 100판: `python tools/eval/s1e2_loop.py games --run m2-s1e2 --reference ... --hosts tools/eval/hosts.toml --watch --worker "--priority 2 --backend rocm --local-hostd <주소> --hostd <uranium-hostd>"`
      - 체크포인트마다 `protocol.py job --lineage m2 --point s1e2 --metrics t0_100`으로 `<shared>/eval/<run>-games/<run>__ckpt-N/` job을 만든다(`--games-root`로 바꿈). 다른 호스트가 먼저 만든 job은 잡힌 것으로 본다.
-     - 그 job을 이 호스트의 `eval-worker`로 돌리고 `DONE`을 기다린 뒤 다음 체크포인트로 간다. `--worker`가 없으면 job만 만들고, 작업자는 따로 띄운다.
+     - 그 job을 이 호스트의 `eval-worker`로 돌리고 `DONE`을 기다린 뒤 다음 체크포인트로 간다. `--worker`가 없으면 job만 만들고, 작업자는 따로 띄운다. `--worker`가 있으면 다른 호스트가 만든 끝나지 않은 job에도 작업자로 붙는다.
    - 진행: `s1e2_loop.py list --run m2-s1e2 --reference ...`
    - 표: `s1e2_loop.py table --run m2-s1e2 --reference ... [--json] [--md]`
      - val: top-1, 헤드별 NLL(action·delay·selected·target_unit·target_loc), win_open MSE, step 수

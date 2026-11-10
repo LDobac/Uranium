@@ -208,7 +208,7 @@ effect_metrics = ["bunker_any", "marine_sum", "rax2_any", "label_p"]
 
 [metric.cue_diag.human]
 # Human TvT / TvP games (reports/jepa_survey.md 10.2.3 practice: the human shards' val + test splits, the T / P
-# probes). Main-session interim decision 2026-11-10 (game count, reason): `diag dump` has no matchup filter, so
+# probes). Game count: user decision (confirmed 2026-11-10); the reason it was proposed: `diag dump` has no matchup filter, so
 # the set is the fixed-seed shuffle of 032-R17 ② (`--games 500 --seed 1`, the val500 rule) per split, val + test
 # = 1,000 games of every matchup: about 15% TvT and 50% TvP by the val500 race shares (T 161,586 / P 578,841 /
 # Z 359,719 steps), i.e. about 150 TvT and 500 TvP views, against 497 / 1,142 in the survey's full pass
