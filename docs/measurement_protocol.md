@@ -12,6 +12,9 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 | `tools/eval/protocol.py` | job 생성·조건 검사·기록, Checkpoint 1 job 재집계, teacher-forced 명령, 봇 해시 확인, 비교 |
 | `tools/eval/tables.py` | 평가 job 결과 표(러시·운영형·T1·승률) |
 | `tools/eval/per_action.py`, `per_action_table.py` | 교사 보관분 행동별 채점과 표 |
+| `tools/eval/diag_table.py` | 진단(`cue_diag`·`dead_channels`) 출력 폴더의 표 |
+| `tools/eval/spatial_logs.py` | 학습 로그의 죽은 채널 기록(041-R25) 요약 |
+| `tools/eval/s1e2_loop.py` | `s1e2` 체크포인트마다 val 500·T0 100판(041-R20 ③) |
 | `tools/eval/hosts.toml` | 게임 호스트 목록(git 미추적, 예시 `hosts.example.toml`) |
 
 - 명령 스트림은 `uranium-replay cmddump`로 뽑는다(`cargo build --release -p uranium-replay`, 다른 위치면 `.env`의 `URANIUM_REPLAY_BIN`).
@@ -26,7 +29,7 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 | 지표 | 내용 | 고정 조건 |
 |---|---|---|
 | `val500` | 대상 맵 val 500게임 teacher forcing | seed 1, ROCm f32, `config/bc.toml` |
-| `val500_race` | `val500`을 상대 종족별로(050-R10 ②) | `val500`과 같은 실행. bc-eval 출력에 `by_enemy_race`(종족별 step·top-1·NLL)가 있어야 한다. 지금 bc-eval은 이 필드를 쓰지 않으므로 `python/uranium/bc/eval.py`에 추가가 필요하다. 없으면 `check-bc-eval`이 거부한다 |
+| `val500_race` | `val500`을 상대 종족별로(050-R10 ②) | `val500`과 같은 실행. bc-eval 출력의 `by_enemy_race`(종족별 step·top-1·NLL)를 쓴다. 이 필드가 없는 옛 출력은 `check-bc-eval`이 거부한다 |
 | `test` | 대상 맵 test 전체(1,199게임) | CUDA, BC 기준선 |
 | `per_action` | 교사 보관분(2026-11-06 교사 판 val 165게임) 행동별 top-1 | CUDA, `--holdout orig` |
 | `rush` | 050-R6 러시 128판 | seed 목록 45,001…, stochastic, `zero_last_failed` false, 60분 |
@@ -36,7 +39,8 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 | `t0_tp` | T0 표준 테란·프로토스 각 32판(050-R10 ①) | T0 300의 맵 블록마다 첫 16 seed: T 41301–41316·41351–41366, P 41401–41416·41451–41466. stochastic, 60분, true |
 | `t1` | T1 봇 6종 × 50판 | seed_base 46000, BC 계열 true / RL false, NDEBUG 봇, 플랫폼 고정 |
 | `ac1` | 042-AC1 200판 | seed_base 42000(argmax 42200), BC 기준선은 a·b·c 세 plan |
-| `cue_diag`, `dead_channels` | 단서 진단, 죽은 채널 통계 | 다른 작업 단위가 채운다(지금은 자리만) |
+| `cue_diag` | 단서 진단(050-R9): 적 생산 건물 HP의 지점별 ridge R²(h_t까지), 적 최대 관측 수, 반사실 개입 Δ | 교사 보관분 433판(아래), `diag dump --cf` ROCm f32·레인 그룹 4, `probes --races Z --boot 500` gain `resid`, `intervene --races Z` 1:30~4:00 |
+| `dead_channels` | 죽은 채널 통계(032-R25): 층별 `pos`·`dead`, `S8`·`s_pool`의 `const` | 같은 보관분 val, `diag spatial` ROCm f32, 준비 2 + 기록 2 batch, 문턱 1e-4. 041-R25 기록이 있는 run은 학습 로그 요약도 |
 
 - `zero_last_failed`는 plan마다 Checkpoint 1 값 그대로다. 러시·운영형은 BC·RL 모두 false다. TvZ·T1·T0·AC1(a)는 BC 계열이 true다. 그래서 TvZ·T1·AC1은 계열(`bc`/`rl`)마다 plan이 따로 있다.
 - T1은 지점의 Checkpoint 1 상대와 같은 플랫폼에서만 돈다(사용자 결정 2026-11-09). 봇 바이너리가 플랫폼마다 다르기 때문이다.
@@ -74,11 +78,64 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
      - `ck1_outputs` 값은 job 폴더, job 폴더 목록, `{ job, stage }`(job의 한 단계), `{ job, as_plan }`(큰 job 안에서 seed·맵·상대로 찾은 프로토콜 plan의 판) 중 하나다.
      - 예: BC 기준선의 `t0_tp`는 T0 300 job(`bc-e2-final`) 안의 64판(T 12/32, P 5/32), e10의 `tvz`는 T0 100 job의 69~100번 판(18/32), Checkpoint 1의 `t0_tp`는 `jepa-diag-tp-20261109`의 `t0-tp` 단계(T 9/32, P 2/32)다.
      - teacher-forced 값은 기존 출력이다. 행동별 출력 사본은 `<shared>/artifacts/per_action/ck1/`에 있다.
-   - 새로 재는 것: `cue_diag`·`dead_channels`(모든 지점, 다른 작업 단위의 진단 도구)와, 050-R9 지점 표에 있지만 Checkpoint 1이 재지 않은 칸(`ck1_supplement`)이다. 이 칸은 새 경로와 같은 `job`·`bc-eval` 명령에 `--lineage ck1`로 잰다("비교가 필요하면 Checkpoint 1 쪽을 같은 plan으로 보충 측정한다").
+   - 새로 재는 것: `cue_diag`·`dead_channels`(모든 지점, 아래 4)와, 050-R9 지점 표에 있지만 Checkpoint 1이 재지 않은 칸(`ck1_supplement`)이다. 이 칸은 새 경로와 같은 `job`·`bc-eval` 명령에 `--lineage ck1`로 잰다("비교가 필요하면 Checkpoint 1 쪽을 같은 plan으로 보충 측정한다").
      - `s2e2`: `t0_600`(041-AC2 T0 600은 계보 밖 `bc-s2-pt`만 쟀다), `val500_race`
      - `mix-e10`(채택 epoch): `t0_tp`
      - `r1`(Checkpoint 1): `test`, `val500_race`, `per_action`
      - `r2`: `per_action`, `t0_tp`
+4. **진단**(`cue_diag`·`dead_channels`, 모든 지점, 두 경로 모두)
+   - 데이터: 교사 보관분. 2026-11-06 교사 판(`teacher-20261106-a`~`d`)과 `teacher-20261107-macro2`의 val + test, 433판, 모두 TvZ다. Checkpoint 1 진단(`reports/jepa_survey.md` 10.1), U1 대조, λ 선택 run이 쓴 데이터와 같다.
+     - 공용 드라이브 `datasets/replays/shards/botgen`에서 그 파트만 연결한 폴더를 실행 호스트의 `<URANIUM_CACHE_DIR 또는 runs>/diag_holdout/<hold_orig|hold_macro2>/botgen`에 만든다(`per_action.py`의 `orig`와 같은 방식).
+     - shard 파일 수와 지문(파일 이름·크기)이 `lineage.toml`과 다르면 거부한다.
+   - 명령: `python tools/eval/protocol.py diag --lineage m2 --point s1e1 --checkpoint checkpoints/m2-s1/ckpt-N`가 그 호스트 경로로 명령을 출력한다. Linux ROCm 호스트에서 `--run`을 붙이면 차례로 실행한다.
+     - 출력 폴더는 `<shared>/artifacts/diag/<run>__<ckpt>/`다. `dump/`(약 0.4 GB, 반사실 pass 포함), `probes.json`, `intervene.json`, `spatial.json`, `summary.json`(`diag summary`), `protocol.json`이 들어간다.
+     - `protocol.json`에는 체크포인트 sha256, git 커밋과 미커밋 측정 파일, metric별 backend·정밀도, 보관분, 실행한 명령(`<shared>`·`<cache>` 표기)이 남는다.
+     - 출력하는 명령(경로는 실행 호스트 것):
+       ```
+       python -m uranium diag dump --checkpoint <ckpt> --shards <cache>/diag_holdout/hold_orig/botgen --shards <cache>/diag_holdout/hold_macro2/botgen --splits val,test --config config/bc.toml --backend rocm --lanes-per-group 4 --row-until 8640 --act-until 5760 --act-every 1 --core-points gate --cf --cf-starts 'T:1280,2080;P:1720,3030;Z:1800,3240' --out <out>/dump
+       python -m uranium diag probes <out>/dump --races Z --stages token,e_pool,sp_pool,c,x_in,L1.g1,L1.out,h,hc --gain resid --boot 500 --cap 0 --seed 7 --device cpu --out <out>/probes.json
+       python -m uranium diag intervene <out>/dump --races Z --window 2160,5760 --boot 2000 --seed 3 --out <out>/intervene.json
+       python -m uranium diag spatial --checkpoint <ckpt> --shards <...hold_orig/botgen> --shards <...hold_macro2/botgen> --split val --config config/bc.toml --backend rocm --precision f32 --batches 2 --skip-batches 2 --lanes-per-group 4 --const-threshold 0.0001 --out <out>/spatial.json
+       python -m uranium diag summary --point <지점> --probes <out>/probes.json --intervene <out>/intervene.json --spatial <out>/spatial.json --out <out>/summary.json
+       ```
+   - 확인: `python tools/eval/protocol.py check-diag <out> [--checkpoint <ckpt>]`. 다음 중 하나라도 다르면 실패한다.
+     - 덤프: 데이터 폴더, 분할, 설정 파일, backend·정밀도, 레인 그룹, `row_until`·`act_until`·`act_every`, 반사실 pass와 착공 시각, 판 433·행 176,873·활성값 행 36,516(데이터 지문, 모델과 무관), 보고 지점(`token`, `e_pool`, `x_in`, `L1.out`, `h`)의 활성값
+     - probes: 같은 체크포인트, gain 방식·bootstrap·cap·MLP, 종족, 과제별 행·판 수(미완성 풀 17,097행·154판, 토큰 있는 행 36,516행·351판), 보고 지점의 probe
+     - intervene: 같은 체크포인트, 창, 종족
+     - spatial: 데이터 폴더, 분할, batch 수, backend·정밀도, `const` 문턱, 체크포인트 하나, 041-R25 층 17개와 `const` 두 점
+   - 표: `python tools/eval/diag_table.py m2-s1=<out> ck1-s1=<out> ... [--json <파일>] [--md <파일>]`. 폴더마다 먼저 `check-diag`를 하고, 다르면 거부한다.
+     - 단서: 과제(`hp|unf_token`, `start|unf_token`, `start|all_token_rows`, `count|focus_rows`)마다 지점별 ridge R²와 판 bootstrap 95% 구간, h_t MLP(64), 방해 변수만의 R², h_t의 방해 변수 대비 향상
+     - 반사실 개입: 효과(`start`, `start_unf`, `count_sc`, `count_tok`) × 지표(`bunker_any`, `marine_sum`, `rax2_any`, `label_p`)의 평균 차이와 구간
+     - 죽은 채널: 층마다 죽은 채널/채널, s8 양수 비율, `const` S8·`s_pool`
+     - 학습 로그: 폴더에 `spatial_log.json`이 있으면 함께 낸다(아래)
+   - 학습 로그 요약(041-R25 기록이 있는 run): `python tools/eval/spatial_logs.py <BC stderr 로그 | RL train.csv> --checkpoint <ckpt> --out <out>/spatial_log.json`
+     - update 600(경보 시작)부터의 기록으로 층별 최대 죽은 비율, 최대 `const`, 최소 양수 비율, 경보 줄·기록 수, 경보 규칙을 넘은 기록을 낸다.
+     - 채널 수는 체크포인트의 모델 설정(`meta.json`)에서 읽는다. λ run 스크립트에서 옮겼고 `m2-lam-base` 로그에서 같은 값이 나온다.
+   - **한계**: 보관분이 모두 TvZ라 저그 probe만 돈다. 적 최대 관측 수(`count|focus_rows`, 스포닝 풀)는 이 행들에서 늘 1이라 `diag probes`가 건너뛴다("constant target 1"). 050-R9 표의 "적 최대 관측 수" R²는 이 보관분으로는 값이 없다. 확인은 그 건너뜀이 맞게 났는지만 본다.
+   - λ run 출력(`<shared>/eval/m2-lambda-20261110/`)은 반사실 pass 없이 덤프해 `check-diag`를 통과하지 않는다. 실제 pass의 활성값은 `--cf`와 무관하므로 probe 수치는 비교할 수 있다. 반사실 개입 Δ는 그 run들에 없다.
+5. **`s1e2` 체크포인트마다**(041-R20 ③, 050-R9 "`m2-s1e2` 체크포인트마다"): `python tools/eval/s1e2_loop.py`
+   - Checkpoint 1 방식(`reports/m6_bc_eval.md` 4절) 그대로다. 채점기가 빌 때마다 아직 안 잡힌 가장 새 체크포인트를 잡고, 그 사이는 건너뛰고, 최종(run의 `DONE`)은 반드시 잰다. 기준인 S1 최종(`s1e1` 지점, `--reference`)을 먼저 잰다. 학습은 멈추지 않는다.
+   - val 500(Linux ROCm 호스트): `python tools/eval/s1e2_loop.py val --run m2-s1e2 --reference checkpoints/m2-s1/ckpt-N --watch`
+     - 체크포인트마다 `protocol.py`의 고정 명령을 돌린다: `python -m uranium bc-eval --dataset replays/shards/stardata --dataset replays/shards/community --dataset replays/shards/scr_ladder --dataset replays/shards/personal --checkpoint <shared>/checkpoints/<run>/ckpt-N --split val --games 500 --seed 1 --backend rocm --config config/bc.toml --out <shared>/artifacts/bc_e2_val/val500/<run>__ckpt-N.json`
+     - 2시간 제한(Checkpoint 1 규칙)을 둔다. 호스트가 여럿이면 `<...>.claim` 파일로 나눠 잡는다.
+     - 결과 옆 `<...>.protocol.json`에 체크포인트 sha256, git, backend·정밀도, 종료 코드를 남기고, 끝나면 `check-bc-eval`을 한다.
+     - `--dry-run`은 모든 체크포인트의 명령을 출력만 한다.
+   - T0 100판: `python tools/eval/s1e2_loop.py games --run m2-s1e2 --reference ... --hosts tools/eval/hosts.toml --watch --worker "--priority 2 --backend rocm --local-hostd <주소> --hostd <uranium-hostd>"`
+     - 체크포인트마다 `protocol.py job --lineage m2 --point s1e2 --metrics t0_100`으로 `<shared>/eval/<run>-games/<run>__ckpt-N/` job을 만든다(`--games-root`로 바꿈).
+     - 그 job을 이 호스트의 `eval-worker`로 돌리고 `DONE`을 기다린 뒤 다음 체크포인트로 간다. `--worker`가 없으면 job만 만들고, 작업자는 따로 띄운다.
+   - 진행: `s1e2_loop.py list --run m2-s1e2 --reference ...`
+   - 표: `s1e2_loop.py table --run m2-s1e2 --reference ... [--json] [--md]`
+     - val: top-1, 헤드별 NLL(action·delay·selected·target_unit·target_loc), win_open MSE, step 수
+     - T0 100: 종족별 승/패/무, 합계, Wilson 95%
+     - 조건이 고정값과 다른 val 출력과 `verify`에 걸린 job은 표에 MISMATCH로 표시한다.
+   - `cue_diag`·`dead_channels`는 이 반복에 넣지 않았다. `s1e2` 지점의 체크포인트마다 잴지, 최종만 잴지는 정하지 않았다(아래 "정하지 않은 것").
+
+## 정하지 않은 것
+
+- `dead_channels`의 데이터: 050-R9는 "모든 지점에 죽은 채널 통계(032-R25)"를 요구하지만 측정 데이터는 정하지 않았다. Checkpoint 1 경로 run에는 041-R25 학습 기록이 없어서, 학습 로그만으로는 비교할 수 없다. 그래서 체크포인트로 재는 `diag spatial`을 비교 값으로 두었다. 데이터는 단서 진단과 같은 교사 보관분 val, 준비 2 + 기록 2 batch(도구 기본값)로 정했다(메인 확인 필요). U1 대조의 정확한 `diag spatial` 명령은 추적 파일에 없다.
+- `spatial.json`의 기록 행 수는 아직 고정하지 않았다. 첫 측정에서 정해지는 값이다.
+- `s1e2` 체크포인트마다 진단을 할지(위 5).
+- 적 최대 관측 수 R²를 낼 보관분(테란·프로토스 판이 있는 보관분)은 정하지 않았다(위 4 한계).
 
 ## 거부하는 경우
 
@@ -91,6 +148,7 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 - job에 OSS 봇이 있는데, 호스트의 봇 해시를 읽을 수 없거나 `t1_bots.toml`에 없을 때. 호스트 목록에 `local = true`를 주거나, `ssh = "<별칭>"`과 `oss_bots_dir`(그 호스트의 `URANIUM_OSS_BOTS_DIR`)을 주거나, `--bot-hashes <파일>`(`<주소> <봇> <sha256>` 줄)을 준다.
 - 측정 파일(`tools/eval`, `config/plans/protocol`, `config/protocol`)에 커밋 안 된 변경이 있을 때. `--allow-dirty`면 경로와 diff 해시를 `protocol.json`에 기록하고 진행한다. `verify`는 그런 job을 표시한다.
 - git 작업 사본이 아닐 때
+- 진단: `bc-eval`·`job`에 진단 지표를 줄 때(`diag`만), 진단 보관분 shard가 고정 지문과 다를 때, 출력 폴더에 `protocol.json`이 이미 있을 때(측정은 폴더마다 한 번, 다른 폴더는 `--out`), `check-diag`가 다른 설정·데이터·체크포인트를 찾을 때
 - `tables.py`에서 조건이 어떤 프로토콜 plan과도 맞지 않는 단계. `--kind <단계 이름>=<rush|macro|t1|winrate>`를 주면 집계한다.
 
 ## 지표 정의
@@ -129,6 +187,10 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 | `runs/dagger/make_test_job.py`, `runs/mix/make_jobs.py`, `runs/tclone/make_jobs.py` | `protocol.py job` |
 | `runs/mix/per_action.py`, `runs/mix/table.py` | `per_action.py`, `per_action_table.py` |
 | `rl-cmddump` | `uranium-replay cmddump` |
+| λ run `scripts/spatial_logs.py` | `spatial_logs.py`(같은 값) |
+| λ run `scripts/summary.py`의 probe 표·공간 표 | `diag_table.py`(같은 칸, `m2-lam-base` probe 값 같음) |
+| λ run 호스트 스크립트(`worker.sh` 등의 dump·probes 줄) | `protocol.py diag`(설정 같고 `--cf` 추가) |
+| 호스트 `~/e2val/val_watch.sh`, `~/e2games/games_watch.sh`(Checkpoint 1 `s1e2`) | `s1e2_loop.py val`, `games` |
 
 - 예외 1: e10 운영형 `scv_8m ≥ 16`은 `tables.py`로 26이다. Checkpoint 1 리포트의 25는 옛 `macro_table.py`가 40번 판에서 모델 행 대신 모델 정보가 없는 마지막 행을 읽은 값이다(리포트에 정정 주석).
 - 예외 2: 재시도 판.

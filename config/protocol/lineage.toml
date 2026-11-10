@@ -4,8 +4,9 @@
 # refuses a request that differs: another plan, seed list, sampling mode, zero_last_failed or max_frames, a
 # metric outside the point's menu, a plan of the other family, a run without the lineage prefix, T1 / OSS bots
 # that are not the recorded NDEBUG builds (config/protocol/t1_bots.toml), T1 hosts of another platform than the
-# point's Checkpoint 1 counterpart. Paths are relative to the repository (templates) or to URANIUM_SHARED_DIR
-# (checkpoints, ck1_outputs).
+# point's Checkpoint 1 counterpart; and the diagnostics (cue_diag, dead_channels) on another hold-out or with
+# other settings (`protocol.py diag` / `check-diag`). Paths are relative to the repository (templates) or to
+# URANIUM_SHARED_DIR (checkpoints, ck1_outputs, outputs).
 schema = 1
 
 [lineage.ck1]
@@ -123,17 +124,102 @@ kind = "games"
 description = "042-AC1 200 (Fighting Spirit vs T0 zerg; BC baseline a / b / c, RL stochastic + argmax with real last_failed)"
 plans = { bc = ["ac1_stoch_lf0", "ac1_stoch_real", "ac1_argmax_real"], rl = ["ac1_stoch_real", "ac1_argmax_real"] }
 
-# ------------------------------------------------------------------ added by other units (P0 U1)
+# ------------------------------------------------------------------ diagnostics of every point (050-R9 "추가 지표")
+# `python -m uranium diag` (python/uranium/diag) on the teacher hold-out, generated and checked by
+# `protocol.py diag` / `check-diag` (docs/measurement_protocol.md). One output folder per checkpoint
+# (`output`, under URANIUM_SHARED_DIR) holds both metrics, their protocol.json and the `diag summary` JSON.
+#
+# The teacher hold-out: the val + test splits of the 2026-11-06 teacher games and of teacher-20261107-macro2
+# (433 TvZ games), the data of the Checkpoint 1 diagnosis (reports/jepa_survey.md 10.1), the U1 parity
+# (2026-11-09) and the 041-R24 lambda runs (2026-11-10, <shared>/eval/m2-lambda-20261110). Each source is a
+# link tree of the listed parts of <shared>/datasets/replays/shards/botgen under
+# <URANIUM_CACHE_DIR or runs>/diag_holdout/<name>/botgen (as per_action.py `orig`); `files_sha256` = sha256
+# of the sorted "<part>/<file> <bytes>" lines of its shard files (a changed source is refused).
+# Limitation (recorded, no other hold-out): every game is TvZ, so only the Zerg probes run, and the enemy
+# max-seen count target (`count|focus_rows`, the spawning pool) is constant 1 on these rows: `diag probes`
+# skips it ("constant target 1"), as in the U1 parity and the lambda runs. 050-R9 lists that regression
+# ("적 최대 관측 수"); it has no value on this hold-out.
 
 [metric.cue_diag]
-kind = "placeholder"
-description = "cue diagnostics: h_t regression R2 of enemy build cues, counterfactual intervention deltas"
-note = "added by work unit U1 (python/uranium/diag/)"
+kind = "diag_cue"
+description = "050-R9 cue diagnostics: ridge R2 of the enemy production building's HP at the model's stages up to h_t, the enemy max-seen count, counterfactual intervention deltas (diag dump --cf, probes, intervene)"
+splits = ["val", "test"]
+config = "config/bc.toml"
+backend = "rocm"
+output = "artifacts/diag/<run>__<ckpt>"
+holdout = [
+    { name = "hold_orig", source = "datasets/replays/shards/botgen", parts = ["teacher-20261106-a", "teacher-20261106-b", "teacher-20261106-c", "teacher-20261106-d"], files = 20, files_sha256 = "48736f36a5fb464b5ab0e8537c1c7a62970aa591bad10d1fe07998bf2e5c493b" },
+    { name = "hold_macro2", source = "datasets/replays/shards/botgen", parts = ["teacher-20261107-macro2"], files = 5, files_sha256 = "379d41132e47efdac27321760eda2e0f38698d91ea0608f1d3eb9e7157faf6ad" },
+]
+
+[metric.cue_diag.dump]
+# The settings of the lambda runs' dumps (the diag dump defaults, lanes per group 4 for the ROCm hosts' memory)
+# plus `--cf`: 050-R9 asks for the counterfactual intervention deltas, which the lambda runs did not measure.
+# The counterfactual passes keep their own recurrent states; the real pass, its activations and the
+# probes are the same as without --cf.
+lanes_per_group = 4
+row_until = 8640
+act_until = 5760
+act_every = 1
+core_points = "gate"
+cf = true
+# python/uranium/diag/dump.py CF_STARTS (frames: early, late start of the anchor)
+cf_starts = { T = [1280, 2080], P = [1720, 3030], Z = [1800, 3240] }
+# Data fingerprint (counted by the lambda runs' dumps, every model alike: the rows depend on the data only)
+expect_games = 433
+expect_rows = 176873
+expect_act_rows = 36516
+
+[metric.cue_diag.probes]
+# U1 parity / lambda settings: --races Z --boot 500, gain resid, the other diag probes defaults (CPU)
+races = ["Z"]
+stages = ["token", "e_pool", "sp_pool", "c", "x_in", "L1.g1", "L1.out", "h", "hc"]
+gain = "resid"
+boot = 500
+cap = 0
+seed = 7
+# rows / games of the reported tasks on this hold-out (the lambda runs' probes)
+expect_tasks = { "hp|unf_token" = [17097, 154], "start|unf_token" = [17097, 154], "start|all_token_rows" = [36516, 351] }
+# constant on this hold-out (see the limitation above): skipped by diag probes
+expect_skipped = { "count|focus_rows" = "constant target" }
+
+[metric.cue_diag.intervene]
+# diag intervene defaults: window 1:30-4:00 (frames), game bootstrap
+races = ["Z"]
+window = [2160, 5760]
+boot = 2000
+seed = 3
+
+[metric.cue_diag.report]
+# The reported cells (tools/eval/diag_table.py): ridge R2 / gain per stage for the tasks, the h_t MLP(64)
+# value, the nuisance-only ridge; intervention deltas (all classes) of the effects on the metrics.
+stages = ["token", "e_pool", "x_in", "L1.out", "h"]
+tasks = ["hp|unf_token", "start|unf_token", "start|all_token_rows", "count|focus_rows"]
+effects = ["start", "start_unf", "count_sc", "count_tok"]
+effect_metrics = ["bunker_any", "marine_sum", "rax2_any", "label_p"]
 
 [metric.dead_channels]
-kind = "placeholder"
-description = "dead-channel statistics of the spatial encoder and the other stages"
-note = "added by work unit U1 (model/monitor.py)"
+kind = "diag_spatial"
+description = "032-R25 dead-channel statistics of the checkpoint: pos / dead per ReLU output and block output, const S8 / s_pool (diag spatial, a teacher-forced pass on the hold-out); runs trained with [monitor] spatial_every also get the 041-R25 training-log summary (tools/eval/spatial_logs.py)"
+# The same hold-out as cue_diag (its val split, the first warm-up + recorded batches of a fresh stream).
+holdout = "cue_diag"
+split = "val"
+config = "config/bc.toml"
+backend = "rocm"
+# no autocast: f32 (on ROCm the backend's precision is f32 anyway, 032-R8)
+precision = "f32"
+batches = 2
+skip_batches = 2
+lanes_per_group = 4
+const_threshold = 1e-4
+output = "artifacts/diag/<run>__<ckpt>"
+# 041-R25 layer names (uranium.model.monitor SPEC_LAYERS) and the const points, all reported
+layers = ["stem", "c0", "c1", "c2", "c3", "r0", "r1", "r2", "r3", "r4", "r5", "d0", "d1", "d2", "d3", "b0", "b1"]
+
+[metric.dead_channels.train_log]
+# 041-R25 record summary of a run log (BC stderr JSON lines or RL train.csv): records from this update on
+# (the alarm's start, uranium.model.monitor ALARM_FROM)
+from_update = 600
 
 # ------------------------------------------------------------------ plan templates (config/plans/protocol/)
 # conditions_sha256 = sha256 of the plan with defaults filled in, the name dropped and every model checkpoint
