@@ -116,15 +116,15 @@
 - 메모리: 060-R3 예산(학습 프로세스 12 GiB) 안일 것으로 봤습니다. 근거는 지난 측정(BC 최악 모양 GPU 약 1.8~5.8 GiB, RL learner GPU 3.9 GiB·상주 2.6 GiB)입니다.
 
 ### 8.2 GPU 테스트(032-AC13, CUDA 호스트)
-- `tests/python/test_model2_gpu.py`, 전체 크기 모델에 모든 스위치를 켰습니다.
+- `tests/python/test_model2_gpu.py`, 전체 크기 모델에 모든 스위치를 켰습니다. 장치 테스트 3개는 `gpu` 표시가 붙어 있고, 설정이 `bc_m2_lambda_base.toml`의 `[model]`과 같은지 보는 테스트는 CPU에서 돕니다. 실행 출력은 `<shared>/eval/m2-integration-20261110/scratch/gpu_test_*.log`에 있습니다(두 테스트가 찍은 값 포함).
   - 추론 graph act = eager: 70 결정(바깥 갱신 2회), 짝수 결정마다 엔티티가 빈 줄 포함, graph 1개, bf16 비트 일치. 우회로와 core_skip 투영은 0이 아니게 바꿔 두 경로가 출력에 들어가게 했습니다. 통과.
-  - 추론 서버 경로(`URANIUM_INFER_COMPILE` = default를 graph 안에서): graph 1개, 첫 결정 뒤 재컴파일 없음(40 결정), value 차이 최대 4.9e-4. 통과.
-  - BC 학습(`URANIUM_COMPILE=reduce-overhead`와 CUDA 학습 기본값, T64·바깥 구간 2개, aux 손실, 감시 2 update마다): 레인 4·그룹 2, 10 update 동안 컴파일된 frame이 1개 그대로이고(새 batch마다 재컴파일 없음) 손실이 유한합니다. 통과.
+  - 추론 서버 경로(`URANIUM_INFER_COMPILE` = default를 graph 안에서): 테스트 판정은 graph 1개, 첫 결정 뒤 재컴파일 없음(40 결정, 컴파일된 frame 수가 첫 결정 때와 같음), value 차이 5e-2 미만입니다. 실측 출력은 frame 1개 그대로, value 차이 최대 4.9e-4입니다. 통과.
+  - BC 학습(`URANIUM_COMPILE=reduce-overhead`와 CUDA 학습 기본값, T64·바깥 구간 2개, aux 손실, 감시 2 update마다): 레인 4·그룹 2. 테스트 판정은 10 update 중 마지막 5 update 동안 재컴파일 없음(컴파일된 frame 수가 같음), 손실·aux 손실이 유한함, 감시 열이 2 update마다 나옴입니다. 실측 출력은 10 update 내내 frame 1개였습니다(합성 shard는 모양이 하나라 이 실행에서는 모양 변화도 없었음). 통과. 출력 로그는 리뷰 반영(설정을 `[aux]`·`[monitor]` 표로, `URANIUM_BC_MICRO_LANES=2`) 전 실행의 것이고, 반영 뒤에는 이 PC GPU가 λ run을 학습 중이라 GPU 테스트를 다시 돌리지 않았습니다.
 - 발견: 레인 그룹 1개로 컴파일하면 선택 헤드 log-softmax backward 커널 하나에서 ptxas가 10분 넘게 돌고 메모리를 7 GB까지 씁니다. 실제 CUDA 설정(그룹 2)은 cold 컴파일 첫 update가 약 10분이라 기준 모델과 같습니다. 그래서 테스트는 그룹 2로 돌립니다.
 
 ### 8.3 CUDA BC 속도(032-R19 ⑤ 참고, CUDA 호스트, bf16, 레인 그룹 2, S1 실데이터 처음 41 update)
 
-| 설정 | s/update 중앙값(p95) | 처음 10개 뺀 중앙값 | 첫 update(cold 컴파일) | 재컴파일 1회 | 최대 GPU | 최대 상주 |
+| 설정 | s/update 중앙값(p95) | cold 컴파일 update와 그 뒤 10개 뺀 중앙값 | 첫 update(cold 컴파일) | 재컴파일 1회 | 최대 GPU | 최대 상주 |
 |---|---|---|---|---|---|---|
 | 기준 `config/bc.toml` | 1.42 (2.69) | 1.44 | 613초 | 107초 | 4.56 GiB | 8.97 GiB |
 | 모두 켬 `config/bc_m2_lambda_base.toml`(λ 0.2·0.1) | 1.49 (2.47) | 1.51 | 626초 | 121초 | 4.62 GiB | 9.19 GiB |
@@ -136,13 +136,14 @@
 
 | 항목 | 모양 | s/update | 최대 GPU | 최대 상주 | 합 | 예산 12 GiB |
 |---|---|---|---|---|---|---|
-| ① BC(모두 켬, aux 손실, optimizer 포함) | 레인 그룹 1 × T64 × N 512(`pad_entities = 512` 사본 설정, 그룹마다 512열 확인, 추가 토큰 2개 자르기 뒤 510 + 2) | 17.9 | 4.05 GiB | 4.27 GiB | 8.3 GiB | 통과 |
+| ① BC(모두 켬, aux 손실, optimizer 포함) | 레인 그룹 1 × T64 × N 512(`pad_entities = 512` 사본 설정 `<shared>/eval/m2-integration-20261110/scratch/bc_m2_worst.toml`, 그룹마다 512열 확인 `<shared>/eval/m2-integration-20261110/scratch/ncheck_bc_m2_worst.txt`, 추가 토큰 2개 자르기 뒤 510 + 2) | 17.9 | 4.05 GiB | 4.27 GiB | 8.3 GiB | 통과 |
 | ② RL learner(모두 켬, aux 손실, KL용 BC 참조 재forward 포함) | 레인 그룹 1 × T64 × 엔티티 512(`bench rl --groups 1 --entities 512:512 --isolate`) | 26.1 | 3.98 GiB | 2.65 GiB | 6.6 GiB | 통과 |
 | 참고: BC 일반 설정(`bc_m2_lambda_base.toml` 그대로) | 실데이터, 그룹 1 | 12.2 | 2.79 GiB | 4.52 GiB | 7.3 GiB | – |
 
 - 절감 설정(재계산 041-R17, 압축 041-R18)은 더 켜지 않았습니다. 이 호스트 `.env`는 재계산 끔(`URANIUM_BC_ENTITY_CHUNK=0`), 압축 켬(`URANIUM_BC_PACK_BATCH=1`)입니다.
 - 상주 메모리는 짧은 측정(4~7 update)의 값입니다. 긴 run에서는 상주가 약 7.4 GiB까지 올랐던 기록이 있습니다(`reports/pytorch_opt.md` 2.17·2.23). 그 값을 넣어도 BC 최악 모양은 4.05 + 7.4 ≈ 11.5 GiB로 예산 안입니다.
-- RL 체크포인트는 모두 켠 구성의 무작위 초기화(`random-m2-allon`, 공용 드라이브 eval 폴더)입니다. RL 설정은 `config/rl.toml`에 `[aux] priv 0.2·jepa 0.1`, `[monitor] spatial_every 100`을 더한 임시 사본입니다.
+- RL 체크포인트는 모두 켠 구성의 무작위 초기화(`<shared>/eval/m2-integration-20261110/random-m2-allon`, 만든 스크립트 `<shared>/eval/m2-integration-20261110/scratch/m2int_ckpt.py`)입니다. RL 설정은 `config/rl.toml`에 `[aux] priv 0.2·jepa 0.1`, `[monitor] spatial_every 100`을 더한 임시 사본(`<shared>/eval/m2-integration-20261110/scratch/rl_m2_aux.toml`)입니다.
+- 실행 스크립트와 로그: `<shared>/eval/m2-integration-20261110/scratch/m2int_rocm_bc.sh`·`rocm_bc.log`(BC 최악 모양과 일반 설정), `m2int_rocm_rl.sh`·`rocm_rl.log`(RL, 고친 `bench/rl.py`를 `PYTHONPATH` 사본으로 사용), `cuda_bc.sh`(8.3절). 결과 표는 `<shared>/eval/m2-integration-20261110/rocm_*.md`·`.json`, `cuda_bc_*.md`·`.json`입니다.
 - `bench rl`의 합성 batch에 aux 분모 필드가 없어 aux 모델에서 실패하던 문제를 고쳤습니다(벤치 도구만, 모델 변경 없음).
 
 ### 8.5 Linux 호스트 재빌드
