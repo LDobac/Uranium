@@ -308,7 +308,7 @@ def main(argv=None) -> None:
     ap.add_argument("--kind", action="append", default=[], help="<stage name>=<rush|macro|t1|winrate> for a plan outside the protocol")
     a = ap.parse_args(argv)
     ec.load_env()
-    cache = a.cache or Path(os.environ.get("URANIUM_CACHE_DIR") or ec.ROOT / "runs") / "eval_cmddump"
+    cache = a.cache or ec.cache_dir() / "eval_cmddump"
     override = dict(k.split("=", 1) for k in a.kind)
     lin = protocol.load_lineage()
     res = {}

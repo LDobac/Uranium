@@ -63,7 +63,7 @@ def holdout_dirs(holdout: str) -> tuple[list[str], list[str]]:
         return ["replays/shards/botgen"], []
     if holdout == "orig":
         src = ec.shared_dir() / "datasets" / "replays" / "shards" / "botgen"
-        work = Path(os.environ.get("URANIUM_CACHE_DIR") or ec.ROOT / "runs") / "per_action_holdout" / "botgen"
+        work = ec.cache_dir() / "per_action_holdout" / "botgen"
         return [], [str(link_tree(src, ORIG, work))]
     raise SystemExit(f"unknown --holdout {holdout}")
 

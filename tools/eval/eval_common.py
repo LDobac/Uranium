@@ -64,6 +64,12 @@ def shared_dir() -> Path:
     return Path(v)
 
 
+def cache_dir() -> Path:
+    """This host's working cache: URANIUM_CACHE_DIR, else runs/ of this checkout (git-ignored)."""
+    load_env()
+    return Path(os.environ.get("URANIUM_CACHE_DIR") or ROOT / "runs")
+
+
 def replay_bin() -> Path:
     """`uranium-replay` (its `cmddump` subcommand): URANIUM_REPLAY_BIN, else target/release of this checkout."""
     load_env()

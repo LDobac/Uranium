@@ -4,7 +4,11 @@ every checkpoint of the run gets val 500 (the protocol's `val500`, Linux ROCm ho
 did it (reports/m6_bc_eval.md 4: `~/e2val/val_watch.sh`, `~/e2games/games_watch.sh`): each scorer takes the
 newest checkpoint not taken yet when it is free, skips the ones in between, always takes the final one
 (the run's DONE), never stops the run; val runs have a 2-hour limit (the Checkpoint 1 rule after a hung
-run). Commands and jobs come from tools/eval/protocol.py (same refusals).
+run). A failed or timed-out val run is kept as <name>.failed-<k>.* and run again while it is still the
+checkpoint to take, up to VAL_ATTEMPTS in all; `val` exits non-zero when the reference or the final one has
+no return-code-0 record. An existing output is never overwritten. The cue diagnostics of the point run at the
+final checkpoint only (AMB-050-6, `protocol.py diag`). Commands and jobs come from tools/eval/protocol.py
+(same refusals).
 
     python tools/eval/s1e2_loop.py list   --run m2-s1e2 [--reference checkpoints/m2-s1/ckpt-N]
     python tools/eval/s1e2_loop.py val    --run m2-s1e2 [--reference ...] [--watch] [--dry-run]
@@ -24,7 +28,6 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
-import os
 import re
 import shlex
 import socket
@@ -41,6 +44,11 @@ LINEAGE = "m2"
 POINT, REF_POINT = "s1e2", "s1e1"
 VAL_METRIC, GAME_METRIC = "val500", "t0_100"
 VAL_TIMEOUT_S = 7200  # reports/m6_bc_eval.md 4: "이후 채점마다 2시간 제한을 걸었다"
+# val attempts per checkpoint (041-R20 ③ "최종 체크포인트는 반드시 한다"): a failed or timed-out run is kept
+# as <name>.failed-<k>.* and run again while the checkpoint is still the one to take, up to this many in
+# all (main-session interim decision 2026-11-10: val500 crashed 3 times on one ROCm host before succeeding
+# in the lambda scoring, <shared>/eval/m2-lambda-20261110/claims/worker.log).
+VAL_ATTEMPTS = 3
 CKPT_RE = re.compile(r"^ckpt-(\d+)$")
 
 
@@ -59,23 +67,30 @@ def run_done(shared: Path, run: str) -> bool:
     return (shared / "checkpoints" / run / "DONE").is_file()
 
 
-def name_of(checkpoint: str) -> str:
-    return protocol.diag_name(checkpoint)
+def output_name(checkpoint: str) -> str:
+    return protocol.output_name(checkpoint)
 
 
 def val_out(lin: dict, shared: Path, checkpoint: str) -> Path:
-    run, ck = name_of(checkpoint).split("__", 1)
+    run, ck = output_name(checkpoint).split("__", 1)
     return shared / lin["metric"][VAL_METRIC]["output"].replace("<run>", run).replace("<ckpt>", ck)
 
 
 def game_job(shared: Path, root: str, checkpoint: str) -> Path:
-    return shared / root / name_of(checkpoint)
+    return shared / root / output_name(checkpoint)
 
 
 def targets(a, shared: Path) -> list[tuple[str, str]]:
     """(point, checkpoint) of the reference (first) and of the run's checkpoints."""
     out = [(REF_POINT, a.reference.replace("\\", "/"))] if a.reference else []
     return out + [(POINT, c) for c in checkpoints(shared, a.run)]
+
+
+def required(items: list[tuple[str, str]], done: bool) -> list[str]:
+    """The checkpoints that must have a result: the reference, and the final one once the run is done."""
+    out = [c for p, c in items if p == REF_POINT]
+    run_items = [c for p, c in items if p == POINT]
+    return out + (run_items[-1:] if done else [])
 
 
 def pick(items: list[tuple[str, str]], taken) -> tuple[str, str] | None:
@@ -107,6 +122,41 @@ def now() -> str:
 # ---------------------------------------------------------------- val 500
 
 
+def val_files(out: Path) -> dict[str, Path]:
+    return {"claim": out.with_suffix(".claim"), "record": out.with_suffix(".protocol.json"), "log": out.with_suffix(".log"), "out": out}
+
+
+def failed_attempts(out: Path) -> int:
+    return len(list(out.parent.glob(f"{out.stem}.failed-*.protocol.json")))
+
+
+def val_record(out: Path) -> dict | None:
+    f = val_files(out)["record"]
+    return json.loads(f.read_text(encoding="utf-8")) if f.is_file() else None
+
+
+def val_state(out: Path) -> str:
+    """done (a run with return code 0), running (claimed, no record yet: here or on another host), failed
+    (a record with another return code, not yet set aside), gave_up (VAL_ATTEMPTS failed attempts), open."""
+    rec = val_record(out)
+    if rec is not None:
+        return "done" if rec.get("returncode") == 0 else "failed"
+    if out.is_file():
+        return "done"  # an output without a record (made by hand): never overwritten (041-R29 ⑨)
+    if val_files(out)["claim"].exists():
+        return "running"
+    return "gave_up" if failed_attempts(out) >= VAL_ATTEMPTS else "open"
+
+
+def set_aside(out: Path) -> int:
+    """A failed attempt's files renamed to <name>.failed-<k>.* (kept, never deleted); returns k."""
+    k = failed_attempts(out) + 1
+    for kind, f in val_files(out).items():
+        if f.exists():
+            f.rename(f.with_name(f"{out.stem}.failed-{k}{''.join(f.suffixes)}" if kind != "out" else f"{out.stem}.failed-{k}{out.suffix}"))
+    return k
+
+
 def score_val(lin: dict, shared: Path, pt_id: str, checkpoint: str, dry: bool, timeout_s: int) -> bool:
     pt = protocol.point(lin, pt_id)
     protocol.check_new_measurement(lin, LINEAGE, VAL_METRIC, pt)
@@ -117,54 +167,70 @@ def score_val(lin: dict, shared: Path, pt_id: str, checkpoint: str, dry: bool, t
     if dry:
         print(" ".join(cmd))
         return True
-    if not claim(out.with_suffix(".claim")):
+    if out.exists():
+        raise protocol.Refused(f"{out} exists (an output is never overwritten, 041-R29 ⑨)")
+    files = val_files(out)
+    if not claim(files["claim"]):
         return False
-    git = protocol.git_state()
     rec = {"protocol": "config/protocol/lineage.toml (050-R9)", "lineage": LINEAGE, "point": pt_id, "metric": VAL_METRIC, "checkpoint": checkpoint,
            "checkpoint_sha256": protocol.checkpoint_sha256(checkpoint), "backend": m["backend"], "precision": protocol.PRECISION[m["backend"]],
-           "git": git, "command": protocol.redact_cmd(cmd, {"<shared>": shared}), "started": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}
-    print(f"{now()} start val500 {name_of(checkpoint)}", flush=True)
+           "git": protocol.git_state(), "command": protocol.redact_cmd(["python", *cmd[1:]], {"<shared>": shared}),
+           "attempt": failed_attempts(out) + 1, "started": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}
+    print(f"{now()} start val500 {output_name(checkpoint)} (attempt {rec['attempt']})", flush=True)
     t0 = time.time()
-    log = out.with_suffix(".log")
     try:
-        with log.open("w", encoding="utf-8") as fh:
+        with files["log"].open("w", encoding="utf-8") as fh:
             p = subprocess.run(cmd, cwd=protocol.ROOT, stdout=subprocess.DEVNULL, stderr=fh, timeout=timeout_s)
         rc = p.returncode
     except subprocess.TimeoutExpired:
         rc = "timeout"
     rec |= {"returncode": rc, "secs": round(time.time() - t0)}
-    out.with_suffix(".protocol.json").write_text(json.dumps(rec, indent=1), encoding="utf-8")
-    print(f"{now()} end val500 {name_of(checkpoint)} rc={rc} secs={rec['secs']}", flush=True)
     if rc == 0:
-        protocol.main(["check-bc-eval", str(out), "--metric", VAL_METRIC])
+        try:
+            protocol.main(["check-bc-eval", str(out), "--metric", VAL_METRIC])
+            rec["check"] = "ok"
+        except SystemExit as e:  # recorded; the loop goes on (a mismatch is not fixed by running again)
+            rec["check"] = str(e.code)
+    files["record"].write_text(json.dumps(rec, indent=1), encoding="utf-8")
+    print(f"{now()} end val500 {output_name(checkpoint)} rc={rc} secs={rec['secs']}" + (f" check: {rec['check']}" if "check" in rec else ""), flush=True)
+    if rc != 0:
+        k = set_aside(out)
+        print(f"{now()} val500 {output_name(checkpoint)}: attempt kept as .failed-{k} ({VAL_ATTEMPTS - k} more allowed)", flush=True)
     return True
 
 
 def cmd_val(a) -> None:
     lin = protocol.load_lineage()
     shared = ec.shared_dir()
-    taken = (lambda c: False) if a.dry_run else (lambda c: val_out(lin, shared, c).with_suffix(".claim").exists())
+    out_of = lambda c: val_out(lin, shared, c)  # noqa: E731
+    taken = (lambda c: False) if a.dry_run else (lambda c: val_state(out_of(c)) != "open")
     while True:
         done = run_done(shared, a.run)  # read before picking: the final checkpoint is never missed
         items = targets(a, shared)
-        nxt = pick(items, taken)
         if a.dry_run:
             for pt_id, c in items:
                 score_val(lin, shared, pt_id, c, True, a.timeout_s)
             return
+        nxt = pick(items, taken)
         if nxt is not None:
             score_val(lin, shared, *nxt, False, a.timeout_s)
             continue
-        if not a.watch or done:
-            print(f"{now()} val500: nothing left" + (" (run done)" if done else ""), flush=True)
-            return
-        time.sleep(a.poll_s)
+        need = {c: val_state(out_of(c)) for c in required(items, done)}
+        if a.watch and (not done or "running" in need.values()):
+            time.sleep(a.poll_s)
+            continue
+        bad = {c: s for c, s in need.items() if s != "done" or (val_record(out_of(c)) or {}).get("returncode", 0) != 0}
+        print(f"{now()} val500: nothing left" + (" (run done)" if done else ""), flush=True)
+        if bad:
+            raise SystemExit("val500 without a return-code-0 record: " + ", ".join(f"{c} ({s})" for c, s in bad.items()))
+        return
 
 
 # ---------------------------------------------------------------- T0 100
 
 
-def make_job(lin: dict, shared: Path, a, pt_id: str, checkpoint: str) -> Path:
+def make_job(lin: dict, shared: Path, a, pt_id: str, checkpoint: str) -> Path | None:
+    """The checkpoint's T0 100 job (protocol.py job); None when another host made it first."""
     job = game_job(shared, a.games_root, checkpoint)
     args = ["job", "--lineage", LINEAGE, "--point", pt_id, "--checkpoint", checkpoint, "--metrics", GAME_METRIC, "--job", job.name,
             "--label", job.name, "--hosts", a.hosts, "--out-root", str(job.parent)]
@@ -172,7 +238,11 @@ def make_job(lin: dict, shared: Path, a, pt_id: str, checkpoint: str) -> Path:
         args.append("--allow-dirty")
     if a.dry_run:
         args.append("--dry-run")
-    protocol.main(args)
+    try:
+        protocol.main(args)
+    except FileExistsError:
+        print(f"{now()} {job.name}: the job exists (made by another host)", flush=True)
+        return None
     return job
 
 
@@ -180,11 +250,11 @@ def play(job: Path, shared: Path, worker: str | None, poll_s: int) -> None:
     rel = job.relative_to(shared).as_posix()
     if worker is not None:
         cmd = [sys.executable, "-m", "uranium", "eval-worker", "--job", rel, *shlex.split(worker)]
-        print(f"{now()} start games {job.name}: {' '.join(cmd[1:])}", flush=True)
+        print(f"{now()} start games {job.name}: {' '.join(['python', *cmd[1:]])}", flush=True)
         subprocess.run(cmd, cwd=protocol.ROOT)
-    while not (job / "DONE").is_file():
-        if worker is not None:
+        if not (job / "DONE").is_file():
             print(f"{now()} {job.name}: worker ended before DONE; waiting for other workers", flush=True)
+    while not (job / "DONE").is_file():
         time.sleep(poll_s)
     print(f"{now()} end games {job.name}", flush=True)
 
@@ -203,7 +273,9 @@ def cmd_games(a) -> None:
             return
         nxt = pick(items, taken)
         if nxt is not None:
-            play(make_job(lin, shared, a, *nxt), shared, a.worker, a.poll_s)
+            job = make_job(lin, shared, a, *nxt)
+            if job is not None:
+                play(job, shared, a.worker, a.poll_s)
             continue
         if not a.watch or done:
             print(f"{now()} games: nothing left" + (" (run done)" if done else ""), flush=True)
@@ -221,10 +293,10 @@ def cmd_list(a) -> None:
     print(f"run {a.run}: {'done' if run_done(shared, a.run) else 'training'}")
     for pt_id, c in targets(a, shared):
         v = val_out(lin, shared, c)
-        vs = "scored" if v.is_file() else "claimed" if v.with_suffix(".claim").exists() else "-"
+        vs = val_state(v) + (f" ({failed_attempts(v)} failed)" if failed_attempts(v) else "")
         j = game_job(shared, root, c)
         gs = "done" if (j / "DONE").is_file() else "job" if j.exists() else "-"
-        print(f"{pt_id:5} {c:44} val500 {vs:8} t0_100 {gs}")
+        print(f"{pt_id:5} {c:44} val500 {vs:20} t0_100 {gs}")
 
 
 VAL_COLS = (("top-1", lambda v: f"{v['action_top1'] * 100:.2f}%"), ("NLL action", lambda v: f"{v['nll']['action']:.3f}"),
@@ -237,8 +309,7 @@ RACES = ("terran", "protoss", "zerg")
 def collect(lin: dict, shared: Path, a) -> list[dict]:
     import tables
 
-    ec.load_env()
-    cache = Path(os.environ.get("URANIUM_CACHE_DIR") or protocol.ROOT / "runs") / "eval_cmddump"
+    cache = ec.cache_dir() / "eval_cmddump"
     root = a.games_root or f"eval/{a.run}-games"
     rows = []
     for pt_id, c in targets(a, shared):
