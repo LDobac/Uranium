@@ -225,6 +225,8 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
   - `by_class.rush`·`by_class.macro`: 판 수, step, 행동별 행, `bunker_p_before_4m`
   - `r27.rush_bunker_top1`: 혼합 연장 규칙(041-R21 ⑥)의 벙커 top-1. 경로 2부터 러시 상대 판에서만 센다.
   - `r27.macro_bunker_p_before_4m`: 운영형 판에서 4:00 전(관측 프레임 < 5,760) 채점 step의 p(Build_Bunker) 평균. 기록만 한다.
+    - 이 값은 `full` 보관분의 운영형 117판으로 잰다(메인 임시 결정 2026-11-10, `orig`만이면 36판). `--holdout orig`이면 나머지 botgen 파트(macro2·macro3)를 이 값만을 위해 한 번 더 채점한다. `r27.macro_holdout`에 범위를 적는다.
+    - 그 밖의 값(`per_action`, `by_class`, 러시 벙커 top-1)은 채점한 보관분(프로토콜 값 `orig`) 그대로다.
 - `per_action_table.py`는 나눈 출력이면 러시 벙커 top-1과 열 사이 변화, 운영형 p(벙커)를 행으로 더한다. 나누지 않은 열은 `-`다.
 - Checkpoint 1 경로의 `bc-mix` 벙커 top-1은 러시·운영형을 합친 보관분 값이다. 경로 2와 비교할 때 정의 차이를 표에 적는다.
 - `uranium._core`의 `Batch.lane_games`(판의 `replay_sha256`)가 필요하다. 이 변경 이후로 빌드한 확장이어야 한다.
@@ -233,16 +235,16 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 
 - 명령: `python tools/eval/regression_gate.py --baseline-val <m2-s2e2 val500 json> --candidate-val <지점 val500 json> --baseline-games <m2-s2e2 t0_tp job> --candidate-games <지점 t0_tp job> [--json <파일>]`
 - 입력
-  - val500 출력: `protocol.py bc-eval --metric val500_race`가 내는 명령으로 돌린다. 이 명령에 `--bunker-before 5760`이 들어 있다. 이 옵션은 `bunker_before` 필드만 더하고 나머지 출력은 같다.
+  - val500 출력: `protocol.py bc-eval --metric val500_race`(또는 `val500`, 같은 출력 파일)가 내는 명령으로 돌린다. 이 명령에 `--bunker-before 5760`이 들어 있다. 이 옵션은 `bunker_before` 필드만 더하고 나머지 출력은 같다. `check-bc-eval`은 이 필드가 없으면 경고한다(3a가 MISSING).
   - 게임: 프로토콜 plan `t0_tp` 단계가 있는 평가 job. 명령 스트림은 `tables.py`처럼 `uranium-replay cmddump`로 뽑는다.
 - 검사(문턱은 AMB-050-3 결정, 경계는 통과)
 
 | 검사 | 내용 | 통과 |
 |---|---|---|
 | 1 | T0 표준 테란·프로토스 각 32판 승률(승 / 유효 판, 무승부는 승 아님, 상대 크래시 판 무효) | 기준선 승률 이상 |
-| 2 | val500 상대 종족별 action top-1, action NLL(`nll.action`) | top-1 ≥ 기준선 − 0.5%p, NLL ≤ 기준선 + 0.01 |
-| 3a | 사람 TvT·TvP val 판의 4:00 전 p(Build_Bunker) 평균(teacher forcing) | 기준선 이하 |
+| 2 | val500 상대 종족별 action top-1, 행동 종류 NLL(`nll.action`, 사용자 확인 2026-11-10) | top-1 ≥ 기준선 − 0.5%p, NLL ≤ 기준선 + 0.01 |
+| 3a | 사람 TvT·TvP val 판의 4:00 전 p(Build_Bunker) step 평균(teacher forcing, step 평균은 메인 임시 결정 2026-11-10) | 기준선 이하 |
 | 3b | T0 테란·프로토스 판의 `bunker_order_4m`·`bunker_unit_4m` 비율 | 기준선 이하 |
 
-- 판정은 테란·프로토스 상대만 한다. 하나라도 FAIL이면 그 지점 결과와 함께 사용자에게 보고한다. 학습은 멈추지 않는다. 입력이 없는 검사는 MISSING이다.
+- 판정은 테란·프로토스 상대만 한다. 하나라도 FAIL이면 그 지점 결과와 함께 사용자에게 보고한다. 학습은 멈추지 않는다. 입력이 없는 검사는 MISSING이다. T0 job에 결과도 무효 표시도 없는 판이 남아 있으면(끝나지 않은 job) 1·3b는 MISSING이다.
 - 게임 칸에는 Wilson 95% 구간과 Fisher p를 함께 낸다. 32판은 조건당 약 ±12%p 잡음이 있어 작은 차이는 사용자가 판단한다.

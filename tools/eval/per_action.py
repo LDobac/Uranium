@@ -8,7 +8,7 @@ Read-only; writes one JSON (input of tools/eval/per_action_table.py).
 
 --holdout orig (the protocol value): the 2026-11-06 teacher shards only (165 val games, 94,433 steps),
 the hold-out of the BC / FT / clone / bc-mix columns of Checkpoint 1. `full` = the whole botgen source
-(teacher-20261107-macro2 too). --shards DIR... scores other source folders.
+(teacher-20261107-macro2 and teacher-20261109-macro3 too). --shards DIR... scores other source folders.
 
 Moved from runs/mix/per_action.py (a copy of runs/adv8/per_action.py) with the loop unchanged. The
 `orig` source folder (four parts of botgen) is rebuilt from links under <URANIUM_CACHE_DIR or runs>/
@@ -23,7 +23,10 @@ runs>/per_action_holdout/teacher_classes.json). The JSON then also has `by_class
 rows per class, and the mean p(Build_Bunker) over the scored steps before 4:00) and `r27`: the bunker
 top-1 of the bc-mix extension rule (041-R21 6, counted on rush-opponent games only) and the macro
 games' mean p(Build_Bunker) before 4:00 (recorded only). The `per_action` list over every game is
-unchanged. `--classes none` turns the split off, `--classes <json>` ({replay_sha256: rush|macro})
+unchanged. The recorded macro value is over the macro games of the `full` hold-out (main-session interim
+decision 2026-11-10: 117 games instead of the 36 of `orig`): with `--holdout orig` the other botgen parts
+(macro2, macro3) are scored in a second pass for it only (`r27.macro_holdout`); `by_class` and every other
+number stay those of the scored hold-out. `--classes none` turns the split off, `--classes <json>` ({replay_sha256: rush|macro})
 gives the classes of other shard folders. Needs `uranium._core` with `Batch.lane_games`.
 """
 
@@ -53,8 +56,6 @@ MACRO_OPPONENTS = ("ualbertabot2hatchhydra", "ualbertabot3hatchmuta", "steamhamm
 CLASSES = ("rush", "macro")
 # 041-R27: "before 4:00" = observation frame < 5,760 (24 frames per game second, 042-R14).
 BUNKER_BEFORE = 4 * 60 * ec.FPS
-# Observation scalar 0 is frame / 86,400 (030 §1, python/uranium/diag/tables.py FRAME_SCALE).
-FRAME_SCALE = 86400.0
 
 
 def opponent_class(opponent: str) -> str:
@@ -80,7 +81,9 @@ def file_sha256(p: Path) -> str:
 def teacher_classes(raw_root: Path, cache: Path | None = None) -> dict[str, dict]:
     """{replay_sha256: {"class", "opponent", "plan"}} of every teacher botgen game under raw_root
     (`teacher-*/teacher_botgen_*/games.jsonl` and `replays/g<game_id>.rep`). A plan folder is hashed again
-    only when its games.jsonl changed (cache: {plan folder: {"games_jsonl", "games"}})."""
+    only when its games.jsonl changed (cache: {plan folder: {"games_jsonl", "games": {sha: {"opponent"}}}};
+    the class is derived from the opponent on every call, so a changed opponent list is never stale). A
+    replay hash listed twice with different classes is an error."""
     old = {}
     if cache is not None and cache.exists():
         old = json.loads(cache.read_text(encoding="utf-8"))
@@ -99,9 +102,13 @@ def teacher_classes(raw_root: Path, cache: Path | None = None) -> dict[str, dict
                 g = json.loads(line)
                 rep = plan / "replays" / f"g{g['game_id']}.rep"
                 if rep.exists():
-                    got[file_sha256(rep)] = {"class": opponent_class(g["opponent"]), "opponent": g["opponent"].split("@", 1)[0], "plan": key}
+                    got[file_sha256(rep)] = {"opponent": g["opponent"]}
         new[key] = {"games_jsonl": sig, "games": got}
-        out.update(got)
+        for sha, v in got.items():
+            e = {"class": opponent_class(v["opponent"]), "opponent": v["opponent"].split("@", 1)[0], "plan": key}
+            if sha in out and out[sha]["class"] != e["class"]:
+                raise SystemExit(f"041-R27: replay {sha} is {out[sha]['class']} in {out[sha]['plan']} and {e['class']} in {key}")
+            out.setdefault(sha, e)
     if not out:
         raise SystemExit(f"041-R27: no teacher botgen plan folder under {raw_root}")
     if cache is not None and new != old:
@@ -162,6 +169,35 @@ def holdout_dirs(holdout: str) -> tuple[list[str], list[str]]:
         work = ec.cache_dir() / "per_action_holdout" / "botgen"
         return [], [str(link_tree(src, ORIG, work))]
     raise SystemExit(f"unknown --holdout {holdout}")
+
+
+def added_dirs() -> list[str]:
+    """041-R27: the botgen parts outside `orig` (teacher-20261107-macro2, teacher-20261109-macro3, ...) as one
+    source folder of links (<URANIUM_CACHE_DIR or runs>/per_action_holdout_added/botgen); [] without any."""
+    src = ec.shared_dir() / "datasets" / "replays" / "shards" / "botgen"
+    parts = sorted(p.name for p in src.iterdir() if p.is_dir() and p.name not in ORIG)
+    if not parts:
+        return []
+    work = Path(os.environ.get("URANIUM_CACHE_DIR") or ec.ROOT / "runs") / "per_action_holdout_added" / "botgen"
+    return [str(link_tree(src, parts, work))]
+
+
+def macro_full(r27: dict, added_macro: dict | None) -> dict:
+    """041-R27 recorded macro value over the `full` hold-out's macro games (main-session interim decision
+    2026-11-10): the scored hold-out's macro tally plus `added_macro` (by_class.macro of the pass over the other
+    botgen parts), step-weighted. Returns a new r27."""
+    out = {**r27, "macro_holdout": "full" if added_macro is not None else r27.get("macro_holdout")}
+    if added_macro is None:
+        return out
+    a = added_macro["bunker_p_before_4m"]
+    n0, n1 = r27["macro_steps_before_4m"], a["steps"]
+    s0 = (r27["macro_bunker_p_before_4m"] or 0.0) * n0
+    s1 = (a["mean_p"] or 0.0) * n1
+    out["macro_steps_before_4m"] = n0 + n1
+    out["macro_bunker_p_before_4m"] = (s0 + s1) / (n0 + n1) if n0 + n1 else None
+    out["macro_games"] = r27["macro_games"] + added_macro["games"]
+    out["macro_added_games"] = added_macro["games"]
+    return out
 
 
 class Tally:
@@ -233,6 +269,7 @@ def score(ckpt_dir: str, datasets: list[str], shards: list[str], backend_name: s
 
     from uranium import _core, ckpt
     from uranium.device import autocast, configure, resolve
+    from uranium.diag.tables import FRAME_SCALE  # observation scalar 0 = frame / 86,400 (030 §1)
     from uranium.model import to_obs
 
     names = {a["id"]: a["name"] for a in tomllib.loads((ec.ROOT / "crates/uranium-env/tables/actions.toml").read_text(encoding="utf-8"))["action"]}
@@ -319,7 +356,7 @@ def score(ckpt_dir: str, datasets: list[str], shards: list[str], backend_name: s
                 if tallies is not None:
                     # 041-R27: p(Build_Bunker) and the observation frame of each row (scalar 0 = frame / 86,400).
                     pb = d["action"][:, bunker_id].float().exp().tolist()
-                    fr = [round(x * FRAME_SCALE) for x in torch.as_tensor(hg["scalar"])[:, 0].tolist()]
+                    fr = [round(x * FRAME_SCALE) for x in hg["scalar"][:, 0].tolist()]
                 for r in rows:
                     i = la[r]
                     for ta in (every,) if tallies is None else (every, tallies[lane_cls[start + r // t]]):
@@ -382,6 +419,13 @@ def main(argv=None) -> None:
     classes = load_classes(a.classes, None if a.shards else a.holdout)
     res = score(str(ck), datasets, shards, a.backend, a.config, classes)
     res["holdout"] = "shards" if a.shards else a.holdout
+    if classes is not None:
+        res["r27"]["macro_holdout"] = res["holdout"]
+        if res["holdout"] == "orig":
+            # 041-R27 interim decision: the recorded macro value over the full hold-out's macro games.
+            extra = added_dirs()
+            added = score(str(ck), [], extra, a.backend, a.config, classes)["by_class"]["macro"] if extra else None
+            res["r27"] = macro_full(res["r27"], added)
     a.out.write_text(json.dumps(res, indent=1), encoding="utf-8")
     print_report(res)
 

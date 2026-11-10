@@ -53,9 +53,19 @@ def test_teacher_classes_from_plans_041_r27(tmp_path):
     got = pa.teacher_classes(raw, cache)
     assert {s: v["class"] for s, v in got.items()} == {**{s: "rush" for s in rush}, **{s: "macro" for s in {**macro, **macro3}}}
     assert got[next(iter(macro3))] == {"class": "macro", "opponent": "ualbertabot3hatchmuta", "plan": "teacher-3-macro3/teacher_botgen_macro3"}
-    # the cache is reused while games.jsonl is unchanged (a replaced replay is not re-hashed)
+    # the cache is reused while games.jsonl is unchanged (a replaced replay is not re-hashed); it keeps the
+    # opponent only, the class is derived on every call
     (raw / "teacher-1/teacher_botgen_rush/replays/g1.rep").write_bytes(b"changed")
     assert pa.teacher_classes(raw, cache) == got
+    cached = json.loads(cache.read_text(encoding="utf-8"))
+    assert all(set(v) == {"opponent"} for e in cached.values() for v in e["games"].values())
+    # the same replay under two plans with different classes is an error
+    dup = raw / "teacher-9/teacher_botgen_macro9"
+    (dup / "replays").mkdir(parents=True)
+    (dup / "games.jsonl").write_text(json.dumps({"game_id": 2, "opponent": "t0-zerg@0.1.0"}) + "\n", encoding="utf-8")
+    (dup / "replays" / "g2.rep").write_bytes(b"teacher-1/teacher_botgen_rush/2")
+    with pytest.raises(SystemExit, match="is rush in teacher-1/teacher_botgen_rush and macro in teacher-9/teacher_botgen_macro9"):
+        pa.teacher_classes(raw, None)
     # load_classes: a JSON file of either form
     f = tmp_path / "c.json"
     f.write_text(json.dumps({"a": "rush", "b": {"class": "macro"}}), encoding="utf-8")
@@ -167,3 +177,17 @@ def test_per_action_table_r27_rows_041_r27(tmp_path):
     assert "Build_Bunker top-1, rush-opponent games (041-R27) | - | 62.0 | 65.0" in text
     assert "macro mean p(Build_Bunker) < 4:00 (record) | - | 0.0123 | 0.0101" in text
     assert "041-R27 rush bunker top-1 per column [62.0, 65.0], last change +3.0 %p" in text
+
+
+def test_macro_value_over_the_full_hold_out_041_r27():
+    """The recorded macro p(bunker) before 4:00 is the step-weighted value over the orig pass's macro games and
+    the added parts' macro games (main-session interim decision 2026-11-10); the rest of r27 is unchanged."""
+    r27 = {"rush_bunker_top1": 0.6, "rush_bunker_steps": 50, "rush_games": 129,
+           "macro_bunker_p_before_4m": 0.02, "macro_steps_before_4m": 100, "macro_games": 36, "macro_holdout": "orig"}
+    added = {"games": 81, "steps": 900, "bunker_p_before_4m": {"before_frame": 5760, "steps": 300, "mean_p": 0.06}}
+    got = pa.macro_full(r27, added)
+    assert got["macro_bunker_p_before_4m"] == pytest.approx((0.02 * 100 + 0.06 * 300) / 400)
+    assert (got["macro_steps_before_4m"], got["macro_games"], got["macro_added_games"], got["macro_holdout"]) == (400, 117, 81, "full")
+    assert {k: got[k] for k in ("rush_bunker_top1", "rush_bunker_steps", "rush_games")} == {"rush_bunker_top1": 0.6, "rush_bunker_steps": 50, "rush_games": 129}
+    assert r27["macro_games"] == 36, "the input is not changed"
+    assert pa.macro_full(r27, None) == r27

@@ -173,10 +173,6 @@ class Acc:
         }
 
 
-# Observation scalar 0 is frame / 86,400 (030 §1, crates/uranium-env/src/features/extract.rs).
-FRAME_SCALE = 86400.0
-
-
 class BunkerAcc:
     """050-R10 ③: mean teacher-forced p(Build_Bunker) over the scored steps (weight > 0) observed before
     `before` (frame), per enemy race and over every game."""
@@ -193,7 +189,10 @@ class BunkerAcc:
     def add(self, out: dict, g: dict, rows_race: list[str]) -> None:
         dev = out["dists"]["action"].device
         ok = torch.as_tensor(g["weights"], device=dev) > 0
-        frame = torch.round(torch.as_tensor(g["scalar"], device=dev)[:, 0].double() * FRAME_SCALE)
+        from uranium.diag.tables import FRAME_SCALE  # observation scalar 0 = frame / 86,400 (030 §1)
+
+        # Only the frame column goes to the device.
+        frame = torch.round(torch.as_tensor(g["scalar"][:, 0], device=dev).double() * FRAME_SCALE)
         take = ok & (frame < self.before)
         p = out["dists"]["action"][:, self.action].double().exp()
         for name in ["all", *set(rows_race)]:

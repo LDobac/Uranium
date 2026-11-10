@@ -35,6 +35,8 @@ seed = 1
 backend = "rocm"
 config = "config/bc.toml"
 output = "artifacts/bc_e2_val/val500/<run>__<ckpt>.json"
+# 050-R10 3: the same output file as val500_race, so the same additive option (bunker_before field).
+extra_args = ["--bunker-before", "5760"]
 
 [metric.val500_race]
 kind = "bc_eval"
@@ -72,7 +74,7 @@ output = "artifacts/bc_main_eval/test_cuda/<run>.json"
 kind = "per_action"
 description = "per-action teacher-forced top-1 / tile accuracy on the teacher hold-out (val split of the botgen teacher games)"
 # orig = the 2026-11-06 teacher shards only (165 val games, 94,433 steps): the hold-out of the BC / FT / clone /
-# bc-mix columns (runs/mix/per_action_eN.json). `full` adds teacher-20261107-macro2 (reported apart).
+# bc-mix columns (runs/mix/per_action_eN.json). `full` adds teacher-20261107-macro2 and teacher-20261109-macro3 (reported apart).
 holdout = "orig"
 split = "val"
 seed = 1
