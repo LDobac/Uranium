@@ -245,3 +245,9 @@
 - Linux 호스트 세 대를 master 36b54ae로 맞췄습니다(`git pull --ff-only`). release 바이너리를 다시 빌드했고, Python 확장은 학습 venv에 다시 설치했습니다. 브리지·패치는 바뀌지 않아 OpenBW 브리지는 다시 빌드하지 않았습니다.
 - 둘째 Linux ROCm 호스트의 hostd는 지워진 옛 바이너리로 돌고 있어 새 바이너리로 재시작했습니다. Linux 빌드 호스트의 hostd는 디스크의 바이너리와 같아 그대로 뒀습니다. 첫째 Linux ROCm 호스트에서는 hostd가 돌고 있지 않았습니다.
 - 11-09의 `git pull` 'unable to update local ref' 실패는 다시 나지 않았습니다. 첫째 Linux ROCm 호스트의 reflog를 보면 11-09 21:17에 `fetch -q origin`이 origin/master만 옮기고 HEAD는 그대로였습니다. 그래서 같은 저장소에서 fetch 두 개가 동시에 돌아 ref 잠금이 겹친 것으로 봅니다. 남은 잠금 파일은 없고 fsck도 정상입니다. 원격에서 지워진 브랜치의 추적 ref(`tmp/…`·`integ/…` 디렉터리 포함)는 `git remote prune origin`으로 정리했습니다. 커밋 안 된 사용자 작업은 없었습니다. 추적하지 않는 파일은 확장 교체 때 남은 `_core*.so.old-*`뿐입니다.
+
+### 8.6 Checkpoint 1 재채점(032-AC13 실측, 2026-11-10)
+- 사전 예상: 모델 2 코드에서 §2.8 스위치가 모두 꺼진 모델은 지금 모델과 같으므로, Checkpoint 1 val500이 기존 값과 같을 것으로 봤습니다.
+- 방법: master 09efd52(모델 2 코드 전부 포함), 첫째 Linux ROCm 호스트 f32, `bc-eval --split val --games 500 --seed 1 --backend rocm --config config/bc.toml`, `bc-dagger-r1/ckpt-1137`. 비교 대상은 11-08 채점 `<shared>/artifacts/bc_e2_val/val500/bc-dagger-r1__ckpt-1137.json`입니다.
+- 결과: action top-1 72.19%(0.7219132733, 같은 값), step 1,100,146(같음), 헤드별 NLL 차이 모두 5e-9 이하(행동 0.8726653357 대 0.8726653352). **통과.**
+- 산출물: `<shared>/eval/m2-ac13-20261110/val500-ck1.json`·`.log`. 첫 시도는 ROCm 환경 변수(`LD_LIBRARY_PATH` 등)를 빠뜨려 rocBLAS 오류로 시작하지 못했고, 사용자가 장비를 쓰는 동안 한 번 멈췄다가 다시 돌렸습니다.
