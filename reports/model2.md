@@ -193,7 +193,7 @@
   - `config/bc_m2_mix_e1.toml`: `[aux]`를 채웠습니다.
   - `config/rl_m2.toml`: `config/rl.toml`에 `[aux]`·`[monitor]`를 더했습니다.
 - 경로 2 본학습 설정은 모두 `keep_checkpoints = 0`입니다(041-R29 ⑨, 모든 체크포인트 보존).
-- 메인 임시 결정(2026-11-10): `config/bc_m2.toml`·`bc_m2_e2.toml`에 `[train] model_seed` 1을 넣었습니다. 041-R29 ①의 "그 밖의 설정은 `config/bc.toml`과 같다"대로면 seed가 없습니다. 넣은 이유는 `m2-s1`의 초기 가중치를 `m2-lam-base`와 같게 하려는 것입니다(설정 지문도 같음). `--init` run에는 영향이 없습니다. 041-R29 ① 본문에 적었고, 사용자 확인 대상입니다.
+- 초기화 seed(사용자 확인 2026-11-10): `config/bc_m2.toml`·`bc_m2_e2.toml`에 `[train] model_seed` 1을 넣었습니다. 041-R29 ①의 "그 밖의 설정은 `config/bc.toml`과 같다"대로면 seed가 없습니다. 넣은 이유는 `m2-s1`의 초기 가중치를 `m2-lam-base`와 같게 하려는 것입니다(설정 지문도 같음). `--init` run에는 영향이 없습니다. 041-R29 ① 본문에 적었고, 사용자가 2026-11-10에 확인했습니다(seed 1 고정).
 
 ### 7.9 장애
 - 16:38 둘째 Linux ROCm 호스트에서 GPU 메모리 접근 오류가 났고, 사용자 재부팅 전까지 그 호스트의 GPU 작업이 모두 실패했습니다. 실패한 작업은 재부팅 뒤 다시 돌렸고, 실패 기록은 `failed-*` claim·`*.fail1.log`로 남겼습니다. 표의 수치 중 오류가 난 실행에서 나온 것은 없습니다.
