@@ -203,18 +203,27 @@ impl DataArgs {
 /// Shard folders read as is (like `--shards`) and scanned as a group with one scan cache
 /// (`bc::scan_groups`): `--group a,b,c --group d` reuses the cache of an earlier run that read
 /// `a,b,c` together when `d` has changed. Read-only: no manifest is checked or written.
+/// `--dataset-group a,b,c`: the same with datasets (`--dataset` names, pulled or verified through
+/// their manifests as the trainer reads them, 061-R11-1 / R12).
 #[derive(clap::Args)]
 struct GroupArgs {
     #[arg(long = "group")]
     group: Vec<String>,
+    #[arg(long = "dataset-group")]
+    dataset_group: Vec<String>,
 }
 
 impl GroupArgs {
-    /// The `--dataset` / `--shards` folders as one group (when given), then each `--group`.
+    /// The `--dataset` / `--shards` folders as one group (when given), then each
+    /// `--dataset-group` and each `--group`.
     fn groups(&self, data: &DataArgs) -> Result<Vec<Vec<PathBuf>>> {
         let mut out = Vec::new();
         if !data.dataset.is_empty() || !data.shards.is_empty() {
             out.push(data.dirs()?);
+        }
+        for g in &self.dataset_group {
+            let names: Vec<PathBuf> = g.split(',').filter(|s| !s.is_empty()).map(PathBuf::from).collect();
+            out.push(uranium_train::storage::dataset_dirs(&names, &[])?);
         }
         out.extend(self.group.iter().map(|g| g.split(',').filter(|s| !s.is_empty()).map(PathBuf::from).collect::<Vec<_>>()));
         anyhow::ensure!(out.iter().any(|g| !g.is_empty()), "pass --dataset, --shards or --group");
@@ -348,6 +357,17 @@ fn main() -> Result<()> {
             // 041-R14: warmup = 5% of the epoch, rounded half up.
             let warmup = (t.s2.updates as f64 * 0.05 + 0.5).floor() as u64;
             println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "config": config, "fractions": f, "s2": t.s2, "s2_warmup": warmup, "s2_mix": t.s2_mix }))?);
+            // 041-R21 ⑥ / R26 ③: fractions that miss a share are not to be used.
+            let mix = t.s2_mix.as_ref().expect("the config has [data.subsample]");
+            anyhow::ensure!(
+                mix.teacher_ok && mix.race_ok,
+                "the fractions miss the mix shares: teacher {:.4} (ok {}), human races {:?} vs S2 {:?} (ok {}) (041-R21 ⑥, R26)",
+                mix.teacher_share,
+                mix.teacher_ok,
+                mix.human_race_share,
+                mix.reference_human_race_share,
+                mix.race_ok
+            );
             Ok(())
         }
         Cmd::FeedDigest { data, config, stage, batches, group, max_select, pack, synthetic_maps } => {

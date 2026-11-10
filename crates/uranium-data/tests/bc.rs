@@ -1346,6 +1346,14 @@ fn bc_epoch_counts_by_source_and_race_041_r26() {
     assert!((mix.teacher_share - botgen as f64 / t.s2.steps as f64).abs() < 1e-12);
     let json = serde_json::to_value(&t).unwrap();
     assert!(json["s2_mix"]["reference_human_race_share"].is_object() && json["s2"]["by_source"]["botgen"]["Z"]["steps"].is_u64());
+    // `--group` / `--dataset-group`: the folders scanned in groups count the same as in one.
+    let (ra, rb) = (shard_dir("mix-count-a", &games[..40], 9), shard_dir("mix-count-b", &games[40..], 9));
+    let g = uranium_data::bc::epoch_table_groups(&[vec![ra.clone()], vec![rb.clone()]], &cfg).unwrap();
+    let one = uranium_data::bc::epoch_table(&[ra.clone(), rb.clone()], &cfg).unwrap();
+    assert_eq!(serde_json::to_value(&g).unwrap(), serde_json::to_value(&one).unwrap());
+    assert_eq!(g.s2.steps, t.s2.steps);
+    std::fs::remove_dir_all(&ra).ok();
+    std::fs::remove_dir_all(&rb).ok();
     std::fs::remove_dir_all(&root).ok();
 }
 
