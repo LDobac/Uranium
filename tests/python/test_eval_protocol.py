@@ -1540,22 +1540,30 @@ def status_text(stages: list[tuple]) -> str:
 
 
 def fake_status(monkeypatch, state: dict) -> list:
-    """s1e2_loop.eval_status answering from state["stages"] (an Exception: raised); returns the calls."""
+    """s1e2_loop.eval_status answering from state["stages"] (an Exception: raised; a str: that text), job.toml with
+    state["job_stages"] stages (default: as many as the rows); returns the calls."""
     calls = []
 
     def status(job, write):
         calls.append((Path(job).name, write))
-        if isinstance(state["stages"], Exception):
-            raise state["stages"]
-        return status_text(state["stages"])
+        s = state["stages"]
+        if isinstance(s, Exception):
+            raise s
+        return s if isinstance(s, str) else status_text(s)
+
+    def job_stages(job):
+        n = state.get("job_stages")
+        return [None] * (n if n is not None else len(state["stages"]))
 
     monkeypatch.setattr(s1e2_loop, "eval_status", status)
+    monkeypatch.setattr(s1e2_loop.ec, "job_stages", job_stages)
     return calls
 
 
 def test_s1e2_games_done_once_from_eval_status_041_r20(tmp_path, monkeypatch, capsys):
     """050-R9 / 041-R20 ③: no worker writes a job's DONE; after the worker run the loop asks eval-status and, every
-    stage played out, writes status.txt (its text) and DONE atomically, once."""
+    stage played out in two readings, takes the merge claim and writes status.txt (its text) and DONE atomically,
+    once."""
     job = tmp_path / "eval" / "m2-s1e2-games" / "m2-s1e2__ckpt-1000"
     job.mkdir(parents=True)
     state = {"stages": [("01-t0", 100, 100, 0, 0)]}
@@ -1563,40 +1571,108 @@ def test_s1e2_games_done_once_from_eval_status_041_r20(tmp_path, monkeypatch, ca
     assert s1e2_loop.status_stages(status_text(state["stages"])) == [{"stage": "01-t0", "games": 100, "done": 100, "in_flight": 0, "left": 0, "retried": 0}]
     runs = []
     monkeypatch.setattr(s1e2_loop.subprocess, "run", lambda cmd, cwd=None: runs.append(cmd) or subprocess.CompletedProcess(cmd, 0))
-    monkeypatch.setattr(s1e2_loop.time, "sleep", lambda s: pytest.fail("complete after the worker run"))
+    monkeypatch.setattr(s1e2_loop.time, "sleep", lambda s: pytest.fail("poll 0: confirmed at the first wait check"))
     s1e2_loop.play(job, tmp_path, "--priority 2", 0)
     assert len(runs) == 1 and runs[0][2:6] == ["uranium", "eval-worker", "--job", "eval/m2-s1e2-games/m2-s1e2__ckpt-1000"]
-    assert (job / "DONE").is_file() and (job / "status.txt").read_text(encoding="utf-8") == status_text(state["stages"])
-    assert calls == [(job.name, False), (job.name, True)]  # the summaries rewritten once, with the final text
-    assert sorted(p.name for p in job.iterdir()) == ["DONE", "status.txt"]  # no temp file left
-    assert "complete per eval-status (01-t0 100/100 done, 0 in flight, 0 left); wrote status.txt and DONE" in capsys.readouterr().out
+    assert (job / "DONE").is_file() and (job / "status.txt").read_bytes() == status_text(state["stages"]).encode()  # "\n" kept on Windows
+    assert calls == [(job.name, False), (job.name, False), (job.name, True)]  # two readings, the summaries rewritten once
+    assert json.loads((job / ".merge-claim").read_text(encoding="utf-8"))["host"] == s1e2_loop.socket.gethostname()
+    assert sorted(p.name for p in job.iterdir()) == [".merge-claim", "DONE", "status.txt"]  # no temp file left
+    out = capsys.readouterr().out
+    assert "confirming at the next poll" in out and "complete per eval-status (01-t0 100/100 done, 0 in flight, 0 left); wrote status.txt and DONE" in out
     done = (job / "DONE").read_text(encoding="utf-8")
-    assert s1e2_loop.finish(job) and len(calls) == 2 and (job / "DONE").read_text(encoding="utf-8") == done  # not asked or written again
+    assert s1e2_loop.finish(job) and len(calls) == 3 and (job / "DONE").read_text(encoding="utf-8") == done  # not asked or written again
+    assert not s1e2_loop.pending(job)
 
 
-@pytest.mark.parametrize("stages", [
-    [("01-t0", 100, 97, 0, 3)],  # games left
-    [("01-t0", 100, 99, 1, 0)],  # one in flight
-    [("01-t0", 100, 100, 0, 0), ("02-t1", 50, 10, 4, 36)],  # one stage played out, another not
-    [],  # no stage table
-    RuntimeError("reading job.toml: not found"),  # unreadable (a job being made, the shared drive away)
-])
-def test_s1e2_games_incomplete_gets_no_done_041_r20(tmp_path, monkeypatch, stages):
+def test_s1e2_games_two_readings_a_poll_apart_041_r20(tmp_path, monkeypatch):
+    """A complete reading is confirmed by a later one at least a poll later; an incomplete reading in between starts over."""
     job = tmp_path / "j"
     job.mkdir()
-    calls = fake_status(monkeypatch, {"stages": stages})
-    assert not s1e2_loop.finish(job)
-    assert not (job / "DONE").exists() and not (job / "status.txt").exists()
+    state = {"stages": [("01-t0", 100, 100, 0, 0)]}
+    fake_status(monkeypatch, state)
+    clock = [1000.0]
+    monkeypatch.setattr(s1e2_loop.time, "monotonic", lambda: clock[0])
+    assert not s1e2_loop.finish(job, 120) and s1e2_loop.pending(job)
+    clock[0] += 60
+    assert not s1e2_loop.finish(job, 120)  # too soon
+    state["stages"] = [("01-t0", 100, 99, 1, 0)]  # a game came back for another attempt
+    clock[0] += 60
+    assert not s1e2_loop.finish(job, 120) and not s1e2_loop.pending(job)
+    state["stages"] = [("01-t0", 100, 100, 0, 0)]
+    assert not s1e2_loop.finish(job, 120)
+    clock[0] += 120
+    assert s1e2_loop.finish(job, 120) and (job / "DONE").is_file()
+
+
+@pytest.mark.parametrize("state", [
+    {"stages": [("01-t0", 100, 97, 0, 3)]},  # games left
+    {"stages": [("01-t0", 100, 99, 1, 0)]},  # one in flight
+    {"stages": [("01-t0", 100, 100, 0, 0), ("02-t1", 50, 10, 4, 36)]},  # one stage played out, another not
+    {"stages": [("01-t0", 100, 100, 0, 0)], "job_stages": 2},  # a stage of job.toml without a row
+    {"stages": status_text([("01-t0", 100, 100, 0, 0)]) + "| 02-t1 | 50 | ? | 0 | 0 | 0 |\n"},  # a malformed row
+    {"stages": [], "job_stages": 1},  # no stage table
+    {"stages": RuntimeError("reading job.toml: not found")},  # unreadable (a job being made, the shared drive away)
+])
+def test_s1e2_games_incomplete_gets_no_done_041_r20(tmp_path, monkeypatch, state):
+    job = tmp_path / "j"
+    job.mkdir()
+    calls = fake_status(monkeypatch, dict(state, job_stages=state.get("job_stages", 1)))
+    assert not s1e2_loop.finish(job) and not s1e2_loop.finish(job)
+    assert not (job / "DONE").exists() and not (job / "status.txt").exists() and not (job / ".merge-claim").exists()
     assert all(not w for _, w in calls)  # the summaries are not rewritten for an incomplete job
+
+
+def test_s1e2_games_status_stages_fail_closed_041_r20():
+    good = status_text([("01-t0", 100, 100, 0, 0)])
+    assert len(s1e2_loop.status_stages(good + "\nleaving hosts: h\n")) == 1  # the table ends at a blank line
+    assert s1e2_loop.status_stages(good + "| 02-t1 | 50 | 50 | 0 |\n") == []
+    assert s1e2_loop.status_stages(good + "02-t1 50 50 0 0 0\n") == []
+    assert s1e2_loop.status_stages(good.replace("| in flight |", "| flying |")) == []
+
+
+def test_s1e2_games_merge_claim_one_host_041_r20(tmp_path, monkeypatch, capsys):
+    """Only the host with the job's merge claim runs eval-status with write and writes DONE; a claim older than
+    MERGE_STALE_S without DONE is set aside (kept) and taken again."""
+    job = tmp_path / "j"
+    job.mkdir()
+    calls = fake_status(monkeypatch, {"stages": [("01-t0", 100, 100, 0, 0)]})
+    claim = job / ".merge-claim"
+    claim.write_text(json.dumps({"host": "other-host", "pid": 1}), encoding="utf-8")
+    assert not s1e2_loop.finish(job) and not s1e2_loop.finish(job)
+    assert s1e2_loop.pending(job) and not (job / "DONE").exists() and (job.name, True) not in calls
+    assert "other-host writes DONE" in capsys.readouterr().out
+    t = claim.stat().st_mtime - s1e2_loop.MERGE_STALE_S - 60
+    os.utime(claim, (t, t))
+    assert s1e2_loop.finish(job) and (job / "DONE").is_file()
+    assert json.loads((job / ".merge-claim.stale-1").read_text(encoding="utf-8"))["host"] == "other-host"
+    assert json.loads(claim.read_text(encoding="utf-8"))["host"] == s1e2_loop.socket.gethostname()
+
+
+def test_s1e2_games_failed_write_sets_the_claim_aside_041_r20(tmp_path, monkeypatch, capsys):
+    job = tmp_path / "j"
+    job.mkdir()
+    fake_status(monkeypatch, {"stages": [("01-t0", 100, 100, 0, 0)]})
+
+    def full_disk(f, text):
+        raise OSError("no space left")
+
+    monkeypatch.setattr(s1e2_loop, "write_atomic", full_disk)
+    assert not s1e2_loop.finish(job) and not s1e2_loop.finish(job)
+    assert "writing status.txt / DONE failed" in capsys.readouterr().out
+    assert not (job / "DONE").exists() and not (job / ".merge-claim").exists() and (job / ".merge-claim.failed-1").is_file()
+    monkeypatch.undo()
+    fake_status(monkeypatch, {"stages": [("01-t0", 100, 100, 0, 0)]})
+    assert s1e2_loop.finish(job) and (job / "DONE").is_file()  # still pending: the next try writes it
 
 
 def test_s1e2_games_job_of_another_host_joined_and_completed_041_r20(tmp_path, monkeypatch):
     """A job another host made is joined once; this worker ends while the other host still plays, the loop waits on
-    eval-status (not joining again) and writes DONE when the other host's games are in. A job already played out
-    without DONE is finished, not joined."""
+    eval-status (not joining again) and writes DONE when the other host's games are in."""
     shared = s1e2_shared(tmp_path, monkeypatch, steps=(1000,), done=True)
     job = shared / "eval" / "m2-s1e2-games" / "m2-s1e2__ckpt-1000"
     job.mkdir(parents=True)  # made by another host, not DONE
+    (job / "job.toml").write_text("", encoding="utf-8")
     state = {"stages": [("01-t0", 100, 60, 4, 36)]}
     fake_status(monkeypatch, state)
     runs, sleeps = [], []
@@ -1615,10 +1691,39 @@ def test_s1e2_games_job_of_another_host_joined_and_completed_041_r20(tmp_path, m
     monkeypatch.setattr(s1e2_loop.time, "sleep", sleep)
     monkeypatch.setattr(s1e2_loop, "make_job", lambda *a: pytest.fail("the job exists"))
     s1e2_loop.main(["games", "--run", "m2-s1e2", "--worker", "--priority 2", "--watch", "--poll-s", "0"])
-    assert len(runs) == 1 and len(sleeps) == 2
+    assert len(runs) == 1 and len(sleeps) == 3  # two waits for the other host, one for the confirming reading
     assert (job / "DONE").is_file() and "| 01-t0 | 100 | 100 | 0 | 0 | 0 |" in (job / "status.txt").read_text(encoding="utf-8")
-    # played out elsewhere, no DONE: finished here when picking, no worker run
-    (job / "DONE").unlink()
-    runs.clear()
+
+
+def test_s1e2_games_played_out_job_swept_not_joined_041_r20(tmp_path, monkeypatch):
+    """A job played out without DONE (hand-started workers, or another host's loop stopped) is finished by the
+    sweep, not joined: no worker run."""
+    shared = s1e2_shared(tmp_path, monkeypatch, steps=(1000,), done=True)
+    job = shared / "eval" / "m2-s1e2-games" / "m2-s1e2__ckpt-1000"
+    job.mkdir(parents=True)
+    (job / "job.toml").write_text("", encoding="utf-8")
+    calls = fake_status(monkeypatch, {"stages": [("01-t0", 100, 100, 0, 0)]})
+    sleeps = []
+    monkeypatch.setattr(s1e2_loop.subprocess, "run", lambda *a, **k: pytest.fail("no worker for a played-out job"))
+    monkeypatch.setattr(s1e2_loop.time, "sleep", sleeps.append)
     s1e2_loop.main(["games", "--run", "m2-s1e2", "--worker", "--priority 2", "--watch", "--poll-s", "0"])
-    assert runs == [] and (job / "DONE").is_file()
+    assert (job / "DONE").is_file() and len(sleeps) == 1 and calls.count((job.name, True)) == 1
+
+
+def test_s1e2_games_status_table_of_the_extension_041_r20(tmp_path, monkeypatch):
+    """Pins eval-status's table format: the real uranium._core.eval_status on a fresh T0 100 job."""
+    core = pytest.importorskip("uranium._core")
+    if not hasattr(core, "eval_status"):
+        pytest.skip("uranium._core without eval_status")
+    shared = s1e2_shared(tmp_path, monkeypatch, steps=(1000,), done=True)
+    monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
+    hosts = tmp_path / "hosts.toml"
+    hosts.write_text('[[host]]\naddr = "h:7700"\n', encoding="utf-8")
+    a = argparse.Namespace(games_root="eval/m2-s1e2-games", hosts=str(hosts), allow_dirty=False, dry_run=False)
+    job = s1e2_loop.make_job(LIN, shared, a, "s1e2", "checkpoints/m2-s1e2/ckpt-1000")
+    (stage,) = s1e2_loop.status_stages(s1e2_loop.eval_status(job, write=False))
+    assert {k: v for k, v in stage.items() if k != "stage"} == {"games": 100, "done": 0, "in_flight": 0, "left": 100, "retried": 0}
+    assert len(ec.job_stages(job)) == 1
+    _, _, why = s1e2_loop.read_status(job, write=False)
+    assert why == f"{stage['stage']} 0/100 done, 0 in flight, 100 left"
+    assert not s1e2_loop.finish(job) and not (job / "DONE").exists()

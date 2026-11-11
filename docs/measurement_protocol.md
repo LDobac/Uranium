@@ -150,7 +150,7 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
    - T0 100판: `python tools/eval/s1e2_loop.py games --run m2-s1e2 --reference ... --hosts tools/eval/hosts.toml --watch --worker "--priority 2 --backend rocm --local-hostd <주소> --hostd <uranium-hostd>"`
      - 체크포인트마다 `protocol.py job --lineage m2 --point s1e2 --metrics t0_100`으로 `<shared>/eval/<run>-games/<run>__ckpt-N/` job을 만든다(`--games-root`로 바꿈). 다른 호스트가 먼저 만든 job은 잡힌 것으로 본다.
      - 그 job을 이 호스트의 `eval-worker`로 돌리고 `DONE`을 기다린 뒤 다음 체크포인트로 간다. `--worker`가 없으면 job만 만들고, 작업자는 따로 띄운다. `--worker`가 있으면 다른 호스트가 만든 끝나지 않은 job에도 작업자로 붙는다.
-     - `DONE`은 작업자가 쓰지 않고 이 루프가 쓴다(Checkpoint 1의 `games_watch.sh`가 하던 일). 작업자 실행이 끝날 때와 기다리는 동안, 그리고 체크포인트를 고를 때 `eval-status`를 보고, 모든 단계가 진행 중 0·남은 판 0이면 `status.txt`(`eval-status` 출력, 단계별 병합 기록·요약도 다시 씀)와 `DONE`을 임시 파일 → 이름 바꾸기로 쓴다. 끝나지 않았거나 상태를 못 읽은 job에는 쓰지 않는다. 다른 호스트가 끝낸 job도 이렇게 `DONE`을 받고 다시 붙지 않는다.
+     - `DONE`은 작업자가 쓰지 않고 이 루프가 쓴다(Checkpoint 1의 `games_watch.sh`가 하던 일). 작업자 실행이 끝날 때, 기다리는 동안, 그리고 매 반복마다 games 폴더의 `DONE` 없는 job을 훑으며 `eval-status`를 본다. 모든 단계가 진행 중 0·남은 판 0이고 표의 단계 수가 `job.toml`과 같으면 한 번 더(한 poll 뒤) 확인하고, job의 `.merge-claim`을 먼저 만든 한 호스트만 `status.txt`(`eval-status` 출력, 단계별 병합 기록·요약도 다시 씀)와 `DONE`을 임시 파일 → 이름 바꾸기로 쓴다. 10분 넘게 `DONE` 없이 남은 claim은 `.merge-claim.stale-<k>`로 옮기고(지우지 않음) 다시 잡는다. 끝나지 않았거나, 표를 못 읽었거나, 쓰기에 실패한 job에는 쓰지 않는다(실패한 claim은 `.merge-claim.failed-<k>`). 다른 호스트가 끝낸 job도 이렇게 `DONE`을 받고 다시 붙지 않는다.
    - 진행: `s1e2_loop.py list --run m2-s1e2 --reference ...`
    - 표: `s1e2_loop.py table --run m2-s1e2 --reference ... [--json] [--md]`
      - val: top-1, 헤드별 NLL(action·delay·selected·target_unit·target_loc), win_open MSE, step 수

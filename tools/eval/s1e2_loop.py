@@ -21,7 +21,8 @@ Outputs (under URANIUM_SHARED_DIR): val `artifacts/bc_e2_val/val500/<run>__<ckpt
 `<...>.claim`; games `eval/<games root>/<run>__<ckpt>/` (default `eval/<run>-games`), each an eval job made by
 `protocol.py job` (protocol.json inside) and played by `python -m uranium eval-worker` (`--worker` runs one
 here; else workers are started by hand on the job). The loop writes the job's `status.txt` (eval-status
-output) and `DONE` once eval-status shows every stage played out (nothing in flight, nothing left).
+output) and `DONE` once eval-status shows every stage played out (nothing in flight, nothing left) in two
+readings a poll apart; one host does it (the job's `.merge-claim`).
 """
 
 from __future__ import annotations
@@ -353,7 +354,8 @@ def eval_status(job: Path, write: bool) -> str:
 
 
 def status_stages(text: str) -> list[dict]:
-    """The per-stage rows of eval-status's table (empty when the table is missing)."""
+    """The per-stage rows of eval-status's table; empty (fail closed) when the table is missing or a row of it
+    does not parse."""
     lines = text.splitlines()
     try:
         i = lines.index(STATUS_HEAD)
@@ -361,9 +363,11 @@ def status_stages(text: str) -> list[dict]:
         return []
     out = []
     for ln in lines[i + 2:]:
+        if not ln.strip():
+            break
         cells = [c.strip() for c in ln.strip().strip("|").split("|")]
         if not ln.startswith("|") or len(cells) != 6 or not all(c.isdigit() for c in cells[1:]):
-            break
+            return []
         out.append(dict(zip(("stage", "games", "done", "in_flight", "left", "retried"), [cells[0], *map(int, cells[1:])])))
     return out
 
@@ -381,35 +385,110 @@ def progress(stages: list[dict]) -> str:
 def write_atomic(f: Path, text: str) -> None:
     """A temp file next to it, then a rename (several hosts share the folder: a reader never sees half a file)."""
     tmp = f.with_name(f".{f.name}.tmp-{socket.gethostname()}-{os.getpid()}")
-    tmp.write_text(text, encoding="utf-8")
+    tmp.write_text(text, encoding="utf-8", newline="\n")
     os.replace(tmp, f)
 
 
-def finish(job: Path, quiet: bool = False) -> bool:
+# The merge (eval-status with write: summaries rewritten) and the DONE write of a job are done by one host: the
+# one whose exclusive-create claim file this is. A claim older than MERGE_STALE_S without a DONE (its host
+# stopped midway) is set aside (renamed, never deleted) and taken again.
+MERGE_CLAIM = ".merge-claim"
+MERGE_STALE_S = 600
+# jobs with one complete eval-status reading not yet confirmed: str(job) -> time.monotonic() of that reading
+_complete_seen: dict[str, float] = {}
+
+
+def pending(job: Path) -> bool:
+    """A complete reading waits for its confirming one (finish)."""
+    return str(job) in _complete_seen
+
+
+def set_aside_merge_claim(job: Path, why: str) -> None:
+    f = job / MERGE_CLAIM
+    k = len(list(job.glob(f"{MERGE_CLAIM}.*"))) + 1
+    try:
+        f.rename(job / f"{MERGE_CLAIM}.{why}-{k}")
+    except OSError:
+        pass  # another host set it aside first
+
+
+def take_merge_claim(job: Path, quiet: bool) -> bool:
+    f = job / MERGE_CLAIM
+    if claim(f, MERGE_STALE_S):
+        return True
+    c = read_claim(f)
+    try:
+        age = time.time() - f.stat().st_mtime
+    except FileNotFoundError:
+        return claim(f, MERGE_STALE_S)
+    if age <= MERGE_STALE_S or (job / "DONE").is_file():
+        if not quiet:
+            print(f"{now()} {job.name}: complete; {c.get('host', '?')} writes DONE (merge claim of {round(age)} s)", flush=True)
+        return False
+    set_aside_merge_claim(job, "stale")
+    print(f"{now()} {job.name}: merge claim of {c.get('host', '?')} older than {MERGE_STALE_S} s without DONE, set aside", flush=True)
+    return claim(f, MERGE_STALE_S)
+
+
+def read_status(job: Path, write: bool) -> tuple[str, list[dict], str | None]:
+    """eval-status's text, its stage rows and why they do not show a played-out job (None: they do). Every stage
+    of job.toml must have a row."""
+    text = eval_status(job, write=write)
+    stages = status_stages(text)
+    n = len(ec.job_stages(job))
+    if len(stages) != n:
+        return text, stages, f"{len(stages)} stage rows in eval-status, {n} stages in job.toml"
+    return text, stages, None if status_complete(stages) else progress(stages)
+
+
+def finish(job: Path, gap_s: float = 0, quiet: bool = False) -> bool:
     """041-R20 ③ (the step of Checkpoint 1's games_watch.sh after each worker run): whether the job has its
-    DONE. Without one, eval-status decides: when every stage is played out (status_complete), `status.txt`
-    (eval-status's text, the merged summaries rewritten) and then `DONE` are written atomically. An incomplete
-    job or an unreadable status never gets a DONE."""
-    done = job / "DONE"
+    DONE. Without one, eval-status decides. A played-out job (every stage: nothing in flight, nothing left) is
+    confirmed by a second reading at least `gap_s` later (a later call); then this host takes the merge claim,
+    runs eval-status with write (the merged summaries), and writes `status.txt` (its text) and `DONE`, each
+    atomically. An incomplete job, an unreadable status or a failed step never gets a DONE."""
+    done, key = job / "DONE", str(job)
     if done.is_file():
+        _complete_seen.pop(key, None)
         return True
     try:
-        stages = status_stages(eval_status(job, write=False))
-        if not status_complete(stages):
-            if not quiet:
-                print(f"{now()} {job.name}: not complete ({progress(stages)})", flush=True)
-            return False
-        text = eval_status(job, write=True)  # the merged records and summaries, as `eval-status` writes them
-        stages = status_stages(text)
-        if not status_complete(stages) or done.is_file():
-            return done.is_file()
+        _, stages, why = read_status(job, write=False)
+    except Exception as e:  # a job still being made, the shared drive away: asked again later
+        _complete_seen.pop(key, None)
+        if not quiet:
+            print(f"{now()} {job.name}: eval-status read failed ({e!r}); no DONE", flush=True)
+        return False
+    if why is not None:
+        _complete_seen.pop(key, None)
+        if not quiet:
+            print(f"{now()} {job.name}: not complete ({why})", flush=True)
+        return False
+    if key not in _complete_seen:
+        _complete_seen[key] = time.monotonic()
+        print(f"{now()} {job.name}: complete per eval-status ({progress(stages)}); confirming at the next poll", flush=True)
+        return False
+    if time.monotonic() - _complete_seen[key] < gap_s or not take_merge_claim(job, quiet):
+        return False
+    try:
+        text, stages, why = read_status(job, write=True)
+    except Exception as e:
+        set_aside_merge_claim(job, "failed")
+        print(f"{now()} {job.name}: eval-status with write failed ({e!r}); no DONE", flush=True)
+        return False
+    if why is not None:
+        set_aside_merge_claim(job, "failed")
+        _complete_seen.pop(key, None)
+        print(f"{now()} {job.name}: not complete in the merging reading ({why}); no DONE", flush=True)
+        return False
+    try:
         write_atomic(job / "status.txt", text)
         write_atomic(done, json.dumps({"host": socket.gethostname(), "by": "s1e2_loop.py, eval-status complete",
                                        "written": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}) + "\n")
-    except Exception as e:  # a job still being made, the shared drive away: not complete, asked again later
-        if not quiet:
-            print(f"{now()} {job.name}: eval-status unreadable ({e!r}); no DONE", flush=True)
+    except OSError as e:
+        set_aside_merge_claim(job, "failed")
+        print(f"{now()} {job.name}: writing status.txt / DONE failed ({e!r}); no DONE", flush=True)
         return False
+    _complete_seen.pop(key, None)
     print(f"{now()} {job.name}: complete per eval-status ({progress(stages)}); wrote status.txt and DONE", flush=True)
     return True
 
@@ -420,11 +499,19 @@ def play(job: Path, shared: Path, worker: str | None, poll_s: int) -> None:
         cmd = [sys.executable, "-m", "uranium", "eval-worker", "--job", rel, *shlex.split(worker)]
         print(f"{now()} start games {job.name}: {' '.join(['python', *cmd[1:]])}", flush=True)
         rc = subprocess.run(cmd, cwd=protocol.ROOT).returncode
-        if not finish(job):
-            print(f"{now()} {job.name}: worker ended rc={rc} before the job was complete; waiting for other workers", flush=True)
-    while not finish(job, quiet=True):
+        if not finish(job, poll_s):
+            print(f"{now()} {job.name}: worker ended rc={rc}; waiting for DONE", flush=True)
+    while not finish(job, poll_s, quiet=True):
         time.sleep(poll_s)
     print(f"{now()} end games {job.name}", flush=True)
+
+
+def sweep(shared: Path, root: str, poll_s: int) -> list[Path]:
+    """finish() on every job folder of the games root without DONE (a job played out by hand-started workers or
+    by another host); returns those waiting for their confirming reading."""
+    d = shared / root
+    jobs = [j for j in sorted(d.iterdir()) if (j / "job.toml").is_file() and not (j / "DONE").is_file()] if d.is_dir() else []
+    return [j for j in jobs if not finish(j, poll_s, quiet=True) and pending(j)]
 
 
 def cmd_games(a) -> None:
@@ -435,9 +522,9 @@ def cmd_games(a) -> None:
 
     def taken(c: str) -> bool:
         # with --worker, an existing job that is not DONE is joined once (another host made it); else taken.
-        # A job played out without a DONE gets it here (finish) and is not joined again.
+        # A job played out (DONE written by the sweep, or waiting for its confirming reading) is not joined.
         j = game_job(shared, a.games_root, c)
-        return j.exists() and (a.worker is None or j.name in joined or finish(j, quiet=True))
+        return j.exists() and (a.worker is None or j.name in joined or (j / "DONE").is_file() or pending(j))
 
     while True:
         done = run_done(shared, a.run)
@@ -446,6 +533,7 @@ def cmd_games(a) -> None:
             for pt_id, c in items:
                 make_job(lin, shared, a, pt_id, c)
             return
+        confirming = sweep(shared, a.games_root, a.poll_s)
         nxt = pick(items, taken)
         if nxt is not None:
             job = game_job(shared, a.games_root, nxt[1])
@@ -457,7 +545,7 @@ def cmd_games(a) -> None:
                 joined.add(job.name)
                 play(job, shared, a.worker, a.poll_s)
             continue
-        if not a.watch or done:
+        if (not a.watch or done) and not confirming:
             print(f"{now()} games: nothing left" + (" (run done)" if done else ""), flush=True)
             return
         time.sleep(a.poll_s)
