@@ -212,7 +212,8 @@ def test_bc_eval_out_writes_the_report_032_r20(tiny_config, shards, tmp_path, ca
     out = tmp_path / "out"
     assert _core.run_bc(make, str(tiny_config), out=str(out), shards=[str(shards)], steps=1, synthetic_maps=True) == "done"
     report = tmp_path / "val" / "r.json"
-    a = argparse.Namespace(dataset=[], shards=[str(shards)], checkpoint=str(out / "last"), split="train", backend="cpu", core=None, games=None, seed=1, config=str(tiny_config), maps_dir=None, synthetic_maps=True, out=str(report))
+    a = argparse.Namespace(dataset=[], shards=[str(shards)], checkpoint=str(out / "last"), split="train", backend="cpu", core=None, games=None, seed=1, config=str(tiny_config), maps_dir=None, synthetic_maps=True, out=str(report),
+                           bunker_before=None)  # 050-R10 `--bunker-before` (default off)
     assert bc_eval.main(a) == 0
     printed = json.loads(capsys.readouterr().out)
     assert json.loads(report.read_text(encoding="utf-8")) == printed

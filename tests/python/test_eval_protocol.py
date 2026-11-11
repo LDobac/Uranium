@@ -878,13 +878,15 @@ def test_check_diag_refuses_tasks_and_checkpoint_050_r9(tmp_path):
     pr["dump"]["checkpoint_sha256"] = "b" * 64
     (out / "teacher" / "probes.json").write_text(json.dumps(pr), encoding="utf-8")
     hp = json.loads((out / "human" / "probes.json").read_text(encoding="utf-8"))
-    hp["races"]["T"]["tasks"]["count|focus_rows"] = {"rows": 9, "skipped": "constant target 1"}  # AMB-050-4: the count must have values
+    hp["races"]["P"]["tasks"]["count|focus_rows"] = {"rows": 9, "skipped": "constant target 1"}  # AMB-050-4: the P count must have values
+    hp["races"]["T"]["tasks"]["count|focus_rows"] = {"rows": 9, "skipped": "constant target 1"}  # T: not measurable (2026-11-11), not required
     (out / "human" / "probes.json").write_text(json.dumps(hp), encoding="utf-8")
     problems = protocol.check_diag(LIN, "cue_diag", out)
     assert any("hp|unf_token rows / games" in p for p in problems), problems
     assert any("teacher probes Z count|focus_rows: expected skipped" in p for p in problems), problems
     assert any("teacher probes dump checkpoint_sha256" in p for p in problems), problems
-    assert any("human probes T count|focus_rows: no values (constant target 1)" in p for p in problems), problems
+    assert any("human probes P count|focus_rows: no values (constant target 1)" in p for p in problems), problems
+    assert not any("human probes T count|focus_rows" in p for p in problems), problems
     (out / "teacher" / "intervene.json").unlink()
     assert any("no " in p and "intervene.json" in p for p in protocol.check_diag(LIN, "cue_diag", out))
 
@@ -1052,8 +1054,9 @@ def test_diag_run_records_retries_and_checks_050_r9(tmp_path, monkeypatch):
 def test_diag_run_split_over_two_hosts_050_r9(tmp_path, monkeypatch):
     """--part gpu (the ROCm host: dumps and their copies, running.json kept) then --part cpu on another host at the
     same commit (dumps fetched into its cache, probes / intervene / summaries / training log, protocol.json, check);
-    every step records its host. The cpu part is refused before the gpu part finished, at another commit or for
-    another checkpoint; the commands recorded are the same as one --part all attempt."""
+    every step records its host. The cpu part is refused before the gpu part finished, at another commit, with
+    other uncommitted protocol files or for another checkpoint; protocol.json lists the gpu part's commands, then
+    the cpu part's (with the fetches) once, also after a failed cpu attempt is run again."""
     shared = tmp_path / "shared"
     monkeypatch.setenv("URANIUM_SHARED_DIR", str(shared))
     monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: SHA)
@@ -1062,12 +1065,15 @@ def test_diag_run_split_over_two_hosts_050_r9(tmp_path, monkeypatch):
     monkeypatch.setattr(protocol, "set_data", fake_set_data)
     log = tmp_path / "s1.log"
     log.write_text("{}\n", encoding="utf-8")
-    ran = []
+    ran, fail = [], set()
 
     def fake_run(cmd, cwd=None, check=None):
         step = protocol.step_name(cmd)
         ran.append((protocol.socket.gethostname(), step))
         o = Path(cmd[cmd.index("--out") + 1])
+        if step in fail:
+            fail.discard(step)
+            raise subprocess.CalledProcessError(1, cmd)
         if step == "dump":
             set_outputs(tmp_path / "staged" / o.parent.name, o.parent.name)
             shutil.copytree(tmp_path / "staged" / o.parent.name / "dump", o)
@@ -1106,13 +1112,23 @@ def test_diag_run_split_over_two_hosts_050_r9(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match="REFUSED: .*dumps of checkpoint sha256"):
         protocol.main(base + ["--part", "cpu", "--train-log", str(log)])
     monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: SHA)
+    dirty = {**CLEAN_GIT, "protocol_files_dirty": True, "dirty_paths": ["tools/eval/protocol.py"], "dirty_diff_sha256": "d" * 64}
+    monkeypatch.setattr(protocol, "git_state", lambda: dirty)
+    with pytest.raises(SystemExit, match="REFUSED: .*uncommitted protocol files differ between the parts"):
+        protocol.main(base + ["--part", "cpu", "--train-log", str(log), "--allow-dirty"])
+    monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
+    fail.add("summary")  # a failed cpu attempt, then run again on the same host
+    with pytest.raises(subprocess.CalledProcessError):
+        protocol.main(base + ["--part", "cpu", "--train-log", str(log)])
     ran.clear()
     protocol.main(base + ["--part", "cpu", "--train-log", str(log)])
     assert ran == [("cpu", "probes"), ("cpu", "intervene"), ("cpu", "summary"), ("cpu", "probes"), ("cpu", "summary"), ("cpu", "spatial_logs")]
     assert fake_set_data.calls[-2:] == [("teacher", False), ("human", False)]  # no link trees on the cpu host
     rec = json.loads((out / "protocol.json").read_text(encoding="utf-8"))
-    assert [(s["step"], s["host"]) for s in rec["steps"]][4:] == [("fetch", "cpu"), ("probes", "cpu"), ("intervene", "cpu"), ("summary", "cpu"),
+    assert [(s["step"], s["host"]) for s in rec["steps"]][4:] == [("fetch", "cpu"), ("probes", "cpu"), ("intervene", "cpu"), ("summary", "cpu"),  # failed attempt
+                                                                  ("fetch", "cpu"), ("probes", "cpu"), ("intervene", "cpu"), ("summary", "cpu"),
                                                                   ("fetch", "cpu"), ("probes", "cpu"), ("summary", "cpu"), ("spatial_logs", "cpu")]
+    assert "error" in rec["steps"][7] and sum(c[4] == "probes" for c in rec["commands"] if len(c) > 4) == 2  # commands not repeated
     assert rec["finished"] and rec["check"] == [] and rec["parts"]["cpu"]["host"] == "cpu" and rec["train_log"]["file"] == "s1.log"
     assert ["fetch", "<shared>/artifacts/diag/m2-s1__ckpt-9/teacher/dump", "<cache>/diag_dump/m2-s1__ckpt-9/teacher/dump"] in rec["commands"]
     assert not (out / "running.json").exists() and (tmp_path / "cache_cpu" / "diag_dump" / "m2-s1__ckpt-9" / "teacher" / "dump" / "manifest.json").is_file()
@@ -1192,6 +1208,8 @@ def test_diag_table_050_r9(tmp_path):
     assert res["intervention"]["teacher"]["Z"]["effects"]["start"]["bunker_any"]["mean"] == 0.01
     md = "\n".join(diag_table.markdown(LIN, {"m2-s1": res}))
     assert "### cue probe, human hold-out, T `count|focus_rows`" in md and "| m2-s1 | 17097 / 154 | 0.500 [0.400, 0.600]" in md
+    # user decision 2026-11-11 (AMB-050-4): the TvT barracks count is labelled, not compared; the P count has values
+    assert res["cue"]["human"]["T"]["count|focus_rows"]["not_measurable"].startswith("TvT") and "| m2-s1 | 측정 불가 (not measurable): TvT" in md
     assert "### counterfactual intervention, teacher hold-out, Z" in md and "r4 39.8% (51 @ 3000)" in md
     ck1 = all_outputs(tmp_path / "c")
     (ck1 / "spatial_log.json").unlink()

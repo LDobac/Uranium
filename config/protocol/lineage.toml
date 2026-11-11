@@ -269,6 +269,11 @@ stages = ["token", "e_pool", "x_in", "L1.out", "h"]
 # count|focus_rows = the enemy max-seen production-building count (050-R9 "적 최대 관측 수"); it must have values
 tasks = ["count|focus_rows", "hp|unf_token", "start|all_token_rows", "focus2_by_300|all_token_rows"]
 required = ["count|focus_rows"]
+# User decision 2026-11-11 (AMB-050-4 follow-up): the TvT barracks count cue is not measurable on this data (before
+# 6:00 the enemy nearly always has one barracks; Checkpoint 1 r1: 6,497 of 6,557 probe rows count 1, the 60 others
+# from one game). The probes still run it; it is not required and the tables label it; only the P (gateway) count
+# cue is compared.
+not_measurable = { T = { "count|focus_rows" = "TvT: the max-seen barracks count is 1 on nearly every row (user decision 2026-11-11)" } }
 
 [metric.dead_channels]
 kind = "diag_train_log"

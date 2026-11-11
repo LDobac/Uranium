@@ -712,10 +712,17 @@ pub struct ChosenGames {
     cur: VecDeque<(usize, ShardGame)>,
     cur_file: usize,
     last: Option<GameId>,
+    /// The read-ahead thread: joined when the channel ends, so a panic there is an error, not the
+    /// end of the games.
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 /// A decoded file of [`ChosenGames`]: its index and its chosen games with their index in it.
 type ChosenFile = (usize, Vec<(usize, ShardGame)>);
+
+fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
+    p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "non-text panic".into())
+}
 
 /// `game` with its steps at frame >= `until` dropped, the first step always kept (the
 /// [`crate::eval::EvalSelection::until_frame`] cut).
@@ -737,7 +744,7 @@ impl ChosenGames {
         let files: std::collections::BTreeSet<usize> = ids.iter().map(|g| g.file).collect();
         let (tx, rx) = std::sync::mpsc::sync_channel(if until.is_some() { CHOSEN_PREFETCH_FILES_CUT } else { CHOSEN_PREFETCH_FILES });
         // The reader dropping `rx` (an evaluation stopped early) ends the thread at its next send.
-        std::thread::spawn(move || {
+        let thread = std::thread::spawn(move || {
             for k in files {
                 let r = src.file_games(k).map(|games| {
                     let mut kept: Vec<(usize, ShardGame)> = games.into_iter().enumerate().filter(|(i, _)| ids.contains(&GameId { file: k, game: *i })).collect();
@@ -752,14 +759,20 @@ impl ChosenGames {
                 }
             }
         });
-        Self { rx, cur: VecDeque::new(), cur_file: 0, last: None }
+        Self { rx, cur: VecDeque::new(), cur_file: 0, last: None, thread: Some(thread) }
     }
 }
 
 impl StepSource for ChosenGames {
     fn next_game(&mut self) -> Result<Option<ShardGame>> {
         while self.cur.is_empty() {
-            let Ok(r) = self.rx.recv() else { return Ok(None) };
+            let Ok(r) = self.rx.recv() else {
+                // The thread is done: every file sent, or it panicked (then no silent early end).
+                if let Some(t) = self.thread.take() {
+                    t.join().map_err(|p| anyhow::anyhow!("the chosen-games read-ahead thread panicked: {}", panic_text(&*p)))?;
+                }
+                return Ok(None);
+            };
             let (k, games) = r?;
             self.cur_file = k;
             self.cur = games.into();
@@ -1282,4 +1295,23 @@ pub fn prepare(game: &ShardGame, z_present: bool, sym: Sym, maps: &MapStore) -> 
     let mut stream = GameStream::new(game.clone(), z_present, sym, maps)?;
     let (steps, invalid_labels) = stream.next_chunk(usize::MAX);
     Ok(GameSeq { steps, result: stream.result, invalid_labels })
+}
+
+#[cfg(test)]
+mod chosen_tests {
+    use super::*;
+
+    /// 050-R9 review: a read-ahead thread that panics ends the games with an error, not silently
+    /// (an evaluation would score fewer games).
+    #[test]
+    fn chosen_games_read_ahead_panic_is_an_error_050_r9() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Result<ChosenFile>>(1);
+        let thread = std::thread::spawn(move || {
+            let _tx = tx;
+            panic!("decode failed");
+        });
+        let mut c = ChosenGames { rx, cur: VecDeque::new(), cur_file: 0, last: None, thread: Some(thread) };
+        let e = c.next_game().expect_err("a panic is an error");
+        assert!(format!("{e:#}").contains("decode failed"));
+    }
 }
