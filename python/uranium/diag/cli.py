@@ -12,6 +12,8 @@ COMMANDS = {
     "spatial": ("spatial", "032-R25 dead-channel statistics (pos / dead / const) of the ReLU-bearing layers"),
     "core-split": ("core_split", "probes at the GTrXL sub-points and the gate decomposition, on a dump"),
     "summary": ("summary", "the per-lineage-point summary JSON from the other commands' outputs"),
+    "plan-dump": ("plan_dump", "jepa_planning S0 rows: h', JEPA target, privileged, own state, action, policy log-probs, g_k, win_open"),
+    "plan-s0": ("plan_s0", "jepa_planning S0 predictors U / A / A+d / H / S and the M0-M3d tables on plan-dump folders"),
 }
 
 
