@@ -796,7 +796,7 @@ def test_check_diag_accepts_the_pinned_outputs_050_r9(tmp_path, capsys):
     assert protocol.check_diag(LIN, "dead_channels", out, SHA) == []
     protocol.main(["check-diag", str(out)])
     text = capsys.readouterr().out
-    assert "NOTE human expect_games = 1000 (not pinned yet)" in text and "conform to the protocol" in text
+    assert "NOTE" not in text and "conform to the protocol" in text  # both sets' data fingerprints pinned
 
 
 @pytest.mark.parametrize("name, edit, want", [
@@ -994,8 +994,7 @@ def test_diag_run_records_retries_and_checks_050_r9(tmp_path, monkeypatch):
     assert [s["step"] for s in rec["steps"]] == ["dump", "probes", "intervene", "copy", "summary", "dump", "probes", "copy", "summary", "spatial_logs"]
     assert rec["commands"][0][0] == "python" and rec["commands"][0][6] == "<shared>/checkpoints/m2-s1/ckpt-9"
     assert rec["commands"][0][-1] == "<cache>/diag_dump/m2-s1__ckpt-9/teacher/dump" and rec["commands"][3] == ["copy", "<cache>/diag_dump/m2-s1__ckpt-9/teacher/dump", "<shared>/artifacts/diag/m2-s1__ckpt-9/teacher/dump"]
-    assert rec["sets"]["human"]["files"] == 2069 and rec["unpinned"] == ["human expect_games = 1000 (not pinned yet)", "human expect_rows = 500000 (not pinned yet)",
-                                                                       "human expect_act_rows = 90000 (not pinned yet)"]
+    assert rec["sets"]["human"]["files"] == 2069 and rec["unpinned"] == []
     with pytest.raises(SystemExit, match="REFUSED: .*protocol.json exists"):
         protocol.main(base + ["checkpoints/m2-s1/ckpt-9"])
     # a failed attempt: kept (running.json with the error), then run again
@@ -1126,8 +1125,8 @@ def test_s1e2_final_only_restricts_cue_diag_only_050_r9(tmp_path, monkeypatch, c
 
 
 def test_human_data_consistency_across_folders_050_r9(tmp_path):
-    """The human set's fingerprint is not pinned yet: check-diag compares it with the other finished folders
-    (the same data for every checkpoint)."""
+    """check-diag compares a set's data fingerprint (and the probe tasks' rows / games) with the other finished
+    folders (the same data for every checkpoint), besides the pinned values."""
     root = tmp_path / "diag"
     a = all_outputs(root / "m2-s1__ckpt-1")
     b = all_outputs(root / "bc-dagger-r1__ckpt-1137")
@@ -1135,6 +1134,7 @@ def test_human_data_consistency_across_folders_050_r9(tmp_path):
     set_outputs(b / "human", "human", manifest={"games": 999})
     problems = protocol.check_diag(LIN, "cue_diag", b)
     assert any("human data differs from the finished m2-s1__ckpt-1: games 999 vs 1000" in p for p in problems), problems
+    assert any("human dump games: 999, pinned 1000" in p for p in problems), problems
     hp = json.loads((a / "human" / "probes.json").read_text(encoding="utf-8"))
     hp["races"]["P"]["tasks"]["count|focus_rows"]["rows"] = 7
     (a / "human" / "probes.json").write_text(json.dumps(hp), encoding="utf-8")

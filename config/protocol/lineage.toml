@@ -241,7 +241,11 @@ cf = false
 # 8640), the steps after it are not extracted (human games run 15-20 min). Without it a 32-lane batch held whole
 # human games (about 8 GB resident on the 14 GB ROCm host) and spent most of its time on steps it drops.
 read_until = 8640
-# data fingerprint: TBD, pinned after the first run (`check-diag` prints the values while they are unset)
+# Data fingerprint: the first run's values (Checkpoint 1 r1, 2026-11-11, `check-diag` NOTE); the rows depend on
+# the data only (the same with and without --read-until).
+expect_games = 1000
+expect_rows = 763946
+expect_act_rows = 85872
 
 [metric.cue_diag.human.probes]
 # The survey's T / P settings (docs/commands.md: probes --cap 60 --boot 300), gain resid
