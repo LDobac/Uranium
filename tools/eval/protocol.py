@@ -623,7 +623,8 @@ def check_cue_set(lin: dict, name: str, d: Path, sha: str | None) -> list[str]:
             for t, (rows, games) in p["expect_tasks"].items():
                 x = tasks.get(t, {})
                 same(f"probes {race} {t} rows / games", [x.get("rows"), x.get("games")], [rows, games])
-            for t in set(p["expect_tasks"]) | set(rep.get("required", [])):
+            # a race's task the user marked not measurable on this data (AMB-050-4, 2026-11-11) is not required
+            for t in set(p["expect_tasks"]) | (set(rep.get("required", [])) - set(not_measurable(rep, race))):
                 x = tasks.get(t, {})
                 if "metrics" not in x:
                     problems.append(f"{name} probes {race} {t}: no values ({x.get('skipped', 'not run')})")
@@ -644,6 +645,12 @@ def check_cue_set(lin: dict, name: str, d: Path, sha: str | None) -> list[str]:
             same("intervene window", ivr.get("window"), [float(x) for x in iv["window"]])
             same("intervene races", sorted(ivr.get("races", {})), sorted(iv["races"]))
     return problems + data_consistency(lin, name, d)
+
+
+def not_measurable(rep: dict, race: str) -> dict[str, str]:
+    """{task: reason} of a cue set's `report.not_measurable` for `race`: probed, not required, labelled in the tables
+    (user decision 2026-11-11, AMB-050-4: the human TvT barracks count)."""
+    return dict((rep.get("not_measurable") or {}).get(race, {}))
 
 
 def game_rows_sha256(dump: Path) -> str | None:
@@ -897,7 +904,8 @@ def cmd_diag(a) -> None:
             print(f"[diag] earlier local copy kept as {moved}", flush=True)
         rec["parts"]["cpu"] = {"host": host, "platform": sys.platform, "git": git, "started": now(), "finished": None}
         rec["train_log"] = {"file": Path(a.train_log).name, "sha256": log_sha} if log_sha else None
-        rec["commands"] += [diag_record_cmd(c, roots) for c in cmds]
+        # the gpu part's commands, then this attempt's (an earlier failed cpu attempt's are not repeated)
+        rec["commands"] = [c for c in rec["commands"] if step_part(c) == "gpu"] + [diag_record_cmd(c, roots) for c in cmds]
     else:
         if (out / RUNNING).is_file() and not a.takeover:
             try:
@@ -988,6 +996,10 @@ def cpu_record(out: Path, sha: str, metrics: list[str], git: dict, takeover: boo
         raise Refused(f"{f}: metrics {rec.get('metrics')}, this attempt {metrics}")
     if (gpu.get("git") or {}).get("commit") != git.get("commit"):
         raise Refused(f"{f}: the dumps were made at git {(gpu.get('git') or {}).get('commit')}, this host is at {git.get('commit')} (same commit on both parts)")
+    g = gpu.get("git") or {}
+    if (g.get("dirty_paths") or [], g.get("dirty_diff_sha256")) != (git.get("dirty_paths") or [], git.get("dirty_diff_sha256")):
+        raise Refused(f"{f}: uncommitted protocol files differ between the parts (gpu {g.get('dirty_paths') or []}, this host {git.get('dirty_paths') or []}); "
+                      f"the same protocol files on both parts")
     cpu = rec["parts"].get("cpu")
     if cpu and not cpu.get("finished") and not takeover:
         failed = any("error" in s for s in rec.get("steps", []) if s.get("host") == cpu.get("host") and step_part_name(s["step"]) == "cpu")
@@ -1001,6 +1013,11 @@ def cmd_check_diag(a) -> None:
     sha = checkpoint_sha256(a.checkpoint) if a.checkpoint else None
     metrics = [x.strip() for x in a.metrics.split(",") if x.strip()]
     problems = [p for metric in metrics for p in check_diag(lin, metric, Path(a.out), sha)]
+    rec_f = Path(a.out) / DIAG_RECORD
+    if rec_f.is_file():  # where the parts ran (050-R9 record: the probes' CPU host changes MLP values up to 0.005)
+        rec = json.loads(rec_f.read_text(encoding="utf-8"))
+        parts = rec.get("parts") or {"all": {"host": rec.get("host")}}
+        print("hosts:", ", ".join(f"{k} {v.get('host')}" for k, v in parts.items()))
     if "cue_diag" in metrics:
         for n in unpinned(lin, Path(a.out)):
             print("NOTE", n)

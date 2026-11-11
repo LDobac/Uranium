@@ -5,7 +5,8 @@ measurement_protocol.md) from the output folders `protocol.py diag --run` writes
   (AUC for a class task) with the game-bootstrap 95% CI at the reported stages for each reported task
   (`report.stages`, `report.tasks`), the h_t MLP(64) value, the nuisance-only ridge, the gain over the
   nuisance at h_t; a skipped task shows its reason. The enemy max-seen production-building count
-  (`count|focus_rows`) has values on the human set; on the Zerg teacher rows it is constant (skipped).
+  (`count|focus_rows`) has values on the human Protoss rows; on the Zerg teacher rows it is constant (skipped);
+  on the human Terran rows it is "측정 불가" (not measurable, `report.not_measurable`, user decision 2026-11-11).
 - intervention (teacher set, all classes): games / edited, mean delta [CI] of every reported effect and metric
 - dead channels (041-R25 training-log records, `spatial_log.json`, tools/eval/spatial_logs.py): alarms, worst
   dead layer share, max const S8 / s_pool, min positive share. Checkpoint 1 lineage: not measured (no
@@ -47,9 +48,13 @@ def cue_rows(lin: dict, name: str, pr: dict) -> dict:
     out = {}
     for race in s["probes"]["races"]:
         tasks = pr.get("races", {}).get(race, {}).get("tasks", {})
+        nm = protocol.not_measurable(rep, race)
         rr = {}
         for t in rep["tasks"]:
             x = tasks.get(t, {})
+            if t in nm:  # user decision 2026-11-11 (AMB-050-4): labelled, its values not compared
+                rr[t] = {"not_measurable": nm[t], "rows": x.get("rows"), "games": x.get("games")}
+                continue
             if "metrics" not in x:
                 rr[t] = {"skipped": x.get("skipped", "not run"), "rows": x.get("rows")}
                 continue
@@ -109,6 +114,9 @@ def markdown(lin: dict, res: dict[str, dict]) -> list[str]:
                 L += ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
                 for lab, r in cue.items():
                     x = r.get(race, {}).get(t, {})
+                    if "not_measurable" in x:
+                        L.append(f"| {lab} | 측정 불가 (not measurable): {x['not_measurable']} |" + " |" * (len(head) - 2))
+                        continue
                     if "stages" not in x:
                         L.append(f"| {lab} | skipped: {x.get('skipped')} |" + " |" * (len(head) - 2))
                         continue

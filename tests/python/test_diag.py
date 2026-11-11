@@ -371,6 +371,30 @@ def test_action_seq_is_forward_seq_action_head_050_r9(tiny_config, shards, tmp_p
     cap.close()
 
 
+@pytest.mark.parametrize("variant", ["outer", "model2", "model2_all"])
+def test_action_seq_with_outer_and_bypass_050_r9(variant):
+    """`action_seq` = `forward_seq(...)["dists"]["action"]` (and the state) with the outer LSTM, the head bypass
+    (032-R21, made non-zero) and core_skip (032-R23) on: the model 2 path of the diagnostics."""
+    from test_variants import SEG, net_of, perturb, tiny
+
+    from uranium.model.config import VariantConfig
+
+    v = {"outer": VariantConfig(outer=SEG), "model2": VariantConfig(outer=SEG, bypass=True, core_skip=True),
+         "model2_all": VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=SEG, bypass=True, core_skip=True)}[variant]
+    cfg, b, t, obs, labels, priv = tiny(v)
+    net = perturb(net_of(cfg))
+    if net.variant.core_skip is not None:  # zero-initialised: non-zero as after training
+        with torch.no_grad():
+            for p in net.variant.core_skip.parameters():
+                p.copy_(torch.randn(p.shape, generator=torch.Generator().manual_seed(5)) * 0.05)
+    with torch.no_grad():
+        o = net.forward_seq(obs, labels, priv, net.init_state(b), t)
+        a, lp = net.action_seq(obs, net.init_state(b), t)
+    assert torch.equal(o["dists"]["action"], lp)
+    for x, y in zip(torch.utils._pytree.tree_leaves(o["state"]), torch.utils._pytree.tree_leaves(a["state"])):
+        assert torch.equal(x, y)
+
+
 def test_dump_read_until_keeps_the_rows_050_r9(tiny_config, shards, tmp_path, monkeypatch):
     """`diag dump --read-until`: each game read only up to that frame; the rows (and their game ids) are the
     dumped rows without it, in another order (the lanes run shorter games); a cut before the row window is refused."""

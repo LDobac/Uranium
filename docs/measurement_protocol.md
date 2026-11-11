@@ -93,7 +93,8 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
      - `human`(사람 TvT·TvP): 적 최대 관측 생산 건물 수(`count|focus_rows`, 배럭·게이트웨이)를 잰다(AMB-050-4). `reports/jepa_survey.md` 10.2.3 방식이다.
        - 데이터: 사람 shard 4개(val500과 같은 `--dataset`)의 val·test에서 각 500게임(032-R17 ② 고정 seed 1). 데이터셋 manifest 지문(2,069 파일)이 다르면 거부한다.
        - 판 수는 사용자 결정이다(사용자 확인 2026-11-10). `diag dump`에 상대 종족 필터가 없어 모든 상대의 1,000게임을 읽는다. val500 종족 비율로 TvT 약 150, TvP 약 500 관점이다(조사의 전체 패스는 497·1,142, 두 체크포인트 약 4.2시간).
-       - 설정: 조사의 테란·프로토스 설정(`--act-until 8640 --act-every 4`, `probes --cap 60 --boot 300`), 반사실 pass 없음, ROCm f32, 레인 그룹 4. `probes --races T,P`이고 `count|focus_rows`에 값이 있어야 한다.
+       - 설정: 조사의 테란·프로토스 설정(`--act-until 8640 --act-every 4`, `probes --cap 60 --boot 300`), 반사실 pass 없음, ROCm f32, 레인 그룹 4. `probes --races T,P`이고 프로토스의 `count|focus_rows`에 값이 있어야 한다.
+       - 테란(TvT)의 `count|focus_rows`(적 최대 관측 배럭 수)는 "이 데이터로 측정 불가"다(사용자 확인 2026-11-11, AMB-050-4 후속). 6:00 전에는 상대 배럭이 거의 늘 1개다(Checkpoint 1 r1: probe 행 6,557개 중 6,497개가 1, 나머지 60개는 한 판). probe는 돌지만 `check-diag`가 요구하지 않고 표는 "측정 불가"로 쓴다(`lineage.toml` `report.not_measurable`). 지점 비교는 프로토스(게이트웨이 수)만 한다.
        - `--read-until 8640`: 판을 6:00까지만 읽는다. 쓰는 행·활성값은 모두 6:00 전이라 같고, 사람 판(15~20분)의 나머지 step을 읽지 않는다. 레인이 판을 더 빨리 바꾸므로 parts 안 행 순서만 다르다. 교사 보관분에는 쓰지 않는다(λ run과 같은 행 순서를 지켜야 probe 값이 같다).
        - 데이터 지문(판·행·활성값 행 수)은 첫 측정(2026-11-11 r1) 값으로 고정했다: 판 1,000·행 763,946·활성값 행 85,872. 그 밖에 `check-diag`는 옆의 끝난 출력 폴더(`<shared>/artifacts/diag/*/<set>`)와 판·행·활성값 행 수, 과제별 행·판 수를 맞춰 보고 다르면 거부한다(데이터만으로 정해지는 값이라 체크포인트와 무관).
    - `dead_channels`는 그 run의 학습 로그 `sp_*` 기록(041-R25·042-R21)만 쓴다(AMB-050-5). 기록은 update 600부터 그 체크포인트의 update(BC: `ckpt-N` = update N, RL: agent `main`의 로그 전체)까지다.
@@ -105,7 +106,7 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
      - 다 끝나면 `running.json`이 `protocol.json`이 된다. 체크포인트 sha256, git 커밋과 미커밋 측정 파일, backend·정밀도, 보관분, 학습 로그 이름·sha256, 실행한 명령(`python`, `<shared>`·`<cache>` 표기), 단계 기록, 확인 결과가 들어간다.
      - `protocol.json`이 있는 폴더는 거부한다. `running.json`에 실패한 단계가 없으면(다른 호스트가 재는 중일 수 있음) 거부하고, 그 호스트가 없어졌으면 `--takeover`로 다시 잰다. 실패한 시도의 폴더는 `<out>.failed-<k>`로, 캐시의 덤프는 `<run>__<ckpt>.failed-<k>`로 이름을 바꿔 남기고 다시 잰다.
      - 두 호스트로 나누기(`--part`): `--run --part gpu`(Linux ROCm 호스트)는 덤프와 그 복사만 하고 `running.json`을 남긴다. 이어 CPU 호스트에서 같은 git 커밋으로 `--run --part cpu`(`dead_channels`면 `--train-log`도)를 하면 덤프를 그 호스트 `<cache>`로 가져와(`fetch`) probes·intervene·summary·학습 로그 단계를 돌리고 `protocol.json`을 쓴다. gpu 단계가 안 끝났거나, 커밋·체크포인트·지표가 다르면 거부한다. 단계마다 호스트를 남긴다. 기본값 `--part all`은 한 호스트에서 전부 돈다.
-       - probes(`--device cpu`)는 호스트마다 값이 조금 다르다. 같은 덤프(r1 교사)에서 Linux CPU 호스트와 Linux ROCm 호스트의 CPU를 비교하면 ridge는 2e-8까지, MLP(64)는 0.005까지 차이 났다(CPU 행렬 곱 라이브러리 차이). λ run probes는 Linux CPU 호스트에서 돌았으므로 그 호스트에서 돌린다. Linux ROCm 호스트의 CPU에서는 약 10배 느리다(교사 probes 7,033초 대 707초).
+       - probes(`--device cpu`)는 호스트마다 값이 조금 다르다. 같은 덤프(r1 교사)에서 Linux CPU 호스트와 Linux ROCm 호스트의 CPU를 비교하면 ridge는 2e-8까지, MLP(64)는 0.005까지 차이 났다(CPU 행렬 곱 라이브러리 차이). λ run probes는 Linux CPU 호스트에서 돌았으므로 `--part cpu`는 Linux CPU 호스트에서 돌린다(메인 임시 결정 2026-11-11). Linux ROCm 호스트의 CPU에서는 약 10배 느리다(교사 probes 7,033초 대 707초). `check-diag`는 각 단계가 돈 호스트를 출력한다.
      - 이 호스트 캐시에 지점마다 덤프가 남는다. 교사 덤프는 약 0.4 GB(λ run, `--cf` 없이), 반사실 pass가 있는 교사 덤프도 약 0.4 GB, 사람 1,000게임 덤프는 약 1.0 GB다(r1). `--part cpu` 호스트 캐시에도 같은 크기가 남는다. 공용 드라이브에도 같은 크기가 복사된다.
      - 출력하는 명령(경로는 실행 호스트 것, `<out>` = `<shared>/artifacts/diag/<run>__<ckpt>`):
        ```
@@ -126,7 +127,7 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
    - 확인: `python tools/eval/protocol.py check-diag <out> [--metrics ...] [--checkpoint <ckpt>]`. 다음 중 하나라도 다르면 실패한다.
      - `protocol.json`: 끝난 기록, 그 지표, git 커밋, 체크포인트 sha256(050-R9 기록 규칙)
      - 덤프(보관분마다): 데이터 폴더, 분할, 판 수·seed(`human`), 설정 파일, backend·정밀도, 레인 그룹, `row_until`·`act_until`·`act_every`·`read_until`(`human`만 8640), 반사실 pass(교사만)와 착공 시각, 고정된 데이터 지문(교사: 판 433·행 176,873·활성값 행 36,516, 사람: 판 1,000·행 763,946·활성값 행 85,872), 보고 지점(`token`, `e_pool`, `x_in`, `L1.out`, `h`)의 활성값
-     - probes: 같은 체크포인트, gain 방식·bootstrap·cap·MLP, 종족, 과제별 행·판 수(교사: 미완성 풀 17,097행·154판, 토큰 있는 행 36,516행·351판), 값이 있어야 하는 과제(`human`의 `count|focus_rows`), 건너뛰어야 하는 과제(교사의 `count|focus_rows`)
+     - probes: 같은 체크포인트, gain 방식·bootstrap·cap·MLP, 종족, 과제별 행·판 수(교사: 미완성 풀 17,097행·154판, 토큰 있는 행 36,516행·351판), 값이 있어야 하는 과제(`human` 프로토스의 `count|focus_rows`, 테란은 측정 불가라 요구하지 않음), 건너뛰어야 하는 과제(교사의 `count|focus_rows`)
      - intervene(교사): 같은 체크포인트, 창, 종족
      - `spatial_log.json`: 시작 update 600, 기록이 있음, 경보 층 11개
    - 표: `python tools/eval/diag_table.py m2-s1=<out> ck1-s1=<out> ... [--metrics ...] [--json <파일>] [--md <파일>]`. 폴더마다 먼저 `check-diag`를 하고, 다르면 거부한다. Checkpoint 1 폴더는 `--metrics cue_diag`로 따로 내거나 `--no-check`로 함께 낸다(죽은 채널 칸은 "재지 않음").
