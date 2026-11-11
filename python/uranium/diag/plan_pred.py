@@ -5,7 +5,8 @@ Data (`Data`): one or more `diag plan-dump` folders, each a source `NAME:KIND:RO
 - kind `human` / `teacher` / `model` (M3b reads teacher and model games, M3c trains on human-only and
   model-only rows),
 - role `train` (every game trains), `eval` (every game evaluates) or `split` (a fixed-seed game-level
-  split, `eval_frac` evaluates; both streams of one replay on the same side, as 041-R12).
+  split, `eval_frac` evaluates; both streams of one replay on the same side, as 041-R12). The split
+  draws from a generator seeded by (`split_seed`, crc32 of the source NAME): renaming a source moves it.
 Pairs (t, t+k): two rows of one game k decisions apart (`dec`); a row is used when its label is valid
 (weight > 0) and its t+k row was dumped. Every predictor of one k sees the same rows.
 
@@ -16,10 +17,11 @@ state at t+k, standardised, MSE), q̂ (2 logits: game won, 8:00 SCVs >= 8; BCE w
   A   h'_t ⊕ Emb(a_t) (32)
   Ad  h'_t ⊕ Emb(a_t) ⊕ Emb(delay bucket) (16)              (A+d)
   H   h'_t ⊕ action-type shares over decisions [t, t+k) (101) (oracle)
-  S   h'_t ⊕ Emb(action of a fixed random row of the same game) (control)
+  S   h'_t ⊕ Emb(action of a fixed random valid-label row of the same game) (control, `PARTNER_SEED`)
 h' is standardised with the training rows' mean / sd (part of the predictor). Same steps, batch and seed
 for every predictor."""
 
+import hashlib
 import json
 import zlib
 from dataclasses import dataclass
@@ -36,6 +38,11 @@ VARIANTS = ("U", "A", "Ad", "H", "S")
 KINDS = ("human", "teacher", "model")
 ROLES = ("train", "eval", "split")
 HIDDEN, EMB_A, EMB_D = 512, 32, 16
+PARTNER_SEED = 12345
+# Standardisation floors (sd used = max(sd, floor); a column constant on the training rows, sd < 1e-6,
+# is left out): own state half a count (supply columns are BWAPI half-supply units, the same floor),
+# privileged 0.05 in its encoded units (a count is log1p(n) / 4: 0 -> 1 is 0.17).
+OWN_SD_FLOOR, PRIV_SD_FLOOR, CONST_SD = 0.5, 0.05, 1e-6
 Q_NAMES = ("win", "scv8")
 
 
@@ -68,7 +75,13 @@ def split_eval(keys: list, name: str, frac: float, seed: int) -> set:
 class Data:
     """Every row of the sources in memory except the g_k outputs (memmaps): h, y, priv, logp float16."""
 
-    def __init__(self, sources: list[Source], ks=(8, 32), eval_frac: float = 0.2, split_seed: int = 1, drop: dict | None = None):
+    def __init__(self, sources: list[Source], ks=(8, 32), eval_frac: float = 0.2, split_seed: int = 1, drop: dict | None = None,
+                 keep_bot: bool = False, maps=None):
+        """`drop` {source name: {"bot": [[sha256, start], ...], "model": [...]}}: the views of a source
+        (e.g. config/plan_s0/jepa_diag_tp_views.json); a stream (replay sha256, own start slot
+        `scalar_cat[2]`) in "bot" is left out, and every stream must be in one of the lists. A `model`
+        source with Terran-enemy streams (TvT: both players' views are streams) needs one, or
+        `keep_bot`. `maps`: only games of these map families (0 / 1 = the target maps)."""
         self.sources = sources
         self.ks = list(ks)
         rows, games, mans = [], [], []
@@ -91,19 +104,33 @@ class Data:
         # global games
         self.game_meta, gid_map = [], []
         drop = drop or {}
-        for si, (s, g) in enumerate(zip(sources, games)):
-            dropped = {(x[0], int(x[1]) if len(x) > 1 else None) for x in drop.get(s.name, [])}
-            ev = set()
+        maps = None if maps is None else {int(x) for x in maps}
+        self.dropped = {}
+        for s, g in zip(sources, games):
+            views = drop.get(s.name)
+            bot = {(x[0], int(x[1])) for x in views["bot"]} if views else set()
+            ours = {(x[0], int(x[1])) for x in views["model"]} if views else set()
+            if s.kind == "model" and not views and not keep_bot and any(e.get("race") == "T" for e in g.values()):
+                raise SystemExit(f"plan-s0: model source {s.name} has Terran-enemy streams (the bot's view of a TvT replay is a stream too): "
+                                 f"--drop {s.name}=<views json> or --keep-bot-perspective")
             keyf = lambda gid, e: e.get("sha") or f"gid{gid}"  # noqa: E731
-            if s.role == "split":
-                ev = split_eval([keyf(k, e) for k, e in g.items()], s.name, eval_frac, split_seed)
-            m = {}
+            m, n_bot, n_map = {}, 0, 0
             for gid in sorted(g):
                 e = g[gid]
+                view = (e.get("sha"), int(e.get("start", -1)))
+                if views and view not in bot and view not in ours:
+                    raise SystemExit(f"plan-s0: source {s.name} stream {view} is in neither view list of --drop")
+                if view in bot:
+                    n_bot += 1
+                elif maps is not None and int(e.get("map", -1)) not in maps:
+                    n_map += 1
+                else:
+                    m[gid] = None
+            self.dropped[s.name] = {"bot_view": n_bot, "map": n_map}
+            ev = split_eval([keyf(k, g[k]) for k in m], s.name, eval_frac, split_seed) if s.role == "split" else set()
+            for gid in m:
+                e = g[gid]
                 key = keyf(gid, e)
-                if (key, None) in dropped or (key, e.get("occ")) in dropped:
-                    m[gid] = -1
-                    continue
                 role = s.role if s.role != "split" else ("eval" if key in ev else "train")
                 m[gid] = len(self.game_meta)
                 self.game_meta.append({**e, "src": s.name, "kind": s.kind, "role": role, "gid": gid, "key": f"{s.name}/{key}"})
@@ -119,24 +146,32 @@ class Data:
         keys = sorted({e["key"] for e in self.game_meta})
         kid = {k: i for i, k in enumerate(keys)}
         self.g_unit = np.array([kid[e["key"]] for e in self.game_meta], np.int64)  # bootstrap unit: the replay
-        # rows
-        keep_parts, cols = [], {k: [] for k in ("h", "y", "priv", "priv_ok", "own", "action", "delay", "weight", "logp", "mask", "win_open", "frame", "dec", "game")}
-        self.gk_rows = []  # per source: (global row offset, local row index array, memmaps)
-        off = 0
+        # the games and their roles (the report refuses models trained on another split)
+        self.split_digest = hashlib.sha256(json.dumps(sorted([e["key"], e.get("start"), e["role"]] for e in self.game_meta)).encode()).hexdigest()
+        # rows: preallocated, filled source by source from the memmaps (no second copy)
+        fields = ("h", "y", "priv", "priv_ok", "own", "action", "delay", "weight", "logp", "mask", "win_open", "frame", "dec")
+        sel = []
         for si, r in enumerate(rows):
-            gm = np.array([gid_map[si].get(int(x), -1) for x in range(max(gid_map[si], default=-1) + 1)], np.int64)
+            gm = np.full(max(games[si], default=-1) + 1, -1, np.int64)
+            for gid, j in gid_map[si].items():
+                gm[gid] = j
             game = gm[np.asarray(r["game"])] if len(r["game"]) else np.zeros(0, np.int64)
             keep = np.nonzero(game >= 0)[0]
-            keep_parts.append(keep)
-            for k in cols:
-                if k == "game":
-                    cols[k].append(game[keep])
-                else:
-                    cols[k].append(np.asarray(r[k][keep]) if len(keep) else np.zeros((0, *r[k].shape[1:]), r[k].dtype))
+            sel.append((keep, game[keep]))
+        total = sum(len(k) for k, _ in sel)
+        for f in fields:
+            setattr(self, f, np.empty((total, *rows[0][f].shape[1:]), rows[0][f].dtype))
+        self.game = np.empty(total, np.int64)
+        self.gk_rows = []  # per source: (global row offset, local row index array, memmaps)
+        off = 0
+        for (keep, game), r in zip(sel, rows):
+            n = len(keep)
+            self.game[off:off + n] = game
+            for f in fields:
+                for c in range(0, n, 200_000):  # bounded temporaries
+                    getattr(self, f)[off + c:off + min(c + 200_000, n)] = r[f][keep[c:c + 200_000]]
             self.gk_rows.append((off, keep, {k: r[k] for k in r if k.startswith("g") and k[1:].isdigit()}))
-            off += len(keep)
-        for k, v in cols.items():
-            setattr(self, k, np.concatenate(v))
+            off += n
         self.N = len(self.game)
         self.G = G
         # game-ordered rows: pos, and the t+k row of the same game
@@ -153,12 +188,17 @@ class Data:
             n = np.full(self.N, -1, np.int64)
             n[self.order[ok]] = self.order[jj[ok]]
             self.nxt[k] = n
-        # the S control's partner: a fixed random row of the same game (seeded per game)
+        # the S control's partner: a random valid-label row of the same game. One generator (seed
+        # PARTNER_SEED) walks the games in global order (sources in --src order, then game id), so the
+        # draws depend on the source list and the games kept.
         starts = np.concatenate([[0], np.nonzero(np.diff(gs))[0] + 1, [self.N]])
-        partner = np.empty(self.N, np.int64)
-        rng = np.random.default_rng(12345)
+        partner = np.arange(self.N, dtype=np.int64)
+        rng = np.random.default_rng(PARTNER_SEED)
+        valid_o = self.weight[self.order] > 0
         for a, b in zip(starts[:-1], starts[1:]):
-            partner[self.order[a:b]] = self.order[a + rng.integers(0, b - a, b - a)]
+            cand = self.order[a:b][valid_o[a:b]]
+            if len(cand):
+                partner[self.order[a:b]] = cand[rng.integers(0, len(cand), b - a)]
         self.partner = partner
         self.row_eval = self.g_role_eval[self.game] if self.N else np.zeros(0, bool)
         self.row_q = self.g_q[self.game] if self.N else np.zeros((0, 2))
@@ -210,20 +250,21 @@ class Data:
     # ------------------------------------------------------------- standardisation
     def stats(self, rows) -> dict:
         """Mean / sd of h', privileged and own state over `rows` (targets: their t+k rows are the
-        same population); a near-constant column gets sd inf (left out of losses and R²)."""
+        same population). Targets: sd floored (`OWN_SD_FLOOR`, `PRIV_SD_FLOOR`); a column constant on
+        these rows gets sd inf (left out of losses and R²). h': a constant column is divided by 1."""
         sub = rows if len(rows) <= 200_000 else rows[np.linspace(0, len(rows) - 1, 200_000).astype(np.int64)]
 
-        def ms(x):
+        def ms(x, floor):
             x = np.asarray(x, np.float64)
             mu, sd = x.mean(0), x.std(0)
-            return mu.astype(np.float32), np.where(sd < 1e-4, np.inf, sd).astype(np.float32)
+            return mu.astype(np.float32), np.where(sd < CONST_SD, np.inf, np.maximum(sd, floor)).astype(np.float32)
 
         st = {}
-        st["h_mu"], st["h_sd"] = ms(self.h[sub])
+        st["h_mu"], st["h_sd"] = ms(self.h[sub], 0.0)
         st["h_sd"] = np.where(np.isfinite(st["h_sd"]), st["h_sd"], 1.0).astype(np.float32)
         pk = sub[self.priv_ok[sub] > 0]
-        st["p_mu"], st["p_sd"] = ms(self.priv[pk]) if len(pk) else (np.zeros(self.priv.shape[1], np.float32), np.full(self.priv.shape[1], np.inf, np.float32))
-        st["o_mu"], st["o_sd"] = ms(self.own[sub])
+        st["p_mu"], st["p_sd"] = ms(self.priv[pk], PRIV_SD_FLOOR) if len(pk) else (np.zeros(self.priv.shape[1], np.float32), np.full(self.priv.shape[1], np.inf, np.float32))
+        st["o_mu"], st["o_sd"] = ms(self.own[sub], OWN_SD_FLOOR)
         return st
 
     def batch(self, idx, k: int, variant: str, st: dict) -> dict:

@@ -13,8 +13,13 @@ replay, so both streams of one replay move together):
   pairs, operation-action share, rows whose policy top 8 has an operation action.
 - M1 conditioning gain over U on all rows and on operation-action rows (a_t an operation action), per
   k: ŷ 1 - cos (and the model's own g_k as a reference), p̂ R² and ô R² (standardised, kept
-  dimensions), win NLL and 8:00 SCV NLL (decided games); gain = L_U - L_X (R²: X - U), the oracle
-  share r = gain_A / gain_H, the control ratio gain_A / gain_S.
+  dimensions; ô on the 6.3 columns `OWN_HEADLINE`, `o_all` every column, `_own_cols` per column),
+  win NLL and 8:00 SCV NLL (decided games); gain = L_U - L_X (R²: X - U), the oracle share
+  r = gain_A / gain_H (undefined, and the k not judged, when H gains nothing), the control ratio
+  gain_A / gain_S.
+- Views: a `model` source with Terran-enemy streams needs `--drop NAME=<views json>` (bot views out by
+  replay sha256 + own start slot) or `--keep-bot-perspective`. Models record the split digest; a report
+  on another split is refused.
 - M2 on operation-action rows, candidates = policy top 8 open types ∪ {a_t}, predictor A: M2a
   spread R_t = mean pairwise distance of the candidates' predictions / the RMS error of the actual
   action's prediction (ŷ scaled to norm sqrt(d), ô / p̂ standardised); M2b direction: share of (row,
@@ -44,6 +49,8 @@ M0_TOP = (4, 8, 16)
 CAND_TOP = 8
 OUTCOMES = pp.Q_NAMES  # q̂ heads: game won, 8:00 SCVs >= 8
 # 6.5 thresholds, 기본안(미확정) (reports/jepa_planning.md 6.5: the user decides the numbers)
+# 6.3 o_t: the own-state columns of the headline ô metric (the predictors train on every column)
+OWN_HEADLINE = ("scv", "supply_used", "supply_total", "barracks", "bunker", "command_center", "supply_depot", "refinery", "factory", "army")
 TH_DEFAULTS = {"s_ratio": 2.0, "r_min": 0.2, "r_noise": 0.1, "m2b": 0.90, "m2a": 0.5, "m3a": 0.01}
 
 
@@ -63,7 +70,10 @@ def add_args(p) -> None:
     p.add_argument("--retrain", action="store_true")
     p.add_argument("--eval-frac", type=float, default=0.2, help="eval share of a `split` source (game level)")
     p.add_argument("--split-seed", type=int, default=1)
-    p.add_argument("--drop", help="JSON {source name: [[replay_sha256] or [sha, occ], ...]}: streams left out (e.g. the bot perspective of TvT model games)")
+    p.add_argument("--drop", action="append", default=[], help="NAME=JSON: the views of source NAME ({\"bot\": [[sha256, start], ...], \"model\": [...]}, "
+                   "config/plan_s0/jepa_diag_tp_views.json): bot views left out, every stream must be listed")
+    p.add_argument("--keep-bot-perspective", action="store_true", help="accept a model source's Terran-enemy streams without --drop (both TvT views)")
+    p.add_argument("--maps", default="", help="only games of these map families (e.g. 0,1 = the target maps; empty = all)")
     p.add_argument("--boot", type=int, default=1000)
     p.add_argument("--boot-seed", type=int, default=7)
     p.add_argument("--bands", default="2880,5760,8640,14400", help="M3a time bands (frame edges; the first..last span is `all`)")
@@ -84,7 +94,10 @@ def model_specs(ks, variants, m3c: bool) -> list[tuple[str, str, int, list | Non
 
 
 def fingerprint(data: pp.Data) -> dict:
-    return {**data.checkpoint, "rows": int(data.N), "games": int(data.G), "sources": [[s.name, s.kind, s.role] for s in data.sources]}
+    """What a trained model depends on: checkpoint, rows, sources and the games / roles kept (the split
+    digest covers --eval-frac, --split-seed, --drop and --maps)."""
+    return {**data.checkpoint, "rows": int(data.N), "games": int(data.G), "sources": [[s.name, s.kind, s.role] for s in data.sources],
+            "split_digest": data.split_digest}
 
 
 def train_all(data: pp.Data, a, ks, variants, models: Path) -> dict:
@@ -163,7 +176,8 @@ def targets(data: pp.Data, ev, k, st, with_y: bool = True) -> dict:
     o_on = np.isfinite(st["o_sd"])
     p = np.where(p_on, (data.priv[t].astype(np.float32) - st["p_mu"]) / np.where(p_on, st["p_sd"], 1.0), 0.0).astype(np.float32)
     o = np.where(o_on, (data.own[t] - st["o_mu"]) / np.where(o_on, st["o_sd"], 1.0), 0.0).astype(np.float32)
-    out = {"p": p, "p_ok": data.priv_ok[t] > 0, "o": o, "p_on": p_on, "o_on": o_on, "q": data.row_q[ev]}
+    head = np.isin(np.array(data.own_names), OWN_HEADLINE)
+    out = {"p": p, "p_ok": data.priv_ok[t] > 0, "o": o, "p_on": p_on, "o_on": o_on & head, "o_all_on": o_on, "q": data.row_q[ev]}
     if with_y:
         out["y"] = data.y[t].astype(np.float32)
     return out
@@ -172,7 +186,7 @@ def targets(data: pp.Data, ev, k, st, with_y: bool = True) -> dict:
 def eval_rows(nets: dict, data: pp.Data, ev, k, st, chunk: int = 8192) -> tuple[dict, dict]:
     """Per-row M1 terms of every predictor (and the model's own g_k, ŷ only) on rows `ev`, chunk by
     chunk (bounded memory) -> ({name: {metric: [rows]}}, {name: q̂ logits [rows, 2]})."""
-    rows = {nm: {m: [] for m in ("y", "p", "o") + OUTCOMES} for nm in nets}
+    rows = {nm: {m: [] for m in ("y", "p", "o", "o_all", "o_cols") + OUTCOMES} for nm in nets}
     rows["gk"] = {"y": []}
     qlog = {nm: [] for nm in nets}
     for s in range(0, len(ev), chunk):
@@ -199,7 +213,10 @@ def cosine(a, b) -> np.ndarray:
 def per_row(pred: dict, tg: dict) -> dict:
     out = {"y": 1.0 - cosine(pred["y"], tg["y"])}
     out["p"] = np.where(tg["p_ok"], (((pred["p"] - tg["p"]) ** 2) * tg["p_on"]).sum(1), np.nan)
-    out["o"] = (((pred["o"] - tg["o"]) ** 2) * tg["o_on"]).sum(1)
+    oc = ((pred["o"] - tg["o"]) ** 2 * tg["o_all_on"]).astype(np.float32)
+    out["o"] = (oc * tg["o_on"]).sum(1)
+    out["o_all"] = oc.sum(1)
+    out["o_cols"] = oc
     for j, q in enumerate(OUTCOMES):
         yq = tg["q"][:, j]
         out[q] = np.where(np.isfinite(yq), ps.bce(pred["q"][:, j], np.nan_to_num(yq)), np.nan)
@@ -209,20 +226,20 @@ def per_row(pred: dict, tg: dict) -> dict:
 def m1_block(boot: ps.Boot, rows: dict, tg: dict, sel: np.ndarray, names: list) -> dict:
     """One row set: per metric the predictors' values and the gains over U."""
     res = {}
-    for met in ("y", "p", "o") + OUTCOMES:
+    for met in ("y", "p", "o", "o_all") + OUTCOMES:
         vals = {}
         for nm in names:
             if met not in rows[nm]:
                 continue
             v = rows[nm][met][sel]
-            if met in ("p", "o"):
-                tgt = tg[met][sel] * (tg[f"{met}_on"])
+            if met in ("p", "o", "o_all"):
+                tgt = (tg["o"] if met.startswith("o") else tg["p"])[sel] * tg[f"{met}_on"]
                 vals[nm] = boot.r2(v, tgt, tg["p_ok"][sel] if met == "p" else None)
             else:
                 vals[nm] = boot.mean(v)
         if "U" not in vals:
             continue
-        higher = met in ("p", "o")
+        higher = met in ("p", "o", "o_all")
         gain = {nm: ((vals[nm][0] - vals["U"][0], vals[nm][1] - vals["U"][1]) if higher else (vals["U"][0] - vals[nm][0], vals["U"][1] - vals[nm][1]))
                 for nm in vals if nm != "U"}
         r = {"metric": "R2" if higher else ("1-cos" if met == "y" else "NLL"), "values": {nm: ps.ci(v) for nm, v in vals.items()},
@@ -233,6 +250,21 @@ def m1_block(boot: ps.Boot, rows: dict, tg: dict, sel: np.ndarray, names: list) 
             r["a_over_s"] = float(gain["A"][0] / gain["S"][0]) if gain["S"][0] else None
         res[met] = r
     return res
+
+
+def own_cols_block(boot: ps.Boot, rows: dict, tg: dict, sel: np.ndarray, names: list, own_names: list) -> dict:
+    """Per own-state column (kept on the training rows): each predictor's R² and the gain of A over U."""
+    out = {}
+    for c in np.nonzero(tg["o_all_on"])[0]:
+        y = tg["o"][sel][:, [c]]
+        vals = {nm: boot.r2(rows[nm]["o_cols"][sel, c], y) for nm in names if "o_cols" in rows[nm]}
+        if "U" not in vals:
+            continue
+        e = {"values": {nm: ps.ci(v) for nm, v in vals.items()}, "headline": own_names[c] in OWN_HEADLINE}
+        if "A" in vals:
+            e["gain_A"] = ps.diff(vals["A"], vals["U"])
+        out[own_names[c]] = e
+    return out
 
 
 def kind_groups(data: pp.Data, ev) -> dict:
@@ -279,6 +311,7 @@ def m2(data: pp.Data, net, st, k, ev, boot_n, seed) -> dict:
         flat_a = np.where(valid, cs, 0).reshape(-1)
         pr = pp.predict(net, data, flat_r, k, st, action=flat_a)
         out = {"y": norm_y(pr["y"]).reshape(n, C, -1), "o": (pr["o"] * tg["o_on"]).reshape(n, C, -1), "p": (pr["p"] * tg["p_on"]).reshape(n, C, -1)}
+        o_dir = pr["o"].reshape(n, C, -1)  # M2b reads the candidate's own column X, every column
         pair = valid[:, :, None] & valid[:, None, :] & ~np.eye(C, dtype=bool)[None]
         for key, x in out.items():
             d = np.linalg.norm(x[:, :, None] - x[:, None, :], axis=-1)
@@ -298,8 +331,8 @@ def m2(data: pp.Data, net, st, k, ev, boot_n, seed) -> dict:
             if not has.any():
                 continue
             ii = np.nonzero(has)[0]
-            mine = out["o"][ii, j, col[ii]]
-            others = out["o"][ii, :, col[ii]]  # [m, C]
+            mine = o_dir[ii, j, col[ii]]
+            others = o_dir[ii, :, col[ii]]  # [m, C]
             ov = valid[ii].copy()
             ov[:, j] = False
             some = ov.any(1)
@@ -353,7 +386,7 @@ def delta_q(net, data: pp.Data, rows, action) -> np.ndarray:
     return Q[np.arange(len(rows)), a] - (pi[:, :, None] * Q).sum(1)
 
 
-def m3b(data: pp.Data, nets: dict, k, a, boot_n, seed) -> dict:
+def m3b(data: pp.Data, nets: dict, a, boot_n, seed) -> dict:
     bunker = tb.action_id("Build_Bunker")
     lo, hi = (float(x) for x in a.m3b_window.split(","))
     races = set(a.m3b_races.split(","))
@@ -393,7 +426,7 @@ def m3b(data: pp.Data, nets: dict, k, a, boot_n, seed) -> dict:
     return res
 
 
-def m3a(data: pp.Data, ev, preds: dict, k, bands, boot_n, seed) -> dict:
+def m3a(data: pp.Data, ev, preds: dict, bands, boot_n, seed) -> dict:
     out = {}
     fr = data.frame[ev]
     edges = list(bands)
@@ -456,11 +489,13 @@ def verdict(rep: dict, th: dict, ks) -> dict:
             c = {}
             for met in ("y", q):
                 blk = g(rep, "M1", ks_, "pooled", "op", met)
-                ga, gs, r = g(blk, "gain", "A"), g(blk, "gain", "S"), g(blk, "r", "pt")
-                if ga is None or gs is None or not finite(r):
-                    c[f"m1_{'y' if met == 'y' else 'outcome'}"] = None
+                ga, gs, gh, r = g(blk, "gain", "A"), g(blk, "gain", "S"), g(blk, "gain", "H"), g(blk, "r", "pt")
+                name = f"m1_{'y' if met == 'y' else 'outcome'}"
+                # r = A / H is undefined when the oracle gains nothing: that k cannot be judged
+                if ga is None or gs is None or gh is None or not finite(gh["pt"]) or gh["pt"] <= 0 or not finite(r):
+                    c[name] = None
                     continue
-                c[f"m1_{'y' if met == 'y' else 'outcome'}"] = bool(ga["pt"] > 0 and ga["lo"] > 0 and ga["pt"] >= th["s_ratio"] * gs["pt"] and r >= th["r_min"])
+                c[name] = bool(ga["pt"] > 0 and ga["lo"] > 0 and ga["pt"] >= th["s_ratio"] * gs["pt"] and r >= th["r_min"])
             r_med = g(rep, "M2", ks_, "M2a_y", "R_median")
             c["m2a"] = None if r_med is None else bool(r_med >= th["m2a"])
             d3a = g(rep, "M3a", ks_, q, "all", "A_minus_U")
@@ -487,15 +522,21 @@ def verdict(rep: dict, th: dict, ks) -> dict:
         row1 = all3([any_k(lambda c: all3([m1(c), c["m2a"], m3(c)])), m2b_pass])
         row2 = all3([any_k(lambda c: all3([m1(c), c["m2a"], None if m3(c) is None else not m3(c)])), m2b_pass])
         # A gain in the noise (r < r_noise on ŷ, every k) while the oracle's gain is significant (some k)
+        # (the k where H is significant; r is defined there, H's gain being > 0)
         rs = [g(rep, "M1", str(k), "pooled", "op", "y", "r", "pt") for k in ks]
         h_lo = [g(rep, "M1", str(k), "pooled", "op", "y", "gain", "H", "lo") for k in ks]
         a_lo = [g(rep, "M1", str(k), "pooled", "op", "y", "gain", "A", "lo") for k in ks]
-        row3 = None if not all(finite(x) for x in rs + h_lo) else bool(all(x < th["r_noise"] for x in rs) and any(x > 0 for x in h_lo))
+        sig = [i for i, x in enumerate(h_lo) if finite(x) and x > 0]
+        if not all(finite(x) for x in h_lo) or any(not finite(rs[i]) for i in sig):
+            row3 = None
+        else:
+            row3 = bool(sig) and all(rs[i] < th["r_noise"] for i in sig)
         row4 = None if not all(finite(x) for x in a_lo + h_lo) else bool(all(x <= 0 for x in a_lo + h_lo))
+        # human-only: rush-game ΔQ below 0 (CI), model-only: not (its CI reaches 0 or above)
         r5 = []
         for k in ks:
-            hu = g(rep, "M3b", str(k), "A-human", "both", q, "rush_mean", "pt")
-            mo = g(rep, "M3b", str(k), "A-model", "both", q, "rush_mean", "pt")
+            hu = g(rep, "M3b", str(k), "A-human", "both", q, "rush_mean", "hi")
+            mo = g(rep, "M3b", str(k), "A-model", "both", q, "rush_mean", "hi")
             r5.append(None if not (finite(hu) and finite(mo)) else bool(hu < 0 <= mo))
         row5 = True if any(v is True for v in r5) else (None if any(v is None for v in r5) else False)
         row6 = None if m2b_pass is None else not m2b_pass
@@ -504,9 +545,9 @@ def verdict(rep: dict, th: dict, ks) -> dict:
             "rows": [
                 {"observation": "M1 (ŷ and outcome) + M2a + M3a + M3b(model games) at one k, and M2b", "meaning": "계획 가능", "next": "S1·S2", "matched": row1},
                 {"observation": "M1·M2 pass, M3 fails", "meaning": "미래는 맞히나 채점이 약함", "next": "채점 대상 바꾸기, 모델 판 늘리기", "matched": row2},
-                {"observation": f"M1 A gain in noise (r < {th['r_noise']:g} every k), H oracle gain significant", "meaning": "앞으로의 계획 묶음이 중요", "next": "(b) 옵션 검토", "matched": row3},
+                {"observation": f"M1 A gain in noise (r < {th['r_noise']:g} at every k where the H oracle gain is significant, one at least)", "meaning": "앞으로의 계획 묶음이 중요", "next": "(b) 옵션 검토", "matched": row3},
                 {"observation": "M1 A and H gains both not significant (CI includes 0)", "meaning": "행동이 미래를 거의 안 바꿈", "next": "계획 경로 중단", "matched": row4},
-                {"observation": "M3c rush ΔQ < 0 for human-only, >= 0 for model-only", "meaning": "행동이 증거가 되는 착각", "next": "모델 판 위주 학습", "matched": row5},
+                {"observation": "M3c rush-game ΔQ: human-only CI below 0, model-only CI not below 0", "meaning": "행동이 증거가 되는 착각", "next": "모델 판 위주 학습", "matched": row5},
                 {"observation": f"M2b < {th['m2b']:g}", "meaning": "버그나 레이블 어긋남", "next": "파이프라인 확인", "matched": row6},
             ],
         }
@@ -556,7 +597,12 @@ def markdown(rep: dict) -> str:
                     L.append(f"| {met} ({r['metric']}) | {_f(r['values'].get('U'))} | {_f(gn.get('A'), 4)} | {_f(gn.get('Ad'), 4)} | {_f(gn.get('H'), 4)} | {_f(gn.get('S'), 4)} | "
                              f"{_f(gn.get('gk'), 4)} | {_f(r.get('r'))} | {_f(r.get('a_over_s'), 2)} |")
                 L.append("")
-    L += ["## M2 구별 (운영 행동 행, 예측기 A)", "", "| k | 행 | 후보 수 p50 | M2a R 중앙값 ŷ / ô / p̂ | M2b 비율 | M2b 건설 / 생산 |", "|---|---|---|---|---|---|"]
+    L += ["## M1 내 상태 열별 R² (pooled · 운영 행동 행, 6.3 열)", "", "| k | 열 | U | A − U |", "|---|---|---|---|"]
+    for k, blk in rep["M1"].items():
+        for col, e in (blk.get("pooled", {}).get("op", {}).get("_own_cols") or {}).items():
+            if e["headline"]:
+                L.append(f"| {k} | {col} | {_f(e['values'].get('U'))} | {_f(e.get('gain_A'), 4)} |")
+    L += ["", "## M2 구별 (운영 행동 행, 예측기 A)", "", "| k | 행 | 후보 수 p50 | M2a R 중앙값 ŷ / ô / p̂ | M2b 비율 | M2b 건설 / 생산 |", "|---|---|---|---|---|---|"]
     for k, m in rep["M2"].items():
         if not m.get("rows"):
             L.append(f"| {k} | 0 | - | - | - | - |")
@@ -605,7 +651,9 @@ def report(data: pp.Data, a, ks, variants, models: Path) -> dict:
     rep = {"kind": "plan-s0", "checkpoint": data.checkpoint, "data": pp.describe(data),
            "settings": {"ks": ks, "variants": variants, "boot": a.boot, "boot_seed": a.boot_seed, "eval_frac": a.eval_frac, "split_seed": a.split_seed,
                         "steps": a.steps, "batch": a.batch, "lr": a.lr, "seed": a.seed, "thresholds": th, "bands": a.bands, "m3b_races": a.m3b_races,
-                        "m3b_window": a.m3b_window, "m3b_macro": a.m3b_macro, "drop": a.drop},
+                        "m3b_window": a.m3b_window, "m3b_macro": a.m3b_macro, "drop": a.drop, "keep_bot_perspective": a.keep_bot_perspective,
+                        "maps": a.maps, "left_out": data.dropped, "own_headline": list(OWN_HEADLINE),
+                        "sd_floors": {"own": pp.OWN_SD_FLOOR, "privileged": pp.PRIV_SD_FLOOR}},
            "M0": m0(data, ks), "M1": {}, "M2": {}, "M3a": {}, "M3b": {}, "M3d": {}, "models": {}}
     bands = [float(x) for x in a.bands.split(",")]
     for k in ks:
@@ -642,6 +690,7 @@ def report(data: pp.Data, a, ks, variants, models: Path) -> dict:
                 bt = ps.Boot(data.row_unit[ev[sel]], a.boot, a.boot_seed)
                 blk = m1_block(bt, rows, tg, sel, names)
                 blk["_rows"] = int(len(sel))
+                blk["_own_cols"] = own_cols_block(bt, rows, tg, sel, names, data.own_names)
                 rep["M1"][ks_][gname][rs] = blk
         print(f"[report] k={k} M1 done", flush=True)
         if "A" in nets:
@@ -650,9 +699,9 @@ def report(data: pp.Data, a, ks, variants, models: Path) -> dict:
             preds["U_next"] = pp.predict(nets["U"], data, ev, k, st, inputs_h=data.nxt[k][ev], keep=("q",))
             for nm in ("A", "U", "U_next"):
                 preds[nm]["q"] = ps.sigmoid(preds[nm]["q"])
-            rep["M3a"][ks_] = m3a(data, ev, preds, k, bands, a.boot, a.boot_seed)
+            rep["M3a"][ks_] = m3a(data, ev, preds, bands, a.boot, a.boot_seed)
             m3nets = {nm: nets[nm] for nm in ("A", "A-human", "A-model") if nm in nets}
-            rep["M3b"][ks_] = m3b(data, m3nets, k, a, a.boot, a.boot_seed)
+            rep["M3b"][ks_] = m3b(data, m3nets, a, a.boot, a.boot_seed)
             rep["M3d"][ks_] = m3d(data, {"A": nets["A"], "U": nets["U"], "U_st": st}, k, ev, a.boot, a.boot_seed)
             print(f"[report] k={k} M3 done", flush=True)
     rep["verdict"] = verdict(rep, th, ks)
@@ -670,9 +719,16 @@ def run(a) -> int:
     if "U" not in variants:
         raise SystemExit("plan-s0: U (the baseline) must be among --variants")
     srcs = [pp.parse_src(s) for s in a.src]
-    drop = json.loads(Path(a.drop).read_text(encoding="utf-8")) if a.drop else None
+    drop = {}
+    for spec in a.drop:
+        name, sep, path = spec.partition("=")
+        if not sep or name not in {s.name for s in srcs}:
+            raise SystemExit(f"--drop {spec!r}: expected NAME=JSON with NAME a --src name")
+        drop[name] = json.loads(Path(path).read_text(encoding="utf-8"))
+    maps = [int(x) for x in a.maps.split(",") if x.strip()] or None
     t0 = time.time()
-    data = pp.Data(srcs, ks, a.eval_frac, a.split_seed, drop)
+    data = pp.Data(srcs, ks, a.eval_frac, a.split_seed, drop, keep_bot=a.keep_bot_perspective, maps=maps)
+    print(f"[data] left out: {data.dropped}", flush=True)
     print(f"[data] rows {data.N} games {data.G} {time.time() - t0:.0f}s", flush=True)
     out = Path(a.out)
     models = out / "models"

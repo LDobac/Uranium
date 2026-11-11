@@ -145,14 +145,17 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 측정 도구다. 모델·spec·계획 모듈은 바꾸지 않는다(계획 모듈은 아직 승인 전). 덤프(GPU 1회) → 예측기 학습·표(CPU) 두 단계다. 코드는 `python/uranium/diag/plan_dump.py`(덤프), `plan_pred.py`(데이터·예측기), `plan_stats.py`(판 bootstrap·AUC·R²·Spearman), `plan_s0.py`(학습·표·판정)다.
 - 덤프: `python -m uranium diag plan-dump --checkpoint <ckpt> (--dataset <rel> | --shards <dir>)... --out <dir> [--splits val,test] [--games N] [--seed 1] [--backend cuda|rocm|cpu] [--lanes-per-group 8] [--row-until 14400] [--read-until F] [--gk 8,32] [--classes <json>]`
   - 모델은 `diag dump`와 같은 경로(trunk + 행동 종류 헤드, `action_seq`의 값)로 돌고, 같은 forward에서 JEPA 정답 y = LN([e_pool, s_pool])·g_k(h')·win_open을 더 꺼낸다(032-R24 학습 전용 출력을 읽기만 한다). `diag dump`는 그대로다.
-  - `--row-until`(기본 10:00) 전의 모든 실제 step이 한 행이다. 행: h', y, privileged(학습 정답으로만), 내 상태 34열(SCV·병력·건물 종류별 완성+생산 중 수, 서플라이, 병력 합, 자기 시야 스칼라에서), 레이블 행동 종류·지연 bucket·가중치, 행동 종류 log-prob, type_mask, win_open, g_8·g_32, 프레임, 판 안 결정 번호. 판마다 결과, 8:00 SCV ≥ 8, 빌드 분류(privileged 규칙, `--classes`가 있으면 그 값도), 리플레이 sha256, 맵 계열, 상대 종족을 `games.json`에 남긴다.
+  - `--row-until`(기본 10:00) 전의 모든 실제 step이 한 행이다. 행: h', y, privileged(학습 정답으로만), 내 상태 34열(SCV·병력·건물 종류별 완성+생산 중 수, 서플라이(BWAPI 반 단위: 마린 = 2), 병력 합, 자기 시야 스칼라에서), 레이블 행동 종류·지연 bucket·가중치, 행동 종류 log-prob, type_mask, win_open, g_8·g_32, 프레임, 판 안 결정 번호. 판마다 결과, 8:00 SCV ≥ 8, 빌드 분류(privileged 규칙, `--classes`가 있으면 그 값도), 리플레이 sha256, 자기 시작 슬롯(`scalar_cat[2]`, sha256과 함께 관점을 정함), 맵 계열, 상대 종족을 `games.json`에 남긴다.
   - 행은 레인 그룹마다 `rows/<필드>.bin`에 바로 쓴다(호스트 메모리 일정). 행당 약 5.2 KB(g_k 포함), `--gk ''`면 약 3.2 KB.
   - `--read-until`의 기본값은 `--row-until`이다(그 뒤 step은 읽지 않는다).
-- 학습·표: `python -m uranium diag plan-s0 --src <이름>:<human|teacher|model>:<train|eval|split>=<덤프> ... --out <dir> [--stage all|train|report] [--ks 8,32] [--steps 3000] [--batch 512] [--lr 1e-3] [--seed 0] [--threads N] [--eval-frac 0.2] [--split-seed 1] [--boot 1000] [--drop <json>] [--m3b-races Z] [--m3b-window 2880,5040] [--m3b-macro macro] [--tag <이름>] [--th-s-ratio 2 --th-r-min 0.2 --th-r-noise 0.1 --th-m2b 0.9 --th-m2a 0.5 --th-m3a 0.01]`
-  - 역할: `train`은 모든 판으로 학습, `eval`은 모든 판으로 평가, `split`은 고정 seed 판 단위 분할(평가 20%, 한 리플레이의 두 관점은 같은 쪽).
+- 학습·표: `python -m uranium diag plan-s0 --src <이름>:<human|teacher|model>:<train|eval|split>=<덤프> ... --out <dir> [--stage all|train|report] [--ks 8,32] [--steps 3000] [--batch 512] [--lr 1e-3] [--seed 0] [--threads N] [--eval-frac 0.2] [--split-seed 1] [--boot 1000] [--drop <src>=<json>] [--keep-bot-perspective] [--maps 0,1] [--m3b-races Z] [--m3b-window 2880,5040] [--m3b-macro macro] [--tag <이름>] [--th-s-ratio 2 --th-r-min 0.2 --th-r-noise 0.1 --th-m2b 0.9 --th-m2a 0.5 --th-m3a 0.01]`
+  - 역할: `train`은 모든 판으로 학습, `eval`은 모든 판으로 평가, `split`은 고정 seed 판 단위 분할(평가 20%, 한 리플레이의 두 관점은 같은 쪽). 분할은 (`--split-seed`, `--src` 이름의 crc32)로 정해지므로 이름을 바꾸면 분할도 바뀐다. 모델 파일에는 남긴 판과 역할의 지문이 들어가고, 다른 분할(`--eval-frac`·`--split-seed`·`--drop`·`--maps`)로 `--stage report`를 하면 거부한다.
+  - 관점: 모델 판 shard의 테란전은 두 플레이어 관점이 모두 스트림이다. `model` 출처에 테란 상대 스트림이 있으면 `--drop <src>=config/plan_s0/jepa_diag_tp_views.json`(11-09 진단 관점 표: 뷰마다 [리플레이 sha256, 자기 시작 슬롯], `bot`·`model`. records APM으로 정함)이나 `--keep-bot-perspective`가 있어야 돈다. `bot` 관점을 빼고, 어느 목록에도 없는 스트림이 있으면 거부한다(시작 슬롯 번호가 다르면 여기서 드러난다).
+  - S 대조의 상대 행: 같은 판의 레이블이 유효한 행 중 하나다. 생성기 하나(seed 12345)가 판을 전역 순서(`--src` 순서, 판 id)로 돈다.
+  - 표준화: 정답의 sd는 바닥값을 둔다(내 상태 0.5개, privileged 부호화 단위 0.05). 학습 행에서 상수인 열은 뺀다. ô 머리 지표는 6.3의 10열(SCV, 서플라이 2, 배럭, 벙커, CC, 서플라이 디폿, 정제소, 팩토리, 병력)이고, 34열 전체(`o_all`)와 열별 R²도 낸다.
   - k마다 예측기 U·A·A+d·H·S(같은 구조·step·seed)와 M3c용 A(사람만, 모델 판만)를 `<out>/models/`에 저장한다. 이미 있는 모델은 다시 학습하지 않는다(`--retrain`). 같은 스레드 수면 비트 단위로 같다.
   - 표는 `<out>/s0.json`·`s0.md`(`--tag`면 `s0-<tag>.*`): M0, M1(전체 행·운영 행동 행, 출처 묶음별), M2a·M2b, M3a(시간대별), M3b·M3c, M3d, 6.5 판정표(채점 대상 판 결과·8:00 SCV 따로). 신뢰구간은 판(리플레이) 단위 bootstrap 95%다. 문턱 기본값은 기본안(미확정)이다.
-  - 메모리: 행당 약 3 KB(h', y, privileged, log-prob)를 올린다. 130만 행이면 약 4 GB, 학습·표 포함 최대 약 6 GB.
+  - 메모리: 행당 약 3.2 KB(h', y, privileged, log-prob, 내 상태)를 미리 잡은 배열에 출처별로 채운다(두 번째 사본 없음). 130만 행이면 약 4.2 GB, 학습·표 포함 최대 약 5~6 GB.
 - 실행 순서(2026-11-11 사용자 결정: 덤프는 Linux ROCm 호스트에서 표본을 줄여, 학습·표는 Linux CPU 호스트)
   1. 표본 확인(수 분): 아래 덤프 명령에 `--games 4 --limit-batches 20`, 출력은 `~/Workspace/Uranium_logs/plan_s0/smoke/...`. 이어 같은 호스트에서 `plan-s0 ... --steps 50 --boot 20 --out ~/Workspace/Uranium_logs/plan_s0/smoke/s0`.
   2. 덤프(Linux ROCm 호스트, 사용자가 비워 둔 장비에서 학습·측정 job이 없을 때). `<ckpt>` = `<shared>/checkpoints/m2-s1/ckpt-39096`, `<D>` = `~/Workspace/Uranium_logs/plan_s0/m2-s1__ckpt-39096`(호스트 생성 파일 폴더 규칙):
@@ -168,15 +171,17 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
      ```
      - 교사 보관분 연결 폴더(`hold_orig`·`hold_macro2`)는 `protocol.py diag`가 그 호스트에 만든 것이다(`docs/measurement_protocol.md` 4). `teacher_classes.json`은 `per_action.py`의 러시·운영형 분류(041-R27)를 {sha256: 분류}로 펼친 것이다.
      - 사람 `--splits train`은 S1 학습 분할(모든 맵)이다. `EvalStream`에 대상 맵 선택이 없어 6.2의 "S2 학습 분할"과 다르다. 맵 계열은 `games.json`의 `map`(0·1 = 대상 맵)에 남는다. val 150판은 val500(같은 seed)의 앞 150판이다.
-     - 모델 판 shard의 테란전에는 봇 관점 스트림이 섞여 있다(`reports/jepa_survey.md` 10.2.1). 11-09 관점 표로 `{"model": [[sha256, occ], ...]}` 파일을 만들어 `plan-s0 --drop`에 준다. 없으면 테란전 스트림이 모두 들어간다.
+     - 모델 판 shard 520 스트림 중 160은 테란전의 봇 관점이다(`reports/jepa_survey.md` 10.2.1). 덤프는 모두 읽고, `plan-s0 --drop model=config/plan_s0/jepa_diag_tp_views.json`이 뺀다.
   3. 학습·표(Linux CPU 호스트, 덤프를 공용 드라이브에서 그 호스트의 같은 `<D>`로 먼저 복사):
      ```
-     python -m uranium diag plan-s0 --src human-train:human:train=<D>/human_train --src human-val:human:eval=<D>/human_val --src teacher:teacher:split=<D>/teacher --src model:model:split=<D>/model [--drop <json>] --threads 4 --out <D>/s0
+     python -m uranium diag plan-s0 --src human-train:human:train=<D>/human_train --src human-val:human:eval=<D>/human_val --src teacher:teacher:split=<D>/teacher --src model:model:split=<D>/model --drop model=config/plan_s0/jepa_diag_tp_views.json --threads 4 --out <D>/s0
      python -m uranium diag plan-s0 <같은 --src·--drop> --threads 4 --stage report --m3b-races T,P --tag tp --out <D>/s0
      cp -r <D>/s0 <shared>/eval/jepa-plan-feas-<날짜>/s0
      ```
-     - 둘째 줄은 모델 판(테란·프로토스 상대만 있음)의 M3b·M3c 표다. 6.4의 M3b는 저그 상대 행이라 모델 판 shard에는 해당 행이 없다.
-- 시간(추정, 실행 전): 덤프는 행 수로 정해진다. `diag dump` 실측(Linux ROCm 호스트, 레인 그룹 4)은 행당 약 2.3 ms다(사람 1,000판 6:00까지 763,946행 1,772초, 교사 433판 pass 7번 2,054초). 위 표본은 사람 학습 400판 약 51만 행(10:00까지 판당 약 1,270행 가정), val 150판 약 19만, 교사 433판 최대 29만, 모델 판 520 스트림 최대 34만, 합계 약 130만 행이다. 6:00 뒤 행은 유닛이 많아 행당 비용이 더 클 수 있어 1~2시간으로 본다(shard 훑기 포함). 디스크는 약 7 GB(`--gk ''`면 약 4 GB). 학습·표는 Linux CPU 호스트에서 예측기 14개 × 3,000 step(CUDA 호스트 CPU 4스레드에서 약 20 ms/step, Linux CPU 호스트는 2~3배로 가정) 약 40분~1시간과 표 약 20~30분이다.
+     - 둘째 줄은 모델 판(테란·프로토스 상대만 있음)의 M3b·M3c 표다. 6.4의 M3b는 저그 상대 행인데 모델 판 shard에는 저그 상대가 없다.
+     - 판정표 읽는 법: 1·2행(계획 가능 / 채점이 약함)은 "M3b(모델 판)"이 필요하므로 `s0-tp.md`에서 읽는다(첫 보고서에서는 모델 판 M3b 행이 없어 "판단 불가"). 5행(M3c 착각)은 저그 교사 보관분 행이 있는 첫 보고서 `s0.md`에서 읽는다. 3·4·6행은 두 보고서가 같다(M1·M2는 M3b 설정과 무관).
+  4. 비교 체크포인트(6.2: 학습 길이에 따라 행동 조건 이득이 달라지는지, M1만 본다): `<ckpt2>` = `<shared>/checkpoints/m2-lam-base/ckpt-3000`, `<D2>` = `~/Workspace/Uranium_logs/plan_s0/m2-lam-base__ckpt-3000`로 2의 덤프 네 줄을 같은 판 수로 다시 하고(같은 표본이어야 비교가 된다, 덤프 시간도 같음), 3의 첫 줄을 `<D2>`·`--no-m3c`로 돌린다. 두 `s0.md`의 M1 표(운영 행동 행, k = 8·32)를 나란히 본다.
+- 시간(추정, 실행 전): 덤프는 행 수로 정해진다. `diag dump` 실측(Linux ROCm 호스트, 레인 그룹 4)은 행당 약 2.3 ms다(사람 1,000판 6:00까지 763,946행 1,772초, 교사 433판 pass 7번 2,054초). 위 표본은 사람 학습 400판 약 51만 행(10:00까지 판당 약 1,270행 가정), val 150판 약 19만, 교사 433판 최대 29만, 모델 판 520 스트림(봇 관점 160 포함, 분석에서 뺌) 최대 34만, 합계 약 130만 행이다. 4의 비교 덤프는 같은 시간이 한 번 더 든다. 6:00 뒤 행은 유닛이 많아 행당 비용이 더 클 수 있어 1~2시간으로 본다(shard 훑기 포함). 디스크는 약 7 GB(`--gk ''`면 약 4 GB). 학습·표는 Linux CPU 호스트에서 예측기 14개 × 3,000 step(CUDA 호스트 CPU 4스레드에서 약 20 ms/step, Linux CPU 호스트는 2~3배로 가정) 약 40분~1시간과 표 약 20~30분이다.
 
 ## 감시·작업자(060-R6, 061-R13~R15)
 - `uranium-train supervise [--hang-minutes 30 --max-restarts 5 --window-minutes 60 --delay-seconds 60 --progress-file <file> --fatal-pattern <regex>... --log <file>] -- <bc|rl 인자>`: 자식은 `URANIUM_PYTHON -m uranium <bc|rl 인자>`다(`.env`에 없으면 시작하지 않는다). 비정상 종료·멈춤이면 같은 run을 재시작한다. 종료 코드 0·130·75(잠금을 얻지 못함: 다른 호스트 잠금, 획득 경쟁에서 짐, 양보 예약)·76(양보)은 재시작하지 않는다. 70(장치 치명 오류, 저장 없이 끝남, 042-R20)은 재시작한다.

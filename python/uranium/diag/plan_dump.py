@@ -19,8 +19,8 @@ Rows (`rows/<field>.bin`, raw arrays appended lane group by lane group, row orde
   np.packbits), win_open float32 (NaN without the head), g<k> float16 [d_y] (g_k(h'), the k of `--gk`
   the model has).
 games.json {gid: {split, lane, race (privileged), enemy_race, sha (replay_sha256), occ (n-th stream of
-  that replay in this dump: both perspectives of a TvT replay), map (family index, 0/1 = target maps),
-  start, result (+1 / -1 / 0 = undecided), rows, dec_rows, last_frame, scv8 (own SCVs >= 8 at 8:00,
+  that replay in dump order; not a player identity), map (family index, 0/1 = target maps), start (own
+  start slot, scalar_cat[2]: with sha it names the view, e.g. one player of a TvT replay), result (+1 / -1 / 0 = undecided), rows, dec_rows, last_frame, scv8 (own SCVs >= 8 at 8:00,
   0 if the game ended before, None if not readable), cls (build class from privileged, jepa_survey
   7.3 draft rules, `features.game_labels`), cls_given (`--classes`), start1, first_sight}}.
 manifest.json: checkpoint (sha256), data, selection, windows, backend, precision, stats, own columns.
@@ -57,8 +57,8 @@ def op_actions() -> list[int]:
 def own_columns() -> tuple[list[str], dict[int, list[int]], dict[int, int]]:
     """(column names, {column: Terran unit ids summed}, {action id: column}) of the own-state vector:
     done + in-production count (scalar input, own vision) of every Terran type a Build / BuildAddon /
-    Train action makes (siege tank: both modes), then supply used / total and the army (every trained
-    type but the SCV), 6.3 o_t. `{action: column}` is the M2b direction map."""
+    Train action makes (siege tank: both modes), then supply used / total (BWAPI half-supply units:
+    a Marine is 2) and the army (every trained type but the SCV), 6.3 o_t. `{action: column}` is the M2b direction map."""
     terran = set(tb.terran())
     names, types, of_action = [], {}, {}
     for a in sorted(tb._rows("actions"), key=lambda a: a["id"]):
@@ -76,6 +76,7 @@ def own_columns() -> tuple[list[str], dict[int, list[int]], dict[int, int]]:
     return names, types, of_action
 
 
+@functools.cache
 def _group(aid: int) -> str:
     return next(a["group"] for a in tb._rows("actions") if a["id"] == aid)
 
