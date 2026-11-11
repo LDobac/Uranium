@@ -9,21 +9,29 @@ A on the human-only and the model-only training rows. Same steps, batch and seed
 
 Tables (eval games only; CIs: game bootstrap 95 %, `uranium.diag.plan_stats`; the bootstrap unit is the
 replay, so both streams of one replay move together):
-- M0 basics (every row): open action types, policy top-m mass (m = 4, 8, 16), frame gap of k-decision
-  pairs, operation-action share, rows whose policy top 8 has an operation action.
+- Design (`plan_pred.Design`, reports/jepa_planning.md 6.8): the second run's default drops the chained
+  rows of teacher / model sources, gives every predictor o_t, predicts the own-state change and draws
+  the S partner from another game; `--v1` is the first run (2026-11-11) bit for bit (same models, same
+  numbers; the report adds the change-space own-state metrics, the verdict keeps the first run's rows).
+- M0 basics (every row): open action types, policy top-m mass (m = 4, 8, 16), frame gap of the next
+  decision and of the k pairs (and their decision gap with `--k-unit frame`), operation-action share,
+  rows whose policy top 8 has an operation action, chained rows.
 - M1 conditioning gain over U on all rows and on operation-action rows (a_t an operation action), per
-  k: ŷ 1 - cos (and the model's own g_k as a reference), p̂ R² and ô R² (standardised, kept
-  dimensions; ô on the 6.3 columns `OWN_HEADLINE`, `o_all` every column, `_own_cols` per column),
-  win NLL and 8:00 SCV NLL (decided games); gain = L_U - L_X (R²: X - U), the oracle share
-  r = gain_A / gain_H (undefined, and the k not judged, when H gains nothing), the control ratio
-  gain_A / gain_S.
+  k: ŷ 1 - cos (and the model's own g_k as a reference, decision k only), p̂ R² and ô R² (standardised,
+  kept dimensions; ô on the 6.3 columns `OWN_HEADLINE`, `o_all` every column, `_own_cols` per column),
+  the own-state change R² `od` / `od_all` (o_{t+k} - o_t standardised by its training sd) with the
+  relative error cut 1 - err_X / err_U (`cut`, the reported own-state metric), win NLL and 8:00 SCV
+  NLL (decided games); gain = L_U - L_X (R²: X - U), the oracle share r = gain_A / gain_H (undefined,
+  and the k not judged, when H gains nothing), the control ratio gain_A / gain_S. Per source kind too:
+  k decisions are a different frame span per source (M0).
 - Views: a `model` source with Terran-enemy streams needs `--drop NAME=<views json>` (bot views out by
   replay sha256 + own start slot) or `--keep-bot-perspective`. Models record the split digest; a report
   on another split is refused.
 - M2 on operation-action rows, candidates = policy top 8 open types ∪ {a_t}, predictor A: M2a
   spread R_t = mean pairwise distance of the candidates' predictions / the RMS error of the actual
-  action's prediction (ŷ scaled to norm sqrt(d), ô / p̂ standardised); M2b direction: share of (row,
-  Build/BuildAddon/Train_X candidate) where ô_X of that candidate exceeds ô_X of every other candidate.
+  action's prediction (ŷ scaled to norm sqrt(d), ô / p̂ standardised, ô in the predictor's own target
+  space); M2b direction: share of (row, Build/BuildAddon/Train_X candidate) where ô_X of that candidate
+  (the predicted change with `--own-target delta`) exceeds ô_X of every other candidate.
 - M3a outcome AUC by time band: q̂_A(h'_t, a_t), q̂_U(h'_t), win_open(h'_t), oracle q̂_U(h'_{t+k}).
 - M3b rush check: rows of teacher / model eval games of `--m3b-races` in `--m3b-window` with
   Build_Bunker open; ΔQ = σq̂(Bunker) - Σ_c π(c) σq̂(c) over the open types; rush minus macro mean
@@ -32,7 +40,9 @@ replay, so both streams of one replay move together):
 - M3d advantage agreement: operation-action rows, Spearman of Â_t = σq̂_A(a_t) - Σ_c π(c) σq̂_A(c)
   and G_t = outcome - σq̂_U(h'_t).
 - Verdict: the 6.5 table, per scoring target (win, scv8), thresholds `--th-*` (기본안(미확정): the
-  user sets them)."""
+  user sets them). Not `--v1`: M1 also needs the own-state criterion at k = `--th-own-k` (A's relative
+  change-error cut over U on pooled operation-action rows: CI above 0 and at least `--th-s-ratio` times
+  the S control's cut), and "A and H both not significant" counts the own-state cuts too."""
 
 import json
 import time
@@ -82,6 +92,32 @@ def add_args(p) -> None:
     p.add_argument("--m3b-macro", default="macro", help="build classes counted as macro (comma-separated)")
     for k, v in TH_DEFAULTS.items():
         p.add_argument(f"--th-{k.replace('_', '-')}", type=float, default=v, help=f"6.5 threshold, 기본안(미확정) {v}")
+    p.add_argument("--th-own-k", type=int, default=8, help="k of the M1 own-state criterion (기본안(미확정) 8; 0 = no own-state criterion; --v1: 0)")
+    # design (plan_pred.Design; reports/jepa_planning.md 6.8)
+    d = pp.Design()
+    p.add_argument("--v1", action="store_true", help="the first S0 run's design (every valid row, h' only, level targets, same-game S partner) "
+                   "and verdict: its models and numbers")
+    p.add_argument("--chains", choices=["drop", "keep"], help="chained rows of --chain-kinds: drop (default) or keep (--v1)")
+    p.add_argument("--chain-kinds", help=f"source kinds whose chained rows are dropped (default {','.join(d.chain_kinds)})")
+    p.add_argument("--own-input", choices=["on", "off"], help="o_t as a predictor input (default on; --v1 off)")
+    p.add_argument("--own-target", choices=["delta", "level"], help="ô target: o_{t+k} - o_t (default) or o_{t+k} (--v1)")
+    p.add_argument("--s-partner", choices=["other-game", "same-game"], help="S control partner row: another game of the source (default) or the same game (--v1)")
+    p.add_argument("--k-unit", choices=["dec", "frame"], help="k in decisions (default) or frames (t+k = the first row k frames or more later)")
+
+
+def design_of(a) -> pp.Design:
+    """`plan_pred.Design` from the flags (`--v1` takes no other design flag)."""
+    given = {"chains": a.chains, "chain_kinds": a.chain_kinds, "own_input": a.own_input, "own_target": a.own_target, "partner": a.s_partner, "k_unit": a.k_unit}
+    given = {k: v for k, v in given.items() if v is not None}
+    if a.v1:
+        if given:
+            raise SystemExit(f"plan-s0: --v1 is the first run's design; drop {sorted(given)}")
+        return pp.V1
+    if "chain_kinds" in given:
+        given["chain_kinds"] = tuple(x for x in given["chain_kinds"].split(",") if x)
+    if "own_input" in given:
+        given["own_input"] = given["own_input"] == "on"
+    return pp.Design(**given)
 
 
 def model_specs(ks, variants, m3c: bool) -> list[tuple[str, str, int, list | None]]:
@@ -95,9 +131,13 @@ def model_specs(ks, variants, m3c: bool) -> list[tuple[str, str, int, list | Non
 
 def fingerprint(data: pp.Data) -> dict:
     """What a trained model depends on: checkpoint, rows, sources and the games / roles kept (the split
-    digest covers --eval-frac, --split-seed, --drop and --maps)."""
-    return {**data.checkpoint, "rows": int(data.N), "games": int(data.G), "sources": [[s.name, s.kind, s.role] for s in data.sources],
-            "split_digest": data.split_digest}
+    digest covers --eval-frac, --split-seed, --drop and --maps) and the design (absent for `V1`, as the
+    first run's models have it)."""
+    fp = {**data.checkpoint, "rows": int(data.N), "games": int(data.G), "sources": [[s.name, s.kind, s.role] for s in data.sources],
+          "split_digest": data.split_digest}
+    if data.design != pp.V1:
+        fp["design"] = data.design.as_dict()
+    return fp
 
 
 def train_all(data: pp.Data, a, ks, variants, models: Path) -> dict:
@@ -118,7 +158,7 @@ def train_all(data: pp.Data, a, ks, variants, models: Path) -> dict:
             continue
         key = (k, tuple(kinds or ()))
         if key not in stats:
-            stats[key] = data.stats(rows)
+            stats[key] = data.stats(rows, k)
         t0 = time.time()
         net, lg = pp.train_one(data, v, k, rows, stats[key], steps=a.steps, batch=a.batch, lr=a.lr, seed=a.seed)
         meta = {"variant": v, "k": k, "kinds": kinds, "rows": int(len(rows)), "steps": a.steps, "batch": a.batch, "lr": a.lr, "seed": a.seed,
@@ -149,16 +189,21 @@ def m0(data: pp.Data, ks) -> dict:
             top8 = np.argsort(-p, 1, kind="stable")[:, :CAND_TOP]
             top8_op.append((data.op[top8] & (np.take_along_axis(p, top8, 1) > 0)).any(1))
         cat = lambda xs: np.concatenate(xs) if xs else np.zeros(0)  # noqa: E731
-        gaps = {}
-        for k in sorted(set(ks) | {1}):
+        gaps, dgaps = {}, {}
+        nx = data.nxt_dec1[sel]
+        ok = nx >= 0
+        gaps["1"] = ps.quantiles(data.frame[nx[ok]] - data.frame[sel[ok]])
+        for k in sorted(set(ks) - ({1} if data.design.k_unit == "dec" else set())):
             nx = data.nxt[k][sel]
             ok = nx >= 0
             gaps[str(k)] = ps.quantiles(data.frame[nx[ok]] - data.frame[sel[ok]])
+            dgaps[str(k)] = ps.quantiles((data.pos[nx[ok]] - data.pos[sel[ok]]).astype(float))
         v = data.valid[sel]
         out[gname] = {
             "rows": int(len(sel)), "valid_rows": int(v.sum()), "open_types": ps.quantiles(cat(n_open)),
-            "top_mass": {str(t): ps.quantiles(cat(tops[t])) for t in M0_TOP}, "frame_gap": gaps,
+            "top_mass": {str(t): ps.quantiles(cat(tops[t])) for t in M0_TOP}, "frame_gap": gaps, "dec_gap": dgaps,
             "op_share": float(data.is_op[sel].sum() / max(v.sum(), 1)), "top8_has_op": float(cat(top8_op).mean()) if len(sel) else None,
+            "chained_valid": int((v & data.chained[sel]).sum()), "chain_dropped": int((v & data.chain_drop[sel]).sum()),
         }
     return out
 
@@ -174,19 +219,22 @@ def targets(data: pp.Data, ev, k, st, with_y: bool = True) -> dict:
     t = data.nxt[k][ev]
     p_on = np.isfinite(st["p_sd"])
     o_on = np.isfinite(st["o_sd"])
+    d_on = np.isfinite(st["d_sd"])
     p = np.where(p_on, (data.priv[t].astype(np.float32) - st["p_mu"]) / np.where(p_on, st["p_sd"], 1.0), 0.0).astype(np.float32)
     o = np.where(o_on, (data.own[t] - st["o_mu"]) / np.where(o_on, st["o_sd"], 1.0), 0.0).astype(np.float32)
+    od = np.where(d_on, (data.own[t] - data.own[ev] - st["d_mu"]) / np.where(d_on, st["d_sd"], 1.0), 0.0).astype(np.float32)
     head = np.isin(np.array(data.own_names), OWN_HEADLINE)
-    out = {"p": p, "p_ok": data.priv_ok[t] > 0, "o": o, "p_on": p_on, "o_on": o_on & head, "o_all_on": o_on, "q": data.row_q[ev]}
+    out = {"p": p, "p_ok": data.priv_ok[t] > 0, "o": o, "p_on": p_on, "o_on": o_on & head, "o_all_on": o_on, "q": data.row_q[ev],
+           "od": od, "od_on": d_on & head, "od_all_on": d_on}
     if with_y:
         out["y"] = data.y[t].astype(np.float32)
     return out
 
 
 def eval_rows(nets: dict, data: pp.Data, ev, k, st, chunk: int = 8192) -> tuple[dict, dict]:
-    """Per-row M1 terms of every predictor (and the model's own g_k, ŷ only) on rows `ev`, chunk by
-    chunk (bounded memory) -> ({name: {metric: [rows]}}, {name: q̂ logits [rows, 2]})."""
-    rows = {nm: {m: [] for m in ("y", "p", "o", "o_all", "o_cols") + OUTCOMES} for nm in nets}
+    """Per-row M1 terms of every predictor (and the model's own g_k, ŷ only, decision k) on rows `ev`,
+    chunk by chunk (bounded memory) -> ({name: {metric: [rows]}}, {name: q̂ logits [rows, 2]})."""
+    rows = {nm: {m: [] for m in ("y", "p", "o", "o_all", "o_cols", "od", "od_all", "od_cols") + OUTCOMES} for nm in nets}
     rows["gk"] = {"y": []}
     qlog = {nm: [] for nm in nets}
     for s in range(0, len(ev), chunk):
@@ -194,10 +242,11 @@ def eval_rows(nets: dict, data: pp.Data, ev, k, st, chunk: int = 8192) -> tuple[
         tg = targets(data, sl, k, st)
         for nm, net in nets.items():
             pr = pp.predict(net, data, sl, k, st, chunk=chunk)
+            pr["o"], pr["od"] = pp.own_spaces(data, pr["o"], sl, st)
             for m, v in per_row(pr, tg).items():
                 rows[nm][m].append(v)
             qlog[nm].append(pr["q"])
-        gk = data.gk(k, sl)
+        gk = data.gk(k, sl) if data.design.k_unit == "dec" else None
         if gk is None:
             rows.pop("gk", None)
         elif "gk" in rows:
@@ -213,10 +262,11 @@ def cosine(a, b) -> np.ndarray:
 def per_row(pred: dict, tg: dict) -> dict:
     out = {"y": 1.0 - cosine(pred["y"], tg["y"])}
     out["p"] = np.where(tg["p_ok"], (((pred["p"] - tg["p"]) ** 2) * tg["p_on"]).sum(1), np.nan)
-    oc = ((pred["o"] - tg["o"]) ** 2 * tg["o_all_on"]).astype(np.float32)
-    out["o"] = (oc * tg["o_on"]).sum(1)
-    out["o_all"] = oc.sum(1)
-    out["o_cols"] = oc
+    for sp in ("o", "od"):
+        oc = ((pred[sp] - tg[sp]) ** 2 * tg[f"{sp}_all_on"]).astype(np.float32)
+        out[sp] = (oc * tg[f"{sp}_on"]).sum(1)
+        out[f"{sp}_all"] = oc.sum(1)
+        out[f"{sp}_cols"] = oc
     for j, q in enumerate(OUTCOMES):
         yq = tg["q"][:, j]
         out[q] = np.where(np.isfinite(yq), ps.bce(pred["q"][:, j], np.nan_to_num(yq)), np.nan)
@@ -226,24 +276,30 @@ def per_row(pred: dict, tg: dict) -> dict:
 def m1_block(boot: ps.Boot, rows: dict, tg: dict, sel: np.ndarray, names: list) -> dict:
     """One row set: per metric the predictors' values and the gains over U."""
     res = {}
-    for met in ("y", "p", "o", "o_all") + OUTCOMES:
-        vals = {}
+    r2_tgt = {"p": "p", "o": "o", "o_all": "o", "od": "od", "od_all": "od"}
+    for met in ("y", "p", "o", "o_all", "od", "od_all") + OUTCOMES:
+        vals, errs = {}, {}
         for nm in names:
             if met not in rows[nm]:
                 continue
             v = rows[nm][met][sel]
-            if met in ("p", "o", "o_all"):
-                tgt = (tg["o"] if met.startswith("o") else tg["p"])[sel] * tg[f"{met}_on"]
+            if met in r2_tgt:
+                tgt = tg[r2_tgt[met]][sel] * tg[f"{met}_on"]
                 vals[nm] = boot.r2(v, tgt, tg["p_ok"][sel] if met == "p" else None)
+                if met in ("od", "od_all"):
+                    errs[nm] = boot.mean(v)
             else:
                 vals[nm] = boot.mean(v)
         if "U" not in vals:
             continue
-        higher = met in ("p", "o", "o_all")
+        higher = met in r2_tgt
         gain = {nm: ((vals[nm][0] - vals["U"][0], vals[nm][1] - vals["U"][1]) if higher else (vals["U"][0] - vals[nm][0], vals["U"][1] - vals[nm][1]))
                 for nm in vals if nm != "U"}
         r = {"metric": "R2" if higher else ("1-cos" if met == "y" else "NLL"), "values": {nm: ps.ci(v) for nm, v in vals.items()},
              "gain": {nm: ps.ci(g) for nm, g in gain.items()}}
+        if errs:
+            # the reported own-state metric: relative change-error cut 1 - err_X / err_U (paired draws)
+            r["cut"] = {nm: ps.rel_cut(e, errs["U"]) for nm, e in errs.items() if nm != "U"}
         if "A" in gain and "H" in gain:
             r["r"] = ps.ratio(gain["A"], gain["H"])
         if "A" in gain and "S" in gain:
@@ -253,7 +309,8 @@ def m1_block(boot: ps.Boot, rows: dict, tg: dict, sel: np.ndarray, names: list) 
 
 
 def own_cols_block(boot: ps.Boot, rows: dict, tg: dict, sel: np.ndarray, names: list, own_names: list) -> dict:
-    """Per own-state column (kept on the training rows): each predictor's R² and the gain of A over U."""
+    """Per own-state column (kept on the training rows): each predictor's R² and the gain of A over U, on the
+    level (o_{t+k}) and under `delta` on the change (o_{t+k} - o_t) with A's relative error cut."""
     out = {}
     for c in np.nonzero(tg["o_all_on"])[0]:
         y = tg["o"][sel][:, [c]]
@@ -263,6 +320,13 @@ def own_cols_block(boot: ps.Boot, rows: dict, tg: dict, sel: np.ndarray, names: 
         e = {"values": {nm: ps.ci(v) for nm, v in vals.items()}, "headline": own_names[c] in OWN_HEADLINE}
         if "A" in vals:
             e["gain_A"] = ps.diff(vals["A"], vals["U"])
+        if tg["od_all_on"][c]:
+            yd = tg["od"][sel][:, [c]]
+            dv = {nm: boot.r2(rows[nm]["od_cols"][sel, c], yd) for nm in names if "od_cols" in rows[nm]}
+            e["delta"] = {"values": {nm: ps.ci(v) for nm, v in dv.items()}}
+            if "A" in dv:
+                e["delta"]["gain_A"] = ps.diff(dv["A"], dv["U"])
+                e["delta"]["cut_A"] = ps.rel_cut(boot.mean(rows["A"]["od_cols"][sel, c]), boot.mean(rows["U"]["od_cols"][sel, c]))
         out[own_names[c]] = e
     return out
 
@@ -297,6 +361,9 @@ def m2(data: pp.Data, net, st, k, ev, boot_n, seed) -> dict:
         return {"rows": 0}
     cand = candidates(data, rows)
     tg = targets(data, rows, k, st)
+    # ô in the predictor's own target space (the change with --own-target delta: M2b compares predicted changes)
+    if data.design.own_target == "delta":
+        tg["o"], tg["o_on"] = tg["od"], tg["od_on"]
     C = cand.shape[1]
     D = {"y": np.full(len(rows), np.nan), "o": np.full(len(rows), np.nan), "p": np.full(len(rows), np.nan)}
     err = {"y": [], "o": [], "p": []}
@@ -368,30 +435,32 @@ def m2(data: pp.Data, net, st, k, ev, boot_n, seed) -> dict:
 
 
 @torch.no_grad()
-def q_all(net, data: pp.Data, rows, chunk: int = 256) -> np.ndarray:
-    """[rows, A, 2] σq̂ of predictor A for every action type."""
+def q_all(net, data: pp.Data, rows, st, chunk: int = 256) -> np.ndarray:
+    """[rows, A, 2] σq̂ of predictor A (standardisation `st`) for every action type."""
     cand = torch.arange(data.n_act)
     out = []
     for s in range(0, len(rows), chunk):
         r = rows[s:s + chunk]
-        out.append(ps.sigmoid(net.q_all(torch.from_numpy(data.h[r].astype(np.float32)), cand).numpy()))
+        own = data.own_in(r, st) if net.own_in else None
+        out.append(ps.sigmoid(net.q_all(torch.from_numpy(data.h[r].astype(np.float32)), cand, own).numpy()))
     return np.concatenate(out) if out else np.zeros((0, data.n_act, len(OUTCOMES)))
 
 
-def delta_q(net, data: pp.Data, rows, action) -> np.ndarray:
+def delta_q(net, data: pp.Data, rows, action, st) -> np.ndarray:
     """[rows, 2] σq̂(action) - Σ_c π(c) σq̂(c) (`action` [rows] or an int)."""
-    Q = q_all(net, data, rows)
+    Q = q_all(net, data, rows, st)
     pi = data.probs(rows)
     a = np.broadcast_to(np.asarray(action, np.int64), (len(rows),))
     return Q[np.arange(len(rows)), a] - (pi[:, :, None] * Q).sum(1)
 
 
-def m3b(data: pp.Data, nets: dict, a, boot_n, seed) -> dict:
+def m3b(data: pp.Data, nets: dict, sts: dict, a, boot_n, seed) -> dict:
     bunker = tb.action_id("Build_Bunker")
     lo, hi = (float(x) for x in a.m3b_window.split(","))
     races = set(a.m3b_races.split(","))
     macro = set(a.m3b_macro.split(","))
     sel = (data.row_eval & np.isin(data.row_kind, [pp.KINDS.index("teacher"), pp.KINDS.index("model")]) & (data.frame >= lo) & (data.frame < hi))
+    sel &= ~data.chain_drop  # a dropped chained row's observation already shows its chain's commands
     sel &= np.array([data.g_race[g] in races for g in data.game]) if data.N else sel
     rows = np.nonzero(sel)[0]
     if len(rows):
@@ -406,7 +475,7 @@ def m3b(data: pp.Data, nets: dict, a, boot_n, seed) -> dict:
     groups = {"teacher": data.row_kind[rows] == pp.KINDS.index("teacher"), "model": data.row_kind[rows] == pp.KINDS.index("model")}
     groups["both"] = np.ones(len(rows), bool)
     for pname, net in nets.items():
-        dq = delta_q(net, data, rows, bunker)
+        dq = delta_q(net, data, rows, bunker, sts[pname])
         res[pname] = {}
         for gname, gm in groups.items():
             if not gm.any():
@@ -455,7 +524,7 @@ def m3d(data: pp.Data, nets: dict, k, ev, boot_n, seed) -> dict:
     rows = ev[data.is_op[ev]]
     if not len(rows) or "A" not in nets or "U" not in nets:
         return {"rows": 0}
-    adv = delta_q(nets["A"], data, rows, data.action[rows])
+    adv = delta_q(nets["A"], data, rows, data.action[rows], nets["A_st"])
     qu = ps.sigmoid(pp.predict(nets["U"], data, rows, k, nets["U_st"])["q"])
     out = {"rows": int(len(rows))}
     bt = ps.Boot(data.row_unit[rows], boot_n, seed)
@@ -502,9 +571,15 @@ def verdict(rep: dict, th: dict, ks) -> dict:
             c["m3a"] = None if d3a is None or not finite(d3a["pt"]) else bool(d3a["pt"] >= th["m3a"])
             d3b = g(rep, "M3b", ks_, "A", "model", q, "rush_minus_macro")
             c["m3b"] = None if d3b is None or not finite(d3b["lo"]) else bool(d3b["pt"] > 0 and d3b["lo"] > 0)
+            # own-state change: A's relative error cut over U, CI above 0 and >= s_ratio x the S control's cut
+            ca, cs = g(rep, "M1", ks_, "pooled", "op", "od", "cut", "A"), g(rep, "M1", ks_, "pooled", "op", "od", "cut", "S")
+            c["m1_own"] = None if ca is None or cs is None or not finite(ca["lo"]) or not finite(cs["pt"]) else \
+                bool(ca["pt"] > 0 and ca["lo"] > 0 and ca["pt"] >= th["s_ratio"] * cs["pt"])
             crit[ks_] = c
         m2b = g(rep, "M2", str(max(ks)), "M2b", "rate", "pt")
         m2b_pass = None if m2b is None else bool(m2b >= th["m2b"])
+        own_k = int(th.get("own_k") or 0)
+        own_pass = (crit[str(own_k)]["m1_own"] if str(own_k) in crit else None) if own_k else True
 
         def all3(vals):
             if any(v is False for v in vals):
@@ -519,8 +594,8 @@ def verdict(rep: dict, th: dict, ks) -> dict:
 
         m1 = lambda c: all3([c["m1_y"], c["m1_outcome"]])  # noqa: E731
         m3 = lambda c: all3([c["m3a"], c["m3b"]])  # noqa: E731
-        row1 = all3([any_k(lambda c: all3([m1(c), c["m2a"], m3(c)])), m2b_pass])
-        row2 = all3([any_k(lambda c: all3([m1(c), c["m2a"], None if m3(c) is None else not m3(c)])), m2b_pass])
+        row1 = all3([own_pass, any_k(lambda c: all3([m1(c), c["m2a"], m3(c)])), m2b_pass])
+        row2 = all3([own_pass, any_k(lambda c: all3([m1(c), c["m2a"], None if m3(c) is None else not m3(c)])), m2b_pass])
         # A gain in the noise (r < r_noise on ŷ, every k) while the oracle's gain is significant (some k)
         # (the k where H is significant; r is defined there, H's gain being > 0)
         rs = [g(rep, "M1", str(k), "pooled", "op", "y", "r", "pt") for k in ks]
@@ -531,6 +606,9 @@ def verdict(rep: dict, th: dict, ks) -> dict:
             row3 = None
         else:
             row3 = bool(sig) and all(rs[i] < th["r_noise"] for i in sig)
+        if own_k:  # the own-state change cuts of A and H count too
+            a_lo = a_lo + [g(rep, "M1", str(k), "pooled", "op", "od", "cut", "A", "lo") for k in ks]
+            h_lo = h_lo + [g(rep, "M1", str(k), "pooled", "op", "od", "cut", "H", "lo") for k in ks]
         row4 = None if not all(finite(x) for x in a_lo + h_lo) else bool(all(x <= 0 for x in a_lo + h_lo))
         # human-only: rush-game ΔQ below 0 (CI), model-only: not (its CI reaches 0 or above)
         r5 = []
@@ -540,13 +618,15 @@ def verdict(rep: dict, th: dict, ks) -> dict:
             r5.append(None if not (finite(hu) and finite(mo)) else bool(hu < 0 <= mo))
         row5 = True if any(v is True for v in r5) else (None if any(v is None for v in r5) else False)
         row6 = None if m2b_pass is None else not m2b_pass
+        own_txt = f" + own-state change cut (k = {own_k})" if own_k else ""
         out[q] = {
-            "criteria": crit, "m2b_k": max(ks), "m2b_rate": m2b, "m2b_pass": m2b_pass,
+            "criteria": crit, "m2b_k": max(ks), "m2b_rate": m2b, "m2b_pass": m2b_pass, "own_k": own_k or None, "own_pass": own_pass if own_k else None,
             "rows": [
-                {"observation": "M1 (ŷ and outcome) + M2a + M3a + M3b(model games) at one k, and M2b", "meaning": "계획 가능", "next": "S1·S2", "matched": row1},
-                {"observation": "M1·M2 pass, M3 fails", "meaning": "미래는 맞히나 채점이 약함", "next": "채점 대상 바꾸기, 모델 판 늘리기", "matched": row2},
+                {"observation": f"M1 (ŷ and outcome) + M2a + M3a + M3b(model games) at one k{own_txt}, and M2b", "meaning": "계획 가능", "next": "S1·S2", "matched": row1},
+                {"observation": f"M1·M2 pass{own_txt}, M3 fails", "meaning": "미래는 맞히나 채점이 약함", "next": "채점 대상 바꾸기, 모델 판 늘리기", "matched": row2},
                 {"observation": f"M1 A gain in noise (r < {th['r_noise']:g} at every k where the H oracle gain is significant, one at least)", "meaning": "앞으로의 계획 묶음이 중요", "next": "(b) 옵션 검토", "matched": row3},
-                {"observation": "M1 A and H gains both not significant (CI includes 0)", "meaning": "행동이 미래를 거의 안 바꿈", "next": "계획 경로 중단", "matched": row4},
+                {"observation": "M1 A and H gains both not significant (CI includes 0)" + (" on ŷ and the own-state change cut" if own_k else ""),
+                 "meaning": "행동이 미래를 거의 안 바꿈", "next": "계획 경로 중단", "matched": row4},
                 {"observation": "M3c rush-game ΔQ: human-only CI below 0, model-only CI not below 0", "meaning": "행동이 증거가 되는 착각", "next": "모델 판 위주 학습", "matched": row5},
                 {"observation": f"M2b < {th['m2b']:g}", "meaning": "버그나 레이블 어긋남", "next": "파이프라인 확인", "matched": row6},
             ],
@@ -574,14 +654,25 @@ def _f(x, nd=3):
 def markdown(rep: dict) -> str:
     L = ["# S0 가능성 시험 결과 (jepa_planning S0)", "", f"- 체크포인트 sha256: `{rep['checkpoint']['checkpoint_sha256']}`",
          f"- 행 {rep['data']['rows']:,}, 판 {rep['data']['games']:,}, bootstrap {rep['settings']['boot']}회(판 단위, 95%)",
-         f"- 판정 문턱(기본안(미확정)): {json.dumps(rep['settings']['thresholds'])}", "", "## 데이터", "", "| 출처 | 종류 | 역할 | 판 | 평가 판 | 행 |", "|---|---|---|---|---|---|"]
+         f"- 판정 문턱(기본안(미확정)): {json.dumps(rep['settings']['thresholds'])}",
+         f"- 설계(`plan_pred.Design`): {json.dumps(rep['settings'].get('design'))}" + (" (첫 실행과 같음, `--v1`)" if rep["settings"].get("v1") else ""),
+         "", "## 데이터", "", "| 출처 | 종류 | 역할 | 판 | 평가 판 | 행 | 유효 레이블 중 체인 행 | 뺀 체인 행(운영 행동) |", "|---|---|---|---|---|---|---|---|"]
     for s in rep["data"]["sources"]:
-        L.append(f"| {s['name']} | {s['kind']} | {s['role']} | {s['games']} | {s['eval_games']} | {s['rows']:,} |")
-    L += ["", "## M0 기초", "", "| 묶음 | 행 | 열린 종류 p50 | top4 / top8 / top16 확률 합(평균) | 결정 간격 p50(프레임) | k 쌍 간격 p50 | 운영 행동 비율 | top8에 운영 행동 |", "|---|---|---|---|---|---|---|---|"]
+        ch = s.get("chains") or {}
+        L.append(f"| {s['name']} | {s['kind']} | {s['role']} | {s['games']} | {s['eval_games']} | {s['rows']:,} | {ch.get('chained_valid', 0):,} / {ch.get('valid', 0):,} | "
+                 f"{ch.get('dropped', 0):,} ({ch.get('dropped_op', 0):,}) |")
+    L += ["", f"- S 대조 상대 행이 같은 판인 행: {rep['data'].get('partner_same_game_rows', '-')}",
+          "- 체인 행: 같은 판의 앞 결정이 1프레임 이내의 명령(NoOp 아님)인 행(040-R4가 한 프레임 명령 묶음의 2번째부터를 +1, +2, … 프레임으로 민 것). 관측에 묶음 명령의 효과가 이미 들어 있다."]
+    frame_k = (rep["settings"].get("design") or {}).get("k_unit") == "frame"
+    L += ["", "## M0 기초", "", "| 묶음 | 행 | 열린 종류 p50 | top4 / top8 / top16 확률 합(평균) | 결정 간격 p50(프레임) | k 쌍 간격 p50 | 운영 행동 비율 | top8에 운영 행동 | 체인 행 / 뺀 행 |",
+          "|---|---|---|---|---|---|---|---|---|"]
     for gname, m in rep["M0"].items():
         tm = " / ".join(_f(m["top_mass"][str(t)].get("mean")) for t in M0_TOP)
-        gaps = ", ".join(f"k{k} {_f(v.get('p50'), 0)}" for k, v in m["frame_gap"].items() if k != "1")
-        L.append(f"| {gname} | {m['rows']:,} | {_f(m['open_types'].get('p50'), 0)} | {tm} | {_f(m['frame_gap']['1'].get('p50'), 0)} | {gaps} | {_f(m['op_share'])} | {_f(m['top8_has_op'])} |")
+        dg = m.get("dec_gap") or {}
+        gaps = ", ".join(f"k{k} {_f(v.get('p50'), 0)}" + (f" ({_f((dg.get(k) or {}).get('p50'), 0)}결정)" if frame_k else "") for k, v in m["frame_gap"].items() if k != "1")
+        L.append(f"| {gname} | {m['rows']:,} | {_f(m['open_types'].get('p50'), 0)} | {tm} | {_f(m['frame_gap']['1'].get('p50'), 0)} | {gaps} | {_f(m['op_share'])} | {_f(m['top8_has_op'])} | "
+                 f"{m.get('chained_valid', 0):,} / {m.get('chain_dropped', 0):,} |")
+    L += ["", "- k의 단위가 결정이면(`--k-unit dec`) 같은 k라도 출처마다 프레임 간격이 다르다(위 표). 출처 묶음별 M1 표를 따로 보고, 프레임으로 맞추려면 `--k-unit frame`."]
     for k, blk in rep["M1"].items():
         L += ["", f"## M1 조건 이득 (k = {k}, 평가 판)", ""]
         for gname, sets in blk.items():
@@ -597,11 +688,23 @@ def markdown(rep: dict) -> str:
                     L.append(f"| {met} ({r['metric']}) | {_f(r['values'].get('U'))} | {_f(gn.get('A'), 4)} | {_f(gn.get('Ad'), 4)} | {_f(gn.get('H'), 4)} | {_f(gn.get('S'), 4)} | "
                              f"{_f(gn.get('gk'), 4)} | {_f(r.get('r'))} | {_f(r.get('a_over_s'), 2)} |")
                 L.append("")
-    L += ["## M1 내 상태 열별 R² (pooled · 운영 행동 행, 6.3 열)", "", "| k | 열 | U | A − U |", "|---|---|---|---|"]
+    L += ["## M1 내 상태 변화 오차 감소 (od: o_{t+k} − o_t, 6.3 열, 1 − err_X / err_U)", "",
+          "| k | 묶음 | 행 집합 | U R²(변화) | A R²(변화) | A 감소 | A+d 감소 | H 감소 | S 감소 |", "|---|---|---|---|---|---|---|---|---|"]
+    for k, blk in rep["M1"].items():
+        for gname, sets in blk.items():
+            for rs, mets in sets.items():
+                od = mets.get("od") if mets else None
+                if not od:
+                    continue
+                cut = od.get("cut", {})
+                L.append(f"| {k} | {gname} | {'운영 행동' if rs == 'op' else '전체'} | {_f(od['values'].get('U'))} | {_f(od['values'].get('A'))} | {_f(cut.get('A'))} | "
+                         f"{_f(cut.get('Ad'))} | {_f(cut.get('H'))} | {_f(cut.get('S'))} |")
+    L += ["", "## M1 내 상태 열별 R² (pooled · 운영 행동 행, 6.3 열)", "", "| k | 열 | U | A − U | 변화 U | 변화 A − U | 변화 A 감소 |", "|---|---|---|---|---|---|---|"]
     for k, blk in rep["M1"].items():
         for col, e in (blk.get("pooled", {}).get("op", {}).get("_own_cols") or {}).items():
             if e["headline"]:
-                L.append(f"| {k} | {col} | {_f(e['values'].get('U'))} | {_f(e.get('gain_A'), 4)} |")
+                dl = e.get("delta") or {}
+                L.append(f"| {k} | {col} | {_f(e['values'].get('U'))} | {_f(e.get('gain_A'), 4)} | {_f((dl.get('values') or {}).get('U'))} | {_f(dl.get('gain_A'), 4)} | {_f(dl.get('cut_A'))} |")
     L += ["", "## M2 구별 (운영 행동 행, 예측기 A)", "", "| k | 행 | 후보 수 p50 | M2a R 중앙값 ŷ / ô / p̂ | M2b 비율 | M2b 건설 / 생산 |", "|---|---|---|---|---|---|"]
     for k, m in rep["M2"].items():
         if not m.get("rows"):
@@ -636,10 +739,14 @@ def markdown(rep: dict) -> str:
         L += [f"### 채점 대상 {q}", "", "| 관찰 | 해석 | 다음 | 해당 |", "|---|---|---|---|"]
         for r in v["rows"]:
             L.append(f"| {r['observation']} | {r['meaning']} | {r['next']} | {'판단 불가(입력 없음)' if r['matched'] is None else _f(r['matched'])} |")
-        L += ["", "| k | M1 ŷ | M1 결과 | M2a | M3a | M3b(모델 판) |", "|---|---|---|---|---|---|"]
+        L += ["", "| k | M1 ŷ | M1 결과 | M1 내 상태 변화 | M2a | M3a | M3b(모델 판) |", "|---|---|---|---|---|---|---|"]
         for k, c in v["criteria"].items():
-            L.append(f"| {k} | {_f(c['m1_y'])} | {_f(c['m1_outcome'])} | {_f(c['m2a'])} | {_f(c['m3a'])} | {_f(c['m3b'])} |")
-        L += ["", f"- M2b(k = {v['m2b_k']}) {_f(v['m2b_rate'])}: {_f(v['m2b_pass'])}", ""]
+            L.append(f"| {k} | {_f(c['m1_y'])} | {_f(c['m1_outcome'])} | {_f(c.get('m1_own'))} | {_f(c['m2a'])} | {_f(c['m3a'])} | {_f(c['m3b'])} |")
+        L += ["", f"- M2b(k = {v['m2b_k']}) {_f(v['m2b_rate'])}: {_f(v['m2b_pass'])}"]
+        if v.get("own_k"):
+            L.append(f"- M1 내 상태 변화 기준(k = {v['own_k']}, A 감소 신뢰구간 > 0, S 대조의 {rep['settings']['thresholds']['s_ratio']:g}배 이상): "
+                     f"{'판단 불가' if v['own_pass'] is None else _f(v['own_pass'])}")
+        L.append("")
     return "\n".join(L) + "\n"
 
 
@@ -648,8 +755,10 @@ def markdown(rep: dict) -> str:
 
 def report(data: pp.Data, a, ks, variants, models: Path) -> dict:
     th = {k: getattr(a, f"th_{k}") for k in TH_DEFAULTS}
+    th["own_k"] = 0 if a.v1 else a.th_own_k
     rep = {"kind": "plan-s0", "checkpoint": data.checkpoint, "data": pp.describe(data),
            "settings": {"ks": ks, "variants": variants, "boot": a.boot, "boot_seed": a.boot_seed, "eval_frac": a.eval_frac, "split_seed": a.split_seed,
+                        "design": data.design.as_dict(), "v1": bool(a.v1),
                         "steps": a.steps, "batch": a.batch, "lr": a.lr, "seed": a.seed, "thresholds": th, "bands": a.bands, "m3b_races": a.m3b_races,
                         "m3b_window": a.m3b_window, "m3b_macro": a.m3b_macro, "drop": a.drop, "keep_bot_perspective": a.keep_bot_perspective,
                         "maps": a.maps, "left_out": data.dropped, "own_headline": list(OWN_HEADLINE),
@@ -667,6 +776,8 @@ def report(data: pp.Data, a, ks, variants, models: Path) -> dict:
             if meta.get("data") != fingerprint(data):
                 raise SystemExit(f"{path}: trained on other data; run --stage train (--retrain)")
             label = name.split("_k")[0]
+            if "d_mu" not in st:  # first-run models: the change statistics of their training rows, for the change metrics
+                st = {**st, **data.delta_stats(data.pair_rows(k, "train", kinds), k)}
             nets[label], sts[label] = net, st
             rep["models"][name] = {x: meta[x] for x in ("rows", "steps", "batch", "lr", "seed", "secs") if x in meta} | {"last": meta["log"][-1] if meta.get("log") else None}
         ev = data.pair_rows(k, "eval")
@@ -701,8 +812,8 @@ def report(data: pp.Data, a, ks, variants, models: Path) -> dict:
                 preds[nm]["q"] = ps.sigmoid(preds[nm]["q"])
             rep["M3a"][ks_] = m3a(data, ev, preds, bands, a.boot, a.boot_seed)
             m3nets = {nm: nets[nm] for nm in ("A", "A-human", "A-model") if nm in nets}
-            rep["M3b"][ks_] = m3b(data, m3nets, a, a.boot, a.boot_seed)
-            rep["M3d"][ks_] = m3d(data, {"A": nets["A"], "U": nets["U"], "U_st": st}, k, ev, a.boot, a.boot_seed)
+            rep["M3b"][ks_] = m3b(data, m3nets, sts, a, a.boot, a.boot_seed)
+            rep["M3d"][ks_] = m3d(data, {"A": nets["A"], "U": nets["U"], "U_st": st, "A_st": sts["A"]}, k, ev, a.boot, a.boot_seed)
             print(f"[report] k={k} M3 done", flush=True)
     rep["verdict"] = verdict(rep, th, ks)
     return rep
@@ -726,9 +837,15 @@ def run(a) -> int:
             raise SystemExit(f"--drop {spec!r}: expected NAME=JSON with NAME a --src name")
         drop[name] = json.loads(Path(path).read_text(encoding="utf-8"))
     maps = [int(x) for x in a.maps.split(",") if x.strip()] or None
+    design = design_of(a)
+    if not a.v1 and a.th_own_k and a.th_own_k not in ks:
+        raise SystemExit(f"plan-s0: --th-own-k {a.th_own_k} is not among --ks {ks} (0 = no own-state criterion)")
     t0 = time.time()
-    data = pp.Data(srcs, ks, a.eval_frac, a.split_seed, drop, keep_bot=a.keep_bot_perspective, maps=maps)
+    data = pp.Data(srcs, ks, a.eval_frac, a.split_seed, drop, keep_bot=a.keep_bot_perspective, maps=maps, design=design)
+    print(f"[data] design: {design.as_dict()}", flush=True)
     print(f"[data] left out: {data.dropped}", flush=True)
+    print(f"[data] chained rows (valid label / dropped / dropped operation actions): "
+          f"{ {n: (c['chained_valid'], c['dropped'], c['dropped_op']) for n, c in data.chain_counts.items()} }", flush=True)
     print(f"[data] rows {data.N} games {data.G} {time.time() - t0:.0f}s", flush=True)
     out = Path(a.out)
     models = out / "models"

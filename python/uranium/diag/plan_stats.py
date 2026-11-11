@@ -6,7 +6,8 @@ draws for every predictor, so differences are paired) and gives the 2.5 / 97.5 p
   its game's multiplicity).
 - `mean`: mean of a per-row value; `r2`: 1 - SSE / SST over several dimensions (SST about the draw's
   own mean); `auc`: weighted ROC AUC (ties count 1/2); `spearman`: rank correlation (rows resampled
-  explicitly); `ci` / `diff`: point, interval and paired difference."""
+  explicitly); `ci` / `diff`: point, interval and paired difference; `rel_cut`: 1 - a / b of two means
+  (relative error reduction), paired."""
 
 import numpy as np
 
@@ -143,6 +144,13 @@ def ratio(a: tuple, b: tuple) -> dict:
     with np.errstate(invalid="ignore", divide="ignore"):
         pt = a[0] / b[0] if b[0] else np.nan
         return summary(pt, np.asarray(a[1]) / np.asarray(b[1]))
+
+
+def rel_cut(a: tuple, b: tuple) -> dict:
+    """1 - a / b (relative error reduction of mean error a against b) with the paired interval."""
+    with np.errstate(invalid="ignore", divide="ignore"):
+        pt = 1.0 - a[0] / b[0] if b[0] else np.nan
+        return summary(pt, 1.0 - np.asarray(a[1]) / np.asarray(b[1]))
 
 
 def bce(logit, y) -> np.ndarray:

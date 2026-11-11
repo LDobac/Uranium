@@ -22,7 +22,8 @@ games.json {gid: {split, lane, race (privileged), enemy_race, sha (replay_sha256
   that replay in dump order; not a player identity), map (family index, 0/1 = target maps), start (own
   start slot, scalar_cat[2]: with sha it names the view, e.g. one player of a TvT replay), result (+1 / -1 / 0 = undecided), rows, dec_rows, last_frame, scv8 (own SCVs >= 8 at 8:00,
   0 if the game ended before, None if not readable), cls (build class from privileged, jepa_survey
-  7.3 draft rules, `features.game_labels`), cls_given (`--classes`), start1, first_sight}}.
+  7.3 draft rules, `features.game_labels`), cls_given (`--classes`), start1, first_sight, skipped
+  (`--skip-views`: a listed stream, no rows)}}.
 manifest.json: checkpoint (sha256), data, selection, windows, backend, precision, stats, own columns.
 
 Memory: bounded (rows streamed to disk per lane group; per lane only the open game's label columns)."""
@@ -115,6 +116,8 @@ def add_args(p) -> None:
                    help="read each game only up to this frame (default: --row-until; 0 = whole games); the rows are the same")
     p.add_argument("--gk", default="8,32", help="g_k outputs to keep (the k the model has; empty = none)")
     p.add_argument("--classes", help="JSON {replay_sha256: class or {\"class\": ...}}: a given build class per game (cls_given)")
+    p.add_argument("--skip-views", help="views JSON ({\"bot\": [[sha256, start], ...], ...}, config/plan_s0/jepa_diag_tp_views.json): the streams "
+                   "of the \"bot\" list get no rows (games.json `skipped`), and a lane group whose lanes are all such streams skips its forward")
     p.add_argument("--lanes-per-group", type=int, default=8)
     p.add_argument("--limit-batches", type=int, default=0)
     p.add_argument("--maps-dir", help="map folder (else from .env)")
@@ -195,6 +198,14 @@ def model_rows(net, obs: dict, s0, t: int, gk: list[int]) -> dict:
     return {"h": h, "y": y, "logp": lp, "win_open": wo, "g": g, "state": state}
 
 
+def read_skip_views(path) -> set:
+    """{(replay sha256, own start slot)} of the "bot" list of a views JSON (`--skip-views`)."""
+    if not path:
+        return set()
+    got = json.loads(Path(path).read_text(encoding="utf-8"))
+    return {(x[0], int(x[1])) for x in got["bot"]}
+
+
 def read_classes(path) -> dict:
     if not path:
         return {}
@@ -209,7 +220,7 @@ def finish_game(lg: dict, games: dict, read_until: float) -> None:
     e["dec_rows"] = lg["dec"]
     e["last_frame"] = lg["last"]
     # the 8:00 SCV check needs the steps up to 8:00 read; a game whose last step is before 8:00 ended there
-    readable = not read_until or read_until > F8M + 1
+    readable = (not read_until or read_until > F8M + 1) and not lg["skip"]
     e["scv8"] = None if not readable else int(lg["last"] >= F8M and lg["scv_at8"] >= SCV8_MIN)
     e["cls"] = e["start1"] = e["first_sight"] = None
     if acc and lg["race"] in tb.RACES:
@@ -251,6 +262,7 @@ def run(a) -> int:
     v = net.variant
     gk = [k for k in want_gk if v is not None and v.aux_jepa is not None and str(k) in v.aux_jepa]
     classes = read_classes(a.classes)
+    skip_views = read_skip_views(a.skip_views)
     names, _, _ = own_columns()
     d_h = net.cfg.core.hidden
     d_y = net.cfg.entity.d_model + net.cfg.spatial.pool
@@ -267,7 +279,7 @@ def run(a) -> int:
     games: dict[int, dict] = {}
     seen_sha: dict[str, int] = {}
     t0 = time.time()
-    stats = {"batches": 0, "groups": 0, "rows": 0, "frame_resets": 0}
+    stats = {"batches": 0, "groups": 0, "rows": 0, "frame_resets": 0, "skipped_views": 0, "skipped_groups": 0}
     splits = [s for s in a.splits.split(",") if s]
     for si, split in enumerate(splits):
         try:
@@ -312,17 +324,24 @@ def run(a) -> int:
                     sub = lane_slice(hg, li, T)
                     race = race_of(sub, np.arange(n))
                     gid = len(games)
-                    lg = {"gid": gid, "race": race, "last": -1.0, "anchor": None, "sha": sha, "dec": 0, "scv_at8": 0, "acc": []}
+                    sc_cat = np.asarray(hg["scalar_cat"])[li * T]
+                    skip = (sha, int(sc_cat[2])) in skip_views
+                    lg = {"gid": gid, "race": race, "last": -1.0, "anchor": None, "sha": sha, "dec": 0, "scv_at8": 0, "acc": [], "skip": skip}
                     lane_game[lane] = lg
                     occ = seen_sha.get(sha, 0)
                     seen_sha[sha] = occ + 1
-                    sc_cat = np.asarray(hg["scalar_cat"])[li * T]
                     games[gid] = {"split": split, "lane": lane, "race": race, "enemy_race": races[lane] if lane < len(races) else "", "sha": sha, "occ": occ,
                                   "map": int(sc_cat[1]), "start": int(sc_cat[2]), "result": int(np.sign(np.asarray(hg["results"])[li * T])), "rows": 0,
-                                  "cls_given": classes.get(sha)}
+                                  "cls_given": classes.get(sha), **({"skipped": True} if skip else {})}
+                    stats["skipped_views"] += skip
                 if (np.diff(fr) < -1).any():
                     stats["frame_resets"] += 1
                 lg["last"] = float(fr[-1])
+                if lg["skip"]:
+                    # --skip-views: no rows, no labels; the decision index still counts the steps
+                    lanes.append((li, np.zeros(0, np.int64), lg["gid"], lg["dec"]))
+                    lg["dec"] += n
+                    continue
                 rows = li * T + np.arange(n)
                 at8 = rows[fr <= F8M]
                 if len(at8):
@@ -336,6 +355,12 @@ def run(a) -> int:
                 games[lg["gid"]]["rows"] += len(sel)
                 lg["dec"] += n
             if not lanes:
+                continue
+            if all(lane_game[start + li]["skip"] for li, _, _, _ in lanes):
+                # every lane with steps is a skipped view: no forward. The group state stays as it was;
+                # only skipped streams continue from it (a new stream on a lane starts from a reset
+                # state, `keep` False), so the written rows are those of a full walk.
+                stats["skipped_groups"] += 1
                 continue
             stats["groups"] += 1
             obs = to_obs(hg, device)
@@ -376,6 +401,7 @@ def run(a) -> int:
         "data": [redact(d) for d in dirs], "splits": splits, "games_per_split": a.games, "seed": a.seed, "config": Path(a.config).as_posix(),
         "seq_len": T, "lanes": LANES, "lanes_per_group": G, "row_until": a.row_until, "read_until": read_until or None, "gk": gk,
         "own_columns": names, "op_actions": op_actions(), "classes": a.classes and redact(a.classes),
+        "skip_views": a.skip_views and redact(a.skip_views),
         "core": net.cfg.core.kind, "outer": net.outer is not None, "backend": backend, "precision": precision,
         "games": len(games), "stats": stats, "secs": round(time.time() - t0, 1),
     }

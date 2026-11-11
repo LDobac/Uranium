@@ -143,18 +143,23 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 
 ## 계획 JEPA S0 가능성 시험(`reports/jepa_planning.md` 6절, jepa_planning S0)
 측정 도구다. 모델·spec·계획 모듈은 바꾸지 않는다(계획 모듈은 아직 승인 전). 덤프(GPU 1회) → 예측기 학습·표(CPU) 두 단계다. 코드는 `python/uranium/diag/plan_dump.py`(덤프), `plan_pred.py`(데이터·예측기), `plan_stats.py`(판 bootstrap·AUC·R²·Spearman), `plan_s0.py`(학습·표·판정)다.
-- 덤프: `python -m uranium diag plan-dump --checkpoint <ckpt> (--dataset <rel> | --shards <dir>)... --out <dir> [--splits val,test] [--games N] [--seed 1] [--backend cuda|rocm|cpu] [--lanes-per-group 8] [--row-until 14400] [--read-until F] [--gk 8,32] [--classes <json>]`
+- 덤프: `python -m uranium diag plan-dump --checkpoint <ckpt> (--dataset <rel> | --shards <dir>)... --out <dir> [--splits val,test] [--games N] [--seed 1] [--backend cuda|rocm|cpu] [--lanes-per-group 8] [--row-until 14400] [--read-until F] [--gk 8,32] [--classes <json>] [--skip-views <json>]`
   - 모델은 `diag dump`와 같은 경로(trunk + 행동 종류 헤드, `action_seq`의 값)로 돌고, 같은 forward에서 JEPA 정답 y = LN([e_pool, s_pool])·g_k(h')·win_open을 더 꺼낸다(032-R24 학습 전용 출력을 읽기만 한다). `diag dump`는 그대로다.
   - `--row-until`(기본 10:00) 전의 모든 실제 step이 한 행이다. 행: h', y, privileged(학습 정답으로만), 내 상태 34열(SCV·병력·건물 종류별 완성+생산 중 수, 서플라이(BWAPI 반 단위: 마린 = 2), 병력 합, 자기 시야 스칼라에서), 레이블 행동 종류·지연 bucket·가중치, 행동 종류 log-prob, type_mask, win_open, g_8·g_32, 프레임, 판 안 결정 번호. 판마다 결과, 8:00 SCV ≥ 8, 빌드 분류(privileged 규칙, `--classes`가 있으면 그 값도), 리플레이 sha256, 자기 시작 슬롯(`scalar_cat[2]`, sha256과 함께 관점을 정함), 맵 계열, 상대 종족을 `games.json`에 남긴다.
   - 행은 레인 그룹마다 `rows/<필드>.bin`에 바로 쓴다(호스트 메모리 일정). 행당 약 5.2 KB(g_k 포함), `--gk ''`면 약 3.2 KB.
   - `--read-until`의 기본값은 `--row-until`이다(그 뒤 step은 읽지 않는다).
-- 학습·표: `python -m uranium diag plan-s0 --src <이름>:<human|teacher|model>:<train|eval|split>=<덤프> ... --out <dir> [--stage all|train|report] [--ks 8,32] [--steps 3000] [--batch 512] [--lr 1e-3] [--seed 0] [--threads N] [--eval-frac 0.2] [--split-seed 1] [--boot 1000] [--drop <src>=<json>] [--keep-bot-perspective] [--maps 0,1] [--m3b-races Z] [--m3b-window 2880,5040] [--m3b-macro macro] [--tag <이름>] [--th-s-ratio 2 --th-r-min 0.2 --th-r-noise 0.1 --th-m2b 0.9 --th-m2a 0.5 --th-m3a 0.01]`
+  - `--skip-views <관점 표>`(`--drop`과 같은 JSON): `bot` 목록의 스트림은 행을 쓰지 않는다(`games.json`에 `skipped`, 행 0). 레인 그룹의 실제 step이 모두 그런 스트림이면 그 그룹의 forward도 건너뛴다(그 상태를 이어 쓰는 것은 건너뛴 스트림뿐이고 새 스트림은 초기화된 상태에서 시작하므로, 나머지 스트림의 행은 전체 덤프와 같다). 모델 판을 모델 자신의 명령으로 다시 build하면 테란전 봇 관점이 봇 APM만큼(판당 수천 step) 길어져서 쓴다.
+- 학습·표: `python -m uranium diag plan-s0 --src <이름>:<human|teacher|model>:<train|eval|split>=<덤프> ... --out <dir> [--stage all|train|report] [--ks 8,32] [--steps 3000] [--batch 512] [--lr 1e-3] [--seed 0] [--threads N] [--eval-frac 0.2] [--split-seed 1] [--boot 1000] [--drop <src>=<json>] [--keep-bot-perspective] [--maps 0,1] [--m3b-races Z] [--m3b-window 2880,5040] [--m3b-macro macro] [--tag <이름>] [--th-s-ratio 2 --th-r-min 0.2 --th-r-noise 0.1 --th-m2b 0.9 --th-m2a 0.5 --th-m3a 0.01 --th-own-k 8] [--v1 | --chains drop|keep --chain-kinds teacher,model --own-input on|off --own-target delta|level --s-partner other-game|same-game --k-unit dec|frame]`
+  - 설계(`plan_pred.Design`, `reports/jepa_planning.md` 6.8 둘째 실행): 기본값은 체인 행 빼기(교사·모델 판), 모든 예측기에 현재 내 상태 o_t 입력, ô 정답 = 변화 o_{t+k} − o_t, S 대조 상대 = 같은 출처의 다른 판, k 단위 = 결정이다. `--v1`은 첫 실행(2026-11-11)의 설계·판정표 그대로다(같은 모델·같은 수치, 보고서에는 변화 지표만 더해진다. 다른 설계 플래그와 함께 쓰면 거부). 설계는 모델 파일의 지문에 들어가 다른 설계로 `--stage report`를 하면 거부한다.
+  - 체인 행: 같은 판의 앞 결정(dec − 1)이 1프레임 이내의 명령(NoOp가 아닌 레이블, 무효 포함)인 행이다. 040-R4가 한 프레임 명령 묶음의 2번째부터를 +1, +2, … 프레임으로 밀어서, 그 관측에는 첫 프레임에 실행된 묶음 명령(자기 명령 포함)의 효과가 이미 들어 있다. 교사는 8프레임마다 명령하고 모델 결정도 몇 프레임 간격이라 이 출처에서 1프레임 간격은 묶음이다(사람은 진짜 연속 명령일 수 있어 기본으로 빼지 않는다). 뺀 행은 예시·M3b 행이 아니고, t+k 정답과 H 오라클 행동으로는 남는다. 출처별 수는 `[data] chained rows` 줄과 보고서 데이터 표에 있다.
+  - `--k-unit frame`: k는 프레임이고 t+k는 같은 판에서 k프레임 이상 뒤의 첫 행, H 오라클은 그 사이 결정들의 행동 비율이다. g_k 기준선(결정 k)은 내지 않는다. 결정 k는 출처마다 프레임 간격이 달라서(M0 표, 사람 k = 8 약 82프레임, 교사·모델 약 143프레임) 출처별 M1 표를 따로 보거나 이것으로 맞춘다.
   - 역할: `train`은 모든 판으로 학습, `eval`은 모든 판으로 평가, `split`은 고정 seed 판 단위 분할(평가 20%, 한 리플레이의 두 관점은 같은 쪽). 분할은 (`--split-seed`, `--src` 이름의 crc32)로 정해지므로 이름을 바꾸면 분할도 바뀐다. 모델 파일에는 남긴 판과 역할의 지문이 들어가고, 다른 분할(`--eval-frac`·`--split-seed`·`--drop`·`--maps`)로 `--stage report`를 하면 거부한다.
   - 관점: 모델 판 shard의 테란전은 두 플레이어 관점이 모두 스트림이다. `model` 출처에 테란 상대 스트림이 있으면 `--drop <src>=config/plan_s0/jepa_diag_tp_views.json`(11-09 진단 관점 표: 뷰마다 [리플레이 sha256, 자기 시작 슬롯], `bot`·`model`. records APM으로 정함)이나 `--keep-bot-perspective`가 있어야 돈다. `bot` 관점을 빼고, 어느 목록에도 없는 스트림이 있으면 거부한다(시작 슬롯 번호가 다르면 여기서 드러난다).
-  - S 대조의 상대 행: 같은 판의 레이블이 유효한 행 중 하나다. 생성기 하나(seed 12345)가 판을 전역 순서(`--src` 순서, 판 id)로 돈다.
-  - 표준화: 정답의 sd는 바닥값을 둔다(내 상태 0.5개, privileged 부호화 단위 0.05). 학습 행에서 상수인 열은 뺀다. ô 머리 지표는 6.3의 10열(SCV, 서플라이 2, 배럭, 벙커, CC, 서플라이 디폿, 정제소, 팩토리, 병력)이고, 34열 전체(`o_all`)와 열별 R²도 낸다.
+  - S 대조의 상대 행: 기본은 같은 출처의 다른 판에서 쓸 수 있는 행(유효 레이블, 뺀 체인 행 아님) 하나다(출처의 행동 분포는 그대로, 판 정체는 없음). 생성기 하나(seed 12345)가 출처를 `--src` 순서로 돈다. `--s-partner same-game`(`--v1`)은 같은 판의 행이고, 생성기가 판을 전역 순서(`--src` 순서, 판 id)로 돈다.
+  - 표준화: 정답의 sd는 바닥값을 둔다(내 상태 0.5개, privileged 부호화 단위 0.05). 학습 행에서 상수인 열은 뺀다. ô 머리 지표는 6.3의 10열(SCV, 서플라이 2, 배럭, 벙커, CC, 서플라이 디폿, 정제소, 팩토리, 병력)이고, 34열 전체(`o_all`)와 열별 R²도 낸다. 변화 정답(o_{t+k} − o_t)도 학습 행의 평균·sd(바닥 0.5개)로 표준화하고, o_t 입력은 수준의 평균·sd로 표준화한다(상수 열은 0).
+  - 내 상태 지표: 수준 R²(`o`·`o_all`, 변화 예측이면 o_t + 예측 변화로 되돌려 계산)와 변화 R²(`od`·`od_all`), 상대 오차 감소 `cut` = 1 − err_X / err_U(변화 공간, 같은 bootstrap 표본으로 짝지은 신뢰구간)를 낸다. 보고하는 내 상태 지표는 변화 쪽이다. M2a의 ô와 M2b는 예측기 자신의 정답 공간(기본: 변화)으로 계산한다.
   - k마다 예측기 U·A·A+d·H·S(같은 구조·step·seed)와 M3c용 A(사람만, 모델 판만)를 `<out>/models/`에 저장한다. 이미 있는 모델은 다시 학습하지 않는다(`--retrain`). 같은 스레드 수면 비트 단위로 같다.
-  - 표는 `<out>/s0.json`·`s0.md`(`--tag`면 `s0-<tag>.*`): M0, M1(전체 행·운영 행동 행, 출처 묶음별), M2a·M2b, M3a(시간대별), M3b·M3c, M3d, 6.5 판정표(채점 대상 판 결과·8:00 SCV 따로). 신뢰구간은 판(리플레이) 단위 bootstrap 95%다. 문턱 기본값은 기본안(미확정)이다.
+  - 표는 `<out>/s0.json`·`s0.md`(`--tag`면 `s0-<tag>.*`): M0, M1(전체 행·운영 행동 행, 출처 묶음별), M2a·M2b, M3a(시간대별), M3b·M3c, M3d, 6.5 판정표(채점 대상 판 결과·8:00 SCV 따로). 신뢰구간은 판(리플레이) 단위 bootstrap 95%다. 문턱 기본값은 기본안(미확정)이다. `--v1`이 아니면 1·2행의 M1에 내 상태 기준(k = `--th-own-k`, pooled 운영 행동 행의 A 변화 오차 감소 신뢰구간 > 0이고 S 대조 감소의 `--th-s-ratio`배 이상)이 더해지고, 4행(A·H 모두 유의하지 않음)은 ŷ와 함께 A·H의 변화 오차 감소도 본다. `--th-own-k 0`이면 내 상태 기준을 쓰지 않는다.
   - 메모리: 행당 약 3.2 KB(h', y, privileged, log-prob, 내 상태)를 미리 잡은 배열에 출처별로 채운다(두 번째 사본 없음). 130만 행이면 약 4.2 GB, 학습·표 포함 최대 약 5~6 GB.
 - 실행 순서(2026-11-11 사용자 결정: 덤프는 Linux ROCm 호스트에서 표본을 줄여, 학습·표는 Linux CPU 호스트)
   1. 표본 확인(수 분): 아래 덤프 명령에 `--games 4 --limit-batches 20`, 출력은 `~/Workspace/Uranium_logs/plan_s0/smoke/...`. 이어 같은 호스트에서 `plan-s0 ... --steps 50 --boot 20 --out ~/Workspace/Uranium_logs/plan_s0/smoke/s0`.
@@ -182,6 +187,41 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
      - 판정표 읽는 법: 1·2행(계획 가능 / 채점이 약함)은 "M3b(모델 판)"이 필요하므로 `s0-tp.md`에서 읽는다(첫 보고서에서는 모델 판 M3b 행이 없어 "판단 불가"). 5행(M3c 착각)은 저그 교사 보관분 행이 있는 첫 보고서 `s0.md`에서 읽는다. 3·4·6행은 두 보고서가 같다(M1·M2는 M3b 설정과 무관).
   4. 비교 체크포인트(6.2: 학습 길이에 따라 행동 조건 이득이 달라지는지, M1만 본다): `<ckpt2>` = `<shared>/checkpoints/m2-lam-base/ckpt-3000`, `<D2>` = `~/Workspace/Uranium_logs/plan_s0/m2-lam-base__ckpt-3000`로 2의 덤프 네 줄을 같은 판 수로 다시 하고(같은 표본이어야 비교가 된다, 덤프 시간도 같음), 3의 첫 줄을 `<D2>`·`--no-m3c`로 돌린다. 두 `s0.md`의 M1 표(운영 행동 행, k = 8·32)를 나란히 본다.
 - 시간(추정, 실행 전): 덤프는 행 수로 정해진다. `diag dump` 실측(Linux ROCm 호스트, 레인 그룹 4)은 행당 약 2.3 ms다(사람 1,000판 6:00까지 763,946행 1,772초, 교사 433판 pass 7번 2,054초). 위 표본은 사람 학습 400판 약 51만 행(10:00까지 판당 약 1,270행 가정), val 150판 약 19만, 교사 433판 최대 29만, 모델 판 520 스트림(봇 관점 160 포함, 분석에서 뺌) 최대 34만, 합계 약 130만 행이다. 4의 비교 덤프는 같은 시간이 한 번 더 든다. 6:00 뒤 행은 유닛이 많아 행당 비용이 더 클 수 있어 1~2시간으로 본다(shard 훑기 포함). 디스크는 약 7 GB(`--gk ''`면 약 4 GB). 학습·표는 Linux CPU 호스트에서 예측기 14개 × 3,000 step(CUDA 호스트 CPU 4스레드에서 약 20 ms/step, Linux CPU 호스트는 2~3배로 가정) 약 40분~1시간과 표 약 20~30분이다.
+- 둘째 실행(S0b, 2026-11-12 사용자 결정: 첫 실행의 세 문제를 고쳐 재측정, `reports/jepa_planning.md` 6.8). 위 1~4의 명령은 이제 둘째 설계로 돈다. 첫 실행을 그대로 다시 내려면 `plan-s0`에 `--v1`을 붙인다(첫 실행의 모델 파일로 `--stage report --v1`도 된다). `<J>` = `<shared>/eval/jepa-diag-tp-20261109`(11-09 모델 판 원본), `<O>` = `<shared>/eval/jepa-plan-feas-20261112`. 사람·교사 덤프는 첫 실행 것(`<shared>/eval/jepa-plan-feas-20261111/dump/`, 같은 체크포인트)을 그대로 쓰고 모델 판만 다시 만든다.
+  1. 모델 판 다시 build(Linux CPU 호스트, 저장소 루트, 약 20~25분 추정: 11-09 build는 `--jobs 6`으로 320판 20분 + 40판 1.5분, 표본 6판은 `--jobs 4`로 40초). 레이블은 리플레이에 기록된 모델 자신의 명령이다(`--relabel` 없음, 그래서 출처 태그는 `dagger`가 아니라 `botgen`, 040-R14). 다른 build 옵션은 11-09와 같다.
+     ```
+     set -a; . ./.env; set +a
+     J=$URANIUM_SHARED_DIR/eval/jepa-diag-tp-20261109; O=$URANIUM_SHARED_DIR/eval/jepa-plan-feas-20261112
+     export URANIUM_MAPS_DIR=$URANIUM_SHARED_DIR/datasets/replays/build/maps
+     mkdir -p $O/records/model_own $O/logs
+     for part in games extra; do
+       target/release/uranium-replay build $J/tp-$part/replays --src botgen --out $O/shards/model_own/$part \
+         --records $O/records/model_own/botgen_$part.jsonl --jobs 6 --until-frame 11520 --time-limit 14400 < /dev/null > $O/logs/build_$part.log 2>&1
+     done
+     ```
+     - `botgen`에는 5분 기준이 있어(040 품질 표, `dagger`만 예외) 5:00 전에 끝난 리플레이(11-09 기준 tp 4판)는 `filtered`(shorter than 5 minutes)로 빠진다. 테란전 봇 관점은 봇 APM만큼 step이 많고(판당 수천), 일부는 무효 레이블 20% 이상(040-R19)으로 빠진다. 빠진 스트림은 분석에 없을 뿐이고, 봇 관점은 어차피 관점 표가 뺀다. 관점 키(리플레이 sha256, 자기 시작 슬롯)는 레이블과 무관해서 `config/plan_s0/jepa_diag_tp_views.json`이 그대로 맞는다(표본 build에서 테란전 두 관점이 모두 기록됨을 확인).
+     - 확인: `$O/logs/build_*.log` 마지막 줄의 `by_outcome`, records의 `filtered` 사유.
+  2. 모델 판 덤프(Linux ROCm 호스트, 약 15~30분 추정: 모델 관점 약 22만 행. 봇 관점은 행을 쓰지 않고, forward는 레인 그룹이 모두 봇 관점일 때만 건너뛰므로 건너뛰는 몫에 달린다. 첫 실행 모델 판 32만 행 700초). S0 전용 사본(`~/Workspace/Uranium_logs/s0/repo`를 이 변경이 들어간 origin/master로. Rust 변경이 없어 그 사본의 `_core` 그대로)에서:
+     ```
+     export LD_LIBRARY_PATH=<그 호스트의 rocBLAS 경로> HSA_ENABLE_SDMA=0 MALLOC_ARENA_MAX=2 URANIUM_BC_FEED_THREADS=5
+     cd ~/Workspace/Uranium_logs/s0/repo && git fetch -q origin && git checkout -q --detach origin/master && export PYTHONPATH=$PWD/python
+     D=~/Workspace/Uranium_logs/s0b/m2-s1__ckpt-39096
+     <venv python> -m uranium diag plan-dump --checkpoint <shared>/checkpoints/m2-s1/ckpt-39096 --shards <O>/shards/model_own --splits train,val,test \
+       --skip-views config/plan_s0/jepa_diag_tp_views.json --config config/bc.toml --backend rocm --lanes-per-group 4 --out $D/model_own
+     mkdir -p <O>/dump && cp -r $D/model_own <O>/dump/model_own.part && mv <O>/dump/model_own.part <O>/dump/model_own
+     ```
+  3. 학습·표(Linux CPU 호스트, 같은 S0 사본, 본 표 약 25~30분 + `tp` 표 약 7분 추정: 첫 실행 21분·6.5분, o_t 입력과 변화 지표가 조금 더한다). 첫 실행 덤프가 `~/Workspace/Uranium_logs/s0/m2-s1__ckpt-39096`에 있으면 그것을 쓴다(없으면 `<shared>/eval/jepa-plan-feas-20261111/dump/`에서 복사):
+     ```
+     cd ~/Workspace/Uranium_logs/s0/repo && git fetch -q origin && git checkout -q --detach origin/master && export PYTHONPATH=$PWD/python
+     D1=~/Workspace/Uranium_logs/s0/m2-s1__ckpt-39096; D=~/Workspace/Uranium_logs/s0b/m2-s1__ckpt-39096
+     mkdir -p $D && cp -r <O>/dump/model_own $D/model_own
+     SRC="--src human-train:human:train=$D1/human_train --src human-val:human:eval=$D1/human_val --src teacher:teacher:split=$D1/teacher --src model:model:split=$D/model_own --drop model=config/plan_s0/jepa_diag_tp_views.json --threads 4"
+     <venv python> -m uranium diag plan-s0 $SRC --out $D/s0b
+     <venv python> -m uranium diag plan-s0 $SRC --stage report --m3b-races T,P --tag tp --out $D/s0b
+     cp -r $D/s0b <O>/s0b.part && mv <O>/s0b.part <O>/s0b
+     ```
+     - 판정표 읽는 법은 위 3과 같다. 내 상태 기준(k = 8)은 "M1 내 상태 변화 오차 감소" 표의 pooled·운영 행동 행 A 감소다.
+  4. 선택 비교(각각 위 3과 같은 시간, `$SRC` 그대로): 레이블 고침만의 효과 `--v1 --out $D/s0b-v1`(첫 설계 + 새 모델 판 레이블), 프레임 k `--k-unit frame --ks 144,576 --th-own-k 144 --out $D/s0b-frame`(교사·모델 판의 k = 8·32 결정에 가까운 6초·24초).
 
 ## 감시·작업자(060-R6, 061-R13~R15)
 - `uranium-train supervise [--hang-minutes 30 --max-restarts 5 --window-minutes 60 --delay-seconds 60 --progress-file <file> --fatal-pattern <regex>... --log <file>] -- <bc|rl 인자>`: 자식은 `URANIUM_PYTHON -m uranium <bc|rl 인자>`다(`.env`에 없으면 시작하지 않는다). 비정상 종료·멈춤이면 같은 run을 재시작한다. 종료 코드 0·130·75(잠금을 얻지 못함: 다른 호스트 잠금, 획득 경쟁에서 짐, 양보 예약)·76(양보)은 재시작하지 않는다. 70(장치 치명 오류, 저장 없이 끝남, 042-R20)은 재시작한다.
