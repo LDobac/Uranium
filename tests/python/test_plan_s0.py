@@ -142,6 +142,38 @@ def test_plan_dump_schema_and_determinism(tiny_config, shards, tmp_path):
         main(dump_args(ck, shards, tiny_config, tmp_path / "d1"))
 
 
+def test_plan_dump_skip_views(tiny_config, shards, tmp_path):
+    """jepa_planning S0 second run: `--skip-views` writes no rows for the "bot" streams of a views JSON (games.json
+    `skipped`), skips the forward of a lane group holding only such streams, and the other streams' rows are
+    those of a full dump."""
+    from uranium.__main__ import main
+
+    ck = tiny_model2(tmp_path / "ck")
+    common = ("--row-until", "1e9", "--read-until", "0", "--lanes-per-group", "1")
+    assert main(dump_args(ck, shards, tiny_config, tmp_path / "full", *common)) == 0
+    R0, g0, _ = load(tmp_path / "full")
+    bot = [[e["sha"], e["start"]] for gid, e in sorted(g0.items()) if gid % 2 == 0]
+    views = tmp_path / "views.json"
+    views.write_text(json.dumps({"bot": bot, "model": [[e["sha"], e["start"]] for gid, e in sorted(g0.items()) if gid % 2 == 1]}))
+    assert main(dump_args(ck, shards, tiny_config, tmp_path / "skip", *common, "--skip-views", str(views))) == 0
+    R1, g1, m1 = load(tmp_path / "skip")
+    skipped = {(e["sha"], e["start"]) for e in g1.values() if e.get("skipped")}
+    assert skipped == {tuple(x) for x in bot} and all(e["rows"] == 0 for e in g1.values() if e.get("skipped"))
+    assert m1["stats"]["skipped_views"] == len(bot) and m1["stats"]["skipped_groups"] > 0
+    key = lambda R, g: {(g[int(x)]["sha"], g[int(x)]["start"], int(d)): i for i, (x, d) in enumerate(zip(R["game"], R["dec"]))}  # noqa: E731
+    k0, k1 = key(R0, g0), key(R1, g1)
+    assert set(k1) == {k for k in k0 if (k[0], k[1]) not in skipped} and len(k1) > 0
+    i0 = np.array([k0[k] for k in sorted(k1)])
+    i1 = np.array([k1[k] for k in sorted(k1)])
+    for f in ("action", "frame", "own", "priv", "mask", "weight"):
+        assert np.array_equal(R0[f][i0], R1[f][i1]), f
+    assert np.array_equal(R0["h"][i0], R1["h"][i1]) and np.array_equal(R0["logp"][i0], R1["logp"][i1])
+    for e in g1.values():
+        if not e.get("skipped"):
+            e0 = next(x for x in g0.values() if (x["sha"], x["start"]) == (e["sha"], e["start"]))
+            assert e["rows"] == e0["rows"] and e["dec_rows"] == e0["dec_rows"] and e["scv8"] == e0["scv8"]
+
+
 def test_plan_dump_rows_equal_action_seq_and_read_until(tiny_config, shards, tmp_path):
     """The dumped h' / log-probs are the `action_seq` values of the same stream walk; `--read-until` keeps the
     rows before `--row-until` (the same per-game rows, another order)."""
@@ -242,10 +274,11 @@ def test_paired_diff_ratio_and_bce():
 # ---------------------------------------------------------------- synthetic plan-dump folders
 
 
-def fake_dump(path: Path, n_games=24, rows=60, seed=0, kind_shift=0.0, d=16, sha_prefix="a", race="Z", void_every=0):
+def fake_dump(path: Path, n_games=24, rows=60, seed=0, kind_shift=0.0, d=16, sha_prefix="a", race="Z", void_every=0, chain_every=0):
     """A plan-dump folder with known structure: the action type (0..3, 3 = Build_Bunker's own column) moves the
     future own bunker count and y; h carries the game's result. Game g: start slot g % 4, map family g % 3;
-    `void_every`: every n-th row has a void label (weight 0)."""
+    `void_every`: every n-th row has a void label (weight 0); `chain_every`: row i with i % n == n - 1 is observed
+    1 frame after row i - 1 (a 040-R4 chained row; rows are 24 frames apart otherwise)."""
     from uranium.diag.plan_dump import RowWriter
 
     rng = np.random.default_rng(seed)
@@ -276,7 +309,11 @@ def fake_dump(path: Path, n_games=24, rows=60, seed=0, kind_shift=0.0, d=16, sha
         m[:, acts] = True
         lp = np.full((rows, n_act), -np.inf)
         lp[:, acts] = np.log([0.4, 0.3, 0.2, 0.1])
-        w.add({"game": np.full(rows, g), "split": np.zeros(rows), "dec": np.arange(rows), "frame": 2880 + 24.0 * np.arange(rows), "h": h, "y": y,
+        frames = 2880 + 24.0 * np.arange(rows)
+        if chain_every:
+            ch = np.arange(rows) % chain_every == chain_every - 1
+            frames[ch] = frames[np.nonzero(ch)[0] - 1] + 1
+        w.add({"game": np.full(rows, g), "split": np.zeros(rows), "dec": np.arange(rows), "frame": frames, "h": h, "y": y,
                "priv": rng.normal(size=(rows, 5)) + h[:, :1], "priv_ok": np.ones(rows), "own": own, "action": a, "delay": rng.integers(0, 16, rows),
                "weight": (np.arange(rows) % void_every != 0) if void_every else np.ones(rows), "logp": lp, "mask": np.packbits(m, axis=1), "win_open": h[:, 0] * 0.1, "g8": y})
         games[g] = {"split": "val", "race": race, "sha": f"{sha_prefix}{g:063x}", "occ": 0, "start": g % 4, "map": g % 3, "result": res, "rows": rows, "dec_rows": rows, "scv8": int(g % 3 == 0),
@@ -304,8 +341,10 @@ def test_data_pairs_and_split(tmp_path):
     hist = data.inputs(r, 8, "H")["hist"].numpy()[0]
     want = np.bincount(data.action[5:13].astype(int), minlength=101) / 8
     assert np.allclose(hist, want)
-    # the control: an action of the same game
-    assert (data.game[data.partner] == data.game).all()
+    # the control (second run): an action of another game of the source; the first run: of the same game
+    assert (data.game[data.partner] != data.game).all() and data.partner_same_game == 0
+    v1 = pp.Data([pp.Source("a", "teacher", "split", str(p))], ks=(8,), eval_frac=0.25, split_seed=1, design=pp.V1)
+    assert (v1.game[v1.partner] == v1.game).all()
     # the same split for a second load; a different seed moves it
     d2 = pp.Data([pp.Source("a", "teacher", "split", str(p))], ks=(8,), eval_frac=0.25, split_seed=1)
     d3 = pp.Data([pp.Source("a", "teacher", "split", str(p))], ks=(8,), eval_frac=0.25, split_seed=2)
@@ -337,21 +376,99 @@ def test_bot_views_and_split_digest(tmp_path):
     assert keep.split_digest != d.split_digest
 
 
-def test_partner_rows_have_valid_labels_and_sd_floors(tmp_path):
-    p = fake_dump(tmp_path / "a", void_every=3)
-    data = pp.Data([pp.Source("a", "teacher", "split", str(p))], ks=(8,))
-    assert (data.game[data.partner] == data.game).all() and (data.weight[data.partner] > 0).all()
-    st = data.stats(data.pair_rows(8, "train"))
-    on = np.isfinite(st["o_sd"])
-    assert (st["o_sd"][on] >= pp.OWN_SD_FLOOR).all() and not on[own_columns()[0].index("marine")]  # constant 0: left out
-    assert (st["p_sd"][np.isfinite(st["p_sd"])] >= pp.PRIV_SD_FLOOR).all()
+def test_chained_rows_dropped_for_teacher_and_model(tmp_path):
+    """jepa_planning S0 second run: a row whose previous decision is a command 1 frame earlier (040-R4 same-frame
+    chain) is not an example in teacher / model sources (human rows stay); it stays a t+k target; V1 keeps all."""
+    t = fake_dump(tmp_path / "t", chain_every=5)
+    h = fake_dump(tmp_path / "h", chain_every=5, sha_prefix="c", seed=1)
+    src = [pp.Source("t", "teacher", "split", str(t)), pp.Source("h", "human", "split", str(h))]
+    data = pp.Data(src, ks=(8,))
+    want = (data.dec % 5 == 4)  # rows 4, 9, ... of every game: 1 frame after a command
+    assert np.array_equal(data.chained, want)
+    is_t = data.row_kind == pp.KINDS.index("teacher")
+    assert np.array_equal(data.chain_drop, want & is_t) and not (data.chain_drop & ~is_t).any()
+    assert data.chain_counts["t"]["dropped"] == data.chain_counts["t"]["chained_valid"] == int((want & is_t).sum())
+    assert data.chain_counts["h"]["chained_valid"] > 0 and data.chain_counts["h"]["dropped"] == 0
+    rows = np.concatenate([data.pair_rows(8, "train"), data.pair_rows(8, "eval")])
+    assert not data.chain_drop[rows].any() and (want[rows] & ~is_t[rows]).any()
+    assert data.chain_drop[data.nxt[8][rows]].any()  # still a target
+    # the first run keeps every valid row
+    v1 = pp.Data(src, ks=(8,), design=pp.V1)
+    assert not v1.chain_drop.any() and len(v1.pair_rows(8, "train")) > len(data.pair_rows(8, "train"))
+    keep = pp.Data(src, ks=(8,), design=pp.Design(chains="keep"))
+    assert np.array_equal(keep.usable, keep.valid)
 
 
-def test_predictor_training_is_deterministic_and_q_all_matches_forward(tmp_path):
+def test_own_input_delta_targets_and_spaces(tmp_path):
+    """jepa_planning S0 second run: o_t standardised as an input, the ô target o_{t+k} - o_t in its own
+    standardisation, and `own_spaces` maps a prediction to the level and change spaces consistently."""
     p = fake_dump(tmp_path / "a")
     data = pp.Data([pp.Source("a", "teacher", "split", str(p))], ks=(8,))
     rows = data.pair_rows(8, "train")
-    st = data.stats(rows)
+    st = data.stats(rows, 8)
+    b = data.batch(rows[:64], 8, "A", st)
+    t = data.nxt[8][rows[:64]]
+    bunker = own_columns()[2][tb.action_id("Build_Bunker")]
+    want = (data.own[t, bunker] - data.own[rows[:64], bunker] - st["d_mu"][bunker]) / st["d_sd"][bunker]
+    assert np.allclose(b["o"][:, bunker].numpy(), want, atol=1e-5)
+    assert np.allclose(b["own"][:, bunker].numpy(), (data.own[rows[:64], bunker] - st["o_mu"][bunker]) / st["o_sd"][bunker], atol=1e-5)
+    marine = own_columns()[0].index("marine")  # constant: 0 in both
+    assert (b["own"][:, marine] == 0).all() and (b["o"][:, marine] == 0).all()
+    # the true change, mapped to both spaces, gives the level and change targets
+    lvl, dlt = pp.own_spaces(data, b["o"].numpy(), rows[:64], st)
+    on = np.isfinite(st["o_sd"])
+    assert np.allclose(dlt, b["o"].numpy(), atol=1e-5)
+    assert np.allclose(lvl[:, on], ((data.own[t] - st["o_mu"]) / st["o_sd"])[:, on], atol=1e-4)
+    # the level design: the same targets from the other side
+    lv = pp.Data([pp.Source("a", "teacher", "split", str(p))], ks=(8,), design=pp.Design(own_target="level", own_input=False))
+    bl = lv.batch(rows[:64], 8, "U", st)
+    assert "own" not in bl
+    l2, d2 = pp.own_spaces(lv, bl["o"].numpy(), rows[:64], st)
+    assert np.allclose(l2, lvl, atol=1e-4) and np.allclose(d2, dlt, atol=1e-4)
+
+
+def test_frame_k_pairs_and_oracle_window(tmp_path):
+    """`--k-unit frame`: t+k is the first row of the game k frames or more later; the H oracle counts the
+    decisions [t, t+k). On rows 24 frames apart, k = 48 frames is 2 decisions."""
+    p = fake_dump(tmp_path / "a", chain_every=5)
+    src = [pp.Source("a", "teacher", "split", str(p))]
+    fr = pp.Data(src, ks=(48,), design=pp.Design(k_unit="frame"))
+    dc = pp.Data(src, ks=(2,), design=pp.Design(k_unit="dec"))
+    r = fr.pair_rows(48, "train")
+    n = fr.nxt[48][r]
+    assert (fr.game[n] == fr.game[r]).all() and (fr.frame[n] - fr.frame[r] >= 48).all()
+    prev = fr.order[fr.pos[n] - 1]
+    assert (fr.frame[prev] - fr.frame[r] < 48).all()
+    same = (fr.dec[n] - fr.dec[r]) == 2
+    assert same.mean() > 0.5
+    rr = r[same & (dc.nxt[2][r] >= 0)]
+    assert np.array_equal(fr.inputs(rr, 48, "H")["hist"].numpy(), dc.inputs(rr, 2, "H")["hist"].numpy())
+    assert np.array_equal(fr.nxt_dec1, dc.nxt[1])
+
+
+def test_partner_rows_have_valid_labels_and_sd_floors(tmp_path):
+    p = fake_dump(tmp_path / "a", void_every=3)
+    q = fake_dump(tmp_path / "b", void_every=3, sha_prefix="b", seed=1)
+    v1 = pp.Data([pp.Source("a", "teacher", "split", str(p))], ks=(8,), design=pp.V1)
+    assert (v1.game[v1.partner] == v1.game).all() and (v1.weight[v1.partner] > 0).all()
+    # jepa_planning S0 second run: another game of the same source (no game identity), a usable row
+    data = pp.Data([pp.Source("a", "teacher", "split", str(p)), pp.Source("b", "model", "split", str(q))], ks=(8,), keep_bot=True)
+    assert (data.game[data.partner] != data.game).all() and data.usable[data.partner].all()
+    assert (data.row_src[data.partner] == data.row_src).all()
+    st = data.stats(data.pair_rows(8, "train"), 8)
+    on = np.isfinite(st["o_sd"])
+    assert (st["o_sd"][on] >= pp.OWN_SD_FLOOR).all() and not on[own_columns()[0].index("marine")]  # constant 0: left out
+    assert (st["p_sd"][np.isfinite(st["p_sd"])] >= pp.PRIV_SD_FLOOR).all()
+    d_on = np.isfinite(st["d_sd"])
+    assert (st["d_sd"][d_on] >= pp.OWN_SD_FLOOR).all() and d_on[own_columns()[2][tb.action_id("Build_Bunker")]]
+
+
+@pytest.mark.parametrize("design", [pp.Design(), pp.V1], ids=["second", "v1"])
+def test_predictor_training_is_deterministic_and_q_all_matches_forward(tmp_path, design):
+    p = fake_dump(tmp_path / "a")
+    data = pp.Data([pp.Source("a", "teacher", "split", str(p))], ks=(8,), design=design)
+    rows = data.pair_rows(8, "train")
+    st = data.stats(rows, 8)
     outs = []
     for _ in range(2):
         net, log = pp.train_one(data, "A", 8, rows, st, steps=20, batch=64, lr=1e-3, seed=3, log_every=10)
@@ -363,12 +480,17 @@ def test_predictor_training_is_deterministic_and_q_all_matches_forward(tmp_path)
     net = outs[0][0]
     ev = data.pair_rows(8, "eval")[:50]
     h = torch.from_numpy(data.h[ev].astype(np.float32))
+    own = data.own_in(ev, st) if design.own_input else None
+    assert net.own_in == (data.own.shape[1] if design.own_input else 0)
     cand = torch.arange(data.n_act)
-    qa = net.q_all(h, cand)
+    qa = net.q_all(h, cand, own)
     with torch.no_grad():
         for c in (0, tb.action_id("Build_Bunker"), 77):
-            q = net(h, torch.full((len(ev),), c))["q"]
+            q = net(h, torch.full((len(ev),), c), own=own)["q"]
             assert torch.allclose(qa[:, c], q, atol=1e-5)
+    if design.own_input:
+        with pytest.raises(ValueError, match="o_t"):
+            net(h, torch.full((len(ev),), 0))
     # save / load round trip
     pp.save(net, st, tmp_path / "m.pt", {"x": 1})
     n2, st2, meta = pp.load(tmp_path / "m.pt", data)
@@ -390,12 +512,14 @@ def test_m2b_direction_and_candidates(tmp_path):
 
 def test_plan_s0_end_to_end_on_known_structure(tmp_path):
     """The chain on synthetic folders: training is repeatable, the report has every table and the verdict; the
-    action-conditioned predictor wins on the bunker-driven targets and M2b points the right way."""
+    action-conditioned predictor wins on the bunker-driven targets and M2b points the right way. jepa_planning S0
+    second run: chained teacher / model rows are dropped (human kept), the own-state change metrics and the
+    own-state criterion are reported; `--v1` is the first run's design and verdict."""
     from uranium.__main__ import main
 
-    a = fake_dump(tmp_path / "t", n_games=40, seed=1)
-    m = fake_dump(tmp_path / "m", n_games=40, seed=2, sha_prefix="b")
-    h = fake_dump(tmp_path / "h", n_games=40, seed=3, sha_prefix="c")
+    a = fake_dump(tmp_path / "t", n_games=40, seed=1, chain_every=7)
+    m = fake_dump(tmp_path / "m", n_games=40, seed=2, sha_prefix="b", chain_every=7)
+    h = fake_dump(tmp_path / "h", n_games=40, seed=3, sha_prefix="c", chain_every=7)
     args = ["diag", "plan-s0", "--src", f"teach:teacher:split={a}", "--src", f"mod:model:split={m}", "--src", f"hum:human:train={h}", "--ks", "8",
             "--steps", "150", "--batch", "128", "--lr", "3e-3", "--boot", "50", "--threads", "1", "--m3b-window", "0,1e9"]
     assert main([*args, "--out", str(tmp_path / "o1")]) == 0
@@ -408,8 +532,15 @@ def test_plan_s0_end_to_end_on_known_structure(tmp_path):
     rep = json.loads((tmp_path / "o1" / "s0.json").read_text())
     assert {"M0", "M1", "M2", "M3a", "M3b", "M3d", "verdict"} <= set(rep)
     op = rep["M1"]["8"]["pooled"]["op"]
-    assert "r" in op["y"] and "gk" in op["y"]["gain"] and set(op) == {"y", "p", "o", "o_all", "win", "scv8", "_rows", "_own_cols"}
-    assert op["_own_cols"]["bunker"]["headline"] and "gain_A" in op["_own_cols"]["bunker"]
+    assert "r" in op["y"] and "gk" in op["y"]["gain"] and set(op) == {"y", "p", "o", "o_all", "od", "od_all", "win", "scv8", "_rows", "_own_cols"}
+    assert op["_own_cols"]["bunker"]["headline"] and "gain_A" in op["_own_cols"]["bunker"] and "cut_A" in op["_own_cols"]["bunker"]["delta"]
+    # the action decides the bunker change: A cuts the change error, the other-game control does not
+    assert op["od"]["cut"]["A"]["lo"] > 0.05 and op["od"]["cut"]["A"]["pt"] > op["od"]["cut"]["S"]["pt"] + 0.1 and op["od"]["cut"]["H"]["pt"] > 0.5, op["od"]["cut"]
+    chains = {s["name"]: s["chains"] for s in rep["data"]["sources"]}
+    assert chains["teach"]["dropped"] == chains["teach"]["chained_valid"] > 0 and chains["mod"]["dropped"] > 0
+    assert chains["hum"]["chained_valid"] > 0 and chains["hum"]["dropped"] == 0
+    assert rep["settings"]["design"] == pp.Design().as_dict() and rep["data"]["partner_same_game_rows"] == 0
+    assert rep["verdict"]["win"]["own_k"] == 8 and "m1_own" in rep["verdict"]["win"]["criteria"]["8"]
     # Build_Bunker moves the future bunker count: its candidate predicts the most bunkers
     assert rep["M2"]["8"]["M2b"]["pairs"] > 0 and rep["M2"]["8"]["M2b"]["build"]["rate"]["pt"] > 0.8, rep["M2"]["8"]["M2b"]
     assert rep["M3b"]["8"]["A"]["model"]["rows"] > 0 and "A-human" in rep["M3b"]["8"]
@@ -422,9 +553,23 @@ def test_plan_s0_end_to_end_on_known_structure(tmp_path):
     rep2 = json.loads((tmp_path / "o1" / "s0.json").read_text())
     rep.pop("secs"), rep2.pop("secs")
     assert rep == rep2
-    # models trained on another split are refused
+    # models trained on another split, or with another design, are refused
     with pytest.raises(SystemExit, match="other data"):
         main([*args, "--out", str(tmp_path / "o1"), "--stage", "report", "--split-seed", "2"])
+    with pytest.raises(SystemExit, match="other data"):
+        main([*args, "--out", str(tmp_path / "o1"), "--stage", "report", "--v1"])
+    with pytest.raises(SystemExit, match="--v1"):
+        main([*args, "--out", str(tmp_path / "o3"), "--v1", "--chains", "keep"])
+    with pytest.raises(SystemExit, match="th-own-k"):
+        main([*args, "--out", str(tmp_path / "o3"), "--th-own-k", "32"])
+    # the first run's design: every valid row, h' only, level targets, same-game partner, no own-state criterion
+    assert main([*args, "--out", str(tmp_path / "o3"), "--v1"]) == 0
+    r1 = json.loads((tmp_path / "o3" / "s0.json").read_text())
+    assert r1["settings"]["design"] == pp.V1.as_dict() and r1["verdict"]["win"]["own_k"] is None
+    assert all(s["chains"]["dropped"] == 0 for s in r1["data"]["sources"]) and r1["data"]["partner_same_game_rows"] > 0
+    ck = torch.load(tmp_path / "o3" / "models" / "A_k8.pt", weights_only=False)
+    assert ck["own_in"] == 0 and "design" not in ck["meta"]["data"]
+    assert "od" in r1["M1"]["8"]["pooled"]["op"] and r1["M2"]["8"]["M2b"]["pairs"] > 0
 
 
 def _m1(a, s, h, r):
@@ -433,9 +578,10 @@ def _m1(a, s, h, r):
 
 
 def _report(*, a=(0.05, 0.02, 0.08), s=(0.01, -0.01, 0.03), h=(0.1, 0.05, 0.15), r=0.5, r_med=0.8, m2b=0.95, m3a=0.02, m3b=(0.01, 0.002, 0.02),
-            hum=(-0.02, -0.03, -0.01), mod=(0.01, -0.005, 0.02)):
+            hum=(-0.02, -0.03, -0.01), mod=(0.01, -0.005, 0.02), cut=((0.2, 0.1, 0.3), (0.0, -0.02, 0.02), (0.4, 0.3, 0.5))):
     ci = lambda t: {"pt": t[0], "lo": t[1], "hi": t[2]}  # noqa: E731
     m1 = {q: _m1(a, s, h, r) for q in ("y", "win", "scv8")}
+    m1["od"] = {"cut": {"A": ci(cut[0]), "S": ci(cut[1]), "H": ci(cut[2])}}
     return {
         "M1": {"8": {"pooled": {"op": m1}}, "32": {"pooled": {"op": m1}}},
         "M2": {k: {"M2a_y": {"R_median": r_med}, "M2b": {"rate": {"pt": m2b}}} for k in ("8", "32")},
@@ -472,3 +618,26 @@ def test_verdict_rows():
     rep = _report()
     del rep["M3b"]
     assert rows(rep)[0] is None and rows(rep)[4] is None
+
+
+def test_verdict_own_state_criterion():
+    """jepa_planning S0 second run (기본안(미확정)): M1 also needs A's own-state change-error cut at k = 8 (CI above 0,
+    >= 2x the S control's cut); "A and H not significant" counts the cuts; own_k 0 is the first run's table."""
+    from uranium.diag.plan_s0 import TH_DEFAULTS, verdict
+
+    th = dict(TH_DEFAULTS, own_k=8)
+    rows = lambda rep, t=th: [r["matched"] for r in verdict(rep, t, [8, 32])["win"]["rows"]]  # noqa: E731
+    assert rows(_report()) == [True, False, False, False, True, False]
+    v = verdict(_report(), th, [8, 32])["win"]
+    assert v["own_pass"] is True and v["criteria"]["8"]["m1_own"] is True
+    # the cut's CI reaches 0: no "planning possible", nor "M3 fails"
+    no = _report(cut=((0.05, -0.01, 0.1), (0.0, -0.02, 0.02), (0.4, 0.3, 0.5)))
+    assert rows(no)[:2] == [False, False] and rows(no, dict(TH_DEFAULTS, own_k=0))[0] is True
+    # the S control cuts as much: fails too
+    assert rows(_report(cut=((0.2, 0.1, 0.3), (0.15, 0.1, 0.2), (0.4, 0.3, 0.5))))[0] is False
+    # own-state criterion at a k that was not run: cannot be judged
+    assert rows(_report(), dict(TH_DEFAULTS, own_k=16))[0] is None
+    # A and H not significant on ŷ, but the own-state cut is: not "the action changes nothing"
+    flat = dict(a=(0.001, -0.001, 0.003), h=(0.001, -0.002, 0.004), r=1.0)
+    assert rows(_report(**flat))[3] is False and rows(_report(**flat), dict(TH_DEFAULTS, own_k=0))[3] is True
+    assert rows(_report(**flat, cut=((0.01, -0.01, 0.02), (0.0, -0.02, 0.02), (0.01, -0.02, 0.03))))[3] is True

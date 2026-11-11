@@ -7,17 +7,36 @@ Data (`Data`): one or more `diag plan-dump` folders, each a source `NAME:KIND:RO
 - role `train` (every game trains), `eval` (every game evaluates) or `split` (a fixed-seed game-level
   split, `eval_frac` evaluates; both streams of one replay on the same side, as 041-R12). The split
   draws from a generator seeded by (`split_seed`, crc32 of the source NAME): renaming a source moves it.
-Pairs (t, t+k): two rows of one game k decisions apart (`dec`); a row is used when its label is valid
-(weight > 0) and its t+k row was dumped. Every predictor of one k sees the same rows.
+Pairs (t, t+k): two rows of one game k decisions apart (`dec`; `Design.k_unit` "frame": the first row
+of the game at least k frames later); a row is used (an example) when its label is valid (weight > 0),
+it is not a dropped chained row (below) and its t+k row was dumped. Every predictor of one k sees the
+same rows.
+
+`Design` (reports/jepa_planning.md 6.8, the second S0 run; `V1` = the first run, 2026-11-11):
+- chains: a chained row is a row whose previous row of the game (dec - 1) is a command label
+  (action != NoOp, void or not) observed at most 1 frame earlier. 040-R4 keeps the commands of one
+  frame as consecutive labels and moves the 2nd, 3rd, ... to +1, +2, ... frames, so their
+  observations already show the effect of the commands executed on the first frame (their own
+  included). Teacher commands come every 8 frames and the model's decisions are several frames apart,
+  so in those sources a 1-frame gap after a command is such a chain (in human data it can also be two
+  commands 1 frame apart). `chains` "drop": chained rows of `chain_kinds` are not examples (and not M3b
+  rows); they stay targets and H-oracle actions.
+- own_input: the own state o_t (standardised, `OWN_SD_FLOOR`) is an input of every predictor.
+- own_target: the ô head predicts "delta" (o_{t+k} - o_t, standardised with its own mean / sd, floor
+  `OWN_SD_FLOOR`) or "level" (o_{t+k}).
+- partner: the S control's action comes from a random usable row of another game of the same source
+  ("other-game", the source's action marginal without the game's identity) or of the same game
+  ("same-game", the first run).
 
 Predictors (6.4, one per variant and k; 3.2 shape): input -> Linear 512 -> ReLU -> Linear 512 -> ReLU,
 heads ŷ (d_y, 1 - cos to LN y_{t+k}), p̂ (privileged at t+k, standardised, MSE, rows with one), ô (own
-state at t+k, standardised, MSE), q̂ (2 logits: game won, 8:00 SCVs >= 8; BCE where defined). Inputs:
+state, `own_target`, standardised, MSE), q̂ (2 logits: game won, 8:00 SCVs >= 8; BCE where defined).
+Inputs (⊕ o_t after h'_t when `own_input`):
   U   h'_t
   A   h'_t ⊕ Emb(a_t) (32)
   Ad  h'_t ⊕ Emb(a_t) ⊕ Emb(delay bucket) (16)              (A+d)
   H   h'_t ⊕ action-type shares over decisions [t, t+k) (101) (oracle)
-  S   h'_t ⊕ Emb(action of a fixed random valid-label row of the same game) (control, `PARTNER_SEED`)
+  S   h'_t ⊕ Emb(action of the partner row, `partner`) (control, `PARTNER_SEED`)
 h' is standardised with the training rows' mean / sd (part of the predictor). Same steps, batch and seed
 for every predictor."""
 
@@ -44,6 +63,32 @@ PARTNER_SEED = 12345
 # privileged 0.05 in its encoded units (a count is log1p(n) / 4: 0 -> 1 is 0.17).
 OWN_SD_FLOOR, PRIV_SD_FLOOR, CONST_SD = 0.5, 0.05, 1e-6
 Q_NAMES = ("win", "scv8")
+NOOP = 0  # action id of NoOp (data/tables actions)
+
+
+@dataclass(frozen=True)
+class Design:
+    """How rows become predictor examples (module docstring). The default is the second S0 run."""
+
+    chains: str = "drop"  # "drop" | "keep"
+    chain_kinds: tuple = ("teacher", "model")
+    own_input: bool = True
+    own_target: str = "delta"  # "delta" | "level"
+    partner: str = "other-game"  # "other-game" | "same-game"
+    k_unit: str = "dec"  # "dec" | "frame"
+
+    def __post_init__(self):
+        if self.chains not in ("drop", "keep") or self.own_target not in ("delta", "level") or self.partner not in ("other-game", "same-game") \
+                or self.k_unit not in ("dec", "frame") or any(k not in KINDS for k in self.chain_kinds):
+            raise SystemExit(f"plan-s0: bad design {self}")
+
+    def as_dict(self) -> dict:
+        return {"chains": self.chains, "chain_kinds": list(self.chain_kinds), "own_input": self.own_input, "own_target": self.own_target,
+                "partner": self.partner, "k_unit": self.k_unit}
+
+
+# The first S0 run (2026-11-11, master 5f248af): every valid row, h' only, level targets, same-game partner.
+V1 = Design(chains="keep", chain_kinds=(), own_input=False, own_target="level", partner="same-game", k_unit="dec")
 
 
 @dataclass
@@ -63,6 +108,13 @@ def parse_src(spec: str) -> Source:
     return Source(parts[0], parts[1], parts[2], path)
 
 
+def _ms(x, floor) -> tuple[np.ndarray, np.ndarray]:
+    """Column mean and floored sd (float32); a column constant on these rows gets sd inf."""
+    x = np.asarray(x, np.float64)
+    mu, sd = x.mean(0), x.std(0)
+    return mu.astype(np.float32), np.where(sd < CONST_SD, np.inf, np.maximum(sd, floor)).astype(np.float32)
+
+
 def split_eval(keys: list, name: str, frac: float, seed: int) -> set:
     """The eval share of a `split` source: a fixed-seed permutation of the sorted replay keys."""
     u = sorted(set(keys))
@@ -76,14 +128,16 @@ class Data:
     """Every row of the sources in memory except the g_k outputs (memmaps): h, y, priv, logp float16."""
 
     def __init__(self, sources: list[Source], ks=(8, 32), eval_frac: float = 0.2, split_seed: int = 1, drop: dict | None = None,
-                 keep_bot: bool = False, maps=None):
+                 keep_bot: bool = False, maps=None, design: Design = Design()):
         """`drop` {source name: {"bot": [[sha256, start], ...], "model": [...]}}: the views of a source
         (e.g. config/plan_s0/jepa_diag_tp_views.json); a stream (replay sha256, own start slot
         `scalar_cat[2]`) in "bot" is left out, and every stream must be in one of the lists. A `model`
         source with Terran-enemy streams (TvT: both players' views are streams) needs one, or
-        `keep_bot`. `maps`: only games of these map families (0 / 1 = the target maps)."""
+        `keep_bot`. `maps`: only games of these map families (0 / 1 = the target maps). `design`:
+        module docstring (`V1` = the first run)."""
         self.sources = sources
         self.ks = list(ks)
+        self.design = design
         rows, games, mans = [], [], []
         for s in sources:
             r, g, m = load_dump(s.path)
@@ -133,9 +187,10 @@ class Data:
                 key = keyf(gid, e)
                 role = s.role if s.role != "split" else ("eval" if key in ev else "train")
                 m[gid] = len(self.game_meta)
-                self.game_meta.append({**e, "src": s.name, "kind": s.kind, "role": role, "gid": gid, "key": f"{s.name}/{key}"})
+                self.game_meta.append({**e, "src": s.name, "kind": s.kind, "role": role, "gid": gid, "key": f"{s.name}/{key}", "si": len(gid_map)})
             gid_map.append(m)
         G = len(self.game_meta)
+        self.g_src = np.array([e["si"] for e in self.game_meta], np.int64)
         self.g_role_eval = np.array([e["role"] == "eval" for e in self.game_meta], bool)
         self.g_kind = np.array([KINDS.index(e["kind"]) for e in self.game_meta], np.int8)
         res = np.array([e.get("result", 0) for e in self.game_meta], np.float64)
@@ -180,7 +235,8 @@ class Data:
         self.pos[self.order] = np.arange(self.N)
         gs, ds = self.game[self.order], self.dec[self.order]
         self.nxt = {}
-        for k in sorted(set(self.ks) | {1}):
+        dec_ks = sorted(set(self.ks) | {1}) if design.k_unit == "dec" else [1]
+        for k in dec_ks:
             j = np.arange(self.N) + k
             ok = j < self.N
             jj = np.where(ok, j, 0)
@@ -188,31 +244,81 @@ class Data:
             n = np.full(self.N, -1, np.int64)
             n[self.order[ok]] = self.order[jj[ok]]
             self.nxt[k] = n
-        # the S control's partner: a random valid-label row of the same game. One generator (seed
-        # PARTNER_SEED) walks the games in global order (sources in --src order, then game id), so the
-        # draws depend on the source list and the games kept.
-        starts = np.concatenate([[0], np.nonzero(np.diff(gs))[0] + 1, [self.N]])
-        partner = np.arange(self.N, dtype=np.int64)
-        rng = np.random.default_rng(PARTNER_SEED)
-        valid_o = self.weight[self.order] > 0
-        for a, b in zip(starts[:-1], starts[1:]):
-            cand = self.order[a:b][valid_o[a:b]]
-            if len(cand):
-                partner[self.order[a:b]] = cand[rng.integers(0, len(cand), b - a)]
-        self.partner = partner
+        self.nxt_dec1 = self.nxt[1]  # the next decision (M0 decision gap), whatever the k unit
+        if design.k_unit == "frame":
+            # t+k = the first row of the game at least k frames later (frames do not decrease along dec)
+            fs = self.frame[self.order].astype(np.float64)
+            key = gs.astype(np.float64) * 1e7 + fs
+            for k in self.ks:
+                j = np.searchsorted(key, key + k, side="left")
+                ok = j < self.N
+                jj = np.where(ok, j, 0)
+                ok &= gs[jj] == gs
+                n = np.full(self.N, -1, np.int64)
+                n[self.order[ok]] = self.order[jj[ok]]
+                self.nxt[k] = n
         self.row_eval = self.g_role_eval[self.game] if self.N else np.zeros(0, bool)
         self.row_q = self.g_q[self.game] if self.N else np.zeros((0, 2))
         self.row_unit = self.g_unit[self.game] if self.N else np.zeros(0, np.int64)
         self.row_kind = self.g_kind[self.game] if self.N else np.zeros(0, np.int8)
+        self.row_src = self.g_src[self.game] if self.N else np.zeros(0, np.int64)
         self.valid = self.weight > 0
         self.is_op = self.op[self.action.astype(np.int64)] & self.valid
+        # chained rows (module docstring): the previous decision of the game is a command 1 frame or less earlier
+        fo, ao = self.frame[self.order], self.action[self.order]
+        ch = np.zeros(self.N, bool)
+        if self.N:
+            ch[1:] = (gs[1:] == gs[:-1]) & (ds[1:] == ds[:-1] + 1) & (fo[1:] - fo[:-1] <= 1) & (ao[:-1] != NOOP)
+        self.chained = np.empty(self.N, bool)
+        self.chained[self.order] = ch
+        drop_kinds = [KINDS.index(x) for x in design.chain_kinds] if design.chains == "drop" else []
+        self.chain_drop = self.chained & np.isin(self.row_kind, drop_kinds)
+        self.usable = self.valid & ~self.chain_drop
+        self.chain_counts = {}
+        for si, s in enumerate(sources):
+            m = self.row_src == si
+            self.chain_counts[s.name] = {"rows": int(m.sum()), "valid": int((m & self.valid).sum()), "chained_valid": int((m & self.valid & self.chained).sum()),
+                                         "chained_op": int((m & self.is_op & self.chained).sum()), "dropped": int((m & self.valid & self.chain_drop).sum()),
+                                         "dropped_op": int((m & self.is_op & self.chain_drop).sum())}
+        if design.partner == "same-game":
+            # the S control's partner: a random valid-label row of the same game. One generator (seed
+            # PARTNER_SEED) walks the games in global order (sources in --src order, then game id), so the
+            # draws depend on the source list and the games kept.
+            starts = np.concatenate([[0], np.nonzero(np.diff(gs))[0] + 1, [self.N]])
+            partner = np.arange(self.N, dtype=np.int64)
+            rng = np.random.default_rng(PARTNER_SEED)
+            valid_o = self.usable[self.order]
+            for a, b in zip(starts[:-1], starts[1:]):
+                cand = self.order[a:b][valid_o[a:b]]
+                if len(cand):
+                    partner[self.order[a:b]] = cand[rng.integers(0, len(cand), b - a)]
+        else:
+            # a random usable row of another game of the same source (redrawn while it is the row's own
+            # game; a source with one game keeps same-game draws). One generator, sources in --src order.
+            partner = np.arange(self.N, dtype=np.int64)
+            rng = np.random.default_rng(PARTNER_SEED)
+            for si in range(len(sources)):
+                rows_s = np.nonzero(self.row_src == si)[0]
+                pool = rows_s[self.usable[rows_s]]
+                if not len(pool):
+                    continue
+                draw = pool[rng.integers(0, len(pool), len(rows_s))]
+                for _ in range(64):
+                    bad = np.nonzero(self.game[draw] == self.game[rows_s])[0]
+                    if not len(bad) or len(np.unique(self.game[pool])) < 2:
+                        break
+                    draw[bad] = pool[rng.integers(0, len(pool), len(bad))]
+                partner[rows_s] = draw
+        self.partner = partner
+        self.partner_same_game = int((self.game[partner] == self.game).sum()) if self.N else 0
         self.n_act = self.logp.shape[1]
         self.n_delay = int(max(16, int(self.delay.max()) + 1 if self.N else 16))
 
     # ------------------------------------------------------------- selections
     def pair_rows(self, k: int, role: str, kinds=None) -> np.ndarray:
-        """Rows with a valid label and a t+k row, of `role` games (`kinds`: only those source kinds)."""
-        m = self.valid & (self.nxt[k] >= 0) & (self.row_eval == (role == "eval"))
+        """Usable rows (a valid label, not a dropped chained row) with a t+k row, of `role` games (`kinds`:
+        only those source kinds)."""
+        m = self.usable & (self.nxt[k] >= 0) & (self.row_eval == (role == "eval"))
         if kinds is not None:
             m &= np.isin(self.row_kind, [KINDS.index(x) for x in kinds])
         return np.nonzero(m)[0]
@@ -248,24 +354,44 @@ class Data:
         return out
 
     # ------------------------------------------------------------- standardisation
-    def stats(self, rows) -> dict:
+    def stats(self, rows, k: int | None = None) -> dict:
         """Mean / sd of h', privileged and own state over `rows` (targets: their t+k rows are the
-        same population). Targets: sd floored (`OWN_SD_FLOOR`, `PRIV_SD_FLOOR`); a column constant on
-        these rows gets sd inf (left out of losses and R²). h': a constant column is divided by 1."""
+        same population), and with `k` of the own-state change o_{t+k} - o_t (`delta_stats`). Targets: sd
+        floored (`OWN_SD_FLOOR`, `PRIV_SD_FLOOR`); a column constant on these rows gets sd inf (left out
+        of losses and R²). h': a constant column is divided by 1."""
         sub = rows if len(rows) <= 200_000 else rows[np.linspace(0, len(rows) - 1, 200_000).astype(np.int64)]
 
-        def ms(x, floor):
-            x = np.asarray(x, np.float64)
-            mu, sd = x.mean(0), x.std(0)
-            return mu.astype(np.float32), np.where(sd < CONST_SD, np.inf, np.maximum(sd, floor)).astype(np.float32)
-
         st = {}
-        st["h_mu"], st["h_sd"] = ms(self.h[sub], 0.0)
+        st["h_mu"], st["h_sd"] = _ms(self.h[sub], 0.0)
         st["h_sd"] = np.where(np.isfinite(st["h_sd"]), st["h_sd"], 1.0).astype(np.float32)
         pk = sub[self.priv_ok[sub] > 0]
-        st["p_mu"], st["p_sd"] = ms(self.priv[pk], PRIV_SD_FLOOR) if len(pk) else (np.zeros(self.priv.shape[1], np.float32), np.full(self.priv.shape[1], np.inf, np.float32))
-        st["o_mu"], st["o_sd"] = ms(self.own[sub], OWN_SD_FLOOR)
+        st["p_mu"], st["p_sd"] = _ms(self.priv[pk], PRIV_SD_FLOOR) if len(pk) else (np.zeros(self.priv.shape[1], np.float32), np.full(self.priv.shape[1], np.inf, np.float32))
+        st["o_mu"], st["o_sd"] = _ms(self.own[sub], OWN_SD_FLOOR)
+        if k is not None:
+            st.update(self.delta_stats(rows, k))
         return st
+
+    def delta_stats(self, rows, k: int) -> dict:
+        """{d_mu, d_sd}: mean / sd of o_{t+k} - o_t over `rows` (the `stats` subsample and floors)."""
+        sub = rows if len(rows) <= 200_000 else rows[np.linspace(0, len(rows) - 1, 200_000).astype(np.int64)]
+        d_mu, d_sd = _ms(self.own[self.nxt[k][sub]] - self.own[sub], OWN_SD_FLOOR)
+        return {"d_mu": d_mu, "d_sd": d_sd}
+
+    def own_in(self, rows, st: dict) -> torch.Tensor:
+        """[rows, O] the standardised own state o_t (an input with `Design.own_input`; columns constant on the
+        training rows are 0)."""
+        on = np.isfinite(st["o_sd"])
+        x = np.where(on, (self.own[rows] - st["o_mu"]) / np.where(on, st["o_sd"], 1.0), 0.0)
+        return torch.from_numpy(x.astype(np.float32))
+
+    def own_target(self, idx, t, st: dict) -> np.ndarray:
+        """[rows, O] the ô target of rows `idx` with t+k rows `t` in its standardised space (`Design.own_target`;
+        left-out columns 0)."""
+        if self.design.own_target == "delta":
+            x, mu, sd = self.own[t] - self.own[idx], st["d_mu"], st["d_sd"]
+        else:
+            x, mu, sd = self.own[t], st["o_mu"], st["o_sd"]
+        return np.nan_to_num((x - mu) / sd, posinf=0.0, neginf=0.0).astype(np.float32)
 
     def batch(self, idx, k: int, variant: str, st: dict) -> dict:
         """Tensors of rows `idx` for predictor `variant` at k."""
@@ -274,17 +400,19 @@ class Data:
         p = (self.priv[t].astype(np.float32) - st["p_mu"]) / st["p_sd"]
         b["p"] = torch.from_numpy(np.nan_to_num(p, posinf=0.0, neginf=0.0))
         b["p_ok"] = torch.from_numpy((self.priv_ok[t] > 0).astype(np.float32))
-        o = (self.own[t] - st["o_mu"]) / st["o_sd"]
-        b["o"] = torch.from_numpy(np.nan_to_num(o, posinf=0.0, neginf=0.0).astype(np.float32))
+        b["o"] = torch.from_numpy(self.own_target(idx, t, st))
         q = self.row_q[idx]
         b["q"] = torch.from_numpy(np.nan_to_num(q, nan=0.0).astype(np.float32))
         b["q_ok"] = torch.from_numpy(np.isfinite(q).astype(np.float32))
-        b.update(self.inputs(idx, k, variant))
+        b.update(self.inputs(idx, k, variant, st))
         return b
 
-    def inputs(self, idx, k: int, variant: str, action=None) -> dict:
-        """The conditioning inputs of `variant` (`action` overrides a_t: candidate scoring)."""
+    def inputs(self, idx, k: int, variant: str, st: dict | None = None, action=None, in_rows=None) -> dict:
+        """The conditioning inputs of `variant` (`action` overrides a_t: candidate scoring; `in_rows`: the rows
+        whose observation (o_t) is the input instead, as their h'). o_t needs the standardisation `st`."""
         out = {}
+        if self.design.own_input and st is not None:
+            out["own"] = self.own_in(idx if in_rows is None else in_rows, st)
         if variant in ("A", "Ad"):
             out["a"] = torch.from_numpy((self.action[idx] if action is None else np.asarray(action)).astype(np.int64))
         if variant == "Ad":
@@ -292,27 +420,41 @@ class Data:
         if variant == "S":
             out["a"] = torch.from_numpy(self.action[self.partner[idx]].astype(np.int64))
         if variant == "H":
-            win = self.order[self.pos[idx][:, None] + np.arange(k)[None]]
-            acts = self.action[win].astype(np.int64)
-            w = self.valid[win].astype(np.float32)
+            if self.design.k_unit == "dec":
+                win = self.order[self.pos[idx][:, None] + np.arange(k)[None]]
+                acts = self.action[win].astype(np.int64)
+                w = self.valid[win].astype(np.float32)
+                n_win = k
+            else:
+                # the decisions [t, t+k): a variable count per row
+                p0 = self.pos[idx]
+                span = self.pos[self.nxt[k][idx]] - p0
+                n_win = int(span.max()) if len(idx) else 0
+                j = np.arange(n_win)[None]
+                inside = j < span[:, None]
+                win = self.order[np.where(inside, p0[:, None] + j, p0[:, None])]
+                acts = self.action[win].astype(np.int64)
+                w = (self.valid[win] & inside).astype(np.float32)
             hist = np.zeros((len(idx), self.n_act), np.float32)
-            np.add.at(hist, (np.repeat(np.arange(len(idx)), k), acts.reshape(-1)), w.reshape(-1))
+            np.add.at(hist, (np.repeat(np.arange(len(idx)), n_win), acts.reshape(-1)), w.reshape(-1))
             hist /= np.maximum(hist.sum(1, keepdims=True), 1.0)
             out["hist"] = torch.from_numpy(hist)
         return out
 
 
 class Predictor(nn.Module):
-    def __init__(self, variant: str, d_h: int, d_y: int, d_p: int, d_o: int, n_act: int, n_delay: int):
+    def __init__(self, variant: str, d_h: int, d_y: int, d_p: int, d_o: int, n_act: int, n_delay: int, own_in: int = 0):
+        """`own_in`: width of the o_t input (0 = none, the first run)."""
         super().__init__()
         if variant not in VARIANTS:
             raise ValueError(f"variant {variant!r}")
         self.variant = variant
+        self.own_in = own_in
         self.register_buffer("h_mu", torch.zeros(d_h))
         self.register_buffer("h_sd", torch.ones(d_h))
         self.emb_a = nn.Embedding(n_act, EMB_A) if variant in ("A", "Ad", "S") else None
         self.emb_d = nn.Embedding(n_delay, EMB_D) if variant == "Ad" else None
-        d_in = d_h + (EMB_A if self.emb_a is not None else 0) + (EMB_D if self.emb_d is not None else 0) + (n_act if variant == "H" else 0)
+        d_in = d_h + own_in + (EMB_A if self.emb_a is not None else 0) + (EMB_D if self.emb_d is not None else 0) + (n_act if variant == "H" else 0)
         self.l1 = nn.Linear(d_in, HIDDEN)
         self.l2 = nn.Linear(HIDDEN, HIDDEN)
         self.y = nn.Linear(HIDDEN, d_y)
@@ -320,8 +462,16 @@ class Predictor(nn.Module):
         self.o = nn.Linear(HIDDEN, d_o)
         self.q = nn.Linear(HIDDEN, len(Q_NAMES))
 
-    def body(self, h, a=None, d=None, hist=None):
+    def _state_in(self, h, own):
         x = [(h - self.h_mu) / self.h_sd]
+        if self.own_in:
+            if own is None:
+                raise ValueError("this predictor reads o_t (own_in)")
+            x.append(own)
+        return x
+
+    def body(self, h, a=None, d=None, hist=None, own=None):
+        x = self._state_in(h, own)
         if self.emb_a is not None:
             x.append(self.emb_a(a))
         if self.emb_d is not None:
@@ -330,18 +480,18 @@ class Predictor(nn.Module):
             x.append(hist)
         return F.relu(self.l2(F.relu(self.l1(torch.cat(x, 1)))))
 
-    def forward(self, h, a=None, d=None, hist=None) -> dict:
-        z = self.body(h, a, d, hist)
+    def forward(self, h, a=None, d=None, hist=None, own=None) -> dict:
+        z = self.body(h, a, d, hist, own)
         return {"y": self.y(z), "p": self.p(z), "o": self.o(z), "q": self.q(z)}
 
-    def q_all(self, h, cand) -> torch.Tensor:
+    def q_all(self, h, cand, own=None) -> torch.Tensor:
         """q̂ logits [rows, C, 2] of variant A for every action of `cand` [C] (the same numbers as
-        `forward` with a = c, the first layer split into its h' and Emb(a) parts)."""
+        `forward` with a = c, the first layer split into its state (h', o_t) and Emb(a) parts)."""
         assert self.variant == "A"
-        d_h = self.h_mu.shape[0]
+        d_s = self.h_mu.shape[0] + self.own_in
         w = self.l1.weight
-        zh = F.linear((h - self.h_mu) / self.h_sd, w[:, :d_h], self.l1.bias)
-        za = F.linear(self.emb_a(cand), w[:, d_h:])
+        zh = F.linear(torch.cat(self._state_in(h, own), 1), w[:, :d_s], self.l1.bias)
+        za = F.linear(self.emb_a(cand), w[:, d_s:])
         z = F.relu(zh[:, None] + za[None])
         return self.q(F.relu(self.l2(z)))
 
@@ -359,10 +509,11 @@ def loss_terms(out: dict, b: dict, o_on: torch.Tensor, p_on: torch.Tensor) -> di
 def train_one(data: Data, variant: str, k: int, rows: np.ndarray, st: dict, *, steps: int, batch: int, lr: float, seed: int, log_every: int = 500) -> tuple[Predictor, list]:
     """One predictor (fixed seed: init, batches); -> (predictor, loss log)."""
     torch.manual_seed(seed)
-    net = Predictor(variant, data.h.shape[1], data.y.shape[1], data.priv.shape[1], data.own.shape[1], data.n_act, data.n_delay)
+    net = Predictor(variant, data.h.shape[1], data.y.shape[1], data.priv.shape[1], data.own.shape[1], data.n_act, data.n_delay,
+                    own_in=data.own.shape[1] if data.design.own_input else 0)
     net.h_mu.copy_(torch.from_numpy(st["h_mu"]))
     net.h_sd.copy_(torch.from_numpy(st["h_sd"]))
-    o_on = torch.from_numpy(np.isfinite(st["o_sd"]).astype(np.float32))
+    o_on = torch.from_numpy(np.isfinite(st["d_sd" if data.design.own_target == "delta" else "o_sd"]).astype(np.float32))
     p_on = torch.from_numpy(np.isfinite(st["p_sd"]).astype(np.float32))
     opt = torch.optim.Adam(net.parameters(), lr=lr)
     rng = np.random.default_rng(seed)
@@ -371,7 +522,7 @@ def train_one(data: Data, variant: str, k: int, rows: np.ndarray, st: dict, *, s
     for step in range(1, steps + 1):
         idx = np.sort(rows[rng.integers(0, len(rows), batch)])
         b = data.batch(idx, k, variant, st)
-        out = net(b["h"], b.get("a"), b.get("d"), b.get("hist"))
+        out = net(b["h"], b.get("a"), b.get("d"), b.get("hist"), b.get("own"))
         lt = loss_terms(out, b, o_on, p_on)
         parts = {"y": lt["y"].mean(), "p": lt["p"].sum() / b["p_ok"].sum().clamp_min(1),
                  "o": lt["o"].mean(), "q": lt["q"].sum(0).div(b["q_ok"].sum(0).clamp_min(1)).sum()}
@@ -397,21 +548,37 @@ def predict(net: Predictor, data: Data, idx: np.ndarray, k: int, st: dict, chunk
     for s in range(0, len(idx), chunk):
         sl = idx[s:s + chunk]
         hin = sl if inputs_h is None else inputs_h[s:s + chunk]
-        x = data.inputs(sl, k, net.variant, None if action is None else action[s:s + chunk])
-        o = net(torch.from_numpy(data.h[hin].astype(np.float32)), x.get("a"), x.get("d"), x.get("hist"))
+        x = data.inputs(sl, k, net.variant, st, None if action is None else action[s:s + chunk], in_rows=hin)
+        o = net(torch.from_numpy(data.h[hin].astype(np.float32)), x.get("a"), x.get("d"), x.get("hist"), x.get("own"))
         for k_ in out:
             out[k_].append(o[k_].numpy())
     return {k_: (np.concatenate(v) if v else np.zeros((0, 1), np.float32)) for k_, v in out.items()}
 
 
+def own_spaces(data: Data, pred_o: np.ndarray, rows, st: dict) -> tuple[np.ndarray, np.ndarray]:
+    """The ô output of rows `rows` (o_t of those rows) in the level space ((o_{t+k} - o_mu) / o_sd) and the
+    change space ((o_{t+k} - o_t - d_mu) / d_sd), whatever the predictor's `own_target` (float32; columns
+    left out of a space 0). `st` needs d_mu / d_sd (`Data.delta_stats`)."""
+    o_on, d_on = np.isfinite(st["o_sd"]), np.isfinite(st["d_sd"])
+    o_sd, d_sd = np.where(o_on, st["o_sd"], 1.0), np.where(d_on, st["d_sd"], 1.0)
+    own_t = data.own[rows]
+    if data.design.own_target == "delta":
+        dlt = pred_o
+        lvl = (own_t + np.where(d_on, pred_o * d_sd + st["d_mu"], st["d_mu"]) - st["o_mu"]) / o_sd
+    else:
+        lvl = pred_o
+        dlt = (np.where(o_on, pred_o * o_sd + st["o_mu"], st["o_mu"]) - own_t - st["d_mu"]) / d_sd
+    return np.where(o_on, lvl, 0.0).astype(np.float32), np.where(d_on, dlt, 0.0).astype(np.float32)
+
+
 def save(net: Predictor, st: dict, path: Path, meta: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"state": net.state_dict(), "variant": net.variant, "stats": {k: v.tolist() for k, v in st.items()}, "meta": meta}, path)
+    torch.save({"state": net.state_dict(), "variant": net.variant, "own_in": net.own_in, "stats": {k: v.tolist() for k, v in st.items()}, "meta": meta}, path)
 
 
 def load(path: Path, data: Data) -> tuple[Predictor, dict, dict]:
     ck = torch.load(path, map_location="cpu", weights_only=False)
-    net = Predictor(ck["variant"], data.h.shape[1], data.y.shape[1], data.priv.shape[1], data.own.shape[1], data.n_act, data.n_delay)
+    net = Predictor(ck["variant"], data.h.shape[1], data.y.shape[1], data.priv.shape[1], data.own.shape[1], data.n_act, data.n_delay, own_in=ck.get("own_in", 0))
     net.load_state_dict(ck["state"])
     net.eval()
     st = {k: np.asarray(v, np.float32) for k, v in ck["stats"].items()}
@@ -419,9 +586,9 @@ def load(path: Path, data: Data) -> tuple[Predictor, dict, dict]:
 
 
 def describe(data: Data) -> dict:
-    out = {"rows": int(data.N), "games": int(data.G), "sources": []}
+    out = {"rows": int(data.N), "games": int(data.G), "design": data.design.as_dict(), "partner_same_game_rows": data.partner_same_game, "sources": []}
     for s in data.sources:
         gm = [e for e in data.game_meta if e["src"] == s.name]
         out["sources"].append({"name": s.name, "kind": s.kind, "role": s.role, "games": len(gm), "eval_games": sum(e["role"] == "eval" for e in gm),
-                               "rows": int(sum(e.get("rows", 0) for e in gm))})
+                               "rows": int(sum(e.get("rows", 0) for e in gm)), "chains": data.chain_counts[s.name]})
     return json.loads(json.dumps(out))
