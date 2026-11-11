@@ -86,7 +86,8 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 4. **진단**(`cue_diag`·`dead_channels`, 모든 지점. 사용자 결정 2026-11-10, AMB-050-4·5·6)
    - `cue_diag`는 보관분 두 개로 잰다. 출력은 `<out>/<teacher|human>/`이다.
      - `teacher`(교사 보관분): 2026-11-06 교사 판(`teacher-20261106-a`~`d`)과 `teacher-20261107-macro2`의 val + test, 433판, 모두 TvZ다. Checkpoint 1 진단(`reports/jepa_survey.md` 10.1), U1 대조, λ 선택 run과 같은 데이터다. 저그 HP·착공 단서와 반사실 개입 Δ를 잰다.
-       - 공용 드라이브 `datasets/replays/shards/botgen`에서 그 파트만 연결한 폴더를 실행 호스트의 `<cache>/diag_holdout/<hold_orig|hold_macro2>/botgen`에 만든다(`<cache>` = `URANIUM_CACHE_DIR`, 없으면 `runs`). `per_action.py`의 `orig`와 같은 방식이다.
+       - 공용 드라이브 `datasets/replays/shards/botgen`에서 그 파트만 연결한 폴더를 실행 호스트의 `<cache>/diag_holdout/by_name/<hold_orig|hold_macro2>`에 만든다(`<cache>` = `URANIUM_CACHE_DIR`, 없으면 `runs`). `per_action.py`의 `orig`와 같은 방식이다.
+       - 폴더 이름이 판 순서를 정한다. shard 리더는 `<폴더 이름>/<파트>/shard_*` 순으로 읽으므로 `hold_macro2`가 먼저다. U1 대조·λ run 덤프(`<data>/hold_orig`, `<data>/hold_macro2`)와 같은 순서여야 판 id가 같고, 판 id로 나누는 probe 겹·bootstrap이 같아 같은 가중치에서 같은 값이 나온다. 2026-11-11 이전의 `<name>/botgen` 연결 폴더는 `hold_orig`를 먼저 읽어 행은 같지만 값이 달랐다(r1 미완성 풀 HP 방해 변수 R² 0.349 대 0.337). `check-diag`는 판 순서 지문(`expect_game_rows_sha256`, 판 id 순 판별 행 수의 sha256)도 본다.
        - 원본과 연결 폴더의 shard 파일 수·지문(파일 이름·크기)이 `lineage.toml`과 다르면 거부한다.
        - 이 보관분의 저그 풀 행에서는 적 최대 관측 수가 늘 1이라 `diag probes`가 건너뛴다. 확인은 그 건너뜀이 났는지만 본다.
      - `human`(사람 TvT·TvP): 적 최대 관측 생산 건물 수(`count|focus_rows`, 배럭·게이트웨이)를 잰다(AMB-050-4). `reports/jepa_survey.md` 10.2.3 방식이다.
@@ -108,7 +109,7 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
      - 이 호스트 캐시에 지점마다 덤프가 남는다. 교사 덤프는 약 0.4 GB(λ run, `--cf` 없이), 반사실 pass가 있는 교사 덤프도 약 0.4 GB, 사람 1,000게임 덤프는 약 1.0 GB다(r1). `--part cpu` 호스트 캐시에도 같은 크기가 남는다. 공용 드라이브에도 같은 크기가 복사된다.
      - 출력하는 명령(경로는 실행 호스트 것, `<out>` = `<shared>/artifacts/diag/<run>__<ckpt>`):
        ```
-       python -m uranium diag dump --checkpoint <ckpt> --shards <cache>/diag_holdout/hold_orig/botgen --shards <cache>/diag_holdout/hold_macro2/botgen --splits val,test --config config/bc.toml --backend rocm --lanes-per-group 4 --row-until 8640 --act-until 5760 --act-every 1 --core-points gate --cf --cf-starts 'T:1280,2080;P:1720,3030;Z:1800,3240' --out <cache>/diag_dump/<run>__<ckpt>/teacher/dump
+       python -m uranium diag dump --checkpoint <ckpt> --shards <cache>/diag_holdout/by_name/hold_orig --shards <cache>/diag_holdout/by_name/hold_macro2 --splits val,test --config config/bc.toml --backend rocm --lanes-per-group 4 --row-until 8640 --act-until 5760 --act-every 1 --core-points gate --cf --cf-starts 'T:1280,2080;P:1720,3030;Z:1800,3240' --out <cache>/diag_dump/<run>__<ckpt>/teacher/dump
        python -m uranium diag probes <cache>/diag_dump/<run>__<ckpt>/teacher/dump --races Z --stages token,e_pool,sp_pool,c,x_in,L1.g1,L1.out,h,hc --gain resid --boot 500 --cap 0 --seed 7 --device cpu --out <out>/teacher/probes.json
        python -m uranium diag intervene <cache>/diag_dump/<run>__<ckpt>/teacher/dump --races Z --window 2160,5760 --boot 2000 --seed 3 --out <out>/teacher/intervene.json
        cp -r <cache>/diag_dump/<run>__<ckpt>/teacher/dump <out>/teacher/dump.part && mv <out>/teacher/dump.part <out>/teacher/dump
