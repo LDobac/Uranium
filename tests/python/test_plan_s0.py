@@ -242,9 +242,10 @@ def test_paired_diff_ratio_and_bce():
 # ---------------------------------------------------------------- synthetic plan-dump folders
 
 
-def fake_dump(path: Path, n_games=24, rows=60, seed=0, kind_shift=0.0, d=16, sha_prefix="a"):
+def fake_dump(path: Path, n_games=24, rows=60, seed=0, kind_shift=0.0, d=16, sha_prefix="a", race="Z", void_every=0):
     """A plan-dump folder with known structure: the action type (0..3, 3 = Build_Bunker's own column) moves the
-    future own bunker count and y; h carries the game's result."""
+    future own bunker count and y; h carries the game's result. Game g: start slot g % 4, map family g % 3;
+    `void_every`: every n-th row has a void label (weight 0)."""
     from uranium.diag.plan_dump import RowWriter
 
     rng = np.random.default_rng(seed)
@@ -277,8 +278,8 @@ def fake_dump(path: Path, n_games=24, rows=60, seed=0, kind_shift=0.0, d=16, sha
         lp[:, acts] = np.log([0.4, 0.3, 0.2, 0.1])
         w.add({"game": np.full(rows, g), "split": np.zeros(rows), "dec": np.arange(rows), "frame": 2880 + 24.0 * np.arange(rows), "h": h, "y": y,
                "priv": rng.normal(size=(rows, 5)) + h[:, :1], "priv_ok": np.ones(rows), "own": own, "action": a, "delay": rng.integers(0, 16, rows),
-               "weight": np.ones(rows), "logp": lp, "mask": np.packbits(m, axis=1), "win_open": h[:, 0] * 0.1, "g8": y})
-        games[g] = {"split": "val", "race": "Z", "sha": f"{sha_prefix}{g:063x}", "occ": 0, "result": res, "rows": rows, "dec_rows": rows, "scv8": int(g % 3 == 0),
+               "weight": (np.arange(rows) % void_every != 0) if void_every else np.ones(rows), "logp": lp, "mask": np.packbits(m, axis=1), "win_open": h[:, 0] * 0.1, "g8": y})
+        games[g] = {"split": "val", "race": race, "sha": f"{sha_prefix}{g:063x}", "occ": 0, "start": g % 4, "map": g % 3, "result": res, "rows": rows, "dec_rows": rows, "scv8": int(g % 3 == 0),
                     "cls": "rush" if g % 4 < 2 else "macro", "cls_given": None}
     w.close()
     (path / "games.json").write_text(json.dumps(games))
@@ -309,9 +310,41 @@ def test_data_pairs_and_split(tmp_path):
     d2 = pp.Data([pp.Source("a", "teacher", "split", str(p))], ks=(8,), eval_frac=0.25, split_seed=1)
     d3 = pp.Data([pp.Source("a", "teacher", "split", str(p))], ks=(8,), eval_frac=0.25, split_seed=2)
     assert np.array_equal(d2.g_role_eval, data.g_role_eval) and not np.array_equal(d3.g_role_eval, data.g_role_eval)
-    # dropped streams leave
-    d4 = pp.Data([pp.Source("a", "teacher", "split", str(p))], ks=(8,), drop={"a": [[f"a{0:063x}", 0]]})
-    assert d4.G == 23 and d4.N == 23 * 60
+    # map families
+    d5 = pp.Data([pp.Source("a", "teacher", "split", str(p))], ks=(8,), maps=[0, 1])
+    assert d5.G == 16 and d5.dropped["a"] == {"bot_view": 0, "map": 8}
+
+
+def test_bot_views_and_split_digest(tmp_path):
+    """jepa_planning S0: a model source with Terran-enemy streams needs the view table (bot views out by replay
+    sha256 + own start slot, every stream listed) or --keep-bot-perspective; the split digest names the games and roles."""
+    p = fake_dump(tmp_path / "m", race="T")
+    src = [pp.Source("m", "model", "split", str(p))]
+    with pytest.raises(SystemExit, match="Terran-enemy"):
+        pp.Data(src, ks=(8,))
+    keep = pp.Data(src, ks=(8,), keep_bot=True)
+    assert keep.G == 24
+    views = {"bot": [[f"a{g:063x}", g % 4] for g in range(0, 24, 2)], "model": [[f"a{g:063x}", g % 4] for g in range(1, 24, 2)]}
+    d = pp.Data(src, ks=(8,), drop={"m": views})
+    assert d.G == 12 and d.dropped["m"]["bot_view"] == 12 and all(e["gid"] % 2 == 1 for e in d.game_meta)
+    # a stream in neither list (another start slot) is refused
+    bad = {"bot": views["bot"], "model": [[sha, (st + 1) % 4] for sha, st in views["model"]]}
+    with pytest.raises(SystemExit, match="neither"):
+        pp.Data(src, ks=(8,), drop={"m": bad})
+    # the digest moves with the split seed and the games kept
+    assert pp.Data(src, ks=(8,), drop={"m": views}).split_digest == d.split_digest
+    assert pp.Data(src, ks=(8,), drop={"m": views}, split_seed=2).split_digest != d.split_digest
+    assert keep.split_digest != d.split_digest
+
+
+def test_partner_rows_have_valid_labels_and_sd_floors(tmp_path):
+    p = fake_dump(tmp_path / "a", void_every=3)
+    data = pp.Data([pp.Source("a", "teacher", "split", str(p))], ks=(8,))
+    assert (data.game[data.partner] == data.game).all() and (data.weight[data.partner] > 0).all()
+    st = data.stats(data.pair_rows(8, "train"))
+    on = np.isfinite(st["o_sd"])
+    assert (st["o_sd"][on] >= pp.OWN_SD_FLOOR).all() and not on[own_columns()[0].index("marine")]  # constant 0: left out
+    assert (st["p_sd"][np.isfinite(st["p_sd"])] >= pp.PRIV_SD_FLOOR).all()
 
 
 def test_predictor_training_is_deterministic_and_q_all_matches_forward(tmp_path):
@@ -375,7 +408,8 @@ def test_plan_s0_end_to_end_on_known_structure(tmp_path):
     rep = json.loads((tmp_path / "o1" / "s0.json").read_text())
     assert {"M0", "M1", "M2", "M3a", "M3b", "M3d", "verdict"} <= set(rep)
     op = rep["M1"]["8"]["pooled"]["op"]
-    assert "r" in op["y"] and "gk" in op["y"]["gain"] and set(op) == {"y", "p", "o", "win", "scv8", "_rows"}
+    assert "r" in op["y"] and "gk" in op["y"]["gain"] and set(op) == {"y", "p", "o", "o_all", "win", "scv8", "_rows", "_own_cols"}
+    assert op["_own_cols"]["bunker"]["headline"] and "gain_A" in op["_own_cols"]["bunker"]
     # Build_Bunker moves the future bunker count: its candidate predicts the most bunkers
     assert rep["M2"]["8"]["M2b"]["pairs"] > 0 and rep["M2"]["8"]["M2b"]["build"]["rate"]["pt"] > 0.8, rep["M2"]["8"]["M2b"]
     assert rep["M3b"]["8"]["A"]["model"]["rows"] > 0 and "A-human" in rep["M3b"]["8"]
@@ -388,3 +422,53 @@ def test_plan_s0_end_to_end_on_known_structure(tmp_path):
     rep2 = json.loads((tmp_path / "o1" / "s0.json").read_text())
     rep.pop("secs"), rep2.pop("secs")
     assert rep == rep2
+    # models trained on another split are refused
+    with pytest.raises(SystemExit, match="other data"):
+        main([*args, "--out", str(tmp_path / "o1"), "--stage", "report", "--split-seed", "2"])
+
+
+def _m1(a, s, h, r):
+    ci = lambda pt, lo, hi: {"pt": pt, "lo": lo, "hi": hi}  # noqa: E731
+    return {"gain": {"A": ci(*a), "S": ci(*s), "H": ci(*h)}, "r": ci(r, r, r)}
+
+
+def _report(*, a=(0.05, 0.02, 0.08), s=(0.01, -0.01, 0.03), h=(0.1, 0.05, 0.15), r=0.5, r_med=0.8, m2b=0.95, m3a=0.02, m3b=(0.01, 0.002, 0.02),
+            hum=(-0.02, -0.03, -0.01), mod=(0.01, -0.005, 0.02)):
+    ci = lambda t: {"pt": t[0], "lo": t[1], "hi": t[2]}  # noqa: E731
+    m1 = {q: _m1(a, s, h, r) for q in ("y", "win", "scv8")}
+    return {
+        "M1": {"8": {"pooled": {"op": m1}}, "32": {"pooled": {"op": m1}}},
+        "M2": {k: {"M2a_y": {"R_median": r_med}, "M2b": {"rate": {"pt": m2b}}} for k in ("8", "32")},
+        "M3a": {k: {q: {"all": {"A_minus_U": ci((m3a, m3a - 0.01, m3a + 0.01))}} for q in ("win", "scv8")} for k in ("8", "32")},
+        "M3b": {k: {"A": {"model": {q: {"rush_minus_macro": ci(m3b)} for q in ("win", "scv8")}},
+                    "A-human": {"both": {q: {"rush_mean": ci(hum)} for q in ("win", "scv8")}},
+                    "A-model": {"both": {q: {"rush_mean": ci(mod)} for q in ("win", "scv8")}}} for k in ("8", "32")},
+    }
+
+
+def test_verdict_rows():
+    """6.5 table logic (thresholds 기본안(미확정)): True / False / None per row on crafted reports."""
+    from uranium.diag.plan_s0 import TH_DEFAULTS, verdict
+
+    th = dict(TH_DEFAULTS)
+    rows = lambda rep: [r["matched"] for r in verdict(rep, th, [8, 32])["win"]["rows"]]  # noqa: E731
+    # everything passes: planning possible; M3c human-only CI below 0, model-only reaches 0: delusion row
+    assert rows(_report()) == [True, False, False, False, True, False]
+    # M3b fails: "M1·M2 pass, M3 fails"
+    assert rows(_report(m3b=(0.01, -0.002, 0.02)))[:2] == [False, True]
+    # A's gain under twice the S control: M1 fails at both k
+    assert rows(_report(s=(0.03, 0.0, 0.05)))[:2] == [False, False]
+    # the oracle gains nothing: r undefined, M1 cannot be judged
+    v = verdict(_report(h=(-0.01, -0.02, 0.0)), th, [8, 32])["win"]
+    assert v["criteria"]["8"]["m1_y"] is None and v["rows"][0]["matched"] is None
+    # A in the noise, H significant
+    assert rows(_report(a=(0.001, -0.001, 0.003), r=0.01))[2] is True
+    # neither A nor H significant
+    assert rows(_report(a=(0.001, -0.001, 0.003), h=(0.001, -0.002, 0.004), r=1.0))[3] is True
+    # model-only CI below 0 too: no delusion row; M2b < 0.9
+    out = rows(_report(mod=(-0.02, -0.03, -0.01), m2b=0.5))
+    assert out[4] is False and out[5] is True and out[0] is False
+    # missing inputs: None
+    rep = _report()
+    del rep["M3b"]
+    assert rows(rep)[0] is None and rows(rep)[4] is None
