@@ -609,7 +609,15 @@ def test_unknown_plan_needs_kind_050_r9(tmp_path):
 CUE, DEAD = LIN["metric"]["cue_diag"], LIN["metric"]["dead_channels"]
 TEACHER, HUMAN = CUE["teacher"], CUE["human"]
 SHA = "f" * 64
-TAILS = ["hold_orig/botgen", "hold_macro2/botgen"]
+TAILS = ["by_name/hold_orig", "by_name/hold_macro2"]
+
+
+@pytest.fixture(autouse=True)
+def _game_order(monkeypatch):
+    """The outputs written below have no rows parts: their game order is the one a `FAKE_GAME_ROWS` file in the
+    dump names (the pinned value unless a test writes another); `game_rows_sha256` itself is tested apart."""
+    real = protocol.game_rows_sha256
+    monkeypatch.setattr(protocol, "game_rows_sha256", lambda d: (Path(d) / "FAKE_GAME_ROWS").read_text() if (Path(d) / "FAKE_GAME_ROWS").is_file() else real(d))
 HUMAN_DS = sorted(HUMAN["datasets"])
 
 
@@ -669,6 +677,31 @@ def test_diag_commands_pinned_050_r9(tmp_path):
     assert "--until-update" not in protocol.train_log_command(LIN, protocol.point(LIN, "rl-s1"), "checkpoints/m2-rl/ckpt-5/agents/main", "train.csv", "CK", o)
     assert protocol.diag_out(LIN, "cue_diag", "checkpoints/m2-s1/ckpt-39096") == "artifacts/diag/m2-s1__ckpt-39096"
     assert protocol.diag_out(LIN, "dead_channels", "checkpoints/ac1-vtrace-s1/ckpt-3133569/agents/main") == "artifacts/diag/ac1-vtrace-s1__ckpt-3133569-agents-main"
+
+
+def test_game_rows_sha256_is_the_game_order_050_r9(tmp_path):
+    """The dump's rows per game id in id order (the probes' folds follow the ids): the same rows under other ids
+    give another value; parts are concatenated in order; no rows -> None."""
+    import hashlib
+
+    import numpy as np
+
+    d = tmp_path / "dump"
+    d.mkdir()
+    assert protocol.game_rows_sha256(d) is None
+    np.savez_compressed(d / "rows_p000.npz", game=np.array([0, 0, 1, 2, 2, 2]), frame=np.zeros(6))
+    np.savez_compressed(d / "rows_p001.npz", game=np.array([3, 1]), frame=np.zeros(2))
+    assert protocol.game_rows_sha256(d) == hashlib.sha256(b"2,2,3,1").hexdigest()
+    np.savez_compressed(d / "rows_p000.npz", game=np.array([1, 1, 0, 2, 2, 2]), frame=np.zeros(6))  # games 0 and 1 swapped ids
+    assert protocol.game_rows_sha256(d) == hashlib.sha256(b"1,3,3,1").hexdigest()
+
+
+def test_teacher_link_trees_order_games_as_the_lambda_runs_050_r9():
+    """The hold-out folders are named after the entries (by_name/<name>): the shard reader orders by folder name,
+    hold_macro2 before hold_orig, as the U1 parity and lambda runs (<data>/hold_orig, <data>/hold_macro2)."""
+    names = [h["name"] for h in TEACHER["holdout"]]
+    assert protocol.data_tails(TEACHER) == names and sorted(names) == ["hold_macro2", "hold_orig"]
+    assert TEACHER["dump"]["expect_game_rows_sha256"] == "a29f81c1580c83db17e056b45b28de871675b30985735d0c74a67be25371bdf6"
 
 
 def fake_source(root: Path, parts: dict[str, list[int]]) -> Path:
@@ -757,6 +790,7 @@ def set_outputs(d: Path, name: str, sha: str = SHA, **edit) -> Path:
     d.mkdir(parents=True, exist_ok=True)
     (d / "dump").mkdir(exist_ok=True)
     (d / "dump" / "manifest.json").write_text(json.dumps(man), encoding="utf-8")
+    (d / "dump" / "FAKE_GAME_ROWS").write_text(edit.get("game_rows", dm.get("expect_game_rows_sha256", "")), encoding="utf-8")
     (d / "probes.json").write_text(json.dumps(probes_o), encoding="utf-8")
     if "intervene" in s:
         eff = {"n": 100, "mean": 0.01, "lo": -0.01, "hi": 0.03, "share_ge_0.15": 0.0}
@@ -806,6 +840,9 @@ def test_check_diag_accepts_the_pinned_outputs_050_r9(tmp_path, capsys):
     ("teacher", {"manifest": {"lanes_per_group": 8}}, "teacher dump lanes_per_group"),
     ("teacher", {"manifest": {"games": 202, "stats": {"rows": 82148, "act_rows": 15553}}}, "teacher dump games: 202, pinned 433"),
     ("teacher", {"manifest": {"data": ["/h/some/other"]}}, "not the pinned hold-out"),
+    # the earlier link trees <name>/botgen: the same games, hold_orig read first (other game ids)
+    ("teacher", {"manifest": {"data": ["/h/diag_holdout/hold_orig/botgen", "/h/diag_holdout/hold_macro2/botgen"]}}, "orders the games otherwise"),
+    ("teacher", {"game_rows": "210c" + "0" * 60}, "teacher dump game order (game_rows_sha256)"),
     ("teacher", {"manifest": {"cf_starts": {"T": [1280.0, 2080.0], "P": [1720.0, 3030.0], "Z": [1500.0, 3240.0]}}}, "teacher dump cf_starts"),
     ("teacher", {"manifest": {"stages": ["token", "e_pool", "h"]}}, "no activations at ['x_in', 'L1.out']"),
     ("teacher", {"probes": {"gain_method": "joint"}}, "teacher probes gain_method"),

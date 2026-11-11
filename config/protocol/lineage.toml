@@ -155,7 +155,9 @@ sets = ["teacher", "human"]
 # The val + test splits of the 2026-11-06 teacher games and of teacher-20261107-macro2 (433 TvZ games), the data
 # of the Checkpoint 1 diagnosis (reports/jepa_survey.md 10.1), the U1 parity (2026-11-09) and the 041-R24 lambda
 # runs (2026-11-10, <shared>/eval/m2-lambda-20261110). Each source is a link tree of the listed parts of
-# <shared>/datasets/replays/shards/botgen under <cache>/diag_holdout/<name>/botgen (as per_action.py `orig`);
+# <shared>/datasets/replays/shards/botgen under <cache>/diag_holdout/by_name/<name> (as per_action.py `orig`; the
+# folder named <name> because the shard reader orders the games by folder name: hold_macro2 first, as the U1
+# parity and lambda runs' <data>/<name> folders; protocol.py set_data);
 # `files_sha256` = sha256 of the sorted "<part>/<file> <bytes>" lines of its shard files (the source and the
 # link tree are both checked).
 splits = ["val", "test"]
@@ -182,6 +184,9 @@ cf_starts = { T = [1280, 2080], P = [1720, 3030], Z = [1800, 3240] }
 expect_games = 433
 expect_rows = 176873
 expect_act_rows = 36516
+# The game order (rows per game id, protocol.py game_rows_sha256): the probes' folds and bootstrap follow the game
+# ids, so the same rows in another game order give other values (the U1 parity / lambda dumps' order).
+expect_game_rows_sha256 = "a29f81c1580c83db17e056b45b28de871675b30985735d0c74a67be25371bdf6"
 
 [metric.cue_diag.teacher.probes]
 # U1 parity / lambda settings: --races Z --boot 500, gain resid, the other diag probes defaults (CPU)
@@ -239,13 +244,14 @@ core_points = "gate"
 cf = false
 # Each game read only up to 6:00 (`diag dump --read-until`): the rows and activations are the same (all before
 # 8640), the steps after it are not extracted (human games run 15-20 min). Without it a 32-lane batch held whole
-# human games (about 8 GB resident on the 14 GB ROCm host) and spent most of its time on steps it drops.
+# human games (about 8 GB resident) and spent most of its time on steps it drops.
 read_until = 8640
 # Data fingerprint: the first run's values (Checkpoint 1 r1, 2026-11-11, `check-diag` NOTE); the rows depend on
 # the data only (the same with and without --read-until).
 expect_games = 1000
 expect_rows = 763946
 expect_act_rows = 85872
+expect_game_rows_sha256 = "253ecf0c9a60328ec3764ffccd4d12fb29660005d0c8f044bc764f1d781f9e08"
 
 [metric.cue_diag.human.probes]
 # The survey's T / P settings (docs/commands.md: probes --cap 60 --boot 300), gain resid

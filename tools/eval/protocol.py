@@ -453,8 +453,12 @@ def _check_files(name: str, got: tuple[int, str], want: tuple[int, str], where) 
 
 def set_data(lin: dict, name: str, shared: Path | None = None, work: Path | None = None, create: bool = True) -> list[str]:
     """The data arguments of a cue hold-out set on this host, after its fingerprint check:
-    - `holdout` (link trees): `--shards <work>/<name>/<source name>` per entry (per_action.link_tree of the
-      pinned parts; work = <cache>/diag_holdout); the source and, once linked, the link tree are checked.
+    - `holdout` (link trees): `--shards <work>/by_name/<name>` per entry (per_action.link_tree of the pinned
+      parts; work = <cache>/diag_holdout); the source and, once linked, the link tree are checked. The folder
+      is named after the entry because the shard reader orders the games by `<folder>/<part>/shard_*`
+      (data::shard_keys): `hold_macro2/...` before `hold_orig/...`, the order of the U1 parity and the lambda
+      runs (their folders <data>/hold_orig, <data>/hold_macro2). The earlier `<name>/botgen` trees read every
+      `hold_orig` game first: the same rows, other game ids, so other folds and other probe values.
       create=False: only the paths (and the source check), nothing written.
     - `datasets`: `--dataset <name>` per dataset, the manifests checked."""
     import per_action
@@ -469,7 +473,7 @@ def set_data(lin: dict, name: str, shared: Path | None = None, work: Path | None
     for h in s["holdout"]:
         src = shared / h["source"]
         _check_files(h["name"], files_fingerprint(src, h["parts"]), (h["files"], h["files_sha256"]), src)
-        dst = work / h["name"] / Path(h["source"]).name
+        dst = work / "by_name" / h["name"]
         if create:
             per_action.link_tree(src, h["parts"], dst)
             _check_files(h["name"], files_fingerprint(dst, h["parts"]), (h["files"], h["files_sha256"]), f"link tree {dst}")
@@ -478,10 +482,11 @@ def set_data(lin: dict, name: str, shared: Path | None = None, work: Path | None
 
 
 def data_tails(s: dict) -> list[str]:
-    """The ends of the data folders a dump of the set records (`diag dump` manifest `data`, in its order)."""
+    """The ends of the data folders a dump of the set records (`diag dump` manifest `data`, in its order): the
+    datasets, or the hold-out entries' names (the folder name orders the games, `set_data`)."""
     if "datasets" in s:
         return sorted(s["datasets"])  # storage::dataset_dirs sorts the dataset names
-    return [f"{h['name']}/{Path(h['source']).name}" for h in s["holdout"]]
+    return [h["name"] for h in s["holdout"]]
 
 
 def output_name(checkpoint: str) -> str:
@@ -564,7 +569,6 @@ def check_cue_set(lin: dict, name: str, d: Path, sha: str | None) -> list[str]:
     s = cue_set(lin, name)
     dm, p, rep = s["dump"], s["probes"], s["report"]
     tails = data_tails(s)
-    names = [h["name"] for h in s.get("holdout", [])] or tails
     problems: list[str] = []
 
     def same(what: str, got, want) -> None:
@@ -572,11 +576,12 @@ def check_cue_set(lin: dict, name: str, d: Path, sha: str | None) -> list[str]:
             problems.append(f"{name} {what}: {got!r}, pinned {want!r}")
 
     def data(what: str, got) -> None:
-        # the folders in the pinned order: this tool's link trees (<name>/<source>) or a folder named <name>
-        # holding the same parts (the lambda runs); the row / game counts fingerprint the content
+        # the folders in the pinned order, each named as its hold-out entry (this tool's link trees by_name/<name>,
+        # the lambda runs' <data>/<name>): the folder name orders the games (set_data); the row / game counts
+        # fingerprint the content
         got = list(got or [])
-        if len(got) != len(tails) or not all(_ends_with(g, t) or _ends_with(g, n) for g, t, n in zip(got, tails, names)):
-            problems.append(f"{name} {what} data {got}: not the pinned hold-out (.../{', .../'.join(tails)})")
+        if len(got) != len(tails) or not all(_ends_with(g, t) for g, t in zip(got, tails)):
+            problems.append(f"{name} {what} data {got}: not the pinned hold-out (.../{', .../'.join(tails)}; a folder named otherwise orders the games otherwise)")
 
     man = _load(d / "dump" / "manifest.json", problems)
     if man is not None:
@@ -591,6 +596,8 @@ def check_cue_set(lin: dict, name: str, d: Path, sha: str | None) -> list[str]:
         for k, got in (("expect_games", man.get("games")), ("expect_rows", st.get("rows")), ("expect_act_rows", st.get("act_rows"))):
             if k in dm:
                 same(f"dump {k.removeprefix('expect_')}", got, dm[k])
+        if "expect_game_rows_sha256" in dm:  # the game order: the folds and bootstrap follow the game ids
+            same("dump game order (game_rows_sha256)", game_rows_sha256(d / "dump"), dm["expect_game_rows_sha256"])
         if dm["cf"]:
             same("dump cf_starts", man.get("cf_starts"), {r: list(v) for r, v in dm["cf_starts"].items()})
             if len(man.get("passes") or []) < 2:
@@ -637,6 +644,19 @@ def check_cue_set(lin: dict, name: str, d: Path, sha: str | None) -> list[str]:
             same("intervene window", ivr.get("window"), [float(x) for x in iv["window"]])
             same("intervene races", sorted(ivr.get("races", {})), sorted(iv["races"]))
     return problems + data_consistency(lin, name, d)
+
+
+def game_rows_sha256(dump: Path) -> str | None:
+    """sha256 of the dump's rows per game id ("n0,n1,..." in id order): fixes which game got which id, so the
+    probes' game folds and bootstrap (050-R9: the same numbers as the lambda runs on the same weights).
+    None without rows."""
+    import numpy as np
+
+    parts = sorted(Path(dump).glob("rows_p*.npz"))
+    if not parts:
+        return None
+    games = np.concatenate([np.load(p)["game"] for p in parts])
+    return hashlib.sha256(",".join(str(int(n)) for n in np.bincount(games)).encode()).hexdigest()
 
 
 def data_fingerprint(lin: dict, name: str, d: Path) -> dict | None:
