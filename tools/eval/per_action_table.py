@@ -9,6 +9,8 @@ and the macro-opponent games' mean p(Build_Bunker) before 4:00 (recorded only); 
     python tools/eval/per_action_table.py BC=<json> mix-e1=<json> ... [--json out.json]
 
 --json writes {label: {"file", "steps", "games", "overall_top1", "actions": {action: per_action row}, "r27"}}.
+--chain-start tabulates each JSON's `chain_start` block instead (041-R30 ⑤, the chain-start observation scores,
+recorded only); the default is the current-observation fields (Checkpoint 1 comparison, extension rule).
 """
 
 from __future__ import annotations
@@ -20,8 +22,12 @@ from pathlib import Path
 ROWS = ["Build_Bunker", "Move_Pos", "Train_Marine", "Attack_Unit", "Repair_Unit", "NoOp", "Train_SCV", "Attack_Pos"]
 
 
-def load(p: Path) -> dict:
+def load(p: Path, chain_start: bool = False) -> dict:
     d = json.loads(p.read_text(encoding="utf-8"))
+    if chain_start:
+        if "chain_start" not in d:
+            raise SystemExit(f"{p}: no `chain_start` block (041-R30 ⑤; scored with --chain-start none or before 2026-11-12)")
+        d = d["chain_start"]
     tot = sum(r["n"] for r in d["per_action"])
     return {"file": str(p), "steps": d.get("steps"), "games": d.get("games"),
             "overall_top1": sum(r["top1"] * r["n"] for r in d["per_action"]) / tot,
@@ -70,13 +76,14 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("columns", nargs="+", help="<label>=<per_action json>")
     ap.add_argument("--json", type=Path, default=None)
+    ap.add_argument("--chain-start", action="store_true", help="041-R30 ⑤: the chain-start observation block of each JSON")
     a = ap.parse_args(argv)
     data = {}
     for c in a.columns:
         label, sep, path = c.partition("=")
         if not sep:
             raise SystemExit(f"column {c!r}: expected <label>=<json>")
-        data[label] = load(Path(path))
+        data[label] = load(Path(path), a.chain_start)
     print("\n".join(table(data)))
     if a.json:
         a.json.write_text(json.dumps(data, indent=1), encoding="utf-8")
