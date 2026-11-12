@@ -647,6 +647,47 @@ S0b 결과(`<shared>/eval/jepa-plan-feas-20261112/s0b/s0.md`·`s0-tp.md`, 119만
    - 기본안(미확정): (가). 계획 모듈 spec과 따로 승인할 수 있게.
 
 - 작업자 임시 판단(사용자 수치·spec 아님): 모델 상태는 줄기에서 저장해 되살리고(다시 추론은 시작용 대안), 분기 일치 확인은 관측 다이제스트로, 대안 주입은 행동 종류 마스크로 합니다.
+- **사용자 결정(2026-11-12)**: 1. B1(러시 대응, T0 `zerg_rush`)은 8:00까지, B2(일반 운영 행동)는 12:00까지, 결과는 정한 시각의 내 상태와 050 지표(끝까지 두지 않음). 2. (다) 한 결정과 옵션 둘 다. 3. (가) T0만(AMB-021-3 그대로). 4. B1 기본안 1,280판, B2 1,920판은 B1 결과 뒤 결정. 5. `m2-s1/ckpt-39096`, stochastic. 6. 구현은 지금, 게임은 모델 2 경로 측정의 빈 시간에. 7. (가) 새 05x spec → [spec 051](../spec/051-branch-games.md) 초안(Draft, 사용자 확인 대기).
+
+### 7.14 구현 계획(spec 051 초안 기준, 2026-11-12)
+
+- 전제: spec 051이 `Approved`가 되고, 051 "다른 spec에 제안하는 변경"(020 새 R22·R15 ①, 031-R4, 032-R16, 041-R28, 050)을 사용자가 확인한 뒤 시작합니다. AMB-051-1~5는 B1 실행 전에 정해지면 되므로, 코드는 수치를 설정(plan·대안 설정 파일)으로 받게 만들고 기본안 값을 넣지 않은 채 시작할 수 있습니다(수치가 들어가는 plan 생성만 결정 뒤).
+- 진행 방식: 메인은 계획·git만, 단위별 서브 에이전트(worktree, 병렬). 빌드·테스트는 학습 중인 이 PC가 아니라 Linux CPU 호스트에서 합니다.
+
+**작업 단위**
+
+| 단위 | 내용 | 파일 | 테스트 | 에이전트 시간 | 앞 단위 |
+|---|---|---|---|---|---|
+| U1 형식·순수 논리 | 행동 기록 줄(쓰기·읽기), 관측별 다이제스트, snapshot 규칙 판정, 개입 규칙 엔진(마스크 좁히기·창·`missed`), 상태 파일 쓰기·읽기·sha256 | 새 `crates/uranium-env/src/branch.rs`(라이브러리라 에이전트 없이 시험), `features/label.rs` 옆 형식 | 051-AC1의 형식·규칙·개입 부분(CPU 단위 테스트) | 2~3시간 | – |
+| U2 상태 되살리기 | `Req::SetState`·`InferSession::set_state`, broker 작업에 `sets`, PyO3 노출, Python 추론 스레드 처리 순서(리셋 → 되살리기 → 상태 읽기 → act)·K/V 다시 계산 | `crates/uranium-agent/src/infer.rs`·`broker.rs`, `crates/uranium-py/src/agent.rs`, `python/uranium/agent/infer.py` | 051-AC2(pytest CPU, LSTM·GTrXL), broker 단위 테스트 | 2~3시간 | – |
+| U3 세션 기록·분기 플레이어 | 세션 루프의 관측별 다이제스트·행동 기록(모델·T0 모두), 모델 세션 snapshot 저장, 강제 앞부분(추론 없이 `extract`·`record_action`, 기록 `Act` 그대로, 불일치 → 빈 채팅 퇴장), t에서 되살리기·개입, 시점 표본·희석·결과 기록, `verify_state`, T0 그림자 경로 | `crates/uranium-agent/src/lib.rs`·`model_policy.rs`, `InferenceHandle` 판별 설정(`with_act_log`·`with_branch`), `crates/uranium-scripted/tests/branch_replay.rs` 이전 | 051-AC1의 강제 앞부분 부분(합성 관측열·가짜 추론 서버), 051-AC3·AC4 무시 테스트(hostd) | 4~6시간 | U1, U2(API) |
+| U4 plan·러너·plan 생성 | plan 키 `act_log`·`snapshots`·`branches`·`verify_state`와 로드 검사, 평가 작업 단계 폴더 `acts/`·`states/`, 판별 설정 전달. 줄기 결과 → `points.jsonl`·분기 목록·plan 생성(B1 규칙, 051-R10 검사, 반복 바깥 순서), 판 뒤 `branches.jsonl` 모으기(상대 앞부분 비교 포함) | `crates/uranium-runner/src/plan.rs`·`eval.rs`·`lib.rs`, 새 `tools/eval/branch_plan.py`·`branch_collect.py` | Rust plan 테스트(키 없는 plan 결과 불변 포함), pytest 생성기 결정론·거부 사유 | 3~4시간 | U1(형식) |
+| U5 분석 | 재레이블 없는 build의 `--memory-log`(041-R28 개정), `diag plan-branch`(시점 행 결합, S0b 예측기 불러오기, 짝 효과·줄기 bootstrap·split-half, M3u·M2c, md·json 출력) | `crates/uranium-replay/src/main.rs`·`pipeline.rs`, 새 `python/uranium/diag/plan_branch.py`, `diag/cli.py` | Rust build 옵션 테스트, pytest 합성 기록(알려진 효과 복원, bootstrap 결정론) | 3~4시간 | U1(형식, 합성 데이터로 먼저 가능) |
+| U6 리뷰·e2e·문서 | 별개 리뷰어 에이전트(spec 적합성·코드 품질), 반영, 051-AC6 Linux CPU 호스트 end-to-end, `docs/commands.md` "분기 게임" 절 | – | 051-AC6 | 2~3시간 + e2e 벽시계 | U1~U5 |
+
+- 에이전트 코딩 합계 약 16~23시간(7.10의 14~20시간에 재레이블 없는 build 옵션과 결과 모으기 도구가 더해짐).
+- 순서: ① U1·U2·U5(합성 데이터 부분) 병렬 → ② U1 반영 뒤 U3·U4 병렬(U3은 U2 반영도 필요) → ③ 리뷰·반영·master 반영(rebase, FF) → ④ Linux CPU 호스트에서 `cargo test --workspace`·pytest CPU·hostd 무시 테스트(051-AC3·AC4) → ⑤ 051-AC6 → ⑥ B1 줄기 → ⑦ plan 생성·시점 덤프 → ⑧ B1 분기(빈 시간에 나눠) → ⑨ 분석·리포트 `reports/branch_b1.md`.
+
+**장비·게임 시간 예산(추정)**
+
+| 묶음 | 판 | 판당 벽시계 | 자리·추론 | 총 벽시계 |
+|---|---|---|---|---|
+| 051-AC6 e2e | 줄기 2 + 분기 약 8 | CPU 추론 속도 미측정. 8:00 판 10~20분으로 추정(판 하나로 먼저 잼) | Linux CPU 호스트 2~3자리, CPU 추론 | 1~3시간(2시간 넘을 것 같으면 호라이즌 4:00으로 줄이고 보고) |
+| B1 줄기 | 40(+ 바꿀 줄기 몇 판) | 8:00까지 약 3분(ROCm 판당 약 60프레임/초) | 13자리 + ROCm GPU 1 | 약 0.3~0.5시간 |
+| 시점 덤프 | 줄기 리플레이 약 44개, 시점 80 | – | Linux CPU 호스트(build + `plan-dump` CPU) | 1시간 안 |
+| B1 분기 | 1,280 | 약 2.2분(앞부분 2~4초 + t 뒤 약 5,000~8,300프레임) | 13자리 + ROCm GPU 1 | 4~6시간(게임 자리 약 47시간분) |
+| 분석 | – | – | Linux CPU 호스트 | 0.5시간 안 |
+
+- 저장: 리플레이·행동 기록·상태 파일 합쳐 1 GB 안(추정). 공용 드라이브 `<shared>/eval/branch-<날짜>/`.
+- CUDA 호스트(이 PC)는 교사 혼합 연쇄 학습 중이라 쓰지 않습니다.
+
+**경로 측정 빈 시간에 돌리는 방법**
+
+1. 분기 줄기·분기 판은 평가 작업(020-R15) 두 개로 만듭니다: `branch-b1-trunk-<날짜>`, 그 결과로 만든 `branch-b1-<날짜>`. 둘 다 마무리 정지·재개가 되고, 분기 plan은 반복이 바깥이라 중간에 멈춰도 끝난 판끼리 짝 비교가 됩니다(051-R10).
+2. 시작 조건: 경로 측정(050-R9)의 게임 job이 돌고 있지 않고(그 job의 진행 중 표가 비어 있음), 분기 작업자가 쓸 ROCm GPU에서 다른 평가 추론이 돌지 않을 때. 교사 hold-out 채점처럼 게임 자리를 쓰지 않는 측정은 다른 ROCm GPU에서 함께 돌 수 있습니다.
+3. 경로 측정 게임을 시작해야 하면 분기 작업자에 Ctrl+C 한 번(마무리 정지, 진행 중인 판이 끝나기까지 최대 약 3분) 뒤 경로 측정을 시작합니다. 끝나면 같은 job으로 작업자를 다시 띄웁니다(남은 판부터).
+4. 메인 세션이 교사 혼합 epoch 진행(epoch당 학습 시간)과 지점별 측정 메뉴(050-R9 표)를 보고 빈 시간을 고르고, 분기 작업 시작·정지를 `reports/timeline.md`에 남깁니다.
+5. 빈 시간이 짧으면 Linux CPU 호스트 3자리 + ROCm GPU 빈 시간만 쓰는 방식(경로 측정 영향 거의 없음, 약 3~4배 느림, 7.13 6번 (나))으로 바꿀 수 있습니다. 이때는 hosts 파일만 바꿉니다.
 
 ---
 
