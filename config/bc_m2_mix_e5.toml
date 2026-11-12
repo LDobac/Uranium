@@ -1,0 +1,125 @@
+# 041-R29 ③ model 2 path (lineage 2) teacher mix, epoch 5 (m2-mix-e5): the 041-R21 ⑥ recipe from the
+# lineage-2 BC baseline (`--s2 --init m2-s2e2/<last ckpt>`, eN from m2-mix-e(N-1), weights only),
+# with the 041-R26 race-balanced human part (AMB-041-15). Data: every teacher game (`botgen`, the
+# 040-R23 macro counter-example games teacher-20261109-macro3 included) plus the four human sources'
+# target-map train games (S2) kept per enemy race ([data.subsample] fraction_by_race), so the teacher
+# is 50 +- 3% of the update steps and inside the human part TvT : TvP : TvZ is the S2 human data's
+# within +-3%p. The chain's configs differ in data.seed (3, 4, ...), the per-race fractions and
+# [steps], all recounted with `uranium-train mix-fractions` for each seed. Peak / floor learning rate
+# 3e-4 / 3e-6 x s2_lr_scale 0.1 = 3e-5 / 3e-7, warmup 5%, cosine to the end of the epoch (041-R21 ⑥).
+# [aux]: lambda_priv 0.2, lambda_jepa 0.1 (AMB-041-13b, confirmed 2026-11-10), as config/bc_m2.toml.
+# 041 behaviour cloning hyper-parameters (041-R3, R10: tuning targets, recorded in checkpoints).
+
+# Parallel games per batch (B) and truncated-BPTT length (T, 041-R2 / 032-R5).
+lanes = 32
+seq_len = 64
+# Lanes per forward/backward pass. Group gradients are summed into one update (same result as one
+# pass over all lanes), so peak GPU memory follows the group, not `lanes`. 0 = all lanes at once.
+micro_lanes = 1
+# Burn balanced gradient checkpointing: recompute memory-bound activations during backward.
+grad_checkpointing = false
+# Round the batch entity count N up to a multiple of this (masked padding, same result). Fewer
+# distinct tensor shapes; ~9% faster per update on the 13-game CUDA sample (2026-10-17).
+pad_entities = 64
+# AdamW + linear warmup + cosine decay, gradient-norm clip 1.0 (041-R3): one global L2 norm over
+# all parameter gradients after the micro-lane sum (not Burn's per-tensor clip, G-D4).
+# 041-R21 ⑥: x s2_lr_scale = 3e-5 peak, 3e-7 floor.
+lr = 3e-4
+min_lr = 3e-6
+warmup_steps = 2000
+# Schedule length when no stage length applies (smoke runs). `bc` uses [steps] below.
+total_steps = 500000
+weight_decay = 1e-4
+grad_clip = 1.0
+# S2 fine-tuning uses 1/10 of the learning rate (041-R4).
+s2_lr_scale = 0.1
+# 061-R6 (G-D6): checkpoints kept per run on the shared drive. Absent = 5; 0 = keep all.
+# 041-R29 ⑨: every checkpoint of the lineage is kept (execution only, not in the fingerprint).
+keep_checkpoints = 0
+# Head loss weights (041-R1).
+[heads]
+action = 1.0
+delay = 0.5
+queued = 0.2
+selected = 1.0
+target_unit = 1.0
+target_loc = 1.0
+
+[steps]
+# Only the S2 stage runs with this file. One epoch, counted by `uranium-train mix-fractions --config
+# config/bc_m2_mix_e5.toml --dataset-group replays/shards/stardata,replays/shards/community,replays/shards/scr_ladder,replays/shards/personal
+# --dataset-group replays/shards/botgen` (the datasets through their manifests, as the trainer's
+# --dataset reads them; lanes 32, seq_len 64, data.seed 7; 2026-11-12, the same datasets as e1's
+# count, botgen manifest with teacher-20261109-macro3): 2,555 games, 2,415,004 steps, of which the
+# teacher 2,057 games, 1,207,759 steps = 50.01%; human TvT : TvP : TvZ steps
+# 14.9 : 49.2 : 35.9% against the S2 human data's 14.9 : 49.2 : 35.9%).
+# s1 / ablation_a are unused (0 = total_steps). Recount when the datasets change.
+s1 = 0
+s2 = 1187
+ablation_a = 0
+# 041-R14: 5% of the epoch, rounded half up (1,187 x 0.05 = 59.35 -> 59).
+s2_warmup = 59
+
+[value]
+# win head MSE weight (041-R7)
+win = 0.5
+# 041-R19 (2026-10-21): win_open head MSE weight. Present = a new run builds the head (032-R18,
+# win estimate without privileged input for the 031-R12 surrender rule). Clipped apart from the
+# other parameters, so they update as without it. Not in bc_core_ablation.toml.
+win_open = 0.5
+
+[data]
+# Fraction of games trained with z_present = false (041-R8 / 033-R2).
+z_drop = 0.25
+# Random dihedral symmetry per game at load time (030-R4, 040-R7).
+augment = true
+# 030-R11 (user decision 2026-10-19): share of games whose enemy race is masked as unknown until
+# the first enemy unit is seen (per game, hash of replay sha256 + seed; no extra copies).
+enemy_race_mask = 0.05
+# 041-R29 ③: epoch 5 of the chain uses seed 7, as the Checkpoint 1 path's bc-mix-e5.
+seed = 7
+checkpoint_every = 5000
+# Also checkpoint at least this often in wall time (061-R10; ~2 updates/min on CUDA).
+checkpoint_minutes = 60
+# 041-R30 (user decision 2026-11-12, AMB-041-19): a chained teacher step (same-frame command chain,
+# 040-R4 delay 1: frame <= previous step's + 1 after a command) is observed through its chain-start
+# step's RawFrame, not its own frame that already shows the earlier commands' effects. Labels,
+# delays, step counts and [steps] are unchanged; the dagger source is not listed (no leak).
+chain_start_sources = ["botgen"]
+
+# 041-R21 ⑥ / R26 (AMB-041-15): every game of the teacher source `botgen`; of the human target-map
+# train games a share per enemy race (per game, hash of replay sha256 + data.seed; both TvT
+# perspectives together), computed by `uranium-train mix-fractions` for data.seed 7. `fraction` is
+# the single share aiming at the same total (used only by a game without a T / P / Z enemy).
+[data.subsample]
+fraction = 0.0524
+keep_sources = ["botgen"]
+
+[data.subsample.fraction_by_race]
+T = 0.042
+P = 0.05272
+Z = 0.0557
+
+# 041-R29 ①: the four 032 section 2.7 switches (as config/bc.toml), the 032 section 2.8 switches
+# bypass, spatial_preact, aux_priv, aux_jepa (k = 1, 8, 32) and the core fix F1 core_skip
+# (AMB-032-14). Absent keys would mean off.
+[model]
+terrain = true
+ctx_token = true
+attn_pool = true
+outer = 32
+bypass = true
+spatial_preact = true
+core_skip = true
+aux_priv = true
+aux_jepa = [1, 8, 32]
+
+# 041-R25: dead-channel statistics every 100 updates (execution only).
+[monitor]
+spatial_every = 100
+
+# 041-R23 ⑥ (AMB-041-13b, user decision 2026-11-10 after the 041-R24 lambda runs: the default
+# proposal kept): aux loss weights lambda_priv 0.2, lambda_jepa 0.1.
+[aux]
+priv = 0.2
+jepa = 0.1
