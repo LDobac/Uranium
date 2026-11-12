@@ -75,6 +75,22 @@ def test_bc_eval_option_041_r30(trained):
         _core.EvalStream(str(cfg), [str(chains)], split="train", synthetic_maps=True, chain_start_sources=["stardata"])
 
 
+def test_table_reads_either_block_041_r30(tmp_path):
+    import json
+
+    import per_action_table as pat
+
+    row = lambda top1: {"action": "Build_Bunker", "n": 2, "top1": top1}  # noqa: E731
+    f = tmp_path / "pa.json"
+    f.write_text(json.dumps({"steps": 2, "games": 1, "per_action": [row(0.5)], "chain_start": {"steps": 2, "games": 1, "per_action": [row(1.0)]}}), encoding="utf-8")
+    assert pat.load(f)["overall_top1"] == 0.5
+    assert pat.load(f, chain_start=True)["overall_top1"] == 1.0
+    g = tmp_path / "old.json"
+    g.write_text(json.dumps({"steps": 2, "games": 1, "per_action": [row(0.5)]}), encoding="utf-8")
+    with pytest.raises(SystemExit, match="041-R30"):
+        pat.load(g, chain_start=True)
+
+
 def test_chain_start_option_text_041_r30():
     assert pa.chain_sources("botgen") == ["botgen"] and pa.chain_sources("botgen,dagger") == ["botgen", "dagger"]
     assert pa.chain_sources("none") == []
