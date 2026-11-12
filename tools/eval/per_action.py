@@ -30,10 +30,11 @@ number stay those of the scored hold-out. `--classes none` turns the split off, 
 gives the classes of other shard folders. Needs `uranium._core` with `Batch.lane_games`.
 
 041-R30 ⑤ (user decision 2026-11-12, AMB-041-19): the hold-out is scored both ways. Every field above is the
-current-observation score (each step its own observation, comparable with Checkpoint 1; the bc-mix extension rule
-`r27.rush_bunker_top1` < 70% and the side-arm threshold < 50% read these). `chain_start` holds the same report
-(`games`, `steps`, `per_action`, and with classes `by_class` / `r27`) scored with the chain-start observation of the
-`--chain-start` sources (default botgen), recorded only. `--chain-start none` skips it (half the time). The
+current-observation score (each step its own observation, comparable with Checkpoint 1; the Checkpoint 1 lineage's
+bc-mix extension rule `r27.rush_bunker_top1` < 70% and side-arm threshold < 50% read these, recorded only for
+lineage 2). `chain_start` holds the same report (`games`, `steps`, `per_action`, and with classes `by_class` / `r27`)
+scored with the chain-start observation of the `--chain-start` sources (default botgen); lineage 2 (041-R29 3) judges
+the extension rule and the side-arm threshold on its `r27.rush_bunker_top1`, same 70% / 50% (user decision 2026-11-12). `--chain-start none` skips it (half the time). The
 config's [data] chain_start_sources is not followed: only this option turns it on.
 """
 
@@ -406,7 +407,7 @@ def print_report(res: dict) -> None:
     if r27:
         bt = "-" if r27["rush_bunker_top1"] is None else f"{r27['rush_bunker_top1'] * 100:.1f}%"
         mp = "-" if r27["macro_bunker_p_before_4m"] is None else f"{r27['macro_bunker_p_before_4m']:.4f}"
-        print(f"041-R27: rush-opponent games {r27['rush_games']}: Build_Bunker top-1 {bt} ({r27['rush_bunker_steps']} steps, the bc-mix extension rule input); "
+        print(f"041-R27: rush-opponent games {r27['rush_games']}: Build_Bunker top-1 {bt} ({r27['rush_bunker_steps']} steps, the bc-mix extension rule input for this observation's lineage); "
               f"macro-opponent games {r27['macro_games']}: mean p(Build_Bunker) before 4:00 {mp} ({r27['macro_steps_before_4m']} steps, recorded only)")
 
 
@@ -433,16 +434,16 @@ def main(argv=None) -> None:
     chain = chain_sources(a.chain_start)
     holdout = "shards" if a.shards else a.holdout
     res = score_holdout(str(ck), datasets, shards, a.backend, a.config, classes, holdout, None)
-    # The current-observation report (the extension rule input) is written before the second pass.
+    # The current-observation report (Checkpoint 1 lineage extension rule input) is written before the second pass.
     a.out.write_text(json.dumps(res, indent=1), encoding="utf-8")
     if chain:
-        # 041-R30 ⑤: the same report with the chain-start observation, recorded only.
+        # 041-R30 ⑤: the same report with the chain-start observation (lineage 2 extension rule input, 2026-11-12).
         cs = score_holdout(str(ck), datasets, shards, a.backend, a.config, classes, holdout, chain)
         res["chain_start"] = {"sources": chain, **{k: cs[k] for k in ("games", "steps", "per_action", "by_class", "r27") if k in cs}}
         a.out.write_text(json.dumps(res, indent=1), encoding="utf-8")
     print_report(res)
     if chain:
-        print(f"\n041-R30 chain-start observation ({', '.join(chain)}; recorded only, the extension rule reads the scores above):")
+        print(f"\n041-R30 chain-start observation ({', '.join(chain)}; lineage 2 extension rule input; Checkpoint 1 lineage reads the scores above):")
         print_report(res["chain_start"])
 
 

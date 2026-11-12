@@ -71,7 +71,7 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 2. **teacher-forced 지표**(새 경로)
    - `python tools/eval/protocol.py bc-eval --metric val500 --lineage m2 --point s2e2 --checkpoint <ckpt>`가 고정 명령을 출력한다. 그 backend 장비에서 돌린다.
    - 출력은 `protocol.py check-bc-eval <json> --metric val500`로 확인한다(split·게임 수·selection seed).
-   - 행동별: `python tools/eval/per_action.py --checkpoint <ckpt> --out <json>` → `python tools/eval/per_action_table.py BC=<json> m2-e1=<json> ...`. 출력의 기존 필드는 현재 관측 점수(Checkpoint 1 비교·연장 규칙)이고 `chain_start` 블록은 체인 시작 관측 점수(041-R30 ⑤, 기록만, `--chain-start none`이면 생략)다.
+   - 행동별: `python tools/eval/per_action.py --checkpoint <ckpt> --out <json>` → `python tools/eval/per_action_table.py BC=<json> m2-e1=<json> ...`. 출력의 기존 필드는 현재 관측 점수(Checkpoint 1 비교·Checkpoint 1 경로 연장 규칙, 경로 2에서는 기록만)이고 `chain_start` 블록은 체인 시작 관측 점수(041-R30 ⑤, 경로 2 연장 규칙 입력 — 사용자 결정 2026-11-12, `--chain-start none`이면 생략)다. 경로 2 표는 `per_action_table.py --chain-start`로 낸다.
 3. **Checkpoint 1 경로**(`--lineage ck1`): 이미 잰 칸은 다시 재지 않는다(050-R9).
    - 이미 있는 칸: `ck1_outputs`의 기존 출력을 쓴다.
      - 게임 칸은 `python tools/eval/protocol.py tables --lineage ck1 --point r1 [--json <파일>]`로 다시 집계해 두 held·bunker 정의를 낸다. 게임은 새로 돌리지 않는다.
