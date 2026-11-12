@@ -92,7 +92,7 @@ def add_args(p) -> None:
     p.add_argument("--m3b-macro", default="macro", help="build classes counted as macro (comma-separated)")
     for k, v in TH_DEFAULTS.items():
         p.add_argument(f"--th-{k.replace('_', '-')}", type=float, default=v, help=f"6.5 threshold, 기본안(미확정) {v}")
-    p.add_argument("--th-own-k", type=int, default=8, help="k of the M1 own-state criterion (기본안(미확정) 8; 0 = no own-state criterion; --v1: 0)")
+    p.add_argument("--th-own-k", type=int, help="k of the M1 own-state criterion (기본안(미확정) 8; 0 = no own-state criterion; not with --v1, which has none)")
     # design (plan_pred.Design; reports/jepa_planning.md 6.8)
     d = pp.Design()
     p.add_argument("--v1", action="store_true", help="the first S0 run's design (every valid row, h' only, level targets, same-game S partner) "
@@ -106,7 +106,7 @@ def add_args(p) -> None:
 
 
 def design_of(a) -> pp.Design:
-    """`plan_pred.Design` from the flags (`--v1` takes no other design flag)."""
+    """`plan_pred.Design` from the flags (`--v1` takes no other design flag, nor --th-own-k)."""
     given = {"chains": a.chains, "chain_kinds": a.chain_kinds, "own_input": a.own_input, "own_target": a.own_target, "partner": a.s_partner, "k_unit": a.k_unit}
     given = {k: v for k, v in given.items() if v is not None}
     if a.v1:
@@ -755,7 +755,7 @@ def markdown(rep: dict) -> str:
 
 def report(data: pp.Data, a, ks, variants, models: Path) -> dict:
     th = {k: getattr(a, f"th_{k}") for k in TH_DEFAULTS}
-    th["own_k"] = 0 if a.v1 else a.th_own_k
+    th["own_k"] = a.th_own_k  # resolved in `run` (0 with --v1)
     rep = {"kind": "plan-s0", "checkpoint": data.checkpoint, "data": pp.describe(data),
            "settings": {"ks": ks, "variants": variants, "boot": a.boot, "boot_seed": a.boot_seed, "eval_frac": a.eval_frac, "split_seed": a.split_seed,
                         "design": data.design.as_dict(), "v1": bool(a.v1),
@@ -838,7 +838,10 @@ def run(a) -> int:
         drop[name] = json.loads(Path(path).read_text(encoding="utf-8"))
     maps = [int(x) for x in a.maps.split(",") if x.strip()] or None
     design = design_of(a)
-    if not a.v1 and a.th_own_k and a.th_own_k not in ks:
+    if a.v1 and a.th_own_k is not None:
+        raise SystemExit("plan-s0: --v1 has no own-state criterion; drop --th-own-k")
+    a.th_own_k = 0 if a.v1 else (8 if a.th_own_k is None else a.th_own_k)
+    if a.th_own_k and a.th_own_k not in ks:
         raise SystemExit(f"plan-s0: --th-own-k {a.th_own_k} is not among --ks {ks} (0 = no own-state criterion)")
     t0 = time.time()
     data = pp.Data(srcs, ks, a.eval_frac, a.split_seed, drop, keep_bot=a.keep_bot_perspective, maps=maps, design=design)

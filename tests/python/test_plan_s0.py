@@ -149,17 +149,26 @@ def test_plan_dump_skip_views(tiny_config, shards, tmp_path):
     from uranium.__main__ import main
 
     ck = tiny_model2(tmp_path / "ck")
-    common = ("--row-until", "1e9", "--read-until", "0", "--lanes-per-group", "1")
-    assert main(dump_args(ck, shards, tiny_config, tmp_path / "full", *common)) == 0
+    common = ("--row-until", "1e9", "--read-until", "0")
+    assert main(dump_args(ck, shards, tiny_config, tmp_path / "full", *common, "--lanes-per-group", "1")) == 0
     R0, g0, _ = load(tmp_path / "full")
     bot = [[e["sha"], e["start"]] for gid, e in sorted(g0.items()) if gid % 2 == 0]
     views = tmp_path / "views.json"
     views.write_text(json.dumps({"bot": bot, "model": [[e["sha"], e["start"]] for gid, e in sorted(g0.items()) if gid % 2 == 1]}))
-    assert main(dump_args(ck, shards, tiny_config, tmp_path / "skip", *common, "--skip-views", str(views))) == 0
-    R1, g1, m1 = load(tmp_path / "skip")
+    for lpg in ("1", "2"):
+        _check_skipped_dump(main(dump_args(ck, shards, tiny_config, tmp_path / f"skip{lpg}", *common, "--lanes-per-group", lpg, "--skip-views", str(views))),
+                            tmp_path / f"skip{lpg}", R0, g0, bot, lpg)
+
+
+def _check_skipped_dump(rc, out, R0, g0, bot, lpg):
+    assert rc == 0
+    R1, g1, m1 = load(out)
     skipped = {(e["sha"], e["start"]) for e in g1.values() if e.get("skipped")}
     assert skipped == {tuple(x) for x in bot} and all(e["rows"] == 0 for e in g1.values() if e.get("skipped"))
-    assert m1["stats"]["skipped_views"] == len(bot) and m1["stats"]["skipped_groups"] > 0
+    assert m1["stats"]["skipped_views"] == len(bot) and (m1["stats"]["skipped_groups"] > 0 or lpg != "1")
+    # plan-s0 leaves the row-less skipped streams out even without a view table
+    d = pp.Data([pp.Source("m", "model", "split", str(out))], ks=(8,), keep_bot=True)
+    assert d.G == len(g1) - len(bot) and d.dropped["m"]["bot_view"] == len(bot)
     key = lambda R, g: {(g[int(x)]["sha"], g[int(x)]["start"], int(d)): i for i, (x, d) in enumerate(zip(R["game"], R["dec"]))}  # noqa: E731
     k0, k1 = key(R0, g0), key(R1, g1)
     assert set(k1) == {k for k in k0 if (k[0], k[1]) not in skipped} and len(k1) > 0
@@ -274,11 +283,12 @@ def test_paired_diff_ratio_and_bce():
 # ---------------------------------------------------------------- synthetic plan-dump folders
 
 
-def fake_dump(path: Path, n_games=24, rows=60, seed=0, kind_shift=0.0, d=16, sha_prefix="a", race="Z", void_every=0, chain_every=0):
+def fake_dump(path: Path, n_games=24, rows=60, seed=0, kind_shift=0.0, d=16, sha_prefix="a", race="Z", void_every=0, chain_every=0, f32_frames=False):
     """A plan-dump folder with known structure: the action type (0..3, 3 = Build_Bunker's own column) moves the
     future own bunker count and y; h carries the game's result. Game g: start slot g % 4, map family g % 3;
     `void_every`: every n-th row has a void label (weight 0); `chain_every`: row i with i % n == n - 1 is observed
-    1 frame after row i - 1 (a 040-R4 chained row; rows are 24 frames apart otherwise)."""
+    1 frame after row i - 1 (a 040-R4 chained row; rows are 24 frames apart otherwise); `f32_frames`: frames as
+    plan-dump reads them (an f32 frame / 86400 times 86400, up to ~1e-3 off a whole frame)."""
     from uranium.diag.plan_dump import RowWriter
 
     rng = np.random.default_rng(seed)
@@ -313,6 +323,8 @@ def fake_dump(path: Path, n_games=24, rows=60, seed=0, kind_shift=0.0, d=16, sha
         if chain_every:
             ch = np.arange(rows) % chain_every == chain_every - 1
             frames[ch] = frames[np.nonzero(ch)[0] - 1] + 1
+        if f32_frames:
+            frames = (frames.astype(np.float32) / np.float32(86400)).astype(np.float32) * np.float32(tb.FRAME_SCALE)
         w.add({"game": np.full(rows, g), "split": np.zeros(rows), "dec": np.arange(rows), "frame": frames, "h": h, "y": y,
                "priv": rng.normal(size=(rows, 5)) + h[:, :1], "priv_ok": np.ones(rows), "own": own, "action": a, "delay": rng.integers(0, 16, rows),
                "weight": (np.arange(rows) % void_every != 0) if void_every else np.ones(rows), "logp": lp, "mask": np.packbits(m, axis=1), "win_open": h[:, 0] * 0.1, "g8": y})
@@ -376,11 +388,16 @@ def test_bot_views_and_split_digest(tmp_path):
     assert keep.split_digest != d.split_digest
 
 
-def test_chained_rows_dropped_for_teacher_and_model(tmp_path):
+@pytest.mark.parametrize("f32", [False, True], ids=["exact", "f32-frames"])
+def test_chained_rows_dropped_for_teacher_and_model(tmp_path, f32):
     """jepa_planning S0 second run: a row whose previous decision is a command 1 frame earlier (040-R4 same-frame
-    chain) is not an example in teacher / model sources (human rows stay); it stays a t+k target; V1 keeps all."""
-    t = fake_dump(tmp_path / "t", chain_every=5)
-    h = fake_dump(tmp_path / "h", chain_every=5, sha_prefix="c", seed=1)
+    chain) is not an example in teacher / model sources (human rows stay); it stays a t+k target; V1 keeps all.
+    With f32-encoded frames a 1-frame gap reads up to ~1.001 and still counts."""
+    t = fake_dump(tmp_path / "t", chain_every=5, f32_frames=f32)
+    h = fake_dump(tmp_path / "h", chain_every=5, sha_prefix="c", seed=1, f32_frames=f32)
+    if f32:
+        fr = load_rows(t)["frame"]
+        assert (np.diff(fr.reshape(24, 60), axis=1) > 1).any()  # some 1-frame gaps read above 1
     src = [pp.Source("t", "teacher", "split", str(t)), pp.Source("h", "human", "split", str(h))]
     data = pp.Data(src, ks=(8,))
     want = (data.dec % 5 == 4)  # rows 4, 9, ... of every game: 1 frame after a command
@@ -396,7 +413,7 @@ def test_chained_rows_dropped_for_teacher_and_model(tmp_path):
     v1 = pp.Data(src, ks=(8,), design=pp.V1)
     assert not v1.chain_drop.any() and len(v1.pair_rows(8, "train")) > len(data.pair_rows(8, "train"))
     keep = pp.Data(src, ks=(8,), design=pp.Design(chains="keep"))
-    assert np.array_equal(keep.usable, keep.valid)
+    assert np.array_equal(keep.usable, keep.valid) and keep.design.chain_kinds == ()
 
 
 def test_own_input_delta_targets_and_spaces(tmp_path):
@@ -427,18 +444,20 @@ def test_own_input_delta_targets_and_spaces(tmp_path):
     assert np.allclose(l2, lvl, atol=1e-4) and np.allclose(d2, dlt, atol=1e-4)
 
 
-def test_frame_k_pairs_and_oracle_window(tmp_path):
-    """`--k-unit frame`: t+k is the first row of the game k frames or more later; the H oracle counts the
-    decisions [t, t+k). On rows 24 frames apart, k = 48 frames is 2 decisions."""
-    p = fake_dump(tmp_path / "a", chain_every=5)
+@pytest.mark.parametrize("f32", [False, True], ids=["exact", "f32-frames"])
+def test_frame_k_pairs_and_oracle_window(tmp_path, f32):
+    """`--k-unit frame`: t+k is the first row of the game k frames or more later (whole frames); the H oracle
+    counts the decisions [t, t+k). On rows 24 frames apart, k = 48 frames is 2 decisions."""
+    p = fake_dump(tmp_path / "a", chain_every=5, f32_frames=f32)
     src = [pp.Source("a", "teacher", "split", str(p))]
     fr = pp.Data(src, ks=(48,), design=pp.Design(k_unit="frame"))
     dc = pp.Data(src, ks=(2,), design=pp.Design(k_unit="dec"))
     r = fr.pair_rows(48, "train")
     n = fr.nxt[48][r]
-    assert (fr.game[n] == fr.game[r]).all() and (fr.frame[n] - fr.frame[r] >= 48).all()
+    whole = np.rint(fr.frame.astype(np.float64))
+    assert (fr.game[n] == fr.game[r]).all() and (whole[n] - whole[r] >= 48).all()
     prev = fr.order[fr.pos[n] - 1]
-    assert (fr.frame[prev] - fr.frame[r] < 48).all()
+    assert (whole[prev] - whole[r] < 48).all()
     same = (fr.dec[n] - fr.dec[r]) == 2
     assert same.mean() > 0.5
     rr = r[same & (dc.nxt[2][r] >= 0)]
@@ -562,6 +581,8 @@ def test_plan_s0_end_to_end_on_known_structure(tmp_path):
         main([*args, "--out", str(tmp_path / "o3"), "--v1", "--chains", "keep"])
     with pytest.raises(SystemExit, match="th-own-k"):
         main([*args, "--out", str(tmp_path / "o3"), "--th-own-k", "32"])
+    with pytest.raises(SystemExit, match="th-own-k"):
+        main([*args, "--out", str(tmp_path / "o3"), "--v1", "--th-own-k", "8"])
     # the first run's design: every valid row, h' only, level targets, same-game partner, no own-state criterion
     assert main([*args, "--out", str(tmp_path / "o3"), "--v1"]) == 0
     r1 = json.loads((tmp_path / "o3" / "s0.json").read_text())
