@@ -78,6 +78,9 @@ class Design:
     k_unit: str = "dec"  # "dec" | "frame"
 
     def __post_init__(self):
+        if self.chains == "keep":
+            object.__setattr__(self, "chain_kinds", ())  # nothing is dropped: no kinds
+        object.__setattr__(self, "chain_kinds", tuple(self.chain_kinds))
         if self.chains not in ("drop", "keep") or self.own_target not in ("delta", "level") or self.partner not in ("other-game", "same-game") \
                 or self.k_unit not in ("dec", "frame") or any(k not in KINDS for k in self.chain_kinds):
             raise SystemExit(f"plan-s0: bad design {self}")
@@ -174,7 +177,7 @@ class Data:
                 view = (e.get("sha"), int(e.get("start", -1)))
                 if views and view not in bot and view not in ours:
                     raise SystemExit(f"plan-s0: source {s.name} stream {view} is in neither view list of --drop")
-                if view in bot:
+                if view in bot or e.get("skipped"):  # plan-dump --skip-views: a bot view without rows
                     n_bot += 1
                 elif maps is not None and int(e.get("map", -1)) not in maps:
                     n_map += 1
@@ -247,7 +250,9 @@ class Data:
         self.nxt_dec1 = self.nxt[1]  # the next decision (M0 decision gap), whatever the k unit
         if design.k_unit == "frame":
             # t+k = the first row of the game at least k frames later (frames do not decrease along dec)
-            fs = self.frame[self.order].astype(np.float64)
+            # frames rounded: the dump's frame is scalar[0] * FRAME_SCALE from an f32 frame / 86400, so a whole
+            # frame reads up to ~1e-3 off
+            fs = np.rint(self.frame[self.order].astype(np.float64))
             key = gs.astype(np.float64) * 1e7 + fs
             for k in self.ks:
                 j = np.searchsorted(key, key + k, side="left")
@@ -265,7 +270,8 @@ class Data:
         self.valid = self.weight > 0
         self.is_op = self.op[self.action.astype(np.int64)] & self.valid
         # chained rows (module docstring): the previous decision of the game is a command 1 frame or less earlier
-        fo, ao = self.frame[self.order], self.action[self.order]
+        # (frames rounded: f32-encoded, a 1-frame gap reads up to ~1.001)
+        fo, ao = np.rint(self.frame[self.order].astype(np.float64)), self.action[self.order]
         ch = np.zeros(self.N, bool)
         if self.N:
             ch[1:] = (gs[1:] == gs[:-1]) & (ds[1:] == ds[:-1] + 1) & (fo[1:] - fo[:-1] <= 1) & (ao[:-1] != NOOP)
