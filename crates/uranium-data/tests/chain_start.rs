@@ -275,6 +275,7 @@ fn feeder_uses_the_config_key_041_r30() {
     let on = load("chain_start_sources = [\"botgen\"]").unwrap();
     assert_eq!(on.data.chain_start_sources, Some(botgen()));
     assert_ne!(on.fingerprint(), base.fingerprint(), "041-R30 ②: in the fingerprint when present");
+    assert_eq!(load("chain_start_sources = [\"dagger\", \"botgen\"]").unwrap().fingerprint(), load("chain_start_sources = [\"botgen\", \"dagger\", \"botgen\"]").unwrap().fingerprint(), "a set");
     assert!(load("chain_start_sources = []").is_err());
     assert!(load("chain_start_sources = [\"stardata\"]").is_err());
     // 041-R30 ⑥: the lineage-2 mix config lists botgen only.
