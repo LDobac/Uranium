@@ -433,11 +433,13 @@ def main(argv=None) -> None:
     chain = chain_sources(a.chain_start)
     holdout = "shards" if a.shards else a.holdout
     res = score_holdout(str(ck), datasets, shards, a.backend, a.config, classes, holdout, None)
+    # The current-observation report (the extension rule input) is written before the second pass.
+    a.out.write_text(json.dumps(res, indent=1), encoding="utf-8")
     if chain:
         # 041-R30 ⑤: the same report with the chain-start observation, recorded only.
         cs = score_holdout(str(ck), datasets, shards, a.backend, a.config, classes, holdout, chain)
         res["chain_start"] = {"sources": chain, **{k: cs[k] for k in ("games", "steps", "per_action", "by_class", "r27") if k in cs}}
-    a.out.write_text(json.dumps(res, indent=1), encoding="utf-8")
+        a.out.write_text(json.dumps(res, indent=1), encoding="utf-8")
     print_report(res)
     if chain:
         print(f"\n041-R30 chain-start observation ({', '.join(chain)}; recorded only, the extension rule reads the scores above):")

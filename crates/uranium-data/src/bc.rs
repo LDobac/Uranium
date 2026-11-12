@@ -310,7 +310,12 @@ impl BcConfig {
             subsample: self.data.subsample.clone(),
             aux: self.aux.clone(),
             train: self.train.clone(),
-            chain_start_sources: self.data.chain_start_sources.clone(),
+            // 041-R30 ②: a set of sources (order and repeats do not change what is trained).
+            chain_start_sources: self.data.chain_start_sources.clone().map(|mut v| {
+                v.sort();
+                v.dedup();
+                v
+            }),
             clip_mode: CLIP_MODE,
         }
     }

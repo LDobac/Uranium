@@ -1283,6 +1283,9 @@ def cmd_check_bc_eval(a) -> None:
     if m is None or m["kind"] != "bc_eval":
         raise Refused(f"{a.metric} is not a bc-eval metric ({', '.join(k for k, v in lin['metric'].items() if v['kind'] == 'bc_eval')})")
     d = json.loads(Path(a.output).read_text(encoding="utf-8"))
+    if "chain_start_sources" in d:
+        # 041-R30 ⑤: pinned bc-eval metrics are current-observation scores.
+        raise SystemExit(f"MISMATCH {a.output}: scored with --chain-start-sources {d['chain_start_sources']} (041-R30: pinned metrics use the current observation)")
     want = {"split": m["split"], "games": m.get("expect_games", m.get("games")), "selection_seed": m.get("seed")}
     got = {k: d.get(k) for k in want}
     if got != want:
