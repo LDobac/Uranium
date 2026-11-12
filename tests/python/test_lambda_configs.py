@@ -88,12 +88,50 @@ def test_main_lineage_configs_041_r29():
     assert _bc(root / "bc_m2_e2.toml", "s1")[0]["data"]["seed"] == 2
 
 
+_M2_MIX = tuple(f"bc_m2_mix_e{e}.toml" for e in range(1, 8))
+
+
 def test_m2_mix_e1_aux_041_r29():
-    """041-R29 ③: the teacher mix template carries the confirmed λ (AMB-041-13b) and the model 2 switches."""
+    """041-R29 ③: the teacher mix chain (e1 ... e7) carries the confirmed λ (AMB-041-13b), the model 2
+    switches and the 041-R30 chain-start observation for botgen."""
     from uranium.bc.run import model_variant
 
-    p = Path(__file__).resolve().parents[2] / "config" / "bc_m2_mix_e1.toml"
-    cfg, _ = _bc(p, "s2")
-    assert cfg["aux"] == {"priv": pytest.approx(0.2), "jepa": pytest.approx(0.1)} and cfg["monitor"] == {"spatial_every": 100}
-    assert cfg["keep_checkpoints"] == 0, "041-R29 ⑨"
-    assert vars(model_variant(str(p))) == _ALL_ON
+    root = Path(__file__).resolve().parents[2] / "config"
+    for name in _M2_MIX:
+        p = root / name
+        cfg, _ = _bc(p, "s2")
+        assert cfg["aux"] == {"priv": pytest.approx(0.2), "jepa": pytest.approx(0.1)} and cfg["monitor"] == {"spatial_every": 100}, name
+        assert cfg["keep_checkpoints"] == 0, "041-R29 ⑨"
+        assert vars(model_variant(str(p))) == _ALL_ON, name
+
+
+def test_m2_mix_chain_041_r29():
+    """041-R29 ③ / 041-R21 ⑥: config/bc_m2_mix_e2.toml ... e7.toml are bc_m2_mix_e1.toml except data.seed
+    (epoch N: N + 2), the 041-R26 per-race human fractions and [steps] s2 / s2_warmup (recounted with
+    `uranium-train mix-fractions` per seed, warmup 5% rounded half up, 041-R14); 041-R30
+    chain_start_sources = ["botgen"] kept; the fingerprints differ (seed and subsample are in it)."""
+    import tomllib
+
+    root = Path(__file__).resolve().parents[2] / "config"
+
+    def flat(t, pre=""):
+        out = {}
+        for k, x in t.items():
+            out.update(flat(x, f"{pre}{k}.") if isinstance(x, dict) else {f"{pre}{k}": x})
+        return out
+
+    ref = flat(tomllib.loads((root / _M2_MIX[0]).read_text(encoding="utf-8")))
+    allowed = {"data.seed", "data.subsample.fraction", "steps.s2", "steps.s2_warmup"} | {f"data.subsample.fraction_by_race.{r}" for r in "TPZ"}
+    fps = set()
+    for e, name in enumerate(_M2_MIX, start=1):
+        t = flat(tomllib.loads((root / name).read_text(encoding="utf-8")))
+        assert t.keys() == ref.keys(), name
+        assert {k for k in t if t[k] != ref[k]} <= allowed, name
+        assert t["data.seed"] == e + 2, name
+        assert t["data.chain_start_sources"] == ["botgen"] and t["data.subsample.keep_sources"] == ["botgen"], name
+        assert t["steps.s2_warmup"] == int(t["steps.s2"] * 0.05 + 0.5), name
+        assert all(0 < t[f"data.subsample.fraction_by_race.{r}"] < 1 for r in "TPZ"), name
+        cfg, fp = _bc(root / name, "s2")
+        assert cfg["data"]["seed"] == e + 2 and cfg["total_steps"] == t["steps.s2"] and cfg["warmup_steps"] == t["steps.s2_warmup"], name
+        fps.add(fp)
+    assert len(fps) == len(_M2_MIX)

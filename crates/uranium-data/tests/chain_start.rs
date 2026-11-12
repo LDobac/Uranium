@@ -278,9 +278,12 @@ fn feeder_uses_the_config_key_041_r30() {
     assert_eq!(load("chain_start_sources = [\"dagger\", \"botgen\"]").unwrap().fingerprint(), load("chain_start_sources = [\"botgen\", \"dagger\", \"botgen\"]").unwrap().fingerprint(), "a set");
     assert!(load("chain_start_sources = []").is_err());
     assert!(load("chain_start_sources = [\"stardata\"]").is_err());
-    // 041-R30 ⑥: the lineage-2 mix config lists botgen only.
-    let mix = BcConfig::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/bc_m2_mix_e1.toml"))).unwrap();
-    assert_eq!(mix.data.chain_start_sources, Some(botgen()));
+    // 041-R30 ⑥: the lineage-2 mix configs (041-R29 ③ chain e1 ... e7) list botgen only.
+    for e in 1..=7 {
+        let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config")).join(format!("bc_m2_mix_e{e}.toml"));
+        let mix = BcConfig::load(&path).unwrap();
+        assert_eq!(mix.data.chain_start_sources, Some(botgen()), "{}", path.display());
+    }
     assert!(check_chain_start_sources(&["botgen".into(), "dagger".into()]).is_ok());
 
     let mut cfg = on.clone();
