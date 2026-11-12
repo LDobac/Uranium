@@ -58,6 +58,11 @@ pub struct DataConfig {
     /// the B-3 fingerprint is the one from before the key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subsample: Option<Subsample>,
+    /// 041-R30: sources (`botgen`, `dagger`) whose chained steps are observed through their
+    /// chain-start step. Absent = every step its own observation and the B-3 fingerprint from
+    /// before the key; present = in the fingerprint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_start_sources: Option<Vec<String>>,
 }
 
 fn default_enemy_race_mask() -> f64 {
@@ -217,6 +222,9 @@ pub struct ResultSettings {
     /// 041-R24 ⑦: `[train] model_seed` (new runs' initial weights); left out when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub train: Option<TrainSettings>,
+    /// 041-R30 ②: `[data] chain_start_sources`; left out when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chain_start_sources: Option<Vec<String>>,
     /// Not a config field: the gradient clip semantics (041-R3 global L2 norm since 2026-10-19,
     /// [`CLIP_MODE`]), so runs from before the change do not match the fingerprint.
     pub clip_mode: &'static str,
@@ -250,6 +258,9 @@ impl BcConfig {
         }
         if let Some(t) = &cfg.train {
             t.check().with_context(|| path.display().to_string())?;
+        }
+        if let Some(c) = &cfg.data.chain_start_sources {
+            crate::data::check_chain_start_sources(c).with_context(|| path.display().to_string())?;
         }
         Ok(cfg)
     }
@@ -299,6 +310,7 @@ impl BcConfig {
             subsample: self.data.subsample.clone(),
             aux: self.aux.clone(),
             train: self.train.clone(),
+            chain_start_sources: self.data.chain_start_sources.clone(),
             clip_mode: CLIP_MODE,
         }
     }
@@ -472,6 +484,8 @@ pub struct Feeder {
     pack: bool,
     /// Threads that extract a batch's lanes ([`feed_threads`], [`Feeder::set_threads`]).
     threads: usize,
+    /// 041-R30: sources whose chained steps get the chain-start observation (empty = none).
+    chain_start: Vec<String>,
 }
 
 impl Feeder {
@@ -493,7 +507,13 @@ impl Feeder {
             maps: Arc::new(MapStore::from_env()),
             pack: false,
             threads: feed_threads(),
+            chain_start: cfg.data.chain_start_sources.clone().unwrap_or_default(),
         }
+    }
+
+    /// 041-R30 ⑤: the chain-start sources, replacing the config's (scoring sets them by option).
+    pub fn set_chain_start(&mut self, sources: Vec<String>) {
+        self.chain_start = sources;
     }
 
     /// 041-R18: keep the batches' spatial planes and location masks compressed until their lane
@@ -537,7 +557,7 @@ impl Feeder {
             let z_present = self.rng.unit() >= self.z_drop;
             let sym = if self.augment { Sym::augment()[(self.rng.next() % 4) as usize] } else { Sym::IDENTITY };
             self.games += 1;
-            let g = GameStream::new(game, z_present, sym, &self.maps)?.with_race_mask(self.race_mask, self.seed);
+            let g = GameStream::new(game, z_present, sym, &self.maps)?.with_race_mask(self.race_mask, self.seed).with_chain_start(&self.chain_start);
             self.no_result_games += (g.value_weight == 0.0) as usize;
             self.lanes[i] = Lane { game: Some(g), id: src.last_id(), fresh: true };
         }
@@ -658,7 +678,7 @@ impl Feeder {
             *lane = Lane::empty();
             let Some(s) = saved else { continue };
             let game = games.next().expect("one game per saved lane");
-            let mut g = GameStream::new(game, s.z_present, Sym::augment()[s.sym as usize % 4], &self.maps)?.with_race_mask(self.race_mask, self.seed);
+            let mut g = GameStream::new(game, s.z_present, Sym::augment()[s.sym as usize % 4], &self.maps)?.with_race_mask(self.race_mask, self.seed).with_chain_start(&self.chain_start);
             g.advance_to(s.pos);
             if g.remaining() > 0 {
                 *lane = Lane { game: Some(g), id: Some(s.id), fresh: true };

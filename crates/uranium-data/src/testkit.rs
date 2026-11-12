@@ -147,6 +147,26 @@ pub fn race_games() -> Vec<ShardGame> {
         .collect()
 }
 
+/// 041-R30 tests: `varied_games` as source `botgen` with same-frame command chains: every step k with
+/// k % 4 == 2 (a Gather_Unit after a Move_Pos) is one frame after the step before, so it is chained;
+/// minerals differ per step, so the chain-start observation differs from the step's own.
+pub fn chain_games() -> Vec<ShardGame> {
+    varied_games()
+        .into_iter()
+        .map(|mut g| {
+            g.meta.src = "botgen".into();
+            for k in 0..g.steps.len() {
+                let f = if k % 4 == 2 { g.steps[k - 1].raw_frame.frame + 1 } else { k as u32 * 8 };
+                let s = &mut g.steps[k];
+                s.raw_frame.frame = f;
+                s.action_label.frame = f;
+                s.raw_frame.self_state.minerals = 400 + 10 * k as i32;
+            }
+            g
+        })
+        .collect()
+}
+
 /// A game with two more SCVs on every step (rows of one batch then have different entity counts).
 pub fn game_more_units(len: usize, tag: u32) -> ShardGame {
     let mut g = game_len(len, tag);
