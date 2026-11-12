@@ -81,6 +81,11 @@ seed = 3
 checkpoint_every = 5000
 # Also checkpoint at least this often in wall time (061-R10; ~2 updates/min on CUDA).
 checkpoint_minutes = 60
+# 041-R30 (user decision 2026-11-12, AMB-041-19): a chained teacher step (same-frame command chain,
+# 040-R4 delay 1: frame <= previous step's + 1 after a command) is observed through its chain-start
+# step's RawFrame, not its own frame that already shows the earlier commands' effects. Labels,
+# delays, step counts and [steps] are unchanged; the dagger source is not listed (no leak).
+chain_start_sources = ["botgen"]
 
 # 041-R21 ⑥ / R26 (AMB-041-15): every game of the teacher source `botgen`; of the human target-map
 # train games a share per enemy race (per game, hash of replay sha256 + data.seed; both TvT

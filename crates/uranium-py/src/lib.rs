@@ -256,11 +256,13 @@ struct EvalStream {
 impl EvalStream {
     /// `split`: train / val / test; `games`: N games by the fixed-seed shuffle (032-R17 ②), else
     /// every game; `has_open`: replay the surrender check with the win_open head (032-R18);
-    /// `until_frame`: each game read only up to that frame (`EvalSelection::until_frame`).
+    /// `until_frame`: each game read only up to that frame (`EvalSelection::until_frame`);
+    /// `chain_start_sources`: 041-R30 ⑤ scoring option, chained steps of these sources (`botgen`,
+    /// `dagger`) observed through their chain-start step (the config's key is not followed).
     #[new]
-    #[pyo3(signature = (config, dirs, split = "test", games = None, seed = 1, has_open = false, maps_dir = None, synthetic_maps = false, until_frame = None))]
+    #[pyo3(signature = (config, dirs, split = "test", games = None, seed = 1, has_open = false, maps_dir = None, synthetic_maps = false, until_frame = None, chain_start_sources = None))]
     #[allow(clippy::too_many_arguments)]
-    fn new(py: Python<'_>, config: PathBuf, dirs: Vec<PathBuf>, split: &str, games: Option<usize>, seed: u64, has_open: bool, maps_dir: Option<PathBuf>, synthetic_maps: bool, until_frame: Option<u32>) -> PyResult<Self> {
+    fn new(py: Python<'_>, config: PathBuf, dirs: Vec<PathBuf>, split: &str, games: Option<usize>, seed: u64, has_open: bool, maps_dir: Option<PathBuf>, synthetic_maps: bool, until_frame: Option<u32>, chain_start_sources: Option<Vec<String>>) -> PyResult<Self> {
         use uranium_data::split::Split;
         let split = match split {
             "train" => Split::Train,
@@ -275,7 +277,15 @@ impl EvalStream {
             (false, None) => None,
         };
         let sel = uranium_data::eval::EvalSelection { split, games, seed, until_frame };
-        let inner = py.detach(move || uranium_data::eval::EvalStream::new(&dirs, &cfg, sel, maps, has_open)).map_err(err)?;
+        let inner = py
+            .detach(move || {
+                let s = uranium_data::eval::EvalStream::new(&dirs, &cfg, sel, maps, has_open)?;
+                match chain_start_sources {
+                    Some(c) => s.with_chain_start(c),
+                    None => Ok(s),
+                }
+            })
+            .map_err(err)?;
         Ok(Self { inner })
     }
 
@@ -542,7 +552,8 @@ fn write_test_shards(root: PathBuf, kind: &str, per_file: usize, only_race: Opti
         "varied" => tk::varied_games(),
         "mixed" => vec![tk::game(), tk::game_more_units(5, 2), tk::game_with_invalid(9, 3), tk::game_more_units(16, 4), tk::game_len(7, 5)],
         "races" => tk::race_games(),
-        _ => return Err(PyValueError::new_err(format!("kind {kind:?}: expected varied, mixed or races"))),
+        "chains" => tk::chain_games(),
+        _ => return Err(PyValueError::new_err(format!("kind {kind:?}: expected varied, mixed, races or chains"))),
     };
     if let Some(r) = only_race {
         games.retain(|g| g.game_info.players.iter().any(|p| p.is_enemy && format!("{:?}", p.race).to_lowercase() == r));

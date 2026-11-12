@@ -55,6 +55,9 @@ def add_parser(sub) -> None:
     p.add_argument("--out", help="also write the JSON report to this file (032-R20 ③ val scoring)")
     p.add_argument("--bunker-before", type=int, metavar="FRAME",
                    help="also report the mean p(Build_Bunker) over the scored steps before this frame, per enemy race (050-R10 ③; 4:00 = 5760)")
+    p.add_argument("--chain-start-sources", nargs="+", metavar="SRC", choices=["botgen", "dagger"],
+                   help="041-R30 ⑤: score chained steps of these sources with their chain-start observation (the config's "
+                        "[data] chain_start_sources is not followed; default: every step its own observation)")
     p.add_argument("--maps-dir", help=argparse.SUPPRESS)
     p.add_argument("--synthetic-maps", action="store_true", help=argparse.SUPPRESS)
     p.set_defaults(fn=main)
@@ -212,7 +215,7 @@ class BunkerAcc:
 
 @torch.no_grad()
 def evaluate(dirs: list[str], ckpt_dir: str, split: str, games, seed: int, config: str, device, precision: str, core=None, maps_dir=None, synthetic_maps=False,
-             bunker_before: int | None = None) -> dict:
+             bunker_before: int | None = None, chain_start_sources: list[str] | None = None) -> dict:
     from uranium import _core, ckpt
     from uranium.device import autocast
     from uranium.model import to_obs
@@ -224,7 +227,9 @@ def evaluate(dirs: list[str], ckpt_dir: str, split: str, games, seed: int, confi
     if core is not None and net.cfg.core.kind.lower() != core:
         raise ValueError(f"checkpoint core {net.cfg.core.kind} != requested {core}")
     has_open = net.value.open is not None
-    stream = _core.EvalStream(config, dirs, split=split, games=games, seed=seed, has_open=has_open, maps_dir=maps_dir, synthetic_maps=synthetic_maps)
+    # 041-R30 ⑤: the chain-start observation only by this option (None = the stream default, off).
+    cs = {} if not chain_start_sources else {"chain_start_sources": list(chain_start_sources)}
+    stream = _core.EvalStream(config, dirs, split=split, games=games, seed=seed, has_open=has_open, maps_dir=maps_dir, synthetic_maps=synthetic_maps, **cs)
     t, lanes = cfg["seq_len"], cfg["lanes"]
     g = lanes if cfg["micro_lanes"] == 0 else min(cfg["micro_lanes"], lanes)
     groups = -(-lanes // g)
@@ -265,6 +270,8 @@ def evaluate(dirs: list[str], ckpt_dir: str, split: str, games, seed: int, confi
         rep.update(aux.report())
     if bunker is not None:
         rep["bunker_before"] = bunker.report()
+    if chain_start_sources:
+        rep["chain_start_sources"] = list(chain_start_sources)
     return rep
 
 
@@ -326,7 +333,7 @@ def main(a) -> int:
     backend, device, precision = resolve(a.backend)
     configure(backend)
     rep = evaluate(dirs, ckpt_dir, a.split, a.games, a.seed, a.config, device, precision, a.core, a.maps_dir, a.synthetic_maps,
-                   a.bunker_before)
+                   a.bunker_before, getattr(a, "chain_start_sources", None))
     text = json.dumps(rep, indent=2)
     print(text)
     if a.out:

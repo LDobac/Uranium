@@ -109,6 +109,9 @@ impl EvalStream {
         ecfg.data.augment = false;
         // 030-R11: the race mask is a training-only exception; evaluation sees the real input.
         ecfg.data.enemy_race_mask = 0.0;
+        // 041-R30 ⑤: scoring does not follow the training config's chain-start key; only the
+        // explicit option ([`EvalStream::with_chain_start`]) turns it on.
+        ecfg.data.chain_start_sources = None;
         let mut feeder = Feeder::new(&ecfg).with_maps(maps);
         feeder.drain = true;
         let source = match sel.games {
@@ -119,6 +122,14 @@ impl EvalStream {
             None => Source::All(src),
         };
         Ok(Self { feeder, source, until_frame: sel.until_frame, has_open, judges: vec![None; cfg.lanes], sur: SurrenderEval::default(), held_frames: Vec::new(), open_se: 0.0, open_n: 0 })
+    }
+
+    /// 041-R30 ⑤: score with the chain-start observation for the games of `sources` (the scoring
+    /// option; checked like `[data] chain_start_sources`). Call before the first batch.
+    pub fn with_chain_start(mut self, sources: Vec<String>) -> Result<Self> {
+        crate::data::check_chain_start_sources(&sources)?;
+        self.feeder.set_chain_start(sources);
+        Ok(self)
     }
 
     /// The next batch; `None` once every lane is drained.

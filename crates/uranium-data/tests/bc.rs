@@ -344,7 +344,7 @@ fn tiny_bc(micro_lanes: usize, pad_entities: usize) -> BcConfig {
         s2_lr_scale: 0.1,
         heads: HeadWeights { action: 1.0, delay: 0.5, queued: 0.2, selected: 1.0, target_unit: 1.0, target_loc: 1.0 },
         value: ValueWeights { win: 0.5, win_open: None },
-        data: DataConfig { z_drop: 0.0, augment: false, seed: 1, checkpoint_every: 1000, checkpoint_minutes: 0, enemy_race_mask: 0.0, subsample: None },
+        data: DataConfig { z_drop: 0.0, augment: false, seed: 1, checkpoint_every: 1000, checkpoint_minutes: 0, enemy_race_mask: 0.0, subsample: None, chain_start_sources: None },
         keep_checkpoints: None,
         aux: None,
         monitor: None,
@@ -370,7 +370,7 @@ fn warmup_cosine_schedule_041_r3() {
         s2_lr_scale: 0.1,
         heads: HeadWeights { action: 1.0, delay: 0.5, queued: 0.2, selected: 1.0, target_unit: 1.0, target_loc: 1.0 },
         value: ValueWeights { win: 0.5, win_open: None },
-        data: DataConfig { z_drop: 0.25, augment: true, seed: 1, checkpoint_every: 1, checkpoint_minutes: 0, enemy_race_mask: 0.05, subsample: None },
+        data: DataConfig { z_drop: 0.25, augment: true, seed: 1, checkpoint_every: 1, checkpoint_minutes: 0, enemy_race_mask: 0.05, subsample: None, chain_start_sources: None },
         keep_checkpoints: None,
         aux: None,
         monitor: None,
@@ -992,7 +992,7 @@ fn scan_cache_follows_the_dataset_fingerprint() {
 #[test]
 fn config_fingerprint_fields_are_classified_b3() {
     use uranium_data::bc::EXECUTION_ONLY;
-    const RESULT: [&str; 18] = [
+    const RESULT: [&str; 19] = [
         "lanes",
         "seq_len",
         "lr",
@@ -1011,6 +1011,7 @@ fn config_fingerprint_fields_are_classified_b3() {
         "data.subsample",
         "aux",
         "train",
+        "data.chain_start_sources",
     ];
     let mut cfg = tiny_bc(1, 0);
     // 041-R21 / 041-R23: an absent subsample or [aux] is left out of the fingerprint JSON and of
@@ -1018,6 +1019,9 @@ fn config_fingerprint_fields_are_classified_b3() {
     assert!(serde_json::to_value(cfg.results_view()).unwrap().get("subsample").is_none());
     assert!(serde_json::to_value(cfg.results_view()).unwrap().get("aux").is_none());
     assert!(serde_json::to_value(cfg.results_view()).unwrap().get("train").is_none());
+    // 041-R30 ②: an absent chain_start_sources is left out of both JSONs too.
+    assert!(serde_json::to_value(cfg.results_view()).unwrap().get("chain_start_sources").is_none());
+    assert!(serde_json::to_value(&cfg).unwrap()["data"].get("chain_start_sources").is_none());
     let json = serde_json::to_value(&cfg).unwrap();
     assert!(json.get("aux").is_none() && json.get("monitor").is_none() && json.get("train").is_none(), "041-R23 / R24 / R25: absent tables stay out of the config JSON");
     cfg.keep_checkpoints = Some(3);
@@ -1025,6 +1029,7 @@ fn config_fingerprint_fields_are_classified_b3() {
     cfg.aux = Some(AuxWeights { privileged: Some(0.2), jepa: Some(0.1) });
     cfg.monitor = Some(MonitorConfig { spatial_every: 100 });
     cfg.train = Some(TrainSettings { model_seed: Some(1) });
+    cfg.data.chain_start_sources = Some(vec!["botgen".into()]);
     let v = serde_json::to_value(&cfg).unwrap();
     let mut keys: Vec<String> = Vec::new();
     for (k, x) in v.as_object().unwrap() {
@@ -1056,7 +1061,7 @@ fn config_fingerprint_fields_are_classified_b3() {
     assert_eq!(c.fingerprint(), base, "execution-only settings");
     c.monitor = Some(MonitorConfig { spatial_every: 7 });
     assert_eq!(c.fingerprint(), base, "041-R25: [monitor] is execution only");
-    let changes: [fn(&mut BcConfig); 18] = [
+    let changes: [fn(&mut BcConfig); 19] = [
         |c| c.lanes += 1,
         |c| c.seq_len += 1,
         |c| c.lr *= 2.0,
@@ -1075,6 +1080,7 @@ fn config_fingerprint_fields_are_classified_b3() {
         |c| c.data.subsample.as_mut().unwrap().fraction = 0.5,
         |c| c.aux.as_mut().unwrap().jepa = Some(0.3),
         |c| c.train.as_mut().unwrap().model_seed = Some(2),
+        |c| c.data.chain_start_sources = Some(vec!["botgen".into(), "dagger".into()]),
     ];
     for (i, f) in changes.iter().enumerate() {
         let mut c = cfg.clone();

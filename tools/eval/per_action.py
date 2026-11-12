@@ -28,6 +28,13 @@ decision 2026-11-10: 117 games instead of the 36 of `orig`): with `--holdout ori
 (macro2, macro3) are scored in a second pass for it only (`r27.macro_holdout`); `by_class` and every other
 number stay those of the scored hold-out. `--classes none` turns the split off, `--classes <json>` ({replay_sha256: rush|macro})
 gives the classes of other shard folders. Needs `uranium._core` with `Batch.lane_games`.
+
+041-R30 ⑤ (user decision 2026-11-12, AMB-041-19): the hold-out is scored both ways. Every field above is the
+current-observation score (each step its own observation, comparable with Checkpoint 1; the bc-mix extension rule
+`r27.rush_bunker_top1` < 70% and the side-arm threshold < 50% read these). `chain_start` holds the same report
+(`games`, `steps`, `per_action`, and with classes `by_class` / `r27`) scored with the chain-start observation of the
+`--chain-start` sources (default botgen), recorded only. `--chain-start none` skips it (half the time). The
+config's [data] chain_start_sources is not followed: only this option turns it on.
 """
 
 from __future__ import annotations
@@ -262,9 +269,11 @@ def class_report(tallies: dict, names: dict, key_ids: set) -> tuple[dict, dict]:
 
 
 def score(ckpt_dir: str, datasets: list[str], shards: list[str], backend_name: str, config: str,
-          classes: dict[str, str] | None = None, maps_dir=None, synthetic_maps: bool = False, split: str = "val") -> dict:
+          classes: dict[str, str] | None = None, maps_dir=None, synthetic_maps: bool = False, split: str = "val",
+          chain_start: list[str] | None = None) -> dict:
     """`classes` {replay_sha256: rush|macro}: also tally per class (041-R27); a scored game without a
-    class is an error."""
+    class is an error. `chain_start`: 041-R30 ⑤ scoring option, chained steps of these sources observed through
+    their chain-start step (None = each step its own observation)."""
     import torch
 
     from uranium import _core, ckpt
@@ -283,7 +292,8 @@ def score(ckpt_dir: str, datasets: list[str], shards: list[str], backend_name: s
     has_open = net.value.open is not None
     dirs = _core.dataset_dirs(datasets, shards)
     print("dirs", dirs, file=sys.stderr)
-    stream = _core.EvalStream(config, dirs, split=split, games=None, seed=1, has_open=has_open, maps_dir=maps_dir, synthetic_maps=synthetic_maps)
+    cs = {"chain_start_sources": list(chain_start)} if chain_start else {}
+    stream = _core.EvalStream(config, dirs, split=split, games=None, seed=1, has_open=has_open, maps_dir=maps_dir, synthetic_maps=synthetic_maps, **cs)
     t, lanes = cfg["seq_len"], cfg["lanes"]
     g = lanes if cfg["micro_lanes"] == 0 else min(cfg["micro_lanes"], lanes)
     groups = -(-lanes // g)
@@ -411,23 +421,54 @@ def main(argv=None) -> None:
     ap.add_argument("--classes", default=None,
                     help="041-R27 rush / macro split: auto (the teacher botgen plans; default for --holdout), none (default for --shards), "
                          "or a JSON file {replay_sha256: rush|macro}")
+    ap.add_argument("--chain-start", default="botgen",
+                    help="041-R30 ⑤: also score with the chain-start observation of these sources (comma list of botgen, dagger; "
+                         "default botgen) into `chain_start`; none = current observation only")
     a = ap.parse_args(argv)
     ec.load_env()
     ck = Path(a.checkpoint)
     ck = ck if ck.is_absolute() else ec.shared_dir() / ck
     datasets, shards = ([], a.shards) if a.shards else holdout_dirs(a.holdout)
     classes = load_classes(a.classes, None if a.shards else a.holdout)
-    res = score(str(ck), datasets, shards, a.backend, a.config, classes)
-    res["holdout"] = "shards" if a.shards else a.holdout
-    if classes is not None:
-        res["r27"]["macro_holdout"] = res["holdout"]
-        if res["holdout"] == "orig":
-            # 041-R27 interim decision: the recorded macro value over the full hold-out's macro games.
-            extra = added_dirs()
-            added = score(str(ck), [], extra, a.backend, a.config, classes)["by_class"]["macro"] if extra else None
-            res["r27"] = macro_full(res["r27"], added)
+    chain = chain_sources(a.chain_start)
+    holdout = "shards" if a.shards else a.holdout
+    res = score_holdout(str(ck), datasets, shards, a.backend, a.config, classes, holdout, None)
+    if chain:
+        # 041-R30 ⑤: the same report with the chain-start observation, recorded only.
+        cs = score_holdout(str(ck), datasets, shards, a.backend, a.config, classes, holdout, chain)
+        res["chain_start"] = {"sources": chain, **{k: cs[k] for k in ("games", "steps", "per_action", "by_class", "r27") if k in cs}}
     a.out.write_text(json.dumps(res, indent=1), encoding="utf-8")
     print_report(res)
+    if chain:
+        print(f"\n041-R30 chain-start observation ({', '.join(chain)}; recorded only, the extension rule reads the scores above):")
+        print_report(res["chain_start"])
+
+
+def chain_sources(text: str) -> list[str]:
+    """041-R30 ⑤ `--chain-start`: [] for none, else the listed sources (botgen, dagger)."""
+    if text.strip().lower() == "none":
+        return []
+    out = [s.strip() for s in text.split(",") if s.strip()]
+    bad = [s for s in out if s not in ("botgen", "dagger")]
+    if not out or bad:
+        raise SystemExit(f"041-R30: --chain-start takes botgen, dagger (comma list) or none, got {text!r}")
+    return out
+
+
+def score_holdout(ck: str, datasets: list[str], shards: list[str], backend: str, config: str, classes: dict | None, holdout: str,
+                  chain: list[str] | None) -> dict:
+    """One scoring of the hold-out (the current observation when `chain` is None, 041-R30 ⑤), with the 041-R27
+    recorded macro value over the full hold-out's macro games for `orig`."""
+    res = score(ck, datasets, shards, backend, config, classes, chain_start=chain)
+    res["holdout"] = holdout
+    if classes is not None:
+        res["r27"]["macro_holdout"] = holdout
+        if holdout == "orig":
+            # 041-R27 interim decision: the recorded macro value over the full hold-out's macro games.
+            extra = added_dirs()
+            added = score(ck, [], extra, backend, config, classes, chain_start=chain)["by_class"]["macro"] if extra else None
+            res["r27"] = macro_full(res["r27"], added)
+    return res
 
 
 if __name__ == "__main__":

@@ -1181,6 +1181,36 @@ pub struct GameStream {
     pub result: f32,
     /// 041-R7 / A-3: value-loss weight, 0 for an undecided result ([`value_weight`]).
     pub value_weight: f32,
+    /// 041-R30: this game's source is in `[data] chain_start_sources` (or the scoring option), so
+    /// its chained steps are observed through their chain-start step's RawFrame.
+    chain_start: bool,
+    /// 041-R30 ①: index of the chain-start step of the step at `pos - 1` (carried across chunks).
+    chain_from: usize,
+    /// 041-R30 ③: events of chained steps' own frames, applied at the next step that is not chained.
+    pending_events: Vec<uranium_proto::GameEvent>,
+}
+
+/// 041-R30 ①: step `i` of `steps` is chained when its frame is at most one after step `i - 1`'s and
+/// step `i - 1`'s label is a command (not NoOp, action 0; an `unknown` label counts as a command).
+/// Frames are the steps' integer RawFrame frames (= label frames, 040 pipeline).
+pub fn chained_step(steps: &[uranium_replay::shard::Step], i: usize) -> bool {
+    i > 0 && i < steps.len() && steps[i].raw_frame.frame <= steps[i - 1].raw_frame.frame.saturating_add(1) && steps[i - 1].action_label.action != NOOP_ACTION
+}
+
+/// 034-R2: action 0 is NoOp.
+const NOOP_ACTION: u16 = 0;
+
+/// 041-R30 ②: the sources `[data] chain_start_sources` may list (040-R14 `src`). Human sources
+/// are not allowed: their chains are mostly genuine consecutive commands.
+pub const CHAIN_START_SOURCES: [&str; 2] = ["botgen", "dagger"];
+
+/// 041-R30 ②: a non-empty list of allowed sources (start error otherwise).
+pub fn check_chain_start_sources(sources: &[String]) -> Result<()> {
+    anyhow::ensure!(!sources.is_empty(), "[data] chain_start_sources is empty: remove the key (041-R30)");
+    for s in sources {
+        anyhow::ensure!(CHAIN_START_SOURCES.contains(&s.as_str()), "[data] chain_start_sources: {s:?} is not one of {CHAIN_START_SOURCES:?} (041-R30)");
+    }
+    Ok(())
 }
 
 impl GameStream {
@@ -1194,7 +1224,15 @@ impl GameStream {
         let zero_priv = PrivilegedTensors { summary: vec![0.0; dims().privileged()] };
         let result = game.meta.result as f32;
         let value_weight = value_weight(&game.meta);
-        Ok(Self { game, walker, z, sym, pos: 0, zero_priv, result, value_weight })
+        Ok(Self { game, walker, z, sym, pos: 0, zero_priv, result, value_weight, chain_start: false, chain_from: 0, pending_events: Vec::new() })
+    }
+
+    /// 041-R30: observe chained steps through their chain-start step when the game's source is in
+    /// `sources` (`[data] chain_start_sources`, or the scoring option). Call before the first step.
+    pub fn with_chain_start(mut self, sources: &[String]) -> Self {
+        debug_assert_eq!(self.pos, 0, "chain-start rule after the first step");
+        self.chain_start = sources.contains(&self.game.meta.src);
+        self
     }
 
     /// 030-R11 BC exception (user decision 2026-10-19, 5%): when [`enemy_race_masked`] picks this
@@ -1258,17 +1296,40 @@ impl GameStream {
 
     /// Up to `n` next steps and how many of them have labels inconsistent with the masks.
     pub fn next_chunk(&mut self, n: usize) -> (Vec<TrainStep>, usize) {
-        let end = (self.pos + n).min(self.game.steps.len());
+        let end = self.pos.saturating_add(n).min(self.game.steps.len());
         let mut steps = Vec::with_capacity(end - self.pos);
         let mut invalid = 0;
-        for s in &self.game.steps[self.pos..end] {
+        for i in self.pos..end {
+            let s = &self.game.steps[i];
+            // 041-R30: a chained step of a listed source is observed through its chain-start
+            // step's RawFrame with that frame's events emptied (memory already folded them in at
+            // the chain start); its own frame's events wait for the next step that is not chained.
+            // Everything tied to the observation (privileged, frame, surrender rule, label check)
+            // comes from that frame too; label, delay and memory order stay the step's own.
+            let chained = self.chain_start && chained_step(&self.game.steps, i);
+            let owned: Option<uranium_proto::RawFrame>;
+            let obs_step = if chained {
+                self.pending_events.extend(s.raw_frame.events.iter().cloned());
+                let c = &self.game.steps[self.chain_from];
+                owned = Some(uranium_proto::RawFrame { events: Vec::new(), ..c.raw_frame.clone() });
+                c
+            } else {
+                self.chain_from = i;
+                owned = (!self.pending_events.is_empty()).then(|| {
+                    let mut events = std::mem::take(&mut self.pending_events);
+                    events.extend(s.raw_frame.events.iter().cloned());
+                    uranium_proto::RawFrame { events, ..s.raw_frame.clone() }
+                });
+                s
+            };
+            let frame = owned.as_ref().unwrap_or(&s.raw_frame);
             // Memory sees what the policy did, like in RL (030 §4 previous action, §1 last action):
             // the units that act on the command (041-R11); `LabelWalker::step` records it. A DAgger
             // step with 040-R22 `memory_action` gets the model's own decisions instead, before the
             // observation (041-R28 ③); without it (`None`) this is the label, as before.
-            let (o, mut label, why) = self.walker.step_with_memory(&s.raw_frame, &s.action_label, self.z.as_ref(), s.memory_action.as_deref());
+            let (o, mut label, why) = self.walker.step_with_memory(frame, &s.action_label, self.z.as_ref(), s.memory_action.as_deref());
             // 031-R12 ③ after memory saw this frame, as in the live check (041-AC4).
-            let surrender_rule = uranium_env::surrender::rule_holds(&s.raw_frame, &self.walker.mem);
+            let surrender_rule = uranium_env::surrender::rule_holds(frame, &self.walker.mem);
             let ok = why.is_none();
             // 040-AC7: `invalid` counts what the 040-R19 filter counts; 031-AC3 `unknown` steps
             // (labeler version 2) are weight 0 too but not invalid labels.
@@ -1281,9 +1342,9 @@ impl GameStream {
                 }
                 transform_with_starts(&o, self.sym, &self.walker.map.start_locations)
             };
-            let privileged = s.privileged.as_ref().map_or_else(|| self.zero_priv.clone(), privileged);
-            let has_privileged = s.privileged.is_some();
-            steps.push(TrainStep { obs: o, label, privileged, has_privileged, weight: if ok { 1.0 } else { 0.0 }, frame: s.raw_frame.frame, surrender_rule });
+            let privileged = obs_step.privileged.as_ref().map_or_else(|| self.zero_priv.clone(), privileged);
+            let has_privileged = obs_step.privileged.is_some();
+            steps.push(TrainStep { obs: o, label, privileged, has_privileged, weight: if ok { 1.0 } else { 0.0 }, frame: frame.frame, surrender_rule });
         }
         self.pos = end;
         (steps, invalid)
