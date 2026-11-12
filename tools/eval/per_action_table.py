@@ -3,14 +3,16 @@ tools/eval/per_action.py JSON. Rows: top-1 of the key actions (with tile accurac
 target accuracy for Attack_Unit), the overall step-weighted top-1, steps / games, and the column-to-column
 change of Build_Bunker top-1 (the bc-mix extension rule input). Moved from runs/mix/table.py with the same
 cells. A column scored with the 041-R27 rush / macro split (per_action.py `r27`) adds the Build_Bunker top-1 on
-rush-opponent games (the extension rule input from model 2 on, AMB-041-16) with its column-to-column change,
+rush-opponent games (the extension rule input from model 2 on, AMB-041-16; for model 2 its chain-start
+observation score, --chain-start) with its column-to-column change,
 and the macro-opponent games' mean p(Build_Bunker) before 4:00 (recorded only); other columns show "-".
 
     python tools/eval/per_action_table.py BC=<json> mix-e1=<json> ... [--json out.json]
 
 --json writes {label: {"file", "steps", "games", "overall_top1", "actions": {action: per_action row}, "r27"}}.
 --chain-start tabulates each JSON's `chain_start` block instead (041-R30 ⑤, the chain-start observation scores,
-recorded only); the default is the current-observation fields (Checkpoint 1 comparison, extension rule).
+lineage 2 extension rule input, user decision 2026-11-12); the default is the current-observation fields (Checkpoint 1
+comparison and Checkpoint 1 lineage extension rule; recorded only for lineage 2).
 """
 
 from __future__ import annotations
