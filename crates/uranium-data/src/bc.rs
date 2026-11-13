@@ -969,7 +969,8 @@ pub fn epoch_table_groups(groups: &[Vec<PathBuf>], cfg: &BcConfig) -> Result<Epo
     let s2_mix = cfg.data.subsample.as_ref().map(|sub| {
         // The reference: the S2 human games without the subsample (041-R26 "S2 사람 데이터의 비율").
         let all: Vec<GameSummary> = scan.iter().copied().flatten().filter(|g| crate::split::selects(Selection::S2, &g.meta)).cloned().collect();
-        crate::mix::MixShares::new(&s2.by_source, &crate::mix::count_by_source(&all), &sub.keep_sources)
+        // 044-R5 ③: the `fraction_by_source` sources (distill) are neither teacher nor human.
+        crate::mix::MixShares::with_sources(&s2.by_source, &crate::mix::count_by_source(&all), &sub.keep_sources, &sub.share_sources())
     });
     Ok(EpochTable { lanes: cfg.lanes, seq_len: cfg.seq_len, seed: cfg.data.seed, s1, ablation_a: s2.clone(), s2, s2_mix })
 }

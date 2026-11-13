@@ -161,7 +161,13 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
         let per = crate::bc::subsample_counts(&scan, args.stage.selection(), s, cfg.data.seed);
         let absent: Vec<&String> = s.keep_sources.iter().filter(|k| !per.contains_key(*k)).collect();
         let games: serde_json::Map<String, serde_json::Value> = per.iter().map(|(k, (n, kept))| (k.clone(), serde_json::json!({ "selected": n, "kept": kept }))).collect();
-        crate::elog!("{}", serde_json::json!({ "subsample": s, "seed": cfg.data.seed, "games": games, "keep_sources_absent": absent, "note": "041-R21" }));
+        let mut line = serde_json::json!({ "subsample": s, "seed": cfg.data.seed, "games": games, "keep_sources_absent": absent, "note": "041-R21" });
+        if s.fraction_by_source.is_some() {
+            // 044-R5: a `fraction_by_source` key no game carries (a typo would count those games as human).
+            let missing: Vec<String> = s.share_sources().into_iter().filter(|k| !per.contains_key(k)).collect();
+            line["fraction_by_source_absent"] = serde_json::json!(missing);
+        }
+        crate::elog!("{line}");
     }
     // B-3: what this run trains; stored in every checkpoint and compared on resume.
     let ident = RunIdent { stage: format!("{:?}", args.stage), config: cfg.fingerprint(), dataset: crate::data::dataset_fingerprint(&src)? };

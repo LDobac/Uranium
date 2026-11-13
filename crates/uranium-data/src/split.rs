@@ -46,6 +46,13 @@ pub struct Subsample {
     /// before the key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fraction_by_race: Option<std::collections::BTreeMap<String, f64>>,
+    /// 044-R5 ③ / 041-R31: the share kept per source (`GameMeta.src`, e.g. `distill`) of a source
+    /// that is neither the teacher (`keep_sources`) nor human data. A source listed here keeps
+    /// this share of its games by the same per-game hash rule, in place of `fraction` /
+    /// `fraction_by_race`, and is left out of the human part of the mix ([`crate::mix`]). Absent =
+    /// the 041-R26 subsample and the B-3 fingerprint from before the key (044-AC3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fraction_by_source: Option<std::collections::BTreeMap<String, f64>>,
 }
 
 /// 041-R26 races of `Subsample::fraction_by_race`.
@@ -63,11 +70,23 @@ impl Subsample {
             anyhow::ensure!(SUBSAMPLE_RACES.contains(&r.as_str()), "[data.subsample] fraction_by_race key {r:?} must be one of {SUBSAMPLE_RACES:?} (041-R26)");
             anyhow::ensure!(*f > 0.0 && *f <= 1.0, "[data.subsample] fraction_by_race {r} must be in (0, 1], got {f} (041-R26)");
         }
+        for (s, f) in self.fraction_by_source.iter().flatten() {
+            anyhow::ensure!(!self.keep_sources.contains(s), "[data.subsample] fraction_by_source key {s:?} is also in keep_sources (044-R5)");
+            anyhow::ensure!(*f > 0.0 && *f <= 1.0, "[data.subsample] fraction_by_source {s} must be in (0, 1], got {f} (044-R5)");
+        }
         Ok(())
     }
 
-    /// The share kept of `meta`'s games outside `keep_sources` (041-R21, R26).
+    /// The `fraction_by_source` sources (044-R5: neither teacher nor human), sorted.
+    pub fn share_sources(&self) -> Vec<String> {
+        self.fraction_by_source.iter().flatten().map(|(s, _)| s.clone()).collect()
+    }
+
+    /// The share kept of `meta`'s games outside `keep_sources` (041-R21, R26; 044-R5 per source).
     pub fn fraction_of(&self, meta: &GameMeta) -> f64 {
+        if let Some(f) = self.fraction_by_source.as_ref().and_then(|m| m.get(&meta.src)) {
+            return *f;
+        }
         self.fraction_by_race.as_ref().and_then(|m| enemy_race(&meta.matchup).and_then(|r| m.get(r))).copied().unwrap_or(self.fraction)
     }
 
