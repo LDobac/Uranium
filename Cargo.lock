@@ -1576,6 +1576,7 @@ dependencies = [
  "socket2",
  "toml",
  "uranium-agent",
+ "uranium-env",
  "uranium-proto",
  "uranium-store",
 ]

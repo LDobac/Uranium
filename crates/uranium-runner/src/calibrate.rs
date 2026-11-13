@@ -112,6 +112,11 @@ fn step_plan(n: u32, frames: u32) -> Plan {
         surrender: uranium_agent::infer::SurrenderMode::Off,
         surrender_chat: uranium_agent::infer::DEFAULT_CHAT.into(),
         memory_log: false,
+        act_log: false,
+        snapshots: Vec::new(),
+        branches: None,
+        verify_state: false,
+        branch_lines: Vec::new(),
         matchups,
     }
 }

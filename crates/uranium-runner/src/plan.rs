@@ -1,12 +1,14 @@
 //! Matchup plan files and host lists (spec 020, 021-R7).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use uranium_agent::T0Build;
-use uranium_proto::Race;
 use uranium_agent::infer::{DEFAULT_CHAT, SampleMode, SurrenderMode};
+use uranium_env::branch::{BranchPlanLine, BranchPlayer, GameBranch, HORIZON_MARGIN, Intervention, SnapshotRule, Snapshots};
+use uranium_env::features::extract::action_table;
+use uranium_proto::Race;
 use uranium_proto::control::{GameSpec, MapKey, PlayerKind, PlayerSpec};
 
 #[derive(Deserialize, Debug, Clone)]
@@ -50,6 +52,25 @@ pub struct Plan {
     /// model player per game.
     #[serde(default)]
     pub memory_log: bool,
+    /// 020-R22 ① (051-R2): every bridge session of the plan's games (model and T0) writes an act
+    /// log, `<stage>/acts/g<n>-p<players index>.jsonl` (plain runs: `<out>/acts/`).
+    #[serde(default)]
+    pub act_log: bool,
+    /// 020-R22 ② (051-R3): the `players[0]` model session saves its Core state before the first
+    /// decision each rule matches, `<stage>/states/g<n>-o<obs>.state`. Empty = none.
+    #[serde(default)]
+    pub snapshots: Vec<SnapshotRule>,
+    /// 020-R22 ③ (051-R10): the branch list, one line per plan game, relative to the plan file's
+    /// folder: game n's `players[0]` model session is a branch player of line n.
+    #[serde(default)]
+    pub branches: Option<String>,
+    /// 020-R22 ③ / 051-R6: the branch player rebuilds its state over the prefix and compares it
+    /// with the saved one at t (acceptance tests only).
+    #[serde(default)]
+    pub verify_state: bool,
+    /// The lines of `branches`, read by [`load_plan`] (empty without `branches`).
+    #[serde(skip)]
+    pub branch_lines: Vec<BranchPlanLine>,
     #[serde(rename = "matchup")]
     pub matchups: Vec<Matchup>,
 }
@@ -211,7 +232,7 @@ pub struct HostsFile {
 
 pub fn load_plan(path: &Path) -> Result<Plan> {
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let plan: Plan = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    let mut plan: Plan = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
     if plan.matchups.is_empty() {
         bail!("plan has no [[matchup]]");
     }
@@ -240,7 +261,44 @@ pub fn load_plan(path: &Path) -> Result<Plan> {
     if plan.memory_log && plan.matchups.iter().all(|m| m.p0.model().is_none() && m.p1.model().is_none()) {
         elog!("[env] WARNING: plan `{}` has memory_log = true but no model player: no decision log is written (041-R28)", plan.name);
     }
+    plan.check_branch_keys(path.parent().unwrap_or(Path::new(".")))
+        .with_context(|| format!("plan {} (020-R22, 051)", path.display()))?;
     Ok(plan)
+}
+
+/// 020-R22 ③: the plan map name of a game's map (`fighting_spirit` / `circuit_breaker`), as the
+/// branch list writes it.
+pub fn map_name(m: MapKey) -> &'static str {
+    match m {
+        MapKey::FightingSpirit => "fighting_spirit",
+        MapKey::CircuitBreaker => "circuit_breaker",
+    }
+}
+
+/// 020-R22 ③: the opponent of a game as the branch list writes it: the 021-R3 opponent id of
+/// `players[1]` without its version (`t0-zerg-rush`; the version is checked through the act logs'
+/// T0 policy, 051-R1 ④).
+pub fn branch_opponent(job: &Job) -> String {
+    let id = crate::opponent_id(&job.spec.players[1], job.t0_builds[1], None, &Default::default());
+    id.split('@').next().unwrap_or(&id).to_string()
+}
+
+/// `URANIUM_SHARED_DIR` (061), the base of the relative paths in a branch list (051-R10).
+pub fn shared_dir_env() -> Option<PathBuf> {
+    std::env::var_os("URANIUM_SHARED_DIR").filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+fn resolve_shared(p: &str, shared: Option<&Path>) -> Result<PathBuf> {
+    let p = Path::new(p);
+    if p.is_absolute() {
+        return Ok(p.to_path_buf());
+    }
+    let s = shared.with_context(|| format!("branch list path {} is relative to the shared drive: URANIUM_SHARED_DIR is not set (051-R10)", p.display()))?;
+    Ok(s.join(p))
+}
+
+fn is_sha256(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 impl Plan {
@@ -271,6 +329,120 @@ impl Plan {
             None if self.same_seed => self.seed_base,
             None => self.seed_base.wrapping_add(id as u32),
         }
+    }
+
+    /// 020-R22: the plan uses a branch-game key (051). Without one, nothing of 051 applies and the
+    /// plan plays as before (020-R22 ④).
+    pub fn uses_branch_keys(&self) -> bool {
+        self.act_log || !self.snapshots.is_empty() || self.branches.is_some() || self.verify_state
+    }
+
+    /// H of a branch-game plan: `max_frames - 48` (051-R1), `None` when `max_frames` is not
+    /// above the margin.
+    pub fn horizon(&self) -> Option<u32> {
+        self.max_frames.checked_sub(HORIZON_MARGIN).filter(|h| *h > 0)
+    }
+
+    /// 051-R9 ③: the actions of every alternative in the branch list, first appearance order
+    /// (what the `none` alternative's dilution check follows).
+    pub fn branch_none_actions(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for r in self.branch_lines.iter().flat_map(|l| &l.alt.rules) {
+            if !out.contains(&r.action) {
+                out.push(r.action.clone());
+            }
+        }
+        out
+    }
+
+    /// 020-R22 / 051-R1 / 051-R10 load checks; reads the branch list (relative to `dir`, the plan
+    /// file's folder). A plan without the keys passes untouched (020-R22 ④).
+    fn check_branch_keys(&mut self, dir: &Path) -> Result<()> {
+        ensure!(!self.verify_state || self.branches.is_some(), "verify_state goes with branches (020-R22 ③)");
+        let trunk = !self.snapshots.is_empty();
+        let branch = self.branches.is_some();
+        if !trunk && !branch {
+            // act_log alone (or nothing): every bridge session logs, any players (051-AC3).
+            return Ok(());
+        }
+        // Interim decision (U4): a game is a trunk or a branch, not both.
+        ensure!(!(trunk && branch), "snapshots and branches in one plan: a branch game is not a trunk (051-R3, 051-R10)");
+        let what = if trunk { "snapshots" } else { "branches" };
+        // 051-R1 ③: plan settings of trunk and branch games.
+        ensure!(self.surrender == SurrenderMode::Off, "{what}: surrender must be \"off\" (051-R1 ③: the branch prefix has no inference to carry the 031-R12 check)");
+        ensure!(!self.privileged, "{what}: privileged must be false (051-R1 ③)");
+        ensure!(self.save_replay, "{what}: save_replay must be true (051-R1 ③)");
+        ensure!(self.zero_last_failed, "{what}: zero_last_failed must be true (051-R1 ③)");
+        let horizon = self.horizon().with_context(|| format!("{what}: max_frames {} must be H + {HORIZON_MARGIN} with H > 0 (051-R1)", self.max_frames))?;
+        for (i, m) in self.matchups.iter().enumerate() {
+            // 051-R1 ① ②: our stochastic model as players[0] against a T0 bot.
+            ensure!(matches!(m.p0, Side::Model { sample: SampleMode::Stochastic, .. }), "{what}: matchup {i}: players[0] must be a model with sample = \"stochastic\" (051-R1 ②)");
+            ensure!(matches!(m.p1, Side::T0 { .. }), "{what}: matchup {i}: players[1] must be a T0 bot (051-R1 ①)");
+            ensure!(m.p1_random_ratio == 0.0, "{what}: matchup {i}: p1_random_ratio must be 0 (the opponent must be the trunk's, 051-R1 ④)");
+        }
+        let table = action_table();
+        Snapshots::new(&self.snapshots, table)?;
+        if let Some(file) = &self.branches {
+            let path = dir.join(file);
+            let f = std::fs::File::open(&path).with_context(|| format!("branch list {}", path.display()))?;
+            let lines: Vec<BranchPlanLine> = uranium_env::branch::read_jsonl(std::io::BufReader::new(f)).with_context(|| format!("branch list {}", path.display()))?;
+            // 020-R22 ③: one line per plan game, the game's seed, map and opponent the trunk's.
+            ensure!(lines.len() as u64 == self.games(), "branch list {} has {} lines for {} games (020-R22 ③)", path.display(), lines.len(), self.games());
+            for (job, l) in expand(self, "branch-check").iter().zip(&lines) {
+                let n = job.spec.game_id;
+                let ctx = || format!("branch list {} line {n}", path.display());
+                ensure!(job.spec.seed == Some(l.seed), "{}: seed {} but plan game {n} has seed {:?} (020-R22 ③)", ctx(), l.seed, job.spec.seed);
+                ensure!(map_name(job.spec.map) == l.map, "{}: map {} but plan game {n} is on {} (020-R22 ③)", ctx(), l.map, map_name(job.spec.map));
+                let opp = branch_opponent(job);
+                ensure!(opp == l.opponent, "{}: opponent {} but plan game {n} plays {opp} (020-R22 ③)", ctx(), l.opponent);
+                ensure!(l.f_t < horizon, "{}: f_t {} is not before the horizon {horizon} (051-R1)", ctx(), l.f_t);
+                ensure!(is_sha256(&l.state_sha256), "{}: state_sha256 is not a lowercase sha256", ctx());
+                ensure!(l.repeat >= 1, "{}: repeat numbers start at 1", ctx());
+                ensure!(!l.alt.name.is_empty(), "{}: alternative without a name", ctx());
+                // 051-R7: the rules name known actions and non-empty windows.
+                Intervention::new(&l.alt, table, l.f_t).with_context(ctx)?;
+            }
+            self.branch_lines = lines;
+        }
+        Ok(())
+    }
+
+    /// Checks every branch list path resolves on this host (relative paths need
+    /// `URANIUM_SHARED_DIR`, 051-R10), before any game starts.
+    pub fn check_branch_paths(&self, shared: Option<&Path>) -> Result<()> {
+        for l in &self.branch_lines {
+            resolve_shared(&l.acts, shared)?;
+            resolve_shared(&l.state, shared)?;
+        }
+        Ok(())
+    }
+
+    /// 020-R22: the 051 settings of plan game `n` (1-based) whose stage folder is `stage_dir`
+    /// (plain runs: the output folder); `None` for a plan without a 051 key, so its games play
+    /// as before (020-R22 ④). `shared`: base of the branch list's relative paths (061).
+    pub fn game_branch(&self, n: u64, stage_dir: &Path, shared: Option<&Path>) -> Result<Option<GameBranch>> {
+        if !self.uses_branch_keys() {
+            return Ok(None);
+        }
+        let branch = match self.branch_lines.get((n as usize).wrapping_sub(1)) {
+            Some(line) => Some(BranchPlayer {
+                line: line.clone(),
+                acts: resolve_shared(&line.acts, shared)?,
+                state: resolve_shared(&line.state, shared)?,
+                horizon: self.horizon().context("branch plan without a horizon (051-R1)")?,
+                none_actions: self.branch_none_actions(),
+                verify_state: self.verify_state,
+            }),
+            None if self.branches.is_some() => bail!("plan game {n} has no branch list line (020-R22 ③)"),
+            None => None,
+        };
+        Ok(Some(GameBranch {
+            plan_game: u32::try_from(n).context("plan game number exceeds u32")?,
+            acts_dir: self.act_log.then(|| stage_dir.join("acts")),
+            snapshots: self.snapshots.clone(),
+            states_dir: (!self.snapshots.is_empty()).then(|| stage_dir.join("states")),
+            branch,
+        }))
     }
 }
 
@@ -621,6 +793,196 @@ p1={kind='oss',name='iron',race='terran'}";
             assert_eq!(jobs.len(), n);
             assert!(jobs.iter().all(|j| seen.insert(j.spec.seed.unwrap())), "a botgen seed repeats");
         }
+    }
+
+    /// A B1-like plan head (051 Interfaces): trunk or branch settings per 051-R1 ③.
+    const BRANCH_HEAD: &str = "save_replay=true\nzero_last_failed=true\nsurrender='off'\nmax_frames=11568\nact_log=true\n";
+    const BRANCH_GAMES: &str = "[[matchup]]\nmap='fighting_spirit'\ngames=2\np0={kind='model',checkpoint='checkpoints/m2-s1/ckpt-39096',sample='stochastic'}\np1={kind='t0',race='zerg',build='zerg_rush'}\n[[matchup]]\nmap='circuit_breaker'\ngames=1\np0={kind='model',checkpoint='checkpoints/m2-s1/ckpt-39096',sample='stochastic'}\np1={kind='t0',race='zerg',build='zerg_rush'}\n";
+    const SNAPSHOTS: &str = "[[snapshots]]\nname='b1-p1'\nfrom_frame=3240\nto_frame=5760\nany_open=['Build_Bunker']\n[[snapshots]]\nname='b1-p2'\nfrom_frame=3960\nto_frame=5760\nany_open=['Build_Bunker']\n";
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("uranium-plan-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// One branch list line for plan game `seed` / `map` (051-R10 fields).
+    fn line(seed: u32, map: &str, alt: uranium_env::branch::Alternative, repeat: u32) -> BranchPlanLine {
+        BranchPlanLine {
+            trunk: "trunk-job/b1-trunk/g1".into(),
+            point: "trunk-job/b1-trunk/g1#b1-p1".into(),
+            acts: "eval/trunk-job/b1-trunk/acts/g1-p0.jsonl".into(),
+            opponent_acts: "eval/trunk-job/b1-trunk/acts/g1-p1.jsonl".into(),
+            state: "eval/trunk-job/b1-trunk/states/g1-o412.state".into(),
+            state_sha256: "a".repeat(64),
+            i_t: 412,
+            f_t: 3256,
+            seed,
+            map: map.into(),
+            opponent: "t0-zerg-rush".into(),
+            alt,
+            repeat,
+        }
+    }
+
+    fn alt(name: &str, rules: &[(&str, &str, u32, u32)]) -> uranium_env::branch::Alternative {
+        use uranium_env::branch::{InterventionRule, Op};
+        let rules = rules.iter().map(|(op, a, f, t)| InterventionRule { op: if *op == "force" { Op::Force } else { Op::Ban }, action: (*a).into(), from_s: *f, to_s: *t }).collect();
+        uranium_env::branch::Alternative { name: name.into(), rules }
+    }
+
+    fn write_lines(path: &Path, lines: &[BranchPlanLine]) {
+        let mut buf = Vec::new();
+        uranium_env::branch::write_jsonl(&mut buf, lines).unwrap();
+        std::fs::write(path, buf).unwrap();
+    }
+
+    /// 020-R22 ④: a plan without the 051 keys loads, expands and plays exactly as before: no key
+    /// set, no branch list, no per-game settings (the tracked plans included).
+    #[test]
+    fn plan_without_branch_keys_unchanged_020_r22() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/plans");
+        for p in ["rush5_check.toml", "teacher_check.toml", "dagger_r1.toml"] {
+            let plan = load_plan(&dir.join(p)).unwrap();
+            assert!(!plan.uses_branch_keys() && plan.branch_lines.is_empty(), "{p}");
+            assert!(plan.game_branch(1, Path::new("out"), None).unwrap().is_none(), "{p}");
+        }
+        let text = format!("name='x'\n{BRANCH_GAMES}");
+        let plain: Plan = toml::from_str(&text).unwrap();
+        assert!(!plain.act_log && plain.snapshots.is_empty() && plain.branches.is_none() && !plain.verify_state);
+        assert_eq!(plain.horizon(), Some(86_400 - 48));
+        // The keys change no GameSpec: the per-game settings travel beside it (020-R22).
+        let keyed: Plan = toml::from_str(&format!("name='x'\nact_log=true\n{BRANCH_GAMES}")).unwrap();
+        let specs = |p: &Plan| expand(p, "a:1").into_iter().map(|j| (j.spec, j.models, j.t0_builds)).collect::<Vec<_>>();
+        assert_eq!(specs(&plain), specs(&keyed));
+        assert!(crate::check_branch_support(&plain).is_ok());
+        assert!(crate::check_branch_support(&keyed).is_err(), "refused until the agent sessions read the board (051 U3)");
+    }
+
+    /// 020-R22 ① ②: act logs alone (any bridge players, 051-AC3) and a trunk plan with snapshot
+    /// rules: per-game settings with the stage's `acts/` and `states/` folders and plan game n.
+    #[test]
+    fn act_log_and_snapshots_settings_020_r22() {
+        let dir = temp_dir("trunk");
+        let path = dir.join("p.toml");
+        std::fs::write(&path, "name='x'\nact_log=true\n[[matchup]]\nmap='both'\ngames=2\np0={kind='t0',race='terran'}\np1={kind='t0',race='zerg',build='zerg_rush'}\n").unwrap();
+        let plan = load_plan(&path).unwrap();
+        let g = plan.game_branch(2, Path::new("stage"), None).unwrap().unwrap();
+        assert_eq!((g.plan_game, g.act_log_path(1)), (2, Some(Path::new("stage").join("acts").join("g2-p1.jsonl"))));
+        assert!(g.states_dir.is_none() && g.snapshots.is_empty() && g.branch.is_none());
+        std::fs::write(&path, format!("name='x'\n{BRANCH_HEAD}{SNAPSHOTS}{BRANCH_GAMES}")).unwrap();
+        let plan = load_plan(&path).unwrap();
+        assert_eq!(plan.horizon(), Some(11_520));
+        let g = plan.game_branch(3, Path::new("stage"), None).unwrap().unwrap();
+        assert_eq!(g.snapshots.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["b1-p1", "b1-p2"]);
+        assert_eq!(g.state_path(412), Some(Path::new("stage").join("states").join("g3-o412.state")));
+        assert!(g.branch.is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 051-R1 / 020-R22 load checks of trunk and branch plans: settings, players, rules.
+    #[test]
+    fn branch_plan_load_checks_051_r1() {
+        let dir = temp_dir("checks");
+        let path = dir.join("p.toml");
+        let load = |text: String| {
+            std::fs::write(&path, text).unwrap();
+            load_plan(&path).map_err(|e| format!("{e:#}"))
+        };
+        load(format!("name='x'\n{BRANCH_HEAD}{SNAPSHOTS}{BRANCH_GAMES}")).unwrap();
+        let bad = |head: &str, games: &str, want: &str| {
+            let e = load(format!("name='x'\n{head}{SNAPSHOTS}{games}")).unwrap_err();
+            assert!(e.contains(want), "{want}: {e}");
+        };
+        bad(&BRANCH_HEAD.replace("surrender='off'", "surrender='shadow'"), BRANCH_GAMES, "surrender");
+        bad(&BRANCH_HEAD.replace("surrender='off'\n", ""), BRANCH_GAMES, "surrender");
+        bad(&format!("{BRANCH_HEAD}privileged=true\n"), BRANCH_GAMES, "privileged");
+        bad(&BRANCH_HEAD.replace("save_replay=true", "save_replay=false"), BRANCH_GAMES, "save_replay");
+        bad(&BRANCH_HEAD.replace("zero_last_failed=true", "zero_last_failed=false"), BRANCH_GAMES, "zero_last_failed");
+        bad(&BRANCH_HEAD.replace("max_frames=11568", "max_frames=48"), BRANCH_GAMES, "max_frames");
+        bad(BRANCH_HEAD, &BRANCH_GAMES.replacen(",sample='stochastic'", "", 1), "stochastic");
+        bad(BRANCH_HEAD, &BRANCH_GAMES.replacen("{kind='t0',race='zerg',build='zerg_rush'}", "{kind='oss',name='iron',race='terran'}", 1), "T0 bot");
+        bad(BRANCH_HEAD, &format!("{BRANCH_GAMES}p1_random_ratio=0.5\n").replacen("build='zerg_rush'", "build='standard'", 2), "p1_random_ratio");
+        bad(&format!("{BRANCH_HEAD}verify_state=true\n"), BRANCH_GAMES, "verify_state");
+        // Snapshot rules (051-R3): known action names, unique names, non-empty windows.
+        let rules = |r: &str| load(format!("name='x'\n{BRANCH_HEAD}{r}{BRANCH_GAMES}")).unwrap_err();
+        assert!(rules("[[snapshots]]\nname='a'\nfrom_frame=1\nto_frame=2\nany_open=['Build_Bunkr']\n").contains("Build_Bunkr"));
+        assert!(rules("[[snapshots]]\nname='a'\nfrom_frame=1\nto_frame=2\n[[snapshots]]\nname='a'\nfrom_frame=1\nto_frame=2\n").contains("twice"));
+        assert!(rules("[[snapshots]]\nname='a'\nfrom_frame=2\nto_frame=2\n").contains("empty window"));
+        assert!(rules("[[snapshots]]\nname='a'\nfrom_frame=1\nto_frame=2\nbogus=1\n").contains("bogus"));
+        // A game is a trunk or a branch (interim decision U4).
+        write_lines(&dir.join("b.jsonl"), &[]);
+        assert!(load(format!("name='x'\n{BRANCH_HEAD}branches='b.jsonl'\n{SNAPSHOTS}{BRANCH_GAMES}")).unwrap_err().contains("snapshots and branches"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 020-R22 ③ / 051-R10: the branch list has one line per plan game whose seed, map and
+    /// opponent are the game's; its alternatives are valid 051-R7 rules; f_t is before H. Game n's
+    /// settings carry line n with its paths resolved on the shared drive, H and the dilution list.
+    #[test]
+    fn branch_list_checks_020_r22() {
+        let dir = temp_dir("branches");
+        let path = dir.join("p.toml");
+        let seeds = "seeds=[45001, 45002, 45140]\n";
+        let none = alt("none", &[]);
+        let bunker = alt("force_bunker", &[("force", "Build_Bunker", 0, 0)]);
+        let ban = alt("ban_bunker_90s", &[("ban", "Build_Bunker", 0, 90)]);
+        let good = vec![line(45001, "fighting_spirit", none.clone(), 1), line(45002, "fighting_spirit", bunker.clone(), 1), line(45140, "circuit_breaker", ban.clone(), 2)];
+        let load = |lines: &[BranchPlanLine], extra: &str| {
+            write_lines(&dir.join("branches_plan.jsonl"), lines);
+            std::fs::write(&path, format!("name='x'\n{BRANCH_HEAD}{seeds}{extra}branches='branches_plan.jsonl'\n{BRANCH_GAMES}")).unwrap();
+            load_plan(&path).map_err(|e| format!("{e:#}"))
+        };
+        let plan = load(&good, "verify_state=true\n").unwrap();
+        assert_eq!(plan.branch_lines, good);
+        assert_eq!(plan.branch_none_actions(), ["Build_Bunker"]);
+        let shared = dir.join("shared");
+        let g = plan.game_branch(2, Path::new("stage"), Some(&shared)).unwrap().unwrap();
+        let b = g.branch.as_ref().unwrap();
+        assert_eq!(b.line, good[1]);
+        assert_eq!(b.acts, shared.join("eval/trunk-job/b1-trunk/acts/g1-p0.jsonl"));
+        assert_eq!(b.state, shared.join("eval/trunk-job/b1-trunk/states/g1-o412.state"));
+        assert_eq!((b.horizon, b.verify_state, b.none_actions.clone()), (11_520, true, vec!["Build_Bunker".to_string()]));
+        assert_eq!(g.act_log_path(0), Some(Path::new("stage").join("acts").join("g2-p0.jsonl")));
+        assert!(g.states_dir.is_none(), "a branch game saves no state");
+        // Relative paths need the shared drive (051-R10); absolute ones do not.
+        assert!(plan.check_branch_paths(None).unwrap_err().to_string().contains("URANIUM_SHARED_DIR"));
+        assert!(plan.game_branch(1, Path::new("stage"), None).is_err());
+        plan.check_branch_paths(Some(&shared)).unwrap();
+        let mut abs = good.clone();
+        for l in &mut abs {
+            l.acts = shared.join("a.jsonl").to_string_lossy().into_owned();
+            l.state = shared.join("s.state").to_string_lossy().into_owned();
+        }
+        load(&abs, "").unwrap().check_branch_paths(None).unwrap();
+        // Load errors.
+        let err = |lines: Vec<BranchPlanLine>, want: &str| {
+            let e = load(&lines, "").unwrap_err();
+            assert!(e.contains(want), "{want}: {e}");
+        };
+        err(good[..2].to_vec(), "2 lines for 3 games");
+        err([good.clone(), vec![good[0].clone()]].concat(), "4 lines for 3 games");
+        let edit = |i: usize, f: &dyn Fn(&mut BranchPlanLine)| {
+            let mut v = good.clone();
+            f(&mut v[i]);
+            v
+        };
+        err(edit(1, &|l| l.seed = 45003), "seed 45003");
+        err(edit(2, &|l| l.map = "fighting_spirit".into()), "map fighting_spirit");
+        err(edit(0, &|l| l.opponent = "t0-zerg".into()), "opponent t0-zerg");
+        err(edit(0, &|l| l.f_t = 11_520), "horizon");
+        err(edit(0, &|l| l.state_sha256 = "A".repeat(64)), "sha256");
+        err(edit(0, &|l| l.repeat = 0), "repeat");
+        err(edit(1, &|l| l.alt = alt("x", &[("force", "Build_Bunkr", 0, 0)])), "Build_Bunkr");
+        err(edit(1, &|l| l.alt = alt("x", &[("ban", "NoOp", 0, 90)])), "NoOp");
+        err(edit(1, &|l| l.alt = alt("x", &[("ban", "Build_Bunker", 90, 0)])), "empty window");
+        std::fs::write(dir.join("branches_plan.jsonl"), "{\"bogus\":1}\n").unwrap();
+        std::fs::write(&path, format!("name='x'\n{BRANCH_HEAD}{seeds}branches='branches_plan.jsonl'\n{BRANCH_GAMES}")).unwrap();
+        assert!(load_plan(&path).is_err(), "unknown fields");
+        std::fs::write(&path, format!("name='x'\n{BRANCH_HEAD}{seeds}branches='missing.jsonl'\n{BRANCH_GAMES}")).unwrap();
+        assert!(format!("{:#}", load_plan(&path).unwrap_err()).contains("missing.jsonl"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
