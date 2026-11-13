@@ -1,11 +1,12 @@
-# 프로토스전 퇴보 수정 계획 (증류 · 새 교사 · RL)
+# 프로토스전 퇴보 수정 계획 (증류 · 새 교사 · RL) — 결정 완료
 
-- 작성: 2026-11-14. 계획과 spec 초안만 만들었습니다(코드·학습 변경 없음).
+- 작성: 2026-11-14. 계획과 spec만 만들었습니다(코드·학습 변경 없음).
+- **결정 완료(2026-11-14)**: AMB 18개를 모두 기본안대로 정했습니다. 2절 여섯 질문(AMB-044-1·3·4·5·7·8·9·10·11, AMB-022-1·2)은 사용자 결정이고, 나머지(AMB-044-2·6, AMB-022-3~7)는 기본안 채택을 사용자가 따로 확인했습니다. spec 022·044는 Approved이고, 021·040·041·042·050·060 개정도 반영했습니다. 다음은 Plan 모드 승인 → 8절 구현 단위입니다.
 - 사용자 결정(2026-11-14): ① 테란·프로토스전 자기 판 증류, ② 테란·프로토스전 교사 새로 만들기, ③ RL을 모두 진행합니다. 순서는 spec 초안 → Plan 모드 승인 → 구현입니다.
-- spec 초안(모두 Draft, 미승인):
+- spec(2026-11-14 Approved, 사용자 확인 2026-11-14):
   - [`spec/044-self-game-distillation.md`](../spec/044-self-game-distillation.md): 증류 라운드와 RL의 종족별 참조 KL. AMB-044-1~11
   - [`spec/022-matchup-teacher.md`](../spec/022-matchup-teacher.md): 테란·프로토스전 교사 `terran_tp`. AMB-022-1~7
-  - 040·041·042·050·060·021에 넣을 개정 문안은 두 문서 끝에만 적었고 아직 반영하지 않았습니다(051 초안과 같은 방식).
+  - 개정 반영: 021-R9, 040-R24·출처 `distill`, 041-R31·R22·R28·R29 ④ 보충, 042-R22·042-AC12, 050-R9 지점 표·050-R10 적용 지점·022 교사 점검, 060-AC7
 - 근거: 원인 분석(작업 산출물 `protoss_regress/report.md`), `reports/model2.md` 9절, `reports/timeline.md` 11-13~14 줄.
 
 ## 1. 무엇이 문제이고 무엇을 하나
@@ -32,9 +33,9 @@
 - B는 T0 프로토스·테란을 각 70% 안팎 이기는 수준까지 만들 수 있을 것입니다. 다만 021-R8 교사처럼 조정 반복이 여러 번 필요할 수 있습니다.
 - C의 효과는 불확실합니다. 이전 RL run들은 러시 방어를 거의 올리지 못했습니다(`reports/m6_ac1.md`, 042 `rush-s*`). 종족별 참조는 "올리기"보다 "무너지지 않게 붙잡기"가 주 효과일 것입니다.
 
-## 2. 먼저 정해 주셔야 할 것 (6가지)
+## 2. 사용자 결정 (2026-11-14, 여섯 가지 모두 기본안)
 
-아래가 정해져야 그에 기대는 코드를 쓸 수 있습니다(CLAUDE.md 모호함 규칙). 나머지 AMB(022-3·5·6·7, 044-2·6)는 기본안으로 둬도 일정에 지장이 없습니다. 각 항목의 "기본안"은 제 제안이고 아직 확정이 아닙니다.
+아래 여섯 질문은 모두 **기본안으로 정했습니다**(사용자 결정 2026-11-14). 나머지 AMB(022-3~7, 044-2·6)도 기본안 채택을 확인받았습니다. 아래 본문은 질문할 때의 설명을 그대로 남긴 것입니다.
 
 1. **증류 정답의 꼴** (AMB-044-1)
    - 기준선 모델은 상황마다 행동의 확률표를 냅니다. 그중 무엇을 정답으로 쓸지 정해 주세요.
@@ -170,9 +171,9 @@
 - **모두 실패하면 종족별 정책 라우팅**을 사용자 결정으로 올립니다. 저그는 선택 모델, 테란·프로토스는 BC 기준선을 씁니다(원인 분석 7절 C). 즉시 기준선 수준이지만 Random 상대 처리가 필요하고, RL에는 그대로 못 씁니다.
 - 32판 묶음은 조건당 약 ±12%p 잡음이 있습니다. 경계 근처 결과는 판정하지 않고 보고합니다(050-R10과 같음).
 
-## 7. AMB 목록 (spec/README.md 레지스트리에 Open으로 등록)
+## 7. AMB 목록 (모두 Resolved 2026-11-14)
 
-| ID | 내용 | 기본안(미확정) |
+| ID | 내용 | 결정(기본안 채택) |
 |---|---|---|
 | AMB-044-1 | 증류 정답 꼴 | 레이블러 분포에서 표집 1개 |
 | AMB-044-2 | 레이블러 | `m2-s2e2/ckpt-11387` |
@@ -192,3 +193,27 @@
 | AMB-022-5 | 시즈·공격 수치 | 시즈 11타일·해제 13타일 10초, 웨이브 탱크 4 + 인구 40, 12:00 뒤 20 |
 | AMB-022-6 | 종족 분기·Random | 저그 → 021-R8, 나머지 → 022, Random 판은 데이터 제외 |
 | AMB-022-7 | 교사 판 합류 | botgen 800판, 10분 절단, 교사 몫 안 Z:P:T = 50:30:20, 합격 다음 라운드부터 T/P 자기 판은 새 교사로 재레이블 |
+
+## 8. 구현 단위 (Plan 승인용)
+
+- 단위마다 worktree 하나, 끝나면 별도 리뷰어 에이전트 검토 → 반영 → master(FF). 에이전트 시간은 리뷰 반영을 포함합니다.
+- 테스트는 Linux CPU 호스트에서 돌립니다(CUDA 호스트가 학습 중이면 그 장비에서 빌드·테스트하지 않음).
+
+| 단위 | 내용 | 주요 파일 | 에이전트 시간 | 의존 | 장비 |
+|---|---|---|---|---|---|
+| U1 | 증류 판 plan 생성기 `--distill`(044-R1: 구성·10분 상한·`memory_log`·seed 겹침 검사, d2 `--half`) | `tools/eval/rush_check_plan.py`, `config/plans/distill_m2_d1.toml`, `tests/python` | 1.5~2 | 없음 | CPU |
+| U2 | 결정 스텝 build `--src distill`(044-R2, 040-R24: 결정마다 스텝, `memory_action` 구간, `unknown` 자리 레이블, BC 폴더 밖 `--out` 강제, 041-R28 ④·⑤ 실패 판 `filtered`) | `crates/uranium-replay`(build·relabel의 `--memory-log` 경로, `src` 태그), `crates/uranium-proto`/shard 메타 | 3~4 | 없음(041-R28 결정 시점 스텝 코드 재사용) | CPU |
+| U3 | 정책 레이블 `python -m uranium distill-label`(044-R3: BC 로더 입력 그대로, 표집 1개·판별 seed, 헤드 값 → `action_label` 변환, 040-R19 필터, `label_policy` records) + Rust shard writer 노출(040-R17 검증) | `python/uranium/distill/`(새), `crates/uranium-py`, `crates/uranium-data`·`uranium-replay` shard 쓰기, `tests/python`(044-AC2 왕복) | 8~10 | U2(shard 모양) | CPU 테스트, 실제 레이블은 CUDA |
+| U4 | `mix-fractions --share`(세 몫 + 사람 종족 비율, 044-AC3) + BC 설정 출처 `distill_m2` | `crates/uranium-train`, `crates/uranium-data`(subsample·지문), `config/bc_m2_distill_d1.toml` | 2.5~3 | 없음 | CPU |
+| U5 | 측정 메뉴: `lineage.toml`에 증류 라운드·D·수정 RL 점검 지점, 교사 모드 판 비율 열, 044-R6 판정 도구 | `config/protocol/lineage.toml`, `tools/eval/protocol.py`·`tables.py`·`eval_common.py`, `tests/python/test_eval_protocol.py` | 2~3 | 없음 | CPU |
+| U6 | 022 교사 `terran_tp`(022-R1~R10: 개막·가스·팩토리·머신샵·시즈 연구, P/T 러시 식별, M/D 가지, 시즈 규칙, 공격·수색, 그림자 손질, `scripted.tp` 기록, 로비 종족 분기, 022-AC1 단위 테스트) | `crates/uranium-scripted/src/tp.rs`(새)·`lib.rs`·`react.rs`(재사용 부분 공개), 에이전트 서버 교사 세션 분기(`crates/uranium-agent`), plan `build` 이름 | 16~24 | 없음 | CPU + Linux 게임 호스트(OpenBW 스모크) |
+| U7 | 교사 그림자 재레이블 `--relabel terran_tp`(저그 판 거부, 022-AC3) | `crates/uranium-replay` relabel | 2~3 | U6 | CPU |
+| U8 | 교사 점검·botgen plan(022-R11 점검 plan, 022-R12 botgen 800판) | `tools/eval/rush_check_plan.py`, `config/plans/teacher_tp_check.toml`·`teacher_botgen_tp.toml` | 1.5 | U6 | CPU |
+| U9 | RL 종족별 참조 KL(044-R9: `[kl.reference]` 파싱·전달, 참조 모델 중복 제거, 레인별 참조 재forward, `kl_ref_<종족>` 열, 044-AC4 비트 동일 테스트) | `python/uranium/rl/learner.py`·`reference.py`·`run.py`, RL 설정 구조(`crates/uranium-league`·`uranium-py`), `tests/python` | 5~6 | 없음 | CPU 테스트, Linux ROCm 호스트 메모리 벤치(060-AC7) |
+| U10 | RL 상대 구성 설정 `config/rl_m2_race.toml`(044-R10: 종족 30:35:35 고정 몫, T0 50·T1 50, 저그 T0 반은 러시 사다리, E-Regression 빌드 제외). 지금 종족 선택은 승률 기반 `p_race`라 고정 몫 키 또는 042-R19 `fixed` 사다리 그룹으로 표현 가능한지 먼저 확인 | `config/rl_m2_race.toml`, (필요하면) `crates/uranium-league` 종족 몫 키 | 2~4 | U9 | CPU, 표본 100 update는 CUDA |
+| U11 | 표본 end-to-end(044-R12): 20판 → U2 → U3 → U4 → 50 update → 측정 job 1 → RL 100 update | 실행 스크립트 `<shared>/eval/m2-lineage/scripts/distill_d1.sh` | 1.5(+ 장비 약 2시간) | U1~U5, U9·U10 | 모든 장비 조금씩 |
+
+- 병렬: U1·U2·U4·U5·U6·U9는 서로 독립입니다. U3는 U2 뒤, U7·U8은 U6 뒤, U10은 U9 뒤입니다.
+- 합계: 코드 단위 약 45~63 에이전트 시간입니다. 이 밖에 실행·측정·리포트 운영이 약 15~25시간입니다(4절).
+- 실행 순서(코드 뒤): S 확정 → U11 → d1 판 600 → build → 레이블 → 학습 → 측정·판정 → (조건부) d2 → 교사 합격(022-AC2) → botgen 800 → t1 교사 라운드 → 수정 RL(D 출발) → AC1 비교 run.
+
