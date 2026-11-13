@@ -28,6 +28,9 @@ use uranium_proto::{Act, GameInfo, RawFrame};
 
 use crate::infer::{InferSession, InferenceHandle, SampleMode};
 
+/// 034-R2: action_type 0 is NoOp (sends no command).
+const NOOP_ACTION: u16 = 0;
+
 /// Model-specific part of a session record (020-R5, 031-R4).
 #[derive(Serialize, Debug, Clone, Default)]
 pub struct ModelStats {
@@ -232,8 +235,6 @@ struct BranchRun {
     seen: u32,
     /// The state was restored at t; observations from t on play live (051-R6).
     at_t: bool,
-    /// Decisions from t on (0 = the t decision).
-    k: u32,
     intervention: Intervention,
     samples: SampleTracker,
     dilution: DilutionTracker,
@@ -283,7 +284,6 @@ impl BranchRun {
             invalid: None,
             seen: 0,
             at_t: false,
-            k: 0,
             intervention,
             samples: SampleTracker::new(line.f_t, cfg.horizon),
             dilution,
@@ -686,9 +686,9 @@ impl ModelPolicy {
         b.last.decision = Some(uranium_env::branch::Decision { action, delay_bucket: delay_bucket as u32, units: ids.to_vec(), rejected });
         if let Some(run) = b.player.as_deref_mut().filter(|r| r.at_t) {
             run.intervention.note_executor(frame, rejected);
-            run.samples.on_decision(run.k, frame, scalar);
+            // 051-R9 ① d8 / d32 count decisions that sent a command (NoOp is action 0, 034-R2).
+            run.samples.on_decision(frame, scalar, action != NOOP_ACTION && !rejected);
             run.dilution.on_decision(frame, action);
-            run.k += 1;
         }
     }
 

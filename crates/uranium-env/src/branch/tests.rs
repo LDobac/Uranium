@@ -557,7 +557,7 @@ fn branch_samples_051_r9() {
     let mut s = SampleTracker::new(f_t, 11_520);
     for k in 0..=40u32 {
         let frame = f_t + k * 200;
-        s.on_decision(k, frame, &[k as f32]);
+        s.on_decision(frame, &[k as f32], true);
     }
     let x = s.samples();
     let at = |o: &Option<Sample>| o.as_ref().map(|s| s.frame);
@@ -568,9 +568,40 @@ fn branch_samples_051_r9() {
     assert_eq!(x.d8.as_ref().unwrap().scalar, vec![8.0]);
     assert_eq!(at(&x.d32), Some(f_t + 32 * 200));
     let mut s = SampleTracker::new(f_t, 4000);
-    s.on_decision(1, 3999, &[]);
-    s.on_decision(2, 4000, &[]);
+    s.on_decision(3999, &[], true);
+    s.on_decision(4000, &[], true);
     assert_eq!(s.samples().horizon.as_ref().unwrap().frame, 4000);
+}
+
+/// 051-R9 ① (user decision 2026-11-13): d8 / d32 count only decisions after t that sent a
+/// command (not NoOp, not refused); the t decision never counts; time samples take every decision.
+#[test]
+fn branch_samples_count_command_decisions_051_r9() {
+    let f_t = 3300;
+    let mut s = SampleTracker::new(f_t, 11_520);
+    // k = 0 is t (a command, not counted); after t every third decision is a NoOp or refused.
+    let mut sent = 0;
+    for k in 0..=60u32 {
+        let cmd = k == 0 || k % 3 != 0;
+        s.on_decision(f_t + k * 10, &[k as f32], cmd);
+        if k > 0 && cmd {
+            sent += 1;
+            if sent == 8 {
+                assert_eq!(s.samples().d8.as_ref().unwrap().scalar, vec![k as f32]);
+            }
+        }
+    }
+    let x = s.samples();
+    // Command decisions after t: k = 1, 2, 4, 5, 7, 8, 10, 11 -> the 8th is k = 11.
+    assert_eq!(x.d8.as_ref().unwrap().scalar, vec![11.0]);
+    // 32nd: 16 pairs (k = 3j+1, 3j+2), the 32nd is k = 3 * 15 + 2 = 47.
+    assert_eq!(x.d32.as_ref().unwrap().scalar, vec![47.0]);
+    let mut s = SampleTracker::new(f_t, 11_520);
+    for k in 0..=40u32 {
+        s.on_decision(f_t + k * 200, &[k as f32], false);
+    }
+    assert!(s.samples().d8.is_none() && s.samples().d32.is_none(), "no command, no decision sample");
+    assert_eq!(s.samples().t60.as_ref().map(|x| x.frame), Some(f_t + 8 * 200), "time samples take every decision");
 }
 
 /// 051-R9 ③ dilution: the alternative's actions, or the configured list for `none`; t excluded.
