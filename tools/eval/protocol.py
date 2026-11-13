@@ -1055,6 +1055,8 @@ def cmd_job(a) -> None:
     for m in metrics:
         check_new_measurement(lin, a.lineage, m, pt)
         spec = check_metric(lin, pt, m)
+        if spec["kind"] == "games_table":
+            raise Refused(f"metric {m} is a table of the point's game jobs (052-R8: tools/eval/tables.py / `protocol.py tables`), not a job")
         if spec["kind"] != "games":
             raise Refused(f"metric {m} is not a game metric (use the bc-eval command)")
         stages += [(m, p) for p in metric_plans(lin, pt, m)]
@@ -1198,7 +1200,7 @@ def cmd_tables(a) -> None:
         raise Refused("tables of other lineages: run tools/eval/tables.py on their jobs")
     ec.load_env()
     cache = Path(a.cache) if a.cache else ec.cache_dir() / "eval_cmddump"
-    res = ck1_game_tables(lin, pt, ec.shared_dir(), cache)
+    res = ck1_game_tables(lin, pt, ec.shared_dir(), cache, a.ops, a.ops_jobs)
     tables.print_tables(res)
     if a.json:
         Path(a.json).write_text(json.dumps(res, indent=1), encoding="utf-8")
@@ -1212,8 +1214,9 @@ def output_entries(out) -> list[dict]:
     return [{"job": o} if isinstance(o, str) else dict(o) for o in items]
 
 
-def ck1_game_tables(lin: dict, pt: dict, shared: Path, cache: Path) -> dict:
-    """050-R9: the tables of a Checkpoint 1 point's existing game outputs (both held / bunker definitions)."""
+def ck1_game_tables(lin: dict, pt: dict, shared: Path, cache: Path, ops: str = "replay", ops_jobs: int = 1) -> dict:
+    """050-R9: the tables of a Checkpoint 1 point's existing game outputs (both held / bunker definitions), and
+    the 052-R8 ops / rush_combat tables, the lineage's new metrics, from replay values (052-R7)."""
     import tables
 
     res: dict = {}
@@ -1228,9 +1231,9 @@ def ck1_game_tables(lin: dict, pt: dict, shared: Path, cache: Path) -> dict:
             seen.add(key)
             job = shared / e["job"]
             if e.get("as_plan"):
-                res.update(tables.subset_tables(job, e["as_plan"], lin))
+                res.update(tables.subset_tables(job, e["as_plan"], lin, cache, ops, ops_jobs))
             else:
-                res.update(tables.job_tables(job, cache, lin=lin, stages={e["stage"]} if e.get("stage") else None))
+                res.update(tables.job_tables(job, cache, lin=lin, stages={e["stage"]} if e.get("stage") else None, ops=ops, ops_jobs=ops_jobs))
     if not res:
         raise Refused(f"point {pt['id']} has no Checkpoint 1 game outputs")
     return res
@@ -1376,6 +1379,8 @@ def main(argv=None) -> None:
     s.add_argument("--point", required=True)
     s.add_argument("--json", default=None)
     s.add_argument("--cache", default=None)
+    s.add_argument("--ops", choices=("replay", "live", "off"), default="replay", help="052-R8 tables: opsdump replay values (the path comparison's), live row values, or none")
+    s.add_argument("--ops-jobs", type=int, default=1, help="parallel opsdump processes")
     s.set_defaults(f=cmd_tables)
     s = sub.add_parser("render", help="one measurement plan from its template")
     s.add_argument("--plan", required=True)

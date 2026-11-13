@@ -12,6 +12,10 @@ docs/measurement_protocol.md): every stage of each job, by the protocol plan its
   t1       T1 300 by bot and race: W/D/L, surrender wins, minutes p50
   winrate  T0 / TvZ / AC1: W/D/L per matchup and opponent race, Wilson 95%
 
+Every stage also gets the 052-R8 tables (`ops`, `rush_combat`: by matchup, medians / means, rush entry and
+SCV pull / bunker / focus, split by held_s and held_8m) from `uranium-replay opsdump` replay values (052-R7, cached
+as <cache>/<job>/<stage>/g<n>.ops.json; --ops live reads the session rows' own values, --ops off skips them).
+
 Opponent-crash games (an Aborted attempt where our launcher exited with 0 and the opponent's did not,
 eval_common.opponent_crashes) are invalid in every table. Both held and both bunker definitions are always
 printed. A job with protocol.json also shows its checkpoint sha256, git commit, uncommitted-file flag and
@@ -19,6 +23,7 @@ host platforms.
 Command streams come from `uranium-replay cmddump` (cached as <cache>/<job>/<stage>/g<n>.json).
 
     python tools/eval/tables.py <job dir>... [--json out.json] [--cache DIR] [--kind <stage name>=<kind>]
+                                [--ops replay|live|off] [--ops-jobs N]
 
 Moved from runs/dagger/test_table.py, t1_table.py, ac1_table.py, runs/tclone_macro/macro_table.py and
 runs/bc_ft_teacher/rush_summary.py with the same counting rules.
@@ -145,6 +150,91 @@ def winrate_table(stage: int, plan: dict, rows: dict[int, dict], invalid: set[in
     return {"blocks": blocks, "by_race": by_race, "total": tot}
 
 
+# 052-R8: the ops keys (052 Interfaces order) and those that are time integrals (also divided by the window length).
+OPS_KEYS = ("end_s", "mined", "gas", "inc_4m", "inc_6m", "inc_8m", "inc_10m", "inc_scv_4m", "inc_scv_6m", "inc_scv_8m", "inc_scv_10m",
+            "mline_bldg_n", "mline_bldg_s", "cc_lift_s", "stranded_scv_s", "idle_scv_s", "oversat_scv_s", "sblock_s", "sblock_n",
+            "sblock_first_s", "float_min_rs", "float_gas_rs")
+OPS_INTEGRALS = ("mline_bldg_s", "cc_lift_s", "stranded_scv_s", "idle_scv_s", "oversat_scv_s", "sblock_s", "float_min_rs", "float_gas_rs")
+OPS_SOURCES = ("replay", "live", "off")
+
+
+def _matchup(r: dict) -> str:
+    """Our race against the race the enemy actually played (session row), e.g. TvZ."""
+    return f"{(r.get('self_race') or 'Terran')[:1]}v{(r.get('enemy_race') or 'Unknown')[:1]}"
+
+
+def _summary(v: list) -> dict:
+    v = [x for x in v if x is not None]
+    return {"n": len(v), "median": ec.median(v), "mean": sum(v) / len(v) if v else None}
+
+
+def _rush_stats(items: list[tuple[dict, dict]]) -> dict:
+    """052-R8 rush_combat cells over (row, value) pairs: entries; among them pull_s present (rate, median), scv_lost /
+    kills medians, bunker_load_s present rate, focus_hhi median (games without a value left out)."""
+    rc = [v["rush_combat"] for _, v in items if v.get("rush_combat")]
+    k = len(rc)
+
+    def present(key: str) -> list:
+        return [x[key] for x in rc if x.get(key) is not None]
+
+    pull, load = present("pull_s"), present("bunker_load_s")
+    return {"n": len(items), "entered": k, "entered_rate": k / len(items) if items else None,
+            "pull_n": len(pull), "pull_rate": len(pull) / k if k else None, "pull_s_p50": ec.median(pull),
+            "scv_lost_p50": ec.median(present("scv_lost")), "kills_p50": ec.median(present("kills")),
+            "bunker_load_n": len(load), "bunker_load_rate": len(load) / k if k else None,
+            "focus_hhi_p50": ec.median(present("focus_hhi"))}
+
+
+def ops_tables(rows: dict[int, dict], values: dict[int, dict]) -> tuple[dict, dict]:
+    """052-R8 tables of one stage's valid model rows (by game n) and their 052 values ({n: {"ops", "rush_combat"}},
+    replay or live): `ops` by matchup (and `all`): games with values, games without (`missing`), each key's
+    n / median / mean (empty values left out), integrals also `<key>_per_s` = mean of value / end_s; `rush_combat`
+    by matchup, each over all games and split by held_s (scv_min_1m > 4) and held_8m (scv_8m >= 8, 050-R7)."""
+    groups: dict[str, list[int]] = {"all": sorted(rows)}
+    for n in sorted(rows):
+        groups.setdefault(_matchup(rows[n]), []).append(n)
+    ops, rush = {}, {}
+    for g, ns in groups.items():
+        have = [n for n in ns if n in values and values[n].get("ops") is not None]
+        o = [values[n]["ops"] for n in have]
+        t = {"n": len(have), "missing": len(ns) - len(have)}
+        for key in OPS_KEYS:
+            t[key] = _summary([x.get(key) for x in o])
+        for key in OPS_INTEGRALS:
+            t[f"{key}_per_s"] = _summary([x[key] / x["end_s"] for x in o if x.get(key) is not None and x.get("end_s")])
+        ops[g] = t
+        items = [(rows[n], values[n]) for n in have]
+        m = lambda r: r.get("model") or {}  # noqa: E731
+        held_s = lambda r: (m(r).get("scv_min_1m") or 0) > 4  # noqa: E731
+        held_8m = lambda r: (m(r).get("scv_8m") or 0) >= 8  # noqa: E731
+        rush[g] = {"all": _rush_stats(items),
+                   "held_s": _rush_stats([x for x in items if held_s(x[0])]), "not_held_s": _rush_stats([x for x in items if not held_s(x[0])]),
+                   "held_8m": _rush_stats([x for x in items if held_8m(x[0])]), "not_held_8m": _rush_stats([x for x in items if not held_8m(x[0])])}
+    return ops, rush
+
+
+def stage_ops(stage_dir: Path, rows: dict[int, dict], cache: Path, source: str, jobs: int = 1, games: dict[int, int] | None = None) -> dict:
+    """052-R7 / R8: the stage's ops / rush_combat tables from `source`: `replay` = `uranium-replay opsdump` of the
+    stage's replays from the model's slot (cached as <cache>/g<n>.ops.json; `games` maps a row's n to its replay's
+    game number when they differ, e.g. a subset of a larger job), `live` = the session rows' own values. Path
+    comparisons (050-R9) use replay values on both sides."""
+    if source not in OPS_SOURCES:
+        raise UnknownPlan(f"--ops {source}: one of {', '.join(OPS_SOURCES)}")
+    if source == "off":
+        return {}
+    failed: dict[int, str] = {}
+    if source == "replay":
+        src = games or {n: n for n in rows}
+        got, bad = ec.ops_stage(stage_dir, {src[n]: rows[n].get("slot", 0) for n in rows}, cache, jobs=jobs)
+        back = {g: n for n, g in src.items()}
+        values = {back[g]: d for g, d in got.items()}
+        failed = {back[g]: e for g, e in bad.items()}
+    else:
+        values = {n: {"ops": r["model"].get("ops"), "rush_combat": r["model"].get("rush_combat")} for n, r in rows.items() if r["model"].get("ops") is not None}
+    ops, rush = ops_tables(rows, values)
+    return {"ops_source": source, "ops_failed": {str(n): e for n, e in sorted(failed.items())}, "ops": ops, "rush_combat": rush}
+
+
 KINDS = ("rush", "macro", "t1", "winrate")
 
 
@@ -180,10 +270,11 @@ def game_keys(plan: dict) -> dict[tuple, int]:
     return out
 
 
-def subset_tables(job: Path, plan_id: str, lin: dict | None = None) -> dict:
+def subset_tables(job: Path, plan_id: str, lin: dict | None = None, cache: Path | None = None, ops: str = "replay", ops_jobs: int = 1) -> dict:
     """050-R9: a protocol plan's games found inside a larger Checkpoint 1 job by (seed, map, opponent,
     sampling), e.g. the T0 Terran / Protoss 32 + 32 (t0_tp) inside the BC baseline's T0 300, or the TvZ 32
-    inside a T0 100. The source stage must have the plan's zero_last_failed and max_frames."""
+    inside a T0 100. The source stage must have the plan's zero_last_failed and max_frames. With a `cache`, the
+    052-R8 tables of those games too (`stage_ops`; the source stage's replays)."""
     lin = lin or protocol.load_lineage()
     target = tomllib.loads(protocol.render(lin, plan_id, "checkpoints/subset/ckpt-0", plan_id))
     want = game_keys(target)
@@ -212,12 +303,15 @@ def subset_tables(job: Path, plan_id: str, lin: dict | None = None) -> dict:
                "sample": sorted({r["model"].get("sample") for r in rows.values()}), "inference": {}}
         res["table"] = winrate_table(1, target, rows, bad)
         res["counts"] = {r: {"won": [v["won"], v["n"]]} for r, v in {**res["table"]["by_race"], "total": res["table"]["total"]}.items()}
+        if cache is not None:
+            valid = {m: r for m, r in rows.items() if ec.STAGE_BASE + m not in bad}
+            res.update(stage_ops(job / plan["name"], valid, cache / job.name / plan["name"], ops, ops_jobs, {m: have[key] for key, m in want.items() if m in valid}))
         return {f"{job.name}/{plan['name']}[{plan_id}]": res}
     raise protocol.Refused(f"{job.name}: no stage holds every game of plan {plan_id}")
 
 
 def job_tables(job: Path, cache: Path, override: dict[str, str] | None = None, lin: dict | None = None,
-               stages: set[str] | None = None) -> dict:
+               stages: set[str] | None = None, ops: str = "replay", ops_jobs: int = 1) -> dict:
     lin = lin or protocol.load_lineage()
     rows_all = ec.read_results(job)
     ledger = ec.read_ledger(job)
@@ -261,6 +355,9 @@ def job_tables(job: Path, cache: Path, override: dict[str, str] | None = None, l
         else:
             res["table"] = winrate_table(k, plan, rows, invalid)
             res["counts"] = {r: {"won": [v["won"], v["n"]]} for r, v in {**res["table"]["by_race"], "total": res["table"]["total"]}.items()}
+        # 052-R8: every game stage (opponent-crash games left out, as in the other tables).
+        valid = {n: r for n, r in rows.items() if k * ec.STAGE_BASE + n not in invalid}
+        res.update(stage_ops(job / plan["name"], valid, cache / job.name / plan["name"], ops, ops_jobs))
         out[f"{job.name}/{plan['name']}"] = res
     return out
 
@@ -270,6 +367,27 @@ def _pct(k: int, n: int) -> str:
         return "-"
     lo, hi = ec.wilson(k, n)
     return f"{k}/{n} = {100 * k / n:.1f}% [{100 * lo:.1f}, {100 * hi:.1f}]"
+
+
+def _num(x) -> str:
+    return "-" if x is None else f"{x:.3g}" if isinstance(x, float) else str(x)
+
+
+def print_ops(s: dict) -> None:
+    """052-R8: medians (means) of the ops keys and the rush_combat cells per matchup."""
+    failed = s.get("ops_failed") or {}
+    print(f"052 ops ({s['ops_source']} values" + (f", {len(failed)} replay(s) failed: games {', '.join(failed)}" if failed else "") + ")")
+    keys = ["mined", "gas", "inc_4m", "inc_6m", "inc_8m", "inc_10m", "inc_scv_4m", "inc_scv_6m", "inc_scv_8m", "inc_scv_10m",
+            "mline_bldg_n", "sblock_n", "sblock_first_s"] + [k for k in OPS_INTEGRALS] + [f"{k}_per_s" for k in OPS_INTEGRALS]
+    print("matchup | n | missing | " + " | ".join(f"{k} p50 (mean)" for k in keys))
+    for g, t in s["ops"].items():
+        print(f"{g} | {t['n']} | {t['missing']} | " + " | ".join(f"{_num(t[k]['median'])} ({_num(t[k]['mean'])})" for k in keys))
+    print("matchup | split | n | entered | entered % | pull_s present % | pull_s p50 | scv_lost p50 | kills p50 | bunker_load_s present % | focus_hhi p50")
+    pct = lambda x: "-" if x is None else f"{100 * x:.1f}%"  # noqa: E731
+    for g, t in s["rush_combat"].items():
+        for split, v in t.items():
+            print(f"{g} | {split} | {v['n']} | {v['entered']} | {pct(v['entered_rate'])} | {pct(v['pull_rate'])} | {_num(v['pull_s_p50'])} | "
+                  f"{_num(v['scv_lost_p50'])} | {_num(v['kills_p50'])} | {pct(v['bunker_load_rate'])} | {_num(v['focus_hhi_p50'])}")
 
 
 def print_tables(res: dict) -> None:
@@ -315,6 +433,8 @@ def print_tables(res: dict) -> None:
             print(f"total: {_pct(v['won'], v['n'])}, {v['draw']} draws, invalid {v['invalid']}, missing {v['missing']}")
         if s["inference"]:
             print("inference: " + ", ".join(f"{b} {x['games']} ({x['precision']})" for b, x in s["inference"].items()))
+        if s.get("ops"):
+            print_ops(s)
         print()
 
 
@@ -324,6 +444,8 @@ def main(argv=None) -> None:
     ap.add_argument("--json", type=Path, default=None, help="write every stage's numbers (input of protocol.py compare)")
     ap.add_argument("--cache", type=Path, default=None, help="command stream cache (default <URANIUM_CACHE_DIR or runs>/eval_cmddump)")
     ap.add_argument("--kind", action="append", default=[], help="<stage name>=<rush|macro|t1|winrate> for a plan outside the protocol")
+    ap.add_argument("--ops", choices=OPS_SOURCES, default="replay", help="052-R8 tables from opsdump replay values (default), the session rows' live values, or none")
+    ap.add_argument("--ops-jobs", type=int, default=max(1, (os.cpu_count() or 2) // 2), help="parallel opsdump processes")
     a = ap.parse_args(argv)
     ec.load_env()
     cache = a.cache or ec.cache_dir() / "eval_cmddump"
@@ -332,7 +454,7 @@ def main(argv=None) -> None:
     res = {}
     try:
         for j in a.jobs:
-            res.update(job_tables(j, cache, override, lin))
+            res.update(job_tables(j, cache, override, lin, ops=a.ops, ops_jobs=a.ops_jobs))
     except UnknownPlan as e:
         raise SystemExit(f"REFUSED: {e}")
     print_tables(res)

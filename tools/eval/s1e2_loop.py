@@ -592,7 +592,9 @@ def collect(lin: dict, shared: Path, a) -> list[dict]:
             r["val500_problem"] = None if got == want else f"{got} != pinned {want}"
         j = game_job(shared, root, c)
         if (j / "DONE").is_file():
-            res = tables.job_tables(j, cache, lin=lin)
+            # 052-R8 tables from the rows' live values here (no OpenBW replays in the loop); path comparisons
+            # use replay values (tables.py / protocol.py tables, 052-R7).
+            res = tables.job_tables(j, cache, lin=lin, ops="live")
             (t,) = res.values()
             r["t0_100"] = t
             r["t0_100_problems"] = protocol.verify_job(lin, j, LINEAGE, protocol.point(lin, pt_id))

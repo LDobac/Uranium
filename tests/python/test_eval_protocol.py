@@ -222,7 +222,7 @@ def test_ck1_supplement_only_for_missing_cells_050_r9(tmp_path, monkeypatch):
     for metric in ("rush", "t0_tp", "t0_300"):
         with pytest.raises(SystemExit, match=rf"no new {metric} measurement at point s2e2 \(it has {metric}: `protocol.py tables`\)"):
             protocol.main(base[:-1] + ["j2", "--metrics", metric])
-    with pytest.raises(SystemExit, match="no new macro measurement at point s2e2; allowed there: cue_diag, t0_600, val500_race"):
+    with pytest.raises(SystemExit, match="no new macro measurement at point s2e2; allowed there: cue_diag, ops, rush_combat, t0_600, val500_race"):
         protocol.main(base[:-1] + ["j2", "--metrics", "macro"])
     r1 = ["--lineage", "ck1", "--point", "r1", "--checkpoint", "checkpoints/bc-dagger-r1/ckpt-1137"]
     protocol.main(["bc-eval", "--metric", "val500_race"] + r1)
@@ -653,6 +653,125 @@ def test_unknown_plan_needs_kind_050_r9(tmp_path):
         tables.main([str(job), "--cache", str(tmp_path / "cache")])
 
 
+# ------------------------------------------------------------------ 052 ops / rush_combat tables (052-R7 / R8, 052-AC3)
+
+
+def ops_value(mined: int, end_s: float = 600.0, sblock_first_s=None, cc_lift_s: float = 0.0, rush: dict | None = None) -> dict:
+    keys = dict.fromkeys(tables.OPS_KEYS, 0.0)
+    keys.update(end_s=end_s, mined=mined, sblock_first_s=sblock_first_s, cc_lift_s=cc_lift_s, inc_10m=None if end_s < 600 else 900.0)
+    return {"ops": keys, "rush_combat": rush}
+
+
+def rush_value(pull_s=None, scv_lost: int = 0, kills: int = 0, bunker_load_s=None, focus_hhi=None) -> dict:
+    return {"in_s": 200.0, "enemy_max": 6, "pull_s": pull_s, "pull_max": 3, "scv_move_max": 0, "scv_lost": scv_lost, "kills": kills,
+            "bunker_marines_max": 0, "bunker_load_s": bunker_load_s, "bunker_empty_s": 0.0, "focus_hhi": focus_hhi, "focus_obs": 1}
+
+
+def write_ops(cache: Path, n: int, value: dict, slot: int = 0) -> None:
+    cache.mkdir(parents=True, exist_ok=True)
+    (cache / f"g{n}.ops.json").write_text(json.dumps({"rep": f"g{n}.rep", "perspective": slot, "frames": 20000, **value}) + "\n", encoding="utf-8")
+
+
+def test_ops_tables_from_replay_values_052_ac3(tmp_path):
+    """052-R8 / 052-AC3: the ops and rush_combat tables of a small job from cached opsdump lines (052-R7): by matchup,
+    medians / means without empty values, integrals per window second, rush entries only among the games that have
+    one, held_s / held_8m splits; games without a value (no replay, a line of another slot) and opponent-crash games
+    are left out; the stage's other tables are unchanged."""
+    zerg, terran = {"self_race": "Terran", "enemy_race": "Zerg"}, {"self_race": "Terran", "enemy_race": "Terran"}
+    rows = [{**row(1, True, scv_min_1m=6, scv_8m=12), **zerg}, {**row(2, False, scv_min_1m=2, scv_8m=3), **zerg},
+            {**row(3, True, scv_min_1m=8, scv_8m=None), **zerg}, {**row(4, None, scv_min_1m=5, scv_8m=9), **terran},
+            {**row(5, False), **terran}, {**row(6, True), **zerg}, {**row(7, True), **zerg}]
+    ledger = [{"game_id": 100007, "outcome": "Aborted", "detail": "launcher exit codes [Some(0), None]"}]
+    job = make_job(tmp_path, "tvz_bc", rows, ledger)
+    cache = tmp_path / "cache" / job.name / "tvz_bc"
+    write_ops(cache, 1, ops_value(4000, sblock_first_s=90.0, cc_lift_s=60.0, rush=rush_value(pull_s=4.0, scv_lost=2, kills=3, bunker_load_s=0.0, focus_hhi=1.0)))
+    write_ops(cache, 2, ops_value(2000, end_s=300.0, rush=rush_value(scv_lost=9, kills=1, focus_hhi=0.5)))
+    write_ops(cache, 3, ops_value(6000, cc_lift_s=30.0))
+    write_ops(cache, 4, ops_value(5000, sblock_first_s=120.0, rush=rush_value(pull_s=10.0, bunker_load_s=12.0)))
+    write_ops(cache, 6, ops_value(1, end_s=60.0), slot=1)  # measured from the other slot: not ours
+    write_ops(cache, 7, ops_value(1))  # opponent crash: invalid
+    res = tables.job_tables(job, tmp_path / "cache", lin=LIN)
+    t = res[f"{job.name}/tvz_bc"]
+    assert t["table"]["total"]["n"] == 6 and t["ops_source"] == "replay" and t["ops_failed"] == {}
+    ops, rush = t["ops"], t["rush_combat"]
+    assert sorted(ops) == ["TvT", "TvZ", "all"]
+    a = ops["all"]
+    assert (a["n"], a["missing"]) == (4, 2), "games 5 (no replay) and 6 (another slot) have no value; 7 is invalid"
+    assert a["mined"] == {"n": 4, "median": 4500.0, "mean": 4250.0}
+    assert a["sblock_first_s"] == {"n": 2, "median": 105.0, "mean": 105.0}, "empty values left out"
+    assert a["inc_10m"]["n"] == 3 and a["cc_lift_s_per_s"]["mean"] == (0.1 + 0.0 + 0.05 + 0.0) / 4
+    assert (ops["TvZ"]["n"], ops["TvZ"]["missing"], ops["TvT"]["n"], ops["TvT"]["missing"]) == (3, 1, 1, 1)
+    r = rush["all"]["all"]
+    assert (r["n"], r["entered"], r["entered_rate"]) == (4, 3, 0.75)
+    assert (r["pull_n"], r["pull_rate"], r["pull_s_p50"]) == (2, 2 / 3, 7.0)
+    assert (r["scv_lost_p50"], r["kills_p50"], r["bunker_load_n"], r["bunker_load_rate"], r["focus_hhi_p50"]) == (2, 1, 2, 2 / 3, 0.75)
+    held = rush["all"]
+    assert (held["held_s"]["n"], held["held_s"]["entered"], held["not_held_s"]["n"], held["not_held_s"]["entered"]) == (3, 2, 1, 1)
+    assert (held["held_8m"]["n"], held["held_8m"]["entered"], held["not_held_8m"]["entered"]) == (2, 2, 1), "scv_8m 12 and 9 held; 3 and none not"
+    assert rush["TvT"]["all"]["entered"] == 1 and rush["TvZ"]["not_held_8m"]["pull_rate"] == 0.0
+    # An empty group: no entries, rates empty.
+    none = tables.ops_tables({1: rows[0]}, {})
+    assert none[0]["all"]["n"] == 0 and none[1]["all"]["all"]["entered_rate"] is None and none[1]["all"]["held_s"]["pull_rate"] is None
+    # --json carries both tables per stage; --ops off leaves them out; --ops live reads the rows' own values.
+    out = tmp_path / "t.json"
+    tables.main([str(job), "--cache", str(tmp_path / "cache"), "--json", str(out)])
+    j = json.loads(out.read_text(encoding="utf-8"))[f"{job.name}/tvz_bc"]
+    assert j["ops"]["all"]["mined"]["median"] == 4500.0 and j["rush_combat"]["all"]["all"]["entered"] == 3
+    assert "ops" not in tables.job_tables(job, tmp_path / "cache", lin=LIN, ops="off")[f"{job.name}/tvz_bc"]
+    live_rows = [{**rows[0], "model": {**rows[0]["model"], **ops_value(777, rush=rush_value(pull_s=1.0))}}, rows[1]]
+    live = tables.job_tables(make_job(tmp_path / "l", "tvz_bc", live_rows), tmp_path / "cache", lin=LIN, ops="live")
+    (lt,) = live.values()
+    assert lt["ops_source"] == "live" and lt["ops"]["all"]["n"] == 1 and lt["ops"]["all"]["missing"] == 1
+    assert lt["ops"]["all"]["mined"]["median"] == 777 and lt["rush_combat"]["all"]["all"]["pull_s_p50"] == 1.0
+
+
+def test_ops_stage_runs_opsdump_from_our_slot_052_r7(tmp_path, monkeypatch):
+    """052-R7: each replay is measured from the row's slot and cached; a cached line of the same slot is reused, of
+    another slot measured again; a failure is reported and not cached; no replay = no value, no call."""
+    stage = tmp_path / "stage"
+    (stage / "replays").mkdir(parents=True)
+    for n in (1, 2, 3):
+        (stage / "replays" / f"g{n}.rep").write_bytes(b"rep")
+    binary = tmp_path / "uranium-replay"
+    binary.write_bytes(b"")
+    calls = []
+
+    def fake(b, rep, slot):
+        calls.append((rep.name, slot))
+        return {"rep": rep.name, "error": "desync"} if rep.name == "g3.rep" else {"rep": rep.name, "perspective": slot, "frames": 1, **ops_value(8)}
+
+    monkeypatch.setattr(ec, "_opsdump", fake)
+    cache = tmp_path / "cache"
+    write_ops(cache, 2, ops_value(16), slot=0)  # another slot than the row's 1: measured again
+    got, failed = ec.ops_stage(stage, {1: 0, 2: 1, 3: 0, 4: 1}, cache, binary=binary, jobs=2)
+    assert sorted(calls) == [("g1.rep", 0), ("g2.rep", 1), ("g3.rep", 0)]
+    assert sorted(got) == [1, 2] and got[2]["perspective"] == 1 and failed == {3: "desync"}
+    assert not (cache / "g3.ops.json").exists() and json.loads((cache / "g2.ops.json").read_text(encoding="utf-8"))["perspective"] == 1
+    calls.clear()
+    got, failed = ec.ops_stage(stage, {1: 0, 2: 1, 3: 0}, cache, binary=binary)
+    assert calls == [("g3.rep", 0)] and sorted(got) == [1, 2], "cached lines reused, the failure tried again"
+    with pytest.raises(SystemExit, match="cargo build"):
+        ec.ops_stage(stage, {3: 0}, tmp_path / "c2", binary=tmp_path / "missing")
+
+
+def test_ops_tables_on_every_menu_052_r8(tmp_path):
+    """052-R8 / 052-AC3: ops and rush_combat are tables on every point's menu (not jobs; Checkpoint 1 gets them as new
+    metrics from replay values); the protocol plans and their conditions are unchanged, so the same request makes the
+    same job (test_job_written_and_recorded_050_r9, test_conditions_frozen_050_ac5)."""
+    for m in ("ops", "rush_combat"):
+        assert LIN["metric"][m]["kind"] == "games_table" and LIN["metric"][m]["source"] == "replay"
+    for pt in LIN["point"]:
+        assert {"ops", "rush_combat"} <= set(pt["optional"]) and not {"ops", "rush_combat"} & set(pt["metrics"]), pt["id"]
+        protocol.check_metric(LIN, pt, "ops")
+        protocol.check_new_measurement(LIN, "ck1", "rush_combat", pt)
+    for pid, h in FROZEN.items():
+        assert LIN["plan"][pid]["conditions_sha256"] == h
+    ck = fake_checkpoint(tmp_path)
+    with pytest.raises(SystemExit, match="REFUSED: metric ops is a table of the point's game jobs"):
+        protocol.main(job_args(tmp_path, ck, "ops"))
+    assert not (tmp_path / "eval").exists()
+
+
 # ------------------------------------------------------------------ diagnostics (050-R9 cue_diag, dead_channels)
 
 CUE, DEAD = LIN["metric"]["cue_diag"], LIN["metric"]["dead_channels"]
@@ -685,7 +804,7 @@ def test_diag_settings_are_the_tools_050_r9():
     assert "count|focus_rows" in TEACHER["probes"]["expect_skipped"] and "intervene" in TEACHER and "intervene" not in HUMAN
     assert (HUMAN["games"], HUMAN["seed"], HUMAN["splits"]) == (500, 1, ["val", "test"]) and HUMAN["datasets"] == LIN["metric"]["val500"]["datasets"]
     # AMB-050-5: training-log records only, Checkpoint 1 not measured
-    assert DEAD["kind"] == "diag_train_log" and "ck1" in DEAD["not_measured"] and LIN["lineage"]["ck1"]["new_metrics"] == ["cue_diag"]
+    assert DEAD["kind"] == "diag_train_log" and "ck1" in DEAD["not_measured"] and LIN["lineage"]["ck1"]["new_metrics"] == ["cue_diag", "ops", "rush_combat"]
     # AMB-050-6: s1e2 diagnostics at the final checkpoint only
     assert [p["id"] for p in LIN["point"] if p.get("diag_final_only")] == ["s1e2"]
     for pt in LIN["point"]:
