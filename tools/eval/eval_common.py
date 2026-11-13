@@ -320,7 +320,8 @@ OPS_CACHE_VERSION = 1
 
 def _opsdump(binary: Path, rep: Path, slot: int) -> dict:
     """One `uranium-replay opsdump --perspective <slot>` line; {"error": ...} when it fails."""
-    p = subprocess.run([str(binary), "opsdump", "--perspective", str(slot), str(rep)], capture_output=True, text=True)
+    # opsdump writes UTF-8 (a replay path may hold any script); not the Windows locale codepage.
+    p = subprocess.run([str(binary), "opsdump", "--perspective", str(slot), str(rep)], capture_output=True, text=True, encoding="utf-8", errors="replace")
     lines = [l for l in p.stdout.splitlines() if l.strip()]
     if p.returncode != 0 or len(lines) != 1:
         return {"error": (p.stderr.strip().splitlines() or [f"exit {p.returncode}"])[-1]}
