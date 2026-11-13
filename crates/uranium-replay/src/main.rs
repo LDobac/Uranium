@@ -46,6 +46,9 @@ enum Cmd {
         until_frame: u32,
         #[arg(long, default_value_t = uranium_replay::opsdump::STRIDE)]
         stride: u32,
+        /// 052-AC2 rehearsal: also print the mined fields' depletion (`field_check`).
+        #[arg(long)]
+        field_check: bool,
     },
     /// 040-AC1: compare per-player command counts and APM with the screp reference parser.
     /// Play a replay in OpenBW replay mode and report the 040-R8 desync signals as JSON.
@@ -328,15 +331,15 @@ fn main() -> Result<()> {
                 println!("{}", load(p)?.cmddump(&p.to_string_lossy()));
             }
         }
-        Cmd::Opsdump { reps, perspective, until_frame, stride } => {
+        Cmd::Opsdump { reps, perspective, until_frame, stride, field_check } => {
             use uranium_replay::opsdump::{line, measure, perspective_slots};
             anyhow::ensure!(stride >= 1, "--stride must be at least 1");
             let cfg = uranium_replay::play::PlayConfig::from_env(uranium_replay::play::work_dir_default())?;
             for p in &reps {
                 let name = p.to_string_lossy();
                 let out: Vec<_> = match load(p).and_then(|rep| perspective_slots(&rep, perspective).map(|s| (rep, s))) {
-                    Ok((rep, slots)) => slots.into_iter().map(|slot| line(&name, Some(slot), Some(rep.header.frames), measure(&rep, slot, &cfg, until_frame, stride))).collect(),
-                    Err(e) => vec![line(&name, perspective, None, Err(e))],
+                    Ok((rep, slots)) => slots.into_iter().map(|slot| line(&name, Some(slot), Some(rep.header.frames), measure(&rep, slot, &cfg, until_frame, stride), field_check)).collect(),
+                    Err(e) => vec![line(&name, perspective, None, Err(e), field_check)],
                 };
                 for l in out {
                     println!("{}", serde_json::to_string(&l)?);

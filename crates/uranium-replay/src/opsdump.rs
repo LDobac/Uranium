@@ -11,7 +11,7 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 use sha2::Digest as _;
-use uranium_env::ops::{OpsMetrics, OpsTracker, RushCombat};
+use uranium_env::ops::{FieldCheck, OpsMetrics, OpsTracker, RushCombat};
 
 use crate::Replay;
 use crate::play::{PlayConfig, play_stride, slot_of, terran_perspectives};
@@ -41,7 +41,7 @@ pub fn perspective_slots(rep: &Replay, slot: Option<u8>) -> Result<Vec<u8>> {
 
 /// One output line (052 Interfaces), keys in this order: `{"rep", "perspective", "frames", "ops",
 /// "rush_combat"}`; a replay that could not be read or played gets `ops` / `rush_combat` null and
-/// an `error`.
+/// an `error`. `--field-check` (052-AC2 rehearsal only) adds `field_check` at the end.
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct OpsLine {
     pub rep: String,
@@ -53,18 +53,24 @@ pub struct OpsLine {
     pub rush_combat: Option<RushCombat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field_check: Option<FieldCheck>,
 }
 
-pub fn line(rep: &str, slot: Option<u8>, frames: Option<u32>, res: Result<(OpsMetrics, Option<RushCombat>)>) -> OpsLine {
-    let base = OpsLine { rep: rep.to_string(), perspective: slot, frames, ops: None, rush_combat: None, error: None };
+/// One replay's measurement: the two session objects and the 052-AC2 field check.
+pub type Measured = (OpsMetrics, Option<RushCombat>, FieldCheck);
+
+/// The output line of one measurement; `field_check` only when asked for (`--field-check`).
+pub fn line(rep: &str, slot: Option<u8>, frames: Option<u32>, res: Result<Measured>, field_check: bool) -> OpsLine {
+    let base = OpsLine { rep: rep.to_string(), perspective: slot, frames, ops: None, rush_combat: None, error: None, field_check: None };
     match res {
-        Ok((ops, rush)) => OpsLine { ops: Some(ops), rush_combat: rush, ..base },
+        Ok((ops, rush, fc)) => OpsLine { ops: Some(ops), rush_combat: rush, field_check: field_check.then_some(fc), ..base },
         Err(e) => OpsLine { error: Some(format!("{e:#}")), ..base },
     }
 }
 
-/// Plays `rep` from BWAPI slot `slot` and returns the tracker's two objects.
-pub fn measure(rep: &Replay, slot: u8, cfg: &PlayConfig, until: u32, stride: u32) -> Result<(OpsMetrics, Option<RushCombat>)> {
+/// Plays `rep` from BWAPI slot `slot` and returns the tracker's two objects and its field check.
+pub fn measure(rep: &Replay, slot: u8, cfg: &PlayConfig, until: u32, stride: u32) -> Result<Measured> {
     let id = rep.header.players.get(slot as usize).with_context(|| format!("no player in slot {slot}"))?.id;
     let chk: String = sha2::Sha256::digest(&rep.map).iter().map(|b| format!("{b:02x}")).collect();
     let tracker: std::cell::RefCell<Option<Result<OpsTracker>>> = std::cell::RefCell::new(None);
@@ -87,7 +93,7 @@ pub fn measure(rep: &Replay, slot: u8, cfg: &PlayConfig, until: u32, stride: u32
     )?;
     let t = tracker.into_inner().context("bridge sent no GameInfo")??;
     res.completed()?;
-    Ok((t.ops(), t.rush_combat()))
+    Ok((t.ops(), t.rush_combat(), t.field_check()))
 }
 
 #[cfg(test)]
@@ -128,10 +134,14 @@ mod tests {
     /// an error.
     #[test]
     fn line_format_052_r7() {
-        let ok = serde_json::to_string(&line("g1.rep", Some(0), Some(9_000), Ok((Default::default(), None)))).unwrap();
+        let ok = serde_json::to_string(&line("g1.rep", Some(0), Some(9_000), Ok((Default::default(), None, Default::default())), false)).unwrap();
         assert!(ok.starts_with(r#"{"rep":"g1.rep","perspective":0,"frames":9000,"ops":{"end_s":0.0,"#), "{ok}");
         assert!(ok.ends_with(r#""float_gas_rs":0.0},"rush_combat":null}"#), "{ok}");
-        let bad = serde_json::to_string(&line("g2.rep", Some(1), None, Err(anyhow::anyhow!("launcher exited")))).unwrap();
+        let bad = serde_json::to_string(&line("g2.rep", Some(1), None, Err(anyhow::anyhow!("launcher exited")), true)).unwrap();
         assert_eq!(bad, r#"{"rep":"g2.rep","perspective":1,"frames":null,"ops":null,"rush_combat":null,"error":"launcher exited"}"#);
+        // 052-AC2: --field-check appends the check after rush_combat.
+        let fc = FieldCheck { depleted: 24, fields: 2, unknown_fields: 0, scvs: 3 };
+        let ok = serde_json::to_string(&line("g1.rep", Some(0), Some(9_000), Ok((Default::default(), None, fc)), true)).unwrap();
+        assert!(ok.ends_with(r#""rush_combat":null,"field_check":{"depleted":24,"fields":2,"unknown_fields":0,"scvs":3}}"#), "{ok}");
     }
 }
