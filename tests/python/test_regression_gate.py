@@ -157,6 +157,43 @@ def test_unfinished_t0_job_is_missing_050_r10(tmp_path):
     assert {x["result"] for x in rg.judge_games(base, done)} == {"PASS"}
 
 
+def test_undecodable_lines_are_missing_050_r10(tmp_path):
+    """050-R9 / 050-R10: a corrupt line in a job's files fails closed. A lost Aborted ledger entry would turn an
+    invalid opponent-crash game into a counted win with no `missing` sign, and a lost counted row makes the game
+    missing; either way every race of the games checks (1, 3b) is MISSING with the undecodable-line note."""
+    crash = {"game_id": 100040, "outcome": "Aborted", "detail": "launcher exit codes [Some(0), None]"}
+
+    def job(name, rows, ledger=None):
+        j = t0_tp_job(tmp_path, name, rows, ledger)
+        for n in range(1, 65):
+            dump(tmp_path / "cache" / j.name / "t0_tp" / f"g{n}.json", [build(500, 10, 10, 109)])
+        return j
+
+    base = rg.t0_tp_counts(job("base", [row(n, n % 2 == 1) for n in range(1, 65)]), tmp_path / "cache", LIN)
+    cj = job("cand", [row(n, n % 2 == 1) for n in range(1, 65)], [crash])
+    cand = rg.t0_tp_counts(cj, tmp_path / "cache", LIN)
+    assert cand["protoss"]["invalid"] == 1 and cand["skipped_lines"] == []
+    assert {x["result"] for x in rg.judge_games(base, cand)} == {"PASS"}
+    # the Aborted entry corrupted: game 40 would count again, so nothing is judged
+    line = json.dumps(crash).encode()
+    (cj / "games" / "h.jsonl").write_bytes(line[:30] + b"\x00" * 20 + b"\n")
+    lost = rg.t0_tp_counts(cj, tmp_path / "cache", LIN)
+    assert lost["protoss"]["invalid"] == 0 and lost["protoss"]["missing"] == 0 and len(lost["skipped_lines"]) == 1
+    c = rg.judge_games(base, lost)
+    assert {x["result"] for x in c} == {"MISSING"} and {x["race"] for x in c} == {"terran", "protoss"}
+    assert all(x["note"] == "1 undecodable lines in the job files: 0 (baseline) / 1 (candidate)" for x in c)
+    assert {x["result"] for x in rg.judge_games(lost, base)} == {"MISSING"}
+    # a counted row corrupted: that game becomes missing
+    (cj / "games" / "h.jsonl").write_bytes(line + b"\n")
+    f = cj / "results" / "h.jsonl"
+    lines = f.read_bytes().splitlines(keepends=True)
+    f.write_bytes(b"".join(lines[:4]) + lines[4][:25] + b"\n" + b"".join(lines[5:]))  # game 5 (Terran)
+    bad = rg.t0_tp_counts(cj, tmp_path / "cache", LIN)
+    assert bad["terran"]["missing"] == 1 and len(bad["skipped_lines"]) == 1
+    c = rg.judge_games(base, bad)
+    assert {x["result"] for x in c} == {"MISSING"} and all("undecodable lines" in x["note"] for x in c)
+
+
 def test_gate_cli_end_to_end_050_ac5(tmp_path):
     """main(): bc-eval JSONs and t0_tp jobs in, one verdict per check and the JSON out."""
     base_rows = [row(n, n % 2 == 1, bunker_s=None) for n in range(1, 65)]

@@ -98,35 +98,44 @@ _BLANK = b"\x00 \t\r\n\f\v"
 
 
 class Rows(list):
-    """The rows of a job's JSONL files (a plain list of dicts) with `skipped`: the lines that did not decode,
-    as {"file", "line" (from 1), "error"}. Lines that are empty once NUL bytes and whitespace are stripped
-    are not rows and not counted (050-R9)."""
+    """The rows of a job's JSONL files (a plain list of dicts) with `skipped`: the lines (pieces between NUL
+    runs) that did not decode, as {"file", "line" (from 1), "error"}. Lines that are empty once NUL bytes and
+    whitespace are removed are not rows and not counted (050-R9)."""
 
     def __init__(self, rows=(), skipped=()):
         super().__init__(rows)
         self.skipped: list[dict] = list(skipped)
 
 
+_WARNED: set[tuple[str, int, int, str]] = set()  # (file, line, piece, error) already warned in this process
+
+
 def read_jsonl_dir(d: Path) -> Rows:
     """Every row of d/*.jsonl, files in name order. A result file on the shared drive can hold write
-    corruption (a line of NUL bytes, a truncated last line): a line empty after stripping NULs and
-    whitespace is ignored, any other line that does not decode to a JSON object is skipped with a warning
-    naming the file and line and counted in `skipped`; every decodable row is kept (050-R9)."""
+    corruption (a run of NUL bytes, a truncated line): a line is split at NUL runs and each piece read on its
+    own, so a row written after NULs on the same line is kept. A piece empty after stripping whitespace is
+    ignored; any other piece that does not decode to a JSON object is skipped with a warning naming the file
+    and line (once per process) and counted in `skipped` (050-R9). Rows damaged in place but still valid
+    JSON cannot be told apart."""
     out = Rows()
     for f in sorted(d.glob("*.jsonl")):
         for i, line in enumerate(f.read_bytes().splitlines(), start=1):
-            s = line.strip(_BLANK)
-            if not s:
-                continue
-            try:
-                r = json.loads(s.decode("utf-8"))  # UnicodeDecodeError and JSONDecodeError are ValueErrors
-                if not isinstance(r, dict):
-                    raise ValueError(f"not a JSON object ({type(r).__name__})")
-            except ValueError as e:
-                print(f"warning: {f}:{i}: skipped an undecodable line ({e})", file=sys.stderr)
-                out.skipped.append({"file": f.name, "line": i, "error": str(e)})
-                continue
-            out.append(r)
+            for j, piece in enumerate(re.split(rb"\x00+", line)):
+                s = piece.strip(_BLANK)
+                if not s:
+                    continue
+                try:
+                    r = json.loads(s.decode("utf-8"))  # UnicodeDecodeError and JSONDecodeError are ValueErrors
+                    if not isinstance(r, dict):
+                        raise ValueError(f"not a JSON object ({type(r).__name__})")
+                except ValueError as e:
+                    key = (str(f), i, j, str(e))
+                    if key not in _WARNED:
+                        _WARNED.add(key)
+                        print(f"warning: {f}:{i}: skipped an undecodable line ({e})", file=sys.stderr)
+                    out.skipped.append({"file": f.name, "line": i, "error": str(e)})
+                    continue
+                out.append(r)
     return out
 
 

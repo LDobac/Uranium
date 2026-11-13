@@ -627,7 +627,7 @@ def markdown(rows: list[dict]) -> list[str]:
         lo, hi = ec.wilson(tot["won"], tot["n"]) if tot["n"] else (0.0, 0.0)
         flag = f" (MISMATCH: {'; '.join(r['t0_100_problems'])})" if r["t0_100_problems"] else ""
         if t.get("skipped_lines"):
-            flag += f" (skipped {len(t['skipped_lines'])} undecodable result line(s))"
+            flag += f" (skipped {len(t['skipped_lines'])} undecodable result / ledger line(s))"
         cells = [wdl(by.get(f"stochastic vs {x}", {"won": 0, "lost": 0, "draw": 0})) for x in RACES]
         L.append(f"| {lab}{flag} | " + " | ".join(cells) + f" | {wdl(tot)} | {100 * tot['won'] / max(tot['n'], 1):.0f}% [{100 * lo:.0f}, {100 * hi:.0f}] |")
     return L
