@@ -1031,6 +1031,19 @@ def cmd_check_diag(a) -> None:
 # ---------------------------------------------------------------- commands
 
 
+def job_names(job: str, groups: dict[bool, list]) -> dict[bool, str]:
+    """Job folder name of each zero_last_failed group (050-R9): `job` alone for one group, else
+    `job-<metrics of the group>`. One metric can have plans in both groups (ac1 on a BC point: ac1_stoch_lf0
+    with zero_last_failed true, ac1_stoch_real / ac1_argmax_real false); groups whose metric names coincide
+    get -lf0 (true) / -real (false) after them, the plan id suffixes of the two ac1 conditions."""
+    if len(groups) == 1:
+        return {zlf: job for zlf in groups}
+    base = {zlf: job + "-" + "-".join(dict.fromkeys(m for m, _, _ in items)) for zlf, items in groups.items()}
+    out = {zlf: n + ("-lf0" if zlf else "-real") if list(base.values()).count(n) > 1 else n for zlf, n in base.items()}
+    assert len(set(out.values())) == len(out), out
+    return out
+
+
 def cmd_job(a) -> None:
     lin = load_lineage()
     pt = point(lin, a.point)
@@ -1061,10 +1074,9 @@ def cmd_job(a) -> None:
     bots = oss_bots(plans)
     bot_hashes = check_bots(hosts, bots, Path(a.bot_hashes) if a.bot_hashes else None) if bots else {}
     out_root = Path(a.out_root) if a.out_root else ec.shared_dir() / "eval"
-    many = len(groups) > 1
+    names = job_names(a.job, groups)
     for zlf, items in groups.items():
-        name = a.job + ("-" + "-".join(dict.fromkeys(m for m, _, _ in items)) if many else "")
-        d = out_root / name
+        d = out_root / names[zlf]
         if a.dry_run:
             print(f"[dry run] {d}: " + ", ".join(p for _, p, _ in items))
             continue
@@ -1347,7 +1359,7 @@ def main(argv=None) -> None:
     s.add_argument("--point", required=True)
     s.add_argument("--checkpoint", required=True, help="relative to URANIUM_SHARED_DIR")
     s.add_argument("--metrics", required=True, help="comma separated game metrics of the point's menu")
-    s.add_argument("--job", required=True, help="job folder name under <shared>/eval (per zero_last_failed group: -<metrics>)")
+    s.add_argument("--job", required=True, help="job folder name under <shared>/eval (per zero_last_failed group: -<metrics>, plus -lf0 / -real when two groups have the same metrics)")
     s.add_argument("--label", default=None, help="stage name prefix (default the run name)")
     s.add_argument("--hosts", default=str(HOSTS))
     s.add_argument("--bot-hashes", default=None, help="file of `<addr> <bot> <sha256>` lines for hosts without local / ssh")

@@ -125,6 +125,13 @@ def test_t0_tp_counts_from_a_job_050_r10(tmp_path):
     c = rg.t0_tp_counts(job, tmp_path / "cache", LIN)
     assert c["terran"] == {"n": 3, "won": 1, "bunker_order_4m": 1, "bunker_unit_4m": 1, "dumped": 3, "invalid": 0, "games": 32, "missing": 29}
     assert c["protoss"] == {"n": 2, "won": 1, "bunker_order_4m": 0, "bunker_unit_4m": 1, "dumped": 1, "invalid": 1, "games": 32, "missing": 29}
+    assert c["skipped_lines"] == []
+    # 050-R9: a NUL line is ignored, a truncated line is skipped and counted; the decodable rows are kept
+    f = job / "results" / "h.jsonl"
+    f.write_bytes(f.read_bytes() + b"\x00" * 64 + b"\n" + b'{"game_id": 100036, "won"\n')
+    c2 = rg.t0_tp_counts(job, tmp_path / "cache", LIN)
+    assert {r: c2[r] for r in ("terran", "protoss")} == {r: c[r] for r in ("terran", "protoss")}
+    assert [(s["file"], s["line"]) for s in c2["skipped_lines"]] == [("results/h.jsonl", 8)]
     with pytest.raises(SystemExit, match="0 stages of the protocol plan t0_tp"):
         rg.t0_tp_counts(make_job(tmp_path / "m", "macro", []), tmp_path / "cache", LIN)
 

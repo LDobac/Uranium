@@ -347,6 +347,23 @@ def test_job_written_and_recorded_050_r9(tmp_path, monkeypatch):
     assert any("uncommitted protocol files" in p for p in protocol.verify_job(LIN, tvz, "m2", protocol.point(LIN, "s2e2")))
 
 
+def test_job_ac1_alone_gets_distinct_names_050_r9(tmp_path, monkeypatch):
+    """--metrics ac1 on a BC point has plans in both zero_last_failed groups (ac1_stoch_lf0 true, ac1_stoch_real /
+    ac1_argmax_real false): two jobs j-ac1-lf0 / j-ac1-real, not two of the same name. With another metric the
+    group names differ already and stay as they were (j-t0_300-ac1, j-ac1)."""
+    monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
+    protocol.checkpoint_sha256.cache_clear()
+    ck = fake_checkpoint(tmp_path)
+    protocol.main(job_args(tmp_path, ck, "ac1"))
+    assert sorted(p.name for p in (tmp_path / "eval").iterdir()) == ["j-ac1-lf0", "j-ac1-real"]
+    for name, zlf, plans in (("j-ac1-lf0", True, ["ac1_stoch_lf0"]), ("j-ac1-real", False, ["ac1_stoch_real", "ac1_argmax_real"])):
+        rec = json.loads((tmp_path / "eval" / name / "protocol.json").read_text(encoding="utf-8"))
+        assert rec["zero_last_failed"] is zlf and [p["plan"] for p in rec["plans"]] == plans
+    g = {True: [("t0_300", "t0_300", ""), ("ac1", "ac1_stoch_lf0", "")], False: [("ac1", "ac1_stoch_real", "")]}
+    assert protocol.job_names("j", g) == {True: "j-t0_300-ac1", False: "j-ac1"}
+    assert protocol.job_names("j", {True: g[True]}) == {True: "j"}
+
+
 def test_dirty_protocol_files_refused_050_ac5(tmp_path, monkeypatch):
     monkeypatch.setattr(protocol, "git_state", lambda: {**CLEAN_GIT, "protocol_files_dirty": True, "dirty_paths": ["tools/eval/tables.py"], "dirty_diff_sha256": "c" * 64})
     ck = fake_checkpoint(tmp_path)
@@ -460,6 +477,35 @@ def test_model_rows_highest_attempt_050_r9():
     ]
     got = ec.model_rows(rows, 1)
     assert sorted(got) == [1, 2] and got[1]["model"]["scv_8m"] == 9 and got[2]["model"]["scv_8m"] == 5
+
+
+def test_corrupt_result_lines_skipped_and_counted_050_r9(tmp_path, capsys):
+    """Shared-drive write corruption in results/*.jsonl and games/*.jsonl: a line of NUL bytes is not a row and
+    not counted; NULs around a row are stripped and the row kept; a truncated line is skipped with a warning
+    naming file and line and counted in `skipped_lines` of the tables; every decodable row is kept."""
+    rows = [row(1, True), row(2, False), row(3, None)]
+    job = make_job(tmp_path, "tvz_bc", [], [{"game_id": 100009, "outcome": "Finished", "detail": None}])
+    (job / "results" / "h.jsonl").write_bytes(
+        (json.dumps(rows[0]) + "\n").encode() + b"\x00" * 300 + b"\n"
+        + b"\x00\x00" + (json.dumps(rows[1]) + "\n").encode()
+        + json.dumps(rows[2])[:40].encode() + b"\n"
+        + (json.dumps(rows[2]) + "\r\n").encode())
+    (job / "games" / "h.jsonl").write_bytes(b'{"game_id": 100009, "outco\n[1, 2]\n' + b"\x00" * 8)
+    got = ec.read_results(job)
+    assert list(got) == rows
+    assert [(s["file"], s["line"]) for s in got.skipped] == [("h.jsonl", 4)]
+    assert ec.read_ledger(job) == [] and len(ec.read_ledger(job).skipped) == 2
+    err = capsys.readouterr().err
+    assert f"{job / 'results' / 'h.jsonl'}:4: skipped an undecodable line" in err
+    assert f"{job / 'games' / 'h.jsonl'}:2: skipped an undecodable line (not a JSON object (list))" in err
+    (t,) = tables.job_tables(job, tmp_path / "cache", lin=LIN).values()
+    assert t["rows"] == 3
+    assert [(s["file"], s["line"]) for s in t["skipped_lines"]] == [("results/h.jsonl", 4), ("games/h.jsonl", 1), ("games/h.jsonl", 2)]
+    tables.print_tables({"tvz_bc/tvz_bc": t})
+    assert "SKIPPED 3 undecodable line(s) of the job (counted as no row): results/h.jsonl:4, games/h.jsonl:1, games/h.jsonl:2" in capsys.readouterr().out
+    clean = make_job(tmp_path / "clean", "tvz_bc", rows)
+    (t,) = tables.job_tables(clean, tmp_path / "cache", lin=LIN).values()
+    assert t["skipped_lines"] == [] and t["rows"] == 3
 
 
 def test_wilson_and_fisher_050_r2():

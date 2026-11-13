@@ -14,6 +14,7 @@ import math
 import os
 import re
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -93,14 +94,52 @@ def job_stages(job: Path) -> list[tuple[int, Path, dict]]:
     return out
 
 
-def read_results(job: Path) -> list[dict]:
-    """Every row of the job's results/*.jsonl, files in name order (a later row of a game wins)."""
-    rows = []
-    for f in sorted((job / "results").glob("*.jsonl")):
-        for line in f.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                rows.append(json.loads(line))
-    return rows
+_BLANK = b"\x00 \t\r\n\f\v"
+
+
+class Rows(list):
+    """The rows of a job's JSONL files (a plain list of dicts) with `skipped`: the lines that did not decode,
+    as {"file", "line" (from 1), "error"}. Lines that are empty once NUL bytes and whitespace are stripped
+    are not rows and not counted (050-R9)."""
+
+    def __init__(self, rows=(), skipped=()):
+        super().__init__(rows)
+        self.skipped: list[dict] = list(skipped)
+
+
+def read_jsonl_dir(d: Path) -> Rows:
+    """Every row of d/*.jsonl, files in name order. A result file on the shared drive can hold write
+    corruption (a line of NUL bytes, a truncated last line): a line empty after stripping NULs and
+    whitespace is ignored, any other line that does not decode to a JSON object is skipped with a warning
+    naming the file and line and counted in `skipped`; every decodable row is kept (050-R9)."""
+    out = Rows()
+    for f in sorted(d.glob("*.jsonl")):
+        for i, line in enumerate(f.read_bytes().splitlines(), start=1):
+            s = line.strip(_BLANK)
+            if not s:
+                continue
+            try:
+                r = json.loads(s.decode("utf-8"))  # UnicodeDecodeError and JSONDecodeError are ValueErrors
+                if not isinstance(r, dict):
+                    raise ValueError(f"not a JSON object ({type(r).__name__})")
+            except ValueError as e:
+                print(f"warning: {f}:{i}: skipped an undecodable line ({e})", file=sys.stderr)
+                out.skipped.append({"file": f.name, "line": i, "error": str(e)})
+                continue
+            out.append(r)
+    return out
+
+
+def read_results(job: Path) -> Rows:
+    """Every row of the job's results/*.jsonl, files in name order (a later row of a game wins);
+    `skipped` lists the lines that did not decode (read_jsonl_dir)."""
+    return read_jsonl_dir(job / "results")
+
+
+def skipped_lines(results: list[dict], ledger: list[dict]) -> list[dict]:
+    """{"file": "results/<name>" | "games/<name>", "line", "error"} of the lines read_results / read_ledger skipped."""
+    return [{**s, "file": f"{sub}/{s['file']}"} for sub, rows in (("results", results), ("games", ledger))
+            for s in getattr(rows, "skipped", [])]
 
 
 # Session game ids (crates/uranium-runner/src/eval.rs hostd_id): attempt * 10,000,000 + stage * 100,000 + n.
@@ -140,13 +179,9 @@ def model_rows(rows: list[dict], stage: int) -> dict[int, dict]:
     return {n: r for n, (_, r) in best.items()}
 
 
-def read_ledger(job: Path) -> list[dict]:
-    rows = []
-    for f in sorted((job / "games").glob("*.jsonl")):
-        for line in f.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                rows.append(json.loads(line))
-    return rows
+def read_ledger(job: Path) -> Rows:
+    """Every row of the job's games/*.jsonl (the game ledger), skipping undecodable lines as read_results."""
+    return read_jsonl_dir(job / "games")
 
 
 _EXITS = re.compile(r"launcher exit codes \[([^\]]*)\]")
