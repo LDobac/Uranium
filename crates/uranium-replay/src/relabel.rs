@@ -149,7 +149,7 @@ pub fn read_decision_log(path: &std::path::Path) -> DecisionLogRead {
 /// replay's (`incomplete`: another game's log, or no final frame to tell).
 pub fn bind_log(read: &DecisionLogRead, me: u8, replay_frames: u32) -> Result<&ModelLog, MemoryCheck> {
     let DecisionLogRead::Complete(log) = read else { return Err(MemoryCheck::without_log(read)) };
-    let not = |status, reason: String| Err(MemoryCheck { status, reason: Some(reason), decisions: log.decisions.len(), checked: 0, mismatched: 0 });
+    let not = |status, reason: String| Err(MemoryCheck { status, reason: Some(reason), decisions: log.decisions.len(), checked: 0, mismatched: 0, decision_steps: None });
     if log.player != me {
         return not("other_player", format!("the log is player {}'s, this view is player {me}'s", log.player));
     }
@@ -223,6 +223,32 @@ pub fn step_memory(log: &[LoggedDecision], step_frames: &[u32]) -> Vec<Vec<Memor
     out
 }
 
+/// 041-R28 decision-time steps (2026-11-13, user decision 2026-11-13; 051-R13 ④): in a build without
+/// relabelling whose log is used, every logged decision (NoOp ones included) gets a step at its
+/// playback frame L - 2 (`playback_frame`) up to `limit`, unless a label step is already at that
+/// frame. There is no clean label for a step between two command labels (the earlier label's
+/// delay already reaches the next one, 040-R4 / 031-R11), so the added step's label is `unknown`
+/// (031-AC3: BC weight 0, not a 040-R19 invalid label) with the frames to the next step (the
+/// game end after the last one) as its delay: an observation / memory only row (`memory_action`,
+/// 041-R28 ③), not a BC training sample. `labels` stay sorted by frame; returns the steps added.
+pub fn add_decision_steps(labels: &mut Vec<crate::label::Label>, log: &[LoggedDecision], limit: u32, end_frame: u32) -> usize {
+    use crate::label::{Label, UNKNOWN_ACTION};
+    let have: std::collections::HashSet<u32> = labels.iter().map(|l| l.frame).collect();
+    let mut add: Vec<u32> = log.iter().map(|(l, _)| playback_frame(*l)).filter(|p| *p <= limit && !have.contains(p)).collect();
+    add.sort_unstable();
+    add.dedup();
+    let n = add.len();
+    labels.extend(add.into_iter().map(|frame| Label { frame, action: UNKNOWN_ACTION, delay: 0, queued: false, selected: Vec::new(), target_unit: None, target_tile: None }));
+    labels.sort_by_key(|l| l.frame); // stable: the existing labels keep their order
+    for i in 0..labels.len() {
+        if labels[i].is_unknown() && labels[i].delay == 0 && !have.contains(&labels[i].frame) {
+            let next = labels.get(i + 1).map_or(end_frame, |l| l.frame);
+            labels[i].delay = next.saturating_sub(labels[i].frame).max(1);
+        }
+    }
+    n
+}
+
 /// 041-R28 ④ / ⑤ record (`memory` of a written relabelled perspective, build records).
 #[derive(serde::Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct MemoryCheck {
@@ -238,6 +264,11 @@ pub struct MemoryCheck {
     /// not the perspective's own units at their playback frame (041-R28 ⑤).
     pub checked: usize,
     pub mismatched: usize,
+    /// 041-R28 decision-time steps (2026-11-13, builds without relabelling): observation / memory
+    /// only steps added at the decisions' playback frames ([`add_decision_steps`]); absent when
+    /// none are added (relabelled builds, logs not used).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision_steps: Option<usize>,
 }
 
 impl MemoryCheck {
@@ -247,13 +278,13 @@ impl MemoryCheck {
             DecisionLogRead::Incomplete(r) => ("incomplete", Some(r.clone())),
             DecisionLogRead::Complete(_) => unreachable!("a complete log is checked"),
         };
-        Self { status, reason, decisions: 0, checked: 0, mismatched: 0 }
+        Self { status, reason, decisions: 0, checked: 0, mismatched: 0, decision_steps: None }
     }
 
     /// The unit check of a complete log: `ok` unless more than 1% mismatch.
     pub fn checked(decisions: usize, checked: usize, mismatched: usize) -> Self {
         let bad = checked > 0 && mismatched as f64 / checked as f64 > MEMORY_MISMATCH_MAX;
-        Self { status: if bad { "unit_mismatch" } else { "ok" }, reason: None, decisions, checked, mismatched }
+        Self { status: if bad { "unit_mismatch" } else { "ok" }, reason: None, decisions, checked, mismatched, decision_steps: None }
     }
 
     pub fn ok(&self) -> bool {

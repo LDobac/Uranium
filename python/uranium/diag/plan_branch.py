@@ -8,19 +8,22 @@ whose `models/A_k<k>.pt` are the S0b predictor A (and whose `s0*.json` M3b ΔQ i
 bunker effects).
 
 Fields read (051 "Interfaces"; extra fields are ignored):
+Field names follow `uranium_env::branch` (`PointRecord`, `BranchRecord`, `RuleLog`, `Samples`,
+`DilutionEntry`, `BranchEnd`):
 - point: `point` (id `<trunk id>#<rule>`), `trunk` {`id`?, `replay` (path, relative to `--root` /
   URANIUM_SHARED_DIR / `<dir>`), `replay_sha256`?, `start`? (own start slot, scalar_cat[2])}, `f_t`,
   `scalar_t`?, `checkpoint_sha256`?, `valid`, `skip_reason`.
 - branch: `point`, `alt` (name), `rules` [{`op`, `action` (id or 034 name), `from_s`, `to_s`}],
-  `repeat`, `valid`, `invalid`, `intervention` [per rule: `applied`, `frame` (int or "missed") or
-  `missed`, `rejected`], `samples` {name: {`frame`, `scalar`} or null} (or a list of such with `name`),
-  `metrics` {...}, `dilution` {...}, `end` {...}.
+  `repeat`, `valid`, `invalid` {`reason`, ...}, `intervention` [per rule: `applied`, `force_frame`,
+  `missed`, `rejected`], `samples` {`t60`, `t120`, `t240`, `horizon`, `d8`, `d32`: {`frame`, `scalar`}
+  or null}, `metrics` {...}, `dilution` [{`action`, `first_frame`, `picks_30s`}], `end`
+  {`result`, `end_frame`, `reason`, `before_horizon`}.
 - An outcome name (`--outcomes`) is read from `metrics`, then `end`, then the branch line itself, or
   as a dotted path (`end.frame`); `own@<sample>:<column>` is the own-state column (`plan_dump.own_columns`)
   of a sample's scalar vector. true / false read as 1 / 0; a missing value leaves the branch out of
   that outcome. The default outcomes are those of 051-R11 ④ (`OUTCOMES`, and `own@<s>:<c>` for the
   samples `--own-samples` and the columns `--own-cols`, `plan_s0.OWN_HEADLINE`); the sample names
-  (`OWN_SAMPLES`, `--sample-k8` / `--sample-k32`) and `end.before_h` must match the branch writer.
+  (`OWN_SAMPLES`, `--sample-k8` / `--sample-k32`) and `end.before_horizon` must match the branch writer.
 
 Tables (bootstrap: whole trunks with replacement, `--boot` draws, fixed `--boot-seed`; one set of draws
 for every alternative and outcome, so they are paired):
@@ -44,8 +47,10 @@ for every alternative and outcome, so they are paired):
 4. h'_t, o_t and π(c|t) are the dump row of the point (051-R13 ④): live frame f_t -> playback frame
    f_t - `--row-lag` (041-R28 ②, the game-start observation at 1) in the game of the trunk replay
    (sha256; several views of one replay: `trunk.start`, else the view whose own state equals
-   own(scalar_t)). Points without a row are left out of M3u / M2c and counted (with the distance to
-   the nearest row of the game). Optional alternatives (`ban`, several rules) get table 1 only.
+   own(scalar_t)). Exact frames only: the trunk build adds a step at every logged decision's playback
+   frame (041-R28 decision-time steps, user decision 2026-11-13), so the row exists by construction
+   when the trunk's log was used; points without one (a log not used, another build) are left out of
+   M3u / M2c and counted (with the distance to the nearest row of the game). Optional alternatives (`ban`, several rules) get table 1 only.
 5. Invalid branches by reason, per alternative the refused / missed rates of its `force` rules, and the
    dilution numbers (051-R9 ③, means of the numeric leaves).
 No thresholds (AMB-051-5 기본안(미확정): report only).
@@ -70,9 +75,9 @@ from uranium.diag.plan_dump import own_columns, own_state
 SCV8 = pp.Q_NAMES.index("scv8")  # the q̂ head of 8:00 SCVs >= 8 (= 050-R6 ③, held_8m)
 GAME_START_FRAME = 1
 # 051-R11 ④ (AMB-051-4): main results, then the auxiliary 050 metrics and the end before the horizon
-OUTCOMES = ("held_8m", "held_s", "scv_8m", "scv_min_1m", "bunker_s", "barracks_s", "army_s", "end.before_h")
+OUTCOMES = ("held_8m", "held_s", "scv_8m", "scv_min_1m", "bunker_s", "barracks_s", "army_s", "end.before_horizon")
 # 051-R9 ① sample names: f_t + 60 / 120 / 240 s, the horizon H, the 8th / 32nd decision after t
-OWN_SAMPLES = ("60s", "120s", "240s", "H", "dec8", "dec32")
+OWN_SAMPLES = ("t60", "t120", "t240", "horizon", "d8", "d32")
 
 
 def add_args(p) -> None:
@@ -91,8 +96,8 @@ def add_args(p) -> None:
     p.add_argument("--m3u-outcome", default="held_8m", help="the measured outcome M3u compares with the scv8 head (050-R6 ③)")
     p.add_argument("--baseline", default="none", help="alternative the effects are taken against (051-R7 no intervention)")
     p.add_argument("--ks", default="8,32", help="predictor k of M3u / M2c (models A_k<k>.pt)")
-    p.add_argument("--sample-k8", default="dec8", help="branch sample of the 8th decision after t (M2c k = 8)")
-    p.add_argument("--sample-k32", default="dec32", help="branch sample of the 32nd decision after t (M2c k = 32)")
+    p.add_argument("--sample-k8", default="d8", help="branch sample of the 8th decision after t (M2c k = 8)")
+    p.add_argument("--sample-k32", default="d32", help="branch sample of the 32nd decision after t (M2c k = 32)")
     p.add_argument("--row-lag", type=int, default=2, help="live frame f_t -> dump row at playback frame f_t - lag (041-R28 ②)")
     p.add_argument("--boot", type=int, default=2000)
     p.add_argument("--boot-seed", type=int, default=7)
@@ -563,7 +568,13 @@ def diagnostics(B: Branches) -> dict:
 
 
 def _leaves(d, prefix=""):
-    if isinstance(d, dict):
+    """(dotted key, number) of every numeric leaf; a list of `{action, ...}` entries (051-R9 ③
+    `DilutionEntry`) is keyed by the action."""
+    if isinstance(d, list):
+        for i, v in enumerate(d):
+            key = v.get("action", i) if isinstance(v, dict) else i
+            yield from _leaves({k: x for k, x in v.items() if k != "action"} if isinstance(v, dict) else v, f"{prefix}{key}.")
+    elif isinstance(d, dict):
         for k, v in d.items():
             yield from _leaves(v, f"{prefix}{k}.")
     elif isinstance(d, (int, float)) and not isinstance(d, bool):

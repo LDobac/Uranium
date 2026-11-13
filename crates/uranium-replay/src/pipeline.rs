@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 
 use crate::label::{Coverage, Labeler};
 use crate::play::{PlayConfig, PlayResult, play_observe, play_with, slot_of};
+use crate::relabel::MemoryCheck;
 use crate::shard::{GameMeta, ShardGame, ShardWriter, Step, result_source};
 use crate::{Replay, cmd, header};
 
@@ -401,6 +402,10 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
     // 040-R21: `--until-frame n` keeps only the steps observed at frames <= n (the label coverage
     // still counts the whole game; the result is the game's).
     cut_after(&mut labels, until_frame, |l| l.frame);
+    // 041-R28 decision-time steps (user decision 2026-11-13, 051-R13 ④): builds without relabelling
+    // whose log is used also observe every logged decision's playback frame.
+    let limit = until_frame.map_or(last, |u| u.min(last));
+    let decision_steps = decision_steps(o.relabel.is_some(), bound.as_ref(), &own_at, last, limit, rep.header.frames, &mut labels);
     let frames: Vec<u32> = labels.iter().map(|l| l.frame).collect();
     // Replay B: decision-time observations. B stops at every base stop of A (or T, 041-R22), so
     // they form the 040-R8 double-replay check (check_digest hashes the base stops only and
@@ -429,8 +434,26 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
     let Some(game_info) = res.game_info else {
         return Ok(Err(Outcome::Error { reason: "bridge sent no GameInfo (AMB-040-6)".into() }));
     };
-    let memory = bound.map(|b| attach_memory(&mut steps, b, last, &own_at));
+    let memory = bound.map(|b| MemoryCheck { decision_steps, ..attach_memory(&mut steps, b, last, &own_at) });
     Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info, repeats_dropped, memory }))
+}
+
+/// 041-R28 decision-time steps (2026-11-13): adds them ([`crate::relabel::add_decision_steps`]) only
+/// in a build without relabelling (`relabelled` false) whose log is bound to the view and passes the
+/// ⑤ unit check (the log will fill the memory); relabelled builds and unused logs keep `labels` as
+/// they are. Returns the steps added (`None` = not this build's case).
+pub fn decision_steps(
+    relabelled: bool,
+    bound: Option<&Result<&crate::relabel::ModelLog, MemoryCheck>>,
+    own_at: &HashMap<u32, std::collections::HashSet<u32>>,
+    last: u32,
+    limit: u32,
+    end_frame: u32,
+    labels: &mut Vec<crate::label::Label>,
+) -> Option<usize> {
+    let Some(Ok(log)) = bound.filter(|_| !relabelled) else { return None };
+    let (checked, mismatched) = crate::relabel::unit_check(&log.decisions, last, own_at);
+    MemoryCheck::checked(log.decisions.len(), checked, mismatched).ok().then(|| crate::relabel::add_decision_steps(labels, &log.decisions, limit, end_frame))
 }
 
 /// 041-R28 ② / ④ / ⑤: fills every step's `memory_action` from a decision log bound to this view
@@ -909,60 +932,102 @@ mod tests {
         assert!(check_build_args("botgen", false, Some(Path::new("no/such/memory"))).is_err());
     }
 
-    /// 041-R28 ② ④ ⑤ on a build without relabelling (051-R13 ④): the steps are the replay's own
-    /// command labels (any frames, not the teacher cadence), and a trunk's 051-R2 act log fills each
-    /// step with the model decisions of live frames [live_{i-1}, live_i), exactly as the equivalent
+    /// 041-R28 ② ④ ⑤ and decision-time steps (user decision 2026-11-13, 051-R13 ④) on a build without
+    /// relabelling: the replay's own command labels (any frames) get one observation / memory only step
+    /// (`unknown`, BC weight 0) at each logged decision's playback frame L - 2 (NoOp decisions too, none
+    /// where a label already is), so every decision has its exact row; the trunk's 051-R2 act log fills
+    /// each step with the decisions of live frames [live_{i-1}, live_i), exactly as the equivalent
     /// 041-R28 decision log would; the scripted session's act log beside it is not used.
     #[test]
-    fn act_log_memory_on_command_label_steps_051_r13() {
-        use crate::act_log::tests::{end_line, obs_line};
+    fn act_log_memory_and_decision_steps_051_r13_041_r28() {
+        use crate::act_log::tests::{log_text, obs_line};
         use crate::act_log::{parse_memory_log, read_memory_logs};
+        use crate::label::{Label, UNKNOWN_ACTION};
         use crate::relabel::bind_logs;
         let dir = std::env::temp_dir().join(format!("uranium-act-mem-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        // Live decisions at 1, 9, 17, 25 (forced prefix, then free); the replay is 500 frames long.
-        let ours = [
-            obs_line(0, 1, Some((0, 0, vec![])), true),
-            obs_line(1, 9, Some((4, 2, vec![5])), true),
-            obs_line(2, 17, Some((7, 1, vec![5, 6])), false),
-            obs_line(3, 25, Some((0, 3, vec![])), false),
-            end_line(4, 4, 498, 0, "model:x"),
-        ]
-        .join("\n");
+        // Live decisions at 1, 9, 17, 25 (forced prefix, then free; 0 = NoOp); the replay is 500 frames.
+        let ours = log_text(
+            vec![obs_line(0, 1, Some((0, 0, vec![])), true), obs_line(1, 9, Some((4, 2, vec![5])), true), obs_line(2, 17, Some((7, 1, vec![5, 6])), false), obs_line(3, 25, Some((0, 3, vec![])), false)],
+            498,
+            0,
+            "model:x",
+        );
         std::fs::write(dir.join("g3-p0.jsonl"), &ours).unwrap();
-        std::fs::write(dir.join("g3-p1.jsonl"), format!("{}\n{}", obs_line(0, 1, None, false), end_line(1, 0, 498, 1, "t0@3:zerg_rush"))).unwrap();
+        std::fs::write(dir.join("g3-p1.jsonl"), log_text(vec![obs_line(0, 1, None, false)], 498, 1, "t0@3:zerg_rush")).unwrap();
         let logs = read_memory_logs(&dir, Path::new("replays/g3.rep"));
         assert_eq!(logs.len(), 1);
         let own: HashMap<u32, std::collections::HashSet<u32>> = HashMap::from([(7, [5].into()), (15, [5, 6].into())]);
-        let run = |logs: &[crate::relabel::DecisionLogRead]| {
-            let mut s = crate::shard::tests::game(1).steps;
-            // Command label steps (playback frames 1, 11, 20): live frames 1, 13, 22.
-            for (st, f) in s.iter_mut().zip([1u32, 11, 20]) {
-                st.raw_frame.frame = f;
-            }
-            let r = attach_memory(&mut s, bind_logs(logs, 0, 500), 500, &own);
-            (r, s.into_iter().map(|x| x.memory_action.map(|v| v.into_iter().map(|a| a.action).collect::<Vec<_>>())).collect::<Vec<_>>())
+        let label = |frame, action, delay| Label { frame, action, delay, queued: false, selected: vec![], target_unit: None, target_tile: None };
+        // Command label steps at playback frames 1, 11, 20 (live 1, 13, 22).
+        let commands = vec![label(1, 0, 10), label(11, 4, 9), label(20, 7, 480)];
+        let run = |logs: &[crate::relabel::DecisionLogRead], relabelled: bool| {
+            let bound = bind_logs(logs, 0, 500);
+            let mut labels = commands.clone();
+            let added = decision_steps(relabelled, Some(&bound), &own, 500, 500, 500, &mut labels);
+            let tpl = crate::shard::tests::game(1).steps[0].clone();
+            let mut s: Vec<Step> = labels.iter().map(|l| Step { raw_frame: uranium_proto::RawFrame { frame: l.frame, ..tpl.raw_frame.clone() }, action_label: l.clone(), ..tpl.clone() }).collect();
+            let r = MemoryCheck { decision_steps: added, ..attach_memory(&mut s, bound, 500, &own) };
+            (r, labels, s.into_iter().map(|x| x.memory_action.map(|v| v.into_iter().map(|a| a.action).collect::<Vec<_>>())).collect::<Vec<_>>())
         };
-        let (r, got) = run(&logs);
-        assert_eq!((r.status, r.decisions, r.checked, r.mismatched), ("ok", 4, 2, 0));
-        assert_eq!(got, vec![Some(vec![]), Some(vec![0, 4]), Some(vec![7])]);
-        // The same decisions as a 041-R28 decision log give the same memory.
-        let dl = parse_memory_log(&[
-            r#"{"frame":1,"action":0,"delay_bucket":0,"units":[]}"#,
-            r#"{"frame":9,"action":4,"delay_bucket":2,"units":[5]}"#,
-            r#"{"frame":17,"action":7,"delay_bucket":1,"units":[5,6]}"#,
-            r#"{"frame":25,"action":0,"delay_bucket":3,"units":[]}"#,
-            r#"{"decisions":4,"end_frame":498,"player":0}"#,
-        ]
-        .join("\n"))
+        let (r, labels, got) = run(&logs, false);
+        assert_eq!((r.status, r.decisions, r.checked, r.mismatched, r.decision_steps), ("ok", 4, 2, 0, Some(3)));
+        // Decision rows at playback 7, 15, 23 (live 9, 17, 25); live 1 is the existing game-start step.
+        assert_eq!(labels.iter().map(|l| (l.frame, l.is_unknown(), l.delay)).collect::<Vec<_>>(), vec![(1, false, 10), (7, true, 4), (11, false, 9), (15, true, 5), (20, false, 480), (23, true, 477)]);
+        assert!(labels.iter().filter(|l| l.is_unknown()).all(|l| l.action == UNKNOWN_ACTION && l.selected.is_empty()));
+        // Memory before each observation: the decisions made on earlier live observations.
+        assert_eq!(got, vec![Some(vec![]), Some(vec![0]), Some(vec![4]), Some(vec![]), Some(vec![7]), Some(vec![])]);
+        // The same decisions as a 041-R28 decision log give the same steps and memory.
+        let dl = parse_memory_log(
+            &[
+                r#"{"frame":1,"action":0,"delay_bucket":0,"units":[]}"#,
+                r#"{"frame":9,"action":4,"delay_bucket":2,"units":[5]}"#,
+                r#"{"frame":17,"action":7,"delay_bucket":1,"units":[5,6]}"#,
+                r#"{"frame":25,"action":0,"delay_bucket":3,"units":[]}"#,
+                r#"{"decisions":4,"end_frame":498,"player":0}"#,
+            ]
+            .join("\n"),
+        )
         .unwrap();
-        assert_eq!(run(&[dl]), (r, got));
-        // No act log of the view's player: every step None.
-        let (r, got) = run(&[]);
-        assert_eq!(r.status, "missing");
+        assert_eq!(run(&[dl], false), (r, labels, got));
+        // No act log of the view's player: no steps added, every step None.
+        let (r, labels, got) = run(&[], false);
+        assert_eq!((r.status, r.decision_steps), ("missing", None));
+        assert_eq!(labels, commands);
         assert!(got.iter().all(Option::is_none));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 041-R28 decision-time steps are for builds without relabelling whose log is used: a relabelled
+    /// (DAgger) build's labels, and so its shard steps, stay byte for byte what they were; so do the
+    /// labels of a game whose log fails the ⑤ unit check. `--until-frame` bounds the added steps.
+    #[test]
+    fn decision_steps_leave_relabel_builds_unchanged_041_r28() {
+        use crate::label::Label;
+        use crate::relabel::{DecisionLogRead, ModelLog, bind_log};
+        use crate::shard::MemoryAction;
+        let label = |frame, action, delay| Label { frame, action, delay, queued: false, selected: vec![5], target_unit: None, target_tile: Some((3, 4)) };
+        let teacher = vec![label(1, 0, 8), label(7, 12, 8), label(15, 4, 8), label(23, 0, 8)];
+        let m = |action, units: Vec<u32>| MemoryAction { action, delay_bucket: 1, units };
+        let read = DecisionLogRead::Complete(ModelLog { decisions: vec![(5, m(4, vec![5])), (13, m(0, vec![])), (30, m(7, vec![5]))], end_frame: Some(500), player: 0 });
+        let bound = bind_log(&read, 0, 500);
+        let own: HashMap<u32, std::collections::HashSet<u32>> = HashMap::from([(3, [5].into()), (28, [5].into())]);
+        let bytes = |l: &Vec<Label>| postcard::to_allocvec(l).unwrap();
+        let mut relabelled = teacher.clone();
+        assert_eq!(decision_steps(true, Some(&bound), &own, 500, 500, 500, &mut relabelled), None);
+        assert_eq!(bytes(&relabelled), bytes(&teacher), "a relabelled build gets no decision steps");
+        // Unit check failed (selections not own units): the log is not used, nothing added.
+        let mut failed = teacher.clone();
+        assert_eq!(decision_steps(false, Some(&bound), &HashMap::new(), 500, 500, 500, &mut failed), None);
+        assert_eq!(bytes(&failed), bytes(&teacher));
+        // Without relabelling: playback 3 and 28 are added, 11 too (NoOp); --until-frame 20 keeps 3 and 11.
+        let mut cut = teacher.clone();
+        assert_eq!(decision_steps(false, Some(&bound), &own, 500, 20, 500, &mut cut), Some(2));
+        assert_eq!(cut.iter().map(|l| l.frame).collect::<Vec<_>>(), vec![1, 3, 7, 11, 15, 23]);
+        // The existing labels are unchanged (their delays included).
+        assert_eq!(cut.iter().filter(|l| !l.is_unknown()).cloned().collect::<Vec<_>>(), teacher);
+        assert_eq!(decision_steps(false, None, &own, 500, 500, 500, &mut teacher.clone()), None);
     }
 
     #[test]
