@@ -288,7 +288,8 @@ def _scout_fixed(op: int, h: str) -> tuple[bool, int, int]:
     """(ground move?, x, y) of `scout_3m_fixed` (050-R9, 2026-11-14 개정, 사용자 결정 2026-11-14): the payload as
     stored (crates/uranium-replay label.rs / relabel.rs): x bytes 0-1, y 2-3, target 4-5, unit type 6-7, then
     the order byte (0x15 only) and queued. A ground right click (target 0 or 0xFFFF, label.rs `valid_tag`) or a
-    targeted Move order."""
+    targeted Move order. The stream does not tell the selected unit's type, so a ground right click with one
+    building selected (a CC / Barracks rally point) also counts; SCV intent is not enforced."""
     x, y, tag = u16(h, 0), u16(h, 2), u16(h, 4)
     far = op == OP_ORDER and int(h[16:18], 16) == ORDER_MOVE or op == OP_RCLICK and tag in (0, 0xFFFF)
     return far, x, y
@@ -298,7 +299,8 @@ def analyze_both(path: Path) -> tuple[dict, int | None, int | None]:
     """First build-order frame per unit type and the frame of the first single-SCV far move before 3:00 (scout) of
     the Terran player, up to 8:00: (first, scout by the old reading `scout_3m`, scout by the fixed reading
     `scout_3m_fixed`). The rest of the rule is the same for both (runs/dagger/test_table.py, runs/adv8/cmds.py):
-    one unit selected by the last select command, more than 1,200 px Manhattan from the first build tile."""
+    one unit selected by the last select command (of any type: "single-SCV" is the intent, not checked), more than
+    1,200 px Manhattan from the first build tile."""
     d = json.loads(path.read_text(encoding="utf-8"))
     tp = [p["id"] for p in d["players"] if p.get("race") == RACE_TERRAN][0]
     first, base, last_sel = {}, None, 0
