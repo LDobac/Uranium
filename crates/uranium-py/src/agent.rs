@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use numpy::{IntoPyArray, PyArrayMethods, PyReadonlyArray1, PyUntypedArrayMethods};
+use numpy::{IntoPyArray, PyReadonlyArray1, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};

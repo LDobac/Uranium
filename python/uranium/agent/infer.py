@@ -65,15 +65,20 @@ def zero_rows(s, rows: torch.Tensor):
 
 
 def state_to_host(s, slot: int) -> tuple[list, list]:
-    """032-R16: row `slot` of a Core state on the host: (float32 arrays flat, shapes with batch 1)
-    in `leaves` order (bools as 0/1; every state tensor is f32 or bool, so the values are exact)."""
+    """032 §2.4 `state_to_host` (032-R16) for one slot: row `slot` of the server's recurrent state
+    (the Core state, with `outer` also the outer LSTM state) on the host as a `HostState`'s parts:
+    (float32 arrays flat, shapes with batch 1) in `leaves` order (bools as 0/1; every state tensor
+    is f32 or bool, so the values are exact). A module function over the whole state, like
+    `select_rows` / `scatter_rows`, rather than a Core method: the outer LSTM state is not the Core's."""
     ts = [t[slot:slot + 1].float().cpu() for t in leaves(s)]
     return [t.reshape(-1).numpy() for t in ts], [list(t.shape) for t in ts]
 
 
 def state_from_host(s, parts: list, device: torch.device):
-    """051-R4 / 032-R16: a batch-1 state of `s`'s structure from host parts [(shape, float32
-    values)] as `state_to_host` gives them; bit for bit the state they came from. `ValueError` when
+    """032 §2.4 `state_from_host` (032-R16, 051-R4): a batch-1 state of `s`'s structure (the
+    server's state stands in for the Core's own knowledge of its structure) from host parts
+    [(shape, float32 values)] as `state_to_host` gives them; bit for bit the state they came from,
+    ready for `scatter_rows`. `ValueError` when
     the part count, a shape (against one row of `s`) or a bool part's values (0/1) do not fit: a
     state of another model or Core kind."""
     ls = leaves(s)
@@ -340,14 +345,19 @@ class InferenceServer(threading.Thread):
         step computes K/V from them with the current weights (as after a 032-R16 swap), so the
         restored layer inputs fully determine the next act."""
         errors = []
+        # `scatter_rows` is out of place: the server's state changes only once every restore is
+        # written, so another error midway (a device error) leaves it as it was and every
+        # restore of this work fails with it (`broker.fail`).
+        st = self.state
         for slot, parts in restores:
             try:
-                sub = state_from_host(self.state, parts, self.device)
+                sub = state_from_host(st, parts, self.device)
             except ValueError as e:
                 errors.append(str(e))
                 continue
-            self.state = scatter_rows(self.state, torch.tensor([slot], device=self.device), sub)
+            st = scatter_rows(st, torch.tensor([slot], device=self.device), sub)
             errors.append(None)
+        self.state = st
         self.broker.reply_restores(errors)
 
     @torch.no_grad()

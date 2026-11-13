@@ -113,21 +113,26 @@ def bits(state) -> list[tuple[list, bytes]]:
     return [(list(shape), np.asarray(v, dtype=np.float32).tobytes()) for shape, v in state]
 
 
+@pytest.mark.parametrize("k", [2, 5])
 @pytest.mark.parametrize("model2", [False, True], ids=["base", "model2"])
 @pytest.mark.parametrize("kind", ["Lstm", "Gtrxl"])
-def test_set_state_round_trip_and_resume_051_r4(tmp_path, kind, model2):
-    """051-R4 (032-R16): a second slot restores the first slot's state from before decision 5 of
+def test_set_state_round_trip_and_resume_051_r4(tmp_path, kind, model2, k):
+    """051-R4 (032-R16): a second slot restores the first slot's state from before decision k of
     12: `state()` -> `set_state()` -> `state()` is bit for bit, the other slot's state is untouched
-    (032-R14), and the 7 decisions after the restore (action, log-probs, value) are bit for bit
-    those of the uninterrupted slot, every batch one row. The GTrXL memory (4) and the outer
-    segment (4) both roll over after the restore."""
+    (032-R14), and the 12 - k decisions after the restore (action, log-probs, value) are bit for
+    bit those of the uninterrupted slot, every batch one row. k = 2: the GTrXL memory (4) is not
+    full yet (its valid mask has zeros); k = 5: the memory and the outer segment (4) both roll
+    over after the restore."""
     b, s = server(checkpoint(tmp_path, kind, model2), "argmax", 1)
-    r = _core.restore_play(b, 5, 12)
+    r = _core.restore_play(b, k, 12)
     stop(s)
     assert bits(r["restored"]) == bits(r["saved"]), "state() -> set_state() -> state() round trip"
     assert any(np.asarray(v).any() for _, v in r["saved"]), "a non-trivial state"
+    if kind == "Gtrxl":
+        mask = np.asarray(r["saved"][2][1])  # leaves: memory per layer (2), valid mask, [outer]
+        assert mask.sum() == min(k, 4), "GTrXL valid mask: k of 4 memory rows"
     assert bits(r["other_after"]) == bits(r["other_before"]), "032-R14: the other slot is unchanged"
-    assert len(r["straight"]) == 7
+    assert len(r["straight"]) == 12 - k
     assert r["resumed"] == r["straight"], "decisions after the restore = uninterrupted decisions"
 
 
@@ -190,13 +195,16 @@ def test_set_state_refuses_a_mismatch_051_r4(tmp_path):
 
 
 def test_restore_order_in_one_work_051_r4(tmp_path):
-    """051-R4: one work with a reset, a restore and a state read of the same slot is handled as
-    reset -> restore -> state read: the read gives the restored state."""
-    from uranium.agent.infer import leaves, rebuild, state_to_host
+    """051-R4 (051-AC2 order): one work with a reset, a restore and a state read of slot 1 and a
+    batch of slots 1 and 0 is handled as reset -> restore -> state read -> act: the read gives the
+    restored state, the batch acts from it (slot 0 from its own state), and the rows not in the
+    batch are unchanged (032-R14)."""
+    from uranium.agent.infer import leaves, rebuild, select_rows, state_to_host
+    from uranium.bench.inputs import random_obs
 
     class FakeBroker:
         checkpoint_id, temp, capacity, pad_entities, warmup_entities = "fake@0", 0.0, 3, 64, 0
-        restored = read = None
+        restored = read = out = None
 
         def reply_restores(self, errors):
             self.restored = errors
@@ -204,19 +212,32 @@ def test_restore_order_in_one_work_051_r4(tmp_path):
         def reply_states(self, parts, shapes):
             self.read = [(sh, p) for p, sh in zip(parts[0], shapes[0])]
 
-    net, _ = ckpt.load_model(checkpoint(tmp_path, "Gtrxl"), CPU)
+        def reply(self, *arrays):
+            self.out = arrays
+
+    net, _ = ckpt.load_model(checkpoint(tmp_path, "Gtrxl", True), CPU)
     fb = FakeBroker()
     srv = InferenceServer(fb, CPU, "f32", net=net)
     g = torch.Generator().manual_seed(1)
     rand = lambda t: torch.rand(t.shape, generator=g) > 0.5 if t.dtype == torch.bool else torch.randn(t.shape, generator=g)  # noqa: E731
     srv.state = rebuild(srv.state, iter([rand(t) for t in leaves(srv.state)]))
     host = lambda r: bits(zip(*reversed(state_to_host(srv.state, r))))  # noqa: E731
-    want, others = host(2), [host(0), host(2)]
+    want, row2 = host(2), host(2)
     parts, shapes = state_to_host(srv.state, 2)
-    srv.handle({"resets": [1], "restores": [(1, list(zip(shapes, parts)))], "states": [1], "batch": None})
+    # Expected: slot 1 acts from slot 2's state (restored after the reset), slot 0 from its own.
+    obs = random_obs(2, 64, net.cfg.input, CPU, torch.Generator().manual_seed(2))
+    start = select_rows(srv.state, torch.tensor([2, 0]))
+    with torch.no_grad():
+        exp = net.act(obs, start, 0.0)
+    batch = {"slots": [1, 0], "n": 64, **{k: v.numpy() for k, v in obs.items()}}
+    srv.handle({"resets": [1], "restores": [(1, list(zip(shapes, parts)))], "states": [1], "batch": batch})
     assert fb.restored == [None]
     assert bits(fb.read) == want, "the read sees the restore, not the reset"
-    assert [host(0), host(2)] == others, "032-R14: other rows unchanged"
+    lp, value = fb.out[6], fb.out[8]
+    assert lp.tobytes() == exp["log_prob"].numpy().tobytes() and value.tobytes() == exp["value"].reshape(-1).numpy().tobytes(), "the act sees the restore"
+    got = select_rows(srv.state, torch.tensor([1, 0]))
+    assert all(torch.equal(x, y.to(x.dtype)) for x, y in zip(leaves(got), leaves(exp["state"]))), "the act's state written to slots 1, 0"
+    assert host(2) == row2, "032-R14: the row outside the batch is unchanged"
 
 
 def test_close_stops_the_thread_and_frees_the_model_042(tmp_path):

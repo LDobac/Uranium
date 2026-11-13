@@ -162,7 +162,8 @@ fn set_state_restores_the_slot_051_r4() {
     assert_eq!(r.action.delay_bucket, 2, "the decision after the restore uses the restored state");
     assert_eq!(b.state().unwrap().parts[0].1, vec![3.0]);
     // Refused by the broker: not batch 1, values that do not fill the shape, no parts.
-    for bad in [HostState { parts: vec![(vec![2, 1], vec![0.0, 0.0])] }, HostState { parts: vec![(vec![1, 2], vec![0.0])] }, HostState::default()] {
+    let overflow = HostState { parts: vec![(vec![1, usize::MAX, 2], vec![0.0])] };
+    for bad in [HostState { parts: vec![(vec![2, 1], vec![0.0, 0.0])] }, HostState { parts: vec![(vec![1, 2], vec![0.0])] }, HostState::default(), overflow] {
         let e = b.set_state(bad).unwrap_err().to_string();
         assert!(e.contains("051-R4"), "{e}");
     }
