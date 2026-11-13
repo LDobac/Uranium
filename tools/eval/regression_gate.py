@@ -22,7 +22,9 @@ without the T0 games). 3a is a step mean (main-session interim decision 2026-11-
     python tools/eval/regression_gate.py --baseline-val <bc-eval json> --candidate-val <bc-eval json> \\
         --baseline-games <eval job dir> --candidate-games <eval job dir> [--json out.json] [--cache DIR]
 
-The job dirs are eval jobs (protocol.py job) with a stage whose plan is the protocol plan `t0_tp`; the T0
+The job dirs are eval jobs (protocol.py job) with a stage whose plan is the protocol plan `t0_tp` (or `t0_tp_rl`, an RL
+checkpoint's; since 2026-11-14 the gate also covers the distillation rounds, the fixed model D and the fixed-RL checks,
+044-R6 / R7 / R11); the T0
 bunker command streams come from `uranium-replay cmddump` like tables.py (cached under --cache).
 """
 
@@ -44,6 +46,8 @@ TOP1_DROP = 0.005   # (2) per-race val top-1 within -0.5 %p of the baseline
 NLL_RISE = 0.01     # (2) per-race val NLL within +0.01 of the baseline
 NLL_HEAD = "nll.action"  # (2) the action-type head NLL (user confirmed 2026-11-10, AMB-050-3)
 BUNKER_BEFORE = 4 * 60 * ec.FPS  # 3: before 4:00 = frame < 5,760
+# (1) / (3b) games: t0_tp, or t0_tp_rl at the 044-R11 fixed-RL checks (2026-11-14: the gate applies there too, 050-R10).
+T0_TP_PLANS = ("t0_tp", "t0_tp_rl")
 # Float slack of the inclusive boundaries (the inputs are rounded JSON floats).
 EPS = 1e-9
 PASS, FAIL, MISSING = "PASS", "FAIL", "MISSING"
@@ -150,9 +154,9 @@ def t0_tp_counts(job: Path, cache: Path, lin: dict | None = None) -> dict:
     `skipped_lines`: the job's undecodable result / ledger lines (eval_common.read_jsonl_dir); a game whose only row was on
     such a line is missing, so its race is not judged."""
     lin = lin or protocol.load_lineage()
-    stages = [(k, f, p) for k, f, p in ec.job_stages(job) if protocol.identify(lin, p) == "t0_tp"]
+    stages = [(k, f, p) for k, f, p in ec.job_stages(job) if protocol.identify(lin, p) in T0_TP_PLANS]
     if len(stages) != 1:
-        raise SystemExit(f"050-R10: {job} has {len(stages)} stages of the protocol plan t0_tp (want 1)")
+        raise SystemExit(f"050-R10: {job} has {len(stages)} stages of the protocol plan t0_tp / t0_tp_rl (want 1)")
     k, _, plan = stages[0]
     results, ledger = ec.read_results(job), ec.read_ledger(job)
     rows = ec.model_rows(results, k)
@@ -177,7 +181,7 @@ def t0_tp_counts(job: Path, cache: Path, lin: dict | None = None) -> dict:
             c["bunker_unit_4m"] += bs is not None and bs < 240
             if n in dumps:
                 c["dumped"] += 1
-                first = ec.analyze(dumps[n])[0]
+                first = ec.analyze(dumps[n], r.get("slot", 0))[0]  # TvT: the model's player at its slot (2026-11-14 fix)
                 c["bunker_order_4m"] += first.get(ec.BUNKER, tables.INF) < BUNKER_BEFORE
     return out
 

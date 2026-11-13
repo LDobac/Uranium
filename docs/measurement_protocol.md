@@ -7,10 +7,12 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 | 파일 | 내용 |
 |---|---|
 | `config/protocol/lineage.toml` | 경로 지점(`s1e1` … `rl-s3`), 지점별 지표 메뉴, 지표별 고정 조건, plan 템플릿의 조건 해시, Checkpoint 1 결과 위치(`ck1_outputs`), Checkpoint 1 보충 측정 칸(`ck1_supplement`), T1 플랫폼(`t1_platforms`) |
-| `config/plans/protocol/*.toml` | Checkpoint 1 측정 plan 사본 13개. 바뀌는 것은 이름(`@NAME@`)과 체크포인트(`@CHECKPOINT@`)뿐 |
+| `config/plans/protocol/*.toml` | Checkpoint 1 측정 plan 사본 13개와 `t0_tp_rl`(수정 RL 점검용, `t0_tp`에서 `zero_last_failed`만 false). 바뀌는 것은 이름(`@NAME@`)과 체크포인트(`@CHECKPOINT@`)뿐 |
 | `config/protocol/t1_bots.toml` | 허용하는 OSS 봇 바이너리 sha256(NDEBUG 빌드) |
 | `tools/eval/protocol.py` | job 생성·조건 검사·기록, Checkpoint 1 job 재집계, teacher-forced 명령, 봇 해시 확인, 비교 |
-| `tools/eval/tables.py` | 평가 job 결과 표(러시·운영형·T1·승률), 모든 단계의 052 `ops`·`rush_combat` 표 |
+| `tools/eval/tables.py` | 평가 job 결과 표(러시·운영형·T1·승률), 모든 단계의 052 `ops`·`rush_combat` 표, 테란·프로토스 상대 단계의 교사 모드 판 비율(050-R10) |
+| `tools/eval/regression_gate.py` | 050-R10 회귀 게이트(아래 "회귀 게이트") |
+| `tools/eval/distill_verdict.py` | 044-R6 증류 라운드 판정(아래 "증류 라운드 판정") |
 | `tools/eval/per_action.py`, `per_action_table.py` | 교사 보관분 행동별 채점과 표 |
 | `tools/eval/diag_table.py` | 진단(`cue_diag`·`dead_channels`) 출력 폴더의 표 |
 | `tools/eval/spatial_logs.py` | 학습 로그의 죽은 채널 기록(041-R25) 요약 |
@@ -24,6 +26,11 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 ## 지점과 지표
 
 - 지점: `s1e1`, `s1e2`, `s2e2`(BC 기준선), `mix-e1` … `mix-e10`, `r1`(Checkpoint 1), `r2`, `rl-s1`(Checkpoint 1 RL) … `rl-s3`. `python tools/eval/protocol.py list`로 본다.
+- Checkpoint 1 대응이 없는 경로 2 지점(050-R9 지점 표 2026-11-14 행, 044-R6·R7·R11): `ck1_checkpoint`가 없어 `--lineage ck1`은 거부한다.
+  - `d1`, `d2`: 증류 라운드(run `m2-distill-d<R>`만 받음, `run_pattern`). val 500(종족별), 교사 hold-out, T0 표준 테란·프로토스 각 32판, TvZ 32판, 러시 128판 + 운영형 40판, 교사 모드 판 비율, 진단.
+  - `D`: 경로 2 수정 모델(044-R7, 통과한 라운드의 체크포인트). Checkpoint 1 대응 모델 행과 같은 test 1,199, val 500(종족별), T1 300판, T0 표준 테란·프로토스. 진단은 그 라운드 지점과 같은 체크포인트·출력 폴더다.
+  - `rl-fix`: 경로 2 수정 RL 점검(044-R11, 150만 step마다). T0 표준 테란·프로토스(`t0_tp_rl`), TvZ(`tvz_rl`), 러시 128 + 운영형 40, 끝에 T1 300(`t1_rl`).
+  - 이 네 지점에도 050-R10 게이트를 적용하고 교사 모드 판 비율을 기록한다(050-R10).
 - `metrics`는 Checkpoint 1 경로에서 잰 지표다. 이 지표는 바로 비교할 수 있다. `optional`은 Checkpoint 1 값이 없는 지표다. 그중 050-R9 지점 표가 요구하는 칸은 `ck1_supplement`로 Checkpoint 1 쪽도 보충 측정할 수 있다.
 - 지표
 
@@ -38,6 +45,8 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 | `tvz` | T0 저그 32판 | seed 42069…42100, BC 계열 true / RL false |
 | `t0_100`·`t0_300`·`t0_600` | T0 3종족 | seed_base 42000 / 41300 / 41000, true(BC 계열만) |
 | `t0_tp` | T0 표준 테란·프로토스 각 32판(050-R10 ①) | T0 300의 맵 블록마다 첫 16 seed: T 41301–41316·41351–41366, P 41401–41416·41451–41466. stochastic, 60분, true |
+| `t0_tp`(RL) | 같은 64판, RL 점검용 plan `t0_tp_rl` | 같은 seed·조건, `zero_last_failed` false(050-R9 RL 규칙) |
+| `teacher_mode` | 교사 모드 판 비율(050-R10, 기록만). job이 아니라 `tables.py`가 T0·T1 단계의 테란·프로토스 상대 판마다 센다(아래 "지표 정의") | 명령 스트림(`uranium-replay cmddump`) |
 | `t1` | T1 봇 6종 × 50판 | seed_base 46000, BC 계열 true / RL false, NDEBUG 봇, 플랫폼 고정 |
 | `ac1` | 042-AC1 200판 | seed_base 42000(argmax 42200), BC 기준선은 a·b·c 세 plan |
 | `cue_diag` | 단서 진단(050-R9): 적 생산 건물 HP·착공의 지점별 ridge R²(h_t까지), 적 최대 관측 생산 건물 수, 반사실 개입 Δ | 교사 보관분 433판(저그, `diag dump --cf`, `probes --races Z --boot 500`, `intervene`)과 사람 TvT·TvP(val·test 각 500게임, `probes --races T,P --cap 60 --boot 300`), ROCm f32·레인 그룹 4(아래 4) |
@@ -48,7 +57,8 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
   - BC 기준선(`s2e2`): Linux ROCm 호스트
   - Checkpoint 1(`r1`): Windows 호스트
   - Checkpoint 1 RL(`rl-s1`): 둘 다(실제로 섞여 돌았다)
-  - `t1_platforms`가 없는 지점은 T1을 받지 않는다.
+  - `r2`: Windows. 경로 2의 Checkpoint 1 대응 모델은 r1·r2 중 041-R29 ④로 고르므로, r2도 그 모델 행의 칸(test, val 500 종족별, T1, T0 표준 테란·프로토스)을 `optional`로 받는다.
+  - `t1_platforms`가 없는 지점은 T1을 받지 않는다. `D`·`rl-fix`는 T1이 메뉴에 있지만 Checkpoint 1 대응이 없어 플랫폼이 정해지지 않았다(`t1_platforms_open`). 정해질 때까지 T1 job은 그 이유와 함께 거부한다.
 
 ## 재는 법
 
@@ -165,9 +175,10 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 - Checkpoint 1 경로에서 이미 잰 칸의 재측정(그 지점의 `ck1_supplement`와 진단 지표만 받는다)
 - 지점 메뉴에 없는 지표, 다른 계열의 plan(예: BC 지점에 `tvz_rl`)
 - 템플릿 조건 해시나 고정값(판 수·표집·`zero_last_failed`·`max_frames`)이 `lineage.toml`과 다를 때. 이름·체크포인트(p0·p1의 모델 모두)가 자리표시가 아닐 때
-- `m2` 경로인데 run 이름이 `m2-`로 시작하지 않을 때
+- `m2` 경로인데 run 이름이 `m2-`로 시작하지 않을 때, `run_pattern`이 있는 지점(`d1`·`d2`·`D`)에서 run 이름이 맞지 않을 때
+- Checkpoint 1 대응이 없는 지점(`d1`·`d2`·`D`·`rl-fix`)의 `--lineage ck1`
 - 체크포인트 가중치 파일이 없을 때
-- T1 job의 호스트 중 `platform`이 없거나 지점의 `t1_platforms`가 아닌 것이 있을 때
+- T1 job의 호스트 중 `platform`이 없거나 지점의 `t1_platforms`가 아닌 것이 있을 때, T1 플랫폼이 정해지지 않은 지점(`t1_platforms_open`)의 T1 job
 - job에 OSS 봇이 있는데, 호스트의 봇 해시를 읽을 수 없거나 `t1_bots.toml`에 없을 때. 호스트 목록에 `local = true`를 주거나, `ssh = "<별칭>"`과 `oss_bots_dir`(그 호스트의 `URANIUM_OSS_BOTS_DIR`)을 주거나, `--bot-hashes <파일>`(`<주소> <봇> <sha256>` 줄)을 준다.
 - 측정 파일(`tools/eval`, `config/plans/protocol`, `config/protocol`)에 커밋 안 된 변경이 있을 때. `--allow-dirty`면 경로와 diff 해시를 `protocol.json`에 기록하고 진행한다. `verify`는 그런 job을 표시한다.
 - git 작업 사본이 아닐 때
@@ -188,6 +199,12 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
   - `scout_3m`: 기존 값. 우클릭(0x14)·대상 지정 명령(0x15)의 y를 바이트 1~2, 대상을 2~3에서 읽어(실제는 y 2~3, 대상 4~5) 땅 우클릭을 못 세고 사실상 한 유닛 `Move`만 센다. 041-R22 ④·041-R29 ④ 정찰 문턱은 이 값으로 정했으므로 판정은 이 값으로 한다.
   - `scout_3m_fixed`: 바이트를 바로 읽은 값. 땅 우클릭(대상 0 또는 0xFFFF)과 `Move`를 센다. 기록·비교용. 선택한 유닛의 종류는 명령 스트림에 없어 SCV인지 보지 않으므로, 건물 1기를 고르고 멀리 땅을 우클릭한 랠리 지정도 정찰로 센다.
   - 둘 다 명령 스트림 캐시(`g<n>.json`)에서 집계 때마다 계산하므로 캐시를 지울 필요가 없다. `compare`는 두 JSON 중 한쪽에라도 이 키가 없으면(옛 JSON과 새 JSON의 비교 포함) 그 키를 건너뛴다.
+- 명령 스트림의 모델 플레이어: 테란이 하나면 그 플레이어, 테란끼리(TvT)면 세션 행 `slot` 자리의 플레이어(cmddump `players` 순서 = 세션 slot, TvP 판에서 확인). 2026-11-14 전에는 첫 테란을 읽어, `t0_tp` 테란전에서 모델이 slot 1인 판(32판 중 30판)은 상대 T0의 명령을 셌다. 영향은 회귀 게이트 3b의 테란전 `bunker_order_4m`뿐이다(러시·운영형은 저그전이라 같음).
+- 교사 모드 판(050-R10·044 용어, 원인 분석의 판별 규칙): 0~6분 분당 명령 < 150이고 4:00 전 리파이너리 지시가 없는 판.
+  - 분당 명령 = 모델 플레이어의 명령 스트림 항목(선택 명령 포함) 중 프레임 < 8,640인 것의 수 ÷ 6이다. 판이 6:00 전에 끝나도 6으로 나눈다. 비교는 정수로 한다(항목 수 < 900).
+  - 리파이너리 지시 = 프레임 < 5,760의 Build(0x0c) 명령 중 유닛 종류 110.
+  - 표: 상대 종족(plan의 p1 종족, 테란·프로토스)마다 명령 스트림이 있는 유효 판 중 교사 모드 판 수, 모드별 승·무·패와 10:00 전 패(`end_frame` < 14,400). 상대 크래시 판은 뺀다. 명령 스트림이 없는 판은 `no_stream`으로 따로 센다. JSON `counts`에 `teacher_mode vs <종족>` 줄이 있어 `compare`가 Fisher p를 낸다.
+  - 원인 분석 값과 같다(2026-11-14 확인): 테란전·프로토스전 교사 모드 판 경로 2 s2e2 0·0/32, mix-e7 18·19/32, r1 25·30/32, Checkpoint 1 r1 22·27/32. 모드별 승·10분 안 패도 원인 분석 표와 같다.
 - 운영형 경제: CC 지시 ≤ 5:00, `scv_8m` ≥ 16
   - 8:00 전에 끝난 판은 `scv_8m` ≥ 16 실패로 센다. Checkpoint 1 모델 표(`test_table.py`)와 같다.
   - Checkpoint 1 임시 결정 "섬멸 승으로 8:00 전에 끝난 판은 통과"는 교사 세션 표(`summary.md`의 T0 Terran sessions)에만 적용됐다. 이 규칙의 값은 JSON의 `scv_8m_16_winpass`로만 낸다(r1 31 → 37, r2 34 → 37, e10 26 → 32, Checkpoint 1 RL 37 → 37).
@@ -260,4 +277,25 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 | 3b | T0 테란·프로토스 판의 `bunker_order_4m`·`bunker_unit_4m` 비율 | 기준선 이하 |
 
 - 판정은 테란·프로토스 상대만 한다. 하나라도 FAIL이면 그 지점 결과와 함께 사용자에게 보고한다. 학습은 멈추지 않는다. 입력이 없는 검사는 MISSING이다. T0 job에 결과도 무효 표시도 없는 판이 남아 있으면(끝나지 않은 job) 1·3b는 MISSING이다.
+- 적용 지점(2026-11-14 추가): 증류 라운드, 수정 모델 D, 수정 RL 점검. RL 점검의 T0 job은 `t0_tp_rl` 단계를 쓰고 기준선은 그대로 `m2-s2e2`의 `t0_tp`다.
+- 3b 테란전 `bunker_order_4m`은 2026-11-14부터 모델 플레이어의 명령을 읽는다(위 "지표 정의"). 그 전 판정의 이 칸은 상대 T0의 명령이었다(경로 2 s2e2·e7·r1·r2 모두 1/32, 고친 값 10·19·18·23/32).
+
+## 증류 라운드 판정 (044-R6)
+
+- 명령: `python tools/eval/distill_verdict.py --round d1 --baseline-val <m2-s2e2 val500 json> --candidate-val <라운드 val500 json> --baseline-games <m2-s2e2 t0_tp job> --candidate-games <라운드 t0_tp job> --candidate-tvz <라운드 TvZ job> --candidate-rush <라운드 러시 job> --s-games <S의 t0_tp job> --s-rush <S의 러시 job> [--verdict <shared>/eval/m2-lineage/d1_first_test.verdict] [--json <파일>]`
+- S는 041-R29 ④ 선택 결과(Checkpoint 1 대응 모델)다. 같은 job이 TvZ와 T0 단계를 함께 가져도 된다(`-tvz-t0_tp`).
+- 판정(AMB-044-7, 경계는 통과)
+
+| 판정 | 조건 |
+|---|---|
+| `pass` | 050-R10 게이트 전부 PASS(1, 2, 3a, 3b) + TvZ 32판 ≥ 16승 + 늦은 막음(`held_8m`) ≥ 24/64 + 막음 합(이른 + 늦은 `held_8m`) ≥ S의 막음 합 − 6 |
+| `d2` | d1만. 통과하지 못했지만 T0 프로토스 승 ≥ S + 4이고 TvZ 유지(≥ 16승, 늦은 막음 ≥ 24/64) |
+| `stop` | TvZ 유지 실패 또는 T0 프로토스 승 < S + 4. d2가 통과하지 못하면 늘 `stop`(d2가 마지막) |
+| `incomplete` | 판정이 달린 입력이 없음(끝나지 않은 job, 깨진 줄, 게이트 검사 MISSING). 판정하지 않는다 |
+
+- 막음·TvZ는 세션 행으로 센다(`tables.py`와 같은 규칙, 상대 크래시 판 무효). 승 수는 무효 판을 뺀 절대 수다.
+- 교사 모드 판 비율(라운드와 S의 `t0_tp`)은 판정 파일에 기록만 한다.
+- 라운드 job의 `protocol.json`은 그 라운드 지점(`d1`·`d2`)이고 체크포인트가 하나여야 한다. 아니면 거부한다.
+- 판정 파일은 첫 줄이 판정, 나머지가 `# ` 줄(조건별 값)이다. 이미 있으면 덮어쓰지 않는다(041-R29 ⑨).
+- 어느 판정이든 결과를 사용자에게 보고하고 다음 단계는 사용자가 정한다(자동 정지 없음).
 - 게임 칸에는 Wilson 95% 구간과 Fisher p를 함께 낸다. 32판은 조건당 약 ±12%p 잡음이 있어 작은 차이는 사용자가 판단한다.

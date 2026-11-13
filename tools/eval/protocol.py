@@ -205,6 +205,7 @@ def check_new_measurement(lin: dict, lineage: str, metric: str, pt: dict) -> Non
     cells it has are re-tabulated from its existing outputs (`protocol.py tables`)."""
     if lineage not in lin["lineage"]:
         raise Refused(f"no lineage {lineage!r}")
+    no_counterpart(lineage, pt)
     why = lin["metric"].get(metric, {}).get("not_measured", {}).get(lineage)
     if why:
         raise Refused(f"{metric} of lineage {lineage}: {why}")
@@ -224,18 +225,32 @@ def run_of(checkpoint: str) -> str:
     return parts[i - 1] if i > 0 else parts[-1]
 
 
+def no_counterpart(lineage: str, pt: dict) -> None:
+    """050-R9 point table (2026-11-14, 044-R6 / R7 / R11): the distillation rounds, the fixed model D and the fixed
+    RL checks have no Checkpoint 1 counterpart (no `ck1_checkpoint`): nothing of the Checkpoint 1 lineage is
+    measured or re-tabulated there."""
+    if lineage == "ck1" and not pt.get("ck1_checkpoint"):
+        raise Refused(f"point {pt['id']} has no Checkpoint 1 counterpart (050-R9 point table): not a point of lineage ck1")
+
+
 def check_checkpoint(lin: dict, lineage: str, pt: dict, checkpoint: str) -> None:
     """Checkpoint 1 points take exactly their recorded checkpoint (or a copy with the same weights); other
-    lineages a run with their prefix."""
+    lineages a run with their prefix, and at a point with `run_pattern` (044: the distillation rounds
+    `m2-distill-d<R>`) a run whose name (prefix removed) matches it."""
     if lineage not in lin["lineage"]:
         raise Refused(f"no lineage {lineage!r}")
     if lineage == "ck1":
+        no_counterpart(lineage, pt)
         if checkpoint.replace("\\", "/").rstrip("/") != pt["ck1_checkpoint"] and checkpoint_sha256(checkpoint) != checkpoint_sha256(pt["ck1_checkpoint"]):
             raise Refused(f"point {pt['id']} of the Checkpoint 1 lineage is {pt['ck1_checkpoint']}, not {checkpoint}")
         return
     prefix = lin["lineage"][lineage]["run_prefix"]
-    if not run_of(checkpoint).startswith(prefix):
-        raise Refused(f"lineage {lineage} runs start with {prefix!r}; {checkpoint} is run {run_of(checkpoint)!r}")
+    run = run_of(checkpoint)
+    if not run.startswith(prefix):
+        raise Refused(f"lineage {lineage} runs start with {prefix!r}; {checkpoint} is run {run!r}")
+    pat = pt.get("run_pattern")
+    if pat and not re.fullmatch(pat, run[len(prefix):]):
+        raise Refused(f"point {pt['id']} takes runs {prefix}<{pat}> (lineage.toml run_pattern); {checkpoint} is run {run!r}")
 
 
 # ---------------------------------------------------------------- records
@@ -330,7 +345,9 @@ def check_t1_platform(pt: dict, hosts: list[dict]) -> list[str]:
     OSS bot binaries differ between platforms. Every host of a T1 job needs `platform` in the host list."""
     allowed = pt.get("t1_platforms")
     if not allowed:
-        raise Refused(f"point {pt['id']} has no Checkpoint 1 T1 counterpart platform (lineage.toml t1_platforms)")
+        # A point whose T1 platform is not decided yet carries the reason (`t1_platforms_open`).
+        why = f": {pt['t1_platforms_open']}" if pt.get("t1_platforms_open") else ""
+        raise Refused(f"point {pt['id']} has no Checkpoint 1 T1 counterpart platform (lineage.toml t1_platforms){why}")
     bad = [f"{h['addr']} ({h.get('platform', 'no platform')})" for h in hosts if h.get("platform") not in allowed]
     if bad:
         raise Refused(f"T1 of point {pt['id']} runs on {', '.join(allowed)} hosts only; host list has " + ", ".join(bad))
@@ -1198,6 +1215,7 @@ def cmd_tables(a) -> None:
     pt = point(lin, a.point)
     if a.lineage != "ck1":
         raise Refused("tables of other lineages: run tools/eval/tables.py on their jobs")
+    no_counterpart(a.lineage, pt)
     ec.load_env()
     cache = Path(a.cache) if a.cache else ec.cache_dir() / "eval_cmddump"
     res = ck1_game_tables(lin, pt, ec.shared_dir(), cache, a.ops, a.ops_jobs)
@@ -1340,7 +1358,8 @@ def cmd_list(a) -> None:
     for p in lin["point"]:
         t1 = f"  T1 on {'/'.join(p['t1_platforms'])}" if p.get("t1_platforms") else ""
         t1 += f"  ck1 supplement {','.join(p['ck1_supplement'])}" if p.get("ck1_supplement") else ""
-        print(f"{p['id']:8} {p['family']:3} {p['ck1_checkpoint']:48} metrics {','.join(p['metrics'])}  optional {','.join(p.get('optional', []))}{t1}")
+        t1 += "  T1 platform open" if "t1" in p["metrics"] + p.get("optional", []) and not p.get("t1_platforms") else ""
+        print(f"{p['id']:8} {p['family']:3} {p.get('ck1_checkpoint', '- (no Checkpoint 1 counterpart)'):48} metrics {','.join(p['metrics'])}  optional {','.join(p.get('optional', []))}{t1}")
 
 
 def cmd_compare(a) -> None:

@@ -136,6 +136,24 @@ def test_t0_tp_counts_from_a_job_050_r10(tmp_path):
         rg.t0_tp_counts(make_job(tmp_path / "m", "macro", []), tmp_path / "cache", LIN)
 
 
+def test_tvt_bunker_order_reads_the_models_player_050_r10(tmp_path):
+    """(3b) in TvT both players are Terran: bunker_order_4m reads the model's player at the row's slot (the players list
+    index), not the first Terran (the T0 opponent whenever the model plays slot 1; fixed 2026-11-14)."""
+    rows = [{**row(1, True), "slot": 1}, {**row(2, True), "slot": 0}]
+    job = t0_tp_job(tmp_path, "tvt", rows)
+    cache = tmp_path / "cache" / job.name / "t0_tp"
+    players = [{"id": 2, "race": 1}, {"id": 3, "race": 1}]
+    bunker = build(4000, 12, 12, ec.BUNKER)[3]
+    for n in (1, 2):   # the player at list index 0 (id 2) orders a bunker before 4:00, the one at index 1 (id 3) does not
+        f = cache / f"g{n}.json"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps({"players": players, "cmds": [[500, 2, 12, build(0, 10, 10, 109)[3]], [4000, 2, 12, bunker],
+                                                              [500, 3, 12, build(0, 30, 30, 109)[3]]]}), encoding="utf-8")
+    c = rg.t0_tp_counts(job, tmp_path / "cache", LIN)
+    assert (c["terran"]["n"], c["terran"]["dumped"], c["terran"]["bunker_order_4m"]) == (2, 2, 1), "only game 2 (slot 0) ordered a bunker"
+    assert ec.analyze(cache / "g1.json", 1)[0] == {109: 500} and ec.analyze(cache / "g1.json", 0)[0] == {109: 500, ec.BUNKER: 4000}
+
+
 def test_unfinished_t0_job_is_missing_050_r10(tmp_path):
     """A job with planned games that have neither a result nor an invalid mark is not judged (1 and 3b MISSING),
     even when its finished games would pass; once every game has a result or is invalid it is judged."""
