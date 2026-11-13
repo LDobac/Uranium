@@ -1,6 +1,6 @@
 """041-R24 loss-weight selection run configs (P3, AMB-041-13a): config/bc_m2_lambda_*.toml, and the
 model 2 path configs with the confirmed λ (041-R29, AMB-041-13b): bc_m2.toml, bc_m2_e2.toml,
-bc_m2_mix_e1.toml."""
+bc_m2_mix_e1.toml ... e7, the DAgger round 1 bc_m2_dagger_r1.toml and its plan dagger_m2_r1.toml."""
 
 import json
 from pathlib import Path
@@ -135,3 +135,88 @@ def test_m2_mix_chain_041_r29():
         assert cfg["data"]["seed"] == e + 2 and cfg["total_steps"] == t["steps.s2"] and cfg["warmup_steps"] == t["steps.s2_warmup"], name
         fps.add(fp)
     assert len(fps) == len(_M2_MIX)
+
+
+def _flat(t, pre=""):
+    out = {}
+    for k, x in t.items():
+        out.update(_flat(x, f"{pre}{k}.") if isinstance(x, dict) else {f"{pre}{k}": x})
+    return out
+
+
+def _toml(path):
+    import tomllib
+
+    return tomllib.loads(path.read_text(encoding="utf-8"))
+
+
+_M2_TABLES = {"keep_checkpoints", "monitor.spatial_every", "aux.priv", "aux.jepa"} | {f"model.{k}" for k in ("bypass", "spatial_preact", "core_skip", "aux_priv", "aux_jepa")}
+_RACE_FRACTIONS = {f"data.subsample.fraction_by_race.{r}" for r in "TPZ"}
+_COUNTED = {"data.subsample.fraction", "steps.s2", "steps.s2_warmup"} | _RACE_FRACTIONS
+
+
+def test_m2_dagger_r1_config_041_r29(tmp_path):
+    """041-R29 ④ / 041-R22 ③ / 041-R26 / 041-R30 ⑥: config/bc_m2_dagger_r1.toml is the Checkpoint 1 path's
+    bc_dagger_r1.toml (1 epoch, learning rate, data.seed 13, keep_sources botgen + dagger) with the model 2
+    tables of bc_m2_mix_e7.toml ([model], [aux], [monitor], keep_checkpoints 0), chain_start_sources
+    ["botgen"] (not dagger), and its own per-race human fractions and [steps]. Until the run driver's count
+    fills them, the placeholder zero fraction_by_race makes the loader refuse the file (s2 = 0 would mean
+    total_steps); filled, they are a valid race subsample and a 5% warmup (041-R14)."""
+    from uranium.bc.run import model_variant
+
+    root = Path(__file__).resolve().parents[2] / "config"
+    p = root / "bc_m2_dagger_r1.toml"
+    new, ck1, mix = (_flat(_toml(root / f)) for f in ("bc_m2_dagger_r1.toml", "bc_dagger_r1.toml", "bc_m2_mix_e7.toml"))
+    # TOML level against Checkpoint 1's round 1: only the model 2 keys, 041-R30 and the counted values differ.
+    diff = {k for k in new.keys() | ck1.keys() if new.get(k) != ck1.get(k)}
+    assert _M2_TABLES | {"data.chain_start_sources"} | _RACE_FRACTIONS <= diff
+    assert diff <= _M2_TABLES | {"data.chain_start_sources"} | _COUNTED, diff - _M2_TABLES - _COUNTED
+    # ... and against the lineage's last mix epoch: same keys; the DAgger data seed and sources, counted values.
+    assert new.keys() == mix.keys()
+    assert {k for k in new if new[k] != mix[k]} <= {"data.seed", "data.subsample.keep_sources"} | _COUNTED
+    assert new["data.seed"] == 13 and new["data.subsample.keep_sources"] == ["botgen", "dagger"]
+    assert new["data.chain_start_sources"] == ["botgen"], "041-R30 ⑥: teacher botgen only, not the dagger relabels"
+    assert vars(model_variant(str(p))) == _ALL_ON
+    fr = [new[k] for k in sorted(_RACE_FRACTIONS)]
+    filled = not all(f == 0 for f in fr)
+    if not filled:
+        # Placeholder: refused by every loader (the run driver counts on a copy without the table).
+        assert (new["steps.s2"], new["steps.s2_warmup"]) == (0, 0)
+        with pytest.raises(Exception, match="fraction_by_race"):
+            _bc(p, "s2")
+        text = p.read_text(encoding="utf-8")
+        table = "[data.subsample.fraction_by_race]\nT = 0.0\nP = 0.0\nZ = 0.0\n"
+        assert text.count(table) == 1
+        p = tmp_path / "count.toml"
+        p.write_text(text.replace(table, ""), encoding="utf-8")
+    else:
+        assert all(0 < f <= 1 for f in fr) and 0 < new["data.subsample.fraction"] <= 1
+        assert new["steps.s2"] > 0 and new["steps.s2_warmup"] == int(new["steps.s2"] * 0.05 + 0.5)
+        assert "PLACEHOLDER" not in p.read_text(encoding="utf-8")
+    cfg, fp = _bc(p, "s2")
+    ref, ref_fp = _bc(root / "bc_dagger_r1.toml", "s2")
+    assert cfg["aux"] == {"priv": pytest.approx(0.2), "jepa": pytest.approx(0.1)} and cfg["monitor"] == {"spatial_every": 100}
+    assert cfg["keep_checkpoints"] == 0 and "train" not in cfg, "041-R29 ⑨; model_seed unused with --init"
+    assert cfg["data"]["chain_start_sources"] == ["botgen"] and cfg["data"]["subsample"]["keep_sources"] == ["botgen", "dagger"]
+    skip = ("aux", "monitor", "keep_checkpoints", "data", "steps", "total_steps", "warmup_steps")
+    assert {k: x for k, x in cfg.items() if k not in skip} == {k: x for k, x in ref.items() if k not in skip}
+    dskip = ("chain_start_sources", "subsample")
+    assert {k: x for k, x in cfg["data"].items() if k not in dskip} == {k: x for k, x in ref["data"].items() if k not in dskip}
+    assert cfg["lr"] * cfg["s2_lr_scale"] == pytest.approx(3e-5) and cfg["min_lr"] * cfg["s2_lr_scale"] == pytest.approx(3e-7)
+    assert fp != ref_fp
+    if filled:
+        assert (cfg["total_steps"], cfg["warmup_steps"]) == (new["steps.s2"], new["steps.s2_warmup"])
+
+
+def test_m2_dagger_r1_plan_041_r28():
+    """041-R29 ④ / 041-R22 ① / 041-R28 ①: config/plans/dagger_m2_r1.toml (rush_check_plan.py --dagger --round 1
+    --memory-log --checkpoint checkpoints/m2-mix-e7/ckpt-1212) is the Checkpoint 1 path's round-1 plan (same 600
+    seeds and matchups, stochastic, 10 min, replays) with the lineage-2 model and the decision logs."""
+    root = Path(__file__).resolve().parents[2] / "config" / "plans"
+    new, ck1 = _toml(root / "dagger_m2_r1.toml"), _toml(root / "dagger_r1.toml")
+    assert new["memory_log"] is True and "memory_log" not in ck1 and new["save_replay"] is True
+    assert {k: x for k, x in new.items() if k not in ("memory_log", "matchup")} == {k: x for k, x in ck1.items() if k != "matchup"}
+    assert len(new["seeds"]) == 600 == sum(m["games"] for m in new["matchup"])
+    for a, b in zip(new["matchup"], ck1["matchup"], strict=True):
+        assert a["p0"] == {"kind": "model", "checkpoint": "checkpoints/m2-mix-e7/ckpt-1212", "sample": "stochastic"}
+        assert {k: x for k, x in a.items() if k != "p0"} == {k: x for k, x in b.items() if k != "p0"}
