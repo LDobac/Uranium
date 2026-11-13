@@ -37,8 +37,8 @@ def scalar_with(counts: dict) -> list:
 
 
 def args(d: Path, **kw) -> Namespace:
-    base = dict(dir=str(d), points=None, branches=None, out=None, dump=None, s0=None, root=None, outcomes="held_8m,held_s",
-                own_samples="", own_cols="bunker,marine", m3u_outcome="held_8m", baseline="none", ks="8,32", sample_k8="dec8", sample_k32="dec32", row_lag=2, boot=200, boot_seed=7)
+    base = dict(dir=str(d), points=None, branches=None, out=None, dump=None, s0=None, root=None, outcomes="held_8m,held_s,end.before_horizon",
+                own_samples="", own_cols="bunker,marine", m3u_outcome="held_8m", baseline="none", ks="8,32", sample_k8="d8", sample_k32="d32", row_lag=2, boot=200, boot_seed=7)
     return Namespace(**{**base, **kw})
 
 
@@ -69,16 +69,20 @@ def synthetic(d: Path, n_trunks=10, per_trunk=2, repeats=4, noise=0.05, seed=0, 
                     n += 1
                     missed = bool(missed_every) and a.startswith("force") and n % missed_every == 0
                     eff = 0.0 if missed else EFFECT[a] + v
-                    iv = [{"applied": 0 if missed else 1, "frame": "missed" if missed else 3242, "rejected": False}] if ALTS[a] else []
+                    # `uranium_env::branch::RuleLog` per rule (051-R7 ⑤)
+                    iv = [{**rule, "in_window": 1, "applied": 0 if missed else 1, "force_frame": None if missed else 3242, "missed": missed,
+                           "rejected": None if missed else False} for rule in ALTS[a]]
                     if not missed:
                         eff_exec.append((r, eff))
                     branches.append({"point": pid, "alt": a, "rules": ALTS[a], "repeat": r + 1, "valid": True, "intervention": iv,
                                      "metrics": {"held_s": base + eff + errs[r], "held_8m": int(r % 2 == 0 or a == "force_bunker")},
-                                     "dilution": {"first_pick_s": 10.0 + r}, "end": {"result": "draw"}})
+                                     "dilution": [{"action": BUNKER, "first_frame": 3300 + r, "picks_30s": r}],
+                                     "end": {"result": "draw", "end_frame": 11568, "reason": "TimeLimitDraw", "before_horizon": False}})
                 if a != "none":
                     truth[a].append(EFFECT[a] + v)
     # one invalid branch and one skipped point
-    branches.append({"point": points[0]["point"], "alt": "force_bunker", "rules": ALTS["force_bunker"], "repeat": 9, "valid": False, "invalid": "digest"})
+    branches.append({"point": points[0]["point"], "alt": "force_bunker", "rules": ALTS["force_bunker"], "repeat": 9, "valid": False,
+                     "invalid": {"reason": "digest", "obs": 12, "frame": 97}})
     points.append({"point": "job/s/g99#b1-p1", "trunk": {"replay": "x"}, "f_t": 0, "valid": False, "skip_reason": "state_sha256"})
     write_records(d, points, branches)
     return points, branches, truth
@@ -102,7 +106,8 @@ def test_paired_effects_recover_known_effect_and_are_deterministic(tmp_path):
     assert held["counts"]["none"]["n"] == 80 and held["counts"]["none"]["k"] == 40
     dg = rep["diagnostics"]
     assert dg["invalid"] == 1 and dg["invalid_by_alt"] == {"force_bunker": {"digest": 1}} and dg["skipped_points"] == {"job/s/g99#b1-p1": "state_sha256"}
-    assert dg["alts"]["force_bunker"]["missed_rate"] == 0.0 and dg["alts"]["force_bunker"]["dilution"]["first_pick_s"]["mean"] == 11.5
+    assert dg["alts"]["force_bunker"]["missed_rate"] == 0.0 and dg["alts"]["force_bunker"]["dilution"][f"{BUNKER}.picks_30s"]["mean"] == 1.5
+    assert rep["paired"]["end.before_horizon"]["counts"]["none"] == {"n": 80, "k": 0, "rate": 0.0}
     assert rep["M3u"] == {"skipped": "no --dump / --s0"}
     # determinism: same seed same numbers; another seed other intervals, same points
     again = pb.analyse(args(tmp_path / "b"))
@@ -134,15 +139,15 @@ def test_executed_only_and_split_half(tmp_path):
 
 def test_outcome_fields_and_executed():
     names = own_columns()[0]
-    b = {"metrics": {"held_8m": True, "x": 2}, "end": {"frame": 900, "before_h": False}, "samples": {"dec8": {"frame": 5, "scalar": scalar_with({"bunker": 2, "marine": 3})}, "dec32": None}}
-    assert pb.outcome(b, "held_8m") == 1.0 and pb.outcome(b, "frame") == 900 and pb.outcome(b, "end.before_h") == 0.0
-    assert np.isnan(pb.outcome(b, "nothing")) and np.isnan(pb.outcome(b, "own@dec32:bunker"))
-    assert pb.outcome(b, "own@dec8:bunker") == 2 and pb.outcome(b, "own@dec8:marine") == 3 and pb.outcome(b, "own@dec8:army") == 3
+    b = {"metrics": {"held_8m": True, "x": 2}, "end": {"frame": 900, "before_horizon": False}, "samples": {"d8": {"frame": 5, "scalar": scalar_with({"bunker": 2, "marine": 3})}, "d32": None}}
+    assert pb.outcome(b, "held_8m") == 1.0 and pb.outcome(b, "frame") == 900 and pb.outcome(b, "end.before_horizon") == 0.0
+    assert np.isnan(pb.outcome(b, "nothing")) and np.isnan(pb.outcome(b, "own@d32:bunker"))
+    assert pb.outcome(b, "own@d8:bunker") == 2 and pb.outcome(b, "own@d8:marine") == 3 and pb.outcome(b, "own@d8:army") == 3
     with pytest.raises(SystemExit, match="own column"):
-        pb.outcome(b, "own@dec8:nope")
+        pb.outcome(b, "own@d8:nope")
     assert "bunker" in names
     # list-form samples
-    assert pb.outcome({"samples": [{"name": "dec8", "scalar": scalar_with({"bunker": 1})}]}, "own@dec8:bunker") == 1
+    assert pb.outcome({"samples": [{"name": "d8", "scalar": scalar_with({"bunker": 1})}]}, "own@d8:bunker") == 1
     f = ALTS["force_bunker"]
     assert pb.executed({"rules": f, "intervention": [{"applied": 1, "frame": 10, "rejected": False}]})
     assert not pb.executed({"rules": f, "intervention": [{"applied": 1, "frame": 10, "rejected": True}]})
@@ -209,7 +214,7 @@ def test_m3u_and_m2c_against_the_predictor(tmp_path):
             for r in (1, 2):
                 score = 0.0 if a == "none" else float(want_dq[a][8][pi]) * (1 + 0.1 * r)
                 samples = {}
-                for k, name in ((8, "dec8"), (32, "dec32")):
+                for k, name in ((8, "d8"), (32, "d32")):
                     cnt = {"bunker": 5, "marine": 5}
                     if a != "none":
                         col = names[of_action[bunker if a == "force_bunker" else marine]]
@@ -231,9 +236,9 @@ def test_m3u_and_m2c_against_the_predictor(tmp_path):
     mm[:] = data.mask
     mm.flush()
     del mm
-    rep = pb.analyse(args(tmp_path / "b", dump=str(dump), s0=str(s0), outcomes="score", m3u_outcome="score", own_samples="dec8"))
+    rep = pb.analyse(args(tmp_path / "b", dump=str(dump), s0=str(s0), outcomes="score", m3u_outcome="score", own_samples="d8"))
     # 051-R11 ④ own-state outcome: the bunker count at the 8th decision moved by the sign of the k = 8 prediction
-    ob = rep["paired"]["own@dec8:bunker"]["alts"]["force_bunker"]["all"]
+    ob = rep["paired"]["own@d8:bunker"]["alts"]["force_bunker"]["all"]
     assert ob["points"] == 12 and ob["D"]["pt"] == pytest.approx(np.sign(pred[8]["force_bunker"][:, names.index("bunker")]).mean())
     miss = rep["rows_missing"]
     assert miss["points"] == 2 and miss["by_reason"] == {"no_row": 1, "no_game": 1}
