@@ -150,8 +150,9 @@ pub struct Step {
     /// 040-R22 (schema 7): the decisions the model that played the game made in the playback
     /// frames [previous step's observation, this step's observation), in order (041-R28 ②), which
     /// BC puts into agent memory before this step's observation (041-R28 ③). `None` = not known
-    /// (every step of a game without a usable decision log, every source but `dagger`, schema 6 / 5
-    /// shards); `Some(vec![])` = no decision in between. A game has it on every step or on none.
+    /// (every step of a game without a usable decision log, every source but `dagger`, `branch` and
+    /// `distill` (044-R2), schema 6 / 5 shards); `Some(vec![])` = no decision in between. A game
+    /// has it on every step or on none.
     pub memory_action: Option<Vec<MemoryAction>>,
 }
 
@@ -198,7 +199,7 @@ pub fn read(path: &Path) -> Result<Shard> {
     decode(&bytes)
 }
 
-fn decode(bytes: &[u8]) -> Result<Shard> {
+pub(crate) fn decode(bytes: &[u8]) -> Result<Shard> {
     // The schema version is the first field of every header version.
     let (schema, _) = postcard::take_from_bytes::<u32>(bytes).context("decoding shard header")?;
     ensure!((MIN_SCHEMA_VERSION..=SCHEMA_VERSION).contains(&schema), "shard schema {schema} != {SCHEMA_VERSION} (schemas {MIN_SCHEMA_VERSION}..{SCHEMA_VERSION} are read)");

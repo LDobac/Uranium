@@ -249,6 +249,35 @@ pub fn add_decision_steps(labels: &mut Vec<crate::label::Label>, log: &[LoggedDe
     n
 }
 
+/// 044-R2 / 040-R24 (`--src distill`): the label slots of a decision-step game. One step at the
+/// game-start observation (040-R18, playback frame 1) and one at each logged decision's playback
+/// frame L - 2 ([`playback_frame`], NoOp decisions included) up to `limit`; no step for the replay's
+/// own commands. The model decides on its first live observation (live frame 1, playback frame 1),
+/// so the game-start step is that decision's step, and decisions whose playback frames coincide (live
+/// frames 1..=3 all show playback frame 1) share one step. Every label is `unknown` (031-AC3: BC
+/// weight 0) with the frames to the next step (the game end `end_frame` after the last one) as its
+/// delay, as the 041-R28 decision-time steps ([`add_decision_steps`]): slots the 044-R3 policy
+/// labeller fills. Returns the labels (sorted by frame) and the steps at decision frames.
+pub fn distill_labels(log: &[LoggedDecision], limit: u32, end_frame: u32) -> (Vec<crate::label::Label>, usize) {
+    use crate::label::{Label, UNKNOWN_ACTION};
+    let mut decided: Vec<u32> = log.iter().map(|(l, _)| playback_frame(*l)).filter(|p| *p <= limit).collect();
+    decided.sort_unstable();
+    decided.dedup();
+    let mut frames = decided.clone();
+    if frames.first() != Some(&GAME_START_FRAME) {
+        frames.insert(0, GAME_START_FRAME);
+    }
+    let labels = frames
+        .iter()
+        .enumerate()
+        .map(|(i, &frame)| {
+            let next = frames.get(i + 1).copied().unwrap_or(end_frame);
+            Label { frame, action: UNKNOWN_ACTION, delay: next.saturating_sub(frame).max(1), queued: false, selected: Vec::new(), target_unit: None, target_tile: None }
+        })
+        .collect();
+    (labels, decided.len())
+}
+
 /// 041-R28 ④ / ⑤ record (`memory` of a written relabelled perspective, build records).
 #[derive(serde::Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct MemoryCheck {
@@ -266,7 +295,8 @@ pub struct MemoryCheck {
     pub mismatched: usize,
     /// 041-R28 decision-time steps (2026-11-13, builds without relabelling): observation / memory
     /// only steps added at the decisions' playback frames ([`add_decision_steps`]); absent when
-    /// none are added (relabelled builds, logs not used).
+    /// none are added (relabelled builds, logs not used). In a `distill` build (044-R2) the steps
+    /// at decision frames ([`distill_labels`]; the game-start step counts when a decision is there).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decision_steps: Option<usize>,
 }
