@@ -10,7 +10,7 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 | `config/plans/protocol/*.toml` | Checkpoint 1 측정 plan 사본 13개. 바뀌는 것은 이름(`@NAME@`)과 체크포인트(`@CHECKPOINT@`)뿐 |
 | `config/protocol/t1_bots.toml` | 허용하는 OSS 봇 바이너리 sha256(NDEBUG 빌드) |
 | `tools/eval/protocol.py` | job 생성·조건 검사·기록, Checkpoint 1 job 재집계, teacher-forced 명령, 봇 해시 확인, 비교 |
-| `tools/eval/tables.py` | 평가 job 결과 표(러시·운영형·T1·승률) |
+| `tools/eval/tables.py` | 평가 job 결과 표(러시·운영형·T1·승률), 모든 단계의 052 `ops`·`rush_combat` 표 |
 | `tools/eval/per_action.py`, `per_action_table.py` | 교사 보관분 행동별 채점과 표 |
 | `tools/eval/diag_table.py` | 진단(`cue_diag`·`dead_channels`) 출력 폴더의 표 |
 | `tools/eval/spatial_logs.py` | 학습 로그의 죽은 채널 기록(041-R25) 요약 |
@@ -18,6 +18,7 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 | `tools/eval/hosts.toml` | 게임 호스트 목록(git 미추적, 예시 `hosts.example.toml`) |
 
 - 명령 스트림은 `uranium-replay cmddump`로 뽑는다(`cargo build --release -p uranium-replay`, 다른 위치면 `.env`의 `URANIUM_REPLAY_BIN`).
+- 052 운영 지표(`ops`·`rush_combat`, 052-R7·R8)는 같은 바이너리의 `uranium-replay opsdump`로 리플레이를 우리 슬롯 시점에서 8프레임마다 멈춰 다시 센다(OpenBW 재생, `.env`의 `URANIUM_BWAPI_DIR`·`URANIUM_BRIDGE_LIB`·`URANIUM_DATA_DIR`·`URANIUM_MAPS_DIR`). 결과는 `<cache>/<job>/<stage>/g<n>.ops.json`에 남아 다음 집계가 다시 쓴다. 경로 비교는 양쪽 모두 재생 값이다. `tables.py --ops live`는 세션 행의 라이브 값(run 감시용), `--ops off`는 표를 뺀다. 학습 중인 장비가 아닌 CPU 호스트에서 `--ops-jobs N`으로 나눠 돌린다.
 - DAgger 판 생성 plan은 이 프로토콜 밖이다. 기존대로 `tools/eval/rush_check_plan.py --dagger`로 만든다(`docs/commands.md`).
 
 ## 지점과 지표
@@ -60,7 +61,7 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
      - plan 내용 해시와 조건 해시
      - 호스트별 플랫폼과 봇 해시
    - 돌리기: 평가 작업자(`docs/commands.md` "평가 작업").
-   - 표: `python tools/eval/tables.py <shared>/eval/<job> --json <job>.json`. 단계마다 다음을 함께 적는다.
+   - 표: `python tools/eval/tables.py <shared>/eval/<job> --json <job>.json`. 단계마다 052 `ops`·`rush_combat` 표(matchup별 중앙값·평균, 러시 진입 판의 SCV 동원·손실·벙커·집중도, `held_s`·`held_8m`별)도 낸다. 단계마다 다음을 함께 적는다.
      - 추론 backend별 판 수와 정밀도(CUDA bf16 혼합, ROCm f32)
      - `protocol.json`의 체크포인트 sha256, 미커밋 표시, 호스트 플랫폼
      - 결과·ledger 파일의 깨진 줄(공용 드라이브 쓰기 손상: NUL 줄, 잘린 줄). NUL만 있는 줄은 무시하고, 읽을 수 없는 줄은 건너뛰어 `SKIPPED`로 파일:줄을 적는다(JSON `skipped_lines`). 회귀 게이트는 깨진 줄이 있는 쪽이 있으면 게임 판정(1, 3b)을 모두 MISSING으로 둔다.

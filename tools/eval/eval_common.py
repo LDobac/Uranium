@@ -313,6 +313,49 @@ def dump_stage(stage_dir: Path, games: list[int], out: Path, binary: Path | None
     return got
 
 
+def _opsdump(binary: Path, rep: Path, slot: int) -> dict | None:
+    p = subprocess.run([str(binary), "opsdump", "--perspective", str(slot), str(rep)], capture_output=True, text=True)
+    lines = [l for l in p.stdout.splitlines() if l.strip()]
+    if p.returncode != 0 or len(lines) != 1:
+        return {"error": (p.stderr.strip().splitlines() or [f"exit {p.returncode}"])[-1]}
+    return json.loads(lines[0])
+
+
+def ops_stage(stage_dir: Path, games: dict[int, int], out: Path, binary: Path | None = None, jobs: int = 1) -> tuple[dict[int, dict], dict[int, str]]:
+    """052-R7: `uranium-replay opsdump --perspective <slot>` of each game's replay (games = {n: our BWAPI slot, the
+    session row's `slot`}) into out/g<n>.ops.json, kept so a later run reuses it (a cached line of another slot is
+    measured again). Returns ({n: the opsdump line} of the games measured, {n: error} of the replays that failed;
+    failures are not cached). Games without a replay are in neither."""
+    got: dict[int, dict] = {}
+    todo: list[tuple[int, int, Path]] = []
+    for n, slot in sorted(games.items()):
+        j = out / f"g{n}.ops.json"
+        if j.exists():
+            d = json.loads(j.read_text(encoding="utf-8"))
+            if d.get("perspective") == slot and d.get("ops") is not None:
+                got[n] = d
+                continue
+        rep = stage_dir / "replays" / f"g{n}.rep"
+        if rep.exists():
+            todo.append((n, slot, rep))
+    failed: dict[int, str] = {}
+    if todo:
+        binary = binary or replay_bin()
+        if not binary.exists():
+            raise SystemExit(f"no {binary}: cargo build --release -p uranium-replay (or set URANIUM_REPLAY_BIN)")
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+            for (n, slot, _), d in zip(todo, pool.map(lambda t: _opsdump(binary, t[2], t[1]), todo)):
+                if d.get("ops") is None:
+                    failed[n] = d.get("error") or "no ops"
+                    continue
+                out.mkdir(parents=True, exist_ok=True)
+                (out / f"g{n}.ops.json").write_text(json.dumps(d) + "\n", encoding="utf-8")
+                got[n] = d
+    return got, failed
+
+
 # ---------------------------------------------------------------- statistics (050-R2)
 
 
