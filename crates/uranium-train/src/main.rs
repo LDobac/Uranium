@@ -160,7 +160,8 @@ enum Cmd {
         data: DataArgs,
     },
     /// 052-R7: the games `bc-eval --split <s> --games <n> --seed <k>` scores (032-R17 ②), one JSON
-    /// line each (`replay_sha256`, `perspective_slot`, `src`, `map_family`, `matchup`, `split`);
+    /// line each with keys `map_family`, `matchup`, `perspective_slot`, `replay_sha256`, `split`,
+    /// `src` (serde_json writes them sorted);
     /// `--target-maps` runs the same shuffle over the split's target-map games only. Reads the
     /// scan (cached), not the steps.
     EvalGames {
