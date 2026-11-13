@@ -12,6 +12,22 @@ use crate::trajectory::Segment;
 /// Entity padding of learner batches (the inference server's default, 030-R7).
 pub const PAD_ENTITIES: usize = 64;
 
+/// 044-R9: the `[kl.reference]` keys in order; a lane's `ref_race` is the index here (the
+/// `train.csv` `kl_ref_<race>` columns are in this order too).
+pub const REF_RACES: [&str; 4] = ["zerg", "terran", "protoss", "random"];
+
+/// 044-R9: the `[kl.reference]` key index of an enemy lobby race (`Segment::enemy_lobby_race`):
+/// a lobby Random, which `GameInfo` gives as Random or Unknown (030-R11), is `random`.
+pub fn ref_race(r: uranium_proto::Race) -> u8 {
+    use uranium_proto::Race;
+    match r {
+        Race::Zerg => 0,
+        Race::Terran => 1,
+        Race::Protoss => 2,
+        Race::Random | Race::Unknown => 3,
+    }
+}
+
 pub struct SegmentGroup {
     pub b: usize,
     pub t: usize,
@@ -46,12 +62,19 @@ pub struct SegmentGroup {
     /// Per lane: 042-R16 self-imitation buffer lane's r_win (`Segment::sil_return`), NaN for a
     /// queue lane.
     pub sil_return: Vec<f32>,
+    /// Per lane: 044-R9 `[kl.reference]` key index of the game's enemy lobby race ([`ref_race`]).
+    pub ref_race: Vec<u8>,
     /// Per lane: Core state before step 0 (042 core_state0); empty parts = zero state.
     pub state0: Vec<HostState>,
 }
 
 /// Lanes `segs` as one group of `t` steps; selections cut at `max_select` (032-R12).
 pub fn group(segs: &[Segment], t: usize, max_select: usize) -> SegmentGroup {
+    group_of(&segs.iter().collect::<Vec<_>>(), t, max_select)
+}
+
+/// [`group`] of lanes in any order (044-R9: the learner groups lanes by KL reference).
+pub fn group_of(segs: &[&Segment], t: usize, max_select: usize) -> SegmentGroup {
     let b = segs.len();
     let mut obs = Vec::with_capacity(b * t);
     let mut labels = Vec::with_capacity(b * t);
@@ -99,6 +122,7 @@ pub fn group(segs: &[Segment], t: usize, max_select: usize) -> SegmentGroup {
         r_value_policy: segs.iter().map(|s| s.r_value_policy).collect(),
         pseudo_scale: segs.iter().flat_map(|s| s.pseudo_scale).collect(),
         sil_return: segs.iter().map(|s| s.sil_return.unwrap_or(f32::NAN)).collect(),
+        ref_race: segs.iter().map(|s| ref_race(s.enemy_lobby_race)).collect(),
         state0: segs.iter().map(|s| s.state0.clone()).collect(),
     }
 }

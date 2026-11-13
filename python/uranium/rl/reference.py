@@ -10,7 +10,8 @@ targets run one reward component at a time. Only additions: the phase marks of `
 the 042-R2 진단 로그 statistics (advantage RMS per channel, value loss per channel, per-step KL p99
 / max from the trained steps picked out on the host), the reference for the learner's. No
 self-imitation lanes (042-R16), no 042-R21 aux losses or dead-channel statistics (their statistics
-keys are `None`, as the learner's with the defaults). Not used by training."""
+keys are `None`, as the learner's with the defaults), one KL reference (no 044-R9 `[kl.reference]`;
+`kl_ref` `None`). Not used by training."""
 
 import torch
 
@@ -18,7 +19,7 @@ from uranium.agent.infer import leaves, rebuild
 from uranium.bc.clip import clip_global_norm
 from uranium.device import autocast
 from uranium.model import to_obs
-from uranium.rl.learner import HEADS, Learner, aux_stats, component_weights, diagnostics, kl_coef, kl_per_head, scaled_kl, sil_settings, sil_stats, value_channels
+from uranium.rl.learner import HEADS, Learner, aux_stats, component_weights, diagnostics, kl_coef, kl_per_head, kl_ref_stats, scaled_kl, sil_settings, sil_stats, value_channels
 
 
 def _valid(length: torch.Tensor, t: int) -> torch.Tensor:
@@ -140,6 +141,8 @@ class ReferenceLearner(Learner):
         cfg, dev = self.cfg, self.device
         if self.aux or self.monitor_every:
             raise NotImplementedError("the reference learner has no 042-R21 aux losses or [monitor] statistics")
+        if self.race_ref is not None:
+            raise NotImplementedError("the reference learner has one KL reference (no 044-R9 [kl.reference])")
         if self.phases:
             self._ph.clear()
             started = self._mark = time.perf_counter()
@@ -207,6 +210,7 @@ class ReferenceLearner(Learner):
         stats.update(sil_stats(sil_settings(cfg), [0.0, 0.0, 0.0], 0.0, 0.0))
         # 042-R21 ③: no aux module and no monitor here (refused at the start of the update).
         stats.update(aux_stats({}, []))
+        stats["kl_ref"] = kl_ref_stats(None, None)
         self.tick("stats")
         if self.phases:
             self._ph["python_total"] = time.perf_counter() - started

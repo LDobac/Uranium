@@ -234,9 +234,9 @@ def test_entity_pad_cut_keeps_the_update_032_r19():
     batch = Segments(4, 4, tiny_net(2, seed=6), 2)
     # Off by default (no measured gain, 032-R19).
     assert not l.trim_pad
-    assert l.prepare(batch, 0, 1, 4)["entity_mask"].shape[1] == batch.group(0, 1, 4, 12)["entity_mask"].shape[1]
+    assert l.prepare(batch, (0, 1), 4)["entity_mask"].shape[1] == batch.group(0, 1, 4, 12)["entity_mask"].shape[1]
     l.trim_pad = True
-    assert l.prepare(batch, 0, 1, 4)["entity_mask"].shape[1] == batch.group(0, 1, 4, 12)["entity_mask"].shape[1] - 2, "no padding cut"
+    assert l.prepare(batch, (0, 1), 4)["entity_mask"].shape[1] == batch.group(0, 1, 4, 12)["entity_mask"].shape[1] - 2, "no padding cut"
     new, ref = run(Learner, "vtrace", 2, 1), run(ReferenceLearner, "vtrace", 2, 1)
     for s_new, s_ref in zip(new[0], ref[0]):
         close_stats(s_new, s_ref, 1e-5, 1e-6)

@@ -63,12 +63,19 @@ impl SegmentBatch {
         self.segs.iter().map(|s| s.steps.iter().take(s.trained()).filter(|x| x.has_privileged).count()).collect()
     }
 
+    /// Per lane: the 044-R9 `[kl.reference]` key index of its game's enemy lobby race (0 zerg,
+    /// 1 terran, 2 protoss, 3 random; what `group` puts in `ref_race`), without collating.
+    #[getter]
+    fn ref_races(&self) -> Vec<u8> {
+        self.segs.iter().map(|s| uranium_league::batch::ref_race(s.enemy_lobby_race)).collect()
+    }
+
     /// Lanes `start..end` collated for one forward (`uranium_league::batch::group`): the
     /// observation arrays, the taken actions as labels, `privileged`, `mask`, `behaviour`,
     /// `rewards` [rows, 4], per lane `terminal`, `trained`, `versions`, `r_value_policy` (r_value
     /// keeps its policy weight, AMB-042-14), `pseudo_scale` [b, 2] (build / units policy-weight
     /// multipliers, 033-R11, AMB-042-16), `sil_return` [b] (042-R16 buffer lane's r_win, NaN for
-    /// a queue lane) and `state0` (None = zero
+    /// a queue lane), `ref_race` [b] (044-R9 `[kl.reference]` key index) and `state0` (None = zero
     /// state, else a list of (shape, float32 array)), plus `b`, `t`, `n`.
     fn group<'py>(&self, py: Python<'py>, start: usize, end: usize, t: usize, max_select: usize) -> PyResult<Bound<'py, PyDict>> {
         if start >= end || end > self.segs.len() {
@@ -76,52 +83,69 @@ impl SegmentBatch {
         }
         let segs = &self.segs[start..end];
         let g = py.detach(move || uranium_league::batch::group(segs, t, max_select));
-        let d = PyDict::new(py);
-        let (r, n) = (g.obs.b, g.obs.n);
-        crate::put_obs(py, &d, g.obs)?;
-        let l = g.labels;
-        macro_rules! put {
-            ($k:expr, $v:expr, $s:expr) => {
-                d.set_item($k, $v.into_pyarray(py).reshape($s)?)?
-            };
-        }
-        put!("action", l.action, vec![r]);
-        put!("delay", l.delay, vec![r]);
-        put!("queued", l.queued, vec![r]);
-        put!("selected", l.selected, vec![r, l.s]);
-        put!("target_unit", l.target_unit, vec![r]);
-        put!("target_loc", l.target_loc, vec![r]);
-        put!("privileged", g.privileged.summary, vec![r, g.privileged.p]);
-        put!("mask", g.mask, vec![r]);
-        // 042-R21 ①: real (non-fill) steps and steps with a privileged summary (aux masks).
-        put!("real", g.real, vec![r]);
-        put!("priv_present", g.priv_present, vec![r]);
-        put!("behaviour", g.behaviour, vec![r]);
-        put!("rewards", g.rewards, vec![r, 4]);
-        put!("terminal", g.terminal, vec![g.b]);
-        put!("trained", g.trained.iter().map(|&x| x as i64).collect::<Vec<_>>(), vec![g.b]);
-        put!("versions", g.versions, vec![g.b]);
-        put!("r_value_policy", g.r_value_policy, vec![g.b]);
-        put!("pseudo_scale", g.pseudo_scale, vec![g.b, 2]);
-        put!("sil_return", g.sil_return, vec![g.b]);
-        let states = PyList::empty(py);
-        for s in g.state0 {
-            if s.parts.is_empty() {
-                states.append(py.None())?;
-            } else {
-                let parts = PyList::empty(py);
-                for (shape, v) in s.parts {
-                    parts.append((shape, v.into_pyarray(py)))?;
-                }
-                states.append(parts)?;
-            }
-        }
-        d.set_item("state0", states)?;
-        d.set_item("b", g.b)?;
-        d.set_item("t", g.t)?;
-        d.set_item("n", n)?;
-        Ok(d)
+        group_dict(py, g)
     }
+
+    /// `group` of the lanes `lanes` in that order (044-R9: the learner's lane groups by KL
+    /// reference); the same arrays as `group` of a range for the same lanes.
+    fn group_lanes<'py>(&self, py: Python<'py>, lanes: Vec<usize>, t: usize, max_select: usize) -> PyResult<Bound<'py, PyDict>> {
+        if lanes.is_empty() || lanes.iter().any(|&i| i >= self.segs.len()) {
+            return Err(PyValueError::new_err(format!("lanes {lanes:?} of {}", self.segs.len())));
+        }
+        let segs: Vec<&Segment> = lanes.iter().map(|&i| &self.segs[i]).collect();
+        let g = py.detach(move || uranium_league::batch::group_of(&segs, t, max_select));
+        group_dict(py, g)
+    }
+}
+
+/// The numpy dict of one collated lane group (`SegmentBatch::group`).
+fn group_dict(py: Python<'_>, g: uranium_league::batch::SegmentGroup) -> PyResult<Bound<'_, PyDict>> {
+    let d = PyDict::new(py);
+    let (r, n) = (g.obs.b, g.obs.n);
+    crate::put_obs(py, &d, g.obs)?;
+    let l = g.labels;
+    macro_rules! put {
+        ($k:expr, $v:expr, $s:expr) => {
+            d.set_item($k, $v.into_pyarray(py).reshape($s)?)?
+        };
+    }
+    put!("action", l.action, vec![r]);
+    put!("delay", l.delay, vec![r]);
+    put!("queued", l.queued, vec![r]);
+    put!("selected", l.selected, vec![r, l.s]);
+    put!("target_unit", l.target_unit, vec![r]);
+    put!("target_loc", l.target_loc, vec![r]);
+    put!("privileged", g.privileged.summary, vec![r, g.privileged.p]);
+    put!("mask", g.mask, vec![r]);
+    // 042-R21 ①: real (non-fill) steps and steps with a privileged summary (aux masks).
+    put!("real", g.real, vec![r]);
+    put!("priv_present", g.priv_present, vec![r]);
+    put!("behaviour", g.behaviour, vec![r]);
+    put!("rewards", g.rewards, vec![r, 4]);
+    put!("terminal", g.terminal, vec![g.b]);
+    put!("trained", g.trained.iter().map(|&x| x as i64).collect::<Vec<_>>(), vec![g.b]);
+    put!("versions", g.versions, vec![g.b]);
+    put!("r_value_policy", g.r_value_policy, vec![g.b]);
+    put!("pseudo_scale", g.pseudo_scale, vec![g.b, 2]);
+    put!("sil_return", g.sil_return, vec![g.b]);
+    put!("ref_race", g.ref_race, vec![g.b]);
+    let states = PyList::empty(py);
+    for s in g.state0 {
+        if s.parts.is_empty() {
+            states.append(py.None())?;
+        } else {
+            let parts = PyList::empty(py);
+            for (shape, v) in s.parts {
+                parts.append((shape, v.into_pyarray(py)))?;
+            }
+            states.append(parts)?;
+        }
+    }
+    d.set_item("state0", states)?;
+    d.set_item("b", g.b)?;
+    d.set_item("t", g.t)?;
+    d.set_item("n", n)?;
+    Ok(d)
 }
 
 /// The Python learner object behind [`RlLearners`]: `brokers()`, `version(i)`,
@@ -287,14 +311,28 @@ fn check_seq(r: &[f32], v: &[f32], l: &[f32]) -> PyResult<()> {
 /// policy-weight multipliers (`Segment::pseudo_scale`, 033-R11, AMB-042-16), empty = 1 and 1.
 /// `sil_returns`: per lane `Segment::sil_return` (042-R16 buffer lanes, last), empty = none.
 /// `priv_from`: the first step with a privileged summary (`Step::has_privileged`, 042-R21 ①;
-/// earlier steps have none), 0 = every step.
+/// earlier steps have none), 0 = every step. `races`: per lane the enemy lobby race
+/// (`Segment::enemy_lobby_race`, 044-R9) as "zerg" / "terran" / "protoss" / "random" /
+/// "unknown", empty = unknown (the `random` reference).
 #[pyfunction]
-#[pyo3(signature = (lanes, t, r_value_off = Vec::new(), pseudo_rewards = false, pseudo_scale = Vec::new(), sil_returns = Vec::new(), priv_from = 0))]
+#[pyo3(signature = (lanes, t, r_value_off = Vec::new(), pseudo_rewards = false, pseudo_scale = Vec::new(), sil_returns = Vec::new(), priv_from = 0, races = Vec::new()))]
 #[allow(clippy::too_many_arguments)]
-pub fn test_segments(lanes: usize, t: usize, r_value_off: Vec<usize>, pseudo_rewards: bool, pseudo_scale: Vec<(f32, f32)>, sil_returns: Vec<Option<f32>>, priv_from: usize) -> SegmentBatch {
+pub fn test_segments(lanes: usize, t: usize, r_value_off: Vec<usize>, pseudo_rewards: bool, pseudo_scale: Vec<(f32, f32)>, sil_returns: Vec<Option<f32>>, priv_from: usize, races: Vec<String>) -> PyResult<SegmentBatch> {
     use uranium_env::features::PrivilegedTensors;
     use uranium_env::features::executor::HostAction;
     use uranium_league::trajectory::{PackedObs, Step};
+    use uranium_proto::Race;
+    let races = races
+        .iter()
+        .map(|r| match r.as_str() {
+            "zerg" => Ok(Race::Zerg),
+            "terran" => Ok(Race::Terran),
+            "protoss" => Ok(Race::Protoss),
+            "random" => Ok(Race::Random),
+            "unknown" => Ok(Race::Unknown),
+            x => Err(PyValueError::new_err(format!("race {x:?}: expected zerg, terran, protoss, random or unknown"))),
+        })
+        .collect::<PyResult<Vec<_>>>()?;
     let segs = (0..lanes)
         .map(|lane| {
             let steps = uranium_league::testkit::observations(t)
@@ -311,10 +349,10 @@ pub fn test_segments(lanes: usize, t: usize, r_value_off: Vec<usize>, pseudo_rew
                     version: 0,
                 })
                 .collect();
-            Segment { agent: 0, game_id: lane as u64, steps, state0: Default::default(), terminal: lane % 2 == 0, r_value_policy: !r_value_off.contains(&lane), pseudo_scale: pseudo_scale.get(lane).map_or([1.0, 1.0], |&(a, b)| [a, b]), start_frame: 0, sil_return: sil_returns.get(lane).copied().flatten() }
+            Segment { agent: 0, game_id: lane as u64, steps, state0: Default::default(), terminal: lane % 2 == 0, r_value_policy: !r_value_off.contains(&lane), pseudo_scale: pseudo_scale.get(lane).map_or([1.0, 1.0], |&(a, b)| [a, b]), start_frame: 0, sil_return: sil_returns.get(lane).copied().flatten(), enemy_lobby_race: races.get(lane).copied().unwrap_or(Race::Unknown) }
         })
         .collect();
-    SegmentBatch { segs }
+    Ok(SegmentBatch { segs })
 }
 
 /// The `config/rl.toml` values as JSON (042-R9).

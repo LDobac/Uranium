@@ -63,6 +63,7 @@ def add_parser(sub) -> None:
     r.add_argument("--out", help="markdown report")
     r.add_argument("--json", help="raw results (the parity log for `bench rl-parity`)")
     r.add_argument("--isolate", action="store_true", help="each learner x group in its own process, so its peak RSS (060-R3) is its own, not the process peak so far")
+    r.add_argument("--references", type=int, default=1, help="044-R9 / 060-AC7 ②: distinct KL reference models resident (1-4; > 1: the race-aware reference path, lanes' lobby races cycling; new learner only)")
     r.set_defaults(fn=rl_main)
 
     rp = bsub.add_parser("rl-parity", help="parity of two `bench rl` runs (042 lane-group equivalence)")
@@ -199,7 +200,7 @@ def rl_main(a) -> int:
                 write(a.json, json.dumps({"env": env, "runs": runs}, indent=1))
                 continue
             try:
-                runs.append(run_learner(kind, int(g), net, cfg, batch, device, precision, a.algo, a.updates, a.phases, a.ops, a.trace, log, off, a.trim))
+                runs.append(run_learner(kind, int(g), net, cfg, batch, device, precision, a.algo, a.updates, a.phases, a.ops, a.trace, log, off, a.trim, a.references))
             except torch.OutOfMemoryError as e:  # a group size over the device memory is a result (060-R3)
                 runs.append({"learner": kind, "group": int(g), "off": list(off), "trim": a.trim and kind == "new", "updates": [], "median_s": None, "mean_s": None, "p95_s": None, "peak_gib": None, "peak_rss_gib": None, "failed": str(e).splitlines()[0][:160]})
                 torch.cuda.empty_cache()
@@ -222,6 +223,7 @@ def _rl_child(a, kind: str, group: int, log) -> dict:
         argv = [sys.executable, "-m", "uranium", "bench", "rl", "--checkpoint", a.checkpoint, "--config", a.config, "--algo", a.algo, "--learner", kind, "--groups", str(group),
                 "--updates", str(a.updates), "--entities", a.entities, "--templates", str(a.templates), "--seed", str(a.seed), "--off", a.off, "--ops", str(a.ops), "--json", str(out)]
         argv += (["--backend", a.backend] if a.backend else []) + (["--lanes", str(a.lanes)] if a.lanes else []) + (["--phases"] if a.phases else []) + (["--trim"] if a.trim else []) + (["--trace", a.trace] if a.trace else [])
+        argv += ["--references", str(a.references)]
         log(f"[bench rl] child: {kind} group {group}")
         rc = subprocess.run(argv, stdout=subprocess.DEVNULL).returncode
         if rc != 0 or not out.is_file():

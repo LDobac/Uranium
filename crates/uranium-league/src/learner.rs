@@ -81,6 +81,11 @@ pub struct UpdateStats {
     /// [`SPATIAL_COLUMNS`] order (`None` on the other updates and when off).
     #[serde(default)]
     pub spatial: Option<Vec<f32>>,
+    /// 044-R9: per `[kl.reference]` key (`batch::REF_RACES` order) the mean per-step KL(π ‖
+    /// π_ref) (used heads summed, before the head multipliers) over the trained steps of the
+    /// lanes of that lobby race; `None` without the table or without such a step.
+    #[serde(default)]
+    pub kl_ref: [Option<f32>; 4],
 }
 
 /// 041-R25 ② layer names in order (the Python `uranium.model.monitor.SPEC_LAYERS`): ReLU outputs
