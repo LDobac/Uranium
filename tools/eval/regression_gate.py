@@ -112,13 +112,20 @@ def _rate_note(bk: int, bn: int, ck: int, cn: int) -> str:
 def judge_games(base: dict | None, cand: dict | None) -> list[dict]:
     """(1) and (3b) from the per-race T0 counts {race: {n, won, bunker_order_4m, bunker_unit_4m, dumped, missing}}.
     A job with planned games that have neither a result row nor an invalid mark (`missing`, an unfinished job)
-    is not judged."""
+    is not judged. Neither is a job with undecodable result / ledger lines (`skipped_lines`, 050-R9): a lost
+    Aborted ledger entry or a lost retry row changes the counts unseen, and the line cannot be tied to a race,
+    so every race is MISSING (fail closed)."""
     out = []
+    sb, sc = len((base or {}).get("skipped_lines") or []), len((cand or {}).get("skipped_lines") or [])
     for r in RACES:
         b, c = (base or {}).get(r), (cand or {}).get(r)
         for chk, metric, thr in (("1", "won", ">= baseline"), ("3b", "bunker_order_4m", "<= baseline"), ("3b", "bunker_unit_4m", "<= baseline")):
             if not b or not c or not b["n"] or not c["n"]:
                 out.append(_check(chk, r, metric, None, None, thr, MISSING, "no T0 t0_tp games"))
+                continue
+            if sb or sc:
+                out.append(_check(chk, r, metric, [b[metric], b["n"]], [c[metric], c["n"]], thr, MISSING,
+                                  f"{sb + sc} undecodable lines in the job files: {sb} (baseline) / {sc} (candidate)"))
                 continue
             if b.get("missing") or c.get("missing"):
                 out.append(_check(chk, r, metric, [b[metric], b["n"]], [c[metric], c["n"]], thr, MISSING,

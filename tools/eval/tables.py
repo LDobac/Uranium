@@ -187,7 +187,7 @@ def subset_tables(job: Path, plan_id: str, lin: dict | None = None) -> dict:
     rows_all = ec.read_results(job)
     ledger = ec.read_ledger(job)
     invalid = ec.opponent_crashes(ledger)
-    skipped = ec.skipped_lines(rows_all, ledger)
+    skipped = ec.skipped_lines(rows_all, ledger)  # job-wide, as in job_tables
     for k, f, plan in ec.job_stages(job):
         have = game_keys(plan)
         if not set(want) <= set(have):
@@ -217,6 +217,7 @@ def job_tables(job: Path, cache: Path, override: dict[str, str] | None = None, l
     rows_all = ec.read_results(job)
     ledger = ec.read_ledger(job)
     invalid = ec.opponent_crashes(ledger)
+    # Job-wide (050-R9): an undecodable line has no readable game id, so every stage carries the job's list.
     skipped = ec.skipped_lines(rows_all, ledger)
     rec = protocol.read_record(job)
     out = {}

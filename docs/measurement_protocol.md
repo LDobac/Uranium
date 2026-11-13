@@ -63,6 +63,7 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
    - 표: `python tools/eval/tables.py <shared>/eval/<job> --json <job>.json`. 단계마다 다음을 함께 적는다.
      - 추론 backend별 판 수와 정밀도(CUDA bf16 혼합, ROCm f32)
      - `protocol.json`의 체크포인트 sha256, 미커밋 표시, 호스트 플랫폼
+     - 결과·ledger 파일의 깨진 줄(공용 드라이브 쓰기 손상: NUL 줄, 잘린 줄). NUL만 있는 줄은 무시하고, 읽을 수 없는 줄은 건너뛰어 `SKIPPED`로 파일:줄을 적는다(JSON `skipped_lines`). 회귀 게이트는 깨진 줄이 있는 쪽이 있으면 게임 판정(1, 3b)을 모두 MISSING으로 둔다.
    - 확인: `python tools/eval/protocol.py verify <shared>/eval/<job> --lineage m2 --point s2e2`. 다음 중 하나라도 어긋나면 실패한다.
      - `protocol.json`이 있는지
      - plan 파일이 기록된 해시와 같은지
