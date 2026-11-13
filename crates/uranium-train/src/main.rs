@@ -356,13 +356,16 @@ fn main() -> Result<()> {
             let t = uranium_train::bc::epoch_table_groups(&groups, &with)?;
             // 041-R14: warmup = 5% of the epoch, rounded half up.
             let warmup = (t.s2.updates as f64 * 0.05 + 0.5).floor() as u64;
-            println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "config": config, "fractions": f, "s2": t.s2, "s2_warmup": warmup, "s2_mix": t.s2_mix }))?);
+            // 041-R21 ⑥ / 041-R22 ③ / 041-R29 ④: the teacher share is judged against --teacher-share
+            // (0.5 = the mix epoch; a DAgger round's teacher + dagger share), same ±3% tolerance.
+            let mix = t.s2_mix.clone().expect("the config has [data.subsample]").with_target(teacher_share);
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "config": config, "fractions": f, "s2": t.s2, "s2_warmup": warmup, "s2_mix": mix }))?);
             // 041-R21 ⑥ / R26 ③: fractions that miss a share are not to be used.
-            let mix = t.s2_mix.as_ref().expect("the config has [data.subsample]");
             anyhow::ensure!(
                 mix.teacher_ok && mix.race_ok,
-                "the fractions miss the mix shares: teacher {:.4} (ok {}), human races {:?} vs S2 {:?} (ok {}) (041-R21 ⑥, R26)",
+                "the fractions miss the mix shares: teacher {:.4} vs target {} (ok {}), human races {:?} vs S2 {:?} (ok {}) (041-R21 ⑥, R22 ③, R26)",
                 mix.teacher_share,
+                mix.teacher_share_target,
                 mix.teacher_ok,
                 mix.human_race_share,
                 mix.reference_human_race_share,

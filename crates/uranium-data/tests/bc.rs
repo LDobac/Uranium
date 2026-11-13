@@ -1376,6 +1376,19 @@ fn race_fractions_hit_the_mix_shares_041_r26() {
     let mix = MixShares::new(&count_by_source(&scan.iter().filter(|g| skew.keeps(&g.meta, 3)).cloned().collect::<Vec<_>>()), &all, &teacher);
     assert!(!mix.race_ok, "{:?}", mix.human_race_share);
     assert!(race_fractions(&scan, &["nothing".to_string()], 3, 0.5).is_err(), "no teacher steps");
+    // 041-R22 ③ / 041-R29 ④: a DAgger round's teacher share (`mix-fractions --teacher-share`) is judged
+    // against its own target with the same ±3% tolerance; `new` keeps the mix epoch's 0.5.
+    let f = race_fractions(&scan, &teacher, 13, 0.5954).unwrap();
+    let sub = Subsample { fraction: f.fraction, keep_sources: teacher.clone(), fraction_by_race: Some(f.fraction_by_race.clone()) };
+    let mix = MixShares::new(&count_by_source(&scan.iter().filter(|g| sub.keeps(&g.meta, 13)).cloned().collect::<Vec<_>>()), &all, &teacher);
+    assert_eq!(mix.teacher_share_target, 0.5);
+    assert!(!mix.teacher_ok && mix.race_ok, "0.5954 is outside 0.5 ± 0.03: {}", mix.teacher_share);
+    let at = mix.clone().with_target(0.5954);
+    assert!((at.teacher_share - 0.5954).abs() < 0.01 && at.teacher_ok && at.race_ok, "{at:?}");
+    assert_eq!(at.teacher_share_target, 0.5954);
+    assert_eq!(MixShares { teacher_share_target: 0.5954, teacher_ok: true, ..mix.clone() }, at, "only the judgement changes");
+    assert!(!mix.clone().with_target(0.66).teacher_ok, "outside 0.66 ± 0.03");
+    assert_eq!(mix.clone().with_target(0.5), mix, "--teacher-share 0.5 (the default) is the mix epoch's judgement");
 }
 
 /// 041-R26 ③: `bc-epoch` counts each stage's games and steps per source and enemy race (they add
