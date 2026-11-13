@@ -390,8 +390,9 @@ impl DecisionLog {
         }
     }
 
-    pub fn decision(&mut self, frame: u32, action: u16, delay_bucket: usize, units: &[u32]) {
-        self.line(&DecisionLogLine::Decision { frame, action, delay_bucket: delay_bucket as u32, units: units.to_vec() });
+    /// `forced`: a branch player's prefix decision (051-R5 ⑤), written as `"forced":true`.
+    pub fn decision(&mut self, frame: u32, action: u16, delay_bucket: usize, units: &[u32], forced: bool) {
+        self.line(&DecisionLogLine::Decision { frame, action, delay_bucket: delay_bucket as u32, units: units.to_vec(), forced });
         self.decisions += 1;
     }
 
@@ -567,6 +568,10 @@ impl ModelPolicy {
     /// trunk and, before t, plays the recorded decision without inference. `Some(act)` = send it
     /// (a forced `Act`, or the chat-less leave of an invalid branch); `None` = play this
     /// observation through the normal path (t restores there, after t plays live).
+    ///
+    /// Throughput note (032-R14): prefix observations send no request, so while branch sessions
+    /// are in their prefix the inference server's batches hold fewer rows and each waits up to
+    /// `max_wait` for rows that do not come. That changes speed only, never a result.
     fn branch_prefix(&mut self, f: &RawFrame) -> Result<Option<Act>> {
         let Some(b) = self.branch.as_deref_mut() else { return Ok(None) };
         let i = b.obs - 1;
@@ -602,9 +607,9 @@ impl ModelPolicy {
         }
         let d = line.decision.clone().expect("ForcedPrefix holds a model session's log");
         self.mem.record_action(d.action, d.delay_bucket as usize, &d.units);
-        // 051-R5 ⑤: the 041-R28 log gets the forced decision in its usual form.
+        // 051-R5 ⑤: the 041-R28 log gets the forced decision marked `forced`.
         if let Some(l) = self.decision_log.as_mut() {
-            l.decision(f.frame, d.action, d.delay_bucket as usize, &d.units);
+            l.decision(f.frame, d.action, d.delay_bucket as usize, &d.units, true);
         }
         b.last = LineExtra { decision: Some(d), state: None, state_sha256: None, forced: true };
         // 051-R5 ③: the recorded Act as it was sent.
@@ -710,15 +715,18 @@ impl ModelPolicy {
         if let Some(l) = self.decision_log.as_mut() {
             l.end(final_frame.map(|f| f.frame));
         }
-        // 051-R7: a `force` that never fired is missed; a branch whose game ended before t never
-        // reached the trunk's observation i_t at f_t (051-R5 ①: `frame`).
+        // 051-R7: a `force` that never fired is missed; a branch whose game finished before t never
+        // reached the trunk's observation i_t at f_t (051-R5 ①: `frame`). An abort (disconnect,
+        // session error, `GameEnd` Aborted / AgentTimeout: `outcome` None) is an infrastructure
+        // failure, not an invalid branch: the record's `error` / `end: null` tells it apart and
+        // the evaluation job plays the game again (020-R15 ④).
         if let Some(b) = self.branch.as_deref_mut() {
             let next = b.obs;
             if let Some(run) = b.player.as_deref_mut() {
                 run.intervention.finish();
                 if let Some((reason, why)) = run.pending.take() {
                     run.fail(reason, None, None, &why);
-                } else if !run.at_t && run.invalid.is_none() {
+                } else if outcome.is_some() && !run.at_t && run.invalid.is_none() {
                     let why = format!("the game ended before t (trunk observation {:?})", run.prefix.as_ref().map(ForcedPrefix::i_t));
                     run.fail(InvalidReason::Frame, Some(next), final_frame.map(|f| f.frame), &why);
                 }
@@ -895,7 +903,7 @@ impl ModelPolicy {
         // 041-R28 ①: the same decision, executor refusal or not (surrender decisions return
         // above and are never recorded in memory, so never logged).
         if let Some(l) = self.decision_log.as_mut() {
-            l.decision(f.frame, a.action, a.delay_bucket, &ids);
+            l.decision(f.frame, a.action, a.delay_bucket, &ids, false);
         }
         self.branch_after_act(f.frame, a.action, a.delay_bucket, &ids, rejected, &r.obs.obs.scalar);
         self.stats.decisions += 1;
