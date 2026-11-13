@@ -395,6 +395,11 @@ impl Write for SinkWriter {
 /// One session per (game id, slot) in turn on one server with `board`; slot 0 plays the model,
 /// slot 1 the T0 default. Each bridge sends its frames (until the agent leaves), then GameEnd.
 fn serve_games(h: &InferenceHandle, board: BranchBoard, games: &[(u64, u8, Vec<RawFrame>)]) -> Vec<serde_json::Value> {
+    serve_games_ending(h, board, games, EndReason::TimeLimitDraw)
+}
+
+/// [`serve_games`] whose games that run to their last frame end with `reason`.
+fn serve_games_ending(h: &InferenceHandle, board: BranchBoard, games: &[(u64, u8, Vec<RawFrame>)], reason: EndReason) -> Vec<serde_json::Value> {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let routes = Routes::default();
@@ -421,7 +426,7 @@ fn serve_games(h: &InferenceHandle, board: BranchBoard, games: &[(u64, u8, Vec<R
         }
         info.players[1].race = Race::Terran;
         write_msg(&mut w, &BridgeMsg::GameInfo(Box::new(info))).unwrap();
-        let mut end = GameEnd { winner: None, frame: fs.last().unwrap().frame + 8, reason: EndReason::TimeLimitDraw, stats: None, final_frame: None };
+        let mut end = GameEnd { winner: None, frame: fs.last().unwrap().frame + 8, reason, stats: None, final_frame: None };
         for f in fs {
             let frame = f.frame;
             write_msg(&mut w, &BridgeMsg::Frame(Box::new(f))).unwrap();
@@ -535,5 +540,68 @@ fn games_off_the_board_are_unchanged_020_r22() {
     };
     assert_eq!(strip(&plain[0]), strip(&other[0]));
     assert_eq!(strip(&plain[0]), strip(&logged[0]), "act logs and snapshots change no Act, digest or metric");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 051-R5 ① / 051-R9 ④: an aborted game is an infrastructure failure, not an invalid branch. A
+/// disconnect before t leaves `invalid` unset (a finished game that ended before t is `frame`, see
+/// `mismatch_or_bad_inputs_leave_without_chat_051_r5`), and a `GameEnd` Aborted after t gives
+/// `end: null` (no outcome; the job plays the game again, 020-R15 ④).
+#[test]
+fn aborted_branches_are_not_invalid_051_r9() {
+    let dir = temp("abort");
+    let (h, _) = mock();
+    let fs = frames(9);
+    let t = trunk(&h, &dir, &fs);
+    let mut p = ModelPolicy::new(&h, &game_info()).unwrap().with_branch(branch_game(&t, none(), false), 0).unwrap();
+    for f in &fs[..3] {
+        p.on_frame(f).unwrap();
+    }
+    p.on_abort();
+    let o = p.branch_record().unwrap().outcome.unwrap();
+    assert_eq!((o.valid, o.invalid, o.end), (true, None, None));
+
+    let board = BranchBoard::default();
+    board.lock().unwrap().insert(31, branch_game(&t, none(), false));
+    let recs = serve_games_ending(&h, board, &[(31, 0, fs.clone())], EndReason::Aborted);
+    let o: BranchOutcome = serde_json::from_value(recs[0]["branch"].clone()).unwrap();
+    assert_eq!((o.valid, o.invalid, o.end), (true, None, None));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 051-R5 ⑤ / 041-R28: a branch player's 041-R28 decision log marks the forced prefix decisions
+/// `"forced":true`; every other line, and a plain (DAgger) session's whole log, is byte-identical
+/// to the format before the field (no `forced` key), and both forms read back.
+#[test]
+fn decision_log_marks_forced_decisions_051_r5() {
+    use uranium_env::features::label::DecisionLogLine;
+    let dir = temp("memlog");
+    let (h, _) = mock();
+    let fs = frames(8);
+    let t = trunk(&h, &dir, &fs);
+    let log = dir.join("memory").join("g2.jsonl");
+    let mut p = ModelPolicy::new(&h.clone().with_memory_log(log.clone()), &game_info()).unwrap().with_branch(branch_game(&t, none(), false), 0).unwrap();
+    for f in &fs {
+        p.on_frame(f).unwrap();
+    }
+    p.on_end(Some(uranium_env::reward::Outcome::Draw), None);
+    let text = std::fs::read_to_string(&log).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), fs.len() + 1);
+    for (i, l) in lines[..fs.len()].iter().enumerate() {
+        assert_eq!(l.contains(r#""forced":true"#), i < I_T as usize, "line {i}: {l}");
+        let parsed: DecisionLogLine = serde_json::from_str(l).unwrap();
+        assert!(matches!(parsed, DecisionLogLine::Decision { forced, .. } if forced == (i < I_T as usize)), "line {i}");
+    }
+    assert_eq!(lines[0], r#"{"frame":1,"action":0,"delay_bucket":0,"units":[],"forced":true}"#);
+    // A plain (DAgger) session: the bytes of the format before the field.
+    let plain = dir.join("memory").join("g3.jsonl");
+    let mut q = ModelPolicy::new(&h.clone().with_memory_log(plain.clone()), &game_info()).unwrap();
+    for f in &fs[..2] {
+        q.on_frame(f).unwrap();
+    }
+    q.on_end(Some(uranium_env::reward::Outcome::Draw), None);
+    let want = concat!(r#"{"frame":1,"action":0,"delay_bucket":0,"units":[]}"#, "\n", r#"{"frame":25,"action":0,"delay_bucket":1,"units":[]}"#, "\n", r#"{"decisions":2,"end_frame":null,"player":0}"#, "\n");
+    assert_eq!(std::fs::read_to_string(&plain).unwrap(), want);
     std::fs::remove_dir_all(&dir).ok();
 }

@@ -510,7 +510,7 @@ fn decision_log_lines_match_memory_records_041_r28() {
         .iter()
         .enumerate()
         // The mock samples NoOp with an empty selection and delay bucket = decisions so far.
-        .map(|(t, f)| DecisionLogLine::Decision { frame: f.frame, action: 0, delay_bucket: (t % DELAY_BUCKETS.len()) as u32, units: vec![] })
+        .map(|(t, f)| DecisionLogLine::Decision { frame: f.frame, action: 0, delay_bucket: (t % DELAY_BUCKETS.len()) as u32, units: vec![], forced: false })
         .chain([DecisionLogLine::End { decisions: 6, end_frame: Some(fs.last().unwrap().frame), player: SELF }])
         .collect();
     assert_eq!(lines, want);

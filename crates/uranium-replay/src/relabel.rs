@@ -113,7 +113,7 @@ pub fn parse_decision_log(text: &str) -> DecisionLogRead {
             return DecisionLogRead::Incomplete(format!("line {} after the end line", i + 1));
         }
         match serde_json::from_str::<DecisionLogLine>(line) {
-            Ok(DecisionLogLine::Decision { frame, action, delay_bucket, units }) => {
+            Ok(DecisionLogLine::Decision { frame, action, delay_bucket, units, .. }) => {
                 if out.last().is_some_and(|(f, _)| *f > frame) {
                     return DecisionLogRead::Incomplete(format!("line {}: frame {frame} before the previous decision's", i + 1));
                 }

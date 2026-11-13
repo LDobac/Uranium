@@ -519,22 +519,10 @@ impl ActLogFile {
     }
 }
 
-/// 051-R2 end line `git`: the commit of the source tree this agent was built from (`git rev-parse
-/// HEAD` there), `unknown` when it cannot be read.
+/// 051-R2 end line `git`: the commit this agent was built from, fixed at build time (`build.rs`:
+/// `git rev-parse HEAD`, rebuilt when HEAD moves), `unknown` when the build had no git checkout.
 pub fn git_commit() -> &'static str {
-    static C: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    C.get_or_init(|| {
-        std::process::Command::new("git")
-            .args(["rev-parse", "HEAD"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "unknown".into())
-    })
+    env!("URANIUM_GIT")
 }
 
 /// One JSONL record (one player of one game).
@@ -947,7 +935,11 @@ impl SessionLog {
         let Some(part) = policy.branch_record() else { return };
         rec.snapshots = part.snapshots;
         rec.branch = part.outcome.map(|mut o| {
-            if let (Some((winner, frame, reason)), Some(b)) = (self.end, &game.branch) {
+            // 051-R9 ④ of a finished game only: an aborted one (no `GameEnd`, or Aborted /
+            // AgentTimeout) keeps `end: null` = no outcome, and the job plays it again.
+            if let (Some((winner, frame, reason)), Some(b)) = (self.end, &game.branch)
+                && !matches!(reason, EndReason::Aborted | EndReason::AgentTimeout)
+            {
                 o.end = Some(uranium_env::branch::BranchEnd::new(winner, slot, frame, reason, b.horizon));
             }
             if let Err(e) = uranium_env::branch::FiniteRecord::check_finite(&o) {
@@ -1145,6 +1137,14 @@ mod tests {
         let mut z = ScriptedPolicy::new(&t0_info(Race::Zerg), T0Build::ZergRush).unwrap();
         z.on_frame(&scv_frame(100, 0)).unwrap();
         assert!(z.scripted_stats().is_none());
+    }
+
+    /// 051-R2: the act-log `git` is the build-time constant (a commit id or `unknown`).
+    #[test]
+    fn git_commit_is_the_build_constant_051_r2() {
+        let c = git_commit();
+        assert_eq!(c, env!("URANIUM_GIT"));
+        assert!(c == "unknown" || (c.len() == 40 && c.bytes().all(|b| b.is_ascii_hexdigit())), "{c}");
     }
 
     /// 020-R11 / 020-R16: the spec index comes from both hostd name forms, nothing from others.

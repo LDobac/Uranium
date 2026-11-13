@@ -50,7 +50,17 @@ pub struct MemoryAction {
 #[serde(untagged)]
 pub enum DecisionLogLine {
     /// `frame`: the live observation frame the decision was made on (`RawFrame.frame`).
-    Decision { frame: u32, action: u16, delay_bucket: u32, units: Vec<u32> },
+    /// `forced` (051-R5 ⑤): a branch player's prefix decision replayed from the trunk's act log;
+    /// written only when true, so every other log is byte-identical to before. A forced decision
+    /// is still a decision memory recorded (the relabel build uses it like any other).
+    Decision {
+        frame: u32,
+        action: u16,
+        delay_bucket: u32,
+        units: Vec<u32>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        forced: bool,
+    },
     /// Written only when the game ended (`GameEnd`): decision lines written, `end_frame` the
     /// final frame the bridge sent (if any) and `player` the session's own BWAPI player id, so the
     /// relabel build applies the log only to that player's view of the same game.
