@@ -603,6 +603,10 @@ pub struct SessionRecord {
     /// 051-R9: a branch player's outcome (`players[0]` model session of a branch game).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<uranium_env::branch::BranchOutcome>,
+    /// 051-R8 / R12: a model session's inference server seed (set at the server's start), in plan
+    /// games with 051 keys only (020-R22 ④); `None` when the server recorded none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub infer_seed: Option<u64>,
 }
 
 /// BWAPI neutral player id.
@@ -855,6 +859,7 @@ pub fn session(stream: TcpStream, opts: &ServeOptions) -> SessionRecord {
         act_log: None,
         snapshots: Vec::new(),
         branch: None,
+        infer_seed: None,
     };
     let mut rejections = Vec::new();
     if let Err(e) = run_session(stream, opts, &mut rec, &mut rejections) {
@@ -914,6 +919,10 @@ fn run_session(stream: TcpStream, opts: &ServeOptions, rec: &mut SessionRecord, 
     }
     if let Some(g) = &game_branch {
         log.record(g, &mut *policy, hello.slot, rec);
+        // 051-R8: the model session's inference server seed (`points.jsonl` / `branches.jsonl`).
+        if let PolicySpec::Model(h) = &spec {
+            rec.infer_seed = h.infer_seed;
+        }
     }
     res
 }
