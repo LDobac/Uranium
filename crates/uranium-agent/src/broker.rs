@@ -66,7 +66,9 @@ fn restore_shape_error(state: &HostState) -> Option<String> {
         return Some("the state has no parts (051-R4)".into());
     }
     state.parts.iter().enumerate().find_map(|(i, (shape, v))| {
-        (shape.first() != Some(&1) || shape.iter().product::<usize>() != v.len()).then(|| format!("part {i}: {} values for shape {shape:?}, batch 1 expected (051-R4)", v.len()))
+        // Checked: a session's shape must not overflow (a panic here would poison the broker).
+        let n = shape.iter().try_fold(1usize, |n, &d| n.checked_mul(d));
+        (shape.first() != Some(&1) || n != Some(v.len())).then(|| format!("part {i}: {} values for shape {shape:?}, batch 1 expected (051-R4)", v.len()))
     })
 }
 
