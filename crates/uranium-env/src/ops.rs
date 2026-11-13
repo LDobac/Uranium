@@ -97,17 +97,23 @@ pub struct OpsMetrics {
     pub float_gas_rs: f64,
 }
 
-/// 052-AC2 cross-check of `mined` (not a session key): the minerals taken out of the fields our
-/// SCVs mined in the ops window (initial amount − amount last seen in the window, precompute fields
-/// only), the fields that had an own mining SCV, those of them without a known initial amount (left
-/// out of `depleted`), and the SCV count at the window's last observation. `mined` should be within
-/// 8 × `scvs` below `depleted` (cargo picked up but not yet returned).
+/// 052-AC2 cross-check of `mined` (not a session key). `depleted`: the minerals taken out of the
+/// fields own SCVs delivered from in the ops window (initial amount − amount last seen in the
+/// window); `fields`: those fields; `unknown_fields`: those without a precompute initial amount
+/// (left out of `depleted`). A field only targeted (a scout's gather order on the enemy's minerals)
+/// is not one: the enemy's mining would count. `scvs` / `carrying`: own SCVs and those carrying at
+/// the window's last observation that had own units (a replay's last frame has none);
+/// `lost_cargo`: 8 per own SCV destroyed in the window while last seen carrying. `mined` should be
+/// within 8 × `scvs` below `depleted` (052-AC2); exactly, `depleted` − `mined` = 8 × `carrying` +
+/// `lost_cargo` up to what the observation spacing misses.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct FieldCheck {
     pub depleted: u32,
     pub fields: u32,
     pub unknown_fields: u32,
     pub scvs: u32,
+    pub carrying: u32,
+    pub lost_cargo: u32,
 }
 
 /// 052-R5 `rush_combat` object (Interfaces order); `None` in the record = no entry.
@@ -265,9 +271,11 @@ pub struct OpsTracker {
     /// Owner and type of each unit at the last observation that had it (052-R5 destroy events).
     last_seen: BTreeMap<UnitId, (u8, u16)>,
     mline_seen: BTreeSet<UnitId>,
-    /// Fields an own SCV mined in the ops window and the SCV count at its last observation (052-AC2).
+    /// 052-AC2 field check: fields own SCVs delivered from in the ops window, (SCVs, carrying SCVs)
+    /// at its last observation with own units, cargo lost with destroyed SCVs.
     mined_fields: BTreeSet<usize>,
-    last_scvs: u32,
+    last_scvs: (u32, u32),
+    lost_cargo: u32,
     prev: u32,
     last: Option<u32>,
     mined: u32,
@@ -345,7 +353,8 @@ impl OpsTracker {
             last_seen: BTreeMap::new(),
             mline_seen: BTreeSet::new(),
             mined_fields: BTreeSet::new(),
-            last_scvs: 0,
+            last_scvs: (0, 0),
+            lost_cargo: 0,
             prev: 0,
             last: None,
             mined: 0,
@@ -425,6 +434,9 @@ impl OpsTracker {
                 if let Some(&i) = self.field_of.get(id) {
                     self.fields[i].amount = 0;
                 }
+                if in_window && self.carry.get(id) == Some(&true) && self.last_seen.get(id).is_some_and(|&(o, t)| o == self.me && t == self.ids.scv) {
+                    self.lost_cargo += TRIP;
+                }
                 if let (Some(r), Some(&(owner, ty))) = (self.rush.as_mut().filter(|r| rush_open(r)), self.last_seen.get(id)) {
                     if owner == self.me && ty == self.ids.scv {
                         r.scv_lost += 1;
@@ -460,6 +472,9 @@ impl OpsTracker {
                     self.gas += TRIP;
                 } else {
                     self.mined += TRIP;
+                    if let Some(&Harvest::Mineral(Some(i))) = self.harvest.get(&u.id) {
+                        self.mined_fields.insert(i);
+                    }
                     for (k, &x) in INC_AT.iter().enumerate() {
                         if fr > x - MINUTE && fr <= x {
                             self.inc_mined[k] += TRIP;
@@ -524,9 +539,8 @@ impl OpsTracker {
                 per_base[k].0 += 1;
             }
         }
-        if in_window {
-            self.mined_fields.extend(mining.iter().copied());
-            self.last_scvs = n_scv as u32;
+        if in_window && !mine.is_empty() {
+            self.last_scvs = (n_scv as u32, scvs.iter().filter(|u| u.has(flags::CARRYING)).count() as u32);
         }
         let oversat: i64 = per_base.iter().map(|&(n, k)| (n - SAT_PER_FIELD * k).max(0)).sum();
         // Mineral line tiles (052-R2, AMB-052-3): tile centres within 32 px of a base CC → base
@@ -705,7 +719,8 @@ impl OpsTracker {
                 None => unknown += 1,
             }
         }
-        FieldCheck { depleted, fields: self.mined_fields.len() as u32, unknown_fields: unknown, scvs: self.last_scvs }
+        let (scvs, carrying) = self.last_scvs;
+        FieldCheck { depleted, fields: self.mined_fields.len() as u32, unknown_fields: unknown, scvs, carrying, lost_cargo: self.lost_cargo }
     }
 
     /// The `rush_combat` object (052-R5); `None` = no entry before 5:00.
@@ -1147,40 +1162,50 @@ mod tests {
         assert_eq!(run(vec![vec![at(1, 60)], vec![at(1, 60), at(2, 999)], vec![ordered(at(1, 60), "Attack1", Some(60)), at(2, 60)]]), (None, 0));
     }
 
-    /// 052-AC2 field check: the mined fields' initial − last amount in the ops window, a field
-    /// without a precompute amount counted apart, the SCV count at the window's last observation.
+    /// 052-AC2 field check: the fields delivered from (initial − last amount in the ops window), a
+    /// field without a precompute amount counted apart, a scout's gather target on another field
+    /// left out, SCVs and carrying SCVs at the window's last observation with own units.
     #[test]
     fn field_check_052_ac2() {
         let mut t = tracker();
         let fld = |amount| UnitState { resources: amount, ..field() };
         let far = |amount| UnitState { resources: amount, ..unit(901, 11, "Resource_Mineral_Field", (3000, 3000), true) };
-        t.step(&frame(100, vec![cc(), fld(1500), scv(10, "MiningMinerals", Some(FIELD_ID), false)]));
-        t.step(&frame(200, vec![cc(), fld(1492), scv(10, "ReturnMinerals", Some(1), true)]));
-        t.step(&frame(300, vec![cc(), fld(1484), scv(10, "MiningMinerals", Some(FIELD_ID), false), scv(11, "MiningMinerals", Some(901), false), far(300)]));
-        assert_eq!(t.ops().mined, 8);
-        assert_eq!(t.field_check(), FieldCheck { depleted: 16, fields: 2, unknown_fields: 1, scvs: 2 });
-        // After 10:00 nothing changes.
-        t.step(&frame(14_400, vec![cc(), fld(1484), scv(10, "MiningMinerals", Some(FIELD_ID), false)]));
+        let theirs = || UnitState { resources: 1200, ..unit(902, 11, "Resource_Mineral_Field", (3000, 3200), true) };
+        let scout = || scv(12, "MoveToMinerals", Some(902), false);
+        t.step(&frame(100, vec![cc(), fld(1500), scv(10, "MiningMinerals", Some(FIELD_ID), false), scout(), theirs()]));
+        t.step(&frame(200, vec![cc(), fld(1492), scv(10, "ReturnMinerals", Some(1), true), scout(), theirs()]));
+        t.step(&frame(300, vec![cc(), fld(1484), scv(10, "MiningMinerals", Some(FIELD_ID), false), scv(11, "MiningMinerals", Some(901), false), far(300), scout()]));
+        t.step(&frame(400, vec![cc(), fld(1476), scv(10, "ReturnMinerals", Some(1), true), scv(11, "ReturnMinerals", Some(1), true), far(292), scout()]));
+        t.step(&frame(500, vec![cc(), fld(1476), scv(10, "ReturnMinerals", Some(1), true), scv(11, "MiningMinerals", Some(901), false), far(284), scout()]));
+        assert_eq!(t.ops().mined, 16);
+        let want = FieldCheck { depleted: 24, fields: 2, unknown_fields: 1, scvs: 3, carrying: 1, lost_cargo: 0 };
+        assert_eq!(t.field_check(), want);
+        // A replay's last frame without own units, then after 10:00: nothing changes.
+        t.step(&frame(14_400, vec![fld(1476)]));
         t.step(&frame(14_408, vec![cc(), fld(1000), scv(10, "MiningMinerals", Some(FIELD_ID), false)]));
-        assert_eq!(t.field_check(), FieldCheck { depleted: 16, fields: 2, unknown_fields: 1, scvs: 1 });
+        assert_eq!(t.field_check(), want);
     }
 
     /// 052-AC2 field check: a mined-out field (its `UnitDestroyed` event) counts its whole initial
-    /// amount; a field out of sight keeps the amount last seen; a field never mined is left out.
+    /// amount, a field out of sight keeps the amount last seen, and a carrying SCV's death loses 8:
+    /// `depleted` = `mined` + `lost_cargo` here.
     #[test]
-    fn field_check_mined_out_and_unseen_052_ac2() {
-        let mut t = OpsTracker::new(ME, vec![ENEMY], Some(OURS), Some(&pre(&[(FIELD_POS, 40), ((1312, 1104), 1500)], vec![(30, 30), (60, 60)])));
+    fn field_check_mined_out_and_lost_cargo_052_ac2() {
+        let mut t = OpsTracker::new(ME, vec![ENEMY], Some(OURS), Some(&pre(&[(FIELD_POS, 16), ((1312, 1104), 1500)], vec![(30, 30), (60, 60)])));
         let fld = |amount| UnitState { resources: amount, ..field() };
-        t.step(&frame(100, vec![cc(), fld(40), scv(10, "MiningMinerals", Some(FIELD_ID), false)]));
-        t.step(&frame(200, vec![cc(), fld(32), scv(10, "ReturnMinerals", Some(1), true)]));
-        // Out of sight: the last seen 32 stays.
+        t.step(&frame(100, vec![cc(), fld(16), scv(10, "MiningMinerals", Some(FIELD_ID), false)]));
+        t.step(&frame(200, vec![cc(), fld(8), scv(10, "ReturnMinerals", Some(1), true)]));
+        // Out of sight: the last seen 8 stays.
         t.step(&frame(300, vec![cc(), scv(10, "MiningMinerals", Some(FIELD_ID), false)]));
-        assert_eq!(t.field_check(), FieldCheck { depleted: 8, fields: 1, unknown_fields: 0, scvs: 1 });
+        assert_eq!(t.field_check(), FieldCheck { depleted: 8, fields: 1, unknown_fields: 0, scvs: 1, carrying: 0, lost_cargo: 0 });
         let mut f = frame(400, vec![cc(), scv(10, "ReturnMinerals", Some(1), true)]);
         f.events = vec![GameEvent::UnitDestroyed(FIELD_ID)];
         t.step(&f);
+        let mut f = frame(500, vec![cc()]);
+        f.events = vec![GameEvent::UnitDestroyed(10)];
+        t.step(&f);
         assert_eq!(t.ops().mined, 8);
-        assert_eq!(t.field_check(), FieldCheck { depleted: 40, fields: 1, unknown_fields: 0, scvs: 1 });
+        assert_eq!(t.field_check(), FieldCheck { depleted: 16, fields: 1, unknown_fields: 0, scvs: 0, carrying: 0, lost_cargo: 8 });
     }
 
     /// 052-R1 / 052-AC1: nothing counts after 10:00 (blocks, mineral-line buildings, deliveries);
