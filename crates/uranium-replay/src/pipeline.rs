@@ -315,8 +315,8 @@ struct ViewOptions<'a> {
     relabel: Option<uranium_scripted::T0Build>,
     /// CHK SHA-256 (map precompute file name, 031).
     map_hash: &'a str,
-    /// 041-R28: the replay's model decision log (`--memory-log`, relabelled views only).
-    memory: Option<&'a crate::relabel::DecisionLogRead>,
+    /// 041-R28: the replay's model decision logs (`--memory-log`; relabelled or not, 051-R13 ④).
+    memory: Option<&'a [crate::relabel::DecisionLogRead]>,
 }
 
 /// Processes one view of one replay into a shard game.
@@ -329,13 +329,25 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
     // 041-R28 ⑤: own unit ids of the perspective at the playback frames of the model's decisions.
     let mut own_at: HashMap<u32, std::collections::HashSet<u32>> = HashMap::new();
     // 041-R28 ④: the log is used only for its own player's view of the game it was written for.
-    let bound = o.memory.map(|read| crate::relabel::bind_log(read, me, rep.header.frames));
+    let bound = o.memory.map(|reads| crate::relabel::bind_logs(reads, me, rep.header.frames));
+    // 041-R28 ⑤: replay A (or T) also stops at the model decisions' playback frames for the unit
+    // check. Extra stops only split the events between observations (the 040-R8 check ignores them).
+    let check_frames = match &bound {
+        Some(Ok(log)) => crate::relabel::decision_frames(&log.decisions, last),
+        _ => Vec::new(),
+    };
     let (mut a, mut labels, coverage, repeats_dropped) = match o.relabel {
         // Replay A: own unit types at each command frame + desync signals.
         None => {
             let mut units_at: HashMap<u32, HashMap<u32, crate::label::Own>> = HashMap::new();
-            let a = play_with(rep, view.perspective, cfg, &[], &mut |f, _| {
-                units_at.insert(f.frame, f.units.iter().filter(|u| u.owner == me).map(|u| (u.id, crate::label::Own::from_state(u))).collect());
+            // 041-R28 (051-R13 ④): a build without relabelling takes `--memory-log` too; the
+            // labels stay the replay's own commands, only the step memory is the live session's.
+            let a = play_with(rep, view.perspective, cfg, &check_frames, &mut |f, _| {
+                let own: HashMap<u32, crate::label::Own> = f.units.iter().filter(|u| u.owner == me).map(|u| (u.id, crate::label::Own::from_state(u))).collect();
+                if check_frames.binary_search(&f.frame).is_ok() {
+                    own_at.insert(f.frame, own.keys().copied().collect());
+                }
+                units_at.insert(f.frame, own);
             })?;
             let (labels, coverage) = own_labels(rep, view.perspective, labeler, &units_at)?;
             (a, labels, coverage, None)
@@ -345,13 +357,8 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
         // commands only feed the 040-R8 checks).
         Some(build) => {
             let mut stops = crate::relabel::teacher_frames(last);
-            // 041-R28 ⑤: T also stops at the model decisions' playback frames for the unit check.
-            // Extra stops only split the events between observations (the 040-R8 check ignores
-            // them) and the teacher reads no events, so its labels are the same.
-            let check_frames = match &bound {
-                Some(Ok(log)) => crate::relabel::decision_frames(&log.decisions, last),
-                _ => Vec::new(),
-            };
+            // 041-R28 ⑤: T also stops at the check frames; the teacher reads no events, so its
+            // labels are the same.
             stops.extend(&check_frames);
             stops.sort_unstable();
             stops.dedup();
@@ -445,6 +452,18 @@ pub fn attach_memory(steps: &mut [Step], bound: Result<&crate::relabel::ModelLog
         }
     }
     m
+}
+
+/// `uranium-replay build` option rules: 041-R22 relabelled games are their own source (040
+/// `dagger`) and only they; 041-R28 `--memory-log` names a folder and goes with or without
+/// `--relabel` (051-R13 ④: the branch-game trunk replays are built without relabelling, with the
+/// act logs as the memory).
+pub fn check_build_args(src: &str, relabel: bool, memory_log: Option<&Path>) -> Result<()> {
+    anyhow::ensure!((src == "dagger") == relabel, "--relabel goes with --src dagger and only with it (041-R22)");
+    if let Some(d) = memory_log {
+        anyhow::ensure!(d.is_dir(), "--memory-log {}: not a folder (041-R28)", d.display());
+    }
+    Ok(())
 }
 
 /// 041-R28: `--memory-log` refuses a build whose replays share a file stem (the log is found by it).
@@ -541,8 +560,10 @@ pub struct BuildOptions {
     /// 041-R22 (`--relabel`, source `dagger`): the labels are this teacher's commands on the
     /// perspective's observations instead of the replay's own commands.
     pub relabel: Option<uranium_scripted::T0Build>,
-    /// 041-R28 (`--memory-log <dir>`, relabelled builds only): folder of the model decision logs,
-    /// `<replay file stem>.jsonl` per replay (040-R22 `memory_action`). `None` = every step `None`.
+    /// 041-R28 (`--memory-log <dir>`, with or without `relabel`, 051-R13 ④): folder of the model
+    /// decision logs, `<replay file stem>.jsonl` per replay, or the game's 051-R2 act logs
+    /// `<stem>-p<k>.jsonl` (`act_log::read_memory_logs`; 040-R22 `memory_action`). `None` = every
+    /// step `None`.
     pub memory_log: Option<PathBuf>,
 }
 
@@ -744,15 +765,16 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
     if recorded_name.is_some() && recorded_winner.is_none() {
         eprintln!("040-R8: recorded winner of {} matches no player name", &sha[..12]);
     }
-    // 041-R28: the model's decision log of this game, named like the replay file.
-    let memory = opt.memory_log.as_ref().map(|d| crate::relabel::read_decision_log(&memory_log_path(d, file)));
+    // 041-R28: the model's decision log of this game, named like the replay file (or the game's
+    // 051-R2 act logs).
+    let memory = opt.memory_log.as_ref().map(|d| crate::act_log::read_memory_logs(d, file));
     let mut out = Vec::new();
     for view in views {
         if *written.lock().unwrap() >= opt.budget_bytes {
             out.push(rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Filtered { reason: "storage budget reached (040-R12)".into() }));
             continue;
         }
-        let vo = ViewOptions { until_frame: opt.until_frame, time_limit: opt.time_limit, relabel: opt.relabel, map_hash: &map_hash, memory: memory.as_ref() };
+        let vo = ViewOptions { until_frame: opt.until_frame, time_limit: opt.time_limit, relabel: opt.relabel, map_hash: &map_hash, memory: memory.as_deref() };
         let outcome = match build_view(&rep, &view, cfg, labeler, recorded_winner, vo) {
             Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info, repeats_dropped, memory })) => {
                 let n = steps.len();
@@ -871,6 +893,76 @@ mod tests {
         let text = serde_json::to_string(&Outcome::Written { steps: 3, coverage: Default::default(), result: 0, result_source: "none".into(), repeats_dropped: Some(0), memory: Some(r) }).unwrap();
         assert!(text.contains(r#""memory":{"status":"unit_mismatch","decisions":2,"checked":2,"mismatched":1}"#), "{text}");
         assert_eq!(memory_log_path(Path::new("m"), Path::new("x/replays/g12.rep")), Path::new("m").join("g12.jsonl"));
+    }
+
+    /// 041-R28 (051-R13 ④): `--memory-log` is accepted on a build without relabelling (any source but
+    /// `dagger`) as with it; `--relabel` still goes with `dagger` only, and the folder must exist.
+    #[test]
+    fn memory_log_without_relabel_051_r13_041_r28() {
+        let dir = std::env::temp_dir();
+        assert!(check_build_args("botgen", false, Some(&dir)).is_ok(), "no-relabel build with --memory-log");
+        assert!(check_build_args("branch", false, Some(&dir)).is_ok());
+        assert!(check_build_args("dagger", true, Some(&dir)).is_ok());
+        assert!(check_build_args("botgen", false, None).is_ok());
+        assert!(check_build_args("dagger", false, Some(&dir)).is_err(), "dagger needs --relabel (041-R22)");
+        assert!(check_build_args("botgen", true, None).is_err(), "--relabel only with dagger (041-R22)");
+        assert!(check_build_args("botgen", false, Some(Path::new("no/such/memory"))).is_err());
+    }
+
+    /// 041-R28 ② ④ ⑤ on a build without relabelling (051-R13 ④): the steps are the replay's own
+    /// command labels (any frames, not the teacher cadence), and a trunk's 051-R2 act log fills each
+    /// step with the model decisions of live frames [live_{i-1}, live_i), exactly as the equivalent
+    /// 041-R28 decision log would; the scripted session's act log beside it is not used.
+    #[test]
+    fn act_log_memory_on_command_label_steps_051_r13() {
+        use crate::act_log::tests::{end_line, obs_line};
+        use crate::act_log::{parse_memory_log, read_memory_logs};
+        use crate::relabel::bind_logs;
+        let dir = std::env::temp_dir().join(format!("uranium-act-mem-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Live decisions at 1, 9, 17, 25 (forced prefix, then free); the replay is 500 frames long.
+        let ours = [
+            obs_line(0, 1, Some((0, 0, vec![])), true),
+            obs_line(1, 9, Some((4, 2, vec![5])), true),
+            obs_line(2, 17, Some((7, 1, vec![5, 6])), false),
+            obs_line(3, 25, Some((0, 3, vec![])), false),
+            end_line(4, 4, 498, 0, "model:x"),
+        ]
+        .join("\n");
+        std::fs::write(dir.join("g3-p0.jsonl"), &ours).unwrap();
+        std::fs::write(dir.join("g3-p1.jsonl"), format!("{}\n{}", obs_line(0, 1, None, false), end_line(1, 0, 498, 1, "t0@3:zerg_rush"))).unwrap();
+        let logs = read_memory_logs(&dir, Path::new("replays/g3.rep"));
+        assert_eq!(logs.len(), 1);
+        let own: HashMap<u32, std::collections::HashSet<u32>> = HashMap::from([(7, [5].into()), (15, [5, 6].into())]);
+        let run = |logs: &[crate::relabel::DecisionLogRead]| {
+            let mut s = crate::shard::tests::game(1).steps;
+            // Command label steps (playback frames 1, 11, 20): live frames 1, 13, 22.
+            for (st, f) in s.iter_mut().zip([1u32, 11, 20]) {
+                st.raw_frame.frame = f;
+            }
+            let r = attach_memory(&mut s, bind_logs(logs, 0, 500), 500, &own);
+            (r, s.into_iter().map(|x| x.memory_action.map(|v| v.into_iter().map(|a| a.action).collect::<Vec<_>>())).collect::<Vec<_>>())
+        };
+        let (r, got) = run(&logs);
+        assert_eq!((r.status, r.decisions, r.checked, r.mismatched), ("ok", 4, 2, 0));
+        assert_eq!(got, vec![Some(vec![]), Some(vec![0, 4]), Some(vec![7])]);
+        // The same decisions as a 041-R28 decision log give the same memory.
+        let dl = parse_memory_log(&[
+            r#"{"frame":1,"action":0,"delay_bucket":0,"units":[]}"#,
+            r#"{"frame":9,"action":4,"delay_bucket":2,"units":[5]}"#,
+            r#"{"frame":17,"action":7,"delay_bucket":1,"units":[5,6]}"#,
+            r#"{"frame":25,"action":0,"delay_bucket":3,"units":[]}"#,
+            r#"{"decisions":4,"end_frame":498,"player":0}"#,
+        ]
+        .join("\n"))
+        .unwrap();
+        assert_eq!(run(&[dl]), (r, got));
+        // No act log of the view's player: every step None.
+        let (r, got) = run(&[]);
+        assert_eq!(r.status, "missing");
+        assert!(got.iter().all(Option::is_none));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

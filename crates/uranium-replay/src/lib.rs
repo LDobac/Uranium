@@ -1,6 +1,7 @@
 //! `uranium-replay`: StarCraft replay parsing (040-R1), SC:R -> 1.16.1 conversion (013-R6..R8)
 //! and dataset filtering (040).
 
+pub mod act_log;
 pub mod chk;
 pub mod cmd;
 pub mod container;
