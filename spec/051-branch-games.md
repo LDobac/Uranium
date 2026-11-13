@@ -1,6 +1,6 @@
 # 051 — Branch Games (분기 게임: 행동의 인과 효과 측정)
 
-- **Status**: Approved (2026-11-12, 사용자 확인 2026-11-12). 근거: 사용자 결정 2026-11-12(`reports/jepa_planning.md` 7.13 답), 설계·가능성 시험 `reports/jepa_planning.md` 7절, 구현 계획 7.14절. AMB-051-1~5는 기본안 채택(사용자 확인 2026-11-12)으로 본문(051-R3·R11·R13·R15)에 반영했고, AMB-051-6(B2)은 Deferred(B1)다. 아래 "다른 spec에 넣은 변경"은 020-R22·R15 ①, 031-R4, 032-R16, 041-R28, 050에 반영했다(사용자 확인 2026-11-12).
+- **Status**: Approved (2026-11-12, 사용자 확인 2026-11-12). 근거: 사용자 결정 2026-11-12(`reports/jepa_planning.md` 7.13 답), 설계·가능성 시험 `reports/jepa_planning.md` 7절, 구현 계획 7.14절. AMB-051-1~5는 기본안 채택(사용자 확인 2026-11-12)으로 본문(051-R3·R11·R13·R15)에 반영했고, AMB-051-6(B2)은 Deferred(B1)다. 아래 "다른 spec에 넣은 변경"은 020-R22·R15 ①, 031-R4, 032-R16, 041-R28, 050에 반영했다(사용자 확인 2026-11-12). **2026-11-13 개정(사용자 결정 2026-11-13)**: 051-R13 ④ 시점 행은 줄기 build의 결정 시점 스텝(041-R28)으로 구성상 있고 분석은 정확히 맞는 행만 쓴다.
 - **Related**: [011](011-bridge-openbw.md)(011-AC4 결정론), [020](020-env-orchestration.md)(plan·평가 작업), [021](021-opponent-pool.md)(T0), [030](030-observation.md)(§4 기억·스칼라), [031](031-action-space.md)(031-R4 마스크·거절), [032](032-model-architecture.md)(032-R14·R16 슬롯 상태), [034](034-action-table.md)(`type_mask`), [041](041-imitation-learning.md)(041-R28 기억 기록), [050](050-evaluation.md)(050-R6·R7 세션 지표, 050-R9 경로 측정), [061](061-shared-storage.md), `reports/jepa_planning.md` 6·7절
 
 ## Purpose

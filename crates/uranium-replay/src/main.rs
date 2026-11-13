@@ -170,11 +170,13 @@ enum Cmd {
         /// 041-R28: folder of the model decision logs (`<replay stem>.jsonl`; a plan with
         /// `memory_log = true` writes `memory/` beside `replays/`), or of the 051-R2 act logs
         /// (`<replay stem>-p<players index>.jsonl`, an evaluation job's `acts/`; scripted sessions'
-        /// logs are skipped). With or without `--relabel` (051-R13 ④: a build without relabelling
-        /// keeps the replay's own commands as labels and takes only the step memory from the live
-        /// session). Each step gets the 040-R22 `memory_action` (shard schema 7); a view without a
-        /// complete log of its player, or with more than 1% decisions naming units that are not its
-        /// own, gets none (records `memory`).
+        /// logs are skipped). With `--relabel`, or without it only with `--src branch` and an
+        /// explicit `--out` outside the BC shards (051-R13 ④ branch trunks: the replay's own
+        /// commands stay the labels, the step memory is the live session's, and every logged
+        /// decision gets an observation / memory only step at its playback frame; not BC data).
+        /// Each step gets the 040-R22 `memory_action` (shard schema 7); a view without a complete log
+        /// of its player, or with more than 1% decisions naming units that are not its own, gets
+        /// none (records `memory`).
         #[arg(long)]
         memory_log: Option<PathBuf>,
     },
@@ -312,7 +314,10 @@ fn main() -> Result<()> {
         }
         Cmd::Build { dir, src, out, records, jobs, limit, budget_gb, skip_hashes, part, parts, ladder_records, until_frame, time_limit, relabel, memory_log } => {
             anyhow::ensure!(parts >= 1 && part < parts, "--part must be below --parts");
-            uranium_replay::pipeline::check_build_args(&src, relabel.is_some(), memory_log.as_deref())?;
+            // 041-R28: the BC shards root (the default `--out` parent) that branch trunk shards stay out of.
+            let bc_shards_root = std::env::var_os("URANIUM_SHARED_DIR").map(|d| PathBuf::from(d).join("datasets/replays/shards"));
+            uranium_replay::pipeline::check_build_args(&src, relabel.is_some(), memory_log.as_deref(), out.as_deref(), bc_shards_root.as_deref())?;
+            let memory_log = memory_log.as_deref().map(uranium_replay::act_log::MemoryLogDir::open).transpose()?;
             let relabel = relabel.as_deref().map(uranium_replay::relabel::teacher_build).transpose()?;
             let skip_sha256 = match skip_hashes {
                 Some(p) => std::fs::read_to_string(&p)?.lines().filter_map(|l| l.split_whitespace().next().map(str::to_string)).collect(),

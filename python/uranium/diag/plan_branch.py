@@ -36,13 +36,14 @@ for every alternative and outcome, so they are paired):
    numbers, their Pearson correlation over points r and the Spearman-Brown value 2r / (1 + r).
 2. M3u (one-decision `force` alternatives, `from_s = to_s = 0`): ΔQ̂(a) = σq̂_A(h'_t, o_t, a) -
    Σ_c π(c|t) σq̂_A(h'_t, o_t, c) on the `scv8` head (`plan_s0.delta_q`) against the measured d_p(a) of
-   `--m3u-outcome`: sign agreement (pairs with d ≠ 0), Spearman over (point, alternative) pairs (trunk
+   `--m3u-outcome`: sign agreement (ties, ΔQ̂ = 0 or d = 0, left out and counted), Spearman over (point, alternative) pairs (trunk
    bootstrap), and the ratio to the noise ceiling sqrt(Spearman-Brown) of those pairs. Per alternative
    the mean ΔQ̂ beside D(a) (bunker alternatives also with the S0b M3b ΔQ).
 3. M2c: predicted own-state change of predictor A_k (k = `--ks`): ô(a) - Σ_c π(c|t) ô(c) in counts
    (the predictor's standardisation undone) against the measured o(sample k, a) - o(sample k, baseline)
    (repeat means; samples `--sample-k8` / `--sample-k32`). Direction agreement on the column the forced
-   action makes (`own_columns` action map; pairs with a measured change ≠ 0), and the Spearman
+   action makes (`own_columns` action map; ties, no predicted or measured change, left out and counted;
+   the same pairs as M3u: the forced action open at t), and the Spearman
    correlation over every kept column of every pair (trunk bootstrap).
 4. h'_t, o_t and π(c|t) are the dump row of the point (051-R13 ④): live frame f_t -> playback frame
    f_t - `--row-lag` (041-R28 ②, the game-start observation at 1) in the game of the trunk replay
@@ -329,18 +330,19 @@ def file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def replay_sha(point: dict, roots: list[Path]) -> str | None:
+def replay_sha(point: dict, roots: list[Path], cache: dict | None = None) -> str | None:
+    """sha256 of the point's trunk replay (`trunk.replay_sha256`, else the file hashed once per path)."""
     t = point.get("trunk") or {}
     if t.get("replay_sha256"):
         return t["replay_sha256"]
     rp = t.get("replay")
     if not rp:
         return None
-    cands = [Path(rp)] if Path(rp).is_absolute() else [r / rp for r in roots]
-    for c in cands:
-        if c.is_file():
-            return file_sha256(c)
-    return None
+    cache = {} if cache is None else cache
+    if rp not in cache:
+        cands = [Path(rp)] if Path(rp).is_absolute() else [r / rp for r in roots]
+        cache[rp] = next((file_sha256(c) for c in cands if c.is_file()), None)
+    return cache[rp]
 
 
 def find_rows(B: Branches, data, roots: list[Path], lag: int) -> tuple[dict, dict]:
@@ -349,10 +351,14 @@ def find_rows(B: Branches, data, roots: list[Path], lag: int) -> tuple[dict, dic
     for gi, e in enumerate(data.game_meta):
         by_sha.setdefault(e.get("sha"), []).append(gi)
     frames = np.rint(data.frame.astype(np.float64))
+    order = np.argsort(data.game, kind="stable")
+    keys, starts = np.unique(data.game[order], return_index=True)
+    rows_of = dict(zip(keys.tolist(), np.split(order, starts[1:]))) if len(order) else {}
+    sha_cache: dict = {}
     rows, missing = {}, {}
     for p in B.points:
         pt = B.all_points[p]
-        sha = replay_sha(pt, roots)
+        sha = replay_sha(pt, roots, sha_cache)
         if sha is None:
             missing[p] = {"reason": "no_replay"}
             continue
@@ -366,7 +372,7 @@ def find_rows(B: Branches, data, roots: list[Path], lag: int) -> tuple[dict, dic
         f = max(int(pt["f_t"]) - lag, GAME_START_FRAME)
         hit, near = [], []
         for g in games:
-            gr = np.nonzero(data.game == g)[0]
+            gr = rows_of.get(g, np.zeros(0, np.int64))
             at = gr[frames[gr] == f]
             if len(at):
                 hit.append((g, int(at[np.argmin(data.dec[at])])))
@@ -436,6 +442,21 @@ def s0_m3b(s0: Path, k: int) -> dict | None:
     return None
 
 
+def sign_agreement(pred, meas) -> tuple[np.ndarray, int]:
+    """Per pair 1 / 0 = the signs of `pred` and `meas` agree / differ; NaN for a pair left out: not
+    finite, or a tie (`pred` == 0 or `meas` == 0, no direction to agree with), counted in the second
+    value."""
+    pred, meas = np.asarray(pred, np.float64), np.asarray(meas, np.float64)
+    fin = np.isfinite(pred) & np.isfinite(meas)
+    tie = fin & ((pred == 0) | (meas == 0))
+    return np.where(fin & ~tie, (np.sign(pred) == np.sign(meas)).astype(np.float64), np.nan), int(tie.sum())
+
+
+def _rate(v: np.ndarray) -> float | None:
+    v = v[np.isfinite(v)]
+    return float(v.mean()) if len(v) else None
+
+
 def m3u(B: Branches, data, rows: dict, nets: dict, y: str, boot_n: int, seed: int, s0: Path | None) -> dict:
     fn = (lambda b: outcome(b, y))
     forced = {a: one_decision_force(B.rules[a]) for a in B.alts if a != B.baseline}
@@ -462,7 +483,7 @@ def m3u(B: Branches, data, rows: dict, nets: dict, y: str, boot_n: int, seed: in
             ok = np.isfinite(dq) & np.isfinite(d)
             res["alts"][a] = {"action": act, "pairs": int(ok.sum()), "dq_mean": float(dq[ok].mean()) if ok.any() else None,
                               "d_mean": float(d[ok].mean()) if ok.any() else None,
-                              "sign_agree": float((np.sign(dq[ok]) == np.sign(d[ok]))[d[ok] != 0].mean()) if (ok & (d != 0)).any() else None}
+                              "sign_agree": _rate(sign_agreement(dq[ok], d[ok])[0])}
             dq_all.append(dq[ok])
             d_all.append(d[ok])
             unit.append(np.asarray([B.trunks[i] for i in sel[ok]], object))
@@ -470,8 +491,8 @@ def m3u(B: Branches, data, rows: dict, nets: dict, y: str, boot_n: int, seed: in
         res["pairs"] = int(len(d_all))
         if len(d_all):
             bt = ps.Boot(unit.astype(str), boot_n, seed)
-            nz = d_all != 0
-            res["sign_agree"] = {"pairs": int(nz.sum()), **ps.ci(bt.mean(np.where(nz, (np.sign(dq_all) == np.sign(d_all)).astype(float), np.nan)))}
+            agree, ties = sign_agreement(dq_all, d_all)
+            res["sign_agree"] = {"pairs": int(np.isfinite(agree).sum()), "ties": ties, **ps.ci(bt.mean(agree))}
             rho = bt.spearman(dq_all, d_all)
             res["spearman"] = ps.ci(rho)
             ceil = float(np.sqrt(sb)) if sb is not None and sb > 0 else None
@@ -512,15 +533,16 @@ def m2c(B: Branches, data, rows: dict, nets: dict, samples: dict, boot_n: int, s
                 if ma is not None and base[i] is not None:
                     meas[i] = ma - base[i]
             col = of_action.get(int(act))
-            ok = np.isfinite(meas).all(1)
+            # the pairs M3u reads: the forced action open at t (051-R10)
+            ok = np.isfinite(meas).all(1) & data.mask_rows(pi_rows)[:, act]
             ent = {"action": int(act), "column": None if col is None else names[col], "pairs": int(ok.sum())}
             if col is not None and ok.any():
                 pm, mm = pred[ok, col], meas[ok, col]
-                # pairs with a measured change, on a column the predictor keeps (constant columns are NaN)
-                nz = (mm != 0) & np.isfinite(pm)
-                ent["direction"] = {"pairs": int(nz.sum()), "agree": float((np.sign(pm[nz]) == np.sign(mm[nz])).mean()) if nz.any() else None,
+                # ties (no predicted or no measured change) and columns the predictor leaves out (NaN) are not counted
+                agree, ties = sign_agreement(pm, mm)
+                ent["direction"] = {"pairs": int(np.isfinite(agree).sum()), "ties": ties, "agree": _rate(agree),
                                     "pred_mean": float(pm.mean()) if np.isfinite(pm).all() else None, "meas_mean": float(mm.mean())}
-                dirs.append((np.where(nz, (np.sign(pm) == np.sign(mm)).astype(float), np.nan), [trunk[i] for i in np.nonzero(ok)[0]]))
+                dirs.append((agree, [trunk[i] for i in np.nonzero(ok)[0]]))
             res["alts"][a] = ent
             P.append(pred[ok])
             M.append(meas[ok])
