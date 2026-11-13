@@ -81,6 +81,13 @@ def rel_to(root: Path, path: Path) -> str:
         raise Refused(f"{path} is not under the shared drive {root} (051-R10 paths are relative to it)") from e
 
 
+def job_dir(arg: str | Path, root: Path) -> Path:
+    """A job folder as given when it exists (or is absolute), else under the shared drive (as eval-worker's
+    `--job`, 061)."""
+    p = Path(arg)
+    return p if p.is_absolute() or p.exists() else root / p
+
+
 def on_shared(root: Path, rel: str) -> Path:
     p = Path(rel)
     return p if p.is_absolute() else root / p
@@ -170,7 +177,13 @@ class ActLog:
                 continue
             if end is not None:
                 raise Refused(f"{path} line {n}: line after the end line")
-            v = json.loads(text)
+            try:
+                v = json.loads(text)
+            except json.JSONDecodeError as e:
+                # A line cut short (session killed mid-write): the log is incomplete (051-R2).
+                if lenient:
+                    return cls(lines, None)
+                raise Refused(f"{path} line {n}: not JSON ({e}; a log cut short is incomplete, 051-R2)") from e
             if "end" in v:
                 end = v["end"]
                 continue

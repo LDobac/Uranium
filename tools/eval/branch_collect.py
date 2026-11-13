@@ -164,12 +164,14 @@ def collect(job: Path, stage: str | None, root: Path) -> dict:
 
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--job", required=True, type=Path, help="branch job folder (051-R12 output folder)")
+    ap.add_argument("--job", required=True, type=Path, help="branch job folder (051-R12 output folder; as given if it exists, else under URANIUM_SHARED_DIR)")
     ap.add_argument("--stage", default=None, help="branch stage name (default: the job's only branch stage)")
     ap.add_argument("--root", default=None, help="shared drive (default URANIUM_SHARED_DIR)")
     a = ap.parse_args(argv)
     try:
-        s = collect(a.job, a.stage, bc.shared_root(a.root))
+        root = bc.shared_root(a.root)
+        a.job = bc.job_dir(a.job, root)
+        s = collect(a.job, a.stage, root)
     except Refused as e:
         raise SystemExit(f"REFUSED: {e}") from e
     print(f"{a.job / 'branches.jsonl'}: {s['records']} of {s['planned']} games, {s['valid']} valid; "
