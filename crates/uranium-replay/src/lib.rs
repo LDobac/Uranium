@@ -9,6 +9,7 @@ pub mod granularity;
 pub mod header;
 pub mod label;
 pub mod mpq;
+pub mod opsdump;
 pub mod pipeline;
 pub mod play;
 pub mod relabel;

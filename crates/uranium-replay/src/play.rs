@@ -155,37 +155,7 @@ pub fn play_with(rep: &Replay, perspective: u8, cfg: &PlayConfig, extra_stops: &
 /// Like `play_with`, also handing the bridge's GameInfo to `on_info` before the first observation.
 pub fn play_observe(rep: &Replay, perspective: u8, cfg: &PlayConfig, extra_stops: &[u32], on_info: &mut OnInfo, on_frame: &mut OnFrame) -> Result<PlayResult> {
     let t0 = Instant::now();
-    std::fs::create_dir_all(&cfg.work_dir)?;
-    let name = format!("r{}-{}-{perspective}.rep", std::process::id(), t0.elapsed().as_nanos() ^ rand_salt());
-    let rep_path = cfg.work_dir.join(&name);
-    std::fs::write(&rep_path, rep.to_legacy_file()?)?;
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let addr = listener.local_addr()?.to_string();
-    let log = std::fs::File::create(cfg.work_dir.join(format!("{name}.log")))?;
-    let mut cmd = Command::new(&cfg.launcher);
-    // 011-R10: the opponent is the other active player (empty slots are left out of GameInfo).
-    if let [opponent] = rep.active_players().iter().filter(|(p, _)| p.id != perspective).map(|(p, _)| p.id).collect::<Vec<_>>()[..] {
-        cmd.env("URANIUM_REPLAY_ENEMY", slot_of(rep, opponent)?.to_string());
-    }
-    let mut child = cmd
-        .current_dir(&cfg.work_dir)
-        .env("URANIUM_DATA_DIR", &cfg.data_dir)
-        .env("OPENBW_ENABLE_UI", "0")
-        .env("BWAPI_CONFIG_AI__AI", &cfg.bridge_lib)
-        .env("BWAPI_CONFIG_AUTO_MENU__AUTO_MENU", "SINGLE_PLAYER")
-        .env("BWAPI_CONFIG_AUTO_MENU__MAP", &rep_path)
-        .env("BWAPI_CONFIG_AUTO_MENU__AUTO_RESTART", "OFF")
-        .env("BWAPI_CONFIG_AUTO_MENU__SAVE_REPLAY", "")
-        .env("URANIUM_AGENT_ADDR", &addr)
-        // Commands carry the player id, BWAPI players are slots (M4 spike).
-        .env("URANIUM_REPLAY_PERSPECTIVE", slot_of(rep, perspective)?.to_string())
-        .env("URANIUM_PRIVILEGED", "1")
-        .env("URANIUM_MAX_FRAMES", (rep.header.frames + 240).to_string())
-        .stdin(Stdio::null())
-        .stdout(log.try_clone()?)
-        .stderr(log)
-        .spawn()
-        .with_context(|| format!("starting {}", cfg.launcher.display()))?;
+    let (mut child, listener, rep_path) = launch(rep, perspective, cfg, true)?;
     let res = accept(&listener, Some(&mut child), Duration::from_secs(60)).and_then(|s| session(rep, perspective, s, extra_stops, on_info, on_frame));
     let deadline = Instant::now() + Duration::from_secs(10);
     while child.try_wait()?.is_none() && Instant::now() < deadline {
@@ -197,6 +167,119 @@ pub fn play_observe(rep: &Replay, perspective: u8, cfg: &PlayConfig, extra_stops
     std::fs::remove_file(&rep_path).ok();
     res.wall_s = t0.elapsed().as_secs_f64();
     Ok(res)
+}
+
+/// Starts the launcher on `rep` from `perspective` (011-R10): the 1.16.1 replay file written into
+/// `cfg.work_dir`, the listener the bridge connects to, the launcher process. `privileged` asks the
+/// bridge for 011-R12 summaries.
+fn launch(rep: &Replay, perspective: u8, cfg: &PlayConfig, privileged: bool) -> Result<(std::process::Child, TcpListener, PathBuf)> {
+    std::fs::create_dir_all(&cfg.work_dir)?;
+    let name = format!("r{}-{}-{perspective}.rep", std::process::id(), rand_salt());
+    let rep_path = cfg.work_dir.join(&name);
+    std::fs::write(&rep_path, rep.to_legacy_file()?)?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let addr = listener.local_addr()?.to_string();
+    let log = std::fs::File::create(cfg.work_dir.join(format!("{name}.log")))?;
+    let mut cmd = Command::new(&cfg.launcher);
+    // 011-R10: the opponent is the other active player (empty slots are left out of GameInfo).
+    if let [opponent] = rep.active_players().iter().filter(|(p, _)| p.id != perspective).map(|(p, _)| p.id).collect::<Vec<_>>()[..] {
+        cmd.env("URANIUM_REPLAY_ENEMY", slot_of(rep, opponent)?.to_string());
+    }
+    let child = cmd
+        .current_dir(&cfg.work_dir)
+        .env("URANIUM_DATA_DIR", &cfg.data_dir)
+        .env("OPENBW_ENABLE_UI", "0")
+        .env("BWAPI_CONFIG_AI__AI", &cfg.bridge_lib)
+        .env("BWAPI_CONFIG_AUTO_MENU__AUTO_MENU", "SINGLE_PLAYER")
+        .env("BWAPI_CONFIG_AUTO_MENU__MAP", &rep_path)
+        .env("BWAPI_CONFIG_AUTO_MENU__AUTO_RESTART", "OFF")
+        .env("BWAPI_CONFIG_AUTO_MENU__SAVE_REPLAY", "")
+        .env("URANIUM_AGENT_ADDR", &addr)
+        // Commands carry the player id, BWAPI players are slots (M4 spike).
+        .env("URANIUM_REPLAY_PERSPECTIVE", slot_of(rep, perspective)?.to_string())
+        .env("URANIUM_PRIVILEGED", if privileged { "1" } else { "0" })
+        .env("URANIUM_MAX_FRAMES", (rep.header.frames + 240).to_string())
+        .stdin(Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log)
+        .spawn()
+        .with_context(|| format!("starting {}", cfg.launcher.display()))?;
+    Ok((child, listener, rep_path))
+}
+
+/// What a stride playback saw (052-R7 `opsdump`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StrideResult {
+    pub observations: u32,
+    /// Frame of the last observation handed over.
+    pub last_frame: Option<u32>,
+    /// The bridge's GameEnd frame (`None` when the playback was cut or the launcher died first).
+    pub end_frame: Option<u32>,
+    /// The observer stopped the playback (`on_frame` returned false).
+    pub cut: bool,
+    pub wall_s: f64,
+}
+
+/// 052-R7: plays `rep` from `perspective` stopping only at multiples of `stride` frames (after the
+/// bridge's first observation), without privileged summaries (033-R5), handing each observation to
+/// `on_frame`. Playback ends at the game end or as soon as `on_frame` returns false: the launcher is
+/// then killed (the cut, "재생을 끊는다").
+pub fn play_stride(rep: &Replay, perspective: u8, cfg: &PlayConfig, stride: u32, on_info: &mut OnInfo, on_frame: &mut dyn FnMut(&RawFrame) -> bool) -> Result<StrideResult> {
+    anyhow::ensure!(stride >= 1, "stride must be at least 1");
+    let t0 = Instant::now();
+    let (mut child, listener, rep_path) = launch(rep, perspective, cfg, false)?;
+    let expected = slot_of(rep, perspective)?;
+    let res = accept(&listener, Some(&mut child), Duration::from_secs(60)).and_then(|s| stride_session(s, expected, stride, on_info, on_frame));
+    let cut = res.as_ref().is_ok_and(|r| r.cut);
+    let deadline = Instant::now() + Duration::from_secs(if cut { 0 } else { 10 });
+    while child.try_wait()?.is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut res = res?;
+    std::fs::remove_file(&rep_path).ok();
+    res.wall_s = t0.elapsed().as_secs_f64();
+    Ok(res)
+}
+
+/// The agent side of a stride playback (052-R7): every observation goes to `on_frame`, the next
+/// stop is the next multiple of `stride`.
+fn stride_session(stream: TcpStream, expected_slot: u8, stride: u32, on_info: &mut OnInfo, on_frame: &mut dyn FnMut(&RawFrame) -> bool) -> Result<StrideResult> {
+    stream.set_read_timeout(Some(Duration::from_secs(60)))?;
+    let mut r = BufReader::new(stream.try_clone()?);
+    let mut w = BufWriter::new(stream);
+    let mut out = StrideResult::default();
+    loop {
+        let msg: BridgeMsg = match read_msg(&mut r) {
+            Ok(m) => m,
+            Err(_) => break, // launcher exited without GameEnd
+        };
+        match msg {
+            BridgeMsg::Hello(h) => {
+                anyhow::ensure!(h.replay, "bridge is not in replay mode");
+                anyhow::ensure!(h.slot == expected_slot, "bridge observes player {} instead of {expected_slot} (013 player numbering)", h.slot);
+            }
+            BridgeMsg::GameInfo(gi) => on_info(&gi),
+            BridgeMsg::Privileged(_) => {}
+            BridgeMsg::Frame(f) => {
+                out.observations += 1;
+                out.last_frame = Some(f.frame);
+                if !on_frame(&f) {
+                    out.cut = true;
+                    break;
+                }
+                let next = (f.frame / stride + 1) * stride;
+                let act = Act { cmds: vec![], advance_frames: next - f.frame, valid_until_frame: None, surrender: None };
+                write_msg(&mut w, &AgentMsg::Act(act))?;
+            }
+            BridgeMsg::End(GameEnd { frame, .. }) => {
+                out.end_frame = Some(frame);
+                break;
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// BWAPI player id of the player with command id `id`: BWAPI numbers the occupied header slots
@@ -437,6 +520,70 @@ pub fn ensure_file(p: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fake replay-mode bridge: Hello (slot 1), then an observation at `first` and at every frame
+    /// the agent advances to, until the agent hangs up or `end` is reached (GameEnd). Returns the
+    /// frames the agent asked for.
+    fn fake_bridge(addr: std::net::SocketAddr, first: u32, end: u32) -> std::thread::JoinHandle<Vec<u32>> {
+        use uranium_proto::{Backend, BitGrid, EndReason, Hello, Mode, PROTOCOL_VERSION, PlayerState};
+        std::thread::spawn(move || {
+            let s = TcpStream::connect(addr).unwrap();
+            let mut r = BufReader::new(s.try_clone().unwrap());
+            let mut w = BufWriter::new(s);
+            let hello = Hello { protocol_version: PROTOCOL_VERSION, backend: Backend::OpenBw, game_version: String::new(), mode: Mode::Lockstep, game_id: 0, slot: 1, replay: true };
+            write_msg(&mut w, &BridgeMsg::Hello(hello)).unwrap();
+            let (mut f, mut asked) = (first, vec![]);
+            loop {
+                if f >= end {
+                    let _ = write_msg(&mut w, &BridgeMsg::End(GameEnd { winner: None, frame: end, reason: EndReason::Elimination, stats: None, final_frame: None }));
+                    break;
+                }
+                let raw = RawFrame { frame: f, self_state: PlayerState::default(), units: vec![], visibility: BitGrid::new(1, 1), explored: BitGrid::new(1, 1), creep: BitGrid::new(1, 1), events: vec![], effects: vec![] };
+                if write_msg(&mut w, &BridgeMsg::Frame(Box::new(raw))).is_err() {
+                    break;
+                }
+                match read_msg::<AgentMsg>(&mut r) {
+                    Ok(AgentMsg::Act(a)) => {
+                        f += a.advance_frames;
+                        asked.push(f);
+                    }
+                    _ => break,
+                }
+            }
+            asked
+        })
+    }
+
+    /// 052-R7: stride playback stops at every multiple of the stride after the first observation,
+    /// is cut as soon as the observer says so, and otherwise runs to the game end.
+    #[test]
+    fn stride_session_stops_and_cut_052_r7() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let bridge = fake_bridge(listener.local_addr().unwrap(), 1, 10_000);
+        let (s, _) = listener.accept().unwrap();
+        let mut seen = vec![];
+        let res = stride_session(s, 1, 8, &mut |_| {}, &mut |f| {
+            seen.push(f.frame);
+            f.frame < 40
+        })
+        .unwrap();
+        assert_eq!(seen, vec![1, 8, 16, 24, 32, 40]);
+        assert_eq!((res.observations, res.last_frame, res.end_frame, res.cut), (6, Some(40), None, true));
+        assert_eq!(bridge.join().unwrap(), vec![8, 16, 24, 32, 40], "nothing asked after the cut");
+        // A game ending first.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let bridge = fake_bridge(listener.local_addr().unwrap(), 0, 20);
+        let (s, _) = listener.accept().unwrap();
+        let res = stride_session(s, 1, 8, &mut |_| {}, &mut |_| true).unwrap();
+        assert_eq!((res.observations, res.last_frame, res.end_frame, res.cut), (3, Some(16), Some(20), false));
+        bridge.join().unwrap();
+        // The wrong player's view is refused.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let bridge = fake_bridge(listener.local_addr().unwrap(), 0, 20);
+        let (s, _) = listener.accept().unwrap();
+        assert!(stride_session(s, 0, 8, &mut |_| {}, &mut |_| true).is_err());
+        bridge.join().unwrap();
+    }
 
     fn ok() -> PlayResult {
         PlayResult { perspective: 0, header_frames: 1000, end_frame: Some(1002), select_cmds: 100, invalid_select_cmds: 5, ..Default::default() }
