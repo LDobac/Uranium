@@ -360,9 +360,15 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
     let bound = o.memory.map(|reads| crate::relabel::bind_logs(reads, me, rep.header.frames));
     // 044-R2: a distill view needs its player's complete log (④); without one it is filtered before
     // any replay (the opponent's view of a TvT game has none).
-    if o.distill && !matches!(bound, Some(Ok(_))) {
-        let Err(filtered) = distill_steps(bound.as_ref(), &HashMap::new(), 0, 0, 0) else { unreachable!("no bound log") };
-        return Ok(Err(Outcome::Filtered { reason: filtered }));
+    if o.distill {
+        let reason = match &bound {
+            Some(Ok(_)) => None,
+            Some(Err(m)) => Some(distill_filter_reason(m)),
+            None => Some(distill_filter_reason(&MemoryCheck::without_log(&crate::relabel::DecisionLogRead::Missing))),
+        };
+        if let Some(reason) = reason {
+            return Ok(Err(Outcome::Filtered { reason }));
+        }
     }
     // 041-R28 ⑤: replay A (or T) also stops at the model decisions' playback frames for the unit
     // check. Extra stops only split the events between observations (the 040-R8 check ignores them).
@@ -438,17 +444,9 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
     // 041-R28 decision-time steps (user decision 2026-11-13, 051-R13 ④): builds without relabelling
     // whose log is used also observe every logged decision's playback frame.
     let limit = until_frame.map_or(last, |u| u.min(last));
-    let decision_steps = if o.distill {
-        // 044-R2: the replay's own (model) commands made `labels` for the 040-R8 checks only.
-        match distill_steps(bound.as_ref(), &own_at, last, limit, rep.header.frames) {
-            Ok((slots, n)) => {
-                labels = slots;
-                Some(n)
-            }
-            Err(reason) => return Ok(Err(Outcome::Filtered { reason })),
-        }
-    } else {
-        decision_steps(o.relabel.is_some(), bound.as_ref(), &own_at, last, limit, rep.header.frames, &mut labels)
+    let decision_steps = match step_labels(o.distill, o.relabel.is_some(), bound.as_ref(), &own_at, last, limit, rep.header.frames, &mut labels) {
+        Ok(n) => n,
+        Err(reason) => return Ok(Err(Outcome::Filtered { reason })),
     };
     let frames: Vec<u32> = labels.iter().map(|l| l.frame).collect();
     // Replay B: decision-time observations. B stops at every base stop of A (or T, 041-R22), so
@@ -482,6 +480,10 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
         return Ok(Err(Outcome::Error { reason: "bridge sent no GameInfo (AMB-040-6)".into() }));
     };
     let memory = bound.map(|b| MemoryCheck { decision_steps, ..attach_memory(&mut steps, b, last, &own_at) });
+    // 044-R2 (044-R3 contract): a written distill game has `memory_action` on every step.
+    if o.distill && steps.iter().any(|s| s.memory_action.is_none()) {
+        return Ok(Err(Outcome::Error { reason: "distill step without memory_action (044-R2)".into() }));
+    }
     Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info, repeats_dropped, memory }))
 }
 
@@ -501,6 +503,30 @@ pub fn decision_steps(
     let Some(Ok(log)) = bound.filter(|_| !relabelled) else { return None };
     let (checked, mismatched) = crate::relabel::unit_check(&log.decisions, last, own_at);
     MemoryCheck::checked(log.decisions.len(), checked, mismatched).ok().then(|| crate::relabel::add_decision_steps(labels, &log.decisions, limit, end_frame))
+}
+
+/// The step labels of a view after the 040-R21 cut (`labels`: the replay's own command labels, or
+/// the 041-R22 teacher's): a `distill` view (044-R2) replaces them with [`distill_steps`] (the
+/// replay's own, model, commands made them for the 040-R8 checks only; `Err` = its `filtered`
+/// reason); any other build keeps them and adds the 041-R28 decision-time steps where they apply
+/// ([`decision_steps`]). Returns the steps at decision frames.
+#[allow(clippy::too_many_arguments)]
+pub fn step_labels(
+    distill: bool,
+    relabelled: bool,
+    bound: Option<&Result<&crate::relabel::ModelLog, MemoryCheck>>,
+    own_at: &HashMap<u32, std::collections::HashSet<u32>>,
+    last: u32,
+    limit: u32,
+    end_frame: u32,
+    labels: &mut Vec<crate::label::Label>,
+) -> std::result::Result<Option<usize>, String> {
+    if !distill {
+        return Ok(decision_steps(relabelled, bound, own_at, last, limit, end_frame, labels));
+    }
+    let (slots, n) = distill_steps(bound, own_at, last, limit, end_frame)?;
+    *labels = slots;
+    Ok(Some(n))
 }
 
 /// 044-R2 (`--src distill`): the steps of a view, replacing the replay's command labels: the
@@ -599,9 +625,9 @@ pub fn check_isolated_build(src: &str, records: &Path, time_limit: Option<u32>) 
     if !isolated(src) {
         return Ok(());
     }
-    anyhow::ensure!(time_limit.is_some(), "--src {src} needs --time-limit <the plan's max_frames> (051-R1, 051-R13 4: trunks end at the time limit; 044-R1: distill games at 14400)");
+    anyhow::ensure!(time_limit.is_some(), "--src {src} needs --time-limit <the plan's max_frames> (051-R1, 051-R13 4: trunks end at the time limit; 044-R2: distill games end at the 044-R1 time limit 14400)");
     let name = records.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    anyhow::ensure!(name.starts_with(src) && name.ends_with(".jsonl"), "--records {}: the file name must start with `{src}` and end with .jsonl (the resume scan reads `<source>*.jsonl`)", records.display());
+    anyhow::ensure!(name.starts_with(src) && name.ends_with(".jsonl"), "--records {}: the file name must start with `{src}` and end with .jsonl (the resume scan reads `<source>*.jsonl`; 051-R13 4, 044-R2)", records.display());
     // The scan reads every `<source>*.jsonl` of the records folder: not the 051-R12 output folder,
     // whose `branches.jsonl` it would take for build records.
     let dir = records.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
@@ -1201,7 +1227,7 @@ mod tests {
     /// its own decision, which is in step i + 1's; the shard keeps all of it (schema 7).
     #[test]
     fn distill_steps_are_the_logged_decisions_044_r2_ac1() {
-        use crate::label::UNKNOWN_ACTION;
+        use crate::label::{Label, UNKNOWN_ACTION};
         use crate::relabel::{DecisionLogRead, ModelLog, bind_log, playback_frame};
         use crate::shard::MemoryAction;
         let m = |action, units: Vec<u32>| MemoryAction { action, delay_bucket: 2, units };
@@ -1217,9 +1243,23 @@ mod tests {
         assert_eq!(n, 4);
         assert!(labels.iter().all(|l| l.action == UNKNOWN_ACTION && l.is_unknown() && l.selected.is_empty() && l.target_unit.is_none() && l.target_tile.is_none() && !l.queued));
         assert_eq!(labels.iter().map(|l| l.delay).collect::<Vec<_>>(), vec![6, 3, 8, 682]);
-        // No step at the replay's command frames: the steps come from the log alone.
-        let commands = [3u32, 11, 25];
-        assert!(labels.iter().all(|l| !commands.contains(&l.frame)));
+        // The build's label swap (`step_labels`): the replay's command labels (frames 1, 3, 11, 25)
+        // are replaced by the slots, so no step sits at a command frame; a branch build of the same
+        // view keeps them and adds the decision-time steps.
+        let cmd = |frame, action| Label { frame, action, delay: 2, queued: false, selected: vec![5], target_unit: None, target_tile: None };
+        let commands = vec![cmd(1, 0), cmd(3, 4), cmd(11, 7), cmd(25, 4)];
+        let mut swapped = commands.clone();
+        assert_eq!(step_labels(true, false, Some(&bound), &own, last, limit, 700, &mut swapped), Ok(Some(4)));
+        assert_eq!(swapped, labels);
+        assert!(swapped.iter().all(|l| ![3, 11, 25].contains(&l.frame)));
+        let mut branch = commands.clone();
+        assert_eq!(step_labels(false, false, Some(&bound), &own, last, limit, 700, &mut branch), Ok(Some(3)));
+        assert_eq!(branch.iter().map(|l| (l.frame, l.is_unknown())).collect::<Vec<_>>(), vec![(1, false), (3, false), (7, true), (10, true), (11, false), (18, true), (25, false)]);
+        let mut relabelled = commands.clone();
+        assert_eq!(step_labels(false, true, Some(&bound), &own, last, limit, 700, &mut relabelled), Ok(None));
+        assert_eq!(relabelled, commands);
+        let mut unbound = commands.clone();
+        assert!(step_labels(true, false, None, &own, last, limit, 700, &mut unbound).unwrap_err().starts_with("decision_log missing"));
         // Memory (041-R28 ②): the decisions before each step's live frame and at or after the previous one's.
         let tpl = crate::shard::tests::game(1).steps[0].clone();
         let mut steps: Vec<Step> = labels.iter().map(|l| Step { raw_frame: uranium_proto::RawFrame { frame: l.frame, ..tpl.raw_frame.clone() }, action_label: l.clone(), memory_action: None, ..tpl.clone() }).collect();
