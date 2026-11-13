@@ -1463,6 +1463,8 @@ dependencies = [
  "anyhow",
  "proptest",
  "serde",
+ "serde_json",
+ "sha2",
  "toml",
  "uranium-proto",
 ]
