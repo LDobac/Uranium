@@ -21,8 +21,15 @@
 //! the nearer one; mineral lines and remaining-field counts use the fields with amount > 0; an
 //! event counts in the rush window when it arrives with an observation in (E, E + 90 s] (the
 //! interval rule); the CC exception's "spot without an own CC" = no own CC (landed, any state)
-//! within 3 tiles of the spot's depot centre; `bunker_load_s` is 0 when a marine sat in an own
-//! bunker at any observation up to and including E.
+//! within 3 tiles of the spot's depot centre, the spot being the depot centre pixel of the
+//! `base_locs` tile; `bunker_load_s` is 0 when a marine sits in an own bunker at E (already
+//! loaded), measured from the first window observation with one otherwise; `mline_bldg_n` counts a
+//! building the first time it is seen in a mineral line (also when a later base puts it there);
+//! lifted buildings are not in a mineral line; every "within N tiles / px" is inclusive; a mining
+//! SCV whose field is unknown is left out of `stranded_scv_s` / `oversat_scv_s`; `inc_scv_*` is
+//! empty when no SCV was there; rush entry is measured from our start tile's centre (the spec's
+//! words), not the CC centre; a final frame with the same frame number as the last observation
+//! adds no second focus sample.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -122,7 +129,7 @@ enum Harvest {
     Gas,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 struct Ids {
     scv: u16,
     cc: u16,
@@ -135,7 +142,7 @@ struct Ids {
     /// A mineral field type (its 2 x 1 tile footprint).
     mineral: u16,
     /// Producer type -> its cheapest unit's (minerals, gas, BWAPI supply) (052-R3).
-    cheapest: Vec<(u16, i32, i32, i32)>,
+    cheapest: [(u16, i32, i32, i32); 4],
 }
 
 #[derive(Debug, Clone)]
@@ -261,7 +268,6 @@ pub struct OpsTracker {
     blocked: bool,
     float_min: u64,
     float_gas: u64,
-    loaded_before: bool,
     rush: Option<Rush>,
     ids: Ids,
     orders: Orders,
@@ -291,7 +297,7 @@ impl OpsTracker {
             bunker: type_id("Terran_Bunker"),
             refinery: type_id("Terran_Refinery"),
             mineral: type_id("Resource_Mineral_Field"),
-            cheapest: vec![
+            cheapest: [
                 cost("Terran_Command_Center", "Terran_SCV"),
                 cost("Terran_Barracks", "Terran_Marine"),
                 cost("Terran_Factory", "Terran_Vulture"),
@@ -338,7 +344,6 @@ impl OpsTracker {
             blocked: false,
             float_min: 0,
             float_gas: 0,
-            loaded_before: false,
             rush: None,
             ids,
             orders,
@@ -383,6 +388,13 @@ impl OpsTracker {
     pub fn step(&mut self, f: &RawFrame) {
         let fr = f.frame;
         let (lo, hi) = (self.prev, fr.max(self.prev));
+        // After 10:00 (and so after any rush window, which ends by 9,360) nothing counts any more.
+        if lo >= WINDOW_END && self.rush.as_ref().is_none_or(|r| lo >= r.end()) {
+            self.prev = hi;
+            self.last = Some(hi);
+            return;
+        }
+        let repeat = self.last == Some(fr);
         let dt = overlap(lo, hi, 0, WINDOW_END);
         let in_window = fr <= WINDOW_END;
         let rush_open = |r: &Rush| fr > r.entry && fr <= r.end();
@@ -409,7 +421,7 @@ impl OpsTracker {
             let i = self.field_for(u.id, u.pos);
             self.fields[i].amount = u.resources as u32;
         }
-        let ids = self.ids.clone();
+        let ids = self.ids;
         let mine: Vec<&UnitState> = f.units.iter().filter(|u| u.owner == self.me).collect();
         // Bases: completed, landed CCs (052-R1).
         let bases: Vec<&UnitState> = mine.iter().copied().filter(|u| u.unit_type == ids.cc && u.has(flags::COMPLETED) && !u.has(flags::LIFTED)).collect();
@@ -588,9 +600,6 @@ impl OpsTracker {
         let bunkers: BTreeSet<UnitId> = mine.iter().filter(|u| u.unit_type == ids.bunker).map(|u| u.id).collect();
         let marines: Vec<&UnitState> = mine.iter().copied().filter(|u| u.unit_type == ids.marine && u.has(flags::COMPLETED)).collect();
         let loaded = marines.iter().filter(|u| u.loaded_in.is_some_and(|b| bunkers.contains(&b))).count() as u32;
-        if self.rush.as_ref().is_none_or(|r| fr <= r.entry) && loaded > 0 {
-            self.loaded_before = true;
-        }
         let done_bunker = mine.iter().any(|u| u.unit_type == ids.bunker && u.has(flags::COMPLETED));
         let empty = done_bunker && loaded == 0 && !marines.is_empty();
         // AttackUnit at a visible enemy unit: focus of this observation (needs 2 or more units).
@@ -616,7 +625,7 @@ impl OpsTracker {
                     r.load_frame = Some(fr);
                 }
                 let n: u32 = aimed.values().sum();
-                if n >= 2 {
+                if n >= 2 && !repeat {
                     r.hhi_sum += aimed.values().map(|&k| (k as f64 / n as f64).powi(2)).sum::<f64>();
                     r.hhi_n += 1;
                 }
@@ -676,7 +685,7 @@ impl OpsTracker {
             scv_lost: r.scv_lost,
             kills: r.kills,
             bunker_marines_max: r.marines_max,
-            bunker_load_s: if self.loaded_before { Some(0.0) } else { r.load_frame.map(since) },
+            bunker_load_s: r.load_frame.map(since),
             bunker_empty_s: secs(r.empty),
             focus_hhi: (r.hhi_n > 0).then(|| r.hhi_sum / r.hhi_n as f64),
             focus_obs: r.hhi_n,
@@ -1064,13 +1073,16 @@ mod tests {
         t.step(&frame(3_720, vec![bunker(true), marine(40, true), marine(41, false)]));
         let r = t.rush_combat().unwrap();
         assert_eq!((r.bunker_load_s, r.bunker_marines_max, r.bunker_empty_s), (Some(20.0), 2, 10.0));
-        // Loaded at E: 0; loaded earlier and out at E: 0 too.
-        for (pre_loaded, at_e) in [(false, true), (true, false)] {
-            let mut t = tracker();
-            t.step(&frame(2_000, vec![bunker(true), marine(40, pre_loaded)]));
-            t.step(&frame(3_000, vec![ling(60, START), bunker(true), marine(40, at_e)]));
-            assert_eq!(t.rush_combat().unwrap().bunker_load_s, Some(0.0));
-        }
+        // Loaded at E: 0; loaded earlier but out at E: from E to the next loading.
+        let mut t = tracker();
+        t.step(&frame(2_000, vec![bunker(true), marine(40, false)]));
+        t.step(&frame(3_000, vec![ling(60, START), bunker(true), marine(40, true)]));
+        assert_eq!(t.rush_combat().unwrap().bunker_load_s, Some(0.0));
+        let mut t = tracker();
+        t.step(&frame(2_000, vec![bunker(true), marine(40, true)]));
+        t.step(&frame(3_000, vec![ling(60, START), bunker(true), marine(40, false)]));
+        t.step(&frame(3_480, vec![bunker(true), marine(40, true)]));
+        assert_eq!(t.rush_combat().unwrap().bunker_load_s, Some(20.0));
         // Never loaded: empty; an unfinished bunker is never "empty".
         let mut t = tracker();
         t.step(&frame(3_000, vec![ling(60, START), bunker(false), marine(40, false)]));
@@ -1097,6 +1109,51 @@ mod tests {
         assert_eq!(run(vec![vec![at(1, 60), at(2, 60)], vec![at(1, 60), at(2, 61)]]), (Some(0.75), 2));
         // One attacker, a target out of sight, an Attack1 order: no observation counted.
         assert_eq!(run(vec![vec![at(1, 60)], vec![at(1, 60), at(2, 999)], vec![ordered(at(1, 60), "Attack1", Some(60)), at(2, 60)]]), (None, 0));
+    }
+
+    /// 052-R1 / 052-AC1: nothing counts after 10:00 (blocks, mineral-line buildings, deliveries);
+    /// a final frame with the same frame number adds no second focus sample; an air army kill and a
+    /// carrying SCV's death (no delivery) are read against the last observation.
+    #[test]
+    fn window_end_repeat_and_deaths_052_r1() {
+        let rax = || unit(3, ME, "Terran_Barracks", (2000, 2000), true);
+        let depot = unit(5, ME, "Terran_Supply_Depot", (35 * 32 + 48, 31 * 32 + 32), true);
+        let mut t = tracker();
+        let mut f = frame(14_400, vec![cc(), field()]);
+        f.self_state = state(100, 0, 18, 20);
+        t.step(&f);
+        let mut f = frame(14_424, vec![cc(), field(), rax(), depot]);
+        f.self_state = state(100, 0, 20, 20);
+        t.step(&f);
+        let m = t.ops();
+        assert_eq!((m.sblock_n, m.sblock_first_s, m.sblock_s, m.mline_bldg_n, m.mline_bldg_s), (0, None, 0.0, 0, 0.0));
+        // Focus: the decision observation and a final frame at the same frame are one sample.
+        let at = |id, target| ordered(unit(id, ME, "Terran_Marine", START, true), "AttackUnit", Some(target));
+        let mut t = tracker();
+        let obs = || frame(3_000, vec![ling(60, START), ling(61, START), at(1, 60), at(2, 61)]);
+        t.step(&obs());
+        t.step(&obs());
+        assert_eq!(t.rush_combat().unwrap().focus_obs, 1);
+        // Kills count air army units too (033-R9 army); a carrying SCV that dies delivers nothing.
+        let mut t = tracker();
+        t.step(&frame(3_000, vec![ling(60, START), unit(61, ENEMY, "Zerg_Mutalisk", START, true), scv(10, "ReturnMinerals", Some(1), true)]));
+        let mut f = frame(3_024, vec![]);
+        f.events = vec![GameEvent::UnitDestroyed(61), GameEvent::UnitDestroyed(10)];
+        t.step(&f);
+        let r = t.rush_combat().unwrap();
+        assert_eq!((r.kills, r.scv_lost, t.ops().mined), (1, 1, 0));
+    }
+
+    /// 052-R2 / 052-AC1: a field within 12 tiles of two bases counts for the nearer one only
+    /// (oversaturation per base).
+    #[test]
+    fn shared_field_belongs_to_the_nearer_base_052_r2() {
+        // Field at x 1312; bases at 1024 (288 px) and 1600 (288 + 1 px away on the other side).
+        let mut t = tracker();
+        let far = UnitState { id: 2, pos: (1601, 1008), ..cc() };
+        let workers = |n: u32| (0..n).map(|i| scv(10 + i, "MiningMinerals", Some(FIELD_ID), false)).collect::<Vec<_>>();
+        t.step(&frame(24, [vec![cc(), far, field()], workers(4)].concat()));
+        assert_eq!(t.ops().oversat_scv_s, 1.0, "4 SCVs on the one field of the nearer base: 1 over, the other base has none");
     }
 
     /// 052-AC1 (the 033-AC3 r_survive test): the same states observed every 8, 24 or 96 frames

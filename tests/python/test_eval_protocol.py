@@ -667,9 +667,10 @@ def rush_value(pull_s=None, scv_lost: int = 0, kills: int = 0, bunker_load_s=Non
             "bunker_marines_max": 0, "bunker_load_s": bunker_load_s, "bunker_empty_s": 0.0, "focus_hhi": focus_hhi, "focus_obs": 1}
 
 
-def write_ops(cache: Path, n: int, value: dict, slot: int = 0) -> None:
+def write_ops(cache: Path, n: int, value: dict, slot: int = 0, version: int = ec.OPS_CACHE_VERSION) -> None:
     cache.mkdir(parents=True, exist_ok=True)
-    (cache / f"g{n}.ops.json").write_text(json.dumps({"rep": f"g{n}.rep", "perspective": slot, "frames": 20000, **value}) + "\n", encoding="utf-8")
+    line = {"rep": f"g{n}.rep", "perspective": slot, "frames": 20000, **value, "cache_version": version}
+    (cache / f"g{n}.ops.json").write_text(json.dumps(line) + "\n", encoding="utf-8")
 
 
 def test_ops_tables_from_replay_values_052_ac3(tmp_path):
@@ -730,7 +731,7 @@ def test_ops_stage_runs_opsdump_from_our_slot_052_r7(tmp_path, monkeypatch):
     another slot measured again; a failure is reported and not cached; no replay = no value, no call."""
     stage = tmp_path / "stage"
     (stage / "replays").mkdir(parents=True)
-    for n in (1, 2, 3):
+    for n in (1, 2, 3, 5):
         (stage / "replays" / f"g{n}.rep").write_bytes(b"rep")
     binary = tmp_path / "uranium-replay"
     binary.write_bytes(b"")
@@ -743,13 +744,18 @@ def test_ops_stage_runs_opsdump_from_our_slot_052_r7(tmp_path, monkeypatch):
     monkeypatch.setattr(ec, "_opsdump", fake)
     cache = tmp_path / "cache"
     write_ops(cache, 2, ops_value(16), slot=0)  # another slot than the row's 1: measured again
-    got, failed = ec.ops_stage(stage, {1: 0, 2: 1, 3: 0, 4: 1}, cache, binary=binary, jobs=2)
-    assert sorted(calls) == [("g1.rep", 0), ("g2.rep", 1), ("g3.rep", 0)]
-    assert sorted(got) == [1, 2] and got[2]["perspective"] == 1 and failed == {3: "desync"}
+    write_ops(cache, 5, ops_value(16), version=ec.OPS_CACHE_VERSION - 1)  # an older tracker's value: measured again
+    got, failed = ec.ops_stage(stage, {1: 0, 2: 1, 3: 0, 4: 1, 5: 0}, cache, binary=binary, jobs=2)
+    assert sorted(calls) == [("g1.rep", 0), ("g2.rep", 1), ("g3.rep", 0), ("g5.rep", 0)]
+    assert sorted(got) == [1, 2, 5] and got[2]["perspective"] == 1 and got[5]["ops"]["mined"] == 8 and failed == {3: "desync"}
+    assert json.loads((cache / "g5.ops.json").read_text(encoding="utf-8"))["cache_version"] == ec.OPS_CACHE_VERSION
     assert not (cache / "g3.ops.json").exists() and json.loads((cache / "g2.ops.json").read_text(encoding="utf-8"))["perspective"] == 1
     calls.clear()
     got, failed = ec.ops_stage(stage, {1: 0, 2: 1, 3: 0}, cache, binary=binary)
     assert calls == [("g3.rep", 0)] and sorted(got) == [1, 2], "cached lines reused, the failure tried again"
+    monkeypatch.undo()  # the real ec._opsdump on a broken output line
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout="{broken\n", stderr=""))
+    assert "unreadable opsdump line" in ec._opsdump(binary, stage / "replays" / "g1.rep", 0)["error"]
     with pytest.raises(SystemExit, match="cargo build"):
         ec.ops_stage(stage, {3: 0}, tmp_path / "c2", binary=tmp_path / "missing")
 

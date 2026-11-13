@@ -313,26 +313,36 @@ def dump_stage(stage_dir: Path, games: list[int], out: Path, binary: Path | None
     return got
 
 
-def _opsdump(binary: Path, rep: Path, slot: int) -> dict | None:
+# 052-R7 cache key of g<n>.ops.json: bump when the OpsTracker or the opsdump settings (8-frame stops, cut at
+# 10:00) change, so a later tabulation measures the replays again instead of reusing old values.
+OPS_CACHE_VERSION = 1
+
+
+def _opsdump(binary: Path, rep: Path, slot: int) -> dict:
+    """One `uranium-replay opsdump --perspective <slot>` line; {"error": ...} when it fails."""
     p = subprocess.run([str(binary), "opsdump", "--perspective", str(slot), str(rep)], capture_output=True, text=True)
     lines = [l for l in p.stdout.splitlines() if l.strip()]
     if p.returncode != 0 or len(lines) != 1:
         return {"error": (p.stderr.strip().splitlines() or [f"exit {p.returncode}"])[-1]}
-    return json.loads(lines[0])
+    try:
+        return json.loads(lines[0])
+    except ValueError as e:
+        return {"error": f"unreadable opsdump line ({e})"}
 
 
 def ops_stage(stage_dir: Path, games: dict[int, int], out: Path, binary: Path | None = None, jobs: int = 1) -> tuple[dict[int, dict], dict[int, str]]:
     """052-R7: `uranium-replay opsdump --perspective <slot>` of each game's replay (games = {n: our BWAPI slot, the
     session row's `slot`}) into out/g<n>.ops.json, kept so a later run reuses it (a cached line of another slot is
-    measured again). Returns ({n: the opsdump line} of the games measured, {n: error} of the replays that failed;
-    failures are not cached). Games without a replay are in neither."""
+    measured again, and so is a line of another OPS_CACHE_VERSION). Returns ({n: the opsdump line} of the games
+    measured, {n: error} of the replays that failed; failures are not cached). Games without a replay are in
+    neither."""
     got: dict[int, dict] = {}
     todo: list[tuple[int, int, Path]] = []
     for n, slot in sorted(games.items()):
         j = out / f"g{n}.ops.json"
         if j.exists():
             d = json.loads(j.read_text(encoding="utf-8"))
-            if d.get("perspective") == slot and d.get("ops") is not None:
+            if d.get("perspective") == slot and d.get("ops") is not None and d.get("cache_version") == OPS_CACHE_VERSION:
                 got[n] = d
                 continue
         rep = stage_dir / "replays" / f"g{n}.rep"
@@ -345,13 +355,14 @@ def ops_stage(stage_dir: Path, games: dict[int, int], out: Path, binary: Path | 
             raise SystemExit(f"no {binary}: cargo build --release -p uranium-replay (or set URANIUM_REPLAY_BIN)")
         from concurrent.futures import ThreadPoolExecutor
 
+        print(f"opsdump: {len(todo)} replay(s) of {stage_dir.name} ({max(1, jobs)} at a time)", file=sys.stderr)
         with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
             for (n, slot, _), d in zip(todo, pool.map(lambda t: _opsdump(binary, t[2], t[1]), todo)):
                 if d.get("ops") is None:
                     failed[n] = d.get("error") or "no ops"
                     continue
                 out.mkdir(parents=True, exist_ok=True)
-                (out / f"g{n}.ops.json").write_text(json.dumps(d) + "\n", encoding="utf-8")
+                (out / f"g{n}.ops.json").write_text(json.dumps({**d, "cache_version": OPS_CACHE_VERSION}) + "\n", encoding="utf-8")
                 got[n] = d
     return got, failed
 
