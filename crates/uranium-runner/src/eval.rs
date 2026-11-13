@@ -783,10 +783,10 @@ impl EvalWorker {
             s.plan.check_branch_paths(plan::shared_dir_env().as_deref())?;
         }
         let (routes, builds, ends) = (Routes::default(), T0Builds::default(), EndBoard::default());
-        // TODO(051 U3): hand `branches` to the agent server with the other boards.
+        // 020-R22: the workers fill the 051 board per game; the agent sessions read it.
         let branches = uranium_env::branch::BranchBoard::default();
         let results = job.sub("results").join(format!("{}.jsonl", cfg.host));
-        let agent_addr = crate::start_agent(listen, &results, &unit_rejections_file(&job, &cfg.host), routes.clone(), builds.clone(), ends.clone(), Default::default())?;
+        let agent_addr = crate::start_agent(listen, &results, &unit_rejections_file(&job, &cfg.host), routes.clone(), builds.clone(), ends.clone(), Default::default(), branches.clone())?;
         elog!("[eval] job {} ({} stages, {} games), host {} priority {} backend {}, agent at {agent_addr}", job.dir.display(), job.stages.len(), job.keys().len(), cfg.host, priority, backend);
         if let Some(addr) = &local_hostd {
             // Coming back: this host takes games again (020-R15 ⑥).
@@ -1478,7 +1478,7 @@ mod tests {
 
     /// 020-R22 ① / 020-R15 ①: a stage with `act_log` names its games' act logs by plan game
     /// number under `<stage>/acts/` whatever the attempt; a stage without 051 keys has no settings
-    /// (020-R22 ④); a job with a 051 stage is refused until the agent reads the board (051 U3).
+    /// (020-R22 ④); a job with a 051 stage starts (the agent reads the board, 051 U3).
     #[test]
     fn act_logs_under_the_stage_020_r22() {
         let dir = job_dir("actlog", 2);
@@ -1495,8 +1495,9 @@ mod tests {
         j.spec.game_id = hostd_id(0, 2, 0);
         assert_eq!(src.game_branch(&j).unwrap(), None, "stage a has no 051 key");
         let cfg = StorageConfig::new(&dir, &dir, "h");
-        let e = EvalWorker::start(&dir, cfg, 0, "cpu", None, Arc::default(), "127.0.0.1:0").err().unwrap();
-        assert!(format!("{e:#}").contains("branch-game keys"), "{e:#}");
+        // 051 U3: the agent sessions read the board, so a job with a 051 stage starts.
+        let w = EvalWorker::start(&dir, cfg, 0, "cpu", None, Arc::default(), "127.0.0.1:0").unwrap();
+        w.close();
         std::fs::remove_dir_all(&dir).ok();
     }
 

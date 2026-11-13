@@ -19,6 +19,9 @@ use uranium_env::reward::{Outcome, RewardParts, RewardTracker};
 use uranium_env::scout::{RewardConfig, ScoutMetrics, ScoutTracker, seconds};
 use uranium_env::concede::{CollapseJudge, ConcedeGame, LeaveRule};
 use uranium_env::surrender::{DEFAULT_CHAT, SurrenderJudge, SurrenderMode, rule_holds};
+use uranium_env::branch::{
+    BranchOutcome, BranchPlayer, DilutionTracker, ForcedPrefix, GameBranch, Intervention, Invalid, InvalidReason, PrefixStep, SampleTracker, SnapshotTaken, Snapshots, StateCheck, ActLog, decode_state, encode_state, obs_digest, open_ids, quit_act, sha256_hex, state_id,
+};
 use crate::infer::HostState;
 use uranium_proto::{Act, GameInfo, RawFrame};
 
@@ -158,6 +161,192 @@ pub struct ModelPolicy {
     concede_reward: Option<RewardParts>,
     /// 041-R28 ①: this game's decision log (`InferenceHandle::memory_log`); off by default.
     decision_log: Option<DecisionLog>,
+    /// 051 (020-R22): act-log extras, snapshots and the branch player of a plan game with 051
+    /// keys ([`ModelPolicy::with_branch`]); `None` otherwise, and then nothing below changes
+    /// (020-R22 ④).
+    branch: Option<Box<BranchSession>>,
+}
+
+/// 051-R2: the model's part of one act-log line; the session adds the observation index, frame,
+/// digest and the `Act` sent.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LineExtra {
+    /// The decision on this observation (`None`: no decision, e.g. a branch leaving, 051-R5 ①).
+    pub decision: Option<uranium_env::branch::Decision>,
+    /// 051-R3: state id saved right before this decision and its file's sha256.
+    pub state: Option<String>,
+    pub state_sha256: Option<String>,
+    /// 051-R5 ⑤: the decision was forced from the trunk's act log.
+    pub forced: bool,
+}
+
+/// 051: what a model session of a plan game with 051 keys adds to its session record (020-R22):
+/// the trunk's `snapshots` (051-R3, read by the plan tool for `points.jsonl`, 051-R10) and a
+/// branch player's outcome (record key `branch`, 051-R9, read for `branches.jsonl`).
+#[derive(Debug, Clone, Default)]
+pub struct BranchSessionPart {
+    /// 051-R3: state files this session saved (trunk games).
+    pub snapshots: Vec<SnapshotTaken>,
+    /// 051-R9: a branch player's outcome (`end` is filled by the session from `GameEnd`).
+    pub outcome: Option<BranchOutcome>,
+}
+
+/// 051 per-session state of a model session in a plan game with 051 keys.
+struct BranchSession {
+    /// Observations seen so far (the index of the current one is `obs - 1`).
+    obs: u32,
+    /// What the current observation adds to its act-log line (051-R2).
+    last: LineExtra,
+    /// 051-R3 snapshot rules of a trunk's `players[0]` model session.
+    trunk: Option<TrunkSnapshots>,
+    /// 051-R5..R9: the branch player of a branch game's `players[0]` model session.
+    player: Option<Box<BranchRun>>,
+}
+
+struct TrunkSnapshots {
+    rules: Snapshots,
+    game: Arc<GameBranch>,
+    taken: Vec<SnapshotTaken>,
+}
+
+/// 051-R5..R9 branch player state.
+struct BranchRun {
+    cfg: BranchPlayer,
+    /// The trunk's act log of this session as a prefix checker (051-R5 ①); `None` when it could
+    /// not be read (then `pending` says why).
+    prefix: Option<ForcedPrefix>,
+    /// The trunk's state at t (051-R3 file, sha256 checked).
+    saved: Option<HostState>,
+    /// A trunk input failed to load: the branch leaves at its first observation (051-R5 ①).
+    pending: Option<(InvalidReason, String)>,
+    invalid: Option<Invalid>,
+    /// Prefix observations (i <= i_t) seen.
+    seen: u32,
+    /// The state was restored at t; observations from t on play live (051-R6).
+    at_t: bool,
+    /// Decisions from t on (0 = the t decision).
+    k: u32,
+    intervention: Intervention,
+    samples: SampleTracker,
+    dilution: DilutionTracker,
+    state_check: Option<StateCheck>,
+}
+
+impl BranchRun {
+    /// Loads the trunk inputs (051-R5, 051-R6 ②). A missing or incomplete act log or state file
+    /// is `missing_input`, a state file whose sha256 or content is wrong is `state`; either makes
+    /// the branch invalid at its first observation. A bad alternative is a configuration error
+    /// (the plan load checks it, 020-R22 ③).
+    fn load(cfg: &BranchPlayer) -> Result<Self> {
+        let table = action_table();
+        let line = &cfg.line;
+        let intervention = Intervention::new(&line.alt, table, line.f_t)?;
+        let dilution = DilutionTracker::new(&line.alt, &cfg.none_actions, table, line.f_t)?;
+        let mut pending = None;
+        let prefix = match ActLog::read_path(&cfg.acts).and_then(|log| ForcedPrefix::new(log, line.i_t, line.f_t)) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                pending = Some((InvalidReason::MissingInput, format!("trunk act log: {e:#}")));
+                None
+            }
+        };
+        let saved = match std::fs::read(&cfg.state) {
+            Err(e) => {
+                pending.get_or_insert((InvalidReason::MissingInput, format!("state file {}: {e}", cfg.state.display())));
+                None
+            }
+            Ok(bytes) if sha256_hex(&bytes) != line.state_sha256 => {
+                pending.get_or_insert((InvalidReason::State, format!("state file {}: sha256 {} is not {}", cfg.state.display(), sha256_hex(&bytes), line.state_sha256)));
+                None
+            }
+            Ok(bytes) => match decode_state(&bytes) {
+                Ok(parts) => Some(HostState { parts }),
+                Err(e) => {
+                    pending.get_or_insert((InvalidReason::State, format!("state file {}: {e:#}", cfg.state.display())));
+                    None
+                }
+            },
+        };
+        Ok(Self {
+            cfg: cfg.clone(),
+            prefix,
+            saved,
+            pending,
+            invalid: None,
+            seen: 0,
+            at_t: false,
+            k: 0,
+            intervention,
+            samples: SampleTracker::new(line.f_t, cfg.horizon),
+            dilution,
+            state_check: None,
+        })
+    }
+
+    fn fail(&mut self, reason: InvalidReason, obs: Option<u32>, frame: Option<u32>, why: &str) {
+        elog!("[agent] 051: branch {} invalid ({reason:?}) at observation {obs:?} frame {frame:?}: {why}", self.cfg.line.point);
+        self.invalid = Some(Invalid { reason, obs, frame });
+    }
+}
+
+/// 051-R3: writes one slot state as a state file (created or replaced: a game played again
+/// overwrites its earlier attempt, 020-R22 ②), synced to the disk or the shared drive's server
+/// (061), and returns the content's sha256.
+fn save_state(path: &std::path::Path, state: &HostState) -> Result<String> {
+    use std::io::Write as _;
+    let bytes = encode_state(&state.parts)?;
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let mut f = std::fs::File::create(path)?;
+    f.write_all(&bytes)?;
+    f.sync_all()?;
+    Ok(sha256_hex(&bytes))
+}
+
+/// 051-R6 (`verify_state`): bit equality and the largest absolute difference of two states
+/// (different part shapes: not equal, no finite difference).
+pub fn compare_states(a: &HostState, b: &HostState) -> StateCheck {
+    let same_shape = a.parts.len() == b.parts.len() && a.parts.iter().zip(&b.parts).all(|((sa, da), (sb, db))| sa == sb && da.len() == db.len());
+    if !same_shape {
+        return StateCheck::new(false, f64::INFINITY);
+    }
+    let mut bit_equal = true;
+    let mut max = 0f64;
+    for ((_, da), (_, db)) in a.parts.iter().zip(&b.parts) {
+        for (x, y) in da.iter().zip(db) {
+            bit_equal &= x.to_bits() == y.to_bits();
+            let d = (*x as f64 - *y as f64).abs();
+            // NaN anywhere makes the difference not a number (recorded as null).
+            max = if d.is_nan() || max.is_nan() { f64::NAN } else { max.max(d) };
+        }
+    }
+    StateCheck::new(bit_equal, max)
+}
+
+/// 051-R9 ② / 050-R9: the session metrics of a branch-game model session under the
+/// [`uranium_env::branch::OUTCOME_METRICS`] names: the 042 / 050-R7 metrics (game seconds as in
+/// `ModelStats`), `held_s` (`scv_min_1m > 4`, 050-R7) and `held_8m` (`scv_8m >= 8`, 050-R6 ③; a
+/// game that ended before 8:00 fails).
+pub fn outcome_metrics(m: &ScoutMetrics) -> serde_json::Map<String, serde_json::Value> {
+    let secs = |f: Option<u32>| f.map(seconds);
+    let v = serde_json::json!({
+        "held_8m": m.scv_8m.is_some_and(|n| n >= 8),
+        "held_s": m.scv_min_1m.is_some_and(|n| n > 4),
+        "scv_8m": m.scv_8m,
+        "scv_min_1m": m.scv_min_1m,
+        "bunker_s": secs(m.bunker_frame),
+        "barracks_s": secs(m.barracks_frame),
+        "army_s": secs(m.army_frame),
+        "scout_main_s": secs(m.main_frame),
+        "scout_types_4m": m.types_4m,
+        "scout_types_6m": m.types_6m,
+        "scv_4m": m.scv_4m,
+    });
+    match v {
+        serde_json::Value::Object(map) => map,
+        _ => unreachable!("an object literal"),
+    }
 }
 
 /// 041-R28 ① (AMB-041-17): the JSON-lines file of one game's model decisions, written exactly as
@@ -312,7 +501,181 @@ impl ModelPolicy {
             concede: None,
             concede_reward: None,
             decision_log: handle.memory_log.as_deref().map(|p| DecisionLog::create(p, self_player)),
+            branch: None,
         })
+    }
+
+    /// 020-R22 / 051: this session plays a plan game with 051 keys. Every such model session
+    /// reports its act-log extras ([`Self::act_log_extra`], 051-R2); the `players[0]` session
+    /// (`players_index == 0`) also checks the snapshot rules (051-R3) or, in a branch game, plays
+    /// as the branch player (051-R5..R9). A branch player never surrenders (051-R1 ③: its prefix
+    /// has no inference to judge on).
+    pub fn with_branch(mut self, game: Arc<GameBranch>, players_index: u8) -> Result<Self> {
+        let mut b = BranchSession { obs: 0, last: LineExtra::default(), trunk: None, player: None };
+        if players_index == 0 {
+            if !game.snapshots.is_empty() {
+                let rules = Snapshots::new(&game.snapshots, action_table())?;
+                anyhow::ensure!(game.states_dir.is_some(), "051-R3: snapshot rules without a states folder");
+                b.trunk = Some(TrunkSnapshots { rules, game: game.clone(), taken: vec![] });
+            }
+            if let Some(cfg) = &game.branch {
+                b.player = Some(Box::new(BranchRun::load(cfg)?));
+                self.surrender_mode = SurrenderMode::Off;
+                self.stats.surrender = "off".into();
+            }
+        }
+        self.branch = Some(Box::new(b));
+        Ok(self)
+    }
+
+    /// 051-R2: the model's part of the act-log line of the last observation (`None` outside plan
+    /// games with 051 keys).
+    pub fn act_log_extra(&mut self) -> Option<LineExtra> {
+        self.branch.as_mut().map(|b| std::mem::take(&mut b.last))
+    }
+
+    /// 051: the session record part (snapshots, branch outcome without `end`).
+    pub fn branch_record(&mut self) -> Option<BranchSessionPart> {
+        let m = self.scout_metrics();
+        let b = self.branch.as_ref()?;
+        let metrics = outcome_metrics(&m);
+        let outcome = b.player.as_ref().map(|r| BranchOutcome {
+            valid: r.invalid.is_none(),
+            invalid: r.invalid.clone(),
+            prefix_obs: r.seen,
+            prefix_matched: r.prefix.as_ref().map_or(0, ForcedPrefix::matched),
+            state_check: r.state_check.clone(),
+            intervention: r.intervention.log(),
+            samples: r.samples.samples().clone(),
+            metrics,
+            dilution: r.dilution.entries(),
+            end: None,
+        });
+        Some(BranchSessionPart { snapshots: b.trunk.as_ref().map(|t| t.taken.clone()).unwrap_or_default(), outcome })
+    }
+
+    /// Agent memory (tests: 051-AC1 forced prefix memory = the trunk's).
+    pub fn memory(&self) -> &AgentMemory {
+        &self.mem
+    }
+
+    fn scout_metrics(&self) -> ScoutMetrics {
+        self.reward.as_ref().and_then(|r| r.scout_metrics()).unwrap_or_else(|| self.scout.metrics())
+    }
+
+    /// 051-R5 (observation `i`, i <= i_t of a branch player): checks the observation against the
+    /// trunk and, before t, plays the recorded decision without inference. `Some(act)` = send it
+    /// (a forced `Act`, or the chat-less leave of an invalid branch); `None` = play this
+    /// observation through the normal path (t restores there, after t plays live).
+    fn branch_prefix(&mut self, f: &RawFrame) -> Result<Option<Act>> {
+        let Some(b) = self.branch.as_deref_mut() else { return Ok(None) };
+        let i = b.obs - 1;
+        let Some(run) = b.player.as_deref_mut() else { return Ok(None) };
+        if run.invalid.is_some() {
+            // 051-R5 ①: already leaving.
+            return Ok(Some(quit_act()));
+        }
+        if let Some((reason, why)) = run.pending.take() {
+            run.fail(reason, Some(i), Some(f.frame), &why);
+            return Ok(Some(quit_act()));
+        }
+        let prefix = run.prefix.as_mut().expect("a branch without a pending load error has its prefix");
+        if i > prefix.i_t() {
+            return Ok(None);
+        }
+        run.seen += 1;
+        let digest = obs_digest(f)?;
+        let line = match prefix.step(i, f.frame, digest) {
+            Err(inv) => {
+                let why = format!("{:?} differs from the trunk", inv.reason);
+                run.fail(inv.reason, inv.obs, inv.frame, &why);
+                return Ok(Some(quit_act()));
+            }
+            Ok(PrefixStep::Forced(line)) => line.clone(),
+            Ok(PrefixStep::AtT(_) | PrefixStep::Live) => return Ok(None),
+        };
+        // 051-R5 ②: memory follows the observation and records the trunk's decision.
+        let obs = extract(f, &mut self.mem, &self.map, self.z.as_ref());
+        if run.cfg.verify_state {
+            // 051-R6 test option: build the state over the prefix, drop the sampled action.
+            self.sess.act(obs)?;
+        }
+        let d = line.decision.clone().expect("ForcedPrefix holds a model session's log");
+        self.mem.record_action(d.action, d.delay_bucket as usize, &d.units);
+        // 051-R5 ⑤: the 041-R28 log gets the forced decision in its usual form.
+        if let Some(l) = self.decision_log.as_mut() {
+            l.decision(f.frame, d.action, d.delay_bucket as usize, &d.units);
+        }
+        b.last = LineExtra { decision: Some(d), state: None, state_sha256: None, forced: true };
+        // 051-R5 ③: the recorded Act as it was sent.
+        Ok(Some(line.act))
+    }
+
+    /// 051-R3 / 051-R6 / 051-R7 after feature extraction, before inference: a trunk saves the
+    /// state at a decision a snapshot rule picks; a branch player restores the trunk's state at t
+    /// and narrows `type_mask` from t on. `Some(act)` = the branch became invalid (leave).
+    fn branch_before_act(&mut self, f: &RawFrame, obs: &mut uranium_env::features::Observation) -> Result<Option<Act>> {
+        let Some(b) = self.branch.as_deref_mut() else { return Ok(None) };
+        let i = b.obs - 1;
+        if let Some(t) = b.trunk.as_mut() {
+            let hit = t.rules.check(i, f.frame, &obs.masks.type_mask);
+            if !hit.is_empty() {
+                let state = self.sess.state()?;
+                let id = state_id(t.game.plan_game, i);
+                let path = t.game.state_path(i).expect("checked in with_branch");
+                match save_state(&path, &state) {
+                    Ok(sha) => {
+                        t.taken.push(SnapshotTaken {
+                            rules: hit,
+                            state: id.clone(),
+                            state_sha256: sha.clone(),
+                            i,
+                            frame: f.frame,
+                            digest: obs_digest(f)?,
+                            type_mask: open_ids(&obs.masks.type_mask),
+                            scalar: obs.obs.scalar.clone(),
+                        });
+                        b.last.state = Some(id);
+                        b.last.state_sha256 = Some(sha);
+                    }
+                    // The game goes on; the plan tool skips a point without its state (051-R10).
+                    Err(e) => elog!("[agent] WARNING: 051-R3 state file {} not written: {e:#}", path.display()),
+                }
+            }
+        }
+        if let Some(run) = b.player.as_deref_mut() {
+            let i_t = run.prefix.as_ref().map(ForcedPrefix::i_t);
+            if !run.at_t && i_t == Some(i) {
+                let saved = run.saved.clone().expect("a branch without a pending load error has its state");
+                if run.cfg.verify_state {
+                    run.state_check = Some(compare_states(&self.sess.state()?, &saved));
+                }
+                // 051-R6 ②: restore; a refused state makes the branch invalid.
+                if let Err(e) = self.sess.set_state(saved) {
+                    run.fail(InvalidReason::State, Some(i), Some(f.frame), &format!("{e:#}"));
+                    return Ok(Some(quit_act()));
+                }
+                run.at_t = true;
+            }
+            if run.at_t {
+                // 051-R7 ④: the narrowed mask goes to the model and comes back for the executor.
+                run.intervention.apply_to(f.frame, obs);
+            }
+        }
+        Ok(None)
+    }
+
+    /// 051-R2 / 051-R7 ⑤ / 051-R9 after the executor: the act-log decision and, from t on, the
+    /// intervention's executor verdict, the time-point samples and the dilution count.
+    fn branch_after_act(&mut self, frame: u32, action: u16, delay_bucket: usize, ids: &[u32], rejected: bool, scalar: &[f32]) {
+        let Some(b) = self.branch.as_deref_mut() else { return };
+        b.last.decision = Some(uranium_env::branch::Decision { action, delay_bucket: delay_bucket as u32, units: ids.to_vec(), rejected });
+        if let Some(run) = b.player.as_deref_mut().filter(|r| r.at_t) {
+            run.intervention.note_executor(frame, rejected);
+            run.samples.on_decision(run.k, frame, scalar);
+            run.dilution.on_decision(frame, action);
+            run.k += 1;
+        }
     }
 
     /// 012-R14 / 012-R18: SC:R (realtime) sessions get no `CommandFailed`, so `last_failed` is 0
@@ -346,6 +709,20 @@ impl ModelPolicy {
     pub fn on_end(&mut self, outcome: Option<Outcome>, final_frame: Option<&RawFrame>) {
         if let Some(l) = self.decision_log.as_mut() {
             l.end(final_frame.map(|f| f.frame));
+        }
+        // 051-R7: a `force` that never fired is missed; a branch whose game ended before t never
+        // reached the trunk's observation i_t at f_t (051-R5 ①: `frame`).
+        if let Some(b) = self.branch.as_deref_mut() {
+            let next = b.obs;
+            if let Some(run) = b.player.as_deref_mut() {
+                run.intervention.finish();
+                if let Some((reason, why)) = run.pending.take() {
+                    run.fail(reason, None, None, &why);
+                } else if !run.at_t && run.invalid.is_none() {
+                    let why = format!("the game ended before t (trunk observation {:?})", run.prefix.as_ref().map(ForcedPrefix::i_t));
+                    run.fail(InvalidReason::Frame, Some(next), final_frame.map(|f| f.frame), &why);
+                }
+            }
         }
         // 042 metrics of a session without a reward tracker: the final frame too (010-R12).
         if let (None, Some(f)) = (self.reward.as_ref(), final_frame) {
@@ -446,12 +823,24 @@ impl ModelPolicy {
         if self.reward.is_none() {
             self.scout.step(f);
         }
+        if let Some(b) = self.branch.as_deref_mut() {
+            b.obs += 1;
+            b.last = LineExtra::default();
+        }
         if let Some(act) = self.concede_check(f) {
+            return Ok(act);
+        }
+        // 051-R5: a branch player's forced prefix (no inference) or its leave.
+        if let Some(act) = self.branch_prefix(f)? {
             return Ok(act);
         }
         let t0 = Instant::now();
         // z absent unless an RL session set one (041-AC2 / AMB-041-2, 033-R8).
-        let obs = extract(f, &mut self.mem, &self.map, self.z.as_ref());
+        let mut obs = extract(f, &mut self.mem, &self.map, self.z.as_ref());
+        // 051-R3 snapshot / 051-R6 restore / 051-R7 intervention (plan games with 051 keys only).
+        if let Some(act) = self.branch_before_act(f, &mut obs)? {
+            return Ok(act);
+        }
         let reward_before = self.reward.as_mut().map(|r| r.step(f)).unwrap_or_default();
         let state = match self.observer.as_ref() {
             Some(o) if o.wants_state() => Some(self.sess.state()?),
@@ -508,6 +897,7 @@ impl ModelPolicy {
         if let Some(l) = self.decision_log.as_mut() {
             l.decision(f.frame, a.action, a.delay_bucket, &ids);
         }
+        self.branch_after_act(f.frame, a.action, a.delay_bucket, &ids, rejected, &r.obs.obs.scalar);
         self.stats.decisions += 1;
         self.host.push((host_extract + t2.elapsed()).as_secs_f32() * 1e3);
         let bucket = a.delay_bucket.min(DELAY_BUCKETS.len() - 1);
@@ -550,5 +940,30 @@ mod tests {
         let s = ModelStats { scv_4m: Some(20), scv_min_1m: Some(5), army_s: Some(185.0), scv_8m: None, ..Default::default() };
         let text = serde_json::to_string(&s).unwrap();
         assert!(text.ends_with(r#""scv_4m":20,"scv_min_1m":5,"army_s":185.0,"scv_8m":null}"#), "{text}");
+    }
+
+    /// 051-R9 ② / 050-R9: every 051-R11 ④ outcome key is there; `held_8m` = `scv_8m >= 8` (a game
+    /// that ended before 8:00 fails), `held_s` = `scv_min_1m > 4`, seconds as in `ModelStats`.
+    #[test]
+    fn outcome_metrics_hold_definitions_051_r9() {
+        let m = ScoutMetrics { scv_8m: Some(8), scv_min_1m: Some(4), bunker_frame: Some(240), ..Default::default() };
+        let v = outcome_metrics(&m);
+        for k in uranium_env::branch::OUTCOME_METRICS {
+            assert!(v.contains_key(*k), "{k}");
+        }
+        assert_eq!((v["held_8m"].as_bool(), v["held_s"].as_bool(), v["bunker_s"].as_f64()), (Some(true), Some(false), Some(10.0)));
+        let v = outcome_metrics(&ScoutMetrics { scv_8m: None, scv_min_1m: Some(5), ..Default::default() });
+        assert_eq!((v["held_8m"].as_bool(), v["held_s"].as_bool()), (Some(false), Some(true)));
+    }
+
+    /// 051-R6 `verify_state`: bit equality (so -0.0 != 0.0), the largest difference, and other
+    /// shapes or NaN give no finite difference.
+    #[test]
+    fn compare_states_051_r6() {
+        let s = |v: Vec<f32>| HostState { parts: vec![(vec![1, v.len()], v)] };
+        assert_eq!(compare_states(&s(vec![1.0, 2.0]), &s(vec![1.0, 2.0])), StateCheck { bit_equal: true, max_abs_diff: Some(0.0) });
+        assert_eq!(compare_states(&s(vec![0.0, 2.0]), &s(vec![-0.0, 2.5])), StateCheck { bit_equal: false, max_abs_diff: Some(0.5) });
+        assert_eq!(compare_states(&s(vec![1.0]), &s(vec![1.0, 2.0])), StateCheck { bit_equal: false, max_abs_diff: None });
+        assert_eq!(compare_states(&s(vec![f32::NAN]), &s(vec![1.0])).max_abs_diff, None);
     }
 }
