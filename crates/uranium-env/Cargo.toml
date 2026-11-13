@@ -10,6 +10,9 @@ publish.workspace = true
 uranium-proto.workspace = true
 anyhow.workspace = true
 serde.workspace = true
+# 051 branch-game logs (JSON lines) and state-file hashes.
+serde_json.workspace = true
+sha2.workspace = true
 toml.workspace = true
 
 [dev-dependencies]

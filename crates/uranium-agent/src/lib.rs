@@ -510,13 +510,8 @@ fn visibility_violations(f: &RawFrame, me: u8) -> u64 {
         .count() as u64
 }
 
-pub fn fnv1a(mut h: u64, bytes: &[u8]) -> u64 {
-    for &b in bytes {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h
-}
+/// The session digest's FNV-1a, shared with the 051-R2 observation digest (one implementation).
+pub use uranium_env::branch::fnv1a;
 
 /// Loads host settings from `.env` (or `$URANIUM_ENV_FILE`) before anything reads the
 /// environment; variables already set in the process win (spec 001-R9).
