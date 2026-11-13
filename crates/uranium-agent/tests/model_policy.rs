@@ -34,6 +34,19 @@ fn mock(max_batch: usize, win_open: Option<f32>) -> InferenceHandle {
             for s in w.resets {
                 decisions[s] = 0;
             }
+            // 051-R4: after the resets, before the state reads; the mock's state is one value.
+            let errors = w
+                .restores
+                .iter()
+                .map(|(s, st)| match st.parts.as_slice() {
+                    [(shape, v)] if shape == &[1, 1] => {
+                        decisions[*s] = v[0] as usize;
+                        None
+                    }
+                    _ => Some("shape differs from the slot's [1, 1]".to_string()),
+                })
+                .collect();
+            b.reply_restores(errors).unwrap();
             let states = w.states.iter().map(|&s| HostState { parts: vec![(vec![1, 1], vec![decisions[s] as f32])] }).collect();
             b.reply_states(states).unwrap();
             if let Some(batch) = w.batch {
@@ -124,6 +137,39 @@ fn slot_state_and_swap_032_r16() {
     drop(sess);
     let again = h.open().unwrap();
     assert_eq!(again.state().unwrap().parts[0].1, vec![0.0], "a reopened slot starts from zero (032-R5)");
+}
+
+/// 051-R4: `set_state` overwrites the slot's state before its next read and decision; other slots
+/// keep theirs (032-R14); a state the broker or the model thread refuses is an error and the slot
+/// keeps its state.
+#[test]
+fn set_state_restores_the_slot_051_r4() {
+    use uranium_env::features::{AgentMemory, MapInfo, extract};
+    let h = mock(1, None);
+    let (a, b) = (h.open().unwrap(), h.open().unwrap());
+    let info = game_info();
+    let mut mem = AgentMemory::new(&info);
+    let map = MapInfo::new(&info, 0, None).unwrap();
+    let obs = extract(&frames(0, 1)[0], &mut mem, &map, None);
+    a.act(obs.clone()).unwrap();
+    a.act(obs.clone()).unwrap();
+    let saved = a.state().unwrap();
+    assert_eq!(saved.parts[0].1, vec![2.0]);
+    b.set_state(saved.clone()).unwrap();
+    assert_eq!(b.state().unwrap(), saved, "state() -> set_state() -> state() round trip");
+    assert_eq!(a.state().unwrap(), saved, "the other slot is unchanged");
+    let r = b.act(obs.clone()).unwrap();
+    assert_eq!(r.action.delay_bucket, 2, "the decision after the restore uses the restored state");
+    assert_eq!(b.state().unwrap().parts[0].1, vec![3.0]);
+    // Refused by the broker: not batch 1, values that do not fill the shape, no parts.
+    for bad in [HostState { parts: vec![(vec![2, 1], vec![0.0, 0.0])] }, HostState { parts: vec![(vec![1, 2], vec![0.0])] }, HostState::default()] {
+        let e = b.set_state(bad).unwrap_err().to_string();
+        assert!(e.contains("051-R4"), "{e}");
+    }
+    // Refused by the model thread: a shape that is not the slot's.
+    let e = b.set_state(HostState { parts: vec![(vec![1, 2], vec![7.0, 7.0])] }).unwrap_err().to_string();
+    assert!(e.contains("state restore refused") && e.contains("[1, 1]"), "{e}");
+    assert_eq!(b.state().unwrap().parts[0].1, vec![3.0], "a refused restore keeps the slot's state");
 }
 
 /// 020-R11: two bridges of one game on one server get the policy routed to their slot; slots

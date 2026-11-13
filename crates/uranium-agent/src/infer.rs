@@ -110,6 +110,10 @@ pub enum Req {
     Swap { net: Box<dyn Any + Send>, version: u64, reply: Sender<Result<()>> },
     /// 032-R16: the slot's Core state on the host (042 core_state0).
     State { slot: usize, reply: Sender<Result<HostState>> },
+    /// 051-R4 / 032-R16: overwrite the slot's Core state with `state` (as `State` returned it,
+    /// batch dimension 1). Within one work of the server: reset -> restore -> state read -> act.
+    /// A state whose parts do not match the slot's state is refused (the slot keeps its state).
+    SetState { slot: usize, state: HostState, reply: Sender<Result<()>> },
 }
 
 /// Cheap to clone; every clone talks to the same server.
@@ -219,6 +223,15 @@ impl InferSession {
     pub fn state(&self) -> Result<HostState> {
         let (tx, rx) = mpsc::channel();
         self.tx.send(Req::State { slot: self.slot, reply: tx }).map_err(|_| anyhow!("inference server is gone"))?;
+        rx.recv().map_err(|_| anyhow!("inference server dropped the request"))?
+    }
+
+    /// 051-R4 / 032-R16: restores this slot's Core state from `state` (what [`Self::state`]
+    /// returned, possibly in another game or process). Applied before this slot's next `act`;
+    /// other slots keep their state (032-R14). An error (shape mismatch) leaves the state as it was.
+    pub fn set_state(&self, state: HostState) -> Result<()> {
+        let (tx, rx) = mpsc::channel();
+        self.tx.send(Req::SetState { slot: self.slot, state, reply: tx }).map_err(|_| anyhow!("inference server is gone"))?;
         rx.recv().map_err(|_| anyhow!("inference server dropped the request"))?
     }
 }

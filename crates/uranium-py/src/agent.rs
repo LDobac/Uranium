@@ -97,8 +97,9 @@ impl Broker {
     }
 
     /// Waits up to `timeout_ms` for work: `None`, or a dict with `resets` (slots to zero),
-    /// `states` (slots whose state to send with `reply_states`) and `batch` (`None` or a dict of
-    /// `slots`, `n` and the observation arrays).
+    /// `restores` (051-R4: `(slot, [(shape, float32 array)])` to write, answered with
+    /// `reply_restores`), `states` (slots whose state to send with `reply_states`) and `batch`
+    /// (`None` or a dict of `slots`, `n` and the observation arrays), handled in that order.
     fn next<'py>(&self, py: Python<'py>, timeout_ms: u64) -> PyResult<Option<Bound<'py, PyDict>>> {
         let inner = &self.inner;
         let (w, returned) = py.detach(move || {
@@ -110,6 +111,15 @@ impl Broker {
         let Some(w) = w.map_err(err)? else { return Ok(None) };
         let d = PyDict::new(py);
         d.set_item("resets", w.resets)?;
+        let restores = PyList::empty(py);
+        for (slot, st) in w.restores {
+            let parts = PyList::empty(py);
+            for (shape, v) in st.parts {
+                parts.append((shape, v.into_pyarray(py)))?;
+            }
+            restores.append((slot, parts))?;
+        }
+        d.set_item("restores", restores)?;
         d.set_item("states", w.states)?;
         match w.batch {
             None => d.set_item("batch", py.None())?,
@@ -177,6 +187,12 @@ impl Broker {
             out.push(h);
         }
         self.inner.lock().unwrap().reply_states(out).map_err(err)
+    }
+
+    /// 051-R4: answers the last work's restores in its `restores` order: `None` = written, a
+    /// message = refused (the slot kept its state; the session gets the message as its error).
+    fn reply_restores(&self, errors: Vec<Option<String>>) -> PyResult<()> {
+        self.inner.lock().unwrap().reply_restores(errors).map_err(err)
     }
 
     /// 032-R16: weights version reported with later decisions (after the model thread swapped).
@@ -353,9 +369,46 @@ pub fn play_sessions(py: Python<'_>, broker: PyRef<'_, Broker>, sessions: usize,
 /// Tests (032-R16): a fresh slot's Core state, then after one and two decisions, as
 /// [(shape, values)] per state.
 #[pyfunction]
-pub fn slot_states<'py>(py: Python<'py>, broker: PyRef<'py, Broker>) -> PyResult<Vec<Vec<(Vec<usize>, Bound<'py, numpy::PyArray1<f32>>)>>> {
+pub fn slot_states<'py>(py: Python<'py>, broker: PyRef<'py, Broker>) -> PyResult<Vec<PyState<'py>>> {
     let h = broker.handle.clone();
     drop(broker);
     let states = py.detach(move || uranium_agent::testkit::slot_states(&h)).map_err(err)?;
-    Ok(states.into_iter().map(|s| s.parts.into_iter().map(|(shape, v)| (shape, v.into_pyarray(py))).collect()).collect())
+    Ok(states.into_iter().map(|s| host_to_py(py, s)).collect())
+}
+
+/// A Core state for Python: per part (shape, float32 values).
+type PyState<'py> = Vec<(Vec<usize>, Bound<'py, numpy::PyArray1<f32>>)>;
+
+fn host_to_py(py: Python<'_>, s: HostState) -> PyState<'_> {
+    s.parts.into_iter().map(|(shape, v)| (shape, v.into_pyarray(py))).collect()
+}
+
+/// Tests (051-R4): session A plays `steps` synthetic decisions, session B restores A's state from
+/// before decision `k` and replays decisions `k..`. A dict of `saved`, `restored`,
+/// `other_before`, `other_after` (states as in `slot_states`) and `straight`, `resumed` (per
+/// decision: (action text, [u32 bits of log_prob, head_log_prob*6, value*4, win_open or 0])).
+#[pyfunction]
+pub fn restore_play<'py>(py: Python<'py>, broker: PyRef<'py, Broker>, k: usize, steps: usize) -> PyResult<Bound<'py, PyDict>> {
+    let h = broker.handle.clone();
+    drop(broker);
+    let r = py.detach(move || uranium_agent::testkit::restore_play(&h, k, steps)).map_err(err)?;
+    let d = PyDict::new(py);
+    d.set_item("saved", host_to_py(py, r.saved))?;
+    d.set_item("restored", host_to_py(py, r.restored))?;
+    d.set_item("other_before", host_to_py(py, r.other_before))?;
+    d.set_item("other_after", host_to_py(py, r.other_after))?;
+    d.set_item("straight", r.straight)?;
+    d.set_item("resumed", r.resumed)?;
+    Ok(d)
+}
+
+/// Tests (051-R4): a fresh slot makes one decision, then `state` ([(shape, float32 values)]) is
+/// restored into it: (state before, None or the refusal message, state after).
+#[pyfunction]
+pub fn set_slot_state<'py>(py: Python<'py>, broker: PyRef<'py, Broker>, state: Vec<(Vec<usize>, Vec<f32>)>) -> PyResult<(PyState<'py>, Option<String>, PyState<'py>)> {
+    let h = broker.handle.clone();
+    drop(broker);
+    let st = HostState { parts: state };
+    let (before, res, after) = py.detach(move || uranium_agent::testkit::set_and_read(&h, st)).map_err(err)?;
+    Ok((host_to_py(py, before), res.err(), host_to_py(py, after)))
 }
