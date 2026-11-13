@@ -57,8 +57,8 @@
 - 판 생성: `tools/eval/rush_check_plan.py --distill --round <R> [--half] --memory-log --checkpoint <ckpt>` → `config/plans/distill_m2_d<R>.toml`
 - build: `uranium-replay build <raw> --src distill --memory-log <dir> --until-frame <n> --time-limit <n> --out <shared>/datasets/replays/distill_pre/d<R> --records <폴더>/distill_d<R>.jsonl`(BC shard 폴더 안 `--out`, `--memory-log`·`--time-limit` 없음, `distill`로 시작하지 않는 records 이름은 거부. 통과 못 한 시점의 `filtered` 사유는 `decision_log <status> …`, records `memory.decision_steps` = 결정 프레임 스텝 수)
 - 레이블: `python -m uranium distill-label --checkpoint <ckpt> --mode sample --label-seed <s> --in <distill_pre> --out <shared>/datasets/replays/shards/distill_m2/d<R> --records <jsonl>`(Python이 레이블을 내고 shard 쓰기·040-R17 검증은 `uranium._core`의 Rust writer)
-- 몫: `uranium-train mix-fractions --share teacher=<a>,distill=<b>`(지금 `--teacher-share` 하나는 그대로 유효)
-- BC 설정: `[data]` 출처 목록에 `distill_m2`, `[data.subsample] keep_sources`에 증류 몫 규칙
+- 몫: `uranium-train mix-fractions --share teacher=<a>,distill=<b>`(사람 몫 = 1 − a − b, `--teacher-share`와 함께 쓰지 않음. 지금 `--teacher-share` 하나는 그대로 유효). 출력 `source_fractions`(출처별 고르기 몫)와 `s2_mix.sources`·`s2_mix.human`(몫·목표·판정)이 붙는다
+- BC 설정: 학습 데이터셋에 `replays/shards/distill_m2`(shard 출처 태그 `distill`), `[data.subsample.fraction_by_source] distill = <몫>`(교사 `keep_sources`와도 사람 데이터와도 따로 세는 출처의 게임 고르기 몫, 041-R21 ②와 같은 해시 규칙. 키가 없으면 고르기·설정 지문이 지금과 같다). 설정 `config/bc_m2_distill_d1.toml`
 - RL 설정: `[kl.reference] zerg = "<ckpt>"`, `terran = ...`, `protoss = ...`, `random = ...`
 - 기록: build·레이블 records(`label_policy`), 라운드 판정 파일 `<shared>/eval/m2-lineage/d<R>_first_test.verdict`
 
