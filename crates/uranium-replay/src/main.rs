@@ -193,12 +193,13 @@ enum Cmd {
         /// explicit `--out` outside the BC shards (051-R13 ④ branch trunks: the replay's own
         /// commands stay the labels, the step memory is the live session's, and every logged
         /// decision gets an observation / memory only step at its playback frame; not BC data), or
-        /// with `--src distill` (required there, 044-R2: the steps are the game start and one per
-        /// logged decision, all `unknown` label slots for the 044-R3 policy labeller; a view whose
-        /// log fails 041-R28 ④ / ⑤ is `filtered`; `--out` outside the BC shards, `--time-limit`
-        /// and a `distill*.jsonl` records file required). Each step gets the 040-R22 `memory_action` (shard schema 7); a view without a complete log
-        /// of its player, or with more than 1% decisions naming units that are not its own, gets
-        /// none (records `memory`).
+        /// with `--src distill` (required there, 044-R2: one step per playback frame of the game
+        /// start and the logged decisions, all `unknown` label slots for the 044-R3 policy
+        /// labeller; a view whose log fails 041-R28 ④ / ⑤ is `filtered`; `--out` outside the BC
+        /// shards, `--time-limit` and a `distill*.jsonl` records file required). Each step gets the
+        /// 040-R22 `memory_action` (shard schema 7); a view without a complete log of its player,
+        /// or with more than 1% decisions naming units that are not its own, gets none (records
+        /// `memory`).
         #[arg(long)]
         memory_log: Option<PathBuf>,
     },

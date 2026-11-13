@@ -257,7 +257,21 @@ pub fn add_decision_steps(labels: &mut Vec<crate::label::Label>, log: &[LoggedDe
 /// frames 1..=3 all show playback frame 1) share one step. Every label is `unknown` (031-AC3: BC
 /// weight 0) with the frames to the next step (the game end `end_frame` after the last one) as its
 /// delay, as the 041-R28 decision-time steps ([`add_decision_steps`]): slots the 044-R3 policy
-/// labeller fills. Returns the labels (sorted by frame) and the steps at decision frames.
+/// labeller fills. Returns the labels (sorted by frame, one per frame) and the steps at decision
+/// frames.
+///
+/// Contract of a `distill_pre` shard game for the 044-R3 labeller (U3):
+/// - Step identity: (`meta.replay_sha256`, `meta.perspective_slot`, `raw_frame.frame`); the frames
+///   of a game are unique and increasing, the first is the game-start frame 1. The live frame of a
+///   step is `raw_frame.frame + 2` (frame 1: live 1, [`live_of_playback`]).
+/// - The labeller replaces the whole `action_label` (this delay is a placeholder too) and keeps
+///   `action_label.frame == raw_frame.frame`.
+/// - `raw_frame`, `privileged`, `memory_action` and `meta` (`src` = `distill`, `stage` = `B`,
+///   result) stay as built. Every step of a written distill game has `Some(memory_action)` (the
+///   build refuses to write it otherwise), and the BC loader puts it into memory before the step's
+///   observation, never the label.
+/// - The build records' `coverage` counts the replay's own (model) commands, not shard labels;
+///   `memory.decision_steps` counts the steps at decision frames.
 pub fn distill_labels(log: &[LoggedDecision], limit: u32, end_frame: u32) -> (Vec<crate::label::Label>, usize) {
     use crate::label::{Label, UNKNOWN_ACTION};
     let mut decided: Vec<u32> = log.iter().map(|(l, _)| playback_frame(*l)).filter(|p| *p <= limit).collect();
