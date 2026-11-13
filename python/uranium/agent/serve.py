@@ -75,11 +75,23 @@ def new_infer_seed() -> int:
     return secrets.randbits(63)
 
 
-def start_server(checkpoint: str, sample: str, backend: str | None, max_batch: int, max_wait_ms: int, zero_last_failed: bool = False, warmup: bool = False, warm_batches: list[int] | None = None, seed: int | None = None):
+def seed_inference(seed: int) -> None:
+    """051-R8: seeds torch's global generator (every device) once the process's servers are started
+    and warmed up, before any game is handed to them (`serve` / `scr` before accepting sessions,
+    `run` before `run_plan`, `eval-worker` before `dispatch`), so the stochastic draws of the first
+    batch start from the recorded seed. The servers of one process share the generator, hence one
+    seed for them all; a draw is still not reproducible per game (batches mix games), which 051-R8
+    does not ask for."""
+    import torch
+
+    torch.manual_seed(seed)
+
+
+def start_server(checkpoint: str, sample: str, backend: str | None, max_batch: int, max_wait_ms: int, seed: int, zero_last_failed: bool = False, warmup: bool = False, warm_batches: list[int] | None = None):
     """A broker for `checkpoint` and its model thread (started). `warm_batches`: the warm-up also
-    runs these batch sizes (see `InferenceServer.warm_up`). `seed` (default: a fresh one): the
-    torch seed the model thread sets before its first game (051-R8); the sessions' records of plan
-    games with 051 keys carry it as `infer_seed`."""
+    runs these batch sizes (see `InferenceServer.warm_up`). `seed`: the process's inference seed
+    (051-R8), recorded on the broker (the sessions' records of plan games with 051 keys carry it as
+    `infer_seed`); the caller sets it with `seed_inference` once its servers are up."""
     from uranium import _core
     from uranium.agent.infer import InferenceServer
     from uranium.device import configure, resolve
@@ -87,7 +99,6 @@ def start_server(checkpoint: str, sample: str, backend: str | None, max_batch: i
     backend, device, precision = resolve(backend)
     configure(backend)
     n_max = json.loads(_core.feature_dims())["n_max"] if warmup else 0
-    seed = new_infer_seed() if seed is None else seed
     broker = _core.Broker(checkpoint, sample, max_batch=max_batch, max_wait_ms=max_wait_ms, zero_last_failed=zero_last_failed, warmup_entities=n_max, seed=seed)
     server = InferenceServer(broker, device, precision)
     if warmup:
@@ -111,7 +122,9 @@ def serve(a) -> int:
     if a.policy == "model":
         if not a.checkpoint:
             raise SystemExit("a model policy needs --checkpoint")
-        broker, _ = start_server(a.checkpoint, a.sample, a.backend, a.max_batch, a.max_wait_ms, a.zero_last_failed)
+        seed = new_infer_seed()
+        broker, _ = start_server(a.checkpoint, a.sample, a.backend, a.max_batch, a.max_wait_ms, seed, a.zero_last_failed)
+        seed_inference(seed)
     _core.serve(a.listen, a.out, broker, surrender=a.surrender, surrender_chat=a.surrender_chat, respond_delay_ms=a.respond_delay_ms, sessions=a.sessions)
     return 0
 
@@ -124,7 +137,9 @@ def scr(a) -> int:
     _sigint_kills()
     if not a.checkpoint:
         raise SystemExit("scr needs --checkpoint")
-    broker, _ = start_server(a.checkpoint, a.sample, a.backend, a.max_batch, a.max_wait_ms, a.zero_last_failed, warmup=True)
+    seed = new_infer_seed()
+    broker, _ = start_server(a.checkpoint, a.sample, a.backend, a.max_batch, a.max_wait_ms, seed, a.zero_last_failed, warmup=True)
+    seed_inference(seed)
     _core.serve(a.listen, a.out, broker, surrender=a.surrender, surrender_chat=a.surrender_chat)
     return 0
 
@@ -137,8 +152,9 @@ def run(a) -> int:
     # 051-R8: one seed for the process's servers (they share torch's global generator).
     seed = new_infer_seed()
     for ckpt, sample in _core.plan_models(a.plan):
-        broker, _ = start_server(ckpt, sample, a.backend, a.max_batch, a.max_wait_ms, seed=seed)
+        broker, _ = start_server(ckpt, sample, a.backend, a.max_batch, a.max_wait_ms, seed)
         models.append((ckpt, sample, broker))
+    seed_inference(seed)
     _core.run_plan(a.plan, models, out=a.out)
     return 0
 
@@ -182,11 +198,15 @@ def eval_worker(a) -> int:
                 for ckpt, sample in _needed_models(w):
                     if w.stop_level() > 0:
                         break
-                    broker, server = start_server(ckpt, sample, a.backend, a.max_batch, a.max_wait_ms, warmup=not a.no_warmup, warm_batches=batches, seed=seed)
+                    broker, server = start_server(ckpt, sample, a.backend, a.max_batch, a.max_wait_ms, seed, warmup=not a.no_warmup, warm_batches=batches)
                     models.append((ckpt, sample, broker))
                     servers.append(server)
                 # Ctrl+C while loading: no game was handed out, `close` lets the lease go.
-                end = "stopped" if w.stop_level() > 0 else w.dispatch(models)
+                if w.stop_level() > 0:
+                    end = "stopped"
+                else:
+                    seed_inference(seed)  # 051-R8: after every warm-up, before the first game
+                    end = w.dispatch(models)
             finally:
                 for s in servers:
                     s.stop.set()
