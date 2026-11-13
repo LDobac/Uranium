@@ -21,7 +21,9 @@ hit = 10
 miss = 10
 
 # Decision points (051-R3 rules, 051-R11 ①): the first decision from 2:15 / 2:45 on where
-# Build_Bunker is open, windows end at 4:00. Two points on one decision count once.
+# Build_Bunker is open, windows end at 4:00. When b1-p1 lands at or after 2:45 (both rules on one
+# decision), b1-p2 moves to the first such decision at or after b1-p1 + 30 s (user decision
+# 2026-11-13); a trunk without it before 4:00 is replaced.
 [[snapshots]]
 name = "b1-p1"
 from_frame = 3240
@@ -33,6 +35,8 @@ name = "b1-p2"
 from_frame = 3960
 to_frame = 5760
 any_open = ["Build_Bunker"]
+after_rule = "b1-p1"
+after_s = 30
 
 # 051-R11 ② (AMB-051-3): the alternatives (051-R7 rules). A t-only force whose action is closed at
 # t drops that alternative at that point (051-R10).

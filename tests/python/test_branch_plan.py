@@ -149,6 +149,8 @@ def test_trunk_plan_051_r11():
     assert (p["save_replay"], p["zero_last_failed"], p["surrender"], p["max_frames"], p["act_log"]) == (True, True, "off", 11568, True)
     assert [s["name"] for s in p["snapshots"]] == ["b1-p1", "b1-p2"]
     assert p["snapshots"][0] == {"name": "b1-p1", "from_frame": 3240, "to_frame": 5760, "any_open": ["Build_Bunker"]}
+    # 051-R3 / R11 ① (user decision 2026-11-13): b1-p2 moves off b1-p1's decision by 30 s.
+    assert p["snapshots"][1] == {"name": "b1-p2", "from_frame": 3960, "to_frame": 5760, "any_open": ["Build_Bunker"], "after_rule": "b1-p1", "after_s": 30}
     rush = bp.rush_blocks(cfg)
     games = bc.plan_games(p)
     assert len(games) == 40
@@ -398,7 +400,9 @@ def test_config_checks_051_r7(tmp_path):
     base = CONFIG.read_text(encoding="utf-8")
     p = tmp_path / "c.toml"
     for old, new in (('"Train_Marine"', '"Train_Marne"'), ("from_s = 0, to_s = 90", "from_s = 90, to_s = 0"),
-                     ('op = "ban", action = "Build_Bunker"', 'op = "ban", action = "NoOp"'), ('name = "force_marine"', 'name = "none"')):
+                     ('op = "ban", action = "Build_Bunker"', 'op = "ban", action = "NoOp"'), ('name = "force_marine"', 'name = "none"'),
+                     # 051-R3 after_rule: an earlier rule, with after_s.
+                     ('after_rule = "b1-p1"', 'after_rule = "b1-p2"'), ('after_s = 30\n', '\n')):
         assert old in base
         p.write_text(base.replace(old, new), encoding="utf-8")
         with pytest.raises(bc.Refused):
