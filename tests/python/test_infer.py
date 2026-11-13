@@ -241,30 +241,37 @@ def test_restore_order_in_one_work_051_r4(tmp_path):
 
 
 def test_server_seed_051_r8(tmp_path):
-    """051-R8: a broker's `seed` reaches the model thread, which seeds torch before its first
-    batch (same seed, one session at a time: the same stochastic play); a broker without one (RL
-    learners, league snapshots) leaves torch's generator alone. `new_infer_seed` fits int64."""
-    from uranium.agent.serve import new_infer_seed
+    """051-R8: the broker carries the process's seed (recorded in 051 session records); the starter
+    seeds torch once its servers are up and before the first game (`seed_inference`), so the same
+    seed gives the same stochastic play (one session at a time); the model thread itself never
+    reseeds (a broker without a seed: RL learners, league snapshots). `new_infer_seed` fits int64.
+    torch's global generator is restored afterwards."""
+    from uranium.agent.serve import new_infer_seed, seed_inference
 
-    d = checkpoint(tmp_path, "Lstm")
-    seed = 2**63 - 1
-    plays = []
-    for _ in range(2):
-        b = _core.Broker(str(d), "stochastic", max_batch=1, max_wait_ms=200, capacity=8, seed=seed)
-        assert b.seed == seed
-        s = InferenceServer(b, CPU, "f32")
-        s.start()
-        plays.append(_core.play_sessions(b, 1, 12)[0][0])
+    rng = torch.get_rng_state()
+    try:
+        d = checkpoint(tmp_path, "Lstm")
+        seed = 2**63 - 1
+        plays = []
+        for _ in range(2):
+            b = _core.Broker(str(d), "stochastic", max_batch=1, max_wait_ms=200, capacity=8, seed=seed)
+            assert b.seed == seed
+            s = InferenceServer(b, CPU, "f32")
+            s.start()
+            seed_inference(b.seed)
+            plays.append(_core.play_sessions(b, 1, 12)[0][0])
+            stop(s)
+            assert torch.initial_seed() == seed
+        assert plays[0] == plays[1], "same seed, same draws"
+        torch.manual_seed(77)
+        b, s = server(d, "stochastic", 1)
+        assert b.seed is None
+        _core.play_sessions(b, 1, 4)
         stop(s)
-        assert torch.initial_seed() == seed
-    assert plays[0] == plays[1], "same seed, same draws"
-    torch.manual_seed(77)
-    b, s = server(d, "stochastic", 1)
-    assert b.seed is None
-    _core.play_sessions(b, 1, 4)
-    stop(s)
-    assert torch.initial_seed() == 77, "no seed: the generator is not reseeded"
-    assert all(0 <= new_infer_seed() < 2**63 for _ in range(100))
+        assert torch.initial_seed() == 77, "the model thread never reseeds"
+        assert all(0 <= new_infer_seed() < 2**63 for _ in range(100))
+    finally:
+        torch.set_rng_state(rng)
 
 
 def test_close_stops_the_thread_and_frees_the_model_042(tmp_path):

@@ -219,9 +219,6 @@ class InferenceServer(threading.Thread):
         # `close`: the thread frees the model when it ends (042 league snapshots, AMB-042-14).
         self.release = False
         self.error: BaseException | None = None
-        # 051-R8: the torch seed this thread sets before serving (`None`: none, RL learners and
-        # league snapshots keep their generator as it is).
-        self.seed = getattr(broker, "seed", None)
         # Held while a work item runs; a weight swap waits for the batch in flight.
         self.lock = threading.Lock()
 
@@ -314,12 +311,6 @@ class InferenceServer(threading.Thread):
             if not self.warmed and self.broker.warmup_entities > 0:
                 with DEVICE_LOCK.shared():
                     self.warm_up()
-            # 051-R8: the stochastic draws (global torch generator, every device) start from the
-            # recorded seed, after the warm-up's draws. Several servers of one process share the
-            # generator, so their starters give them one seed; a draw is still not reproducible
-            # per game (batches mix games), which 051-R8 does not ask for.
-            if self.seed is not None:
-                torch.manual_seed(self.seed)
             while not self.stop.is_set() and not self.broker.closed():
                 w = self.broker.next(self.poll_ms)
                 if w is None:

@@ -132,8 +132,8 @@ pub struct InferenceHandle {
     /// 041-R28 ①: the decision log file of the one game a session opened from this handle plays
     /// (the scheduler sets it per game for plans with `memory_log = true`); `None` = no log.
     pub memory_log: Option<PathBuf>,
-    /// 051-R8: the torch seed the inference server set when it started (`None`: the server set
-    /// none, e.g. RL learners). Copied into the session records of plan games with 051 keys.
+    /// 051-R8: the torch seed its process set before the server's first game (`None`: none set,
+    /// e.g. RL learners). Copied into the session records of plan games with 051 keys.
     pub infer_seed: Option<u64>,
 }
 
@@ -179,7 +179,7 @@ impl InferenceHandle {
         Self { tx, checkpoint_id: checkpoint_id.into(), sample, zero_last_failed: opts.zero_last_failed, surrender: SurrenderMode::Shadow, surrender_chat: DEFAULT_CHAT.into(), memory_log: None, infer_seed: None }
     }
 
-    /// 051-R8: the seed the server behind this handle set at its start (recorded, not used here).
+    /// 051-R8: the inference seed of the server's process (recorded, not used here).
     pub fn with_infer_seed(mut self, seed: Option<u64>) -> Self {
         self.infer_seed = seed;
         self

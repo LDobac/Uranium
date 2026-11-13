@@ -516,6 +516,12 @@ pub fn check_branch_build(src: &str, records: &Path, time_limit: Option<u32>) ->
     anyhow::ensure!(time_limit.is_some(), "--src {BRANCH_SRC} needs --time-limit <the trunk plan's max_frames, H + 48> (051-R1, 051-R13 4: trunks end at the time limit)");
     let name = records.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     anyhow::ensure!(name.starts_with(BRANCH_SRC) && name.ends_with(".jsonl"), "--records {}: the file name must start with `{BRANCH_SRC}` and end with .jsonl (the resume scan reads `<source>*.jsonl`)", records.display());
+    // The scan reads every `branch*.jsonl` of the records folder: not the 051-R12 output folder,
+    // whose `branches.jsonl` it would take for build records.
+    let dir = records.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    for other in ["branches.jsonl", "points.jsonl"] {
+        anyhow::ensure!(!dir.join(other).exists(), "--records {}: its folder holds {other} (the 051-R12 output folder); give the build records a folder of their own (e.g. <out folder>/build/)", records.display());
+    }
     Ok(())
 }
 
@@ -992,6 +998,13 @@ mod tests {
         assert!(check_branch_build("branch", &rec("branch_build.jsonl"), None).is_err());
         assert!(check_branch_build("branch", &rec("build_records.jsonl"), Some(11_568)).is_err());
         assert!(check_branch_build("botgen", &rec("x.jsonl"), None).is_ok(), "other sources unchanged");
+        // Not in the 051-R12 output folder (its branches.jsonl would be read as build records).
+        let o = dir.join(format!("u6-branch-records-{}", std::process::id()));
+        std::fs::create_dir_all(o.join("build")).unwrap();
+        std::fs::write(o.join("branches.jsonl"), "").unwrap();
+        assert!(check_branch_build("branch", &o.join("branch_build.jsonl"), Some(11_568)).is_err());
+        assert!(check_branch_build("branch", &o.join("build").join("branch_build.jsonl"), Some(11_568)).is_ok());
+        std::fs::remove_dir_all(&o).ok();
         assert!(!ok("dagger", false, Some(&dir), None), "dagger needs --relabel (041-R22)");
         assert!(!ok("botgen", true, None, None), "--relabel only with dagger (041-R22)");
         assert!(!ok("branch", false, Some(Path::new("no/such/memory")), Some(&eval)));

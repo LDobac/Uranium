@@ -47,8 +47,9 @@ pub struct Broker {
 #[pymethods]
 impl Broker {
     /// `checkpoint`: a folder (relative = under URANIUM_SHARED_DIR, 020-R11); batching defaults
-    /// are placeholders until measured (020-R11 TBD(M6)). `seed`: the torch seed the model thread
-    /// sets when it starts (051-R8, recorded in the sessions' records; None = no seed set).
+    /// are placeholders until measured (020-R11 TBD(M6)). `seed`: the torch seed the starting
+    /// process set before its first game (051-R8, `seed_inference`; recorded in the sessions'
+    /// records; None = no seed set).
     #[new]
     #[pyo3(signature = (checkpoint, sample = "argmax", max_batch = 32, max_wait_ms = 5, capacity = 128, pad_entities = 64, zero_last_failed = false, warmup_entities = 0, seed = None))]
     #[allow(clippy::too_many_arguments)]
@@ -60,7 +61,7 @@ impl Broker {
         Ok(Self { inner: Mutex::new(b), handle: handle.with_infer_seed(seed), dir, opts })
     }
 
-    /// 051-R8: the torch seed the model thread sets at its start (None = none).
+    /// 051-R8: the process's inference torch seed (None = none).
     #[getter]
     fn seed(&self) -> Option<u64> {
         self.handle.infer_seed
