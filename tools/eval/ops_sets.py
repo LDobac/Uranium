@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -113,7 +112,7 @@ def main(argv=None) -> None:
                 items.append((key, run / "replays" / f"g{n}.rep", r["slot"]))
             write_set(a.out, run.name, rows, measure(items, a.out / "cache" / run.name, a.jobs))
     else:
-        idx = sha_index(Path(os.environ["URANIUM_SHARED_DIR"]))
+        idx = sha_index(ec.shared_dir())
         for lst in a.inputs:
             rows, items = [], []
             for line in lst.read_text(encoding="utf-8").splitlines():

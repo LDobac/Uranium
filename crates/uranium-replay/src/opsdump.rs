@@ -140,8 +140,8 @@ mod tests {
         let bad = serde_json::to_string(&line("g2.rep", Some(1), None, Err(anyhow::anyhow!("launcher exited")), true)).unwrap();
         assert_eq!(bad, r#"{"rep":"g2.rep","perspective":1,"frames":null,"ops":null,"rush_combat":null,"error":"launcher exited"}"#);
         // 052-AC2: --field-check appends the check after rush_combat.
-        let fc = FieldCheck { depleted: 24, fields: 2, unknown_fields: 0, scvs: 3, carrying: 1, lost_cargo: 8 };
+        let fc = FieldCheck { depleted: 24, fields: 2, unknown_fields: 0, scvs: 3, scvs_max: 5, carrying: 1, lost_cargo: 8 };
         let ok = serde_json::to_string(&line("g1.rep", Some(0), Some(9_000), Ok((Default::default(), None, fc)), true)).unwrap();
-        assert!(ok.ends_with(r#""rush_combat":null,"field_check":{"depleted":24,"fields":2,"unknown_fields":0,"scvs":3,"carrying":1,"lost_cargo":8}}"#), "{ok}");
+        assert!(ok.ends_with(r#""rush_combat":null,"field_check":{"depleted":24,"fields":2,"unknown_fields":0,"scvs":3,"scvs_max":5,"carrying":1,"lost_cargo":8}}"#), "{ok}");
     }
 }
