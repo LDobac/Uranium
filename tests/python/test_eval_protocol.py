@@ -547,6 +547,53 @@ def test_analyze_first_build_and_scout_050_r6(tmp_path):
     first, scout = ec.analyze(f)
     assert first == {109: 500, ec.BUNKER: 4000, ec.CC: 7200}
     assert scout == 700
+    assert ec.analyze_both(f) == (first, 700, 700)
+
+
+def le16(*vals: int) -> str:
+    return "".join(f"{v & 0xFF:02x}{v >> 8:02x}" for v in vals)
+
+
+def rclick(frame: int, x: int, y: int, target: int) -> list:
+    """Right click (0x14) as stored: x, y, target, unit type (u16 little endian), queued."""
+    return [frame, 0, 20, le16(x, y, target, 228) + "00"]
+
+
+def order(frame: int, x: int, y: int, target: int, order_id: int) -> list:
+    """Targeted order (0x15) as stored: x, y, target, unit type, order byte, queued."""
+    return [frame, 0, 21, le16(x, y, target, 228) + f"{order_id:02x}" + "00"]
+
+
+@pytest.mark.parametrize("ground", [0, 0xFFFF])
+def test_scout_fixed_counts_ground_right_click_050_r9(tmp_path, ground):
+    """050-R9 (2026-11-14 개정, 사용자 결정 2026-11-14): `scout_3m_fixed` reads x / y / target at bytes 0 / 2 / 4, so a
+    ground right click far from the base is a scout; the old reading (target from bytes 2-3 = y) never sees one."""
+    f = tmp_path / "g1.json"
+    dump(f, [
+        build(500, 10, 10, 109),          # base at (320, 320)
+        [600, 0, 9, "0101"],              # select 1 unit
+        rclick(650, 2000, 320, 5),        # right click on a unit (mining, following): not a move
+        rclick(700, 2000, 320, ground),   # ground right click 1,680 px away
+        rclick(4400, 3000, 3000, ground),  # after 3:00: ignored
+    ])
+    assert ec.analyze_both(f)[1:] == (None, 700)
+    assert ec.analyze(f)[1] is None, "analyze keeps the old reading (scout_3m)"
+
+
+def test_scout_old_and_fixed_read_move_orders_differently_050_r9(tmp_path):
+    """The old reading takes y from bytes 1-2 (x high byte, y low byte): a Move next to the base counts as far.
+    The fixed reading uses the real y; both keep the one-unit selection and Move-only rules."""
+    f = tmp_path / "g1.json"
+    dump(f, [
+        build(500, 10, 10, 109),
+        [600, 0, 9, "0201"],                          # two units selected: no scout
+        order(610, 3000, 3000, 0, ec.ORDER_MOVE),
+        [650, 0, 9, "0101"],
+        order(660, 3000, 3000, 0, 10),                # far, but not a Move order
+        order(700, 330, 330, 0, ec.ORDER_MOVE),       # next to the base: old y = 0x01 + 256 * 0x4a
+        order(800, 330, 2000, 0, ec.ORDER_MOVE),      # 1,690 px away: the fixed scout
+    ])
+    assert ec.analyze_both(f)[1:] == (700, 800)
 
 
 def make_job(tmp_path: Path, pid: str, rows: list[dict], ledger: list[dict] | None = None, plan_text: str | None = None) -> Path:
@@ -583,7 +630,9 @@ def test_rush_table_both_held_and_bunker_definitions_050_r7(tmp_path, monkeypatc
     job = make_job(tmp_path, "rush_check", rows)
     cache = tmp_path / "cache" / job.name / "rush_check"
     dump(cache / f"g{early[0]}.json", [build(500, 10, 10, 109), build(4000, 12, 12, ec.BUNKER)])   # order < 3:00
-    dump(cache / f"g{early[1]}.json", [build(500, 10, 10, 109), build(5000, 12, 12, ec.BUNKER)])   # order < 4:00
+    # 050-R9 (2026-11-14): one unit right-clicked far on the ground before 3:00: scout_3m_fixed only
+    dump(cache / f"g{early[1]}.json", [build(500, 10, 10, 109), [600, 0, 9, "0101"], rclick(700, 3000, 320, 0),
+                                       build(5000, 12, 12, ec.BUNKER)])   # order < 4:00
     res = tables.job_tables(job, tmp_path / "cache", lin=LIN)
     t = res[f"{job.name}/rush_check"]
     assert t["plan"] == "rush_check" and t["kind"] == "rush" and t["protocol"] is None
@@ -592,6 +641,7 @@ def test_rush_table_both_held_and_bunker_definitions_050_r7(tmp_path, monkeypatc
     assert (e["bunker_order_3m"], e["bunker_order_4m"], e["bunker_unit_3m"], e["bunker_unit_4m"]) == (1, 2, 1, 2)
     assert e["scv_4m_p50"] == 5 and e["scv_4m_p50_known"] == 6 and e["won"] == 2 and e["dumped"] == 2
     assert t["counts"]["early"]["held_s"] == [2, 4] and t["table"]["late"]["n"] == 0
+    assert (e["scout_3m"], e["scout_3m_fixed"]) == (0, 1) and t["counts"]["early"]["scout_3m_fixed"] == [1, 4]
 
 
 def test_bunker_unit_boundaries_050_r7(tmp_path, monkeypatch):
