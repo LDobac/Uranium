@@ -1324,7 +1324,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     let ends = EndBoard::default();
     let listen = uranium_runner::env_or("URANIUM_AGENT_LISTEN", "127.0.0.1:7600");
     let concede = ConcedeBoard::default();
-    let agent_addr = uranium_runner::start_agent(&listen, &args.log_dir.join("sessions.jsonl"), &args.log_dir.join("unit_rejections.jsonl"), routes.clone(), builds.clone(), ends.clone(), concede.clone())?;
+    let agent_addr = uranium_runner::start_agent(&listen, &args.log_dir.join("sessions.jsonl"), &args.log_dir.join("unit_rejections.jsonl"), routes.clone(), builds.clone(), ends.clone(), concede.clone(), Default::default())?;
     // 042-R2 / R14: a games.csv of an older version (without `end_reason`) is kept aside.
     let games_csv = open_csv(&args.log_dir.join("games.csv"), GAMES_HEADER)?;
     let base_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) * 1000;

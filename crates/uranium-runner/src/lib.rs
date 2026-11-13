@@ -93,11 +93,9 @@ pub trait JobSource: Send + Sync {
 
 /// 020-R22 / 051: whether the agent sessions read the [`BranchBoard`] (act logs, snapshots,
 /// branch players). Until they do, a plan with a 051 key is refused at the start of a run rather
-/// than played without its logs.
-// TODO(051 U3): the session side (crates/uranium-agent) adds `branches: BranchBoard` to
-// `ServeOptions`, looks up `Hello.game_id` there and acts on `GameBranch`; `start_agent` then
-// takes `Dispatch::branches` (the board the workers fill) and this becomes `true`.
-pub const AGENT_READS_BRANCH_BOARD: bool = false;
+/// than played without its logs. The sessions look up `Hello.game_id` in `ServeOptions::branches`
+/// ([`start_agent`] gets `Dispatch::branches`, the board the workers fill, 051 U3).
+pub const AGENT_READS_BRANCH_BOARD: bool = true;
 
 /// Refuses a plan with a 051 key while the agent cannot act on it ([`AGENT_READS_BRANCH_BOARD`]).
 pub fn check_branch_support(plan: &plan::Plan) -> Result<()> {
@@ -355,9 +353,9 @@ pub fn run_plan(plan_path: &Path, out: Option<PathBuf>, models: Models) -> Resul
     let builds = T0Builds::default();
     let routes = Routes::default();
     let ends = EndBoard::default();
-    // TODO(051 U3): hand `branches` to the agent server with the other boards.
+    // 020-R22: the workers fill the 051 board per game; the agent sessions read it.
     let branches = BranchBoard::default();
-    let public = start_agent(&env_or("URANIUM_AGENT_LISTEN", "127.0.0.1:7600"), &out.join("results.jsonl"), &out.join("unit_rejections.jsonl"), routes.clone(), builds.clone(), ends.clone(), Default::default())?;
+    let public = start_agent(&env_or("URANIUM_AGENT_LISTEN", "127.0.0.1:7600"), &out.join("results.jsonl"), &out.join("unit_rejections.jsonl"), routes.clone(), builds.clone(), ends.clone(), Default::default(), branches.clone())?;
     let jobs = plan::expand(&plan, &public);
     elog!("[env] plan `{}`: {} games, agent at {public}", plan.name, jobs.len());
     let started = std::time::Instant::now();
@@ -385,14 +383,16 @@ pub fn run_plan(plan_path: &Path, out: Option<PathBuf>, models: Models) -> Resul
 /// Bridges on every host must reach it (`URANIUM_AGENT_PUBLIC_ADDR` when it differs). Session
 /// records go to `results`, per-unit rejection details to `unit_rejections` (031-R10). `concede`:
 /// the RL league games that judge 042-R14 collapse concede (plans pass an empty board).
-pub fn start_agent(listen: &str, results: &Path, unit_rejections: &Path, routes: Routes, t0_builds: T0Builds, ends: EndBoard, concede: ConcedeBoard) -> Result<String> {
+/// `branches`: the 051 per-game settings the workers fill (020-R22; empty = none).
+#[allow(clippy::too_many_arguments)]
+pub fn start_agent(listen: &str, results: &Path, unit_rejections: &Path, routes: Routes, t0_builds: T0Builds, ends: EndBoard, concede: ConcedeBoard, branches: BranchBoard) -> Result<String> {
     let listener = TcpListener::bind(listen).with_context(|| format!("binding agent {listen}"))?;
     let bound = listener.local_addr()?.to_string();
     let public = std::env::var("URANIUM_AGENT_PUBLIC_ADDR").ok().filter(|v| !v.trim().is_empty()).unwrap_or(bound);
     let sink = open_sink(results)?;
     let unit_rejections = RejectionLog::new(unit_rejections.to_path_buf());
     std::thread::spawn(move || {
-        if let Err(e) = serve(listener, ServeOptions { routes, t0_builds, ends, unit_rejections, concede, ..ServeOptions::new(PolicySpec::ScriptedT0) }, sink) {
+        if let Err(e) = serve(listener, ServeOptions { routes, t0_builds, ends, unit_rejections, concede, branches, ..ServeOptions::new(PolicySpec::ScriptedT0) }, sink) {
             elog!("[env] agent server stopped: {e:#}");
         }
     });

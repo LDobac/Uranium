@@ -110,9 +110,20 @@ pub trait Policy: Send {
     fn on_abort(&mut self) {
         self.on_end(None, None)
     }
+    /// 051-R2: the policy's part of the act-log line of the observation just answered (model
+    /// sessions of plan games with 051 keys); `None` = none (T0 lines carry no decision).
+    fn act_log_extra(&mut self) -> Option<model_policy::LineExtra> {
+        None
+    }
+    /// 051: the model session's part of the session record `branch` (snapshots, metrics, branch
+    /// outcome); `None` for T0 sessions and outside plan games with 051 keys.
+    fn branch_record(&mut self) -> Option<model_policy::BranchSessionPart> {
+        None
+    }
 }
 
 pub use uranium_scripted::T0Build;
+pub use uranium_env::branch::{BranchBoard, GameBranch};
 
 /// One session's GameEnd report (020-R13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,12 +240,19 @@ pub const REALTIME_ACT_FRAMES: u32 = 24;
 
 /// `realtime`: the bridge said `Mode::Realtime` (SC:R, 012-R18). `concede`: the 042-R14 state of
 /// an RL league game and this session's `GameSpec.players` index; model sessions judge with it.
-pub fn make_policy(spec: &PolicySpec, game_id: u64, info: &GameInfo, build: T0Build, realtime: bool, concede: Option<(Arc<uranium_env::concede::ConcedeGame>, u8)>) -> Result<Box<dyn Policy>> {
-    let model = |p: ModelPolicy| {
+/// `branch`: the 051 settings of a plan game with 051 keys (020-R22) and this session's
+/// `GameSpec.players` index; model sessions log, snapshot or play the branch with them.
+#[allow(clippy::too_many_arguments)]
+pub fn make_policy(spec: &PolicySpec, game_id: u64, info: &GameInfo, build: T0Build, realtime: bool, concede: Option<(Arc<uranium_env::concede::ConcedeGame>, u8)>, branch: Option<(Arc<GameBranch>, u8)>) -> Result<Box<dyn Policy>> {
+    let model = |p: ModelPolicy| -> Result<ModelPolicy> {
         let p = if realtime { p.with_zero_last_failed() } else { p };
-        match concede.clone() {
+        let p = match concede.clone() {
             Some((game, side)) => p.with_concede(game, side),
             None => p,
+        };
+        match branch.clone() {
+            Some((game, index)) => p.with_branch(game, index),
+            None => Ok(p),
         }
     };
     let terran = || -> Result<()> {
@@ -248,12 +266,12 @@ pub fn make_policy(spec: &PolicySpec, game_id: u64, info: &GameInfo, build: T0Bu
         PolicySpec::ScriptedT0 => Box::new(ScriptedPolicy::new(info, build)?),
         PolicySpec::Model(h) => {
             terran()?;
-            Box::new(model(ModelPolicy::new(h, info)?))
+            Box::new(model(ModelPolicy::new(h, info)?)?)
         }
         PolicySpec::Learner(l) => {
             terran()?;
             let (z, observer) = l.session(game_id, info);
-            Box::new(model(ModelPolicy::new(l.handle(), info)?.with_observer(z, l.reward_config(), observer)))
+            Box::new(model(ModelPolicy::new(l.handle(), info)?.with_observer(z, l.reward_config(), observer))?)
         }
     })
 }
@@ -421,6 +439,102 @@ impl Policy for ModelPolicy {
     fn on_abort(&mut self) {
         ModelPolicy::on_abort(self)
     }
+
+    fn act_log_extra(&mut self) -> Option<model_policy::LineExtra> {
+        ModelPolicy::act_log_extra(self)
+    }
+
+    fn branch_record(&mut self) -> Option<model_policy::BranchSessionPart> {
+        ModelPolicy::branch_record(self)
+    }
+}
+
+/// 051-R2 (020-R22 ①): the session record's `act_log` of a plan game with `act_log = true`.
+#[derive(Serialize, Debug, Clone, Default, PartialEq)]
+pub struct ActLogStatus {
+    /// The file this session wrote (`<acts>/g<plan game>-p<players index>.jsonl`).
+    pub path: String,
+    /// The end line went out (`GameEnd`) and the file was synced: the log is complete (051-R2).
+    pub complete: bool,
+    /// Why the log stopped (open or write failure); the game itself went on.
+    pub error: Option<String>,
+}
+
+/// 051-R2: one session's act log. A file that cannot be opened or written is reported once and
+/// left without its end line (incomplete, never used for a branch); the game is not affected.
+struct ActLogFile {
+    path: PathBuf,
+    w: Option<uranium_env::branch::ActLogWriter<BufWriter<std::fs::File>>>,
+    error: Option<String>,
+    complete: bool,
+}
+
+impl ActLogFile {
+    /// Creates (truncates: a game played again overwrites its log, 020-R22 ①) the file.
+    fn create(path: PathBuf) -> Self {
+        let open = || -> std::io::Result<std::fs::File> {
+            if let Some(d) = path.parent() {
+                std::fs::create_dir_all(d)?;
+            }
+            std::fs::File::create(&path)
+        };
+        match open() {
+            Ok(f) => Self { path, w: Some(uranium_env::branch::ActLogWriter::new(BufWriter::new(f))), error: None, complete: false },
+            Err(e) => {
+                let mut s = Self { path, w: None, error: None, complete: false };
+                s.stop(format!("open: {e}"));
+                s
+            }
+        }
+    }
+
+    fn stop(&mut self, why: String) {
+        elog!("[agent] WARNING: act log {} stopped (051-R2): {why}", self.path.display());
+        self.w = None;
+        self.error.get_or_insert(why);
+    }
+
+    fn push(&mut self, line: &uranium_env::branch::ObsLine) {
+        let Some(w) = self.w.as_mut() else { return };
+        if let Err(e) = w.push(line) {
+            self.stop(format!("{e:#}"));
+        }
+    }
+
+    /// `GameEnd`: the end line, then flush and fsync (the file may be on the shared drive, 061).
+    fn finish(&mut self, end: uranium_env::branch::ActLogEnd) {
+        let Some(w) = self.w.take() else { return };
+        let res = w.finish(end).and_then(|w| w.into_inner().map_err(|e| anyhow::anyhow!("{}", e.error()))).and_then(|f| f.sync_all().map_err(Into::into));
+        match res {
+            Ok(()) => self.complete = true,
+            Err(e) => self.stop(format!("{e:#}")),
+        }
+    }
+
+    /// Mid-game failure or disconnect: the lines so far are flushed without the end line.
+    fn abort(&mut self) {
+        if let Some(w) = self.w.take() {
+            drop(w);
+        }
+    }
+}
+
+/// 051-R2 end line `git`: the commit of the source tree this agent was built from (`git rev-parse
+/// HEAD` there), `unknown` when it cannot be read.
+pub fn git_commit() -> &'static str {
+    static C: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    C.get_or_init(|| {
+        std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "unknown".into())
+    })
 }
 
 /// One JSONL record (one player of one game).
@@ -471,6 +585,16 @@ pub struct SessionRecord {
     /// 050-R8: T0 Terran session metrics (`model` keys) and the 021-R8 teacher record; `None` for
     /// model sessions and non-Terran T0 bots.
     pub scripted: Option<ScriptedStats>,
+    /// 051 (020-R22): the three keys below appear only in plan games with 051 keys, so other
+    /// records are unchanged (020-R22 ④). 051-R2: this session's act log.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub act_log: Option<ActLogStatus>,
+    /// 051-R3: state files a trunk's `players[0]` model session saved (one per decision point).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub snapshots: Vec<uranium_env::branch::SnapshotTaken>,
+    /// 051-R9: a branch player's outcome (`players[0]` model session of a branch game).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<uranium_env::branch::BranchOutcome>,
 }
 
 /// BWAPI neutral player id.
@@ -544,11 +668,14 @@ pub struct ServeOptions {
     pub unit_rejections: RejectionLog,
     /// 042-R14: RL league games that judge collapse concede (empty = none).
     pub concede: ConcedeBoard,
+    /// 020-R22 / 051: per-game settings of plan games with 051 keys by hostd game id (act logs,
+    /// snapshots, branch players); games not listed play as before (020-R22 ④).
+    pub branches: BranchBoard,
 }
 
 impl ServeOptions {
     pub fn new(default: PolicySpec) -> Self {
-        Self { default, routes: Routes::default(), delay_ms: 0, max_sessions: 0, t0_builds: T0Builds::default(), ends: EndBoard::default(), unit_rejections: RejectionLog::default(), concede: ConcedeBoard::default() }
+        Self { default, routes: Routes::default(), delay_ms: 0, max_sessions: 0, t0_builds: T0Builds::default(), ends: EndBoard::default(), unit_rejections: RejectionLog::default(), concede: ConcedeBoard::default(), branches: BranchBoard::default() }
     }
 }
 
@@ -717,6 +844,9 @@ pub fn session(stream: TcpStream, opts: &ServeOptions) -> SessionRecord {
         model: None,
         error: None,
         scripted: None,
+        act_log: None,
+        snapshots: Vec::new(),
+        branch: None,
     };
     let mut rejections = Vec::new();
     if let Err(e) = run_session(stream, opts, &mut rec, &mut rejections) {
@@ -760,22 +890,84 @@ fn run_session(stream: TcpStream, opts: &ServeOptions, rec: &mut SessionRecord, 
     rec.t0_build = build.name().to_string();
     // 042-R14: only RL league games are on the board (never realtime SC:R games).
     let concede = opts.concede.get(hello.game_id).filter(|_| hello.mode == Mode::Lockstep).map(|g| (g, index));
-    let mut policy = make_policy(&spec, hello.game_id, &info, build, hello.mode == Mode::Realtime, concede)?;
-    let res = play(&mut reader, &mut writer, &mut *policy, &hello, rec, rejections, delay_ms, &opts.ends);
+    // 020-R22 / 051: the per-game settings of a plan game with 051 keys (lockstep only, 001-R5);
+    // games not on the board play exactly as before (020-R22 ④).
+    let game_branch = if hello.mode == Mode::Lockstep { opts.branches.lock().unwrap().get(&hello.game_id).cloned() } else { None };
+    let mut policy = make_policy(&spec, hello.game_id, &info, build, hello.mode == Mode::Realtime, concede, game_branch.clone().map(|g| (g, index)))?;
+    let mut log = SessionLog { act_log: game_branch.as_ref().and_then(|g| g.act_log_path(index)).map(ActLogFile::create), index, end: None };
+    let res = play(&mut reader, &mut writer, &mut *policy, &hello, rec, rejections, delay_ms, &opts.ends, &mut log);
     if res.is_err() {
-        // Disconnected or failed mid-game: not a finished episode (042-R3), no complete 041-R28 log.
+        // Disconnected or failed mid-game: not a finished episode (042-R3), no complete 041-R28 log
+        // and no complete 051-R2 act log.
         policy.on_abort();
+        if let Some(l) = log.act_log.as_mut() {
+            l.abort();
+        }
+    }
+    if let Some(g) = &game_branch {
+        log.record(g, &mut *policy, hello.slot, rec);
     }
     res
 }
 
+/// 051 bookkeeping of one session in a plan game with 051 keys.
+struct SessionLog {
+    /// 051-R2: `None` = the plan has no `act_log` (or the game is not on the board).
+    act_log: Option<ActLogFile>,
+    /// This session's `GameSpec.players` index.
+    index: u8,
+    /// `GameEnd` (winner, frame, reason) once it came.
+    end: Option<(Option<u8>, u32, EndReason)>,
+}
+
+impl SessionLog {
+    /// 051-R2 end line on `GameEnd` (then fsync).
+    fn finish(&mut self, winner: Option<u8>, frame: u32, reason: EndReason, slot: u8, policy: &str) {
+        self.end = Some((winner, frame, reason));
+        if let Some(l) = self.act_log.as_mut() {
+            l.finish(uranium_env::branch::ActLogEnd {
+                obs: 0,
+                decisions: 0,
+                end_frame: frame,
+                reason,
+                player: slot,
+                players_index: self.index,
+                policy: policy.to_string(),
+                git: git_commit().to_string(),
+                feature_schema: uranium_env::features::FEATURE_SCHEMA_VERSION,
+                action_schema: uranium_env::actions::ACTION_SCHEMA_VERSION,
+            });
+        }
+    }
+
+    /// The session record's 051 keys (020-R22): `act_log`, `snapshots`, `branch` (with its
+    /// 051-R9 ④ `end` when the game ended).
+    fn record(&self, game: &GameBranch, policy: &mut dyn Policy, slot: u8, rec: &mut SessionRecord) {
+        rec.act_log = self.act_log.as_ref().map(|l| ActLogStatus { path: l.path.display().to_string(), complete: l.complete, error: l.error.clone() });
+        let Some(part) = policy.branch_record() else { return };
+        rec.snapshots = part.snapshots;
+        rec.branch = part.outcome.map(|mut o| {
+            if let (Some((winner, frame, reason)), Some(b)) = (self.end, &game.branch) {
+                o.end = Some(uranium_env::branch::BranchEnd::new(winner, slot, frame, reason, b.horizon));
+            }
+            if let Err(e) = uranium_env::branch::FiniteRecord::check_finite(&o) {
+                elog!("[agent] WARNING: 051-R9 branch outcome of game {} has a value JSON cannot hold: {e:#}", rec.game_id);
+            }
+            o
+        });
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, policy: &mut dyn Policy, hello: &Hello, rec: &mut SessionRecord, rejections: &mut Vec<String>, delay_ms: u64, ends: &EndBoard) -> Result<()> {
+fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, policy: &mut dyn Policy, hello: &Hello, rec: &mut SessionRecord, rejections: &mut Vec<String>, delay_ms: u64, ends: &EndBoard, log: &mut SessionLog) -> Result<()> {
     let (mut reader, mut writer) = (reader, writer);
     let realtime = hello.mode == Mode::Realtime;
     let mut policy_time = Duration::ZERO;
     let mut first = true;
-    let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
+    // 011-AC4 session digest: one FNV-1a over every observation's framed bytes, from the same
+    // offset basis and bytes as the 051-R2 observation digest.
+    let mut digest: u64 = uranium_env::branch::FNV_OFFSET;
+    let mut obs_index: u32 = 0;
     let mut last_cmds: Vec<Command> = Vec::new();
     loop {
         match read_msg::<BridgeMsg>(&mut reader)? {
@@ -790,9 +982,10 @@ fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, po
                 }
             }
             BridgeMsg::Frame(f) => {
-                let mut bytes = Vec::new();
-                write_msg(&mut bytes, &*f)?;
+                let bytes = uranium_env::branch::frame_bytes(&f)?;
                 digest = fnv1a(digest, &bytes);
+                let i = obs_index;
+                obs_index += 1;
                 // Debug aid: URANIUM_AGENT_DUMP=<dir> writes observations before URANIUM_AGENT_DUMP_MAX_FRAME (default 240).
                 if let Ok(dir) = std::env::var("URANIUM_AGENT_DUMP") {
                     let max: u32 = std::env::var("URANIUM_AGENT_DUMP_MAX_FRAME").ok().and_then(|v| v.parse().ok()).unwrap_or(240);
@@ -846,6 +1039,20 @@ fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, po
                     // 012-R7 / 010-R7: every policy's Act expires REALTIME_ACT_FRAMES after the frame it saw.
                     act.valid_until_frame = Some(f.frame + REALTIME_ACT_FRAMES);
                 }
+                // 051-R2: one line per observation with the Act exactly as sent.
+                if let Some(l) = log.act_log.as_mut() {
+                    let x = policy.act_log_extra().unwrap_or_default();
+                    l.push(&uranium_env::branch::ObsLine {
+                        i,
+                        frame: f.frame,
+                        digest: uranium_env::branch::obs_digest_bytes(&bytes),
+                        act: act.clone(),
+                        decision: x.decision,
+                        state: x.state,
+                        state_sha256: x.state_sha256,
+                        forced: x.forced,
+                    });
+                }
                 write_msg(&mut writer, &AgentMsg::Act(act))?;
             }
             BridgeMsg::End(end) => {
@@ -870,6 +1077,7 @@ fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, po
                 // After `on_end`: the 042 metrics include the final frame (AMB-042-16).
                 rec.model = policy.model_stats();
                 rec.scripted = policy.scripted_stats();
+                log.finish(end.winner, end.frame, end.reason, hello.slot, &rec.policy);
                 return Ok(());
             }
             other => bail!("unexpected message {other:?}"),

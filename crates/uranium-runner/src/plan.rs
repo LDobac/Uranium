@@ -859,7 +859,7 @@ p1={kind='oss',name='iron',race='terran'}";
         let specs = |p: &Plan| expand(p, "a:1").into_iter().map(|j| (j.spec, j.models, j.t0_builds)).collect::<Vec<_>>();
         assert_eq!(specs(&plain), specs(&keyed));
         assert!(crate::check_branch_support(&plain).is_ok());
-        assert!(crate::check_branch_support(&keyed).is_err(), "refused until the agent sessions read the board (051 U3)");
+        assert!(crate::check_branch_support(&keyed).is_ok(), "the agent sessions read the board (051 U3)");
     }
 
     /// 020-R22 ① ②: act logs alone (any bridge players, 051-AC3) and a trunk plan with snapshot
