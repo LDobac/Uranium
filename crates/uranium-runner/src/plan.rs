@@ -368,6 +368,8 @@ impl Plan {
         // Interim decision (U4): a game is a trunk or a branch, not both.
         ensure!(!(trunk && branch), "snapshots and branches in one plan: a branch game is not a trunk (051-R3, 051-R10)");
         let what = if trunk { "snapshots" } else { "branches" };
+        // 051-R2 / 051-R10: a trunk's points are read from its act log (state id, digest, decision).
+        ensure!(!trunk || self.act_log, "snapshots go with act_log = true (the trunk's act log is the branch input, 051-R2, 051-R10)");
         // 051-R1 ③: plan settings of trunk and branch games.
         ensure!(self.surrender == SurrenderMode::Off, "{what}: surrender must be \"off\" (051-R1 ③: the branch prefix has no inference to carry the 031-R12 check)");
         ensure!(!self.privileged, "{what}: privileged must be false (051-R1 ③)");
@@ -905,6 +907,7 @@ p1={kind='oss',name='iron',race='terran'}";
         bad(BRANCH_HEAD, &BRANCH_GAMES.replacen("{kind='t0',race='zerg',build='zerg_rush'}", "{kind='oss',name='iron',race='terran'}", 1), "T0 bot");
         bad(BRANCH_HEAD, &format!("{BRANCH_GAMES}p1_random_ratio=0.5\n").replacen("build='zerg_rush'", "build='standard'", 2), "p1_random_ratio");
         bad(&format!("{BRANCH_HEAD}verify_state=true\n"), BRANCH_GAMES, "verify_state");
+        bad(&BRANCH_HEAD.replace("act_log=true\n", ""), BRANCH_GAMES, "act_log");
         // Snapshot rules (051-R3): known action names, unique names, non-empty windows.
         let rules = |r: &str| load(format!("name='x'\n{BRANCH_HEAD}{r}{BRANCH_GAMES}")).unwrap_err();
         assert!(rules("[[snapshots]]\nname='a'\nfrom_frame=1\nto_frame=2\nany_open=['Build_Bunkr']\n").contains("Build_Bunkr"));
