@@ -1,5 +1,6 @@
 //! `uranium-replay` CLI (040): `inspect` one replay, `convert` SC:R -> 1.16.1 (013-R6),
-//! `scan` a folder for parse errors and counts, `cmddump` command streams for the 050 tables.
+//! `scan` a folder for parse errors and counts, `cmddump` command streams for the 050 tables,
+//! `opsdump` the 052 ops / early-rush combat metrics replayed from our view.
 
 use std::path::{Path, PathBuf};
 
@@ -30,6 +31,21 @@ enum Cmd {
     Cmddump {
         #[arg(required = true)]
         reps: Vec<PathBuf>,
+    },
+    /// 052-R7: play each replay again in OpenBW replay mode from our player's view, stopping every
+    /// `--stride` frames, and print the 052 metrics as one JSON line per view `{"rep",
+    /// "perspective", "frames", "ops", "rush_combat"}` (a replay that fails: null objects and
+    /// `error`). Playback stops at the later of `--until-frame` and the rush combat window's end.
+    Opsdump {
+        #[arg(required = true)]
+        reps: Vec<PathBuf>,
+        /// BWAPI slot of our player (the session record's `slot`); default every active Terran.
+        #[arg(long)]
+        perspective: Option<u8>,
+        #[arg(long, default_value_t = uranium_replay::opsdump::UNTIL_FRAME)]
+        until_frame: u32,
+        #[arg(long, default_value_t = uranium_replay::opsdump::STRIDE)]
+        stride: u32,
     },
     /// 040-AC1: compare per-player command counts and APM with the screp reference parser.
     /// Play a replay in OpenBW replay mode and report the 040-R8 desync signals as JSON.
@@ -310,6 +326,21 @@ fn main() -> Result<()> {
         Cmd::Cmddump { reps } => {
             for p in &reps {
                 println!("{}", load(p)?.cmddump(&p.to_string_lossy()));
+            }
+        }
+        Cmd::Opsdump { reps, perspective, until_frame, stride } => {
+            use uranium_replay::opsdump::{line, measure, perspective_slots};
+            anyhow::ensure!(stride >= 1, "--stride must be at least 1");
+            let cfg = uranium_replay::play::PlayConfig::from_env(uranium_replay::play::work_dir_default())?;
+            for p in &reps {
+                let name = p.to_string_lossy();
+                let out: Vec<_> = match load(p).and_then(|rep| perspective_slots(&rep, perspective).map(|s| (rep, s))) {
+                    Ok((rep, slots)) => slots.into_iter().map(|slot| line(&name, Some(slot), Some(rep.header.frames), measure(&rep, slot, &cfg, until_frame, stride))).collect(),
+                    Err(e) => vec![line(&name, perspective, None, Err(e))],
+                };
+                for l in out {
+                    println!("{}", serde_json::to_string(&l)?);
+                }
             }
         }
         Cmd::Build { dir, src, out, records, jobs, limit, budget_gb, skip_hashes, part, parts, ladder_records, until_frame, time_limit, relabel, memory_log } => {
