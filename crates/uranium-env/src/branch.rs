@@ -779,26 +779,34 @@ pub struct Samples {
     pub t240: Option<Sample>,
     /// First decision with frame >= H.
     pub horizon: Option<Sample>,
-    /// The 8th / 32nd decision after t.
+    /// The 8th / 32nd command decision after t (051-R9 ①: a decision that sent a command, i.e.
+    /// not NoOp and not refused by the executor; the t decision itself is not counted).
     pub d8: Option<Sample>,
     pub d32: Option<Sample>,
 }
 
-/// 051-R9 ① sampler, fed every decision from t on.
+/// 051-R9 ① sampler, fed every decision from t on (the first call is the t decision).
 #[derive(Debug, Clone)]
 pub struct SampleTracker {
     f_t: u32,
     horizon: u32,
     samples: Samples,
+    /// The t decision was fed.
+    started: bool,
+    /// Command decisions after t so far (051-R9 ①, user decision 2026-11-13).
+    commands: u32,
 }
 
 impl SampleTracker {
     pub fn new(f_t: u32, horizon: u32) -> Self {
-        Self { f_t, horizon, samples: Samples::default() }
+        Self { f_t, horizon, samples: Samples::default(), started: false, commands: 0 }
     }
 
-    /// `k`: decisions after t (0 = the t decision).
-    pub fn on_decision(&mut self, k: u32, frame: u32, scalar: &[f32]) {
+    /// One decision from t on. `sent_command`: the decision sent a command (its action is not
+    /// NoOp and the executor did not refuse it, 031-R4); only those count towards `d8` / `d32`,
+    /// the step unit of the S0b predictors (replay command steps, user decision 2026-11-13). The
+    /// time samples (`t60` .. `horizon`) take every decision.
+    pub fn on_decision(&mut self, frame: u32, scalar: &[f32], sent_command: bool) {
         let s = || Some(Sample { frame, scalar: scalar.to_vec() });
         let f_t = self.f_t;
         let x = &mut self.samples;
@@ -810,11 +818,15 @@ impl SampleTracker {
         if x.horizon.is_none() && frame >= self.horizon {
             x.horizon = s();
         }
-        if k == 8 {
-            x.d8 = s();
-        }
-        if k == 32 {
-            x.d32 = s();
+        // The t decision is not "after t" (051-R9 ①).
+        let after_t = std::mem::replace(&mut self.started, true);
+        if after_t && sent_command {
+            self.commands += 1;
+            match self.commands {
+                8 => x.d8 = s(),
+                32 => x.d32 = s(),
+                _ => {}
+            }
         }
     }
 
