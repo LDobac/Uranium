@@ -441,15 +441,27 @@ pub struct SnapshotRule {
     /// 034 action names: the decision's `type_mask` must open at least one. Empty = no condition.
     #[serde(default)]
     pub any_open: Vec<String>,
+    /// 051-R3 / 051-R11 ① (user decision 2026-11-13): an earlier rule of the list. When it fires
+    /// on the decision this rule would fire on, this rule skips that decision and fires on the
+    /// first later decision meeting its condition with frame >= that rule's frame + `after_s` x 24
+    /// (still before `to_frame`). Otherwise the key changes nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_rule: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_s: Option<u32>,
 }
 
 /// 051-R3: checks the snapshot rules on every decision; each rule fires on the first decision in
-/// its window that meets its condition, and only then.
+/// its window that meets its condition, and only then (an `after_rule` rule moves off the decision
+/// of its earlier rule).
 #[derive(Debug, Clone)]
 pub struct Snapshots {
-    rules: Vec<(SnapshotRule, Vec<u16>)>,
-    /// Observation index each rule fired at.
-    fired: Vec<Option<u32>>,
+    /// (rule, `any_open` ids, index of its `after_rule` and the delay in frames).
+    rules: Vec<(SnapshotRule, Vec<u16>, Option<(usize, u32)>)>,
+    /// (observation index, frame) each rule fired at.
+    fired: Vec<Option<(u32, u32)>>,
+    /// Frame from which a rule moved off its `after_rule`'s decision may fire.
+    not_before: Vec<u32>,
 }
 
 impl Snapshots {
@@ -461,9 +473,17 @@ impl Snapshots {
             ensure!(names.insert(r.name.as_str()), "snapshot rule `{}` given twice", r.name);
             ensure!(r.from_frame < r.to_frame, "snapshot rule `{}`: empty window [{}, {})", r.name, r.from_frame, r.to_frame);
             let ids = r.any_open.iter().map(|a| action_id(table, a).with_context(|| format!("snapshot rule `{}`", r.name))).collect::<Result<Vec<_>>>()?;
-            out.push((r.clone(), ids));
+            let after = match (&r.after_rule, r.after_s) {
+                (None, None) => None,
+                (Some(a), Some(s)) => {
+                    let i = out.iter().position(|(x, _, _): &(SnapshotRule, Vec<u16>, _)| &x.name == a).with_context(|| format!("snapshot rule `{}`: after_rule `{a}` is not an earlier rule (051-R3)", r.name))?;
+                    Some((i, s * FRAMES_PER_SECOND))
+                }
+                _ => anyhow::bail!("snapshot rule `{}`: after_rule and after_s go together (051-R3)", r.name),
+            };
+            out.push((r.clone(), ids, after));
         }
-        Ok(Self { fired: vec![None; out.len()], rules: out })
+        Ok(Self { fired: vec![None; out.len()], not_before: vec![0; out.len()], rules: out })
     }
 
     /// Checks decision observation `obs` at `frame` (after feature extraction, before inference).
@@ -471,21 +491,31 @@ impl Snapshots {
     /// decision, shared by every rule named (051 Interfaces).
     pub fn check(&mut self, obs: u32, frame: u32, type_mask: &[bool]) -> Vec<String> {
         let mut hit = vec![];
-        for ((r, ids), fired) in self.rules.iter().zip(&mut self.fired) {
-            if fired.is_some() || frame < r.from_frame || frame >= r.to_frame {
+        for k in 0..self.rules.len() {
+            let (r, ids, after) = &self.rules[k];
+            if self.fired[k].is_some() || frame < r.from_frame.max(self.not_before[k]) || frame >= r.to_frame {
                 continue;
             }
-            if ids.is_empty() || ids.iter().any(|&a| type_mask.get(a as usize).copied().unwrap_or(false)) {
-                *fired = Some(obs);
-                hit.push(r.name.clone());
+            if !(ids.is_empty() || ids.iter().any(|&a| type_mask.get(a as usize).copied().unwrap_or(false))) {
+                continue;
             }
+            // 051-R3 `after_rule`: not on the earlier rule's decision; from its frame + after_s on.
+            if let Some((i, delay)) = *after
+                && let Some((o, f)) = self.fired[i]
+                && o == obs
+            {
+                self.not_before[k] = f.saturating_add(delay);
+                continue;
+            }
+            self.fired[k] = Some((obs, frame));
+            hit.push(r.name.clone());
         }
         hit
     }
 
     /// (rule name, observation index it fired at).
     pub fn fired(&self) -> impl Iterator<Item = (&str, Option<u32>)> {
-        self.rules.iter().zip(&self.fired).map(|((r, _), f)| (r.name.as_str(), *f))
+        self.rules.iter().zip(&self.fired).map(|((r, _, _), f)| (r.name.as_str(), f.map(|(o, _)| o)))
     }
 }
 

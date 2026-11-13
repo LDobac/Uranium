@@ -302,7 +302,50 @@ fn mask_with(open: &[&str]) -> Vec<bool> {
 }
 
 fn rule(name: &str, from: u32, to: u32, any_open: &[&str]) -> SnapshotRule {
-    SnapshotRule { name: name.into(), from_frame: from, to_frame: to, any_open: any_open.iter().map(|s| s.to_string()).collect() }
+    SnapshotRule { name: name.into(), from_frame: from, to_frame: to, any_open: any_open.iter().map(|s| s.to_string()).collect(), after_rule: None, after_s: None }
+}
+
+fn after(mut r: SnapshotRule, earlier: &str, secs: u32) -> SnapshotRule {
+    r.after_rule = Some(earlier.into());
+    r.after_s = Some(secs);
+    r
+}
+
+/// 051-R3 / 051-R11 ① (user decision 2026-11-13): an `after_rule` rule that would fire on its
+/// earlier rule's decision moves to the first matching decision at or after that frame + after_s
+/// (window end kept); not coincident = as without the key; never moved past the window = no point.
+#[test]
+fn branch_snapshot_after_rule_051_r3() {
+    let t = action_table();
+    let bunker = mask_with(&["Build_Bunker"]);
+    let none = mask_with(&[]);
+    let b1 = || [rule("b1-p1", 3240, 5760, &["Build_Bunker"]), after(rule("b1-p2", 3960, 5760, &["Build_Bunker"]), "b1-p1", 30)];
+    // Coincident (first open decision after 2:45): p2 moves to >= 4001 + 720 = 4721.
+    let mut s = Snapshots::new(&b1(), t).unwrap();
+    assert!(s.check(0, 3300, &none).is_empty());
+    assert_eq!(s.check(1, 4001, &bunker), vec!["b1-p1"]);
+    assert!(s.check(2, 4500, &bunker).is_empty());
+    assert!(s.check(3, 4720, &bunker).is_empty(), "before p1 + 30 s");
+    assert!(s.check(4, 4721, &none).is_empty(), "its condition still holds");
+    assert_eq!(s.check(5, 4730, &bunker), vec!["b1-p2"]);
+    assert_eq!(s.fired().collect::<Vec<_>>(), vec![("b1-p1", Some(1)), ("b1-p2", Some(5))]);
+    // Not coincident: p1 before 2:45, p2 at the first open decision from 2:45 on (even < p1 + 30 s).
+    let mut s = Snapshots::new(&b1(), t).unwrap();
+    assert_eq!(s.check(0, 3900, &bunker), vec!["b1-p1"]);
+    assert_eq!(s.check(1, 3970, &bunker), vec!["b1-p2"]);
+    // Moved past the window end: p2 never fires (the trunk is replaced, 051-R11 ①).
+    let mut s = Snapshots::new(&b1(), t).unwrap();
+    assert_eq!(s.check(0, 5100, &bunker), vec!["b1-p1"]);
+    assert!(s.check(1, 5759, &bunker).is_empty());
+    assert_eq!(s.fired().collect::<Vec<_>>(), vec![("b1-p1", Some(0)), ("b1-p2", None)]);
+    // Key errors: a later or unknown rule, half the pair.
+    assert!(Snapshots::new(&[after(rule("a", 0, 9, &[]), "b", 1), rule("b", 0, 9, &[])], t).is_err());
+    let mut half = rule("b", 0, 9, &[]);
+    half.after_s = Some(3);
+    assert!(Snapshots::new(&[rule("a", 0, 9, &[]), half], t).is_err());
+    // The plan form.
+    let r: SnapshotRule = toml::from_str("name = \"b1-p2\"\nfrom_frame = 3960\nto_frame = 5760\nany_open = [\"Build_Bunker\"]\nafter_rule = \"b1-p1\"\nafter_s = 30").unwrap();
+    assert_eq!(r, b1()[1]);
 }
 
 /// 051-AC1 / 051-R3: window [from, to), `any_open`, first matching decision only, two rules on

@@ -113,7 +113,7 @@ const I_T: u32 = 5;
 /// A trunk game: plan game 1, snapshot rule `p` from the frame of observation `I_T` (no condition,
 /// 051-R3), state files under `dir/states`.
 fn trunk_game(dir: &Path) -> Arc<GameBranch> {
-    let rule = SnapshotRule { name: "p".into(), from_frame: 24 * I_T + 1, to_frame: 100_000, any_open: vec![] };
+    let rule = SnapshotRule { name: "p".into(), from_frame: 24 * I_T + 1, to_frame: 100_000, any_open: vec![], after_rule: None, after_s: None };
     Arc::new(GameBranch { plan_game: 1, acts_dir: Some(dir.join("acts")), snapshots: vec![rule], states_dir: Some(dir.join("states")), branch: None })
 }
 

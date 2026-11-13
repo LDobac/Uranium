@@ -54,7 +54,7 @@ import branch_common as bc  # noqa: E402
 import eval_common as ec  # noqa: E402
 
 Refused = bc.Refused
-SNAPSHOT_KEYS = {"name", "from_frame", "to_frame", "any_open"}
+SNAPSHOT_KEYS = {"name", "from_frame", "to_frame", "any_open", "after_rule", "after_s"}
 RULE_KEYS = {"op", "action", "from_s", "to_s"}
 
 
@@ -76,6 +76,11 @@ def load_config(path: Path) -> dict:
         for a in s.get("any_open", []):
             if a not in ids:
                 raise Refused(f"{path}: snapshot rule {s['name']}: unknown action {a} (034)")
+        # 051-R3 after_rule / after_s (user decision 2026-11-13): an earlier rule, both keys together.
+        if ("after_rule" in s) != ("after_s" in s):
+            raise Refused(f"{path}: snapshot rule {s['name']}: after_rule and after_s go together (051-R3)")
+        if "after_rule" in s and (s["after_rule"] not in names[:names.index(s["name"])] or int(s["after_s"]) < 0):
+            raise Refused(f"{path}: snapshot rule {s['name']}: after_rule {s['after_rule']} must be an earlier rule, after_s >= 0 (051-R3)")
     alts = [a["name"] for a in cfg["alternative"]]
     if len(set(alts)) != len(alts):
         raise Refused(f"{path}: alternative names must be unique")
@@ -157,6 +162,8 @@ def snapshot_tables(cfg: dict) -> list[str]:
     for s in cfg["snapshots"]:
         out += ["[[snapshots]]", f"name = {bc.toml_value(s['name'])}", f"from_frame = {int(s['from_frame'])}",
                 f"to_frame = {int(s['to_frame'])}", f"any_open = {bc.toml_value(list(s.get('any_open', [])))}"]
+        if "after_rule" in s:
+            out += [f"after_rule = {bc.toml_value(s['after_rule'])}", f"after_s = {int(s['after_s'])}"]
     return out
 
 
@@ -166,10 +173,18 @@ def render_trunk(name: str, cfg: dict, blocks: list[tuple[str, list[int]]], head
     return "\n".join([*plan_head(name, cfg, header), *seeds, *snapshot_tables(cfg), *matchups]) + "\n"
 
 
+def job_stages(job: Path) -> list:
+    """`ec.job_stages`, a missing or unreadable job / stage plan file refused (not a bare OSError)."""
+    try:
+        return ec.job_stages(job)
+    except (OSError, ValueError) as e:
+        raise Refused(f"{job}: cannot read the job's stages ({e})") from e
+
+
 def job_seeds(job: Path) -> set[int]:
     out: set[int] = set()
     if (job / "job.toml").is_file():
-        for _, _, plan in ec.job_stages(job):
+        for _, _, plan in job_stages(job):
             out.update(int(s) for s in ec.plan_seeds(plan))
     return out
 
@@ -244,7 +259,7 @@ class Trunk:
 def read_trunks(a, cfg: dict, root: Path, job: Path, expect: dict) -> list[Trunk]:
     rules = [s["name"] for s in cfg["snapshots"]]
     horizon = int(cfg["horizon"])
-    stages = {plan["name"]: (k, f, plan) for k, f, plan in ec.job_stages(job)}
+    stages = {plan["name"]: (k, f, plan) for k, f, plan in job_stages(job)}
     sha_cache: dict[str, str | None] = {}
     out = []
     for stage in a.stage:
@@ -404,7 +419,7 @@ def build(a) -> dict:
     cfg = load_config(a.config)
     root = bc.shared_root(a.root)
     job = bc.job_dir(a.trunk_job, root)
-    out = Path(a.out)
+    out = bc.job_dir(a.out, root)
     counts = {"hit": int(cfg["trunks"]["hit"] if a.hit is None else a.hit), "miss": int(cfg["trunks"]["miss"] if a.miss is None else a.miss)}
     alts = [x for x in cfg["alternative"] if a.alts is None or x["name"] in a.alts.split(",")]
     if a.alts is not None and len(alts) != len(a.alts.split(",")):
@@ -476,7 +491,7 @@ def build(a) -> dict:
             if any(need.values()):
                 blocks.append((m, pick_seeds(seeds, need, a.condition_fn, exclude)))
         # A stage name the trunk job does not use yet (a second replacement round gets -r2, -r3, ...).
-        taken = {plan["name"] for _, _, plan in ec.job_stages(job)} if (job / "job.toml").is_file() else set()
+        taken = {plan["name"] for _, _, plan in job_stages(job)} if (job / "job.toml").is_file() else set()
         rname = a.replacement_name or f"{name}-trunk-r"
         if rname in taken:
             if a.replacement_name:
@@ -508,7 +523,7 @@ def main(argv=None) -> None:
     b.add_argument("--trunk-job", required=True, help="trunk job folder (as given if it exists, else under URANIUM_SHARED_DIR)")
     b.add_argument("--stage", action="append", required=True, help="trunk stage name (repeat for replacement stages)")
     b.add_argument("--config", type=Path, default=bc.ROOT / "config" / "branch_b1.toml")
-    b.add_argument("--out", required=True, help="branch job folder (051-R12 output folder)")
+    b.add_argument("--out", required=True, help="branch job folder (051-R12 output folder; as given if it exists or is absolute, else under URANIUM_SHARED_DIR)")
     b.add_argument("--root", default=None, help="shared drive (default URANIUM_SHARED_DIR)")
     b.add_argument("--name", default=None, help="branch plan (stage) name, default the config name")
     b.add_argument("--alts", default=None, help="comma list of alternatives to keep (default all, 051-AC6 uses none,force_bunker)")
