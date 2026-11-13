@@ -1,7 +1,8 @@
 """The model thread of one inference server (032-R7, R14, R16; AMB-000-4). Sessions run on Rust
 threads and queue observations in a `uranium._core.Broker`; this thread pulls a batch, gathers
 the batch rows of the `[capacity, …]` Core state kept on the device, runs one `act` (sampling in
-the forward, 032-R9), writes the rows back and replies. Opened slots start from zero (032-R5).
+the forward, 032-R9), writes the rows back and replies. Opened slots start from zero (032-R5);
+a session can read its slot's state (032-R16) and overwrite it (051-R4, branch games).
 Batching changes throughput only: every row is computed as it would be alone."""
 
 import contextlib
@@ -61,6 +62,36 @@ def scatter_rows(s, rows: torch.Tensor, sub):
 
 def zero_rows(s, rows: torch.Tensor):
     return rebuild(s, iter([t.index_fill(0, rows, 0) for t in leaves(s)]))
+
+
+def state_to_host(s, slot: int) -> tuple[list, list]:
+    """032-R16: row `slot` of a Core state on the host: (float32 arrays flat, shapes with batch 1)
+    in `leaves` order (bools as 0/1; every state tensor is f32 or bool, so the values are exact)."""
+    ts = [t[slot:slot + 1].float().cpu() for t in leaves(s)]
+    return [t.reshape(-1).numpy() for t in ts], [list(t.shape) for t in ts]
+
+
+def state_from_host(s, parts: list, device: torch.device):
+    """051-R4 / 032-R16: a batch-1 state of `s`'s structure from host parts [(shape, float32
+    values)] as `state_to_host` gives them; bit for bit the state they came from. `ValueError` when
+    the part count, a shape (against one row of `s`) or a bool part's values (0/1) do not fit: a
+    state of another model or Core kind."""
+    ls = leaves(s)
+    if len(parts) != len(ls):
+        raise ValueError(f"{len(parts)} state parts for a Core state of {len(ls)} (051-R4)")
+    out = []
+    for i, (t, (shape, v)) in enumerate(zip(ls, parts)):
+        want = [1, *t.shape[1:]]
+        if list(shape) != want:
+            raise ValueError(f"state part {i}: shape {list(shape)}, the slot's is {want} (051-R4)")
+        x = torch.as_tensor(v, dtype=torch.float32).reshape(want)
+        if t.dtype == torch.bool:
+            if not ((x == 0) | (x == 1)).all():
+                raise ValueError(f"state part {i}: a mask part with values other than 0 and 1 (051-R4)")
+        elif t.dtype != torch.float32:
+            raise ValueError(f"state part {i}: the slot's state is {t.dtype}, host states are float32 (051-R4)")
+        out.append(x.to(device=device, dtype=t.dtype))
+    return rebuild(s, iter(out))
 
 
 def _tree(x, f):
@@ -299,17 +330,41 @@ class InferenceServer(threading.Thread):
                 self._free()
 
     @torch.no_grad()
+    def restore(self, restores: list) -> None:
+        """051-R4 / 032-R16: writes each (slot, host parts) into that slot's row of the Core state
+        (`state_from_host`, then `scatter_rows`: the other rows stay bit for bit, 032-R14) and
+        answers the sessions; a state that does not fit is refused and the slot keeps its state.
+        Works with every act path: the eager and compiled act read the state rows the server
+        passes, the captured graphs copy them in each call (`GraphedAct`). The GTrXL Core keeps
+        no K/V cache across steps: its state is the layer inputs and the valid mask, and every
+        step computes K/V from them with the current weights (as after a 032-R16 swap), so the
+        restored layer inputs fully determine the next act."""
+        errors = []
+        for slot, parts in restores:
+            try:
+                sub = state_from_host(self.state, parts, self.device)
+            except ValueError as e:
+                errors.append(str(e))
+                continue
+            self.state = scatter_rows(self.state, torch.tensor([slot], device=self.device), sub)
+            errors.append(None)
+        self.broker.reply_restores(errors)
+
+    @torch.no_grad()
     def handle(self, w: dict, t_py: int | None = None) -> None:
         dev = self.device
         t_lock = time.time_ns()
+        # 051-R4: reset -> restore -> state read -> act, in this order within one work.
         if w["resets"]:
             self.state = zero_rows(self.state, torch.tensor(w["resets"], device=dev))
+        if w.get("restores"):
+            self.restore(w["restores"])
         if w["states"]:
             parts, shapes = [], []
             for slot in w["states"]:
-                ts = [t[slot:slot + 1].float().cpu() for t in leaves(self.state)]
-                parts.append([t.reshape(-1).numpy() for t in ts])
-                shapes.append([list(t.shape) for t in ts])
+                p, s = state_to_host(self.state, slot)
+                parts.append(p)
+                shapes.append(s)
             self.broker.reply_states(parts, shapes)
         b = w["batch"]
         if b is None:

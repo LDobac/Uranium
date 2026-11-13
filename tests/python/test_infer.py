@@ -14,19 +14,30 @@ import torch
 from uranium import _core, ckpt
 from uranium.agent.infer import InferenceServer
 from uranium.model import UraniumNet, UraniumNetConfig, action_columns, input_dims
+from uranium.model.config import VariantConfig
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "burn_parity"
 CPU = torch.device("cpu")
 DELAY_BUCKETS = json.loads(_core.feature_dims())["delay_buckets"]
 
 
-def checkpoint(tmp_path: Path, kind: str) -> Path:
+def checkpoint(tmp_path: Path, kind: str, model2: bool = False) -> Path:
+    """A random tiny checkpoint; `model2`: with the outer LSTM (segment 4 decisions, 032 §2.7),
+    the head bypass and core skip (032-R21, R23) on, their zero-initialised outputs made non-zero
+    so they change the outputs."""
     cfg = UraniumNetConfig.from_dict(json.loads((FIX / "tiny-lstm" / "meta.json").read_text())["config"])
     cfg.input = input_dims()
     cfg.core.kind = kind
+    if model2:
+        cfg.variant = VariantConfig(outer=4, bypass=True, core_skip=True)
     torch.manual_seed(11)
     net = UraniumNet(cfg, action_columns())
-    d = tmp_path / f"ckpt-{kind}"
+    if model2:
+        g = torch.Generator().manual_seed(5)
+        with torch.no_grad():
+            for p in [*net.variant.core_skip.parameters(), *net.variant.bypass.out.parameters()]:
+                p.copy_(torch.randn(p.shape, generator=g) * 0.05)
+    d = tmp_path / f"ckpt-{kind}{'-m2' if model2 else ''}"
     d.mkdir()
     ckpt.save_model(d, net)
     ckpt.save_meta(d, cfg, {"random_init": True}, "f32")
@@ -96,6 +107,116 @@ def test_slot_state_032_r16(tmp_path, kind):
     assert any((x != y).any() for x, y in zip(one, two))
     assert all(shape[0] == 1 for shape, _ in states[0]), "batch dimension 1 per slot"
     stop(s)
+
+
+def bits(state) -> list[tuple[list, bytes]]:
+    return [(list(shape), np.asarray(v, dtype=np.float32).tobytes()) for shape, v in state]
+
+
+@pytest.mark.parametrize("model2", [False, True], ids=["base", "model2"])
+@pytest.mark.parametrize("kind", ["Lstm", "Gtrxl"])
+def test_set_state_round_trip_and_resume_051_r4(tmp_path, kind, model2):
+    """051-R4 (032-R16): a second slot restores the first slot's state from before decision 5 of
+    12: `state()` -> `set_state()` -> `state()` is bit for bit, the other slot's state is untouched
+    (032-R14), and the 7 decisions after the restore (action, log-probs, value) are bit for bit
+    those of the uninterrupted slot, every batch one row. The GTrXL memory (4) and the outer
+    segment (4) both roll over after the restore."""
+    b, s = server(checkpoint(tmp_path, kind, model2), "argmax", 1)
+    r = _core.restore_play(b, 5, 12)
+    stop(s)
+    assert bits(r["restored"]) == bits(r["saved"]), "state() -> set_state() -> state() round trip"
+    assert any(np.asarray(v).any() for _, v in r["saved"]), "a non-trivial state"
+    assert bits(r["other_after"]) == bits(r["other_before"]), "032-R14: the other slot is unchanged"
+    assert len(r["straight"]) == 7
+    assert r["resumed"] == r["straight"], "decisions after the restore = uninterrupted decisions"
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("graph", ["off", "on"])
+def test_set_state_on_the_device_051_r4(tmp_path, monkeypatch, graph):
+    """051-R4 on a CUDA / ROCm device, eager and with captured graphs (URANIUM_INFER_GRAPH):
+    the round trip is bit for bit (state values are f32 / bool), the decisions after the restore
+    are those of the uninterrupted slot (same actions; log-probs and values within the 032-R19
+    tolerance)."""
+    if not torch.cuda.is_available():
+        pytest.skip("no CUDA / ROCm device")
+    from uranium.device import resolve
+
+    _, dev, prec = resolve(None)
+    monkeypatch.setenv("URANIUM_INFER_GRAPH", graph)
+    b = _core.Broker(str(checkpoint(tmp_path, "Gtrxl", True)), "argmax", max_batch=1, max_wait_ms=200, capacity=8)
+    s = InferenceServer(b, dev, prec)
+    assert (s.graphed is not None) == (graph == "on")
+    s.start()
+    r = _core.restore_play(b, 5, 12)
+    stop(s)
+    assert bits(r["restored"]) == bits(r["saved"])
+    assert bits(r["other_after"]) == bits(r["other_before"])
+    for (a1, x), (a2, y) in zip(r["straight"], r["resumed"]):
+        assert a1 == a2
+        x, y = np.array(x, dtype=np.uint32).view(np.float32), np.array(y, dtype=np.uint32).view(np.float32)
+        assert np.allclose(x, y, atol=1e-4, rtol=1e-4), (x, y)
+
+
+def test_set_state_refuses_a_mismatch_051_r4(tmp_path):
+    """051-R4: a state of another Core kind or model (part count, shape, a mask part with values
+    other than 0/1) is refused with an error and the slot keeps its state; a fitting state is
+    written."""
+    lstm, gtrxl = checkpoint(tmp_path, "Lstm"), checkpoint(tmp_path, "Gtrxl")
+    b, s = server(lstm, "argmax", 1)
+    bg, sg = server(gtrxl, "argmax", 1)
+    try:
+        lstm_state = [(shape, np.asarray(v).tolist()) for shape, v in _core.slot_states(b)[1]]
+        g_state = [(shape, np.asarray(v).tolist()) for shape, v in _core.slot_states(bg)[2]]
+        before, e, after = _core.set_slot_state(b, lstm_state)
+        assert e is None and bits(after) == bits([(sh, np.asarray(v, dtype=np.float32)) for sh, v in lstm_state])
+        bad = {
+            "another core": g_state,
+            "missing part": lstm_state[:1],
+            "wider": [([1, sh[1] + 1], v + [0.0]) for sh, v in lstm_state],
+        }
+        mask = list(g_state)
+        mask[-1] = (mask[-1][0], [0.5] * len(mask[-1][1]))
+        for name, st in bad.items():
+            before, e, after = _core.set_slot_state(b, st)
+            assert e is not None and "051-R4" in e, (name, e)
+            assert bits(after) == bits(before), f"{name}: the slot keeps its state"
+        before, e, after = _core.set_slot_state(bg, mask)
+        assert e is not None and "0 and 1" in e, e
+        assert bits(after) == bits(before)
+    finally:
+        stop(s)
+        stop(sg)
+
+
+def test_restore_order_in_one_work_051_r4(tmp_path):
+    """051-R4: one work with a reset, a restore and a state read of the same slot is handled as
+    reset -> restore -> state read: the read gives the restored state."""
+    from uranium.agent.infer import leaves, rebuild, state_to_host
+
+    class FakeBroker:
+        checkpoint_id, temp, capacity, pad_entities, warmup_entities = "fake@0", 0.0, 3, 64, 0
+        restored = read = None
+
+        def reply_restores(self, errors):
+            self.restored = errors
+
+        def reply_states(self, parts, shapes):
+            self.read = [(sh, p) for p, sh in zip(parts[0], shapes[0])]
+
+    net, _ = ckpt.load_model(checkpoint(tmp_path, "Gtrxl"), CPU)
+    fb = FakeBroker()
+    srv = InferenceServer(fb, CPU, "f32", net=net)
+    g = torch.Generator().manual_seed(1)
+    rand = lambda t: torch.rand(t.shape, generator=g) > 0.5 if t.dtype == torch.bool else torch.randn(t.shape, generator=g)  # noqa: E731
+    srv.state = rebuild(srv.state, iter([rand(t) for t in leaves(srv.state)]))
+    host = lambda r: bits(zip(*reversed(state_to_host(srv.state, r))))  # noqa: E731
+    want, others = host(2), [host(0), host(2)]
+    parts, shapes = state_to_host(srv.state, 2)
+    srv.handle({"resets": [1], "restores": [(1, list(zip(shapes, parts)))], "states": [1], "batch": None})
+    assert fb.restored == [None]
+    assert bits(fb.read) == want, "the read sees the restore, not the reset"
+    assert [host(0), host(2)] == others, "032-R14: other rows unchanged"
 
 
 def test_close_stops_the_thread_and_frees_the_model_042(tmp_path):

@@ -574,6 +574,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(agent::eval_status, m)?)?;
     m.add_function(wrap_pyfunction!(agent::play_sessions, m)?)?;
     m.add_function(wrap_pyfunction!(agent::slot_states, m)?)?;
+    m.add_function(wrap_pyfunction!(agent::restore_play, m)?)?;
+    m.add_function(wrap_pyfunction!(agent::set_slot_state, m)?)?;
     m.add_class::<rl::SegmentBatch>()?;
     m.add_function(wrap_pyfunction!(rl::run_rl, m)?)?;
     m.add_function(wrap_pyfunction!(rl::vtrace, m)?)?;

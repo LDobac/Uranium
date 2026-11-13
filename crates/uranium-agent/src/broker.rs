@@ -2,8 +2,10 @@
 //! inference thread, AMB-000-4, 001-R6). Sessions talk to it exactly as to any inference server;
 //! the model thread pulls work with [`Broker::next`] and answers with [`Broker::reply`]:
 //! - `resets`: slots opened since the last work; their Core state starts at zero (032-R5)
-//! - `states`: slots whose Core state a session asked for (032-R16), answered with
-//!   [`Broker::reply_states`] before the batch
+//! - `restores`: slots whose Core state a session overwrites (051-R4), after the resets, answered
+//!   with [`Broker::reply_restores`]
+//! - `states`: slots whose Core state a session asked for (032-R16), after the restores, answered
+//!   with [`Broker::reply_states`] before the batch
 //! - `batch`: the waiting sessions' observations, collated on the host (030 §1 layout), run once
 //!   when the batch is full, every active session waits, or the oldest has waited `max_wait`
 //!   (032-R14; lockstep sessions wait for their reply, so batching changes throughput only)
@@ -31,9 +33,12 @@ struct Pending {
     since: Instant,
 }
 
-/// One pull of the model thread.
+/// One pull of the model thread, handled in this order (051-R4): `resets`, `restores`, `states`,
+/// `batch`.
 pub struct Work {
     pub resets: Vec<usize>,
+    /// 051-R4: (slot, state) to write into the slot's Core state, in request order.
+    pub restores: Vec<(usize, HostState)>,
     pub states: Vec<usize>,
     pub batch: Option<WorkBatch>,
 }
@@ -52,6 +57,17 @@ pub struct WorkBatch {
 /// Wall clock in UNIX nanoseconds (comparable with Python's `time.time_ns`).
 pub fn unix_ns() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64)
+}
+
+/// 051-R4: why `state` cannot be one slot's Core state on its own (no parts, a part that is not
+/// batch 1, values that do not fill a shape); `None` when it can.
+fn restore_shape_error(state: &HostState) -> Option<String> {
+    if state.parts.is_empty() {
+        return Some("the state has no parts (051-R4)".into());
+    }
+    state.parts.iter().enumerate().find_map(|(i, (shape, v))| {
+        (shape.first() != Some(&1) || shape.iter().product::<usize>() != v.len()).then(|| format!("part {i}: {} values for shape {shape:?}, batch 1 expected (051-R4)", v.len()))
+    })
 }
 
 /// The model's output for a batch, rows in `WorkBatch::slots` order.
@@ -86,6 +102,8 @@ pub struct Broker {
     resets: Vec<usize>,
     states: Vec<(usize, Sender<Result<HostState>>)>,
     asked: Vec<Sender<Result<HostState>>>,
+    restores: Vec<(usize, HostState, Sender<Result<()>>)>,
+    restoring: Vec<Sender<Result<()>>>,
     inflight: Option<InFlight>,
     version: u64,
     /// Every handle is gone: no more work will come.
@@ -97,7 +115,7 @@ impl Broker {
     pub fn new(checkpoint_id: String, sample: SampleMode, opts: InferOptions) -> Result<(Self, InferenceHandle)> {
         let (tx, rx) = mpsc::channel();
         let cols = ActionColumns::current()?;
-        let b = Self { rx, opts, cols, used: vec![false; opts.capacity], pending: Vec::new(), resets: Vec::new(), states: Vec::new(), asked: Vec::new(), inflight: None, version: 0, closed: false };
+        let b = Self { rx, opts, cols, used: vec![false; opts.capacity], pending: Vec::new(), resets: Vec::new(), states: Vec::new(), asked: Vec::new(), restores: Vec::new(), restoring: Vec::new(), inflight: None, version: 0, closed: false };
         Ok((b, InferenceHandle::new(tx, checkpoint_id, sample, &opts)))
     }
 
@@ -132,12 +150,21 @@ impl Broker {
                 self.used[slot] = false;
                 self.pending.retain(|p| p.slot != slot);
                 self.resets.retain(|s| *s != slot);
+                self.restores.retain(|(s, _, _)| *s != slot);
             }
             Req::Act { slot, obs, reply } => self.pending.push(Pending { slot, obs, reply, since: Instant::now() }),
             Req::Swap { reply, .. } => {
                 let _ = reply.send(Err(anyhow!("this server swaps weights in its model thread (032-R16), not through the handle")));
             }
             Req::State { slot, reply } => self.states.push((slot, reply)),
+            Req::SetState { slot, state, reply } => match restore_shape_error(&state) {
+                // 051-R4: refused here when a part is not batch 1 or its values do not fill its
+                // shape; the model thread checks the shapes against the slot's state.
+                Some(e) => {
+                    let _ = reply.send(Err(anyhow!("state restore refused: {e}")));
+                }
+                None => self.restores.push((slot, state, reply)),
+            },
         }
     }
 
@@ -151,6 +178,7 @@ impl Broker {
     pub fn next(&mut self, timeout: Duration) -> Result<Option<Work>> {
         ensure!(self.inflight.is_none(), "the previous batch has no reply yet");
         ensure!(self.asked.is_empty(), "the previous state requests have no reply yet");
+        ensure!(self.restoring.is_empty(), "the previous restores have no reply yet");
         let deadline = Instant::now() + timeout;
         loop {
             loop {
@@ -163,7 +191,7 @@ impl Broker {
                     }
                 }
             }
-            if !self.resets.is_empty() || !self.states.is_empty() || self.due() {
+            if !self.resets.is_empty() || !self.restores.is_empty() || !self.states.is_empty() || self.due() {
                 return Ok(self.take());
             }
             let now = Instant::now();
@@ -187,6 +215,8 @@ impl Broker {
 
     fn take(&mut self) -> Option<Work> {
         let resets = std::mem::take(&mut self.resets);
+        let (restores, restoring): (Vec<_>, Vec<_>) = std::mem::take(&mut self.restores).into_iter().map(|(slot, st, reply)| ((slot, st), reply)).unzip();
+        self.restoring = restoring;
         let (states, asked): (Vec<usize>, Vec<_>) = std::mem::take(&mut self.states).into_iter().unzip();
         self.asked = asked;
         let batch = self.due().then(|| {
@@ -201,7 +231,21 @@ impl Broker {
             self.inflight = Some(InFlight { n: obs.n, batch, started: Instant::now() });
             WorkBatch { slots, obs, wait_mean, wait_max, formed_unix_ns: unix_ns() }
         });
-        (!resets.is_empty() || !states.is_empty() || batch.is_some()).then_some(Work { resets, states, batch })
+        (!resets.is_empty() || !restores.is_empty() || !states.is_empty() || batch.is_some()).then_some(Work { resets, restores, states, batch })
+    }
+
+    /// 051-R4: answers the restores of the last work, in its `restores` order: `None` = written,
+    /// `Some(reason)` = refused (the slot kept its state).
+    pub fn reply_restores(&mut self, errors: Vec<Option<String>>) -> Result<()> {
+        let restoring = std::mem::take(&mut self.restoring);
+        ensure!(errors.len() == restoring.len(), "{} restore results for {} restores", errors.len(), restoring.len());
+        for (e, reply) in errors.into_iter().zip(restoring) {
+            let _ = reply.send(match e {
+                None => Ok(()),
+                Some(msg) => Err(anyhow!("state restore refused: {msg}")),
+            });
+        }
+        Ok(())
     }
 
     /// Answers the state requests of the last work, in its `states` order.
@@ -245,7 +289,8 @@ impl Broker {
         Ok(())
     }
 
-    /// The model failed on the last batch (or state requests): every waiting session gets the error.
+    /// The model failed on the last batch (or state requests, restores): every waiting session
+    /// gets the error.
     pub fn fail(&mut self, msg: &str) {
         if let Some(f) = self.inflight.take() {
             for p in f.batch {
@@ -253,6 +298,9 @@ impl Broker {
             }
         }
         for reply in std::mem::take(&mut self.asked) {
+            let _ = reply.send(Err(anyhow!("inference failed: {msg}")));
+        }
+        for reply in std::mem::take(&mut self.restoring) {
             let _ = reply.send(Err(anyhow!("inference failed: {msg}")));
         }
     }
@@ -267,6 +315,9 @@ impl Broker {
             let _ = p.reply.send(Err(anyhow!("inference server stopped: {msg}")));
         }
         for (_, reply) in self.states.drain(..) {
+            let _ = reply.send(Err(anyhow!("inference server stopped: {msg}")));
+        }
+        for (_, _, reply) in self.restores.drain(..) {
             let _ = reply.send(Err(anyhow!("inference server stopped: {msg}")));
         }
         let open = self.used.iter().filter(|u| **u).count();
