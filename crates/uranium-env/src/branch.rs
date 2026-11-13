@@ -144,6 +144,14 @@ pub struct ObsLine {
     pub forced: bool,
 }
 
+impl ObsLine {
+    /// 051-R3: a saved state comes with its sha256, and a sha256 only with a state.
+    pub fn check_state(&self) -> Result<()> {
+        ensure!(self.state.is_some() == self.state_sha256.is_some(), "observation {}: `state` and `state_sha256` must be given together (051-R3)", self.i);
+        Ok(())
+    }
+}
+
 impl Serialize for ObsLine {
     /// Model lines (with `decision`) always carry `state` (`null` when none, 051-R2); T0 lines
     /// carry neither (051 Interfaces).
@@ -219,6 +227,7 @@ impl ActLog {
                 continue;
             }
             let line: ObsLine = serde_json::from_value(v).with_context(ctx)?;
+            line.check_state().with_context(ctx)?;
             ensure!(line.i as usize == lines.len(), "{}: observation index {} (expected {})", ctx(), line.i, lines.len());
             if let Some(prev) = lines.last() {
                 ensure!(line.frame > prev.frame, "{}: frame {} not after {}", ctx(), line.frame, prev.frame);
@@ -229,6 +238,9 @@ impl ActLog {
         let decisions = lines.iter().filter(|l| l.decision.is_some()).count() as u64;
         ensure!(end.obs == lines.len() as u64, "end line counts {} observations, the log holds {}", end.obs, lines.len());
         ensure!(end.decisions == decisions, "end line counts {} decisions, the log holds {decisions}", end.decisions);
+        if let Some(last) = lines.last() {
+            ensure!(end.end_frame >= last.frame, "end frame {} before the last observation's frame {}", end.end_frame, last.frame);
+        }
         Ok(Self { lines, end })
     }
 
@@ -268,6 +280,7 @@ impl<W: Write> ActLogWriter<W> {
     /// Appends one observation line; its index must be the next one.
     pub fn push(&mut self, line: &ObsLine) -> Result<()> {
         ensure!(line.i as u64 == self.obs, "act log: observation index {} (expected {})", line.i, self.obs);
+        line.check_state()?;
         serde_json::to_writer(&mut self.w, line)?;
         self.w.write_all(b"\n")?;
         self.obs += 1;
@@ -495,6 +508,7 @@ pub fn encode_state(parts: &[(Vec<usize>, Vec<f32>)]) -> Result<Vec<u8>> {
     out.extend_from_slice(&u32_of(parts.len(), "part count")?.to_le_bytes());
     for (k, (shape, data)) in parts.iter().enumerate() {
         let n: usize = shape.iter().product();
+        ensure!(!shape.is_empty(), "state part {k}: rank 0 (every Core state part has a batch dimension, 032-R16)");
         ensure!(n == data.len(), "state part {k}: shape {shape:?} holds {n} values, given {}", data.len());
         out.extend_from_slice(&u32_of(shape.len(), "rank")?.to_le_bytes());
         for &d in shape {
@@ -526,6 +540,7 @@ pub fn decode_state(bytes: &[u8]) -> Result<Vec<(Vec<usize>, Vec<f32>)>> {
     let mut out = Vec::new();
     for _ in 0..parts {
         let rank = c.word()? as usize;
+        ensure!(rank > 0, "state part of rank 0");
         let shape = (0..rank).map(|_| c.word().map(|d| d as usize)).collect::<Result<Vec<_>>>()?;
         let n = shape.iter().try_fold(1usize, |a, &d| a.checked_mul(d)).context("state part too large")?;
         ensure!(n <= c.0.len() / 4, "state file truncated");
@@ -643,10 +658,13 @@ impl Intervention {
             let ctx = || format!("alternative `{}` rule {} {}", alt.name, op_name(r.op), r.action);
             let id = action_id(table, &r.action).with_context(ctx)?;
             ensure!(r.from_s < r.to_s || r.t_only(), "{}: empty window {}..{} s", ctx(), r.from_s, r.to_s);
+            // 051-R7 ③: NoOp is closed only by a force; a NoOp ban is a configuration error.
+            ensure!(!(r.op == Op::Ban && id == 0), "{}: NoOp cannot be banned (051-R7 ③)", ctx());
+            let at = |s: u32| s.checked_mul(FRAMES_PER_SECOND).and_then(|d| f_t.checked_add(d)).with_context(|| format!("{}: window frame overflows u32", ctx()));
             let (start, end) = if r.t_only() {
-                (f_t, f_t + 1)
+                (f_t, f_t.checked_add(1).with_context(|| format!("{}: f_t {f_t} overflows u32", ctx()))?)
             } else {
-                (f_t + r.from_s * FRAMES_PER_SECOND, f_t + r.to_s * FRAMES_PER_SECOND)
+                (at(r.from_s)?, at(r.to_s)?)
             };
             let log = RuleLog { rule: r.clone(), in_window: 0, applied: 0, force_frame: None, missed: false, rejected: None };
             rules.push(ActiveRule { id, start, end, log });
@@ -687,6 +705,9 @@ impl Intervention {
                 m.iter_mut().enumerate().for_each(|(k, b)| *b = k == i);
                 r.log.force_frame = Some(frame);
                 r.log.applied += 1;
+            } else if r.log.rule.t_only() {
+                // 051-R7 ①: a one-decision force whose action is closed at t is missed at t.
+                r.log.missed = true;
             }
         }
         debug_assert!(m.iter().any(|&b| b) || !type_mask.iter().any(|&b| b), "051-R7: intervention emptied the mask");
@@ -782,7 +803,7 @@ impl SampleTracker {
         let f_t = self.f_t;
         let x = &mut self.samples;
         for (slot, secs) in [(&mut x.t60, 60), (&mut x.t120, 120), (&mut x.t240, 240)] {
-            if slot.is_none() && frame >= f_t + secs * FRAMES_PER_SECOND {
+            if slot.is_none() && frame >= f_t.saturating_add(secs * FRAMES_PER_SECOND) {
                 *slot = s();
             }
         }
@@ -834,14 +855,16 @@ impl DilutionTracker {
         Ok(Self { f_t, entries })
     }
 
-    /// One sampled decision; decisions at or before f_t are ignored.
+    /// One sampled decision; decisions at or before f_t are ignored. A decision after t that a
+    /// windowed `force` (not `0/0`) narrowed to the action counts as a pick too: tell it apart
+    /// with that rule's `RuleLog::force_frame`.
     pub fn on_decision(&mut self, frame: u32, action: u16) {
         if frame <= self.f_t {
             return;
         }
         for (_, e) in self.entries.iter_mut().filter(|(id, _)| *id == action) {
             e.first_frame.get_or_insert(frame);
-            if frame < self.f_t + 30 * FRAMES_PER_SECOND {
+            if frame < self.f_t.saturating_add(30 * FRAMES_PER_SECOND) {
                 e.picks_30s += 1;
             }
         }
@@ -889,7 +912,52 @@ impl BranchEnd {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct StateCheck {
     pub bit_equal: bool,
-    pub max_abs_diff: f64,
+    /// `None` when the difference is not a finite number (NaN or infinity in a state): JSON has
+    /// no such numbers, so the record stays readable.
+    pub max_abs_diff: Option<f64>,
+}
+
+impl StateCheck {
+    pub fn new(bit_equal: bool, max_abs_diff: f64) -> Self {
+        Self { bit_equal, max_abs_diff: max_abs_diff.is_finite().then_some(max_abs_diff) }
+    }
+}
+
+/// 051-R11 ④ (B1) outcome metric keys in `metrics` / `trunk_outcome`, primary first: `held_8m`
+/// (050-R6 ③) and `held_s` (050-R7), then `scv_8m`, `scv_min_1m`, `bunker_s`, `barracks_s`,
+/// `army_s` (the model session's 050-R7 metrics). The session, the plan tools and the analysis
+/// read the names from here.
+pub const OUTCOME_METRICS: &[&str] = &["held_8m", "held_s", "scv_8m", "scv_min_1m", "bunker_s", "barracks_s", "army_s"];
+
+/// Records written as JSON lines must hold finite floats only: serde_json writes NaN and
+/// infinities as `null`, which would not read back (051-R12).
+pub trait FiniteRecord {
+    fn check_finite(&self) -> Result<()>;
+}
+
+fn finite(what: &str, v: &[f32]) -> Result<()> {
+    if let Some(k) = v.iter().position(|x| !x.is_finite()) {
+        bail!("{what}[{k}] = {} is not finite", v[k]);
+    }
+    Ok(())
+}
+
+impl FiniteRecord for Samples {
+    fn check_finite(&self) -> Result<()> {
+        for (name, s) in [("t60", &self.t60), ("t120", &self.t120), ("t240", &self.t240), ("horizon", &self.horizon), ("d8", &self.d8), ("d32", &self.d32)] {
+            if let Some(s) = s {
+                finite(&format!("samples.{name}.scalar"), &s.scalar)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn finite_state_check(c: &Option<StateCheck>) -> Result<()> {
+    if let Some(d) = c.as_ref().and_then(|c| c.max_abs_diff) {
+        ensure!(d.is_finite(), "state_check.max_abs_diff = {d} is not finite");
+    }
+    Ok(())
 }
 
 /// 051-R9: what a branch game's model session leaves in its session result.
@@ -908,6 +976,13 @@ pub struct BranchOutcome {
     pub metrics: serde_json::Map<String, serde_json::Value>,
     pub dilution: Vec<DilutionEntry>,
     pub end: Option<BranchEnd>,
+}
+
+impl FiniteRecord for BranchOutcome {
+    fn check_finite(&self) -> Result<()> {
+        finite_state_check(&self.state_check)?;
+        self.samples.check_finite()
+    }
 }
 
 /// 051-R10: one line of a branch list (`branches`, one per plan game, in plan order).
@@ -932,6 +1007,12 @@ pub struct BranchPlanLine {
     pub opponent: String,
     pub alt: Alternative,
     pub repeat: u32,
+}
+
+impl FiniteRecord for BranchPlanLine {
+    fn check_finite(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// 051-R12 `trunk` of `points.jsonl`.
@@ -968,6 +1049,11 @@ pub struct PointRecord {
     pub t0_policy: String,
     pub git: String,
     pub schemas: Schemas,
+    /// The trunk game's inference backend and precision (032-R8) and inference server seed
+    /// (051-R8, 051-R12).
+    pub backend: String,
+    pub precision: String,
+    pub infer_seed: Option<u64>,
     pub i_t: u32,
     pub f_t: u32,
     #[serde(with = "hex_u64")]
@@ -982,6 +1068,12 @@ pub struct PointRecord {
     pub trunk_outcome: serde_json::Map<String, serde_json::Value>,
     pub valid: bool,
     pub skip_reason: Option<String>,
+}
+
+impl FiniteRecord for PointRecord {
+    fn check_finite(&self) -> Result<()> {
+        finite("scalar_t", &self.scalar_t)
+    }
 }
 
 /// 051-R12 `game` of `branches.jsonl`.
@@ -1031,6 +1123,13 @@ pub struct BranchRecord {
     pub end: Option<BranchEnd>,
 }
 
+impl FiniteRecord for BranchRecord {
+    fn check_finite(&self) -> Result<()> {
+        finite_state_check(&self.state_check)?;
+        self.samples.check_finite()
+    }
+}
+
 /// Reads a JSON-lines file of `T` (blank lines skipped).
 pub fn read_jsonl<T: serde::de::DeserializeOwned>(r: impl BufRead) -> Result<Vec<T>> {
     let mut out = vec![];
@@ -1044,8 +1143,11 @@ pub fn read_jsonl<T: serde::de::DeserializeOwned>(r: impl BufRead) -> Result<Vec
     Ok(out)
 }
 
-/// Writes `rows` as JSON lines.
-pub fn write_jsonl<T: Serialize>(mut w: impl Write, rows: &[T]) -> Result<()> {
+/// Writes `rows` as JSON lines; refuses a row with a non-finite float before writing anything.
+pub fn write_jsonl<T: Serialize + FiniteRecord>(mut w: impl Write, rows: &[T]) -> Result<()> {
+    for (n, r) in rows.iter().enumerate() {
+        r.check_finite().with_context(|| format!("row {}", n + 1))?;
+    }
     for r in rows {
         serde_json::to_writer(&mut w, r)?;
         w.write_all(b"\n")?;

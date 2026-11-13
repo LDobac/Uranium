@@ -232,6 +232,22 @@ fn branch_act_log_without_end_is_refused_051_ac1() {
     // Bad digest text.
     let bad = text.replacen("9f1c000000000000", "9f1c", 1);
     assert!(ActLog::read(bad.as_bytes()).is_err());
+    // 051-R3: a state without its sha256 (or the reverse) is refused on write and on read.
+    let mut l = model_line(0, 0, 0, act(vec![], 1));
+    l.state = Some("g0-o0".into());
+    assert!(ActLogWriter::new(Vec::new()).push(&l).is_err());
+    l.state = None;
+    l.state_sha256 = Some(sha256_hex(b"s"));
+    assert!(ActLogWriter::new(Vec::new()).push(&l).is_err());
+    let no_sha = text.replacen(r#","state_sha256":""#, r#","x":""#, 1);
+    assert_ne!(no_sha, text);
+    assert!(format!("{:#}", ActLog::read(no_sha.as_bytes()).unwrap_err()).contains("state_sha256"));
+    // The end frame cannot come before the last observation.
+    let mut log = model_log();
+    log.end.end_frame = log.lines.last().unwrap().frame - 1;
+    let mut buf = Vec::new();
+    log.write(&mut buf).unwrap();
+    assert!(ActLog::read(&buf[..]).unwrap_err().to_string().contains("end frame"));
 }
 
 fn raw_frame(frame: u32, minerals: i32) -> RawFrame {
@@ -332,7 +348,7 @@ fn branch_snapshot_rules_051_ac1() {
 #[test]
 fn branch_state_file_round_trip_bits_051_ac1() {
     let odd = [f32::from_bits(0x7fc0_1234), -0.0, f32::from_bits(1), f32::INFINITY, f32::NEG_INFINITY, f32::MIN_POSITIVE, 1.5, -3.25];
-    let parts = vec![(vec![2, 4], odd.to_vec()), (vec![1, 0, 3], vec![]), (vec![], vec![42.0]), (vec![3], vec![0.1, 0.2, 0.3])];
+    let parts = vec![(vec![2, 4], odd.to_vec()), (vec![1, 0, 3], vec![]), (vec![1], vec![42.0]), (vec![3], vec![0.1, 0.2, 0.3])];
     let bytes = encode_state(&parts).unwrap();
     let back = decode_state(&bytes).unwrap();
     assert_eq!(back.len(), parts.len());
@@ -352,6 +368,13 @@ fn branch_state_file_round_trip_bits_051_ac1() {
     magic[0] = b'X';
     assert!(decode_state(&magic).is_err());
     assert!(encode_state(&[(vec![2, 2], vec![1.0])]).is_err(), "shape and values disagree");
+    // Rank-0 parts are refused both ways.
+    assert!(encode_state(&[(vec![], vec![1.0])]).is_err());
+    let mut rank0 = b"URST".to_vec();
+    for w in [1u32, 1, 0, 1.0f32.to_bits()] {
+        rank0.extend_from_slice(&w.to_le_bytes());
+    }
+    assert!(decode_state(&rank0).unwrap_err().to_string().contains("rank 0"));
 }
 
 fn alt(rules: &[(Op, &str, u32, u32)]) -> Alternative {
@@ -391,9 +414,10 @@ fn branch_force_missed_051_ac1() {
     let t = action_table();
     let f_t = 1000;
     let marine = mask_with(&["Train_Marine"]);
-    // 0/0 and closed at t: missed at the next decision, never forced later.
+    // 0/0 and closed at t: missed at t itself, never forced later.
     let mut iv = Intervention::new(&alt(&[(Op::Force, "Build_Bunker", 0, 0)]), t, f_t).unwrap();
     assert_eq!(iv.apply(f_t, &marine), marine);
+    assert!(iv.log()[0].missed, "missed at t");
     assert_eq!(iv.apply(f_t + 8, &mask_with(&["Build_Bunker"])), mask_with(&["Build_Bunker"]));
     let log = &iv.log()[0];
     assert!(log.missed && log.force_frame.is_none() && log.rejected.is_none());
@@ -433,10 +457,15 @@ fn branch_ban_window_and_close_only_051_ac1() {
     let mut iv = Intervention::new(&alt(&[(Op::Ban, "Build_Bunker", 0, 0)]), t, f_t).unwrap();
     assert_eq!(iv.apply(f_t, &m), closed);
     assert_eq!(iv.apply(f_t + 1, &m), m);
-    // NoOp under a ban stays open; a NoOp-only mask stays non-empty.
-    let mut iv = Intervention::new(&alt(&[(Op::Ban, "NoOp", 0, 90)]), t, f_t).unwrap();
-    assert_eq!(iv.apply(f_t, &mask_with(&[])), mask_with(&[]));
-    assert_eq!(iv.log()[0].applied, 0);
+    // NoOp stays open under bans; a NoOp ban is refused as a configuration error (051-R7 ③).
+    let mut iv = Intervention::new(&alt(&[(Op::Ban, "Build_Bunker", 0, 90), (Op::Ban, "Train_Marine", 0, 90)]), t, f_t).unwrap();
+    assert_eq!(open(&iv.apply(f_t, &m)), vec!["NoOp"]);
+    let err = Intervention::new(&alt(&[(Op::Ban, "NoOp", 0, 90)]), t, f_t).unwrap_err();
+    assert!(format!("{err:#}").contains("NoOp cannot be banned"), "{err:#}");
+    // Window frames that overflow u32 are refused.
+    assert!(Intervention::new(&alt(&[(Op::Ban, "Build_Bunker", 0, u32::MAX / 24 + 1)]), t, f_t).is_err());
+    assert!(Intervention::new(&alt(&[(Op::Ban, "Build_Bunker", 0, 90)]), t, u32::MAX - 100).is_err());
+    assert!(Intervention::new(&alt(&[(Op::Force, "Build_Bunker", 0, 0)]), t, u32::MAX).is_err());
     // A force never opens a closed bit, under any rule mix; the mask never empties.
     let mut iv = Intervention::new(&alt(&[(Op::Force, "Build_Bunker", 0, 90), (Op::Ban, "Build_Bunker", 0, 30), (Op::Ban, "Train_Marine", 0, 90)]), t, f_t).unwrap();
     for (k, frame) in [f_t, f_t + 8, f_t + 30 * 24].into_iter().enumerate() {
@@ -615,7 +644,7 @@ fn branch_records_round_trip_051_r12() {
         valid: true,
         invalid: None,
         prefix: PrefixRecord { obs: 412, matched: 412, opponent: Some(PrefixCompare { obs: 300, matched: 300, first_mismatch_frame: Some(3264) }) },
-        state_check: Some(StateCheck { bit_equal: true, max_abs_diff: 0.0 }),
+        state_check: Some(StateCheck::new(true, 0.0)),
         intervention: iv.log(),
         samples: Samples { t60: Some(Sample { frame: 4700, scalar: vec![0.1, -2.5, f32::MIN_POSITIVE] }), ..Default::default() },
         metrics,
@@ -642,6 +671,9 @@ fn branch_records_round_trip_051_r12() {
         t0_policy: "t0@1".into(),
         git: "g".into(),
         schemas: Schemas { feature: 7, action: 2 },
+        backend: "rocm".into(),
+        precision: "f32".into(),
+        infer_seed: Some(11),
         i_t: 412,
         f_t: 3256,
         digest_t: u64::MAX - 1,
@@ -660,4 +692,31 @@ fn branch_records_round_trip_051_r12() {
     assert_eq!(act_log_name(3, 1), "g3-p1.jsonl");
     let o = BranchOutcome { valid: true, intervention: iv.log(), ..Default::default() };
     assert_eq!(serde_json::from_str::<BranchOutcome>(&serde_json::to_string(&o).unwrap()).unwrap(), o);
+    // write_jsonl round trips both record kinds.
+    let mut buf = Vec::new();
+    write_jsonl(&mut buf, std::slice::from_ref(&rec)).unwrap();
+    assert_eq!(read_jsonl::<BranchRecord>(&buf[..]).unwrap(), vec![rec.clone()]);
+    let mut buf = Vec::new();
+    write_jsonl(&mut buf, std::slice::from_ref(&p)).unwrap();
+    assert_eq!(read_jsonl::<PointRecord>(&buf[..]).unwrap(), vec![p.clone()]);
+
+    // Non-finite floats would come back as unreadable nulls: refused before anything is written,
+    // and a non-finite state difference is recorded as None.
+    assert_eq!(StateCheck::new(false, f64::NAN).max_abs_diff, None);
+    assert_eq!(StateCheck::new(false, f64::INFINITY).max_abs_diff, None);
+    assert_eq!(StateCheck::new(false, 0.5).max_abs_diff, Some(0.5));
+    let mut bad = rec.clone();
+    bad.samples.d8 = Some(Sample { frame: 1, scalar: vec![0.0, f32::NAN] });
+    let mut buf = Vec::new();
+    let err = write_jsonl(&mut buf, &[rec.clone(), bad]).unwrap_err();
+    assert!(format!("{err:#}").contains("samples.d8.scalar[1]"), "{err:#}");
+    assert!(buf.is_empty(), "nothing written");
+    let mut bad = rec.clone();
+    bad.state_check = Some(StateCheck { bit_equal: false, max_abs_diff: Some(f64::NAN) });
+    assert!(write_jsonl(Vec::new(), &[bad]).is_err());
+    let mut bad = p.clone();
+    bad.scalar_t = vec![f32::NEG_INFINITY];
+    assert!(write_jsonl(Vec::new(), &[bad]).is_err());
+    // The B1 metric keys (051-R11 ④), primary first.
+    assert_eq!(&OUTCOME_METRICS[..2], &["held_8m", "held_s"]);
 }
