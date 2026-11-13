@@ -271,6 +271,17 @@ def test_branch_plan_refusals_051_r10(tmp_path, case):
     rush = bp.rush_blocks(bp.load_config(CONFIG))[tj.games[0]["map"]]
     assert seed == next(x for x in rush if x not in used and cond(x) == cond(tj.games[0]["seed"]))
     assert r["snapshots"] == tj.plan["snapshots"] and r["max_frames"] == 11568
+    assert r["name"] == "branch-b1-trunk-r"
+    if case == "incomplete":
+        # A second replacement round: the first replacement stage (`rep`, in the trunk job's plans) is a
+        # stage of the trunk job, so the new one gets -r2.
+        assert rep.parent == tj.job / "plans"
+        (tj.job / "job.toml").write_text("stages = ['plans/trunk.toml', 'plans/trunk-r.toml']\nhosts = 'hosts.toml'\n", encoding="utf-8")
+        rep2 = tmp_path / "trunk-r2.toml"
+        bp.build(args(tj, out, replacements=str(rep2)))
+        assert tomllib.loads(rep2.read_text(encoding="utf-8"))["name"] == "branch-b1-trunk-r2"
+        with pytest.raises(bp.Refused, match="already has that stage"):
+            bp.build(args(tj, out, replacements=str(rep2), replacement_name="branch-b1-trunk-r"))
 
 
 def branch_job(tmp_path: Path, tj: TrunkJob) -> Path:
@@ -359,6 +370,17 @@ def test_branch_stages_left_out_of_tables_050(tmp_path):
     (job / "plans" / "b.toml").write_text("name = 'b'\nact_log = true\n[[matchup]]\nmap = 'both'\ngames = 1\np0 = {kind = 't0', race = 'terran'}\np1 = {kind = 't0', race = 'zerg'}\n", encoding="utf-8")
     (job / "job.toml").write_text("stages = ['plans/b.toml']\nhosts = 'h.toml'\n", encoding="utf-8")
     assert tables.job_tables(job, tmp_path / "cache", override={"b": "winrate"}, lin=lin) == {}
+
+
+def test_act_log_cut_short_is_incomplete_051_r2(tmp_path):
+    """051-R2: a log whose last line was cut mid-write is incomplete: lenient reads keep the lines before it
+    (no end line), strict reads refuse it (no JSONDecodeError escapes)."""
+    p = tmp_path / "g1-p1.jsonl"
+    p.write_text('{"i":0,"frame":1,"digest":"a"}\n{"i":1,"frame":9,"digest":"b"}\n{"i":2,"fra', encoding="utf-8")
+    log = bc.ActLog.read(p, lenient=True)
+    assert log.end is None and [x["i"] for x in log.lines] == [0, 1]
+    with pytest.raises(bc.Refused, match="not JSON"):
+        bc.ActLog.read(p)
 
 
 def test_compare_prefix_matches_rust_051_r12():

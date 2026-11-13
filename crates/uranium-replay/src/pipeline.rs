@@ -503,6 +503,22 @@ pub fn check_build_args(src: &str, relabel: bool, memory_log: Option<&Path>, out
     Ok(())
 }
 
+/// 051-R13 ④ branch trunk builds: `--time-limit` (the trunk plan's `max_frames` = H + 48) is
+/// required, because every trunk ends at the time limit (without it the first leave counts as a
+/// player leaving and the 040-R8 desync checks can drop a view, and with it its points); and the
+/// records file name must start with `branch` (the resume scan reads the records files of the
+/// source by that prefix; a records file it does not see makes a second run build every view again,
+/// and the repeated replay hashes then make the dump's view lookup ambiguous).
+pub fn check_branch_build(src: &str, records: &Path, time_limit: Option<u32>) -> Result<()> {
+    if src != BRANCH_SRC {
+        return Ok(());
+    }
+    anyhow::ensure!(time_limit.is_some(), "--src {BRANCH_SRC} needs --time-limit <the trunk plan's max_frames, H + 48> (051-R1, 051-R13 4: trunks end at the time limit)");
+    let name = records.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    anyhow::ensure!(name.starts_with(BRANCH_SRC) && name.ends_with(".jsonl"), "--records {}: the file name must start with `{BRANCH_SRC}` and end with .jsonl (the resume scan reads `<source>*.jsonl`)", records.display());
+    Ok(())
+}
+
 /// `p` is `root` or below it (absolute paths compared component by component; ASCII case-insensitive
 /// on Windows).
 fn path_within(p: &Path, root: &Path) -> bool {
@@ -970,6 +986,12 @@ mod tests {
             let upper = PathBuf::from(root.to_string_lossy().to_uppercase()).join("x");
             assert!(!ok("branch", false, Some(&dir), Some(&upper)));
         }
+        // A branch build needs --time-limit and a records file named `branch*.jsonl` (resume scan).
+        let rec = |n: &str| dir.join(n);
+        assert!(check_branch_build("branch", &rec("branch_build.jsonl"), Some(11_568)).is_ok());
+        assert!(check_branch_build("branch", &rec("branch_build.jsonl"), None).is_err());
+        assert!(check_branch_build("branch", &rec("build_records.jsonl"), Some(11_568)).is_err());
+        assert!(check_branch_build("botgen", &rec("x.jsonl"), None).is_ok(), "other sources unchanged");
         assert!(!ok("dagger", false, Some(&dir), None), "dagger needs --relabel (041-R22)");
         assert!(!ok("botgen", true, None, None), "--relabel only with dagger (041-R22)");
         assert!(!ok("branch", false, Some(Path::new("no/such/memory")), Some(&eval)));

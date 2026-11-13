@@ -348,6 +348,7 @@ fn main() -> Result<()> {
             // 041-R28: the BC shards root (the default `--out` parent) that branch trunk shards stay out of.
             let bc_shards_root = std::env::var_os("URANIUM_SHARED_DIR").map(|d| PathBuf::from(d).join("datasets/replays/shards"));
             uranium_replay::pipeline::check_build_args(&src, relabel.is_some(), memory_log.as_deref(), out.as_deref(), bc_shards_root.as_deref())?;
+            uranium_replay::pipeline::check_branch_build(&src, &records, time_limit)?;
             let memory_log = memory_log.as_deref().map(uranium_replay::act_log::MemoryLogDir::open).transpose()?;
             let relabel = relabel.as_deref().map(uranium_replay::relabel::teacher_build).transpose()?;
             let skip_sha256 = match skip_hashes {
