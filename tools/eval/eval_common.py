@@ -225,6 +225,16 @@ def ledger_backends(ledger: list[dict]) -> dict[str, int]:
     return out
 
 
+# 020-R22 plan keys of branch games (051): a plan with one of them plays trunks or branches.
+BRANCH_KEYS = ("act_log", "snapshots", "branches", "verify_state")
+
+
+def is_branch_plan(plan: dict) -> bool:
+    """050 "분기 게임(051)": branch-game stages (a 020-R22 key set, as `Plan::uses_branch_keys`) are never part
+    of an evaluation table, the lineage measurement (050-R9) or the gate (050-R3 / 050-R10)."""
+    return any(plan.get(k) for k in BRANCH_KEYS)
+
+
 def plan_seeds(plan: dict) -> list[int]:
     total = sum(m["games"] for m in plan["matchup"])
     if "seeds" in plan:

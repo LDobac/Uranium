@@ -155,7 +155,10 @@ def render(lin: dict, plan_id: str, checkpoint: str, name: str) -> str:
 
 
 def identify(lin: dict, plan: dict) -> str | None:
-    """Protocol plan id whose template has exactly this plan's conditions, else None."""
+    """Protocol plan id whose template has exactly this plan's conditions, else None. A branch-game plan
+    (020-R22 keys, 051) is never a protocol plan (050: not in the lineage measurement or the gate)."""
+    if ec.is_branch_plan(plan):
+        return None
     h = conditions_sha256(plan)
     for pid, spec in lin["plan"].items():
         if spec["conditions_sha256"] == h:
@@ -1143,7 +1146,8 @@ def verify_job(lin: dict, job: Path, lineage: str, pt: dict) -> list[str]:
     for k, f, plan in ec.job_stages(job):
         pid = identify(lin, plan)
         if pid is None:
-            problems.append(f"stage {k} {f.name}: conditions match no protocol plan")
+            why = "a branch-game plan (051) is never a lineage measurement" if ec.is_branch_plan(plan) else "conditions match no protocol plan"
+            problems.append(f"stage {k} {f.name}: {why}")
             continue
         if pid not in allowed:
             problems.append(f"stage {k} {f.name}: plan {pid} is not in the menu of point {pt['id']} ({pt['family']})")
