@@ -21,7 +21,8 @@ with a decision; the state file exists with that sha256; the checkpoint's `model
 with the act log policy's 12 hex digits; the T0 policy is `t0@<workspace version>` (`--t0-policy`); both
 logs' feature / action schemas are those of the built `uranium._core` (`--schemas F,A`). A point that fails
 is written with `valid = false` and its `skip_reason`; a rule that never fired, or fired on the decision of
-an earlier rule (two points on one decision count once, 051-R11 ①), has no record and is listed in
+an earlier rule (two points on one decision count once: rules without `after_rule`; a rule with it moves
+off its earlier rule's decision in the game, 051-R3, 051-R11 ①), has no record and is listed in
 `branch_plan.json`. A trunk is used when every config point is valid; per (map, condition) the first
 `hit` / `miss` usable trunks in rush-plan seed order are used (later ones `cell full`). A short cell is
 reported, and `--replacements <plan.toml>` writes a trunk stage with the next seeds of that map and
@@ -79,8 +80,9 @@ def load_config(path: Path) -> dict:
         # 051-R3 after_rule / after_s (user decision 2026-11-13): an earlier rule, both keys together.
         if ("after_rule" in s) != ("after_s" in s):
             raise Refused(f"{path}: snapshot rule {s['name']}: after_rule and after_s go together (051-R3)")
-        if "after_rule" in s and (s["after_rule"] not in names[:names.index(s["name"])] or int(s["after_s"]) < 0):
-            raise Refused(f"{path}: snapshot rule {s['name']}: after_rule {s['after_rule']} must be an earlier rule, after_s >= 0 (051-R3)")
+        if "after_rule" in s and (s["after_rule"] not in names[:names.index(s["name"])] or not isinstance(s["after_s"], int)
+                                  or isinstance(s["after_s"], bool) or not 0 <= s["after_s"] < 2**32 // 24):
+            raise Refused(f"{path}: snapshot rule {s['name']}: after_rule {s['after_rule']} must be an earlier rule, after_s an integer >= 0 (051-R3)")
     alts = [a["name"] for a in cfg["alternative"]]
     if len(set(alts)) != len(alts):
         raise Refused(f"{path}: alternative names must be unique")
@@ -335,7 +337,7 @@ def read_trunk(t: Trunk, sd: Path, game: dict | None, recs: list[dict], rules: l
             t.missing[rule] = "rule did not fire (051-R3)"
             continue
         if ent["state"] in seen:
-            t.missing[rule] = f"same decision as {seen[ent['state']]} (counts once, 051-R11 1)"
+            t.missing[rule] = f"same decision as {seen[ent['state']]} (counts once: a rule without after_rule, 051-R3, 051-R11 1)"
             continue
         seen[ent["state"]] = rule
         i = int(ent["i"])

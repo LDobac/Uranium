@@ -402,7 +402,8 @@ def test_config_checks_051_r7(tmp_path):
     for old, new in (('"Train_Marine"', '"Train_Marne"'), ("from_s = 0, to_s = 90", "from_s = 90, to_s = 0"),
                      ('op = "ban", action = "Build_Bunker"', 'op = "ban", action = "NoOp"'), ('name = "force_marine"', 'name = "none"'),
                      # 051-R3 after_rule: an earlier rule, with after_s.
-                     ('after_rule = "b1-p1"', 'after_rule = "b1-p2"'), ('after_s = 30\n', '\n')):
+                     ('after_rule = "b1-p1"', 'after_rule = "b1-p2"'), ('after_s = 30\n', '\n'), ('after_s = 30\n', 'after_s = 30.5\n'),
+                     ('after_s = 30\n', 'after_s = "30"\n')):
         assert old in base
         p.write_text(base.replace(old, new), encoding="utf-8")
         with pytest.raises(bc.Refused):

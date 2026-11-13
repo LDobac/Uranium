@@ -477,7 +477,8 @@ impl Snapshots {
                 (None, None) => None,
                 (Some(a), Some(s)) => {
                     let i = out.iter().position(|(x, _, _): &(SnapshotRule, Vec<u16>, _)| &x.name == a).with_context(|| format!("snapshot rule `{}`: after_rule `{a}` is not an earlier rule (051-R3)", r.name))?;
-                    Some((i, s * FRAMES_PER_SECOND))
+                    let delay = s.checked_mul(FRAMES_PER_SECOND).with_context(|| format!("snapshot rule `{}`: after_s {s} overflows the frame count (051-R3)", r.name))?;
+                    Some((i, delay))
                 }
                 _ => anyhow::bail!("snapshot rule `{}`: after_rule and after_s go together (051-R3)", r.name),
             };

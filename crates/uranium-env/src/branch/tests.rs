@@ -343,6 +343,7 @@ fn branch_snapshot_after_rule_051_r3() {
     let mut half = rule("b", 0, 9, &[]);
     half.after_s = Some(3);
     assert!(Snapshots::new(&[rule("a", 0, 9, &[]), half], t).is_err());
+    assert!(Snapshots::new(&[rule("a", 0, 9, &[]), after(rule("b", 0, 9, &[]), "a", u32::MAX)], t).is_err(), "after_s overflow");
     // The plan form.
     let r: SnapshotRule = toml::from_str("name = \"b1-p2\"\nfrom_frame = 3960\nto_frame = 5760\nany_open = [\"Build_Bunker\"]\nafter_rule = \"b1-p1\"\nafter_s = 30").unwrap();
     assert_eq!(r, b1()[1]);
