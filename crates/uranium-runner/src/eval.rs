@@ -16,6 +16,8 @@
 //! - `leaving/<host addr>`: a game host that gets no new game (its worker is stopping).
 //! - `<stage>/replays/g<plan id>.rep`; `<stage>/games.jsonl`, `results.jsonl`, `summary.md`,
 //!   `sessions.md`: the merged view `eval-status` writes (plan ids, last attempt of each game).
+//! - `<stage>/acts/g<plan id>-p<players index>.jsonl`, `<stage>/states/g<plan id>-o<obs>.state`:
+//!   act logs and state files of a stage whose plan has the 020-R22 keys (051).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::BufWriter;
@@ -548,6 +550,15 @@ impl JobSource for LedgerSource {
         let stage = self.job.stages.get(k.0)?;
         stage.plan.memory_log.then(|| self.job.sub(&stage.name).join("memory").join(crate::memory_log_name(k.1)))
     }
+
+    /// 020-R22 / 020-R15 ①: a stage with 051 keys puts each game's act logs in `<stage>/acts/`
+    /// and state files in `<stage>/states/`, named by plan game number (a game played again
+    /// overwrites them); branch list paths are under `URANIUM_SHARED_DIR` (061).
+    fn game_branch(&self, job: &Job) -> Result<Option<uranium_env::branch::GameBranch>> {
+        let k = key_of(job.spec.game_id);
+        let Some(stage) = self.job.stages.get(k.0) else { return Ok(None) };
+        stage.plan.game_branch(k.1, &self.job.sub(&stage.name), plan::shared_dir_env().as_deref())
+    }
 }
 
 /// 020-R15 ⑥: plays the source's games on the job's hosts until the source ends. The hosts file
@@ -744,6 +755,8 @@ pub struct EvalWorker {
     routes: Routes,
     builds: T0Builds,
     ends: EndBoard,
+    /// 020-R22: per-game 051 settings for the agent sessions.
+    branches: uranium_env::branch::BranchBoard,
     lease: Arc<Mutex<Option<Lease>>>,
     /// Games this process recorded as final, kept across lease periods: a period's first ledger
     /// read must not hand them out again even if the share does not show the record yet.
@@ -765,7 +778,13 @@ impl EvalWorker {
     pub fn start(job_dir: &Path, cfg: StorageConfig, priority: i32, backend: &str, local_hostd: Option<String>, stop: Arc<AtomicUsize>, listen: &str) -> Result<Self> {
         let job = Arc::new(EvalJob::load(job_dir)?);
         storage::check_name(&cfg.host)?;
+        for s in &job.stages {
+            crate::check_branch_support(&s.plan)?;
+            s.plan.check_branch_paths(plan::shared_dir_env().as_deref())?;
+        }
         let (routes, builds, ends) = (Routes::default(), T0Builds::default(), EndBoard::default());
+        // TODO(051 U3): hand `branches` to the agent server with the other boards.
+        let branches = uranium_env::branch::BranchBoard::default();
         let results = job.sub("results").join(format!("{}.jsonl", cfg.host));
         let agent_addr = crate::start_agent(listen, &results, &unit_rejections_file(&job, &cfg.host), routes.clone(), builds.clone(), ends.clone(), Default::default())?;
         elog!("[eval] job {} ({} stages, {} games), host {} priority {} backend {}, agent at {agent_addr}", job.dir.display(), job.stages.len(), job.keys().len(), cfg.host, priority, backend);
@@ -790,6 +809,7 @@ impl EvalWorker {
             routes,
             builds,
             ends,
+            branches,
             lease: Arc::new(Mutex::new(None)),
             recorded: Mutex::new(HashSet::new()),
             lost: Arc::new(AtomicBool::new(false)),
@@ -1018,7 +1038,7 @@ impl EvalWorker {
                 }
             }
         }
-        let mut dispatch = Dispatch::new(self.routes.clone(), models, self.builds.clone()).with_ends(self.ends.clone());
+        let mut dispatch = Dispatch::new(self.routes.clone(), models, self.builds.clone()).with_ends(self.ends.clone()).with_branches(self.branches.clone());
         dispatch.infer = Some(InferTag { host: self.cfg.host.clone(), backend: self.backend.clone(), stages: self.job.stage_names() });
         let source = Arc::new(LedgerSource::new(self.job.clone(), &self.cfg.host, &self.agent_addr, loaded));
         source.remember_finished(&self.recorded.lock().unwrap());
@@ -1453,6 +1473,30 @@ mod tests {
         assert_eq!(src.memory_log(&j), Some(dir.join("b/memory/g2.jsonl")));
         j.spec.game_id = hostd_id(0, 2, 0);
         assert_eq!(src.memory_log(&j), None, "stage a has no memory_log");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 020-R22 ① / 020-R15 ①: a stage with `act_log` names its games' act logs by plan game
+    /// number under `<stage>/acts/` whatever the attempt; a stage without 051 keys has no settings
+    /// (020-R22 ④); a job with a 051 stage is refused until the agent reads the board (051 U3).
+    #[test]
+    fn act_logs_under_the_stage_020_r22() {
+        let dir = job_dir("actlog", 2);
+        let p = dir.join("plans/1.toml");
+        let text = std::fs::read_to_string(&p).unwrap().replace("save_replay=true\n", "save_replay=true\nact_log=true\n");
+        std::fs::write(&p, text).unwrap();
+        let job = Arc::new(EvalJob::load(&dir).unwrap());
+        let src = LedgerSource::new(job.clone(), "h", "127.0.0.1:1", all_stages());
+        let mut j = plan::expand(&job.stages[1].plan, "x").remove(1);
+        j.spec.game_id = hostd_id(1, 2, 3);
+        let g = src.game_branch(&j).unwrap().unwrap();
+        assert_eq!((g.plan_game, g.act_log_path(1)), (2, Some(dir.join("b").join("acts").join("g2-p1.jsonl"))));
+        assert!(g.states_dir.is_none() && g.branch.is_none());
+        j.spec.game_id = hostd_id(0, 2, 0);
+        assert_eq!(src.game_branch(&j).unwrap(), None, "stage a has no 051 key");
+        let cfg = StorageConfig::new(&dir, &dir, "h");
+        let e = EvalWorker::start(&dir, cfg, 0, "cpu", None, Arc::default(), "127.0.0.1:0").err().unwrap();
+        assert!(format!("{e:#}").contains("branch-game keys"), "{e:#}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -31,6 +31,7 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use uranium_agent::infer::InferenceHandle;
 use uranium_agent::{ConcedeBoard, EndBoard, PolicySpec, RejectionLog, Routes, ServeOptions, T0Build, T0Builds, open_sink, serve};
+use uranium_env::branch::{BranchBoard, GameBranch};
 use uranium_proto::control::*;
 use uranium_proto::{read_msg, write_msg};
 
@@ -83,6 +84,27 @@ pub trait JobSource: Send + Sync {
     fn memory_log(&self, _job: &Job) -> Option<PathBuf> {
         None
     }
+    /// 020-R22: the 051 settings of `job` (act logs, snapshots, branch player) when its plan has a
+    /// 051 key; `Ok(None)` = none (the default, 020-R22 ④).
+    fn game_branch(&self, _job: &Job) -> Result<Option<GameBranch>> {
+        Ok(None)
+    }
+}
+
+/// 020-R22 / 051: whether the agent sessions read the [`BranchBoard`] (act logs, snapshots,
+/// branch players). Until they do, a plan with a 051 key is refused at the start of a run rather
+/// than played without its logs.
+// TODO(051 U3): the session side (crates/uranium-agent) adds `branches: BranchBoard` to
+// `ServeOptions`, looks up `Hello.game_id` there and acts on `GameBranch`; `start_agent` then
+// takes `Dispatch::branches` (the board the workers fill) and this becomes `true`.
+pub const AGENT_READS_BRANCH_BOARD: bool = false;
+
+/// Refuses a plan with a 051 key while the agent cannot act on it ([`AGENT_READS_BRANCH_BOARD`]).
+pub fn check_branch_support(plan: &plan::Plan) -> Result<()> {
+    if plan.uses_branch_keys() && !AGENT_READS_BRANCH_BOARD {
+        bail!("plan `{}` uses branch-game keys (act_log / snapshots / branches / verify_state, 020-R22) but this agent build does not act on them yet (051)", plan.name);
+    }
+    Ok(())
 }
 
 /// 041-R28 ① (AMB-041-17): file name of the decision log of the game whose replay is
@@ -99,11 +121,23 @@ pub struct QueueSource {
     replay_dir: Option<PathBuf>,
     /// 041-R28 ①: where model players write their decision logs (`g<id>.jsonl`); `None` = none.
     memory_dir: Option<PathBuf>,
+    /// 020-R22: the plan with 051 keys, its output folder (`acts/`, `states/`) and the shared
+    /// drive of the branch list's paths.
+    branch: Option<(Arc<plan::Plan>, PathBuf, Option<PathBuf>)>,
 }
 
 impl QueueSource {
     pub fn new(jobs: Vec<Job>) -> Self {
-        Self { jobs: Mutex::new(VecDeque::from(jobs)), replay_dir: None, memory_dir: None }
+        Self { jobs: Mutex::new(VecDeque::from(jobs)), replay_dir: None, memory_dir: None, branch: None }
+    }
+
+    /// 020-R22: games of a plan with 051 keys get their settings ([`plan::Plan::game_branch`]),
+    /// act logs and state files under `out` (`acts/`, `states/`); a plan without them gets none.
+    pub fn with_branch(mut self, plan: Arc<plan::Plan>, out: PathBuf, shared: Option<PathBuf>) -> Self {
+        if plan.uses_branch_keys() {
+            self.branch = Some((plan, out, shared));
+        }
+        self
     }
 
     /// 020-R5: replays of `save_replay` games land in `dir` on the scheduler's PC, wherever the
@@ -123,6 +157,12 @@ impl QueueSource {
 impl JobSource for QueueSource {
     fn memory_log(&self, job: &Job) -> Option<PathBuf> {
         self.memory_dir.as_ref().map(|d| d.join(memory_log_name(job.spec.game_id)))
+    }
+    fn game_branch(&self, job: &Job) -> Result<Option<GameBranch>> {
+        match &self.branch {
+            Some((plan, out, shared)) => plan.game_branch(job.spec.game_id, out, shared.as_deref()),
+            None => Ok(None),
+        }
     }
     fn next(&self) -> Option<Job> {
         self.jobs.lock().unwrap().pop_front()
@@ -185,6 +225,9 @@ pub struct Dispatch {
     pub leaving: Arc<Mutex<HashSet<String>>>,
     /// 020-R15 ⑧: what games.jsonl records about the games' inference (evaluation jobs).
     pub infer: Option<InferTag>,
+    /// 020-R22: each game's 051 settings by hostd id, set before `StartGame` and removed after
+    /// the game ([`JobSource::game_branch`]); the agent sessions read it ([`AGENT_READS_BRANCH_BOARD`]).
+    pub branches: BranchBoard,
 }
 
 /// 020-R15 ⑧ / ⑦: the inference host and backend of an evaluation job's games, and its stage
@@ -198,7 +241,13 @@ pub struct InferTag {
 
 impl Dispatch {
     pub fn new(routes: Routes, models: Models, t0_builds: T0Builds) -> Self {
-        Self { routes, models, t0_builds, inflight: InFlight::default(), ends: None, leaving: Arc::default(), infer: None }
+        Self { routes, models, t0_builds, inflight: InFlight::default(), ends: None, leaving: Arc::default(), infer: None, branches: BranchBoard::default() }
+    }
+
+    /// 020-R22: the board the agent sessions read (the one given to the agent server).
+    pub fn with_branches(mut self, branches: BranchBoard) -> Self {
+        self.branches = branches;
+        self
     }
 
     /// Checks finished games against `ends` (020-R4) and drops their reports afterwards.
@@ -292,6 +341,9 @@ pub fn plan_policies(plan: &plan::Plan, handles: &HashMap<ModelKey, InferenceHan
 /// of scripted players only).
 pub fn run_plan(plan_path: &Path, out: Option<PathBuf>, models: Models) -> Result<()> {
     let plan = plan::load_plan(plan_path)?;
+    check_branch_support(&plan)?;
+    let shared = plan::shared_dir_env();
+    plan.check_branch_paths(shared.as_deref())?;
     let out = out.unwrap_or_else(|| default_out(&plan));
     std::fs::create_dir_all(&out)?;
     std::fs::copy(plan_path, out.join("plan.toml"))?;
@@ -303,16 +355,20 @@ pub fn run_plan(plan_path: &Path, out: Option<PathBuf>, models: Models) -> Resul
     let builds = T0Builds::default();
     let routes = Routes::default();
     let ends = EndBoard::default();
+    // TODO(051 U3): hand `branches` to the agent server with the other boards.
+    let branches = BranchBoard::default();
     let public = start_agent(&env_or("URANIUM_AGENT_LISTEN", "127.0.0.1:7600"), &out.join("results.jsonl"), &out.join("unit_rejections.jsonl"), routes.clone(), builds.clone(), ends.clone(), Default::default())?;
     let jobs = plan::expand(&plan, &public);
     elog!("[env] plan `{}`: {} games, agent at {public}", plan.name, jobs.len());
     let started = std::time::Instant::now();
     // Scenario builds (050) and model routes are registered per game by the workers (020-R11).
-    let dispatch = Dispatch::new(routes, models, builds).with_ends(ends);
+    let dispatch = Dispatch::new(routes, models, builds).with_ends(ends).with_branches(branches);
     let mut source = QueueSource::new(jobs).with_replays(out.join("replays"));
     if plan.memory_log {
         source = source.with_memory_logs(out.join("memory"));
     }
+    // 020-R22: act logs and state files under the output folder (`acts/`, `states/`).
+    let source = source.with_branch(Arc::new(plan.clone()), out.clone(), shared);
     let source = Arc::new(source);
     run_source(source.clone(), &hosts()?, &out.join("games.jsonl"), &dispatch)?;
     let left = JobSource::left(&*source);
@@ -447,6 +503,20 @@ pub(crate) fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter
             source.requeue(job);
             bail!("no inference server for {k:?} (020-R11)");
         }
+        // 020-R22: the game's 051 settings, on the board before the bridges connect. A game whose
+        // settings cannot be built must not play without them.
+        let branch = match source.game_branch(&job).and_then(|b| prepare_branch_dirs(b.as_ref()).map(|_| b)) {
+            Ok(b) => b,
+            Err(e) => {
+                source.requeue(job);
+                return Err(e.context("branch-game settings (020-R22)"));
+            }
+        };
+        let game_id = job.spec.game_id;
+        if let Some(b) = branch {
+            dispatch.branches.lock().unwrap().insert(game_id, Arc::new(b));
+        }
+        let _branch_entry = BoardEntry(&dispatch.branches, game_id);
         // 020-R11: model players are routed by (game_id, slot) before the bridges connect.
         let memory_log = source.memory_log(&job);
         for slot in 0..2 {
@@ -535,6 +605,25 @@ pub(crate) fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter
         *d += 1;
         elog!("[env] {} game {} {} ({}s)", *d, job.spec.game_id, outcome.as_str(), fin.wall_s);
     }
+}
+
+/// Removes a game's [`BranchBoard`] entry when the slot worker is done with the game (any path).
+struct BoardEntry<'a>(&'a BranchBoard, u64);
+
+impl Drop for BoardEntry<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut b) = self.0.lock() {
+            b.remove(&self.1);
+        }
+    }
+}
+
+/// 020-R22 ① ②: the folders the sessions write act logs and state files into.
+fn prepare_branch_dirs(b: Option<&GameBranch>) -> Result<()> {
+    for d in b.into_iter().flat_map(|b| [&b.acts_dir, &b.states_dir]).flatten() {
+        std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
+    }
+    Ok(())
 }
 
 /// 021-R3: T0 bots are versioned with the workspace (scenario builds add their tag:
@@ -802,6 +891,61 @@ mod tests {
         assert_eq!(by_id(2)["outcome"], "Aborted");
         assert!(by_id(2)["detail"].as_str().unwrap().starts_with(BRIDGE_NEVER_CONNECTED), "{lines:?}");
         assert_eq!((ends.connected(1), ends.connected(2)), (0, 0), "reports dropped after the game");
+    }
+
+    /// 020-R22: a slot worker puts each game's 051 settings on the board under its hostd id
+    /// before `StartGame` (the act-log folder made) and removes them after the game; a plan
+    /// without the keys puts nothing there and makes no folder (020-R22 ④).
+    #[test]
+    fn game_branch_on_the_board_020_r22() {
+        /// Records what the board holds for a game when its end is reported (still in the game).
+        struct Spy {
+            inner: QueueSource,
+            board: BranchBoard,
+            seen: Mutex<Vec<(u64, Option<GameBranch>)>>,
+        }
+        impl JobSource for Spy {
+            fn next(&self) -> Option<Job> {
+                self.inner.next()
+            }
+            fn requeue(&self, job: Job) {
+                self.inner.requeue(job)
+            }
+            fn game_branch(&self, job: &Job) -> Result<Option<GameBranch>> {
+                self.inner.game_branch(job)
+            }
+            fn done(&self, job: &Job, _outcome: JobOutcome, _replay: Option<Vec<u8>>) {
+                let g = self.board.lock().unwrap().get(&job.spec.game_id).map(|g| (**g).clone());
+                self.seen.lock().unwrap().push((job.spec.game_id, g));
+            }
+        }
+        let games = "[[matchup]]\nmap='both'\ngames=2\np0={kind='t0',race='terran'}\np1={kind='t0',race='zerg'}";
+        for (head, logged) in [("", false), ("act_log=true\n", true)] {
+            let plan: plan::Plan = toml::from_str(&format!("name='t'\n{head}{games}")).unwrap();
+            let dir = std::env::temp_dir().join(format!("uranium-env-test-branch-{logged}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let board = BranchBoard::default();
+            let inner = QueueSource::new(plan::expand(&plan, "x")).with_branch(Arc::new(plan.clone()), dir.clone(), None);
+            let spy = Arc::new(Spy { inner, board: board.clone(), seen: Mutex::new(vec![]) });
+            let dispatch = Dispatch::new(Routes::default(), Models::new(), T0Builds::default()).with_branches(board.clone());
+            run_source(spy.clone(), &[HostEntry { addr: fake_hostd(false, 20), max_games: None }], &dir.join("games.jsonl"), &dispatch).unwrap();
+            let mut seen = spy.seen.lock().unwrap().clone();
+            seen.sort_by_key(|(id, _)| *id);
+            assert_eq!(seen.len(), 2);
+            for (id, g) in seen {
+                match g {
+                    Some(g) => {
+                        assert!(logged);
+                        assert_eq!((g.plan_game as u64, g.act_log_path(0)), (id, Some(dir.join("acts").join(format!("g{id}-p0.jsonl")))));
+                    }
+                    None => assert!(!logged),
+                }
+            }
+            assert!(board.lock().unwrap().is_empty(), "entries removed after the game");
+            assert_eq!(dir.join("acts").is_dir(), logged);
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
 
     /// 021-R3 (2026-10-17): scenario T0 builds get their own opponent id, the standard build keeps

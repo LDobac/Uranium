@@ -1156,5 +1156,89 @@ pub fn write_jsonl<T: Serialize + FiniteRecord>(mut w: impl Write, rows: &[T]) -
     Ok(())
 }
 
+// ---------------------------------------------------------------------------------------------
+// Per-game session settings (020-R22): what the scheduler hands the agent for one plan game
+
+/// 051-R1: the branch plan's `max_frames` is H + this (a decision observation after H: delay up
+/// to 32 frames plus margin).
+pub const HORIZON_MARGIN: u32 = 48;
+
+/// 020-R22 ③ / 051-R5..R8: the `players[0]` model session of plan game n plays as a branch
+/// player from line n of the plan's branch list.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct BranchPlayer {
+    /// The branch list line as written (paths relative to the shared drive, 061).
+    pub line: BranchPlanLine,
+    /// `line.acts` and `line.state` resolved against the shared drive of this host.
+    pub acts: std::path::PathBuf,
+    pub state: std::path::PathBuf,
+    /// H: the plan's `max_frames` - [`HORIZON_MARGIN`] (051-R1, 051-R9 ① horizon sample).
+    pub horizon: u32,
+    /// 051-R9 ③: for the `none` alternative, the actions of every alternative of the plan's
+    /// branch list (first appearance order) — the `none_actions` of [`DilutionTracker::new`].
+    pub none_actions: Vec<String>,
+    /// 020-R22 ③ / 051-R6: rebuild the state over the prefix and compare it at t (tests only).
+    pub verify_state: bool,
+}
+
+/// 020-R22: the 051 settings of one plan game, built by the scheduler before `StartGame` and
+/// looked up by the agent with the session's hostd game id ([`BranchBoard`]).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct GameBranch {
+    /// Plan game number n (1-based; not the hostd id): file names `g<n>-...` (020-R22 ① ②).
+    pub plan_game: u32,
+    /// 020-R22 ①: every bridge session (model and T0) writes its act log (051-R2) to
+    /// [`GameBranch::act_log_path`]; `None` = no act log. A game played again overwrites it.
+    pub acts_dir: Option<std::path::PathBuf>,
+    /// 020-R22 ②: the snapshot rules (051-R3) of the `players[0]` model session; empty = none.
+    pub snapshots: Vec<SnapshotRule>,
+    /// 020-R22 ②: where that session writes its state files ([`GameBranch::state_path`]).
+    pub states_dir: Option<std::path::PathBuf>,
+    /// 020-R22 ③: the `players[0]` model session is a branch player.
+    pub branch: Option<BranchPlayer>,
+}
+
+impl GameBranch {
+    /// `<acts>/g<n>-p<players index>.jsonl` (020-R22 ①).
+    pub fn act_log_path(&self, players_index: u8) -> Option<std::path::PathBuf> {
+        self.acts_dir.as_ref().map(|d| d.join(act_log_name(self.plan_game, players_index)))
+    }
+
+    /// `<states>/g<n>-o<obs>.state` (020-R22 ②, [`state_id`]).
+    pub fn state_path(&self, obs: u32) -> Option<std::path::PathBuf> {
+        self.states_dir.as_ref().map(|d| d.join(format!("{}.state", state_id(self.plan_game, obs))))
+    }
+}
+
+/// 020-R22: the scheduler's per-game settings by hostd game id (the session's `Hello.game_id`),
+/// shared with the in-process agent server like the T0 build board. An entry is set before
+/// `StartGame` and removed after hostd reports the game's end.
+pub type BranchBoard = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, std::sync::Arc<GameBranch>>>>;
+
+/// 051-R3 / 051-R12: one state file a trunk's model session saved, as its session record lists
+/// it (`snapshots`, one entry per file; the plan tool reads the decision point from it). The
+/// `type_mask` (open action ids) and `scalar` (030 §4) are those of the decision observation.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct SnapshotTaken {
+    /// The rules that fired on this decision (two rules on one decision share the file).
+    pub rules: Vec<String>,
+    /// State id ([`state_id`]) and the file's content sha256.
+    pub state: String,
+    pub state_sha256: String,
+    /// Observation index, frame and digest of the decision.
+    pub i: u32,
+    pub frame: u32,
+    #[serde(with = "hex_u64")]
+    pub digest: u64,
+    pub type_mask: Vec<u16>,
+    pub scalar: Vec<f32>,
+}
+
+impl FiniteRecord for SnapshotTaken {
+    fn check_finite(&self) -> Result<()> {
+        finite("scalar", &self.scalar)
+    }
+}
+
 #[cfg(test)]
 mod tests;

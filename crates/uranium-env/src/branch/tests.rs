@@ -720,3 +720,20 @@ fn branch_records_round_trip_051_r12() {
     // The B1 metric keys (051-R11 ④), primary first.
     assert_eq!(&OUTCOME_METRICS[..2], &["held_8m", "held_s"]);
 }
+
+/// 020-R22 ① ②: a game's act-log and state file paths; `SnapshotTaken` (the trunk session
+/// record's `snapshots` entries) round trips with its hex digest and refuses non-finite scalars.
+#[test]
+fn branch_game_settings_020_r22() {
+    let g = GameBranch { plan_game: 7, acts_dir: Some("a".into()), states_dir: Some("s".into()), ..Default::default() };
+    assert_eq!(g.act_log_path(1), Some(std::path::Path::new("a").join("g7-p1.jsonl")));
+    assert_eq!(g.state_path(412), Some(std::path::Path::new("s").join("g7-o412.state")));
+    assert_eq!(GameBranch::default().act_log_path(0), None);
+    assert_eq!(GameBranch::default().state_path(0), None);
+    let s = SnapshotTaken { rules: vec!["b1-p1".into(), "b1-p2".into()], state: state_id(7, 412), state_sha256: "ab".into(), i: 412, frame: 3256, digest: 0x0f, type_mask: vec![0, 37], scalar: vec![0.5] };
+    let text = serde_json::to_string(&s).unwrap();
+    assert!(text.contains(r#""digest":"000000000000000f""#), "{text}");
+    assert_eq!(serde_json::from_str::<SnapshotTaken>(&text).unwrap(), s);
+    let bad = SnapshotTaken { scalar: vec![f32::NAN], ..s };
+    assert!(write_jsonl(Vec::new(), &[bad]).is_err());
+}
