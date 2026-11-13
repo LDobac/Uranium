@@ -167,11 +167,14 @@ enum Cmd {
         /// (`terran_react`, the 021-R8 teacher). No 5-minute filter.
         #[arg(long)]
         relabel: Option<String>,
-        /// 041-R28 (with `--relabel` only): folder of the DAgger games' model decision logs
-        /// (`<replay stem>.jsonl`; a plan with `memory_log = true` writes `memory/` beside
-        /// `replays/`). Each relabelled step gets the 040-R22 `memory_action` (shard schema 7); a
-        /// game without a complete log, or with more than 1% decisions naming units that are not
-        /// its own, gets none (records `memory`).
+        /// 041-R28: folder of the model decision logs (`<replay stem>.jsonl`; a plan with
+        /// `memory_log = true` writes `memory/` beside `replays/`), or of the 051-R2 act logs
+        /// (`<replay stem>-p<players index>.jsonl`, an evaluation job's `acts/`; scripted sessions'
+        /// logs are skipped). With or without `--relabel` (051-R13 ④: a build without relabelling
+        /// keeps the replay's own commands as labels and takes only the step memory from the live
+        /// session). Each step gets the 040-R22 `memory_action` (shard schema 7); a view without a
+        /// complete log of its player, or with more than 1% decisions naming units that are not its
+        /// own, gets none (records `memory`).
         #[arg(long)]
         memory_log: Option<PathBuf>,
     },
@@ -309,12 +312,7 @@ fn main() -> Result<()> {
         }
         Cmd::Build { dir, src, out, records, jobs, limit, budget_gb, skip_hashes, part, parts, ladder_records, until_frame, time_limit, relabel, memory_log } => {
             anyhow::ensure!(parts >= 1 && part < parts, "--part must be below --parts");
-            // 041-R22: relabelled games are their own source (040 `dagger`), and only they.
-            anyhow::ensure!((src == "dagger") == relabel.is_some(), "--relabel goes with --src dagger and only with it (041-R22)");
-            anyhow::ensure!(memory_log.is_none() || relabel.is_some(), "--memory-log goes with --relabel (041-R28)");
-            if let Some(d) = &memory_log {
-                anyhow::ensure!(d.is_dir(), "--memory-log {}: not a folder (041-R28)", d.display());
-            }
+            uranium_replay::pipeline::check_build_args(&src, relabel.is_some(), memory_log.as_deref())?;
             let relabel = relabel.as_deref().map(uranium_replay::relabel::teacher_build).transpose()?;
             let skip_sha256 = match skip_hashes {
                 Some(p) => std::fs::read_to_string(&p)?.lines().filter_map(|l| l.split_whitespace().next().map(str::to_string)).collect(),

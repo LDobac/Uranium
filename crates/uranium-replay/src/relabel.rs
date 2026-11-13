@@ -160,6 +160,20 @@ pub fn bind_log(read: &DecisionLogRead, me: u8, replay_frames: u32) -> Result<&M
     }
 }
 
+/// 041-R28 ④ with several logs of one game (051-R2 act logs, one per model session): the log of
+/// the view of BWAPI player `me` ([`bind_log`] on the complete log of that player), else why none
+/// is used: no log (`missing`), a log that cannot be read whole (`incomplete`, whose player is
+/// unknown), or only other players' logs (`other_player`). With one log this is [`bind_log`].
+pub fn bind_logs(reads: &[DecisionLogRead], me: u8, replay_frames: u32) -> Result<&ModelLog, MemoryCheck> {
+    if let Some(r) = reads.iter().find(|r| matches!(r, DecisionLogRead::Complete(l) if l.player == me)) {
+        return bind_log(r, me, replay_frames);
+    }
+    match reads.iter().find(|r| !matches!(r, DecisionLogRead::Complete(_))).or(reads.first()) {
+        Some(r) => bind_log(r, me, replay_frames),
+        None => Err(MemoryCheck::without_log(&DecisionLogRead::Missing)),
+    }
+}
+
 /// The playback frames at which the unit check (041-R28 ⑤) needs the perspective's own units:
 /// those of the decisions up to playback frame `last`, sorted, each once.
 pub fn decision_frames(log: &[LoggedDecision], last: u32) -> Vec<u32> {

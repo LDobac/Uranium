@@ -14,6 +14,7 @@ COMMANDS = {
     "summary": ("summary", "the per-lineage-point summary JSON from the other commands' outputs"),
     "plan-dump": ("plan_dump", "jepa_planning S0 rows: h', JEPA target, privileged, own state, action, policy log-probs, g_k, win_open"),
     "plan-s0": ("plan_s0", "jepa_planning S0 predictors U / A / A+d / H / S and the M0-M3d tables on plan-dump folders"),
+    "plan-branch": ("plan_branch", "051-R13 branch games: paired effects (trunk bootstrap, split-half), M3u and M2c against the S0b predictor A"),
 }
 
 
