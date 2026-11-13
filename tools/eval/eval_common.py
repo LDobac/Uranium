@@ -295,14 +295,19 @@ def _scout_fixed(op: int, h: str) -> tuple[bool, int, int]:
     return far, x, y
 
 
-def analyze_both(path: Path) -> tuple[dict, int | None, int | None]:
+def analyze_both(path: Path, slot: int = 0) -> tuple[dict, int | None, int | None]:
     """First build-order frame per unit type and the frame of the first single-SCV far move before 3:00 (scout) of
-    the Terran player, up to 8:00: (first, scout by the old reading `scout_3m`, scout by the fixed reading
-    `scout_3m_fixed`). The rest of the rule is the same for both (runs/dagger/test_table.py, runs/adv8/cmds.py):
-    one unit selected by the last select command (of any type: "single-SCV" is the intent, not checked), more than
-    1,200 px Manhattan from the first build tile."""
+    the model's player (`model_player`: the only Terran, in TvT the one at the session row's `slot`), up to 8:00:
+    (first, scout by the old reading `scout_3m`, scout by the fixed reading `scout_3m_fixed`). The rest of the rule
+    is the same for both (runs/dagger/test_table.py, runs/adv8/cmds.py): one unit selected by the last select command
+    (of any type: "single-SCV" is the intent, not checked), more than 1,200 px Manhattan from the first build tile.
+
+    TvT (050-R10 check 3b, 2026-11-14 fix): this read the first Terran of the players list, which in the t0_tp TvT
+    games is the T0 opponent whenever the model plays slot 1 (30 of 32 games); games with one Terran are unchanged."""
     d = json.loads(path.read_text(encoding="utf-8"))
-    tp = [p["id"] for p in d["players"] if p.get("race") == RACE_TERRAN][0]
+    tp = model_player(d, slot)
+    if tp is None:  # no Terran at the slot (not a model game of ours): the first Terran, as before
+        tp = [p["id"] for p in d["players"] if p.get("race") == RACE_TERRAN][0]
     first, base, last_sel = {}, None, 0
     scout: list[int | None] = [None, None]
     for f, p, op, h in d["cmds"]:
@@ -323,10 +328,53 @@ def analyze_both(path: Path) -> tuple[dict, int | None, int | None]:
     return first, scout[0], scout[1]
 
 
-def analyze(path: Path) -> tuple[dict, int | None]:
+def analyze(path: Path, slot: int = 0) -> tuple[dict, int | None]:
     """(first build-order frames, scout frame by the old reading `scout_3m`), see analyze_both."""
-    first, scout, _ = analyze_both(path)
+    first, scout, _ = analyze_both(path, slot)
     return first, scout
+
+
+# 050-R10 / 044 용어 "교사 모드 판" (2026-11-14, user confirmed 2026-11-14): fewer than 150 commands per minute over
+# 0-6 min and no refinery build order before 4:00 (the cause analysis' rule, protoss_regress analyze_games.py /
+# early_mode.py): every command-stream entry of the model player before 6:00 (frame < 8,640) counts, selections
+# included, divided by 6 whatever the game's length; refinery = a Build command (0x0c) of unit type 110 at frame < 5,760.
+TEACHER_MODE_CMD_UNTIL = 6 * 60 * FPS
+TEACHER_MODE_CMD_MINUTES = 6
+TEACHER_MODE_CMDS_PER_MIN = 150
+TEACHER_MODE_REFINERY_BEFORE = 4 * 60 * FPS
+REFINERY = 110
+
+
+def model_player(d: dict, slot: int) -> int | None:
+    """The model's player id in a cmddump: the only Terran, else (TvT) the player at the session row's `slot`
+    (the players list index is the session slot, as the cause analysis checked on its games); None when neither."""
+    players = d.get("players", [])
+    terran = [p["id"] for p in players if p.get("race") == RACE_TERRAN]
+    if len(terran) == 1:
+        return terran[0]
+    if 0 <= slot < len(players) and players[slot].get("race") == RACE_TERRAN:
+        return players[slot]["id"]
+    return None
+
+
+def teacher_mode(path: Path, slot: int) -> dict | None:
+    """050-R10 teacher-mode verdict of one game's command stream (the model's player, `model_player`): commands
+    before 6:00, whether a refinery was ordered before 4:00, and `teacher_mode` = commands < 150 x 6 and no such
+    order. None when the model's player is not found."""
+    d = json.loads(path.read_text(encoding="utf-8"))
+    pid = model_player(d, slot)
+    if pid is None:
+        return None
+    cmds, refinery = 0, None
+    for f, p, op, h in d["cmds"]:
+        if p != pid:
+            continue
+        if f < TEACHER_MODE_CMD_UNTIL:
+            cmds += 1
+        if op == OP_BUILD and refinery is None and f < TEACHER_MODE_REFINERY_BEFORE and u16(h, 5) == REFINERY:
+            refinery = f
+    return {"cmds_0_6m": cmds, "cmds_per_min_0_6m": cmds / TEACHER_MODE_CMD_MINUTES, "refinery_order_4m": refinery is not None,
+            "teacher_mode": cmds < TEACHER_MODE_CMDS_PER_MIN * TEACHER_MODE_CMD_MINUTES and refinery is None}
 
 
 def dump_stage(stage_dir: Path, games: list[int], out: Path, binary: Path | None = None) -> dict[int, Path]:

@@ -43,6 +43,8 @@ FROZEN = {
     "ac1_stoch_real": "26b945e09943581885a45e4cde93f65fd8af45d48c830e0574a12fcf9076d849",
     "ac1_argmax_real": "d6419d130914f07aad97e99e480b0e72a4fab12180cfa9f99dada8902a688917",
     "t0_tp": "0e033d973095d2fa73d140c1385c0daa74a94b7e1173dbf09c108c07f5a9d4a5",
+    # 044-R11 fixed-RL checks (2026-11-14): t0_tp with zero_last_failed false (no Checkpoint 1 source plan).
+    "t0_tp_rl": "a176734c88b906a0852d474f1a2ca1fe2c92ccbee078ed4ea93daae68ff4bf98",
 }
 
 # The Checkpoint 1 plans on the shared drive the templates were taken from (relative to URANIUM_SHARED_DIR).
@@ -63,6 +65,9 @@ SHARED_PLANS = [
     ("ac1_argmax_real", "eval/ac1-20261101/ac1-vtrace-s1-3m/plans/02-ac1-vtrace-s1-3m-argmax.toml"),
     ("t0_tp", "eval/jepa-diag-tp-20261109/plans/02-t0.toml"),
 ]
+
+# The points with a Checkpoint 1 counterpart (050-R9); the 2026-11-14 rows (044: d1, d2, D, rl-fix) have none.
+CK1_POINTS = [p for p in LIN["point"] if p.get("ck1_checkpoint")]
 
 CLEAN_GIT = {"commit": "0" * 40, "protocol_files_dirty": False, "dirty_paths": [], "dirty_diff_sha256": None}
 
@@ -186,7 +191,7 @@ def test_ck1_lineage_takes_no_new_measurements_050_r9(tmp_path):
                            "--job", "j", "--hosts", str(hosts), "--out-root", str(tmp_path)])
     with pytest.raises(SystemExit, match="REFUSED: lineage ck1 is measured already"):
         protocol.main(["bc-eval", "--metric", "val500", "--lineage", "ck1", "--point", "r1", "--checkpoint", "checkpoints/bc-dagger-r1/ckpt-1137"])
-    for pt in LIN["point"]:
+    for pt in CK1_POINTS:
         protocol.check_new_measurement(LIN, "ck1", "cue_diag", pt)
         with pytest.raises(protocol.Refused, match="not measured"):  # AMB-050-5: no training-log statistics
             protocol.check_new_measurement(LIN, "ck1", "dead_channels", pt)
@@ -196,15 +201,23 @@ def test_ck1_lineage_takes_no_new_measurements_050_r9(tmp_path):
 
 
 def test_lineage_menus_consistent_050_r9():
-    """Every Checkpoint 1 output and supplement is on the point's menu; a supplement is a cell Checkpoint 1 lacks."""
+    """Every Checkpoint 1 output and supplement is on the point's menu; a supplement is a cell Checkpoint 1 lacks. A
+    point without a Checkpoint 1 counterpart (2026-11-14 rows) has no Checkpoint 1 cells; T1 on a menu has its
+    platform pinned or the reason it is open (`t1_platforms_open`), never both."""
     for pt in LIN["point"]:
         menu = set(pt["metrics"]) | set(pt.get("optional", []))
+        assert menu <= set(LIN["metric"]) and not set(pt["metrics"]) & set(pt.get("optional", [])), pt["id"]
         outs, sup = set(pt.get("ck1_outputs", {})), set(pt.get("ck1_supplement", []))
         assert outs <= menu and sup <= menu, pt["id"]
         assert not outs & sup, pt["id"]
-        assert set(pt["metrics"]) - {"cue_diag", "dead_channels"} <= outs, pt["id"]
+        if pt.get("ck1_checkpoint"):
+            assert set(pt["metrics"]) - {"cue_diag", "dead_channels"} <= outs, pt["id"]
+        else:
+            assert not outs and not sup, pt["id"]
         if "t1" in menu:
-            assert pt.get("t1_platforms"), pt["id"]
+            assert bool(pt.get("t1_platforms")) != bool(pt.get("t1_platforms_open")), pt["id"]
+        else:
+            assert not pt.get("t1_platforms") and not pt.get("t1_platforms_open"), pt["id"]
     assert protocol.point(LIN, "s2e2")["ck1_supplement"] == ["t0_600", "val500_race"]
 
 
@@ -703,6 +716,175 @@ def test_unknown_plan_needs_kind_050_r9(tmp_path):
         tables.main([str(job), "--cache", str(tmp_path / "cache")])
 
 
+# ------------------------------------------------------------------ 2026-11-14 points (044-R6 / R7 / R11, 050-R9 / R10)
+
+
+def test_distill_fix_points_menus_050_r9():
+    """050-R9 point table rows of 2026-11-14: distillation rounds (val500 by race, teacher hold-out, T0 T / P 32 + 32,
+    TvZ 32, rush 128 + macro 40, teacher-mode share), D (the Checkpoint 1 counterpart model's cells: test, val500 by
+    race, T1 300, T0 T / P), the fixed-RL checks (T0 T / P, TvZ, rush + macro, T1 at the end). No Checkpoint 1
+    counterpart: lineage ck1 refused there."""
+    d1, d2, D, rl = (protocol.point(LIN, p) for p in ("d1", "d2", "D", "rl-fix"))
+    for pt in (d1, d2):
+        assert pt["family"] == "bc"
+        assert {"val500", "val500_race", "per_action", "t0_tp", "tvz", "rush", "macro", "teacher_mode"} <= set(pt["metrics"])
+        assert {"cue_diag", "dead_channels"} <= set(pt["metrics"]), "050-R9: the diagnostics at every point"
+    assert D["family"] == "bc" and {"test", "val500", "val500_race", "t1", "t0_tp", "teacher_mode"} <= set(D["metrics"])
+    assert rl["family"] == "rl" and {"t0_tp", "tvz", "rush", "macro", "teacher_mode"} <= set(rl["metrics"]) and "t1" in rl["optional"]
+    assert protocol.metric_plans(LIN, rl, "t0_tp") == ["t0_tp_rl"] and protocol.metric_plans(LIN, rl, "tvz") == ["tvz_rl"]
+    assert protocol.metric_plans(LIN, rl, "t1") == ["t1_rl"] and protocol.metric_plans(LIN, d1, "t0_tp") == ["t0_tp"]
+    assert LIN["metric"]["teacher_mode"]["kind"] == "games_table"
+    for pt in (d1, d2, D, rl):
+        assert not pt.get("ck1_checkpoint")
+        for m in ("cue_diag", "t0_tp"):
+            with pytest.raises(protocol.Refused, match=f"point {pt['id']} has no Checkpoint 1 counterpart"):
+                protocol.check_new_measurement(LIN, "ck1", m, pt)
+        with pytest.raises(protocol.Refused, match="no Checkpoint 1 counterpart"):
+            protocol.check_checkpoint(LIN, "ck1", pt, "checkpoints/bc-dagger-r1/ckpt-1137")
+        protocol.check_new_measurement(LIN, "m2", "teacher_mode", pt)
+    with pytest.raises(SystemExit, match="REFUSED: point d1 has no Checkpoint 1 counterpart"):
+        protocol.main(["tables", "--lineage", "ck1", "--point", "d1"])
+
+
+def test_distill_points_run_names_050_r9():
+    """044: round d<R> is run m2-distill-d<R>; D is one of them; the fixed-RL point takes any lineage-2 run."""
+    for pid, ok, bad in (("d1", "m2-distill-d1", "m2-distill-d2"), ("d2", "m2-distill-d2", "m2-dagger-r2"), ("D", "m2-distill-d2", "m2-distill-dx")):
+        pt = protocol.point(LIN, pid)
+        protocol.check_checkpoint(LIN, "m2", pt, f"checkpoints/{ok}/ckpt-1850")
+        with pytest.raises(protocol.Refused, match=rf"point {pid} takes runs m2-<"):
+            protocol.check_checkpoint(LIN, "m2", pt, f"checkpoints/{bad}/ckpt-1850")
+    protocol.check_checkpoint(LIN, "m2", protocol.point(LIN, "rl-fix"), "checkpoints/m2-rl-race-s1/ckpt-1500000/agents/main")
+    with pytest.raises(protocol.Refused, match="start with"):
+        protocol.check_checkpoint(LIN, "m2", protocol.point(LIN, "d1"), "checkpoints/distill-d1/ckpt-1")
+
+
+def test_t1_platform_of_new_points_050_r9(tmp_path, monkeypatch):
+    """r2 (a candidate of the Checkpoint 1 counterpart model, 041-R29 ④) takes T1 on Windows like that model; D and the
+    fixed-RL checks have no counterpart and their T1 platform is not decided: a T1 job is refused with the reason."""
+    r2 = protocol.point(LIN, "r2")
+    assert {"t1", "test", "val500_race"} <= set(r2["optional"]) and r2["t1_platforms"] == ["windows"]
+    assert protocol.check_t1_platform(r2, [{"addr": "a", "platform": "windows"}]) == ["windows"]
+    for pid in ("D", "rl-fix"):
+        with pytest.raises(protocol.Refused, match=r"no Checkpoint 1 T1 counterpart platform \(lineage.toml t1_platforms\): .*not decided"):
+            protocol.check_t1_platform(protocol.point(LIN, pid), [{"addr": "a", "platform": "windows"}])
+    monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
+    ck = fake_checkpoint(tmp_path, "m2-distill-d1")
+    with pytest.raises(SystemExit, match="REFUSED: point D has no Checkpoint 1 T1 counterpart platform"):
+        protocol.main(job_args(tmp_path, ck, "t1", hosts_text='[[host]]\naddr = "h:7700"\nplatform = "windows"\n', point="D"))
+    with pytest.raises(SystemExit, match="REFUSED: metric teacher_mode is a table of the point's game jobs"):
+        protocol.main(job_args(tmp_path, ck, "teacher_mode", point="d1"))
+    assert not (tmp_path / "eval").exists()
+
+
+def test_t0_tp_rl_template_050_r9():
+    """t0_tp_rl: the t0_tp games, seeds and conditions with zero_last_failed false (RL checkpoints, 050-R9)."""
+    bc = tomllib.loads(protocol.render(LIN, "t0_tp", "c", "n"))
+    rl = tomllib.loads(protocol.render(LIN, "t0_tp_rl", "c", "n"))
+    assert rl["zero_last_failed"] is False and bc["zero_last_failed"] is True
+    assert {k: v for k, v in protocol.normalize(rl).items() if k != "zero_last_failed"} == {k: v for k, v in protocol.normalize(bc).items() if k != "zero_last_failed"}
+    assert tables.game_keys(rl) == tables.game_keys(bc)
+    assert protocol.identify(LIN, rl) == "t0_tp_rl" and protocol.identify(LIN, bc) == "t0_tp"
+    assert LIN["plan"]["t0_tp_rl"]["families"] == ["rl"]
+
+
+def test_rl_fix_job_uses_t0_tp_rl_050_r9(tmp_path, monkeypatch):
+    """A fixed-RL check's t0_tp + tvz job: one job (both zero_last_failed false), plans t0_tp_rl and tvz_rl."""
+    monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
+    protocol.checkpoint_sha256.cache_clear()
+    ck = fake_checkpoint(tmp_path, "m2-rl-race-s1")
+    protocol.main(job_args(tmp_path, ck, "t0_tp,tvz", point="rl-fix"))
+    rec = json.loads((tmp_path / "eval" / "j" / "protocol.json").read_text(encoding="utf-8"))
+    assert (rec["point"], rec["family"], rec["zero_last_failed"]) == ("rl-fix", "rl", False)
+    assert [p["plan"] for p in rec["plans"]] == ["t0_tp_rl", "tvz_rl"]
+    assert protocol.verify_job(LIN, tmp_path / "eval" / "j", "m2", protocol.point(LIN, "rl-fix")) == []
+
+
+# ------------------------------------------------------------------ teacher-mode share (050-R10, 044-R6)
+
+
+def cmds(n: int, frame: int = 100, player: int = 0) -> list:
+    """n select commands of a player at one frame (every command-stream entry counts)."""
+    return [[frame, player, 9, "0101"] for _ in range(n)]
+
+
+def test_teacher_mode_rule_boundaries_050_r10(tmp_path):
+    """< 150 commands per minute over 0-6 min (fewer than 900 entries before frame 8,640, selections included) and no
+    refinery build order before 4:00 (frame < 5,760); the other player's commands do not count."""
+    f = tmp_path / "g.json"
+
+    def tm(c):
+        dump(f, c)
+        return ec.teacher_mode(f, 0)
+
+    t = tm(cmds(899) + [[8640, 0, 9, "0101"]] * 50 + cmds(500, player=1))
+    assert t == {"cmds_0_6m": 899, "cmds_per_min_0_6m": 899 / 6, "refinery_order_4m": False, "teacher_mode": True}
+    assert tm(cmds(900))["teacher_mode"] is False
+    assert tm(cmds(10) + [build(5759, 20, 20, ec.REFINERY)]) == {"cmds_0_6m": 11, "cmds_per_min_0_6m": 11 / 6, "refinery_order_4m": True, "teacher_mode": False}
+    assert tm(cmds(10) + [build(5760, 20, 20, ec.REFINERY)])["teacher_mode"] is True
+    assert tm(cmds(10) + [build(100, 20, 20, 109)])["teacher_mode"] is True, "another building is not a refinery"
+    assert tm(cmds(10) + [[100, 1, 12, build(0, 20, 20, ec.REFINERY)[3]]])["teacher_mode"] is True, "the opponent's refinery"
+
+
+def test_teacher_mode_model_player_050_r10(tmp_path):
+    """The model is the only Terran; in TvT the player at the session row's slot (the players list index)."""
+    f = tmp_path / "g.json"
+    f.write_text(json.dumps({"players": [{"id": 2, "race": 1}, {"id": 3, "race": 1}], "cmds": cmds(1000, player=2) + cmds(5, player=3)}), encoding="utf-8")
+    assert ec.teacher_mode(f, 0)["cmds_0_6m"] == 1000 and ec.teacher_mode(f, 1)["cmds_0_6m"] == 5
+    assert ec.model_player({"players": [{"id": 4, "race": 2}, {"id": 5, "race": 1}]}, 0) == 5
+    assert ec.model_player({"players": [{"id": 4, "race": 2}, {"id": 5, "race": 0}]}, 0) is None
+    assert ec.model_player({"players": [{"id": 2, "race": 1}, {"id": 3, "race": 1}]}, 2) is None
+
+
+def test_teacher_mode_table_050_r10(tmp_path, monkeypatch):
+    """Per opponent race of a t0_tp stage: teacher-mode games over the games with a command stream, W/D/L and losses
+    before 10:00 per mode (end_frame < 14,400); opponent-crash games and games without a row are left out, games
+    without a stream counted apart; `counts` gets the share rows for protocol.py compare."""
+    rows = [{**row(1, True), "end_frame": 30000}, {**row(2, False), "end_frame": 14399}, {**row(3, False), "end_frame": 14400},
+            {**row(4, None), "end_frame": 86400}, row(5, True),
+            {**row(33, False), "end_frame": 10000}, {**row(34, True), "end_frame": 20000}, row(35, False)]
+    ledger = [{"game_id": 100035, "outcome": "Aborted", "detail": "launcher exit codes [Some(0), None]"}]
+    job = make_job(tmp_path, "t0_tp", rows, ledger)
+    cache = tmp_path / "cache" / job.name / "t0_tp"
+    for n in (1, 2, 3, 33):
+        dump(cache / f"g{n}.json", cmds(100))               # teacher mode
+    dump(cache / "g4.json", cmds(100) + [build(3000, 20, 20, ec.REFINERY)])
+    dump(cache / "g34.json", cmds(2000))
+    dump(cache / "g35.json", cmds(10))                      # invalid game: not counted
+    t = tables.job_tables(job, tmp_path / "cache", lin=LIN, ops="off")["t0_tp/t0_tp"]
+    tm = t["teacher_mode"]
+    assert tm["terran"] == {"n": 4, "teacher": 3, "no_stream": 1,
+                            "teacher_mode": {"n": 3, "won": 1, "draw": 0, "lost": 2, "lost_10m": 1},
+                            "other": {"n": 1, "won": 0, "draw": 1, "lost": 0, "lost_10m": 0}}
+    assert tm["protoss"] == {"n": 2, "teacher": 1, "no_stream": 0,
+                             "teacher_mode": {"n": 1, "won": 0, "draw": 0, "lost": 1, "lost_10m": 1},
+                             "other": {"n": 1, "won": 1, "draw": 0, "lost": 0, "lost_10m": 0}}
+    assert t["counts"]["teacher_mode vs terran"] == {"teacher_mode": [3, 4]} and t["counts"]["teacher_mode vs protoss"] == {"teacher_mode": [1, 2]}
+    assert t["table"]["by_race"]["stochastic vs terran"]["n"] == 5, "the win-rate table is unchanged"
+    tables.print_tables({"t0_tp/t0_tp": t})
+    # TvZ only: no table; a host without uranium-replay gets an error entry, the other tables stay
+    tvz = make_job(tmp_path / "z", "tvz_bc", [row(1, True)])
+    assert "teacher_mode" not in tables.job_tables(tvz, tmp_path / "cache", lin=LIN, ops="off")["tvz_bc/tvz_bc"]
+    (job / "t0_tp" / "replays").mkdir(parents=True)
+    (job / "t0_tp" / "replays" / "g5.rep").write_bytes(b"rep")
+    monkeypatch.setenv("URANIUM_REPLAY_BIN", str(tmp_path / "missing-uranium-replay"))
+    t2 = tables.job_tables(job, tmp_path / "cache", lin=LIN, ops="off")["t0_tp/t0_tp"]
+    assert "cargo build" in t2["teacher_mode"]["error"] and t2["table"] == t["table"]
+    tables.print_tables({"t0_tp/t0_tp": t2})
+
+
+def test_teacher_mode_in_subset_tables_050_r10(tmp_path):
+    """A t0_tp found inside a T0 300 job: the teacher-mode table reads the source stage's command streams."""
+    zl = {"zero_last_failed": True}
+    rows = [{**row(1, True), "model": {**row(1, True)["model"], **zl}}, {**row(116, False), "model": {**row(116, False)["model"], **zl}}]
+    job = make_job(tmp_path, "t0_300", rows)
+    cache = tmp_path / "cache" / job.name / "t0_300"
+    dump(cache / "g1.json", cmds(2000))
+    dump(cache / "g116.json", cmds(5))   # P FS seed 41416 = t0_tp game 48
+    (t,) = tables.subset_tables(job, "t0_tp", LIN, tmp_path / "cache", ops="off").values()
+    assert t["teacher_mode"]["terran"]["teacher"] == 0 and t["teacher_mode"]["terran"]["n"] == 1
+    assert t["teacher_mode"]["protoss"]["teacher"] == 1 and t["teacher_mode"]["protoss"]["teacher_mode"]["lost"] == 1
+
+
 # ------------------------------------------------------------------ 052 ops / rush_combat tables (052-R7 / R8, 052-AC3)
 
 
@@ -819,6 +1001,7 @@ def test_ops_tables_on_every_menu_052_r8(tmp_path):
     for pt in LIN["point"]:
         assert {"ops", "rush_combat"} <= set(pt["optional"]) and not {"ops", "rush_combat"} & set(pt["metrics"]), pt["id"]
         protocol.check_metric(LIN, pt, "ops")
+    for pt in CK1_POINTS:
         protocol.check_new_measurement(LIN, "ck1", "rush_combat", pt)
     for pid, h in FROZEN.items():
         assert LIN["plan"][pid]["conditions_sha256"] == h
@@ -1157,7 +1340,7 @@ def test_diag_metric_refusals_050_r9(tmp_path, monkeypatch):
         protocol.main(["diag", "--lineage", "m2", "--point", "s1e1", "--checkpoint", "checkpoints/bc-s1-pt/ckpt-39096", "--metrics", "cue_diag"])
     with pytest.raises(SystemExit, match=r"REFUSED: dead_channels of lineage ck1: not measured \(no training-log statistics"):
         protocol.main(["diag", "--lineage", "ck1", "--point", "r1", "--checkpoint", "checkpoints/bc-dagger-r1/ckpt-1137"])
-    for pt in LIN["point"]:
+    for pt in CK1_POINTS:
         protocol.check_new_measurement(LIN, "ck1", "cue_diag", pt)
     with pytest.raises(SystemExit, match="REFUSED: dead_channels reads the run's training log: --train-log"):
         protocol.main(["diag", "--lineage", "m2", "--point", "s1e1", "--checkpoint", "checkpoints/m2-s1/ckpt-1"])

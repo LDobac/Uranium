@@ -16,6 +16,9 @@ docs/measurement_protocol.md): every stage of each job, by the protocol plan its
 Every stage also gets the 052-R8 tables (`ops`, `rush_combat`: by matchup, medians / means, rush entry and
 SCV pull / bunker / focus, split by held_s and held_8m) from `uranium-replay opsdump` replay values (052-R7, cached
 as <cache>/<job>/<stage>/g<n>.ops.json; --ops live reads the session rows' own values, --ops off skips them).
+Every t1 / winrate stage with Terran or Protoss opponents also gets the 050-R10 teacher-mode share (2026-11-14, 044-R6,
+record only): per opponent race, the games with fewer than 150 commands per minute over 0-6 min and no refinery
+build order before 4:00 (eval_common.teacher_mode), W/D/L and losses before 10:00 per mode.
 
 Opponent-crash games (an Aborted attempt where our launcher exited with 0 and the opponent's did not,
 eval_common.opponent_crashes) are invalid in every table. Both held and both bunker definitions are always
@@ -52,7 +55,7 @@ def rush_table(stage: int, plan: dict, rows: dict[int, dict], invalid: set[int],
     out = {}
     for c in ("early", "late"):
         g = [(n, r) for n, r in sorted(rows.items()) if cond[n] == c and stage * 100000 + n not in invalid]
-        an = {n: ec.analyze_both(dumps[n]) if n in dumps else (None, None, None) for n, _ in g}
+        an = {n: ec.analyze_both(dumps[n], r.get("slot", 0)) if n in dumps else (None, None, None) for n, r in g}
         m = [r["model"] for _, r in g]
         first = [an[n][0] for n, _ in g]
         bunker_s = [x.get("bunker_s") for x in m]
@@ -88,7 +91,7 @@ def macro_table(stage: int, plan: dict, rows: dict[int, dict], invalid: set[int]
     out = {}
     for o in dict.fromkeys(opp):
         g = [(n, r) for n, r in sorted(rows.items()) if opp[n - 1] == o and stage * 100000 + n not in invalid]
-        first = [ec.analyze(dumps[n])[0] if n in dumps else None for n, _ in g]
+        first = [ec.analyze(dumps[n], r.get("slot", 0))[0] if n in dumps else None for n, r in g]
         m = [r["model"] for _, r in g]
         w = sum(1 for _, r in g if r["won"])
         d = sum(1 for _, r in g if r["won"] is None)
@@ -153,6 +156,90 @@ def winrate_table(stage: int, plan: dict, rows: dict[int, dict], invalid: set[in
             for k in c:
                 c[k] += row[k]
     return {"blocks": blocks, "by_race": by_race, "total": tot}
+
+
+# 050-R10 / 044-R6 (2026-11-14): the teacher-mode share is recorded against these races (TvT and TvP apart); a loss
+# before 10:00 is an early loss (the cause analysis' "10분 안 패").
+TEACHER_MODE_RACES = ("terran", "protoss")
+EARLY_LOSS = 10 * 60 * ec.FPS
+
+
+def teacher_mode_games(plan: dict) -> list[int]:
+    """Plan game numbers whose opponent is Terran or Protoss (the plan's p1 race)."""
+    return [n for m, a, b in _blocks(plan) if m["p1"].get("race") in TEACHER_MODE_RACES for n in range(a, b + 1)]
+
+
+def _mode_counts() -> dict:
+    return {"n": 0, "won": 0, "draw": 0, "lost": 0, "lost_10m": 0}
+
+
+def teacher_mode_table(stage: int, plan: dict, rows: dict[int, dict], invalid: set[int], dumps: dict[int, Path]) -> dict:
+    """050-R10 teacher-mode share per opponent race (the plan's p1 race, Terran and Protoss only; map blocks of a race
+    together) over the valid games with a model row: `n` = games with a command stream, `teacher` = teacher-mode
+    games (eval_common.teacher_mode), `no_stream` = games without one (no replay, or the model's player not found),
+    and W/D/L with losses before 10:00 (`lost_10m`, end_frame < 14,400) for the teacher-mode and the other games."""
+    out: dict = {}
+    for m, a, b in _blocks(plan):
+        race = m["p1"].get("race")
+        if race not in TEACHER_MODE_RACES:
+            continue
+        c = out.setdefault(race, {"n": 0, "teacher": 0, "no_stream": 0, "teacher_mode": _mode_counts(), "other": _mode_counts()})
+        for n in range(a, b + 1):
+            if n not in rows or stage * ec.STAGE_BASE + n in invalid:
+                continue
+            r = rows[n]
+            tm = ec.teacher_mode(dumps[n], r.get("slot", 0)) if n in dumps else None
+            if tm is None:
+                c["no_stream"] += 1
+                continue
+            c["n"] += 1
+            c["teacher"] += tm["teacher_mode"]
+            g = c["teacher_mode" if tm["teacher_mode"] else "other"]
+            g["n"] += 1
+            if r.get("won") is True:
+                g["won"] += 1
+            elif r.get("won") is None:
+                g["draw"] += 1
+            else:
+                g["lost"] += 1
+                g["lost_10m"] += (r.get("end_frame") if r.get("end_frame") is not None else INF) < EARLY_LOSS
+    return out
+
+
+def stage_teacher_mode(stage_dir: Path, stage: int, plan: dict, rows: dict[int, dict], invalid: set[int], cache: Path,
+                       games: dict[int, int] | None = None) -> dict:
+    """The stage's `teacher_mode` table (empty without Terran / Protoss games). Command streams from `uranium-replay
+    cmddump` (cached as <cache>/g<n>.json; `games` maps a row's n to its replay's game number when they differ). A
+    host without the binary gets an `error` entry instead (the stage's other tables do not need it)."""
+    want = [n for n in teacher_mode_games(plan) if n in rows and stage * ec.STAGE_BASE + n not in invalid]
+    if not want:
+        return {}
+    src = games or {n: n for n in want}
+    try:
+        got = ec.dump_stage(stage_dir, sorted(src[n] for n in want), cache)
+    except SystemExit as e:
+        return {"teacher_mode": {"error": str(e)}}
+    dumps = {n: got[src[n]] for n in want if src[n] in got}
+    return {"teacher_mode": teacher_mode_table(stage, plan, rows, invalid, dumps)}
+
+
+def add_teacher_mode_counts(res: dict) -> None:
+    """`counts` rows `teacher_mode vs <race>` (input of protocol.py compare: the share with Fisher p)."""
+    for race, v in (res.get("teacher_mode") or {}).items():
+        if race in TEACHER_MODE_RACES:
+            res["counts"][f"teacher_mode vs {race}"] = {"teacher_mode": [v["teacher"], v["n"]]}
+
+
+def print_teacher_mode(t: dict) -> None:
+    print("teacher mode (050-R10: < 150 commands/min over 0-6 min and no refinery order before 4:00) | vs | games | "
+          "teacher-mode games | teacher-mode W/D/L, lost < 10:00 | other W/D/L, lost < 10:00 | no command stream")
+    if "error" in t:
+        print(f"  not counted: {t['error']}")
+        return
+    for race, v in t.items():
+        a, o = v["teacher_mode"], v["other"]
+        print(f"  | {race} | {v['n']} | {_pct(v['teacher'], v['n'])} | {a['won']}/{a['draw']}/{a['lost']}, {a['lost_10m']} | "
+              f"{o['won']}/{o['draw']}/{o['lost']}, {o['lost_10m']} | {v['no_stream']}")
 
 
 # 052-R8: the ops keys (052 Interfaces order) and those that are time integrals (also divided by the window length).
@@ -311,6 +398,9 @@ def subset_tables(job: Path, plan_id: str, lin: dict | None = None, cache: Path 
         if cache is not None:
             valid = {m: r for m, r in rows.items() if ec.STAGE_BASE + m not in bad}
             res.update(stage_ops(job / plan["name"], valid, cache / job.name / plan["name"], ops, ops_jobs, {m: have[key] for key, m in want.items() if m in valid}))
+            res.update(stage_teacher_mode(job / plan["name"], 1, target, rows, bad, cache / job.name / plan["name"],
+                                          {m: have[key] for key, m in want.items() if m in rows}))
+            add_teacher_mode_counts(res)
         return {f"{job.name}/{plan['name']}[{plan_id}]": res}
     raise protocol.Refused(f"{job.name}: no stage holds every game of plan {plan_id}")
 
@@ -360,6 +450,10 @@ def job_tables(job: Path, cache: Path, override: dict[str, str] | None = None, l
         else:
             res["table"] = winrate_table(k, plan, rows, invalid)
             res["counts"] = {r: {"won": [v["won"], v["n"]]} for r, v in {**res["table"]["by_race"], "total": res["table"]["total"]}.items()}
+        if kind in ("t1", "winrate"):
+            # 050-R10 / 044-R6: the teacher-mode share against Terran / Protoss opponents (record only).
+            res.update(stage_teacher_mode(job / plan["name"], k, plan, rows, invalid, cache / job.name / plan["name"]))
+            add_teacher_mode_counts(res)
         # 052-R8: every game stage (opponent-crash games left out, as in the other tables).
         valid = {n: r for n, r in rows.items() if k * ec.STAGE_BASE + n not in invalid}
         res.update(stage_ops(job / plan["name"], valid, cache / job.name / plan["name"], ops, ops_jobs))
@@ -436,6 +530,8 @@ def print_tables(res: dict) -> None:
                 print(f"  {r}: {_pct(v['won'], v['n'])}, {v['draw']} draws")
             v = t["total"]
             print(f"total: {_pct(v['won'], v['n'])}, {v['draw']} draws, invalid {v['invalid']}, missing {v['missing']}")
+        if s.get("teacher_mode"):
+            print_teacher_mode(s["teacher_mode"])
         if s["inference"]:
             print("inference: " + ", ".join(f"{b} {x['games']} ({x['precision']})" for b, x in s["inference"].items()))
         if s.get("ops"):

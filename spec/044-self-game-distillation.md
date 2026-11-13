@@ -60,7 +60,8 @@
 - 몫: `uranium-train mix-fractions --share teacher=<a>,distill=<b>`(사람 몫 = 1 − a − b, `--teacher-share`와 함께 쓰지 않음. 지금 `--teacher-share` 하나는 그대로 유효). 출력 `source_fractions`(출처별 고르기 몫, 몫 판정이 ± 3%p 아래로 실패한 출처는 `short`: 모자란 스텝·판당 스텝·선택 몫·더 둘 판 수 추정, 목표 아래지만 범위 안이면 참고용 `below_target`)와 `s2_mix.sources`·`s2_mix.human`(몫·목표·판정)이 붙는다
 - BC 설정: 학습 데이터셋에 `replays/shards/distill_m2`(shard 출처 태그 `distill`), `[data.subsample.fraction_by_source] distill = <몫>`(교사 `keep_sources`와도 사람 데이터와도 따로 세는 출처의 게임 고르기 몫, 041-R21 ②와 같은 해시 규칙. 키가 없으면 고르기·설정 지문이 지금과 같다). 설정 `config/bc_m2_distill_d1.toml`
 - RL 설정: `[kl.reference] zerg = "<ckpt>"`, `terran = ...`, `protoss = ...`, `random = ...`
-- 기록: build·레이블 records(`label_policy`), 라운드 판정 파일 `<shared>/eval/m2-lineage/d<R>_first_test.verdict`
+- 기록: build·레이블 records(`label_policy`), 라운드 판정 파일 `<shared>/eval/m2-lineage/d<R>_first_test.verdict`(`tools/eval/distill_verdict.py --round d<R> ... --verdict <파일>`, 첫 줄 `pass`·`d2`·`stop`·`incomplete`, `docs/measurement_protocol.md` "증류 라운드 판정")
+- 측정 지점: `config/protocol/lineage.toml` `d1`·`d2`·`D`·`rl-fix`(Checkpoint 1 대응 없음), 수정 RL 점검의 T0 표준 테란·프로토스 plan `t0_tp_rl`, 교사 모드 판 비율 `tables.py` `teacher_mode`
 
 ## Acceptance Criteria
 
