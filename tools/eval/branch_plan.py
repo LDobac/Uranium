@@ -381,6 +381,11 @@ def select(trunks: list[Trunk], cfg: dict, counts: dict[str, int], rush: dict[st
                 elif t.usable:
                     for p in t.points.values():
                         p["valid"], p["skip_reason"] = False, "cell full (051-R11 1)"
+                else:
+                    # A trunk with fewer valid points than rules is replaced: none of its points is branched.
+                    for p in t.points.values():
+                        if p["valid"]:
+                            p["valid"], p["skip_reason"] = False, "trunk replaced (051-R11 1)"
             cells[f"{m}/{c}"] = {"quota": quota, "used": used, "short": quota - used}
     return cells
 

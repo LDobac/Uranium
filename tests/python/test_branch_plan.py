@@ -259,6 +259,10 @@ def test_branch_plan_refusals_051_r10(tmp_path, case):
             "line": "not the snapshot's"}[case]
     assert want in why, why
     assert all(not x["point"].startswith("trunk-job/b1-trunk/g1#") for x in bc.read_jsonl(out / "plans" / "branches_plan.jsonl"))
+    mine = [p for p in bc.read_jsonl(out / "points.jsonl") if p["point"].startswith("trunk-job/b1-trunk/g1#")]
+    assert all(not p["valid"] and p["skip_reason"] for p in mine), "a replaced trunk's points are not valid"
+    if case in ("state_sha", "not_fired", "same_decision"):
+        assert any(p["skip_reason"] == "trunk replaced (051-R11 1)" for p in mine)
     cell = f"{tj.games[0]['map']}/{cond(tj.games[0]['seed'])}"
     assert s["cells"][cell]["short"] == 1 and s["replacements"]["short"] == {cell: 1}
     r = tomllib.loads(rep.read_text(encoding="utf-8"))
@@ -296,34 +300,48 @@ def test_branch_collect_records_051_r12(tmp_path):
         if n == 4:
             results.append({"game_id": n, "model": {"x": 1}})  # no branch outcome
             continue
+        if n == 7:  # aborted: the session never saw GameEnd (valid, no end) -> no outcome
+            results.append({"game_id": n, "model": {"x": 1}, "branch": {**outcome, "end": None}})
+            continue
         results.append({"game_id": n, "model": {"x": 1}, "branch": outcome, "infer_seed": 3})
         trunk = bc.read_jsonl(bc.on_shared(tmp_path, ln["opponent_acts"]))[:-1]
         mine = [dict(x) for x in trunk]
-        cut = 2 if n == 2 else 8  # game 2's opponent differs before f_t
+        # The opponent's observations differ from the first one after f_t (game 2: before f_t).
+        cut = 2 if n == 2 else next(x["i"] for x in trunk if x["frame"] > ln["f_t"])
         for x in mine[cut:]:
             x["digest"] = digest(x["i"], 555)
-        jsonl(sd / "acts" / f"g{n}-p1.jsonl", mine)
-        jsonl(sd / "acts" / f"g{n}-p0.jsonl", [{"end": {"git": "def"}}])
+        if n != 6:  # game 6: the opponent's act log is missing
+            jsonl(sd / "acts" / f"g{n}-p1.jsonl", [*mine, {"end": {"policy": T0}}])
+        # game 5 ran another checkpoint (051-R1 ④)
+        policy = f"model:ckpt-39096@{'0' * 12 if n == 5 else tj.ckpt_sha[:12]}:stochastic"
+        jsonl(sd / "acts" / f"g{n}-p0.jsonl", [{"end": {"git": "def", "policy": policy}}])
     (sd / "replays").mkdir(parents=True)
     (sd / "replays" / "g1.rep").write_bytes(b"rep")
     jsonl(sd / "games.jsonl", games)
     jsonl(sd / "results.jsonl", results)
     s = bcol.collect(out, None, tmp_path)
     recs = bc.read_jsonl(out / "branches.jsonl")
-    assert len(recs) == len(lines) - 2 == s["records"]
+    assert len(recs) == len(lines) - 3 == s["records"]
+    assert 7 not in {r["game"]["plan_game"] for r in recs}
     assert all(set(r) == RECORD_KEYS and set(r["game"]) == GAME_KEYS for r in recs)
     r = recs[0]
     assert (r["point"], r["alt"], r["repeat"], r["valid"]) == (lines[0]["point"], "none", 1, True)
     assert r["game"] == {"job": "branch-job", "stage": "branch-b1", "plan_game": 1, "hostd_game": 10_100_001, "attempt": 1,
                          "replay": "eval/branch-job/branch-b1/replays/g1.rep", "host": "h", "backend": "cuda", "precision": "bf16-mixed", "infer_seed": 3}
     assert (r["checkpoint_sha256"], r["git"]) == (tj.ckpt_sha, "def")
-    assert r["prefix"]["opponent"] == {"obs": 5, "matched": 5, "first_mismatch_frame": bc.read_jsonl(bc.on_shared(tmp_path, lines[0]["opponent_acts"]))[8]["frame"]}
+    assert r["prefix"]["opponent"] == {"obs": 5, "matched": 5, "first_mismatch_frame": bc.read_jsonl(bc.on_shared(tmp_path, lines[0]["opponent_acts"]))[6]["frame"]}
+    assert r["prefix"]["opponent"]["first_mismatch_frame"] > lines[0]["f_t"]
     for k in ("intervention", "samples", "metrics", "dilution", "end"):
         assert r[k] == outcome[k], k
     bad = recs[1]
     assert not bad["valid"] and bad["invalid"]["reason"] == "digest" and bad["prefix"]["opponent"]["matched"] == 2
-    assert s["invalid_by_reason"] == {"digest": 1}
-    assert [m["game"] for m in s["missing"]] == [3, 4]
+    assert bad["invalid"]["side"] == "opponent"
+    by_game = {r["game"]["plan_game"]: r for r in recs}
+    assert by_game[5]["invalid"]["reason"] == "missing_input" and "policy" in by_game[5]["invalid"]["policy_mismatch"]
+    assert by_game[6]["valid"] and by_game[6]["prefix"]["opponent"] is None
+    assert s["invalid_by_reason"] == {"digest": 1, "missing_input": 1}
+    assert s["opponent_prefix_unchecked"] == [6] and s["act_log_incomplete"] == {"ours": [], "opponent": [6]}
+    assert [m["game"] for m in s["missing"]] == [3, 4, 7]
     first = (out / "branches.jsonl").read_bytes()
     assert bcol.collect(out, None, tmp_path) == s and (out / "branches.jsonl").read_bytes() == first, "deterministic"
 

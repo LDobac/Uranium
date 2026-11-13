@@ -512,11 +512,7 @@ pub(crate) fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter
                 return Err(e.context("branch-game settings (020-R22)"));
             }
         };
-        let game_id = job.spec.game_id;
-        if let Some(b) = branch {
-            dispatch.branches.lock().unwrap().insert(game_id, Arc::new(b));
-        }
-        let _branch_entry = BoardEntry(&dispatch.branches, game_id);
+        let mut branch_entry = BoardEntry::insert(&dispatch.branches, job.spec.game_id, branch);
         // 020-R11: model players are routed by (game_id, slot) before the bridges connect.
         let memory_log = source.memory_log(&job);
         for slot in 0..2 {
@@ -542,7 +538,9 @@ pub(crate) fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter
         let reply = match reply {
             Ok(m) => m,
             Err(e) => {
-                // The game never started: leave it for the remaining hosts (020-R4).
+                // The game never started: leave it for the remaining hosts (020-R4). A requeued
+                // game keeps its hostd id: its board entry goes first (another slot may take it).
+                branch_entry.release();
                 source.requeue(job);
                 return Err(anyhow::Error::from(e).context(format!("hostd {addr} lost")));
             }
@@ -552,6 +550,7 @@ pub(crate) fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter
             ControlResponse::Rejected { reason } => {
                 elog!("[env] {addr} rejected game {}: {reason}", job.spec.game_id);
                 if reason.contains("capacity") {
+                    branch_entry.release();
                     source.requeue(job);
                     std::thread::sleep(Duration::from_secs(2));
                     continue;
@@ -561,6 +560,7 @@ pub(crate) fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter
                 continue;
             }
             other => {
+                branch_entry.release();
                 source.requeue(job);
                 bail!("unexpected {other:?}");
             }
@@ -607,14 +607,38 @@ pub(crate) fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter
     }
 }
 
-/// Removes a game's [`BranchBoard`] entry when the slot worker is done with the game (any path).
-struct BoardEntry<'a>(&'a BranchBoard, u64);
+/// A slot worker's [`BranchBoard`] entry for one game: removed when the worker is done with the
+/// game (any path, or [`BoardEntry::release`] before a requeue). A requeued game keeps its hostd id
+/// and another slot may put its own entry there meanwhile: only the entry this guard inserted (the
+/// same `Arc`) is ever removed.
+struct BoardEntry<'a> {
+    board: &'a BranchBoard,
+    id: u64,
+    mine: Option<Arc<GameBranch>>,
+}
+
+impl<'a> BoardEntry<'a> {
+    fn insert(board: &'a BranchBoard, id: u64, branch: Option<GameBranch>) -> Self {
+        let mine = branch.map(Arc::new);
+        if let Some(b) = &mine {
+            board.lock().unwrap().insert(id, b.clone());
+        }
+        Self { board, id, mine }
+    }
+
+    fn release(&mut self) {
+        let Some(mine) = self.mine.take() else { return };
+        if let Ok(mut b) = self.board.lock()
+            && b.get(&self.id).is_some_and(|e| Arc::ptr_eq(e, &mine))
+        {
+            b.remove(&self.id);
+        }
+    }
+}
 
 impl Drop for BoardEntry<'_> {
     fn drop(&mut self) {
-        if let Ok(mut b) = self.0.lock() {
-            b.remove(&self.1);
-        }
+        self.release();
     }
 }
 
@@ -946,6 +970,37 @@ mod tests {
             assert_eq!(dir.join("acts").is_dir(), logged);
             std::fs::remove_dir_all(&dir).ok();
         }
+    }
+
+    /// 020-R22: a requeued game keeps its hostd id. Slot A releases its entry before the requeue
+    /// and slot B (which took the game) puts its own; whatever order the two slots end in, A never
+    /// removes B's entry, and B's own end removes it.
+    #[test]
+    fn board_entry_requeue_race_020_r22() {
+        let board = BranchBoard::default();
+        let g = |n| GameBranch { plan_game: n, ..Default::default() };
+        let held = |board: &BranchBoard| board.lock().unwrap().get(&7).map(|e| e.plan_game);
+        // A releases before its requeue, then B inserts; A's guard ends after B started.
+        let mut a = BoardEntry::insert(&board, 7, Some(g(1)));
+        a.release();
+        assert_eq!(held(&board), None);
+        let b = BoardEntry::insert(&board, 7, Some(g(2)));
+        drop(a);
+        assert_eq!(held(&board), Some(2), "A's guard leaves B's entry");
+        drop(b);
+        assert_eq!(held(&board), None);
+        // B replaced A's entry before A's guard ended (no release on that path).
+        let a = BoardEntry::insert(&board, 7, Some(g(1)));
+        let b = BoardEntry::insert(&board, 7, Some(g(2)));
+        drop(a);
+        assert_eq!(held(&board), Some(2));
+        drop(b);
+        assert_eq!(held(&board), None);
+        // A game without settings touches nothing.
+        let b = BoardEntry::insert(&board, 7, Some(g(2)));
+        drop(BoardEntry::insert(&board, 7, None));
+        assert_eq!(held(&board), Some(2));
+        drop(b);
     }
 
     /// 021-R3 (2026-10-17): scenario T0 builds get their own opponent id, the standard build keeps
