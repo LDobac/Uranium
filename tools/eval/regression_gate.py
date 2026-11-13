@@ -139,16 +139,19 @@ def t0_tp_counts(job: Path, cache: Path, lin: dict | None = None) -> dict:
     """Per opponent race of the job's `t0_tp` stage: valid games, wins, games with a Build_Bunker command
     before 4:00 (bunker_order_4m), games whose bunker unit appeared before 240 s (bunker_unit_4m), games
     with a command stream (dumped), planned games (games) and planned games with neither a result row nor
-    an invalid mark (missing: the job has not finished them). Opponent-crash games are invalid (tables.py)."""
+    an invalid mark (missing: the job has not finished them). Opponent-crash games are invalid (tables.py).
+    `skipped_lines`: the job's undecodable result / ledger lines (eval_common.read_jsonl_dir); a game whose only row was on
+    such a line is missing, so its race is not judged."""
     lin = lin or protocol.load_lineage()
     stages = [(k, f, p) for k, f, p in ec.job_stages(job) if protocol.identify(lin, p) == "t0_tp"]
     if len(stages) != 1:
         raise SystemExit(f"050-R10: {job} has {len(stages)} stages of the protocol plan t0_tp (want 1)")
     k, _, plan = stages[0]
-    rows = ec.model_rows(ec.read_results(job), k)
-    invalid = ec.opponent_crashes(ec.read_ledger(job))
+    results, ledger = ec.read_results(job), ec.read_ledger(job)
+    rows = ec.model_rows(results, k)
+    invalid = ec.opponent_crashes(ledger)
     dumps = ec.dump_stage(job / plan["name"], sorted(rows), cache / job.name / plan["name"])
-    out: dict[str, dict] = {}
+    out: dict = {"skipped_lines": ec.skipped_lines(results, ledger)}
     for m, a, b in tables._blocks(plan):
         race = m["p1"]["race"]
         c = out.setdefault(race, {"n": 0, "won": 0, "bunker_order_4m": 0, "bunker_unit_4m": 0, "dumped": 0, "invalid": 0, "games": 0, "missing": 0})
@@ -221,6 +224,9 @@ def main(argv=None) -> dict:
                    "candidate_games": None if a.candidate_games is None else a.candidate_games.name,
                    "baseline_t0_tp": bg, "candidate_t0_tp": cg}
     print_gate(g)
+    for side, c in (("baseline", bg), ("candidate", cg)):
+        if c and c.get("skipped_lines"):
+            print(f"{side} games: SKIPPED {len(c['skipped_lines'])} undecodable line(s): " + ", ".join(f"{x['file']}:{x['line']}" for x in c["skipped_lines"]))
     if a.json:
         a.json.write_text(json.dumps(g, indent=1), encoding="utf-8")
         print("wrote", a.json)

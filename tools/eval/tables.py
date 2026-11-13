@@ -185,7 +185,9 @@ def subset_tables(job: Path, plan_id: str, lin: dict | None = None) -> dict:
     target = tomllib.loads(protocol.render(lin, plan_id, "checkpoints/subset/ckpt-0", plan_id))
     want = game_keys(target)
     rows_all = ec.read_results(job)
-    invalid = ec.opponent_crashes(ec.read_ledger(job))
+    ledger = ec.read_ledger(job)
+    invalid = ec.opponent_crashes(ledger)
+    skipped = ec.skipped_lines(rows_all, ledger)
     for k, f, plan in ec.job_stages(job):
         have = game_keys(plan)
         if not set(want) <= set(have):
@@ -199,6 +201,7 @@ def subset_tables(job: Path, plan_id: str, lin: dict | None = None) -> dict:
         res = {"job": job.name, "stage": k, "plan_file": f.name, "plan": plan_id, "kind": "winrate", "subset_of": plan["name"],
                "protocol": None, "conditions_sha256": lin["plan"][plan_id]["conditions_sha256"], "plan_sha256": protocol.file_sha256(f),
                "games_planned": len(want), "rows": len(rows), "invalid_games": sorted(bad),
+               "skipped_lines": skipped,
                "checkpoints": sorted({r["model"].get("checkpoint") for r in rows.values()}),
                "zero_last_failed": sorted({r["model"].get("zero_last_failed") for r in rows.values()}),
                "sample": sorted({r["model"].get("sample") for r in rows.values()}), "inference": {}}
@@ -214,6 +217,7 @@ def job_tables(job: Path, cache: Path, override: dict[str, str] | None = None, l
     rows_all = ec.read_results(job)
     ledger = ec.read_ledger(job)
     invalid = ec.opponent_crashes(ledger)
+    skipped = ec.skipped_lines(rows_all, ledger)
     rec = protocol.read_record(job)
     out = {}
     for k, f, plan in ec.job_stages(job):
@@ -229,6 +233,7 @@ def job_tables(job: Path, cache: Path, override: dict[str, str] | None = None, l
                "conditions_sha256": protocol.conditions_sha256(plan), "plan_sha256": protocol.file_sha256(f),
                "games_planned": sum(m["games"] for m in plan["matchup"]), "rows": len(rows),
                "invalid_games": sorted(g for g in invalid if ec.stage_of(g) == k),
+               "skipped_lines": skipped,
                "checkpoints": sorted({r["model"].get("checkpoint") for r in rows.values()}),
                "zero_last_failed": sorted({r["model"].get("zero_last_failed") for r in rows.values()}),
                "sample": sorted({r["model"].get("sample") for r in rows.values()}),
@@ -269,6 +274,9 @@ def print_tables(res: dict) -> None:
             dirty = "UNCOMMITTED protocol files" if p["protocol_files_dirty"] else "clean"
             print(f"protocol.json: {p['lineage']} / {p['point']}, checkpoint sha256 {p['checkpoint_sha256']}, git {str(p['git_commit'])[:12]} ({dirty}), "
                   f"host platforms {', '.join(p['platforms'])}" + (f", T1 on {', '.join(p['t1_platforms'])}" if p.get("t1_platforms") else ""))
+        sk = s.get("skipped_lines") or []
+        if sk:
+            print(f"SKIPPED {len(sk)} undecodable line(s) of the job (counted as no row): " + ", ".join(f"{x['file']}:{x['line']}" for x in sk))
         if s["kind"] == "rush":
             print("cond | n | held_8m (scv_8m>=8) | held_s (scv_min_1m>4) | scout<3:00 | bunker_order<3:00 | bunker_order<4:00 | bunker_unit<3:00 | bunker_unit<4:00 | scv_4m p50 | won | dumped | invalid")
             for c, v in t.items():

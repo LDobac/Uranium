@@ -53,7 +53,7 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 
 1. **게임 지표**(새 경로)
    - job 만들기: `python tools/eval/protocol.py job --lineage m2 --point s2e2 --checkpoint checkpoints/m2-s2e2/ckpt-N --metrics rush,macro,tvz --job m2-s2e2-<날짜>`
-   - `zero_last_failed`가 다른 단계는 한 job에 둘 수 없다. 그래서 값마다 job을 나눠 `<job>-rush-macro`, `<job>-tvz`처럼 만든다.
+   - `zero_last_failed`가 다른 단계는 한 job에 둘 수 없다. 그래서 값마다 job을 나눠 `<job>-rush-macro`, `<job>-tvz`처럼 만든다. 한 지표가 두 값에 걸치면(BC 지점의 `ac1` 하나만) 이름이 겹치지 않게 `<job>-ac1-lf0`, `<job>-ac1-real`로 붙는다.
    - 각 job에 `protocol.json`이 남는다. 들어가는 것:
      - 체크포인트 sha256
      - git 커밋. 측정 파일이 커밋 안 됐으면 그 경로와 diff 해시
