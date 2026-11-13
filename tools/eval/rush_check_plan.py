@@ -45,6 +45,22 @@ the botgen and check seeds and every other plan in --out-dir.
 
     python tools/eval/rush_check_plan.py --dagger --round 1
     python tools/eval/rush_check_plan.py --dagger --round 2 --half --checkpoint checkpoints/bc-dagger-r1/ckpt-N
+
+`--distill --round R [--half] --checkpoint C` (044-R1, AMB-044-3 / AMB-044-4, user decision 2026-11-14):
+writes config/plans/distill_m2_d<R>.toml, the self-game distillation games of round d<R>: the model C
+(d1 = the 041-R29 ④ selection S, d2 = the d1 model; no default) stochastic against Terran and Protoss
+opponents, T0 standard Protoss 2 maps x 120 + T0 standard Terran 2 maps x 60 + T1 Protoss (UAlbertaBot P,
+Stardust) 2 bots x 2 maps x 30 + T1 Terran (UAlbertaBot T, Iron) 2 bots x 2 maps x 30 = 600 games (Protoss :
+Terran = 3 : 2), races fixed (no Random), no E-Regression scenario builds, no McRave; `--half` (round d2)
+halves every block = 300 games. 10 min, replays kept, decision logs always on (`memory_log`, 041-R28 ①;
+`--memory-log` is accepted and changes nothing). Seeds: splitmix64(80,000 + n) >> 32 with a round stride of
+600 as --dagger (n = (R - 1) * 600 + 1..), asserted disjoint from the botgen, check and dagger seeds and from
+every plan under --out-dir including its subfolders (the 050-R9 protocol templates config/plans/protocol/,
+in particular t0_tp's T0 standard Terran / Protoss 32 games: T0 is deterministic, the same seed is the same
+game, 021-AC3 / 020-AC2).
+
+    python tools/eval/rush_check_plan.py --distill --round 1 --checkpoint checkpoints/<S run>/ckpt-N
+    python tools/eval/rush_check_plan.py --distill --round 2 --half --checkpoint checkpoints/m2-distill-d1/ckpt-N
 """
 
 import argparse
@@ -163,14 +179,16 @@ def write_botgen(out_dir: Path) -> None:
 
 
 def plan_seeds(path: Path) -> set[int]:
-    """Every seed a plan file uses: its `seeds` list, else `seed_base + 1..total games` (020-R20)."""
+    """Every seed a plan file uses (020-R20, crates/uranium-runner plan.rs `seed_of`): its `seeds` list,
+    else `seed_base` (default 1,000) with `same_seed`, else `seed_base + 1..total games`."""
     p = tomllib.loads(path.read_text(encoding="utf-8"))
     if "seeds" in p:
         return set(p["seeds"])
-    if "seed_base" in p:
-        total = sum(m.get("games", 0) for m in p.get("matchup", []))
-        return set(range(p["seed_base"] + 1, p["seed_base"] + total + 1))
-    return set()
+    base = p.get("seed_base", 1000)
+    if p.get("same_seed", False):
+        return {base}
+    total = sum(m.get("games", 0) for m in p.get("matchup", []))
+    return set(range(base + 1, base + total + 1))
 
 
 def write_botgen_extra(out_dir: Path, first: int, name: str) -> None:
@@ -285,6 +303,108 @@ def write_dagger(out_dir: Path, rnd: int, checkpoint: str, out: Path | None, hal
     print(f"{out}: {n} games, first-target hit {hits} ({hits / n:.1%}, natural 1/3), {len(taken)} other seeds disjoint")
 
 
+# 044-R1 (AMB-044-3 Resolved 2026-11-14): self-game distillation opponents, (label, p1, games per map of a
+# full round). Races fixed (no Random); T0 standard builds only (no E-Regression scenario builds); T1 bots as
+# the 050-R9 T1 plans name them, without McRave (slow in lockstep, AMB-042-13).
+DISTILL_OPPONENTS = (
+    ("T0 protoss", '{ kind = "t0", race = "protoss" }', 120),
+    ("T0 terran", '{ kind = "t0", race = "terran" }', 60),
+    ("ualbertabot protoss", '{ kind = "oss", name = "ualbertabot", race = "protoss" }', 30),
+    ("stardust", '{ kind = "oss", name = "stardust", race = "protoss" }', 30),
+    ("ualbertabot terran", '{ kind = "oss", name = "ualbertabot", race = "terran" }', 30),
+    ("iron", '{ kind = "oss", name = "iron", race = "terran" }', 30),
+)
+# Hash key of the distillation seeds (botgen 60,000.., dagger 70,000..): game number n of round d<R> is
+# (R - 1) * DISTILL_ROUND_STRIDE + i, i = 1..games (600 full, 300 half), as the DAgger rounds.
+DISTILL_SEED_KEY = 80000
+DISTILL_ROUND_STRIDE = 600
+
+
+def distill_blocks(half: bool) -> list[tuple[str, str, str, int]]:
+    """(opponent label, p1, map, games) in plan order: each opponent x Fighting Spirit / Circuit Breaker."""
+    return [(o, p1, m, g // 2 if half else g) for o, p1, g in DISTILL_OPPONENTS for m in MAPS]
+
+
+def distill_seeds(rnd: int, games: int) -> tuple[int, list[int]]:
+    """(first game number n, seeds) of round d<rnd> (044-R1)."""
+    first = (rnd - 1) * DISTILL_ROUND_STRIDE + 1
+    return first, [splitmix64(DISTILL_SEED_KEY + k) >> 32 for k in range(first, first + games)]
+
+
+def taken_seeds(out_dir: Path, skip: tuple[Path, ...]) -> set[int]:
+    """Seeds the distillation plan must not use (044-R1): the botgen game numbers 1..2,400 (rush, macro,
+    macro2), the 050-R6 rush check list, the teacher check ranges, and every plan under `out_dir` and its
+    subfolders (config/plans/protocol: the 050-R9 templates) except `skip`."""
+    n_prev = (len(BOTGEN_RUSH) * BOTGEN_RUSH_GAMES + len(BOTGEN_MACRO) * BOTGEN_MACRO_GAMES) * len(MAPS)
+    taken = set(botgen_seeds(1, n_prev + 400)) | set(_core.rush_check_seeds(len(OPPONENTS) * len(MAPS), FIRST_SEED))
+    for base, count in CHECK_SEED_RANGES:
+        taken.update(range(base + 1, base + count + 1))
+    skip = tuple(p.resolve() for p in skip)
+    for other in sorted(out_dir.rglob("*.toml")):
+        if other.resolve() not in skip:
+            taken |= plan_seeds(other)
+    return taken
+
+
+def render_distill(rnd: int, checkpoint: str, name: str, half: bool) -> tuple[str, list[int]]:
+    """The text and seeds of the round d<rnd> distillation plan (044-R1)."""
+    assert rnd >= 1, "--round starts at 1"
+    blocks = distill_blocks(half)
+    n = sum(g for *_, g in blocks)
+    assert n <= DISTILL_ROUND_STRIDE, "a round plan must fit in its seed stride"
+    first, seeds = distill_seeds(rnd, n)
+    last = first + n - 1
+    assert len(set(seeds)) == n, "distill seeds repeat"
+    p0 = f'{{ kind = "model", checkpoint = "{checkpoint}", sample = "stochastic" }}'
+    t0p, t0t = (sum(g for o, _, _, g in blocks if o == k) for k in ("T0 protoss", "T0 terran"))
+    t1 = n - t0p - t0t
+    span = "(r - 1) * 600 + 300, the first half of the round's 600" if half else "r * 600"
+    lines = [
+        "# 044-R1 / 041-R31 (AMB-044-3 / AMB-044-4, user decision 2026-11-14): self-game distillation round",
+        f"# d{rnd} games, generated by tools/eval/rush_check_plan.py --distill --round {rnd}{' --half' if half else ''} (do not edit by hand).",
+        f"# The model players[0] (stochastic) against T0 standard Protoss ({t0p}) and Terran ({t0t}) and the T1",
+        f"# Protoss (UAlbertaBot P, Stardust) and Terran (UAlbertaBot T, Iron) bots ({t1}) x Fighting Spirit / Circuit",
+        f"# Breaker = {n} games{' (half size, round d2)' if half else ''}, races fixed (no Random), 10 min (max_frames 14,400; build",
+        "# --src distill --until-frame 14400 --time-limit 14400, 044-R2), replays kept. T1 bots: the 050-R9 T1 rule",
+        "# (NDEBUG builds, config/protocol/t1_bots.toml; opponent-crash games are invalid).",
+        f"# seeds (020-R20): splitmix64(80,000 + n) >> 32, n = {first:,}..{last:,} (round r: n = (r - 1) * 600 + 1..{span}):",
+        "# natural start slots, none of another plan's seeds (botgen, check, dagger, 050-R9 protocol; asserted).",
+        f'name = "{name}"',
+        "save_replay = true",
+        "# 041-R28 / 044-R2: decision logs memory/g<id>.jsonl beside replays/ (uranium-replay build --memory-log).",
+        "memory_log = true",
+        "wall_timeout_s = 7200",
+        "zero_last_failed = false",
+        f"max_frames = {TEACHER_MAX_FRAMES}",
+        "seeds = [",
+    ]
+    k = 0
+    for opp, _, m, games in blocks:
+        block = seeds[k:k + games]
+        lines.append(f"  # games {k + 1}..{k + games}: {opp}, {m}")
+        for i in range(0, games, 8):
+            lines.append("  " + ", ".join(str(s) for s in block[i:i + 8]) + ",")
+        k += games
+    lines.append("]")
+    for _, p1, m, games in blocks:
+        lines += ["[[matchup]]", f'map = "{m}"', f"games = {games}", f"p0 = {p0}", f"p1 = {p1}"]
+    return "\n".join(lines) + "\n", seeds
+
+
+def write_distill(out_dir: Path, rnd: int, checkpoint: str, out: Path | None, half: bool = False,
+                  name: str | None = None) -> Path:
+    """One distillation round plan (044-R1): 600 games, or with `half` (round d2) 300."""
+    own = out_dir / f"distill_m2_d{rnd}.toml"
+    out = out or own
+    text, seeds = render_distill(rnd, checkpoint, name or f"distill-m2-d{rnd}", half)
+    taken = taken_seeds(out_dir, (out, own))
+    assert not taken & set(seeds), "a seed of this plan is another plan's (botgen, check, dagger or protocol)"
+    out.write_bytes(text.encode("utf-8"))
+    hits = sum(_core.start_slots(s, 0)[2] for s in seeds)
+    print(f"{out}: {len(seeds)} games, first-target hit {hits} ({hits / len(seeds):.1%}, natural 1/3), {len(taken)} other seeds disjoint")
+    return out
+
+
 def render(checkpoint: str | None, name: str) -> str:
     """`checkpoint` None = the 021-R8 teacher plays players[0] (050-R8)."""
     blocks = len(OPPONENTS) * len(MAPS)
@@ -350,16 +470,24 @@ if __name__ == "__main__":
     ap.add_argument("--name", default=None, help="plan name (the evaluation stage name; default rush5-check / teacher-check)")
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--botgen", action="store_true", help="write the two teacher botgen plans (040-R14 / 050-R8)")
-    ap.add_argument("--out-dir", type=Path, default=ROOT / "config" / "plans", help="--botgen / --dagger output folder (and the seed disjointness scan)")
+    ap.add_argument("--out-dir", type=Path, default=ROOT / "config" / "plans", help="--botgen / --dagger / --distill output folder (and the seed disjointness scan; --distill also scans subfolders)")
     ap.add_argument("--first-game", type=int, default=None,
                     help="--botgen: write one more macro plan from this botgen game number (> 2,000) instead")
     ap.add_argument("--dagger", action="store_true", help="write a DAgger round plan (10th advisory 2.2)")
-    ap.add_argument("--round", type=int, default=1, help="--dagger: round number (seeds per round disjoint)")
-    ap.add_argument("--half", action="store_true", help="--dagger: half-size round plan, 300 games (11th advisory 2)")
-    ap.add_argument("--memory-log", action="store_true", help="--dagger: the model writes decision logs for the memory_action relabel (041-R28)")
+    ap.add_argument("--distill", action="store_true", help="write a self-game distillation round plan (044-R1; needs --checkpoint)")
+    ap.add_argument("--round", type=int, default=1, help="--dagger / --distill: round number (seeds per round disjoint)")
+    ap.add_argument("--half", action="store_true", help="--dagger / --distill: half-size round plan, 300 games (11th advisory 2, 044-R1 d2)")
+    ap.add_argument("--memory-log", action="store_true",
+                    help="--dagger: the model writes decision logs for the memory_action relabel (041-R28); --distill: always on")
     a = ap.parse_args()
-    assert a.dagger or not a.half, "--half needs --dagger"
-    assert a.dagger or not a.memory_log, "--memory-log needs --dagger"
+    assert not (a.dagger and a.distill), "--dagger and --distill are separate plans"
+    assert a.dagger or a.distill or not a.half, "--half needs --dagger or --distill"
+    assert a.dagger or a.distill or not a.memory_log, "--memory-log needs --dagger or --distill"
+    if a.distill:
+        # 044-R1: the model is S (d1) or the d1 model (d2), never a default.
+        assert a.checkpoint, "--distill needs --checkpoint (044-R1: d1 = the 041-R29 (4) selection S, d2 = the d1 model)"
+        write_distill(a.out_dir, a.round, a.checkpoint, a.out, a.half, a.name)
+        raise SystemExit(0)
     if a.dagger:
         write_dagger(a.out_dir, a.round, a.checkpoint or DAGGER_CHECKPOINT, a.out, a.half, a.memory_log)
         raise SystemExit(0)
