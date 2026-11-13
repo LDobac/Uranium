@@ -982,6 +982,24 @@ pub fn eval_games(src: &ShardSource, scan: &[Vec<GameSummary>], n: usize, seed: 
     sample_games(&counts, n, seed)
 }
 
+/// 052-R7: the metas (replay SHA-256, perspective slot) of `n` games by the [`eval_games`]
+/// fixed-seed shuffle (032-R17 ②), in game-id order. `target_only` runs the same shuffle over the
+/// split's target-map games only (052-R7 "사람 리플레이 대상 맵 val·test"); without it these are
+/// exactly the games `bc-eval --games n --seed` scores.
+pub fn eval_game_metas(src: &ShardSource, scan: &[Vec<GameSummary>], n: usize, seed: u64, target_only: bool) -> Vec<uranium_replay::shard::GameMeta> {
+    let per_file: Vec<Vec<GameSummary>> = scan
+        .iter()
+        .enumerate()
+        .map(|(k, items)| {
+            let mut v = src.order_file(k, items.clone());
+            v.retain(|g| !target_only || crate::split::is_target_map(&g.meta));
+            v
+        })
+        .collect();
+    let counts: Vec<usize> = per_file.iter().map(Vec::len).collect();
+    sample_games(&counts, n, seed).into_iter().map(|id| per_file[id.file][id.game].meta.clone()).collect()
+}
+
 /// One lane group of a batch, collated on the host (041-R2, R3): what the trainer feeds one
 /// forward/backward. Rows are b-major (row = lane * T + step); a game shorter than the chunk is
 /// padded with its last step at weight 0.

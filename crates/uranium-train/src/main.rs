@@ -159,6 +159,22 @@ enum Cmd {
         #[command(flatten)]
         data: DataArgs,
     },
+    /// 052-R7: the games `bc-eval --split <s> --games <n> --seed <k>` scores (032-R17 ②), one JSON
+    /// line each (`replay_sha256`, `perspective_slot`, `src`, `map_family`, `matchup`, `split`);
+    /// `--target-maps` runs the same shuffle over the split's target-map games only. Reads the
+    /// scan (cached), not the steps.
+    EvalGames {
+        #[command(flatten)]
+        data: DataArgs,
+        #[arg(long)]
+        split: String,
+        #[arg(long)]
+        games: usize,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        #[arg(long)]
+        target_maps: bool,
+    },
     /// 061-R7: writes `<dir>/manifest.json` (relative path -> sha256, bytes, subfolders included) so
     /// training PCs can pull and verify the dataset. `--verify` checks an existing one instead.
     /// Before hashing, every `shard_NNNNN.bin.zst` below `dir` must decode completely (040-R17).
@@ -298,6 +314,23 @@ fn main() -> Result<()> {
             let src = ShardSource::from_dirs(&data.dirs()?)?;
             let scan = uranium_train::data::scan_cached(&src)?;
             println!("{}", serde_json::to_string_pretty(&uranium_train::split::split_stats(scan.iter().flatten()))?);
+            Ok(())
+        }
+        Cmd::EvalGames { data, split, games, seed, target_maps } => {
+            use uranium_train::split::{Selection, Split};
+            let sp = match split.as_str() {
+                "train" => Split::Train,
+                "val" => Split::Val,
+                "test" => Split::Test,
+                _ => anyhow::bail!("--split {split}: expected train, val or test"),
+            };
+            // The same source and scan as `bc-eval` (uranium_data::eval::EvalStream::new).
+            let src = ShardSource::from_dirs(&data.dirs()?)?.select(Selection::Only(sp));
+            let scan = uranium_train::data::scan_cached(&src)?;
+            for m in uranium_train::bc::eval_game_metas(&src, &scan, games, seed, target_maps) {
+                let row = serde_json::json!({ "replay_sha256": m.replay_sha256, "perspective_slot": m.perspective_slot, "src": m.src, "map_family": m.map_family, "matchup": m.matchup, "split": split });
+                println!("{row}");
+            }
             Ok(())
         }
         Cmd::LabelCheck { data, games } => {

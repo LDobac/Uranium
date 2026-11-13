@@ -933,6 +933,36 @@ fn eval_games_are_a_fixed_seed_sample_032_r17() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+/// 052-R7: `eval_game_metas` names the games `eval_games` picks (the bc-eval games, 032-R17 ②) and,
+/// with `target_only`, the same fixed-seed shuffle over the target-map games only.
+#[test]
+fn eval_game_metas_are_the_eval_games_052_r7() {
+    use uranium_data::bc::{eval_game_metas, eval_games};
+    use uranium_data::data::{ChosenGames, StepSource, scan_files};
+    let mut games = varied_games();
+    for (i, g) in games.iter_mut().enumerate() {
+        g.meta.map_family = if i % 3 == 0 { "other" } else { "fighting_spirit" }.into();
+    }
+    let root = shard_dir("eval-metas", &games, 4);
+    let src = || ShardSource::new(&root).unwrap();
+    let scan = scan_files(src().files()).unwrap();
+    let ids = eval_games(&src(), &scan, 6, 1);
+    let mut chosen = ChosenGames::new(src(), &ids);
+    let mut want = Vec::new();
+    while let Some(g) = chosen.next_game().unwrap() {
+        want.push(g.meta.replay_sha256.clone());
+    }
+    let sha = |v: Vec<uranium_replay::shard::GameMeta>| v.into_iter().map(|m| m.replay_sha256).collect::<Vec<_>>();
+    assert_eq!(sha(eval_game_metas(&src(), &scan, 6, 1, false)), want, "the bc-eval games");
+    let t = eval_game_metas(&src(), &scan, 6, 1, true);
+    assert_eq!(t.len(), 6);
+    assert!(t.iter().all(|m| m.map_family == "fighting_spirit"), "target maps only");
+    assert_eq!(t, eval_game_metas(&src(), &scan, 6, 1, true), "deterministic");
+    assert_ne!(sha(t), sha(eval_game_metas(&src(), &scan, 6, 2, true)), "the seed matters");
+    assert_eq!(eval_game_metas(&src(), &scan, 100, 1, true).len(), 10, "at most every target-map game");
+    std::fs::remove_dir_all(&root).ok();
+}
+
 /// E-10: split-stats gives per source the share of games and steps without a privileged summary
 /// and the result sources (040-R8, A-3).
 #[test]
