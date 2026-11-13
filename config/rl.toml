@@ -61,6 +61,19 @@ selected = 1.0
 target_unit = 1.0
 target_loc = 1.0
 
+# 044-R9 / 042-R22 ①: optional [kl.reference] table, the KL reference checkpoint per lobby enemy
+# race (keys zerg, terran, protoss, random; GameInfo at session start, a lobby Random is random;
+# a missing key = the --bc model). Values are model folders like --bc, relative paths under
+# URANIUM_SHARED_DIR. Every reference must have the --bc model's config (start error otherwise);
+# keys naming the same checkpoint share one model. Absent = one reference (--bc), as before.
+# train.csv kl_ref_<race>: the mean per-step KL of that race's trained steps (empty when absent).
+# Example (lineage 2 fixed RL, 044-R11):
+#   [kl.reference]
+#   zerg = "checkpoints/<S>/ckpt-<step>"
+#   terran = "checkpoints/m2-s2e2/ckpt-11387"
+#   protoss = "checkpoints/m2-s2e2/ckpt-11387"
+#   random = "checkpoints/m2-s2e2/ckpt-11387"
+
 [actors]
 # Push weights to the inference server every K updates.
 weight_push_every = 4
@@ -193,7 +206,7 @@ r_value_vs_model = true
 # td_lambda, [curriculum.band], [league] model_game_max_s and [sil] (AMB-042-17), and
 # [league.rush_judge] and [sil] wins_only (AMB-042-18), and [league.start_mix], ladder_pick
 # "fixed" with [[ladder]] weight, [sil] select_keys, select_army_before_s and select_start_hit
-# (AMB-042-19).
+# (AMB-042-19), and [kl.reference] (044-R9).
 
 [curriculum.band]
 # 042 사다리 선택 band (AMB-042-17): weight exp(-((x - center) / width)^2), x = Main's win-table

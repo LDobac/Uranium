@@ -70,6 +70,10 @@ pub struct Segment {
     /// 042-R16 (AMB-042-17): `Some(R)` = a lane from the self-imitation buffer, R = its game's
     /// r_win; `None` = a lane from the queue (every segment the queue ever holds).
     pub sil_return: Option<f32>,
+    /// 044-R9: the enemy's lobby race of this segment's game, as `GameInfo` gave it at session
+    /// start (a lobby Random arrives as Random or Unknown, 030-R11), fixed for the game; picks the
+    /// lane's `[kl.reference]` (`batch::ref_race`).
+    pub enemy_lobby_race: uranium_proto::Race,
 }
 
 impl Segment {
@@ -370,6 +374,8 @@ pub struct TrajectoryObserver {
     scout: Option<ScoutMetrics>,
     /// Frame of the first step of the segment being built (`Segment::start_frame`).
     seg_frame: u32,
+    /// `Segment::enemy_lobby_race` of this game's segments (044-R9).
+    enemy_lobby_race: uranium_proto::Race,
     /// 042-R16: gets a copy of every non-terminal segment before it is queued (the terminal one is
     /// copied by the caller once r_win is set); `None` = no copies.
     copies: Option<SegmentSink>,
@@ -391,7 +397,7 @@ impl TrajectoryObserver {
     pub fn new(agent: usize, game_id: u64, seq_len: usize, queue: Arc<SegmentQueue>, results: Sender<GameResult>) -> Self {
         assert!(seq_len >= 2, "segments overlap by one step");
         let privileged = PrivilegedTensors { summary: vec![0.0; uranium_env::features::extract::dims().privileged()] };
-        Self { agent, game_id, seq_len, queue, results, steps: Vec::new(), state0: None, next_state0: None, privileged, has_privileged: false, reward_sum: [0.0; 4], decisions: 0, enemy_race: None, hold: None, r_value_policy: true, pseudo: PseudoMode::Z, pseudo_scale: [1.0, 1.0], scout_sum: 0.0, survive_sum: 0.0, scout: None, seg_frame: 0, copies: None }
+        Self { agent, game_id, seq_len, queue, results, steps: Vec::new(), state0: None, next_state0: None, privileged, has_privileged: false, reward_sum: [0.0; 4], decisions: 0, enemy_race: None, hold: None, r_value_policy: true, pseudo: PseudoMode::Z, pseudo_scale: [1.0, 1.0], scout_sum: 0.0, survive_sum: 0.0, scout: None, seg_frame: 0, copies: None, enemy_lobby_race: uranium_proto::Race::Unknown }
     }
 
     /// 042-R16 (AMB-042-17): `sink` gets a copy of each non-terminal segment of this game before
@@ -412,6 +418,13 @@ impl TrajectoryObserver {
     /// (default `true`).
     pub fn r_value_policy(mut self, on: bool) -> Self {
         self.r_value_policy = on;
+        self
+    }
+
+    /// 044-R9: the enemy's lobby race (`GameInfo` at session start) of this game's segments
+    /// (default Unknown, the `random` reference).
+    pub fn enemy_lobby_race(mut self, race: uranium_proto::Race) -> Self {
+        self.enemy_lobby_race = race;
         self
     }
 
@@ -490,7 +503,7 @@ impl SessionObserver for TrajectoryObserver {
             let steps = std::mem::replace(&mut self.steps, vec![last]);
             let state0 = self.state0.take().unwrap_or_default();
             self.state0 = self.next_state0.take();
-            let seg = Segment { agent: self.agent, game_id: self.game_id, steps, state0, terminal: false, r_value_policy: self.r_value_policy, pseudo_scale: self.pseudo_scale, start_frame: self.seg_frame, sil_return: None };
+            let seg = Segment { agent: self.agent, game_id: self.game_id, steps, state0, terminal: false, r_value_policy: self.r_value_policy, pseudo_scale: self.pseudo_scale, start_frame: self.seg_frame, sil_return: None, enemy_lobby_race: self.enemy_lobby_race };
             // The next segment starts with this decision.
             self.seg_frame = d.frame;
             if let Some(sink) = &self.copies {
@@ -517,7 +530,7 @@ impl SessionObserver for TrajectoryObserver {
                 if !self.steps.is_empty() {
                     let steps = std::mem::take(&mut self.steps);
                     let state0 = self.state0.take().unwrap_or_default();
-                    let seg = Segment { agent: self.agent, game_id: self.game_id, steps, state0, terminal: true, r_value_policy: self.r_value_policy, pseudo_scale: self.pseudo_scale, start_frame: self.seg_frame, sil_return: None };
+                    let seg = Segment { agent: self.agent, game_id: self.game_id, steps, state0, terminal: true, r_value_policy: self.r_value_policy, pseudo_scale: self.pseudo_scale, start_frame: self.seg_frame, sil_return: None, enemy_lobby_race: self.enemy_lobby_race };
                     match &self.hold {
                         Some(sink) => sink(seg),
                         None => self.queue.push(seg),
@@ -660,6 +673,34 @@ pub(crate) mod tests {
         assert_eq!(g.r_value_policy, [false, false, true, true]);
     }
 
+    /// 044-R9 (044-AC4): every segment of a game carries the enemy's lobby race set at session
+    /// start, whatever race the decisions reveal later; the batch maps it to the `[kl.reference]`
+    /// key (zerg 0, terran 1, protoss 2, a lobby Random given as Random or Unknown 3), also for
+    /// lanes collated in another order (`group_of`).
+    #[test]
+    fn segments_carry_the_lobby_race_044_r9() {
+        use uranium_proto::Race;
+        let q = Arc::new(SegmentQueue::new(32));
+        let games = [(1u64, Some(Race::Zerg)), (2, Some(Race::Terran)), (3, Some(Race::Protoss)), (4, Some(Race::Random)), (5, Some(Race::Unknown)), (6, None)];
+        for (game, race) in games {
+            let (tx, _rx) = mpsc::channel();
+            let mut o = TrajectoryObserver::new(0, game, 3, q.clone(), tx);
+            if let Some(r) = race {
+                o = o.enemy_lobby_race(r);
+            }
+            for i in 0..2 {
+                decide(&mut o, i, 0.0);
+            }
+            o.on_end(RewardParts::default(), Some(Outcome::Draw));
+        }
+        let segs = q.try_take(6, 0, 100).unwrap();
+        assert_eq!(segs.iter().map(|s| s.enemy_lobby_race).collect::<Vec<_>>(), [Race::Zerg, Race::Terran, Race::Protoss, Race::Random, Race::Unknown, Race::Unknown]);
+        assert_eq!(crate::batch::group(&segs, 3, 12).ref_race, [0, 1, 2, 3, 3, 3]);
+        let order: Vec<&Segment> = [4, 0, 2].iter().map(|&i| &segs[i]).collect();
+        assert_eq!(crate::batch::group_of(&order, 3, 12).ref_race, [3, 0, 2]);
+        assert_eq!(crate::batch::REF_RACES, ["zerg", "terran", "protoss", "random"]);
+    }
+
     fn decide_parts(obs: &mut TrajectoryObserver, i: usize, r: RewardParts) {
         let o = fake_obs(i);
         let a = HostAction { action: 0, delay_bucket: 0, queued: false, selected: vec![], target_unit: None, target_loc: None };
@@ -771,6 +812,7 @@ pub(crate) mod tests {
             pseudo_scale: [1.0, 1.0],
             start_frame: 0,
             sil_return: None,
+            enemy_lobby_race: uranium_proto::Race::Unknown,
         }
     }
 

@@ -66,6 +66,40 @@ pub struct KlConfig {
     /// Absent = 1.0 each (the earlier loss).
     #[serde(default)]
     pub head_scale: KlHeadScale,
+    /// `[kl.reference]` (044-R9, 042-R22 ①): the KL reference checkpoint per lobby enemy race.
+    /// Absent (or empty) = the `--bc` model for every game, as before; not written to the
+    /// learner's JSON then (the config JSON is the same as before the key).
+    #[serde(default, skip_serializing_if = "KlReference::is_empty")]
+    pub reference: KlReference,
+}
+
+/// `[kl.reference]` (044-R9): per lobby enemy race (the game's `GameInfo` at session start; a
+/// lobby Random, which `GameInfo` gives as Random or Unknown, is `random`) the checkpoint folder
+/// of the KL reference, as `--bc` (a model folder: weights and `meta.json`). Relative paths are
+/// under `URANIUM_SHARED_DIR` (as `[league] anchor`, 020-R11). A race without a key uses `--bc`.
+/// The learner loads each distinct checkpoint once and checks it has the `--bc` model's config.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct KlReference {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zerg: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terran: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protoss: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub random: Option<String>,
+}
+
+impl KlReference {
+    pub fn is_empty(&self) -> bool {
+        self.by_race().iter().all(|(_, v)| v.is_none())
+    }
+
+    /// The keys in the order of [`crate::batch::REF_RACES`] (the `kl_ref_<race>` columns).
+    pub fn by_race(&self) -> [(&'static str, Option<&str>); 4] {
+        [("zerg", self.zerg.as_deref()), ("terran", self.terran.as_deref()), ("protoss", self.protoss.as_deref()), ("random", self.random.as_deref())]
+    }
 }
 
 impl KlConfig {
@@ -83,6 +117,9 @@ impl KlConfig {
         }
         if let Some((h, x)) = self.head_scale.by_head().into_iter().find(|(_, x)| !(*x >= 0.0 && x.is_finite())) {
             bail!("[kl.head_scale] {h} must be a finite value >= 0, got {x} (042-R9, AMB-042-17)");
+        }
+        if let Some((race, _)) = self.reference.by_race().into_iter().find(|(_, v)| v.is_some_and(|p| p.trim().is_empty())) {
+            bail!("[kl.reference] {race} is empty: give a checkpoint folder or leave the key out (the --bc model, 044-R9)");
         }
         Ok(())
     }
@@ -1245,6 +1282,26 @@ mod tests {
         assert!(rl_with(scale, "actions = 1.0").is_err(), "unknown head");
         let partial = rl_with("action = 1.0\ndelay = 1.0\nqueued = 1.0\nselected = 1.0", "selected = 0.5").unwrap();
         assert_eq!(partial.kl.head_scale, KlHeadScale { selected: 0.5, ..KlHeadScale::default() }, "absent heads 1.0");
+    }
+
+    /// 044-R9 / 042-R22 ① (044-AC4): `[kl.reference]` keys `zerg`, `terran`, `protoss`, `random`
+    /// (unknown keys and empty values are load errors); absent = no table, and the config JSON
+    /// the learner reads is the same as before the key (no `reference` field).
+    #[test]
+    fn kl_reference_table_044_r9() {
+        let c = RlConfig::default_file();
+        assert!(c.kl.reference.is_empty());
+        assert!(!serde_json::to_string(&c).unwrap().contains("reference"), "absent: the JSON as before");
+        let tail = "target_loc = 1.0\n\n# 044-R9";
+        let with = |body: &str| rl_with(tail, &format!("target_loc = 1.0\n\n[kl.reference]\n{body}\n\n# 044-R9"));
+        let r = with("zerg = \"checkpoints/s/ckpt-1\"\nrandom = \"checkpoints/b/ckpt-2\"").unwrap().kl.reference;
+        assert_eq!(r, KlReference { zerg: Some("checkpoints/s/ckpt-1".into()), random: Some("checkpoints/b/ckpt-2".into()), ..Default::default() });
+        assert_eq!(r.by_race().map(|(k, _)| k), ["zerg", "terran", "protoss", "random"]);
+        let js: serde_json::Value = serde_json::from_str(&serde_json::to_string(&with("zerg = \"a\"").unwrap()).unwrap()).unwrap();
+        assert_eq!(js["kl"]["reference"], serde_json::json!({"zerg": "a"}), "only the given keys");
+        assert!(with("").unwrap().kl.reference.is_empty(), "an empty table = none");
+        assert!(with("zergs = \"a\"").is_err(), "unknown race key");
+        assert!(with("terran = \"  \"").is_err(), "empty value");
     }
 
     /// 042-R15 설정 검사 (AMB-042-17, 메인 임시 결정): 0 or 60..=3600.

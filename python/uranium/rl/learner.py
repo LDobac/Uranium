@@ -27,7 +27,13 @@ apart or ride along as ordinary lanes ("replay"). Without buffer lanes the updat
 042-R21 (model 2): with the 032-R24 aux modules the loss adds λ_priv L_priv + λ_jepa L_jepa (`[aux]`,
 queue lanes only, batch-wide divisors from the host), and `[monitor] spatial_every` adds the 032-R25
 dead-channel statistics (a separate no_grad eval pass per lane group, read with the update's other
-statistics). Without them the update and its statistics are as before (aux keys `None`)."""
+statistics). Without them the update and its statistics are as before (aux keys `None`).
+
+044-R9 (042-R22 ①): with `[kl.reference]` the KL reference of a lane is the model of its game's
+enemy lobby race (`refs`, `race_ref`); when the races use more than one model the queue lanes are
+grouped by reference (each lane group runs one reference forward), and `kl_ref` gives the mean
+per-step KL per lobby race. Without the table, or with every race on the `--bc` model, the lane
+groups, the reference forward, the loss and the other statistics are as before, bit for bit."""
 
 import copy
 import json
@@ -63,6 +69,9 @@ AUX_PARTS = 2 + AUX_JEPA_SLOTS
 PARTS = BASE_PARTS + AUX_PARTS
 # 042-R16 "sil" lane-group parts: the weighted loss, steps with A+ > 0, trained steps.
 SIL_PARTS = 3
+# 044-R9: the `[kl.reference]` keys (`uranium_league::batch::REF_RACES`); a lane's `ref_race` is the
+# index here, and the statistics' `kl_ref` (train.csv `kl_ref_<race>`) follow this order.
+REF_RACES = ("zerg", "terran", "protoss", "random")
 
 
 def host_micro_lanes(cfg: dict) -> int:
@@ -244,6 +253,27 @@ def rl_aux_counts(batch, t: int, queue: int, ks: list) -> dict:
     return {"priv": sum(priv), "real": sum(real), "pairs": [sum(max(0, min(tr, r - k)) for tr, r in zip(trained, real)) for k in ks]}
 
 
+def kl_ref_stats(sums: list | None, steps: list | None) -> list:
+    """044-R9 `kl_ref` in `REF_RACES` order: per lobby race the summed per-step KL (used heads,
+    before the head multipliers) over that race's trained queue steps / those steps; `None`
+    without `[kl.reference]` (`sums` None), without such a step, or when not finite."""
+    if sums is None:
+        return [None] * len(REF_RACES)
+    return [finite_or_none(s / c) if c > 0 else None for s, c in zip(sums, steps)]
+
+
+def lanes_by_ref(races: list, race_ref: list, lanes: int, size: int) -> list:
+    """044-R9 lane groups of the queue lanes `0..lanes` when the races use more than one reference
+    model: per reference (in index order) its lanes in batch order, cut into groups of `size`;
+    [(lane list, reference index)]."""
+    ref = [race_ref[int(r)] for r in list(races)[:lanes]]
+    out = []
+    for r in sorted(set(ref)):
+        mine = [i for i in range(lanes) if ref[i] == r]
+        out += [(mine[s:s + size], r) for s in range(0, len(mine), size)]
+    return out
+
+
 def value_channels(values: torch.Tensor, vs: torch.Tensor, mask: torch.Tensor, n: int) -> torch.Tensor:
     """042-R2 진단 로그: each channel's Σ 0.5 (V − target)^2 over the trained rows / `n` [4]."""
     return ((values - vs) ** 2 * mask[:, None]).sum(0) * (0.5 / n)
@@ -270,9 +300,12 @@ def state0_of(net, g: dict, device, pinned: bool | None = None):
 
 
 class Learner:
-    """One learning agent: the trained net, the frozen BC reference, Adam (042 optimizer table)."""
+    """One learning agent: the trained net, the frozen BC reference, Adam (042 optimizer table).
+    044-R9: `refs` are the other `[kl.reference]` models (frozen, may be shared by the learners),
+    `race_ref` per lobby race (`REF_RACES`) the KL reference's index in `[bc, *refs]`; `None` =
+    no table (`bc` for every lane, as before)."""
 
-    def __init__(self, cfg: dict, net, bc, device: torch.device, precision: str, algo: str, update: int = 0, micro_lanes: int | None = None):
+    def __init__(self, cfg: dict, net, bc, device: torch.device, precision: str, algo: str, update: int = 0, micro_lanes: int | None = None, refs: list | None = None, race_ref: list | None = None):
         self.cfg = cfg
         # 042-R21 ①: `[aux]` keys and the trained model's aux modules must match (start error).
         # The BC reference's aux modules never run (`forward_seq(aux=False)`, 042-R21 ②).
@@ -287,6 +320,16 @@ class Learner:
         self.bc = bc.to(device).eval()
         for p in self.bc.parameters():
             p.requires_grad_(False)
+        # 044-R9: the KL references [--bc (also the exploiters' reset policy), *other models].
+        self.refs = [self.bc]
+        for r in refs or []:
+            r = r.to(device).eval()
+            for p in r.parameters():
+                p.requires_grad_(False)
+            self.refs.append(r)
+        if race_ref is not None and (len(race_ref) != len(REF_RACES) or any(not 0 <= int(i) < len(self.refs) for i in race_ref)):
+            raise ValueError(f"044-R9: race_ref {race_ref} needs one index into the {len(self.refs)} references per race {REF_RACES}")
+        self.race_ref = None if race_ref is None else [int(i) for i in race_ref]
         self.update_count = update
         # 042-R9 (AMB-042-17): per-head KL multipliers, None = all 1.0.
         self.kl_scale = kl_head_scale(cfg)
@@ -334,13 +377,16 @@ class Learner:
         self._ph[phase] += now - self._mark
         self._mark = now
 
-    def prepare(self, batch, start: int, end: int, t: int) -> dict:
-        """Lanes `start..end` collated and staged for the copy (on the collate thread): with
+    def prepare(self, batch, lanes, t: int) -> dict:
+        """Lanes `lanes` (a range `(start, end)`, or a list: 044-R9 lane groups by reference)
+        collated and staged for the copy (on the collate thread): with
         `trim_pad` the 032 §2.7 entity padding cut (`trim_entity_pad`, dropout 0 in RL), the copied arrays page-locked
         (CUDA host) with the spatial planes in bf16 (bf16 autocast), core_state0 on the host and the
         outer segments' row indices from its counter (`phase_split`)."""
         net = self.net
-        g = trim_entity_pad(batch.group(start, end, t, net.cfg.heads.max_select), net.cfg.variant.tokens() if self.trim_pad else 0)
+        ms = net.cfg.heads.max_select
+        g = batch.group(lanes[0], lanes[1], t, ms) if isinstance(lanes, tuple) else batch.group_lanes(list(lanes), t, ms)
+        g = trim_entity_pad(g, net.cfg.variant.tokens() if self.trim_pad else 0)
         g = stage(g, self.device, self.precision, pinned=self.pinned, spatial_bf16=self.spatial_bf16, keys=STAGE_KEYS)
         s = state0_host(net, g)
         if net.outer is not None:
@@ -435,14 +481,21 @@ class Learner:
         k = sil_lane_count(batch)
         apart_lanes = k if sil["mode"] == "sil" else 0
         normal = lanes - apart_lanes
-        groups = [(s, min(s + g_size, normal), False) for s in range(0, normal, g_size)]
-        groups += [(s, min(s + g_size, lanes), True) for s in range(normal, lanes, g_size)]
+        # Lane groups: (lanes, buffer lanes apart, KL reference index). 044-R9: when the lobby
+        # races use more than one reference model the queue lanes are grouped by reference (one
+        # reference forward per group); otherwise the ranges as before.
+        multi = self.race_ref is not None and len(set(self.race_ref)) > 1
+        if multi:
+            groups = [(ls, False, r) for ls, r in lanes_by_ref(batch.ref_races, self.race_ref, normal, g_size)]
+        else:
+            groups = [((s, min(s + g_size, normal)), False, 0) for s in range(0, normal, g_size)]
+        groups += [((s, min(s + g_size, lanes)), True, 0) for s in range(normal, lanes, g_size)]
         coef_kl = kl_coef(cfg, self.update_count)
         epochs = 1 if self.algo == "vtrace" else max(1, cfg["ppo"]["epochs"])
         # The totals come from the batch itself; the lane groups are collated one ahead on a
         # worker thread (the Rust collate releases the GIL) while the previous one trains, as
         # in BC: at most two collated groups are alive (not every group of the batch at once).
-        collate = lambda gi: self.prepare(batch, groups[gi][0], groups[gi][1], t)  # noqa: E731
+        collate = lambda gi: self.prepare(batch, groups[gi][0], t)  # noqa: E731
         trained = [int(x) for x in batch.trained]
         # The loss terms are means over the lanes that take them ("replay" buffer lanes included);
         # `steps` counts the queue lanes only, as the run loop's `trained_steps` (042-R2).
@@ -469,6 +522,14 @@ class Learner:
         net_cfg = self.net.cfg
         moments = torch.zeros(4, net_cfg.entity.d_model + net_cfg.spatial.pool, dtype=torch.float64, device=dev) if "jepa" in self.aux else None
         mon = ReluMonitor(self.net, points="spatial") if spatial_due(self.monitor_every, self.update_count + 1) else None
+        # 044-R9: per lobby race the summed per-step KL (device) and trained steps (host) of the
+        # KL-taking lanes (the queue lanes and "replay" buffer lanes), with `[kl.reference]` only.
+        kl_race = None
+        if self.race_ref is not None:
+            kl_race = torch.zeros(len(REF_RACES), dtype=torch.float64, device=dev)
+            race_steps = [0.0] * len(REF_RACES)
+            for r, x in zip(list(batch.ref_races)[:normal], trained[:normal]):
+                race_steps[int(r)] += x
         for epoch in range(epochs):
             self.opt.zero_grad(set_to_none=True)
             nxt = self._collate.submit(collate, 0)
@@ -479,14 +540,17 @@ class Learner:
                     self.tick("collate_wait")
                     if gi + 1 < len(groups):
                         nxt = self._collate.submit(collate, gi + 1)
-                    if groups[gi][2]:
+                    if groups[gi][1]:
                         part = self.sil_group_loss(g, n_sil, sil)
                         if epoch == 0:
                             sil_parts += part
                         del g
                         continue
                     first = epoch == 0
-                    part, tg, kl_step = self.group_loss(g, n, weights, coef_kl, ppo_targets, gi, aux, moments if first else None, mon if first else None)
+                    part, tg, kl_step = self.group_loss(g, n, weights, coef_kl, ppo_targets, gi, aux, moments if first else None, mon if first else None, groups[gi][2])
+                    if first and kl_race is not None:
+                        lane_kl = torch.nan_to_num(kl_step.view(g["b"], -1).double(), nan=0.0).sum(1)
+                        kl_race.index_add_(0, to_device(g["ref_race"], dev, self.pinned).long(), lane_kl)
                     del g
                     if epoch == 0:
                         parts += part
@@ -517,8 +581,11 @@ class Learner:
             st = mon.stats()
             channels = channel_counts_of(st)
             extra.append(packed(st))
-        vals = torch.cat([parts, nan if norm is None else norm.detach().double().reshape(1), kl_tail(kl_steps, dev), sil_parts, *extra]).tolist()
-        tail = vals[PARTS + 3 + SIL_PARTS:]
+        races = [] if kl_race is None else [kl_race]
+        vals = torch.cat([parts, nan if norm is None else norm.detach().double().reshape(1), kl_tail(kl_steps, dev), sil_parts, *races, *extra]).tolist()
+        at = PARTS + 3 + SIL_PARTS
+        kl_race_sums = None if kl_race is None else vals[at:at + len(REF_RACES)]
+        tail = vals[at + (0 if kl_race is None else len(REF_RACES)):]
         self.tick("stats")
         stats = {
             "update": self.update_count + 1, "steps": steps, "kl_coef": coef_kl, "policy": vals[0], "value": vals[1], "win_open": vals[3], "kl": vals[2],
@@ -531,6 +598,7 @@ class Learner:
         stats.update(diagnostics(host["adv_sq"], adv_sq_c, vals[16:BASE_PARTS], vals[PARTS + 1:PARTS + 3], n))
         stats.update(sil_stats(sil, vals[PARTS + 3:PARTS + 3 + SIL_PARTS], host["sil_pos"], host["sil_steps"]))
         stats.update(aux_stats(self.aux, self.ks, vals[BASE_PARTS:PARTS], aux, tail[:2] if moments is not None else (None, None)))
+        stats["kl_ref"] = kl_ref_stats(kl_race_sums, None if kl_race is None else race_steps)
         if mon is not None:
             rec = dict(zip(SPEC_COLUMNS, tail[-len(SPEC_COLUMNS):]))
             stats["spatial"] = list(rec.values())
@@ -554,13 +622,14 @@ class Learner:
         return stats
 
     def group_loss(self, g: dict, n: int, weights, coef_kl: float, ppo_targets: list, gi: int, aux: dict | None = None, moments: torch.Tensor | None = None,
-                   mon: ReluMonitor | None = None) -> tuple[torch.Tensor, dict, torch.Tensor]:
+                   mon: ReluMonitor | None = None, ref: int = 0) -> tuple[torch.Tensor, dict, torch.Tensor]:
         """Forward, targets, loss and backward of one lane group (divided by the batch's trained
         steps `n`); returns the detached loss parts (a device tensor, `PARTS`), the targets' host
         sums (ρ, advantage, the 진단 로그 squares, `sil_positive`) and the per-step KL (NaN on
         untrained rows, a device tensor). `aux`: the batch's aux divisors (`rl_aux_counts`) when
         the model has an aux module (042-R21 ①); `moments`: the JEPA target sums it adds to;
-        `mon`: the update's dead-channel monitor, run on this group after its backward."""
+        `mon`: the update's dead-channel monitor, run on this group after its backward; `ref`: the
+        group's KL reference in `refs` (044-R9; 0 = `bc`)."""
         cfg, dev, net, pin = self.cfg, self.device, self.net, self.pinned
         t = g["t"]
         obs, labels = to_obs(g, dev, pinned=pin), net.labels(g, dev, pinned=pin)
@@ -581,10 +650,11 @@ class Learner:
         e = cfg["entropy"]
         ent_terms = [(out["entropy"][h].float() * mask).sum() / n for h in HEADS]
         entropy = sum(e[h] * term for h, term in zip(HEADS, ent_terms))
-        # KL(π ‖ π_BC) with the frozen BC net on the same inputs (AMB-042-9). Queued before the
-        # targets wait for the read-back, so the device runs it while the host computes them.
+        # KL(π ‖ π_BC) with the frozen BC net on the same inputs (AMB-042-9); 044-R9: the group's
+        # `[kl.reference]` model. Queued before the targets wait for the read-back, so the device
+        # runs it while the host computes them.
         with torch.no_grad(), autocast(dev, self.precision):
-            bc = self.bc.forward_seq(obs, labels, priv, s0, t, phased=True, phases=phases)
+            bc = self.refs[ref].forward_seq(obs, labels, priv, s0, t, phased=True, phases=phases)
         self.tick("bc_forward")
         kl = kl_per_head({k: (v.float() if v.is_floating_point() else v) for k, v in out["dists"].items()}, {k: (v.float() if v.is_floating_point() else v) for k, v in bc["dists"].items()})
         kl_terms = [(kl[h] * mask).sum() / n for h in HEADS]

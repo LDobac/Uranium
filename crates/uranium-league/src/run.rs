@@ -364,6 +364,9 @@ impl LearnerHook for Hook {
                 }
             }
         }
+        // 044-R9: the game's KL reference by the enemy's lobby race as GameInfo gives it now (a
+        // lobby Random arrives as Random / Unknown, 030-R11), fixed for the game.
+        let lobby_race = info.players.iter().find(|p| p.is_enemy).map_or(Race::Unknown, |p| p.race);
         // 033 / 042 "r_value의 게임별 적용" (AMB-042-14): per game, by the opponent's class.
         let r_value_policy = class.is_none_or(|c| self.shared.league.lock().unwrap().r_value_in_policy(c));
         // 033-R11 (AMB-042-16): r_scout / r_survive policy-weight multipliers, per game the same way.
@@ -379,7 +382,7 @@ impl LearnerHook for Hook {
                 Some(Strategy { build: e.build.clone(), units: e.units.clone() })
             }
         };
-        let mut obs = TrajectoryObserver::new(self.agent.index(), game_id, self.seq_len, self.shared.queues[self.agent.index()].clone(), self.tx.clone()).hold_terminal(held_sink(self.shared.clone())).r_value_policy(r_value_policy).pseudo(self.reward.pseudo, pseudo_scale);
+        let mut obs = TrajectoryObserver::new(self.agent.index(), game_id, self.seq_len, self.shared.queues[self.agent.index()].clone(), self.tx.clone()).hold_terminal(held_sink(self.shared.clone())).r_value_policy(r_value_policy).pseudo(self.reward.pseudo, pseudo_scale).enemy_lobby_race(lobby_race);
         // 042-R16 (AMB-042-17): Main's games of the selected ladder group keep segment copies
         // until the game is judged; with `select_keys` / `select_start_hit` (AMB-042-19) only
         // games against a listed opponent with the wanted start condition (the others can never
@@ -994,8 +997,18 @@ fn train_header() -> String {
     for c in spatial_columns() {
         h += &format!(",{c}");
     }
+    for r in crate::batch::REF_RACES {
+        h += &format!(",kl_ref_{r}");
+    }
     h += "\n";
     h
+}
+
+/// 044-R9 (2026-11-14): `kl_ref_<race>` after the spatial statistics, last, in
+/// `batch::REF_RACES` order; in the header whatever the config, empty without `[kl.reference]`
+/// (the 042-R21 ③ precedent) or without a trained step of that race in the batch.
+fn kl_ref_columns(s: &UpdateStats) -> String {
+    s.kl_ref.iter().map(|x| format!(",{}", x.map_or(String::new(), |v| v.to_string()))).collect()
 }
 
 /// 042-R21 ③ (2026-11-09): the aux loss columns after `sil_pos_frac`, in this order, then the
@@ -1585,6 +1598,7 @@ fn write_row(csv: &mut std::fs::File, started: Instant, agent: AgentKind, s: &Up
     );
     row += &diag_columns(s, sil);
     row += &aux_columns(s);
+    row += &kl_ref_columns(s);
     row += "\n";
     csv.write_all(row.as_bytes())?;
     Ok(())
@@ -1611,7 +1625,7 @@ mod tests {
     /// spec's order (AMB-042-17).
     #[test]
     fn train_csv_header_columns_042_r2() {
-        assert_eq!(train_header().trim().split(',').count(), 15 + 12 + 11 + 15 + 6 + 36);
+        assert_eq!(train_header().trim().split(',').count(), 15 + 12 + 11 + 15 + 6 + 36 + 4);
         assert!(train_header().contains(
             ",win_open,trained_steps,queue_wait_s,adv_rms,adv_rms_win,adv_rms_build,adv_rms_units,adv_rms_value,value_loss_win,value_loss_build,value_loss_units,value_loss_value,kl_p99,kl_max,sil_buffer,sil_lanes,sil_loss,sil_pos_frac,aux_priv,"
         ));
@@ -1625,7 +1639,7 @@ mod tests {
         let layers = "stem,c0,c1,c2,c3,r0,r1,r2,r3,r4,r5,d0,d1,d2,d3,b0,b1";
         let pos: Vec<String> = layers.split(',').map(|l| format!("sp_pos_{l}")).collect();
         let dead: Vec<String> = layers.split(',').map(|l| format!("sp_dead_{l}")).collect();
-        let tail = format!(",sil_pos_frac,aux_priv,aux_jepa,jepa_tgt_std,aux_jepa_slot1,aux_jepa_slot2,aux_jepa_slot3,{},{},sp_const_s8,sp_const_pool", pos.join(","), dead.join(","));
+        let tail = format!(",sil_pos_frac,aux_priv,aux_jepa,jepa_tgt_std,aux_jepa_slot1,aux_jepa_slot2,aux_jepa_slot3,{},{},sp_const_s8,sp_const_pool,kl_ref_zerg,kl_ref_terran,kl_ref_protoss,kl_ref_random", pos.join(","), dead.join(","));
         assert!(train_header().trim().ends_with(&tail));
         // Off (the defaults): every aux and spatial value empty, as many values as the columns.
         let off = aux_columns(&UpdateStats::default());
@@ -1645,6 +1659,19 @@ mod tests {
         // The learner's JSON: the aux keys read; an older learner's JSON without them still reads.
         let js: UpdateStats = serde_json::from_str(r#"{"update":1,"steps":2,"loss":0.1,"policy":0.1,"value":0.0,"kl":0.0,"kl_coef":0.1,"kl_heads":[0,0,0,0,0,0],"entropy_heads":[0,0,0,0,0,0],"rho_mean":1,"adv_mean":0,"lag_mean":0,"win_open":0,"aux_priv":0.5,"aux_jepa":null,"jepa_tgt_std":null,"aux_jepa_slots":[0.25,null,null],"spatial":null}"#).unwrap();
         assert_eq!((js.aux_priv, js.aux_jepa, js.aux_jepa_slots, js.spatial), (Some(0.5), None, [Some(0.25), None, None], None));
+    }
+
+    /// 044-R9 (044-AC4): `kl_ref_<race>` values in `REF_RACES` order, empty when not measured
+    /// (no table, no trained step of that race); a learner JSON without `kl_ref` still reads.
+    #[test]
+    fn train_csv_kl_ref_columns_044_r9() {
+        assert_eq!(kl_ref_columns(&UpdateStats::default()), ",,,,");
+        let s = UpdateStats { kl_ref: [Some(0.5), None, Some(0.25), None], ..Default::default() };
+        assert_eq!(kl_ref_columns(&s), ",0.5,,0.25,");
+        let js: UpdateStats = serde_json::from_str(r#"{"update":1,"steps":2,"loss":0.1,"policy":0.1,"value":0.0,"kl":0.0,"kl_coef":0.1,"kl_heads":[0,0,0,0,0,0],"entropy_heads":[0,0,0,0,0,0],"rho_mean":1,"adv_mean":0,"lag_mean":0,"win_open":0,"kl_ref":[0.125,null,null,2.0]}"#).unwrap();
+        assert_eq!(js.kl_ref, [Some(0.125), None, None, Some(2.0)]);
+        let old: UpdateStats = serde_json::from_str(r#"{"update":1,"steps":2,"loss":0.1,"policy":0.1,"value":0.0,"kl":0.0,"kl_coef":0.1,"kl_heads":[0,0,0,0,0,0],"entropy_heads":[0,0,0,0,0,0],"rho_mean":1,"adv_mean":0,"lag_mean":0,"win_open":0}"#).unwrap();
+        assert_eq!(old.kl_ref, [None; 4]);
     }
 
     /// 042-R2 진단 로그 / 042-R16 (AMB-042-17): the row values; SIL columns empty when `[sil]` is

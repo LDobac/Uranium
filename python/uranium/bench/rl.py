@@ -5,7 +5,10 @@ uranium rl`). Lane group sizes and the learner before the optimisations (`refere
 one run from the same weights and batch, so the times compare and the per-update statistics are a
 parity log (`bench rl-parity`: losses, KL, gradient norm per update, 042 lane-group equivalence).
 The first update warms kernels up (cuDNN benchmark per shape) and is not counted in the medians.
-Process settings as in an RL run: `configure(backend)` without the BC trainer's defaults."""
+Process settings as in an RL run: `configure(backend)` without the BC trainer's defaults.
+`references` > 1 (044-R9, 060-AC7 ②): that many distinct KL reference models resident (copies of
+the checkpoint) and the lanes' lobby races cycling zerg, terran, protoss, random, so the update runs
+the race-aware reference path (lane groups by reference)."""
 
 import copy
 import json
@@ -115,9 +118,18 @@ class SyntheticSegments:
     def priv_trained(self) -> list[int]:
         return self.trained
 
+    @property
+    def ref_races(self) -> list[int]:
+        """044-R9: lane i's lobby race key index (`REF_RACES`) is i mod 4."""
+        return [i % 4 for i in range(self.lanes)]
+
     def group(self, start: int, end: int, t: int, max_select: int) -> dict:
-        assert t == self.t and 0 <= start < end <= self.lanes, (start, end, t)
-        lanes = self.lane[start:end]
+        assert 0 <= start < end <= self.lanes, (start, end)
+        return self.group_lanes(list(range(start, end)), t, max_select)
+
+    def group_lanes(self, idx: list, t: int, max_select: int) -> dict:
+        assert t == self.t and idx and all(0 <= i < self.lanes for i in idx), (idx, t)
+        lanes = [self.lane[i] for i in idx]
         n = max(self.blocks[x["block"]][0] for x in lanes)
         cols: dict = {k: [] for k in (*OBS_KEYS, *LABEL_KEYS, "privileged", "behaviour")}
         for x in lanes:
@@ -141,6 +153,7 @@ class SyntheticSegments:
         g["pseudo_scale"] = np.ones((len(lanes), 2), dtype=self.dtypes["pseudo_scale"])
         # Queue lanes only, no self-imitation buffer lanes (042-R16, AMB-042-17).
         g["sil_return"] = np.full(len(lanes), np.nan, dtype=self.dtypes["sil_return"])
+        g["ref_race"] = np.array([i % 4 for i in idx], dtype=self.dtypes["ref_race"])
         # 042-R21 ①: whole segments (every row a real step) with a privileged summary each.
         g["real"] = np.ones(len(lanes) * t, dtype=self.dtypes["real"])
         g["priv_present"] = np.ones(len(lanes) * t, dtype=self.dtypes["priv_present"])
@@ -165,15 +178,28 @@ def profile_update(learner, batch, device: torch.device, n_ops: int, trace: str 
     return {"ops": [{"name": e.key, "calls": e.count, "self_ms": round(getattr(e, key, 0.0) / 1e3, 3), "cpu_ms": round(e.self_cpu_time_total / 1e3, 3)} for e in ev], "runtime_calls": calls}
 
 
-def run_learner(kind: str, group: int, net, cfg: dict, batch, device: torch.device, precision: str, algo: str, updates: int, phases: bool, n_ops: int = 0, trace: str | None = None, log=print, off: tuple = (), trim: bool = False) -> dict:
+def race_refs(references: int) -> tuple[int, list | None]:
+    """044-R9 bench setting: (other reference models, race_ref) for `references` distinct KL
+    reference models: race i (`REF_RACES` order) on model i + 1 while there is one, the rest on
+    --bc's (2 = the lineage 2 fixed RL: zerg on one model, terran / protoss / random on --bc's)."""
+    if references <= 1:
+        return 0, None
+    k = min(references, 4)
+    return k - 1, [i + 1 if i + 1 < k else 0 for i in range(4)]
+
+
+def run_learner(kind: str, group: int, net, cfg: dict, batch, device: torch.device, precision: str, algo: str, updates: int, phases: bool, n_ops: int = 0, trace: str | None = None, log=print, off: tuple = (), trim: bool = False, references: int = 1) -> dict:
     """`updates` + 1 updates of a fresh learner (`new` or `reference`) from `net`'s weights;
     `off`: staging steps of the new learner left out (`OFF`), to measure each alone; `trim`: the
-    new learner with the 032 §2.7 entity padding cut (off by default)."""
+    new learner with the 032 §2.7 entity padding cut (off by default); `references` > 1: that
+    many distinct KL reference models resident (044-R9, `race_refs`; the new learner only)."""
     from uranium.rl.learner import Learner
     from uranium.rl.reference import ReferenceLearner
 
     cls = {"new": Learner, "reference": ReferenceLearner}[kind]
-    l = cls(copy.deepcopy(cfg), copy.deepcopy(net), copy.deepcopy(net), device, precision, algo, micro_lanes=group)
+    extra, race_ref = race_refs(references if kind == "new" else 1)
+    refs = {"refs": [copy.deepcopy(net) for _ in range(extra)], "race_ref": race_ref} if race_ref is not None else {}
+    l = cls(copy.deepcopy(cfg), copy.deepcopy(net), copy.deepcopy(net), device, precision, algo, micro_lanes=group, **refs)
     l.phases = phases
     for k in off if kind == "new" else ():
         setattr(l, OFF[k], False)
@@ -191,7 +217,7 @@ def run_learner(kind: str, group: int, net, cfg: dict, batch, device: torch.devi
         log(f"[bench rl] {kind} group {group} update {step}: {wall:.2f}s loss {s['loss']:.6f} kl {s['kl']:.3e}")
     walls = [x["wall_s"] for x in res[1:]]
     out = {
-        "learner": kind, "group": group, "off": list(off) if kind == "new" else [], "trim": trim and kind == "new", "lanes": batch.lanes, "seq_len": batch.t, "algo": algo, "updates": res,
+        "learner": kind, "group": group, "off": list(off) if kind == "new" else [], "trim": trim and kind == "new", "references": 1 + extra, "lanes": batch.lanes, "seq_len": batch.t, "algo": algo, "updates": res,
         "median_s": statistics.median(walls) if walls else None, "mean_s": statistics.fmean(walls) if walls else None,
         "p95_s": sorted(walls)[min(len(walls) - 1, math.ceil(0.95 * len(walls)) - 1)] if walls else None,
         "peak_gib": peak_gib(device), "peak_rss_gib": peak_rss_gib(),
@@ -240,7 +266,7 @@ def markdown(runs: list[dict], env: dict, command: str) -> str:
             out.append(f"| {r['learner']} | {r['group']} | – | **failed**: `{r['failed']}` | | | | |")
             continue
         last = r["updates"][-1]["stats"]["loss"] if r["updates"] else None
-        name = r["learner"] + (f" (off: {', '.join(r['off'])})" if r.get("off") else "") + (" (trim)" if r.get("trim") else "")
+        name = r["learner"] + (f" (off: {', '.join(r['off'])})" if r.get("off") else "") + (" (trim)" if r.get("trim") else "") + (f" ({r['references']} KL references)" if r.get("references", 1) > 1 else "")
         out.append(f"| {name} | {r['group']} | {max(len(r['updates']) - 1, 0)} | {fmt(r['median_s'], '.2f')} ({fmt(r['p95_s'], '.2f')}) | {fmt(r['mean_s'], '.2f')} | {fmt(r['peak_gib'], '.2f')} | {fmt(r['peak_rss_gib'], '.2f')} | {fmt(last, '.6f')} |")
     phased = [r for r in runs if r.get("phase_median_s")]
     if phased:

@@ -24,7 +24,7 @@ STATE_FILE = "train_state.json"
 def add_parser(sub) -> None:
     p = sub.add_parser("rl", help="RL + league: learners, inference servers, agent server and game dispatch (042)")
     p.add_argument("--run", required=True, help="run id (061 checkpoints/<run>/ and the lock)")
-    p.add_argument("--bc", required=True, help="BC checkpoint: the KL reference, the exploiters' start and reset policy, and Main's start without --init")
+    p.add_argument("--bc", required=True, help="BC checkpoint: the KL reference (per lobby race the config's [kl.reference] when given, 044-R9), the exploiters' start and reset policy, and Main's start without --init")
     p.add_argument("--init", help="042 (AMB-042-13): Main's start weights (only) from an RL checkpoint folder `ckpt-<step>` (its agents/main) or that agents/main folder; new runs only, a run with a LATEST resumes from it")
     p.add_argument("--config", default="config/rl.toml")
     p.add_argument("--algo", choices=["vtrace", "ppo"], default="vtrace")
@@ -57,6 +57,9 @@ class Learners:
         self.max_batch, self.max_wait_ms = max_batch, max_wait_ms
         # KL reference (AMB-042-9) and exploiter reset policy: always --bc, also with --init (042).
         bc, _ = ckpt.load_model(Path(bc_dir), device, adjust=_no_dropout)
+        # 044-R9: the other [kl.reference] models, loaded once and shared by the three learners
+        # (frozen; the run loop runs one learner update at a time).
+        refs, race_ref = kl_references(cfg, bc_dir, bc, device)
         self.learners: list = []
         self.servers: list = []
         self.brokers_: list = []
@@ -66,7 +69,7 @@ class Learners:
         # Per agent: where its weights started (042, AMB-042-13), written into every checkpoint.
         self.starts: list = []
         for name, (net, update, optim_dir, start) in zip(AGENTS, start_policies(bc_dir, bc, init, resume, device), strict=True):
-            l = Learner(cfg, net, _copy(bc), device, precision, algo, update)
+            l = Learner(cfg, net, _copy(bc), device, precision, algo, update, refs=refs, race_ref=race_ref)
             if optim_dir is not None:
                 ckpt.load_optimizer(optim_dir, ckpt.OPTIM_MAIN, l.net, l.opt)
             self.learners.append(l)
@@ -199,6 +202,72 @@ def start_policies(bc_dir: str, bc, init: str | None, resume: str | None, device
     return out
 
 
+def reference_dir(path: str) -> Path:
+    """A `[kl.reference]` value as a folder (044-R9): absolute as given, relative under
+    `URANIUM_SHARED_DIR` (as `[league] anchor`, 020-R11)."""
+    p = Path(path.strip())
+    if p.is_absolute():
+        return p
+    shared = os.environ.get("URANIUM_SHARED_DIR", "").strip()
+    if not shared:
+        raise ValueError(f"[kl.reference] {path}: a relative path needs URANIUM_SHARED_DIR (044-R9)")
+    return Path(shared) / p
+
+
+def model_key(d: Path, cfg) -> tuple:
+    """What makes two checkpoints the same KL reference (044-R9): the weights file's SHA-256
+    (the 020-R5 policy version) and the model config."""
+    from uranium import ckpt
+
+    return ckpt.policy_version(d), json.dumps(_flat(cfg.to_dict()), sort_keys=True, default=str)
+
+
+def kl_references(cfg: dict, bc_dir: str, bc, device) -> tuple[list, list | None]:
+    """044-R9 `[kl.reference]`: (the reference models other than `--bc`, each loaded once; per
+    lobby race in `REF_RACES` order the index of its reference in `[bc, *models]`), or `([],
+    None)` without the table (one reference, `--bc`, as before). A race without a key uses `--bc`;
+    keys naming the same checkpoint (same weights and config, `model_key`) share one model, and
+    one naming `--bc`'s uses `--bc` itself. A model config other than `--bc`'s is a start error
+    (the KL compares the same heads' distributions, 042 출발 정책, 032-R10)."""
+    from uranium import ckpt
+    from uranium.rl.learner import REF_RACES
+
+    table = (cfg.get("kl") or {}).get("reference") or {}
+    if not any(table.get(r) for r in REF_RACES):
+        return [], None
+    keys = {model_key(Path(bc_dir), bc.cfg): 0}
+    names = {0: f"--bc {bc_dir}"}
+    models: list = []
+    race_ref: list = []
+    for race in REF_RACES:
+        path = table.get(race)
+        if not path:
+            race_ref.append(0)
+            continue
+        d = reference_dir(path)
+        meta = ckpt.read_meta(d)
+        key = model_key(d, _no_dropout(type(bc.cfg).from_dict(meta["config"])))
+        if key not in keys:
+            net, _ = ckpt.load_model(d, device, adjust=_no_dropout)
+            same_model(bc.cfg, net.cfg, f"[kl.reference] {race} = {path}")
+            keys[key] = len(models) + 1
+            names[keys[key]] = f"{path} (sha256 {key[0][:12]})"
+            models.append(net)
+        race_ref.append(keys[key])
+    print("[rl] KL reference per lobby race (044-R9): " + ", ".join(f"{r} {names[i]}" for r, i in zip(REF_RACES, race_ref)) + f"; {len(models)} model(s) besides --bc", file=sys.stderr, flush=True)
+    return models, race_ref
+
+
+def same_model(bc_cfg, cfg, what: str) -> None:
+    """A model config other than the BC model's (`bc_cfg`) is a start error: the KL compares the
+    same heads' distributions (042, 032-R10). Both pass the schema check of `ckpt.read_meta`, so
+    a feature version on the load-compatible list (030-R5) is not a model difference."""
+    want, got = _flat(bc_cfg.to_dict()), _flat(cfg.to_dict())
+    if got != want:
+        diff = sorted(k for k in want.keys() | got.keys() if want.get(k) != got.get(k))
+        raise ValueError(f"{what}: model config differs from the --bc model ({', '.join(diff)}); the KL to the BC policy needs the same model (042, 032-R10)")
+
+
 def init_agent_dir(init: str) -> Path:
     """`--init` as Main's model folder: an RL checkpoint folder (`ckpt-<step>`, its
     `agents/main`) or that `agents/main` folder itself (042, AMB-042-13)."""
@@ -223,10 +292,7 @@ def load_init(init: str, bc_cfg, device) -> tuple:
 
     d = init_agent_dir(init)
     net, meta = ckpt.load_model(d, device, adjust=_no_dropout)
-    want, got = _flat(bc_cfg.to_dict()), _flat(net.cfg.to_dict())
-    if got != want:
-        diff = sorted(k for k in want.keys() | got.keys() if want.get(k) != got.get(k))
-        raise ValueError(f"--init {init}: model config differs from the --bc model ({', '.join(diff)}); the KL to the BC policy needs the same model (042, 032-R10)")
+    same_model(bc_cfg, net.cfg, f"--init {init}")
     start = {"from": "init", "path": str(init), "abs_path": str(Path(init).resolve()), "update": meta["train"].get("update")}
     state = d.parent.parent / STATE_FILE
     if state.is_file():
