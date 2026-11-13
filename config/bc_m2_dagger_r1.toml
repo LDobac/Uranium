@@ -7,7 +7,7 @@
 # `dagger/r1`, `dagger/r2`) and the four human sources' target-map train games (S2) kept per enemy race
 # ([data.subsample] fraction_by_race, 041-R26: inside the human part TvT : TvP : TvZ is the S2 human data's
 # within +-3%p). Teacher + dagger share of the update steps: the Checkpoint 1 round 1's realised share,
-# 59.54% (user decision 2026-11-13; bc-dagger-r1 recounted 2026-11-13 with `uranium-train bc-epoch --config
+# 59.54% (user decision 2026-11-12, 041-R29 ④; bc-dagger-r1 recounted 2026-11-13 with `uranium-train bc-epoch --config
 # config/bc_dagger_r1.toml` on its own data, the human sources + the botgen shards of
 # manifest_backups/botgen-manifest.ck1-20261107.json + dagger/r1: 2,593 games, 2,270,677 steps = 1,137
 # updates as trained, teacher botgen 1,013,935 + dagger 338,049 = 1,351,984 steps = 0.5954). The fractions
