@@ -143,7 +143,7 @@ enum Cmd {
     Build {
         dir: PathBuf,
         /// 040-R14 source tag (stardata, scr_public, community, personal, user, bot, botgen, scr_ladder,
-        /// dagger).
+        /// dagger, distill; `branch` for 051 analysis shards).
         #[arg(long)]
         src: String,
         /// Shard output folder (default `<URANIUM_SHARED_DIR>/datasets/replays/shards/<src>`, 040-R13).
@@ -192,8 +192,11 @@ enum Cmd {
         /// logs are skipped). With `--relabel`, or without it only with `--src branch` and an
         /// explicit `--out` outside the BC shards (051-R13 ④ branch trunks: the replay's own
         /// commands stay the labels, the step memory is the live session's, and every logged
-        /// decision gets an observation / memory only step at its playback frame; not BC data).
-        /// Each step gets the 040-R22 `memory_action` (shard schema 7); a view without a complete log
+        /// decision gets an observation / memory only step at its playback frame; not BC data), or
+        /// with `--src distill` (required there, 044-R2: the steps are the game start and one per
+        /// logged decision, all `unknown` label slots for the 044-R3 policy labeller; a view whose
+        /// log fails 041-R28 ④ / ⑤ is `filtered`; `--out` outside the BC shards, `--time-limit`
+        /// and a `distill*.jsonl` records file required). Each step gets the 040-R22 `memory_action` (shard schema 7); a view without a complete log
         /// of its player, or with more than 1% decisions naming units that are not its own, gets
         /// none (records `memory`).
         #[arg(long)]
@@ -351,7 +354,7 @@ fn main() -> Result<()> {
             // 041-R28: the BC shards root (the default `--out` parent) that branch trunk shards stay out of.
             let bc_shards_root = std::env::var_os("URANIUM_SHARED_DIR").map(|d| PathBuf::from(d).join("datasets/replays/shards"));
             uranium_replay::pipeline::check_build_args(&src, relabel.is_some(), memory_log.as_deref(), out.as_deref(), bc_shards_root.as_deref())?;
-            uranium_replay::pipeline::check_branch_build(&src, &records, time_limit)?;
+            uranium_replay::pipeline::check_isolated_build(&src, &records, time_limit)?;
             let memory_log = memory_log.as_deref().map(uranium_replay::act_log::MemoryLogDir::open).transpose()?;
             let relabel = relabel.as_deref().map(uranium_replay::relabel::teacher_build).transpose()?;
             let skip_sha256 = match skip_hashes {

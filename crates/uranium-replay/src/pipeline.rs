@@ -194,6 +194,15 @@ pub fn filter(rep: &Replay, family: &str, bot: bool, any_length: bool) -> std::r
     Ok(views)
 }
 
+/// The [`filter`] flags of a source: (`bot`: stage B, no APM bar; `any_length`: no 5-minute bar).
+/// Bot data (040 quality table): `bot`, `botgen`, `dagger`, 041-R28 `branch` and 044-R2 `distill`.
+/// Any length: relabelled (`dagger`, 041-R22) games, `branch` trunks (a trunk lost early to the rush
+/// is a point) and `distill` games (044-R2: no 5-minute bar, as `dagger`).
+pub fn filter_rules(src: &str, relabelled: bool) -> (bool, bool) {
+    let bot = matches!(src, "bot" | "botgen" | "dagger" | BRANCH_SRC | DISTILL_SRC);
+    (bot, relabelled || src == BRANCH_SRC || src == DISTILL_SRC)
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum Outcome {
@@ -318,7 +327,25 @@ struct ViewOptions<'a> {
     map_hash: &'a str,
     /// 041-R28: the replay's model decision logs (`--memory-log`; relabelled or not, 051-R13 ④).
     memory: Option<&'a [crate::relabel::DecisionLogRead]>,
+    /// 044-R2 (`--src distill`): the steps are the game start and the logged model decisions only,
+    /// with `unknown` label slots; a view whose log fails 041-R28 ④ / ⑤ is `filtered`.
+    distill: bool,
 }
+
+/// 044-R2: the `filtered` reason of a distill view whose decision log fails 041-R28 ④ (no complete
+/// log of the view's player: `missing`, `incomplete`, `other_player`, e.g. the T0 opponent's view of
+/// a TvT game) or ⑤ (`unit_mismatch`).
+pub fn distill_filter_reason(m: &MemoryCheck) -> String {
+    let mut s = format!("{DISTILL_FILTER_PREFIX} {} (041-R28, 044-R2): {} decisions, {} checked, {} mismatched", m.status, m.decisions, m.checked, m.mismatched);
+    if let Some(r) = &m.reason {
+        s.push_str(": ");
+        s.push_str(r);
+    }
+    s
+}
+
+/// Start of the 044-R2 `filtered` reason (statistics group by it).
+pub const DISTILL_FILTER_PREFIX: &str = "decision_log";
 
 /// Processes one view of one replay into a shard game.
 fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, recorded_winner: Option<u8>, o: ViewOptions) -> Result<std::result::Result<ViewGame, Outcome>> {
@@ -331,6 +358,12 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
     let mut own_at: HashMap<u32, std::collections::HashSet<u32>> = HashMap::new();
     // 041-R28 ④: the log is used only for its own player's view of the game it was written for.
     let bound = o.memory.map(|reads| crate::relabel::bind_logs(reads, me, rep.header.frames));
+    // 044-R2: a distill view needs its player's complete log (④); without one it is filtered before
+    // any replay (the opponent's view of a TvT game has none).
+    if o.distill && !matches!(bound, Some(Ok(_))) {
+        let Err(filtered) = distill_steps(bound.as_ref(), &HashMap::new(), 0, 0, 0) else { unreachable!("no bound log") };
+        return Ok(Err(Outcome::Filtered { reason: filtered }));
+    }
     // 041-R28 ⑤: replay A (or T) also stops at the model decisions' playback frames for the unit
     // check. Extra stops only split the events between observations (the 040-R8 check ignores them).
     let check_frames = match &bound {
@@ -405,7 +438,18 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
     // 041-R28 decision-time steps (user decision 2026-11-13, 051-R13 ④): builds without relabelling
     // whose log is used also observe every logged decision's playback frame.
     let limit = until_frame.map_or(last, |u| u.min(last));
-    let decision_steps = decision_steps(o.relabel.is_some(), bound.as_ref(), &own_at, last, limit, rep.header.frames, &mut labels);
+    let decision_steps = if o.distill {
+        // 044-R2: the replay's own (model) commands made `labels` for the 040-R8 checks only.
+        match distill_steps(bound.as_ref(), &own_at, last, limit, rep.header.frames) {
+            Ok((slots, n)) => {
+                labels = slots;
+                Some(n)
+            }
+            Err(reason) => return Ok(Err(Outcome::Filtered { reason })),
+        }
+    } else {
+        decision_steps(o.relabel.is_some(), bound.as_ref(), &own_at, last, limit, rep.header.frames, &mut labels)
+    };
     let frames: Vec<u32> = labels.iter().map(|l| l.frame).collect();
     // Replay B: decision-time observations. B stops at every base stop of A (or T, 041-R22), so
     // they form the 040-R8 double-replay check (check_digest hashes the base stops only and
@@ -428,6 +472,9 @@ fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &Labeler, re
     if let Some(&f) = frames.first().filter(|_| steps.is_empty()) {
         return Ok(Err(Outcome::Error { reason: format!("no observation at the first step frame {f} (040-R18)") }));
     }
+    // 044-R2: steps past the last observation replay B gave are gone; they were all decision steps
+    // (the game-start step is the first and is kept).
+    let decision_steps = if o.distill { decision_steps.map(|n| n - (frames.len() - steps.len())) } else { decision_steps };
     let mut res = res;
     res.drop_time_limit_leave(time_limit);
     let (result, result_source) = judge(&res, recorded_winner, me);
@@ -456,6 +503,31 @@ pub fn decision_steps(
     MemoryCheck::checked(log.decisions.len(), checked, mismatched).ok().then(|| crate::relabel::add_decision_steps(labels, &log.decisions, limit, end_frame))
 }
 
+/// 044-R2 (`--src distill`): the steps of a view, replacing the replay's command labels: the
+/// game-start step and a step per logged decision up to `limit`, all `unknown` label slots
+/// ([`crate::relabel::distill_labels`]), with the steps at decision frames; or the `filtered`
+/// reason when the view's log fails 041-R28 ④ (no complete log of its player) or ⑤ (more than 1%
+/// of its selections not own units at their playback frames, `own_at`, up to `last`).
+pub fn distill_steps(
+    bound: Option<&Result<&crate::relabel::ModelLog, MemoryCheck>>,
+    own_at: &HashMap<u32, std::collections::HashSet<u32>>,
+    last: u32,
+    limit: u32,
+    end_frame: u32,
+) -> std::result::Result<(Vec<crate::label::Label>, usize), String> {
+    let log = match bound {
+        Some(Ok(log)) => log,
+        Some(Err(m)) => return Err(distill_filter_reason(m)),
+        None => return Err(distill_filter_reason(&MemoryCheck::without_log(&crate::relabel::DecisionLogRead::Missing))),
+    };
+    let (checked, mismatched) = crate::relabel::unit_check(&log.decisions, last, own_at);
+    let m = MemoryCheck::checked(log.decisions.len(), checked, mismatched);
+    if !m.ok() {
+        return Err(distill_filter_reason(&m));
+    }
+    Ok(crate::relabel::distill_labels(&log.decisions, limit, end_frame))
+}
+
 /// 041-R28 ② / ④ / ⑤: fills every step's `memory_action` from a decision log bound to this view
 /// ([`crate::relabel::bind_log`]) whose unit check passes, and leaves every step `None` otherwise
 /// (all or none per game). `last`: the last frame checked (the teacher's range); `own_at`: own
@@ -480,43 +552,57 @@ pub fn attach_memory(steps: &mut [Step], bound: Result<&crate::relabel::ModelLog
 /// 041-R28 (051-R13 ④): source tag of the branch-game trunk builds (no relabelling, act-log memory,
 /// decision-time steps): analysis shards, never BC data.
 pub const BRANCH_SRC: &str = "branch";
+/// 044-R2 / 040-R24: source tag of the self-game distillation builds (decision steps only, `unknown`
+/// label slots for the 044-R3 policy labeller): BC data only after that labelling, in another folder.
+pub const DISTILL_SRC: &str = "distill";
+
+/// The sources whose build takes `--memory-log` without `--relabel` and whose shards stay outside
+/// the BC shards root: 041-R28 `branch` trunks and 044-R2 `distill` games before labelling.
+fn isolated(src: &str) -> bool {
+    src == BRANCH_SRC || src == DISTILL_SRC
+}
 
 /// `uranium-replay build` option rules: 041-R22 relabelled games are their own source (040
 /// `dagger`) and only they; 041-R28 `--memory-log` names a folder and goes with `--relabel` or,
 /// without it, only with `--src branch` (051-R13 ④: branch-game trunks, whose command-label steps'
 /// memory already holds the decision they are labelled with and whose decision-time steps are not
-/// BC samples). A `branch` build needs an explicit `--out` outside the BC shards root
-/// `bc_shards_root` (`<shared>/datasets/replays/shards`, when known), so its shards never join a BC
-/// source.
+/// BC samples) or `--src distill` (044-R2, which needs it: its steps are the logged decisions). A
+/// `branch` or `distill` build needs an explicit `--out` outside the BC shards root `bc_shards_root`
+/// (`<shared>/datasets/replays/shards`, when known), so its shards never join a BC source (044-R2:
+/// `distill` shards become BC data only through the 044-R3 labeller, which writes new shards).
 pub fn check_build_args(src: &str, relabel: bool, memory_log: Option<&Path>, out: Option<&Path>, bc_shards_root: Option<&Path>) -> Result<()> {
     anyhow::ensure!((src == "dagger") == relabel, "--relabel goes with --src dagger and only with it (041-R22)");
     if let Some(d) = memory_log {
         anyhow::ensure!(d.is_dir(), "--memory-log {}: not a folder (041-R28)", d.display());
-        anyhow::ensure!(relabel || src == BRANCH_SRC, "--memory-log without --relabel goes with --src {BRANCH_SRC} only (041-R28: branch trunk shards are not BC data)");
+        anyhow::ensure!(relabel || isolated(src), "--memory-log without --relabel goes with --src {BRANCH_SRC} or --src {DISTILL_SRC} only (041-R28: branch trunk shards are not BC data; 044-R2)");
     }
-    if src == BRANCH_SRC {
-        let Some(out) = out else { anyhow::bail!("--src {BRANCH_SRC} needs an explicit --out outside the BC shards (e.g. <shared>/eval/branch-<date>/shards, 041-R28)") };
+    anyhow::ensure!(src != DISTILL_SRC || memory_log.is_some(), "--src {DISTILL_SRC} needs --memory-log <the plan's memory folder> (044-R2: a step per logged model decision)");
+    if isolated(src) {
+        let Some(out) = out else {
+            anyhow::bail!("--src {src} needs an explicit --out outside the BC shards (e.g. <shared>/eval/branch-<date>/shards, 041-R28; <shared>/datasets/replays/distill_pre/d<R>, 044-R2)")
+        };
         if let Some(root) = bc_shards_root {
-            anyhow::ensure!(!path_within(out, root), "--src {BRANCH_SRC}: --out {} is inside the BC shards {} (041-R28: branch trunk shards are not BC data)", out.display(), root.display());
+            anyhow::ensure!(!path_within(out, root), "--src {src}: --out {} is inside the BC shards {} (041-R28, 044-R2: these shards are not BC data)", out.display(), root.display());
         }
     }
     Ok(())
 }
 
-/// 051-R13 ④ branch trunk builds: `--time-limit` (the trunk plan's `max_frames` = H + 48) is
-/// required, because every trunk ends at the time limit (without it the first leave counts as a
-/// player leaving and the 040-R8 desync checks can drop a view, and with it its points); and the
-/// records file name must start with `branch` (the resume scan reads the records files of the
-/// source by that prefix; a records file it does not see makes a second run build every view again,
-/// and the repeated replay hashes then make the dump's view lookup ambiguous).
-pub fn check_branch_build(src: &str, records: &Path, time_limit: Option<u32>) -> Result<()> {
-    if src != BRANCH_SRC {
+/// 051-R13 ④ branch trunk builds and 044-R2 distill builds: `--time-limit` (the generating plan's
+/// `max_frames`: H + 48 for a trunk, 14,400 for a distill plan, 044-R1) is required, because those
+/// games end at the time limit (without it the first leave counts as a player leaving and the 040-R8
+/// desync checks can drop a view); and the records file name must start with the source tag (the
+/// resume scan reads the records files of the source by that prefix; a records file it does not see
+/// makes a second run build every view again, and the repeated replay hashes then make the dump's
+/// view lookup ambiguous).
+pub fn check_isolated_build(src: &str, records: &Path, time_limit: Option<u32>) -> Result<()> {
+    if !isolated(src) {
         return Ok(());
     }
-    anyhow::ensure!(time_limit.is_some(), "--src {BRANCH_SRC} needs --time-limit <the trunk plan's max_frames, H + 48> (051-R1, 051-R13 4: trunks end at the time limit)");
+    anyhow::ensure!(time_limit.is_some(), "--src {src} needs --time-limit <the plan's max_frames> (051-R1, 051-R13 4: trunks end at the time limit; 044-R1: distill games at 14400)");
     let name = records.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    anyhow::ensure!(name.starts_with(BRANCH_SRC) && name.ends_with(".jsonl"), "--records {}: the file name must start with `{BRANCH_SRC}` and end with .jsonl (the resume scan reads `<source>*.jsonl`)", records.display());
-    // The scan reads every `branch*.jsonl` of the records folder: not the 051-R12 output folder,
+    anyhow::ensure!(name.starts_with(src) && name.ends_with(".jsonl"), "--records {}: the file name must start with `{src}` and end with .jsonl (the resume scan reads `<source>*.jsonl`)", records.display());
+    // The scan reads every `<source>*.jsonl` of the records folder: not the 051-R12 output folder,
     // whose `branches.jsonl` it would take for build records.
     let dir = records.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
     for other in ["branches.jsonl", "points.jsonl"] {
@@ -812,9 +898,8 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
     if let Some(name) = excludes.matches(&rep.header.map_name, &map_hash) {
         return vec![rec(&sha, &rep.header.map_name, &family, None, Outcome::Filtered { reason: format!("excluded map (040-R16): {name}") })];
     }
-    // 041-R28 `branch` trunks are bot games of any length (a trunk lost early to the rush is a point).
-    let any_length = opt.relabel.is_some() || opt.src == BRANCH_SRC;
-    let views = match filter(&rep, &family, matches!(opt.src.as_str(), "bot" | "botgen" | "dagger" | BRANCH_SRC), any_length) {
+    let (bot, any_length) = filter_rules(&opt.src, opt.relabel.is_some());
+    let views = match filter(&rep, &family, bot, any_length) {
         Ok(v) => v,
         Err(reason) => return vec![rec(&sha, &rep.header.map_name, &family, None, Outcome::Filtered { reason })],
     };
@@ -846,7 +931,7 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
             out.push(rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Filtered { reason: "storage budget reached (040-R12)".into() }));
             continue;
         }
-        let vo = ViewOptions { until_frame: opt.until_frame, time_limit: opt.time_limit, relabel: opt.relabel, map_hash: &map_hash, memory: memory.as_deref() };
+        let vo = ViewOptions { until_frame: opt.until_frame, time_limit: opt.time_limit, relabel: opt.relabel, map_hash: &map_hash, memory: memory.as_deref(), distill: opt.src == DISTILL_SRC };
         let outcome = match build_view(&rep, &view, cfg, labeler, recorded_winner, vo) {
             Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info, repeats_dropped, memory })) => {
                 let n = steps.len();
@@ -994,16 +1079,16 @@ mod tests {
         }
         // A branch build needs --time-limit and a records file named `branch*.jsonl` (resume scan).
         let rec = |n: &str| dir.join(n);
-        assert!(check_branch_build("branch", &rec("branch_build.jsonl"), Some(11_568)).is_ok());
-        assert!(check_branch_build("branch", &rec("branch_build.jsonl"), None).is_err());
-        assert!(check_branch_build("branch", &rec("build_records.jsonl"), Some(11_568)).is_err());
-        assert!(check_branch_build("botgen", &rec("x.jsonl"), None).is_ok(), "other sources unchanged");
+        assert!(check_isolated_build("branch", &rec("branch_build.jsonl"), Some(11_568)).is_ok());
+        assert!(check_isolated_build("branch", &rec("branch_build.jsonl"), None).is_err());
+        assert!(check_isolated_build("branch", &rec("build_records.jsonl"), Some(11_568)).is_err());
+        assert!(check_isolated_build("botgen", &rec("x.jsonl"), None).is_ok(), "other sources unchanged");
         // Not in the 051-R12 output folder (its branches.jsonl would be read as build records).
         let o = dir.join(format!("u6-branch-records-{}", std::process::id()));
         std::fs::create_dir_all(o.join("build")).unwrap();
         std::fs::write(o.join("branches.jsonl"), "").unwrap();
-        assert!(check_branch_build("branch", &o.join("branch_build.jsonl"), Some(11_568)).is_err());
-        assert!(check_branch_build("branch", &o.join("build").join("branch_build.jsonl"), Some(11_568)).is_ok());
+        assert!(check_isolated_build("branch", &o.join("branch_build.jsonl"), Some(11_568)).is_err());
+        assert!(check_isolated_build("branch", &o.join("build").join("branch_build.jsonl"), Some(11_568)).is_ok());
         std::fs::remove_dir_all(&o).ok();
         assert!(!ok("dagger", false, Some(&dir), None), "dagger needs --relabel (041-R22)");
         assert!(!ok("botgen", true, None, None), "--relabel only with dagger (041-R22)");
@@ -1107,6 +1192,169 @@ mod tests {
         // The existing labels are unchanged (their delays included).
         assert_eq!(cut.iter().filter(|l| !l.is_unknown()).cloned().collect::<Vec<_>>(), teacher);
         assert_eq!(decision_steps(false, None, &own, 500, 500, 500, &mut teacher.clone()), None);
+    }
+
+    /// 044-AC1 (044-R2, 040-R24): a distill view's steps are the game-start step and one per logged
+    /// decision (NoOp ones included) at playback frame L - 2 within `--until-frame`, never the
+    /// replay's command frames; every label is an `unknown` slot (delay to the next step, the game end
+    /// after the last); step i's `memory_action` holds the decisions of [obs_{i-1}, obs_i) and never
+    /// its own decision, which is in step i + 1's; the shard keeps all of it (schema 7).
+    #[test]
+    fn distill_steps_are_the_logged_decisions_044_r2_ac1() {
+        use crate::label::UNKNOWN_ACTION;
+        use crate::relabel::{DecisionLogRead, ModelLog, bind_log, playback_frame};
+        use crate::shard::MemoryAction;
+        let m = |action, units: Vec<u32>| MemoryAction { action, delay_bucket: 2, units };
+        // Live decisions 1 (NoOp), 9, 12 (NoOp), 20 and 600; the replay is 700 frames, --until-frame 300.
+        let decisions = vec![(1, m(0, vec![])), (9, m(4, vec![5])), (12, m(0, vec![])), (20, m(7, vec![5, 6])), (600, m(4, vec![5]))];
+        let read = DecisionLogRead::Complete(ModelLog { decisions: decisions.clone(), end_frame: Some(698), player: 0 });
+        let bound = bind_log(&read, 0, 700);
+        let own: HashMap<u32, std::collections::HashSet<u32>> = HashMap::from([(7, [5].into()), (18, [5, 6].into())]);
+        let (last, limit) = (332, 300); // as build_view: last = until + 32, limit = until
+        let (labels, n) = distill_steps(Some(&bound), &own, last, limit, 700).unwrap();
+        // The game-start step is the live-1 decision's step: 4 decisions in range, 4 steps.
+        assert_eq!(labels.iter().map(|l| l.frame).collect::<Vec<_>>(), vec![1, 7, 10, 18]);
+        assert_eq!(n, 4);
+        assert!(labels.iter().all(|l| l.action == UNKNOWN_ACTION && l.is_unknown() && l.selected.is_empty() && l.target_unit.is_none() && l.target_tile.is_none() && !l.queued));
+        assert_eq!(labels.iter().map(|l| l.delay).collect::<Vec<_>>(), vec![6, 3, 8, 682]);
+        // No step at the replay's command frames: the steps come from the log alone.
+        let commands = [3u32, 11, 25];
+        assert!(labels.iter().all(|l| !commands.contains(&l.frame)));
+        // Memory (041-R28 ②): the decisions before each step's live frame and at or after the previous one's.
+        let tpl = crate::shard::tests::game(1).steps[0].clone();
+        let mut steps: Vec<Step> = labels.iter().map(|l| Step { raw_frame: uranium_proto::RawFrame { frame: l.frame, ..tpl.raw_frame.clone() }, action_label: l.clone(), memory_action: None, ..tpl.clone() }).collect();
+        let r = attach_memory(&mut steps, bound.clone(), last, &own);
+        assert_eq!((r.status, r.decisions, r.checked, r.mismatched), ("ok", 5, 2, 0));
+        let mem: Vec<Vec<MemoryAction>> = steps.iter().map(|s| s.memory_action.clone().expect("every step has memory")).collect();
+        assert_eq!(mem, vec![vec![], vec![m(0, vec![])], vec![m(4, vec![5])], vec![m(0, vec![])]]);
+        // A step's memory is exactly the decisions with a live frame in [live_{i-1}, live_i) ...
+        let live: Vec<u32> = steps.iter().map(|s| crate::relabel::live_of_playback(s.raw_frame.frame)).collect();
+        for i in 1..steps.len() {
+            let want: Vec<MemoryAction> = decisions.iter().filter(|(l, _)| *l >= live[i - 1] && *l < live[i]).map(|(_, d)| d.clone()).collect();
+            assert_eq!(mem[i], want, "step {i}");
+        }
+        // ... so the decision made on a step's own observation is outside its interval and inside
+        // the next step's: never an input of the step it is made on.
+        for (i, s) in steps.iter().enumerate() {
+            for (l, _) in decisions.iter().filter(|(l, _)| playback_frame(*l) == s.raw_frame.frame) {
+                assert!(*l >= live[i], "step {i} would hold its own decision");
+                assert!(live.get(i + 1).is_none_or(|n| l < n), "step {i}'s decision belongs to step {}", i + 1);
+            }
+        }
+        // Schema 7 keeps the slots and the memory.
+        let game = ShardGame { meta: GameMeta { src: DISTILL_SRC.into(), stage: "B".into(), ..crate::shard::tests::game(1).meta }, game_info: crate::shard::tests::game(1).game_info, steps: steps.clone() };
+        let shard = crate::shard::Shard { header: Default::default(), games: vec![game.clone()] };
+        let back = crate::shard::decode(&postcard::to_stdvec(&shard).unwrap()).unwrap();
+        assert_eq!(back.header.schema_version, crate::shard::SCHEMA_VERSION);
+        assert_eq!(back.games, vec![game]);
+        // Decisions on live frames 1..=3 all show playback frame 1: one step, their memory after it.
+        let early = vec![(1, m(0, vec![])), (2, m(4, vec![5])), (3, m(0, vec![])), (11, m(0, vec![]))];
+        let (labels, n) = crate::relabel::distill_labels(&early, 300, 700);
+        assert_eq!((labels.iter().map(|l| (l.frame, l.delay)).collect::<Vec<_>>(), n), (vec![(1, 8), (9, 691)], 2));
+        let mem = crate::relabel::step_memory(&early, &[1, 9]);
+        assert_eq!(mem, vec![vec![], vec![m(0, vec![]), m(4, vec![5]), m(0, vec![])]]);
+        // A log without a decision on the game-start observation: the game-start step is added (1 + decisions).
+        let (labels, n) = crate::relabel::distill_labels(&[(9, m(0, vec![])), (17, m(0, vec![]))], 300, 700);
+        assert_eq!((labels.iter().map(|l| l.frame).collect::<Vec<_>>(), n), (vec![1, 7, 15], 2));
+    }
+
+    /// 044-R2 / 041-R28 ④ ⑤: a distill view without its player's complete log (no log, an incomplete
+    /// one, only the other player's: the T0 opponent's view of a TvT game) or with more than 1% unit
+    /// mismatches is `filtered` with the check's status in the reason; none of them gets steps.
+    #[test]
+    fn distill_views_failing_the_log_checks_are_filtered_044_r2() {
+        use crate::relabel::{DecisionLogRead, ModelLog, bind_log};
+        use crate::shard::MemoryAction;
+        let m = |units: Vec<u32>| MemoryAction { action: 4, delay_bucket: 1, units };
+        let own: HashMap<u32, std::collections::HashSet<u32>> = HashMap::from([(7, [5].into()), (15, [5].into())]);
+        let complete = |decisions, player| DecisionLogRead::Complete(ModelLog { decisions, end_frame: Some(500), player });
+        let reason = |b: Option<&Result<&ModelLog, MemoryCheck>>| match distill_steps(b, &own, 500, 500, 500) {
+            Err(reason) => reason,
+            other => panic!("{other:?}"),
+        };
+        assert!(reason(None).starts_with("decision_log missing (041-R28, 044-R2)"));
+        for (read, status) in [
+            (DecisionLogRead::Missing, "missing"),
+            (DecisionLogRead::Incomplete("no end line".into()), "incomplete"),
+            (complete(vec![(9, m(vec![5]))], 1), "other_player"),
+            (DecisionLogRead::Complete(ModelLog { decisions: vec![(9, m(vec![5]))], end_frame: Some(9_000), player: 0 }), "incomplete"),
+        ] {
+            let r = reason(Some(&bind_log(&read, 0, 502)));
+            assert!(r.starts_with(&format!("{DISTILL_FILTER_PREFIX} {status} ")), "{r}");
+        }
+        let bad = complete(vec![(9, m(vec![5])), (17, m(vec![6]))], 0);
+        let r = reason(Some(&bind_log(&bad, 0, 502)));
+        assert_eq!(r, "decision_log unit_mismatch (041-R28, 044-R2): 2 decisions, 2 checked, 1 mismatched");
+        let good = complete(vec![(9, m(vec![5])), (17, m(vec![5]))], 0);
+        assert!(distill_steps(Some(&bind_log(&good, 0, 502)), &own, 500, 500, 500).is_ok());
+    }
+
+    /// 044-R2 / 040-R24: `--src distill` needs `--memory-log` and an explicit `--out` outside the BC
+    /// shards root, `--time-limit` and a `distill*.jsonl` records file (as `branch`, 041-R28); it is bot
+    /// data of any length (stage B, no APM or 5-minute bar, 040 quality table). The other sources'
+    /// rules are unchanged.
+    #[test]
+    fn distill_build_args_and_filter_rules_044_r2_040_r24() {
+        let dir = std::env::temp_dir();
+        let root = dir.join("shared").join("datasets").join("replays").join("shards");
+        let pre = dir.join("shared").join("datasets").join("replays").join("distill_pre").join("d1");
+        let ok = |src, relabel, mem: Option<&Path>, out: Option<&Path>| check_build_args(src, relabel, mem, out, Some(&root)).is_ok();
+        assert!(ok("distill", false, Some(&dir), Some(&pre)));
+        assert!(!ok("distill", false, None, Some(&pre)), "the steps are the logged decisions");
+        assert!(!ok("distill", false, Some(&dir), None), "explicit --out");
+        assert!(!ok("distill", false, Some(&dir), Some(&root.join("distill_m2").join("d1"))), "not inside the BC shards");
+        assert!(!ok("distill", false, Some(&dir), Some(&root)));
+        assert!(!ok("distill", true, Some(&dir), Some(&pre)), "--relabel only with dagger");
+        assert!(!ok("distill", false, Some(Path::new("no/such/memory")), Some(&pre)));
+        let rec = |n: &str| dir.join(n);
+        assert!(check_isolated_build("distill", &rec("distill_d1.jsonl"), Some(14_400)).is_ok());
+        assert!(check_isolated_build("distill", &rec("distill_d1.jsonl"), None).is_err());
+        assert!(check_isolated_build("distill", &rec("branch_d1.jsonl"), Some(14_400)).is_err());
+        assert!(check_isolated_build("branch", &rec("distill_d1.jsonl"), Some(14_400)).is_err());
+        // Filter flags: distill is bot data of any length; the earlier sources keep theirs.
+        assert_eq!(filter_rules("distill", false), (true, true));
+        for (src, relabel) in [("stardata", false), ("scr_public", false), ("community", false), ("personal", false), ("user", false), ("scr_ladder", false), ("bot", false), ("botgen", false), ("dagger", true), ("branch", false)] {
+            let before = (matches!(src, "bot" | "botgen" | "dagger" | BRANCH_SRC), relabel || src == BRANCH_SRC);
+            assert_eq!(filter_rules(src, relabel), before, "{src}");
+        }
+    }
+
+    /// 044-R2 (ignored, a built shard): every game of a `--src distill` shard
+    /// (`URANIUM_TEST_DISTILL_SHARD`, built with `--memory-log URANIUM_TEST_DISTILL_MEMORY` from
+    /// replays named `g<id>.rep`, given as `URANIUM_TEST_DISTILL_REPLAYS`) starts at the game-start
+    /// observation, has an `unknown` label slot on every step, a step at each logged decision's
+    /// playback frame and nowhere else, and each step's memory is the log's [live_{i-1}, live_i).
+    #[test]
+    #[ignore = "needs URANIUM_TEST_DISTILL_SHARD, URANIUM_TEST_DISTILL_MEMORY and URANIUM_TEST_DISTILL_REPLAYS"]
+    fn distill_shard_matches_its_logs_044_r2() {
+        use crate::relabel::{bind_logs, playback_frame, step_memory};
+        let var = |k: &str| PathBuf::from(std::env::var(k).unwrap_or_else(|_| panic!("{k}")));
+        let shard = crate::shard::read(&var("URANIUM_TEST_DISTILL_SHARD")).unwrap();
+        let mem = crate::act_log::MemoryLogDir::open(&var("URANIUM_TEST_DISTILL_MEMORY")).unwrap();
+        let mut reps = Vec::new();
+        for e in std::fs::read_dir(var("URANIUM_TEST_DISTILL_REPLAYS")).unwrap().flatten() {
+            let b = std::fs::read(e.path()).unwrap();
+            reps.push((hex(&Sha256::digest(&b)), e.path()));
+        }
+        assert!(!shard.games.is_empty());
+        for g in &shard.games {
+            assert_eq!((g.meta.src.as_str(), g.meta.stage.as_str()), (DISTILL_SRC, "B"));
+            let file = &reps.iter().find(|(s, _)| *s == g.meta.replay_sha256).expect("the game's replay").1;
+            let rep = crate::parse(&std::fs::read(file).unwrap()).unwrap();
+            let logs = mem.logs(file);
+            let log = bind_logs(&logs, g.meta.perspective_slot, rep.header.frames).expect("a bound log");
+            let frames: Vec<u32> = g.steps.iter().map(|s| s.raw_frame.frame).collect();
+            assert_eq!(frames[0], crate::label::GAME_START_FRAME);
+            assert!(g.steps.iter().all(|s| s.action_label.is_unknown() && s.action_label.frame == s.raw_frame.frame));
+            let last = *frames.last().unwrap();
+            let mut want: Vec<u32> = log.decisions.iter().map(|(l, _)| playback_frame(*l)).filter(|p| *p <= last).collect();
+            want.insert(0, crate::label::GAME_START_FRAME);
+            want.dedup();
+            assert_eq!(frames, want, "a step at each decision frame and nowhere else");
+            let got: Vec<Vec<crate::shard::MemoryAction>> = g.steps.iter().map(|s| s.memory_action.clone().expect("memory on every step")).collect();
+            assert_eq!(got, step_memory(&log.decisions, &frames));
+            eprintln!("{}: {} decisions, {} steps", &g.meta.replay_sha256[..12], log.decisions.len(), frames.len());
+        }
     }
 
     #[test]
@@ -1325,7 +1573,7 @@ mod tests {
         let cfg = PlayConfig::from_env(crate::play::work_dir_default().join("relabel-test")).unwrap();
         let labeler = Labeler::new().unwrap();
         let run = |relabel| {
-            let vo = ViewOptions { until_frame: Some(11_520), time_limit: Some(14_400), relabel, map_hash: &map_hash, memory: None };
+            let vo = ViewOptions { until_frame: Some(11_520), time_limit: Some(14_400), relabel, map_hash: &map_hash, memory: None, distill: false };
             match build_view(&rep, &view, &cfg, &labeler, None, vo).unwrap() {
                 Ok(g) => g,
                 Err(o) => panic!("{o:?}"),
@@ -1365,7 +1613,7 @@ mod tests {
         let cfg = PlayConfig::from_env(crate::play::work_dir_default().join("relabel-test")).unwrap();
         let labeler = Labeler::new().unwrap();
         let run = |relabel| {
-            let vo = ViewOptions { until_frame: Some(11_520), time_limit: Some(14_400), relabel, map_hash: &map_hash, memory: None };
+            let vo = ViewOptions { until_frame: Some(11_520), time_limit: Some(14_400), relabel, map_hash: &map_hash, memory: None, distill: false };
             match build_view(&rep, &view, &cfg, &labeler, None, vo).unwrap() {
                 Ok(g) => g,
                 Err(o) => panic!("{o:?}"),
