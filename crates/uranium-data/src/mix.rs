@@ -13,7 +13,8 @@ use serde::Serialize;
 use crate::data::{GameSummary, SUBSAMPLE_SALT, game_unit};
 use crate::split::{SUBSAMPLE_RACES, enemy_race};
 
-/// 041-R21 ⑥: the teacher share of the mix epoch's update steps, and its tolerance.
+/// 041-R21 ⑥: the teacher share of the mix epoch's update steps, and its tolerance (also the
+/// tolerance around a DAgger round's `--teacher-share`, 041-R22 ③).
 pub const TEACHER_SHARE: f64 = 0.5;
 pub const TEACHER_TOLERANCE: f64 = 0.03;
 /// 041-R26 (AMB-041-15): the tolerance of each enemy race's share inside the human part.
@@ -77,7 +78,10 @@ pub struct MixShares {
     pub human_race_share: BTreeMap<String, f64>,
     /// The same shares in the reference (the S2 human data without the subsample).
     pub reference_human_race_share: BTreeMap<String, f64>,
-    /// |teacher_share - 0.5| <= 0.03.
+    /// The teacher share `teacher_ok` is judged against: 0.5 (041-R21 ⑥ mix epoch), or the
+    /// `mix-fractions --teacher-share` of a DAgger round (041-R22 ③, R29 ④; [`Self::with_target`]).
+    pub teacher_share_target: f64,
+    /// |teacher_share - teacher_share_target| <= 0.03.
     pub teacher_ok: bool,
     /// Every race's |share - reference share| <= 0.03 (041-R26, AMB-041-15).
     pub race_ok: bool,
@@ -105,10 +109,23 @@ impl MixShares {
             human_race_steps,
             human_race_share,
             reference_human_race_share,
-            teacher_ok: (teacher_share - TEACHER_SHARE).abs() <= TEACHER_TOLERANCE + EPS,
+            teacher_share_target: TEACHER_SHARE,
+            teacher_ok: teacher_share_ok(teacher_share, TEACHER_SHARE),
             race_ok,
         }
     }
+
+    /// The same shares with `teacher_ok` judged against `target` (same ±3% tolerance): a DAgger
+    /// round's teacher + dagger share (041-R22 ③, 041-R29 ④), not the mix epoch's 50%.
+    pub fn with_target(mut self, target: f64) -> Self {
+        self.teacher_share_target = target;
+        self.teacher_ok = teacher_share_ok(self.teacher_share, target);
+        self
+    }
+}
+
+fn teacher_share_ok(share: f64, target: f64) -> bool {
+    (share - target).abs() <= TEACHER_TOLERANCE + EPS
 }
 
 /// The shortest decimal `x` with `lo < x <= hi` (`hi` itself when none is shorter), so a fraction
