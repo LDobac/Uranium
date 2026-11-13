@@ -68,9 +68,18 @@ def add_parsers(sub) -> None:
     k.set_defaults(fn=random_checkpoint)
 
 
-def start_server(checkpoint: str, sample: str, backend: str | None, max_batch: int, max_wait_ms: int, zero_last_failed: bool = False, warmup: bool = False, warm_batches: list[int] | None = None):
+def new_infer_seed() -> int:
+    """051-R8: a fresh torch seed for an inference server (63 bits: an int64 in every JSON reader)."""
+    import secrets
+
+    return secrets.randbits(63)
+
+
+def start_server(checkpoint: str, sample: str, backend: str | None, max_batch: int, max_wait_ms: int, zero_last_failed: bool = False, warmup: bool = False, warm_batches: list[int] | None = None, seed: int | None = None):
     """A broker for `checkpoint` and its model thread (started). `warm_batches`: the warm-up also
-    runs these batch sizes (see `InferenceServer.warm_up`)."""
+    runs these batch sizes (see `InferenceServer.warm_up`). `seed` (default: a fresh one): the
+    torch seed the model thread sets before its first game (051-R8); the sessions' records of plan
+    games with 051 keys carry it as `infer_seed`."""
     from uranium import _core
     from uranium.agent.infer import InferenceServer
     from uranium.device import configure, resolve
@@ -78,12 +87,13 @@ def start_server(checkpoint: str, sample: str, backend: str | None, max_batch: i
     backend, device, precision = resolve(backend)
     configure(backend)
     n_max = json.loads(_core.feature_dims())["n_max"] if warmup else 0
-    broker = _core.Broker(checkpoint, sample, max_batch=max_batch, max_wait_ms=max_wait_ms, zero_last_failed=zero_last_failed, warmup_entities=n_max)
+    seed = new_infer_seed() if seed is None else seed
+    broker = _core.Broker(checkpoint, sample, max_batch=max_batch, max_wait_ms=max_wait_ms, zero_last_failed=zero_last_failed, warmup_entities=n_max, seed=seed)
     server = InferenceServer(broker, device, precision)
     if warmup:
         server.warm_up(warm_batches)
     server.start()
-    print(f"[infer] {broker.checkpoint_id} ready ({backend}, {precision}, {sample}, max_batch {max_batch})", file=sys.stderr, flush=True)
+    print(f"[infer] {broker.checkpoint_id} ready ({backend}, {precision}, {sample}, max_batch {max_batch}, seed {seed})", file=sys.stderr, flush=True)
     return broker, server
 
 
@@ -124,8 +134,10 @@ def run(a) -> int:
 
     _sigint_kills()
     models = []
+    # 051-R8: one seed for the process's servers (they share torch's global generator).
+    seed = new_infer_seed()
     for ckpt, sample in _core.plan_models(a.plan):
-        broker, _ = start_server(ckpt, sample, a.backend, a.max_batch, a.max_wait_ms)
+        broker, _ = start_server(ckpt, sample, a.backend, a.max_batch, a.max_wait_ms, seed=seed)
         models.append((ckpt, sample, broker))
     _core.run_plan(a.plan, models, out=a.out)
     return 0
@@ -164,10 +176,13 @@ def eval_worker(a) -> int:
                 # count: a shape first met in a game stalls every game of the server for its
                 # capture (seconds to minutes with several models).
                 batches = [1 << i for i in range(max(a.max_batch, 1).bit_length())]
+                # 051-R8: a seed chosen at each lease period's start, one for all its servers (they
+                # share torch's global generator); recorded per game as `infer_seed`.
+                seed = new_infer_seed()
                 for ckpt, sample in _needed_models(w):
                     if w.stop_level() > 0:
                         break
-                    broker, server = start_server(ckpt, sample, a.backend, a.max_batch, a.max_wait_ms, warmup=not a.no_warmup, warm_batches=batches)
+                    broker, server = start_server(ckpt, sample, a.backend, a.max_batch, a.max_wait_ms, warmup=not a.no_warmup, warm_batches=batches, seed=seed)
                     models.append((ckpt, sample, broker))
                     servers.append(server)
                 # Ctrl+C while loading: no game was handed out, `close` lets the lease go.

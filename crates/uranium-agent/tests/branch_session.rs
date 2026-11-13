@@ -460,6 +460,7 @@ fn serve_games_ending(h: &InferenceHandle, board: BranchBoard, games: &[(u64, u8
 fn sessions_write_act_logs_and_branch_records_051_r2() {
     let dir = temp("serve");
     let (h, _) = mock();
+    let h = h.with_infer_seed(Some(u64::MAX >> 1));
     let fs = frames(9);
     let board = BranchBoard::default();
     board.lock().unwrap().insert(11, trunk_game(&dir));
@@ -485,8 +486,9 @@ fn sessions_write_act_logs_and_branch_records_051_r2() {
     let snap: SnapshotTaken = serde_json::from_value(model["snapshots"][0].clone()).unwrap();
     assert_eq!((snap.i, snap.rules.clone(), snap.digest), (I_T, vec!["p".to_string()], ours.lines[I_T as usize].digest));
     assert!(model.get("branch").is_none());
+    assert_eq!(model["infer_seed"], u64::MAX >> 1, "051-R8: the server's seed in the record");
     let t0 = recs.iter().find(|r| r["slot"] == 1).unwrap();
-    assert!(t0.get("snapshots").is_none() && t0.get("branch").is_none());
+    assert!(t0.get("snapshots").is_none() && t0.get("branch").is_none() && t0.get("infer_seed").is_none());
 
     // The branch game, from the trunk files the server wrote.
     let sha = snap.state_sha256.clone();
@@ -504,6 +506,7 @@ fn sessions_write_act_logs_and_branch_records_051_r2() {
     }
     let o: BranchOutcome = serde_json::from_value(recs[0]["branch"].clone()).unwrap();
     assert!(o.valid);
+    assert_eq!(recs[0]["infer_seed"], u64::MAX >> 1);
     assert_eq!(o.end, Some(BranchEnd { result: GameResult::Draw, end_frame: fs.last().unwrap().frame + 8, reason: EndReason::TimeLimitDraw, before_horizon: true }), "H = frame 217");
     assert_eq!(recs[0]["model"]["surrender"], "off", "051-R1 ③: a branch player never surrenders");
     std::fs::remove_dir_all(&dir).ok();
@@ -515,6 +518,7 @@ fn sessions_write_act_logs_and_branch_records_051_r2() {
 fn games_off_the_board_are_unchanged_020_r22() {
     let dir = temp("plain");
     let (h, _) = mock();
+    let h = h.with_infer_seed(Some(3));
     let fs = frames(6);
     let board = BranchBoard::default();
     board.lock().unwrap().insert(99, trunk_game(&dir));
@@ -522,14 +526,14 @@ fn games_off_the_board_are_unchanged_020_r22() {
     let other = serve_games(&h, board.clone(), &[(22, 0, fs.clone())]);
     let logged = serve_games(&h, board, &[(99, 0, fs.clone())]);
     for r in plain.iter().chain(&other) {
-        for k in ["act_log", "snapshots", "branch"] {
+        for k in ["act_log", "snapshots", "branch", "infer_seed"] {
             assert!(r.get(k).is_none(), "{k}: {r}");
         }
     }
     let strip = |r: &serde_json::Value| {
         let mut r = r.clone();
         let o = r.as_object_mut().unwrap();
-        for k in ["game_id", "wall_s", "policy_ms", "act_log", "snapshots"] {
+        for k in ["game_id", "wall_s", "policy_ms", "act_log", "snapshots", "infer_seed"] {
             o.remove(k);
         }
         let m = o["model"].as_object_mut().unwrap();

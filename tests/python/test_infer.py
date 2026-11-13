@@ -240,6 +240,33 @@ def test_restore_order_in_one_work_051_r4(tmp_path):
     assert host(2) == row2, "032-R14: the row outside the batch is unchanged"
 
 
+def test_server_seed_051_r8(tmp_path):
+    """051-R8: a broker's `seed` reaches the model thread, which seeds torch before its first
+    batch (same seed, one session at a time: the same stochastic play); a broker without one (RL
+    learners, league snapshots) leaves torch's generator alone. `new_infer_seed` fits int64."""
+    from uranium.agent.serve import new_infer_seed
+
+    d = checkpoint(tmp_path, "Lstm")
+    seed = 2**63 - 1
+    plays = []
+    for _ in range(2):
+        b = _core.Broker(str(d), "stochastic", max_batch=1, max_wait_ms=200, capacity=8, seed=seed)
+        assert b.seed == seed
+        s = InferenceServer(b, CPU, "f32")
+        s.start()
+        plays.append(_core.play_sessions(b, 1, 12)[0][0])
+        stop(s)
+        assert torch.initial_seed() == seed
+    assert plays[0] == plays[1], "same seed, same draws"
+    torch.manual_seed(77)
+    b, s = server(d, "stochastic", 1)
+    assert b.seed is None
+    _core.play_sessions(b, 1, 4)
+    stop(s)
+    assert torch.initial_seed() == 77, "no seed: the generator is not reseeded"
+    assert all(0 <= new_infer_seed() < 2**63 for _ in range(100))
+
+
 def test_close_stops_the_thread_and_frees_the_model_042(tmp_path):
     """042 스냅샷 추론 서버 (AMB-042-14): `close` ends the model thread and drops the model (its
     device memory); a plain `stop` keeps the model."""

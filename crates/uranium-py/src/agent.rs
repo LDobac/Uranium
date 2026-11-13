@@ -47,16 +47,23 @@ pub struct Broker {
 #[pymethods]
 impl Broker {
     /// `checkpoint`: a folder (relative = under URANIUM_SHARED_DIR, 020-R11); batching defaults
-    /// are placeholders until measured (020-R11 TBD(M6)).
+    /// are placeholders until measured (020-R11 TBD(M6)). `seed`: the torch seed the model thread
+    /// sets when it starts (051-R8, recorded in the sessions' records; None = no seed set).
     #[new]
-    #[pyo3(signature = (checkpoint, sample = "argmax", max_batch = 32, max_wait_ms = 5, capacity = 128, pad_entities = 64, zero_last_failed = false, warmup_entities = 0))]
+    #[pyo3(signature = (checkpoint, sample = "argmax", max_batch = 32, max_wait_ms = 5, capacity = 128, pad_entities = 64, zero_last_failed = false, warmup_entities = 0, seed = None))]
     #[allow(clippy::too_many_arguments)]
-    fn new(checkpoint: PathBuf, sample: &str, max_batch: usize, max_wait_ms: u64, capacity: usize, pad_entities: usize, zero_last_failed: bool, warmup_entities: usize) -> PyResult<Self> {
+    fn new(checkpoint: PathBuf, sample: &str, max_batch: usize, max_wait_ms: u64, capacity: usize, pad_entities: usize, zero_last_failed: bool, warmup_entities: usize, seed: Option<u64>) -> PyResult<Self> {
         let dir = resolve_checkpoint(&checkpoint).map_err(err)?;
         let id = checkpoint_id(&dir).map_err(err)?;
         let opts = InferOptions { max_batch: max_batch.max(1), max_wait: Duration::from_millis(max_wait_ms), capacity, pad_entities, zero_last_failed, warmup_entities };
         let (b, handle) = uranium_agent::broker::Broker::new(id, sample_of(sample)?, opts).map_err(err)?;
-        Ok(Self { inner: Mutex::new(b), handle, dir, opts })
+        Ok(Self { inner: Mutex::new(b), handle: handle.with_infer_seed(seed), dir, opts })
+    }
+
+    /// 051-R8: the torch seed the model thread sets at its start (None = none).
+    #[getter]
+    fn seed(&self) -> Option<u64> {
+        self.handle.infer_seed
     }
 
     /// The resolved checkpoint folder the model thread loads.
