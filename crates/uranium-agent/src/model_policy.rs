@@ -16,6 +16,7 @@ use uranium_env::features::extract::action_table;
 use uranium_env::features::label::DecisionLogLine;
 use uranium_env::maps::{MapFamilies, PrecomputeSource, family_index, live_precompute_for_session, maps_dir};
 use uranium_env::reward::{Outcome, RewardParts, RewardTracker};
+use uranium_env::ops::{OpsMetrics, OpsTracker, RushCombat};
 use uranium_env::scout::{RewardConfig, ScoutMetrics, ScoutTracker, seconds};
 use uranium_env::concede::{CollapseJudge, ConcedeGame, LeaveRule};
 use uranium_env::surrender::{DEFAULT_CHAT, SurrenderJudge, SurrenderMode, rule_holds};
@@ -77,6 +78,11 @@ pub struct ModelStats {
     pub scv_min_1m: Option<u32>,
     pub army_s: Option<f64>,
     pub scv_8m: Option<u32>,
+    /// 052-R6: the 052 ops and early-rush combat metrics (`OpsTracker`) of every observation the
+    /// session got and its final frame, after the existing keys (their order unchanged); metrics
+    /// only (052-R9).
+    pub ops: OpsMetrics,
+    pub rush_combat: Option<RushCombat>,
 }
 
 /// One model decision as an RL actor needs it (042: obs, action, behaviour log-prob per head and
@@ -135,6 +141,8 @@ pub struct ModelPolicy {
     /// reward tracker gets a fresh copy with its settings (`with_observer`); every other model
     /// session (plan / evaluation games) steps this one for the 042 metrics only.
     scout: ScoutTracker,
+    /// 052-R6 ops / early-rush combat metrics of this session (own vision and public map data).
+    ops: OpsTracker,
     self_player: u8,
     sess: InferSession,
     mem: AgentMemory,
@@ -485,6 +493,7 @@ impl ModelPolicy {
             z: None,
             reward: None,
             scout: ScoutTracker::for_game(info, RewardConfig::default()),
+            ops: OpsTracker::for_game(info, pre.as_ref()),
             self_player,
             sess: handle.open()?,
             mem,
@@ -736,6 +745,10 @@ impl ModelPolicy {
         if let (None, Some(f)) = (self.reward.as_ref(), final_frame) {
             self.scout.step(f);
         }
+        // 052-R6: the final frame of every session.
+        if let Some(f) = final_frame {
+            self.ops.step(f);
+        }
         if let Some(o) = self.observer.as_mut() {
             let mut after = match (outcome, final_frame, self.reward.as_mut()) {
                 (Some(_), Some(f), Some(r)) => r.step(f),
@@ -831,6 +844,9 @@ impl ModelPolicy {
         if self.reward.is_none() {
             self.scout.step(f);
         }
+        // 052-R6: every observation of every model session (RL, plan, evaluation, branch games
+        // including their forced prefix, 051-R5 ④).
+        self.ops.step(f);
         if let Some(b) = self.branch.as_deref_mut() {
             b.obs += 1;
             b.last = LineExtra::default();
@@ -925,6 +941,7 @@ impl ModelPolicy {
         (s.scout_main_s, s.scout_types_4m, s.scout_types_6m) = (secs(m.main_frame), m.types_4m, m.types_6m);
         (s.barracks_s, s.bunker_s, s.scv_4m) = (secs(m.barracks_frame), secs(m.bunker_frame), m.scv_4m);
         (s.scv_min_1m, s.army_s, s.scv_8m) = (m.scv_min_1m, secs(m.army_frame), m.scv_8m);
+        (s.ops, s.rush_combat) = (self.ops.ops(), self.ops.rush_combat());
         s
     }
 }
@@ -947,7 +964,22 @@ mod tests {
     fn model_row_keys_050_r7() {
         let s = ModelStats { scv_4m: Some(20), scv_min_1m: Some(5), army_s: Some(185.0), scv_8m: None, ..Default::default() };
         let text = serde_json::to_string(&s).unwrap();
-        assert!(text.ends_with(r#""scv_4m":20,"scv_min_1m":5,"army_s":185.0,"scv_8m":null}"#), "{text}");
+        assert!(text.contains(r#""scv_4m":20,"scv_min_1m":5,"army_s":185.0,"scv_8m":null,"ops":{"#), "{text}");
+    }
+
+    /// 052-R6 / 052-AC1: the model row keeps every existing key in its order and ends with `ops`
+    /// then `rush_combat` (null without an entry).
+    #[test]
+    fn model_row_ends_with_ops_052_r6() {
+        let s = ModelStats { rush_combat: Some(RushCombat { in_s: 100.0, ..Default::default() }), ..Default::default() };
+        let text = serde_json::to_string(&s).unwrap();
+        let keys = ["checkpoint", "sample", "map_family", "map_precompute", "zero_last_failed", "surrender", "win_open", "surrender_frame", "decisions", "rejected", "decide_ms_p50", "decide_ms_p95", "run_ms_p50", "run_ms_p95", "mean_batch", "host_ms_p50", "scout_main_s", "scout_types_4m", "scout_types_6m", "barracks_s", "bunker_s", "scv_4m", "scv_min_1m", "army_s", "scv_8m", "ops", "rush_combat"];
+        let at: Vec<usize> = keys.iter().map(|k| text.find(&format!("\"{k}\":")).unwrap_or_else(|| panic!("{k} missing: {text}"))).collect();
+        assert!(at.windows(2).all(|w| w[0] < w[1]), "key order: {text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v.as_object().unwrap().len(), keys.len(), "no other key");
+        assert_eq!(v["rush_combat"]["in_s"], 100.0);
+        assert!(serde_json::to_string(&ModelStats::default()).unwrap().ends_with(r#""float_gas_rs":0.0},"rush_combat":null}"#));
     }
 
     /// 051-R9 ② / 050-R9: every 051-R11 ④ outcome key is there; `held_8m` = `scv_8m >= 8` (a game

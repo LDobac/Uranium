@@ -300,7 +300,8 @@ impl Policy for Box<dyn uranium_scripted::Bot> {
 /// 050-R8 session record part of a T0 Terran session (`scripted`): the 042 정찰·대응 지표 and
 /// 050-R7 세션 지표 with the same keys, definitions and code (`ScoutTracker`) as the model row,
 /// folded over every observation of the session and its final frame, plus the 021-R8 teacher's
-/// record (`react`, `terran_react` only). Game seconds (frame / 24).
+/// record (`react`, `terran_react` only), then the 052 ops / early-rush combat metrics (`ops`,
+/// `rush_combat`, the model row's keys and code, 052-R6). Game seconds (frame / 24).
 #[derive(Serialize, Debug, Clone, Default, PartialEq)]
 pub struct ScriptedStats {
     pub scout_main_s: Option<f64>,
@@ -313,6 +314,9 @@ pub struct ScriptedStats {
     pub army_s: Option<f64>,
     pub scv_8m: Option<u32>,
     pub react: Option<ReactRecord>,
+    /// 052-R6: appended after the existing keys (their order unchanged).
+    pub ops: uranium_env::ops::OpsMetrics,
+    pub rush_combat: Option<uranium_env::ops::RushCombat>,
 }
 
 /// 021-R8 teacher record in game seconds (`uranium_scripted::ReactStats`).
@@ -344,10 +348,12 @@ pub struct ReactRecord {
     pub rules_s: BTreeMap<uranium_scripted::RushRule, f64>,
 }
 
-/// A T0 session (021): the scripted bot, and for a Terran bot the 042 / 050-R7 metrics tracker.
+/// A T0 session (021): the scripted bot, and for a Terran bot the 042 / 050-R7 and 052 metrics
+/// trackers.
 pub struct ScriptedPolicy {
     bot: Box<dyn uranium_scripted::Bot>,
     scout: Option<uranium_env::scout::ScoutTracker>,
+    ops: Option<uranium_env::ops::OpsTracker>,
 }
 
 impl ScriptedPolicy {
@@ -356,18 +362,23 @@ impl ScriptedPolicy {
     /// without (no expansion, bunkers toward the map centre).
     pub fn new(info: &GameInfo, build: T0Build) -> Result<Self> {
         let race = info.players.iter().find(|p| p.is_self).map(|p| p.race);
-        let hints = if build.needs_map_hints() && race == Some(Race::Terran) {
+        let terran = race == Some(Race::Terran);
+        let (hints, pre) = if build.needs_map_hints() && terran {
             let family = uranium_env::maps::MapFamilies::load()?.classify(&info.map_name, "");
             let (pre, _) = uranium_env::maps::live_precompute_for_session(uranium_env::maps::maps_dir(), info, &family)?;
             if pre.is_none() {
                 elog!("[agent] WARNING: no map precompute for {:?}; the 021-R8 teacher does not expand", info.map_name);
             }
-            pre.map(|p| uranium_scripted::MapHints { base_locs: p.base_locs, chokes: p.chokes }).unwrap_or_default()
+            (pre.as_ref().map(|p| uranium_scripted::MapHints { base_locs: p.base_locs.clone(), chokes: p.chokes.clone() }).unwrap_or_default(), pre)
         } else {
-            uranium_scripted::MapHints::default()
+            // 052-R6: the ops metrics of any other T0 Terran session read the precompute when there
+            // is one; a missing one never refuses the session.
+            let pre = if terran { uranium_env::maps::maps_dir().ok().and_then(|d| uranium_env::maps::live_precompute(&d, info).0) } else { None };
+            (uranium_scripted::MapHints::default(), pre)
         };
-        let scout = (race == Some(Race::Terran)).then(|| uranium_env::scout::ScoutTracker::for_game(info, uranium_env::scout::RewardConfig::default()));
-        Ok(Self { bot: uranium_scripted::for_game_hints(info, build, hints), scout })
+        let scout = terran.then(|| uranium_env::scout::ScoutTracker::for_game(info, uranium_env::scout::RewardConfig::default()));
+        let ops = terran.then(|| uranium_env::ops::OpsTracker::for_game(info, pre.as_ref()));
+        Ok(Self { bot: uranium_scripted::for_game_hints(info, build, hints), scout, ops })
     }
 }
 
@@ -376,6 +387,10 @@ impl Policy for ScriptedPolicy {
         if let Some(s) = self.scout.as_mut() {
             s.step(f);
         }
+        // 052-R6: every observation (8 frames apart) and the final frame below.
+        if let Some(o) = self.ops.as_mut() {
+            o.step(f);
+        }
         Ok(self.bot.act(f))
     }
 
@@ -383,6 +398,9 @@ impl Policy for ScriptedPolicy {
         // 010-R12: the final frame counts like the model row's (050-R7).
         if let (Some(s), Some(f)) = (self.scout.as_mut(), final_frame) {
             s.step(f);
+        }
+        if let (Some(o), Some(f)) = (self.ops.as_mut(), final_frame) {
+            o.step(f);
         }
     }
 
@@ -415,6 +433,8 @@ impl Policy for ScriptedPolicy {
             army_s: secs(m.army_frame),
             scv_8m: m.scv_8m,
             react,
+            ops: self.ops.as_ref().map(|o| o.ops()).unwrap_or_default(),
+            rush_combat: self.ops.as_ref().and_then(|o| o.rush_combat()),
         })
     }
 }
@@ -1125,7 +1145,10 @@ mod tests {
         let s = p.scripted_stats().unwrap();
         assert_eq!((s.scv_min_1m, s.scv_4m, s.scv_8m, s.react.clone()), (Some(3), Some(9), Some(9), None));
         let text = serde_json::to_string(&s).unwrap();
-        assert!(text.starts_with(r#"{"scout_main_s":null,"scout_types_4m":0,"scout_types_6m":0,"barracks_s":null,"bunker_s":null,"scv_4m":9,"scv_min_1m":3,"army_s":null,"scv_8m":9,"react":null}"#), "{text}");
+        // 052-R6: `ops` and `rush_combat` follow the existing keys, whose order is unchanged.
+        assert!(text.starts_with(r#"{"scout_main_s":null,"scout_types_4m":0,"scout_types_6m":0,"barracks_s":null,"bunker_s":null,"scv_4m":9,"scv_min_1m":3,"army_s":null,"scv_8m":9,"react":null,"ops":{"end_s":480.0,"mined":0,"#), "{text}");
+        assert!(text.ends_with(r#""float_gas_rs":0.0},"rush_combat":null}"#), "{text}");
+        assert_eq!(s.ops.end_s, 480.0, "the final frame counts (052-R6, 010-R12)");
 
         let mut t = ScriptedPolicy::new(&t0_info(Race::Terran), T0Build::TerranReact).unwrap();
         t.on_frame(&scv_frame(100, 4)).unwrap();
