@@ -3,7 +3,8 @@ docs/measurement_protocol.md): every stage of each job, by the protocol plan its
 (config/protocol/lineage.toml; a plan outside the protocol is refused unless --kind names its table):
 
   rush     050-R6 128-game rush check by start condition: held_8m (scv_8m >= 8), held_s (scv_min_1m > 4,
-           session held), scout before 3:00 (command stream), bunker_order_3m / _4m (first Build_Bunker
+           session held), scout before 3:00 (command stream; scout_3m = the old reading the DAgger thresholds
+           use, scout_3m_fixed = the payload read right, 050-R9 2026-11-14), bunker_order_3m / _4m (first Build_Bunker
            command), bunker_unit_3m / _4m (bunker_s), scv_4m p50, wins; JSON also held_8m_winpass
            (rush_summary.py: a win before 8:00 passes) and scv_4m_p50_known (g3.py)
   macro    050-R8 macro 40 by opponent: bunker_order_4m, bunker_unit_4m, CC order by 5:00, scv_8m >= 16
@@ -51,7 +52,7 @@ def rush_table(stage: int, plan: dict, rows: dict[int, dict], invalid: set[int],
     out = {}
     for c in ("early", "late"):
         g = [(n, r) for n, r in sorted(rows.items()) if cond[n] == c and stage * 100000 + n not in invalid]
-        an = {n: ec.analyze(dumps[n]) if n in dumps else (None, None) for n, _ in g}
+        an = {n: ec.analyze_both(dumps[n]) if n in dumps else (None, None, None) for n, _ in g}
         m = [r["model"] for _, r in g]
         first = [an[n][0] for n, _ in g]
         bunker_s = [x.get("bunker_s") for x in m]
@@ -63,7 +64,11 @@ def rush_table(stage: int, plan: dict, rows: dict[int, dict], invalid: set[int],
             "held_8m": sum(1 for x in m if (x.get("scv_8m") or 0) >= 8),
             "held_8m_winpass": sum(1 for x, (_, r) in zip(m, g) if (x["scv_8m"] >= 8 if x.get("scv_8m") is not None else bool(r.get("won")))),
             "held_s": sum(1 for x in m if (x.get("scv_min_1m") or 0) > 4),
+            # 050-R9 (2026-11-14 개정, 사용자 결정 2026-11-14): scout_3m keeps the old payload reading (single-unit
+            # Move orders only, one byte off) that 041-R22 ④ / 041-R29 ④ thresholds were set on; scout_3m_fixed
+            # reads 0x14 / 0x15 as stored and also counts ground right clicks.
             "scout_3m": sum(1 for n, _ in g if an[n][1] is not None),
+            "scout_3m_fixed": sum(1 for n, _ in g if an[n][2] is not None),
             "bunker_order_3m": sum(1 for f in first if f and f.get(ec.BUNKER, INF) < 3 * 60 * ec.FPS),
             "bunker_order_4m": sum(1 for f in first if f and f.get(ec.BUNKER, INF) < 4 * 60 * ec.FPS),
             "bunker_unit_3m": sum(1 for b in bunker_s if b is not None and b < 180),
@@ -346,7 +351,7 @@ def job_tables(job: Path, cache: Path, override: dict[str, str] | None = None, l
             dumps = ec.dump_stage(job / plan["name"], sorted(rows), cache / job.name / plan["name"])
             res["table"] = rush_table(k, plan, rows, invalid, dumps) if kind == "rush" else macro_table(k, plan, rows, invalid, dumps)
             if kind == "rush":
-                res["counts"] = {c: {key: [v[key], v["n"]] for key in ("held_8m", "held_s", "scout_3m", "bunker_order_3m", "bunker_order_4m", "bunker_unit_3m", "bunker_unit_4m", "won")} for c, v in res["table"].items()}
+                res["counts"] = {c: {key: [v[key], v["n"]] for key in ("held_8m", "held_s", "scout_3m", "scout_3m_fixed", "bunker_order_3m", "bunker_order_4m", "bunker_unit_3m", "bunker_unit_4m", "won")} for c, v in res["table"].items()}
             else:
                 res["counts"] = {o: {key: [v[key], v["n"]] for key in ("bunker_order_4m", "bunker_unit_4m", "cc_order_5m", "scv_8m_16", "won")} for o, v in res["table"].items()}
         elif kind == "t1":
@@ -406,10 +411,10 @@ def print_tables(res: dict) -> None:
         if sk:
             print(f"SKIPPED {len(sk)} undecodable line(s) of the job (counted as no row): " + ", ".join(f"{x['file']}:{x['line']}" for x in sk))
         if s["kind"] == "rush":
-            print("cond | n | held_8m (scv_8m>=8) | held_s (scv_min_1m>4) | scout<3:00 | bunker_order<3:00 | bunker_order<4:00 | bunker_unit<3:00 | bunker_unit<4:00 | scv_4m p50 | won | dumped | invalid")
+            print("cond | n | held_8m (scv_8m>=8) | held_s (scv_min_1m>4) | scout<3:00 (old) | scout<3:00 fixed | bunker_order<3:00 | bunker_order<4:00 | bunker_unit<3:00 | bunker_unit<4:00 | scv_4m p50 | won | dumped | invalid")
             for c, v in t.items():
                 s4 = "-" if v["scv_4m_p50"] is None else f"{v['scv_4m_p50']:.0f}"
-                print(f"{c} | {v['n']} | {v['held_8m']} | {v['held_s']} | {v['scout_3m']} | {v['bunker_order_3m']} | {v['bunker_order_4m']} | {v['bunker_unit_3m']} | {v['bunker_unit_4m']} | {s4} | {v['won']} | {v['dumped']} | {v['invalid']}")
+                print(f"{c} | {v['n']} | {v['held_8m']} | {v['held_s']} | {v['scout_3m']} | {v['scout_3m_fixed']} | {v['bunker_order_3m']} | {v['bunker_order_4m']} | {v['bunker_unit_3m']} | {v['bunker_unit_4m']} | {s4} | {v['won']} | {v['dumped']} | {v['invalid']}")
         elif s["kind"] == "macro":
             print("opponent | n | bunker_order<4:00 | bunker_unit<4:00 | CC order<=5:00 | scv_8m>=16 | won/draw/lost | dumped")
             for o, v in t.items():

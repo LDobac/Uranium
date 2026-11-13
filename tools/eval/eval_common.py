@@ -270,12 +270,39 @@ def u16(h: str, i: int) -> int:
     return int(h[2 * i:2 * i + 2], 16) + 256 * int(h[2 * i + 2:2 * i + 4], 16)
 
 
-def analyze(path: Path) -> tuple[dict, int | None]:
-    """First build-order frame per unit type and the first single-SCV far move before 3:00 (scout) of
-    the Terran player, up to 8:00. Same rule as runs/dagger/test_table.py (runs/adv8/cmds.py)."""
+SCOUT_BEFORE = 4320  # 3:00
+SCOUT_DIST = 1200  # pixels, Manhattan from the first build position
+
+
+def _scout_old(op: int, h: str) -> tuple[bool, int, int]:
+    """(ground move?, x, y) as runs/dagger/test_table.py read them: y from payload bytes 1-2 and the target from
+    bytes 2-3 (the real y), one byte off. A right click then never has the 0xFFFF target, so this counts
+    single-unit Move orders (0x15) only, at a wrong y. Kept as the `scout_3m` definition the DAgger
+    thresholds were set on (050-R9, 041-R22 ④ / 041-R29 ④; 2026-11-14 개정, 사용자 결정 2026-11-14)."""
+    x, y, tag = u16(h, 0), u16(h, 1), u16(h, 2)
+    far = op == OP_ORDER and int(h[16:18], 16) == ORDER_MOVE or op == OP_RCLICK and tag == 0xFFFF
+    return far, x, y
+
+
+def _scout_fixed(op: int, h: str) -> tuple[bool, int, int]:
+    """(ground move?, x, y) of `scout_3m_fixed` (050-R9, 2026-11-14 개정, 사용자 결정 2026-11-14): the payload as
+    stored (crates/uranium-replay label.rs / relabel.rs): x bytes 0-1, y 2-3, target 4-5, unit type 6-7, then
+    the order byte (0x15 only) and queued. A ground right click (target 0 or 0xFFFF, label.rs `valid_tag`) or a
+    targeted Move order."""
+    x, y, tag = u16(h, 0), u16(h, 2), u16(h, 4)
+    far = op == OP_ORDER and int(h[16:18], 16) == ORDER_MOVE or op == OP_RCLICK and tag in (0, 0xFFFF)
+    return far, x, y
+
+
+def analyze_both(path: Path) -> tuple[dict, int | None, int | None]:
+    """First build-order frame per unit type and the frame of the first single-SCV far move before 3:00 (scout) of
+    the Terran player, up to 8:00: (first, scout by the old reading `scout_3m`, scout by the fixed reading
+    `scout_3m_fixed`). The rest of the rule is the same for both (runs/dagger/test_table.py, runs/adv8/cmds.py):
+    one unit selected by the last select command, more than 1,200 px Manhattan from the first build tile."""
     d = json.loads(path.read_text(encoding="utf-8"))
     tp = [p["id"] for p in d["players"] if p.get("race") == RACE_TERRAN][0]
-    first, base, last_sel, scout = {}, None, 0, None
+    first, base, last_sel = {}, None, 0
+    scout: list[int | None] = [None, None]
     for f, p, op, h in d["cmds"]:
         if p != tp or f > CUT:
             continue
@@ -286,11 +313,17 @@ def analyze(path: Path) -> tuple[dict, int | None]:
             first.setdefault(ty, f)
             if base is None:
                 base = (x * 32, y * 32)
-        elif op in (OP_RCLICK, OP_ORDER):
-            x, y, tag = u16(h, 0), u16(h, 1), u16(h, 2)
-            far = op == OP_ORDER and int(h[16:18], 16) == ORDER_MOVE or op == OP_RCLICK and tag == 0xFFFF
-            if far and base is not None and scout is None and last_sel == 1 and f < 4320 and abs(x - base[0]) + abs(y - base[1]) > 1200:
-                scout = f
+        elif op in (OP_RCLICK, OP_ORDER) and base is not None and last_sel == 1 and f < SCOUT_BEFORE:
+            for i, read in enumerate((_scout_old, _scout_fixed)):
+                far, x, y = read(op, h)
+                if far and scout[i] is None and abs(x - base[0]) + abs(y - base[1]) > SCOUT_DIST:
+                    scout[i] = f
+    return first, scout[0], scout[1]
+
+
+def analyze(path: Path) -> tuple[dict, int | None]:
+    """(first build-order frames, scout frame by the old reading `scout_3m`), see analyze_both."""
+    first, scout, _ = analyze_both(path)
     return first, scout
 
 
