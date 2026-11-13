@@ -154,6 +154,9 @@ class UnknownPlan(Exception):
 
 def stage_kind(lin: dict, plan: dict, override: dict[str, str]) -> tuple[str, str | None]:
     """The protocol plan a stage's conditions match (050-R9); a plan outside the protocol needs --kind."""
+    if ec.is_branch_plan(plan):
+        # 050 "분기 게임(051)": branch-game games are never tabulated, --kind included.
+        raise UnknownPlan(f"stage {plan['name']}: a branch-game plan (020-R22 keys, 051) is not an evaluation table (050)")
     pid = protocol.identify(lin, plan)
     if plan["name"] in override:
         if override[plan["name"]] not in KINDS:
@@ -189,6 +192,8 @@ def subset_tables(job: Path, plan_id: str, lin: dict | None = None) -> dict:
     invalid = ec.opponent_crashes(ledger)
     skipped = ec.skipped_lines(rows_all, ledger)  # job-wide, as in job_tables
     for k, f, plan in ec.job_stages(job):
+        if ec.is_branch_plan(plan):  # 050 "분기 게임(051)": never a source of an evaluation table
+            continue
         have = game_keys(plan)
         if not set(want) <= set(have):
             continue
@@ -223,6 +228,10 @@ def job_tables(job: Path, cache: Path, override: dict[str, str] | None = None, l
     out = {}
     for k, f, plan in ec.job_stages(job):
         if stages is not None and plan["name"] not in stages:
+            continue
+        if ec.is_branch_plan(plan):
+            # 050 "분기 게임(051)": branch-game stages stay out of every table (051 records only).
+            print(f"note: {job.name}/{plan['name']}: branch-game stage (051) left out of the tables", file=sys.stderr)
             continue
         kind, pid = stage_kind(lin, plan, override or {})
         rows = ec.model_rows(rows_all, k)
