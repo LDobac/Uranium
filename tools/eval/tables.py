@@ -445,7 +445,7 @@ def main(argv=None) -> None:
     ap.add_argument("--cache", type=Path, default=None, help="command stream cache (default <URANIUM_CACHE_DIR or runs>/eval_cmddump)")
     ap.add_argument("--kind", action="append", default=[], help="<stage name>=<rush|macro|t1|winrate> for a plan outside the protocol")
     ap.add_argument("--ops", choices=OPS_SOURCES, default="replay", help="052-R8 tables from opsdump replay values (default), the session rows' live values, or none")
-    ap.add_argument("--ops-jobs", type=int, default=max(1, (os.cpu_count() or 2) // 2), help="parallel opsdump processes")
+    ap.add_argument("--ops-jobs", type=int, default=1, help="parallel opsdump processes (OpenBW playbacks: not on a training host)")
     a = ap.parse_args(argv)
     ec.load_env()
     cache = a.cache or ec.cache_dir() / "eval_cmddump"

@@ -220,6 +220,16 @@ pub struct StrideResult {
     pub wall_s: f64,
 }
 
+impl StrideResult {
+    /// 052-R7 / 052 Risks: a playback that neither reached the game end nor was cut by the
+    /// observer (launcher crash, 60 s read timeout, broken stream) is no measurement.
+    pub fn completed(&self) -> Result<()> {
+        anyhow::ensure!(self.observations > 0, "no observation");
+        anyhow::ensure!(self.cut || self.end_frame.is_some(), "playback stopped at frame {:?} without the game end (launcher exit or timeout)", self.last_frame);
+        Ok(())
+    }
+}
+
 /// 052-R7: plays `rep` from `perspective` stopping only at multiples of `stride` frames (after the
 /// bridge's first observation), without privileged summaries (033-R5), handing each observation to
 /// `on_frame`. Playback ends at the game end or as soon as `on_frame` returns false: the launcher is
@@ -232,13 +242,18 @@ pub fn play_stride(rep: &Replay, perspective: u8, cfg: &PlayConfig, stride: u32,
     let res = accept(&listener, Some(&mut child), Duration::from_secs(60)).and_then(|s| stride_session(s, expected, stride, on_info, on_frame));
     let cut = res.as_ref().is_ok_and(|r| r.cut);
     let deadline = Instant::now() + Duration::from_secs(if cut { 0 } else { 10 });
-    while child.try_wait()?.is_none() && Instant::now() < deadline {
+    while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
     let _ = child.kill();
     let _ = child.wait();
     let mut res = res?;
+    // Thousands of replays go through here (052-R7): a played replay leaves no file behind; a
+    // failed one keeps its copy and launcher log for diagnosis.
     std::fs::remove_file(&rep_path).ok();
+    let mut log = rep_path.into_os_string();
+    log.push(".log");
+    std::fs::remove_file(&log).ok();
     res.wall_s = t0.elapsed().as_secs_f64();
     Ok(res)
 }
@@ -569,6 +584,7 @@ mod tests {
         .unwrap();
         assert_eq!(seen, vec![1, 8, 16, 24, 32, 40]);
         assert_eq!((res.observations, res.last_frame, res.end_frame, res.cut), (6, Some(40), None, true));
+        res.completed().unwrap();
         assert_eq!(bridge.join().unwrap(), vec![8, 16, 24, 32, 40], "nothing asked after the cut");
         // A game ending first.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -576,7 +592,11 @@ mod tests {
         let (s, _) = listener.accept().unwrap();
         let res = stride_session(s, 1, 8, &mut |_| {}, &mut |_| true).unwrap();
         assert_eq!((res.observations, res.last_frame, res.end_frame, res.cut), (3, Some(16), Some(20), false));
+        res.completed().unwrap();
         bridge.join().unwrap();
+        // The bridge gone mid-game (no GameEnd, not cut): no measurement.
+        let broken = StrideResult { observations: 3, last_frame: Some(16), ..Default::default() };
+        assert!(broken.completed().is_err() && StrideResult::default().completed().is_err());
         // The wrong player's view is refused.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let bridge = fake_bridge(listener.local_addr().unwrap(), 0, 20);

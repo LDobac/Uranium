@@ -21,15 +21,21 @@ pub const UNTIL_FRAME: u32 = uranium_env::ops::WINDOW_END;
 pub const STRIDE: u32 = 8;
 
 /// BWAPI slots (the session record's `slot`) to observe: the given one, else every active Terran
-/// (botgen and human replays, 052-R7). A slot without an active player is refused.
+/// (botgen and human replays, 052-R7). A slot without an active Terran player is refused, and so
+/// is a replay without one.
 pub fn perspective_slots(rep: &Replay, slot: Option<u8>) -> Result<Vec<u8>> {
     match slot {
         Some(s) => {
             let p = rep.header.players.get(s as usize).with_context(|| format!("no player in slot {s}"))?;
             anyhow::ensure!(rep.active_players().iter().any(|(a, _)| a.id == p.id), "slot {s} is not an active player");
+            anyhow::ensure!(p.race == crate::header::RACE_TERRAN, "slot {s} is not Terran (052: Terran sessions only)");
             Ok(vec![s])
         }
-        None => terran_perspectives(rep).into_iter().map(|id| slot_of(rep, id)).collect(),
+        None => {
+            let ids = terran_perspectives(rep);
+            anyhow::ensure!(!ids.is_empty(), "no active Terran player");
+            ids.into_iter().map(|id| slot_of(rep, id)).collect()
+        }
     }
 }
 
@@ -80,7 +86,7 @@ pub fn measure(rep: &Replay, slot: u8, cfg: &PlayConfig, until: u32, stride: u32
         },
     )?;
     let t = tracker.into_inner().context("bridge sent no GameInfo")??;
-    anyhow::ensure!(res.observations > 0, "no observation");
+    res.completed()?;
     Ok((t.ops(), t.rush_combat()))
 }
 
@@ -104,13 +110,16 @@ mod tests {
         Replay { format: Format::Legacy, header: header::parse(&h), raw_header: h, blocks, map: vec![], unit_limit: None }
     }
 
-    /// 052-R7: the given slot, else every active Terran; an empty slot is refused.
+    /// 052-R7: the given Terran slot, else every active Terran; an empty or non-Terran slot and a
+    /// replay without a Terran are refused.
     #[test]
     fn perspective_slots_052_r7() {
         let tz = two_player([header::RACE_TERRAN, 0]);
         assert_eq!(perspective_slots(&tz, None).unwrap(), vec![0]);
-        assert_eq!(perspective_slots(&tz, Some(1)).unwrap(), vec![1]);
+        assert_eq!(perspective_slots(&tz, Some(0)).unwrap(), vec![0]);
+        assert!(perspective_slots(&tz, Some(1)).is_err(), "the Zerg slot");
         assert!(perspective_slots(&tz, Some(5)).is_err());
+        assert!(perspective_slots(&two_player([0, 2]), None).is_err(), "no Terran");
         let tt = two_player([header::RACE_TERRAN, header::RACE_TERRAN]);
         assert_eq!(perspective_slots(&tt, None).unwrap(), vec![0, 1], "TvT: both Terran views");
     }
