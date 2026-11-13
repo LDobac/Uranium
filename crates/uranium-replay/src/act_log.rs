@@ -7,6 +7,7 @@
 //! executor refused it, forced prefix decisions included, 051-R5 ⑤) becomes one [`LoggedDecision`]
 //! at the line's live frame. A scripted (T0) session's log has no decisions and is no memory source.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use uranium_env::branch::ActLog;
@@ -45,39 +46,54 @@ pub fn parse_memory_log(text: &str) -> Option<DecisionLogRead> {
     }
 }
 
-/// 041-R28 (AMB-041-17) and 051-R12 (020-R22 ①): the memory logs of replay `file` in the
-/// `--memory-log` folder `dir`. `<stem>.jsonl` (the decision log of a `memory_log` plan, or an act log
-/// under that name) if present, else every act log `<stem>-p<players index>.jsonl` of the game (an
-/// evaluation job's `acts/` folder beside `replays/`), scripted ones left out. Empty = no log.
-pub fn read_memory_logs(dir: &Path, file: &Path) -> Vec<DecisionLogRead> {
-    let one = crate::pipeline::memory_log_path(dir, file);
-    let read = |p: &Path| match std::fs::read_to_string(p) {
-        Ok(t) => parse_memory_log(&t),
-        Err(e) => Some(DecisionLogRead::Incomplete(format!("reading {}: {e}", p.display()))),
-    };
-    if one.exists() {
-        return read(&one).map_or_else(|| vec![DecisionLogRead::Incomplete(format!("{}: a scripted session's act log", one.display()))], |r| vec![r]);
-    }
-    act_log_paths(dir, file).iter().filter_map(|p| read(p)).collect()
+/// The `--memory-log` folder of a build (041-R28), listed once: the act logs `<stem>-p<k>.jsonl` (k a
+/// players index, `uranium_env::branch::act_log_name`) by replay stem.
+#[derive(Debug, Clone)]
+pub struct MemoryLogDir {
+    pub dir: PathBuf,
+    acts: HashMap<String, Vec<(u32, PathBuf)>>,
 }
 
-/// The act logs `<stem>-p<k>.jsonl` (k a players index, `uranium_env::branch::act_log_name`) of
-/// replay `file` in `dir`, sorted by k.
-pub fn act_log_paths(dir: &Path, file: &Path) -> Vec<PathBuf> {
-    let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let prefix = format!("{stem}-p");
-    let mut found: Vec<(u32, PathBuf)> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| {
+impl MemoryLogDir {
+    pub fn open(dir: &Path) -> anyhow::Result<Self> {
+        let mut acts: HashMap<String, Vec<(u32, PathBuf)>> = HashMap::new();
+        for e in std::fs::read_dir(dir)?.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            let k = name.strip_prefix(&prefix)?.strip_suffix(".jsonl")?.parse::<u32>().ok()?;
-            Some((k, e.path()))
-        })
-        .collect();
-    found.sort();
-    found.into_iter().map(|(_, p)| p).collect()
+            let Some((stem, k)) = name.strip_suffix(".jsonl").and_then(|n| n.rsplit_once("-p")) else { continue };
+            if let Ok(k) = k.parse::<u32>() {
+                acts.entry(stem.to_string()).or_default().push((k, e.path()));
+            }
+        }
+        acts.values_mut().for_each(|v| v.sort());
+        Ok(Self { dir: dir.to_path_buf(), acts })
+    }
+
+    /// The act logs of replay `file`, sorted by players index.
+    pub fn act_log_paths(&self, file: &Path) -> Vec<PathBuf> {
+        let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        self.acts.get(&stem).map(|v| v.iter().map(|(_, p)| p.clone()).collect()).unwrap_or_default()
+    }
+
+    /// 041-R28 (AMB-041-17) and 051-R12 (020-R22 ①): the memory logs of replay `file`.
+    /// `<stem>.jsonl` (the decision log of a `memory_log` plan, or an act log under that name) if
+    /// present, else every act log `<stem>-p<players index>.jsonl` of the game (an evaluation job's
+    /// `acts/` folder beside `replays/`), scripted ones left out. Empty = no log.
+    pub fn logs(&self, file: &Path) -> Vec<DecisionLogRead> {
+        let one = crate::pipeline::memory_log_path(&self.dir, file);
+        let read = |p: &Path| match std::fs::read_to_string(p) {
+            Ok(t) => parse_memory_log(&t),
+            Err(e) => Some(DecisionLogRead::Incomplete(format!("reading {}: {e}", p.display()))),
+        };
+        if one.exists() {
+            return read(&one).map_or_else(|| vec![DecisionLogRead::Incomplete(format!("{}: a scripted session's act log", one.display()))], |r| vec![r]);
+        }
+        self.act_log_paths(file).iter().filter_map(|p| read(p)).collect()
+    }
+}
+
+/// [`MemoryLogDir::logs`] of a folder listed now (an unreadable folder has no logs).
+pub fn read_memory_logs(dir: &Path, file: &Path) -> Vec<DecisionLogRead> {
+    MemoryLogDir::open(dir).map(|d| d.logs(file)).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -180,7 +196,7 @@ pub(crate) mod tests {
         std::fs::write(dir.join("g7-p1.jsonl"), t0_log(11_568)).unwrap();
         std::fs::write(dir.join("g70-p0.jsonl"), "not this game").unwrap();
         std::fs::write(dir.join("g7-px.jsonl"), "not an act log name").unwrap();
-        assert_eq!(act_log_paths(&dir, rep), vec![dir.join("g7-p0.jsonl"), dir.join("g7-p1.jsonl")]);
+        assert_eq!(MemoryLogDir::open(&dir).unwrap().act_log_paths(rep), vec![dir.join("g7-p0.jsonl"), dir.join("g7-p1.jsonl")]);
         let logs = read_memory_logs(&dir, rep);
         assert_eq!(logs.len(), 1, "the scripted log is no memory source");
         let ours = bind_logs(&logs, 0, 11_570).expect("player 0's view binds its log");

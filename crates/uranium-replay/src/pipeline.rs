@@ -477,16 +477,41 @@ pub fn attach_memory(steps: &mut [Step], bound: Result<&crate::relabel::ModelLog
     m
 }
 
+/// 041-R28 (051-R13 ④): source tag of the branch-game trunk builds (no relabelling, act-log memory,
+/// decision-time steps): analysis shards, never BC data.
+pub const BRANCH_SRC: &str = "branch";
+
 /// `uranium-replay build` option rules: 041-R22 relabelled games are their own source (040
-/// `dagger`) and only they; 041-R28 `--memory-log` names a folder and goes with or without
-/// `--relabel` (051-R13 ④: the branch-game trunk replays are built without relabelling, with the
-/// act logs as the memory).
-pub fn check_build_args(src: &str, relabel: bool, memory_log: Option<&Path>) -> Result<()> {
+/// `dagger`) and only they; 041-R28 `--memory-log` names a folder and goes with `--relabel` or,
+/// without it, only with `--src branch` (051-R13 ④: branch-game trunks, whose command-label steps'
+/// memory already holds the decision they are labelled with and whose decision-time steps are not
+/// BC samples). A `branch` build needs an explicit `--out` outside the BC shards root
+/// `bc_shards_root` (`<shared>/datasets/replays/shards`, when known), so its shards never join a BC
+/// source.
+pub fn check_build_args(src: &str, relabel: bool, memory_log: Option<&Path>, out: Option<&Path>, bc_shards_root: Option<&Path>) -> Result<()> {
     anyhow::ensure!((src == "dagger") == relabel, "--relabel goes with --src dagger and only with it (041-R22)");
     if let Some(d) = memory_log {
         anyhow::ensure!(d.is_dir(), "--memory-log {}: not a folder (041-R28)", d.display());
+        anyhow::ensure!(relabel || src == BRANCH_SRC, "--memory-log without --relabel goes with --src {BRANCH_SRC} only (041-R28: branch trunk shards are not BC data)");
+    }
+    if src == BRANCH_SRC {
+        let Some(out) = out else { anyhow::bail!("--src {BRANCH_SRC} needs an explicit --out outside the BC shards (e.g. <shared>/eval/branch-<date>/shards, 041-R28)") };
+        if let Some(root) = bc_shards_root {
+            anyhow::ensure!(!path_within(out, root), "--src {BRANCH_SRC}: --out {} is inside the BC shards {} (041-R28: branch trunk shards are not BC data)", out.display(), root.display());
+        }
     }
     Ok(())
+}
+
+/// `p` is `root` or below it (absolute paths compared component by component; ASCII case-insensitive
+/// on Windows).
+fn path_within(p: &Path, root: &Path) -> bool {
+    let abs = |x: &Path| std::path::absolute(x).unwrap_or_else(|_| x.to_path_buf());
+    let (p, root) = (abs(p), abs(root));
+    let (mut a, b) = (p.components(), root.components());
+    b.into_iter().all(|rc| {
+        a.next().is_some_and(|pc| if cfg!(windows) { pc.as_os_str().eq_ignore_ascii_case(rc.as_os_str()) } else { pc == rc })
+    })
 }
 
 /// 041-R28: `--memory-log` refuses a build whose replays share a file stem (the log is found by it).
@@ -587,7 +612,7 @@ pub struct BuildOptions {
     /// decision logs, `<replay file stem>.jsonl` per replay, or the game's 051-R2 act logs
     /// `<stem>-p<k>.jsonl` (`act_log::read_memory_logs`; 040-R22 `memory_action`). `None` = every
     /// step `None`.
-    pub memory_log: Option<PathBuf>,
+    pub memory_log: Option<crate::act_log::MemoryLogDir>,
 }
 
 /// Resume state from earlier records, per perspective (040-R17 / 040-R19 review): a written
@@ -765,7 +790,9 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
     if let Some(name) = excludes.matches(&rep.header.map_name, &map_hash) {
         return vec![rec(&sha, &rep.header.map_name, &family, None, Outcome::Filtered { reason: format!("excluded map (040-R16): {name}") })];
     }
-    let views = match filter(&rep, &family, matches!(opt.src.as_str(), "bot" | "botgen" | "dagger"), opt.relabel.is_some()) {
+    // 041-R28 `branch` trunks are bot games of any length (a trunk lost early to the rush is a point).
+    let any_length = opt.relabel.is_some() || opt.src == BRANCH_SRC;
+    let views = match filter(&rep, &family, matches!(opt.src.as_str(), "bot" | "botgen" | "dagger" | BRANCH_SRC), any_length) {
         Ok(v) => v,
         Err(reason) => return vec![rec(&sha, &rep.header.map_name, &family, None, Outcome::Filtered { reason })],
     };
@@ -790,7 +817,7 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
     }
     // 041-R28: the model's decision log of this game, named like the replay file (or the game's
     // 051-R2 act logs).
-    let memory = opt.memory_log.as_ref().map(|d| crate::act_log::read_memory_logs(d, file));
+    let memory = opt.memory_log.as_ref().map(|d| d.logs(file));
     let mut out = Vec::new();
     for view in views {
         if *written.lock().unwrap() >= opt.budget_bytes {
@@ -918,18 +945,35 @@ mod tests {
         assert_eq!(memory_log_path(Path::new("m"), Path::new("x/replays/g12.rep")), Path::new("m").join("g12.jsonl"));
     }
 
-    /// 041-R28 (051-R13 ④): `--memory-log` is accepted on a build without relabelling (any source but
-    /// `dagger`) as with it; `--relabel` still goes with `dagger` only, and the folder must exist.
+    /// 041-R28 (051-R13 ④): `--memory-log` without relabelling goes with `--src branch` only, and a
+    /// `branch` build needs an explicit `--out` outside the BC shards root (its shards are not BC
+    /// data); `--relabel` still goes with `dagger` only (with or without `--memory-log`), and the
+    /// memory folder must exist.
     #[test]
-    fn memory_log_without_relabel_051_r13_041_r28() {
+    fn memory_log_without_relabel_only_for_branch_051_r13_041_r28() {
         let dir = std::env::temp_dir();
-        assert!(check_build_args("botgen", false, Some(&dir)).is_ok(), "no-relabel build with --memory-log");
-        assert!(check_build_args("branch", false, Some(&dir)).is_ok());
-        assert!(check_build_args("dagger", true, Some(&dir)).is_ok());
-        assert!(check_build_args("botgen", false, None).is_ok());
-        assert!(check_build_args("dagger", false, Some(&dir)).is_err(), "dagger needs --relabel (041-R22)");
-        assert!(check_build_args("botgen", true, None).is_err(), "--relabel only with dagger (041-R22)");
-        assert!(check_build_args("botgen", false, Some(Path::new("no/such/memory"))).is_err());
+        let root = dir.join("shared").join("datasets").join("replays").join("shards");
+        let eval = dir.join("shared").join("eval").join("branch-20261113").join("shards");
+        let ok = |src, relabel, mem: Option<&Path>, out: Option<&Path>| check_build_args(src, relabel, mem, out, Some(&root)).is_ok();
+        assert!(ok("branch", false, Some(&dir), Some(&eval)), "a branch trunk build");
+        assert!(ok("branch", false, Some(&dir), Some(&eval)) && check_build_args("branch", false, Some(&dir), Some(&eval), None).is_ok());
+        assert!(ok("dagger", true, Some(&dir), None) && ok("dagger", true, None, None) && ok("botgen", false, None, None));
+        // No-relabel --memory-log under a BC source tag: refused (label leak, unknown chain starts).
+        for src in ["botgen", "bot", "scr_ladder", "human"] {
+            assert!(!ok(src, false, Some(&dir), Some(&eval)), "{src}");
+        }
+        // A branch build without --out, or with --out inside the BC shards root (any depth, any case on Windows).
+        assert!(!ok("branch", false, Some(&dir), None));
+        assert!(!ok("branch", false, Some(&dir), Some(&root.join("branch"))));
+        assert!(!ok("branch", false, None, Some(&root)));
+        if cfg!(windows) {
+            let upper = PathBuf::from(root.to_string_lossy().to_uppercase()).join("x");
+            assert!(!ok("branch", false, Some(&dir), Some(&upper)));
+        }
+        assert!(!ok("dagger", false, Some(&dir), None), "dagger needs --relabel (041-R22)");
+        assert!(!ok("botgen", true, None, None), "--relabel only with dagger (041-R22)");
+        assert!(!ok("branch", false, Some(Path::new("no/such/memory")), Some(&eval)));
+        assert!(!path_within(&eval, &root) && path_within(&root, &root));
     }
 
     /// 041-R28 ② ④ ⑤ and decision-time steps (user decision 2026-11-13, 051-R13 ④) on a build without

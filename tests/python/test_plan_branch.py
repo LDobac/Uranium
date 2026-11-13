@@ -157,6 +157,9 @@ def test_outcome_fields_and_executed():
     assert pb.executed({"rules": ALTS["ban_bunker"], "intervention": [{"applied": 3}]}) and pb.executed({"rules": []})
     assert pb.one_decision_force(f) == tb.action_id(BUNKER) and pb.one_decision_force(ALTS["ban_bunker"]) is None
     assert pb.one_decision_force([{"op": "force", "action": 5, "from_s": 0, "to_s": 30}]) is None
+    # sign agreement: ties (either side 0) and non-finite pairs are left out, ties counted
+    agree, ties = pb.sign_agreement([0.2, -0.1, 0.0, 0.3, np.nan], [1.0, 1.0, 1.0, 0.0, 1.0])
+    assert ties == 2 and np.array_equal(agree[:2], [1.0, 0.0]) and np.isnan(agree[2:]).all()
 
 
 def predictors(dump: Path, s0: Path) -> pp.Data:
