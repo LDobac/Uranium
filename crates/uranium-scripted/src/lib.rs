@@ -9,9 +9,15 @@
 //!
 //! The 021-R8 scouting-reactive Terran teacher (`T0Build::TerranReact`) is the Terran brain plus
 //! the `react` module: it scouts, identifies a rush from its own vision and defends only then.
+//!
+//! The 022 TvT / TvP teacher (`T0Build::TerranTp`) reuses that teacher's parts (scouting, bunker,
+//! SCV pull and repair, worker answer, construction resumption) with its own opening (gas,
+//! factory, siege tanks), rush rules, branches, siege rule and attack (`tp` module). Against a
+//! lobby Zerg its session is the 021-R8 teacher (022-R2).
 
 pub mod placement;
 pub mod react;
+pub mod tp;
 pub mod types;
 
 use std::collections::BTreeMap;
@@ -21,6 +27,8 @@ use uranium_proto::*;
 use crate::placement::Placer;
 pub use crate::react::{Branch, MapHints, ReactParams, ReactStats, RushRule};
 use crate::react::ReactState;
+pub use crate::tp::{TpParams, TpRule, TpStats};
+use crate::tp::TpState;
 use crate::types::*;
 
 const STEP_FRAMES: u32 = 8;
@@ -42,6 +50,10 @@ pub trait Bot: Send {
     fn react_stats(&self) -> Option<ReactStats> {
         None
     }
+    /// 022 teacher record of the game so far (`scripted.tp`, 022-R10); other builds have none.
+    fn tp_stats(&self) -> Option<TpStats> {
+        None
+    }
 }
 
 /// Which T0 bot plays: the standard M3 build of the race, or an E-Regression scenario bot
@@ -61,6 +73,9 @@ pub enum T0Build {
     ZergMuta,
     /// 021-R8 scouting-reactive Terran teacher (AMB-021-4): defends only after it sees a rush.
     TerranReact,
+    /// 022 TvT / TvP teacher (021-R9): gas, factory and siege tanks; against a lobby Zerg the
+    /// session is the 021-R8 teacher (022-R2).
+    TerranTp,
 }
 
 impl T0Build {
@@ -76,6 +91,7 @@ impl T0Build {
             T0Build::ProtossDt => Some("dt"),
             T0Build::ZergMuta => Some("muta"),
             T0Build::TerranReact => Some("react"),
+            T0Build::TerranTp => Some("tp"),
         }
     }
 
@@ -84,7 +100,7 @@ impl T0Build {
         match self {
             T0Build::Standard => None,
             T0Build::ZergRush | T0Build::ZergMuta => Some(Race::Zerg),
-            T0Build::TerranDrop | T0Build::TerranReact => Some(Race::Terran),
+            T0Build::TerranDrop | T0Build::TerranReact | T0Build::TerranTp => Some(Race::Terran),
             T0Build::ProtossDt => Some(Race::Protoss),
         }
     }
@@ -97,12 +113,24 @@ impl T0Build {
             T0Build::ProtossDt => "protoss_dt",
             T0Build::ZergMuta => "zerg_muta",
             T0Build::TerranReact => "terran_react",
+            T0Build::TerranTp => "terran_tp",
         }
     }
 
-    /// 021-R8: the build reads the map precompute (base locations, chokes).
+    /// 021-R8 / 022-R10: the build reads the map precompute (base locations, chokes).
     pub fn needs_map_hints(self) -> bool {
-        self == T0Build::TerranReact
+        matches!(self, T0Build::TerranReact | T0Build::TerranTp)
+    }
+
+    /// 022-R2: the teacher session of a game. `terran_tp` against a lobby Zerg is the 021-R8
+    /// teacher; against Terran, Protoss or a lobby Random (resolved later, never switched) it
+    /// stays `terran_tp`. Every other build is unchanged.
+    pub fn for_lobby(self, info: &GameInfo) -> T0Build {
+        let enemy = info.players.iter().find(|p| p.is_enemy).map(|p| p.race);
+        match self {
+            T0Build::TerranTp if enemy == Some(Race::Zerg) => T0Build::TerranReact,
+            b => b,
+        }
     }
 }
 
@@ -121,7 +149,8 @@ pub fn for_game_build(info: &GameInfo, build: T0Build) -> Box<dyn Bot> {
 /// ignore them).
 pub fn for_game_hints(info: &GameInfo, build: T0Build, hints: MapHints) -> Box<dyn Bot> {
     let race = info.players.iter().find(|p| p.is_self).map(|p| p.race).unwrap_or(Race::Terran);
-    Box::new(Brain::with_hints(info, Kit::for_build(race, build), &hints))
+    // 022-R2: the lobby enemy race picks the teacher.
+    Box::new(Brain::with_hints(info, Kit::for_build(race, build.for_lobby(info)), &hints))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -172,6 +201,9 @@ pub struct Kit {
     /// 021-R8 teacher: opening, scouting, rush rule and branches (`react` module). `None` for
     /// every other build.
     pub react: Option<ReactParams>,
+    /// 022 teacher (`tp` module, with `react` for the parts it reuses). `None` for every other
+    /// build.
+    pub tp: Option<TpParams>,
 }
 
 impl Kit {
@@ -184,6 +216,7 @@ impl Kit {
             (T0Build::TerranDrop, _) => Kit::terran_drop(),
             (T0Build::ProtossDt, _) => Kit::protoss_dt(),
             (T0Build::TerranReact, _) => Kit::terran_react(),
+            (T0Build::TerranTp, _) => Kit::terran_tp(),
             (T0Build::Standard, Race::Protoss) => Kit::protoss(),
             (T0Build::Standard, Race::Zerg) => Kit::zerg(),
             (T0Build::Standard, _) => Kit::terran(),
@@ -210,6 +243,7 @@ impl Kit {
             scout: false,
             defend: false,
             react: None,
+            tp: None,
         }
     }
     pub fn protoss() -> Self {
@@ -232,6 +266,7 @@ impl Kit {
             scout: false,
             defend: false,
             react: None,
+            tp: None,
         }
     }
     pub fn zerg() -> Self {
@@ -254,6 +289,7 @@ impl Kit {
             scout: false,
             defend: false,
             react: None,
+            tp: None,
         }
     }
 
@@ -316,6 +352,13 @@ impl Kit {
     pub fn terran_react() -> Self {
         Self { defend: true, react: Some(ReactParams::default()), ..Self::terran() }
     }
+
+    /// 022 TvT / TvP teacher: the 021-R8 teacher's parts (`ReactParams`: opening depots and
+    /// barracks, scouting, bunkers, SCV pull / repair, worker answer, resumption, home guard) with
+    /// the `tp` module's opening, rush rules, branches, siege tanks and attack (`TpParams`).
+    pub fn terran_tp() -> Self {
+        Self { defend: true, react: Some(ReactParams::default()), tp: Some(TpParams::default()), ..Self::terran() }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -367,6 +410,8 @@ pub struct Brain {
     map_center: Pos,
     /// 021-R8 teacher state (`Kit::react`).
     react: Option<ReactState>,
+    /// 022 teacher state (`Kit::tp`).
+    tp: Option<TpState>,
 }
 
 impl Brain {
@@ -385,7 +430,9 @@ impl Brain {
         let (cells_w, cells_h) = (w.div_ceil(CELL), h.div_ceil(CELL));
         let home = my_start.map(react::depot_center);
         let react = kit.react.clone().map(|p| ReactState::new(p, hints, home, &starts));
+        let tp = kit.tp.clone().map(|p| TpState::new(p, info));
         Self {
+            tp,
             home,
             map_center: (w * 16, h * 16),
             react,
@@ -526,8 +573,12 @@ impl Bot for Brain {
         let base = if k.react.is_some() { self.home_depot(&mine) } else { mine.iter().find(|u| is_resource_depot(u.unit_type)).map(|u| u.pos) };
         let mut larvae: Vec<&UnitState> = mine.iter().copied().filter(|u| u.unit_type == LARVA).collect();
         let prod_count = count(k.production) + self.pending.iter().filter(|p| p.ty == k.production).count();
-        // 021-R8: rush rule R and the branch switches, at this observation.
-        self.react_observe(f, &mine);
+        // 021-R8: rush rule R and the branch switches, at this observation (022: its own rules).
+        if self.tp.is_some() {
+            self.tp_observe(f, &mine);
+        } else {
+            self.react_observe(f, &mine);
+        }
         let branch = self.react_branch();
 
         // Gas crew and scout (scenario bots only): workers with a job other than minerals.
@@ -545,6 +596,8 @@ impl Bot for Brain {
                 self.gas_crew.push(w);
             }
         }
+        // 022-R3: the gas crew, chosen again from each observation (022-R9).
+        self.tp_gas(f, &mine, &mut cmds);
         if k.react.is_some() {
             self.react_scouting(f, &mine, &minerals_vis, &mut cmds);
             // 021-R8 SCV pull / repair before the idle-worker rule below.
@@ -574,8 +627,9 @@ impl Bot for Brain {
             }
         }
 
-        // Supply.
-        let supply_low = f.self_state.supply_total < 400 && supply_free <= 4 + 4 * prod_count as i32;
+        // Supply (022: the factory counts as a production building).
+        let supply_prod = prod_count + if self.tp.is_some() { count(FACTORY) } else { 0 };
+        let supply_low = f.self_state.supply_total < 400 && supply_free <= 4 + 4 * supply_prod as i32;
         match k.supply {
             Supply::Building(ty) => {
                 let in_progress = mine.iter().filter(|u| u.unit_type == ty && !u.has(flags::COMPLETED)).count() + self.pending.iter().filter(|p| p.ty == ty).count();
@@ -603,10 +657,16 @@ impl Bot for Brain {
 
         // 021-R8: D bunker, M natural command center and natural bunker. `hold_all` is held from
         // everything after the first barracks, `hold_army` (the expansion's price) from marines.
-        let (hold_all, hold_army) = match base {
+        let (mut hold_all, mut hold_army) = match base {
             Some(b) => self.react_build(f, &mine, b, &busy, &mut cmds, &mut minerals),
             None => (0, 0),
         };
+        // 022-R3 / R5 / R6: refinery, factory, machine shop, siege research and the natural.
+        if let Some(b) = base.filter(|_| self.tp.is_some()) {
+            let (all, army) = self.tp_build(f, &mine, b, &busy, &mut cmds, &mut minerals, &mut gas);
+            hold_all += all;
+            hold_army += army;
+        }
 
         // Production buildings.
         let workers = count(k.worker);
@@ -649,6 +709,9 @@ impl Bot for Brain {
         let tech_ready = tech_done || k.tech.iter().filter(|t| !is_refinery(**t)).all(|&t| mine.iter().any(|u| u.unit_type == t && done(u)));
         let special = k.special.filter(|_| tech_ready);
         let mut army_n = count(k.army);
+        // 022-R3 / R5: marines before the factory, SCVs per command center.
+        let army_cap = self.tp_marine_cap(&mine).unwrap_or(k.army_cap);
+        let max_workers = self.tp_max_workers(&mine).unwrap_or(k.max_workers);
         minerals -= hold_all;
         match k.supply {
             Supply::Larva(_) => {
@@ -681,13 +744,21 @@ impl Bot for Brain {
                 }
             }
             Supply::Building(_) => {
+                let mut workers = workers;
                 for d in mine.iter().filter(|u| is_resource_depot(u.unit_type) && u.has(flags::COMPLETED) && !u.has(flags::TRAINING) && !u.has(flags::LIFTED)) {
-                    if workers < k.max_workers && minerals - hold_workers >= 50 && supply_free >= 2 {
+                    if workers < max_workers && minerals - hold_workers >= 50 && supply_free >= 2 {
                         cmds.push(Command::Train { building: d.id, unit_type: k.worker });
                         minerals -= 50;
                         supply_free -= 2;
+                        // 022-R5: the SCV cap counts SCVs ordered at this observation (two command
+                        // centers); the other builds keep their per-depot check.
+                        if self.tp.is_some() {
+                            workers += 1;
+                        }
                     }
                 }
+                // 022-R3: siege tanks before marines.
+                hold_army += self.tp_train(f, &mine, &mut minerals, &mut gas, &mut supply_free, &mut cmds);
                 let mut used = Vec::new();
                 if let Some((producer, sp, cap)) = special.filter(|s| s.0 != LARVA) {
                     let queued: usize = mine.iter().filter(|u| u.unit_type == producer).map(|u| u.build_queue.iter().filter(|&&q| q == sp).count()).sum();
@@ -704,7 +775,7 @@ impl Bot for Brain {
                     }
                 }
                 for p in mine.iter().filter(|u| u.unit_type == k.production && u.has(flags::COMPLETED) && !u.has(flags::TRAINING) && !u.has(flags::LIFTED) && !used.contains(&u.id)) {
-                    if army_n < k.army_cap && minerals - hold_army >= cost(k.army) && supply_free >= 2 {
+                    if army_n < army_cap && minerals - hold_army >= cost(k.army) && supply_free >= 2 {
                         cmds.push(Command::Train { building: p.id, unit_type: k.army });
                         minerals -= cost(k.army);
                         supply_free -= 2;
@@ -717,6 +788,8 @@ impl Bot for Brain {
         // 021-R8: marines that load or hold (D) or fill a bunker (M) stay out of waves and the guard.
         let kept = self.react_reserved_marines(&mine);
         match k.tactic {
+            // 022-R7 / R8: siege tanks, the tank spot and the attack.
+            _ if self.tp.is_some() => self.tp_army(f, &mine, &kept, &mut cmds),
             // Attack-move waves (none in the teacher's defence branch).
             Tactic::Waves if branch == Some(Branch::Defence) => {}
             Tactic::Waves => {
@@ -750,7 +823,15 @@ impl Bot for Brain {
     }
 
     fn react_stats(&self) -> Option<ReactStats> {
+        // The 022 teacher reuses the 021-R8 state but keeps its own record.
+        if self.tp.is_some() {
+            return None;
+        }
         self.teacher_stats()
+    }
+
+    fn tp_stats(&self) -> Option<TpStats> {
+        self.tp.as_ref().map(|t| t.stats.clone())
     }
 }
 
@@ -763,7 +844,9 @@ impl Brain {
         let center = (tile.0 * 32 + 16, tile.1 * 32 + 16);
         // Scenario bots skip SCVs still constructing (BWAPI Unit_Busy); the standard M3
         // builds keep their original worker choice.
-        let skip_constructing = !self.kit.tech.is_empty();
+        // 022: the teacher's SCVs often construct several buildings at once (OpenBW smoke: a depot
+        // given to a constructing SCV was refused and the teacher stayed supply blocked).
+        let skip_constructing = !self.kit.tech.is_empty() || self.kit.tp.is_some();
         let worker = mine
             .iter()
             .filter(|u| u.unit_type == self.kit.worker && u.has(flags::COMPLETED) && !u.has(flags::CARRYING) && !busy.contains(&u.id))
