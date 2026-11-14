@@ -1,0 +1,135 @@
+# 044-R8 / 022-R12 (AMB-022-7 Resolved 2026-11-14, user decision 2026-11-14): teacher round t1 self games, generated
+# by tools/eval/rush_check_plan.py --teacher-round (do not edit by hand). One round after the distillation rounds:
+# the round's TvT / TvP self games are labelled by the 022 teacher's shadow, not the baseline labeller (041-R22 ②
+# form, source dagger, cut at 10:00 like the distillation games): uranium-replay build <dir>/replays --src dagger
+# --relabel terran_tp --games <dir>/games.jsonl --memory-log <dir>/memory --until-frame 14400 --time-limit 14400
+# --out <shared>/datasets/replays/shards/dagger_m2/t1 (docs/commands.md: the model's view only, lobby races from
+# games.jsonl). Composition as the 044-R1 self games of a round, half size (as d2):
+# the model players[0] (stochastic) against T0 standard Protoss (120) and Terran (60) and the T1
+# Protoss (UAlbertaBot P, Stardust) and Terran (UAlbertaBot T, Iron) bots (120) x Fighting Spirit / Circuit
+# Breaker = 300 games, races fixed (no Random), 10 min (max_frames 14,400), replays kept. T1 bots:
+# the 050-R9 T1 rule (NDEBUG builds, config/protocol/t1_bots.toml; opponent-crash games are invalid).
+# seeds (020-R20): splitmix64(3,000,000 + n) >> 32, n = 1..300 (block 1..600 reserved):
+# natural start slots, none of another plan's seeds (botgen, check, dagger, distill, 022 teacher, 050-R9 protocol,
+# the DAgger / distillation round blocks and top-ups, the 022 botgen top-ups, the 022 development seeds; asserted).
+name = "dagger-m2-t1"
+save_replay = true
+# 041-R28: decision logs memory/g<id>.jsonl beside replays/ (uranium-replay build --memory-log).
+memory_log = true
+wall_timeout_s = 7200
+zero_last_failed = false
+max_frames = 14400
+seeds = [
+  # games 1..60: T0 protoss, fighting_spirit
+  1722791266, 4274741153, 1035237691, 2985264800, 307061580, 1285585485, 2586653817, 174783071,
+  101920461, 2003085614, 2637639233, 1904603520, 2583847430, 3680519414, 1947203082, 3750906258,
+  3817415499, 754682365, 3740369059, 1542693414, 3808309315, 2885190808, 3614195964, 3179237593,
+  812245756, 3954392320, 2564198693, 1629980388, 3048041255, 395582340, 1953109321, 3082803661,
+  3184970761, 2752082716, 4106586579, 2893937099, 3942797042, 2779779172, 393828217, 3868497772,
+  2993615825, 4144083216, 680580370, 2171198143, 3997904961, 3800634641, 345751881, 25900393,
+  2178679489, 2234222087, 1010213598, 326482543, 1413143273, 1756223118, 2824175415, 913617001,
+  2992932256, 3496391329, 3553640968, 805158131,
+  # games 61..120: T0 protoss, circuit_breaker
+  2681644894, 1287159413, 1333117718, 3780607393, 1926146426, 3480093662, 142487419, 641796194,
+  2811061782, 892950880, 1638557947, 599082842, 1974401854, 661564040, 3398046581, 2692404859,
+  1698037627, 1580838175, 2930644553, 3597902636, 2290230125, 2037014109, 3097653632, 1474477261,
+  1987143926, 1447368553, 4181527655, 1058687666, 4139573390, 4291952344, 2018875678, 1990409048,
+  756879934, 1900704733, 3289996489, 4252755423, 3419365844, 1739985233, 4148626399, 1583895859,
+  1503314582, 776921489, 3545987851, 1201990242, 3044895844, 3690973301, 1186601034, 2995647645,
+  335560403, 3506294733, 184694899, 988988738, 3771767189, 760546261, 1282685145, 1429436066,
+  1254939101, 975457694, 1337400201, 3054975257,
+  # games 121..150: T0 terran, fighting_spirit
+  1167019629, 3248012905, 851608393, 714184176, 3029163566, 2670777194, 1109786111, 1992737687,
+  3902876517, 3104621347, 378580696, 341938740, 4176367400, 3302020315, 1697551616, 4262079895,
+  1442538502, 2978890620, 3195518697, 3216632258, 875346921, 2680221810, 2298244263, 2440284749,
+  3132255123, 1200747619, 3764444434, 1503255588, 3767663653, 1969902995,
+  # games 151..180: T0 terran, circuit_breaker
+  1687399295, 2404660303, 3891490439, 892811572, 1989568790, 2645363411, 3054985145, 1369359610,
+  1000191624, 1291851115, 3787445336, 1965925757, 2708817359, 2070608365, 2055487570, 3409590774,
+  3791950056, 817589990, 1968112965, 2133074226, 1168323192, 2478330929, 739281386, 3082060399,
+  908881996, 3364783220, 2417611103, 4079135176, 2112537066, 2644549023,
+  # games 181..195: ualbertabot protoss, fighting_spirit
+  2980919426, 2564396870, 1738380476, 2384018575, 1229557283, 908413849, 2821819198, 3597053551,
+  3387182057, 1944226207, 2345360129, 1027199508, 3879571796, 1704698240, 813582507,
+  # games 196..210: ualbertabot protoss, circuit_breaker
+  1217611822, 4224304726, 556397670, 3638411301, 1883539380, 1673816886, 1293856604, 1786564,
+  3510529087, 1342905734, 3896879447, 2635966540, 1035435399, 3408756107, 3491138970,
+  # games 211..225: stardust, fighting_spirit
+  3562386446, 3134641678, 3369107318, 262484082, 1684840469, 582791044, 3391390847, 2832609877,
+  1158750387, 975540232, 4095298611, 715130620, 3489516440, 3054515905, 3368040300,
+  # games 226..240: stardust, circuit_breaker
+  3974446543, 4003399263, 3793396159, 4154839845, 2449909776, 3744618871, 776576548, 2017104984,
+  811779081, 1926122344, 1733120844, 287880356, 142422216, 4061160032, 3201283185,
+  # games 241..255: ualbertabot terran, fighting_spirit
+  2621415085, 4240306741, 706466091, 4178252765, 2537033698, 3892597747, 3829126550, 202580684,
+  2257280813, 1440926092, 706408938, 1920909392, 1255232389, 1571804768, 1285088501,
+  # games 256..270: ualbertabot terran, circuit_breaker
+  1338104662, 471699222, 2889112682, 1928789462, 1346362858, 695295133, 1429515527, 1059672768,
+  2189499922, 4279343226, 1085159626, 873467413, 2345998775, 421236074, 1158335474,
+  # games 271..285: iron, fighting_spirit
+  2370843955, 2499176560, 4148988581, 2219715073, 2521922343, 2467448714, 3018702650, 2024584298,
+  374210227, 3573704457, 2816238358, 375843201, 1014367698, 423306220, 3683303715,
+  # games 286..300: iron, circuit_breaker
+  3054894393, 3180727956, 1818488725, 3360086469, 3502873301, 2477168276, 3852110702, 3271648126,
+  2615712932, 1297314098, 2185844499, 193745382, 884779044, 2941459104, 3548561592,
+]
+[[matchup]]
+map = "fighting_spirit"
+games = 60
+p0 = { kind = "model", checkpoint = "checkpoints/m2-distill-d1/ckpt-2000", sample = "stochastic" }
+p1 = { kind = "t0", race = "protoss" }
+[[matchup]]
+map = "circuit_breaker"
+games = 60
+p0 = { kind = "model", checkpoint = "checkpoints/m2-distill-d1/ckpt-2000", sample = "stochastic" }
+p1 = { kind = "t0", race = "protoss" }
+[[matchup]]
+map = "fighting_spirit"
+games = 30
+p0 = { kind = "model", checkpoint = "checkpoints/m2-distill-d1/ckpt-2000", sample = "stochastic" }
+p1 = { kind = "t0", race = "terran" }
+[[matchup]]
+map = "circuit_breaker"
+games = 30
+p0 = { kind = "model", checkpoint = "checkpoints/m2-distill-d1/ckpt-2000", sample = "stochastic" }
+p1 = { kind = "t0", race = "terran" }
+[[matchup]]
+map = "fighting_spirit"
+games = 15
+p0 = { kind = "model", checkpoint = "checkpoints/m2-distill-d1/ckpt-2000", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot", race = "protoss" }
+[[matchup]]
+map = "circuit_breaker"
+games = 15
+p0 = { kind = "model", checkpoint = "checkpoints/m2-distill-d1/ckpt-2000", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot", race = "protoss" }
+[[matchup]]
+map = "fighting_spirit"
+games = 15
+p0 = { kind = "model", checkpoint = "checkpoints/m2-distill-d1/ckpt-2000", sample = "stochastic" }
+p1 = { kind = "oss", name = "stardust", race = "protoss" }
+[[matchup]]
+map = "circuit_breaker"
+games = 15
+p0 = { kind = "model", checkpoint = "checkpoints/m2-distill-d1/ckpt-2000", sample = "stochastic" }
+p1 = { kind = "oss", name = "stardust", race = "protoss" }
+[[matchup]]
+map = "fighting_spirit"
+games = 15
+p0 = { kind = "model", checkpoint = "checkpoints/m2-distill-d1/ckpt-2000", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot", race = "terran" }
+[[matchup]]
+map = "circuit_breaker"
+games = 15
+p0 = { kind = "model", checkpoint = "checkpoints/m2-distill-d1/ckpt-2000", sample = "stochastic" }
+p1 = { kind = "oss", name = "ualbertabot", race = "terran" }
+[[matchup]]
+map = "fighting_spirit"
+games = 15
+p0 = { kind = "model", checkpoint = "checkpoints/m2-distill-d1/ckpt-2000", sample = "stochastic" }
+p1 = { kind = "oss", name = "iron", race = "terran" }
+[[matchup]]
+map = "circuit_breaker"
+games = 15
+p0 = { kind = "model", checkpoint = "checkpoints/m2-distill-d1/ckpt-2000", sample = "stochastic" }
+p1 = { kind = "oss", name = "iron", race = "terran" }

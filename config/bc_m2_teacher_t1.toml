@@ -1,9 +1,8 @@
 # 044-R8 / 022-R12 model 2 path (lineage 2) teacher round t1 (m2-teacher-t1; user decision 2026-11-14: one round after
 # the distillation rounds, judged by 044-R6): the 041-R22 ③ one-epoch `--init` recipe of config/bc_m2_dagger_r2.toml
 # (the 041-R28 memory field, the model 2 tables) without the distillation source. One epoch from `--s2 --init <the
-# last distillation round's last checkpoint>` (weights only).
-# PLACEHOLDER: the start checkpoint (m2-distill-d1, or m2-distill-d2 when it runs) is named by the round driver;
-# the start point is user confirmed 2026-11-14.
+# checkpoints/m2-distill-d1/ckpt-2000>` (weights only; 044-R8 ③ as amended 2026-11-15, user-delegated, Fable advice
+# 2026-11-15: d1, not d2, is the start point and the model of the t1 self games config/plans/dagger_m2_t1.toml).
 # Data (044-R8 ③, user decision 2026-11-14): every teacher game (`botgen`: the 021-R8 teacher's and the 022 teacher's
 # teacher-tp-<date> games, with any --botgen-tp --extra top-ups), every lineage-2 DAgger game (`dagger_m2` r1, r2, r3
 # and t1: the t1 self games of config/plans/dagger_m2_t1.toml relabelled by the 022 teacher, GameMeta.src `dagger`)
@@ -11,7 +10,7 @@
 # 041-R26). No distillation share: `distill_m2` is not in the data (the shards stay on the drive). Shares of the
 # update steps: teacher + dagger 65%, human 35%, each +-3%p; inside the teacher + dagger steps Zerg : Protoss :
 # Terran = 50 : 30 : 20 +-3%p (022-R12, AMB-022-7); every teacher game is kept, and a short Protoss / Terran share
-# is filled by more 022 teacher botgen games (rush_check_plan.py --botgen-tp --extra N --part K), not by cutting
+# is filled by more 022 teacher botgen games (rush_check_plan.py --botgen-tp --extra-p N --extra-t M --part K), not by cutting
 # the Zerg data. The fractions and [steps] come from `uranium-train mix-fractions --teacher-share 0.65
 # --teacher-races Z=0.5,P=0.3,T=0.2`. Learning rate as bc_m2_dagger_r2.toml (044-R5 ④): 3e-4 / 3e-6 x
 # s2_lr_scale 0.1 = 3e-5 / 3e-7, warmup 5%, cosine to the end of the epoch. Losses as every source (044-R5 ⑤).
@@ -83,10 +82,9 @@ augment = true
 # 030-R11 (user decision 2026-10-19): share of games whose enemy race is masked as unknown until
 # the first enemy unit is seen (per game, hash of replay sha256 + seed; no extra copies).
 enemy_race_mask = 0.05
-# 044-R8 ③ (user decision 2026-11-14): the next data seed after the distillation rounds: 16 after d1 (15),
-# 17 when d2 (16) runs.
-# PLACEHOLDER: 16 assumes no d2; the round driver sets 17 if d2 ran.
-seed = 16
+# 044-R8 ③ (user decision 2026-11-14; 2026-11-15 amendment): the next data seed after the distillation rounds
+# d1 (15) and d2 (16): 17 (d2 ran, though t1 starts from d1).
+seed = 17
 checkpoint_every = 5000
 # Also checkpoint at least this often in wall time (061-R10; ~2 updates/min on CUDA).
 checkpoint_minutes = 60
