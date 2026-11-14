@@ -219,7 +219,9 @@ def refs_of(table: dict, bc_dir: Path):
     bc, _ = ckpt.load_model(bc_dir, CPU, adjust=_no_dropout)
     cfg = rl_cfg(2)
     cfg["kl"]["reference"] = table
-    return kl_references(cfg, str(bc_dir), bc, CPU)
+    models, race_ref, record = kl_references(cfg, str(bc_dir), bc, CPU)
+    assert (record is None) == (race_ref is None)
+    return models, race_ref
 
 
 def test_reference_table_dedupes_and_resolves_044_r9(tmp_path, monkeypatch):
@@ -278,6 +280,14 @@ def test_learners_share_the_references_044_r9(monkeypatch, tmp_path):
     assert all(l.refs[0] is l.bc for l in ls.learners)
     st = ls.learners[0].update(batch_of(["zerg", "terran"]), WEIGHTS)
     assert st["kl_ref"][0] is not None and st["kl_ref"][1] is not None
+    # Every checkpoint records the race → checkpoint map with the weights' sha256 (044-R9).
+    from uranium import ckpt
+    from uranium.rl.run import KL_REFERENCE_KEY
+
+    ls.save(0, str(tmp_path / "ck" / "main"), json.dumps({"update": 1, "agent": "main"}))
+    rec = ckpt.read_meta(tmp_path / "ck" / "main")["train"][KL_REFERENCE_KEY]
+    assert rec["zerg"] == {"path": str(s), "abs_path": str(s.resolve()), "sha256": ckpt.policy_version(s)}
+    assert all(rec[r] == {"path": "--bc", "abs_path": str(bc.resolve()), "sha256": ckpt.policy_version(bc)} for r in ("terran", "protoss", "random"))
 
 
 def test_rl_config_reference_json_044_r9():

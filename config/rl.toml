@@ -64,8 +64,9 @@ target_loc = 1.0
 # 044-R9 / 042-R22 ①: optional [kl.reference] table, the KL reference checkpoint per lobby enemy
 # race (keys zerg, terran, protoss, random; GameInfo at session start, a lobby Random is random;
 # a missing key = the --bc model). Values are model folders like --bc, relative paths under
-# URANIUM_SHARED_DIR. Every reference must have the --bc model's config (start error otherwise);
-# keys naming the same checkpoint share one model. Absent = one reference (--bc), as before.
+# URANIUM_SHARED_DIR (unlike --bc, which is relative to the working folder). Every reference
+# must have the --bc model's config (start error otherwise); keys naming the same checkpoint
+# (weights sha256 + config) share one model; checkpoints record the map (train.kl_reference). Absent = one reference (--bc), as before.
 # train.csv kl_ref_<race>: the mean per-step KL of that race's trained steps (empty when absent).
 # Example (lineage 2 fixed RL, 044-R11):
 #   [kl.reference]
