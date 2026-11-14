@@ -392,6 +392,21 @@ impl ReactState {
     fn due(last: Option<u32>, frame: u32, every: u32) -> bool {
         last.is_none_or(|l| frame >= l + every)
     }
+
+    /// `due`, or for the 022 teacher (`aligned`, 022-AC3) at the first observation of each window
+    /// `frame / every` of the game clock (observations are 8 frames apart, so exactly one per window)
+    /// and not twice in a window: the live teacher and its shadow (which counts live frames) then
+    /// decide at the same observations, where timers counted from each side's own last order drifted
+    /// apart for good after one different decision, and a step taken at the first observation its
+    /// condition held went one observation apart whenever the condition changed between the shadow's
+    /// playback frame L − 2 and the live frame L.
+    pub(crate) fn due_on(aligned: bool, last: Option<u32>, frame: u32, every: u32) -> bool {
+        if aligned {
+            frame % every < crate::STEP_FRAMES && last.is_none_or(|l| frame / every != l / every)
+        } else {
+            Self::due(last, frame, every)
+        }
+    }
 }
 
 /// Command-center centre of a depot top-left tile.
@@ -665,7 +680,10 @@ impl Brain {
     /// Footprints the Brain's generic placement leaves free: the planned main bunker site and the
     /// natural command center.
     pub(crate) fn react_reserved_sites(&self) -> Vec<(Tile, u16)> {
-        self.react.as_ref().map(|r| r.main_site.map(|t| (t, BUNKER)).into_iter().chain(r.natural.map(|n| (n, CC))).collect()).unwrap_or_default()
+        let mut out: Vec<(Tile, u16)> = self.react.as_ref().map(|r| r.main_site.map(|t| (t, BUNKER)).into_iter().chain(r.natural.map(|n| (n, CC))).collect()).unwrap_or_default();
+        // 022-AC3: sites the game refused to the 022 teacher are kept free for a while.
+        out.extend(self.tp_failed_sites());
+        out
     }
 
     pub(crate) fn react_branch(&self) -> Option<Branch> {
@@ -743,7 +761,11 @@ impl Brain {
         };
         match target {
             Some(p) => {
-                if f.frame >= self.scout_order + crate::WAVE_PERIOD || s.has(flags::IDLE) {
+                // 022-AC3: the 022 teacher does not order again an idle scout standing within 3 tiles of
+                // its target (next to the enemy depot it cannot reach: live it went idle again within
+                // the 8 frames and was ordered at every observation, its shadow saw it still moving).
+                let settled = self.tp.is_some() && s.has(flags::IDLE) && within(s.pos, p, 3);
+                if (ReactState::due_on(self.tp.is_some(), Some(self.scout_order), f.frame, crate::WAVE_PERIOD) || s.has(flags::IDLE)) && !settled {
                     cmds.push(Command::Unit { units: vec![id], order: CmdOrder::Move(Target::Pos(p)), queued: false });
                     self.scout_order = f.frame;
                 }
@@ -783,7 +805,7 @@ impl Brain {
             self.scout_done = true;
             return;
         }
-        let just_ordered = f.frame < self.scout_order + crate::WAVE_PERIOD;
+        let just_ordered = !ReactState::due_on(self.tp.is_some(), Some(self.scout_order), f.frame, crate::WAVE_PERIOD);
         let keep = current.filter(|u| just_ordered || heading_out(u) || out_of_main(u)).map(|u| u.id);
         let jobs: Vec<UnitId> = self.pending.iter().map(|q| q.worker).chain(self.react_busy()).collect();
         let taken_over = || mine.iter().filter(|u| u.unit_type == SCV && u.has(flags::COMPLETED) && !u.has(flags::CONSTRUCTING) && !jobs.contains(&u.id) && heading_out(u)).min_by_key(|u| u.id).map(|u| u.id);
@@ -1006,6 +1028,7 @@ impl Brain {
     /// For each completed own bunker with room: the nearest unloaded completed marines to load.
     fn garrison(&self, mine: &[&UnitState]) -> Vec<(UnitId, Vec<UnitId>)> {
         let Some(r) = self.react.as_ref() else { return Vec::new() };
+        let rings = self.tp.is_some();
         let mut taken: BTreeSet<UnitId> = BTreeSet::new();
         let mut out = Vec::new();
         let mut bunkers: Vec<&&UnitState> = mine.iter().filter(|u| u.unit_type == BUNKER && done(u)).collect();
@@ -1017,7 +1040,7 @@ impl Brain {
                 continue;
             }
             let mut free: Vec<&&UnitState> = mine.iter().filter(|u| u.unit_type == MARINE && u.has(flags::COMPLETED) && u.loaded_in.is_none() && !taken.contains(&u.id)).collect();
-            free.sort_by_key(|u| (dist2(u.pos, b.pos), u.id));
+            free.sort_by_key(|u| (crate::tp::pick_key(rings, u.pos, b.pos), u.id));
             let ids: Vec<UnitId> = free.iter().take(want).map(|u| u.id).collect();
             taken.extend(&ids);
             if !ids.is_empty() {
@@ -1030,10 +1053,11 @@ impl Brain {
     /// Marine control after the Brain's waves and guard: bunker garrisons (both branches), and in
     /// D the marines that do not load hold beside the bunker.
     pub(crate) fn react_marines(&mut self, f: &RawFrame, mine: &[&UnitState], cmds: &mut Vec<Command>) {
+        let aligned = self.tp.is_some();
         let Some(r) = self.react.as_mut() else { return };
         r.holding.retain(|id| mine.iter().any(|u| u.id == *id && u.loaded_in.is_none()));
         let (every, branch, last) = (r.p.retarget, r.branch, r.last_marines);
-        if !ReactState::due(last, f.frame, every) {
+        if !ReactState::due_on(aligned, last, f.frame, every) {
             return;
         }
         let mut acted = false;
@@ -1056,6 +1080,7 @@ impl Brain {
     pub(crate) fn react_scvs(&mut self, f: &RawFrame, mine: &[&UnitState], minerals: &[&UnitState], cmds: &mut Vec<Command>) {
         let Some(r) = self.react.as_ref() else { return };
         let (p, branch) = (r.p.clone(), r.branch);
+        let rings = self.tp.is_some();
         let home = self.home_depot(mine).or(self.home);
         let gather_home = |ids: Vec<UnitId>, cmds: &mut Vec<Command>| {
             if ids.is_empty() {
@@ -1107,6 +1132,23 @@ impl Brain {
             let r = self.react.as_ref().expect("checked above");
             (r.pulled.clone(), r.repairers.clone(), r.last_pull, r.last_repair)
         };
+        // 022-AC3 (022 teacher): the repairers are chosen again from this observation like the
+        // pulled SCVs — kept while they visibly repair a bunker (or within the window of the last
+        // repair order), and an own SCV repairing a bunker is a repairer — instead of kept by id, so
+        // the shadow follows the SCVs the live teacher sent.
+        if rings {
+            let repair = uranium_env::types::order_id("Repair");
+            let bunker_ids: BTreeSet<UnitId> = mine.iter().filter(|u| u.unit_type == BUNKER).map(|u| u.id).collect();
+            let repairing = |u: &UnitState| Some(u.order) == repair && u.order_target.is_some_and(|t| bunker_ids.contains(&t));
+            let fresh = !ReactState::due_on(true, last_repair, f.frame, p.retarget);
+            repairers.retain(|id| mine.iter().copied().find(|u| u.id == *id).is_some_and(|u| fresh || repairing(u)));
+            for u in mine.iter().filter(|u| u.unit_type == SCV && repairing(u)) {
+                if !repairers.contains(&u.id) && !pulled.contains(&u.id) {
+                    repairers.push(u.id);
+                }
+            }
+            repairers.sort_unstable();
+        }
         // 10th advisory (§2 1, 041-R22): the pulled SCVs are chosen again from this observation.
         // An SCV stays pulled while it visibly is (not gathering or building once the last pull
         // order is `retarget` frames old); an own SCV attacking a threat is pulled. In a live
@@ -1117,7 +1159,7 @@ impl Brain {
             let r = self.react.as_ref().expect("checked above");
             r.repairers.iter().chain(r.harass.iter().flat_map(|h| &h.guards)).chain(r.resumers.values().map(|(scv, _)| scv)).copied().chain(self.pending.iter().map(|q| q.worker)).chain(self.scout).collect()
         };
-        let fresh = !ReactState::due(last_pull, f.frame, p.retarget);
+        let fresh = !ReactState::due_on(rings, last_pull, f.frame, p.retarget);
         let threat_ids: BTreeSet<UnitId> = threats.iter().map(|u| u.id).collect();
         let attacking = |u: &UnitState| ATTACK_ORDERS.contains(&u.order) && u.order_target.is_some_and(|t| threat_ids.contains(&t));
         pulled.retain(|id| mine.iter().copied().find(|u| u.id == *id).is_some_and(|u| fresh || attacking(u) || !(u.has(flags::GATHERING) || u.has(flags::CONSTRUCTING))));
@@ -1127,14 +1169,14 @@ impl Brain {
         if threats.is_empty() {
             // Nothing in reach: the pulled SCVs mine at once (no chase).
             gather_home(std::mem::take(&mut pulled), cmds);
-        } else if ReactState::due(last_pull, f.frame, p.retarget) {
+        } else if ReactState::due_on(rings, last_pull, f.frame, p.retarget) {
             // The target: the threat nearest an own bunker (none: nearest a command center).
             let anchors = if bunkers.is_empty() { &depots } else { &bunkers };
             let target = threats.iter().copied().min_by_key(|u| (anchors.iter().map(|a| dist2(u.pos, *a)).min().unwrap_or(0), u.id)).expect("non-empty");
             let want = p.pull_max.min(scvs.len().saturating_sub(p.pull_keep));
             let jobs: Vec<UnitId> = self.pending.iter().map(|q| q.worker).chain(self.scout).chain(repairers.iter().copied()).chain(self.react_busy().into_iter().filter(|id| !pulled.contains(id))).collect();
             let mut free: Vec<&&&UnitState> = scvs.iter().filter(|u| !u.has(flags::CONSTRUCTING) && !jobs.contains(&u.id) && !pulled.contains(&u.id)).collect();
-            free.sort_by_key(|u| (dist2(u.pos, target.pos), u.id));
+            free.sort_by_key(|u| (crate::tp::pick_key_id(rings, u.pos, target.pos), u.id));
             for u in free.into_iter().take(want.saturating_sub(pulled.len())) {
                 pulled.push(u.id);
             }
@@ -1149,7 +1191,7 @@ impl Brain {
         }
         // Repair (D): a completed bunker below `repair_below_pct` gets `repairers` SCVs until full.
         let mut repair_acted = false;
-        if ReactState::due(last_repair, f.frame, p.retarget) {
+        if ReactState::due_on(rings, last_repair, f.frame, p.retarget) {
             let mut bunkers: Vec<&&UnitState> = mine.iter().filter(|u| u.unit_type == BUNKER && done(u) && u.hp < BUNKER_HP).collect();
             bunkers.sort_by_key(|b| (b.hp, b.id));
             let damaged = bunkers.iter().find(|b| (b.hp as u32) * 100 < BUNKER_HP as u32 * p.repair_below_pct).or(if repairers.is_empty() { None } else { bunkers.first() });
@@ -1157,7 +1199,7 @@ impl Brain {
                 Some(b) => {
                     let jobs: Vec<UnitId> = self.pending.iter().map(|q| q.worker).chain(self.scout).chain(pulled.iter().copied()).chain(self.react_busy().into_iter().filter(|id| !repairers.contains(id))).collect();
                     let mut free: Vec<&&&UnitState> = scvs.iter().filter(|u| !u.has(flags::CONSTRUCTING) && !jobs.contains(&u.id) && !repairers.contains(&u.id)).collect();
-                    free.sort_by_key(|u| (dist2(u.pos, b.pos), u.id));
+                    free.sort_by_key(|u| (crate::tp::pick_key_id(rings, u.pos, b.pos), u.id));
                     for u in free.into_iter().take(p.repairers.saturating_sub(repairers.len())) {
                         repairers.push(u.id);
                     }
@@ -1191,6 +1233,7 @@ impl Brain {
     fn react_harass(&mut self, f: &RawFrame, mine: &[&UnitState], minerals: &[&UnitState], cmds: &mut Vec<Command>) {
         let me = self.me;
         let builders: Vec<UnitId> = self.pending.iter().map(|q| q.worker).collect();
+        let aligned = self.tp.is_some();
         let Some(r) = self.react.as_mut() else { return };
         let p = r.p.clone();
         let workers: Vec<&UnitState> = f.units.iter().filter(|u| is_enemy(u, me) && is_worker(u.unit_type)).collect();
@@ -1202,7 +1245,7 @@ impl Brain {
             let target = workers.iter().find(|w| w.id == h.target).filter(|w| within(w.pos, h.at, p.harass_release));
             match target {
                 Some(t) if !h.guards.is_empty() => {
-                    if f.frame >= h.last_order + p.retarget {
+                    if ReactState::due_on(aligned, Some(h.last_order), f.frame, p.retarget) {
                         cmds.push(Command::Unit { units: h.guards.clone(), order: CmdOrder::Attack(Target::Unit(t.id)), queued: false });
                         h.last_order = f.frame;
                     }
@@ -1242,6 +1285,7 @@ impl Brain {
     fn react_resume(&mut self, f: &RawFrame, mine: &[&UnitState], cmds: &mut Vec<Command>) {
         let pending: Vec<UnitId> = self.pending.iter().map(|q| q.worker).chain(self.scout).collect();
         let busy = self.react_busy();
+        let rings = self.tp.is_some();
         let Some(r) = self.react.as_mut() else { return };
         let after = r.p.resume_after;
         let unfinished: Vec<&&UnitState> = mine.iter().filter(|u| is_building(u.unit_type) && !u.has(flags::COMPLETED)).collect();
@@ -1260,7 +1304,7 @@ impl Brain {
                 .iter()
                 .filter(|u| u.unit_type == SCV && u.has(flags::COMPLETED) && !u.has(flags::CONSTRUCTING) && u.order != ORDER_CONSTRUCTING && !pending.contains(&u.id))
                 .filter(|u| Some(u.id) == prev || (!busy.contains(&u.id) && !taken.contains(&u.id)))
-                .min_by_key(|u| (dist2(u.pos, b.pos), u.id));
+                .min_by_key(|u| (crate::tp::pick_key(rings, u.pos, b.pos), u.id));
             if let Some(s) = scv {
                 cmds.push(Command::Unit { units: vec![s.id], order: CmdOrder::RightClick(Target::Unit(b.id)), queued: false });
                 taken.insert(s.id);
@@ -1307,10 +1351,11 @@ impl Brain {
     pub(crate) fn order_build_at(&mut self, ty: u16, tile: Tile, f: &RawFrame, mine: &[&UnitState], busy: &[UnitId], cmds: &mut Vec<Command>) -> bool {
         let center = (tile.0 * 32 + 16, tile.1 * 32 + 16);
         let jobs: Vec<UnitId> = self.react_busy().into_iter().chain(self.pending.iter().map(|q| q.worker)).collect();
+        let rings = self.tp.is_some();
         let worker = mine
             .iter()
             .filter(|u| u.unit_type == SCV && u.has(flags::COMPLETED) && !u.has(flags::CARRYING) && !u.has(flags::CONSTRUCTING) && !busy.contains(&u.id) && !jobs.contains(&u.id))
-            .min_by_key(|u| (dist2(u.pos, center), u.id));
+            .min_by_key(|u| (crate::tp::pick_key(rings, u.pos, center), u.id));
         let Some(w) = worker else { return false };
         cmds.push(Command::Build { worker: w.id, unit_type: ty, tile });
         self.pending.push(crate::Pending { ty, tile, worker: w.id, issued: f.frame });
@@ -2399,6 +2444,47 @@ mod tests {
         let act = b.act(&frame(1_556, u, 0, 24));
         assert!(unit_orders(&act, |o| matches!(o, CmdOrder::Gather(_))).contains(&guards[0]), "{:?}", act.cmds);
         assert!(b.react_busy().is_empty());
+    }
+
+    /// 021-R8 regression guard (2026-11-14, 022 work): the 021-R8 teacher's commands over a fixed
+    /// sequence of observations — an opening, a macro game, a zergling rush with a bunker, pulls and
+    /// repairs, idle SCVs — hash to the value recorded before the 022 teacher's changes (FNV-1a over
+    /// the commands' Debug text). Changes for `terran_tp` must leave `terran_react` byte-identical.
+    #[test]
+    fn terran_react_golden_digest_021_r8() {
+        let mut b = teacher();
+        let mut out: Vec<String> = Vec::new();
+        for n in (8..=7_200u32).step_by(8) {
+            let scvs = (4 + n / 300).min(22);
+            let mut u = if n < 1_600 {
+                let mut v = vec![unit(1, CC, home()), UnitState { owner: 11, ..unit(3, 176, (home().0 - 200, home().1)) }];
+                v.extend((0..scvs).map(|i| unit(100 + i, SCV, (home().0 - 100, home().1 + 4 * i as u16))));
+                v
+            } else {
+                base(scvs)
+            };
+            if (2_800..3_100).contains(&n) {
+                let m = depot_center(THEIRS);
+                u.push(enemy(80, HATCHERY, m));
+                u.push(enemy(81, SPAWNING_POOL, (m.0 + 160, m.1)));
+            }
+            if (4_000..5_000).contains(&n) {
+                u.push(UnitState { hp: 250, ..unit(60, BUNKER, (home().0 + 5 * 32, home().1 + 64)) });
+                u.extend((0..6).map(|i| unit(200 + i, MARINE, (home().0 + 40, home().1 + 100 + 8 * i as u16))));
+                u.extend((0..4).map(|i| enemy(90 + i, ZERGLING, (home().0 + 5 * 32 + 10 * i as u16, home().1 + 128))));
+            }
+            if n % 96 == 0 {
+                u.iter_mut().filter(|x| x.unit_type == SCV).take(2).for_each(|x| x.flags = flags::COMPLETED | flags::IDLE | flags::CARRYING);
+            }
+            let act = b.act(&frame(n, u, 120 + (n % 400) as i32, (2 * scvs) as u16));
+            out.push(format!("{n} {:?}", act.cmds));
+        }
+        let mut h: u64 = 0xcbf29ce484222325;
+        for byte in out.join("\n").bytes() {
+            h ^= u64::from(byte);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        assert_eq!(h, 0x99c9cddbf89e4ac5, "terran_react commands changed");
     }
 
     /// 021-R3 / 021-R8: `t0-terran-react`, plan name `terran_react`, Terran only; another race
