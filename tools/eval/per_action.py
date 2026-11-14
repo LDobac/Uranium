@@ -7,19 +7,21 @@ Read-only; writes one JSON (input of tools/eval/per_action_table.py).
     python tools/eval/per_action.py --checkpoint <dir> --out <json> [--holdout orig|full] [--backend cuda]
 
 --holdout orig (the protocol value): the 2026-11-06 teacher shards only (165 val games, 94,433 steps),
-the hold-out of the BC / FT / clone / bc-mix columns of Checkpoint 1. `full` = the whole botgen source
-(teacher-20261107-macro2 and teacher-20261109-macro3 too). --shards DIR... scores other source folders.
+the hold-out of the BC / FT / clone / bc-mix columns of Checkpoint 1. `full` = every botgen part but the 022
+TvT / TvP teacher's teacher-tp-* (teacher-20261107-macro2 and teacher-20261109-macro3 too; 041-R27 is about the
+Zerg teacher, 044-R8 adds teacher-tp-*-v2 to botgen). --shards DIR... scores other source folders.
 
 Moved from runs/mix/per_action.py (a copy of runs/adv8/per_action.py) with the loop unchanged. The
 `orig` source folder (four parts of botgen) is rebuilt from links under <URANIUM_CACHE_DIR or runs>/
-per_action_holdout/botgen, as runs/mix/holdout_orig/botgen was.
+per_action_holdout/botgen, as runs/mix/holdout_orig/botgen was; `full` likewise under per_action_holdout_full/botgen.
 
 041-R27 (AMB-041-16): the hold-out games are also split by the teacher game's opponent, `rush` (the
 four rush opponents of plan teacher_botgen_rush) or `macro` (the five macro opponents of plans
 teacher_botgen_macro / macro2 / macro3, 040-R23). Each game's class comes from the generating plan's
 games.jsonl (`opponent`) and the SHA-256 of its replay file, which is the shard's `replay_sha256`
 (<shared>/datasets/replays/raw/botgen/teacher-*/teacher_botgen_*/, cached in <URANIUM_CACHE_DIR or
-runs>/per_action_holdout/teacher_classes.json). The JSON then also has `by_class` (the same per-action
+runs>/per_action_holdout/teacher_classes.json); teacher-tp-* (the TvT / TvP teacher, 044-R8) has no class and is
+in no hold-out. The JSON then also has `by_class` (the same per-action
 rows per class, and the mean p(Build_Bunker) over the scored steps before 4:00) and `r27`: the bunker
 top-1 of the bc-mix extension rule (041-R21 6, counted on rush-opponent games only) and the macro
 games' mean p(Build_Bunker) before 4:00 (recorded only). The `per_action` list over every game is
@@ -150,14 +152,32 @@ def load_classes(spec: str | None, holdout: str | None) -> dict[str, str] | None
     return out
 
 
+def remove_entry(p: Path) -> None:
+    """Remove a link-tree entry: a link or file, or a folder of links (the source files stay)."""
+    if p.is_dir() and not p.is_symlink():
+        shutil.rmtree(p)
+    else:
+        p.unlink()
+
+
 def link_tree(src_root: Path, parts: list[str], dst_root: Path) -> Path:
     """dst_root/<part>/shard_* linked to src_root/<part>/shard_* (hard link, else symbolic link, else
-    copy): a source folder that holds only some parts of a source (the shard reader takes a source
-    folder, 040-R13 / 041-R13). Returns dst_root."""
+    copy): a source folder that holds exactly these parts of a source (the shard reader takes a source
+    folder, 040-R13 / 041-R13). Subfolders of dst_root not in `parts` and shard files no longer in their
+    source part are removed (041-R27 / 044-R8: a part dropped from the list is not scored). Returns dst_root."""
+    if dst_root.exists():
+        for e in sorted(dst_root.iterdir()):
+            if e.name not in parts:
+                remove_entry(e)
     for part in parts:
         d = dst_root / part
         d.mkdir(parents=True, exist_ok=True)
-        for f in sorted((src_root / part).glob("shard_*.bin.zst")):
+        want = sorted((src_root / part).glob("shard_*.bin.zst"))
+        names = {f.name for f in want}
+        for e in sorted(d.iterdir()):
+            if e.name not in names:
+                remove_entry(e)
+        for f in want:
             t = d / f.name
             if t.exists():
                 if t.stat().st_size == f.stat().st_size:
@@ -173,22 +193,35 @@ def link_tree(src_root: Path, parts: list[str], dst_root: Path) -> Path:
     return dst_root
 
 
+def botgen_src() -> Path:
+    return ec.shared_dir() / "datasets" / "replays" / "shards" / "botgen"
+
+
+def holdout_parts(src: Path) -> list[str]:
+    """041-R27 / 044-R8: the botgen parts of the Zerg-teacher hold-out (`full`): every part folder but the 022
+    TvT / TvP teacher's teacher-tp-* (no rush / macro class). `orig` is ORIG, the rest is added_dirs()."""
+    return sorted(p.name for p in src.iterdir() if p.is_dir() and not p.name.startswith(TP_PREFIX))
+
+
 def holdout_dirs(holdout: str) -> tuple[list[str], list[str]]:
-    """(datasets, shard folders) of a hold-out name."""
+    """(datasets, shard folders) of a hold-out name: `orig` = the ORIG parts, `full` = holdout_parts(), each one
+    source folder of links."""
     if holdout == "full":
-        return ["replays/shards/botgen"], []
+        src = botgen_src()
+        work = ec.cache_dir() / "per_action_holdout_full" / "botgen"
+        return [], [str(link_tree(src, holdout_parts(src), work))]
     if holdout == "orig":
-        src = ec.shared_dir() / "datasets" / "replays" / "shards" / "botgen"
+        src = botgen_src()
         work = ec.cache_dir() / "per_action_holdout" / "botgen"
         return [], [str(link_tree(src, ORIG, work))]
     raise SystemExit(f"unknown --holdout {holdout}")
 
 
 def added_dirs() -> list[str]:
-    """041-R27: the botgen parts outside `orig` (teacher-20261107-macro2, teacher-20261109-macro3, ...) as one
+    """041-R27: the `full` parts outside `orig` (teacher-20261107-macro2, teacher-20261109-macro3, ...) as one
     source folder of links (<URANIUM_CACHE_DIR or runs>/per_action_holdout_added/botgen); [] without any."""
-    src = ec.shared_dir() / "datasets" / "replays" / "shards" / "botgen"
-    parts = sorted(p.name for p in src.iterdir() if p.is_dir() and p.name not in ORIG and not p.name.startswith(TP_PREFIX))
+    src = botgen_src()
+    parts = [p for p in holdout_parts(src) if p not in ORIG]
     if not parts:
         return []
     work = ec.cache_dir() / "per_action_holdout_added" / "botgen"
