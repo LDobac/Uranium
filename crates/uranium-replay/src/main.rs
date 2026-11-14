@@ -183,7 +183,8 @@ enum Cmd {
         time_limit: Option<u32>,
         /// 041-R22 DAgger (source `dagger`, required with it): label each Terran view with this
         /// teacher's commands on the view's observations instead of the replay's own commands
-        /// (`terran_react`, the 021-R8 teacher). No 5-minute filter.
+        /// (`terran_react`, the 021-R8 teacher; `terran_tp`, the 022 TvT / TvP teacher, 022-R9: a
+        /// view against a lobby Zerg or Random is `filtered`, 022-AC3 / 022-R2). No 5-minute filter.
         #[arg(long)]
         relabel: Option<String>,
         /// 041-R28: folder of the model decision logs (`<replay stem>.jsonl`; a plan with

@@ -1,5 +1,6 @@
 //! 041-R22 DAgger relabelling (040 출처 `dagger`): the model's own games are played back and the
-//! 021-R8 teacher is run as a shadow on the model's (Terran) observations. The teacher sees every
+//! 021-R8 teacher (or the 022 teacher, `--relabel terran_tp`, 022-R9) is run as a shadow on the
+//! model's (Terran) observations. The teacher sees every
 //! observation a live T0 session would (live frame 1, then every 8 frames, `Act.advance_frames`;
 //! `live_frame` maps them to playback frames) and its commands become the labels, at the frames a
 //! live game records them; the model's own commands are only used for the 040-R8 checks.
@@ -24,11 +25,30 @@ use crate::label::GAME_START_FRAME;
 use crate::shard::MemoryAction;
 use uranium_env::features::label::DecisionLogLine;
 
-/// Teacher builds `uranium-replay build --relabel` accepts (041-R22): the 021-R8 teacher only.
+/// Teacher builds `uranium-replay build --relabel` accepts (041-R22): the 021-R8 teacher
+/// `terran_react` and the 022 TvT / TvP teacher `terran_tp` (022-R9, 041-R22 2026-11-14; a game
+/// against a lobby Zerg or Random is refused for it, [`lobby_refusal`]).
 pub fn teacher_build(name: &str) -> Result<T0Build> {
     match name {
         "terran_react" => Ok(T0Build::TerranReact),
-        other => bail!("--relabel {other}: only terran_react (the 021-R8 teacher) relabels (041-R22)"),
+        "terran_tp" => Ok(T0Build::TerranTp),
+        other => bail!("--relabel {other}: only terran_react (the 021-R8 teacher) and terran_tp (the 022 teacher) relabel (041-R22, 022-R9)"),
+    }
+}
+
+/// 022-AC3 / 041-R22 (2026-11-14) and 022-R2: why a view whose opponent's replay header race is
+/// `enemy_race` (`header::RACE_*`) is not relabelled with `build`, or `None` when it is. The 022
+/// teacher relabels games against a lobby Terran or Protoss only: against a lobby Zerg its live
+/// session is the 021-R8 teacher (022-R2), so such a game is refused (`filtered`) instead of being
+/// relabelled by another teacher; a lobby Random game is no relabel data either (022-R2,
+/// AMB-022-6; seen only when the header keeps the lobby choice, `header::RACE_RANDOM`). The 021-R8
+/// teacher relabels every view as before.
+pub fn lobby_refusal(build: T0Build, enemy_race: u8) -> Option<String> {
+    use crate::header::{RACE_RANDOM, RACE_ZERG};
+    match (build, enemy_race) {
+        (T0Build::TerranTp, RACE_ZERG) => Some("lobby Zerg opponent: --relabel terran_tp relabels games against Terran / Protoss only (022-AC3, 041-R22)".into()),
+        (T0Build::TerranTp, RACE_RANDOM) => Some("lobby Random opponent: no --relabel terran_tp data from Random games (022-R2)".into()),
+        _ => None,
     }
 }
 
@@ -748,6 +768,142 @@ mod tests {
         s.observe(&frame_at(1, two(), 100));
         assert_eq!(s.cmds.iter().filter(|c| c.op == op::TRAIN).count(), 2);
         assert_eq!(s.repeats_dropped, 0);
+    }
+
+    /// Last playback frame of the synthetic shadow game ([`scenario`], about 6:15).
+    const SCENARIO_LAST: u32 = 9_000;
+
+    /// A synthetic shadow game on the teacher cadence up to [`SCENARIO_LAST`]: a command center,
+    /// SCVs added every 300 frames (the newest idle), changing minerals and supply, a depot from
+    /// 1,500, a barracks from 2,500 (complete from 3,500), marines from 3,900, and four `enemy`
+    /// units 4 to 7 tiles from the command center from 4,000 to 4,600 (a rush the teacher sees).
+    fn scenario(enemy: u16) -> Vec<RawFrame> {
+        use uranium_scripted::types::DEPOT;
+        teacher_frames(SCENARIO_LAST)
+            .into_iter()
+            .map(|n| {
+                let scvs = (4 + n / 300).min(20);
+                let mut v = vec![unit(10, 0, CC, (192, 176))];
+                for i in 0..scvs {
+                    let fl = if i + 1 == scvs { flags::COMPLETED | flags::IDLE } else { flags::COMPLETED | flags::GATHERING };
+                    v.push(UnitState { flags: fl, ..unit(1 + i, 0, SCV, (200 + 8 * (i % 6) as u16, 230 + 8 * (i / 6) as u16)) });
+                }
+                v.extend((0..4).map(|i| unit(50 + i, 11, MINERAL_FIELDS[0], (100 + 32 * i as u16, 60))));
+                if n >= 1_500 {
+                    v.push(unit(20, 0, DEPOT, (320, 96)));
+                }
+                if n >= 2_500 {
+                    let fl = if n >= 3_500 { flags::COMPLETED } else { 0 };
+                    v.push(UnitState { flags: fl, ..unit(21, 0, BARRACKS, (352, 256)) });
+                }
+                let marines = if n > 3_500 { ((n - 3_500) / 400).min(10) } else { 0 };
+                v.extend((0..marines).map(|i| unit(100 + i, 0, MARINE, (300, 260 + 8 * i as u16))));
+                if (4_000..4_600).contains(&n) {
+                    v.extend((0..4).map(|i| unit(200 + i, 1, enemy, (260 + 32 * i as u16, 360))));
+                }
+                let mut f = frame_at(n, v, 50 + (n % 400) as i32);
+                f.self_state.supply_used = (2 * (scvs + marines)) as u16;
+                f.self_state.supply_total = 20 + 16 * (n / 2_000) as u16;
+                f
+            })
+            .collect()
+    }
+
+    /// The shadow's replay commands, labels and counters of a [`scenario`] game, as text.
+    fn shadow_output(build: T0Build, info: &uranium_proto::GameInfo, enemy: u16) -> (String, Vec<(u32, String)>) {
+        let mut s = Shadow::new(info, build, uranium_scripted::MapHints::default(), 3, SCENARIO_LAST);
+        scenario(enemy).iter().for_each(|f| s.observe(f));
+        let (labels, cov) = s.labels(&Labeler::new().unwrap(), SCENARIO_LAST + 64);
+        let text = format!("{:?}|{:?}|{}|{}|{}|{}|{}|{:?}|{:?}", s.cmds, labels, s.repeats_dropped, s.observations, cov.commands, cov.labeled, cov.unknown, cov.unknown_ops, cov.unknown_orders);
+        (text, names(&labels))
+    }
+
+    /// 64-bit FNV-1a (a stable digest of the golden text).
+    fn fnv1a(b: &[u8]) -> u64 {
+        b.iter().fold(0xcbf2_9ce4_8422_2325, |h, &x| (h ^ x as u64).wrapping_mul(0x0100_0000_01b3))
+    }
+
+    /// Digest of [`shadow_output`] for the 021-R8 teacher on the zergling [`scenario`], computed
+    /// with the code before the 022 teacher (master 6fb0e71, 2026-11-14).
+    const REACT_GOLDEN: u64 = 0xcd6e_6f30_2e17_9b1f;
+
+    /// 041-R22 / 022-R9: adding the 022 teacher (`--relabel terran_tp`) leaves `--relabel
+    /// terran_react` output byte for byte as it was: the 021-R8 shadow's replay commands, labels
+    /// and counters on a synthetic game with an opening, buildings, marines and a zergling rush
+    /// have the digest the code before the 022 teacher gave.
+    #[test]
+    fn terran_react_relabel_output_unchanged_041_r22_022_r9() {
+        let (text, got) = shadow_output(T0Build::TerranReact, &info(), uranium_scripted::types::ZERGLING);
+        let kinds: std::collections::BTreeSet<&str> = got.iter().map(|(_, n)| n.as_str()).collect();
+        eprintln!("react golden {:#x} labels {} kinds {kinds:?}", fnv1a(text.as_bytes()), got.len());
+        // The scenario reaches the opening, the rush rule and the defence branch.
+        for k in ["Build_SupplyDepot", "Build_Barracks", "Build_Bunker", "Train_SCV", "Train_Marine", "Gather_Unit", "Hold"] {
+            assert!(kinds.contains(k), "{k} missing: {kinds:?}");
+        }
+        assert_eq!(fnv1a(text.as_bytes()), REACT_GOLDEN);
+    }
+
+    /// `info()` with the enemy's lobby race `race`.
+    fn info_vs(race: uranium_proto::Race) -> uranium_proto::GameInfo {
+        let mut i = info();
+        i.players[1].race = race;
+        i
+    }
+
+    /// 022-R9 / 041-R22 (`--relabel terran_tp`): the shadow is the 022 teacher on a TvP game: its
+    /// labels are the 022 opening's (a refinery on the geyser) rather than the 021-R8 teacher's, use
+    /// only the 034 actions of 022 "모델 표현", and the same observations give the same labels.
+    #[test]
+    fn terran_tp_shadow_labels_a_tvp_game_022_r9() {
+        use uranium_proto::Race;
+        use uranium_scripted::types::{GEYSER, ZEALOT};
+        let with_geyser = |build| {
+            let mut s = Shadow::new(&info_vs(Race::Protoss), build, uranium_scripted::MapHints::default(), 3, SCENARIO_LAST);
+            for mut f in scenario(ZEALOT) {
+                f.units.push(unit(60, 11, GEYSER, (96, 320)));
+                s.observe(&f);
+            }
+            let (labels, _) = s.labels(&Labeler::new().unwrap(), SCENARIO_LAST + 64);
+            (format!("{:?}|{:?}|{}", s.cmds, labels, s.repeats_dropped), names(&labels))
+        };
+        let (a, got) = with_geyser(T0Build::TerranTp);
+        assert_eq!(a, with_geyser(T0Build::TerranTp).0, "same observations, same labels (022-R1)");
+        let allowed = [
+            "NoOp", "Build_SupplyDepot", "Build_Barracks", "Build_Refinery", "Build_Factory", "Build_CommandCenter", "Build_Bunker", "BuildAddon_MachineShop", "Research_TankSiege",
+            "Train_SCV", "Train_Marine", "Train_SiegeTank", "SiegeMode", "TankMode", "Move_Pos", "Load_Unit", "Hold", "Attack_Pos", "Attack_Unit", "Repair_Unit", "Gather_Unit", "Smart_Unit",
+            "ReturnCargo",
+        ];
+        let off: Vec<&(u32, String)> = got.iter().filter(|(_, n)| !allowed.contains(&n.as_str())).collect();
+        assert!(off.is_empty(), "labels outside 022 모델 표현: {off:?}");
+        assert!(got.iter().any(|(_, n)| n == "Build_Refinery"), "the 022-R3 refinery: {got:?}");
+        let (react, react_names) = with_geyser(T0Build::TerranReact);
+        assert_ne!(a, react, "not the 021-R8 teacher's labels");
+        assert!(!react_names.iter().any(|(_, n)| n == "Build_Refinery"));
+    }
+
+    /// 022-AC3 / 041-R22: `--relabel terran_tp` refuses a lobby Zerg (and Random, 022-R2) opponent
+    /// and takes Terran and Protoss; `terran_react` refuses none. A Zerg game must be refused
+    /// rather than shadowed: there the 022 build's session is the 021-R8 teacher (022-R2), so its
+    /// labels would silently be that teacher's.
+    #[test]
+    fn terran_tp_refuses_lobby_zerg_022_ac3() {
+        use crate::header::{RACE_PROTOSS, RACE_RANDOM, RACE_TERRAN, RACE_ZERG};
+        assert_eq!(teacher_build("terran_tp").unwrap(), T0Build::TerranTp);
+        assert!(teacher_build("standard").is_err() && teacher_build("terran_drop").is_err());
+        assert!(lobby_refusal(T0Build::TerranTp, RACE_ZERG).unwrap().contains("022-AC3"));
+        assert!(lobby_refusal(T0Build::TerranTp, RACE_RANDOM).unwrap().contains("022-R2"));
+        for r in [RACE_TERRAN, RACE_PROTOSS] {
+            assert_eq!(lobby_refusal(T0Build::TerranTp, r), None);
+        }
+        for r in [RACE_ZERG, RACE_TERRAN, RACE_PROTOSS, RACE_RANDOM] {
+            assert_eq!(lobby_refusal(T0Build::TerranReact, r), None, "the 021-R8 relabel is unchanged");
+        }
+        let zerg = info_vs(uranium_proto::Race::Zerg);
+        assert_eq!(
+            shadow_output(T0Build::TerranTp, &zerg, uranium_scripted::types::ZERGLING),
+            shadow_output(T0Build::TerranReact, &zerg, uranium_scripted::types::ZERGLING),
+            "a lobby Zerg turns the 022 build into the 021-R8 teacher"
+        );
     }
 
     /// The live T0 session's observation frames 1, 9, 17, ... (011-R15, `Act.advance_frames` 8)
