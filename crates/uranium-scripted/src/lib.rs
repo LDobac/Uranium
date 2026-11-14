@@ -788,8 +788,17 @@ impl Bot for Brain {
         // 021-R8: marines that load or hold (D) or fill a bunker (M) stay out of waves and the guard.
         let kept = self.react_reserved_marines(&mine);
         match k.tactic {
-            // 022-R7 / R8: siege tanks, the tank spot and the attack.
-            _ if self.tp.is_some() => self.tp_army(f, &mine, &kept, &mut cmds),
+            // 022-R7 / R8: siege tanks, the tank spot and the attack. Marines the home guard below
+            // orders at this observation are its own (022-R8: the guard defends during an attack;
+            // one order per unit per observation).
+            _ if self.tp.is_some() => {
+                let guard_on = k.defend && (branch != Some(Branch::Defence) || self.react_marines_attack());
+                let mut owned = kept.clone();
+                if let Some((_, guards)) = base.filter(|_| guard_on).and_then(|b| self.guard_order(f, &mine, b, &kept)) {
+                    owned.extend(guards);
+                }
+                self.tp_army(f, &mine, &owned, &mut cmds)
+            }
             // Attack-move waves (none in the teacher's defence branch).
             Tactic::Waves if branch == Some(Branch::Defence) => {}
             Tactic::Waves => {
@@ -811,7 +820,8 @@ impl Bot for Brain {
                 }
             }
         }
-        // 021-R8 D: the home guard only while the marines attack (7th advisory C).
+        // 021-R8 D: the home guard only while the marines attack (7th advisory C). The 022 teacher's
+        // `tp_army` above read the same condition.
         if k.defend && (branch != Some(Branch::Defence) || self.react_marines_attack()) {
             if let Some(b) = base {
                 self.defend(f, &mine, b, &kept, &mut cmds);
@@ -982,11 +992,22 @@ impl Brain {
     /// within `DEFEND_RADIUS` of an own command center guard every command center, except those
     /// `kept` for a bunker.
     fn defend(&mut self, f: &RawFrame, mine: &[&UnitState], base: Pos, kept: &[UnitId], cmds: &mut Vec<Command>) {
+        let Some((at, guards)) = self.guard_order(f, mine, base, kept) else { return };
+        for chunk in guards.chunks(12) {
+            cmds.push(Command::Unit { units: chunk.to_vec(), order: CmdOrder::Attack(Target::Pos(at)), queued: false });
+        }
+        self.last_defend = f.frame;
+    }
+
+    /// The home guard's order at this observation (`defend`): where it attack-moves and which
+    /// units; `None` when it gives none. Read without acting by the 022 teacher, whose attack
+    /// leaves these units to the guard (one order per unit per observation, 022-R8).
+    fn guard_order(&self, f: &RawFrame, mine: &[&UnitState], base: Pos, kept: &[UnitId]) -> Option<(Pos, Vec<UnitId>)> {
         // With plain waves every army unit attacks; there is no separate guard.
         let react = self.kit.react.is_some();
         let has_guard = self.kit.tactic == Tactic::Drop || self.kit.attacker != self.kit.army || react;
         if !has_guard || f.frame < self.last_defend + WAVE_PERIOD {
-            return;
+            return None;
         }
         let bases: Vec<Pos> = if react { mine.iter().filter(|u| is_resource_depot(u.unit_type)).map(|u| u.pos).collect() } else { vec![base] };
         let near_base = |p: Pos| bases.iter().map(|b| dist2(p, *b)).min().unwrap_or(i64::MAX);
@@ -997,7 +1018,7 @@ impl Brain {
             .iter()
             .filter(|u| u.owner != self.me && !is_neutral_owner(u.owner) && near_base(u.pos) < reach * reach)
             .min_by_key(|u| (near_base(u.pos), u.id));
-        let Some(t) = threat else { return };
+        let t = threat?;
         let on_drop: Vec<UnitId> = self.drops.iter().flat_map(|d| d.squad.iter().copied()).collect();
         let guards: Vec<UnitId> = mine
             .iter()
@@ -1005,10 +1026,7 @@ impl Brain {
             .filter(|u| !react || near_base(u.pos) < DEFEND_RADIUS * DEFEND_RADIUS)
             .map(|u| u.id)
             .collect();
-        for chunk in guards.chunks(12) {
-            cmds.push(Command::Unit { units: chunk.to_vec(), order: CmdOrder::Attack(Target::Pos(t.pos)), queued: false });
-        }
-        self.last_defend = f.frame;
+        Some((t.pos, guards))
     }
 }
 

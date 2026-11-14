@@ -38,9 +38,9 @@ use crate::{Brain, centroid, dist2, done};
 
 /// SCV hit points (BWAPI type table): the scout leaves the enemy main below `scout_hp_pct` of it.
 const SCV_HP: u32 = 60;
-/// Army units farther than this (tiles) from every own command center are out on an attack
-/// (the Brain's home-guard radius, `DEFEND_RADIUS`).
-const OUT_TILES: i64 = 20;
+/// Army units farther than this (tiles) from every own command center are out on an attack:
+/// the Brain's home-guard radius.
+const OUT_TILES: i64 = crate::DEFEND_RADIUS / 32;
 
 /// 022 numbers (AMB-022-2..5 Resolved, 2026-11-14). Frames are game frames (24 per second),
 /// distances tiles, supply in units (a marine = 1).
@@ -756,7 +756,8 @@ impl Brain {
 
     /// 022-R7 / R8 tank and attack control, after the marines' bunker orders and before the home
     /// guard: siege mode by the siege rule (every observation), and every `retarget` frames the
-    /// attack group (every tank and marine not kept for a bunker when the attack condition holds,
+    /// attack group (every tank and marine not in `kept` — kept for a bunker or ordered by the home
+    /// guard at this observation — when the attack condition holds,
     /// else the ones already out, more than `OUT_TILES` from every command center) attack-moves
     /// on the Brain's target with units far ahead of the tanks waiting at its front, and the other tanks go to
     /// the tank spot.
@@ -1461,6 +1462,36 @@ mod tests {
             })
         };
         assert_eq!((to(300), to(200), to(212), to(224)), (Some(cells[0]), Some(cells[0]), Some(cells[1]), Some(cells[2])), "{:?}", act.cmds);
+    }
+
+    /// 022-R8: an attack starting while an enemy is at the base leaves the marines near home to the
+    /// home guard; every unit gets one order at the observation (tanks the attack, marines the guard).
+    #[test]
+    fn home_guard_owns_marines_during_an_attack_022_r8() {
+        let mut u = base(20);
+        u.extend((0..32).map(|i| unit(200 + i, MARINE, (home().0 + 100 + 4 * (i % 8) as u16, home().1 + 100 + 4 * (i / 8) as u16))));
+        u.extend((0..4).map(|i| unit(300 + i, SIEGE_TANK, (home().0 + 80, home().1 + 120 + 8 * i as u16))));
+        let zealot = (home().0 + 15 * 32, home().1);
+        u.push(enemy(90, ZEALOT, zealot));
+        let target = depot_center(THEIRS);
+        u.push(enemy(80, NEXUS, target));
+        let mut b = teacher();
+        let act = b.act(&sieging(frame(9_000, u, 0, 120), true, false));
+        assert_eq!(stats(&b).wave_frame, Some(9_000));
+        let mut orders: BTreeMap<UnitId, Vec<CmdOrder>> = BTreeMap::new();
+        for c in &act.cmds {
+            if let Command::Unit { units, order, .. } = c {
+                for id in units {
+                    orders.entry(*id).or_default().push(order.clone());
+                }
+            }
+        }
+        for id in 200..232 {
+            assert_eq!(orders.get(&id), Some(&vec![CmdOrder::Attack(Target::Pos(zealot))]), "marine {id}: {:?}", act.cmds);
+        }
+        for id in 300..304 {
+            assert_eq!(orders.get(&id), Some(&vec![CmdOrder::Attack(Target::Pos(target))]), "tank {id}: {:?}", act.cmds);
+        }
     }
 
     /// 022-R3 scout: the enemy main found before 2:40 keeps the scout there (circling, from 2:30 at
