@@ -20,6 +20,9 @@
 #   weight it has in the rl_m2 (C0) runs, as in every earlier C1 run config (rl_t1self, rl_rush*).
 #   [[t1]] = the 044-R10 T1 list (McRave out, Steamhammer T / Z, 021-R4); it is not drawn from
 #   (c1_t1 = 0) and gates which T1 ladder entry may be Random (021-R7).
+#   The user decided the shares (24 : 28 : 28 : 20, T0 / T1 half and half, half of zerg T0 rush);
+#   the fixed-ladder mechanism with Random entries, r_value_stages, equal T1 shares within a race
+#   and the UAlbertaBot-only Random T1 are main interim decisions awaiting user confirmation.
 # Run (044-R11): 1 seed, `python -m uranium rl --run m2-rl-fix-<n> --config config/rl_m2_race.toml
 #   --init <D> --bc <shared>/checkpoints/m2-s2e2/ckpt-11387 --algo vtrace --max-agent-steps
 #   6000000` (D = the 044-R6 passing distillation model; none passes: ask the user). Checks with
