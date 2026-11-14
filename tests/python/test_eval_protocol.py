@@ -203,7 +203,7 @@ def test_ck1_lineage_takes_no_new_measurements_050_r9(tmp_path):
 def test_lineage_menus_consistent_050_r9():
     """Every Checkpoint 1 output and supplement is on the point's menu; a supplement is a cell Checkpoint 1 lacks. A
     point without a Checkpoint 1 counterpart (2026-11-14 rows) has no Checkpoint 1 cells; T1 on a menu has its
-    platform pinned or the reason it is open (`t1_platforms_open`), never both."""
+    platform(s) pinned."""
     for pt in LIN["point"]:
         menu = set(pt["metrics"]) | set(pt.get("optional", []))
         assert menu <= set(LIN["metric"]) and not set(pt["metrics"]) & set(pt.get("optional", [])), pt["id"]
@@ -215,9 +215,9 @@ def test_lineage_menus_consistent_050_r9():
         else:
             assert not outs and not sup, pt["id"]
         if "t1" in menu:
-            assert bool(pt.get("t1_platforms")) != bool(pt.get("t1_platforms_open")), pt["id"]
+            assert pt.get("t1_platforms") and set(pt["t1_platforms"]) <= set(protocol.PLATFORMS), pt["id"]
         else:
-            assert not pt.get("t1_platforms") and not pt.get("t1_platforms_open"), pt["id"]
+            assert not pt.get("t1_platforms"), pt["id"]
     assert protocol.point(LIN, "s2e2")["ck1_supplement"] == ["t0_600", "val500_race"]
 
 
@@ -725,6 +725,12 @@ def test_distill_fix_points_menus_050_r9():
     race, T1 300, T0 T / P), the fixed-RL checks (T0 T / P, TvZ, rush + macro, T1 at the end). No Checkpoint 1
     counterpart: lineage ck1 refused there."""
     d1, d2, D, rl = (protocol.point(LIN, p) for p in ("d1", "d2", "D", "rl-fix"))
+    # DAgger r3 of lineage 2 (user decision 2026-11-14): r2's menu, no Checkpoint 1 counterpart
+    r2, r3 = protocol.point(LIN, "r2"), protocol.point(LIN, "r3")
+    assert {k: r3.get(k) for k in ("family", "metrics", "optional", "t1_platforms")} == {k: r2.get(k) for k in ("family", "metrics", "optional", "t1_platforms")}
+    assert not r3.get("ck1_checkpoint")
+    with pytest.raises(protocol.Refused, match="point r3 has no Checkpoint 1 counterpart"):
+        protocol.check_new_measurement(LIN, "ck1", "cue_diag", r3)
     for pt in (d1, d2):
         assert pt["family"] == "bc"
         assert {"val500", "val500_race", "per_action", "t0_tp", "tvz", "rush", "macro", "teacher_mode"} <= set(pt["metrics"])
@@ -747,33 +753,80 @@ def test_distill_fix_points_menus_050_r9():
 
 
 def test_distill_points_run_names_050_r9():
-    """044: round d<R> is run m2-distill-d<R>; D is one of them; the fixed-RL point takes any lineage-2 run."""
+    """044: round d<R> is run m2-distill-d<R>; D is one of them; the fixed-RL run is m2-rl-fix-<number> (user decision
+    2026-11-14)."""
     for pid, ok, bad in (("d1", "m2-distill-d1", "m2-distill-d2"), ("d2", "m2-distill-d2", "m2-dagger-r2"), ("D", "m2-distill-d2", "m2-distill-dx")):
         pt = protocol.point(LIN, pid)
         protocol.check_checkpoint(LIN, "m2", pt, f"checkpoints/{ok}/ckpt-1850")
         with pytest.raises(protocol.Refused, match=rf"point {pid} takes runs m2-<"):
             protocol.check_checkpoint(LIN, "m2", pt, f"checkpoints/{bad}/ckpt-1850")
-    protocol.check_checkpoint(LIN, "m2", protocol.point(LIN, "rl-fix"), "checkpoints/m2-rl-race-s1/ckpt-1500000/agents/main")
+    protocol.check_checkpoint(LIN, "m2", protocol.point(LIN, "rl-fix"), "checkpoints/m2-rl-fix-1/ckpt-1500000/agents/main")
+    with pytest.raises(protocol.Refused, match=r"point rl-fix takes runs m2-<rl-fix-\[0-9\]\+>"):  # user decision 2026-11-14
+        protocol.check_checkpoint(LIN, "m2", protocol.point(LIN, "rl-fix"), "checkpoints/m2-rl-race-s1/ckpt-1500000/agents/main")
     with pytest.raises(protocol.Refused, match="start with"):
         protocol.check_checkpoint(LIN, "m2", protocol.point(LIN, "d1"), "checkpoints/distill-d1/ckpt-1")
 
 
 def test_t1_platform_of_new_points_050_r9(tmp_path, monkeypatch):
     """r2 (a candidate of the Checkpoint 1 counterpart model, 041-R29 ④) takes T1 on Windows like that model; D and the
-    fixed-RL checks have no counterpart and their T1 platform is not decided: a T1 job is refused with the reason."""
+    fixed-RL checks have no counterpart: T1 on whichever host is idle, platform recorded (user decision 2026-11-14)."""
     r2 = protocol.point(LIN, "r2")
     assert {"t1", "test", "val500_race"} <= set(r2["optional"]) and r2["t1_platforms"] == ["windows"]
     assert protocol.check_t1_platform(r2, [{"addr": "a", "platform": "windows"}]) == ["windows"]
+    hosts = [{"addr": "a", "platform": "windows"}, {"addr": "b", "platform": "linux"}]
     for pid in ("D", "rl-fix"):
-        with pytest.raises(protocol.Refused, match=r"no Checkpoint 1 T1 counterpart platform \(lineage.toml t1_platforms\): .*not decided"):
-            protocol.check_t1_platform(protocol.point(LIN, pid), [{"addr": "a", "platform": "windows"}])
+        assert protocol.check_t1_platform(protocol.point(LIN, pid), hosts) == ["linux", "windows"]
+        with pytest.raises(protocol.Refused, match=r"b \(no platform\)"):
+            protocol.check_t1_platform(protocol.point(LIN, pid), [hosts[0], {"addr": "b"}])
     monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
+    protocol.checkpoint_sha256.cache_clear()
     ck = fake_checkpoint(tmp_path, "m2-distill-d1")
-    with pytest.raises(SystemExit, match="REFUSED: point D has no Checkpoint 1 T1 counterpart platform"):
-        protocol.main(job_args(tmp_path, ck, "t1", hosts_text='[[host]]\naddr = "h:7700"\nplatform = "windows"\n', point="D"))
+    bots = [f"h:7700 {b} {accepted(b)}" for b in sorted(tomllib.loads(protocol.BOTS.read_text(encoding="utf-8"))["bot"])]
+    protocol.main(job_args(tmp_path, ck, "t1", hosts_text='[[host]]\naddr = "h:7700"\nplatform = "linux"\n', point="D", bot_lines=bots))
+    rec = json.loads((tmp_path / "eval" / "j" / "protocol.json").read_text(encoding="utf-8"))
+    assert rec["point"] == "D" and rec["t1_platforms"] == ["linux"] and rec["hosts"] == [{"addr": "h:7700", "platform": "linux"}]
+    shutil.rmtree(tmp_path / "eval")
     with pytest.raises(SystemExit, match="REFUSED: metric teacher_mode is a table of the point's game jobs"):
         protocol.main(job_args(tmp_path, ck, "teacher_mode", point="d1"))
     assert not (tmp_path / "eval").exists()
+
+
+def test_rl_fix_diagnostics_final_only_050_r9(tmp_path, monkeypatch):
+    """User decision 2026-11-14: the fixed-RL checks take the cue diagnostics at the run's final checkpoint only (DONE and
+    the last ckpt-N), read through the RL checkpoint layout ckpt-N/agents/<agent>."""
+    monkeypatch.setenv("URANIUM_SHARED_DIR", str(tmp_path / "shared"))
+    run = tmp_path / "shared" / "checkpoints" / "m2-rl-fix-1"
+    for n in (1500000, 3000000):
+        (run / f"ckpt-{n}" / "agents" / "main").mkdir(parents=True)
+    pt = protocol.point(LIN, "rl-fix")
+    with pytest.raises(protocol.Refused, match="final checkpoint only"):
+        protocol.check_final_only(pt, "checkpoints/m2-rl-fix-1/ckpt-3000000/agents/main")   # no DONE yet
+    (run / "DONE").write_text("", encoding="utf-8")
+    protocol.check_final_only(pt, "checkpoints/m2-rl-fix-1/ckpt-3000000/agents/main")
+    with pytest.raises(protocol.Refused, match=r"diagnostics \(cue_diag, dead_channels\) at the run's final checkpoint only \(user decision 2026-11-14\)"):
+        protocol.check_final_only(pt, "checkpoints/m2-rl-fix-1/ckpt-1500000/agents/main")
+    # both diagnostics restricted at rl-fix; s1e2 restricts cue_diag only (AMB-050-6)
+    assert protocol.final_only_metrics(pt) == ["cue_diag", "dead_channels"]
+    assert protocol.final_only_metrics(protocol.point(LIN, "s1e2")) == ["cue_diag"]
+    assert protocol.final_only_metrics(protocol.point(LIN, "s1e1")) == []
+    with pytest.raises(SystemExit, match=r"REFUSED: point rl-fix: diagnostics \(cue_diag, dead_channels\)"):
+        protocol.main(["diag", "--lineage", "m2", "--point", "rl-fix", "--checkpoint", "checkpoints/m2-rl-fix-1/ckpt-1500000/agents/main",
+                       "--metrics", "dead_channels", "--train-log", "train.csv"])
+
+
+def test_compare_marks_backend_and_t1_platform_differences_050_r9(capsys, tmp_path):
+    """User decision 2026-11-14: a comparison marks a stage whose inference backend / precision or T1 platform differ."""
+    def stage(backend, prec, platforms=None, kind="t1"):
+        return {"kind": kind, "inference": {f"{backend}@h": {"games": 300, "precision": prec}},
+                "protocol": {"t1_platforms": platforms}, "counts": {"total": {"won": [10, 300]}}}
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    a.write_text(json.dumps({"x": stage("cuda", "bf16-mixed", ["windows"]), "y": stage("rocm", "f32", kind="winrate")}), encoding="utf-8")
+    b.write_text(json.dumps({"x": stage("rocm", "f32", ["linux"]), "y": stage("rocm", "f32", kind="winrate")}), encoding="utf-8")
+    protocol.main(["compare", str(a), str(b)])
+    out = capsys.readouterr().out
+    assert "NOTE x: inference backend differs: cuda (bf16-mixed) vs rocm (f32)" in out
+    assert "NOTE x: T1 platform differs: ['windows'] vs ['linux']" in out
+    assert "NOTE y" not in out and "x total won: 10/300 vs 10/300" in out
 
 
 def test_t0_tp_rl_template_050_r9():
@@ -791,7 +844,7 @@ def test_rl_fix_job_uses_t0_tp_rl_050_r9(tmp_path, monkeypatch):
     """A fixed-RL check's t0_tp + tvz job: one job (both zero_last_failed false), plans t0_tp_rl and tvz_rl."""
     monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
     protocol.checkpoint_sha256.cache_clear()
-    ck = fake_checkpoint(tmp_path, "m2-rl-race-s1")
+    ck = fake_checkpoint(tmp_path, "m2-rl-fix-1")
     protocol.main(job_args(tmp_path, ck, "t0_tp,tvz", point="rl-fix"))
     rec = json.loads((tmp_path / "eval" / "j" / "protocol.json").read_text(encoding="utf-8"))
     assert (rec["point"], rec["family"], rec["zero_last_failed"]) == ("rl-fix", "rl", False)
@@ -1045,7 +1098,7 @@ def test_diag_settings_are_the_tools_050_r9():
     # AMB-050-5: training-log records only, Checkpoint 1 not measured
     assert DEAD["kind"] == "diag_train_log" and "ck1" in DEAD["not_measured"] and LIN["lineage"]["ck1"]["new_metrics"] == ["cue_diag", "ops", "rush_combat"]
     # AMB-050-6: s1e2 diagnostics at the final checkpoint only
-    assert [p["id"] for p in LIN["point"] if p.get("diag_final_only")] == ["s1e2"]
+    assert [p["id"] for p in LIN["point"] if p.get("diag_final_only")] == ["s1e2", "rl-fix"]  # rl-fix: user decision 2026-11-14
     for pt in LIN["point"]:
         assert {"cue_diag", "dead_channels"} <= set(pt["metrics"]), pt["id"]
         for s in CUE["sets"]:

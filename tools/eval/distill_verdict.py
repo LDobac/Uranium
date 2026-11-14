@@ -7,8 +7,11 @@ the user and the next step is the user's (044-R6, as 050-R10).
           + held sum (early + late held_8m of the rush 128) >= S's held sum - 6
   d2    = (round d1 only) not passed, but T0 Protoss wins (t0_tp) >= S's + 4 and TvZ kept
   stop  = TvZ not kept, or T0 Protoss wins < S's + 4; and a d2 that does not pass (d2 is the last round)
-  incomplete = an input the decision depends on is missing (an unfinished job, undecodable job lines, a gate check
-          MISSING); nothing is decided
+
+Only these three verdicts (user decision 2026-11-14): a gate check that is MISSING or a cell without a value (games
+without a row, no val output) counts as failed. To keep the never-overwritten verdict file right, the tool refuses to
+run (no verdict, no file) while an input job is unfinished (no DONE) or has undecodable result / ledger lines. The
+baseline job must be of point s2e2 and S's two jobs of one selection candidate point (r1 / r2 / r3 / s2e2) and checkpoint.
 
 S = the 041-R29 ④ selection (the Checkpoint 1 counterpart model); its rush 128 and t0_tp jobs give the held sum and
 the Protoss wins the round is compared with. Boundaries are inclusive (">= 16", ">= 24", ">= S - 6", ">= S + 4").
@@ -47,20 +50,15 @@ D2_PROTOSS_GAIN = 4    # d2: T0 Protoss wins >= S's + 4
 ROUNDS = ("d1", "d2")
 RUSH_PLANS = ("rush_check",)
 TVZ_PLANS = ("tvz_bc", "tvz_rl")
-PASS, D2, STOP, INCOMPLETE = "pass", "d2", "stop", "incomplete"
+PASS, D2, STOP = "pass", "d2", "stop"
+# 041-R29 ④: S is r1, r2 or r3 (r3 runs, user decision 2026-11-14), or the BC baseline when no candidate qualifies.
+S_POINTS = ("r1", "r2", "r3", "s2e2")
+BASELINE_POINT = "s2e2"
 
 
-def and3(*xs: bool | None) -> bool | None:
-    """Three-valued and: False if any is False, else None if any is unknown, else True."""
-    if any(x is False for x in xs):
-        return False
-    if any(x is None for x in xs):
-        return None
-    return True
-
-
-def ge(x: int | None, y: int | None) -> bool | None:
-    return None if x is None or y is None else x >= y
+def ge(x: int | None, y: int | None) -> bool:
+    """x >= y; a missing value fails (user decision 2026-11-14)."""
+    return x is not None and y is not None and x >= y
 
 
 def one_stage(job: Path, lin: dict, plan_ids: tuple[str, ...]) -> tuple[int, Path, dict]:
@@ -117,39 +115,34 @@ def protoss_wins(c: dict | None) -> int | None:
 
 def decide(rnd: str, gate_overall: str | None, tvz: dict | None, rush: dict | None, s_rush: dict | None,
            protoss: int | None, s_protoss: int | None) -> tuple[str, dict]:
-    """The 044-R6 verdict and its conditions (True / False / None = unknown)."""
+    """The 044-R6 verdict and its conditions. A gate that is not PASS (FAIL or MISSING) and a count of a job with
+    games missing count as failed (user decision 2026-11-14)."""
     if rnd not in ROUNDS:
         raise SystemExit(f"044-R6: round {rnd!r} is not one of {', '.join(ROUNDS)} (d2 is the last round)")
     ok = lambda c: c is not None and c["complete"]  # noqa: E731
-    tvz_wins = ge(tvz["won"], TVZ_WINS) if ok(tvz) else None
-    late = ge(rush["late"], LATE_HELD) if ok(rush) else None
     held = rush["early"] + rush["late"] if ok(rush) else None
     s_held = s_rush["early"] + s_rush["late"] if ok(s_rush) else None
     cond = {
-        "gate": {rg.PASS: True, rg.FAIL: False}.get(gate_overall),
-        "tvz_wins": tvz_wins,
-        "late_held": late,
+        "gate": gate_overall == rg.PASS,
+        "tvz_wins": ok(tvz) and ge(tvz["won"], TVZ_WINS),
+        "late_held": ok(rush) and ge(rush["late"], LATE_HELD),
         "held_sum": ge(held, None if s_held is None else s_held - HELD_SUM_SLACK),
         "protoss_gain": ge(protoss, None if s_protoss is None else s_protoss + D2_PROTOSS_GAIN),
     }
-    cond["tvz_kept"] = and3(cond["tvz_wins"], cond["late_held"])
-    passed = and3(cond["gate"], cond["tvz_kept"], cond["held_sum"])
-    if passed is True:
+    cond["tvz_kept"] = cond["tvz_wins"] and cond["late_held"]
+    if cond["gate"] and cond["tvz_kept"] and cond["held_sum"]:
         return PASS, cond
-    if passed is None:
-        return INCOMPLETE, cond
-    if rnd == "d2":
-        return STOP, cond
-    go = and3(cond["tvz_kept"], cond["protoss_gain"])
-    return {True: D2, False: STOP, None: INCOMPLETE}[go], cond
+    if rnd == "d1" and cond["tvz_kept"] and cond["protoss_gain"]:
+        return D2, cond
+    return STOP, cond
 
 
 def _cnt(x, n) -> str:
     return "-" if x is None else f"{x}/{n}"
 
 
-def _yn(c: bool | None) -> str:
-    return {True: "yes", False: "NO", None: "unknown"}[c]
+def _yn(c: bool) -> str:
+    return "yes" if c else "NO"
 
 
 def _tm(t: dict) -> str:
@@ -193,6 +186,39 @@ def candidate_records(jobs: list[Path], rnd: str) -> dict:
             "no_protocol_json": sorted(n for n, r in recs.items() if r is None)}
 
 
+def reference_records(baseline: Path, s_jobs: list[Path]) -> dict:
+    """The baseline job is of point s2e2 (050-R10: m2-s2e2) and S's jobs of one selection candidate point (041-R29 ④)
+    and one checkpoint; each needs its lineage-2 protocol.json."""
+    def rec(j: Path) -> dict:
+        r = protocol.read_record(j)
+        if r is None or r.get("lineage") != "m2":
+            raise SystemExit(f"044-R6: {j.name} has no lineage-2 {protocol.RECORD} (the baseline and S jobs are protocol jobs)")
+        return r
+    b = rec(baseline)
+    if b.get("point") != BASELINE_POINT:
+        raise SystemExit(f"044-R6: baseline job {baseline.name} is of point {b.get('point')!r}, not {BASELINE_POINT} (050-R10 baseline m2-s2e2)")
+    s = [rec(j) for j in s_jobs]
+    pts, shas = {r.get("point") for r in s}, {r.get("checkpoint_sha256") for r in s}
+    if len(pts) != 1 or not pts <= set(S_POINTS) or len(shas) != 1:
+        raise SystemExit(f"044-R6: S's jobs must be of one selection candidate point ({' / '.join(S_POINTS)}) and one checkpoint; "
+                         f"got points {sorted(map(str, pts))}, {len(shas)} checkpoint(s)")
+    return {"baseline_checkpoint": b.get("checkpoint"), "s_point": pts.pop(), "s_checkpoint": s[0].get("checkpoint")}
+
+
+def check_finished(jobs: list[Path]) -> None:
+    """Refuse (no verdict, no file) while an input job is unfinished or has undecodable lines (user decision
+    2026-11-14: the verdict file is never overwritten, so it is written from finished jobs only)."""
+    problems = []
+    for j in dict.fromkeys(jobs):
+        if not (j / "DONE").is_file():
+            problems.append(f"{j.name}: not finished (no DONE)")
+        bad = ec.skipped_lines(ec.read_results(j), ec.read_ledger(j))
+        if bad:
+            problems.append(f"{j.name}: {len(bad)} undecodable line(s) (" + ", ".join(f"{x['file']}:{x['line']}" for x in bad) + ")")
+    if problems:
+        raise SystemExit("044-R6: no verdict while an input job is unfinished or damaged:\n  " + "\n  ".join(problems))
+
+
 def main(argv=None) -> dict:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--round", required=True, choices=ROUNDS)
@@ -213,7 +239,9 @@ def main(argv=None) -> dict:
     ec.load_env()
     cache = a.cache or ec.cache_dir() / "eval_cmddump"
     lin = protocol.load_lineage()
+    check_finished([a.baseline_games, a.candidate_games, a.candidate_tvz, a.candidate_rush, a.s_games, a.s_rush])
     rec = candidate_records([a.candidate_games, a.candidate_tvz, a.candidate_rush], a.round)
+    ref = reference_records(a.baseline_games, [a.s_games, a.s_rush])
     bg = rg.t0_tp_counts(a.baseline_games, cache, lin)
     cg = rg.t0_tp_counts(a.candidate_games, cache, lin)
     sg = rg.t0_tp_counts(a.s_games, cache, lin)
@@ -227,14 +255,15 @@ def main(argv=None) -> dict:
     print()
     print("\n".join(lines))
     out = {"round": a.round, "verdict": word, "conditions": cond, "gate": g, "tvz": tvz, "rush": rush, "s_rush": s_rush,
-           "protoss_wins": protoss, "s_protoss_wins": s_protoss, "teacher_mode": tm, "s_teacher_mode": s_tm, "candidate": rec,
+           "protoss_wins": protoss, "s_protoss_wins": s_protoss, "teacher_mode": tm, "s_teacher_mode": s_tm, "candidate": rec, "reference": ref,
            "inputs": {k: None if v is None else Path(v).name for k, v in (("baseline_val", a.baseline_val), ("candidate_val", a.candidate_val),
                       ("baseline_games", a.baseline_games), ("candidate_games", a.candidate_games), ("candidate_tvz", a.candidate_tvz),
                       ("candidate_rush", a.candidate_rush), ("s_games", a.s_games), ("s_rush", a.s_rush))}}
     if a.verdict is not None:
         stamp = datetime.datetime.now().astimezone().isoformat(timespec="minutes")
         head = f"# {stamp}, 044-R6 round {a.round}, checkpoint {rec['checkpoint'] or '?'} (sha256 {str(rec['checkpoint_sha256'])[:12]})"
-        jobs = f"# jobs: t0_tp {a.candidate_games.name}, tvz {a.candidate_tvz.name}, rush {a.candidate_rush.name}; S {a.s_games.name}, {a.s_rush.name}; baseline {a.baseline_games.name}"
+        jobs = (f"# jobs: t0_tp {a.candidate_games.name}, tvz {a.candidate_tvz.name}, rush {a.candidate_rush.name}; "
+                f"S ({ref['s_point']}) {a.s_games.name}, {a.s_rush.name}; baseline {a.baseline_games.name}")
         a.verdict.parent.mkdir(parents=True, exist_ok=True)
         with a.verdict.open("x", encoding="utf-8") as fh:
             fh.write("\n".join([word, head, jobs] + [f"# {x}" for x in lines[1:]]) + "\n")

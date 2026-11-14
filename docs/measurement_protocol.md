@@ -27,9 +27,10 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 
 - 지점: `s1e1`, `s1e2`, `s2e2`(BC 기준선), `mix-e1` … `mix-e10`, `r1`(Checkpoint 1), `r2`, `rl-s1`(Checkpoint 1 RL) … `rl-s3`. `python tools/eval/protocol.py list`로 본다.
 - Checkpoint 1 대응이 없는 경로 2 지점(050-R9 지점 표 2026-11-14 행, 044-R6·R7·R11): `ck1_checkpoint`가 없어 `--lineage ck1`은 거부한다.
+  - `r3`: 경로 2 DAgger 3라운드(사용자 결정 2026-11-14, 041-R29 ④). 메뉴는 `r2`와 같다(Checkpoint 1 대응 모델 후보라 test·val 500 종족별·T1(Windows)도 `optional`).
   - `d1`, `d2`: 증류 라운드(run `m2-distill-d<R>`만 받음, `run_pattern`). val 500(종족별), 교사 hold-out, T0 표준 테란·프로토스 각 32판, TvZ 32판, 러시 128판 + 운영형 40판, 교사 모드 판 비율, 진단.
   - `D`: 경로 2 수정 모델(044-R7, 통과한 라운드의 체크포인트). Checkpoint 1 대응 모델 행과 같은 test 1,199, val 500(종족별), T1 300판, T0 표준 테란·프로토스. 진단은 그 라운드 지점과 같은 체크포인트·출력 폴더다.
-  - `rl-fix`: 경로 2 수정 RL 점검(044-R11, 150만 step마다). T0 표준 테란·프로토스(`t0_tp_rl`), TvZ(`tvz_rl`), 러시 128 + 운영형 40, 끝에 T1 300(`t1_rl`).
+  - `rl-fix`: 경로 2 수정 RL 점검(044-R11, 150만 step마다). T0 표준 테란·프로토스(`t0_tp_rl`), TvZ(`tvz_rl`), 러시 128 + 운영형 40, 끝에 T1 300(`t1_rl`). 단서 진단과 죽은 채널 통계는 run의 최종 체크포인트만(`diag_final_only = ["cue_diag", "dead_channels"]`, 사용자 결정 2026-11-14). run 이름은 `m2-rl-fix-<번호>`만 받는다(사용자 결정 2026-11-14).
   - 이 네 지점에도 050-R10 게이트를 적용하고 교사 모드 판 비율을 기록한다(050-R10).
 - `metrics`는 Checkpoint 1 경로에서 잰 지표다. 이 지표는 바로 비교할 수 있다. `optional`은 Checkpoint 1 값이 없는 지표다. 그중 050-R9 지점 표가 요구하는 칸은 `ck1_supplement`로 Checkpoint 1 쪽도 보충 측정할 수 있다.
 - 지표
@@ -58,7 +59,8 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
   - Checkpoint 1(`r1`): Windows 호스트
   - Checkpoint 1 RL(`rl-s1`): 둘 다(실제로 섞여 돌았다)
   - `r2`: Windows. 경로 2의 Checkpoint 1 대응 모델은 r1·r2 중 041-R29 ④로 고르므로, r2도 그 모델 행의 칸(test, val 500 종족별, T1, T0 표준 테란·프로토스)을 `optional`로 받는다.
-  - `t1_platforms`가 없는 지점은 T1을 받지 않는다. `D`·`rl-fix`는 T1이 메뉴에 있지만 Checkpoint 1 대응이 없어 플랫폼이 정해지지 않았다(`t1_platforms_open`). 정해질 때까지 T1 job은 그 이유와 함께 거부한다.
+  - `D`·`rl-fix`: Checkpoint 1 대응이 없어 빈 호스트에서 돈다(Windows·Linux 모두, 사용자 결정 2026-11-14). job의 `protocol.json`에 호스트 플랫폼, `tables.py`에 단계별 추론 backend·정밀도가 남고, `compare`는 두 쪽의 backend나 T1 플랫폼이 다르면 `NOTE` 줄로 표시한다.
+  - `t1_platforms`가 없는 지점은 T1을 받지 않는다.
 
 ## 재는 법
 
@@ -112,7 +114,7 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
    - `dead_channels`는 그 run의 학습 로그 `sp_*` 기록(041-R25·042-R21)만 쓴다(AMB-050-5). 기록은 update 600부터 그 체크포인트의 update(BC: `ckpt-N` = update N, RL: agent `main`의 로그 전체)까지다.
      - Checkpoint 1 경로 칸은 "재지 않음(학습 기록 없음)"이다. `--lineage ck1`의 `dead_channels`는 거부한다.
      - `diag spatial`은 프로토콜에서 뺐다. 필요하면 따로 쓰는 도구다.
-   - `s1e2` 지점의 단서 진단(`cue_diag`)은 run의 최종 체크포인트(`DONE`이 있고 가장 늦은 `ckpt-N`)만 받는다(AMB-050-6). `dead_channels`는 이 제한이 없다.
+   - `s1e2` 지점의 단서 진단(`cue_diag`)은 run의 최종 체크포인트(`DONE`이 있고 가장 늦은 `ckpt-N`)만 받는다(AMB-050-6). `dead_channels`는 이 제한이 없다. `rl-fix`는 `cue_diag`와 `dead_channels` 모두 최종 체크포인트만 받는다(사용자 결정 2026-11-14, RL 체크포인트 `ckpt-N/agents/<agent>`의 `ckpt-N`으로 본다).
    - 명령: `python tools/eval/protocol.py diag --lineage m2 --point s1e1 --checkpoint checkpoints/m2-s1/ckpt-N --train-log <BC stderr 로그 | RL train.csv>`가 이 호스트 경로로 명령을 출력만 한다(아무것도 쓰지 않음). Linux ROCm 호스트에서 `--run`을 붙이면 차례로 실행한다. Checkpoint 1 경로는 `--metrics cue_diag`.
      - `--run`은 먼저 `<out>/running.json`을 쓰고, 단계마다 걸린 시간·오류를 남긴다. 덤프는 이 호스트 `<cache>/diag_dump/<run>__<ckpt>/<set>/dump`에 쓰고, 끝나면 `<out>/<set>/dump.part`로 복사한 뒤 이름을 바꾼다(λ 스크립트와 같음).
      - 다 끝나면 `running.json`이 `protocol.json`이 된다. 체크포인트 sha256, git 커밋과 미커밋 측정 파일, backend·정밀도, 보관분, 학습 로그 이름·sha256, 실행한 명령(`python`, `<shared>`·`<cache>` 표기), 단계 기록, 확인 결과가 들어간다.
@@ -175,10 +177,10 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 - Checkpoint 1 경로에서 이미 잰 칸의 재측정(그 지점의 `ck1_supplement`와 진단 지표만 받는다)
 - 지점 메뉴에 없는 지표, 다른 계열의 plan(예: BC 지점에 `tvz_rl`)
 - 템플릿 조건 해시나 고정값(판 수·표집·`zero_last_failed`·`max_frames`)이 `lineage.toml`과 다를 때. 이름·체크포인트(p0·p1의 모델 모두)가 자리표시가 아닐 때
-- `m2` 경로인데 run 이름이 `m2-`로 시작하지 않을 때, `run_pattern`이 있는 지점(`d1`·`d2`·`D`)에서 run 이름이 맞지 않을 때
-- Checkpoint 1 대응이 없는 지점(`d1`·`d2`·`D`·`rl-fix`)의 `--lineage ck1`
+- `m2` 경로인데 run 이름이 `m2-`로 시작하지 않을 때, `run_pattern`이 있는 지점(`d1`·`d2`·`D`·`rl-fix`)에서 run 이름이 맞지 않을 때
+- Checkpoint 1 대응이 없는 지점(`r3`·`d1`·`d2`·`D`·`rl-fix`)의 `--lineage ck1`
 - 체크포인트 가중치 파일이 없을 때
-- T1 job의 호스트 중 `platform`이 없거나 지점의 `t1_platforms`가 아닌 것이 있을 때, T1 플랫폼이 정해지지 않은 지점(`t1_platforms_open`)의 T1 job
+- T1 job의 호스트 중 `platform`이 없거나 지점의 `t1_platforms`가 아닌 것이 있을 때
 - job에 OSS 봇이 있는데, 호스트의 봇 해시를 읽을 수 없거나 `t1_bots.toml`에 없을 때. 호스트 목록에 `local = true`를 주거나, `ssh = "<별칭>"`과 `oss_bots_dir`(그 호스트의 `URANIUM_OSS_BOTS_DIR`)을 주거나, `--bot-hashes <파일>`(`<주소> <봇> <sha256>` 줄)을 준다.
 - 측정 파일(`tools/eval`, `config/plans/protocol`, `config/protocol`)에 커밋 안 된 변경이 있을 때. `--allow-dirty`면 경로와 diff 해시를 `protocol.json`에 기록하고 진행한다. `verify`는 그런 job을 표시한다.
 - git 작업 사본이 아닐 때
@@ -291,7 +293,9 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 | `pass` | 050-R10 게이트 전부 PASS(1, 2, 3a, 3b) + TvZ 32판 ≥ 16승 + 늦은 막음(`held_8m`) ≥ 24/64 + 막음 합(이른 + 늦은 `held_8m`) ≥ S의 막음 합 − 6 |
 | `d2` | d1만. 통과하지 못했지만 T0 프로토스 승 ≥ S + 4이고 TvZ 유지(≥ 16승, 늦은 막음 ≥ 24/64) |
 | `stop` | TvZ 유지 실패 또는 T0 프로토스 승 < S + 4. d2가 통과하지 못하면 늘 `stop`(d2가 마지막) |
-| `incomplete` | 판정이 달린 입력이 없음(끝나지 않은 job, 깨진 줄, 게이트 검사 MISSING). 판정하지 않는다 |
+
+- 판정은 이 셋뿐이다(사용자 결정 2026-11-14). 게이트 검사가 MISSING이거나 칸이 비면(판이 빠짐, val 출력 없음) 그 조건은 실패로 센다.
+- 판정 파일을 지키려고, 입력 job 중 하나라도 끝나지 않았거나(`DONE` 없음) 깨진 줄이 있으면 판정도 파일도 없이 거부한다. 기준선 job은 `s2e2` 지점, S의 두 job은 선택 후보 지점(`r1`·`r2`·`r3`·`s2e2`) 하나와 체크포인트 하나의 `protocol.json`이어야 한다.
 
 - 막음·TvZ는 세션 행으로 센다(`tables.py`와 같은 규칙, 상대 크래시 판 무효). 승 수는 무효 판을 뺀 절대 수다.
 - 교사 모드 판 비율(라운드와 S의 `t0_tp`)은 판정 파일에 기록만 한다.

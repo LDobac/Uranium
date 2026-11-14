@@ -214,7 +214,7 @@ def stage_teacher_mode(stage_dir: Path, stage: int, plan: dict, rows: dict[int, 
     want = [n for n in teacher_mode_games(plan) if n in rows and stage * ec.STAGE_BASE + n not in invalid]
     if not want:
         return {}
-    src = games or {n: n for n in want}
+    src = games if games is not None else {n: n for n in want}
     try:
         got = ec.dump_stage(stage_dir, sorted(src[n] for n in want), cache)
     except SystemExit as e:

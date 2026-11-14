@@ -631,8 +631,19 @@ ck1_outputs = { val500 = "artifacts/bc_e2_val/val500/bc-dagger-r2__ckpt-1218.jso
 # lineage ck1 is refused there (protocol.py no_counterpart). `metrics` = the row's cells + the diagnostics every
 # point gets (050-R9 "추가 지표"); 050-R10 gate at every one of them (tools/eval/regression_gate.py) and the
 # teacher-mode share recorded (`teacher_mode`, TvT / TvP). `run_pattern`: the run name after the lineage prefix.
-# `t1_platforms_open`: T1 is on the menu but its platform is not decided (050-R9 ties it to the Checkpoint 1
-# counterpart, which these points do not have); a T1 job is refused until lineage.toml pins `t1_platforms`.
+# T1 of D and rl-fix (user decision 2026-11-14, 050-R9): no Checkpoint 1 counterpart platform; T1 runs on whichever
+# host is idle (both platforms allowed). The job records its host platforms (protocol.json), tables.py the inference
+# backend / precision per stage, and `protocol.py compare` marks backend and T1-platform differences.
+
+[[point]]
+id = "r3"
+family = "bc"
+note = "DAgger round 3 of lineage 2 (user decision 2026-11-14: r3 runs, 041-R29 ④); Checkpoint 1 had no r3"
+# The same menu as r2 (the round's tests, and the Checkpoint 1 counterpart model's cells, r3 being a candidate of the
+# 041-R29 ④ selection; T1 on Windows like that model).
+t1_platforms = ["windows"]
+metrics = ["val500", "rush", "macro", "tvz", "cue_diag", "dead_channels"]
+optional = ["per_action", "t0_100", "t0_tp", "test", "val500_race", "t1", "ops", "rush_combat"]
 
 [[point]]
 id = "d1"
@@ -655,7 +666,7 @@ id = "D"
 family = "bc"
 note = "path-2 fixed model D (044-R7): the checkpoint of the round that passed 044-R6, measured as the 'Checkpoint 1 대응 모델' row; the round point's cells (val500, t0_tp, diagnostics) are the same checkpoint's"
 run_pattern = "distill-d[0-9]+"
-t1_platforms_open = "D has no Checkpoint 1 counterpart; whether its T1 runs on Windows (as the Checkpoint 1 counterpart model S) or Linux is not decided"
+t1_platforms = ["windows", "linux"]
 # The diagnostics: the same checkpoint and output folder as its round point's (measured once, `diag` refuses a
 # finished folder).
 metrics = ["test", "val500", "val500_race", "t1", "t0_tp", "teacher_mode", "cue_diag", "dead_channels"]
@@ -665,9 +676,11 @@ optional = ["per_action", "tvz", "rush", "macro", "ops", "rush_combat"]
 id = "rl-fix"
 family = "rl"
 note = "path-2 fixed RL checks (044-R11: every 1.5M agent steps, T1 300 at the end), from D"
-t1_platforms_open = "the fixed RL run has no Checkpoint 1 counterpart (Checkpoint 1 RL ran T1 on both platforms); not decided"
-# The diagnostics every point gets (050-R9); whether at every check or the run's last only (as s1e2, AMB-050-6) is
-# not decided: no `diag_final_only` here.
+t1_platforms = ["windows", "linux"]
+# The diagnostics (cue_diag and dead_channels) at the run's final checkpoint only (user decision 2026-11-14; s1e2
+# restricts cue_diag only). Run `m2-rl-fix-<number>` (user decision 2026-11-14, 044-R11).
+diag_final_only = ["cue_diag", "dead_channels"]
+run_pattern = "rl-fix-[0-9]+"
 metrics = ["t0_tp", "tvz", "rush", "macro", "teacher_mode", "cue_diag", "dead_channels"]
 optional = ["t1", "ops", "rush_combat"]
 
