@@ -611,6 +611,15 @@ impl RlConfig {
             if !keys.insert(key.clone()) {
                 bail!("[[ladder]] entry {}: win-table key {key} appears twice (042, AMB-042-15)", i + 1);
             }
+            // 021-R7 / 044-R10 (2026-11-14): a Random T1 entry only for a [[t1]] bot of that name
+            // listing all three races (as the [[t1]] Random draw; the T0 build is checked above).
+            if e.race == uranium_proto::Race::Random && e.kind == crate::league::LadderKind::T1 {
+                use uranium_proto::Race;
+                let name = e.name.as_deref().unwrap_or_default();
+                if !self.t1.iter().any(|b| b.name == name && [Race::Terran, Race::Protoss, Race::Zerg].iter().all(|r| b.races.contains(r))) {
+                    bail!("[[ladder]] entry {}: race Random needs a [[t1]] bot named {name:?} listing Terran, Protoss and Zerg (021-R7)", i + 1);
+                }
+            }
         }
         // 042 사다리 그룹 설정 검사 (AMB-042-16).
         let groups = &self.curriculum.ladder_groups;
@@ -1001,8 +1010,16 @@ mod tests {
         assert!(entry("kind = \"t2\"\nname = \"x\"\nrace = \"Zerg\"").is_err(), "kind");
         assert!(entry("kind = \"t0\"\nbuild = \"zerg_rushes\"\nrace = \"Zerg\"").is_err(), "unknown build");
         assert!(entry("kind = \"t0\"\nbuild = \"zerg_rush\"\nrace = \"Terran\"").is_err(), "build of another race");
-        assert!(entry("kind = \"t0\"\nbuild = \"standard\"\nrace = \"Random\"").is_err(), "Random");
-        assert!(entry("kind = \"t1\"\nname = \"zzzkbot\"\nrace = \"Random\"").is_err(), "Random");
+        // 021-R7 / 044-R10 (2026-11-14): Random only on the standard T0 build and on a [[t1]] bot
+        // listing all three races (rl.toml: ualbertabot, steamhammer, mcrave; zzzkbot is Zerg only).
+        assert!(entry("kind = \"t0\"\nbuild = \"zerg_rush\"\nrace = \"Random\"").is_err(), "Random one-race build");
+        assert!(entry("kind = \"t1\"\nname = \"zzzkbot\"\nrace = \"Random\"").is_err(), "Random one-race bot");
+        assert!(entry("kind = \"t1\"\nname = \"ualbertabot9pool10lings\"\nrace = \"Random\"").is_err(), "Random bot not in [[t1]]");
+        assert!(entry("kind = \"t1\"\nname = \"ualbertabot\"\nrace = \"Unknown\"").is_err(), "Unknown");
+        let r = entry("kind = \"t0\"\nbuild = \"standard\"\nrace = \"Random\"").unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(r.ladder[0].opponent().unwrap().1, "t0-random");
+        let r = entry("kind = \"t1\"\nname = \"ualbertabot\"\nrace = \"Random\"").unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(r.ladder[0].opponent().unwrap().1, "ualbertabot-random");
         assert!(entry("kind = \"t1\"\nrace = \"Zerg\"").is_err(), "t1 without a name");
         assert!(entry("kind = \"t0\"\nname = \"zzzkbot\"\nrace = \"Zerg\"").is_err(), "t0 without a build");
         assert!(entry("kind = \"t1\"\nname = \"zzzkbot\"\nrace = \"Zerg\"\nraces = [\"Zerg\"]").is_err(), "unknown key");
@@ -1663,6 +1680,60 @@ mod tests {
         d.league.start_mix = t.league.start_mix.clone();
         d.league.rush_judge.groups = vec!["rush".into()];
         (d.sil.select_keys, d.sil.select_army_before_s, d.sil.select_start_hit) = (t.sil.select_keys.clone(), t.sil.select_army_before_s, t.sil.select_start_hit);
+        assert_eq!(d, t);
+        let back: RlConfig = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert_eq!(back, t, "the serialised config (checkpoint) reads back the same");
+    }
+
+    /// 044-R9 / R10 / R11, 042-R22 (user decisions 2026-11-14): `config/rl_m2_race.toml` refuses to
+    /// load until `[kl.reference] zerg` (S) is filled in, and is `config/rl_m2.toml` with only the
+    /// listed changes — `[kl.reference]` terran / protoss / random = m2-s2e2 ckpt-11387; C1 without
+    /// stage changes, every game a "fixed" ladder game (no self-play, no model opponent), groups by
+    /// lobby race 0.24 / 0.28 / 0.28 / 0.20; r_value in C1; the 044-R10 T1 list (no McRave,
+    /// Steamhammer T / Z). The realised shares are `league::tests::m2_race_shares_044_r10`.
+    #[test]
+    fn rl_m2_race_config_044_r10() {
+        use uranium_proto::Race;
+        let text = include_str!("../../../config/rl_m2_race.toml").replace("\r\n", "\n");
+        let t: RlConfig = toml::from_str(&text).unwrap();
+        let err = format!("{:#}", t.validate().unwrap_err());
+        assert!(err.contains("[kl.reference] zerg is empty"), "the S placeholder refuses to start: {err}");
+        let s = "checkpoints/m2-dagger-r3/ckpt-1";
+        assert!(text.contains("\nzerg = \"\"\n"));
+        let t: RlConfig = toml::from_str(&text.replacen("\nzerg = \"\"\n", &format!("\nzerg = \"{s}\"\n"), 1)).unwrap();
+        t.validate().unwrap_or_else(|e| panic!("{e:#}"));
+        let base = "checkpoints/m2-s2e2/ckpt-11387";
+        assert_eq!(t.kl.reference, KlReference { zerg: Some(s.into()), terran: Some(base.into()), protoss: Some(base.into()), random: Some(base.into()) });
+        let cc = &t.curriculum;
+        assert_eq!((cc.start_stage, cc.auto_advance), (Stage::C1, false));
+        assert_eq!((cc.c1_ladder, cc.c1_t0, cc.c1_t1, cc.c1_self, cc.c1_snapshot, cc.c1_anchor), (1.0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        assert_eq!(cc.ladder_pick, LadderPickSetting::All(LadderPick::Fixed));
+        let groups: Vec<(&str, f64)> = cc.ladder_groups.iter().map(|(g, x)| (g.as_str(), *x)).collect();
+        assert_eq!(groups, [("protoss", 0.28), ("random", 0.20), ("terran", 0.24), ("zerg", 0.28)]);
+        assert_eq!(cc.r_value_stages, vec![Stage::C0, Stage::C1]);
+        let t1: Vec<(&str, &[Race])> = t.t1.iter().map(|b| (b.name.as_str(), b.races.as_slice())).collect();
+        assert_eq!(t1, [("ualbertabot", &[Race::Terran, Race::Protoss, Race::Zerg][..]), ("steamhammer", &[Race::Terran, Race::Zerg][..]), ("stardust", &[Race::Protoss][..]), ("zzzkbot", &[Race::Zerg][..]), ("iron", &[Race::Terran][..])]);
+        let race_group = |r: Race| match r {
+            Race::Terran => "terran",
+            Race::Protoss => "protoss",
+            Race::Zerg => "zerg",
+            _ => "random",
+        };
+        assert!(t.ladder.iter().all(|e| e.weight.is_some() && e.group == race_group(e.race)), "every entry weighted, in its race's group");
+        // 044-R10: no E-Regression builds, no McRave.
+        assert!(t.ladder.iter().all(|e| e.build.is_none_or(|b| matches!(b, uranium_agent::T0Build::Standard | uranium_agent::T0Build::ZergRush))));
+        assert!(t.ladder.iter().all(|e| !e.name.as_deref().unwrap_or_default().starts_with("mcrave")));
+        assert_eq!(t.ladder.len(), 17);
+        // Everything else as in config/rl_m2.toml.
+        let mut d: RlConfig = toml::from_str(include_str!("../../../config/rl_m2.toml")).unwrap();
+        d.kl.reference = t.kl.reference.clone();
+        {
+            let dc = &mut d.curriculum;
+            (dc.start_stage, dc.auto_advance, dc.r_value_stages) = (cc.start_stage, cc.auto_advance, cc.r_value_stages.clone());
+            (dc.c1_ladder, dc.c1_t0, dc.c1_t1, dc.c1_self) = (cc.c1_ladder, cc.c1_t0, cc.c1_t1, cc.c1_self);
+            (dc.ladder_pick, dc.ladder_groups) = (cc.ladder_pick.clone(), cc.ladder_groups.clone());
+        }
+        (d.t1, d.ladder) = (t.t1.clone(), t.ladder.clone());
         assert_eq!(d, t);
         let back: RlConfig = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
         assert_eq!(back, t, "the serialised config (checkpoint) reads back the same");
