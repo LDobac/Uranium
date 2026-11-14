@@ -1,6 +1,6 @@
 """041-R24 loss-weight selection run configs (P3, AMB-041-13a): config/bc_m2_lambda_*.toml, and the
 model 2 path configs with the confirmed λ (041-R29, AMB-041-13b): bc_m2.toml, bc_m2_e2.toml,
-bc_m2_mix_e1.toml ... e7, the DAgger rounds bc_m2_dagger_r1.toml / r2 and their plans dagger_m2_r1.toml / r2."""
+bc_m2_mix_e1.toml ... e7, the DAgger rounds bc_m2_dagger_r1.toml / r2 / r3 and their plans dagger_m2_r1.toml / r2 / r3."""
 
 import json
 from pathlib import Path
@@ -155,29 +155,38 @@ _RACE_FRACTIONS = {f"data.subsample.fraction_by_race.{r}" for r in "TPZ"}
 _COUNTED = {"data.subsample.fraction", "steps.s2", "steps.s2_warmup"} | _RACE_FRACTIONS
 
 
-# Round -> (data.seed, the lineage's config before it, keys that may differ from that one besides the counted).
-_M2_DAGGER = {1: (13, "bc_m2_mix_e7.toml", {"data.seed", "data.subsample.keep_sources"}), 2: (14, "bc_m2_dagger_r1.toml", {"data.seed"})}
+# Round -> (data.seed, the lineage's config before it, keys that may differ from that one besides the counted,
+# the Checkpoint 1 path's round compared with: round 3 is lineage 2 only (user decision 2026-11-14), so it is held
+# against Checkpoint 1's last round 2 with the data seed apart).
+_M2_DAGGER = {
+    1: (13, "bc_m2_mix_e7.toml", {"data.seed", "data.subsample.keep_sources"}, 1),
+    2: (14, "bc_m2_dagger_r1.toml", {"data.seed"}, 2),
+    3: (15, "bc_m2_dagger_r2.toml", {"data.seed"}, 2),
+}
 
 
 @pytest.mark.parametrize("rnd", sorted(_M2_DAGGER))
 def test_m2_dagger_config_041_r29(tmp_path, rnd):
     """041-R29 ④ / 041-R22 ③ / 041-R26 / 041-R30 ⑥: config/bc_m2_dagger_r<R>.toml is the Checkpoint 1 path's
-    bc_dagger_r<R>.toml (1 epoch, learning rate, data.seed 13 / 14, keep_sources botgen + dagger) with the
-    model 2 tables of the lineage's config before it (r1: bc_m2_mix_e7.toml, r2: bc_m2_dagger_r1.toml; [model],
+    bc_dagger_r<R>.toml (r3: bc_dagger_r2.toml; 1 epoch, learning rate, data.seed 13 / 14 / 15, keep_sources
+    botgen + dagger) with the model 2 tables of the lineage's config before it (r1: bc_m2_mix_e7.toml, r2 / r3:
+    the round before; [model],
     [aux], [monitor], keep_checkpoints 0), chain_start_sources ["botgen"] (not dagger), and its own per-race
     human fractions and [steps] (the same 0.5954 teacher + dagger target in every round). Until the run
     driver's count fills them, the placeholder zero fraction_by_race makes the loader refuse the file (s2 = 0
     would mean total_steps); filled, they are a valid race subsample and a 5% warmup (041-R14)."""
     from uranium.bc.run import model_variant
 
-    seed, before, may_differ = _M2_DAGGER[rnd]
+    seed, before, may_differ, ck1_round = _M2_DAGGER[rnd]
+    seed_apart = {"data.seed"} if ck1_round != rnd else set()
     root = Path(__file__).resolve().parents[2] / "config"
     p = root / f"bc_m2_dagger_r{rnd}.toml"
-    new, ck1, prev = (_flat(_toml(root / f)) for f in (p.name, f"bc_dagger_r{rnd}.toml", before))
+    new, ck1, prev = (_flat(_toml(root / f)) for f in (p.name, f"bc_dagger_r{ck1_round}.toml", before))
     # TOML level against Checkpoint 1's same round: only the model 2 keys, 041-R30 and the counted values differ.
     diff = {k for k in new.keys() | ck1.keys() if new.get(k) != ck1.get(k)}
     assert _M2_TABLES | {"data.chain_start_sources"} | _RACE_FRACTIONS <= diff
-    assert diff <= _M2_TABLES | {"data.chain_start_sources"} | _COUNTED, diff - _M2_TABLES - _COUNTED
+    allowed = _M2_TABLES | {"data.chain_start_sources"} | _COUNTED | seed_apart
+    assert diff <= allowed, diff - allowed
     # ... and against the lineage's config before it: same keys; the DAgger data seed (and sources), counted values.
     assert new.keys() == prev.keys()
     assert {k for k in new if new[k] != prev[k]} <= may_differ | _COUNTED
@@ -201,13 +210,13 @@ def test_m2_dagger_config_041_r29(tmp_path, rnd):
         assert new["steps.s2"] > 0 and new["steps.s2_warmup"] == int(new["steps.s2"] * 0.05 + 0.5)
         assert "PLACEHOLDER" not in p.read_text(encoding="utf-8")
     cfg, fp = _bc(p, "s2")
-    ref, ref_fp = _bc(root / f"bc_dagger_r{rnd}.toml", "s2")
+    ref, ref_fp = _bc(root / f"bc_dagger_r{ck1_round}.toml", "s2")
     assert cfg["aux"] == {"priv": pytest.approx(0.2), "jepa": pytest.approx(0.1)} and cfg["monitor"] == {"spatial_every": 100}
     assert cfg["keep_checkpoints"] == 0 and "train" not in cfg, "041-R29 ⑨; model_seed unused with --init"
     assert cfg["data"]["chain_start_sources"] == ["botgen"] and cfg["data"]["subsample"]["keep_sources"] == ["botgen", "dagger"]
     skip = ("aux", "monitor", "keep_checkpoints", "data", "steps", "total_steps", "warmup_steps")
     assert {k: x for k, x in cfg.items() if k not in skip} == {k: x for k, x in ref.items() if k not in skip}
-    dskip = ("chain_start_sources", "subsample")
+    dskip = ("chain_start_sources", "subsample", *(("seed",) if seed_apart else ()))
     assert {k: x for k, x in cfg["data"].items() if k not in dskip} == {k: x for k, x in ref["data"].items() if k not in dskip}
     assert cfg["lr"] * cfg["s2_lr_scale"] == pytest.approx(3e-5) and cfg["min_lr"] * cfg["s2_lr_scale"] == pytest.approx(3e-7)
     assert fp != ref_fp
@@ -215,21 +224,38 @@ def test_m2_dagger_config_041_r29(tmp_path, rnd):
         assert (cfg["total_steps"], cfg["warmup_steps"]) == (new["steps.s2"], new["steps.s2_warmup"])
 
 
-# Round -> (games, the model that plays: the lineage's model before the round, 041-R22 ③ / 041-R29 ④).
-_M2_DAGGER_PLAN = {1: (600, "checkpoints/m2-mix-e7/ckpt-1212"), 2: (300, "checkpoints/m2-dagger-r1/ckpt-1285")}
+# Round -> (games, the model that plays: the lineage's model before the round, 041-R22 ③ / 041-R29 ④; the Checkpoint 1
+# path's plan compared with: round 3 is lineage 2 only, held against Checkpoint 1's half plan of round 2).
+_M2_DAGGER_PLAN = {
+    1: (600, "checkpoints/m2-mix-e7/ckpt-1212", 1),
+    2: (300, "checkpoints/m2-dagger-r1/ckpt-1285", 2),
+    3: (300, "checkpoints/m2-dagger-r2/ckpt-1408", 2),
+}
 
 
 @pytest.mark.parametrize("rnd", sorted(_M2_DAGGER_PLAN))
 def test_m2_dagger_plan_041_r28(rnd):
     """041-R29 ④ / 041-R22 ① / 041-R28 ①: config/plans/dagger_m2_r<R>.toml (rush_check_plan.py --dagger --round R
-    [--half for round 2] --memory-log --checkpoint <the lineage's model before the round>) is the Checkpoint 1
+    [--half for rounds 2, 3] --memory-log --checkpoint <the lineage's model before the round>) is the Checkpoint 1
     path's same-round plan (same seeds and matchups: r1 600 games n = 1..600, r2 the half plan 300 games
-    n = 601..900; stochastic, 10 min, replays) with the lineage-2 model and the decision logs."""
-    games, ckpt = _M2_DAGGER_PLAN[rnd]
+    n = 601..900; stochastic, 10 min, replays) with the lineage-2 model and the decision logs. Round 3 (lineage 2
+    only, user decision 2026-11-14) is the round-2 half plan's matchups with the round-3 seeds n = 1,201..1,500
+    (splitmix64(70,000 + n) >> 32, the 600-wide round stride)."""
+    import importlib.util
+
+    games, ckpt, ck1_round = _M2_DAGGER_PLAN[rnd]
     root = Path(__file__).resolve().parents[2] / "config" / "plans"
-    new, ck1 = _toml(root / f"dagger_m2_r{rnd}.toml"), _toml(root / f"dagger_r{rnd}.toml")
+    new, ck1 = _toml(root / f"dagger_m2_r{rnd}.toml"), _toml(root / f"dagger_r{ck1_round}.toml")
     assert new["memory_log"] is True and "memory_log" not in ck1 and new["save_replay"] is True
-    assert {k: x for k, x in new.items() if k not in ("memory_log", "matchup")} == {k: x for k, x in ck1.items() if k != "matchup"}
+    apart = ("memory_log", "matchup") + (("name", "seeds") if ck1_round != rnd else ())
+    assert {k: x for k, x in new.items() if k not in apart} == {k: x for k, x in ck1.items() if k not in apart}
+    if ck1_round != rnd:
+        spec = importlib.util.spec_from_file_location("rush_check_plan", root.parents[1] / "tools" / "eval" / "rush_check_plan.py")
+        gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gen)
+        first = (rnd - 1) * gen.DAGGER_ROUND_STRIDE + 1
+        assert new["name"] == f"dagger-r{rnd}"
+        assert new["seeds"] == [gen.splitmix64(gen.DAGGER_SEED_KEY + k) >> 32 for k in range(first, first + games)]
     assert len(new["seeds"]) == games == sum(m["games"] for m in new["matchup"])
     for a, b in zip(new["matchup"], ck1["matchup"], strict=True):
         assert a["p0"] == {"kind": "model", "checkpoint": ckpt, "sample": "stochastic"}
