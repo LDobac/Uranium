@@ -107,6 +107,81 @@ def test_distill_rejects_taken_seed_044_r1(tmp_path):
     assert rcp.write_distill(tmp_path, 1, CKPT, None).read_bytes() == first, "rewriting its own file is fine"
 
 
+@pytest.mark.parametrize("extra", [20, 120, 1000])
+def test_distill_topup_composition_044_r5(tmp_path, extra):
+    """044-R5 ③ top-up (user decision 2026-11-14): `--extra N` writes N more games of the round with the same
+    model and the exact 044-R1 composition (every block x N / 600), the same 10 min / replays / decision logs,
+    plan name distill-m2-d<R>-x<K>."""
+    out = tmp_path / "x.toml"
+    rcp.write_distill(PLANS, 1, CKPT, out, extra=extra, part=2)
+    plan = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert plan["name"] == "distill-m2-d1-x2"
+    assert plan["max_frames"] == 14400 and plan["save_replay"] is True and plan["memory_log"] is True
+    games = Counter()
+    for m in plan["matchup"]:
+        assert m["p0"] == {"kind": "model", "checkpoint": CKPT, "sample": "stochastic"}
+        assert m.get("p1_random_ratio", 0) == 0 and "build" not in m["p1"]
+        games[(_opponent(m["p1"]), m["map"])] += m["games"]
+    assert games == Counter({(o, mp): g * extra // 600 for o, g in FULL.items() for mp in MAPS})
+    assert sum(games.values()) == extra == len(plan["seeds"])
+    assert _core.plan_models(str(out)) == [(CKPT, "stochastic")]
+
+
+def test_distill_topup_seeds_disjoint_044_r5(tmp_path):
+    """044-R5 ③ top-up: the seeds are the game-number hash of their own block n = 100,000 + (R - 1) * 10,000 +
+    (K - 1) * 1,000 + i, disjoint from every round block (d1 n 1..600, d2 601..900, up to n 6,000), from the
+    other parts and rounds' top-ups and from every tracked plan; N not a multiple of 20 (the ratio) or above
+    1,000, `--half` with `--extra` and a part below 1 are refused; a plan under --out-dir that takes one of its
+    seeds stops the generator."""
+    seeds = {}
+    for rnd, part in ((1, 1), (1, 2), (2, 1)):
+        out = tmp_path / f"x{rnd}{part}.toml"
+        rcp.write_distill(PLANS, rnd, CKPT, out, extra=1000, part=part)
+        s = tomllib.loads(out.read_text(encoding="utf-8"))["seeds"]
+        first = 100000 + (rnd - 1) * 10000 + (part - 1) * 1000 + 1
+        assert s == [rcp.splitmix64(80000 + n) >> 32 for n in range(first, first + 1000)]
+        seeds[(rnd, part)] = set(s)
+    assert len(set().union(*seeds.values())) == 3000, "parts and rounds disjoint"
+    rounds = {rcp.splitmix64(80000 + n) >> 32 for n in range(1, 6001)}
+    _, d1 = rcp.render_distill(1, CKPT, "x", False)
+    _, d2 = rcp.render_distill(2, CKPT, "x", True)
+    assert set(d1) | set(d2) <= rounds and not rounds & set().union(*seeds.values())
+    tracked = set()
+    for p in PLANS.rglob("*.toml"):
+        if not p.name.startswith("distill_m2_d"):
+            tracked |= rcp.plan_seeds(p)
+    assert not tracked & set().union(*seeds.values())
+    for bad in (dict(extra=30), dict(extra=1020), dict(extra=20, part=0)):
+        with pytest.raises(AssertionError):
+            rcp.render_distill(1, CKPT, "x", False, **bad)
+    with pytest.raises(AssertionError, match="separate plans"):
+        rcp.render_distill(1, CKPT, "x", True, extra=20)
+    # The round plan and an earlier part under --out-dir are scanned; its own file is not counted.
+    d = tmp_path / "plans"
+    d.mkdir()
+    rcp.write_distill(d, 1, CKPT, None)
+    out = rcp.write_distill(d, 1, CKPT, None, extra=40)
+    assert out == d / "distill_m2_d1_x1.toml" and rcp.write_distill(d, 1, CKPT, None, extra=40) == out
+    _, x1 = rcp.render_distill(1, CKPT, "x", False, extra=40, part=1)
+    (d / "clash.toml").write_text(
+        f'name = "c"\nseeds = [{x1[5]}]\n[[matchup]]\nmap = "fighting_spirit"\ngames = 1\n'
+        'p0 = { kind = "t0", race = "terran" }\np1 = { kind = "t0", race = "protoss" }\n', encoding="utf-8")
+    with pytest.raises(AssertionError, match="another plan's"):
+        rcp.write_distill(d, 1, CKPT, None, extra=40)
+
+
+def test_distill_topup_cli_044_r5(tmp_path):
+    """044-R5 ③ top-up: `--extra` / `--part` only with `--distill`, `--part` only with `--extra`."""
+    tool = ROOT / "tools" / "eval" / "rush_check_plan.py"
+    run = lambda *a: subprocess.run([sys.executable, str(tool), *a], capture_output=True, text=True, encoding="utf-8", errors="replace")  # noqa: E731
+    r = run("--distill", "--round", "1", "--extra", "60", "--checkpoint", CKPT, "--out", str(tmp_path / "x.toml"))
+    assert r.returncode == 0, r.stderr
+    assert tomllib.loads((tmp_path / "x.toml").read_text(encoding="utf-8"))["name"] == "distill-m2-d1-x1"
+    for args in (("--dagger", "--extra", "60"), ("--distill", "--part", "2", "--checkpoint", CKPT), ("--distill", "--extra", "50", "--checkpoint", CKPT)):
+        r = run(*args, "--out", str(tmp_path / "bad.toml"))
+        assert r.returncode != 0 and not (tmp_path / "bad.toml").exists(), args
+
+
 def test_plan_seeds_runner_rule_020_r20(tmp_path):
     """020-R20 (plan.rs `seed_of`): the seed scan counts a plan without `seeds` / `seed_base` as the default
     seed_base 1,000 + n, and `same_seed` as seed_base alone."""

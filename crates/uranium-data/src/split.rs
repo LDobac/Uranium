@@ -32,7 +32,10 @@ pub fn selects(sel: Selection, meta: &GameMeta) -> bool {
 /// both perspectives of a TvT game are kept or dropped together and the subset is the same on
 /// every PC and on resume. Applied after the stage selection, so it never moves a game between
 /// the train / val / test splits (041-R12).
+/// Unknown keys are an error (a typo such as `fraction_by_sources` would otherwise silently train
+/// another mix, 044-R5).
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Subsample {
     /// Share of games kept, in (0, 1].
     pub fraction: f64,

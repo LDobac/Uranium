@@ -1324,6 +1324,25 @@ fn subsample_by_source_044_r5() {
     let s: Subsample = toml::from_str("fraction = 0.25\nkeep_sources = [\"botgen\", \"dagger\"]\n[fraction_by_race]\nT = 0.5\nZ = 0.1\n[fraction_by_source]\ndistill = 0.7\n").unwrap();
     assert_eq!(s, with);
     assert!(serde_json::to_value(&by).unwrap().get("fraction_by_source").is_none(), "absent: the 041-R26 fingerprint JSON");
+    // An unknown key (a typo) is an error, not a silently different mix.
+    assert!(toml::from_str::<Subsample>("fraction = 0.25\n[fraction_by_sources]\ndistill = 0.7\n").is_err());
+    assert!(toml::from_str::<Subsample>("fraction = 0.25\nkeep_source = [\"botgen\"]\n").is_err());
+    // ... and every tracked BC config with [data.subsample] still loads (the placeholder ones are refused for
+    // their zero fractions, not for a key).
+    for dir in ["config", "releases/checkpoint-1/config"] {
+        let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).join(dir);
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let p = e.path();
+            let text = std::fs::read_to_string(&p).unwrap_or_default();
+            if p.extension().is_none_or(|x| x != "toml") || !text.lines().any(|l| l.trim() == "[data.subsample]") {
+                continue;
+            }
+            match BcConfig::load(&p) {
+                Ok(c) => assert!(c.data.subsample.is_some(), "{}", p.display()),
+                Err(err) => assert!(text.contains("PLACEHOLDER") && format!("{err:#}").contains("must be in (0, 1]"), "{}: {err:#}", p.display()),
+            }
+        }
+    }
     // The B-3 fingerprint of a real config: unchanged without the key, changed with it.
     let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config"));
     let cfg = BcConfig::load(&dir.join("bc_m2_dagger_r2.toml")).unwrap();
