@@ -17,6 +17,10 @@ EXIT_BUSY = 75
 # started, {"from": "init" | "bc", "path" (as given), "abs_path", and for init "update" /
 # "step"} (042, AMB-042-13).
 START_KEY = "start"
+# 044-R9: key of the KL reference record in each agent's train JSON (only with `[kl.reference]`):
+# per lobby race {"path" (as configured, "--bc" for the --bc model), "abs_path", "sha256" (weights,
+# 020-R5)}.
+KL_REFERENCE_KEY = "kl_reference"
 # Written by the Rust run loop at a checkpoint's root (uranium_store::ckpt::STATE_FILE, 061).
 STATE_FILE = "train_state.json"
 
@@ -59,7 +63,7 @@ class Learners:
         bc, _ = ckpt.load_model(Path(bc_dir), device, adjust=_no_dropout)
         # 044-R9: the other [kl.reference] models, loaded once and shared by the three learners
         # (frozen; the run loop runs one learner update at a time).
-        refs, race_ref = kl_references(cfg, bc_dir, bc, device)
+        refs, race_ref, self.kl_reference = kl_references(cfg, bc_dir, bc, device)
         self.learners: list = []
         self.servers: list = []
         self.brokers_: list = []
@@ -136,6 +140,8 @@ class Learners:
         train = json.loads(train_json)
         if self.starts[i] is not None:  # None: resumed from a checkpoint written before the record
             train[START_KEY] = self.starts[i]
+        if self.kl_reference is not None:  # 044-R9: which checkpoint each race's KL used
+            train[KL_REFERENCE_KEY] = self.kl_reference
         ckpt.save_meta(d, l.net.cfg, train, self.precision, impl_settings())
 
     def snapshot_server(self, dir: str) -> tuple:
@@ -204,7 +210,8 @@ def start_policies(bc_dir: str, bc, init: str | None, resume: str | None, device
 
 def reference_dir(path: str) -> Path:
     """A `[kl.reference]` value as a folder (044-R9): absolute as given, relative under
-    `URANIUM_SHARED_DIR` (as `[league] anchor`, 020-R11)."""
+    `URANIUM_SHARED_DIR` (as `[league] anchor`, 020-R11; `--bc` itself stays relative to the
+    working folder)."""
     p = Path(path.strip())
     if p.is_absolute():
         return p
@@ -222,10 +229,11 @@ def model_key(d: Path, cfg) -> tuple:
     return ckpt.policy_version(d), json.dumps(_flat(cfg.to_dict()), sort_keys=True, default=str)
 
 
-def kl_references(cfg: dict, bc_dir: str, bc, device) -> tuple[list, list | None]:
+def kl_references(cfg: dict, bc_dir: str, bc, device) -> tuple[list, list | None, dict | None]:
     """044-R9 `[kl.reference]`: (the reference models other than `--bc`, each loaded once; per
-    lobby race in `REF_RACES` order the index of its reference in `[bc, *models]`), or `([],
-    None)` without the table (one reference, `--bc`, as before). A race without a key uses `--bc`;
+    lobby race in `REF_RACES` order the index of its reference in `[bc, *models]`; the record
+    each checkpoint keeps, `KL_REFERENCE_KEY`), or `([], None, None)` without the table (one
+    reference, `--bc`, as before). A race without a key uses `--bc`;
     keys naming the same checkpoint (same weights and config, `model_key`) share one model, and
     one naming `--bc`'s uses `--bc` itself. A model config other than `--bc`'s is a start error
     (the KL compares the same heads' distributions, 042 출발 정책, 032-R10)."""
@@ -234,15 +242,18 @@ def kl_references(cfg: dict, bc_dir: str, bc, device) -> tuple[list, list | None
 
     table = (cfg.get("kl") or {}).get("reference") or {}
     if not any(table.get(r) for r in REF_RACES):
-        return [], None
-    keys = {model_key(Path(bc_dir), bc.cfg): 0}
+        return [], None, None
+    bc_key = model_key(Path(bc_dir), bc.cfg)
+    keys = {bc_key: 0}
     names = {0: f"--bc {bc_dir}"}
+    record: dict = {}
     models: list = []
     race_ref: list = []
     for race in REF_RACES:
         path = table.get(race)
         if not path:
             race_ref.append(0)
+            record[race] = {"path": "--bc", "abs_path": str(Path(bc_dir).resolve()), "sha256": bc_key[0]}
             continue
         d = reference_dir(path)
         meta = ckpt.read_meta(d)
@@ -254,8 +265,9 @@ def kl_references(cfg: dict, bc_dir: str, bc, device) -> tuple[list, list | None
             names[keys[key]] = f"{path} (sha256 {key[0][:12]})"
             models.append(net)
         race_ref.append(keys[key])
+        record[race] = {"path": path, "abs_path": str(d.resolve()), "sha256": key[0]}
     print("[rl] KL reference per lobby race (044-R9): " + ", ".join(f"{r} {names[i]}" for r, i in zip(REF_RACES, race_ref)) + f"; {len(models)} model(s) besides --bc", file=sys.stderr, flush=True)
-    return models, race_ref
+    return models, race_ref, record
 
 
 def same_model(bc_cfg, cfg, what: str) -> None:
