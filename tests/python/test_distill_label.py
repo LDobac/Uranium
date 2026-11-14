@@ -177,8 +177,10 @@ def test_row_noise_depends_only_on_the_row_key_and_column_044_r3():
     assert len(set(keys.tolist())) == 3
 
     def draws(k, n):
-        nz = RowNoise(k, n, 2)
-        return [nz.uniform((k.shape[0], w), "cpu") for w in (10, 16, 2, n + 1, n + 1, n, 30)]
+        nz = RowNoise(k, n, 2, 10, 16, 30)
+        out = [nz.uniform((k.shape[0], w), "cpu") for w in (10, 16, 2, n + 1, n + 1, n, 30)]
+        nz.finished()
+        return out
 
     a, b = draws(keys, 4), draws(keys[[2, 0]], 9)
     for i, (x, y) in enumerate(zip(a, b)):
@@ -188,9 +190,18 @@ def test_row_noise_depends_only_on_the_row_key_and_column_044_r3():
             assert torch.equal(x[[2, 0], -1], y[:, -1]), "END column"
     assert not torch.equal(a[0][0], a[0][1]) and not torch.equal(a[3][:, :4], a[4][:, :4])
     assert float(a[6].min()) > 0.0 and float(a[6].max()) < 1.0
-    with pytest.raises(ValueError, match="selection draw"):
-        nz = RowNoise(keys, 4, 2)
-        [nz.uniform((3, w), "cpu") for w in (10, 16, 2, 4)]
+    # A changed head order fails: a selection draw of the wrong width, swapped fixed-width draws,
+    # a draw past the last, and a missing draw (checked after the heads call).
+    for widths in ((10, 16, 2, 4), (16, 10), (10, 2, 16), (10, 16, 2, 5, 5, 4, 30, 30)):
+        nz = RowNoise(keys, 4, 2, 10, 16, 30)
+        with pytest.raises(ValueError, match="044-R3 noise"):
+            for w in widths:
+                nz.uniform((3, w), "cpu")
+    nz = RowNoise(keys, 4, 2, 10, 16, 30)
+    for w in (10, 16, 2, 5, 5, 4):
+        nz.uniform((3, w), "cpu")
+    with pytest.raises(ValueError, match="made 6 draws, expected 7"):
+        nz.finished()
 
 
 def test_inputs_and_outputs_are_checked_044_r3(tiny_config, tmp_path, labeller, pre, monkeypatch):
@@ -206,8 +217,15 @@ def test_inputs_and_outputs_are_checked_044_r3(tiny_config, tmp_path, labeller, 
     _core.write_test_shards(str(other), "varied", 4)
     with pytest.raises(RuntimeError, match="044-R3"):
         label_games(str(other), str(labeller), str(tmp_path / "o2"), str(tmp_path / "l2.jsonl"), str(tiny_config), CPU, "f32", "sample", 1, synthetic_maps=True)
-    with pytest.raises(RuntimeError, match="already holds"):
+    # `other` holds files at the inputs' paths with the inputs' views (the synthetic games share
+    # replay hashes): read as this labelling's output published before its records lines.
+    with pytest.raises(RuntimeError, match="stopped after publishing them"):
         label_games(str(pre), str(labeller), str(other), str(tmp_path / "l3.jsonl"), str(tiny_config), CPU, "f32", "sample", 1, synthetic_maps=True)
+    mixed = tmp_path / "mixed"
+    _core.write_test_shards(str(mixed), "mixed", 1)
+    (mixed / "p0").rename(mixed / "q0")
+    with pytest.raises(RuntimeError, match="already holds"):
+        label_games(str(pre), str(labeller), str(mixed), str(tmp_path / "l4.jsonl"), str(tiny_config), CPU, "f32", "sample", 1, synthetic_maps=True)
 
 
 def test_records_continue_with_the_same_policy_044_r5(tiny_config, tmp_path, labeller, pre):

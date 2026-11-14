@@ -119,7 +119,26 @@ pub fn check_args(input: &Path, out: &Path, records: &Path, mode: &str, bc_shard
     let done = read_labelled(records)?;
     if done.inputs.is_empty() && out.is_dir() {
         let there = shard_files(out)?;
-        ensure!(there.is_empty(), "--out {} already holds {} shard(s) (e.g. {}) and --records {} has none: label into a new folder, or give that labelling's records to continue it (044-R3)", out.display(), there.len(), there[0].display(), records.display());
+        if !there.is_empty() {
+            // The output files that are the outputs of these input files (same relative path, and
+            // every view in it is a view of that input file): a run that stopped after publishing
+            // its first file(s) but before their records lines. Read only on this error path.
+            let views = |p: &Path| -> Option<BTreeSet<(String, u8)>> { shard::read(p).ok().map(|s| s.games.iter().map(|g| (g.meta.replay_sha256.clone(), g.meta.perspective_slot)).collect()) };
+            let ours: Vec<String> = files
+                .iter()
+                .filter(|(rel, f)| there.iter().any(|t| t == &out.join(rel)) && views(&out.join(rel)).zip(views(f)).is_some_and(|(o, i)| o.is_subset(&i)))
+                .map(|(rel, _)| rel.clone())
+                .collect();
+            ensure!(
+                ours.len() != there.len(),
+                "--out {} holds {} labelled file(s) of these inputs (e.g. {}) but --records {} has no line: a labelling stopped after publishing them and before their records lines; remove those files (or the folder) and run again with the same --records (044-R3)",
+                out.display(),
+                ours.len(),
+                ours[0],
+                records.display()
+            );
+            anyhow::bail!("--out {} already holds {} shard(s) (e.g. {}) and --records {} has none: label into a new folder, or give that labelling's records to continue it (044-R3)", out.display(), there.len(), there[0].display(), records.display());
+        }
     }
     let todo: Vec<String> = files.into_iter().map(|(rel, _)| rel).filter(|rel| !done.inputs.contains(rel)).collect();
     ensure!(!todo.is_empty(), "--records {} already has every input file of {}: nothing to label", records.display(), input.display());

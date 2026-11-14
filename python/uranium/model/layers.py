@@ -311,9 +311,11 @@ def masked_log_softmax(logits, allowed):
     return F.log_softmax(logits.float().masked_fill(~allowed, MASKED), 1)
 
 
-def gumbel_argmax(logp, temp: float, generator: torch.Generator | None = None):
+def gumbel_argmax(logp, temp: float, generator=None):
     """Gumbel-max sample from log-probs [B,K] (032-R9). `temp == 0` is greedy. Masked entries
-    (-1e9) are never chosen because the noise is bounded."""
+    (-1e9) are never chosen because the noise is bounded. `generator`: None, a `torch.Generator`,
+    or a per-row noise source with `uniform(shape, device)` (044-R3,
+    `uranium.distill.noise.RowNoise`)."""
     if temp <= 0:
         return logp.argmax(1)
     if generator is not None and not isinstance(generator, torch.Generator):

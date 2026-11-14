@@ -14,8 +14,9 @@ first step to its last.
 of each step is a counter-based hash of (view seed, the step's frame, head draw, column)
 (`uranium.distill.noise`), the view seed a hash of (`replay_sha256`, perspective, `--label-seed`)
 (`_core.distill_game_seed`): a step's draw never depends on the batch it is computed in (lanes,
-`micro_lanes`, `pad_entities`, `seq_len` chunks), so the labels depend only on the input, the
-checkpoint, the mode, the seed and the device's numerics. `--mode argmax` (temperature 0) is a tool
+`micro_lanes`, `pad_entities`, `seq_len` chunks). On CPU the labels are bit-identical across batch
+shapes (032-R1); on a GPU the logits can move by a few ULPs with the padded shape and flip a
+near-tie, so there the same labels need the same batch shape too (recorded in `label_policy`). `--mode argmax` (temperature 0) is a tool
 option and never training data.
 ③ The head values become 040 `action_label`s in Rust (`label_of_choice`): action id, the delay
 bucket's lower bound, queued, the selection's unit ids in pick order, the target unit id, the
@@ -155,8 +156,10 @@ def label_games(input_dir: str, ckpt_dir: str, out: str, records: str, config: s
                 noise = None
                 if temp > 0:
                     keys = row_keys([seeds[lane] for lane in live for _ in range(steps[lane])], [f for lane in live for f in frames_of[lane]], device)
-                    noise = RowNoise(keys, n_ent, max_select)
+                    noise = RowNoise(keys, n_ent, max_select, net.cfg.input.actions, net.cfg.heads.delay_buckets, net.cfg.input.map_size ** 2)
                 o = net.heads(None, temp, h[idx], sc["c"][idx], e[idx], _rows(sp, idx), _rows(obs, idx), net.table, noise, u=None if u is None else u[idx])
+                if noise is not None:
+                    noise.finished()
             chosen = {key: _host(v) for key, v in o["chosen"].items()}
             at = 0
             for lane, r0 in zip(live, starts):
