@@ -210,3 +210,63 @@ def test_tp_teacher_folders_left_out_044_r8(tmp_path, monkeypatch):
     monkeypatch.setattr(pa.ec, "cache_dir", lambda: tmp_path / "cache")
     (added,) = pa.added_dirs()
     assert sorted(p.name for p in Path(added).iterdir()) == ["teacher-20261107-macro2"]
+
+
+def tree(root: Path) -> dict[str, bytes]:
+    return {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def botgen(tmp_path, monkeypatch, parts):
+    shared = tmp_path / "shared"
+    src = shared / "datasets" / "replays" / "shards" / "botgen"
+    for part in parts:
+        (src / part).mkdir(parents=True, exist_ok=True)
+        (src / part / "shard_00000.bin.zst").write_bytes(part.encode())
+    monkeypatch.setattr(pa.ec, "shared_dir", lambda: shared)
+    monkeypatch.setattr(pa.ec, "cache_dir", lambda: tmp_path / "cache")
+    return src
+
+
+def test_full_holdout_excludes_tp_teacher_041_r27_044_r8(tmp_path, monkeypatch):
+    """041-R27 / 044-R8: `--holdout full` is a link tree of every botgen part but teacher-tp-* (also the -v2 shards
+    added before teacher round t1) = ORIG + added_dirs() parts; `orig` stays the ORIG parts only."""
+    added = ["teacher-20261107-macro2", "teacher-20261109-macro3"]
+    src = botgen(tmp_path, monkeypatch, (*pa.ORIG, *added, "teacher-tp-20261114", "teacher-tp-20261114-v2"))
+    datasets, (full,) = pa.holdout_dirs("full")
+    assert datasets == []
+    assert sorted(p.name for p in Path(full).iterdir()) == sorted([*pa.ORIG, *added])
+    assert tree(Path(full)) == {f"{p}/shard_00000.bin.zst": p.encode() for p in [*pa.ORIG, *added]}
+    (ad,) = pa.added_dirs()
+    assert sorted({*pa.ORIG, *(p.name for p in Path(ad).iterdir())}) == sorted(p.name for p in Path(full).iterdir())
+    datasets, (orig,) = pa.holdout_dirs("orig")
+    assert datasets == [] and tree(Path(orig)) == {f"{p}/shard_00000.bin.zst": p.encode() for p in pa.ORIG}
+    assert Path(orig) != Path(full)
+    assert pa.holdout_parts(src) == sorted([*pa.ORIG, *added])
+    with pytest.raises(SystemExit, match="unknown --holdout"):
+        pa.holdout_dirs("tp")
+
+
+def test_link_tree_drops_stale_entries_041_r27_044_r8(tmp_path, monkeypatch):
+    """041-R27 / 044-R8: a rebuilt link tree holds exactly the current parts: a part dropped from the list (or a
+    stray teacher-tp-* folder from an older tree) and a shard file gone from its source part are removed; the
+    source files stay."""
+    src = botgen(tmp_path, monkeypatch, (*pa.ORIG, "teacher-20261107-macro2", "teacher-20261109-macro3"))
+    (src / "teacher-20261109-macro3" / "shard_00001.bin.zst").write_bytes(b"second")
+    (ad,) = pa.added_dirs()
+    work = Path(ad)
+    assert sorted(tree(work)) == ["teacher-20261107-macro2/shard_00000.bin.zst", "teacher-20261109-macro3/shard_00000.bin.zst",
+                                  "teacher-20261109-macro3/shard_00001.bin.zst"]
+    # an older tree's teacher-tp folder, a part no longer in the source, a shard removed from its source part
+    (work / "teacher-tp-20261114-v2").mkdir()
+    (work / "teacher-tp-20261114-v2" / "shard_00000.bin.zst").write_bytes(b"tp")
+    import shutil
+    shutil.rmtree(src / "teacher-20261107-macro2")
+    (src / "teacher-20261109-macro3" / "shard_00001.bin.zst").unlink()
+    (ad2,) = pa.added_dirs()
+    assert Path(ad2) == work
+    assert tree(work) == {"teacher-20261109-macro3/shard_00000.bin.zst": b"teacher-20261109-macro3"}
+    assert (src / "teacher-20261109-macro3" / "shard_00000.bin.zst").read_bytes() == b"teacher-20261109-macro3"
+    assert all((src / p / "shard_00000.bin.zst").exists() for p in pa.ORIG)
+    # no added part left: [] (the stale tree is not read)
+    shutil.rmtree(src / "teacher-20261109-macro3")
+    assert pa.added_dirs() == []
