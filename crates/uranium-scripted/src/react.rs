@@ -1133,9 +1133,12 @@ impl Brain {
             (r.pulled.clone(), r.repairers.clone(), r.last_pull, r.last_repair)
         };
         // 022-AC3 (022 teacher): the repairers are chosen again from this observation like the
-        // pulled SCVs — kept while they visibly repair a bunker (or within the window of the last
-        // repair order), and an own SCV repairing a bunker is a repairer — instead of kept by id, so
-        // the shadow follows the SCVs the live teacher sent.
+        // pulled SCVs — kept while they visibly repair a bunker, and otherwise dropped only at the
+        // first observation of a `retarget` window (`due_on` aligned: the later observations of every
+        // window keep them, whenever the last repair order was), and an own SCV repairing a bunker is
+        // a repairer — instead of kept by id, so the shadow follows the SCVs the live teacher sent.
+        // The same window rule holds for the pulled SCVs below: an SCV back to mining stays pulled
+        // (and out of the other SCV picks) until the next window starts, live and shadow alike.
         if rings {
             let repair = uranium_env::types::order_id("Repair");
             let bunker_ids: BTreeSet<UnitId> = mine.iter().filter(|u| u.unit_type == BUNKER).map(|u| u.id).collect();
@@ -2450,6 +2453,8 @@ mod tests {
     /// sequence of observations — an opening, a macro game, a zergling rush with a bunker, pulls and
     /// repairs, idle SCVs — hash to the value recorded before the 022 teacher's changes (FNV-1a over
     /// the commands' Debug text). Changes for `terran_tp` must leave `terran_react` byte-identical.
+    /// The hash covers the `Command` Debug format too: if a proto type's Debug output changes, record
+    /// the value again from the master commit before the change (not from the changed code).
     #[test]
     fn terran_react_golden_digest_021_r8() {
         let mut b = teacher();
