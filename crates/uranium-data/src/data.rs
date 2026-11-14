@@ -1267,6 +1267,11 @@ impl GameStream {
         &self.game.meta.replay_sha256
     }
 
+    /// 040 meta `perspective_slot`: the view's BWAPI player id (044-R3 game seed with the replay hash).
+    pub fn perspective_slot(&self) -> u8 {
+        self.game.meta.perspective_slot
+    }
+
     /// Steps not yet produced.
     pub fn remaining(&self) -> usize {
         self.game.steps.len() - self.pos

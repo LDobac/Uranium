@@ -639,7 +639,7 @@ pub fn check_isolated_build(src: &str, records: &Path, time_limit: Option<u32>) 
 
 /// `p` is `root` or below it (absolute paths compared component by component; ASCII case-insensitive
 /// on Windows).
-fn path_within(p: &Path, root: &Path) -> bool {
+pub fn path_within(p: &Path, root: &Path) -> bool {
     let abs = |x: &Path| std::path::absolute(x).unwrap_or_else(|_| x.to_path_buf());
     let (p, root) = (abs(p), abs(root));
     let (mut a, b) = (p.components(), root.components());

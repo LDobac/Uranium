@@ -10,6 +10,7 @@ use uranium_env::features::extract::action_table;
 use uranium_env::types::TypeTables;
 use uranium_proto::*;
 use uranium_replay::label::Label;
+use uranium_env::features::label::{MemoryAction, UNKNOWN_ACTION};
 use uranium_replay::shard::{GameMeta, Shard, ShardGame, ShardHeader, Step, write};
 
 pub const W: u16 = 32;
@@ -161,6 +162,45 @@ pub fn chain_games() -> Vec<ShardGame> {
                 s.raw_frame.frame = f;
                 s.action_label.frame = f;
                 s.raw_frame.self_state.minerals = 400 + 10 * k as i32;
+            }
+            g
+        })
+        .collect()
+}
+
+/// 044-R2 / 044-R3 tests: `varied_games` as `distill_pre` games (source `distill`, stage B): step
+/// frames 1, 9, 17, ..., every label an `unknown` slot, and on every step the model decisions of the
+/// previous step's frame as `memory_action` (empty on the first step), cycling Train_SCV by the
+/// Command Center, Move_Pos and Gather_Unit by the SCV, and NoOp; each game has a second SCV from
+/// its fourth step on (batches then hold different entity counts).
+pub fn distill_games() -> Vec<ShardGame> {
+    let table = action_table();
+    let id = |name: &str| table.by_name(name).unwrap().id;
+    let decision = |k: usize| -> MemoryAction {
+        let (action, units) = match k % 4 {
+            0 => (id("Train_SCV"), vec![1]),
+            1 => (id("Move_Pos"), vec![2]),
+            2 => (id("Gather_Unit"), vec![2]),
+            _ => (id("NoOp"), vec![]),
+        };
+        MemoryAction { action, delay_bucket: 7, units }
+    };
+    varied_games()
+        .into_iter()
+        .map(|mut g| {
+            g.meta.src = "distill".into();
+            g.meta.stage = "B".into();
+            g.meta.matchup = "TvP".into();
+            g.game_info.players[1].race = Race::Protoss;
+            for k in 0..g.steps.len() {
+                let s = &mut g.steps[k];
+                let f = k as u32 * 8 + 1;
+                s.raw_frame.frame = f;
+                if k >= 3 {
+                    s.raw_frame.units.push(unit(4, 0, "Terran_SCV", (10, 6)));
+                }
+                s.action_label = Label { frame: f, action: UNKNOWN_ACTION, delay: 8, queued: false, selected: vec![], target_unit: None, target_tile: None };
+                s.memory_action = Some(if k == 0 { vec![] } else { vec![decision(k - 1)] });
             }
             g
         })

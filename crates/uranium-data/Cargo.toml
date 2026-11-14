@@ -21,3 +21,9 @@ serde_json.workspace = true
 sha2.workspace = true
 toml.workspace = true
 zstd = "0.13"
+
+[[test]]
+# 044-R3: uses the synthetic games of the `testkit` feature (`cargo test -p uranium-data --features testkit`;
+# `cargo test --workspace` enables it through uranium-py).
+name = "distill"
+required-features = ["testkit"]

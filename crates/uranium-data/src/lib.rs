@@ -10,6 +10,7 @@ pub mod bc;
 pub mod bc_run;
 pub mod collate;
 pub mod data;
+pub mod distill;
 pub mod eval;
 pub mod mix;
 pub mod pack;
