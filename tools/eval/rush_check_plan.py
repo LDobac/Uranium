@@ -579,8 +579,9 @@ def render_tp(check: bool, name: str) -> tuple[str, list[int]]:
             "# the 022-AC2 check passes. The teacher players[0] against T0 standard Protoss and Terran x Fighting Spirit /",
             f"# Circuit Breaker x {TP_BOTGEN_T0_GAMES} ({t0}) and the T1 Terran / Protoss bots (UAlbertaBot P, Stardust, UAlbertaBot T,",
             f"# Iron) x 2 maps x {TP_BOTGEN_T1_GAMES} ({n - t0}) = {n} games, races fixed (no Random games in the data, 022-R2), 10 min",
-            "# (max_frames 14,400), replays kept; build: uranium-replay build <dir> --src botgen --until-frame 14400",
-            "# --time-limit 14400 --out <shared>/datasets/replays/shards/botgen/teacher-tp-<date>. The Zerg : Protoss : Terran",
+            "# (max_frames 14,400), replays kept; build: uranium-replay build <dir>/replays --src botgen --games",
+            "# <dir>/games.jsonl --until-frame 14400 --time-limit 14400 --out <shared>/datasets/replays/shards/botgen/teacher-tp-<date>",
+            "# (--games: the teacher's view only, lobby races from games.jsonl; spec 040). The Zerg : Protoss : Terran",
             "# = 50 : 30 : 20 race split inside the teacher + dagger share is set by the training mix, not by this plan.",
             "# T1 bots: the 050-R9 T1 rule (NDEBUG builds, config/protocol/t1_bots.toml; opponent-crash games are invalid).",
         ]

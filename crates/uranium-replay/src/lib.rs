@@ -8,6 +8,7 @@ pub mod container;
 pub mod granularity;
 pub mod header;
 pub mod label;
+pub mod lobby;
 pub mod mpq;
 pub mod opsdump;
 pub mod pipeline;
