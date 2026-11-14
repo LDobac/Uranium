@@ -194,12 +194,6 @@ pub fn filter(rep: &Replay, family: &str, bot: bool, any_length: bool) -> std::r
     Ok(views)
 }
 
-/// The replay header race (`header::RACE_*`) of the active player other than `perspective` (the
-/// opponent of a [`filter`] view: lobby race, or the race played when the header stores that).
-pub fn enemy_race(rep: &Replay, perspective: u8) -> Option<u8> {
-    rep.active_players().into_iter().find(|(p, _)| p.id != perspective).map(|(p, _)| p.race)
-}
-
 /// The [`filter`] flags of a source: (`bot`: stage B, no APM bar; `any_length`: no 5-minute bar).
 /// Bot data (040 quality table): `bot`, `botgen`, `dagger`, 041-R28 `branch` and 044-R2 `distill`.
 /// Any length: relabelled (`dagger`, 041-R22) games, `branch` trunks (a trunk lost early to the rush
@@ -620,6 +614,17 @@ pub fn check_build_args(src: &str, relabel: bool, memory_log: Option<&Path>, out
     Ok(())
 }
 
+/// 022-R2 / R12 / AC3 (2026-11-14): `--relabel terran_tp` needs `--games` (the generating job's
+/// games.jsonl: lobby races and the players[0] view; without them a lobby-Random game or the
+/// Terran opponent of a TvT game would be taken for data), and `--games` goes with that relabel or
+/// with `--src botgen` (the 022 teacher's botgen games) only, so every other build is unchanged.
+pub fn check_games_arg(src: &str, relabel: Option<uranium_scripted::T0Build>, games: bool) -> Result<()> {
+    let tp = relabel == Some(uranium_scripted::T0Build::TerranTp);
+    anyhow::ensure!(!tp || games, "--relabel terran_tp needs --games <the job's games.jsonl> (022-R2 / 022-AC3: lobby races; only players[0], the model, is a view)");
+    anyhow::ensure!(!games || tp || (src == "botgen" && relabel.is_none()), "--games goes with --relabel terran_tp or --src botgen (the 022 teacher's botgen games, 022-R12) only");
+    Ok(())
+}
+
 /// 051-R13 ④ branch trunk builds and 044-R2 distill builds: `--time-limit` (the generating plan's
 /// `max_frames`: H + 48 for a trunk, 14,400 for a distill plan, 044-R1) is required, because those
 /// games end at the time limit (without it the first leave counts as a player leaving and the 040-R8
@@ -753,6 +758,9 @@ pub struct BuildOptions {
     /// `<stem>-p<k>.jsonl` (`act_log::read_memory_logs`; 040-R22 `memory_action`). `None` = every
     /// step `None`.
     pub memory_log: Option<crate::act_log::MemoryLogDir>,
+    /// 022-R2 / R12 / AC3 (`--games <games.jsonl>`, [`check_games_arg`]): the runner's lobby races
+    /// of the games; only players[0] is a view (`lobby::players0_view`). `None` = every Terran view.
+    pub games: Option<crate::lobby::GamesLog>,
 }
 
 /// Resume state from earlier records, per perspective (040-R17 / 040-R19 review): a written
@@ -937,6 +945,21 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
     };
     // Resume: only perspectives without their own record (an earlier run may have recorded one
     // perspective and lost the other with an unflushed shard).
+    // 022-R2 / R12 / AC3 (`--games`): only players[0] (the 022 teacher, or the model of a
+    // `--relabel terran_tp` build) is a view, and the opponent's lobby race (games.jsonl) decides.
+    // A 022 teacher game in a botgen build without it is refused: its TvT opponent view is no
+    // teacher data and its lobby races are unknown.
+    let views = match &opt.games {
+        Some(g) => match crate::lobby::players0_view(&rep, views, g.lobby(file), opt.relabel) {
+            Ok(v) => vec![v],
+            Err((view, reason)) => return vec![rec(&sha, &rep.header.map_name, &family, view, Outcome::Filtered { reason })],
+        },
+        None if opt.src == "botgen" && crate::lobby::is_tp_teacher_game(&rep) => {
+            let reason = "022 teacher game in a botgen build without --games <games.jsonl> (022-R12: teacher view only, lobby races)".to_string();
+            return vec![rec(&sha, &rep.header.map_name, &family, None, Outcome::Filtered { reason })];
+        }
+        None => views,
+    };
     let views = opt.done.remaining(&sha, views);
     if views.is_empty() {
         return Vec::new();
@@ -963,13 +986,7 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
             out.push(rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Filtered { reason: "storage budget reached (040-R12)".into() }));
             continue;
         }
-        // 022-AC3 / 041-R22 (2026-11-14): `--relabel terran_tp` refuses a game against a lobby Zerg
-        // (and a lobby Random, 022-R2) before any replay.
-        if let Some(reason) = opt.relabel.zip(enemy_race(&rep, view.perspective)).and_then(|(b, r)| crate::relabel::lobby_refusal(b, r)) {
-            out.push(rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Filtered { reason }));
-            continue;
-        }
-        let vo =ViewOptions { until_frame: opt.until_frame, time_limit: opt.time_limit, relabel: opt.relabel, map_hash: &map_hash, memory: memory.as_deref(), distill: opt.src == DISTILL_SRC };
+        let vo = ViewOptions { until_frame: opt.until_frame, time_limit: opt.time_limit, relabel: opt.relabel, map_hash: &map_hash, memory: memory.as_deref(), distill: opt.src == DISTILL_SRC };
         let outcome = match build_view(&rep, &view, cfg, labeler, recorded_winner, vo) {
             Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info, repeats_dropped, memory })) => {
                 let n = steps.len();
@@ -1559,7 +1576,7 @@ mod tests {
         let excludes = MapExcludes::load(&families).unwrap();
         let labeler = Labeler::new().unwrap();
         let cfg = PlayConfig { launcher: dir.join("none"), bridge_lib: dir.join("none"), data_dir: dir.join("none"), work_dir: dir.join("w") };
-        let opt = BuildOptions { src: "t".into(), shards_dir: dir.join("s"), staging_dir: dir.join("l"), recorded_winners: HashMap::new(), jobs: 1, shard_target_bytes: 1, budget_bytes: 1 << 30, first_shard_index: 0, skip_sha256: Default::default(), done: ResumeDone::default(), duplicates: part1, until_frame: None, time_limit: None, relabel: None, memory_log: None };
+        let opt = BuildOptions { src: "t".into(), shards_dir: dir.join("s"), staging_dir: dir.join("l"), recorded_winners: HashMap::new(), jobs: 1, shard_target_bytes: 1, budget_bytes: 1 << 30, first_shard_index: 0, skip_sha256: Default::default(), done: ResumeDone::default(), duplicates: part1, until_frame: None, time_limit: None, relabel: None, memory_log: None, games: None };
         let out = process(1, &files[3], &opt, &cfg, &families, &excludes, &labeler, &Mutex::new(0));
         assert_eq!(out.len(), 1);
         let (r, game) = &out[0];
@@ -1607,68 +1624,118 @@ mod tests {
         assert!(!views.is_empty() && views.iter().all(|v| v.stage == "B"));
     }
 
-    /// 022-AC3 / 041-R22 (2026-11-14): `uranium-replay build --src dagger --relabel terran_tp` records
-    /// every Terran view of a game against a lobby Zerg (or a header Random, 022-R2) as `filtered`
-    /// before any replay (no OpenBW here), and goes on to the replay with a Terran or Protoss
-    /// opponent; `--relabel terran_react` refuses no game.
+    /// A two-player 1.16.1 replay file `<dir>/g<id>.rep` (no OpenBW needed to get to the views):
+    /// `players` = (command id, header race, hostd name), each training once.
+    fn tp_replay(dir: &Path, id: u64, players: [(u8, u8, &str); 2]) -> PathBuf {
+        let mut h = vec![0u8; crate::container::HEADER_SIZE];
+        h[1..5].copy_from_slice(&8_000u32.to_le_bytes()); // over 5 minutes (botgen keeps the 040 length bar)
+        h[0x61] = b't';
+        for (i, (pid, race, name)) in players.iter().enumerate() {
+            let p = 0xa1 + i * 36;
+            h[p] = i as u8;
+            h[p + 4] = *pid;
+            h[p + 8] = 2;
+            h[p + 9] = *race;
+            h[p + 10] = i as u8;
+            h[p + 11..p + 11 + name.len()].copy_from_slice(name.as_bytes());
+        }
+        let train = |p: u8| cmd::Cmd { frame: 10, player: p, op: cmd::op::TRAIN, data: vec![7, 0] };
+        let blocks = vec![cmd::Block { frame: 10, cmds: vec![train(players[0].0), train(players[1].0)] }];
+        let rep = Replay { format: crate::Format::Legacy, header: header::parse(&h), raw_header: h, blocks, map: vec![9; 10], unit_limit: None };
+        let path = dir.join(format!("g{id}.rep"));
+        std::fs::write(&path, rep.to_legacy_file().unwrap()).unwrap();
+        path
+    }
+
+    /// 022-R2 / R12 / AC3, 040 (2026-11-14): with `--games` (the job's games.jsonl) only players[0]
+    /// (hostd name `p0-...`, whatever its command id) is a view, so a TvT 022 botgen game writes the
+    /// teacher's view only; the opponent's LOBBY race comes from games.jsonl: a lobby Random that
+    /// played Zerg is refused as Random (022-R2), a lobby Zerg as 022-AC3 (`--relabel terran_tp`) or
+    /// 022-R12 (botgen), a game without a line or whose lobby race differs from the header race is
+    /// refused, Terran and Protoss go on to the replay (no OpenBW here: an error, never a lobby
+    /// refusal). A 022 teacher game in a botgen build without `--games` is refused. Builds without
+    /// `--games` (the 021-R8 relabel, other botgen games) keep every Terran view.
     #[test]
-    fn terran_tp_build_filters_lobby_zerg_views_022_ac3() {
+    fn players0_view_and_lobby_races_from_games_jsonl_022_r12_ac3() {
+        use crate::header::{RACE_PROTOSS as P, RACE_TERRAN as T, RACE_ZERG as Z};
         use uranium_scripted::T0Build;
         let dir = std::env::temp_dir().join(format!("uranium-tp-lobby-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        // A two-player 1.16.1 replay (player 0 Terran, player 1 of `enemy`), each training once.
-        let file = |enemy: u8| {
-            let mut h = vec![0u8; crate::container::HEADER_SIZE];
-            h[1..5].copy_from_slice(&2_000u32.to_le_bytes());
-            h[0x61] = b't';
-            for (i, race) in [(0usize, header::RACE_TERRAN), (1, enemy)] {
-                let p = 0xa1 + i * 36;
-                h[p] = i as u8;
-                h[p + 4] = i as u8;
-                h[p + 8] = 2;
-                h[p + 9] = race;
-                h[p + 10] = i as u8;
-                h[p + 11] = b'p';
-                h[p + 12] = b'0' + i as u8;
-            }
-            let train = |p: u8| cmd::Cmd { frame: 10, player: p, op: cmd::op::TRAIN, data: vec![7, 0] };
-            let blocks = vec![cmd::Block { frame: 10, cmds: vec![train(0), train(1)] }];
-            let rep = Replay { format: crate::Format::Legacy, header: header::parse(&h), raw_header: h, blocks, map: vec![9; 10], unit_limit: None };
-            let path = dir.join(format!("g{enemy}.rep"));
-            std::fs::write(&path, rep.to_legacy_file().unwrap()).unwrap();
-            path
-        };
+        let tp = "p0-T0-terran-terran_tp";
+        // players[0] has command id 1 and the opponent id 0: the view follows the name.
+        let game = |id, enemy_header, enemy_name: &str| tp_replay(&dir, id, [(0, enemy_header, enemy_name), (1, T, tp)]);
+        let lines = [(1, "Terran"), (2, "Random"), (3, "Zerg"), (4, "Protoss"), (6, "Protoss")];
+        let text: String = lines.iter().map(|(id, r)| format!("{{\"game_id\":{id},\"matchup\":0,\"races\":[\"Terran\",\"{r}\"],\"outcome\":\"finished\"}}\n")).collect();
+        let games = crate::lobby::GamesLog::parse(&text).unwrap();
         let families = MapFamilies::load().unwrap();
         let excludes = MapExcludes::load(&families).unwrap();
         let labeler = Labeler::new().unwrap();
         let cfg = PlayConfig { launcher: dir.join("none"), bridge_lib: dir.join("none"), data_dir: dir.join("none"), work_dir: dir.join("w") };
-        let run = |enemy: u8, relabel: T0Build| {
-            let path = file(enemy);
-            let opt = BuildOptions { src: "dagger".into(), shards_dir: dir.join("s"), staging_dir: dir.join("l"), recorded_winners: HashMap::new(), jobs: 1, shard_target_bytes: 1, budget_bytes: 1 << 30, first_shard_index: 0, skip_sha256: Default::default(), done: ResumeDone::default(), duplicates: Duplicates::find(std::slice::from_ref(&path), &[0], 1), until_frame: Some(14_400), time_limit: Some(14_400), relabel: Some(relabel), memory_log: None };
-            process(0, &path, &opt, &cfg, &families, &excludes, &labeler, &Mutex::new(0)).into_iter().map(|(r, g)| {
+        let run = |path: &Path, src: &str, relabel: Option<T0Build>, games: Option<crate::lobby::GamesLog>| {
+            let opt = BuildOptions { src: src.into(), shards_dir: dir.join("s"), staging_dir: dir.join("l"), recorded_winners: HashMap::new(), jobs: 1, shard_target_bytes: 1, budget_bytes: 1 << 30, first_shard_index: 0, skip_sha256: Default::default(), done: ResumeDone::default(), duplicates: Duplicates::find(&[path.to_path_buf()], &[0], 1), until_frame: Some(14_400), time_limit: Some(14_400), relabel, memory_log: None, games };
+            process(0, path, &opt, &cfg, &families, &excludes, &labeler, &Mutex::new(0)).into_iter().map(|(r, g)| {
                 assert!(g.is_none());
-                assert_eq!(r.relabel, Some(relabel.name()));
-                (r.view.map(|v| v.matchup), r.outcome)
+                (r.view.map(|v| v.perspective), r.outcome)
             }).collect::<Vec<_>>()
         };
-        let lobby = |o: &Outcome| matches!(o, Outcome::Filtered { reason } if reason.starts_with("lobby "));
-        let zerg = run(header::RACE_ZERG, T0Build::TerranTp);
-        assert_eq!(zerg.len(), 1);
-        assert_eq!(zerg[0].0.as_deref(), Some("TvZ"));
-        assert!(matches!(&zerg[0].1, Outcome::Filtered { reason } if reason.contains("022-AC3")), "{:?}", zerg[0].1);
-        let random = run(header::RACE_RANDOM, T0Build::TerranTp);
-        assert!(matches!(&random[0].1, Outcome::Filtered { reason } if reason.contains("022-R2")), "{:?}", random[0].1);
-        // Terran (both views) and Protoss opponents go on to the replay (here it fails: no OpenBW).
-        for (enemy, views) in [(header::RACE_PROTOSS, 1), (header::RACE_TERRAN, 2)] {
-            let got = run(enemy, T0Build::TerranTp);
-            assert_eq!(got.len(), views);
-            assert!(got.iter().all(|(_, o)| !lobby(o) && !matches!(o, Outcome::Written { .. })), "{got:?}");
+        let reason = |o: &Outcome| match o {
+            Outcome::Filtered { reason } => reason.clone(),
+            _ => String::new(),
+        };
+        let tvt = game(1, T, "p1-T0-terran");
+        // 022 botgen, TvT: the teacher's view (command id 1) only.
+        let got = run(&tvt, "botgen", None, Some(games.clone()));
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, Some(1), "{got:?}");
+        assert!(reason(&got[0].1).is_empty(), "{:?}", got[0].1);
+        // Without --games: refused as a whole (no view written).
+        let got = run(&tvt, "botgen", None, None);
+        assert!(got.len() == 1 && got[0].0.is_none() && reason(&got[0].1).contains("without --games"), "{got:?}");
+        // `--relabel terran_tp` on a TvT self game: the model's (players[0]) view only.
+        let got = run(&tvt, "dagger", Some(T0Build::TerranTp), Some(games.clone()));
+        assert_eq!(got.iter().map(|g| g.0).collect::<Vec<_>>(), vec![Some(1)]);
+        // A lobby Random that played Zerg: refused as Random (022-R2), not as a lobby Zerg.
+        let random = game(2, Z, "p1-ualbertabot");
+        for (src, relabel) in [("dagger", Some(T0Build::TerranTp)), ("botgen", None)] {
+            let got = run(&random, src, relabel, Some(games.clone()));
+            assert!(got.len() == 1 && got[0].0 == Some(1) && reason(&got[0].1).starts_with("lobby Random") && reason(&got[0].1).contains("022-R2"), "{got:?}");
         }
-        // The 021-R8 relabel refuses no lobby race.
-        for enemy in [header::RACE_ZERG, header::RACE_RANDOM, header::RACE_PROTOSS] {
-            assert!(run(enemy, T0Build::TerranReact).iter().all(|(_, o)| !lobby(o)));
-        }
+        // A lobby Zerg: 022-AC3 for the relabel, 022-R12 for botgen.
+        let zerg = game(3, Z, "p1-T0-zerg");
+        assert!(reason(&run(&zerg, "dagger", Some(T0Build::TerranTp), Some(games.clone()))[0].1).contains("022-AC3"));
+        assert!(reason(&run(&zerg, "botgen", None, Some(games.clone()))[0].1).contains("022-R12"));
+        // A lobby Protoss goes on (one view).
+        let got = run(&game(4, P, "p1-stardust"), "dagger", Some(T0Build::TerranTp), Some(games.clone()));
+        assert!(got.len() == 1 && got[0].0 == Some(1) && reason(&got[0].1).is_empty(), "{got:?}");
+        // No games.jsonl line: refused, never guessed.
+        let got = run(&game(5, P, "p1-stardust"), "dagger", Some(T0Build::TerranTp), Some(games.clone()));
+        assert!(got.len() == 1 && got[0].0.is_none() && reason(&got[0].1).contains("no games.jsonl line"), "{got:?}");
+        // Lobby Protoss but the header says Terran was played: refused.
+        let got = run(&game(6, T, "p1-T0-terran"), "botgen", None, Some(games.clone()));
+        assert!(reason(&got[0].1).contains("header race Terran"), "{got:?}");
+        // Builds without --games are as before: every Terran view (the 021-R8 relabel; a botgen game
+        // without the 022 teacher).
+        assert_eq!(run(&tvt, "dagger", Some(T0Build::TerranReact), None).len(), 2);
+        let react = tp_replay(&dir, 7, [(0, T, "p1-T0-terran"), (1, T, "p0-T0-terran-terran_reac")]);
+        assert!(run(&react, "botgen", None, None).iter().all(|g| g.0.is_some() && reason(&g.1).is_empty()));
+        assert!(run(&zerg, "dagger", Some(T0Build::TerranReact), None).iter().all(|g| reason(&g.1).is_empty()));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 022-R2 / AC3: `--relabel terran_tp` needs `--games`; `--games` goes with it or with a
+    /// `--src botgen` build only.
+    #[test]
+    fn games_arg_rules_022_r2() {
+        use uranium_scripted::T0Build::{TerranReact, TerranTp};
+        assert!(check_games_arg("dagger", Some(TerranTp), false).is_err());
+        assert!(check_games_arg("dagger", Some(TerranTp), true).is_ok());
+        assert!(check_games_arg("botgen", None, true).is_ok());
+        assert!(check_games_arg("botgen", None, false).is_ok());
+        assert!(check_games_arg("dagger", Some(TerranReact), true).is_err());
+        assert!(check_games_arg("dagger", Some(TerranReact), false).is_ok());
+        for src in ["distill", "branch", "stardata"] {
+            assert!(check_games_arg(src, None, true).is_err(), "{src}");
+        }
     }
 
     /// 041-R22 (OpenBW, ignored): relabelling a model game (`URANIUM_TEST_DAGGER_REP`, an OpenBW

@@ -26,29 +26,17 @@ use crate::shard::MemoryAction;
 use uranium_env::features::label::DecisionLogLine;
 
 /// Teacher builds `uranium-replay build --relabel` accepts (041-R22): the 021-R8 teacher
-/// `terran_react` and the 022 TvT / TvP teacher `terran_tp` (022-R9, 041-R22 2026-11-14; a game
-/// against a lobby Zerg or Random is refused for it, [`lobby_refusal`]).
+/// `terran_react` and the 022 TvT / TvP teacher `terran_tp` (022-R9, 041-R22 2026-11-14). A
+/// `terran_tp` build needs `--games` (the runner's games.jsonl): only the plan's players[0] (the
+/// model) is a view, and a game whose opponent's LOBBY race is Zerg (022-AC3) or Random (022-R2)
+/// is refused (`crate::lobby::players0_view`). Against a lobby Zerg the 022 build's live session is
+/// the 021-R8 teacher (022-R2), so such a game is refused rather than relabelled by another
+/// teacher. The 021-R8 teacher relabels every Terran view as before.
 pub fn teacher_build(name: &str) -> Result<T0Build> {
     match name {
         "terran_react" => Ok(T0Build::TerranReact),
         "terran_tp" => Ok(T0Build::TerranTp),
         other => bail!("--relabel {other}: only terran_react (the 021-R8 teacher) and terran_tp (the 022 teacher) relabel (041-R22, 022-R9)"),
-    }
-}
-
-/// 022-AC3 / 041-R22 (2026-11-14) and 022-R2: why a view whose opponent's replay header race is
-/// `enemy_race` (`header::RACE_*`) is not relabelled with `build`, or `None` when it is. The 022
-/// teacher relabels games against a lobby Terran or Protoss only: against a lobby Zerg its live
-/// session is the 021-R8 teacher (022-R2), so such a game is refused (`filtered`) instead of being
-/// relabelled by another teacher; a lobby Random game is no relabel data either (022-R2,
-/// AMB-022-6; seen only when the header keeps the lobby choice, `header::RACE_RANDOM`). The 021-R8
-/// teacher relabels every view as before.
-pub fn lobby_refusal(build: T0Build, enemy_race: u8) -> Option<String> {
-    use crate::header::{RACE_RANDOM, RACE_ZERG};
-    match (build, enemy_race) {
-        (T0Build::TerranTp, RACE_ZERG) => Some("lobby Zerg opponent: --relabel terran_tp relabels games against Terran / Protoss only (022-AC3, 041-R22)".into()),
-        (T0Build::TerranTp, RACE_RANDOM) => Some("lobby Random opponent: no --relabel terran_tp data from Random games (022-R2)".into()),
-        _ => None,
     }
 }
 
@@ -830,7 +818,10 @@ mod tests {
     /// 041-R22 / 022-R9: adding the 022 teacher (`--relabel terran_tp`) leaves `--relabel
     /// terran_react` output byte for byte as it was: the 021-R8 shadow's replay commands, labels
     /// and counters on a synthetic game with an opening, buildings, marines and a zergling rush
-    /// have the digest the code before the 022 teacher gave.
+    /// have the digest the code before the 022 teacher gave. Coverage limit: with
+    /// `MapHints::default()` (no base locations or chokes) the teacher has no natural, so the M
+    /// expansion and natural-bunker paths, and the home guard's natural-dependent parts, are not
+    /// exercised here (only the OpenBW relabel tests with real map precomputes reach them).
     #[test]
     fn terran_react_relabel_output_unchanged_041_r22_022_r9() {
         let (text, got) = shadow_output(T0Build::TerranReact, &info(), uranium_scripted::types::ZERGLING);
@@ -881,23 +872,13 @@ mod tests {
         assert!(!react_names.iter().any(|(_, n)| n == "Build_Refinery"));
     }
 
-    /// 022-AC3 / 041-R22: `--relabel terran_tp` refuses a lobby Zerg (and Random, 022-R2) opponent
-    /// and takes Terran and Protoss; `terran_react` refuses none. A Zerg game must be refused
-    /// rather than shadowed: there the 022 build's session is the 021-R8 teacher (022-R2), so its
-    /// labels would silently be that teacher's.
+    /// 022-AC3 / 041-R22: `--relabel terran_tp` names the 022 teacher. A lobby Zerg game must be
+    /// refused (the build does, `lobby::players0_view`) rather than shadowed: there the 022 build's
+    /// session is the 021-R8 teacher (022-R2), so its labels would silently be that teacher's.
     #[test]
-    fn terran_tp_refuses_lobby_zerg_022_ac3() {
-        use crate::header::{RACE_PROTOSS, RACE_RANDOM, RACE_TERRAN, RACE_ZERG};
+    fn terran_tp_shadow_against_zerg_is_the_react_teacher_022_ac3() {
         assert_eq!(teacher_build("terran_tp").unwrap(), T0Build::TerranTp);
         assert!(teacher_build("standard").is_err() && teacher_build("terran_drop").is_err());
-        assert!(lobby_refusal(T0Build::TerranTp, RACE_ZERG).unwrap().contains("022-AC3"));
-        assert!(lobby_refusal(T0Build::TerranTp, RACE_RANDOM).unwrap().contains("022-R2"));
-        for r in [RACE_TERRAN, RACE_PROTOSS] {
-            assert_eq!(lobby_refusal(T0Build::TerranTp, r), None);
-        }
-        for r in [RACE_ZERG, RACE_TERRAN, RACE_PROTOSS, RACE_RANDOM] {
-            assert_eq!(lobby_refusal(T0Build::TerranReact, r), None, "the 021-R8 relabel is unchanged");
-        }
         let zerg = info_vs(uranium_proto::Race::Zerg);
         assert_eq!(
             shadow_output(T0Build::TerranTp, &zerg, uranium_scripted::types::ZERGLING),

@@ -203,6 +203,14 @@ enum Cmd {
         /// `memory`).
         #[arg(long)]
         memory_log: Option<PathBuf>,
+        /// 022-R2 / R12 / AC3: the generating job's games.jsonl (lobby races of each `g<id>.rep`).
+        /// Required with `--relabel terran_tp`; with `--src botgen` it marks a build of the 022
+        /// teacher's botgen games. Only the plan's players[0] (hostd name `p0-...`: the teacher, or
+        /// the model) is a view; a game whose opponent's lobby race is Zerg or Random, without a
+        /// games.jsonl line, or whose lobby race differs from the race played is `filtered`. A
+        /// botgen build without it refuses 022 teacher games. One plan (stage) folder per build.
+        #[arg(long)]
+        games: Option<PathBuf>,
     },
     CheckScrep {
         dir: PathBuf,
@@ -351,7 +359,7 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::Build { dir, src, out, records, jobs, limit, budget_gb, skip_hashes, part, parts, ladder_records, until_frame, time_limit, relabel, memory_log } => {
+        Cmd::Build { dir, src, out, records, jobs, limit, budget_gb, skip_hashes, part, parts, ladder_records, until_frame, time_limit, relabel, memory_log, games } => {
             anyhow::ensure!(parts >= 1 && part < parts, "--part must be below --parts");
             // 041-R28: the BC shards root (the default `--out` parent) that branch trunk shards stay out of.
             let bc_shards_root = std::env::var_os("URANIUM_SHARED_DIR").map(|d| PathBuf::from(d).join("datasets/replays/shards"));
@@ -359,6 +367,8 @@ fn main() -> Result<()> {
             uranium_replay::pipeline::check_isolated_build(&src, &records, time_limit)?;
             let memory_log = memory_log.as_deref().map(uranium_replay::act_log::MemoryLogDir::open).transpose()?;
             let relabel = relabel.as_deref().map(uranium_replay::relabel::teacher_build).transpose()?;
+            uranium_replay::pipeline::check_games_arg(&src, relabel, games.is_some())?;
+            let games = games.as_deref().map(uranium_replay::lobby::GamesLog::load).transpose()?;
             let skip_sha256 = match skip_hashes {
                 Some(p) => std::fs::read_to_string(&p)?.lines().filter_map(|l| l.split_whitespace().next().map(str::to_string)).collect(),
                 None => Default::default(),
@@ -373,8 +383,8 @@ fn main() -> Result<()> {
             files.truncate(limit.unwrap_or(usize::MAX));
             // 041-R28: a decision log is found by its replay's file stem, so two replays with the
             // same stem (two plan folders' g1.rep) could take each other's log: build one plan
-            // folder (with its own memory folder) at a time.
-            if memory_log.is_some() {
+            // folder (with its own memory folder) at a time; 022 `--games` finds a game id by the stem too.
+            if memory_log.is_some() || games.is_some() {
                 uranium_replay::pipeline::unique_stems(&files)?;
             }
             // Several hosts split one source by sorted-file position (each writes its own shards
@@ -417,7 +427,7 @@ fn main() -> Result<()> {
             // without one, so the build refuses to start.
             uranium_env::maps::maps_dir()?;
             let staging_dir = uranium_replay::shard::staging_dir();
-            let opt = uranium_replay::pipeline::BuildOptions { src, shards_dir, staging_dir, recorded_winners, jobs, shard_target_bytes: 512 << 20, budget_bytes: budget_gb << 30, first_shard_index: first, skip_sha256, done, duplicates, until_frame, time_limit, relabel, memory_log };
+            let opt = uranium_replay::pipeline::BuildOptions { src, shards_dir, staging_dir, recorded_winners, jobs, shard_target_bytes: 512 << 20, budget_bytes: budget_gb << 30, first_shard_index: first, skip_sha256, done, duplicates, until_frame, time_limit, relabel, memory_log, games };
             let out_file = std::sync::Mutex::new(std::fs::OpenOptions::new().create(true).append(true).open(&records)?);
             let counts = std::sync::Mutex::new(std::collections::BTreeMap::<String, usize>::new());
             uranium_replay::pipeline::build(&files, &opt, &cfg, &|r| {
