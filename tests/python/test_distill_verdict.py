@@ -343,3 +343,73 @@ def test_verdict_t1_end_to_end_044_r6_r7(tmp_path, monkeypatch):
     swap = {str(s_t0): str(s1), str(s_rush): str(srush1)}
     with pytest.raises(SystemExit, match="round t1's S is r2"):
         dv.main([swap.get(x, x) for x in args[:-4]])
+
+
+def t1_args(tmp_path: Path, monkeypatch, point: str | None = "t1", cand_top1: float = 0.7) -> tuple[list[str], Path, Path]:
+    """--round t1 arguments (with --verdict) over finished jobs: TvT / TvP teacher mode 1 / 1, held 60, TvZ 20; returns
+    (args, the verdict path, the round t0_tp job's command stream cache)."""
+    cache = tmp_path / "cache"
+    base = games_job(tmp_path, "base", "t0_tp", t0_rows(16, 10), point="s2e2", sha="0" * 64)
+    cand = games_job(tmp_path, "cand", "t0_tp", t0_rows(16, 10), point=point)
+    s_t0 = games_job(tmp_path, "s", "t0_tp", t0_rows(13, 1), point="r2", sha="2" * 64)
+    t0_dumps(cache, base, set())
+    t0_dumps(cache, s_t0, set())
+    t0_dumps(cache, cand, {1, 33})
+    tvz_job = games_job(tmp_path, "tvz", "tvz_bc", [{**row(n, n <= 20), "model": {**row(n, True)["model"], "zero_last_failed": True}} for n in range(1, 33)], point=point)
+    rush_job = games_job(tmp_path, "rush", "rush_check", rush_rows(monkeypatch, 30, 30), point=point)
+    s_rush = games_job(tmp_path, "srush", "rush_check", rush_rows(monkeypatch, 19, 37), point="r2", sha="2" * 64)
+    b = {"terran": 0.02, "protoss": 0.01}
+    bv, cv = tmp_path / "b.json", tmp_path / "c.json"
+    bv.write_text(json.dumps(val({"terran": 0.7, "protoss": 0.65}, {"terran": 0.9, "protoss": 1.0}, b)), encoding="utf-8")
+    cv.write_text(json.dumps(val({"terran": cand_top1, "protoss": 0.65}, {"terran": 0.9, "protoss": 1.0}, b)), encoding="utf-8")
+    verdict = tmp_path / "t1_first_test.verdict"
+    return (["--round", "t1", "--baseline-val", str(bv), "--candidate-val", str(cv), "--baseline-games", str(base),
+             "--candidate-games", str(cand), "--candidate-tvz", str(tvz_job), "--candidate-rush", str(rush_job),
+             "--s-games", str(s_t0), "--s-rush", str(s_rush), "--cache", str(cache), "--verdict", str(verdict)],
+            verdict, cache / cand.name / "t0_tp")
+
+
+def without_verdict(args: list[str]) -> list[str]:
+    i = args.index("--verdict")
+    return args[:i] + args[i + 2:]
+
+
+def test_t1_verdict_needs_the_d_checkpoint_044_r7(tmp_path, monkeypatch):
+    """A t1 verdict file names D's checkpoint: refused (no file) when no round job has a protocol.json; without
+    --verdict the run still reports (D = t1 shown as '?')."""
+    args, verdict, _ = t1_args(tmp_path, monkeypatch, point=None)
+    with pytest.raises(SystemExit, match="needs the round's checkpoint"):
+        dv.main(args)
+    assert not verdict.exists()
+    out = dv.main(without_verdict(args))
+    assert out["verdict"] == "pass" and (out["d_choice"]["d"], out["d_choice"]["checkpoint"]) == ("t1", "?")
+
+
+def test_t1_verdict_refused_while_a_command_stream_is_missing_044_r6(tmp_path, monkeypatch, capsys):
+    """A valid T0 TvT / TvP game without a command stream refuses a t1 verdict file (a passing cmddump failure must not
+    fix D = d1 for good); without --verdict the teacher-mode cell is MISSING (a fail) with the reason, also when every
+    game of a race lacks its stream. The t1 report lists the failing gate checks."""
+    args, verdict, streams = t1_args(tmp_path, monkeypatch, cand_top1=0.694)
+    (streams / "g5.json").unlink()
+    with pytest.raises(SystemExit, match=r"have no command stream \(TvT 1\)"):
+        dv.main(args)
+    assert not verdict.exists()
+    capsys.readouterr()
+    out = dv.main(without_verdict(args))
+    assert out["teacher_cells"]["terran"] == {"teacher": 1, "n": 31, "ok": False, "missing": "1 game(s) without a command stream"}
+    assert out["teacher_cells"]["protoss"]["ok"] and out["verdict"] == "stop" and out["d_choice"]["d"] == "d1"
+    text = capsys.readouterr().out
+    # gate: top-1 -0.6 %p FAIL; 3b bunker_order_4m MISSING (a stream gone); nll.action RECORD is not listed
+    assert "050-R10 gate vs m2-s2e2 (2 nll.action record only): FAIL (2 terran action_top1 FAIL, 3b terran bunker_order_4m MISSING)" in text
+    assert "teacher mode (050-R10, need <= 3 each): TvT - (1 game(s) without a command stream), TvP 1/32: NO" in text
+    assert "teacher mode TvT 1, TvP 1 <= 3/32: NO, yes" in text
+    for n in range(1, 33):
+        (streams / f"g{n}.json").unlink(missing_ok=True)
+    out = dv.main(without_verdict(args))
+    assert out["teacher_cells"]["terran"]["missing"] == "32 game(s) without a command stream"
+    # streams not counted at all (no cmddump binary): refused with --verdict, MISSING without
+    monkeypatch.setattr(dv, "t0_teacher_mode", lambda job, cache, lin: {"error": "no uranium-replay"})
+    with pytest.raises(SystemExit, match=r"command streams are not counted \(no uranium-replay\)"):
+        dv.main(args)
+    assert not verdict.exists()
+    assert dv.main(without_verdict(args))["teacher_cells"]["protoss"]["missing"] == "command streams not counted"

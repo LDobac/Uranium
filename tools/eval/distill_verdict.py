@@ -25,6 +25,9 @@ are judged as before (their verdict files stand):
     held sum (early + late) >= 60, T0 Terran + Protoss wins >= 20 / 64 and teacher-mode TvT and TvP <= 3 / 32 each all
     hold; otherwise D = d1 (checkpoints/m2-distill-d1/ckpt-2000). Printed, in the JSON (`d_choice`) and as comment
     lines of the verdict file (whose first line stays pass / stop).
+  - With --verdict the tool also refuses (no verdict, no file) when no round job has a protocol.json (D's checkpoint
+    unknown) and while a valid T0 TvT / TvP game of the round has no command stream or the streams were not counted
+    (a passing cmddump failure would fail the teacher-mode cell for good); without --verdict such a cell shows MISSING.
 
 Only these three verdicts (user decision 2026-11-14): a gate check that is MISSING or a cell without a value (games
 without a row, no val output) counts as failed. To keep the never-overwritten verdict file right, the tool refuses to
@@ -160,14 +163,27 @@ def teacher_cells(tm: dict, c: dict | None) -> dict:
     for race in tables.TEACHER_MODE_RACES:
         v = None if "error" in tm else tm.get(race)
         cc = (c or {}).get(race)
-        why = ("command streams not counted" if "error" in tm else "no games" if not v or not v["n"] else
+        why = ("command streams not counted" if "error" in tm else "no games" if not v else
                f"{v['no_stream']} game(s) without a command stream" if v["no_stream"] else
+               "no games" if not v["n"] else
                "no t0_tp counts" if not cc else
                f"{cc['missing']} game(s) without a result" if cc.get("missing") else
                "undecodable job lines" if c.get("skipped_lines") else "")
         teacher, n = (v["teacher"], v["n"]) if v else (None, 0)
         out[race] = {"teacher": teacher, "n": n, "ok": not why and teacher <= TEACHER_MODE_MAX, "missing": why}
     return out
+
+
+def stream_gaps(tm: dict) -> None:
+    """Refuse a t1 verdict file (no verdict, no file) while a valid T0 TvT / TvP game has no command stream or the
+    streams were not counted: a passing cmddump failure would otherwise fail the teacher-mode cell, and with it D = t1,
+    for good in the never-overwritten file (as check_finished, 044-R6). Without --verdict the cell shows MISSING."""
+    if "error" in tm:
+        raise SystemExit(f"044-R6: no verdict while the round's t0_tp command streams are not counted ({tm['error']})")
+    gaps = [f"Tv{r[0].upper()} {v['no_stream']}" for r, v in tm.items() if v.get("no_stream")]
+    if gaps:
+        raise SystemExit("044-R6: no verdict while valid T0 games of the round have no command stream (" + ", ".join(gaps) +
+                         "); run uranium-replay cmddump (or fix the replays) and run again")
 
 
 def t0_wins(c: dict | None) -> int | None:
@@ -381,7 +397,11 @@ def main(argv=None) -> dict:
     later = a.round not in NLL_JUDGED_ROUNDS
     if later and ref["s_point"] != T1_S_POINT:
         raise SystemExit(f"044-R8: round {a.round}'s S is {T1_S_POINT} (m2-dagger-r2/ckpt-1408); S's jobs are of point {ref['s_point']!r}")
-    bg =rg.t0_tp_counts(a.baseline_games, cache, lin)
+    if later and a.verdict is not None and not rec["checkpoint"]:
+        # 044-R7: the never-overwritten file must name D's checkpoint; t1's comes from the round jobs' protocol.json.
+        raise SystemExit(f"044-R7: --verdict for round {a.round} needs the round's checkpoint (D) from a round job's {protocol.RECORD}; "
+                         f"none has one ({', '.join(rec['no_protocol_json'])})")
+    bg = rg.t0_tp_counts(a.baseline_games, cache, lin)
     cg = rg.t0_tp_counts(a.candidate_games, cache, lin)
     sg = rg.t0_tp_counts(a.s_games, cache, lin)
     g = rg.gate(rg._load(a.baseline_val), rg._load(a.candidate_val), bg, cg)
@@ -391,6 +411,8 @@ def main(argv=None) -> dict:
     protoss, s_protoss = protoss_wins(cg), protoss_wins(sg)
     tm, s_tm = t0_teacher_mode(a.candidate_games, cache, lin), t0_teacher_mode(a.s_games, cache, lin)
     tcells = teacher_cells(tm, cg) if later else None
+    if later and a.verdict is not None:
+        stream_gaps(tm)
     word, cond = decide(a.round, g["overall"], tvz, rush, s_rush, protoss, s_protoss, tcells)
     d = d_choice(word, tvz, rush, t0_wins(cg), tcells, rec["checkpoint"]) if later else None
     lines = report_lines(a.round, word, cond, g, tvz, rush, s_rush, protoss, s_protoss, tm, s_tm, tcells, d)
