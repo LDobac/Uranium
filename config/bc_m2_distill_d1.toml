@@ -18,9 +18,7 @@
 # rate as bc_m2_dagger_r2.toml (044-R5 ④): 3e-4 / 3e-6 x s2_lr_scale 0.1 = 3e-5 / 3e-7, warmup 5%, cosine to
 # the end of the epoch. Losses as every source (044-R5 ⑤, AMB-044-6). [aux] lambda_priv 0.2, lambda_jepa 0.1
 # (AMB-041-13b), as config/bc_m2_dagger_r2.toml.
-# PLACEHOLDER: [data.subsample] fraction / fraction_by_race / fraction_by_source and [steps] s2 / s2_warmup are
-# filled by the count of the distill round driver (U11) after the distill_m2/d1 labelling (the zero fraction_by_race and
-# fraction_by_source make every loader refuse this file until then).
+# Counted 2026-11-14 (run driver distill_d1.sh count): [data.subsample] fractions and [steps].
 # 041 behaviour cloning hyper-parameters (041-R3, R10: tuning targets, recorded in checkpoints).
 
 # Parallel games per batch (B) and truncated-BPTT length (T, 041-R2 / 032-R5).
@@ -63,13 +61,19 @@ target_loc = 1.0
 # config/bc_m2_distill_d1.toml --share teacher=0.45,distill=0.2 --dataset-group replays/shards/stardata,replays/shards/community,replays/shards/scr_ladder,replays/shards/personal
 # --dataset-group replays/shards/botgen,replays/shards/dagger_m2,replays/shards/distill_m2` (the datasets through
 # their manifests, as the trainer's --dataset reads them; lanes 32, seq_len 64, data.seed 15).
-# PLACEHOLDER: counted after the distill_m2/d1 labelling (s2 = 0 would mean total_steps).
+# Counted 2026-11-14 (human 4 sources read in place, --group; botgen (its manifest: the six 021-R8 teacher folders,
+# not teacher-tp-*), dagger_m2, distill_m2 through their manifests, --dataset-group): 4,443 games,
+# 3,971,735 steps, of which the
+# teacher botgen 2,057 games, 1,207,759 steps + dagger_m2 945 games, 599,844 steps
+# = 45.5% (target 45%), distill 872 games, 761,273 steps = 19.2% (target 20%),
+# human 35.3% (target 35%); human TvT : TvP : TvZ steps 14.8 : 49.4 : 35.8% against the
+# S2 human data's 14.9 : 49.2 : 35.9%.
 # s1 / ablation_a are unused (0 = total_steps). Recount when the datasets change.
 s1 = 0
-s2 = 0
+s2 = 2000
 ablation_a = 0
-# 041-R14: 5% of the epoch, rounded half up.
-s2_warmup = 0
+# 041-R14: 5% of the epoch, rounded half up (2,000 x 0.05 = 100.00 -> 100).
+s2_warmup = 100
 
 [value]
 # win head MSE weight (041-R7)
@@ -104,20 +108,17 @@ chain_start_sources = ["botgen"]
 # replay sha256 + data.seed, computed by `uranium-train mix-fractions --share` for data.seed 15. `fraction` is
 # the single human share aiming at the same total (used only by a game without a T / P / Z enemy).
 [data.subsample]
-# PLACEHOLDER: replaced by the count (0.0492 is m2-dagger-r2's single share).
-fraction = 0.0492
+fraction = 0.061
 keep_sources = ["botgen", "dagger"]
 
-# PLACEHOLDER: 0 is outside (0, 1], so BcConfig::load refuses the file until the count fills the three.
 [data.subsample.fraction_by_race]
-T = 0.0
-P = 0.0
-Z = 0.0
+T = 0.047
+P = 0.0622
+Z = 0.06
 
 # 044-R5 ③: the share of the distill games kept (1.0 = all of them when they are below their 20% share).
-# PLACEHOLDER: 0 is outside (0, 1], refused like fraction_by_race until the count fills it.
 [data.subsample.fraction_by_source]
-distill = 0.0
+distill = 1.0
 
 # 041-R29 ①: the four 032 section 2.7 switches (as config/bc.toml), the 032 section 2.8 switches
 # bypass, spatial_preact, aux_priv, aux_jepa (k = 1, 8, 32) and the core fix F1 core_skip
