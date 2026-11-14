@@ -72,6 +72,20 @@ round plans and earlier parts included). R is 1..10 and K 1..10, so every (R, K)
 required, a new one for each top-up, and an existing plan file is never overwritten with other seeds.
 
     python tools/eval/rush_check_plan.py --distill --round 1 --extra 120 --part 1 --checkpoint checkpoints/<S run>/ckpt-N
+
+`--teacher-tp` (022-R11 / 022-AC2, AMB-022-1 Resolved 2026-11-14): rewrites config/plans/teacher_tp_check.toml, the
+check of the 022 TvT / TvP teacher `{ kind = "t0", race = "terran", build = "terran_tp" }` (players[0]) against T0
+standard Protoss and Terran x 2 maps x 32 (pass >= 44/64 each) and the T1 bots UAlbertaBot P, Stardust, UAlbertaBot T,
+Iron x 2 maps x 10 (recorded only) = 208 games, 60 min, replays kept. `--botgen-tp` (022-R12 / 044-R8, AMB-022-7):
+rewrites config/plans/teacher_botgen_tp.toml, the teacher's botgen games: T0 standard Protoss and Terran x 2 maps x
+150 + the same four T1 bots x 2 maps x 25 = 800 games, 10 min (build --src botgen --until-frame 14400 --time-limit
+14400). Both: races fixed (no Random, 022-R2), seeds splitmix64(1,000,000 + n) >> 32 (check n = 1..208, botgen
+n = 1,001..1,800), asserted disjoint from each other, from every plan under --out-dir and its subfolders (050-R9
+protocol templates included), from the botgen / check seeds, from the DAgger and distillation round blocks not
+generated yet (rounds 1..10, distillation top-ups) and from the teacher's development seeds 77,001..77,264.
+
+    python tools/eval/rush_check_plan.py --teacher-tp
+    python tools/eval/rush_check_plan.py --botgen-tp
 """
 
 import argparse
@@ -475,6 +489,142 @@ def write_distill(out_dir: Path, rnd: int, checkpoint: str, out: Path | None, ha
     return out
 
 
+# 022 TvT / TvP teacher `terran_tp` (021-R9): the 022-R11 check plan and the 022-R12 botgen plan (AMB-022-1 /
+# AMB-022-7 Resolved 2026-11-14). The teacher players[0]; opponents with fixed races (022-R2: no Random games in
+# the data), T0 standard builds only, the T1 Terran / Protoss bots of 022-R11 / R12 (the 044-R1 four).
+TP_TEACHER = '{ kind = "t0", race = "terran", build = "terran_tp" }'
+TP_T0 = (
+    ("T0 protoss", '{ kind = "t0", race = "protoss" }'),
+    ("T0 terran", '{ kind = "t0", race = "terran" }'),
+)
+TP_T1 = (
+    ("ualbertabot protoss", '{ kind = "oss", name = "ualbertabot", race = "protoss" }'),
+    ("stardust", '{ kind = "oss", name = "stardust", race = "protoss" }'),
+    ("ualbertabot terran", '{ kind = "oss", name = "ualbertabot", race = "terran" }'),
+    ("iron", '{ kind = "oss", name = "iron", race = "terran" }'),
+)
+# 022-R11: T0 standard Protoss / Terran 2 maps x 32 (pass: >= 44 / 64 each), T1 4 bots x 2 maps x 10 (recorded).
+TP_CHECK_T0_GAMES = 32
+TP_CHECK_T1_GAMES = 10
+# 022-AC2: 60-minute cap.
+TP_CHECK_MAX_FRAMES = 86400
+# 022-R12: T0 standard Protoss / Terran 2 maps x 150 (600) + T1 4 bots x 2 maps x 25 (200) = 800, 10-minute cap.
+TP_BOTGEN_T0_GAMES = 150
+TP_BOTGEN_T1_GAMES = 25
+# Hash key of the 022 teacher seeds, far above every other key's game numbers (botgen 60,000 + n, dagger
+# 70,000 + n, distill 80,000 + n with n <= 200,000): the check plan is game numbers 1..208, the botgen plan
+# 1,001..1,800.
+TP_SEED_KEY = 1_000_000
+TP_CHECK_FIRST = 1
+TP_BOTGEN_FIRST = 1001
+# 022-R11: the teacher's development runs used seeds 77,001..77,264; the check plan must not tune on them.
+TP_DEV_SEEDS = range(77001, 77265)
+# Seed blocks of plans not generated yet that the 022 plans keep clear of: DAgger rounds 1..10 (70,000 + n,
+# n <= 6,000), distillation rounds 1..10 (80,000 + n, n <= 6,000) and their top-up parts (n = 100,001..200,000).
+RESERVED_ROUNDS = 10
+
+
+def tp_blocks(check: bool) -> list[tuple[str, str, str, int]]:
+    """(opponent label, p1, map, games) of the 022-R11 check plan (`check`) or the 022-R12 botgen plan, in plan
+    order: T0 Protoss, T0 Terran, then the T1 bots, each x Fighting Spirit / Circuit Breaker."""
+    t0, t1 = (TP_CHECK_T0_GAMES, TP_CHECK_T1_GAMES) if check else (TP_BOTGEN_T0_GAMES, TP_BOTGEN_T1_GAMES)
+    return [(o, p1, m, g) for opps, g in ((TP_T0, t0), (TP_T1, t1)) for o, p1 in opps for m in MAPS]
+
+
+def tp_seeds(check: bool) -> tuple[int, list[int]]:
+    """(first game number, seeds) of the 022 check plan (`check`) or botgen plan: splitmix64(1,000,000 + n) >> 32."""
+    first = TP_CHECK_FIRST if check else TP_BOTGEN_FIRST
+    n = sum(g for *_, g in tp_blocks(check))
+    return first, [splitmix64(TP_SEED_KEY + k) >> 32 for k in range(first, first + n)]
+
+
+def reserved_seeds() -> set[int]:
+    """Seeds of plans other generators will write (DAgger and distillation rounds, distillation top-ups) and the
+    022 teacher's development seeds: the 022 plans do not take them either."""
+    n = RESERVED_ROUNDS * DAGGER_ROUND_STRIDE
+    s = {splitmix64(DAGGER_SEED_KEY + k) >> 32 for k in range(1, n + 1)}
+    s |= {splitmix64(DISTILL_SEED_KEY + k) >> 32 for k in range(1, DISTILL_ROUNDS_RESERVED * DISTILL_ROUND_STRIDE + 1)}
+    top = range(DISTILL_EXTRA_BASE + 1, DISTILL_EXTRA_BASE + DISTILL_ROUNDS_RESERVED * DISTILL_EXTRA_ROUND + 1)
+    s |= {splitmix64(DISTILL_SEED_KEY + k) >> 32 for k in top}
+    return s | set(TP_DEV_SEEDS)
+
+
+def render_tp(check: bool, name: str) -> tuple[str, list[int]]:
+    """The text and seeds of the 022-R11 teacher check plan (`check`) or the 022-R12 teacher botgen plan."""
+    blocks = tp_blocks(check)
+    first, seeds = tp_seeds(check)
+    n = len(seeds)
+    last = first + n - 1
+    assert len(set(seeds)) == n, "022 teacher seeds repeat"
+    other_first, other = tp_seeds(not check)
+    assert not set(seeds) & set(other), "the 022 check and botgen plans share a seed"
+    t0 = sum(g for o, *_, g in blocks if o.startswith("T0 "))
+    if check:
+        what = [
+            "# 022-R11 / 022-AC2 (AMB-022-1 Resolved 2026-11-14): check of the TvT / TvP teacher t0-terran-tp, generated by",
+            "# tools/eval/rush_check_plan.py --teacher-tp (do not edit by hand). The teacher players[0] against T0 standard",
+            f"# Protoss and Terran x Fighting Spirit / Circuit Breaker x {TP_CHECK_T0_GAMES} ({t0}) and the T1 Terran / Protoss bots",
+            f"# (UAlbertaBot P, Stardust, UAlbertaBot T, Iron) x 2 maps x {TP_CHECK_T1_GAMES} ({n - t0}) = {n} games, races fixed, 60 min, replays kept;",
+            "# scripted players and OSS bots only (uranium-env run). Results: the T0 Terran session rows' scripted.tp (022-R10).",
+            "# Pass (measured once on this plan; development runs use other seeds): T0 Protoss >= 44/64 and T0 Terran >= 44/64",
+            "# wins, no crash. 022-AC4: refinery order <= 2:00 and factory order <= 3:30 in >= 95% of the games. T1 games are",
+            "# recorded only: a bot whose win rate is below the BC baseline's T1 300 rate against the same bot is reported.",
+            "# T1 bots: the 050-R9 T1 rule (NDEBUG builds, config/protocol/t1_bots.toml; opponent-crash games are invalid).",
+        ]
+        max_frames = TP_CHECK_MAX_FRAMES
+    else:
+        what = [
+            "# 022-R12 / 044-R8 / 040-R14 (AMB-022-7 Resolved 2026-11-14): teacher botgen games of the TvT / TvP teacher",
+            "# t0-terran-tp, generated by tools/eval/rush_check_plan.py --botgen-tp (do not edit by hand); played only after",
+            "# the 022-AC2 check passes. The teacher players[0] against T0 standard Protoss and Terran x Fighting Spirit /",
+            f"# Circuit Breaker x {TP_BOTGEN_T0_GAMES} ({t0}) and the T1 Terran / Protoss bots (UAlbertaBot P, Stardust, UAlbertaBot T,",
+            f"# Iron) x 2 maps x {TP_BOTGEN_T1_GAMES} ({n - t0}) = {n} games, races fixed (no Random games in the data, 022-R2), 10 min",
+            "# (max_frames 14,400), replays kept; build: uranium-replay build <dir> --src botgen --until-frame 14400",
+            "# --time-limit 14400 --out <shared>/datasets/replays/shards/botgen/teacher-tp-<date>. The Zerg : Protoss : Terran",
+            "# = 50 : 30 : 20 race split inside the teacher + dagger share is set by the training mix, not by this plan.",
+            "# T1 bots: the 050-R9 T1 rule (NDEBUG builds, config/protocol/t1_bots.toml; opponent-crash games are invalid).",
+        ]
+        max_frames = TEACHER_MAX_FRAMES
+    lines = [
+        *what,
+        f"# seeds (020-R20): splitmix64(1,000,000 + n) >> 32, n = {first:,}..{last:,} (check plan 1..208, botgen plan 1,001..1,800):",
+        "# natural start slots, none of another plan's seeds (botgen, check, dagger, distill, 050-R9 protocol, the",
+        "# teacher's development seeds 77,001..77,264; asserted by the generator).",
+        f'name = "{name}"',
+        "save_replay = true",
+        "wall_timeout_s = 7200",
+        f"max_frames = {max_frames}",
+        "seeds = [",
+    ]
+    k = 0
+    for opp, _, m, games in blocks:
+        block = seeds[k:k + games]
+        lines.append(f"  # games {k + 1}..{k + games}: {opp}, {m}")
+        for i in range(0, games, 8):
+            lines.append("  " + ", ".join(str(s) for s in block[i:i + 8]) + ",")
+        k += games
+    lines.append("]")
+    for _, p1, m, games in blocks:
+        lines += ["[[matchup]]", f'map = "{m}"', f"games = {games}", f"p0 = {TP_TEACHER}", f"p1 = {p1}"]
+    return "\n".join(lines) + "\n", seeds
+
+
+def write_tp(out_dir: Path, check: bool, out: Path | None = None) -> Path:
+    """Writes the 022-R11 check plan config/plans/teacher_tp_check.toml (`check`) or the 022-R12 botgen plan
+    config/plans/teacher_botgen_tp.toml; asserts its seeds are disjoint from every other plan under `out_dir` (and
+    subfolders), the botgen / check / reserved round blocks and the teacher's development seeds."""
+    stem, name = ("teacher_tp_check", "teacher-tp-check") if check else ("teacher_botgen_tp", "teacher-botgen-tp")
+    own = out_dir / f"{stem}.toml"
+    out = out or own
+    text, seeds = render_tp(check, name)
+    taken = taken_seeds(out_dir, (out, own)) | reserved_seeds()
+    assert not taken & set(seeds), "a seed of this plan is another plan's (botgen, check, dagger, distill, protocol or development)"
+    out.write_bytes(text.encode("utf-8"))
+    hits = sum(_core.start_slots(s, 0)[2] for s in seeds)
+    print(f"{out}: {len(seeds)} games, first-target hit {hits} ({hits / len(seeds):.1%}, natural 1/3), {len(taken)} other seeds disjoint")
+    return out
+
+
 def render(checkpoint: str | None, name: str) -> str:
     """`checkpoint` None = the 021-R8 teacher plays players[0] (050-R8)."""
     blocks = len(OPPONENTS) * len(MAPS)
@@ -553,7 +703,16 @@ if __name__ == "__main__":
                     help="--distill --extra (required there): top-up part number 1..10 of the round, a new one per top-up (its own seed block)")
     ap.add_argument("--memory-log", action="store_true",
                     help="--dagger: the model writes decision logs for the memory_action relabel (041-R28); --distill: always on")
+    ap.add_argument("--teacher-tp", action="store_true", help="write the 022-R11 check plan of the 022 teacher terran_tp (config/plans/teacher_tp_check.toml)")
+    ap.add_argument("--botgen-tp", action="store_true", help="write the 022-R12 botgen plan of the 022 teacher terran_tp (config/plans/teacher_botgen_tp.toml)")
     a = ap.parse_args()
+    if a.teacher_tp or a.botgen_tp:
+        # 022-R11 / R12: fixed composition and seeds; only --out-dir (and --out) apply.
+        assert not (a.teacher_tp and a.botgen_tp), "--teacher-tp and --botgen-tp are separate plans"
+        assert not (a.teacher or a.botgen or a.dagger or a.distill or a.half or a.extra or a.part or a.memory_log
+                    or a.first_game is not None or a.checkpoint or a.name), "--teacher-tp / --botgen-tp take only --out-dir / --out"
+        write_tp(a.out_dir, a.teacher_tp, a.out)
+        raise SystemExit(0)
     assert not (a.dagger and a.distill), "--dagger and --distill are separate plans"
     assert a.dagger or a.distill or not a.half, "--half needs --dagger or --distill"
     assert a.dagger or a.distill or not a.memory_log, "--memory-log needs --dagger or --distill"
