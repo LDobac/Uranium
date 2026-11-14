@@ -196,6 +196,18 @@ impl Batch {
         self.inner.game_ids.clone()
     }
 
+    /// 044-R3: per lane, its view's `perspective_slot` (040 meta; 0 for a drained lane).
+    fn lane_perspectives(&self) -> Vec<u8> {
+        self.inner.perspective_slots.clone()
+    }
+
+    /// 044-R3: the observation frames of lane `lane`'s steps in this batch (with the game, the
+    /// step identity, 044-R2).
+    fn lane_frames(&self, lane: usize) -> PyResult<Vec<u32>> {
+        let c = self.inner.chunks.get(lane).ok_or_else(|| PyValueError::new_err(format!("lane {lane} of {}", self.inner.chunks.len())))?;
+        Ok(c.iter().map(|s| s.frame).collect())
+    }
+
     /// `bc-eval` label facts per row of `group(start, end, t, ..)`: (has target location,
     /// full selection length) as numpy arrays.
     fn label_extras<'py>(&self, py: Python<'py>, start: usize, end: usize, t: usize) -> (Bound<'py, numpy::PyArray1<bool>>, Bound<'py, numpy::PyArray1<i32>>) {
@@ -317,6 +329,132 @@ impl EvalStream {
         let (mse, sur) = self.inner.finish();
         serde_json::to_string(&serde_json::json!({ "win_open_mse": mse, "surrender": sur })).map_err(|e| err(e.into()))
     }
+}
+
+/// 044-R3 policy labelling (`python -m uranium distill-label`, [`uranium_data::distill`]): the
+/// `distill_pre` games through the BC loader as `bc-eval` reads them, the labeller's head choices
+/// per lane ([`DistillLabeller::put`]) and the labelled shards ([`DistillLabeller::write`]).
+#[pyclass(module = "uranium._core", unsendable)]
+struct DistillLabeller {
+    inner: uranium_data::distill::DistillLabeller,
+}
+
+fn i64s<'a>(a: &'a numpy::PyReadonlyArray1<'_, i64>, what: &str) -> PyResult<&'a [i64]> {
+    a.as_slice().map_err(|e| PyValueError::new_err(format!("{what}: {e}")))
+}
+
+#[pymethods]
+impl DistillLabeller {
+    /// `config`: the BC config (lanes, `seq_len`); `input`: the `distill_pre` folder (044-R2);
+    /// `label_seed`: 044-R3 ② seed of the per-game draws. Maps: `maps_dir`, else
+    /// `URANIUM_MAPS_DIR`; `synthetic_maps` for test games only. `only`: the input files to read
+    /// (relative paths, `distill_check`); `None` = all.
+    #[new]
+    #[pyo3(signature = (config, input, label_seed, maps_dir = None, synthetic_maps = false, only = None))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(py: Python<'_>, config: PathBuf, input: PathBuf, label_seed: u64, maps_dir: Option<PathBuf>, synthetic_maps: bool, only: Option<Vec<String>>) -> PyResult<Self> {
+        let cfg = BcConfig::load(&config).map_err(err)?;
+        let maps = Arc::new(match (synthetic_maps, maps_dir) {
+            (true, _) => MapStore::synthetic(),
+            (false, Some(d)) => MapStore::dir(d),
+            (false, None) => MapStore::from_env(),
+        });
+        let inner = py.detach(move || uranium_data::distill::DistillLabeller::new(&input, &cfg, maps, label_seed, only.as_deref())).map_err(err)?;
+        Ok(Self { inner })
+    }
+
+    /// The next batch, `None` once every lane is drained.
+    fn next(&mut self, py: Python<'_>) -> PyResult<Option<Batch>> {
+        let inner = &mut self.inner;
+        let b = py.detach(move || inner.next()).map_err(err)?;
+        Ok(b.map(|inner| Batch { inner }))
+    }
+
+    /// Per lane of `batch`: (game key `"<file>:<game>"`, the game's 044-R3 seed), `None` for a
+    /// drained lane. A new key in a lane is a new game (a new RNG).
+    fn lanes(&self, batch: &Batch) -> Vec<Option<(String, u64)>> {
+        self.inner.lanes(&batch.inner).into_iter().map(|x| x.map(|(id, seed)| (format!("{}:{}", id.file, id.game), seed))).collect()
+    }
+
+    /// The head choices for lane `lane`'s steps of `batch` (one row per step, step order):
+    /// ActionType, delay bucket, queued (0/1), the selection's entity indices in pick order
+    /// `[steps, S]` ending at `end` (END = the group's entity count), TargetUnit, Location.
+    #[allow(clippy::too_many_arguments)]
+    fn put(
+        &mut self,
+        batch: &Batch,
+        lane: usize,
+        action: numpy::PyReadonlyArray1<'_, i64>,
+        delay: numpy::PyReadonlyArray1<'_, i64>,
+        queued: numpy::PyReadonlyArray1<'_, i64>,
+        selected: numpy::PyReadonlyArray2<'_, i64>,
+        end: usize,
+        target_unit: numpy::PyReadonlyArray1<'_, i64>,
+        target_loc: numpy::PyReadonlyArray1<'_, i64>,
+    ) -> PyResult<()> {
+        use uranium_env::features::label::HeadChoice;
+        let (a, d, q, tu, tl) = (i64s(&action, "action")?, i64s(&delay, "delay")?, i64s(&queued, "queued")?, i64s(&target_unit, "target_unit")?, i64s(&target_loc, "target_loc")?);
+        let sel = selected.as_array();
+        let n = a.len();
+        if [d.len(), q.len(), tu.len(), tl.len(), sel.nrows()].iter().any(|&x| x != n) {
+            return Err(PyValueError::new_err(format!("lane {lane}: head arrays of different lengths (action {n})")));
+        }
+        let idx = |v: i64| usize::try_from(v).map_err(|_| PyValueError::new_err(format!("negative head index {v}")));
+        let mut choices = Vec::with_capacity(n);
+        for r in 0..n {
+            let mut picks = Vec::new();
+            for &v in sel.row(r).iter() {
+                let i = idx(v)?;
+                if i >= end {
+                    break;
+                }
+                picks.push(i);
+            }
+            let action = u16::try_from(a[r]).map_err(|_| PyValueError::new_err(format!("action {}", a[r])))?;
+            choices.push(HeadChoice { action, delay_bucket: idx(d[r])?, queued: q[r] != 0, selected: picks, target_unit: idx(tu[r])?, target_loc: idx(tl[r])? });
+        }
+        self.inner.put(&batch.inner, lane, &choices).map_err(err)
+    }
+
+    /// Games read so far.
+    #[getter]
+    fn games(&self) -> usize {
+        self.inner.games()
+    }
+
+    /// Writes the labelled shards under `out` and the records (`policy`: the `label_policy` JSON
+    /// object, 044-R3 ⑤); staging `URANIUM_SHARD_STAGING_DIR` (040-R17). Returns the summary JSON.
+    #[pyo3(signature = (out, records, policy, threads = None))]
+    fn write(&mut self, py: Python<'_>, out: PathBuf, records: PathBuf, policy: String, threads: Option<usize>) -> PyResult<String> {
+        let policy: serde_json::Value = serde_json::from_str(&policy).map_err(|e| PyValueError::new_err(format!("policy: {e}")))?;
+        let inner = &mut self.inner;
+        let staging = uranium_data::distill::staging_dir();
+        let sum = py.detach(move || inner.write(&out, &records, &policy, &staging, threads)).map_err(err)?;
+        serde_json::to_string(&sum).map_err(|e| err(e.into()))
+    }
+}
+
+/// 044-R3 argument rules ([`uranium_data::distill::check_args`]); the BC shards root is
+/// `<URANIUM_SHARED_DIR>/datasets/replays/shards` when the variable is set. Returns the input
+/// files to label (an existing records file is continued, 044-R5 ③ top-up).
+#[pyfunction]
+fn distill_check(input: PathBuf, out: PathBuf, records: PathBuf, mode: &str) -> PyResult<Vec<String>> {
+    let root = std::env::var_os("URANIUM_SHARED_DIR").filter(|v| !v.is_empty()).map(|d| PathBuf::from(d).join("datasets/replays/shards"));
+    uranium_data::distill::check_args(&input, &out, &records, mode, root.as_deref()).map_err(err)
+}
+
+/// What an existing distill-label records file holds ([`uranium_data::distill::read_labelled`]):
+/// JSON {inputs, views, policy} (policy: the first line's `label_policy`, null for a new file).
+#[pyfunction]
+fn distill_records(records: PathBuf) -> PyResult<String> {
+    let l = uranium_data::distill::read_labelled(&records).map_err(err)?;
+    serde_json::to_string(&l).map_err(|e| err(e.into()))
+}
+
+/// 044-R3 ② seed of one game's draws ([`uranium_data::distill::game_seed`]).
+#[pyfunction]
+fn distill_game_seed(replay_sha256: &str, perspective_slot: u8, label_seed: u64) -> u64 {
+    uranium_data::distill::game_seed(replay_sha256, perspective_slot, label_seed)
 }
 
 /// A Python exception as an error of the Rust loop, with its traceback.
@@ -553,7 +691,8 @@ fn write_test_shards(root: PathBuf, kind: &str, per_file: usize, only_race: Opti
         "mixed" => vec![tk::game(), tk::game_more_units(5, 2), tk::game_with_invalid(9, 3), tk::game_more_units(16, 4), tk::game_len(7, 5)],
         "races" => tk::race_games(),
         "chains" => tk::chain_games(),
-        _ => return Err(PyValueError::new_err(format!("kind {kind:?}: expected varied, mixed, races or chains"))),
+        "distill" => tk::distill_games(),
+        _ => return Err(PyValueError::new_err(format!("kind {kind:?}: expected varied, mixed, races, chains or distill"))),
     };
     if let Some(r) = only_race {
         games.retain(|g| g.game_info.players.iter().any(|p| p.is_enemy && format!("{:?}", p.race).to_lowercase() == r));
@@ -566,6 +705,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Feeder>()?;
     m.add_class::<Batch>()?;
     m.add_class::<EvalStream>()?;
+    m.add_class::<DistillLabeller>()?;
+    m.add_function(wrap_pyfunction!(distill_check, m)?)?;
+    m.add_function(wrap_pyfunction!(distill_records, m)?)?;
+    m.add_function(wrap_pyfunction!(distill_game_seed, m)?)?;
     m.add_class::<agent::Broker>()?;
     m.add_function(wrap_pyfunction!(agent::serve, m)?)?;
     m.add_function(wrap_pyfunction!(agent::plan_models, m)?)?;

@@ -446,6 +446,11 @@ pub struct Batch {
     /// 041-R27: per lane, its game's replay SHA-256 ([`GameStream::replay_sha256`]); empty for a
     /// drained lane.
     pub game_ids: Vec<String>,
+    /// 044-R3: per lane, its game's place in the source ([`StepSource::last_id`] when the game
+    /// entered the lane; `None` for a drained lane or a source without ids) and its 040 meta
+    /// `perspective_slot` (0 for a drained lane): the policy labeller's game identity and seed.
+    pub game_keys: Vec<Option<GameId>>,
+    pub perspective_slots: Vec<u8>,
     pub state: FeedState,
 }
 
@@ -580,6 +585,8 @@ impl Feeder {
         let mut value_weights = Vec::with_capacity(self.lanes.len());
         let mut enemy_races = Vec::with_capacity(self.lanes.len());
         let mut game_ids = Vec::with_capacity(self.lanes.len());
+        let mut game_keys = Vec::with_capacity(self.lanes.len());
+        let mut perspective_slots = Vec::with_capacity(self.lanes.len());
         let mut planes = Vec::new();
         // Feature extraction (and packing) touches only the lane's own game: lanes run on
         // `threads` threads, results kept in lane order, so the batch is the same.
@@ -603,6 +610,8 @@ impl Feeder {
                 value_weights.push(0.0);
                 enemy_races.push(String::new());
                 game_ids.push(String::new());
+                game_keys.push(None);
+                perspective_slots.push(0);
                 continue;
             };
             self.invalid_labels += invalid;
@@ -615,13 +624,15 @@ impl Feeder {
             value_weights.push(g.value_weight);
             enemy_races.push(g.enemy_race().to_string());
             game_ids.push(g.replay_sha256().to_string());
+            game_keys.push(lane.id);
+            perspective_slots.push(g.perspective_slot());
             lane.fresh = false;
             if g.remaining() == 0 {
                 lane.game = None;
                 lane.id = None;
             }
         }
-        Ok(Some(Batch { chunks, planes, fresh, results, value_weights, enemy_races, game_ids, state: self.state(pos) }))
+        Ok(Some(Batch { chunks, planes, fresh, results, value_weights, enemy_races, game_ids, game_keys, perspective_slots, state: self.state(pos) }))
     }
 
     /// [`Feeder::next_batch`] from a shard source, with its read position in the batch's state.

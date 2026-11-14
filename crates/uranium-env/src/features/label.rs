@@ -183,6 +183,49 @@ pub fn host_label_check(l: &Label, o: &Observation) -> (HostLabel, Option<&'stat
     (h, why)
 }
 
+/// One sampled policy decision as head indices into an observation (044-R3 ②): ActionType, delay
+/// bucket, queued, the selection's entity indices in pick order (without END) and the TargetUnit /
+/// Location head outputs (read only when the action uses them).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadChoice {
+    pub action: u16,
+    pub delay_bucket: usize,
+    pub queued: bool,
+    pub selected: Vec<usize>,
+    pub target_unit: usize,
+    pub target_loc: usize,
+}
+
+/// 044-R3 ③: a sampled decision on observation `o` (frame `frame`) as a replay label (040
+/// `action_label`), the inverse of [`host_label_check`]: the delay is the bucket's lower bound
+/// (031-R11, [`bucket_index`] maps it back to the bucket), the selection the picked units' ids in
+/// pick order, the target unit its id, the location cell `y * MAP + x` the tile (x, y) whose
+/// centre the executor commands (unaugmented: the caller reads without symmetry). Only the parts
+/// the 034 action uses are kept (`queued` without `uses_queued` is false). Indices past the
+/// observation's entities (padding) are dropped; [`host_label_check`] then reports the label.
+pub fn label_of_choice(frame: u32, c: &HeadChoice, o: &Observation) -> Label {
+    let a = action_table().actions.get(c.action as usize);
+    let id = |i: usize| o.entity_ids.get(i).copied();
+    let mut selected: Vec<u32> = Vec::new();
+    if a.is_some_and(|a| a.uses_select) {
+        for u in c.selected.iter().filter_map(|&i| id(i)) {
+            if !selected.contains(&u) {
+                selected.push(u);
+            }
+        }
+    }
+    let target = a.map_or(TargetKind::None, |a| a.target);
+    Label {
+        frame,
+        action: c.action,
+        delay: DELAY_BUCKETS[c.delay_bucket.min(DELAY_BUCKETS.len() - 1)],
+        queued: c.queued && a.is_some_and(|a| a.uses_queued),
+        selected,
+        target_unit: if target == TargetKind::Unit { id(c.target_unit) } else { None },
+        target_tile: (target == TargetKind::Loc && c.target_loc < CELLS).then_some(((c.target_loc % MAP) as u16, (c.target_loc / MAP) as u16)),
+    }
+}
+
 /// [`unload_target_check`] reason: the `Unload_Unit` target is not loaded in the selected transport.
 pub const NOT_IN_TRANSPORT_REASON: &str = "target_not_in_transport";
 
