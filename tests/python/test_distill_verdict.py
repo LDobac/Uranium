@@ -165,9 +165,17 @@ def test_unfinished_or_damaged_job_is_refused_044_r6(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match=r"bad: 1 undecodable line\(s\) \(results/h.jsonl:129\)"):
         dv.check_finished([bad])
     verdict = tmp_path / "v.verdict"
+    v = tmp_path / "val.json"
+    v.write_text("{}", encoding="utf-8")
+    args = ["--round", "d1", "--baseline-games", str(ok), "--candidate-games", str(ok), "--candidate-tvz", str(ok),
+            "--candidate-rush", str(run), "--s-games", str(ok), "--s-rush", str(ok), "--verdict", str(verdict)]
     with pytest.raises(SystemExit, match="no verdict while an input job is unfinished"):
-        dv.main(["--round", "d1", "--baseline-games", str(ok), "--candidate-games", str(ok), "--candidate-tvz", str(ok),
-                 "--candidate-rush", str(run), "--s-games", str(ok), "--s-rush", str(ok), "--verdict", str(verdict)])
+        dv.main(args + ["--baseline-val", str(v), "--candidate-val", str(v)])
+    # with --verdict both val outputs must be given and exist (a forgotten flag would fail checks 2 / 3a for good)
+    with pytest.raises(SystemExit, match="--verdict needs --baseline-val"):
+        dv.main(args + ["--candidate-val", str(v)])
+    with pytest.raises(SystemExit, match="--verdict needs --candidate-val .*missing.json"):
+        dv.main(args + ["--baseline-val", str(v), "--candidate-val", str(tmp_path / "missing.json")])
     assert not verdict.exists()
 
 

@@ -1407,10 +1407,13 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         0 => crate::elog!("[rl] dead learner check off ([actors] dead_learner_minutes = 0, 042-R20)"),
         m => crate::elog!("[rl] dead learner check: abnormal end after {DEAD_LEARNER_GAMES}+ finished games without an update for {m} min, or {BAD_SESSION_STREAK} finished games in a row without a learning-session decision (042-R20)"),
     }
+    // 042-R12 / 061-R13: the run reached `--max-agent-steps` (it gets DONE after the final push).
+    let mut steps_reached = false;
     loop {
         let steps_hit = args.max_agent_steps > 0 && shared.agent_steps.load(Ordering::SeqCst) >= args.max_agent_steps;
         if steps_hit {
             crate::elog!("[rl] {} agent steps reached: clean stop (042-R12)", args.max_agent_steps);
+            steps_reached = true;
         }
         let limit_hit = steps_hit || (args.max_updates > 0 && updates_this_run >= args.max_updates) || (args.max_minutes > 0 && started.elapsed() >= Duration::from_secs(args.max_minutes * 60));
         if crate::stopping(&stop) || limit_hit {
@@ -1520,11 +1523,28 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     let league_now = shared.league.lock().unwrap().clone();
     let out = save_checkpoint(&mut run, step, learners.as_mut(), &cfg, &league_now, &args, state_extra(&shared, trained_steps))?;
     crate::elog!("[rl] final checkpoint {}: {out:?}", crate::storage::ckpt_name(step));
+    finish_run(run, out, steps_reached, step)
+}
+
+/// 042-R10 / R12, 061-R13 (2026-11-14): the end of a clean stop. With the final checkpoint pushed, a run that
+/// reached `--max-agent-steps` gets `checkpoints/<run>/DONE` (the 061 marker a finished BC run writes; the
+/// 050-R9 diagnostics of the run's final checkpoint need it) before the lock is released. A Ctrl+C or an update /
+/// minute limit stop writes no DONE (the run resumes from LATEST); an error ends before this. Unpushed: the lock is
+/// kept and no DONE (061-R11-5/6).
+fn finish_run(run: Run, out: PushOutcome, steps_reached: bool, step: u64) -> Result<()> {
     match out {
-        PushOutcome::Pushed => run.release()?,
-        other => crate::elog!("[rl] push {other:?}: keeping the lock so the next start recovers it (061-R11-5/6)"),
+        PushOutcome::Pushed => {
+            if steps_reached {
+                crate::storage::mark_done(&run.cfg, &run.run_id, step)?;
+                crate::elog!("[rl] {} finished: DONE at {} (061-R13)", run.run_id, crate::storage::ckpt_name(step));
+            }
+            run.release()
+        }
+        other => {
+            crate::elog!("[rl] push {other:?}: keeping the lock so the next start recovers it (061-R11-5/6)");
+            Ok(())
+        }
     }
-    Ok(())
 }
 
 /// One update batch of `agent` (042): `lanes` segments from its queue (042-R4 lag drop), or, with
@@ -1607,6 +1627,31 @@ fn write_row(csv: &mut std::fs::File, started: Instant, agent: AgentKind, s: &Up
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 042-R12 / 061-R13 (2026-11-14): a pushed final checkpoint of a run that reached `--max-agent-steps` writes
+    /// `checkpoints/<run>/DONE` through the 061 writer and releases the lock; another clean stop (Ctrl+C, update /
+    /// minute limit) writes no DONE; an unpushed one keeps the lock and writes no DONE.
+    #[test]
+    fn done_on_max_agent_steps_042_r12() {
+        let root = std::env::temp_dir().join(format!("uranium-rl-done-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cfg = StorageConfig::new(root.join("shared"), root.join("cache"), "h");
+        for (run_id, out, reached, done, released) in [
+            ("rl-done", PushOutcome::Pushed, true, true, true),
+            ("rl-ctrlc", PushOutcome::Pushed, false, false, true),
+            ("rl-deferred", PushOutcome::Deferred("share".into()), true, false, false),
+        ] {
+            let run = Run::acquire(cfg.clone(), run_id, false).unwrap();
+            let lock = run.lock_path();
+            assert!(lock.is_file(), "{run_id}");
+            finish_run(run, out, reached, 3_000_007).unwrap();
+            assert_eq!(crate::storage::is_done(&cfg, run_id).unwrap(), done, "{run_id}");
+            assert_eq!(!lock.exists(), released, "{run_id}");
+        }
+        let p = crate::storage::done_path(&cfg, "rl-done");
+        assert_eq!(std::fs::read_to_string(p).unwrap().trim(), crate::storage::ckpt_name(3_000_007));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn snapshot_names_are_smb_safe_061_r9() {

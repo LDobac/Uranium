@@ -236,6 +236,11 @@ def main(argv=None) -> dict:
     a = ap.parse_args(argv)
     if a.verdict is not None and a.verdict.exists():
         raise SystemExit(f"{a.verdict} exists: a verdict is not overwritten (041-R29 ⑨)")
+    if a.verdict is not None:
+        # A forgotten or mistyped val path would fail gate check 2 / 3a for good in a never-overwritten file.
+        for flag, v in (("--baseline-val", a.baseline_val), ("--candidate-val", a.candidate_val)):
+            if v is None or not Path(v).is_file():
+                raise SystemExit(f"044-R6: --verdict needs {flag} (an existing bc-eval JSON); got {v!r}")
     ec.load_env()
     cache = a.cache or ec.cache_dir() / "eval_cmddump"
     lin = protocol.load_lineage()

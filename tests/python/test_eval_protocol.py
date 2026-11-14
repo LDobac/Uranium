@@ -827,6 +827,10 @@ def test_compare_marks_backend_and_t1_platform_differences_050_r9(capsys, tmp_pa
     assert "NOTE x: inference backend differs: cuda (bf16-mixed) vs rocm (f32)" in out
     assert "NOTE x: T1 platform differs: ['windows'] vs ['linux']" in out
     assert "NOTE y" not in out and "x total won: 10/300 vs 10/300" in out
+    # a side without an inference record (a Checkpoint 1 subset stage) is labelled, not called a difference
+    z = stage("rocm", "f32", kind="winrate")
+    assert protocol.backend_notes({**z, "inference": {}}, z) == ["inference backend not recorded on one side: not recorded vs rocm (f32)"]
+    assert protocol.backend_notes({**z, "inference": {}}, {**z, "inference": {}}) == []
 
 
 def test_t0_tp_rl_template_050_r9():

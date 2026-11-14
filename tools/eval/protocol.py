@@ -819,7 +819,7 @@ def check_final_only(pt: dict, checkpoint: str) -> None:
         return
     d = checkpoint_dir(checkpoint)
     # BC: <run>/ckpt-N; RL (rl-fix, user decision 2026-11-14): <run>/ckpt-N/agents/<agent>
-    d = next((p for p in (d, *d.parents) if p.name.startswith("ckpt-")), d)
+    d = next((p for p in (d, d.parent, d.parent.parent) if p.name.startswith("ckpt-")), d)
     run = d.parent
     steps = sorted(int(x.name[5:]) for x in run.glob("ckpt-*") if x.name[5:].isdigit())
     if not (run / "DONE").is_file() or not steps or d.name != f"ckpt-{steps[-1]}":
@@ -1380,8 +1380,12 @@ def backend_notes(a: dict, b: dict) -> list[str]:
     platform differ (D and the fixed-RL checks run T1 on whichever host is idle)."""
     out = []
     ba, bb = stage_backends(a), stage_backends(b)
-    if ba != bb:
-        out.append(f"inference backend differs: {', '.join(ba) or '?'} vs {', '.join(bb) or '?'}")
+    if not ba or not bb:
+        # e.g. a Checkpoint 1 subset stage (games found inside a larger job): no inference record
+        if ba or bb:
+            out.append(f"inference backend not recorded on one side: {', '.join(ba) or 'not recorded'} vs {', '.join(bb) or 'not recorded'}")
+    elif ba != bb:
+        out.append(f"inference backend differs: {', '.join(ba)} vs {', '.join(bb)}")
     pa, pb = ((s.get("protocol") or {}).get("t1_platforms") for s in (a, b))
     if (a.get("kind") == "t1" or b.get("kind") == "t1") and sorted(pa or []) != sorted(pb or []):
         out.append(f"T1 platform differs: {pa or '?'} vs {pb or '?'}")
