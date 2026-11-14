@@ -62,6 +62,9 @@ KEY = {"Build_Bunker", "Load_Unit", "Attack_Unit", "Repair_Unit", "Move_Pos", "B
 RUSH_OPPONENTS = ("t0-zerg-rush", "ualbertabot12poollings", "ualbertabot9pool10lings", "ualbertabot9poolhydra")
 MACRO_OPPONENTS = ("ualbertabot2hatchhydra", "ualbertabot3hatchmuta", "steamhammer2hatchmuta", "t0-zerg-muta", "t0-zerg")
 CLASSES = ("rush", "macro")
+# 044-R8 / 022-R12: the TvT / TvP teacher's botgen folders (raw and shards botgen/teacher-tp-*) are not part of the
+# 041-R27 Zerg-teacher hold-out: no rush / macro class, not in the `full` macro pass.
+TP_PREFIX = "teacher-tp-"
 # 041-R27: "before 4:00" = observation frame < 5,760 (24 frames per game second, 042-R14).
 BUNKER_BEFORE = 4 * 60 * ec.FPS
 
@@ -97,6 +100,8 @@ def teacher_classes(raw_root: Path, cache: Path | None = None) -> dict[str, dict
         old = json.loads(cache.read_text(encoding="utf-8"))
     new, out = {}, {}
     for games in sorted(raw_root.glob("teacher-*/teacher_botgen_*/games.jsonl")):
+        if games.parent.parent.name.startswith(TP_PREFIX):
+            continue  # 044-R8: the 022 teacher's games
         plan = games.parent
         key = plan.relative_to(raw_root).as_posix()
         sig = file_sha256(games)
@@ -183,7 +188,7 @@ def added_dirs() -> list[str]:
     """041-R27: the botgen parts outside `orig` (teacher-20261107-macro2, teacher-20261109-macro3, ...) as one
     source folder of links (<URANIUM_CACHE_DIR or runs>/per_action_holdout_added/botgen); [] without any."""
     src = ec.shared_dir() / "datasets" / "replays" / "shards" / "botgen"
-    parts = sorted(p.name for p in src.iterdir() if p.is_dir() and p.name not in ORIG)
+    parts = sorted(p.name for p in src.iterdir() if p.is_dir() and p.name not in ORIG and not p.name.startswith(TP_PREFIX))
     if not parts:
         return []
     work = ec.cache_dir() / "per_action_holdout_added" / "botgen"
