@@ -422,14 +422,24 @@ impl DistillLabeller {
         self.inner.games()
     }
 
-    /// Writes the labelled shards under `out` and the records (`policy`: the `label_policy` JSON
-    /// object, 044-R3 ⑤); staging `URANIUM_SHARD_STAGING_DIR` (040-R17). Returns the summary JSON.
+    /// Where the labelled shards go (`out`) and the records (`policy`: the `label_policy` JSON
+    /// object, 044-R3 ⑤); staging `URANIUM_SHARD_STAGING_DIR` (040-R17). Before the first batch.
     #[pyo3(signature = (out, records, policy, threads = None))]
-    fn write(&mut self, py: Python<'_>, out: PathBuf, records: PathBuf, policy: String, threads: Option<usize>) -> PyResult<String> {
+    fn open(&mut self, out: PathBuf, records: PathBuf, policy: String, threads: Option<usize>) -> PyResult<()> {
         let policy: serde_json::Value = serde_json::from_str(&policy).map_err(|e| PyValueError::new_err(format!("policy: {e}")))?;
+        self.inner.open(&out, &records, &policy, &uranium_data::distill::staging_dir(), threads).map_err(err)
+    }
+
+    /// Writes the input files whose games are all labelled (after each batch); returns how many.
+    fn flush(&mut self, py: Python<'_>) -> PyResult<usize> {
         let inner = &mut self.inner;
-        let staging = uranium_data::distill::staging_dir();
-        let sum = py.detach(move || inner.write(&out, &records, &policy, &staging, threads)).map_err(err)?;
+        py.detach(move || inner.flush()).map_err(err)
+    }
+
+    /// After the last batch: the files left, the completeness check and the summary JSON.
+    fn finish(&mut self, py: Python<'_>) -> PyResult<String> {
+        let inner = &mut self.inner;
+        let sum = py.detach(move || inner.finish()).map_err(err)?;
         serde_json::to_string(&sum).map_err(|e| err(e.into()))
     }
 }

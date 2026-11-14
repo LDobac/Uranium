@@ -10,22 +10,26 @@ map precomputes, `last_failed` 0), read as `bc-eval` reads a split: no z (`z_pre
 symmetry, no enemy race mask, no chain-start observation; the core state runs from each view's
 first step to its last.
 ② Answer: `--mode sample` draws one action per step from the labeller's distribution (temperature
-1, the heads' autoregressive order and masks as in a live session, Gumbel-max, 032-R9), with a
-torch RNG per view seeded by a hash of (`replay_sha256`, perspective, `--label-seed`)
-(`_core.distill_game_seed`); the draws of a view are those of its own steps in order, `seq_len`
-rows per head call. `--mode argmax` (temperature 0) is a tool option and never training data.
+1, the heads' autoregressive order and masks as in a live session, Gumbel-max, 032-R9). The noise
+of each step is a counter-based hash of (view seed, the step's frame, head draw, column)
+(`uranium.distill.noise`), the view seed a hash of (`replay_sha256`, perspective, `--label-seed`)
+(`_core.distill_game_seed`): a step's draw never depends on the batch it is computed in (lanes,
+`micro_lanes`, `pad_entities`, `seq_len` chunks), so the labels depend only on the input, the
+checkpoint, the mode, the seed and the device's numerics. `--mode argmax` (temperature 0) is a tool
+option and never training data.
 ③ The head values become 040 `action_label`s in Rust (`label_of_choice`): action id, the delay
 bucket's lower bound, queued, the selection's unit ids in pick order, the target unit id, the
 location cell's tile; the BC loader reads them back as the same head indices (044-AC2).
 ④ The 040-R19 invalid-label filter (20%) runs on the labelled views as the build runs it, and the
 shards are written with the 040-R17 verified copy, one output file per input file (same relative
-path under `--out`). ⑤ One records line per view with `label_policy` (checkpoint path and sha256,
+path under `--out`) as soon as all its games are labelled. ⑤ One records line per view with `label_policy` (checkpoint path and sha256,
 mode, label seed, the view's seed, device, precision, git commit, invalid labels, config).
 
 An existing `--records` file continues its labelling (044-R5 ③: the round's top-up games are built
 into the same `distill_pre/d<R>` and labelled into the same `--out`): the input files it names are
 skipped, the others are labelled with the same checkpoint, mode and label seed (else an error),
-and their lines are appended. A run stopped between files continues the same way.
+and their lines are appended (the batch shape and device may differ: the draws do not depend on
+them). A run stopped part way continues the same way from its last written file.
 
 Records are not named `distill*.jsonl` (the `--src distill` build's resume scan reads those). A
 summary (views, steps, invalid labels, action types per minute of game time) is printed and
@@ -38,6 +42,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
+# 044-R3 ② noise scheme of `uranium.distill.noise` (records `label_policy.noise`).
+NOISE_VERSION = "rowhash-1"
 # Game minutes per band of the action-type summary (044 risk: labels in states the labeller never saw).
 FRAMES_PER_MINUTE = 24 * 60
 
@@ -85,6 +91,7 @@ def label_games(input_dir: str, ckpt_dir: str, out: str, records: str, config: s
     from uranium.device import autocast
     from uranium.diag.summary import git_commit
     from uranium.model import to_obs
+    from uranium.distill.noise import RowNoise, row_keys
     from uranium.model.net import OBS_KEYS
 
     # The input files left to label: an existing records file is continued (044-R5 ③ top-up into
@@ -93,7 +100,7 @@ def label_games(input_dir: str, ckpt_dir: str, out: str, records: str, config: s
     prior = json.loads(_core.distill_records(records))
     sha = ckpt.policy_version(Path(ckpt_dir))
     if prior["policy"] is not None:
-        for key, want in (("checkpoint_sha256", sha), ("mode", mode), ("label_seed", label_seed)):
+        for key, want in (("checkpoint_sha256", sha), ("mode", mode), ("label_seed", label_seed), ("noise", NOISE_VERSION)):
             if prior["policy"].get(key) != want:
                 raise ValueError(f"--records {records} continues a labelling with {key} {prior['policy'].get(key)!r}, this run {want!r}: "
                                  "one round folder has one labeller policy (044-R3); give a new --out and --records")
@@ -106,64 +113,67 @@ def label_games(input_dir: str, ckpt_dir: str, out: str, records: str, config: s
     mlanes = micro_lanes if micro_lanes is not None else cfg["micro_lanes"]
     g = lanes if mlanes == 0 else min(mlanes, lanes)
     groups = -(-lanes // g)
+    max_select = net.cfg.heads.max_select
+    policy = {
+        "checkpoint": str(ckpt_dir), "checkpoint_sha256": sha, "mode": mode, "label_seed": label_seed, "noise": NOISE_VERSION,
+        "temperature": temp, "device": backend, "precision": precision, "git_commit": git_commit(),
+        "config": str(config), "config_fingerprint": fingerprint, "seq_len": t, "lanes": lanes, "micro_lanes": g, "pad_entities": cfg["pad_entities"],
+    }
     lab = _core.DistillLabeller(config, input_dir, label_seed, maps_dir=maps_dir, synthetic_maps=synthetic_maps, only=todo)
+    # Each input file is written (and its records lines appended) once all its games are labelled.
+    lab.open(out, records, json.dumps(policy), threads)
     states = [None] * groups
-    gens: list = [None] * lanes  # per lane: (game key, torch.Generator) of the game in it
     names = _action_names()
     bands: dict = {}
     steps_total = 0
     while (b := lab.next()) is not None:
         steps = b.lane_steps()
-        for lane, info in enumerate(lab.lanes(b)):
-            if info is None:
-                gens[lane] = None
-            elif gens[lane] is None or gens[lane][0] != info[0]:
-                gen = torch.Generator(device=device)
-                gen.manual_seed(info[1])
-                gens[lane] = (info[0], gen)
+        seeds = [None if x is None else x[1] for x in lab.lanes(b)]
         frames_of = {lane: b.lane_frames(lane) for lane in range(lanes) if steps[lane]}
         views = list(zip(b.lane_games(), b.lane_perspectives()))
         for gi in range(groups):
             start, end = gi * g, min((gi + 1) * g, lanes)
-            if all(steps[lane] == 0 for lane in range(start, end)):
+            live = [lane for lane in range(start, end) if steps[lane]]
+            if not live:
                 states[gi] = None
                 continue
-            hg = b.group(start, end, t, cfg["pad_entities"], net.cfg.heads.max_select)
+            hg = b.group(start, end, t, cfg["pad_entities"], max_select)
             obs = to_obs(hg, device)
             keep = torch.as_tensor(hg["keep"]).to(device).bool()
             s = states[gi]
             s0 = net.init_state(hg["b"], device) if s is None else net.mask_state(s, keep)
+            # The group's real steps (lane-major, step order), one heads call over all of them.
+            starts = [(lane - start) * t for lane in live]
+            idx = torch.tensor([r0 + k for r0, lane in zip(starts, live) for k in range(steps[lane])], dtype=torch.int64, device=device)
             with autocast(device, precision):
                 h, e, sp, sc, _, state = net.trunk_seq(obs, s0, t)
                 u = net._bypass(h, sc, e, obs)
                 states[gi] = state
                 n_ent = e.shape[1]  # the selection's END index (032 §2.5 #4)
-                for lane in range(start, end):
-                    k = steps[lane]
-                    if k == 0:
-                        continue
-                    r0 = (lane - start) * t
-                    rows = slice(r0, r0 + k)
-                    # The heads of one view's rows with that view's RNG: its draws never depend on
-                    # the other lanes (044-R3 ②, per-game seed).
-                    gen = gens[lane][1] if temp > 0 else None
-                    o = net.heads(None, temp, h[rows], sc["c"][rows], e[rows], _rows(sp, rows), _rows(obs, rows), net.table, gen, u=None if u is None else u[rows])
-                    ch = {key: _host(v) for key, v in o["chosen"].items()}
-                    lab.put(b, lane, ch["action"], ch["delay"], ch["queued"], ch["selected"], n_ent, ch["target_unit"], ch["target_loc"])
-                    steps_total += k
-                    for f, a in zip(frames_of[lane], ch["action"].tolist()):
-                        band = bands.setdefault(str(f // FRAMES_PER_MINUTE), {})
-                        name = names.get(a, str(a))
-                        band[name] = band.get(name, 0) + 1
-                    if trace is not None:
-                        trace({"game": views[lane][0], "slot": views[lane][1], "frames": frames_of[lane], "chosen": ch, "end": n_ent,
-                               "obs": {key: np.asarray(hg[key])[r0:r0 + k] for key in OBS_KEYS}})
-    policy = {
-        "checkpoint": str(ckpt_dir), "checkpoint_sha256": sha, "mode": mode, "label_seed": label_seed,
-        "temperature": temp, "device": backend, "precision": precision, "git_commit": git_commit(),
-        "config": str(config), "config_fingerprint": fingerprint, "seq_len": t, "lanes": lanes, "micro_lanes": g,
-    }
-    written = json.loads(lab.write(out, records, json.dumps(policy), threads))
+                # 044-R3 ②: each step's draws from its own (view seed, frame) key, independent of
+                # the group's shape (lanes, micro_lanes, pad_entities, seq_len chunks).
+                noise = None
+                if temp > 0:
+                    keys = row_keys([seeds[lane] for lane in live for _ in range(steps[lane])], [f for lane in live for f in frames_of[lane]], device)
+                    noise = RowNoise(keys, n_ent, max_select)
+                o = net.heads(None, temp, h[idx], sc["c"][idx], e[idx], _rows(sp, idx), _rows(obs, idx), net.table, noise, u=None if u is None else u[idx])
+            chosen = {key: _host(v) for key, v in o["chosen"].items()}
+            at = 0
+            for lane, r0 in zip(live, starts):
+                k = steps[lane]
+                ch = {key: v[at:at + k] for key, v in chosen.items()}
+                at += k
+                lab.put(b, lane, ch["action"], ch["delay"], ch["queued"], ch["selected"], n_ent, ch["target_unit"], ch["target_loc"])
+                steps_total += k
+                for f, a in zip(frames_of[lane], ch["action"].tolist()):
+                    band = bands.setdefault(str(f // FRAMES_PER_MINUTE), {})
+                    name = names.get(a, str(a))
+                    band[name] = band.get(name, 0) + 1
+                if trace is not None:
+                    trace({"game": views[lane][0], "slot": views[lane][1], "frames": frames_of[lane], "chosen": ch, "end": n_ent,
+                           "obs": {key: np.asarray(hg[key])[r0:r0 + k] for key in OBS_KEYS}})
+        lab.flush()
+    written = json.loads(lab.finish())
     summary = {"input": str(input_dir), "out": str(out), "records": str(records), "input_files": len(todo), "views_before": prior["views"],
                "games": lab.games, "steps_labelled": steps_total, **written,
                "label_policy": policy, "actions_by_minute": dict(sorted(bands.items(), key=lambda kv: int(kv[0])))}

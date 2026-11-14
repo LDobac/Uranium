@@ -316,7 +316,13 @@ def gumbel_argmax(logp, temp: float, generator: torch.Generator | None = None):
     (-1e9) are never chosen because the noise is bounded."""
     if temp <= 0:
         return logp.argmax(1)
-    u = torch.empty(logp.shape, dtype=torch.float32, device=logp.device).uniform_(1e-6, 1.0 - 1e-6, generator=generator)
+    if generator is not None and not isinstance(generator, torch.Generator):
+        # 044-R3 ②: a per-row noise source (`uranium.distill.noise.RowNoise`): uniforms in
+        # (0, 1) of `logp`'s shape that depend only on each row's own seed and the column, not on
+        # the batch shape. Any other caller passes a torch.Generator or None (unchanged).
+        u = generator.uniform(logp.shape, logp.device)
+    else:
+        u = torch.empty(logp.shape, dtype=torch.float32, device=logp.device).uniform_(1e-6, 1.0 - 1e-6, generator=generator)
     g = -torch.log(-torch.log(u))
     return (logp / temp + g).argmax(1)
 

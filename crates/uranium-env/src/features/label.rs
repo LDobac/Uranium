@@ -201,29 +201,32 @@ pub struct HeadChoice {
 /// (031-R11, [`bucket_index`] maps it back to the bucket), the selection the picked units' ids in
 /// pick order, the target unit its id, the location cell `y * MAP + x` the tile (x, y) whose
 /// centre the executor commands (unaugmented: the caller reads without symmetry). Only the parts
-/// the 034 action uses are kept (`queued` without `uses_queued` is false). Indices past the
-/// observation's entities (padding) are dropped; [`host_label_check`] then reports the label.
-pub fn label_of_choice(frame: u32, c: &HeadChoice, o: &Observation) -> Label {
-    let a = action_table().actions.get(c.action as usize);
-    let id = |i: usize| o.entity_ids.get(i).copied();
+/// the 034 action uses are kept (`queued` without `uses_queued` is false). A head value outside
+/// its range (an action not in the 034 table, a delay bucket past the last, a selected or target
+/// entity past the observation's entities, a cell off the map) is an error: the sampler masks
+/// those, so one means the choices and the observation do not belong together.
+pub fn label_of_choice(frame: u32, c: &HeadChoice, o: &Observation) -> Result<Label> {
+    let a = action_table().actions.get(c.action as usize).ok_or_else(|| anyhow::anyhow!("frame {frame}: action {} is not in the 034 table", c.action))?;
+    anyhow::ensure!(c.delay_bucket < DELAY_BUCKETS.len(), "frame {frame}: delay bucket {} of {}", c.delay_bucket, DELAY_BUCKETS.len());
+    let n = o.entity_ids.len();
+    let id = |i: usize, what: &str| o.entity_ids.get(i).copied().ok_or_else(|| anyhow::anyhow!("frame {frame}: {} {what} entity {i} of {n}", a.name));
     let mut selected: Vec<u32> = Vec::new();
-    if a.is_some_and(|a| a.uses_select) {
-        for u in c.selected.iter().filter_map(|&i| id(i)) {
+    if a.uses_select {
+        for &i in &c.selected {
+            let u = id(i, "selected")?;
             if !selected.contains(&u) {
                 selected.push(u);
             }
         }
     }
-    let target = a.map_or(TargetKind::None, |a| a.target);
-    Label {
-        frame,
-        action: c.action,
-        delay: DELAY_BUCKETS[c.delay_bucket.min(DELAY_BUCKETS.len() - 1)],
-        queued: c.queued && a.is_some_and(|a| a.uses_queued),
-        selected,
-        target_unit: if target == TargetKind::Unit { id(c.target_unit) } else { None },
-        target_tile: (target == TargetKind::Loc && c.target_loc < CELLS).then_some(((c.target_loc % MAP) as u16, (c.target_loc / MAP) as u16)),
-    }
+    let target_unit = if a.target == TargetKind::Unit { Some(id(c.target_unit, "target")?) } else { None };
+    let target_tile = if a.target == TargetKind::Loc {
+        anyhow::ensure!(c.target_loc < CELLS, "frame {frame}: {} location cell {} of {CELLS}", a.name, c.target_loc);
+        Some(((c.target_loc % MAP) as u16, (c.target_loc / MAP) as u16))
+    } else {
+        None
+    };
+    Ok(Label { frame, action: c.action, delay: DELAY_BUCKETS[c.delay_bucket], queued: c.queued && a.uses_queued, selected, target_unit, target_tile })
 }
 
 /// [`unload_target_check`] reason: the `Unload_Unit` target is not loaded in the selected transport.

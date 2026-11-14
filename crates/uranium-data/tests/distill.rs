@@ -69,7 +69,7 @@ fn label_of_choice_reads_back_as_the_same_heads_044_r3() {
             HeadChoice { action: id("NoOp"), delay_bucket: 3, queued: true, selected: vec![scv], target_unit: mineral, target_loc: cell },
         ];
         for c in cases {
-            let l = label_of_choice(s.frame, &c, o);
+            let l = label_of_choice(s.frame, &c, o).unwrap();
             assert_eq!(l.frame, g.steps[k].raw_frame.frame);
             assert_eq!(bucket_index(l.delay), c.delay_bucket);
             let a = &action_table().actions[c.action as usize];
@@ -89,6 +89,69 @@ fn label_of_choice_reads_back_as_the_same_heads_044_r3() {
     for (b, &d) in DELAY_BUCKETS.iter().enumerate() {
         assert_eq!(bucket_index(d), b);
     }
+    // A head value out of its range is an error, never a dropped or clamped field.
+    let o = &seq.steps[0].obs;
+    let n = o.entity_ids.len();
+    let ok = HeadChoice { action: id("Gather_Unit"), delay_bucket: 0, queued: false, selected: vec![0], target_unit: 0, target_loc: 0 };
+    let bad = [
+        HeadChoice { action: u16::MAX - 1, ..ok.clone() },
+        HeadChoice { delay_bucket: DELAY_BUCKETS.len(), ..ok.clone() },
+        HeadChoice { selected: vec![n], ..ok.clone() },
+        HeadChoice { target_unit: n, ..ok.clone() },
+        HeadChoice { action: id("Move_Pos"), target_loc: MAP * MAP, ..ok.clone() },
+    ];
+    for (i, c) in bad.iter().enumerate() {
+        assert!(label_of_choice(1, c, o).is_err(), "case {i}");
+    }
+    // Unused heads are not checked (a Move_Pos target unit, a NoOp selection).
+    label_of_choice(1, &HeadChoice { action: id("Move_Pos"), target_unit: n + 5, ..ok.clone() }, o).unwrap();
+    label_of_choice(1, &HeadChoice { action: id("NoOp"), selected: vec![n + 5], ..ok }, o).unwrap();
+}
+
+/// 044-R4: an input shard of another header (schema, feature / action / labeler version) is refused
+/// before the output is written with the current one.
+#[test]
+fn an_input_of_another_header_is_refused_044_r4() {
+    let d = tmp("header");
+    let cfg = tiny_cfg(&d);
+    let input = d.join("pre");
+    std::fs::create_dir_all(&input).unwrap();
+    let header = ShardHeader { labeler_version: ShardHeader::default().labeler_version + 1, ..ShardHeader::default() };
+    shard::write(&input.join("shard_00000.bin.zst"), &Shard { header, games: vec![pre_game(3, 601)] }).unwrap();
+    let mut lab = DistillLabeller::new(&input, &cfg, Arc::new(MapStore::synthetic()), 1, None).unwrap();
+    let e = format!("{:#}", lab.next().err().expect("refused"));
+    assert!(e.contains("shard header"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A stopped pass keeps every file it finished: each input file is written as soon as all its
+/// games are labelled (`flush` after a batch), not at the end.
+#[test]
+fn files_are_written_as_their_games_finish_044_r3() {
+    let d = tmp("flush");
+    let cfg = tiny_cfg(&d);
+    let input = d.join("pre");
+    std::fs::create_dir_all(&input).unwrap();
+    // Two files: a short game first (done after the first batch), then a long one.
+    shard::write(&input.join("shard_00000.bin.zst"), &Shard { header: ShardHeader::default(), games: vec![pre_game(2, 701)] }).unwrap();
+    shard::write(&input.join("shard_00001.bin.zst"), &Shard { header: ShardHeader::default(), games: vec![pre_game(16, 702)] }).unwrap();
+    let mut lab = DistillLabeller::new(&input, &cfg, Arc::new(MapStore::synthetic()), 1, None).unwrap();
+    let (out, rec) = (d.join("out"), d.join("label.jsonl"));
+    lab.open(&out, &rec, &serde_json::json!({}), &d.join("staging"), None).unwrap();
+    let noop = HeadChoice { action: id("NoOp"), delay_bucket: 0, queued: false, selected: vec![], target_unit: 0, target_loc: 0 };
+    let mut after_first = None;
+    while let Some(b) = lab.next().unwrap() {
+        for lane in 0..b.chunks.len() {
+            lab.put(&b, lane, &vec![noop.clone(); b.chunks[lane].len()]).unwrap();
+        }
+        let n = lab.flush().unwrap();
+        after_first.get_or_insert((n, out.join("shard_00000.bin.zst").exists(), out.join("shard_00001.bin.zst").exists()));
+    }
+    assert_eq!(after_first, Some((1, true, false)));
+    let sum = lab.finish().unwrap();
+    assert_eq!((sum.views, sum.files_written, sum.steps_written), (2, 2, 18));
+    assert_eq!(std::fs::read_to_string(&rec).unwrap().lines().count(), 2);
+    let _ = std::fs::remove_dir_all(&d);
 }
 
 /// The labelling pass over two views (10 steps each): view A gets one type-masked action (10%,
@@ -180,7 +243,8 @@ fn a_view_without_all_labels_is_an_error_044_r3() {
     assert!(lab.put(&first, lane, std::slice::from_ref(&noop)).is_err(), "one choice per step");
     lab.put(&first, lane, &vec![noop; first.chunks[lane].len()]).unwrap();
     let e = lab.write(&d.join("out"), &d.join("label.jsonl"), &serde_json::json!({}), &d.join("staging"), None).unwrap_err();
-    assert!(format!("{e:#}").contains("4 labels for 6 steps"), "{e:#}");
+    assert!(format!("{e:#}").contains("not fully labelled") && format!("{e:#}").contains("shard_00000.bin.zst"), "{e:#}");
+    assert!(!d.join("out").join("shard_00000.bin.zst").exists() && std::fs::read_to_string(d.join("label.jsonl")).unwrap().is_empty());
     let _ = std::fs::remove_dir_all(&d);
 }
 
