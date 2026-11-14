@@ -194,6 +194,12 @@ pub fn filter(rep: &Replay, family: &str, bot: bool, any_length: bool) -> std::r
     Ok(views)
 }
 
+/// The replay header race (`header::RACE_*`) of the active player other than `perspective` (the
+/// opponent of a [`filter`] view: lobby race, or the race played when the header stores that).
+pub fn enemy_race(rep: &Replay, perspective: u8) -> Option<u8> {
+    rep.active_players().into_iter().find(|(p, _)| p.id != perspective).map(|(p, _)| p.race)
+}
+
 /// The [`filter`] flags of a source: (`bot`: stage B, no APM bar; `any_length`: no 5-minute bar).
 /// Bot data (040 quality table): `bot`, `botgen`, `dagger`, 041-R28 `branch` and 044-R2 `distill`.
 /// Any length: relabelled (`dagger`, 041-R22) games, `branch` trunks (a trunk lost early to the rush
@@ -957,7 +963,13 @@ fn process(index: usize, file: &Path, opt: &BuildOptions, cfg: &PlayConfig, fami
             out.push(rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Filtered { reason: "storage budget reached (040-R12)".into() }));
             continue;
         }
-        let vo = ViewOptions { until_frame: opt.until_frame, time_limit: opt.time_limit, relabel: opt.relabel, map_hash: &map_hash, memory: memory.as_deref(), distill: opt.src == DISTILL_SRC };
+        // 022-AC3 / 041-R22 (2026-11-14): `--relabel terran_tp` refuses a game against a lobby Zerg
+        // (and a lobby Random, 022-R2) before any replay.
+        if let Some(reason) = opt.relabel.zip(enemy_race(&rep, view.perspective)).and_then(|(b, r)| crate::relabel::lobby_refusal(b, r)) {
+            out.push(rec(&sha, &rep.header.map_name, &family, Some(view), Outcome::Filtered { reason }));
+            continue;
+        }
+        let vo =ViewOptions { until_frame: opt.until_frame, time_limit: opt.time_limit, relabel: opt.relabel, map_hash: &map_hash, memory: memory.as_deref(), distill: opt.src == DISTILL_SRC };
         let outcome = match build_view(&rep, &view, cfg, labeler, recorded_winner, vo) {
             Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info, repeats_dropped, memory })) => {
                 let n = steps.len();
@@ -1595,6 +1607,70 @@ mod tests {
         assert!(!views.is_empty() && views.iter().all(|v| v.stage == "B"));
     }
 
+    /// 022-AC3 / 041-R22 (2026-11-14): `uranium-replay build --src dagger --relabel terran_tp` records
+    /// every Terran view of a game against a lobby Zerg (or a header Random, 022-R2) as `filtered`
+    /// before any replay (no OpenBW here), and goes on to the replay with a Terran or Protoss
+    /// opponent; `--relabel terran_react` refuses no game.
+    #[test]
+    fn terran_tp_build_filters_lobby_zerg_views_022_ac3() {
+        use uranium_scripted::T0Build;
+        let dir = std::env::temp_dir().join(format!("uranium-tp-lobby-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A two-player 1.16.1 replay (player 0 Terran, player 1 of `enemy`), each training once.
+        let file = |enemy: u8| {
+            let mut h = vec![0u8; crate::container::HEADER_SIZE];
+            h[1..5].copy_from_slice(&2_000u32.to_le_bytes());
+            h[0x61] = b't';
+            for (i, race) in [(0usize, header::RACE_TERRAN), (1, enemy)] {
+                let p = 0xa1 + i * 36;
+                h[p] = i as u8;
+                h[p + 4] = i as u8;
+                h[p + 8] = 2;
+                h[p + 9] = race;
+                h[p + 10] = i as u8;
+                h[p + 11] = b'p';
+                h[p + 12] = b'0' + i as u8;
+            }
+            let train = |p: u8| cmd::Cmd { frame: 10, player: p, op: cmd::op::TRAIN, data: vec![7, 0] };
+            let blocks = vec![cmd::Block { frame: 10, cmds: vec![train(0), train(1)] }];
+            let rep = Replay { format: crate::Format::Legacy, header: header::parse(&h), raw_header: h, blocks, map: vec![9; 10], unit_limit: None };
+            let path = dir.join(format!("g{enemy}.rep"));
+            std::fs::write(&path, rep.to_legacy_file().unwrap()).unwrap();
+            path
+        };
+        let families = MapFamilies::load().unwrap();
+        let excludes = MapExcludes::load(&families).unwrap();
+        let labeler = Labeler::new().unwrap();
+        let cfg = PlayConfig { launcher: dir.join("none"), bridge_lib: dir.join("none"), data_dir: dir.join("none"), work_dir: dir.join("w") };
+        let run = |enemy: u8, relabel: T0Build| {
+            let path = file(enemy);
+            let opt = BuildOptions { src: "dagger".into(), shards_dir: dir.join("s"), staging_dir: dir.join("l"), recorded_winners: HashMap::new(), jobs: 1, shard_target_bytes: 1, budget_bytes: 1 << 30, first_shard_index: 0, skip_sha256: Default::default(), done: ResumeDone::default(), duplicates: Duplicates::find(std::slice::from_ref(&path), &[0], 1), until_frame: Some(14_400), time_limit: Some(14_400), relabel: Some(relabel), memory_log: None };
+            process(0, &path, &opt, &cfg, &families, &excludes, &labeler, &Mutex::new(0)).into_iter().map(|(r, g)| {
+                assert!(g.is_none());
+                assert_eq!(r.relabel, Some(relabel.name()));
+                (r.view.map(|v| v.matchup), r.outcome)
+            }).collect::<Vec<_>>()
+        };
+        let lobby = |o: &Outcome| matches!(o, Outcome::Filtered { reason } if reason.starts_with("lobby "));
+        let zerg = run(header::RACE_ZERG, T0Build::TerranTp);
+        assert_eq!(zerg.len(), 1);
+        assert_eq!(zerg[0].0.as_deref(), Some("TvZ"));
+        assert!(matches!(&zerg[0].1, Outcome::Filtered { reason } if reason.contains("022-AC3")), "{:?}", zerg[0].1);
+        let random = run(header::RACE_RANDOM, T0Build::TerranTp);
+        assert!(matches!(&random[0].1, Outcome::Filtered { reason } if reason.contains("022-R2")), "{:?}", random[0].1);
+        // Terran (both views) and Protoss opponents go on to the replay (here it fails: no OpenBW).
+        for (enemy, views) in [(header::RACE_PROTOSS, 1), (header::RACE_TERRAN, 2)] {
+            let got = run(enemy, T0Build::TerranTp);
+            assert_eq!(got.len(), views);
+            assert!(got.iter().all(|(_, o)| !lobby(o) && !matches!(o, Outcome::Written { .. })), "{got:?}");
+        }
+        // The 021-R8 relabel refuses no lobby race.
+        for enemy in [header::RACE_ZERG, header::RACE_RANDOM, header::RACE_PROTOSS] {
+            assert!(run(enemy, T0Build::TerranReact).iter().all(|(_, o)| !lobby(o)));
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// 041-R22 (OpenBW, ignored): relabelling a model game (`URANIUM_TEST_DAGGER_REP`, an OpenBW
     /// replay of a model game; `.env` launcher, bridge and `URANIUM_MAPS_DIR`) twice gives the same
     /// steps, and the labels are the 021-R8 teacher's (only the actions of its 034 table, the
@@ -1644,8 +1720,24 @@ mod tests {
     #[test]
     #[ignore = "needs OpenBW (.env) and URANIUM_TEST_TEACHER_REP"]
     fn relabel_of_a_teacher_game_gives_its_botgen_labels_041_r22() {
+        teacher_game_agreement("URANIUM_TEST_TEACHER_REP", uranium_scripted::T0Build::TerranReact, 11_520);
+    }
+
+    /// 022-AC3 (OpenBW, ignored): the same for a 022 teacher botgen game against Terran or Protoss
+    /// (`URANIUM_TEST_TEACHER_TP_REP`, the teacher the first Terran player, data cut at 10:00 as
+    /// 022-R12): relabelled with `terran_tp` it gives its botgen labels (>= 95%).
+    #[test]
+    #[ignore = "needs OpenBW (.env) and URANIUM_TEST_TEACHER_TP_REP"]
+    fn relabel_of_a_tp_teacher_game_gives_its_botgen_labels_022_ac3() {
+        teacher_game_agreement("URANIUM_TEST_TEACHER_TP_REP", uranium_scripted::T0Build::TerranTp, 14_400);
+    }
+
+    /// The teacher-game agreement check of `relabel_of_a_teacher_game...` (041-R22, 022-AC3): the
+    /// replay at env `var`, its first Terran view relabelled with `build` and labelled with its own
+    /// commands, both cut at `until_frame`.
+    fn teacher_game_agreement(var: &str, build: uranium_scripted::T0Build, until_frame: u32) {
         let _ = dotenvy::dotenv();
-        let path = std::env::var("URANIUM_TEST_TEACHER_REP").expect("URANIUM_TEST_TEACHER_REP");
+        let path = std::env::var(var).expect(var);
         let rep = crate::parse(&std::fs::read(&path).unwrap()).unwrap();
         let map_hash = hex(&Sha256::digest(&rep.map));
         let family = MapFamilies::load().unwrap().classify(&rep.header.map_name, &map_hash);
@@ -1653,13 +1745,13 @@ mod tests {
         let cfg = PlayConfig::from_env(crate::play::work_dir_default().join("relabel-test")).unwrap();
         let labeler = Labeler::new().unwrap();
         let run = |relabel| {
-            let vo = ViewOptions { until_frame: Some(11_520), time_limit: Some(14_400), relabel, map_hash: &map_hash, memory: None, distill: false };
+            let vo = ViewOptions { until_frame: Some(until_frame), time_limit: Some(14_400), relabel, map_hash: &map_hash, memory: None, distill: false };
             match build_view(&rep, &view, &cfg, &labeler, None, vo).unwrap() {
                 Ok(g) => g,
                 Err(o) => panic!("{o:?}"),
             }
         };
-        let (shadow, botgen) = (run(Some(uranium_scripted::T0Build::TerranReact)), run(None));
+        let (shadow, botgen) = (run(Some(build)), run(None));
         // (action, sorted selection, target unit, target tile)
         type Key = (u16, Vec<u32>, Option<u32>, Option<(u16, u16)>);
         let key = |s: &Step| -> Key {
