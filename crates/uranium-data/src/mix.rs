@@ -9,6 +9,11 @@
 //! `keep_sources`, the `fraction_by_source` sources (`distill`), and the human rest — each against
 //! its own target ± 3%p, with the 041-R26 race rule inside the human part ([`share_fractions`],
 //! [`MixShares::with_shares`]). Without `fraction_by_source` everything is the two-share mix above.
+//!
+//! 044-R8 / 022-R12 (AMB-022-7): from the round after the 022 teacher passes, the teacher + dagger
+//! share also has enemy-race targets (Zerg : Protoss : Terran = 50 : 30 : 20, each ± 3%p of the
+//! teacher + dagger steps): [`share_fractions_with_races`] subsamples the teacher games per race
+//! (`[data.subsample] keep_fraction_by_race`) and [`MixShares::with_teacher_races`] judges them.
 
 use std::collections::BTreeMap;
 
@@ -98,6 +103,10 @@ pub struct MixShares {
     /// [`Self::with_shares`]; absent otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub human: Option<ShareCheck>,
+    /// 044-R8 / 022-R12: each enemy race's share of the teacher + dagger steps against its target
+    /// (± 3%p), set by [`Self::with_teacher_races`]; left out of the JSON otherwise.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub teacher_races: BTreeMap<String, ShareCheck>,
 }
 
 /// 044-R5 ③: one share of a three-share epoch: its steps, its share of all steps and, once judged
@@ -162,6 +171,7 @@ impl MixShares {
             race_ok,
             sources: source_checks,
             human: None,
+            teacher_races: BTreeMap::new(),
         }
     }
 
@@ -192,11 +202,41 @@ impl MixShares {
         Ok(out)
     }
 
-    /// Every judged share within its bound: the teacher, the human races and, when judged
-    /// ([`Self::with_shares`]), every source and the human share.
-    pub fn all_ok(&self) -> bool {
-        self.teacher_ok && self.race_ok && self.sources.values().chain(self.human.as_ref()).all(|c| c.ok != Some(false))
+    /// 044-R8 / 022-R12 (AMB-022-7): the enemy-race shares inside the teacher + dagger steps of
+    /// `epoch` (the epoch's counts these shares were made from) judged against `races` (± 3%p). A
+    /// teacher race without a target is judged against 0, a target race without steps is share 0.
+    pub fn with_teacher_races(mut self, epoch: &SourceRaceCounts, races: &BTreeMap<String, f64>) -> Self {
+        let steps = teacher_race_steps(epoch, &self.teacher_sources);
+        let total: u64 = steps.values().sum();
+        self.teacher_races = steps
+            .keys()
+            .chain(races.keys())
+            .map(|r| {
+                let n = steps.get(r).copied().unwrap_or(0);
+                let share = if total > 0 { n as f64 / total as f64 } else { 0.0 };
+                (r.clone(), ShareCheck { steps: n, share, target: None, ok: None }.judged(races.get(r).copied().unwrap_or(0.0)))
+            })
+            .collect();
+        self
     }
+
+    /// Every judged share within its bound: the teacher, the human races and, when judged
+    /// ([`Self::with_shares`], [`Self::with_teacher_races`]), every source, the human share and the
+    /// teacher races.
+    pub fn all_ok(&self) -> bool {
+        self.teacher_ok && self.race_ok && self.sources.values().chain(self.human.as_ref()).chain(self.teacher_races.values()).all(|c| c.ok != Some(false))
+    }
+}
+
+/// Steps per enemy race of the `teacher` sources (044-R8).
+fn teacher_race_steps(c: &SourceRaceCounts, teacher: &[String]) -> BTreeMap<String, u64> {
+    let mut out = BTreeMap::new();
+    for (_, races) in c.iter().filter(|(s, _)| teacher.contains(s)) {
+        for (r, n) in races.iter().filter(|(_, n)| n.steps > 0) {
+            *out.entry(r.clone()).or_default() += n.steps;
+        }
+    }
+    out
 }
 
 fn teacher_share_ok(share: f64, target: f64) -> bool {
@@ -356,6 +396,93 @@ pub struct SourceFractions {
     /// The same for a source below its target but within the band (informational: no top-up).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub below_target: BTreeMap<String, Shortfall>,
+    /// 044-R8 / 022-R12: the per-race subsample of the teacher games (`--teacher-races`); then
+    /// `teacher_steps` is the steps it keeps. Left out of the JSON without it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub teacher_races: Option<TeacherRaceFractions>,
+}
+
+/// 044-R8 / 022-R12 (AMB-022-7): the teacher + dagger games (`keep_sources`) kept per enemy race so
+/// their steps are split by the race targets (Zerg : Protoss : Terran = 50 : 30 : 20). The race
+/// with the fewest steps for its target (`binding`) is kept whole; every other race keeps the game
+/// prefix (keep-number order, the [`race_fractions`] rule, botgen and dagger games together) nearest
+/// its target share of that. So no teacher game is dropped beyond what the targets need, and the
+/// epoch (teacher steps / the teacher share) follows the kept teacher steps.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct TeacherRaceFractions {
+    /// Target share of each enemy race inside the teacher + dagger steps.
+    pub target_share: BTreeMap<String, f64>,
+    /// The selection's teacher steps per race, and per source and race.
+    pub reference_steps: BTreeMap<String, u64>,
+    pub reference_steps_by_source: BTreeMap<String, BTreeMap<String, u64>>,
+    /// The race(s) kept whole: the smallest selection steps / target share.
+    pub binding: Vec<String>,
+    /// Steps to keep per race (target share x the binding race's steps / its share), the steps the
+    /// fractions keep (per race, and per source and race) and their sum.
+    pub target_steps: BTreeMap<String, u64>,
+    pub kept_steps: BTreeMap<String, u64>,
+    pub kept_steps_by_source: BTreeMap<String, BTreeMap<String, u64>>,
+    pub kept_total_steps: u64,
+    /// `[data.subsample] keep_fraction_by_race`.
+    pub keep_fraction_by_race: BTreeMap<String, f64>,
+}
+
+/// 044-R8 / 022-R12: [`TeacherRaceFractions`] of the teacher games of `games` for one data seed.
+/// `races`: the target shares (keys `T` / `P` / `Z`, each in (0, 1), summing to 1); every teacher
+/// step must have an enemy race with a target and every target race some teacher steps.
+pub fn teacher_race_fractions(games: &[GameSummary], teacher: &[String], races: &BTreeMap<String, f64>, seed: u64) -> Result<TeacherRaceFractions> {
+    ensure!(!teacher.is_empty(), "no teacher sources (`[data.subsample] keep_sources`, 044-R8)");
+    ensure!(!races.is_empty(), "no teacher race targets (044-R8)");
+    for (r, &x) in races {
+        ensure!(SUBSAMPLE_RACES.contains(&r.as_str()), "teacher race {r:?} must be one of {SUBSAMPLE_RACES:?} (044-R8)");
+        ensure!(x > 0.0 && x < 1.0, "teacher race share {r} must be in (0, 1), got {x} (044-R8)");
+    }
+    let sum: f64 = races.values().sum();
+    ensure!((sum - 1.0).abs() <= 1e-9, "teacher race shares sum to {sum}, not 1 (044-R8)");
+    let mut by_race: BTreeMap<String, Vec<(f64, u64, &str)>> = BTreeMap::new();
+    let mut reference_steps_by_source: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
+    for g in games.iter().filter(|g| teacher.contains(&g.meta.src) && g.steps > 0) {
+        let r = race_key(&g.meta.matchup);
+        ensure!(races.contains_key(&r), "teacher source {} has steps against race {r:?} without a --teacher-races target (044-R8)", g.meta.src);
+        *reference_steps_by_source.entry(g.meta.src.clone()).or_default().entry(r.clone()).or_default() += g.steps as u64;
+        by_race.entry(r).or_default().push((game_unit(&g.meta.replay_sha256, seed, SUBSAMPLE_SALT), g.steps as u64, g.meta.src.as_str()));
+    }
+    let reference_steps: BTreeMap<String, u64> = by_race.iter().map(|(r, v)| (r.clone(), v.iter().map(|x| x.1).sum())).collect();
+    for r in races.keys() {
+        ensure!(reference_steps.contains_key(r), "the selection has no teacher steps against race {r:?} (044-R8)");
+    }
+    // The epoch's teacher steps / 1: the most every race can give at its target share.
+    let scale = races.iter().map(|(r, &x)| reference_steps[r] as f64 / x).fold(f64::INFINITY, f64::min);
+    let binding: Vec<String> = races.iter().filter(|(r, x)| reference_steps[*r] as f64 / **x <= scale * (1.0 + 1e-12)).map(|(r, _)| r.clone()).collect();
+    let (mut target_steps, mut kept_steps, mut keep_fraction_by_race) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
+    let mut kept_steps_by_source: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
+    for (r, v) in by_race {
+        let (f, k) = if binding.contains(&r) {
+            (1.0, reference_steps[&r])
+        } else {
+            prefix_fraction(v.iter().map(|x| (x.0, x.1)).collect(), races[&r] * scale)
+        };
+        for (u, n, src) in &v {
+            if *u < f {
+                *kept_steps_by_source.entry(src.to_string()).or_default().entry(r.clone()).or_default() += n;
+            }
+        }
+        target_steps.insert(r.clone(), (races[&r] * scale).round() as u64);
+        kept_steps.insert(r.clone(), k);
+        keep_fraction_by_race.insert(r, f);
+    }
+    let kept_total_steps = kept_steps.values().sum();
+    Ok(TeacherRaceFractions {
+        target_share: races.clone(),
+        reference_steps,
+        reference_steps_by_source,
+        binding,
+        target_steps,
+        kept_steps,
+        kept_steps_by_source,
+        kept_total_steps,
+        keep_fraction_by_race,
+    })
 }
 
 /// 044-R5 ③ top-up (user decision 2026-11-14): how far a source (`distill`) is below its target
@@ -417,6 +544,14 @@ impl SourceFractions {
 /// it per race at the S2 human race shares (041-R26), by the [`race_fractions`] rule. Every
 /// share is then judged by [`MixShares::with_shares`].
 pub fn share_fractions(games: &[GameSummary], teacher: &[String], sources: &BTreeMap<String, f64>, seed: u64, teacher_share: f64) -> Result<(RaceFractions, SourceFractions)> {
+    share_fractions_with_races(games, teacher, sources, seed, teacher_share, None)
+}
+
+/// [`share_fractions`] with, when `teacher_races` is given (044-R8 / 022-R12: the rounds after the
+/// 022 teacher passes), the teacher games subsampled per enemy race by [`teacher_race_fractions`]:
+/// the epoch is then the kept teacher steps / `teacher_share` (`source_fractions.teacher_races`).
+/// Without it, [`share_fractions`] exactly.
+pub fn share_fractions_with_races(games: &[GameSummary], teacher: &[String], sources: &BTreeMap<String, f64>, seed: u64, teacher_share: f64, teacher_races: Option<&BTreeMap<String, f64>>) -> Result<(RaceFractions, SourceFractions)> {
     ensure!(!sources.is_empty(), "no source shares (044-R5: e.g. distill)");
     let human_share = 1.0 - teacher_share - sources.values().sum::<f64>();
     // 1e-9: shares summing to 1 up to float rounding leave no human rest.
@@ -424,7 +559,11 @@ pub fn share_fractions(games: &[GameSummary], teacher: &[String], sources: &BTre
     for s in sources.keys() {
         ensure!(!teacher.contains(s), "share source {s:?} is a teacher source (`keep_sources`, 044-R5)");
     }
-    let teacher_steps = teacher_steps_of(games, teacher)?;
+    let teacher_races = teacher_races.map(|r| teacher_race_fractions(games, teacher, r, seed)).transpose()?;
+    let teacher_steps = match &teacher_races {
+        Some(t) => t.kept_total_steps,
+        None => teacher_steps_of(games, teacher)?,
+    };
     let total = teacher_steps as f64 / teacher_share;
     let others: Vec<String> = sources.keys().cloned().collect();
     let (mut reference, mut reference_games, mut target, mut kept, mut fraction_by_source) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
@@ -455,6 +594,7 @@ pub fn share_fractions(games: &[GameSummary], teacher: &[String], sources: &BTre
         fraction_by_source,
         short: BTreeMap::new(),
         below_target: BTreeMap::new(),
+        teacher_races,
     };
     Ok((race, src))
 }
@@ -474,27 +614,29 @@ mod tests {
         assert_eq!(shortest_in(0.9, 1.0), 1.0);
     }
 
+    /// One S2 game of a scan: game number `i` (its replay hash), source, matchup, perspective slot, steps.
+    fn summary(i: u64, src: &str, mu: &str, slot: u8, steps: usize) -> GameSummary {
+        let meta = uranium_replay::shard::GameMeta {
+            map_hash: String::new(),
+            map_family: "fighting_spirit".into(),
+            matchup: mu.into(),
+            player_race: 1,
+            perspective_slot: slot,
+            apm: 0,
+            result: 0,
+            result_source: "none".into(),
+            enemy_random: false,
+            src: src.into(),
+            stage: "S2".into(),
+            replay_sha256: format!("{:064x}", i.wrapping_mul(0x9E37_79B9_7F4A_7C15)),
+        };
+        GameSummary { meta, steps, privileged_none: 0 }
+    }
+
     /// S2-like scan: teacher `botgen` + `dagger` TvZ, human games of three enemy races (TvT as two
     /// perspectives) and, with `distill` > 0, that many `distill` games (044-R1: TvP and TvT, the
     /// model's view only).
     fn scan(distill: u64) -> Vec<GameSummary> {
-        let summary = |i: u64, src: &str, mu: &str, slot: u8, steps: usize| {
-            let meta = uranium_replay::shard::GameMeta {
-                map_hash: String::new(),
-                map_family: "fighting_spirit".into(),
-                matchup: mu.into(),
-                player_race: 1,
-                perspective_slot: slot,
-                apm: 0,
-                result: 0,
-                result_source: "none".into(),
-                enemy_random: false,
-                src: src.into(),
-                stage: "S2".into(),
-                replay_sha256: format!("{:064x}", i.wrapping_mul(0x9E37_79B9_7F4A_7C15)),
-            };
-            GameSummary { meta, steps, privileged_none: 0 }
-        };
         let mut v = Vec::new();
         for i in 0..300 {
             v.push(summary(i, if i % 4 == 0 { "dagger" } else { "botgen" }, "TvZ", 0, 400 + (i as usize * 37) % 300));
@@ -572,7 +714,7 @@ mod tests {
     }
 
     fn sub(race: &RaceFractions, teacher: &[String], by_source: Option<BTreeMap<String, f64>>) -> Subsample {
-        Subsample { fraction: race.fraction, keep_sources: teacher.to_vec(), fraction_by_race: Some(race.fraction_by_race.clone()), fraction_by_source: by_source }
+        Subsample { fraction: race.fraction, keep_sources: teacher.to_vec(), fraction_by_race: Some(race.fraction_by_race.clone()), fraction_by_source: by_source, keep_fraction_by_race: None }
     }
 
     use crate::split::Subsample;
@@ -685,5 +827,92 @@ mod tests {
         assert!(share_fractions(&games, &teacher, &[("distill".to_string(), 0.6)].into(), 15, 0.45).is_err());
         assert!(share_fractions(&games, &teacher, &[("dagger".to_string(), 0.2)].into(), 15, 0.45).is_err());
         assert!(MixShares::new(&count_by_source(&kept), &all, &teacher).with_shares(0.45, &targets).is_err());
+    }
+
+    /// [`scan`] plus the teacher + dagger games against Protoss and Terran of a 044-R8 round: the 022
+    /// teacher's botgen games and the t<R> self games relabelled by it (source `dagger`), `p` / `t`
+    /// games of each.
+    fn scan_tp(distill: u64, p: u64, t: u64) -> Vec<GameSummary> {
+        let mut v = scan(distill);
+        for i in 0..p {
+            v.push(summary(20_000 + i, if i % 3 == 0 { "dagger" } else { "botgen" }, "TvP", 0, 300 + (i as usize * 61) % 600));
+        }
+        for i in 0..t {
+            v.push(summary(30_000 + i, if i % 3 == 0 { "dagger" } else { "botgen" }, "TvT", 0, 300 + (i as usize * 47) % 600));
+        }
+        v
+    }
+
+    /// 044-R8 / 022-R12 (AMB-022-7): with teacher race targets Z : P : T = 50 : 30 : 20 the teacher +
+    /// dagger games are kept per enemy race (botgen and dagger together): the race with the fewest
+    /// steps for its share is kept whole, the others at their share of it, each ± 3%p of the teacher
+    /// steps (here far inside); the epoch follows the kept teacher steps and the 044-R5 ③ shares and
+    /// human races still hold. Without targets the result and JSON are the 044-R5 ones.
+    #[test]
+    fn teacher_races_hit_their_shares_044_r8() {
+        let teacher = vec!["botgen".to_string(), "dagger".to_string()];
+        let targets: BTreeMap<String, f64> = [("distill".to_string(), 0.20)].into();
+        let races: BTreeMap<String, f64> = [("Z".to_string(), 0.5), ("P".to_string(), 0.3), ("T".to_string(), 0.2)].into();
+        // Zerg binding (TvZ about 165k steps; TvP and TvT more than their share of it), then Protoss binding.
+        for (p, t, bind) in [(300u64, 230u64, "Z"), (40, 230, "P")] {
+            let games = scan_tp(1_200, p, t);
+            let all = count_by_source(&games);
+            for seed in [15u64, 16] {
+                let (race, src) = share_fractions_with_races(&games, &teacher, &targets, seed, 0.45, Some(&races)).unwrap();
+                assert_eq!((race.clone(), src.clone()), share_fractions_with_races(&games, &teacher, &targets, seed, 0.45, Some(&races)).unwrap(), "deterministic");
+                let tr = src.teacher_races.as_ref().unwrap();
+                assert_eq!(tr.binding, [bind]);
+                assert_eq!(tr.keep_fraction_by_race[bind], 1.0);
+                assert_eq!(tr.kept_steps[bind], tr.reference_steps[bind], "the binding race is kept whole");
+                assert!(tr.keep_fraction_by_race.values().all(|&f| f > 0.0 && f <= 1.0) && tr.keep_fraction_by_race.len() == 3);
+                assert_eq!(src.teacher_steps, tr.kept_total_steps);
+                assert_eq!(src.target_total_steps, (tr.kept_total_steps as f64 / 0.45).round() as u64);
+                let s = Subsample { keep_fraction_by_race: Some(tr.keep_fraction_by_race.clone()), ..sub(&race, &teacher, Some(src.fraction_by_source.clone())) };
+                s.check().unwrap();
+                let kept: Vec<_> = games.iter().filter(|g| s.keeps(&g.meta, seed)).cloned().collect();
+                let epoch = count_by_source(&kept);
+                let mix = MixShares::with_sources(&epoch, &all, &teacher, &s.share_sources()).with_shares(0.45, &targets).unwrap().with_teacher_races(&epoch, &races);
+                assert!(mix.all_ok(), "{bind} seed {seed}: {mix:?}");
+                assert_eq!(mix.teacher_steps, tr.kept_total_steps, "the fractions keep what they say");
+                for (r, &x) in &races {
+                    let c = &mix.teacher_races[r];
+                    assert!((c.share - x).abs() < 0.01 && c.ok == Some(true) && c.target == Some(x), "{bind} seed {seed} {r}: {c:?}");
+                    assert_eq!(c.steps, tr.kept_steps[r]);
+                }
+                for (src_name, by) in &tr.kept_steps_by_source {
+                    for (r, n) in by {
+                        assert_eq!(*n, epoch[src_name][r].steps, "{src_name} {r}");
+                    }
+                }
+                assert!(tr.kept_steps_by_source["dagger"].contains_key("P") && tr.kept_steps_by_source["botgen"].contains_key("T"), "botgen and dagger both kept");
+                assert!((mix.teacher_share - 0.45).abs() < 0.01 && (mix.sources["distill"].share - 0.20).abs() < 0.01);
+                assert!((mix.human.as_ref().unwrap().share - 0.35).abs() < 0.01);
+                let json = serde_json::to_value(&mix).unwrap();
+                assert!(json["teacher_races"]["Z"]["ok"].as_bool().unwrap());
+                assert!(serde_json::to_value(&src).unwrap()["teacher_races"]["keep_fraction_by_race"]["Z"].is_f64());
+                // Every teacher game kept: the races miss their shares (Zerg far below 50%, or Protoss below 30%).
+                let whole = Subsample { keep_fraction_by_race: None, ..s.clone() };
+                let kept: Vec<_> = games.iter().filter(|g| whole.keeps(&g.meta, seed)).cloned().collect();
+                let epoch = count_by_source(&kept);
+                let off = MixShares::with_sources(&epoch, &all, &teacher, &s.share_sources()).with_teacher_races(&epoch, &races);
+                assert!(!off.all_ok() && off.teacher_races.values().any(|c| c.ok == Some(false)), "{off:?}");
+            }
+            // No targets: share_fractions exactly, no teacher_races in either JSON.
+            let (race, src) = share_fractions_with_races(&games, &teacher, &targets, 15, 0.45, None).unwrap();
+            assert_eq!((race.clone(), src.clone()), share_fractions(&games, &teacher, &targets, 15, 0.45).unwrap());
+            assert!(src.teacher_races.is_none() && serde_json::to_value(&src).unwrap().get("teacher_races").is_none());
+            let s = sub(&race, &teacher, Some(src.fraction_by_source.clone()));
+            let kept: Vec<_> = games.iter().filter(|g| s.keeps(&g.meta, 15)).cloned().collect();
+            let mix = MixShares::with_sources(&count_by_source(&kept), &all, &teacher, &s.share_sources()).with_shares(0.45, &targets).unwrap();
+            assert!(serde_json::to_value(&mix).unwrap().get("teacher_races").is_none());
+        }
+        // Bad inputs: no teacher games against a target race, shares not summing to 1, a race outside
+        // T / P / Z, a teacher race without a target.
+        let games = scan_tp(1_200, 300, 230);
+        assert!(share_fractions_with_races(&scan(1_200), &teacher, &targets, 15, 0.45, Some(&races)).is_err(), "no TvP / TvT teacher games");
+        let bad = |r: &[(&str, f64)]| share_fractions_with_races(&games, &teacher, &targets, 15, 0.45, Some(&r.iter().map(|(k, x)| (k.to_string(), *x)).collect())).is_err();
+        assert!(bad(&[("Z", 0.5), ("P", 0.3), ("T", 0.3)]));
+        assert!(bad(&[("Z", 0.5), ("P", 0.3), ("R", 0.2)]));
+        assert!(bad(&[("Z", 0.6), ("P", 0.4)]), "TvT teacher games without a target");
     }
 }

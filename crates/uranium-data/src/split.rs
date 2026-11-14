@@ -56,6 +56,14 @@ pub struct Subsample {
     /// the 041-R26 subsample and the B-3 fingerprint from before the key (044-AC3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fraction_by_source: Option<std::collections::BTreeMap<String, f64>>,
+    /// 044-R8 / 022-R12 (AMB-022-7): the share kept per enemy race (`"T"`, `"P"`, `"Z"`) of the
+    /// `keep_sources` games (teacher `botgen` + `dagger`), so the races inside the teacher + dagger
+    /// share are Zerg : Protoss : Terran = 50 : 30 : 20 (`uranium-train mix-fractions
+    /// --teacher-races`). Same per-game hash rule as the other keys; a race not listed keeps its
+    /// teacher games whole. Absent = every teacher game kept (041-R21) and the B-3 fingerprint from
+    /// before the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_fraction_by_race: Option<std::collections::BTreeMap<String, f64>>,
 }
 
 /// 041-R26 races of `Subsample::fraction_by_race`.
@@ -77,6 +85,13 @@ impl Subsample {
             anyhow::ensure!(!self.keep_sources.contains(s), "[data.subsample] fraction_by_source key {s:?} is also in keep_sources (044-R5)");
             anyhow::ensure!(*f > 0.0 && *f <= 1.0, "[data.subsample] fraction_by_source {s} must be in (0, 1], got {f} (044-R5)");
         }
+        if let Some(m) = &self.keep_fraction_by_race {
+            anyhow::ensure!(!self.keep_sources.is_empty(), "[data.subsample] keep_fraction_by_race without keep_sources (044-R8)");
+            for (r, f) in m {
+                anyhow::ensure!(SUBSAMPLE_RACES.contains(&r.as_str()), "[data.subsample] keep_fraction_by_race key {r:?} must be one of {SUBSAMPLE_RACES:?} (044-R8)");
+                anyhow::ensure!(*f > 0.0 && *f <= 1.0, "[data.subsample] keep_fraction_by_race {r} must be in (0, 1], got {f} (044-R8)");
+            }
+        }
         Ok(())
     }
 
@@ -93,8 +108,18 @@ impl Subsample {
         self.fraction_by_race.as_ref().and_then(|m| enemy_race(&meta.matchup).and_then(|r| m.get(r))).copied().unwrap_or(self.fraction)
     }
 
+    /// The share kept of `meta`'s game when its source is in `keep_sources`: 1 (kept whole), or the
+    /// enemy race's `keep_fraction_by_race` (044-R8).
+    pub fn keep_fraction_of(&self, meta: &GameMeta) -> f64 {
+        self.keep_fraction_by_race.as_ref().and_then(|m| enemy_race(&meta.matchup).and_then(|r| m.get(r))).copied().unwrap_or(1.0)
+    }
+
     pub fn keeps(&self, meta: &GameMeta, seed: u64) -> bool {
-        self.keep_sources.iter().any(|s| *s == meta.src) || crate::data::game_unit(&meta.replay_sha256, seed, crate::data::SUBSAMPLE_SALT) < self.fraction_of(meta)
+        if self.keep_sources.contains(&meta.src) {
+            // 041-R21: kept whole without `keep_fraction_by_race` (no hash drawn, as before the key).
+            return self.keep_fraction_by_race.is_none() || crate::data::game_unit(&meta.replay_sha256, seed, crate::data::SUBSAMPLE_SALT) < self.keep_fraction_of(meta);
+        }
+        crate::data::game_unit(&meta.replay_sha256, seed, crate::data::SUBSAMPLE_SALT) < self.fraction_of(meta)
     }
 }
 

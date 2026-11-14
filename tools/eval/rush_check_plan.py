@@ -86,6 +86,20 @@ generated yet (rounds 1..10, distillation top-ups) and from the teacher's develo
 
     python tools/eval/rush_check_plan.py --teacher-tp
     python tools/eval/rush_check_plan.py --botgen-tp
+
+`--teacher-round --round R [--half] --checkpoint C` (044-R8 / 022-R12, AMB-022-7): from the round after the 022
+teacher passes 022-AC2, writes config/plans/dagger_m2_t<R>.toml (plan name `dagger-m2-t<R>`), the round's TvT / TvP
+self games that the 022 teacher's shadow relabels (`uranium-replay build --src dagger --relabel terran_tp --games
+<dir>/games.jsonl`, shards dagger_m2/t<R>): the model C (the round's start model; no default) stochastic with the
+044-R1 composition of a round (as --distill: 600 games, `--half` 300), races fixed (no Random), 10 min, replays kept,
+decision logs always on (`memory_log`, 041-R28; `--memory-log` is accepted and changes nothing), the last failed
+command shown (`zero_last_failed = false`, 041-R22 DAgger games). Seeds: splitmix64(2,000,000 + n) >> 32 with a round
+stride of 600 (n = (R - 1) * 600 + 1..), asserted disjoint from every plan under --out-dir and its subfolders, the
+botgen / check seeds, the DAgger / distillation round blocks and top-ups and the other teacher round blocks not
+generated yet (rounds 1..10) and the 022 teacher's development seeds; the 022 plans keep clear of the teacher round
+blocks too.
+
+    python tools/eval/rush_check_plan.py --teacher-round --round 2 --checkpoint checkpoints/m2-distill-d1/ckpt-N
 """
 
 import argparse
@@ -538,14 +552,19 @@ def tp_seeds(check: bool) -> tuple[int, list[int]]:
     return first, [splitmix64(TP_SEED_KEY + k) >> 32 for k in range(first, first + n)]
 
 
-def reserved_seeds() -> set[int]:
-    """Seeds of plans other generators will write (DAgger and distillation rounds, distillation top-ups) and the
-    022 teacher's development seeds: the 022 plans do not take them either."""
+def reserved_seeds(skip_teacher_round: int | None = None) -> set[int]:
+    """Seeds of plans other generators will write (DAgger and distillation rounds, distillation top-ups, the 044-R8
+    teacher rounds) and the 022 teacher's development seeds: the 022 plans do not take them either.
+    `skip_teacher_round`: leave out that teacher round's own block (its generator's own seeds)."""
     n = RESERVED_ROUNDS * DAGGER_ROUND_STRIDE
     s = {splitmix64(DAGGER_SEED_KEY + k) >> 32 for k in range(1, n + 1)}
     s |= {splitmix64(DISTILL_SEED_KEY + k) >> 32 for k in range(1, DISTILL_ROUNDS_RESERVED * DISTILL_ROUND_STRIDE + 1)}
     top = range(DISTILL_EXTRA_BASE + 1, DISTILL_EXTRA_BASE + DISTILL_ROUNDS_RESERVED * DISTILL_EXTRA_ROUND + 1)
     s |= {splitmix64(DISTILL_SEED_KEY + k) >> 32 for k in top}
+    for r in range(1, RESERVED_ROUNDS + 1):
+        if r != skip_teacher_round:
+            first = teacher_round_first(r)
+            s |= {splitmix64(TEACHER_ROUND_SEED_KEY + k) >> 32 for k in range(first, first + TEACHER_ROUND_STRIDE)}
     return s | set(TP_DEV_SEEDS)
 
 
@@ -626,6 +645,95 @@ def write_tp(out_dir: Path, check: bool, out: Path | None = None) -> Path:
     return out
 
 
+# 044-R8 / 022-R12 (AMB-022-7 Resolved 2026-11-14): from the round after the 022 teacher passes, the round's
+# TvT / TvP self games are labelled by the 022 teacher's shadow (`--relabel terran_tp --games`, source `dagger`,
+# shards dagger_m2/t<R>) instead of the baseline labeller. The games are the round's 044-R1 self games (the
+# DISTILL_OPPONENTS composition, `--half` the d2 size), the 041-R22 ① DAgger form: the round's model stochastic,
+# decision logs for the 041-R28 memory_action relabel, last failed command shown (zero_last_failed = false).
+# Hash key of their seeds, far from every other key's game numbers (botgen 60,000 + n, dagger 70,000 + n,
+# distill 80,000 + n with n <= 200,000, 022 teacher 1,000,000 + n with n <= 1,800): game number n of teacher
+# round t<R> is (R - 1) * TEACHER_ROUND_STRIDE + i, i = 1..games (600 full, 300 half), as the DAgger rounds.
+TEACHER_ROUND_SEED_KEY = 2_000_000
+TEACHER_ROUND_STRIDE = 600
+
+
+def teacher_round_first(rnd: int) -> int:
+    """The first game number n of teacher round t<rnd> (044-R8)."""
+    assert 1 <= rnd <= RESERVED_ROUNDS, f"--round must be in 1..{RESERVED_ROUNDS} (the reserved round seed blocks)"
+    return (rnd - 1) * TEACHER_ROUND_STRIDE + 1
+
+
+def render_teacher_round(rnd: int, checkpoint: str, name: str, half: bool) -> tuple[str, list[int]]:
+    """The text and seeds of the teacher round t<rnd> self-game plan (044-R8): the 044-R1 composition."""
+    blocks = distill_blocks(half)
+    n = sum(g for *_, g in blocks)
+    assert n <= TEACHER_ROUND_STRIDE, "a round plan must fit in its seed stride"
+    first = teacher_round_first(rnd)
+    last = first + n - 1
+    seeds = [splitmix64(TEACHER_ROUND_SEED_KEY + k) >> 32 for k in range(first, last + 1)]
+    assert len(set(seeds)) == n, "teacher round seeds repeat"
+    p0 = f'{{ kind = "model", checkpoint = "{checkpoint}", sample = "stochastic" }}'
+    t0p, t0t = (sum(g for o, _, _, g in blocks if o == k) for k in ("T0 protoss", "T0 terran"))
+    t1 = n - t0p - t0t
+    span = "(r - 1) * 600 + 300, the first half of the round's 600" if half else "r * 600"
+    lines = [
+        f"# 044-R8 / 022-R12 (AMB-022-7 Resolved 2026-11-14): teacher round t{rnd} self games, generated by",
+        f"# tools/eval/rush_check_plan.py --teacher-round --round {rnd}{' --half' if half else ''} (do not edit by hand). The round after the 022",
+        "# teacher passes 022-AC2: the round's TvT / TvP self games are labelled by the 022 teacher's shadow, not the",
+        "# baseline labeller (041-R22 ② form, source dagger): uranium-replay build <dir>/replays --src dagger",
+        "# --relabel terran_tp --games <dir>/games.jsonl --memory-log <dir>/memory --until-frame 11520 --time-limit 14400",
+        f"# --out <shared>/datasets/replays/shards/dagger_m2/t{rnd} (docs/commands.md: the model's view only, lobby races from",
+        "# games.jsonl). Composition as the 044-R1 self games of a round:",
+        f"# the model players[0] (stochastic) against T0 standard Protoss ({t0p}) and Terran ({t0t}) and the T1",
+        f"# Protoss (UAlbertaBot P, Stardust) and Terran (UAlbertaBot T, Iron) bots ({t1}) x Fighting Spirit / Circuit",
+        f"# Breaker = {n} games{' (half size)' if half else ''}, races fixed (no Random), 10 min (max_frames 14,400), replays kept. T1 bots:",
+        "# the 050-R9 T1 rule (NDEBUG builds, config/protocol/t1_bots.toml; opponent-crash games are invalid).",
+        f"# seeds (020-R20): splitmix64(2,000,000 + n) >> 32, n = {first:,}..{last:,} (round r: n = (r - 1) * 600 + 1..{span}):",
+        "# natural start slots, none of another plan's seeds (botgen, check, dagger, distill, 022 teacher, 050-R9 protocol,",
+        "# the DAgger / distillation / teacher round blocks not generated yet, the 022 development seeds; asserted).",
+        f'name = "{name}"',
+        "save_replay = true",
+        "# 041-R28: decision logs memory/g<id>.jsonl beside replays/ (uranium-replay build --memory-log).",
+        "memory_log = true",
+        "wall_timeout_s = 7200",
+        "zero_last_failed = false",
+        f"max_frames = {TEACHER_MAX_FRAMES}",
+        "seeds = [",
+    ]
+    k = 0
+    for opp, _, m, games in blocks:
+        block = seeds[k:k + games]
+        lines.append(f"  # games {k + 1}..{k + games}: {opp}, {m}")
+        for i in range(0, games, 8):
+            lines.append("  " + ", ".join(str(s) for s in block[i:i + 8]) + ",")
+        k += games
+    lines.append("]")
+    for _, p1, m, games in blocks:
+        lines += ["[[matchup]]", f'map = "{m}"', f"games = {games}", f"p0 = {p0}", f"p1 = {p1}"]
+    return "\n".join(lines) + "\n", seeds
+
+
+def write_teacher_round(out_dir: Path, rnd: int, checkpoint: str, out: Path | None = None, half: bool = False,
+                        name: str | None = None) -> Path:
+    """The teacher round t<rnd> self-game plan (044-R8) config/plans/dagger_m2_t<rnd>.toml: 600 games, `half` 300.
+    Asserts its seeds are disjoint from every plan under `out_dir` (and subfolders), the botgen / check blocks, the
+    reserved DAgger / distillation / other teacher round blocks and the 022 development seeds; an existing plan
+    file is rewritten only with the same seeds."""
+    stem = f"dagger_m2_t{rnd}"
+    own = out_dir / f"{stem}.toml"
+    out = out or own
+    text, seeds = render_teacher_round(rnd, checkpoint, name or stem.replace("_", "-"), half)
+    taken = taken_seeds(out_dir, (out, own)) | reserved_seeds(skip_teacher_round=rnd)
+    assert not taken & set(seeds), "a seed of this plan is another plan's (botgen, check, dagger, distill, 022 teacher, protocol or a reserved round)"
+    for f in {out.resolve(), own.resolve()}:
+        if f.exists():
+            assert plan_seeds(f) == set(seeds), f"{f} exists with other seeds: refusing to overwrite it (games of it may be played); use another --out"
+    out.write_bytes(text.encode("utf-8"))
+    hits = sum(_core.start_slots(s, 0)[2] for s in seeds)
+    print(f"{out}: {len(seeds)} games, first-target hit {hits} ({hits / len(seeds):.1%}, natural 1/3), {len(taken)} other seeds disjoint")
+    return out
+
+
 def render(checkpoint: str | None, name: str) -> str:
     """`checkpoint` None = the 021-R8 teacher plays players[0] (050-R8)."""
     blocks = len(OPPONENTS) * len(MAPS)
@@ -696,23 +804,31 @@ if __name__ == "__main__":
                     help="--botgen: write one more macro plan from this botgen game number (> 2,000) instead")
     ap.add_argument("--dagger", action="store_true", help="write a DAgger round plan (10th advisory 2.2)")
     ap.add_argument("--distill", action="store_true", help="write a self-game distillation round plan (044-R1; needs --checkpoint)")
-    ap.add_argument("--round", type=int, default=1, help="--dagger / --distill: round number (seeds per round disjoint)")
-    ap.add_argument("--half", action="store_true", help="--dagger / --distill: half-size round plan, 300 games (11th advisory 2, 044-R1 d2)")
+    ap.add_argument("--round", type=int, default=1, help="--dagger / --distill / --teacher-round: round number (seeds per round disjoint)")
+    ap.add_argument("--half", action="store_true", help="--dagger / --distill / --teacher-round: half-size round plan, 300 games (11th advisory 2, 044-R1 d2)")
     ap.add_argument("--extra", type=int, default=0,
                     help="--distill: a top-up plan of N more games of round --round (044-R5 (3), user decision 2026-11-14; N a multiple of 20)")
     ap.add_argument("--part", type=int, default=None,
                     help="--distill --extra (required there): top-up part number 1..10 of the round, a new one per top-up (its own seed block)")
     ap.add_argument("--memory-log", action="store_true",
-                    help="--dagger: the model writes decision logs for the memory_action relabel (041-R28); --distill: always on")
+                    help="--dagger: the model writes decision logs for the memory_action relabel (041-R28); --distill / --teacher-round: always on")
     ap.add_argument("--teacher-tp", action="store_true", help="write the 022-R11 check plan of the 022 teacher terran_tp (config/plans/teacher_tp_check.toml)")
     ap.add_argument("--botgen-tp", action="store_true", help="write the 022-R12 botgen plan of the 022 teacher terran_tp (config/plans/teacher_botgen_tp.toml)")
+    ap.add_argument("--teacher-round", action="store_true",
+                    help="write a 044-R8 teacher round self-game plan config/plans/dagger_m2_t<R>.toml (the 044-R1 composition; needs --checkpoint)")
     a = ap.parse_args()
     if a.teacher_tp or a.botgen_tp:
         # 022-R11 / R12: fixed composition and seeds; only --out-dir (and --out) apply.
         assert not (a.teacher_tp and a.botgen_tp), "--teacher-tp and --botgen-tp are separate plans"
-        assert not (a.teacher or a.botgen or a.dagger or a.distill or a.half or a.extra or a.part or a.memory_log
+        assert not (a.teacher or a.botgen or a.dagger or a.distill or a.teacher_round or a.half or a.extra or a.part or a.memory_log
                     or a.first_game is not None or a.checkpoint or a.name), "--teacher-tp / --botgen-tp take only --out-dir / --out"
         write_tp(a.out_dir, a.teacher_tp, a.out)
+        raise SystemExit(0)
+    if a.teacher_round:
+        # 044-R8: the round's model, never a default; the 044-R1 composition (--half the d2 size), no top-up.
+        assert not (a.teacher or a.botgen or a.dagger or a.distill or a.extra or a.part is not None or a.first_game is not None),             "--teacher-round takes only --round / --half / --memory-log / --checkpoint / --name / --out / --out-dir"
+        assert a.checkpoint, "--teacher-round needs --checkpoint (044-R8: the model of the round)"
+        write_teacher_round(a.out_dir, a.round, a.checkpoint, a.out, a.half, a.name)
         raise SystemExit(0)
     assert not (a.dagger and a.distill), "--dagger and --distill are separate plans"
     assert a.dagger or a.distill or not a.half, "--half needs --dagger or --distill"
