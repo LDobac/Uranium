@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 
 from uranium import _core, ckpt
 from uranium.distill.label import label_games
@@ -18,7 +19,7 @@ from uranium.model.net import OBS_KEYS
 from test_aux import CPU, make_net
 
 POLICY_KEYS = {"checkpoint", "checkpoint_sha256", "mode", "label_seed", "game_seed", "temperature", "device", "precision", "git_commit", "invalid_labels",
-               "config", "config_fingerprint", "seq_len", "lanes", "micro_lanes"}
+               "config", "config_fingerprint", "seq_len", "lanes", "micro_lanes", "pad_entities", "noise"}
 
 
 @pytest.fixture
@@ -142,19 +143,54 @@ def test_same_seed_same_labels_other_seed_other_draws_argmax_ignores_it_044_ac2(
     assert runs["m5"][0] != runs["s5"][0]
 
 
-def test_a_views_draws_do_not_depend_on_the_other_games_044_r3(tiny_config, tmp_path, labeller, pre):
-    """044-R3 ②: the RNG is per view (hash of replay, perspective and seed), so a view's labels are
-    the same when its lanes and neighbours change (3 lanes instead of 2: the games share batches
-    differently) and when it is labelled alone."""
-    base, trace = collect()
-    run(pre, labeller, tiny_config, tmp_path, "two", trace=trace)
-    three_cfg = tmp_path / "bc_three.toml"
-    three_cfg.write_text(tiny_config.read_text(encoding="utf-8").replace("lanes = 2", "lanes = 3"), encoding="utf-8")
-    three, trace3 = collect()
-    run(pre, labeller, three_cfg, tmp_path, "three", trace=trace3)
-    assert {k: int(v[0]["action"]) for k, v in base.items()} == {k: int(v[0]["action"]) for k, v in three.items()}
-    for k in base:
-        assert all(np.array_equal(base[k][0][h], three[k][0][h]) for h in base[k][0]), k
+@pytest.mark.parametrize("variant", [
+    {"lanes = 2": "lanes = 3"},
+    {"micro_lanes = 1": "micro_lanes = 0"},
+    {"lanes = 2": "lanes = 3", "micro_lanes = 1": "micro_lanes = 2"},
+    {"pad_entities = 0": "pad_entities = 64"},
+    {"seq_len = 4": "seq_len = 8", "micro_lanes = 1": "micro_lanes = 0"},
+], ids=["lanes3", "micro0", "micro2", "pad64", "seq8"])
+def test_labels_do_not_depend_on_the_batch_shape_044_r3(tiny_config, tmp_path, labeller, pre, variant):
+    """044-R3 ②: a step's draw is a hash of (view seed, frame, head draw, column), so the labelled
+    shards are byte-identical whatever the lane count, the lanes per forward (games sharing a
+    forward: the group's entity count N sets the selection / target widths), the entity padding or
+    the seq_len chunks (CPU, 032-R1)."""
+    base = run(pre, labeller, tiny_config, tmp_path, "base")
+    text = tiny_config.read_text(encoding="utf-8")
+    for a, b in variant.items():
+        assert a in text
+        text = text.replace(a, b)
+    other_cfg = tmp_path / "bc_other.toml"
+    other_cfg.write_text(text, encoding="utf-8")
+    other = run(pre, labeller, other_cfg, tmp_path, "other")
+    shape = ("lanes", "micro_lanes", "pad_entities", "seq_len")
+    assert [other["label_policy"][k] for k in shape] != [base["label_policy"][k] for k in shape]
+    assert shard_bytes(tmp_path / "other" / "out") == shard_bytes(tmp_path / "base" / "out")
+
+
+def test_row_noise_depends_only_on_the_row_key_and_column_044_r3():
+    """The noise of a column does not depend on the width drawn, the other rows or the row order;
+    the selection's END has its own column (not N); different keys, draws and columns differ."""
+    from uranium.distill.noise import RowNoise, row_keys
+
+    keys = row_keys([5, 5, 2 ** 62 + 7], [1, 9, 1], "cpu")
+    assert len(set(keys.tolist())) == 3
+
+    def draws(k, n):
+        nz = RowNoise(k, n, 2)
+        return [nz.uniform((k.shape[0], w), "cpu") for w in (10, 16, 2, n + 1, n + 1, n, 30)]
+
+    a, b = draws(keys, 4), draws(keys[[2, 0]], 9)
+    for i, (x, y) in enumerate(zip(a, b)):
+        w = min(x.shape[1], y.shape[1]) - (1 if i in (3, 4) else 0)
+        assert torch.equal(x[[2, 0], :w], y[:, :w]), i
+        if i in (3, 4):
+            assert torch.equal(x[[2, 0], -1], y[:, -1]), "END column"
+    assert not torch.equal(a[0][0], a[0][1]) and not torch.equal(a[3][:, :4], a[4][:, :4])
+    assert float(a[6].min()) > 0.0 and float(a[6].max()) < 1.0
+    with pytest.raises(ValueError, match="selection draw"):
+        nz = RowNoise(keys, 4, 2)
+        [nz.uniform((3, w), "cpu") for w in (10, 16, 2, 4)]
 
 
 def test_inputs_and_outputs_are_checked_044_r3(tiny_config, tmp_path, labeller, pre, monkeypatch):
