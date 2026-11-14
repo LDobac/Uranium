@@ -171,14 +171,48 @@ def test_distill_topup_seeds_disjoint_044_r5(tmp_path):
         rcp.write_distill(d, 1, CKPT, None, extra=40)
 
 
+def test_distill_seed_blocks_bounded_044_r5():
+    """044-R5 ③ top-up: rounds 1..10 and parts 1..10 only, so every allowed (round, part) top-up block is its
+    own and lies above every allowed round block (by game number: the hash is then asserted per plan)."""
+    assert (rcp.DISTILL_ROUNDS_RESERVED, rcp.DISTILL_EXTRA_PARTS) == (10, 10)
+    rounds = [range(rcp.distill_first(r), rcp.distill_first(r) + rcp.DISTILL_ROUND_STRIDE) for r in range(1, 11)]
+    tops = [range(rcp.distill_first(r, 1, k), rcp.distill_first(r, 1, k) + rcp.DISTILL_EXTRA_PART) for r in range(1, 11) for k in range(1, 11)]
+    blocks = rounds + tops
+    assert sum(len(b) for b in blocks) == len(set().union(*map(set, blocks))), "no two blocks share a game number"
+    assert max(b[-1] for b in rounds) < min(b[0] for b in tops)
+    for bad in (dict(rnd=11), dict(rnd=0), dict(rnd=1, extra=20, part=11), dict(rnd=11, extra=20, part=1)):
+        rnd = bad.pop("rnd")
+        with pytest.raises(AssertionError, match="--round|--part"):
+            rcp.render_distill(rnd, CKPT, "x", False, **bad)
+
+
+def test_distill_plan_not_overwritten_with_other_seeds_044_r5(tmp_path):
+    """044-R5 ③ top-up: an existing plan file is rewritten only with the same seeds (same command): another N
+    for the same part, or --half on the round's own file, would replay seeds of games already played."""
+    out = rcp.write_distill(tmp_path, 1, CKPT, None, extra=40, part=1)
+    assert rcp.write_distill(tmp_path, 1, "checkpoints/other/ckpt-2", None, extra=40, part=1) == out, "same seeds, other model: fine"
+    with pytest.raises(AssertionError, match="other seeds"):
+        rcp.write_distill(tmp_path, 1, CKPT, None, extra=60, part=1)
+    assert rcp.plan_seeds(out) == {int(s) for s in rcp.render_distill(1, CKPT, "x", False, extra=40, part=1)[1]}
+    assert rcp.write_distill(tmp_path, 1, CKPT, None, extra=60, part=2) == tmp_path / "distill_m2_d1_x2.toml"
+    rcp.write_distill(tmp_path, 2, CKPT, None, half=True)
+    with pytest.raises(AssertionError, match="other seeds"):
+        rcp.write_distill(tmp_path, 2, CKPT, None)
+
+
 def test_distill_topup_cli_044_r5(tmp_path):
-    """044-R5 ③ top-up: `--extra` / `--part` only with `--distill`, `--part` only with `--extra`."""
+    """044-R5 ③ top-up: `--extra` needs `--part`, `--extra` / `--part` only with `--distill`, `--part` only with
+    `--extra`."""
     tool = ROOT / "tools" / "eval" / "rush_check_plan.py"
     run = lambda *a: subprocess.run([sys.executable, str(tool), *a], capture_output=True, text=True, encoding="utf-8", errors="replace")  # noqa: E731
-    r = run("--distill", "--round", "1", "--extra", "60", "--checkpoint", CKPT, "--out", str(tmp_path / "x.toml"))
+    r = run("--distill", "--round", "1", "--extra", "60", "--part", "1", "--checkpoint", CKPT, "--out", str(tmp_path / "x.toml"))
     assert r.returncode == 0, r.stderr
     assert tomllib.loads((tmp_path / "x.toml").read_text(encoding="utf-8"))["name"] == "distill-m2-d1-x1"
-    for args in (("--dagger", "--extra", "60"), ("--distill", "--part", "2", "--checkpoint", CKPT), ("--distill", "--extra", "50", "--checkpoint", CKPT)):
+    r = run("--distill", "--round", "1", "--extra", "60", "--checkpoint", CKPT, "--out", str(tmp_path / "bad.toml"))
+    assert r.returncode != 0 and "--part" in r.stderr and not (tmp_path / "bad.toml").exists()
+    for args in (("--dagger", "--extra", "60", "--part", "1"), ("--distill", "--part", "2", "--checkpoint", CKPT),
+                 ("--distill", "--extra", "50", "--part", "1", "--checkpoint", CKPT), ("--distill", "--extra", "60", "--part", "11", "--checkpoint", CKPT),
+                 ("--distill", "--round", "11", "--checkpoint", CKPT)):
         r = run(*args, "--out", str(tmp_path / "bad.toml"))
         assert r.returncode != 0 and not (tmp_path / "bad.toml").exists(), args
 
