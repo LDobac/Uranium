@@ -252,7 +252,7 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
   - 운영형 5상대(`ualbertabot2hatchhydra`, `ualbertabot3hatchmuta`, `steamhammer2hatchmuta`, T0 `zerg_muta`, T0 표준 저그): plan `teacher_botgen_macro`·`macro2`·`macro3`(040-R23)
   - 리플레이 파일 SHA-256이 shard의 `replay_sha256`이라 이것으로 판을 잇는다. 원본은 `<shared>/datasets/replays/raw/botgen/teacher-*/teacher_botgen_*/`, 캐시는 `<URANIUM_CACHE_DIR>/per_action_holdout/teacher_classes.json`이다.
   - 모르는 상대 이름이나 분류가 없는 판이 나오면 멈춘다(새 plan의 상대는 `per_action.py`에 더한다).
-  - TvT·TvP 교사(022)의 botgen 폴더 `teacher-tp-*`(`-v2` 포함)는 분류하지 않고 `orig`·`full`·운영형 추가 채점 어디에도 넣지 않는다. 041-R27은 저그 교사 보관분이고, 044-R8로 botgen에 더해지는 이 판들은 러시·운영형 분류가 없다. `full`도 `orig`처럼 이 폴더를 뺀 파트의 연결 폴더(`<URANIUM_CACHE_DIR>/per_action_holdout_full/botgen`)로 읽는다.
+  - TvT·TvP 교사(022)의 botgen 폴더 `teacher-tp-*`(`-v2` 포함)는 분류하지 않고 `orig`·`full`·운영형 추가 채점 어디에도 넣지 않는다. 041-R27은 저그 교사 보관분이고, 044-R8로 botgen에 더해지는 이 판들은 러시·운영형 분류가 없다. `full`은 botgen manifest에 등록된 파트 중 이 폴더를 뺀 파트를 `orig`처럼 연결 폴더(`<URANIUM_CACHE_DIR>/per_action_holdout_full/botgen`)로 읽고, 디스크의 파트 폴더나 파일 크기가 manifest와 다르면 멈춘다.
 - 보관분(교사 판 val, 2026-11-10): `orig` 165판 = 러시 129 + 운영형 36. macro2 37판, macro3 44판은 모두 운영형이다. `full`이면 러시 129 + 운영형 117이다.
 - 출력에 더해지는 것
   - `by_class.rush`·`by_class.macro`: 판 수, step, 행동별 행, `bunker_p_before_4m`

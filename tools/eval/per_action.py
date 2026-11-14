@@ -7,13 +7,14 @@ Read-only; writes one JSON (input of tools/eval/per_action_table.py).
     python tools/eval/per_action.py --checkpoint <dir> --out <json> [--holdout orig|full] [--backend cuda]
 
 --holdout orig (the protocol value): the 2026-11-06 teacher shards only (165 val games, 94,433 steps),
-the hold-out of the BC / FT / clone / bc-mix columns of Checkpoint 1. `full` = every botgen part but the 022
-TvT / TvP teacher's teacher-tp-* (teacher-20261107-macro2 and teacher-20261109-macro3 too; 041-R27 is about the
-Zerg teacher, 044-R8 adds teacher-tp-*-v2 to botgen). --shards DIR... scores other source folders.
+the hold-out of the BC / FT / clone / bc-mix columns of Checkpoint 1. `full` = the parts registered in the botgen
+manifest but the 022 TvT / TvP teacher's teacher-tp-* (teacher-20261107-macro2 and teacher-20261109-macro3 too;
+041-R27 is about the Zerg teacher, 044-R8 adds teacher-tp-*-v2 to botgen). --shards DIR... scores other source folders.
 
 Moved from runs/mix/per_action.py (a copy of runs/adv8/per_action.py) with the loop unchanged. The
 `orig` source folder (four parts of botgen) is rebuilt from links under <URANIUM_CACHE_DIR or runs>/
-per_action_holdout/botgen, as runs/mix/holdout_orig/botgen was; `full` likewise under per_action_holdout_full/botgen.
+per_action_holdout/botgen, as runs/mix/holdout_orig/botgen was; `full` likewise under per_action_holdout_full/botgen
+(the manifest's shard files; refused when the part folders or file sizes on disk differ from the manifest).
 
 041-R27 (AMB-041-16): the hold-out games are also split by the teacher game's opponent, `rush` (the
 four rush opponents of plan teacher_botgen_rush) or `macro` (the five macro opponents of plans
@@ -152,44 +153,96 @@ def load_classes(spec: str | None, holdout: str | None) -> dict[str, str] | None
     return out
 
 
+SHARD_GLOB = "shard_*.bin.zst"
+
+
+def is_link(p: Path) -> bool:
+    """A symbolic link or (Windows) a directory junction."""
+    return p.is_symlink() or p.is_junction()
+
+
 def remove_entry(p: Path) -> None:
-    """Remove a link-tree entry: a link or file, or a folder of links (the source files stay)."""
-    if p.is_dir() and not p.is_symlink():
-        shutil.rmtree(p)
-    else:
-        p.unlink()
+    """Remove a link-tree entry: a link, junction or file (only the entry itself), or a real folder of links (the
+    source files stay). An entry already gone (another process building the same tree) is not an error."""
+    try:
+        if p.is_junction():
+            os.rmdir(p)
+        elif p.is_dir() and not p.is_symlink():
+            shutil.rmtree(p)
+        else:
+            p.unlink()
+    except FileNotFoundError:
+        pass
 
 
-def link_tree(src_root: Path, parts: list[str], dst_root: Path) -> Path:
+def _under(p: Path, root: Path) -> bool:
+    return p.resolve().is_relative_to(root.resolve())
+
+
+def check_link_root(src_root: Path, parts: list[str], dst_root: Path) -> None:
+    """041-R27 / 044-R8: a pruned link tree must be a real folder of its own: dst_root and its part folders are
+    neither links / junctions nor inside src_root (nor src_root inside dst_root), so pruning never removes a
+    source file."""
+    for d in (dst_root, *(dst_root / part for part in parts)):
+        if is_link(d):
+            raise SystemExit(f"041-R27: link tree folder {d} is a symbolic link or junction; remove it (the tree is rebuilt)")
+    if (_under(dst_root, src_root) or _under(src_root, dst_root)
+            or any(_under(dst_root / part, src_root) for part in parts if (dst_root / part).exists())):
+        raise SystemExit(f"041-R27: link tree {dst_root} lies inside its source {src_root} (or holds it)")
+
+
+def _link(f: Path, t: Path) -> None:
+    """t -> f: hard link, else symbolic link, else copy; a t made meanwhile by another process is kept."""
+    try:
+        os.link(f, t)
+    except FileExistsError:
+        pass
+    except OSError:
+        try:
+            os.symlink(f, t)
+        except FileExistsError:
+            pass
+        except OSError:
+            shutil.copyfile(f, t)
+
+
+def link_tree(src_root: Path, parts: list[str], dst_root: Path, prune: bool = False,
+              files: dict[str, list[str]] | None = None) -> Path:
     """dst_root/<part>/shard_* linked to src_root/<part>/shard_* (hard link, else symbolic link, else
-    copy): a source folder that holds exactly these parts of a source (the shard reader takes a source
-    folder, 040-R13 / 041-R13). Subfolders of dst_root not in `parts` and shard files no longer in their
-    source part are removed (041-R27 / 044-R8: a part dropped from the list is not scored). Returns dst_root."""
-    if dst_root.exists():
-        for e in sorted(dst_root.iterdir()):
-            if e.name not in parts:
-                remove_entry(e)
+    copy): a source folder that holds only some parts of a source (the shard reader takes a source
+    folder, 040-R13 / 041-R13). `files` {part: [file name]}: the files of each part (default: its shard_* on
+    disk). prune (per_action's own trees, 041-R27 / 044-R8): the tree holds exactly these parts and files;
+    subfolders of dst_root not in `parts` and unwanted files in a part are removed, after check_link_root.
+    Without prune (050-R9 protocol.set_data) nothing is removed: a stray file is left for its fingerprint
+    check to refuse. Returns dst_root."""
+    if prune:
+        check_link_root(src_root, parts, dst_root)
+        if dst_root.exists():
+            for e in sorted(dst_root.iterdir()):
+                if e.name not in parts:
+                    remove_entry(e)
     for part in parts:
         d = dst_root / part
         d.mkdir(parents=True, exist_ok=True)
-        want = sorted((src_root / part).glob("shard_*.bin.zst"))
-        names = {f.name for f in want}
-        for e in sorted(d.iterdir()):
-            if e.name not in names:
-                remove_entry(e)
+        if files is None:
+            want = sorted((src_root / part).glob(SHARD_GLOB))
+        else:
+            want = [src_root / part / n for n in sorted(files.get(part, []))]
+        if prune:
+            names = {f.name for f in want}
+            for e in sorted(d.iterdir()):
+                if e.name not in names:
+                    remove_entry(e)
         for f in want:
             t = d / f.name
-            if t.exists():
-                if t.stat().st_size == f.stat().st_size:
-                    continue
-                t.unlink()
             try:
-                os.link(f, t)
-            except OSError:
-                try:
-                    os.symlink(f, t)
-                except OSError:
-                    shutil.copyfile(f, t)
+                if t.exists():
+                    if t.stat().st_size == f.stat().st_size:
+                        continue
+                    t.unlink()
+            except FileNotFoundError:
+                pass
+            _link(f, t)
     return dst_root
 
 
@@ -197,23 +250,46 @@ def botgen_src() -> Path:
     return ec.shared_dir() / "datasets" / "replays" / "shards" / "botgen"
 
 
-def holdout_parts(src: Path) -> list[str]:
-    """041-R27 / 044-R8: the botgen parts of the Zerg-teacher hold-out (`full`): every part folder but the 022
-    TvT / TvP teacher's teacher-tp-* (no rush / macro class). `orig` is ORIG, the rest is added_dirs()."""
-    return sorted(p.name for p in src.iterdir() if p.is_dir() and not p.name.startswith(TP_PREFIX))
+def holdout_parts(src: Path) -> tuple[list[str], dict[str, list[str]]]:
+    """041-R27 / 044-R8: (parts, {part: shard file names}) of the Zerg-teacher hold-out `full`: the parts registered
+    in the botgen manifest (src/manifest.json, 061) except the 022 TvT / TvP teacher's teacher-tp-* (no rush /
+    macro class), with the manifest's shard files. Refused when the part folders on disk (teacher-tp-* aside) are
+    not the manifest's parts, or a listed shard is missing or its size is not the manifest `bytes`. `orig` is
+    ORIG, the rest is added_dirs()."""
+    mf = src / "manifest.json"
+    if not mf.exists():
+        raise SystemExit(f"041-R27: no botgen manifest {mf}")
+    listed = json.loads(mf.read_text(encoding="utf-8"))["files"]
+    files: dict[str, list[str]] = {}
+    for key, entry in listed.items():
+        bits = key.split("/")
+        if len(bits) != 2 or bits[0].startswith(TP_PREFIX) or not Path(bits[1]).match(SHARD_GLOB):
+            continue
+        f = src / key
+        if not f.is_file():
+            raise SystemExit(f"041-R27: botgen manifest file {key} is missing under {src}")
+        if f.stat().st_size != entry["bytes"]:
+            raise SystemExit(f"041-R27: botgen {key} is {f.stat().st_size} B, the manifest says {entry['bytes']} B")
+        files.setdefault(bits[0], []).append(bits[1])
+    disk = {p.name for p in src.iterdir() if p.is_dir() and not p.name.startswith(TP_PREFIX)}
+    if disk != set(files):
+        raise SystemExit(f"041-R27: botgen part folders {sorted(disk)} are not the manifest's parts {sorted(files)} "
+                         "(teacher-tp-* aside); push or remove the part first")
+    return sorted(files), {k: sorted(v) for k, v in files.items()}
 
 
 def holdout_dirs(holdout: str) -> tuple[list[str], list[str]]:
-    """(datasets, shard folders) of a hold-out name: `orig` = the ORIG parts, `full` = holdout_parts(), each one
-    source folder of links."""
+    """(datasets, shard folders) of a hold-out name: `orig` = the ORIG parts, `full` = holdout_parts() (the
+    parts registered in the botgen manifest but teacher-tp-*), each one source folder of links."""
     if holdout == "full":
         src = botgen_src()
+        parts, files = holdout_parts(src)
         work = ec.cache_dir() / "per_action_holdout_full" / "botgen"
-        return [], [str(link_tree(src, holdout_parts(src), work))]
+        return [], [str(link_tree(src, parts, work, prune=True, files=files))]
     if holdout == "orig":
         src = botgen_src()
         work = ec.cache_dir() / "per_action_holdout" / "botgen"
-        return [], [str(link_tree(src, ORIG, work))]
+        return [], [str(link_tree(src, ORIG, work, prune=True))]
     raise SystemExit(f"unknown --holdout {holdout}")
 
 
@@ -221,11 +297,12 @@ def added_dirs() -> list[str]:
     """041-R27: the `full` parts outside `orig` (teacher-20261107-macro2, teacher-20261109-macro3, ...) as one
     source folder of links (<URANIUM_CACHE_DIR or runs>/per_action_holdout_added/botgen); [] without any."""
     src = botgen_src()
-    parts = [p for p in holdout_parts(src) if p not in ORIG]
+    parts, files = holdout_parts(src)
+    parts = [p for p in parts if p not in ORIG]
     if not parts:
         return []
     work = ec.cache_dir() / "per_action_holdout_added" / "botgen"
-    return [str(link_tree(src, parts, work))]
+    return [str(link_tree(src, parts, work, prune=True, files=files))]
 
 
 def macro_full(r27: dict, added_macro: dict | None) -> dict:
