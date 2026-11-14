@@ -357,7 +357,8 @@ impl Kit {
     /// barracks, scouting, bunkers, SCV pull / repair, worker answer, resumption, home guard) with
     /// the `tp` module's opening, rush rules, branches, siege tanks and attack (`TpParams`).
     pub fn terran_tp() -> Self {
-        Self { defend: true, react: Some(ReactParams::default()), tp: Some(TpParams::default()), ..Self::terran() }
+        let tp = TpParams::default();
+        Self { defend: true, react: Some(tp.react_params()), tp: Some(tp), ..Self::terran() }
     }
 }
 

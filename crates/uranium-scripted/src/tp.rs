@@ -127,6 +127,20 @@ pub struct TpParams {
     /// Repeated orders (gas crew, machine shop, research, tank and attack moves): every this many
     /// frames (022-R1, 48).
     pub retarget: u32,
+    /// 022-R6 D ② ③ numbers of the reused 021-R8 defence, for this teacher (022 tuning, user decision
+    /// 2026-11-14: tune within the decided build direction): SCVs repairing a damaged bunker
+    /// (021-R8 `repairers`), most SCVs pulled against enemies at the bunker or the mineral line
+    /// (`pull_max`), and the marines-to-enemies ratio from which D marines attack-move out instead
+    /// of holding by the bunker (`marine_ratio`).
+    pub repairers: usize,
+    pub pull_max: usize,
+    pub marine_ratio: usize,
+    /// 022-R5 M vs Protoss (022 tuning, 2026-11-14 dev runs): the natural also waits for this many
+    /// complete tanks (3; 0 = the factory order alone, as decided first).
+    pub expand_tanks_p: usize,
+    /// 022-R6 D vs Protoss (022 tuning, 2026-11-14 dev runs): the marines never attack-move out
+    /// (the 021-R8 `marine_ratio` rule); they load into the bunker and hold beside it.
+    pub marines_hold_p: bool,
 }
 
 impl Default for TpParams {
@@ -174,7 +188,20 @@ impl Default for TpParams {
             late_wave_supply: 20,
             group_gap: 8,
             retarget: 48,
+            repairers: 2,
+            pull_max: 6,
+            marine_ratio: 2,
+            expand_tanks_p: 3,
+            marines_hold_p: true,
         }
+    }
+}
+
+impl TpParams {
+    /// The 021-R8 numbers this teacher's reused defence runs with (`ReactParams` defaults with this
+    /// teacher's D ② ③ numbers).
+    pub fn react_params(&self) -> crate::ReactParams {
+        crate::ReactParams { repairers: self.repairers, pull_max: self.pull_max, marine_ratio: self.marine_ratio, ..Default::default() }
     }
 }
 
@@ -414,6 +441,7 @@ impl Brain {
         if t.seen.is_none() {
             t.seen = enemies.iter().find_map(|u| race_of(u.unit_type));
         }
+        let matchup = t.matchup();
         for u in enemies.iter().filter(|u| matches!(u.unit_type, GATEWAY | BARRACKS)) {
             for s in others.iter().filter(|s| within(u.pos, depot_center(**s), p.proxy_radius)) {
                 t.prod_seen.insert((*s, u.unit_type));
@@ -472,7 +500,8 @@ impl Brain {
         // army near the bases 2:1, else load / hold beside the bunker.
         let outside = mine.iter().filter(|u| u.unit_type == MARINE && u.has(flags::COMPLETED) && u.loaded_in.is_none()).count();
         let close = enemies.iter().filter(|u| is_ground_army_type(u.unit_type) && depots.iter().any(|d| within(u.pos, *d, r.p.marine_radius))).count();
-        r.marines_attack = r.branch == Branch::Defence && close > 0 && outside >= r.p.marine_ratio * close;
+        let hold = p.marines_hold_p && matchup == Matchup::Protoss;
+        r.marines_attack = r.branch == Branch::Defence && !hold && close > 0 && outside >= r.p.marine_ratio * close;
         if r.marines_attack {
             r.holding.clear();
         }
@@ -655,7 +684,7 @@ impl Brain {
         if let Some(n) = natural.filter(|_| !self.natural_started(mine)) {
             let tanks = Self::tanks_done(mine);
             let ready = match (branch, matchup) {
-                (Branch::Macro, Matchup::Protoss) => has(self, FACTORY),
+                (Branch::Macro, Matchup::Protoss) => has(self, FACTORY) && tanks >= p.expand_tanks_p,
                 (Branch::Macro, Matchup::Terran) => tanks >= p.expand_tanks,
                 (Branch::Defence, _) => tanks >= p.expand_tanks && f.frame >= last_contact + p.quiet,
             };
@@ -1223,6 +1252,10 @@ mod tests {
             if n >= 2_400 {
                 u.push(building(8, FACTORY, FACTORY_AT));
             }
+            // Three tanks from 5:00 (022 tuning: vs Protoss the natural waits for them).
+            if n >= 7_200 {
+                u.extend((0..3).map(|i| unit(300 + i, SIEGE_TANK, (home().0 + 60, home().1 + 100 + 8 * i as u16))));
+            }
             if (2_800..3_100).contains(&n) {
                 let m = depot_center(THEIRS);
                 u.push(enemy(80, NEXUS, m));
@@ -1312,17 +1345,24 @@ mod tests {
             u
         };
         let tanks = |k: u32| (0..k).map(|i| unit(300 + i, SIEGE_TANK, (home().0 + 60, home().1 + 100 + 8 * i as u16))).collect::<Vec<_>>();
-        assert!(builds(&teacher().act(&frame(3_000, with(vec![]), 400, 40)), CC).is_empty(), "no factory");
+        assert!(builds(&teacher().act(&frame(3_000, with(tanks(3)), 400, 40)), CC).is_empty(), "no factory");
+        // 022 tuning: vs Protoss also 3 complete tanks (`expand_tanks_p`).
+        let fac_tanks = |k: u32| [vec![factory()], tanks(k)].concat();
+        assert!(builds(&teacher().act(&frame(5_000, with(fac_tanks(2)), 400, 40)), CC).is_empty(), "2 tanks");
         let mut b = teacher();
-        let act = b.act(&frame(3_000, with(vec![building(8, FACTORY, FACTORY_AT)]), 400, 40));
+        let act = b.act(&frame(5_000, with(fac_tanks(3)), 400, 40));
         assert_eq!(builds(&act, CC), vec![NATURAL], "{:?}", act.cmds);
-        assert_eq!(stats(&b).expand_frame, Some(3_000));
-        let act = teacher().act(&frame(3_000, with(vec![building(8, FACTORY, FACTORY_AT)]), 399, 40));
+        assert_eq!(stats(&b).expand_frame, Some(5_000));
+        let act = teacher().act(&frame(5_000, with(fac_tanks(3)), 399, 40));
         assert!(builds(&act, CC).is_empty());
+        // As decided first (no tank condition): the factory order alone.
+        let first = TpParams { expand_tanks_p: 0, ..TpParams::default() };
+        let mut d0 = Brain::with_hints(&info(Race::Protoss), Kit { tp: Some(first.clone()), react: Some(first.react_params()), ..Kit::terran_tp() }, &hints());
+        assert_eq!(builds(&d0.act(&frame(3_000, with(vec![building(8, FACTORY, FACTORY_AT)]), 400, 40)), CC), vec![NATURAL]);
         // Before 4:00 the price is held from marines only (an SCV is trained); from 4:00 from
         // everything.
-        assert_eq!(trains(&teacher().act(&frame(5_759, with(vec![factory()]), 399, 40)), SCV), 1);
-        assert_eq!(trains(&teacher().act(&frame(5_760, with(vec![factory()]), 399, 40)), SCV), 0);
+        assert_eq!(trains(&teacher().act(&frame(5_759, with(fac_tanks(3)), 399, 40)), SCV), 1);
+        assert_eq!(trains(&teacher().act(&frame(5_760, with(fac_tanks(3)), 399, 40)), SCV), 0);
         // Terran: two tanks.
         let act = teacher_vs(Race::Terran).act(&frame(5_000, with([vec![factory()], tanks(1)].concat()), 400, 40));
         assert!(builds(&act, CC).is_empty(), "{:?}", act.cmds);
@@ -1492,6 +1532,39 @@ mod tests {
         for id in 300..304 {
             assert_eq!(orders.get(&id), Some(&vec![CmdOrder::Attack(Target::Pos(target))]), "tank {id}: {:?}", act.cmds);
         }
+    }
+
+    /// 022-R6 D (022 tuning): vs Protoss the D marines never attack-move out (`marines_hold_p`);
+    /// vs Terran the 021-R8 2:1 rule stays.
+    #[test]
+    fn defence_marines_hold_vs_protoss_022_r6() {
+        let run = |race: Race, ty: u16| {
+            let mut b = teacher_vs(race);
+            b.scout_done = true;
+            let mut u = base(12);
+            u.extend((0..6).map(|n| unit(200 + n, MARINE, (home().0 + 100, home().1 + 100 + 4 * n as u16))));
+            u.push(enemy(90, ty, (home().0 + 8 * 32, home().1)));
+            u.push(enemy(91, ty, (home().0 + 8 * 32, home().1 + 20)));
+            b.act(&frame(6_000, u, 0, 40));
+            (branch(&b), b.react_marines_attack())
+        };
+        assert_eq!(run(Race::Protoss, ZEALOT), (Branch::Defence, false));
+        assert_eq!(run(Race::Terran, MARINE), (Branch::Defence, true));
+    }
+
+    /// 022-R6 D ③ (tuned numbers): a damaged bunker under zealot attack gets `repairers` SCVs.
+    #[test]
+    fn damaged_bunker_gets_repairers_022_r6() {
+        let mut b = teacher();
+        b.scout_done = true;
+        let mut u = base(20);
+        let bunker = (home().0 + 5 * 32, home().1 + 64);
+        u.push(UnitState { hp: 120, ..unit(60, BUNKER, bunker) });
+        u.extend((0..5).map(|i| enemy(90 + i, ZEALOT, (bunker.0 + 40, bunker.1 + 10 * i as u16))));
+        let act = b.act(&frame(7_000, u, 100, 40));
+        assert_eq!(branch(&b), Branch::Defence);
+        let repair = ordered(&act, |o| *o == CmdOrder::Repair(60));
+        assert_eq!(repair.len(), TpParams::default().repairers, "{:?}", act.cmds);
     }
 
     /// 022-R3 scout: the enemy main found before 2:40 keeps the scout there (circling, from 2:30 at
