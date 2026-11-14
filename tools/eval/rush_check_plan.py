@@ -739,10 +739,17 @@ def write_tp(out_dir: Path, check: bool, out: Path | None = None, extra: dict[st
     taken = taken_seeds(out_dir, (out, own)) | reserved_seeds(skip_tp_extra_part=part if extra else None)
     assert not taken & set(seeds), "a seed of this plan is another plan's (botgen, check, dagger, distill, protocol or development)"
     if extra:
-        # A top-up part rewritten with other counts would replay seeds of games already played; use another --part.
+        # A top-up part rewritten with other counts would replay seeds of games already played, and one with the same
+        # total but another Protoss / Terran split would give the same seeds to other matchups: the existing file must
+        # have the same seeds and matchups (review 2026-11-14); otherwise use another --part.
+        want = tomllib.loads(text)
         for f in {out.resolve(), own.resolve()}:
             if f.exists():
-                assert plan_seeds(f) == set(seeds), f"{f} exists with other seeds: refusing to overwrite it (games of it may be played); use another --part / --out"
+                have = tomllib.loads(f.read_text(encoding="utf-8"))
+                assert plan_seeds(f) == set(seeds) and have.get("seeds") == want["seeds"], \
+                    f"{f} exists with other seeds: refusing to overwrite it (games of it may be played); use another --part / --out"
+                assert have.get("matchup") == want["matchup"], \
+                    f"{f} exists with other matchups (another --extra-p / --extra-t split): refusing to overwrite it (games of it may be played); use another --part / --out"
     out.write_bytes(text.encode("utf-8"))
     hits = sum(_core.start_slots(s, 0)[2] for s in seeds)
     print(f"{out}: {len(seeds)} games, first-target hit {hits} ({hits / len(seeds):.1%}, natural 1/3), {len(taken)} other seeds disjoint")

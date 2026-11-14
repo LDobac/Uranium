@@ -353,8 +353,17 @@ fn teacher_race_report(
         );
     }
     if let Some(games) = &tr.extra_botgen_tp {
-        let args: Vec<String> = games.iter().map(|(r, n)| format!("--extra-{} {n}", r.to_lowercase())).collect();
-        eprintln!("[mix-fractions] top-up: rush_check_plan.py --botgen-tp {} --part K (teacher_races.after_top_up: the expected shares after it)", args.join(" "));
+        let args = |g: &std::collections::BTreeMap<String, u64>| g.iter().map(|(r, n)| format!("--extra-{} {n}", r.to_lowercase())).collect::<Vec<_>>().join(" ");
+        // More than one part (review 2026-11-14): the first run's counts; the rest are in the warning / after_top_up.parts.
+        match tr.after_top_up.as_ref().map(|t| &t.parts[..]) {
+            Some([first, rest @ ..]) if !rest.is_empty() => eprintln!(
+                "[mix-fractions] top-up ({} in all, {} parts): first rush_check_plan.py --botgen-tp {} --part K, then the next parts of teacher_races.after_top_up.parts",
+                args(games),
+                rest.len() + 1,
+                args(first)
+            ),
+            _ => eprintln!("[mix-fractions] top-up: rush_check_plan.py --botgen-tp {} --part K (teacher_races.after_top_up: the expected shares after it)", args(games)),
+        }
     }
     // Review 2026-11-14: the simulated shares after the top-up, a multi-part top-up, a short Zerg share.
     for w in &tr.warnings {
