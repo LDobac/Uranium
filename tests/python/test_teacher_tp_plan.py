@@ -78,6 +78,9 @@ def test_tp_seeds_disjoint_022_r11_r12():
     assert not tracked & (set(check) | set(botgen))
     reserved = rcp.reserved_seeds()
     assert set(range(77001, 77265)) <= reserved
+    dev_tune = {rcp.splitmix64(1_000_000 + n) >> 32 for n in range(5001, 5133)}
+    assert len(dev_tune) == 132 and dev_tune <= reserved, "022 tuning development seeds (2026-11-14)"
+    assert not dev_tune & (set(check) | set(botgen) | tracked)
     assert {rcp.splitmix64(70000 + n) >> 32 for n in (1, 6000)} <= reserved, "DAgger rounds 1..10"
     assert {rcp.splitmix64(80000 + n) >> 32 for n in (1, 6000, 100_001, 200_000)} <= reserved, "distillation rounds and top-ups"
     assert not reserved & (set(check) | set(botgen))
