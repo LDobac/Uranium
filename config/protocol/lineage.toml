@@ -662,6 +662,15 @@ metrics = ["val500", "val500_race", "per_action", "t0_tp", "tvz", "rush", "macro
 optional = ["ops", "rush_combat"]
 
 [[point]]
+id = "t1"
+family = "bc"
+note = "teacher round t1 (044-R8, user decision 2026-11-14: one round after the distillation rounds, judged by 044-R6, run m2-teacher-t1); verdict: tools/eval/distill_verdict.py --round t1 (pass or stop only)"
+# The distillation rounds' menu (same metrics). Run name m2-teacher-t1: 메인 임시 결정 2026-11-14, 사용자 확인 대기.
+run_pattern = "teacher-t1"
+metrics = ["val500", "val500_race", "per_action", "t0_tp", "tvz", "rush", "macro", "teacher_mode", "cue_diag", "dead_channels"]
+optional = ["ops", "rush_combat"]
+
+[[point]]
 id = "D"
 family = "bc"
 note = "path-2 fixed model D (044-R7): the checkpoint of the round that passed 044-R6, measured as the 'Checkpoint 1 대응 모델' row; the round point's cells (val500, t0_tp, diagnostics) are the same checkpoint's"

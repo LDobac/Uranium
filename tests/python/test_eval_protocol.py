@@ -750,6 +750,15 @@ def test_distill_fix_points_menus_050_r9():
         protocol.check_new_measurement(LIN, "m2", "teacher_mode", pt)
     with pytest.raises(SystemExit, match="REFUSED: point d1 has no Checkpoint 1 counterpart"):
         protocol.main(["tables", "--lineage", "ck1", "--point", "d1"])
+    # 044-R8 teacher round t1 (user decision 2026-11-14): the distillation rounds' menu, run m2-teacher-t1 (메인 임시 결정
+    # 2026-11-14, 사용자 확인 대기), no Checkpoint 1 counterpart.
+    t1 = protocol.point(LIN, "t1")
+    assert {k: t1.get(k) for k in ("family", "metrics", "optional")} == {k: d1.get(k) for k in ("family", "metrics", "optional")}
+    assert not t1.get("ck1_checkpoint")
+    protocol.check_new_measurement(LIN, "m2", "teacher_mode", t1)
+    protocol.check_checkpoint(LIN, "m2", t1, "checkpoints/m2-teacher-t1/ckpt-1500")
+    with pytest.raises(protocol.Refused, match=r"point t1 takes runs m2-<"):
+        protocol.check_checkpoint(LIN, "m2", t1, "checkpoints/m2-distill-d1/ckpt-1500")
 
 
 def test_distill_points_run_names_050_r9():
