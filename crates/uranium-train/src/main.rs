@@ -278,6 +278,9 @@ fn parse_shares(s: &str) -> std::result::Result<Shares, String> {
             return Err(format!("{part:?}: a share is in (0, 1)"));
         }
         let k = k.trim();
+        if k.is_empty() {
+            return Err(format!("{part:?}: empty name"));
+        }
         if k == "human" {
             return Err("the human share is 1 - the others; do not name it".into());
         }
@@ -422,7 +425,8 @@ fn main() -> Result<()> {
             let sub = cfg.data.subsample.clone().ok_or_else(|| anyhow::anyhow!("{}: no [data.subsample] (its keep_sources are the teacher, 041-R21 ⑥)", config.display()))?;
             let groups = groups.groups(&data)?;
             let scan = uranium_train::bc::scan_groups(&groups)?;
-            let s2: Vec<uranium_train::data::GameSummary> = scan.into_values().flatten().filter(|g| uranium_train::split::selects(uranium_train::split::Selection::S2, &g.meta)).collect();
+            let all: Vec<uranium_train::data::GameSummary> = scan.into_values().flatten().collect();
+            let s2: Vec<uranium_train::data::GameSummary> = all.iter().filter(|g| uranium_train::split::selects(uranium_train::split::Selection::S2, &g.meta)).cloned().collect();
             let mut with = cfg.clone();
             let (f, source_fractions) = match &share {
                 None => {
@@ -444,7 +448,9 @@ fn main() -> Result<()> {
                     });
                     // The values the config file will get must load (fractions in (0, 1]).
                     with.data.subsample.as_ref().expect("set above").check()?;
-                    (f, Some(sf))
+                    // 044-R5 ③ top-up (user decision 2026-11-14): a source below its target gets the
+                    // missing steps and an estimate of the games to add (rush_check_plan.py --extra).
+                    (f, Some(sf.with_shortfalls(&all)))
                 }
             };
             let t = uranium_train::bc::epoch_table_groups(&groups, &with)?;
@@ -458,6 +464,15 @@ fn main() -> Result<()> {
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({ "config": config, "fractions": f, "source_fractions": source_fractions, "s2": t.s2, "s2_warmup": warmup, "s2_mix": mix }))?
                 );
+                for (s, x) in source_fractions.iter().flat_map(|sf| sf.short.iter()) {
+                    eprintln!(
+                        "[mix-fractions] {s}: {} steps below its target ({:.0} steps per counted game, {:.1}% of its games in the selection): about {} more games (044-R5 ③ top-up; distill: rush_check_plan.py --distill --round R --extra N, N rounded up to a multiple of 20, plus the build's filtered share)",
+                        x.missing_steps,
+                        x.steps_per_game,
+                        x.selected_share * 100.0,
+                        x.extra_games
+                    );
+                }
                 anyhow::ensure!(
                     mix.all_ok(),
                     "the fractions miss the shares: teacher {:.4} vs {} (ok {}), sources {:?}, human {:?}, human races {:?} vs S2 {:?} (ok {}) (044-R5 ③, 041-R26)",
@@ -576,7 +591,7 @@ mod tests {
     fn share_option_044_r5() {
         let s = parse_shares("teacher=0.45,distill=0.2").unwrap();
         assert_eq!((s.teacher, s.sources.clone()), (0.45, [("distill".to_string(), 0.2)].into()));
-        for bad in ["distill=0.2", "teacher=0.45", "teacher=0.45,distill=0", "teacher=0.45,distill=1", "teacher=0.45,distill=x", "teacher=0.45,teacher=0.4,distill=0.2", "teacher=0.45,distill=0.2,human=0.35", "teacher"] {
+        for bad in ["distill=0.2", "teacher=0.45", "teacher=0.45,distill=0", "teacher=0.45,distill=1", "teacher=0.45,distill=x", "teacher=0.45,teacher=0.4,distill=0.2", "teacher=0.45,distill=0.2,human=0.35", "teacher", "teacher=0.45,=0.2"] {
             assert!(parse_shares(bad).is_err(), "{bad}");
         }
         let cmd = |args: &[&str]| Cli::try_parse_from([&["uranium-train", "mix-fractions", "--config", "c.toml", "--shards", "d"], args].concat());

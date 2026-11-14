@@ -2,8 +2,8 @@
 # `--init` recipe of config/bc_m2_dagger_r2.toml (the 041-R28 memory field, the model 2 tables) with the
 # self-game distillation source (044-R5 ⑥). One epoch from `--s2 --init <S>` (weights only), S = the 041-R29 ④
 # selection (the Checkpoint 1 counterpart model, 044-R7; AMB-044-4), its last checkpoint.
-# PLACEHOLDER: S is not chosen yet (the r2 point measurements are running); the run queue / driver names its
-# checkpoint when the selection is made.
+# PLACEHOLDER: S is not chosen yet (the r2 point measurements are running); the distill round driver (plan
+# unit U11, not written yet) names its checkpoint when the selection is made.
 # Data (044-R5 ②): every teacher game (`botgen`, as config/bc_m2_dagger_r2.toml), every lineage-2 DAgger game
 # so far (`dagger_m2`, GameMeta.src `dagger`), every distillation game so far (`distill_m2/d1`: S's 600 games
 # of config/plans/distill_m2_d1.toml against Terran / Protoss, built as decision steps (044-R2) and labelled
@@ -12,13 +12,15 @@
 # inside the human part TvT : TvP : TvZ is the S2 human data's within +-3%p). Shares of the update steps
 # (044-R5 ③, AMB-044-5): teacher + dagger 45%, distill 20%, human 35%, each +-3%p; teacher + dagger are kept
 # whole (so the epoch grows, about 1,850 updates estimated), distill is subsampled per game when it has more
-# than its share ([data.subsample.fraction_by_source], same hash rule as 041-R21 ②). The fractions and
+# than its share ([data.subsample.fraction_by_source], same hash rule as 041-R21 ②); when it has fewer, more
+# distill games of the round are played to fill it (top-up plans config/plans/distill_m2_d1_x<K>.toml, user
+# decision 2026-11-14), not a smaller share or less teacher + dagger. The fractions and
 # [steps] come from `uranium-train mix-fractions --share teacher=0.45,distill=0.2` for data.seed 15. Learning
 # rate as bc_m2_dagger_r2.toml (044-R5 ④): 3e-4 / 3e-6 x s2_lr_scale 0.1 = 3e-5 / 3e-7, warmup 5%, cosine to
 # the end of the epoch. Losses as every source (044-R5 ⑤, AMB-044-6). [aux] lambda_priv 0.2, lambda_jepa 0.1
 # (AMB-041-13b), as config/bc_m2_dagger_r2.toml.
 # PLACEHOLDER: [data.subsample] fraction / fraction_by_race / fraction_by_source and [steps] s2 / s2_warmup are
-# filled by the run driver's count after the distill_m2/d1 labelling (the zero fraction_by_race and
+# filled by the count of the distill round driver (U11) after the distill_m2/d1 labelling (the zero fraction_by_race and
 # fraction_by_source make every loader refuse this file until then).
 # 041 behaviour cloning hyper-parameters (041-R3, R10: tuning targets, recorded in checkpoints).
 

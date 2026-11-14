@@ -343,9 +343,57 @@ pub struct SourceFractions {
     /// steps the fraction keeps (the nearest the per-game hash allows; all of them when the source
     /// has fewer steps than its target, which the share check then reports).
     pub reference_source_steps: BTreeMap<String, u64>,
+    /// Per source: the selection's games (with steps).
+    pub reference_source_games: BTreeMap<String, usize>,
     pub target_source_steps: BTreeMap<String, u64>,
     pub kept_source_steps: BTreeMap<String, u64>,
     pub fraction_by_source: BTreeMap<String, f64>,
+    /// 044-R5 ③ top-up (user decision 2026-11-14): the sources whose selection has fewer steps
+    /// than their target, set by [`Self::with_shortfalls`]; left out of the JSON when none is short.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub short: BTreeMap<String, Shortfall>,
+}
+
+/// 044-R5 ③ top-up (user decision 2026-11-14): how far a source (`distill`) is below its target
+/// and about how many more games of it would fill it. More games of the source do not move the
+/// target (the epoch is the teacher steps / the teacher target).
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct Shortfall {
+    /// Target steps - the selection's steps (all of them are kept).
+    pub missing_steps: u64,
+    /// The selection's steps per game (the counted games: train split, target maps).
+    pub steps_per_game: f64,
+    /// The source's games in the selection and in the whole scan (every split): their ratio is
+    /// the share of a new game that lands in the selection (041-R12 split by replay hash).
+    pub selected_games: usize,
+    pub scanned_games: usize,
+    pub selected_share: f64,
+    /// ceil(missing_steps / steps_per_game / selected_share): games to play beyond those built.
+    /// Games the build filters (044-R2 `filtered`) are not in the scan, so add the build's
+    /// filtered share on top.
+    pub extra_games: u64,
+}
+
+impl SourceFractions {
+    /// [`Self::short`] for the sources whose selection misses its target; `all`: every game of the
+    /// scan (all splits), for the selected share.
+    pub fn with_shortfalls(mut self, all: &[GameSummary]) -> Self {
+        self.short.clear();
+        for (s, &target) in &self.target_source_steps {
+            let have = self.reference_source_steps[s];
+            if have >= target {
+                continue;
+            }
+            let selected_games = self.reference_source_games[s];
+            let scanned_games = all.iter().filter(|g| g.meta.src == *s && g.steps > 0).count().max(selected_games);
+            let steps_per_game = have as f64 / selected_games as f64;
+            let selected_share = selected_games as f64 / scanned_games as f64;
+            let missing_steps = target - have;
+            let extra_games = (missing_steps as f64 / steps_per_game / selected_share).ceil() as u64;
+            self.short.insert(s.clone(), Shortfall { missing_steps, steps_per_game, selected_games, scanned_games, selected_share, extra_games });
+        }
+        self
+    }
 }
 
 /// 044-R5 ③ (041-R31): the subsample of a three-share epoch for one data seed. The teacher games
@@ -357,19 +405,21 @@ pub struct SourceFractions {
 pub fn share_fractions(games: &[GameSummary], teacher: &[String], sources: &BTreeMap<String, f64>, seed: u64, teacher_share: f64) -> Result<(RaceFractions, SourceFractions)> {
     ensure!(!sources.is_empty(), "no source shares (044-R5: e.g. distill)");
     let human_share = 1.0 - teacher_share - sources.values().sum::<f64>();
-    ensure!(teacher_share > 0.0 && sources.values().all(|&b| b > 0.0) && human_share > 0.0, "shares must be > 0 with a human rest > 0: teacher {teacher_share}, sources {sources:?}, human {human_share}");
+    // 1e-9: shares summing to 1 up to float rounding leave no human rest.
+    ensure!(teacher_share > 0.0 && sources.values().all(|&b| b > 0.0) && human_share > 1e-9, "shares must be > 0 with a human rest > 0: teacher {teacher_share}, sources {sources:?}, human {human_share}");
     for s in sources.keys() {
         ensure!(!teacher.contains(s), "share source {s:?} is a teacher source (`keep_sources`, 044-R5)");
     }
     let teacher_steps = teacher_steps_of(games, teacher)?;
     let total = teacher_steps as f64 / teacher_share;
     let others: Vec<String> = sources.keys().cloned().collect();
-    let (mut reference, mut target, mut kept, mut fraction_by_source) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
+    let (mut reference, mut reference_games, mut target, mut kept, mut fraction_by_source) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
     for (s, &b) in sources {
         let v: Vec<(f64, u64)> = games.iter().filter(|g| g.meta.src == *s && g.steps > 0).map(|g| (game_unit(&g.meta.replay_sha256, seed, SUBSAMPLE_SALT), g.steps as u64)).collect();
         let have: u64 = v.iter().map(|x| x.1).sum();
         ensure!(have > 0, "the selection has no steps of the source {s:?} (044-R5)");
         let want = b * total;
+        reference_games.insert(s.clone(), v.len());
         let (f, k) = prefix_fraction(v, want);
         reference.insert(s.clone(), have);
         target.insert(s.clone(), want.round() as u64);
@@ -385,9 +435,11 @@ pub fn share_fractions(games: &[GameSummary], teacher: &[String], sources: &BTre
         teacher_steps,
         target_total_steps: total.round() as u64,
         reference_source_steps: reference,
+        reference_source_games: reference_games,
         target_source_steps: target,
         kept_source_steps: kept,
         fraction_by_source,
+        short: BTreeMap::new(),
     };
     Ok((race, src))
 }
@@ -576,6 +628,22 @@ mod tests {
         let (race, src) = share_fractions(&short, &teacher, &targets, 15, 0.45).unwrap();
         assert_eq!(src.fraction_by_source["distill"], 1.0);
         assert_eq!(src.kept_source_steps["distill"], src.reference_source_steps["distill"]);
+        // 044-R5 ③ top-up (user decision 2026-11-14): the missing steps and the extra games, with the
+        // selected share of the scan (here 60 selected of 75 scanned distill games = 80%).
+        assert!(src.short.is_empty() && serde_json::to_value(&src).unwrap().get("short").is_none(), "only with_shortfalls fills it");
+        let mut scanned = short.clone();
+        scanned.extend(scan(75).into_iter().filter(|g| g.meta.src == "distill").skip(60));
+        let src = src.with_shortfalls(&scanned);
+        let x = &src.short["distill"];
+        let have = src.reference_source_steps["distill"];
+        assert_eq!(x.missing_steps, src.target_source_steps["distill"] - have);
+        assert_eq!((x.selected_games, x.scanned_games), (60, 75));
+        assert!((x.steps_per_game - have as f64 / 60.0).abs() < 1e-9 && (x.selected_share - 0.8).abs() < 1e-12);
+        assert_eq!(x.extra_games, (x.missing_steps as f64 / x.steps_per_game / 0.8).ceil() as u64);
+        // Playing that many more games (same steps per game, 80% selected) reaches the target.
+        assert!(have as f64 + x.extra_games as f64 * 0.8 * x.steps_per_game >= src.target_source_steps["distill"] as f64);
+        let (_, full) = share_fractions(&games, &teacher, &targets, 15, 0.45).unwrap();
+        assert!(full.with_shortfalls(&games).short.is_empty(), "no shortfall when the source covers its target");
         let s = sub(&race, &teacher, Some(src.fraction_by_source.clone()));
         let kept: Vec<_> = short.iter().filter(|g| s.keeps(&g.meta, 15)).cloned().collect();
         let mix = MixShares::with_sources(&count_by_source(&kept), &count_by_source(&short), &teacher, &s.share_sources()).with_shares(0.45, &targets).unwrap();

@@ -61,6 +61,16 @@ game, 021-AC3 / 020-AC2).
 
     python tools/eval/rush_check_plan.py --distill --round 1 --checkpoint checkpoints/<S run>/ckpt-N
     python tools/eval/rush_check_plan.py --distill --round 2 --half --checkpoint checkpoints/m2-distill-d1/ckpt-N
+
+`--distill --round R --extra N [--part K] --checkpoint C` (044-R5 ③ top-up, user decision 2026-11-14): when
+`uranium-train mix-fractions --share` reports the round's distill steps below their share, N more games of
+round d<R> with the round's model and the same 044-R1 composition (every block x N / 600; N a multiple of 20)
+in config/plans/distill_m2_d<R>_x<K>.toml (plan name `distill-m2-d<R>-x<K>`). Seeds: game numbers
+n = 100,000 + (R - 1) * 10,000 + (K - 1) * 1,000 + 1.. (at most 1,000 per part), asserted disjoint from every
+round block n = 1..6,000 (generated or not) and, like a round plan, from every plan under --out-dir (the
+round plans and earlier parts included).
+
+    python tools/eval/rush_check_plan.py --distill --round 1 --extra 120 --checkpoint checkpoints/<S run>/ckpt-N
 """
 
 import argparse
@@ -318,16 +328,41 @@ DISTILL_OPPONENTS = (
 # (R - 1) * DISTILL_ROUND_STRIDE + i, i = 1..games (600 full, 300 half), as the DAgger rounds.
 DISTILL_SEED_KEY = 80000
 DISTILL_ROUND_STRIDE = 600
+# 044-R5 ③ top-up (user decision 2026-11-14): more games of round d<R> when its distill steps miss their 20%
+# share. Part K of round R uses game numbers n = DISTILL_EXTRA_BASE + (R - 1) * DISTILL_EXTRA_ROUND
+# + (K - 1) * DISTILL_EXTRA_PART + i, i = 1..N: far above every round block (n <= R * 600), one block per
+# (round, part). N is a multiple of DISTILL_EXTRA_UNIT so every 044-R1 block keeps its ratio exactly (the
+# smallest block, 30 of 600, is 1/20).
+DISTILL_EXTRA_BASE = 100000
+DISTILL_EXTRA_ROUND = 10000
+DISTILL_EXTRA_PART = 1000
+DISTILL_EXTRA_UNIT = 20
+# Round game numbers 1 .. this x 600 are asserted disjoint from a top-up plan's seeds even before those
+# rounds are generated (044-R1 has at most 2 rounds; 10 leaves room).
+DISTILL_ROUNDS_RESERVED = 10
 
 
-def distill_blocks(half: bool) -> list[tuple[str, str, str, int]]:
-    """(opponent label, p1, map, games) in plan order: each opponent x Fighting Spirit / Circuit Breaker."""
+def distill_blocks(half: bool, extra: int = 0) -> list[tuple[str, str, str, int]]:
+    """(opponent label, p1, map, games) in plan order: each opponent x Fighting Spirit / Circuit Breaker.
+    `extra` > 0 (044-R5 ③ top-up): `extra` games in the 044-R1 ratio (each block x extra / 600)."""
+    if extra:
+        assert extra % DISTILL_EXTRA_UNIT == 0 and 0 < extra <= DISTILL_EXTRA_PART, \
+            f"--extra must be a multiple of {DISTILL_EXTRA_UNIT} in {DISTILL_EXTRA_UNIT}..{DISTILL_EXTRA_PART} (the 044-R1 ratio exactly); round it up"
+        return [(o, p1, m, g * extra // DISTILL_ROUND_STRIDE) for o, p1, g in DISTILL_OPPONENTS for m in MAPS]
     return [(o, p1, m, g // 2 if half else g) for o, p1, g in DISTILL_OPPONENTS for m in MAPS]
 
 
-def distill_seeds(rnd: int, games: int) -> tuple[int, list[int]]:
-    """(first game number n, seeds) of round d<rnd> (044-R1)."""
-    first = (rnd - 1) * DISTILL_ROUND_STRIDE + 1
+def distill_first(rnd: int, extra: int = 0, part: int = 1) -> int:
+    """The first game number n of round d<rnd> (044-R1), or of its top-up part `part` (044-R5 ③)."""
+    if extra:
+        assert part >= 1, "--part starts at 1"
+        return DISTILL_EXTRA_BASE + (rnd - 1) * DISTILL_EXTRA_ROUND + (part - 1) * DISTILL_EXTRA_PART + 1
+    return (rnd - 1) * DISTILL_ROUND_STRIDE + 1
+
+
+def distill_seeds(rnd: int, games: int, extra: int = 0, part: int = 1) -> tuple[int, list[int]]:
+    """(first game number n, seeds) of round d<rnd> (044-R1) or of its top-up part (044-R5 ③)."""
+    first = distill_first(rnd, extra, part)
     return first, [splitmix64(DISTILL_SEED_KEY + k) >> 32 for k in range(first, first + games)]
 
 
@@ -346,28 +381,49 @@ def taken_seeds(out_dir: Path, skip: tuple[Path, ...]) -> set[int]:
     return taken
 
 
-def render_distill(rnd: int, checkpoint: str, name: str, half: bool) -> tuple[str, list[int]]:
-    """The text and seeds of the round d<rnd> distillation plan (044-R1)."""
+def render_distill(rnd: int, checkpoint: str, name: str, half: bool, extra: int = 0, part: int = 1) -> tuple[str, list[int]]:
+    """The text and seeds of the round d<rnd> distillation plan (044-R1), or with `extra` > 0 its top-up part
+    `part` (044-R5 ③, user decision 2026-11-14): `extra` more games of the same composition."""
     assert rnd >= 1, "--round starts at 1"
-    blocks = distill_blocks(half)
+    assert not (half and extra), "--half and --extra are separate plans"
+    blocks = distill_blocks(half, extra)
     n = sum(g for *_, g in blocks)
-    assert n <= DISTILL_ROUND_STRIDE, "a round plan must fit in its seed stride"
-    first, seeds = distill_seeds(rnd, n)
+    assert n <= (DISTILL_EXTRA_PART if extra else DISTILL_ROUND_STRIDE), "a plan must fit in its seed stride"
+    assert not extra or n == extra
+    first, seeds = distill_seeds(rnd, n, extra, part)
     last = first + n - 1
     assert len(set(seeds)) == n, "distill seeds repeat"
+    if extra:
+        # Every round block, generated or not yet, stays disjoint (by number, and asserted by seed value).
+        rounds = {splitmix64(DISTILL_SEED_KEY + k) >> 32 for k in range(1, DISTILL_ROUNDS_RESERVED * DISTILL_ROUND_STRIDE + 1)}
+        assert not rounds & set(seeds), "a top-up seed is a round seed"
     p0 = f'{{ kind = "model", checkpoint = "{checkpoint}", sample = "stochastic" }}'
     t0p, t0t = (sum(g for o, _, _, g in blocks if o == k) for k in ("T0 protoss", "T0 terran"))
     t1 = n - t0p - t0t
     span = "(r - 1) * 600 + 300, the first half of the round's 600" if half else "r * 600"
+    if extra:
+        what = [
+            f"# 044-R5 ③ top-up (user decision 2026-11-14): {n} more self-game distillation games of round d{rnd} (part {part}),",
+            f"# generated by tools/eval/rush_check_plan.py --distill --round {rnd} --extra {n} --part {part} (do not edit by hand):",
+            "# the round's distill steps miss their 20% share, so more games of the same 044-R1 composition are played",
+            "# with the round's model and built / labelled into the same round's distill_pre / distill_m2 folders.",
+        ]
+        seed_note = (f"# seeds (020-R20): splitmix64(80,000 + n) >> 32, n = {first:,}..{last:,} (top-up part k of round r:"
+                     " n = 100,000 + (r - 1) * 10,000 + (k - 1) * 1,000 + 1..; no round seed n = 1..6,000):")
+    else:
+        what = [
+            "# 044-R1 / 041-R31 (AMB-044-3 / AMB-044-4, user decision 2026-11-14): self-game distillation round",
+            f"# d{rnd} games, generated by tools/eval/rush_check_plan.py --distill --round {rnd}{' --half' if half else ''} (do not edit by hand).",
+        ]
+        seed_note = f"# seeds (020-R20): splitmix64(80,000 + n) >> 32, n = {first:,}..{last:,} (round r: n = (r - 1) * 600 + 1..{span}):"
     lines = [
-        "# 044-R1 / 041-R31 (AMB-044-3 / AMB-044-4, user decision 2026-11-14): self-game distillation round",
-        f"# d{rnd} games, generated by tools/eval/rush_check_plan.py --distill --round {rnd}{' --half' if half else ''} (do not edit by hand).",
+        *what,
         f"# The model players[0] (stochastic) against T0 standard Protoss ({t0p}) and Terran ({t0t}) and the T1",
         f"# Protoss (UAlbertaBot P, Stardust) and Terran (UAlbertaBot T, Iron) bots ({t1}) x Fighting Spirit / Circuit",
         f"# Breaker = {n} games{' (half size, round d2)' if half else ''}, races fixed (no Random), 10 min (max_frames 14,400; build",
         "# --src distill --until-frame 14400 --time-limit 14400, 044-R2), replays kept. T1 bots: the 050-R9 T1 rule",
         "# (NDEBUG builds, config/protocol/t1_bots.toml; opponent-crash games are invalid).",
-        f"# seeds (020-R20): splitmix64(80,000 + n) >> 32, n = {first:,}..{last:,} (round r: n = (r - 1) * 600 + 1..{span}):",
+        seed_note,
         "# natural start slots, none of another plan's seeds (botgen, check, dagger, 050-R9 protocol; asserted).",
         f'name = "{name}"',
         "save_replay = true",
@@ -392,11 +448,13 @@ def render_distill(rnd: int, checkpoint: str, name: str, half: bool) -> tuple[st
 
 
 def write_distill(out_dir: Path, rnd: int, checkpoint: str, out: Path | None, half: bool = False,
-                  name: str | None = None) -> Path:
-    """One distillation round plan (044-R1): 600 games, or with `half` (round d2) 300."""
-    own = out_dir / f"distill_m2_d{rnd}.toml"
+                  name: str | None = None, extra: int = 0, part: int = 1) -> Path:
+    """One distillation round plan (044-R1): 600 games, or with `half` (round d2) 300; with `extra` (044-R5 ③
+    top-up) its part `part`, `extra` more games: config/plans/distill_m2_d<R>_x<K>.toml."""
+    stem = f"distill_m2_d{rnd}_x{part}" if extra else f"distill_m2_d{rnd}"
+    own = out_dir / f"{stem}.toml"
     out = out or own
-    text, seeds = render_distill(rnd, checkpoint, name or f"distill-m2-d{rnd}", half)
+    text, seeds = render_distill(rnd, checkpoint, name or stem.replace("_", "-"), half, extra, part)
     taken = taken_seeds(out_dir, (out, own))
     assert not taken & set(seeds), "a seed of this plan is another plan's (botgen, check, dagger or protocol)"
     out.write_bytes(text.encode("utf-8"))
@@ -477,16 +535,21 @@ if __name__ == "__main__":
     ap.add_argument("--distill", action="store_true", help="write a self-game distillation round plan (044-R1; needs --checkpoint)")
     ap.add_argument("--round", type=int, default=1, help="--dagger / --distill: round number (seeds per round disjoint)")
     ap.add_argument("--half", action="store_true", help="--dagger / --distill: half-size round plan, 300 games (11th advisory 2, 044-R1 d2)")
+    ap.add_argument("--extra", type=int, default=0,
+                    help="--distill: a top-up plan of N more games of round --round (044-R5 (3), user decision 2026-11-14; N a multiple of 20)")
+    ap.add_argument("--part", type=int, default=1, help="--distill --extra: top-up part number of the round (its own seed block)")
     ap.add_argument("--memory-log", action="store_true",
                     help="--dagger: the model writes decision logs for the memory_action relabel (041-R28); --distill: always on")
     a = ap.parse_args()
     assert not (a.dagger and a.distill), "--dagger and --distill are separate plans"
     assert a.dagger or a.distill or not a.half, "--half needs --dagger or --distill"
     assert a.dagger or a.distill or not a.memory_log, "--memory-log needs --dagger or --distill"
+    assert a.distill or not (a.extra or a.part != 1), "--extra / --part need --distill"
+    assert a.extra or a.part == 1, "--part needs --extra"
     if a.distill:
         # 044-R1: the model is S (d1) or the d1 model (d2), never a default.
         assert a.checkpoint, "--distill needs --checkpoint (044-R1: d1 = the 041-R29 (4) selection S, d2 = the d1 model)"
-        write_distill(a.out_dir, a.round, a.checkpoint, a.out, a.half, a.name)
+        write_distill(a.out_dir, a.round, a.checkpoint, a.out, a.half, a.name, a.extra, a.part)
         raise SystemExit(0)
     if a.dagger:
         write_dagger(a.out_dir, a.round, a.checkpoint or DAGGER_CHECKPOINT, a.out, a.half, a.memory_log)
