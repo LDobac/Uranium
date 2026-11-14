@@ -797,6 +797,43 @@ p1={kind='oss',name='iron',race='terran'}";
         }
     }
 
+    /// 022-R11 / 022-R12 (AMB-022-1 / AMB-022-7): the 022 teacher's check plan (T0 standard Protoss /
+    /// Terran 2 maps x 32 + 4 T1 bots x 2 maps x 10, 60 min) and botgen plan (x 150 / x 25 = 800, 10
+    /// min) load with the teacher `terran_tp` as players[0] of every game, fixed races, replays kept,
+    /// and seeds that repeat neither each other nor another teacher plan's.
+    #[test]
+    fn teacher_tp_plans_022_r11_r12() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/plans");
+        let teacher = Side::T0 { race: RaceSel::Terran, build: T0Build::TerranTp, name: None };
+        let t0 = |race| Side::T0 { race, build: T0Build::Standard, name: None };
+        let oss = |n: &str, race| Side::Oss { name: n.into(), race };
+        let opponents =
+            vec![t0(RaceSel::Protoss), t0(RaceSel::Terran), oss("ualbertabot", RaceSel::Protoss), oss("stardust", RaceSel::Protoss), oss("ualbertabot", RaceSel::Terran), oss("iron", RaceSel::Terran)];
+        let mut seen = std::collections::HashSet::new();
+        for p in ["teacher_check.toml", "teacher_macro_check.toml", "teacher_t0zerg_check.toml", "teacher_botgen_rush.toml", "teacher_botgen_macro.toml", "teacher_botgen_macro2.toml", "teacher_botgen_macro3.toml"] {
+            seen.extend(expand(&load_plan(&dir.join(p)).unwrap(), "o").iter().map(|j| j.spec.seed.unwrap()));
+        }
+        for (file, t0_games, t1_games, total, max_frames) in [("teacher_tp_check.toml", 32, 10, 208, 86_400), ("teacher_botgen_tp.toml", 150, 25, 800, 14_400)] {
+            let plan = load_plan(&dir.join(file)).unwrap();
+            assert!(plan.save_replay && plan.max_frames == max_frames, "{file}");
+            let blocks: Vec<(Side, MapSel, u32)> = plan.matchups.iter().map(|m| (m.p1.clone(), m.map, m.games)).collect();
+            let want: Vec<(Side, MapSel, u32)> = opponents
+                .iter()
+                .enumerate()
+                .flat_map(|(i, o)| {
+                    let g = if i < 2 { t0_games } else { t1_games };
+                    [(o.clone(), MapSel::FightingSpirit, g), (o.clone(), MapSel::CircuitBreaker, g)]
+                })
+                .collect();
+            assert_eq!(blocks, want, "{file}");
+            assert!(plan.matchups.iter().all(|m| m.p0 == teacher && m.p1_random_ratio == 0.0 && m.p0.model().is_none()), "{file}");
+            let jobs = expand(&plan, "t");
+            assert_eq!(jobs.len(), total, "{file}");
+            assert!(jobs.iter().all(|j| j.t0_builds[0] == T0Build::TerranTp && j.spec.players[0].race == Race::Terran));
+            assert!(jobs.iter().all(|j| seen.insert(j.spec.seed.unwrap())), "{file}: a seed repeats");
+        }
+    }
+
     /// A B1-like plan head (051 Interfaces): trunk or branch settings per 051-R1 ③.
     const BRANCH_HEAD: &str = "save_replay=true\nzero_last_failed=true\nsurrender='off'\nmax_frames=11568\nact_log=true\n";
     const BRANCH_GAMES: &str = "[[matchup]]\nmap='fighting_spirit'\ngames=2\np0={kind='model',checkpoint='checkpoints/m2-s1/ckpt-39096',sample='stochastic'}\np1={kind='t0',race='zerg',build='zerg_rush'}\n[[matchup]]\nmap='circuit_breaker'\ngames=1\np0={kind='model',checkpoint='checkpoints/m2-s1/ckpt-39096',sample='stochastic'}\np1={kind='t0',race='zerg',build='zerg_rush'}\n";
