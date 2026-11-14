@@ -76,14 +76,14 @@ def test_teacher_round_plan_composition_044_r8(tmp_path, half):
 
 
 def test_teacher_round_seeds_disjoint_044_r8(tmp_path):
-    """044-R8: seeds are splitmix64(2,000,000 + n) >> 32 with round stride 600 (a half round the first half of its
+    """044-R8: seeds are splitmix64(3,000,000 + n) >> 32 with round stride 600 (a half round the first half of its
     block), deterministic, disjoint between rounds, from every tracked plan (050-R9 protocol templates included),
     from the DAgger / distillation round blocks and top-ups, the other teacher round blocks and the 022
     development seeds; the 022 plans' reserved set covers the teacher round blocks too."""
     _, t1 = rcp.render_teacher_round(1, CKPT, "x", False)
     _, t2 = rcp.render_teacher_round(2, CKPT, "x", True)
-    assert t1 == [rcp.splitmix64(2_000_000 + n) >> 32 for n in range(1, 601)]
-    assert t2 == [rcp.splitmix64(2_000_000 + n) >> 32 for n in range(601, 901)]
+    assert t1 == [rcp.splitmix64(3_000_000 + n) >> 32 for n in range(1, 601)]
+    assert t2 == [rcp.splitmix64(3_000_000 + n) >> 32 for n in range(601, 901)]
     assert len(set(t1)) == 600 and len(set(t2)) == 300 and not set(t1) & set(t2)
     tracked = set()
     for p in PLANS.rglob("*.toml"):
@@ -95,11 +95,18 @@ def test_teacher_round_seeds_disjoint_044_r8(tmp_path):
         others = rcp.reserved_seeds(skip_teacher_round=r)
         assert not others & set(s)
         assert set(s) <= rcp.reserved_seeds(), "the full reserved set holds every teacher round block"
+    # Every allowed round 1..10 at full size can be generated: no seed in common with the other reserved blocks
+    # (DAgger, distillation rounds and top-ups, other teacher rounds, development seeds) or a tracked plan.
+    for r in range(1, rcp.RESERVED_ROUNDS + 1):
+        _, s = rcp.render_teacher_round(r, CKPT, "x", False)
+        assert len(set(s)) == 600, r
+        assert not rcp.reserved_seeds(skip_teacher_round=r) & set(s), f"round {r}"
+        assert not rcp.taken_seeds(PLANS, tuple(PLANS.rglob("dagger_m2_t*.toml"))) & set(s), f"round {r}"
     others = rcp.reserved_seeds(skip_teacher_round=1)
     assert set(t2) <= others and set(range(77001, 77265)) <= others
     assert {rcp.splitmix64(70000 + n) >> 32 for n in (1, 6000)} <= others
     assert {rcp.splitmix64(80000 + n) >> 32 for n in (1, 6000, 100_001, 200_000)} <= others
-    assert {rcp.splitmix64(2_000_000 + n) >> 32 for n in (6000,)} <= others and not {rcp.splitmix64(2_000_000 + 6001) >> 32} & rcp.reserved_seeds()
+    assert {rcp.splitmix64(3_000_000 + n) >> 32 for n in (6000,)} <= others and not {rcp.splitmix64(3_000_000 + 6001) >> 32} & rcp.reserved_seeds()
     assert rcp.render_teacher_round(1, CKPT, "x", False) == rcp.render_teacher_round(1, CKPT, "x", False)
     for bad in (0, 11):
         with pytest.raises(AssertionError, match="--round"):

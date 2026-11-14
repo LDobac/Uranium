@@ -93,7 +93,7 @@ self games that the 022 teacher's shadow relabels (`uranium-replay build --src d
 <dir>/games.jsonl`, shards dagger_m2/t<R>): the model C (the round's start model; no default) stochastic with the
 044-R1 composition of a round (as --distill: 600 games, `--half` 300), races fixed (no Random), 10 min, replays kept,
 decision logs always on (`memory_log`, 041-R28; `--memory-log` is accepted and changes nothing), the last failed
-command shown (`zero_last_failed = false`, 041-R22 DAgger games). Seeds: splitmix64(2,000,000 + n) >> 32 with a round
+command shown (`zero_last_failed = false`, 041-R22 DAgger games). Seeds: splitmix64(3,000,000 + n) >> 32 with a round
 stride of 600 (n = (R - 1) * 600 + 1..), asserted disjoint from every plan under --out-dir and its subfolders, the
 botgen / check seeds, the DAgger / distillation round blocks and top-ups and the other teacher round blocks not
 generated yet (rounds 1..10) and the 022 teacher's development seeds; the 022 plans keep clear of the teacher round
@@ -653,7 +653,9 @@ def write_tp(out_dir: Path, check: bool, out: Path | None = None) -> Path:
 # Hash key of their seeds, far from every other key's game numbers (botgen 60,000 + n, dagger 70,000 + n,
 # distill 80,000 + n with n <= 200,000, 022 teacher 1,000,000 + n with n <= 1,800): game number n of teacher
 # round t<R> is (R - 1) * TEACHER_ROUND_STRIDE + i, i = 1..games (600 full, 300 half), as the DAgger rounds.
-TEACHER_ROUND_SEED_KEY = 2_000_000
+# (2,000,000 is not used: its round-7 block shares a seed with a distillation top-up block; 3,000,000 has no
+# seed in common with any reserved block, tracked plan or development seed for rounds 1..10, asserted by the tests.)
+TEACHER_ROUND_SEED_KEY = 3_000_000
 TEACHER_ROUND_STRIDE = 600
 
 
@@ -688,7 +690,7 @@ def render_teacher_round(rnd: int, checkpoint: str, name: str, half: bool) -> tu
         f"# Protoss (UAlbertaBot P, Stardust) and Terran (UAlbertaBot T, Iron) bots ({t1}) x Fighting Spirit / Circuit",
         f"# Breaker = {n} games{' (half size)' if half else ''}, races fixed (no Random), 10 min (max_frames 14,400), replays kept. T1 bots:",
         "# the 050-R9 T1 rule (NDEBUG builds, config/protocol/t1_bots.toml; opponent-crash games are invalid).",
-        f"# seeds (020-R20): splitmix64(2,000,000 + n) >> 32, n = {first:,}..{last:,} (round r: n = (r - 1) * 600 + 1..{span}):",
+        f"# seeds (020-R20): splitmix64(3,000,000 + n) >> 32, n = {first:,}..{last:,} (round r: n = (r - 1) * 600 + 1..{span}):",
         "# natural start slots, none of another plan's seeds (botgen, check, dagger, distill, 022 teacher, 050-R9 protocol,",
         "# the DAgger / distillation / teacher round blocks not generated yet, the 022 development seeds; asserted).",
         f'name = "{name}"',
@@ -826,7 +828,8 @@ if __name__ == "__main__":
         raise SystemExit(0)
     if a.teacher_round:
         # 044-R8: the round's model, never a default; the 044-R1 composition (--half the d2 size), no top-up.
-        assert not (a.teacher or a.botgen or a.dagger or a.distill or a.extra or a.part is not None or a.first_game is not None),             "--teacher-round takes only --round / --half / --memory-log / --checkpoint / --name / --out / --out-dir"
+        assert not (a.teacher or a.botgen or a.dagger or a.distill or a.extra or a.part is not None or a.first_game is not None), (
+            "--teacher-round takes only --round / --half / --memory-log / --checkpoint / --name / --out / --out-dir")
         assert a.checkpoint, "--teacher-round needs --checkpoint (044-R8: the model of the round)"
         write_teacher_round(a.out_dir, a.round, a.checkpoint, a.out, a.half, a.name)
         raise SystemExit(0)
