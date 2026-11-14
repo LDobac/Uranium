@@ -24,8 +24,10 @@
 #   the fixed-ladder mechanism with Random entries, r_value_stages, equal T1 shares within a race
 #   and the UAlbertaBot-only Random T1 are main interim decisions awaiting user confirmation.
 # Run (044-R11): 1 seed, `python -m uranium rl --run m2-rl-fix-<n> --config config/rl_m2_race.toml
-#   --init <D> --bc <shared>/checkpoints/m2-s2e2/ckpt-11387 --algo vtrace --max-agent-steps
-#   6000000` (D = the 044-R6 passing distillation model; none passes: ask the user). Checks with
+#   --bc <shared>/checkpoints/<D> --algo vtrace --max-agent-steps 6000000`, no --init (D = t1 or d1 by
+#   the 044-R7 rule; 044-R11 as amended 2026-11-15, user-delegated: --init takes RL checkpoints only, the
+#   C1-fixed run trains Main only so the Exploiters stay --bc copies, and every [kl.reference] race key is
+#   set, so Main trains exactly as with --init D and --bc m2-s2e2). Checks with
 #   the 050-R9 plan on the first checkpoint at or after 1.5M, 3.0M, 4.5M and 6.0M agent steps (T0
 #   standard terran / protoss 32 each, TvZ 32, rush 128 + macro 40, T1 300 at the end). Stop (042-R10
 #   clean stop, then report to the user): two checks in a row with T0 terran or protoss wins >= 6
