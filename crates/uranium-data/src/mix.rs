@@ -348,10 +348,14 @@ pub struct SourceFractions {
     pub target_source_steps: BTreeMap<String, u64>,
     pub kept_source_steps: BTreeMap<String, u64>,
     pub fraction_by_source: BTreeMap<String, f64>,
-    /// 044-R5 ③ top-up (user decision 2026-11-14): the sources whose selection has fewer steps
-    /// than their target, set by [`Self::with_shortfalls`]; left out of the JSON when none is short.
+    /// 044-R5 ③ top-up (user decision 2026-11-14): the sources whose share is below its ± 3%p band
+    /// and whose selection has fewer steps than the target: play this many more games. Set by
+    /// [`Self::with_shortfalls`]; left out of the JSON when none is short.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub short: BTreeMap<String, Shortfall>,
+    /// The same for a source below its target but within the band (informational: no top-up).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub below_target: BTreeMap<String, Shortfall>,
 }
 
 /// 044-R5 ③ top-up (user decision 2026-11-14): how far a source (`distill`) is below its target
@@ -375,22 +379,32 @@ pub struct Shortfall {
 }
 
 impl SourceFractions {
-    /// [`Self::short`] for the sources whose selection misses its target; `all`: every game of the
+    /// [`Self::short`] for the sources whose share check failed below its band (`mix`: the epoch's
+    /// judged shares, [`MixShares::with_shares`]; 044-R5 ③: only then are games added) and whose
+    /// selection has fewer steps than the target; [`Self::below_target`] for a source with fewer
+    /// steps than the target that is still within ± 3%p (informational). `all`: every game of the
     /// scan (all splits), for the selected share.
-    pub fn with_shortfalls(mut self, all: &[GameSummary]) -> Self {
+    pub fn with_shortfalls(mut self, all: &[GameSummary], mix: &MixShares) -> Self {
         self.short.clear();
+        self.below_target.clear();
         for (s, &target) in &self.target_source_steps {
             let have = self.reference_source_steps[s];
             if have >= target {
                 continue;
             }
+            let failed_low = mix.sources.get(s).is_some_and(|c| c.ok == Some(false) && c.target.is_some_and(|t| c.share < t));
             let selected_games = self.reference_source_games[s];
             let scanned_games = all.iter().filter(|g| g.meta.src == *s && g.steps > 0).count().max(selected_games);
             let steps_per_game = have as f64 / selected_games as f64;
             let selected_share = selected_games as f64 / scanned_games as f64;
             let missing_steps = target - have;
             let extra_games = (missing_steps as f64 / steps_per_game / selected_share).ceil() as u64;
-            self.short.insert(s.clone(), Shortfall { missing_steps, steps_per_game, selected_games, scanned_games, selected_share, extra_games });
+            let x = Shortfall { missing_steps, steps_per_game, selected_games, scanned_games, selected_share, extra_games };
+            if failed_low {
+                self.short.insert(s.clone(), x);
+            } else {
+                self.below_target.insert(s.clone(), x);
+            }
         }
         self
     }
@@ -440,6 +454,7 @@ pub fn share_fractions(games: &[GameSummary], teacher: &[String], sources: &BTre
         kept_source_steps: kept,
         fraction_by_source,
         short: BTreeMap::new(),
+        below_target: BTreeMap::new(),
     };
     Ok((race, src))
 }
@@ -631,9 +646,22 @@ mod tests {
         // 044-R5 ③ top-up (user decision 2026-11-14): the missing steps and the extra games, with the
         // selected share of the scan (here 60 selected of 75 scanned distill games = 80%).
         assert!(src.short.is_empty() && serde_json::to_value(&src).unwrap().get("short").is_none(), "only with_shortfalls fills it");
+        let s = sub(&race, &teacher, Some(src.fraction_by_source.clone()));
+        let kept: Vec<_> = short.iter().filter(|g| s.keeps(&g.meta, 15)).cloned().collect();
+        let mix = MixShares::with_sources(&count_by_source(&kept), &count_by_source(&short), &teacher, &s.share_sources()).with_shares(0.45, &targets).unwrap();
+        assert!(!mix.all_ok() && mix.sources["distill"].ok == Some(false), "{mix:?}");
         let mut scanned = short.clone();
         scanned.extend(scan(75).into_iter().filter(|g| g.meta.src == "distill").skip(60));
-        let src = src.with_shortfalls(&scanned);
+        // Below the target but inside the ± 3%p band: informational only, no top-up (044-R5 ③).
+        let mut in_band = mix.clone();
+        in_band.sources.get_mut("distill").unwrap().share = 0.185;
+        in_band.sources.get_mut("distill").unwrap().ok = Some(true);
+        let info = src.clone().with_shortfalls(&scanned, &in_band);
+        assert!(info.short.is_empty() && info.below_target.contains_key("distill"));
+        assert!(serde_json::to_value(&info).unwrap().get("short").is_none(), "U11 keys on `short`");
+        let src = src.with_shortfalls(&scanned, &mix);
+        assert!(src.below_target.is_empty());
+        assert_eq!(src.short["distill"], info.below_target["distill"], "the same numbers, only the key differs");
         let x = &src.short["distill"];
         let have = src.reference_source_steps["distill"];
         assert_eq!(x.missing_steps, src.target_source_steps["distill"] - have);
@@ -643,11 +671,8 @@ mod tests {
         // Playing that many more games (same steps per game, 80% selected) reaches the target.
         assert!(have as f64 + x.extra_games as f64 * 0.8 * x.steps_per_game >= src.target_source_steps["distill"] as f64);
         let (_, full) = share_fractions(&games, &teacher, &targets, 15, 0.45).unwrap();
-        assert!(full.with_shortfalls(&games).short.is_empty(), "no shortfall when the source covers its target");
-        let s = sub(&race, &teacher, Some(src.fraction_by_source.clone()));
-        let kept: Vec<_> = short.iter().filter(|g| s.keeps(&g.meta, 15)).cloned().collect();
-        let mix = MixShares::with_sources(&count_by_source(&kept), &count_by_source(&short), &teacher, &s.share_sources()).with_shares(0.45, &targets).unwrap();
-        assert!(!mix.all_ok() && mix.sources["distill"].ok == Some(false), "{mix:?}");
+        let full = full.with_shortfalls(&games, &mix);
+        assert!(full.short.is_empty() && full.below_target.is_empty(), "no shortfall when the source covers its target");
         // A distill fraction 3x too wide fails distill (and so the teacher share).
         let (race, src) = share_fractions(&games, &teacher, &targets, 15, 0.45).unwrap();
         let wide = sub(&race, &teacher, Some([("distill".to_string(), (src.fraction_by_source["distill"] * 3.0).min(1.0))].into()));

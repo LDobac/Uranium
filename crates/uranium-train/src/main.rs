@@ -448,9 +448,7 @@ fn main() -> Result<()> {
                     });
                     // The values the config file will get must load (fractions in (0, 1]).
                     with.data.subsample.as_ref().expect("set above").check()?;
-                    // 044-R5 ③ top-up (user decision 2026-11-14): a source below its target gets the
-                    // missing steps and an estimate of the games to add (rush_check_plan.py --extra).
-                    (f, Some(sf.with_shortfalls(&all)))
+                    (f, Some(sf))
                 }
             };
             let t = uranium_train::bc::epoch_table_groups(&groups, &with)?;
@@ -460,13 +458,16 @@ fn main() -> Result<()> {
             if let Some(sh) = &share {
                 // 044-R5 ③: teacher, each source and the human rest, each ± 3%p; human races ± 3%p.
                 let mix = mix.with_shares(sh.teacher, &sh.sources)?;
+                // 044-R5 ③ top-up (user decision 2026-11-14): a source whose share fails below its band
+                // gets the missing steps and an estimate of the games to add (rush_check_plan.py --extra).
+                let source_fractions = source_fractions.map(|sf| sf.with_shortfalls(&all, &mix));
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({ "config": config, "fractions": f, "source_fractions": source_fractions, "s2": t.s2, "s2_warmup": warmup, "s2_mix": mix }))?
                 );
                 for (s, x) in source_fractions.iter().flat_map(|sf| sf.short.iter()) {
                     eprintln!(
-                        "[mix-fractions] {s}: {} steps below its target ({:.0} steps per counted game, {:.1}% of its games in the selection): about {} more games (044-R5 ③ top-up; distill: rush_check_plan.py --distill --round R --extra N, N rounded up to a multiple of 20, plus the build's filtered share)",
+                        "[mix-fractions] {s}: below its share band, {} steps below its target ({:.0} steps per counted game, {:.1}% of its games in the selection): about {} more games (044-R5 ③ top-up; distill: rush_check_plan.py --distill --round R --extra N --part K, N rounded up to a multiple of 20, plus the build's filtered share)",
                         x.missing_steps,
                         x.steps_per_game,
                         x.selected_share * 100.0,
