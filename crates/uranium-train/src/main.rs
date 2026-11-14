@@ -353,6 +353,10 @@ fn teacher_race_report(
             tr.extra_botgen_tp_games.map_or("-".to_string(), |n| n.to_string())
         );
     }
+    // Review 2026-11-14: the simulated shares after the top-up, a multi-part top-up, a short Zerg share.
+    for w in &tr.warnings {
+        eprintln!("[mix-fractions] WARNING: {w}");
+    }
     Ok((mix, Some(tr)))
 }
 

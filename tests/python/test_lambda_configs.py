@@ -316,3 +316,44 @@ def test_m2_distill_d1_config_044_r5(tmp_path):
     assert {k: x for k, x in cfg["data"].items() if k not in dskip} == {k: x for k, x in ref["data"].items() if k not in dskip}
     assert cfg["lr"] * cfg["s2_lr_scale"] == pytest.approx(3e-5) and cfg["min_lr"] * cfg["s2_lr_scale"] == pytest.approx(3e-7)
     assert fp != ref_fp
+
+
+def test_m2_teacher_t1_config_044_r8(tmp_path):
+    """044-R8 ③ (user decision 2026-11-14): config/bc_m2_teacher_t1.toml is config/bc_m2_dagger_r2.toml (041-R22 ③ one
+    epoch, learning rate 3e-5 / 3e-7, model 2 tables, keep_sources botgen + dagger, chain_start_sources ["botgen"])
+    with no distillation source (no fraction_by_source), the next data seed (16 after d1, 17 after d2) and its own
+    per-race human fractions and [steps] (`mix-fractions --teacher-share 0.65 --teacher-races Z=0.5,P=0.3,T=0.2`).
+    Until the count fills them, the placeholder zero fraction_by_race makes the loader refuse the file."""
+    from uranium.bc.run import model_variant
+
+    root = Path(__file__).resolve().parents[2] / "config"
+    p = root / "bc_m2_teacher_t1.toml"
+    new, prev = (_flat(_toml(root / f)) for f in (p.name, "bc_m2_dagger_r2.toml"))
+    assert new.keys() == prev.keys(), "no distill share: no fraction_by_source"
+    assert {k for k in prev if new[k] != prev[k]} <= {"data.seed"} | _COUNTED
+    assert new["data.seed"] in (16, 17) and new["data.subsample.keep_sources"] == ["botgen", "dagger"]
+    assert new["data.chain_start_sources"] == ["botgen"]
+    assert vars(model_variant(str(p))) == _ALL_ON
+    text = p.read_text(encoding="utf-8")
+    assert "--teacher-share 0.65 --teacher-races Z=0.5,P=0.3,T=0.2" in text
+    fr = [new[k] for k in sorted(_RACE_FRACTIONS)]
+    if all(f == 0 for f in fr):
+        assert (new["steps.s2"], new["steps.s2_warmup"]) == (0, 0)
+        with pytest.raises(Exception, match="fraction_by_race"):
+            _bc(p, "s2")
+        table = "[data.subsample.fraction_by_race]\nT = 0.0\nP = 0.0\nZ = 0.0\n"
+        assert text.count(table) == 1
+        p = tmp_path / "count.toml"
+        p.write_text(text.replace(table, ""), encoding="utf-8")
+    else:
+        assert all(0 < f <= 1 for f in fr) and new["steps.s2"] > 0 and new["steps.s2_warmup"] == int(new["steps.s2"] * 0.05 + 0.5)
+        assert "PLACEHOLDER" not in text
+    cfg, fp = _bc(p, "s2")
+    ref, ref_fp = _bc(root / "bc_m2_dagger_r2.toml", "s2")
+    assert "fraction_by_source" not in cfg["data"]["subsample"]
+    skip = ("data", "steps", "total_steps", "warmup_steps")
+    assert {k: x for k, x in cfg.items() if k not in skip} == {k: x for k, x in ref.items() if k not in skip}
+    dskip = ("seed", "subsample")
+    assert {k: x for k, x in cfg["data"].items() if k not in dskip} == {k: x for k, x in ref["data"].items() if k not in dskip}
+    assert cfg["lr"] * cfg["s2_lr_scale"] == pytest.approx(3e-5) and cfg["min_lr"] * cfg["s2_lr_scale"] == pytest.approx(3e-7)
+    assert fp != ref_fp

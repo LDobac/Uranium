@@ -8,6 +8,10 @@ the user and the next step is the user's (044-R6, as 050-R10).
   d2    = (round d1 only) not passed, but T0 Protoss wins (t0_tp) >= S's + 4 and TvZ kept
   stop  = TvZ not kept, or T0 Protoss wins < S's + 4; and a d2 that does not pass (d2 is the last round)
 
+The teacher round t1 (044-R8, user decision 2026-11-14: one round after the distillation rounds, judged by the 044-R6
+rules) is `--round t1`: pass or stop only, no "d2" (t1 is the last round; 메인 임시 결정 2026-11-14, 사용자 확인 대기).
+Its jobs are of lineage point t1.
+
 Only these three verdicts (user decision 2026-11-14): a gate check that is MISSING or a cell without a value (games
 without a row, no val output) counts as failed. To keep the never-overwritten verdict file right, the tool refuses to
 run (no verdict, no file) while an input job is unfinished (no DONE) or has undecodable result / ledger lines. The
@@ -47,7 +51,8 @@ TVZ_WINS = 16          # TvZ 32 >= 16 wins (041-R29 ④ qualification)
 LATE_HELD = 24         # late (missed-first-target) held_8m >= 24 / 64
 HELD_SUM_SLACK = 6     # held sum (early + late held_8m) >= S's - 6
 D2_PROTOSS_GAIN = 4    # d2: T0 Protoss wins >= S's + 4
-ROUNDS = ("d1", "d2")
+# 044-R8: t1 = the teacher round (pass or stop only; 메인 임시 결정 2026-11-14, 사용자 확인 대기).
+ROUNDS = ("d1", "d2", "t1")
 RUSH_PLANS = ("rush_check",)
 TVZ_PLANS = ("tvz_bc", "tvz_rl")
 PASS, D2, STOP = "pass", "d2", "stop"
@@ -118,7 +123,7 @@ def decide(rnd: str, gate_overall: str | None, tvz: dict | None, rush: dict | No
     """The 044-R6 verdict and its conditions. A gate that is not PASS (FAIL or MISSING) and a count of a job with
     games missing count as failed (user decision 2026-11-14)."""
     if rnd not in ROUNDS:
-        raise SystemExit(f"044-R6: round {rnd!r} is not one of {', '.join(ROUNDS)} (d2 is the last round)")
+        raise SystemExit(f"044-R6: round {rnd!r} is not one of {', '.join(ROUNDS)} (d2 is the last round; t1 the teacher round, 044-R8)")
     ok = lambda c: c is not None and c["complete"]  # noqa: E731
     held = rush["early"] + rush["late"] if ok(rush) else None
     s_held = s_rush["early"] + s_rush["late"] if ok(s_rush) else None

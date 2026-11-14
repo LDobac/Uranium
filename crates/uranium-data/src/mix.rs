@@ -426,6 +426,25 @@ pub const TP_BOTGEN_RACE_SHARE: [(&str, f64); 2] = [("P", 0.5), ("T", 0.5)];
 /// A `--botgen-tp --extra N` top-up keeps the 022-R12 ratio exactly when N is a multiple of this
 /// (the smallest block, 25 of 800, is 1/32).
 pub const TP_BOTGEN_EXTRA_UNIT: u64 = 32;
+/// The largest `--botgen-tp --extra N` of one `--part` (its seed block of 1,000 game numbers rounded
+/// down to the unit, `rush_check_plan.py` TP_EXTRA_MAX); a larger top-up is several parts.
+pub const TP_BOTGEN_EXTRA_MAX: u64 = 992;
+
+/// 044-R8 top-up check: the teacher races after playing the recommended `--botgen-tp --extra` games
+/// (half against each of Protoss / Terran, every block of the 022-R12 composition), at the counted
+/// games' steps per game and selected share; the Zerg steps do not change.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct TopUpCheck {
+    /// The recommended games (`extra_botgen_tp_games`) and how they split into `--part` runs of at
+    /// most [`TP_BOTGEN_EXTRA_MAX`] games each.
+    pub games: u64,
+    pub parts: Vec<u64>,
+    /// Expected steps and share of each race inside the teacher + dagger steps after the top-up.
+    pub steps: BTreeMap<String, u64>,
+    pub share: BTreeMap<String, f64>,
+    /// Every race within its target ± 3%p after the top-up.
+    pub ok: bool,
+}
 
 /// 044-R8 / 022-R12 (AMB-022-7, user decision 2026-11-14): the enemy races inside the teacher +
 /// dagger steps of a teacher round. Every teacher game is kept; when a race's share fails below
@@ -458,6 +477,14 @@ pub struct TeacherRaces {
     /// is short (a short Zerg race is reported in `short` only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extra_botgen_tp_games: Option<u64>,
+    /// The races simulated after that top-up (absent without one).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_top_up: Option<TopUpCheck>,
+    /// Plain-language warnings (also on stderr): the top-up does not reach the bands (the 1 : 1
+    /// Protoss / Terran composition cannot fix every race, a spec question pending), it needs more
+    /// than one `--part` run, or the Zerg share is short (Protoss / Terran top-ups cannot raise it).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 impl TeacherRaces {
@@ -485,6 +512,26 @@ impl TeacherRaces {
                 *steps.get_mut(r).expect("checked above") += n;
             }
         }
+        // Every teacher game is kept, so the selection's teacher steps are the epoch's (`mix`).
+        if !mix.teacher_races.is_empty() {
+            for (r, n) in &steps {
+                debug_assert_eq!(mix.teacher_races.get(r).map_or(0, |c| c.steps), *n, "teacher race {r}: selection vs epoch steps");
+            }
+        }
+        // Steps per game and selected share of a race's games: its `botgen` games (for Protoss / Terran
+        // the 022 teacher's; an older botgen game against that race would be counted too, though the
+        // 021-R8 teacher's are all against Zerg), else every teacher game of it. (games selected,
+        // games scanned, steps per game); None without any.
+        let rate = |r: &str| -> Option<(usize, usize, f64)> {
+            let of_race = |g: &&GameSummary, botgen_only: bool| is_teacher(g) && race_key(&g.meta.matchup) == r && (!botgen_only || g.meta.src == "botgen");
+            let botgen_only = selection.iter().any(|g| of_race(&g, true));
+            let sel: Vec<&GameSummary> = selection.iter().filter(|g| of_race(g, botgen_only)).collect();
+            if sel.is_empty() {
+                return None;
+            }
+            let scanned = all.iter().filter(|g| of_race(g, botgen_only)).count().max(sel.len());
+            Some((sel.len(), scanned, sel.iter().map(|g| g.steps as u64).sum::<u64>() as f64 / sel.len() as f64))
+        };
         // The anchor: the race with the most steps for its share (its steps fix the others' targets).
         let scale = races.iter().map(|(r, &x)| steps[r] as f64 / x).fold(0.0, f64::max);
         ensure!(scale > 0.0, "the selection has no teacher steps (044-R8)");
@@ -496,19 +543,14 @@ impl TeacherRaces {
             if have >= target {
                 continue;
             }
-            // Steps per game and selected share of the race's botgen games (else every teacher game of it).
-            let of_race = |g: &&GameSummary, botgen_only: bool| is_teacher(g) && race_key(&g.meta.matchup) == *r && (!botgen_only || g.meta.src == "botgen");
-            let botgen_only = selection.iter().any(|g| of_race(&g, true));
-            let sel: Vec<&GameSummary> = selection.iter().filter(|g| of_race(g, botgen_only)).collect();
-            let scanned = all.iter().filter(|g| of_race(g, botgen_only)).count().max(sel.len());
             let missing_steps = target - have;
-            let x = if sel.is_empty() {
-                Shortfall { missing_steps, steps_per_game: 0.0, selected_games: 0, scanned_games: scanned, selected_share: 0.0, extra_games: 0 }
-            } else {
-                let steps_per_game = sel.iter().map(|g| g.steps as u64).sum::<u64>() as f64 / sel.len() as f64;
-                let selected_share = sel.len() as f64 / scanned as f64;
-                let extra_games = (missing_steps as f64 / steps_per_game / selected_share).ceil() as u64;
-                Shortfall { missing_steps, steps_per_game, selected_games: sel.len(), scanned_games: scanned, selected_share, extra_games }
+            let x = match rate(r.as_str()) {
+                None => Shortfall { missing_steps, steps_per_game: 0.0, selected_games: 0, scanned_games: 0, selected_share: 0.0, extra_games: 0 },
+                Some((selected_games, scanned_games, steps_per_game)) => {
+                    let selected_share = selected_games as f64 / scanned_games as f64;
+                    let extra_games = (missing_steps as f64 / steps_per_game / selected_share).ceil() as u64;
+                    Shortfall { missing_steps, steps_per_game, selected_games, scanned_games, selected_share, extra_games }
+                }
             };
             let failed_low = mix.teacher_races.get(r).is_some_and(|c| c.ok == Some(false) && c.target.is_some_and(|t| c.share < t));
             if failed_low {
@@ -522,7 +564,44 @@ impl TeacherRaces {
             .filter_map(|(r, share)| short.get(*r).map(|x: &Shortfall| (x.extra_games as f64 / share).ceil() as u64))
             .max()
             .map(|n| n.div_ceil(TP_BOTGEN_EXTRA_UNIT) * TP_BOTGEN_EXTRA_UNIT);
-        Ok(Self { target_share: races.clone(), steps, steps_by_source, anchor, target_steps, short, below_target, extra_botgen_tp_games })
+        let mut warnings = Vec::new();
+        let after_top_up = extra_botgen_tp_games.map(|n| {
+            let mut after = steps.clone();
+            for (r, share) in TP_BOTGEN_RACE_SHARE {
+                if let (Some(v), Some((sel, scanned, spg))) = (after.get_mut(r), rate(r)) {
+                    *v += (n as f64 * share * sel as f64 / scanned as f64 * spg).round() as u64;
+                }
+            }
+            let total: u64 = after.values().sum();
+            let share: BTreeMap<String, f64> = after.iter().map(|(r, &v)| (r.clone(), v as f64 / total as f64)).collect();
+            let ok = races.iter().all(|(r, &x)| teacher_share_ok(share[r], x));
+            let parts = (0..n.div_ceil(TP_BOTGEN_EXTRA_MAX)).map(|k| (n - k * TP_BOTGEN_EXTRA_MAX).min(TP_BOTGEN_EXTRA_MAX)).collect();
+            TopUpCheck { games: n, parts, steps: after, share, ok }
+        });
+        if let Some(t) = &after_top_up {
+            if !t.ok {
+                let shares: Vec<String> = t.share.iter().map(|(r, x)| format!("{r} {:.1}% (target {:.0}%)", x * 100.0, races[r] * 100.0)).collect();
+                warnings.push(format!(
+                    "after the recommended top-up of {} 022 botgen games (half against Protoss, half against Terran) the races would be {}: still outside +-3%p. The 1 : 1 Protoss / Terran composition cannot reach the 30 : 20 targets here (spec question pending); do not play it blindly (044-R8)",
+                    t.games,
+                    shares.join(", ")
+                ));
+            }
+            if t.parts.len() > 1 {
+                let runs: Vec<String> = t.parts.iter().enumerate().map(|(k, g)| format!("--extra {g} --part K{}", if k == 0 { String::new() } else { format!("+{k}") })).collect();
+                warnings.push(format!(
+                    "{} games exceed one --part ({} at most): play them as {} runs of rush_check_plan.py --botgen-tp ({}; K = the next unused part)",
+                    t.games,
+                    TP_BOTGEN_EXTRA_MAX,
+                    t.parts.len(),
+                    runs.join(", ")
+                ));
+            }
+        }
+        if short.contains_key("Z") {
+            warnings.push("the Zerg share is short: Protoss / Terran top-ups (022 botgen) cannot raise it (044-R8)".to_string());
+        }
+        Ok(Self { target_share: races.clone(), steps, steps_by_source, anchor, target_steps, short, below_target, extra_botgen_tp_games, after_top_up, warnings })
     }
 }
 
@@ -881,7 +960,7 @@ mod tests {
         assert!(tr.short.is_empty() && tr.extra_botgen_tp_games.is_none(), "{tr:?}");
         assert_eq!(mix.teacher_steps, tr.steps.values().sum::<u64>(), "every teacher game kept");
         let json = serde_json::to_value(&tr).unwrap();
-        assert!(json.get("short").is_none() && json.get("extra_botgen_tp_games").is_none());
+        assert!(json.get("short").is_none() && json.get("extra_botgen_tp_games").is_none() && json.get("after_top_up").is_none() && json.get("warnings").is_none());
         // Too few Protoss / Terran games: both short, Zerg kept whole (the anchor), the epoch the same teacher steps.
         let few = scan_tp(40, 30);
         let (mix, tr) = teacher_round(&few, &races);
@@ -904,12 +983,48 @@ mod tests {
         for r in ["P", "T"] {
             assert!(tr.steps[r] as f64 + n as f64 * 0.5 * tr.short[r].steps_per_game >= tr.target_steps[r] as f64);
         }
+        // The simulated shares after that top-up: Zerg unchanged, Protoss / Terran grown by half the games each.
+        let t = tr.after_top_up.as_ref().unwrap();
+        assert_eq!((t.games, t.steps["Z"]), (n, tr.steps["Z"]));
+        assert_eq!(t.parts.iter().sum::<u64>(), n);
+        assert!(t.parts.iter().all(|&g| g <= TP_BOTGEN_EXTRA_MAX && g % TP_BOTGEN_EXTRA_UNIT == 0));
+        for r in ["P", "T"] {
+            let want = tr.steps[r] as f64 + n as f64 * 0.5 * tr.short[r].steps_per_game;
+            assert!((t.steps[r] as f64 - want).abs() <= 1.0, "{r}");
+        }
+        assert!((t.share.values().sum::<f64>() - 1.0).abs() < 1e-9);
+        assert_eq!(t.ok, t.share.iter().all(|(r, x)| (x - races[r]).abs() <= 0.03 + 1e-12));
+        assert_eq!(tr.warnings.iter().any(|w| w.contains("still outside")), !t.ok);
+        assert_eq!(tr.warnings.iter().any(|w| w.contains("exceed one --part")), t.parts.len() > 1);
+        // P : T far from 3 : 2 (Protoss short, Terran near its share): the 1 : 1 top-up overshoots Terran, so
+        // the simulation warns (review 2026-11-14: Z 100k, P 45k, T 40k -> T about 25.6% after the top-up).
+        let skew = scan_tp(60, 70);
+        let (_, tr) = teacher_round(&skew, &races);
+        let t = tr.after_top_up.as_ref().expect("Protoss short");
+        assert!(!t.ok && tr.warnings.iter().any(|w| w.contains("still outside") && w.contains("spec question")), "{tr:?}");
+        assert!(serde_json::to_value(&tr).unwrap()["warnings"].is_array());
+        // A short Zerg share (Protoss anchor): reported, with the note that Protoss / Terran top-ups cannot fix it.
+        let zshort = scan_tp(1_000, 200);
+        let (mix, tr) = teacher_round(&zshort, &races);
+        assert!(mix.teacher_races["Z"].ok == Some(false) && tr.short.contains_key("Z") && tr.anchor == ["P"]);
+        assert!(tr.warnings.iter().any(|w| w.contains("Zerg share is short")));
+        // A top-up above one part: split into --part runs of at most 992 games.
+        let mut tiny = scan(0);
+        for i in 0..2 {
+            tiny.push(summary(40_000 + i, "botgen", "TvP", 0, 50));
+            tiny.push(summary(41_000 + i, "botgen", "TvT", 0, 50));
+        }
+        let (_, tr) = teacher_round(&tiny, &races);
+        let t = tr.after_top_up.as_ref().unwrap();
+        assert!(t.games > TP_BOTGEN_EXTRA_MAX && t.parts.len() as u64 == t.games.div_ceil(TP_BOTGEN_EXTRA_MAX) && t.parts[0] == TP_BOTGEN_EXTRA_MAX);
+        assert!(tr.warnings.iter().any(|w| w.contains("exceed one --part") && w.contains("--extra 992 --part K,")));
         // Protoss a little below its target but within the band: below_target only, no top-up.
         let near = scan_tp(155, 110);
         let (mix, tr) = teacher_round(&near, &races);
         let p = &mix.teacher_races["P"];
         assert!(p.ok == Some(true) && p.share < 0.3, "{p:?}");
         assert!(tr.short.is_empty() && tr.below_target.contains_key("P") && tr.extra_botgen_tp_games.is_none());
+        assert!(tr.after_top_up.is_none() && tr.warnings.is_empty());
         // Without targets: no teacher_races in the mix JSON.
         let teacher = vec!["botgen".to_string(), "dagger".to_string()];
         let f = race_fractions(&fit, &teacher, 16, 0.65).unwrap();

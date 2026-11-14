@@ -177,8 +177,8 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 - Checkpoint 1 경로에서 이미 잰 칸의 재측정(그 지점의 `ck1_supplement`와 진단 지표만 받는다)
 - 지점 메뉴에 없는 지표, 다른 계열의 plan(예: BC 지점에 `tvz_rl`)
 - 템플릿 조건 해시나 고정값(판 수·표집·`zero_last_failed`·`max_frames`)이 `lineage.toml`과 다를 때. 이름·체크포인트(p0·p1의 모델 모두)가 자리표시가 아닐 때
-- `m2` 경로인데 run 이름이 `m2-`로 시작하지 않을 때, `run_pattern`이 있는 지점(`d1`·`d2`·`D`·`rl-fix`)에서 run 이름이 맞지 않을 때
-- Checkpoint 1 대응이 없는 지점(`r3`·`d1`·`d2`·`D`·`rl-fix`)의 `--lineage ck1`
+- `m2` 경로인데 run 이름이 `m2-`로 시작하지 않을 때, `run_pattern`이 있는 지점(`d1`·`d2`·`t1`·`D`·`rl-fix`)에서 run 이름이 맞지 않을 때
+- Checkpoint 1 대응이 없는 지점(`r3`·`d1`·`d2`·`t1`·`D`·`rl-fix`)의 `--lineage ck1`
 - 체크포인트 가중치 파일이 없을 때
 - T1 job의 호스트 중 `platform`이 없거나 지점의 `t1_platforms`가 아닌 것이 있을 때
 - job에 OSS 봇이 있는데, 호스트의 봇 해시를 읽을 수 없거나 `t1_bots.toml`에 없을 때. 호스트 목록에 `local = true`를 주거나, `ssh = "<별칭>"`과 `oss_bots_dir`(그 호스트의 `URANIUM_OSS_BOTS_DIR`)을 주거나, `--bot-hashes <파일>`(`<주소> <봇> <sha256>` 줄)을 준다.
@@ -299,7 +299,8 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 
 - 막음·TvZ는 세션 행으로 센다(`tables.py`와 같은 규칙, 상대 크래시 판 무효). 승 수는 무효 판을 뺀 절대 수다.
 - 교사 모드 판 비율(라운드와 S의 `t0_tp`)은 판정 파일에 기록만 한다.
-- 라운드 job의 `protocol.json`은 그 라운드 지점(`d1`·`d2`)이고 체크포인트가 하나여야 한다. 아니면 거부한다.
+- 라운드 job의 `protocol.json`은 그 라운드 지점(`d1`·`d2`·`t1`)이고 체크포인트가 하나여야 한다. 아니면 거부한다.
+- 교사 라운드 t1(044-R8, 사용자 결정 2026-11-14: 증류 라운드 뒤 한 번, 044-R6 규칙): `--round t1`, 판정 파일 `<shared>/eval/m2-lineage/t1_first_test.verdict`. 판정은 `pass`·`stop`뿐이다(t1이 마지막이라 `d2` 없음 — 메인 임시 결정 2026-11-14, 사용자 확인 대기). 라운드 job은 지점 `t1`(run `m2-teacher-t1`)이다.
 - 판정 파일은 첫 줄이 판정, 나머지가 `# ` 줄(조건별 값)이다. 이미 있으면 덮어쓰지 않는다(041-R29 ⑨).
 - 어느 판정이든 결과를 사용자에게 보고하고 다음 단계는 사용자가 정한다(자동 정지 없음).
 - 게임 칸에는 Wilson 95% 구간과 Fisher p를 함께 낸다. 32판은 조건당 약 ±12%p 잡음이 있어 작은 차이는 사용자가 판단한다.

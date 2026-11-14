@@ -1,0 +1,136 @@
+# 044-R8 / 022-R12 model 2 path (lineage 2) teacher round t1 (m2-teacher-t1; user decision 2026-11-14: one round after
+# the distillation rounds, judged by 044-R6): the 041-R22 ③ one-epoch `--init` recipe of config/bc_m2_dagger_r2.toml
+# (the 041-R28 memory field, the model 2 tables) without the distillation source. One epoch from `--s2 --init <the
+# last distillation round's last checkpoint>` (weights only).
+# PLACEHOLDER: the start checkpoint (m2-distill-d1, or m2-distill-d2 when it runs) is named by the round driver;
+# the start point is 메인 임시 결정 2026-11-14, 사용자 확인 대기.
+# Data (044-R8 ③, user decision 2026-11-14): every teacher game (`botgen`: the 021-R8 teacher's and the 022 teacher's
+# teacher-tp-<date> games, with any --botgen-tp --extra top-ups), every lineage-2 DAgger game (`dagger_m2` r1, r2, r3
+# and t1: the t1 self games of config/plans/dagger_m2_t1.toml relabelled by the 022 teacher, GameMeta.src `dagger`)
+# and the four human sources' target-map train games (S2) kept per enemy race ([data.subsample] fraction_by_race,
+# 041-R26). No distillation share: `distill_m2` is not in the data (the shards stay on the drive). Shares of the
+# update steps: teacher + dagger 65%, human 35%, each +-3%p; inside the teacher + dagger steps Zerg : Protoss :
+# Terran = 50 : 30 : 20 +-3%p (022-R12, AMB-022-7); every teacher game is kept, and a short Protoss / Terran share
+# is filled by more 022 teacher botgen games (rush_check_plan.py --botgen-tp --extra N --part K), not by cutting
+# the Zerg data. The fractions and [steps] come from `uranium-train mix-fractions --teacher-share 0.65
+# --teacher-races Z=0.5,P=0.3,T=0.2`. Learning rate as bc_m2_dagger_r2.toml (044-R5 ④): 3e-4 / 3e-6 x
+# s2_lr_scale 0.1 = 3e-5 / 3e-7, warmup 5%, cosine to the end of the epoch. Losses as every source (044-R5 ⑤).
+# PLACEHOLDER: [data.subsample] fraction / fraction_by_race and [steps] s2 / s2_warmup are filled by the count after
+# the dagger_m2/t1 relabel (the zero fraction_by_race makes every loader refuse this file until then).
+# 041 behaviour cloning hyper-parameters (041-R3, R10: tuning targets, recorded in checkpoints).
+
+# Parallel games per batch (B) and truncated-BPTT length (T, 041-R2 / 032-R5).
+lanes = 32
+seq_len = 64
+# Lanes per forward/backward pass. Group gradients are summed into one update (same result as one
+# pass over all lanes), so peak GPU memory follows the group, not `lanes`. 0 = all lanes at once.
+micro_lanes = 1
+# Burn balanced gradient checkpointing: recompute memory-bound activations during backward.
+grad_checkpointing = false
+# Round the batch entity count N up to a multiple of this (masked padding, same result). Fewer
+# distinct tensor shapes; ~9% faster per update on the 13-game CUDA sample (2026-10-17).
+pad_entities = 64
+# AdamW + linear warmup + cosine decay, gradient-norm clip 1.0 (041-R3): one global L2 norm over
+# all parameter gradients after the micro-lane sum (not Burn's per-tensor clip, G-D4).
+# 041-R22 ③: x s2_lr_scale = 3e-5 peak, 3e-7 floor.
+lr = 3e-4
+min_lr = 3e-6
+warmup_steps = 2000
+# Schedule length when no stage length applies (smoke runs). `bc` uses [steps] below.
+total_steps = 500000
+weight_decay = 1e-4
+grad_clip = 1.0
+# S2 fine-tuning uses 1/10 of the learning rate (041-R4).
+s2_lr_scale = 0.1
+# 061-R6 (G-D6): checkpoints kept per run on the shared drive. Absent = 5; 0 = keep all.
+# 041-R29 ⑨: every checkpoint of the lineage is kept (execution only, not in the fingerprint).
+keep_checkpoints = 0
+# Head loss weights (041-R1).
+[heads]
+action = 1.0
+delay = 0.5
+queued = 0.2
+selected = 1.0
+target_unit = 1.0
+target_loc = 1.0
+
+[steps]
+# Only the S2 stage runs with this file. One epoch, counted by `uranium-train mix-fractions --config
+# config/bc_m2_teacher_t1.toml --teacher-share 0.65 --teacher-races Z=0.5,P=0.3,T=0.2 --dataset-group replays/shards/stardata,replays/shards/community,replays/shards/scr_ladder,replays/shards/personal
+# --dataset-group replays/shards/botgen,replays/shards/dagger_m2` (no distill_m2; the datasets through their
+# manifests, as the trainer's --dataset reads them; lanes 32, seq_len 64).
+# PLACEHOLDER: counted after the dagger_m2/t1 relabel (s2 = 0 would mean total_steps).
+# s1 / ablation_a are unused (0 = total_steps). Recount when the datasets change.
+s1 = 0
+s2 = 0
+ablation_a = 0
+# 041-R14: 5% of the epoch, rounded half up.
+s2_warmup = 0
+
+[value]
+# win head MSE weight (041-R7)
+win = 0.5
+# 041-R19 (2026-10-21): win_open head MSE weight. Present = a new run builds the head (032-R18,
+# win estimate without privileged input for the 031-R12 surrender rule). Clipped apart from the
+# other parameters, so they update as without it. Not in bc_core_ablation.toml.
+win_open = 0.5
+
+[data]
+# Fraction of games trained with z_present = false (041-R8 / 033-R2).
+z_drop = 0.25
+# Random dihedral symmetry per game at load time (030-R4, 040-R7).
+augment = true
+# 030-R11 (user decision 2026-10-19): share of games whose enemy race is masked as unknown until
+# the first enemy unit is seen (per game, hash of replay sha256 + seed; no extra copies).
+enemy_race_mask = 0.05
+# 044-R8 ③ (user decision 2026-11-14): the next data seed after the distillation rounds: 16 after d1 (15),
+# 17 when d2 (16) runs.
+# PLACEHOLDER: 16 assumes no d2; the round driver sets 17 if d2 ran.
+seed = 16
+checkpoint_every = 5000
+# Also checkpoint at least this often in wall time (061-R10; ~2 updates/min on CUDA).
+checkpoint_minutes = 60
+# 041-R30 ⑥ / 041-R29 ④ (user decision 2026-11-12, AMB-041-19): a chained teacher step of `botgen` is
+# observed through its chain-start step's RawFrame. Only botgen: the relabelled dagger chains are not
+# carried out by the model, so their next observation shows no effect (no leak, 041-R22).
+chain_start_sources = ["botgen"]
+
+# 044-R8 ③ / 041-R26 (AMB-041-15): every game of the teacher sources `botgen` and `dagger` (GameMeta.src of the
+# dagger_m2 shards is `dagger`); of the human target-map train games a share per enemy race (per game, hash
+# of replay sha256 + data.seed; both TvT perspectives together), computed by `uranium-train mix-fractions
+# --teacher-share 0.65 --teacher-races Z=0.5,P=0.3,T=0.2`. `fraction` is the single share aiming at the same
+# total (used only by a game without a T / P / Z enemy).
+[data.subsample]
+# PLACEHOLDER: replaced by the count (0.0492 is m2-dagger-r2's single share).
+fraction = 0.0492
+keep_sources = ["botgen", "dagger"]
+
+# PLACEHOLDER: 0 is outside (0, 1], so BcConfig::load refuses the file until the count fills the three.
+[data.subsample.fraction_by_race]
+T = 0.0
+P = 0.0
+Z = 0.0
+
+# 041-R29 ①: the four 032 section 2.7 switches (as config/bc.toml), the 032 section 2.8 switches
+# bypass, spatial_preact, aux_priv, aux_jepa (k = 1, 8, 32) and the core fix F1 core_skip
+# (AMB-032-14). Absent keys would mean off.
+[model]
+terrain = true
+ctx_token = true
+attn_pool = true
+outer = 32
+bypass = true
+spatial_preact = true
+core_skip = true
+aux_priv = true
+aux_jepa = [1, 8, 32]
+
+# 041-R25: dead-channel statistics every 100 updates (execution only).
+[monitor]
+spatial_every = 100
+
+# 041-R23 ⑥ (AMB-041-13b, user decision 2026-11-10 after the 041-R24 lambda runs: the default
+# proposal kept): aux loss weights lambda_priv 0.2, lambda_jepa 0.1.
+[aux]
+priv = 0.2
+jepa = 0.1
