@@ -1,0 +1,488 @@
+# 044-R9~R11 / 042-R22 경로 2 수정 RL `m2-rl-fix-<n>` (user decisions 2026-11-14): config/rl_m2.toml
+# with only these changes —
+# [kl.reference] (044-R9): zerg = S, terran / protoss / random = m2-s2e2 ckpt-11387 (the --bc
+#   model, so those races use --bc itself). S is chosen after DAgger r3 or r4 (041-R29 ④); until then
+#   zerg = "" and the config load refuses to start ("[kl.reference] zerg is empty").
+# Opponents (044-R10): every game is a fixed-weight [[ladder]] game — [curriculum] start_stage
+#   "C1", auto_advance = false, c1_ladder = 1 and every other c1_* share 0 (no self-play, no model
+#   opponent), ladder_pick = "fixed" (042-R19), ladder_groups by lobby race terran 0.24 : protoss
+#   0.28 : zerg 0.28 : random 0.20 (Random a separate 20% share, the other 80% split 30 : 35 : 35).
+#   Inside each group T0 standard 50% / T1 50% by the [[ladder]] weights; T1 bots of a race equal
+#   (T = UAlbertaBot, Steamhammer, Iron; P = UAlbertaBot, Stardust; Z = UAlbertaBot, Steamhammer,
+#   ZZZKBot; McRave left out); half of zerg T0 is the rush ladder (T0 zerg_rush and the
+#   UAlbertaBot variants 9pool10lings, 9pool12lings, 9poolhydra, equal). Random (021-R7, 044-R10):
+#   T0 standard and UAlbertaBot (the one [[t1]] bot listing all three races) with race = "Random"
+#   (lobby Random in every game of those entries). No E-Regression builds (t0 terran_drop,
+#   protoss_dt, zerg_muta). Both maps (half each, the C1 pick). Shares of all games: T0 terran 12,
+#   UAB / SH / Iron T 4 each; T0 protoss 14, UAB / Stardust P 7 each; T0 zerg 7, 4 rush entries
+#   1.75 each, UAB / SH / ZZZK Z 4.67 each; T0 random 10, UAB random 10 (%).
+#   [curriculum] r_value_stages = ["C0", "C1"]: the run is in C1, and r_value keeps the policy
+#   weight it has in the rl_m2 (C0) runs, as in every earlier C1 run config (rl_t1self, rl_rush*).
+#   [[t1]] = the 044-R10 T1 list (McRave out, Steamhammer T / Z, 021-R4); it is not drawn from
+#   (c1_t1 = 0) and gates which T1 ladder entry may be Random (021-R7).
+# Run (044-R11): 1 seed, `python -m uranium rl --run m2-rl-fix-<n> --config config/rl_m2_race.toml
+#   --init <D> --bc <shared>/checkpoints/m2-s2e2/ckpt-11387 --algo vtrace --max-agent-steps
+#   6000000` (D = the 044-R6 passing distillation model; none passes: ask the user). Checks with
+#   the 050-R9 plan on the first checkpoint at or after 1.5M, 3.0M, 4.5M and 6.0M agent steps (T0
+#   standard terran / protoss 32 each, TvZ 32, rush 128 + macro 40, T1 300 at the end). Stop (042-R10
+#   clean stop, then report to the user): two checks in a row with T0 terran or protoss wins >= 6
+#   below D, or one check with TvZ < 16/32.
+#
+# The rl_m2.toml header follows.
+# 042-R21 ④ model 2 path (lineage 2) RL (041-R29 ⑥): config/rl.toml (the config the 042-AC1 runs
+# used; their AC1 setting comes from CLI flags) plus the [aux] and [monitor] tables below, nothing
+# else changed. The aux keys are not in config/rl.toml:
+# a Checkpoint 1 lineage model has no aux modules and a present key without its module is a start
+# error (042-R21 ①). Runs as the Checkpoint 1 lineage's 042-AC1 V-trace runs, with
+# `--config config/rl_m2.toml` and `--bc` / start = the last checkpoint of m2-s2e2.
+# 042 RL / league initial values (AMB-042-3, 2026-10-17). Tuning targets (042-R9):
+# read by `python -m uranium rl` and copied into every checkpoint (061-R10).
+# agent step = one act() call; update = one learner parameter update.
+
+# Batch: lanes x seq_len agent steps per update (042-R8: T = 64).
+lanes = 32
+seq_len = 64
+micro_lanes = 1
+# 061-R6 (G-D6): checkpoints kept on the share, 0 = all (user decision 2026-10-31: keep every
+# RL checkpoint so learning curves can be evaluated afterwards).
+keep_checkpoints = 0
+
+[optimizer]
+# Adam (AlphaStar RL stage), 1/10 of the BC learning rate.
+lr = 3e-5
+beta1 = 0.0
+beta2 = 0.99
+eps = 1e-5
+weight_decay = 0.0
+# Global L2-norm clip over all parameter gradients after the lane-group sum (041-R3, G-D4).
+grad_clip = 1.0
+
+[loss]
+gamma = 1.0
+# TD(λ): V-trace trace coefficient c = λ min(c̄, ρ) in the value target and the PG advantage
+# (042-R9 run setting; rush-s3 0.95, AMB-042-17).
+td_lambda = 0.8
+vtrace_rho_bar = 1.0
+vtrace_c_bar = 1.0
+pg = 1.0
+upgo = 1.0
+value = 0.5
+# 042-R13: win_open head (when the model has one) regresses the win v-trace target, same form.
+win_open = 0.5
+
+[entropy]
+# Per-head coefficients, summed over used heads only (032-R10).
+action = 3e-3
+delay = 1e-3
+queued = 1e-3
+selected = 1e-3
+target_unit = 1e-3
+target_loc = 1e-3
+
+[kl]
+# coef = max(floor, init * 0.5^(update / half_life_updates)); `update` = the agent's learner
+# updates in this run (a new run, --init included, starts at 0; a resume continues from its
+# checkpoint). Load errors unless init > 0, 0 <= floor <= init, half_life_updates > 0 (042-R9,
+# AMB-042-17).
+init = 0.1
+floor = 0.01
+half_life_updates = 20000
+
+[kl.head_scale]
+# 042-R9 (AMB-042-17): head h's KL coefficient = the schedule value x this (>= 0); 1.0 each =
+# the earlier loss. train.csv kl_coef is the schedule value before these.
+action = 1.0
+delay = 1.0
+queued = 1.0
+selected = 1.0
+target_unit = 1.0
+target_loc = 1.0
+
+[kl.reference]
+# 044-R9 (AMB-044-9, user decision 2026-11-14): KL reference by the game's lobby enemy race at
+# game start (GameInfo; lobby Random / Unknown = random). Relative paths are under
+# URANIUM_SHARED_DIR. zerg = S, chosen after DAgger r3 or r4 (041-R29 ④): fill in its checkpoint
+# folder before the run; empty refuses to start.
+zerg = ""
+terran = "checkpoints/m2-s2e2/ckpt-11387"
+protoss = "checkpoints/m2-s2e2/ckpt-11387"
+random = "checkpoints/m2-s2e2/ckpt-11387"
+
+[actors]
+# Push weights to the inference server every K updates.
+weight_push_every = 4
+# 042-R4: drop trajectories whose behaviour version lags by more than this.
+max_policy_lag = 32
+# Trajectory queue capacity per agent in batches of `lanes` segments (at least 1).
+queue_batches = 4
+# Full queue (user decision 2026-10-31): "wait" = backpressure, the pushing game waits for a
+# place (FIFO across games; a game in lockstep simply pauses); "drop_oldest" = previous
+# behaviour, never wait and drop the oldest segment.
+queue_full = "wait"
+# Longest single wait for a place (AMB-042-11); then the oldest segment is dropped
+# (`dropped_full`). Keep well below the OpenBW drop time (011-R18, 600 s).
+queue_wait_max_s = 120
+# Wall-clock limit of one RL game (AMB-042-12, 020-R3), queue waits included; the game ends as
+# Timeout and is left out of training like an Aborted one (042-R3).
+game_wall_timeout_s = 7200
+
+[league]
+# 042-R7 time share, applied from C2. C0/C1 train Main only.
+share_main = 0.5
+share_main_exploiter = 0.25
+share_league_exploiter = 0.25
+# Main opponents in C2.
+main_pfsp = 0.5
+main_self = 0.35
+main_t1 = 0.15
+# PFSP f_hard(x) = (1 - x)^p
+pfsp_power = 2.0
+# Main Exploiter falls back to f_var over Main snapshots below this win rate.
+main_exploiter_fallback_win_rate = 0.2
+main_exploiter_fallback_share = 0.5
+# Win-rate table: per-game EMA decay d (w <- d w + (1 - d) x after each game against that
+# opponent; every win-table pick uses it: ladder f_var, C1 snapshot f_hard, C2 PFSP, Main
+# Exploiter f_var), prior for unseen opponents (042 승률 표).
+win_rate_decay = 0.99
+win_rate_prior = 0.5
+# p_race = uniform_mix / 3 + (1 - uniform_mix) * (1 - w_r) / sum(1 - w)
+race_uniform_mix = 0.5
+# 021-R7: Random race share for multi-race T0/T1 bots (T1: only bots listing all three races,
+# AMB-042-14).
+bot_random_race = 0.2
+# 042 anchor (AMB-042-14): a fixed opponent, an RL checkpoint folder `ckpt-<step>` (its
+# agents/main) or that agents/main folder, relative to URANIUM_SHARED_DIR; "" = none. Needed
+# when [curriculum] c1_anchor > 0; its model files must exist at start.
+anchor = ""
+# 042-R15 (AMB-042-17): game seconds after which an RL training game against a model (current
+# Main, snapshot, anchor) ends as a draw (TimeLimitDraw, r_win 0, 020-R3) through
+# GameSpec.max_frames = min(86400, x * 24); 0 = no cap (60 minutes). 0 or 60..3600. Bot games and
+# evaluation games keep 60 minutes.
+model_game_max_s = 0
+# 042-R17 러시 미니게임 (AMB-042-18): absent [league.rush_judge] (or groups = []) = off, the earlier
+# game lengths and results. Its keys and defaults: groups = [] ([[ladder]] group names, each in
+# [curriculum] ladder_groups); at_s = 480 (60..3600 game seconds); min_scv = 8 (>= 1). RL training
+# games of those groups (not games against a model, not evaluation games) end at
+# GameSpec.max_frames = min(86400, at_s * 24); one that ends there as TimeLimitDraw is a win when
+# the learning session's own SCVs at its last observation (GameEnd final frame, else the last
+# frame; the 033-R10 count) are >= min_scv, else a loss (no observation = no result, not trained).
+# It sets r_win, the win table, the curriculum windows and the [sil] selection; games.csv
+# end_reason = RushJudge and judge_scv. Earlier ends keep their result. Example (rush-s4):
+#   [league.rush_judge]
+#   groups = ["rush", "warmup"]
+# 042-R18 시작 조건 섞기 (AMB-042-19): absent [league.start_mix] (or no rush_hit_share) = off, every
+# RL game keeps its hash seed. Its keys: rush_hit_share (0..1), groups = ["rush"] (default;
+# [[ladder]] group names, each in [curriculum] ladder_groups). RL training games of those groups
+# draw a target start condition from the game id (020-R21 first-target hit with probability
+# rush_hit_share; natural 1/3) and take the first of up to 64 seeds derived from the game id whose
+# hit matches it (none: the hash seed, logged). Other groups, games against a model and evaluation
+# games keep their seed; the bots are unchanged. games.csv slot_self, slot_enemy and start_hit
+# are written for every game either way. Example (rush-s5):
+#   [league.start_mix]
+#   rush_hit_share = 0.5
+
+[snapshot]
+main_every_updates = 2000
+exploiter_win_rate = 0.7
+exploiter_win_window = 200
+exploiter_max_updates = 4000
+league_exploiter_reset_prob = 0.25
+# 042 C1 snapshot candidates (AMB-042-14): the latest this many published Main snapshots,
+# 0 = all. Older snapshots stay on the share.
+main_candidates = 4
+
+[curriculum]
+# 042-R5. Window = most recent games per opponent race.
+window_games = 300
+c0_t0 = 0.8
+c0_self = 0.2
+c0_to_c1_win_rate_vs_t0 = 0.7
+# 044-R10: every game from the [[ladder]] below (c1_ladder = 1, all other C1 shares 0).
+c1_t0 = 0.0
+c1_t1 = 0.0
+c1_self = 0.0
+# 042 (AMB-042-14): C1 shares of past Main snapshots (PFSP f_hard over the [snapshot]
+# main_candidates latest published) and of the [league] anchor; c1_self is the current Main.
+# C1 picks in proportion to the six c1_* values (t0, t1, ladder, self, snapshot, anchor).
+c1_snapshot = 0.0
+c1_anchor = 0.0
+# 042 C1 rush ladder (AMB-042-15): share of the [[ladder]] opponents (also part of the
+# proportional C1 draw), and how the ladder picks an entry: "f_var" = PFSP x(1 - x) on Main's
+# win rate against it (unseen = win_rate_prior), uniform if all weights are 0; "band"
+# (AMB-042-17) = exp(-((x - center) / width)^2) with [curriculum.band] below. A table picks per
+# group, e.g. ladder_pick = { rush = "band", macro = "f_var" } (groups not listed: "f_var"; every
+# group named must be in ladder_groups). "fixed" (042-R19, AMB-042-19) = in proportion to the
+# entries' [[ladder]] weight (>= 0, absent 1.0; the win table is not read). weight is a load error
+# on an entry whose group is not "fixed", as is a "fixed" group whose weights sum to 0.
+c1_ladder = 1.0
+ladder_pick = "fixed"
+# 042 사다리 그룹 (AMB-042-16): absent = one pool of every [[ladder]] entry. When set, e.g.
+# ladder_groups = { rush = 0.5, macro = 0.5 }, a ladder game first draws a group by these shares
+# and then an entry of that group ([[ladder]] group = "...") by ladder_pick; every group listed
+# needs an entry and every entry's group must be listed.
+# 044-R10 (user decision 2026-11-14): groups by lobby race, Random a separate 20% and the other
+# 80% split terran : protoss : zerg = 30 : 35 : 35.
+ladder_groups = { terran = 0.24, protoss = 0.28, zerg = 0.28, random = 0.20 }
+c1_to_c2_win_rate_vs_t1 = 0.5
+# Pseudo-reward (033 r_build, r_units) linear decay to 0 after entering C2.
+pseudo_reward_decay_updates = 20000
+# 042-R5 (AMB-042-13). Stage of a new league (no LATEST): "C0" or "C1"; a resumed run keeps
+# the stage of its checkpoint.
+start_stage = "C1"
+# false = never change stage on the win-rate bars above (windows are still recorded).
+auto_advance = false
+# 033: stages that use r_value; weight 0 in the others. 044-R10: C1 kept as in the rl_m2 (C0) runs.
+r_value_stages = ["C0", "C1"]
+# 033 (AMB-042-14): false = r_value has policy weight 0 in games against a model (current Main,
+# snapshots, anchor); the value head learns r_value in every game.
+r_value_vs_model = true
+# On resume the ratios above, auto_advance, r_value_stages, r_value_vs_model, ladder_pick,
+# ladder_groups, [league] anchor and win_rate_decay, [snapshot] main_candidates, [[t1]],
+# [[ladder]], [reward] and [concede] follow this file; stage, win tables, windows and snapshots
+# come from the checkpoint (042). A [reward] pseudo other than the checkpoint's is a start error.
+# So do [kl] (the update count continues from the checkpoint), [kl.head_scale], [loss]
+# td_lambda, [curriculum.band], [league] model_game_max_s and [sil] (AMB-042-17), and
+# [league.rush_judge] and [sil] wins_only (AMB-042-18), and [league.start_mix], ladder_pick
+# "fixed" with [[ladder]] weight, [sil] select_keys, select_army_before_s and select_start_hit
+# (AMB-042-19).
+
+[curriculum.band]
+# 042 사다리 선택 band (AMB-042-17): weight exp(-((x - center) / width)^2), x = Main's win-table
+# value (unseen 0.5). Inside a group (all entries without groups), entries with x < exclude_below
+# get weight 0 when some entry is at or above it (none excluded when all are below); all weights
+# 0 = the remaining entries uniform. Load errors unless 0 <= center <= 1, width > 0,
+# 0 <= exclude_below < 1.
+center = 0.5
+width = 0.15
+exclude_below = 0.10
+
+[ppo]
+# Comparison baseline (042 algorithm alternatives).
+clip = 0.2
+gae_lambda = 0.95
+epochs = 2
+# Adopt PPO only if 3-seed mean final win rate beats V-trace by more than this.
+adopt_margin = 0.03
+
+[replays]
+# 042-R11: keep 1 replay per this many games (game id multiple) plus every winner-disagreement
+# game (020-R13), under <URANIUM_SHARED_DIR>/runs/<run>/replays/. Never deleted.
+sample_every = 100
+
+# 042-R16 자기 모방·막은 판 재학습 (AMB-042-17): absent [sil] = off (the learner and league as
+# before). Its keys and default values (rush-s4 turns it on with these, wins_only = true and
+# buffer_segments = 256 (user decision 2026-11-04: RAM), config/rl_rush4.toml; a configuration
+# that uses select_scv_4m or max_uses is asked first):
+#   enabled = false; mode = "sil" ("sil": buffer lanes train only
+#   w_pg * mean[-log pi * A+] + w_v * mean[0.5 * A+^2], A+ = max(R - V_win, 0); "replay": the
+#   ordinary loss, a segment leaves after max_uses uses, not in the 042-R4 lag drop);
+#   select_group = "rush" (a [[ladder]] group; games with a result that were won, or with
+#   scv_4m >= select_scv_4m and no collapse concede); select_scv_4m = 12; wins_only = false
+#   (true = won games only, after the 042-R17 judgement; select_scv_4m unused, AMB-042-18);
+#   until_s = 480
+#   (segments starting before it, 0 = whole game); buffer_segments = 2048 (FIFO, not in
+#   checkpoints); lanes = 4 (of the batch lanes, replaced, Main only); w_pg = 0.05; w_v = 0.01;
+#   max_uses = 4.
+#   042-R16 상대·접촉 거르기 (AMB-042-19), both absent = no filter: select_keys = [...] (win-table
+#   keys, each of a select_group [[ladder]] entry, not empty: only games against them);
+#   select_army_before_s (game seconds >= 0: only games whose first enemy army sighting, army_s of
+#   050-R7, is known and at most this). rush-s5 (config/rl_rush5.toml): T0 zerg_rush,
+#   ualbertabot12poollings and ualbertabot9pool10lings, 225.
+#   select_start_hit (true | false, absent = no filter; user delegation 2026-11-05, fifth
+#   advisory): only games whose 020-R21 start_hit (games.csv start_hit) equals it, a game without
+#   start slots is not selected. rush-s5: true.
+
+[reward]
+# 033-R11 reward channel mode (AMB-042-16): "z" = the build / units value heads and channels
+# learn r_build / r_units (z games only, the earlier behaviour); "scout" = they learn r_scout
+# (033-R9) / r_survive (033-R10), no z (a --z-table is then a start error). The weights of r_win,
+# r_build, r_units and r_value are config/reward.toml.
+pseudo = "z"
+
+[reward.scout]
+# 033-R9 r_scout: one-time items from our own vision only (033-R5). Policy weight, per-game cap of
+# the decayed raw values, multiplier in games against a model.
+weight = 0.15
+cap = 1.0
+vs_model = 0.5
+# Decay: full up to full_until_s, linear to 0 at zero_at_s (game seconds, 24 fps).
+full_until_s = 240.0
+zero_at_s = 480.0
+# Enemy main found: an enemy building within this many tiles of a start location that is not ours.
+main_radius_tiles = 10.0
+# Enemy workers: at least this many in one observation.
+workers_min = 4
+# Raw values: enemy main, each enemy building type, a second enemy resource depot, workers, army.
+main = 0.3
+building_type = 0.1
+expansion = 0.1
+workers = 0.1
+army = 0.1
+
+[reward.survive]
+# 033-R10 r_survive: game seconds in [from_s, until_s] x min(own SCVs / scv_target, 1) /
+# (until_s - from_s); policy weight and multiplier in games against a model (0 = bot games only).
+weight = 0.1
+vs_model = 0.0
+from_s = 180.0
+until_s = 480.0
+scv_target = 20
+
+[concede]
+# 042-R14 collapse concede of RL training games (AMB-042-15): a model session (learning agent or
+# model opponent) whose own supply is at most max_supply on the game screen (supply_used <=
+# 2 x max_supply, units in production included) at every decision for hold_s seconds, counted
+# from after_s, leaves with "gg"; the game is a normal loss of that side (020-R18, 033). Plan /
+# evaluation games never concede. false = the earlier behaviour.
+enabled = false
+max_supply = 4
+hold_s = 120
+after_s = 180
+
+# T1 bots (021) and the races they play (measured in M3, config/plans/m3-t1.toml). The league
+# picks from this list as is (it does not check which bots the game hosts have), so every bot
+# listed must be installed on every game host; Random applies to multi-race bots (021-R7).
+# 044-R10: the T1 list of the run (McRave left out, Steamhammer Terran / Zerg only, 021-R4). Not
+# drawn from (c1_t1 = 0); a T1 [[ladder]] entry may be Random only for a bot here listing all
+# three races (021-R7), so the Random T1 entry is UAlbertaBot.
+[[t1]]
+name = "ualbertabot"
+races = ["Terran", "Protoss", "Zerg"]
+[[t1]]
+name = "steamhammer"
+races = ["Terran", "Zerg"]
+[[t1]]
+name = "stardust"
+races = ["Protoss"]
+[[t1]]
+name = "zzzkbot"
+races = ["Zerg"]
+[[t1]]
+name = "iron"
+races = ["Terran"]
+
+# 044-R10 opponents (user decision 2026-11-14), ladder_pick "fixed" (042-R19): weight is relative
+# inside its group (ladder_groups above). Each group is T0 standard 50% / T1 50%; T1 bots of a
+# race equal; zerg T0 is half T0 standard and half the rush ladder (4 entries, equal). Bots must
+# be installed on every game host (the league does not check).
+
+# terran 0.24: T0 standard 3 : UAlbertaBot 1 : Steamhammer 1 : Iron 1.
+[[ladder]]
+kind = "t0"
+build = "standard"
+race = "Terran"
+group = "terran"
+weight = 3.0
+[[ladder]]
+kind = "t1"
+name = "ualbertabot"
+race = "Terran"
+group = "terran"
+weight = 1.0
+[[ladder]]
+kind = "t1"
+name = "steamhammer"
+race = "Terran"
+group = "terran"
+weight = 1.0
+[[ladder]]
+kind = "t1"
+name = "iron"
+race = "Terran"
+group = "terran"
+weight = 1.0
+
+# protoss 0.28: T0 standard 2 : UAlbertaBot 1 : Stardust 1.
+[[ladder]]
+kind = "t0"
+build = "standard"
+race = "Protoss"
+group = "protoss"
+weight = 2.0
+[[ladder]]
+kind = "t1"
+name = "ualbertabot"
+race = "Protoss"
+group = "protoss"
+weight = 1.0
+[[ladder]]
+kind = "t1"
+name = "stardust"
+race = "Protoss"
+group = "protoss"
+weight = 1.0
+
+# zerg 0.28: T0 standard 12, rush ladder 4 x 3 (T0 zerg_rush and the UAlbertaBot rush variants),
+# UAlbertaBot / Steamhammer / ZZZKBot 8 each (sum 48: T0 standard 1/4, rush 1/4, T1 1/2).
+[[ladder]]
+kind = "t0"
+build = "standard"
+race = "Zerg"
+group = "zerg"
+weight = 12.0
+[[ladder]]
+kind = "t0"
+build = "zerg_rush"
+race = "Zerg"
+group = "zerg"
+weight = 3.0
+[[ladder]]
+kind = "t1"
+name = "ualbertabot9pool10lings"
+race = "Zerg"
+group = "zerg"
+weight = 3.0
+[[ladder]]
+kind = "t1"
+name = "ualbertabot9pool12lings"
+race = "Zerg"
+group = "zerg"
+weight = 3.0
+[[ladder]]
+kind = "t1"
+name = "ualbertabot9poolhydra"
+race = "Zerg"
+group = "zerg"
+weight = 3.0
+[[ladder]]
+kind = "t1"
+name = "ualbertabot"
+race = "Zerg"
+group = "zerg"
+weight = 8.0
+[[ladder]]
+kind = "t1"
+name = "steamhammer"
+race = "Zerg"
+group = "zerg"
+weight = 8.0
+[[ladder]]
+kind = "t1"
+name = "zzzkbot"
+race = "Zerg"
+group = "zerg"
+weight = 8.0
+
+# random 0.20 (021-R7): lobby Random in every game of these entries, T0 standard 1 : UAlbertaBot 1.
+[[ladder]]
+kind = "t0"
+build = "standard"
+race = "Random"
+group = "random"
+weight = 1.0
+[[ladder]]
+kind = "t1"
+name = "ualbertabot"
+race = "Random"
+group = "random"
+weight = 1.0
+
+# 042-R21 ① (AMB-042-21, user decision 2026-11-10: the default proposal kept): aux loss weights
+# as in BC (041-R23 ⑥, AMB-041-13b), lambda_priv 0.2, lambda_jepa 0.1.
+[aux]
+priv = 0.2
+jepa = 0.1
+
+# 042-R21 ③ (AMB-041-14): spatial dead-channel statistics every 100 updates, as BC (execution only).
+[monitor]
+spatial_every = 100

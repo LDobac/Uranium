@@ -62,7 +62,11 @@ pub enum LadderKind {
 }
 
 /// One `[[ladder]]` entry (042 C1 러시 사다리, AMB-042-15): a T0 build or a T1 bot folder (021
-/// config variants included) with the one race it plays (no race sampling, no Random, 021-R7).
+/// config variants included) with the one race it plays (no race sampling). 021-R7 / 044-R10
+/// (2026-11-14): `race = "Random"` makes every game of the entry a lobby Random game (the
+/// `[league] bot_random_race` draw is never applied to ladder entries); only the standard T0
+/// build and a `[[t1]]` bot listing all three races may be Random (the bot is checked in
+/// `RlConfig::validate`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LadderEntry {
@@ -93,11 +97,12 @@ impl LadderEntry {
 
     /// The opponent, its win-table key and class by the existing rules (042, 021-R3): T0
     /// `t0-<race>[-<build tag>]` / T0, T1 `<name>-<race>` / T1. An error for the 042 사다리 설정
-    /// 검사 cases (missing or extra field, Random / Unknown race, a build of another race).
+    /// 검사 cases (missing or extra field, Unknown race, a build of another race — so Random on
+    /// a one-race build). A Random entry's key is `t0-random` / `<name>-random` (021-R7, 044-R10).
     pub fn opponent(&self) -> Result<(Opponent, String, Class), String> {
         let race = self.race;
-        if !RACES.contains(&race) {
-            return Err(format!("[[ladder]] race must be Terran, Protoss or Zerg, got {race:?} (042, 021-R7)"));
+        if !RACES.contains(&race) && race != Race::Random {
+            return Err(format!("[[ladder]] race must be Terran, Protoss, Zerg or Random, got {race:?} (042, 021-R7)"));
         }
         match (self.kind, self.build, self.name.as_deref()) {
             (LadderKind::T0, Some(build), None) => {
@@ -1519,6 +1524,67 @@ mod tests {
         }
     }
 
+    /// 044-R10 / 042-R22 ② (user decisions 2026-11-14): `config/rl_m2_race.toml` realises lobby
+    /// races terran 24 : protoss 28 : zerg 28 : Random 20 over many picks, T0 / T1 half and half in
+    /// each, half of zerg T0 the rush ladder (4 entries equal), T1 bots of a race equal, both maps,
+    /// Main only, no self-play or model opponent and no E-Regression build (fixed seed sample).
+    #[test]
+    fn m2_race_shares_044_r10() {
+        let text = include_str!("../../../config/rl_m2_race.toml").replace("\r\n", "\n").replacen("\nzerg = \"\"\n", "\nzerg = \"checkpoints/s/ckpt-1\"\n", 1);
+        let c: RlConfig = toml::from_str(&text).unwrap();
+        c.validate().unwrap_or_else(|e| panic!("{e:#}"));
+        let mut l = League::new("m2-rl-fix-1", 7, None, c);
+        const RUSH: [&str; 4] = ["t0-zerg-rush", "ualbertabot9pool10lings-zerg", "ualbertabot9pool12lings-zerg", "ualbertabot9poolhydra-zerg"];
+        let n = 100_000;
+        let mut keys: BTreeMap<String, usize> = BTreeMap::new();
+        // (race, "t0" | "t1") with the zerg rush ladder in zerg T0 (044-R10).
+        let mut split: BTreeMap<(&str, &str), usize> = BTreeMap::new();
+        let mut fs = 0;
+        for _ in 0..n {
+            let p = l.next();
+            assert_eq!(p.agent, AgentKind::Main);
+            let race = match &p.opponent {
+                Opponent::T0 { race, build } => {
+                    assert!(matches!(build, T0Build::Standard | T0Build::ZergRush), "no E-Regression build: {build:?}");
+                    *race
+                }
+                Opponent::T1 { race, .. } => *race,
+                o => panic!("no self-play or model opponent: {o:?}"),
+            };
+            let r = race_name(race);
+            assert_eq!(p.ladder_group.as_deref(), Some(r), "{}: the entry's group is its lobby race", p.key);
+            let tier = if p.class == Class::T0 || RUSH.contains(&p.key.as_str()) { "t0" } else { "t1" };
+            *split.entry((r, tier)).or_default() += 1;
+            *keys.entry(p.key).or_default() += 1;
+            fs += usize::from(p.fighting_spirit);
+        }
+        let f = |x: usize| x as f64 / n as f64;
+        let race_share = |r: &str| f(split.iter().filter(|((x, _), _)| *x == r).map(|(_, c)| *c).sum());
+        for (r, want) in [("terran", 0.24), ("protoss", 0.28), ("zerg", 0.28), ("random", 0.20)] {
+            let got = race_share(r);
+            assert!((got - want).abs() < 0.006, "{r}: {got} vs {want}");
+            let t0 = f(split.get(&(r, "t0")).copied().unwrap_or(0)) / got;
+            assert!((t0 - 0.5).abs() < 0.012, "{r}: T0 share {t0}");
+        }
+        let zerg_t0 = split[&("zerg", "t0")] as f64;
+        let rush: usize = RUSH.iter().map(|k| keys.get(*k).copied().unwrap_or(0)).sum();
+        assert!((rush as f64 / zerg_t0 - 0.5).abs() < 0.02, "rush ladder {rush} of zerg T0 {zerg_t0}");
+        // Every entry at its share of all games (%).
+        let want: [(&str, f64); 17] = [
+            ("t0-terran", 12.0), ("ualbertabot-terran", 4.0), ("steamhammer-terran", 4.0), ("iron-terran", 4.0),
+            ("t0-protoss", 14.0), ("ualbertabot-protoss", 7.0), ("stardust-protoss", 7.0),
+            ("t0-zerg", 7.0), ("t0-zerg-rush", 1.75), ("ualbertabot9pool10lings-zerg", 1.75), ("ualbertabot9pool12lings-zerg", 1.75), ("ualbertabot9poolhydra-zerg", 1.75),
+            ("ualbertabot-zerg", 28.0 / 6.0), ("steamhammer-zerg", 28.0 / 6.0), ("zzzkbot-zerg", 28.0 / 6.0),
+            ("t0-random", 10.0), ("ualbertabot-random", 10.0),
+        ];
+        assert_eq!(keys.keys().cloned().collect::<BTreeSet<_>>(), want.iter().map(|(k, _)| k.to_string()).collect::<BTreeSet<_>>());
+        for (k, pct) in want {
+            let got = 100.0 * f(keys[k]);
+            assert!((got - pct).abs() < 0.5, "{k}: {got}% vs {pct}%");
+        }
+        assert!((f(fs) - 0.5).abs() < 0.01, "both maps: fighting spirit {}", f(fs));
+    }
+
     /// 042 사다리 설정 검사 (AMB-042-15): an entry's opponent, key and class, and the entries
     /// that are errors.
     #[test]
@@ -1530,9 +1596,18 @@ mod tests {
         let (o, k, c) = t1_entry("steamhammeroverpool", Race::Zerg).opponent().unwrap();
         assert_eq!((o, k.as_str(), c), (Opponent::T1 { name: "steamhammeroverpool".into(), race: Race::Zerg }, "steamhammeroverpool-zerg", Class::T1));
         assert!(t0_entry(T0Build::ZergRush, Race::Terran).opponent().is_err(), "build of another race");
-        assert!(t0_entry(T0Build::Standard, Race::Random).opponent().is_err());
-        assert!(t1_entry("zzzkbot", Race::Random).opponent().is_err());
         assert!(t1_entry("zzzkbot", Race::Unknown).opponent().is_err());
+        assert!(t0_entry(T0Build::Standard, Race::Unknown).opponent().is_err());
+        // 021-R7 / 044-R10 (2026-11-14): a Random entry plays lobby Random in every game, keys
+        // `t0-random` / `<name>-random`; a one-race build cannot be Random (a T1 entry's
+        // three-race check against [[t1]] is in the config check).
+        let (o, k, c) = t0_entry(T0Build::Standard, Race::Random).opponent().unwrap();
+        assert_eq!((o, k.as_str(), c), (Opponent::T0 { race: Race::Random, build: T0Build::Standard }, "t0-random", Class::T0));
+        let (o, k, c) = t1_entry("ualbertabot", Race::Random).opponent().unwrap();
+        assert_eq!((o, k.as_str(), c), (Opponent::T1 { name: "ualbertabot".into(), race: Race::Random }, "ualbertabot-random", Class::T1));
+        for b in [T0Build::ZergRush, T0Build::TerranDrop, T0Build::ProtossDt, T0Build::ZergMuta, T0Build::TerranReact] {
+            assert!(t0_entry(b, Race::Random).opponent().is_err(), "{b:?}");
+        }
         assert!(t1_entry(" ", Race::Zerg).opponent().is_err());
         assert!(LadderEntry { kind: LadderKind::T0, build: Some(T0Build::ZergRush), name: Some("x".into()), race: Race::Zerg, group: String::new(), weight: None }.opponent().is_err());
         assert!(LadderEntry { kind: LadderKind::T0, build: None, name: None, race: Race::Zerg, group: String::new(), weight: None }.opponent().is_err());
