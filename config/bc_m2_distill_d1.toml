@@ -2,8 +2,8 @@
 # `--init` recipe of config/bc_m2_dagger_r2.toml (the 041-R28 memory field, the model 2 tables) with the
 # self-game distillation source (044-R5 ⑥). One epoch from `--s2 --init <S>` (weights only), S = the 041-R29 ④
 # selection (the Checkpoint 1 counterpart model, 044-R7; AMB-044-4), its last checkpoint.
-# PLACEHOLDER: S is not chosen yet (the r2 point measurements are running); the distill round driver (plan
-# unit U11, not written yet) names its checkpoint when the selection is made.
+# PLACEHOLDER: S is not chosen yet (DAgger round r3 runs before the selection, user decision 2026-11-14); the
+# distill round driver (plan unit U11, not written yet) names its checkpoint when the selection is made.
 # Data (044-R5 ②): every teacher game (`botgen`, as config/bc_m2_dagger_r2.toml), every lineage-2 DAgger game
 # so far (`dagger_m2`, GameMeta.src `dagger`), every distillation game so far (`distill_m2/d1`: S's 600 games
 # of config/plans/distill_m2_d1.toml against Terran / Protoss, built as decision steps (044-R2) and labelled

@@ -117,6 +117,7 @@ def test_distill_topup_composition_044_r5(tmp_path, extra):
     plan = tomllib.loads(out.read_text(encoding="utf-8"))
     assert plan["name"] == "distill-m2-d1-x2"
     assert plan["max_frames"] == 14400 and plan["save_replay"] is True and plan["memory_log"] is True
+    assert plan["zero_last_failed"] is False, "044-R1: the model sees its last failed command, as DAgger"
     games = Counter()
     for m in plan["matchup"]:
         assert m["p0"] == {"kind": "model", "checkpoint": CKPT, "sample": "stochastic"}
