@@ -566,6 +566,8 @@ impl Bot for Brain {
         if let Some(rp) = k.react.as_ref() {
             self.pending.retain(|p| !react::bunker_order_stale(rp, p, f, &mine));
         }
+        // 022-R9 / AC3: idle SCVs and idle builders from the observation (022 teacher only).
+        self.tp_idle(f, &mine);
 
         let mut minerals = f.self_state.minerals - self.pending.iter().map(|p| cost(p.ty)).sum::<i32>();
         let mut gas = f.self_state.gas - self.pending.iter().map(|p| gas_cost(p.ty)).sum::<i32>();
@@ -617,6 +619,10 @@ impl Bot for Brain {
         for w in mine.iter().filter(|u| u.unit_type == k.worker && u.has(flags::COMPLETED) && u.has(flags::IDLE)) {
             let on_gas = self.gas_crew.contains(&w.id);
             if busy.contains(&w.id) && !on_gas {
+                continue;
+            }
+            // 022-R9 / AC3: the 022 teacher sends an SCV to mine once it has been idle a while.
+            if !self.tp_idle_long(w.id, f.frame) {
                 continue;
             }
             if w.has(flags::CARRYING) {
@@ -862,7 +868,7 @@ impl Brain {
             .iter()
             .filter(|u| u.unit_type == self.kit.worker && u.has(flags::COMPLETED) && !u.has(flags::CARRYING) && !busy.contains(&u.id))
             .filter(|u| !(skip_constructing && u.has(flags::CONSTRUCTING)))
-            .min_by_key(|u| dist2(u.pos, center));
+            .min_by_key(|u| if self.tp.is_some() { (tp::pick_key(true, u.pos, center), u.id) } else { (dist2(u.pos, center), 0) });
         let Some(w) = worker else { return false };
         cmds.push(Command::Build { worker: w.id, unit_type: ty, tile });
         self.pending.push(Pending { ty, tile, worker: w.id, issued: f.frame });
@@ -1007,7 +1013,7 @@ impl Brain {
         // With plain waves every army unit attacks; there is no separate guard.
         let react = self.kit.react.is_some();
         let has_guard = self.kit.tactic == Tactic::Drop || self.kit.attacker != self.kit.army || react;
-        if !has_guard || f.frame < self.last_defend + WAVE_PERIOD {
+        if !has_guard || !ReactState::due_on(self.tp.is_some(), Some(self.last_defend), f.frame, WAVE_PERIOD) {
             return None;
         }
         let bases: Vec<Pos> = if react { mine.iter().filter(|u| is_resource_depot(u.unit_type)).map(|u| u.pos).collect() } else { vec![base] };
@@ -1027,7 +1033,8 @@ impl Brain {
             .filter(|u| !react || near_base(u.pos) < DEFEND_RADIUS * DEFEND_RADIUS)
             .map(|u| u.id)
             .collect();
-        Some((t.pos, guards))
+        // 022-AC3: the 022 teacher's guard target on the 4-tile grid (a moving enemy).
+        Some((if self.tp.is_some() { tp::snap(t.pos) } else { t.pos }, guards))
     }
 }
 

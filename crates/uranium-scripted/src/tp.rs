@@ -142,6 +142,13 @@ pub struct TpParams {
     /// 022-R5 M vs Protoss (022 tuning, 2026-11-14 dev runs): the natural also waits for this many
     /// complete tanks (3; 0 = the factory order alone, as decided first).
     pub expand_tanks_p: usize,
+    /// 022-R9 / 022-AC3 (2026-11-14): an SCV goes (back) to mining only once it has been seen idle
+    /// for this many frames, and a build order whose SCV has been seen idle that long is dropped
+    /// (the build is ordered again). Both read the observation alone, so the live teacher and its
+    /// shadow at playback frame L − 2 decide the same; a pending builder the shadow cannot know of
+    /// kept an idle SCV out of mining live for 25 s while the shadow sent it to mine at every
+    /// observation (022-AC3 relabel check, 메인 임시 결정).
+    pub idle_grace: u32,
     /// 022-R6 D vs Protoss (022 tuning, 2026-11-14 dev runs): the marines never attack-move out
     /// (the 021-R8 `marine_ratio` rule); they load into the bunker and hold beside it.
     pub marines_hold_p: bool,
@@ -197,6 +204,7 @@ impl Default for TpParams {
             marine_ratio: 2,
             expand_tanks_p: 3,
             marines_hold_p: true,
+            idle_grace: 16,
         }
     }
 }
@@ -273,6 +281,12 @@ pub(crate) struct TpState {
     seen: Option<Race>,
     /// SCVs gathering gas at the last observation (022-R9: from their orders, not from ids).
     pub gas_crew: Vec<UnitId>,
+    /// Own completed SCVs seen idle at every observation since this frame (022-R9 / AC3).
+    idle_since: BTreeMap<UnitId, u32>,
+    /// Sites of build orders dropped because their SCV stood idle (the game refused the site):
+    /// (top-left tile, type) kept free of new orders until the frame (022-AC3: without it the site
+    /// was ordered again every 16 frames).
+    failed_sites: Vec<(Tile, u16, u32)>,
     /// Last frame each SCV was seen with a gas order: one seen on gas within 2 × `retarget`
     /// frames still counts unless it is seen mining minerals (an SCV leaving the refinery shows
     /// other orders for a moment; OpenBW smoke: counted out, a fourth SCV was sent).
@@ -305,6 +319,8 @@ impl TpState {
             lobby,
             seen: None,
             gas_crew: Vec::new(),
+            idle_since: BTreeMap::new(),
+            failed_sites: Vec::new(),
             gas_seen: BTreeMap::new(),
             refinery_since: None,
             last_gas: None,
@@ -328,9 +344,33 @@ impl TpState {
         }
     }
 
+    /// At most once per window `frame / every` of the game clock (022-AC3, `ReactState::due_on`).
     fn due(last: Option<u32>, frame: u32, every: u32) -> bool {
-        last.is_none_or(|l| frame >= l + every)
+        crate::react::ReactState::due_on(true, last, frame, every)
     }
+}
+
+/// 022-AC3: the sort key of "the unit nearest `b`" picks (SCVs to build, gather gas, pull, repair;
+/// marines to load). For the 022 teacher (`rings`) the distance in 4-tile rings, so that the
+/// live teacher and its shadow at playback frame L − 2 (positions 2 frames apart) mostly pick the
+/// same unit, ties going to the lowest id; for the 021-R8 teacher the exact squared distance as
+/// before.
+pub(crate) fn pick_key(rings: bool, a: Pos, b: Pos) -> i64 {
+    if rings { (dist2(a, b) as f64).sqrt() as i64 / 128 } else { dist2(a, b) }
+}
+
+/// 022-AC3: the sort key of the SCV pull and repair picks: for the 022 teacher (`by_id`) none (the
+/// lowest ids among the free SCVs, which stand at the mineral line next to the threat anyway; a
+/// distance ring still put one SCV in or out between the live teacher and its shadow), for the
+/// 021-R8 teacher the exact squared distance as before.
+pub(crate) fn pick_key_id(by_id: bool, a: Pos, b: Pos) -> i64 {
+    if by_id { 0 } else { dist2(a, b) }
+}
+
+/// 022-AC3: an attack-move target on a 4-tile grid (the centre of its 4 × 4-tile cell), so that a
+/// moving target gives the live teacher and its shadow the same point.
+pub(crate) fn snap(p: Pos) -> Pos {
+    (p.0 / 128 * 128 + 64, p.1 / 128 * 128 + 64)
 }
 
 /// The race of a unit type (BWAPI type table), for a lobby-Random enemy.
@@ -532,23 +572,65 @@ impl Brain {
         Some(Some(self.circle_point(c, s.pos, p.scout_circle)))
     }
 
-    /// A point `radius` tiles from `c`, a quarter turn on from `pos` (the scout goes around the
-    /// enemy start), on a walkable spot of the static map (else the nearest turn that is; else `c`).
-    fn circle_point(&self, c: Pos, pos: Pos, radius: i64) -> Pos {
+    /// The scout's next point around the enemy start: one of 8 fixed waypoints `radius` tiles from
+    /// `c` (45° apart), a quarter turn on from the waypoint nearest `pos` (the scout goes around the
+    /// enemy start), the first walkable one of the following turns (else `c`). Fixed points
+    /// (022-AC3): a point computed from the exact position moved with the 2 frames between a live
+    /// observation and its shadow at playback L − 2 and gave other Move targets.
+    pub(crate) fn circle_point(&self, c: Pos, pos: Pos, radius: i64) -> Pos {
+        let r = radius * 32;
+        let d = (r as f64 * std::f64::consts::FRAC_1_SQRT_2).round() as i64;
+        // Clockwise on screen (y down) from east.
+        let offsets = [(r, 0), (d, d), (0, r), (-d, d), (-r, 0), (-d, -d), (0, -r), (d, -d)];
         let a = (pos.1 as f64 - c.1 as f64).atan2(pos.0 as f64 - c.0 as f64);
-        let r = (radius * 32) as f64;
-        for deg in [90.0f64, 60.0, 120.0, 45.0, 135.0, 30.0, 150.0, 180.0] {
-            let b = a + deg.to_radians();
-            let (x, y) = (c.0 as f64 + r * b.cos(), c.1 as f64 + r * b.sin());
-            if x < 0.0 || y < 0.0 {
+        let k = (a / std::f64::consts::FRAC_PI_4).round() as i64;
+        for step in [2i64, 1, 3, 4, 5, 6, 7] {
+            let (ox, oy) = offsets[(k + step).rem_euclid(8) as usize];
+            let (x, y) = (c.0 as i64 + ox, c.1 as i64 + oy);
+            if x < 0 || y < 0 {
                 continue;
             }
-            let (x, y) = (x.round() as u16, y.round() as u16);
+            let (x, y) = (x as u16, y as u16);
             if (x / 8) < self.walkable.width && (y / 8) < self.walkable.height && self.walkable.get(x / 8, y / 8) {
                 return (x, y);
             }
         }
         c
+    }
+
+    /// 022-R9 / AC3: idle SCVs from the observation — the frame since which each own completed SCV
+    /// has been seen idle at every observation — and build orders whose SCV has been idle
+    /// `idle_grace` frames are dropped. Before the Brain's other steps.
+    pub(crate) fn tp_idle(&mut self, f: &RawFrame, mine: &[&UnitState]) {
+        let Some(t) = self.tp.as_mut() else { return };
+        let idle: Vec<UnitId> = mine.iter().filter(|u| u.unit_type == SCV && u.has(flags::COMPLETED) && u.has(flags::IDLE) && u.loaded_in.is_none()).map(|u| u.id).collect();
+        t.idle_since.retain(|id, _| idle.contains(id));
+        for id in idle {
+            t.idle_since.entry(id).or_insert(f.frame);
+        }
+        let grace = t.p.idle_grace;
+        let since = t.idle_since.clone();
+        t.failed_sites.retain(|(_, _, until)| f.frame < *until);
+        let mut failed = Vec::new();
+        self.pending.retain(|q| {
+            let idle = since.get(&q.worker).is_some_and(|s| f.frame >= s + grace);
+            if idle {
+                failed.push((q.tile, q.ty, f.frame + crate::PENDING_TIMEOUT));
+            }
+            !idle
+        });
+        self.tp.as_mut().expect("checked above").failed_sites.extend(failed);
+    }
+
+    /// Sites kept free after a refused build order (`failed_sites`).
+    pub(crate) fn tp_failed_sites(&self) -> Vec<(Tile, u16)> {
+        self.tp.as_ref().map(|t| t.failed_sites.iter().map(|(tile, ty, _)| (*tile, *ty)).collect()).unwrap_or_default()
+    }
+
+    /// 022-R9 / AC3: the SCV has been seen idle for `idle_grace` frames (true for every SCV with
+    /// any other build).
+    pub(crate) fn tp_idle_long(&self, id: UnitId, frame: u32) -> bool {
+        self.tp.as_ref().is_none_or(|t| t.idle_since.get(&id).is_some_and(|s| frame >= s + t.p.idle_grace))
     }
 
     /// 022-R3 gas crew (022-R9: chosen again from each observation): the own SCVs whose order is a
@@ -587,7 +669,7 @@ impl Brain {
             .iter()
             .filter(|u| u.unit_type == SCV && u.has(flags::COMPLETED) && !u.has(flags::CARRYING) && !u.has(flags::CONSTRUCTING) && !jobs.contains(&u.id))
             .collect();
-        free.sort_by_key(|u| (dist2(u.pos, r.pos), u.id));
+        free.sort_by_key(|u| (pick_key(true, u.pos, r.pos), u.id));
         let ids: Vec<UnitId> = free.iter().take(want - crew.len()).map(|u| u.id).collect();
         if ids.is_empty() {
             return;
@@ -846,7 +928,22 @@ impl Brain {
             cmds.push(Command::Unit { units: chunk.to_vec(), order: CmdOrder::Unsiege, queued: false });
         }
 
-        // Moves every `retarget` frames.
+        // Tanks outside the attack and more than 4 tiles from the tank spot (tanks crowd around it)
+        // go there, at the first observation of each 48-frame window (022-AC3: the live teacher and
+        // its shadow order at the same observations; a Move given when the tank's visible order was
+        // not one went one observation apart for a newly complete tank).
+        if let Some(s) = spot.filter(|_| crate::react::ReactState::due_on(true, None, f.frame, p.retarget)) {
+            let home: Vec<UnitId> = tanks
+                .iter()
+                .filter(|u| u.unit_type == SIEGE_TANK && !siege.contains(&u.id) && Some(u.order) != sieging && !in_group(u) && !within(u.pos, s, 4))
+                .map(|u| u.id)
+                .collect();
+            for chunk in home.chunks(12) {
+                cmds.push(Command::Unit { units: chunk.to_vec(), order: CmdOrder::Move(Target::Pos(s)), queued: false });
+            }
+        }
+
+        // Attack moves every `retarget` frames.
         let last = self.tp.as_ref().expect("checked above").last_tanks;
         if !TpState::due(last, f.frame, p.retarget) {
             return;
@@ -875,34 +972,29 @@ impl Brain {
                     cmds.push(Command::Unit { units: chunk.to_vec(), order: CmdOrder::Attack(Target::Pos(cells[k % cells.len()])), queued: false });
                 }
                 acted |= !(tanks_go.is_empty() && ids.is_empty());
-            } else if let Some(target) = self.attack_target(f, lead) {
+            } else if let Some(target) = self.attack_target(f, lead).map(snap) {
                 let lead_d = dist2(lead, target);
                 let gap = p.group_gap * 32;
-                let (mut go, mut wait) = (Vec::new(), Vec::new());
-                for u in group_tanks.iter().filter(|u| mobile(u)).chain(group_marines.iter()) {
-                    let ahead = dist2(u.pos, lead) > gap * gap && dist2(u.pos, target) < lead_d;
-                    if ahead { wait.push(u.id) } else { go.push(u.id) }
-                }
-                for chunk in go.chunks(12) {
-                    cmds.push(Command::Unit { units: chunk.to_vec(), order: CmdOrder::Attack(Target::Pos(target)), queued: false });
-                }
                 // Waiting = attack-moving back to the front of the group (`group_gap` − 2 tiles from
                 // the tanks' centre toward the target), where they stop. Not Hold: units holding on
                 // a ramp cannot be pushed aside and blocked the tanks behind them for good (OpenBW
                 // smoke, 메인 임시 결정).
-                let front = toward(lead, target, (p.group_gap - 2) as f64);
-                for chunk in wait.chunks(12) {
-                    cmds.push(Command::Unit { units: chunk.to_vec(), order: CmdOrder::Attack(Target::Pos(front)), queued: false });
+                let front = snap(toward(lead, target, (p.group_gap - 2) as f64));
+                // 022-AC3: the units are cut into selections of 12 by id first and each selection
+                // split into going and waiting units, so a unit that is ahead in one of the live
+                // teacher and its shadow (positions 2 frames apart) changes its own selection only.
+                let mut units: Vec<&UnitState> = group_tanks.iter().copied().filter(|u| mobile(u)).chain(group_marines.iter().copied()).collect();
+                units.sort_by_key(|u| u.id);
+                for chunk in units.chunks(12) {
+                    let (wait, go): (Vec<&UnitState>, Vec<&UnitState>) = chunk.iter().partition(|u| dist2(u.pos, lead) > gap * gap && dist2(u.pos, target) < lead_d);
+                    for (ids, at) in [(go, target), (wait, front)] {
+                        if !ids.is_empty() {
+                            cmds.push(Command::Unit { units: ids.iter().map(|u| u.id).collect(), order: CmdOrder::Attack(Target::Pos(at)), queued: false });
+                        }
+                    }
                 }
-                acted |= !(go.is_empty() && wait.is_empty());
+                acted |= !units.is_empty();
             }
-        }
-        if let Some(s) = spot {
-            let home: Vec<UnitId> = tanks.iter().filter(|u| mobile(u) && !in_group(u) && !within(u.pos, s, 2)).map(|u| u.id).collect();
-            for chunk in home.chunks(12) {
-                cmds.push(Command::Unit { units: chunk.to_vec(), order: CmdOrder::Move(Target::Pos(s)), queued: false });
-            }
-            acted |= !home.is_empty();
         }
         if acted {
             self.tp.as_mut().expect("checked above").last_tanks = Some(f.frame);
@@ -1198,28 +1290,28 @@ mod tests {
         // Machine shop once the factory is complete.
         let mut v = u.clone();
         v.push(building(8, FACTORY, FACTORY_AT));
-        let act = teacher().act(&gas(frame(3_000, v, 100, 30), 100));
+        let act = teacher().act(&gas(frame(3_024, v, 100, 30), 100));
         assert!(!act.cmds.iter().any(|c| matches!(c, Command::BuildAddon { .. })), "{:?}", act.cmds);
         let mut v = u.clone();
         v.push(factory());
         let mut b = teacher();
-        let act = b.act(&gas(frame(3_000, v, 100, 30), 100));
+        let act = b.act(&gas(frame(3_024, v, 100, 30), 100));
         assert!(act.cmds.contains(&Command::BuildAddon { building: 8, unit_type: MACHINE_SHOP }), "{:?}", act.cmds);
-        assert_eq!(stats(&b).shop_frame, Some(3_000));
+        assert_eq!(stats(&b).shop_frame, Some(3_024));
         // Siege mode research once the shop is complete (not while it is built, not twice).
         let mut v = u.clone();
         v.push(UnitState { has_addon: true, ..factory() });
         v.push(building(9, MACHINE_SHOP, shop().pos));
-        let act = teacher().act(&gas(frame(3_500, v.clone(), 200, 30), 200));
+        let act = teacher().act(&gas(frame(3_504, v.clone(), 200, 30), 200));
         assert!(!act.cmds.iter().any(|c| matches!(c, Command::Research { .. })), "{:?}", act.cmds);
         let last = v.len() - 1;
         v[last] = shop();
         let mut b = teacher();
-        let act = b.act(&gas(frame(3_500, v.clone(), 200, 30), 200));
+        let act = b.act(&gas(frame(3_504, v.clone(), 200, 30), 200));
         assert!(act.cmds.contains(&Command::Research { building: 9, tech: TECH_TANK_SIEGE }), "{:?}", act.cmds);
         assert_eq!(trains(&act, SIEGE_TANK), 0, "tanks after the research order");
-        assert_eq!(stats(&b).siege_frame, Some(3_500));
-        let act = teacher().act(&sieging(gas(frame(3_500, v.clone(), 200, 30), 200), false, true));
+        assert_eq!(stats(&b).siege_frame, Some(3_504));
+        let act = teacher().act(&sieging(gas(frame(3_504, v.clone(), 200, 30), 200), false, true));
         assert!(!act.cmds.iter().any(|c| matches!(c, Command::Research { .. })), "researching: {:?}", act.cmds);
         // Tanks once the research has started.
         let mut b = teacher();
@@ -1446,7 +1538,7 @@ mod tests {
         u.push(unit(300, SIEGE_TANK, (home().0 - 6 * 32, home().1 - 4 * 32)));
         u.push(enemy(90, ZEALOT, depot_center((60, 60))));
         u.push(enemy(91, ZEALOT, depot_center((60, 61))));
-        let act = b.act(&frame(3_000, u, 0, 40));
+        let act = b.act(&frame(3_024, u, 0, 40));
         assert_eq!(branch(&b), Branch::Defence);
         let spot = toward(bunker, home(), 3.0);
         assert!(act.cmds.contains(&Command::Unit { units: vec![300], order: CmdOrder::Move(Target::Pos(spot)), queued: false }), "{:?}", act.cmds);
@@ -1467,9 +1559,9 @@ mod tests {
             let act = b.act(&sieging(frame(n, army(marines, tanks), 0, 120), true, false));
             (ordered(&act, |o| matches!(o, CmdOrder::Attack(Target::Pos(_)))).len(), stats(&b).wave_frame)
         };
-        assert_eq!(attackers(9_000, 32, 4), (36, Some(9_000)));
-        assert_eq!(attackers(9_000, 31, 4), (0, None), "39 supply");
-        assert_eq!(attackers(9_000, 34, 3), (0, None), "3 tanks");
+        assert_eq!(attackers(9_024, 32, 4), (36, Some(9_024)));
+        assert_eq!(attackers(9_024, 31, 4), (0, None), "39 supply");
+        assert_eq!(attackers(9_024, 34, 3), (0, None), "3 tanks");
         assert_eq!(attackers(17_280, 20, 0), (20, Some(17_280)));
         assert_eq!(attackers(17_279, 20, 0), (0, None), "before 12:00");
         assert_eq!(attackers(17_280, 19, 0), (0, None), "19 supply");
@@ -1480,11 +1572,13 @@ mod tests {
         let target = depot_center(THEIRS);
         u.push(enemy(80, NEXUS, target));
         u.iter_mut().filter(|x| x.id == 200).for_each(|x| x.pos = (home().0 + 30 * 32, home().1 + 30 * 32));
-        let act = b.act(&sieging(frame(9_000, u, 0, 120), true, false));
+        let act = b.act(&sieging(frame(9_024, u, 0, 120), true, false));
+        // 022-AC3: the target on its 4-tile grid cell.
+        let goal = snap(target);
         let lead = (home().0 + 80, home().1 + 120 + 12);
-        let front = toward(lead, target, 6.0);
+        let front = snap(toward(lead, goal, 6.0));
         assert!(ordered(&act, |o| *o == CmdOrder::Attack(Target::Pos(front))).contains(&200), "{:?}", act.cmds);
-        assert!(ordered(&act, |o| *o == CmdOrder::Attack(Target::Pos(target))).contains(&300));
+        assert!(ordered(&act, |o| *o == CmdOrder::Attack(Target::Pos(goal))).contains(&300));
     }
 
     /// 022-R8 hunting: with no enemy building remembered, every start scouted and no enemy in
@@ -1496,8 +1590,8 @@ mod tests {
         u.extend((0..4).map(|i| unit(300 + i, SIEGE_TANK, (home().0 + 80, home().1 + 120 + 8 * i as u16))));
         let mut b = teacher();
         // Everything seen once, then a dark observation: the cells' last-seen frames decide.
-        b.act(&sieging(frame(9_000, u.clone(), 0, 120), true, false));
-        let act = b.act(&sieging(dark(frame(9_048, u, 0, 120)), true, false));
+        b.act(&sieging(frame(9_024, u.clone(), 0, 120), true, false));
+        let act = b.act(&sieging(dark(frame(9_072, u, 0, 120)), true, false));
         let cells = b.stale_cells();
         let to = |id: UnitId| {
             act.cmds.iter().find_map(|c| match c {
@@ -1520,8 +1614,8 @@ mod tests {
         let target = depot_center(THEIRS);
         u.push(enemy(80, NEXUS, target));
         let mut b = teacher();
-        let act = b.act(&sieging(frame(9_000, u, 0, 120), true, false));
-        assert_eq!(stats(&b).wave_frame, Some(9_000));
+        let act = b.act(&sieging(frame(9_024, u, 0, 120), true, false));
+        assert_eq!(stats(&b).wave_frame, Some(9_024));
         let mut orders: BTreeMap<UnitId, Vec<CmdOrder>> = BTreeMap::new();
         for c in &act.cmds {
             if let Command::Unit { units, order, .. } = c {
@@ -1531,10 +1625,10 @@ mod tests {
             }
         }
         for id in 200..232 {
-            assert_eq!(orders.get(&id), Some(&vec![CmdOrder::Attack(Target::Pos(zealot))]), "marine {id}: {:?}", act.cmds);
+            assert_eq!(orders.get(&id), Some(&vec![CmdOrder::Attack(Target::Pos(snap(zealot)))]), "marine {id}: {:?}", act.cmds);
         }
         for id in 300..304 {
-            assert_eq!(orders.get(&id), Some(&vec![CmdOrder::Attack(Target::Pos(target))]), "tank {id}: {:?}", act.cmds);
+            assert_eq!(orders.get(&id), Some(&vec![CmdOrder::Attack(Target::Pos(snap(target)))]), "tank {id}: {:?}", act.cmds);
         }
     }
 
@@ -1567,7 +1661,7 @@ mod tests {
         let bunker = (home().0 + 5 * 32, home().1 + 64);
         u.push(UnitState { hp: 120, ..unit(60, BUNKER, bunker) });
         u.extend((0..5).map(|i| enemy(90 + i, ZEALOT, (bunker.0 + 40, bunker.1 + 10 * i as u16))));
-        let act = b.act(&frame(7_000, u, 100, 40));
+        let act = b.act(&frame(7_008, u, 100, 40));
         assert_eq!(branch(&b), Branch::Defence);
         let repair = ordered(&act, |o| *o == CmdOrder::Repair(60));
         assert_eq!(repair.len(), 5, "{:?}", act.cmds);
@@ -1620,6 +1714,8 @@ mod tests {
     fn shadow_fixups_022_r9() {
         let rush = |n: u32| {
             let mut u = base(12);
+            // The SCVs mine (an idle builder would release its order, 022-AC3 `idle_grace`).
+            u.iter_mut().filter(|x| x.unit_type == SCV).for_each(|x| x.flags = flags::COMPLETED | flags::GATHERING);
             u.push(enemy(90, ZEALOT, depot_center((60, 60))));
             u.push(enemy(91, ZEALOT, depot_center((60, 61))));
             frame(n, u, 100, 30)
@@ -1643,29 +1739,187 @@ mod tests {
         g.scout_done = true;
         let crew = |act: &Act| ordered(act, |o| *o == CmdOrder::Gather(5));
         assert!(crew(&g.act(&frame(3_000, u.clone(), 0, 30))).is_empty(), "just complete");
-        let first = crew(&g.act(&frame(3_048, u.clone(), 0, 30)));
+        assert!(crew(&g.act(&frame(3_024, u.clone(), 0, 30))).is_empty(), "complete 24 frames");
+        // First observations of the 48-frame windows of the game clock (022-AC3): 3,072, 3,120, ...
+        let first = crew(&g.act(&frame(3_072, u.clone(), 0, 30)));
         assert_eq!(first.len(), 3);
-        assert!(crew(&g.act(&frame(3_090, u.clone(), 0, 30))).is_empty(), "within 48 frames");
-        assert_eq!(crew(&g.act(&frame(3_096, u.clone(), 0, 30))), first, "not on gas: chosen again");
+        assert!(crew(&g.act(&frame(3_080, u.clone(), 0, 30))).is_empty(), "not a window start");
+        assert_eq!(crew(&g.act(&frame(3_120, u.clone(), 0, 30))), first, "not on gas: chosen again");
         let harvest = uranium_env::types::order_id("HarvestGas").unwrap();
         for x in u.iter_mut().filter(|x| first.contains(&x.id)) {
             x.order = harvest;
         }
-        assert!(crew(&g.act(&frame(3_200, u.clone(), 0, 30))).is_empty(), "three on gas");
+        assert!(crew(&g.act(&frame(3_216, u.clone(), 0, 30))).is_empty(), "three on gas");
         assert_eq!(g.tp_gas_crew().len(), 3);
         // One leaving the refinery (another order for a moment) or out of sight: still three; one
         // seen mining minerals: two, and another is sent.
         let one = *first.iter().next().unwrap();
         let mut leaving = u.clone();
         leaving.iter_mut().filter(|x| x.id == one).for_each(|x| x.order = 0);
-        assert!(crew(&g.act(&frame(3_248, leaving, 0, 30))).is_empty(), "leaving the refinery");
+        assert!(crew(&g.act(&frame(3_264, leaving, 0, 30))).is_empty(), "leaving the refinery");
         let away: Vec<UnitState> = u.iter().filter(|x| x.id != one).cloned().collect();
-        assert!(crew(&g.act(&frame(3_256, away, 0, 30))).is_empty(), "out of sight");
+        assert!(crew(&g.act(&frame(3_272, away, 0, 30))).is_empty(), "out of sight");
         assert_eq!(g.tp_gas_crew().len(), 3);
         let mining = uranium_env::types::order_id("MiningMinerals").unwrap();
         u.iter_mut().filter(|x| x.id == one).for_each(|x| x.order = mining);
-        let sent = crew(&g.act(&frame(3_300, u.clone(), 0, 30)));
+        let sent = crew(&g.act(&frame(3_312, u.clone(), 0, 30)));
         assert_eq!((g.tp_gas_crew().len(), sent.len()), (3, 1), "mining minerals: replaced");
+    }
+
+    /// 022-R9 / 022-AC3: an idle SCV goes to mine once it has been seen idle `idle_grace` (16)
+    /// frames, and a build order whose SCV has been idle that long is dropped and given again; the
+    /// 021-R8 teacher still sends idle SCVs at once.
+    #[test]
+    fn idle_scvs_from_the_observation_022_ac3() {
+        let gathers = |act: &Act| ordered(act, |o| matches!(o, CmdOrder::Gather(_)));
+        let mut b = teacher();
+        b.scout_done = true;
+        let mut u = base(12);
+        u.iter_mut().filter(|x| x.unit_type == SCV).for_each(|x| x.flags = flags::COMPLETED | flags::GATHERING);
+        u.iter_mut().filter(|x| x.id == 100).for_each(|x| x.flags = flags::COMPLETED | flags::IDLE);
+        assert!(!gathers(&b.act(&frame(3_000, u.clone(), 0, 40))).contains(&100), "just idle");
+        assert!(!gathers(&b.act(&frame(3_008, u.clone(), 0, 40))).contains(&100));
+        assert!(gathers(&b.act(&frame(3_016, u.clone(), 0, 40))).contains(&100), "idle 16 frames");
+        let mut r = Brain::with_hints(&info(Race::Zerg), Kit::for_build(Race::Terran, T0Build::TerranTp.for_lobby(&info(Race::Zerg))), &hints());
+        r.scout_done = true;
+        assert!(gathers(&r.act(&frame(3_000, u, 0, 40))).contains(&100), "021-R8: at once");
+
+        // A depot ordered to SCV x that stays idle: the order is dropped after 16 frames and given
+        // again; while x walks to the site (not idle) it is kept.
+        let depot = |b: &Brain| b.pending.iter().filter(|q| q.ty == DEPOT).map(|q| (q.worker, q.issued)).collect::<Vec<_>>();
+        let mut d = teacher();
+        d.scout_done = true;
+        let mut u = base(12);
+        u.iter_mut().filter(|x| x.unit_type == SCV).for_each(|x| x.flags = flags::COMPLETED | flags::GATHERING);
+        let mut f = frame(3_000, u.clone(), 200, 40);
+        f.self_state.supply_total = 40;
+        d.act(&f);
+        let first = depot(&d);
+        assert_eq!(first.len(), 1, "a depot ordered");
+        let w = first[0].0;
+        let at = |n: u32, flags_w: u32| {
+            let mut v = u.clone();
+            v.iter_mut().filter(|x| x.id == w).for_each(|x| x.flags = flags_w);
+            let mut f = frame(n, v, 200, 40);
+            f.self_state.supply_total = 40;
+            f
+        };
+        d.act(&at(3_008, flags::COMPLETED | flags::IDLE));
+        d.act(&at(3_016, flags::COMPLETED | flags::IDLE));
+        assert_eq!(depot(&d), first, "idle 8 frames: kept");
+        let site = d.pending.iter().find(|q| q.ty == DEPOT).unwrap().tile;
+        d.act(&at(3_024, flags::COMPLETED | flags::IDLE));
+        assert!(depot(&d).iter().all(|(_, issued)| *issued == 3_024), "idle 16 frames: ordered again {:?}", depot(&d));
+        // The refused site is kept free for 25 s: the new order is elsewhere.
+        assert!(d.pending.iter().filter(|q| q.ty == DEPOT).all(|q| q.tile != site), "{site:?}");
+        assert_eq!(d.tp_failed_sites(), vec![(site, DEPOT)]);
+        let mut e = teacher();
+        e.scout_done = true;
+        e.act(&f);
+        for n in [3_008, 3_016, 3_024, 3_032] {
+            e.act(&at(n, flags::COMPLETED | flags::MOVING));
+        }
+        assert_eq!(depot(&e), first, "walking: kept");
+    }
+
+    /// 022-R3 / 022-AC3: the scout's circle points are 8 fixed waypoints 6 tiles from the enemy
+    /// start, so positions 2 frames apart give the same Move target.
+    #[test]
+    fn scout_circle_waypoints_are_fixed_022_ac3() {
+        let b = teacher();
+        let c = depot_center(THEIRS);
+        let around = |dx: i32, dy: i32| ((c.0 as i32 + dx) as u16, (c.1 as i32 + dy) as u16);
+        let p = b.circle_point(c, around(-150, 10), 6);
+        assert_eq!(p, b.circle_point(c, around(-146, 14), 6), "2 frames later");
+        assert_eq!(p, around(0, -192), "west of the start: a quarter turn on is north (y down: -90° ... +90°)");
+        let d = ((dist2(b.circle_point(c, around(100, 100), 6), c)) as f64).sqrt() / 32.0;
+        assert!((5.9..=6.1).contains(&d), "{d}");
+    }
+
+    /// 022-AC3: picks by 4-tile distance rings (then the lowest id) and attack targets on a 4-tile
+    /// grid do not change with 2 frames of movement; the 021-R8 teacher keeps exact distances.
+    #[test]
+    fn picks_and_targets_robust_to_two_frames_022_ac3() {
+        let at = (1000, 1000);
+        assert_eq!(pick_key(true, (1000 + 60, 1000), at), pick_key(true, (1000 + 66, 1000), at));
+        assert!(pick_key(true, (1000 + 60, 1000), at) < pick_key(true, (1000 + 200, 1000), at));
+        assert_eq!(pick_key(false, (1000 + 60, 1000), at), 3_600);
+        assert_eq!(snap((1000, 1010)), snap((1006, 1004)));
+        assert_eq!(snap((1000, 1010)), (7 * 128 + 64, 7 * 128 + 64));
+    }
+
+    /// 022-AC3: an idle scout standing within 3 tiles of its target (the enemy depot from 2:30) is
+    /// not ordered again; one farther away is.
+    #[test]
+    fn settled_scout_is_not_ordered_again_022_ac3() {
+        let main = depot_center(THEIRS);
+        let units = |dx: u16| {
+            let mut u = base(12);
+            u.push(UnitState { flags: flags::COMPLETED | flags::IDLE, ..unit(150, SCV, (main.0 - dx, main.1)) });
+            u.push(enemy(9, NEXUS, main));
+            u
+        };
+        let moves = |act: &Act| ordered(act, |o| matches!(o, CmdOrder::Move(_))).contains(&150);
+        let mut b = teacher();
+        b.scout = Some(150);
+        b.act(&frame(2_400, units(5 * 32), 0, 30));
+        assert!(!moves(&b.act(&frame(3_700, units(2 * 32), 0, 30))), "idle 2 tiles from the depot");
+        let mut c = teacher();
+        c.scout = Some(150);
+        c.act(&frame(2_400, units(5 * 32), 0, 30));
+        assert!(moves(&c.act(&frame(3_700, units(5 * 32), 0, 30))), "idle 5 tiles away");
+    }
+
+    /// 022-AC3: the 022 teacher's 48-frame cadences are windows of the game clock (at most once per
+    /// `frame / 48`), the 021-R8 teacher's count from its own last order as before.
+    #[test]
+    fn cadences_on_game_clock_windows_022_ac3() {
+        use crate::react::ReactState;
+        assert!(ReactState::due_on(true, None, 97, 48), "the first observation of window 96..143");
+        assert!(!ReactState::due_on(true, None, 105, 48), "not the first observation");
+        assert!(!ReactState::due_on(true, Some(97), 100, 48), "same window");
+        assert!(ReactState::due_on(true, Some(97), 145, 48), "next window");
+        assert!(!ReactState::due_on(false, Some(100), 144, 48), "021-R8: 44 frames after");
+        assert!(ReactState::due_on(false, Some(100), 148, 48));
+    }
+
+    /// 022-AC3: the repairers come from the observation — an SCV repairing the bunker (the live
+    /// teacher's pick) is taken over, one picked but not repairing is dropped in the next window —
+    /// and tanks away from the tank spot are sent there at the first observation of each window.
+    #[test]
+    fn repairers_and_tank_moves_from_the_observation_022_ac3() {
+        let repair = uranium_env::types::order_id("Repair").unwrap();
+        let mut b = teacher();
+        b.scout_done = true;
+        let bunker = (home().0 + 5 * 32, home().1 + 64);
+        let scene = |repairing: &[UnitId]| {
+            let mut u = base(20);
+            u.iter_mut().filter(|x| x.unit_type == SCV).for_each(|x| x.flags = flags::COMPLETED | flags::GATHERING);
+            u.push(UnitState { hp: 120, ..unit(60, BUNKER, bunker) });
+            u.extend((0..5).map(|i| enemy(90 + i, ZEALOT, (bunker.0 + 40, bunker.1 + 10 * i as u16))));
+            for x in u.iter_mut().filter(|x| repairing.contains(&x.id)) {
+                (x.order, x.order_target) = (repair, Some(60));
+            }
+            u
+        };
+        let act = b.act(&frame(7_008, scene(&[]), 100, 40));
+        let first = ordered(&act, |o| *o == CmdOrder::Repair(60));
+        assert_eq!(first.len(), 2, "{:?}", act.cmds);
+        // Next window: the live teacher's repairers are 110 and 111 (visibly repairing): taken over.
+        let act = b.act(&frame(7_056, scene(&[110, 111]), 100, 40));
+        assert_eq!(ordered(&act, |o| *o == CmdOrder::Repair(60)), BTreeSet::from([110, 111]), "{:?}", act.cmds);
+
+        // A tank away from the spot is ordered there at every observation until its order shows it.
+        let mut t = teacher();
+        t.scout_done = true;
+        let tank_at = (home().0 - 6 * 32, home().1 - 4 * 32);
+        let tank = |order: u16, to: Option<Pos>| UnitState { order, order_pos: to, ..unit(300, SIEGE_TANK, tank_at) };
+        t.act(&frame(6_000, [base(12), vec![tank(0, None)]].concat(), 0, 40));
+        let spot = t.tp_tank_spot(&base(12).iter().collect::<Vec<_>>()).unwrap();
+        let moved = |act: &Act| ordered(act, |o| *o == CmdOrder::Move(Target::Pos(spot))).contains(&300);
+        assert!(moved(&t.act(&frame(6_048, [base(12), vec![tank(0, None)]].concat(), 0, 40))), "a window start");
+        assert!(!moved(&t.act(&frame(6_056, [base(12), vec![tank(6, Some(spot))]].concat(), 0, 40))), "not a window start");
+        assert!(moved(&t.act(&frame(6_096, [base(12), vec![tank(6, Some(spot))]].concat(), 0, 40))), "next window, still away");
     }
 
     /// 022-R2 (AMB-022-6): the lobby enemy race picks the teacher — Zerg the 021-R8 teacher,
@@ -1725,11 +1979,11 @@ mod tests {
         u.push(unit(5, REFINERY, GEYSER_AT));
         run(&mut teacher(), gas(frame(2_400, u.clone(), 300, 30), 100));
         u.push(factory());
-        run(&mut teacher(), gas(frame(3_000, u.clone(), 100, 30), 100));
+        run(&mut teacher(), gas(frame(3_024, u.clone(), 100, 30), 100));
         u.pop();
         u.push(UnitState { has_addon: true, ..factory() });
         u.push(shop());
-        run(&mut teacher(), gas(frame(3_500, u.clone(), 200, 30), 200));
+        run(&mut teacher(), gas(frame(3_504, u.clone(), 200, 30), 200));
         run(&mut teacher(), sieging(gas(frame(3_600, u.clone(), 300, 30), 200), false, true));
         // Defence: a damaged bunker, marines, zealots at the bunker, a tank by them.
         let mut d = teacher();
@@ -1740,7 +1994,7 @@ mod tests {
         u.push(unit(300, SIEGE_TANK, (home().0 + 2 * 32, home().1 + 3 * 32)));
         u.push(enemy(90, ZEALOT, (bunker.0, bunker.1 + 64)));
         u.push(enemy(91, ZEALOT, (bunker.0 + 20, bunker.1 + 64)));
-        run(&mut d, sieging(frame(4_000, u, 0, 60), true, false));
+        run(&mut d, sieging(frame(4_032, u, 0, 60), true, false));
         // Marines that do not load hold beside the bunker (3 against 2 zealots).
         let mut h = teacher();
         let mut u = base(12);
@@ -1752,15 +2006,15 @@ mod tests {
         u.push(enemy(92, ZEALOT, (home().0 + 8 * 32, home().1 - 3 * 32 + 40)));
         u.push(enemy(93, ZEALOT, (home().0 + 8 * 32, home().1 - 3 * 32 + 60)));
         u.iter_mut().filter(|x| x.unit_type == MARINE).take(4).for_each(|x| x.loaded_in = Some(60));
-        run(&mut h, frame(4_000, u, 0, 60));
+        run(&mut h, frame(4_032, u, 0, 60));
         // Unsiege after 10 s, then the attack.
         let mut w = teacher();
         let mut u = base(20);
         u.extend((0..32).map(|i| unit(200 + i, MARINE, (home().0 + 100 + 4 * (i % 8) as u16, home().1 + 100 + 4 * (i / 8) as u16))));
         u.extend((0..3).map(|i| unit(300 + i, SIEGE_TANK, (home().0 + 80, home().1 + 120 + 8 * i as u16))));
         u.push(unit(303, SIEGE_TANK_SIEGED, (home().0 + 80, home().1 + 160)));
-        run(&mut w, sieging(frame(9_000, u.clone(), 0, 120), true, false));
-        run(&mut w, sieging(frame(9_240, u, 0, 120), true, false));
+        run(&mut w, sieging(frame(9_024, u.clone(), 0, 120), true, false));
+        run(&mut w, sieging(frame(9_264, u, 0, 120), true, false));
         out
     }
 
