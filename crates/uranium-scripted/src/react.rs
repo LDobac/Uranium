@@ -400,16 +400,16 @@ pub fn depot_center(t: Tile) -> Pos {
 }
 
 /// Bunker centre of a top-left tile.
-fn bunker_center(t: Tile) -> Pos {
+pub(crate) fn bunker_center(t: Tile) -> Pos {
     (t.0 * 32 + 48, t.1 * 32 + 32)
 }
 
-fn within(a: Pos, b: Pos, tiles: i64) -> bool {
+pub(crate) fn within(a: Pos, b: Pos, tiles: i64) -> bool {
     dist2(a, b) <= (tiles * TILE) * (tiles * TILE)
 }
 
 /// `from` moved `tiles` toward `to` (pixels; `to == from` keeps `from`).
-fn toward(from: Pos, to: Pos, tiles: f64) -> Pos {
+pub(crate) fn toward(from: Pos, to: Pos, tiles: f64) -> Pos {
     let (dx, dy) = (to.0 as f64 - from.0 as f64, to.1 as f64 - from.1 as f64);
     let len = (dx * dx + dy * dy).sqrt();
     if len < 1.0 {
@@ -434,7 +434,7 @@ fn clear_of_units(f: &RawFrame, t: Tile) -> bool {
     })
 }
 
-fn is_enemy(u: &UnitState, me: u8) -> bool {
+pub(crate) fn is_enemy(u: &UnitState, me: u8) -> bool {
     u.owner != me && !is_neutral_owner(u.owner)
 }
 
@@ -555,7 +555,7 @@ pub fn rush_rules(p: &ReactParams, f: &RawFrame, me: u8, cx: &RuleContext<'_>) -
 
 impl Brain {
     /// Own command centers (completed or not).
-    fn own_depots(mine: &[&UnitState]) -> Vec<Pos> {
+    pub(crate) fn own_depots(mine: &[&UnitState]) -> Vec<Pos> {
         mine.iter().filter(|u| is_resource_depot(u.unit_type)).map(|u| u.pos).collect()
     }
 
@@ -569,7 +569,7 @@ impl Brain {
     }
 
     /// Start locations other than ours.
-    fn other_starts(&self) -> Vec<Tile> {
+    pub(crate) fn other_starts(&self) -> Vec<Tile> {
         let home = self.home;
         self.starts.iter().copied().filter(|s| Some(depot_center(*s)) != home).collect()
     }
@@ -675,10 +675,14 @@ impl Brain {
     /// SCVs with a teacher job (pulled, repairing, guarding a builder, resuming a building): not
     /// mining, not picked to build.
     pub(crate) fn react_busy(&self) -> Vec<UnitId> {
-        self.react
+        let mut out: Vec<UnitId> = self
+            .react
             .as_ref()
             .map(|r| r.pulled.iter().chain(&r.repairers).chain(r.harass.iter().flat_map(|h| &h.guards)).copied().chain(r.resumers.values().map(|(scv, _)| *scv)).collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // 022-R3: the gas crew of the 022 teacher.
+        out.extend(self.tp_gas_crew());
+        out
     }
 
     /// Opening supply rule: the first depot at 9 supply, the second at 15, then the standard rule.
@@ -699,6 +703,8 @@ impl Brain {
         let r = self.react.as_ref()?;
         let rax_done = mine.iter().any(|u| u.unit_type == BARRACKS && done(u));
         let cap = match r.branch {
+            // 022-R5 / R6: the 022 teacher's caps.
+            _ if self.tp.is_some() => self.tp_barracks_cap(mine),
             Branch::Defence => 2,
             Branch::Macro if self.natural_started(mine) || (r.natural.is_none() && rax_done) => 3,
             Branch::Macro => 1,
@@ -707,7 +713,7 @@ impl Brain {
         Some((cap, ready))
     }
 
-    fn natural_started(&self, mine: &[&UnitState]) -> bool {
+    pub(crate) fn natural_started(&self, mine: &[&UnitState]) -> bool {
         let Some(n) = self.react.as_ref().and_then(|r| r.natural) else { return false };
         mine.iter().any(|u| is_resource_depot(u.unit_type) && building_tile(u) == n) || self.pending.iter().any(|p| p.ty == CC && p.tile == n)
     }
@@ -726,6 +732,8 @@ impl Brain {
         let Some(id) = self.scout else { return };
         let Some(s) = mine.iter().find(|u| u.id == id) else { return };
         let target = match main {
+            // 022-R3: the 022 teacher's scout stays in the enemy main until 2:40.
+            Some(m) if self.tp_scout_target(f, s, m).is_some() => self.tp_scout_target(f, s, m).expect("checked"),
             Some(m) => {
                 let c = depot_center(m);
                 let looked = within(s.pos, c, look) || main_frame.is_some_and(|mf| f.frame >= mf + look_max);
@@ -894,7 +902,7 @@ impl Brain {
     /// the way out of the main toward the natural; else toward `via`, else the map centre. For the
     /// natural bunker (`outer_of` = the main) only chokes farther from the main than the natural
     /// count, nearest first, so it does not face back up the main ramp.
-    fn bunker_facing(&self, center: Pos, outer_of: Option<Pos>) -> Pos {
+    pub(crate) fn bunker_facing(&self, center: Pos, outer_of: Option<Pos>) -> Pos {
         let Some(r) = self.react.as_ref() else { return self.map_center };
         let tile = |t: &Tile| (t.0 * 32 + 16, t.1 * 32 + 16);
         let far = r.chokes.iter().map(tile).filter(|c| dist2(*c, center) >= (CHOKE_MIN * TILE).pow(2));
@@ -943,7 +951,8 @@ impl Brain {
             Branch::Macro => {
                 let Some(n) = natural else { return (0, 0) };
                 if !self.natural_started(mine) {
-                    if !rax_done {
+                    // 022-R5: the 022 teacher expands in `tp_build`.
+                    if !rax_done || self.tp.is_some() {
                         return (0, 0);
                     }
                     let expand_ok = main_known || f.frame >= p.expand_hold_until;

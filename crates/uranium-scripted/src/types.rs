@@ -14,6 +14,12 @@ pub const FACTORY: u16 = 113;
 pub const STARPORT: u16 = 114;
 pub const CONTROL_TOWER: u16 = 115;
 pub const BUNKER: u16 = 125;
+/// 022 teacher: siege tank (tank mode / siege mode), the factory's machine shop.
+pub const SIEGE_TANK: u16 = 5;
+pub const SIEGE_TANK_SIEGED: u16 = 30;
+pub const MACHINE_SHOP: u16 = 120;
+/// BWAPI TechType `Tank_Siege_Mode` (researched at the machine shop).
+pub const TECH_TANK_SIEGE: u16 = 5;
 // Zerg
 pub const ZERGLING: u16 = 37;
 pub const HYDRALISK: u16 = 38;
@@ -59,6 +65,11 @@ pub fn is_resource_depot(ty: u16) -> bool {
     matches!(ty, CC | NEXUS | HATCHERY | LAIR | HIVE)
 }
 
+/// A siege tank in either mode.
+pub fn is_tank(ty: u16) -> bool {
+    matches!(ty, SIEGE_TANK | SIEGE_TANK_SIEGED)
+}
+
 pub fn is_worker(ty: u16) -> bool {
     matches!(ty, SCV | PROBE | DRONE)
 }
@@ -78,9 +89,9 @@ pub fn cost(ty: u16) -> i32 {
         REFINERY | ASSIMILATOR | BUNKER => 100,
         ZEALOT => 100,
         FACTORY | SPIRE | CYBERNETICS_CORE => 200,
-        STARPORT | LAIR | CITADEL | TEMPLAR_ARCHIVES => 150,
+        STARPORT | LAIR | CITADEL | TEMPLAR_ARCHIVES | SIEGE_TANK => 150,
         DROPSHIP | MUTALISK => 100,
-        CONTROL_TOWER => 50,
+        CONTROL_TOWER | MACHINE_SHOP => 50,
         DARK_TEMPLAR => 125,
         _ => 50,
     }
@@ -89,10 +100,10 @@ pub fn cost(ty: u16) -> i32 {
 /// Gas price (BWAPI 4.2 type table).
 pub fn gas_cost(ty: u16) -> i32 {
     match ty {
-        FACTORY | STARPORT | DROPSHIP | LAIR | MUTALISK | CITADEL | DARK_TEMPLAR => 100,
+        FACTORY | STARPORT | DROPSHIP | LAIR | MUTALISK | CITADEL | DARK_TEMPLAR | SIEGE_TANK => 100,
         SPIRE => 150,
         TEMPLAR_ARCHIVES => 200,
-        CONTROL_TOWER => 50,
+        CONTROL_TOWER | MACHINE_SHOP => 50,
         _ => 0,
     }
 }
@@ -100,7 +111,7 @@ pub fn gas_cost(ty: u16) -> i32 {
 /// Supply in BWAPI units (2 per marine) for one train order (a zergling order hatches two).
 pub fn supply_cost(ty: u16) -> i32 {
     match ty {
-        ZEALOT | DARK_TEMPLAR | MUTALISK | DROPSHIP => 4,
+        ZEALOT | DARK_TEMPLAR | MUTALISK | DROPSHIP | SIEGE_TANK => 4,
         _ => 2,
     }
 }

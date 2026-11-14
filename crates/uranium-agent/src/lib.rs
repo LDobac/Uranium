@@ -301,7 +301,8 @@ impl Policy for Box<dyn uranium_scripted::Bot> {
 /// 050-R7 세션 지표 with the same keys, definitions and code (`ScoutTracker`) as the model row,
 /// folded over every observation of the session and its final frame, plus the 021-R8 teacher's
 /// record (`react`, `terran_react` only), then the 052 ops / early-rush combat metrics (`ops`,
-/// `rush_combat`, the model row's keys and code, 052-R6). Game seconds (frame / 24).
+/// `rush_combat`, the model row's keys and code, 052-R6), then the 022 teacher's record (`tp`,
+/// `terran_tp` only, 022-R10). Game seconds (frame / 24).
 #[derive(Serialize, Debug, Clone, Default, PartialEq)]
 pub struct ScriptedStats {
     pub scout_main_s: Option<f64>,
@@ -317,6 +318,39 @@ pub struct ScriptedStats {
     /// 052-R6: appended after the existing keys (their order unchanged).
     pub ops: uranium_env::ops::OpsMetrics,
     pub rush_combat: Option<uranium_env::ops::RushCombat>,
+    /// 022-R10: appended after the existing keys (their order unchanged).
+    pub tp: Option<TpRecord>,
+}
+
+/// 022 teacher record in game seconds (`uranium_scripted::TpStats`, 022-R10).
+#[derive(Serialize, Debug, Clone, Default, PartialEq)]
+pub struct TpRecord {
+    /// Enemy main found (an enemy building within 10 tiles of a start location).
+    pub main_s: Option<f64>,
+    /// First rush identification (022-R4) and its rule (`gates`, `zealots`, `proxy_gate`, `rax`,
+    /// `marines`, `proxy_rax`, `army`).
+    pub rush_s: Option<f64>,
+    pub rush_rule: Option<uranium_scripted::TpRule>,
+    /// Macro → defence switches; first defence → macro switch.
+    pub defences: u32,
+    pub macro_s: Option<f64>,
+    /// First order of the refinery, factory, machine shop, siege mode research, siege tank and
+    /// natural command center.
+    pub refinery_s: Option<f64>,
+    pub factory_s: Option<f64>,
+    pub shop_s: Option<f64>,
+    pub siege_s: Option<f64>,
+    pub tank_s: Option<f64>,
+    pub expand_s: Option<f64>,
+    /// First observation with the attack condition (022-R8).
+    pub wave_s: Option<f64>,
+    /// Branch at the end (`macro` / `defence`).
+    pub branch: uranium_scripted::Branch,
+    /// First enemy army within 20 tiles of an own command center; first own bunker.
+    pub contact_s: Option<f64>,
+    pub bunker_s: Option<f64>,
+    /// First time each rule held (before 8:00, in any branch).
+    pub rules_s: BTreeMap<uranium_scripted::TpRule, f64>,
 }
 
 /// 021-R8 teacher record in game seconds (`uranium_scripted::ReactStats`).
@@ -357,9 +391,9 @@ pub struct ScriptedPolicy {
 }
 
 impl ScriptedPolicy {
-    /// 021-R8: the teacher build reads the 031 map precompute (base locations, chokes) with the
-    /// model's session rule: a target map without one refuses the session, any other map plays on
-    /// without (no expansion, bunkers toward the map centre).
+    /// 021-R8 / 022-R10: the teacher builds read the 031 map precompute (base locations, chokes)
+    /// with the model's session rule: a target map without one refuses the session, any other map
+    /// plays on without (no expansion, bunkers toward the map centre).
     pub fn new(info: &GameInfo, build: T0Build) -> Result<Self> {
         let race = info.players.iter().find(|p| p.is_self).map(|p| p.race);
         let terran = race == Some(Race::Terran);
@@ -367,7 +401,7 @@ impl ScriptedPolicy {
             let family = uranium_env::maps::MapFamilies::load()?.classify(&info.map_name, "");
             let (pre, _) = uranium_env::maps::live_precompute_for_session(uranium_env::maps::maps_dir(), info, &family)?;
             if pre.is_none() {
-                elog!("[agent] WARNING: no map precompute for {:?}; the 021-R8 teacher does not expand", info.map_name);
+                elog!("[agent] WARNING: no map precompute for {:?}; the teacher does not expand", info.map_name);
             }
             (pre.as_ref().map(|p| uranium_scripted::MapHints { base_locs: p.base_locs.clone(), chokes: p.chokes.clone() }).unwrap_or_default(), pre)
         } else {
@@ -422,6 +456,24 @@ impl Policy for ScriptedPolicy {
             bunker_s: secs(r.bunker_frame),
             rules_s: r.rule_frames.iter().map(|(k, f)| (*k, uranium_env::scout::seconds(*f))).collect(),
         });
+        let tp = self.bot.tp_stats().map(|r| TpRecord {
+            main_s: secs(r.main_frame),
+            rush_s: secs(r.rush_frame),
+            rush_rule: r.rush_rule,
+            defences: r.defences,
+            macro_s: secs(r.macro_frame),
+            refinery_s: secs(r.refinery_frame),
+            factory_s: secs(r.factory_frame),
+            shop_s: secs(r.shop_frame),
+            siege_s: secs(r.siege_frame),
+            tank_s: secs(r.tank_frame),
+            expand_s: secs(r.expand_frame),
+            wave_s: secs(r.wave_frame),
+            branch: r.branch,
+            contact_s: secs(r.contact_frame),
+            bunker_s: secs(r.bunker_frame),
+            rules_s: r.rule_frames.iter().map(|(k, f)| (*k, uranium_env::scout::seconds(*f))).collect(),
+        });
         Some(ScriptedStats {
             scout_main_s: secs(m.main_frame),
             scout_types_4m: m.types_4m,
@@ -435,6 +487,7 @@ impl Policy for ScriptedPolicy {
             react,
             ops: self.ops.as_ref().map(|o| o.ops()).unwrap_or_default(),
             rush_combat: self.ops.as_ref().and_then(|o| o.rush_combat()),
+            tp,
         })
     }
 }
@@ -1156,7 +1209,8 @@ mod tests {
         let text = serde_json::to_string(&s).unwrap();
         // 052-R6: `ops` and `rush_combat` follow the existing keys, whose order is unchanged.
         assert!(text.starts_with(r#"{"scout_main_s":null,"scout_types_4m":0,"scout_types_6m":0,"barracks_s":null,"bunker_s":null,"scv_4m":9,"scv_min_1m":3,"army_s":null,"scv_8m":9,"react":null,"ops":{"end_s":480.0,"mined":0,"#), "{text}");
-        assert!(text.ends_with(r#""float_gas_rs":0.0},"rush_combat":null}"#), "{text}");
+        // 022-R10: `tp` after them.
+        assert!(text.ends_with(r#""float_gas_rs":0.0},"rush_combat":null,"tp":null}"#), "{text}");
         assert_eq!(s.ops.end_s, 480.0, "the final frame counts (052-R6, 010-R12)");
 
         let mut t = ScriptedPolicy::new(&t0_info(Race::Terran), T0Build::TerranReact).unwrap();
@@ -1169,6 +1223,24 @@ mod tests {
         let mut z = ScriptedPolicy::new(&t0_info(Race::Zerg), T0Build::ZergRush).unwrap();
         z.on_frame(&scv_frame(100, 0)).unwrap();
         assert!(z.scripted_stats().is_none());
+
+        // 022-R2 / R10: `terran_tp` against a lobby Zerg is the 021-R8 teacher (`react`); against
+        // Protoss it keeps the `tp` record.
+        let mut tz = ScriptedPolicy::new(&t0_info(Race::Terran), T0Build::TerranTp).unwrap();
+        tz.on_frame(&scv_frame(100, 4)).unwrap();
+        let s = tz.scripted_stats().unwrap();
+        assert!(s.react.is_some() && s.tp.is_none());
+        let mut info = t0_info(Race::Terran);
+        info.players[1].race = Race::Protoss;
+        let mut tp = ScriptedPolicy::new(&info, T0Build::TerranTp).unwrap();
+        tp.on_frame(&scv_frame(100, 4)).unwrap();
+        let s = tp.scripted_stats().unwrap();
+        assert!(s.react.is_none());
+        let text = serde_json::to_string(&s.tp.expect("022 record")).unwrap();
+        assert_eq!(
+            text,
+            r#"{"main_s":null,"rush_s":null,"rush_rule":null,"defences":0,"macro_s":null,"refinery_s":null,"factory_s":null,"shop_s":null,"siege_s":null,"tank_s":null,"expand_s":null,"wave_s":null,"branch":"macro","contact_s":null,"bunker_s":null,"rules_s":{}}"#
+        );
     }
 
     /// 051-R2: the act-log `git` is the build-time constant (a commit id or `unknown`).
