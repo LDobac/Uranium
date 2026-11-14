@@ -345,13 +345,16 @@ fn teacher_race_report(
     let tr = uranium_train::mix::TeacherRaces::new(s2, all, &mix.teacher_sources, r, &mix)?;
     for (race, x) in &tr.short {
         eprintln!(
-            "[mix-fractions] teacher race {race}: below its share band, {} steps below its target ({:.0} steps per counted game, {:.1}% of its games in the selection): about {} more games of it (044-R8 top-up, user decision 2026-11-14: rush_check_plan.py --botgen-tp --extra N --part K, N = {} for every short Protoss / Terran race, plus the build's filtered share)",
+            "[mix-fractions] teacher race {race}: below its share band, {} steps below its target ({:.0} steps per counted game, {:.1}% of its games in the selection): about {} more games of it (044-R8 top-up, user decisions 2026-11-14: 022 botgen games against the short race(s) only, plus the build's filtered share)",
             x.missing_steps,
             x.steps_per_game,
             x.selected_share * 100.0,
-            x.extra_games,
-            tr.extra_botgen_tp_games.map_or("-".to_string(), |n| n.to_string())
+            x.extra_games
         );
+    }
+    if let Some(games) = &tr.extra_botgen_tp {
+        let args: Vec<String> = games.iter().map(|(r, n)| format!("--extra-{} {n}", r.to_lowercase())).collect();
+        eprintln!("[mix-fractions] top-up: rush_check_plan.py --botgen-tp {} --part K (teacher_races.after_top_up: the expected shares after it)", args.join(" "));
     }
     // Review 2026-11-14: the simulated shares after the top-up, a multi-part top-up, a short Zerg share.
     for w in &tr.warnings {

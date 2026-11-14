@@ -1685,8 +1685,9 @@ mod tests {
         assert_eq!(back, t, "the serialised config (checkpoint) reads back the same");
     }
 
-    /// 044-R9 / R10 / R11, 042-R22 (user decisions 2026-11-14): `config/rl_m2_race.toml` refuses to
-    /// load until `[kl.reference] zerg` (S) is filled in, and is `config/rl_m2.toml` with only the
+    /// 044-R9 / R10 / R11, 042-R22 (user decisions 2026-11-14): `config/rl_m2_race.toml` has
+    /// `[kl.reference] zerg` = S (the 041-R29 ④ selection r2, `m2-dagger-r2/ckpt-1408`, chosen
+    /// 2026-11-14) and refuses to load with it empty, and is `config/rl_m2.toml` with only the
     /// listed changes — `[kl.reference]` terran / protoss / random = m2-s2e2 ckpt-11387; C1 without
     /// stage changes, every game a "fixed" ladder game (no self-play, no model opponent), groups by
     /// lobby race 0.24 / 0.28 / 0.28 / 0.20; r_value in C1; the 044-R10 T1 list (no McRave,
@@ -1695,12 +1696,13 @@ mod tests {
     fn rl_m2_race_config_044_r10() {
         use uranium_proto::Race;
         let text = include_str!("../../../config/rl_m2_race.toml").replace("\r\n", "\n");
+        let s = "checkpoints/m2-dagger-r2/ckpt-1408";
+        let filled = format!("\nzerg = \"{s}\"\n");
+        assert!(text.contains(&filled), "S = r2 (041-R29 ④, 2026-11-14)");
+        let empty: RlConfig = toml::from_str(&text.replacen(&filled, "\nzerg = \"\"\n", 1)).unwrap();
+        let err = format!("{:#}", empty.validate().unwrap_err());
+        assert!(err.contains("[kl.reference] zerg is empty"), "an empty S refuses to start: {err}");
         let t: RlConfig = toml::from_str(&text).unwrap();
-        let err = format!("{:#}", t.validate().unwrap_err());
-        assert!(err.contains("[kl.reference] zerg is empty"), "the S placeholder refuses to start: {err}");
-        let s = "checkpoints/m2-dagger-r3/ckpt-1";
-        assert!(text.contains("\nzerg = \"\"\n"));
-        let t: RlConfig = toml::from_str(&text.replacen("\nzerg = \"\"\n", &format!("\nzerg = \"{s}\"\n"), 1)).unwrap();
         t.validate().unwrap_or_else(|e| panic!("{e:#}"));
         let base = "checkpoints/m2-s2e2/ckpt-11387";
         assert_eq!(t.kl.reference, KlReference { zerg: Some(s.into()), terran: Some(base.into()), protoss: Some(base.into()), random: Some(base.into()) });

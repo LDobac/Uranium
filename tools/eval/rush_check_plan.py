@@ -89,15 +89,16 @@ from the teacher's development seeds (77,001..77,264 and splitmix64(1,000,000 + 
     python tools/eval/rush_check_plan.py --teacher-tp
     python tools/eval/rush_check_plan.py --botgen-tp
 
-`--botgen-tp --extra N --part K` (044-R8 / 022-R12 top-up, user decision 2026-11-14): when `uranium-train
-mix-fractions --teacher-races` reports a Protoss / Terran race short inside the teacher + dagger share (the Zerg data
-is not cut), N more 022 teacher botgen games of the 022-R12 composition (every block x N / 800; N a multiple of 32,
-at most 992; `teacher_races.extra_botgen_tp_games` gives N) in config/plans/teacher_botgen_tp_x<K>.toml (plan name
-`teacher-botgen-tp-x<K>`). Seeds: game numbers n = 10,000 + (K - 1) * 1,000 + 1.. of the same key, K = 1..10, each part
-its own block; asserted disjoint like the plans above (and from the other parts); an existing part file is never
-overwritten with other seeds.
+`--botgen-tp --extra-p N --extra-t M --part K` (044-R8 / 022-R12 top-up, user decisions 2026-11-14): when
+`uranium-train mix-fractions --teacher-races` reports a Protoss / Terran race short inside the teacher + dagger share
+(the Zerg data is not cut), more 022 teacher botgen games against the short race(s) only: N against Protoss and M
+against Terran, each race's games in its 022-R12 ratio (every block of that race x N / 400 or x M / 400; N and M
+multiples of 16, N + M at most 992 per part; `teacher_races.extra_botgen_tp` gives them and their --part split) in
+config/plans/teacher_botgen_tp_x<K>.toml (plan name `teacher-botgen-tp-x<K>`). Seeds: game numbers
+n = 10,000 + (K - 1) * 1,000 + 1.. of the same key, K = 1..10, each part its own block; asserted disjoint like the plans
+above (and from the other parts); an existing part file is never overwritten with other seeds.
 
-    python tools/eval/rush_check_plan.py --botgen-tp --extra 224 --part 1
+    python tools/eval/rush_check_plan.py --botgen-tp --extra-p 224 --part 1
 
 `--teacher-round --checkpoint C` (044-R8 / 022-R12, AMB-022-7, user decision 2026-11-14): writes
 config/plans/dagger_m2_t1.toml (plan name `dagger-m2-t1`), the self games of the teacher round t1 — one round after
@@ -557,34 +558,50 @@ def tp_dev_seeds() -> set[int]:
 # n <= 6,000), distillation rounds 1..10 (80,000 + n, n <= 6,000) and their top-up parts (n = 100,001..200,000),
 # the teacher round t1 and the 022 botgen top-up parts.
 RESERVED_ROUNDS = 10
-# 044-R8 / 022-R12 top-up (user decision 2026-11-14): when `uranium-train mix-fractions --teacher-races` reports a
+# 044-R8 / 022-R12 top-up (user decisions 2026-11-14): when `uranium-train mix-fractions --teacher-races` reports a
 # Protoss / Terran race short inside the teacher + dagger share, more 022 teacher botgen games are played (the Zerg
-# data is not cut). Part K of N games uses game numbers n = TP_EXTRA_BASE + (K - 1) * TP_EXTRA_PART + i,
-# i = 1..N, far above the check (1..208) and botgen (1,001..1,800) plans, one block per part; N is a multiple of
-# TP_EXTRA_UNIT so every 022-R12 block keeps its ratio exactly (the smallest block, 25 of 800, is 1/32).
+# data is not cut) against the short race(s) only: `--extra-p N` Protoss and `--extra-t M` Terran games, each race's
+# games in its 022-R12 ratio (T0 standard 150, the two T1 bots 25 each, per map: the smallest block is 1/16 of the
+# race's 400 games, so N and M are multiples of TP_EXTRA_RACE_UNIT). Part K uses game numbers
+# n = TP_EXTRA_BASE + (K - 1) * TP_EXTRA_PART + i, i = 1..N + M, far above the check (1..208) and botgen
+# (1,001..1,800) plans, one block per part; N + M fits the part's block (at most TP_EXTRA_MAX).
 TP_EXTRA_BASE = 10000
 TP_EXTRA_PART = 1000
 TP_EXTRA_PARTS = 10
-TP_EXTRA_UNIT = 32
-TP_EXTRA_MAX = TP_EXTRA_PART // TP_EXTRA_UNIT * TP_EXTRA_UNIT
+TP_EXTRA_RACE_UNIT = 16
+TP_EXTRA_MAX = TP_EXTRA_PART // TP_EXTRA_RACE_UNIT * TP_EXTRA_RACE_UNIT
+# The races of a top-up: "P" / "T" -> the lobby race of the opponents in the 022-R12 blocks.
+TP_EXTRA_RACES = {"P": "protoss", "T": "terran"}
 
 
-def tp_blocks(check: bool, extra: int = 0) -> list[tuple[str, str, str, int]]:
+def tp_race(p1: str) -> str:
+    """The race letter (P / T) of a 022 plan opponent `p1`."""
+    return next(k for k, race in TP_EXTRA_RACES.items() if f'race = "{race}"' in p1)
+
+
+def tp_blocks(check: bool, extra: dict[str, int] | None = None) -> list[tuple[str, str, str, int]]:
     """(opponent label, p1, map, games) of the 022-R11 check plan (`check`) or the 022-R12 botgen plan, in plan
-    order: T0 Protoss, T0 Terran, then the T1 bots, each x Fighting Spirit / Circuit Breaker. `extra` > 0: a botgen
-    top-up of `extra` games in the 022-R12 ratio (each block x extra / 800)."""
+    order: T0 Protoss, T0 Terran, then the T1 bots, each x Fighting Spirit / Circuit Breaker. `extra` ({"P": N,
+    "T": M}): a botgen top-up of N Protoss and M Terran games, each race's blocks in its 022-R12 ratio (each block
+    x N / 400 or x M / 400); blocks without games left out."""
     t0, t1 = (TP_CHECK_T0_GAMES, TP_CHECK_T1_GAMES) if check else (TP_BOTGEN_T0_GAMES, TP_BOTGEN_T1_GAMES)
     blocks = [(o, p1, m, g) for opps, g in ((TP_T0, t0), (TP_T1, t1)) for o, p1 in opps for m in MAPS]
     if extra:
         assert not check, "a top-up is of the botgen plan"
-        assert extra % TP_EXTRA_UNIT == 0 and 0 < extra <= TP_EXTRA_MAX, \
-            f"--extra must be a multiple of {TP_EXTRA_UNIT} in {TP_EXTRA_UNIT}..{TP_EXTRA_MAX} (the 022-R12 ratio exactly); round it up"
-        full = sum(g for *_, g in blocks)
-        blocks = [(o, p1, m, g * extra // full) for o, p1, m, g in blocks]
+        assert set(extra) <= set(TP_EXTRA_RACES), f"top-up races are {sorted(TP_EXTRA_RACES)}"
+        for r, n in extra.items():
+            assert n >= 0 and n % TP_EXTRA_RACE_UNIT == 0, \
+                f"--extra-{r.lower()} must be a multiple of {TP_EXTRA_RACE_UNIT} (the race's 022-R12 ratio exactly); round it up"
+        total = sum(extra.values())
+        assert 0 < total <= TP_EXTRA_MAX, f"--extra-p + --extra-t must be in {TP_EXTRA_RACE_UNIT}..{TP_EXTRA_MAX} (one part's seed block); split it over --part runs"
+        full = {r: sum(g for _, p1, _, g in blocks if tp_race(p1) == r) for r in TP_EXTRA_RACES}
+        blocks = [(o, p1, m, g * extra.get(tp_race(p1), 0) // full[tp_race(p1)]) for o, p1, m, g in blocks]
+        blocks = [b for b in blocks if b[3] > 0]
+        assert sum(b[3] for b in blocks) == total
     return blocks
 
 
-def tp_first(check: bool, extra: int = 0, part: int = 1) -> int:
+def tp_first(check: bool, extra: dict[str, int] | None = None, part: int = 1) -> int:
     """The first game number of the 022 check plan (`check`), botgen plan or botgen top-up part `part`."""
     if extra:
         assert 1 <= part <= TP_EXTRA_PARTS, f"--part must be in 1..{TP_EXTRA_PARTS} (the botgen top-up seed blocks)"
@@ -592,7 +609,7 @@ def tp_first(check: bool, extra: int = 0, part: int = 1) -> int:
     return TP_CHECK_FIRST if check else TP_BOTGEN_FIRST
 
 
-def tp_seeds(check: bool, extra: int = 0, part: int = 1) -> tuple[int, list[int]]:
+def tp_seeds(check: bool, extra: dict[str, int] | None = None, part: int = 1) -> tuple[int, list[int]]:
     """(first game number, seeds) of the 022 check plan (`check`), botgen plan or botgen top-up part:
     splitmix64(1,000,000 + n) >> 32."""
     first = tp_first(check, extra, part)
@@ -602,7 +619,7 @@ def tp_seeds(check: bool, extra: int = 0, part: int = 1) -> tuple[int, list[int]
 
 def tp_extra_block(part: int) -> set[int]:
     """Every seed of the 022 botgen top-up part `part`'s block (game numbers of the part's whole stride)."""
-    first = tp_first(False, TP_EXTRA_UNIT, part)
+    first = tp_first(False, {"P": TP_EXTRA_RACE_UNIT}, part)
     return {splitmix64(TP_SEED_KEY + k) >> 32 for k in range(first, first + TP_EXTRA_PART)}
 
 
@@ -624,26 +641,29 @@ def reserved_seeds(skip_teacher_round: bool = False, skip_tp_extra_part: int | N
     return s | tp_dev_seeds()
 
 
-def render_tp(check: bool, name: str, extra: int = 0, part: int = 1) -> tuple[str, list[int]]:
+def render_tp(check: bool, name: str, extra: dict[str, int] | None = None, part: int = 1) -> tuple[str, list[int]]:
     """The text and seeds of the 022-R11 teacher check plan (`check`) or the 022-R12 teacher botgen plan, or with
-    `extra` > 0 the botgen top-up part `part` (044-R8, user decision 2026-11-14): `extra` more botgen games."""
+    `extra` ({"P": N, "T": M}) the botgen top-up part `part` (044-R8, user decisions 2026-11-14): more botgen games
+    against the short race(s) only."""
     blocks = tp_blocks(check, extra)
     first, seeds = tp_seeds(check, extra, part)
     n = len(seeds)
     last = first + n - 1
     assert len(set(seeds)) == n, "022 teacher seeds repeat"
     for c in (True, False):
-        if (c, 0) != (check, extra):
+        if extra or c != check:
             assert not set(seeds) & set(tp_seeds(c)[1]), "the 022 check, botgen and top-up plans share a seed"
     t0 = sum(g for o, *_, g in blocks if o.startswith("T0 "))
     if extra:
+        ep, et = extra.get("P", 0), extra.get("T", 0)
         what = [
-            f"# 044-R8 / 022-R12 top-up (user decision 2026-11-14): {n} more teacher botgen games of the TvT / TvP teacher",
-            f"# t0-terran-tp (part {part}), generated by tools/eval/rush_check_plan.py --botgen-tp --extra {n} --part {part} (do not edit by",
-            "# hand): uranium-train mix-fractions --teacher-races reported a Protoss / Terran race below its share inside",
-            "# the teacher + dagger share, and the Zerg data is not cut, so more games of the 022-R12 composition are played",
-            f"# (each block x {n} / 800): T0 standard Protoss and Terran ({t0}) and the T1 bots UAlbertaBot P, Stardust,",
-            f"# UAlbertaBot T, Iron ({n - t0}) x Fighting Spirit / Circuit Breaker, races fixed (no Random, 022-R2), 10 min",
+            f"# 044-R8 / 022-R12 top-up (user decisions 2026-11-14): {n} more teacher botgen games of the TvT / TvP teacher",
+            f"# t0-terran-tp (part {part}), generated by tools/eval/rush_check_plan.py --botgen-tp --extra-p {ep} --extra-t {et} --part {part}",
+            "# (do not edit by hand): uranium-train mix-fractions --teacher-races reported a race below its share inside the",
+            "# teacher + dagger share, and the Zerg data is not cut, so more games against the short race(s) only are played,",
+            f"# each race in its 022-R12 ratio: {ep} against Protoss (T0 standard, UAlbertaBot P, Stardust; each block x {ep} / 400)",
+            f"# and {et} against Terran (T0 standard, UAlbertaBot T, Iron; x {et} / 400) x Fighting Spirit / Circuit Breaker",
+            f"# (T0 standard {t0}, T1 {n - t0}), races fixed (no Random, 022-R2), 10 min",
             "# (max_frames 14,400), replays kept; built like teacher_botgen_tp.toml (--src botgen --games <dir>/games.jsonl",
             "# --until-frame 14400 --time-limit 14400) into the same botgen/teacher-tp-<date> source.",
             "# T1 bots: the 050-R9 T1 rule (NDEBUG builds, config/protocol/t1_bots.toml; opponent-crash games are invalid).",
@@ -704,7 +724,7 @@ def render_tp(check: bool, name: str, extra: int = 0, part: int = 1) -> tuple[st
     return "\n".join(lines) + "\n", seeds
 
 
-def write_tp(out_dir: Path, check: bool, out: Path | None = None, extra: int = 0, part: int = 1) -> Path:
+def write_tp(out_dir: Path, check: bool, out: Path | None = None, extra: dict[str, int] | None = None, part: int = 1) -> Path:
     """Writes the 022-R11 check plan config/plans/teacher_tp_check.toml (`check`) or the 022-R12 botgen plan
     config/plans/teacher_botgen_tp.toml, or with `extra` the botgen top-up part config/plans/teacher_botgen_tp_x<K>.toml;
     asserts its seeds are disjoint from every other plan under `out_dir` (and subfolders), the botgen / check /
@@ -719,7 +739,7 @@ def write_tp(out_dir: Path, check: bool, out: Path | None = None, extra: int = 0
     taken = taken_seeds(out_dir, (out, own)) | reserved_seeds(skip_tp_extra_part=part if extra else None)
     assert not taken & set(seeds), "a seed of this plan is another plan's (botgen, check, dagger, distill, protocol or development)"
     if extra:
-        # A top-up part rewritten with another N would replay seeds of games already played; use another --part.
+        # A top-up part rewritten with other counts would replay seeds of games already played; use another --part.
         for f in {out.resolve(), own.resolve()}:
             if f.exists():
                 assert plan_seeds(f) == set(seeds), f"{f} exists with other seeds: refusing to overwrite it (games of it may be played); use another --part / --out"
@@ -884,11 +904,14 @@ if __name__ == "__main__":
     ap.add_argument("--distill", action="store_true", help="write a self-game distillation round plan (044-R1; needs --checkpoint)")
     ap.add_argument("--round", type=int, default=None, help="--dagger / --distill: round number, default 1 (seeds per round disjoint)")
     ap.add_argument("--half", action="store_true", help="--dagger / --distill: half-size round plan, 300 games (11th advisory 2, 044-R1 d2)")
+    ap.add_argument("--extra-p", type=int, default=0,
+                    help="--botgen-tp: N more 022 teacher botgen games against Protoss (044-R8, user decisions 2026-11-14; a multiple of 16)")
+    ap.add_argument("--extra-t", type=int, default=0,
+                    help="--botgen-tp: M more 022 teacher botgen games against Terran (a multiple of 16; N + M <= 992 per --part)")
     ap.add_argument("--extra", type=int, default=0,
-                    help="--distill: a top-up plan of N more games of round --round (044-R5 (3), user decision 2026-11-14; N a multiple of 20); "
-                         "--botgen-tp: N more 022 teacher botgen games (044-R8, user decision 2026-11-14; N a multiple of 32)")
+                    help="--distill: a top-up plan of N more games of round --round (044-R5 (3), user decision 2026-11-14; N a multiple of 20)")
     ap.add_argument("--part", type=int, default=None,
-                    help="--distill / --botgen-tp --extra (required there): top-up part number 1..10, a new one per top-up (its own seed block)")
+                    help="--distill --extra / --botgen-tp --extra-p / --extra-t (required there): top-up part number 1..10, a new one per top-up (its own seed block)")
     ap.add_argument("--memory-log", action="store_true",
                     help="--dagger: the model writes decision logs for the memory_action relabel (041-R28); --distill / --teacher-round: always on")
     ap.add_argument("--teacher-tp", action="store_true", help="write the 022-R11 check plan of the 022 teacher terran_tp (config/plans/teacher_tp_check.toml)")
@@ -898,14 +921,19 @@ if __name__ == "__main__":
     a = ap.parse_args()
     if a.teacher_tp or a.botgen_tp:
         # 022-R11 / R12: fixed composition and seeds; only --out-dir (and --out) apply, and for --botgen-tp the
-        # top-up --extra N --part K (044-R8, user decision 2026-11-14).
+        # top-up --extra-p N --extra-t M --part K against the short race(s) only (044-R8, user decisions 2026-11-14).
         assert not (a.teacher_tp and a.botgen_tp), "--teacher-tp and --botgen-tp are separate plans"
         assert not (a.teacher or a.botgen or a.dagger or a.distill or a.teacher_round or a.half or a.memory_log or a.round is not None
-                    or a.first_game is not None or a.checkpoint or a.name), "--teacher-tp / --botgen-tp take only --out-dir / --out (--botgen-tp also --extra / --part)"
-        assert a.botgen_tp or not (a.extra or a.part is not None), "--extra / --part are for --botgen-tp, not --teacher-tp"
-        assert bool(a.extra) == (a.part is not None), "--botgen-tp --extra N needs --part K (1 for the first top-up, 2 for the next, ...) and --part needs --extra"
-        write_tp(a.out_dir, a.teacher_tp, a.out, a.extra, a.part or 1)
+                    or a.first_game is not None or a.checkpoint or a.name or a.extra), \
+            "--teacher-tp / --botgen-tp take only --out-dir / --out (--botgen-tp also --extra-p / --extra-t / --part)"
+        topup = bool(a.extra_p or a.extra_t)
+        assert a.botgen_tp or not (topup or a.part is not None), "--extra-p / --extra-t / --part are for --botgen-tp, not --teacher-tp"
+        assert topup == (a.part is not None), \
+            "--botgen-tp --extra-p N / --extra-t M needs --part K (1 for the first top-up, 2 for the next, ...) and --part needs a count"
+        extra = {r: n for r, n in (("P", a.extra_p), ("T", a.extra_t)) if n} if topup else None
+        write_tp(a.out_dir, a.teacher_tp, a.out, extra, a.part or 1)
         raise SystemExit(0)
+    assert not (a.extra_p or a.extra_t), "--extra-p / --extra-t are for --botgen-tp"
     if a.teacher_round:
         # 044-R8 (user decision 2026-11-14): one round t1 of 300 games; the round's model, never a default.
         assert not (a.teacher or a.botgen or a.dagger or a.distill or a.extra or a.part is not None or a.first_game is not None

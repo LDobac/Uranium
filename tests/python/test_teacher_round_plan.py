@@ -126,7 +126,7 @@ def test_teacher_round_rejects_taken_seed_044_r8(tmp_path):
     rcp.write_distill(tmp_path, 2, CKPT, None, half=True)
     rcp.write_tp(tmp_path, True)
     rcp.write_tp(tmp_path, False)
-    rcp.write_tp(tmp_path, False, extra=rcp.TP_EXTRA_MAX, part=1)
+    rcp.write_tp(tmp_path, False, extra={"P": rcp.TP_EXTRA_MAX}, part=1)
     assert rcp.write_teacher_round(tmp_path, CKPT).read_bytes() == first
 
 

@@ -68,7 +68,7 @@ def test_decide_d2_is_the_last_round_044_r6():
     assert dv.decide("d2", "FAIL", tvz(30), rush(30, 30), S_RUSH, 20, 1)[0] == "stop", "no d3"
     with pytest.raises(SystemExit, match="d2 is the last round"):
         dv.decide("d3", "PASS", tvz(16), rush(26, 24), S_RUSH, 1, 1)
-    # 044-R8 teacher round t1 (메인 임시 결정 2026-11-14, 사용자 확인 대기): pass or stop only, never "d2".
+    # 044-R8 teacher round t1 (user confirmed 2026-11-14): pass or stop only, never "d2".
     assert dv.decide("t1", "PASS", tvz(16), rush(26, 24), S_RUSH, 1, 1)[0] == "pass"
     assert dv.decide("t1", "FAIL", tvz(16), rush(26, 24), S_RUSH, 5, 1)[0] == "stop", "the d1 'd2' case is a stop for t1"
     assert dv.decide("t1", "FAIL", tvz(30), rush(30, 30), S_RUSH, 20, 1)[0] == "stop"
