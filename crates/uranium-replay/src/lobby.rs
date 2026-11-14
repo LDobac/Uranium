@@ -98,23 +98,51 @@ pub fn name_index(name: &[u8]) -> Option<u8> {
     i.parse().ok()
 }
 
-/// A replay in which a player is the 022 teacher (hostd name `p<i>-T0-terran-terran_tp`).
+/// A replay in which a player is the 022 teacher by its default hostd name
+/// (`p<i>-T0-terran-terran_tp`). A plan `name` override on the teacher hides it from this check:
+/// the 022 plans (`rush_check_plan.py --teacher-tp / --botgen-tp`) never set one, and a `--games`
+/// build refuses players[0] of any other name ([`players0_view`]).
 pub fn is_tp_teacher_game(rep: &Replay) -> bool {
     rep.header.players.iter().any(|p| name_index(&p.name).is_some() && p.name.splitn(2, |&b| b == b'-').nth(1) == Some(TP_TEACHER_NAME.as_bytes()))
 }
 
+/// The hostd name of the 022 teacher as players[0] (020-R16, no plan `name` override).
+fn tp_teacher_p0() -> String {
+    format!("p0-{TP_TEACHER_NAME}")
+}
+
+/// `--games` finds a game by the id in its file name, so two replay files of one id (`g3.rep` and
+/// `g3-s5-p0.rep`, or two plan folders' `g3.rep`) would read the same games.jsonl line: refused.
+pub fn unique_game_ids(files: &[std::path::PathBuf]) -> Result<()> {
+    let mut seen: HashMap<u64, &std::path::PathBuf> = HashMap::new();
+    for f in files {
+        if let Some(first) = game_id(f).and_then(|id| seen.insert(id, f)) {
+            bail!("--games: {} and {} have the same game id: build one plan (stage) folder at a time (022-R12)", first.display(), f.display());
+        }
+    }
+    Ok(())
+}
+
 /// The players[0] view of a replay (one of the [`crate::pipeline::filter`] `views`), or why the
-/// replay is refused (with the view when there is one): no games.jsonl line (`lobby` None), no
-/// players[0] player name, players[0] not a Terran view or not a lobby Terran, a lobby Random
-/// opponent (022-R2), a lobby Zerg opponent (022-AC3 with `--relabel terran_tp`, 022-R12 for the
-/// 022 botgen data), or a lobby race other than the race the replay header says was played.
+/// replay is refused (with the view when there is one): no games.jsonl line (`lobby` None), not
+/// exactly one players[0] player name, in a botgen build (`relabel` None) a players[0] that is not
+/// the 022 teacher by its hostd name, players[0] not a Terran view or not a lobby Terran, a lobby
+/// Random opponent (022-R2), a lobby Zerg opponent (022-R2 with 022-AC3 / 022-R12 ② / 044-R8 ② for
+/// `--relabel terran_tp`, 022-R12 for the 022 botgen data), or a lobby race other than the race
+/// the replay header says was played.
 pub fn players0_view(rep: &Replay, views: Vec<View>, lobby: Option<[u8; 2]>, relabel: Option<T0Build>) -> std::result::Result<View, (Option<View>, String)> {
     let Some([own, enemy]) = lobby else {
         return Err((None, "no games.jsonl line for this replay: lobby races unknown (022-R2, 022-R12)".into()));
     };
-    let Some(p0) = rep.header.players.iter().find(|p| name_index(&p.name) == Some(0)) else {
-        return Err((None, "no players[0] player name (hostd p0-<name> / uranium-p0, 020-R16)".into()));
+    let p0s: Vec<&crate::header::Player> = rep.header.players.iter().filter(|p| name_index(&p.name) == Some(0)).collect();
+    let [p0] = p0s.as_slice() else {
+        return Err((None, format!("{} players[0] player names, not one (hostd p0-<name> / uranium-p0, 020-R16)", p0s.len())));
     };
+    // 022-R12 / 040: a botgen build's data is the 022 teacher's view; a plan `name` override (or any
+    // other players[0]) is refused rather than taken for the teacher.
+    if relabel.is_none() && p0.name != tp_teacher_p0().as_bytes() {
+        return Err((None, format!("players[0] is not the 022 teacher by its hostd name {} (022-R12: teacher view only; plan name overrides are not supported)", tp_teacher_p0())));
+    }
     let Some(view) = views.into_iter().find(|v| v.perspective == p0.id) else {
         return Err((None, "players[0] is not a Terran view".into()));
     };
@@ -125,8 +153,8 @@ pub fn players0_view(rep: &Replay, views: Vec<View>, lobby: Option<[u8; 2]>, rel
     let played = rep.active_players().into_iter().find(|(p, _)| p.id != p0.id).map(|(p, _)| p.race);
     let reason = match enemy {
         RACE_RANDOM => Some("lobby Random opponent: no 022 teacher data from Random games (022-R2)".to_string()),
-        RACE_ZERG if relabel.is_some() => Some("lobby Zerg opponent: --relabel terran_tp relabels games against Terran / Protoss only (022-AC3, 041-R22)".to_string()),
-        RACE_ZERG => Some("lobby Zerg opponent: 022 teacher botgen data is against Terran / Protoss only (022-R12)".to_string()),
+        RACE_ZERG if relabel.is_some() => Some("lobby Zerg opponent: --relabel terran_tp relabels games against Terran / Protoss only (022-R2, 022-AC3, 022-R12 ②, 044-R8 ②, 041-R22)".to_string()),
+        RACE_ZERG => Some("lobby Zerg opponent: 022 teacher botgen data is against Terran / Protoss only (022-R2, 022-R12)".to_string()),
         r if played != Some(r) => Some(format!("lobby race {} (games.jsonl) but the replay header race {}", race_name(r), played.map_or("none", race_name))),
         _ => None,
     };
@@ -152,6 +180,10 @@ mod tests {
         assert_eq!(log.lobby(Path::new("game4.rep")), None);
         assert!(GamesLog::parse("{\"game_id\":3,\"races\":[\"Terran\",\"Zerg\"]}\n{\"game_id\":3,\"races\":[\"Terran\",\"Protoss\"]}").is_err(), "conflicting lines");
         assert!(GamesLog::parse("{\"game_id\":3,\"races\":[\"Terran\",\"Elf\"]}").is_err());
+        let p = |s: &str| std::path::PathBuf::from(s);
+        assert!(unique_game_ids(&[p("a/g3.rep"), p("a/g4.rep"), p("a/x.rep"), p("a/y.rep")]).is_ok());
+        assert!(unique_game_ids(&[p("a/g3.rep"), p("a/g3-s5-p0.rep")]).is_err(), "one id, two files");
+        assert!(unique_game_ids(&[p("a/replays/g3.rep"), p("b/replays/g3.rep")]).is_err(), "two plan folders");
         assert_eq!([name_index(b"p0-T0-terran-terran_tp"), name_index(b"uranium-p1"), name_index(b"p12-x"), name_index(b"player"), name_index(b"px-y")], [Some(0), Some(1), Some(12), None, None]);
     }
 }

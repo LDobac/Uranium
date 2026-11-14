@@ -207,8 +207,10 @@ enum Cmd {
         /// Required with `--relabel terran_tp`; with `--src botgen` it marks a build of the 022
         /// teacher's botgen games. Only the plan's players[0] (hostd name `p0-...`: the teacher, or
         /// the model) is a view; a game whose opponent's lobby race is Zerg or Random, without a
-        /// games.jsonl line, or whose lobby race differs from the race played is `filtered`. A
-        /// botgen build without it refuses 022 teacher games. One plan (stage) folder per build.
+        /// games.jsonl line, not exactly one players[0] name, players[0] not lobby Terran (botgen:
+        /// not the 022 teacher by its hostd name `p0-T0-terran-terran_tp`), or whose lobby race
+        /// differs from the race played is `filtered`. A botgen build without it refuses 022
+        /// teacher games. One plan (stage) folder per build: two replay files of one game id stop it.
         #[arg(long)]
         games: Option<PathBuf>,
     },
@@ -383,9 +385,14 @@ fn main() -> Result<()> {
             files.truncate(limit.unwrap_or(usize::MAX));
             // 041-R28: a decision log is found by its replay's file stem, so two replays with the
             // same stem (two plan folders' g1.rep) could take each other's log: build one plan
-            // folder (with its own memory folder) at a time; 022 `--games` finds a game id by the stem too.
-            if memory_log.is_some() || games.is_some() {
+            // folder (with its own memory folder) at a time.
+            if memory_log.is_some() {
                 uranium_replay::pipeline::unique_stems(&files)?;
+            }
+            // 022 `--games` finds a game by the id in the file name: one file per id (g3.rep and
+            // g3-s5-p0.rep clash too).
+            if games.is_some() {
+                uranium_replay::lobby::unique_game_ids(&files)?;
             }
             // Several hosts split one source by sorted-file position (each writes its own shards
             // folder and records file).

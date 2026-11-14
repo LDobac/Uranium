@@ -1664,8 +1664,8 @@ mod tests {
         let tp = "p0-T0-terran-terran_tp";
         // players[0] has command id 1 and the opponent id 0: the view follows the name.
         let game = |id, enemy_header, enemy_name: &str| tp_replay(&dir, id, [(0, enemy_header, enemy_name), (1, T, tp)]);
-        let lines = [(1, "Terran"), (2, "Random"), (3, "Zerg"), (4, "Protoss"), (6, "Protoss")];
-        let text: String = lines.iter().map(|(id, r)| format!("{{\"game_id\":{id},\"matchup\":0,\"races\":[\"Terran\",\"{r}\"],\"outcome\":\"finished\"}}\n")).collect();
+        let lines = [(1, "Terran", "Terran"), (2, "Terran", "Random"), (3, "Terran", "Zerg"), (4, "Terran", "Protoss"), (6, "Terran", "Protoss"), (8, "Random", "Protoss"), (9, "Terran", "Protoss"), (10, "Terran", "Protoss"), (11, "Terran", "Protoss")];
+        let text: String = lines.iter().map(|(id, a, b)| format!("{{\"game_id\":{id},\"matchup\":0,\"races\":[\"{a}\",\"{b}\"],\"outcome\":\"finished\"}}\n")).collect();
         let games = crate::lobby::GamesLog::parse(&text).unwrap();
         let families = MapFamilies::load().unwrap();
         let excludes = MapExcludes::load(&families).unwrap();
@@ -1675,6 +1675,8 @@ mod tests {
             let opt = BuildOptions { src: src.into(), shards_dir: dir.join("s"), staging_dir: dir.join("l"), recorded_winners: HashMap::new(), jobs: 1, shard_target_bytes: 1, budget_bytes: 1 << 30, first_shard_index: 0, skip_sha256: Default::default(), done: ResumeDone::default(), duplicates: Duplicates::find(&[path.to_path_buf()], &[0], 1), until_frame: Some(14_400), time_limit: Some(14_400), relabel, memory_log: None, games };
             process(0, path, &opt, &cfg, &families, &excludes, &labeler, &Mutex::new(0)).into_iter().map(|(r, g)| {
                 assert!(g.is_none());
+                // Refusal records name the build's teacher too (records `relabel`).
+                assert_eq!(r.relabel, relabel.map(|b| b.name()));
                 (r.view.map(|v| v.perspective), r.outcome)
             }).collect::<Vec<_>>()
         };
@@ -1713,6 +1715,21 @@ mod tests {
         // Lobby Protoss but the header says Terran was played: refused.
         let got = run(&game(6, T, "p1-T0-terran"), "botgen", None, Some(games.clone()));
         assert!(reason(&got[0].1).contains("header race Terran"), "{got:?}");
+        // players[0] whose lobby race was Random (it played Terran): refused.
+        let got = run(&game(8, P, "p1-stardust"), "botgen", None, Some(games.clone()));
+        assert!(got.len() == 1 && got[0].0 == Some(1) && reason(&got[0].1).contains("players[0] lobby race Random"), "{got:?}");
+        // No players[0] name, or two: refused (the view is not guessed from the command id).
+        let got = run(&tp_replay(&dir, 9, [(0, P, "stardust"), (1, T, "teacher")]), "dagger", Some(T0Build::TerranTp), Some(games.clone()));
+        assert!(got.len() == 1 && got[0].0.is_none() && reason(&got[0].1).contains("0 players[0] player names"), "{got:?}");
+        let got = run(&tp_replay(&dir, 10, [(0, P, "p0-stardust"), (1, T, tp)]), "dagger", Some(T0Build::TerranTp), Some(games.clone()));
+        assert!(got.len() == 1 && got[0].0.is_none() && reason(&got[0].1).contains("2 players[0] player names"), "{got:?}");
+        // A botgen build takes players[0] only when it is the 022 teacher by its hostd name (a plan
+        // `name` override or another player is refused); a relabel build takes any players[0] (the model).
+        let other = tp_replay(&dir, 11, [(0, P, "p1-stardust"), (1, T, "p0-mine")]);
+        let got = run(&other, "botgen", None, Some(games.clone()));
+        assert!(got.len() == 1 && got[0].0.is_none() && reason(&got[0].1).contains("not the 022 teacher"), "{got:?}");
+        let got = run(&other, "dagger", Some(T0Build::TerranTp), Some(games.clone()));
+        assert!(got.len() == 1 && got[0].0 == Some(1) && reason(&got[0].1).is_empty(), "{got:?}");
         // Builds without --games are as before: every Terran view (the 021-R8 relabel; a botgen game
         // without the 022 teacher).
         assert_eq!(run(&tvt, "dagger", Some(T0Build::TerranReact), None).len(), 2);
