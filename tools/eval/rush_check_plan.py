@@ -82,7 +82,8 @@ rewrites config/plans/teacher_botgen_tp.toml, the teacher's botgen games: T0 sta
 14400). Both: races fixed (no Random, 022-R2), seeds splitmix64(1,000,000 + n) >> 32 (check n = 1..208, botgen
 n = 1,001..1,800), asserted disjoint from each other, from every plan under --out-dir and its subfolders (050-R9
 protocol templates included), from the botgen / check seeds, from the DAgger and distillation round blocks not
-generated yet (rounds 1..10, distillation top-ups) and from the teacher's development seeds 77,001..77,264.
+generated yet (rounds 1..10, distillation top-ups) and from the teacher's development seeds (77,001..77,264 and
+splitmix64(1,000,000 + n) >> 32 for n = 5,001..5,132, the 2026-11-14 tuning).
 
     python tools/eval/rush_check_plan.py --teacher-tp
     python tools/eval/rush_check_plan.py --botgen-tp
@@ -531,8 +532,16 @@ TP_BOTGEN_T1_GAMES = 25
 TP_SEED_KEY = 1_000_000
 TP_CHECK_FIRST = 1
 TP_BOTGEN_FIRST = 1001
-# 022-R11: the teacher's development runs used seeds 77,001..77,264; the check plan must not tune on them.
+# 022-R11: the teacher's development runs used seeds 77,001..77,264 and, for the 2026-11-14 tuning (022 조정),
+# splitmix64(1,000,000 + n) >> 32 with n = 5,001..5,132 (T0 Protoss 5,001..5,048, T0 Terran 5,101..5,132); no plan
+# may reuse them.
 TP_DEV_SEEDS = range(77001, 77265)
+TP_DEV_TUNE = range(5001, 5133)
+
+
+def tp_dev_seeds() -> set[int]:
+    """Every 022 teacher development seed (TP_DEV_SEEDS and the tuning block TP_DEV_TUNE on the 022 key)."""
+    return set(TP_DEV_SEEDS) | {splitmix64(TP_SEED_KEY + n) >> 32 for n in TP_DEV_TUNE}
 # Seed blocks of plans not generated yet that the 022 plans keep clear of: DAgger rounds 1..10 (70,000 + n,
 # n <= 6,000), distillation rounds 1..10 (80,000 + n, n <= 6,000) and their top-up parts (n = 100,001..200,000).
 RESERVED_ROUNDS = 10
@@ -565,7 +574,7 @@ def reserved_seeds(skip_teacher_round: int | None = None) -> set[int]:
         if r != skip_teacher_round:
             first = teacher_round_first(r)
             s |= {splitmix64(TEACHER_ROUND_SEED_KEY + k) >> 32 for k in range(first, first + TEACHER_ROUND_STRIDE)}
-    return s | set(TP_DEV_SEEDS)
+    return s | tp_dev_seeds()
 
 
 def render_tp(check: bool, name: str) -> tuple[str, list[int]]:

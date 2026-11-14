@@ -11,8 +11,8 @@
 //! two zealots / four marines before 3:30, the scout at the enemy start depot from 2:30 to 3:30
 //! without a gateway / barracks ever seen near that start (a proxy), or two enemy army units
 //! within 20 tiles of an own command center. Without R the macro branch M expands (Protoss: once
-//! the factory is ordered, at the latest from 4:00; Terran: after two tanks), adds barracks and
-//! a natural bunker (022-R5). R switches to the defence branch D at that observation: the 021-R8
+//! the factory is ordered and three tanks are complete, its price held from everything from the
+//! later of that and 4:00; Terran: after two tanks), adds barracks and a natural bunker (022-R5). R switches to the defence branch D at that observation: the 021-R8
 //! main bunker, garrison, SCV pull and repair, a second barracks, and the tanks gather behind
 //! the bunker (022-R6). D returns to M with 8 marines, 2 tanks and 60 s without contact, or with
 //! 4 tanks. Tanks siege when enemy ground army is within 11 tiles and leave siege mode after 10 s
@@ -87,8 +87,9 @@ pub struct TpParams {
     /// R is judged only before this frame (8:00).
     pub judge_until: u32,
     /// 022-R5 M: the natural command center at `expand_minerals` (400) — against Protoss once the
-    /// factory is ordered (at the latest from `expand_by`, 4:00: then its price is held from
-    /// everything), against Terran once `expand_tanks` (2) tanks are complete.
+    /// factory is ordered and `expand_tanks_p` (3) tanks are complete (from then and from
+    /// `expand_by`, 4:00, whichever is later, its price is held from everything), against Terran
+    /// once `expand_tanks` (2) tanks are complete.
     pub expand_minerals: i32,
     pub expand_by: u32,
     pub expand_tanks: usize,
@@ -128,12 +129,15 @@ pub struct TpParams {
     /// frames (022-R1, 48).
     pub retarget: u32,
     /// 022-R6 D ② ③ numbers of the reused 021-R8 defence, for this teacher (022 tuning, user decision
-    /// 2026-11-14: tune within the decided build direction): SCVs repairing a damaged bunker
-    /// (021-R8 `repairers`), most SCVs pulled against enemies at the bunker or the mineral line
-    /// (`pull_max`), and the marines-to-enemies ratio from which D marines attack-move out instead
-    /// of holding by the bunker (`marine_ratio`).
+    /// 2026-11-14: tune within the decided build direction; values as 021-R8). SCVs repairing a
+    /// damaged bunker (021-R8 `repairers`, 2).
     pub repairers: usize,
+    /// Most SCVs pulled against enemy ground army at a bunker or a mineral line (021-R8 `pull_max`, 6;
+    /// min(this, SCVs − 4)).
     pub pull_max: usize,
+    /// D marines outside bunkers attack-move (home guard) once they are at least this many times the
+    /// enemy ground army near the bases, else they load and hold by the bunker (021-R8
+    /// `marine_ratio`, 2; not used vs Protoss with `marines_hold_p`).
     pub marine_ratio: usize,
     /// 022-R5 M vs Protoss (022 tuning, 2026-11-14 dev runs): the natural also waits for this many
     /// complete tanks (3; 0 = the factory order alone, as decided first).
@@ -1555,7 +1559,9 @@ mod tests {
     /// 022-R6 D ③ (tuned numbers): a damaged bunker under zealot attack gets `repairers` SCVs.
     #[test]
     fn damaged_bunker_gets_repairers_022_r6() {
-        let mut b = teacher();
+        // A non-default number, so the test checks that `TpParams::repairers` reaches the defence.
+        let tp = TpParams { repairers: 5, ..TpParams::default() };
+        let mut b = Brain::with_hints(&info(Race::Protoss), Kit { react: Some(tp.react_params()), tp: Some(tp), ..Kit::terran_tp() }, &hints());
         b.scout_done = true;
         let mut u = base(20);
         let bunker = (home().0 + 5 * 32, home().1 + 64);
@@ -1564,7 +1570,7 @@ mod tests {
         let act = b.act(&frame(7_000, u, 100, 40));
         assert_eq!(branch(&b), Branch::Defence);
         let repair = ordered(&act, |o| *o == CmdOrder::Repair(60));
-        assert_eq!(repair.len(), TpParams::default().repairers, "{:?}", act.cmds);
+        assert_eq!(repair.len(), 5, "{:?}", act.cmds);
     }
 
     /// 022-R3 scout: the enemy main found before 2:40 keeps the scout there (circling, from 2:30 at
