@@ -115,3 +115,73 @@ def test_tp_cli_takes_only_out_dir_022_r11(tmp_path):
     ok = run("--botgen-tp")
     assert ok.returncode == 0, ok.stderr
     assert _text(tmp_path / "teacher_botgen_tp.toml") == _text(TRACKED[False])
+
+
+@pytest.mark.parametrize("extra", [32, 224, rcp.TP_EXTRA_MAX])
+def test_tp_botgen_topup_composition_044_r8(tmp_path, extra):
+    """044-R8 / 022-R12 top-up (user decision 2026-11-14): `--botgen-tp --extra N --part K` writes N more 022 teacher
+    botgen games in the exact 022-R12 ratio (every block x N / 800), the teacher players[0], 10 min, no Random, plan
+    name teacher-botgen-tp-x<K>; half of them against each race (mix-fractions' extra_botgen_tp_games rule)."""
+    out = rcp.write_tp(tmp_path, False, extra=extra, part=2)
+    assert out == tmp_path / "teacher_botgen_tp_x2.toml"
+    plan = _load(out)
+    assert plan["name"] == "teacher-botgen-tp-x2" and plan["max_frames"] == 14400 and plan["save_replay"] is True
+    games = Counter()
+    for m in plan["matchup"]:
+        assert m["map"] in MAPS and m["p0"] == TEACHER
+        assert m.get("p1_random_ratio", 0) == 0 and m["p1"]["race"] in ("protoss", "terran") and "build" not in m["p1"]
+        games[(_opponent(m["p1"]), m["map"])] += m["games"]
+    assert games == Counter({**{(o, mp): 150 * extra // 800 for o in T0 for mp in MAPS}, **{(o, mp): 25 * extra // 800 for o in T1 for mp in MAPS}})
+    assert sum(games.values()) == extra == len(plan["seeds"])
+    protoss = sum(g for ((_, _, race), _), g in games.items() if race == "protoss")
+    assert protoss * 2 == extra, "half of the games against each race"
+
+
+def test_tp_botgen_topup_seeds_044_r8(tmp_path):
+    """044-R8 top-up: seeds are the game-number hash of the part's own block n = 10,000 + (K - 1) * 1,000 + i of the
+    022 key, disjoint between parts, from the check / botgen plans, every tracked plan and the reserved blocks
+    (the teacher round t1 included); N not a multiple of 32 or above 992 and a part outside 1..10 are refused; a
+    plan under --out-dir that takes one of its seeds stops the generator; a part is never rewritten with other
+    seeds."""
+    seeds = {}
+    for part in range(1, rcp.TP_EXTRA_PARTS + 1):
+        _, s = rcp.render_tp(False, "x", extra=rcp.TP_EXTRA_MAX, part=part)
+        first = 10_000 + (part - 1) * 1_000 + 1
+        assert s == [rcp.splitmix64(1_000_000 + n) >> 32 for n in range(first, first + rcp.TP_EXTRA_MAX)]
+        seeds[part] = set(s)
+        assert set(s) <= rcp.tp_extra_block(part)
+        assert not rcp.reserved_seeds(skip_tp_extra_part=part) & rcp.tp_extra_block(part)
+    allp = set().union(*seeds.values())
+    assert len(allp) == rcp.TP_EXTRA_PARTS * rcp.TP_EXTRA_MAX, "parts disjoint"
+    tracked = set()
+    for p in PLANS.rglob("*.toml"):
+        if not p.name.startswith("teacher_botgen_tp_x"):
+            tracked |= rcp.plan_seeds(p)
+    assert not tracked & set().union(*(rcp.tp_extra_block(k) for k in range(1, 11)))
+    for bad in (dict(extra=30), dict(extra=1024), dict(extra=32, part=0), dict(extra=32, part=11)):
+        with pytest.raises(AssertionError):
+            rcp.render_tp(False, "x", **bad)
+    with pytest.raises(AssertionError):
+        rcp.render_tp(True, "x", extra=32)
+    out = rcp.write_tp(tmp_path, False, extra=64, part=1)
+    assert rcp.write_tp(tmp_path, False, extra=64, part=1) == out
+    with pytest.raises(AssertionError, match="other seeds"):
+        rcp.write_tp(tmp_path, False, extra=96, part=1)
+    _, x2 = rcp.render_tp(False, "x", extra=64, part=2)
+    (tmp_path / "clash.toml").write_text(
+        f'name = "c"\nseeds = [{x2[5]}]\n[[matchup]]\nmap = "fighting_spirit"\ngames = 1\n'
+        'p0 = { kind = "t0", race = "terran" }\np1 = { kind = "t0", race = "protoss" }\n', encoding="utf-8")
+    with pytest.raises(AssertionError, match="another plan's"):
+        rcp.write_tp(tmp_path, False, extra=64, part=2)
+
+
+def test_tp_botgen_topup_cli_044_r8(tmp_path):
+    """044-R8 top-up: `--extra` needs `--part` (and back), both only with --botgen-tp (or --distill)."""
+    run = lambda *a: subprocess.run([sys.executable, str(ROOT / "tools" / "eval" / "rush_check_plan.py"), *a, "--out-dir", str(tmp_path)], capture_output=True, text=True)  # noqa: E731
+    ok = run("--botgen-tp", "--extra", "64", "--part", "3")
+    assert ok.returncode == 0, ok.stderr
+    assert _load(tmp_path / "teacher_botgen_tp_x3.toml")["name"] == "teacher-botgen-tp-x3"
+    for bad in (["--botgen-tp", "--extra", "64"], ["--botgen-tp", "--part", "1"], ["--teacher-tp", "--extra", "64", "--part", "1"],
+                ["--botgen-tp", "--extra", "50", "--part", "1"], ["--botgen-tp", "--extra", "64", "--part", "11"], ["--botgen-tp", "--round", "1"]):
+        r = run(*bad)
+        assert r.returncode != 0, bad
