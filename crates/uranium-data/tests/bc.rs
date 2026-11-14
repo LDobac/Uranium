@@ -1055,7 +1055,7 @@ fn config_fingerprint_fields_are_classified_b3() {
     let json = serde_json::to_value(&cfg).unwrap();
     assert!(json.get("aux").is_none() && json.get("monitor").is_none() && json.get("train").is_none(), "041-R23 / R24 / R25: absent tables stay out of the config JSON");
     cfg.keep_checkpoints = Some(3);
-    cfg.data.subsample = Some(uranium_data::split::Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()], fraction_by_race: None, fraction_by_source: None });
+    cfg.data.subsample = Some(uranium_data::split::Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()], fraction_by_race: None, fraction_by_source: None, keep_fraction_by_race: None });
     cfg.aux = Some(AuxWeights { privileged: Some(0.2), jepa: Some(0.1) });
     cfg.monitor = Some(MonitorConfig { spatial_every: 100 });
     cfg.train = Some(TrainSettings { model_seed: Some(1) });
@@ -1200,7 +1200,7 @@ fn fine_tune_config_041_r21() {
     assert!((ft.lr * ft.s2_lr_scale - 1.5e-5).abs() < 1e-12, "peak {}", ft.lr * ft.s2_lr_scale);
     assert!((ft.min_lr * ft.s2_lr_scale - 1.5e-7).abs() < 1e-14, "floor {}", ft.min_lr * ft.s2_lr_scale);
     assert_eq!(ft.data.seed, 3);
-    assert_eq!(ft.data.subsample, Some(Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()], fraction_by_race: None, fraction_by_source: None }));
+    assert_eq!(ft.data.subsample, Some(Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()], fraction_by_race: None, fraction_by_source: None, keep_fraction_by_race: None }));
     assert!(ft.steps.s2 > 0);
     assert_eq!(ft.steps.s2_warmup, short_stage_warmup(ft.steps.s2));
     let s2 = ft.clone().for_stage(BcStage::S2);
@@ -1222,7 +1222,7 @@ fn fine_tune_config_041_r21() {
 fn subsample_keeps_a_share_per_game_041_r21() {
     use uranium_data::data::enemy_race_masked;
     use uranium_data::split::Subsample;
-    let sub = Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()], fraction_by_race: None, fraction_by_source: None };
+    let sub = Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()], fraction_by_race: None, fraction_by_source: None, keep_fraction_by_race: None };
     let meta = |i: u32, src: &str| {
         let mut m = game().meta;
         m.replay_sha256 = format!("{:064x}", u64::from(i).wrapping_mul(0x9E37_79B9_7F4A_7C15));
@@ -1239,13 +1239,13 @@ fn subsample_keeps_a_share_per_game_041_r21() {
     other.perspective_slot = 1;
     assert_eq!(sub.keeps(&other, 3), sub.keeps(&metas[0], 3), "both perspectives of a game");
     assert!((0..2_000).all(|i| sub.keeps(&meta(i, "botgen"), 3)), "teacher games are kept whole");
-    let all = Subsample { fraction: 1.0, keep_sources: vec![], fraction_by_race: None, fraction_by_source: None };
+    let all = Subsample { fraction: 1.0, keep_sources: vec![], fraction_by_race: None, fraction_by_source: None, keep_fraction_by_race: None };
     assert!(metas.iter().all(|m| all.keeps(m, 3)));
     // Independent of the race mask drawn from the same hash and seed (other salt).
     let masked = kept.iter().filter(|m| enemy_race_masked(&m.replay_sha256, 3, 0.05)).count() as f64 / kept.len() as f64;
     assert!((0.035..0.065).contains(&masked), "race mask share among kept games {masked}");
-    assert!(Subsample { fraction: 0.0, keep_sources: vec![], fraction_by_race: None, fraction_by_source: None }.check().is_err());
-    assert!(Subsample { fraction: 1.5, keep_sources: vec![], fraction_by_race: None, fraction_by_source: None }.check().is_err());
+    assert!(Subsample { fraction: 0.0, keep_sources: vec![], fraction_by_race: None, fraction_by_source: None, keep_fraction_by_race: None }.check().is_err());
+    assert!(Subsample { fraction: 1.5, keep_sources: vec![], fraction_by_race: None, fraction_by_source: None, keep_fraction_by_race: None }.check().is_err());
     assert!(sub.check().is_ok());
 }
 
@@ -1257,7 +1257,7 @@ fn subsample_keeps_a_share_per_game_041_r21() {
 fn subsample_by_enemy_race_041_r26() {
     use uranium_data::split::{Subsample, enemy_race};
     assert_eq!((enemy_race("TvZ"), enemy_race("TvT"), enemy_race("T")), (Some("Z"), Some("T"), None));
-    let by = Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()], fraction_by_race: Some([("T".to_string(), 0.5), ("Z".to_string(), 0.1)].into()), fraction_by_source: None };
+    let by = Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()], fraction_by_race: Some([("T".to_string(), 0.5), ("Z".to_string(), 0.1)].into()), fraction_by_source: None, keep_fraction_by_race: None };
     let plain = Subsample { fraction_by_race: None, ..by.clone() };
     let meta = |i: u32, src: &str, mu: &str| {
         let mut m = game().meta;
@@ -1279,7 +1279,7 @@ fn subsample_by_enemy_race_041_r26() {
     other.perspective_slot = 1;
     assert_eq!(by.keeps(&other, 3), by.keeps(&tvt, 3), "both perspectives of a TvT game");
     let metas: Vec<GameMeta> = (0..2_000).map(|i| meta(i, "community", "TvP")).collect();
-    assert!(metas.iter().all(|m| plain.keeps(m, 3) == Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()], fraction_by_race: Some([("P".to_string(), 0.25)].into()), fraction_by_source: None }.keeps(m, 3)));
+    assert!(metas.iter().all(|m| plain.keeps(m, 3) == Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()], fraction_by_race: Some([("P".to_string(), 0.25)].into()), fraction_by_source: None, keep_fraction_by_race: None }.keeps(m, 3)));
     assert!(by.check().is_ok());
     assert!(Subsample { fraction_by_race: Some([("X".to_string(), 0.5)].into()), ..plain.clone() }.check().is_err());
     assert!(Subsample { fraction_by_race: Some([("P".to_string(), 0.0)].into()), ..plain.clone() }.check().is_err());
@@ -1296,7 +1296,7 @@ fn subsample_by_enemy_race_041_r26() {
 #[test]
 fn subsample_by_source_044_r5() {
     use uranium_data::split::Subsample;
-    let by = Subsample { fraction: 0.25, keep_sources: vec!["botgen".into(), "dagger".into()], fraction_by_race: Some([("T".to_string(), 0.5), ("Z".to_string(), 0.1)].into()), fraction_by_source: None };
+    let by = Subsample { fraction: 0.25, keep_sources: vec!["botgen".into(), "dagger".into()], fraction_by_race: Some([("T".to_string(), 0.5), ("Z".to_string(), 0.1)].into()), fraction_by_source: None, keep_fraction_by_race: None };
     let with = Subsample { fraction_by_source: Some([("distill".to_string(), 0.7)].into()), ..by.clone() };
     let meta = |i: u32, src: &str, mu: &str| {
         let mut m = game().meta;
@@ -1353,6 +1353,64 @@ fn subsample_by_source_044_r5() {
     assert_ne!(c.fingerprint(), cfg.fingerprint(), "044-R5: fraction_by_source is in the fingerprint");
 }
 
+/// 044-R8 / 022-R12 (AMB-022-7): `keep_fraction_by_race` keeps that share of the `keep_sources`
+/// (teacher + dagger) games of an enemy race by the same per-game hash rule; a race without a key
+/// keeps its teacher games whole and the other games are kept exactly as without the key; it is
+/// checked (races, range, needs keep_sources), read from TOML, in the B-3 fingerprint when present
+/// and absent from the JSON (so the fingerprint) when not.
+#[test]
+fn subsample_teacher_by_race_044_r8() {
+    use uranium_data::split::Subsample;
+    let by = Subsample {
+        fraction: 0.25,
+        keep_sources: vec!["botgen".into(), "dagger".into()],
+        fraction_by_race: Some([("T".to_string(), 0.5), ("Z".to_string(), 0.1)].into()),
+        fraction_by_source: Some([("distill".to_string(), 0.7)].into()),
+        keep_fraction_by_race: None,
+    };
+    let with = Subsample { keep_fraction_by_race: Some([("T".to_string(), 0.4), ("P".to_string(), 0.6)].into()), ..by.clone() };
+    let meta = |i: u32, src: &str, mu: &str| {
+        let mut m = game().meta;
+        m.replay_sha256 = format!("{:064x}", u64::from(i).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        m.src = src.into();
+        m.matchup = mu.into();
+        m
+    };
+    for (src, mu, want) in [("botgen", "TvT", 0.4), ("dagger", "TvT", 0.4), ("botgen", "TvP", 0.6), ("dagger", "TvP", 0.6)] {
+        let g: Vec<GameMeta> = (0..20_000).map(|i| meta(i, src, mu)).collect();
+        let share = g.iter().filter(|m| with.keeps(m, 15)).count() as f64 / g.len() as f64;
+        assert!((share - want).abs() < 0.01, "{src} {mu}: kept share {share}");
+        assert!(g.iter().all(|m| with.keep_fraction_of(m) == want));
+    }
+    for src in ["botgen", "dagger"] {
+        assert!((0..2_000).all(|i| with.keeps(&meta(i, src, "TvZ"), 15) && by.keeps(&meta(i, src, "TvT"), 15)), "{src}: no key = kept whole");
+    }
+    for src in ["community", "distill"] {
+        for mu in ["TvT", "TvP", "TvZ"] {
+            let o: Vec<GameMeta> = (0..2_000).map(|i| meta(i, src, mu)).collect();
+            assert!(o.iter().all(|m| with.keeps(m, 15) == by.keeps(m, 15)), "{src} {mu}: as without the key");
+        }
+    }
+    assert!(with.check().is_ok());
+    assert!(Subsample { keep_fraction_by_race: Some([("T".to_string(), 0.0)].into()), ..by.clone() }.check().is_err());
+    assert!(Subsample { keep_fraction_by_race: Some([("T".to_string(), 1.5)].into()), ..by.clone() }.check().is_err());
+    assert!(Subsample { keep_fraction_by_race: Some([("R".to_string(), 0.5)].into()), ..by.clone() }.check().is_err());
+    assert!(Subsample { keep_sources: vec![], fraction_by_source: None, ..with.clone() }.check().is_err(), "no teacher sources");
+    let s: Subsample = toml::from_str(
+        "fraction = 0.25\nkeep_sources = [\"botgen\", \"dagger\"]\n[fraction_by_race]\nT = 0.5\nZ = 0.1\n[fraction_by_source]\ndistill = 0.7\n[keep_fraction_by_race]\nT = 0.4\nP = 0.6\n",
+    )
+    .unwrap();
+    assert_eq!(s, with);
+    assert!(serde_json::to_value(&by).unwrap().get("keep_fraction_by_race").is_none(), "absent: the fingerprint JSON from before the key");
+    let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config"));
+    let cfg = BcConfig::load(&dir.join("bc_m2_dagger_r2.toml")).unwrap();
+    let mut c = cfg.clone();
+    c.data.subsample.as_mut().unwrap().keep_fraction_by_race = None;
+    assert_eq!(c.fingerprint(), cfg.fingerprint());
+    c.data.subsample.as_mut().unwrap().keep_fraction_by_race = Some([("Z".to_string(), 0.8)].into());
+    assert_ne!(c.fingerprint(), cfg.fingerprint(), "044-R8: keep_fraction_by_race is in the fingerprint");
+}
+
 /// 044-R5 ③: `bc-epoch` with `fraction_by_source` counts the distill games apart from both the
 /// teacher and the human part (`s2_mix.sources`, human steps and the S2 human race reference
 /// without them); the shares add up to the epoch.
@@ -1371,7 +1429,7 @@ fn bc_epoch_counts_distill_apart_044_r5() {
     }
     let root = shard_dir("mix-distill", &games, 9);
     let mut cfg = tiny_bc(1, 0);
-    cfg.data.subsample = Some(Subsample { fraction: 1.0, keep_sources: vec!["botgen".into()], fraction_by_race: None, fraction_by_source: Some([("distill".to_string(), 1.0)].into()) });
+    cfg.data.subsample = Some(Subsample { fraction: 1.0, keep_sources: vec!["botgen".into()], fraction_by_race: None, fraction_by_source: Some([("distill".to_string(), 1.0)].into()), keep_fraction_by_race: None });
     let t = uranium_data::bc::epoch_table(std::slice::from_ref(&root), &cfg).unwrap();
     let mix = t.s2_mix.as_ref().unwrap();
     let steps = |s: &str| -> u64 { t.s2.by_source.get(s).map_or(0, |r| r.values().map(|x| x.steps).sum()) };
@@ -1403,7 +1461,7 @@ fn subsampled_source_and_epoch_count_agree_041_r21() {
     let root = shard_dir("subsample", &games, 7);
     let mut cfg = tiny_bc(1, 0);
     cfg.lanes = 2;
-    cfg.data.subsample = Some(Subsample { fraction: 0.5, keep_sources: vec!["botgen".into()], fraction_by_race: None, fraction_by_source: None });
+    cfg.data.subsample = Some(Subsample { fraction: 0.5, keep_sources: vec!["botgen".into()], fraction_by_race: None, fraction_by_source: None, keep_fraction_by_race: None });
     let src = cfg.train_source(std::slice::from_ref(&root), Selection::S1).unwrap();
     let mut read: Vec<GameMeta> = Vec::new();
     for k in 0..src.files().len() {
@@ -1482,7 +1540,7 @@ fn race_fractions_hit_the_mix_shares_041_r26() {
         let f = race_fractions(&scan, &teacher, seed, 0.5).unwrap();
         assert_eq!(f, race_fractions(&scan, &teacher, seed, 0.5).unwrap(), "deterministic");
         assert_eq!(f.fraction_by_race.keys().collect::<Vec<_>>(), ["P", "T", "Z"]);
-        let sub = Subsample { fraction: f.fraction, keep_sources: teacher.clone(), fraction_by_race: Some(f.fraction_by_race.clone()), fraction_by_source: None };
+        let sub = Subsample { fraction: f.fraction, keep_sources: teacher.clone(), fraction_by_race: Some(f.fraction_by_race.clone()), fraction_by_source: None, keep_fraction_by_race: None };
         sub.check().unwrap();
         let kept: Vec<_> = scan.iter().filter(|g| sub.keeps(&g.meta, seed)).cloned().collect();
         let mix = MixShares::new(&count_by_source(&kept), &all, &teacher);
@@ -1499,19 +1557,19 @@ fn race_fractions_hit_the_mix_shares_041_r26() {
     }
     // Off mixes fail: too much human data, or one race over its share.
     let f = race_fractions(&scan, &teacher, 3, 0.5).unwrap();
-    let wide = Subsample { fraction: f.fraction * 3.0, keep_sources: teacher.clone(), fraction_by_race: None, fraction_by_source: None };
+    let wide = Subsample { fraction: f.fraction * 3.0, keep_sources: teacher.clone(), fraction_by_race: None, fraction_by_source: None, keep_fraction_by_race: None };
     let mix = MixShares::new(&count_by_source(&scan.iter().filter(|g| wide.keeps(&g.meta, 3)).cloned().collect::<Vec<_>>()), &all, &teacher);
     assert!(!mix.teacher_ok, "{}", mix.teacher_share);
     let mut by = f.fraction_by_race.clone();
     *by.get_mut("T").unwrap() *= 3.0;
-    let skew = Subsample { fraction: f.fraction, keep_sources: teacher.clone(), fraction_by_race: Some(by), fraction_by_source: None };
+    let skew = Subsample { fraction: f.fraction, keep_sources: teacher.clone(), fraction_by_race: Some(by), fraction_by_source: None, keep_fraction_by_race: None };
     let mix = MixShares::new(&count_by_source(&scan.iter().filter(|g| skew.keeps(&g.meta, 3)).cloned().collect::<Vec<_>>()), &all, &teacher);
     assert!(!mix.race_ok, "{:?}", mix.human_race_share);
     assert!(race_fractions(&scan, &["nothing".to_string()], 3, 0.5).is_err(), "no teacher steps");
     // 041-R22 ③ / 041-R29 ④: a DAgger round's teacher share (`mix-fractions --teacher-share`) is judged
     // against its own target with the same ±3% tolerance; `new` keeps the mix epoch's 0.5.
     let f = race_fractions(&scan, &teacher, 13, 0.5954).unwrap();
-    let sub = Subsample { fraction: f.fraction, keep_sources: teacher.clone(), fraction_by_race: Some(f.fraction_by_race.clone()), fraction_by_source: None };
+    let sub = Subsample { fraction: f.fraction, keep_sources: teacher.clone(), fraction_by_race: Some(f.fraction_by_race.clone()), fraction_by_source: None, keep_fraction_by_race: None };
     let mix = MixShares::new(&count_by_source(&scan.iter().filter(|g| sub.keeps(&g.meta, 13)).cloned().collect::<Vec<_>>()), &all, &teacher);
     assert_eq!(mix.teacher_share_target, 0.5);
     assert!(!mix.teacher_ok && mix.race_ok, "0.5954 is outside 0.5 ± 0.03: {}", mix.teacher_share);
@@ -1549,7 +1607,7 @@ fn bc_epoch_counts_by_source_and_race_041_r26() {
         assert_eq!((steps, n), (c.steps, c.games));
     }
     assert!(t.s2.by_source["community"].contains_key("T") && t.s2.by_source["community"].contains_key("P"));
-    cfg.data.subsample = Some(Subsample { fraction: 0.5, keep_sources: vec!["botgen".into()], fraction_by_race: None, fraction_by_source: None });
+    cfg.data.subsample = Some(Subsample { fraction: 0.5, keep_sources: vec!["botgen".into()], fraction_by_race: None, fraction_by_source: None, keep_fraction_by_race: None });
     let t = uranium_data::bc::epoch_table(std::slice::from_ref(&root), &cfg).unwrap();
     let mix = t.s2_mix.as_ref().unwrap();
     let botgen: u64 = t.s2.by_source["botgen"].values().map(|x| x.steps).sum();

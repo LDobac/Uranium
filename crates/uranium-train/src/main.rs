@@ -41,8 +41,10 @@ enum Cmd {
     /// `--teacher-share` of the epoch's steps and every race keeps its share of the S2 human data;
     /// then the S2 epoch with those fractions (`[steps] s2` and the `s2_mix` checks of `bc-epoch`).
     /// 044-R5 ③ (041-R31): `--share teacher=0.45,distill=0.2` instead gives three shares — the
-    /// teacher (kept whole), each named source (`[data.subsample] fraction_by_source`) and the human
-    /// rest (per race, 041-R26) — each judged ± 3%p.
+    /// teacher (kept whole unless --teacher-races), each named source (`[data.subsample] fraction_by_source`) and the human
+    /// rest (per race, 041-R26) — each judged ± 3%p. 044-R8 / 022-R12: with `--teacher-races
+    /// Z=0.5,P=0.3,T=0.2` the teacher games are also kept per enemy race (`[data.subsample]
+    /// keep_fraction_by_race`) so the races inside the teacher share hit those targets ± 3%p.
     MixFractions {
         #[command(flatten)]
         data: DataArgs,
@@ -56,6 +58,11 @@ enum Cmd {
         /// the human share is 1 - the others. Not with --teacher-share.
         #[arg(long, value_parser = parse_shares, conflicts_with = "teacher_share")]
         share: Option<Shares>,
+        /// 044-R8 / 022-R12 (AMB-022-7): enemy-race targets inside the teacher (+ dagger) share,
+        /// `Z=0.5,P=0.3,T=0.2` (keys T / P / Z, each in (0, 1), summing to 1). Needs --share
+        /// (checked when the command runs, [`teacher_races_need_share`]).
+        #[arg(long, value_parser = parse_teacher_races)]
+        teacher_races: Option<std::collections::BTreeMap<String, f64>>,
     },
     /// AMB-000-4 check: SHA-256 of every lane group of the first BC batches (`Batch::group`, the
     /// host collate). The Python side hashes the `uranium._core` arrays the same way, so the two
@@ -296,6 +303,40 @@ fn parse_shares(s: &str) -> std::result::Result<Shares, String> {
     Ok(Shares { teacher, sources })
 }
 
+/// `--teacher-races Z=0.5,P=0.3,T=0.2` (044-R8 / 022-R12): every race T / P / Z once, each share in
+/// (0, 1), the shares summing to 1.
+fn parse_teacher_races(s: &str) -> std::result::Result<std::collections::BTreeMap<String, f64>, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for part in s.split(',').filter(|p| !p.is_empty()) {
+        let (k, v) = part.split_once('=').ok_or_else(|| format!("{part:?}: expected <race>=<share>"))?;
+        let k = k.trim();
+        if !["T", "P", "Z"].contains(&k) {
+            return Err(format!("{part:?}: the race is T, P or Z"));
+        }
+        let v: f64 = v.trim().parse().map_err(|e| format!("{part:?}: {e}"))?;
+        if !(v > 0.0 && v < 1.0) {
+            return Err(format!("{part:?}: a share is in (0, 1)"));
+        }
+        if out.insert(k.to_string(), v).is_some() {
+            return Err(format!("{k:?} given twice"));
+        }
+    }
+    if out.len() != 3 {
+        return Err("give every race T, P and Z (e.g. Z=0.5,P=0.3,T=0.2)".into());
+    }
+    let sum: f64 = out.values().sum();
+    if (sum - 1.0).abs() > 1e-9 {
+        return Err(format!("the race shares sum to {sum}, not 1"));
+    }
+    Ok(out)
+}
+
+/// 044-R8: `--teacher-races` only with `--share` (the three-share rounds of 044-R5 ③).
+fn teacher_races_need_share(share: &Option<Shares>, teacher_races: &Option<std::collections::BTreeMap<String, f64>>) -> Result<()> {
+    anyhow::ensure!(teacher_races.is_none() || share.is_some(), "--teacher-races needs --share (044-R8: the race split inside the teacher + dagger share of a three-share round)");
+    Ok(())
+}
+
 /// `--fatal-pattern` (060-R6): a regex, checked when the command line is read.
 fn parse_regex(s: &str) -> std::result::Result<regex::Regex, String> {
     regex::Regex::new(s).map_err(|e| e.to_string())
@@ -420,7 +461,8 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&out)?);
             Ok(())
         }
-        Cmd::MixFractions { data, groups, config, teacher_share, share } => {
+        Cmd::MixFractions { data, groups, config, teacher_share, share, teacher_races } => {
+            teacher_races_need_share(&share, &teacher_races)?;
             let cfg = BcConfig::load(&config)?;
             let sub = cfg.data.subsample.clone().ok_or_else(|| anyhow::anyhow!("{}: no [data.subsample] (its keep_sources are the teacher, 041-R21 ⑥)", config.display()))?;
             let groups = groups.groups(&data)?;
@@ -432,19 +474,28 @@ fn main() -> Result<()> {
                 None => {
                     // Without --share a fraction_by_source source would be counted as human.
                     anyhow::ensure!(sub.fraction_by_source.is_none(), "{}: [data.subsample] fraction_by_source needs --share (044-R5 ③)", config.display());
+                    // The fractions written below would silently drop the per-race teacher subsample.
+                    anyhow::ensure!(sub.keep_fraction_by_race.is_none(), "{}: [data.subsample] keep_fraction_by_race needs --share and --teacher-races (044-R8)", config.display());
                     let f = uranium_train::mix::race_fractions(&s2, &sub.keep_sources, cfg.data.seed, teacher_share)?;
-                    with.data.subsample = Some(uranium_train::split::Subsample { fraction: f.fraction, keep_sources: sub.keep_sources.clone(), fraction_by_race: Some(f.fraction_by_race.clone()), fraction_by_source: None });
+                    with.data.subsample = Some(uranium_train::split::Subsample { fraction: f.fraction, keep_sources: sub.keep_sources.clone(), fraction_by_race: Some(f.fraction_by_race.clone()), fraction_by_source: None, keep_fraction_by_race: None });
                     (f, None)
                 }
                 Some(sh) => {
                     let unnamed: Vec<String> = sub.share_sources().into_iter().filter(|s| !sh.sources.contains_key(s)).collect();
                     anyhow::ensure!(unnamed.is_empty(), "{}: fraction_by_source {unnamed:?} has no --share target (044-R5 ③)", config.display());
-                    let (f, sf) = uranium_train::mix::share_fractions(&s2, &sub.keep_sources, &sh.sources, cfg.data.seed, sh.teacher)?;
+                    anyhow::ensure!(
+                        teacher_races.is_some() || sub.keep_fraction_by_race.is_none(),
+                        "{}: [data.subsample] keep_fraction_by_race needs --teacher-races (044-R8)",
+                        config.display()
+                    );
+                    let (f, sf) = uranium_train::mix::share_fractions_with_races(&s2, &sub.keep_sources, &sh.sources, cfg.data.seed, sh.teacher, teacher_races.as_ref())?;
                     with.data.subsample = Some(uranium_train::split::Subsample {
                         fraction: f.fraction,
                         keep_sources: sub.keep_sources.clone(),
                         fraction_by_race: Some(f.fraction_by_race.clone()),
                         fraction_by_source: Some(sf.fraction_by_source.clone()),
+                        // 044-R8: the teacher games per enemy race (absent without --teacher-races).
+                        keep_fraction_by_race: sf.teacher_races.as_ref().map(|t| t.keep_fraction_by_race.clone()),
                     });
                     // The values the config file will get must load (fractions in (0, 1]).
                     with.data.subsample.as_ref().expect("set above").check()?;
@@ -457,7 +508,11 @@ fn main() -> Result<()> {
             let mix = t.s2_mix.clone().expect("the config has [data.subsample]");
             if let Some(sh) = &share {
                 // 044-R5 ③: teacher, each source and the human rest, each ± 3%p; human races ± 3%p.
-                let mix = mix.with_shares(sh.teacher, &sh.sources)?;
+                let mut mix = mix.with_shares(sh.teacher, &sh.sources)?;
+                if let Some(r) = &teacher_races {
+                    // 044-R8 / 022-R12: Zerg : Protoss : Terran inside the teacher + dagger steps, ± 3%p.
+                    mix = mix.with_teacher_races(&t.s2.by_source, r);
+                }
                 // 044-R5 ③ top-up (user decision 2026-11-14): a source whose share fails below its band
                 // gets the missing steps and an estimate of the games to add (rush_check_plan.py --extra).
                 let source_fractions = source_fractions.map(|sf| sf.with_shortfalls(&all, &mix));
@@ -476,7 +531,7 @@ fn main() -> Result<()> {
                 }
                 anyhow::ensure!(
                     mix.all_ok(),
-                    "the fractions miss the shares: teacher {:.4} vs {} (ok {}), sources {:?}, human {:?}, human races {:?} vs S2 {:?} (ok {}) (044-R5 ③, 041-R26)",
+                    "the fractions miss the shares: teacher {:.4} vs {} (ok {}), sources {:?}, human {:?}, human races {:?} vs S2 {:?} (ok {}), teacher races {:?} (044-R5 ③, 041-R26, 044-R8)",
                     mix.teacher_share,
                     mix.teacher_share_target,
                     mix.teacher_ok,
@@ -484,7 +539,8 @@ fn main() -> Result<()> {
                     mix.human,
                     mix.human_race_share,
                     mix.reference_human_race_share,
-                    mix.race_ok
+                    mix.race_ok,
+                    mix.teacher_races
                 );
                 return Ok(());
             }
@@ -603,5 +659,27 @@ mod tests {
         let Cmd::MixFractions { share, .. } = cmd(&["--share", "teacher=0.45,distill=0.2"]).unwrap().cmd else { panic!() };
         assert_eq!(share.unwrap().teacher, 0.45);
         assert!(cmd(&["--teacher-share", "0.5", "--share", "teacher=0.45,distill=0.2"]).is_err());
+    }
+
+    /// 044-R8 / 022-R12 (AMB-022-7): `--teacher-races Z=0.5,P=0.3,T=0.2` needs `--share`; every race
+    /// once, shares in (0, 1) summing to 1; without it the command line is the one before.
+    #[test]
+    fn teacher_races_option_044_r8() {
+        let r = parse_teacher_races("Z=0.5,P=0.3,T=0.2").unwrap();
+        assert_eq!(r, [("P".to_string(), 0.3), ("T".to_string(), 0.2), ("Z".to_string(), 0.5)].into());
+        for bad in ["Z=0.5,P=0.3", "Z=0.5,P=0.3,T=0.3", "Z=0.5,P=0.3,T=0.2,Z=0.5", "Z=0.5,P=0.3,R=0.2", "Z=1,P=0,T=0", "Z=0.5,P=0.3,T=x", "Z=0.5,P=0.3,T"] {
+            assert!(parse_teacher_races(bad).is_err(), "{bad}");
+        }
+        let cmd = |args: &[&str]| Cli::try_parse_from([&["uranium-train", "mix-fractions", "--config", "c.toml", "--shards", "d"], args].concat());
+        let Cmd::MixFractions { share, teacher_races, .. } = cmd(&["--share", "teacher=0.45,distill=0.2", "--teacher-races", "Z=0.5,P=0.3,T=0.2"]).unwrap().cmd else { panic!() };
+        assert_eq!((share.unwrap().teacher, teacher_races.unwrap()["Z"]), (0.45, 0.5));
+        let Cmd::MixFractions { teacher_races, .. } = cmd(&["--share", "teacher=0.45,distill=0.2"]).unwrap().cmd else { panic!() };
+        assert!(teacher_races.is_none());
+        for args in [&["--teacher-races", "Z=0.5,P=0.3,T=0.2"][..], &["--teacher-share", "0.5954", "--teacher-races", "Z=0.5,P=0.3,T=0.2"]] {
+            let Cmd::MixFractions { share, teacher_races, .. } = cmd(args).unwrap().cmd else { panic!() };
+            assert!(teacher_races_need_share(&share, &teacher_races).is_err(), "{args:?}: needs --share");
+        }
+        let Cmd::MixFractions { share, teacher_races, .. } = cmd(&["--share", "teacher=0.45,distill=0.2", "--teacher-races", "Z=0.5,P=0.3,T=0.2"]).unwrap().cmd else { panic!() };
+        assert!(teacher_races_need_share(&share, &teacher_races).is_ok());
     }
 }
