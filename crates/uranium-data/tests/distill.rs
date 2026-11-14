@@ -288,6 +288,15 @@ fn argument_rules_044_r3() {
     assert!(err(check_args(&input, &out, &d.join("distill_d1.jsonl"), "sample", Some(&root))).contains("resume scan"));
     assert!(err(check_args(&input, &input.join("x"), &rec, "sample", None)).contains("overlap"));
     assert!(err(check_args(&d.join("empty"), &out, &rec, "sample", None)).contains("--in"));
+    // The output of this input file (same path, its views) without any records line: a run
+    // stopped after publishing it.
+    write_input(&out, vec![pre_game(3, 401)]);
+    assert!(err(check_args(&input, &out, &rec, "sample", None)).contains("stopped after publishing them"));
+    // Shards that are not these inputs' outputs (another file name, or the same name with other
+    // views): another labelling's folder.
+    shard::write(&out.join("shard_00099.bin.zst"), &Shard { header: ShardHeader::default(), games: vec![pre_game(3, 404)] }).unwrap();
+    assert!(err(check_args(&input, &out, &rec, "sample", None)).contains("already holds"));
+    std::fs::remove_file(out.join("shard_00099.bin.zst")).unwrap();
     write_input(&out, vec![pre_game(3, 402)]);
     assert!(err(check_args(&input, &out, &rec, "sample", None)).contains("already holds"));
     // Continuation: the records name shard_00000 (its output is there); a later input file is the

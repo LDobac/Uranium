@@ -4,7 +4,10 @@ only on its own identity, never on the batch it is computed in: not on the lane 
 share a forward (`micro_lanes`), the entity padding (`pad_entities`, the group's entity count N
 sets the selection and target widths) or how a view is cut into `seq_len` chunks. Entity columns
 are the entity's index in the step's own observation and the selection's END has its own column
-id, so a wider padded group adds columns without moving any other column's value.
+id, so a wider padded group adds columns without moving any other column's value. The noise is
+exactly batch-shape independent; the labels are bit-identical across batch shapes on CPU (032-R1).
+On a GPU the logits themselves can move by a few ULPs with the padded shape (kernel choice,
+reduction order), which can flip a near-tie, so GPU labels are only the same for the same shape.
 
 The hash is exact integer arithmetic on int64 tensors that never overflows (32-bit values,
 multiplications split in 16-bit halves), so the noise is the same on every device; it is the
@@ -47,28 +50,39 @@ class RowNoise:
     """The noise source of one `Heads.forward` over rows with the given keys (`row_keys`), passed
     as its `generator` (`gumbel_argmax` calls `uniform`). The heads draw in a fixed order: ActionType,
     Delay, Queued, `max_select` selection steps (width N + 1, END last), TargetUnit (width N),
-    Location; the call index is part of the hash, and the selection / target widths are checked
-    against `n` so a change of that order fails instead of shifting the noise."""
+    Location; the call index is part of the hash, and every draw's width is checked (ActionType
+    `actions`, Delay `delay_buckets`, Queued 2, selection N + 1, TargetUnit N, Location `cells`), so
+    a removed, added or swapped draw fails instead of shifting the noise; the caller checks after
+    the heads call that all `draws` were made (`finished`)."""
 
-    def __init__(self, keys: torch.Tensor, n: int, max_select: int):
+    def __init__(self, keys: torch.Tensor, n: int, max_select: int, actions: int, delay_buckets: int, cells: int):
         self.keys, self.n, self.max_select = keys, n, max_select
+        self.widths = [actions, delay_buckets, 2, *([n + 1] * max_select), n, cells]
         self.call = 0
+
+    @property
+    def draws(self) -> int:
+        """Draws one heads call makes: ActionType, Delay, Queued, `max_select` selection steps,
+        TargetUnit, Location."""
+        return len(self.widths)
+
+    def finished(self) -> None:
+        """After the heads call: every draw was made (else the head order changed)."""
+        if self.call != self.draws:
+            raise ValueError(f"044-R3 noise: the heads made {self.call} draws, expected {self.draws}")
 
     def uniform(self, shape, device) -> torch.Tensor:
         rows, width = shape
         c = self.call
         self.call += 1
         s = self.max_select
+        if c >= self.draws:
+            raise ValueError(f"044-R3 noise: draw {c} past the heads' {self.draws} draws")
+        if width != self.widths[c]:
+            raise ValueError(f"044-R3 noise: draw {c} has width {width}, expected {self.widths[c]} (head order or widths changed)")
         cols = torch.arange(width, dtype=torch.int64, device=device)
         if 3 <= c < 3 + s:
-            if width != self.n + 1:
-                raise ValueError(f"044-R3 noise: selection draw {c - 3} has width {width}, expected N + 1 = {self.n + 1}")
-            cols[-1] = END_COLUMN
-        elif c == 3 + s:
-            if width != self.n:
-                raise ValueError(f"044-R3 noise: target unit draw has width {width}, expected N = {self.n}")
-        elif c > 4 + s:
-            raise ValueError(f"044-R3 noise: draw {c} past the heads' {5 + s} draws")
+            cols[-1] = END_COLUMN  # the selection's END
         if rows != self.keys.shape[0]:
             raise ValueError(f"044-R3 noise: {rows} rows, keys for {self.keys.shape[0]}")
         call = mix32(self.keys.to(device) ^ int(mix32(torch.tensor([c ^ SALT_CALL]))[0]))
