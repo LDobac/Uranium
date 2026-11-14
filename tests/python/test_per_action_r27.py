@@ -348,3 +348,44 @@ def test_link_tree_refuses_links_and_trees_inside_the_source_041_r27_044_r8(tmp_
     with pytest.raises(SystemExit, match="inside its source"):
         pa.link_tree(src / "a", ["x"], src, prune=True)
     assert tree(src) == before
+
+
+def test_orig_macro_parts_checked_before_scoring_041_r27_044_r8(tmp_path, monkeypatch):
+    """041-R27 / 044-R8: with `--holdout orig` the added parts of the macro pass are taken once, before any scoring:
+    a botgen manifest mismatch stops before score() runs (no silent fallback to the orig macro games), and the
+    current-observation and chain-start passes read the same added folder."""
+    src = botgen(tmp_path, monkeypatch, (*pa.ORIG, *ADDED), listed=(*pa.ORIG, ADDED[0]))
+    monkeypatch.setattr(pa.ec, "load_env", lambda: None)
+    cls = tmp_path / "classes.json"
+    cls.write_text(json.dumps({"x": "rush"}), encoding="utf-8")
+    out_json = tmp_path / "out.json"
+    args = ["--checkpoint", str(tmp_path / "ck"), "--out", str(out_json), "--holdout", "orig", "--classes", str(cls)]
+
+    def unreachable(*a, **k):
+        raise AssertionError("score() ran before the manifest check")
+
+    monkeypatch.setattr(pa, "score", unreachable)
+    with pytest.raises(SystemExit, match="are not the manifest's parts"):
+        pa.main(args)
+    assert not out_json.exists()
+
+    write_manifest(src, (*pa.ORIG, *ADDED))
+    calls = []
+
+    def fake(ck, datasets, shards, backend, config, classes=None, chain_start=None, **k):
+        calls.append((list(shards), chain_start))
+        early = {"before_frame": pa.BUNKER_BEFORE, "steps": 0, "mean_p": None}
+        return {"games": 1, "steps": 0, "per_action": [], "by_class": {"macro": {"games": 1, "bunker_p_before_4m": early}},
+                "r27": {"rush_bunker_top1": None, "rush_bunker_steps": 0, "rush_games": 0, "macro_bunker_p_before_4m": None,
+                        "macro_steps_before_4m": 0, "macro_games": 0}}
+
+    monkeypatch.setattr(pa, "score", fake)
+    taken = []
+    real_added = pa.added_dirs
+    monkeypatch.setattr(pa, "added_dirs", lambda: taken.append(1) or real_added())
+    pa.main(args)
+    assert len(taken) == 1
+    (orig,), (added,) = pa.holdout_dirs("orig")[1], real_added()
+    assert calls == [([orig], None), ([added], None), ([orig], ["botgen"]), ([added], ["botgen"])]
+    out = json.loads(out_json.read_text(encoding="utf-8"))
+    assert out["r27"]["macro_holdout"] == "full" and out["r27"]["macro_added_games"] == 1
