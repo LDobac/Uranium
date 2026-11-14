@@ -764,7 +764,9 @@ def test_distill_fix_points_menus_050_r9():
 def test_distill_points_run_names_050_r9():
     """044: round d<R> is run m2-distill-d<R>; D is one of them; the fixed-RL run is m2-rl-fix-<number> (user decision
     2026-11-14)."""
-    for pid, ok, bad in (("d1", "m2-distill-d1", "m2-distill-d2"), ("d2", "m2-distill-d2", "m2-dagger-r2"), ("D", "m2-distill-d2", "m2-distill-dx")):
+    # D is also the teacher round t1 when it passes (044-R7, user confirmed 2026-11-14).
+    for pid, ok, bad in (("d1", "m2-distill-d1", "m2-distill-d2"), ("d2", "m2-distill-d2", "m2-dagger-r2"), ("D", "m2-distill-d2", "m2-distill-dx"),
+                         ("D", "m2-teacher-t1", "m2-teacher-t2"), ("t1", "m2-teacher-t1", "m2-distill-d1")):
         pt = protocol.point(LIN, pid)
         protocol.check_checkpoint(LIN, "m2", pt, f"checkpoints/{ok}/ckpt-1850")
         with pytest.raises(protocol.Refused, match=rf"point {pid} takes runs m2-<"):

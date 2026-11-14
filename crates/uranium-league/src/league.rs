@@ -1530,7 +1530,8 @@ mod tests {
     /// Main only, no self-play or model opponent and no E-Regression build (fixed seed sample).
     #[test]
     fn m2_race_shares_044_r10() {
-        let text = include_str!("../../../config/rl_m2_race.toml").replace("\r\n", "\n").replacen("\nzerg = \"\"\n", "\nzerg = \"checkpoints/s/ckpt-1\"\n", 1);
+        // S (`[kl.reference] zerg`) is filled in the tracked file (r2, 2026-11-14).
+        let text = include_str!("../../../config/rl_m2_race.toml").replace("\r\n", "\n");
         let c: RlConfig = toml::from_str(&text).unwrap();
         c.validate().unwrap_or_else(|e| panic!("{e:#}"));
         let mut l = League::new("m2-rl-fix-1", 7, None, c);

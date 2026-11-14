@@ -3,7 +3,7 @@
 # (the 041-R28 memory field, the model 2 tables) without the distillation source. One epoch from `--s2 --init <the
 # last distillation round's last checkpoint>` (weights only).
 # PLACEHOLDER: the start checkpoint (m2-distill-d1, or m2-distill-d2 when it runs) is named by the round driver;
-# the start point is 메인 임시 결정 2026-11-14, 사용자 확인 대기.
+# the start point is user confirmed 2026-11-14.
 # Data (044-R8 ③, user decision 2026-11-14): every teacher game (`botgen`: the 021-R8 teacher's and the 022 teacher's
 # teacher-tp-<date> games, with any --botgen-tp --extra top-ups), every lineage-2 DAgger game (`dagger_m2` r1, r2, r3
 # and t1: the t1 self games of config/plans/dagger_m2_t1.toml relabelled by the 022 teacher, GameMeta.src `dagger`)

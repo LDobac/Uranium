@@ -9,8 +9,9 @@ the user and the next step is the user's (044-R6, as 050-R10).
   stop  = TvZ not kept, or T0 Protoss wins < S's + 4; and a d2 that does not pass (d2 is the last round)
 
 The teacher round t1 (044-R8, user decision 2026-11-14: one round after the distillation rounds, judged by the 044-R6
-rules) is `--round t1`: pass or stop only, no "d2" (t1 is the last round; 메인 임시 결정 2026-11-14, 사용자 확인 대기).
-Its jobs are of lineage point t1.
+rules) is `--round t1`: pass or stop only, no "d2" (t1 is the last round; user confirmed 2026-11-14). Its jobs are of
+lineage point t1; S is the 041-R29 ④ selection, r2 (m2-dagger-r2/ckpt-1408), as for the distillation rounds. A passing t1
+is D (044-R7, user confirmed 2026-11-14).
 
 Only these three verdicts (user decision 2026-11-14): a gate check that is MISSING or a cell without a value (games
 without a row, no val output) counts as failed. To keep the never-overwritten verdict file right, the tool refuses to
@@ -51,7 +52,7 @@ TVZ_WINS = 16          # TvZ 32 >= 16 wins (041-R29 ④ qualification)
 LATE_HELD = 24         # late (missed-first-target) held_8m >= 24 / 64
 HELD_SUM_SLACK = 6     # held sum (early + late held_8m) >= S's - 6
 D2_PROTOSS_GAIN = 4    # d2: T0 Protoss wins >= S's + 4
-# 044-R8: t1 = the teacher round (pass or stop only; 메인 임시 결정 2026-11-14, 사용자 확인 대기).
+# 044-R8: t1 = the teacher round (pass or stop only; user confirmed 2026-11-14).
 ROUNDS = ("d1", "d2", "t1")
 RUSH_PLANS = ("rush_check",)
 TVZ_PLANS = ("tvz_bc", "tvz_rl")

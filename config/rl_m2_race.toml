@@ -1,8 +1,8 @@
 # 044-R9~R11 / 042-R22 경로 2 수정 RL `m2-rl-fix-<n>` (user decisions 2026-11-14): config/rl_m2.toml
 # with only these changes —
 # [kl.reference] (044-R9): zerg = S, terran / protoss / random = m2-s2e2 ckpt-11387 (the --bc
-#   model, so those races use --bc itself). S is chosen after DAgger r3 or r4 (041-R29 ④); until then
-#   zerg = "" and the config load refuses to start ("[kl.reference] zerg is empty").
+#   model, so those races use --bc itself). S = the 041-R29 ④ selection, r2 (m2-dagger-r2/ckpt-1408,
+#   chosen 2026-11-14); an empty zerg refuses to start ("[kl.reference] zerg is empty").
 # Opponents (044-R10): every game is a fixed-weight [[ladder]] game — [curriculum] start_stage
 #   "C1", auto_advance = false, c1_ladder = 1 and every other c1_* share 0 (no self-play, no model
 #   opponent), ladder_pick = "fixed" (042-R19), ladder_groups by lobby race terran 0.24 : protoss
@@ -104,9 +104,8 @@ target_loc = 1.0
 [kl.reference]
 # 044-R9 (AMB-044-9, user decision 2026-11-14): KL reference by the game's lobby enemy race at
 # game start (GameInfo; lobby Random / Unknown = random). Relative paths are under
-# URANIUM_SHARED_DIR. zerg = S, chosen after DAgger r3 or r4 (041-R29 ④): fill in its checkpoint
-# folder before the run; empty refuses to start.
-zerg = ""
+# URANIUM_SHARED_DIR. zerg = S, the 041-R29 ④ selection r2 (chosen 2026-11-14); empty refuses to start.
+zerg = "checkpoints/m2-dagger-r2/ckpt-1408"
 terran = "checkpoints/m2-s2e2/ckpt-11387"
 protoss = "checkpoints/m2-s2e2/ckpt-11387"
 random = "checkpoints/m2-s2e2/ckpt-11387"
