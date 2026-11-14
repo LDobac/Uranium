@@ -345,9 +345,7 @@ def check_t1_platform(pt: dict, hosts: list[dict]) -> list[str]:
     OSS bot binaries differ between platforms. Every host of a T1 job needs `platform` in the host list."""
     allowed = pt.get("t1_platforms")
     if not allowed:
-        # A point whose T1 platform is not decided yet carries the reason (`t1_platforms_open`).
-        why = f": {pt['t1_platforms_open']}" if pt.get("t1_platforms_open") else ""
-        raise Refused(f"point {pt['id']} has no Checkpoint 1 T1 counterpart platform (lineage.toml t1_platforms){why}")
+        raise Refused(f"point {pt['id']} has no Checkpoint 1 T1 counterpart platform (lineage.toml t1_platforms)")
     bad = [f"{h['addr']} ({h.get('platform', 'no platform')})" for h in hosts if h.get("platform") not in allowed]
     if bad:
         raise Refused(f"T1 of point {pt['id']} runs on {', '.join(allowed)} hosts only; host list has " + ", ".join(bad))
@@ -807,16 +805,27 @@ def diag_record_cmd(c: list[str], roots: dict[str, Path]) -> list[str]:
     return redact_cmd(c if c[0] in (COPY, FETCH) else ["python", *c[1:]], roots)
 
 
+def final_only_metrics(pt: dict) -> list[str]:
+    """The diagnostics a point takes at its run's final checkpoint only: `diag_final_only = true` = cue_diag (s1e2,
+    AMB-050-6: dead_channels not restricted), or a list (rl-fix: cue_diag and dead_channels, user decision 2026-11-14)."""
+    f = pt.get("diag_final_only")
+    return list(f) if isinstance(f, list) else (["cue_diag"] if f else [])
+
+
 def check_final_only(pt: dict, checkpoint: str) -> None:
     """A point with `diag_final_only` (s1e2, AMB-050-6): the cue diagnostics at the run's final checkpoint only
     (the run folder has DONE and no later ckpt-N)."""
     if not pt.get("diag_final_only"):
         return
     d = checkpoint_dir(checkpoint)
+    # BC: <run>/ckpt-N; RL (rl-fix, user decision 2026-11-14): <run>/ckpt-N/agents/<agent>
+    d = next((p for p in (d, *d.parents) if p.name.startswith("ckpt-")), d)
     run = d.parent
     steps = sorted(int(x.name[5:]) for x in run.glob("ckpt-*") if x.name[5:].isdigit())
     if not (run / "DONE").is_file() or not steps or d.name != f"ckpt-{steps[-1]}":
-        raise Refused(f"point {pt['id']}: cue diagnostics at the run's final checkpoint only (AMB-050-6); {checkpoint} is not (DONE {'present' if (run / 'DONE').is_file() else 'missing'}, last ckpt-{steps[-1] if steps else '?'})")
+        what = "cue diagnostics" if final_only_metrics(pt) == ["cue_diag"] else f"diagnostics ({', '.join(final_only_metrics(pt))})"
+        why = "AMB-050-6" if pt["id"] == "s1e2" else "user decision 2026-11-14"
+        raise Refused(f"point {pt['id']}: {what} at the run's final checkpoint only ({why}); {checkpoint} is not (DONE {'present' if (run / 'DONE').is_file() else 'missing'}, last ckpt-{steps[-1] if steps else '?'})")
 
 
 def step_part_name(step: str) -> str:
@@ -864,7 +873,7 @@ def cmd_diag(a) -> None:
         if check_metric(lin, pt, metric)["kind"] not in DIAG_KINDS:
             raise Refused(f"metric {metric} is not a diagnostic")
     check_checkpoint(lin, a.lineage, pt, a.checkpoint)
-    if "cue_diag" in metrics:  # AMB-050-6 restricts the cue diagnostics (단서 진단) only
+    if set(final_only_metrics(pt)) & set(metrics):
         check_final_only(pt, a.checkpoint)
     if "dead_channels" in metrics and not a.train_log and a.part != "gpu":
         raise Refused(f"dead_channels reads the run's training log: --train-log <BC stderr log | RL train.csv> of {run_of(a.checkpoint)}")
@@ -1358,8 +1367,25 @@ def cmd_list(a) -> None:
     for p in lin["point"]:
         t1 = f"  T1 on {'/'.join(p['t1_platforms'])}" if p.get("t1_platforms") else ""
         t1 += f"  ck1 supplement {','.join(p['ck1_supplement'])}" if p.get("ck1_supplement") else ""
-        t1 += "  T1 platform open" if "t1" in p["metrics"] + p.get("optional", []) and not p.get("t1_platforms") else ""
         print(f"{p['id']:8} {p['family']:3} {p.get('ck1_checkpoint', '- (no Checkpoint 1 counterpart)'):48} metrics {','.join(p['metrics'])}  optional {','.join(p.get('optional', []))}{t1}")
+
+
+def stage_backends(s: dict) -> list[str]:
+    """`<backend> (<precision>)` of a tables.py stage's inference games (the ledger's backend, 032-R8)."""
+    return sorted({f"{b.split('@')[0]} ({x.get('precision', '?')})" for b, x in (s.get("inference") or {}).items()})
+
+
+def backend_notes(a: dict, b: dict) -> list[str]:
+    """050-R9 (user decision 2026-11-14): a comparison marks stages whose inference backend / precision or T1 game
+    platform differ (D and the fixed-RL checks run T1 on whichever host is idle)."""
+    out = []
+    ba, bb = stage_backends(a), stage_backends(b)
+    if ba != bb:
+        out.append(f"inference backend differs: {', '.join(ba) or '?'} vs {', '.join(bb) or '?'}")
+    pa, pb = ((s.get("protocol") or {}).get("t1_platforms") for s in (a, b))
+    if (a.get("kind") == "t1" or b.get("kind") == "t1") and sorted(pa or []) != sorted(pb or []):
+        out.append(f"T1 platform differs: {pa or '?'} vs {pb or '?'}")
+    return out
 
 
 def cmd_compare(a) -> None:
@@ -1367,6 +1393,8 @@ def cmd_compare(a) -> None:
     A = json.loads(Path(a.a).read_text(encoding="utf-8"))
     B = json.loads(Path(a.b).read_text(encoding="utf-8"))
     for key in sorted(set(A) & set(B)):
+        for note in backend_notes(A[key], B[key]):
+            print(f"NOTE {key}: {note}")
         ca, cb = A[key].get("counts", {}), B[key].get("counts", {})
         for row in sorted(set(ca) & set(cb)):
             for metric, (x, n) in ca[row].items():
