@@ -6,6 +6,7 @@ shards (uranium._core with Batch.lane_games)."""
 import functools
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -193,6 +194,36 @@ def test_macro_value_over_the_full_hold_out_041_r27():
     assert pa.macro_full(r27, None) == r27
 
 
+
+
+def tree(root: Path) -> dict[str, bytes]:
+    return {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def write_manifest(src: Path, parts) -> None:
+    """botgen/manifest.json (061) listing the shard files on disk of `parts`."""
+    files = {f"{p}/{f.name}": {"sha256": hashlib.sha256(f.read_bytes()).hexdigest(), "bytes": f.stat().st_size}
+             for p in parts for f in sorted((src / p).glob("shard_*.bin.zst"))}
+    (src / "manifest.json").write_text(json.dumps({"files": files}), encoding="utf-8")
+
+
+def botgen(tmp_path, monkeypatch, parts, listed=None):
+    """A fake shared botgen source: one shard per part on disk, the manifest listing `listed` (default all)."""
+    shared = tmp_path / "shared"
+    src = shared / "datasets" / "replays" / "shards" / "botgen"
+    for part in parts:
+        (src / part).mkdir(parents=True, exist_ok=True)
+        (src / part / "shard_00000.bin.zst").write_bytes(part.encode())
+    write_manifest(src, parts if listed is None else listed)
+    monkeypatch.setattr(pa.ec, "shared_dir", lambda: shared)
+    monkeypatch.setattr(pa.ec, "cache_dir", lambda: tmp_path / "cache")
+    return src
+
+
+ADDED = ["teacher-20261107-macro2", "teacher-20261109-macro3"]
+TP_V1, TP_V2 = "teacher-tp-20261114", "teacher-tp-20261114-v2"
+
+
 def test_tp_teacher_folders_left_out_044_r8(tmp_path, monkeypatch):
     """044-R8 / 022-R12: botgen folders of the 022 TvT / TvP teacher (teacher-tp-*) are neither classified (their
     T0 Protoss / Terran opponents have no 041-R27 class) nor part of the `full` macro pass."""
@@ -201,72 +232,119 @@ def test_tp_teacher_folders_left_out_044_r8(tmp_path, monkeypatch):
     fake_plan(raw, "teacher-tp-20261114/teacher_botgen_tp", [(1, "t0-protoss@0.1.0"), (2, "iron@aiide2017")])
     got = pa.teacher_classes(raw, None)
     assert {s: v["class"] for s, v in got.items()} == {s: "rush" for s in rush}
-    shared = tmp_path / "shared"
-    src = shared / "datasets" / "replays" / "shards" / "botgen"
-    for part in (*pa.ORIG, "teacher-20261107-macro2", "teacher-tp-20261114", "teacher-tp-20261114-v2"):
-        (src / part).mkdir(parents=True)
-        (src / part / "shard_00000.bin.zst").write_bytes(part.encode())
-    monkeypatch.setattr(pa.ec, "shared_dir", lambda: shared)
-    monkeypatch.setattr(pa.ec, "cache_dir", lambda: tmp_path / "cache")
+    botgen(tmp_path, monkeypatch, (*pa.ORIG, ADDED[0], TP_V1, TP_V2), listed=(*pa.ORIG, ADDED[0], TP_V2))
     (added,) = pa.added_dirs()
-    assert sorted(p.name for p in Path(added).iterdir()) == ["teacher-20261107-macro2"]
-
-
-def tree(root: Path) -> dict[str, bytes]:
-    return {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
-
-
-def botgen(tmp_path, monkeypatch, parts):
-    shared = tmp_path / "shared"
-    src = shared / "datasets" / "replays" / "shards" / "botgen"
-    for part in parts:
-        (src / part).mkdir(parents=True, exist_ok=True)
-        (src / part / "shard_00000.bin.zst").write_bytes(part.encode())
-    monkeypatch.setattr(pa.ec, "shared_dir", lambda: shared)
-    monkeypatch.setattr(pa.ec, "cache_dir", lambda: tmp_path / "cache")
-    return src
+    assert sorted(p.name for p in Path(added).iterdir()) == [ADDED[0]]
 
 
 def test_full_holdout_excludes_tp_teacher_041_r27_044_r8(tmp_path, monkeypatch):
-    """041-R27 / 044-R8: `--holdout full` is a link tree of every botgen part but teacher-tp-* (also the -v2 shards
-    added before teacher round t1) = ORIG + added_dirs() parts; `orig` stays the ORIG parts only."""
-    added = ["teacher-20261107-macro2", "teacher-20261109-macro3"]
-    src = botgen(tmp_path, monkeypatch, (*pa.ORIG, *added, "teacher-tp-20261114", "teacher-tp-20261114-v2"))
+    """041-R27 / 044-R8: `--holdout full` is a link tree of the parts registered in the botgen manifest but
+    teacher-tp-* (the -v2 shards listed before teacher round t1; the unlisted v1 folder on disk) = ORIG + the
+    added_dirs() parts, with the manifest's files only; `orig` stays the ORIG parts."""
+    src = botgen(tmp_path, monkeypatch, (*pa.ORIG, *ADDED, TP_V1, TP_V2), listed=(*pa.ORIG, *ADDED, TP_V2))
+    (src / ADDED[0] / "shard_00007.bin.zst").write_bytes(b"not in the manifest")  # on disk, not listed: not linked
+    parts, files = pa.holdout_parts(src)
+    assert parts == sorted([*pa.ORIG, *ADDED]) and files == {p: ["shard_00000.bin.zst"] for p in parts}
     datasets, (full,) = pa.holdout_dirs("full")
     assert datasets == []
-    assert sorted(p.name for p in Path(full).iterdir()) == sorted([*pa.ORIG, *added])
-    assert tree(Path(full)) == {f"{p}/shard_00000.bin.zst": p.encode() for p in [*pa.ORIG, *added]}
+    assert tree(Path(full)) == {f"{p}/shard_00000.bin.zst": p.encode() for p in [*pa.ORIG, *ADDED]}
     (ad,) = pa.added_dirs()
     assert sorted({*pa.ORIG, *(p.name for p in Path(ad).iterdir())}) == sorted(p.name for p in Path(full).iterdir())
     datasets, (orig,) = pa.holdout_dirs("orig")
     assert datasets == [] and tree(Path(orig)) == {f"{p}/shard_00000.bin.zst": p.encode() for p in pa.ORIG}
-    assert Path(orig) != Path(full)
-    assert pa.holdout_parts(src) == sorted([*pa.ORIG, *added])
+    assert len({Path(orig), Path(full), Path(ad)}) == 3
     with pytest.raises(SystemExit, match="unknown --holdout"):
         pa.holdout_dirs("tp")
 
 
+def test_full_holdout_refuses_a_manifest_mismatch_041_r27_044_r8(tmp_path, monkeypatch):
+    """041-R27 / 044-R8: `full` (and the added pass) stop when the botgen folder does not match its manifest: a
+    non-teacher-tp part folder not registered, a listed shard missing or of another size, no manifest."""
+    src = botgen(tmp_path, monkeypatch, (*pa.ORIG, *ADDED, TP_V1), listed=(*pa.ORIG, ADDED[0]))
+    with pytest.raises(SystemExit, match="are not the manifest's parts"):
+        pa.holdout_dirs("full")
+    with pytest.raises(SystemExit, match="are not the manifest's parts"):
+        pa.added_dirs()
+    write_manifest(src, (*pa.ORIG, *ADDED))
+    assert pa.holdout_parts(src)[0] == sorted([*pa.ORIG, *ADDED])  # the unlisted teacher-tp v1 folder is no mismatch
+    (src / ADDED[1] / "shard_00000.bin.zst").write_bytes(b"other size")
+    with pytest.raises(SystemExit, match="the manifest says"):
+        pa.holdout_dirs("full")
+    (src / ADDED[1] / "shard_00000.bin.zst").unlink()
+    with pytest.raises(SystemExit, match="is missing"):
+        pa.holdout_dirs("full")
+    (src / "manifest.json").unlink()
+    with pytest.raises(SystemExit, match="no botgen manifest"):
+        pa.holdout_dirs("full")
+
+
 def test_link_tree_drops_stale_entries_041_r27_044_r8(tmp_path, monkeypatch):
-    """041-R27 / 044-R8: a rebuilt link tree holds exactly the current parts: a part dropped from the list (or a
-    stray teacher-tp-* folder from an older tree) and a shard file gone from its source part are removed; the
-    source files stay."""
-    src = botgen(tmp_path, monkeypatch, (*pa.ORIG, "teacher-20261107-macro2", "teacher-20261109-macro3"))
-    (src / "teacher-20261109-macro3" / "shard_00001.bin.zst").write_bytes(b"second")
+    """041-R27 / 044-R8: a rebuilt per_action link tree holds exactly the current parts: a part dropped from the
+    manifest (or a stray teacher-tp-* folder from an older tree) and a shard file no longer listed are removed; the
+    source files stay. Without prune (050-R9 protocol.set_data) nothing is removed."""
+    src = botgen(tmp_path, monkeypatch, (*pa.ORIG, *ADDED))
+    (src / ADDED[1] / "shard_00001.bin.zst").write_bytes(b"second")
+    write_manifest(src, (*pa.ORIG, *ADDED))
     (ad,) = pa.added_dirs()
     work = Path(ad)
-    assert sorted(tree(work)) == ["teacher-20261107-macro2/shard_00000.bin.zst", "teacher-20261109-macro3/shard_00000.bin.zst",
-                                  "teacher-20261109-macro3/shard_00001.bin.zst"]
+    assert sorted(tree(work)) == [f"{ADDED[0]}/shard_00000.bin.zst", f"{ADDED[1]}/shard_00000.bin.zst", f"{ADDED[1]}/shard_00001.bin.zst"]
     # an older tree's teacher-tp folder, a part no longer in the source, a shard removed from its source part
-    (work / "teacher-tp-20261114-v2").mkdir()
-    (work / "teacher-tp-20261114-v2" / "shard_00000.bin.zst").write_bytes(b"tp")
+    (work / TP_V2).mkdir()
+    (work / TP_V2 / "shard_00000.bin.zst").write_bytes(b"tp")
     import shutil
-    shutil.rmtree(src / "teacher-20261107-macro2")
-    (src / "teacher-20261109-macro3" / "shard_00001.bin.zst").unlink()
+    shutil.rmtree(src / ADDED[0])
+    (src / ADDED[1] / "shard_00001.bin.zst").unlink()
+    write_manifest(src, (*pa.ORIG, ADDED[1]))
+    # without prune nothing goes
+    pa.link_tree(src, [ADDED[1]], work)
+    assert (work / TP_V2 / "shard_00000.bin.zst").exists() and (work / ADDED[1] / "shard_00001.bin.zst").exists()
     (ad2,) = pa.added_dirs()
     assert Path(ad2) == work
-    assert tree(work) == {"teacher-20261109-macro3/shard_00000.bin.zst": b"teacher-20261109-macro3"}
-    assert (src / "teacher-20261109-macro3" / "shard_00000.bin.zst").read_bytes() == b"teacher-20261109-macro3"
+    assert tree(work) == {f"{ADDED[1]}/shard_00000.bin.zst": ADDED[1].encode()}
+    assert (src / ADDED[1] / "shard_00000.bin.zst").read_bytes() == ADDED[1].encode()
     assert all((src / p / "shard_00000.bin.zst").exists() for p in pa.ORIG)
     # no added part left: [] (the stale tree is not read)
-    shutil.rmtree(src / "teacher-20261109-macro3")
+    shutil.rmtree(src / ADDED[1])
+    write_manifest(src, pa.ORIG)
     assert pa.added_dirs() == []
+
+
+def dir_link(link: Path, target: Path) -> None:
+    """A directory symbolic link, else (Windows) a junction; skips the test when the OS allows neither."""
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return
+    except (OSError, NotImplementedError):
+        pass
+    try:
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    except (ImportError, OSError):
+        pytest.skip("no directory symbolic link or junction on this host")
+
+
+def test_link_tree_refuses_links_and_trees_inside_the_source_041_r27_044_r8(tmp_path):
+    """041-R27 / 044-R8: a pruned link tree whose root or part folder is a symbolic link / junction, or which lies
+    inside its source, is refused before anything is removed."""
+    src = tmp_path / "src"
+    for part in ("a", "b"):
+        (src / part).mkdir(parents=True)
+        (src / part / "shard_00000.bin.zst").write_bytes(part.encode())
+    before = tree(src)
+    dst = tmp_path / "dst"
+    dir_link(dst, src)
+    with pytest.raises(SystemExit, match="symbolic link or junction"):
+        pa.link_tree(src, ["a"], dst, prune=True)
+    assert tree(src) == before
+    os.rmdir(dst) if dst.is_junction() else dst.unlink()
+    dst.mkdir()
+    dir_link(dst / "a", src / "b")
+    with pytest.raises(SystemExit, match="symbolic link or junction"):
+        pa.link_tree(src, ["a"], dst, prune=True)
+    assert tree(src) == before
+    with pytest.raises(SystemExit, match="inside its source"):
+        pa.link_tree(src, ["a"], src / "b" / "tree", prune=True)
+    with pytest.raises(SystemExit, match="inside its source"):
+        pa.link_tree(src / "a", ["x"], src, prune=True)
+    assert tree(src) == before
