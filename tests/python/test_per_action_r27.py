@@ -191,3 +191,22 @@ def test_macro_value_over_the_full_hold_out_041_r27():
     assert {k: got[k] for k in ("rush_bunker_top1", "rush_bunker_steps", "rush_games")} == {"rush_bunker_top1": 0.6, "rush_bunker_steps": 50, "rush_games": 129}
     assert r27["macro_games"] == 36, "the input is not changed"
     assert pa.macro_full(r27, None) == r27
+
+
+def test_tp_teacher_folders_left_out_044_r8(tmp_path, monkeypatch):
+    """044-R8 / 022-R12: botgen folders of the 022 TvT / TvP teacher (teacher-tp-*) are neither classified (their
+    T0 Protoss / Terran opponents have no 041-R27 class) nor part of the `full` macro pass."""
+    raw = tmp_path / "raw"
+    rush = fake_plan(raw, "teacher-1/teacher_botgen_rush", [(1, "t0-zerg-rush@0.1.0")])
+    fake_plan(raw, "teacher-tp-20261114/teacher_botgen_tp", [(1, "t0-protoss@0.1.0"), (2, "iron@aiide2017")])
+    got = pa.teacher_classes(raw, None)
+    assert {s: v["class"] for s, v in got.items()} == {s: "rush" for s in rush}
+    shared = tmp_path / "shared"
+    src = shared / "datasets" / "replays" / "shards" / "botgen"
+    for part in (*pa.ORIG, "teacher-20261107-macro2", "teacher-tp-20261114", "teacher-tp-20261114-v2"):
+        (src / part).mkdir(parents=True)
+        (src / part / "shard_00000.bin.zst").write_bytes(part.encode())
+    monkeypatch.setattr(pa.ec, "shared_dir", lambda: shared)
+    monkeypatch.setattr(pa.ec, "cache_dir", lambda: tmp_path / "cache")
+    (added,) = pa.added_dirs()
+    assert sorted(p.name for p in Path(added).iterdir()) == ["teacher-20261107-macro2"]
