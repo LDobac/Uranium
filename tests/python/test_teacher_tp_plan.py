@@ -174,6 +174,11 @@ def test_tp_botgen_topup_seeds_044_r8(tmp_path):
     assert rcp.write_tp(tmp_path, False, extra={"P": 64}, part=1) == out
     with pytest.raises(AssertionError, match="other seeds"):
         rcp.write_tp(tmp_path, False, extra={"P": 64, "T": 32}, part=1)
+    # Review 2026-11-14: the same total with another Protoss / Terran split has the same seeds but other matchups.
+    for other in ({"T": 64}, {"P": 32, "T": 32}):
+        with pytest.raises(AssertionError, match="other matchups"):
+            rcp.write_tp(tmp_path, False, extra=other, part=1)
+    assert all(m["p1"]["race"] == "protoss" for m in _load(out)["matchup"]), "the played plan is left as it was"
     _, x2 = rcp.render_tp(False, "x", extra={"T": 64}, part=2)
     (tmp_path / "clash.toml").write_text(
         f'name = "c"\nseeds = [{x2[5]}]\n[[matchup]]\nmap = "fighting_spirit"\ngames = 1\n'
