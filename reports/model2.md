@@ -622,3 +622,11 @@ S1·S2 데이터와 학습 일정(update 수, lr, data seed)은 Checkpoint 1과 
 - 체크포인트 `<shared>/checkpoints/m2-rl-fix-2/`(전부 보존), `m2-rl-fix-1/ckpt-33477`.
 - 점검 job `<shared>/eval/m2-rl-fix-2-c{1..4}-20261115-*`, 표 `<shared>/eval/m2-lineage/logs/m2-rl-fix-2_c{1..4}_tables.json`, 끝 T1 `eval/m2-rl-fix-2-final-20261115`(표 `logs/m2-rl-fix-2_final_t1_tables.json`), D T1 `eval/m2-D-t1-20261115`(표 `logs/D_t1_t1_tables.json`), D test `<shared>/artifacts/bc_main_eval/test_cuda/m2-teacher-t1.json`.
 - run 로그·드라이버 `C:\Workspace\Uranium_logs\m2_rl_fix\m2-rl-fix-2\`(train.csv 사본 `<shared>/eval/m2-lineage/train_logs/m2-rl-fix-2.train.csv`), 점검 helper `<shared>/eval/m2-lineage/scripts/rlcheck_loop2.sh`.
+
+- **결과 모델 결정**(사용자 위임·Fable 자문 2026-11-15): 경로 2 수정 모델로 이어 쓰는 것은 D = t1(`m2-teacher-t1/ckpt-2844`)이고, 수정 RL 마지막 체크포인트 c4(`m2-rl-fix-2/ckpt-6129424`)는 결과로 기록·보존만 한다(044-R7의 D 정의 그대로, spec 변경 없음).
+  - 근거: 600만 step RL이 D보다 유의하게 올린 지표가 없다. T0 테란 + 프로토스 30/64(D 34, p 0.60; 점검 네 번 28·24·22·30), TvZ 32/32(D 29), 막음 합 66(D 61), 러시 승 90/128(D 91), 운영형 26/40(D 26). T1 300은 D 44/299 대 c4 30/298(p 0.11)이고 차이는 테란·프로토스전이다: TvP + TvT 22/195 대 10/194(p 0.04), UAlbertaBot 프로토스 8/15 → 2/16·테란 9/16 → 4/16, 저그 15/18 → 14/18.
+  - 교사 모드: c4는 T0 점검 모두 0·0, T1에서 TvP 6/96·TvT 1/98(D는 T0 4·9/32, T1 27/97·15/97). D의 T1 교사 모드 판은 그 밖의 판보다 승률이 높았다(TvP 4/27 대 4/70, TvT 6/15 대 7/82). T0 표준에서는 반대였다(TvP 3/9 대 13/23). 교사 모드를 뺀 T1 TvP + TvT는 D 11/152 대 c4 8/187(p 0.25)로 불확실하다. 즉 c4는 누출을 없앴지만 그 대가로 T1 테란·프로토스전 승이 줄었다.
+  - c4의 T1 TvP·TvT 상태(052 지표): 8분 수입 중앙값 TvP 84·TvT 400(D 736·760), TvP 비교사 모드 판 0/90, 벙커 탑승 27%(D 62%).
+  - 추정(확인 전): 테란·프로토스 KL 참조가 `m2-s2e2`라 RL이 022 교사로 얻은 테란·프로토스전 이득을 `m2-s2e2` 쪽으로 되돌린 것으로 보인다(c4 T0 프로토스 11/32, `m2-s2e2` 10/32). 다음 RL 전에 044-R9 참조 값을 다시 정한다(결정 항목).
+  - 단서: T0·TvZ·러시 수치는 D가 CUDA bf16, RL 점검이 ROCm f32 추론이고 32판 표본이다. T1 300은 둘 다 CUDA bf16이다. D의 T0 34/64는 고른 뒤의 값이라 약 30으로 읽는다(10.3). D의 T1 300은 선택 뒤에 잰 값이다. 추가 측정은 하지 않는다(c4 T0를 CUDA로 다시 재도 결정이 바뀌지 않음).
+  - 알려진 한계(D): 교사 모드 누출(T0 TvT 4/32·TvP 9/32), 테란 val top-1 −0.71%p·NLL +0.035, test 1,199 top-1 71.63%(`m2-s2e2` 72.14%).
