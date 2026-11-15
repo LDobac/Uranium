@@ -587,3 +587,38 @@ S1·S2 데이터와 학습 일정(update 수, lr, data seed)은 Checkpoint 1과 
 - 산출물: 판정 `<shared>/eval/m2-lineage/t1_first_test.verdict`, `logs/t1_verdict.{json,txt}`, 표 `logs/t1_tables{,_live}.{json,txt}`, 개막 진단 `logs/rush_opening_diag_t1.md`, val `<shared>/artifacts/bc_e2_val/val500/m2-teacher-t1__ckpt-2844.json`, 게임 job `<shared>/eval/m2-t1-20261115-*`, 학습 로그 `logs/t1_t1_train_Desktop.*`, 데이터 `shards/dagger_m2/t1`·`shards/botgen/teacher-tp-20261114-v2-x1`·`-x2`.
 - **규칙상 D = d1 → 사후 개정으로 D = t1**(사용자 위임·Fable 자문 2026-11-15, spec 044-R7 개정 3). 근거: T0 테란 + 프로토스 34/64 대 d1 20/64(Fisher p 약 0.02), TvZ 29 대 26, 막음 합 61 대 66(잡음 범위). 교사 모드 TvP 9판은 3승 1무 5패(10분 전 패 4, 그 밖 23판 중 10분 전 패 3)로 누출은 실제이고 해롭지만 순효과는 t1이 낫다. 주의: t1은 여러 지점 중 고른 결과라 선택 편향이 있어 실제 T0 테란 + 프로토스는 약 30/64로 보는 편이 안전하다. 더 엄격해진 RL 중단 기준(D = t1의 18·16/32에서 6판 아래)은 점검·종족마다 약 19% 확률로 잘못 걸릴 수 있다(두 점검 연속 조건이 이를 줄임). `t1_first_test.verdict`는 고치지 않는다.
 - 다음: `m2-rl-fix-1`(D = d1) 06:55 시작 → 07:02 정상 종료(ckpt-33477, 산출물 보존) → `m2-rl-fix-2`(D = t1, `--bc m2-teacher-t1/ckpt-2844`) 07:03 시작. 점검마다 교사 모드 판 수와 승·무·패를 기록한다. D(t1)의 044-R7 추가 측정(test 1,199, T1 300)은 RL 뒤 CUDA 호스트가 빌 때 한다(d1 측정값은 그대로 둠).
+
+## 11. 경로 2 수정 RL `m2-rl-fix-2`(044-R9~R11, D = t1)
+
+### 11.1 설정
+- `python -m uranium rl --run m2-rl-fix-2 --config config/rl_m2_race.toml --bc <shared>/checkpoints/m2-teacher-t1/ckpt-2844 --algo vtrace --backend cuda --seed 1 --max-agent-steps 6000000`(`--init` 없음, 044-R11 개정 2026-11-15), supervise 아래, CUDA bf16. 종족별 참조 KL: 저그 S(`m2-dagger-r2/ckpt-1408`), 테란·프로토스·Random `m2-s2e2/ckpt-11387`. 상대 구성은 044-R10 고정 비중 사다리. 학습 게임 CUDA 호스트 자체 hostd 6 + Linux CPU 호스트 3.
+- 앞선 `m2-rl-fix-1`(D = d1, 06:55~07:02, `ckpt-33477`)은 D를 t1으로 바꾼 사후 결정(044-R7 개정 3)으로 정상 종료하고 산출물은 그대로 둠.
+- 07:03~12:33, 6.13M agent step(마지막 `ckpt-6129424`), 중단 규칙 걸리지 않음.
+- 점검(044-R11): 150만 step마다 그 뒤 첫 체크포인트의 Main, 050-R9 `rl-fix` plan(T0 표준 테란·프로토스 각 32, TvZ 32, 러시 128 + 운영형 40), Linux ROCm 호스트 추론 ROCm f32(D 자신의 측정은 CUDA bf16 — 판 결과 잡음이 더 크지만 차이로 기록), 표는 `tables.py --ops live`. 점검 한 번이 약 1.5~3시간이라 RL보다 느렸고, 둘째 Linux ROCm 호스트의 둘째 작업자가 한 점검의 다른 job을 맡아 나눴다(job lease는 하나).
+
+### 11.2 점검 결과
+
+| 지점 | T0 테란 | T0 프로토스 | TvZ | 러시 막음(이른/늦은, 합) | 러시 승 | 운영형 승 | 교사 모드 TvT/TvP | 러시 본진 진입 / 그중 막음 / 벙커 탑승 |
+|---|---|---|---|---|---|---|---|---|
+| D = t1 `ckpt-2844`(CUDA) | 18/32 | 16/32 | 29/32 | 21/40 (61) | 91/128 | 26/40 | 4/9 | 90 / 27 / 65 |
+| c1 `ckpt-1566130` | 12 | 16 | 31 | 16/34 (50) | 72 | 26 | 0/0 | 102 / 27 / 53 |
+| c2 `ckpt-3251723` | 13 | 11 | 31 | 22/35 (57) | 82 | 20 | 0/0 | 100 / 33 / 65 |
+| c3 `ckpt-5154827` | 9 | 13 | 30 | 23/36 (59) | 76 | 24 | 0/0 | 94 / 30 / 48 |
+| c4 `ckpt-6129424`(끝) | 19 | 11 | 32 | 27/39 (66) | 90 | 26 | 0/0 | 97 / 39 / 71 |
+
+- 중단 규칙(D의 18·16에서 6판 이상 낮음 두 점검 연속, 또는 TvZ < 16): c1(테란 12)·c3(테란 9)만 낮음, 연속은 없음. TvZ는 늘 30 이상.
+- 교사 모드 판은 c1부터 모든 점검에서 0이다(D는 TvT 4·TvP 9). 종족별 참조 KL(테란·프로토스 = `m2-s2e2`)과 같이 가는 변화로 보이지만 원인은 확인 전이다.
+- T0 테란·프로토스는 32판이라 ±12%p 안팎의 잡음이 있고, 점검 사이 오르내림(테란 12 → 13 → 9 → 19, 프로토스 16 → 11 → 13 → 11)은 그 범위와 겹친다. 프로토스는 D보다 낮은 쪽에 머문다.
+
+### 11.3 끝 측정(T1 300)과 D 추가 측정(044-R7)
+- `m2-rl-fix-2` 끝 Main T1 300(CUDA 호스트 추론 bf16 + 그 호스트 6슬롯, Linux CPU 호스트에는 McRave 없음): 유효 298판 중 30승(UAlbertaBot 20/50, Steamhammer 7/48(상대 크래시 무효 2), ZZZKBot 0, Stardust 0, Iron 0, McRave 3/50), T1 안 교사 모드 TvP 6/96·TvT 1/98.
+- D(t1) T1: 299판 중 44승(UAlbertaBot 32/49, Steamhammer 4, ZZZKBot 1, Stardust 0, Iron 1, McRave 6), T1 안 교사 모드 TvP 27/97·TvT 15/97. 마지막 한 판은 시간 상한까지 갈 판이라 중단·무효(코디네이터 임시 결정).
+- D(t1) test 1,199(CUDA 고정): top-1 71.63%·top-5 95.76%·nll.action 0.8928(`m2-s2e2` 72.14%·96.04%·0.8683).
+- 참고: Checkpoint 1 T1 33/300, 경로 2 BC `m2-s2e2` 24/300.
+- 끝 체크포인트 진단(cue_diag·dead_channels, 첫째 Linux ROCm 호스트 ROCm f32)은 이 기록 시점에 진행 중이다.
+- 어느 체크포인트를 다음으로 이어갈지는 정하지 않았다(코디네이터·자문 판단 대기).
+
+### 11.4 산출물(지우지 않음)
+- 체크포인트 `<shared>/checkpoints/m2-rl-fix-2/`(전부 보존), `m2-rl-fix-1/ckpt-33477`.
+- 점검 job `<shared>/eval/m2-rl-fix-2-c{1..4}-20261115-*`, 표 `<shared>/eval/m2-lineage/logs/m2-rl-fix-2_c{1..4}_tables.json`, 끝 T1 `eval/m2-rl-fix-2-final-20261115`(표 `logs/m2-rl-fix-2_final_t1_tables.json`), D T1 `eval/m2-D-t1-20261115`(표 `logs/D_t1_t1_tables.json`), D test `<shared>/artifacts/bc_main_eval/test_cuda/m2-teacher-t1.json`.
+- run 로그·드라이버 `C:\Workspace\Uranium_logs\m2_rl_fix\m2-rl-fix-2\`(train.csv 사본 `<shared>/eval/m2-lineage/train_logs/m2-rl-fix-2.train.csv`), 점검 helper `<shared>/eval/m2-lineage/scripts/rlcheck_loop2.sh`.
