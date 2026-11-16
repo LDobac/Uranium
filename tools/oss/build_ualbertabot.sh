@@ -3,11 +3,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT/tools/oss/common.sh"
 SRC="$ROOT/third_party/ualbertabot"
-COMMIT=558899d8793456f4a6ec4196efbb5235552e24db
+COMMIT="$(pin ualbertabot_commit)"
+URL="$(pin ualbertabot_url)"
+PATCH="$(pin ualbertabot_patch)"
 OUT="$OSS_OUT_ROOT/ualbertabot"
 
-oss_git_fetch "$SRC" https://github.com/davechurchill/ualbertabot.git "$COMMIT"
-oss_patch "$SRC" "$ROOT/third_party/patches/0005-ualbertabot-linux-bwapi42.patch"
+git_fetch_pinned "$SRC" "$URL" "$COMMIT"
+oss_patch "$SRC" "$PATCH"
 
 srcs=()
 for f in "$SRC"/UAlbertaBot/Source/*.cpp "$SRC"/UAlbertaBot/Source/linux/*.cpp "$SRC"/BOSS/source/*.cpp "$SRC"/SparCraft/source/*.cpp; do

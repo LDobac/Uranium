@@ -2,15 +2,18 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT/tools/oss/common.sh"
-VER=5.3.6
+VER="$(pin steamhammer_version)"
 SRC="$ROOT/third_party/steamhammer"
 CFG="$ROOT/third_party/steamhammer_dll"
 OUT="$OSS_OUT_ROOT/steamhammer"
-URL=https://satirist.org/downloads/starcraft/steamhammer/$VER
+URL="$(pin steamhammer_url)/$VER"
+SRC_SHA="$(pin steamhammer_source_sha256)"
+CFG_SHA="$(pin steamhammer_dll_sha256)"
+PATCH="$(pin steamhammer_patch)"
 
-oss_zip_fetch "$SRC" "$URL/Steamhammer_source.zip" d7ccc9f54cb8a9b1d11befc136272646767a7fd494dd937924a82e03581ad522
-oss_zip_fetch "$CFG" "$URL/Steamhammer_dll.zip" afde6ff7a697abae5364c3e6c623aa579524f05e3015f662e4ef7bce379cc83c
-oss_patch "$SRC" "$ROOT/third_party/patches/0006-steamhammer-linux-bwapi42.patch"
+oss_zip_fetch "$SRC" "$URL/Steamhammer_source.zip" "$SRC_SHA"
+oss_zip_fetch "$CFG" "$URL/Steamhammer_dll.zip" "$CFG_SHA"
+oss_patch "$SRC" "$PATCH"
 
 S="$SRC/Steamhammer_source/Steamhammer/Source"
 srcs=()

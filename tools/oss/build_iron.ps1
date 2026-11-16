@@ -2,8 +2,8 @@ $Root = (Resolve-Path "$PSScriptRoot\..\..").Path
 . "$Root\tools\oss\common.ps1"
 $Src = "$Root\third_party\iron"
 
-Get-OssZip $Src 'https://davechurchill.ca/starcraft/aiide/results/2019/bots/Iron.zip' 'd9a3eefe04c627550d57af611c17828971fba1667da402ccf708523b6b892f33'
-Add-OssPatch $Src "$Root\third_party\patches\0010-iron-linux-bwapi42.patch"
+Get-OssZip $Src (Get-Pin iron_url) (Get-Pin iron_sha256)
+Add-OssPatch $Src (Get-Pin iron_patch)
 
 $S = "$Src\Iron\src\Iron"
 $srcs = Get-ChildItem $S -Recurse -Filter *.cpp |
@@ -12,4 +12,4 @@ $srcs = Get-ChildItem $S -Recurse -Filter *.cpp |
 Build-OssModule -Bot iron -Sources $srcs -Includes $S, "$S\bwem\src" -Defines NOMINMAX `
     -ForceIncludes climits, cfloat, cmath, stdexcept, algorithm -UraniumModule
 New-OssData iron
-Complete-Oss iron aiide2017
+Complete-Oss iron (Get-Pin iron_version)

@@ -3,11 +3,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT/tools/oss/common.sh"
 SRC="$ROOT/third_party/mcrave"
-COMMIT=7d1719a22d8b896f957abae50e2ea5efff974fe2
+COMMIT="$(pin mcrave_commit)"
+URL="$(pin mcrave_url)"
+PATCH="$(pin mcrave_patch)"
 OUT="$OSS_OUT_ROOT/mcrave"
 
-oss_git_fetch "$SRC" https://github.com/Cmccrave/McRave.git "$COMMIT"
-oss_patch "$SRC" "$ROOT/third_party/patches/0009-mcrave-linux-bwapi42.patch"
+git_fetch_pinned "$SRC" "$URL" "$COMMIT"
+oss_patch "$SRC" "$PATCH"
 
 S="$SRC/Source"
 mapfile -t srcs < <(find "$S" -name '*.cpp' ! -name Dll.cpp | sort)

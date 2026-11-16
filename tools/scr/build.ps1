@@ -1,13 +1,8 @@
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path "$PSScriptRoot\..\..").Path
 . "$Root\tools\env.ps1"
+. "$Root\tools\build_common.ps1"
 Import-UraniumEnv $Root
-
-function Invoke-Native([string]$Exe, [string[]]$Argv) {
-    $ErrorActionPreference = 'Continue'
-    & $Exe @Argv 2>&1 | ForEach-Object { "$_" }
-    if ($LASTEXITCODE -ne 0) { throw "$Exe $($Argv -join ' ') failed ($LASTEXITCODE)" }
-}
 
 Invoke-Native cargo @('test', '--manifest-path', "$Root\bridge\scr\Cargo.toml")
 Invoke-Native cargo @('build', '--release', '--manifest-path', "$Root\bridge\scr\Cargo.toml")

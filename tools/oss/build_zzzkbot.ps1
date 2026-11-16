@@ -1,10 +1,10 @@
 $Root = (Resolve-Path "$PSScriptRoot\..\..").Path
 . "$Root\tools\oss\common.ps1"
 $Src = "$Root\third_party\zzzkbot"
-$Commit = '7183e37b6b416ea53c1040c83e639a3a3c395eed'
+$Commit = Get-Pin zzzkbot_commit
 
-Get-OssGit $Src 'https://github.com/chriscoxe/zzzkbot.git' $Commit
-Add-OssPatch $Src "$Root\third_party\patches\0007-zzzkbot-linux-bwapi42.patch"
+Get-PinnedGit $Src (Get-Pin zzzkbot_url) $Commit
+Add-OssPatch $Src (Get-Pin zzzkbot_patch)
 
 $S = "$Src\ZZZKBot\Source"
 Build-OssModule -Bot zzzkbot -Sources "$S\ZZZKBotAIModule.cpp", "$S\linux\UraniumModule.cpp" -Includes $S -Defines NOMINMAX -UraniumModule

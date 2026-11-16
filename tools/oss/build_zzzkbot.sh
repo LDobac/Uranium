@@ -3,11 +3,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT/tools/oss/common.sh"
 SRC="$ROOT/third_party/zzzkbot"
-COMMIT=7183e37b6b416ea53c1040c83e639a3a3c395eed
+COMMIT="$(pin zzzkbot_commit)"
+URL="$(pin zzzkbot_url)"
+PATCH="$(pin zzzkbot_patch)"
 OUT="$OSS_OUT_ROOT/zzzkbot"
 
-oss_git_fetch "$SRC" https://github.com/chriscoxe/zzzkbot.git "$COMMIT"
-oss_patch "$SRC" "$ROOT/third_party/patches/0007-zzzkbot-linux-bwapi42.patch"
+git_fetch_pinned "$SRC" "$URL" "$COMMIT"
+oss_patch "$SRC" "$PATCH"
 
 S="$SRC/ZZZKBot/Source"
 mapfile -t objs < <(oss_compile "$ROOT/build/obj/zzzkbot" -std=c++17 -O2 -fPIC -fpermissive -w \

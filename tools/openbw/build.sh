@@ -2,36 +2,18 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "$ROOT/tools/build_common.sh"
 TP="$ROOT/third_party"
-OPENBW_COMMIT=4b046d5f65302b10cb0a745f0fecd37ec85b20a8
-BWAPI_COMMIT=48124ba8ed1b4d52b3dfd52acbaf34afb9a37fe2
+OPENBW_URL="$(pin openbw_url)"
+OPENBW_COMMIT="$(pin openbw_commit)"
+BWAPI_URL="$(pin bwapi_url)"
+BWAPI_COMMIT="$(pin bwapi_commit)"
 JOBS="${JOBS:-$(nproc)}"
 
-fetch() {
-  local dir="$1" url="$2" commit="$3"
-  if [[ ! -d "$dir/.git" ]]; then
-    git clone -q "$url" "$dir"
-  fi
-  if [[ "$(git -C "$dir" rev-parse HEAD)" != "$commit" ]]; then
-    git -C "$dir" fetch -q origin "$commit"
-    git -C "$dir" checkout -q "$commit"
-  fi
-}
-
-apply_patch() {
-  local dir="$1" patch="$2"
-  if git -C "$dir" apply --reverse --check "$patch" 2>/dev/null; then
-    echo "[build] already applied: $(basename "$patch")"
-  else
-    git -C "$dir" apply "$patch"
-    echo "[build] applied: $(basename "$patch")"
-  fi
-}
-
-fetch "$TP/openbw" https://github.com/OpenBW/openbw.git "$OPENBW_COMMIT"
-fetch "$TP/bwapi" https://github.com/OpenBW/bwapi.git "$BWAPI_COMMIT"
-for p in "$TP"/patches/0*-openbw-*.patch; do [[ -e "$p" ]] && apply_patch "$TP/openbw" "$p"; done
-for p in "$TP"/patches/0*-bwapi-*.patch; do [[ -e "$p" ]] && apply_patch "$TP/bwapi" "$p"; done
+git_fetch_pinned "$TP/openbw" "$OPENBW_URL" "$OPENBW_COMMIT"
+git_fetch_pinned "$TP/bwapi" "$BWAPI_URL" "$BWAPI_COMMIT"
+for p in "$TP"/patches/0*-openbw-*.patch; do [[ -e "$p" ]] && git_apply_patch "$TP/openbw" "$p" "[build]"; done
+for p in "$TP"/patches/0*-bwapi-*.patch; do [[ -e "$p" ]] && git_apply_patch "$TP/bwapi" "$p" "[build]"; done
 
 cmake -S "$TP/bwapi" -B "$TP/bwapi/build" \
   -DCMAKE_BUILD_TYPE=Release \

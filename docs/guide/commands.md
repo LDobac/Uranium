@@ -39,7 +39,7 @@ cargo build --release -p uranium-train
 - Burn: 마지막 커밋 태그 `burn-final`. Burn 체크포인트(`model.bpk`)는 보관만, 읽지 않음([061-R10](../spec/2026_10_15_22_24_061-shared-storage.md)).
 
 ### OpenBW·브리지·T1 봇 ([spec 011](../spec/2026_10_15_22_24_011-bridge-openbw.md), [spec 021](../spec/2026_10_15_22_24_021-opponent-pool.md))
-- OpenBW/BWAPI: `tools/openbw/build.sh` → `third_party/bwapi/build/bin/BWAPILauncher`. 패치 `third_party/patches/`(0001~0015) 순서대로.
+- OpenBW/BWAPI: `tools/openbw/build.sh` → `third_party/bwapi/build/bin/BWAPILauncher`. 패치 `third_party/patches/`(0001~0015) 순서대로. OpenBW·BWAPI·T1 봇의 URL·커밋·sha256·패치 이름은 `tools/pins.txt`(`<키> <값>` 줄, 두 셸이 같이 읽음).
 - 브리지: `tools/openbw/build_bridge.sh` → `bridge/openbw/build/liburanium_bridge.so`. shim 500줄 이하. shim·Rust 쪽은 C ABI라 늘 함께 빌드. 브리지 .so·에이전트·hostd는 모든 PC에서 같은 커밋으로 함께 빌드([010-R12](../spec/2026_10_15_22_24_010-game-protocol.md) 프로토콜 버전 2), 옛 shim과 새 라이브러리 섞지 않음.
 - Windows: `tools\openbw\build.ps1` → `tools\openbw\build_bridge.ps1` → `tools\oss\build_<bot>.ps1`([13 Windows](#13-windows)).
 - T1 봇: `tools/oss/build_<bot>.sh`(`ualbertabot`, `steamhammer`, `zzzkbot`, `stardust`, `mcrave`, `iron`) → `<URANIUM_OSS_BOTS_DIR>/<bot>/{module.so, VERSION}`. 상대 ID `<bot>@<버전>`([021-R3](../spec/2026_10_15_22_24_021-opponent-pool.md)).

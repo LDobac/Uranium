@@ -3,12 +3,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT/tools/oss/common.sh"
 SRC="$ROOT/third_party/stardust"
-COMMIT=22d93d7a55d0a0494384474a456fd7ee26baee97
+COMMIT="$(pin stardust_commit)"
+URL="$(pin stardust_url)"
+PATCH="$(pin stardust_patch)"
 OUT="$OSS_OUT_ROOT/stardust"
 OBJ="$ROOT/build/obj/stardust"
 
-oss_git_fetch "$SRC" https://github.com/bmnielsen/Stardust.git "$COMMIT"
-oss_patch "$SRC" "$ROOT/third_party/patches/0008-stardust-linux-bwapi42.patch"
+git_fetch_pinned "$SRC" "$URL" "$COMMIT"
+oss_patch "$SRC" "$PATCH"
 
 Z="$SRC/3rdparty/zstd/lib"
 zflags=(-O2 -fPIC -DNDEBUG -DZSTD_DISABLE_ASM -I"$Z" -I"$Z/common")

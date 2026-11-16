@@ -1,18 +1,10 @@
 source "$ROOT/tools/env.sh"; uranium_load_env "$ROOT"
+source "$ROOT/tools/build_common.sh"
 BWAPI_INC="$ROOT/third_party/bwapi/bwapi/include"
 BWAPI_LIB="$ROOT/third_party/bwapi/build/lib"
 OSS_OUT_ROOT="${URANIUM_OSS_BOTS_DIR:-$ROOT/build/oss_bots}"
 JOBS="${JOBS:-$(nproc)}"
 [[ -f "$BWAPI_LIB/libBWAPILIB.so" ]] || { echo "run tools/openbw/build.sh first" >&2; exit 1; }
-
-oss_git_fetch() {
-  local dir="$1" url="$2" commit="$3"
-  [[ -d "$dir/.git" ]] || git clone -q "$url" "$dir"
-  if [[ "$(git -C "$dir" rev-parse HEAD)" != "$commit" ]]; then
-    git -C "$dir" fetch -q origin "$commit"
-    git -C "$dir" checkout -q "$commit"
-  fi
-}
 
 oss_zip_fetch() {
   local dir="$1" url="$2" sha="$3" zip="$ROOT/third_party/$(basename "$1").zip"
@@ -28,13 +20,7 @@ oss_zip_fetch() {
 }
 
 oss_patch() {
-  local dir="$1" patch="$2"
-  if git -C "$dir" apply --reverse --check "$patch" 2>/dev/null; then
-    echo "[oss] patch already applied: $(basename "$patch")"
-  else
-    git -C "$dir" apply "$patch"
-    echo "[oss] patch applied: $(basename "$patch")"
-  fi
+  git_apply_patch "$1" "$ROOT/third_party/patches/$2" "[oss] patch"
 }
 
 oss_stale() {

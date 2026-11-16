@@ -1,10 +1,10 @@
 $Root = (Resolve-Path "$PSScriptRoot\..\..").Path
 . "$Root\tools\oss\common.ps1"
 $Src = "$Root\third_party\stardust"
-$Commit = '22d93d7a55d0a0494384474a456fd7ee26baee97'
+$Commit = Get-Pin stardust_commit
 
-Get-OssGit $Src 'https://github.com/bmnielsen/Stardust.git' $Commit
-Add-OssPatch $Src "$Root\third_party\patches\0008-stardust-linux-bwapi42.patch"
+Get-PinnedGit $Src (Get-Pin stardust_url) $Commit
+Add-OssPatch $Src (Get-Pin stardust_patch)
 
 $Z = "$Src\3rdparty\zstd\lib"
 $zsrcs = Get-ChildItem "$Z\common\*.c", "$Z\compress\*.c", "$Z\decompress\*.c" | ForEach-Object { $_.FullName }

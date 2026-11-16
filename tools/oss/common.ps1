@@ -1,28 +1,12 @@
 $ErrorActionPreference = 'Stop'
 . "$Root\tools\env.ps1"
+. "$Root\tools\build_common.ps1"
 Import-UraniumEnv $Root
 $BwapiInc = "$Root\third_party\bwapi\bwapi\include"
 $BwapiLib = "$Root\third_party\bwapi\build\lib\Release\BWAPILIB.lib"
 $OssOutRoot = if ($env:URANIUM_OSS_BOTS_DIR) { $env:URANIUM_OSS_BOTS_DIR } else { "$Root\build\oss_bots" }
 $Generator = if ($env:URANIUM_CMAKE_GENERATOR) { $env:URANIUM_CMAKE_GENERATOR } else { 'Visual Studio 18 2026' }
 if (-not (Test-Path $BwapiLib)) { throw 'run tools\openbw\build.ps1 first' }
-
-function Invoke-Native([string]$Exe, [string[]]$Argv) {
-    $ErrorActionPreference = 'Continue'
-    & $Exe @Argv 2>&1 | ForEach-Object { "$_" }
-    if ($LASTEXITCODE -ne 0) { throw "$Exe $($Argv -join ' ') failed ($LASTEXITCODE)" }
-}
-
-function Get-OssGit([string]$Dir, [string]$Url, [string]$Commit) {
-    if (-not (Test-Path "$Dir\.git")) {
-        Invoke-Native git @('-c', 'core.autocrlf=false', 'clone', '-q', $Url, $Dir)
-        Invoke-Native git @('-C', $Dir, 'config', 'core.autocrlf', 'false')
-    }
-    if ((git -C $Dir rev-parse HEAD) -ne $Commit) {
-        Invoke-Native git @('-C', $Dir, 'fetch', '-q', 'origin', $Commit)
-        Invoke-Native git @('-C', $Dir, 'checkout', '-q', $Commit)
-    }
-}
 
 function Get-OssZip([string]$Dir, [string]$Url, [string]$Sha256) {
     if (Test-Path "$Dir\.git") { return }
@@ -38,15 +22,7 @@ function Get-OssZip([string]$Dir, [string]$Url, [string]$Sha256) {
 }
 
 function Add-OssPatch([string]$Dir, [string]$Patch) {
-    $ErrorActionPreference = 'Continue'
-    git -C $Dir apply --reverse --check $Patch 2>$null
-    $ErrorActionPreference = 'Stop'
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "[oss] patch already applied: $(Split-Path $Patch -Leaf)"
-    } else {
-        Invoke-Native git @('-C', $Dir, 'apply', $Patch)
-        Write-Host "[oss] patch applied: $(Split-Path $Patch -Leaf)"
-    }
+    Add-GitPatch $Dir "$Root\third_party\patches\$Patch" '[oss] patch'
 }
 
 function Build-OssModule {
