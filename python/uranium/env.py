@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+ENV_FILE_KEY = "URANIUM_ENV_FILE"
+
 
 def _value(raw: str) -> str:
     raw = raw.strip()
@@ -20,8 +22,9 @@ def find(start: Path | None = None) -> Path | None:
 
 
 def load(path: Path | None = None) -> Path | None:
-    path = path or find()
     if path is None:
+        path = Path(os.environ[ENV_FILE_KEY]) if ENV_FILE_KEY in os.environ else find()
+    if path is None or not path.is_file():
         return None
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
