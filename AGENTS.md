@@ -57,7 +57,7 @@ docs/
   guide/                 commands.md, scr.md, measurement_protocol.md
   timeline.md
 crates/                  uranium-* (역할: spec 001, ladder는 043)
-python/uranium           model/, bc/, rl/, agent/, distill/, diag/, bench/, kernels/, ckpt.py. 진입점 `python -m uranium`
+python/uranium           model/, bc/, rl/, agent/, distill/, diag/, bench/, kernels/, ckpt.py, clip.py, device.py, env.py, passes.py, provenance.py, tables.py. 진입점 `python -m uranium`
 bridge/openbw            BWAPI shim(C++) → liburanium_bridge
 bridge/scr               samase 플러그인 (자체 Cargo workspace, 표 tables/)
 tools/                   openbw/, oss/, scr/, eval/(평가·측정), archive/(공용 드라이브 압축 보관), ablation/, worker/, casc-extract/, bwapi-tables/, env.sh·env.ps1, build_common.sh·build_common.ps1, pins.txt
