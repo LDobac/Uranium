@@ -231,7 +231,7 @@ impl MemoryCheck {
 
 pub const UNMODELED_OP: u8 = 0xff;
 const LAST_SLOT: u16 = 254;
-const SHUTTLE: u16 = 72;
+const SHUTTLE: u16 = 69;
 
 fn order(name: &str) -> u8 {
     uranium_env::types::order_id(name).unwrap_or_else(|| panic!("order {name}")) as u8
@@ -478,6 +478,11 @@ mod tests {
     use crate::label::Labeler;
     use uranium_proto::flags;
     use uranium_scripted::types::{BARRACKS, CC, MARINE, MINERAL_FIELDS, SCV};
+
+    #[test]
+    fn shuttle_id_matches_the_table_013_r1() {
+        assert_eq!(uranium_env::types::TypeTables::get().unit_by_name("Protoss_Shuttle").map(|u| u.id as u16), Some(SHUTTLE));
+    }
 
     fn unit(id: u32, owner: u8, ty: u16, pos: Pos) -> UnitState {
         UnitState { id, owner, unit_type: ty, pos, flags: flags::COMPLETED, ..Default::default() }
