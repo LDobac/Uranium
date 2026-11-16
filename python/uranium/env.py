@@ -1,15 +1,49 @@
 import os
+import sys
 from pathlib import Path
 
 ENV_FILE_KEY = "URANIUM_ENV_FILE"
+ESCAPES = {"\\": "\\", "'": "'", '"': '"', "$": "$", " ": " ", "n": "\n"}
+
+
+def _comment(tail: str) -> bool:
+    return not tail.strip() or (tail[0] in " \t" and tail.lstrip(" \t").startswith("#"))
+
+
+def _weak(text: str, whole: bool) -> str | None:
+    out = []
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\":
+            i += 1
+            if i == len(text) or text[i] not in ESCAPES:
+                raise ValueError(f"escape {text[i - 1:i + 1]!r} in a double-quoted value (the Rust loader takes only {sorted(ESCAPES)} after a backslash)")
+            out.append(ESCAPES[text[i]])
+        elif c == '"' and not whole:
+            return "".join(out) if _comment(text[i + 1:]) else None
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out) if whole else None
 
 
 def _value(raw: str) -> str:
     raw = raw.strip()
-    if len(raw) >= 2 and raw[0] == raw[-1] == "'":
-        return raw[1:-1]
-    if len(raw) >= 2 and raw[0] == raw[-1] == '"':
-        return bytes(raw[1:-1], "utf-8").decode("unicode_escape")
+    if raw.startswith("#"):
+        return ""
+    if raw.startswith("'"):
+        end = raw.find("'", 1)
+        if end > 0 and _comment(raw[end + 1:]):
+            return raw[1:end]
+        if len(raw) >= 2 and raw.endswith("'"):
+            return raw[1:-1]
+    if raw.startswith('"'):
+        v = _weak(raw[1:], False)
+        if v is None and len(raw) >= 2 and raw.endswith('"'):
+            v = _weak(raw[1:-1], True)
+        if v is not None:
+            return v
     return raw.split(" #", 1)[0].strip()
 
 
@@ -29,7 +63,7 @@ def load(path: Path | None = None) -> Path | None:
     path = path or find()
     if path is None:
         return None
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -39,8 +73,13 @@ def load(path: Path | None = None) -> Path | None:
         if not sep:
             continue
         key = key.strip()
+        try:
+            value = _value(raw)
+        except ValueError as e:
+            print(f"warning: failed to load {path}: line {n}: {e}; the lines after it are not read", file=sys.stderr, flush=True)
+            break
         if key and key not in os.environ:
-            os.environ[key] = _value(raw)
+            os.environ[key] = value
     return path
 
 
@@ -57,8 +96,6 @@ M_ARENA_MAX = -8
 
 
 def apply_malloc() -> int | None:
-    import sys
-
     raw = os.environ.get("URANIUM_MALLOC_MMAP_THRESHOLD", "")
     if not raw or not sys.platform.startswith("linux"):
         return None
@@ -72,8 +109,6 @@ def apply_malloc() -> int | None:
 
 
 def apply_malloc_arenas() -> int | None:
-    import sys
-
     raw = os.environ.get("URANIUM_MALLOC_ARENA_MAX", "")
     if not raw or not sys.platform.startswith("linux"):
         return None
