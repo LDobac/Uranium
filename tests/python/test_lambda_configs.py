@@ -201,6 +201,7 @@ _M2_DAGGER_PLAN = {
     3: (300, "checkpoints/m2-dagger-r2/ckpt-1408", 2),
 }
 
+
 @pytest.mark.parametrize("rnd", sorted(_M2_DAGGER_PLAN))
 def test_m2_dagger_plan_041_r28(rnd):
     games, ckpt, ck1_round = _M2_DAGGER_PLAN[rnd]

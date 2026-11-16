@@ -8,10 +8,26 @@ if TOOLS_EVAL not in sys.path:
     sys.path.insert(0, TOOLS_EVAL)
 
 import eval_common as ec  # noqa: E402
-import protocol  # noqa: E402
-import tables  # noqa: E402
 
-LIN = protocol.load_lineage()
+_LINEAGE: dict = {}
+
+
+def _lineage() -> dict:
+    if not _LINEAGE:
+        import protocol
+
+        lin = protocol.load_lineage()
+        cue = lin["metric"]["cue_diag"]
+        _LINEAGE.update(LIN=lin, CUE=cue, DEAD=lin["metric"]["dead_channels"], TEACHER=cue["teacher"], HUMAN=cue["human"],
+                        HUMAN_DS=sorted(cue["human"]["datasets"]))
+    return _LINEAGE
+
+
+def __getattr__(name: str):
+    if name in ("LIN", "CUE", "DEAD", "TEACHER", "HUMAN", "HUMAN_DS"):
+        return _lineage()[name]
+    raise AttributeError(name)
+
 
 CLEAN_GIT = {"commit": "0" * 40, "protocol_files_dirty": False, "dirty_paths": [], "dirty_diff_sha256": None}
 
@@ -43,7 +59,9 @@ def make_job(tmp_path: Path, pid: str, rows: list[dict], ledger: list[dict] | No
     (job / "plans").mkdir(parents=True)
     (job / "results").mkdir()
     (job / "games").mkdir()
-    (job / "plans" / "01.toml").write_text(plan_text or protocol.render(LIN, pid, "checkpoints/m2-r1/ckpt-5", pid), encoding="utf-8")
+    import protocol
+
+    (job / "plans" / "01.toml").write_text(plan_text or protocol.render(_lineage()["LIN"], pid, "checkpoints/m2-r1/ckpt-5", pid), encoding="utf-8")
     (job / "job.toml").write_text('stages = ["plans/01.toml"]\nhosts = "hosts.toml"\n', encoding="utf-8")
     (job / "results" / "h.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     (job / "games" / "h.jsonl").write_text("".join(json.dumps(g) + "\n" for g in ledger or []), encoding="utf-8")
@@ -60,6 +78,8 @@ def cmds(n: int, frame: int = 100, player: int = 0) -> list:
 
 
 def ops_value(mined: int, end_s: float = 600.0, sblock_first_s=None, cc_lift_s: float = 0.0, rush: dict | None = None) -> dict:
+    import tables
+
     keys = dict.fromkeys(tables.OPS_KEYS, 0.0)
     keys.update(end_s=end_s, mined=mined, sblock_first_s=sblock_first_s, cc_lift_s=cc_lift_s, inc_10m=None if end_s < 600 else 900.0)
     return {"ops": keys, "rush_combat": rush}
@@ -76,15 +96,10 @@ def write_ops(cache: Path, n: int, value: dict, slot: int = 0, version: int = ec
     (cache / f"g{n}.ops.json").write_text(json.dumps(line) + "\n", encoding="utf-8")
 
 
-CUE, DEAD = LIN["metric"]["cue_diag"], LIN["metric"]["dead_channels"]
-
-TEACHER, HUMAN = CUE["teacher"], CUE["human"]
-
 SHA = "f" * 64
 
 TAILS = ["by_name/hold_orig", "by_name/hold_macro2"]
 
-HUMAN_DS = sorted(HUMAN["datasets"])
 
 
 def probe_metrics(stages) -> dict:
@@ -93,9 +108,9 @@ def probe_metrics(stages) -> dict:
 
 
 def set_outputs(d: Path, name: str, sha: str = SHA, **edit) -> Path:
-    s = CUE[name]
+    s = _lineage()["CUE"][name]
     dm, p = s["dump"], s["probes"]
-    data = [f"/h/diag_holdout/{t}" for t in TAILS] if name == "teacher" else [f"<shared>/datasets/{x}" for x in HUMAN_DS]
+    data = [f"/h/diag_holdout/{t}" for t in TAILS] if name == "teacher" else [f"<shared>/datasets/{x}" for x in _lineage()["HUMAN_DS"]]
     man = {"checkpoint": "<shared>/checkpoints/m2-s1/ckpt-9", "checkpoint_sha256": sha, "data": data, "splits": ["val", "test"], "games_per_split": s.get("games"),
            "seed": 1, "config": "config/bc.toml", "lanes_per_group": 4, "row_until": 8640.0, "act_until": float(dm["act_until"]), "act_every": dm["act_every"],
            "read_until": float(dm["read_until"]) if dm.get("read_until") else None,
@@ -127,7 +142,7 @@ def set_outputs(d: Path, name: str, sha: str = SHA, **edit) -> Path:
 
 def train_log_output(out: Path, **edit) -> Path:
     r = {"log": "s1.log", "from_update": 600, "until_update": 39096, "sp_records_from": 25, "alarm_lines": [], "alarm_records": [], "crossing_records": [],
-         "dead": {k: {"max": 3, "max_share": 0.05, "at": 700, "last": 1} for k in DEAD["layers"]} | {"r4": {"max": 51, "max_share": 0.398, "at": 3000, "last": 51}},
+         "dead": {k: {"max": 3, "max_share": 0.05, "at": 700, "last": 1} for k in _lineage()["DEAD"]["layers"]} | {"r4": {"max": 51, "max_share": 0.398, "at": 3000, "last": 51}},
          "worst_dead_layer": "r4", "worst_dead_share": 0.398, "const": {"sp_const_s8": {"max": 0, "share": 0.0}, "sp_const_pool": {"max": 0, "share": 0.0}},
          "min_pos_any": 0.2} | edit
     out.mkdir(parents=True, exist_ok=True)
@@ -143,13 +158,15 @@ def record(out: Path, metrics=("cue_diag", "dead_channels"), sha: str = SHA, **e
 
 
 def all_outputs(out: Path, sha: str = SHA) -> Path:
-    for s in CUE["sets"]:
+    for s in _lineage()["CUE"]["sets"]:
         set_outputs(out / s, s, sha)
     train_log_output(out)
     return record(out, sha=sha)
 
 
 def fake_game_order(monkeypatch) -> None:
+    import protocol
+
     real = protocol.game_rows_sha256
     monkeypatch.setattr(protocol, "game_rows_sha256", lambda d: (Path(d) / "FAKE_GAME_ROWS").read_text() if (Path(d) / "FAKE_GAME_ROWS").is_file() else real(d))
 

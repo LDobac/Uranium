@@ -618,8 +618,6 @@ def test_diag_commands_pinned_050_r9(tmp_path):
 
 
 def test_game_rows_sha256_is_the_game_order_050_r9(tmp_path):
-    import hashlib
-
     import numpy as np
 
     d = tmp_path / "dump"
