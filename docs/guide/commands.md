@@ -14,7 +14,7 @@
 
 ### Python·PyTorch (AMB-000-4, 001-R8)
 - 학습·추론은 Python 3.14 + PyTorch 2.14(`python/uranium`). `uranium` 패키지 = Python + Rust 확장 `uranium._core`(crate `uranium-py`, maturin). Rust를 고치면 같은 설치 명령으로 다시 설치.
-- 호스트마다 venv → torch(CUDA `uv pip install --python <venv python> "torch==2.14.*" --index-url https://download.pytorch.org/whl/cu130`, Linux ROCm은 그 GPU용 빌드) → 저장소 루트에서 `uv pip install --python <venv python> -e .`. 호스트별 명령은 아래 블록.
+- 호스트마다 venv → torch(Linux ROCm은 그 GPU용 빌드) → 저장소 루트에서 `-e .` 설치. 명령은 아래 블록.
 
 ```powershell
 # CUDA 호스트 (Windows PowerShell, uv는 scoop)
@@ -115,7 +115,7 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
 - 동시 게임 수([020-R10](../spec/2026_10_15_22_24_020-env-orchestration.md)): 게임 호스트에서 `uranium-env calibrate` → `<URANIUM_CACHE_DIR>/hostd_calibration.toml`(`URANIUM_HOSTD_MAX_GAMES` 없을 때 사용).
 - 스케줄러(crate `uranium-runner`, 바이너리 `uranium-env`):
   - 스크립트 플레이어만: `uranium-env run --plan config/plans/<plan>.toml [--out runs/<dir>]`
-  - 모델 플레이어 포함(추론은 Python, [AMB-000-4](../spec/README.md)): `python -m uranium run --plan <plan> [--out runs/<dir>] [--backend cuda|rocm|cpu --max-batch N --max-wait-ms M]`. 옵션 기본 `python -m uranium run --plan <plan> [--out <dir>] [--backend cuda|rocm|cpu] [--max-batch 32] [--max-wait-ms 5]`, 백엔드 기본은 그 PC의 GPU.
+  - 모델 플레이어 포함(추론은 Python, [AMB-000-4](../spec/README.md)): `python -m uranium run --plan <plan> [--out runs/<dir>] [--backend cuda|rocm|cpu] [--max-batch 32] [--max-wait-ms 5]`(백엔드 기본은 그 PC의 GPU).
   - 출력: `games.jsonl`, `results.jsonl`, `summary.md`(Wilson 95%, 정책별 합산), `sessions.md`. 호스트 목록 `URANIUM_HOSTS_FILE`(예시 `config/hosts.example.toml`).
 - hostd·스케줄러는 같은 커밋으로 빌드(제어 프로토콜 v3).
 - 멈춘 Python 프로세스(Linux): `kill -USR1 <pid>` → 모든 스레드 스택을 그 프로세스 stderr(작업자·학습 로그)에 쓰고 계속 돔(root 불필요).
@@ -128,7 +128,7 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
   - `on`: 판정 성립 시 채팅 1초 뒤 퇴장(패배). win_open 헤드 있는 체크포인트 필요([032-R18](../spec/2026_10_15_22_24_032-model-architecture.md)).
   - 에이전트 서버 단독: `--surrender on --surrender-chat gg`. 테스트 전용 `URANIUM_TEST_SURRENDER_FRAME=<프레임>`: `on`에서 그 프레임 뒤 첫 결정에 무조건 항복.
 - `zero_last_failed = true`: `last_failed` 입력 0 고정([030-R10](../spec/2026_10_15_22_24_030-observation.md)). BC 체크포인트 평가 plan(코어 비교, bc-vs-t0)에서 켜고 RL은 끔. 단독 실행은 `--zero-last-failed`.
-- 맵 사전계산 형식 `version = 2`(자원 목록 포함, spec 030). 옛 `<hash>.toml`·`<hash>.resources.toml`은 없는 것으로 봄 → 재build·`uranium-replay mapgen`. 대상 맵 사전계산 `uranium-replay mapgen <맵 파일>...`(AMB-031-4).
+- 맵 사전계산 형식 `version = 2`(자원 목록 포함, spec 030). 옛 `<hash>.toml`·`<hash>.resources.toml`은 없는 것으로 봄 → 재build·`uranium-replay mapgen`. 대상 맵 사전계산 `uranium-replay mapgen <맵 파일>...`([AMB-031-4](../spec/README.md)).
 - 플레이어 이름(020-R16): 리플레이에서 `p<i>-<run 폴더 이름>`(모델), `p<i>-T0-<종족>`, OSS 봇 이름(24바이트 자름). plan 플레이어 `name`으로 바꿈.
 - 예시 plan: 스모크 `config/plans/smoke-model.toml`(체크포인트 `python -m uranium random-checkpoint --out <dir> [--core lstm|gtrxl] [--win-open]`), [041-AC2](../spec/2026_10_15_22_24_041-imitation-learning.md) `config/plans/bc-vs-t0.toml`.
 
@@ -143,7 +143,7 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
 - 권한을 받으면 모델마다 모든 (배치, 엔티티 수) 모양 워밍업 뒤 첫 판(`--no-warmup`으로 끔). 공용 드라이브를 못 읽는 동안은 새 배정만 멈춤.
 - Ctrl+C 1회: 진행 중 판 기록 후 종료(그 PC hostd는 `leaving/` 표시로 새 판 안 받음). 2회: 진행 중 판 `StopGame` → 같은 seed로 재실행 예약 후 종료. 3회: 즉시. 다시 실행하면 합류.
 - `--hostd` 작업자는 끝날 때 그 hostd의 판(다른 작업자 판 포함)이 0이 될 때까지 기다린 뒤 hostd 끔(Linux hostd 출력 `<log>.hostd`).
-- 다시 하는 판: 브리지 미접속(020-R4), hostd 끊김, 강제 정지. 시간 초과·crash는 결과로 남음. hostd 판 번호 `시도 × 10,000,000 + 단계 × 100,000 + 판 번호`. 재시도 시도가 `max_attempts`(`job.toml`, 기본 3, AMB-020-6)에 이르면 결과 없이 끝내고 경고.
+- 다시 하는 판: 브리지 미접속(020-R4), hostd 끊김, 강제 정지. 시간 초과·crash는 결과로 남음. hostd 판 번호 `시도 × 10,000,000 + 단계 × 100,000 + 판 번호`. 재시도 시도가 `max_attempts`(`job.toml`, 기본 3, [AMB-020-6](../spec/README.md))에 이르면 결과 없이 끝내고 경고.
 - 기록: `games/<host>.jsonl`(판마다 `infer_host`·`backend`)·`results/<host>.jsonl`, 진행 중 `inflight/<host>.json`, 리플레이 `<stage>/replays/g<판 번호>.rep`, 작업자 상태 `workers/<host>.eval.json`(학습 작업자 파일과 별도).
 - 집계: `python -m uranium eval-status --job eval/<job> [--no-write]` → 단계별 진행 표, `<stage>/games.jsonl`·`results.jsonl`(plan 판 번호, 마지막 시도만)·`summary.md`(추론 backend별 판 수 포함)·`sessions.md` 재작성. 리그전 `tools/ablation/league_table.py --run <job>/<stage> <plan>`.
 
@@ -152,7 +152,7 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
 - 정찰 반응형 테란 교사(050-R8, [021-R8](../spec/2026_10_15_22_24_021-opponent-pool.md)): `uranium-env run --plan <plan> --out runs/<dir>`로(스크립트·OSS 봇만, GPU 불필요, 게임 호스트에 `URANIUM_MAPS_DIR` 사전계산 필요 — 대상 맵에서 없으면 세션 거부)
   - `config/plans/teacher_check.toml`(050-R6과 같은 128판·시드, p0 = T0 `terran_react`, `python tools/eval/rush_check_plan.py --teacher`로 재작성)
   - `config/plans/teacher_macro_check.toml`(운영형 4상대 × 10판), `config/plans/teacher_t0zerg_check.toml`(T0 표준 저그 10판)
-  - T0 테란 세션 `results.jsonl` 행에 `scripted`(모델 행과 같은 키 `scout_main_s`…`scv_4m`·`scv_min_1m`·`army_s`·`scv_8m`; 교사면 `react`: `main_s`·`rush_s`·`rush_rule`·`defences`·`macro_s`·`expand_s`·`branch`·`pool_start_s`·`pool_seen_s`·`lings_max`·`contact_s`·`bunker_s`·`rules_s`).
+  - T0 테란 세션 `results.jsonl` 행에 `scripted`(키: [050 "T0 테란 세션 지표"](../spec/2026_10_15_22_24_050-evaluation.md), 교사 `react`는 021-R8 기록).
   - `summary.md` "T0 Terran sessions" 표: matchup·맵별 막음(`scv_min_1m > 4`)·승·4:00 전 벙커·선제 벙커·①②④′ 발화·4:00까지 확장·8:00 SCV ≥ 16/≥ 14·첫 규칙(상대별 기준 050-R8).
   - 적중·빗나감 조건별 집계: plan 시드로 생성기(`uranium._core`)를 돌려 나눔(`scripted` 행).
 
@@ -170,7 +170,7 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
 - SC:R 실전([spec 012](../spec/2026_10_15_22_24_012-bridge-remastered.md), 설치·절차 [scr.md](scr.md)): `tools\scr\build.ps1`(테스트·빌드·모드 폴더 설치) → `python -m uranium scr --checkpoint <ckpt> [--backend cuda] [--sample stochastic] [--listen 127.0.0.1:7700] [--out runs/scr/sessions.jsonl]`(realtime: Act 기한 관측 + 24프레임 012-R7, `last_failed` 0 012-R14, 항복 기본 `on` 012-R11) → `tools\scr\run.ps1`(samase64 해시 확인 후 실행) → 게임 시작은 사람.
 - 액션 시나리오(031-AC1): hostd를 띄운 뒤 `URANIUM_TEST_HOSTD=<hostd 주소> [URANIUM_MAPS_DIR=<투혼 자원 파일이 있는 폴더>] cargo test -p uranium-env --test openbw_actions -- --ignored --nocapture`
   - 사전계산은 라이브 에이전트 규칙으로 읽음(없으면 CC 자리 규칙이 BWAPI와 다를 수 있음, `uranium-replay mapgen <투혼 .scx>`).
-  - 투혼에서 스크립트 테란 p0가 034의 101개 action_type을 실제 마스크·executor로 한 번 이상 실행, `CommandFailed` 없음 확인. 허용 거절: 유닛이 선 건물 자리 Unbuildable_Location, 한 Act 여러 지출 명령 자원 부족. 시야 밖 한 번 본 미네랄 Smart_Unit·Gather_Unit(011-R20), 비무장 유닛 Attack_Pos → Move(AMB-041-1)도 확인. p1은 가만히 있는 테란.
+  - 투혼에서 스크립트 테란 p0가 034의 101개 action_type을 실제 마스크·executor로 한 번 이상 실행, `CommandFailed` 없음 확인. 허용 거절: 유닛이 선 건물 자리 Unbuildable_Location, 한 Act 여러 지출 명령 자원 부족. 시야 밖 한 번 본 미네랄 Smart_Unit·Gather_Unit(011-R20), 비무장 유닛 Attack_Pos → Move([AMB-041-1](../spec/README.md))도 확인. p1은 가만히 있는 테란.
   - 다 덮으면 `StopGame`(게임 약 19분, 벽시계 약 1분). 출력 `target/tmp/openbw_actions_031_ac1.{md,rep}`.
   - hostd가 다른 PC면 `URANIUM_TEST_AGENT_LISTEN=0.0.0.0:0`과 `URANIUM_AGENT_PUBLIC_ADDR`.
 
@@ -296,7 +296,7 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
 4. 분기 판(추론 PC): `python -m uranium eval-worker --job eval/branch-b1-<D> --priority <n> [--backend ...]` → `python -m uranium eval-status --job eval/branch-b1-<D>` → `python tools/eval/branch_collect.py --job eval/branch-b1-<D>`(`<O>/branches.jsonl`, `branch_collect.json`: 무효 사유별·대안별 수·빠진 판). plan 경로는 공용 드라이브 기준이라 작업자마다 `URANIUM_SHARED_DIR` 필요. 1,280판 4~6시간(경로 측정 틈에 나눠).
 5. 줄기 shard(Linux CPU 호스트, 저장소 루트, `URANIUM_MAPS_DIR=<S>/datasets/replays/build/maps`, `mkdir -p <O>/build`): 줄기 stage마다 같은 `--out`·records로 `target/release/uranium-replay build <S>/<T>/<stage>/replays --src branch --out <O>/shards/trunks --records <O>/build/branch_build.jsonl --memory-log <S>/<T>/<stage>/acts --time-limit 11568 --jobs 4`. shard는 출처 폴더 아래 한 단계(`<O>/shards/trunks/shard_*.bin.zst`)여야 덤프가 `--shards <O>/shards`로 읽음(`<O>/shards`에 바로 쓰면 040-R13 깊이 검사로 거부).
 6. 덤프(CPU로 충분): `python -m uranium diag plan-dump --checkpoint <S>/checkpoints/m2-s1/ckpt-39096 --shards <O>/shards --splits train,val,test --config config/bc.toml --backend cpu --out <O>/dump`. 기본 `--splits val,test`는 줄기 대부분을 뺌(manifest 없는 줄기 shard는 모두 `train`) → 셋 다 줌. 줄기 4판 CPU 약 2분 반.
-7. 분석: `python -m uranium diag plan-branch --dir <O> --dump <O>/dump --s0 <S>/eval/jepa-plan-feas-20261112/s0b`(`--s0` = S0b 예측기 A `models/A_k8.pt`·`A_k32.pt`가 있는 `plan-s0` 출력 폴더) → `<O>/analysis/plan-branch.md`·`analysis.json`, 리포트 reports/branch_b1.md(051-AC7).
+7. 분석: `python -m uranium diag plan-branch --dir <O> --dump <O>/dump --s0 <S>/eval/jepa-plan-feas-20261112/s0b`(`--s0` = S0b 예측기 A `models/A_k8.pt`·`A_k32.pt`가 있는 `plan-s0` 출력 폴더) → `<O>/analysis/plan-branch.md`·`analysis.json`, 리포트 `reports/branch_b1.md`(051-AC7).
 - 051-AC6 작은 확인(Linux CPU 호스트 하나, CPU 추론): 1번에 `--hit 1 --miss 0`(맵마다 1판), 3번에 `--hit 1 --miss 0 --alts none,force_bunker --repeats 1 --verify-state`, 작업자 `--backend cpu --no-warmup --max-batch 4 --local-hostd <주소> --hostd target/release/uranium-hostd`.
   - `--verify-state`는 plan 판 모두에 앞부분 추론을 켬 → B1 본 plan에는 주지 않음(시험은 판 1~2개 stage 따로).
   - 여러 판이 한 배치면 앞부분 추론 배치 구성이 줄기와 달라 `state_check`가 비트 일치 안 할 수 있음(3판 동시 최대 차이 1e-6~1e-5, 혼자 `--max-batch 1`이면 일치).
@@ -317,7 +317,7 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
 - `opsdump <rep>... [--perspective <slot>] [--until-frame 14400] [--stride 8] [--field-check]`([052-R7](../spec/2026_11_13_17_19_052-ops-metrics.md)): OpenBW 재생으로 우리 시점(세션 행 `slot`, 없으면 테란 플레이어마다)에서 8프레임마다 052 `ops`·`rush_combat` 집계.
   - 시점마다 JSON 한 줄 `{"rep", "perspective", "frames", "ops", "rush_combat"}`, 실패면 둘 다 null + `error`. 10:00과 러시 전투 창 끝 중 늦은 쪽에서 끊음.
   - `--field-check`(052-AC2 리허설): `field_check` = `depleted`(창 안 우리 SCV가 반납한 필드의 초기량 − 마지막 잔량 합), `fields`, `unknown_fields`, `scvs`(창 안 마지막 관측 SCV 수), `scvs_max`, `carrying`(마지막 관측 미네랄 운반 중), `lost_cargo`(운반 중 죽은 SCV마다 8). 기준 |`depleted` − 8 × `carrying` − `lost_cargo` − `mined`| ≤ 8 × `scvs_max`.
-- `granularity <shard 폴더…> | --replays <rep…>`: 결정 단위 측정 G0·AMB-031-7용 판마다 레이블·압축 상태 `.jsonl.gz`(분석 전용, [5](#경로-측정결정-단위-측정)).
+- `granularity <shard 폴더…> | --replays <rep…>`: 결정 단위 측정 G0·[AMB-031-7](../spec/README.md)용 판마다 레이블·압축 상태 `.jsonl.gz`(분석 전용, [5](#경로-측정결정-단위-측정)).
 - `dataset-stats <records.jsonl 또는 폴더>... --out docs/report/survey/<YYYY_MM_DD_HH_mm>_dataset_stats.md`: 맵·매치업·src·stage·분할별 게임·시점 수, 디싱크 폐기율, `result_source` 분포(040-R6, 040-AC2, 040-AC4).
 - `build <dir> --src <tag> --records <jsonl> [--jobs N --limit N --part i --parts N --ladder-records <collect.jsonl>]`: 필터 → 013-R7 왕복 검증 → 재생 → 레이블 → shard.
   - 기본 출력 `<URANIUM_SHARED_DIR>/datasets/replays/shards/<src>`, 원본 `datasets/replays/raw/<src>/`(040-R13), 맵 사전계산은 `URANIUM_MAPS_DIR`에 씀.
@@ -359,8 +359,8 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
 ### 메모리·공급 환경변수
 모두 batch 내용·순서를 바꾸지 않음 → 값이 다른 호스트끼리 같은 run 이어 하기 가능. 시작 줄 `{"prefetch": N, ...}`, `entity_chunk`·`pack_batch`·`micro_lanes`로 확인. 호스트별 값은 [1](#호스트-메모리-설정-env).
 - `URANIUM_BC_PREFETCH`(041-R16, 기본 2): batch 하나 약 4 GB, 깊이 + 2개까지 메모리. Linux ROCm 호스트도 `URANIUM_MALLOC_MMAP_THRESHOLD=1048576`과 함께 2(최대 상주 약 10 → 6.3 GiB, 데이터 대기 0). `0` = 데이터 스레드 없이 batch 1개(대기 약 4~6초/update). 다음 레인 그룹 collate는 늘 작업 스레드에서 미리.
-- `URANIUM_BC_ENTITY_CHUNK`(041-R17, 기본 0 = 끔, `torch.utils.checkpoint`), `URANIUM_BC_PACK_BATCH`(041-R18, 기본 0): Linux ROCm 호스트 `0`·`1`(AMB-041-8: 재계산 끄면 약 15% 빠름, 최악 모양 GPU 5.7 GiB; 16이면 1.8 GiB). 재계산 dropout 난수 열만 다름.
-- `URANIUM_BC_MICRO_LANES`(041-R3, AMB-041-7): 한 번에 forward·backward하는 레인 수(없으면 설정 `micro_lanes`). CUDA 호스트 2, Linux ROCm 호스트 1. dropout 난수 묶음만 다름.
+- `URANIUM_BC_ENTITY_CHUNK`(041-R17, 기본 0 = 끔, `torch.utils.checkpoint`), `URANIUM_BC_PACK_BATCH`(041-R18, 기본 0): Linux ROCm 호스트 `0`·`1`([AMB-041-8](../spec/README.md): 재계산 끄면 약 15% 빠름, 최악 모양 GPU 5.7 GiB; 16이면 1.8 GiB). 재계산 dropout 난수 열만 다름.
+- `URANIUM_BC_MICRO_LANES`(041-R3, [AMB-041-7](../spec/README.md)): 한 번에 forward·backward하는 레인 수(없으면 설정 `micro_lanes`). CUDA 호스트 2, Linux ROCm 호스트 1. dropout 난수 묶음만 다름.
 - `URANIUM_BC_FEED_THREADS`(기본 3): 레인별 feature 추출·레인 그룹 압축 해제 스레드. 늘리면 학습 스레드와 CPU를 다퉈 느려짐.
 - `URANIUM_BC_PROFILE=1`: 구간별 시간 출력.
 
@@ -462,27 +462,27 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
 `python -m uranium rl --run <id> --bc <BC ckpt> [--init <RL ckpt>] --logs <dir> [--config config/rl.toml] [--algo vtrace|ppo] [--backend cuda|rocm|cpu] [--z-table <jsonl>] [--ac1-race terran|protoss|zerg] [--max-agent-steps N] [--max-updates N] [--max-minutes N] [--checkpoint-minutes 30] [--max-batch 32] [--max-wait-ms 5] [--take-over]`
 - 학습기·추론 PyTorch, 리그·배정·세그먼트 큐·체크포인트·잠금 Rust(`uranium-league`), 한 프로세스([AMB-000-4](../spec/README.md)). 종료 코드 75 = 다른 호스트 잠금([061-R5](../spec/2026_10_15_22_24_061-shared-storage.md)).
 - 체크포인트 `agents/<agent>/`의 `model.safetensors`·`optim-main.safetensors`·`meta.json`, 잠금 spec 061, 게임 호스트 `URANIUM_HOSTS_FILE`. 로그 `train.csv`·`games.csv`(042-R2). Burn RL 체크포인트 안 읽음.
-- `--init`(AMB-042-13): Main만 RL 체크포인트 폴더(`<shared>/checkpoints/<run>/ckpt-<step>`, 그 안 `agents/main`) 또는 그 `agents/main`에서 가중치만(옵티마이저 새로, update 0). `--bc`는 KL 참조, Exploiter 둘은 BC에서 시작·리셋. 모델 설정이 `--bc`와 다르면 시작 오류. run에 LATEST가 있으면(재시작·`supervise` 재실행 포함) `--init` 무시. 출발 출처는 `meta.json` `train.start`(`from`·`path`·`abs_path`, `--init`이면 `update`·`step`), 재개해도 유지.
+- `--init`([AMB-042-13](../spec/README.md)): Main만 RL 체크포인트 폴더(`<shared>/checkpoints/<run>/ckpt-<step>`, 그 안 `agents/main`) 또는 그 `agents/main`에서 가중치만(옵티마이저 새로, update 0). `--bc`는 KL 참조, Exploiter 둘은 BC에서 시작·리셋. 모델 설정이 `--bc`와 다르면 시작 오류. run에 LATEST가 있으면(재시작·`supervise` 재실행 포함) `--init` 무시. 출발 출처는 `meta.json` `train.start`(`from`·`path`·`abs_path`, `--init`이면 `update`·`step`), 재개해도 유지.
 - 042-AC1·[033-AC2](../spec/2026_10_15_22_24_033-reward.md): `--max-agent-steps 10000000`(run 누적, 도달하면 정상 종료, 042-R12).
 - `--logs`가 상대 경로면 현재 폴더 기준 절대 경로(추론 서버 모델 폴더 `<logs>/infer/<agent>`).
 - learner 레인 그룹: `.env` `URANIUM_RL_MICRO_LANES`(0 = 전체, 없으면 `config/rl.toml` `micro_lanes`). gradient 합산 순서만 다름([032-R19](../spec/2026_10_15_22_24_032-model-architecture.md)).
 - 리플레이: `[replays] sample_every`(기본 100) 배수 게임과 승자 불일치 게임만 `runs/<run>/replays/`(042-R11).
 - 시작·체크포인트마다 디스크 80% 경고(061-R8), `runs/*/replays/` 합계 100GB 초과 경고(지우지 않음, [060-R7](../spec/2026_10_15_22_24_060-infra.md)). 보존 `keep_checkpoints`(없으면 5, 0 = 전부).
-- 정지 감지(042-R20, AMB-042-20): `[actors] dead_learner_minutes`(기본 15, 0 = 끔). `Finished` 판 20판 이상인데 그 시간 동안 update 없음, 또는 끝난 판 10판 연속 학습 세션 결정 0 → 체크포인트 없이 오류 종료(supervise가 LATEST에서 재시작). CUDA·HIP 치명 오류(illegal memory access 등)는 한 줄 남기고 저장 없이 코드 70.
+- 정지 감지(042-R20, [AMB-042-20](../spec/README.md)): `[actors] dead_learner_minutes`(기본 15, 0 = 끔). `Finished` 판 20판 이상인데 그 시간 동안 update 없음, 또는 끝난 판 10판 연속 학습 세션 결정 0 → 체크포인트 없이 오류 종료(supervise가 LATEST에서 재시작). CUDA·HIP 치명 오류(illegal memory access 등)는 한 줄 남기고 저장 없이 코드 70.
 - z 테이블: `uranium-train z-table`(033-R8).
 - 운영 절차(재개·끊김 복구·결과): [checkpoint1_rl](../report/release/2026_11_08_13_35_checkpoint1_rl.md), [m6_ac1](../report/experiment/2026_11_02_23_37_m6_ac1.md).
 
 ### 설정 블록 (`config/rl*.toml`)
-- 러시 사다리·붕괴 항복(AMB-042-15): `[curriculum] c1_ladder`·`ladder_pick = "f_var"`, `[[ladder]]`(`kind = "t0"`+`build` 또는 `kind = "t1"`+`name`, `race`), `[concede] enabled`(042-R14, 학습 게임만). `games.csv` 마지막 열 `end_reason`(`Concede` = 붕괴 항복). 열이 다른 옛 `games.csv`는 `games-<unix>.csv`로 옮기고 새로. 예 `config/rl_rush1.toml`.
-- 사다리 그룹·정찰 보상(AMB-042-16): `[curriculum] ladder_groups = { rush = 0.5, macro = 0.5 }` + `[[ladder]] group`(그룹을 몫대로 먼저, 그 안에서 f_var), `[league] win_rate_decay`, `[reward] pseudo = "scout"`(build·units 채널이 r_scout·r_survive, 033-R11, `[reward.scout]`·`[reward.survive]`).
+- 러시 사다리·붕괴 항복([AMB-042-15](../spec/README.md)): `[curriculum] c1_ladder`·`ladder_pick = "f_var"`, `[[ladder]]`(`kind = "t0"`+`build` 또는 `kind = "t1"`+`name`, `race`), `[concede] enabled`(042-R14, 학습 게임만). `games.csv` 마지막 열 `end_reason`(`Concede` = 붕괴 항복). 열이 다른 옛 `games.csv`는 `games-<unix>.csv`로 옮기고 새로. 예 `config/rl_rush1.toml`.
+- 사다리 그룹·정찰 보상([AMB-042-16](../spec/README.md)): `[curriculum] ladder_groups = { rush = 0.5, macro = 0.5 }` + `[[ladder]] group`(그룹을 몫대로 먼저, 그 안에서 f_var), `[league] win_rate_decay`, `[reward] pseudo = "scout"`(build·units 채널이 r_scout·r_survive, 033-R11, `[reward.scout]`·`[reward.survive]`).
   - `"scout"`에 `--z-table`을 주거나 다른 모드 체크포인트를 재개하면 시작 오류. 그룹 이름은 영문·숫자·`_`·`-`만.
-  - `games.csv` `end_reason` 뒤: `r_scout`·`r_survive`(`"z"`면 빈 값)·`ladder_group`·`scout_main_s`·`scout_types_4m`·`scout_types_6m`·`barracks_s`·`bunker_s`·`scv_4m`(게임 초). 같은 지표가 모든 모델 세션 기록(`results.jsonl`·`sessions.jsonl`) `model`에도. 예 `config/rl_rush2.toml`(운영형 그룹 목록은 자리표시).
-- 신호 밀도·KL(AMB-042-17):
+  - `games.csv` `end_reason` 뒤 열: [042 "정찰·대응 지표"](../spec/2026_10_15_22_24_042-rl-training.md#정찰대응-지표-2026-11-03-amb-042-16). 같은 지표가 모든 모델 세션 기록(`results.jsonl`·`sessions.jsonl`) `model`에도. 예 `config/rl_rush2.toml`(운영형 그룹 목록은 자리표시).
+- 신호 밀도·KL([AMB-042-17](../spec/README.md)):
   - `[league] model_game_max_s`: 모델 상대 RL 판 게임 초 상한(0 = 60분, 0 또는 60~3600, 도달하면 `TimeLimitDraw` 무승부 r_win 0, 042-R15).
   - `ladder_pick = "band"` 또는 그룹별 표(`{ rush = "band", macro = "f_var" }`, 없는 그룹은 f_var) + `[curriculum.band]` `center`·`width`·`exclude_below`.
   - `[kl]` `init`·`floor`·`half_life_updates`(update는 run 안에서 0부터, 재개는 이어 감), `[kl.head_scale]`(헤드별 배수, 기본 1.0), `[loss] td_lambda`, `[sil]`(자기 모방·막은 판 재학습, 042-R16, 기본 꺼짐, 켜는 것은 사용자 결정).
-  - `train.csv` `queue_wait_s` 뒤: `adv_rms`·`adv_rms_{win,build,units,value}`·`value_loss_{win,build,units,value}`·`kl_p99`·`kl_max`·`sil_buffer`·`sil_lanes`·`sil_loss`·`sil_pos_frac`(SIL 꺼지면 빈 값). 예 `config/rl_rush3.toml`.
-- 러시 미니게임(AMB-042-18): `[league.rush_judge]` `groups`(사다리 그룹 이름, 기본 `[]` = 꺼짐, `ladder_groups`에 있어야 함)·`at_s`(기본 480, 60~3600)·`min_scv`(기본 8, ≥ 1).
+  - `train.csv` `queue_wait_s` 뒤 열: [042-R2 "진단 로그"](../spec/2026_10_15_22_24_042-rl-training.md). 예 `config/rl_rush3.toml`.
+- 러시 미니게임([AMB-042-18](../spec/README.md)): `[league.rush_judge]` `groups`(사다리 그룹 이름, 기본 `[]` = 꺼짐, `ladder_groups`에 있어야 함)·`at_s`(기본 480, 60~3600)·`min_scv`(기본 8, ≥ 1).
   - 그 그룹 RL 학습 판만 `min(86400, at_s × 24)` 프레임에 끝남(모델 상대 판·평가 게임 제외). 그때 `TimeLimitDraw`면 마지막 관측 자기 SCV ≥ `min_scv` → 승, 아니면 패(관측·세션 보고 없으면 결과 없음, 042-R17). 그 전에 끝난 판은 원래 결과.
   - `[sil] wins_only = true`: 자기 모방이 승 판만(기본 false). `games.csv` 판정 판 `end_reason = RushJudge`, 끝 열 `judge_scv`. 예 `config/rl_rush4.toml`.
 - 종족별 참조 KL([044-R9](../spec/2026_11_14_08_18_044-self-game-distillation.md), 042-R22 ①): `[kl.reference]` `zerg`·`terran`·`protoss`·`random` = 참조 체크포인트 폴더(`--bc`와 같은 모델 폴더).
@@ -521,7 +521,7 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
   - 학습기 연동([041-R25](../spec/2026_10_15_22_24_041-imitation-learning.md)·[042-R21](../spec/2026_10_15_22_24_042-rl-training.md)): `python/uranium/model/monitor.py` `relu_stats(points="spatial")`·`packed`(열 순서 `SPEC_COLUMNS`). 계약(update 전 s0, 상태 저장 없음, no_grad·eval, RNG 미사용, 032-AC15)은 그 파일 머리말.
 - 코어 분해: `python -m uranium diag core-split <dump> --checkpoint <ckpt>`: 미완성 기준 건물 행 지점별 HP R², GRU 게이트마다 (1−z)·x·z·h~ 분산 비율과 R², 변수별 x_in→h_t 잔존 비율.
 - 요약: `python -m uranium diag summary --point <경로 지점> [--probes <json>] [--intervene <json>] [--spatial <json>] [--core-split <json>] --out <json>`(스키마 `uranium.diag.summary/1`, `python/uranium/diag/summary.py`).
-- 경로 측정([050-R9](../spec/2026_10_15_22_24_050-evaluation.md))의 `cue_diag`(교사 보관분 + 사람 TvT·TvP)·`dead_channels`(학습 로그 `sp_*`, `tools/eval/spatial_logs.py`)는 `python tools/eval/protocol.py diag ... [--run]`이 고정 설정으로 만듦. 확인 `check-diag`, 표 `tools/eval/diag_table.py`([measurement_protocol](measurement_protocol.md) 4). `diag spatial`은 프로토콜 밖(AMB-050-5).
+- 경로 측정([050-R9](../spec/2026_10_15_22_24_050-evaluation.md))의 `cue_diag`(교사 보관분 + 사람 TvT·TvP)·`dead_channels`(학습 로그 `sp_*`, `tools/eval/spatial_logs.py`)는 `python tools/eval/protocol.py diag ... [--run]`이 고정 설정으로 만듦. 확인 `check-diag`, 표 `tools/eval/diag_table.py`([measurement_protocol](measurement_protocol.md) 4). `diag spatial`은 프로토콜 밖([AMB-050-5](../spec/README.md)).
 - 설정: 기본 = 10.1 저그 진단(활성값 4:00까지, 판당 상한 없음). 테란·프로토스 사람 리플레이(10.2.3)는 `dump --act-until 8640 --act-every 4`, `probes --cap 60 --boot 300`.
 - 재현 기준값(Checkpoint 1, 교사 보관분 433판, Linux ROCm f32): 미완성 풀 HP R² 토큰 0.991·e_pool 0.868·h_t 0.227, s8 양수 0%·128/128, `const` S8 128/128·`s_pool` 256/256.
 
@@ -553,7 +553,7 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
 
 ### 첫 실행 순서 (덤프 Linux ROCm 호스트, 학습·표 Linux CPU 호스트)
 1. 표본(수 분, 저장소 루트): 아래 덤프에 `--games 4 --limit-batches 20`, 출력 `local/work/plan_s0/smoke/...` → 같은 호스트 `plan-s0 ... --steps 50 --boot 20 --out local/work/plan_s0/smoke/s0`.
-2. 덤프(Linux ROCm 호스트, 저장소 루트, 학습·측정 job 없을 때). `<ckpt>` = `<shared>/checkpoints/m2-s1/ckpt-39096`, `<D>` = `local/work/plan_s0/m2-s1__ckpt-39096`:
+2. 덤프(Linux ROCm 호스트, 저장소 루트, 사용자가 비워 둔 장비에서 학습·측정 job 없을 때). `<ckpt>` = `<shared>/checkpoints/m2-s1/ckpt-39096`, `<D>` = `local/work/plan_s0/m2-s1__ckpt-39096`:
      ```
      export LD_LIBRARY_PATH=<그 호스트의 rocBLAS 경로> HSA_ENABLE_SDMA=0 MALLOC_ARENA_MAX=2 URANIUM_BC_FEED_THREADS=5
      mkdir -p local/work/plan_s0
@@ -624,9 +624,9 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
 - 로그인된 SC:R 클라이언트 로컬 웹 API 사용. 포트는 `tasklist`·`netstat -ano`(관리자 불필요), `URANIUM_SCR_API_PORT`로 고정 가능.
 - 리플레이는 약 30일 뒤 사라지고 프로필엔 최근 25경기 → 매일 실행([AMB-043-8](../spec/README.md)).
 - 첫 실행은 `raw\` 전체 SHA-256 인덱스(몇 분), 이후 `ladder\raw_index.json`. 일일 한도에 닿으면 종료, 다시 실행하면 `collect.jsonl` 보고 이어 감.
-- `datasets\replays\ladder\collect.jsonl`에 toon 평문 → 공용 드라이브 밖으로 옮기지 않음(AMB-043-6). 원본 응답 플레이어 이름은 출력·커밋 금지(043-R11, PowerShell 5.1은 `Get-Content -Encoding UTF8`).
+- `datasets\replays\ladder\collect.jsonl`에 toon 평문 → 공용 드라이브 밖으로 옮기지 않음([AMB-043-6](../spec/README.md)). 원본 응답 플레이어 이름은 출력·커밋 금지(043-R11, PowerShell 5.1은 `Get-Content -Encoding UTF8`).
 - `failed (schema)` 20번 연속이면 멈춤 → `crates\uranium-ladder\src\schema.rs`만 고침(043-R9·R10).
-- 데이터는 040의 예외로 내부 학습 전용, 재배포 금지(AMB-043-1).
+- 데이터는 040의 예외로 내부 학습 전용, 재배포 금지([AMB-043-1](../spec/README.md)).
 
 ## 13. Windows
 ([001-R8](../spec/2026_10_15_22_24_001-system-architecture.md), [011-R16](../spec/2026_10_15_22_24_011-bridge-openbw.md), [020-R8](../spec/2026_10_15_22_24_020-env-orchestration.md)) 명령은 PowerShell, 스크립트 `powershell -ExecutionPolicy Bypass -File <script>`. 검증 [m3_windows](../report/milestone/2026_10_16_11_33_m3_windows.md), [m3_remote](../report/milestone/2026_10_16_12_28_m3_remote.md).
