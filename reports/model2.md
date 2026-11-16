@@ -297,7 +297,7 @@ S1·S2 데이터와 학습 일정(update 수, lr, data seed)은 Checkpoint 1과 
 | 공간 인코더 깊은 단계가 살아 있음 | update 3,200부터 매 기록 경보(한 층 50% 이상 죽음, 최대 c3 78.9%·r4 75.0%·r5 73.4%). S8·s_pool 상수 채널은 학습 내내 0 | 부분. Checkpoint 1식 완전 붕괴는 없지만 깊은 층 절반 넘게 죽음 |
 | val500이 비슷하거나 조금 나음(±0.5%p) | top-1 차이 −0.07·−0.04·+0.05%p, 행동 NLL −0.005·−0.003·−0.008. test top-1 −0.01%p, NLL −0.003 | 맞음 |
 | 게임 지표 변화는 불확실 | s2e2에서 T0 300 +7.0%p(p 0.099), AC1 stochastic(lf0) +11.7%p(p 0.009), T1 +3.7%p(p 0.089). 러시 막음은 차이 없음(이른 4 대 2, 늦은 23 대 19 / 64) | 방향은 대부분 모델 2 쪽이지만 p < 0.01은 AC1 lf0 하나. 막음은 그대로 |
-| 테란전·프로토스전이 혼합 뒤 덜 나빠짐 | 게임(혼합 e7 T0 테란·프로토스 32판)은 아직 안 잼. val은 e7 테란 NLL +0.0098(문턱 +0.01 바로 아래)·프로토스 +0.0082. 회귀 게이트 ③a(4:00 전 p(벙커))는 테란·프로토스 모두 기준선보다 조금 높음(9.9절) | 미정 |
+| 테란전·프로토스전이 혼합 뒤 덜 나빠짐 | 게임(혼합 e7 T0 테란·프로토스 32판)은 아직 안 잼. val은 e7 테란 NLL +0.0098(문턱 +0.01 바로 아래)·프로토스 +0.0082. 회귀 게이트 ③a(4:00 전 p(벙커))는 테란·프로토스 모두 기준선보다 조금 높음(9.9절). 뒤에 잰 e7 게임(T0 테란 12/32·프로토스 2/32)과 게이트 FAIL은 9.9절 덧붙임 | 미정(작성 시점) |
 
 추가로 보인 것은 두 가지입니다.
 - 반사실 개입에서 풀 착공을 바꿨을 때 p(벙커)의 변화는 Checkpoint 1보다 작습니다(s2e2 −0.0004 대 +0.0054). 단서는 h_t에 더 잘 담기지만, BC 지점의 행동 종류 헤드는 그 단서로 벙커를 더 고르지 않습니다.
@@ -528,6 +528,10 @@ S1·S2 데이터와 학습 일정(update 수, lr, data seed)은 Checkpoint 1과 
   - 문턱은 "기준선 이하, 허용폭 없음"(메인 임시 결정 2026-11-10)입니다. 절대값은 1/2,000 아래로 작습니다.
 - 050-R10에 따라 이 결과를 사용자에게 보고합니다. 다음 단계는 사용자가 정합니다(자동 정지 없음).
 - ①·③b(게임)는 e7의 T0 테란·프로토스 32판을 돌린 뒤 판정합니다.
+- **게임 부분과 전체 판정(뒤에 덧붙임, 11-13 23:3x)**: e7 T0 테란·프로토스 32판(`<shared>/eval/m2-mix-e7-t0tp-20261113`, 기준선 `m2-s2e2-t0tp-20261112`)을 넣은 전체 판정은 **FAIL**입니다(`C:\Workspace\Uranium_logs\m2_report\gate_e7.json`).
+  - ① T0 승: 테란 16 → 12/32(p 0.450), 프로토스 10 → 2/32(p 0.022), 둘 다 실패.
+  - ③b 4:00 전 벙커: 완성(`bunker_unit_4m`) 테란 9 → 17/32·프로토스 11 → 17/32, 지시(`bunker_order_4m`) 프로토스 12 → 19/32, 모두 실패. 테란전 지시는 처음 판정에서 1 → 1/32 통과였으나 아래 정정으로 실패입니다.
+- **정정(2026-11-14, U5 측정 도구 수정 5b2d3fd, 기록 2042a88)**: 명령 스트림 분석이 첫 테란 플레이어를 읽어, `t0_tp` 테란전에서 모델이 slot 1인 판(32판 중 30판)은 상대 T0 테란의 명령을 셌습니다. 고친 테란전 `bunker_order_4m`은 기준선 s2e2 10/32, e7 19/32, DAgger r1 18/32, r2 23/32입니다(이전 값은 모두 1/32). 다시 판정하면 e7·r1·r2 모두 바뀐 칸은 ③b 테란전 `bunker_order_4m` 하나(PASS → FAIL)이고, 나머지 칸과 전체 판정(FAIL)은 그대로입니다. 위 `gate_e7.json`과 `m2_r1\gate_r1.json`은 고치기 전 출력 그대로 두었고, 재판정 출력은 Linux CPU 호스트 작업 폴더 `~/Workspace/Uranium_logs/gate_recheck/`에 있습니다.
 
 ### 9.10 측정 중 장애
 
@@ -615,12 +619,13 @@ S1·S2 데이터와 학습 일정(update 수, lr, data seed)은 Checkpoint 1과 
 - D(t1) T1: 299판 중 44승(UAlbertaBot 32/49, Steamhammer 4, ZZZKBot 1, Stardust 0, Iron 1, McRave 6), T1 안 교사 모드 TvP 27/97·TvT 15/97. 마지막 한 판은 시간 상한까지 갈 판이라 중단·무효(코디네이터 임시 결정).
 - D(t1) test 1,199(CUDA 고정): top-1 71.63%·top-5 95.76%·nll.action 0.8928(`m2-s2e2` 72.14%·96.04%·0.8683).
 - 참고: Checkpoint 1 T1 33/300, 경로 2 BC `m2-s2e2` 24/300.
-- 끝 체크포인트 진단(cue_diag·dead_channels, 첫째 Linux ROCm 호스트 ROCm f32)은 이 기록 시점에 진행 중이다.
-- 어느 체크포인트를 다음으로 이어갈지는 정하지 않았다(코디네이터·자문 판단 대기).
+- 끝 체크포인트 진단(cue_diag·dead_channels, 첫째 Linux ROCm 호스트 ROCm f32, 11-15 15:41~20:08, 괄호는 D = t1): 교사 hold-out 저그 풀 HP h_t R² 0.642 [0.575, 0.692](0.554), 시작 위치 h_t R² 0.835(0.807), 반사실 개입 Δ start label_p +0.0039 [0.0026, 0.0052](+0.0135)·bunker_any +0.0072(+0.0166). 사람 hold-out 프로토스 생산 건물 수 h_t R² 0.181(0.080), 테란 칸은 둘 다 음수라 측정 불가 그대로. 죽은 채널 최악 r4 80.5%(103개, update 600; t1 최악 c3 78.1%), 경보 lines/records/crossing 0/0/25(t1 23/23/23), S8·s_pool 상수 0. RL 뒤 단서 표상(h_t R²)은 조금 오르고 반사실 효과는 줄었다. 기록만이고 결과 모델 결정은 바뀌지 않는다.
+- 다음으로 이어 쓸 모델은 정했다: D = t1(11.4 끝 "결과 모델 결정").
 
 ### 11.4 산출물(지우지 않음)
 - 체크포인트 `<shared>/checkpoints/m2-rl-fix-2/`(전부 보존), `m2-rl-fix-1/ckpt-33477`.
 - 점검 job `<shared>/eval/m2-rl-fix-2-c{1..4}-20261115-*`, 표 `<shared>/eval/m2-lineage/logs/m2-rl-fix-2_c{1..4}_tables.json`, 끝 T1 `eval/m2-rl-fix-2-final-20261115`(표 `logs/m2-rl-fix-2_final_t1_tables.json`), D T1 `eval/m2-D-t1-20261115`(표 `logs/D_t1_t1_tables.json`), D test `<shared>/artifacts/bc_main_eval/test_cuda/m2-teacher-t1.json`.
+- 끝 체크포인트 진단 `<shared>/artifacts/diag/m2-rl-fix-2__ckpt-6129424-agents-main`(표 `tools/eval/diag_table.py`).
 - run 로그·드라이버 `C:\Workspace\Uranium_logs\m2_rl_fix\m2-rl-fix-2\`(train.csv 사본 `<shared>/eval/m2-lineage/train_logs/m2-rl-fix-2.train.csv`), 점검 helper `<shared>/eval/m2-lineage/scripts/rlcheck_loop2.sh`.
 
 - **결과 모델 결정**(사용자 위임·Fable 자문 2026-11-15): 경로 2 수정 모델로 이어 쓰는 것은 D = t1(`m2-teacher-t1/ckpt-2844`)이고, 수정 RL 마지막 체크포인트 c4(`m2-rl-fix-2/ckpt-6129424`)는 결과로 기록·보존만 한다(044-R7의 D 정의 그대로, spec 변경 없음).
@@ -630,3 +635,68 @@ S1·S2 데이터와 학습 일정(update 수, lr, data seed)은 Checkpoint 1과 
   - 추정(확인 전): 테란·프로토스 KL 참조가 `m2-s2e2`라 RL이 022 교사로 얻은 테란·프로토스전 이득을 `m2-s2e2` 쪽으로 되돌린 것으로 보인다(c4 T0 프로토스 11/32, `m2-s2e2` 10/32). 다음 RL 전에 044-R9 참조 값을 다시 정한다(결정 항목).
   - 단서: T0·TvZ·러시 수치는 D가 CUDA bf16, RL 점검이 ROCm f32 추론이고 32판 표본이다. T1 300은 둘 다 CUDA bf16이다. D의 T0 34/64는 고른 뒤의 값이라 약 30으로 읽는다(10.3). D의 T1 300은 선택 뒤에 잰 값이다. 추가 측정은 하지 않는다(c4 T0를 CUDA로 다시 재도 결정이 바뀌지 않음).
   - 알려진 한계(D): 교사 모드 누출(T0 TvT 4/32·TvP 9/32), 테란 val top-1 −0.71%p·NLL +0.035, test 1,199 top-1 71.63%(`m2-s2e2` 72.14%).
+
+## 12. 경로 2 AC1 비교(042-R21 ④, 042-AC1)
+
+### 12.1 배경과 판정 기준(학습 전 기록)
+- 배경: 042-R21 ④는 경로 2 BC 기준선 `m2-s2e2`에서 042-AC1과 같은 설정(투혼, T0 저그, z 없음, 확률적 샘플링 판정, 학습 전후 200판)으로 V-trace 3 seed × 300만 agent step을 돌려, Checkpoint 1 경로의 AC1 V-trace 3 run과 같은 지점으로 비교하라고 정한다.
+- 사전 예상: 시작 전에 따로 기록한 예상은 없다. 시작 때(11-15 17:01) 기록한 것은 설정·표본 결과·판정 기준뿐이다.
+- 판정 기준(042-AC1): seed마다 학습 후 승률의 Wilson 95% 하한 > BC 승률의 상한. BC 승률은 AC1 규칙대로 `last_failed` 0 고정(lf0)과 실제 값(real) 중 높은 쪽인 lf0 160/200 = 80.0% [73.9, 85.0](9.5절, real 149/200 = 74.5%)이고, 그래서 문턱은 **85.0%**다. 개선은 3 seed 모두 통과해야 한다.
+
+### 12.2 설정
+- `python -m uranium rl --run m2-ac1-vtrace-s<k> --bc <shared>/checkpoints/m2-s2e2/ckpt-11387 --config config/rl_m2.toml --ac1-race zerg --algo vtrace --seed <k> --max-agent-steps 3000000 --checkpoint-minutes 30 --backend <cuda|rocm>`(k = 1·2·3), supervise 아래. `config/rl_m2.toml`은 `config/rl.toml`에 `[aux]` priv 0.2·jepa 0.1과 `[monitor] spatial_every` 100을 더한 설정이다.
+- CUDA 호스트는 bf16·레인 그룹 2, Linux ROCm 호스트는 f32·레인 그룹 1(060-AC7 ② 벤치 통과 값).
+- 멈춤: seed마다 300만 agent step에 닿으면 정상 종료하고 그 끝 체크포인트로 판정한다. 사용자 지시(2026-11-15 "CP1이랑 동일 학습량이 되면 정지해")에 따라 Checkpoint 1 V-trace와 같은 학습량이고, 연장은 없으며 s3 평가 뒤에는 더 학습하지 않는다.
+- 학습 게임: CUDA 호스트에서 돌 때는 그 호스트 자체 hostd 9 + Linux 호스트 3 = 12판(Checkpoint 1 AC1 11-02 뒤 구성과 같음).
+- 평가: run마다 끝 체크포인트로 AC1 200판(protocol job 점 `rl-s<k>`, stochastic, `last_failed` 실제 값). argmax 단계는 042-AC1 2026-11-02 사용자 결정대로 뺐다.
+- 표본: 11-15 16:23~16:32 scratch `m2-ac1-sample-cuda` 30 update(로컬 판만). 정상 종료, aux 열 채워짐, 평가 job 생성과 argmax 단계 빼기를 확인했다.
+
+### 12.3 진행 기록
+- seed 배분은 공용 드라이브 claim 폴더(`<shared>/eval/m2-lineage/logs/ac1-claim-<run>`, 먼저 만든 호스트가 학습·평가를 맡음)와 061 잠금으로 했다. 장치가 바뀔 때는 STOP 파일 → 정상 종료(042-R10) → 마지막 체크포인트 push·잠금 해제 → 새 호스트에서 LATEST부터 이어 갔다(DONE 없음).
+
+| seed | 장치 이력(agent step 구간) | 학습 시각 | 끝 체크포인트 | 평가(CUDA 추론 bf16) |
+|---|---|---|---|---|
+| s1 | 0~180,368 CUDA bf16 → ~2,644,955 둘째 Linux ROCm 호스트 ROCm f32 → 끝 CUDA bf16 | 11-15 17:01~17:17, 17:20~11-16 08:04(ROCm), 08:04~08:30 | `ckpt-3024918` | 08:30~08:56 |
+| s2 | 0~505,726 첫째 Linux ROCm 호스트 ROCm f32 → 끝 CUDA bf16 | 11-15 20:41~11-16 00:17(ROCm), 00:17~02:39 | `ckpt-3040542` | 02:39~03:18 |
+| s3 | 처음부터 끝까지 CUDA bf16(Checkpoint 1 AC1과 같은 장치 조건) | 11-16 03:18~06:10 | `ckpt-3082043` | 06:10~06:36 |
+
+- 11-15 17:17: 사용자가 CUDA 호스트를 써서("이 pc 사용할거임") s1을 정상 종료(`ckpt-180368`)했다. 17:20 사용자 지시("다른 pc가 먼저 유휴상태가 되면 거기서 학습 이어가")대로 둘째 Linux ROCm 호스트에서 이어 갔다. 학습 게임은 그 호스트 2 + Linux CPU 호스트 3이었고, 처음 몇 update는 약 45초/update였다.
+- 11-15 20:41: s2를 첫째 Linux ROCm 호스트에서 s1과 병렬로 시작했다(코디네이터 지시). 학습 게임은 그 호스트 3슬롯만이었고, 처음 약 50초/update·약 35 step/s였다. Checkpoint 1은 seed를 CUDA 호스트에서 차례로 돌렸다.
+- 11-16 00:16: CUDA 호스트가 다시 비어("이 pc 써") 남은 step이 가장 많은 s2를 옮겼다(060-R8 주 장비 규칙, `ckpt-505726`에서). CUDA에서는 약 205 step/s였다. 학습 게임은 CUDA 호스트 9 + 첫째 Linux ROCm 호스트 3이었다.
+- 11-16 03:18: s3는 CUDA 호스트가 claim했고, 둘째 Linux ROCm 호스트는 건너뛰었다.
+- 11-16 08:03: CUDA 호스트가 06:36(s3 평가 끝)부터 비어 s1을 옮겼다(`ckpt-2644955`에서). 약 203 step/s였다.
+- 평가 게임은 세 seed 모두 CUDA 호스트 6 + 첫째 Linux ROCm 호스트 6슬롯이었다. 08:56에 드라이버가 모두 끝났다.
+
+### 12.4 결과
+| seed | 끝 체크포인트 | 승-무-패 | 승률 [Wilson 95%] | 판정(하한 > 85.0%) |
+|---|---|---|---|---|
+| s1 | `ckpt-3024918` | 172-28-0 | 86.0% [80.5, 90.1] | 미달 |
+| s2 | `ckpt-3040542` | 167-31-2 | 83.5% [77.7, 88.0] | 미달 |
+| s3 | `ckpt-3082043` | 170-27-3 | 85.0% [79.4, 89.3] | 미달 |
+| 평균 | – | 합 509/600 | **84.8%** | 3 seed 모두 미달 |
+
+**Checkpoint 1 경로와 비교**(`reports/m6_ac1.md` 1절, 승-무-패)
+
+| 경로 | BC 기준선(lf0) | V-trace s1 | V-trace s2 | V-trace s3 | 평균 | 판정 문턱 |
+|---|---|---|---|---|---|---|
+| 경로 2 | 80.0% [73.9, 85.0] | 86.0%(172-28-0) | 83.5%(167-31-2) | 85.0%(170-27-3) | 84.8% | 하한 > 85.0% |
+| Checkpoint 1 | 68.3% [61.6, 74.4] | 79.0%(158-35-7, `ckpt-3133569`) | 72.5%(145-48-7) | 75.0%(150-42-8) | 75.5% | 하한 > 74.4% |
+
+### 12.5 해석
+- 경로 2의 세 seed는 모두 Checkpoint 1 V-trace의 어느 seed(가장 높은 79.0%)보다 높다. 평균은 84.8% 대 75.5%다.
+- 그래도 042-AC1 기준으로는 세 seed 모두 미달이다. 가장 높은 하한이 s1의 80.5%이고, BC 상한 85.0%를 넘은 seed는 없다. s3의 점 추정 85.0%는 BC 상한과 같다.
+- BC 기준선에서 오른 폭은 경로 2가 80.0% → 84.8%, Checkpoint 1이 68.3% → 75.5%다. 경로 2는 BC 기준선이 이미 높아 문턱(85.0%)도 함께 높다.
+- 경로 2 RL은 진 판이 거의 없다(0·2·3판, Checkpoint 1 V-trace 7·7·8판). 나머지는 무승부(28·31·27판, Checkpoint 1 35·48·42판)다. 승률을 더 올리려면 무승부를 승으로 바꿔야 한다.
+
+### 12.6 단서
+- 장치 혼합: s1(약 246만 step 구간)과 s2(처음 약 51만 step)는 learner·추론이 ROCm f32였고 학습 게임 슬롯도 적었다(s1은 그 호스트 2 + Linux CPU 호스트 3으로 시작, s2는 그 호스트 3). Checkpoint 1 AC1은 learner가 모두 CUDA bf16이었다. 장치 조건이 Checkpoint 1과 같은 것은 s3뿐이다.
+- 기준선 측정 조건: 경로 2 BC 기준선 AC1은 첫째 Linux ROCm 호스트 f32 추론(9.1절)이고, RL 뒤 평가는 CUDA 호스트 bf16 추론이다. Checkpoint 1 AC1은 기준선과 RL 뒤 모두 CUDA 호스트 bf16이었다. AC1 규칙대로 기준선은 lf0, RL 뒤 평가는 real이다.
+- 200판 표본이라 seed당 Wilson 구간 폭이 약 10%p다. seed 차이(83.5~86.0%)는 그 안이다.
+- 판정 체크포인트: 경로 2는 300만 step 상한에서 멈춘 끝 체크포인트(3,024,918~3,082,043 step)다. Checkpoint 1 V-trace s1은 1,000만 step까지 학습한 run에서 300만에 가장 가까운 `ckpt-3133569`로 판정했다.
+
+### 12.7 산출물(지우지 않음)
+- 체크포인트 `<shared>/checkpoints/m2-ac1-vtrace-s1/`·`-s2/`·`-s3/`(DONE, 모두 보존), 표본 `m2-ac1-sample-cuda/`.
+- AC1 평가 job `<shared>/eval/m2-ac1-vtrace-s{1,2,3}-ac1-20261116`, 표본 job `eval/m2-ac1-sample-cuda-ac1-20261115`(게임 없음).
+- 표 `<shared>/eval/m2-lineage/logs/m2-ac1-vtrace-s{1,2,3}_ac1_tables.{json,txt}`, seed claim 폴더 `logs/ac1-claim-m2-ac1-vtrace-s{1,2,3}`.
+- 드라이버·로그(CUDA 호스트) `C:\Workspace\Uranium_logs\m2_ac1\`: `driver.py`, `driver.log`, `state.json`(seed별 평가 결과), 평가 작업자·hostd 로그, run별 `m2-ac1-vtrace-s<k>\logs\`(`train.csv`·`games.csv` 등, CUDA 구간만).
+- ROCm 구간 드라이버·로그: 그 Linux ROCm 호스트 작업 폴더 `~/Workspace/Uranium_logs/m2_ac1/`(드라이버 `ac1_linux.sh`·`ac1_linux2.sh`).
