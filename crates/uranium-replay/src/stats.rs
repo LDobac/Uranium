@@ -1,6 +1,3 @@
-//! Dataset statistics (040-R6, 040-AC2, 040-AC4; C-4): `reports/dataset_stats.md` from `build`
-//! records, and shard GameInfo checks (B-12). Counts only, no file or player names (040-R14).
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -10,12 +7,10 @@ use serde_json::Value;
 
 use crate::split::{Split, split_for};
 
-/// B-12: a shard game's GameInfo has exactly one `is_enemy` player (011-R10).
 pub fn one_enemy(gi: &uranium_proto::GameInfo) -> bool {
     gi.players.iter().filter(|p| p.is_enemy).count() == 1
 }
 
-/// Games (distinct `replay_sha256`) and views (written perspectives, 040-R2) of one group.
 #[derive(Default)]
 struct Count {
     games: BTreeSet<String>,
@@ -46,7 +41,6 @@ fn split_name(s: Split) -> &'static str {
     }
 }
 
-/// Markdown report from `build` records (JSON lines).
 pub fn dataset_markdown(records: &[PathBuf]) -> Result<String> {
     let mut rows: Vec<Value> = Vec::new();
     for p in records {
@@ -54,10 +48,6 @@ pub fn dataset_markdown(records: &[PathBuf]) -> Result<String> {
             rows.push(serde_json::from_str(line).with_context(|| format!("parsing {}", p.display()))?);
         }
     }
-    // A re-run can record the same view twice (same replay and perspective, or the same rejected
-    // replay): the last record counts. The key includes the source (R-5): a replay skipped as
-    // "duplicate of another source" is a different record from that source's own. A 040-R20
-    // record (a later copy of the same file) is kept apart from the first file's record too.
     let before = rows.len();
     let mut last: BTreeMap<(String, String, Option<u64>, bool), usize> = BTreeMap::new();
     for (i, r) in rows.iter().enumerate() {
@@ -69,12 +59,9 @@ pub fn dataset_markdown(records: &[PathBuf]) -> Result<String> {
     let duplicates = before - rows.len();
     let mut recorded: BTreeMap<String, usize> = BTreeMap::new();
     let s = |v: &Value, k: &str| v[k].as_str().unwrap_or("").to_string();
-    // Build outcomes per src: records (views, or whole replays rejected before a view exists).
     let mut outcomes: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
-    // `filtered` records by reason group (040-R19 invalid labels among them) and src.
     let mut filtered: BTreeMap<(String, String), usize> = BTreeMap::new();
     let mut replays: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    // 040-AC2 desync rate = desync / (written + desync), per src and map family.
     let mut played: BTreeMap<(&'static str, String), (usize, usize)> = BTreeMap::new();
     let mut by_family_matchup: BTreeMap<(String, String), Count> = BTreeMap::new();
     let mut by_title: BTreeMap<String, (String, BTreeMap<String, Count>)> = BTreeMap::new();
@@ -84,8 +71,6 @@ pub fn dataset_markdown(records: &[PathBuf]) -> Result<String> {
     let mut by_source: BTreeMap<(String, i64), Count> = BTreeMap::new();
     let mut total = Count::default();
     let (mut cmds, mut labeled) = (0u64, 0u64);
-    // 2026-10-19: labeler version (records without one are version 1) -> written views and
-    // (commands, labeled, unknown) of their coverage (040 "Shard 포맷", mixed G-D1 rebuild).
     let mut by_labeler: BTreeMap<u64, (Count, [u64; 3])> = BTreeMap::new();
     for r in &rows {
         let (src, outcome, sha, family) = (s(r, "src"), s(r, "outcome"), s(r, "replay_sha256"), s(r, "map_family"));
@@ -117,7 +102,6 @@ pub fn dataset_markdown(records: &[PathBuf]) -> Result<String> {
         by_src.entry(src.clone()).or_default().add(&sha, steps);
         by_stage.entry(stage).or_default().add(&sha, steps);
         by_split.entry((family.clone(), split_name(split_for(&sha, &family)))).or_default().add(&sha, steps);
-        // Records written before schema 5 have no result: shown as "(none recorded)".
         let source = r["result_source"].as_str().unwrap_or("(none recorded)").to_string();
         by_source.entry((source, r["result"].as_i64().unwrap_or(0))).or_default().add(&sha, steps);
         let cov = |k: &str| r["coverage"][k].as_u64().unwrap_or(0);
@@ -217,10 +201,8 @@ pub fn dataset_markdown(records: &[PathBuf]) -> Result<String> {
     Ok(md)
 }
 
-/// Group label of the 040-R19 filter (invalid labels ≥ 20%) in the statistics.
 pub const INVALID_LABEL_GROUP: &str = "invalid_labels>=20% (040-R19)";
 
-/// A `filtered` reason without its per-record details (ratio, map name), for counting.
 pub fn filter_group(reason: &str) -> String {
     if reason.starts_with(uranium_env::features::label::INVALID_LABEL_PREFIX) {
         INVALID_LABEL_GROUP.to_string()
@@ -231,12 +213,9 @@ pub fn filter_group(reason: &str) -> String {
     }
 }
 
-/// 034-AC3 / AMB-040-6 / B-12 / 040-R20: label distribution and GameInfo checks over a shard
-/// folder (subfolders included), as JSON. [`check_shard_stats`] turns the checks into an error.
 pub fn shard_stats(dir: &std::path::Path) -> Result<Value> {
     use std::collections::BTreeMap;
     let table = uranium_env::actions::ActionTable::load()?;
-    // Subfolders too (build writes `<src>/<part>/`), finished shards only (040-R17).
     fn walk(d: &std::path::Path, out: &mut Vec<PathBuf>) -> Result<()> {
         for e in std::fs::read_dir(d)? {
             let e = e?;
@@ -251,7 +230,6 @@ pub fn shard_stats(dir: &std::path::Path) -> Result<Value> {
     let mut files = Vec::new();
     walk(dir, &mut files)?;
     files.sort();
-    // 040-R20: one game per (replay, perspective) in a source.
     let mut seen = std::collections::HashSet::<(String, u8)>::new();
     let mut duplicate_games = 0usize;
     let (mut games, mut steps, mut bad_game_info) = (0usize, 0usize, Vec::new());
@@ -262,8 +240,6 @@ pub fn shard_stats(dir: &std::path::Path) -> Result<Value> {
     let mut families = BTreeMap::<String, usize>::new();
     let mut result_sources = BTreeMap::<String, usize>::new();
     let (mut is_enemy_violations, mut enemy_random, mut not_game_start) = (0usize, 0usize, 0usize);
-    // 2026-10-19: labeler version -> shards, games, steps, unknown labels, Unload_Unit labels,
-    // labels whose selection is longer than the action's max_select (F12, version 2 only).
     let mut by_labeler = BTreeMap::<u32, [usize; 6]>::new();
     let unload = table.by_name("Unload_Unit").map(|a| a.id);
     for f in &files {
@@ -298,7 +274,6 @@ pub fn shard_stats(dir: &std::path::Path) -> Result<Value> {
                 is_enemy_violations += 1;
             }
             *result_sources.entry(g.meta.result_source.clone()).or_default() += 1;
-            // 040-R18: the first step is the game-start observation.
             let start = crate::label::GAME_START_FRAME;
             if !g.steps.first().is_some_and(|s| s.raw_frame.frame == start && s.action_label.frame == start) {
                 not_game_start += 1;
@@ -342,8 +317,6 @@ pub fn shard_stats(dir: &std::path::Path) -> Result<Value> {
     }))
 }
 
-/// `shard-stats` failure rules: a game without exactly one `is_enemy` player (B-12) or a
-/// (replay, perspective) that appears twice (040-R20).
 pub fn check_shard_stats(s: &Value) -> Result<()> {
     let bad = s["is_enemy_violations"].as_u64().unwrap_or(0);
     anyhow::ensure!(bad == 0, "B-12: {bad} games without exactly one is_enemy player");
@@ -366,7 +339,6 @@ mod tests {
         .to_string()
     }
 
-    /// 040-R6 / 040-AC2 / 040-AC4: games vs views, desync rate, result_source.
     #[test]
     fn dataset_stats_count_games_and_views_040_r6() {
         let dir = std::env::temp_dir().join(format!("uranium-stats-test-{}", std::process::id()));
@@ -376,19 +348,14 @@ mod tests {
         let lines = [
             written(&a, 0, "fighting_spirit", "투혼 1.3", "TvT", "bridge", 1),
             written(&a, 1, "fighting_spirit", "투혼 1.3", "TvT", "bridge", -1),
-            // A re-run wrote the same view again: counted once.
             written(&a, 1, "fighting_spirit", "투혼 1.3", "TvT", "bridge", -1),
             written(&"b".repeat(64), 0, "other", "Python", "TvZ", "none", 0),
-            // Labeler version 2 (2026-10-19): one written view with 2 unknown commands.
             serde_json::json!({"index": 6, "replay_sha256": "f".repeat(64), "src": "stardata", "map_family": "other", "map_name": "Python", "map_hash": "", "view": {"perspective": 0, "stage": "S1", "apm": 100, "matchup": "TvZ", "enemy_random": false}, "labeler_version": 2, "outcome": "written", "steps": 7, "coverage": {"commands": 9, "labeled": 7, "unknown": 2, "unknown_ops": [[41, 2]], "unknown_orders": []}, "result": 1, "result_source": "bridge"}).to_string(),
             serde_json::json!({"index": 3, "replay_sha256": "c".repeat(64), "src": "stardata", "map_family": "other", "map_name": "Python", "map_hash": "", "view": {"perspective": 0, "stage": "S1", "apm": 90, "matchup": "TvP", "enemy_random": false}, "outcome": "desync", "reasons": ["x"]}).to_string(),
-            // 040-R19: two perspectives rejected for invalid labels, counted under one reason.
             serde_json::json!({"index": 4, "replay_sha256": "d".repeat(64), "src": "stardata", "map_family": "other", "map_name": "Python", "map_hash": "", "view": {"perspective": 0, "stage": "S1", "apm": 900, "matchup": "TvT", "enemy_random": false}, "outcome": "filtered", "reason": "invalid_labels>=20% (55.0%, 11/20) (040-R19)"}).to_string(),
             serde_json::json!({"index": 4, "replay_sha256": "d".repeat(64), "src": "stardata", "map_family": "other", "map_name": "Python", "map_hash": "", "view": {"perspective": 1, "stage": "S1", "apm": 950, "matchup": "TvT", "enemy_random": false}, "outcome": "filtered", "reason": "invalid_labels>=20% (24.6%, 1119/4550) (040-R19)"}).to_string(),
             serde_json::json!({"index": 5, "replay_sha256": "e".repeat(64), "src": "stardata", "map_family": "other", "map_name": "X", "map_hash": "", "view": null, "outcome": "filtered", "reason": "excluded map (040-R16): X"}).to_string(),
-            // R-5: the same replay skipped by another source is that source's own record.
             serde_json::json!({"index": 0, "replay_sha256": "e".repeat(64), "src": "community", "map_family": "", "map_name": "", "map_hash": "", "view": null, "outcome": "filtered", "reason": "duplicate of another source"}).to_string(),
-            // 040-R20: a later copy of the excluded-map file must not hide the first file's reason.
             serde_json::json!({"index": 9, "replay_sha256": "e".repeat(64), "src": "stardata", "map_family": "", "map_name": "", "map_hash": "", "view": null, "outcome": "filtered", "reason": format!("{}: same file as global index 5", crate::pipeline::DUPLICATE_IN_SOURCE)}).to_string(),
         ];
         std::fs::write(&p, lines.join("\n")).unwrap();
@@ -398,7 +365,6 @@ mod tests {
         assert!(md.contains("| none | 0 | 1 | 25.0% |"), "{md}");
         assert!(md.contains("| 전체 |  | 5 | 1 | 20.0% |"), "{md}");
         assert!(md.contains("| map_family | other | 3 | 1 | 33.3% |"), "{md}");
-        // Labeler versions: records without the field are version 1.
         assert!(md.contains("| 1 | 2 | 3 | 30 | 15 | 15 | 0 |"), "{md}");
         assert!(md.contains("| 2 | 1 | 1 | 7 | 9 | 7 | 2 |"), "{md}");
         assert!(md.contains("중복 기록(같은 리플레이·시점, 마지막 것만 셈): 1개 제외"), "{md}");
@@ -434,8 +400,6 @@ mod tests {
         }
     }
 
-    /// 040-R20: `shard-stats` reads subfolders and fails when a (replay, perspective) appears
-    /// twice, e.g. built by two parts.
     #[test]
     fn shard_stats_fail_on_a_repeated_game_040_r20() {
         use crate::shard::{ShardWriter, tests::game};
@@ -463,7 +427,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// B-12: exactly one is_enemy player.
     #[test]
     fn game_info_needs_exactly_one_enemy_b12() {
         assert!(one_enemy(&info(1)));

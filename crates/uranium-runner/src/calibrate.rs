@@ -1,7 +1,3 @@
-//! `uranium-env calibrate` (spec 020-R10): finds the largest number of concurrent games this
-//! host sustains while the bridge latency stays within the 011-AC2 target, and stores it in
-//! `<URANIUM_CACHE_DIR>/hostd_calibration.toml` for uranium-hostd.
-
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -13,7 +9,6 @@ use serde_json::Value;
 
 use crate::plan::{self, HostEntry, MapSel, Matchup, Plan, RaceSel, Side};
 
-/// 011-AC2: bridge overhead p99 per frame <= 0.3 ms. Judged on the median over sessions.
 pub const TARGET_US: f64 = 300.0;
 pub const FILE_NAME: &str = "hostd_calibration.toml";
 
@@ -25,7 +20,6 @@ pub struct Step {
     pub serialize_p99_median_us: f64,
     pub serialize_p99_max_us: f64,
     pub engine_fps_p50: f64,
-    /// Game frames simulated per wall-clock second over all concurrent games.
     pub throughput_fps: f64,
 }
 
@@ -45,7 +39,6 @@ struct CalibrationFile<'a> {
     step: &'a [Step],
 }
 
-/// Largest passing concurrency, measured in increasing order; stops at the first failure.
 pub fn recommend(steps: &[Step]) -> u32 {
     steps.iter().take_while(|s| s.passes()).map(|s| s.games).last().unwrap_or(1)
 }
@@ -58,7 +51,6 @@ fn median(v: &mut [f64]) -> f64 {
     v[v.len() / 2]
 }
 
-/// Summarizes one step from its session records and hostd outcomes.
 pub fn summarize(games: u32, sessions: &[Value], outcomes: &[Value], wall_s: f64) -> Step {
     let mut p99: Vec<f64> = sessions.iter().filter_map(|s| s["stats"]["serialize_us_p99"].as_f64()).collect();
     let mut fps: Vec<f64> = sessions
@@ -68,7 +60,6 @@ pub fn summarize(games: u32, sessions: &[Value], outcomes: &[Value], wall_s: f64
             (gt > 0.0).then(|| gf / (gt / 1e3))
         })
         .collect();
-    // Both sides of a T0 game report the same frames: count each game once (slot 0).
     let frames: f64 = sessions.iter().filter(|s| s["slot"].as_u64() == Some(0)).filter_map(|s| s["end_frame"].as_f64()).sum();
     let aborted = outcomes.iter().filter(|g| g["outcome"] != "Finished").count();
     let max = p99.iter().copied().fold(0.0, f64::max);
@@ -83,7 +74,6 @@ pub fn summarize(games: u32, sessions: &[Value], outcomes: &[Value], wall_s: f64
     }
 }
 
-/// 2N games of T0 cross-race play so every slot is busy; races rotate T-P, T-Z, P-Z.
 fn step_plan(n: u32, frames: u32) -> Plan {
     let pairs = [(RaceSel::Terran, RaceSel::Protoss), (RaceSel::Terran, RaceSel::Zerg), (RaceSel::Protoss, RaceSel::Zerg)];
     let total = 2 * n;
@@ -138,7 +128,6 @@ impl Drop for Hostd {
     }
 }
 
-/// Starts `uranium-hostd serve` from the same build directory with a fixed concurrency.
 fn spawn_hostd(n: u32, addr: &str, work: &Path) -> Result<Hostd> {
     let exe = std::env::current_exe()?.with_file_name(if cfg!(windows) { "uranium-hostd.exe" } else { "uranium-hostd" });
     if !exe.is_file() {
@@ -165,7 +154,6 @@ fn spawn_hostd(n: u32, addr: &str, work: &Path) -> Result<Hostd> {
     bail!("hostd did not come up; see {}", work.join("hostd.log").display())
 }
 
-/// Civil date in UTC for the file header; no date crate needed.
 fn today() -> String {
     let days = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() / 86_400).unwrap_or(0) as i64;
     let z = days + 719_468;
@@ -280,7 +268,6 @@ mod tests {
     #[test]
     fn recommend_takes_largest_passing_prefix_020_r10() {
         assert_eq!(recommend(&[step(1, 120.0, 0), step(2, 200.0, 0), step(3, 290.0, 0), step(4, 900.0, 0)]), 3);
-        // A pass after a failure does not count (measurement stops at the first failure).
         assert_eq!(recommend(&[step(1, 120.0, 0), step(2, 400.0, 0), step(3, 200.0, 0)]), 1);
         assert_eq!(recommend(&[step(1, 120.0, 0), step(2, 150.0, 1)]), 1);
         assert_eq!(recommend(&[step(1, 500.0, 0)]), 1);

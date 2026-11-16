@@ -1,6 +1,3 @@
-/* C ABI between the BWAPI shim (C++) and the Rust bridge (crates/uranium-bridge-openbw).
- * Plain-old-data only; must match the #[repr(C)] structs in crates/uranium-bridge-openbw/src/ffi.rs.
- * Spec 011 / 001-R3: the shim only copies BWAPI state into these structs and executes commands. */
 #ifndef URANIUM_BRIDGE_H
 #define URANIUM_BRIDGE_H
 
@@ -14,28 +11,28 @@ extern "C" {
 
 typedef struct {
   uint8_t id;
-  uint8_t race;      /* BWAPI Races: 0 Zerg, 1 Terran, 2 Protoss, 6 Random, else unknown */
+  uint8_t race;
   uint8_t is_self;
   uint8_t is_enemy;
-  int32_t start_x;   /* tile, UR_NONE if unknown */
+  int32_t start_x;
   int32_t start_y;
   char name[32];
 } UrPlayer;
 
 typedef struct {
   const char* map_name;
-  const char* map_path;           /* file read by Rust for the SHA-256 */
+  const char* map_path;
   uint16_t width_tiles, height_tiles;
-  const uint8_t* walkable;        /* (w*4)*(h*4) bytes, 0/1 */
-  const uint8_t* buildable;       /* w*h bytes, 0/1 */
-  const uint8_t* ground_height;   /* w*h bytes */
-  const uint16_t* start_locations;/* x,y tile pairs */
+  const uint8_t* walkable;
+  const uint8_t* buildable;
+  const uint8_t* ground_height;
+  const uint16_t* start_locations;
   uint32_t n_start_locations;
   const UrPlayer* players;
   uint32_t n_players;
   uint8_t self_id;
-  uint8_t privileged;             /* CompleteMapInformation enabled for PrivilegedSummary */
-  uint8_t replay;                 /* 011-R10: replay playback, self_id is the perspective player */
+  uint8_t privileged;
+  uint8_t replay;
 } UrStatic;
 
 typedef struct {
@@ -50,16 +47,16 @@ typedef struct {
   uint8_t owner, angle;
   uint16_t type;
   uint16_t x, y;
-  int16_t vx, vy;                 /* 1/256 px per frame */
+  int16_t vx, vy;
   uint16_t hp, shield, energy, order;
-  int32_t order_target;           /* UR_NONE */
-  int32_t order_x, order_y;       /* UR_NONE */
+  int32_t order_target;
+  int32_t order_x, order_y;
   uint8_t ground_cd, air_cd, spell_cd, spider_mines;
-  uint32_t flags;                 /* uranium_proto::flags */
+  uint32_t flags;
   uint16_t build_queue[5];
   uint16_t remaining_train, remaining_build, remaining_research, resources;
-  int32_t loaded_in;              /* UR_NONE */
-  uint16_t timers[8];             /* lockdown, irradiate, matrix, stasis, plague, ensnare, maelstrom, stim */
+  int32_t loaded_in;
+  uint16_t timers[8];
   uint8_t blind, parasite, nuke_armed, has_addon;
 } UrUnit;
 
@@ -68,17 +65,17 @@ enum { UR_EV_CREATE = 0, UR_EV_DESTROY, UR_EV_MORPH, UR_EV_DISCOVER, UR_EV_EVADE
 
 typedef struct {
   uint8_t kind;
-  int32_t unit;        /* 유닛 id. UR_EV_CMD_FAILED: 명령 index. UR_EV_UNIT_REJECTED: 거절된 유닛 id(찾지 못했으면 요청한 id) */
-  int32_t x, y;        /* UR_EV_NUKE: 위치. UR_EV_CMD_FAILED: x = BWAPI 오류. UR_EV_UNIT_REJECTED: x = 명령 index, y = BWAPI 오류 */
-  uint16_t unit_type;  /* UR_EV_UNIT_REJECTED: BWAPI UnitType id, 유닛을 찾지 못했으면 0xFFFF. 다른 kind는 0xFFFF */
-  uint8_t command;     /* UR_EV_UNIT_REJECTED: 브리지가 그 유닛에 시도한 BWAPI UnitCommandType id. 보낸 유닛: 유닛별 보정 뒤. 찾지 못한 유닛: 대상 해석 뒤(사라진 자원 → Move 포함), 유닛별 보정 전. 잔상 명령: Attack_Unit / Right_Click_Unit. 다른 kind는 0 */
+  int32_t unit;
+  int32_t x, y;
+  uint16_t unit_type;
+  uint8_t command;
 } UrEvent;
 
 typedef struct {
-  uint16_t bullet_type;           /* BWAPI BulletType id, 0xFFFF = nuke dot */
+  uint16_t bullet_type;
   uint16_t x, y;
-  int32_t remaining;              /* frames, UR_NONE */
-  int32_t owner;                  /* UR_NONE */
+  int32_t remaining;
+  int32_t owner;
 } UrEffect;
 
 typedef struct {
@@ -98,68 +95,53 @@ typedef struct {
   UrPlayerState self_state;
   const UrUnit* units;
   uint32_t n_units;
-  const uint8_t* visible;         /* w*h tiles */
+  const uint8_t* visible;
   const uint8_t* explored;
   const uint8_t* creep;
   const UrEvent* events;
   uint32_t n_events;
   const UrEffect* effects;
   uint32_t n_effects;
-  const UrPrivileged* privileged; /* NULL unless UrStatic.privileged */
+  const UrPrivileged* privileged;
 } UrFrame;
 
-/* Command kinds */
 enum { UR_CMD_UNIT = 0, UR_CMD_BUILD, UR_CMD_BUILD_ADDON, UR_CMD_TRAIN, UR_CMD_MORPH, UR_CMD_RESEARCH, UR_CMD_UPGRADE, UR_CMD_CANCEL, UR_CMD_SET_RALLY };
-/* Orders for UR_CMD_UNIT */
 enum {
   UR_ORD_MOVE = 0, UR_ORD_ATTACK, UR_ORD_PATROL, UR_ORD_HOLD, UR_ORD_STOP, UR_ORD_RIGHT_CLICK, UR_ORD_SIEGE, UR_ORD_UNSIEGE,
   UR_ORD_CLOAK, UR_ORD_DECLOAK, UR_ORD_BURROW, UR_ORD_UNBURROW, UR_ORD_LIFT, UR_ORD_LAND, UR_ORD_LOAD, UR_ORD_UNLOAD_ALL,
   UR_ORD_REPAIR, UR_ORD_GATHER, UR_ORD_RETURN_CARGO, UR_ORD_USE_TECH,
-  UR_ORD_UNLOAD /* target_unit = the loaded unit (034 Unload_Unit) */
+  UR_ORD_UNLOAD
 };
-/* Cancel kinds */
 enum { UR_CANCEL_CONSTRUCTION = 0, UR_CANCEL_TRAIN, UR_CANCEL_RESEARCH, UR_CANCEL_UPGRADE, UR_CANCEL_ADDON, UR_CANCEL_MORPH };
 
 typedef struct {
   uint8_t kind, order, queued, cancel_kind;
-  int32_t unit;                   /* actor: worker / building / unit (single-unit commands) */
-  int32_t target_unit;            /* UR_NONE */
-  int32_t x, y;                   /* position (px) or tile; UR_NONE */
-  uint16_t type;                  /* unit type / tech / upgrade */
-  uint16_t n_units;               /* UR_CMD_UNIT: units in unit_pool[units_offset ..] */
+  int32_t unit;
+  int32_t target_unit;
+  int32_t x, y;
+  uint16_t type;
+  uint16_t n_units;
   uint32_t units_offset;
 } UrCmd;
 
 typedef struct {
-  const UrCmd* cmds;              /* valid until the next uranium_bridge_* call */
+  const UrCmd* cmds;
   uint32_t n_cmds;
   const int32_t* unit_pool;
   uint32_t advance_frames;
-  /* 010-R13 / 011-R21: non-zero = surrender (n_cmds is 0). Send surrender_chat (NUL-terminated
-     UTF-8, at most 79 bytes, empty = no chat; valid until the next call) as chat, then leave the
-     game UR_SURRENDER_LEAVE_FRAMES later without calling uranium_bridge_step again. */
   uint8_t surrender;
   const char* surrender_chat;
 } UrAct;
 
-/* 011-R21: frames between the surrender chat and leaving (about 1 s, so the chat goes out). */
 enum { UR_SURRENDER_LEAVE_FRAMES = 24 };
 
-/* Return 0 on success; non-zero means the shim must leave the game. */
 int32_t uranium_bridge_start(const UrStatic* info);
 int32_t uranium_bridge_step(const UrFrame* frame, UrAct* out);
-/* reason: 0 elimination, 1 surrender/left, 2 time limit draw.
-   last: own-vision state at the end and the events since the last step (010-R12), or NULL.
-   Its privileged pointer is ignored. */
 void uranium_bridge_end(int32_t winner, uint8_t reason, uint32_t frame, const UrFrame* last);
-/* Next frame at which the shim must call uranium_bridge_step. */
 uint32_t uranium_bridge_next_frame(void);
-/* Max frames (URANIUM_MAX_FRAMES). The game seed is applied by OpenBW patch 0002. */
 uint32_t uranium_bridge_max_frames(void);
 uint8_t uranium_bridge_privileged_requested(void);
-/* 011-R10: URANIUM_REPLAY_PERSPECTIVE player id, or -1 when unset. */
 int32_t uranium_bridge_replay_perspective(void);
-/* 011-R10: URANIUM_REPLAY_ENEMY player id, or -1 when unset. */
 int32_t uranium_bridge_replay_enemy(void);
 
 #ifdef __cplusplus

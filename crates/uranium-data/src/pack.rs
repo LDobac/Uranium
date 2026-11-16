@@ -1,10 +1,5 @@
-//! Lossless compression of an observation's two large planes (spatial features and location
-//! masks, mostly zero): ~1.9 MB per step raw, a batch is 2,048 steps. RL trajectories (042) and
-//! BC batches on hosts that ask for it (041-R18) keep them this way until the update.
-
 use uranium_env::features::Observation;
 
-/// The spatial features and location masks of one observation, zstd-compressed.
 #[derive(Clone)]
 pub struct Planes {
     spatial: Vec<u8>,
@@ -14,7 +9,6 @@ pub struct Planes {
 }
 
 impl Planes {
-    /// Moves the planes out of `o` (left empty) into compressed form.
     pub fn take(o: &mut Observation) -> Self {
         let spatial_bytes: Vec<u8> = o.obs.spatial.iter().flat_map(|f| f.to_le_bytes()).collect();
         let loc_bytes: Vec<u8> = o.masks.loc_class_mask.iter().map(|&b| b as u8).collect();
@@ -24,7 +18,6 @@ impl Planes {
         Self { spatial: compress(&spatial_bytes), loc_mask: compress(&loc_bytes), spatial_len, loc_len }
     }
 
-    /// `o` (whose planes were taken) with its planes back, bit for bit.
     pub fn restore(&self, o: &Observation) -> Observation {
         let mut o = o.clone();
         let mut spatial = vec![0f32; self.spatial_len];
@@ -35,9 +28,6 @@ impl Planes {
         o
     }
 
-    /// The planes decompressed into `spatial` ([`Planes::spatial_len`]) and `loc_mask`
-    /// ([`Planes::loc_len`]), e.g. a row of a collated batch: streamed through a small buffer, no
-    /// plane-sized temporary.
     pub fn restore_into(&self, spatial: &mut [f32], loc_mask: &mut [bool]) {
         assert!(spatial.len() == self.spatial_len && loc_mask.len() == self.loc_len, "plane sizes");
         let mut dec = zstd::stream::read::Decoder::with_buffer(&self.spatial[..]).expect("zstd spatial");
@@ -67,24 +57,17 @@ impl Planes {
         self.spatial.len() + self.loc_mask.len()
     }
 
-    /// Bytes reserved by the compressed planes' buffers (their capacity, not the length; the
-    /// allocator's own rounding is not counted).
     pub fn allocated(&self) -> usize {
         self.spatial.capacity() + self.loc_mask.capacity()
     }
 }
 
-/// zstd level 1 with the buffer trimmed to the compressed size. `bulk::compress` returns the
-/// compress bound (about the raw plane, ~1.9 MB a step) as capacity, so a packed BC batch of
-/// 2,048 steps kept ~4 GB allocated (041-R18, 2026-10-24: Windows commit and Linux heap growth
-/// per update).
 fn compress(raw: &[u8]) -> Vec<u8> {
     let mut v = zstd::bulk::compress(raw, 1).expect("zstd compress");
     v.shrink_to_fit();
     v
 }
 
-/// An observation with its two large planes compressed.
 #[derive(Clone)]
 pub struct PackedObs {
     obs: Observation,

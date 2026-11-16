@@ -1,5 +1,3 @@
-//! Runs one 1v1 OpenBW game: two BWAPILauncher processes (spec 020-R2/R3/R4, 011).
-
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -20,21 +18,15 @@ pub fn race_name(r: Race) -> &'static str {
     }
 }
 
-/// BWAPI drops ':' from the save_replay path ("illegal characters"), so on Windows a drive
-/// letter turns the path relative to the launcher. Pass it drive-relative ("\dir\x.rep"); the
-/// replay dir must be on the same drive as the hostd work dir.
 fn bwapi_save_path(p: &Path) -> String {
     let s = p.display().to_string();
     if cfg!(windows) && s.as_bytes().get(1) == Some(&b':') { s[2..].to_string() } else { s }
 }
 
-/// Where launcher slot 0 saves the replay of a `save_replay` game (011-R7).
 pub fn replay_file(spec: &GameSpec, replay_dir: &Path) -> PathBuf {
     replay_dir.join(format!("g{}-s{}-p0.rep", spec.game_id, spec.seed.map_or("x".to_string(), |s| s.to_string())))
 }
 
-/// 020-R1 / 042-R11: the saved replay goes back in `Finished.replay`. A file in the configured
-/// replay folder stays; one in the game's work folder is only a temporary copy and is removed.
 fn take_replay(cfg: &Config, spec: &GameSpec, dir: &Path) -> Option<Vec<u8>> {
     if !spec.save_replay {
         return None;
@@ -47,15 +39,10 @@ fn take_replay(cfg: &Config, spec: &GameSpec, dir: &Path) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-/// Player name prefix when the spec has no display name; the suffix is the `GameSpec.players`
-/// index.
 pub const PLAYER_NAME_PREFIX: &str = "uranium-p";
 
-/// BWAPI cuts `auto_menu.character_name` to 24 bytes (AutoMenuManager.cpp).
 pub const MAX_PLAYER_NAME: usize = 24;
 
-/// 020-R16: `p<i>-<name>` cut to [`MAX_PLAYER_NAME`] bytes (the index is never cut), or
-/// `uranium-p<i>` without a display name. The agent reads the index back (020-R11).
 pub fn player_name(spec: &GameSpec, slot: usize) -> String {
     let Some(name) = spec.players[slot].name.as_deref() else { return format!("{PLAYER_NAME_PREFIX}{slot}") };
     let mut out = format!("p{slot}-");
@@ -68,10 +55,8 @@ pub fn player_name(spec: &GameSpec, slot: usize) -> String {
     out
 }
 
-/// 011-R23 / 020-R17: turns on BWAPI patch 0016 (Train supply rule, ghost commands).
 pub const BRIDGE_EXT_VAR: &str = "URANIUM_BRIDGE_EXT";
 
-/// Environment for one launcher (mirrors tools/openbw/selfmatch.sh).
 pub fn launcher_env(cfg: &Config, spec: &GameSpec, slot: usize, module: &Path, replay_dir: &Path) -> Vec<(String, String)> {
     let p = &spec.players[slot];
     let map = cfg.maps_dir.join(spec.map.file_name());
@@ -88,33 +73,25 @@ pub fn launcher_env(cfg: &Config, spec: &GameSpec, slot: usize, module: &Path, r
         ("URANIUM_OPENBW_DROP_TIMEOUT_MS", cfg.drop_timeout_ms.to_string()),
         (
             "BWAPI_CONFIG_AUTO_MENU__SAVE_REPLAY",
-            // Both clients record the same game; keep slot 0 only (040 botgen dedup).
             if spec.save_replay && slot == 0 { bwapi_save_path(&replay_file(spec, replay_dir)) } else { String::new() },
         ),
         ("URANIUM_GAME_ID", spec.game_id.to_string()),
-        // 0004 patch: deterministic client ids => launcher slot = player slot (011-AC4).
         ("URANIUM_LAN_SLOT", slot.to_string()),
-        // The BWAPI player id need not follow launch order; the name tells the agent which
-        // GameSpec player it is (050 scenario builds are looked up by it).
         ("BWAPI_CONFIG_AUTO_MENU__CHARACTER_NAME", player_name(spec, slot)),
         ("URANIUM_MAX_FRAMES", spec.max_frames.to_string()),
         ("URANIUM_PRIVILEGED", if spec.privileged { "1" } else { "0" }.to_string()),
     ];
     if let PlayerKind::Bridge { agent_addr } = &p.kind {
         env.push(("URANIUM_AGENT_ADDR", agent_addr.clone()));
-        // 020-R17: only the launcher that runs our bridge gets the BWAPI extension.
         env.push((BRIDGE_EXT_VAR, "1".to_string()));
     }
     let mut env: Vec<(String, String)> = env.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
-    // 0002 patch: every client must see the same seed for a deterministic setup (011-AC4).
     if let Some(seed) = spec.seed {
         env.push(("URANIUM_SEED".into(), seed.to_string()));
     }
     env
 }
 
-/// [`launcher_env`] on `cmd`. 020-R17: an OSS bot launcher never inherits [`BRIDGE_EXT_VAR`] from
-/// hostd's own environment, so BWAPI patch 0016 stays off for it.
 fn set_launcher_env(cmd: &mut Command, cfg: &Config, spec: &GameSpec, slot: usize, module: &Path, replay_dir: &Path) {
     cmd.envs(launcher_env(cfg, spec, slot, module, replay_dir));
     if !matches!(spec.players[slot].kind, PlayerKind::Bridge { .. }) {
@@ -152,7 +129,6 @@ fn tail(path: &Path, lines: usize) -> String {
     v[v.len().saturating_sub(lines)..].join(" | ")
 }
 
-/// Plays one game to the end (or timeout). `stop` is polled to support `StopGame`.
 pub fn run(cfg: &Config, platform: &dyn Platform, spec: &GameSpec, stop: &dyn Fn() -> bool) -> Result<GameFinished> {
     let started = Instant::now();
     let dir = cfg.work_dir.join(format!("g{}", spec.game_id));
@@ -176,8 +152,6 @@ pub fn run(cfg: &Config, platform: &dyn Platform, spec: &GameSpec, stop: &dyn Fn
             cmd.envs(lan.env[slot].iter().map(|(k, v)| (k, v)));
             children.push(platform.spawn(cmd).with_context(|| format!("spawning launcher {slot}"))?);
             logs.push(log);
-            // The first client binds the LAN endpoint and becomes player slot 0; wait for it so
-            // slot assignment never depends on scheduling (011-AC4).
             if slot == 0 && !platform.wait_first_ready(&lan, Duration::from_secs(20)) {
                 anyhow::bail!("first launcher did not open its LAN endpoint within 20 s");
             }
@@ -228,7 +202,6 @@ pub fn run(cfg: &Config, platform: &dyn Platform, spec: &GameSpec, stop: &dyn Fn
     Ok(GameFinished { game_id: spec.game_id, outcome: outcome.unwrap(), exit_codes: codes, wall_s: started.elapsed().as_secs() as u32, replay })
 }
 
-/// Environment for one replay playback launcher (011-R10, 020-R1 StartReplay).
 pub fn replay_env(cfg: &Config, job: &ReplaySpec, rep: &Path) -> Vec<(String, String)> {
     [
         ("URANIUM_DATA_DIR", cfg.data_dir.display().to_string()),
@@ -240,10 +213,8 @@ pub fn replay_env(cfg: &Config, job: &ReplaySpec, rep: &Path) -> Vec<(String, St
         ("BWAPI_CONFIG_AUTO_MENU__SAVE_REPLAY", String::new()),
         ("URANIUM_GAME_ID", job.job_id.to_string()),
         ("URANIUM_AGENT_ADDR", job.agent_addr.clone()),
-        // 013: BWAPI id of the observed player (rank of its occupied header slot).
         ("URANIUM_REPLAY_PERSPECTIVE", job.perspective_slot.to_string()),
         ("URANIUM_PRIVILEGED", if job.privileged { "1" } else { "0" }.to_string()),
-        // Replays end on their own; never cut them at the 60-minute game limit.
         ("URANIUM_MAX_FRAMES", u32::MAX.to_string()),
     ]
     .into_iter()
@@ -251,8 +222,6 @@ pub fn replay_env(cfg: &Config, job: &ReplaySpec, rep: &Path) -> Vec<(String, St
     .collect()
 }
 
-/// Plays one replay (`rep_bytes`, already in 1.16.1 form, 013-R6) with a single launcher in
-/// replay mode. The bridge streams RawFrames to `agent_addr` (040-R12 streaming, 020-AC4).
 pub fn run_replay(cfg: &Config, platform: &dyn Platform, job: &ReplaySpec, stop: &dyn Fn() -> bool) -> Result<GameFinished> {
     let started = Instant::now();
     let dir = cfg.work_dir.join(format!("r{}", job.job_id));
@@ -289,7 +258,6 @@ pub fn run_replay(cfg: &Config, platform: &dyn Platform, job: &ReplaySpec, stop:
     Ok(GameFinished { game_id: job.job_id, outcome, exit_codes: [code, None], wall_s: started.elapsed().as_secs() as u32, replay: None })
 }
 
-/// Quarantine key: same map and player setup (020-R4).
 pub fn config_key(spec: &GameSpec) -> String {
     let p = |i: usize| {
         let k = match &spec.players[i].kind {
@@ -339,8 +307,6 @@ mod tests {
         }
     }
 
-    /// 020-R1 / 042-R11: the replay travels back in `Finished`; a work-folder copy is temporary,
-    /// a file in the configured replay folder stays.
     #[test]
     fn take_replay_returns_bytes_and_cleans_work_copy_020_r1() {
         let root = std::env::temp_dir().join(format!("uranium-hostd-rep-{}", std::process::id()));
@@ -376,7 +342,6 @@ mod tests {
     fn launcher_env_matches_m2_harness() {
         let env = launcher_env(&cfg(), &spec(Some(9)), 0, Path::new("/b/lib.so"), Path::new("/w/g3"));
         let get = |k: &str| env.iter().find(|(a, _)| a == k).map(|(_, v)| v.clone());
-        // Path separator is platform-specific (001-R8).
         let map = Path::new("/m").join("fighting_spirit_1.3.scx");
         assert_eq!(get("BWAPI_CONFIG_AUTO_MENU__MAP").unwrap(), map.to_string_lossy());
         assert_eq!(get("BWAPI_CONFIG_AUTO_MENU__RACE").unwrap(), "Terran");
@@ -385,7 +350,6 @@ mod tests {
         assert_eq!(get("BWAPI_CONFIG_AUTO_MENU__SAVE_REPLAY").unwrap(), "");
         assert_eq!(get("URANIUM_LAN_SLOT").unwrap(), "0");
         assert_eq!(get("BWAPI_CONFIG_AUTO_MENU__CHARACTER_NAME").unwrap(), "uranium-p0");
-        // 011-R18: both clients get the raised drop timeout (patch 0013).
         assert_eq!(get("URANIUM_OPENBW_DROP_TIMEOUT_MS").unwrap(), "600000");
         let env1 = launcher_env(&cfg(), &spec(None), 1, Path::new("/o/module.so"), Path::new("/w/g3"));
         assert!(env1.iter().any(|(k, v)| k == "URANIUM_OPENBW_DROP_TIMEOUT_MS" && v == "600000"));
@@ -393,8 +357,6 @@ mod tests {
         assert!(env1.iter().any(|(k, v)| k == "BWAPI_CONFIG_AUTO_MENU__RACE" && v == "Random"));
     }
 
-    /// 011-AC11 / 020-R17: `URANIUM_BRIDGE_EXT=1` reaches the bridge launcher only; the OSS bot
-    /// launcher gets it removed even when hostd itself has it.
     #[test]
     fn bridge_ext_only_for_bridge_launcher_020_r17() {
         let s = spec(None);
@@ -410,7 +372,6 @@ mod tests {
         assert_eq!(ext(1), vec![None], "OSS bot launcher: removed, not inherited");
     }
 
-    /// 020-R16: `p<i>-<name>` cut to 24 bytes without cutting the index, legacy name without one.
     #[test]
     fn player_names_020_r16() {
         let mut s = spec(None);

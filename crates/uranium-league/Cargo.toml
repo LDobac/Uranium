@@ -7,7 +7,6 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# Synthetic observations for tests of other crates (uranium-py: the PyTorch learner tests).
 testkit = []
 
 [dependencies]

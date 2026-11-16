@@ -1,24 +1,3 @@
-//! 020-R15 evaluation jobs: several plans played in order from a ledger on the shared drive
-//! (061), by whichever worker holds the job's lease (061-R16). The lease holder alone hands out
-//! new games and runs their inference; a worker with a higher `--priority` asks it to yield, and
-//! it then stops handing out games, lets the lease go at once and finishes its games in flight
-//! (no game changes its inference host midway). Ctrl+C finishes the games in flight and stops;
-//! a second Ctrl+C stops them now and they are played again later.
-//!
-//! Layout under the job folder `<shared>/eval/<job>/`:
-//! - `job.toml`: `stages` (plan files, relative to the job folder, played in this order) and
-//!   `hosts` (020-R6 hosts file, re-read every minute).
-//! - `games/<host>.jsonl`, `results/<host>.jsonl`: what each worker's scheduler and agent wrote
-//!   (hostd ids, [`hostd_id`]); one writer per file.
-//! - `results/unit_rejections/<host>.jsonl`: each worker's per-unit rejection details (031-R10),
-//!   never merged into the stage records.
-//! - `inflight/<host>.json`: the games a worker has in flight, rewritten every few seconds.
-//! - `leaving/<host addr>`: a game host that gets no new game (its worker is stopping).
-//! - `<stage>/replays/g<plan id>.rep`; `<stage>/games.jsonl`, `results.jsonl`, `summary.md`,
-//!   `sessions.md`: the merged view `eval-status` writes (plan ids, last attempt of each game).
-//! - `<stage>/acts/g<plan id>-p<players index>.jsonl`, `<stage>/states/g<plan id>-o<obs>.state`:
-//!   act logs and state files of a stage whose plan has the 020-R22 keys (051).
-
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -35,9 +14,6 @@ use uranium_store::storage::{self, ContentObserver, Lease, LockObserver, LockSta
 use crate::plan::{self, HostEntry, ModelKey, Plan};
 use crate::{BRIDGE_NEVER_CONNECTED, Dispatch, InferTag, Job, JobOutcome, JobSource, Models, capabilities};
 
-/// 020-R15 ⑦: hostd ids are `attempt × ATTEMPT_BASE + stage number × STAGE_BASE + plan id`
-/// (stage numbers from 1), so games of two stages, and two attempts of one game, never share an
-/// id on a game host (work folder, socket name) or in the session records.
 pub const STAGE_BASE: u64 = 100_000;
 pub const ATTEMPT_BASE: u64 = 10_000_000;
 
@@ -45,12 +21,10 @@ pub fn hostd_id(stage: usize, plan_id: u64, attempt: u32) -> u64 {
     attempt as u64 * ATTEMPT_BASE + (stage as u64 + 1) * STAGE_BASE + plan_id
 }
 
-/// (attempt, stage index, plan id) of a hostd id.
 pub fn split_id(id: u64) -> (u32, usize, u64) {
     ((id / ATTEMPT_BASE) as u32, ((id % ATTEMPT_BASE) / STAGE_BASE).saturating_sub(1) as usize, id % STAGE_BASE)
 }
 
-/// A game of the job: (stage index, plan game id).
 pub type Key = (usize, u64);
 
 fn key_of(id: u64) -> Key {
@@ -58,13 +32,10 @@ fn key_of(id: u64) -> Key {
     (s, g)
 }
 
-/// 020-R15 ④: outcomes played again with the same seed (020-R4 bridge never connected, hostd
-/// lost, a game stopped by a second Ctrl+C). Timeout, a game crash and other rejections stay.
 pub fn retryable(outcome: &str, detail: Option<&str>) -> bool {
     outcome == JobOutcome::Stopped.as_str() || detail.is_some_and(|d| d.starts_with(BRIDGE_NEVER_CONNECTED) || d.starts_with(HOSTD_LOST))
 }
 
-/// The detail `worker` records for a game whose hostd connection broke (020-R4).
 pub const HOSTD_LOST: &str = "hostd connection lost";
 
 #[derive(Deserialize, Debug)]
@@ -72,8 +43,6 @@ pub const HOSTD_LOST: &str = "hostd connection lost";
 struct JobFile {
     stages: Vec<PathBuf>,
     hosts: PathBuf,
-    /// 020-R15 ④ (AMB-020-6, user decision 2026-10-26): attempts per game before it is given up
-    /// (it then counts with its last record, and a warning is logged).
     #[serde(default = "d_max_attempts")]
     max_attempts: u32,
 }
@@ -87,10 +56,8 @@ pub struct Stage {
     pub plan: Plan,
 }
 
-/// A loaded evaluation job.
 pub struct EvalJob {
     pub dir: PathBuf,
-    /// Lease id `eval-<folder name>` (061-R16).
     pub lease_id: String,
     pub stages: Vec<Stage>,
     pub max_attempts: Option<u32>,
@@ -116,7 +83,6 @@ impl EvalJob {
             if games >= STAGE_BASE {
                 bail!("stage `{}` has {games} games, at most {} (020-R15 ⑦)", plan.name, STAGE_BASE - 1);
             }
-            // One inference server per model serves every stage: their session settings must agree.
             let mine = crate::plan_models(&plan);
             for s in &stages {
                 let shared = crate::plan_models(&s.plan).iter().any(|k| mine.contains(k));
@@ -138,7 +104,6 @@ impl EvalJob {
         Ok(Self { dir: dir.to_path_buf(), lease_id, stages, max_attempts: Some(jf.max_attempts), hosts_file: dir.join(jf.hosts) })
     }
 
-    /// Every game of the job in play order (stage order, then plan order).
     pub fn keys(&self) -> Vec<Key> {
         let mut v = Vec::new();
         for (si, s) in self.stages.iter().enumerate() {
@@ -157,7 +122,6 @@ impl EvalJob {
     }
 }
 
-/// One games.jsonl line as the ledger needs it.
 #[derive(Debug, Clone)]
 pub struct Rec {
     pub id: u64,
@@ -166,9 +130,6 @@ pub struct Rec {
     pub line: serde_json::Value,
 }
 
-/// Lines of every `*.jsonl` in `dir` (a missing folder has none; a line being written is
-/// skipped). A folder or file that cannot be read is an error, never "no records" (061-R13:
-/// unknown is not empty).
 fn read_dir_lines(dir: &Path) -> Result<Vec<serde_json::Value>> {
     let mut out = Vec::new();
     let rd = match std::fs::read_dir(dir) {
@@ -191,15 +152,10 @@ fn read_dir_lines(dir: &Path) -> Result<Vec<serde_json::Value>> {
     Ok(out)
 }
 
-/// 031-R10: a worker's per-unit rejection details, `results/unit_rejections/<host>.jsonl` (the
-/// agent creates the folder on the first rejection). A subfolder, so the non-recursive
-/// [`read_dir_lines`] of `results/` never takes them for session records (020-R15 ⑨).
 fn unit_rejections_file(job: &EvalJob, host: &str) -> PathBuf {
     job.sub("results").join("unit_rejections").join(format!("{host}.jsonl"))
 }
 
-/// The job's game records. A record whose stage name differs from the stage at its index means
-/// `job.toml` changed under a running job: refused (020-R15 ⑦).
 pub fn read_records(job: &EvalJob) -> Result<Vec<Rec>> {
     let mut out = Vec::new();
     for v in read_dir_lines(&job.sub("games"))? {
@@ -214,23 +170,15 @@ pub fn read_records(job: &EvalJob) -> Result<Vec<Rec>> {
     Ok(out)
 }
 
-/// 020-R15 ④: what the records say about each game.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LedgerState {
-    /// Games with a final record (or given up), and the hostd id of the record that ends them.
     pub done: HashMap<Key, u64>,
-    /// Records per game (the next attempt number).
     pub attempts: HashMap<Key, u32>,
-    /// Records that are played again.
     pub retried: usize,
-    /// Failed attempts per game: retried records other than `Stopped` (a user's second Ctrl+C
-    /// is not a fault of the game, AMB-020-6).
     pub failures: HashMap<Key, u32>,
-    /// Games given up after `max_attempts` failed attempts.
     pub gave_up: Vec<Key>,
 }
 
-/// A retried record that counts toward `max_attempts` (020-R15 ④).
 fn is_failure(outcome: &str, detail: Option<&str>) -> bool {
     retryable(outcome, detail) && outcome != JobOutcome::Stopped.as_str()
 }
@@ -271,12 +219,10 @@ pub fn ledger_state(recs: &[Rec], max_attempts: Option<u32>) -> LedgerState {
     st
 }
 
-/// Games still to hand out, in play order: no final record and not in flight anywhere.
 pub fn pending(keys: &[Key], st: &LedgerState, busy: &HashSet<Key>) -> Vec<Key> {
     keys.iter().copied().filter(|k| !st.done.contains_key(k) && !busy.contains(k)).collect()
 }
 
-/// `inflight/<host>.json` (020-R15 ①).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Inflight {
     pub host: String,
@@ -289,8 +235,6 @@ fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-/// Every worker's in-flight file read now (a missing folder: none). A file that cannot be read
-/// or parsed is an error: its games would otherwise look free (061-R13 "unknown").
 fn read_inflight(job: &EvalJob) -> Result<Vec<Inflight>> {
     let dir = job.sub("inflight");
     let rd = match std::fs::read_dir(&dir) {
@@ -310,12 +254,6 @@ fn read_inflight(job: &EvalJob) -> Result<Vec<Inflight>> {
     Ok(v)
 }
 
-/// What the in-flight files say: games other live workers have in flight, and the next attempt
-/// number past every id in any file. That includes this host's file left by an earlier process
-/// and a dead worker's: such an attempt has no record, and hostd or the session records may still
-/// hold its id (020-R15 ⑦). A worker counts as gone when its file stayed exactly the same for
-/// `stale_after` on this process's clock (061-R5 expiry by watching; a live worker rewrites it
-/// every few seconds), and its games are handed out again.
 pub struct Flights {
     pub busy: HashSet<Key>,
     pub attempts: HashMap<Key, u32>,
@@ -339,38 +277,25 @@ fn flights(job: &EvalJob, me: &str, obs: &mut ContentObserver<Inflight>, stale_a
     Ok(f)
 }
 
-/// 020-R15: the games of one worker's lease, handed to its slot workers. `next` waits while
-/// other workers' games are in flight (they may come back for another attempt) or the ledger is
-/// unknown (paused), and ends when nothing is left or the source is closed (yield, Ctrl+C, lease
-/// lost). Only games of `loaded` stages (their models are served here) are handed out.
 pub struct LedgerSource {
     job: Arc<EvalJob>,
     host: String,
-    /// Plan jobs per stage (plan game id `i + 1` at index `i`), bridges pointed at this agent.
     jobs: Vec<Vec<Job>>,
     loaded: HashSet<usize>,
     inner: Mutex<Inner>,
-    /// Serialises in-flight file writes; each writer snapshots under it, so the last rename
-    /// carries the latest state.
     write: Mutex<()>,
 }
 
 struct Inner {
-    /// Checked and cleared under this lock: no game is handed out once `close` returned.
     open: bool,
-    /// The ledger or the lease is unknown right now (share unreachable): no new game.
     paused: bool,
     queue: VecDeque<Key>,
-    /// Games left in stages whose models are not loaded here (the caller loads them next).
     unloaded: usize,
-    /// In flight here: key -> hostd id.
     mine: HashMap<Key, u64>,
-    /// Games this process recorded as final (a refresh can read the ledger before the record).
     finished: HashSet<Key>,
     attempts: HashMap<Key, u32>,
     failures: HashMap<Key, u32>,
     busy_elsewhere: HashSet<Key>,
-    /// A refresh read the ledger at least once: before that, "nothing queued" means nothing.
     known: bool,
 }
 
@@ -381,7 +306,6 @@ impl LedgerSource {
         Self { job, host: host.to_string(), jobs, loaded, inner: Mutex::new(inner), write: Mutex::new(()) }
     }
 
-    /// Re-reads the ledger: what is left, attempt numbers, other workers' games in flight.
     pub fn refresh(&self, st: &LedgerState, fl: Flights) {
         let keys = self.job.keys();
         let mut g = self.inner.lock().unwrap();
@@ -407,12 +331,10 @@ impl LedgerSource {
         self.inner.lock().unwrap().open = false;
     }
 
-    /// Games recorded as final by this process in earlier lease periods (never handed out again).
     pub fn remember_finished(&self, keys: &HashSet<Key>) {
         self.inner.lock().unwrap().finished.extend(keys.iter().copied());
     }
 
-    /// Games recorded as final in this period (and remembered ones).
     pub fn finished(&self) -> HashSet<Key> {
         self.inner.lock().unwrap().finished.clone()
     }
@@ -425,7 +347,6 @@ impl LedgerSource {
         self.inner.lock().unwrap().paused = paused;
     }
 
-    /// Games left whose models this period did not load.
     pub fn unloaded(&self) -> usize {
         self.inner.lock().unwrap().unloaded
     }
@@ -436,8 +357,6 @@ impl LedgerSource {
         v
     }
 
-    /// Nothing left for this period: the ledger was read and nothing is to hand out or in flight
-    /// here or elsewhere. While the ledger is unknown (never read, or paused) it is not complete.
     pub fn complete(&self) -> bool {
         let g = self.inner.lock().unwrap();
         g.known && !g.paused && g.queue.is_empty() && g.mine.is_empty() && g.busy_elsewhere.is_empty()
@@ -457,8 +376,6 @@ impl LedgerSource {
         }
     }
 
-    /// 020-R15 ④ with `max_attempts`: a retried game goes back in the queue unless its failed
-    /// attempts reached the limit (the ledger then counts it as given up, without a result).
     fn retry_or_give_up(&self, g: &mut Inner, k: Key, failed: bool) {
         if failed {
             *g.failures.entry(k).or_default() += 1;
@@ -498,7 +415,6 @@ impl JobSource for LedgerSource {
                     return None;
                 }
             }
-            // Other games may still come back for another attempt (refresh fills the queue).
             std::thread::sleep(Duration::from_secs(2));
         }
     }
@@ -507,7 +423,6 @@ impl JobSource for LedgerSource {
         let k = key_of(job.spec.game_id);
         let mut g = self.inner.lock().unwrap();
         g.mine.remove(&k);
-        // Not recorded: the same attempt number is used again.
         g.attempts.insert(k, split_id(job.spec.game_id).0);
         g.queue.push_front(k);
         drop(g);
@@ -527,7 +442,6 @@ impl JobSource for LedgerSource {
                 elog!("[eval] could not write {}: {e}", path.display());
             }
         }
-        // The record was written just before (worker); a retried game goes back in the queue.
         let mut g = self.inner.lock().unwrap();
         g.mine.remove(&k);
         if retryable(outcome.as_str(), detail) {
@@ -543,17 +457,12 @@ impl JobSource for LedgerSource {
         self.inner.lock().unwrap().queue.len()
     }
 
-    /// 041-R28 ①: `<stage>/memory/g<plan id>.jsonl` beside `<stage>/replays/g<plan id>.rep` for a
-    /// stage whose plan has `memory_log = true`. A game played again overwrites its log.
     fn memory_log(&self, job: &Job) -> Option<PathBuf> {
         let k = key_of(job.spec.game_id);
         let stage = self.job.stages.get(k.0)?;
         stage.plan.memory_log.then(|| self.job.sub(&stage.name).join("memory").join(crate::memory_log_name(k.1)))
     }
 
-    /// 020-R22 / 020-R15 ①: a stage with 051 keys puts each game's act logs in `<stage>/acts/`
-    /// and state files in `<stage>/states/`, named by plan game number (a game played again
-    /// overwrites them); branch list paths are under `URANIUM_SHARED_DIR` (061).
     fn game_branch(&self, job: &Job) -> Result<Option<uranium_env::branch::GameBranch>> {
         let k = key_of(job.spec.game_id);
         let Some(stage) = self.job.stages.get(k.0) else { return Ok(None) };
@@ -561,9 +470,6 @@ impl JobSource for LedgerSource {
     }
 }
 
-/// 020-R15 ⑥: plays the source's games on the job's hosts until the source ends. The hosts file
-/// is re-read and unreachable or lost hosts are probed again every `every`; hosts marked as
-/// leaving get no new game.
 pub fn run_hosts(source: Arc<LedgerSource>, games_path: &Path, dispatch: &Dispatch, every: Duration) -> Result<()> {
     if let Some(d) = games_path.parent() {
         std::fs::create_dir_all(d)?;
@@ -627,8 +533,6 @@ pub fn run_hosts(source: Arc<LedgerSource>, games_path: &Path, dispatch: &Dispat
                 }
             }
         }
-        // Hosts are probed every `every`, leaving markers read every 5 s (a leaving host's slots
-        // end after their game); the end of the last slot is noticed within 200 ms.
         let until = Instant::now() + every;
         let mut marks = Instant::now();
         while Instant::now() < until && !(!active() && all_ended(&live)) {
@@ -643,18 +547,14 @@ pub fn run_hosts(source: Arc<LedgerSource>, games_path: &Path, dispatch: &Dispat
     }
     use std::io::Write;
     games_out.lock().unwrap().flush()?;
-    // Session records are written when each bridge sends GameEnd, before its launcher exits.
     std::thread::sleep(Duration::from_secs(1));
     Ok(())
 }
 
-/// File name of a leaving marker for a host address (`:` is not allowed on Windows).
 fn leaving_file(addr: &str) -> String {
     addr.replace([':', '/', '\\'], "_")
 }
 
-/// Hosts marked as leaving; `None` when the folder or a marker cannot be read (the caller keeps
-/// the set it had: unknown is not "nobody leaves", 061-R13).
 fn read_leaving(job: &EvalJob) -> Option<HashSet<String>> {
     let mut set = HashSet::new();
     let rd = match std::fs::read_dir(job.sub("leaving")) {
@@ -681,18 +581,12 @@ pub fn clear_leaving(job: &EvalJob, addr: &str) -> Result<()> {
     }
 }
 
-/// How a worker's dispatch period ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchEnd {
-    /// Every game of the job has its final record.
     Done,
-    /// A higher-priority worker took over (the games in flight here were finished first).
     Yielded,
-    /// Ctrl+C (020-R15 ⑤).
     Stopped,
-    /// The lease went to another worker without a yield (expired while the share was away).
     Lost,
-    /// Games are left whose models were not loaded: load `needed_models` again (lease kept).
     Reload,
 }
 
@@ -708,7 +602,6 @@ impl DispatchEnd {
     }
 }
 
-/// How a wait for the lease ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaitEnd {
     Lease,
@@ -716,8 +609,6 @@ pub enum WaitEnd {
     Stopped,
 }
 
-/// 061-R16: an evaluation worker's status, `workers/<host>.eval.json` (a training queue worker
-/// on the same PC keeps `workers/<host>.json`).
 fn status_path(cfg: &StorageConfig, host: &str) -> PathBuf {
     cfg.shared.join("workers").join(format!("{host}.eval.json"))
 }
@@ -732,7 +623,6 @@ fn read_status(cfg: &StorageConfig, host: &str) -> Option<storage::WorkerStatus>
     serde_json::from_slice(&std::fs::read(status_path(cfg, host)).ok()?).ok()
 }
 
-/// Sets a flag when dropped (a panicking slot still ends the side loop).
 struct SetOnDrop<'a>(&'a AtomicBool);
 
 impl Drop for SetOnDrop<'_> {
@@ -741,35 +631,24 @@ impl Drop for SetOnDrop<'_> {
     }
 }
 
-/// One evaluation worker (020-R15 ②): its agent server stays up between lease periods; models
-/// are loaded by the caller for each period (only while it holds the lease).
 pub struct EvalWorker {
     pub job: Arc<EvalJob>,
     pub cfg: StorageConfig,
     pub priority: i32,
     pub backend: String,
     pub local_hostd: Option<String>,
-    /// Ctrl+C presses ([`uranium_store::install_drain_handler`]).
     pub stop: Arc<AtomicUsize>,
     pub agent_addr: String,
     routes: Routes,
     builds: T0Builds,
     ends: EndBoard,
-    /// 020-R22: per-game 051 settings for the agent sessions.
     branches: uranium_env::branch::BranchBoard,
     lease: Arc<Mutex<Option<Lease>>>,
-    /// Games this process recorded as final, kept across lease periods: a period's first ledger
-    /// read must not hand them out again even if the share does not show the record yet.
     recorded: Mutex<HashSet<Key>>,
-    /// Set by the heartbeat thread when another worker took the lease (061-R5 Lost).
     lost: Arc<AtomicBool>,
-    /// The last heartbeat could not reach the share: whether the lease is still ours is unknown.
     lease_unknown: Arc<AtomicBool>,
-    /// This PC's hostd is marked as leaving (once per stop).
     marked: AtomicBool,
-    /// Ends the heartbeat thread.
     closed: Arc<AtomicBool>,
-    /// How often hosts are probed, the ledger re-read and files rewritten (tests shorten them).
     pub every: Duration,
     pub tick: Duration,
 }
@@ -783,16 +662,13 @@ impl EvalWorker {
             s.plan.check_branch_paths(plan::shared_dir_env().as_deref())?;
         }
         let (routes, builds, ends) = (Routes::default(), T0Builds::default(), EndBoard::default());
-        // 020-R22: the workers fill the 051 board per game; the agent sessions read it.
         let branches = uranium_env::branch::BranchBoard::default();
         let results = job.sub("results").join(format!("{}.jsonl", cfg.host));
         let agent_addr = crate::start_agent(listen, &results, &unit_rejections_file(&job, &cfg.host), routes.clone(), builds.clone(), ends.clone(), Default::default(), branches.clone())?;
         elog!("[eval] job {} ({} stages, {} games), host {} priority {} backend {}, agent at {agent_addr}", job.dir.display(), job.stages.len(), job.keys().len(), cfg.host, priority, backend);
         if let Some(addr) = &local_hostd {
-            // Coming back: this host takes games again (020-R15 ⑥).
             clear_leaving(&job, addr)?;
         }
-        // Every worker reads the same hosts file: a loopback entry is a different PC for each.
         for h in plan::load_hosts(&job.hosts_file).unwrap_or_default() {
             if h.addr.starts_with("127.") || h.addr.starts_with("localhost") {
                 elog!("[eval] WARNING: hosts file entry {} is a loopback address; with workers on several PCs give every host its LAN address (020-R15 ①)", h.addr);
@@ -823,8 +699,6 @@ impl EvalWorker {
         Ok(w)
     }
 
-    /// 061-R5: the lease is refreshed every `heartbeat_every` for as long as it is held, also
-    /// while the caller loads and warms up models (minutes), not only while games are handed out.
     fn start_heartbeat(&self) {
         let (lease, lost, unknown, closed, cfg) = (self.lease.clone(), self.lost.clone(), self.lease_unknown.clone(), self.closed.clone(), self.cfg.clone());
         let (priority, backend, id) = (self.priority, self.backend.clone(), self.job.lease_id.clone());
@@ -871,8 +745,6 @@ impl EvalWorker {
         }
     }
 
-    /// 020-R15 ⑥: on the first Ctrl+C, whatever the worker is doing, this PC's hostd gets no new
-    /// game from anyone (also when another worker holds the lease and plays there).
     fn mark_my_hostd_leaving(&self) {
         if let Some(addr) = &self.local_hostd
             && !self.marked.swap(true, Ordering::SeqCst)
@@ -887,14 +759,11 @@ impl EvalWorker {
         }
     }
 
-    /// The ledger and the in-flight files now (in-flight files first: a game leaves a file only
-    /// after its record is written). An unreadable share is an error, never "nothing there".
     fn snapshot(&self, obs: &mut ContentObserver<Inflight>) -> Result<(LedgerState, Flights)> {
         let fl = flights(&self.job, &self.cfg.host, obs, self.cfg.stale_after)?;
         Ok((ledger_state(&read_records(&self.job)?, self.job.max_attempts), fl))
     }
 
-    /// Models of the stages that still have games to play (load these for a lease period).
     pub fn needed_models(&self) -> Result<Vec<ModelKey>> {
         let st = ledger_state(&read_records(&self.job)?, self.job.max_attempts);
         let mut keys = Vec::new();
@@ -912,9 +781,6 @@ impl EvalWorker {
         Ok(keys)
     }
 
-    /// 061-R16 / 061-R14: waits until this worker holds the lease. A free lease is taken unless
-    /// another host's live yield request reserves it; a lease of a lower-priority worker gets a
-    /// yield request; an expired one is taken over.
     pub fn wait_lease(&self) -> Result<WaitEnd> {
         let mut locks = LockObserver::default();
         let mut yields = YieldObserver::default();
@@ -1023,14 +889,10 @@ impl EvalWorker {
         self.status(false);
     }
 
-    /// Plays games while this worker holds the lease, with `handles` (models of the stages to play
-    /// in this period, [`needed_models`]). Returns once no game of this period is in flight.
     pub fn dispatch(&self, handles: &HashMap<ModelKey, InferenceHandle>) -> Result<DispatchEnd> {
         let mut models = Models::new();
         let mut loaded = HashSet::new();
         for (si, s) in self.job.stages.iter().enumerate() {
-            // A stage plays only with all its models served: a model player without its server
-            // would quietly play as the agent's default T0 bot (020-R11).
             if crate::plan_models(&s.plan).iter().all(|k| handles.contains_key(k)) {
                 loaded.insert(si);
                 for (k, p) in crate::plan_policies(&s.plan, handles)? {
@@ -1075,8 +937,6 @@ impl EvalWorker {
         Ok(end)
     }
 
-    /// The lease holder's side loop: Ctrl+C, yield requests, a lost or unknown lease, ledger
-    /// refresh (an unreadable ledger keeps the last queue and pauses new games), in-flight file.
     fn watch(&self, source: &LedgerSource, dispatch: &Dispatch, end: &Mutex<Option<DispatchEnd>>, quit: &AtomicBool, obs: &mut ContentObserver<Inflight>) {
         let mut forced = false;
         let mut last_refresh = Instant::now();
@@ -1143,9 +1003,6 @@ impl EvalWorker {
         }
     }
 
-    /// 020-R15 ⑥: before this PC's hostd (`--local-hostd`) is shut down, wait until it runs no
-    /// game: another worker may hold the lease and play there. Gives up on the second Ctrl+C or
-    /// when hostd cannot be reached.
     pub fn wait_local_hostd_idle(&self) {
         let Some(addr) = &self.local_hostd else { return };
         self.mark_my_hostd_leaving();
@@ -1173,7 +1030,6 @@ impl EvalWorker {
         }
     }
 
-    /// Exit: lease, yield request and in-flight file of this worker go away.
     pub fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
         if self.stop_level() > 0 {
@@ -1185,7 +1041,6 @@ impl EvalWorker {
     }
 }
 
-/// 020-R15 ⑨: progress of a job and the merged per-stage records and summaries.
 pub fn status(job_dir: &Path, write_summaries: bool) -> Result<String> {
     use std::fmt::Write;
     let job = EvalJob::load(job_dir)?;
@@ -1227,25 +1082,17 @@ pub fn status(job_dir: &Path, write_summaries: bool) -> Result<String> {
     Ok(out)
 }
 
-/// 020-R15 ⑨ (user decision 2026-10-27): a game hostd ended normally in which a bridge session
-/// did not report its end (its connection broke mid-game: a host's network, a client crash) has
-/// no result. The other side would otherwise count a win "by the opponent leaving". Bridge
-/// players are p0 and, unless the record names an OSS bot, p1.
 pub fn session_lost(record: &serde_json::Value, ended_sessions: usize) -> bool {
     let bridges = if record["p1_kind"].as_str().is_some_and(|k| k.starts_with("oss:")) { 1 } else { 2 };
     record["outcome"].as_str() == Some(JobOutcome::Finished.as_str()) && ended_sessions < bridges
 }
 
-/// Writes `<stage>/games.jsonl` / `results.jsonl` with plan ids (the last final attempt of each
-/// game, `hostd_id` kept) and the 020-R13/R14 summary, plus the inference backend table. Given-up
-/// games and games with a lost session ([`session_lost`]) count as results-less `Aborted`.
 fn merge_stage(job: &EvalJob, si: usize, recs: &[Rec], st: &LedgerState) -> Result<()> {
     use std::fmt::Write as _;
     let s = &job.stages[si];
     let dir = job.sub(&s.name);
     std::fs::create_dir_all(&dir)?;
     let finals: HashMap<u64, u64> = st.done.iter().filter(|(k, _)| k.0 == si).map(|(k, id)| (*id, k.1)).collect();
-    // Given-up games (AMB-020-6) end without a result: their last attempt's sessions stay out.
     let gave_up: HashSet<u64> = st.gave_up.iter().filter(|k| k.0 == si).map(|k| st.done[k]).collect();
     let sessions: Vec<serde_json::Value> = read_dir_lines(&job.sub("results"))?.into_iter().filter(|v| v["game_id"].as_u64().is_some_and(|id| finals.contains_key(&id))).collect();
     let mut ended: HashMap<u64, usize> = HashMap::new();
@@ -1326,8 +1173,6 @@ mod tests {
         Flights { busy: HashSet::new(), attempts: HashMap::new() }
     }
 
-    /// 020-R15 ⑨: a normally ended game with fewer ended bridge sessions than bridges has no
-    /// result; an OSS bot opponent has no session of its own.
     #[test]
     fn session_lost_games_have_no_result_020_r15() {
         let g = |outcome: &str, p1: &str| serde_json::json!({"outcome": outcome, "p1_kind": p1});
@@ -1339,7 +1184,6 @@ mod tests {
         assert!(!session_lost(&g("Timeout", "t0"), 1), "only games hostd called Finished");
     }
 
-    /// 020-R15 ⑦: ids keep stages and attempts apart and split back.
     #[test]
     fn hostd_ids_020_r15() {
         assert_eq!(hostd_id(0, 7, 0), 100_007);
@@ -1350,8 +1194,6 @@ mod tests {
         assert_ne!(hostd_id(0, 5, 0), hostd_id(0, 5, 1));
     }
 
-    /// 020-R15 ④: final records end a game, retried ones do not; attempts count all records;
-    /// `max_attempts` gives a game up with its last record.
     #[test]
     fn ledger_state_and_pending_020_r15() {
         let recs = vec![
@@ -1383,8 +1225,6 @@ mod tests {
         assert!(!st.done.contains_key(&(0, 4)), "one failure of game 4 is below the limit");
     }
 
-    /// 031-R10 / 020-R15 ⑨: a host's rejection details go to `results/unit_rejections/<host>.jsonl`
-    /// and are not read as session records (not merged into the stage records).
     #[test]
     fn results_skip_unit_rejection_files_031_r10() {
         let dir = job_dir("rej", 1);
@@ -1414,8 +1254,6 @@ mod tests {
         HashSet::from([0, 1])
     }
 
-    /// 020-R15: a source hands out every game once in play order, retries a stopped one with the
-    /// next attempt, writes replays under the stage, and ends when nothing is left.
     #[test]
     fn ledger_source_hands_out_in_order_020_r15() {
         let dir = job_dir("src", 2);
@@ -1445,11 +1283,9 @@ mod tests {
         for j in [&b2, &c2, &d] {
             src.done(j, JobOutcome::Finished, None);
         }
-        // A refresh that read the ledger before these records must not hand them out again.
         src.refresh(&LedgerState::default(), no_flights());
         assert!(src.next().is_none());
         assert!(src.complete());
-        // Nor the next lease period of this worker, whose first read may miss them as well.
         let next_period = LedgerSource::new(job.clone(), "h", "127.0.0.1:1", all_stages());
         next_period.remember_finished(&src.finished());
         next_period.refresh(&LedgerState::default(), no_flights());
@@ -1457,9 +1293,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 041-R28 ①: a stage whose plan has `memory_log = true` puts each game's decision log at
-    /// `<stage>/memory/g<plan id>.jsonl` beside `<stage>/replays/g<plan id>.rep`, the same for
-    /// every attempt; other stages have none.
     #[test]
     fn memory_log_beside_the_stage_replay_041_r28() {
         let dir = job_dir("memlog", 2);
@@ -1476,9 +1309,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 020-R22 ① / 020-R15 ①: a stage with `act_log` names its games' act logs by plan game
-    /// number under `<stage>/acts/` whatever the attempt; a stage without 051 keys has no settings
-    /// (020-R22 ④); a job with a 051 stage starts (the agent reads the board, 051 U3).
     #[test]
     fn act_logs_under_the_stage_020_r22() {
         let dir = job_dir("actlog", 2);
@@ -1495,15 +1325,11 @@ mod tests {
         j.spec.game_id = hostd_id(0, 2, 0);
         assert_eq!(src.game_branch(&j).unwrap(), None, "stage a has no 051 key");
         let cfg = StorageConfig::new(&dir, &dir, "h");
-        // 051 U3: the agent sessions read the board, so a job with a 051 stage starts.
         let w = EvalWorker::start(&dir, cfg, 0, "cpu", None, Arc::default(), "127.0.0.1:0").unwrap();
         w.close();
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 020-R15 ④: a refresh drops games in flight on other live workers, picks up their retries
-    /// and attempts; a paused source waits, a closed one hands out nothing; stages without
-    /// loaded models are left for the next period.
     #[test]
     fn refresh_pause_close_and_unloaded_stages_020_r15() {
         let dir = job_dir("refresh", 3);
@@ -1526,9 +1352,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 020-R15 ④ ⑦: another worker's live in-flight games are busy; once its file stays unchanged
-    /// for `stale_after` its games are free again, and every id in any file (this host's left by
-    /// an earlier process too) moves the next attempt past it.
     #[test]
     fn flights_expire_dead_workers_and_bump_attempts_020_r15() {
         let dir = job_dir("flights", 2);
@@ -1540,11 +1363,9 @@ mod tests {
         };
         write("dead", vec![hostd_id(0, 1, 0)]);
         write("me", vec![hostd_id(0, 2, 3)]);
-        // This process's own live file does not move its attempts.
         let f = Inflight { host: "me".into(), pid: std::process::id(), time: 5, games: vec![hostd_id(1, 1, 5)] };
         std::fs::write(dir.join("inflight/me-live.json"), serde_json::to_vec(&f).unwrap()).unwrap();
         let mut obs = ContentObserver::default();
-        // Watched in steps shorter than half the limit, as 061-R5 expiry requires.
         let stale = Duration::from_millis(400);
         let f = flights(&job, "me", &mut obs, stale).unwrap();
         assert_eq!(f.busy, HashSet::from([(0, 1)]), "this host's own old file is not busy");
@@ -1563,8 +1384,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 020-R15 ⑦: records naming another stage than job.toml has at their index are refused; an
-    /// unreadable games folder is an error, a missing one is empty.
     #[test]
     fn records_check_the_stage_list_020_r15() {
         let dir = job_dir("stages", 1);
@@ -1578,7 +1397,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Two stages sharing a model must agree on its session settings.
     #[test]
     fn shared_models_need_the_same_session_settings() {
         let dir = job_dir("settings", 1);
@@ -1591,8 +1409,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 061-R16: the lease is the R5 lock without a checkpoint folder; a take-over makes the old
-    /// holder's heartbeat Lost, release removes only one's own lock.
     #[test]
     fn lease_acquire_heartbeat_release_061_r16() {
         let shared = std::env::temp_dir().join(format!("uranium-lease-{}", std::process::id()));
@@ -1611,8 +1427,6 @@ mod tests {
         std::fs::remove_dir_all(&shared).ok();
     }
 
-    /// 061-R16: a waiting worker with a higher priority asks the holder to yield (its status is
-    /// the eval worker file, not the training worker's), and takes the lease once it is free.
     #[test]
     fn higher_priority_worker_gets_the_lease_061_r16() {
         let dir = job_dir("handover", 2);
@@ -1626,7 +1440,6 @@ mod tests {
         let hi = worker("hi", 10);
         assert_eq!(lo.wait_lease().unwrap(), WaitEnd::Lease);
         assert_eq!(read_status(&lo.cfg, "lo").and_then(|s| s.run), Some(lo.job.lease_id.clone()));
-        // A training worker's file on the same host does not change the eval priority.
         storage::write_worker(&lo.cfg, 50, "cpu", None).unwrap();
         let h = hi.clone();
         let t = std::thread::spawn(move || h.wait_lease().unwrap());

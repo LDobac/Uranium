@@ -1,5 +1,3 @@
-//! Markdown summary of session records (M2 report: 011-AC1..AC4).
-
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -32,7 +30,6 @@ pub fn summarize(input: &Path, out: &Path, title: &str) -> Result<()> {
         if rs.len() != 2 {
             incomplete += 1;
         }
-        // One line per game: take the record with stats from the first slot.
         let r = rs[0];
         *reasons.entry(r["reason"].as_str().unwrap_or("?").to_string()).or_default() += 1;
         if let Some(w) = r["winner"].as_u64() {

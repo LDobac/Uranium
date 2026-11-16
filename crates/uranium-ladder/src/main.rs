@@ -1,6 +1,3 @@
-//! `uranium-ladder`: SC:R ladder replay collector over the logged-in client's local web API
-//! (spec 043). `probe` is the 043-AC1 spike, `collect` the daily run, `status` its summary.
-
 mod api;
 mod collect;
 mod env;
@@ -28,35 +25,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// 043-AC1 spike: detect the API, fetch one step of the leaderboard → profile → match →
-    /// replay chain, save the raw response outside git and print only its shape.
     Probe(ProbeArgs),
-    /// Print the redacted shape (043-R11) of a saved response, optionally of one JSON pointer.
     Shape {
         file: PathBuf,
-        /// RFC 6901 pointer, e.g. /replays/0
         #[arg(long)]
         pointer: Option<String>,
     },
-    /// Daily collection run (043-R4..R9) into raw/scr_ladder and ladder/collect.jsonl.
     Collect {
         #[arg(long)]
         plan: PathBuf,
-        /// Most downloads in this run
         #[arg(long)]
         limit: Option<u32>,
-        /// List new ladder links per tracked player without fetching match info or replays
         #[arg(long)]
         dry_run: bool,
-        /// Fetch again only the matches whose latest record failed with a reason starting with
-        /// this prefix (default `schema:`), e.g. after a schema fix (043-R9). Same rate and
-        /// daily budget (043-R4).
         #[arg(long, num_args = 0..=1, default_missing_value = "schema:")]
         retry_failed: Option<String>,
     },
-    /// Counts of collect.jsonl per status, matchup and map (no player names).
     Status {
-        /// Write the markdown here instead of stdout
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -64,14 +49,10 @@ enum Cmd {
 
 #[derive(Args)]
 struct ProbeArgs {
-    /// Raw-response folder (default: <URANIUM_SHARED_DIR>/datasets/replays/ladder/probe)
     #[arg(long)]
     out: Option<PathBuf>,
-    /// Step 2: fetch the first page of this leaderboard id
     #[arg(long)]
     leaderboard: Option<u64>,
-    /// Step 3: profile of --toon on --gateway (its `replays[]` list); with --gamemode and
-    /// --season also the match history
     #[arg(long, requires = "gateway")]
     toon: Option<String>,
     #[arg(long)]
@@ -80,10 +61,8 @@ struct ProbeArgs {
     gamemode: Option<String>,
     #[arg(long)]
     season: Option<String>,
-    /// Step 4: match info (with the replay links) of this profile `link`
     #[arg(long)]
     match_id: Option<String>,
-    /// Step 5: download a replay link that appears in a saved probe response (043-R2)
     #[arg(long)]
     download: Option<String>,
 }
@@ -134,8 +113,6 @@ fn probe(settings: &Settings, a: ProbeArgs) -> Result<()> {
         return probe_download(settings, &mut http, &out, url);
     }
     let api = Api::connect(&mut http, settings)?;
-    // Each step is chosen by the caller after reading the previous raw response, so no field
-    // is picked automatically here (043-R9).
     let mut steps: Vec<(&str, String, String)> = Vec::new();
     if let Some(id) = a.leaderboard {
         steps.push(("leaderboard page", schema::leaderboard_page(id, 0, 100), format!("leaderboard_{id}.json")));
@@ -156,7 +133,6 @@ fn probe(settings: &Settings, a: ProbeArgs) -> Result<()> {
     for (what, path, file) in steps {
         let r = http.get(&api.url(&path))?;
         std::fs::write(out.join(&file), &r.body)?;
-        // 043-R11: the path may hold a toon, so only the step name is printed.
         println!("\n== {what}: HTTP {} ({} bytes) -> <probe>/{file}", r.status, r.body.len());
         println!("headers: {}", r.header_names.join(", "));
         print_shape(&r.body);
@@ -165,7 +141,6 @@ fn probe(settings: &Settings, a: ProbeArgs) -> Result<()> {
     Ok(())
 }
 
-/// Step 5: the link must come from a saved API response (043-R2).
 fn probe_download(settings: &Settings, http: &mut Http, out: &Path, url: &str) -> Result<()> {
     if !link_in_saved_responses(out, url)? {
         bail!("this link does not appear in any saved probe response in {} (043-R2)", out.display());

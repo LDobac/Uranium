@@ -1,6 +1,3 @@
-//! Game memory -> `Snapshot` / `RawStatic` (012-R2). The only module that dereferences game
-//! pointers; it only reads (012-R4). Pointers come from the samase plugin API.
-
 use std::mem::size_of;
 
 use uranium_env::types::TypeTables;
@@ -9,8 +6,6 @@ use crate::bw;
 use crate::snapshot::{RawBullet, RawPlayer, RawSelf, RawStatic, RawUnit, Snapshot};
 use crate::tables::Tables;
 
-/// One samase extended array (`samase_plugin::ExtendedArray`): per-player data of ids beyond the
-/// legacy tables, 12 bytes per id.
 #[derive(Clone, Copy)]
 pub struct ExtArray {
     pub ptr: *const u8,
@@ -23,10 +18,8 @@ impl ExtArray {
     }
 }
 
-/// Pointers of one frame.
 pub struct Sources {
     pub game: *const bw::Game,
-    /// Array of 12 players.
     pub players: *const bw::Player,
     pub first_active: *const bw::Unit,
     pub first_hidden: *const bw::Unit,
@@ -35,11 +28,9 @@ pub struct Sources {
     pub tile_flags: *const u32,
     pub first_bullet: *const bw::Bullet,
     pub local: u8,
-    /// samase extended arrays (0 upgrade level, 2 tech researched, 4 upgrading, 5 researching).
     pub ext: Vec<ExtArray>,
 }
 
-/// Unit chain safety bound (the array has 3400 units).
 const MAX_CHAIN: usize = 4096;
 
 fn cstr(bytes: &[u8]) -> String {
@@ -48,7 +39,6 @@ fn cstr(bytes: &[u8]) -> String {
 }
 
 impl Sources {
-    /// SC:R unit tag of a unit pointer (012-R17): array index + 1, reuse counter above.
     unsafe fn tag(&self, u: *const bw::Unit) -> u32 {
         let index = (u as usize - self.units as usize) / size_of::<bw::Unit>();
         let shift = if self.units_len > 1700 { 13 } else { 11 };
@@ -58,7 +48,6 @@ impl Sources {
     unsafe fn read_unit(&self, p: *const bw::Unit, hidden: bool, t: &Tables) -> Option<RawUnit> {
         let u = unsafe { &*p };
         let f = &u.flingy;
-        // BWAPI isUnitAlive (GameUnits.cpp:38-48): a sprite and not dying; hidden scarabs are dead.
         if f.sprite.is_null() || u.order == t.orders.die {
             return None;
         }
@@ -102,7 +91,6 @@ impl Sources {
             remaining_build_time: u.remaining_build_time,
             current_build_unit: u.secondary_order_target.unit as usize,
             related: u.related as usize,
-            // SAFETY (unions): read as plain bytes; observe uses each only for matching types.
             fighter_parent: unsafe { s1.interceptor.parent } as usize,
             fighter_outside: unsafe { s1.interceptor.is_outside_hangar } != 0,
             addon: unsafe { s1.building.addon } as usize,
@@ -118,8 +106,6 @@ impl Sources {
         })
     }
 
-    /// Live units: the active list, the hidden list, and scanner sweeps (which BWAPI finds in a
-    /// list samase does not expose; scanned from the unit array instead).
     unsafe fn read_units(&self, t: &Tables, out: &mut Vec<RawUnit>) {
         out.clear();
         for (first, hidden) in [(self.first_active, false), (self.first_hidden, true)] {
@@ -159,7 +145,6 @@ impl Sources {
         }
     }
 
-    /// Local player's resources, supply, upgrades and techs (PlayerImpl.cpp:185-238).
     unsafe fn read_self(&self, g: &bw::Game, t: &Tables) -> RawSelf {
         let me = self.local as usize;
         let race = unsafe { (*self.players.add(me)).race } as usize;
@@ -191,14 +176,12 @@ impl Sources {
             supply_max: supplies.2,
             upgrades: (0..61).map(upgrade_level).collect(),
             upgrading: (0..61).map(|i| bit(ext(4), &g.upgrade_in_progress[me], i)).collect(),
-            // A tech no building researches counts as researched (PlayerImpl.cpp:195).
             tech: (0..44).map(|i| types.techs.get(i).is_some_and(|x| x.what_researches < 0) || tech_level(i) != 0).collect(),
             researching: (0..44).map(|i| bit(ext(5), &g.tech_in_progress[me], i)).collect(),
             nuke_available: g.unit_availability[me].get(t.units.nuclear_missile as usize).is_some_and(|&v| v != 0),
         }
     }
 
-    /// One frame (`out` is reused between frames).
     pub unsafe fn snapshot(&self, t: &Tables, out: &mut Snapshot) {
         let g = unsafe { &*self.game };
         out.frame = g.frame_count;
@@ -210,7 +193,6 @@ impl Sources {
         if !self.tile_flags.is_null() {
             out.tiles.extend_from_slice(unsafe { std::slice::from_raw_parts(self.tile_flags, n) });
         } else {
-            // Unknown map state: nothing visible.
             out.tiles.resize(n, u32::MAX);
         }
         unsafe {
@@ -226,8 +208,6 @@ impl Sources {
         out.index_units();
     }
 
-    /// Data read once at game start (`GameInfo`, shim onStart). `megatile(i)` and `vf4(m)` give
-    /// the tileset data for walkability (`None` when samase did not provide it).
     pub unsafe fn static_info(&self, multiplayer: bool, megatile: &dyn Fn(usize) -> Option<u16>, vf4: &dyn Fn(usize) -> Option<u16>) -> RawStatic {
         let g = unsafe { &*self.game };
         let (w, h) = (g.map_width_tiles, g.map_height_tiles);
@@ -252,8 +232,6 @@ impl Sources {
                 }
             })
             .collect();
-        // 030-R11 diagnosis: where SC:R keeps a lobby-Random pick (the race is rolled before the
-        // plugin's first frame).
         crate::log::log(&format!(
             "race fields: player.race {:?} starting_races {:?} player_randomization {:?} starting_player_types {:?}",
             (0..8).map(|p| unsafe { (*self.players.add(p)).race }).collect::<Vec<_>>(),

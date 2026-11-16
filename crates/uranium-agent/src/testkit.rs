@@ -1,6 +1,3 @@
-//! Synthetic model sessions for tests outside this crate (uranium-py: the PyTorch inference tests,
-//! AMB-000-4). The frames are the ones the session tests use (`tests/model_policy.rs`).
-
 #[path = "../../uranium-env/tests/common/mod.rs"]
 mod common;
 
@@ -12,7 +9,6 @@ use crate::model_policy::{ModelPolicy, ModelStats};
 
 pub use common::{SELF, game_info};
 
-/// Frames that differ per session `k` and step `t` (units move, some appear later).
 pub fn frames(k: usize, steps: usize) -> Vec<RawFrame> {
     (0..steps)
         .map(|t| {
@@ -27,7 +23,6 @@ pub fn frames(k: usize, steps: usize) -> Vec<RawFrame> {
         .collect()
 }
 
-/// One session playing `frames(k, steps)`: (commands, advance) per step and the session stats.
 pub fn play(h: &InferenceHandle, k: usize, steps: usize) -> Result<(Vec<(Vec<Command>, u32)>, ModelStats)> {
     let mut p = ModelPolicy::new(h, &game_info())?;
     let mut acts = Vec::with_capacity(steps);
@@ -38,7 +33,6 @@ pub fn play(h: &InferenceHandle, k: usize, steps: usize) -> Result<(Vec<(Vec<Com
     Ok((acts, p.stats()))
 }
 
-/// `sessions` sessions at once (thread each), session `k` playing `frames(k, steps)`.
 pub fn play_parallel(h: &InferenceHandle, sessions: usize, steps: usize) -> Result<Vec<(Vec<(Vec<Command>, u32)>, ModelStats)>> {
     let threads: Vec<_> = (0..sessions)
         .map(|k| {
@@ -49,8 +43,6 @@ pub fn play_parallel(h: &InferenceHandle, sessions: usize, steps: usize) -> Resu
     threads.into_iter().map(|t| t.join().map_err(|_| anyhow::anyhow!("session thread panicked"))?).collect()
 }
 
-/// One decision for bit-exact comparison (051-R4): the executor's action (debug text) and the
-/// bits of log_prob, head_log_prob[6], value[4], win_open (0 when absent).
 pub type ActBits = (String, Vec<u32>);
 
 fn act_bits(r: &crate::infer::ActReply) -> ActBits {
@@ -61,19 +53,12 @@ fn act_bits(r: &crate::infer::ActReply) -> ActBits {
     (format!("{:?}", r.action), bits)
 }
 
-/// 051-R4 restore check on `frames(0, steps)` (observations extracted once, so both sessions see
-/// the same inputs; every request alone, so every batch has one row).
 pub struct RestorePlay {
-    /// Session A's state before decision `k`.
     pub saved: HostState,
-    /// Session B's state read right after restoring `saved` into its slot.
     pub restored: HostState,
-    /// A's state (after its last decision) before and after B's restore (032-R14: unchanged).
     pub other_before: HostState,
     pub other_after: HostState,
-    /// A's decisions `k..steps`, without interruption.
     pub straight: Vec<ActBits>,
-    /// B's decisions on the same observations after the restore.
     pub resumed: Vec<ActBits>,
 }
 
@@ -105,8 +90,6 @@ pub fn restore_play(h: &InferenceHandle, k: usize, steps: usize) -> Result<Resto
     Ok(RestorePlay { saved, restored, other_before, other_after, straight, resumed })
 }
 
-/// 051-R4: restores `state` into a fresh slot that first made one decision: (its state before the
-/// restore, the restore's result, its state after).
 pub fn set_and_read(h: &InferenceHandle, state: HostState) -> Result<(HostState, std::result::Result<(), String>, HostState)> {
     use uranium_env::features::{AgentMemory, MapInfo, extract};
     let info = game_info();
@@ -119,7 +102,6 @@ pub fn set_and_read(h: &InferenceHandle, state: HostState) -> Result<(HostState,
     Ok((before, res, s.state()?))
 }
 
-/// 032-R16: a fresh slot's state, the state after one decision, after a second one.
 pub fn slot_states(h: &InferenceHandle) -> Result<Vec<HostState>> {
     use uranium_env::features::{AgentMemory, MapInfo, extract};
     let sess = h.open()?;

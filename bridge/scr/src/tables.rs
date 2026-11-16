@@ -1,7 +1,3 @@
-//! SC:R bridge tables (013-R1, 012-R5): order normalisation, effects and command opcodes from
-//! `bridge/scr/tables/*.toml`, plus the BWAPI unit / order / tech ids the bridge needs, looked up
-//! by name in the uranium-env BWAPI tables. No version-specific number lives in the code.
-
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -9,7 +5,6 @@ use serde::Deserialize;
 use uranium_env::types::{TypeTables, UnitType, order_id};
 use uranium_proto::EffectKind;
 
-/// Version key every table must carry (013-R1, AMB-012-2).
 pub const VERSION: &str = "scr-1.23.10.13515";
 
 const ORDERS_TOML: &str = include_str!("../tables/orders.toml");
@@ -75,7 +70,6 @@ struct CommandsFile {
     tech_orders: Vec<String>,
 }
 
-/// BWAPI order ids by name (the order enum is the raw game order id).
 #[derive(Debug, Clone, Copy)]
 pub struct Orders {
     pub die: u8,
@@ -85,7 +79,6 @@ pub struct Orders {
     pub move_: u8,
     pub follow: u8,
     pub attack1: u8,
-    /// Order of a fog-ghost attack (012-R17): the engine's MoveToAttack, named in orders.toml.
     pub move_to_attack: u8,
     pub attack_move: u8,
     pub tower_attack: u8,
@@ -124,15 +117,12 @@ pub struct Orders {
     pub wait_for_gas: u8,
     pub harvest_gas: u8,
     pub return_gas: u8,
-    /// Raw orders after which BWAPI counts a unit idle (UnitUpdate.cpp isIdle).
     pub idle: [u8; 14],
-    /// BWAPI `isConstructing` orders (UnitUpdate.cpp), besides morphing and add-ons.
     pub constructing: [u8; 11],
     pub gather_minerals: [u8; 7],
     pub gather_gas: [u8; 7],
 }
 
-/// BWAPI unit type ids by name.
 #[derive(Debug, Clone, Copy)]
 pub struct Units {
     pub mineral_field: u16,
@@ -168,7 +158,6 @@ pub struct Units {
     pub none: u16,
 }
 
-/// BWAPI tech ids by name.
 #[derive(Debug, Clone, Copy)]
 pub struct Techs {
     pub stim_packs: u16,
@@ -182,12 +171,10 @@ pub struct Techs {
 }
 
 pub struct Tables {
-    /// Raw order -> BWAPI order (identity unless listed).
     order_map: [u8; 256],
     bullets: HashMap<u16, EffectKind>,
     spell_units: HashMap<u16, EffectKind>,
     pub op: Opcodes,
-    /// Targeted order of each tech (None = not a targeted order).
     tech_order: Vec<Option<u8>>,
     pub orders: Orders,
     pub units: Units,
@@ -380,13 +367,11 @@ impl Tables {
         Ok(Self { order_map, bullets: kinds(&e.bullets)?, spell_units: kinds(&e.spell_units)?, op: c.opcodes, tech_order, orders, units, techs })
     }
 
-    /// Shared parsed copy; `Err` disables the bridge (012-R6).
     pub fn get() -> Result<&'static Tables, String> {
         static T: OnceLock<Result<Tables, String>> = OnceLock::new();
         T.get_or_init(Self::parse).as_ref().map_err(Clone::clone)
     }
 
-    /// BWAPI order of a raw game order (BWAPI `BWtoBWAPI_Order`).
     pub fn bwapi_order(&self, raw: u8) -> u8 {
         self.order_map[raw as usize]
     }
@@ -408,12 +393,10 @@ impl Tables {
     }
 }
 
-/// BWAPI unit type data (`None` for ids outside the table).
 pub fn unit_type(id: u16) -> Option<&'static UnitType> {
     TypeTables::get().unit(id)
 }
 
-/// BWAPI `WeaponTypes::None`.
 pub fn has_weapon(id: i32) -> bool {
     TypeTables::get().weapon(id).is_some_and(|w| w.name != "None")
 }
@@ -422,7 +405,6 @@ pub fn has_weapon(id: i32) -> bool {
 mod tests {
     use super::*;
 
-    /// 013-R1 / 013-R2: every table parses, carries the version key, and names resolve.
     #[test]
     fn tables_parse_013_r1() {
         let t = Tables::get().unwrap();
@@ -431,7 +413,6 @@ mod tests {
         assert_eq!(t.bwapi_order(order("NukePaint").unwrap()), order("CastNuclearStrike").unwrap());
         assert_eq!(t.bwapi_order(o.move_), o.move_, "unlisted orders keep their id");
         assert_eq!((o.move_, o.follow, o.attack_move, o.harvest1), (6, 49, 14, 79));
-        // 012-R17: the fog-ghost attack is the engine's MoveToAttack, raw order 9.
         assert_eq!(o.move_to_attack, 9);
         assert_eq!(t.bullet_effect(157), EffectKind::PsionicStorm);
         assert_eq!(t.bullet_effect(99), EffectKind::Other(99));

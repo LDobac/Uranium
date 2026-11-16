@@ -1,6 +1,3 @@
-//! `uranium-replay`: StarCraft replay parsing (040-R1), SC:R -> 1.16.1 conversion (013-R6..R8)
-//! and dataset filtering (040).
-
 pub mod act_log;
 pub mod chk;
 pub mod cmd;
@@ -33,7 +30,6 @@ pub struct Replay {
     pub raw_header: Vec<u8>,
     pub blocks: Vec<cmd::Block>,
     pub map: Vec<u8>,
-    /// SC:R `LMTS` unit limit (013 tag remapping).
     pub unit_limit: Option<u32>,
 }
 
@@ -43,7 +39,6 @@ pub fn parse(file: &[u8]) -> Result<Replay> {
     Ok(Replay { format: s.format, header: header::parse(&s.header), raw_header: s.header, blocks, map: s.map, unit_limit: s.unit_limit })
 }
 
-/// Milliseconds per frame at Fastest (screp `Frame.Milliseconds`).
 pub const MS_PER_FRAME: u64 = 42;
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
@@ -52,9 +47,7 @@ pub struct PlayerStats {
     pub race: u8,
     pub cmds: u32,
     pub last_cmd_frame: u32,
-    /// Same definition as screp: commands / minutes up to the player's last command.
     pub apm: u32,
-    /// Train + build commands, used to tell players from observers.
     pub train_build: u32,
 }
 
@@ -86,11 +79,7 @@ impl Replay {
             .collect()
     }
 
-    /// The 1.16.1 file OpenBW can load (013-R6). Legacy replays are re-encoded too, so every
-    /// replay goes through the same path.
     pub fn to_legacy_file(&self) -> Result<Vec<u8>> {
-        // 013: commands of ids outside the header players (observers, id >= 128) stop OpenBW's
-        // replay loader ("player id not found"); they never affect the game, so drop them.
         let ids: Vec<u8> = self.header.players.iter().map(|p| p.id).collect();
         let blocks = self
             .blocks
@@ -102,7 +91,6 @@ impl Replay {
                     match cmd::openbw(c.op) {
                         cmd::OpenBw::Supported => cmds.push(c),
                         cmd::OpenBw::DropNoEffect => {}
-                        // Kept for review instead of discarding the replay (user decision 2026-10-16).
                         cmd::OpenBw::Unhandled => anyhow::bail!("review: opcode {:#04x} at frame {} is not handled by OpenBW", c.op, c.frame),
                     }
                 }
@@ -110,12 +98,9 @@ impl Replay {
             })
             .filter(|b: &Result<cmd::Block>| b.as_ref().map_or(true, |b| !b.cmds.is_empty()))
             .collect::<Result<Vec<_>>>()?;
-        // 013 맵 CHK 정규화: SC:R map versions (STRx) become ones OpenBW's loader accepts.
         Ok(container::write_legacy(&self.raw_header, &cmd::encode(&blocks)?, &chk::to_legacy(&self.map)?))
     }
 
-    /// 013-R7 / 013-AC4 (called by `build` for every replay, C-7): the converted file parses back to exactly the converted commands
-    /// (observer and no-effect commands dropped) with the same header and map.
     pub fn roundtrip_check(&self) -> Result<()> {
         let back = parse(&self.to_legacy_file()?)?;
         anyhow::ensure!(back.format == Format::Legacy, "converted file is {:?}", back.format);
@@ -138,18 +123,11 @@ impl Replay {
         Ok(())
     }
 
-    /// Players that actually played: humans with at least one train/build command
-    /// (observers never issue them; same idea as screp's observer heuristic).
     pub fn active_players(&self) -> Vec<(Player, PlayerStats)> {
         let stats = self.player_stats();
         self.header.players.iter().cloned().zip(stats).filter(|(p, s)| p.kind == 2 && s.train_build > 0).collect()
     }
 
-    /// `uranium-replay cmddump` (050-R9 measurement protocol, `tools/eval/tables.py`): the replay's
-    /// command stream as stored (no 013 conversion), so orders the model issued can be told apart
-    /// from automatic unit behaviour: `{"rep", "frames", "players": [{"id", "race"}], "cmds":
-    /// [[frame, player, opcode, payload hex], ...]}`. Same output as the untracked `rl-cmddump`
-    /// tool the Checkpoint 1 tables used.
     pub fn cmddump(&self, rep: &str) -> serde_json::Value {
         let cmds: Vec<_> = self.cmds().map(|c| serde_json::json!([c.frame, c.player, c.op, c.data.iter().map(|b| format!("{b:02x}")).collect::<String>()])).collect();
         let players: Vec<_> = self.header.players.iter().map(|p| serde_json::json!({"id": p.id, "race": p.race})).collect();
@@ -161,14 +139,12 @@ impl Replay {
 mod tests {
     use super::*;
 
-    /// 013-R7: converting an SC:R command stream and parsing the result gives the same
-    /// commands as converting command by command.
     #[test]
     fn conversion_round_trip_013_r7() {
         let mut h = vec![0u8; container::HEADER_SIZE];
         h[1..5].copy_from_slice(&100u32.to_le_bytes());
-        h[0xa1 + 4] = 0; // player id 0
-        h[0xa1 + 8] = 2; // human
+        h[0xa1 + 4] = 0;
+        h[0xa1 + 8] = 2;
         h[0xa1 + 9] = header::RACE_TERRAN;
         h[0xa1 + 11] = b'p';
         let blocks = vec![cmd::Block {
@@ -188,8 +164,6 @@ mod tests {
         assert_eq!(back.player_stats()[0].cmds, 2);
     }
 
-    /// 050-R9 measurement tools: `cmddump` lists every command as
-    /// `[frame, player, opcode, payload hex]` with the header players' ids and races.
     #[test]
     fn cmddump_json_050_r9() {
         let mut h = vec![0u8; container::HEADER_SIZE];

@@ -1,9 +1,3 @@
-//! 042-R16 자기 모방·막은 판 재학습 (AMB-042-17, off by default): segments of selected RL
-//! training games (a ladder group's held or won games) wait in a FIFO buffer and replace some
-//! lanes of Main's update batches. The learner trains those lanes with the self-imitation loss
-//! (`"sil"`, Oh et al. 2018) or as ordinary lanes (`"replay"`). The defaults are the spec's
-//! numbers; `rush-s4` turns it on with them and `wins_only` (AMB-042-18).
-
 use std::collections::{BTreeMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
@@ -11,56 +5,34 @@ use uranium_env::reward::Outcome;
 
 use crate::trajectory::Segment;
 
-/// How the learner trains the buffer lanes (042-R16).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SilMode {
-    /// Only `w_pg · mean[-log π · A⁺] + w_v · mean[0.5 · (A⁺)²]`, `A⁺ = max(R − V_win, 0)`.
     #[default]
     Sil,
-    /// The ordinary loss (V-trace PG, UPGO, value, KL, entropy); a segment leaves the buffer after
-    /// `max_uses` batches.
     Replay,
 }
 
-/// `[sil]` (042-R16, AMB-042-17). `enabled = false` (the default) = the learner and the league as
-/// before this feature.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct SilConfig {
     pub enabled: bool,
     pub mode: SilMode,
-    /// The ladder group whose games are candidates (`[[ladder]] group`).
     pub select_group: String,
-    /// "Held" stand-in: `scv_4m` at least this (and no collapse concede).
     pub select_scv_4m: u32,
-    /// 042-R16 고를 판 (AMB-042-18): `true` = won games only (the held stand-in and
-    /// `select_scv_4m` are not used); `false` = won or held, as before. Left out of the serialised
-    /// config when false, so checkpoints of earlier configs record the same config as before.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub wins_only: bool,
-    /// 042-R16 상대·접촉 거르기 (AMB-042-19): only games against these win-table keys (each the
-    /// key of a `select_group` `[[ladder]]` entry, not empty); absent = every opponent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub select_keys: Option<Vec<String>>,
-    /// 042-R16 상대·접촉 거르기 (AMB-042-19): only games whose `army_s` (050-R7, first enemy army
-    /// sighting, game seconds) is known and at most this (>= 0); absent = no filter.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub select_army_before_s: Option<f64>,
-    /// 042-R16 상대·접촉 거르기 (AMB-042-19, 사용자 위임 2026-11-05, 5차 자문): only games whose
-    /// 020-R21 `start_hit` equals this; a game without start slots is not selected; absent = no
-    /// filter (and left out of the serialised config, as before the key).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub select_start_hit: Option<bool>,
-    /// Segments whose first decision frame is below `until_s × 24`; 0 = the whole game.
     pub until_s: u32,
-    /// Buffer capacity in segments (FIFO).
     pub buffer_segments: usize,
-    /// Batch lanes replaced by buffer segments once the buffer holds this many.
     pub lanes: usize,
     pub w_pg: f32,
     pub w_v: f32,
-    /// `"replay"`: uses of a segment before it leaves the buffer.
     pub max_uses: u32,
 }
 
@@ -71,9 +43,6 @@ impl Default for SilConfig {
 }
 
 impl SilConfig {
-    /// 042-R16 검사, when enabled: `w_pg`, `w_v` >= 0, `1 <= lanes < batch lanes`,
-    /// `buffer_segments >= lanes`, `max_uses >= 1`, `select_group` in `ladder_groups` (the mode
-    /// and unknown keys are checked by the parser).
     pub fn validate(&self, batch_lanes: usize, ladder_groups: &BTreeMap<String, f64>) -> Result<(), String> {
         if !self.enabled {
             return Ok(());
@@ -93,8 +62,6 @@ impl SilConfig {
         if !ladder_groups.contains_key(&self.select_group) {
             return Err(format!("[sil] select_group {:?} is not in [curriculum] ladder_groups (042-R16)", self.select_group));
         }
-        // AMB-042-19 (메인 임시 결정); the keys themselves are checked against `[[ladder]]` by
-        // `RlConfig::validate`.
         if self.select_keys.as_ref().is_some_and(|k| k.is_empty()) {
             return Err("[sil] select_keys is empty (042-R16, AMB-042-19)".into());
         }
@@ -106,35 +73,22 @@ impl SilConfig {
         Ok(())
     }
 
-    /// 042-R16 상대·접촉 거르기 (AMB-042-19), on top of `selects`: the game's opponent win-table
-    /// key is in `select_keys` (when set), its `army_s` is known and at most
-    /// `select_army_before_s` (when set; never seen = not selected), and its 020-R21 `start_hit`
-    /// passes [`Self::passes_start_hit`].
     pub fn passes_filters(&self, key: &str, army_s: Option<f64>, start_hit: Option<bool>) -> bool {
         self.may_select(key, start_hit) && self.select_army_before_s.is_none_or(|t| army_s.is_some_and(|a| a <= t))
     }
 
-    /// 042-R16 상대·접촉 거르기: the part of [`Self::passes_filters`] known when the game starts
-    /// (opponent key and start slots), so games that can never be selected keep no segment copies.
     pub fn may_select(&self, key: &str, start_hit: Option<bool>) -> bool {
         self.select_keys.as_ref().is_none_or(|ks| ks.iter().any(|k| k == key)) && self.passes_start_hit(start_hit)
     }
 
-    /// 042-R16 `select_start_hit` (사용자 위임 2026-11-05, 5차 자문): absent = every game; set =
-    /// the game's `start_hit` is known (start slots from its seed) and equal to it.
     pub fn passes_start_hit(&self, start_hit: Option<bool>) -> bool {
         self.select_start_hit.is_none_or(|w| start_hit == Some(w))
     }
 
-    /// 042-R16 담을 세그먼트: its first decision is before `until_s` (0 = every segment).
     pub fn keeps_segment(&self, start_frame: u32) -> bool {
         self.until_s == 0 || u64::from(start_frame) < u64::from(self.until_s) * 24
     }
 
-    /// 042-R16 고를 판: a game of `select_group` with a result (Aborted / Timeout have none) that
-    /// was won, or held (`scv_4m >= select_scv_4m`, unknown = no) without a collapse concede;
-    /// with `wins_only` (AMB-042-18) won only. The outcome is the one after the 042-R17 rush
-    /// judgement.
     pub fn selects(&self, ladder_group: Option<&str>, outcome: Option<Outcome>, scv_4m: Option<u32>, conceded: bool) -> bool {
         if ladder_group != Some(self.select_group.as_str()) {
             return false;
@@ -149,12 +103,10 @@ impl SilConfig {
 
 struct Entry {
     seg: Segment,
-    /// The game's r_win (γ = 1: the win channel's Monte-Carlo return).
     ret: f32,
     uses: u32,
 }
 
-/// The 042-R16 segment buffer (FIFO, not in checkpoints: a resumed run starts empty).
 pub struct SilBuffer {
     entries: VecDeque<Entry>,
     capacity: usize,
@@ -174,7 +126,6 @@ impl SilBuffer {
         self.entries.is_empty()
     }
 
-    /// A selected game's segments with its r_win; the oldest leave above the capacity.
     pub fn push_game(&mut self, segs: Vec<Segment>, ret: f32) {
         for seg in segs {
             self.entries.push_back(Entry { seg, ret, uses: 0 });
@@ -185,7 +136,6 @@ impl SilBuffer {
     }
 
     fn unit(&mut self) -> f64 {
-        // SplitMix64, as the league's.
         self.rng = self.rng.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.rng;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -194,14 +144,11 @@ impl SilBuffer {
         (z >> 11) as f64 / (1u64 << 53) as f64
     }
 
-    /// `k` distinct segments drawn uniformly (copies with `sil_return` set); empty when the buffer
-    /// holds fewer. `"replay"`: a segment used `max_uses` times leaves the buffer.
     pub fn sample(&mut self, k: usize, mode: SilMode, max_uses: u32) -> Vec<Segment> {
         let n = self.entries.len();
         if k == 0 || n < k {
             return Vec::new();
         }
-        // Partial Fisher-Yates over the indices.
         let mut idx: Vec<usize> = (0..n).collect();
         for i in 0..k {
             let j = i + ((self.unit() * (n - i) as f64) as usize).min(n - i - 1);
@@ -239,7 +186,6 @@ mod tests {
         BTreeMap::from([("rush".to_string(), 0.5), ("macro".to_string(), 0.5)])
     }
 
-    /// 042-R16 검사: off = never checked; on = the listed load errors.
     #[test]
     fn sil_settings_are_checked_042_r16() {
         let off = SilConfig { lanes: 0, w_pg: -1.0, ..SilConfig::default() };
@@ -260,7 +206,6 @@ mod tests {
         SilConfig { lanes: 31, buffer_segments: 31, until_s: 0, ..on }.validate(32, &groups()).unwrap();
     }
 
-    /// 042-R16 고를 판: the group, a result, then a win or held (scv_4m) without a concede.
     #[test]
     fn game_selection_042_r16() {
         let c = SilConfig::default();
@@ -277,9 +222,6 @@ mod tests {
         assert!(!c.selects(None, Some(Outcome::Win), Some(15), false), "not a ladder game");
     }
 
-    /// 042-R16 `wins_only` / 042-AC8 (AMB-042-18): `true` selects won games of the group only — a
-    /// lost or drawn game with `scv_4m >= select_scv_4m` is not selected; `false` (the default)
-    /// is the selection above.
     #[test]
     fn wins_only_selection_042_r16() {
         assert!(!SilConfig::default().wins_only, "default false");
@@ -294,23 +236,17 @@ mod tests {
         }
         assert!(!c.selects(rush, None, Some(20), false), "no result");
         assert!(!c.selects(Some("warmup"), Some(Outcome::Win), None, false), "other group");
-        // Absent key = false; any other value is a load error.
         let parse = |t: &str| toml::from_str::<SilConfig>(t);
         assert!(!parse("enabled = true").unwrap().wins_only);
         assert!(parse("wins_only = true").unwrap().wins_only);
         assert!(parse("wins_only = 1").is_err());
         assert!(parse("win_only = true").is_err(), "unknown key");
-        // Serialised (checkpoint config): absent when false, as before the key; read back the same.
         assert!(serde_json::to_value(SilConfig::default()).unwrap().get("wins_only").is_none());
         let on = serde_json::to_value(&c).unwrap();
         assert_eq!(on["wins_only"], true);
         assert_eq!(serde_json::from_value::<SilConfig>(on).unwrap(), c);
     }
 
-    /// 042-R16 상대·접촉 거르기 / 042-AC9 (AMB-042-19): with `select_keys` an opponent outside
-    /// the list is not selected; with `select_army_before_s` a game whose `army_s` is above it or
-    /// empty is not; without the two keys every game passes (the earlier selection); the checks
-    /// (empty list, negative or NaN seconds) and the serialised config without them as before.
     #[test]
     fn opponent_and_contact_filters_042_r16() {
         let off = SilConfig::default();
@@ -340,11 +276,6 @@ mod tests {
         assert_eq!(serde_json::from_value::<SilConfig>(serde_json::to_value(&c).unwrap()).unwrap(), c);
     }
 
-    /// 042-R16 `select_start_hit` / 042-AC9 (AMB-042-19, 사용자 위임 2026-11-05, 5차 자문):
-    /// `true` selects only first-target hits, `false` only misses, a game without start slots
-    /// neither; absent = every game (the earlier selection). With the other filters it is one more
-    /// condition (`rush-s5`: three keys, 225 s, hits). Parse, and absent from the serialised config
-    /// when unset (earlier checkpoints' config unchanged).
     #[test]
     fn start_hit_filter_042_r16() {
         let off = SilConfig::default();
@@ -375,7 +306,6 @@ mod tests {
         assert_eq!(serde_json::from_value::<SilConfig>(v).unwrap(), rush5);
     }
 
-    /// 042-R16 담을 세그먼트: first decision before `until_s`, 0 = all.
     #[test]
     fn segment_window_042_r16() {
         let c = SilConfig::default();
@@ -385,8 +315,6 @@ mod tests {
         assert!(all.keeps_segment(u32::MAX));
     }
 
-    /// 042-R16 버퍼: FIFO capacity, k distinct samples carrying the game's R, nothing below k;
-    /// `"sil"` keeps sampled segments, `"replay"` drops one after `max_uses` uses.
     #[test]
     fn buffer_fifo_and_sampling_042_r16() {
         let mut b = SilBuffer::new(5, 1);
@@ -403,7 +331,6 @@ mod tests {
             assert_eq!(x.sil_return, Some(if x.game_id < 3 { 1.0 } else { -1.0 }));
         }
         assert_eq!(b.len(), 5, "sil mode keeps them");
-        // Uniform: every segment is drawn about as often.
         let mut count = BTreeMap::new();
         for _ in 0..4_000 {
             for x in b.sample(2, SilMode::Sil, 4) {
@@ -411,7 +338,6 @@ mod tests {
             }
         }
         assert!(count.values().all(|&n| (1_400..1_800).contains(&n)), "{count:?}");
-        // Replay: after max_uses uses a segment leaves.
         let mut r = SilBuffer::new(10, 2);
         r.push_game((0..4).map(|i| seg_at(i, 0)).collect(), 1.0);
         for _ in 0..2 {

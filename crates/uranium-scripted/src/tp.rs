@@ -1,31 +1,3 @@
-//! 022 TvT / TvP teacher (`T0Build::TerranTp`, opponent id `t0-terran-tp`, plan build
-//! `terran_tp`, spec 022, 021-R9).
-//!
-//! The teacher plays the 021-R8 opening (9 depot, 11 barracks, 15 depot) with a refinery at 12
-//! supply and three SCVs on gas, at most four marines before the factory, the factory at 100 gas,
-//! the machine shop once the factory is complete, siege mode research once the shop is, then
-//! siege tanks and marines (022-R3). Its scout is the 021-R8 scout, but it stays in the enemy main
-//! until 2:40 (or until its hit points fall below half) to count gateways / barracks and army.
-//!
-//! Rush rule R (022-R4) reads the current observation only: two gateways / barracks before 2:40,
-//! two zealots / four marines before 3:30, the scout at the enemy start depot from 2:30 to 3:30
-//! without a gateway / barracks ever seen near that start (a proxy), or two enemy army units
-//! within 20 tiles of an own command center. Without R the macro branch M expands (Protoss: once
-//! the factory is ordered and three tanks are complete, its price held from everything from the
-//! later of that and 4:00; Terran: after two tanks), adds barracks and a natural bunker (022-R5). R switches to the defence branch D at that observation: the 021-R8
-//! main bunker, garrison, SCV pull and repair, a second barracks, and the tanks gather behind
-//! the bunker (022-R6). D returns to M with 8 marines, 2 tanks and 60 s without contact, or with
-//! 4 tanks. Tanks siege when enemy ground army is within 11 tiles and leave siege mode after 10 s
-//! without any within 13 tiles when they have somewhere to go (022-R7). With 4 tanks and 40 army
-//! supply (20 from 12:00) M attacks: the tanks lead, marines follow, units more than 8 tiles
-//! ahead of the tanks wait, and the shared brain's target choice hunts the last buildings (022-R8).
-//!
-//! The rest is the 021-R8 teacher (`react`): bunker sites, SCV pull / repair, worker answer,
-//! construction resumption, home guard, map hints, and its shadow fix-ups (022-R9). The tank
-//! siege timers, the tank spot, the attack group and the gas crew are computed again from the
-//! own units visible at each observation (no ids carried from the teacher's own orders). Every
-//! action is one 010 `Command` the model can issue (034), at most 12 units each. No randomness.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
@@ -36,121 +8,58 @@ use crate::react::{Branch, FPS, bunker_center, depot_center, is_enemy, toward, w
 use crate::types::*;
 use crate::{Brain, centroid, dist2, done};
 
-/// SCV hit points (BWAPI type table): the scout leaves the enemy main below `scout_hp_pct` of it.
 const SCV_HP: u32 = 60;
-/// Army units farther than this (tiles) from every own command center are out on an attack:
-/// the Brain's home-guard radius.
 const OUT_TILES: i64 = crate::DEFEND_RADIUS / 32;
 
-/// 022 numbers (AMB-022-2..5 Resolved, 2026-11-14). Frames are game frames (24 per second),
-/// distances tiles, supply in units (a marine = 1).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TpParams {
-    /// 022-R3: the refinery at this supply (12), `gas_workers` (3) SCVs on gas, at most
-    /// `marines_before_factory` (4) marines until the factory is ordered, the factory at
-    /// `factory_gas` (100) gas.
     pub refinery_supply: u32,
     pub gas_workers: usize,
     pub marines_before_factory: usize,
     pub factory_gas: i32,
-    /// 022-R3 scout: once it finds the enemy main before `scout_stay_until` (2:40) it stays there
-    /// until then or until its hit points fall below `scout_hp_pct` (50) %; it circles
-    /// `scout_circle` tiles around the enemy start (메인 임시 결정: the way it "goes around the
-    /// main") and from `proxy_from` walks to the start's depot (rule ④).
     pub scout_stay_until: u32,
     pub scout_hp_pct: u32,
     pub scout_circle: i64,
-    /// 022-R4 ①: at least `prod_min` (2) gateways / barracks (unfinished ones too) in one
-    /// observation before `prod_before` (2:40).
     pub prod_min: usize,
     pub prod_before: u32,
-    /// 022-R4 ②: at least `zealots_min` (2) zealots / `marines_min` (4) marines in one
-    /// observation before `units_before` (3:30), anywhere.
     pub zealots_min: usize,
     pub marines_min: usize,
     pub units_before: u32,
-    /// 022-R4 ④: the scout within `proxy_look` (3) tiles of the enemy start depot (a visible
-    /// nexus / command center within `main_radius` of a start location), `proxy_from` (2:30) ≤
-    /// t < `proxy_before` (3:30), and no gateway / barracks ever seen within `proxy_radius` (12)
-    /// tiles of that start.
     pub proxy_from: u32,
     pub proxy_before: u32,
     pub proxy_look: i64,
     pub proxy_radius: i64,
-    /// 022-R4 ③ (021-R8 ③): at least `army_min` (2) enemy army units (033) within
-    /// `army_radius` (20) tiles of an own command center; one there is contact.
     pub army_radius: i64,
     pub army_min: usize,
-    /// The enemy main is found when an enemy building is remembered within `main_radius` (10)
-    /// tiles of a start location (021-R8).
     pub main_radius: i64,
-    /// R is judged only before this frame (8:00).
     pub judge_until: u32,
-    /// 022-R5 M: the natural command center at `expand_minerals` (400) — against Protoss once the
-    /// factory is ordered and `expand_tanks_p` (3) tanks are complete (from then and from
-    /// `expand_by`, 4:00, whichever is later, its price is held from everything), against Terran
-    /// once `expand_tanks` (2) tanks are complete.
     pub expand_minerals: i32,
     pub expand_by: u32,
     pub expand_tanks: usize,
-    /// 022-R5: barracks once the natural command center is complete (1 + 2 against Protoss,
-    /// 1 + 1 against Terran); SCVs `scv_per_cc` (22) per complete command center, at most
-    /// `scv_max` (40).
     pub barracks_p: usize,
     pub barracks_t: usize,
     pub scv_per_cc: usize,
     pub scv_max: usize,
-    /// 022-R6 D: `barracks_d` (2) barracks; the natural with `expand_tanks` tanks and `quiet` (60 s)
-    /// after the last contact; back to M with `macro_marines` (8, loaded ones too) marines,
-    /// `macro_tanks` (2) tanks and `quiet` without contact, or with `macro_tanks_any` (4) tanks
-    /// (which also keep M when R holds, 메인 임시 결정 like 021-R8's 12 marines). The tanks wait
-    /// `tank_wait` (3, within the 2–4 of 022-R6) tiles behind the bunker toward its command center.
     pub barracks_d: usize,
     pub quiet: u32,
     pub macro_marines: usize,
     pub macro_tanks: usize,
     pub macro_tanks_any: usize,
     pub tank_wait: f64,
-    /// 022-R7: siege mode once siege mode is researched and enemy ground army (no workers,
-    /// visible) is within `siege_range` (11) tiles; tank mode after `unsiege_quiet` (10 s) without
-    /// any within `unsiege_range` (13) tiles while the tank has somewhere to go.
     pub siege_range: i64,
     pub unsiege_range: i64,
     pub unsiege_quiet: u32,
-    /// 022-R8: M attacks with `wave_tanks` (4) tanks and `wave_supply` (40) army supply (a marine
-    /// 1, a tank 2), or from `late_wave_from` (12:00) with `late_wave_supply` (20); units more than
-    /// `group_gap` (8) tiles ahead of the tanks' centre wait.
     pub wave_tanks: usize,
     pub wave_supply: u32,
     pub late_wave_from: u32,
     pub late_wave_supply: u32,
     pub group_gap: i64,
-    /// Repeated orders (gas crew, machine shop, research, tank and attack moves): every this many
-    /// frames (022-R1, 48).
     pub retarget: u32,
-    /// 022-R6 D ② ③ numbers of the reused 021-R8 defence, for this teacher (022 tuning, user decision
-    /// 2026-11-14: tune within the decided build direction; values as 021-R8). SCVs repairing a
-    /// damaged bunker (021-R8 `repairers`, 2).
     pub repairers: usize,
-    /// Most SCVs pulled against enemy ground army at a bunker or a mineral line (021-R8 `pull_max`, 6;
-    /// min(this, SCVs − 4)).
     pub pull_max: usize,
-    /// D marines outside bunkers attack-move (home guard) once they are at least this many times the
-    /// enemy ground army near the bases, else they load and hold by the bunker (021-R8
-    /// `marine_ratio`, 2; not used vs Protoss with `marines_hold_p`).
     pub marine_ratio: usize,
-    /// 022-R5 M vs Protoss (022 tuning, 2026-11-14 dev runs): the natural also waits for this many
-    /// complete tanks (3; 0 = the factory order alone, as decided first).
     pub expand_tanks_p: usize,
-    /// 022-R9 / 022-AC3 (2026-11-14): an SCV goes (back) to mining only once it has been seen idle
-    /// for this many frames, and a build order whose SCV has been seen idle that long is dropped
-    /// (the build is ordered again). Both read the observation alone, so the live teacher and its
-    /// shadow at playback frame L − 2 decide the same; a pending builder the shadow cannot know of
-    /// kept an idle SCV out of mining live for 25 s while the shadow sent it to mine at every
-    /// observation (022-AC3 relabel check, 메인 임시 결정).
     pub idle_grace: u32,
-    /// 022-R6 D vs Protoss (022 tuning, 2026-11-14 dev runs): the marines never attack-move out
-    /// (the 021-R8 `marine_ratio` rule); they load into the bunker and hold beside it.
     pub marines_hold_p: bool,
 }
 
@@ -210,65 +119,43 @@ impl Default for TpParams {
 }
 
 impl TpParams {
-    /// The 021-R8 numbers this teacher's reused defence runs with (`ReactParams` defaults with this
-    /// teacher's D ② ③ numbers).
     pub fn react_params(&self) -> crate::ReactParams {
         crate::ReactParams { repairers: self.repairers, pull_max: self.pull_max, marine_ratio: self.marine_ratio, ..Default::default() }
     }
 }
 
-/// Which 022-R4 rush rule held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TpRule {
-    /// ①P 2 gateways before 2:40.
     Gates,
-    /// ②P 2 zealots before 3:30.
     Zealots,
-    /// ④P the scout at the enemy start nexus, 2:30–3:30, no gateway ever seen near it.
     ProxyGate,
-    /// ①T 2 barracks before 2:40.
     Rax,
-    /// ②T 4 marines before 3:30.
     Marines,
-    /// ④T the scout at the enemy start command center, 2:30–3:30, no barracks ever seen near it.
     ProxyRax,
-    /// ③ 2 enemy army units within 20 tiles of an own command center.
     Army,
 }
 
-/// What the 022 teacher did in one game (session record `scripted.tp`, 022-R10). Frames.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct TpStats {
-    /// Enemy main found (an enemy building remembered within `main_radius` of a start).
     pub main_frame: Option<u32>,
-    /// First rush identification and its rule.
     pub rush_frame: Option<u32>,
     pub rush_rule: Option<TpRule>,
-    /// M → D switches; first D → M switch.
     pub defences: u32,
     pub macro_frame: Option<u32>,
-    /// First order of the refinery, factory, machine shop, siege mode research, siege tank and
-    /// natural command center.
     pub refinery_frame: Option<u32>,
     pub factory_frame: Option<u32>,
     pub shop_frame: Option<u32>,
     pub siege_frame: Option<u32>,
     pub tank_frame: Option<u32>,
     pub expand_frame: Option<u32>,
-    /// First observation with the attack condition (022-R8).
     pub wave_frame: Option<u32>,
-    /// Branch at the last observation.
     pub branch: Branch,
-    /// First enemy army within `army_radius` of an own command center; first own bunker.
     pub contact_frame: Option<u32>,
     pub bunker_frame: Option<u32>,
-    /// First observation (before 8:00) at which each rule held, in any branch.
     pub rule_frames: BTreeMap<TpRule, u32>,
 }
 
-/// The matchup build the teacher follows (022-R5): the lobby race, a lobby Random by the first
-/// enemy unit seen (Terran's until then, 메인 임시 결정 — Random games are not data, 022-R2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Matchup {
     Protoss,
@@ -279,29 +166,16 @@ pub(crate) struct TpState {
     pub p: TpParams,
     lobby: Race,
     seen: Option<Race>,
-    /// SCVs gathering gas at the last observation (022-R9: from their orders, not from ids).
     pub gas_crew: Vec<UnitId>,
-    /// Own completed SCVs seen idle at every observation since this frame (022-R9 / AC3).
     idle_since: BTreeMap<UnitId, u32>,
-    /// Sites of build orders dropped because their SCV stood idle (the game refused the site):
-    /// (top-left tile, type) kept free of new orders until the frame (022-AC3: without it the site
-    /// was ordered again every 16 frames).
     failed_sites: Vec<(Tile, u16, u32)>,
-    /// Last frame each SCV was seen with a gas order: one seen on gas within 2 × `retarget`
-    /// frames still counts unless it is seen mining minerals (an SCV leaving the refinery shows
-    /// other orders for a moment; OpenBW smoke: counted out, a fourth SCV was sent).
     gas_seen: BTreeMap<UnitId, u32>,
-    /// The complete refinery and the first frame it was seen complete: SCVs are sent `retarget`
-    /// frames later, so its builder (which starts mining on its own) is counted first.
     refinery_since: Option<(UnitId, u32)>,
     last_gas: Option<u32>,
     last_shop: Option<u32>,
     last_research: Option<u32>,
     last_tanks: Option<u32>,
-    /// (start, gateway / barracks type): one was seen within `proxy_radius` of that start (R ④).
     prod_seen: BTreeSet<(Tile, u16)>,
-    /// Sieged tanks: the last frame with enemy ground army within `unsiege_range` (the first
-    /// frame seen sieged otherwise); dropped once a tank is not sieged (022-R7, R9).
     quiet: BTreeMap<UnitId, u32>,
     order_sieging: Option<u16>,
     order_unsieging: Option<u16>,
@@ -344,36 +218,23 @@ impl TpState {
         }
     }
 
-    /// At most once per window `frame / every` of the game clock (022-AC3, `ReactState::due_on`).
     fn due(last: Option<u32>, frame: u32, every: u32) -> bool {
         crate::react::ReactState::due_on(true, last, frame, every)
     }
 }
 
-/// 022-AC3: the sort key of "the unit nearest `b`" picks (SCVs to build, gather gas, pull, repair;
-/// marines to load). For the 022 teacher (`rings`) the distance in 4-tile rings, so that the
-/// live teacher and its shadow at playback frame L − 2 (positions 2 frames apart) mostly pick the
-/// same unit, ties going to the lowest id; for the 021-R8 teacher the exact squared distance as
-/// before.
 pub(crate) fn pick_key(rings: bool, a: Pos, b: Pos) -> i64 {
     if rings { (dist2(a, b) as f64).sqrt() as i64 / 128 } else { dist2(a, b) }
 }
 
-/// 022-AC3: the sort key of the SCV pull and repair picks: for the 022 teacher (`by_id`) none (the
-/// lowest ids among the free SCVs, which stand at the mineral line next to the threat anyway; a
-/// distance ring still put one SCV in or out between the live teacher and its shadow), for the
-/// 021-R8 teacher the exact squared distance as before.
 pub(crate) fn pick_key_id(by_id: bool, a: Pos, b: Pos) -> i64 {
     if by_id { 0 } else { dist2(a, b) }
 }
 
-/// 022-AC3: an attack-move target on a 4-tile grid (the centre of its 4 × 4-tile cell), so that a
-/// moving target gives the live teacher and its shadow the same point.
 pub(crate) fn snap(p: Pos) -> Pos {
     (p.0 / 128 * 128 + 64, p.1 / 128 * 128 + 64)
 }
 
-/// The race of a unit type (BWAPI type table), for a lobby-Random enemy.
 fn race_of(ty: u16) -> Option<Race> {
     match uranium_env::types::TypeTables::get().unit(ty)?.race.as_str() {
         "Protoss" => Some(Race::Protoss),
@@ -383,8 +244,6 @@ fn race_of(ty: u16) -> Option<Race> {
     }
 }
 
-/// What the 022 rule needs besides the observation: own command centers, the start locations
-/// other than ours, the scout's position and the (start, gateway / barracks type) pairs ever seen.
 pub struct TpContext<'a> {
     pub depots: &'a [Pos],
     pub starts: &'a [Tile],
@@ -392,7 +251,6 @@ pub struct TpContext<'a> {
     pub prod_seen: &'a BTreeSet<(Tile, u16)>,
 }
 
-/// Every 022-R4 rush rule that holds in this observation (own vision only), in rule order.
 pub fn tp_rules(p: &TpParams, f: &RawFrame, me: u8, cx: &TpContext<'_>) -> Vec<TpRule> {
     let mut out = Vec::new();
     if f.frame >= p.judge_until {
@@ -400,7 +258,6 @@ pub fn tp_rules(p: &TpParams, f: &RawFrame, me: u8, cx: &TpContext<'_>) -> Vec<T
     }
     let enemies: Vec<&UnitState> = f.units.iter().filter(|u| is_enemy(u, me)).collect();
     let count = |ty: u16| enemies.iter().filter(|u| u.unit_type == ty).count();
-    // ④: the scout next to a visible enemy start depot of `depot` type, no `prod` ever seen there.
     let proxy = |depot: u16, prod: u16| {
         (p.proxy_from..p.proxy_before).contains(&f.frame)
             && cx.scout.is_some_and(|sc| {
@@ -435,8 +292,6 @@ pub fn tp_rules(p: &TpParams, f: &RawFrame, me: u8, cx: &TpContext<'_>) -> Vec<T
 }
 
 impl Brain {
-    /// The shared brain's hunting cells (walkable centre) stalest first, in its scan order on ties:
-    /// the first is its hunting target.
     fn stale_cells(&self) -> Vec<Pos> {
         let mut cells: Vec<(u32, u16, u16, Pos)> = Vec::new();
         for cy in 0..self.cells_h {
@@ -451,25 +306,19 @@ impl Brain {
         cells.into_iter().map(|(_, _, _, p)| p).collect()
     }
 
-    /// SCVs on gas at the last observation (busy for the other SCV jobs).
     pub(crate) fn tp_gas_crew(&self) -> Vec<UnitId> {
         self.tp.as_ref().map(|t| t.gas_crew.clone()).unwrap_or_default()
     }
 
-    /// Completed own siege tanks (either mode).
     fn tanks_done(mine: &[&UnitState]) -> usize {
         mine.iter().filter(|u| is_tank(u.unit_type) && u.has(flags::COMPLETED)).count()
     }
 
-    /// The natural command center is complete.
     fn natural_done(&self, mine: &[&UnitState]) -> bool {
         let Some(n) = self.react.as_ref().and_then(|r| r.natural) else { return false };
         mine.iter().any(|u| is_resource_depot(u.unit_type) && building_tile(u) == n && done(u))
     }
 
-    /// Per observation (022-R4, R6, R10): enemy main found, the enemy race of a lobby Random,
-    /// gateways / barracks seen near starts, contact, rule R (M → D) and the D → M rule. The
-    /// branch, contact and defence base live in the 021-R8 state its D parts read.
     pub(crate) fn tp_observe(&mut self, f: &RawFrame, mine: &[&UnitState]) {
         let Some(p) = self.tp.as_ref().map(|t| t.p.clone()) else { return };
         let me = self.me;
@@ -503,7 +352,6 @@ impl Brain {
         let r = self.react.as_mut().expect("the 022 teacher reuses the 021-R8 state");
         if let Some(s) = found.filter(|_| r.enemy_main.is_none()) {
             r.enemy_main = Some(s);
-            // The 021-R8 scout's look timer reads this one.
             r.stats.main_frame = Some(f.frame);
             t.stats.main_frame = Some(f.frame);
         }
@@ -513,8 +361,6 @@ impl Brain {
         }
         match r.branch {
             Branch::Macro => {
-                // With `macro_tanks_any` tanks R does not switch to D (it would switch back at
-                // the next observation; 메인 임시 결정 like 021-R8's 12 marines).
                 if let Some(&rule) = rules.first().filter(|_| tanks < p.macro_tanks_any) {
                     r.branch = Branch::Defence;
                     r.last_contact = f.frame;
@@ -523,9 +369,6 @@ impl Brain {
                         t.stats.rush_frame = Some(f.frame);
                         t.stats.rush_rule = Some(rule);
                     }
-                    // The defence base (021-R8, rule advisory §3): the own command center nearest
-                    // the enemy army seen; without army in sight the natural once it stands, else
-                    // the main.
                     let main = home.and_then(|h| depots.iter().copied().min_by_key(|d| (dist2(*d, h), *d)));
                     let natural = r.natural.and_then(|n| depots.iter().copied().find(|d| within(*d, depot_center(n), 1)));
                     let by_army = army.iter().flat_map(|a| depots.iter().map(move |d| (dist2(*a, *d), *d))).min().map(|(_, d)| d);
@@ -540,8 +383,6 @@ impl Brain {
                 }
             }
         }
-        // D marines (021-R8 7th advisory C): attack-move while they outnumber the enemy ground
-        // army near the bases 2:1, else load / hold beside the bunker.
         let outside = mine.iter().filter(|u| u.unit_type == MARINE && u.has(flags::COMPLETED) && u.loaded_in.is_none()).count();
         let close = enemies.iter().filter(|u| is_ground_army_type(u.unit_type) && depots.iter().any(|d| within(u.pos, *d, r.p.marine_radius))).count();
         let hold = p.marines_hold_p && matchup == Matchup::Protoss;
@@ -552,10 +393,6 @@ impl Brain {
         t.stats.branch = r.branch;
     }
 
-    /// 022-R3 scout (AMB-022-4): with the enemy main found before 2:40 the scout stays in it until
-    /// 2:40 or until its hit points fall below half — circling the enemy start, from 2:30 at its
-    /// depot (rule ④) — then mines again (`Some(None)`). A main found from 2:40 on is looked at
-    /// as by the 021-R8 scout (`None`).
     pub(crate) fn tp_scout_target(&self, f: &RawFrame, s: &UnitState, main: Tile) -> Option<Option<Pos>> {
         let t = self.tp.as_ref()?;
         let p = &t.p;
@@ -572,15 +409,9 @@ impl Brain {
         Some(Some(self.circle_point(c, s.pos, p.scout_circle)))
     }
 
-    /// The scout's next point around the enemy start: one of 8 fixed waypoints `radius` tiles from
-    /// `c` (45° apart), a quarter turn on from the waypoint nearest `pos` (the scout goes around the
-    /// enemy start), the first walkable one of the following turns (else `c`). Fixed points
-    /// (022-AC3): a point computed from the exact position moved with the 2 frames between a live
-    /// observation and its shadow at playback L − 2 and gave other Move targets.
     pub(crate) fn circle_point(&self, c: Pos, pos: Pos, radius: i64) -> Pos {
         let r = radius * 32;
         let d = (r as f64 * std::f64::consts::FRAC_1_SQRT_2).round() as i64;
-        // Clockwise on screen (y down) from east.
         let offsets = [(r, 0), (d, d), (0, r), (-d, d), (-r, 0), (-d, -d), (0, -r), (d, -d)];
         let a = (pos.1 as f64 - c.1 as f64).atan2(pos.0 as f64 - c.0 as f64);
         let k = (a / std::f64::consts::FRAC_PI_4).round() as i64;
@@ -598,9 +429,6 @@ impl Brain {
         c
     }
 
-    /// 022-R9 / AC3: idle SCVs from the observation — the frame since which each own completed SCV
-    /// has been seen idle at every observation — and build orders whose SCV has been idle
-    /// `idle_grace` frames are dropped. Before the Brain's other steps.
     pub(crate) fn tp_idle(&mut self, f: &RawFrame, mine: &[&UnitState]) {
         let Some(t) = self.tp.as_mut() else { return };
         let idle: Vec<UnitId> = mine.iter().filter(|u| u.unit_type == SCV && u.has(flags::COMPLETED) && u.has(flags::IDLE) && u.loaded_in.is_none()).map(|u| u.id).collect();
@@ -622,21 +450,14 @@ impl Brain {
         self.tp.as_mut().expect("checked above").failed_sites.extend(failed);
     }
 
-    /// Sites kept free after a refused build order (`failed_sites`).
     pub(crate) fn tp_failed_sites(&self) -> Vec<(Tile, u16)> {
         self.tp.as_ref().map(|t| t.failed_sites.iter().map(|(tile, ty, _)| (*tile, *ty)).collect()).unwrap_or_default()
     }
 
-    /// 022-R9 / AC3: the SCV has been seen idle for `idle_grace` frames (true for every SCV with
-    /// any other build).
     pub(crate) fn tp_idle_long(&self, id: UnitId, frame: u32) -> bool {
         self.tp.as_ref().is_none_or(|t| t.idle_since.get(&id).is_some_and(|s| frame >= s + t.p.idle_grace))
     }
 
-    /// 022-R3 gas crew (022-R9: chosen again from each observation): the own SCVs whose order is a
-    /// gas order or targets the refinery (or was, within 2 × `retarget` frames, and they are not
-    /// mining minerals now); while fewer than `gas_workers`, the free SCVs nearest the refinery
-    /// are sent to it (every `retarget` frames, from `retarget` frames after it is complete).
     pub(crate) fn tp_gas(&mut self, f: &RawFrame, mine: &[&UnitState], cmds: &mut Vec<Command>) {
         let Some(t) = self.tp.as_ref() else { return };
         let (want, every, last) = (t.p.gas_workers, t.p.retarget, t.last_gas);
@@ -680,17 +501,12 @@ impl Brain {
         t.last_gas = Some(f.frame);
     }
 
-    /// The build site of `ty` near `base` (the Brain's placement, the planned main bunker site and
-    /// the natural kept free) and its order with the nearest free SCV.
     fn tp_order_build(&mut self, ty: u16, f: &RawFrame, mine: &[&UnitState], base: Pos, busy: &[UnitId], cmds: &mut Vec<Command>) -> Option<bool> {
         let reserved: Vec<(Tile, u16)> = self.pending.iter().map(|q| (q.tile, q.ty)).chain(self.react_reserved_sites()).collect();
         let tile = self.place(ty, f, mine, base, &reserved)?;
         Some(self.order_build_at(ty, tile, f, mine, busy, cmds))
     }
 
-    /// 022-R3 / R5 / R6 orders after the 021-R8 bunker step: refinery, factory, machine shop, siege
-    /// mode research and the natural command center. Returns (minerals held from everything,
-    /// minerals held from marines).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn tp_build(&mut self, f: &RawFrame, mine: &[&UnitState], base: Pos, busy: &[UnitId], cmds: &mut Vec<Command>, minerals: &mut i32, gas: &mut i32) -> (i32, i32) {
         let Some(t) = self.tp.as_ref() else { return (0, 0) };
@@ -700,17 +516,10 @@ impl Brain {
         let has = |s: &Self, ty: u16| mine.iter().any(|u| u.unit_type == ty) || s.pending.iter().any(|q| q.ty == ty);
         let rax_done = mine.iter().any(|u| u.unit_type == BARRACKS && done(u));
         let supply = u32::from(f.self_state.supply_used);
-        // The price of a refinery, factory, machine shop or research that waits for minerals is
-        // held from everything after it (SCVs, barracks, marines): 022-R3 orders them at 12 supply,
-        // at 100 gas and once the previous step is complete, and 022-AC4 wants the factory by 3:30
-        // in D too (OpenBW smoke: held from marines only, D games ordered it at 3:15–3:31; from
-        // nothing, at 3:55–4:05; from everything, by 3:13 in all 64 dev games; 메인 임시 결정).
-        // D's bunker and second barracks are ordered at R, before the refinery has 100 gas.
         fn stats(s: &mut Brain) -> &mut TpStats {
             &mut s.tp.as_mut().expect("the 022 teacher").stats
         }
 
-        // Refinery at 12 supply once the barracks is ordered (and again if it is lost).
         if !has(self, REFINERY) && has(self, BARRACKS) && supply >= 2 * p.refinery_supply {
             if *minerals >= cost(REFINERY) {
                 if self.tp_order_build(REFINERY, f, mine, base, busy, cmds) == Some(true) {
@@ -721,7 +530,6 @@ impl Brain {
                 hold_all += cost(REFINERY);
             }
         }
-        // Factory at 100 gas once the barracks is complete.
         if !has(self, FACTORY) && rax_done && *gas >= p.factory_gas {
             if *minerals >= cost(FACTORY) {
                 if self.tp_order_build(FACTORY, f, mine, base, busy, cmds) == Some(true) {
@@ -733,7 +541,6 @@ impl Brain {
                 hold_all += cost(FACTORY);
             }
         }
-        // Machine shop once the factory is complete.
         let factory = mine.iter().filter(|u| u.unit_type == FACTORY && done(u) && !u.has(flags::LIFTED)).min_by_key(|u| u.id).copied();
         let shop = mine.iter().any(|u| u.unit_type == MACHINE_SHOP);
         if let Some(fa) = factory.filter(|fa| !fa.has_addon && !shop && !fa.has(flags::TRAINING) && TpState::due(last_shop, f.frame, p.retarget)) {
@@ -748,7 +555,6 @@ impl Brain {
                 hold_all += cost(MACHINE_SHOP);
             }
         }
-        // Siege mode research once the machine shop is complete.
         let bit = 1u64 << TECH_TANK_SIEGE;
         let research_started = (f.self_state.tech | f.self_state.researching) & bit != 0;
         let shop_done = mine.iter().filter(|u| u.unit_type == MACHINE_SHOP && done(u)).min_by_key(|u| u.id).copied();
@@ -764,7 +570,6 @@ impl Brain {
                 hold_all += 150;
             }
         }
-        // The natural (022-R5 M, R6 D).
         let r = self.react.as_ref().expect("the 022 teacher reuses the 021-R8 state");
         let (branch, natural, last_contact) = (r.branch, r.natural, r.last_contact);
         if let Some(n) = natural.filter(|_| !self.natural_started(mine)) {
@@ -788,9 +593,6 @@ impl Brain {
         (hold_all, hold_army)
     }
 
-    /// 022-R3: siege tanks from each complete, idle factory with a complete machine shop once
-    /// siege mode research has started. Returns minerals to hold from marines (a tank waits for
-    /// minerals while gas is there).
     pub(crate) fn tp_train(&mut self, f: &RawFrame, mine: &[&UnitState], minerals: &mut i32, gas: &mut i32, supply_free: &mut i32, cmds: &mut Vec<Command>) -> i32 {
         if self.tp.is_none() || (f.self_state.tech | f.self_state.researching) & (1u64 << TECH_TANK_SIEGE) == 0 {
             return 0;
@@ -816,22 +618,18 @@ impl Brain {
         0
     }
 
-    /// 022-R3: at most `marines_before_factory` marines in M until the factory is ordered.
     pub(crate) fn tp_marine_cap(&self, mine: &[&UnitState]) -> Option<usize> {
         let t = self.tp.as_ref()?;
         let factory = mine.iter().any(|u| u.unit_type == FACTORY) || self.pending.iter().any(|q| q.ty == FACTORY);
         Some(if self.react_branch() == Some(Branch::Macro) && !factory { t.p.marines_before_factory } else { usize::MAX })
     }
 
-    /// 022-R5: `scv_per_cc` SCVs per complete command center, at most `scv_max`.
     pub(crate) fn tp_max_workers(&self, mine: &[&UnitState]) -> Option<usize> {
         let t = self.tp.as_ref()?;
         let ccs = mine.iter().filter(|u| is_resource_depot(u.unit_type) && done(u)).count().max(1);
         Some((t.p.scv_per_cc * ccs).min(t.p.scv_max))
     }
 
-    /// 022-R5 / R6 barracks cap: 1 until the natural command center is complete, then 3 against
-    /// Protoss and 2 against Terran; at least 2 in D.
     pub(crate) fn tp_barracks_cap(&self, mine: &[&UnitState]) -> usize {
         let Some(t) = self.tp.as_ref() else { return 1 };
         let macro_cap = match (self.natural_done(mine), t.matchup()) {
@@ -845,9 +643,6 @@ impl Brain {
         }
     }
 
-    /// 022-R6 tank spot: `tank_wait` tiles behind the bunker toward its command center — D's
-    /// defence base, in M the natural once it stands, else the main (its planned bunker site) —
-    /// or toward the way out of that base when it has no bunker.
     pub(crate) fn tp_tank_spot(&self, mine: &[&UnitState]) -> Option<Pos> {
         let t = self.tp.as_ref()?;
         let r = self.react.as_ref()?;
@@ -869,13 +664,6 @@ impl Brain {
         })
     }
 
-    /// 022-R7 / R8 tank and attack control, after the marines' bunker orders and before the home
-    /// guard: siege mode by the siege rule (every observation), and every `retarget` frames the
-    /// attack group (every tank and marine not in `kept` — kept for a bunker or ordered by the home
-    /// guard at this observation — when the attack condition holds,
-    /// else the ones already out, more than `OUT_TILES` from every command center) attack-moves
-    /// on the Brain's target with units far ahead of the tanks waiting at its front, and the other tanks go to
-    /// the tank spot.
     pub(crate) fn tp_army(&mut self, f: &RawFrame, mine: &[&UnitState], kept: &[UnitId], cmds: &mut Vec<Command>) {
         let Some(t) = self.tp.as_ref() else { return };
         let p = t.p.clone();
@@ -885,7 +673,6 @@ impl Brain {
         let enemy_ground: Vec<Pos> = f.units.iter().filter(|u| is_enemy(u, me) && is_ground_army_type(u.unit_type)).map(|u| u.pos).collect();
         let near = |at: Pos, tiles: i64| enemy_ground.iter().any(|e| within(*e, at, tiles));
         let tanks: Vec<&UnitState> = mine.iter().copied().filter(|u| is_tank(u.unit_type) && u.has(flags::COMPLETED) && u.loaded_in.is_none()).collect();
-        // Siege timers from the tanks seen sieged (no ids from the teacher's own orders).
         let t = self.tp.as_mut().expect("checked above");
         t.quiet.retain(|id, _| tanks.iter().any(|u| u.id == *id && u.unit_type == SIEGE_TANK_SIEGED));
         for u in tanks.iter().filter(|u| u.unit_type == SIEGE_TANK_SIEGED) {
@@ -908,7 +695,6 @@ impl Brain {
         let in_group = |u: &UnitState| wave || out(u);
         let spot = self.tp_tank_spot(mine);
 
-        // 022-R7: the siege rule, at every observation.
         let (mut siege, mut unsiege) = (Vec::new(), Vec::new());
         for u in &tanks {
             if u.unit_type == SIEGE_TANK && researched && Some(u.order) != sieging && near(u.pos, p.siege_range) {
@@ -928,10 +714,6 @@ impl Brain {
             cmds.push(Command::Unit { units: chunk.to_vec(), order: CmdOrder::Unsiege, queued: false });
         }
 
-        // Tanks outside the attack and more than 4 tiles from the tank spot (tanks crowd around it)
-        // go there, at the first observation of each 48-frame window (022-AC3: the live teacher and
-        // its shadow order at the same observations; a Move given when the tank's visible order was
-        // not one went one observation apart for a newly complete tank).
         if let Some(s) = spot.filter(|_| crate::react::ReactState::due_on(true, None, f.frame, p.retarget)) {
             let home: Vec<UnitId> = tanks
                 .iter()
@@ -943,7 +725,6 @@ impl Brain {
             }
         }
 
-        // Attack moves every `retarget` frames.
         let last = self.tp.as_ref().expect("checked above").last_tanks;
         if !TpState::due(last, f.frame, p.retarget) {
             return;
@@ -955,10 +736,6 @@ impl Brain {
         let mut acted = false;
         if !group_tanks.is_empty() || !group_marines.is_empty() {
             let lead = if group_tanks.is_empty() { centroid(&group_marines) } else { centroid(&group_tanks) };
-            // 022-R8 hunting (no enemy building remembered, every start scouted, no enemy in
-            // sight): the shared brain's stalest cells, one per marine squad of 12 and the first
-            // for the tanks, without waiting for the tanks (nothing to fight; OpenBW smoke: the
-            // whole army walking to one cell at tank speed left 60-minute draws, 메인 임시 결정).
             let hunting = self.enemy_buildings.is_empty() && self.scouted.iter().all(|s| *s) && !f.units.iter().any(|u| is_enemy(u, me));
             let cells = if hunting { self.stale_cells() } else { Vec::new() };
             if !cells.is_empty() {
@@ -975,14 +752,7 @@ impl Brain {
             } else if let Some(target) = self.attack_target(f, lead).map(snap) {
                 let lead_d = dist2(lead, target);
                 let gap = p.group_gap * 32;
-                // Waiting = attack-moving back to the front of the group (`group_gap` − 2 tiles from
-                // the tanks' centre toward the target), where they stop. Not Hold: units holding on
-                // a ramp cannot be pushed aside and blocked the tanks behind them for good (OpenBW
-                // smoke, 메인 임시 결정).
                 let front = snap(toward(lead, target, (p.group_gap - 2) as f64));
-                // 022-AC3: the units are cut into selections of 12 by id first and each selection
-                // split into going and waiting units, so a unit that is ahead in one of the live
-                // teacher and its shadow (positions 2 frames apart) changes its own selection only.
                 let mut units: Vec<&UnitState> = group_tanks.iter().copied().filter(|u| mobile(u)).chain(group_marines.iter().copied()).collect();
                 units.sort_by_key(|u| u.id);
                 for chunk in units.chunks(12) {
@@ -1010,8 +780,6 @@ mod tests {
     use crate::react::MapHints;
     use crate::{Bot, Kit, T0Build};
 
-    /// Our start (10, 10), the enemy start (110, 110), the natural (10, 26); chokes past the main
-    /// (24, 10), past the natural (10, 40) and at the enemy (100, 100) — the 021-R8 test map.
     const OURS: Tile = (10, 10);
     const THEIRS: Tile = (110, 110);
     const NATURAL: Tile = (10, 26);
@@ -1069,7 +837,6 @@ mod tests {
         depot_center(OURS)
     }
 
-    /// CC, a completed barracks, a mineral field, two depots and `scvs` SCVs at home.
     fn base(scvs: u32) -> Vec<UnitState> {
         let mut v = vec![
             unit(1, CC, home()),
@@ -1082,7 +849,6 @@ mod tests {
         v
     }
 
-    /// A command center, a mineral field and `scvs` SCVs.
     fn cc_only(scvs: u32) -> Vec<UnitState> {
         let mut v = vec![unit(1, CC, home()), UnitState { owner: 11, ..unit(3, MINERAL_FIELDS[0], (home().0 - 200, home().1)) }];
         v.extend((0..scvs).map(|i| unit(100 + i, SCV, (home().0 - 100, home().1 + 10 * i as u16))));
@@ -1166,8 +932,6 @@ mod tests {
         b.tp_stats().unwrap()
     }
 
-    /// 022-AC1 / 022-R4: rules ①–④ (Protoss and Terran) and ③ read the current observation at
-    /// their boundaries.
     #[test]
     fn rush_rules_022_r4() {
         let p = TpParams::default();
@@ -1178,16 +942,13 @@ mod tests {
         let at = |n: u32, units: Vec<UnitState>| tp_rules(&p, &frame(n, units, 0, 0), 0, &cx);
         let far = depot_center((60, 60));
         let many = |ty: u16, k: u32| (0..k).map(|i| enemy(30 + i, ty, (far.0, far.1 + 8 * i as u16))).collect::<Vec<_>>();
-        // ①P two gateways (one unfinished) before 2:40 (3,840); one is not enough.
         let gates = vec![enemy(20, GATEWAY, far), UnitState { owner: 1, ..building(21, GATEWAY, (far.0 + 160, far.1)) }];
         assert_eq!(at(3_839, gates.clone()), vec![TpRule::Gates]);
         assert_eq!(at(3_840, gates.clone()), vec![]);
         assert_eq!(at(3_000, gates[..1].to_vec()), vec![]);
-        // ②P two zealots before 3:30 (5,040), anywhere; one is not enough.
         assert_eq!(at(5_039, many(ZEALOT, 2)), vec![TpRule::Zealots]);
         assert_eq!(at(5_040, many(ZEALOT, 2)), vec![]);
         assert_eq!(at(4_000, many(ZEALOT, 1)), vec![]);
-        // ①T / ②T the same with barracks and four marines.
         let rax = vec![enemy(20, BARRACKS, far), UnitState { owner: 1, ..building(21, BARRACKS, (far.0 + 160, far.1)) }];
         assert_eq!(at(3_839, rax.clone()), vec![TpRule::Rax]);
         assert_eq!(at(3_840, rax.clone()), vec![]);
@@ -1195,8 +956,6 @@ mod tests {
         assert_eq!(at(5_039, many(MARINE, 4)), vec![TpRule::Marines]);
         assert_eq!(at(5_040, many(MARINE, 4)), vec![]);
         assert_eq!(at(4_000, many(MARINE, 3)), vec![]);
-        // ③ (021-AC3): two enemy army units within 20 tiles of a command center, after 3:30 too;
-        // one is contact only; 21 tiles out, workers and buildings are no army; nothing from 8:00.
         let near = |id: u32, ty: u16| enemy(id, ty, (home().0 + 19 * 32, home().1 + id as u16));
         assert_eq!(at(9_000, vec![near(9, ZEALOT), near(10, DRAGOON)]), vec![TpRule::Army]);
         assert_eq!(at(9_000, vec![near(9, MARINE), near(10, MARINE)]), vec![TpRule::Army]);
@@ -1204,8 +963,6 @@ mod tests {
         assert_eq!(at(9_000, vec![near(9, ZEALOT), enemy(10, ZEALOT, (home().0 + 21 * 32, home().1))]), vec![]);
         assert_eq!(at(9_000, vec![near(9, PROBE), near(10, SCV), near(11, ZEALOT), near(12, PYLON)]), vec![]);
         assert_eq!(at(11_520, vec![near(9, ZEALOT), near(10, ZEALOT)]), vec![]);
-        // ④P the scout within 3 tiles of the visible enemy start nexus, 2:30 ≤ t < 3:30, no
-        // gateway ever seen within 12 tiles of that start.
         let main = depot_center(THEIRS);
         let scout_at = |tiles: u16| Some((main.0 - tiles * 32, main.1));
         let proxy = |n: u32, depot: u16, scout: Option<Pos>, seen: &BTreeSet<(Tile, u16)>| {
@@ -1220,7 +977,6 @@ mod tests {
         assert_eq!(proxy(4_000, NEXUS, None, &none), vec![], "no scout");
         let gate_seen = BTreeSet::from([(THEIRS, GATEWAY)]);
         assert_eq!(proxy(4_000, NEXUS, scout_at(3), &gate_seen), vec![], "a gateway seen there");
-        // ④T the same at a command center with barracks.
         assert_eq!(proxy(3_600, CC, scout_at(3), &none), vec![TpRule::ProxyRax]);
         assert_eq!(proxy(3_599, CC, scout_at(3), &none), vec![]);
         assert_eq!(proxy(5_040, CC, scout_at(3), &none), vec![]);
@@ -1229,8 +985,6 @@ mod tests {
         assert_eq!(proxy(4_000, CC, scout_at(3), &gate_seen), vec![TpRule::ProxyRax], "a gateway is no barracks");
     }
 
-    /// 022-R4 ④: a gateway seen near the enemy start in an earlier observation (memory) keeps
-    /// the proxy rule off; without it the scout at the nexus at 2:30 identifies a proxy.
     #[test]
     fn proxy_rule_remembers_gateways_022_r4() {
         let main = depot_center(THEIRS);
@@ -1254,9 +1008,6 @@ mod tests {
         assert_eq!((branch(&c), stats(&c).rush_rule), (Branch::Defence, Some(TpRule::ProxyGate)));
     }
 
-    /// 022-AC1 / 022-R3 opening: depots at 9 and 15 supply, barracks at 11, refinery at 12, the
-    /// factory at 100 gas, the machine shop once the factory is complete, siege mode research once
-    /// the shop is, tanks once the research has started; at most 4 marines before the factory.
     #[test]
     fn opening_022_r3() {
         let act = teacher().act(&dark(frame(500, cc_only(8), 200, 16)));
@@ -1267,7 +1018,6 @@ mod tests {
         u.push(unit(6, DEPOT, (home().0, home().1 - 160)));
         assert!(builds(&teacher().act(&dark(frame(1_500, u.clone(), 200, 20))), BARRACKS).is_empty(), "10 supply");
         assert_eq!(builds(&teacher().act(&dark(frame(1_500, u.clone(), 200, 22))), BARRACKS).len(), 1, "11 supply");
-        // Refinery at 12 supply on the geyser, after the barracks order.
         u.push(building(2, BARRACKS, (home().0 + 200, home().1 + 160)));
         u.push(geyser());
         let act = teacher().act(&dark(frame(2_000, u.clone(), 200, 22)));
@@ -1279,7 +1029,6 @@ mod tests {
         assert!(builds(&act, DEPOT).is_empty(), "the second depot waits for 15");
         assert_eq!(builds(&teacher().act(&dark(frame(2_000, u, 200, 30))), DEPOT).len(), 1, "15 supply");
 
-        // Factory at 100 gas (refinery done, barracks done).
         let mut u = base(14);
         u.push(unit(5, REFINERY, GEYSER_AT));
         assert!(builds(&teacher().act(&gas(frame(2_400, u.clone(), 300, 30), 99)), FACTORY).is_empty());
@@ -1287,7 +1036,6 @@ mod tests {
         let act = b.act(&gas(frame(2_400, u.clone(), 300, 30), 100));
         assert_eq!(builds(&act, FACTORY).len(), 1, "{:?}", act.cmds);
         assert_eq!(stats(&b).factory_frame, Some(2_400));
-        // Machine shop once the factory is complete.
         let mut v = u.clone();
         v.push(building(8, FACTORY, FACTORY_AT));
         let act = teacher().act(&gas(frame(3_024, v, 100, 30), 100));
@@ -1298,7 +1046,6 @@ mod tests {
         let act = b.act(&gas(frame(3_024, v, 100, 30), 100));
         assert!(act.cmds.contains(&Command::BuildAddon { building: 8, unit_type: MACHINE_SHOP }), "{:?}", act.cmds);
         assert_eq!(stats(&b).shop_frame, Some(3_024));
-        // Siege mode research once the shop is complete (not while it is built, not twice).
         let mut v = u.clone();
         v.push(UnitState { has_addon: true, ..factory() });
         v.push(building(9, MACHINE_SHOP, shop().pos));
@@ -1313,13 +1060,11 @@ mod tests {
         assert_eq!(stats(&b).siege_frame, Some(3_504));
         let act = teacher().act(&sieging(gas(frame(3_504, v.clone(), 200, 30), 200), false, true));
         assert!(!act.cmds.iter().any(|c| matches!(c, Command::Research { .. })), "researching: {:?}", act.cmds);
-        // Tanks once the research has started.
         let mut b = teacher();
         let act = b.act(&sieging(gas(frame(3_600, v, 300, 30), 200), false, true));
         assert!(act.cmds.contains(&Command::Train { building: 8, unit_type: SIEGE_TANK }), "{:?}", act.cmds);
         assert_eq!(stats(&b).tank_frame, Some(3_600));
 
-        // At most 4 marines before the factory (macro branch); continuous once it is ordered.
         let marines = |k: u32| (0..k).map(|i| unit(200 + i, MARINE, (home().0 + 100, home().1 + 4 * i as u16))).collect::<Vec<_>>();
         let mut u = base(14);
         u.extend(marines(4));
@@ -1333,9 +1078,6 @@ mod tests {
         assert_eq!(trains(&teacher().act(&frame(3_000, u, 1_000, 36)), MARINE), 1);
     }
 
-    /// 022-AC1 user constraint (as 021-R8): a macro game with no rush evidence — the enemy main
-    /// seen with one gateway and probes, a probe scouting our base — issues no bunker order from
-    /// 0:00 to 6:00, stays in M and expands (against Protoss once the factory is ordered).
     #[test]
     fn no_main_bunker_without_rush_evidence_022_r5() {
         let mut b = teacher();
@@ -1343,12 +1085,9 @@ mod tests {
         for n in (8..=8_640).step_by(8) {
             let scvs = (4 + n / 300).min(22);
             let mut u = if n < 1_600 { cc_only(scvs) } else { base(scvs) };
-            // The factory the teacher orders at 100 gas stands from 2,400 (else its pending order
-            // holds its price).
             if n >= 2_400 {
                 u.push(building(8, FACTORY, FACTORY_AT));
             }
-            // Three tanks from 5:00 (022 tuning: vs Protoss the natural waits for them).
             if n >= 7_200 {
                 u.extend((0..3).map(|i| unit(300 + i, SIEGE_TANK, (home().0 + 60, home().1 + 100 + 8 * i as u16))));
             }
@@ -1369,9 +1108,6 @@ mod tests {
         assert!(expanded && stats(&b).expand_frame.is_some() && stats(&b).factory_frame < stats(&b).expand_frame);
     }
 
-    /// 022-AC1 / 022-R6: R switches to D at that observation, and the same observation orders
-    /// the main bunker (on the ground path toward the natural, 5–7 tiles out) and the second
-    /// barracks; the record keeps the rule and the frame.
     #[test]
     fn rush_switches_to_defence_022_r6() {
         for (enemy_race, ty, k, rule) in [(Race::Protoss, ZEALOT, 2, TpRule::Zealots), (Race::Terran, MARINE, 4, TpRule::Marines)] {
@@ -1391,8 +1127,6 @@ mod tests {
         }
     }
 
-    /// 022-R6: D → M with 8 marines (loaded ones too), 2 tanks and 60 s without contact, or with
-    /// 4 tanks whatever the contact; with 4 tanks R keeps M.
     #[test]
     fn defence_returns_to_macro_022_r6() {
         let army = |marines: u32, tanks: u32| {
@@ -1420,7 +1154,6 @@ mod tests {
         b.act(&frame(6_000 + 1_440, loaded, 0, 40));
         assert_eq!(branch(&b), Branch::Macro, "8 marines (4 loaded), 2 tanks, 60 s");
         assert_eq!(stats(&b).macro_frame, Some(7_440));
-        // Under contact: 3 tanks stay in D, 4 return to M and keep it.
         let mut c = teacher();
         c.act(&frame(6_000, zealots(army(0, 3)), 0, 40));
         assert_eq!(branch(&c), Branch::Defence);
@@ -1430,9 +1163,6 @@ mod tests {
         assert_eq!((branch(&c), stats(&c).defences), (Branch::Macro, 1), "R with 4 tanks keeps M");
     }
 
-    /// 022-R5: against Protoss the natural at 400 minerals once the factory is ordered, its price
-    /// held from everything from 4:00; against Terran after 2 tanks; in D after 2 tanks and 60 s
-    /// without contact.
     #[test]
     fn natural_expansion_022_r5() {
         let with = |extra: Vec<UnitState>| {
@@ -1442,7 +1172,6 @@ mod tests {
         };
         let tanks = |k: u32| (0..k).map(|i| unit(300 + i, SIEGE_TANK, (home().0 + 60, home().1 + 100 + 8 * i as u16))).collect::<Vec<_>>();
         assert!(builds(&teacher().act(&frame(3_000, with(tanks(3)), 400, 40)), CC).is_empty(), "no factory");
-        // 022 tuning: vs Protoss also 3 complete tanks (`expand_tanks_p`).
         let fac_tanks = |k: u32| [vec![factory()], tanks(k)].concat();
         assert!(builds(&teacher().act(&frame(5_000, with(fac_tanks(2)), 400, 40)), CC).is_empty(), "2 tanks");
         let mut b = teacher();
@@ -1451,20 +1180,15 @@ mod tests {
         assert_eq!(stats(&b).expand_frame, Some(5_000));
         let act = teacher().act(&frame(5_000, with(fac_tanks(3)), 399, 40));
         assert!(builds(&act, CC).is_empty());
-        // As decided first (no tank condition): the factory order alone.
         let first = TpParams { expand_tanks_p: 0, ..TpParams::default() };
         let mut d0 = Brain::with_hints(&info(Race::Protoss), Kit { tp: Some(first.clone()), react: Some(first.react_params()), ..Kit::terran_tp() }, &hints());
         assert_eq!(builds(&d0.act(&frame(3_000, with(vec![building(8, FACTORY, FACTORY_AT)]), 400, 40)), CC), vec![NATURAL]);
-        // Before 4:00 the price is held from marines only (an SCV is trained); from 4:00 from
-        // everything.
         assert_eq!(trains(&teacher().act(&frame(5_759, with(fac_tanks(3)), 399, 40)), SCV), 1);
         assert_eq!(trains(&teacher().act(&frame(5_760, with(fac_tanks(3)), 399, 40)), SCV), 0);
-        // Terran: two tanks.
         let act = teacher_vs(Race::Terran).act(&frame(5_000, with([vec![factory()], tanks(1)].concat()), 400, 40));
         assert!(builds(&act, CC).is_empty(), "{:?}", act.cmds);
         let act = teacher_vs(Race::Terran).act(&frame(5_000, with([vec![factory()], tanks(2)].concat()), 400, 40));
         assert_eq!(builds(&act, CC), vec![NATURAL]);
-        // D: two tanks and 60 s after the last contact.
         let mut d = teacher();
         let mut u = with(tanks(2));
         u.push(enemy(90, ZEALOT, (home().0 + 9 * 32, home().1)));
@@ -1472,15 +1196,11 @@ mod tests {
         let act = d.act(&frame(6_000, u, 400, 40));
         assert_eq!(branch(&d), Branch::Defence);
         assert!(builds(&act, CC).is_empty());
-        // (650: the bunker and second barracks orders D keeps giving hold 250.)
         assert!(builds(&d.act(&frame(7_439, with(tanks(2)), 650, 40)), CC).is_empty());
         assert_eq!(builds(&d.act(&frame(7_440, with(tanks(2)), 650, 40)), CC), vec![NATURAL]);
         assert_eq!(branch(&d), Branch::Defence, "no marines: still D");
     }
 
-    /// 022-AC1 / 022-R7: once siege mode is researched a tank sieges with enemy ground army within
-    /// 11 tiles (not 12, not workers); a sieged tank leaves siege mode after 10 s without enemy
-    /// ground army within 13 tiles when it has somewhere to go, not at its spot.
     #[test]
     fn siege_rule_022_r7() {
         let tank_at = (home().0 + 15 * 32, home().1);
@@ -1498,7 +1218,6 @@ mod tests {
         assert!(siege(&at(6_000, tank.clone(), vec![enemy(90, PROBE, (tank_at.0 + 5 * 32, tank_at.1))], true)).is_empty(), "a worker");
         assert!(siege(&at(6_000, tank.clone(), vec![enemy(90, ZEALOT, (tank_at.0 + 5 * 32, tank_at.1))], false)).is_empty(), "not researched");
 
-        // Unsiege: first seen sieged at 6,000 away from its spot (15 tiles east of the main).
         let sieged = unit(300, SIEGE_TANK_SIEGED, tank_at);
         let run = |b: &mut Brain, n: u32, extra: Vec<UnitState>| {
             let mut u = base(12);
@@ -1511,13 +1230,11 @@ mod tests {
         assert!(unsiege(&run(&mut b, 6_000, vec![])).is_empty());
         assert!(unsiege(&run(&mut b, 6_239, vec![])).is_empty());
         assert_eq!(unsiege(&run(&mut b, 6_240, vec![])), BTreeSet::from([300]));
-        // An enemy within 13 tiles at 6,100 restarts the 10 s.
         let mut c = teacher();
         run(&mut c, 6_000, vec![]);
         run(&mut c, 6_100, vec![enemy(90, ZEALOT, (tank_at.0 + 13 * 32, tank_at.1))]);
         assert!(unsiege(&run(&mut c, 6_240, vec![])).is_empty());
         assert_eq!(unsiege(&run(&mut c, 6_340, vec![])), BTreeSet::from([300]));
-        // At its spot it stays sieged.
         let mut d = teacher();
         let plain = base(12);
         d.act(&frame(5_000, plain.clone(), 0, 40));
@@ -1528,7 +1245,6 @@ mod tests {
         assert!(unsiege(&d.act(&sieging(frame(6_480, u, 0, 40), true, false))).is_empty());
     }
 
-    /// 022-R6: tanks not attacking go behind the bunker (3 tiles toward the command center).
     #[test]
     fn tanks_wait_behind_the_bunker_022_r6() {
         let mut b = teacher();
@@ -1544,8 +1260,6 @@ mod tests {
         assert!(act.cmds.contains(&Command::Unit { units: vec![300], order: CmdOrder::Move(Target::Pos(spot)), queued: false }), "{:?}", act.cmds);
     }
 
-    /// 022-AC1 / 022-R8: M attacks with 4 tanks and 40 army supply (a marine 1, a tank 2), or
-    /// from 12:00 with 20; units more than 8 tiles ahead of the tanks wait (Hold).
     #[test]
     fn wave_condition_022_r8() {
         let army = |marines: u32, tanks: u32| {
@@ -1565,15 +1279,12 @@ mod tests {
         assert_eq!(attackers(17_280, 20, 0), (20, Some(17_280)));
         assert_eq!(attackers(17_279, 20, 0), (0, None), "before 12:00");
         assert_eq!(attackers(17_280, 19, 0), (0, None), "19 supply");
-        // A marine far ahead of the tanks toward the target waits: it attack-moves back to the
-        // group's front, 6 tiles from the tanks' centre.
         let mut b = teacher();
         let mut u = army(32, 4);
         let target = depot_center(THEIRS);
         u.push(enemy(80, NEXUS, target));
         u.iter_mut().filter(|x| x.id == 200).for_each(|x| x.pos = (home().0 + 30 * 32, home().1 + 30 * 32));
         let act = b.act(&sieging(frame(9_024, u, 0, 120), true, false));
-        // 022-AC3: the target on its 4-tile grid cell.
         let goal = snap(target);
         let lead = (home().0 + 80, home().1 + 120 + 12);
         let front = snap(toward(lead, goal, 6.0));
@@ -1581,15 +1292,12 @@ mod tests {
         assert!(ordered(&act, |o| *o == CmdOrder::Attack(Target::Pos(goal))).contains(&300));
     }
 
-    /// 022-R8 hunting: with no enemy building remembered, every start scouted and no enemy in
-    /// sight, the marine squads of 12 go to different stalest cells and the tanks to the first.
     #[test]
     fn hunting_squads_022_r8() {
         let mut u = base(20);
         u.extend((0..32).map(|i| unit(200 + i, MARINE, (home().0 + 100 + 4 * (i % 8) as u16, home().1 + 100 + 4 * (i / 8) as u16))));
         u.extend((0..4).map(|i| unit(300 + i, SIEGE_TANK, (home().0 + 80, home().1 + 120 + 8 * i as u16))));
         let mut b = teacher();
-        // Everything seen once, then a dark observation: the cells' last-seen frames decide.
         b.act(&sieging(frame(9_024, u.clone(), 0, 120), true, false));
         let act = b.act(&sieging(dark(frame(9_072, u, 0, 120)), true, false));
         let cells = b.stale_cells();
@@ -1602,8 +1310,6 @@ mod tests {
         assert_eq!((to(300), to(200), to(212), to(224)), (Some(cells[0]), Some(cells[0]), Some(cells[1]), Some(cells[2])), "{:?}", act.cmds);
     }
 
-    /// 022-R8: an attack starting while an enemy is at the base leaves the marines near home to the
-    /// home guard; every unit gets one order at the observation (tanks the attack, marines the guard).
     #[test]
     fn home_guard_owns_marines_during_an_attack_022_r8() {
         let mut u = base(20);
@@ -1632,8 +1338,6 @@ mod tests {
         }
     }
 
-    /// 022-R6 D (022 tuning): vs Protoss the D marines never attack-move out (`marines_hold_p`);
-    /// vs Terran the 021-R8 2:1 rule stays.
     #[test]
     fn defence_marines_hold_vs_protoss_022_r6() {
         let run = |race: Race, ty: u16| {
@@ -1650,10 +1354,8 @@ mod tests {
         assert_eq!(run(Race::Terran, MARINE), (Branch::Defence, true));
     }
 
-    /// 022-R6 D ③ (tuned numbers): a damaged bunker under zealot attack gets `repairers` SCVs.
     #[test]
     fn damaged_bunker_gets_repairers_022_r6() {
-        // A non-default number, so the test checks that `TpParams::repairers` reaches the defence.
         let tp = TpParams { repairers: 5, ..TpParams::default() };
         let mut b = Brain::with_hints(&info(Race::Protoss), Kit { react: Some(tp.react_params()), tp: Some(tp), ..Kit::terran_tp() }, &hints());
         b.scout_done = true;
@@ -1667,8 +1369,6 @@ mod tests {
         assert_eq!(repair.len(), 5, "{:?}", act.cmds);
     }
 
-    /// 022-R3 scout: the enemy main found before 2:40 keeps the scout there (circling, from 2:30 at
-    /// the start depot) until 2:40, then it mines; below half hit points it leaves at once.
     #[test]
     fn scout_stays_in_the_enemy_main_022_r3() {
         let main = depot_center(THEIRS);
@@ -1707,14 +1407,10 @@ mod tests {
         assert!(gathers(&act) && c.scout_done, "{:?}", act.cmds);
     }
 
-    /// 022-R9 shadow fix-ups (021-AC3 form): the bunker order memory expires after 144 frames
-    /// without a bunker; a lifted factory trains no tank; the gas crew is chosen again from the
-    /// SCVs' orders.
     #[test]
     fn shadow_fixups_022_r9() {
         let rush = |n: u32| {
             let mut u = base(12);
-            // The SCVs mine (an idle builder would release its order, 022-AC3 `idle_grace`).
             u.iter_mut().filter(|x| x.unit_type == SCV).for_each(|x| x.flags = flags::COMPLETED | flags::GATHERING);
             u.push(enemy(90, ZEALOT, depot_center((60, 60))));
             u.push(enemy(91, ZEALOT, depot_center((60, 61))));
@@ -1731,8 +1427,6 @@ mod tests {
         u.push(shop());
         assert_eq!(trains(&teacher().act(&sieging(gas(frame(4_000, u, 500, 30), 300), true, false)), SIEGE_TANK), 0);
 
-        // Gas: 48 frames after the refinery is seen complete (its builder mines on its own) three
-        // SCVs are sent; 48 frames later they mine minerals (not carried out): sent again.
         let mut u = base(14);
         u.push(unit(5, REFINERY, GEYSER_AT));
         let mut g = teacher();
@@ -1740,7 +1434,6 @@ mod tests {
         let crew = |act: &Act| ordered(act, |o| *o == CmdOrder::Gather(5));
         assert!(crew(&g.act(&frame(3_000, u.clone(), 0, 30))).is_empty(), "just complete");
         assert!(crew(&g.act(&frame(3_024, u.clone(), 0, 30))).is_empty(), "complete 24 frames");
-        // First observations of the 48-frame windows of the game clock (022-AC3): 3,072, 3,120, ...
         let first = crew(&g.act(&frame(3_072, u.clone(), 0, 30)));
         assert_eq!(first.len(), 3);
         assert!(crew(&g.act(&frame(3_080, u.clone(), 0, 30))).is_empty(), "not a window start");
@@ -1751,8 +1444,6 @@ mod tests {
         }
         assert!(crew(&g.act(&frame(3_216, u.clone(), 0, 30))).is_empty(), "three on gas");
         assert_eq!(g.tp_gas_crew().len(), 3);
-        // One leaving the refinery (another order for a moment) or out of sight: still three; one
-        // seen mining minerals: two, and another is sent.
         let one = *first.iter().next().unwrap();
         let mut leaving = u.clone();
         leaving.iter_mut().filter(|x| x.id == one).for_each(|x| x.order = 0);
@@ -1766,9 +1457,6 @@ mod tests {
         assert_eq!((g.tp_gas_crew().len(), sent.len()), (3, 1), "mining minerals: replaced");
     }
 
-    /// 022-R9 / 022-AC3: an idle SCV goes to mine once it has been seen idle `idle_grace` (16)
-    /// frames, and a build order whose SCV has been idle that long is dropped and given again; the
-    /// 021-R8 teacher still sends idle SCVs at once.
     #[test]
     fn idle_scvs_from_the_observation_022_ac3() {
         let gathers = |act: &Act| ordered(act, |o| matches!(o, CmdOrder::Gather(_)));
@@ -1784,8 +1472,6 @@ mod tests {
         r.scout_done = true;
         assert!(gathers(&r.act(&frame(3_000, u, 0, 40))).contains(&100), "021-R8: at once");
 
-        // A depot ordered to SCV x that stays idle: the order is dropped after 16 frames and given
-        // again; while x walks to the site (not idle) it is kept.
         let depot = |b: &Brain| b.pending.iter().filter(|q| q.ty == DEPOT).map(|q| (q.worker, q.issued)).collect::<Vec<_>>();
         let mut d = teacher();
         d.scout_done = true;
@@ -1810,7 +1496,6 @@ mod tests {
         let site = d.pending.iter().find(|q| q.ty == DEPOT).unwrap().tile;
         d.act(&at(3_024, flags::COMPLETED | flags::IDLE));
         assert!(depot(&d).iter().all(|(_, issued)| *issued == 3_024), "idle 16 frames: ordered again {:?}", depot(&d));
-        // The refused site is kept free for 25 s: the new order is elsewhere.
         assert!(d.pending.iter().filter(|q| q.ty == DEPOT).all(|q| q.tile != site), "{site:?}");
         assert_eq!(d.tp_failed_sites(), vec![(site, DEPOT)]);
         let mut e = teacher();
@@ -1822,8 +1507,6 @@ mod tests {
         assert_eq!(depot(&e), first, "walking: kept");
     }
 
-    /// 022-R3 / 022-AC3: the scout's circle points are 8 fixed waypoints 6 tiles from the enemy
-    /// start, so positions 2 frames apart give the same Move target.
     #[test]
     fn scout_circle_waypoints_are_fixed_022_ac3() {
         let b = teacher();
@@ -1836,8 +1519,6 @@ mod tests {
         assert!((5.9..=6.1).contains(&d), "{d}");
     }
 
-    /// 022-AC3: picks by 4-tile distance rings (then the lowest id) and attack targets on a 4-tile
-    /// grid do not change with 2 frames of movement; the 021-R8 teacher keeps exact distances.
     #[test]
     fn picks_and_targets_robust_to_two_frames_022_ac3() {
         let at = (1000, 1000);
@@ -1848,8 +1529,6 @@ mod tests {
         assert_eq!(snap((1000, 1010)), (7 * 128 + 64, 7 * 128 + 64));
     }
 
-    /// 022-AC3: an idle scout standing within 3 tiles of its target (the enemy depot from 2:30) is
-    /// not ordered again; one farther away is.
     #[test]
     fn settled_scout_is_not_ordered_again_022_ac3() {
         let main = depot_center(THEIRS);
@@ -1870,8 +1549,6 @@ mod tests {
         assert!(moves(&c.act(&frame(3_700, units(5 * 32), 0, 30))), "idle 5 tiles away");
     }
 
-    /// 022-AC3: the 022 teacher's 48-frame cadences are windows of the game clock (at most once per
-    /// `frame / 48`), the 021-R8 teacher's count from its own last order as before.
     #[test]
     fn cadences_on_game_clock_windows_022_ac3() {
         use crate::react::ReactState;
@@ -1883,9 +1560,6 @@ mod tests {
         assert!(ReactState::due_on(false, Some(100), 148, 48));
     }
 
-    /// 022-AC3: the repairers come from the observation — an SCV repairing the bunker (the live
-    /// teacher's pick) is taken over, one picked but not repairing is dropped in the next window —
-    /// and tanks away from the tank spot are sent there at the first observation of each window.
     #[test]
     fn repairers_and_tank_moves_from_the_observation_022_ac3() {
         let repair = uranium_env::types::order_id("Repair").unwrap();
@@ -1905,11 +1579,9 @@ mod tests {
         let act = b.act(&frame(7_008, scene(&[]), 100, 40));
         let first = ordered(&act, |o| *o == CmdOrder::Repair(60));
         assert_eq!(first.len(), 2, "{:?}", act.cmds);
-        // Next window: the live teacher's repairers are 110 and 111 (visibly repairing): taken over.
         let act = b.act(&frame(7_056, scene(&[110, 111]), 100, 40));
         assert_eq!(ordered(&act, |o| *o == CmdOrder::Repair(60)), BTreeSet::from([110, 111]), "{:?}", act.cmds);
 
-        // A tank away from the spot is ordered there at every observation until its order shows it.
         let mut t = teacher();
         t.scout_done = true;
         let tank_at = (home().0 - 6 * 32, home().1 - 4 * 32);
@@ -1922,8 +1594,6 @@ mod tests {
         assert!(moved(&t.act(&frame(6_096, [base(12), vec![tank(6, Some(spot))]].concat(), 0, 40))), "next window, still away");
     }
 
-    /// 022-R2 (AMB-022-6): the lobby enemy race picks the teacher — Zerg the 021-R8 teacher,
-    /// Terran, Protoss and Random the 022 one.
     #[test]
     fn lobby_race_picks_the_teacher_022_r2() {
         for (race, tp) in [(Race::Zerg, false), (Race::Terran, true), (Race::Protoss, true), (Race::Random, true), (Race::Unknown, true)] {
@@ -1932,7 +1602,6 @@ mod tests {
         }
         assert_eq!(T0Build::TerranTp.for_lobby(&info(Race::Zerg)), T0Build::TerranReact);
         assert_eq!(T0Build::TerranReact.for_lobby(&info(Race::Protoss)), T0Build::TerranReact);
-        // A lobby Random follows the race it shows first (the Terran build until then).
         let mut b = teacher_vs(Race::Random);
         assert_eq!(b.tp.as_ref().unwrap().matchup(), Matchup::Terran);
         let mut u = base(12);
@@ -1941,7 +1610,6 @@ mod tests {
         assert_eq!(b.tp.as_ref().unwrap().matchup(), Matchup::Protoss);
     }
 
-    /// 022-R1 / 021-R3: `t0-terran-tp`, plan name `terran_tp`, Terran only, reads the map hints.
     #[test]
     fn build_id_022_r1() {
         let t = T0Build::TerranTp;
@@ -1951,8 +1619,6 @@ mod tests {
         assert!(Kit::terran_react().tp.is_none());
     }
 
-    /// Scenes covering every kind of command the teacher gives: opening, gas, factory, machine
-    /// shop, research, tanks, defence (bunker, load, hold, pull, repair), siege, unsiege, attack.
     fn scenes() -> Vec<(RawFrame, Act)> {
         let mut out = Vec::new();
         let mut run = |b: &mut Brain, f: RawFrame| {
@@ -1971,7 +1637,6 @@ mod tests {
         u.push(building(2, BARRACKS, (home().0 + 200, home().1 + 160)));
         u.push(geyser());
         run(&mut teacher(), dark(frame(2_000, u, 300, 24)));
-        // R: the bunker, the second barracks, a marine.
         let mut u = base(12);
         u.extend((0..2).map(|i| enemy(90 + i, ZEALOT, depot_center((60, 60 + i as u16)))));
         run(&mut teacher(), frame(3_000, u, 400, 30));
@@ -1985,7 +1650,6 @@ mod tests {
         u.push(shop());
         run(&mut teacher(), gas(frame(3_504, u.clone(), 200, 30), 200));
         run(&mut teacher(), sieging(gas(frame(3_600, u.clone(), 300, 30), 200), false, true));
-        // Defence: a damaged bunker, marines, zealots at the bunker, a tank by them.
         let mut d = teacher();
         let bunker = (home().0 + 5 * 32, home().1 + 64);
         let mut u = base(20);
@@ -1995,7 +1659,6 @@ mod tests {
         u.push(enemy(90, ZEALOT, (bunker.0, bunker.1 + 64)));
         u.push(enemy(91, ZEALOT, (bunker.0 + 20, bunker.1 + 64)));
         run(&mut d, sieging(frame(4_032, u, 0, 60), true, false));
-        // Marines that do not load hold beside the bunker (3 against 2 zealots).
         let mut h = teacher();
         let mut u = base(12);
         u.push(UnitState { hp: 350, ..unit(60, BUNKER, bunker) });
@@ -2007,7 +1670,6 @@ mod tests {
         u.push(enemy(93, ZEALOT, (home().0 + 8 * 32, home().1 - 3 * 32 + 60)));
         u.iter_mut().filter(|x| x.unit_type == MARINE).take(4).for_each(|x| x.loaded_in = Some(60));
         run(&mut h, frame(4_032, u, 0, 60));
-        // Unsiege after 10 s, then the attack.
         let mut w = teacher();
         let mut u = base(20);
         u.extend((0..32).map(|i| unit(200 + i, MARINE, (home().0 + 100 + 4 * (i % 8) as u16, home().1 + 100 + 4 * (i / 8) as u16))));
@@ -2018,9 +1680,6 @@ mod tests {
         out
     }
 
-    /// 022-AC1: every command maps to one 034 action (through the replay commands BWAPI would
-    /// send, `uranium-replay` relabel conversion and labeler, as in 041-R22), and the scenes use
-    /// the 034 actions of spec 022 "모델 표현".
     #[test]
     fn commands_are_034_actions_022_ac1() {
         let lab = uranium_replay::label::Labeler::new().unwrap();
@@ -2049,7 +1708,6 @@ mod tests {
         }
     }
 
-    /// 022-R1: the same observations give the same commands.
     #[test]
     fn same_observations_same_commands_022_r1() {
         let (a, b) = (scenes(), scenes());

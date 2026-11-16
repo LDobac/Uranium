@@ -1,13 +1,8 @@
-//! 043-R10: every path and response field of the SC:R local web API used by the collector.
-//! Measured on 2026-10-16 (`reports/m4_ladder_probe.md`); when a client update changes the
-//! API, only this module changes.
-
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
 use serde_json::Value;
 
-/// Prefixes tried in front of the `/v1/...` routes; the measured client uses `/web-api`.
 pub const PATH_PREFIXES: [&str; 2] = ["", "/web-api"];
 pub const LEADERBOARD_LIST: &str = "/v1/leaderboard";
 pub const GATEWAYS: &str = "/v1/gateway";
@@ -28,9 +23,7 @@ pub fn match_history(toon: &str, gateway: &str, gamemode: &str, season: &str) ->
     format!("/v1/matchmaker-gameinfo-by-toon/{}/{}/{}/{}", enc(toon), enc(gateway), enc(gamemode), enc(season))
 }
 
-/// Ladder (matchmaking) games have `MM-<UUID>` links; private lobbies have numeric ones.
 pub const LADDER_LINK_PREFIX: &str = "MM-";
-/// `create_time` values at or above this are placeholders (u32::MAX was seen), not times.
 pub const MAX_REAL_TIME: u64 = u32::MAX as u64;
 
 #[derive(Deserialize, Debug)]
@@ -47,7 +40,6 @@ pub struct LeaderboardMeta {
 }
 
 impl LeaderboardList {
-    /// Current-season leaderboard of one gateway and game mode.
     pub fn current(&self, gateway: u32, gamemode: u32) -> Option<&LeaderboardMeta> {
         self.leaderboards
             .values()
@@ -56,7 +48,6 @@ impl LeaderboardList {
     }
 }
 
-/// A leaderboard page is a table: `columns` names, `rows` values.
 #[derive(Deserialize, Debug)]
 pub struct LeaderboardPage {
     pub columns: Vec<String>,
@@ -105,7 +96,6 @@ pub struct ProfileReplay {
 }
 
 impl ProfileReplay {
-    /// 043-R5: human 1v1 ladder game.
     pub fn is_ladder_1v1(&self) -> bool {
         self.link.starts_with(LADDER_LINK_PREFIX) && self.attributes.get("replay_humans").and_then(Value::as_str) == Some("2")
     }
@@ -119,15 +109,11 @@ pub struct MatchInfo {
 
 #[derive(Deserialize, Debug)]
 pub struct MatchPlayer {
-    /// The player's toon.
     pub name: String,
     pub gateway_id: u32,
     pub game_info: GameInfo,
-    /// Results as this player's client reported them, keyed by toon ("" for empty slots).
     pub game_result: BTreeMap<String, GameResult>,
     pub info_attributes: BTreeMap<String, Value>,
-    /// Missing for some players (measured 2026-10-19; user decision 2026-10-19): the match is
-    /// still collected and the record leaves that player's MMR/rank empty (043-R8, R9).
     #[serde(default)]
     pub score: Option<Score>,
 }
@@ -159,8 +145,6 @@ pub struct MatchReplay {
 }
 
 impl MatchPlayer {
-    /// Race actually played: the player's own game result has it (`terran`); the matchmaking
-    /// attribute is the race picked, which can be `Random`.
     pub fn race(&self) -> Option<&str> {
         self.game_result
             .get(&self.name)
@@ -178,8 +162,6 @@ pub const RESULT_WIN: &str = "Win";
 pub const RESULT_LOSS: &str = "Loss";
 
 impl MatchInfo {
-    /// 043 Risks: the winner only when every player's report says Win for one toon and Loss
-    /// for the other.
     pub fn agreed_winner(&self) -> Option<&str> {
         let toons: Vec<&str> = self.players.values().map(|p| p.name.as_str()).collect();
         if toons.len() != 2 {
@@ -198,7 +180,6 @@ impl MatchInfo {
     }
 }
 
-/// Percent-encodes one path segment.
 pub fn enc(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
@@ -242,7 +223,6 @@ mod tests {
         assert_eq!(m.race(), Some("Terran"));
     }
 
-    /// 043-R9: a player without `score` still parses; only that player's MMR/rank is unknown.
     #[test]
     fn r043_r9_match_player_without_score() {
         let mut b = player("b", &[("a", "Win"), ("b", "Loss")]);

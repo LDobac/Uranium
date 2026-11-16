@@ -1,12 +1,5 @@
-# 012-R4 / 013 (SC:R bridge normalisation): network command opcodes the bridge sends. Unit
-# selections and unit-targeted orders use the SC:R 1.21 forms (u32 unit tags); every other
-# command keeps its 1.16.1 opcode and layout. Layouts follow BWAPI 4.2 `BW::Orders`
-# (BWAPI/Source/BW/OrderTypes.h) and are written in src/commands.rs. Spike-checked bytes:
-# select, right_click, chat (reports/m7_scr_spike.md).
 version = "scr-1.23.10.13515"
 
-# BWAPI `TechType::getOrder` (BWAPILIB/Source/TechType.cpp techOrders), by tech id; "None" = the
-# tech has no targeted order (it is used through its own command or not at all).
 tech_orders = [
     "None", "CastLockdown", "CastEMPShockwave", "PlaceMine", "CastScannerSweep", "None",
     "CastDefensiveMatrix", "CastIrradiate", "FireYamatoGun", "None", "None", "None",

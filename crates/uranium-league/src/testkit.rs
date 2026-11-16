@@ -1,6 +1,3 @@
-//! Synthetic games for RL unit tests (no game data needed): a small map with a few Terran units
-//! and an enemy base, run through the real feature extraction (030).
-
 use uranium_env::features::{AgentMemory, MapInfo, ORDER_NONE, Observation, extract};
 use uranium_env::types::TypeTables;
 use uranium_proto::*;
@@ -54,7 +51,6 @@ fn unit(id: u32, owner: u8, name: &str, tile: (i32, i32)) -> UnitState {
     }
 }
 
-/// Frame `i` of a synthetic game: our base with `2 + i % 5` SCVs and minerals.
 pub fn frame(i: u32) -> RawFrame {
     let full = |v: bool| BitGrid::from_bytes(W, H, &vec![v as u8; W as usize * H as usize]);
     let mut units = vec![unit(1, 0, "Terran_Command_Center", (8, 8)), unit(2, 11, "Resource_Mineral_Field", (4, 8)), unit(3, 1, "Zerg_Hatchery", (50, 50))];
@@ -73,7 +69,6 @@ pub fn frame(i: u32) -> RawFrame {
     }
 }
 
-/// `n` consecutive observations of one synthetic game (memory carried like a real session).
 pub fn observations(n: usize) -> Vec<Observation> {
     let info = game_info();
     let mut mem = AgentMemory::new(&info);

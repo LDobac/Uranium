@@ -1,9 +1,3 @@
-//! Game end (012-R15), with the OpenBW shim's winner and reason rules (shim:434-468).
-//! `Game.victory_state[p]`: 3 = victorious, 1 / 2 / 4 / 6 = defeated (PlayerImpl.cpp:111-126).
-//! A player whose type turns PlayerLeft (10), ComputerLeft (11) or Neutral (7) left the game
-//! (PlayerImpl.cpp:266-271). An enemy that leaves with buildings standing ends the game as a
-//! Surrender, not an Elimination (011-R17).
-
 use uranium_proto::EndReason;
 
 use crate::observe::Derived;
@@ -22,7 +16,6 @@ pub fn defeated(v: u8) -> bool {
 pub struct EndTracker {
     me: u8,
     enemy: Option<u8>,
-    /// Enemy building tags of the previous frame (shim `enemy_buildings_`).
     enemy_buildings: Vec<u32>,
     enemy_left: bool,
     left_seen: bool,
@@ -37,14 +30,12 @@ impl EndTracker {
         self.enemy
     }
 
-    /// `Some((winner, reason))` once the game is over for our player.
     pub fn update(&mut self, s: &Snapshot, d: &[Derived]) -> Option<(Option<u8>, EndReason)> {
         if let Some(e) = self.enemy {
             let ty = s.player_types.get(e as usize).copied().unwrap_or(0);
             let left = ty == PLAYER_LEFT || ty == COMPUTER_LEFT || ty == NEUTRAL;
             if left && !self.left_seen {
                 self.left_seen = true;
-                // Leaving turns the buildings neutral: they still exist (shim onPlayerLeft).
                 self.enemy_left = self.enemy_buildings.iter().any(|tag| s.units.iter().any(|u| u.tag == *tag));
             }
             if !left {
@@ -56,7 +47,6 @@ impl EndTracker {
         let winner = if mine == VICTORIOUS {
             Some(self.me)
         } else if defeated(mine) {
-            // Both defeated on one frame: draw (shim:452-453).
             if defeated(theirs) { None } else { self.enemy }
         } else {
             return None;

@@ -1,5 +1,3 @@
-//! Bridge log file: `URANIUM_SCR_LOG_DIR/uranium_bridge_scr.log` (default: the temp folder).
-
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::sync::Mutex;

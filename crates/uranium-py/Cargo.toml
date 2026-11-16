@@ -9,12 +9,10 @@ publish.workspace = true
 [lib]
 name = "_core"
 crate-type = ["cdylib"]
-# Built by maturin into the `uranium` Python package; tested from Python (tests/python).
 test = false
 doctest = false
 
 [features]
-# Set by maturin (pyproject.toml): do not link libpython (the interpreter provides it).
 extension-module = ["pyo3/extension-module"]
 
 [dependencies]
@@ -31,5 +29,4 @@ pyo3 = "0.30"
 numpy = "0.30"
 
 [target.'cfg(windows)'.dependencies]
-# 032-R19: allocator of the extension on Windows (see lib.rs `GLOBAL`).
 mimalloc = "0.1"

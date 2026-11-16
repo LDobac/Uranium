@@ -1,4 +1,3 @@
-//! Synthetic game states for 030 / 031 / 034 tests (no game data needed).
 #![allow(dead_code)]
 
 use uranium_env::features::{MapInfo, ORDER_NONE};
@@ -53,8 +52,6 @@ impl Builder {
         Self { units: vec![], next: 1 }
     }
 
-    /// Adds a completed unit; buildings and resources are placed by top-left tile, centred on
-    /// their footprint like BWAPI (`tile * 32 + tile_size * 16`).
     pub fn add(&mut self, owner: u8, name: &str, tile: (i32, i32)) -> u32 {
         let t = TypeTables::get().unit_by_name(name).unwrap_or_else(|| panic!("{name}"));
         let pos = if t.is_building() || t.is_resource() {
@@ -113,7 +110,6 @@ pub fn frame(frame: u32, units: Vec<UnitState>, techs: bool) -> RawFrame {
     }
 }
 
-/// A base with every Terran building, addon, unit and state the 034 actions need.
 pub fn rich_units() -> Builder {
     let mut b = Builder::new();
     let cc = b.add(SELF, "Terran_Command_Center", (10, 10));
@@ -206,11 +202,6 @@ pub fn rich_units() -> Builder {
     b
 }
 
-/// Arguments for action `a` that satisfy the masks of `o` (034-R4): the selection is the
-/// eligible own entity ranked first by `rank` (lowest key), the unit target likewise, the
-/// location the first allowed tile ranked by `loc_rank`; the target is never a selected unit. `None` when the type mask is closed or
-/// an argument has no candidate. One unit is selected: enough for every action (034-R7 allows a
-/// building only alone) and for 010-AC4 / 031-AC1.
 pub fn valid_action(
     o: &uranium_env::features::Observation,
     a: &uranium_env::actions::Action,
@@ -233,7 +224,6 @@ pub fn valid_action(
             .map(|(_, i)| i)
     };
     let selected = if a.uses_select { vec![best(Role::Select, &a.select_cap, true, &[])?] } else { vec![] };
-    // A unit never targets itself (the game rejects following or right-clicking oneself).
     let target_unit = match a.target {
         TargetKind::Unit => Some(best(Role::Target, &a.target_cap, false, &selected)?),
         _ => None,
@@ -249,14 +239,12 @@ pub fn valid_action(
     Some(uranium_env::features::executor::HostAction { action: a.id, delay_bucket: 0, queued: false, selected, target_unit, target_loc })
 }
 
-/// Which argument `valid_action` is ranking candidates for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     Select,
     Target,
 }
 
-/// The 034 `command` name a protocol command came from (010-AC4).
 pub fn command_name(c: &Command) -> &'static str {
     match c {
         Command::Unit { order, .. } => match order {

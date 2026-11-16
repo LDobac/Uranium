@@ -1,8 +1,3 @@
-//! `uranium._core`: the Rust side of the PyTorch trainer (001, AMB-000-4). The BC data side
-//! (041: shard order, data RNG, lanes, batches, prefetch, host collate) runs here with the GIL
-//! released and hands each lane group to Python as numpy arrays (ownership moves, no copy), so
-//! the Python trainer reads exactly the batches the Rust code defines.
-
 mod agent;
 mod rl;
 
@@ -18,11 +13,6 @@ use uranium_data::bc_run::{self, BcExit, BcOut, BcRunArgs, BcTrainer, Start};
 use uranium_store::storage::{self, TakeOver};
 use uranium_data::data::{MapStore, ShardSource};
 
-/// 032-R19 (BC feed, 041; 2026-10-25): the feed allocates and frees GBs of large buffers per
-/// update (a ~1.9 MB plane per step, ~240 MB per collated lane group). The Windows heap returns
-/// blocks that large to the OS on free, so every update page-faulted them in again (~0.9 M
-/// faults/s on the CUDA host) and the feed thread stalled behind the training process. mimalloc
-/// keeps freed memory for reuse. Allocation only: the same bytes.
 #[cfg(windows)]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -48,7 +38,6 @@ fn source(dirs: &[PathBuf], stage: BcStage, cfg: &BcConfig) -> anyhow::Result<Sh
     cfg.train_source(dirs, stage.selection())
 }
 
-/// BC batches from shard folders (041), built ahead on a Rust thread (041-R16).
 #[pyclass(module = "uranium._core", unsendable)]
 struct Feeder {
     inner: Prefetch,
@@ -57,10 +46,6 @@ struct Feeder {
 
 #[pymethods]
 impl Feeder {
-    /// `config`: `config/bc.toml`; `stage`: s1 / s2 / ablation_a (its `[steps]` apply, 041-R14).
-    /// `prefetch` / `pack` default to `URANIUM_BC_PREFETCH` / `URANIUM_BC_PACK_BATCH` (041-R16,
-    /// R18). Maps: `maps_dir`, else `URANIUM_MAPS_DIR`; `synthetic_maps` for test games only.
-    /// `restore`: a `FeedState` JSON from a checkpoint (061-R10).
     #[new]
     #[pyo3(signature = (config, dirs, stage = "s1", prefetch = None, pack = None, maps_dir = None, synthetic_maps = false, check_maps = true, restore = None))]
     #[allow(clippy::too_many_arguments)]
@@ -107,21 +92,18 @@ impl Feeder {
         .map_err(err)
     }
 
-    /// The next batch, `None` at the end of the epoch (041-R14).
     fn next(&mut self, py: Python<'_>) -> PyResult<Option<Batch>> {
         let inner = &mut self.inner;
         let b = py.detach(move || inner.next()).map_err(err)?;
         Ok(b.map(|inner| Batch { inner }))
     }
 
-    /// Fingerprint of the selected shard files the data position refers to (061-R10).
     #[getter]
     fn files(&self) -> String {
         self.files.clone()
     }
 }
 
-/// The observation arrays of a host collate in the 030 §1 shapes (ownership moves, no copy).
 pub(crate) fn put_obs(py: Python<'_>, d: &Bound<'_, PyDict>, o: uranium_data::collate::HostObsBatch) -> PyResult<()> {
     use uranium_data::collate::{ENTITY_CAT, ENTITY_CONT, MAP, SPATIAL, Z_BUILD};
     let (r, n) = (o.b, o.n);
@@ -148,7 +130,6 @@ pub(crate) fn put_obs(py: Python<'_>, d: &Bound<'_, PyDict>, o: uranium_data::co
     Ok(())
 }
 
-/// One BC batch: B lanes x T steps (041-R2) and the data state after it (061-R10).
 #[pyclass(module = "uranium._core", frozen)]
 struct Batch {
     inner: bc::Batch,
@@ -161,67 +142,50 @@ impl Batch {
         self.inner.lanes()
     }
 
-    /// Policy-loss divisor of every group: usable label steps of the whole batch (041-R3).
     #[getter]
     fn valid(&self) -> f32 {
         self.inner.valid()
     }
 
-    /// Value-loss divisor: usable label steps of decided games (041-R7 / A-3).
     #[getter]
     fn value_valid(&self) -> f32 {
         self.inner.value_valid()
     }
 
-    /// Steps per lane (0 = a drained lane, evaluation only).
     fn lane_steps(&self) -> Vec<usize> {
         self.inner.lane_steps()
     }
 
-    /// 041-R23: per lane, the real steps of the first `t` with a privileged summary (the batch-wide
-    /// `aux_priv` divisor, without collating).
     fn lane_priv_steps(&self, t: usize) -> Vec<usize> {
         self.inner.lane_priv_steps(t)
     }
 
-    /// 050-R9 `val500_race`: per lane, the race the game's enemy actually played (`GameInfo`:
-    /// `terran`, `protoss`, `zerg`, else `random` / `unknown`); empty for a drained lane.
     fn lane_enemy_races(&self) -> Vec<String> {
         self.inner.enemy_races.clone()
     }
 
-    /// 041-R27: per lane, its game's replay SHA-256 (the game identity, 040-R5); empty for a
-    /// drained lane.
     fn lane_games(&self) -> Vec<String> {
         self.inner.game_ids.clone()
     }
 
-    /// 044-R3: per lane, its view's `perspective_slot` (040 meta; 0 for a drained lane).
     fn lane_perspectives(&self) -> Vec<u8> {
         self.inner.perspective_slots.clone()
     }
 
-    /// 044-R3: the observation frames of lane `lane`'s steps in this batch (with the game, the
-    /// step identity, 044-R2).
     fn lane_frames(&self, lane: usize) -> PyResult<Vec<u32>> {
         let c = self.inner.chunks.get(lane).ok_or_else(|| PyValueError::new_err(format!("lane {lane} of {}", self.inner.chunks.len())))?;
         Ok(c.iter().map(|s| s.frame).collect())
     }
 
-    /// `bc-eval` label facts per row of `group(start, end, t, ..)`: (has target location,
-    /// full selection length) as numpy arrays.
     fn label_extras<'py>(&self, py: Python<'py>, start: usize, end: usize, t: usize) -> (Bound<'py, numpy::PyArray1<bool>>, Bound<'py, numpy::PyArray1<i32>>) {
         let (a, b) = self.inner.label_extras(start..end, t);
         (a.into_pyarray(py), b.into_pyarray(py))
     }
 
-    /// `FeedState` JSON after this batch (saved in checkpoints, 061-R10).
     fn state_json(&self) -> PyResult<String> {
         serde_json::to_string(&self.inner.state).map_err(|e| err(e.into()))
     }
 
-    /// Lanes `start..end` collated for one forward/backward (`Batch::group`): a dict of numpy
-    /// arrays in the 030 §1 shapes, rows b-major (row = lane * t + step), plus `b`, `t`, `n`.
     fn group<'py>(&self, py: Python<'py>, start: usize, end: usize, t: usize, pad: usize, max_select: usize) -> PyResult<Bound<'py, PyDict>> {
         if start >= end || end > self.inner.lanes() {
             return Err(PyValueError::new_err(format!("lanes {start}..{end} of {}", self.inner.lanes())));
@@ -248,7 +212,6 @@ impl Batch {
         put!("results", g.results, vec![r]);
         put!("value_w", g.value_w, vec![r]);
         put!("keep", g.keep, vec![g.b]);
-        // 032 §2.8 / 041-R23: real (non-padding) steps and steps with a privileged summary.
         put!("real", g.real, vec![r]);
         put!("priv_present", g.priv_present, vec![r]);
         d.set_item("b", g.b)?;
@@ -258,7 +221,6 @@ impl Batch {
     }
 }
 
-/// `bc-eval` games and the 041-AC4 surrender replay ([`uranium_data::eval::EvalStream`]).
 #[pyclass(module = "uranium._core", unsendable)]
 struct EvalStream {
     inner: uranium_data::eval::EvalStream,
@@ -266,11 +228,6 @@ struct EvalStream {
 
 #[pymethods]
 impl EvalStream {
-    /// `split`: train / val / test; `games`: N games by the fixed-seed shuffle (032-R17 ②), else
-    /// every game; `has_open`: replay the surrender check with the win_open head (032-R18);
-    /// `until_frame`: each game read only up to that frame (`EvalSelection::until_frame`);
-    /// `chain_start_sources`: 041-R30 ⑤ scoring option, chained steps of these sources (`botgen`,
-    /// `dagger`) observed through their chain-start step (the config's key is not followed).
     #[new]
     #[pyo3(signature = (config, dirs, split = "test", games = None, seed = 1, has_open = false, maps_dir = None, synthetic_maps = false, until_frame = None, chain_start_sources = None))]
     #[allow(clippy::too_many_arguments)]
@@ -301,15 +258,12 @@ impl EvalStream {
         Ok(Self { inner })
     }
 
-    /// The next batch, `None` once every lane is drained.
     fn next(&mut self, py: Python<'_>) -> PyResult<Option<Batch>> {
         let inner = &mut self.inner;
         let b = py.detach(move || inner.next()).map_err(err)?;
         Ok(b.map(|inner| Batch { inner }))
     }
 
-    /// Feeds the win_open output of lanes `start..end` (rows lane * t + step) to the surrender
-    /// replay and the win_open MSE.
     fn decide(&mut self, batch: &Batch, start: usize, end: usize, t: usize, open: numpy::PyReadonlyArray1<'_, f32>) -> PyResult<()> {
         let open = open.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?;
         if open.len() != (end - start) * t {
@@ -324,16 +278,12 @@ impl EvalStream {
         self.inner.games()
     }
 
-    /// JSON {win_open_mse, surrender} (null without the head); ends the open games.
     fn finish(&mut self) -> PyResult<String> {
         let (mse, sur) = self.inner.finish();
         serde_json::to_string(&serde_json::json!({ "win_open_mse": mse, "surrender": sur })).map_err(|e| err(e.into()))
     }
 }
 
-/// 044-R3 policy labelling (`python -m uranium distill-label`, [`uranium_data::distill`]): the
-/// `distill_pre` games through the BC loader as `bc-eval` reads them, the labeller's head choices
-/// per lane ([`DistillLabeller::put`]) and the labelled shards ([`DistillLabeller::write`]).
 #[pyclass(module = "uranium._core", unsendable)]
 struct DistillLabeller {
     inner: uranium_data::distill::DistillLabeller,
@@ -345,10 +295,6 @@ fn i64s<'a>(a: &'a numpy::PyReadonlyArray1<'_, i64>, what: &str) -> PyResult<&'a
 
 #[pymethods]
 impl DistillLabeller {
-    /// `config`: the BC config (lanes, `seq_len`); `input`: the `distill_pre` folder (044-R2);
-    /// `label_seed`: 044-R3 ② seed of the per-game draws. Maps: `maps_dir`, else
-    /// `URANIUM_MAPS_DIR`; `synthetic_maps` for test games only. `only`: the input files to read
-    /// (relative paths, `distill_check`); `None` = all.
     #[new]
     #[pyo3(signature = (config, input, label_seed, maps_dir = None, synthetic_maps = false, only = None))]
     #[allow(clippy::too_many_arguments)]
@@ -363,22 +309,16 @@ impl DistillLabeller {
         Ok(Self { inner })
     }
 
-    /// The next batch, `None` once every lane is drained.
     fn next(&mut self, py: Python<'_>) -> PyResult<Option<Batch>> {
         let inner = &mut self.inner;
         let b = py.detach(move || inner.next()).map_err(err)?;
         Ok(b.map(|inner| Batch { inner }))
     }
 
-    /// Per lane of `batch`: (game key `"<file>:<game>"`, the game's 044-R3 seed), `None` for a
-    /// drained lane. A new key in a lane is a new game (a new RNG).
     fn lanes(&self, batch: &Batch) -> Vec<Option<(String, u64)>> {
         self.inner.lanes(&batch.inner).into_iter().map(|x| x.map(|(id, seed)| (format!("{}:{}", id.file, id.game), seed))).collect()
     }
 
-    /// The head choices for lane `lane`'s steps of `batch` (one row per step, step order):
-    /// ActionType, delay bucket, queued (0/1), the selection's entity indices in pick order
-    /// `[steps, S]` ending at `end` (END = the group's entity count), TargetUnit, Location.
     #[allow(clippy::too_many_arguments)]
     fn put(
         &mut self,
@@ -416,27 +356,22 @@ impl DistillLabeller {
         self.inner.put(&batch.inner, lane, &choices).map_err(err)
     }
 
-    /// Games read so far.
     #[getter]
     fn games(&self) -> usize {
         self.inner.games()
     }
 
-    /// Where the labelled shards go (`out`) and the records (`policy`: the `label_policy` JSON
-    /// object, 044-R3 ⑤); staging `URANIUM_SHARD_STAGING_DIR` (040-R17). Before the first batch.
     #[pyo3(signature = (out, records, policy, threads = None))]
     fn open(&mut self, out: PathBuf, records: PathBuf, policy: String, threads: Option<usize>) -> PyResult<()> {
         let policy: serde_json::Value = serde_json::from_str(&policy).map_err(|e| PyValueError::new_err(format!("policy: {e}")))?;
         self.inner.open(&out, &records, &policy, &uranium_data::distill::staging_dir(), threads).map_err(err)
     }
 
-    /// Writes the input files whose games are all labelled (after each batch); returns how many.
     fn flush(&mut self, py: Python<'_>) -> PyResult<usize> {
         let inner = &mut self.inner;
         py.detach(move || inner.flush()).map_err(err)
     }
 
-    /// After the last batch: the files left, the completeness check and the summary JSON.
     fn finish(&mut self, py: Python<'_>) -> PyResult<String> {
         let inner = &mut self.inner;
         let sum = py.detach(move || inner.finish()).map_err(err)?;
@@ -444,36 +379,28 @@ impl DistillLabeller {
     }
 }
 
-/// 044-R3 argument rules ([`uranium_data::distill::check_args`]); the BC shards root is
-/// `<URANIUM_SHARED_DIR>/datasets/replays/shards` when the variable is set. Returns the input
-/// files to label (an existing records file is continued, 044-R5 ③ top-up).
 #[pyfunction]
 fn distill_check(input: PathBuf, out: PathBuf, records: PathBuf, mode: &str) -> PyResult<Vec<String>> {
     let root = std::env::var_os("URANIUM_SHARED_DIR").filter(|v| !v.is_empty()).map(|d| PathBuf::from(d).join("datasets/replays/shards"));
     uranium_data::distill::check_args(&input, &out, &records, mode, root.as_deref()).map_err(err)
 }
 
-/// What an existing distill-label records file holds ([`uranium_data::distill::read_labelled`]):
-/// JSON {inputs, views, policy} (policy: the first line's `label_policy`, null for a new file).
 #[pyfunction]
 fn distill_records(records: PathBuf) -> PyResult<String> {
     let l = uranium_data::distill::read_labelled(&records).map_err(err)?;
     serde_json::to_string(&l).map_err(|e| err(e.into()))
 }
 
-/// 044-R3 ② seed of one game's draws ([`uranium_data::distill::game_seed`]).
 #[pyfunction]
 fn distill_game_seed(replay_sha256: &str, perspective_slot: u8, label_seed: u64) -> u64 {
     uranium_data::distill::game_seed(replay_sha256, perspective_slot, label_seed)
 }
 
-/// A Python exception as an error of the Rust loop, with its traceback.
 fn py_error(py: Python<'_>, e: PyErr) -> anyhow::Error {
     let tb = e.traceback(py).and_then(|t| t.format().ok()).unwrap_or_default();
     anyhow::anyhow!("{tb}{e}")
 }
 
-/// The Python trainer object (`uranium.bc.trainer`) behind [`BcTrainer`].
 struct PyTrainer(Py<PyAny>);
 
 impl BcTrainer for PyTrainer {
@@ -494,11 +421,6 @@ impl BcTrainer for PyTrainer {
     }
 }
 
-/// 041 / 061: one BC stage with the Rust run loop ([`bc_run::run`]): data thread, schedule,
-/// checkpoints, run lock, heartbeat, push, yield and resume. `make(config_json, start, dir,
-/// entity_chunk)` builds the trainer once the start point is known (`start`: "new", "resume" or
-/// "init"; `dir` the checkpoint for the last two). Returns how the run ended: "done", "stopped",
-/// "lock_lost", "yielded" (exit 76) or "busy" (the lock is not ours, exit 75).
 #[pyfunction]
 #[pyo3(signature = (make, config, stage = "s1", out = None, run = None, take_over = false, take_over_if = None, datasets = Vec::new(), shards = Vec::new(), steps = None, resume = None, init = None, backend = "cpu", precision = "f32", core = "gtrxl", maps_dir = None, synthetic_maps = false))]
 #[allow(clippy::too_many_arguments)]
@@ -570,7 +492,6 @@ fn run_bc(
             uranium_data::elog!("{e:#}");
             Ok("busy")
         }
-        // Ctrl+C during the dataset pull: no lock yet, a clean stop (042-R10).
         Err(e) if e.downcast_ref::<uranium_store::Interrupted>().is_some() => {
             uranium_data::elog!("[bc] {e:#}");
             Ok("stopped")
@@ -579,19 +500,16 @@ fn run_bc(
     }
 }
 
-/// 041-R9 data folders: `datasets` pulled or verified (061-R11-1, R12), then `shards` as they are.
 #[pyfunction]
 fn dataset_dirs(py: Python<'_>, datasets: Vec<PathBuf>, shards: Vec<PathBuf>) -> PyResult<Vec<PathBuf>> {
     py.detach(move || storage::dataset_dirs(&datasets, &shards)).map_err(err)
 }
 
-/// Checkpoint folder of `dir`: itself, or the one `LATEST` names in a 061 run folder.
 #[pyfunction]
 fn resolve_checkpoint(dir: PathBuf) -> PyResult<PathBuf> {
     bc_run::resolve_checkpoint(&dir).map_err(err)
 }
 
-/// Effective config of `stage` as JSON and its fingerprint (B-3).
 #[pyfunction]
 #[pyo3(signature = (config, stage = "s1"))]
 fn bc_config(config: PathBuf, stage: &str) -> PyResult<(String, String)> {
@@ -599,14 +517,12 @@ fn bc_config(config: PathBuf, stage: &str) -> PyResult<(String, String)> {
     Ok((serde_json::to_string(&cfg).map_err(|e| err(e.into()))?, cfg.fingerprint()))
 }
 
-/// Learning rate at `step` (041-R3, the reference for the Python schedule).
 #[pyfunction]
 #[pyo3(signature = (config, stage, step, scale = 1.0))]
 fn lr_at(config: PathBuf, stage: &str, step: usize, scale: f64) -> PyResult<f64> {
     Ok(self::config(&config, stage)?.lr_at(step, scale))
 }
 
-/// [`uranium_data::data::dataset_fingerprint`] of the files `stage` reads (B-3).
 #[pyfunction]
 #[pyo3(signature = (config, dirs, stage = "s1"))]
 fn dataset_fingerprint(py: Python<'_>, config: PathBuf, dirs: Vec<PathBuf>, stage: &str) -> PyResult<String> {
@@ -615,7 +531,6 @@ fn dataset_fingerprint(py: Python<'_>, config: PathBuf, dirs: Vec<PathBuf>, stag
     py.detach(move || uranium_data::data::dataset_fingerprint(&source(&dirs, st, &cfg)?)).map_err(err)
 }
 
-/// One-epoch updates per stage as JSON (041-R13, the same table as `uranium-train bc-epoch`).
 #[pyfunction]
 fn epoch_table(py: Python<'_>, config: PathBuf, dirs: Vec<PathBuf>) -> PyResult<String> {
     let cfg = BcConfig::load(&config).map_err(err)?;
@@ -623,14 +538,12 @@ fn epoch_table(py: Python<'_>, config: PathBuf, dirs: Vec<PathBuf>) -> PyResult<
     serde_json::to_string(&t).map_err(|e| err(e.into()))
 }
 
-/// 034 action table columns (032 §5) as JSON: the model's mask gather constants.
 #[pyfunction]
 fn action_columns() -> PyResult<String> {
     let c = uranium_data::table::ActionColumns::current().map_err(err)?;
     serde_json::to_string(&c).map_err(|e| err(e.into()))
 }
 
-/// Feature schema dimensions (030) as JSON: capability and location class counts, widths.
 #[pyfunction]
 fn feature_dims() -> PyResult<String> {
     use uranium_data::collate as c;
@@ -639,7 +552,6 @@ fn feature_dims() -> PyResult<String> {
         "entity_cat": c::ENTITY_CAT, "entity_cont": c::ENTITY_CONT, "spatial": c::SPATIAL, "map": c::MAP, "z_build": c::Z_BUILD,
         "actions": d.0, "scalar": d.1, "z_units": d.2, "caps": d.3, "loc_classes": d.4, "privileged": d.5,
         "delay_buckets": uranium_data::table::DELAY_BUCKETS, "n_max": uranium_data::table::N_MAX, "feature_version": uranium_data::table::FEATURE_SCHEMA_VERSION, "action_version": uranium_data::table::ACTION_SCHEMA_VERSION,
-        // 030-R5: earlier feature schemas whose checkpoints load as they are.
         "feature_load_compat": uranium_env::features::FEATURE_SCHEMA_LOAD_COMPAT,
     }))
     .map_err(|e| err(e.into()))
@@ -650,48 +562,34 @@ fn uranium_env_dims() -> (usize, usize, usize, usize, usize, usize) {
     (d.actions, d.scalar(), d.z_units(), d.caps(), d.loc_classes(), d.privileged())
 }
 
-/// Field order of the lane-group digest (`uranium-train feed-digest`).
 #[pyfunction]
 fn group_fields() -> Vec<&'static str> {
     bc::GROUP_FIELDS.to_vec()
 }
 
-/// 042-R10 / 060-R6: the process's Ctrl+C handler (first: clean stop, second: exit 130).
 #[pyfunction]
 fn install_stop_handler(tag: String) -> PyResult<()> {
     let tag: &'static str = Box::leak(tag.into_boxed_str());
     uranium_store::install_stop_handler(tag).map(|_| ()).map_err(err)
 }
 
-/// Whether a clean stop was requested (Ctrl+C or the watchdog's SIGINT).
 #[pyfunction]
 fn stop_requested() -> bool {
     uranium_store::stop_requested()
 }
 
-/// 020-R21 시드 → 시작 슬롯 (AMB-042-19): `(slot_self, slot_enemy, start_hit)` — the start slots
-/// (0..3) of `GameSpec.players[0]` (ours) and `players[1]` for an OpenBW melee game with this
-/// seed after `random_players` Random race draws, and the first-target hit. The same generator as
-/// the RL league and the check plan (`uranium_runner::start_slots`).
 #[pyfunction]
 #[pyo3(signature = (seed, random_players = 0))]
 fn start_slots(seed: u32, random_players: u32) -> (u8, u8, bool) {
     uranium_runner::start_slots::start_condition(seed, random_players)
 }
 
-/// 050-R6 (AMB-042-19): the seed list of the condition-controlled rush check — `blocks` blocks
-/// of 32 games (16 first-target hits, 16 misses, all twelve slot pairs) from candidate `first`.
 #[pyfunction]
 #[pyo3(signature = (blocks = 4, first = uranium_runner::start_slots::CHECK_FIRST_SEED))]
 fn rush_check_seeds(blocks: usize, first: u32) -> Vec<u32> {
     uranium_runner::start_slots::check_seeds(blocks, first)
 }
 
-/// Tests: writes synthetic shards (`uranium_data::testkit`) under `root`: `kind` is "varied"
-/// (15 games of 1..16 steps), "mixed" (games with different entity counts and void labels),
-/// "races" (the varied games against Terran, Protoss, Zerg and a lobby Random that played
-/// Protoss, `testkit::race_games`). `only_race`: keep the games whose enemy played that race
-/// (`terran`, `protoss`, `zerg`).
 #[pyfunction]
 #[pyo3(signature = (root, kind = "varied", per_file = 4, only_race = None))]
 fn write_test_shards(root: PathBuf, kind: &str, per_file: usize, only_race: Option<String>) -> PyResult<()> {

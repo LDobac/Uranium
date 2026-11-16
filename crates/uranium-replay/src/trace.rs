@@ -1,7 +1,3 @@
-//! Desync tracing (040-R8 analysis): where does an OpenBW replay start to diverge from the
-//! recorded game? Follows the perspective player's selections and reports the first unit tag
-//! that the player keeps selecting although it does not exist in the simulation.
-
 use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Result;
@@ -11,8 +7,6 @@ use crate::Replay;
 use crate::cmd::{self, op};
 use crate::play::{PlayConfig, play_with, slot_of};
 
-/// A tag selected again at least this many times after its first invalid selection is a
-/// persistent miss (the player clearly still had that unit), not a stale click.
 const PERSISTENT_REPEATS: usize = 3;
 
 #[derive(Serialize, Debug, Clone, Default)]
@@ -26,14 +20,10 @@ pub struct Sighting {
 
 #[derive(Serialize, Debug, Clone)]
 pub struct Divergence {
-    /// Frame of the first selection of the missing unit that OpenBW could not resolve.
     pub frame: u32,
     pub tag: u32,
-    /// Later selections of the same tag.
     pub repeats: usize,
-    /// How OpenBW saw the unit: never (`None`, e.g. its production failed) or until `last_seen`.
     pub seen: Option<Sighting>,
-    /// Unit type the player's last command before divergence trained/built, if any.
     pub nearby_commands: Vec<String>,
 }
 
@@ -44,7 +34,6 @@ pub struct Trace {
     pub end_frame: Option<u32>,
     pub select_cmds: u32,
     pub invalid_select_cmds: u32,
-    /// Invalid selection share per 1000-frame window: (window start, invalid, total).
     pub by_window: Vec<(u32, u32, u32)>,
     pub first_persistent: Option<Divergence>,
     pub supply_at_divergence: Option<(u16, u16)>,
@@ -54,7 +43,6 @@ pub fn trace(rep: &Replay, perspective: u8, cfg: &PlayConfig) -> Result<Trace> {
     let me = slot_of(rep, perspective)?;
     let cmds: Vec<cmd::Cmd> = rep.cmds().filter(|c| c.player == perspective).map(|c| cmd::to_legacy(c, rep.unit_limit)).collect::<Result<_>>()?;
     let mut seen: HashMap<u32, Sighting> = HashMap::new();
-    // (frame, tag) of every unresolved selection, in order.
     let mut misses: Vec<(u32, u32)> = Vec::new();
     let mut windows: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
     let mut supply_log: Vec<(u32, u16, u16)> = Vec::new();

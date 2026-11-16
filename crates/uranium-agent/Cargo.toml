@@ -7,14 +7,12 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# Synthetic frames for tests of other crates (uranium-py: the Python inference tests).
 testkit = []
 
 [dependencies]
 uranium-proto.workspace = true
 uranium-scripted.workspace = true
 uranium-env = { path = "../uranium-env" }
-# Host collate and action columns (AMB-000-4: the model runs in Python behind `broker`).
 uranium-data = { path = "../uranium-data" }
 anyhow.workspace = true
 clap.workspace = true

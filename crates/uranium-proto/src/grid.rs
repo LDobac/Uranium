@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-/// Row-major bit grid (1 bit per cell, LSB first).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 pub struct BitGrid {
     pub width: u16,
@@ -14,7 +13,6 @@ impl BitGrid {
         Self { width, height, bits: vec![0; n.div_ceil(8)] }
     }
 
-    /// Builds from one byte per cell (non-zero = set).
     pub fn from_bytes(width: u16, height: u16, cells: &[u8]) -> Self {
         let mut g = Self::new(width, height);
         for (i, &c) in cells.iter().enumerate().take(width as usize * height as usize) {

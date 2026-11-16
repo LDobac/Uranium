@@ -1,24 +1,17 @@
-//! OS-specific parts of hostd (spec 020-R8): OpenBW LAN pairing and process cleanup.
-//! Linux: LOCAL sockets + process groups with `PR_SET_PDEATHSIG`.
-//! Windows: TCP port pairs (011-R16) + Job Objects with kill-on-close.
-
 use std::process::{Child, Command};
 
 use anyhow::Result;
 
 use crate::config::Config;
 
-/// Environment for the two launchers of one game so they find each other (011-R4, 011-R16).
 pub struct LanSetup {
     pub env: [Vec<(String, String)>; 2],
-    /// Resources to release when the game ends (socket file or ports).
     pub cleanup: LanCleanup,
 }
 
 pub enum LanCleanup {
     #[cfg_attr(not(unix), allow(dead_code))]
     File(std::path::PathBuf),
-    /// Windows TCP port pair starting at this port (docs/commands.md, "Windows").
     #[cfg_attr(not(windows), allow(dead_code))]
     Ports(u16),
 }
@@ -26,20 +19,12 @@ pub enum LanCleanup {
 pub trait Platform: Send + Sync {
     fn lan_setup(&self, game_id: u64) -> Result<LanSetup>;
     fn release(&self, lan: LanSetup);
-    /// Blocks until the first launcher's LAN endpoint exists, so player slots are assigned
-    /// in launch order and seeded games are reproducible (011-AC4).
     fn wait_first_ready(&self, lan: &LanSetup, timeout: std::time::Duration) -> bool;
-    /// Spawn so that the launcher and everything it starts can be killed as a unit and dies
-    /// with hostd (020-AC3).
     fn spawn(&self, cmd: Command) -> Result<Child>;
-    /// Kill the launcher and its descendants.
     fn kill_tree(&self, child: &mut Child);
-    /// Release per-process resources of a launcher that already exited.
     fn reap(&self, _child: &mut Child) {}
 }
 
-/// Port pairs `(p, p+1)` for Windows TCP LAN pairing (011-R16, 020-R8). Pairs come from
-/// `[base, base + 2 * pairs)`; a pair is skipped while `busy` reports either port in use.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub struct PortPool {
     base: u16,
@@ -54,7 +39,6 @@ impl PortPool {
         Ok(Self { base, taken: std::sync::Mutex::new(vec![false; pairs]) })
     }
 
-    /// Lowest free pair, or an error when every pair is taken or busy.
     pub fn acquire(&self, busy: impl Fn(u16) -> bool) -> Result<u16> {
         let mut taken = self.taken.lock().unwrap();
         for (i, t) in taken.iter_mut().enumerate() {
@@ -90,7 +74,6 @@ mod unix {
 
     impl UnixPlatform {
         pub fn new() -> Result<Self> {
-            // Unix socket paths are limited to 108 bytes: keep them short (011, M2 finding).
             let base = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
             let sock_dir = base.join("uranium");
             std::fs::create_dir_all(&sock_dir).with_context(|| format!("creating {}", sock_dir.display()))?;
@@ -126,10 +109,8 @@ mod unix {
 
         fn spawn(&self, mut cmd: Command) -> Result<Child> {
             cmd.process_group(0);
-            // SAFETY: only async-signal-safe calls between fork and exec.
             unsafe {
                 cmd.pre_exec(|| {
-                    // Die with the hostd thread that spawned us (kill -9 of hostd, 020-AC3).
                     if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
                         return Err(std::io::Error::last_os_error());
                     }
@@ -141,7 +122,6 @@ mod unix {
 
         fn kill_tree(&self, child: &mut Child) {
             let pgid = child.id() as i32;
-            // SAFETY: plain syscall; the group id is the child's pid (process_group(0)).
             unsafe {
                 libc::kill(-pgid, libc::SIGKILL);
             }
@@ -172,8 +152,6 @@ mod windows {
 
     pub struct WindowsPlatform {
         ports: PortPool,
-        /// Job handle (as usize, for Send) per launcher pid. Closing it kills the launcher, so
-        /// the launchers die with hostd even on `taskkill /F` (020-AC3).
         jobs: Mutex<HashMap<u32, usize>>,
     }
 
@@ -187,10 +165,8 @@ mod windows {
         }
     }
 
-    /// IPv4 TCP ports in LISTEN state, from the system TCP table.
     fn listening_ports() -> Vec<u16> {
         let mut size = 0u32;
-        // SAFETY: size query with a null buffer, then a buffer of the reported size.
         unsafe {
             GetExtendedTcpTable(std::ptr::null_mut(), &mut size, 0, AF_INET as u32, TCP_TABLE_OWNER_PID_LISTENER, 0);
             let mut buf = vec![0u32; (size as usize).div_ceil(4) + 64];
@@ -200,15 +176,12 @@ mod windows {
             }
             let n = buf[0] as usize;
             let rows = std::slice::from_raw_parts(buf.as_ptr().add(1).cast::<MIB_TCPROW_OWNER_PID>(), n);
-            // dwLocalPort holds the port in network byte order in its low 16 bits.
             rows.iter().map(|r| u16::from_be(r.dwLocalPort as u16)).collect()
         }
     }
 
     impl Platform for WindowsPlatform {
         fn lan_setup(&self, _game_id: u64) -> Result<LanSetup> {
-            // Ports another program listens on are skipped. OpenBW binds with SO_REUSEADDR, so
-            // TIME_WAIT leftovers of earlier games do not block a pair; the LISTEN table decides.
             let listening = listening_ports();
             let p = self.ports.acquire(|port| listening.contains(&port))?;
             let env = |listen: u16, connect: u16| {
@@ -229,9 +202,6 @@ mod windows {
             }
         }
 
-        /// Slot 0 listens on p and connects to p+1 once (refused, nothing there yet); slot 1
-        /// then connects to p. A probe connect to p would be accepted as a client, so the
-        /// LISTEN table is polled instead (011-AC4).
         fn wait_first_ready(&self, lan: &LanSetup, timeout: std::time::Duration) -> bool {
             let LanCleanup::Ports(p) = lan.cleanup else { return true };
             let t = std::time::Instant::now();
@@ -245,7 +215,6 @@ mod windows {
         }
 
         fn spawn(&self, mut cmd: Command) -> Result<Child> {
-            // SAFETY: plain Win32 calls; every handle is checked and closed on failure.
             unsafe {
                 let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
                 anyhow::ensure!(!job.is_null(), "CreateJobObjectW: {}", std::io::Error::last_os_error());
@@ -262,8 +231,6 @@ mod windows {
                     CloseHandle(job);
                     anyhow::bail!("SetInformationJobObject: {e}");
                 }
-                // BWAPILauncher starts no child processes, so assigning right after spawn
-                // leaves nothing outside the job.
                 let mut child = match cmd.creation_flags(CREATE_NO_WINDOW).spawn().context("spawning launcher") {
                     Ok(c) => c,
                     Err(e) => {
@@ -285,7 +252,6 @@ mod windows {
 
         fn kill_tree(&self, child: &mut Child) {
             if let Some(job) = self.take_job(child) {
-                // SAFETY: job is a handle this platform created and still owns.
                 unsafe {
                     TerminateJobObject(job, 1);
                     CloseHandle(job);
@@ -298,7 +264,6 @@ mod windows {
 
         fn reap(&self, child: &mut Child) {
             if let Some(job) = self.take_job(child) {
-                // SAFETY: as above; the launcher already exited, closing kills any leftovers.
                 unsafe {
                     CloseHandle(job);
                 }
@@ -332,7 +297,6 @@ mod tests {
     #[test]
     fn port_pool_skips_busy_ports_020_r8() {
         let pool = PortPool::new(17000, 2).unwrap();
-        // 17001 is held by another program: the whole first pair is skipped.
         assert_eq!(pool.acquire(|p| p == 17001).unwrap(), 17002);
         assert!(pool.acquire(|p| p == 17001).is_err());
         assert!(PortPool::new(65535, 1).is_err());

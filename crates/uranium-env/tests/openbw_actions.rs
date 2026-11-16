@@ -1,29 +1,3 @@
-//! 031-AC1 (C-5): every 034 action type is executed in a real OpenBW game and the game accepts it
-//! (no `CommandFailed` for at least one execution, and every rejection is a justified one, 액션
-//! 감사), Smart_Unit / Gather_Unit on a resource out
-//! of vision (011-R20, 액션 감사 F2), and the Attack_Pos -> move substitution
-//! for unarmed units (034 이동·전투 비고, AMB-041-1: the bridge sends a move, the unit's order
-//! becomes Move). `supply_queue_ghost_commands_and_unit_rejections_011_r23` checks the 2026-10-31
-//! decisions in a short game of its own: a supply-blocked Train on a building with a queue (034-R3,
-//! 011-R23), commands on a remembered enemy building out of vision (011-R20 ①-2) and per-unit
-//! rejections of a group command (011-R20 ④).
-//!
-//! Needs a running `uranium-hostd` with OpenBW and Fighting Spirit, so it is ignored by default:
-//!
-//! ```text
-//! URANIUM_TEST_HOSTD=<host:port> [URANIUM_TEST_AGENT_LISTEN=0.0.0.0:0] [URANIUM_AGENT_PUBLIC_ADDR=<addr>] \
-//!   cargo test -p uranium-env --test openbw_actions -- --ignored --nocapture
-//! ```
-//!
-//! Player 0 is a scripted Terran that walks the whole tech tree with one base and issues each
-//! action type through the real masks and executor (031-R4) as soon as the type mask allows it.
-//! Player 1 is an idle Terran that only provides enemy targets (lockdown, flare, yamato, attack).
-//! Gas is saved by cancelling upgrades and unneeded units right after they start (which also
-//! covers the Cancel_* types); damage for Repair_Unit comes from our own nuke on our Engineering
-//! Bay, and Heal / Restoration targets from Stim and an Irradiate on our own vehicle. When every
-//! type is covered the test stops the game through hostd (`StopGame`). The coverage table and the
-//! replay (when hostd returns it) are written to `CARGO_TARGET_TMPDIR`.
-
 mod common;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -42,47 +16,34 @@ use uranium_env::types::{TypeTables, UnitType, order_id};
 use uranium_proto::control::{ControlRequest, ControlResponse, GameOutcome, GameSpec, MapKey, PlayerKind, PlayerSpec, CONTROL_VERSION};
 use uranium_proto::*;
 
-/// Frames between observations of the scripted player.
 const STEP: u32 = 8;
-/// 60 game minutes (about 4 minutes of wall time); one refinery makes the tech tree slow.
 const MAX_FRAMES: u32 = 24 * 60 * 60;
-/// Executions tried per action type before giving up on it.
 const MAX_TRIES: u32 = 8;
-/// Frames between two tries of the same action type.
 const RETRY_FRAMES: u32 = 96;
 
 #[derive(Default, Clone, Debug)]
 struct Stat {
-    /// Steps in which the type mask allowed the action.
     opened: u32,
-    /// Commands sent.
     sent: u32,
-    /// `CommandFailed` received for them (031-R10).
     failed: u32,
-    /// Sent and not failed: the game accepted the command.
     ok: u32,
-    /// The executor refused the chosen arguments (031-R4).
     rejected: u32,
     first_ok_frame: Option<u32>,
     last_try_frame: u32,
     errors: Vec<u16>,
 }
 
-/// One command of the last `Act`, in `cmd_index` order.
 #[derive(Clone, Debug)]
 struct Sent {
     action: u16,
     units: Vec<UnitId>,
-    /// Attack_Pos with an unarmed unit: check its order next frame.
     unarmed: bool,
-    /// Smart_Unit / Gather_Unit on a resource out of vision (011-R20, 액션 감사 F2).
     fog: bool,
 }
 
 #[derive(Clone, Debug)]
 enum Follow {
     Stop(Vec<UnitId>),
-    /// Queued move home after a cast far away.
     Home(UnitId),
     CancelUpgrade(UnitId),
     CancelTrain(UnitId),
@@ -108,27 +69,19 @@ struct State {
     scout: Option<UnitId>,
     scout_target: usize,
     scout_holding: bool,
-    /// Scout route: a ring around our main (explored tiles for building), then enemy starts.
     waypoints: Vec<(i32, i32)>,
     gas: Vec<UnitId>,
-    /// Tile each building was lifted from (land it back there).
     origin: HashMap<UnitId, (i32, i32)>,
-    /// Frame of the last order per action (economy throttle).
     pending: HashMap<String, u32>,
     unarmed_pending: Option<UnitId>,
-    /// (unit type, order after Attack_Pos) for the unarmed-unit check.
     unarmed: Vec<(String, u16)>,
-    /// (action, SCV) accepted on a resource out of vision: its order is checked next frame.
     fog_pending: Option<(u16, UnitId)>,
-    /// (action, order after it; None = CommandFailed) for resources out of vision (액션 감사 F2).
     fog: Vec<(String, Option<u16>)>,
     fog_next: u32,
     rotate: usize,
     frame: u32,
     log: Vec<String>,
-    /// (frame, checksum of every observed unit) per observation: 011-AC4 determinism.
     sums: Vec<(u32, u64)>,
-    /// `Command::Unit` sent with two or more units (group commands, 011-R20).
     group_cmds: u32,
     end: Option<String>,
 }
@@ -156,8 +109,6 @@ fn unit_tile(u: &UnitState) -> (i32, i32) {
 
 impl Coverage {
     fn new(info: &GameInfo) -> Self {
-        // As live agents (031, AMB-031-4): the map precompute knows every map resource, so the
-        // cc_slot distance rule matches BWAPI `canBuildHere` (static minerals and geysers).
         let pre = uranium_env::maps::maps_dir().ok().and_then(|d| uranium_env::maps::live_precompute(&d, info).0);
         eprintln!("[031-AC1] map precompute: {}", if pre.is_some() { "loaded" } else { "none" });
         let map = MapInfo::new(info, 0, pre.as_ref()).expect("map");
@@ -213,7 +164,6 @@ impl Coverage {
     }
 }
 
-/// Per-frame lookups for ranking candidates.
 struct Ctx<'a> {
     f: &'a RawFrame,
     o: &'a Observation,
@@ -221,11 +171,8 @@ struct Ctx<'a> {
     tt: &'static TypeTables,
     units: HashMap<UnitId, &'a UnitState>,
     idx: HashMap<UnitId, usize>,
-    /// Tiles within 5 of a resource (keep the mineral line free).
     near_res: Vec<bool>,
-    /// Tiles with an own ground unit on them.
     occupied: Vec<bool>,
-    /// Addon slots of own addon-capable buildings without an addon.
     reserved: Vec<bool>,
 }
 
@@ -282,15 +229,12 @@ impl<'a> Ctx<'a> {
         i < self.o.obs.n && self.o.masks.unit_cap[i * CAPABILITIES.len() + k]
     }
 
-    /// Free build spot for `name`: one tile of margin, addon space for addon parents, away from
-    /// resources, units and other buildings' addon slots. Ranked by distance to `start`.
     fn build_rank(&self, name: &str, start: (i32, i32), tile: usize) -> Option<i64> {
         let t = self.tt.unit_by_name(name)?;
         let (x, y) = ((tile % MAP) as i32, (tile / MAP) as i32);
         let addon = if ADDON_PARENTS.contains(&name) { 3 } else { 0 };
         self.area_free(x - 1, y - 1, x + t.tile_width + 1 + addon, y + t.tile_height + 1, false)?;
         if addon > 0 {
-            // The 2x2 addon slot itself must be buildable.
             let (ax, ay) = (x + t.tile_width, y + t.tile_height - 2);
             for yy in ay..ay + 2 {
                 for xx in ax..ax + 2 {
@@ -303,7 +247,6 @@ impl<'a> Ctx<'a> {
         Some(d2((x, y), start))
     }
 
-    /// No blocked, resource-near, occupied or reserved tile in [x0, x1) x [y0, y1).
     fn area_free(&self, x0: i32, y0: i32, x1: i32, y1: i32, allow_reserved: bool) -> Option<()> {
         for y in y0..y1 {
             for x in x0..x1 {
@@ -331,7 +274,6 @@ const ADDONS: [(&str, &str); 6] = [
     ("BuildAddon_CovertOps", "Terran_Covert_Ops"),
 ];
 
-/// (Build action, type, count) the tech tree needs.
 const REQUIRED_BUILDINGS: [(&str, &str, usize); 10] = [
     ("Build_Refinery", "Terran_Refinery", 1),
     ("Build_Barracks", "Terran_Barracks", 1),
@@ -345,8 +287,6 @@ const REQUIRED_BUILDINGS: [(&str, &str, usize); 10] = [
     ("Build_CommandCenter", "Terran_Command_Center", 2),
 ];
 
-/// (Train action, type, count) kept alive for the skills.
-/// A ghost too: the one that calls our own nuke may die in it before Lockdown is covered.
 const KEEP_UNITS: [(&str, &str, usize); 4] = [
     ("Train_Marine", "Terran_Marine", 4),
     ("Train_Medic", "Terran_Medic", 1),
@@ -354,15 +294,12 @@ const KEEP_UNITS: [(&str, &str, usize); 4] = [
     ("Train_Ghost", "Terran_Ghost", 1),
 ];
 
-/// Commands checked on a resource out of vision (011-R20, 액션 감사 F2).
 const FOG_ACTIONS: [&str; 2] = ["Smart_Unit", "Gather_Unit"];
 
-/// Orders of an SCV on its way to or at a mineral field.
 fn harvest_orders() -> Vec<u16> {
     ["Harvest1", "Harvest2", "MoveToMinerals", "WaitForMinerals", "MiningMinerals"].iter().filter_map(|n| order_id(n)).collect()
 }
 
-/// Units only built for coverage: cancelled right after they start (refund, Cancel_Train).
 const CANCEL_TRAIN: [&str; 4] = ["Train_Firebat", "Train_Goliath", "Train_Wraith", "Train_Valkyrie"];
 
 impl State {
@@ -370,7 +307,6 @@ impl State {
         self.stats[id_of(name) as usize].ok > 0
     }
 
-    /// No order of this action for `frames` frames.
     fn quiet(&self, name: &str, frames: u32) -> bool {
         self.pending.get(name).is_none_or(|&f| self.frame >= f + frames)
     }
@@ -379,12 +315,10 @@ impl State {
         self.stats.iter().all(|s| s.ok > 0) && !self.unarmed.is_empty() && FOG_ACTIONS.iter().all(|a| self.fog_ok(a))
     }
 
-    /// A command on a resource out of vision was accepted and the SCV went for the minerals.
     fn fog_ok(&self, name: &str) -> bool {
         self.fog.iter().any(|(a, o)| a == name && o.is_some_and(|o| harvest_orders().contains(&o)))
     }
 
-    /// 031-R10: `CommandFailed` for the previous `Act` arrives with this frame.
     fn settle(&mut self, events: &[GameEvent]) {
         let failed: HashMap<usize, u16> = events
             .iter()
@@ -422,7 +356,6 @@ impl State {
             s.opened += o.masks.type_mask[a] as u32;
         }
         if self.stats[0].ok == 0 {
-            // NoOp: an Act without commands (delay only).
             self.stats[0].sent = 1;
             self.stats[0].ok = 1;
             self.stats[0].first_ok_frame = Some(f.frame);
@@ -445,14 +378,11 @@ impl State {
             }
             self.waypoints.extend(self.enemy_starts.iter().copied());
         }
-        // AMB-041-1: the unarmed unit's order after an accepted Attack_Pos.
         if let Some(id) = self.unarmed_pending.take() {
             if let Some(u) = cx.units.get(&id) {
                 self.unarmed.push((cx.name(u).to_string(), u.order));
             }
         }
-        // 액션 감사 F2: the SCV's order after a command on a resource out of vision; then it
-        // stops (and mines at home again as an idle worker).
         if let Some((a, id)) = self.fog_pending.take() {
             if let Some(u) = cx.units.get(&id) {
                 self.fog.push((table().actions[a as usize].name.clone(), Some(u.order)));
@@ -481,7 +411,6 @@ impl State {
                     busy.extend(e.units.iter().copied());
                     self.after_send(&cx, &table().actions[st_i], &e.units);
                     if table().actions[st_i].name == "Load_Unit" {
-                        // Which transport the units were sent into, and the dropships' cargo.
                         let target = act.target_unit.and_then(|i| cx.unit(i)).map_or("?", |u| cx.name(u));
                         let cargo: Vec<String> = cx
                             .own("Terran_Dropship")
@@ -520,7 +449,6 @@ impl State {
             .unwrap_or(self.start)
     }
 
-    /// A host action for `name` with explicit units (masks still checked by the executor).
     fn by_ids(cx: &Ctx, name: &str, sel: &[UnitId], target: Option<UnitId>, loc: Option<(i32, i32)>, queued: bool) -> Option<HostAction> {
         let a = table().by_name(name)?;
         let selected: Vec<usize> = sel.iter().filter_map(|id| cx.idx.get(id).copied()).collect();
@@ -547,8 +475,6 @@ impl State {
             };
             match act {
                 Some(a) if cx.o.masks.type_mask[a.action as usize] => plan.push((a, false)),
-                // Not possible yet (the upgrade has not started, the caster is gone): retry for a
-                // while, then drop it.
                 _ => {
                     if self.frame + 24 * 60 < MAX_FRAMES {
                         self.follow.push_back(fu);
@@ -556,7 +482,6 @@ impl State {
                 }
             }
         }
-        // Keep the follow-up list from growing without bound when a unit is gone.
         while self.follow.len() > 32 {
             self.follow.pop_front();
         }
@@ -583,8 +508,6 @@ impl State {
         }
     }
 
-    /// Workers, supply, the second science facility and CC, addons and research that a cancel
-    /// took back, and the scout that gives vision of the idle enemy.
     fn economy(&mut self, cx: &Ctx, plan: &mut Vec<(HostAction, bool)>) {
         let me = &cx.f.self_state;
         let scvs = cx.own("Terran_SCV");
@@ -593,7 +516,6 @@ impl State {
         let (scout, gas_ids) = (self.scout, self.gas.clone());
         let not_special = |u: &&&UnitState| Some(u.id) != scout && !gas_ids.contains(&u.id);
 
-        // Idle workers mine (gas workers go back to gas).
         let refinery = cx.own("Terran_Refinery").into_iter().find(|u| u.has(flags::COMPLETED));
         let idle: Vec<UnitId> = scvs
             .iter()
@@ -611,7 +533,6 @@ impl State {
             let ids: Vec<UnitId> = min_idle.into_iter().take(12).collect();
             plan.extend(Self::by_ids(cx, "Gather_Unit", &ids, Some(m.id), None, false).map(|a| (a, false)));
         }
-        // Three on gas.
         if let Some(r) = refinery {
             if self.gas.len() < 3 {
                 let mut cand: Vec<&&UnitState> =
@@ -624,32 +545,24 @@ impl State {
                 }
             }
         }
-        // Workers.
         let queued_scv = main.is_some_and(|cc| cc.build_queue[0] != cx.w.ids.none);
         if scvs.len() < 22 && !queued_scv && me.minerals >= 50 {
             plan.extend(valid_action(cx.o, table().by_name("Train_SCV").unwrap(), &|_, _| Some(0), &|_| Some(0)).map(|a| (a, false)));
         }
-        // Supply: keep 4+ free (8 in BWAPI half-supply units), two depots at a time late.
-        // A worker walking to its site has placed nothing yet: one order per type per 30 s.
         let free = me.supply_total as i32 - me.supply_used as i32;
         let depots_building = cx.own("Terran_Supply_Depot").iter().filter(|u| !u.has(flags::COMPLETED)).count();
         let want_building = if me.supply_total >= 60 { 2 } else { 1 };
-        // Late, keep room for a battlecruiser (6 supply = 12 half units).
         let reserve = if me.supply_total >= 60 { 16 } else { 8 };
         if me.supply_total < 400 && free < reserve + 16 * depots_building as i32 && depots_building < want_building && me.minerals >= 100 && self.quiet("Build_SupplyDepot", 720) {
             let a = table().by_name("Build_SupplyDepot").unwrap();
             let start = self.start;
             plan.extend(valid_action(cx.o, a, &|_, _| Some(0), &|t| cx.build_rank("Terran_Supply_Depot", start, t)).map(|a| (a, false)));
         }
-        // Units the remaining skills need (marines: stim, heal, load, moves; medic: restoration;
-        // vessel: irradiate), replaced when lost (e.g. to our own nuke).
         for (train, ty, need) in KEEP_UNITS {
             if self.ok(train) && cx.own(ty).len() < need && self.quiet(train, 480) {
                 plan.extend(valid_action(cx.o, table().by_name(train).unwrap(), &|_, _| Some(0), &|_| Some(0)).map(|a| (a, false)));
             }
         }
-        // Buildings the tech tree needs: placed again when the first order did not lead to a
-        // building; a second science facility (physics lab and covert ops) and CC (silo, CC lift).
         for (build, ty, need) in REQUIRED_BUILDINGS {
             if self.ok(build) && cx.own(ty).len() < need && self.quiet(build, 1440) {
                 let a = table().by_name(build).unwrap();
@@ -658,7 +571,6 @@ impl State {
                 plan.extend(valid_action(cx.o, a, &|_, _| Some(0), &rank).map(|a| (a, false)));
             }
         }
-        // Rebuild an addon a cancel took back; covered addons only.
         for (action, addon) in ADDONS {
             if self.ok(action) && cx.own(addon).is_empty() && (action != "BuildAddon_NuclearSilo" || self.ok("Land_CommandCenter_Pos")) && self.quiet(action, 240) {
                 let a = table().by_name(action).unwrap();
@@ -673,8 +585,6 @@ impl State {
                 );
             }
         }
-        // A lifted building lands again (a land order given while it is still lifting off can be
-        // lost), back on its own tiles when they are free.
         if let Some(b) = cx.f.units.iter().find(|u| cx.is_own(u) && u.has(flags::LIFTED)) {
             let lifted_at = self.pending.get("Lift").copied().unwrap_or(0);
             let land = if cx.name(b) == "Terran_Command_Center" { "Land_CommandCenter_Pos" } else { "Land_Pos" };
@@ -688,19 +598,16 @@ impl State {
                 plan.extend(valid_action(cx.o, a, &|_, i| cx.unit(i).filter(|u| u.id == b.id).map(|_| 0), &rank).map(|a| (a, false)));
             }
         }
-        // Research a cancel took back (cloaking field stays cancelled: ghosts cloak instead).
         for a in table().actions.iter().filter(|a| a.name.starts_with("Research_") && a.name != "Research_CloakingField") {
             let tech = a.tech.unwrap();
             if self.ok(&a.name) && !cx.w.researched(tech) && me.researching & (1u64 << tech) == 0 && self.quiet(&a.name, 240) {
                 plan.extend(valid_action(cx.o, a, &|_, _| Some(0), &|_| Some(0)).map(|a| (a, false)));
             }
         }
-        // Scout: an SCV parks at the enemy base (workers do not attack on their own).
         if self.scout.is_none() && f_frame(cx) > 1500 {
             self.scout = scvs.iter().filter(not_special).filter(|u| u.has(flags::COMPLETED) && !u.has(flags::CONSTRUCTING)).map(|u| u.id).next_back();
         }
         if self.scout.and_then(|id| cx.units.get(&id)).is_some_and(|u| u.has(flags::CONSTRUCTING)) {
-            // The executor picked the scout as a builder (031-R2): it stays a worker.
             self.scout = None;
             self.scout_holding = false;
         }
@@ -723,8 +630,6 @@ impl State {
         }
     }
 
-    /// AMB-041-1: Attack_Pos with an unarmed unit (dropship, science vessel) must reach the game
-    /// as a move. Done once per unarmed type.
     fn unarmed_check(&mut self, cx: &Ctx, plan: &mut Vec<(HostAction, bool)>) {
         if self.unarmed_pending.is_some() || plan.iter().any(|(_, u)| *u) {
             return;
@@ -733,8 +638,6 @@ impl State {
             if self.unarmed.iter().any(|(t, _)| t == ty) {
                 continue;
             }
-            // Not while units are boarding it: their load turns the dropship's order into
-            // PickupTransport on the next frame.
             let boarding = [order_id("PickupTransport"), order_id("PickupIdle")];
             if !self.quiet("Load_Unit", 192) {
                 continue;
@@ -749,8 +652,6 @@ impl State {
         }
     }
 
-    /// 011-R20 / 액션 감사 F2: Smart_Unit and Gather_Unit with one SCV on a mineral field seen
-    /// before and now out of vision (a remembered entity with its real id).
     fn fog_check(&mut self, cx: &Ctx) -> Option<HostAction> {
         if self.fog_pending.is_some() || self.frame < self.fog_next {
             return None;
@@ -771,7 +672,6 @@ impl State {
         Self::by_ids(cx, name, &[scv.id], Some(mineral.unit.id), None, false)
     }
 
-    /// One uncovered action type whose mask is open, with ranked arguments.
     fn coverage(&mut self, cx: &Ctx) -> Option<HostAction> {
         let n = table().actions.len();
         for k in 0..n {
@@ -795,18 +695,14 @@ impl State {
     }
 
     fn extra_tries(&self, name: &str) -> u32 {
-        // Repeated setup actions (see `repeat`).
         if matches!(name, "Lift" | "Load_Unit" | "Irradiate_Unit" | "Stim" | "Build_MissileTurret") { 8 } else { 0 }
     }
 
-    /// Setup actions issued again until the action they enable is covered.
     fn repeat(&self, cx: &Ctx, name: &str) -> bool {
         let lifted = cx.f.units.iter().any(|u| cx.is_own(u) && u.has(flags::LIFTED));
         let has_cap = |cap: &str| (0..cx.o.obs.n).any(|i| cx.cap(i, cap));
         match name {
             "Lift" => self.ok("Land_Pos") && !self.ok("Land_CommandCenter_Pos") && !lifted,
-            // UnloadAll_Pos needs a loaded dropship (can_unload_pos), not a loaded bunker; Unload_Unit
-            // (F7) a loaded transport. A dropship still in production is no target (034-R10).
             "Load_Unit" => !(self.ok("UnloadAll_Pos") && self.ok("Unload_Unit")) && !has_cap("can_unload_pos") && cx.own("Terran_Dropship").iter().any(|u| u.has(flags::COMPLETED)),
             "Irradiate_Unit" => !self.ok("Restoration_Unit") && has_cap("can_cast_restoration") && !has_cap("restorable"),
             "Stim" => !self.ok("Heal_Unit") && has_cap("can_heal") && !has_cap("healable"),
@@ -815,12 +711,9 @@ impl State {
         }
     }
 
-    /// Order constraints between coverage actions.
     fn gate(&self, name: &str) -> bool {
         match name {
-            // The second CC lifts and lands first; its addon slot then takes the silo.
             "BuildAddon_NuclearSilo" => self.ok("Land_CommandCenter_Pos"),
-            // Our own nuke damages our Engineering Bay for Repair_Unit; upgrades there first.
             "Nuke_Pos" => self.ok("Upgrade_InfantryWeapons") && self.ok("Upgrade_InfantryArmor") && self.ok("Cancel_Construction"),
             _ => true,
         }
@@ -841,7 +734,6 @@ impl State {
         let own = |u: &UnitState| cx.is_own(u);
         let bld = |u: &UnitState| cx.tt.unit(u.unit_type).is_some_and(|t| t.is_building());
         let mech_only = |u: &UnitState| cx.tt.unit(u.unit_type).is_some_and(|t: &UnitType| t.is_mechanical() && !t.is_organic() && !t.is_building());
-        // Ordinary movers: marines first, never the scout or gas workers, never buildings.
         let mover = |u: &UnitState| -> Option<i64> {
             if bld(u) || Some(u.id) == scout || gas.contains(&u.id) {
                 return None;
@@ -924,12 +816,10 @@ fn f_frame(cx: &Ctx) -> u32 {
     cx.f.frame
 }
 
-/// The script player 0 (`uranium-p0`) runs in a hostd game; player 1 idles.
 trait Script: Send + 'static {
     fn on_frame(&mut self, f: &RawFrame) -> Act;
     fn on_end(&mut self, end: &GameEnd);
     fn on_closed(&mut self, why: String);
-    /// Everything checked: the game is stopped (`StopGame`).
     fn done(&self) -> bool;
 }
 
@@ -955,8 +845,6 @@ impl Script for Coverage {
     }
 }
 
-/// FNV-1a over the observed units (id order): id, type, position, hp, shield, energy, order,
-/// order target, flags. Equal sequences = the two games played the same (011-AC4).
 fn frame_checksum(f: &RawFrame) -> u64 {
     let mut units: Vec<&UnitState> = f.units.iter().collect();
     units.sort_by_key(|u| u.id);
@@ -978,7 +866,6 @@ fn frame_checksum(f: &RawFrame) -> u64 {
     h
 }
 
-/// One bridge connection: player 0 runs the script (`None` for the idle player 1).
 fn session<S: Script>(stream: TcpStream, hostd: String, game_id: u64, stop_when_done: bool, make: fn(&GameInfo) -> S) -> Result<Option<S>, String> {
     let e = |x: ProtoError| x.to_string();
     let mut r = BufReader::new(stream.try_clone().map_err(|x| x.to_string())?);
@@ -1008,7 +895,6 @@ fn session<S: Script>(stream: TcpStream, hostd: String, game_id: u64, stop_when_
                     break;
                 }
                 if script.as_ref().is_some_and(|s| s.done()) && !stopped {
-                    // Everything is covered: stop the game instead of playing to the limit.
                     stopped = true;
                     let _ = control(&hostd, ControlRequest::StopGame { game_id }, false);
                 }
@@ -1025,8 +911,6 @@ fn session<S: Script>(stream: TcpStream, hostd: String, game_id: u64, stop_when_
     Ok(script)
 }
 
-/// One request on a fresh hostd control connection; returns the first reply when `reply` (hostd
-/// does not answer `StopGame`).
 fn control(addr: &str, req: ControlRequest, reply: bool) -> Result<(BufReader<TcpStream>, TcpStream, Option<ControlResponse>), String> {
     let s = TcpStream::connect(addr).map_err(|e| format!("hostd {addr}: {e}"))?;
     let mut r = BufReader::new(s.try_clone().map_err(|e| e.to_string())?);
@@ -1041,19 +925,13 @@ fn control(addr: &str, req: ControlRequest, reply: bool) -> Result<(BufReader<Tc
     Ok((r, w, resp))
 }
 
-/// BWAPI errors (`Errors::Enum`) the game may return although the masks allowed the action, and
-/// why. Anything else is a mask / executor / bridge mismatch (031-AC1).
 fn justified(action: &str, error: u16) -> Option<&'static str> {
     const UNBUILDABLE_LOCATION: u16 = 19;
     const INSUFFICIENT_MINERALS: u16 = 11;
     const INSUFFICIENT_GAS: u16 = 12;
     let spends = ["Build_", "BuildAddon_", "Train_", "Research_", "Upgrade_"].iter().any(|p| action.starts_with(p));
     match (action, error) {
-        // Test artifact: the scenario sends economy and coverage commands in one Act, all judged
-        // against the same minerals; the agent sends one command per decision (031-R3).
         (_, INSUFFICIENT_MINERALS | INSUFFICIENT_GAS) if spends => Some("several spending commands in one test Act"),
-        // 034 위치 마스크 비고: location masks see buildings and resources of the current
-        // observation, not units standing on the tiles; the game rejects a footprint with a unit.
         (a, UNBUILDABLE_LOCATION) if a.starts_with("Build_") || a.starts_with("BuildAddon_") || a.starts_with("Land_") => Some("unit on the footprint"),
         _ => None,
     }
@@ -1084,21 +962,16 @@ fn report(st: &State) -> String {
     md
 }
 
-/// One scripted game on hostd: player 0 runs the coverage script (stopping the game once every
-/// type is covered when `stop_when_done`), player 1 idles. Returns the script state.
 fn play(seed: u32, max_frames: u32, stop_when_done: bool, tag: &str) -> Box<State> {
     Box::new(play_script(seed, max_frames, stop_when_done, tag, Coverage::new).st)
 }
 
-/// [`play`] with any script for player 0.
 fn play_script<S: Script>(seed: u32, max_frames: u32, stop_when_done: bool, tag: &str, make: fn(&GameInfo) -> S) -> S {
     let hostd = std::env::var("URANIUM_TEST_HOSTD").expect("URANIUM_TEST_HOSTD=<hostd control address>");
     let listen = std::env::var("URANIUM_TEST_AGENT_LISTEN").unwrap_or_else(|_| "127.0.0.1:0".into());
     let listener = TcpListener::bind(&listen).expect("agent listener");
     let bound = listener.local_addr().unwrap();
-    // Bridges on a remote host need an address they can reach (as for `uranium-env run`).
     let agent_addr = std::env::var("URANIUM_AGENT_PUBLIC_ADDR").ok().filter(|v| !v.trim().is_empty()).map_or(bound.to_string(), |a| {
-        // Keep our port: the public address names the host.
         let host = a.rsplit_once(':').map_or(a.as_str(), |(h, _)| h).to_string();
         format!("{host}:{}", bound.port())
     });
@@ -1162,8 +1035,6 @@ fn every_action_type_runs_in_openbw_031_ac1() {
 
     let missing: Vec<&str> = table().actions.iter().zip(&st.stats).filter(|(_, s)| s.ok == 0).map(|(a, _)| a.name.as_str()).collect();
     assert!(missing.is_empty(), "031-AC1: never accepted by the game: {missing:?}");
-    // 031-AC1 (액션 감사 테스트 공백): beyond "accepted once", every rejection is a known,
-    // justified one (`justified`); any other BWAPI error is a mask / executor / bridge mismatch.
     let mut bad = vec![];
     for (a, s) in table().actions.iter().zip(&st.stats) {
         let unexplained: Vec<u16> = s.errors.iter().copied().filter(|&e| justified(&a.name, e).is_none()).collect();
@@ -1172,12 +1043,9 @@ fn every_action_type_runs_in_openbw_031_ac1() {
         }
     }
     assert!(bad.is_empty(), "031-AC1: rejections beyond the justified ones: {bad:?}");
-    // 011-R20 / 액션 감사 F2: a resource seen before and now out of vision takes Smart_Unit and
-    // Gather_Unit (the SCV heads for the minerals).
     for a in FOG_ACTIONS {
         assert!(st.fog_ok(a), "{a} on a resource out of vision: {:?}", st.fog);
     }
-    // AMB-041-1: unarmed units given Attack_Pos are moving (BWAPI order Move).
     let mv = order_id("Move").unwrap();
     assert!(!st.unarmed.is_empty(), "no unarmed unit got Attack_Pos");
     for (ty, order) in &st.unarmed {
@@ -1185,9 +1053,6 @@ fn every_action_type_runs_in_openbw_031_ac1() {
     }
 }
 
-/// 011-AC4 with group commands (011-R20, review 2026-10-19): the same seed and the same scripted
-/// Act sequence give the same game twice — every observation's unit checksum and the GameEnd frame
-/// and winner. The script plays 10 game minutes (no StopGame: its timing is wall clock).
 #[test]
 #[ignore = "needs a running uranium-hostd with OpenBW (URANIUM_TEST_HOSTD)"]
 fn same_seed_same_acts_same_game_011_ac4() {
@@ -1206,50 +1071,34 @@ fn same_seed_same_acts_same_game_011_ac4() {
     assert!(a.group_cmds > 0 && a.group_cmds == b.group_cmds, "multi-unit group commands were issued (011-R20)");
 }
 
-/// What one command of the last `PreRl` Act checks.
 #[derive(Clone, Debug)]
 enum Check {
-    /// Train_SCV with the supply full on this producer, its queue length and our completed SCVs.
     SupplyTrain { producer: UnitId, queue: usize, done: usize },
-    /// Attack_Unit / Smart_Unit on the remembered enemy building, issued to this unit; the
-    /// building's remembered position.
     Ghost(&'static str, UnitId, Pos),
-    /// A group command with an unmovable and an unknown unit (011-R20 (4)).
     Group,
     Other,
 }
 
-/// One supply-blocked Train_SCV (034-R3, 011-R23 (1)).
 #[derive(Clone, Debug)]
 struct SupplyTry {
-    /// Sent and no CommandFailed (false: masked, skipped or failed).
     accepted: bool,
     queue_before: usize,
-    /// Producer queue length at the next observation plus the SCVs completed meanwhile.
     queue_after_plus_done: Option<usize>,
 }
 
-/// One command on the remembered enemy building (011-R20 (1)-2).
 #[derive(Clone, Debug)]
 struct GhostTry {
     action: &'static str,
     accepted: bool,
     rejections: usize,
-    /// The unit's order, order target and order position at the next observation.
     order_after: Option<u16>,
     order_target: Option<UnitId>,
     order_pos: Option<Pos>,
-    /// The remembered position the ghost command was sent to.
     building_pos: Pos,
-    /// The building's tile was visible at the next observation.
     building_visible: bool,
-    /// The selected unit can attack and move (the 0016 unit-side check passes, 011-R23 (2)).
     attacker: bool,
 }
 
-/// 2026-10-31 decisions (034, 011-R20, 011-R23) in one short game: player 0 trains SCVs without
-/// depots until supply blocks, scouts the idle enemy's base and leaves it, then commands the
-/// remembered building out of vision, and sends one group command that two units cannot take.
 struct PreRl {
     mem: AgentMemory,
     map: MapInfo,
@@ -1257,22 +1106,17 @@ struct PreRl {
     enemy_starts: Vec<(i32, i32)>,
     scout: Option<UnitId>,
     scout_target: usize,
-    /// The enemy building the scout saw.
     seen: Option<UnitId>,
     last: Vec<Check>,
-    /// Ghost commands sent and not settled yet (action, unit).
     ghost_pending: Vec<(&'static str, UnitId)>,
-    /// Units whose ghost command is settled: stopped on the next frame.
     ghost_stop: Vec<UnitId>,
     supply: Vec<SupplyTry>,
     ghost: Vec<GhostTry>,
-    /// (CommandFailed, UnitRejected (unit, unit type, command, error)) of the group command.
     group: Option<(bool, Vec<(UnitId, Option<u16>, u8, u16)>)>,
     group_cc: Option<UnitId>,
     end: Option<String>,
 }
 
-/// An id no unit has (011-R20 (4): a selected unit the bridge cannot find).
 const MISSING_UNIT: UnitId = 0x00FF_FFF0;
 
 const GHOST_ACTIONS: [&str; 2] = ["Attack_Unit", "Smart_Unit"];
@@ -1314,7 +1158,6 @@ impl PreRl {
         }
     }
 
-    /// A host action through the real masks and executor, by unit ids (031-R4).
     fn host(o: &Observation, name: &str, sel: &[UnitId], target: Option<UnitId>, loc: Option<(i32, i32)>) -> Option<HostAction> {
         let a = table().by_name(name)?;
         let idx = |id: &UnitId| o.entity_ids.iter().position(|e| e == id);
@@ -1340,7 +1183,6 @@ impl PreRl {
             let rej = rejected.remove(&i).unwrap_or_default();
             match c {
                 Check::SupplyTrain { producer, queue, done } => {
-                    // The queue grows by one; an SCV completing meanwhile takes one off its head.
                     let after = f.units.iter().find(|u| u.id == producer).map(|p| queue_len(p) + completed_scvs(f, me).saturating_sub(done));
                     self.supply.push(SupplyTry { accepted: !failed.contains(&i), queue_before: queue, queue_after_plus_done: after });
                 }
@@ -1385,15 +1227,12 @@ impl Script for PreRl {
         let mut plan: Vec<(HostAction, Check)> = vec![];
         let mut raw: Vec<(Command, Check)> = vec![];
 
-        // Miners: idle SCVs (not the scout) gather from the mineral field nearest the CC.
         let idle: Vec<UnitId> = scvs.iter().filter(|u| u.has(flags::COMPLETED) && u.has(flags::IDLE) && Some(u.id) != self.scout).map(|u| u.id).collect();
         let mineral = cc.and_then(|c| f.units.iter().filter(|u| name(u).starts_with("Resource_Mineral_Field")).min_by_key(|u| d2(unit_tile(u), unit_tile(c))));
         if let (Some(m), false) = (mineral, idle.is_empty()) {
             plan.extend(Self::host(&o, "Gather_Unit", &idle, Some(m.id), None).map(|a| (a, Check::Other)));
         }
 
-        // 034-R3 / 011-R23 (1): SCVs without depots until supply blocks; then Train_SCV again on
-        // the CC whose queue is not empty (the engine accepts it, so do the masks and BWAPI).
         if let Some(c) = cc {
             let q = queue_len(c);
             let blocked = f.self_state.supply_used + 2 > f.self_state.supply_total;
@@ -1403,7 +1242,6 @@ impl Script for PreRl {
                     let check = Check::SupplyTrain { producer: c.id, queue: q, done: completed_scvs(f, me) };
                     match valid_action(&o, train, &|_, _| Some(0), &|_| Some(0)) {
                         Some(a) => plan.push((a, check)),
-                        // The mask is closed: recorded as not accepted.
                         None => self.supply.push(SupplyTry { accepted: false, queue_before: q, queue_after_plus_done: None }),
                     }
                 } else if !blocked && q < 2 {
@@ -1412,7 +1250,6 @@ impl Script for PreRl {
             }
         }
 
-        // Scout: an SCV walks to the enemy start until it sees an enemy building, then goes home.
         if self.scout.is_none() && f.frame > 24 * 20 {
             self.scout = scvs.iter().filter(|u| u.has(flags::COMPLETED) && !u.has(flags::CONSTRUCTING)).map(|u| u.id).next_back();
         }
@@ -1432,13 +1269,9 @@ impl Script for PreRl {
             }
         }
 
-        // Units whose ghost command is settled stop (the miner goes back to mining when idle).
         if !self.ghost_stop.is_empty() {
             raw.push((Command::Unit { units: std::mem::take(&mut self.ghost_stop), order: CmdOrder::Stop, queued: false }, Check::Other));
         }
-        // 011-R20 (1)-2: the building is out of vision and remembered: Attack_Unit (scout) and
-        // Smart_Unit (a busy miner, so the idle-gather order above never takes it) on it are ghost
-        // commands; each is (re)sent until it is settled.
         let remembered = self.seen.filter(|id| !f.units.iter().any(|u| u.id == *id) && w.entities.iter().any(|e| e.remembered && e.unit.id == *id));
         if let (Some(b), Some(s)) = (remembered, self.scout) {
             let b_pos = w.entities.iter().find(|e| e.remembered && e.unit.id == b).map_or((0, 0), |e| e.unit.pos);
@@ -1454,8 +1287,6 @@ impl Script for PreRl {
             }
         }
 
-        // 011-R20 (4): one group command a miner takes and the CC (cannot move) and an unknown unit
-        // do not: accepted, with one UnitRejected for each of the two.
         if self.group.is_none() && f.frame > 24 * 10 {
             if let (Some(c), Some(s)) = (cc, scvs.iter().find(|u| u.has(flags::COMPLETED) && !u.has(flags::IDLE) && Some(u.id) != self.scout)) {
                 self.group_cc = Some(c.id);
@@ -1475,7 +1306,6 @@ impl Script for PreRl {
                     }
                     true
                 }
-                // Masked (031-R4) for a ghost command: recorded as not accepted.
                 Err(_) if matches!(check, Check::Ghost(..)) => {
                     if let Check::Ghost(action, _, pos) = check {
                         self.ghost.push(GhostTry {
@@ -1492,7 +1322,6 @@ impl Script for PreRl {
                     }
                     continue;
                 }
-                // Busy (or empty) this frame: a ghost command is planned again next frame.
                 _ => false,
             };
             match check {
@@ -1526,17 +1355,6 @@ impl Script for PreRl {
     }
 }
 
-/// 034-R3 / 011-R23 (1), 011-R20 (1)-2 / 011-R23 (2), 011-R20 (4) (2026-10-31 decisions, 031-AC1):
-/// - a supply-blocked Train on a building whose queue is not empty is accepted and the queue grows
-///   by one (allowing for a unit completing in between);
-/// - Attack_Unit and Smart_Unit on a remembered enemy building out of vision are accepted, with no
-///   UnitRejected for units that can attack and move. The engine gives the attacker order
-///   MoveToAttack (9), which BWAPI reports as AttackUnit (10, BWtoBWAPI.cpp, UnitUpdate.cpp):
-///   while the building's tile is out of vision the unit shows order 10, no order target (vision
-///   filter) and the remembered position as order position;
-/// - a group command is accepted with one UnitRejected per unit it could not give the order to.
-///
-/// Needs the bridge built with BWAPI patch 0016 and hostd setting `URANIUM_BRIDGE_EXT=1` (020-R17).
 #[test]
 #[ignore = "needs a running uranium-hostd with OpenBW (URANIUM_TEST_HOSTD)"]
 fn supply_queue_ghost_commands_and_unit_rejections_011_r23() {
@@ -1551,7 +1369,6 @@ fn supply_queue_ghost_commands_and_unit_rejections_011_r23() {
         assert_eq!(t.queue_after_plus_done, Some(t.queue_before + 1), "the producer's queue grew by one: {t:?}");
     }
 
-    // The engine's MoveToAttack (9) reads back from BWAPI as AttackUnit (10).
     let attack = order_id("AttackUnit").expect("AttackUnit order");
     for action in GHOST_ACTIONS {
         let g = s.ghost.iter().find(|g| g.action == action).unwrap_or_else(|| panic!("{action} on the remembered building never sent"));

@@ -1,6 +1,3 @@
-//! `collect` and `status` (043-R4..R9): leaderboard → tracked players' profile `replays[]` →
-//! match info → replay download, with dedup, resume and the daily budget.
-
 use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -14,19 +11,14 @@ use crate::env::Settings;
 use crate::limit::Daily;
 use crate::schema::{self, LeaderboardEntry, LeaderboardList, LeaderboardPage, MatchInfo, Profile};
 
-/// 040-R14 / 043-R7 source tag.
 pub const SRC: &str = "scr_ladder";
-/// 043-R9: stop after this many failures in a row.
 const MAX_CONSECUTIVE_FAILURES: u32 = 20;
 
-/// 043-R5 collection plan (`config/ladder/<plan>.toml`).
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Plan {
     pub gateways: Vec<u32>,
     pub gamemode: u32,
-    /// Lowest leaderboard bucket of tracked players. Unset until the rank letter ↔ bucket
-    /// mapping is confirmed (043-R5 TBD(M4)); `collect` refuses to run without it.
     pub min_bucket: Option<i64>,
     #[serde(default = "default_page_size")]
     pub page_size: u32,
@@ -43,11 +35,8 @@ impl Plan {
     }
 }
 
-/// Where the collector reads and writes (043-R7, R8).
 pub struct Paths {
-    /// `datasets/replays/ladder`: collect.jsonl, daily.json, raw_index.json
     pub ladder: PathBuf,
-    /// `datasets/replays/raw`: every source, for the cross-source SHA-256 dedup (043-R6)
     pub raw_root: PathBuf,
 }
 
@@ -68,16 +57,11 @@ impl Paths {
 }
 
 pub struct Opts {
-    /// Most downloads in this run.
     pub limit: Option<u32>,
-    /// List candidate matches without fetching match info or replays.
     pub dry_run: bool,
-    /// Instead of walking the leaderboard, fetch again the matches whose latest record is
-    /// `failed` with a reason starting with this prefix (043-R6, R9).
     pub retry_failed: Option<String>,
 }
 
-/// 043-R8 record, one line of collect.jsonl per match.
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Record {
     #[serde(rename = "match")]
@@ -112,12 +96,10 @@ pub struct RecordPlayer {
     pub gateway_id: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub race: Option<String>,
-    /// MMR and leaderboard bucket; empty when the match info has no `score` for this player.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rating: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bucket: Option<i64>,
-    /// This player's client report per toon (`Win`, `Loss`, `Disconnect`, `Undecided`, …).
     pub reports: BTreeMap<String, String>,
 }
 
@@ -259,8 +241,6 @@ pub fn run(settings: &Settings, paths: &Paths, plan: &Plan, opt: &Opts) -> Resul
                 continue;
             }
         };
-        // Placeholder times mark games whose replay may not exist yet; they are left for a
-        // later run instead of being recorded.
         let links: Vec<_> = profile
             .replays
             .iter()
@@ -273,7 +253,7 @@ pub fn run(settings: &Settings, paths: &Paths, plan: &Plan, opt: &Opts) -> Resul
         }
         for (link, create_time) in links {
             if rec.seen.contains(&link) {
-                continue; // reached through the opponent's profile earlier in this run
+                continue;
             }
             if daily.remaining() == 0 {
                 println!("daily download budget ({}) reached (043-R4)", settings.daily_max);
@@ -300,8 +280,6 @@ pub fn run(settings: &Settings, paths: &Paths, plan: &Plan, opt: &Opts) -> Resul
     Ok(rec.summary)
 }
 
-/// Latest record per match, in first-seen order (later lines replace earlier ones), and the
-/// number of lines that did not parse as a record.
 fn latest_records(text: &str) -> (Vec<Record>, usize) {
     let mut order: Vec<String> = Vec::new();
     let mut last: std::collections::HashMap<String, Record> = std::collections::HashMap::new();
@@ -319,7 +297,6 @@ fn latest_records(text: &str) -> (Vec<Record>, usize) {
     (order.into_iter().filter_map(|k| last.remove(&k)).collect(), bad)
 }
 
-/// `latest_records` of a file, with a stderr summary of skipped unparsable lines.
 fn latest_records_of(path: &Path) -> Result<Vec<Record>> {
     let text = std::fs::read_to_string(path).with_context(|| format!("{}", path.display()))?;
     let (records, bad) = latest_records(&text);
@@ -329,7 +306,6 @@ fn latest_records_of(path: &Path) -> Result<Vec<Record>> {
     Ok(records)
 }
 
-/// `--retry-failed`: matches whose latest record is `failed` with a reason starting with `prefix`.
 fn retry_targets(records: &Path, prefix: &str) -> Result<Vec<(String, u64)>> {
     Ok(latest_records_of(records)?
         .into_iter()
@@ -338,7 +314,6 @@ fn retry_targets(records: &Path, prefix: &str) -> Result<Vec<(String, u64)>> {
         .collect())
 }
 
-/// Match info → download → verify → store. Returns the record and whether a download happened.
 fn fetch_match(api: &Api, http: &mut Http, paths: &Paths, raw_shas: &mut HashSet<String>, link: &str, create_time: u64) -> Result<(Record, bool)> {
     let mut r = Record { link: link.to_string(), create_time: Some(create_time), collected_at: chrono::Local::now().to_rfc3339(), ..Default::default() };
     let info: MatchInfo = match api.json(http, &schema::match_info(link)) {
@@ -377,7 +352,6 @@ fn fetch_match(api: &Api, http: &mut Http, paths: &Paths, raw_shas: &mut HashSet
             r.reason = Some("duplicate".into());
             return Ok((r, true));
         }
-        // 043-R7: file name from the match id, never from player names.
         let name = format!("{}.rep", &hex(&Sha256::digest(link.as_bytes()))[..32]);
         let dir = paths.raw_src();
         std::fs::create_dir_all(&dir)?;
@@ -423,8 +397,6 @@ struct IndexEntry {
     sha256: String,
 }
 
-/// 043-R6: SHA-256 of every `.rep` under `raw/`, cached by (path, size, mtime) so a daily run
-/// only hashes new files.
 fn raw_index(raw_root: &Path, cache: &Path) -> Result<HashSet<String>> {
     let mut old: BTreeMap<String, IndexEntry> =
         std::fs::read_to_string(cache).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
@@ -470,12 +442,10 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// `status`: counts per status/reason, and per matchup and map for stored replays (no names).
 pub fn status_markdown(records: &Path) -> Result<String> {
     let mut by_status: BTreeMap<String, u32> = BTreeMap::new();
     let mut by_matchup: BTreeMap<String, u32> = BTreeMap::new();
     let mut by_map: BTreeMap<String, u32> = BTreeMap::new();
-    // A retried match counts once, by its latest record.
     for r in latest_records_of(records)? {
         let reason = r.reason.as_deref().map(|s| s.split(':').next().unwrap_or(s).to_string());
         *by_status.entry(match reason {
@@ -508,7 +478,6 @@ fn matchup(r: &Record) -> String {
         .iter()
         .map(|p| p.race.as_deref().and_then(|s| s.chars().next()).map_or('?', |c| c.to_ascii_uppercase()))
         .collect();
-    // Terran first, then P, Z (TvP, TvZ, PvZ, ...).
     races.sort_by_key(|c| match c {
         'T' => 0,
         'P' => 1,
@@ -533,12 +502,10 @@ mod tests {
 
     type Routes = Arc<Mutex<BTreeMap<String, (u16, Vec<u8>)>>>;
 
-    /// Minimal HTTP/1.1 server answering GETs from `routes`; counts file downloads.
     fn serve(listener: TcpListener, routes: Routes, downloads: Arc<AtomicU32>) {
         serve_logged(listener, routes, downloads, Arc::default());
     }
 
-    /// `serve` that also records when each request line arrived (043-AC4, server side).
     fn serve_logged(listener: TcpListener, routes: Routes, downloads: Arc<AtomicU32>, arrivals: Arc<Mutex<Vec<std::time::Instant>>>) {
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
@@ -579,14 +546,11 @@ mod tests {
         json!({"attributes": {"replay_humans": humans}, "create_time": time, "link": link})
     }
 
-    /// 043-AC2: leaderboard → profile → match → download, in-run and cross-run dedup,
-    /// cross-source SHA-256 dedup, schema mismatch recorded as failed.
     #[test]
     fn r043_ac2_collect_flow_dedup_resume_schema() {
         let dir = std::env::temp_dir().join(format!("uranium-ladder-collect-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let paths = Paths { ladder: dir.join("ladder"), raw_root: dir.join("raw") };
-        // A replay another source already holds (043-R6).
         let dup = b"seRS fake replay already in personal".to_vec();
         std::fs::create_dir_all(paths.raw_root.join("personal")).unwrap();
         std::fs::write(paths.raw_root.join("personal").join("x.rep"), &dup).unwrap();
@@ -640,7 +604,6 @@ mod tests {
         assert_eq!(by("MM-5").reason.as_deref(), Some("duplicate"));
         assert!(!lines.iter().any(|r| r.link == "MM-2" || r.link == "MM-3" || r.link == "123"));
 
-        // Resume: a second run fetches nothing new (043-R6).
         let s = run(&settings, &paths, &plan, &opt).unwrap();
         assert_eq!(s, Summary::default());
         assert_eq!(downloads.load(Ordering::SeqCst), 2);
@@ -649,7 +612,6 @@ mod tests {
         assert!(md.contains("| TvZ | 1 |") && md.contains("| failed (schema) | 1 |"), "{md}");
         assert!(!md.contains("toon"), "status must not name players: {md}");
 
-        // 043-R9 retry: MM-4 now answers with a player lacking `score`; only it is fetched again.
         let rep4 = b"seRS fake ladder replay 4".to_vec();
         let mut pb_no_score = pb.clone();
         pb_no_score.as_object_mut().unwrap().remove("score");
@@ -663,7 +625,6 @@ mod tests {
         assert_eq!((last.link.as_str(), last.status.as_str()), ("MM-4", "ok"));
         assert_eq!(last.players.iter().filter(|p| p.rating.is_none()).count(), 1);
         assert_eq!(last.season_id, Some(20));
-        // Nothing left to retry, and status counts MM-4 once (latest record).
         assert_eq!(run(&settings, &paths, &plan, &retry).unwrap(), Summary::default());
         let md = status_markdown(&paths.records()).unwrap();
         assert!(md.contains("| ok | 2 |") && !md.contains("failed (schema)"), "{md}");
@@ -673,14 +634,11 @@ not json
 ");
         assert_eq!(bad, 1);
 
-        // 043-R5: refuse to run without a confirmed min_bucket.
         let unset = Plan { min_bucket: None, ..plan };
         assert!(run(&settings, &paths, &unset, &opt).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// 043-AC4: a whole collect run (leaderboard, profile, match info, download) reaches the
-    /// server no faster than the configured rate, and the collector's own send log agrees.
     #[test]
     fn r043_ac4_collect_requests_stay_under_the_rate() {
         let dir = std::env::temp_dir().join(format!("uranium-ladder-rate-{}", std::process::id()));
@@ -710,14 +668,11 @@ not json
         let s = run(&settings, &paths, &plan, &Opts { limit: None, dry_run: false, retry_failed: None }).unwrap();
         assert_eq!(s.ok, 1);
         let t = arrivals.lock().unwrap().clone();
-        // connect (prefix "" then "/web-api"), list, page, profile, match info, download.
         assert_eq!(t.len(), 7, "every request is paced");
-        // Server side: sends are 100 ms apart; allow 20 ms of loopback jitter per gap.
         let min_gap = t.windows(2).map(|w| w[1] - w[0]).min().unwrap();
         assert!(min_gap >= std::time::Duration::from_millis(80), "requests {min_gap:?} apart at {rps} req/s");
         assert!(t[t.len() - 1] - t[0] >= std::time::Duration::from_millis(580));
 
-        // The collector's own send log (printed when the run's `Http` is dropped).
         let mut http = Http::new(rps);
         for _ in 0..4 {
             http.get(&format!("http://127.0.0.1:{port}/web-api/v1/leaderboard")).unwrap();

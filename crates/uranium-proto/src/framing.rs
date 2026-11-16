@@ -3,7 +3,6 @@ use std::io::{Read, Write};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-/// Upper bound for one message; anything larger is treated as a corrupt stream.
 pub const MAX_MESSAGE_BYTES: usize = 16 << 20;
 
 #[derive(Debug)]
@@ -37,7 +36,6 @@ impl From<postcard::Error> for ProtoError {
     }
 }
 
-/// Writes `u32 LE length + postcard payload` (010-R1). Returns the payload size.
 pub fn write_msg<T: Serialize>(w: &mut impl Write, msg: &T) -> Result<usize, ProtoError> {
     let payload = postcard::to_stdvec(msg)?;
     if payload.len() > MAX_MESSAGE_BYTES {

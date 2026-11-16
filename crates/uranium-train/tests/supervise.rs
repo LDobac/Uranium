@@ -1,5 +1,3 @@
-//! 060-R6 watchdog restart policy.
-
 use std::time::Duration;
 
 use uranium_train::supervise::{Decision, EXIT_DEVICE_FATAL, Ending, Liveness, SuperviseArgs, decide, fatal_match};
@@ -20,19 +18,15 @@ fn args() -> SuperviseArgs {
 #[test]
 fn restart_policy_060_r6() {
     let a = args();
-    // Clean ends are final: done / step limit / Ctrl+C clean stop / lock lost (0), second Ctrl+C (130).
     assert_eq!(decide(Ending::Exited(Some(0)), false, 0, &a), Decision::Stop);
     assert_eq!(decide(Ending::Exited(Some(130)), false, 0, &a), Decision::Stop);
-    // Abnormal ends restart with a doubling delay, capped at 10 minutes.
     assert_eq!(decide(Ending::Exited(Some(101)), false, 0, &a), Decision::Restart(Duration::from_secs(60)));
     assert_eq!(decide(Ending::Exited(None), false, 1, &a), Decision::Restart(Duration::from_secs(120)));
     assert_eq!(decide(Ending::Hung, false, 2, &a), Decision::Restart(Duration::from_secs(240)));
     let mut big = args();
     big.max_restarts = 20;
     assert_eq!(decide(Ending::Hung, false, 9, &big), Decision::Restart(Duration::from_secs(600)));
-    // Too many restarts in the window: give up.
     assert_eq!(decide(Ending::Exited(Some(1)), false, 3, &a), Decision::GiveUp);
-    // After the supervisor got Ctrl+C nothing restarts.
     assert_eq!(decide(Ending::Exited(Some(1)), true, 0, &a), Decision::Stop);
     assert_eq!(decide(Ending::Hung, true, 0, &a), Decision::Stop);
 }
@@ -40,19 +34,15 @@ fn restart_policy_060_r6() {
 #[test]
 fn lock_busy_and_yield_are_not_restarted_060_r6() {
     let a = args();
-    // 75: the lock could not be taken (061-R5); 76: yielded (061-R14).
     assert_eq!(decide(Ending::Exited(Some(75)), false, 0, &a), Decision::Stop);
     assert_eq!(decide(Ending::Exited(Some(76)), false, 0, &a), Decision::Stop);
 }
 
-/// 060-R6 (H-4): on Unix the training child gets its own process group, so a terminal Ctrl+C
-/// reaches only the watchdog, which passes it on once.
 #[cfg(unix)]
 #[test]
 fn child_runs_in_its_own_process_group_060_r6() {
     let mut child = uranium_train::supervise::child_command(std::path::Path::new("/bin/sleep")).arg("5").spawn().unwrap();
     let pid = child.id() as libc::pid_t;
-    // SAFETY: plain syscalls.
     let (theirs, mine) = unsafe { (libc::getpgid(pid), libc::getpgrp()) };
     child.kill().ok();
     child.wait().ok();
@@ -60,8 +50,6 @@ fn child_runs_in_its_own_process_group_060_r6() {
     assert_ne!(theirs, mine);
 }
 
-/// 060-R6 (AMB-042-20): a fatal device error exit (042-R20, 70) and a fatal stderr line restart
-/// like a crash, within the same restart limit.
 #[test]
 fn fatal_endings_restart_like_a_crash_060_r6() {
     let a = args();
@@ -73,40 +61,33 @@ fn fatal_endings_restart_like_a_crash_060_r6() {
     assert_eq!(decide(Ending::Fatal, true, 0, &a), Decision::Stop);
 }
 
-/// 060-R6 (AMB-042-20): with a progress file only its changes are progress; stderr lines are
-/// progress only without one (fake clock).
 #[test]
 fn progress_file_alone_is_progress_060_r6() {
     let t0 = std::time::Instant::now();
     let hang = Duration::from_secs(30 * 60);
     let at = |m: u64| t0 + Duration::from_secs(m * 60);
     let mtime = |s: u64| Some(std::time::UNIX_EPOCH + Duration::from_secs(s));
-    // With a progress file: 40 minutes of error lines without a train.csv row is a hang.
     let mut l = Liveness::new(t0, Some(mtime(100)));
     for m in 1..40 {
         l.line(at(m));
         l.file(mtime(100), at(m));
     }
     assert!(!l.hung(at(29), hang) && l.hung(at(30), hang));
-    // A changed modification time resets the clock; the same one does not.
     let mut l = Liveness::new(t0, Some(mtime(100)));
     l.file(mtime(160), at(20));
     assert!(!l.hung(at(49), hang) && l.hung(at(50), hang));
     l.file(mtime(160), at(45));
     assert!(l.hung(at(50), hang));
-    // A file that does not exist yet: its first appearance is progress, a missing read is not.
     let mut l = Liveness::new(t0, Some(None));
     l.file(None, at(10));
     assert!(l.hung(at(30), hang));
     l.file(mtime(5), at(25));
     assert!(!l.hung(at(54), hang) && l.hung(at(55), hang));
-    // Without a progress file every stderr line is progress (as before).
     let mut l = Liveness::new(t0, None);
     l.line(at(20));
     assert!(!l.hung(at(49), hang) && l.hung(at(50), hang));
 }
 
-/// 060-R6 `--fatal-pattern` (AMB-042-20): any of the patterns, as a regex search in the line.
 #[test]
 fn fatal_patterns_match_060_r6() {
     let p = vec![regex::Regex::new("illegal memory access").unwrap(), regex::Regex::new(r"^Sticky error").unwrap()];
@@ -118,8 +99,6 @@ fn fatal_patterns_match_060_r6() {
     assert!(fatal_match(&[], line).is_none());
 }
 
-/// 060-R6 (AMB-042-20) with real children: a fatal stderr line kills the child at once; with a
-/// progress file a child that only prints is killed as hung; without one it is not.
 #[cfg(unix)]
 #[test]
 fn watched_children_fatal_line_and_progress_file_060_r6() {
@@ -150,8 +129,6 @@ fn watched_children_fatal_line_and_progress_file_060_r6() {
     assert_eq!(e, Ending::Exited(Some(0)), "lines are progress without a progress file");
 }
 
-/// 060-R6 (AMB-042-20) on Windows (the CUDA host's watchdog): a fatal stderr line kills the child
-/// at once, also while a grandchild (`ping`) still holds the stderr pipe.
 #[cfg(windows)]
 #[test]
 fn watched_child_fatal_line_windows_060_r6() {

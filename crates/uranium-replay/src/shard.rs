@@ -1,7 +1,3 @@
-//! BC shard format (040 "Shard 포맷", 040-R9, R12, R14, R15): per game the decision-time RawFrame,
-//! PrivilegedSummary and action label, postcard-encoded and zstd-compressed. Features and masks
-//! are built at training time (040-R12), so `feature_version` is 0 here.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -12,43 +8,20 @@ use uranium_proto::{GameInfo, PrivilegedSummary, RawFrame};
 use crate::label::Label;
 pub use uranium_env::features::label::MemoryAction;
 
-/// 2: games carry the bridge GameInfo (AMB-040-6); version-1 shards must be rebuilt.
-/// 3: label selections follow the game's selection rules (040-R3, 2026-10-17); rebuild 2.
-/// 4: GameInfo players are the perspective and its opponent only, in id order (011-R10,
-/// 2026-10-17); rebuild 3.
-/// 5: `result_source` and `enemy_random` in the meta, no spam merging (040-R4), game-start first
-/// step (040-R18) (2026-10-19, full rebuild G-D1); older shards are refused.
-/// 6: the header carries `labeler_version` (2026-10-19 user decision, action audit F7 / F12).
-/// Schema 5 differs only in the header and is still read, as labeler version 1, because the
-/// full rebuild G-D1 is part schema 5 and part schema 6 (040 "Shard 포맷").
-/// 7: steps carry the optional `memory_action` (040-R22, 2026-11-09). Schemas 6 and 5 are still
-/// read, every step with `memory_action = None`; existing shards are not rebuilt.
 pub const SCHEMA_VERSION: u32 = 7;
-/// Oldest schema [`read`] accepts.
 pub const MIN_SCHEMA_VERSION: u32 = 5;
-/// Labeler version of schema-5 shards (040 "Shard 포맷").
 pub const SCHEMA5_LABELER_VERSION: u32 = 1;
-/// Features are not stored (040-R12).
 pub const FEATURE_VERSION: u32 = 0;
 const ZSTD_LEVEL: i32 = 3;
 
-/// 040-R17: local folder where `build` completes shards before copying them to the shared drive
-/// (`.env`, 001-R9). Default: `<temp>/uranium-replay/shard-staging`.
 pub const STAGING_DIR_ENV: &str = "URANIUM_SHARD_STAGING_DIR";
-/// 040-R17: copies retried after a hash mismatch (default 3).
 pub const COPY_RETRIES: u32 = 3;
-/// 040-R17: suffix of a shard being copied to the shared drive.
 pub const TEMP_SUFFIX: &str = ".tmp";
 
-/// 040-R8 `result_source` values (shard meta, records).
 pub mod result_source {
-    /// The OpenBW replay reported a winner.
     pub const BRIDGE: &str = "bridge";
-    /// No bridge winner: the first player to leave (LEAVE 0x57) lost.
     pub const LEAVE: &str = "leave";
-    /// Neither: the winner recorded for an SC:R replay (043-R8).
     pub const RECORDED: &str = "recorded";
-    /// Undecided: `result = 0`, value weight 0 (041-R7).
     pub const NONE: &str = "none";
 }
 
@@ -57,7 +30,6 @@ pub struct ShardHeader {
     pub schema_version: u32,
     pub feature_version: u32,
     pub action_version: u32,
-    /// `label::LABELER_VERSION` the labels were made with (schema 6); 1 for schema-5 shards.
     pub labeler_version: u32,
 }
 
@@ -72,7 +44,6 @@ impl Default for ShardHeader {
     }
 }
 
-/// Schema-5 header (no labeler version); games are laid out as in schema 6.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 struct ShardHeaderV5 {
     schema_version: u32,
@@ -86,7 +57,6 @@ struct ShardV5 {
     games: Vec<ShardGameV6>,
 }
 
-/// Schema-6 (and 5) step: no `memory_action` (040-R22).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 struct StepV6 {
     raw_frame: RawFrame,
@@ -108,7 +78,6 @@ struct ShardV6 {
 }
 
 impl From<ShardGameV6> for ShardGame {
-    /// 040-R22: a schema-6 / 5 step reads as `memory_action = None`, the rest unchanged.
     fn from(g: ShardGameV6) -> Self {
         let steps = g.steps.into_iter().map(|s| Step { raw_frame: s.raw_frame, privileged: s.privileged, action_label: s.action_label, memory_action: None }).collect();
         ShardGame { meta: g.meta, game_info: g.game_info, steps }
@@ -117,28 +86,17 @@ impl From<ShardGameV6> for ShardGame {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GameMeta {
-    /// SHA-256 of the replay's map section (CHK).
     pub map_hash: String,
-    /// 040-R15: `fighting_spirit`, `circuit_breaker` or `other`.
     pub map_family: String,
-    /// e.g. "TvZ" from the perspective player's side.
     pub matchup: String,
     pub player_race: u8,
-    /// BWAPI id of the perspective player (013).
     pub perspective_slot: u8,
     pub apm: u32,
-    /// 040-R8: 1 win, -1 loss, 0 undecided (`result_source = none`).
     pub result: i8,
-    /// 040-R8: how `result` was decided (`result_source::*`).
     pub result_source: String,
-    /// 030-R11: the opponent picked Random in the lobby (header race 6), so its race is unknown
-    /// until its first unit is seen.
     pub enemy_random: bool,
-    /// 040-R14 source tag.
     pub src: String,
-    /// 040-R9: "S1" or "S2".
     pub stage: String,
-    /// SHA-256 of the original replay file: game identity for game-level splits (040-R5).
     pub replay_sha256: String,
 }
 
@@ -147,19 +105,12 @@ pub struct Step {
     pub raw_frame: RawFrame,
     pub privileged: Option<PrivilegedSummary>,
     pub action_label: Label,
-    /// 040-R22 (schema 7): the decisions the model that played the game made in the playback
-    /// frames [previous step's observation, this step's observation), in order (041-R28 ②), which
-    /// BC puts into agent memory before this step's observation (041-R28 ③). `None` = not known
-    /// (every step of a game without a usable decision log, every source but `dagger`, `branch` and
-    /// `distill` (044-R2), schema 6 / 5 shards); `Some(vec![])` = no decision in between. A game
-    /// has it on every step or on none.
     pub memory_action: Option<Vec<MemoryAction>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ShardGame {
     pub meta: GameMeta,
-    /// Static map and players of the perspective (AMB-040-6): feature extraction needs it (030).
     pub game_info: GameInfo,
     pub steps: Vec<Step>,
 }
@@ -172,16 +123,12 @@ pub struct Shard {
 
 pub fn encode(shard: &Shard) -> Result<Vec<u8>> {
     let bytes = postcard::to_stdvec(shard).context("encoding shard")?;
-    // 040-R17 (R-5): the frame carries a content checksum, so a damaged shard fails to decompress
-    // instead of decoding garbage. Readers accept frames with or without it (older shards).
     let mut enc = zstd::stream::Encoder::new(Vec::new(), ZSTD_LEVEL)?;
     enc.include_checksum(true)?;
     std::io::Write::write_all(&mut enc, &bytes)?;
     Ok(enc.finish()?)
 }
 
-/// Writes one shard to a local path (write then rename, so readers never see a partial file).
-/// `build` goes through `ShardWriter`, which adds the 040-R17 copy verification.
 pub fn write(path: &Path, shard: &Shard) -> Result<u64> {
     let packed = encode(shard)?;
     let tmp = temp_path(path);
@@ -190,9 +137,6 @@ pub fn write(path: &Path, shard: &Shard) -> Result<u64> {
     Ok(packed.len() as u64)
 }
 
-/// Reads a shard of schema 7, of schema 6 (every `memory_action` `None`, 040-R22), or of schema 5
-/// as labeler version 1 (040 "Shard 포맷": the G-D1 rebuild mixes 5 and 6). Older schemas are
-/// refused.
 pub fn read(path: &Path) -> Result<Shard> {
     let packed = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let bytes = zstd::decode_all(packed.as_slice())?;
@@ -200,7 +144,6 @@ pub fn read(path: &Path) -> Result<Shard> {
 }
 
 pub(crate) fn decode(bytes: &[u8]) -> Result<Shard> {
-    // The schema version is the first field of every header version.
     let (schema, _) = postcard::take_from_bytes::<u32>(bytes).context("decoding shard header")?;
     ensure!((MIN_SCHEMA_VERSION..=SCHEMA_VERSION).contains(&schema), "shard schema {schema} != {SCHEMA_VERSION} (schemas {MIN_SCHEMA_VERSION}..{SCHEMA_VERSION} are read)");
     match schema {
@@ -218,11 +161,6 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Shard> {
     }
 }
 
-/// 040-R17 (R-5): every finished shard (`shard_NNNNN.bin.zst`) below `dir` decompresses and
-/// decodes completely. Checked on `jobs` threads; the error lists every shard that fails, so a
-/// manifest is never written over a corrupt shard. Files are read past this client's cache
-/// (`share_io`); `jobs` is capped at 4 (each worker holds one decoded shard). Returns (shards,
-/// games).
 pub fn validate_tree(dir: &Path, jobs: usize) -> Result<(usize, usize)> {
     fn walk(d: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
         for e in std::fs::read_dir(d).with_context(|| format!("listing {}", d.display()))? {
@@ -262,26 +200,20 @@ pub fn validate_tree(dir: &Path, jobs: usize) -> Result<(usize, usize)> {
     Ok((files.len(), games.into_inner()))
 }
 
-/// `<path>.tmp`: the name a shard has while it is copied (040-R17).
 pub fn temp_path(path: &Path) -> PathBuf {
     let mut s = path.as_os_str().to_owned();
     s.push(TEMP_SUFFIX);
     PathBuf::from(s)
 }
 
-/// Index of a finished shard file name `shard_NNNNN.bin.zst`; temporary copies (`*.tmp`, and
-/// `*.part` / `*.bin.tmp` of older builds) are not shards (040-R17).
 pub fn shard_index(file_name: &str) -> Option<u32> {
     file_name.strip_prefix("shard_")?.strip_suffix(".bin.zst")?.parse().ok()
 }
 
-/// First free shard index of a folder: one past the highest finished shard. Counting files would
-/// reuse an index after a gap or count left-over temporary copies.
 pub fn next_shard_index(dir: &Path) -> u32 {
     std::fs::read_dir(dir).map_or(0, |d| d.flatten().filter_map(|e| shard_index(&e.file_name().to_string_lossy())).map(|i| i + 1).max().unwrap_or(0))
 }
 
-/// 040-R17 staging folder (`URANIUM_SHARD_STAGING_DIR`).
 pub fn staging_dir() -> PathBuf {
     std::env::var_os(STAGING_DIR_ENV).filter(|v| !v.is_empty()).map_or_else(|| std::env::temp_dir().join("uranium-replay").join("shard-staging"), PathBuf::from)
 }
@@ -290,15 +222,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Copies a file to the shared drive (replaceable in tests to simulate a corrupting copy).
 pub type CopyFn = fn(&Path, &Path) -> std::io::Result<u64>;
 
-/// 040-R17: `local` is complete; copy it to `<dest>.tmp`, read the copy back and compare
-/// SHA-256, rename to `dest` only on a match and then delete `local`. A mismatch removes the
-/// temporary copy and copies again, `retries` times; after that the error names the local copy,
-/// which is kept. The read-back is what the file server holds: the copy is `fsync`ed and read
-/// past this client's cache (`share_io`, R-5: a cached read-back passed 7 shards that were
-/// zero-filled on the share).
 pub fn publish(local: &Path, dest: &Path, copy: CopyFn, retries: u32) -> Result<()> {
     let want = sha256_hex(&std::fs::read(local).with_context(|| format!("reading {}", local.display()))?);
     let tmp = temp_path(dest);
@@ -318,9 +243,6 @@ pub fn publish(local: &Path, dest: &Path, copy: CopyFn, retries: u32) -> Result<
     bail!("040-R17: {} failed verification after {} copies; local copy kept at {}", dest.display(), retries + 1, local.display())
 }
 
-/// Collects games and writes `shard_XXXXX.bin.zst` files of roughly `target_bytes` (encoded size
-/// before compression) each: completed in the local staging folder, then copied and verified
-/// (040-R17).
 pub struct ShardWriter {
     dir: PathBuf,
     staging: PathBuf,
@@ -331,13 +253,10 @@ pub struct ShardWriter {
     pub written: Vec<(PathBuf, u64)>,
     pub copy: CopyFn,
     pub retries: u32,
-    /// Local copy of the shard that failed verification (040-R17); set once, then every write fails.
     failed: Option<PathBuf>,
 }
 
 impl ShardWriter {
-    /// `staging` is a local folder (`staging_dir()`); several builds may share it, so shard files
-    /// there carry the process id.
     pub fn new(dir: PathBuf, staging: PathBuf, first_index: u32, target_bytes: usize) -> Result<Self> {
         std::fs::create_dir_all(&dir)?;
         std::fs::create_dir_all(&staging).with_context(|| format!("creating {} (040-R17 staging)", staging.display()))?;
@@ -354,8 +273,6 @@ impl ShardWriter {
         Ok(())
     }
 
-    /// 040-R17: after a failed shard the writer refuses everything, so the kept local copy is
-    /// never overwritten and no later shard is published past the failure.
     fn check(&self) -> Result<()> {
         match &self.failed {
             Some(local) => bail!("040-R17: an earlier shard failed verification (local copy {}); no more shards are written", local.display()),
@@ -368,8 +285,6 @@ impl ShardWriter {
         if self.pending.is_empty() {
             return Ok(());
         }
-        // The index and the pending games are consumed whatever happens; the local name is
-        // unique per process and attempt, so no later flush or run can overwrite a kept copy.
         let name = format!("shard_{:05}.bin.zst", self.next_index);
         self.next_index += 1;
         self.pending_bytes = 0;
@@ -464,7 +379,6 @@ pub(crate) mod tests {
             w.add(game(n)).unwrap();
         }
         assert_eq!(validate_tree(&dir.join("shared"), 2).unwrap(), (4, 4));
-        // R-5: an 8 MiB zero-filled head as found on the share; a truncated file.
         let p0 = &w.written[0].0;
         let mut b = std::fs::read(p0).unwrap();
         let n = 8.min(b.len());
@@ -473,7 +387,6 @@ pub(crate) mod tests {
         let p2 = &w.written[2].0;
         let b = std::fs::read(p2).unwrap();
         std::fs::write(p2, &b[..b.len() / 2]).unwrap();
-        // R-5: a zero-filled region in the middle of the file (found at 4 MiB on the share).
         let p3 = &w.written[3].0;
         let mut b = std::fs::read(p3).unwrap();
         let (lo, hi) = (b.len() / 3, 2 * b.len() / 3);
@@ -484,13 +397,10 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 040-R17 (R-5): new shards carry a zstd content checksum; shards written before it (no
-    /// checksum) still read the same.
     #[test]
     fn shard_checksum_is_new_and_old_shards_still_read_040_r17() {
         let shard = Shard { header: ShardHeader::default(), games: vec![game(1), game(2)] };
         let packed = encode(&shard).unwrap();
-        // Frame header descriptor (after the 4-byte magic): bit 2 = content checksum flag.
         assert_eq!(packed[4] & 0b100, 0b100, "checksum flag set");
         assert_eq!(decode(&zstd::decode_all(packed.as_slice()).unwrap()).unwrap(), shard);
         let old = zstd::encode_all(postcard::to_stdvec(&shard).unwrap().as_slice(), ZSTD_LEVEL).unwrap();
@@ -499,7 +409,6 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("shard_00000.bin.zst"), &old).unwrap();
         assert_eq!(read(&dir.join("shard_00000.bin.zst")).unwrap(), shard);
-        // A flipped byte in the compressed data is caught by the checksum or the decoder.
         let mut bad = packed.clone();
         let mid = bad.len() / 2;
         bad[mid] ^= 0xff;
@@ -510,7 +419,7 @@ pub(crate) mod tests {
     #[test]
     fn shards_round_trip_and_roll_over_040() {
         let dir = tmp_dir("roll");
-        let mut w = ShardWriter::new(dir.join("shared"), dir.join("local"), 0, 1).unwrap(); // every game flushes
+        let mut w = ShardWriter::new(dir.join("shared"), dir.join("local"), 0, 1).unwrap();
         w.add(game(1)).unwrap();
         w.add(game(2)).unwrap();
         w.flush().unwrap();
@@ -518,14 +427,11 @@ pub(crate) mod tests {
         let s = read(&w.written[1].0).unwrap();
         assert_eq!(s.header, ShardHeader::default());
         assert_eq!(s.games, vec![game(2)]);
-        // 040-R17: verified copies leave no temporary or local files.
         assert_eq!(files(&dir.join("shared")), vec!["shard_00000.bin.zst", "shard_00001.bin.zst"]);
         assert!(files(&dir.join("local")).is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Schema 6 (2026-10-19): schema-5 shards of the same rebuild are still read, as labeler
-    /// version 1, with their games unchanged (040 "Shard 포맷").
     #[test]
     fn schema5_shards_read_as_labeler_v1_040() {
         let dir = tmp_dir("schema5");
@@ -536,21 +442,16 @@ pub(crate) mod tests {
         let s = read(&p).unwrap();
         assert_eq!(s.header, ShardHeader { schema_version: 5, feature_version: 0, action_version: 1, labeler_version: SCHEMA5_LABELER_VERSION });
         assert_eq!(s.games, vec![game(1), game(2)]);
-        // New shards carry the current labeler version.
         write(&p, &Shard { header: ShardHeader::default(), games: vec![game(3)] }).unwrap();
         assert_eq!(read(&p).unwrap().header.labeler_version, crate::label::LABELER_VERSION);
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A schema-6 / 5 game as the old writers laid it out (no `memory_action`).
     fn v6(g: &ShardGame) -> ShardGameV6 {
         let steps = g.steps.iter().map(|s| StepV6 { raw_frame: s.raw_frame.clone(), privileged: s.privileged.clone(), action_label: s.action_label.clone() }).collect();
         ShardGameV6 { meta: g.meta.clone(), game_info: g.game_info.clone(), steps }
     }
 
-    /// 040-AC9 (040-R22): a schema-7 shard round-trips steps with and without `memory_action`
-    /// (`None`, an empty list, decisions); a schema-6 shard reads with every step `None` and its
-    /// other content as the schema-6 reader read it.
     #[test]
     fn schema7_memory_action_round_trip_and_schema6_reads_none_040_ac9() {
         let dir = tmp_dir("schema7");
@@ -567,7 +468,6 @@ pub(crate) mod tests {
         assert_eq!(back, shard);
         assert_eq!(back.games[0].steps[0].memory_action, Some(vec![]), "an empty list stays an empty list, not None");
         assert!(back.games[1].steps.iter().all(|s| s.memory_action.is_none()));
-        // Schema 6: same games without the field.
         let old = ShardV6 { header: ShardHeader { schema_version: 6, ..ShardHeader::default() }, games: vec![v6(&with), v6(&game(2))] };
         std::fs::write(&p, zstd::encode_all(postcard::to_stdvec(&old).unwrap().as_slice(), 3).unwrap()).unwrap();
         let s = read(&p).unwrap();
@@ -578,7 +478,6 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Schemas older than 5 are refused (040 "Shard 포맷").
     #[test]
     fn old_schema_is_refused_040() {
         let dir = tmp_dir("schema");
@@ -591,7 +490,6 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn corrupting_copy(from: &Path, to: &Path) -> std::io::Result<u64> {
-        // Zeroes the first bytes, like the SMB failure of reports/m4_desync_nondet.md.
         let mut b = std::fs::read(from)?;
         b[..4].fill(0);
         std::fs::write(to, &b)?;
@@ -604,8 +502,6 @@ pub(crate) mod tests {
         if FAILS_LEFT.fetch_update(std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() { corrupting_copy(from, to) } else { std::fs::copy(from, to) }
     }
 
-    /// 040-R17: a copy that reads back with another hash is retried; after the retries the shard
-    /// is an error, nothing is left under the final or temporary name and the local copy stays.
     #[test]
     fn shard_copy_is_verified_and_retried_040_r17() {
         let dir = tmp_dir("verify");
@@ -619,15 +515,12 @@ pub(crate) mod tests {
         assert!(kept.len() == 1 && kept[0].starts_with(&format!("{}-", std::process::id())) && kept[0].ends_with("-shard_00007.bin.zst"), "{kept:?}");
         let kept_bytes = std::fs::read(dir.join("local").join(&kept[0])).unwrap();
         assert_eq!(read(&dir.join("local").join(&kept[0])).unwrap().games, vec![game(1)]);
-        // A failed writer refuses further games and flushes, even with a working copy: the kept
-        // local copy is never overwritten and nothing is published after the failure.
         w.copy = |from, to| std::fs::copy(from, to);
         assert!(w.add(game(3)).is_err());
         assert!(w.flush().is_err());
         assert_eq!(files(&dir.join("local")), kept);
         assert_eq!(std::fs::read(dir.join("local").join(&kept[0])).unwrap(), kept_bytes);
         assert!(files(&dir.join("shared")).is_empty());
-        // Two bad copies, then a good one: published under the final name.
         FAILS_LEFT.store(2, std::sync::atomic::Ordering::SeqCst);
         let mut w = ShardWriter::new(dir.join("shared"), dir.join("local2"), 8, usize::MAX).unwrap();
         w.copy = flaky_copy;
@@ -638,7 +531,6 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 040-R17: temporary copies do not count as shards when a build picks its first index.
     #[test]
     fn next_index_skips_temporary_files_040_r17() {
         let dir = tmp_dir("index");

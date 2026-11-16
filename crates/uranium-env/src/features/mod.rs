@@ -1,6 +1,3 @@
-//! Observation features (spec 030), masks (034) and the shared per-frame view used by the
-//! executor (031). One code path for training, replays and SC:R (030 Purpose).
-
 pub mod augment;
 pub mod executor;
 pub mod extract;

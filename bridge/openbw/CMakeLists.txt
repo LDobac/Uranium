@@ -1,5 +1,3 @@
-# Builds liburanium_bridge.so = thin BWAPI shim (C++) + Rust staticlib (spec 011).
-# Invoked by tools/openbw/build_bridge.sh, which builds the Rust part first.
 cmake_minimum_required(VERSION 3.16)
 project(uranium_bridge CXX)
 
@@ -15,9 +13,6 @@ endif()
 add_library(uranium_bridge SHARED shim/shim.cpp)
 target_include_directories(uranium_bridge PRIVATE include "${BWAPI_DIR}/bwapi/include")
 if(MSVC)
-  # Windows (001-R8): uranium_bridge.dll. Only __declspec(dllexport) symbols are exported.
-  # BWAPILIB is static here; both it and the Rust staticlib use the default /MD CRT.
-  # /utf-8: sources and uranium_bridge.h are UTF-8 (Korean comments) whatever the system code page.
   target_compile_options(uranium_bridge PRIVATE /FIcstdint /W3 /EHsc /utf-8)
   target_compile_definitions(uranium_bridge PRIVATE _CRT_SECURE_NO_WARNINGS)
   target_link_directories(uranium_bridge PRIVATE "${BWAPI_BUILD_DIR}/lib/Release")
@@ -28,6 +23,5 @@ else()
   target_compile_options(uranium_bridge PRIVATE -include cstdint -Wall -Wno-unused-parameter)
   target_link_directories(uranium_bridge PRIVATE "${BWAPI_BUILD_DIR}/lib")
   target_link_libraries(uranium_bridge PRIVATE BWAPILIB "${RUST_STATICLIB}" pthread dl m)
-  # Rust staticlib symbols must not leak: export only gameInit/newAIModule.
   target_link_options(uranium_bridge PRIVATE "-Wl,--exclude-libs,ALL")
 endif()

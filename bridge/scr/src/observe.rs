@@ -1,9 +1,3 @@
-//! Snapshot -> `RawFrame` / `GameInfo` with the OpenBW bridge's meaning (012-R3, 012-R12, 012-R13).
-//! The OpenBW shim reads BWAPI 4.2 with CompleteMapInformation on and filters with
-//! `visible_to_self`; this module recomputes the same BWAPI values from raw game memory. Source
-//! references: UU = BWAPI/Source/BWAPI/UnitUpdate.cpp, GU = GameUnits.cpp, UL =
-//! BWAPILIB/Source/Unit.cpp, shim = bridge/openbw/shim/shim.cpp, mapping = reports/m7_scr_field_mapping.md.
-
 use std::collections::{HashMap, HashSet};
 
 use sha2::{Digest, Sha256};
@@ -13,7 +7,6 @@ use uranium_proto::*;
 use crate::snapshot::{MOVING_OR_ACCELERATING, RawStatic, RawUnit, Snapshot, UnitRef, status, tile};
 use crate::tables::{Tables, has_weapon, unit_type};
 
-/// BWAPI values of one live unit (all units are accessible: CompleteMapInformation semantics).
 #[derive(Debug, Clone, Default)]
 pub struct Derived {
     pub bwapi_type: u16,
@@ -22,23 +15,17 @@ pub struct Derived {
     pub constructing: bool,
     pub idle: bool,
     pub training: bool,
-    /// BWAPI `getOrder` (mapped through the order table).
     pub order: u8,
     pub transport: UnitRef,
     pub pos: (i32, i32),
-    /// BWAPI `isVisible(self)` and `isDetected` (UU:94-108).
     pub visible: bool,
     pub detected: bool,
-    /// Passes the shim's `visible_to_self` (own unit, or seen and detected).
     pub observed: bool,
-    /// Live add-on (BWAPI `getAddon`), 0 = none.
     pub addon: UnitRef,
 }
 
-/// Per-game state the observation needs between frames.
 #[derive(Default)]
 pub struct ObserveState {
-    /// BWAPI order of each unit last frame: `isMoving` reads the previous frame's order (UU:294).
     prev_order: HashMap<u32, u8>,
 }
 
@@ -54,8 +41,6 @@ fn ceil256(v: i32) -> u16 {
     if v <= 0 { 0 } else { ((v + 255) / 256).min(u16::MAX as i32) as u16 }
 }
 
-/// BWAPI `UnitType` of a live unit (UU:136-155): mineral fields fold into one type, a morphing
-/// building shows what it becomes.
 fn bwapi_type(u: &RawUnit, t: &Tables) -> u16 {
     if t.is_mineral_field(u.unit_type) {
         return t.units.mineral_field;
@@ -74,13 +59,11 @@ fn has_empty_queue(u: &RawUnit, t: &Tables) -> bool {
     u.build_slot < 5 && u.build_queue[u.build_slot as usize] == t.units.none
 }
 
-/// BWAPI `isScannerVisible`: any tile within 64 px of the sweep is visible.
 fn scanner_visible(s: &Snapshot, pos: (i32, i32)) -> bool {
     let (l, tp, r, b) = ((pos.0 - 64) / 32, (pos.1 - 64) / 32, (pos.0 + 64) / 32, (pos.1 + 64) / 32);
     (l..=r).any(|x| (tp..=b).any(|y| s.visible(x, y)))
 }
 
-/// BWAPI values of every unit of the snapshot, in `s.units` order.
 pub fn derive(s: &Snapshot, t: &Tables) -> Vec<Derived> {
     let o = &t.orders;
     let me = s.local;
@@ -91,7 +74,6 @@ pub fn derive(s: &Snapshot, t: &Tables) -> Vec<Derived> {
             let ty = bwapi_type(u, t);
             let morphing = [o.zerg_birth, o.zerg_building_morph, o.zerg_unit_morph, o.incomplete_morphing].contains(&u.order);
             let completed = u.status & status::COMPLETED != 0 && !morphing;
-            // Transport (UU:157-169).
             let fighter = [t.units.interceptor, t.units.scarab, t.units.spider_mine].contains(&ty);
             let in_transport = u.status & (status::IN_TRANSPORT | status::IN_BUILDING) != 0;
             let transport = if fighter {
@@ -102,7 +84,6 @@ pub fn derive(s: &Snapshot, t: &Tables) -> Vec<Derived> {
                 0
             };
             let tt = unit_type(ty);
-            // isTraining (UU:346-355).
             let training = if ty == t.units.nuclear_silo && u.secondary_order == o.train {
                 true
             } else if !tt.is_some_and(|x| x.has(flag::PRODUCES_UNITS)) {
@@ -112,16 +93,13 @@ pub fn derive(s: &Snapshot, t: &Tables) -> Vec<Derived> {
             } else {
                 !has_empty_queue(u, t)
             };
-            // isConstructing (UU:366-381).
             let build_unit = u.current_build_unit != 0;
             let constructing = morphing
                 || o.constructing.contains(&u.order)
                 || u.order == o.build_addon
                 || u.secondary_order == o.build_addon
                 || (!completed && build_unit);
-            // isIdle (UU:384-404), on raw orders.
             let idle = !(training || constructing || morphing || u.order == o.research_tech || u.order == o.upgrade) && o.idle.contains(&u.order);
-            // Visibility and detection for our player (UU:79-108).
             let burrowed = u.status & status::BURROWED != 0;
             let (visible, detected) = if !u.has_sprite {
                 (false, false)
@@ -148,7 +126,6 @@ pub fn derive(s: &Snapshot, t: &Tables) -> Vec<Derived> {
             Derived { bwapi_type: ty, completed, morphing, constructing, idle, training, order: t.bwapi_order(u.order), transport, pos: (0, 0), visible, detected, observed: false, addon: 0 }
         })
         .collect();
-    // Positions follow the transport (UU:172); add-ons (UU:415-428).
     for i in 0..d.len() {
         let u = &s.units[i];
         let src = s.unit(d[i].transport).unwrap_or(u);
@@ -158,7 +135,6 @@ pub fn derive(s: &Snapshot, t: &Tables) -> Vec<Derived> {
             d[i].addon = addon_of(u.current_build_unit).or_else(|| addon_of(u.addon)).unwrap_or(0);
         }
     }
-    // GU augmentUnitData:259-290: a builder and its building, a building and its unfinished add-on.
     let mut marks: Vec<usize> = Vec::new();
     for i in 0..d.len() {
         let u = &s.units[i];
@@ -172,7 +148,6 @@ pub fn derive(s: &Snapshot, t: &Tables) -> Vec<Derived> {
         d[k].constructing = true;
         d[k].idle = false;
     }
-    // shim `visible_to_self`: own units, else seen (any footprint tile visible) and detected.
     for i in 0..d.len() {
         let u = &s.units[i];
         d[i].observed = if u.player == me {
@@ -192,7 +167,6 @@ pub fn derive(s: &Snapshot, t: &Tables) -> Vec<Derived> {
     d
 }
 
-/// BWAPI `isGatheringMinerals || isGatheringGas` (UnitShared.cpp:449-530), on BWAPI orders.
 fn gathering(s: &Snapshot, d: &[Derived], i: usize, t: &Tables) -> bool {
     let u = &s.units[i];
     let o = &t.orders;
@@ -229,7 +203,6 @@ fn gathering(s: &Snapshot, d: &[Derived], i: usize, t: &Tables) -> bool {
     minerals || gas
 }
 
-/// BWAPI `getTrainingQueue` (UU:576-597) padded with `None`.
 fn training_queue(u: &RawUnit, ty: u16, t: &Tables) -> [u16; 5] {
     let none = t.units.none;
     let mut q = [none; 5];
@@ -248,7 +221,6 @@ fn training_queue(u: &RawUnit, ty: u16, t: &Tables) -> [u16; 5] {
     q
 }
 
-/// The `UnitState` of observed unit `i` (shim `fill_unit`); `ids` names observed units only.
 fn unit_state(s: &Snapshot, d: &[Derived], i: usize, t: &Tables, st: &ObserveState, observed_tag: &dyn Fn(UnitRef) -> Option<u32>) -> UnitState {
     let u = &s.units[i];
     let di = &d[i];
@@ -275,17 +247,13 @@ fn unit_state(s: &Snapshot, d: &[Derived], i: usize, t: &Tables, st: &ObserveSta
     set(worker && (u.carried == 1 || u.carried == 2), flags::CARRYING);
     set(di.transport != 0, flags::LOADED);
     set(di.idle, flags::IDLE);
-    // UNDER_ATTACK stays 0: BWAPI 4.2 hard-codes recentlyAttacked = false (UU:468, mapping §4-1).
     set(gathering(s, d, i, t), flags::GATHERING);
     set(di.training, flags::TRAINING);
-    // UL isBeingConstructed.
     let being_constructed = di.morphing || (!di.completed && (tt.is_some_and(|x| x.race != "Terran") || u.current_build_unit != 0));
     set(being_constructed, flags::BEING_CONSTRUCTED);
     let prev = st.prev_order.get(&u.tag).copied();
     set(u.flingy_flags & MOVING_OR_ACCELERATING != 0 || prev == Some(o.move_), flags::MOVING);
 
-    // Remaining times (UU:586-660): inside info, sent for every unit as OpenBW does (AMB-030-5
-    // hides another player's in the agent).
     let mut remaining_train = s.unit(u.current_build_unit).map_or(0, |b| b.remaining_build_time);
     if [t.units.hatchery, t.units.lair, t.units.hive].contains(&ty) {
         let larvae = s.units.iter().filter(|l| l.unit_type == t.units.larva && l.related == u.ptr).count();
@@ -302,7 +270,6 @@ fn unit_state(s: &Snapshot, d: &[Derived], i: usize, t: &Tables, st: &ObserveSta
         unit_type: ty,
         pos: (di.pos.0.max(0) as u16, di.pos.1.max(0) as u16),
         vel: (u.speed.0 as i16, u.speed.1 as i16),
-        // BWAPI angle (facing - 64) as radians, back to 256 steps in the shim.
         angle: u.facing.wrapping_sub(64),
         hp: ceil256(u.hp),
         shield: if tt.is_some_and(|x| x.max_shields > 0) { ceil256(u.shields) } else { 0 },
@@ -342,7 +309,6 @@ fn unit_state(s: &Snapshot, d: &[Derived], i: usize, t: &Tables, st: &ObserveSta
     }
 }
 
-/// Ghost nuke tracking (GU:229-249): the painted target, and whether its launch was reported.
 #[derive(Default)]
 pub struct NukeState {
     target: HashMap<u32, (i32, i32)>,
@@ -350,8 +316,6 @@ pub struct NukeState {
 }
 
 impl NukeState {
-    /// Nuke dots this frame (shim: only visible ones) and new launches. A launch is reported only
-    /// where we see the target (BWAPI without CompleteMapInformation; mapping §4-3, 013 list).
     pub fn update(&mut self, s: &Snapshot, t: &Tables, ghost: u16) -> (Vec<Pos>, Vec<Pos>) {
         let (mut dots, mut launches) = (vec![], vec![]);
         for u in s.units.iter().filter(|u| u.unit_type == ghost) {
@@ -376,12 +340,10 @@ impl NukeState {
     }
 }
 
-/// The local player's `PlayerState` (shim `fill_player_state`, PlayerImpl.cpp:185-238).
 pub fn player_state(s: &Snapshot) -> PlayerState {
     let me = &s.me;
     let bits = |v: &[bool]| v.iter().enumerate().filter(|(_, b)| **b).fold(0u64, |a, (i, _)| a | 1 << i);
     let mut tech = bits(&me.tech);
-    // Nuclear_Strike (45) is "researched" when the missile is available (PlayerImpl.cpp:210).
     if me.nuke_available {
         tech |= 1 << 45;
     }
@@ -399,9 +361,6 @@ pub fn player_state(s: &Snapshot) -> PlayerState {
     }
 }
 
-/// `UnitState`s of the observed units (`d` from `derive`), sorted as the OpenBW bridge sorts them
-/// (`raw_frame`). References (order target, transport) name observed units only (shim
-/// `id_or_none`).
 pub fn observe_units(s: &Snapshot, d: &[Derived], t: &Tables, st: &ObserveState) -> Vec<UnitState> {
     let observed: HashMap<UnitRef, u32> = s.units.iter().zip(d).filter(|(_, x)| x.observed).map(|(u, _)| (u.ptr, u.tag)).collect();
     let tag = |r: UnitRef| observed.get(&r).copied();
@@ -411,13 +370,11 @@ pub fn observe_units(s: &Snapshot, d: &[Derived], t: &Tables, st: &ObserveState)
 }
 
 impl ObserveState {
-    /// Remember this frame's BWAPI orders for the next frame's `MOVING` flag.
     pub fn end_frame(&mut self, s: &Snapshot, d: &[Derived]) {
         self.prev_order = s.units.iter().zip(d).map(|(u, x)| (u.tag, x.order)).collect();
     }
 }
 
-/// A full observation (shim `observe`): units, grids, effects, given events.
 pub fn raw_frame(s: &Snapshot, t: &Tables, units: Vec<UnitState>, nuke_dots: &[Pos], events: Vec<GameEvent>) -> RawFrame {
     let (w, h) = (s.width, s.height);
     let mut vis = Vec::with_capacity(w as usize * h as usize);
@@ -432,7 +389,6 @@ pub fn raw_frame(s: &Snapshot, t: &Tables, units: Vec<UnitState>, nuke_dots: &[P
             creep.push((v && f & (tile::HAS_CREEP | tile::TEMPORARY_CREEP) != 0) as u8);
         }
     }
-    // Bullets whose centre tile we see now (AMB-030-4, shim:521-526).
     let mut effects: Vec<Effect> = s
         .bullets
         .iter()
@@ -462,7 +418,6 @@ pub fn raw_frame(s: &Snapshot, t: &Tables, units: Vec<UnitState>, nuke_dots: &[P
     }
 }
 
-/// Deterministic event order within one observation (as the OpenBW bridge, convert.rs).
 pub fn event_order(e: &GameEvent) -> (u8, u32, u32) {
     match *e {
         GameEvent::UnitCreated(id) => (0, id, 0),
@@ -472,7 +427,6 @@ pub fn event_order(e: &GameEvent) -> (u8, u32, u32) {
         GameEvent::UnitEvade(id) => (4, id, 0),
         GameEvent::NukeDetect((x, y)) => (5, x as u32, y as u32),
         GameEvent::CommandFailed { cmd_index, error } => (6, cmd_index as u32, error as u32),
-        // 010-R14: never emitted by SC:R sessions (012-R14); same key as the OpenBW bridge.
         GameEvent::UnitRejected { cmd_index, unit, .. } => (7, cmd_index as u32, unit),
     }
 }
@@ -487,14 +441,10 @@ fn race(r: u8) -> Race {
     }
 }
 
-/// BWAPI player types counted as players (GameEvents.cpp:138-142: None < type < Closed), minus
-/// Neutral.
 fn is_player(player_type: u8) -> bool {
     (1..7).contains(&player_type)
 }
 
-/// `GameInfo` (012-R13, shim onStart). `map_bytes` is the map file for the hash (None = zeros,
-/// logged by the caller). A lobby-Random player keeps race Random (030-R11).
 pub fn game_info(r: &RawStatic, map_bytes: Option<&[u8]>) -> GameInfo {
     let (w, h) = (r.width, r.height);
     let start_tile = |p: (u16, u16)| ((p.0 as i32 - 64) / 32, (p.1 as i32 - 48) / 32);
@@ -541,9 +491,6 @@ pub fn game_info(r: &RawStatic, map_bytes: Option<&[u8]>) -> GameInfo {
     }
 }
 
-/// BWAPI `isWalkable` at 8 px (Map.cpp:101-108, OpenBW `is_walkable`): `minitile(x, y)` is the
-/// vf4 walkable bit of the tile's megatile, `None` when the tileset data could not be read (then
-/// a partially walkable tile counts as walkable).
 pub fn walkability(w: u16, h: u16, tiles: &[u32], minitile: &dyn Fn(usize, usize, usize) -> Option<bool>) -> Vec<u8> {
     let (ww, wh) = (w as usize * 4, h as usize * 4);
     let mut out = vec![0u8; ww * wh];
@@ -567,8 +514,6 @@ pub fn walkability(w: u16, h: u16, tiles: &[u32], minitile: &dyn Fn(usize, usize
     out
 }
 
-/// Whether unit type `ty` can attack-move (BWAPI `canAttackMove`, Templates.h:582: armed or a
-/// medic, and able to move). Used to send unarmed units a move instead (shim:168-171).
 pub fn can_attack_move(ty: u16, t: &Tables) -> bool {
     let Some(x) = unit_type(ty) else { return false };
     let armed = has_weapon(x.ground_weapon) || has_weapon(x.air_weapon) || ty == t.units.carrier || ty == t.units.reaver;

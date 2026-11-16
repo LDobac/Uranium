@@ -18,8 +18,6 @@ members = [
     "tools/casc-extract",
     "tools/bwapi-tables",
 ]
-# 012: the SC:R bridge is a Windows x64 cdylib with its own workspace (bridge/scr/Cargo.toml),
-# so Linux hosts never build it (001-R8).
 exclude = ["bridge/scr"]
 
 [workspace.package]
@@ -29,8 +27,6 @@ license = "UNLICENSED"
 publish = false
 
 [workspace.dependencies]
-# The model, training and inference are PyTorch (python/uranium, AMB-000-4); the last Burn
-# commit is tagged `burn-final`.
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"

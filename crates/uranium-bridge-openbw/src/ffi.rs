@@ -1,5 +1,3 @@
-//! `#[repr(C)]` mirrors of `bridge/openbw/include/uranium_bridge.h`. Keep both in sync.
-
 use std::ffi::c_char;
 
 pub const UR_NONE: i32 = -1;
@@ -30,7 +28,6 @@ pub struct UrStatic {
     pub n_players: u32,
     pub self_id: u8,
     pub privileged: u8,
-    /// 011-R10: replay playback; `self_id` is the perspective player.
     pub replay: u8,
 }
 
@@ -89,29 +86,18 @@ pub const UR_EV_DISCOVER: u8 = 3;
 pub const UR_EV_EVADE: u8 = 4;
 pub const UR_EV_NUKE: u8 = 5;
 pub const UR_EV_CMD_FAILED: u8 = 6;
-/// 011-R20 ④, 010-R14: one unit of a `Command::Unit` did not take the command.
 pub const UR_EV_UNIT_REJECTED: u8 = 7;
 
 #[repr(C)]
 pub struct UrEvent {
     pub kind: u8,
-    /// Unit id. UR_EV_CMD_FAILED: command index. UR_EV_UNIT_REJECTED: rejected (requested) unit id.
     pub unit: i32,
-    /// UR_EV_NUKE: position. UR_EV_CMD_FAILED: x = BWAPI error. UR_EV_UNIT_REJECTED: x = command
-    /// index, y = BWAPI error.
     pub x: i32,
     pub y: i32,
-    /// UR_EV_UNIT_REJECTED: BWAPI UnitType id, 0xFFFF when the unit was not found (and for other kinds).
     pub unit_type: u16,
-    /// UR_EV_UNIT_REJECTED: BWAPI UnitCommandType id the bridge attempted for that unit. Issued
-    /// units: after the per-unit rewrite. Units not found: after target resolution (a gone
-    /// resource → Move included) but before any per-unit rewrite. Fog-ghost commands:
-    /// Attack_Unit / Right_Click_Unit. 0 for other kinds.
     pub command: u8,
 }
 
-// 011 "C ABI 이벤트": the C layout is kind@0, unit@4, x@8, y@12, unit_type@16, command@18, size 20
-// (the shim asserts the same on the C side).
 const _: () = {
     assert!(std::mem::size_of::<UrEvent>() == 20);
     assert!(std::mem::align_of::<UrEvent>() == 4);
@@ -200,16 +186,12 @@ pub struct UrAct {
     pub n_cmds: u32,
     pub unit_pool: *const i32,
     pub advance_frames: u32,
-    /// 010-R13 / 011-R21: non-zero = surrender, `surrender_chat` NUL-terminated (empty = no chat).
     pub surrender: u8,
     pub surrender_chat: *const c_char,
 }
 
-/// 011-R21 (`UR_SURRENDER_LEAVE_FRAMES`): frames between the surrender chat and leaving.
 pub const SURRENDER_LEAVE_FRAMES: u32 = 24;
 
-/// # Safety
-/// `ptr` must point to `n` valid elements (or `n == 0`).
 pub unsafe fn slice<'a, T>(ptr: *const T, n: u32) -> &'a [T] {
     if n == 0 || ptr.is_null() { &[] } else { unsafe { std::slice::from_raw_parts(ptr, n as usize) } }
 }

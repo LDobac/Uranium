@@ -1,13 +1,7 @@
-//! 043-R11: reduce an API response to its shape so it can be printed and reported without
-//! player names, toons or other values.
-
 use serde_json::{Map, Value, json};
 
 const MAX_NUMERIC_KEY_LEN: usize = 5;
 
-/// Replaces every value by a type marker. Arrays keep their length and the shape of the first
-/// element. Object keys are kept only when they look like schema field names (lowercase
-/// snake_case or digits); other keys could be player names used as map keys and are masked.
 pub fn shape(v: &Value) -> Value {
     match v {
         Value::Null => Value::Null,
@@ -32,15 +26,12 @@ pub fn shape(v: &Value) -> Value {
 fn is_schema_key(k: &str) -> bool {
     let mut chars = k.chars();
     let Some(c0) = chars.next() else { return false };
-    // Short numeric keys are gateway/leaderboard/gamemode ids; longer ones can be aurora ids or
-    // all-digit toons (seen in match history), so they are masked.
     if k.chars().all(|c| c.is_ascii_digit()) {
         return k.len() <= MAX_NUMERIC_KEY_LEN;
     }
     c0.is_ascii_lowercase() && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
-/// Scheme and host of a URL (no path or query), for reporting where replay links point.
 pub fn url_host(url: &str) -> String {
     let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
     let host = rest.split(['/', '?', '#']).next().unwrap_or("");

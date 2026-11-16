@@ -1,6 +1,3 @@
-//! 034 masks: `unit_cap` capability classes per entity, `loc_class_mask` location classes and
-//! `type_mask` (034-R3..R5). Computed from the same `World` as the features (030-R8).
-
 use uranium_proto::{PlayerState, UnitState, flags};
 
 use super::schema::{CELLS, MAP, OWNER_ENEMY, OWNER_NEUTRAL, OWNER_SELF};
@@ -10,8 +7,6 @@ use crate::actions::{Action, ActionTable, CAPABILITIES, Executor, LOC_CLASSES, T
 pub const K: usize = CAPABILITIES.len();
 pub const L: usize = LOC_CLASSES.len();
 
-/// Index into `CAPABILITIES` (a `match` compiles to fast comparisons; 030-AC3 budget). Kept in
-/// sync with the table by `cap_index_matches_table`.
 fn cap(name: &str) -> usize {
     match name {
         "can_move" => 0,
@@ -83,7 +78,6 @@ fn loc(name: &str) -> usize {
     LOC_CLASSES.iter().position(|c| *c == name).unwrap_or_else(|| panic!("location class {name}"))
 }
 
-/// "CommandCenter" -> "Terran_Command_Center" (034 table `producer` field).
 pub fn producer_type(world: &World, producer: &str) -> Option<u16> {
     let mut name = String::from("Terran");
     for c in producer.chars() {
@@ -95,7 +89,6 @@ pub fn producer_type(world: &World, producer: &str) -> Option<u16> {
     world.types.unit_by_name(&name).map(|t| t.id as u16)
 }
 
-/// Capability row for one entity (034 capability classes).
 pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     let mut c = [false; K];
     let u = &e.unit;
@@ -107,43 +100,24 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     let done = u.has(flags::COMPLETED);
     let loaded = u.has(flags::LOADED) || u.loaded_in.is_some();
     let lifted = u.has(flags::LIFTED);
-    // OpenBW `unit_is_disabled` (034-R6, B-11): a disabled unit takes no command, so every
-    // selection class below excludes it (through `commandable` / `own_any` / the rally rule).
     let disabled = is_disabled(u);
     let ty = u.unit_type;
-    // Owned, completed, not loaded, not disabled, not a mine or nuke: may take Stop (034 can_stop).
     let stoppable = own && done && !loaded && !disabled && ty != ids.spider_mine && ty != ids.nuke;
-    // Every other command also needs (액션 감사 F15·F16, 사용자 결정 2026-10-19): not an SCV
-    // constructing a building (OpenBW `unit_can_receive_order` allows it Stop only) and not in a
-    // siege / unsiege transition (orders.dat not interruptible: BWAPI Unit_Busy).
     let constructing_scv = ty == ids.scv && u.order == ids.order_constructing;
-    // Live only: replay labels follow the engine, which queues the command (U-4, user decision
-    // 2026-10-19; `AgentMemory::replay_labels`).
     let transitioning = !w.mem.replay_labels && (u.order == ids.order_sieging || u.order == ids.order_unsieging);
-    // An SCV inside a refinery is hidden: no player can click it, BWAPI refuses it (Unit_Busy).
     let in_gas = u.order == ids.order_harvest_gas;
     let commandable = stoppable && !constructing_scv && !transitioning && !in_gas;
     let energy = u.energy;
     let mut set = |name: &str, v: bool| c[cap(name)] = v;
 
-    // selection classes
     let mobile = commandable && !disabled && ((!t.is_building() && t.top_speed > 0.0) || lifted) && ty != ids.tank_sieged;
     set("can_move", mobile);
-    // Right click on a unit: movers follow / attack / load, and a sieged tank (OpenBW
-    // `right_click_action` 3) attacks an enemy target in place (034, AMB-041-1).
     set("can_right_click_unit", mobile || (commandable && !disabled && ty == ids.tank_sieged));
-    // A bunker has no weapon and no attack order (units.dat right_click_action 0): the game skips
-    // it and BWAPI rejects it (Unable_To_Hit), so it is not an attacker (액션 감사 F11).
     set("can_attack", commandable && !disabled && (t.ground_weapon >= 0 || t.air_weapon >= 0));
-    // BWAPI `canStop`: completed non-buildings (sieged tanks, constructing SCVs and units in a
-    // siege transition included), lifted buildings and missile turrets; the game stops any unit
-    // (액션 감사 F5).
     set("can_stop", stoppable && !in_gas && (!t.is_building() || lifted || ty == ids.turret));
     set("is_worker", commandable && t.is_worker());
     set("can_be_loaded", commandable && !t.is_building() && !t.is_flyer() && t.space_required > 0 && t.space_required <= 8);
     set("is_transport_loaded", commandable && t.space_provided > 0 && w.cargo.get(&u.id).copied().unwrap_or(0) > 0);
-    // UnloadAll_Pos (MoveUnload) is a dropship order: BWAPI `canUnloadAllPosition` rejects a
-    // bunker (Incompatible_UnitType) (액션 감사 F6).
     set("can_unload_pos", commandable && t.space_provided > 0 && !t.is_building() && w.cargo.get(&u.id).copied().unwrap_or(0) > 0);
     let caster = |tech: u16| commandable && !disabled && w.researched(tech) && energy >= w.tech_energy(tech);
     set("can_stim", commandable && (ty == ids.marine || ty == ids.firebat) && w.researched(ids.tech_stim) && u.hp > 10);
@@ -164,14 +138,11 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     set("can_cast_emp", ty == ids.vessel && caster(ids.tech_emp));
     set("can_cast_irradiate", ty == ids.vessel && caster(ids.tech_irradiate));
     set("can_cast_yamato", ty == ids.battlecruiser && caster(ids.tech_yamato));
-    // 034-R8: a building constructing its addon is busy too (BWAPI `isIdle` false).
     let busy = queue_len(u) > 0 || u.remaining_research > 0 || w.building_addon(u);
     let liftable = t.has(crate::types::flag::FLYING_BUILDING);
     set("can_lift", commandable && liftable && !lifted && !busy);
     set("can_land_noncc", commandable && lifted && ty != ids.cc);
     set("can_land_cc", commandable && lifted && ty == ids.cc);
-    // Rally needs no completion: the game and BWAPI `canSetRallyPosition` accept producers under
-    // construction (034-R3).
     set("can_rally", own && !loaded && !disabled && t.has(crate::types::flag::PRODUCES_UNITS) && t.is_building() && !lifted);
     let addon_ok = |parent: u16| commandable && ty == parent && !lifted && !u.has_addon && !busy && addon_space_free(w, u, t);
     set("addon_capable_cc", addon_ok(ids.cc));
@@ -185,29 +156,12 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     set("can_cancel_upgrade", own_any && done && u.remaining_research > 0 && u.order == ids.order_upgrade);
     set("can_cancel_addon", own_any && done && u.has_addon && w.addon_of.get(&u.id).is_none_or(|_| addon_incomplete(w, u)));
 
-    // target classes
-    // A unit still in production (created incomplete inside its producer) or loaded in a
-    // transport cannot be clicked, and BWAPI `canTargetUnit` rejects an incomplete non-building
-    // (Incompatible_State); buildings under construction stay targets (액션 감사 F1).
-    // Eggs, cocoons and merging archons are incomplete but targetable (BWAPI `canTargetUnit`:
-    // morphing units and archons; the game accepts them too).
     let present = visible && (done || t.is_building() || ids.targetable_incomplete.contains(&ty)) && !loaded && !in_gas;
     let targetable = present && !(u.has(flags::CLOAKED) && !u.has(flags::DETECTED) && e.owner != OWNER_SELF);
     let own_target = own && present;
     let hurt = (u.hp as i32) < t.max_hp;
     let building = t.is_building();
-    // 030 §2 / E-3: a resource out of vision that was seen before (its real id is known) stays a
-    // target, like a fogged mineral field a player right-clicks; one never seen (map-only, no id)
-    // is not.
     let known_resource = e.remembered && e.owner == OWNER_NEUTRAL && t.is_resource() && !is_unseen_resource_id(u.id);
-    // 034 target classes / 030-R2 (사용자 결정 2026-10-31, 액션 감사 U-2): an enemy building out
-    // of vision that was seen before stays clickable, like the ghost a player attacks or
-    // right-clicks in the fog. Judged from the last seen state only; the bridge commands its last
-    // position and type, not the real unit (011-R20 ①-2), so nothing new leaks. Only Attack_Unit
-    // and the `any_unit` actions take it; the other target classes need a visible unit.
-    // 034-AC4 ⑤: not when its id was seen since as a neutral resource (`seen_as_neutral`). Not a
-    // building last seen lifted either: a floating building leaves no clickable ghost (interim
-    // main-session decision 2026-10-31, 034 target classes).
     let known_building = e.remembered && e.owner == OWNER_ENEMY && building && !lifted && !seen_as_neutral(w, u.id);
     set("attackable_enemy", ((enemy && targetable) || known_building) && !t.has(crate::types::flag::INVINCIBLE));
     set("any_unit", targetable || known_resource || known_building);
@@ -225,29 +179,14 @@ pub fn unit_caps(w: &World, e: &Entity) -> [bool; K] {
     set("yamato_target", enemy && targetable);
     let free_space = t.space_provided - w.cargo.get(&u.id).copied().unwrap_or(0);
     set("loadable_transport", own_target && done && (ty == ids.dropship || ty == ids.bunker) && free_space > 0);
-    // Unload_Unit (2026-10-19, action audit F7): a transport with cargo (`is_transport_loaded`,
-    // BWAPI `canUnloadWithOrWithoutTarget`) unloads one own loaded unit. Cargo is own, so this
-    // never reveals anything outside own vision (010-R5). The target must sit in the selected
-    // transport; the executor and the BC label walker check that (031-R4), the masks only say
-    // "loaded".
     set("loaded_unit", own && loaded);
     c
 }
 
-/// 034-AC4 ⑤ / 030-R2: the id is also a neutral entity of this observation (a visible or
-/// remembered resource). A destroyed refinery turns back into the geyser with the same id, which
-/// BWAPI reports as UnitMorph, not UnitDestroyed; `AgentMemory::update` then keeps the refinery in
-/// `enemy_buildings` while that id is visible, so once it leaves vision the observation holds both
-/// the stale refinery and the remembered geyser under one id. That duplicate entity is
-/// pre-existing and kept so the entity features stay as in the BC data (feature schema 7 changes
-/// masks only, 030-R5); candidate for the next feature rebuild. Until then the mask keeps the
-/// stale refinery out of every target class. Scans the entities only for remembered enemy
-/// buildings, which are few.
 fn seen_as_neutral(w: &World, id: uranium_proto::UnitId) -> bool {
     w.entities.iter().any(|n| n.owner == OWNER_NEUTRAL && n.unit.id == id)
 }
 
-/// The 2x2 addon slot to the right of the footprint is buildable and free (034 addon_capable).
 fn addon_space_free(w: &World, u: &UnitState, t: &crate::types::UnitType) -> bool {
     let (x, y) = top_left(u, t);
     let (ax, ay) = (x + t.tile_width, y + t.tile_height - 2);
@@ -266,7 +205,6 @@ pub(crate) fn addon_incomplete(w: &World, b: &UnitState) -> bool {
     })
 }
 
-/// 2D prefix sum of "cannot build here" tiles: O(1) footprint checks.
 struct Bad {
     sum: Vec<u32>,
 }
@@ -282,7 +220,6 @@ impl Bad {
         }
         Self { sum }
     }
-    /// No bad tile in [x, x+w) x [y, y+h); out-of-map footprints are rejected.
     fn clear(&self, x: usize, y: usize, w: usize, h: usize) -> bool {
         if x + w > MAP || y + h > MAP {
             return false;
@@ -293,7 +230,6 @@ impl Bad {
     }
 }
 
-/// [L,128,128] location classes (034). Judged from the current observation (034 note).
 pub fn loc_masks(w: &World) -> Vec<bool> {
     let mut m = vec![false; L * CELLS];
     let map = w.map;
@@ -303,7 +239,6 @@ pub fn loc_masks(w: &World) -> Vec<bool> {
         let i = y * MAP + x;
         !map.in_map(x as i32, y as i32) || !map.buildable[i] || w.blocked[i] || !explored.get(x as u16, y as u16) || creep.get(x as u16, y as u16)
     });
-    // Resource no-build zone for resource depots: 3 tiles around minerals and geysers.
     let mut near_res = vec![false; CELLS];
     let resources = w.entities.iter().map(|e| &e.unit).chain(w.mem.resources.values().map(|r| &r.unit));
     for r in resources {
@@ -347,8 +282,6 @@ pub fn loc_masks(w: &World) -> Vec<bool> {
     for e in w.entities.iter().filter(|e| e.unit.unit_type == w.ids.geyser) {
         let t = w.ty(&e.unit).unwrap();
         let (x, y) = top_left(&e.unit, t);
-        // Geysers out of vision are entities too (E-3); only explored ones can take a refinery,
-        // as for every other build footprint (`bad` above). Visible geysers are always explored.
         if w.map.in_map(x, y) && explored.get(x as u16, y as u16) {
             m[refinery * CELLS + y as usize * MAP + x as usize] = true;
         }
@@ -356,7 +289,6 @@ pub fn loc_masks(w: &World) -> Vec<bool> {
     m
 }
 
-/// Producer type and the addon it must carry for this action (031-R1, 034-R3).
 pub fn producer_for(w: &World, a: &Action) -> Option<(u16, Option<u16>)> {
     let p = producer_type(w, a.producer.as_deref()?)?;
     let need_addon = a.unit_type.and_then(|ut| {
@@ -365,26 +297,18 @@ pub fn producer_for(w: &World, a: &Action) -> Option<(u16, Option<u16>)> {
     Some((p, need_addon))
 }
 
-/// Supply room for one more `t` (OpenBW `has_available_supply_for`, half-supply units): under the
-/// supply total and the 200 cap.
 fn supply_free(me: &PlayerState, t: &crate::types::UnitType) -> bool {
     t.supply_required == 0 || (me.supply_total as i32 - me.supply_used as i32 >= t.supply_required && me.supply_used as i32 + t.supply_required <= 400)
 }
 
-/// 034-R3 Train supply as the engine checks it (OpenBW `build_queue_push`, 사용자 결정
-/// 2026-10-31, 액션 감사 U-1): supply is checked only for a producer with an empty queue, so a
-/// Train is open while supply is short if a candidate already has 1..4 queued (then
-/// `pick_building_candidates` keeps only those). The 200 cap is skipped the same way.
 pub fn train_supply_ok(w: &World, a: &Action) -> bool {
     a.unit_type.and_then(|ut| w.types.unit(ut)).is_none_or(|t| supply_free(&w.frame.self_state, t)) || !pick_building_candidates(w, a).is_empty()
 }
 
-/// Candidate buildings for a `pick_building` action, best first (031-R1).
 pub fn pick_building_candidates<'w>(w: &'w World, a: &Action) -> Vec<&'w UnitState> {
     let Some((p, addon)) = producer_for(w, a) else { return vec![] };
     let research = matches!(a.command.as_str(), "Research" | "Upgrade");
     if a.command == "UnitUseTech" {
-        // Scanner sweep: the comsat with the most energy (031-R1).
         let need = w.tech_energy(a.tech.unwrap_or(0));
         let mut v: Vec<&UnitState> =
             w.frame.units.iter().filter(|u| u.owner == w.mem.self_player && u.unit_type == p && u.has(flags::COMPLETED) && !is_disabled(u) && u.energy >= need).collect();
@@ -395,15 +319,12 @@ pub fn pick_building_candidates<'w>(w: &'w World, a: &Action) -> Vec<&'w UnitSta
     if a.unit_type == Some(w.ids.nuke) {
         v.retain(|s| !s.nuke_armed && queue_len(s) == 0);
     }
-    // 031-R1 / 034-R3 (U-1): with supply short only a producer with a non-empty queue takes the
-    // Train (the engine checks supply for an empty queue only); same (queue_len, id) order.
     if a.command == "Train" && a.unit_type.and_then(|ut| w.types.unit(ut)).is_some_and(|t| !supply_free(&w.frame.self_state, t)) {
         v.retain(|s| queue_len(s) > 0);
     }
     v
 }
 
-/// 034-R3 prerequisites: resources, supply, tech and required buildings.
 fn prereq_ok(w: &World, a: &Action) -> bool {
     let me = &w.frame.self_state;
     let afford = |m: i32, g: i32| me.minerals >= m && me.gas >= g;
@@ -414,7 +335,6 @@ fn prereq_ok(w: &World, a: &Action) -> bool {
         "Build" | "BuildAddon" => {
             let ut = a.unit_type.unwrap();
             let t = w.types.unit(ut).unwrap();
-            // The selected parent building (addons) or the worker is checked by the selection.
             afford(t.minerals, t.gas) && required_ok(ut, (a.command == "BuildAddon").then_some(t.what_builds as u16))
         }
         "Train" => {
@@ -438,7 +358,6 @@ fn prereq_ok(w: &World, a: &Action) -> bool {
     }
 }
 
-/// [A] action-type mask (034-R3..R5).
 pub fn type_mask(w: &World, table: &ActionTable, caps: &[[bool; K]], locs: &[bool]) -> Vec<bool> {
     let cap_any = |name: &str, own_only: bool| {
         let k = cap(name);
@@ -461,7 +380,6 @@ pub fn type_mask(w: &World, table: &ActionTable, caps: &[[bool; K]], locs: &[boo
             }
             match a.executor {
                 Executor::PickBuilding => ok &= !pick_building_candidates(w, a).is_empty(),
-                // 034-R6: the candidates `pick_worker` takes (액션 감사 F15).
                 Executor::PickWorker => ok &= super::executor::worker_candidates(w).next().is_some(),
                 Executor::None => {}
             }
@@ -475,7 +393,6 @@ pub fn type_mask(w: &World, table: &ActionTable, caps: &[[bool; K]], locs: &[boo
         .collect()
 }
 
-/// Own unit nearest to a tile, used by tests and the executor.
 pub fn dist2_to_tile(u: &UnitState, tile: (i32, i32)) -> i64 {
     let (x, y) = (tile.0 as i64 * 32 + 16, tile.1 as i64 * 32 + 16);
     let (ux, uy) = (u.pos.0 as i64, u.pos.1 as i64);

@@ -1,7 +1,3 @@
-//! Replay playback through OpenBW replay mode (011-R10..R12) with this process as the agent:
-//! observes the perspective player at each of its command frames and measures the desync
-//! signals of 040-R8 (AMB-040-5): invalid selections, last frame reached, leaver ahead.
-
 use std::io::{BufReader, BufWriter};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -15,7 +11,6 @@ use uranium_proto::{Act, AgentMsg, BridgeMsg, GameEnd, PrivilegedSummary, RawFra
 use crate::Replay;
 use crate::cmd::op;
 
-/// Paths from `.env` (001-R9), same keys as uranium-hostd (020-R9).
 pub struct PlayConfig {
     pub launcher: PathBuf,
     pub bridge_lib: PathBuf,
@@ -36,49 +31,33 @@ impl PlayConfig {
 pub struct PlayResult {
     pub perspective: u8,
     pub header_frames: u32,
-    /// Frame of the bridge's GameEnd (None if the launcher died first).
     pub end_frame: Option<u32>,
     pub winner: Option<u8>,
     pub observations: u32,
     pub select_cmds: u32,
-    /// Select commands naming at least one tag that is not among the observed units. Players
-    /// also select visible enemy and neutral units (minerals), so any owner counts.
     pub invalid_select_cmds: u32,
     pub total_tags: u32,
     pub invalid_tags: u32,
-    /// FNV-1a over the serialized RawFrames.
     pub digest: String,
-    /// 040-R8 double-replay check: FNV-1a over the observations that do not depend on
-    /// `extra_stops` (events in between accumulated and sorted), so a run with extra stops
-    /// compares equal to one without them.
     #[serde(skip)]
     pub check_digest: String,
     pub final_frame: u32,
     pub final_self_supply: u16,
     pub final_enemy_supply: Option<u16>,
-    /// Player id of the first leave command of the two players, if any.
     pub first_leaver: Option<u8>,
-    /// BWAPI id (slot) of that player (040-R8 result rule (b)).
     pub first_leaver_slot: Option<u8>,
-    /// BWAPI ids (slots) of the two active players.
     pub player_slots: Vec<u8>,
-    /// Supplies on the last observation before the first leave command (040-R8 ③).
     pub pre_leave_self_supply: Option<u16>,
     pub pre_leave_enemy_supply: Option<u16>,
     pub wall_s: f64,
-    /// The bridge's GameInfo (static map), stored in shards (AMB-040-6).
     #[serde(skip)]
     pub game_info: Option<uranium_proto::GameInfo>,
 }
 
-/// 040-R8 ① (user decision 2026-10-16): more than this share of invalid selections is a desync.
 pub const MAX_INVALID_SELECT: f64 = 0.15;
-/// 040-R8 ③: leaver supply at least this many times the opponent's (opponent > 0).
 pub const LEAVER_AHEAD_RATIO: f64 = 1.5;
 
 impl PlayResult {
-    /// 040-R8 result rules (a) and (b): the bridge's winner, else the opponent of the first player
-    /// to leave (LEAVE 0x57). BWAPI id (slot) and `result_source`.
     pub fn decided_winner(&self) -> Option<(u8, &'static str)> {
         use crate::shard::result_source;
         if let Some(w) = self.winner {
@@ -92,12 +71,6 @@ impl PlayResult {
         }
     }
 
-    /// 040-R21 time limit (`uranium-replay build --time-limit n`): a replay of at least n frames
-    /// (the generating plan's `max_frames`; every bridge leaves there, 011 shim, and the leave
-    /// commands land a frame or so before the replay's last frame) ended by the time limit, not by
-    /// a player, since a leave in a 1v1 ends the game. Its first leave is then no leave (no 040-R8
-    /// ③ leaver-ahead signal, no result rule (b)) and the bridge winner is dropped too (in replay
-    /// mode it is the player that did not leave first): the result is undecided. `None` keeps all.
     pub fn drop_time_limit_leave(&mut self, limit: Option<u32>) {
         if let Some(n) = limit {
             if self.header_frames >= n {
@@ -110,8 +83,6 @@ impl PlayResult {
         }
     }
 
-    /// 040-R8 desync reasons (empty = keep). `recorded_winner` is the recorded winner of an SC:R
-    /// replay (BWAPI id, 043-R8) when there is one; ④ compares it with `decided_winner`.
     pub fn desync_reasons(&self, recorded_winner: Option<u8>) -> Vec<String> {
         let mut why = Vec::new();
         if self.select_cmds > 0 && self.invalid_select_cmds as f64 / self.select_cmds as f64 > MAX_INVALID_SELECT {
@@ -140,19 +111,13 @@ pub fn play(rep: &Replay, perspective: u8, cfg: &PlayConfig) -> Result<PlayResul
     play_with(rep, perspective, cfg, &[], &mut |_, _| {})
 }
 
-/// Observation callback: the RawFrame and the PrivilegedSummary sent with it (011-R12).
 pub type OnFrame<'a> = dyn FnMut(&RawFrame, Option<&PrivilegedSummary>) + 'a;
-/// GameInfo callback: the bridge's GameInfo, before the first observation (041-R22: the DAgger
-/// teacher is built from it like a live T0 session).
 pub type OnInfo<'a> = dyn FnMut(&uranium_proto::GameInfo) + 'a;
 
-/// Like `play`, also stopping at `extra_stops` and handing every observation to `on_frame`
-/// (labels and shard steps, 040).
 pub fn play_with(rep: &Replay, perspective: u8, cfg: &PlayConfig, extra_stops: &[u32], on_frame: &mut OnFrame) -> Result<PlayResult> {
     play_observe(rep, perspective, cfg, extra_stops, &mut |_| {}, on_frame)
 }
 
-/// Like `play_with`, also handing the bridge's GameInfo to `on_info` before the first observation.
 pub fn play_observe(rep: &Replay, perspective: u8, cfg: &PlayConfig, extra_stops: &[u32], on_info: &mut OnInfo, on_frame: &mut OnFrame) -> Result<PlayResult> {
     let t0 = Instant::now();
     let (mut child, listener, rep_path) = launch(rep, perspective, cfg, true)?;
@@ -169,9 +134,6 @@ pub fn play_observe(rep: &Replay, perspective: u8, cfg: &PlayConfig, extra_stops
     Ok(res)
 }
 
-/// Starts the launcher on `rep` from `perspective` (011-R10): the 1.16.1 replay file written into
-/// `cfg.work_dir`, the listener the bridge connects to, the launcher process. `privileged` asks the
-/// bridge for 011-R12 summaries.
 fn launch(rep: &Replay, perspective: u8, cfg: &PlayConfig, privileged: bool) -> Result<(std::process::Child, TcpListener, PathBuf)> {
     std::fs::create_dir_all(&cfg.work_dir)?;
     let name = format!("r{}-{}-{perspective}.rep", std::process::id(), rand_salt());
@@ -181,7 +143,6 @@ fn launch(rep: &Replay, perspective: u8, cfg: &PlayConfig, privileged: bool) -> 
     let addr = listener.local_addr()?.to_string();
     let log = std::fs::File::create(cfg.work_dir.join(format!("{name}.log")))?;
     let mut cmd = Command::new(&cfg.launcher);
-    // 011-R10: the opponent is the other active player (empty slots are left out of GameInfo).
     if let [opponent] = rep.active_players().iter().filter(|(p, _)| p.id != perspective).map(|(p, _)| p.id).collect::<Vec<_>>()[..] {
         cmd.env("URANIUM_REPLAY_ENEMY", slot_of(rep, opponent)?.to_string());
     }
@@ -195,7 +156,6 @@ fn launch(rep: &Replay, perspective: u8, cfg: &PlayConfig, privileged: bool) -> 
         .env("BWAPI_CONFIG_AUTO_MENU__AUTO_RESTART", "OFF")
         .env("BWAPI_CONFIG_AUTO_MENU__SAVE_REPLAY", "")
         .env("URANIUM_AGENT_ADDR", &addr)
-        // Commands carry the player id, BWAPI players are slots (M4 spike).
         .env("URANIUM_REPLAY_PERSPECTIVE", slot_of(rep, perspective)?.to_string())
         .env("URANIUM_PRIVILEGED", if privileged { "1" } else { "0" })
         .env("URANIUM_MAX_FRAMES", (rep.header.frames + 240).to_string())
@@ -207,22 +167,16 @@ fn launch(rep: &Replay, perspective: u8, cfg: &PlayConfig, privileged: bool) -> 
     Ok((child, listener, rep_path))
 }
 
-/// What a stride playback saw (052-R7 `opsdump`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StrideResult {
     pub observations: u32,
-    /// Frame of the last observation handed over.
     pub last_frame: Option<u32>,
-    /// The bridge's GameEnd frame (`None` when the playback was cut or the launcher died first).
     pub end_frame: Option<u32>,
-    /// The observer stopped the playback (`on_frame` returned false).
     pub cut: bool,
     pub wall_s: f64,
 }
 
 impl StrideResult {
-    /// 052-R7 / 052 Risks: a playback that neither reached the game end nor was cut by the
-    /// observer (launcher crash, 60 s read timeout, broken stream) is no measurement.
     pub fn completed(&self) -> Result<()> {
         anyhow::ensure!(self.observations > 0, "no observation");
         anyhow::ensure!(self.cut || self.end_frame.is_some(), "playback stopped at frame {:?} without the game end (launcher exit or timeout)", self.last_frame);
@@ -230,10 +184,6 @@ impl StrideResult {
     }
 }
 
-/// 052-R7: plays `rep` from `perspective` stopping only at multiples of `stride` frames (after the
-/// bridge's first observation), without privileged summaries (033-R5), handing each observation to
-/// `on_frame`. Playback ends at the game end or as soon as `on_frame` returns false: the launcher is
-/// then killed (the cut, "재생을 끊는다").
 pub fn play_stride(rep: &Replay, perspective: u8, cfg: &PlayConfig, stride: u32, on_info: &mut OnInfo, on_frame: &mut dyn FnMut(&RawFrame) -> bool) -> Result<StrideResult> {
     anyhow::ensure!(stride >= 1, "stride must be at least 1");
     let t0 = Instant::now();
@@ -248,8 +198,6 @@ pub fn play_stride(rep: &Replay, perspective: u8, cfg: &PlayConfig, stride: u32,
     let _ = child.kill();
     let _ = child.wait();
     let mut res = res?;
-    // Thousands of replays go through here (052-R7): a played replay leaves no file behind; a
-    // failed one keeps its copy and launcher log for diagnosis.
     std::fs::remove_file(&rep_path).ok();
     let mut log = rep_path.into_os_string();
     log.push(".log");
@@ -258,8 +206,6 @@ pub fn play_stride(rep: &Replay, perspective: u8, cfg: &PlayConfig, stride: u32,
     Ok(res)
 }
 
-/// The agent side of a stride playback (052-R7): every observation goes to `on_frame`, the next
-/// stop is the next multiple of `stride`.
 fn stride_session(stream: TcpStream, expected_slot: u8, stride: u32, on_info: &mut OnInfo, on_frame: &mut dyn FnMut(&RawFrame) -> bool) -> Result<StrideResult> {
     stream.set_read_timeout(Some(Duration::from_secs(60)))?;
     let mut r = BufReader::new(stream.try_clone()?);
@@ -268,7 +214,7 @@ fn stride_session(stream: TcpStream, expected_slot: u8, stride: u32, on_info: &m
     loop {
         let msg: BridgeMsg = match read_msg(&mut r) {
             Ok(m) => m,
-            Err(_) => break, // launcher exited without GameEnd
+            Err(_) => break,
         };
         match msg {
             BridgeMsg::Hello(h) => {
@@ -297,8 +243,6 @@ fn stride_session(stream: TcpStream, expected_slot: u8, stride: u32, on_info: &m
     Ok(out)
 }
 
-/// BWAPI player id of the player with command id `id`: BWAPI numbers the occupied header slots
-/// 0, 1, 2, ... in array order (M4 spike, matched by name against GameInfo).
 pub fn slot_of(rep: &Replay, id: u8) -> Result<u8> {
     rep.header.players.iter().position(|p| p.id == id).map(|i| i as u8).with_context(|| format!("no player with id {id}"))
 }
@@ -307,8 +251,6 @@ fn rand_salt() -> u128 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
 }
 
-/// 020-AC4 / 040-AC6: plays the replay through a hostd `StartReplay` job instead of a local
-/// launcher. `agent_ip` is this machine's address as the hostd's launcher can reach it.
 pub fn play_hostd(rep: &Replay, perspective: u8, hostd: &str, agent_ip: &str, extra_stops: &[u32], on_frame: &mut OnFrame) -> Result<PlayResult> {
     use uranium_proto::control::{CONTROL_VERSION, ControlRequest, ControlResponse, ReplaySpec};
     let t0 = Instant::now();
@@ -328,7 +270,6 @@ pub fn play_hostd(rep: &Replay, perspective: u8, hostd: &str, agent_ip: &str, ex
     }
     let mut none: Option<std::process::Child> = None;
     let mut res = accept(&listener, none.as_mut(), Duration::from_secs(60)).and_then(|s| session(rep, perspective, s, extra_stops, &mut |_| {}, on_frame))?;
-    // Wait for the job to finish so the next job does not hit the capacity limit.
     loop {
         match read_msg::<ControlResponse>(&mut cr)? {
             ControlResponse::Finished(f) if f.game_id == job_id => break,
@@ -363,8 +304,6 @@ fn accept(listener: &TcpListener, mut child: Option<&mut std::process::Child>, t
     }
 }
 
-/// Folds one observation (`state` = encoded frame without events) and the events accumulated
-/// since the previous hashed observation, in sorted order, into the 040-R8 check digest.
 fn check_step(h: u64, state: &[u8], events: &mut Vec<Vec<u8>>) -> Result<u64> {
     events.sort_unstable();
     let mut ev = Vec::new();
@@ -385,11 +324,9 @@ fn session(rep: &Replay, perspective: u8, stream: TcpStream, extra_stops: &[u32]
     stream.set_read_timeout(Some(Duration::from_secs(60)))?;
     let mut r = BufReader::new(stream.try_clone()?);
     let mut w = BufWriter::new(stream);
-    // Frames at which the perspective player issued commands, plus the last frame.
     let mine: Vec<&crate::cmd::Cmd> = rep.cmds().filter(|c| c.player == perspective).collect();
     let players: Vec<u8> = rep.active_players().iter().map(|(p, _)| p.id).collect();
     let leave = rep.cmds().find(|c| c.op == op::LEAVE_GAME && players.contains(&c.player)).map(|c| (c.player, c.frame));
-    // 040-R8 ③ needs the supplies on the frame before the first leave command.
     let pre_leave = leave.map(|(_, f)| f.saturating_sub(1)).filter(|&f| f >= 1);
     let mut base: Vec<u32> = mine.iter().map(|c| c.frame).chain([rep.header.frames.saturating_sub(1)]).chain(pre_leave).collect();
     base.sort_unstable();
@@ -413,14 +350,14 @@ fn session(rep: &Replay, perspective: u8, stream: TcpStream, extra_stops: &[u32]
     let last_base = base.last().copied().unwrap_or(0);
     let mut first = true;
     let mut tail: Option<Vec<u8>> = None;
-    let mut checked = 0usize; // commands of `mine` already evaluated
+    let mut checked = 0usize;
     let mut enemy_supply = None;
     let mut privileged: Option<PrivilegedSummary> = None;
     let expected_slot = slot_of(rep, perspective)?;
     loop {
         let msg: BridgeMsg = match read_msg(&mut r) {
             Ok(m) => m,
-            Err(_) => break, // launcher exited without GameEnd
+            Err(_) => break,
         };
         match msg {
             BridgeMsg::Hello(h) => {
@@ -431,7 +368,6 @@ fn session(rep: &Replay, perspective: u8, stream: TcpStream, extra_stops: &[u32]
             }
             BridgeMsg::GameInfo(gi) => {
                 if std::env::var_os("URANIUM_REPLAY_DEBUG").is_some() {
-                    // Header player (array index, slot, command id) -> BWAPI id, matched by name.
                     for p in &rep.header.players {
                         let bw = gi.players.iter().find(|q| q.name.as_bytes() == p.name.as_slice()).map(|q| (q.id, q.is_self));
                         eprintln!("[debug] header index {} slot {} id {} race {} -> bwapi {:?}", p.index, p.slot, p.id, p.race, bw);
@@ -450,9 +386,6 @@ fn session(rep: &Replay, perspective: u8, stream: TcpStream, extra_stops: &[u32]
                 let mut bytes = Vec::new();
                 write_msg(&mut bytes, &*f)?;
                 digest = fnv1a(digest, &bytes);
-                // 040-R8 check: hash the first observation and every base stop. Extra stops only
-                // split the events, which accumulate between observations. After the last base stop
-                // the runs may step differently, so only the last observation there is hashed.
                 for e in &f.events {
                     let mut eb = Vec::new();
                     write_msg(&mut eb, e)?;
@@ -477,7 +410,6 @@ fn session(rep: &Replay, perspective: u8, stream: TcpStream, extra_stops: &[u32]
                     out.pre_leave_self_supply = Some(f.self_state.supply_used);
                     out.pre_leave_enemy_supply = enemy_supply;
                 }
-                // Evaluate every command issued up to this frame against the current units.
                 while checked < mine.len() && mine[checked].frame <= f.frame {
                     let c = mine[checked];
                     checked += 1;
@@ -516,7 +448,6 @@ fn session(rep: &Replay, perspective: u8, stream: TcpStream, extra_stops: &[u32]
     Ok(out)
 }
 
-/// Default perspectives: every active Terran player (040-R2: both sides of TvT).
 pub fn terran_perspectives(rep: &Replay) -> Vec<u8> {
     rep.active_players().iter().filter(|(p, _)| p.race == crate::header::RACE_TERRAN).map(|(p, _)| p.id).collect()
 }
@@ -536,9 +467,6 @@ pub fn ensure_file(p: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// A fake replay-mode bridge: Hello (slot 1), then an observation at `first` and at every frame
-    /// the agent advances to, until the agent hangs up or `end` is reached (GameEnd). Returns the
-    /// frames the agent asked for.
     fn fake_bridge(addr: std::net::SocketAddr, first: u32, end: u32) -> std::thread::JoinHandle<Vec<u32>> {
         use uranium_proto::{Backend, BitGrid, EndReason, Hello, Mode, PROTOCOL_VERSION, PlayerState};
         std::thread::spawn(move || {
@@ -569,8 +497,6 @@ mod tests {
         })
     }
 
-    /// 052-R7: stride playback stops at every multiple of the stride after the first observation,
-    /// is cut as soon as the observer says so, and otherwise runs to the game end.
     #[test]
     fn stride_session_stops_and_cut_052_r7() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -586,7 +512,6 @@ mod tests {
         assert_eq!((res.observations, res.last_frame, res.end_frame, res.cut), (6, Some(40), None, true));
         res.completed().unwrap();
         assert_eq!(bridge.join().unwrap(), vec![8, 16, 24, 32, 40], "nothing asked after the cut");
-        // A game ending first.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let bridge = fake_bridge(listener.local_addr().unwrap(), 0, 20);
         let (s, _) = listener.accept().unwrap();
@@ -594,10 +519,8 @@ mod tests {
         assert_eq!((res.observations, res.last_frame, res.end_frame, res.cut), (3, Some(16), Some(20), false));
         res.completed().unwrap();
         bridge.join().unwrap();
-        // The bridge gone mid-game (no GameEnd, not cut): no measurement.
         let broken = StrideResult { observations: 3, last_frame: Some(16), ..Default::default() };
         assert!(broken.completed().is_err() && StrideResult::default().completed().is_err());
-        // The wrong player's view is refused.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let bridge = fake_bridge(listener.local_addr().unwrap(), 0, 20);
         let (s, _) = listener.accept().unwrap();
@@ -616,7 +539,6 @@ mod tests {
         assert!(PlayResult { invalid_select_cmds: 15, ..ok() }.desync_reasons(None).is_empty());
         assert_eq!(PlayResult { end_frame: Some(900), ..ok() }.desync_reasons(None).len(), 1);
         assert_eq!(PlayResult { end_frame: None, ..ok() }.desync_reasons(None).len(), 1);
-        // leaver 1 (the enemy) had 90 vs our 60 just before leaving: 1.5x -> desync
         let lv = PlayResult { first_leaver: Some(1), pre_leave_self_supply: Some(60), pre_leave_enemy_supply: Some(90), ..ok() };
         assert_eq!(lv.desync_reasons(None).len(), 1);
         let fair = PlayResult { pre_leave_enemy_supply: Some(80), ..lv.clone() };
@@ -626,8 +548,6 @@ mod tests {
         assert_eq!(PlayResult { winner: Some(1), ..ok() }.desync_reasons(Some(0)).len(), 1);
     }
 
-    /// 040-R8 result rules (A-3): bridge winner first, else the first leaver loses; ④ compares a
-    /// recorded winner with either.
     #[test]
     fn leaver_loses_and_recorded_winner_is_checked_040_r8() {
         use crate::shard::result_source;
@@ -637,9 +557,7 @@ mod tests {
         let left = PlayResult { first_leaver_slot: Some(0), ..two.clone() };
         assert_eq!(left.decided_winner(), Some((1, result_source::LEAVE)));
         assert_eq!(PlayResult { first_leaver_slot: Some(1), ..two.clone() }.decided_winner(), Some((0, result_source::LEAVE)));
-        // A leaver that is not one of the two players decides nothing.
         assert_eq!(PlayResult { first_leaver_slot: Some(3), ..two.clone() }.decided_winner(), None);
-        // 040-R21 time limit: a leave at or after the limit is no leave (no ③, no rule (b)).
         let timed = PlayResult { header_frames: 14_400, end_frame: Some(14_400), first_leaver: Some(0), first_leaver_slot: Some(0), pre_leave_self_supply: Some(138), pre_leave_enemy_supply: Some(20), ..two.clone() };
         assert_eq!(timed.desync_reasons(None).len(), 1);
         let mut t = timed.clone();
@@ -650,19 +568,15 @@ mod tests {
         t.drop_time_limit_leave(Some(14_400));
         assert!(t.desync_reasons(None).is_empty());
         assert_eq!(t.decided_winner(), None);
-        // The replay-mode bridge winner of a time-limit game is the player that left second.
         let mut won = PlayResult { winner: Some(1), ..timed.clone() };
         assert_eq!(won.decided_winner(), Some((1, result_source::BRIDGE)));
         won.drop_time_limit_leave(Some(14_400));
         assert_eq!(won.decided_winner(), None);
-        // A shorter game (a leave before the limit) keeps its leave and winner.
         let mut short = PlayResult { header_frames: 9_923, end_frame: Some(9_923), winner: Some(1), ..timed };
         short.drop_time_limit_leave(Some(14_400));
         assert_eq!(short.decided_winner(), Some((1, result_source::BRIDGE)));
-        // ④: the recorded winner must match the leave-decided winner too.
         assert!(left.desync_reasons(Some(1)).is_empty());
         assert_eq!(left.desync_reasons(Some(0)).len(), 1);
-        // Nothing decided: a recorded winner cannot disagree.
         assert!(two.desync_reasons(Some(0)).is_empty());
     }
 }

@@ -1,5 +1,3 @@
-//! Spec 010 acceptance tests: AC1 (round-trip), AC2 (handshake rejection), AC3 (size/time).
-
 use std::time::Instant;
 
 use proptest::prelude::*;
@@ -78,7 +76,6 @@ fn arb_event() -> impl Strategy<Value = GameEvent> {
         any::<u32>().prop_map(GameEvent::UnitDestroyed),
         arb_pos().prop_map(GameEvent::NukeDetect),
         (any::<u16>(), any::<u16>()).prop_map(|(cmd_index, error)| GameEvent::CommandFailed { cmd_index, error }),
-        // 010-AC9: unit_type present and absent.
         (any::<u16>(), any::<u32>(), prop::option::of(any::<u16>()), any::<u8>(), any::<u16>())
             .prop_map(|(cmd_index, unit, unit_type, command, error)| GameEvent::UnitRejected { cmd_index, unit, unit_type, command, error }),
     ]
@@ -159,7 +156,6 @@ fn arb_bridge_msg() -> impl Strategy<Value = BridgeMsg> {
             frame,
             reason: EndReason::TimeLimitDraw,
             stats: Some(BridgeStats { game_frames: frame, game_time_ms: t, ..Default::default() }),
-            // 010-R12: the final frame round-trips with and without content.
             final_frame: last.map(Box::new),
         })),
     ]
@@ -173,7 +169,6 @@ fn arb_agent_msg() -> impl Strategy<Value = AgentMsg> {
             valid_until_frame,
             surrender: None
         })),
-        // 010-AC8: a surrender Act (no commands) with a chat line, possibly empty.
         (1u32..64, prop::option::of("\\PC{0,20}")).prop_map(|(advance_frames, surrender)| AgentMsg::Act(Act { cmds: vec![], advance_frames, valid_until_frame: None, surrender })),
         "\\PC{0,32}".prop_map(AgentMsg::Reject),
     ]
@@ -189,20 +184,17 @@ fn roundtrip<T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(10_000))]
 
-    /// 010-AC1
     #[test]
     fn ac1_bridge_messages_roundtrip(m in arb_bridge_msg()) {
         roundtrip(&m);
     }
 
-    /// 010-AC1
     #[test]
     fn ac1_agent_messages_roundtrip(m in arb_agent_msg()) {
         roundtrip(&m);
     }
 }
 
-/// 010-AC2
 #[test]
 fn ac2_version_mismatch_is_rejected() {
     let mut h = Hello { protocol_version: PROTOCOL_VERSION, backend: Backend::OpenBw, game_version: "x".into(), mode: Mode::Lockstep, game_id: 0, slot: 0, replay: false };
@@ -210,19 +202,15 @@ fn ac2_version_mismatch_is_rejected() {
     h.protocol_version += 1;
     let err = check_hello(&h).unwrap_err();
     assert!(err.contains("protocol version mismatch"), "{err}");
-    // 010-R12: a peer still on version 1 (GameEnd without final_frame) is rejected too.
     h.protocol_version = 1;
     assert!(PROTOCOL_VERSION >= 2 && check_hello(&h).unwrap_err().contains("protocol version mismatch"));
 }
 
-/// 010-AC9 (010-R14): `UnitRejected` is protocol 5, a version-4 peer is rejected, and the new
-/// variant is appended last so frames stored before it decode unchanged.
 #[test]
 fn ac9_unit_rejected_version_and_variant_order() {
     assert_eq!(PROTOCOL_VERSION, 5);
     let h = Hello { protocol_version: 4, backend: Backend::OpenBw, game_version: "x".into(), mode: Mode::Lockstep, game_id: 0, slot: 0, replay: false };
     assert!(check_hello(&h).unwrap_err().contains("protocol version mismatch"));
-    // Existing variants keep their postcard index (CommandFailed is 6), UnitRejected is 7.
     let failed = postcard::to_allocvec(&GameEvent::CommandFailed { cmd_index: 1, error: 2 }).unwrap();
     assert_eq!(failed[0], 6);
     for unit_type in [Some(0u16), None] {
@@ -233,7 +221,6 @@ fn ac9_unit_rejected_version_and_variant_order() {
     }
 }
 
-/// 010-AC3: 200 units ≤ 64 KB, encode+decode ≤ 1 ms.
 #[test]
 fn ac3_200_unit_frame_size_and_time() {
     let unit = |i: u32| UnitState {
@@ -278,7 +265,6 @@ fn ac3_200_unit_frame_size_and_time() {
     }
     let per_ms = t.elapsed().as_secs_f64() * 1e3 / iters as f64;
     eprintln!("200-unit frame: {size} bytes, encode+decode {per_ms:.3} ms");
-    // Debug builds are much slower; the 1 ms budget applies to release (`cargo test --release`).
     if !cfg!(debug_assertions) {
         assert!(per_ms <= 1.0, "encode+decode took {per_ms:.3} ms");
     }

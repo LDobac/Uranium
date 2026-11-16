@@ -1,13 +1,3 @@
-//! `uranium-replay opsdump` (052-R7): a stored replay played again in OpenBW replay mode (011-R10)
-//! from our player's view, stopping every `stride` frames (8), folded by the same
-//! [`uranium_env::ops::OpsTracker`] as live sessions. Playback is cut at the later of `until`
-//! (10:00) and the end of the rush combat window. `cmddump` is not used: the command stream does
-//! not know carrying, idle, supply or resources.
-//!
-//! The replay has no final observation (010-R12: replay mode sends no `final_frame`), so the last
-//! stop is the last observation. The map precompute is the replay build's (`<CHK sha256>.toml`,
-//! written when missing, 031 / AMB-031-3).
-
 use anyhow::{Context, Result};
 use serde::Serialize;
 use sha2::Digest as _;
@@ -16,13 +6,9 @@ use uranium_env::ops::{FieldCheck, OpsMetrics, OpsTracker, RushCombat};
 use crate::Replay;
 use crate::play::{PlayConfig, play_stride, slot_of, terran_perspectives};
 
-/// 052-R7 defaults: 10:00 and 8 frames.
 pub const UNTIL_FRAME: u32 = uranium_env::ops::WINDOW_END;
 pub const STRIDE: u32 = 8;
 
-/// BWAPI slots (the session record's `slot`) to observe: the given one, else every active Terran
-/// (botgen and human replays, 052-R7). A slot without an active Terran player is refused, and so
-/// is a replay without one.
 pub fn perspective_slots(rep: &Replay, slot: Option<u8>) -> Result<Vec<u8>> {
     match slot {
         Some(s) => {
@@ -39,15 +25,10 @@ pub fn perspective_slots(rep: &Replay, slot: Option<u8>) -> Result<Vec<u8>> {
     }
 }
 
-/// One output line (052 Interfaces), keys in this order: `{"rep", "perspective", "frames", "ops",
-/// "rush_combat"}`; a replay that could not be read or played gets `ops` / `rush_combat` null and
-/// an `error`. `--field-check` (052-AC2 rehearsal only) adds `field_check` at the end.
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct OpsLine {
     pub rep: String,
-    /// Our BWAPI slot (`None` only when the replay could not be read and none was given).
     pub perspective: Option<u8>,
-    /// The replay header's frame count.
     pub frames: Option<u32>,
     pub ops: Option<OpsMetrics>,
     pub rush_combat: Option<RushCombat>,
@@ -57,10 +38,8 @@ pub struct OpsLine {
     pub field_check: Option<FieldCheck>,
 }
 
-/// One replay's measurement: the two session objects and the 052-AC2 field check.
 pub type Measured = (OpsMetrics, Option<RushCombat>, FieldCheck);
 
-/// The output line of one measurement; `field_check` only when asked for (`--field-check`).
 pub fn line(rep: &str, slot: Option<u8>, frames: Option<u32>, res: Result<Measured>, field_check: bool) -> OpsLine {
     let base = OpsLine { rep: rep.to_string(), perspective: slot, frames, ops: None, rush_combat: None, error: None, field_check: None };
     match res {
@@ -69,7 +48,6 @@ pub fn line(rep: &str, slot: Option<u8>, frames: Option<u32>, res: Result<Measur
     }
 }
 
-/// Plays `rep` from BWAPI slot `slot` and returns the tracker's two objects and its field check.
 pub fn measure(rep: &Replay, slot: u8, cfg: &PlayConfig, until: u32, stride: u32) -> Result<Measured> {
     let id = rep.header.players.get(slot as usize).with_context(|| format!("no player in slot {slot}"))?.id;
     let chk: String = sha2::Sha256::digest(&rep.map).iter().map(|b| format!("{b:02x}")).collect();
@@ -106,8 +84,8 @@ mod tests {
         h[1..5].copy_from_slice(&100u32.to_le_bytes());
         for (i, race) in races.iter().enumerate() {
             let o = 0xa1 + 36 * i;
-            h[o + 4] = i as u8; // player id
-            h[o + 8] = 2; // human
+            h[o + 4] = i as u8;
+            h[o + 8] = 2;
             h[o + 9] = *race;
             h[o + 11] = b'p';
         }
@@ -116,8 +94,6 @@ mod tests {
         Replay { format: Format::Legacy, header: header::parse(&h), raw_header: h, blocks, map: vec![], unit_limit: None }
     }
 
-    /// 052-R7: the given Terran slot, else every active Terran; an empty or non-Terran slot and a
-    /// replay without a Terran are refused.
     #[test]
     fn perspective_slots_052_r7() {
         let tz = two_player([header::RACE_TERRAN, 0]);
@@ -130,8 +106,6 @@ mod tests {
         assert_eq!(perspective_slots(&tt, None).unwrap(), vec![0, 1], "TvT: both Terran views");
     }
 
-    /// 052 Interfaces: the output line's keys in order, and a failed replay with null objects and
-    /// an error.
     #[test]
     fn line_format_052_r7() {
         let ok = serde_json::to_string(&line("g1.rep", Some(0), Some(9_000), Ok((Default::default(), None, Default::default())), false)).unwrap();
@@ -139,7 +113,6 @@ mod tests {
         assert!(ok.ends_with(r#""float_gas_rs":0.0},"rush_combat":null}"#), "{ok}");
         let bad = serde_json::to_string(&line("g2.rep", Some(1), None, Err(anyhow::anyhow!("launcher exited")), true)).unwrap();
         assert_eq!(bad, r#"{"rep":"g2.rep","perspective":1,"frames":null,"ops":null,"rush_combat":null,"error":"launcher exited"}"#);
-        // 052-AC2: --field-check appends the check after rush_combat.
         let fc = FieldCheck { depleted: 24, fields: 2, unknown_fields: 0, scvs: 3, scvs_max: 5, carrying: 1, lost_cargo: 8 };
         let ok = serde_json::to_string(&line("g1.rep", Some(0), Some(9_000), Ok((Default::default(), None, fc)), true)).unwrap();
         assert!(ok.ends_with(r#""rush_combat":null,"field_check":{"depleted":24,"fields":2,"unknown_fields":0,"scvs":3,"scvs_max":5,"carrying":1,"lost_cargo":8}}"#), "{ok}");

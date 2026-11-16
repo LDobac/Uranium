@@ -1,8 +1,3 @@
-//! Executor (031): semantic action -> one protocol `Command`. Minimal rules only (AMB-031-1):
-//! `pick_building` picks the producer with the shortest queue (031-R1), `pick_worker` the nearest
-//! free SCV (031-R2); build tiles are used as given. Deterministic (031-R7). Actions that violate
-//! the masks are not executed (031-R4, 031-AC2).
-
 use uranium_proto::{CancelKind, CmdOrder, Command, Target, UnitId, UnitState, flags};
 
 use super::extract::{Observation, action_table};
@@ -11,24 +6,19 @@ use super::schema::{CELLS, MAP};
 use super::world::{World, is_disabled};
 use crate::actions::{Action, CAPABILITIES, Executor, LOC_CLASSES, TargetKind};
 
-/// One policy decision in host form (entity indices refer to `Observation::entity_ids`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostAction {
     pub action: u16,
     pub delay_bucket: usize,
     pub queued: bool,
-    /// Selected entity indices (END already removed).
     pub selected: Vec<usize>,
     pub target_unit: Option<usize>,
-    /// Tile index y*128+x.
     pub target_loc: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Executed {
-    /// At most one command (031-R3); empty for NoOp.
     pub commands: Vec<Command>,
-    /// Units the action was issued to (for `AgentMemory::record_action`).
     pub units: Vec<UnitId>,
 }
 
@@ -50,7 +40,6 @@ fn tile_pos(tile: usize) -> (u16, u16) {
     (((tile % MAP) * 32 + 16) as u16, ((tile / MAP) * 32 + 16) as u16)
 }
 
-/// Checks the action against the masks it was sampled under (031-R4) and builds the command.
 pub fn execute(w: &World, obs: &Observation, act: &HostAction) -> Result<Executed, Rejected> {
     let a: &Action = action_table().actions.get(act.action as usize).ok_or(Rejected::UnknownAction)?;
     if !obs.masks.type_mask[a.id as usize] {
@@ -64,14 +53,12 @@ pub fn execute(w: &World, obs: &Observation, act: &HostAction) -> Result<Execute
     let cap = |i: usize, name: &str| i < n && obs.masks.unit_cap[i * k + cap_index(name)];
     let unit = |i: usize| obs.entity_ids[i];
 
-    // Selection (034-R4): own, eligible, distinct, 1..=max_select.
     let mut units = vec![];
     if a.uses_select {
         let mut seen = std::collections::HashSet::new();
         let ok = !act.selected.is_empty()
             && act.selected.len() <= a.max_select as usize
             && act.selected.iter().all(|&i| cap(i, &a.select_cap) && obs.obs.entity_cat[i * 4 + 1] == 0 && seen.insert(i));
-        // 034-R7 / E-4: a selection with a building holds that building only.
         let building = act.selected.iter().any(|&i| obs.masks.is_building.get(i).copied().unwrap_or(false));
         if !ok || (building && act.selected.len() > 1) {
             return Err(Rejected::BadSelection);
@@ -80,7 +67,6 @@ pub fn execute(w: &World, obs: &Observation, act: &HostAction) -> Result<Execute
     }
     let target = match a.target {
         TargetKind::Unit => {
-            // 034-R9: never a unit of the selection (the game rejects self-targeting).
             let t = act.target_unit.filter(|&i| cap(i, &a.target_cap) && (a.self_target || !act.selected.contains(&i))).ok_or(Rejected::BadTarget)?;
             Some(Target::Unit(unit(t)))
         }
@@ -118,8 +104,6 @@ pub fn execute(w: &World, obs: &Observation, act: &HostAction) -> Result<Execute
         "UnitDecloak" => unit_cmd(CmdOrder::Decloak),
         "UnitLoad" => unit_cmd(CmdOrder::Load(target_id())),
         "UnitUnloadAll" => unit_cmd(CmdOrder::UnloadAll(tile.filter(|_| a.target == TargetKind::Loc).map(|_| pos()))),
-        // Unload_Unit (2026-10-19, F7): the target must be loaded in the selected transport
-        // (BWAPI `canUnload` Invalid_Parameter otherwise); the masks only know "loaded" (031-R4).
         "UnitUnload" => {
             let cargo = target_id();
             if !w.frame.units.iter().any(|u| u.id == cargo && u.loaded_in == Some(units[0])) {
@@ -130,7 +114,6 @@ pub fn execute(w: &World, obs: &Observation, act: &HostAction) -> Result<Execute
         "UnitLift" => unit_cmd(CmdOrder::Lift),
         "UnitLand" => unit_cmd(CmdOrder::Land(tile.unwrap())),
         "UnitUseTech" if a.executor == Executor::PickBuilding => {
-            // Scanner sweep: the comsat with the most energy (031-R1).
             let c = *pick_building_candidates(w, a).first().ok_or(Rejected::NoExecutorUnit)?;
             units = vec![c.id];
             Command::Unit { units: units.clone(), order: CmdOrder::UseTech { tech: a.tech.unwrap(), target }, queued: false }
@@ -152,7 +135,6 @@ pub fn execute(w: &World, obs: &Observation, act: &HostAction) -> Result<Execute
                 _ => Command::Upgrade { building: b.id, upgrade: a.upgrade.unwrap() },
             }
         }
-        // One building (034-R7: SetRally max_select 1), one command (031-R3).
         "SetRally" => Command::SetRally { building: units[0], target: target.unwrap() },
         "Cancel" => {
             let kind = match a.cancel.as_deref() {
@@ -169,9 +151,6 @@ pub fn execute(w: &World, obs: &Observation, act: &HostAction) -> Result<Execute
     Ok(Executed { commands: vec![cmd], units })
 }
 
-/// SCVs `pick_worker` may take: own, completed, not loaded, not disabled (034-R6 / B-11), not
-/// constructing, not in an uninterruptible order (inside a refinery, after mining: BWAPI
-/// `canBuild` Unit_Busy). Build_* type masks open only when there is one (034-R6, 액션 감사 F15).
 pub fn worker_candidates<'w>(w: &'w World) -> impl Iterator<Item = &'w UnitState> {
     w.frame
         .units
@@ -180,8 +159,6 @@ pub fn worker_candidates<'w>(w: &'w World) -> impl Iterator<Item = &'w UnitState
         .filter(|u| !u.has(flags::CONSTRUCTING) && !w.ids.orders_uninterruptible.contains(&u.order))
 }
 
-/// 031-R2: nearest SCV that is neither carrying nor constructing; otherwise the nearest carrying
-/// one. Ties by unit id.
 pub fn pick_worker<'w>(w: &'w World, tile: (i32, i32)) -> Option<&'w UnitState> {
     let scvs: Vec<&UnitState> = worker_candidates(w).collect();
     let best = |carrying: bool| scvs.iter().filter(|u| u.has(flags::CARRYING) == carrying).min_by_key(|u| (dist2_to_tile(u, tile), u.id)).copied();

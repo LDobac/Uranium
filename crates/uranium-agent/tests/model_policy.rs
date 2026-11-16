@@ -1,10 +1,3 @@
-//! Model policy session tests (020-R11, 031-R4, 032-R14, 032-R16, 031-R12) with a mock model
-//! behind the inference broker (AMB-000-4): every decision is a NoOp whose delay bucket is the
-//! number of decisions its slot has made (so each reply must reach the right session and slot
-//! states must not mix), with fixed log-probs, values and win_open. Checks that need the real
-//! network (masked sampling, argmax determinism, batched = single play) are in
-//! tests/python/test_infer.py.
-
 #[path = "../../uranium-env/tests/common/mod.rs"]
 mod common;
 
@@ -23,7 +16,6 @@ use uranium_proto::*;
 
 const HEAD_LOGP: [f32; HEADS] = [-0.5, -0.25, 0.0, 0.0, 0.0, 0.0];
 
-/// A mock model thread on a broker; `win_open` is its 032-R18 output (None = no head).
 fn mock(max_batch: usize, win_open: Option<f32>) -> InferenceHandle {
     let opts = InferOptions { max_batch, max_wait: Duration::from_millis(200), capacity: 8, ..InferOptions::default() };
     let (mut b, h) = Broker::new("mock@000000000000".into(), SampleMode::Argmax, opts).unwrap();
@@ -34,7 +26,6 @@ fn mock(max_batch: usize, win_open: Option<f32>) -> InferenceHandle {
             for s in w.resets {
                 decisions[s] = 0;
             }
-            // 051-R4: after the resets, before the state reads; the mock's state is one value.
             let errors = w
                 .restores
                 .iter()
@@ -69,7 +60,6 @@ fn mock(max_batch: usize, win_open: Option<f32>) -> InferenceHandle {
     h
 }
 
-/// Frames that differ per session `k` and step `t` (units move, some appear later).
 fn frames(k: usize, steps: usize) -> Vec<RawFrame> {
     (0..steps)
         .map(|t| {
@@ -84,15 +74,12 @@ fn frames(k: usize, steps: usize) -> Vec<RawFrame> {
         .collect()
 }
 
-/// Plays `frames` and returns (commands, advance) per step.
 fn play(h: &InferenceHandle, frames: &[RawFrame]) -> (Vec<(Vec<Command>, u32)>, uranium_agent::model_policy::ModelStats) {
     let mut p = ModelPolicy::new(h, &game_info()).unwrap();
     let acts = frames.iter().map(|f| p.on_frame(f).unwrap()).map(|a| (a.cmds, a.advance_frames)).collect();
     (acts, p.stats())
 }
 
-/// 032-R14 / 032-R5: sessions batched together each get their own rows back, and a slot's state
-/// (here its decision count) neither mixes with others nor survives a close and reopen.
 #[test]
 fn batched_rows_reach_their_sessions_032_r14() {
     let h = mock(3, None);
@@ -118,8 +105,6 @@ fn batched_rows_reach_their_sessions_032_r14() {
     }
 }
 
-/// 032-R16: a slot's Core state is read before a decision (fresh slot: zero); the broker refuses
-/// a handle-side weight swap (the model thread swaps).
 #[test]
 fn slot_state_and_swap_032_r16() {
     use uranium_env::features::{AgentMemory, MapInfo, extract};
@@ -139,9 +124,6 @@ fn slot_state_and_swap_032_r16() {
     assert_eq!(again.state().unwrap().parts[0].1, vec![0.0], "a reopened slot starts from zero (032-R5)");
 }
 
-/// 051-R4: `set_state` overwrites the slot's state before its next read and decision; other slots
-/// keep theirs (032-R14); a state the broker or the model thread refuses is an error and the slot
-/// keeps its state.
 #[test]
 fn set_state_restores_the_slot_051_r4() {
     use uranium_env::features::{AgentMemory, MapInfo, extract};
@@ -161,20 +143,16 @@ fn set_state_restores_the_slot_051_r4() {
     let r = b.act(obs.clone()).unwrap();
     assert_eq!(r.action.delay_bucket, 2, "the decision after the restore uses the restored state");
     assert_eq!(b.state().unwrap().parts[0].1, vec![3.0]);
-    // Refused by the broker: not batch 1, values that do not fill the shape, no parts.
     let overflow = HostState { parts: vec![(vec![1, usize::MAX, 2], vec![0.0])] };
     for bad in [HostState { parts: vec![(vec![2, 1], vec![0.0, 0.0])] }, HostState { parts: vec![(vec![1, 2], vec![0.0])] }, HostState::default(), overflow] {
         let e = b.set_state(bad).unwrap_err().to_string();
         assert!(e.contains("051-R4"), "{e}");
     }
-    // Refused by the model thread: a shape that is not the slot's.
     let e = b.set_state(HostState { parts: vec![(vec![1, 2], vec![7.0, 7.0])] }).unwrap_err().to_string();
     assert!(e.contains("state restore refused") && e.contains("[1, 1]"), "{e}");
     assert_eq!(b.state().unwrap().parts[0].1, vec![3.0], "a refused restore keeps the slot's state");
 }
 
-/// 020-R11: two bridges of one game on one server get the policy routed to their slot; slots
-/// without a route use the default (T0).
 #[test]
 fn routes_pick_policy_per_slot_020_r11() {
     let h = mock(2, None);
@@ -213,7 +191,6 @@ fn routes_pick_policy_per_slot_020_r11() {
     let (b0, b1) = (bridge(0), bridge(1));
     b0.join().unwrap();
     b1.join().unwrap();
-    // The accept loop returns on the next connection after max_sessions; poke it.
     std::thread::sleep(Duration::from_millis(300));
     let _ = TcpStream::connect(addr);
     server.join().unwrap();
@@ -226,10 +203,6 @@ fn routes_pick_policy_per_slot_020_r11() {
     assert!(by_slot(1)["model"].is_null());
 }
 
-/// 012-R7 / 012-R18 / 010-R10: a realtime (SC:R) session's Acts expire 24 frames after the frame
-/// they answer, its model plays with last_failed = 0 although the server was started without
-/// it, and a PrivilegedSummary is counted but kept from the policy. A lockstep session on the same
-/// server is unchanged.
 #[test]
 fn realtime_session_012_r18() {
     let h = mock(2, None);
@@ -281,8 +254,6 @@ fn realtime_session_012_r18() {
     assert_eq!(by_game(1)["model"]["decisions"], 3);
 }
 
-/// M6 hook (042): every decision reaches the observer with the per-head log-probs and the joint
-/// behaviour log-prob of the server (032-R15, AMB-042-4).
 #[test]
 fn observer_sees_behaviour_log_probs_042() {
     struct Obs(Arc<Mutex<Vec<(f32, f32)>>>);
@@ -304,9 +275,6 @@ fn observer_sees_behaviour_log_probs_042() {
     }
 }
 
-/// E-8 / 010-R12 / 033-R7: the dense reward of frames after the last decision comes from the
-/// bridge's final frame and reaches the observer's end call (it lands on the last decision, 042);
-/// without a final frame only r_win is added.
 #[test]
 fn final_frame_reward_reaches_the_last_decision_010_r12() {
     struct Obs(Arc<Mutex<Vec<uranium_env::reward::RewardParts>>>);
@@ -324,7 +292,6 @@ fn final_frame_reward_reaches_the_last_decision_010_r12() {
         for f in &fs {
             p.on_frame(f).unwrap();
         }
-        // After the last decision an enemy unit we saw dies in sight.
         let mut last = fs.last().unwrap().clone();
         let victim = last.units.iter().position(|u| u.owner == ENEMY).expect("an enemy unit in sight");
         let gone = last.units.remove(victim);
@@ -343,9 +310,6 @@ fn final_frame_reward_reaches_the_last_decision_010_r12() {
     assert_eq!((without.win, without.value), (1.0, 0.0));
 }
 
-/// 033-R9 / R10 / 042 (AMB-042-16): an RL session's rewards carry r_scout / r_survive from its
-/// own observations, with the hook's settings, and the 042 metrics reach the observer right
-/// before the end.
 #[test]
 fn scout_rewards_and_metrics_reach_the_observer_033_r9() {
     use uranium_env::reward::{Outcome, RewardParts};
@@ -393,8 +357,6 @@ fn scout_rewards_and_metrics_reach_the_observer_033_r9() {
     assert_eq!(run(none).0, 0.0, "the hook's settings are used");
 }
 
-/// 042-R17 / 042-AC8 판정 SCV 수 (AMB-042-18): the metrics an RL session hands its observer carry
-/// the own SCVs of `GameEnd.final_frame` (010-R12), or of the last `RawFrame` without one.
 #[test]
 fn judge_scv_from_final_or_last_frame_042_r17() {
     use uranium_env::reward::Outcome;
@@ -410,7 +372,6 @@ fn judge_scv_from_final_or_last_frame_042_r17() {
     let fs = frames(0, 3);
     let scv = ty("Terran_SCV");
     let count = |f: &RawFrame| f.units.iter().filter(|u| u.owner == SELF && u.unit_type == scv && u.has(flags::COMPLETED)).count() as u32;
-    // The final frame at 8:00 with two more own SCVs than the last decision frame.
     let mut last = fs[2].clone();
     last.frame = 11_520;
     let one = last.units.iter().find(|u| u.owner == SELF && u.unit_type == scv && u.has(flags::COMPLETED)).cloned().expect("an own SCV");
@@ -444,13 +405,10 @@ impl Write for SinkWriter {
     }
 }
 
-/// 031-R12 / 020-R14 / 010-R13: Shadow checks without leaving; On (here forced at a frame, as the
-/// integration check does) sends one surrender Act with the handle's chat line and no commands.
 #[test]
 fn surrender_modes_031_r12() {
     let fs = frames(0, 6);
 
-    // Shadow (the handle default): plays as before; before 10 minutes the check never holds.
     let h = mock(1, Some(-0.95));
     assert_eq!(h.surrender, uranium_agent::infer::SurrenderMode::Shadow);
     let mut p = ModelPolicy::new(&h, &game_info()).unwrap();
@@ -461,10 +419,7 @@ fn surrender_modes_031_r12() {
     assert!(s.win_open, "the server answers with win_open");
     assert_eq!((s.surrender.as_str(), s.surrender_frame, s.decisions), ("shadow", None, 6));
 
-    // On, forced from frame 49 (the third frame): one surrender Act, then the bridge leaves.
-    // 041-R28 ①: the surrender decision is not recorded in memory, so not in the decision log.
     let log = std::env::temp_dir().join(format!("uranium-agent-memlog-surrender-{}", std::process::id())).join("g1.jsonl");
-    // SAFETY: only this test sets the variable, and only On-mode sessions read it.
     unsafe { std::env::set_var("URANIUM_TEST_SURRENDER_FRAME", "49") };
     let h = h.with_surrender(uranium_agent::infer::SurrenderMode::On, "good game").with_memory_log(log.clone());
     let mut p = ModelPolicy::new(&h, &game_info()).unwrap();
@@ -475,7 +430,6 @@ fn surrender_modes_031_r12() {
     assert!(acts[2].cmds.is_empty(), "010-R13: no commands with a surrender");
     let s = p.stats();
     assert_eq!((s.surrender.as_str(), s.surrender_frame, s.decisions), ("on", Some(49), 3));
-    // The bridge leaves and reports the GameEnd (the End path writes the end line).
     p.on_end(Some(uranium_env::reward::Outcome::Loss), Some(&fs[2]));
     let lines = decision_log_lines(&log);
     assert_eq!(lines.len(), 3, "two decisions and the end line: {lines:?}");
@@ -489,9 +443,6 @@ fn decision_log_lines(path: &std::path::Path) -> Vec<uranium_env::features::labe
 
 use uranium_env::features::label::DecisionLogLine;
 
-/// 041-R28 ① (AMB-041-17): a handle with `memory_log` makes its session write each decision as
-/// memory records it (live frame, sampled action, delay bucket, selected unit ids) in order, then
-/// the end line with the count and the final frame; without it nothing is written.
 #[test]
 fn decision_log_lines_match_memory_records_041_r28() {
     let dir = std::env::temp_dir().join(format!("uranium-agent-memlog-{}", std::process::id()));
@@ -509,12 +460,10 @@ fn decision_log_lines_match_memory_records_041_r28() {
     let want: Vec<DecisionLogLine> = fs
         .iter()
         .enumerate()
-        // The mock samples NoOp with an empty selection and delay bucket = decisions so far.
         .map(|(t, f)| DecisionLogLine::Decision { frame: f.frame, action: 0, delay_bucket: (t % DELAY_BUCKETS.len()) as u32, units: vec![], forced: false })
         .chain([DecisionLogLine::End { decisions: 6, end_frame: Some(fs.last().unwrap().frame), player: SELF }])
         .collect();
     assert_eq!(lines, want);
-    // A session without the key writes no file.
     let mut q = ModelPolicy::new(&h, &game_info()).unwrap();
     q.on_frame(&fs[0]).unwrap();
     q.on_end(None, None);
@@ -522,16 +471,12 @@ fn decision_log_lines_match_memory_records_041_r28() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 031-R10 / 010-R14 / 010-R12: `play` counts `UnitRejected` from observations and from
-/// `GameEnd.final_frame`; a session that ends in an error (bridge gone mid-game) still keeps its
-/// counts in the record and its detail lines in the file.
 #[test]
 fn unit_rejections_in_sessions_031_r10() {
     let h = mock(1, None);
     let dir = std::env::temp_dir().join(format!("uranium-agent-rej-session-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let path = dir.join("unit_rejections.jsonl");
-    // 041-R28 ①: each game's model session also writes its decision log.
     let routes = Routes::default();
     let slot = uranium_agent::spec_index(&game_info(), 0);
     for g in [1u64, 2] {
@@ -541,8 +486,6 @@ fn unit_rejections_in_sessions_031_r10() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let rej = |cmd_index: u16, unit: u32, unit_type: Option<u16>| GameEvent::UnitRejected { cmd_index, unit, unit_type, command: 14, error: 10 };
-    // Two observations (the second with one rejection), then a GameEnd whose final frame carries
-    // two more (`finish`), or the bridge drops the connection after the second Act.
     let run = |game_id: u64, finish: bool| {
         let bridge = std::thread::spawn(move || {
             let s = TcpStream::connect(addr).unwrap();
@@ -583,8 +526,6 @@ fn unit_rejections_in_sessions_031_r10() {
     assert_eq!(games, vec![1, 1, 1, 2]);
     assert_eq!(lines[1]["frame"], lines[2]["frame"], "both final-frame lines carry its frame");
     assert_eq!(lines[3]["unit"], 5);
-    // 041-R28 ④: only the GameEnd path completes a decision log; a session that failed mid-game
-    // leaves its decisions without the end line (incomplete for the relabel build).
     let done = decision_log_lines(&dir.join("memory/g1.jsonl"));
     assert_eq!(done.len(), 3);
     assert_eq!(done[2], DecisionLogLine::End { decisions: 2, end_frame: Some(frames(0, 3)[2].frame), player: SELF });
@@ -594,7 +535,6 @@ fn unit_rejections_in_sessions_031_r10() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Frames at `at` with own `supply_used` `supply` (BWAPI units).
 fn supply_frames(at: &[(u32, u16)]) -> Vec<RawFrame> {
     let mut fs = frames(0, at.len());
     for (f, &(frame, supply)) in fs.iter_mut().zip(at) {
@@ -604,12 +544,6 @@ fn supply_frames(at: &[(u32, u16)]) -> Vec<RawFrame> {
     fs
 }
 
-/// 042-R14 / 042-AC5 integration without OpenBW: an RL league session concedes before inference
-/// at the first decision 120 s into a collapse counted from 3:00, with the chat "gg" and no
-/// command; the concede is not a decision (no inference, nothing for the observer). The reward of
-/// the frames up to the concede and r_win reach the end call (they land on the last real decision,
-/// 033-R7). The other model session of the game no longer judges; sessions without the game state
-/// (plans, evaluation) never concede.
 #[test]
 fn collapse_concede_is_not_a_decision_042_r14() {
     use uranium_env::concede::{ConcedeConfig, ConcedeGame, Conceded, LeaveRule};
@@ -629,9 +563,7 @@ fn collapse_concede_is_not_a_decision_042_r14() {
     let game = Arc::new(ConcedeGame::new(cfg));
     let seen: Seen = Arc::new(Mutex::new((0, vec![])));
     let mut p = ModelPolicy::new(&h, &game_info()).unwrap().with_observer(None, Default::default(), Box::new(Obs(seen.clone()))).with_concede(game.clone(), 0);
-    // 4,000 healthy; collapse (supply 8 = screen 4) counted from 4,320; 7,199 is 2,879 later.
     let mut fs = supply_frames(&[(4_000, 40), (4_319, 8), (4_320, 8), (5_760, 8), (7_199, 8), (7_200, 8)]);
-    // An enemy unit seen at every decision dies in sight between the last decision and the concede.
     let victim = fs[0].units.iter().find(|u| u.owner == ENEMY).expect("an enemy unit").clone();
     for f in &mut fs[..5] {
         if !f.units.iter().any(|u| u.id == victim.id) {
@@ -648,7 +580,6 @@ fn collapse_concede_is_not_a_decision_042_r14() {
     assert_eq!((s.decisions, s.concede_frame), (5, Some(7_200)), "the concede is not a decision");
     assert_eq!(seen.lock().unwrap().0, 5);
     assert_eq!(game.conceded(), Some(Conceded { side: 0, frame: 7_200, rule: LeaveRule::Concede }));
-    // The leave: GameEnd's final frame without new events.
     let mut last = fs[5].clone();
     last.frame = 7_201;
     last.events.clear();
@@ -659,22 +590,17 @@ fn collapse_concede_is_not_a_decision_042_r14() {
     assert_eq!((ends[0].0.win, ends[0].1), (-1.0, Some(Outcome::Loss)));
     assert!(cost > 0.0 && (ends[0].0.value - cost).abs() < 1e-6, "value {} vs kill {cost}", ends[0].0.value);
 
-    // The other model session of the same game: collapsed as long, but the game was conceded.
     let mut q = ModelPolicy::new(&h, &game_info()).unwrap().with_concede(game.clone(), 1);
     for f in supply_frames(&[(4_320, 0), (7_200, 0), (9_000, 0)]) {
         assert!(q.on_frame(&f).unwrap().surrender.is_none());
     }
     assert_eq!(q.stats().decisions, 3);
-    // No game state (a plan / evaluation game): never.
     let mut e = ModelPolicy::new(&h, &game_info()).unwrap();
     for f in supply_frames(&[(4_320, 0), (7_200, 0), (9_000, 0)]) {
         assert!(e.on_frame(&f).unwrap().surrender.is_none());
     }
 }
 
-/// 042-R14 / 033-R7 / 033-R9 / 033-R10 (AMB-042-16): with collapse concede, the r_scout / r_survive
-/// of the frames after the last real decision up to the concede (and the leave's final frame)
-/// reach the end call, which puts them on that last decision; none of it is lost or doubled.
 #[test]
 fn collapse_concede_with_scout_rewards_042_r14() {
     use uranium_env::concede::{ConcedeConfig, ConcedeGame};
@@ -695,9 +621,7 @@ fn collapse_concede_with_scout_rewards_042_r14() {
     let game = Arc::new(ConcedeGame::new(ConcedeConfig { enabled: true, ..Default::default() }));
     let seen: Seen = Arc::new(Mutex::new((0.0, 0.0, vec![])));
     let mut p = ModelPolicy::new(&h, &game_info()).unwrap().with_observer(None, Default::default(), Box::new(Obs(seen.clone()))).with_concede(game, 0);
-    // Decisions at 4,000 .. 7,199; the concede at 7,200 (as in collapse_concede_is_not_a_decision).
     let mut fs = supply_frames(&[(4_000, 40), (4_319, 8), (4_320, 8), (5_760, 8), (7_199, 8), (7_200, 8)]);
-    // A new enemy building type is first seen in the concede frame.
     let mut pool = fs[0].units.iter().find(|u| u.owner == ENEMY).expect("an enemy unit").clone();
     pool.id = 9_999;
     pool.unit_type = uranium_env::types::TypeTables::get().unit_by_name("Zerg_Spawning_Pool").unwrap().id as u16;
@@ -713,18 +637,13 @@ fn collapse_concede_with_scout_rewards_042_r14() {
     let rate = (scvs / 20.0).min(1.0);
     assert!(scvs > 0.0);
     let per_frame = rate / 24.0 / 300.0;
-    // Decisions: the window from 4,320 to the last decision (7,199); the end: 7,199 → 7,201.
     assert!((survive - (7_199.0 - 4_320.0) * per_frame).abs() < 1e-5, "decisions {survive}");
     assert!((ends[0].survive - 2.0 * per_frame).abs() < 1e-6, "end {}", ends[0].survive);
-    // The pool seen at 7,200: 0.1 x decay(7,200) = 0.075, on the end call only.
     assert!((ends[0].scout - 0.075).abs() < 1e-6, "end scout {}", ends[0].scout);
     assert!(scout > 0.0, "items seen at the decisions paid there");
     assert_eq!(ends[0].win, -1.0);
 }
 
-/// 042 정찰·대응 지표 (AMB-042-16, 050 rush-s2 checks): a plan / evaluation model session (no RL
-/// observer) records the metrics in its results.jsonl row (`model`, after the existing keys), the
-/// final frame included; no reward is involved.
 #[test]
 fn eval_sessions_record_scout_metrics_042() {
     let h = mock(1, None);
@@ -761,26 +680,19 @@ fn eval_sessions_record_scout_metrics_042() {
     let rec: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
     let m = &rec["model"];
     assert_eq!(m["decisions"], 3, "{text}");
-    // Own barracks in the first frame (frame 1), the enemy hatchery at its start location.
     assert_eq!(m["barracks_s"].as_f64(), Some(1.0 / 24.0), "{text}");
     assert_eq!(m["scout_main_s"].as_f64(), Some(1.0 / 24.0), "{text}");
     assert!(m["scout_types_4m"].as_u64().unwrap() >= 1 && m["scout_types_6m"] == m["scout_types_4m"], "{text}");
     assert_eq!(m["scv_4m"].as_u64(), Some(scvs as u64), "from the final frame (5,800 >= 4:00)");
-    // The new keys follow the existing ones.
     let keys: Vec<&String> = m.as_object().unwrap().keys().collect();
     let at = |k: &str| keys.iter().position(|x| x.as_str() == k).unwrap();
     assert!(at("host_ms_p50") < at("scout_main_s") && at("scout_main_s") < at("scv_4m"), "{keys:?}");
 }
 
-/// 042-R14 / 031-R12: in an RL league game the leave is claimed once per game, so an On-mode
-/// 031-R12 surrender never follows a concede of the other side (nor a concede a surrender); in a
-/// fresh game the same session surrenders as before. The 031-R12 rule holds for real here (P(win)
-/// 2.5%, after 10 minutes for 30 s, no own production building = collapse).
 #[test]
 fn surrender_and_concede_share_one_leave_042_r14() {
     use uranium_env::concede::{ConcedeConfig, ConcedeGame, Conceded, LeaveRule};
     let h = mock(1, Some(-0.95)).with_surrender(uranium_agent::infer::SurrenderMode::On, "gg");
-    // Healthy supply (no concede), no own units (031-R12 ③ collapse).
     let fs: Vec<RawFrame> = supply_frames(&[(15_000, 40), (15_800, 40), (16_000, 40)])
         .into_iter()
         .map(|mut f| {
@@ -801,8 +713,6 @@ fn surrender_and_concede_share_one_leave_042_r14() {
     assert_eq!(play(taken), [false, false, false], "the other side conceded: no second leave");
 }
 
-/// 042-R14 through the agent server: a lockstep game on the concede board gets the surrender Act
-/// and its record the concede frame; a game not on the board plays on.
 #[test]
 fn concede_board_reaches_sessions_042_r14() {
     use uranium_env::concede::{ConcedeConfig, ConcedeGame};
@@ -831,7 +741,6 @@ fn concede_board_reaches_sessions_042_r14() {
                     break;
                 }
             }
-            // 011-R21: the leaver's GameEnd names the other player.
             let winner = if left.is_some() { 1 } else { 0 };
             write_msg(&mut w, &BridgeMsg::End(GameEnd { winner: Some(winner), frame: 8_001, reason: EndReason::Surrender, stats: None, final_frame: None })).unwrap();
             w.flush().unwrap();

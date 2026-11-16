@@ -1,10 +1,3 @@
-//! `Command` -> SC:R network commands (012-R4): what the OpenBW shim makes BWAPI send
-//! (shim `exec_units` / `exec` / `unit_command`, BWAPI GameCommands.cpp `executeCommand` and
-//! BW/OrderTypes.h layouts), with the SC:R 1.21 opcodes for selections and unit targets (013).
-//! Only the branches that change the bytes are ported; BWAPI's other pre-checks would only have
-//! dropped the command with a `CommandFailed`, which SC:R sessions do not report (012-R14), and the
-//! game itself ignores an impossible order.
-
 use std::collections::HashMap;
 
 use uranium_proto::*;
@@ -13,29 +6,17 @@ use crate::observe::{Derived, can_attack_move, can_move};
 use crate::snapshot::{RawUnit, Snapshot, status};
 use crate::tables::{Tables, has_weapon, unit_type};
 
-/// BWAPI 031-R3 / shim: at most 12 units per command.
 pub const MAX_UNITS: usize = 12;
-/// `UnitTypes::None` in targeted packets (BW::Orders "always0xe4"); only fog-ghost commands carry
-/// a real unit type (012-R17).
 const NO_UNIT_TYPE: u16 = 0xe4;
-/// SC:R chat text field (80 bytes, NUL padded) after the sender byte.
 pub const CHAT_TEXT: usize = 80;
-/// BWAPI neutral player.
 const NEUTRAL: u8 = 11;
 
-/// A player hostile to us: not ourselves, not neutral, not allied.
 fn is_enemy(s: &Snapshot, player: u8) -> bool {
     player != s.local && player != NEUTRAL && !s.allied(player)
 }
 
-/// Enemy buildings observed this game: tag -> (last position, BWAPI unit type) (012-R17,
-/// 011-R20 ①-2).
 pub type BuildingMemory = HashMap<u32, (Pos, u16)>;
 
-/// 012-R17: refresh the enemy-building record from the units of an observation sent to the agent
-/// (the caller calls it once per observation, not per game frame). An observed enemy building
-/// records its position and type; a tag observed as anything else (a dead refinery's neutral
-/// geyser, a unit reusing the tag) is dropped. Units not observed keep their entry.
 pub fn remember_buildings(s: &Snapshot, d: &[Derived], record: &mut BuildingMemory) {
     for (u, du) in s.units.iter().zip(d).filter(|(_, du)| du.observed) {
         if is_enemy(s, u.player) && unit_type(du.bwapi_type).is_some_and(|x| x.is_building()) {
@@ -46,18 +27,13 @@ pub fn remember_buildings(s: &Snapshot, d: &[Derived], record: &mut BuildingMemo
     }
 }
 
-/// What the commands may refer to this frame.
 pub struct Ctx<'a> {
     pub s: &'a Snapshot,
     pub d: &'a [Derived],
     pub t: &'a Tables,
-    /// Observed units by tag -> index in `s.units` (011-R20: units are resolved among them).
     pub observed: &'a HashMap<u32, usize>,
-    /// Live neutral map resources by tag -> index, in vision or not (011-R20).
     pub resources: &'a HashMap<u32, usize>,
-    /// Position of every map resource seen alive (never cleared, 011-R20).
     pub remembered: &'a HashMap<u32, Pos>,
-    /// Enemy buildings observed this game (012-R17, [`remember_buildings`]).
     pub buildings: &'a BuildingMemory,
 }
 
@@ -70,9 +46,6 @@ impl Ctx<'_> {
         self.unit(tag).or_else(|| self.resources.get(&tag).map(|&i| (&self.s.units[i], &self.d[i])))
     }
 
-    /// 012-R17: a target that is not observed now but is a remembered enemy building -> its last
-    /// position and type. Checked before the map resources (a dead refinery's geyser keeps its
-    /// tag) and never looked up among the live units.
     fn ghost(&self, tag: u32) -> Option<(Pos, u16)> {
         if self.observed.contains_key(&tag) { None } else { self.buildings.get(&tag).copied() }
     }
@@ -82,8 +55,6 @@ fn push_u16(v: &mut Vec<u8>, x: u16) {
     v.extend_from_slice(&x.to_le_bytes());
 }
 
-/// `0x61` TargetedOrder (BW::Orders::Attack): position, unit tag (0 = none), unit type, order,
-/// queued.
 fn targeted(t: &Tables, order: u8, pos: Pos, tag: u32, unit_type: u16, queued: bool) -> Vec<u8> {
     let mut v = vec![t.op.targeted_order];
     push_u16(&mut v, pos.0);
@@ -94,7 +65,6 @@ fn targeted(t: &Tables, order: u8, pos: Pos, tag: u32, unit_type: u16, queued: b
     v
 }
 
-/// `0x60` RightClick: position, unit tag (0 = none), unit type, queued.
 fn right_click(t: &Tables, pos: Pos, tag: u32, unit_type: u16, queued: bool) -> Vec<u8> {
     let mut v = vec![t.op.right_click];
     push_u16(&mut v, pos.0);
@@ -105,7 +75,6 @@ fn right_click(t: &Tables, pos: Pos, tag: u32, unit_type: u16, queued: bool) -> 
     v
 }
 
-/// `0x0c` building placement (MakeBuilding / MakeAddon / Land): order byte, tile, unit type.
 fn place(t: &Tables, order: u8, tile: Tile, unit_type: u16) -> Vec<u8> {
     let mut v = vec![t.op.place, order];
     push_u16(&mut v, tile.0);
@@ -114,7 +83,6 @@ fn place(t: &Tables, order: u8, tile: Tile, unit_type: u16) -> Vec<u8> {
     v
 }
 
-/// `0x63` Select of up to 12 units.
 pub fn select(t: &Tables, tags: &[u32]) -> Vec<u8> {
     let tags = &tags[..tags.len().min(MAX_UNITS)];
     let mut v = vec![t.op.select, tags.len() as u8];
@@ -124,7 +92,6 @@ pub fn select(t: &Tables, tags: &[u32]) -> Vec<u8> {
     v
 }
 
-/// `0x5C` chat as player `me` (012-R11, spike-checked): text cut at 79 bytes, NUL padded.
 pub fn chat(t: &Tables, me: u8, text: &str) -> Vec<u8> {
     let mut v = vec![t.op.chat, me];
     let mut body = [0u8; CHAT_TEXT];
@@ -134,7 +101,6 @@ pub fn chat(t: &Tables, me: u8, text: &str) -> Vec<u8> {
     v
 }
 
-/// BWAPI position of a unit (its transport's when loaded).
 fn pos_of(_u: &RawUnit, d: &Derived) -> Pos {
     (d.pos.0.max(0) as u16, d.pos.1.max(0) as u16)
 }
@@ -143,9 +109,6 @@ fn is_flying(u: &RawUnit, d: &Derived) -> bool {
     unit_type(d.bwapi_type).is_some_and(|x| x.is_flyer()) || (u.status & status::IN_AIR != 0 && unit_type(u.unit_type).is_some_and(|x| x.is_building()))
 }
 
-/// BWAPI `canAttackUnit(u, target)` for the shim's right-click branch (Templates.h:613-700):
-/// a weapon for the target's layer, not busy, completed. A unit that cannot move would need a
-/// range check; for such units both outcomes send the right click, so it is not computed.
 fn can_attack_unit(c: &Ctx, (u, du): (&RawUnit, &Derived), (tu, td): (&RawUnit, &Derived)) -> bool {
     let t = c.t;
     let Some(x) = unit_type(du.bwapi_type) else { return false };
@@ -164,8 +127,6 @@ fn can_attack_unit(c: &Ctx, (u, du): (&RawUnit, &Derived), (tu, td): (&RawUnit, 
     has_weapon(weapon) || ty == t.units.carrier || (ty == t.units.reaver && !is_flying(tu, td))
 }
 
-/// The packet one unit of a `Command::Unit` sends (shim `unit_command` + BWAPI `executeCommand`).
-/// `target` is the resolved unit target, `pos` the position argument.
 fn unit_packet(c: &Ctx, me: (&RawUnit, &Derived), order: &CmdOrder, target: Option<(&RawUnit, &Derived)>, pos: Option<Pos>, q: bool) -> Option<Vec<u8>> {
     let t = c.t;
     let o = &t.orders;
@@ -188,7 +149,6 @@ fn unit_packet(c: &Ctx, me: (&RawUnit, &Derived), order: &CmdOrder, target: Opti
             } else {
                 o.attack1
             })?,
-            // 034 Attack_Pos: unarmed units that can move get a move (shim:168-171).
             None if !can_attack_move(ty, t) && can_move(ty) => at(o.move_)?,
             None => at(o.attack_move)?,
         },
@@ -206,9 +166,6 @@ fn unit_packet(c: &Ctx, me: (&RawUnit, &Derived), order: &CmdOrder, target: Opti
         CmdOrder::RightClick(_) => match target {
             None => right_click(t, pos?, 0, NO_UNIT_TYPE, q),
             Some((tu, td)) => {
-                // Audit F17 (shim:177-183): an enemy the unit cannot attack -> follow; a medic
-                // attack-moves to the target's position.
-                // `u` is ours (only local units are commanded), so "enemy of u" is `is_enemy`.
                 if is_enemy(c.s, tu.player) && can_move(ty) && !can_attack_unit(c, me, (tu, td)) {
                     if ty == t.units.medic && can_attack_move(ty, t) {
                         targeted(t, o.attack_move, pos_of(tu, td), 0, NO_UNIT_TYPE, q)
@@ -287,7 +244,6 @@ fn unit_packet(c: &Ctx, me: (&RawUnit, &Derived), order: &CmdOrder, target: Opti
     })
 }
 
-/// Unit target and position arguments of an order (shim `needs_*`).
 fn args(order: &CmdOrder) -> (Option<u32>, Option<Pos>) {
     let tp = |t: &Target| match *t {
         Target::Unit(id) => (Some(id), None),
@@ -304,12 +260,6 @@ fn args(order: &CmdOrder) -> (Option<u32>, Option<Pos>) {
     }
 }
 
-/// 012-R17 / 011-R20 ①-2: a command on a remembered enemy building out of sight, sent like a click
-/// on its fog ghost: last position and unit type, no tag. Attack -> MoveToAttack for the units
-/// that can attack-move (the unit-side check of 011-R23 ②), RightClick -> a typed right click,
-/// Move -> a move to the position. Other orders on such a target send nothing (011-R20 ②). The
-/// building's real current state is never consulted, and the per-unit corrections of 011-R20 ③
-/// do not apply (the game picks each unit's order).
 fn exec_ghost(c: &Ctx, units: &[u32], order: &CmdOrder, (pos, ty): (Pos, u16), q: bool, out: &mut Vec<Vec<u8>>) {
     let t = c.t;
     match order {
@@ -320,8 +270,6 @@ fn exec_ghost(c: &Ctx, units: &[u32], order: &CmdOrder, (pos, ty): (Pos, u16), q
     }
 }
 
-/// shim `exec_units` (011-R20): resolve the target (a remembered enemy building first, 012-R17),
-/// fall back to a move for a remembered resource, then one packet group per distinct packet.
 fn exec_units(c: &Ctx, units: &[u32], order: &CmdOrder, queued: bool, out: &mut Vec<Vec<u8>>) {
     let (target_id, mut pos) = args(order);
     if let Some(ghost) = target_id.and_then(|id| c.ghost(id)) {
@@ -343,7 +291,6 @@ fn exec_units(c: &Ctx, units: &[u32], order: &CmdOrder, queued: bool, out: &mut 
         return;
     }
     let needs_unit_or_pos = matches!(order, CmdOrder::Move(_) | CmdOrder::Attack(_) | CmdOrder::RightClick(_));
-    // Land carries its tile in the order itself.
     let needs_pos = matches!(order, CmdOrder::Patrol(_));
     if (needs_unit_or_pos && target.is_none() && pos.is_none()) || (needs_pos && pos.is_none()) {
         return;
@@ -351,8 +298,6 @@ fn exec_units(c: &Ctx, units: &[u32], order: &CmdOrder, queued: bool, out: &mut 
     send_grouped(c, units, out, |me| unit_packet(c, me, &order, target, pos, queued));
 }
 
-/// Our units' packets: one select + packet per distinct packet (units of one group share a
-/// select); buildings and critters are sent alone (011-R20 ③).
 fn send_grouped<'a>(c: &'a Ctx, units: &[u32], out: &mut Vec<Vec<u8>>, packet_of: impl Fn((&'a RawUnit, &'a Derived)) -> Option<Vec<u8>>) {
     let mut groups: Vec<(Vec<u8>, Vec<u32>)> = Vec::new();
     for &id in units.iter().take(MAX_UNITS) {
@@ -375,13 +320,11 @@ fn send_grouped<'a>(c: &'a Ctx, units: &[u32], out: &mut Vec<Vec<u8>>, packet_of
     }
 }
 
-/// The building tile of a unit (BWAPI `getTilePosition`).
 fn tile_of(d: &Derived) -> (i32, i32) {
     let (tw, th) = unit_type(d.bwapi_type).map_or((1, 1), |x| (x.tile_width, x.tile_height));
     ((d.pos.0 - tw * 16) / 32, (d.pos.1 - th * 16) / 32)
 }
 
-/// Single-unit commands (shim `exec`).
 fn exec_single(c: &Ctx, cmd: &Command, out: &mut Vec<Vec<u8>>) {
     let t = c.t;
     let o = &t.orders;
@@ -439,7 +382,6 @@ fn exec_single(c: &Ctx, cmd: &Command, out: &mut Vec<Vec<u8>>) {
         Command::Upgrade { upgrade, .. } => vec![t.op.upgrade, *upgrade as u8],
         Command::Cancel { kind, .. } => match kind {
             CancelKind::Construction => vec![t.op.cancel_construction],
-            // BWAPI cancelTrain() = slot -2 (the last queued unit).
             CancelKind::Train => vec![t.op.cancel_train, 0xfe, 0],
             CancelKind::Research => vec![t.op.cancel_research],
             CancelKind::Upgrade => vec![t.op.cancel_upgrade],
@@ -448,12 +390,10 @@ fn exec_single(c: &Ctx, cmd: &Command, out: &mut Vec<Vec<u8>>) {
         },
         Command::SetRally { target, .. } => match *target {
             Target::Pos(p) => targeted(t, o.rally_point_tile, p, 0, NO_UNIT_TYPE, false),
-            // 012-R17: a remembered enemy building out of sight -> rally to its last position.
             Target::Unit(id) => match c.ghost(id) {
                 Some((p, _)) => targeted(t, o.rally_point_tile, p, 0, NO_UNIT_TYPE, false),
                 None => match c.target(id) {
                     Some((tu, td)) => targeted(t, o.rally_point_unit, pos_of(tu, td), tu.tag, NO_UNIT_TYPE, false),
-                    // 011-R20: a remembered resource that is gone -> rally to where it was.
                     None => match c.remembered.get(&id) {
                         Some(&p) => targeted(t, o.rally_point_tile, p, 0, NO_UNIT_TYPE, false),
                         None => return,
@@ -467,7 +407,6 @@ fn exec_single(c: &Ctx, cmd: &Command, out: &mut Vec<Vec<u8>>) {
     out.push(packet);
 }
 
-/// Network commands for one `Act` (in order).
 pub fn encode(c: &Ctx, cmds: &[Command]) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     for cmd in cmds {

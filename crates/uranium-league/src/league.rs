@@ -1,8 +1,3 @@
-//! League (042): who the learning agents play next, the win-rate table, PFSP, the curriculum
-//! C0 → C1 → C2 (042-R5), snapshots and resets, learner time share (042-R7) and the reward
-//! weight schedule (033). Pure logic with its own RNG so it is testable and resumable (042-R1).
-//! Results are judged with 020-R13 before they reach `record`.
-
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
@@ -13,7 +8,6 @@ use uranium_proto::Race;
 
 use crate::config::RlConfig;
 
-/// Learning agents (042 league table).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum AgentKind {
     Main,
@@ -24,7 +18,6 @@ pub enum AgentKind {
 impl AgentKind {
     pub const ALL: [AgentKind; 3] = [AgentKind::Main, AgentKind::MainExploiter, AgentKind::LeagueExploiter];
 
-    /// Name in snapshot ids and checkpoint folders (`agents/<name>/`).
     pub fn name(self) -> &'static str {
         match self {
             Self::Main => "main",
@@ -38,7 +31,6 @@ impl AgentKind {
     }
 }
 
-/// Curriculum stage (042-R5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Stage {
     C0,
@@ -46,14 +38,12 @@ pub enum Stage {
     C2,
 }
 
-/// A T1 bot and the races it plays (021).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct T1Bot {
     pub name: String,
     pub races: Vec<Race>,
 }
 
-/// Kind of a rush ladder entry (042 C1 러시 사다리, AMB-042-15).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LadderKind {
@@ -61,44 +51,26 @@ pub enum LadderKind {
     T1,
 }
 
-/// One `[[ladder]]` entry (042 C1 러시 사다리, AMB-042-15): a T0 build or a T1 bot folder (021
-/// config variants included) with the one race it plays (no race sampling). 021-R7 / 044-R10
-/// (2026-11-14): `race = "Random"` makes every game of the entry a lobby Random game (the
-/// `[league] bot_random_race` draw is never applied to ladder entries); only the standard T0
-/// build and a `[[t1]]` bot listing all three races may be Random (the bot is checked in
-/// `RlConfig::validate`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LadderEntry {
     pub kind: LadderKind,
-    /// `kind = "t0"`: the T0 build (`T0Build` name, e.g. `"zerg_rush"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<T0Build>,
-    /// `kind = "t1"`: the T1 bot folder name (e.g. `"steamhammeroverpool"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub race: Race,
-    /// 042 사다리 그룹 (AMB-042-16): the entry's group (`rush`, `macro`, ...); absent = the empty
-    /// name. Drawn by `[curriculum] ladder_groups` when that is set, recorded in `games.csv`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub group: String,
-    /// 042-R19 (AMB-042-19): the entry's weight in a `"fixed"` group (>= 0, absent = 1.0); only
-    /// for entries of a `"fixed"` group (load error otherwise). Left out of the serialised config
-    /// when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weight: Option<f64>,
 }
 
 impl LadderEntry {
-    /// 042-R19: the `"fixed"` weight (absent = 1.0).
     pub fn fixed_weight(&self) -> f64 {
         self.weight.unwrap_or(1.0)
     }
 
-    /// The opponent, its win-table key and class by the existing rules (042, 021-R3): T0
-    /// `t0-<race>[-<build tag>]` / T0, T1 `<name>-<race>` / T1. An error for the 042 사다리 설정
-    /// 검사 cases (missing or extra field, Unknown race, a build of another race — so Random on
-    /// a one-race build). A Random entry's key is `t0-random` / `<name>-random` (021-R7, 044-R10).
     pub fn opponent(&self) -> Result<(Opponent, String, Class), String> {
         let race = self.race;
         if !RACES.contains(&race) && race != Race::Random {
@@ -118,23 +90,15 @@ impl LadderEntry {
     }
 }
 
-/// How the C1 rush ladder picks among its entries (042 사다리 안 상대 선택, AMB-042-15).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LadderPick {
-    /// PFSP f_var(x) = x(1 - x) on Main's win-table value; all weights 0 = uniform.
     #[default]
     FVar,
-    /// 042 사다리 선택 `band` (AMB-042-17): `exp(-((x - center) / width)^2)` with the
-    /// `exclude_below` rule (`[curriculum.band]`).
     Band,
-    /// 042-R19 사다리 선택 `fixed` (AMB-042-19): in proportion to `[[ladder]] weight` (absent
-    /// 1.0); the win table is not read.
     Fixed,
 }
 
-/// `[curriculum] ladder_pick` (042, AMB-042-17): one method for every group (a string, the
-/// earlier form) or a table group name → method; groups not in the table use `"f_var"`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum LadderPickSetting {
@@ -149,7 +113,6 @@ impl Default for LadderPickSetting {
 }
 
 impl LadderPickSetting {
-    /// The method of a ladder game drawn from `group` (`None` = no `ladder_groups`).
     pub fn for_group(&self, group: Option<&str>) -> LadderPick {
         match self {
             Self::All(p) => *p,
@@ -158,8 +121,6 @@ impl LadderPickSetting {
     }
 }
 
-/// `[curriculum.band]`: the numbers of `ladder_pick = "band"` (042 사다리 선택 `band`,
-/// AMB-042-17). Absent = 0.5 / 0.15 / 0.10.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct BandConfig {
@@ -175,16 +136,11 @@ impl Default for BandConfig {
 }
 
 impl BandConfig {
-    /// 042 `band` weight `exp(-((x - center) / width)^2)`.
     pub fn weight(&self, x: f64) -> f64 {
         let z = (x - self.center) / self.width;
         (-z * z).exp()
     }
 
-    /// The `band` weights of the win-table values `xs` of one group's entries (042,
-    /// AMB-042-17): entries below `exclude_below` get 0 when any entry of the group is at or above
-    /// it (none is excluded when every entry is below); when every remaining weight is 0
-    /// (underflow) the remaining entries get 1 each (uniform).
     pub fn weights(&self, xs: &[f64]) -> Vec<f64> {
         let any_above = xs.iter().any(|x| *x >= self.exclude_below);
         let kept = |x: f64| !(any_above && x < self.exclude_below);
@@ -195,7 +151,6 @@ impl BandConfig {
         xs.iter().map(|&x| if kept(x) { 1.0 } else { 0.0 }).collect()
     }
 
-    /// 042 설정 검사: `0 <= center <= 1`, `width > 0`, `0 <= exclude_below < 1`.
     pub fn validate(&self) -> Result<(), String> {
         if !(0.0..=1.0).contains(&self.center) {
             return Err(format!("[curriculum.band] center must be in 0..=1, got {} (042, AMB-042-17)", self.center));
@@ -210,23 +165,15 @@ impl BandConfig {
     }
 }
 
-/// One opponent choice.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Opponent {
-    /// T0 scripted bot; `race` is Random for the 021-R7 Random share.
     T0 { race: Race, build: T0Build },
-    /// T1 bot by name (021); `race` may be Random for multi-race bots (021-R7).
     T1 { name: String, race: Race },
-    /// The learning agent's current Main weights (TvT self-play).
     SelfPlay,
-    /// A frozen league snapshot (042 snapshot id `uranium-<agent>@<run>/<update>`).
     Snapshot { id: String },
-    /// The fixed anchor opponent `[league] anchor` (042, AMB-042-14); `name` = its checkpoint
-    /// name, win-table key `anchor@<name>`.
     Anchor { name: String },
 }
 
-/// Opponent class for the curriculum windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Class {
     T0,
@@ -234,18 +181,13 @@ pub enum Class {
     Model,
 }
 
-/// The next game for a learning agent.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pick {
     pub agent: AgentKind,
     pub opponent: Opponent,
-    /// Win-table key (021-R3 opponent id, without the bot's version for T1).
     pub key: String,
     pub class: Class,
-    /// Fighting Spirit (true) or Circuit Breaker.
     pub fighting_spirit: bool,
-    /// 042 사다리 그룹 (AMB-042-16): the `[[ladder]]` entry's `group` for a ladder game, `None`
-    /// for any other game (`games.csv` `ladder_group`).
     pub ladder_group: Option<String>,
 }
 
@@ -271,41 +213,25 @@ impl Window {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct AgentState {
-    /// Win-rate EMA per opponent key.
     win: BTreeMap<String, f64>,
-    /// Updates of this agent (its policy version).
     updates: u64,
-    /// Updates at the last snapshot / reset.
     since_snapshot: u64,
-    /// Exploiter snapshot window (042: last 200 games).
     recent: Window,
 }
 
-/// League state; serialised into the checkpoint (`ckpt::save_league`, 042-R1).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct League {
     pub run: String,
     pub stage: Stage,
-    /// Main updates when C2 started (pseudo-reward decay, 033).
     pub c2_start: Option<u64>,
     agents: Vec<AgentState>,
-    /// Main's results per (class, race) for the curriculum (042-R5) and race sampling.
     windows: BTreeMap<String, Window>,
-    /// Snapshot ids by the agent that produced them.
     pub snapshots: Vec<(AgentKind, String)>,
-    // The T1 list is not league state any more: it is `[[t1]]` of the current config
-    // (`RlConfig::t1`, 042 "재개 시 설정", AMB-042-13). The `t1` field of older league.bin
-    // files is ignored on load.
-    /// 042-AC1 small setting: Main only, always the standard T0 bot of this race on Fighting
-    /// Spirit (no self-play, no curriculum change).
     #[serde(default)]
     pub fixed_t0: Option<Race>,
     rng: u64,
     #[serde(skip)]
     cfg: Option<RlConfig>,
-    /// Snapshot ids whose model files are on the share (042 스냅샷 공개, AMB-042-14): only these
-    /// are C1 snapshot candidates. Not league state: the run loop marks them after a publish and,
-    /// on resume, from the share.
     #[serde(skip)]
     published: BTreeSet<String>,
 }
@@ -329,7 +255,6 @@ fn race_name(r: Race) -> &'static str {
 
 const RACES: [Race; 3] = [Race::Terran, Race::Protoss, Race::Zerg];
 
-/// 021-R3 win-table key of a T0 build: `t0-<race>-<tag>`, `t0-<race>` for the standard build.
 fn t0_key(race: Race, build: T0Build) -> String {
     match build.id_tag() {
         Some(tag) => format!("t0-{}-{tag}", race_name(race)),
@@ -348,8 +273,6 @@ fn t0_builds(race: Race) -> Vec<T0Build> {
 }
 
 impl League {
-    /// A new league (no LATEST in the run). It starts in `[curriculum] start_stage` (042-R5,
-    /// AMB-042-13); the 042-AC1 small setting (`fixed_t0`) always starts in C0 as before.
     pub fn new(run: &str, seed: u64, fixed_t0: Option<Race>, cfg: RlConfig) -> Self {
         Self {
             run: run.to_string(),
@@ -369,10 +292,6 @@ impl League {
         serde_json::to_vec_pretty(self).expect("league serialises")
     }
 
-    /// A resumed league (042-R1). Stage, win tables, curriculum windows and snapshots come from
-    /// `b`; opponent ratios, `auto_advance`, `r_value_stages`, `r_value_vs_model`, the anchor,
-    /// `main_candidates` and the T1 list follow `cfg`, the current config file (042 "재개 시
-    /// 설정", AMB-042-13 / 14). No snapshot counts as published until the run loop marks it.
     pub fn from_bytes(b: &[u8], cfg: RlConfig) -> anyhow::Result<Self> {
         let mut l: League = serde_json::from_slice(b)?;
         l.cfg = Some(cfg);
@@ -384,7 +303,6 @@ impl League {
     }
 
     fn unit(&mut self) -> f64 {
-        // SplitMix64.
         self.rng = self.rng.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.rng;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -393,7 +311,6 @@ impl League {
         (z >> 11) as f64 / (1u64 << 53) as f64
     }
 
-    /// Index drawn with probability proportional to `w` (uniform if all are 0).
     fn weighted(&mut self, w: &[f64]) -> usize {
         let total: f64 = w.iter().sum();
         let u = self.unit();
@@ -407,8 +324,6 @@ impl League {
                 return i;
             }
         }
-        // Rounding left `acc` just below 1: the last index with a weight, never a weight-0 entry
-        // (042-R19 `fixed` weight 0 = never picked).
         w.iter().rposition(|x| *x > 0.0).unwrap_or(w.len() - 1)
     }
 
@@ -424,7 +339,6 @@ impl League {
         format!("{class:?}/{}", race_name(race))
     }
 
-    /// Main's recent win rate against a race (all classes), for race sampling.
     fn race_win(&self, r: Race) -> f64 {
         let prior = self.cfg().league.win_rate_prior;
         let (mut s, mut n) = (0.0, 0usize);
@@ -437,7 +351,6 @@ impl League {
         if n == 0 { prior } else { s / n as f64 }
     }
 
-    /// 042 race sampling: `mix/3 + (1-mix)(1-w_r)/Σ(1-w)`, each race at least 1/6.
     pub fn race_probs(&self) -> [f64; 3] {
         let mix = self.cfg().league.race_uniform_mix;
         let loss: Vec<f64> = RACES.iter().map(|&r| 1.0 - self.race_win(r)).collect();
@@ -460,7 +373,6 @@ impl League {
         let race = self.pick_race();
         let builds = t0_builds(race);
         let build = builds[(self.unit() * builds.len() as f64) as usize % builds.len()];
-        // 021-R7: Random only for the standard (multi-race) T0 build.
         let random = build == T0Build::Standard && self.unit() < self.cfg().league.bot_random_race;
         let key = t0_key(race, build);
         (Opponent::T0 { race: if random { Race::Random } else { race }, build }, key, Class::T0)
@@ -476,15 +388,11 @@ impl League {
         let bots = if bots.is_empty() { all.clone() } else { bots };
         let bot = bots[(self.unit() * bots.len() as f64) as usize % bots.len()].clone();
         let race = if bot.races.contains(&race) { race } else { bot.races[0] };
-        // 021-R7 (AMB-042-14): Random only for a bot listing all three races; a two-race bot
-        // plays the sampled race of its list (Random could give one it does not list). The
-        // draw is made only for those bots, so three-race bots keep the earlier draw order.
         let random = RACES.iter().all(|r| bot.races.contains(r)) && self.unit() < self.cfg().league.bot_random_race;
         let key = format!("{}-{}", bot.name, race_name(race));
         Some((Opponent::T1 { name: bot.name, race: if random { Race::Random } else { race } }, key, Class::T1))
     }
 
-    /// Every PFSP candidate (snapshots + T0 + T1) with its key.
     fn pfsp_pool(&self, only_main_snapshots: bool) -> Vec<(Opponent, String, Class)> {
         let mut v: Vec<(Opponent, String, Class)> = self
             .snapshots
@@ -507,7 +415,6 @@ impl League {
         v
     }
 
-    /// PFSP (AlphaStar): weight f(x) with x = the agent's win rate against the candidate.
     fn pfsp(&mut self, agent: AgentKind, pool: Vec<(Opponent, String, Class)>, var: bool) -> Option<(Opponent, String, Class)> {
         if pool.is_empty() {
             return None;
@@ -524,9 +431,6 @@ impl League {
         Some(pool[i].clone())
     }
 
-    /// 042 사다리 선택 `band` (AMB-042-17): one entry of `pool` (one group's entries, or every
-    /// entry without groups) by `BandConfig::weights` over the agent's win-table values (unseen =
-    /// the prior, 0.5).
     fn band_pick(&mut self, agent: AgentKind, pool: Vec<(Opponent, String, Class)>) -> Option<(Opponent, String, Class)> {
         if pool.is_empty() {
             return None;
@@ -537,11 +441,6 @@ impl League {
         Some(pool[i].clone())
     }
 
-    /// 042 C1 러시 사다리 (AMB-042-15): an entry of `[[ladder]]` by `[curriculum] ladder_pick`
-    /// (f_var over Main's win-table values, unseen = the prior; all weights 0 = uniform), with the
-    /// entry's group. 042 사다리 그룹 (AMB-042-16): with `ladder_groups` set, a group is drawn by
-    /// the shares first and the pick is among that group's entries; without it no extra draw is
-    /// made (the earlier picks). `None` for an empty list (a load error when `c1_ladder > 0`).
     fn ladder_pick(&mut self, agent: AgentKind) -> Option<((Opponent, String, Class), String)> {
         let groups: Vec<(String, f64)> = self.cfg().curriculum.ladder_groups.iter().map(|(g, x)| (g.clone(), *x)).collect();
         let group = if groups.is_empty() {
@@ -558,11 +457,9 @@ impl League {
             .filter_map(|e| e.opponent().ok().map(|(o, k, c)| (o, k, c, e.group.clone(), e.fixed_weight())))
             .collect();
         let pool: Vec<(Opponent, String, Class)> = entries.iter().map(|(o, k, c, _, _)| (o.clone(), k.clone(), *c)).collect();
-        // 042 (AMB-042-17): the group's method; "f_var" is the earlier pick, draw for draw.
         let picked = match self.cfg().curriculum.ladder_pick.for_group(group.as_deref()) {
             LadderPick::FVar => self.pfsp(agent, pool, true),
             LadderPick::Band => self.band_pick(agent, pool),
-            // 042-R19 (AMB-042-19): by `[[ladder]] weight`, the win table not read.
             LadderPick::Fixed if pool.is_empty() => None,
             LadderPick::Fixed => {
                 let w: Vec<f64> = entries.iter().map(|e| e.4).collect();
@@ -573,23 +470,18 @@ impl League {
         Some((picked, g))
     }
 
-    /// Win-table key of the current Main as an opponent (self-play).
     pub fn self_play_key(&self) -> String {
         format!("uranium-main@{}", self.run)
     }
 
-    /// 042 anchor (AMB-042-14): its win-table key `anchor@<checkpoint name>`, `None` without one.
     pub fn anchor_key(&self) -> Option<String> {
         self.cfg().league.anchor_name().map(|n| format!("anchor@{n}"))
     }
 
-    /// The snapshot's model files are on the share (042 스냅샷 공개, AMB-042-14).
     pub fn mark_published(&mut self, id: &str) {
         self.published.insert(id.to_string());
     }
 
-    /// 042 C1 snapshot candidates (AMB-042-14): the most recent `[snapshot] main_candidates`
-    /// published Main snapshots (0 = all), oldest first.
     pub fn c1_candidates(&self) -> Vec<String> {
         let all: Vec<&String> = self.snapshots.iter().filter(|(a, id)| *a == AgentKind::Main && self.published.contains(id)).map(|(_, id)| id).collect();
         let n = self.cfg().snapshot.main_candidates;
@@ -602,9 +494,6 @@ impl League {
         Some((Opponent::Anchor { name: name.clone() }, format!("anchor@{name}"), Class::Model))
     }
 
-    /// The model opponents (snapshot ids, anchor key) the next picks can choose in the current
-    /// stage; the run loop shuts the inference servers of the others down (042 스냅샷 추론 서버,
-    /// AMB-042-14).
     pub fn model_opponents(&self) -> BTreeSet<String> {
         let mut out = BTreeSet::new();
         if self.fixed_t0.is_some() {
@@ -621,13 +510,11 @@ impl League {
                     out.extend(self.anchor_key());
                 }
             }
-            // C2 PFSP: every snapshot, as before.
             Stage::C2 => out.extend(self.snapshots.iter().map(|(_, id)| id.clone())),
         }
         out
     }
 
-    /// 042-R7: which agent plays the next game; C0/C1 train Main only.
     fn pick_agent(&mut self) -> AgentKind {
         if self.stage < Stage::C2 {
             return AgentKind::Main;
@@ -637,7 +524,6 @@ impl League {
         AgentKind::ALL[self.weighted(&share)]
     }
 
-    /// The next game (042 league table, curriculum, PFSP).
     pub fn next(&mut self) -> Pick {
         if let Some(race) = self.fixed_t0 {
             let opponent = Opponent::T0 { race, build: T0Build::Standard };
@@ -656,10 +542,6 @@ impl League {
                     if self.unit() < cc.c0_t0 / (cc.c0_t0 + cc.c0_self) { self.t0_pick() } else { selfplay }
                 }
                 Stage::C1 => {
-                    // 042 C1 (AMB-042-14 / 15): proportional over T0, T1, the rush ladder, current
-                    // Main, past Main snapshots and the anchor. With the ladder, snapshot and
-                    // anchor shares at 0 (their default) the draws and picks are the earlier ones
-                    // (`x + 0.0 == x`).
                     let models = cc.c1_snapshot + cc.c1_anchor;
                     let bots = cc.c1_t0 + cc.c1_t1 + cc.c1_ladder;
                     let u = self.unit() * (bots + cc.c1_self + models);
@@ -678,8 +560,6 @@ impl League {
                     } else if models <= 0.0 || u < bots + cc.c1_self {
                         selfplay
                     } else if cc.c1_anchor <= 0.0 || u < bots + cc.c1_self + cc.c1_snapshot {
-                        // Snapshot share (PFSP over the candidates); no published snapshot yet:
-                        // the anchor, else the current Main.
                         let pool: Vec<(Opponent, String, Class)> = self.c1_candidates().into_iter().map(|id| (Opponent::Snapshot { id: id.clone() }, id, Class::Model)).collect();
                         match self.pfsp(agent, pool, false) {
                             Some(p) => p,
@@ -718,8 +598,6 @@ impl League {
         Pick { agent, opponent, key, class, fighting_spirit, ladder_group }
     }
 
-    /// A finished game (outcome judged with 020-R13). `enemy_race` is the race actually played.
-    /// Returns true when Main's curriculum stage advanced (042-R5).
     pub fn record(&mut self, pick: &Pick, enemy_race: Race, outcome: Outcome) -> bool {
         let x = win_value(outcome);
         let decay = self.cfg().league.win_rate_decay;
@@ -737,9 +615,6 @@ impl League {
         self.advance()
     }
 
-    /// 042-R5: every race's last `window_games` against T0 (C0→C1) or T1 (C1→C2) at the bar.
-    /// Never with `[curriculum] auto_advance = false` (AMB-042-13); `record` keeps filling the
-    /// windows either way.
     fn advance(&mut self) -> bool {
         if self.fixed_t0.is_some() {
             return false;
@@ -763,13 +638,6 @@ impl League {
         next.is_some()
     }
 
-    /// 033 weights for an agent's advantage: r_value only in the `[curriculum] r_value_stages`
-    /// stages (default C0, AMB-042-13), r_build / r_units decay to 0 over
-    /// `pseudo_reward_decay_updates` Main updates after C2 starts. 033-R11 `"scout"`
-    /// (AMB-042-16): the build / units channels carry r_scout / r_survive at `[reward.scout]` /
-    /// `[reward.survive]` `weight` (the per-game `vs_model` multiplier is per lane,
-    /// `Segment::pseudo_scale`); the C2 decay applies to `"z"` only (`"scout"` in C2 is asked
-    /// again before C2, the weights stay).
     pub fn reward_weights(&self, base: &RewardWeights) -> [f32; 4] {
         let value = if self.cfg().curriculum.r_value_stages.contains(&self.stage) { base.value } else { 0.0 };
         if self.cfg().reward.pseudo == PseudoMode::Scout {
@@ -783,15 +651,10 @@ impl League {
         [base.win, base.build * decay, base.units * decay, value]
     }
 
-    /// 033 / 042 "r_value의 게임별 적용" (AMB-042-14): whether r_value keeps its policy weight
-    /// in a game against an opponent of `class` (the stage gate is `reward_weights`): always
-    /// against a bot, against a model only with `r_value_vs_model`.
     pub fn r_value_in_policy(&self, class: Class) -> bool {
         class != Class::Model || self.cfg().curriculum.r_value_vs_model
     }
 
-    /// An agent finished an update. Returns `Some(reset)` when it should be snapshotted now
-    /// (042 snapshot table); `reset` = go back to the BC policy afterwards.
     pub fn on_update(&mut self, agent: AgentKind) -> Option<bool> {
         let sc = self.cfg().snapshot.clone();
         let reset_draw = self.unit();
@@ -818,15 +681,12 @@ impl League {
         Some(reset)
     }
 
-    /// 042 snapshot id `uranium-<agent>@<run>/<update>`; adds it to the PFSP pool.
     pub fn add_snapshot(&mut self, agent: AgentKind) -> String {
         let id = format!("uranium-{}@{}/{}", agent.name(), self.run, self.updates(agent));
         self.snapshots.push((agent, id.clone()));
         id
     }
 
-    /// 042-R7: the agent the learner should update next among `ready` ones, the one furthest
-    /// below its share of updates (Main only before C2).
     pub fn learner_turn(&self, ready: &[AgentKind]) -> Option<AgentKind> {
         if self.stage < Stage::C2 {
             return ready.contains(&AgentKind::Main).then_some(AgentKind::Main);
@@ -862,7 +722,6 @@ mod tests {
         League::new("r1", 7, None, cfg())
     }
 
-    /// 042 C0: T0 80% / self 20%, races and builds spread, Random only on the standard build.
     #[test]
     fn c0_mix_042_r5() {
         let mut l = league();
@@ -892,7 +751,6 @@ mod tests {
         assert!(random > 0 && scenario > 0);
     }
 
-    /// 042-R5: C0 → C1 only when every race's last 300 T0 games are at 70%+.
     #[test]
     fn curriculum_advances_on_full_windows_042_r5() {
         let mut l = league();
@@ -910,7 +768,6 @@ mod tests {
         assert_eq!(l.stage, Stage::C1);
     }
 
-    /// PFSP f_hard favours opponents the agent loses to.
     #[test]
     fn pfsp_prefers_hard_opponents_042() {
         let mut l = league();
@@ -937,7 +794,6 @@ mod tests {
         assert!(hard > 10 * easy.max(1), "hard {hard} easy {easy}");
     }
 
-    /// 042-R7: before C2 only Main trains; in C2 the learner follows the shares.
     #[test]
     fn learner_time_share_042_r7() {
         let mut l = league();
@@ -952,7 +808,6 @@ mod tests {
         assert!((counts[0] as f64 / 1000.0 - 0.5).abs() < 0.01, "{counts:?}");
     }
 
-    /// 042 snapshots: Main every N updates without reset; Main Exploiter resets.
     #[test]
     fn snapshots_and_resets_042() {
         let mut l = league();
@@ -975,7 +830,6 @@ mod tests {
         assert_eq!(id, format!("uranium-main@r1/{}", every * 2));
     }
 
-    /// 033: r_value only in C0; pseudo-rewards decay to 0 after C2.
     #[test]
     fn reward_weight_schedule_033() {
         let base = RewardWeights { win: 1.0, build: 0.3, units: 0.3, value: 0.05 };
@@ -992,7 +846,6 @@ mod tests {
         assert_eq!(l.reward_weights(&base), [1.0, 0.0, 0.0, 0.0]);
     }
 
-    /// 042-AC1: the small setting plays one T0 race on Fighting Spirit and never advances.
     #[test]
     fn fixed_t0_setting_042_ac1() {
         let mut l = league();
@@ -1009,7 +862,6 @@ mod tests {
         assert_eq!(l.stage, Stage::C0);
     }
 
-    /// 042-R1: the league survives the checkpoint round trip.
     #[test]
     fn league_round_trip_042_r1() {
         let mut l = league();
@@ -1021,7 +873,6 @@ mod tests {
         assert_eq!(l.next(), m.next());
     }
 
-    /// The 042 "T1·셀프 run" league (config/rl_t1self.toml values, McRave left out).
     fn t1self_cfg() -> RlConfig {
         let mut c = cfg();
         c.curriculum.start_stage = Stage::C1;
@@ -1035,8 +886,6 @@ mod tests {
         Pick { agent: AgentKind::Main, opponent: Opponent::T1 { name: name.into(), race }, key: format!("{name}-{}", race_name(race)), class: Class::T1, fighting_spirit: true, ladder_group: None }
     }
 
-    /// 042-R5 `start_stage = "C1"` (AMB-042-13): a new league starts in C1, trains Main only and,
-    /// with `c1_t0 = 0`, never picks a T0 bot: about half T1, half self-play.
     #[test]
     fn start_stage_c1_t1_self_mix_042_r5() {
         let mut l = League::new("r1", 7, None, t1self_cfg());
@@ -1058,13 +907,10 @@ mod tests {
         assert_eq!(bots + selfp, n);
         let f = bots as f64 / n as f64;
         assert!((0.47..0.53).contains(&f), "T1 share {f}");
-        // Default config: C0 as before; the AC1 small setting stays C0 whatever start_stage says.
         assert_eq!(league().stage, Stage::C0);
         assert_eq!(League::new("r1", 7, Some(Race::Zerg), t1self_cfg()).stage, Stage::C0);
     }
 
-    /// 042-R5 `auto_advance = false` (AMB-042-13): full winning windows never change the stage,
-    /// but the windows are still recorded (they drive race sampling).
     #[test]
     fn auto_advance_off_keeps_stage_042_r5() {
         let mut l = League::new("r1", 7, None, t1self_cfg());
@@ -1077,7 +923,6 @@ mod tests {
         assert_eq!(l.stage, Stage::C1);
         assert_eq!(l.windows.get("T1/zerg").map(|w| w.games.len()), Some(l.cfg().curriculum.window_games));
         assert_ne!(l.race_probs(), before, "windows recorded");
-        // The same windows advance a league with auto_advance on.
         let mut c = t1self_cfg();
         c.curriculum.auto_advance = true;
         let mut on = League::from_bytes(&l.to_bytes(), c).unwrap();
@@ -1088,7 +933,6 @@ mod tests {
         assert_eq!(on.stage, Stage::C2);
     }
 
-    /// 033 r_value (AMB-042-13): non-zero in the `r_value_stages` stages only.
     #[test]
     fn r_value_follows_r_value_stages_033() {
         let base = RewardWeights { win: 1.0, build: 0.3, units: 0.3, value: 0.05 };
@@ -1108,9 +952,6 @@ mod tests {
         assert_eq!(League::new("r1", 7, None, c).reward_weights(&base)[3], 0.0);
     }
 
-    /// 042 "재개 시 설정" (AMB-042-13): a resumed league keeps its stage, windows and snapshots
-    /// from league.bin and takes ratios, auto_advance, r_value_stages and T1 list from the
-    /// current config.
     #[test]
     fn resume_follows_current_config_042_r1() {
         let mut l = league();
@@ -1120,7 +961,6 @@ mod tests {
             l.record(&t1_pick("zzzkbot", Race::Zerg), Race::Zerg, Outcome::Win);
         }
         let bytes = l.to_bytes();
-        // New config: no T0, only T1 (one new bot), r_value in C1, start_stage ignored.
         let mut c = cfg();
         c.curriculum.start_stage = Stage::C0;
         (c.curriculum.c1_t0, c.curriculum.c1_t1, c.curriculum.c1_self) = (0.0, 1.0, 0.0);
@@ -1142,7 +982,6 @@ mod tests {
         assert_eq!(m.cfg().t1.len(), 1);
     }
 
-    /// The 042 "T1·셀프 run" 2차 league (config/rl_t1self2.toml shares, AMB-042-14).
     fn t1self2_cfg() -> RlConfig {
         let mut c = t1self_cfg();
         let cc = &mut c.curriculum;
@@ -1153,8 +992,6 @@ mod tests {
         c
     }
 
-    /// Shares of `n` picks by opponent: (T1, current Main, snapshot, anchor), and the snapshot
-    /// ids picked.
     fn c1_counts(l: &mut League, n: usize) -> ([f64; 4], BTreeMap<String, usize>) {
         let (mut c, mut ids) = ([0usize; 4], BTreeMap::new());
         for _ in 0..n {
@@ -1187,15 +1024,11 @@ mod tests {
         }
     }
 
-    /// 042 C1 model opponents (AMB-042-14): T1 / current Main / snapshots / anchor in proportion
-    /// to `c1_*`; before any published snapshot the snapshot share goes to the anchor; the
-    /// snapshot share draws only among the latest `main_candidates` published Main snapshots.
     #[test]
     fn c1_model_opponent_shares_042_amb_042_14() {
         let mut l = League::new("r1", 7, None, t1self2_cfg());
         let (c, _) = c1_counts(&mut l, 8000);
         near(c, [0.5, 0.15, 0.0, 0.35]);
-        // Six Main snapshots and one exploiter snapshot; the newest Main one is not published.
         let mut main = vec![];
         for i in 0..6 {
             l.agents[0].updates = 250 * (i + 1);
@@ -1209,15 +1042,12 @@ mod tests {
         let (c, ids) = c1_counts(&mut l, 8000);
         near(c, [0.5, 0.15, 0.25, 0.10]);
         assert_eq!(ids.keys().cloned().collect::<BTreeSet<_>>(), main[1..5].iter().cloned().collect());
-        // 0 = every published Main snapshot.
         let mut cfg = t1self2_cfg();
         cfg.snapshot.main_candidates = 0;
         l.cfg = Some(cfg);
         assert_eq!(l.c1_candidates(), main[..5].to_vec());
     }
 
-    /// 042 (AMB-042-14): without an anchor, the anchor share and (before any snapshot) the
-    /// snapshot share go to the current Main.
     #[test]
     fn c1_without_anchor_falls_back_to_current_main_042() {
         let mut cfg = t1self2_cfg();
@@ -1227,7 +1057,6 @@ mod tests {
         let (c, _) = c1_counts(&mut l, 6000);
         let total = 0.5 + 0.15 + 0.25;
         near(c, [0.5 / total, 0.4 / total, 0.0, 0.0]);
-        // An anchor without its own share still takes the snapshot share before any snapshot.
         let mut cfg = t1self2_cfg();
         cfg.curriculum.c1_anchor = 0.0;
         let mut l = League::new("r1", 7, None, cfg);
@@ -1235,7 +1064,6 @@ mod tests {
         near(c, [0.5 / total, 0.15 / total, 0.0, 0.25 / total]);
     }
 
-    /// 042 C1 snapshot share (AMB-042-14): PFSP f_hard within the candidates (unseen = 0.5).
     #[test]
     fn c1_snapshot_pfsp_prefers_hard_snapshots_042() {
         let mut cfg = t1self2_cfg();
@@ -1260,8 +1088,6 @@ mod tests {
         assert!(hard > 2 * unseen && unseen > 10 * easy.max(1), "easy {easy} hard {hard} unseen {unseen}");
     }
 
-    /// 042 (AMB-042-14): with `c1_snapshot = c1_anchor = 0` (the defaults) the picks are those of
-    /// the earlier C1 (T0 / T1 / current Main), whatever snapshots and anchor exist.
     #[test]
     fn zero_model_shares_keep_earlier_c1_picks_042() {
         let mut base = cfg();
@@ -1279,7 +1105,6 @@ mod tests {
         }
     }
 
-    /// 042 스냅샷 추론 서버 (AMB-042-14): the model opponents the picks can choose per stage.
     #[test]
     fn model_opponents_per_stage_042() {
         let mut l = League::new("r1", 7, None, t1self2_cfg());
@@ -1295,7 +1120,6 @@ mod tests {
         let mut want: BTreeSet<String> = ids[2..].iter().cloned().collect();
         want.insert("anchor@ckpt-3133569".into());
         assert_eq!(l.model_opponents(), want);
-        // No anchor share and candidates there: the anchor is not a choice.
         let mut c = t1self2_cfg();
         c.curriculum.c1_anchor = 0.0;
         l.cfg = Some(c);
@@ -1306,7 +1130,6 @@ mod tests {
         assert!(l.model_opponents().is_empty());
     }
 
-    /// 033 / 042 (AMB-042-14): r_value policy weight per game by opponent class.
     #[test]
     fn r_value_per_game_by_opponent_033() {
         let l = League::new("r1", 7, None, t1self2_cfg());
@@ -1317,9 +1140,6 @@ mod tests {
         assert!(l.r_value_in_policy(Class::Model) && l.r_value_in_policy(Class::T1));
     }
 
-    /// 042-R1 / 스냅샷 공개 (AMB-042-14): which snapshots are published is not league state:
-    /// league.bin keeps its format and a resumed league has no candidate until the run loop marks
-    /// the snapshots it finds on the share.
     #[test]
     fn published_is_not_league_state_042() {
         let mut l = League::new("r1", 7, None, t1self2_cfg());
@@ -1335,8 +1155,6 @@ mod tests {
         assert_eq!(m.c1_candidates(), [id]);
     }
 
-    /// 021-R7 (AMB-042-14): Random only for bots listing all three races; a two-race bot plays a
-    /// race of its list.
     #[test]
     fn random_only_for_three_race_bots_021_r7() {
         let mut c = t1self_cfg();
@@ -1364,8 +1182,6 @@ mod tests {
         assert!(sh > 1000 && (0.17..0.23).contains(&f), "steamhammer {sh}, ualbertabot Random {f}");
     }
 
-    /// 042-R1: a league.bin written before AMB-042-13 (with the T1 list inside) still loads; the
-    /// list in it is ignored for the config's.
     #[test]
     fn old_league_bin_loads_042_r1() {
         let mut l = league();
@@ -1381,7 +1197,6 @@ mod tests {
                 assert_ne!(name, "mcrave");
             }
         }
-        // And the 042-AC1 league.bin shape (fixed_t0 absent from the oldest ones).
         v.as_object_mut().unwrap().remove("fixed_t0");
         assert!(League::from_bytes(&serde_json::to_vec(&v).unwrap(), cfg()).unwrap().fixed_t0.is_none());
     }
@@ -1394,7 +1209,6 @@ mod tests {
         LadderEntry { kind: LadderKind::T1, build: None, name: Some(name.into()), race, group: String::new(), weight: None }
     }
 
-    /// The 042 "러시 커리큘럼 run" league (config/rl_rush1.toml shares, AMB-042-15).
     fn rush_cfg() -> RlConfig {
         let mut c = t1self2_cfg();
         let cc = &mut c.curriculum;
@@ -1405,9 +1219,6 @@ mod tests {
 
     const RUSH_KEYS: [&str; 4] = ["t0-zerg-rush", "ualbertabot-zerg", "steamhammeroverpool-zerg", "zzzkbot-zerg"];
 
-    /// 042 C1 러시 사다리 (AMB-042-15): ladder / current Main / anchor shares as `c1_*` (before any
-    /// snapshot the snapshot share goes to the anchor); ladder picks use the existing keys and
-    /// classes, the entry's fixed race (never Random) and the T0 build as listed.
     #[test]
     fn c1_ladder_shares_and_keys_042_amb_042_15() {
         let mut l = League::new("r1", 7, None, rush_cfg());
@@ -1439,7 +1250,6 @@ mod tests {
         let f = |x: usize| x as f64 / n as f64;
         assert!((f(ladder) - 0.70).abs() < 0.025 && (f(selfp) - 0.05).abs() < 0.015 && (f(anchor) - 0.25).abs() < 0.025, "ladder {ladder} self {selfp} anchor {anchor}");
         assert_eq!(keys, RUSH_KEYS.iter().map(|k| k.to_string()).collect::<BTreeSet<_>>());
-        // r_value (bot games) and the curriculum windows follow the class rules.
         assert!(l.r_value_in_policy(Class::T0) && l.r_value_in_policy(Class::T1) && !l.r_value_in_policy(Class::Model));
         let p = Pick { agent: AgentKind::Main, opponent: Opponent::T0 { race: Race::Zerg, build: T0Build::ZergRush }, key: "t0-zerg-rush".into(), class: Class::T0, fighting_spirit: true, ladder_group: None };
         l.record(&p, Race::Zerg, Outcome::Loss);
@@ -1447,9 +1257,6 @@ mod tests {
         assert!(l.win_rate(AgentKind::Main, "t0-zerg-rush") < 0.5);
     }
 
-    /// 042 사다리 안 상대 선택 (AMB-042-15): PFSP f_var x(1 - x) — an entry near 50% (here unseen,
-    /// 0.5) is picked far more than ones Main nearly always beats or loses to; all weights 0 =
-    /// uniform.
     #[test]
     fn ladder_f_var_prefers_even_opponents_042_amb_042_15() {
         let mut c = rush_cfg();
@@ -1476,7 +1283,6 @@ mod tests {
         let get = |k: &str| m.get(k).copied().unwrap_or(0);
         assert!(get("zzzkbot-zerg") > 10 * get("t0-zerg-rush").max(1), "{m:?}");
         assert!(get("steamhammeroverpool-zerg") > 10 * get("ualbertabot-zerg").max(1), "{m:?}");
-        // Every entry at x(1 - x) = 0: uniform.
         for k in RUSH_KEYS {
             l.agents[0].win.insert(k.to_string(), if k.starts_with("t0") { 0.0 } else { 1.0 });
         }
@@ -1485,8 +1291,6 @@ mod tests {
         assert!(m.values().all(|&v| (v as f64 / 8000.0 - 0.25).abs() < 0.025), "{m:?}");
     }
 
-    /// 042 (AMB-042-15): with `c1_ladder = 0` (the default) the picks are the earlier ones,
-    /// whatever `[[ladder]]` lists; the ladder never enters the C2 PFSP pool.
     #[test]
     fn zero_ladder_share_keeps_earlier_picks_042() {
         for base in [cfg(), t1self_cfg(), t1self2_cfg()] {
@@ -1502,8 +1306,6 @@ mod tests {
         assert!(!l.pfsp_pool(false).iter().any(|(_, k, _)| k.starts_with("steamhammeroverpool")));
     }
 
-    /// 042 "재개 시 설정" (AMB-042-15): the ladder list and its share come from the current config
-    /// on resume; the entries' win rates go on through the win table keys.
     #[test]
     fn resume_takes_the_current_ladder_042_r1() {
         let mut l = League::new("r1", 7, None, rush_cfg());
@@ -1524,13 +1326,8 @@ mod tests {
         }
     }
 
-    /// 044-R10 / 042-R22 ② (user decisions 2026-11-14): `config/rl_m2_race.toml` realises lobby
-    /// races terran 24 : protoss 28 : zerg 28 : Random 20 over many picks, T0 / T1 half and half in
-    /// each, half of zerg T0 the rush ladder (4 entries equal), T1 bots of a race equal, both maps,
-    /// Main only, no self-play or model opponent and no E-Regression build (fixed seed sample).
     #[test]
     fn m2_race_shares_044_r10() {
-        // S (`[kl.reference] zerg`) is filled in the tracked file (r2, 2026-11-14).
         let text = include_str!("../../../config/rl_m2_race.toml").replace("\r\n", "\n");
         let c: RlConfig = toml::from_str(&text).unwrap();
         c.validate().unwrap_or_else(|e| panic!("{e:#}"));
@@ -1538,7 +1335,6 @@ mod tests {
         const RUSH: [&str; 4] = ["t0-zerg-rush", "ualbertabot9pool10lings-zerg", "ualbertabot9pool12lings-zerg", "ualbertabot9poolhydra-zerg"];
         let n = 100_000;
         let mut keys: BTreeMap<String, usize> = BTreeMap::new();
-        // (race, "t0" | "t1") with the zerg rush ladder in zerg T0 (044-R10).
         let mut split: BTreeMap<(&str, &str), usize> = BTreeMap::new();
         let mut fs = 0;
         for _ in 0..n {
@@ -1570,7 +1366,6 @@ mod tests {
         let zerg_t0 = split[&("zerg", "t0")] as f64;
         let rush: usize = RUSH.iter().map(|k| keys.get(*k).copied().unwrap_or(0)).sum();
         assert!((rush as f64 / zerg_t0 - 0.5).abs() < 0.02, "rush ladder {rush} of zerg T0 {zerg_t0}");
-        // Every entry at its share of all games (%).
         let want: [(&str, f64); 17] = [
             ("t0-terran", 12.0), ("ualbertabot-terran", 4.0), ("steamhammer-terran", 4.0), ("iron-terran", 4.0),
             ("t0-protoss", 14.0), ("ualbertabot-protoss", 7.0), ("stardust-protoss", 7.0),
@@ -1586,8 +1381,6 @@ mod tests {
         assert!((f(fs) - 0.5).abs() < 0.01, "both maps: fighting spirit {}", f(fs));
     }
 
-    /// 042 사다리 설정 검사 (AMB-042-15): an entry's opponent, key and class, and the entries
-    /// that are errors.
     #[test]
     fn ladder_entry_opponents_042() {
         let (o, k, c) = t0_entry(T0Build::ZergRush, Race::Zerg).opponent().unwrap();
@@ -1599,9 +1392,6 @@ mod tests {
         assert!(t0_entry(T0Build::ZergRush, Race::Terran).opponent().is_err(), "build of another race");
         assert!(t1_entry("zzzkbot", Race::Unknown).opponent().is_err());
         assert!(t0_entry(T0Build::Standard, Race::Unknown).opponent().is_err());
-        // 021-R7 / 044-R10 (2026-11-14): a Random entry plays lobby Random in every game, keys
-        // `t0-random` / `<name>-random`; a one-race build cannot be Random (a T1 entry's
-        // three-race check against [[t1]] is in the config check).
         let (o, k, c) = t0_entry(T0Build::Standard, Race::Random).opponent().unwrap();
         assert_eq!((o, k.as_str(), c), (Opponent::T0 { race: Race::Random, build: T0Build::Standard }, "t0-random", Class::T0));
         let (o, k, c) = t1_entry("ualbertabot", Race::Random).opponent().unwrap();
@@ -1619,8 +1409,6 @@ mod tests {
         LadderEntry { group: g.into(), ..e }
     }
 
-    /// The `rush-s2` league shape (AMB-042-16): the rush entries of `rush_cfg` as "rush", two
-    /// macro entries, ladder only (no model shares) and groups `rush` / `macro` by `shares`.
     fn grouped_cfg(shares: &[(&str, f64)]) -> RlConfig {
         let mut c = rush_cfg();
         (c.curriculum.c1_self, c.curriculum.c1_snapshot, c.curriculum.c1_anchor) = (0.0, 0.0, 0.0);
@@ -1633,13 +1421,10 @@ mod tests {
 
     const MACRO_KEYS: [&str; 2] = ["t0-zerg", "ualbertabot2hatchhydra-zerg"];
 
-    /// 042 사다리 그룹 / 042-AC6 (AMB-042-16): ladder games draw the group by `ladder_groups`
-    /// (fixed seed sample ratio), whatever the win rates; the pick names its group.
     #[test]
     fn ladder_groups_share_games_042_amb_042_16() {
         for (rush, mac) in [(0.5, 0.5), (0.8, 0.2), (1.0, 0.0)] {
             let mut l = League::new("r1", 11, None, grouped_cfg(&[("rush", rush), ("macro", mac)]));
-            // Main beats the macro entries every time: f_var weights 0 there, uniform inside the group.
             for k in MACRO_KEYS {
                 l.agents[0].win.insert(k.to_string(), 1.0);
             }
@@ -1655,15 +1440,12 @@ mod tests {
             let share = counts.get("macro").copied().unwrap_or(0) as f64 / n as f64;
             assert!((share - mac).abs() < 0.02, "{rush}/{mac}: {counts:?}");
         }
-        // Not a ladder game: no group.
         let mut c = grouped_cfg(&[("rush", 0.5), ("macro", 0.5)]);
         (c.curriculum.c1_ladder, c.curriculum.c1_self) = (0.0, 1.0);
         let mut l = League::new("r1", 11, None, c);
         assert!((0..200).all(|_| l.next().ladder_group.is_none()));
     }
 
-    /// 042 사다리 그룹 / 042-AC6 (AMB-042-16): inside a group the pick is f_var over that group's
-    /// entries only.
     #[test]
     fn ladder_f_var_within_group_042_amb_042_16() {
         let mut l = League::new("r1", 5, None, grouped_cfg(&[("rush", 0.0), ("macro", 1.0)]));
@@ -1677,9 +1459,6 @@ mod tests {
         assert!(get("ualbertabot2hatchhydra-zerg") > 10 * get("t0-zerg").max(1), "{m:?}");
     }
 
-    /// 042-R19 / 042-AC9 (AMB-042-19): in a `"fixed"` group the entries come in proportion to
-    /// `[[ladder]] weight` (absent 1.0) on a fixed-seed sample whatever the win table says; the
-    /// other group keeps its method (f_var); a resumed league uses the current file's weights.
     #[test]
     fn ladder_fixed_by_weight_042_r19() {
         let fixed = |rush_weights: &[Option<f64>]| {
@@ -1701,7 +1480,6 @@ mod tests {
         let ws = [Some(0.35), Some(0.30), Some(0.20), Some(0.15)];
         for win in [0.0, 0.5, 1.0] {
             let mut l = League::new("r1", 13, None, fixed(&ws));
-            // The win table is not read: an extreme table changes nothing.
             for k in RUSH_KEYS {
                 l.agents[0].win.insert(k.to_string(), win);
             }
@@ -1711,27 +1489,22 @@ mod tests {
                 assert!((share - w.unwrap()).abs() < 0.015, "win {win}: {k} {share} vs {w:?} ({m:?})");
             }
         }
-        // Absent weight = 1.0; weight 0 = never.
         let mut l = League::new("r1", 13, None, fixed(&[None, Some(2.0), Some(0.0), None]));
         let m = count(&mut l, n);
         let share = |k: &str| m.get(k).copied().unwrap_or(0) as f64 / n as f64;
         assert!((share("t0-zerg-rush") - 0.25).abs() < 0.015 && (share("ualbertabot-zerg") - 0.5).abs() < 0.015 && (share("zzzkbot-zerg") - 0.25).abs() < 0.015, "{m:?}");
         assert_eq!(share("steamhammeroverpool-zerg"), 0.0);
-        // The macro group keeps f_var.
         let mut c = fixed(&ws);
         c.curriculum.ladder_groups = [("rush".to_string(), 0.0), ("macro".to_string(), 1.0)].into_iter().collect();
         let mut l = League::new("r1", 5, None, c.clone());
         l.agents[0].win.insert("t0-zerg".into(), 0.99);
         let m = count(&mut l, 4000);
         assert!(m.get("ualbertabot2hatchhydra-zerg").copied().unwrap_or(0) > 10 * m.get("t0-zerg").copied().unwrap_or(1).max(1), "{m:?}");
-        // 042 "재개 시 설정": the resumed league picks by the current file's weights.
         let l = League::new("r1", 13, None, fixed(&ws));
         let mut r = League::from_bytes(&l.to_bytes(), fixed(&[Some(0.0), Some(0.0), Some(0.0), Some(1.0)])).unwrap();
         assert!((0..500).all(|_| r.next().key == "zzzkbot-zerg"));
     }
 
-    /// 042-R19 / 042-AC9: `f_var` and `band` never read `weight` (the same draws with and without
-    /// it), and an entry without `weight` serialises as before (no key).
     #[test]
     fn no_fixed_keeps_earlier_picks_042_r19() {
         let base = grouped_cfg(&[("rush", 0.7), ("macro", 0.3)]);
@@ -1748,8 +1521,6 @@ mod tests {
         }
     }
 
-    /// 042 사다리 그룹 (AMB-042-16): without `ladder_groups` the picks are the earlier ones (same
-    /// draws, same opponents) whatever `group` the entries carry; the group is still recorded.
     #[test]
     fn no_ladder_groups_keeps_earlier_picks_042_amb_042_16() {
         let base = rush_cfg();
@@ -1768,8 +1539,6 @@ mod tests {
         }
     }
 
-    /// 042 승률 표 / 042-AC6 (AMB-042-16): the EMA decay is `[league] win_rate_decay` of the
-    /// current config (resume included); every pick reads this one table.
     #[test]
     fn win_rate_decay_from_config_042_amb_042_16() {
         let pick = |key: &str| Pick { agent: AgentKind::Main, opponent: Opponent::T1 { name: "zzzkbot".into(), race: Race::Zerg }, key: key.into(), class: Class::T1, fighting_spirit: true, ladder_group: None };
@@ -1787,9 +1556,6 @@ mod tests {
         assert!((m.win_rate(AgentKind::Main, "uranium-main@r1") - 0.5).abs() < 1e-12);
     }
 
-    /// 033-R11 (AMB-042-16): in the "scout" mode the build / units channel weights are
-    /// `[reward.scout]` / `[reward.survive]` `weight`, r_value follows its stages, and no C2 decay
-    /// applies; "z" keeps the earlier schedule.
     #[test]
     fn scout_mode_reward_weights_033_r11() {
         let base = RewardWeights { win: 1.0, build: 0.3, units: 0.3, value: 0.05 };
@@ -1811,9 +1577,6 @@ mod tests {
         assert_eq!(z.reward_weights(&base), [1.0, 0.0, 0.0, 0.0], "z: decayed as before");
     }
 
-    /// 042 사다리 선택 `band` / 042-AC7 (AMB-042-17): the weight formula (center, width), the
-    /// exclusion below `exclude_below` only when some entry is at or above it, no exclusion when
-    /// every entry is below, uniform over the remaining entries when every weight underflows.
     #[test]
     fn band_weights_042_amb_042_17() {
         let b = BandConfig::default();
@@ -1824,18 +1587,14 @@ mod tests {
         assert!(close(b.weight(0.2), (-4.0f64).exp()));
         let other = BandConfig { center: 0.3, width: 0.1, exclude_below: 0.2 };
         assert!(close(other.weight(0.5), (-4.0f64).exp()) && close(other.weight(0.3), 1.0));
-        // Exclusion: 0.05 and 0.09 drop out because 0.5 and 0.1 are at or above 0.10.
         let w = b.weights(&[0.05, 0.5, 0.09, 0.10]);
         assert_eq!((w[0], w[2]), (0.0, 0.0));
         assert!(close(w[1], 1.0) && close(w[3], b.weight(0.10)));
-        // Every entry below: none excluded, the formula for all.
         let w = b.weights(&[0.0, 0.05, 0.09]);
         assert!(w.iter().zip([0.0, 0.05, 0.09]).all(|(a, x)| close(*a, b.weight(x)) && *a > 0.0), "{w:?}");
-        // Every remaining weight 0 (underflow): the remaining entries uniform.
         let narrow = BandConfig { center: 0.5, width: 1e-6, exclude_below: 0.10 };
         assert_eq!(narrow.weights(&[0.05, 0.9, 0.95]), [0.0, 1.0, 1.0]);
         assert_eq!(narrow.weights(&[0.01, 0.02]), [1.0, 1.0]);
-        // 설정 검사.
         b.validate().unwrap();
         BandConfig { center: 0.0, width: 1.0, exclude_below: 0.0 }.validate().unwrap();
         BandConfig { center: 1.0, width: 0.01, exclude_below: 0.99 }.validate().unwrap();
@@ -1844,16 +1603,12 @@ mod tests {
         }
     }
 
-    /// 042 사다리 선택 `band` / 042-AC7 (AMB-042-17) in the league: inside the band group the picks
-    /// follow the band weights over Main's win-table values (unseen = 0.5, excluded entries never
-    /// picked); groups not in the per-group table use f_var.
     #[test]
     fn band_pick_per_group_042_amb_042_17() {
         let mut c = grouped_cfg(&[("rush", 1.0), ("macro", 0.0)]);
         c.curriculum.ladder_pick = LadderPickSetting::PerGroup(BTreeMap::from([("rush".to_string(), LadderPick::Band)]));
         c.validate().unwrap();
         let mut l = League::new("r1", 13, None, c.clone());
-        // t0-zerg-rush unseen (0.5), ualbertabot 0.35, steamhammeroverpool 0.05 (excluded), zzzkbot 0.8.
         for (k, x) in [("ualbertabot-zerg", 0.35), ("steamhammeroverpool-zerg", 0.05), ("zzzkbot-zerg", 0.8)] {
             l.agents[0].win.insert(k.to_string(), x);
         }
@@ -1870,7 +1625,6 @@ mod tests {
             assert!((got - wk / total).abs() < 0.015, "{k}: {got} vs {} ({m:?})", wk / total);
         }
         assert_eq!(m.get("steamhammeroverpool-zerg"), None, "excluded");
-        // The macro group is not in the table: f_var, the same picks as a plain "f_var" setting.
         let mut f = grouped_cfg(&[("rush", 0.0), ("macro", 1.0)]);
         f.curriculum.ladder_pick = c.curriculum.ladder_pick.clone();
         let mut plain = f.clone();
@@ -1881,8 +1635,6 @@ mod tests {
         }
     }
 
-    /// 042 (AMB-042-17): `ladder_pick = "f_var"` (string, table naming every group f_var, or
-    /// absent) gives the earlier picks draw for draw; `"band"` for every group differs.
     #[test]
     fn f_var_settings_keep_earlier_picks_042_amb_042_17() {
         let base = grouped_cfg(&[("rush", 0.5), ("macro", 0.5)]);

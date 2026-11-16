@@ -1,24 +1,15 @@
-//! Realtime observation schedule (012-R7, 012-R8). One observation waits for its `Act` at a time;
-//! the game never waits. The next observation is at max(f + d, f + 2, the frame the Act was
-//! applied), and an Act read after its `valid_until_frame` is dropped and counted.
-
-/// Minimum frames between two observations (012-R8).
 pub const MIN_GAP: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
-    /// Observe at or after this frame.
     Idle { next: u32 },
-    /// Observation of this frame is waiting for its Act.
     Waiting { observed: u32 },
 }
 
 #[derive(Debug, Clone)]
 pub struct Schedule {
     phase: Phase,
-    /// Acts dropped for arriving after `valid_until_frame` (012-AC6).
     pub expired: u32,
-    /// Frames from each observation to the frame its Act was applied (012-AC6).
     pub delays: Vec<u32>,
 }
 
@@ -35,8 +26,6 @@ impl Schedule {
         self.phase = Phase::Waiting { observed: frame };
     }
 
-    /// The Act for the waiting observation is read at `frame`. Returns whether its commands are
-    /// sent (false: expired, or no observation was waiting).
     pub fn on_act(&mut self, frame: u32, advance: u32, valid_until: Option<u32>) -> bool {
         let Phase::Waiting { observed } = self.phase else { return false };
         let ok = valid_until.is_none_or(|v| frame <= v);
@@ -55,8 +44,6 @@ impl Schedule {
 mod tests {
     use super::*;
 
-    /// 012-R8 / 012-R7: observe at f + d, at least 2 frames apart, never before the Act came;
-    /// late Acts are dropped and counted.
     #[test]
     fn schedule_012_r8() {
         let mut s = Schedule::new(1);

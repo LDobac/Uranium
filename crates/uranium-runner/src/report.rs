@@ -1,6 +1,3 @@
-//! Per-matchup summary (021-AC1/AC2, 020-AC1) joined from games.jsonl (hostd outcomes) and
-//! results.jsonl (agent sessions).
-
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -10,21 +7,13 @@ use serde_json::Value;
 
 use crate::plan::{Plan, Side};
 
-/// A model side as shown in summary.md (2026-10-18 user decision, 020 notes): Core kind, run id
-/// and the session `policy` label (020-R5) the side's sessions report.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PolicyInfo {
-    /// Session `policy` label, `model:<folder>@<sha12>:<sample>`.
     pub id: String,
-    /// `lstm` / `gtrxl`.
     pub core: String,
-    /// `<run folder>/<checkpoint folder>`, e.g. `core-abl-lstm/ckpt-5300`.
     pub run: String,
 }
 
-/// Reads a model side's checkpoint for its display info; `None` for other sides or when the
-/// checkpoint cannot be read. The latter is warned about: the report then shows the plan path
-/// only, and a model-vs-model matchup lands in the mirror row without per-policy tables.
 fn model_info(side: &Side) -> Option<PolicyInfo> {
     let Side::Model { checkpoint, sample, .. } = side else { return None };
     match read_model_info(Path::new(checkpoint), *sample) {
@@ -53,7 +42,6 @@ fn lines(path: &Path) -> Result<Vec<Value>> {
     Ok(text.lines().filter(|l| !l.trim().is_empty()).map(serde_json::from_str).collect::<Result<_, _>>()?)
 }
 
-/// Matchup table cell: the policy name plus, for a model side, its session policy label.
 fn side_name(s: &Side, info: Option<&PolicyInfo>) -> String {
     match info {
         Some(i) => format!("{} `{}`", policy_name(s, info), i.id),
@@ -61,7 +49,6 @@ fn side_name(s: &Side, info: Option<&PolicyInfo>) -> String {
     }
 }
 
-/// Policy name: model sides by Core kind and run id when the checkpoint was readable.
 fn policy_name(s: &Side, info: Option<&PolicyInfo>) -> String {
     match (s, info) {
         (Side::Model { sample, .. }, Some(i)) => format!("model {} `{}` ({sample:?})", i.core, i.run),
@@ -78,7 +65,6 @@ fn plan_side_name(s: &Side) -> String {
     }
 }
 
-/// 050-R2: Wilson 95% interval of `wins` out of `n`, in percent.
 pub fn wilson(wins: u32, n: u32) -> (f64, f64) {
     if n == 0 {
         return (0.0, 100.0);
@@ -105,33 +91,22 @@ struct Row {
     p0_wins: u32,
     p1_wins: u32,
     draws: u32,
-    /// Mirror matchups: decided games (winner side is not meaningful).
     decided_mirror: u32,
     violations: u64,
     session_errors: u32,
     minutes: Vec<f64>,
-    /// Games that ended within 300 frames: an opponent that never really played
-    /// (e.g. its module failed to load). Excluded from win counts.
     suspect_short: u32,
-    /// Games whose two sessions report different winners; the later session decides (020-R13).
     winner_disagree: u32,
-    /// Both sessions claimed the win because the other one left: a connection drop, Aborted and
-    /// left out of the win counts (020-R13, 011-AC7).
     dropped: u32,
-    /// Opponent IDs seen for p1 (021-R3).
     opponents: std::collections::BTreeSet<String>,
 }
 
-/// 020-R13: the session whose report decides the game: the one that ended last (largest
-/// `end_frame`); on a tie the first record stands.
 fn decisive<'a>(ss: &[&'a Value]) -> Option<&'a Value> {
     let frame = |s: &Value| s["end_frame"].as_u64().unwrap_or(0);
     let first = *ss.first()?;
     Some(ss.iter().skip(1).fold(first, |best, s| if frame(s) > frame(best) { *s } else { best }))
 }
 
-/// 020-R13: both sessions say the other one left and claim the win (a drop, not a GG: the
-/// leaver of a real GG reports the other side as winner).
 fn mutual_leave(ss: &[&Value]) -> bool {
     ss.len() == 2 && ss.iter().all(|s| s["reason"] == "Surrender" && !s["winner"].is_null() && s["winner"] == s["slot"])
 }
@@ -141,7 +116,6 @@ pub fn write(out: &Path, plan: &Plan) -> Result<()> {
     write_with(out, plan, &infos)
 }
 
-/// `write` with the model sides' display info given per matchup (`[p0, p1]`).
 pub fn write_with(out: &Path, plan: &Plan, infos: &[[Option<PolicyInfo>; 2]]) -> Result<()> {
     let games = lines(&out.join("games.jsonl"))?;
     let sessions = lines(&out.join("results.jsonl"))?;
@@ -185,17 +159,12 @@ pub fn write_with(out: &Path, plan: &Plan, infos: &[[Option<PolicyInfo>; 2]]) ->
         let has_model = m.p0.model().is_some() || m.p1.model().is_some();
         match first["winner"].as_u64() {
             None => row.draws += 1,
-            // Model games: the BWAPI player id need not follow launch order (Windows TCP LAN), so
-            // the side is read from the winner session's policy. Model vs model
-            // with one policy has no side to tell; it counts like a mirror.
             Some(w) if has_model => {
                 let winner_is_model = ss.iter().find(|s| s["slot"].as_u64() == Some(w)).and_then(|s| s["policy"].as_str()).map(|p| p.starts_with("model:"));
                 let p0_model = m.p0.model().is_some();
                 let winner_policy = ss.iter().find(|s| s["slot"].as_u64() == Some(w)).and_then(|s| s["policy"].as_str());
                 let ids = [&infos[mi][0], &infos[mi][1]].map(|i| i.as_ref().map(|i| i.id.as_str()));
                 match winner_is_model {
-                    // Model vs model with two different policies (032-R17 head-to-head): the
-                    // winner session's policy label tells the side.
                     Some(true) if p0_model && m.p1.model().is_some() => match (ids, winner_policy) {
                         ([Some(a), Some(b)], Some(wp)) if a != b && wp == a => row.p0_wins += 1,
                         ([Some(a), Some(b)], Some(wp)) if a != b && wp == b => row.p1_wins += 1,
@@ -212,12 +181,9 @@ pub fn write_with(out: &Path, plan: &Plan, infos: &[[Option<PolicyInfo>; 2]]) ->
                 }
             }
             Some(w) => match m.p1 {
-                // T0 vs T0: both sides have sessions; attribute the win by the winner's race.
                 Side::T0 { .. } => {
                     let mirror = ss.len() == 2 && ss[0]["self_race"] == ss[1]["self_race"];
                     let winner_race = ss.iter().find(|s| s["slot"].as_u64() == Some(w)).and_then(|s| s["self_race"].as_str());
-                    // A mirror between different builds (050 terran drop vs T0 Terran) is
-                    // attributed by the winner's build.
                     let winner_build = ss.iter().find(|s| s["slot"].as_u64() == Some(w)).and_then(|s| s["t0_build"].as_str());
                     let builds_differ = ss.len() == 2 && ss[0]["t0_build"] != ss[1]["t0_build"];
                     let p1_build = match &m.p1 {
@@ -238,7 +204,6 @@ pub fn write_with(out: &Path, plan: &Plan, infos: &[[Option<PolicyInfo>; 2]]) ->
                         row.p1_wins += 1;
                     }
                 }
-                // OSS bot on p1: only our (p0) session exists.
                 Side::Oss { .. } | Side::Model { .. } => {
                     if first["slot"].as_u64() == Some(w) {
                         row.p0_wins += 1;
@@ -254,7 +219,6 @@ pub fn write_with(out: &Path, plan: &Plan, infos: &[[Option<PolicyInfo>; 2]]) ->
     writeln!(md, "# {} — matchup summary\n", plan.name)?;
     writeln!(md, "| # | p0 | p1 | map | games | outcomes | p0 wins | p1 wins | draws | p0 win% [95% CI] | mirror decided | winner disagree | dropped (Aborted) | suspect (<300 frames) | game min p50 | vis. violations | session errors |")?;
     writeln!(md, "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")?;
-    // Per policy, slot swaps and maps combined: (policy, opponent) -> map -> [W, L, D, dropped].
     let mut per: BTreeMap<(String, String), BTreeMap<String, [u32; 4]>> = BTreeMap::new();
     for ((mi, map), r) in &mut rows {
         let m = &plan.matchups[*mi];
@@ -275,7 +239,6 @@ pub fn write_with(out: &Path, plan: &Plan, infos: &[[Option<PolicyInfo>; 2]]) ->
         if !r.opponents.is_empty() && infos[*mi][1].is_none() {
             p1 = format!("{p1} `{}`", r.opponents.iter().cloned().collect::<Vec<_>>().join(", "));
         }
-        // 050-R2: decided + drawn games count, draws as non-wins.
         let n = r.p0_wins + r.p1_wins + r.draws;
         let (lo, hi) = wilson(r.p0_wins, n);
         let rate = if n > 0 { format!("{:.0}% [{lo:.0}, {hi:.0}]", 100.0 * r.p0_wins as f64 / n as f64) } else { "-".into() };
@@ -296,7 +259,6 @@ pub fn write_with(out: &Path, plan: &Plan, infos: &[[Option<PolicyInfo>; 2]]) ->
             r.session_errors
         )?;
     }
-    // Per-policy totals over slot swaps and maps (2026-10-18 user decision, 050-R2 Wilson).
     if !per.is_empty() {
         writeln!(md, "\n## Per policy (slot swaps combined)\n")?;
         writeln!(md, "| policy | opponent | map | games | wins | losses | draws | win% [95% CI] | dropped (Aborted) |")?;
@@ -315,9 +277,7 @@ pub fn write_with(out: &Path, plan: &Plan, infos: &[[Option<PolicyInfo>; 2]]) ->
             }
         }
     }
-    // Core kind and run id of each model policy label.
     let labels: BTreeMap<&str, &PolicyInfo> = infos.iter().flatten().flatten().map(|i| (i.id.as_str(), i)).collect();
-    // 020-R5 / 031-R4: model sessions (policy version, latency, executor rejections).
     let model: Vec<&Value> = sessions.iter().filter(|s| s["model"].is_object()).collect();
     if !model.is_empty() {
         let mut by: BTreeMap<String, Vec<&Value>> = BTreeMap::new();
@@ -364,20 +324,10 @@ pub fn write_with(out: &Path, plan: &Plan, infos: &[[Option<PolicyInfo>; 2]]) ->
         }
     }
     std::fs::write(out.join("summary.md"), &md)?;
-    // Engine/bridge statistics in the M2 format.
     uranium_agent::summary::summarize(&out.join("results.jsonl"), &out.join("sessions.md"), &plan.name)?;
     Ok(())
 }
 
-/// 050-R8: T0 Terran sessions with a `scripted` record (the 021-R8 teacher validation plans), per
-/// matchup and map: held (050-R7 `scv_min_1m > 4`), the session's wins, a bunker started before
-/// 4:00 (`bunker_s < 240`) and a pre-emptive one (also no ③ `army` or ④″ `one_base` rule at or
-/// before it, 7th advisory E), sessions where ①②④′④″ (`pool_start`, `pool_done`, `lings`,
-/// `drones`, `one_base`) ever held, expanded by 4:00, `scv_8m ≥ 16`, `≥ 14` and `≥ 8` (the RL
-/// mini-game criterion, 7th advisory F) among the judged sessions — those that reached 8:00, plus those that ended before
-/// it, our win passing and our loss failing (050-R8, 메인 임시 결정) — and the median of the real
-/// `scv_8m` values, the first rule (D entry) by rule and the median expansion time (rule
-/// advisory §2 criteria).
 fn scripted_section(md: &mut String, games: &[Value], by_game: &BTreeMap<u64, Vec<&Value>>) -> Result<()> {
     #[derive(Default)]
     struct Cell {
@@ -389,7 +339,6 @@ fn scripted_section(md: &mut String, games: &[Value], by_game: &BTreeMap<u64, Ve
         evidence: u32,
         expand_4m: u32,
         scv8: Vec<f64>,
-        /// (passes ≥ 16, passes ≥ 14, passes ≥ 8, judged).
         judged: (u32, u32, u32, u32),
         early_wins: u32,
         rules: BTreeMap<String, u32>,
@@ -407,7 +356,6 @@ fn scripted_section(md: &mut String, games: &[Value], by_game: &BTreeMap<u64, Ve
             c.won += u32::from(s["won"].as_bool() == Some(true));
             let bunker = m["bunker_s"].as_f64().filter(|v| *v < 240.0);
             c.bunker_4m += u32::from(bunker.is_some());
-            // Pre-emptive: no ③ (`army`) and no ④″ (`one_base`, 7th advisory E) at or before it.
             let after = |k: &str| m["react"]["rules_s"][k].as_f64();
             c.preemptive += u32::from(bunker.is_some_and(|b| ["army", "one_base"].iter().all(|k| after(k).is_none_or(|a| a > b))));
             c.evidence += u32::from(["pool_start", "pool_done", "lings", "drones", "one_base"].iter().any(|k| m["react"]["rules_s"][k].is_number()));
@@ -457,8 +405,6 @@ fn scripted_section(md: &mut String, games: &[Value], by_game: &BTreeMap<u64, Ve
     Ok(())
 }
 
-/// 020-R14: surrender modes of the sessions, sessions where the 031-R12 check held, and how many
-/// of those the session's player won (its own GameEnd report; in Shadow mode a false surrender).
 fn surrender_cells(ss: &[&Value]) -> (String, u32, String) {
     let modes: std::collections::BTreeSet<&str> = ss.iter().filter_map(|s| s["model"]["surrender"].as_str()).collect();
     let held: Vec<&&Value> = ss.iter().filter(|s| s["model"]["surrender_frame"].is_u64()).collect();
@@ -472,7 +418,6 @@ fn surrender_cells(ss: &[&Value]) -> (String, u32, String) {
 mod tests {
     use super::*;
 
-    /// 020-R14: held sessions and their wins (false surrenders in Shadow mode).
     #[test]
     fn surrender_cells_count_held_and_won_020_r14() {
         let s = |slot: u64, winner: Option<u64>, frame: Option<u32>| serde_json::json!({"slot": slot, "winner": winner, "model": {"surrender": "shadow", "surrender_frame": frame}});
@@ -482,15 +427,12 @@ mod tests {
         assert_eq!(surrender_cells(&[]), ("-".to_string(), 0, "-".to_string()));
     }
 
-    /// 050-R8: the T0 Terran session table counts held, wins, bunkers before 4:00, 8:00 SCVs and
-    /// the teacher's rush rules per matchup and map; sessions without `scripted` are left out.
     #[test]
     fn scripted_section_050_r8() {
         let games = vec![serde_json::json!({"game_id": 1, "matchup": 0, "map": "fs"}), serde_json::json!({"game_id": 2, "matchup": 0, "map": "fs"})];
         let s1 = serde_json::json!({"game_id": 1, "won": true, "t0_build": "terran_react", "scripted": {"scv_min_1m": 9, "bunker_s": 150.0, "scv_8m": 18, "react": {"rush_rule": "pool_start", "expand_s": null, "rules_s": {"pool_start": 130.0, "army": 200.0}}}});
         let s2 = serde_json::json!({"game_id": 2, "won": false, "t0_build": "terran_react", "scripted": {"scv_min_1m": 4, "bunker_s": 230.0, "scv_8m": 15, "react": {"rush_rule": "army", "expand_s": 170.0, "rules_s": {"army": 220.0}}}});
         let z = serde_json::json!({"game_id": 2, "t0_build": "zerg_rush", "scripted": null});
-        // Ended before 8:00: our win passes the scv_8m criteria, our loss fails (050-R8).
         let w = serde_json::json!({"game_id": 3, "won": true, "end_frame": 10_000, "t0_build": "terran_react", "scripted": {"scv_min_1m": 9, "bunker_s": null, "scv_8m": null, "react": {"rush_rule": null, "expand_s": 200.0, "rules_s": {}}}});
         let l = serde_json::json!({"game_id": 4, "won": false, "end_frame": 8_000, "t0_build": "terran_react", "scripted": {"scv_min_1m": 2, "bunker_s": null, "scv_8m": null, "react": {"rush_rule": null, "expand_s": null, "rules_s": {}}}});
         let games2 = vec![serde_json::json!({"game_id": 3, "matchup": 1, "map": "cb"}), serde_json::json!({"game_id": 4, "matchup": 1, "map": "cb"})];
@@ -500,8 +442,6 @@ mod tests {
         let mut md2 = String::new();
         scripted_section(&mut md2, &games2, &by2).unwrap();
         assert!(md2.contains("| 1 | terran_react | cb | 2 | 1 | 1 | 0 | 0 | 0 | 1 | 1 / 1 / 1 / 2 (1) | - | {\"none\": 2} | 200 |"), "{md2}");
-        // 7th advisory E: a bunker after ④″ (`one_base`) is not pre-emptive; ④″ counts as held
-        // evidence; scv_8m 10 passes only ≥ 8.
         let o = serde_json::json!({"game_id": 5, "won": false, "t0_build": "terran_react", "scripted": {"scv_min_1m": 8, "bunker_s": 200.0, "scv_8m": 10, "react": {"rush_rule": "one_base", "expand_s": null, "rules_s": {"one_base": 190.0}}}});
         let o2 = serde_json::json!({"game_id": 6, "won": false, "t0_build": "terran_react", "scripted": {"scv_min_1m": 8, "bunker_s": 180.0, "scv_8m": 7, "react": {"rush_rule": "one_base", "expand_s": null, "rules_s": {"one_base": 190.0}}}});
         let games3 = vec![serde_json::json!({"game_id": 5, "matchup": 2, "map": "fs"}), serde_json::json!({"game_id": 6, "matchup": 2, "map": "fs"})];
@@ -516,14 +456,12 @@ mod tests {
         by_game.insert(2, vec![&s2, &z]);
         let mut md = String::new();
         scripted_section(&mut md, &games, &by_game).unwrap();
-        // s1: bunker 150 before its army rule (200) = pre-emptive, ①a held; s2: bunker after ③.
         assert!(md.contains("| 0 | terran_react | fs | 2 | 1 | 1 | 2 | 1 | 1 | 1 | 1 / 2 / 2 / 2 (0) | 18 | {\"army\": 1, \"pool_start\": 1} | 170 |"), "{md}");
         let mut empty = String::new();
         scripted_section(&mut empty, &games, &BTreeMap::new()).unwrap();
         assert!(empty.is_empty());
     }
 
-    /// 020-R13: the report of the session that ended last decides a disagreement.
     #[test]
     fn decisive_session_is_the_later_one_020_r13() {
         let a: Value = serde_json::json!({"slot": 0, "winner": null, "end_frame": 8999});
@@ -535,7 +473,6 @@ mod tests {
         assert!(decisive(&[]).is_none());
     }
 
-    /// 020-R13: both sessions claiming the win because the other left is a drop.
     #[test]
     fn mutual_leave_is_a_drop_020_r13() {
         let a: Value = serde_json::json!({"slot": 0, "winner": 0, "reason": "Surrender", "end_frame": 1615});
@@ -548,9 +485,6 @@ mod tests {
         assert!(!mutual_leave(&[&a]));
     }
 
-    /// 032-R17 head-to-head summary (2026-10-18 user decision): both sides show core, run id and
-    /// policy label; wins of a model-vs-model game go to the side whose policy won; the slot-swapped
-    /// matchups add up per policy with a Wilson interval (050-R2).
     #[test]
     fn model_vs_model_summary_per_policy_032_r17() {
         let dir = std::env::temp_dir().join(format!("uranium-report-h2h-{}", std::process::id()));
@@ -565,29 +499,25 @@ mod tests {
         let infos = vec![[Some(a.clone()), Some(b.clone())], [Some(b.clone()), Some(a.clone())]];
         let game = |id: u32, mi: u32| serde_json::json!({"game_id": id, "matchup": mi, "map": "FightingSpirit", "outcome": "Finished", "opponent": "x"}).to_string();
         std::fs::write(dir.join("games.jsonl"), [game(1, 0), game(2, 0), game(3, 1)].join("\n")).unwrap();
-        // The BWAPI slot of a policy need not follow the plan side (020 notes): game 1 has B on slot 0.
         let s = |g: u32, slot: u32, policy: &str, winner: Option<u32>| {
             serde_json::json!({"game_id": g, "slot": slot, "policy": policy, "winner": winner, "reason": "Elimination", "end_frame": 9000, "visibility_violations": 0, "error": null, "model": {"decisions": 10, "decide_ms_p50": 50.0, "decide_ms_p95": 90.0}}).to_string()
         };
         let results = [
-            s(1, 0, &b.id, Some(0)), // B (p1) wins
+            s(1, 0, &b.id, Some(0)),
             s(1, 1, &a.id, Some(0)),
-            s(2, 0, &a.id, None), // draw
+            s(2, 0, &a.id, None),
             s(2, 1, &b.id, None),
-            s(3, 0, &b.id, Some(1)), // A (p1 of the swapped matchup) wins
+            s(3, 0, &b.id, Some(1)),
             s(3, 1, &a.id, Some(1)),
         ];
         std::fs::write(dir.join("results.jsonl"), results.join("\n")).unwrap();
         write_with(&dir, &plan, &infos).unwrap();
         let md = std::fs::read_to_string(dir.join("summary.md")).unwrap();
         let (na, nb) = ("model lstm `run-a/ckpt-1` (Stochastic)", "model gtrxl `run-b/ckpt-1` (Stochastic)");
-        // Matchup rows: both sides named with their policy label; p0/p1 wins, no mirror count.
         assert!(md.contains(&format!("| 0 | {na} `{}` | {nb} `{}` | FightingSpirit | 2 | {{\"Finished\": 2}} | 0 | 1 | 1 | 0% [0, 66] | 0 |", a.id, b.id)), "{md}");
         assert!(md.contains(&format!("| 1 | {nb} `{}` | {na} `{}` | FightingSpirit | 1 | {{\"Finished\": 1}} | 0 | 1 | 0 |", b.id, a.id)), "{md}");
-        // Per policy: A won 1, lost 1, drew 1 over both slot orders.
         assert!(md.contains(&format!("| {na} | {nb} | FightingSpirit | 3 | 1 | 1 | 1 | 33% [6, 79] | 0 |")), "{md}");
         assert!(md.contains(&format!("| {nb} | {na} | FightingSpirit | 3 | 1 | 1 | 1 | 33% [6, 79] | 0 |")), "{md}");
-        // Model sessions carry core and run.
         assert!(md.contains(&format!("| `{}` | lstm | `run-a/ckpt-1` | 3 |", a.id)), "{md}");
         let _ = std::fs::remove_dir_all(&dir);
     }

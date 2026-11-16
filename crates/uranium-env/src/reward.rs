@@ -1,8 +1,3 @@
-//! Reward (spec 033). Components are kept apart for logging and per-component value heads
-//! (033-R3); weights live in a config file (033-R4). Pseudo-rewards are active only when the
-//! episode has a strategy z (033-R2). Only observed destructions count (033-R5). r_scout /
-//! r_survive and the 042 scouting metrics come from [`crate::scout`] (033-R9 / R10, AMB-042-16).
-
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -15,7 +10,6 @@ use crate::types::TypeTables;
 
 pub const REWARD_TOML: &str = include_str!("../../../config/reward.toml");
 
-/// 033 weights (initial values; tuned, decayed by the league in M6).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct RewardWeights {
     pub win: f32,
@@ -30,9 +24,6 @@ impl RewardWeights {
     }
 }
 
-/// One step's reward, unweighted per component (033-R3). `scout` / `survive` are 033-R9 / R10
-/// (raw, after r_scout's decay and cap); which value-head channel they feed is the 033-R11 mode
-/// (the RL trajectory decides, `"z"` leaves them out).
 #[derive(Serialize, Debug, Clone, Copy, PartialEq, Default)]
 pub struct RewardParts {
     pub win: f32,
@@ -44,12 +35,10 @@ pub struct RewardParts {
 }
 
 impl RewardParts {
-    /// The z-mode weighted sum (033 r_win, r_build, r_units, r_value).
     pub fn weighted(&self, w: &RewardWeights) -> f32 {
         w.win * self.win + w.build * self.build + w.units * self.units + w.value * self.value
     }
 
-    /// Adds the dense parts of `o` (every part but r_win).
     pub fn add_dense(&mut self, o: &RewardParts) {
         self.build += o.build;
         self.units += o.units;
@@ -63,11 +52,9 @@ impl RewardParts {
 pub enum Outcome {
     Win,
     Loss,
-    /// Includes the 60-minute time limit (020, AMB-020-2).
     Draw,
 }
 
-/// Levenshtein distance between two action-id sequences.
 pub fn levenshtein(a: &[u16], b: &[u16]) -> usize {
     let mut prev: Vec<usize> = (0..=b.len()).collect();
     for (i, x) in a.iter().enumerate() {
@@ -80,23 +67,18 @@ pub fn levenshtein(a: &[u16], b: &[u16]) -> usize {
     prev[b.len()]
 }
 
-/// Per-episode reward state.
 #[derive(Debug, Clone)]
 pub struct RewardTracker {
     z: Option<Strategy>,
     self_player: u8,
-    /// Own Build / Train / Research / Upgrade actions so far (first 20 count, 030 §5).
     build: Vec<u16>,
-    /// Own units created per terran type index (cumulative composition).
     created: Vec<f32>,
-    /// Last known (owner, unit type) of every unit seen, for observed destructions.
     seen: HashMap<UnitId, (u8, u16)>,
     lost_value: f32,
     killed_value: f32,
     prev_build: f32,
     prev_units: f32,
     prev_value: f32,
-    /// 033-R9 / R10 and the 042 metrics; `None` = both 0, no metrics.
     scout: Option<ScoutTracker>,
 }
 
@@ -121,13 +103,11 @@ impl RewardTracker {
         t
     }
 
-    /// Adds r_scout / r_survive and the 042 scouting metrics of the game (AMB-042-16).
     pub fn with_scout(mut self, scout: ScoutTracker) -> Self {
         self.scout = Some(scout);
         self
     }
 
-    /// 042 정찰·대응 지표 of the observations so far (`None` without a scout tracker).
     pub fn scout_metrics(&self) -> Option<ScoutMetrics> {
         self.scout.as_ref().map(|s| s.metrics())
     }
@@ -142,14 +122,12 @@ impl RewardTracker {
         self.created.iter().zip(&z.units).map(|(c, t)| ((if total > 0.0 { c / total } else { 0.0 }) - t).abs()).sum()
     }
 
-    /// Records an own build-order action (Build / Train / Research / Upgrade group).
     pub fn record_build(&mut self, action: u16) {
         if self.build.len() < 20 {
             self.build.push(action);
         }
     }
 
-    /// Folds one observation; returns the dense reward parts since the previous call.
     pub fn step(&mut self, frame: &RawFrame) -> RewardParts {
         let types = TypeTables::get();
         let d = dims();
@@ -163,7 +141,6 @@ impl RewardTracker {
                     }
                 }
                 GameEvent::UnitDestroyed(id) => {
-                    // 033-R5: only destructions we observed, valued by the last type we saw.
                     if let Some(&(owner, ty)) = self.seen.get(id) {
                         let v = types.unit(ty).map_or(0.0, |t| (t.minerals + t.gas) as f32);
                         if owner == self.self_player {
@@ -195,7 +172,6 @@ impl RewardTracker {
         parts
     }
 
-    /// Terminal reward (033 r_win).
     pub fn end(outcome: Outcome) -> RewardParts {
         let win = match outcome {
             Outcome::Win => 1.0,

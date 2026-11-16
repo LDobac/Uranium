@@ -1,6 +1,3 @@
-//! 041-R9 / 040-R13: shard folders are read with their subfolders (`<src>/<part>/shard_*`), in a
-//! deterministic path order.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -16,9 +13,6 @@ fn keys(dir: &Path) -> Vec<String> {
     shard_keys(dir).unwrap().into_iter().map(|(k, _)| k).collect()
 }
 
-/// 041-R13: in the build layout a shard's key is `<src>/<part>/<file>` whether the source folder
-/// or its parent is given, and wherever (and however) that folder is spelled; the source name is
-/// the folder's real name on disk.
 #[test]
 fn shard_keys_are_location_independent_041_r13() {
     let root = std::env::temp_dir().join(format!("uranium-041-keys-{}", std::process::id()));
@@ -33,7 +27,6 @@ fn shard_keys_are_location_independent_041_r13() {
     for dir in [a.join("stardata"), a.clone(), b.join("stardata"), b.clone(), b.join("stardata").join("..").join("stardata")] {
         assert_eq!(keys(&dir), want, "{}", dir.display());
     }
-    // Another case of the same folder (case-insensitive file systems, e.g. Windows): same key.
     let upper = a.join("STARDATA");
     if upper.is_dir() {
         assert_eq!(keys(&upper), want, "the real folder name, not the spelling");
@@ -41,8 +34,6 @@ fn shard_keys_are_location_independent_041_r13() {
     fs::remove_dir_all(&root).ok();
 }
 
-/// 041-R13: a layout other than `<src>/<part>/shard_*` (shards directly in the given folder,
-/// deeper nesting, or both depths in one folder) is refused with the file and the layout named.
 #[test]
 fn other_shard_layouts_are_refused_041_r13() {
     let root = std::env::temp_dir().join(format!("uranium-041-layout-{}", std::process::id()));
@@ -72,7 +63,6 @@ fn shard_files_recurse_in_path_order_041_r9() {
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(&p, b"").unwrap();
     }
-    // Not shards: manifest, partial copies, other files.
     for f in ["manifest.json", "p00/shard_00001.bin.zst.part", "p01/notes.txt"] {
         fs::write(root.join(f), b"").unwrap();
     }

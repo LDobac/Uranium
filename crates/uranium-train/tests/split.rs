@@ -1,6 +1,3 @@
-//! 041-R12 / R13 (040-R5): game-level split from the replay hash, stage selection and the seeded
-//! shuffle of `ShardSource`.
-
 use std::collections::BTreeMap;
 
 use sha2::{Digest, Sha256};
@@ -115,7 +112,6 @@ fn stages_never_train_on_test_and_s2_keeps_target_maps_041_r13() {
     let test = read(Some(Selection::Only(Split::Test)), None);
     assert!(!test.is_empty());
     assert!(test.iter().all(|t| !s1.contains(t) && !s2.contains(t)), "test games never reach training");
-    // Seeded shuffle: same seed, same order; another seed or no shuffle, another order, same set.
     assert_eq!(s1, read(Some(Selection::S1), Some(7)));
     let other = read(Some(Selection::S1), Some(8));
     assert_ne!(s1, other);

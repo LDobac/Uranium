@@ -1,16 +1,9 @@
-//! 043-R3: find the local web API port of the running SC:R client.
-//!
-//! Uses `tasklist` and `netstat -ano`, which need no administrator rights (unlike
-//! `Get-NetTCPConnection -OwningProcess`). The caller picks among candidates by asking each
-//! one for the leaderboard list.
-
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
 const PROCESS_IMAGE: &str = "StarCraft.exe";
 
-/// PIDs from `tasklist /FO CSV /NH` output whose image name is `StarCraft.exe`.
 pub fn parse_tasklist_pids(csv: &str) -> Vec<u32> {
     let mut pids = Vec::new();
     for line in csv.lines() {
@@ -24,12 +17,10 @@ pub fn parse_tasklist_pids(csv: &str) -> Vec<u32> {
     pids
 }
 
-/// Loopback-reachable LISTENING TCP ports owned by `pids`, from `netstat -ano -p TCP` output.
 pub fn parse_netstat_listen(out: &str, pids: &[u32]) -> Vec<u16> {
     let mut ports = Vec::new();
     for line in out.lines() {
         let cols: Vec<&str> = line.split_whitespace().collect();
-        // Proto, Local Address, Foreign Address, State, PID
         if cols.len() != 5 || !cols[0].eq_ignore_ascii_case("TCP") || cols[3] != "LISTENING" {
             continue;
         }
@@ -50,7 +41,6 @@ pub fn parse_netstat_listen(out: &str, pids: &[u32]) -> Vec<u16> {
     ports
 }
 
-/// Candidate ports of the running client, lowest first.
 pub fn candidates() -> Result<Vec<u16>> {
     let tasks = run("tasklist", &["/FI", &format!("IMAGENAME eq {PROCESS_IMAGE}"), "/FO", "CSV", "/NH"])?;
     let pids = parse_tasklist_pids(&tasks);

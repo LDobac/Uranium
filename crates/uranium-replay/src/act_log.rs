@@ -1,12 +1,3 @@
-//! 041-R28 (051-R2, 051-R13 ④) memory source: the per-observation act log of a branch-game trunk
-//! as a model decision log for `uranium-replay build --memory-log`.
-//!
-//! The log is read and checked by `uranium_env::branch::ActLog` (051-R2: observation indices from 0,
-//! increasing frames, the end line and its counts); a log it refuses is incomplete (041-R28 ④). A
-//! model session's `decision` (the values it recorded in memory, 041-R28 ①, whether or not the
-//! executor refused it, forced prefix decisions included, 051-R5 ⑤) becomes one [`LoggedDecision`]
-//! at the line's live frame. A scripted (T0) session's log has no decisions and is no memory source.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -14,8 +5,6 @@ use uranium_env::branch::ActLog;
 
 use crate::relabel::{DecisionLogRead, LoggedDecision, ModelLog, parse_decision_log};
 
-/// True when the first non-empty line is in the 051-R2 layout (an observation line with `i` or the
-/// `end` object) rather than the 041-R28 decision log layout.
 pub fn is_act_log(text: &str) -> bool {
     let Some(first) = text.lines().find(|l| !l.trim().is_empty()) else { return false };
     match serde_json::from_str::<serde_json::Value>(first) {
@@ -24,8 +13,6 @@ pub fn is_act_log(text: &str) -> bool {
     }
 }
 
-/// The 041-R28 decision log of a complete act log; `None` for a scripted session's log (no
-/// decisions, or a `t0@…` policy, 020-R5).
 pub fn decisions_of(log: &ActLog) -> Option<ModelLog> {
     if log.end.policy.starts_with("t0") || (log.end.decisions == 0 && !log.lines.is_empty()) {
         return None;
@@ -34,8 +21,6 @@ pub fn decisions_of(log: &ActLog) -> Option<ModelLog> {
     Some(ModelLog { decisions, end_frame: Some(log.end.end_frame), player: log.end.player })
 }
 
-/// A memory log file's text in either layout (041-R28 decision log or 051-R2 act log); a scripted
-/// act log is `None`. An act log `ActLog` refuses (no end line, bad counts, …) is incomplete.
 pub fn parse_memory_log(text: &str) -> Option<DecisionLogRead> {
     if !is_act_log(text) {
         return Some(parse_decision_log(text));
@@ -46,8 +31,6 @@ pub fn parse_memory_log(text: &str) -> Option<DecisionLogRead> {
     }
 }
 
-/// The `--memory-log` folder of a build (041-R28), listed once: the act logs `<stem>-p<k>.jsonl` (k a
-/// players index, `uranium_env::branch::act_log_name`) by replay stem.
 #[derive(Debug, Clone)]
 pub struct MemoryLogDir {
     pub dir: PathBuf,
@@ -68,16 +51,11 @@ impl MemoryLogDir {
         Ok(Self { dir: dir.to_path_buf(), acts })
     }
 
-    /// The act logs of replay `file`, sorted by players index.
     pub fn act_log_paths(&self, file: &Path) -> Vec<PathBuf> {
         let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         self.acts.get(&stem).map(|v| v.iter().map(|(_, p)| p.clone()).collect()).unwrap_or_default()
     }
 
-    /// 041-R28 (AMB-041-17) and 051-R12 (020-R22 ①): the memory logs of replay `file`.
-    /// `<stem>.jsonl` (the decision log of a `memory_log` plan, or an act log under that name) if
-    /// present, else every act log `<stem>-p<players index>.jsonl` of the game (an evaluation job's
-    /// `acts/` folder beside `replays/`), scripted ones left out. Empty = no log.
     pub fn logs(&self, file: &Path) -> Vec<DecisionLogRead> {
         let one = crate::pipeline::memory_log_path(&self.dir, file);
         let read = |p: &Path| match std::fs::read_to_string(p) {
@@ -91,7 +69,6 @@ impl MemoryLogDir {
     }
 }
 
-/// [`MemoryLogDir::logs`] of a folder listed now (an unreadable folder has no logs).
 pub fn read_memory_logs(dir: &Path, file: &Path) -> Vec<DecisionLogRead> {
     MemoryLogDir::open(dir).map(|d| d.logs(file)).unwrap_or_default()
 }
@@ -104,7 +81,6 @@ pub(crate) mod tests {
     use uranium_env::branch::{ActLogEnd, Decision, ObsLine};
     use uranium_proto::{Act, Command, EndReason};
 
-    /// One 051-R2 observation line of a model session (`d` = (action, delay, units)) or of a scripted one.
     pub(crate) fn obs_line(i: u32, frame: u32, d: Option<(u16, u32, Vec<u32>)>, forced: bool) -> ObsLine {
         let act = Act { cmds: vec![Command::Train { building: 3, unit_type: 7 }], advance_frames: 8, valid_until_frame: None, surrender: None };
         let decision = d.map(|(action, delay_bucket, units)| Decision { action, delay_bucket, units, rejected: action % 2 == 1 });
@@ -112,7 +88,6 @@ pub(crate) mod tests {
         ObsLine { i, frame, digest: 0x9f1c_0000_0000_abcd ^ u64::from(i), act, decision, state: None, state_sha256: None, forced: forced && model }
     }
 
-    /// A whole act log's text (the `ActLog` writer: the end line counts the lines).
     pub(crate) fn log_text(lines: Vec<ObsLine>, end_frame: u32, player: u8, policy: &str) -> String {
         let end = ActLogEnd {
             obs: 0,
@@ -143,9 +118,6 @@ pub(crate) mod tests {
         log_text(vec![obs_line(0, 1, None, false), obs_line(1, 9, None, false)], end_frame, 1, "t0@3:zerg_rush")
     }
 
-    /// 041-R28 / 051-R2: a model session's act log gives its decisions (forced and executor-refused ones
-    /// included) at their live frames, with the end line's frame and player: the same `ModelLog` as the
-    /// 041-R28 decision log of those decisions.
     #[test]
     fn act_log_reads_as_a_decision_log_051_r2_041_r28() {
         let text = model_log();
@@ -154,7 +126,6 @@ pub(crate) mod tests {
         let m = |action, delay_bucket, units| MemoryAction { action, delay_bucket, units };
         assert_eq!(log.decisions, vec![(1, m(0, 3, vec![])), (9, m(37, 5, vec![1203])), (17, m(4, 1, vec![5, 6]))]);
         assert_eq!((log.end_frame, log.player), (Some(11_568), 0));
-        // The equivalent 041-R28 decision log parses to the same log.
         let dl = [
             r#"{"frame":1,"action":0,"delay_bucket":3,"units":[]}"#,
             r#"{"frame":9,"action":37,"delay_bucket":5,"units":[1203]}"#,
@@ -166,25 +137,21 @@ pub(crate) mod tests {
         assert_eq!(parse_memory_log(&dl), Some(DecisionLogRead::Complete(log)));
     }
 
-    /// 041-R28 ④ on act logs: a log `ActLog` refuses is incomplete; a scripted session's log is no
-    /// memory source.
     #[test]
     fn act_log_incomplete_and_scripted_051_r2() {
         let text = model_log();
         let lines: Vec<&str> = text.lines().collect();
         for bad in [
-            lines[..3].join("\n"),                                        // no end line
-            [lines[0], lines[2], lines[3]].join("\n"),                    // observation numbers / counts
-            [lines[0], lines[1], lines[3], lines[2]].join("\n"),          // line after the end line
-            format!("{}\nnot json\n{}", lines[0], lines[3]),             // a bad line
+            lines[..3].join("\n"),
+            [lines[0], lines[2], lines[3]].join("\n"),
+            [lines[0], lines[1], lines[3], lines[2]].join("\n"),
+            format!("{}\nnot json\n{}", lines[0], lines[3]),
         ] {
             assert!(matches!(parse_memory_log(&bad), Some(DecisionLogRead::Incomplete(_))), "{bad}");
         }
         assert_eq!(parse_memory_log(&t0_log(900)), None);
     }
 
-    /// 041-R28 / 051-R12: `--memory-log` finds `<stem>.jsonl` first, else the game's act logs
-    /// `<stem>-p<k>.jsonl` (scripted ones left out); each view binds the log of its own player.
     #[test]
     fn memory_logs_found_by_replay_stem_051_r12() {
         let dir = std::env::temp_dir().join(format!("uranium-act-log-{}", std::process::id()));
@@ -202,7 +169,6 @@ pub(crate) mod tests {
         let ours = bind_logs(&logs, 0, 11_570).expect("player 0's view binds its log");
         assert_eq!(ours.decisions.len(), 3);
         assert_eq!(bind_logs(&logs, 1, 11_570).unwrap_err().status, "other_player");
-        // `<stem>.jsonl` wins over act logs.
         std::fs::write(dir.join("g7.jsonl"), r#"{"decisions":0,"end_frame":11568,"player":0}"#).unwrap();
         let logs = read_memory_logs(&dir, rep);
         assert_eq!(logs.len(), 1);

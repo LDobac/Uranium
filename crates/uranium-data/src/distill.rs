@@ -1,13 +1,3 @@
-//! The data side of the 044-R3 policy labeller (`python -m uranium distill-label`, 040-R24): the
-//! `distill_pre` games (044-R2 decision-step shards, every label an `unknown` slot) read through
-//! the BC loader exactly as `bc-eval` reads a split (030 features and 034 masks, 041-R28 ③ memory
-//! from `memory_action` before each observation, map precomputes, `last_failed` 0, no z,
-//! symmetry or enemy race mask, every lane drained to its game's last step), the labeller's head
-//! choices turned into 040 `action_label`s ([`label_of_choice`]), and the labelled games written
-//! as new shards with the 040-R19 invalid-label filter (applied after labelling), the 040-R17
-//! verified copy and one records line per view with its `label_policy` (044-R3 ⑤, 044-R4). The
-//! model and the sampling are the PyTorch side (AMB-000-4).
-
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -22,26 +12,16 @@ use uranium_replay::shard::{self, Shard, ShardGame, ShardHeader};
 use crate::bc::{Batch, BcConfig, Feeder, feed_threads};
 use crate::data::{GameId, MapStore, StepSource, shard_files};
 
-/// 040-R17 staging folder of the output shards (`URANIUM_SHARD_STAGING_DIR`, as the build).
 pub use uranium_replay::shard::staging_dir;
 
-/// 040-R14 / 044-R2: the source tag of the games this labeller reads and writes.
 pub const DISTILL_SRC: &str = uranium_replay::pipeline::DISTILL_SRC;
-/// 044-R3 ②: `sample` (one draw from the labeller's distribution at temperature 1, the training
-/// data) or `argmax` (a tool option, never training data).
 pub const LABEL_MODES: [&str; 2] = ["sample", "argmax"];
 
-/// 044-R3 ②: the RNG seed of one game's draws, a hash of (`replay_sha256`, perspective, label
-/// seed): SHA-256 of `044-R3/<replay_sha256>/<perspective_slot>/<label_seed>`, its first 8 bytes
-/// little-endian, shifted right by one (63 bits, a valid seed for any RNG API).
 pub fn game_seed(replay_sha256: &str, perspective_slot: u8, label_seed: u64) -> u64 {
     let d = Sha256::digest(format!("044-R3/{replay_sha256}/{perspective_slot}/{label_seed}").as_bytes());
     u64::from_le_bytes(d[..8].try_into().expect("8 bytes")) >> 1
 }
 
-/// The 044-R2 contract of a `distill_pre` game: source `distill`, `memory_action` on every step
-/// (memory comes from the model's decisions, never from labels) and frames strictly increasing
-/// (the step identity is (`replay_sha256`, perspective, frame)).
 pub fn check_pre_game(g: &ShardGame) -> Result<()> {
     let who = || format!("{} view {}", g.meta.replay_sha256, g.meta.perspective_slot);
     ensure!(g.meta.src == DISTILL_SRC, "{}: source {:?}, expected {DISTILL_SRC:?} (044-R3 labels distill_pre shards of `uranium-replay build --src distill`)", who(), g.meta.src);
@@ -50,8 +30,6 @@ pub fn check_pre_game(g: &ShardGame) -> Result<()> {
     Ok(())
 }
 
-/// The shard files under `input` in path order with their path relative to it (`/`-separated):
-/// the output file of each is `<out>/<relative path>` and records name it by that path.
 pub fn input_files(input: &Path) -> Result<Vec<(String, PathBuf)>> {
     Ok(shard_files(input)?
         .into_iter()
@@ -62,9 +40,6 @@ pub fn input_files(input: &Path) -> Result<Vec<(String, PathBuf)>> {
         .collect())
 }
 
-/// What an existing records file says (044-R5 ③ top-up: the round's later `distill_pre` files are
-/// labelled into the same output folder with the same records file): the input files it has
-/// lines for, its views and the `label_policy` of its first line (`None` for a new file).
 #[derive(Serialize, Debug, Clone, Default)]
 pub struct Labelled {
     pub inputs: BTreeSet<String>,
@@ -72,8 +47,6 @@ pub struct Labelled {
     pub policy: Option<serde_json::Value>,
 }
 
-/// [`Labelled`] of `records` (empty when the file does not exist). A line that is not a records
-/// line (a write cut short) is an error naming it.
 pub fn read_labelled(records: &Path) -> Result<Labelled> {
     let mut l = Labelled::default();
     if !records.exists() {
@@ -92,15 +65,6 @@ pub fn read_labelled(records: &Path) -> Result<Labelled> {
     Ok(l)
 }
 
-/// 044-R3 argument rules, before any game is read: `input` holds shards; `out` is not inside
-/// `input` nor holds it; the records file is not named `distill*.jsonl` (the `--src distill`
-/// build's resume scan reads those files of its records folder as build records); an `argmax`
-/// labelling (never training data, 044-R3 ②) is not written inside the BC shards root
-/// `bc_shards_root` (`<shared>/datasets/replays/shards`, when known). A new records file needs an
-/// `out` without shards. An existing one continues that labelling (044-R5 ③ top-up, or a run
-/// stopped between files): the input files it names are skipped, at least one is left, and none of
-/// the others has its output file yet (one there was published by a run stopped before its
-/// records lines: remove it and run again). Returns the input files to label.
 pub fn check_args(input: &Path, out: &Path, records: &Path, mode: &str, bc_shards_root: Option<&Path>) -> Result<Vec<String>> {
     use uranium_replay::pipeline::path_within;
     ensure!(LABEL_MODES.contains(&mode), "--mode {mode:?}: expected one of {LABEL_MODES:?} (044-R3)");
@@ -120,9 +84,6 @@ pub fn check_args(input: &Path, out: &Path, records: &Path, mode: &str, bc_shard
     if done.inputs.is_empty() && out.is_dir() {
         let there = shard_files(out)?;
         if !there.is_empty() {
-            // The output files that are the outputs of these input files (same relative path, and
-            // every view in it is a view of that input file): a run that stopped after publishing
-            // its first file(s) but before their records lines. Read only on this error path.
             let views = |p: &Path| -> Option<BTreeSet<(String, u8)>> { shard::read(p).ok().map(|s| s.games.iter().map(|g| (g.meta.replay_sha256.clone(), g.meta.perspective_slot)).collect()) };
             let ours: Vec<String> = files
                 .iter()
@@ -149,22 +110,16 @@ pub fn check_args(input: &Path, out: &Path, records: &Path, mode: &str, bc_shard
     Ok(todo)
 }
 
-/// The games of the shard files under a folder, in path order, each checked by [`check_pre_game`];
-/// [`GameId`] = (file index, game index in the file). Records each loaded file's game step counts
-/// (a file is written once all its games are labelled, [`DistillLabeller::flush`]).
 struct InputGames {
     files: Vec<PathBuf>,
     next_file: usize,
     cur: VecDeque<(usize, ShardGame)>,
     cur_file: usize,
     last: Option<GameId>,
-    /// Per loaded file: the step count of each of its games.
     steps: BTreeMap<usize, Vec<usize>>,
 }
 
 impl InputGames {
-    /// The games of one `distill_pre` file: its header must be the current one (the output is
-    /// written with it, 044-R4 schema 7) and every game a `distill_pre` game.
     fn read_file(path: &Path) -> Result<Vec<ShardGame>> {
         let sh = shard::read(path).with_context(|| path.display().to_string())?;
         let want = ShardHeader::default();
@@ -199,7 +154,6 @@ impl StepSource for InputGames {
     }
 }
 
-/// Per view of the output: one records line (044-R3 ⑤, 044-R4).
 #[derive(Serialize, Debug, Clone)]
 pub struct LabelRecord {
     pub replay_sha256: String,
@@ -207,28 +161,19 @@ pub struct LabelRecord {
     pub src: String,
     pub matchup: String,
     pub map_family: String,
-    /// The `distill_pre` shard the view came from (relative to `--in`).
     pub input: String,
-    /// `written` or `filtered` (040-R19 after labelling).
     pub status: &'static str,
-    /// The output shard (relative to `--out`), written views only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shard: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     pub steps: usize,
-    /// 040-R19 counts of the labelled view (the build's function): labelled steps, invalid ones
-    /// (BC weight 0, 031-R4 / 041-R11) by reason.
     pub labeled: usize,
     pub invalid: usize,
     pub by_reason: BTreeMap<&'static str, usize>,
-    /// 044-R3 ⑤: the labeller and how it labelled (checkpoint path and sha256, mode, label seed,
-    /// device and precision, git commit; the caller's fields) plus this view's `game_seed` and
-    /// `invalid_labels`.
     pub label_policy: serde_json::Value,
 }
 
-/// What the labelling wrote so far ([`DistillLabeller::finish`]).
 #[derive(Serialize, Debug, Clone, Default)]
 pub struct WriteSummary {
     pub views: usize,
@@ -239,7 +184,6 @@ pub struct WriteSummary {
     pub files_written: usize,
 }
 
-/// Where the labelled files go ([`DistillLabeller::open`]).
 struct Output {
     out: PathBuf,
     records: std::fs::File,
@@ -248,29 +192,19 @@ struct Output {
     threads: usize,
 }
 
-/// The labelling pass over a `distill_pre` folder: the BC loader's batches ([`Feeder`] in the
-/// `bc-eval` configuration), each lane's game identity and seed, the labels the model's choices
-/// make, and the output shards, each input file written as soon as all its games are labelled (so
-/// only the labels of the files in the lanes are held, and a stopped run keeps every file it
-/// finished: its records continue at file granularity, [`check_args`]).
 pub struct DistillLabeller {
     feeder: Feeder,
     src: InputGames,
-    /// Path of each of `src.files` relative to the input folder ([`input_files`]).
     rels: Vec<String>,
     label_seed: u64,
     labels: HashMap<GameId, Vec<Label>>,
     maps: Arc<MapStore>,
     output: Option<Output>,
-    /// Input files written (indices into `src.files`).
     done: BTreeSet<usize>,
     sum: WriteSummary,
 }
 
 impl DistillLabeller {
-    /// `cfg`: the BC config whose lanes / `seq_len` the pass uses; its data settings are those of
-    /// `bc-eval` (no z, no symmetry, no race mask, no chain-start observation). `only`: the input
-    /// files to read (relative paths, [`check_args`]); `None` = every file under `input`.
     pub fn new(input: &Path, cfg: &BcConfig, maps: Arc<MapStore>, label_seed: u64, only: Option<&[String]>) -> Result<Self> {
         let (rels, files): (Vec<String>, Vec<PathBuf>) = input_files(input)?.into_iter().filter(|(rel, _)| only.is_none_or(|o| o.contains(rel))).unzip();
         ensure!(!files.is_empty(), "{}: no shard_*.bin.zst to label under it", input.display());
@@ -278,8 +212,6 @@ impl DistillLabeller {
             ensure!(o.len() == files.len(), "{}: {} of the {} input files to label are not under it", input.display(), o.len() - files.len(), o.len());
         }
         let mut ecfg = cfg.clone();
-        // 044-R3 ①: z absent (`z_present = false`), no augmentation, the real enemy race (030-R11
-        // mask is training-only), every step its own observation (041-R30 does not apply, 044-R4).
         ecfg.data.z_drop = 1.0;
         ecfg.data.augment = false;
         ecfg.data.enemy_race_mask = 0.0;
@@ -290,9 +222,6 @@ impl DistillLabeller {
         Ok(Self { feeder, src, rels, label_seed, labels: HashMap::new(), maps, output: None, done: BTreeSet::new(), sum: WriteSummary::default() })
     }
 
-    /// Where the labelled files go: `out` (same relative path as the input file), `records`
-    /// (appended; an existing file is continued, [`check_args`]), `policy` the records'
-    /// `label_policy` object, `staging` the 040-R17 local folder, `threads` for the 040-R19 check.
     pub fn open(&mut self, out: &Path, records: &Path, policy: &serde_json::Value, staging: &Path, threads: Option<usize>) -> Result<()> {
         ensure!(policy.is_object(), "label_policy must be a JSON object");
         std::fs::create_dir_all(out).with_context(|| out.display().to_string())?;
@@ -305,7 +234,6 @@ impl DistillLabeller {
         Ok(())
     }
 
-    /// The next batch; `None` once every lane is drained.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<Batch>> {
         let Some(b) = self.feeder.next_batch(&mut self.src, None)? else { return Ok(None) };
@@ -315,7 +243,6 @@ impl DistillLabeller {
         Ok(Some(b))
     }
 
-    /// Per lane of `b`: its game and the game's 044-R3 seed ([`game_seed`]); `None` for a drained lane.
     pub fn lanes(&self, b: &Batch) -> Vec<Option<(GameId, u64)>> {
         (0..b.chunks.len())
             .map(|l| {
@@ -325,8 +252,6 @@ impl DistillLabeller {
             .collect()
     }
 
-    /// The choices for lane `lane`'s steps of `b`, in step order (one per step): their labels on
-    /// the steps' observations ([`label_of_choice`], frame = the step's frame).
     pub fn put(&mut self, b: &Batch, lane: usize, choices: &[HeadChoice]) -> Result<()> {
         let chunk = b.chunks.get(lane).with_context(|| format!("lane {lane} of {}", b.chunks.len()))?;
         ensure!(choices.len() == chunk.len(), "lane {lane}: {} choices for {} steps", choices.len(), chunk.len());
@@ -343,13 +268,10 @@ impl DistillLabeller {
         Ok(())
     }
 
-    /// Games read so far.
     pub fn games(&self) -> usize {
         self.feeder.state(None).games
     }
 
-    /// Writes every read input file whose games are all labelled ([`DistillLabeller::open`] first).
-    /// Returns the files written by this call.
     pub fn flush(&mut self) -> Result<usize> {
         ensure!(self.output.is_some(), "open the output before writing (044-R3)");
         let ready: Vec<usize> = self
@@ -367,8 +289,6 @@ impl DistillLabeller {
         Ok(ready.len())
     }
 
-    /// After the last batch: writes the files left ([`DistillLabeller::flush`]) and checks that
-    /// every input file was written and every label used.
     pub fn finish(&mut self) -> Result<WriteSummary> {
         self.flush()?;
         let missing: Vec<&str> = (0..self.src.files.len()).filter(|k| !self.done.contains(k)).map(|k| self.rels[k].as_str()).collect();
@@ -377,18 +297,11 @@ impl DistillLabeller {
         Ok(self.sum.clone())
     }
 
-    /// [`DistillLabeller::open`] then [`DistillLabeller::finish`] (all labels put first).
     pub fn write(&mut self, out: &Path, records: &Path, policy: &serde_json::Value, staging: &Path, threads: Option<usize>) -> Result<WriteSummary> {
         self.open(out, records, policy, staging, threads)?;
         self.finish()
     }
 
-    /// Input file `k` again under the output folder (same relative path) with each view's labels
-    /// in place of its `unknown` slots (`raw_frame`, `privileged`, `memory_action` and `meta`
-    /// unchanged, 044-R2 contract), without the views whose labelled share of invalid labels is at
-    /// least 20% (040-R19, the build's function and reason); then its records lines (one per view)
-    /// after the file is published (040-R17: completed in staging, copied, read back past the
-    /// cache, renamed), in one write.
     fn write_file(&mut self, k: usize) -> Result<()> {
         let rel_text = self.rels[k].clone();
         let rel = PathBuf::from(&rel_text);
@@ -452,8 +365,6 @@ impl DistillLabeller {
             shard::publish(&local, &dest, |from, to| std::fs::copy(from, to), shard::COPY_RETRIES)?;
             sum.files_written += 1;
         }
-        // Records after the shard is in place (040-R17: a records line never names a missing
-        // shard), the file's lines in one write.
         let mut text = lines.join("\n");
         text.push('\n');
         o.records.write_all(text.as_bytes())?;
@@ -462,8 +373,6 @@ impl DistillLabeller {
     }
 }
 
-/// 040-R19 counts of each game (the build's [`label_validity_with_memory`]: the BC loader's
-/// extraction with `memory_action` memory), on up to `threads` threads, in game order.
 fn validity(games: &[ShardGame], maps: &MapStore, threads: usize) -> Result<Vec<uranium_env::features::label::LabelValidity>> {
     let one = |g: &ShardGame| -> Result<uranium_env::features::label::LabelValidity> {
         let pre = maps.get(&g.meta.map_hash)?;

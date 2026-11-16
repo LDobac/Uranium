@@ -1,7 +1,3 @@
-//! BC data (041): one interface over stored shards and replay streaming (041-R9). A game turns
-//! into a sequence of (observation, label, privileged, weight) steps by running the same feature
-//! extraction as RL and SC:R (030), so stored and streamed games give identical inputs (040-AC6).
-
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -15,60 +11,36 @@ use uranium_env::features::label::LabelWalker;
 use uranium_env::features::label::HostLabel;
 use uranium_replay::shard::{GameMeta, ShardGame, read, result_source};
 
-/// One replay game from any source (041-R9).
 pub trait StepSource {
-    /// Next game, or `None` when the source is exhausted.
     fn next_game(&mut self) -> Result<Option<ShardGame>>;
 
-    /// Where the game last returned by `next_game` sits in the source (resume, 061-R10).
-    /// `None` for sources that cannot be re-read.
     fn last_id(&self) -> Option<GameId> {
         None
     }
 }
 
-/// A game's place in a [`ShardSource`]: file `file` of the (shuffled) file order, game `game` of
-/// that file after selection and shuffle. Stable for the same folders, selection and seed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct GameId {
     pub file: usize,
     pub game: usize,
 }
 
-/// Read position of a [`ShardSource`]: the next game to return is `next` (041-R13 order).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SourcePos {
     pub next: GameId,
 }
 
-/// Stored shards (`shard_*.bin.zst`) under one or more dataset folders, subfolders included (a
-/// full build writes `<src>/<part>/shard_*.bin.zst`, 040-R13). Every file has a canonical key
-/// ([`shard_keys`], `<src>/<part>/shard_*`) and the files are read in key order, so for that
-/// layout the game order depends only on which files are given: not on `--dataset` vs `--shards`,
-/// the order the folders were named in, or where they live (041-R13, 061-R10). Other layouts are
-/// refused.
-/// `select` keeps one split/stage (041-R12, R13); `shuffled` permutes the shard files with a fixed
-/// seed and the games inside each file with a seed derived from it and the file's place (041-R13),
-/// so a position can be sought without reading the files before it.
 pub struct ShardSource {
     files: Vec<PathBuf>,
-    /// [`shard_keys`] key of each file (same order as `files`).
     keys: Vec<String>,
-    /// Next file to load.
     next_file: usize,
-    /// Games left of the loaded file, with their index in it.
     games: VecDeque<(usize, ShardGame)>,
-    /// File of `games`.
     cur_file: usize,
     last: Option<GameId>,
     select: Option<crate::split::Selection>,
-    /// 041-R21: share of each source's games kept (after `select`), with its seed.
     subsample: Option<(crate::split::Subsample, u64)>,
     seed: Option<u64>,
-    /// Files to read (by index); the others are skipped without being read (032-R17 ② evaluation
-    /// of chosen games). `None` = every file.
     only_files: Option<HashSet<usize>>,
-    /// The dataset folders given (their manifests key the scan cache, B-3 fingerprint).
     dirs: Vec<PathBuf>,
 }
 
@@ -77,15 +49,11 @@ impl ShardSource {
         Self::from_dirs(std::slice::from_ref(&dir.to_path_buf()))
     }
 
-    /// The shard files of `dirs` in canonical key order (041-R13); the order the folders are given
-    /// in does not matter. Two files with the same key (a source given twice, or two folders with
-    /// the same source name) or one file reached by two spellings (case, links) are an error.
     pub fn from_dirs(dirs: &[PathBuf]) -> Result<Self> {
         let mut found: Vec<(String, PathBuf)> = Vec::new();
         for d in dirs {
             found.extend(shard_keys(d)?);
         }
-        // One file under two spellings (another case on Windows, a symlink) is the same file.
         let mut seen: HashMap<PathBuf, &Path> = HashMap::new();
         for (_, f) in &found {
             let real = std::fs::canonicalize(f).with_context(|| f.display().to_string())?;
@@ -112,14 +80,11 @@ impl ShardSource {
         self
     }
 
-    /// 041-R21: keeps only the games [`crate::split::Subsample::keeps`] picks with `seed` (after
-    /// `select`, before the per-file shuffle). `None` keeps every game.
     pub fn subsample(mut self, sub: Option<crate::split::Subsample>, seed: u64) -> Self {
         self.subsample = sub.map(|s| (s, seed));
         self
     }
 
-    /// 041-R13: the canonical key order permuted with `seed` alone.
     pub fn shuffled(mut self, seed: u64) -> Self {
         let mut order: Vec<usize> = (0..self.files.len()).collect();
         shuffle(&mut order, &mut Rng::new(seed));
@@ -133,26 +98,19 @@ impl ShardSource {
         &self.files
     }
 
-    /// [`shard_keys`] key of each file, in read order.
     pub fn keys(&self) -> &[String] {
         &self.keys
     }
 
-    /// The folders the files were found in.
     pub fn dirs(&self) -> &[PathBuf] {
         &self.dirs
     }
 
-    /// Reads only the files `keep` (indices into [`ShardSource::files`]); game ids stay those of
-    /// the full list.
     pub fn only_files(mut self, keep: HashSet<usize>) -> Self {
         self.only_files = Some(keep);
         self
     }
 
-    /// The file list in read order by canonical key ([`shard_keys`] key), the same on every PC and
-    /// for `--dataset` and `--shards` alike in the build layout (041-R13, 061-R10): a data position
-    /// only applies to this list.
     pub fn fingerprint(&self) -> String {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
@@ -164,14 +122,12 @@ impl ShardSource {
         format!("{}:{hex}", self.files.len())
     }
 
-    /// Selected games of file `k` in source order (selection, then the per-file shuffle).
     pub fn file_games(&self, k: usize) -> Result<Vec<ShardGame>> {
         let f = &self.files[k];
         let games = read(f).with_context(|| f.display().to_string())?.games;
         Ok(self.order_file(k, games))
     }
 
-    /// Selection and per-file shuffle of file `k`'s games (any item type with a meta).
     pub fn order_file<T: HasMeta>(&self, k: usize, mut games: Vec<T>) -> Vec<T> {
         if let Some(sel) = self.select {
             games.retain(|g| crate::split::selects(sel, g.meta()));
@@ -185,7 +141,6 @@ impl ShardSource {
         games
     }
 
-    /// The next game to return.
     pub fn position(&self) -> SourcePos {
         match self.games.front() {
             Some((g, _)) => SourcePos { next: GameId { file: self.cur_file, game: *g } },
@@ -193,7 +148,6 @@ impl ShardSource {
         }
     }
 
-    /// Continues from `pos` (061-R10 resume): only the file of `pos` is read.
     pub fn seek(&mut self, pos: SourcePos) -> Result<()> {
         self.games.clear();
         self.next_file = pos.next.file;
@@ -206,17 +160,13 @@ impl ShardSource {
         Ok(())
     }
 
-    /// The game `id` (re-read from its file).
     pub fn game(&self, id: GameId) -> Result<ShardGame> {
         let mut games = self.file_games(id.file)?;
         anyhow::ensure!(id.game < games.len(), "{:?} is past the end of {}", id, self.files[id.file].display());
         Ok(games.swap_remove(id.game))
     }
 
-    /// The games `ids`, in the order given, each file decoded once however many of its games are
-    /// asked for (B-13: a resume restores up to `lanes` games, often from the same shard).
     pub fn games(&self, ids: &[GameId]) -> Result<Vec<ShardGame>> {
-        // File by file, so only one decoded shard (about 1 GB) is held at a time.
         let mut by_file: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
         for (slot, id) in ids.iter().enumerate() {
             by_file.entry(id.file).or_default().push(slot);
@@ -234,7 +184,6 @@ impl ShardSource {
     }
 }
 
-/// Items ordered by [`ShardSource::order_file`].
 pub trait HasMeta {
     fn meta(&self) -> &uranium_replay::shard::GameMeta;
 }
@@ -245,21 +194,12 @@ impl HasMeta for ShardGame {
     }
 }
 
-/// Fisher-Yates.
 pub fn shuffle<T>(v: &mut [T], rng: &mut Rng) {
     for i in (1..v.len()).rev() {
         v.swap(i, (rng.next() % (i as u64 + 1)) as usize);
     }
 }
 
-/// 041-R13: the shard files under the given folder `dir` with their canonical keys
-/// `<src>/<part>/shard_*.bin.zst` (the build layout, 040-R13). `dir` is either a source folder
-/// (`--dataset`, `--shards <src>`: files at `<part>/shard_*`, the key starts with the folder's
-/// real name on disk, so another case or a link gives the same key) or a folder of sources
-/// (`--shards <parent>`: files at `<src>/<part>/shard_*`). Whatever is above `dir` (cache, share,
-/// a mount point) is not in the key. Any other depth (shards directly in `dir`, deeper nesting, or
-/// both depths in one folder) is an error naming the file: its key would depend on how the folder
-/// was given.
 pub fn shard_keys(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
     const LAYOUT: &str = "expected <source>/<part>/shard_*.bin.zst under a source folder's parent, or <part>/shard_*.bin.zst under a source folder (040-R13, 041-R13)";
     let files = shard_files(dir)?;
@@ -282,18 +222,14 @@ pub fn shard_keys(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
     Ok(out)
 }
 
-/// Key order: part by part (as path order), so `p0/…` sorts before `p0-x/…` on every OS.
 fn key_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     a.split('/').cmp(b.split('/'))
 }
 
-/// What the fingerprints hash for a key: its parts from the file name up (`shard_*/<part>/<src>`),
-/// the text they hashed before the canonical keys, so `--dataset` fingerprints are unchanged.
 fn key_hash_text(key: &str) -> String {
     key.rsplit('/').collect::<Vec<_>>().join("/")
 }
 
-/// Shard files under `dir` (recursive), sorted by path.
 pub fn shard_files(dir: &std::path::Path) -> Result<Vec<PathBuf>> {
     fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) -> Result<()> {
         for e in std::fs::read_dir(dir).with_context(|| dir.display().to_string())? {
@@ -337,7 +273,6 @@ impl StepSource for ShardSource {
     }
 }
 
-/// In-memory games (tests, replay streaming adapters).
 pub struct VecSource(pub VecDeque<ShardGame>);
 
 impl StepSource for VecSource {
@@ -346,10 +281,6 @@ impl StepSource for VecSource {
     }
 }
 
-/// Updates of one epoch (041-R13 "1 epoch", 2026-10-18): the trainer's lane walk without the
-/// model. `lens` are the step counts of the games in source order; each update every lane takes
-/// up to `seq_len` steps, a lane whose game is used up takes the next non-empty game, and the
-/// epoch ends at the first update a lane cannot be filled (as the trainer's lane walk).
 pub fn epoch_updates(lens: impl IntoIterator<Item = usize>, lanes: usize, seq_len: usize) -> u64 {
     let mut lens = lens.into_iter().filter(|&l| l > 0);
     let mut rem = vec![0usize; lanes];
@@ -370,40 +301,26 @@ pub fn epoch_updates(lens: impl IntoIterator<Item = usize>, lanes: usize, seq_le
     }
 }
 
-/// A training step: inputs, label and loss weight (0 = label inconsistent with the masks).
 #[derive(Debug, Clone)]
 pub struct TrainStep {
     pub obs: Observation,
     pub label: HostLabel,
-    /// The shard step's privileged summary, or zeros when it has none (the value head's input,
-    /// E-10); `has_privileged` tells the two apart.
     pub privileged: PrivilegedTensors,
-    /// 032-R24 / 041-R23: the shard step has a privileged summary (`privileged` is not the zero
-    /// fill), so it can be an `aux_priv` target.
     pub has_privileged: bool,
     pub weight: f32,
-    /// Game frame of the step's observation.
     pub frame: u32,
-    /// 031-R12 ③ at this step (own vision and memory, as the live check sees it); `bc-eval`
-    /// replays the surrender check with it (041-AC4).
     pub surrender_rule: bool,
 }
 
-/// A prepared game.
 #[derive(Debug, Clone)]
 pub struct GameSeq {
     pub steps: Vec<TrainStep>,
-    /// 041-R7 win target: +1 win, -1 loss, 0 unknown.
     pub result: f32,
     pub invalid_labels: usize,
 }
 
 pub use uranium_env::maps::family_index;
 
-/// Map precomputes of BC games (031 맵 사전계산, 030 §2 resources). B-2 (2026-10-19): a game
-/// whose map has no current-version precompute is an error, never a game with the base_loc /
-/// choke / wall channels and the map resource entities at 0 (that trained part of a run on a
-/// different input distribution on hosts without the files). Loaded files are kept in memory.
 pub struct MapStore {
     kind: MapsKind,
     cache: Mutex<HashMap<String, Arc<MapPrecompute>>>,
@@ -411,14 +328,11 @@ pub struct MapStore {
 
 enum MapsKind {
     Dir(PathBuf),
-    /// `URANIUM_MAPS_DIR` missing: every lookup fails with this message.
     Unset(String),
-    /// Synthetic test games: no precompute, channels 0 (tests only).
     Synthetic,
 }
 
 impl MapStore {
-    /// `URANIUM_MAPS_DIR` (031, `.env`); when it is not set, every lookup fails.
     pub fn from_env() -> Self {
         match uranium_env::maps::maps_dir() {
             Ok(d) => Self::dir(d),
@@ -430,7 +344,6 @@ impl MapStore {
         Self { kind: MapsKind::Dir(dir.into()), cache: Mutex::default() }
     }
 
-    /// Tests with synthetic maps only: every game gets no precompute.
     pub fn synthetic() -> Self {
         Self { kind: MapsKind::Synthetic, cache: Mutex::default() }
     }
@@ -443,7 +356,6 @@ impl MapStore {
         }
     }
 
-    /// The precompute of `map_hash`; an error when it is missing or of an older version (B-2).
     pub fn get(&self, map_hash: &str) -> Result<Option<Arc<MapPrecompute>>> {
         let Some(dir) = self.folder()? else { return Ok(None) };
         if let Some(p) = self.cache.lock().unwrap().get(map_hash) {
@@ -461,15 +373,12 @@ impl MapStore {
         Ok(Some(p))
     }
 
-    /// B-2 start check: map hashes (sorted, once each) without a current precompute.
     pub fn missing<'a>(&self, hashes: impl IntoIterator<Item = &'a str>) -> Result<Vec<String>> {
         let Some(dir) = self.folder()? else { return Ok(Vec::new()) };
         let set: std::collections::BTreeSet<&str> = hashes.into_iter().collect();
         Ok(set.into_iter().filter(|h| uranium_env::maps::load_precompute(dir, h).is_none()).map(str::to_string).collect())
     }
 
-    /// B-2: fails, listing every map hash of `games` (with its game count) that has no
-    /// precompute, before any training or evaluation starts.
     pub fn check(&self, games: &[&GameSummary]) -> Result<()> {
         let mut counts: HashMap<&str, usize> = HashMap::new();
         for g in games {
@@ -490,12 +399,10 @@ impl MapStore {
     }
 }
 
-/// What a scan keeps of one game (no frames): selection data and counts.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GameSummary {
     pub meta: GameMeta,
     pub steps: usize,
-    /// Steps without a `PrivilegedSummary` (E-10; the value input is then all zeros).
     pub privileged_none: usize,
 }
 
@@ -505,8 +412,6 @@ impl HasMeta for GameSummary {
     }
 }
 
-/// Every game of every file, file by file in `files` order (games in file order), read in
-/// parallel. A decoded shard is close to 1 GB: a few readers keep a host with limited RAM out of swap.
 pub fn scan_files(files: &[PathBuf]) -> Result<Vec<Vec<GameSummary>>> {
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(4);
     let next = std::sync::atomic::AtomicUsize::new(0);
@@ -538,8 +443,6 @@ pub fn scan_files(files: &[PathBuf]) -> Result<Vec<Vec<GameSummary>>> {
     Ok(per_file.into_iter().map(|v| v.expect("every file read")).collect())
 }
 
-/// B-2 start check of a training / evaluation input: scans the files of `src` and checks the
-/// map precompute of every game `sel` keeps (all games when `None`). Returns the scan.
 pub fn check_maps(src: &ShardSource, sel: Option<crate::split::Selection>, maps: &MapStore) -> Result<Vec<Vec<GameSummary>>> {
     let started = std::time::Instant::now();
     let scan = scan_cached(src)?;
@@ -550,16 +453,10 @@ pub fn check_maps(src: &ShardSource, sel: Option<crate::split::Selection>, maps:
     Ok(scan)
 }
 
-/// `.env` key of the local cache root (061-R7); scans are cached under `<cache>/scans/`.
 const CACHE_DIR_ENV: &str = "URANIUM_CACHE_DIR";
-/// Bump when [`GameSummary`] changes.
 const SCAN_CACHE_VERSION: u32 = 1;
-/// Shard schema the cached summaries were made under. Schema 7 (040-R22) only adds a step field a
-/// [`GameSummary`] does not read, so the caches written under schema 6 stay valid (no rescan of
-/// every dataset); change this when a schema changes what a summary holds.
 const SCAN_SHARD_SCHEMA: u32 = 6;
 
-/// Folder of scan caches: `<URANIUM_CACHE_DIR>/scans`, or `None` (no cache) when not set.
 pub fn scan_cache_dir() -> Option<PathBuf> {
     std::env::var_os(CACHE_DIR_ENV).filter(|v| !v.is_empty()).map(|v| PathBuf::from(v).join("scans"))
 }
@@ -569,22 +466,14 @@ struct ScanCache {
     version: u32,
     shard_schema: u32,
     key: String,
-    /// File keys ([`shard_keys`] key) in key order, and their games.
     files: Vec<(String, Vec<GameSummary>)>,
 }
 
-/// [`scan_files`] of `src`'s files (in `src`'s order) through a local cache (review T4a: the start
-/// checks of `bc`, `bc-eval`, `label-check`, `split-stats` and `bc-epoch` would otherwise decode
-/// every shard each time). The cache is `<cache>/scan-<key>.json`, `key` = the files'
-/// fingerprint (manifest SHA-256; size and modification time for files without a manifest), so
-/// a changed dataset gets a new file and the old one is never read for it. Written atomically
-/// (temporary name, rename); a cache that cannot be read or written only costs a fresh scan.
 pub fn scan_cached(src: &ShardSource) -> Result<Vec<Vec<GameSummary>>> {
     scan_cached_in(src, scan_cache_dir().as_deref())
 }
 
 pub fn scan_cached_in(src: &ShardSource, cache: Option<&Path>) -> Result<Vec<Vec<GameSummary>>> {
-    // Key order, so the cache serves any read order of the same files (041-R13).
     let mut order: Vec<usize> = (0..src.files().len()).collect();
     order.sort_by(|&a, &b| key_cmp(&src.keys()[a], &src.keys()[b]));
     let sorted: Vec<PathBuf> = order.iter().map(|&i| src.files()[i].clone()).collect();
@@ -625,34 +514,21 @@ pub fn scan_cached_in(src: &ShardSource, cache: Option<&Path>) -> Result<Vec<Vec
     Ok(src.files().iter().map(|f| by_sorted[index[f]].clone()).collect())
 }
 
-/// 041-R7 / A-3 (2026-10-19): value-loss weight of a game: 0 when its result could not be decided
-/// (`result_source = none`, `result = 0`), else 1. The policy heads train on it either way.
 pub fn value_weight(meta: &GameMeta) -> f32 {
     if meta.result_source == result_source::NONE { 0.0 } else { 1.0 }
 }
 
-/// B-3: what the data of a run is: per file of `src` (in read order) its canonical key
-/// ([`shard_keys`] key) and its SHA-256 from the nearest `manifest.json` at or below the given
-/// folder (061-R7; verified when opened with `--dataset`, taken as is with `--shards`, so a stale
-/// manifest after a rebuild still gives the old hashes), or its size when no manifest lists it.
-/// The same files in the build layout give the same fingerprint for `--dataset` and `--shards` on
-/// any host (041-R13, 061-R10); a rebuilt dataset (with its new manifest) and the same file names
-/// gives another.
 pub fn dataset_fingerprint(src: &ShardSource) -> Result<String> {
     files_fingerprint(src.dirs(), src.files(), src.keys(), false)
 }
 
-/// [`dataset_fingerprint`] of `files` with their `keys`; with `local`, a file without a manifest
-/// entry is also keyed by its modification time (a local cache key only: times differ between PCs).
 fn files_fingerprint(dirs: &[PathBuf], files: &[PathBuf], keys: &[String], local: bool) -> Result<String> {
     use sha2::{Digest, Sha256};
-    // Manifests by folder, read once (`None`: the folder has none).
     let mut manifests: HashMap<PathBuf, Option<uranium_store::storage::Manifest>> = HashMap::new();
     let mut h = Sha256::new();
     for (f, key) in files.iter().zip(keys) {
         let mut entry = None;
         if let Some(root) = dirs.iter().find(|d| f.starts_with(d)) {
-            // The nearest manifest from the file's folder up to the given folder.
             for anc in f.ancestors().skip(1) {
                 if !anc.starts_with(root) {
                     break;
@@ -685,9 +561,6 @@ fn files_fingerprint(dirs: &[PathBuf], files: &[PathBuf], keys: &[String], local
     Ok(format!("{}:{hex}", files.len()))
 }
 
-/// 032-R17 ② (G-D8, 2026-10-19): `n` games of a split chosen by a fixed-seed shuffle over the
-/// whole split (not the first files: sources are not spread evenly over the files).
-/// `counts[k]` = selected games of file `k`; the result is the chosen ids sorted by place.
 pub fn sample_games(counts: &[usize], n: usize, seed: u64) -> Vec<GameId> {
     let mut ids: Vec<GameId> = counts.iter().enumerate().flat_map(|(file, &c)| (0..c).map(move |game| GameId { file, game })).collect();
     shuffle(&mut ids, &mut Rng::new(seed));
@@ -696,36 +569,23 @@ pub fn sample_games(counts: &[usize], n: usize, seed: u64) -> Vec<GameId> {
     ids
 }
 
-/// Files [`ChosenGames`] decodes ahead of the one being read: whole games, and games cut at a
-/// frame (`with_until`: about one batch of lanes, since games cut at the same frame end, and need
-/// their successors, together; a cut game is a fraction of a whole one).
 pub const CHOSEN_PREFETCH_FILES: usize = 3;
 pub const CHOSEN_PREFETCH_FILES_CUT: usize = 24;
 
-/// The games `ids` of a [`ShardSource`] (in source order), skipping the rest; files with none of
-/// them are not read. A thread decodes the files ahead ([`CHOSEN_PREFETCH_FILES`]) and keeps
-/// only the chosen games, so the reader does not wait for a whole shard's decode per game (050-R9
-/// `diag dump`, 032-R17 ② evaluation: a human shard holds about 20 games, of which a 500-game
-/// selection takes about one). The order and the games are the same as reading in place.
 pub struct ChosenGames {
     rx: std::sync::mpsc::Receiver<Result<ChosenFile>>,
     cur: VecDeque<(usize, ShardGame)>,
     cur_file: usize,
     last: Option<GameId>,
-    /// The read-ahead thread: joined when the channel ends, so a panic there is an error, not the
-    /// end of the games.
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
-/// A decoded file of [`ChosenGames`]: its index and its chosen games with their index in it.
 type ChosenFile = (usize, Vec<(usize, ShardGame)>);
 
 fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
     p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "non-text panic".into())
 }
 
-/// `game` with its steps at frame >= `until` dropped, the first step always kept (the
-/// [`crate::eval::EvalSelection::until_frame`] cut).
 pub fn cut_game(game: &mut ShardGame, until: u32) {
     let keep = game.steps.partition_point(|s| s.raw_frame.frame < until).max(1);
     game.steps.truncate(keep);
@@ -737,13 +597,10 @@ impl ChosenGames {
         Self::with_until(src, ids, None)
     }
 
-    /// `until`: the chosen games are cut there ([`cut_game`]) as they are decoded, so the games
-    /// waiting ahead hold only the steps that are read.
     pub fn with_until(src: ShardSource, ids: &[GameId], until: Option<u32>) -> Self {
         let ids: HashSet<GameId> = ids.iter().copied().collect();
         let files: std::collections::BTreeSet<usize> = ids.iter().map(|g| g.file).collect();
         let (tx, rx) = std::sync::mpsc::sync_channel(if until.is_some() { CHOSEN_PREFETCH_FILES_CUT } else { CHOSEN_PREFETCH_FILES });
-        // The reader dropping `rx` (an evaluation stopped early) ends the thread at its next send.
         let thread = std::thread::spawn(move || {
             for k in files {
                 let r = src.file_games(k).map(|games| {
@@ -767,7 +624,6 @@ impl StepSource for ChosenGames {
     fn next_game(&mut self) -> Result<Option<ShardGame>> {
         while self.cur.is_empty() {
             let Ok(r) = self.rx.recv() else {
-                // The thread is done: every file sent, or it panicked (then no silent early end).
                 if let Some(t) = self.thread.take() {
                     t.join().map_err(|p| anyhow::anyhow!("the chosen-games read-ahead thread panicked: {}", panic_text(&*p)))?;
                 }
@@ -787,8 +643,6 @@ impl StepSource for ChosenGames {
     }
 }
 
-/// 030 §5 BC z: the replay's first 20 Build / Train / Research / Upgrade actions and the
-/// composition of every own Terran unit that appeared.
 pub fn replay_z(game: &ShardGame) -> Strategy {
     let table = action_table();
     let build: Vec<u16> = game
@@ -818,33 +672,18 @@ pub fn replay_z(game: &ShardGame) -> Strategy {
     Strategy { build, units: counts }
 }
 
-/// Label conversion and check: one implementation in `uranium-env`, shared with the replay build
-/// (040-R19 invalid-label filter).
 pub use uranium_env::features::label::{UNKNOWN_REASON, acting_ids, host_label, host_label_check};
 
-/// Label diagnostics (034-AC3): labels failing `host_label_check` per (action, reason), labels per
-/// action, and for `select_cap` failures the unit types in the selection that lack the capability.
 #[derive(Debug, Default)]
 pub struct LabelStats {
     pub fails: std::collections::BTreeMap<(String, &'static str), usize>,
     pub totals: std::collections::BTreeMap<String, usize>,
-    /// "<action> <- <type>+<type> (kept|void)" -> count: selected unit types without the
-    /// capability, dropped from a label that stays valid or leaving none (041-R11).
     pub cap_detail: std::collections::BTreeMap<String, usize>,
-    /// "<action> <- <condition> (new|old)" -> count for `type_mask` failures of Train / Research /
-    /// Upgrade: which prerequisite fails, and whether it already failed at the previous step
-    /// (old) or only became false since (new).
     pub type_detail: std::collections::BTreeMap<String, usize>,
-    /// 액션 감사 F23·F24: "<action> [<reason>] -> <cause>" for target and location failures:
-    /// whether a missing target was seen before / later / never, and which footprint condition
-    /// rejects a build tile (with the building type).
     pub cause_detail: std::collections::BTreeMap<String, usize>,
-    /// Per game: (src, "replay SHA-256 prefix, matchup, map", labels, invalid, target_unit_missing, target_loc),
-    /// to tell a few divergent replays from a spread-out mask issue.
     pub per_game: Vec<(String, String, usize, usize, usize, usize)>,
 }
 
-/// Frames since a unit was last observed, bucketed (label-check, 액션 감사 F23).
 fn age_bucket(frames: u32) -> &'static str {
     match frames {
         0..=8 => "<=8f",
@@ -854,8 +693,6 @@ fn age_bucket(frames: u32) -> &'static str {
     }
 }
 
-/// Why a Build_* / Land_* tile fails its location class (액션 감사 F24): every failing footprint
-/// condition, the building on it, and whether a neighbouring tile would pass (footprint offset).
 fn loc_cause(w: &uranium_env::features::world::World, o: &Observation, a: &uranium_env::actions::Action, tile: Option<(u16, u16)>) -> String {
     use uranium_env::features::world::top_left;
     let Some((x, y)) = tile.map(|(x, y)| (x as i32, y as i32)) else { return "no_tile".into() };
@@ -898,8 +735,6 @@ fn loc_cause(w: &uranium_env::features::world::World, o: &Observation, a: &urani
                     causes.push("creep".into());
                 }
                 if w.blocked[i] {
-                    // What covers the tile: the same building at the same tile is a repeated
-                    // order after the building was placed.
                     let on = w.entities.iter().find(|e| {
                         w.ty(&e.unit).is_some_and(|t| (t.is_building() || t.is_resource()) && !e.unit.has(uranium_proto::flags::LIFTED) && {
                             let (bx, by) = top_left(&e.unit, t);
@@ -938,7 +773,6 @@ fn loc_cause(w: &uranium_env::features::world::World, o: &Observation, a: &urani
     format!("{}{shift}", causes.join("+"))
 }
 
-/// First failing Train / Research / Upgrade prerequisite of `a` in `w` (034-R3 order).
 fn prereq_fail(a: &uranium_env::actions::Action, w: &uranium_env::features::world::World) -> Option<&'static str> {
     let t = uranium_env::types::TypeTables::get();
     let me = &w.frame.self_state;
@@ -946,8 +780,6 @@ fn prereq_fail(a: &uranium_env::actions::Action, w: &uranium_env::features::worl
     match a.command.as_str() {
         "Train" => {
             let u = t.unit(a.unit_type?)?;
-            // 034-R3 / 034-AC4 ⑥ (U-1): the mask's engine rule (supply is checked only while every
-            // candidate's queue is empty), from the same function.
             let supply = uranium_env::features::masks::train_supply_ok(w, a);
             if !afford(u.minerals, u.gas) {
                 Some("afford")
@@ -993,18 +825,15 @@ fn prereq_fail(a: &uranium_env::actions::Action, w: &uranium_env::features::worl
 }
 
 pub fn label_check(game: &ShardGame, st: &mut LabelStats, maps: &MapStore) -> Result<()> {
-    // 030-R11: a lobby-Random enemy stays unknown until seen.
     let mut walker = LabelWalker::new(&game.game_info, family_index(&game.meta.map_family), maps.get(&game.meta.map_hash)?.as_deref(), game.meta.enemy_random)?;
     let k = CAPABILITIES.len();
     let mut prev: Option<&uranium_proto::RawFrame> = None;
-    // 액션 감사 F23: last frame, owner and type each unit id was observed at (earlier steps).
     let mut seen: HashMap<u32, (u32, u8, u16)> = HashMap::new();
     let tt = uranium_env::types::TypeTables::get();
     let type_name = |t: u16| tt.unit(t).map_or("?", |t| t.name.as_str());
     let mut g = (game.meta.src.clone(), format!("{} {} map {} {}x{}", game.meta.replay_sha256.chars().take(12).collect::<String>(), game.meta.matchup, game.meta.map_hash.chars().take(8).collect::<String>(), game.game_info.map_size_tiles.0, game.game_info.map_size_tiles.1), 0usize, 0usize, 0usize, 0usize);
     for (si, s) in game.steps.iter().enumerate() {
         let (o, label, why) = walker.step_with_memory(&s.raw_frame, &s.action_label, None, s.memory_action.as_deref());
-        // 031-AC3 `unknown` steps (labeler version 2) are counted under their own name.
         let a = action_table().actions.get(label.action as usize).filter(|_| !s.action_label.is_unknown());
         let name = if s.action_label.is_unknown() { "Unknown".to_string() } else { a.map_or_else(|| format!("#{}", label.action), |a| a.name.clone()) };
         *st.totals.entry(name.clone()).or_default() += 1;
@@ -1027,7 +856,6 @@ pub fn label_check(game: &ShardGame, st: &mut LabelStats, maps: &MapStore) -> Re
             }
         }
         if let Some(w @ ("target_unit_cap" | "target_unit_missing")) = why {
-            // Target owner (self / enemy / neutral / unseen) and type, from the raw frame.
             let target = s.action_label.target_unit.and_then(|id| s.raw_frame.units.iter().find(|u| u.id == id));
             let me = game.game_info.self_player;
             let desc = target.map_or_else(
@@ -1065,7 +893,6 @@ pub fn label_check(game: &ShardGame, st: &mut LabelStats, maps: &MapStore) -> Re
         if let (Some(a), Some("target_loc")) = (a, why) {
             let w = uranium_env::features::world::World::new(&s.raw_frame, &walker.mem, &walker.map);
             let ty = a.unit_type.map_or("-", type_name);
-            // Did the game build it there anyway (our mask is wrong) or not (the order failed)?
             let me = game.game_info.self_player;
             let built = s.action_label.target_tile.zip(a.unit_type).is_some_and(|((x, y), ut)| {
                 game.steps[si + 1..].iter().take(200).any(|n| {
@@ -1078,8 +905,6 @@ pub fn label_check(game: &ShardGame, st: &mut LabelStats, maps: &MapStore) -> Re
             *st.cause_detail.entry(format!("{name} [target_loc] {ty} -> {cause}{}", if built { " [built there]" } else { " [not built there]" })).or_default() += 1;
         }
         if let (Some(a), Some("type_mask")) = (a, why) {
-            // The previous step's verdict uses its own frame (own units and player state) with
-            // the current memory; only own producers of that frame matter for Train supply.
             let world = |f| uranium_env::features::world::World::new(f, &walker.mem, &walker.map);
             let cond = prereq_fail(a, &world(&s.raw_frame)).unwrap_or("producer_or_required");
             let age = match prev.and_then(|p| prereq_fail(a, &world(p))) {
@@ -1089,7 +914,6 @@ pub fn label_check(game: &ShardGame, st: &mut LabelStats, maps: &MapStore) -> Re
             };
             *st.type_detail.entry(format!("{name} <- {cond} ({age})")).or_default() += 1;
         }
-        // 040-AC7: 031-AC3 `unknown` steps are neither labels nor invalid labels here.
         let unknown = why == Some(UNKNOWN_REASON);
         g.2 += !unknown as usize;
         if let Some(w) = why {
@@ -1107,7 +931,6 @@ pub fn label_check(game: &ShardGame, st: &mut LabelStats, maps: &MapStore) -> Re
     Ok(())
 }
 
-/// Tiny deterministic RNG for data choices (z drop, symmetry).
 #[derive(Debug, Clone)]
 pub struct Rng(u64);
 
@@ -1124,7 +947,6 @@ impl Rng {
     pub fn unit(&mut self) -> f64 {
         (self.next() >> 11) as f64 / (1u64 << 53) as f64
     }
-    /// Raw state for checkpoints (061-R10).
     pub fn state(&self) -> u64 {
         self.0
     }
@@ -1133,10 +955,6 @@ impl Rng {
     }
 }
 
-/// 030-R11 BC exception (user decision 2026-10-19): whether this game's enemy race is masked as
-/// `unknown` until first seen. Per game and deterministic: a hash of the replay SHA-256 and the
-/// data seed (not the data RNG stream, so resume and the other data choices are unaffected),
-/// true for a `ratio` share of games.
 pub fn enemy_race_masked(replay_sha256: &str, seed: u64, ratio: f64) -> bool {
     if ratio <= 0.0 {
         return false;
@@ -1144,16 +962,10 @@ pub fn enemy_race_masked(replay_sha256: &str, seed: u64, ratio: f64) -> bool {
     game_unit(replay_sha256, seed, RACE_MASK_SALT) < ratio
 }
 
-/// Salt of [`enemy_race_masked`] ("RACEMASK").
 const RACE_MASK_SALT: u64 = 0x5241_4345_4D41_534B;
-/// Salt of the 041-R21 game subsample ("SUBSAMPL"), so it does not follow the race mask.
 pub(crate) const SUBSAMPLE_SALT: u64 = 0x5355_4253_414D_504C;
 
-/// A per-game number in [0, 1) from the replay SHA-256, a seed and a salt: the same on every PC
-/// and outside the data RNG stream (resume, 061-R10). Both perspectives of a TvT game share the
-/// replay hash, so they get the same number.
 pub(crate) fn game_unit(replay_sha256: &str, seed: u64, salt: u64) -> f64 {
-    // FNV-1a over the hash text, then a splitmix64 finaliser with the seed.
     let mut h: u64 = 0xCBF2_9CE4_8422_2325;
     for b in replay_sha256.bytes() {
         h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01B3);
@@ -1165,46 +977,28 @@ pub(crate) fn game_unit(replay_sha256: &str, seed: u64, salt: u64) -> f64 {
     (z >> 11) as f64 / (1u64 << 53) as f64
 }
 
-/// Feature extraction over one game in order (memory carries across steps), producing training
-/// steps a chunk at a time so only the current BPTT window is held in memory (041-R2: a whole
-/// game of spatial features is gigabytes). `z_present` and `sym` are chosen by the caller (041-R8,
-/// 040-R7).
 pub struct GameStream {
     game: ShardGame,
-    /// Map, agent memory and the label check shared with the replay build (040-R19).
     walker: LabelWalker,
     z: Option<Strategy>,
     sym: Sym,
     pos: usize,
     zero_priv: PrivilegedTensors,
-    /// 041-R7 win target: +1 win, -1 loss, 0 unknown.
     pub result: f32,
-    /// 041-R7 / A-3: value-loss weight, 0 for an undecided result ([`value_weight`]).
     pub value_weight: f32,
-    /// 041-R30: this game's source is in `[data] chain_start_sources` (or the scoring option), so
-    /// its chained steps are observed through their chain-start step's RawFrame.
     chain_start: bool,
-    /// 041-R30 ①: index of the chain-start step of the step at `pos - 1` (carried across chunks).
     chain_from: usize,
-    /// 041-R30 ③: events of chained steps' own frames, applied at the next step that is not chained.
     pending_events: Vec<uranium_proto::GameEvent>,
 }
 
-/// 041-R30 ①: step `i` of `steps` is chained when its frame is at most one after step `i - 1`'s and
-/// step `i - 1`'s label is a command (not NoOp, action 0; an `unknown` label counts as a command).
-/// Frames are the steps' integer RawFrame frames (= label frames, 040 pipeline).
 pub fn chained_step(steps: &[uranium_replay::shard::Step], i: usize) -> bool {
     i > 0 && i < steps.len() && steps[i].raw_frame.frame <= steps[i - 1].raw_frame.frame.saturating_add(1) && steps[i - 1].action_label.action != NOOP_ACTION
 }
 
-/// 034-R2: action 0 is NoOp.
 const NOOP_ACTION: u16 = 0;
 
-/// 041-R30 ②: the sources `[data] chain_start_sources` may list (040-R14 `src`). Human sources
-/// are not allowed: their chains are mostly genuine consecutive commands.
 pub const CHAIN_START_SOURCES: [&str; 2] = ["botgen", "dagger"];
 
-/// 041-R30 ②: a non-empty list of allowed sources (start error otherwise).
 pub fn check_chain_start_sources(sources: &[String]) -> Result<()> {
     anyhow::ensure!(!sources.is_empty(), "[data] chain_start_sources is empty: remove the key (041-R30)");
     for s in sources {
@@ -1214,11 +1008,7 @@ pub fn check_chain_start_sources(sources: &[String]) -> Result<()> {
 }
 
 impl GameStream {
-    /// Fails when the game's map has no precompute in `maps` (B-2).
     pub fn new(game: ShardGame, z_present: bool, sym: Sym, maps: &MapStore) -> Result<Self> {
-        // 030-R11: a lobby-Random enemy (shard `enemy_random`) stays unknown until seen. Replay
-        // headers store the played race, so in BC data this is rarely set; `mask_enemy_race` (5% of
-        // games) is what teaches the `unknown` input.
         let walker = LabelWalker::new(&game.game_info, family_index(&game.meta.map_family), maps.get(&game.meta.map_hash)?.as_deref(), game.meta.enemy_random)?;
         let z = z_present.then(|| replay_z(&game));
         let zero_priv = PrivilegedTensors { summary: vec![0.0; dims().privileged()] };
@@ -1227,18 +1017,12 @@ impl GameStream {
         Ok(Self { game, walker, z, sym, pos: 0, zero_priv, result, value_weight, chain_start: false, chain_from: 0, pending_events: Vec::new() })
     }
 
-    /// 041-R30: observe chained steps through their chain-start step when the game's source is in
-    /// `sources` (`[data] chain_start_sources`, or the scoring option). Call before the first step.
     pub fn with_chain_start(mut self, sources: &[String]) -> Self {
         debug_assert_eq!(self.pos, 0, "chain-start rule after the first step");
         self.chain_start = sources.contains(&self.game.meta.src);
         self
     }
 
-    /// 030-R11 BC exception (user decision 2026-10-19, 5%): when [`enemy_race_masked`] picks this
-    /// game, the enemy race is `unknown` until the first enemy unit is observed, whatever the
-    /// lobby race. The game itself is used as usual (no copy): 5% of games change, the data size
-    /// does not. Call before the first step.
     pub fn with_race_mask(mut self, ratio: f64, seed: u64) -> Self {
         debug_assert_eq!(self.pos, 0, "race mask after the first step");
         if enemy_race_masked(&self.game.meta.replay_sha256, seed, ratio) {
@@ -1247,9 +1031,6 @@ impl GameStream {
         self
     }
 
-    /// 050-R9 `val500_race`: the race the view's enemy actually played, from `GameInfo` (replays
-    /// hold the played race even for a lobby Random, `AgentMemory::with_lobby`): `terran`,
-    /// `protoss`, `zerg`, else `random` / `unknown` (a bridge that did not report it).
     pub fn enemy_race(&self) -> &'static str {
         use uranium_proto::Race;
         match self.game.game_info.players.iter().find(|p| p.is_enemy).map(|p| p.race) {
@@ -1261,23 +1042,18 @@ impl GameStream {
         }
     }
 
-    /// The game's identity, the original replay's SHA-256 (040-R5; both views of a TvT game share
-    /// it). Teacher hold-out scoring splits games by it (041-R27: rush / macro opponent games).
     pub fn replay_sha256(&self) -> &str {
         &self.game.meta.replay_sha256
     }
 
-    /// 040 meta `perspective_slot`: the view's BWAPI player id (044-R3 game seed with the replay hash).
     pub fn perspective_slot(&self) -> u8 {
         self.game.meta.perspective_slot
     }
 
-    /// Steps not yet produced.
     pub fn remaining(&self) -> usize {
         self.game.steps.len() - self.pos
     }
 
-    /// Steps produced so far.
     pub fn pos(&self) -> usize {
         self.pos
     }
@@ -1290,8 +1066,6 @@ impl GameStream {
         self.z.is_some()
     }
 
-    /// Runs the first `pos` steps through feature extraction without keeping them, so agent
-    /// memory is where it was (resume at a recorded lane position, 061-R10).
     pub fn advance_to(&mut self, pos: usize) {
         while self.pos < pos.min(self.game.steps.len()) {
             let n = (pos - self.pos).min(64);
@@ -1299,18 +1073,12 @@ impl GameStream {
         }
     }
 
-    /// Up to `n` next steps and how many of them have labels inconsistent with the masks.
     pub fn next_chunk(&mut self, n: usize) -> (Vec<TrainStep>, usize) {
         let end = self.pos.saturating_add(n).min(self.game.steps.len());
         let mut steps = Vec::with_capacity(end - self.pos);
         let mut invalid = 0;
         for i in self.pos..end {
             let s = &self.game.steps[i];
-            // 041-R30: a chained step of a listed source is observed through its chain-start
-            // step's RawFrame with that frame's events emptied (memory already folded them in at
-            // the chain start); its own frame's events wait for the next step that is not chained.
-            // Everything tied to the observation (privileged, frame, surrender rule, label check)
-            // comes from that frame too; label, delay and memory order stay the step's own.
             let chained = self.chain_start && chained_step(&self.game.steps, i);
             let owned: Option<uranium_proto::RawFrame>;
             let obs_step = if chained {
@@ -1328,16 +1096,9 @@ impl GameStream {
                 s
             };
             let frame = owned.as_ref().unwrap_or(&s.raw_frame);
-            // Memory sees what the policy did, like in RL (030 §4 previous action, §1 last action):
-            // the units that act on the command (041-R11); `LabelWalker::step` records it. A DAgger
-            // step with 040-R22 `memory_action` gets the model's own decisions instead, before the
-            // observation (041-R28 ③); without it (`None`) this is the label, as before.
             let (o, mut label, why) = self.walker.step_with_memory(frame, &s.action_label, self.z.as_ref(), s.memory_action.as_deref());
-            // 031-R12 ③ after memory saw this frame, as in the live check (041-AC4).
             let surrender_rule = uranium_env::surrender::rule_holds(frame, &self.walker.mem);
             let ok = why.is_none();
-            // 040-AC7: `invalid` counts what the 040-R19 filter counts; 031-AC3 `unknown` steps
-            // (labeler version 2) are weight 0 too but not invalid labels.
             invalid += (!ok && why != Some(UNKNOWN_REASON)) as usize;
             let o = if self.sym == Sym::IDENTITY {
                 o
@@ -1356,7 +1117,6 @@ impl GameStream {
     }
 }
 
-/// Whole game at once (tests, short games): `GameStream` drained in one chunk.
 pub fn prepare(game: &ShardGame, z_present: bool, sym: Sym, maps: &MapStore) -> Result<GameSeq> {
     let mut stream = GameStream::new(game.clone(), z_present, sym, maps)?;
     let (steps, invalid_labels) = stream.next_chunk(usize::MAX);
@@ -1367,8 +1127,6 @@ pub fn prepare(game: &ShardGame, z_present: bool, sym: Sym, maps: &MapStore) -> 
 mod chosen_tests {
     use super::*;
 
-    /// 050-R9 review: a read-ahead thread that panics ends the games with an error, not silently
-    /// (an evaluation would score fewer games).
     #[test]
     fn chosen_games_read_ahead_panic_is_an_error_050_r9() {
         let (tx, rx) = std::sync::mpsc::sync_channel::<Result<ChosenFile>>(1);

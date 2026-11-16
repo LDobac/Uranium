@@ -1,6 +1,3 @@
-//! Per-frame view shared by feature extraction (030), masks (034) and the executor (031), so all
-//! three judge eligibility the same way (031-R4, 031-R7).
-
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
 
@@ -11,7 +8,6 @@ use super::memory::{AgentMemory, ResourceTile, resource_tile};
 use super::schema::{CELLS, MAP, ORDER_NONE, OWNER_ENEMY, OWNER_NEUTRAL, OWNER_SELF};
 use crate::types::{TypeTables, UnitType};
 
-/// Unit / tech / upgrade ids resolved by name from the BWAPI tables (013-R1).
 #[derive(Debug)]
 pub struct Ids {
     pub scv: u16,
@@ -61,13 +57,8 @@ pub struct Ids {
     pub order_sieging: u16,
     pub order_unsieging: u16,
     pub order_harvest_gas: u16,
-    /// Orders that cannot be interrupted (orders.dat `can_be_interrupted` = 0, read 2026-10-19):
-    /// BWAPI refuses most commands (Unit_Busy) while a unit runs one (액션 감사 F15·F16).
     pub orders_uninterruptible: Vec<u16>,
-    /// Incomplete units that are still targets (034-R10): eggs, cocoons and merging archons
-    /// (BWAPI `canTargetUnit` accepts morphing units and archons).
     pub targetable_incomplete: Vec<u16>,
-    /// `UnitTypes::None` (empty training queue slot).
     pub none: u16,
 }
 
@@ -143,7 +134,6 @@ impl Ids {
     }
 }
 
-/// One entity row (030 §2 order: own, visible enemy, remembered enemy buildings, neutral).
 #[derive(Debug, Clone)]
 pub struct Entity {
     pub unit: UnitState,
@@ -159,39 +149,24 @@ pub struct World<'a> {
     pub types: &'static TypeTables,
     pub ids: &'static Ids,
     pub entities: Vec<Entity>,
-    /// Own completed unit counts by type.
     pub own_completed: HashMap<u16, u32>,
-    /// Space used in each own transport (dropship / bunker).
     pub cargo: HashMap<u32, i32>,
-    /// Own building id -> attached addon type.
     pub addon_of: HashMap<u32, u16>,
-    /// An own nuclear silo holds an armed nuke (034 can_cast_nuke).
     pub nuke_ready: bool,
-    /// Tiles covered by any known building or resource (own, visible, remembered), 034 location masks.
     pub blocked: Vec<bool>,
 }
 
-/// Unit ids of resources known only from the map precompute (never seen, so their game id is
-/// unknown): `UNSEEN_RESOURCE_ID + index in MapInfo::resources`. Not targetable (034 target
-/// classes need a real id) and never sent in a command.
 pub const UNSEEN_RESOURCE_ID: UnitId = 0xFFFF_0000;
 
 pub fn is_unseen_resource_id(id: UnitId) -> bool {
     id >= UNSEEN_RESOURCE_ID
 }
 
-/// OpenBW `unit_is_disabled`: lockdown, stasis or maelstrom. Such a unit takes no command, so it
-/// has no selection capability and no executor picks it (034-R6, B-11).
 pub fn is_disabled(u: &UnitState) -> bool {
     let s = &u.status_timers;
     s.lockdown > 0 || s.stasis > 0 || s.maelstrom > 0
 }
 
-/// 030-R2 exception (010-R5, E-3, AMB-030-3): resources out of vision as remembered neutral
-/// entities, in tile order. Seen ones keep their last observed state and frame; resources never
-/// seen take the map's initial state with `seen_frame = 0` (known from the map at game start).
-/// Tiles seen empty (`resources_gone`) are left out. The current amount of a resource out of
-/// vision is never used (no map hack).
 fn unseen_resources(mem: &AgentMemory, map: &MapInfo, visible: &std::collections::HashSet<UnitId>) -> Vec<Entity> {
     let types = TypeTables::get();
     let mut out: BTreeMap<ResourceTile, Entity> = BTreeMap::new();
@@ -200,8 +175,6 @@ fn unseen_resources(mem: &AgentMemory, map: &MapInfo, visible: &std::collections
             out.insert(*k, Entity { unit: r.unit.clone(), owner: OWNER_NEUTRAL, remembered: true, seen_frame: r.seen_frame });
         }
     }
-    // Display fields (owner, hp, shield, energy) as a seen resource of that type reports them, the
-    // first seen in tile order (deterministic); order, targets, flags and timers are reset.
     let mut templates: HashMap<u16, &UnitState> = HashMap::new();
     for s in mem.resources.values() {
         templates.entry(s.unit.unit_type).or_insert(&s.unit);
@@ -232,16 +205,12 @@ fn unseen_resources(mem: &AgentMemory, map: &MapInfo, visible: &std::collections
     out.into_values().collect()
 }
 
-/// BW neutral player (owner of map resources).
 const NEUTRAL_PLAYER: u8 = 11;
 
 pub fn tile_of(u: &UnitState) -> (i32, i32) {
     (u.pos.0 as i32 / 32, u.pos.1 as i32 / 32)
 }
 
-/// Top-left tile of a building footprint from its centre position. BWAPI places a building at
-/// `tile * 32 + tile_size * 16`; the pixel `dimensions` are asymmetric for some types (Machine
-/// Shop: 39 left, 31 right) and would land one tile off.
 pub fn top_left(u: &UnitState, t: &UnitType) -> (i32, i32) {
     ((u.pos.0 as i32 - t.tile_width * 16).div_euclid(32), (u.pos.1 as i32 - t.tile_height * 16).div_euclid(32))
 }
@@ -291,7 +260,6 @@ impl<'a> World<'a> {
             }
         }
 
-        // Addons sit right of the building's footprint, one tile down (BW layout).
         let mut addon_of = HashMap::new();
         let own_buildings: Vec<&UnitState> = frame.units.iter().filter(|u| u.owner == mem.self_player && ty(u).is_some_and(|t| t.is_building())).collect();
         let addons: BTreeMap<(i32, i32), u16> = own_buildings
@@ -342,7 +310,6 @@ impl<'a> World<'a> {
     }
 
     pub fn researched(&self, tech: u16) -> bool {
-        // Techs without a research cost (scan, matrix, healing, nuke) are available from the start.
         let free = self.types.techs.get(tech as usize).is_some_and(|t| t.minerals == 0);
         free || self.frame.self_state.tech & (1u64 << tech) != 0
     }
@@ -359,16 +326,12 @@ impl<'a> World<'a> {
         self.own_completed.get(&unit_type).copied().unwrap_or(0) > 0
     }
 
-    /// 034-R8: a completed own building that is constructing its addon (BWAPI `isConstructing`
-    /// on a completed building, or an incomplete addon in its slot).
     pub fn building_addon(&self, u: &UnitState) -> bool {
         self.ty(u).is_some_and(|t| t.is_building())
             && u.has(flags::COMPLETED)
             && (u.has(flags::CONSTRUCTING) || (u.has_addon && super::masks::addon_incomplete(self, u)))
     }
 
-    /// 031-R1: own completed, landed, idle-enough buildings of `producer` type that can run
-    /// `what` now, ordered by (queue length, id) — or by energy for the scanner.
     pub fn producers(&self, producer: u16, need_addon: Option<u16>, research: bool) -> Vec<&UnitState> {
         let mut v: Vec<&UnitState> = self
             .frame
@@ -376,10 +339,7 @@ impl<'a> World<'a> {
             .iter()
             .filter(|u| u.owner == self.mem.self_player && u.unit_type == producer)
             .filter(|u| u.has(flags::COMPLETED) && !u.has(flags::LIFTED))
-            // 034-R6: a disabled (e.g. stasis-ed) building takes no command.
             .filter(|u| !is_disabled(u))
-            // 034-R8 (사용자 결정 2026-10-19): the game refuses Train / Research / Upgrade
-            // (Unit_Busy) while the building constructs its addon.
             .filter(|u| !self.building_addon(u))
             .filter(|u| need_addon.is_none_or(|a| self.addon_of.get(&u.id) == Some(&a)))
             .filter(|u| if research { u.remaining_research == 0 && queue_len(u) == 0 } else { queue_len(u) < 5 && u.remaining_research == 0 })

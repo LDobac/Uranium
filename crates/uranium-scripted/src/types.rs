@@ -1,8 +1,5 @@
-//! The canonical BWAPI unit type ids the T0 bots need.
-
 use uranium_proto::{Tile, UnitState};
 
-// Terran
 pub const MARINE: u16 = 0;
 pub const SCV: u16 = 7;
 pub const DROPSHIP: u16 = 11;
@@ -14,13 +11,10 @@ pub const FACTORY: u16 = 113;
 pub const STARPORT: u16 = 114;
 pub const CONTROL_TOWER: u16 = 115;
 pub const BUNKER: u16 = 125;
-/// 022 teacher: siege tank (tank mode / siege mode), the factory's machine shop.
 pub const SIEGE_TANK: u16 = 5;
 pub const SIEGE_TANK_SIEGED: u16 = 30;
 pub const MACHINE_SHOP: u16 = 120;
-/// BWAPI TechType `Tank_Siege_Mode` (researched at the machine shop).
 pub const TECH_TANK_SIEGE: u16 = 5;
-// Zerg
 pub const ZERGLING: u16 = 37;
 pub const HYDRALISK: u16 = 38;
 pub const MUTALISK: u16 = 43;
@@ -33,7 +27,6 @@ pub const HIVE: u16 = 133;
 pub const SPIRE: u16 = 141;
 pub const SPAWNING_POOL: u16 = 142;
 pub const EXTRACTOR: u16 = 149;
-// Protoss
 pub const DARK_TEMPLAR: u16 = 61;
 pub const PROBE: u16 = 64;
 pub const ZEALOT: u16 = 65;
@@ -44,7 +37,6 @@ pub const GATEWAY: u16 = 160;
 pub const CITADEL: u16 = 163;
 pub const CYBERNETICS_CORE: u16 = 164;
 pub const TEMPLAR_ARCHIVES: u16 = 165;
-// Neutral
 pub const MINERAL_FIELDS: [u16; 3] = [176, 177, 178];
 pub const GEYSER: u16 = 188;
 
@@ -56,7 +48,6 @@ pub fn is_resource(ty: u16) -> bool {
     is_mineral(ty) || ty == GEYSER
 }
 
-/// Terran 106–130, Zerg 131–152, Protoss 154–175 (BWAPI UnitTypes).
 pub fn is_building(ty: u16) -> bool {
     (106..=175).contains(&ty) && ty != 153
 }
@@ -65,7 +56,6 @@ pub fn is_resource_depot(ty: u16) -> bool {
     matches!(ty, CC | NEXUS | HATCHERY | LAIR | HIVE)
 }
 
-/// A siege tank in either mode.
 pub fn is_tank(ty: u16) -> bool {
     matches!(ty, SIEGE_TANK | SIEGE_TANK_SIEGED)
 }
@@ -74,7 +64,6 @@ pub fn is_worker(ty: u16) -> bool {
     matches!(ty, SCV | PROBE | DRONE)
 }
 
-/// Gas buildings, placed on a geyser.
 pub fn is_refinery(ty: u16) -> bool {
     matches!(ty, REFINERY | EXTRACTOR | ASSIMILATOR)
 }
@@ -97,7 +86,6 @@ pub fn cost(ty: u16) -> i32 {
     }
 }
 
-/// Gas price (BWAPI 4.2 type table).
 pub fn gas_cost(ty: u16) -> i32 {
     match ty {
         FACTORY | STARPORT | DROPSHIP | LAIR | MUTALISK | CITADEL | DARK_TEMPLAR | SIEGE_TANK => 100,
@@ -108,7 +96,6 @@ pub fn gas_cost(ty: u16) -> i32 {
     }
 }
 
-/// Supply in BWAPI units (2 per marine) for one train order (a zergling order hatches two).
 pub fn supply_cost(ty: u16) -> i32 {
     match ty {
         ZEALOT | DARK_TEMPLAR | MUTALISK | DROPSHIP | SIEGE_TANK => 4,
@@ -116,7 +103,6 @@ pub fn supply_cost(ty: u16) -> i32 {
     }
 }
 
-/// Footprint in tiles.
 pub fn tile_size(ty: u16) -> (u16, u16) {
     match ty {
         CC | BARRACKS | NEXUS | GATEWAY | HATCHERY | LAIR | HIVE => (4, 3),
@@ -129,8 +115,6 @@ pub fn tile_size(ty: u16) -> (u16, u16) {
     }
 }
 
-/// Tiles kept free for a building: its footprint plus the 2-tile add-on slot on the right for
-/// the scenario bots' factory and starport (050 terran drop needs a control tower).
 pub fn footprint(ty: u16) -> (u16, u16) {
     let (w, h) = tile_size(ty);
     match ty {
@@ -139,12 +123,10 @@ pub fn footprint(ty: u16) -> (u16, u16) {
     }
 }
 
-/// Add-on top-left tile for a parent building at `parent` (top-left).
 pub fn addon_tile(parent: Tile) -> Tile {
     (parent.0 + 4, parent.1 + 1)
 }
 
-/// Top-left tile of a building/resource given its center position.
 pub fn building_tile(u: &UnitState) -> Tile {
     let (w, h) = tile_size(u.unit_type);
     ((u.pos.0.saturating_sub(w * 16)) / 32, (u.pos.1.saturating_sub(h * 16)) / 32)

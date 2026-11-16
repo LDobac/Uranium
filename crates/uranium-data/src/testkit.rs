@@ -1,8 +1,3 @@
-//! Synthetic BC games for tests (no game data, no map precomputes: use `MapStore::synthetic`):
-//! a 32x32 map with a Command Center, an SCV and a mineral field, 16 steps cycling Train_SCV /
-//! Move_Pos / Gather_Unit / NoOp labels. The same games as the Rust trainer tests, so the Python
-//! trainer tests (via `uranium._core`, AMB-000-4) read the same data. Feature `testkit`.
-
 use std::path::Path;
 
 use anyhow::Result;
@@ -105,8 +100,6 @@ pub fn game() -> ShardGame {
     ShardGame { meta, game_info: info, steps }
 }
 
-/// The synthetic game stretched to `steps` steps with the first `invalid` labels void
-/// (`select_empty`: the selected unit 99 does not exist).
 pub fn game_with_invalid(steps: usize, invalid: usize) -> ShardGame {
     let mut g = game();
     let base = g.steps.clone();
@@ -118,7 +111,6 @@ pub fn game_with_invalid(steps: usize, invalid: usize) -> ShardGame {
     g
 }
 
-/// A game of `len` steps (1..=16) with its own replay hash.
 pub fn game_len(len: usize, tag: u32) -> ShardGame {
     let mut g = game();
     g.steps.truncate(len);
@@ -126,14 +118,10 @@ pub fn game_len(len: usize, tag: u32) -> ShardGame {
     g
 }
 
-/// Fifteen games of different lengths (1..=16 steps), each with its own replay hash.
 pub fn varied_games() -> Vec<ShardGame> {
     [16, 3, 9, 16, 5, 1, 12, 7, 16, 2, 11, 4, 16, 8, 6].iter().enumerate().map(|(i, &l)| game_len(l, i as u32 + 1)).collect()
 }
 
-/// 050-R9 `val500_race` tests: `varied_games` with the enemy's played race cycling Terran,
-/// Protoss, Zerg, and a lobby Random that played Protoss (matchup `TvR`, `enemy_random`; the
-/// replay's `GameInfo` holds the played race).
 pub fn race_games() -> Vec<ShardGame> {
     varied_games()
         .into_iter()
@@ -148,9 +136,6 @@ pub fn race_games() -> Vec<ShardGame> {
         .collect()
 }
 
-/// 041-R30 tests: `varied_games` as source `botgen` with same-frame command chains: every step k with
-/// k % 4 == 2 (a Gather_Unit after a Move_Pos) is one frame after the step before, so it is chained;
-/// minerals differ per step, so the chain-start observation differs from the step's own.
 pub fn chain_games() -> Vec<ShardGame> {
     varied_games()
         .into_iter()
@@ -168,11 +153,6 @@ pub fn chain_games() -> Vec<ShardGame> {
         .collect()
 }
 
-/// 044-R2 / 044-R3 tests: `varied_games` as `distill_pre` games (source `distill`, stage B): step
-/// frames 1, 9, 17, ..., every label an `unknown` slot, and on every step the model decisions of the
-/// previous step's frame as `memory_action` (empty on the first step), cycling Train_SCV by the
-/// Command Center, Move_Pos and Gather_Unit by the SCV, and NoOp; each game has a second SCV from
-/// its fourth step on (batches then hold different entity counts).
 pub fn distill_games() -> Vec<ShardGame> {
     let table = action_table();
     let id = |name: &str| table.by_name(name).unwrap().id;
@@ -207,7 +187,6 @@ pub fn distill_games() -> Vec<ShardGame> {
         .collect()
 }
 
-/// A game with two more SCVs on every step (rows of one batch then have different entity counts).
 pub fn game_more_units(len: usize, tag: u32) -> ShardGame {
     let mut g = game_len(len, tag);
     for s in &mut g.steps {
@@ -216,7 +195,6 @@ pub fn game_more_units(len: usize, tag: u32) -> ShardGame {
     g
 }
 
-/// Shard files `<root>/p<k>/shard_00000.bin.zst` holding `games` in chunks of `per_file`.
 pub fn write_shards(root: &Path, games: &[ShardGame], per_file: usize) -> Result<()> {
     for (k, chunk) in games.chunks(per_file.max(1)).enumerate() {
         let d = root.join(format!("p{k}"));

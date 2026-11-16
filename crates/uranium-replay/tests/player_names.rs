@@ -1,8 +1,3 @@
-//! 020-AC7 check on a real replay: the header's player names are the ones hostd gave
-//! (`p<i>-<name>`, 020-R16). Names are only compared, never printed (040-R14).
-//!   URANIUM_TEST_REP=<g1.rep> URANIUM_TEST_REP_NAMES=p0-<run>,p1-T0-zerg \
-//!     cargo test -p uranium-replay --test player_names -- --ignored
-
 #[test]
 #[ignore = "needs URANIUM_TEST_REP and URANIUM_TEST_REP_NAMES"]
 fn replay_player_names_020_ac7() {

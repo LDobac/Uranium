@@ -1,7 +1,3 @@
-//! Brood War / SC:R x64 memory layouts (012-R2, 012-R5), copied from the `bw_dat` crate of
-//! neivv/aise (`bw_dat/src/bw/structs.rs`, lines 14-656 at commit da4fed6; Apache License 2.0,
-//! Copyright Markus Heikkinen). Changes: serde attributes removed, size checks limited to the
-//! types used here. Read only through samase plugin API pointers; never written (012-R4).
 #![allow(dead_code)]
 
 use std::ffi::c_void;
@@ -169,8 +165,6 @@ pub struct Sprite {
     pub version_specific: SpriteVersions,
 }
 
-/// 1.16.1-only sprite if struct size is needed.
-/// Other than size the layout will match that of Sprite.
 #[repr(C)]
 pub struct OldSprite {
     pub prev: *mut Sprite,
@@ -307,7 +301,6 @@ pub struct Unit {
     pub air_cooldown: u8,
     pub spell_cooldown: u8,
     pub order_target: PointAndUnit,
-    // Entity end
     pub shields: i32,
     pub unit_id: u16,
     pub unused66: u16,
@@ -359,13 +352,11 @@ pub struct Unit {
     pub next_invisible: *mut Unit,
     pub rally_pylon: RallyPylon,
     #[cfg(target_pointer_width = "64")]
-    pub unk_64bit_value: usize, // ??? This is not needed for alignment or anything
+    pub unk_64bit_value: usize,
     pub path: *mut Path,
     pub path_frame: u8,
     pub pathing_flags: u8,
     pub _unk106: u8,
-    /// This was probably a padding byte originally that BW used, so it is inside pathing data
-    /// struct.
     pub is_being_healed: u8,
     pub collision_points: [u16; 0x4],
     pub death_timer: u16,
@@ -587,7 +578,6 @@ pub struct Bullet {
     pub air_cooldown: u8,
     pub spell_cooldown: u8,
     pub target: PointAndUnit,
-    // Entity end
     pub weapon_id: u8,
     pub death_timer: u8,
     pub flags: u8,
@@ -649,7 +639,6 @@ pub struct Player {
 mod tests {
     use super::*;
 
-    /// The layouts must match the SC:R x64 game (bw_dat's own size checks).
     #[test]
     fn x64_sizes_012_r5() {
         use std::mem::size_of;

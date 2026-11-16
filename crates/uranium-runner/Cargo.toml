@@ -11,7 +11,6 @@ name = "uranium-env"
 path = "src/main.rs"
 
 [features]
-# Enable only on a CUDA host (CLAUDE.md fixed conditions): --features cuda
 cuda = []
 
 [dependencies]

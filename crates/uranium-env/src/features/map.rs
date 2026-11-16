@@ -1,43 +1,25 @@
-//! `MapInfo`: per-game static map data (030 §3 static channels, 034 location masks). Built from
-//! the 010 `GameInfo` plus the map precompute (`tools/mapgen`, 031 맵 사전계산, AMB-031-3).
-
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use uranium_proto::{GameInfo, Pos, Tile};
 
 use super::schema::{CELLS, MAP, ch};
 
-/// `MapPrecompute::version` this code writes and accepts. Files of another version are ignored
-/// (`maps::load_precompute` returns `None`) and the next replay build writes them again (031).
-/// 1 = no version field (before 2026-10-19). 2 = adds `resources` (030 §2, E-3, AMB-030-3).
 pub const PRECOMPUTE_VERSION: u32 = 2;
 
-/// One neutral resource of the map file (CHK `UNIT` section): public map information that the
-/// 010-R5 exception and 030-R2 allow out of vision (E-3, AMB-030-3).
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MapResource {
-    /// BWAPI unit type (mineral field or vespene geyser).
     pub unit_type: u16,
-    /// Centre pixel as the CHK stores it (the same as `UnitState::pos` in game).
     pub pos: Pos,
-    /// Initial amount: the CHK value when its "resources valid" property bit (0x10) is set, else
-    /// 0 (OpenBW `create_initial_unit` + `set_unit_resources`).
     pub amount: u32,
 }
 
-/// `<URANIUM_MAPS_DIR>/<map_hash>.toml` written by `uranium-replay build` (031 맵 사전계산).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct MapPrecompute {
-    /// [`PRECOMPUTE_VERSION`] of the writer; files without the field are version 1.
     #[serde(default = "precompute_v1")]
     pub version: u32,
-    /// Resource-depot top-left tiles of every base.
     pub base_locs: Vec<Tile>,
-    /// Tiles on choke points.
     pub chokes: Vec<Tile>,
-    /// Wall-in hint tiles (observation only, never enforced, 031).
     pub wall_candidates: Vec<Tile>,
-    /// Neutral resources in CHK order: the state of resources not yet seen (030 §2, E-3).
     #[serde(default)]
     pub resources: Vec<MapResource>,
 }
@@ -50,24 +32,18 @@ fn precompute_v1() -> u32 {
 pub struct MapInfo {
     pub width: usize,
     pub height: usize,
-    /// Channels 0..=9 of 030 §3, [10,128,128].
     pub static_channels: Vec<f32>,
-    /// Tile walkable (any of its 4x4 walk cells).
     pub walkable: Vec<bool>,
     pub buildable: Vec<bool>,
     pub start_locations: Vec<Tile>,
-    /// Index of the own start location in `start_locations` (030 `start_loc`).
     pub self_start: Option<usize>,
-    /// 040-R15 family index: fighting_spirit 0, circuit_breaker 1, other 2.
     pub map_family: i32,
-    /// Map-public neutral resources from the precompute (030-R2 exception, E-3); empty without one.
     pub resources: Vec<MapResource>,
 }
 
 pub const STATIC_CHANNELS: usize = 10;
 
 impl MapInfo {
-    /// 030-R6: maps wider or taller than 128 tiles are rejected.
     pub fn new(info: &GameInfo, map_family: i32, pre: Option<&MapPrecompute>) -> Result<Self> {
         let s = &info.static_map;
         let (w, h) = (s.width_tiles as usize, s.height_tiles as usize);
@@ -104,7 +80,6 @@ impl MapInfo {
                 set(ch::VALID_MAP, x, y);
             }
         }
-        // Start locations mark the resource-depot footprint (4x3 from the top-left tile).
         for &(x, y) in &s.start_locations {
             for dy in 0..3 {
                 for dx in 0..4 {

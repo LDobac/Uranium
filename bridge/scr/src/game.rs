@@ -1,7 +1,3 @@
-//! One game on the game thread (012-R1): per-frame bookkeeping, observations on the realtime
-//! schedule (012-R8), Acts within their deadline (012-R7), surrender (012-R11) and the end
-//! (012-R10, 012-R15). No I/O here: the caller hands messages to the I/O thread.
-
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -15,15 +11,12 @@ use crate::schedule::Schedule;
 use crate::snapshot::Snapshot;
 use crate::tables::Tables;
 
-/// BWAPI neutral player.
 const NEUTRAL: u8 = 11;
 
 #[derive(Default, Debug)]
 pub struct Outgoing {
-    /// Network commands for `send_command`, in order.
     pub packets: Vec<Vec<u8>>,
     pub to_agent: Vec<BridgeMsg>,
-    /// Lines for the bridge log.
     pub log: Vec<String>,
 }
 
@@ -35,12 +28,8 @@ pub struct Game {
     nukes: NukeState,
     end: EndTracker,
     pub schedule: Schedule,
-    /// Position of every map resource seen alive (011-R20).
     remembered: HashMap<u32, Pos>,
-    /// Enemy buildings observed this game, for fog-ghost commands (012-R17), refreshed with each
-    /// observation sent. A new `Game` per game starts it empty.
     buildings: BuildingMemory,
-    /// Surrendered or ended: nothing more is sent (012-R11).
     pub done: bool,
     pub observations: u32,
     started: Instant,
@@ -66,7 +55,6 @@ impl Game {
             events: EventTracker::default(),
             nukes: NukeState::default(),
             end: EndTracker::new(me, enemy),
-            // Unit tags are ready from frame 1, like the OpenBW bridge's first observation (011-R15).
             schedule: Schedule::new(1),
             remembered: HashMap::new(),
             buildings: BuildingMemory::new(),
@@ -96,7 +84,6 @@ impl Game {
         })
     }
 
-    /// One game frame. `act`: the agent's reply read since the last frame, if any.
     pub fn frame(&mut self, s: &Snapshot, act: Option<AgentMsg>) -> Outgoing {
         let t = self.t;
         let mut out = Outgoing::default();
@@ -117,8 +104,6 @@ impl Game {
             }
         }
         let snapshot_frame = |game: &mut Self| {
-            // 012-R17: the enemy-building record follows the observations sent to the agent (as the
-            // OpenBW shim's observe()), not every game frame.
             commands::remember_buildings(s, &d, &mut game.buildings);
             let units = observe_units(s, &d, t, &game.observe);
             raw_frame(s, t, units, &dots, game.events.take())
@@ -136,7 +121,6 @@ impl Game {
                 }
                 let ok = self.schedule.on_act(s.frame, a.advance_frames, a.valid_until_frame);
                 if let Some(text) = &a.surrender {
-                    // 012-R11: chat, stop, report the loss; the game window stays open.
                     if !a.cmds.is_empty() || text.len() > MAX_SURRENDER_CHAT {
                         out.log.push(format!("010-R13: bad surrender Act ({} commands, {} bytes) ignored", a.cmds.len(), text.len()));
                     } else {
@@ -177,7 +161,6 @@ impl Game {
         out
     }
 
-    /// 012-AC6 summary for the log: observation -> applied delay percentiles and expired Acts.
     pub fn summary(&self) -> String {
         let mut d = self.schedule.delays.clone();
         d.sort_unstable();

@@ -1,18 +1,3 @@
-//! The server side of [`InferenceHandle`] for a model that runs outside Rust (the PyTorch
-//! inference thread, AMB-000-4, 001-R6). Sessions talk to it exactly as to any inference server;
-//! the model thread pulls work with [`Broker::next`] and answers with [`Broker::reply`]:
-//! - `resets`: slots opened since the last work; their Core state starts at zero (032-R5)
-//! - `restores`: slots whose Core state a session overwrites (051-R4), after the resets, answered
-//!   with [`Broker::reply_restores`]
-//! - `states`: slots whose Core state a session asked for (032-R16), after the restores, answered
-//!   with [`Broker::reply_states`] before the batch
-//! - `batch`: the waiting sessions' observations, collated on the host (030 §1 layout), run once
-//!   when the batch is full, every active session waits, or the oldest has waited `max_wait`
-//!   (032-R14; lockstep sessions wait for their reply, so batching changes throughput only)
-//!
-//! The model thread owns the `[capacity, …]` slot state and the weights (032-R16 swaps happen
-//! there); this side builds the executor's actions (034 columns, END = padded n).
-
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
@@ -23,7 +8,6 @@ use uranium_env::features::Observation;
 
 use crate::infer::{ActReply, HEADS, HostState, InferOptions, InferenceHandle, Req, SampleMode, host_action};
 
-/// Batches slower than this are logged (normal p95 is well under a second).
 const SLOW_BATCH: Duration = Duration::from_secs(5);
 
 struct Pending {
@@ -33,58 +17,44 @@ struct Pending {
     since: Instant,
 }
 
-/// One pull of the model thread, handled in this order (051-R4): `resets`, `restores`, `states`,
-/// `batch`.
 pub struct Work {
     pub resets: Vec<usize>,
-    /// 051-R4: (slot, state) to write into the slot's Core state, in request order.
     pub restores: Vec<(usize, HostState)>,
     pub states: Vec<usize>,
     pub batch: Option<WorkBatch>,
 }
 
 pub struct WorkBatch {
-    /// Slot of every row.
     pub slots: Vec<usize>,
     pub obs: HostObsBatch,
-    /// Time the requests waited before the batch was formed (mean, max), and the batch's
-    /// forming time (UNIX ns): latency accounting (AMB-042-10).
     pub wait_mean: Duration,
     pub wait_max: Duration,
     pub formed_unix_ns: u64,
 }
 
-/// Wall clock in UNIX nanoseconds (comparable with Python's `time.time_ns`).
 pub fn unix_ns() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64)
 }
 
-/// 051-R4: why `state` cannot be one slot's Core state on its own (no parts, a part that is not
-/// batch 1, values that do not fill a shape); `None` when it can.
 fn restore_shape_error(state: &HostState) -> Option<String> {
     if state.parts.is_empty() {
         return Some("the state has no parts (051-R4)".into());
     }
     state.parts.iter().enumerate().find_map(|(i, (shape, v))| {
-        // Checked: a session's shape must not overflow (a panic here would poison the broker).
         let n = shape.iter().try_fold(1usize, |n, &d| n.checked_mul(d));
         (shape.first() != Some(&1) || n != Some(v.len())).then(|| format!("part {i}: {} values for shape {shape:?}, batch 1 expected (051-R4)", v.len()))
     })
 }
 
-/// The model's output for a batch, rows in `WorkBatch::slots` order.
 pub struct BatchOut<'a> {
     pub action: &'a [i64],
     pub delay: &'a [i64],
     pub queued: &'a [i64],
-    /// [rows, s] selection steps, END = the batch's padded n.
     pub selected: &'a [i64],
     pub target_unit: &'a [i64],
     pub target_loc: &'a [i64],
     pub log_prob: &'a [f32],
-    /// [rows, HEADS]
     pub head_log_prob: &'a [f32],
-    /// [rows, 4]
     pub value: &'a [f32],
     pub win_open: Option<&'a [f32]>,
 }
@@ -108,12 +78,10 @@ pub struct Broker {
     restoring: Vec<Sender<Result<()>>>,
     inflight: Option<InFlight>,
     version: u64,
-    /// Every handle is gone: no more work will come.
     closed: bool,
 }
 
 impl Broker {
-    /// A broker and the handle sessions use (`checkpoint_id`: 020-R5 policy version).
     pub fn new(checkpoint_id: String, sample: SampleMode, opts: InferOptions) -> Result<(Self, InferenceHandle)> {
         let (tx, rx) = mpsc::channel();
         let cols = ActionColumns::current()?;
@@ -125,12 +93,10 @@ impl Broker {
         &self.opts
     }
 
-    /// Every handle (and session) is gone; the model thread can stop.
     pub fn closed(&self) -> bool {
         self.closed && self.pending.is_empty() && self.inflight.is_none()
     }
 
-    /// 032-R16: weights version reported with every later decision (the model thread swapped).
     pub fn set_version(&mut self, v: u64) {
         self.version = v;
     }
@@ -160,8 +126,6 @@ impl Broker {
             }
             Req::State { slot, reply } => self.states.push((slot, reply)),
             Req::SetState { slot, state, reply } => match restore_shape_error(&state) {
-                // 051-R4: refused here when a part is not batch 1 or its values do not fill its
-                // shape; the model thread checks the shapes against the slot's state.
                 Some(e) => {
                     let _ = reply.send(Err(anyhow!("state restore refused: {e}")));
                 }
@@ -175,8 +139,6 @@ impl Broker {
         !self.pending.is_empty() && (self.pending.len() >= self.opts.max_batch || self.pending.len() >= active || self.pending[0].since.elapsed() >= self.opts.max_wait)
     }
 
-    /// The next work, waiting at most `timeout`; `None` when there is none yet (or every handle is
-    /// gone). The previous batch must have been answered.
     pub fn next(&mut self, timeout: Duration) -> Result<Option<Work>> {
         ensure!(self.inflight.is_none(), "the previous batch has no reply yet");
         ensure!(self.asked.is_empty(), "the previous state requests have no reply yet");
@@ -236,8 +198,6 @@ impl Broker {
         (!resets.is_empty() || !restores.is_empty() || !states.is_empty() || batch.is_some()).then_some(Work { resets, restores, states, batch })
     }
 
-    /// 051-R4: answers the restores of the last work, in its `restores` order: `None` = written,
-    /// `Some(reason)` = refused (the slot kept its state).
     pub fn reply_restores(&mut self, errors: Vec<Option<String>>) -> Result<()> {
         let restoring = std::mem::take(&mut self.restoring);
         ensure!(errors.len() == restoring.len(), "{} restore results for {} restores", errors.len(), restoring.len());
@@ -250,7 +210,6 @@ impl Broker {
         Ok(())
     }
 
-    /// Answers the state requests of the last work, in its `states` order.
     pub fn reply_states(&mut self, states: Vec<HostState>) -> Result<()> {
         let asked = std::mem::take(&mut self.asked);
         ensure!(states.len() == asked.len(), "{} states for {} requests", states.len(), asked.len());
@@ -260,7 +219,6 @@ impl Broker {
         Ok(())
     }
 
-    /// Answers the last batch.
     pub fn reply(&mut self, out: BatchOut<'_>) -> Result<()> {
         let f = self.inflight.take().ok_or_else(|| anyhow!("no batch to answer"))?;
         let b = f.batch.len();
@@ -268,8 +226,6 @@ impl Broker {
         let s = out.selected.len() / b.max(1);
         let run = f.started.elapsed();
         if run >= SLOW_BATCH {
-            // 011-AC7: OpenBW drops a LAN client after 60 s without sync, so a stall here ends the
-            // game early with both sides claiming the win. Log it with wall time to line it up.
             let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
             elog!("[infer] slow batch: {b} requests took {:.1}s (unix {unix})", run.as_secs_f64());
         }
@@ -291,8 +247,6 @@ impl Broker {
         Ok(())
     }
 
-    /// The model failed on the last batch (or state requests, restores): every waiting session
-    /// gets the error.
     pub fn fail(&mut self, msg: &str) {
         if let Some(f) = self.inflight.take() {
             for p in f.batch {
@@ -307,7 +261,6 @@ impl Broker {
         }
     }
 
-    /// Refuses everything still queued (the model thread is stopping).
     pub fn shutdown(&mut self, msg: &str) -> Result<()> {
         self.fail(msg);
         while let Ok(r) = self.rx.try_recv() {

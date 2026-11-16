@@ -1,9 +1,3 @@
-//! 051 branch-game sessions (051-AC1 session part, 051-R2..R9, 020-R22 ④) with a mock model behind
-//! the inference broker (AMB-000-4). The mock's Core state is its slot's decision count (shape
-//! [1, 1]); it samples the only open action when `type_mask` has exactly one (a `force`), else
-//! NoOp, with delay bucket = decisions so far; it logs the open action ids of every row it sees.
-//! The game-level checks (051-AC3..AC6) need hostd: `tests/branch_replay.rs` and the e2e run.
-
 #[path = "../../uranium-env/tests/common/mod.rs"]
 mod common;
 
@@ -23,7 +17,6 @@ use uranium_env::features::extract::action_table;
 use uranium_env::features::{AgentMemory, DELAY_BUCKETS, MapInfo, extract};
 use uranium_proto::*;
 
-/// (slot, open action ids) of every row the mock ran.
 type Seen = Arc<Mutex<Vec<(usize, Vec<u16>)>>>;
 
 fn mock() -> (InferenceHandle, Seen) {
@@ -80,7 +73,6 @@ fn mock() -> (InferenceHandle, Seen) {
     (h, seen)
 }
 
-/// Frames that differ per step (units move, some appear later), frame numbers 24 t + 1.
 fn frames(steps: usize) -> Vec<RawFrame> {
     (0..steps)
         .map(|t| {
@@ -110,15 +102,11 @@ fn postcard(a: &Act) -> Vec<u8> {
 
 const I_T: u32 = 5;
 
-/// A trunk game: plan game 1, snapshot rule `p` from the frame of observation `I_T` (no condition,
-/// 051-R3), state files under `dir/states`.
 fn trunk_game(dir: &Path) -> Arc<GameBranch> {
     let rule = SnapshotRule { name: "p".into(), from_frame: 24 * I_T + 1, to_frame: 100_000, any_open: vec![], after_rule: None, after_s: None };
     Arc::new(GameBranch { plan_game: 1, acts_dir: Some(dir.join("acts")), snapshots: vec![rule], states_dir: Some(dir.join("states")), branch: None })
 }
 
-/// Plays `fs` with `p` the way the session does (051-R2 lines from `act_log_extra`) and returns
-/// the complete log (end line included).
 fn play_logged(p: &mut ModelPolicy, fs: &[RawFrame]) -> (Vec<Act>, ActLog) {
     let mut acts = vec![];
     let mut lines = vec![];
@@ -141,7 +129,6 @@ fn act_is_leave(a: &Act) -> bool {
     a.surrender.is_some()
 }
 
-/// A trunk act log and state file on disk: (log path, trunk acts, log, state file, its sha256).
 struct Trunk {
     acts_path: PathBuf,
     acts: Vec<Act>,
@@ -193,8 +180,6 @@ fn rows_of(seen: &Seen) -> usize {
     seen.lock().unwrap().len()
 }
 
-/// 051-R3: the trunk's `players[0]` session saves its Core state right before the first decision
-/// in the rule's window (one file, bit-exact, sha256 in the act-log line and the record).
 #[test]
 fn trunk_saves_the_state_at_the_snapshot_decision_051_r3() {
     let dir = temp("trunk");
@@ -203,22 +188,17 @@ fn trunk_saves_the_state_at_the_snapshot_decision_051_r3() {
     let t = trunk(&h, &dir, &fs);
     let bytes = std::fs::read(&t.state).unwrap();
     assert_eq!(sha256_hex(&bytes), t.sha);
-    // The mock's state before decision i is i.
     assert_eq!(decode_state(&bytes).unwrap(), vec![(vec![1, 1], vec![I_T as f32])]);
     let at = &t.log.lines[I_T as usize];
     assert_eq!((at.state.as_deref(), at.state_sha256.as_deref()), (Some(state_id(1, I_T).as_str()), Some(t.sha.as_str())));
     assert!(t.log.lines.iter().filter(|l| l.state.is_some()).count() == 1, "the rule fires once");
     assert!(t.log.lines.iter().all(|l| l.decision.is_some() && !l.forced));
-    // The other players index logs but never snapshots (020-R22 ②).
     let mut q = ModelPolicy::new(&h, &game_info()).unwrap().with_branch(trunk_game(&dir.join("other")), 1).unwrap();
     let (_, log) = play_logged(&mut q, &fs);
     assert!(log.lines.iter().all(|l| l.state.is_none()) && q.branch_record().unwrap().snapshots.is_empty());
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 051-R5 / 051-R6 / 051-AC1 (강제 앞부분): observations matching the trunk get the recorded Acts
-/// byte for byte without inference, memory ends up as the trunk's, the restored state at t gives
-/// the trunk's decision, and the act-log lines say `forced` before t.
 #[test]
 fn forced_prefix_replays_the_trunk_and_restores_at_t_051_r5_r6() {
     let dir = temp("prefix");
@@ -239,14 +219,12 @@ fn forced_prefix_replays_the_trunk_and_restores_at_t_051_r5_r6() {
     for (i, (a, b)) in acts.iter().zip(&t.acts).enumerate() {
         assert_eq!(postcard(a), postcard(b), "observation {i}: Act bytes");
     }
-    // Delay bucket at t = the restored decision count (the trunk's), not 0 of a fresh slot.
     assert_eq!(acts[I_T as usize].advance_frames, DELAY_BUCKETS[I_T as usize]);
     for (i, x) in extras.iter().enumerate() {
         assert_eq!(x.forced, i < I_T as usize, "observation {i}");
         assert_eq!(x.decision, t.log.lines[i].decision, "observation {i}: decision");
     }
     assert_eq!(rows_of(&seen), before + fs.len() - I_T as usize);
-    // Memory: the same as the trunk session's after the same observations (051-AC1).
     let map = MapInfo::new(&game_info(), 0, None).unwrap();
     let next = frames(10).pop().unwrap();
     let (mut a, mut b) = (p.memory().clone(), t.memory.clone());
@@ -257,7 +235,6 @@ fn forced_prefix_replays_the_trunk_and_restores_at_t_051_r5_r6() {
     assert!(o.valid && o.invalid.is_none());
     assert_eq!((o.prefix_obs, o.prefix_matched, o.state_check.clone()), (I_T + 1, I_T + 1, None));
     assert!(o.intervention.is_empty());
-    // 051-R9 ①: t decision is k = 0; the 8th decision after t and the horizon were not reached.
     assert_eq!((o.samples.d8.is_none(), o.samples.horizon.is_none(), o.samples.t60.is_none()), (true, true, true));
     for k in OUTCOME_METRICS {
         assert!(o.metrics.contains_key(*k), "{k}");
@@ -266,9 +243,6 @@ fn forced_prefix_replays_the_trunk_and_restores_at_t_051_r5_r6() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 051-R5 ①: a digest or frame different from the trunk before t makes the branch invalid and the
-/// session leaves without chat (and keeps leaving); inputs that cannot be read or do not match
-/// their sha256 are `missing_input` / `state` at the first observation (051-R6 ②).
 #[test]
 fn mismatch_or_bad_inputs_leave_without_chat_051_r5() {
     let dir = temp("mismatch");
@@ -305,22 +279,17 @@ fn mismatch_or_bad_inputs_leave_without_chat_051_r5() {
     no_log.branch.as_mut().unwrap().acts = dir.join("missing.jsonl");
     let (_, o) = run(Arc::new(no_log), &fs);
     assert_eq!(o.invalid.unwrap().reason, InvalidReason::MissingInput);
-    // The game ended before t: the trunk's observation i_t never came.
     let (_, o) = run(branch_game(&t, none(), false), &fs[..3]);
     assert_eq!(o.invalid.unwrap().reason, InvalidReason::Frame);
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 051-R7 (031-R4 exception): from t on the narrowed `type_mask` reaches the model and the
-/// executor; a t-only `force` narrows the t decision to {action} only, a `ban` closes the action
-/// over its window and nothing else; the record logs both.
 #[test]
 fn interventions_narrow_the_mask_from_t_051_r7() {
     let dir = temp("intervene");
     let (h, seen) = mock();
     let fs = frames(9);
     let t = trunk(&h, &dir, &fs);
-    // The t observation's open actions (the trunk's view): force / ban the first non-NoOp one.
     let map = MapInfo::new(&game_info(), 0, None).unwrap();
     let mut mem = AgentMemory::new(&game_info());
     let obs: Vec<_> = fs.iter().map(|f| extract(f, &mut mem, &map, None)).collect();
@@ -354,15 +323,12 @@ fn interventions_narrow_the_mask_from_t_051_r7() {
     let rows: Vec<Vec<u16>> = seen.lock().unwrap()[start..].iter().map(|(_, o)| o.clone()).collect();
     for (k, row) in rows.iter().enumerate() {
         let full = open_ids(&obs[I_T as usize + k].masks.type_mask);
-        // Window [f_t, f_t + 48): observations t and t + 1 (frames 24 apart).
         let want: Vec<u16> = if k < 2 { full.into_iter().filter(|&a| a != target).collect() } else { full };
         assert_eq!(row, &want, "decision t + {k}");
     }
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 051-R6 test option `verify_state`: the prefix runs inference only to build the state, and at t
-/// that state is compared with the saved one (here bit-equal); the Acts stay the trunk's.
 #[test]
 fn verify_state_compares_the_rebuilt_state_051_r6() {
     let dir = temp("verify");
@@ -392,13 +358,10 @@ impl Write for SinkWriter {
     }
 }
 
-/// One session per (game id, slot) in turn on one server with `board`; slot 0 plays the model,
-/// slot 1 the T0 default. Each bridge sends its frames (until the agent leaves), then GameEnd.
 fn serve_games(h: &InferenceHandle, board: BranchBoard, games: &[(u64, u8, Vec<RawFrame>)]) -> Vec<serde_json::Value> {
     serve_games_ending(h, board, games, EndReason::TimeLimitDraw)
 }
 
-/// [`serve_games`] whose games that run to their last frame end with `reason`.
 fn serve_games_ending(h: &InferenceHandle, board: BranchBoard, games: &[(u64, u8, Vec<RawFrame>)], reason: EndReason) -> Vec<serde_json::Value> {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
@@ -439,7 +402,6 @@ fn serve_games_ending(h: &InferenceHandle, board: BranchBoard, games: &[(u64, u8
         }
         write_msg(&mut w, &BridgeMsg::End(end)).unwrap();
         w.flush().unwrap();
-        // The server writes the record when the session ends.
         let n = games.iter().position(|g| g.0 == game_id && g.1 == slot).unwrap() + 1;
         while String::from_utf8(sink.lock().unwrap().clone()).unwrap().lines().count() < n {
             std::thread::sleep(Duration::from_millis(10));
@@ -452,10 +414,6 @@ fn serve_games_ending(h: &InferenceHandle, board: BranchBoard, games: &[(u64, u8
     text.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
 }
 
-/// 051-R2 / 020-R22 ① ② ③ through the agent server: every session of a game on the board writes
-/// its act log (model lines with decisions, T0 lines without; observation digests restarted per
-/// observation over the bytes of the session digest; the end line), the trunk record lists its
-/// snapshot, and a branch game's record carries its outcome with `end`.
 #[test]
 fn sessions_write_act_logs_and_branch_records_051_r2() {
     let dir = temp("serve");
@@ -490,7 +448,6 @@ fn sessions_write_act_logs_and_branch_records_051_r2() {
     let t0 = recs.iter().find(|r| r["slot"] == 1).unwrap();
     assert!(t0.get("snapshots").is_none() && t0.get("branch").is_none() && t0.get("infer_seed").is_none());
 
-    // The branch game, from the trunk files the server wrote.
     let sha = snap.state_sha256.clone();
     let t = Trunk { acts_path: dir.join("acts").join(act_log_name(1, 0)), acts: vec![], log: ours.clone(), state: trunk_game(&dir).state_path(I_T).unwrap(), sha, memory: AgentMemory::new(&game_info()) };
     let mut g = (*branch_game(&t, none(), false)).clone();
@@ -512,8 +469,6 @@ fn sessions_write_act_logs_and_branch_records_051_r2() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 020-R22 ④: a game that is not on the board (or a board entry of another game) plays exactly as
-/// before: the same Acts and digest, and the record has none of the 051 keys.
 #[test]
 fn games_off_the_board_are_unchanged_020_r22() {
     let dir = temp("plain");
@@ -547,10 +502,6 @@ fn games_off_the_board_are_unchanged_020_r22() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 051-R5 ① / 051-R9 ④: an aborted game is an infrastructure failure, not an invalid branch. A
-/// disconnect before t leaves `invalid` unset (a finished game that ended before t is `frame`, see
-/// `mismatch_or_bad_inputs_leave_without_chat_051_r5`), and a `GameEnd` Aborted after t gives
-/// `end: null` (no outcome; the job plays the game again, 020-R15 ④).
 #[test]
 fn aborted_branches_are_not_invalid_051_r9() {
     let dir = temp("abort");
@@ -573,9 +524,6 @@ fn aborted_branches_are_not_invalid_051_r9() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 051-R5 ⑤ / 041-R28: a branch player's 041-R28 decision log marks the forced prefix decisions
-/// `"forced":true`; every other line, and a plain (DAgger) session's whole log, is byte-identical
-/// to the format before the field (no `forced` key), and both forms read back.
 #[test]
 fn decision_log_marks_forced_decisions_051_r5() {
     use uranium_env::features::label::DecisionLogLine;
@@ -598,7 +546,6 @@ fn decision_log_marks_forced_decisions_051_r5() {
         assert!(matches!(parsed, DecisionLogLine::Decision { forced, .. } if forced == (i < I_T as usize)), "line {i}");
     }
     assert_eq!(lines[0], r#"{"frame":1,"action":0,"delay_bucket":0,"units":[],"forced":true}"#);
-    // A plain (DAgger) session: the bytes of the format before the field.
     let plain = dir.join("memory").join("g3.jsonl");
     let mut q = ModelPolicy::new(&h.clone().with_memory_log(plain.clone()), &game_info()).unwrap();
     for f in &fs[..2] {

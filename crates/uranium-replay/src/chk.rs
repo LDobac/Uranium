@@ -1,15 +1,7 @@
-//! Map CHK normalisation for OpenBW (013 "맵 CHK 정규화"): OpenBW's map loader takes CHK `VER`
-//! 59 / 63 / 205 and requires `STR `; SC:R maps saved as VER 64 / 206 carry the extended string
-//! table `STRx` (u32 count and offsets) instead. The converted replay gets VER 63 / 205 and an
-//! equivalent `STR ` (u16); everything else is copied byte for byte.
-
 use anyhow::{Result, bail};
 
-/// SC:R map versions with `STRx` and their 1.16.1 counterparts.
 const VERSIONS: [(u16, u16); 2] = [(64, 63), (206, 205)];
 
-/// One CHK section in file order; `None` name marks trailing bytes that are not a valid
-/// section (map protection), kept verbatim.
 struct Section<'a> {
     name: Option<[u8; 4]>,
     body: &'a [u8],
@@ -35,7 +27,6 @@ fn sections(m: &[u8]) -> Vec<Section<'_>> {
     out
 }
 
-/// `STRx` -> `STR `: same strings in the same order; offsets outside the data become "".
 fn strx_to_str(b: &[u8]) -> Result<Vec<u8>> {
     if b.len() < 4 {
         bail!("STRx section of {} bytes", b.len());
@@ -54,7 +45,7 @@ fn strx_to_str(b: &[u8]) -> Result<Vec<u8>> {
         &s[..s.iter().position(|&c| c == 0).unwrap_or(s.len())]
     };
     let header = 2 + 2 * count;
-    let mut data: Vec<u8> = vec![0]; // shared empty string
+    let mut data: Vec<u8> = vec![0];
     let mut offsets = Vec::with_capacity(count);
     let mut seen: std::collections::HashMap<&[u8], usize> = std::collections::HashMap::new();
     for i in 0..count {
@@ -83,7 +74,6 @@ fn strx_to_str(b: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// The CHK OpenBW can load. Returns the input unchanged when it has no SC:R-only sections.
 pub fn to_legacy(m: &[u8]) -> Result<Vec<u8>> {
     let secs = sections(m);
     let has_strx = secs.iter().any(|s| s.name == Some(*b"STRx"));
@@ -94,7 +84,6 @@ pub fn to_legacy(m: &[u8]) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(m.len());
     for s in &secs {
         match s.name {
-            // Trailing bytes that are not a section go out as they came.
             None => out.extend_from_slice(s.body),
             Some(n) if &n == b"VER " && s.body.len() >= 2 => {
                 let v = u16::from_le_bytes([s.body[0], s.body[1]]);
@@ -145,7 +134,6 @@ mod tests {
         b
     }
 
-    /// Reads a `STR ` body the way OpenBW's `tag_funcs["STR "]` does.
     fn openbw_strings(b: &[u8]) -> Vec<Vec<u8>> {
         let n = u16::from_le_bytes([b[0], b[1]]) as usize;
         (0..n)
@@ -182,7 +170,6 @@ mod tests {
 
     #[test]
     fn strx_replaces_a_stale_str_and_bad_offsets_become_empty_013() {
-        // Two strings: "ok" right after the table (offset 12) and an offset past the end.
         let mut b = 2u32.to_le_bytes().to_vec();
         b.extend_from_slice(&12u32.to_le_bytes());
         b.extend_from_slice(&9999u32.to_le_bytes());

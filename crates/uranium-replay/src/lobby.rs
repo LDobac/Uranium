@@ -1,11 +1,3 @@
-//! 022 teacher data (022-R2, 022-R12, 022-AC3; 041-R22 and 040 2026-11-14): a build with
-//! `--games <games.jsonl>` (`--src botgen` for the 022 teacher's botgen games, required with
-//! `--relabel terran_tp`) keeps only the plan's players[0] as a view (the teacher in its botgen
-//! games, the model in its self games; spec 040: only the teacher's view is data, so the Terran
-//! opponent of a TvT game is not), and takes the opponent's LOBBY race from the runner's
-//! games.jsonl line of the game instead of the replay header, which stores the race played
-//! (`header::RACE_RANDOM`). A replay without such a line is refused, never guessed.
-
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -16,12 +8,8 @@ use crate::Replay;
 use crate::header::{RACE_PROTOSS, RACE_RANDOM, RACE_TERRAN, RACE_ZERG};
 use crate::pipeline::View;
 
-/// Display name of the 022 teacher in a plan (`uranium-runner` `Side::display_name`); hostd names
-/// the player `p<index>-<name>` (020-R16).
 pub const TP_TEACHER_NAME: &str = "T0-terran-terran_tp";
 
-/// The lobby races of the games of one runner output (games.jsonl: `game_id`, `races` =
-/// `GameSpec.players` lobby races, `Random` kept, 021-R7).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GamesLog {
     races: HashMap<u64, [u8; 2]>,
@@ -33,7 +21,6 @@ struct GameLine {
     races: [String; 2],
 }
 
-/// Header race code of a games.jsonl race (`uranium_proto::Race` debug name).
 pub fn race_code(s: &str) -> Option<u8> {
     match s {
         "Zerg" => Some(RACE_ZERG),
@@ -55,7 +42,6 @@ fn race_name(r: u8) -> &'static str {
 }
 
 impl GamesLog {
-    /// games.jsonl text: one line per game attempt; every line of a game id must name the same races.
     pub fn parse(text: &str) -> Result<Self> {
         let mut races: HashMap<u64, [u8; 2]> = HashMap::new();
         for (i, l) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
@@ -73,22 +59,17 @@ impl GamesLog {
         Self::parse(&std::fs::read_to_string(path).with_context(|| format!("--games {}", path.display()))?)
     }
 
-    /// The lobby races [players[0], players[1]] of the replay file (`g<game id>...rep`).
     pub fn lobby(&self, file: &Path) -> Option<[u8; 2]> {
         self.races.get(&game_id(file)?).copied()
     }
 }
 
-/// The game id of a runner replay file name: `g<id>.rep` (uranium-env run, evaluation jobs) or
-/// hostd's `g<id>-s<seed>-p0.rep`.
 pub fn game_id(file: &Path) -> Option<u64> {
     let stem = file.file_stem()?.to_str()?.strip_prefix('g')?;
     let digits = stem.split('-').next()?;
     digits.parse().ok()
 }
 
-/// The `GameSpec.players` index in a hostd player name: `p<i>-<name>` or `uranium-p<i>` (020-R16,
-/// as `uranium_agent::name_index`).
 pub fn name_index(name: &[u8]) -> Option<u8> {
     let name = std::str::from_utf8(name).ok()?;
     if let Some(i) = name.strip_prefix("uranium-p") {
@@ -98,21 +79,14 @@ pub fn name_index(name: &[u8]) -> Option<u8> {
     i.parse().ok()
 }
 
-/// A replay in which a player is the 022 teacher by its default hostd name
-/// (`p<i>-T0-terran-terran_tp`). A plan `name` override on the teacher hides it from this check:
-/// the 022 plans (`rush_check_plan.py --teacher-tp / --botgen-tp`) never set one, and a `--games`
-/// build refuses players[0] of any other name ([`players0_view`]).
 pub fn is_tp_teacher_game(rep: &Replay) -> bool {
     rep.header.players.iter().any(|p| name_index(&p.name).is_some() && p.name.splitn(2, |&b| b == b'-').nth(1) == Some(TP_TEACHER_NAME.as_bytes()))
 }
 
-/// The hostd name of the 022 teacher as players[0] (020-R16, no plan `name` override).
 fn tp_teacher_p0() -> String {
     format!("p0-{TP_TEACHER_NAME}")
 }
 
-/// `--games` finds a game by the id in its file name, so two replay files of one id (`g3.rep` and
-/// `g3-s5-p0.rep`, or two plan folders' `g3.rep`) would read the same games.jsonl line: refused.
 pub fn unique_game_ids(files: &[std::path::PathBuf]) -> Result<()> {
     let mut seen: HashMap<u64, &std::path::PathBuf> = HashMap::new();
     for f in files {
@@ -123,13 +97,6 @@ pub fn unique_game_ids(files: &[std::path::PathBuf]) -> Result<()> {
     Ok(())
 }
 
-/// The players[0] view of a replay (one of the [`crate::pipeline::filter`] `views`), or why the
-/// replay is refused (with the view when there is one): no games.jsonl line (`lobby` None), not
-/// exactly one players[0] player name, in a botgen build (`relabel` None) a players[0] that is not
-/// the 022 teacher by its hostd name, players[0] not a Terran view or not a lobby Terran, a lobby
-/// Random opponent (022-R2), a lobby Zerg opponent (022-R2 with 022-AC3 / 022-R12 ② / 044-R8 ② for
-/// `--relabel terran_tp`, 022-R12 for the 022 botgen data), or a lobby race other than the race
-/// the replay header says was played.
 pub fn players0_view(rep: &Replay, views: Vec<View>, lobby: Option<[u8; 2]>, relabel: Option<T0Build>) -> std::result::Result<View, (Option<View>, String)> {
     let Some([own, enemy]) = lobby else {
         return Err((None, "no games.jsonl line for this replay: lobby races unknown (022-R2, 022-R12)".into()));
@@ -138,8 +105,6 @@ pub fn players0_view(rep: &Replay, views: Vec<View>, lobby: Option<[u8; 2]>, rel
     let [p0] = p0s.as_slice() else {
         return Err((None, format!("{} players[0] player names, not one (hostd p0-<name> / uranium-p0, 020-R16)", p0s.len())));
     };
-    // 022-R12 / 040: a botgen build's data is the 022 teacher's view; a plan `name` override (or any
-    // other players[0]) is refused rather than taken for the teacher.
     if relabel.is_none() && p0.name != tp_teacher_p0().as_bytes() {
         return Err((None, format!("players[0] is not the 022 teacher by its hostd name {} (022-R12: teacher view only; plan name overrides are not supported)", tp_teacher_p0())));
     }
@@ -149,7 +114,6 @@ pub fn players0_view(rep: &Replay, views: Vec<View>, lobby: Option<[u8; 2]>, rel
     if own != RACE_TERRAN {
         return Err((Some(view), format!("players[0] lobby race {} (games.jsonl), not Terran", race_name(own))));
     }
-    // The opponent: the other active player (`filter` keeps 1v1 replays only).
     let played = rep.active_players().into_iter().find(|(p, _)| p.id != p0.id).map(|(p, _)| p.race);
     let reason = match enemy {
         RACE_RANDOM => Some("lobby Random opponent: no 022 teacher data from Random games (022-R2)".to_string()),

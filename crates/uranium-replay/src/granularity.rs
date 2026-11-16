@@ -1,19 +1,3 @@
-//! Decision-granularity measurement helper (G0, `tools/eval/granularity.py`). Analysis only:
-//! nothing is written to the datasets and no labelling rule changes.
-//!
-//! Per game it writes one JSON line with the action labels and a compact own/enemy state in an
-//! early window:
-//! - from shards (040): the stored labels and the stored decision-time observations;
-//! - from replays: the replay's own commands of the Terran player through the same 040 labeler
-//!   as `build` (040-R3, R4: one label per command, same-frame commands become delay-1 chains,
-//!   031-R11 delay buckets), observed in one OpenBW replay pass. Unlike `build` there is no
-//!   5-minute bar and no desync check, so a model game lost early to a rush is kept.
-//!
-//! Selected unit ids in the labels are the observation's unit ids, as in the shards.
-//!
-//! Input of the AMB-031-7 decision (031 "결정 단위", [SPEC DEFERRED(G0)]): whether the 031-R3
-//! 12-unit selection cap binds in rush defence. The measurement changes no action space.
-
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -29,33 +13,23 @@ use crate::label::{Labeler, Own};
 use crate::play::{PlayConfig, play_with, slot_of};
 use crate::shard::ShardGame;
 
-/// Frames kept (labels and states) and the late check frame.
 #[derive(Clone, Copy, Debug)]
 pub struct Window {
-    /// Labels and states at frames `lo..=hi` are kept.
     pub lo: u32,
     pub hi: u32,
-    /// A state is kept at least every `period` frames in the window (besides every command label).
     pub period: u32,
-    /// Own SCVs are counted at the last observation at or before this frame (8:00 = 11,520), if
-    /// the game reached it.
     pub at: u32,
 }
 
-/// Filters for shard games (replays are taken as given).
 #[derive(Clone, Debug, Default)]
 pub struct ShardFilter {
     pub matchup: Option<String>,
     pub stage: Option<String>,
-    /// Empty = every map family.
     pub families: Vec<String>,
 }
 
-/// One own unit: (id, type, x, y, flags, hp, loaded).
 type OwnUnit = (u32, u16, u16, u16, u32, u16, bool);
-/// One visible enemy unit: (id, type, x, y).
 type EnemyUnit = (u32, u16, u16, u16);
-/// (frame, action, delay, queued, selected, target unit).
 type LabelRow = (u32, u16, u32, bool, Vec<u32>, Option<u32>);
 
 #[derive(Serialize, Debug, Clone)]
@@ -68,19 +42,15 @@ pub struct State {
 #[derive(Serialize, Debug, Clone)]
 pub struct GameDump {
     pub source: String,
-    /// Replay file stem, or `<shard file>#<game index>`.
     pub game: String,
     pub replay_sha256: String,
     pub matchup: String,
     pub map_family: String,
     pub stage: String,
     pub result: i8,
-    /// Last frame of the game (replay header frames / last stored step).
     pub end_frame: u32,
-    /// Own start location (pixel centre of the start tile's 4x3 town hall).
     pub start: Option<(u32, u32)>,
     pub enemy_start: Option<(u32, u32)>,
-    /// Own completed SCVs at `Window::at` (None if the game ended before).
     pub scv_at: Option<u32>,
     pub labels: Vec<LabelRow>,
     pub states: Vec<State>,
@@ -116,7 +86,6 @@ fn scvs(f: &RawFrame, me: u8) -> u32 {
     f.units.iter().filter(|u| u.owner == me && u.unit_type == scv && u.flags & uranium_proto::flags::COMPLETED != 0).count() as u32
 }
 
-/// Keeps the states at command-label frames and at least one per `period` frames in the window.
 fn pick_states(w: Window, frames: &BTreeMap<u32, State>, command_frames: &[u32]) -> Vec<State> {
     let mut keep: Vec<u32> = Vec::new();
     let mut next = w.lo;
@@ -127,7 +96,6 @@ fn pick_states(w: Window, frames: &BTreeMap<u32, State>, command_frames: &[u32])
         }
     }
     for &c in command_frames {
-        // The state the command was decided on: the last observation at or before it.
         if let Some((&f, _)) = frames.range(..=c).next_back() {
             keep.push(f);
         }
@@ -141,7 +109,6 @@ fn label_rows(labels: impl Iterator<Item = crate::label::Label>, w: Window) -> V
     labels.filter(|l| l.frame >= w.lo && l.frame <= w.hi).map(|l| (l.frame, l.action, l.delay, l.queued, l.selected, l.target_unit)).collect()
 }
 
-/// One shard game, or `None` when it fails the filter.
 pub fn dump_shard_game(g: &ShardGame, name: String, w: Window, filt: &ShardFilter, noop: u16) -> Option<GameDump> {
     let m = &g.meta;
     if filt.matchup.as_ref().is_some_and(|x| *x != m.matchup) || filt.stage.as_ref().is_some_and(|x| *x != m.stage) {
@@ -169,7 +136,6 @@ pub fn dump_shard_game(g: &ShardGame, name: String, w: Window, filt: &ShardFilte
         }
     }
     let end_frame = g.steps.last().map_or(0, |s| s.raw_frame.frame);
-    // A game that ended (or was cut) well before `at` has no count there.
     if end_frame + 32 < w.at {
         scv_at = None;
     }
@@ -190,8 +156,6 @@ pub fn dump_shard_game(g: &ShardGame, name: String, w: Window, filt: &ShardFilte
     })
 }
 
-/// One replay: the Terran player's own commands through the 040 labeler, observed in one OpenBW
-/// replay pass (no 5-minute bar, no desync check).
 pub fn dump_replay(path: &Path, cfg: &PlayConfig, labeler: &Labeler, w: Window, source: &str, noop: u16) -> Result<GameDump> {
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let rep = crate::parse(&bytes)?;
@@ -221,9 +185,6 @@ pub fn dump_replay(path: &Path, cfg: &PlayConfig, labeler: &Labeler, w: Window, 
     }
     let (labels, _) = crate::pipeline::own_labels(&rep, view.id, labeler, &units_at)?;
     let commands: Vec<u32> = labels.iter().filter(|l| l.action != noop && l.frame >= w.lo && l.frame <= w.hi).map(|l| l.frame).collect();
-    // 040-R8 result without `drop_time_limit_leave`: the plan games here (botgen / eval, 10-minute
-    // `max_frames`) are only split by the 8:00 SCV count, and `result` matters only for a game that
-    // ended before 8:00, which no time limit ends.
     let (result, _) = crate::pipeline::judge(&res, None, me);
     let info = res.game_info.as_ref();
     use sha2::Digest;
@@ -244,7 +205,6 @@ pub fn dump_replay(path: &Path, cfg: &PlayConfig, labeler: &Labeler, w: Window, 
     })
 }
 
-/// Expands folders into `shard_*.bin.zst` (shards) or `*.rep` (replays) files, sorted.
 pub fn expand(inputs: &[PathBuf], replays: bool) -> Result<Vec<PathBuf>> {
     fn walk(d: &Path, replays: bool, out: &mut Vec<PathBuf>) -> Result<()> {
         for e in std::fs::read_dir(d).with_context(|| format!("listing {}", d.display()))? {
@@ -273,8 +233,6 @@ pub fn expand(inputs: &[PathBuf], replays: bool) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-/// Runs over `files` on `jobs` threads and writes gzipped JSON lines to `out`. Returns (games
-/// written, files failed); a failed file is reported on stderr and skipped.
 pub fn run(files: &[PathBuf], replays: bool, out: &Path, source: &str, w: Window, filt: &ShardFilter, jobs: usize) -> Result<(usize, usize)> {
     let noop = uranium_env::actions::ActionTable::load()?.by_name("NoOp").context("NoOp action")?.id;
     let cfg = if replays { Some(PlayConfig::from_env(crate::play::work_dir_default().join("granularity"))?) } else { None };
@@ -333,8 +291,6 @@ mod tests {
         State { f, own: vec![], enemy: vec![] }
     }
 
-    /// One state per period in the window plus the state each command was decided on (G0 input of
-    /// AMB-031-7, 031-R3 cap measurement).
     #[test]
     fn pick_states_keeps_period_and_command_states_031_r3() {
         let w = Window { lo: 100, hi: 300, period: 50, at: 1000 };
@@ -343,7 +299,6 @@ mod tests {
         assert_eq!(kept, vec![100, 120, 151, 160, 230, 260]);
     }
 
-    /// A shard game at `frames`, with `scvs` completed own SCVs at every step.
     fn shard_game(frames: &[u32], scvs: u32) -> ShardGame {
         let mut g = crate::shard::tests::game(0);
         let step = g.steps[0].clone();
@@ -361,8 +316,6 @@ mod tests {
         g
     }
 
-    /// Shard games: the matchup / stage / family filter, and the 8:00 SCV count only for a game that
-    /// reached it (AMB-031-7 G0 measurement, 031-R3).
     #[test]
     fn dump_shard_game_filters_and_scv_at_031_r3() {
         let w = Window { lo: 100, hi: 300, period: 50, at: 1000 };
@@ -380,7 +333,6 @@ mod tests {
         ] {
             assert!(dump_shard_game(&g, "x".into(), w, &f, noop).is_none(), "{f:?}");
         }
-        // Ended (last step) more than 32 frames before `at`: no 8:00 count.
         let short = shard_game(&[100, 200, 900], 9);
         assert_eq!(dump_shard_game(&short, "x".into(), w, &any, noop).unwrap().scv_at, None);
     }

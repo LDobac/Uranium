@@ -1,6 +1,3 @@
-//! I/O threads (012-R1): the game thread only puts messages on a channel and polls for Acts, so it
-//! never waits on the network. One connection per game (`Hello`, `GameInfo`, frames, `GameEnd`).
-
 use std::io::{BufReader, BufWriter, Write};
 use std::net::{Shutdown, TcpStream};
 use std::sync::Arc;
@@ -14,7 +11,6 @@ use uranium_proto::*;
 pub enum Status {
     Connecting = 0,
     Connected = 1,
-    /// Could not connect or the connection broke (012-R16: the bot stays inactive).
     Failed = 2,
     Closed = 3,
 }
@@ -34,11 +30,9 @@ pub struct Io {
     state: Arc<AtomicU8>,
 }
 
-/// How long the I/O thread keeps trying to reach the agent at game start.
 const CONNECT_FOR: Duration = Duration::from_secs(10);
 
 impl Io {
-    /// Starts the connection to `addr`; `log` receives one line per event.
     pub fn start(addr: String, hello: Hello, info: GameInfo, log: fn(&str)) -> Io {
         let (tx, out_rx) = channel::<BridgeMsg>();
         let (in_tx, rx) = channel::<AgentMsg>();
@@ -117,12 +111,10 @@ impl Io {
         status(self.state.load(Ordering::Relaxed))
     }
 
-    /// Queues a message for the agent (never blocks).
     pub fn send(&self, m: BridgeMsg) {
         self.tx.send(m).ok();
     }
 
-    /// The next reply from the agent, if one arrived.
     pub fn try_recv(&self) -> Option<AgentMsg> {
         match self.rx.try_recv() {
             Ok(m) => Some(m),

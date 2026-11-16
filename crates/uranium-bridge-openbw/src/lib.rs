@@ -1,8 +1,3 @@
-//! Rust half of the OpenBW bridge (spec 011). Exposes the C ABI declared in
-//! `bridge/openbw/include/uranium_bridge.h`; the C++ shim calls these from BWAPI callbacks.
-//!
-//! Lockstep: `uranium_bridge_step` blocks until the agent's `Act` arrives (011-R3).
-
 mod convert;
 mod ffi;
 
@@ -30,9 +25,7 @@ struct Bridge {
     agent_wait: Duration,
     serialize_us: Vec<f64>,
     observations: u32,
-    /// 011-R10: replay playback, commands are rejected (011-R11).
     replay: bool,
-    /// 010-R13: the surrender chat line handed to the shim (lives until the next step).
     chat: CString,
 }
 
@@ -106,7 +99,6 @@ unsafe fn cstr(p: *const std::ffi::c_char) -> String {
 fn start(info: &UrStatic) -> Result<Bridge, String> {
     let (w, h) = (info.width_tiles, info.height_tiles);
     let tiles = w as usize * h as usize;
-    // SAFETY: the shim passes arrays sized as documented in uranium_bridge.h.
     let (walk, build, height, starts, players) = unsafe {
         (
             slice(info.walkable, (tiles * 16) as u32),
@@ -116,7 +108,6 @@ fn start(info: &UrStatic) -> Result<Bridge, String> {
             slice(info.players, info.n_players),
         )
     };
-    // BWAPI iterates players in pointer order; sort for determinism (011-R10).
     let mut players: Vec<_> = players.iter().collect();
     players.sort_by_key(|p| p.id);
     let players = players
@@ -165,8 +156,6 @@ fn start(info: &UrStatic) -> Result<Bridge, String> {
         writer,
         width: w,
         height: h,
-        // Replay ids are still 0 on frame 0 (CompleteMapInformation is enabled in onStart), so
-        // the first observation is frame 1 (011-R15).
         next_frame: 1,
         cmds: Vec::new(),
         pool: Vec::new(),
@@ -180,8 +169,6 @@ fn start(info: &UrStatic) -> Result<Bridge, String> {
     })
 }
 
-/// # Safety
-/// `info` must point to a valid `UrStatic` (see uranium_bridge.h).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn uranium_bridge_start(info: *const UrStatic) -> i32 {
     match start(unsafe { &*info }) {
@@ -198,7 +185,6 @@ pub unsafe extern "C" fn uranium_bridge_start(info: *const UrStatic) -> i32 {
 
 fn raw_frame(b: &Bridge, f: &UrFrame) -> RawFrame {
     let tiles = (b.width as usize * b.height as usize) as u32;
-    // SAFETY: arrays provided by the shim for the duration of the call.
     let (units, vis, exp, creep, events, effects) = unsafe {
         (
             slice(f.units, f.n_units),
@@ -209,11 +195,7 @@ fn raw_frame(b: &Bridge, f: &UrFrame) -> RawFrame {
             slice(f.effects, f.n_effects),
         )
     };
-    // BWAPI unit/bullet sets iterate in pointer order, which differs between processes.
-    // Sort so identical games produce identical observations (011-AC4, 010-AC6).
     let mut units: Vec<UnitState> = units.iter().map(convert::unit).collect();
-    // Replay ids are unique from frame 1 on; the content tie-break only guards against a
-    // duplicate ever reaching the sort (heap order differs per run under ASLR).
     units.sort_by_key(|u| (u.id, u.owner, u.unit_type, u.pos));
     let mut effects: Vec<Effect> = effects.iter().map(convert::effect).collect();
     effects.extend(units.iter().filter_map(convert::spell_unit_effect));
@@ -226,7 +208,6 @@ fn raw_frame(b: &Bridge, f: &UrFrame) -> RawFrame {
         explored: BitGrid::from_bytes(b.width, b.height, exp),
         creep: BitGrid::from_bytes(b.width, b.height, creep),
         events: {
-            // Callbacks for units created in the same frame fire in pointer order; sort.
             let mut ev: Vec<GameEvent> = events.iter().filter_map(convert::event).collect();
             ev.sort_by_key(convert::event_order);
             ev
@@ -266,7 +247,6 @@ fn step(b: &mut Bridge, f: &UrFrame, out: &mut UrAct) -> Result<(), String> {
     out.surrender = act.surrender.is_some() as u8;
     out.surrender_chat = if act.surrender.is_some() { b.chat.as_ptr() } else { std::ptr::null() };
     if act.surrender.is_some() {
-        // 011-R21: the shim leaves this many frames later and asks for no more decisions.
         out.advance_frames = SURRENDER_LEAVE_FRAMES;
     }
     b.next_frame = f.frame + out.advance_frames;
@@ -277,8 +257,6 @@ fn step(b: &mut Bridge, f: &UrFrame, out: &mut UrAct) -> Result<(), String> {
     Ok(())
 }
 
-/// 010-R13: a surrender `Act` carries no commands, a chat line of at most
-/// [`MAX_SURRENDER_CHAT`] bytes, and is not allowed in replay playback (011-R11).
 fn surrender_check(replay: bool, cmds: &[Command], text: &str) -> Result<(), String> {
     if replay {
         return Err("010-R13: surrender in replay mode".into());
@@ -292,8 +270,6 @@ fn surrender_check(replay: bool, cmds: &[Command], text: &str) -> Result<(), Str
     Ok(())
 }
 
-/// # Safety
-/// `frame` and `out` must be valid pointers (see uranium_bridge.h).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn uranium_bridge_step(frame: *const UrFrame, out: *mut UrAct) -> i32 {
     let mut guard = BRIDGE.lock().unwrap();
@@ -315,10 +291,6 @@ fn p99(v: &mut [f64]) -> f64 {
     v[((v.len() as f64 * 0.99) as usize).min(v.len() - 1)]
 }
 
-/// # Safety
-/// `last` is NULL or points to a valid `UrFrame` for the duration of the call (uranium_bridge.h).
-/// 010-R12: `last` is the own-vision state at the end with the events since the last step; it is
-/// sent as `GameEnd.final_frame` (not in replay mode, where the agent only records labels).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn uranium_bridge_end(winner: i32, reason: u8, frame: u32, last: *const UrFrame) {
     let Some(mut b) = BRIDGE.lock().unwrap().take() else { return };
@@ -337,7 +309,6 @@ pub unsafe extern "C" fn uranium_bridge_end(winner: i32, reason: u8, frame: u32,
         reason: match reason {
             0 => EndReason::Elimination,
             2 => EndReason::TimeLimitDraw,
-            // 1: the enemy left or was dropped with buildings standing (011-R17).
             _ => EndReason::Surrender,
         },
         stats: Some(stats),
@@ -352,7 +323,6 @@ pub unsafe extern "C" fn uranium_bridge_end(winner: i32, reason: u8, frame: u32,
 mod tests {
     use super::*;
 
-    /// 010-AC8: what the bridge accepts as a surrender Act.
     #[test]
     fn surrender_act_checks_010_ac8() {
         assert!(surrender_check(false, &[], "gg").is_ok());

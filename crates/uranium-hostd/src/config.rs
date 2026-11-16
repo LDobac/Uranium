@@ -1,5 +1,3 @@
-//! hostd settings from `.env` / process environment (spec 020-R9, 001-R9).
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -7,29 +5,20 @@ use anyhow::{Context, Result, bail};
 #[derive(Debug, Clone)]
 pub struct Config {
     pub listen: String,
-    /// BWAPI build dir containing `bin/BWAPILauncher` (Windows: `bin/Release/BWAPILauncher.exe`).
     pub bwapi_dir: PathBuf,
     pub bridge_lib: PathBuf,
     pub data_dir: PathBuf,
     pub maps_dir: PathBuf,
     pub max_games: u32,
-    /// Per-game working directories.
     pub work_dir: PathBuf,
-    /// Third-party bots: `<dir>/<name>/module.{so,dll}` (+ optional `bwapi-data/`), 021 T1.
     pub oss_bots_dir: Option<PathBuf>,
-    /// Windows: first TCP port for OpenBW LAN pairs (011-R16).
     #[cfg_attr(not(windows), allow(dead_code))]
     pub port_base: u16,
-    /// Wall-time limit of one replay playback job (020-R3, M4).
     pub replay_timeout_s: u32,
-    /// Where saved game replays go (040 botgen); default: the game work dir.
     pub replay_dir: Option<PathBuf>,
-    /// 011-R18: OpenBW drops a LAN client that stops syncing after this long (patch 0013).
-    /// Lockstep games block while the agent thinks, so the default is far above upstream's 60 s.
     pub drop_timeout_ms: u64,
 }
 
-/// 011-R18: training default for the OpenBW drop timeout (10 minutes).
 pub const DEFAULT_DROP_TIMEOUT_MS: u64 = 600_000;
 
 fn var(name: &str) -> Option<String> {
@@ -74,7 +63,6 @@ impl Config {
     }
 
     pub fn launcher(&self) -> PathBuf {
-        // MSVC generators are multi-config: outputs go to bin/Release (tools/openbw/build.ps1).
         if cfg!(windows) {
             self.bwapi_dir.join("bin").join("Release").join("BWAPILauncher.exe")
         } else {
@@ -82,8 +70,6 @@ impl Config {
         }
     }
 
-    /// Registered third-party bots (directories containing a module file) as opponent IDs
-    /// `<name>@<version>` from the `VERSION` file the build script writes (021-R3).
     pub fn oss_bots(&self) -> Vec<String> {
         let Some(dir) = &self.oss_bots_dir else { return vec![] };
         let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
@@ -106,7 +92,6 @@ impl Config {
     }
 }
 
-/// Where the concurrency limit came from (020-R10).
 #[derive(Debug, PartialEq, Eq)]
 pub enum MaxGamesSource {
     Env,
@@ -120,8 +105,6 @@ struct CalibrationFile {
     measured_at: Option<String>,
 }
 
-/// 020-R10: `URANIUM_HOSTD_MAX_GAMES` → `<cache>/hostd_calibration.toml` (written by
-/// `uranium-env calibrate`) → conservative default `max(1, (cores - 1) / 2)`.
 pub fn max_games(env: Option<String>, cache_dir: Option<PathBuf>, cores: u32) -> (u32, MaxGamesSource) {
     if let Some(n) = env.and_then(|v| v.parse::<u32>().ok()).filter(|n| *n > 0) {
         eprintln!("[hostd] max concurrent games {n} (URANIUM_HOSTD_MAX_GAMES)");
@@ -142,7 +125,6 @@ pub fn max_games(env: Option<String>, cache_dir: Option<PathBuf>, cores: u32) ->
     (n, MaxGamesSource::Default)
 }
 
-/// `module.so` on Linux, `module.dll` on Windows.
 pub fn oss_module(bot_dir: &Path) -> Option<PathBuf> {
     let f = bot_dir.join(if cfg!(windows) { "module.dll" } else { "module.so" });
     f.is_file().then_some(f)

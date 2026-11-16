@@ -1,6 +1,3 @@
-//! Command stream (040-R1): frame blocks of `(player, opcode, payload)`, every 1.16.1 opcode
-//! plus the SC:R 1.21 extensions, and their conversion to 1.16.1 form (013 table).
-
 use anyhow::{Result, bail, ensure};
 use serde::Serialize;
 
@@ -39,8 +36,6 @@ pub struct Block {
     pub cmds: Vec<Cmd>,
 }
 
-/// Payload size of a fixed-size opcode, `None` for variable-size or unknown ones
-/// (layouts from screp v1.13.8 `parseCommands`).
 fn fixed_size(op: u8) -> Option<usize> {
     Some(match op {
         0x05 | 0x08 | 0x10 | 0x11 | 0x18 | 0x19 | 0x1b | 0x1c | 0x1d | 0x27 | 0x2a | 0x2e | 0x31 | 0x33 | 0x34 | 0x36
@@ -48,7 +43,6 @@ fn fixed_size(op: u8) -> Option<usize> {
         0x0f | 0x1a | 0x1e | 0x21 | 0x22 | 0x25 | 0x26 | 0x28 | 0x2b | 0x2c | 0x2d | 0x30 | 0x32 | 0x3a | 0x3b | 0x3d
         | 0x42 | 0x43 | 0x55 | 0x57 => 1,
         0x0d | 0x13 | 0x1f | 0x20 | 0x23 | 0x29 | 0x35 | 0x41 | 0x44 | 0x45 => 2,
-        // 0x5d: SC:R, undefined in screp; 4 bytes (always 0) from 2,000 ladder replays (013).
         0x0e | 0x12 | 0x2f | 0x58 | 0x5d | 0x62 => 4,
         0x3e => 5,
         0x37 => 6,
@@ -63,8 +57,6 @@ fn fixed_size(op: u8) -> Option<usize> {
     })
 }
 
-/// Parses the commands section into frame blocks. An unknown opcode makes the whole replay
-/// unsupported (013-R2) instead of guessing the rest of the block.
 pub fn parse(b: &[u8]) -> Result<Vec<Block>> {
     let mut blocks = Vec::new();
     let mut pos = 0;
@@ -100,16 +92,10 @@ pub fn parse(b: &[u8]) -> Result<Vec<Block>> {
     Ok(blocks)
 }
 
-/// What OpenBW's replay loader does with a 1.16.1 opcode (`third_party/openbw/actions.h`,
-/// `read_action`): anything it does not handle stops the replay with "unknown action".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpenBw {
-    /// Executed by OpenBW.
     Supported,
-    /// Not handled by OpenBW and without effect on the game (speed, pause, latency, network,
-    /// lobby, save/load): dropped by the converter (013).
     DropNoEffect,
-    /// Parsed, affects the game, not handled by OpenBW: the replay is set aside for review.
     Unhandled,
 }
 
@@ -121,7 +107,6 @@ pub fn openbw(op: u8) -> OpenBw {
     }
 }
 
-/// Serializes blocks back into a commands section.
 pub fn encode(blocks: &[Block]) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     for blk in blocks {
@@ -134,15 +119,8 @@ pub fn encode(blocks: &[Block]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// 1.16.1 unit limit; tags are `index (11 bits) | recycle (5 bits) << 11`.
 pub const LEGACY_UNIT_LIMIT: u32 = 1700;
 
-/// Maps an SC:R unit tag to the 1.16.1 tag OpenBW assigns (013, measured in the M4 spike).
-/// `full` is the 1.21 tag with its "pad" word as the high 16 bits: the pad carries the high bits
-/// of the recycle counter. With an extended unit limit (`LMTS`, e.g. 3400) the index has 13 bits
-/// and player units, allocated from the top of the array, sit `limit - 1700` higher than in
-/// 1.16.1; preplaced map units keep their index. The 1.16.1 recycle counter has 5 bits.
-/// 0 and 0xFFFF mean "no unit".
 pub fn map_tag(full: u32, unit_limit: Option<u32>) -> Result<u16> {
     if full == 0 || full == 0xffff {
         return Ok(full as u16);
@@ -152,13 +130,10 @@ pub fn map_tag(full: u32, unit_limit: Option<u32>) -> Result<u16> {
     let (index, recycle) = (full & ((1 << bits) - 1), full >> bits);
     let shift = limit - LEGACY_UNIT_LIMIT;
     let legacy = if index >= shift { index - shift } else { index };
-    // Indices are 1-based (index 3400 occurs with limit 3400).
     ensure!(legacy <= LEGACY_UNIT_LIMIT, "unit index {index} outside the 1.16.1 range (limit {limit})");
     Ok((legacy | (recycle & 0x1f) << 11) as u16)
 }
 
-/// Converts one command to its 1.16.1 form (013 table): SC:R 1.21 opcodes lose the pad word
-/// after each unit tag, and every unit tag goes through `map_tag`.
 pub fn to_legacy(c: &Cmd, unit_limit: Option<u32>) -> Result<Cmd> {
     let u16_at = |d: &[u8], a: usize| u16::from_le_bytes([d[a], d[a + 1]]) as u32;
     let tag = |d: &[u8], a: usize, padded: bool| -> Result<[u8; 2]> {
@@ -182,9 +157,6 @@ pub fn to_legacy(c: &Cmd, unit_limit: Option<u32>) -> Result<Cmd> {
         }
         op::RIGHT_CLICK | op::TARGETED_ORDER => (c.op, [&d[..4], &tag(d, 4, false)?[..], &d[6..]].concat()),
         op::UNLOAD_121 => (op::UNLOAD, tag(d, 0, true)?.to_vec()),
-        // CANCEL_TRAIN (0x20) carries a queue slot (254 = last; OpenBW `read_action_cancel_build_queue`),
-        // not a unit tag. Slots 0..4 and 254 pass the tag mapping unchanged, so it is kept as is
-        // (액션 감사 F13: changing it would not change any output).
         op::UNLOAD | op::CANCEL_TRAIN => (c.op, tag(d, 0, false)?.to_vec()),
         _ => return Ok(c.clone()),
     };
@@ -204,7 +176,6 @@ mod tests {
 
     #[test]
     fn parses_and_reencodes_blocks_040_r1() {
-        // select 2 units, right click, hotkey, leave
         let mut raw = block(10, &[0, 0x09, 2, 0x34, 0x12, 0x35, 0x12, 0, 0x14, 1, 0, 2, 0, 0xff, 0xff, 0xe4, 0, 0]);
         raw.extend(block(11, &[1, 0x13, 1, 3, 1, 0x57, 1]));
         let blocks = parse(&raw).unwrap();
@@ -231,7 +202,6 @@ mod tests {
         assert_eq!(to_legacy(&to, None).unwrap().data.len(), fixed_size(op::TARGETED_ORDER).unwrap());
         let un = Cmd { frame: 5, player: 0, op: op::UNLOAD_121, data: vec![0xaa, 0xbb, 0, 0] };
         assert_eq!(to_legacy(&un, None).unwrap(), Cmd { frame: 5, player: 0, op: op::UNLOAD, data: vec![0xaa, 0xbb] });
-        // A non-zero pad holds high recycle bits; 1.16.1 keeps 5 of them.
         let padded = Cmd { frame: 5, player: 0, op: op::UNLOAD_121, data: vec![0xaa, 0xbb, 1, 0] };
         assert_eq!(to_legacy(&padded, None).unwrap().data, vec![0xaa, 0xbb]);
     }
@@ -241,15 +211,14 @@ mod tests {
 mod tag_tests {
     use super::*;
 
-    /// Measured in the M4 spike: SC:R tag 0x2CC3 (3400-unit replay) is OpenBW unit 0xE1F.
     #[test]
     fn extended_limit_tags_map_to_legacy_013() {
         assert_eq!(map_tag(0x2cc3, Some(3400)).unwrap(), 0x0e1f);
         assert_eq!(map_tag(0x2cc3, None).unwrap(), 0x2cc3);
         assert_eq!(map_tag(0x2cc3, Some(1700)).unwrap(), 0x2cc3);
         assert_eq!(map_tag(0xffff, Some(3400)).unwrap(), 0xffff);
-        assert_eq!(map_tag(0x0005, Some(3400)).unwrap(), 0x0005); // preplaced unit
-        assert_eq!(map_tag(0x1_0c64, Some(3400)).unwrap(), (3172 - 1700) | 8 << 11); // pad = recycle bit 3
+        assert_eq!(map_tag(0x0005, Some(3400)).unwrap(), 0x0005);
+        assert_eq!(map_tag(0x1_0c64, Some(3400)).unwrap(), (3172 - 1700) | 8 << 11);
         assert_eq!(map_tag(0x0d48, Some(3400)).unwrap(), 1700);
         assert!(map_tag(0x1fff, Some(4000)).is_err());
         let sel = Cmd { frame: 1, player: 0, op: op::SELECT_121, data: vec![1, 0xc3, 0x2c, 0, 0] };
@@ -261,20 +230,18 @@ mod tag_tests {
 mod openbw_tests {
     use super::*;
 
-    /// 013: every opcode we can parse is either executed by OpenBW, dropped as no-effect, or
-    /// held for review; nothing is silently lost.
     #[test]
     fn opcode_classes_match_openbw_actions_h_013() {
         assert_eq!(openbw(op::SELECT), OpenBw::Supported);
         assert_eq!(openbw(op::TARGETED_ORDER), OpenBw::Supported);
         assert_eq!(openbw(op::LEAVE_GAME), OpenBw::Supported);
-        assert_eq!(openbw(0x10), OpenBw::DropNoEffect); // pause
-        assert_eq!(openbw(0x55), OpenBw::DropNoEffect); // latency
-        assert_eq!(openbw(0x1d), OpenBw::Unhandled); // order nothing
-        assert_eq!((fixed_size(0x5d), openbw(0x5d)), (Some(4), OpenBw::DropNoEffect)); // SC:R, 013
+        assert_eq!(openbw(0x10), OpenBw::DropNoEffect);
+        assert_eq!(openbw(0x55), OpenBw::DropNoEffect);
+        assert_eq!(openbw(0x1d), OpenBw::Unhandled);
+        assert_eq!((fixed_size(0x5d), openbw(0x5d)), (Some(4), OpenBw::DropNoEffect));
         for op in 0u8..=0x5c {
             if fixed_size(op).is_some() && !(0x60..=0x65).contains(&op) {
-                let _ = openbw(op); // every parsable legacy opcode has a class
+                let _ = openbw(op);
             }
         }
     }

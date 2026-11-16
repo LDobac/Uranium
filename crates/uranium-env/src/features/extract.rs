@@ -1,6 +1,3 @@
-//! Feature extraction (030-R1): `extract(&RawFrame, &mut AgentMemory, &MapInfo)` -> model
-//! inputs + masks. Pure apart from the memory update; uses only own vision (030-R2).
-
 use std::sync::OnceLock;
 
 use uranium_proto::{EffectKind, PrivilegedSummary, Race, RawFrame, UnitId, UnitState, flags};
@@ -13,27 +10,20 @@ use super::world::{Entity, World, queue_len, top_left};
 use crate::actions::ActionTable;
 use crate::types::TypeTables;
 
-/// Normalisation constants not fixed by 030 (documented in reports/m5_model.md).
 pub mod norm {
-    /// Velocity is in 1/256 px per frame; fastest units move ~6.7 px / frame.
     pub const VELOCITY: f32 = 256.0 * 8.0;
     pub const SPELL_COOLDOWN: f32 = 64.0;
     pub const STATUS_TIMER: f32 = 256.0;
     pub const COUNT_LOG: f32 = 4.0;
-    /// ln(1 + 86400): 60 minutes (020 time limit), the longest possible age.
     pub const LAST_SEEN_LOG: f32 = 11.366_755;
 }
 
-/// Everything one decision step needs: model inputs, masks and the entity -> unit id map that
-/// turns entity indices back into commands (031).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Observation {
     pub obs: ObsTensors,
     pub masks: Masks,
     pub entity_ids: Vec<UnitId>,
-    /// Valid map size in tiles (width, height); needed by symmetry augmentation (030-R4).
     pub map_size: (usize, usize),
-    /// The observation is in transposed orientation (030-R4): building footprints are h x w.
     pub transposed: bool,
 }
 
@@ -47,13 +37,11 @@ pub fn dims() -> &'static FeatureDims {
     D.get_or_init(|| FeatureDims::new(TypeTables::get(), action_table().actions.len()))
 }
 
-/// 030-R1. `z` is the strategy condition for this episode (030 §5); `None` = z_present false.
 pub fn extract(frame: &RawFrame, mem: &mut AgentMemory, map: &MapInfo, z: Option<&Strategy>) -> Observation {
     let types = TypeTables::get();
     mem.observe(frame, types, map);
     let w = World::new(frame, mem, map);
     let mut entities: Vec<&Entity> = w.entities.iter().collect();
-    // 030 §2: entities beyond N_MAX are dropped from the end (neutral first).
     entities.truncate(N_MAX);
     let n = entities.len();
 
@@ -65,7 +53,6 @@ pub fn extract(frame: &RawFrame, mem: &mut AgentMemory, map: &MapInfo, z: Option
     let mut caps = Vec::with_capacity(n);
     let mut is_building = Vec::with_capacity(n);
     for e in &entities {
-        // 034-R7 / E-4: lifted buildings, bunkers and turrets count as buildings.
         is_building.push(w.ty(&e.unit).is_some_and(|t| t.is_building()));
         let u = &e.unit;
         let last = if e.owner == OWNER_SELF { mem.unit_last_action.get(&u.id).copied().unwrap_or(0) } else { 0 };
@@ -133,19 +120,15 @@ pub fn cell_of(pos: (u16, u16), map: &MapInfo) -> i32 {
     cell_of_pixel(pos.0 as f32, pos.1 as f32, (map.width, map.height))
 }
 
-/// 030 §1 `entity_cell` from a pixel position: tile = pixel / 32 rounded down, clamped to the
-/// `size` (w, h) map and the 128 grid. Also used on transformed pixels (030-R4, B-6).
 pub fn cell_of_pixel(px: f32, py: f32, (w, h): (usize, usize)) -> i32 {
     let tile = |p: f32, n: usize| ((p.max(0.0) / 32.0).floor() as usize).min(n.max(1) - 1).min(MAP - 1);
     (tile(py, h) * MAP + tile(px, w)) as i32
 }
 
-/// Offset of the position block inside `entity_cont` (2 normalised + 32 Fourier).
 pub const CONT_POS: usize = 6;
 pub const CONT_VEL: usize = 40;
 pub const CONT_ANGLE: usize = 42;
 
-/// x/(W*32), y/(H*32) and 8 frequencies x 2 axes x sin/cos (030 §2), from pixel coordinates.
 pub fn position_features(px: f32, py: f32, width: usize, height: usize, out: &mut [f32]) {
     let xn = px / (width.max(1) as f32 * 32.0);
     let yn = py / (height.max(1) as f32 * 32.0);
@@ -164,13 +147,11 @@ fn ratio(v: i32, max: i32) -> f32 {
     if max > 0 { (v as f32 / max as f32).min(1.0) } else { 0.0 }
 }
 
-/// 030 §2, 76 values.
 fn entity_features(w: &World, e: &Entity, width: usize, height: usize, f: &mut [f32]) {
     let u = &e.unit;
     let t = w.ty(u);
     let (max_hp, max_sp, max_en) = t.map_or((0, 0, 0), |t| (t.max_hp, t.max_shields, t.max_energy));
 
-    // hp, shield, energy: ratio + sqrt(abs)/16
     for (i, (v, m)) in [(u.hp, max_hp), (u.shield, max_sp), (u.energy, max_en)].into_iter().enumerate() {
         f[i * 2] = ratio(v as i32, m);
         f[i * 2 + 1] = (v as f32).sqrt() / 16.0;
@@ -179,14 +160,10 @@ fn entity_features(w: &World, e: &Entity, width: usize, height: usize, f: &mut [
     f[CONT_VEL] = u.vel.0 as f32 / norm::VELOCITY;
     f[CONT_VEL + 1] = u.vel.1 as f32 / norm::VELOCITY;
     f[CONT_ANGLE] = u.angle as f32 / 256.0;
-    // cooldowns
     let wcd = |id: i32| w.types.weapon(id).map_or(0, |x| x.cooldown);
     f[43] = ratio(u.ground_cd as i32, t.map_or(0, |t| wcd(t.ground_weapon)));
     f[44] = ratio(u.air_cd as i32, t.map_or(0, |t| wcd(t.air_weapon)));
     f[45] = (u.spell_cd as f32 / norm::SPELL_COOLDOWN).min(1.0);
-    // progress: construction, else training; queue length / 5
-    // AMB-030-5: like BWAPI without CompleteMapInformation (canAccessInside), another player's
-    // production queue, remaining build/train time and nuke are hidden; the OpenBW shim sends them.
     let inside = e.owner == OWNER_SELF;
     let build_time = |ty: u16| w.types.unit(ty).map_or(0, |t| t.build_time);
     f[46] = if !inside {
@@ -199,7 +176,6 @@ fn entity_features(w: &World, e: &Entity, width: usize, height: usize, f: &mut [
         0.0
     };
     f[47] = if inside { queue_len(u) as f32 / 5.0 } else { 0.0 };
-    // 12 flags
     let flag_bits = [
         u.has(flags::COMPLETED),
         u.has(flags::SIEGED),
@@ -217,7 +193,6 @@ fn entity_features(w: &World, e: &Entity, width: usize, height: usize, f: &mut [
     for (i, b) in flag_bits.into_iter().enumerate() {
         f[48 + i] = b as u8 as f32;
     }
-    // 10 status effects (remaining time)
     let s = &u.status_timers;
     let timers = [s.lockdown, s.irradiate, s.matrix, s.stasis, s.plague, s.ensnare, s.maelstrom];
     for (i, v) in timers.into_iter().enumerate() {
@@ -226,13 +201,10 @@ fn entity_features(w: &World, e: &Entity, width: usize, height: usize, f: &mut [
     f[67] = s.blind as u8 as f32;
     f[68] = s.parasite as u8 as f32;
     f[69] = (s.stim as f32 / norm::STATUS_TIMER).min(1.0);
-    // skill resources
     f[70] = u.spider_mines as f32 / 3.0;
     f[71] = (inside && u.nuke_armed) as u8 as f32;
-    // memory
     f[72] = e.remembered as u8 as f32;
     f[73] = w.frame.frame.saturating_sub(e.seen_frame) as f32 / 2048.0;
-    // resources left
     if t.is_some_and(|t| t.is_resource() && u.unit_type != w.ids.geyser) {
         f[74] = u.resources as f32 / 1500.0;
     } else if t.is_some_and(|t| t.is_resource()) || u.unit_type == w.ids.refinery {
@@ -240,7 +212,6 @@ fn entity_features(w: &World, e: &Entity, width: usize, height: usize, f: &mut [
     }
 }
 
-/// 030 §3, [26,128,128].
 fn spatial(w: &World, entities: &[&Entity]) -> Vec<f32> {
     let map = w.map;
     let mut s = vec![0f32; SPATIAL * CELLS];
@@ -253,7 +224,6 @@ fn spatial(w: &World, entities: &[&Entity]) -> Vec<f32> {
             s[ch::VISIBLE_NOW * CELLS + i] = w.frame.visibility.get(gx, gy) as u8 as f32;
             s[ch::EXPLORED * CELLS + i] = w.frame.explored.get(gx, gy) as u8 as f32;
             s[ch::CREEP * CELLS + i] = w.frame.creep.get(gx, gy) as u8 as f32;
-            // AMB-030-1: 0 = visible now, 1 = never seen, else log(1+age)/log(1+86400).
             let seen = w.mem.last_visible[i];
             s[ch::LAST_SEEN_AGE * CELLS + i] = if seen == super::memory::NEVER {
                 1.0
@@ -262,7 +232,6 @@ fn spatial(w: &World, entities: &[&Entity]) -> Vec<f32> {
             };
         }
     }
-    // Building footprints and unit densities.
     let mut counts = vec![0u16; 4 * CELLS];
     for e in entities {
         let u = &e.unit;
@@ -293,7 +262,6 @@ fn spatial(w: &World, entities: &[&Entity]) -> Vec<f32> {
             counts[k * CELLS + cell] += 1;
         }
     }
-    // log(1+count) through a small table: most cells are 0.
     let ln1p: [f32; 64] = std::array::from_fn(|n| (1.0 + n as f32).ln());
     for (k, c) in [ch::OWN_GROUND, ch::OWN_AIR, ch::ENEMY_GROUND, ch::ENEMY_AIR].into_iter().enumerate() {
         for i in 0..CELLS {
@@ -303,24 +271,18 @@ fn spatial(w: &World, entities: &[&Entity]) -> Vec<f32> {
             }
         }
     }
-    // 030 §3 / E-1: hazards (observed effects only), every tile the effect's circle overlaps.
-    // AMB-030-4: an effect is observed only when its centre tile is visible now, as on a
-    // player's screen. The OpenBW shim sends every bullet (CompleteMapInformation makes BWAPI
-    // report all bullets visible), so the check is made here and also covers existing shards.
     for ef in w.frame.effects.iter().filter(|ef| w.frame.visibility.get(ef.pos.0 / 32, ef.pos.1 / 32)) {
         let c = match ef.kind {
             EffectKind::PsionicStorm => ch::HAZARD_STORM,
             EffectKind::DarkSwarm => ch::HAZARD_SWARM,
             EffectKind::DisruptionWeb => ch::HAZARD_WEB,
             EffectKind::NukeDot => ch::HAZARD_NUKE,
-            // EMP, Irradiate, Plague, Ensnare and any other projectile.
             _ => ch::HAZARD_OTHER,
         };
         let r = if ef.radius > 0 { ef.radius as i32 } else { hazard_radius(ef.kind) };
         let (cx, cy) = (ef.pos.0 as i32, ef.pos.1 as i32);
         for ty in (cy - r).div_euclid(32)..=(cy + r).div_euclid(32) {
             for tx in (cx - r).div_euclid(32)..=(cx + r).div_euclid(32) {
-                // Nearest point of the tile [32tx, 32tx+32) x [32ty, 32ty+32) to the centre.
                 let dx = cx.clamp(tx * 32, tx * 32 + 31) - cx;
                 let dy = cy.clamp(ty * 32, ty * 32 + 31) - cy;
                 if dx * dx + dy * dy <= r * r {
@@ -331,7 +293,6 @@ fn spatial(w: &World, entities: &[&Entity]) -> Vec<f32> {
             }
         }
     }
-    // Own scanner sweeps (sight range disc, unchanged by E-1).
     let mut disc = |c: usize, pos: (u16, u16), radius: i32| {
         let (cx, cy, r) = (pos.0 as i32, pos.1 as i32, radius.max(16));
         for ty in (cy - r) / 32..=(cy + r) / 32 {
@@ -351,31 +312,19 @@ fn spatial(w: &World, entities: &[&Entity]) -> Vec<f32> {
     s
 }
 
-/// 030 §3 / E-1: hazard radius in pixels when the bridge sends none (`Effect::radius` 0, the
-/// OpenBW bridge today). Values from the 1.16.1 game data as OpenBW (`bwgame.h`) and BWAPI 4.2
-/// (`WeaponType.cpp` splash radii, `unit_types.toml` dimensions) apply them; table in 030 §3.
 pub fn hazard_radius(kind: EffectKind) -> i32 {
     match kind {
-        // Psionic Storm weapon: outer splash 48 (bullet damage within 48 px of the storm).
         EffectKind::PsionicStorm => 48,
-        // Spell_Dark_Swarm unit: dimensions 80 / 80 / 79 / 79 (a 160 x 160 box), half-width 80.
         EffectKind::DarkSwarm => 80,
-        // Spell_Disruption_Web unit: dimensions 60 / 40 / 59 / 39 (120 x 80 box), half-width 60.
         EffectKind::DisruptionWeb => 60,
-        // Nuclear Strike weapon: splash 128 / 192 / 256; the outer radius 256.
         EffectKind::NukeDot => 256,
-        // EMP Shockwave: OpenBW `emp_shockwave` square of the weapon's inner splash 64.
         EffectKind::EmpShockwave => 64,
-        // Irradiate: units within 32 px of the irradiated unit take damage.
         EffectKind::Irradiate => 32,
-        // Plague / Ensnare: OpenBW `plague` / `ensnare` affect the square at +-64 px.
         EffectKind::Plague | EffectKind::Ensnare => 64,
-        // Other projectiles: no area in the data we use; the tile under it (as before E-1).
         EffectKind::Other(_) => 16,
     }
 }
 
-/// 030 §4 scalar vector; layout in `FeatureDims::scalar`.
 fn scalar(w: &World) -> Vec<f32> {
     let d = dims();
     let me = &w.frame.self_state;
@@ -422,7 +371,6 @@ fn scalar(w: &World) -> Vec<f32> {
     v
 }
 
-/// 030-R9: privileged summary for the value heads only.
 pub fn privileged(p: &PrivilegedSummary) -> PrivilegedTensors {
     let d = dims();
     let e = &p.enemy;

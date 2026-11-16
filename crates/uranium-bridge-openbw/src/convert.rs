@@ -1,19 +1,14 @@
-//! C structs <-> proto types. OpenBW uses canonical BWAPI ids, so ids map 1:1 (011-R6).
-
 use uranium_proto::*;
 
 use crate::ffi::*;
 
-/// BWAPI unit types that are really spell areas.
 const SPELL_DISRUPTION_WEB: u16 = 105;
 const SPELL_DARK_SWARM: u16 = 202;
-/// BWAPI bullet types (BulletType.h).
 const BULLET_EMP_MISSILE: u16 = 151;
 const BULLET_PSIONIC_STORM: u16 = 157;
 const BULLET_PLAGUE_CLOUD: u16 = 168;
 const BULLET_ENSNARE: u16 = 170;
 const NUKE_DOT: u16 = 0xFFFF;
-/// `UrEvent.unit_type` when the rejected unit was not found (011 "C ABI 이벤트").
 const NO_UNIT_TYPE: u16 = 0xFFFF;
 
 pub fn race(r: u8) -> Race {
@@ -96,11 +91,8 @@ pub fn event(e: &UrEvent) -> Option<GameEvent> {
         UR_EV_EVADE => GameEvent::UnitEvade(id()?),
         UR_EV_NUKE => GameEvent::NukeDetect((e.x.max(0) as u16, e.y.max(0) as u16)),
         UR_EV_CMD_FAILED => GameEvent::CommandFailed { cmd_index: e.unit.max(0) as u16, error: e.x.max(0) as u16 },
-        // 010-R14, 011 "C ABI 이벤트": unit_type 0xFFFF = unit not found.
         UR_EV_UNIT_REJECTED => GameEvent::UnitRejected {
             cmd_index: e.x.max(0) as u16,
-            // The requested id as the agent sent it: `commands` pools ids with `as i32`, so this
-            // is its exact inverse (an id above i32::MAX arrives negative and is not dropped).
             unit: e.unit as u32,
             unit_type: (e.unit_type != NO_UNIT_TYPE).then_some(e.unit_type),
             command: e.command,
@@ -110,8 +102,6 @@ pub fn event(e: &UrEvent) -> Option<GameEvent> {
     })
 }
 
-/// Deterministic ordering key for events within one observation (011-R15). `UnitRejected` comes
-/// after the other kinds, ordered by (command index, unit id) (011 "C ABI 이벤트").
 pub fn event_order(e: &GameEvent) -> (u8, u32, u32) {
     match *e {
         GameEvent::UnitCreated(id) => (0, id, 0),
@@ -143,7 +133,6 @@ pub fn effect(e: &UrEffect) -> Effect {
     }
 }
 
-/// Dark Swarm / Disruption Web are units in BWAPI; expose them as effects too.
 pub fn spell_unit_effect(u: &UnitState) -> Option<Effect> {
     let kind = match u.unit_type {
         SPELL_DARK_SWARM => EffectKind::DarkSwarm,
@@ -154,7 +143,6 @@ pub fn spell_unit_effect(u: &UnitState) -> Option<Effect> {
 }
 
 pub fn privileged(frame: u32, p: &UrPrivileged) -> PrivilegedSummary {
-    // SAFETY: arrays provided by the shim for the duration of the call.
     let (c, ip) = unsafe { (slice(p.completed, p.n_completed), slice(p.in_production, p.n_in_production)) };
     PrivilegedSummary {
         frame,
@@ -185,7 +173,6 @@ fn cancel_kind(k: CancelKind) -> u8 {
     }
 }
 
-/// Converts proto commands into the shim's flat command array + unit pool.
 pub fn commands(cmds: &[Command], out: &mut Vec<UrCmd>, pool: &mut Vec<i32>) {
     out.clear();
     pool.clear();
@@ -196,7 +183,7 @@ pub fn commands(cmds: &[Command], out: &mut Vec<UrCmd>, pool: &mut Vec<i32>) {
                 u.kind = UR_CMD_UNIT;
                 u.queued = *queued as u8;
                 u.units_offset = pool.len() as u32;
-                u.n_units = units.len().min(12) as u16; // 031-R3
+                u.n_units = units.len().min(12) as u16;
                 pool.extend(units.iter().take(12).map(|&id| id as i32));
                 u.order = match order {
                     CmdOrder::Move(t) => {
@@ -255,7 +242,6 @@ pub fn commands(cmds: &[Command], out: &mut Vec<UrCmd>, pool: &mut Vec<i32>) {
                         }
                         19
                     }
-                    // UR_ORD_UNLOAD (034 Unload_Unit, 2026-10-19): the loaded unit to drop.
                     CmdOrder::Unload(id) => {
                         u.target_unit = *id as i32;
                         20
@@ -334,8 +320,6 @@ mod tests {
         assert_eq!(pool[12], 99);
     }
 
-    /// 011-R20 (액션 감사 F2): a unit-target order carries no position, so the shim fails it at
-    /// once when it cannot resolve the target instead of moving to (-1, -1).
     #[test]
     fn unit_target_orders_carry_no_position_011_r20() {
         let (mut out, mut pool) = (Vec::new(), Vec::new());
@@ -351,8 +335,6 @@ mod tests {
         assert_eq!((out[3].target_unit, out[3].x, out[3].y), (UR_NONE, 5, 6));
     }
 
-    /// 010-R14, 011-R20 ④: UR_EV_UNIT_REJECTED maps x/y to cmd_index/error, 0xFFFF to no unit
-    /// type, and sorts after every other kind by (cmd_index, unit).
     #[test]
     fn unit_rejected_event_and_order_010_r14() {
         let ev = |kind, unit, x, y, unit_type, command| UrEvent { kind, unit, x, y, unit_type, command };
@@ -361,7 +343,6 @@ mod tests {
         let missing = event(&ev(UR_EV_UNIT_REJECTED, 43, 1, 0, 0xFFFF, 6)).unwrap();
         assert_eq!(missing, GameEvent::UnitRejected { cmd_index: 1, unit: 43, unit_type: None, command: 6, error: 0 });
         assert_eq!(event(&ev(UR_EV_CMD_FAILED, 2, 10, 0, 0xFFFF, 0)), Some(GameEvent::CommandFailed { cmd_index: 2, error: 10 }));
-        // A requested id that the pool cast to a negative i32 comes back unchanged, not dropped.
         let (mut cmds, mut pool) = (Vec::new(), Vec::new());
         commands(&[Command::Unit { units: vec![u32::MAX - 1], order: CmdOrder::Stop, queued: false }], &mut cmds, &mut pool);
         let high = event(&ev(UR_EV_UNIT_REJECTED, pool[0], 0, 0, 0xFFFF, 0)).unwrap();

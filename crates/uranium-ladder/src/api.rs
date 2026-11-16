@@ -1,5 +1,3 @@
-//! Paced HTTP to the local web API and replay storage (043-R2, R3, R4, R9).
-
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -9,10 +7,7 @@ use crate::env::Settings;
 use crate::limit::Limiter;
 use crate::{port, schema};
 
-/// Body size cap for one response or replay.
 const MAX_BODY: u64 = 64 << 20;
-/// Transient failures (network, HTTP 5xx, `Internal error` bodies at 200) are retried this
-/// many times with a growing pause.
 const RETRIES: u32 = 2;
 const RETRY_PAUSE: Duration = Duration::from_secs(5);
 
@@ -22,7 +17,6 @@ pub struct Http {
     rps: f64,
 }
 
-/// 043-AC4: every run logs the rate its paced requests actually used, also when it stops early.
 impl Drop for Http {
     fn drop(&mut self) {
         let s = self.limiter.stats();
@@ -38,7 +32,6 @@ pub struct Reply {
     pub body: Vec<u8>,
 }
 
-/// Why one fetch failed; recorded as the `failed` reason (043-R9).
 #[derive(Debug)]
 pub enum FetchError {
     Net(String),
@@ -66,12 +59,10 @@ impl Http {
         Self { agent, limiter: Limiter::new(rps), rps }
     }
 
-    /// 043-AC4: observed rate so far.
     pub fn rate_stats(&self) -> crate::limit::RateStats {
         self.limiter.stats()
     }
 
-    /// One paced GET (043-R4).
     pub fn get(&mut self, url: &str) -> Result<Reply> {
         self.limiter.wait();
         let mut resp = self.agent.get(url).call()?;
@@ -81,7 +72,6 @@ impl Http {
         Ok(Reply { status, header_names, body })
     }
 
-    /// GET with retries for transient failures; the body of a 200 reply.
     pub fn get_ok(&mut self, url: &str) -> Result<Vec<u8>, FetchError> {
         let mut attempt = 0;
         loop {
@@ -105,13 +95,11 @@ fn is_internal_error(body: &[u8]) -> bool {
     body.len() < 256 && String::from_utf8_lossy(body).contains("Internal error")
 }
 
-/// Local API root: `http://127.0.0.1:<port><prefix>`.
 pub struct Api {
     pub base: String,
 }
 
 impl Api {
-    /// 043-R3: the first candidate port and prefix whose leaderboard list answers with JSON.
     pub fn connect(http: &mut Http, settings: &Settings) -> Result<Self> {
         let ports = match settings.port {
             Some(p) => vec![p],
@@ -137,22 +125,17 @@ impl Api {
         format!("{}{path}", self.base)
     }
 
-    /// GET and parse; a body that does not match the schema is `FetchError::Schema` (043-R9).
     pub fn json<T: DeserializeOwned>(&self, http: &mut Http, path: &str) -> Result<T, FetchError> {
         let body = http.get_ok(&self.url(path))?;
         serde_json::from_slice(&clean(&body)).map_err(|e| FetchError::Schema(mask_quoted(&e.to_string())))
     }
 }
 
-/// Some names arrive cut mid-character (invalid UTF-8) or as unpaired surrogate escapes; both
-/// become U+FFFD so the rest of the response still parses.
 fn clean(body: &[u8]) -> Vec<u8> {
     let text = String::from_utf8_lossy(body);
     fix_lone_surrogates(text.as_bytes()).into_owned()
 }
 
-/// The API escapes some names with unpaired UTF-16 surrogates (`\ud83d` alone), which
-/// serde_json rejects; replace each unpaired one with `�`.
 fn fix_lone_surrogates(body: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     fn esc(b: &[u8], i: usize) -> Option<u16> {
         if b.get(i) != Some(&b'\\') || b.get(i + 1).is_none_or(|c| *c != b'u') {
@@ -182,7 +165,6 @@ fn fix_lone_surrogates(body: &[u8]) -> std::borrow::Cow<'_, [u8]> {
                     continue;
                 }
             }
-            // Any other escape: copy the backslash and the escaped byte together.
             let end = (i + 2).min(body.len());
             if let Some(o) = out.as_mut() {
                 o.extend_from_slice(&body[i..end]);
@@ -201,7 +183,6 @@ fn fix_lone_surrogates(body: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     }
 }
 
-/// serde errors quote the offending value (possibly a toon); keep only the message (043-R11).
 fn mask_quoted(s: &str) -> String {
     let mut out = String::new();
     let mut inside = false;
@@ -245,7 +226,6 @@ mod tests {
 
     #[test]
     fn truncated_utf8_name_still_parses() {
-        // A Hangul syllable cut after its first byte, right before the closing quote.
         let raw = b"{\"name\":\"\xeb\x9e\x98\xec\",\"n\":1}";
         assert!(serde_json::from_slice::<serde_json::Value>(raw).is_err());
         let v: serde_json::Value = serde_json::from_slice(&clean(raw)).unwrap();

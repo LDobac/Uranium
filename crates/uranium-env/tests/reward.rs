@@ -1,5 +1,3 @@
-//! 033-AC1: reward signs and magnitudes on synthetic scenarios.
-
 mod common;
 
 use common::*;
@@ -35,11 +33,9 @@ fn following_z_build_is_rewarded_033_ac1() {
     r.record_build(id("Build_SupplyDepot"));
     let p = r.step(&frame(2, vec![], false));
     assert_eq!(p.build, 1.0, "matching step lowers the distance by one");
-    // A deviation does not lower the distance (it can be read as a substitution): reward 0.
     r.record_build(id("Build_Factory"));
     let p = r.step(&frame(3, vec![], false));
     assert_eq!(p.build, 0.0, "{p:?}");
-    // Actions beyond the plan raise the distance: negative.
     r.record_build(id("Train_Marine"));
     r.step(&frame(4, vec![], false));
     r.record_build(id("Build_Starport"));
@@ -82,16 +78,13 @@ fn only_observed_destruction_counts_033_r5() {
     let ling = b.add(ENEMY, "Zerg_Zergling", (40, 40));
     let marine = b.add(SELF, "Terran_Marine", (5, 5));
     r.step(&frame(10, b.units.clone(), false));
-    // Observed kill of a zergling (50 minerals) -> +0.05.
     let mut f = frame(20, vec![b.units[1].clone()], false);
     f.events.push(GameEvent::UnitDestroyed(ling));
     let p = r.step(&f);
     assert!((p.value - 0.05).abs() < 1e-6, "{p:?}");
-    // A destruction of a unit never seen does not count.
     let mut f = frame(30, vec![b.units[1].clone()], false);
     f.events.push(GameEvent::UnitDestroyed(9999));
     assert_eq!(r.step(&f).value, 0.0);
-    // Losing the marine (50) -> -0.05.
     let mut f = frame(40, vec![], false);
     f.events.push(GameEvent::UnitDestroyed(marine));
     assert!((r.step(&f).value + 0.05).abs() < 1e-6);

@@ -1,8 +1,3 @@
-//! 044-R3 policy labelling, data side: head choices become 040 labels the BC label check reads
-//! back as the same head indices (044-AC2), the 040-R19 filter after labelling, the records'
-//! `label_policy`, the per-view seed and the argument rules. The model side and the round trip
-//! through the BC loader are tests/python/test_distill_label.py.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -36,7 +31,6 @@ fn id(name: &str) -> u16 {
     action_table().by_name(name).unwrap().id
 }
 
-/// A `distill_pre` game of `len` steps with its own replay hash.
 fn pre_game(len: usize, tag: u32) -> ShardGame {
     let mut g = testkit::distill_games().into_iter().find(|g| g.steps.len() == 16).unwrap();
     g.steps.truncate(len);
@@ -49,10 +43,6 @@ fn write_input(dir: &Path, games: Vec<ShardGame>) {
     shard::write(&dir.join("shard_00000.bin.zst"), &Shard { header: ShardHeader::default(), games }).unwrap();
 }
 
-/// 044-R3 ③ / 044-AC2: a choice's label reads back through the BC label check (the loader's
-/// `host_label_check`) as the same head indices: action, delay bucket (its lower bound maps back),
-/// queued only where the action uses it, the selection (canonical order), the target unit and the
-/// location cell only where the action uses them.
 #[test]
 fn label_of_choice_reads_back_as_the_same_heads_044_r3() {
     let g = pre_game(16, 1);
@@ -85,11 +75,9 @@ fn label_of_choice_reads_back_as_the_same_heads_044_r3() {
         }
     }
     assert_eq!(checked, 48);
-    // Every delay bucket's lower bound is that bucket (031-R11).
     for (b, &d) in DELAY_BUCKETS.iter().enumerate() {
         assert_eq!(bucket_index(d), b);
     }
-    // A head value out of its range is an error, never a dropped or clamped field.
     let o = &seq.steps[0].obs;
     let n = o.entity_ids.len();
     let ok = HeadChoice { action: id("Gather_Unit"), delay_bucket: 0, queued: false, selected: vec![0], target_unit: 0, target_loc: 0 };
@@ -103,13 +91,10 @@ fn label_of_choice_reads_back_as_the_same_heads_044_r3() {
     for (i, c) in bad.iter().enumerate() {
         assert!(label_of_choice(1, c, o).is_err(), "case {i}");
     }
-    // Unused heads are not checked (a Move_Pos target unit, a NoOp selection).
     label_of_choice(1, &HeadChoice { action: id("Move_Pos"), target_unit: n + 5, ..ok.clone() }, o).unwrap();
     label_of_choice(1, &HeadChoice { action: id("NoOp"), selected: vec![n + 5], ..ok }, o).unwrap();
 }
 
-/// 044-R4: an input shard of another header (schema, feature / action / labeler version) is refused
-/// before the output is written with the current one.
 #[test]
 fn an_input_of_another_header_is_refused_044_r4() {
     let d = tmp("header");
@@ -124,15 +109,12 @@ fn an_input_of_another_header_is_refused_044_r4() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// A stopped pass keeps every file it finished: each input file is written as soon as all its
-/// games are labelled (`flush` after a batch), not at the end.
 #[test]
 fn files_are_written_as_their_games_finish_044_r3() {
     let d = tmp("flush");
     let cfg = tiny_cfg(&d);
     let input = d.join("pre");
     std::fs::create_dir_all(&input).unwrap();
-    // Two files: a short game first (done after the first batch), then a long one.
     shard::write(&input.join("shard_00000.bin.zst"), &Shard { header: ShardHeader::default(), games: vec![pre_game(2, 701)] }).unwrap();
     shard::write(&input.join("shard_00001.bin.zst"), &Shard { header: ShardHeader::default(), games: vec![pre_game(16, 702)] }).unwrap();
     let mut lab = DistillLabeller::new(&input, &cfg, Arc::new(MapStore::synthetic()), 1, None).unwrap();
@@ -154,12 +136,6 @@ fn files_are_written_as_their_games_finish_044_r3() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// The labelling pass over two views (10 steps each): view A gets one type-masked action (10%,
-/// kept, weight 0 there), view B two (20%, the boundary: filtered, 040-R19 after labelling). The
-/// output holds A only, with every label replaced and `raw_frame` / `privileged` /
-/// `memory_action` / meta unchanged (044-R2 contract); the records have a line per view with the
-/// 040-R19 counts and `label_policy` (the caller's fields plus the view's seed and invalid count).
-/// The BC loader reads A back with the labels' weights.
 #[test]
 fn labelling_pass_filters_after_labelling_and_records_the_policy_040_r19_044_r3() {
     let d = tmp("pass");
@@ -221,7 +197,6 @@ fn labelling_pass_filters_after_labelling_and_records_the_policy_040_r19_044_r3(
         assert_eq!(s.action_label.action, if k < 1 { id("Train_Marine") } else { id("NoOp") });
         assert_eq!(s.action_label.delay, DELAY_BUCKETS[7]);
     }
-    // Read back by the BC loader: the labels, weight 0 on the invalid one.
     let seq = prepare(got, false, Sym::IDENTITY, &MapStore::synthetic()).unwrap();
     assert_eq!(seq.invalid_labels, 1);
     assert_eq!(seq.steps.iter().map(|s| s.weight).sum::<f32>(), 9.0);
@@ -229,7 +204,6 @@ fn labelling_pass_filters_after_labelling_and_records_the_policy_040_r19_044_r3(
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// A view without a label for every step is an error, never a shard with `unknown` slots left.
 #[test]
 fn a_view_without_all_labels_is_an_error_044_r3() {
     let d = tmp("missing");
@@ -248,8 +222,6 @@ fn a_view_without_all_labels_is_an_error_044_r3() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// Inputs that are not `distill_pre` games are refused (044-R2 contract: source `distill`,
-/// `memory_action` on every step).
 #[test]
 fn only_distill_pre_games_are_labelled_044_r2() {
     let d = tmp("pre");
@@ -270,8 +242,6 @@ fn only_distill_pre_games_are_labelled_044_r2() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// 044-R3 argument rules, and the continuation of a records file (044-R5 ③ top-up: later input
-/// files of the round labelled into the same output folder).
 #[test]
 fn argument_rules_044_r3() {
     let d = tmp("args");
@@ -288,19 +258,13 @@ fn argument_rules_044_r3() {
     assert!(err(check_args(&input, &out, &d.join("distill_d1.jsonl"), "sample", Some(&root))).contains("resume scan"));
     assert!(err(check_args(&input, &input.join("x"), &rec, "sample", None)).contains("overlap"));
     assert!(err(check_args(&d.join("empty"), &out, &rec, "sample", None)).contains("--in"));
-    // The output of this input file (same path, its views) without any records line: a run
-    // stopped after publishing it.
     write_input(&out, vec![pre_game(3, 401)]);
     assert!(err(check_args(&input, &out, &rec, "sample", None)).contains("stopped after publishing them"));
-    // Shards that are not these inputs' outputs (another file name, or the same name with other
-    // views): another labelling's folder.
     shard::write(&out.join("shard_00099.bin.zst"), &Shard { header: ShardHeader::default(), games: vec![pre_game(3, 404)] }).unwrap();
     assert!(err(check_args(&input, &out, &rec, "sample", None)).contains("already holds"));
     std::fs::remove_file(out.join("shard_00099.bin.zst")).unwrap();
     write_input(&out, vec![pre_game(3, 402)]);
     assert!(err(check_args(&input, &out, &rec, "sample", None)).contains("already holds"));
-    // Continuation: the records name shard_00000 (its output is there); a later input file is the
-    // one left to label, unless its output already exists (published before its records lines).
     std::fs::write(&rec, "{\"input\":\"shard_00000.bin.zst\",\"label_policy\":{\"label_seed\":3}}\n").unwrap();
     assert!(err(check_args(&input, &out, &rec, "sample", None)).contains("nothing to label"));
     shard::write(&input.join("shard_00001.bin.zst"), &Shard { header: ShardHeader::default(), games: vec![pre_game(4, 403)] }).unwrap();
@@ -314,8 +278,6 @@ fn argument_rules_044_r3() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// 044-R5 ③ top-up: a second pass over the round folder labels only the new input file and
-/// appends its records; the first output file is left as it was.
 #[test]
 fn a_second_pass_labels_only_the_new_input_files_044_r3() {
     let d = tmp("topup");
@@ -348,7 +310,6 @@ fn a_second_pass_labels_only_the_new_input_files_044_r3() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// 044-R3 ②: the per-view seed is a hash of (replay hash, perspective, label seed).
 #[test]
 fn game_seed_is_per_view_and_label_seed_044_r3() {
     let s = game_seed("ab", 0, 5);

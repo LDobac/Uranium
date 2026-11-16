@@ -1,8 +1,3 @@
-//! `uranium-agent` binary: standalone agent server for the scripted bot, and the result
-//! summarizer (spec 001-R6). Model players (`serve --policy model`, SC:R `scr`, random
-//! checkpoints) run in the Python process: `python -m uranium serve | scr | random-checkpoint`
-//! (AMB-000-4).
-
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
@@ -17,23 +12,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Accept bridge connections and play (scripted T0; model players: `python -m uranium serve`).
     Serve {
         #[arg(long, default_value = "127.0.0.1:7600")]
         listen: String,
         #[arg(long, value_enum, default_value = "scripted-t0")]
         policy: PolicyKind,
-        /// JSONL file receiving one record per finished session.
         #[arg(long)]
         out: PathBuf,
-        /// Artificial delay before every Act (011-AC7 lag test).
         #[arg(long, default_value_t = 0)]
         respond_delay_ms: u64,
-        /// Exit after this many finished sessions (0 = run forever).
         #[arg(long, default_value_t = 0)]
         sessions: usize,
     },
-    /// Summarize a JSONL results file into Markdown.
     Summarize {
         input: PathBuf,
         #[arg(long)]
@@ -50,7 +40,6 @@ fn main() -> Result<()> {
             if policy == PolicyKind::Model {
                 bail!("model players run in Python: python -m uranium serve --checkpoint <ckpt> (AMB-000-4)");
             }
-            // 031-R10: per-unit rejection details beside the session records.
             let opts = ServeOptions { delay_ms: respond_delay_ms, max_sessions: sessions, unit_rejections: RejectionLog::beside(&out), ..ServeOptions::new(PolicySpec::ScriptedT0) };
             serve_addr(&listen, opts, out)
         }

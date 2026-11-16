@@ -1,7 +1,3 @@
-//! samase plugin entry and frame hook (012). Checks the environment once (012-R6), then on every
-//! game frame: snapshot (012-R2) -> `Game` -> network commands (012-R4) and messages for the I/O
-//! thread (012-R1). A panic disables the bridge instead of taking the game down.
-
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
@@ -21,18 +17,14 @@ use crate::raw::{ExtArray, Sources};
 use crate::snapshot::Snapshot;
 use crate::tables::Tables;
 
-/// SC:R build the bridge supports (012-R6, AMB-012-2): x64 `StarCraft.exe` SHA-256.
 const SUPPORTED_EXE_SHA256: &str = "ce3ab05dc9a6aa35418947e5d95e19651ad6fbcd5e2c1856cd729c5b7c31281c";
 pub const GAME_VERSION: &str = "1.23.10.13515";
-/// samase plugin API version the bridge was written against (012-R6).
 const MIN_API_VERSION: u16 = 44;
 const DEFAULT_AGENT_ADDR: &str = "127.0.0.1:7700";
-/// Frame hook timing is logged every this many frames (012-AC4).
 const HOOK_STATS_EVERY: usize = 24 * 60 * 5;
 
 type Getter = unsafe extern "C" fn() -> *mut c_void;
 
-/// The samase functions the bridge uses (all present, else the bridge stays off: 012-R6).
 struct Api {
     game: Getter,
     players: Getter,
@@ -50,7 +42,6 @@ struct Api {
     ext: Vec<ExtArray>,
 }
 
-// SAFETY: plain function pointers and read-only game memory addresses; used on the game thread.
 unsafe impl Send for Api {}
 
 struct Session {
@@ -58,7 +49,6 @@ struct Session {
     io: Io,
     game_ptr: usize,
     last_frame: u32,
-    /// Acts read but not yet applied (the schedule takes one per frame).
     inbox: VecDeque<AgentMsg>,
     warned: bool,
     snapshot: Snapshot,
@@ -78,7 +68,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// 012-R6: the running exe must be the supported SC:R build.
 fn exe_supported() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
     let bytes = std::fs::read(&exe).map_err(|e| format!("reading {}: {e}", exe.display()))?;
@@ -99,8 +88,6 @@ unsafe fn resolve(api: *const PluginApi) -> Result<Api, String> {
             unsafe { (a.$f)() }.ok_or_else(|| format!("samase does not provide {}", stringify!($f)))?
         };
     }
-    // Variables must be registered with load_vars before read_vars returns them (as aise does);
-    // 0 = not found, 1 = needs a newer samase, 2 = read only, 3 = read / write.
     let vars = [VarId::TilesetIndexedMapTiles as u16, VarId::MinitileData as u16];
     let mut loaded = [0u8; 2];
     unsafe { (a.load_vars)(vars.as_ptr(), loaded.as_mut_ptr(), vars.len()) };
@@ -170,8 +157,6 @@ impl Api {
     }
 }
 
-/// The map file for `GameInfo.map_hash` (012-R13): `Game.map_path` as is, else under the exe's
-/// install folder.
 fn map_bytes(path: &str) -> Option<Vec<u8>> {
     let p = Path::new(path);
     if let Ok(b) = std::fs::read(p) {
@@ -185,7 +170,6 @@ fn env_or(name: &str, default: &str) -> String {
     std::env::var(name).ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| default.to_string())
 }
 
-/// Starts the session of a new game (first frame hook of the game).
 fn start_session(rt: &Runtime, src: &Sources) -> Option<Session> {
     let api = &rt.api;
     if unsafe { (api.is_replay)() } != 0 {
@@ -243,7 +227,6 @@ fn on_frame(rt: &mut Runtime) {
         return;
     }
     let frame = unsafe { (*src.game).frame_count };
-    // A new game: another Game object, or the frame counter went back.
     let new_game = rt.session.as_ref().is_none_or(|s| s.game_ptr != src.game as usize || frame < s.last_frame);
     if new_game {
         if let Some(old) = rt.session.take() {
@@ -312,10 +295,6 @@ unsafe extern "C" fn frame_hook() {
     }
 }
 
-/// samase entry point.
-///
-/// # Safety
-/// Called by samase with its plugin API table.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn samase_plugin_init(api: *const PluginApi) {
     log(&format!("uranium SC:R bridge {} loading (samase plugin API {})", env!("CARGO_PKG_VERSION"), unsafe { (*api).version }));

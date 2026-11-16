@@ -1,30 +1,3 @@
-//! 051-AC3 / 051-AC4 / 051-AC5 (T0 part): forced replay on OpenBW with the 051-R2 act-log format.
-//! Moved from `uranium-scripted/tests/branch_replay.rs` (the `reports/jepa_planning.md` 7.9
-//! feasibility test) and switched to the act logs the agent sessions write (020-R22 ①).
-//!
-//! Three games on one hostd, same seed, T0 Terran standard (`players[0]`, the "trunk policy")
-//! against T0 Zerg 5-pool rush (`players[1]`, the opponent):
-//! - A (trunk): both players are agent server sessions with `act_log` on (the real session
-//!   writer, 051-R2).
-//! - B (forced): `players[0]` is this test's forced player: for every observation it checks the
-//!   frame and observation digest against A's log (051-R5 ①) and sends A's recorded `Act` (051-R5
-//!   ③); its T0 bot still runs on every observation (shadow, 051-AC4) and must want the same
-//!   `Act`. `players[1]` is an agent session as in A.
-//! - C (branch): forced until the first non-empty recorded `Act` at or after `BRANCH_FRAME`, which
-//!   is replaced by an empty `Act` with the same advance; then the shadow bot plays live.
-//!
-//! Checks: B equals A observation by observation for both players (051-AC3, logs compared with
-//! `compare_prefix`); C equals A before the branch observation and differs after it, for us and
-//! for the opponent (051-AC5).
-//!
-//! Needs a running `uranium-hostd`, so it is ignored:
-//!
-//! ```text
-//! URANIUM_TEST_HOSTD=<host:port> [URANIUM_TEST_AGENT_LISTEN=<ip>:0] [URANIUM_TEST_BRANCH_OUT=<dir>] \
-//!   cargo test -p uranium-agent --test branch_replay -- --ignored --nocapture
-//! ```
-//! `URANIUM_TEST_AGENT_LISTEN` must be an address the hostd's bridges can reach (default loopback).
-
 use std::io::BufReader;
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -37,34 +10,25 @@ use uranium_proto::control::{CONTROL_VERSION, ControlRequest, ControlResponse, G
 use uranium_proto::*;
 use uranium_scripted::{T0Build, for_game_build};
 
-/// 5 game minutes: the 5-pool zerglings arrive around 2:30.
 const MAX_FRAMES: u32 = 24 * 60 * 5;
-/// 1:30 (before the rush arrives; the Terran is still building its economy).
 const BRANCH_FRAME: u32 = 24 * 90;
 const SEED: u32 = 70_002;
 
-/// What this test's `players[0]` does in B and C.
 #[derive(Clone)]
 struct Forced {
     trunk: Arc<ActLog>,
-    /// Replace the first non-empty recorded `Act` at or after this frame (u32::MAX = never).
     branch: u32,
     log: PathBuf,
 }
 
 #[derive(Default, Debug)]
 struct Trace {
-    /// Observations where the frame or digest differed from the trunk before the branch (051-R5 ①).
     prefix_mismatch: u32,
-    /// Forced observations where the shadow bot's own `Act` differed from the recorded one.
     shadow_mismatch: u32,
-    /// Frame of the observation whose `Act` was replaced (branch game).
     branched_at: Option<u32>,
     end: Option<String>,
 }
 
-/// The forced player (051-R5 with a T0 trunk: the recorded `Act`s, no decisions); writes its own
-/// act log in the 051-R2 format.
 fn forced_session(stream: TcpStream, m: Forced) -> Result<Trace, String> {
     let e = |x: ProtoError| x.to_string();
     let mut r = BufReader::new(stream.try_clone().map_err(|x| x.to_string())?);
@@ -88,7 +52,6 @@ fn forced_session(stream: TcpStream, m: Forced) -> Result<Trace, String> {
             BridgeMsg::Frame(f) => {
                 let bytes = frame_bytes(&f).map_err(e)?;
                 let digest = obs_digest_bytes(&bytes);
-                // The bot sees every observation (shadow while forced).
                 let own = bot.act(&f);
                 let act = match m.trunk.line(i) {
                     Some(rec) if !branched => {
@@ -125,7 +88,6 @@ fn forced_session(stream: TcpStream, m: Forced) -> Result<Trace, String> {
     }
 }
 
-/// One request on a fresh hostd control connection; hostd answers on it until the game ends.
 fn control(addr: &str, req: ControlRequest) -> Result<(BufReader<TcpStream>, TcpStream), String> {
     let s = TcpStream::connect(addr).map_err(|e| format!("hostd {addr}: {e}"))?;
     let mut r = BufReader::new(s.try_clone().map_err(|e| e.to_string())?);
@@ -139,7 +101,6 @@ fn control(addr: &str, req: ControlRequest) -> Result<(BufReader<TcpStream>, Tcp
     Ok((r, w))
 }
 
-/// The agent server of the test: T0 sessions with act logs for the games on `board` (020-R22 ①).
 struct Agent {
     addr: String,
     board: BranchBoard,
@@ -156,8 +117,6 @@ fn agent(listen: &str, out: &Path) -> Agent {
     Agent { addr, board, builds }
 }
 
-/// One game: `plan_game` names its act logs (`acts/g<n>-p<i>.jsonl`). `forced` = `players[0]` is
-/// the forced player, else an agent session. Returns (forced trace, wall seconds).
 fn play(a: &Agent, out: &Path, plan_game: u32, forced: Option<Forced>, tag: &str) -> (Option<Trace>, f64) {
     let hostd = std::env::var("URANIUM_TEST_HOSTD").expect("URANIUM_TEST_HOSTD=<hostd control address>");
     let game_id = 0x7B_0000_0000 + (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 & 0xFFFF_FFFF);
@@ -204,7 +163,6 @@ fn play(a: &Agent, out: &Path, plan_game: u32, forced: Option<Forced>, tag: &str
     }
     assert!(matches!(finished.outcome, GameOutcome::Finished), "game {tag} did not finish: {:?}", finished.outcome);
     let trace = forced_thread.map(|h| h.join().expect("forced session panicked").expect("forced session"));
-    // The agent sessions write their logs when they end; wait for both end lines.
     for p in 0..2u8 {
         let path = out.join("acts").join(act_log_name(plan_game, p));
         let deadline = Instant::now() + std::time::Duration::from_secs(30);
@@ -231,7 +189,6 @@ fn forced_prefix_reproduces_the_trunk_and_a_branch_diverges_after_it_051_ac3() {
 
     let (_, wa) = play(&a, &out, 1, None, "a_trunk");
     let (a0, a1) = logs(&out, 1);
-    // B forces A's p0 Acts over the whole game (into its own log file: the agent writes p1's).
     let forced = |branch, n| Forced { trunk: Arc::new(a0.clone()), branch, log: out.join("acts").join(act_log_name(n, 0)) };
     let (b, wb) = play(&a, &out, 2, Some(forced(u32::MAX, 2)), "b_forced");
     let (c, wc) = play(&a, &out, 3, Some(forced(BRANCH_FRAME, 3)), "c_branch");
@@ -249,13 +206,11 @@ fn forced_prefix_reproduces_the_trunk_and_a_branch_diverges_after_it_051_ac3() {
     eprintln!("{md}");
     let _ = std::fs::write(out.join("branch_replay.md"), &md);
 
-    // 051-AC3 / AC4: forcing A's Acts reproduces A for both players; the shadow bot agreed.
     let (_, _, bp0, bp1, _) = &rows[0];
     assert_eq!((bp0.matched, bp0.first_mismatch_frame), (bp0.obs, None), "forced game differs for players[0]");
     assert_eq!((bp1.matched, bp1.first_mismatch_frame), (bp1.obs, None), "forced game differs for players[1] (opponent)");
     assert_eq!((b.prefix_mismatch, b.shadow_mismatch), (0, 0));
     assert_eq!(a0.end.end_frame, b0.end.end_frame);
-    // 051-AC5: identical through the branch observation, different after it, for both players.
     let (_, _, cp0, cp1, _) = &rows[1];
     assert_eq!((cp0.matched, cp1.matched), (cp0.obs, cp1.obs), "a difference before the branch");
     let (d0, d1) = (cp0.first_mismatch_frame.expect("branch game identical to the trunk"), cp1.first_mismatch_frame.expect("opponent unaffected by the branch"));

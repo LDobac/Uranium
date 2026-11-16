@@ -1,14 +1,9 @@
-//! Scheduler (`uranium-env`) <-> game host daemon (`uranium-hostd`) control protocol
-//! (spec 020-R1). Same framing as the game protocol (`write_msg`/`read_msg`).
-
 use serde::{Deserialize, Serialize};
 
 use crate::Race;
 
-/// Bumped on incompatible control-schema changes.
 pub const CONTROL_VERSION: u32 = 3;
 
-/// Target map families (`config/assets.toml`).
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum MapKey {
     FightingSpirit,
@@ -16,7 +11,6 @@ pub enum MapKey {
 }
 
 impl MapKey {
-    /// File name inside `URANIUM_MAPS_DIR`.
     pub fn file_name(self) -> &'static str {
         match self {
             MapKey::FightingSpirit => "fighting_spirit_1.3.scx",
@@ -25,22 +19,16 @@ impl MapKey {
     }
 }
 
-/// What controls one player slot.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum PlayerKind {
-    /// Our OpenBW bridge connecting to an agent server (policy or T0 bot runs there).
     Bridge { agent_addr: String },
-    /// A third-party BWAPI bot module registered on the host (021 T1).
     OssBot { name: String },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct PlayerSpec {
-    /// Race picked in the lobby (`Race::Random` allowed, 021-R7).
     pub race: Race,
     pub kind: PlayerKind,
-    /// 020-R16 (control version 3): display name; hostd names the player `p<i>-<name>` (cut to
-    /// the BW limit), `uranium-p<i>` without it.
     pub name: Option<String>,
 }
 
@@ -48,16 +36,11 @@ pub struct PlayerSpec {
 pub struct GameSpec {
     pub game_id: u64,
     pub map: MapKey,
-    /// Exactly two players (1v1).
     pub players: [PlayerSpec; 2],
-    /// `URANIUM_SEED` (011-AC4); `None` = engine-random setup.
     pub seed: Option<u32>,
-    /// `URANIUM_MAX_FRAMES` (020-R3).
     pub max_frames: u32,
-    /// `URANIUM_PRIVILEGED` (010-R10).
     pub privileged: bool,
     pub save_replay: bool,
-    /// Kill the game after this much wall time (020-R3).
     pub wall_timeout_s: u32,
 }
 
@@ -75,7 +58,6 @@ pub enum ControlRequest {
     Hello { control_version: u32 },
     ListCapabilities,
     StartGame(GameSpec),
-    /// 040-R12 streaming; hostd answers `Unsupported` until M4.
     StartReplay(ReplaySpec),
     StopGame { game_id: u64 },
     Status,
@@ -93,21 +75,15 @@ pub struct Capabilities {
     pub cores: u32,
     pub max_concurrent_games: u32,
     pub max_concurrent_replays: u32,
-    /// Opponent IDs `<name>@<version>` (021-R3); the part before `@` is the name usable in
-    /// `PlayerKind::OssBot`. Bots built without a VERSION file are listed by name only.
     pub oss_bots: Vec<String>,
     pub maps: Vec<MapKey>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum GameOutcome {
-    /// Both launchers exited cleanly (the result itself comes from the agent's GameEnd).
     Finished,
-    /// A launcher crashed or failed to start (020-R4); excluded from training.
     Aborted { reason: String },
-    /// Wall-clock timeout; the game was killed (020-R3).
     Timeout,
-    /// Stopped by `StopGame`.
     Stopped,
 }
 
@@ -115,11 +91,8 @@ pub enum GameOutcome {
 pub struct GameFinished {
     pub game_id: u64,
     pub outcome: GameOutcome,
-    /// Exit codes of the two launchers (`None` = killed / no code).
     pub exit_codes: [Option<i32>; 2],
     pub wall_s: u32,
-    /// The slot-0 replay of a `save_replay` game, so a learner can collect replays from remote
-    /// game hosts (020-R1, 042-R11). `None` when not asked for or not written.
     pub replay: Option<Vec<u8>>,
 }
 
@@ -127,9 +100,7 @@ pub struct GameFinished {
 pub enum ControlResponse {
     Hello { control_version: u32, host_name_hint: String },
     Capabilities(Capabilities),
-    /// The game was accepted and is starting.
     Started { game_id: u64 },
-    /// Sent on the same connection when an accepted game ends.
     Finished(GameFinished),
     Status { running: Vec<u64>, quarantined: Vec<String> },
     Rejected { reason: String },

@@ -1,12 +1,3 @@
-//! 061-R13/R14 run queue worker: `uranium-train worker --queue <file> --backend <b> --priority <n>`.
-//!
-//! Takes the first run of the queue that is not done, whose `init_run` is done, and that can be
-//! taken (no lock, this host's own lock, or a lock this worker watched expire, 061-R5), trains it
-//! as a `bc --run` child under the 060-R6 watchdog, then moves on. With nothing to take, it asks a
-//! slower PC's run to yield (higher `--priority` only) and waits. Shared drive trouble is
-//! "unknown": nothing new is taken, the worker keeps running and looks again (061-R13, H-2).
-//! Ctrl+C: the child checkpoints, pushes and releases, then the worker ends.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -19,7 +10,6 @@ use serde::Deserialize;
 use crate::storage::{self, LockObserver, LockView, StorageConfig, TakeOver, Watched, YieldObserver};
 use crate::supervise::{Decision, Ending, SuperviseArgs, Watch, decide};
 
-/// The queue file (TOML). `datasets` and `config` in `[defaults]` apply to runs that omit them.
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct Queue {
     #[serde(default)]
@@ -35,22 +25,16 @@ pub struct Defaults {
     pub config: Option<String>,
 }
 
-/// One run of the queue: the arguments of `bc --run <id>`.
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 pub struct QueueRun {
     pub id: String,
     pub config: Option<String>,
-    /// Default: the adopted core (032-R17, 2026-10-23).
     #[serde(default = "gtrxl")]
     pub core: String,
-    /// `s1`, `s2` (fine-tuning, needs `init_run`) or `ablation-a`.
     #[serde(default = "s1")]
     pub stage: String,
-    /// Run whose final checkpoint gives the starting weights (S2 from S1, 041-R4). The run is
-    /// taken only once this one has `DONE` (061-R13, H-1).
     pub init_run: Option<String>,
     pub datasets: Option<Vec<String>>,
-    /// Stop (and mark done) after this update (test runs).
     pub steps: Option<usize>,
 }
 
@@ -72,7 +56,6 @@ impl Queue {
     }
 }
 
-/// The `bc` arguments of a queue run.
 pub fn bc_args(r: &QueueRun, d: &Defaults, backend: &str, shared: &Path, take: &TakeOver) -> Vec<String> {
     let mut a: Vec<String> = vec!["bc".into(), "--run".into(), r.id.clone(), "--backend".into(), backend.into(), "--core".into(), r.core.clone()];
     if let Some(c) = r.config.as_ref().or(d.config.as_ref()) {
@@ -100,24 +83,18 @@ pub fn bc_args(r: &QueueRun, d: &Defaults, backend: &str, shared: &Path, take: &
     a
 }
 
-/// Trains one queue run to its end (the real launcher spawns `bc`; tests fake it).
 pub trait Launcher {
     fn launch(&self, run: &QueueRun, defaults: &Defaults, take: &TakeOver) -> Result<Ending>;
 }
 
-/// A run to train and how its lock is taken.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pick<'a> {
     pub run: &'a QueueRun,
-    /// [`TakeOver::IfUnchanged`] for a lock of another PC this worker watched expire (061-R5).
     pub take: TakeOver,
 }
 
-/// Runs skipped after too many restarts are left alone this long.
 const GIVE_UP_SKIP: Duration = Duration::from_secs(3600);
 
-/// What a worker watches between polls on its own monotonic clock: run locks (061-R5 expiry)
-/// and yield requests (061-R14 expiry).
 #[derive(Debug, Default)]
 pub struct Observers {
     pub locks: LockObserver,
@@ -131,20 +108,13 @@ impl Observers {
     }
 }
 
-/// The result of one look at the queue.
 #[derive(Debug, Default)]
 pub struct Picked<'a> {
     pub pick: Option<Pick<'a>>,
-    /// Runs skipped this time because their state could not be read (061-R13 "unknown", per run).
     pub unknown: Vec<(String, String)>,
-    /// Yield requests removed as expired (061-R14), `(run, requesting host)`.
     pub expired: Vec<(String, String)>,
 }
 
-/// The next run this host can take (061-R13). `Err` = the share itself is unreachable: take
-/// nothing (H-2). A run whose `DONE`, lock or yield request cannot be read is "unknown": it is
-/// skipped this time and the other runs stay pickable (2026-10-19 decision). `now` is this
-/// process's monotonic clock, the only clock lock and request expiry use (061-R5, R14).
 pub fn pick<'a>(cfg: &StorageConfig, q: &'a Queue, skip: &HashMap<String, Instant>, obs: &mut Observers, now: Instant) -> Result<Picked<'a>> {
     storage::probe_share(cfg)?;
     let mut out = Picked::default();
@@ -165,14 +135,11 @@ fn look<'a>(cfg: &StorageConfig, r: &'a QueueRun, skip: &HashMap<String, Instant
     if storage::is_done(cfg, &r.id)? || skip.get(&r.id).is_some_and(|t| t.elapsed() < GIVE_UP_SKIP) {
         return Ok(None);
     }
-    // H-1: S2 starts from the finished S1 only.
     if let Some(i) = &r.init_run
         && !storage::is_done(cfg, i)?
     {
         return Ok(None);
     }
-    // 061-R14: a request reserves the run for the host that asked, until a worker has seen it
-    // unchanged for 30 min; then it is removed as expired.
     match obs.yields.watch(&r.id, &storage::read_yield(cfg, &r.id), now, storage::YIELD_EXPIRY) {
         Watched::Absent => {}
         Watched::Fresh(y) if y.host != cfg.host => return Ok(None),
@@ -182,7 +149,7 @@ fn look<'a>(cfg: &StorageConfig, r: &'a QueueRun, skip: &HashMap<String, Instant
                 expired.push((r.id.clone(), y.host.clone()));
             }
             if y.host != cfg.host {
-                return Ok(None); // looked at again next poll, without the request
+                return Ok(None);
             }
         }
         Watched::Unknown(e) => anyhow::bail!("yield request: {e}"),
@@ -196,12 +163,6 @@ fn look<'a>(cfg: &StorageConfig, r: &'a QueueRun, skip: &HashMap<String, Instant
     })
 }
 
-/// A run held by a PC whose worker has a lower priority than `priority`, to ask to yield
-/// (061-R14). Only runs a worker trains are targets: the holder's `workers/<host>.json` must name
-/// that run. A run started by hand (`bc --run`, no worker state) is never asked (user decision
-/// 2026-10-19). None when a request of this host is already pending. Runs whose state cannot be
-/// read are skipped (per run), and so are runs this worker gave up on for now (`skip`): it would
-/// not take them either. `Err` = the share is unreachable.
 pub fn preempt_target<'a>(cfg: &StorageConfig, q: &'a Queue, priority: i32, skip: &HashMap<String, Instant>) -> Result<Option<&'a QueueRun>> {
     storage::probe_share(cfg)?;
     for r in &q.run {
@@ -224,7 +185,7 @@ pub fn preempt_target<'a>(cfg: &StorageConfig, q: &'a Queue, priority: i32, skip
         })();
         match target {
             Ok(Some(true)) => return Ok(Some(r)),
-            Ok(Some(false)) => return Ok(None), // this host's request is pending
+            Ok(Some(false)) => return Ok(None),
             Ok(None) | Err(_) => {}
         }
     }
@@ -236,14 +197,11 @@ pub struct WorkerArgs {
     pub backend: String,
     pub priority: i32,
     pub preempt: bool,
-    /// How often to look for a run when there is none (and to retry after share trouble).
     pub poll: Duration,
-    /// How often `workers/<host>.json` is rewritten, also while a child trains (061-R13: 1 min).
     pub status_every: Duration,
     pub supervise: SuperviseArgs,
 }
 
-/// Notes a message once until `reset` (repeated failures every poll would flood the log).
 struct Once(Option<String>);
 
 impl Once {
@@ -259,20 +217,14 @@ impl Once {
     }
 }
 
-/// The worker loop over any launcher; returns when Ctrl+C was pressed (`stop()` true). Shared
-/// drive errors never end it (061-R13, H-2).
 pub fn work<L: Launcher>(cfg: &StorageConfig, a: &WorkerArgs, launcher: &L, stop: &dyn Fn() -> bool, note: &dyn Fn(&str), wait: &dyn Fn(Duration) -> bool) -> Result<()> {
-    // 061-R5: expiry watching restarts after a gap longer than stale_after / 2, so a slower poll
-    // would never see a lock expire.
     anyhow::ensure!(
         a.poll < cfg.stale_after / 2,
         "--poll-seconds ({} s) must be shorter than half the lock expiry ({} s) (061-R5)",
         a.poll.as_secs_f64(),
         (cfg.stale_after / 2).as_secs()
     );
-    // `checkpoints/` marks a reachable share (storage::probe_share); never the root itself.
     let _ = std::fs::create_dir(cfg.shared.join("checkpoints"));
-    // The current run; the mutex also serialises every status write (061-R13).
     let current: Mutex<Option<String>> = Mutex::new(None);
     let finished = AtomicBool::new(false);
     let write_status = |run: Option<&str>| {
@@ -281,7 +233,6 @@ pub fn work<L: Launcher>(cfg: &StorageConfig, a: &WorkerArgs, launcher: &L, stop
         let _ = storage::write_worker(cfg, a.priority, &a.backend, cur.as_deref());
     };
     std::thread::scope(|s| {
-        // 061-R13: the status file every `status_every`, while a child trains as well.
         s.spawn(|| {
             let mut last: Option<Instant> = None;
             while !finished.load(Ordering::SeqCst) {
@@ -294,7 +245,6 @@ pub fn work<L: Launcher>(cfg: &StorageConfig, a: &WorkerArgs, launcher: &L, stop
                 std::thread::sleep(Duration::from_millis(50).min(a.status_every));
             }
         });
-        /// Ends the status thread however the loop ends (a panic included), so the scope joins.
         struct Finish<'a>(&'a AtomicBool);
         impl Drop for Finish<'_> {
             fn drop(&mut self) {
@@ -319,14 +269,13 @@ fn work_loop<L: Launcher>(
 ) -> Result<()> {
     let mut skip: HashMap<String, Instant> = HashMap::new();
     let mut obs = Observers::default();
-    // 061-R14 ①: the run this host asked to yield, cleared when it takes another run or stops.
     let mut my_request: Option<String> = None;
     let mut said = Once(None);
     let mut said_unknown = Once(None);
     let drop_request = |my_request: &mut Option<String>, keep: Option<&str>| {
         if let Some(id) = my_request.take() {
             if Some(id.as_str()) == keep {
-                return; // the child taking it clears it (061-R14)
+                return;
             }
             match storage::clear_yield(cfg, &id) {
                 Ok(()) => note(&format!("withdrew the yield request on {id} (061-R14)")),
@@ -374,7 +323,6 @@ fn work_loop<L: Launcher>(
             let target = if a.preempt { preempt_target(cfg, &q, a.priority, &skip) } else { Ok(None) };
             match target {
                 Ok(Some(t)) => {
-                    // An earlier request of this host (expired by now) is withdrawn first.
                     drop_request(&mut my_request, Some(&t.id));
                     match storage::request_yield(cfg, &t.id, a.priority) {
                         Ok(()) => {
@@ -394,13 +342,9 @@ fn work_loop<L: Launcher>(
             continue;
         };
         said.reset();
-        // 061-R14: the child that takes the run removes this host's request on it; if it ends
-        // without taking it (e.g. 75), the request is removed below, never left as a 30-min
-        // reservation.
         let asked_for_it = my_request.as_deref() == Some(r.id.as_str());
         drop_request(&mut my_request, Some(&r.id));
         set_current(Some(&r.id));
-        // Not watching other locks while training: observations restart afterwards (061-R5).
         obs.reset();
         let mut restarts: Vec<Instant> = Vec::new();
         let mut take = take;
@@ -423,8 +367,6 @@ fn work_loop<L: Launcher>(
                 }
                 _ => {}
             }
-            // H-2: a child that failed while the share is gone is not a crash of the run (it
-            // could not even start); wait for the share instead of burning restarts and giving up.
             if !stop()
                 && let Err(e) = storage::probe_share(cfg)
             {
@@ -457,7 +399,6 @@ fn work_loop<L: Launcher>(
     Ok(())
 }
 
-/// The launcher of the real worker: `bc` as a watched child process.
 struct BcLauncher<'a> {
     watch: &'a Watch,
     backend: String,

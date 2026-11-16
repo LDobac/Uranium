@@ -1,9 +1,3 @@
-//! The data side of `bc-eval` (041 offline metrics, 041-AC1, AC4): the split's games (all, or N
-//! by the fixed-seed shuffle of 032-R17 ②), read without z (041-AC2 condition), symmetry or the
-//! enemy race mask, lanes drained to the last game; and the replay of the 031-R12 surrender check
-//! over every game with the model's win_open values (041-AC4) plus the win_open MSE (032-R18).
-//! The metrics from the head outputs are computed by the PyTorch evaluator (AMB-000-4).
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -16,39 +10,26 @@ use crate::bc::{Batch, BcConfig, Feeder, eval_games};
 use crate::data::{ChosenGames, GameId, MapStore, ShardSource, StepSource, cut_game};
 use crate::split::{Selection, Split};
 
-/// 041-AC4: the 031-R12 surrender check replayed over the evaluated games (Shadow mode).
 #[derive(Serialize, Debug, Default, Clone)]
 pub struct SurrenderEval {
     pub games: u64,
-    /// Games where the check held at some decision.
     pub held: u64,
-    /// Of those, games with a decided result, and the ones the player won (false surrenders).
     pub held_decided: u64,
     pub held_won: u64,
-    /// held_won / held_decided.
     pub false_surrender_rate: f64,
-    /// First frame it held: min / median / max over the games where it held.
     pub held_frame_min: Option<u32>,
     pub held_frame_median: Option<u32>,
     pub held_frame_max: Option<u32>,
 }
 
-/// How the games are picked.
 #[derive(Clone, Copy, Debug)]
 pub struct EvalSelection {
     pub split: Split,
-    /// `Some(n)`: n games by the fixed-seed shuffle (032-R17 ②); `None`: every game.
     pub games: Option<usize>,
     pub seed: u64,
-    /// `Some(f)`: each game is read only up to frame `f` (its steps at frame >= f are dropped as
-    /// it is read; the first step is always kept, so every game still enters a lane in the same
-    /// order). Feature extraction is causal, so the steps kept are the same; the lanes run shorter
-    /// games, so the batches differ (050-R9 `diag dump --read-until`: the rows after it are not
-    /// used). `None`: whole games.
     pub until_frame: Option<u32>,
 }
 
-/// [`EvalSelection::until_frame`] over a source.
 struct Until<'a> {
     src: &'a mut dyn StepSource,
     frame: Option<u32>,
@@ -58,7 +39,7 @@ impl StepSource for Until<'_> {
     fn next_game(&mut self) -> Result<Option<ShardGame>> {
         let mut g = self.src.next_game()?;
         if let (Some(g), Some(f)) = (g.as_mut(), self.frame) {
-            cut_game(g, f); // a no-op for the chosen games, already cut as they were decoded
+            cut_game(g, f);
         }
         Ok(g)
     }
@@ -68,7 +49,7 @@ impl StepSource for Until<'_> {
     }
 }
 
-#[allow(clippy::large_enum_variant)] // one per stream
+#[allow(clippy::large_enum_variant)]
 enum Source {
     All(ShardSource),
     Chosen(ChosenGames),
@@ -88,7 +69,6 @@ pub struct EvalStream {
     source: Source,
     until_frame: Option<u32>,
     has_open: bool,
-    /// Per lane, the surrender check of its current game and the game's result (041-AC4).
     judges: Vec<Option<(SurrenderJudge, f32)>>,
     sur: SurrenderEval,
     held_frames: Vec<u32>,
@@ -97,20 +77,14 @@ pub struct EvalStream {
 }
 
 impl EvalStream {
-    /// `has_open`: the model has a win_open head (032-R18), so the surrender check is replayed.
     pub fn new(dirs: &[PathBuf], cfg: &BcConfig, sel: EvalSelection, maps: Option<Arc<MapStore>>, has_open: bool) -> Result<Self> {
-        // B-2: every game's map precompute is checked before the model runs; the scan also gives
-        // the split's games for the selection.
         let maps = maps.unwrap_or_else(|| Arc::new(MapStore::from_env()));
         let src = ShardSource::from_dirs(dirs)?.select(Selection::Only(sel.split));
         let scan = crate::data::check_maps(&src, Some(Selection::Only(sel.split)), &maps)?;
         let mut ecfg = cfg.clone();
         ecfg.data.z_drop = 1.0;
         ecfg.data.augment = false;
-        // 030-R11: the race mask is a training-only exception; evaluation sees the real input.
         ecfg.data.enemy_race_mask = 0.0;
-        // 041-R30 ⑤: scoring does not follow the training config's chain-start key; only the
-        // explicit option ([`EvalStream::with_chain_start`]) turns it on.
         ecfg.data.chain_start_sources = None;
         let mut feeder = Feeder::new(&ecfg).with_maps(maps);
         feeder.drain = true;
@@ -124,15 +98,12 @@ impl EvalStream {
         Ok(Self { feeder, source, until_frame: sel.until_frame, has_open, judges: vec![None; cfg.lanes], sur: SurrenderEval::default(), held_frames: Vec::new(), open_se: 0.0, open_n: 0 })
     }
 
-    /// 041-R30 ⑤: score with the chain-start observation for the games of `sources` (the scoring
-    /// option; checked like `[data] chain_start_sources`). Call before the first batch.
     pub fn with_chain_start(mut self, sources: Vec<String>) -> Result<Self> {
         crate::data::check_chain_start_sources(&sources)?;
         self.feeder.set_chain_start(sources);
         Ok(self)
     }
 
-    /// The next batch; `None` once every lane is drained.
     pub fn next(&mut self) -> Result<Option<Batch>> {
         let mut src = Until { src: self.source.get(), frame: self.until_frame };
         let Some(batch) = self.feeder.next_batch(&mut src, None)? else { return Ok(None) };
@@ -153,9 +124,6 @@ impl EvalStream {
         Ok(Some(batch))
     }
 
-    /// 032-R18 MSE and the 041-AC4 replay for lanes `lanes` of `batch`: `open` is the group's
-    /// win_open output, rows as in [`Batch::group`] (lane * t + step); every real step in game
-    /// order is a decision.
     pub fn decide(&mut self, batch: &Batch, lanes: std::ops::Range<usize>, t: usize, open: &[f32]) {
         for (i, l) in lanes.enumerate() {
             let result = batch.results[l];
@@ -185,12 +153,10 @@ impl EvalStream {
         }
     }
 
-    /// Games read so far.
     pub fn games(&self) -> usize {
         self.feeder.state(None).games
     }
 
-    /// Ends the open games; (win_open MSE, surrender replay), both `None` without the head.
     pub fn finish(&mut self) -> (Option<f64>, Option<SurrenderEval>) {
         if !self.has_open {
             return (None, None);

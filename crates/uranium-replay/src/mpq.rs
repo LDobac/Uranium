@@ -1,8 +1,3 @@
-//! Minimal MPQ (format 0) reader for map files (.scm / .scx): enough to pull
-//! `staredit\scenario.chk` out of the target maps for the live map precompute (031, AMB-031-4).
-//! Supports encrypted hash / block tables, encrypted files (incl. fix-key), sectored or single-unit
-//! files, zlib and PKWARE implode compression.
-
 use std::io::Read;
 use std::sync::OnceLock;
 
@@ -37,7 +32,6 @@ fn crypt_table() -> &'static [u32; 0x500] {
     })
 }
 
-/// MPQ string hash; `kind` 0 = table offset, 1 / 2 = name checks, 3 = file key.
 fn hash(name: &str, kind: u32) -> u32 {
     let t = crypt_table();
     let (mut s1, mut s2) = (0x7FED_7FEDu32, 0xEEEE_EEEEu32);
@@ -95,7 +89,6 @@ fn decompress(data: &[u8], flags: u32, expect: usize) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Reads one file from an MPQ archive held in memory.
 pub fn read_file(archive: &[u8], name: &str) -> Result<Vec<u8>> {
     let base = archive.windows(4).step_by(512).position(|w| w == b"MPQ\x1a").context("no MPQ header")? * 512;
     let h = &archive[base..];
@@ -156,14 +149,12 @@ mod tests {
 
     #[test]
     fn hash_matches_known_values() {
-        // Well-known MPQ constants: the table keys used by every archive.
         assert_eq!(hash("(hash table)", 3), 0xC3AF_3770);
         assert_eq!(hash("(block table)", 3), 0xEC83_B3A3);
     }
 
     #[test]
     fn decrypt_inverts_encrypt() {
-        // Encrypt with the reference algorithm, then decrypt.
         let plain: Vec<u8> = (0u8..64).collect();
         let key = 0x1234_5678u32;
         let t = crypt_table();

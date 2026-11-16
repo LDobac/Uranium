@@ -1,7 +1,3 @@
-//! 041-R30 / 041-AC7: chained steps of listed sources (teacher `botgen`) are observed through
-//! their chain-start step's RawFrame (events emptied, the chained frames' events carried to the
-//! next step that is not chained); labels, delays, memory order and step counts stay the same.
-
 use uranium_data::bc::{BcConfig, Feeder};
 use uranium_data::data::{GameStream, MapStore, TrainStep, VecSource, chained_step, check_chain_start_sources, prepare};
 use uranium_env::features::augment::Sym;
@@ -35,17 +31,10 @@ fn unit(id: u32, owner: u8, name: &str, tile: (i32, i32)) -> UnitState {
     }
 }
 
-/// Step frames: chains at 1→2→3 (gap 1), 5→6 (5 is not chained: gap 2 after 4), 8→9; step 12 follows
-/// a NoOp label at the next frame (not chained).
 const FRAMES: [u32; 16] = [0, 8, 9, 10, 18, 20, 21, 29, 37, 38, 46, 54, 55, 63, 71, 79];
 const CHAINED: [usize; 4] = [2, 3, 6, 9];
-/// The enemy hatchery seen at step 0 and destroyed (event) in chained step 3's own frame.
 const HATCH: u32 = 50;
 
-/// A game of `src` with [`FRAMES`]; labels cycle Train_SCV, Move_Pos, Gather_Unit, NoOp (step 3 is
-/// a Train_SCV with no minerals in its own frame); minerals and the privileged enemy supply differ per
-/// step; the enemy hatchery is visible at step 0 only, then the map is dark (memory keeps it until
-/// its `UnitDestroyed`); step 1 (a chain start) has a `CommandFailed` event.
 fn chain_game(src: &str) -> ShardGame {
     let n = W as usize * W as usize;
     let info = GameInfo {
@@ -127,9 +116,6 @@ fn chain_game(src: &str) -> ShardGame {
     ShardGame { meta, game_info: info, steps }
 }
 
-/// 041-R30 ③ written out on the shard game itself: each chained step's RawFrame (events emptied)
-/// and privileged replaced by its chain-start step's, its own events carried to the next step that
-/// is not chained. The plain loader on this game must give what the rule gives on the original.
 fn rewritten(g: &ShardGame) -> ShardGame {
     let mut out = g.clone();
     let mut start = 0;
@@ -170,13 +156,9 @@ fn botgen() -> Vec<String> {
 fn chained_steps_follow_the_integer_frame_rule_041_r30() {
     let g = chain_game("botgen");
     let chained: Vec<usize> = (0..g.steps.len()).filter(|&i| chained_step(&g.steps, i)).collect();
-    // Gap 2 (step 5) and a NoOp before (step 12) are not chained; step 0 never is.
     assert_eq!(chained, CHAINED);
 }
 
-/// 041-AC7: with `botgen` listed, a botgen game equals the plain loader on the rewritten game (obs,
-/// label, privileged, weight, frame, surrender rule), for symmetry and z too; labels, delays and the
-/// step count are the game's own. Other sources and an unlisted source read as without the key.
 #[test]
 fn chain_start_observation_041_r30() {
     let g = chain_game("botgen");
@@ -199,13 +181,11 @@ fn chain_start_observation_041_r30() {
             }
         }
     }
-    // Chain-start frame, privileged and frame of the chained steps.
     let on = stream(&g, false, Sym::IDENTITY, &botgen());
     for (i, c) in [(2, 1), (3, 1), (6, 5), (9, 8)] {
         assert_eq!(on[i].frame, FRAMES[c], "step {i}");
         assert_eq!(on[i].privileged.summary, on[c].privileged.summary, "step {i}: privileged of the chain start");
     }
-    // Unlisted sources: human data, and dagger when only botgen is listed.
     for src in ["stardata", "dagger"] {
         let h = chain_game(src);
         assert_eq!(key(&stream(&h, false, Sym::IDENTITY, &botgen())), key(&stream(&h, false, Sym::IDENTITY, &[])), "{src}");
@@ -214,11 +194,6 @@ fn chain_start_observation_041_r30() {
     assert_eq!(key(&stream(&d, false, Sym::IDENTITY, &["dagger".to_string()])), key(&prepare(&rewritten(&d), false, Sym::IDENTITY, &maps).unwrap().steps), "dagger when listed");
 }
 
-/// 041-R30 ③: the chain-start frame's events are not applied again (step 2 does not see step 1's
-/// `CommandFailed`); a chained step's own events wait for the next step that is not chained
-/// (the hatchery destroyed in step 3's frame is still remembered at step 3 and gone at step 4).
-/// The label check follows the observation: step 3's Train_SCV is void at its own frame (no
-/// minerals) and valid at the chain start.
 #[test]
 fn chain_start_events_and_label_check_041_r30() {
     let g = chain_game("botgen");
@@ -227,7 +202,6 @@ fn chain_start_events_and_label_check_041_r30() {
     let has_hatch = |s: &TrainStep| s.obs.entity_ids.contains(&HATCH);
     assert!(has_hatch(&off[2]) && !has_hatch(&off[3]), "without the rule the event lands at step 3");
     assert!(has_hatch(&on[3]) && !has_hatch(&on[4]), "with it at step 4, the next step that is not chained");
-    // Step 2 observed with step 1's events kept would differ (last_failed): the events are emptied.
     let maps = MapStore::synthetic();
     let mut kept = rewritten(&g);
     kept.steps[2].raw_frame.events = g.steps[1].raw_frame.events.clone();
@@ -237,8 +211,6 @@ fn chain_start_events_and_label_check_041_r30() {
     assert_eq!(on[3].weight, 1.0, "and valid at the chain start");
 }
 
-/// Chunks and resume (061-R10): the rule's state crosses chunk boundaries, and a game advanced to
-/// the middle of a chain continues as an uninterrupted one.
 #[test]
 fn chain_start_across_chunks_and_resume_041_r30() {
     let g = chain_game("botgen");
@@ -258,7 +230,6 @@ fn chain_start_across_chunks_and_resume_041_r30() {
     }
 }
 
-/// The feeder takes the sources from `[data] chain_start_sources`.
 #[test]
 fn feeder_uses_the_config_key_041_r30() {
     let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/bc.toml")).unwrap();
@@ -278,7 +249,6 @@ fn feeder_uses_the_config_key_041_r30() {
     assert_eq!(load("chain_start_sources = [\"dagger\", \"botgen\"]").unwrap().fingerprint(), load("chain_start_sources = [\"botgen\", \"dagger\", \"botgen\"]").unwrap().fingerprint(), "a set");
     assert!(load("chain_start_sources = []").is_err());
     assert!(load("chain_start_sources = [\"stardata\"]").is_err());
-    // 041-R30 ⑥: the lineage-2 mix configs (041-R29 ③ chain e1 ... e7) list botgen only.
     for e in 1..=7 {
         let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config")).join(format!("bc_m2_mix_e{e}.toml"));
         let mix = BcConfig::load(&path).unwrap();

@@ -1,14 +1,3 @@
-//! Shared drive storage (061): run lock with a heartbeat lease (R5), atomic checkpoint push (R4),
-//! verified pull into the local cache (R3, R7, R11-1/2), retention (R6), recovery of checkpoints
-//! that were not pushed (R11-3..6) and the local mode of the PC that hosts the share (R12).
-//!
-//! Layout (061-R2): `<shared>/checkpoints/<run>/{ckpt-<step>/, LATEST, promoted/, league/}`,
-//! `<shared>/locks/<run>.json`; the cache mirrors `checkpoints/<run>/` under `<cache>`.
-//!
-//! A checkpoint is written into [`Run::stage_dir`], sealed with a manifest ([`Run::seal`]) and
-//! then pushed ([`Run::push`]). In local mode (R12) the stage lives on the share itself and
-//! sealing already publishes it (same-disk rename).
-
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
@@ -23,19 +12,14 @@ pub const MANIFEST_FILE: &str = "manifest.json";
 pub const LATEST_FILE: &str = "LATEST";
 const CKPT_PREFIX: &str = "ckpt-";
 
-/// Where the shared drive and the cache are, and the lease timing (061-R1, R5, R6, R12).
 #[derive(Debug, Clone)]
 pub struct StorageConfig {
     pub shared: PathBuf,
     pub cache: PathBuf,
-    /// 061-R12: the share is this PC's own disk; read originals in place.
     pub shared_local: bool,
-    /// Lock owner name (061-R5). `URANIUM_HOST_NAME`, else the OS host name.
     pub host: String,
     pub heartbeat_every: Duration,
     pub stale_after: Duration,
-    /// Newest checkpoints kept per run on the share (061-R6, default 5; 0 = all, G-D6). Runs
-    /// set it from their config (`keep_checkpoints`).
     pub keep_latest: usize,
 }
 
@@ -52,8 +36,6 @@ impl StorageConfig {
         }
     }
 
-    /// 061-R1 / R12 / 001-R9: `URANIUM_SHARED_DIR`, `URANIUM_CACHE_DIR`, `URANIUM_SHARED_LOCAL`,
-    /// `URANIUM_HOST_NAME` (the process environment wins over `.env`).
     pub fn from_env() -> Result<Self> {
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
         let shared = var("URANIUM_SHARED_DIR").context("URANIUM_SHARED_DIR is not set (.env)")?;
@@ -73,15 +55,11 @@ fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-/// 061-R9: names that are safe on SMB and Windows.
 pub fn check_name(name: &str) -> Result<()> {
     ensure!(!name.is_empty() && !name.starts_with('.'), "bad name {name:?}");
     ensure!(!name.chars().any(|c| "<>:\"/\\|?*".contains(c) || c.is_control()), "name {name:?} has a character SMB/Windows forbid (061-R9)");
     Ok(())
 }
-
-// ---------------------------------------------------------------------------------------------
-// Manifest (061-R4, R7)
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct FileEntry {
@@ -89,7 +67,6 @@ pub struct FileEntry {
     pub bytes: u64,
 }
 
-/// SHA-256 of every file under a directory, by `/`-separated relative path.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 pub struct Manifest {
     pub files: BTreeMap<String, FileEntry>,
@@ -143,12 +120,10 @@ impl Manifest {
         Ok(serde_json::from_slice(&fs::read(&p).with_context(|| format!("reading {}", p.display()))?)?)
     }
 
-    /// Written through a temporary name so a reader never sees half a manifest.
     pub fn write(&self, dir: &Path) -> Result<()> {
         write_atomic(&dir.join(MANIFEST_FILE), &serde_json::to_vec_pretty(self)?)
     }
 
-    /// 061-R7: every listed file exists with the listed hash.
     pub fn verify(&self, dir: &Path) -> Result<()> {
         for (rel, want) in &self.files {
             let got = sha256_file(&dir.join(rel))?;
@@ -157,10 +132,6 @@ impl Manifest {
         Ok(())
     }
 
-    /// 061-R4 push check: like [`Manifest::verify`] on files this client just wrote to the share,
-    /// but each file is `fsync`ed and read past this client's cache, so the hash is of what the
-    /// file server holds (same rule as the 040-R17 shard copy; a cached read-back passed shards
-    /// that were zero-filled on the share, R-5).
     pub fn verify_on_server(&self, dir: &Path) -> Result<()> {
         for (rel, want) in &self.files {
             let p = dir.join(rel);
@@ -174,15 +145,12 @@ impl Manifest {
     }
 }
 
-/// Reads the directory's manifest and verifies it.
 pub fn verify_dir(dir: &Path) -> Result<Manifest> {
     let m = Manifest::read(dir)?;
     m.verify(dir)?;
     Ok(m)
 }
 
-/// Writes through a temporary file unique to this process and call (threads of one process may
-/// write the same file, e.g. the worker status, 061-R13), then renames it over `path`.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -195,11 +163,6 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     fs::rename(&tmp, path).with_context(|| format!("renaming onto {}", path.display()))
 }
 
-/// 061-R11-1/2: brings `dst` to the manifest of `src`. Files already matching are skipped, the
-/// rest are copied as `<name>.part` and renamed only after their hash checks out; the manifest is
-/// written last, so an interrupted pull resumes where it stopped. Every file prints one progress
-/// line on stderr (a first dataset pull of tens of GB is otherwise silent for longer than the
-/// 060-R6 hang limit could tolerate).
 pub fn pull_tree(src: &Path, dst: &Path) -> Result<Manifest> {
     let m = Manifest::read(src)?;
     let n = m.files.len();
@@ -227,12 +190,9 @@ pub fn pull_tree(src: &Path, dst: &Path) -> Result<Manifest> {
     Ok(m)
 }
 
-/// 061-R3 / R11-1 / R12: a dataset folder (with a manifest) under `<shared>/datasets/`, ready to
-/// read: copied into `<cache>/datasets/` (only what changed), or verified in place in local mode.
 pub fn open_dataset(cfg: &StorageConfig, rel: &Path) -> Result<PathBuf> {
     let src = cfg.shared.join("datasets").join(rel);
     if cfg.shared_local {
-        // Hashing in place: one progress line per file, as in `pull_tree`.
         let m = Manifest::read(&src)?;
         let n = m.files.len();
         for (i, (rel, want)) in m.files.iter().enumerate() {
@@ -264,68 +224,46 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------------------------
-// Run lock (061-R5)
-
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct LockInfo {
     pub host: String,
     pub pid: u32,
-    /// Unix seconds by the writer's clock. Never compared with another PC's clock: expiry is a
-    /// heartbeat that stays the same while a worker watches it (061-R5, [`LockObserver`]).
     pub started: u64,
     pub heartbeat: u64,
 }
 
-/// How [`Run::acquire_with`] treats a lock of another PC (061-R5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TakeOver {
-    /// Refused (exit 75), fresh or expired alike.
     No,
-    /// Manual `--take-over`: taken at once, with a warning.
     Force,
-    /// Worker auto take-over (061-R13): taken only if the lock still has exactly the contents the
-    /// worker saw unchanged for `stale_after` ([`LockObserver`]); otherwise refused (exit 75).
     IfUnchanged(LockInfo),
 }
 
-/// Result of a heartbeat (061-R5, R11-4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LockStatus {
     Held,
-    /// Another PC took the run over (`--take-over`): stop training and do not push (R11-4).
     Lost(LockInfo),
-    /// The share cannot be reached; keep training and retry (R11-3).
     Unreachable(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PushOutcome {
     Pushed,
-    /// The share was unreachable; the checkpoint stays in the cache and is retried (R11-3).
     Deferred(String),
-    /// The lock belongs to someone else now; nothing was pushed (R11-4).
     LockLost(LockInfo),
 }
 
-/// Where a run resumes from (061-R3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resume {
     pub step: u64,
-    /// Verified checkpoint folder to load (cache copy, or the share itself in local mode).
     pub dir: PathBuf,
-    /// The checkpoint came from the cache, pushed at start (R11-5).
     pub recovered: bool,
 }
 
-/// Steps of a push, for fault injection in tests (061-AC2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PushStage {
-    /// Files copied into `ckpt-<step>.tmp-<host>/`, manifest not written yet.
     Copied,
-    /// Manifest written, not renamed yet.
     Manifested,
-    /// Renamed to `ckpt-<step>/`, `LATEST` not updated yet.
     Renamed,
     Done,
 }
@@ -338,7 +276,6 @@ fn parse_ckpt(name: &str) -> Option<u64> {
     name.strip_prefix(CKPT_PREFIX)?.parse().ok()
 }
 
-/// Sealed checkpoint steps in a folder (ignores `.tmp-*` stages).
 fn ckpt_steps(dir: &Path) -> Result<Vec<u64>> {
     let mut v = Vec::new();
     if let Ok(rd) = fs::read_dir(dir) {
@@ -354,9 +291,6 @@ fn ckpt_steps(dir: &Path) -> Result<Vec<u64>> {
     Ok(v)
 }
 
-/// 061-R5: writes this process's lock `locks/<id>.json`, returning it and the lock it replaced
-/// (same host after a crash, or a taken-over one). A lock of another PC is refused with
-/// [`LockBusy`] unless `take` allows it; no file time or clock is compared (061-AC3).
 fn take_lock(cfg: &StorageConfig, id: &str, take: &TakeOver) -> Result<(LockInfo, Option<LockInfo>)> {
     let locks = cfg.shared.join("locks");
     fs::create_dir_all(&locks).with_context(|| format!("creating {}", locks.display()))?;
@@ -374,7 +308,6 @@ fn take_lock(cfg: &StorageConfig, id: &str, take: &TakeOver) -> Result<(LockInfo
     }
     let bytes = fs::read(&path).with_context(|| format!("reading lock {}", path.display()))?;
     let Ok(held) = serde_json::from_slice::<LockInfo>(&bytes) else {
-        // Another process created it a moment ago and has not written it yet.
         return Err(anyhow::Error::new(LockBusy(format!("run {id}: lock {} is being written by another process (061-R5)", path.display()))));
     };
     if held.host != me.host {
@@ -398,10 +331,6 @@ fn take_lock(cfg: &StorageConfig, id: &str, take: &TakeOver) -> Result<(LockInfo
         }
     }
     write_atomic(&path, &serde_json::to_vec_pretty(&me)?)?;
-    // Two takers at once both rename their lock in; the last rename wins. Reading it back
-    // narrows the double-ownership window but does not close it: a loser whose read comes
-    // before the winner's rename still starts, and stops (Lost, no push) at its next
-    // heartbeat, within a minute (061-R5, R11-4). A loser that reads after it exits 75 now.
     let now: LockInfo = fs::read(&path).map_err(anyhow::Error::from).and_then(|b| Ok(serde_json::from_slice(&b)?)).with_context(|| format!("reading back lock {}", path.display()))?;
     if !(now.host == me.host && now.pid == me.pid) {
         return Err(anyhow::Error::new(LockBusy(format!("run {id}: {} (pid {}) took the lock at the same moment (061-R5)", now.host, now.pid))));
@@ -409,8 +338,6 @@ fn take_lock(cfg: &StorageConfig, id: &str, take: &TakeOver) -> Result<(LockInfo
     Ok((me, Some(held)))
 }
 
-/// 061-R16: the lease of an evaluation job (020-R15), the R5 lock under `locks/<id>.json`
-/// without a checkpoint folder. Same heartbeat and expiry as a run lock.
 pub struct Lease {
     pub cfg: StorageConfig,
     pub id: String,
@@ -433,7 +360,6 @@ impl Lease {
         Ok(serde_json::from_slice(&fs::read(self.path())?)?)
     }
 
-    /// Refreshes the lease, as [`Run::heartbeat`].
     pub fn heartbeat(&mut self) -> LockStatus {
         let held = match self.read() {
             Ok(l) => l,
@@ -449,7 +375,6 @@ impl Lease {
         }
     }
 
-    /// Removes the lock if it is still ours.
     pub fn release(self) -> Result<()> {
         if self.read().is_ok_and(|l| l.host == self.me.host && l.pid == self.me.pid) {
             fs::remove_file(self.path())?;
@@ -458,50 +383,32 @@ impl Lease {
     }
 }
 
-/// One training run holding its lock (061-R5). Dropping it without [`Run::release`] keeps the
-/// lock file, as a crash would: the same host takes it back on restart, a worker elsewhere after
-/// watching it unchanged for `stale_after` (061-R5), anyone with `--take-over`.
 pub struct Run {
     pub cfg: StorageConfig,
     pub run_id: String,
     me: LockInfo,
-    /// Lock found at acquire time (same host after a crash, or a taken-over lock).
     previous: Option<LockInfo>,
-    /// 061-R11-5 / R14 ③: ids ([`ckpt_id`]) of the checkpoints this run continues, oldest first:
-    /// the resumed checkpoint's own lineage plus itself, then every checkpoint sealed here.
     lineage: Vec<String>,
-    /// Folder delete of [`Run::prune`] (`fs::remove_dir_all`; replaced in tests).
     remove_dir: fn(&Path) -> std::io::Result<()>,
 }
 
-/// Lineage entries kept in a checkpoint (`lineage.json`); an unpushed checkpoint is always a
-/// few checkpoints past `LATEST`, so older entries are not needed.
 const LINEAGE_KEEP: usize = 256;
 const LINEAGE_FILE: &str = "lineage.json";
 
-/// Identity of a sealed checkpoint: SHA-256 of its manifest (every file's hash, the lineage
-/// file included, so equal ids mean equal contents and equal history).
 pub fn ckpt_id(dir: &Path) -> Result<String> {
     let m = Manifest::read(dir)?;
     Ok(Sha256::digest(serde_json::to_vec(&m)?).iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// The lineage stored in a checkpoint (empty for checkpoints written before 061-R11-5 lineage).
 fn read_lineage(dir: &Path) -> Vec<String> {
     fs::read(dir.join(LINEAGE_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 impl Run {
-    /// 061-R5 / AC3: takes the run lock; `take_over` = manual `--take-over` ([`TakeOver::Force`]).
     pub fn acquire(cfg: StorageConfig, run_id: &str, take_over: bool) -> Result<Self> {
         Self::acquire_with(cfg, run_id, if take_over { TakeOver::Force } else { TakeOver::No })
     }
 
-    /// 061-R5 / AC3: takes the run lock. A lock of another PC, fresh or expired, is refused with
-    /// [`LockBusy`] (exit 75) unless taken over: [`TakeOver::Force`] at once with a warning,
-    /// [`TakeOver::IfUnchanged`] only if the lock is still the one a worker watched expire. No
-    /// file time or clock is compared here (061-AC3). A lock of this same host (its process is
-    /// gone after a crash) is taken back: the spec refuses other PCs only.
     pub fn acquire_with(cfg: StorageConfig, run_id: &str, take: TakeOver) -> Result<Self> {
         check_name(run_id)?;
         check_name(&cfg.host)?;
@@ -514,17 +421,14 @@ impl Run {
         self.cfg.shared.join("locks").join(format!("{}.json", self.run_id))
     }
 
-    /// Checkpoints of the run on the share.
     pub fn shared_dir(&self) -> PathBuf {
         self.cfg.shared.join("checkpoints").join(&self.run_id)
     }
 
-    /// Checkpoints of the run in the cache (unused for checkpoints in local mode).
     pub fn cache_dir(&self) -> PathBuf {
         self.cfg.cache.join("checkpoints").join(&self.run_id)
     }
 
-    /// Where checkpoints are written before they are published.
     fn work_dir(&self) -> PathBuf {
         if self.cfg.shared_local { self.shared_dir() } else { self.cache_dir() }
     }
@@ -533,7 +437,6 @@ impl Run {
         &self.me
     }
 
-    /// The lock that was there before this run took it, if any.
     pub fn previous_owner(&self) -> Option<&LockInfo> {
         self.previous.as_ref()
     }
@@ -546,8 +449,6 @@ impl Run {
         l.host == self.me.host && l.pid == self.me.pid
     }
 
-    /// 061-R5 / R11-4: refreshes the lease (call every `heartbeat_every`). After an outage the
-    /// lock is read again first; if it changed hands the caller must stop without pushing.
     pub fn heartbeat(&mut self) -> LockStatus {
         let held = match self.read_lock() {
             Ok(l) => l,
@@ -563,7 +464,6 @@ impl Run {
         }
     }
 
-    /// Step named by the share's `LATEST` (061-R4).
     pub fn latest(&self) -> Result<Option<u64>> {
         match fs::read_to_string(self.shared_dir().join(LATEST_FILE)) {
             Ok(s) => Ok(Some(parse_ckpt(s.trim()).ok_or_else(|| anyhow!("bad LATEST {:?}", s.trim()))?)),
@@ -572,8 +472,6 @@ impl Run {
         }
     }
 
-    /// 061-R3 start: recover unpushed checkpoints (R11-5), then pull `LATEST` into the cache
-    /// (or verify it in place, R12). `None` = new run.
     pub fn begin(&mut self) -> Result<Option<Resume>> {
         let latest = self.latest()?;
         if !self.cfg.shared_local
@@ -599,7 +497,6 @@ impl Run {
         Ok(Some(Resume { step, dir: dst, recovered: false }))
     }
 
-    /// The run continues the checkpoint in `dir`: its lineage plus itself (061-R11-5).
     fn continue_from(&mut self, dir: &Path) -> Result<()> {
         let mut l = read_lineage(dir);
         l.push(ckpt_id(dir)?);
@@ -607,9 +504,6 @@ impl Run {
         Ok(())
     }
 
-    /// 061-R11-5: the newest cached checkpoint newer than `LATEST`, if this host was the last
-    /// owner of the lock, the checkpoint verifies and it descends from `LATEST` (lineage
-    /// condition, R14 ③: a checkpoint left from before another PC pushed its own is never used).
     fn recoverable(&self, latest: Option<u64>) -> Result<Option<u64>> {
         let last_owner_is_me = self.previous.as_ref().is_some_and(|p| p.host == self.me.host);
         if !last_owner_is_me {
@@ -640,7 +534,6 @@ impl Run {
         format!("{}.tmp-{}", ckpt_name(step), self.cfg.host)
     }
 
-    /// An empty folder to write the checkpoint of `step` into (061-R4 step 1).
     pub fn stage_dir(&self, step: u64) -> Result<PathBuf> {
         let d = self.work_dir().join(self.stage_name(step));
         if d.exists() {
@@ -650,8 +543,6 @@ impl Run {
         Ok(d)
     }
 
-    /// 061-R4 steps 1–2 where the checkpoint was written: manifest, then rename to
-    /// `ckpt-<step>/`. In local mode (R12) this is on the share, and `LATEST` is updated too.
     pub fn seal(&mut self, step: u64) -> Result<PathBuf> {
         let stage = self.work_dir().join(self.stage_name(step));
         let keep_from = self.lineage.len().saturating_sub(LINEAGE_KEEP);
@@ -673,13 +564,10 @@ impl Run {
         write_atomic(&self.shared_dir().join(LATEST_FILE), format!("{}\n", ckpt_name(step)).as_bytes())
     }
 
-    /// 061-R4: publishes the sealed checkpoint `step` (tmp folder → manifest → rename → LATEST).
-    /// R11-3: an unreachable share defers; R11-4: a lost lock pushes nothing.
     pub fn push(&mut self, step: u64) -> Result<PushOutcome> {
         self.push_until(step, PushStage::Done)
     }
 
-    /// [`Run::push`] that stops after `stage`, to simulate a crash mid-push (061-AC2).
     #[doc(hidden)]
     pub fn push_until(&mut self, step: u64, stage: PushStage) -> Result<PushOutcome> {
         match self.heartbeat() {
@@ -688,7 +576,6 @@ impl Run {
             LockStatus::Unreachable(e) => return Ok(PushOutcome::Deferred(e)),
         }
         if self.cfg.shared_local {
-            // Already on the share (seal); only LATEST may be behind.
             if stage >= PushStage::Done && self.latest()?.is_none_or(|l| l < step) {
                 self.write_latest(step)?;
             }
@@ -698,7 +585,6 @@ impl Run {
         let manifest = Manifest::read(&local).with_context(|| format!("{} is not sealed", local.display()))?;
         match self.copy_to_share(step, &local, &manifest, stage) {
             Ok(()) => Ok(PushOutcome::Pushed),
-            // The checkpoint itself is fine; any I/O failure here is the share (R11-3).
             Err(e) => Ok(PushOutcome::Deferred(format!("{e:#}"))),
         }
     }
@@ -736,11 +622,6 @@ impl Run {
         Ok(())
     }
 
-    /// Cached checkpoints not on the share yet, oldest first (R11-3). Pushes go oldest first, so
-    /// these are the cached steps after `LATEST` (older ones were pushed, maybe pruned since).
-    /// With the share unreachable every cached checkpoint counts. Only checkpoints of this run's
-    /// lineage count (061-R14 ③: another lineage's leftovers are never pushed). Empty in local
-    /// mode.
     pub fn unpushed(&self) -> Result<Vec<u64>> {
         if self.cfg.shared_local {
             return Ok(Vec::new());
@@ -754,7 +635,6 @@ impl Run {
             .collect())
     }
 
-    /// R11-3: retries every unpushed checkpoint, oldest first; stops at the first failure.
     pub fn push_pending(&mut self) -> Result<PushOutcome> {
         for step in self.unpushed()? {
             match self.push(step)? {
@@ -765,12 +645,6 @@ impl Run {
         Ok(PushOutcome::Pushed)
     }
 
-    /// 061-R6: keeps the newest `keep_latest` checkpoints on the share (always the one `LATEST`
-    /// names; `keep_latest = 0` keeps all, G-D6) and in the cache only unpushed ones plus the
-    /// newest. `promoted/` and `league/` are never touched. Only the lock holder prunes; an
-    /// unreachable share prunes nothing. A checkpoint that cannot be deleted (B-7: an SMB delete
-    /// error) is logged and left for the next prune; the others are still deleted. Returns how
-    /// many deletes failed.
     pub fn prune(&mut self) -> Result<usize> {
         if self.heartbeat() != LockStatus::Held {
             return Ok(0);
@@ -806,7 +680,6 @@ impl Run {
         Ok(failed)
     }
 
-    /// Replaces the folder delete used by [`Run::prune`] (fault injection in tests, B-7).
     #[doc(hidden)]
     pub fn set_remove_dir(&mut self, f: fn(&Path) -> std::io::Result<()>) {
         self.remove_dir = f;
@@ -829,15 +702,10 @@ impl Run {
         Ok(dst)
     }
 
-    /// 061-R2 `promoted/<name>/`: a pushed checkpoint that passed the 050 gate (kept forever).
     pub fn promote(&self, step: u64, name: &str) -> Result<PathBuf> {
         self.publish_copy(step, "promoted", name)
     }
 
-    /// 061-R2 `league/<name>/`: a 042 league snapshot (kept forever). 042 스냅샷 공개
-    /// (AMB-042-14): only the model files of `agents/<agent>` of the pushed checkpoint `step`
-    /// (not its optimizer state, other agents or league state), as
-    /// `league/<name>/agents/<agent>/` with a manifest of those files. Returns `league/<name>`.
     pub fn league_snapshot(&self, step: u64, name: &str, agent: &str) -> Result<PathBuf> {
         check_name(name)?;
         check_name(agent)?;
@@ -870,14 +738,12 @@ impl Run {
             Ok(())
         })();
         if let Err(e) = copied {
-            // Best effort: only this publish's temporary folder (never `dst`, a published one).
             let _ = fs::remove_dir_all(&tmp);
             return Err(e);
         }
         Ok(dst)
     }
 
-    /// 061-R5 / 042-R10: normal exit, after the final push. Removes the lock if it is still ours.
     pub fn release(self) -> Result<()> {
         if self.read_lock().is_ok_and(|l| self.owns(&l)) {
             fs::remove_file(self.lock_path())?;
@@ -886,7 +752,6 @@ impl Run {
     }
 }
 
-/// A fresh lock of another PC holds the run (061-R5); the run queue worker moves on (061-R13).
 #[derive(Debug)]
 pub struct LockBusy(pub String);
 
@@ -898,11 +763,6 @@ impl std::fmt::Display for LockBusy {
 
 impl std::error::Error for LockBusy {}
 
-// ---------------------------------------------------------------------------------------------
-// Run queue support (061-R13..R15)
-
-/// `<shared>/<name>/`, created if missing, but never the share root itself: an unmounted mount
-/// point must not quietly become a local "share" (061-R13, H-2).
 fn share_subdir(cfg: &StorageConfig, name: &str) -> Result<PathBuf> {
     let d = cfg.shared.join(name);
     match fs::create_dir(&d) {
@@ -912,9 +772,6 @@ fn share_subdir(cfg: &StorageConfig, name: &str) -> Result<PathBuf> {
     }
 }
 
-/// 061-R13 (H-2): the share is there. A shared folder that lost its mount (an empty mount point)
-/// or a dropped connection fails here, so "no lock / no DONE" is never read off a missing share.
-/// The worker creates `checkpoints/` when it starts.
 pub fn probe_share(cfg: &StorageConfig) -> Result<()> {
     let d = cfg.shared.join("checkpoints");
     let m = fs::metadata(&d).with_context(|| format!("shared drive not reachable ({})", d.display()))?;
@@ -923,8 +780,6 @@ pub fn probe_share(cfg: &StorageConfig) -> Result<()> {
     Ok(())
 }
 
-/// The run's lock file as read now: `None` = no lock. A read or parse failure is an error, never
-/// "no lock" (061-R13, H-2: unknown is not Free).
 pub fn peek_lock(cfg: &StorageConfig, run_id: &str) -> Result<Option<LockInfo>> {
     let path = cfg.shared.join("locks").join(format!("{run_id}.json"));
     match fs::read(&path) {
@@ -934,27 +789,16 @@ pub fn peek_lock(cfg: &StorageConfig, run_id: &str) -> Result<Option<LockInfo>> 
     }
 }
 
-/// The run's lock as a worker sees it (061-R5, R13).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LockView {
     Free,
-    /// Held, and not (yet) seen unchanged for `stale_after`.
     Held(LockInfo),
-    /// The worker saw exactly this lock unchanged for `stale_after` on its own monotonic clock.
     Stale(LockInfo),
-    /// Could not be read (061-R13 "unknown"): neither free nor expired.
     Unknown(String),
 }
 
-/// Expiry by watching (061-R5 locks, H-3; 061-R14 yield requests): a file's contents count as
-/// expired only when this process has seen them stay exactly the same for the limit, by its own
-/// monotonic clock. File times and the clocks written in the files are never compared, so PC
-/// clock differences and the share's time stamps do not matter. A change, a read failure or a
-/// gap in watching (longer than half of the limit, e.g. while the worker trained another run)
-/// starts over.
 #[derive(Debug)]
 pub struct ContentObserver<T> {
-    /// run id -> (contents, first seen, last seen).
     seen: std::collections::HashMap<String, (T, std::time::Instant, std::time::Instant)>,
 }
 
@@ -964,21 +808,15 @@ impl<T> Default for ContentObserver<T> {
     }
 }
 
-/// One read of a watched file, as [`ContentObserver::watch`] sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Watched<T> {
-    /// No file.
     Absent,
-    /// Present, not (yet) seen unchanged for the limit.
     Fresh(T),
-    /// Seen unchanged for the limit on this process's monotonic clock.
     Expired(T),
-    /// Could not be read (061-R13 "unknown").
     Unknown(String),
 }
 
 impl<T: Clone + PartialEq> ContentObserver<T> {
-    /// Records one read of the run's file at `now` against `limit`.
     pub fn watch(&mut self, run_id: &str, read: &Result<Option<T>>, now: std::time::Instant, limit: Duration) -> Watched<T> {
         let v = match read {
             Ok(None) => {
@@ -997,21 +835,16 @@ impl<T: Clone + PartialEq> ContentObserver<T> {
         if now.saturating_duration_since(first) >= limit { Watched::Expired(v.clone()) } else { Watched::Fresh(v.clone()) }
     }
 
-    /// Forgets every observation (the worker stops watching while it trains).
     pub fn reset(&mut self) {
         self.seen.clear();
     }
 }
 
-/// 061-R5 expiry for the worker's automatic take-over: lock contents (host, pid, heartbeat)
-/// watched unchanged for `stale_after`.
 pub type LockObserver = ContentObserver<LockInfo>;
 
-/// 061-R14 expiry of yield requests: request contents watched unchanged for [`YIELD_EXPIRY`].
 pub type YieldObserver = ContentObserver<YieldRequest>;
 
 impl ContentObserver<LockInfo> {
-    /// Records one read of the run's lock at `now` and says what it means.
     pub fn observe(&mut self, run_id: &str, read: &Result<Option<LockInfo>>, now: std::time::Instant, stale_after: Duration) -> LockView {
         match self.watch(run_id, read, now, stale_after) {
             Watched::Absent => LockView::Free,
@@ -1022,7 +855,6 @@ impl ContentObserver<LockInfo> {
     }
 }
 
-/// 061-R14 yield request on a run: the requesting host takes the run next.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct YieldRequest {
     pub host: String,
@@ -1030,17 +862,12 @@ pub struct YieldRequest {
     pub time: u64,
 }
 
-/// A request seen unchanged this long by a worker's own monotonic clock is expired and removed
-/// (061-R14, [`YieldObserver`]).
 pub const YIELD_EXPIRY: Duration = Duration::from_secs(30 * 60);
 
 fn yield_path(cfg: &StorageConfig, run_id: &str) -> PathBuf {
     cfg.shared.join("locks").join(format!("{run_id}.yield"))
 }
 
-/// The run's yield request as written; `Ok(None)` = none. A read failure is an error (061-R13
-/// "unknown"). Expiry is not judged here: workers watch requests ([`YieldObserver`]) and remove
-/// expired ones ([`remove_yield_if`]).
 pub fn read_yield(cfg: &StorageConfig, run_id: &str) -> Result<Option<YieldRequest>> {
     let p = yield_path(cfg, run_id);
     let bytes = match fs::read(&p) {
@@ -1051,8 +878,6 @@ pub fn read_yield(cfg: &StorageConfig, run_id: &str) -> Result<Option<YieldReque
     Ok(Some(serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", p.display()))?))
 }
 
-/// Removes the run's yield request if it still has exactly the contents `seen` (an expired
-/// request, 061-R14; whoever wrote it).
 pub fn remove_yield_if(cfg: &StorageConfig, run_id: &str, seen: &YieldRequest) -> Result<bool> {
     if read_yield(cfg, run_id)?.as_ref() != Some(seen) {
         return Ok(false);
@@ -1065,8 +890,6 @@ pub fn remove_yield_if(cfg: &StorageConfig, run_id: &str, seen: &YieldRequest) -
     }
 }
 
-/// A live yield request by another host (training loop check: a read failure counts as none,
-/// training goes on, 061-R11-3).
 pub fn yield_by_other(cfg: &StorageConfig, run_id: &str) -> Option<YieldRequest> {
     read_yield(cfg, run_id).ok().flatten().filter(|y| y.host != cfg.host)
 }
@@ -1077,8 +900,6 @@ pub fn request_yield(cfg: &StorageConfig, run_id: &str, priority: i32) -> Result
     write_atomic(&yield_path(cfg, run_id), &serde_json::to_vec_pretty(&req)?)
 }
 
-/// Removes the run's yield request if this host wrote it (061-R14: when the host takes the run,
-/// takes another run, or its worker stops). Another host's request is left alone.
 pub fn clear_yield(cfg: &StorageConfig, run_id: &str) -> Result<()> {
     let p = yield_path(cfg, run_id);
     let bytes = match fs::read(&p) {
@@ -1096,12 +917,10 @@ pub fn clear_yield(cfg: &StorageConfig, run_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// `checkpoints/<id>/DONE`: the run finished (061-R13).
 pub fn done_path(cfg: &StorageConfig, run_id: &str) -> PathBuf {
     cfg.shared.join("checkpoints").join(run_id).join("DONE")
 }
 
-/// Whether the run has `DONE`. A read failure is an error, not "not done" (061-R13, H-2).
 pub fn is_done(cfg: &StorageConfig, run_id: &str) -> Result<bool> {
     let p = done_path(cfg, run_id);
     match fs::metadata(&p) {
@@ -1117,7 +936,6 @@ pub fn mark_done(cfg: &StorageConfig, run_id: &str, step: u64) -> Result<()> {
     write_atomic(&p, format!("{}\n", ckpt_name(step)).as_bytes())
 }
 
-/// 061-R15: appends one line (plus host and time) to `runs/<id>/devices.jsonl`.
 pub fn log_device(cfg: &StorageConfig, run_id: &str, line: serde_json::Value) {
     let dir = cfg.shared.join("runs").join(run_id);
     let mut v = line;
@@ -1134,7 +952,6 @@ pub fn log_device(cfg: &StorageConfig, run_id: &str, line: serde_json::Value) {
     }
 }
 
-/// One training session's stretch of updates on one host (061-R15): updates `from..to`.
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct DeviceSpan {
     pub host: String,
@@ -1142,17 +959,9 @@ pub struct DeviceSpan {
     pub precision: Option<String>,
     pub from: u64,
     pub to: u64,
-    /// The `stop` reason, or `crash` when the session has no `stop` line.
     pub end: String,
 }
 
-/// 061-R15 aggregation of `devices.jsonl` lines (in file order). A session starts at a `start`
-/// line; its `checkpoint` and `stop` lines are the following ones of the same host (a PC that
-/// lost the lock may write its `stop` after the next owner's `start`). It ends at its `stop`
-/// step; without a `stop` (crash, kill), or after a lost lock (nothing pushed after the last
-/// checkpoint), at its last `checkpoint` step (its start step if none): later updates were not
-/// kept and the next session does them again. A next session that starts at a smaller step cuts
-/// it there.
 pub fn device_spans(lines: &[serde_json::Value]) -> Vec<DeviceSpan> {
     struct S {
         span: DeviceSpan,
@@ -1203,14 +1012,12 @@ pub fn device_spans(lines: &[serde_json::Value]) -> Vec<DeviceSpan> {
         .collect()
 }
 
-/// `runs/<id>/devices.jsonl` as JSON lines; a torn last line (crash mid-write) is skipped.
 pub fn read_devices(cfg: &StorageConfig, run_id: &str) -> Result<Vec<serde_json::Value>> {
     let p = cfg.shared.join("runs").join(run_id).join("devices.jsonl");
     let text = fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
     Ok(text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
 }
 
-/// 061-R13 worker status in `workers/<host>.json`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct WorkerStatus {
     pub host: String,
@@ -1231,10 +1038,6 @@ pub fn read_worker(cfg: &StorageConfig, host: &str) -> Option<WorkerStatus> {
     serde_json::from_slice(&fs::read(cfg.shared.join("workers").join(format!("{host}.json"))).ok()?).ok()
 }
 
-/// 041-R9 data folders of a BC command: `datasets` under `<URANIUM_SHARED_DIR>/datasets/` (with a
-/// manifest: pulled into the cache, or verified in place with URANIUM_SHARED_LOCAL=1, 061-R11-1,
-/// R12), deduplicated and sorted, then the `shards` folders read as they are. The game order
-/// (041-R13) and a run's data position (061-R10) follow the files' canonical keys, not this order.
 pub fn dataset_dirs(datasets: &[PathBuf], shards: &[PathBuf]) -> Result<Vec<PathBuf>> {
     ensure!(!datasets.is_empty() || !shards.is_empty(), "pass --dataset or --shards");
     let mut dirs = Vec::new();

@@ -1,14 +1,3 @@
-//! The RL run loop (042): one process runs the learner, the inference servers, the agent server,
-//! the game dispatch (`uranium-runner`, 020-R12) and the league. The learner and the servers are
-//! the PyTorch side (`python -m uranium rl`, AMB-000-4) behind [`RlLearners`].
-//!
-//! Game outcomes follow 020-R13: once hostd reports a game over, the GameEnd reports of its
-//! sessions are reconciled (`game_result`) and that verdict sets r_win on the learner's terminal
-//! segment (033) and feeds the league win table (042); a rush mini-game that reached its frame
-//! cap is judged by the learner's SCVs first (042-R17). Aborted games are revoked (042-R3).
-//! Checkpoints go through `storage::Run` (061): stage → seal → push; a clean stop (042-R10)
-//! releases the lock only when the final push succeeded (061-R11-5/6).
-
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -38,7 +27,6 @@ use crate::sil::{SilBuffer, SilConfig};
 use crate::storage::{LockStatus, PushOutcome, Run, StorageConfig};
 use crate::trajectory::{GameResult, Segment, SegmentQueue, TrajectoryObserver, trained_steps as trained_steps_of};
 
-/// One entry of the z table (033-R8): a replay's strategy statistic.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ZEntry {
     pub build: Vec<u16>,
@@ -51,41 +39,27 @@ pub struct RlArgs {
     pub algo: Algo,
     pub seed: u64,
     pub take_over: bool,
-    /// Local log folder (train.csv, games.csv, games.jsonl, sessions).
     pub log_dir: PathBuf,
-    /// z table (033-R8); `None` = every game without z.
     pub z_table: Option<PathBuf>,
-    /// Stop after this many updates (smoke runs); 0 = until Ctrl+C.
     pub max_updates: u64,
-    /// Stop after this many minutes (smoke runs); 0 = no limit.
     pub max_minutes: u64,
-    /// 042-R12: clean stop at this many agent steps (run total, across resumes); 0 = no limit.
     pub max_agent_steps: u64,
-    /// Checkpoint every this many minutes (061-R4: 30).
     pub checkpoint_minutes: u64,
-    /// 042-AC1 small setting: always this T0 race on Fighting Spirit, Main only.
     pub fixed_t0: Option<Race>,
-    /// Ctrl+C state (`uranium_store::install_stop_handler`, installed first by the caller).
     pub stop: Arc<AtomicUsize>,
 }
 
-/// Per-game bookkeeping between dispatch and the end of the game.
 struct GameMeta {
     pick: Pick,
-    /// Our learner's BWAPI player id and the enemy race it saw (set at session start).
     self_player: Option<u8>,
     enemy_race: Race,
-    /// Id of the snapshot / anchor server this game holds (`SnapshotPool::acquire`).
     server: Option<u64>,
-    /// 020-R21 start slots of `players[0]` / `players[1]` from the game's seed (`games.csv`
-    /// `slot_self`, `slot_enemy`, AMB-042-19); `None` without a seed.
     slots: Option<[u8; 2]>,
 }
 
 struct Shared {
     league: Mutex<League>,
     games: Mutex<HashMap<u64, GameMeta>>,
-    /// Terminal segments held until the 020-R13 verdict sets r_win.
     held: Mutex<HashMap<u64, Segment>>,
     results: Mutex<Receiver<GameResult>>,
     finished: Mutex<HashMap<u64, GameResult>>,
@@ -101,38 +75,22 @@ struct Shared {
     games_done: AtomicU64,
     disagree: AtomicU64,
     aborted: AtomicU64,
-    /// 042-R20 (AMB-042-20): finished games in a row whose learning session made no decision
-    /// ([`bad_learning_session`]).
     bad_sessions: AtomicU64,
-    /// 042-R20: games that ended `Finished` (the stall check counts these, not Aborted /
-    /// Rejected games of a game host outage, which leave the learner without data anyway).
     finished_games: AtomicU64,
-    /// `[league]` of the config: `GameSpec.max_frames` by opponent (020-R3 60 minutes, 042-R15
-    /// `model_game_max_s`, AMB-042-17; 042-R17 rush mini-games, AMB-042-18) and the
-    /// `[league.rush_judge]` settings.
     league_cfg: LeagueConfig,
-    /// 042-R16 (AMB-042-17): `Some` when `[sil] enabled`.
     sil: Option<SilState>,
-    /// `[actors] game_wall_timeout_s` (AMB-042-12).
     game_wall_timeout_s: u32,
-    /// 042-R11: `<shared>/runs/<run>/replays` and the regular sample interval.
     replay_dir: PathBuf,
     replay_every: u64,
-    /// 042-R14 (AMB-042-15): `[concede]` and the games that judge it (shared with the agent
-    /// server); a game is listed from dispatch until it is done.
     concede_cfg: ConcedeConfig,
     concede: ConcedeBoard,
-    /// 033-R11 channel mode: `games.csv` `r_scout` / `r_survive` are empty in `"z"` (042-R2).
     pseudo: PseudoMode,
 }
 
-/// 042-R16 self-imitation state of a run (AMB-042-17): the copies of the candidate games still
-/// playing and the buffer of the selected ones (not in checkpoints).
 struct SilState {
     cfg: SilConfig,
     pending: Mutex<HashMap<u64, Vec<Segment>>>,
     buffer: Mutex<SilBuffer>,
-    /// The "not in C1" notice was logged.
     off_stage_logged: AtomicBool,
 }
 
@@ -142,7 +100,6 @@ impl SilState {
         Self { cfg, pending: Mutex::new(HashMap::new()), buffer, off_stage_logged: AtomicBool::new(false) }
     }
 
-    /// 042-R16 "Main만(C1)": buffer lanes only in C1; another stage is logged once.
     fn in_stage(&self, stage: crate::league::Stage) -> bool {
         if stage == crate::league::Stage::C1 {
             return true;
@@ -153,15 +110,12 @@ impl SilState {
         false
     }
 
-    /// A copy of a candidate game's segment, kept when it starts before `until_s`.
     fn keep(&self, seg: &Segment) {
         if self.cfg.keeps_segment(seg.start_frame) {
             self.pending.lock().unwrap().entry(seg.game_id).or_default().push(seg.clone());
         }
     }
 
-    /// The game is over: its copies go to the buffer when it is selected (with its r_win), else
-    /// they are dropped. Returns the number of segments added.
     fn settle(&self, game_id: u64, selected: bool, r_win: f32) -> usize {
         let segs = self.pending.lock().unwrap().remove(&game_id).unwrap_or_default();
         if !selected || segs.is_empty() {
@@ -173,8 +127,6 @@ impl SilState {
     }
 }
 
-/// 042-R10 ①② and the queue close (042-R3), once: run by the clean stop, and by `Drop` when the
-/// run loop returns early with an error, so no game is left waiting for a queue place.
 struct Halt {
     shared: Arc<Shared>,
     inflight: uranium_runner::InFlight,
@@ -200,46 +152,30 @@ impl Drop for Halt {
     }
 }
 
-/// Most snapshot / anchor inference servers kept running while idle (least recently used shut
-/// down first); servers with games in flight are never shut down.
 const SNAPSHOT_SERVERS_MAX: usize = 8;
 
-/// A snapshot / anchor whose server failed (start error, or its thread died) is not tried again
-/// for this long: its picks become current-Main self-play without reloading under the pool lock.
 const SNAPSHOT_RETRY_AFTER: Duration = Duration::from_secs(300);
 
-/// One running snapshot / anchor inference server.
 struct LiveServer {
     key: String,
-    /// Unique per started server: a game releases the server it got, not a later one of the key.
     id: u64,
     handle: InferenceHandle,
     close: Box<dyn FnOnce() + Send>,
     alive: Box<dyn Fn() -> bool + Send>,
-    /// Games dispatched against it and not done yet.
     games: usize,
 }
 
-/// Inference servers of league snapshots and the anchor (042 opponents), started on first use.
-/// 042 스냅샷 추론 서버 (AMB-042-14): a server no pick can choose any more
-/// (`League::model_opponents`, e.g. a snapshot that left the C1 candidates) is shut down once its
-/// games are done, which frees its device memory; so is the least recently used idle one above
-/// `cap`. The anchor's server (`pinned`) stays. Snapshot files are never deleted.
 struct SnapshotPool {
-    /// Model folder per key (snapshot id, anchor key): published snapshots and the anchor.
     dirs: HashMap<String, PathBuf>,
-    /// Least recently used first.
     live: VecDeque<LiveServer>,
     cap: usize,
     pinned: Option<String>,
     servers: SnapshotServers,
-    /// Keys whose server failed, and when (`retry_after`).
     failed: HashMap<String, Instant>,
     retry_after: Duration,
     next_id: u64,
 }
 
-/// A shut-down function with the server's key, run without the pool's lock.
 type Closer = (String, Box<dyn FnOnce() + Send>);
 
 impl SnapshotPool {
@@ -247,9 +183,6 @@ impl SnapshotPool {
         Self { dirs, live: VecDeque::new(), cap: SNAPSHOT_SERVERS_MAX, pinned, servers, failed: HashMap::new(), retry_after: SNAPSHOT_RETRY_AFTER, next_id: 0 }
     }
 
-    /// The server of `key` for one more game (started if needed) and its id; pair with
-    /// `release`. A cached server whose thread died is closed and counts as a failure: an error
-    /// (the caller's self-play fallback), and no new start for `retry_after`.
     fn acquire(&mut self, key: &str) -> Result<(InferenceHandle, u64)> {
         if let Some(at) = self.failed.get(key) {
             if at.elapsed() < self.retry_after {
@@ -283,15 +216,12 @@ impl SnapshotPool {
         Ok(out)
     }
 
-    /// A game dispatched with `acquire` (server `id`) is done (or never started).
     fn release(&mut self, id: u64) {
         if let Some(l) = self.live.iter_mut().find(|l| l.id == id) {
             l.games = l.games.saturating_sub(1);
         }
     }
 
-    /// Takes out the idle servers that `in_use` does not list, then the least recently used idle
-    /// ones above `cap`, never the pinned one; returns their shut-down functions.
     fn prune(&mut self, in_use: &BTreeSet<String>) -> Vec<Closer> {
         let pinned = |l: &LiveServer| self.pinned.as_deref() == Some(l.key.as_str());
         let (mut keep, mut out) = (VecDeque::new(), Vec::new());
@@ -317,8 +247,6 @@ impl SnapshotPool {
     }
 }
 
-/// 042 스냅샷 추론 서버 (AMB-042-14): shuts down the servers no pick can choose any more once
-/// their games are done (after every game and every snapshot).
 fn prune_servers(shared: &Shared) {
     let in_use = shared.league.lock().unwrap().model_opponents();
     let closers = shared.snapshots.lock().unwrap().prune(&in_use);
@@ -328,7 +256,6 @@ fn prune_servers(shared: &Shared) {
     }
 }
 
-/// `LearnerHook` of one learning agent: z per episode and the trajectory observer (042).
 struct Hook {
     agent: AgentKind,
     handle: InferenceHandle,
@@ -338,7 +265,6 @@ struct Hook {
     z: Vec<ZEntry>,
     z_drop: f64,
     rng: Mutex<u64>,
-    /// `[reward]` of the config (033-R9 / R10 / R11, AMB-042-16).
     reward: RewardConfig,
 }
 
@@ -364,14 +290,9 @@ impl LearnerHook for Hook {
                 }
             }
         }
-        // 044-R9: the game's KL reference by the enemy's lobby race as GameInfo gives it now (a
-        // lobby Random arrives as Random / Unknown, 030-R11), fixed for the game.
         let lobby_race = info.players.iter().find(|p| p.is_enemy).map_or(Race::Unknown, |p| p.race);
-        // 033 / 042 "r_value의 게임별 적용" (AMB-042-14): per game, by the opponent's class.
         let r_value_policy = class.is_none_or(|c| self.shared.league.lock().unwrap().r_value_in_policy(c));
-        // 033-R11 (AMB-042-16): r_scout / r_survive policy-weight multipliers, per game the same way.
         let pseudo_scale = self.reward.pseudo_scale(class == Some(Class::Model));
-        // 033-R2 / R8: z from the table; z_drop of the games (or all without a table) have none.
         let z = {
             let mut r = self.rng.lock().unwrap();
             let u = splitmix(&mut r);
@@ -383,10 +304,6 @@ impl LearnerHook for Hook {
             }
         };
         let mut obs = TrajectoryObserver::new(self.agent.index(), game_id, self.seq_len, self.shared.queues[self.agent.index()].clone(), self.tx.clone()).hold_terminal(held_sink(self.shared.clone())).r_value_policy(r_value_policy).pseudo(self.reward.pseudo, pseudo_scale).enemy_lobby_race(lobby_race);
-        // 042-R16 (AMB-042-17): Main's games of the selected ladder group keep segment copies
-        // until the game is judged; with `select_keys` / `select_start_hit` (AMB-042-19) only
-        // games against a listed opponent with the wanted start condition (the others can never
-        // be selected).
         if let Some(sil) = &self.shared.sil
             && self.agent == AgentKind::Main
             && ladder_group.as_deref() == Some(sil.cfg.select_group.as_str())
@@ -394,10 +311,6 @@ impl LearnerHook for Hook {
         {
             let s = self.shared.clone();
             obs = obs.copy_segments(Box::new(move |seg: &Segment| {
-                // Not after the game was settled (an Aborted game's session may still push): the
-                // `games` guard is held across the check and the keep, and `done` / `requeue`
-                // remove the game from `games` before they settle, so no copy can recreate a
-                // settled game's pending list. Lock order: `games`, then the SIL lists.
                 let games = s.games.lock().unwrap();
                 if games.contains_key(&seg.game_id)
                     && let Some(sil) = &s.sil
@@ -430,21 +343,12 @@ fn splitmix(state: &mut u64) -> f64 {
     (z >> 11) as f64 / (1u64 << 53) as f64
 }
 
-/// The seed of RL game `id` (no RNG state: the same id gives the same seed, resumes included).
 fn base_seed(id: u64) -> u32 {
     (splitmix(&mut (id ^ 0xA5A5_5A5A)) * u32::MAX as f64) as u32
 }
 
-/// 042-R18 candidates beyond `s_0`: up to 64 seeds of a game.
 const START_MIX_TRIES: u64 = 64;
 
-/// 042-R18 시작 조건 섞기 (AMB-042-19): the `GameSpec.seed` of RL game `id`. Without a share (not
-/// a `[league.start_mix]` group's ladder game) it is the earlier hash seed `s_0`. With one, the
-/// game's target condition is a first-target hit when a uniform value of the id is below the
-/// share; the first of `s_0`, `s_1`..`s_63` (hashes of the id and k) whose 020-R21 hit (ours
-/// `players[0]`, the enemy `players[1]`, `random_players` Random draws first) is the target is
-/// the seed, else `s_0` with a log line (about (2/3)^64, 메인 임시 결정). Hash constants:
-/// implementation choice.
 fn game_seed(id: u64, share: Option<f64>, random_players: u32) -> u32 {
     let Some(share) = share else { return base_seed(id) };
     mixed_seed(id, share, |s| {
@@ -453,7 +357,6 @@ fn game_seed(id: u64, share: Option<f64>, random_players: u32) -> u32 {
     })
 }
 
-/// 042-R18: the seed search of [`game_seed`] with the hit of a seed given by `hit`.
 fn mixed_seed(id: u64, share: f64, hit: impl Fn(u32) -> bool) -> u32 {
     let s0 = base_seed(id);
     let target = splitmix(&mut (id ^ 0x5EED_0042_0018_0000)) < share;
@@ -465,7 +368,6 @@ fn mixed_seed(id: u64, share: f64, hit: impl Fn(u32) -> bool) -> u32 {
     s0
 }
 
-/// League-driven job source (020-R12).
 struct LeagueSource {
     shared: Arc<Shared>,
     hooks: Vec<Arc<Hook>>,
@@ -487,8 +389,6 @@ impl LeagueSource {
                     server = Some(server_id);
                 }
                 Err(e) => {
-                    // 042 모델 상대 실패 (AMB-042-14): the game becomes current-Main self-play;
-                    // the runner slot goes on.
                     let key = s.league.lock().unwrap().self_play_key();
                     crate::elog!("[rl] game {id}: opponent {} cannot be served ({e:#}); playing the current Main instead (042)", pick.key);
                     pick = Pick { opponent: Opponent::SelfPlay, key, class: Class::Model, ..pick };
@@ -505,11 +405,9 @@ impl LeagueSource {
                 policies[1] = Some(PolicySpec::Model(s.handles[AgentKind::Main.index()].clone()));
                 (bridge(Race::Terran), Race::Terran, pick.key.clone())
             }
-            // The server was taken above (`policies[1]`).
             Opponent::Snapshot { .. } | Opponent::Anchor { .. } => (bridge(Race::Terran), Race::Terran, pick.key.clone()),
         };
         let players = [bridge(Race::Terran), p1];
-        // 020-R21: the Random race draws come before the slot shuffle.
         let random_players = players.iter().filter(|p| p.race == Race::Random).count() as u32;
         let share = if pick.class == Class::Model { None } else { s.league_cfg.start_mix.share_for(pick.ladder_group.as_deref()) };
         let seed = game_seed(id, share, random_players);
@@ -519,25 +417,18 @@ impl LeagueSource {
             map: if pick.fighting_spirit { MapKey::FightingSpirit } else { MapKey::CircuitBreaker },
             players,
             seed: Some(seed),
-            // 042-R15 / 020-R3 (AMB-042-17): a game against a model (a failed model opponent's
-            // current-Main self-play included) has the model-game cap; 042-R17 (AMB-042-18): a
-            // ladder game of a `[league.rush_judge]` group ends at `at_s`; other bots the 60 minutes.
             max_frames: s.league_cfg.game_max_frames_of(pick.class == Class::Model, pick.ladder_group.as_deref()),
             privileged: true,
-            // 042-R11: every game is recorded; `done` keeps the sample and disagreements.
             save_replay: true,
-            // AMB-042-12 / 020-R3: queue waits count too; Timeout is left out like Aborted.
             wall_timeout_s: s.game_wall_timeout_s,
         };
         s.games.lock().unwrap().insert(id, GameMeta { pick, self_player: None, enemy_race, server, slots: Some(slots) });
-        // 042-R14: every model session of an RL league game judges collapse concede.
         if s.concede_cfg.enabled {
             s.concede.insert(id, Arc::new(ConcedeGame::new(s.concede_cfg)));
         }
         Job { matchup: 0, spec, t0_builds, models: [None, None], policies, opponent: Some(opponent) }
     }
 
-    /// The game no longer holds its snapshot / anchor server; servers nobody can pick go down.
     fn release_server(&self, meta: &GameMeta) {
         if let Some(id) = meta.server {
             self.shared.snapshots.lock().unwrap().release(id);
@@ -545,7 +436,6 @@ impl LeagueSource {
         prune_servers(&self.shared);
     }
 
-    /// Waits for the session's report and the terminal segment (they race hostd's Finished).
     fn collect(&self, game_id: u64) -> (Option<GameResult>, Option<Segment>) {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -572,12 +462,10 @@ impl JobSource for LeagueSource {
             return None;
         }
         let pick = self.shared.league.lock().unwrap().next();
-        // Never `None` here: that would end the runner slot (042 모델 상대 실패, AMB-042-14).
         Some(self.job(pick))
     }
 
     fn requeue(&self, job: Job) {
-        // A dynamic source simply forgets a game that never started.
         let meta = self.shared.games.lock().unwrap().remove(&job.spec.game_id);
         self.shared.concede.take(job.spec.game_id);
         if let Some(sil) = &self.shared.sil {
@@ -591,20 +479,13 @@ impl JobSource for LeagueSource {
     fn done(&self, job: &Job, outcome: JobOutcome, replay: Option<Vec<u8>>) {
         let s = &self.shared;
         let id = job.spec.game_id;
-        // 042-R14: off the concede board whatever happens below.
         let concede = s.concede.take(id);
         let Some(mut meta) = s.games.lock().unwrap().remove(&id) else { return };
         let agent = meta.pick.agent.index();
         if outcome != JobOutcome::Finished {
-            // 042-R3: Aborted / Timeout / Stopped is never trained. Revoke before waiting for the
-            // session's report: a session blocked on a full queue (backpressure) can report only
-            // once its waiting push is cancelled.
             s.queues[agent].revoke(id);
         }
-        // No lock of `shared` is held from here to the queue push below: a terminal segment that
-        // waits for a place blocks only this host slot's worker (042 queue table).
         let (result, held) = self.collect(id);
-        // 042-R20 (AMB-042-20): the run loop's stall count and dead-inference streak.
         if outcome == JobOutcome::Finished {
             s.finished_games.fetch_add(1, Ordering::SeqCst);
             if result.is_none() {
@@ -618,18 +499,14 @@ impl JobSource for LeagueSource {
             Some(false) => s.bad_sessions.store(0, Ordering::SeqCst),
             None => {}
         }
-        // 030-R11: a Random enemy reaches the agent as Unknown; the race its memory saw is the race
-        // played, which the per-race league windows and games.csv need.
         if matches!(meta.enemy_race, Race::Random | Race::Unknown) {
             if let Some(r) = result.as_ref().and_then(|r| r.enemy_race) {
                 meta.enemy_race = r;
             }
         }
         let ends = s.ends.take(id);
-        // 042-R14: who conceded, if a session did (players index 0 = the learning agent).
         let left = concede.and_then(|g| g.conceded());
         let conceded = left.filter(|c| c.rule == LeaveRule::Concede);
-        // 020-R13: the session that ended last decides.
         let verdict = (outcome == JobOutcome::Finished).then(|| game_result(&ends)).flatten();
         let decided = match (&verdict, meta.self_player) {
             (Some((e, disagree)), Some(me)) => {
@@ -648,10 +525,6 @@ impl JobSource for LeagueSource {
             }
             _ => None,
         };
-        // 042-R17 / 020-R19 (AMB-042-18): a rush mini-game that ended at its frame cap
-        // (`TimeLimitDraw` after 020-R13) is a win with at least `min_scv` own SCVs at the
-        // learning session's last observation, else a loss; with no observation it has no result
-        // (left out of training like an Aborted game, 042-R3). Earlier ends keep their outcome.
         let timed_out = verdict.as_ref().is_some_and(|(e, _)| e.reason == EndReason::TimeLimitDraw);
         let mut judge_scv = None;
         let decided = match decided {
@@ -664,7 +537,6 @@ impl JobSource for LeagueSource {
                         crate::elog!("[rl] game {id}: 042-R17 rush judge at {} s: {n} own SCVs (win at >= {}) -> {judged:?} (bridge {o:?})", judge.at_s, judge.min_scv);
                         Some(judged)
                     }
-                    // 메인 임시 결정 (2026-11-04): a missing session report counts like no observation.
                     Some(None) => {
                         crate::elog!("[rl] game {id}: 042-R17 rush judge at {} s: no observation of the learning session to count SCVs; no result, not trained (042-R3)", judge.at_s);
                         None
@@ -687,7 +559,6 @@ impl JobSource for LeagueSource {
                 if let Some(last) = seg.steps.last_mut() {
                     last.reward[0] += r_win;
                 }
-                // 042-R16: the terminal segment's copy (with r_win), for a candidate game.
                 if let Some(sil) = &s.sil
                     && meta.pick.agent == AgentKind::Main
                     && meta.pick.ladder_group.as_deref() == Some(sil.cfg.select_group.as_str())
@@ -703,22 +574,16 @@ impl JobSource for LeagueSource {
                 }
             }
             (Some(o), None) => {
-                // No terminal segment (e.g. no decision): still a game for the win table.
                 s.queues[agent].finish(id);
                 if s.league.lock().unwrap().record(&meta.pick, meta.enemy_race, o) {
                     stage_advanced(s);
                 }
             }
             (None, _) => {
-                // 042-R3: Aborted / stopped / undecidable: nothing of it is trained.
                 s.queues[agent].revoke(id);
                 s.aborted.fetch_add(1, Ordering::SeqCst);
             }
         }
-        // 042-R14 games.csv `end_reason`: `Concede` for a collapse concede, else the judged
-        // GameEnd reason (020-R13); empty for a game without a result (Aborted, Timeout).
-        // 042-R17 (AMB-042-18): `RushJudge` for a judged rush mini-game, also when a collapse
-        // concede coincided with the frame cap (메인 임시 결정, 2026-11-04).
         let end_reason = match (&verdict, decided) {
             (_, None) => String::new(),
             (_, Some(_)) if judge_scv.is_some() => "RushJudge".to_string(),
@@ -730,9 +595,6 @@ impl JobSource for LeagueSource {
             let who = if c.side == 0 { "learning agent" } else { "opponent" };
             crate::elog!("[rl] game {id}: 042-R14 collapse concede by the {who} side (players index {}) at frame {}; result {:?}", c.side, c.frame, decided);
         }
-        // 042-R16 고를 판 (AMB-042-17): a won or held game of the group goes to the buffer.
-        // 042-R16 상대·접촉 거르기 (AMB-042-19): and its opponent key / first army sighting / 020-R21
-        // start hit pass `select_keys` / `select_army_before_s` / `select_start_hit`.
         if let Some(sil) = &s.sil {
             let scout = result.as_ref().and_then(|r| r.scout);
             let scv_4m = scout.and_then(|m| m.scv_4m);
@@ -780,9 +642,7 @@ impl JobSource for LeagueSource {
             replay_reason,
             end_reason,
             extra,
-            // 042-R2 / R17 (AMB-042-18): the judged SCV count, empty for games not judged.
             judge_scv.map_or(String::new(), |n| n.to_string()),
-            // 042-R2 시작 슬롯·접촉 지표 (AMB-042-19).
             start
         );
         let _ = s.games_csv.lock().unwrap().write_all(line.as_bytes());
@@ -790,16 +650,9 @@ impl JobSource for LeagueSource {
     }
 }
 
-/// 042-R20 (AMB-042-20): `Finished` games since the last learner update before a missing update
-/// counts as a dead learner.
 const DEAD_LEARNER_GAMES: u64 = 20;
-/// 042-R20: finished games in a row whose learning session made no decision = dead inference.
 const BAD_SESSION_STREAK: u64 = 10;
 
-/// 042-R20: a finished game whose learning session reported no decision (inference failed for
-/// every request) is bad (`Some(true)`), one with decisions is good; a game that did not finish
-/// (Aborted, Timeout, Stopped, Rejected) or whose learning session sent no report (the caller
-/// logs a warning) does not count either way.
 fn bad_learning_session(outcome: JobOutcome, result: Option<&GameResult>) -> Option<bool> {
     match (outcome, result) {
         (JobOutcome::Finished, Some(r)) => Some(r.decisions == 0),
@@ -807,12 +660,7 @@ fn bad_learning_session(outcome: JobOutcome, result: Option<&GameResult>) -> Opt
     }
 }
 
-/// 042-R20 (AMB-042-20): the run loop's stall check (pure; the caller passes the clock). In the
-/// 6th advisory's CUDA fault the inference failed for every game, games kept finishing with no
-/// decision and the learner waited for a batch for 40 minutes: an abnormal end lets the 060-R6
-/// watchdog restart the run from LATEST.
 struct StallWatch {
-    /// `[actors] dead_learner_minutes`; zero = off.
     after: Duration,
     last: Instant,
     games_at_last: u64,
@@ -823,13 +671,10 @@ impl StallWatch {
         Self { after: Duration::from_secs(minutes * 60), last: now, games_at_last: games }
     }
 
-    /// A learner update, or the end of the loop's own long work (checkpoint, snapshot).
     fn progress(&mut self, now: Instant, games: u64) {
         (self.last, self.games_at_last) = (now, games);
     }
 
-    /// Why the run should end abnormally, if it should: `games` = `Finished` games in total,
-    /// `bad_streak` = finished games in a row without a decision of the learning session.
     fn check(&self, now: Instant, games: u64, bad_streak: u64) -> Option<String> {
         if self.after.is_zero() {
             return None;
@@ -846,7 +691,6 @@ impl StallWatch {
     }
 }
 
-/// 042-R5 stage change log; 033-R11: the "scout" C2 warning at the C1 → C2 transition too.
 fn stage_advanced(s: &Shared) {
     let stage = s.league.lock().unwrap().stage;
     crate::elog!("[rl] curriculum advanced to {stage:?} (042-R5)");
@@ -855,14 +699,10 @@ fn stage_advanced(s: &Shared) {
     }
 }
 
-/// 033-R11 (AMB-042-16): C2 with `[reward] pseudo = "scout"` is to be decided before C2; until
-/// then r_scout / r_survive keep their weights (no C2 decay) and this warning is logged at start,
-/// at resume and at the C1 → C2 transition.
 fn scout_stage_warning(mode: PseudoMode, stage: crate::league::Stage) -> Option<&'static str> {
     (mode == PseudoMode::Scout && stage == crate::league::Stage::C2).then_some("[rl] WARNING: stage C2 with [reward] pseudo = \"scout\": no C2 decay is applied to r_scout / r_survive (033-R11: to be decided before C2)")
 }
 
-/// 042-R11: why a game's replay is kept, if it is.
 fn replay_reason(game_id: u64, disagree: bool, every: u64) -> Option<&'static str> {
     if disagree {
         Some("disagree")
@@ -873,8 +713,6 @@ fn replay_reason(game_id: u64, disagree: bool, every: u64) -> Option<&'static st
     }
 }
 
-/// 042-R11: writes `g<id>-<reason>.rep` under a temporary name, reads it back and compares the
-/// bytes before the rename (a share can lose a write silently), and returns the file name.
 fn keep_replay(dir: &Path, game_id: u64, reason: &str, bytes: &[u8]) -> Result<String> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let name = format!("g{game_id}-{reason}.rep");
@@ -888,23 +726,12 @@ fn keep_replay(dir: &Path, game_id: u64, reason: &str, bytes: &[u8]) -> Result<S
     Ok(name)
 }
 
-/// games.csv header (042-R2, R11; `end_reason` 042-R14, 2026-11-03; then the 033 raw sums
-/// `r_scout`, `r_survive` and the 042 정찰·대응 지표, AMB-042-16; then the 042-R17 `judge_scv`,
-/// AMB-042-18; then the 시작 슬롯·접촉 지표 `slot_self`, `slot_enemy`, `start_hit`, `scv_min_1m`,
-/// `army_s`, AMB-042-19).
 const GAMES_HEADER: &str = "game_id,agent,opponent,class,enemy_race,map,hostd_outcome,outcome,winner_disagree,decisions,r_win,r_build,r_units,r_value,replay,replay_reason,end_reason,r_scout,r_survive,ladder_group,scout_main_s,scout_types_4m,scout_types_6m,barracks_s,bunker_s,scv_4m,judge_scv,slot_self,slot_enemy,start_hit,scv_min_1m,army_s\n";
 
-/// 020-R21 `start_hit` of a game's start slots (`players[0]`, `players[1]`); `None` without slots.
-/// The value `games.csv` `start_hit` writes and `[sil] select_start_hit` (042-R16) compares.
 fn slots_start_hit(slots: Option<[u8; 2]>) -> Option<bool> {
     slots.map(|[a, b]| uranium_runner::start_slots::start_hit(a, b))
 }
 
-/// 042-R2 시작 슬롯·접촉 지표 (AMB-042-19): `slot_self`, `slot_enemy` (020-R21 slots of
-/// `players[0]` / `players[1]` from the game's seed, empty without one), `start_hit` (`1` / `0`,
-/// the same rule for every game, empty without slots), the learning session's `scv_min_1m` and
-/// `army_s` (050-R7, game seconds; empty when not reached / never seen or without a session
-/// report), comma-joined.
 fn start_columns(slots: Option<[u8; 2]>, result: Option<&GameResult>) -> String {
     let m: Option<ScoutMetrics> = result.and_then(|r| r.scout);
     let (a, b, hit) = match slots {
@@ -916,18 +743,11 @@ fn start_columns(slots: Option<[u8; 2]>, result: Option<&GameResult>) -> String 
         b,
         hit,
         m.and_then(|m| m.scv_min_1m).map_or(String::new(), |n| n.to_string()),
-        // 3 decimals: the value the [sil] select_army_before_s comparison sees (5,401 frames =
-        // 225.042 s, not "225.0").
         m.and_then(|m| m.army_frame).map_or(String::new(), |f| format!("{:.3}", seconds(f))),
     ]
     .join(",")
 }
 
-/// 042-R2 (AMB-042-16): the games.csv columns after `end_reason`, comma-joined. `r_scout`,
-/// `r_survive`: the game's raw sums, empty in the `"z"` mode (and without a session report);
-/// `ladder_group`: the ladder entry's group, empty for other games; the metrics in game seconds
-/// (frame / 24), empty when not reached (`scv_4m`: the game ended before 4:00) or without a
-/// session report.
 fn scout_columns(mode: PseudoMode, result: Option<&GameResult>, ladder_group: Option<&str>) -> String {
     let secs = |f: Option<u32>| f.map_or(String::new(), |f| format!("{:.1}", seconds(f)));
     let (r_scout, r_survive) = match (mode, result) {
@@ -950,9 +770,6 @@ fn scout_columns(mode: PseudoMode, result: Option<&GameResult>, ladder_group: Op
     .join(",")
 }
 
-/// 033-R11: the channel mode a checkpoint was trained with (`agents/main/meta.json` `train.rl`
-/// `reward.pseudo`; absent = `"z"`, the mode before the key existed). `None` without a
-/// readable `meta.json` (nothing to compare).
 fn checkpoint_pseudo(dir: &Path) -> Option<PseudoMode> {
     let meta = dir.join(crate::ckpt::AGENTS_DIR).join(AgentKind::Main.name()).join("meta.json");
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(meta).ok()?).ok()?;
@@ -963,7 +780,6 @@ fn checkpoint_pseudo(dir: &Path) -> Option<PseudoMode> {
     }
 }
 
-/// 033-R11 start errors: `"scout"` with a z table, and a resumed checkpoint of another mode.
 fn check_pseudo(cfg: &RlConfig, z_table: Option<&Path>, resumed: Option<PseudoMode>) -> Result<()> {
     let mode = cfg.pseudo();
     if mode == PseudoMode::Scout
@@ -979,10 +795,6 @@ fn check_pseudo(cfg: &RlConfig, z_table: Option<&Path>, resumed: Option<PseudoMo
     Ok(())
 }
 
-/// 042-R2 train.csv header / row. `trained_steps`: agent steps the learners trained on, run
-/// total (continued from the checkpoint). `queue_wait_s`: seconds the games waited for a place
-/// in this agent's queue (backpressure) since this agent's previous row, counted when each wait
-/// ends.
 fn train_header() -> String {
     let mut h = String::from("time_s,agent,update,policy_version,agent_steps,games,steps,loss,policy,value,kl,kl_coef,rho_mean,adv_mean,lag_mean");
     for n in HEAD_NAMES {
@@ -1004,19 +816,12 @@ fn train_header() -> String {
     h
 }
 
-/// 044-R9 (2026-11-14): `kl_ref_<race>` after the spatial statistics, last, in
-/// `batch::REF_RACES` order; in the header whatever the config, empty without `[kl.reference]`
-/// (the 042-R21 ③ precedent) or without a trained step of that race in the batch.
 fn kl_ref_columns(s: &UpdateStats) -> String {
     s.kl_ref.iter().map(|x| format!(",{}", x.map_or(String::new(), |v| v.to_string()))).collect()
 }
 
-/// 042-R21 ③ (2026-11-09): the aux loss columns after `sil_pos_frac`, in this order, then the
-/// spatial statistics ([`spatial_columns`]). In the header whatever the config (as `sil_*`).
 const AUX_COLUMNS: &str = ",aux_priv,aux_jepa,jepa_tgt_std,aux_jepa_slot1,aux_jepa_slot2,aux_jepa_slot3";
 
-/// The aux and spatial statistics values of a row (leading comma): empty when off, not measured
-/// (a k without a pair in the batch) or not a `[monitor] spatial_every` update (042-R21 ③).
 fn aux_columns(s: &UpdateStats) -> String {
     let opt = |x: Option<f32>| x.map_or(String::new(), |v| v.to_string());
     let mut row = format!(",{},{},{}", opt(s.aux_priv), opt(s.aux_jepa), opt(s.jepa_tgt_std));
@@ -1031,12 +836,8 @@ fn aux_columns(s: &UpdateStats) -> String {
     row
 }
 
-/// 042-R2 진단 로그 (AMB-042-17): the train.csv columns after `queue_wait_s`, in this order.
 const DIAG_COLUMNS: &str = ",adv_rms,adv_rms_win,adv_rms_build,adv_rms_units,adv_rms_value,value_loss_win,value_loss_build,value_loss_units,value_loss_value,kl_p99,kl_max,sil_buffer,sil_lanes,sil_loss,sil_pos_frac";
 
-/// The 진단 로그 values of a row (leading comma). `sil`: (buffer segments, buffer lanes of this
-/// update) when `[sil]` is on; every SIL column is empty when it is off (042-R16), a value the
-/// learner did not measure is empty too.
 fn diag_columns(s: &UpdateStats, sil: Option<(usize, usize)>) -> String {
     let opt = |x: Option<f32>| x.map_or(String::new(), |v| v.to_string());
     let mut row = format!(",{}", s.adv_rms);
@@ -1049,15 +850,10 @@ fn diag_columns(s: &UpdateStats, sil: Option<(usize, usize)>) -> String {
     row
 }
 
-/// Opens train.csv for appending (042-R2).
 fn open_train_csv(path: &Path) -> Result<std::fs::File> {
     open_csv(path, &train_header())
 }
 
-/// Opens a log CSV (`<stem>.csv`: train.csv, games.csv) for appending. A file whose header differs
-/// (an older version with other columns) is kept under a new name and a fresh file is started, so
-/// a file's rows always match its header. When it cannot be moved (e.g. open in a viewer on
-/// Windows), it stays as is and the rows go to `<stem>-<unix>-new.csv` instead.
 fn open_csv(path: &Path, header: &str) -> Result<std::fs::File> {
     let stem = path.file_stem().map_or_else(|| "log".to_string(), |s| s.to_string_lossy().into_owned());
     let name = path.file_name().map_or_else(|| stem.clone(), |s| s.to_string_lossy().into_owned());
@@ -1084,12 +880,10 @@ fn open_csv(path: &Path, header: &str) -> Result<std::fs::File> {
     Ok(csv)
 }
 
-/// TrainState.extra of an RL checkpoint (061-R10): games and trained agent steps (042-R2).
 fn state_extra(shared: &Shared, trained_steps: u64) -> serde_json::Value {
     serde_json::json!({ "games": shared.games_done.load(Ordering::SeqCst), "trained_steps": trained_steps })
 }
 
-/// 042-R2: `trained_steps` of a resumed checkpoint; 0 for one written before it was recorded.
 fn resumed_trained_steps(extra: &serde_json::Value) -> u64 {
     extra.get("trained_steps").and_then(|v| v.as_u64()).unwrap_or(0)
 }
@@ -1100,10 +894,6 @@ fn load_z(path: &Option<PathBuf>) -> Result<Vec<ZEntry>> {
     text.lines().filter(|l| !l.trim().is_empty()).map(|l| Ok(serde_json::from_str(l)?)).collect()
 }
 
-/// Everything the checkpoint needs from the learners (061-R10).
-/// B-8 does not apply here: every caller advances `step` first (snapshot and timed checkpoints
-/// `step += 1`, the final one `max(step, agent steps) + 1`), so one session never writes the same
-/// `ckpt-<step>` twice, whatever an earlier push did.
 fn save_checkpoint(run: &mut Run, step: u64, learners: &mut dyn RlLearners, cfg: &RlConfig, league: &League, args: &RlArgs, state_extra: serde_json::Value) -> Result<PushOutcome> {
     let dir = run.stage_dir(step)?;
     for a in AgentKind::ALL {
@@ -1122,20 +912,15 @@ fn save_checkpoint(run: &mut Run, step: u64, learners: &mut dyn RlLearners, cfg:
     ckpt::copy_configs(&dir, &files)?;
     run.seal(step)?;
     let out = run.push(step);
-    // 061-R8 / 060-R7 (C-3): at every checkpoint.
     check_storage(run);
     out
 }
 
-/// 061-R8: shared drive and cache disk usage; 060-R7: `runs/*/replays/` against the replay
-/// budget (042-R11: never deleted), measured on a background thread so the learner does not wait
-/// for the share walk. Warnings only.
 fn check_storage(run: &Run) {
     crate::disk::warn_storage("rl", &run.cfg);
     crate::disk::spawn_replay_check(&run.cfg.shared, crate::disk::REPLAY_BUDGET_BYTES);
 }
 
-/// B-7 / 061-R6: a failed prune is logged; training goes on.
 fn prune_logged(run: &mut Run) {
     match run.prune() {
         Ok(0) => {}
@@ -1144,21 +929,14 @@ fn prune_logged(run: &mut Run) {
     }
 }
 
-/// Runs RL until a limit or Ctrl+C. `make(cfg, resume)` builds the learners and their inference
-/// servers once the run is locked: from the BC checkpoint, or from the agent folders of the
-/// resumed checkpoint (`resume`, 061-R10), and returns the league snapshot server factory.
 pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(Box<dyn RlLearners>, SnapshotServers)>) -> Result<()> {
-    // 042-R10 / 060-R6: the caller installed the handler first, so an early SIGINT is never lost.
     let stop = args.stop.clone();
     let cfg = RlConfig::load(&args.config)?;
-    // 033-R11: "scout" with a z table is a start error (before the run lock).
     check_pseudo(&cfg, args.z_table.as_deref(), None)?;
     std::fs::create_dir_all(&args.log_dir)?;
 
-    // 061-R3 / R5: lock the run, recover or pull LATEST.
     let storage = StorageConfig::from_env()?;
     let replay_dir = storage.shared.join("runs").join(&args.run).join("replays");
-    // 042 anchor (AMB-042-14): its model files must be there at start (a start error otherwise).
     let anchor_dir = match cfg.league.anchor_name() {
         Some(_) => Some(crate::config::anchor_agent_dir(&storage.shared, &cfg.league.anchor)?),
         None => None,
@@ -1168,10 +946,8 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         return Ok(());
     }
     let mut storage = storage;
-    // 061-R6 (G-D6): the run's retention (`keep_checkpoints`, 0 = all).
     storage.keep_latest = cfg.keep_checkpoints.unwrap_or(uranium_data::bc::DEFAULT_KEEP_CHECKPOINTS);
     let mut run = Run::acquire(storage, &args.run, args.take_over)?;
-    // 061-R8 / 060-R7 (C-3): disk usage and the replay total at the start (warnings only).
     check_storage(&run);
     let resume = match run.begin() {
         Ok(r) => r,
@@ -1182,18 +958,15 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         }
         Err(e) => return Err(e),
     };
-    // Ctrl+C during the pull: release before loading anything (nothing new to save).
     if crate::stopping(&stop) {
         crate::elog!("[rl] Ctrl+C during start: releasing the lock, nothing to save (042-R10)");
         run.release()?;
         return Ok(());
     }
-    // 033-R11: a resumed checkpoint of another channel mode is a start error.
     if let Err(e) = check_pseudo(&cfg, None, resume.as_ref().and_then(|r| checkpoint_pseudo(&r.dir))) {
         let _ = run.release();
         return Err(e);
     }
-    // The learners and their inference servers (from BC, or the resumed agents' folders).
     let (mut learners, servers) = match make(&cfg, resume.as_ref().map(|r| r.dir.as_path())) {
         Ok(x) => x,
         Err(e) => {
@@ -1201,9 +974,6 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
             return Err(e.context("starting the learners (042 start / KL reference)"));
         }
     };
-    // 042 "재개 시 설정" (AMB-042-13): stage, win tables, windows and snapshots come from the
-    // checkpoint; ratios, auto_advance, r_value_stages and `[[t1]]` from the current config. A
-    // new league starts in `[curriculum] start_stage` (042-R5).
     let mut league = match resume.as_ref().map(|r| ckpt::load_league(&r.dir)).transpose()?.flatten() {
         Some(b) => League::from_bytes(&b, cfg.clone())?,
         None => League::new(&args.run, args.seed, args.fixed_t0, cfg.clone()),
@@ -1212,7 +982,6 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         league.fixed_t0 = args.fixed_t0;
     }
     let mut step = resume.as_ref().map_or(0, |r| r.step);
-    // 042-R2: trained agent steps continue from the checkpoint too (0 for one written before).
     let mut trained_steps = match &resume {
         Some(r) => ckpt::load_state(&r.dir)?.map_or(0, |s| resumed_trained_steps(&s.extra)),
         None => 0,
@@ -1224,10 +993,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     }
     crate::elog!("[rl] curriculum: auto_advance {}, r_value in {:?}, {} T1 bot(s) (042-R5, 033)", cc.auto_advance, cc.r_value_stages, cfg.t1.len());
 
-    // The agents' inference servers already run the learners' current weights.
     let handles: Vec<InferenceHandle> = AgentKind::ALL.iter().map(|a| learners.handle(a.index())).collect();
-    // 042 스냅샷 공개 (AMB-042-14): a snapshot is an opponent once its model files are on the
-    // share (a failed publish never got them there).
     let mut snap_dirs: HashMap<String, PathBuf> = HashMap::new();
     for (a, id) in league.snapshots.clone() {
         let d = run.shared_dir().join("league").join(snapshot_name(&id)).join(ckpt::AGENTS_DIR).join(a.name());
@@ -1327,8 +1093,6 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         }
     }
 
-    // 042 queue table: `queue_batches` x `lanes` per agent (>= lanes, so a full queue is always
-    // ready for the learner and a waiting game is never stuck behind it), backpressure when full.
     let wait_max = Duration::from_secs(cfg.actors.queue_wait_max_s);
     let queues: Vec<Arc<SegmentQueue>> = (0..3).map(|_| Arc::new(SegmentQueue::with_policy(cfg.actors.queue_batches * cfg.lanes, cfg.actors.queue_full, wait_max))).collect();
     let (tx, rx) = mpsc::channel();
@@ -1338,7 +1102,6 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     let listen = uranium_runner::env_or("URANIUM_AGENT_LISTEN", "127.0.0.1:7600");
     let concede = ConcedeBoard::default();
     let agent_addr = uranium_runner::start_agent(&listen, &args.log_dir.join("sessions.jsonl"), &args.log_dir.join("unit_rejections.jsonl"), routes.clone(), builds.clone(), ends.clone(), concede.clone(), Default::default())?;
-    // 042-R2 / R14: a games.csv of an older version (without `end_reason`) is kept aside.
     let games_csv = open_csv(&args.log_dir.join("games.csv"), GAMES_HEADER)?;
     let base_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) * 1000;
     let shared = Arc::new(Shared {
@@ -1355,7 +1118,6 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         handles: handles.clone(),
         snapshots: Mutex::new(SnapshotPool::new(snap_dirs, anchor_key, servers)),
         games_csv: Mutex::new(games_csv),
-        // 042-R12: agent steps continue from the checkpoint (TrainState.step).
         agent_steps: AtomicU64::new(step),
         games_done: AtomicU64::new(0),
         disagree: AtomicU64::new(0),
@@ -1381,11 +1143,9 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         .collect();
     let source = Arc::new(LeagueSource { shared: shared.clone(), hooks });
     let dispatch = Dispatch::new(routes, Default::default(), builds);
-    // 042-R3: from here on any return, an error included, stops the games and closes the queues.
     let halt = Halt { shared: shared.clone(), inflight: dispatch.inflight.clone(), done: AtomicBool::new(false) };
     let hosts: Vec<HostEntry> = uranium_runner::hosts()?;
 
-    // Before the first game: a failure here starts nothing.
     let base = RewardWeights::load()?;
     let mut csv = open_train_csv(&args.log_dir.join("train.csv"))?;
     let games_thread = {
@@ -1394,20 +1154,17 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     };
 
     let started = Instant::now();
-    // Each agent's queue wait total at its previous train.csv row (042-R2 `queue_wait_s`).
     let mut wait_seen = [0.0f64; 3];
     let (mut last_ckpt, mut last_beat) = (Instant::now(), Instant::now());
     let mut lock_lost = false;
     let mut updates_this_run = 0u64;
     let mut last_rate = (Instant::now(), shared.agent_steps.load(Ordering::SeqCst));
     let mut steps_per_s = 0.0f64;
-    // 042-R20 (AMB-042-20): dead learner / dead inference check.
     let mut stall = StallWatch::new(cfg.actors.dead_learner_minutes, Instant::now(), 0);
     match cfg.actors.dead_learner_minutes {
         0 => crate::elog!("[rl] dead learner check off ([actors] dead_learner_minutes = 0, 042-R20)"),
         m => crate::elog!("[rl] dead learner check: abnormal end after {DEAD_LEARNER_GAMES}+ finished games without an update for {m} min, or {BAD_SESSION_STREAK} finished games in a row without a learning-session decision (042-R20)"),
     }
-    // 042-R12 / 061-R13: the run reached `--max-agent-steps` (it gets DONE after the final push).
     let mut steps_reached = false;
     loop {
         let steps_hit = args.max_agent_steps > 0 && shared.agent_steps.load(Ordering::SeqCst) >= args.max_agent_steps;
@@ -1419,7 +1176,6 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         if crate::stopping(&stop) || limit_hit {
             break;
         }
-        // 061-R5: heartbeat every minute; a lost lock stops training.
         if last_beat.elapsed() >= Duration::from_secs(60) {
             last_beat = Instant::now();
             match run.heartbeat() {
@@ -1432,9 +1188,6 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
                 LockStatus::Unreachable(e) => crate::elog!("[rl] heartbeat: share unreachable ({e}), continuing (061-R11-3)"),
             }
         }
-        // 042-R20: an error return (no checkpoint: after a device fault it would fail or write
-        // garbage); `halt` stops the games, the process exits non-zero and the 060-R6 watchdog
-        // restarts the run from LATEST.
         if let Some(why) = stall.check(Instant::now(), shared.finished_games.load(Ordering::SeqCst), shared.bad_sessions.load(Ordering::SeqCst)) {
             crate::elog!("[rl] {why}: ending abnormally without a checkpoint, the watchdog restarts from LATEST (042-R20)");
             anyhow::bail!("042-R20 stall: {why}");
@@ -1450,11 +1203,9 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         let Some((batch, trained, sil_row)) = take_batch(&queues[i], shared.sil.as_ref(), agent, stage, cfg.lanes, learners.version(i), cfg.actors.max_policy_lag) else { continue };
         let weights = shared.league.lock().unwrap().reward_weights(&base);
         let stats = learners.update(i, batch, weights)?;
-        // 042-R2 / R12: agent steps the learners trained on, run total.
         trained_steps += trained;
         updates_this_run += 1;
         let snap = shared.league.lock().unwrap().on_update(agent);
-        // 042 K: weights to the actors every `weight_push_every` updates.
         if learners.version(i) % cfg.actors.weight_push_every.max(1) == 0 {
             learners.push(i)?;
         }
@@ -1469,9 +1220,6 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         wait_seen[i] = wait_total;
         write_row(&mut csv, started, agent, &stats, &shared, &queues, learners.version(i), steps_per_s, trained_steps, queue_wait_s, sil_row)?;
         if let Some(reset) = snap {
-            // A league snapshot is a pushed checkpoint whose agent model files are copied to
-            // league/<name>/agents/<agent> (061-R2; 042 스냅샷 공개, AMB-042-14). Only a published
-            // snapshot is an opponent; a failed one is logged and training goes on.
             let id = shared.league.lock().unwrap().add_snapshot(agent);
             let league_now = shared.league.lock().unwrap().clone();
             step += 1;
@@ -1486,11 +1234,9 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
                 },
                 other => crate::elog!("[rl] snapshot {id} not published: {other:?}"),
             }
-            // A snapshot that left the C1 candidates: its server goes once its games are done.
             prune_servers(&shared);
             if reset {
                 learners.reset_to_bc(i)?;
-                // 042-R4: the reset learner never trains the previous policy's segments.
                 queues[i].reset_policy();
                 learners.push(i)?;
             }
@@ -1506,13 +1252,9 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
             }
             last_ckpt = Instant::now();
         }
-        // 042-R20: an update (and the snapshot / checkpoint after it, which may take minutes) is
-        // progress.
         stall.progress(Instant::now(), shared.finished_games.load(Ordering::SeqCst));
     }
 
-    // 042-R10: ① no new games ② stop games in flight (Aborted, revoked) ③ checkpoint + push
-    // ④ release the lock only when the push went through (061-R11-5/6).
     halt.stop();
     let _ = games_thread.join();
     if lock_lost {
@@ -1526,11 +1268,6 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     finish_run(run, out, steps_reached, step)
 }
 
-/// 042-R10 / R12, 061-R13 (2026-11-14): the end of a clean stop. With the final checkpoint pushed, a run that
-/// reached `--max-agent-steps` gets `checkpoints/<run>/DONE` (the 061 marker a finished BC run writes; the
-/// 050-R9 diagnostics of the run's final checkpoint need it) before the lock is released. A Ctrl+C or an update /
-/// minute limit stop writes no DONE (the run resumes from LATEST); an error ends before this. Unpushed: the lock is
-/// kept and no DONE (061-R11-5/6).
 fn finish_run(run: Run, out: PushOutcome, steps_reached: bool, step: u64) -> Result<()> {
     match out {
         PushOutcome::Pushed => {
@@ -1547,12 +1284,6 @@ fn finish_run(run: Run, out: PushOutcome, steps_reached: bool, step: u64) -> Res
     }
 }
 
-/// One update batch of `agent` (042): `lanes` segments from its queue (042-R4 lag drop), or, with
-/// `[sil]` on (042-R16), for Main in C1 once the buffer holds `[sil] lanes` segments, that many
-/// fewer from the queue and the buffer's segments appended last (the batch shape stays; buffer
-/// lanes are not in the lag drop). Also the queue lanes' trained steps (042-R2 `trained_steps`:
-/// buffer lanes are reused steps) and the train.csv SIL values (buffer segments after sampling,
-/// buffer lanes), `None` with `[sil]` off. `None` when the queue has too few segments.
 #[allow(clippy::type_complexity)]
 fn take_batch(queue: &SegmentQueue, sil: Option<&SilState>, agent: AgentKind, stage: crate::league::Stage, lanes: usize, version: u64, max_lag: u64) -> Option<(Vec<Segment>, u64, Option<(usize, usize)>)> {
     let k = match sil {
@@ -1569,7 +1300,6 @@ fn take_batch(queue: &SegmentQueue, sil: Option<&SilState>, agent: AgentKind, st
     Some((batch, trained, row))
 }
 
-/// Snapshot folder name (061-R9 forbids `/` and `@`): `<agent>-<run>-<update>`.
 pub fn snapshot_name(id: &str) -> String {
     id.trim_start_matches("uranium-").replace(['@', '/'], "-")
 }
@@ -1628,9 +1358,6 @@ fn write_row(csv: &mut std::fs::File, started: Instant, agent: AgentKind, s: &Up
 mod tests {
     use super::*;
 
-    /// 042-R12 / 061-R13 (2026-11-14): a pushed final checkpoint of a run that reached `--max-agent-steps` writes
-    /// `checkpoints/<run>/DONE` through the 061 writer and releases the lock; another clean stop (Ctrl+C, update /
-    /// minute limit) writes no DONE; an unpushed one keeps the lock and writes no DONE.
     #[test]
     fn done_on_max_agent_steps_042_r12() {
         let root = std::env::temp_dir().join(format!("uranium-rl-done-{}", std::process::id()));
@@ -1666,8 +1393,6 @@ mod tests {
         assert!(bots.iter().any(|b| b.name == "zzzkbot" && b.races == vec![Race::Zerg]));
     }
 
-    /// 042-R2: `trained_steps` and `queue_wait_s` (2026-10-31), then the 진단 로그 columns in the
-    /// spec's order (AMB-042-17).
     #[test]
     fn train_csv_header_columns_042_r2() {
         assert_eq!(train_header().trim().split(',').count(), 15 + 12 + 11 + 15 + 6 + 36 + 4);
@@ -1676,9 +1401,6 @@ mod tests {
         ));
     }
 
-    /// 042-R21 ③ (2026-11-09): after `sil_pos_frac` the aux columns, then the spatial statistics
-    /// grouped (every `sp_pos_<layer>`, every `sp_dead_<layer>` in the 041-R25 layer order, then
-    /// `sp_const_s8`, `sp_const_pool`), last.
     #[test]
     fn train_csv_aux_and_spatial_columns_042_r21() {
         let layers = "stem,c0,c1,c2,c3,r0,r1,r2,r3,r4,r5,d0,d1,d2,d3,b0,b1";
@@ -1686,10 +1408,8 @@ mod tests {
         let dead: Vec<String> = layers.split(',').map(|l| format!("sp_dead_{l}")).collect();
         let tail = format!(",sil_pos_frac,aux_priv,aux_jepa,jepa_tgt_std,aux_jepa_slot1,aux_jepa_slot2,aux_jepa_slot3,{},{},sp_const_s8,sp_const_pool,kl_ref_zerg,kl_ref_terran,kl_ref_protoss,kl_ref_random", pos.join(","), dead.join(","));
         assert!(train_header().trim().ends_with(&tail));
-        // Off (the defaults): every aux and spatial value empty, as many values as the columns.
         let off = aux_columns(&UpdateStats::default());
         assert_eq!(off, ",".repeat(6 + 36));
-        // On, a spatial update: the values in order; a k without a pair stays empty.
         let mut spatial: Vec<f32> = (0..17).map(|i| i as f32 / 32.0).collect();
         spatial.extend((0..17).map(|i| i as f32));
         spatial.extend([3.0, 5.0]);
@@ -1698,16 +1418,12 @@ mod tests {
         let want: Vec<String> = ["0.5", "0.25", "0.75", "0.125", "0.375", ""].iter().map(|x| x.to_string()).chain(spatial.iter().map(|x| x.to_string())).collect();
         assert_eq!(row, format!(",{}", want.join(",")));
         assert!(row.ends_with(",16,3,5"));
-        // Not a spatial update: the aux values, the spatial columns empty.
         let s = UpdateStats { spatial: None, ..s };
         assert!(aux_columns(&s).ends_with(&",".repeat(36)) && aux_columns(&s).starts_with(",0.5,0.25,0.75,0.125,0.375,,"));
-        // The learner's JSON: the aux keys read; an older learner's JSON without them still reads.
         let js: UpdateStats = serde_json::from_str(r#"{"update":1,"steps":2,"loss":0.1,"policy":0.1,"value":0.0,"kl":0.0,"kl_coef":0.1,"kl_heads":[0,0,0,0,0,0],"entropy_heads":[0,0,0,0,0,0],"rho_mean":1,"adv_mean":0,"lag_mean":0,"win_open":0,"aux_priv":0.5,"aux_jepa":null,"jepa_tgt_std":null,"aux_jepa_slots":[0.25,null,null],"spatial":null}"#).unwrap();
         assert_eq!((js.aux_priv, js.aux_jepa, js.aux_jepa_slots, js.spatial), (Some(0.5), None, [Some(0.25), None, None], None));
     }
 
-    /// 044-R9 (044-AC4): `kl_ref_<race>` values in `REF_RACES` order, empty when not measured
-    /// (no table, no trained step of that race); a learner JSON without `kl_ref` still reads.
     #[test]
     fn train_csv_kl_ref_columns_044_r9() {
         assert_eq!(kl_ref_columns(&UpdateStats::default()), ",,,,");
@@ -1719,8 +1435,6 @@ mod tests {
         assert_eq!(old.kl_ref, [None; 4]);
     }
 
-    /// 042-R2 진단 로그 / 042-R16 (AMB-042-17): the row values; SIL columns empty when `[sil]` is
-    /// off, a value not measured is empty; the row has as many values as the header.
     #[test]
     fn train_csv_diag_columns_042_r2() {
         let s = UpdateStats { adv_rms: 0.5, adv_rms_channels: [0.25, 1.0, 2.0, 0.125], value_loss_channels: [0.5, 0.75, 0.0, 3.0], kl_p99: Some(0.375), kl_max: Some(4.0), sil_loss: Some(0.5), sil_pos_frac: Some(0.25), ..Default::default() };
@@ -1729,7 +1443,6 @@ mod tests {
         let none = UpdateStats { sil_loss: Some(0.0), ..Default::default() };
         assert_eq!(diag_columns(&none, Some((2, 0))), ",0,0,0,0,0,0,0,0,0,,,2,0,0,");
         assert_eq!(diag_columns(&none, None).split(',').count() - 1, DIAG_COLUMNS.split(',').count() - 1);
-        // The learner's JSON without the new keys (an older learner) still reads.
         let old: UpdateStats = serde_json::from_str(r#"{"update":1,"steps":2,"loss":0.1,"policy":0.1,"value":0.0,"kl":0.0,"kl_coef":0.1,"kl_heads":[0,0,0,0,0,0],"entropy_heads":[0,0,0,0,0,0],"rho_mean":1,"adv_mean":0,"lag_mean":0,"win_open":0}"#).unwrap();
         assert_eq!((old.kl_p99, old.sil_loss, old.adv_rms), (None, None, 0.0));
         assert_eq!((old.aux_priv, old.aux_jepa_slots, old.spatial), (None, [None; 3], None));
@@ -1737,9 +1450,6 @@ mod tests {
         assert_eq!((new.kl_p99, new.kl_max, new.adv_rms_channels), (None, Some(2.5), [1.0, 2.0, 3.0, 4.0]));
     }
 
-    /// 042-R15 / 020-R3 (AMB-042-17): with the cap, only games against a model (current Main,
-    /// snapshot, anchor, and a failed model opponent's self-play) get `min(86,400, s x 24)`;
-    /// bot games 86,400; `model_game_max_s = 0`: every game 86,400.
     #[test]
     fn model_game_time_cap_042_r15() {
         let lc = |s: u32| crate::config::LeagueConfig { model_game_max_s: s, ..RlConfig::default_file().league };
@@ -1747,7 +1457,6 @@ mod tests {
         assert_eq!((lc(1_500).game_max_frames(true), lc(1_500).game_max_frames(false)), (36_000, 86_400));
         assert_eq!(lc(3_600).game_max_frames(true), 86_400);
         assert_eq!(lc(60).game_max_frames(true), 1_440);
-        // Through the job source: current Main, anchor, snapshot, T0 bots.
         let frames = |cap: u32, c1: [f64; 3], t0: f64, fail: bool| {
             let mut cfg = RlConfig::default_file();
             cfg.curriculum.start_stage = crate::league::Stage::C1;
@@ -1777,8 +1486,6 @@ mod tests {
         }
     }
 
-    /// 042-R2: a train.csv with an older header is kept aside, the new file gets the current
-    /// header; a current file is appended to as is.
     #[test]
     fn train_csv_with_other_columns_is_kept_aside_042_r2() {
         let dir = std::env::temp_dir().join(format!("uranium-rl-csv-{}", std::process::id()));
@@ -1798,7 +1505,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 042-R2: `trained_steps` continues from the checkpoint; older checkpoints start at 0.
     #[test]
     fn trained_steps_resume_from_checkpoint_042_r2() {
         assert_eq!(resumed_trained_steps(&serde_json::json!({ "games": 3, "trained_steps": 12_345 })), 12_345);
@@ -1806,7 +1512,6 @@ mod tests {
         assert_eq!(resumed_trained_steps(&serde_json::Value::Null), 0);
     }
 
-    /// 042-R11: one regular sample per `every` game ids, every disagreement, nothing else.
     #[test]
     fn replay_reason_samples_and_disagreements_042_r11() {
         assert_eq!(replay_reason(200, false, 100), Some("sample"));
@@ -1818,7 +1523,6 @@ mod tests {
         assert_eq!(kept, 10);
     }
 
-    /// 042-R11: the kept replay is complete under its final name, no `.part` left behind.
     #[test]
     fn keep_replay_writes_verified_file_042_r11() {
         let dir = std::env::temp_dir().join(format!("uranium-rl-rep-{}", std::process::id()));
@@ -1837,9 +1541,6 @@ mod tests {
         InferenceHandle::new(tx, id.into(), SampleMode::Stochastic, &InferOptions::default())
     }
 
-    /// Snapshot servers for tests: `fail` = every start fails; the started folders, the number
-    /// of closes and each started server's liveness flag (in start order, set false to "kill"
-    /// its model thread) are kept.
     fn fake_servers(fail: bool) -> (SnapshotServers, Arc<Mutex<Vec<PathBuf>>>, Arc<AtomicUsize>) {
         let (s, o, c, _) = fake_servers_with(Arc::new(AtomicBool::new(fail)));
         (s, o, c)
@@ -1863,8 +1564,6 @@ mod tests {
         (servers, opened, closed, alive)
     }
 
-    /// A league source over a league in C1 with these model shares (no T0 / T1 / current Main
-    /// unless given) and fake snapshot servers.
     fn source(c1: [f64; 3], anchor: &str, candidates: usize, servers: SnapshotServers) -> LeagueSource {
         let mut cfg = RlConfig::default_file();
         cfg.curriculum.start_stage = crate::league::Stage::C1;
@@ -1876,8 +1575,6 @@ mod tests {
         source_cfg(cfg, servers, &csv)
     }
 
-    /// A league source over a new league of `cfg`, with fake snapshot servers, writing games.csv
-    /// rows to `csv` (an existing file).
     fn source_cfg(cfg: RlConfig, servers: SnapshotServers, csv: &Path) -> LeagueSource {
         let league = League::new("r1", 3, None, cfg.clone());
         let mut dirs = HashMap::new();
@@ -1929,8 +1626,6 @@ mod tests {
         }
     }
 
-    /// 042 모델 상대 실패 (AMB-042-14): an anchor / snapshot whose server cannot start makes the
-    /// game current-Main self-play; the source keeps giving games (a runner slot never ends).
     #[test]
     fn unservable_model_opponent_becomes_self_play_042() {
         let (servers, _, _) = fake_servers(true);
@@ -1943,7 +1638,6 @@ mod tests {
             let m = &games[&job.spec.game_id];
             assert_eq!((&m.pick.opponent, m.pick.class, m.server), (&Opponent::SelfPlay, Class::Model, None));
         }
-        // A snapshot that was never published (no model folder): the same.
         let (servers, opened, _) = fake_servers(false);
         let src = source([0.0, 1.0, 0.0], "", 4, servers);
         {
@@ -1956,8 +1650,6 @@ mod tests {
         assert!(opened.lock().unwrap().is_empty());
     }
 
-    /// 042 스냅샷 추론 서버 (AMB-042-14): a snapshot's server serves its games, goes down once it
-    /// left the candidates and its games are done; the anchor's stays.
     #[test]
     fn snapshot_servers_shut_down_when_unused_042() {
         let (servers, opened, closed) = fake_servers(false);
@@ -1972,7 +1664,6 @@ mod tests {
             src.shared.snapshots.lock().unwrap().dirs.insert(id.clone(), PathBuf::from(format!("league/{n}/agents/main")));
             id
         };
-        // No snapshot yet: the snapshot share goes to the anchor.
         let a = src.next().unwrap();
         assert_eq!(a.opponent.as_deref(), Some("anchor@ckpt-9"));
         assert_eq!(opponent_handle(&a), "anchor/agents/main");
@@ -1992,13 +1683,11 @@ mod tests {
         let keys = src.shared.snapshots.lock().unwrap().live_keys().iter().map(|k| k.to_string()).collect::<Vec<_>>();
         assert_eq!(keys, ["anchor@ckpt-9".to_string(), second.clone()]);
         assert_eq!(opened.lock().unwrap().len(), 3);
-        // The same snapshot again: no new server.
         let j3 = src.next().unwrap();
         assert_eq!(j3.opponent.as_deref(), Some(second.as_str()));
         assert_eq!(opened.lock().unwrap().len(), 3);
     }
 
-    /// The idle servers above the cap go least recently used first; busy and pinned ones stay.
     #[test]
     fn snapshot_pool_cap_spares_busy_and_pinned_servers() {
         let (servers, _, closed) = fake_servers(false);
@@ -2021,16 +1710,10 @@ mod tests {
         assert!(pool.acquire("nope").is_err());
     }
 
-    /// A server whose model thread died after its start returned (e.g. a failed warm-up) is
-    /// never handed out again: the pick that finds it closes it and becomes current-Main
-    /// self-play, as do the picks of that key for `retry_after`; then the key starts afresh. A
-    /// game of the dead server releasing later never touches the new one. Failed starts are not
-    /// retried for `retry_after` either.
     #[test]
     fn dead_and_failing_servers_are_not_reused_042() {
         let fail = Arc::new(AtomicBool::new(false));
         let (servers, opened, closed, alive) = fake_servers_with(fail.clone());
-        // The anchor only (pinned, never pruned).
         let src = source([0.0, 0.0, 1.0], "checkpoints/x/ckpt-9", 4, servers);
         let first = src.next().unwrap();
         assert_eq!(first.opponent.as_deref(), Some("anchor@ckpt-9"));
@@ -2040,16 +1723,13 @@ mod tests {
             assert_eq!(j.opponent.as_deref(), Some("uranium-main@r1"), "dead anchor server: self-play");
         }
         assert_eq!((closed.load(Ordering::SeqCst), opened.lock().unwrap().len()), (1, 1), "closed once, not restarted at once");
-        // After the back-off: a new server.
         src.shared.snapshots.lock().unwrap().retry_after = Duration::ZERO;
         let again = src.next().unwrap();
         assert_eq!(again.opponent.as_deref(), Some("anchor@ckpt-9"));
         assert_eq!(opened.lock().unwrap().len(), 2);
         let new_id = src.shared.games.lock().unwrap()[&again.spec.game_id].server.unwrap();
-        // The dead server's game ends: the new server's count is untouched.
         src.requeue(first);
         assert_eq!(src.shared.snapshots.lock().unwrap().live.iter().find(|l| l.id == new_id).unwrap().games, 1);
-        // A start that fails is not retried at every pick.
         let mut pool = src.shared.snapshots.lock().unwrap();
         pool.retry_after = Duration::from_secs(300);
         pool.live.clear();
@@ -2061,10 +1741,6 @@ mod tests {
         assert_eq!(opened.lock().unwrap().len(), 2, "no reload within the back-off");
     }
 
-    /// 042-R14 / 020-R18 (AMB-042-15) in the run loop: with `[concede] enabled` every RL game is
-    /// on the concede board from dispatch until it is done; a conceded game is judged as a normal
-    /// result (the leaver loses, not Aborted) and games.csv says `Concede`; other games give the
-    /// judged GameEnd reason, games without a result an empty `end_reason`. Off = no board entry.
     #[test]
     fn concede_games_in_the_run_loop_042_r14() {
         use uranium_proto::EndReason;
@@ -2080,7 +1756,6 @@ mod tests {
         cfg.concede.enabled = true;
         let (servers, _, _) = fake_servers(false);
         let src = source_cfg(cfg.clone(), servers, &csv);
-        // Plays one game: the learner (players index / BWAPI id 0) against the current Main (1).
         let play = |ends: &[(u8, u8, EndReason)], conceded: Option<u8>, outcome: JobOutcome| {
             let job = src.next().unwrap();
             let id = job.spec.game_id;
@@ -2102,20 +1777,15 @@ mod tests {
             std::fs::read_to_string(&csv).unwrap().lines().last().unwrap().to_string()
         };
         let row = |line: &str| line.split(',').map(str::to_string).collect::<Vec<_>>();
-        // The learner conceded: it left (names the other side), the opponent model reports its win.
         let r = row(&play(&[(0, 1, EndReason::Surrender), (1, 1, EndReason::Surrender)], Some(0), JobOutcome::Finished));
         assert_eq!((r[7].as_str(), r[10].as_str(), r[16].as_str()), ("Some(Loss)", "-1", "Concede"), "{r:?}");
-        // The opponent model conceded: a win of the learning agent.
         let r = row(&play(&[(1, 0, EndReason::Surrender), (0, 0, EndReason::Surrender)], Some(1), JobOutcome::Finished));
         assert_eq!((r[7].as_str(), r[10].as_str(), r[16].as_str()), ("Some(Win)", "1", "Concede"), "{r:?}");
-        // No concede: the judged reason.
         let r = row(&play(&[(0, 0, EndReason::Elimination), (1, 0, EndReason::Elimination)], None, JobOutcome::Finished));
         assert_eq!((r[7].as_str(), r[16].as_str()), ("Some(Win)", "Elimination"));
-        // Aborted: no result, empty end_reason (also after a concede).
         let r = row(&play(&[(0, 1, EndReason::Surrender)], Some(0), JobOutcome::Aborted));
         assert_eq!((r[7].as_str(), r[16].as_str()), ("None", ""));
         assert_eq!(r.len(), GAMES_HEADER.trim().split(',').count());
-        // Requeued games leave the board too; concede off = no board entry.
         let job = src.next().unwrap();
         let id = job.spec.game_id;
         src.requeue(job);
@@ -2128,10 +1798,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 042-R20 (AMB-042-20): the run loop's stall check with a fake clock — 20 finished games and
-    /// `dead_learner_minutes` without an update end the run, either alone does not; progress
-    /// (an update, a checkpoint after it) restarts both counts; 10 finished games in a row without
-    /// a learning-session decision end it at once; 0 turns both off.
     #[test]
     fn stall_watch_dead_learner_042_r20() {
         let t0 = Instant::now();
@@ -2145,14 +1811,11 @@ mod tests {
         assert!(w.check(at(29), 400, 0).is_none());
         assert!(w.check(at(30), 139, 0).is_none());
         assert!(w.check(at(30), 140, 0).is_some());
-        // Dead inference: the streak alone, whatever the clock.
         assert!(w.check(at(15), 120, BAD_SESSION_STREAK - 1).is_none());
         let why = w.check(at(15), 120, BAD_SESSION_STREAK).expect("10 in a row");
         assert!(why.contains("without a decision"), "{why}");
-        // Off.
         let off = StallWatch::new(0, t0, 0);
         assert!(off.check(at(600), 10_000, 1_000).is_none());
-        // What counts toward the streak: finished games only.
         let r = |d: u64| GameResult { agent: 0, game_id: 1, outcome: None, reward_sum: [0.0; 4], scout_sum: 0.0, survive_sum: 0.0, scout: None, decisions: d, enemy_race: None };
         assert_eq!(bad_learning_session(JobOutcome::Finished, Some(&r(0))), Some(true));
         assert_eq!(bad_learning_session(JobOutcome::Finished, None), None, "no report of the learning session: not counted");
@@ -2162,8 +1825,6 @@ mod tests {
         }
     }
 
-    /// 042-R20 (AMB-042-20): `done` keeps the streak of finished games without a learning-session
-    /// decision; a game with decisions resets it, an Aborted game leaves it.
     #[test]
     fn bad_session_streak_in_the_run_loop_042_r20() {
         use uranium_proto::EndReason;
@@ -2192,13 +1853,10 @@ mod tests {
         for k in 1..=BAD_SESSION_STREAK {
             assert_eq!(play(0, JobOutcome::Finished), k);
         }
-        // The stall check counts `Finished` games only (not the Aborted one).
         assert_eq!(src.shared.finished_games.load(Ordering::SeqCst), 3 + BAD_SESSION_STREAK);
         assert_eq!(src.shared.games_done.load(Ordering::SeqCst), 4 + BAD_SESSION_STREAK);
     }
 
-    /// 042-R2 / R14: a games.csv without `end_reason` (an older version) is kept aside like an
-    /// older train.csv; the new file gets the current header.
     #[test]
     fn games_csv_with_other_columns_is_kept_aside_042_r14() {
         let dir = std::env::temp_dir().join(format!("uranium-rl-games-csv-{}", std::process::id()));
@@ -2218,17 +1876,10 @@ mod tests {
     #[test]
     fn games_csv_header_matches_rows_042_r2() {
         assert_eq!(GAMES_HEADER.trim().split(',').count(), 32);
-        // 042-R2 (AMB-042-16): the new columns follow end_reason in this order; 042-R17
-        // (AMB-042-18): `judge_scv` after scv_4m; 042-AC9 (AMB-042-19): the five start-slot and
-        // contact columns last. The earlier 27 columns are unchanged (rl.toml / rl_rush1..4 rows
-        // only gain the trailing columns).
         assert!(GAMES_HEADER.trim().ends_with(",replay,replay_reason,end_reason,r_scout,r_survive,ladder_group,scout_main_s,scout_types_4m,scout_types_6m,barracks_s,bunker_s,scv_4m,judge_scv,slot_self,slot_enemy,start_hit,scv_min_1m,army_s"));
         assert!(GAMES_HEADER.starts_with("game_id,agent,opponent,class,enemy_race,map,hostd_outcome,outcome,winner_disagree,decisions,r_win,r_build,r_units,r_value,replay,"));
     }
 
-    /// 042-AC9 / 042-R2 (AMB-042-19): `slot_self`, `slot_enemy` = the 020-R21 generator's values,
-    /// `start_hit` 1 / 0 / empty, `scv_min_1m`, `army_s` in game seconds, empty when not reached
-    /// or without a session report.
     #[test]
     fn start_columns_042_ac9() {
         let m = ScoutMetrics { scv_min_1m: Some(3), army_frame: Some(4_452), ..Default::default() };
@@ -2241,9 +1892,6 @@ mod tests {
         assert_eq!(start_columns(None, None), ",,,,", "no seed");
     }
 
-    /// 042-R18 / 042-AC9 (AMB-042-19): without a share the seed is the earlier hash seed; with one
-    /// it is the same for the same game id, its 020-R21 hit is the target, about `rush_hit_share`
-    /// of the games are hits, and when no candidate fits the game keeps `s_0`.
     #[test]
     fn start_mix_seeds_042_r18() {
         use uranium_runner::start_slots::{start_hit, start_slots};
@@ -2264,14 +1912,11 @@ mod tests {
             assert_eq!(game_seed(id, Some(0.5), 0), game_seed(id, Some(0.5), 0), "deterministic");
             assert!(hit(game_seed(id, Some(1.0), 0)));
             assert!(!hit(game_seed(id, Some(0.0), 0)));
-            // A candidate is kept as soon as it fits: s_0 when it already does.
             let s0 = base_seed(id);
             assert_eq!(game_seed(id, Some(if hit(s0) { 1.0 } else { 0.0 }), 0), s0);
-            // No candidate fits: s_0.
             assert_eq!(mixed_seed(id, 1.0, |_| false), s0);
             assert_eq!(mixed_seed(id, 0.0, |_| true), s0);
         }
-        // Random players draw first: the search uses the same generator input.
         let s = game_seed(5, Some(1.0), 1);
         let [a, b] = start_slots(s, 1);
         assert!(start_hit(a, b));
@@ -2281,9 +1926,6 @@ mod tests {
         GameResult { agent: 0, game_id: id, outcome: Some(Outcome::Win), reward_sum: [0.0, 0.0, 0.0, 0.25], scout_sum: 0.6, survive_sum: 0.375, scout, decisions: 9, enemy_race: Some(Race::Zerg) }
     }
 
-    /// 042-R2 / 042-AC6 (AMB-042-16): the columns after `end_reason` — raw sums only in "scout",
-    /// the ladder group of a ladder game, the metrics in game seconds, empty when not reached or
-    /// without a session report.
     #[test]
     fn scout_columns_042_r2() {
         let m = ScoutMetrics { main_frame: Some(3_000), types_4m: 2, types_6m: 5, barracks_frame: Some(2_412), bunker_frame: None, scv_4m: Some(14), scv_last: Some(9), ..Default::default() };
@@ -2295,10 +1937,6 @@ mod tests {
         assert_eq!(scout_columns(PseudoMode::Z, None, None).split(',').count(), 9);
     }
 
-    /// 042-R16 / 042-AC7 (AMB-042-17) in the run loop: Main's games of `select_group` keep segment
-    /// copies (those starting before `until_s`, the terminal one with r_win) until the game is
-    /// judged; a won or held (`scv_4m >= 12`) game's copies go to the buffer with its r_win, the
-    /// others' (lost and not held, another group, Aborted) are dropped; nothing stays pending.
     #[test]
     fn sil_buffer_takes_selected_games_042_r16() {
         use crate::league::{LadderEntry, LadderKind};
@@ -2318,8 +1956,6 @@ mod tests {
             cfg.validate().unwrap();
             let src = source_cfg(cfg, fake_servers(false).0, &csv);
             let info = crate::testkit::game_info();
-            // 10 decisions at frames 0, 10, ..., 90; segments of 4 (seq_len 4 in the test hooks)
-            // start at decisions 0, 3, 6, 9 = frames 0, 30, 60, 90 (the last is terminal).
             let obs = crate::testkit::observations(10);
             let cases = [(Outcome::Win, None, false), (Outcome::Loss, Some(12), false), (Outcome::Loss, Some(5), false), (Outcome::Win, Some(20), true)];
             let (mut want, mut groups) = (0usize, BTreeSet::new());
@@ -2371,12 +2007,6 @@ mod tests {
         }
     }
 
-    /// 042-R16 상대·접촉 거르기 / 042-AC9 (AMB-042-19) in the run loop: with `select_keys` and
-    /// `select_army_before_s` only won games against a listed opponent whose first enemy army
-    /// sighting is known and at most the limit reach the buffer (an unlisted opponent's games keep
-    /// no copies at all); nothing stays pending. With `select_start_hit = true` (사용자 위임
-    /// 2026-11-05, 5차 자문) also only first-target hits by the game's start slots (a miss keeps no
-    /// copies either); without it the same games as before.
     #[test]
     fn sil_opponent_and_contact_filters_in_the_run_loop_042_r16() {
         for select_start_hit in [None, Some(true)] {
@@ -2402,7 +2032,6 @@ mod tests {
         let src = source_cfg(cfg, fake_servers(false).0, &csv);
         let info = crate::testkit::game_info();
         let obs = crate::testkit::observations(10);
-        // army_frame: 5,400 = 225.0 s (selected), 5,401 (not), never seen (not), 2,000 (selected).
         let armies = [Some(5_400u32), Some(5_401), None, Some(2_000)];
         let (mut want, mut keys, mut misses) = (0usize, BTreeSet::new(), 0);
         for g in 0..120 {
@@ -2446,9 +2075,6 @@ mod tests {
         assert_eq!(sil.buffer.lock().unwrap().len(), want);
     }
 
-    /// 042-R18 / 042-AC9 (AMB-042-19) through the job source with config/rl_rush5.toml: rush games
-    /// take the `[league.start_mix]` seed (hits about 0.5), macro games and games against a model
-    /// keep the earlier hash seed; config/rl_rush4.toml (no `[league.start_mix]`) keeps every seed.
     #[test]
     fn start_mix_in_the_job_source_042_r18() {
         let seeds = |file: &str| {
@@ -2487,10 +2113,6 @@ mod tests {
         assert!(seeds(include_str!("../../../config/rl_rush4.toml")).iter().all(|(id, _, _, s)| *s == base_seed(*id)));
     }
 
-    /// 042-R16 / 042-AC7 (AMB-042-17) lane swap of the run loop: buffer lanes replace the last
-    /// `[sil] lanes` lanes only for Main in C1 once the buffer holds that many (the batch keeps
-    /// `lanes` segments, `trained` counts the queue lanes only); buffer lanes are outside the
-    /// 042-R4 lag drop ("replay": a segment leaves after `max_uses`); `[sil]` off = the plain take.
     #[test]
     fn sil_lane_swap_042_r16() {
         use crate::league::Stage;
@@ -2500,14 +2122,11 @@ mod tests {
         for mode in [SilMode::Sil, SilMode::Replay] {
             let sil = SilState::new(SilConfig { enabled: true, mode, lanes: 2, buffer_segments: 100, max_uses: 2, ..SilConfig::default() }, 1);
             let q = SegmentQueue::new(64);
-            // Buffer below `lanes`: the plain take.
             sil.buffer.lock().unwrap().push_game(vec![seg_at(900, 0)], 1.0);
             fill(&q, 0..4, 100);
             let (b, trained, row) = take_batch(&q, Some(&sil), AgentKind::Main, Stage::C1, 4, 100, 32).unwrap();
             assert_eq!((b.len(), trained, row), (4, 4, Some((1, 0))));
             assert!(b.iter().all(|s| s.sil_return.is_none()));
-            // Enough: 2 queue lanes + 2 buffer lanes, last. The buffer's segments are 100 updates
-            // old (version 0 at learner version 100, max lag 32): kept; such queue segments are dropped.
             sil.buffer.lock().unwrap().push_game(vec![seg_at(901, 0), seg_at(902, 0)], -1.0);
             fill(&q, 10..12, 0);
             fill(&q, 20..24, 100);
@@ -2519,14 +2138,12 @@ mod tests {
             assert!(b[2..].iter().all(|s| s.game_id >= 900 && s.version() == 0), "buffer lanes outside the lag drop");
             assert_eq!(q.stats().dropped_lag, 2);
             assert_eq!(row.unwrap().1, 2);
-            // Other stages and agents: no buffer lanes.
             fill(&q, 30..40, 100);
             for (agent, stage) in [(AgentKind::Main, Stage::C2), (AgentKind::Main, Stage::C0), (AgentKind::MainExploiter, Stage::C1)] {
                 let (b, trained, row) = take_batch(&q, Some(&sil), agent, stage, 4, 100, 32).unwrap();
                 assert!(b.iter().all(|s| s.sil_return.is_none()) && b.len() == 4 && trained == 4, "{agent:?} {stage:?}");
                 assert_eq!(row.unwrap().1, 0);
             }
-            // "replay": after max_uses (2) uses a segment leaves; "sil" keeps it.
             let before = sil.buffer.lock().unwrap().len();
             for _ in 0..3 {
                 fill(&q, 50..52, 100);
@@ -2538,7 +2155,6 @@ mod tests {
                 SilMode::Replay => assert!(after < before, "{before} -> {after}"),
             }
         }
-        // [sil] off: the plain take, no SIL values.
         let q = SegmentQueue::new(8);
         fill(&q, 0..4, 0);
         let (b, trained, row) = take_batch(&q, None, AgentKind::Main, Stage::C1, 4, 0, 32).unwrap();
@@ -2546,7 +2162,6 @@ mod tests {
         assert!(take_batch(&q, None, AgentKind::Main, Stage::C1, 4, 0, 32).is_none(), "too few");
     }
 
-    /// 033-R11 (AMB-042-16): the "scout" C2 warning (start, resume, C1 → C2 transition).
     #[test]
     fn scout_c2_warning_033_r11() {
         use crate::league::Stage;
@@ -2556,8 +2171,6 @@ mod tests {
         }
     }
 
-    /// 033-R11 start errors: "scout" with a z table; a resumed checkpoint of the other mode (a
-    /// checkpoint without the key was "z"); `--init` / new runs are not checked.
     #[test]
     fn pseudo_start_errors_033_r11() {
         let mut cfg = RlConfig::default_file();
@@ -2570,7 +2183,6 @@ mod tests {
         check_pseudo(&cfg, None, None).unwrap();
         check_pseudo(&cfg, None, Some(PseudoMode::Scout)).unwrap();
         assert!(check_pseudo(&cfg, None, Some(PseudoMode::Z)).is_err(), "resume a z checkpoint in scout");
-        // The checkpoint's mode from agents/main/meta.json train.rl.
         let dir = std::env::temp_dir().join(format!("uranium-rl-pseudo-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let main = dir.join(crate::ckpt::AGENTS_DIR).join("main");
@@ -2586,9 +2198,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 033-R11 / 042 (AMB-042-16): a session's observer gets the mode and its game's multipliers
-    /// (model opponent: `vs_model` of each reward; bot: 1 and 1) and the hook hands the reward
-    /// settings to the session; games.csv rows carry the ladder group and the metrics.
     #[test]
     fn sessions_and_games_csv_in_scout_mode_042_amb_042_16() {
         use crate::league::{LadderEntry, LadderKind};
@@ -2632,7 +2241,6 @@ mod tests {
             }
             o.on_end(Default::default(), Some(Outcome::Win));
             let seg = src.shared.held.lock().unwrap().get(&id).map(|s| s.pseudo_scale).expect("held terminal segment");
-            // The session's own report is replaced by one with metrics for the row below.
             src.shared.results.lock().unwrap().try_iter().for_each(drop);
             if class == Class::Model {
                 assert_eq!(seg, [0.5, 0.0], "model game: vs_model");
@@ -2651,7 +2259,6 @@ mod tests {
             let r: Vec<&str> = line.split(',').collect();
             assert_eq!(r.len(), GAMES_HEADER.trim().split(',').count(), "{line}");
             assert_eq!(&r[17..27], [&["0.6", "0.375", group.as_deref().unwrap_or("")][..], &["100.0", "1", "3", "", "", "", ""]].concat(), "{line}");
-            // 042-AC9 (AMB-042-19): the slots of the game's seed, no scv_min_1m / army_s reached.
             let [a, b] = uranium_runner::start_slots::start_slots(job.spec.seed.unwrap(), 0);
             let hit = if uranium_runner::start_slots::start_hit(a, b) { "1" } else { "0" };
             assert_eq!(&r[27..], [a.to_string().as_str(), b.to_string().as_str(), hit, "", ""], "{line}");
@@ -2663,10 +2270,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 042-R17 / 042-AC8 판 길이 (AMB-042-18): through the job source with config/rl_rush4.toml,
-    /// ladder games of the judged groups (rush, warmup) get `min(86,400, at_s x 24)` = 11,520,
-    /// macro games 86,400 and games against a model the 042-R15 36,000; with rl_rush3.toml (no
-    /// `[league.rush_judge]`) every ladder game keeps 86,400 as before.
     #[test]
     fn rush_judge_game_lengths_042_r17() {
         let frames = |file: &str| {
@@ -2703,13 +2306,6 @@ mod tests {
         }
     }
 
-    /// 042-R17 / 020-R19 / 042-AC8 판정 (AMB-042-18) in the run loop: a judged group's game that
-    /// ends as `TimeLimitDraw` is a win at `min_scv` (8) own SCVs and a loss at 7 — games.csv
-    /// `outcome`, `r_win` (also on the terminal decision), `end_reason = RushJudge`, `judge_scv`,
-    /// the win table and the self-imitation selection (`wins_only`: the won one only, not the
-    /// lost one with `scv_4m >= 12`) use the judged result; with no observation to count the game
-    /// has no result (not trained, counted with Aborted); earlier ends (Elimination, Surrender,
-    /// collapse Concede) and another group's `TimeLimitDraw` keep their outcome, `judge_scv` empty.
     #[test]
     fn rush_judge_results_in_the_run_loop_042_r17() {
         use crate::config::RushJudgeConfig;
@@ -2738,16 +2334,11 @@ mod tests {
         let obs = crate::testkit::observations(2);
         struct Played {
             row: Vec<String>,
-            /// Main's win-table value against the opponent after the game minus before.
             win_delta: f64,
-            /// r_win on the terminal decision as queued for the learner (`None`: nothing queued).
             terminal_r_win: Option<f32>,
             buffer: usize,
             aborted: u64,
         }
-        // One game of `group`: `decisions` decisions (one terminal segment), the session's report
-        // with `scout` (metrics with `scv_last`), both sessions' GameEnd, optionally a collapse
-        // concede of the learning agent.
         let play = |group: &str, decisions: usize, reason: EndReason, winner: Option<u8>, scout: ScoutMetrics, concede: bool| {
             let job = loop {
                 let j = src.next().unwrap();
@@ -2792,7 +2383,6 @@ mod tests {
         let m = |scv_last: Option<u32>, scv_4m: Option<u32>| ScoutMetrics { scv_last, scv_4m, ..Default::default() };
         let cols = |p: &Played| (p.row[7].clone(), p.row[10].clone(), p.row[16].clone(), p.row[26].clone());
         let s = |x: &str| x.to_string();
-        // min_scv boundary: 8 own SCVs win, 7 lose.
         let won = play("rush", 2, EndReason::TimeLimitDraw, None, m(Some(8), Some(12)), false);
         assert_eq!(cols(&won), (s("Some(Win)"), s("1"), s("RushJudge"), s("8")));
         assert_eq!(won.terminal_r_win, Some(1.0), "r_win on the last decision");
@@ -2805,11 +2395,9 @@ mod tests {
         assert_eq!(lost.terminal_r_win, Some(-1.0));
         assert!(lost.win_delta < 0.0, "win table: a loss");
         assert_eq!(lost.buffer, 1, "wins_only: a lost game with scv_4m >= 12 is not selected");
-        // No observation to count: no result, nothing trained, the win table untouched.
         let none = play("rush", 0, EndReason::TimeLimitDraw, None, m(None, None), false);
         assert_eq!(cols(&none), (s("None"), s("0"), s(""), s("")));
         assert_eq!((none.terminal_r_win, none.win_delta, none.aborted), (None, 0.0, 1));
-        // Ended before the cap: the original outcome.
         let elim = play("rush", 2, EndReason::Elimination, Some(0), m(Some(3), None), false);
         assert_eq!(cols(&elim), (s("Some(Win)"), s("1"), s("Elimination"), s("")));
         assert_eq!((elim.terminal_r_win, elim.buffer), (Some(1.0), 2), "a win before 8:00 is selected too");
@@ -2817,11 +2405,9 @@ mod tests {
         assert_eq!(cols(&gg), (s("Some(Loss)"), s("-1"), s("Surrender"), s("")));
         let conceded = play("rush", 2, EndReason::Surrender, Some(1), m(Some(20), Some(15)), true);
         assert_eq!(cols(&conceded), (s("Some(Loss)"), s("-1"), s("Concede"), s("")));
-        // A collapse concede that coincides with the frame cap: RushJudge wins (메인 임시 결정).
         let both = play("rush", 2, EndReason::TimeLimitDraw, None, m(Some(3), Some(15)), true);
         assert_eq!(cols(&both), (s("Some(Loss)"), s("-1"), s("RushJudge"), s("3")));
         assert_eq!(both.buffer, 2, "a judged loss is not selected");
-        // Another group's TimeLimitDraw stays a draw.
         let macro_draw = play("macro", 2, EndReason::TimeLimitDraw, None, m(Some(20), Some(15)), false);
         assert_eq!(cols(&macro_draw), (s("Some(Draw)"), s("0"), s("TimeLimitDraw"), s("")));
         assert_eq!((macro_draw.terminal_r_win, macro_draw.buffer), (Some(0.0), 2));

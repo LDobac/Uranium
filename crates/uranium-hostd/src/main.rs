@@ -1,6 +1,3 @@
-//! Game host daemon (spec 020). `uranium-env` connects over TCP and asks it to start games;
-//! each accepted game is reported back on the same connection when it ends.
-
 mod config;
 mod game;
 mod platform;
@@ -19,7 +16,6 @@ use uranium_proto::{read_msg, write_msg};
 use crate::config::Config;
 use crate::platform::Platform;
 
-/// 020-R4: quarantine a game configuration after this many consecutive aborts.
 const QUARANTINE_AFTER: u32 = 3;
 
 #[derive(Parser)]
@@ -30,7 +26,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Serve control connections (settings from .env, 020-R9).
     Serve,
 }
 
@@ -127,7 +122,6 @@ fn connection(stream: TcpStream, st: Arc<State>) -> Result<()> {
                 st.stop_requests.lock().unwrap().insert(game_id);
             }
             ControlRequest::StartReplay(job) => {
-                // Replay jobs share the concurrency budget with games (one launcher each).
                 if st.running.fetch_add(1, Ordering::SeqCst) >= st.cfg.max_games {
                     st.running.fetch_sub(1, Ordering::SeqCst);
                     send(&writer, &ControlResponse::Rejected { reason: "host at capacity".into() })?;

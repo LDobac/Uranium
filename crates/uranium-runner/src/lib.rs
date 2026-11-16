@@ -1,11 +1,3 @@
-//! Game scheduler library (spec 020, crate `uranium-runner`, AMB-001-3). Runs the agent server
-//! in-process and spreads games over one or more `uranium-hostd`s. Games come from a `JobSource`
-//! (020-R12): a matchup plan is a fixed queue (`QueueSource`), the RL league (042) picks each
-//! game when a host slot frees up. Used by the `uranium-env` binary and by `uranium-train rl`.
-
-/// `eprintln!` that never panics: inside `uranium-train rl` this runs in a training child whose
-/// stderr is a pipe to its watchdog; when the watchdog is killed hard the pipe closes and
-/// `eprintln!` would panic (EPIPE) instead of letting the run save, push and release (060-R6).
 macro_rules! elog {
     ($($t:tt)*) => {{
         use std::io::Write as _;
@@ -37,10 +29,8 @@ use uranium_proto::{read_msg, write_msg};
 
 pub use crate::plan::{HostEntry, Job, ModelKey};
 
-/// Model servers by (checkpoint, sampling mode) (020-R11).
 pub type Models = HashMap<ModelKey, PolicySpec>;
 
-/// hostd's verdict on a game that was handed to a host (020-R4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum JobOutcome {
     Finished,
@@ -62,42 +52,26 @@ impl JobOutcome {
     }
 }
 
-/// Where workers get their games (020-R12).
 pub trait JobSource: Send + Sync {
-    /// The next game for a free host slot; `None` ends that worker.
     fn next(&self) -> Option<Job>;
-    /// A game that never started (its host was lost): play it elsewhere.
     fn requeue(&self, job: Job);
-    /// hostd's outcome for a game that was started (or rejected), with the replay hostd sent
-    /// back for a `save_replay` game (020-R1).
     fn done(&self, _job: &Job, _outcome: JobOutcome, _replay: Option<Vec<u8>>) {}
-    /// [`JobSource::done`] with the recorded detail (020-R15 retries depend on it).
     fn done_with(&self, job: &Job, outcome: JobOutcome, _detail: Option<&str>, replay: Option<Vec<u8>>) {
         self.done(job, outcome, replay)
     }
-    /// Games still waiting (reported as "not run" when the workers stop).
     fn left(&self) -> usize {
         0
     }
-    /// 041-R28 ①: the decision log file of `job`'s model player (named like its replay), when its
-    /// plan has `memory_log = true`; `None` = no log (the default).
     fn memory_log(&self, _job: &Job) -> Option<PathBuf> {
         None
     }
-    /// 020-R22: the 051 settings of `job` (act logs, snapshots, branch player) when its plan has a
-    /// 051 key; `Ok(None)` = none (the default, 020-R22 ④).
     fn game_branch(&self, _job: &Job) -> Result<Option<GameBranch>> {
         Ok(None)
     }
 }
 
-/// 020-R22 / 051: whether the agent sessions read the [`BranchBoard`] (act logs, snapshots,
-/// branch players). Until they do, a plan with a 051 key is refused at the start of a run rather
-/// than played without its logs. The sessions look up `Hello.game_id` in `ServeOptions::branches`
-/// ([`start_agent`] gets `Dispatch::branches`, the board the workers fill, 051 U3).
 pub const AGENT_READS_BRANCH_BOARD: bool = true;
 
-/// Refuses a plan with a 051 key while the agent cannot act on it ([`AGENT_READS_BRANCH_BOARD`]).
 pub fn check_branch_support(plan: &plan::Plan) -> Result<()> {
     if plan.uses_branch_keys() && !AGENT_READS_BRANCH_BOARD {
         bail!("plan `{}` uses branch-game keys (act_log / snapshots / branches / verify_state, 020-R22) but this agent build does not act on them yet (051)", plan.name);
@@ -105,22 +79,15 @@ pub fn check_branch_support(plan: &plan::Plan) -> Result<()> {
     Ok(())
 }
 
-/// 041-R28 ① (AMB-041-17): file name of the decision log of the game whose replay is
-/// `g<id>.rep` (same game id; `uranium-replay build --memory-log` looks it up by the replay stem).
 pub fn memory_log_name(id: u64) -> String {
     format!("g{id}.jsonl")
 }
 
-/// A fixed list of games (matchup plans).
 #[derive(Default)]
 pub struct QueueSource {
     jobs: Mutex<VecDeque<Job>>,
-    /// Where replays hostd sends back are written (`g<id>.rep`); `None` drops them.
     replay_dir: Option<PathBuf>,
-    /// 041-R28 ①: where model players write their decision logs (`g<id>.jsonl`); `None` = none.
     memory_dir: Option<PathBuf>,
-    /// 020-R22: the plan with 051 keys, its output folder (`acts/`, `states/`) and the shared
-    /// drive of the branch list's paths.
     branch: Option<(Arc<plan::Plan>, PathBuf, Option<PathBuf>)>,
 }
 
@@ -129,8 +96,6 @@ impl QueueSource {
         Self { jobs: Mutex::new(VecDeque::from(jobs)), replay_dir: None, memory_dir: None, branch: None }
     }
 
-    /// 020-R22: games of a plan with 051 keys get their settings ([`plan::Plan::game_branch`]),
-    /// act logs and state files under `out` (`acts/`, `states/`); a plan without them gets none.
     pub fn with_branch(mut self, plan: Arc<plan::Plan>, out: PathBuf, shared: Option<PathBuf>) -> Self {
         if plan.uses_branch_keys() {
             self.branch = Some((plan, out, shared));
@@ -138,14 +103,11 @@ impl QueueSource {
         self
     }
 
-    /// 020-R5: replays of `save_replay` games land in `dir` on the scheduler's PC, wherever the
-    /// game ran.
     pub fn with_replays(mut self, dir: PathBuf) -> Self {
         self.replay_dir = Some(dir);
         self
     }
 
-    /// 041-R28 ①: model players write one decision log per game to `dir/g<id>.jsonl`.
     pub fn with_memory_logs(mut self, dir: PathBuf) -> Self {
         self.memory_dir = Some(dir);
         self
@@ -180,7 +142,6 @@ impl JobSource for QueueSource {
     }
 }
 
-/// Control connections of games in flight, for `StopGame` on a clean stop (042-R10).
 #[derive(Clone, Default)]
 pub struct InFlight {
     games: Arc<Mutex<HashMap<u64, Arc<Mutex<BufWriter<TcpStream>>>>>>,
@@ -188,7 +149,6 @@ pub struct InFlight {
 }
 
 impl InFlight {
-    /// Sends `StopGame` for every game in flight; hostd ends them as `Stopped` (042-R10 ②).
     pub fn stop_all(&self) {
         self.stopping.store(true, Ordering::SeqCst);
         for (id, w) in self.games.lock().unwrap().iter() {
@@ -208,28 +168,18 @@ impl InFlight {
     }
 }
 
-/// Shared state every worker needs.
 #[derive(Clone)]
 pub struct Dispatch {
     pub routes: Routes,
     pub models: Models,
     pub t0_builds: T0Builds,
     pub inflight: InFlight,
-    /// The board of the agent this scheduler started (020-R4 bridge check); `None` when the
-    /// caller reads the board itself (042 league).
     pub ends: Option<EndBoard>,
-    /// 020-R15 ⑥: hosts that get no new game (their worker is leaving); a slot worker on one of
-    /// them ends after its game.
     pub leaving: Arc<Mutex<HashSet<String>>>,
-    /// 020-R15 ⑧: what games.jsonl records about the games' inference (evaluation jobs).
     pub infer: Option<InferTag>,
-    /// 020-R22: each game's 051 settings by hostd id, set before `StartGame` and removed after
-    /// the game ([`JobSource::game_branch`]); the agent sessions read it ([`AGENT_READS_BRANCH_BOARD`]).
     pub branches: BranchBoard,
 }
 
-/// 020-R15 ⑧ / ⑦: the inference host and backend of an evaluation job's games, and its stage
-/// names (a game's stage comes from its hostd id, [`eval::split_id`]).
 #[derive(Clone, Debug)]
 pub struct InferTag {
     pub host: String,
@@ -242,23 +192,17 @@ impl Dispatch {
         Self { routes, models, t0_builds, inflight: InFlight::default(), ends: None, leaving: Arc::default(), infer: None, branches: BranchBoard::default() }
     }
 
-    /// 020-R22: the board the agent sessions read (the one given to the agent server).
     pub fn with_branches(mut self, branches: BranchBoard) -> Self {
         self.branches = branches;
         self
     }
 
-    /// Checks finished games against `ends` (020-R4) and drops their reports afterwards.
     pub fn with_ends(mut self, ends: EndBoard) -> Self {
         self.ends = Some(ends);
         self
     }
 }
 
-/// 020-R4: hostd reports `Finished` for a game whose bridge gave up reaching the agent (the shim
-/// leaves, the launcher exits 0). Such a game has fewer sessions past the Hello check than bridge
-/// players; it is recorded as Aborted with this detail, and an evaluation job plays it again
-/// (020-R15).
 pub const BRIDGE_NEVER_CONNECTED: &str = "bridge never connected";
 
 fn bridge_check(spec: &GameSpec, ends: &EndBoard) -> Option<String> {
@@ -268,7 +212,6 @@ fn bridge_check(spec: &GameSpec, ends: &EndBoard) -> Option<String> {
     (connected < bridges).then(|| format!("{BRIDGE_NEVER_CONNECTED} ({connected} of {bridges} sessions)"))
 }
 
-/// One line of games.jsonl (hostd's view of a game).
 #[derive(Serialize)]
 struct GameRecord {
     game_id: u64,
@@ -277,15 +220,12 @@ struct GameRecord {
     map: String,
     races: [String; 2],
     p1_kind: String,
-    /// Opponent ID `<name>@<version>` (021-R3).
     opponent: String,
-    /// p1's T0 build when it is an E-Regression scenario bot (050).
     #[serde(skip_serializing_if = "Option::is_none")]
     t0_build: Option<String>,
     outcome: String,
     detail: Option<String>,
     wall_s: u32,
-    /// 020-R15: evaluation jobs only (stage name, inference host and backend).
     #[serde(skip_serializing_if = "Option::is_none")]
     stage: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -298,7 +238,6 @@ pub fn env_or(name: &str, default: &str) -> String {
     std::env::var(name).ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| default.to_string())
 }
 
-/// `URANIUM_HOSTS_FILE`, else the local hostd (020).
 pub fn hosts() -> Result<Vec<HostEntry>> {
     match std::env::var("URANIUM_HOSTS_FILE").ok().filter(|v| !v.is_empty()) {
         Some(f) => plan::load_hosts(f.as_ref()),
@@ -306,8 +245,6 @@ pub fn hosts() -> Result<Vec<HostEntry>> {
     }
 }
 
-/// The (checkpoint, sampling mode) pairs the plan's players use, each once (020-R11). Their
-/// inference servers run in the Python process (`python -m uranium run`, AMB-000-4).
 pub fn plan_models(plan: &plan::Plan) -> Vec<ModelKey> {
     let mut keys = Vec::new();
     for m in &plan.matchups {
@@ -320,9 +257,6 @@ pub fn plan_models(plan: &plan::Plan) -> Vec<ModelKey> {
     keys
 }
 
-/// Model policies of the plan from one inference handle per [`plan_models`] key, with the plan's
-/// session settings: 031-R12 / 020-R14 surrender mode and chat line, 030-R10 / E-5
-/// `last_failed = 0` for BC evaluation plans (reason at `Plan::zero_last_failed`).
 pub fn plan_policies(plan: &plan::Plan, handles: &HashMap<ModelKey, InferenceHandle>) -> Result<Models> {
     let mut models = Models::new();
     for key in plan_models(plan) {
@@ -334,9 +268,6 @@ pub fn plan_policies(plan: &plan::Plan, handles: &HashMap<ModelKey, InferenceHan
     Ok(models)
 }
 
-/// Plays every game of a plan (020) with the agent server in-process and writes the results and
-/// report under `out` (default `runs/<plan name>`). `models`: [`plan_policies`] (empty for a plan
-/// of scripted players only).
 pub fn run_plan(plan_path: &Path, out: Option<PathBuf>, models: Models) -> Result<()> {
     let plan = plan::load_plan(plan_path)?;
     check_branch_support(&plan)?;
@@ -347,25 +278,21 @@ pub fn run_plan(plan_path: &Path, out: Option<PathBuf>, models: Models) -> Resul
     std::fs::copy(plan_path, out.join("plan.toml"))?;
     let _ = std::fs::remove_file(out.join("games.jsonl"));
     let _ = std::fs::remove_file(out.join("results.jsonl"));
-    // 031-R10: a fresh plan run starts its per-unit rejection details with its session records.
     let _ = std::fs::remove_file(out.join("unit_rejections.jsonl"));
 
     let builds = T0Builds::default();
     let routes = Routes::default();
     let ends = EndBoard::default();
-    // 020-R22: the workers fill the 051 board per game; the agent sessions read it.
     let branches = BranchBoard::default();
     let public = start_agent(&env_or("URANIUM_AGENT_LISTEN", "127.0.0.1:7600"), &out.join("results.jsonl"), &out.join("unit_rejections.jsonl"), routes.clone(), builds.clone(), ends.clone(), Default::default(), branches.clone())?;
     let jobs = plan::expand(&plan, &public);
     elog!("[env] plan `{}`: {} games, agent at {public}", plan.name, jobs.len());
     let started = std::time::Instant::now();
-    // Scenario builds (050) and model routes are registered per game by the workers (020-R11).
     let dispatch = Dispatch::new(routes, models, builds).with_ends(ends).with_branches(branches);
     let mut source = QueueSource::new(jobs).with_replays(out.join("replays"));
     if plan.memory_log {
         source = source.with_memory_logs(out.join("memory"));
     }
-    // 020-R22: act logs and state files under the output folder (`acts/`, `states/`).
     let source = source.with_branch(Arc::new(plan.clone()), out.clone(), shared);
     let source = Arc::new(source);
     run_source(source.clone(), &hosts()?, &out.join("games.jsonl"), &dispatch)?;
@@ -379,11 +306,6 @@ pub fn run_plan(plan_path: &Path, out: Option<PathBuf>, models: Models) -> Resul
     Ok(())
 }
 
-/// Starts the embedded agent server (001-R6) and returns the address bridges connect to.
-/// Bridges on every host must reach it (`URANIUM_AGENT_PUBLIC_ADDR` when it differs). Session
-/// records go to `results`, per-unit rejection details to `unit_rejections` (031-R10). `concede`:
-/// the RL league games that judge 042-R14 collapse concede (plans pass an empty board).
-/// `branches`: the 051 per-game settings the workers fill (020-R22; empty = none).
 #[allow(clippy::too_many_arguments)]
 pub fn start_agent(listen: &str, results: &Path, unit_rejections: &Path, routes: Routes, t0_builds: T0Builds, ends: EndBoard, concede: ConcedeBoard, branches: BranchBoard) -> Result<String> {
     let listener = TcpListener::bind(listen).with_context(|| format!("binding agent {listen}"))?;
@@ -399,8 +321,6 @@ pub fn start_agent(listen: &str, results: &Path, unit_rejections: &Path, routes:
     Ok(public)
 }
 
-/// Plays `jobs` on `hosts`, appending hostd outcomes to `games_path`. Returns the number of
-/// games that could not be scheduled.
 pub fn run_jobs(jobs: Vec<Job>, hosts: &[HostEntry], games_path: &Path, routes: &Routes, models: &Models) -> Result<usize> {
     let replays = games_path.parent().unwrap_or(Path::new(".")).join("replays");
     let source = Arc::new(QueueSource::new(jobs).with_replays(replays));
@@ -408,14 +328,12 @@ pub fn run_jobs(jobs: Vec<Job>, hosts: &[HostEntry], games_path: &Path, routes: 
     Ok(source.left())
 }
 
-/// Plays games from `source` on `hosts` until every worker got `None` (or lost its host).
 pub fn run_source(source: Arc<dyn JobSource>, hosts: &[HostEntry], games_path: &Path, dispatch: &Dispatch) -> Result<()> {
     let file = std::fs::OpenOptions::new().create(true).append(true).open(games_path)?;
     let games_out = Arc::new(Mutex::new(BufWriter::new(file)));
     let done = Arc::new(Mutex::new(0usize));
     let mut workers = Vec::new();
     for host in hosts {
-        // 020-R4: an unreachable host is skipped, the others still play.
         let caps = match capabilities(&host.addr) {
             Ok(c) => c,
             Err(e) => {
@@ -440,20 +358,15 @@ pub fn run_source(source: Arc<dyn JobSource>, hosts: &[HostEntry], games_path: &
         }
     }
     games_out.lock().unwrap().flush()?;
-    // Session records are written when each bridge sends GameEnd, before its launcher exits.
     std::thread::sleep(Duration::from_secs(1));
     Ok(())
 }
 
 fn connect(addr: &str) -> Result<(BufReader<TcpStream>, BufWriter<TcpStream>)> {
-    // A powered-off host does not refuse, it never answers: without a limit the OS waits about
-    // two minutes per try, and an evaluation job probes absent hosts every minute (020-R15 ⑥).
     use std::net::ToSocketAddrs;
     let target = addr.to_socket_addrs()?.next().with_context(|| format!("{addr}: no address"))?;
     let s = TcpStream::connect_timeout(&target, Duration::from_secs(5))?;
     s.set_nodelay(true).ok();
-    // A game host that powers off never closes the socket; keepalive turns that into a read
-    // error within a few minutes instead of a worker blocked forever (020-R4).
     let ka = socket2::TcpKeepalive::new().with_time(Duration::from_secs(30)).with_interval(Duration::from_secs(10));
     socket2::SockRef::from(&s).set_tcp_keepalive(&ka).ok();
     let mut r = BufReader::new(s.try_clone()?);
@@ -465,7 +378,6 @@ fn connect(addr: &str) -> Result<(BufReader<TcpStream>, BufWriter<TcpStream>)> {
     }
 }
 
-/// How many games hostd runs now (020-R1 `Status`; 020-R15 ⑥ waits for 0 before stopping it).
 pub fn host_status(addr: &str) -> Result<usize> {
     let (mut r, mut w) = connect(addr)?;
     write_msg(&mut w, &ControlRequest::Status)?;
@@ -492,19 +404,15 @@ pub(crate) fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter
             return Ok(());
         }
         let Some(job) = source.next() else { return Ok(()) };
-        // 020-R15 ⑥: the host started leaving while this slot waited for a game.
         if dispatch.leaving.lock().unwrap().contains(addr) {
             source.requeue(job);
             return Ok(());
         }
-        // A model player without its server would quietly play as the agent's default T0 bot.
         if let Some(k) = (0..2).find_map(|s| job.models[s].as_ref().filter(|k| job.policies[s].is_none() && !dispatch.models.contains_key(*k))) {
             let k = k.clone();
             source.requeue(job);
             bail!("no inference server for {k:?} (020-R11)");
         }
-        // 020-R22: the game's 051 settings, on the board before the bridges connect. A game whose
-        // settings cannot be built must not play without them.
         let branch = match source.game_branch(&job).and_then(|b| prepare_branch_dirs(b.as_ref()).map(|_| b)) {
             Ok(b) => b,
             Err(e) => {
@@ -513,12 +421,9 @@ pub(crate) fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter
             }
         };
         let mut branch_entry = BoardEntry::insert(&dispatch.branches, job.spec.game_id, branch);
-        // 020-R11: model players are routed by (game_id, slot) before the bridges connect.
         let memory_log = source.memory_log(&job);
         for slot in 0..2 {
             let spec = job.policies[slot].clone().or_else(|| job.models[slot].as_ref().and_then(|k| dispatch.models.get(k)).cloned());
-            // 041-R28 ①: the plan's model player logs its decisions (one model player per game,
-            // checked when the plan loads).
             let spec = match (spec, &memory_log) {
                 (Some(PolicySpec::Model(h)), Some(p)) => Some(PolicySpec::Model(h.with_memory_log(p.clone()))),
                 (s, _) => s,
@@ -538,8 +443,6 @@ pub(crate) fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter
         let reply = match reply {
             Ok(m) => m,
             Err(e) => {
-                // The game never started: leave it for the remaining hosts (020-R4). A requeued
-                // game keeps its hostd id: its board entry goes first (another slot may take it).
                 branch_entry.release();
                 source.requeue(job);
                 return Err(anyhow::Error::from(e).context(format!("hostd {addr} lost")));
@@ -576,7 +479,6 @@ pub(crate) fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter
                 Ok(other) => elog!("[env] ignoring {other:?}"),
                 Err(e) => {
                     dispatch.inflight.games.lock().unwrap().remove(&job.spec.game_id);
-                    // 020-R4: a game in flight on a lost host is Aborted, not silently dropped.
                     let why = format!("{}: {e}", eval::HOSTD_LOST);
                     let ok = record_retry(games, addr, &job, ids, dispatch, JobOutcome::Aborted, Some(why.clone()), 0);
                     report_done(source, &job, ok, JobOutcome::Aborted, Some(&why), None);
@@ -607,10 +509,6 @@ pub(crate) fn worker(addr: &str, source: &dyn JobSource, games: &Mutex<BufWriter
     }
 }
 
-/// A slot worker's [`BranchBoard`] entry for one game: removed when the worker is done with the
-/// game (any path, or [`BoardEntry::release`] before a requeue). A requeued game keeps its hostd id
-/// and another slot may put its own entry there meanwhile: only the entry this guard inserted (the
-/// same `Arc`) is ever removed.
 struct BoardEntry<'a> {
     board: &'a BranchBoard,
     id: u64,
@@ -642,7 +540,6 @@ impl Drop for BoardEntry<'_> {
     }
 }
 
-/// 020-R22 ① ②: the folders the sessions write act logs and state files into.
 fn prepare_branch_dirs(b: Option<&GameBranch>) -> Result<()> {
     for d in b.into_iter().flat_map(|b| [&b.acts_dir, &b.states_dir]).flatten() {
         std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
@@ -650,9 +547,6 @@ fn prepare_branch_dirs(b: Option<&GameBranch>) -> Result<()> {
     Ok(())
 }
 
-/// 021-R3: T0 bots are versioned with the workspace (scenario builds add their tag:
-/// `t0-zerg-rush@<ver>`), OSS bots by the host's VERSION file; model players by checkpoint id
-/// and sampling mode (020-R5).
 pub fn opponent_id(p: &PlayerSpec, build: T0Build, model: Option<&PolicySpec>, ids: &HashMap<String, String>) -> String {
     if let Some(m) = model {
         return m.label();
@@ -669,9 +563,6 @@ pub fn opponent_id(p: &PlayerSpec, build: T0Build, model: Option<&PolicySpec>, i
     }
 }
 
-/// [`record`] tried a few times (games.jsonl may sit on a shared drive, 061). Returns whether it
-/// was written; the caller tells the source either way, so a game handed out is never left in
-/// flight by a failed write.
 #[allow(clippy::too_many_arguments)]
 fn record_retry(games: &Mutex<BufWriter<std::fs::File>>, host: &str, job: &Job, ids: &HashMap<String, String>, dispatch: &Dispatch, outcome: JobOutcome, detail: Option<String>, wall_s: u32) -> bool {
     for attempt in 1..=5 {
@@ -687,8 +578,6 @@ fn record_retry(games: &Mutex<BufWriter<std::fs::File>>, host: &str, job: &Job, 
     false
 }
 
-/// The source hears a game's end; a game whose record could not be written is reported as
-/// stopped, so an evaluation job plays it again under a new id (020-R15 ④ ⑦).
 fn report_done(source: &dyn JobSource, job: &Job, written: bool, outcome: JobOutcome, detail: Option<&str>, replay: Option<Vec<u8>>) {
     if written {
         source.done_with(job, outcome, detail, replay);
@@ -722,21 +611,14 @@ fn record(games: &Mutex<BufWriter<std::fs::File>>, host: &str, job: &Job, ids: &
         infer_host: dispatch.infer.as_ref().map(|t| t.host.clone()),
         backend: dispatch.infer.as_ref().map(|t| t.backend.clone()),
     };
-    // The whole line in one write past the buffer: a failed try leaves nothing buffered that a
-    // later flush would write again.
     let line = format!("{}\n", serde_json::to_string(&rec)?);
     let mut g = games.lock().unwrap();
     g.flush()?;
     g.get_mut().write_all(line.as_bytes())?;
-    // On the shared drive (020-R15) the line must be on the server before the game leaves the
-    // in-flight file: a Linux SMB client keeps appended data in its cache, and another worker (or
-    // this one's next lease period) reading the ledger meanwhile would see the game neither in
-    // flight nor recorded and play it again (2026-10-26 drill: a 258-byte zero gap, one game twice).
     g.get_ref().sync_data()?;
     Ok(())
 }
 
-/// Output directory default for a plan.
 pub fn default_out(plan: &plan::Plan) -> PathBuf {
     PathBuf::from("runs").join(&plan.name)
 }
@@ -745,10 +627,6 @@ pub fn default_out(plan: &plan::Plan) -> PathBuf {
 mod tests {
     use super::*;
 
-    /// Minimal hostd: answers the handshake and capabilities, plays every game for `game_ms`.
-    /// A `flaky` host drops the connection right after starting its first game. `StopGame` ends
-    /// the running game as `Stopped`. Requests are read on their own thread (a timed-out socket
-    /// read leaves a Windows socket in an undefined state).
     pub(crate) fn fake_hostd(flaky: bool, game_ms: u64) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap().to_string();
@@ -779,12 +657,10 @@ mod tests {
                             ControlRequest::StartGame(g) => {
                                 write_msg(&mut w, &ControlResponse::Started { game_id: g.game_id })?;
                                 if flaky {
-                                    // The reader thread holds a clone: close the socket itself.
                                     w.flush()?;
                                     w.get_ref().shutdown(std::net::Shutdown::Both)?;
                                     return Ok(());
                                 }
-                                // Play until the game time passes or a StopGame arrives.
                                 let outcome = match rx.recv_timeout(Duration::from_millis(game_ms)) {
                                     Ok(ControlRequest::StopGame { .. }) => GameOutcome::Stopped,
                                     _ => GameOutcome::Finished,
@@ -803,8 +679,6 @@ mod tests {
 
     #[test]
     fn lost_and_unreachable_hosts_do_not_stop_the_plan_020_r4() {
-        // Port 0 can never accept a connection, so this fails on every OS. (Binding port 0 and
-        // dropping the listener left a free port that a parallel test's fake hostd could reuse.)
         let dead = "127.0.0.1:0".to_string();
         let hosts: Vec<HostEntry> = [dead, fake_hostd(false, 200), fake_hostd(true, 0)].into_iter().map(|addr| HostEntry { addr, max_games: None }).collect();
         let plan: plan::Plan = toml::from_str("name='t'\n[[matchup]]\nmap='both'\ngames=4\np0={kind='t0',race='terran'}\np1={kind='t0',race='terran'}").unwrap();
@@ -820,8 +694,6 @@ mod tests {
         assert_eq!(lines.iter().filter(|g| g["outcome"] == "Finished").count(), 3, "{lines:?}");
     }
 
-    /// 020-R1 / R5: a `save_replay` game's replay comes back from hostd and lands next to
-    /// games.jsonl, whichever host played it.
     #[test]
     fn plan_replays_come_back_from_hostd_020_r1() {
         let hosts = vec![HostEntry { addr: fake_hostd(false, 50), max_games: None }];
@@ -839,8 +711,6 @@ mod tests {
 
     #[test]
     fn no_reachable_host_is_an_error_020_r4() {
-        // Port 0 can never accept a connection, so this fails on every OS. (Binding port 0 and
-        // dropping the listener left a free port that a parallel test's fake hostd could reuse.)
         let dead = "127.0.0.1:0".to_string();
         let dir = std::env::temp_dir().join(format!("uranium-env-test-none-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -849,8 +719,6 @@ mod tests {
         assert!(res.is_err());
     }
 
-    /// 020-R12: a dynamic source decides each game when a slot frees up and hears every outcome;
-    /// `stop_all` ends the game in flight as Stopped and the workers stop asking (042-R10).
     #[test]
     fn dynamic_source_and_stop_all_020_r12() {
         struct Endless {
@@ -892,8 +760,6 @@ mod tests {
         assert_eq!(*src.outcomes.lock().unwrap(), vec![(1, JobOutcome::Stopped)]);
     }
 
-    /// 020-R4: a Finished game with fewer agent sessions than bridge players is recorded as
-    /// Aborted "bridge never connected"; a game whose bridges all connected stays Finished.
     #[test]
     fn bridge_never_connected_is_not_finished_020_r4() {
         let plan: plan::Plan = toml::from_str("name='t'\n[[matchup]]\nmap='both'\ngames=2\np0={kind='t0',race='terran'}\np1={kind='t0',race='terran'}").unwrap();
@@ -901,7 +767,6 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("uranium-env-test-bridge-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let ends = EndBoard::default();
-        // The fake hostd starts no bridges: game 1 as if both sessions said Hello, game 2 one.
         ends.hello(1);
         ends.hello(1);
         ends.hello(2);
@@ -917,12 +782,8 @@ mod tests {
         assert_eq!((ends.connected(1), ends.connected(2)), (0, 0), "reports dropped after the game");
     }
 
-    /// 020-R22: a slot worker puts each game's 051 settings on the board under its hostd id
-    /// before `StartGame` (the act-log folder made) and removes them after the game; a plan
-    /// without the keys puts nothing there and makes no folder (020-R22 ④).
     #[test]
     fn game_branch_on_the_board_020_r22() {
-        /// Records what the board holds for a game when its end is reported (still in the game).
         struct Spy {
             inner: QueueSource,
             board: BranchBoard,
@@ -972,15 +833,11 @@ mod tests {
         }
     }
 
-    /// 020-R22: a requeued game keeps its hostd id. Slot A releases its entry before the requeue
-    /// and slot B (which took the game) puts its own; whatever order the two slots end in, A never
-    /// removes B's entry, and B's own end removes it.
     #[test]
     fn board_entry_requeue_race_020_r22() {
         let board = BranchBoard::default();
         let g = |n| GameBranch { plan_game: n, ..Default::default() };
         let held = |board: &BranchBoard| board.lock().unwrap().get(&7).map(|e| e.plan_game);
-        // A releases before its requeue, then B inserts; A's guard ends after B started.
         let mut a = BoardEntry::insert(&board, 7, Some(g(1)));
         a.release();
         assert_eq!(held(&board), None);
@@ -989,22 +846,18 @@ mod tests {
         assert_eq!(held(&board), Some(2), "A's guard leaves B's entry");
         drop(b);
         assert_eq!(held(&board), None);
-        // B replaced A's entry before A's guard ended (no release on that path).
         let a = BoardEntry::insert(&board, 7, Some(g(1)));
         let b = BoardEntry::insert(&board, 7, Some(g(2)));
         drop(a);
         assert_eq!(held(&board), Some(2));
         drop(b);
         assert_eq!(held(&board), None);
-        // A game without settings touches nothing.
         let b = BoardEntry::insert(&board, 7, Some(g(2)));
         drop(BoardEntry::insert(&board, 7, None));
         assert_eq!(held(&board), Some(2));
         drop(b);
     }
 
-    /// 021-R3 (2026-10-17): scenario T0 builds get their own opponent id, the standard build keeps
-    /// `t0-<race>@<ver>`.
     #[test]
     fn opponent_id_021_r3_separates_t0_builds() {
         use uranium_proto::Race;

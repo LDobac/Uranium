@@ -1,7 +1,3 @@
-//! Reinforcement learning (042, AMB-000-4): the Rust run loop (`uranium_league::run`: league,
-//! games, segment queues, snapshots, checkpoints, 061 locks) drives the PyTorch learner object;
-//! segment batches reach it as numpy lane groups.
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -17,7 +13,6 @@ use uranium_league::trajectory::Segment;
 use crate::agent::Broker;
 use crate::{err, py_error};
 
-/// One RL batch (lanes of segments) handed to the learner's `update`.
 #[pyclass(module = "uranium._core", frozen)]
 pub struct SegmentBatch {
     segs: Vec<Segment>,
@@ -30,53 +25,36 @@ impl SegmentBatch {
         self.segs.len()
     }
 
-    /// Per lane: trained steps (what `group` puts in `trained`), without collating.
     #[getter]
     fn trained(&self) -> Vec<usize> {
         self.segs.iter().map(|s| s.trained()).collect()
     }
 
-    /// Per lane: oldest behaviour version (what `group` puts in `versions`), without collating.
     #[getter]
     fn versions(&self) -> Vec<u64> {
         self.segs.iter().map(|s| s.version()).collect()
     }
 
-    /// Per lane: 042-R16 self-imitation buffer lane's r_win, `None` for a queue lane (buffer
-    /// lanes come last), without collating.
     #[getter]
     fn sil_returns(&self) -> Vec<Option<f32>> {
         self.segs.iter().map(|s| s.sil_return).collect()
     }
 
-    /// Per lane: the segment's steps (the `real` rows of `group` are the first `min(len, t)`,
-    /// the bootstrap step included), without collating (042-R21 ① batch-wide aux divisors).
     #[getter]
     fn real_steps(&self) -> Vec<usize> {
         self.segs.iter().map(|s| s.steps.len()).collect()
     }
 
-    /// Per lane: trained steps with a privileged summary (the `aux_priv` rows `mask > 0 &
-    /// priv_present`, 042-R21 ①), without collating.
     #[getter]
     fn priv_trained(&self) -> Vec<usize> {
         self.segs.iter().map(|s| s.steps.iter().take(s.trained()).filter(|x| x.has_privileged).count()).collect()
     }
 
-    /// Per lane: the 044-R9 `[kl.reference]` key index of its game's enemy lobby race (0 zerg,
-    /// 1 terran, 2 protoss, 3 random; what `group` puts in `ref_race`), without collating.
     #[getter]
     fn ref_races(&self) -> Vec<u8> {
         self.segs.iter().map(|s| uranium_league::batch::ref_race(s.enemy_lobby_race)).collect()
     }
 
-    /// Lanes `start..end` collated for one forward (`uranium_league::batch::group`): the
-    /// observation arrays, the taken actions as labels, `privileged`, `mask`, `behaviour`,
-    /// `rewards` [rows, 4], per lane `terminal`, `trained`, `versions`, `r_value_policy` (r_value
-    /// keeps its policy weight, AMB-042-14), `pseudo_scale` [b, 2] (build / units policy-weight
-    /// multipliers, 033-R11, AMB-042-16), `sil_return` [b] (042-R16 buffer lane's r_win, NaN for
-    /// a queue lane), `ref_race` [b] (044-R9 `[kl.reference]` key index) and `state0` (None = zero
-    /// state, else a list of (shape, float32 array)), plus `b`, `t`, `n`.
     fn group<'py>(&self, py: Python<'py>, start: usize, end: usize, t: usize, max_select: usize) -> PyResult<Bound<'py, PyDict>> {
         if start >= end || end > self.segs.len() {
             return Err(PyValueError::new_err(format!("lanes {start}..{end} of {}", self.segs.len())));
@@ -86,8 +64,6 @@ impl SegmentBatch {
         group_dict(py, g)
     }
 
-    /// `group` of the lanes `lanes` in that order (044-R9: the learner's lane groups by KL
-    /// reference); the same arrays as `group` of a range for the same lanes.
     fn group_lanes<'py>(&self, py: Python<'py>, lanes: Vec<usize>, t: usize, max_select: usize) -> PyResult<Bound<'py, PyDict>> {
         if lanes.is_empty() || lanes.iter().any(|&i| i >= self.segs.len()) {
             return Err(PyValueError::new_err(format!("lanes {lanes:?} of {}", self.segs.len())));
@@ -98,7 +74,6 @@ impl SegmentBatch {
     }
 }
 
-/// The numpy dict of one collated lane group (`SegmentBatch::group`).
 fn group_dict(py: Python<'_>, g: uranium_league::batch::SegmentGroup) -> PyResult<Bound<'_, PyDict>> {
     let d = PyDict::new(py);
     let (r, n) = (g.obs.b, g.obs.n);
@@ -117,7 +92,6 @@ fn group_dict(py: Python<'_>, g: uranium_league::batch::SegmentGroup) -> PyResul
     put!("target_loc", l.target_loc, vec![r]);
     put!("privileged", g.privileged.summary, vec![r, g.privileged.p]);
     put!("mask", g.mask, vec![r]);
-    // 042-R21 ①: real (non-fill) steps and steps with a privileged summary (aux masks).
     put!("real", g.real, vec![r]);
     put!("priv_present", g.priv_present, vec![r]);
     put!("behaviour", g.behaviour, vec![r]);
@@ -148,10 +122,6 @@ fn group_dict(py: Python<'_>, g: uranium_league::batch::SegmentGroup) -> PyResul
     Ok(d)
 }
 
-/// The Python learner object behind [`RlLearners`]: `brokers()`, `version(i)`,
-/// `update(i, batch, weights) -> json`, `push(i)`, `reset_to_bc(i)`, `save(i, dir, train_json)`,
-/// `snapshot_server(dir) -> (Broker, token)`, `snapshot_server_alive(token)`,
-/// `close_snapshot_server(token)`.
 struct PyLearners {
     obj: Py<PyAny>,
     handles: Vec<InferenceHandle>,
@@ -193,9 +163,6 @@ fn broker_handle(b: &Bound<'_, PyAny>) -> PyResult<InferenceHandle> {
     Ok(b.handle())
 }
 
-/// 042: RL with the Rust run loop. `make(config_json, resume_dir)` builds the learner object
-/// (see [`PyLearners`]) after the run lock is taken. Returns "done", or "busy" when the lock is
-/// another host's (exit 75, 061-R5).
 #[pyfunction]
 #[pyo3(signature = (make, run, config, algo = "vtrace", seed = 1, take_over = false, logs = PathBuf::from("runs/rl"), z_table = None, max_updates = 0, max_minutes = 0, max_agent_steps = 0, checkpoint_minutes = 30, fixed_t0 = None))]
 #[allow(clippy::too_many_arguments)]
@@ -243,8 +210,6 @@ pub fn run_rl(
                         let out = snap.bind(py).call_method1("snapshot_server", (dir.to_path_buf(),)).map_err(|e| py_error(py, e))?;
                         let (b, token): (Bound<'_, PyAny>, u64) = out.extract().map_err(|e| py_error(py, e))?;
                         let handle = broker_handle(&b).map_err(|e| py_error(py, e))?;
-                        // 042 스냅샷 추론 서버 (AMB-042-14): this server instance (`token`), not
-                        // whatever serves the folder later: stops its model thread, frees its memory.
                         let (obj, path) = (snap.clone_ref(py), dir.to_path_buf());
                         let close = Box::new(move || {
                             Python::attach(|py| {
@@ -272,8 +237,6 @@ pub fn run_rl(
     }
 }
 
-/// 042 reference targets (`uranium_league::returns`) for the PyTorch learner's tests: V-trace
-/// (vs, pg_adv, rho), one sequence; `values` has T + 1 entries.
 #[pyfunction]
 pub fn vtrace(rewards: Vec<f32>, values: Vec<f32>, log_rho: Vec<f32>, gamma: f32, lam: f32, rho_bar: f32, c_bar: f32) -> PyResult<(Vec<f32>, Vec<f32>, Vec<f32>)> {
     check_seq(&rewards, &values, &log_rho)?;
@@ -281,14 +244,12 @@ pub fn vtrace(rewards: Vec<f32>, values: Vec<f32>, log_rho: Vec<f32>, gamma: f32
     Ok((v.vs, v.pg_adv, v.rho))
 }
 
-/// UPGO advantage (reference, see [`vtrace`]).
 #[pyfunction]
 pub fn upgo(rewards: Vec<f32>, values: Vec<f32>, log_rho: Vec<f32>, gamma: f32, rho_bar: f32) -> PyResult<Vec<f32>> {
     check_seq(&rewards, &values, &log_rho)?;
     Ok(uranium_league::returns::upgo(&uranium_league::returns::Seq { rewards: &rewards, values: &values, log_rho: &log_rho }, gamma, rho_bar))
 }
 
-/// GAE (advantages, returns) (reference, see [`vtrace`]).
 #[pyfunction]
 pub fn gae(rewards: Vec<f32>, values: Vec<f32>, gamma: f32, lam: f32) -> PyResult<(Vec<f32>, Vec<f32>)> {
     let zeros = vec![0.0; rewards.len()];
@@ -303,17 +264,6 @@ fn check_seq(r: &[f32], v: &[f32], l: &[f32]) -> PyResult<()> {
     Ok(())
 }
 
-/// Tests (042): `lanes` segments of `t` synthetic steps (`uranium_league::testkit`), every step
-/// a NoOp with behaviour log-prob 0; lane k is terminal when k is even; rewards: +1 win at the
-/// end, 0.01 * step on the value component. `r_value_off`: lanes whose game gives r_value no
-/// policy weight (`Segment::r_value_policy` false, AMB-042-14). `pseudo_rewards`: also 0.02 *
-/// step on build and -0.015 * step + 0.05 on units; `pseudo_scale`: per lane build / units
-/// policy-weight multipliers (`Segment::pseudo_scale`, 033-R11, AMB-042-16), empty = 1 and 1.
-/// `sil_returns`: per lane `Segment::sil_return` (042-R16 buffer lanes, last), empty = none.
-/// `priv_from`: the first step with a privileged summary (`Step::has_privileged`, 042-R21 ①;
-/// earlier steps have none), 0 = every step. `races`: per lane the enemy lobby race
-/// (`Segment::enemy_lobby_race`, 044-R9) as "zerg" / "terran" / "protoss" / "random" /
-/// "unknown", empty = unknown (the `random` reference).
 #[pyfunction]
 #[pyo3(signature = (lanes, t, r_value_off = Vec::new(), pseudo_rewards = false, pseudo_scale = Vec::new(), sil_returns = Vec::new(), priv_from = 0, races = Vec::new()))]
 #[allow(clippy::too_many_arguments)]
@@ -355,7 +305,6 @@ pub fn test_segments(lanes: usize, t: usize, r_value_off: Vec<usize>, pseudo_rew
     Ok(SegmentBatch { segs })
 }
 
-/// The `config/rl.toml` values as JSON (042-R9).
 #[pyfunction]
 pub fn rl_config(path: PathBuf) -> PyResult<String> {
     let cfg = RlConfig::load(&path).map_err(err)?;
