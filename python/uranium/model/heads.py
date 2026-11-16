@@ -5,8 +5,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from uranium.env import env_choice
 from uranium.model.config import HeadsConfig, InputDims, SpatialConfig
-from uranium.model.layers import GruCell, Linear, Mlp, ResMlp, conv_layout, entropy, env_choice, gumbel_argmax, log_softmax_f32, masked_log_softmax, pick, tempered
+from uranium.model.layers import GruCell, Linear, Mlp, ResMlp, conv_layout, entropy, gumbel_argmax, log_softmax_f32, masked_log_softmax, pick, tempered
 
 HEAD_NAMES = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
 TARGET_UNIT = 1

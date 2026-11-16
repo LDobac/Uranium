@@ -1,9 +1,9 @@
 import torch
 
-from uranium.agent.infer import leaves, rebuild
-from uranium.bc.clip import clip_global_norm
+from uranium.clip import clip_global_norm
 from uranium.device import autocast
 from uranium.model import to_obs
+from uranium.model.state import leaves, rebuild
 from uranium.rl.learner import HEADS, Learner, aux_stats, component_weights, diagnostics, kl_coef, kl_per_head, kl_ref_stats, scaled_kl, sil_settings, sil_stats, value_channels
 
 

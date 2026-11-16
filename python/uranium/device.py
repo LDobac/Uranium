@@ -6,6 +6,8 @@ import time
 
 import torch
 
+from uranium.env import env_choice
+
 BACKENDS = ("cuda", "rocm", "cpu")
 
 
@@ -65,14 +67,10 @@ COMPILE_RNG_MODES = ("eager", "inductor")
 
 
 def compile_graphs(key: str = "URANIUM_COMPILE") -> bool:
-    from uranium.model.layers import env_choice
-
     return env_choice(key, COMPILE_MODES, "off") in ("reduce-overhead", "max-autotune")
 
 
 def compiled(fn, key: str = "URANIUM_COMPILE"):
-    from uranium.model.layers import env_choice
-
     mode = env_choice(key, COMPILE_MODES, "off")
     if mode == "off":
         return fn
@@ -91,8 +89,6 @@ ADAM_IMPLS = ("default", "foreach", "fused", "single")
 
 
 def adam_impl() -> dict:
-    from uranium.model.layers import env_choice
-
     mode = env_choice("URANIUM_ADAM", ADAM_IMPLS, "default")
     return {} if mode == "default" else {"fused": True} if mode == "fused" else {"foreach": mode == "foreach"}
 

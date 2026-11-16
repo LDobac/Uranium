@@ -158,7 +158,6 @@ def rl_main(a) -> int:
     from uranium.bench.rl import OFF, SyntheticSegments, markdown, run_learner
     from uranium.device import configure, resolve
     from uranium.rl.learner import MICRO_LANES_ENV
-    from uranium.rl.run import _no_dropout
 
     backend, device, precision = resolve(a.backend)
     off = tuple(x.strip() for x in a.off.split(",") if x.strip())
@@ -175,7 +174,7 @@ def rl_main(a) -> int:
     lo, hi = (int(x) for x in a.entities.split(":"))
     net = batch = None
     if not a.isolate:
-        net, _ = ckpt.load_model(Path(a.checkpoint), device, adjust=_no_dropout)
+        net, _ = ckpt.load_model(Path(a.checkpoint), device, adjust=ckpt.no_dropout)
         batch = SyntheticSegments(net, cfg["lanes"], cfg["seq_len"], (lo, hi), a.templates, a.seed)
         net = net.cpu()
     env = environment(backend, precision, device) | {"checkpoint": Path(a.checkpoint).name, "lanes": cfg["lanes"], "seq_len": cfg["seq_len"], "entities": a.entities}

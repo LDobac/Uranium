@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from uranium import ckpt
-from uranium.agent.infer import leaves
+from uranium.model.state import leaves
 from uranium.model import UraniumNet, action_columns
 from uranium.model.config import VariantConfig
 from uranium.model.variants import core_skip_linear
@@ -256,7 +256,7 @@ def test_checkpoint_round_trip_032_ac13(core, arch, tmp_path):
 @torch.no_grad()
 def test_graphed_act_matches_eager_core_skip_032_ac13():
     from uranium.agent.infer import GraphedAct
-    from uranium.bc.trainer import new_net_config
+    from uranium.model.config import new_net_config
     from uranium.bench.inputs import random_obs
     from uranium.device import autocast, resolve
 

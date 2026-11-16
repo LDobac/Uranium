@@ -181,9 +181,9 @@ def save_ckpt(d: Path, net: UraniumNet) -> Path:
 
 def refs_of(table: dict, bc_dir: Path):
     from uranium import ckpt
-    from uranium.rl.run import _no_dropout, kl_references
+    from uranium.rl.run import kl_references
 
-    bc, _ = ckpt.load_model(bc_dir, CPU, adjust=_no_dropout)
+    bc, _ = ckpt.load_model(bc_dir, CPU, adjust=ckpt.no_dropout)
     cfg = rl_cfg(2)
     cfg["kl"]["reference"] = table
     models, race_ref, record = kl_references(cfg, str(bc_dir), bc, CPU)

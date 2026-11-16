@@ -274,8 +274,8 @@ def random_checkpoint(a) -> int:
     import torch
 
     from uranium import ckpt
-    from uranium.bc.trainer import new_net_config
     from uranium.model import UraniumNet
+    from uranium.model.config import new_net_config
 
     torch.manual_seed(a.seed)
     cfg = new_net_config(a.core, a.win_open)

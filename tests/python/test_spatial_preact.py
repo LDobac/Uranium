@@ -153,7 +153,7 @@ def test_monitor_inner_point_under_preact_032_r25():
 
 @pytest.mark.parametrize("name", CONFIGS)
 def test_step_matches_sequence_032_ac13(name):
-    from uranium.agent.infer import leaves
+    from uranium.model.state import leaves
 
     cfg, b, t, obs, labels, _ = tiny(CONFIGS[name])
     net = net_of(cfg)

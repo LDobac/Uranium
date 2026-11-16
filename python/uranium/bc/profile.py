@@ -23,10 +23,11 @@ def main(a) -> int:
     import torch
 
     from uranium import _core
-    from uranium.bc.trainer import BcTrainer, new_net_config
+    from uranium.bc.trainer import BcTrainer
     from uranium.bench.realbc import profile_update
     from uranium.device import configure, resolve
     from uranium.model import UraniumNet
+    from uranium.model.config import model_variant, new_net_config
 
     os.environ["URANIUM_BC_PROFILE"] = "1"
     backend, device, precision = resolve(a.backend)
@@ -35,8 +36,6 @@ def main(a) -> int:
     cfg = json.loads(cfg_json)
     dirs = _core.dataset_dirs(a.dataset, a.shards)
     feeder = _core.Feeder(a.config, dirs, stage="s1", synthetic_maps=a.synthetic_maps)
-    from uranium.bc.run import model_variant
-
     net = UraniumNet(new_net_config(a.core, cfg["value"].get("win_open") is not None, model_variant(a.config)))
     chunk = int(os.environ.get("URANIUM_BC_ENTITY_CHUNK", "0") or 0)
     t = BcTrainer(cfg, net, device, precision, chunk)

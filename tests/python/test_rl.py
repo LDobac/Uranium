@@ -156,7 +156,7 @@ class PhasedOnPolicy(OnPolicy):
         self.state = (cs, (torch.randn(h_o.shape, generator=g), torch.randn(c_o.shape, generator=g), torch.randn(h_sum.shape, generator=g) * torch.tensor([[1.0], [0.0]]), torch.tensor([3.0, 0.0])))
 
     def group(self, start, end, t, max_select):
-        from uranium.agent.infer import leaves
+        from uranium.model.state import leaves
         from uranium.rl.learner import state0_of
 
         g = self.batch.group(start, end, t, max_select)

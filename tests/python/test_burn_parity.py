@@ -6,7 +6,7 @@ import pytest
 import torch
 from safetensors.torch import load_file
 
-from uranium.bc.clip import clip_global_norm
+from uranium.clip import clip_global_norm
 from uranium.model import UraniumNet, UraniumNetConfig, action_columns, to_labels, to_obs
 from uranium.model.burn import burn_to_torch, torch_to_burn
 

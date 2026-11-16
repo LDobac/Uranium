@@ -517,7 +517,7 @@ def test_model_seed_sets_a_new_nets_weights_041_r24(tiny_config, tmp_path):
     a, b, c = new(1), new(1), new(2)
     first = lambda n: next(n.parameters())  # noqa: E731
     assert torch.equal(first(a), first(b)) and not torch.equal(first(a), first(c))
-    from uranium.bc.trainer import new_net_config
+    from uranium.model.config import new_net_config
 
     torch.manual_seed(1)
     torch.randn(17)

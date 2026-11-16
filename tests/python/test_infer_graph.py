@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from uranium.agent.infer import GraphedAct
-from uranium.bc.trainer import new_net_config
+from uranium.model.config import new_net_config
 from uranium.bench.inputs import random_obs
 from uranium.device import autocast, resolve
 from uranium.model import UraniumNet, action_columns

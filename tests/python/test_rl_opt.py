@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from uranium import _core
-from uranium.agent.infer import leaves
+from uranium.model.state import leaves
 from uranium.model import UraniumNet, UraniumNetConfig, action_columns, input_dims, to_labels, to_obs
 from uranium.model.config import VariantConfig
 from uranium.rl import reference, returns

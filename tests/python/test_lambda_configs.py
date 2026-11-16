@@ -12,7 +12,7 @@ import rush_check_plan as gen
 def test_lambda_run_configs_041_r24():
     import tomllib
 
-    from uranium.bc.run import model_variant
+    from uranium.model.config import model_variant
 
     root = Path(__file__).resolve().parents[2] / "config"
     ref = json.loads(_core.bc_config(str(root / "bc.toml"), "s1")[0])
@@ -49,7 +49,7 @@ def _bc(path, stage):
 
 
 def test_main_lineage_configs_041_r29():
-    from uranium.bc.run import model_variant
+    from uranium.model.config import model_variant
 
     root = Path(__file__).resolve().parents[2] / "config"
     for new, old, stages in (("bc_m2.toml", "bc.toml", ("s1", "s2")), ("bc_m2_e2.toml", "bc_e2.toml", ("s1",))):
@@ -83,7 +83,7 @@ _M2_MIX = tuple(f"bc_m2_mix_e{e}.toml" for e in range(1, 8))
 
 
 def test_m2_mix_e1_aux_041_r29():
-    from uranium.bc.run import model_variant
+    from uranium.model.config import model_variant
 
     root = Path(__file__).resolve().parents[2] / "config"
     for name in _M2_MIX:
@@ -149,7 +149,7 @@ _M2_DAGGER = {
 
 @pytest.mark.parametrize("rnd", sorted(_M2_DAGGER))
 def test_m2_dagger_config_041_r29(tmp_path, rnd):
-    from uranium.bc.run import model_variant
+    from uranium.model.config import model_variant
 
     seed, before, may_differ, ck1_round = _M2_DAGGER[rnd]
     seed_apart = {"data.seed"} if ck1_round != rnd else set()
@@ -224,7 +224,7 @@ _SOURCE_FRACTIONS = {"data.subsample.fraction_by_source.distill"}
 
 
 def test_m2_distill_d1_config_044_r5(tmp_path):
-    from uranium.bc.run import model_variant
+    from uranium.model.config import model_variant
 
     root = Path(__file__).resolve().parents[2] / "config"
     p = root / "bc_m2_distill_d1.toml"
@@ -269,7 +269,7 @@ def test_m2_distill_d1_config_044_r5(tmp_path):
 
 
 def test_m2_teacher_t1_config_044_r8(tmp_path):
-    from uranium.bc.run import model_variant
+    from uranium.model.config import model_variant
 
     root = Path(__file__).resolve().parents[2] / "config"
     p = root / "bc_m2_teacher_t1.toml"

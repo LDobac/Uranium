@@ -226,3 +226,23 @@ def input_dims() -> InputDims:
         actions=d["actions"], entity_cont=d["entity_cont"], spatial_channels=d["spatial"], map_size=d["map"], scalar=d["scalar"],
         z_units=d["z_units"], caps=d["caps"], loc_classes=d["loc_classes"], privileged=d["privileged"],
     )
+
+
+CORES = {"lstm": "Lstm", "gtrxl": "Gtrxl"}
+
+
+def new_net_config(core: str, win_open: bool, variant: VariantConfig | None = None) -> UraniumNetConfig:
+    cfg = UraniumNetConfig()
+    cfg.input = input_dims()
+    cfg.core.kind = CORES[core]
+    cfg.value.win_open = win_open
+    if variant is not None:
+        cfg.variant = variant
+    return cfg
+
+
+def model_variant(config: str) -> VariantConfig:
+    import tomllib
+
+    with open(config, "rb") as f:
+        return VariantConfig.from_table(tomllib.load(f).get("model"))

@@ -204,7 +204,7 @@ def test_empty_entity_set_gives_zero_attention_032_r21():
 
 @pytest.mark.parametrize("name", WITH)
 def test_bypass_step_matches_sequence_032_ac13(name):
-    from uranium.agent.infer import leaves
+    from uranium.model.state import leaves
 
     cfg, b, t, obs, labels, _ = tiny_b(on(WITH[name]))
     net = perturb(net_of(cfg))
@@ -280,7 +280,7 @@ def test_bypass_checkpoint_round_trip_032_ac13(name, tmp_path):
 @torch.no_grad()
 def test_graphed_act_matches_eager_bypass():
     from uranium.agent.infer import GraphedAct
-    from uranium.bc.trainer import new_net_config
+    from uranium.model.config import new_net_config
     from uranium.bench.inputs import random_obs
     from uranium.device import autocast, resolve
 
@@ -292,7 +292,7 @@ def test_graphed_act_matches_eager_bypass():
     graphed = GraphedAct(net.act, dev, prec)
     exact = torch.version.hip is None
     close = (lambda a, b: torch.equal(a, b)) if exact else (lambda a, b: torch.allclose(a.float(), b.float(), atol=1e-5, rtol=1e-5))
-    from uranium.agent.infer import leaves
+    from uranium.model.state import leaves
 
     obs = random_obs(4, 128, net.cfg.input, dev, torch.Generator().manual_seed(1), valid=119)
     row1 = obs["entity_mask"][1].clone()

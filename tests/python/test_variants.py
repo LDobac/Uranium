@@ -8,7 +8,7 @@ import torch
 from safetensors.torch import load_file
 
 from uranium import ckpt
-from uranium.bc.run import model_variant
+from uranium.model.config import model_variant
 from uranium.bc.trainer import BcTrainer
 from uranium.model import UraniumNet, UraniumNetConfig, action_columns, to_labels, to_obs
 from uranium.model.config import VariantConfig
@@ -128,7 +128,7 @@ def test_step_matches_sequence_032_ac11(name):
             s = out["state"]
             values.append(out["value"])
     assert torch.allclose(seq["value"].view(b, t, -1), torch.stack(values, 1), atol=1e-5)
-    from uranium.agent.infer import leaves
+    from uranium.model.state import leaves
 
     for x, y in zip(leaves(seq["state"]), leaves(s)):
         assert x.dtype == y.dtype and torch.allclose(x.float(), y.float(), atol=1e-5)
@@ -326,7 +326,7 @@ def test_outer_segment_must_divide_seq_len():
 
 
 def state_after(net, obs, b: int, t: int, counts) -> tuple:
-    from uranium.agent.infer import leaves, rebuild
+    from uranium.model.state import leaves, rebuild
 
     s = net.init_state(b)
     snaps = [s]
@@ -360,7 +360,7 @@ def per_decision(net, obs, labels, s0, b: int, t: int):
 @pytest.mark.parametrize("name", ["outer", "all"])
 @pytest.mark.parametrize("counts", [(1, 2), (3, 0), (5, 1)])
 def test_phased_matches_per_decision_032_ac11(name, counts, core):
-    from uranium.agent.infer import leaves
+    from uranium.model.state import leaves
 
     cfg, b, t, obs, labels, _ = tiny(VARIANTS[name], FIX.parent / core)
     net = net_of(cfg)
@@ -383,7 +383,7 @@ def test_phased_matches_per_decision_032_ac11(name, counts, core):
 @pytest.mark.parametrize("name", ["outer", "all"])
 @pytest.mark.parametrize("counts", [(0, 0), (2, 4)])
 def test_phased_zero_phase_matches_bc_path_032_ac11(name, counts):
-    from uranium.agent.infer import leaves
+    from uranium.model.state import leaves
 
     cfg, b, t, obs, labels, _ = tiny(VARIANTS[name])
     net = net_of(cfg)
@@ -402,7 +402,7 @@ def test_phased_zero_phase_matches_bc_path_032_ac11(name, counts):
 def test_fused_entity_attention_with_tokens(monkeypatch):
     from test_kernels import kernel_or_skip, rel
 
-    from uranium.bc.trainer import new_net_config
+    from uranium.model.config import new_net_config
     from uranium.bench.inputs import random_obs
 
     kernel_or_skip()
@@ -434,8 +434,9 @@ def test_fused_entity_attention_with_tokens(monkeypatch):
 @pytest.mark.gpu
 @torch.no_grad()
 def test_graphed_act_matches_eager_variant():
-    from uranium.agent.infer import GraphedAct, leaves
-    from uranium.bc.trainer import new_net_config
+    from uranium.agent.infer import GraphedAct
+    from uranium.model.state import leaves
+    from uranium.model.config import new_net_config
     from uranium.bench.inputs import random_obs
     from uranium.device import autocast, resolve
 

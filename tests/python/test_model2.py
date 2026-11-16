@@ -205,7 +205,7 @@ def test_zero_hooks_keep_outputs_032_ac13(name):
 
 @pytest.mark.parametrize("name", ["pool", "outer", "all"])
 def test_hooks_step_matches_sequence_032_ac13(name):
-    from uranium.agent.infer import leaves
+    from uranium.model.state import leaves
 
     cfg, b, t, obs, labels, _ = tiny(VARIANTS[name])
     net = with_hooks(cfg, zero=False)
@@ -232,7 +232,7 @@ def test_hooks_step_matches_sequence_032_ac13(name):
 
 @pytest.mark.parametrize("phased", [False, True])
 def test_core_skip_leaves_recurrent_and_outer_state_032_r23(phased):
-    from uranium.agent.infer import leaves
+    from uranium.model.state import leaves
 
     cfg, b, t, obs, labels, _ = tiny(ALL_ARCH)
     ref = net_of(cfg).eval()

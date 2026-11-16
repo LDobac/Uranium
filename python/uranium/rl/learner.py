@@ -9,14 +9,14 @@ from concurrent.futures import ThreadPoolExecutor
 
 import torch
 
-from uranium.agent.infer import leaves, rebuild
-from uranium.bc.clip import clip_global_norm
+from uranium.clip import clip_global_norm
 from uranium.device import adam_impl, autocast
 from uranium.model import to_obs
 from uranium.model.auxiliary import jepa_mean, jepa_moments, jepa_std, jepa_sums, priv_sum
 from uranium.model.config import AUX_JEPA_SLOTS, check_aux
 from uranium.model.monitor import SPEC_COLUMNS, ReluMonitor, channel_counts_of, packed, relu_stats, spatial_alarm, spatial_due, spatial_every
 from uranium.model.net import LABEL_KEYS, OBS_KEYS, phase_split, stage, to_device, trim_entity_pad
+from uranium.model.state import leaves, rebuild
 from uranium.rl.returns import gae_valid, upgo_ratio, vtrace_ratio
 
 HEADS = ("action", "delay", "queued", "selected", "target_unit", "target_loc")

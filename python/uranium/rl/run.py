@@ -43,7 +43,7 @@ class Learners:
 
         self.device, self.precision = device, precision
         self.max_batch, self.max_wait_ms = max_batch, max_wait_ms
-        bc, _ = ckpt.load_model(Path(bc_dir), device, adjust=_no_dropout)
+        bc, _ = ckpt.load_model(Path(bc_dir), device, adjust=ckpt.no_dropout)
         refs, race_ref, self.kl_reference = kl_references(cfg, bc_dir, bc, device)
         self.learners: list = []
         self.servers: list = []
@@ -152,7 +152,7 @@ def start_policies(bc_dir: str, bc, init: str | None, resume: str | None, device
             print(f"[rl] resuming {resume}: --init ignored (042, AMB-042-13)", file=sys.stderr, flush=True)
         for name in AGENTS:
             d = Path(resume) / ckpt.AGENTS_DIR / name
-            net, meta = ckpt.load_model(d, device, adjust=_no_dropout)
+            net, meta = ckpt.load_model(d, device, adjust=ckpt.no_dropout)
             optim = d if (d / ckpt.optim_file(ckpt.OPTIM_MAIN)).is_file() else None
             out.append((net, int(meta["train"].get("update", 0)), optim, meta["train"].get(START_KEY)))
         return out
@@ -204,9 +204,9 @@ def kl_references(cfg: dict, bc_dir: str, bc, device) -> tuple[list, list | None
             continue
         d = reference_dir(path)
         meta = ckpt.read_meta(d)
-        key = model_key(d, _no_dropout(type(bc.cfg).from_dict(meta["config"])))
+        key = model_key(d, ckpt.no_dropout(type(bc.cfg).from_dict(meta["config"])))
         if key not in keys:
-            net, _ = ckpt.load_model(d, device, adjust=_no_dropout)
+            net, _ = ckpt.load_model(d, device, adjust=ckpt.no_dropout)
             same_model(bc.cfg, net.cfg, f"[kl.reference] {race} = {path}")
             keys[key] = len(models) + 1
             names[keys[key]] = f"{path} (sha256 {key[0][:12]})"
@@ -240,7 +240,7 @@ def load_init(init: str, bc_cfg, device) -> tuple:
     from uranium import ckpt
 
     d = init_agent_dir(init)
-    net, meta = ckpt.load_model(d, device, adjust=_no_dropout)
+    net, meta = ckpt.load_model(d, device, adjust=ckpt.no_dropout)
     same_model(bc_cfg, net.cfg, f"--init {init}")
     start = {"from": "init", "path": str(init), "abs_path": str(Path(init).resolve()), "update": meta["train"].get("update")}
     state = d.parent.parent / STATE_FILE
@@ -267,11 +267,6 @@ def _n_max() -> int:
     from uranium import _core
 
     return json.loads(_core.feature_dims())["n_max"]
-
-
-def _no_dropout(c):
-    c.entity.dropout = 0.0
-    return c
 
 
 def _copy(net):

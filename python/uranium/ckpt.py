@@ -68,6 +68,11 @@ def read_meta(dir: Path) -> dict:
     return meta
 
 
+def no_dropout(cfg: UraniumNetConfig) -> UraniumNetConfig:
+    cfg.entity.dropout = 0.0
+    return cfg
+
+
 def load_model(dir: Path, device="cpu", adjust=None) -> tuple[UraniumNet, dict]:
     meta = read_meta(dir)
     cfg = UraniumNetConfig.from_dict(meta["config"])

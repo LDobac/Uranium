@@ -25,15 +25,14 @@ def profile_update(trainer, batch, lr: float, step: int, device: torch.device, n
 
 def run_group(a, group: int, device: torch.device, precision: str, log=print) -> dict:
     from uranium import _core
-    from uranium.bc.trainer import BcTrainer, new_net_config
+    from uranium.bc.trainer import BcTrainer
     from uranium.model import UraniumNet
+    from uranium.model.config import model_variant, new_net_config
 
     cfg = copy.deepcopy(json.loads(_core.bc_config(a.config, a.stage)[0]))
     cfg["micro_lanes"] = group
     dirs = _core.dataset_dirs(a.dataset, a.shards)
     feeder = _core.Feeder(a.config, dirs, stage=a.stage, synthetic_maps=a.synthetic_maps)
-    from uranium.bc.run import model_variant
-
     torch.manual_seed(a.seed)
     net = UraniumNet(new_net_config(a.core, cfg["value"].get("win_open") is not None, model_variant(a.config)))
     chunk = int(os.environ.get("URANIUM_BC_ENTITY_CHUNK", "0") or 0)

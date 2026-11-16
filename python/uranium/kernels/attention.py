@@ -2,8 +2,9 @@ import math
 
 import torch
 
-from uranium.model.layers import MASKED
+from uranium.kernels import load
 
+MASKED = -1e9
 HEAD_DIM = 32
 
 
@@ -15,8 +16,6 @@ def reference(q, k, v, bucket, table, key_ok, scale: float):
 
 
 def _mod():
-    from uranium.kernels import load
-
     return load("attn_bias")
 
 

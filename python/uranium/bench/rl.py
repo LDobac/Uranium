@@ -7,10 +7,10 @@ import time
 import numpy as np
 import torch
 
-from uranium.agent.infer import leaves
 from uranium.bench.inputs import random_obs
 from uranium.bench.timing import peak_gib, peak_rss_gib, reset_peak, sync
 from uranium.model.net import ENTITY_KEYS, LABEL_KEYS, OBS_KEYS
+from uranium.model.state import leaves
 
 WEIGHTS = [1.0, 0.3, 0.3, 0.05]
 STAT_KEYS = ("loss", "policy", "value", "kl", "win_open", "rho_mean", "adv_mean", "grad_norm", "kl_heads", "entropy_heads", "aux_priv", "aux_jepa")

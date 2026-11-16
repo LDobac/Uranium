@@ -44,6 +44,7 @@ def main(a) -> int:
 
     from uranium.bc.trainer import BcTrainer
     from uranium.device import configure, resolve
+    from uranium.model.config import model_variant
 
     backend, device, precision = resolve(a.backend)
     configure(backend, train=True)
@@ -57,15 +58,6 @@ def main(a) -> int:
         backend=backend, precision=precision, core=a.core, maps_dir=a.maps_dir, synthetic_maps=a.synthetic_maps,
     )
     return {"busy": EXIT_BUSY, "yielded": EXIT_YIELDED}.get(end, 0)
-
-
-def model_variant(config: str):
-    import tomllib
-
-    from uranium.model.config import VariantConfig
-
-    with open(config, "rb") as f:
-        return VariantConfig.from_table(tomllib.load(f).get("model"))
 
 
 def _make(cls, core, device, precision, variant, cfg_json, start, dir, entity_chunk):

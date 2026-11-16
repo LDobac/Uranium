@@ -10,11 +10,11 @@ from pathlib import Path
 import torch
 
 from uranium import ckpt, kernels
-from uranium.bc.clip import clip_global_norm
+from uranium.clip import clip_global_norm
 from uranium.device import adam_impl, autocast, compile_graphs, compiled, impl_settings, mark_dynamic
-from uranium.model import UraniumNet, UraniumNetConfig, input_dims, to_obs
+from uranium.model import UraniumNet, to_obs
 from uranium.model.auxiliary import jepa_mean, jepa_moments, jepa_std, jepa_sums, priv_sum
-from uranium.model.config import AUX_JEPA_SLOTS, VariantConfig, check_aux
+from uranium.model.config import AUX_JEPA_SLOTS, CORES, VariantConfig, check_aux, new_net_config
 from uranium.model.monitor import SPEC_COLUMNS, ReluMonitor, channel_counts_of, packed, relu_stats, spatial_alarm, spatial_due, spatial_every
 from uranium.model.net import stage, to_device, trim_entity_pad
 
@@ -24,7 +24,6 @@ AUX_PARTS = ("aux_priv", "aux_jepa", *(f"aux_jepa_slot{i + 1}" for i in range(AU
 VALUE_WIN = 0
 ADAM_BETAS = (0.9, 0.999)
 ADAM_EPS = 1e-5
-CORES = {"lstm": "Lstm", "gtrxl": "Gtrxl"}
 
 
 def dropout_seed(seed: int, step: int, group: int) -> int:
@@ -36,16 +35,6 @@ def dropout_seed(seed: int, step: int, group: int) -> int:
 def bc_aux_counts(batch, t: int, ks: list) -> dict:
     steps = [min(int(x), t) for x in batch.lane_steps()]
     return {"real": sum(steps), "priv": sum(int(x) for x in batch.lane_priv_steps(t)), "pairs": [sum(max(s - k, 0) for s in steps) for k in ks]}
-
-
-def new_net_config(core: str, win_open: bool, variant: VariantConfig | None = None) -> UraniumNetConfig:
-    cfg = UraniumNetConfig()
-    cfg.input = input_dims()
-    cfg.core.kind = CORES[core]
-    cfg.value.win_open = win_open
-    if variant is not None:
-        cfg.variant = variant
-    return cfg
 
 
 class BcTrainer:

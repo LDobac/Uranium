@@ -38,6 +38,13 @@ def load(path: Path | None = None) -> Path | None:
     return path
 
 
+def env_choice(key: str, choices: tuple, default: str) -> str:
+    v = os.environ.get(key, "") or default
+    if v not in choices:
+        raise ValueError(f"{key}={v!r}: expected one of {choices}")
+    return v
+
+
 M_TRIM_THRESHOLD = -1
 M_MMAP_THRESHOLD = -3
 M_ARENA_MAX = -8

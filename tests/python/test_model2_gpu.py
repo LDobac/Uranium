@@ -6,8 +6,10 @@ import pytest
 import torch
 
 from uranium import _core
-from uranium.agent.infer import GraphedAct, leaves, rebuild
-from uranium.bc.trainer import BcTrainer, new_net_config
+from uranium.agent.infer import GraphedAct
+from uranium.model.state import leaves, rebuild
+from uranium.bc.trainer import BcTrainer
+from uranium.model.config import new_net_config
 from uranium.bench.inputs import random_obs
 from uranium.device import IMPL_DEFAULTS, TRAIN_DEFAULTS, autocast, compiled, resolve
 from uranium.model import UraniumNet, action_columns
@@ -19,7 +21,7 @@ ALL_ON = VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=32, b
 
 
 def test_all_on_matches_the_lambda_base_config_041_r24():
-    from uranium.bc.run import model_variant
+    from uranium.model.config import model_variant
 
     assert model_variant(str(ROOT / "config" / "bc_m2_lambda_base.toml")) == ALL_ON
 

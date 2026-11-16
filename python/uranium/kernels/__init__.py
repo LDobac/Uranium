@@ -6,6 +6,9 @@ from pathlib import Path
 
 import torch
 
+from uranium.env import env_choice
+
+ENTITY_ATTN_MODES = ("torch", "fused")
 _HERE = Path(__file__).resolve().parent
 _LOADED: dict = {}
 
@@ -38,9 +41,6 @@ def msvc_env() -> None:
 def warm(device) -> None:
     if torch.device(device).type != "cuda":
         return
-    from uranium.model.encoders import ENTITY_ATTN_MODES
-    from uranium.model.layers import env_choice
-
     if env_choice("URANIUM_ENTITY_ATTN", ENTITY_ATTN_MODES, "torch") == "fused":
         load("attn_bias")
 

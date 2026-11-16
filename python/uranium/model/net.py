@@ -5,11 +5,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from uranium.env import env_choice
 from uranium.model.config import UraniumNetConfig
 from uranium.model.core import build_core
 from uranium.model.encoders import EntityEncoder, ScalarEncoder, SpatialEncoder
 from uranium.model.heads import HEAD_NAMES, LOC_ROW_MODES, ActionTable, Heads, location_rows
-from uranium.model.layers import CHANNELS_LAST_MODES, env_choice
+from uranium.model.layers import CHANNELS_LAST_MODES
 from uranium.model.value import ValueHeads
 from uranium.model.variants import Variants
 

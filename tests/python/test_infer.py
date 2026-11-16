@@ -170,7 +170,8 @@ def test_set_state_refuses_a_mismatch_051_r4(tmp_path):
 
 
 def test_restore_order_in_one_work_051_r4(tmp_path):
-    from uranium.agent.infer import leaves, rebuild, select_rows, state_to_host
+    from uranium.agent.infer import state_to_host
+    from uranium.model.state import leaves, rebuild, select_rows
     from uranium.bench.inputs import random_obs
 
     class FakeBroker:
