@@ -4,17 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from eval_helpers import LIN, build, dump, make_job, row, val
+from eval_helpers import LIN, build, dump, make_job, no_dotenv, row, val  # noqa: F401
 
 import distill_verdict as dv
 import eval_common as ec
 import protocol
 import regression_gate as rg
-
-
-@pytest.fixture(autouse=True)
-def no_dotenv(monkeypatch):
-    monkeypatch.setattr(ec, "load_env", lambda: None)
 
 
 def tvz(won, missing=0, n=32):

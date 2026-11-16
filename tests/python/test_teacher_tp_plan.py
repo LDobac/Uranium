@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from eval_helpers import ROOT
+from eval_helpers import ROOT, opponent
 
 import rush_check_plan as rcp
 
@@ -17,10 +17,6 @@ MAPS = {"fighting_spirit", "circuit_breaker"}
 T0 = {("t0", "standard", "protoss"), ("t0", "standard", "terran")}
 T1 = {("oss", "ualbertabot", "protoss"), ("oss", "stardust", "protoss"), ("oss", "ualbertabot", "terran"), ("oss", "iron", "terran")}
 TRACKED = {True: PLANS / "teacher_tp_check.toml", False: PLANS / "teacher_botgen_tp.toml"}
-
-
-def _opponent(p1: dict) -> tuple[str, str, str]:
-    return (p1["kind"], p1.get("build", "standard") if p1["kind"] == "t0" else p1["name"], p1["race"])
 
 
 def _load(p: Path) -> dict:
@@ -43,7 +39,7 @@ def test_tp_plan_composition_022_r11_r12(check):
         assert m["map"] in MAPS and m["p0"] == TEACHER
         assert m.get("p1_random_ratio", 0) == 0 and m["p1"]["race"] in ("protoss", "terran")
         assert "build" not in m["p1"], "T0 standard builds only"
-        games[(_opponent(m["p1"]), m["map"])] += m["games"]
+        games[(opponent(m["p1"]), m["map"])] += m["games"]
     assert games == Counter({**{(o, mp): t0 for o in T0 for mp in MAPS}, **{(o, mp): t1 for o in T1 for mp in MAPS}})
     assert sum(games.values()) == total == len(plan["seeds"])
     text, seeds = rcp.render_tp(check, plan["name"])
@@ -109,7 +105,7 @@ def test_tp_botgen_topup_composition_044_r8(tmp_path, extra):
     for m in plan["matchup"]:
         assert m["map"] in MAPS and m["p0"] == TEACHER and m["games"] > 0
         assert m.get("p1_random_ratio", 0) == 0 and m["p1"]["race"] in ("protoss", "terran") and "build" not in m["p1"]
-        games[(_opponent(m["p1"]), m["map"])] += m["games"]
+        games[(opponent(m["p1"]), m["map"])] += m["games"]
     want = Counter()
     for race, letter in (("protoss", "P"), ("terran", "T")):
         n = extra.get(letter, 0)

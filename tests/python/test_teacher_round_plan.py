@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from eval_helpers import ROOT
+from eval_helpers import ROOT, opponent
 from uranium import _core
 
 import rush_check_plan as rcp
@@ -24,10 +24,6 @@ FULL = {
     ("oss", "ualbertabot", "terran"): 30,
     ("oss", "iron", "terran"): 30,
 }
-
-
-def _opponent(p1: dict) -> tuple[str, str, str]:
-    return (p1["kind"], p1.get("build", "standard") if p1["kind"] == "t0" else p1["name"], p1["race"])
 
 
 def _load(p: Path) -> dict:
@@ -51,7 +47,7 @@ def test_teacher_round_plan_composition_044_r8(tmp_path):
         assert m["p0"] == {"kind": "model", "checkpoint": CKPT, "sample": "stochastic"}
         assert m.get("p1_random_ratio", 0) == 0 and m["p1"]["race"] in ("protoss", "terran"), "no Random, no Zerg"
         assert "build" not in m["p1"], "T0 standard builds only"
-        games[(_opponent(m["p1"]), m["map"])] += m["games"]
+        games[(opponent(m["p1"]), m["map"])] += m["games"]
     assert games == Counter({(o, mp): g // 2 for o, g in FULL.items() for mp in MAPS})
     assert sum(games.values()) == 300 == len(plan["seeds"])
     assert _core.plan_models(str(out)) == [(CKPT, "stochastic")]

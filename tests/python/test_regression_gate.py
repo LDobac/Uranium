@@ -3,15 +3,10 @@ from pathlib import Path
 
 import pytest
 
-from eval_helpers import LIN, build, dump, make_job, row, val
+from eval_helpers import LIN, build, dump, make_job, no_dotenv, row, val  # noqa: F401
 
 import eval_common as ec
 import regression_gate as rg
-
-
-@pytest.fixture(autouse=True)
-def no_dotenv(monkeypatch):
-    monkeypatch.setattr(ec, "load_env", lambda: None)
 
 
 def results(checks, check, race, metric):

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from eval_helpers import ROOT
+from eval_helpers import ROOT, no_dotenv  # noqa: F401
 
 import branch_collect as bcol
 import branch_common as bc
@@ -32,11 +32,6 @@ GAME_KEYS = {"job", "stage", "plan_game", "hostd_game", "attempt", "replay", "ho
 
 def cond(seed: int) -> str:
     return "hit" if seed % 2 else "miss"
-
-
-@pytest.fixture(autouse=True)
-def no_dotenv(monkeypatch):
-    monkeypatch.setattr(ec, "load_env", lambda: None)
 
 
 def jsonl(path: Path, rows) -> None:

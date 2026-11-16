@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from eval_helpers import ROOT
+from eval_helpers import ROOT, opponent
 from uranium import _core
 
 import rush_check_plan as rcp
@@ -39,10 +39,6 @@ def _write(tmp_path: Path, rnd: int, half: bool) -> tuple[Path, dict]:
     return out, tomllib.loads(out.read_text(encoding="utf-8"))
 
 
-def _opponent(p1: dict) -> tuple[str, str, str]:
-    return (p1["kind"], p1.get("build", "standard") if p1["kind"] == "t0" else p1["name"], p1["race"])
-
-
 @pytest.mark.parametrize("half", [False, True])
 def test_distill_plan_composition_044_r1(tmp_path, half):
     _, plan = _write(tmp_path, 1, half)
@@ -56,7 +52,7 @@ def test_distill_plan_composition_044_r1(tmp_path, half):
         assert m["p0"] == {"kind": "model", "checkpoint": CKPT, "sample": "stochastic"}
         assert m.get("p1_random_ratio", 0) == 0 and m["p1"]["race"] in ("protoss", "terran")
         assert "build" not in m["p1"], "T0 standard builds only (no E-Regression scenario build)"
-        games[(_opponent(m["p1"]), m["map"])] += m["games"]
+        games[(opponent(m["p1"]), m["map"])] += m["games"]
     assert games == Counter({(o, mp): g // div for o, g in FULL.items() for mp in MAPS})
     total = sum(games.values())
     assert total == 600 // div == len(plan["seeds"])
@@ -110,7 +106,7 @@ def test_distill_topup_composition_044_r5(tmp_path, extra):
     for m in plan["matchup"]:
         assert m["p0"] == {"kind": "model", "checkpoint": CKPT, "sample": "stochastic"}
         assert m.get("p1_random_ratio", 0) == 0 and "build" not in m["p1"]
-        games[(_opponent(m["p1"]), m["map"])] += m["games"]
+        games[(opponent(m["p1"]), m["map"])] += m["games"]
     assert games == Counter({(o, mp): g * extra // 600 for o, g in FULL.items() for mp in MAPS})
     assert sum(games.values()) == extra == len(plan["seeds"])
     assert _core.plan_models(str(out)) == [(CKPT, "stochastic")]
