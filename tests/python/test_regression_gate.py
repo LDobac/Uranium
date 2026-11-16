@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from eval_helpers import LIN, build, dump, make_job, no_dotenv, row, val  # noqa: F401
+from eval_helpers import LIN, build, dump, make_job, row, val
 
 import eval_common as ec
 import regression_gate as rg

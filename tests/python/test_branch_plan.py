@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from eval_helpers import ROOT, no_dotenv  # noqa: F401
+from eval_helpers import ROOT
 
 import branch_collect as bcol
 import branch_common as bc

@@ -86,6 +86,7 @@ def test_conditions_frozen_050_ac5():
         assert plan["name"] == protocol.NAME and protocol.conditions_sha256(plan) == FROZEN[pid]
 
 
+@pytest.mark.host_env
 def test_shared_drive_plans_050_ac5():
     ec.load_env()
     shared = os.environ.get("URANIUM_SHARED_DIR")

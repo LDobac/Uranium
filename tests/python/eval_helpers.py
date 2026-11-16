@@ -2,8 +2,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[2]
 TOOLS_EVAL = str(ROOT / "tools" / "eval")
 if TOOLS_EVAL not in sys.path:
@@ -183,8 +181,3 @@ def val(top1: dict, nll: dict, bunker: dict | None = None) -> dict:
 
 def opponent(p1: dict) -> tuple[str, str, str]:
     return (p1["kind"], p1.get("build", "standard") if p1["kind"] == "t0" else p1["name"], p1["race"])
-
-
-@pytest.fixture(autouse=True)
-def no_dotenv(monkeypatch):
-    monkeypatch.setattr(ec, "load_env", lambda: None)

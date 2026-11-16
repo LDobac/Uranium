@@ -24,4 +24,5 @@ testpaths = ["tests/python"]
 markers = [
     "gpu: needs a CUDA or ROCm device (032-AC1, AC8)",
     "data: needs the real BC shards (URANIUM_TEST_SHARDS) and map precomputes",
+    "host_env: reads the host .env on purpose (every other test runs without it)",
 ]

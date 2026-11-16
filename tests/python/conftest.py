@@ -49,6 +49,12 @@ def environ_restored():
 
 
 @pytest.fixture(autouse=True)
+def no_host_env(request, monkeypatch):
+    if request.node.get_closest_marker("host_env") is None:
+        monkeypatch.setenv("URANIUM_ENV_FILE", os.devnull)
+
+
+@pytest.fixture(autouse=True)
 def torch_determinism_restored():
     import torch
 

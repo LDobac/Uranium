@@ -308,7 +308,6 @@ def test_link_tree_refuses_links_and_trees_inside_the_source_041_r27_044_r8(tmp_
 
 def test_orig_macro_parts_checked_before_scoring_041_r27_044_r8(tmp_path, monkeypatch):
     src = botgen(tmp_path, monkeypatch, (*pa.ORIG, *ADDED), listed=(*pa.ORIG, ADDED[0]))
-    monkeypatch.setattr(pa.ec, "load_env", lambda: None)
     cls = tmp_path / "classes.json"
     cls.write_text(json.dumps({"x": "rush"}), encoding="utf-8")
     out_json = tmp_path / "out.json"
