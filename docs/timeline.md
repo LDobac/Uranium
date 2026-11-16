@@ -690,3 +690,5 @@
 - 12:25 — 결정·구조 변경(사용자 결정): 문서를 `docs/`로 통합(spec·리포트 날짜 접두사), 코드·config 주석 제거, 장비별 작업 파일·게임 데이터를 `local/`로 이동, timeline 축약, 커밋 메시지 형식 도입 ([AGENTS.md](../AGENTS.md))
 - 12:41 — 결정(사용자): 에이전트 규칙을 `AGENTS.md`로 옮겨 다른 에이전트도 읽게 함, `CLAUDE.md`는 `@AGENTS.md` 참조만 ([AGENTS.md](../AGENTS.md), [001-R10](spec/2026_10_15_22_24_001-system-architecture.md))
 - 14:30 — 결정(사용자): 공용 드라이브 끝난 자료 작업 단위별 압축 보관, 검증 후 원본 삭제 ([061](spec/2026_10_15_22_24_061-shared-storage.md) R17)
+- 13:10~15:45 — 구조 리팩토링(사용자 지시, 동작 변경 없음): crate 의존 정리(store→replay·train→league·scripted↔replay 제거), 미사용 Rust 학습 코드 제거, 큰 파일 6개·T0 봇 crate 모듈 분리, Python 패키지 import·중복 통합, 테스트 helper 통합, 참조 없는 plan·도구 삭제 (커밋 `96adee5`~`82f4c4e`, [001](spec/2026_10_15_22_24_001-system-architecture.md))
+- 15:45 — 수정: `uranium-replay`·`uranium-train`·`python -m uranium`이 `URANIUM_ENV_FILE`을 따르고 Python `.env` 큰따옴표 값 해석을 Rust 로더와 맞춤, 순서에 따라 실패하던 테스트 6건 해결 ([001-R9](spec/2026_10_15_22_24_001-system-architecture.md), [commands.md](guide/commands.md#1-설치설정))
