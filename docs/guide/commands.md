@@ -308,12 +308,16 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
   - 저장된 레이블·관측: `uranium-replay granularity <shard 폴더…> --matchup TvZ --stage S2 --families fighting_spirit,circuit_breaker --lo 2400 --out <out>/human.jsonl.gz`
   - 리플레이 자체 명령([040](../spec/2026_10_15_22_24_040-replay-dataset.md) 레이블러, 5분 기준·디싱크 검사 없음, `.env` 런처·브리지 필요): `uranium-replay granularity --replays --list <리플레이 목록> --source <태그> --lo 2400 --out <out>/<태그>.jsonl.gz`
   - 표: `python tools/eval/granularity.py --human … --teacher <dump> <plan> --model <dump> <plan> <job 폴더> <stage 번호> --out <md> --json <json>`(2:30~4:30 지연 분포·12기 포화율·같은 프레임 연타·SCV 미세 조작·명령 빈도, venv python, plan 판은 시드 조건으로 이른/늦은).
+  - 결과·12기 포화·사람 러시 규칙·막음 구분: [model2](../report/plan/2026_11_09_22_18_model2.md) 3절. 지연 = 다음 명령 레이블까지 프레임, 연타 = 앞 레이블 뒤 2프레임 이내, 명령 빈도 = 창 안 1,000프레임당 레이블.
+  - SCV 미세 조작: 본진 근처 적 병력이 있는 5초 구간마다 전투 명령(move·attack·smart·repair·hold·stop·patrol, 중립 유닛 우클릭은 채취) 받은 SCV 수, 벙커 완성 → 첫 탑승(Load_Unit·마린 벙커 우클릭), 첫 피격 → 첫 수리(Repair_Unit·SCV 벙커 우클릭, 창 안 없으면 censored).
+  - plan 판: "이른" = 상대 첫 목표가 우리 본진인 seed 조건([050-R6](../spec/2026_10_15_22_24_050-evaluation.md)). 리플레이 이름 `g<n>`으로 seed(`seeds[n − 1]`, matchup 순)에 맞춤. `--opponents` 기본 `t0 zerg_rush,ualbertabot12poollings`(빈 값 = 전부).
 
 ## 6. 리플레이
 `uranium-replay`([spec 040](../spec/2026_10_15_22_24_040-replay-dataset.md)):
 - `inspect <rep>`, `convert <rep> <out>`(SC:R → 1.16.1, 맵 CHK 정규화, [spec 013](../spec/2026_10_15_22_24_013-version-mapping.md)), `check-screp <dir> --screp <exe>`([040-AC1](../spec/2026_10_15_22_24_040-replay-dataset.md)), `ophist <dir>`, `play <rep>`(재생·디싱크 신호), `mapgen`, `roundtrip <dir>`([013-R7](../spec/2026_10_15_22_24_013-version-mapping.md)).
 - `shard-stats <dir>`: 하위 폴더 포함. GameInfo `is_enemy`가 정확히 1명이 아닌 게임이나 같은 (리플레이, 시점) 게임이 두 번([040-R20](../spec/2026_10_15_22_24_040-replay-dataset.md))이면 실패.
 - `cmddump <rep>...`: 리플레이마다 명령 스트림 JSON 한 줄(`tools/eval/tables.py`용).
+  - 형식 `{"rep", "frames", "players": [{"id", "race"}], "cmds": [[frame, player, opcode, payload hex]]}`.
 - `opsdump <rep>... [--perspective <slot>] [--until-frame 14400] [--stride 8] [--field-check]`([052-R7](../spec/2026_11_13_17_19_052-ops-metrics.md)): OpenBW 재생으로 우리 시점(세션 행 `slot`, 없으면 테란 플레이어마다)에서 8프레임마다 [052](../spec/2026_11_13_17_19_052-ops-metrics.md) `ops`·`rush_combat` 집계.
   - 시점마다 JSON 한 줄 `{"rep", "perspective", "frames", "ops", "rush_combat"}`, 실패면 둘 다 null + `error`. 10:00과 러시 전투 창 끝 중 늦은 쪽에서 끊음.
   - `--field-check`([052-AC2](../spec/2026_11_13_17_19_052-ops-metrics.md) 리허설): `field_check` = `depleted`(창 안 우리 SCV가 반납한 필드의 초기량 − 마지막 잔량 합), `fields`, `unknown_fields`, `scvs`(창 안 마지막 관측 SCV 수), `scvs_max`, `carrying`(마지막 관측 미네랄 운반 중), `lost_cargo`(운반 중 죽은 SCV마다 8). 기준 |`depleted` − 8 × `carrying` − `lost_cargo` − `mined`| ≤ 8 × `scvs_max`.
@@ -337,6 +341,7 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
 - 체크포인트([061-R10](../spec/2026_10_15_22_24_061-shared-storage.md)): `model.safetensors`(f32, 정책 버전 = 이 파일 SHA-256), `optim-main.safetensors`, `meta.json`, `train_state.json`, `run_ident.json`, `config/`.
 - `--core` 기본 `gtrxl`([032-R17](../spec/2026_10_15_22_24_032-model-architecture.md); `bc`·`bc-profile`·`random-checkpoint`, 큐 `core`). LSTM 체크포인트는 `--core lstm`(코어가 다르면 읽을 때 오류).
 - `--dataset replays/shards/<src>`는 manifest 검증, `--shards`는 안 함. 하위 폴더까지 읽음([041-R9](../spec/2026_10_15_22_24_041-imitation-learning.md)).
+- `URANIUM_SHARED_LOCAL=1`([061-R12](../spec/2026_10_15_22_24_061-shared-storage.md)): `--dataset`을 캐시로 받지 않고 공용 경로에서 manifest 검증 후 바로 읽음(`uranium-train` `--dataset`도 같음).
 - 폴더 배치([041-R13](../spec/2026_10_15_22_24_041-imitation-learning.md)): 출처 폴더(`<파트>/shard_*`) 또는 출처들의 상위 폴더(`<출처>/<파트>/shard_*`)만. 다른 깊이(출처 바로 아래 shard, 더 깊음, 혼합)는 파일 이름과 함께 오류. 파일 순서 키 `<출처>/<파트>/<파일>` → `--dataset`/`--shards`, 적은 순서, 출처별/상위 폴더, 저장 위치·대소문자와 무관하게 게임 순서·첫 배치·지문 같음. 같은 출처·파일 두 번(대소문자·링크만 다른 경로 포함)은 실패.
 - `--run`([061](../spec/2026_10_15_22_24_061-shared-storage.md) run, `checkpoints/<id>/`): 잠금·heartbeat·push, 시작 시 `LATEST`에서 재개(데이터 위치 포함). 저장은 `checkpoint_every` update 또는 `checkpoint_minutes`마다, Ctrl+C는 저장 후 종료.
 - 다른 PC 잠금(유효·만료 모두)이면 종료 코드 75. `--take-over`는 상대 PC가 멈춘 것을 확인한 뒤에만: 즉시 인수·경고, 상대가 살아 있으면 다음 heartbeat에서 push 없이 멈춤([061-R5](../spec/2026_10_15_22_24_061-shared-storage.md)).
@@ -383,6 +388,8 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
 - `uranium-train`(모두 `--dataset`/`--shards`):
   - `bc-epoch`: 1 epoch update 수(게임 시작 NoOp 스텝 포함).
   - `split-stats`: `splits`(소스·맵 그룹·분할별 게임 수), `sources`(소스별 `privileged` 없는 게임·스텝 수·비율, `result_source`별 게임 수 [040-R8](../spec/2026_10_15_22_24_040-replay-dataset.md)).
+  - `eval-games --split <train|val|test> --games <n> [--seed 1] [--target-maps]`: `bc-eval --split <s> --games <n> --seed <k>`가 채점하는 게임, 게임마다 JSON 한 줄(키 `map_family`·`matchup`·`perspective_slot`·`replay_sha256`·`split`·`src`, 이름순). `--target-maps` = 그 분할의 대상 맵 게임만 같은 방식으로 섞음. 훑기 캐시만 읽음(스텝 안 읽음).
+  - `feed-digest [--stage s1|s2] [--batches 3] [--group 1] [--pack]`: 첫 BC batch 레인 그룹별 SHA-256, batch마다 JSON 한 줄. `python -m uranium feed-digest --shards <dir>`(같은 인자)와 같아야 함(Rust·Python 공급 일치, [AMB-000-4](../spec/README.md)).
   - `label-check [--games N]`([034-AC3](../spec/2026_10_15_22_24_034-action-table.md)): `target_causes`(대상 없음·위치 거절 원인: 이전 목격 여부·경과 프레임, 건물 종류별 막는 조건, 실제로 지어졌는지), `per_game`(게임별 무효 수).
   - `manifest <dir> [--verify]`([061-R7](../spec/2026_10_15_22_24_061-shared-storage.md)): 만들 때 하위 shard를 끝까지 디코드, 실패하면 나열하고 쓰지 않음([040-R17](../spec/2026_10_15_22_24_040-replay-dataset.md)).
 
