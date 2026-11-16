@@ -324,7 +324,7 @@ fn parse_regex(s: &str) -> std::result::Result<regex::Regex, String> {
 }
 
 fn main() -> Result<()> {
-    uranium_env::dotenv::load_env();
+    uranium_store::dotenv::load_env();
     match Cli::parse().cmd {
         Cmd::ZTable { shards, out, all_maps } => {
             use std::io::Write as _;

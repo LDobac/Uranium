@@ -1415,7 +1415,7 @@ mod tests {
     #[test]
     #[ignore = "needs OpenBW (.env) and URANIUM_TEST_DAGGER_REP"]
     fn relabel_is_deterministic_and_from_the_teacher_041_r22() {
-        uranium_env::dotenv::load_env();
+        uranium_store::dotenv::load_env();
         let path = std::env::var("URANIUM_TEST_DAGGER_REP").expect("URANIUM_TEST_DAGGER_REP");
         let bytes = std::fs::read(&path).unwrap();
         let rep = crate::parse(&bytes).unwrap();
@@ -1463,7 +1463,7 @@ mod tests {
     }
 
     fn teacher_game_agreement(var: &str, build: uranium_scripted::T0Build, until_frame: u32) {
-        uranium_env::dotenv::load_env();
+        uranium_store::dotenv::load_env();
         let path = std::env::var(var).expect(var);
         let rep = crate::parse(&std::fs::read(&path).unwrap()).unwrap();
         let map_hash = hex(&Sha256::digest(&rep.map));

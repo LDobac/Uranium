@@ -8,6 +8,7 @@ macro_rules! elog {
 
 pub mod ckpt;
 pub mod disk;
+pub mod dotenv;
 pub mod share_io;
 pub mod storage;
 

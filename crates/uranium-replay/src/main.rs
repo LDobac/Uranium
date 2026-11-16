@@ -266,7 +266,7 @@ fn reps(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    uranium_env::dotenv::load_env();
+    uranium_store::dotenv::load_env();
     match Cli::parse().cmd {
         Cmd::Mapgen { maps } => {
             for m in &maps {

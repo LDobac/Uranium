@@ -5,6 +5,7 @@ use anyhow::{Result, anyhow, ensure};
 use uranium_data::collate::{HostObsBatch, obs_batch};
 use uranium_data::table::ActionColumns;
 use uranium_env::features::Observation;
+use uranium_store::elog;
 
 use crate::infer::{ActReply, HEADS, HostState, InferOptions, InferenceHandle, Req, SampleMode, host_action};
 

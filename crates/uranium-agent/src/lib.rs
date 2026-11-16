@@ -1,10 +1,3 @@
-macro_rules! elog {
-    ($($t:tt)*) => {{
-        use std::io::Write as _;
-        let _ = writeln!(std::io::stderr(), $($t)*);
-    }};
-}
-
 pub mod broker;
 pub mod infer;
 pub mod model_policy;
@@ -23,6 +16,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use uranium_proto::*;
+use uranium_store::elog;
 
 use crate::infer::InferenceHandle;
 use crate::model_policy::{LearnerHook, ModelPolicy, ModelStats};

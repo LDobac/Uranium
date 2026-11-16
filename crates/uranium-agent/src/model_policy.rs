@@ -21,6 +21,7 @@ use uranium_env::branch::{
 };
 use crate::infer::HostState;
 use uranium_proto::{Act, GameInfo, RawFrame};
+use uranium_store::elog;
 
 use crate::infer::{InferSession, InferenceHandle, SampleMode};
 
