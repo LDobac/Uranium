@@ -1,4 +1,6 @@
+import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -108,3 +110,54 @@ def test_unknown_escape_stops_the_load_like_the_rust_loader_001_r9(tmp_path, mon
     got = loaded(tmp_path, monkeypatch, ["K=before", 'K="C:\\Users\\name"', "K=after"])
     assert list(got.values()) == ["before", None, None]
     assert "line 2" in capsys.readouterr().err
+
+
+CASES = json.loads((Path(__file__).resolve().parents[1] / "fixtures" / "dotenv_cases.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
+def test_case_table_shared_with_the_rust_loader_001_r9(case):
+    environ = dict(case["env"])
+    stop = env.read(case["text"].encode("utf-8"), environ)
+    assert environ == {**case["want"], **case["env"]}
+    assert (stop[0] if stop else None) == case["error_line"]
+    assert set(case["want"]) <= set(case["keys"]) | set(case["env"])
+
+
+def test_case_table_has_every_line_the_old_parser_read_differently_001_r9():
+    texts = {c["text"] for c in CASES}
+    for line in ("DK=C:\\data\\sc", "DK=a\\ b", "DK=$DA", "DK=${DA}y", 'DK="${DA} z"', "DK=a b", "DK=a\t# note", 'DK="a"b', "DK='a'b'", 'DK="abc', "DK", "DK-X=1"):
+        assert line + "\n" in texts, line
+
+
+def test_error_warning_names_file_and_line_without_the_value_001_r9(tmp_path, monkeypatch, capsys):
+    keys = [f"URANIUM_TEST_ENV_STOP_{i}" for i in range(3)]
+    for k in keys:
+        monkeypatch.delenv(k, raising=False)
+    f = tmp_path / "stop.env"
+    f.write_bytes(f"{keys[0]}=before\n{keys[1]}=hiddenvalue\\q\n{keys[2]}=after\n".encode())
+    assert env.load(f) == f
+    err = capsys.readouterr().err
+    assert str(f) in err and "line 2" in err and "hiddenvalue" not in err
+    assert [os.environ.get(k) for k in keys] == ["before", None, None]
+
+
+def test_non_utf8_line_stops_the_load_001_r9(tmp_path, monkeypatch, capsys):
+    keys = [f"URANIUM_TEST_ENV_BYTES_{i}" for i in range(3)]
+    for k in keys:
+        monkeypatch.delenv(k, raising=False)
+    f = tmp_path / "bytes.env"
+    f.write_bytes(f"{keys[0]}=before\n{keys[1]}=".encode() + b"\xff\n" + f"{keys[2]}=after\n".encode())
+    env.load(f)
+    assert "line 2" in capsys.readouterr().err
+    assert [os.environ.get(k) for k in keys] == ["before", None, None]
+
+
+def test_substitution_reads_the_process_environment_001_r9(tmp_path, monkeypatch):
+    monkeypatch.setenv("URANIUMTESTENVSUB", "process")
+    monkeypatch.delenv("URANIUM_TEST_ENV_SUB_OUT", raising=False)
+    monkeypatch.delenv("URANIUMTESTENVEARLIER", raising=False)
+    f = tmp_path / "sub.env"
+    f.write_bytes(b"URANIUMTESTENVEARLIER=file\nURANIUM_TEST_ENV_SUB_OUT=$URANIUMTESTENVSUB/${URANIUMTESTENVEARLIER}\n")
+    env.load(f)
+    assert os.environ["URANIUM_TEST_ENV_SUB_OUT"] == "process/file"

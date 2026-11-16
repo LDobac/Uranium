@@ -1,0 +1,1361 @@
+[
+ {
+  "name": "plain",
+  "text": "DK=1\n",
+  "env": {},
+  "want": {
+   "DK": "1"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "double quoted",
+  "text": "DK=\"2\"\n",
+  "env": {},
+  "want": {
+   "DK": "2"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "single quoted",
+  "text": "DK='3'\n",
+  "env": {},
+  "want": {
+   "DK": "3"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "single quoted blank",
+  "text": "DK='fo ur'\n",
+  "env": {},
+  "want": {
+   "DK": "fo ur"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "double quoted blank",
+  "text": "DK=\"fi ve\"\n",
+  "env": {},
+  "want": {
+   "DK": "fi ve"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "empty",
+  "text": "DK=\n",
+  "env": {},
+  "want": {
+   "DK": ""
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "blanks only",
+  "text": "DK=     \n",
+  "env": {},
+  "want": {
+   "DK": ""
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "blanks then comment",
+  "text": "DK=   # foo\n",
+  "env": {},
+  "want": {
+   "DK": ""
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "comment right after equal",
+  "text": "DK=#foo\n",
+  "env": {},
+  "want": {
+   "DK": ""
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "blank before equal",
+  "text": "DK =\"whitespace before =\"\n",
+  "env": {},
+  "want": {
+   "DK": "whitespace before ="
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "blank after equal",
+  "text": "DK=    \"whitespace after =\"\n",
+  "env": {},
+  "want": {
+   "DK": "whitespace after ="
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "tabs around equal",
+  "text": "DK\t=\tv\n",
+  "env": {},
+  "want": {
+   "DK": "v"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "leading and trailing blanks",
+  "text": "  DK = v  \n",
+  "env": {},
+  "want": {
+   "DK": "v"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "export prefix",
+  "text": "export   DK=1\n",
+  "env": {},
+  "want": {
+   "DK": "1"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "comment after blank",
+  "text": "DK=v # comment\n",
+  "env": {},
+  "want": {
+   "DK": "v"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "hash without blank is value",
+  "text": "DK=v#not-a-comment\n",
+  "env": {},
+  "want": {
+   "DK": "v#not-a-comment"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "hash in double quotes",
+  "text": "DK=\"a # b\"\n",
+  "env": {},
+  "want": {
+   "DK": "a # b"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "hash in single quotes",
+  "text": "DK='a # b'\n",
+  "env": {},
+  "want": {
+   "DK": "a # b"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "comment after double quote",
+  "text": "DK=\"a\" # comment\n",
+  "env": {},
+  "want": {
+   "DK": "a"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "tab comment after double quote",
+  "text": "DK=\"a\"\t# comment\n",
+  "env": {},
+  "want": {
+   "DK": "a"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "comment after single quote",
+  "text": "DK='a'   # comment\n",
+  "env": {},
+  "want": {
+   "DK": "a"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "hash right after quote is value",
+  "text": "DK=\"a\"#c\n",
+  "env": {},
+  "want": {
+   "DK": "a#c"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "apostrophe in double quotes",
+  "text": "DK=\"it's\"\n",
+  "env": {},
+  "want": {
+   "DK": "it's"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "double quote in single quotes",
+  "text": "DK='say \"hi\"'\n",
+  "env": {},
+  "want": {
+   "DK": "say \"hi\""
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "tab in double quotes",
+  "text": "DK=\"tab\there\"\n",
+  "env": {},
+  "want": {
+   "DK": "tab\there"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "escaped backslash then n",
+  "text": "DK=\"a\\\\n\"\n",
+  "env": {},
+  "want": {
+   "DK": "a\\n"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "escape backslash",
+  "text": "DK=\"a\\\\b\"\n",
+  "env": {},
+  "want": {
+   "DK": "a\\b"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "escape apostrophe",
+  "text": "DK=\"a\\'b\"\n",
+  "env": {},
+  "want": {
+   "DK": "a'b"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "escape double quote",
+  "text": "DK=\"a\\\"b\"\n",
+  "env": {},
+  "want": {
+   "DK": "a\"b"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "escape dollar",
+  "text": "DK=\"a\\$b\"\n",
+  "env": {},
+  "want": {
+   "DK": "a$b"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "escape blank",
+  "text": "DK=\"a\\ b\"\n",
+  "env": {},
+  "want": {
+   "DK": "a b"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "escape n is a newline",
+  "text": "DK=\"a\\nb\"\n",
+  "env": {},
+  "want": {
+   "DK": "a\nb"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "unknown escape in double quotes",
+  "text": "DK=\"C:\\Users\\name\"\n",
+  "env": {},
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "unquoted windows path",
+  "text": "DK=C:\\data\\sc\n",
+  "env": {},
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "unquoted escaped blank",
+  "text": "DK=a\\ b\n",
+  "env": {},
+  "want": {
+   "DK": "a b"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "unquoted escaped dollar",
+  "text": "DK=\\$DA\n",
+  "env": {
+   "DA": "x"
+  },
+  "want": {
+   "DK": "$DA"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "unquoted trailing backslash is dropped",
+  "text": "DK=a\\\n",
+  "env": {},
+  "want": {
+   "DK": "a"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "single quoted windows path",
+  "text": "DK='C:\\Users\\name\\new\\table'\n",
+  "env": {},
+  "want": {
+   "DK": "C:\\Users\\name\\new\\table"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "single quoted unc path",
+  "text": "DK='\\\\server\\share\\$x'\n",
+  "env": {},
+  "want": {
+   "DK": "\\\\server\\share\\$x"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "backslash apostrophe does not escape in single quotes",
+  "text": "DK='a\\'b'\n",
+  "env": {},
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "unquoted inner blank",
+  "text": "DK=a b\n",
+  "env": {},
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "unquoted inner blank before comment",
+  "text": "DK=a b # c\n",
+  "env": {},
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "tab then comment",
+  "text": "DK=a\t# note\n",
+  "env": {},
+  "want": {
+   "DK": "a"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "tab then comment without blank",
+  "text": "DK=a\t#note\n",
+  "env": {},
+  "want": {
+   "DK": "a"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "text after closing double quote joins",
+  "text": "DK=\"a\"b\n",
+  "env": {},
+  "want": {
+   "DK": "ab"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "quotes inside a word join",
+  "text": "DK=a\"b c\"d\n",
+  "env": {},
+  "want": {
+   "DK": "ab cd"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "blank after closing single quote then text",
+  "text": "DK='a' b\n",
+  "env": {},
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "unterminated double quote",
+  "text": "DK=\"abc\n",
+  "env": {},
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "unterminated single quote",
+  "text": "DK='abc\n",
+  "env": {},
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "apostrophe reopens a quote",
+  "text": "DK='a'b'\n",
+  "env": {},
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "no equal",
+  "text": "DK\n",
+  "env": {},
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "no equal with value",
+  "text": "DK value\n",
+  "env": {},
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "no key",
+  "text": "=v\n",
+  "env": {},
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "export without equal",
+  "text": "export DK\n",
+  "env": {},
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "unicode unquoted",
+  "text": "DK=\ud55c\uae00\uac12\n",
+  "env": {},
+  "want": {
+   "DK": "\ud55c\uae00\uac12"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "unicode double quoted",
+  "text": "DK=\"C:/\ub370\uc774\ud130/\ub9f5 \ud3f4\ub354\"\n",
+  "env": {},
+  "want": {
+   "DK": "C:/\ub370\uc774\ud130/\ub9f5 \ud3f4\ub354"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "unicode single quoted",
+  "text": "DK='D:\\\ub9ac\ud50c\ub808\uc774\\\ud55c\uae00'\n",
+  "env": {},
+  "want": {
+   "DK": "D:\\\ub9ac\ud50c\ub808\uc774\\\ud55c\uae00"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "no-break space inside is kept",
+  "text": "DK=a\u00a0b\n",
+  "env": {},
+  "want": {
+   "DK": "a\u00a0b"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "trailing no-break space is trimmed",
+  "text": "DK=a\u00a0\n",
+  "env": {},
+  "want": {
+   "DK": "a"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "no-break space starts a comment",
+  "text": "DK=a\u00a0#c\n",
+  "env": {},
+  "want": {
+   "DK": "a"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "substitution unquoted",
+  "text": "DK=$DA\n",
+  "env": {
+   "DA": "x"
+  },
+  "want": {
+   "DK": "x"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "substitution braces",
+  "text": "DK=${DA}y\n",
+  "env": {
+   "DA": "x"
+  },
+  "want": {
+   "DK": "xy"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "substitution ends at a non-alphanumeric",
+  "text": "DK=$DA/y\n",
+  "env": {
+   "DA": "x"
+  },
+  "want": {
+   "DK": "x/y"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "substitution name has no underscore",
+  "text": "DK=$DA_B\n",
+  "env": {
+   "DA": "x"
+  },
+  "want": {
+   "DK": "x_B"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "substitution twice",
+  "text": "DK=$DA$DA\n",
+  "env": {
+   "DA": "x"
+  },
+  "want": {
+   "DK": "xx"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "substitution of an unset name is empty",
+  "text": "DK=a$DBUNSET\n",
+  "env": {},
+  "want": {
+   "DK": "a"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "substitution braces in double quotes",
+  "text": "DK=\"${DA} z\"\n",
+  "env": {
+   "DA": "x"
+  },
+  "want": {
+   "DK": "x z"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "substitution in double quotes before a blank",
+  "text": "DK=\"$DA z\"\n",
+  "env": {
+   "DA": "x"
+  },
+  "want": {
+   "DK": "x z"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "substitution right before the closing double quote",
+  "text": "DK=\"$DA\"\n",
+  "env": {
+   "DA": "x"
+  },
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "no substitution in single quotes",
+  "text": "DK='$DA'\n",
+  "env": {
+   "DA": "x"
+  },
+  "want": {
+   "DK": "$DA"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "blank after an unquoted substitution is kept",
+  "text": "DK=$DA b\n",
+  "env": {
+   "DA": "x"
+  },
+  "want": {
+   "DK": "x b"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "lone dollar",
+  "text": "DK=a$\n",
+  "env": {},
+  "want": {
+   "DK": "a"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "double dollar",
+  "text": "DK=$$\n",
+  "env": {},
+  "want": {
+   "DK": ""
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "lone dollar in double quotes",
+  "text": "DK=\"$\"\n",
+  "env": {},
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "empty braces",
+  "text": "DK=a${}b\n",
+  "env": {},
+  "want": {
+   "DK": "ab"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "unterminated braces",
+  "text": "DK=${DA\n",
+  "env": {
+   "DA": "x"
+  },
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "braces take any name",
+  "text": "DK=${D-A}z\n",
+  "env": {
+   "DA": "x"
+  },
+  "want": {
+   "DK": "z"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "key with a dot",
+  "text": "DK.X=1\n",
+  "env": {},
+  "want": {
+   "DK.X": "1"
+  },
+  "error_line": null,
+  "keys": [
+   "DK.X"
+  ]
+ },
+ {
+  "name": "key with a dash",
+  "text": "DK-X=1\n",
+  "env": {},
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "DK",
+   "DK-X"
+  ]
+ },
+ {
+  "name": "key starting with a digit",
+  "text": "1DK=1\n",
+  "env": {},
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "1DK"
+  ]
+ },
+ {
+  "name": "export as a key",
+  "text": "export=1\n",
+  "env": {},
+  "want": {
+   "export": "1"
+  },
+  "error_line": null,
+  "keys": [
+   "export"
+  ]
+ },
+ {
+  "name": "export as a key with blanks",
+  "text": "export  = 1\n",
+  "env": {},
+  "want": {
+   "export": "1"
+  },
+  "error_line": null,
+  "keys": [
+   "export"
+  ]
+ },
+ {
+  "name": "comment lines",
+  "text": "# c\n  # it's\n#DK=1\nDA=2\n",
+  "env": {},
+  "want": {
+   "DA": "2"
+  },
+  "error_line": null,
+  "keys": [
+   "DK",
+   "DA"
+  ]
+ },
+ {
+  "name": "blank lines",
+  "text": "\n   \nDA=2\n\n",
+  "env": {},
+  "want": {
+   "DA": "2"
+  },
+  "error_line": null,
+  "keys": [
+   "DA"
+  ]
+ },
+ {
+  "name": "comment with an apostrophe after a value",
+  "text": "DK=v # it's\nDA=2\n",
+  "env": {},
+  "want": {
+   "DK": "v",
+   "DA": "2"
+  },
+  "error_line": null,
+  "keys": [
+   "DK",
+   "DA"
+  ]
+ },
+ {
+  "name": "hash without blank then an apostrophe swallows the rest",
+  "text": "DK=v# it's\nDA=2\n",
+  "env": {},
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "DK",
+   "DA"
+  ]
+ },
+ {
+  "name": "the first value of a repeated key wins",
+  "text": "DK=1\nDK=2\n",
+  "env": {},
+  "want": {
+   "DK": "1"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "the process value wins",
+  "text": "DK=1\nDA=2\n",
+  "env": {
+   "DK": "p"
+  },
+  "want": {
+   "DK": "p",
+   "DA": "2"
+  },
+  "error_line": null,
+  "keys": [
+   "DK",
+   "DA"
+  ]
+ },
+ {
+  "name": "substitution sees an earlier line",
+  "text": "DA=1\nDK=$DA\n",
+  "env": {},
+  "want": {
+   "DA": "1",
+   "DK": "1"
+  },
+  "error_line": null,
+  "keys": [
+   "DK",
+   "DA"
+  ]
+ },
+ {
+  "name": "substitution prefers the process value",
+  "text": "DA=1\nDK=$DA\n",
+  "env": {
+   "DA": "p"
+  },
+  "want": {
+   "DA": "p",
+   "DK": "p"
+  },
+  "error_line": null,
+  "keys": [
+   "DK",
+   "DA"
+  ]
+ },
+ {
+  "name": "substitution does not see a later line",
+  "text": "DK=$DA\nDA=1\n",
+  "env": {},
+  "want": {
+   "DK": "",
+   "DA": "1"
+  },
+  "error_line": null,
+  "keys": [
+   "DK",
+   "DA"
+  ]
+ },
+ {
+  "name": "substitution of an earlier empty line",
+  "text": "DA=\nDK=a${DA}b\n",
+  "env": {},
+  "want": {
+   "DA": "",
+   "DK": "ab"
+  },
+  "error_line": null,
+  "keys": [
+   "DK",
+   "DA"
+  ]
+ },
+ {
+  "name": "lines before an error stay set",
+  "text": "DA=before\nDK=a b\nDB=after\n",
+  "env": {},
+  "want": {
+   "DA": "before"
+  },
+  "error_line": 2,
+  "keys": [
+   "DK",
+   "DA",
+   "DB"
+  ]
+ },
+ {
+  "name": "an unterminated quote swallows the rest",
+  "text": "DA=1\nDK=\"abc\nDB=2\n",
+  "env": {},
+  "want": {
+   "DA": "1"
+  },
+  "error_line": 2,
+  "keys": [
+   "DK",
+   "DA",
+   "DB"
+  ]
+ },
+ {
+  "name": "a double quoted value spans lines",
+  "text": "DK=\"line1\nline2\"\nDA=2\n",
+  "env": {},
+  "want": {
+   "DK": "line1\nline2",
+   "DA": "2"
+  },
+  "error_line": null,
+  "keys": [
+   "DK",
+   "DA"
+  ]
+ },
+ {
+  "name": "a single quoted value spans lines",
+  "text": "DK='line1\nline2'\nDA=2\n",
+  "env": {},
+  "want": {
+   "DK": "line1\nline2",
+   "DA": "2"
+  },
+  "error_line": null,
+  "keys": [
+   "DK",
+   "DA"
+  ]
+ },
+ {
+  "name": "a reopened quote joins the next line",
+  "text": "DK='a'b'\nDA='x\nDB=3\n",
+  "env": {},
+  "want": {
+   "DK": "ab\nDA=x",
+   "DB": "3"
+  },
+  "error_line": null,
+  "keys": [
+   "DK",
+   "DA",
+   "DB"
+  ]
+ },
+ {
+  "name": "an error after a spanning value names its first line",
+  "text": "DA=1\nDK=\"a\nb\" c\n",
+  "env": {},
+  "want": {
+   "DA": "1"
+  },
+  "error_line": 2,
+  "keys": [
+   "DK",
+   "DA"
+  ]
+ },
+ {
+  "name": "byte order mark",
+  "text": "\ufeffDK=1\n",
+  "env": {},
+  "want": {
+   "DK": "1"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "crlf",
+  "text": "DK=1\r\nDA=\"2\"\r\nDB='3' # c\r\n",
+  "env": {},
+  "want": {
+   "DK": "1",
+   "DA": "2",
+   "DB": "3"
+  },
+  "error_line": null,
+  "keys": [
+   "DK",
+   "DA",
+   "DB"
+  ]
+ },
+ {
+  "name": "no final newline",
+  "text": "DK=1\nDA=2",
+  "env": {},
+  "want": {
+   "DK": "1",
+   "DA": "2"
+  },
+  "error_line": null,
+  "keys": [
+   "DK",
+   "DA"
+  ]
+ },
+ {
+  "name": "carriage return without newline at the end",
+  "text": "DK=1\r",
+  "env": {},
+  "want": {
+   "DK": "1"
+  },
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ },
+ {
+  "name": "trailing blank without a final newline",
+  "text": "DA=1\nDK=v ",
+  "env": {},
+  "want": {
+   "DA": "1"
+  },
+  "error_line": 2,
+  "keys": [
+   "DK",
+   "DA"
+  ]
+ },
+ {
+  "name": "one blank as the last line without a final newline",
+  "text": "DA=1\n ",
+  "env": {},
+  "want": {
+   "DA": "1"
+  },
+  "error_line": 2,
+  "keys": [
+   "DA"
+  ]
+ },
+ {
+  "name": "two blanks as the last line without a final newline",
+  "text": "DA=1\n  ",
+  "env": {},
+  "want": {
+   "DA": "1"
+  },
+  "error_line": null,
+  "keys": [
+   "DA"
+  ]
+ },
+ {
+  "name": "two trailing blanks without a final newline",
+  "text": "DA=1\nDK=v  ",
+  "env": {},
+  "want": {
+   "DA": "1",
+   "DK": "v"
+  },
+  "error_line": null,
+  "keys": [
+   "DK",
+   "DA"
+  ]
+ },
+ {
+  "name": "single quoted path ending with a backslash swallows the rest",
+  "text": "DK='C:\\dir\\'\nDA=2\n",
+  "env": {},
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "DK",
+   "DA"
+  ]
+ },
+ {
+  "name": "two blanks before a comment",
+  "text": "DK=v  # c\nDA=2\n",
+  "env": {},
+  "want": {
+   "DK": "v",
+   "DA": "2"
+  },
+  "error_line": null,
+  "keys": [
+   "DK",
+   "DA"
+  ]
+ },
+ {
+  "name": "two blanks before a comment with an apostrophe swallow the rest",
+  "text": "DK=v  # it's\nDA=2\n",
+  "env": {},
+  "want": {},
+  "error_line": 1,
+  "keys": [
+   "DK",
+   "DA"
+  ]
+ },
+ {
+  "name": "trailing backslash without a final newline",
+  "text": "DA=1\nDK=a\\",
+  "env": {},
+  "want": {
+   "DA": "1"
+  },
+  "error_line": 2,
+  "keys": [
+   "DK",
+   "DA"
+  ]
+ },
+ {
+  "name": "empty file",
+  "text": "",
+  "env": {},
+  "want": {},
+  "error_line": null,
+  "keys": [
+   "DK"
+  ]
+ }
+]

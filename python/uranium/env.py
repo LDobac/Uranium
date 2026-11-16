@@ -1,50 +1,178 @@
 import os
+import re
 import sys
 from pathlib import Path
 
 ENV_FILE_KEY = "URANIUM_ENV_FILE"
+BOM = b"\xef\xbb\xbf"
+WHITESPACE = "".join(map(chr, [9, 10, 11, 12, 13, 32, 0x85, 0xA0, 0x1680, *range(0x2000, 0x200B), 0x2028, 0x2029, 0x202F, 0x205F, 0x3000]))
 ESCAPES = {"\\": "\\", "'": "'", '"': '"', "$": "$", " ": " ", "n": "\n"}
+KEY_START = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_")
+KEY_REST = KEY_START | frozenset("0123456789.")
+COMPLETE, ESCAPE, STRONG, STRONG_ESCAPE, WEAK, WEAK_ESCAPE, COMMENT, BLANK = range(8)
+OPENERS = {"\\": ESCAPE, '"': WEAK, "'": STRONG}
+NO_SUB, SUB, SUB_BRACED = range(3)
 
 
-def _comment(tail: str) -> bool:
-    return not tail.strip() or (tail[0] in " \t" and tail.lstrip(" \t").startswith("#"))
+class ParseError(ValueError):
+    pass
 
 
-def _weak(text: str, whole: bool) -> str | None:
-    out = []
+def _end_state(state: int, piece: str) -> tuple[int, int]:
+    pos = 0
+    for pos, c in enumerate(piece):
+        if state == BLANK:
+            if c == "#":
+                return pos, COMMENT
+            state = OPENERS.get(c, COMPLETE)
+        elif state == COMPLETE:
+            state = BLANK if c in WHITESPACE and c not in "\r\n" else OPENERS.get(c, COMPLETE)
+        elif state == ESCAPE:
+            state = COMPLETE
+        elif state == WEAK:
+            state = WEAK_ESCAPE if c == "\\" else COMPLETE if c == '"' else WEAK
+        elif state == WEAK_ESCAPE:
+            state = WEAK
+        elif state == STRONG:
+            state = STRONG_ESCAPE if c == "\\" else COMPLETE if c == "'" else STRONG
+        else:
+            state = STRONG
+    return pos, state
+
+
+def _lines(data: bytes):
+    pieces = re.findall(rb"[^\n]*\n|[^\n]+", data.removeprefix(BOM))
     i = 0
-    while i < len(text):
-        c = text[i]
-        if c == "\\":
+    while i < len(pieces):
+        first, buf, state = i + 1, "", COMPLETE
+        while True:
+            if i == len(pieces):
+                raise ParseError("the file ends inside a quote, after a backslash or after a trailing blank without a newline", first)
+            try:
+                piece = pieces[i].decode("utf-8")
+            except UnicodeDecodeError:
+                raise ParseError("not UTF-8", i + 1) from None
             i += 1
-            if i == len(text) or text[i] not in ESCAPES:
-                raise ValueError(f"escape {text[i - 1:i + 1]!r} in a double-quoted value (the Rust loader takes only {sorted(ESCAPES)} after a backslash)")
-            out.append(ESCAPES[text[i]])
-        elif c == '"' and not whole:
-            return "".join(out) if _comment(text[i + 1:]) else None
+            start = len(buf)
+            buf += piece
+            if buf.lstrip(WHITESPACE).startswith("#"):
+                yield first, ""
+                break
+            pos, state = _end_state(state, piece)
+            if state == COMPLETE:
+                if buf.endswith("\n"):
+                    buf = buf[:-1].removesuffix("\r")
+                yield first, buf
+                break
+            if state == COMMENT:
+                yield first, buf[:start + pos]
+                break
+
+
+def _key(line: str) -> tuple[str, str]:
+    if not line or line[0] not in KEY_START:
+        raise ParseError("a key must start with an ASCII letter or _")
+    n = next((i for i, c in enumerate(line) if c not in KEY_REST), len(line))
+    return line[:n], line[n:].lstrip(WHITESPACE)
+
+
+def _substitute(name: list, subst: dict, environ, out: list) -> None:
+    key = "".join(name)
+    name.clear()
+    v = environ.get(key)
+    out.append(v if v is not None else subst.get(key) or "")
+
+
+def _value(text: str, subst: dict, environ) -> str:
+    strong = weak = escaped = ending = False
+    mode, name, out = NO_SUB, [], []
+    for c in text:
+        if ending:
+            if c in " \t":
+                continue
+            if c == "#":
+                break
+            raise ParseError("a blank inside an unquoted value (quote the value)")
+        elif escaped:
+            if c not in ESCAPES:
+                raise ParseError(f"a backslash before {c!r}: outside single quotes only {' '.join(ESCAPES)!r} may follow one (put Windows paths in single quotes)")
+            out.append(ESCAPES[c])
+            escaped = False
+        elif strong:
+            if c == "'":
+                strong = False
+            else:
+                out.append(c)
+        elif mode != NO_SUB:
+            if c.isalnum():
+                name.append(c)
+            elif mode == SUB_BRACED:
+                if c == "}":
+                    mode = NO_SUB
+                    _substitute(name, subst, environ, out)
+                else:
+                    name.append(c)
+            elif c == "{" and not name:
+                mode = SUB_BRACED
+            else:
+                _substitute(name, subst, environ, out)
+                if c != "$":
+                    mode = NO_SUB
+                    out.append(c)
+        elif c == "$":
+            mode = SUB
+        elif weak:
+            if c == '"':
+                weak = False
+            elif c == "\\":
+                escaped = True
+            else:
+                out.append(c)
+        elif c == "'":
+            strong = True
+        elif c == '"':
+            weak = True
+        elif c == "\\":
+            escaped = True
+        elif c in " \t":
+            ending = True
         else:
             out.append(c)
-        i += 1
-    return "".join(out) if whole else None
+    if mode == SUB_BRACED or strong or weak:
+        raise ParseError("a quote or ${ is not closed (a $NAME right before the closing double quote swallows it: write ${NAME})")
+    _substitute(name, subst, environ, out)
+    return "".join(out)
 
 
-def _value(raw: str) -> str:
-    raw = raw.strip()
-    if raw.startswith("#"):
-        return ""
-    if raw.startswith("'"):
-        end = raw.find("'", 1)
-        if end > 0 and _comment(raw[end + 1:]):
-            return raw[1:end]
-        if len(raw) >= 2 and raw.endswith("'"):
-            return raw[1:-1]
-    if raw.startswith('"'):
-        v = _weak(raw[1:], False)
-        if v is None and len(raw) >= 2 and raw.endswith('"'):
-            v = _weak(raw[1:-1], True)
-        if v is not None:
-            return v
-    return raw.split(" #", 1)[0].strip()
+def _pair(line: str, subst: dict, environ) -> tuple[str, str] | None:
+    line = line.strip(WHITESPACE)
+    if not line or line.startswith("#"):
+        return None
+    key, line = _key(line)
+    if key == "export" and not line.startswith("="):
+        key, line = _key(line)
+    if not line.startswith("="):
+        raise ParseError("no = after the key")
+    line = line[1:].lstrip(WHITESPACE)
+    if not line or line.startswith("#"):
+        subst[key] = None
+        return key, ""
+    value = _value(line, subst, environ)
+    subst[key] = value
+    return key, value
+
+
+def read(data: bytes, environ) -> tuple[int, str] | None:
+    subst: dict = {}
+    n = 0
+    try:
+        for n, line in _lines(data):
+            pair = _pair(line, subst, environ)
+            if pair is not None and pair[0] not in environ:
+                environ[pair[0]] = pair[1]
+    except ParseError as e:
+        return (e.args[1] if len(e.args) > 1 else n), e.args[0]
+    return None
 
 
 def find(start: Path | None = None) -> Path | None:
@@ -63,23 +191,9 @@ def load(path: Path | None = None) -> Path | None:
     path = path or find()
     if path is None:
         return None
-    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export "):]
-        key, sep, raw = line.partition("=")
-        if not sep:
-            continue
-        key = key.strip()
-        try:
-            value = _value(raw)
-        except ValueError as e:
-            print(f"warning: failed to load {path}: line {n}: {e}; the lines after it are not read", file=sys.stderr, flush=True)
-            break
-        if key and key not in os.environ:
-            os.environ[key] = value
+    stop = read(path.read_bytes(), os.environ)
+    if stop is not None:
+        print(f"warning: failed to load {path}: line {stop[0]}: {stop[1]}; the lines after it are not read", file=sys.stderr, flush=True)
     return path
 
 
