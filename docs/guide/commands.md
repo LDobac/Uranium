@@ -376,7 +376,7 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
 - `--shards` 폴더(상위 폴더면 그 아래 출처 폴더)에 `manifest.json`이 있으면 캐시·데이터 지문이 manifest를 따름(검증은 안 함). **shard를 다시 만들고 manifest를 두면 다른 데이터로 재개가 허용될 수 있음** → 반드시 `manifest <dir>`로 재생성하거나 옛 `manifest.json` 삭제. manifest 없는 사본은 크기 기준 지문이라 `--dataset`으로 시작한 run을 이어 받지 못함.
 - 재개 검사: `train_state.json` `extra.run`에 stage(`S1`/`S2`/`AblationA`), 설정 지문(결과 영향 설정 화이트리스트 `ResultSettings`, `[steps]` 반영; 실행 방식은 `EXECUTION_ONLY`; 새 필드는 둘 중 하나로 분류해야 테스트 통과), 데이터 지문. 하나라도 다르면 잠금 풀고 거부(우회 없음, 새 run 또는 `--init`).
 - 보존([061-R6](../spec/2026_10_15_22_24_061-shared-storage.md)): `keep_checkpoints`(없으면 5, 0 = 전부; `config/bc_core_ablation.toml`은 0). 삭제 실패는 경고만.
-- 압축 보관([061-R17](../spec/2026_10_15_22_24_061-shared-storage.md)): `<shared>/archive/<단위>.tar.zst`, 목록 `archive/INDEX.json`. 풀기는 공유 루트에서 `tar --zstd -xf archive/<단위>.tar.zst`(Linux, zstd 필요) 또는 `python -c "import tarfile; tarfile.open('archive/<단위>.tar.zst').extractall('.', filter='data')"`(Python 3.14).
+- 압축 보관([061-R17](../spec/2026_10_15_22_24_061-shared-storage.md)): 묶기 `<venv python> tools/archive/archive_shared.py pack --shared <shared> --plan <json>`, 단위 찾기 `<shared>/archive/INDEX.json`, 풀기 `<venv python> tools/archive/archive_shared.py restore --shared <shared> --unit <단위> [--only <경로>]`(manifest 대조, 기존 파일 덮어쓰지 않음).
 - 디스크([061-R8](../spec/2026_10_15_22_24_061-shared-storage.md)): 시작·저장마다 공용 드라이브·로컬 캐시(로컬 `--out`이면 그 폴더) 물리 디스크 80% 이상이면 경고(학습 계속).
 
 ### 평가·데이터 확인

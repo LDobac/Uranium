@@ -689,3 +689,4 @@
 - 10:13 — 새 리포트 절·정정: model2 12절 "경로 2 AC1 비교", 11.3절 `m2-rl-fix-2` 진단·D = t1, 9.9절 정정(5b2d3fd로 테란전 `bunker_order_4m` PASS → FAIL, 전체 FAIL 그대로); protoss_fix_plan에 최종 결과 한 줄 ([model2](report/plan/2026_11_09_22_18_model2.md) 9.9·11.3·12절, [protoss_fix_plan](report/plan/2026_11_14_08_18_protoss_fix_plan.md), [042-AC1·R21](spec/2026_10_15_22_24_042-rl-training.md), [050-R9·R10](spec/2026_10_15_22_24_050-evaluation.md))
 - 12:25 — 결정·구조 변경(사용자 결정): 문서를 `docs/`로 통합(spec·리포트 날짜 접두사), 코드·config 주석 제거, 장비별 작업 파일·게임 데이터를 `local/`로 이동, timeline 축약, 커밋 메시지 형식 도입 ([AGENTS.md](../AGENTS.md))
 - 12:41 — 결정(사용자): 에이전트 규칙을 `AGENTS.md`로 옮겨 다른 에이전트도 읽게 함, `CLAUDE.md`는 `@AGENTS.md` 참조만 ([AGENTS.md](../AGENTS.md), [001-R10](spec/2026_10_15_22_24_001-system-architecture.md))
+- 14:30 — 결정(사용자): 공용 드라이브 끝난 자료 작업 단위별 압축 보관, 검증 후 원본 삭제 ([061](spec/2026_10_15_22_24_061-shared-storage.md) R17)
