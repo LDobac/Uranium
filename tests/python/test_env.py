@@ -1,5 +1,7 @@
 import os
 
+import pytest
+
 from uranium import env
 
 KEY = "URANIUM_TEST_ENV_FILE_VALUE"
@@ -37,3 +39,8 @@ def test_without_env_file_the_repo_dotenv_is_read_001_r9(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv(env.ENV_FILE_KEY, raising=False)
     assert env.load() == tmp_path / ".env" and os.environ[KEY] == "repo"
+
+
+def test_explicit_missing_path_is_an_error_001_r9(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        env.load(tmp_path / "missing.env")

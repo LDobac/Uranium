@@ -9,6 +9,7 @@
 ### .env·작업 파일
 - `cp .env.example .env` 후 값 입력. 새 키는 `.env.example`에도. 프로세스 환경변수 우선.
 - Rust 바이너리는 시작 시 읽음, 셸 스크립트는 `tools/env.sh`(Windows `tools\env.ps1`). Windows 경로는 작은따옴표.
+- `URANIUM_ENV_FILE`(프로세스 환경변수로 지정): `<repo>/.env` 대신 그 파일을 읽음. Rust 바이너리·`python -m uranium`·셸 스크립트 공통, 파일이 없으면 아무것도 안 읽음([001-R9](../spec/2026_10_15_22_24_001-system-architecture.md)).
 - 학습 호스트 필수: `URANIUM_SHARED_DIR`, `URANIUM_MAPS_DIR`, `URANIUM_CACHE_DIR`, `URANIUM_PYTHON`(venv python, 작업자·감시가 학습 자식을 띄울 때 씀). Linux ROCm 호스트는 `MIOPEN_USER_DB_PATH`(고정 로컬 폴더)도.
 - 작업 로그·생성 파일·일회용 스크립트: `<repo>/local/work/<작업>/`. 호스트별 스크립트: `<repo>/local/scripts/`. 게임 데이터: `<repo>/local/sc_data/`(`openbw/`, `maps/`).
 

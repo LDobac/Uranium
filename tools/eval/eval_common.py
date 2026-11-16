@@ -46,9 +46,12 @@ def load_env() -> None:
     if env is not None:
         env.load()
         return
-    d = Path.cwd().resolve()
-    for p in [d, *d.parents, ROOT]:
-        f = p / ".env"
+    if "URANIUM_ENV_FILE" in os.environ:
+        files = [Path(os.environ["URANIUM_ENV_FILE"])]
+    else:
+        d = Path.cwd().resolve()
+        files = [p / ".env" for p in [d, *d.parents, ROOT]]
+    for f in files:
         if f.is_file():
             for line in f.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
