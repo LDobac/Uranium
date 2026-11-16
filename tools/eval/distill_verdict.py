@@ -1,4 +1,4 @@
-"""044-R6 round verdict of a distillation round (spec/044 044-R6 / 044-R7, AMB-044-7 Resolved 2026-11-14;"""
+"""044-R6 round verdict of a distillation round (docs/spec/2026_11_14_08_18_044-self-game-distillation.md 044-R6 / 044-R7, AMB-044-7 Resolved 2026-11-14;"""
 
 from __future__ import annotations
 

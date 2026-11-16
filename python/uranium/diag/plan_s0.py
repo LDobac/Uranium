@@ -1,4 +1,4 @@
-"""`python -m uranium diag plan-s0` (jepa_planning S0, reports/jepa_planning.md 6.4-6.5; 050-R9 diagnostics):
+"""`python -m uranium diag plan-s0` (jepa_planning S0, docs/report/plan/2026_11_11_14_56_jepa_planning.md 6.4-6.5; 050-R9 diagnostics):
 the S0 feasibility test on `diag plan-dump` folders, on CPU. Measurement only (no model, spec or
 planner change).
 
@@ -9,7 +9,7 @@ A on the human-only and the model-only training rows. Same steps, batch and seed
 
 Tables (eval games only; CIs: game bootstrap 95 %, `uranium.diag.plan_stats`; the bootstrap unit is the
 replay, so both streams of one replay move together):
-- Design (`plan_pred.Design`, reports/jepa_planning.md 6.8): the second run's default drops the chained
+- Design (`plan_pred.Design`, docs/report/plan/2026_11_11_14_56_jepa_planning.md 6.8): the second run's default drops the chained
   rows of teacher / model sources, gives every predictor o_t, predicts the own-state change and draws
   the S partner from another game; `--v1` is the first run (2026-11-11) bit for bit (same models, same
   numbers; the report adds the change-space own-state metrics, the verdict keeps the first run's rows).

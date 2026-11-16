@@ -1,5 +1,5 @@
 {
-"note": "jepa-diag-tp-20261109 shard views (2026-11-09 diagnostics, reports/jepa_survey.md 10.2.1): [replay_sha256, own start slot] per view; bot = the opponent bot's view of a TvT replay (records APM), model = Checkpoint 1's view. plan-s0 --drop uses bot and checks that every stream is in one list.",
+"note": "jepa-diag-tp-20261109 shard views (2026-11-09 diagnostics, docs/report/survey/2026_11_08_19_26_jepa_survey.md 10.2.1): [replay_sha256, own start slot] per view; bot = the opponent bot's view of a TvT replay (records APM), model = Checkpoint 1's view. plan-s0 --drop uses bot and checks that every stream is in one list.",
 "bot": [
 [
 "005512309d8ae07a96bcf38829f1c27144a207e9e6262d11ee53e7e9f271dfba",

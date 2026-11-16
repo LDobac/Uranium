@@ -14,7 +14,7 @@ COMMANDS = {
 
 
 def add_parser(sub) -> None:
-    p = sub.add_parser("diag", help="cue-flow diagnostics of a checkpoint (reports/jepa_survey.md 7, 10)")
+    p = sub.add_parser("diag", help="cue-flow diagnostics of a checkpoint (docs/report/survey/2026_11_08_19_26_jepa_survey.md 7, 10)")
     dsub = p.add_subparsers(dest="diag_cmd", required=True)
     for name, (module, text) in COMMANDS.items():
         mod = importlib.import_module(f"uranium.diag.{module}")

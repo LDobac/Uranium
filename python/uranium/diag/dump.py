@@ -1,5 +1,5 @@
 """`python -m uranium diag dump`: one teacher-forced pass of a checkpoint over the games of a shard
-source (reports/jepa_survey.md 7.2), per-row features and offline labels, the activations at the
+source (docs/report/survey/2026_11_08_19_26_jepa_survey.md 7.2), per-row features and offline labels, the activations at the
 stages, and with `--cf` the counterfactual passes of the intervention (7.2 (4)), each with its own
 recurrent state from the game start.
 

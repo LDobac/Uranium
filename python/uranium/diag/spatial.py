@@ -1,4 +1,4 @@
-"""`python -m uranium diag spatial`: dead-channel check (032-R25, reports/jepa_survey.md 10.4). Per
+"""`python -m uranium diag spatial`: dead-channel check (032-R25, docs/report/survey/2026_11_08_19_26_jepa_survey.md 10.4). Per
 checkpoint, teacher-forced passes over a few batches of real steps: every ReLU-bearing point's
 positive fraction and never-active channel count (`uranium.model.monitor` with `points="all"`:
 spatial stages incl. the bottleneck / s8, entity FFN, head ResMlp, core FFN), the near-constant S8

@@ -1,4 +1,4 @@
-"""G0 decision-granularity measurement (model-2 plan P0 "G0"; reports/m6_rl_rootcause.md section 4).
+"""G0 decision-granularity measurement (model-2 plan P0 "G0"; docs/report/investigation/2026_11_04_22_20_m6_rl_rootcause.md section 4).
 
 Input of the deferred decision AMB-031-7 (031 "결정 단위", [SPEC DEFERRED(G0)]): does the 031-R3
 12-unit selection cap bind in rush defence, or is the rush-defence failure set by what the policy

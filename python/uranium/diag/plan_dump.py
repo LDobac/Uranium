@@ -1,4 +1,4 @@
-"""`python -m uranium diag plan-dump` (jepa_planning S0, reports/jepa_planning.md 6.3; 050-R9 diagnostics
+"""`python -m uranium diag plan-dump` (jepa_planning S0, docs/report/plan/2026_11_11_14_56_jepa_planning.md 6.3; 050-R9 diagnostics
 tooling, 032-R24 aux outputs): one teacher-forced pass of a checkpoint over the games of a shard source;
 every real step before `--row-until` becomes one row of the S0 feasibility test (`diag plan-s0`).
 

@@ -75,7 +75,7 @@ enum Cmd {
     },
     /// Debug: list the map's triggers (CHK `TRIG`): condition and action types with arguments.
     Triggers { rep: PathBuf },
-    /// 040-R6 / 040-AC2 / 040-AC4 (C-4): `reports/dataset_stats.md` from `build` records (games and
+    /// 040-R6 / 040-AC2 / 040-AC4 (C-4): `docs/report/survey/<YYYY_MM_DD_HH_mm>_dataset_stats.md` from `build` records (games and
     /// views by map, matchup, src, stage, split; desync rate; result_source; map families).
     #[command(alias = "stats")]
     DatasetStats {
