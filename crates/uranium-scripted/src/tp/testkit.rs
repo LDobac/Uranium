@@ -1,5 +1,8 @@
-use super::*;
-use crate::react::MapHints;
+use uranium_proto::*;
+
+use crate::brain::Brain;
+use crate::react::{MapHints, depot_center, toward};
+use crate::types::*;
 use crate::{Bot, Kit, T0Build};
 
 pub const OURS: Tile = (10, 10);
