@@ -16,11 +16,9 @@ flate2 = "1"
 uranium-proto.workspace = true
 uranium-env = { path = "../uranium-env" }
 uranium-scripted = { path = "../uranium-scripted" }
+uranium-store = { path = "../uranium-store" }
 toml.workspace = true
 postcard.workspace = true
 zstd = "0.13"
 sha2.workspace = true
 encoding_rs = "=0.8.35"
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"

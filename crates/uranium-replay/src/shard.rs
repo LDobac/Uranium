@@ -184,7 +184,7 @@ pub fn validate_tree(dir: &Path, jobs: usize) -> Result<(usize, usize)> {
         for _ in 0..jobs.clamp(1, 4) {
             s.spawn(|| {
                 while let Some(f) = files.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
-                    match crate::share_io::read_uncached(f).map_err(anyhow::Error::from).and_then(|p| decode(&zstd::decode_all(p.as_slice())?)) {
+                    match uranium_store::share_io::read_uncached(f).map_err(anyhow::Error::from).and_then(|p| decode(&zstd::decode_all(p.as_slice())?)) {
                         Ok(sh) => {
                             games.fetch_add(sh.games.len(), std::sync::atomic::Ordering::Relaxed);
                         }
@@ -228,7 +228,7 @@ pub fn publish(local: &Path, dest: &Path, copy: CopyFn, retries: u32) -> Result<
     let want = sha256_hex(&std::fs::read(local).with_context(|| format!("reading {}", local.display()))?);
     let tmp = temp_path(dest);
     for attempt in 0..=retries {
-        let got = copy(local, &tmp).and_then(|_| crate::share_io::sync_file(&tmp)).and_then(|_| crate::share_io::read_uncached(&tmp)).map(|b| sha256_hex(&b));
+        let got = copy(local, &tmp).and_then(|_| uranium_store::share_io::sync_file(&tmp)).and_then(|_| uranium_store::share_io::read_uncached(&tmp)).map(|b| sha256_hex(&b));
         match got {
             Ok(h) if h == want => {
                 std::fs::rename(&tmp, dest).with_context(|| format!("renaming {} (040-R17)", tmp.display()))?;

@@ -135,9 +135,9 @@ impl Manifest {
     pub fn verify_on_server(&self, dir: &Path) -> Result<()> {
         for (rel, want) in &self.files {
             let p = dir.join(rel);
-            uranium_replay::share_io::sync_file(&p).with_context(|| format!("syncing {}", p.display()))?;
+            crate::share_io::sync_file(&p).with_context(|| format!("syncing {}", p.display()))?;
             let mut h = Sha256::new();
-            let bytes = uranium_replay::share_io::read_uncached_with(&p, &mut |b| h.update(b)).with_context(|| format!("reading back {}", p.display()))?;
+            let bytes = crate::share_io::read_uncached_with(&p, &mut |b| h.update(b)).with_context(|| format!("reading back {}", p.display()))?;
             let got = FileEntry { sha256: h.finalize().iter().map(|b| format!("{b:02x}")).collect(), bytes };
             ensure!(&got == want, "{} on the share does not match its manifest (061-R4)", p.display());
         }

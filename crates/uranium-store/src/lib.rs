@@ -8,6 +8,7 @@ macro_rules! elog {
 
 pub mod ckpt;
 pub mod disk;
+pub mod share_io;
 pub mod storage;
 
 pub const STOP_CLEAN: usize = 1;
