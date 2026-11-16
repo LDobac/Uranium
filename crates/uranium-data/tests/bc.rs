@@ -847,6 +847,7 @@ fn scan_cache_is_per_file_041_r13() {
     let src = ShardSource::new(&root).unwrap().shuffled(3);
     let fresh = scan_files(src.files()).unwrap();
     assert_eq!(scan_cached_in(&src, Some(&cache)).unwrap(), fresh, "first call scans");
+    assert_eq!(scan_cached_in(&src, Some(&cache)).unwrap(), fresh, "the cache gives back what was scanned");
     let entries = || -> Vec<std::path::PathBuf> { std::fs::read_dir(&cache).unwrap().flatten().map(|e| e.path()).collect() };
     let edit = |from: &str, to: &str| {
         for f in entries() {
@@ -1533,6 +1534,8 @@ fn empty_files_are_skipped_without_changing_the_walk_041_r13() {
     let plain = || cfg.train_source(std::slice::from_ref(&root), Selection::S1).unwrap();
     let scan = scan_files(plain().files()).unwrap();
     let skipping = || plain().skip_empty(&scan);
+    let unshuffled = || ShardSource::new(&root).unwrap().select(Selection::S1).subsample(cfg.data.subsample.clone(), cfg.data.seed);
+    let unshuffled_scan = scan_files(unshuffled().files()).unwrap();
     let walk = |mut s: ShardSource, from: Option<SourcePos>| -> Vec<(String, Option<GameId>, SourcePos)> {
         if let Some(pos) = from {
             s.seek(pos).unwrap();
@@ -1559,5 +1562,15 @@ fn empty_files_are_skipped_without_changing_the_walk_041_r13() {
     }
     assert!(plain().file_games(empty[0]).is_err());
     assert_eq!(walk(skipping(), None), want, "the empty files are not opened");
+    assert_eq!(walk(unshuffled().skip_empty(&unshuffled_scan).shuffled(cfg.data.seed), None), want, "the skipped set follows a later shuffle");
+    let mut reselected = skipping().select(Selection::S1);
+    let read_all = loop {
+        match reselected.next_game() {
+            Ok(Some(_)) => {}
+            Ok(None) => break true,
+            Err(_) => break false,
+        }
+    };
+    assert!(!read_all, "a new selection drops the skipped set");
     std::fs::remove_dir_all(&root).ok();
 }

@@ -51,11 +51,13 @@ impl ShardSource {
 
     pub fn select(mut self, sel: crate::split::Selection) -> Self {
         self.select = Some(sel);
+        self.only_files = None;
         self
     }
 
     pub fn subsample(mut self, sub: Option<crate::split::Subsample>, seed: u64) -> Self {
         self.subsample = sub.map(|s| (s, seed));
+        self.only_files = None;
         self
     }
 
@@ -88,7 +90,9 @@ impl ShardSource {
 
     pub fn skip_empty<T: HasMeta>(self, scan: &[Vec<T>]) -> Self {
         assert_eq!(scan.len(), self.files.len(), "one scan entry per shard file, in the source's file order");
-        let keep = (0..scan.len()).filter(|&k| scan[k].iter().any(|g| self.keeps(g.meta()))).collect();
+        let kept: Vec<usize> = scan.iter().map(|games| games.iter().filter(|g| self.keeps(g.meta())).count()).collect();
+        let keep: HashSet<usize> = (0..kept.len()).filter(|&k| kept[k] > 0).collect();
+        uranium_store::elog!("{}", serde_json::json!({ "skip_empty": { "files": kept.len(), "skipped": kept.len() - keep.len(), "games": kept.iter().sum::<usize>() }, "note": "041-R13" }));
         self.only_files(keep)
     }
 
