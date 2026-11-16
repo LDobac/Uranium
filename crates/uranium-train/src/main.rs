@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use uranium_train::bc::{BcConfig, BcStage};
 use uranium_train::data::ShardSource;
 
-/// Device labels of the PyTorch training children (001-R10).
+/// Device of the PyTorch training children.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum ChildBackend {
     Cuda,
@@ -14,7 +14,7 @@ enum ChildBackend {
 }
 
 #[derive(Parser)]
-#[command(about = "Uranium training (spec 041, 042)")]
+#[command(about = "Uranium BC data checks, training watchdog and run-queue worker (docs/guide/commands.md)")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -22,8 +22,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// 041-R13: updates in one epoch of a stage (the trainer's lane walk without the model);
-    /// the numbers for `[steps]` in `config/bc.toml`. Reads every shard once.
+    /// Count the updates in one epoch of each BC stage (the `[steps]` values of a config).
     BcEpoch {
         #[command(flatten)]
         data: DataArgs,
@@ -32,16 +31,7 @@ enum Cmd {
         #[arg(long, default_value = "config/bc.toml")]
         config: PathBuf,
     },
-    /// 041-R26 ② (AMB-041-15): `[data.subsample] fraction_by_race` for a mix config's data seed and
-    /// `keep_sources` (the teacher): the human S2 games per enemy race kept so the teacher is
-    /// `--teacher-share` of the epoch's steps and every race keeps its share of the S2 human data;
-    /// then the S2 epoch with those fractions (`[steps] s2` and the `s2_mix` checks of `bc-epoch`).
-    /// 044-R5 ③ (041-R31): `--share teacher=0.45,distill=0.2` instead gives three shares — the
-    /// teacher (kept whole), each named source (`[data.subsample] fraction_by_source`) and the human
-    /// rest (per race, 041-R26) — each judged ± 3%p. 044-R8 / 022-R12 (teacher round t1, user
-    /// decision 2026-11-14: `--teacher-share 0.65`, no distill): `--teacher-races Z=0.5,P=0.3,T=0.2`
-    /// also judges the enemy races inside the teacher (+ dagger) steps ± 3%p; every teacher game is
-    /// kept and a race below its band is reported `short` with the 022 teacher botgen games to add.
+    /// Compute the `[data.subsample]` fractions that meet a mix config's teacher, source and race shares.
     MixFractions {
         #[command(flatten)]
         data: DataArgs,
@@ -51,18 +41,14 @@ enum Cmd {
         config: PathBuf,
         #[arg(long, default_value = "0.5")]
         teacher_share: f64,
-        /// 044-R5 ③: `teacher=<a>,<source>=<b>[,...]` (source = `GameMeta.src`, e.g. `distill`);
-        /// the human share is 1 - the others. Not with --teacher-share.
+        /// Shares `teacher=<a>,<source>=<b>[,...]`; human gets the rest. Not with --teacher-share.
         #[arg(long, value_parser = parse_shares, conflicts_with = "teacher_share")]
         share: Option<Shares>,
-        /// 044-R8 / 022-R12 (AMB-022-7): enemy-race targets inside the teacher (+ dagger) share,
-        /// `Z=0.5,P=0.3,T=0.2` (every race T / P / Z once, each in (0, 1), summing to 1).
+        /// Enemy-race shares inside the teacher share, e.g. `Z=0.5,P=0.3,T=0.2` (T, P, Z once, sum 1).
         #[arg(long, value_parser = parse_teacher_races)]
         teacher_races: Option<std::collections::BTreeMap<String, f64>>,
     },
-    /// AMB-000-4 check: SHA-256 of every lane group of the first BC batches (`Batch::group`, the
-    /// host collate). The Python side hashes the `uranium._core` arrays the same way, so the two
-    /// can be compared. One JSON line per batch.
+    /// Print the SHA-256 of each lane group of the first BC batches, one JSON line per batch.
     #[command(hide = true)]
     FeedDigest {
         #[command(flatten)]
@@ -78,37 +64,30 @@ enum Cmd {
         group: usize,
         #[arg(long, default_value = "12")]
         max_select: usize,
-        /// 041-R18: packed batches.
+        /// Use packed batches.
         #[arg(long)]
         pack: bool,
-        /// Test shards without map precomputes (`uranium_data::testkit`).
+        /// Test shards without map precomputes.
         #[arg(long)]
         synthetic_maps: bool,
     },
-    /// 060-R6 watchdog: run `bc` / `rl` arguments as a child and restart the same run after an
-    /// abnormal exit, a hang or a fatal stderr line (it resumes from its last checkpoint). Exit 0
-    /// (done, step limit, Ctrl+C clean stop, lock lost) and 130 (second Ctrl+C) are not
-    /// restarted; 70 (fatal device error, 042-R20) is.
-    /// Example: `uranium-train supervise -- bc --run bc-s1 --dataset ... --backend cuda`.
+    /// Run a `bc` or `rl` command as a child and restart it after a crash, hang or fatal line.
     Supervise {
-        /// Restarts allowed within --window-minutes; then give up.
+        /// Restarts allowed within --window-minutes before giving up.
         #[arg(long, default_value = "5")]
         max_restarts: usize,
         #[arg(long, default_value = "60")]
         window_minutes: u64,
-        /// Delay before a restart (doubles per restart in the window, at most 10 min).
+        /// Delay before a restart; doubles per restart in the window, at most 10 min.
         #[arg(long, default_value = "60")]
         delay_seconds: u64,
-        /// No progress for this long = hang: kill and restart. Progress = a --progress-file change
-        /// when one is given, else any stderr line (060-R6).
+        /// Minutes without progress before the child is killed and restarted.
         #[arg(long, default_value = "30")]
         hang_minutes: u64,
-        /// File whose changes alone count as progress (rl: <logs>/train.csv); stderr lines then
-        /// do not (060-R6, AMB-042-20).
+        /// File whose changes alone count as progress (rl: <logs>/train.csv).
         #[arg(long)]
         progress_file: Option<PathBuf>,
-        /// Regex (repeatable): a child stderr line matching it kills the child and restarts the
-        /// run like a crash (060-R6, AMB-042-20), e.g. `--fatal-pattern "illegal memory access"`.
+        /// Regex (repeatable); a matching child stderr line restarts the run like a crash.
         #[arg(long = "fatal-pattern", value_parser = parse_regex)]
         fatal_pattern: Vec<regex::Regex>,
         /// Also append the child's stderr and the restart notes to this file.
@@ -118,14 +97,12 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         args: Vec<String>,
     },
-    /// 061-R13/R14 run queue worker: takes the first unfinished, untaken run of the queue and trains
-    /// it (`URANIUM_PYTHON -m uranium bc --run`, 060-R6 watchdog), then the next; asks a slower PC
-    /// to yield when nothing is free. Ctrl+C: checkpoint, push, release, stop.
+    /// Train the unfinished runs of a queue one by one; asks slower PCs to yield when none is free.
     Worker {
         /// Queue file (TOML: [defaults] datasets/config, [[run]] id/config/core/stage/init_run/steps).
         #[arg(long)]
         queue: PathBuf,
-        /// Device of the PyTorch children (001-R10).
+        /// Device of the PyTorch children.
         #[arg(long, value_enum)]
         backend: ChildBackend,
         /// Faster PCs get higher numbers; only a higher priority may ask a run to yield.
@@ -149,12 +126,12 @@ enum Cmd {
         #[arg(long)]
         log: Option<PathBuf>,
     },
-    /// 061-R15: updates per host of a run from `runs/<id>/devices.jsonl` (spans and shares).
+    /// Updates per host of a run from `runs/<id>/devices.jsonl`.
     Devices {
         #[arg(long)]
         run: String,
     },
-    /// 034-AC3 diagnostics: labels that fail the masks, by action and reason (JSON).
+    /// List the labels that fail the action masks, by action and reason (JSON).
     LabelCheck {
         #[command(flatten)]
         data: DataArgs,
@@ -162,18 +139,12 @@ enum Cmd {
         #[arg(long)]
         games: Option<usize>,
     },
-    /// 041-R12: game counts per source, map group and split; per source the share of games and
-    /// steps without a privileged summary (E-10) and the result sources (040-R8, A-3). Reads every
-    /// shard; no training.
+    /// Game counts per source, map group and split, with privileged and result coverage (JSON).
     SplitStats {
         #[command(flatten)]
         data: DataArgs,
     },
-    /// 052-R7: the games `bc-eval --split <s> --games <n> --seed <k>` scores (032-R17 ②), one JSON
-    /// line each with keys `map_family`, `matchup`, `perspective_slot`, `replay_sha256`, `split`,
-    /// `src` (serde_json writes them sorted);
-    /// `--target-maps` runs the same shuffle over the split's target-map games only. Reads the
-    /// scan (cached), not the steps.
+    /// Print the games `bc-eval --split --games --seed` scores, one JSON line per game.
     EvalGames {
         #[command(flatten)]
         data: DataArgs,
@@ -186,36 +157,31 @@ enum Cmd {
         #[arg(long)]
         target_maps: bool,
     },
-    /// 061-R7: writes `<dir>/manifest.json` (relative path -> sha256, bytes, subfolders included) so
-    /// training PCs can pull and verify the dataset. `--verify` checks an existing one instead.
-    /// Before hashing, every `shard_NNNNN.bin.zst` below `dir` must decode completely (040-R17).
+    /// Write `<dir>/manifest.json` (sha256 and size per file), or check it with --verify.
     Manifest {
         dir: PathBuf,
         #[arg(long)]
         verify: bool,
     },
-    /// 033-R8: z table (one JSON line per game: build order + unit composition) from the Terran
-    /// views of target-map replays in a shard folder.
+    /// Build the z table (build order and unit mix per game) from target-map Terran views.
     ZTable {
         #[arg(long)]
         shards: PathBuf,
         #[arg(long)]
         out: PathBuf,
-        /// Include every map, not only the target maps (040-R15 families).
+        /// Include every map, not only the target maps.
         #[arg(long)]
         all_maps: bool,
     },
 }
 
-/// Shard folders to read, subfolders included (041-R9); files are read in canonical key order
-/// whatever the folder order or spelling (041-R13).
+/// Shard folders to read, subfolders included.
 #[derive(clap::Args)]
 struct DataArgs {
-    /// Dataset under `<URANIUM_SHARED_DIR>/datasets/` with a manifest (e.g. `replays/shards/stardata`):
-    /// pulled into the cache, or verified in place with URANIUM_SHARED_LOCAL=1 (061-R11-1, R12).
+    /// Dataset under `<URANIUM_SHARED_DIR>/datasets/` with a manifest, e.g. `replays/shards/stardata`.
     #[arg(long)]
     dataset: Vec<PathBuf>,
-    /// Shard folder read as is, without a manifest check (samples, tests).
+    /// Shard folder read as is, without a manifest check.
     #[arg(long)]
     shards: Vec<PathBuf>,
 }
@@ -226,11 +192,7 @@ impl DataArgs {
     }
 }
 
-/// Shard folders read as is (like `--shards`) and scanned as a group with one scan cache
-/// (`bc::scan_groups`): `--group a,b,c --group d` reuses the cache of an earlier run that read
-/// `a,b,c` together when `d` has changed. Read-only: no manifest is checked or written.
-/// `--dataset-group a,b,c`: the same with datasets (`--dataset` names, pulled or verified through
-/// their manifests as the trainer reads them, 061-R11-1 / R12).
+/// Shard folder groups (`a,b,c`), each scanned with its own scan cache.
 #[derive(clap::Args)]
 struct GroupArgs {
     #[arg(long = "group")]

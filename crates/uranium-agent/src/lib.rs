@@ -29,9 +29,9 @@ use crate::model_policy::{LearnerHook, ModelPolicy, ModelStats};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum PolicyKind {
-    /// T0 rule-based bot for our own race (021): picked from `GameInfo` at game start.
+    /// T0 rule-based bot for our own race, picked at game start.
     ScriptedT0,
-    /// Checkpoint policy (020-R11), Terran only.
+    /// Checkpoint policy, Terran only.
     Model,
 }
 

@@ -17,7 +17,7 @@ use crate::env::Settings;
 use crate::limit::Daily;
 
 #[derive(Parser)]
-#[command(name = "uranium-ladder", about = "SC:R ladder replay collector (spec 043)")]
+#[command(name = "uranium-ladder", about = "SC:R ladder replay collector (docs/guide/commands.md)")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -25,17 +25,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// 043-AC1 spike: detect the API, fetch one step of the leaderboard → profile → match →
-    /// replay chain, save the raw response outside git and print only its shape.
+    /// Fetch one leaderboard -> profile -> match -> replay step, save the raw response, print its shape.
     Probe(ProbeArgs),
-    /// Print the redacted shape (043-R11) of a saved response, optionally of one JSON pointer.
+    /// Print the redacted shape of a saved response, optionally at one JSON pointer.
     Shape {
         file: PathBuf,
         /// RFC 6901 pointer, e.g. /replays/0
         #[arg(long)]
         pointer: Option<String>,
     },
-    /// Daily collection run (043-R4..R9) into raw/scr_ladder and ladder/collect.jsonl.
+    /// Daily collection run into raw/scr_ladder and ladder/collect.jsonl.
     Collect {
         #[arg(long)]
         plan: PathBuf,
@@ -45,9 +44,7 @@ enum Cmd {
         /// List new ladder links per tracked player without fetching match info or replays
         #[arg(long)]
         dry_run: bool,
-        /// Fetch again only the matches whose latest record failed with a reason starting with
-        /// this prefix (default `schema:`), e.g. after a schema fix (043-R9). Same rate and
-        /// daily budget (043-R4).
+        /// Fetch again only matches whose latest record failed with this reason prefix (default `schema:`).
         #[arg(long, num_args = 0..=1, default_missing_value = "schema:")]
         retry_failed: Option<String>,
     },
@@ -64,11 +61,10 @@ struct ProbeArgs {
     /// Raw-response folder (default: <URANIUM_SHARED_DIR>/datasets/replays/ladder/probe)
     #[arg(long)]
     out: Option<PathBuf>,
-    /// Step 2: fetch the first page of this leaderboard id
+    /// Fetch the first page of this leaderboard id.
     #[arg(long)]
     leaderboard: Option<u64>,
-    /// Step 3: profile of --toon on --gateway (its `replays[]` list); with --gamemode and
-    /// --season also the match history
+    /// Fetch the profile of this toon on --gateway (with --gamemode and --season, its match history).
     #[arg(long, requires = "gateway")]
     toon: Option<String>,
     #[arg(long)]
@@ -77,10 +73,10 @@ struct ProbeArgs {
     gamemode: Option<String>,
     #[arg(long)]
     season: Option<String>,
-    /// Step 4: match info (with the replay links) of this profile `link`
+    /// Fetch the match info (with the replay links) of this profile `link`.
     #[arg(long)]
     match_id: Option<String>,
-    /// Step 5: download a replay link that appears in a saved probe response (043-R2)
+    /// Download a replay link that appears in a saved probe response.
     #[arg(long)]
     download: Option<String>,
 }

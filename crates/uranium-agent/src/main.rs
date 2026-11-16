@@ -12,7 +12,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Accept bridge connections and play (scripted T0; model players: `python -m uranium serve`).
+    /// Accept bridge connections and play the scripted T0 bot (models: `python -m uranium serve`).
     Serve {
         #[arg(long, default_value = "127.0.0.1:7600")]
         listen: String,
@@ -21,7 +21,7 @@ enum Cmd {
         /// JSONL file receiving one record per finished session.
         #[arg(long)]
         out: PathBuf,
-        /// Artificial delay before every Act (011-AC7 lag test).
+        /// Artificial delay before every Act (lag test).
         #[arg(long, default_value_t = 0)]
         respond_delay_ms: u64,
         /// Exit after this many finished sessions (0 = run forever).

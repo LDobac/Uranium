@@ -21,8 +21,7 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Measure how many concurrent games this host sustains within the bridge latency
-    /// target and store it for uranium-hostd (020-R10). Run on the game host itself.
+    /// Measure how many concurrent games this host sustains and store it for uranium-hostd.
     Calibrate {
         /// Largest concurrency to try (default: logical cores).
         #[arg(long)]
