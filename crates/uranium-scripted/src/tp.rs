@@ -6,10 +6,11 @@ use uranium_proto::*;
 
 use crate::react::{Branch, FPS, bunker_center, depot_center, is_enemy, toward, within};
 use crate::types::*;
-use crate::{Brain, centroid, dist2, done};
+use crate::brain::Brain;
+use crate::util::{centroid, dist2, done};
 
 const SCV_HP: u32 = 60;
-const OUT_TILES: i64 = crate::DEFEND_RADIUS / 32;
+const OUT_TILES: i64 = crate::brain::DEFEND_RADIUS / 32;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TpParams {
@@ -296,7 +297,7 @@ impl Brain {
         let mut cells: Vec<(u32, u16, u16, Pos)> = Vec::new();
         for cy in 0..self.cells_h {
             for cx in 0..self.cells_w {
-                let p = ((cx * crate::CELL + crate::CELL / 2) * 32, (cy * crate::CELL + crate::CELL / 2) * 32);
+                let p = ((cx * crate::brain::CELL + crate::brain::CELL / 2) * 32, (cy * crate::brain::CELL + crate::brain::CELL / 2) * 32);
                 if self.walkable.get(p.0 / 8, p.1 / 8) {
                     cells.push((self.cell_seen[(cy * self.cells_w + cx) as usize], cy, cx, p));
                 }
@@ -443,7 +444,7 @@ impl Brain {
         self.pending.retain(|q| {
             let idle = since.get(&q.worker).is_some_and(|s| f.frame >= s + grace);
             if idle {
-                failed.push((q.tile, q.ty, f.frame + crate::PENDING_TIMEOUT));
+                failed.push((q.tile, q.ty, f.frame + crate::brain::PENDING_TIMEOUT));
             }
             !idle
         });

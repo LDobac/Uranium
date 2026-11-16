@@ -422,7 +422,7 @@ fn bunker_order_expires_without_a_bunker_041_r22() {
     let act = b.act(&defence_frame(2_008 + 144, vec![], 100));
     assert_eq!(builds(&act, BUNKER).len(), 1, "{:?}", act.cmds);
     assert!(b.pending.iter().filter(|q| q.ty == BUNKER).all(|q| q.issued == 2_152));
-    assert!(!bunker_order_stale(&p, &crate::Pending { ty: DEPOT, tile: (0, 0), worker: 1, issued: 0 }, &defence_frame(10_000, vec![], 0), &[]));
+    assert!(!bunker_order_stale(&p, &crate::brain::Pending { ty: DEPOT, tile: (0, 0), worker: 1, issued: 0 }, &defence_frame(10_000, vec![], 0), &[]));
 }
 
 #[test]

@@ -5,7 +5,8 @@ use uranium_env::scout::{is_army_type, is_ground_army_type};
 use uranium_proto::*;
 
 use crate::types::*;
-use crate::{Brain, dist2, done, is_neutral_owner, nearest};
+use crate::brain::Brain;
+use crate::util::{dist2, done, is_neutral_owner, nearest};
 
 pub use uranium_env::types::FRAMES_PER_SECOND as FPS;
 const TILE: i64 = 32;
@@ -18,7 +19,7 @@ const ORDER_MOVE: u16 = 6;
 const ATTACK_ORDERS: [u16; 5] = [8, 9, 10, 11, 14];
 const SCOUT_AWAY_TILES: i64 = 12;
 
-pub(crate) fn bunker_order_stale(p: &ReactParams, q: &crate::Pending, f: &RawFrame, mine: &[&UnitState]) -> bool {
+pub(crate) fn bunker_order_stale(p: &ReactParams, q: &crate::brain::Pending, f: &RawFrame, mine: &[&UnitState]) -> bool {
     q.ty == BUNKER
         && f.frame >= q.issued + p.bunker_order_expiry
         && !mine.iter().any(|u| u.unit_type == BUNKER && within(u.pos, bunker_center(q.tile), 10))
@@ -250,7 +251,7 @@ impl ReactState {
 
     pub(crate) fn due_on(aligned: bool, last: Option<u32>, frame: u32, every: u32) -> bool {
         if aligned {
-            frame % every < crate::STEP_FRAMES && last.is_none_or(|l| frame / every != l / every)
+            frame % every < crate::brain::STEP_FRAMES && last.is_none_or(|l| frame / every != l / every)
         } else {
             Self::due(last, frame, every)
         }
@@ -559,7 +560,7 @@ impl Brain {
         match target {
             Some(p) => {
                 let settled = self.tp.is_some() && s.has(flags::IDLE) && within(s.pos, p, 3);
-                if (ReactState::due_on(self.tp.is_some(), Some(self.scout_order), f.frame, crate::WAVE_PERIOD) || s.has(flags::IDLE)) && !settled {
+                if (ReactState::due_on(self.tp.is_some(), Some(self.scout_order), f.frame, crate::brain::WAVE_PERIOD) || s.has(flags::IDLE)) && !settled {
                     cmds.push(Command::Unit { units: vec![id], order: CmdOrder::Move(Target::Pos(p)), queued: false });
                     self.scout_order = f.frame;
                 }
@@ -590,7 +591,7 @@ impl Brain {
             self.scout_done = true;
             return;
         }
-        let just_ordered = !ReactState::due_on(self.tp.is_some(), Some(self.scout_order), f.frame, crate::WAVE_PERIOD);
+        let just_ordered = !ReactState::due_on(self.tp.is_some(), Some(self.scout_order), f.frame, crate::brain::WAVE_PERIOD);
         let keep = current.filter(|u| just_ordered || heading_out(u) || out_of_main(u)).map(|u| u.id);
         let jobs: Vec<UnitId> = self.pending.iter().map(|q| q.worker).chain(self.react_busy()).collect();
         let taken_over = || mine.iter().filter(|u| u.unit_type == SCV && u.has(flags::COMPLETED) && !u.has(flags::CONSTRUCTING) && !jobs.contains(&u.id) && heading_out(u)).min_by_key(|u| u.id).map(|u| u.id);
@@ -860,7 +861,7 @@ impl Brain {
         for d in &depots {
             let line: Vec<&UnitState> = minerals.iter().copied().filter(|m| within(m.pos, *d, 10)).collect();
             if !line.is_empty() {
-                bases.push(crate::centroid(&line));
+                bases.push(crate::util::centroid(&line));
             }
         }
         let threats: Vec<&UnitState> = f
@@ -1075,7 +1076,7 @@ impl Brain {
             .min_by_key(|u| (crate::tp::pick_key(rings, u.pos, center), u.id));
         let Some(w) = worker else { return false };
         cmds.push(Command::Build { worker: w.id, unit_type: ty, tile });
-        self.pending.push(crate::Pending { ty, tile, worker: w.id, issued: f.frame });
+        self.pending.push(crate::brain::Pending { ty, tile, worker: w.id, issued: f.frame });
         true
     }
 
