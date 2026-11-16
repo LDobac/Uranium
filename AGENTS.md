@@ -2,7 +2,7 @@
 
 스타크래프트1 **테란 밀리 AI 봇** 구현·강화학습. 학습 OpenBW(1.16.1), 실전 SC:R.
 
-표기: 괄호 안 `NNN-…`은 [docs/spec](docs/spec/README.md)의 `*_NNN-*.md` 요구사항·AC, `AMB-…`은 그 README의 레지스트리. BC = 리플레이 모방학습, RL = 강화학습, T0 = 자체 Rust 규칙 기반 봇, T1 = OpenBW로 빌드한 공개 BWAPI 봇.
+표기: [BC][s041] = 리플레이 모방학습, [RL][s042] = 강화학습, [T0][s021] = 자체 Rust 규칙 기반 봇, [T1][s021] = OpenBW로 빌드한 공개 BWAPI 봇.
 
 ## 진행 상황
 - [timeline](docs/timeline.md)
@@ -17,11 +17,11 @@
 |---|---|
 | 종족 | 테란 고정. 상대 T / P / Z |
 | 맵 | 투혼(Fighting Spirit), 서킷브레이커(Circuit Breaker) |
-| 학습 호스트 | Linux ROCm 또는 CUDA(Linux/Windows) (060). 직접 쓴 커널은 한 소스로 CUDA·HIP 빌드, 기준 구현·끄는 설정 필수 (060-R1) |
-| 프레임워크 | 학습·추론 Python **3.14** + PyTorch **2.14.x**, 게임 연동·feature·데이터·저장소 Rust(PyO3 `uranium._core`) (001, AMB-000-4). 정밀도 032-R8(CUDA bf16 혼합, ROCm f32). 테스트·비트 일치 기준 CPU. Linux·Windows 빌드 (001-R8) |
+| 학습 호스트 | Linux ROCm 또는 CUDA(Linux/Windows) ([060][s060]). 직접 쓴 커널은 한 소스로 CUDA·HIP 빌드, 기준 구현·끄는 설정 필수 ([060-R1][s060]) |
+| 프레임워크 | 학습·추론 Python **3.14** + PyTorch **2.14.x**, 게임 연동·feature·데이터·저장소 Rust(PyO3 `uranium._core`) ([001][s001], [AMB-000-4][amb]). 정밀도 [032-R8][s032](CUDA bf16 혼합, ROCm f32). 테스트·비트 일치 기준 CPU. Linux·Windows 빌드 ([001-R8][s001]) |
 | 시뮬레이터 | OpenBW + BWAPI 4.2 포크, Linux 헤드리스. 다른 LAN 호스트 가능 |
-| SC:R 연동 | samase 플러그인 DLL + samase_scarf. **로컬/LAN 커스텀 게임만**, 배틀넷 공개 게임·래더 금지 |
-| 체크포인트·데이터 | 공용 드라이브(SMB, `URANIUM_SHARED_DIR`). pull → 학습 → push, run당 한 호스트(heartbeat 잠금) (061) |
+| SC:R 연동 | samase 플러그인 DLL + samase_scarf ([012][s012]). **로컬/LAN 커스텀 게임만**, 배틀넷 공개 게임·래더 금지 |
+| 체크포인트·데이터 | 공용 드라이브(SMB, `URANIUM_SHARED_DIR`). pull → 학습 → push, run당 한 호스트(heartbeat 잠금) ([061][s061]) |
 | C++ | OpenBW 브리지 shim과 확장 커널만. 나머지는 Rust 또는 Python |
 
 ## Spec Driven 규칙 (필수)
@@ -29,7 +29,7 @@
 2. `Approved`가 아닌 spec은 구현하지 않고 사용자에게 알린다.
 3. 동작 변경: **spec 수정 → 사용자 확인 → 코드**. 코드와 spec이 다르면 코드를 고치거나 spec 변경을 제안.
 4. 요구사항 ID(`010-R3` 등)는 테스트 이름과 커밋 메시지 body에 적는다.
-5. 새 spec: `docs/spec/<YYYY_MM_DD_HH_mm>_<NNN-name>.md`, 템플릿 `Status / Purpose / Scope & Non-goals / Requirements / Interfaces / Acceptance Criteria / Risks & Open Questions / Related`, README에 추가. 번호는 영역 대역(00x 개요, 01x 게임 연동, 02x 실행 환경, 03x 모델, 04x 데이터·학습, 05x 평가, 06x 인프라)에서 빈 번호를 고르고, 한 번 정한 번호는 바꾸지 않는다. 구현 순서 M0~M7.
+5. 새 spec: `docs/spec/<YYYY_MM_DD_HH_mm>_<NNN-name>.md`, 템플릿 `Status / Purpose / Scope & Non-goals / Requirements / Interfaces / Acceptance Criteria / Risks & Open Questions / Related`, README에 추가. 번호는 영역 대역(00x 개요, 01x 게임 연동, 02x 실행 환경, 03x 모델, 04x 데이터·학습, 05x 평가, 06x 인프라)에서 빈 번호를 고르고, 한 번 정한 번호는 바꾸지 않는다. 구현 순서 [M0~M7][ms].
 6. 큰 작업(새 crate, 아키텍처 변경, 여러 spec에 걸친 변경)은 Plan 모드로 승인받는다.
 
 ## 모호함 처리 (필수)
@@ -38,16 +38,16 @@
 - `[SPEC DEFERRED(Mx)]`: 뒤 마일스톤으로 미룬 결정. spec 승인은 막지 않음, 의존 코드 금지, 그 마일스톤 전에 다시 묻는다.
 - `TBD(Mx)`: 측정하면 정해지는 값.
 - 확정: 본문 반영 → 태그 제거 → 레지스트리 `Resolved (YYYY-MM-DD: 결정)`.
-- 남은 작업·대규모 배치 전 점검: 태그 외에 미이행 약속("Mx에서 ~", "비교해 채택")·미실행 AC도.
+- 남은 작업·대규모 배치 전 점검: 태그 외에 미이행 약속("Mx에서 ~", "비교해 채택")·미실행 AC(Acceptance Criteria)도.
 
 ## 아키텍처 원칙
-- 에이전트 코어는 게임 버전을 모른다 (001-R1). 버전 의존 코드는 `bridge/*`와 013 매핑 테이블에만.
-- 브리지는 얇게: 상태 직렬화, 명령 실행, 시야 필터링만 (001-R3).
-- 브리지 ↔ 에이전트는 `uranium-proto`(TCP, postcard)로만 (010).
-- **맵핵 금지**: 관측은 자기 시야 기준 (010-R5, 011-R5, 012-R3, 030-R2).
-- SC:R 명령은 네트워크 커맨드 경로로만, 유닛 메모리 직접 수정 금지 (012-R4).
-- 학습은 lockstep, SC:R 실전은 realtime (001-R5).
-- 맵 고정은 RL·평가만. BC는 전체 맵 사전학습 → 대상 맵 파인튜닝 (041).
+- 에이전트 코어는 게임 버전을 모른다 ([001-R1][s001]). 버전 의존 코드는 `bridge/*`와 [013][s013] 매핑 테이블에만.
+- 브리지는 얇게: 상태 직렬화, 명령 실행, 시야 필터링만 ([001-R3][s001]).
+- 브리지 ↔ 에이전트는 `uranium-proto`(TCP, postcard)로만 ([010][s010]).
+- **맵핵 금지**: 관측은 자기 시야 기준 ([010-R5][s010], [011-R5][s011], [012-R3][s012], [030-R2][s030]).
+- SC:R 명령은 네트워크 커맨드 경로로만, 유닛 메모리 직접 수정 금지 ([012-R4][s012]).
+- 학습은 lockstep, SC:R 실전은 realtime ([001-R5][s001]).
+- 맵 고정은 RL·평가만. BC는 전체 맵 사전학습 → 대상 맵 파인튜닝 ([041][s041]).
 
 ## 저장소 구조
 ```
@@ -69,14 +69,15 @@ runs/                    코드 기본 출력 (git 제외)
 local/                   장비별 (git 제외)
   work/<작업>/ scripts/ sc_data/(맵·OpenBW 데이터·캐시) raw/(옛 벤치 로그)
 ```
+- crate 역할은 [001][s001], `uranium-ladder`는 [043][s043].
 
 ## 코딩 규칙
-- 모델 코드는 장치 무관, 실행 시 `torch.device`로 고른다. 단위 테스트 CPU, 장치 비교 pytest `gpu` 마커 (032-R1).
-- **최적화는 모델 동작 유지** (032-R19): 같은 수식의 빠른 구현만. 구조·헤드·해상도·distance bias·dropout·손실·하이퍼파라미터 불변. Linux ROCm 호스트 메모리 예산(060-R3)에서 최악 모양이 돌아야 채택.
-- 버전별 ID·오프셋은 데이터 테이블로만 (013-R1).
-- **개인·보안 정보 금지** (001-R10): 추적 파일 전부(코드·config·문서·커밋)에 IP, 호스트 이름, 계정, 이메일, 개인 경로, 자격 증명 금지(`<server>`, "Linux ROCm 호스트"로). 장비 종류·모델명·번호·상태는 추적하지 않는 config, `docs/report/`, `docs/timeline.md`에만. 나머지 추적 파일은 OS·백엔드로만.
-- **설정은 `.env`** (001-R9): 루트 `.env`(git 제외), 프로세스 환경변수 우선. 새 키는 `.env.example`에도.
-- 결정론: executor와 feature 추출은 같은 입력이면 같은 출력 (031-R7, 030-R1).
+- 모델 코드는 장치 무관, 실행 시 `torch.device`로 고른다. 단위 테스트 CPU, 장치 비교 pytest `gpu` 마커 ([032-R1][s032]).
+- **최적화는 모델 동작 유지** ([032-R19][s032]): 같은 수식의 빠른 구현만. 구조·헤드·해상도·distance bias·dropout·손실·하이퍼파라미터 불변. Linux ROCm 호스트 메모리 예산([060-R3][s060])에서 최악 모양이 돌아야 채택.
+- 버전별 ID·오프셋은 데이터 테이블로만 ([013-R1][s013]).
+- **개인·보안 정보 금지** ([001-R10][s001]): 추적 파일 전부(코드·config·문서·커밋)에 IP, 호스트 이름, 계정, 이메일, 개인 경로, 자격 증명 금지(`<server>`, "Linux ROCm 호스트"로). 장비 종류·모델명·번호·상태는 추적하지 않는 config, `docs/report/`, `docs/timeline.md`에만. 나머지 추적 파일은 OS·백엔드로만.
+- **설정은 `.env`** ([001-R9][s001]): 루트 `.env`(git 제외), 프로세스 환경변수 우선. 새 키는 `.env.example`에도.
+- 결정론: executor와 feature 추출은 같은 입력이면 같은 출력 ([031-R7][s031], [030-R1][s030]).
 - 각 spec의 AC는 테스트나 벤치로 검증.
 - **주석 금지**: 코드·config에 주석을 쓰지 않는다. 예외는 실행에 쓰이는 것만: 지시문(`# noqa`, shebang), argparse가 `__doc__`로 보여 주는 모듈 설명, clap `///` 도움말, `.env.example`의 키 설명, `.gitignore`. 생성 스크립트도 생성하는 config·plan·표에 주석을 쓰지 않는다.
 - **리뷰**: master 반영 전 별개 리뷰어 에이전트로 spec 적합성·코드 품질 리뷰. 지적은 반영하거나 안 한 이유를 남긴다.
@@ -101,8 +102,25 @@ local/                   장비별 (git 제외)
 상세: [commands.md](docs/guide/commands.md), SC:R [scr.md](docs/guide/scr.md).
 - 테스트: `cargo test --workspace`, `<venv python> -m pytest tests/python`(GPU 호스트 `-m gpu`도)
 - 빌드: `tools/openbw/build.sh` → `build_bridge.sh`(Windows `.ps1`), `cargo build --release`, `uv pip install --python <venv python> -e .`
-- 게임: `uranium-hostd serve`, `python -m uranium run --plan config/plans/<plan>.toml`(스크립트 플레이어만이면 `uranium-env run`), `uranium-env calibrate`
+- 게임: `uranium-hostd serve`(OpenBW 인스턴스 데몬), `python -m uranium run --plan config/plans/<plan>.toml`(스크립트 플레이어만이면 `uranium-env run`), `uranium-env calibrate`
 - 리플레이: `uranium-replay build`
 - 학습: `python -m uranium bc | rl`, 작업자 `uranium-train worker`, 감시 `uranium-train supervise`
 - SC:R 실전: `tools\scr\build.ps1` → `python -m uranium scr --checkpoint <ckpt>` → `tools\scr\run.ps1` → 게임 시작은 사람이
 - 평가·측정: [measurement_protocol.md](docs/guide/measurement_protocol.md), `tools/eval/`
+
+[s001]: docs/spec/2026_10_15_22_24_001-system-architecture.md
+[s010]: docs/spec/2026_10_15_22_24_010-game-protocol.md
+[s011]: docs/spec/2026_10_15_22_24_011-bridge-openbw.md
+[s012]: docs/spec/2026_10_15_22_24_012-bridge-remastered.md
+[s013]: docs/spec/2026_10_15_22_24_013-version-mapping.md
+[s021]: docs/spec/2026_10_15_22_24_021-opponent-pool.md
+[s030]: docs/spec/2026_10_15_22_24_030-observation.md
+[s031]: docs/spec/2026_10_15_22_24_031-action-space.md
+[s032]: docs/spec/2026_10_15_22_24_032-model-architecture.md
+[s041]: docs/spec/2026_10_15_22_24_041-imitation-learning.md
+[s042]: docs/spec/2026_10_15_22_24_042-rl-training.md
+[s043]: docs/spec/2026_10_16_22_48_043-ladder-replay-collector.md
+[s060]: docs/spec/2026_10_15_22_24_060-infra.md
+[s061]: docs/spec/2026_10_15_22_24_061-shared-storage.md
+[amb]: docs/spec/README.md
+[ms]: docs/spec/README.md#마일스톤
