@@ -51,7 +51,7 @@ OpenBW `third_party/openbw/sync.h` `start_game`과 `bwgame.h` `lcg_rand`를 그�
 | ① 종족 | 슬롯 0~11 순서로, 활성 슬롯 중 종족이 Random인 플레이어마다 `lcg_rand(144, 0, 2)` 한 번(종족 결정). 그래서 생성기 입력은 seed와 Random 플레이어 수다. 우리는 테란이고 042 사다리·050 점검 상대는 종족 고정이라 0번이다 |
 | ② 멜레 셔플 | 맵의 열린 슬롯 목록 `a = [0, 1, 2, 3]`(빈 열린 슬롯 포함)에 Fisher–Yates: `i = 3, 2, 1` 차례로 `j = lcg_rand(33, 0, i)`, 자리 `a[i]`와 `a[j]`의 플레이어를 맞바꾼다(`j = i`여도 난수는 소비) |
 | 결과 | 플레이어의 시작 슬롯 = 셔플 뒤 그 플레이어가 놓인 자리 k. 시작 위치는 맵의 슬롯 k 시작 위치이고, BWAPI `getStartLocations()`(= `StaticMap.start_locations`)의 k번째다(두 맵 모두 슬롯 순서. 이 대응도 020-AC8 리허설에서 확인) |
-| 첫 목표 적중 | `start_hit = (slot_self == min{i ∈ 0..3, i ≠ slot_enemy})`. T0는 적 건물을 모르면 `start_locations` 인덱스 순으로 자기 것이 아닌 첫 미탐색 시작 위치를 어택땅한다(`crates/uranium-scripted/src/lib.rs` `attack_target`). UAlbertaBot도 같은 방향으로 작동한다(4차 자문). 실제 첫 웨이브는 오버로드 정찰로 바뀔 수 있다(c0 예측 36/40, 실측 33/40) |
+| 첫 목표 적중 | `start_hit = (slot_self == min{i ∈ 0..3, i ≠ slot_enemy})`. T0는 적 건물을 모르면 `start_locations` 인덱스 순으로 자기 것이 아닌 첫 미탐색 시작 위치를 어택땅한다(`crates/uranium-scripted/src/brain/memory.rs` `attack_target`). UAlbertaBot도 같은 방향으로 작동한다(4차 자문). 실제 첫 웨이브는 오버로드 정찰로 바뀔 수 있다(c0 예측 36/40, 실측 33/40) |
 | 분포 | (slot_self, slot_enemy) 쌍 12가지가 고르게 나오고(무작위 시드 20만 개), 적중 쌍은 (1, 0)·(0, 1)·(0, 2)·(0, 3) 4가지라 적중 확률은 1/3이다. 학습 판(해시 시드)도 1/3, `seed_base + n` 점검은 집합마다 크게 다르다(사다리 seed 44001~44030 적중 0/30, `rush-s4` c0 43001~43040 36/40) |
 
 ### 020-R3 타임아웃 규칙
