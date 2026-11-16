@@ -7,9 +7,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from uranium import tables as tb
 from uranium.diag import plan_pred as pp
 from uranium.diag import plan_stats as ps
-from uranium.diag import tables as tb
 
 M0_TOP = (4, 8, 16)
 CAND_TOP = 8
@@ -360,7 +360,7 @@ def m2(data: pp.Data, net, st, k, ev, boot_n, seed) -> dict:
             m = kind == kk
             if m.any():
                 res["M2b"][kk] = {"pairs": int(m.sum()), "rate": ps.ci(b2.mean(np.where(m, ok, np.nan)))}
-        names_a = {a["id"]: a["name"] for a in tb._rows("actions")}
+        names_a = tb.action_names()
         res["M2b"]["by_action"] = {names_a[int(x)]: {"pairs": int((act == x).sum()), "rate": float(ok[act == x].mean())} for x in np.unique(act)}
     else:
         res["M2b"] = {"pairs": 0}

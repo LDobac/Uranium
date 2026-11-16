@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-TABLES = Path(__file__).resolve().parents[3] / "crates" / "uranium-env" / "tables"
+TABLES = Path(__file__).resolve().parents[2] / "crates" / "uranium-env" / "tables"
 
 HP_RATIO, HP_SQRT, SH_RATIO, SH_SQRT = 0, 1, 2, 3
 COMPLETED = 48
@@ -18,14 +18,14 @@ COUNT_LOG = 4.0
 
 
 @functools.cache
-def _rows(name: str) -> list:
+def rows(name: str) -> list:
     key = "action" if name == "actions" else "rows"
     return tomllib.loads((TABLES / f"{name}.toml").read_text(encoding="utf-8"))[key]
 
 
 @functools.cache
 def units() -> dict:
-    return {u["id"]: u for u in _rows("unit_types")}
+    return {u["id"]: u for u in rows("unit_types")}
 
 
 def _playable(u) -> bool:
@@ -83,12 +83,17 @@ def unit_id(name: str) -> int:
 
 @functools.cache
 def action_id(name: str) -> int:
-    return next(a["id"] for a in _rows("actions") if a["name"] == name)
+    return next(a["id"] for a in rows("actions") if a["name"] == name)
+
+
+@functools.cache
+def action_names() -> dict:
+    return {a["id"]: a["name"] for a in rows("actions")}
 
 
 @functools.cache
 def order_id(name: str) -> int:
-    return next(o["id"] for o in _rows("order_types") if o["name"] == name)
+    return next(o["id"] for o in rows("order_types") if o["name"] == name)
 
 
 RACES = ("T", "P", "Z")

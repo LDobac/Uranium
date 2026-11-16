@@ -6,10 +6,10 @@ import numpy as np
 import pytest
 from test_plan_s0 import fake_dump
 
+from uranium import tables as tb
 from uranium.diag import plan_branch as pb
 from uranium.diag import plan_pred as pp
 from uranium.diag import plan_s0
-from uranium.diag import tables as tb
 from uranium.diag.plan_dump import own_columns
 
 BUNKER = "Build_Bunker"

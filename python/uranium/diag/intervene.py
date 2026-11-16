@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from uranium.diag import tables as tb
+from uranium import tables as tb
 
 
 def add_args(p) -> None:

@@ -4,6 +4,8 @@ from pathlib import Path
 
 import torch
 
+from uranium import tables as tb
+
 HEADS = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
 RACES = ("terran", "protoss", "zerg")
 
@@ -151,8 +153,6 @@ class Acc:
 
 class BunkerAcc:
     def __init__(self, before: int):
-        from uranium.diag import tables as tb
-
         self.before = before
         self.action = tb.action_id("Build_Bunker")
         self.sum: dict[str, float] = {}
@@ -162,9 +162,7 @@ class BunkerAcc:
     def add(self, out: dict, g: dict, rows_race: list[str]) -> None:
         dev = out["dists"]["action"].device
         ok = torch.as_tensor(g["weights"], device=dev) > 0
-        from uranium.diag.tables import FRAME_SCALE
-
-        frame = torch.round(torch.as_tensor(g["scalar"][:, 0], device=dev).double() * FRAME_SCALE)
+        frame = torch.round(torch.as_tensor(g["scalar"][:, 0], device=dev).double() * tb.FRAME_SCALE)
         take = ok & (frame < self.before)
         p = out["dists"]["action"][:, self.action].double().exp()
         for name in ["all", *set(rows_race)]:

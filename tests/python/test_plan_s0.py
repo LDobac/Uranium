@@ -6,10 +6,10 @@ import pytest
 import torch
 
 from uranium import _core, ckpt
+from uranium import tables as tb
 from uranium.diag import plan_pred as pp
 from uranium.diag import plan_stats as ps
 from uranium.diag import probe
-from uranium.diag import tables as tb
 from uranium.diag.plan_dump import load, load_rows, model_rows, op_actions, own_columns, own_state
 from uranium.model import UraniumNet, UraniumNetConfig, action_columns, input_dims
 from uranium.model.config import VariantConfig

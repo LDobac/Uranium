@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from uranium.diag import tables as tb
+from uranium import tables as tb
 from uranium.diag.probe import boot, folds_of, r2, ridge_cv, ridge_cv_multi
 
 RETENTION_VARS = ("frame", "sc_worker", "sc_focus", "sc_enemy_total", "own_marine", "own_rax", "vis_enemy", "tok_enemy", "n_foc", "foc_rem")

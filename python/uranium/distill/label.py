@@ -5,6 +5,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from uranium import tables as tb
+
 NOISE_VERSION = "rowhash-1"
 FRAMES_PER_MINUTE = 24 * 60
 
@@ -76,7 +78,7 @@ def label_games(input_dir: str, ckpt_dir: str, out: str, records: str, config: s
     lab = _core.DistillLabeller(config, input_dir, label_seed, maps_dir=maps_dir, synthetic_maps=synthetic_maps, only=todo)
     lab.open(out, records, json.dumps(policy), threads)
     states = [None] * groups
-    names = _action_names()
+    names = tb.action_names()
     bands: dict = {}
     steps_total = 0
     while (b := lab.next()) is not None:
@@ -130,12 +132,6 @@ def label_games(input_dir: str, ckpt_dir: str, out: str, records: str, config: s
                "games": lab.games, "steps_labelled": steps_total, **written,
                "label_policy": policy, "actions_by_minute": dict(sorted(bands.items(), key=lambda kv: int(kv[0])))}
     return summary
-
-
-def _action_names() -> dict:
-    from uranium.diag import tables as tb
-
-    return {a["id"]: a["name"] for a in tb._rows("actions")}
 
 
 def main(a) -> int:

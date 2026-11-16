@@ -1,6 +1,6 @@
 import numpy as np
 
-from uranium.diag import tables as tb
+from uranium import tables as tb
 
 RACE_INPUT = {0: "T", 1: "P", 2: "Z"}
 

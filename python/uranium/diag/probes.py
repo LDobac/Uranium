@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from uranium.diag import tables as tb
+from uranium import tables as tb
 from uranium.diag.features import game_labels
 from uranium.diag.probe import GAIN_METHODS, onehot, run_task
 

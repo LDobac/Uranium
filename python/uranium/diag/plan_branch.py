@@ -9,10 +9,10 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from uranium import tables as tb
 from uranium.diag import plan_pred as pp
 from uranium.diag import plan_s0
 from uranium.diag import plan_stats as ps
-from uranium.diag import tables as tb
 from uranium.diag.plan_dump import own_columns, own_state
 
 SCV8 = pp.Q_NAMES.index("scv8")

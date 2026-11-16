@@ -35,7 +35,7 @@ def tiny_b(variant: VariantConfig | None = None):
 
 def test_scalar_layout_matches_the_schema_032_r21():
     from uranium import _core
-    from uranium.diag import tables as T
+    from uranium import tables as T
 
     d = json.loads(_core.feature_dims())
     cfg = UraniumNetConfig(input=input_dims())

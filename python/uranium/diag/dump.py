@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from uranium.diag import tables as tb
+from uranium import tables as tb
 from uranium.diag.features import fill_race_cols, lane_features, race_of
 from uranium.diag.stream import lane_groups
 

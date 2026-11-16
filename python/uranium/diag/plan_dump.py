@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from uranium.diag import tables as tb
+from uranium import tables as tb
 from uranium.diag.features import fill_race_cols, game_labels, lane_features, race_of
 from uranium.diag.stream import lane_groups
 
@@ -20,14 +20,14 @@ SIEGE = ("Terran_Siege_Tank_Tank_Mode", "Terran_Siege_Tank_Siege_Mode")
 
 
 def op_actions() -> list[int]:
-    return sorted(a["id"] for a in tb._rows("actions") if a["group"] in OP_GROUPS or a["name"] in OP_EXTRA)
+    return sorted(a["id"] for a in tb.rows("actions") if a["group"] in OP_GROUPS or a["name"] in OP_EXTRA)
 
 
 @functools.cache
 def own_columns() -> tuple[list[str], dict[int, list[int]], dict[int, int]]:
     terran = set(tb.terran())
     names, types, of_action = [], {}, {}
-    for a in sorted(tb._rows("actions"), key=lambda a: a["id"]):
+    for a in sorted(tb.rows("actions"), key=lambda a: a["id"]):
         u = a.get("unit_type")
         if a["group"] not in ("build", "addon", "train") or u not in terran or a["name"] == "Train_NuclearMissile":
             continue
@@ -44,7 +44,7 @@ def own_columns() -> tuple[list[str], dict[int, list[int]], dict[int, int]]:
 
 @functools.cache
 def _group(aid: int) -> str:
-    return next(a["group"] for a in tb._rows("actions") if a["id"] == aid)
+    return next(a["group"] for a in tb.rows("actions") if a["id"] == aid)
 
 
 def own_state(scalar: np.ndarray) -> np.ndarray:

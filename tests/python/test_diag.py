@@ -7,8 +7,8 @@ import pytest
 import torch
 
 from uranium import _core, ckpt
+from uranium import tables as tb
 from uranium.diag import cli, probe
-from uranium.diag import tables as tb
 from uranium.diag.dump import edit_count, edit_start, pad_one
 from uranium.diag.summary import SCHEMA, build, validate
 from uranium.model import UraniumNet, UraniumNetConfig, action_columns, input_dims

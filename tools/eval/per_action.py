@@ -295,7 +295,7 @@ def score(ckpt_dir: str, datasets: list[str], shards: list[str], backend_name: s
 
     from uranium import _core, ckpt
     from uranium.device import autocast, configure, resolve
-    from uranium.diag.tables import FRAME_SCALE
+    from uranium.tables import FRAME_SCALE
     from uranium.model import to_obs
 
     names = {a["id"]: a["name"] for a in ec.actions()}
