@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Build OpenBW + BWAPI (OpenBW fork) headless for Uranium (spec 011, M1(b)).
-# Clones pinned commits into third_party/, applies third_party/patches/*.patch, builds Release.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -9,7 +7,7 @@ OPENBW_COMMIT=4b046d5f65302b10cb0a745f0fecd37ec85b20a8
 BWAPI_COMMIT=48124ba8ed1b4d52b3dfd52acbaf34afb9a37fe2
 JOBS="${JOBS:-$(nproc)}"
 
-fetch() { # dir url commit
+fetch() {
   local dir="$1" url="$2" commit="$3"
   if [[ ! -d "$dir/.git" ]]; then
     git clone -q "$url" "$dir"
@@ -20,7 +18,7 @@ fetch() { # dir url commit
   fi
 }
 
-apply_patch() { # dir patch
+apply_patch() {
   local dir="$1" patch="$2"
   if git -C "$dir" apply --reverse --check "$patch" 2>/dev/null; then
     echo "[build] already applied: $(basename "$patch")"

@@ -1,5 +1,3 @@
-# Smoke for the 050 E-Regression scenario bots: 2 games each (one per map), replays kept so
-# the strategy can be checked from the command log.
 name = "smoke-regression"
 seed_base = 51000
 save_replay = true

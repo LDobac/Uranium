@@ -1,39 +1,4 @@
-"""Lineage measurement protocol (050-R9, 050-AC5; plan "측정 프로토콜", docs/measurement_protocol.md):
-config/protocol/lineage.toml pins, per lineage point, the metric menu and the conditions Checkpoint 1 was
-measured with; this tool turns a (point, checkpoint) into eval jobs and refuses anything that differs (plan
-conditions, sampling, zero_last_failed, family, run prefix, T1 platform, OSS bot builds). Every job gets a
-`protocol.json` record: checkpoint sha256, git commit and uncommitted protocol files (paths, diff hash), plan
-content hashes, host platforms and bot hashes; `verify` checks a job against it.
-
-The Checkpoint 1 lineage (`--lineage ck1`) is measured already: cells it has are not measured again but
-re-tabulated from its existing outputs with both held / bunker definitions (`tables`, also games of a
-protocol plan inside a larger job). It takes the cue diagnostics and, per point, the 050-R9 point-table cells
-it never measured (`ck1_supplement`), with the same plans; its dead_channels cell is not measured (no
-training-log statistics).
-
-The diagnostics (`diag`, `check-diag`): cue_diag runs `python -m uranium diag` on the pinned hold-outs (the Zerg
-teacher hold-out and human TvT / TvP games) with the pinned settings; dead_channels summarises the run's
-041-R25 training-log records (lineage.toml [metric.cue_diag], [metric.dead_channels]); tables:
-tools/eval/diag_table.py.
-The s1e2 per-checkpoint loop (041-R20 ③): tools/eval/s1e2_loop.py.
-
-    python tools/eval/protocol.py list
-    python tools/eval/protocol.py job --lineage m2 --point s2e2 --checkpoint checkpoints/m2-s2e2/ckpt-N \\
-        --metrics rush,macro,tvz --job m2-s2e2-20261112
-    python tools/eval/protocol.py tables --lineage ck1 --point r1 [--json out.json]
-    python tools/eval/protocol.py render --plan rush_check --checkpoint checkpoints/<run>/ckpt-N --name <stage>
-    python tools/eval/protocol.py verify <job dir> --lineage m2 --point s2e2
-    python tools/eval/protocol.py bc-eval --metric val500 --lineage m2 --point s2e2 --checkpoint <dir> [--out <json>]
-    python tools/eval/protocol.py check-bc-eval <output json> --metric val500
-    python tools/eval/protocol.py diag --lineage m2 --point s1e1 --checkpoint checkpoints/m2-s1/ckpt-N --train-log <log> [--metrics cue_diag,dead_channels] [--run]
-    python tools/eval/protocol.py check-diag <shared>/artifacts/diag/<run>__<ckpt> [--metrics ...] [--checkpoint <dir>]
-    python tools/eval/protocol.py bots [--hosts tools/eval/hosts.toml]
-    python tools/eval/protocol.py compare <tables json A> <tables json B>
-
-Host lists (addresses, platforms, ssh aliases, bot folders) live in the git-ignored tools/eval/hosts.toml
-(template tools/eval/hosts.example.toml, 001-R10). Relative checkpoints are under URANIUM_SHARED_DIR (061).
-DAgger generation plans are written by tools/eval/rush_check_plan.py --dagger (docs/commands.md).
-"""
+"""Lineage measurement protocol (050-R9, 050-AC5; plan "측정 프로토콜", docs/guide/measurement_protocol.md):"""
 
 from __future__ import annotations
 
@@ -62,19 +27,14 @@ WEIGHTS = "model.safetensors"
 RECORD = "protocol.json"
 PROTOCOL_PATHS = ("tools/eval", "config/plans/protocol", "config/protocol")
 PLATFORMS = ("windows", "linux")
-# Plan defaults of crates/uranium-runner/src/plan.rs (Plan, Matchup, Side) for the normalised form.
 PLAN_DEFAULTS = {"seed_base": 1000, "same_seed": False, "max_frames": 86_400, "wall_timeout_s": 1800, "privileged": False,
                  "save_replay": False, "zero_last_failed": False, "surrender": "shadow", "surrender_chat": "gg"}
 CKPT, NAME = "@CHECKPOINT@", "@NAME@"
-# 032-R8: CUDA runs bf16 mixed, ROCm f32 (recorded per inference backend).
 PRECISION = {"cuda": "bf16-mixed", "rocm": "f32", "cpu": "f32"}
 
 
 class Refused(Exception):
-    """A request that differs from the pinned protocol (050-R9)."""
-
-
-# ---------------------------------------------------------------- lineage and templates
+    pass
 
 
 def load_lineage(path: Path = LINEAGE) -> dict:
@@ -89,9 +49,6 @@ def model_sides(plan: dict):
 
 
 def normalize(plan: dict) -> dict:
-    """The plan's conditions: defaults filled in, the name dropped, every model checkpoint (p0 or p1)
-    replaced by @CHECKPOINT@ (sampling mode kept), seed_base / same_seed dropped when an explicit seed
-    list is used."""
     p = {**PLAN_DEFAULTS, **{k: v for k, v in plan.items() if k not in ("name", "matchup")}}
     if "seeds" in p:
         p.pop("seed_base")
@@ -123,7 +80,6 @@ def template(lin: dict, plan_id: str) -> tuple[str, dict]:
 
 
 def check_template(lin: dict, plan_id: str) -> dict:
-    """The template still has the pinned conditions (lineage.toml) and placeholders; returns the plan."""
     spec = lin["plan"][plan_id]
     text, plan = template(lin, plan_id)
     sides = list(model_sides(plan))
@@ -155,8 +111,6 @@ def render(lin: dict, plan_id: str, checkpoint: str, name: str) -> str:
 
 
 def identify(lin: dict, plan: dict) -> str | None:
-    """Protocol plan id whose template has exactly this plan's conditions, else None. A branch-game plan
-    (020-R22 keys, 051) is never a protocol plan (050: not in the lineage measurement or the gate)."""
     if ec.is_branch_plan(plan):
         return None
     h = conditions_sha256(plan)
@@ -174,7 +128,6 @@ def point(lin: dict, pid: str) -> dict:
 
 
 def metric_plans(lin: dict, pt: dict, metric: str) -> list[str]:
-    """Plan ids of a game metric for this point's family (`tvz` -> tvz_bc / tvz_rl)."""
     m = lin["metric"][metric]
     plans = m.get("plans", {})
     if isinstance(plans, dict):
@@ -199,10 +152,6 @@ def check_metric(lin: dict, pt: dict, metric: str) -> dict:
 
 
 def check_new_measurement(lin: dict, lineage: str, metric: str, pt: dict) -> None:
-    """050-R9: a lineage that is already measured (Checkpoint 1) is not measured again. It takes its new
-    metrics (lineage `new_metrics`: the diagnostics) and, per point, the cells of the 050-R9 point table it
-    never measured (`ck1_supplement`, "비교가 필요하면 Checkpoint 1 쪽을 같은 plan으로 보충 측정한다");
-    cells it has are re-tabulated from its existing outputs (`protocol.py tables`)."""
     if lineage not in lin["lineage"]:
         raise Refused(f"no lineage {lineage!r}")
     no_counterpart(lineage, pt)
@@ -226,17 +175,11 @@ def run_of(checkpoint: str) -> str:
 
 
 def no_counterpart(lineage: str, pt: dict) -> None:
-    """050-R9 point table (2026-11-14, 044-R6 / R7 / R11): the distillation rounds, the fixed model D and the fixed
-    RL checks have no Checkpoint 1 counterpart (no `ck1_checkpoint`): nothing of the Checkpoint 1 lineage is
-    measured or re-tabulated there."""
     if lineage == "ck1" and not pt.get("ck1_checkpoint"):
         raise Refused(f"point {pt['id']} has no Checkpoint 1 counterpart (050-R9 point table): not a point of lineage ck1")
 
 
 def check_checkpoint(lin: dict, lineage: str, pt: dict, checkpoint: str) -> None:
-    """Checkpoint 1 points take exactly their recorded checkpoint (or a copy with the same weights); other
-    lineages a run with their prefix, and at a point with `run_pattern` (044: the distillation rounds
-    `m2-distill-d<R>`) a run whose name (prefix removed) matches it."""
     if lineage not in lin["lineage"]:
         raise Refused(f"no lineage {lineage!r}")
     if lineage == "ck1":
@@ -253,9 +196,6 @@ def check_checkpoint(lin: dict, lineage: str, pt: dict, checkpoint: str) -> None
         raise Refused(f"point {pt['id']} takes runs {prefix}<{pat}> (lineage.toml run_pattern); {checkpoint} is run {run!r}")
 
 
-# ---------------------------------------------------------------- records
-
-
 def checkpoint_dir(checkpoint: str) -> Path:
     p = Path(checkpoint)
     if p.is_absolute():
@@ -269,8 +209,6 @@ def checkpoint_dir(checkpoint: str) -> Path:
 
 @functools.lru_cache(maxsize=None)
 def checkpoint_sha256(checkpoint: str) -> str:
-    """sha256 of the weights file; its first 12 hex digits are the results' `model.checkpoint` id
-    (crates/uranium-agent/src/infer.rs checkpoint_id)."""
     f = checkpoint_dir(checkpoint) / WEIGHTS
     if not f.is_file():
         raise Refused(f"no {f}")
@@ -286,8 +224,6 @@ def _git(*a: str) -> subprocess.CompletedProcess:
 
 
 def git_state() -> dict:
-    """Commit of this checkout and the uncommitted changes of the protocol files (paths and a sha256 of
-    `git diff HEAD` plus the untracked files' contents). Refused outside a git checkout."""
     try:
         head = _git("rev-parse", "HEAD")
     except OSError as e:
@@ -318,13 +254,9 @@ def read_record(job: Path) -> dict | None:
     return json.loads(f.read_text(encoding="utf-8")) if f.is_file() else None
 
 
-# ---------------------------------------------------------------- hosts, T1 platform, OSS bot builds
-
-
 def load_hosts(path: Path) -> list[dict]:
     if not path.is_file():
         raise Refused(f"no host list {path} (copy tools/eval/hosts.example.toml, git-ignored, 001-R10)")
-    # utf-8-sig: Windows PowerShell 5.1 writes a BOM.
     hosts = tomllib.loads(path.read_text(encoding="utf-8-sig")).get("host", [])
     if not hosts:
         raise Refused(f"{path}: no [[host]]")
@@ -332,7 +264,6 @@ def load_hosts(path: Path) -> list[dict]:
 
 
 def job_hosts_toml(hosts: list[dict]) -> str:
-    """The job's hosts.toml (020: addr, max_games only)."""
     out = []
     for h in hosts:
         out.append(f'[[host]]\naddr = "{h["addr"]}"\n' + (f"max_games = {h['max_games']}\n" if "max_games" in h else ""))
@@ -340,9 +271,6 @@ def job_hosts_toml(hosts: list[dict]) -> str:
 
 
 def check_t1_platform(pt: dict, hosts: list[dict]) -> list[str]:
-    """User decision 2026-11-09 (050-R9): T1 games run on the platform of the point's Checkpoint 1
-    counterpart (BC baseline on the Linux ROCm hosts, Checkpoint 1 on the Windows host), because the
-    OSS bot binaries differ between platforms. Every host of a T1 job needs `platform` in the host list."""
     allowed = pt.get("t1_platforms")
     if not allowed:
         raise Refused(f"point {pt['id']} has no Checkpoint 1 T1 counterpart platform (lineage.toml t1_platforms)")
@@ -377,9 +305,6 @@ def remote_bot_hashes(ssh: str, bots_dir: str, bots: list[str]) -> dict[str, str
 
 
 def check_bots(hosts: list[dict], bots: list[str], given: Path | None = None) -> dict:
-    """Every game host's OSS bot binaries of this job are accepted NDEBUG builds (t1_bots.toml). Hashes
-    come from a file of `<addr> <bot> <sha256>` lines, `local = true` (this PC's URANIUM_OSS_BOTS_DIR) or
-    `ssh = "<alias>"` with `oss_bots_dir` (the host's URANIUM_OSS_BOTS_DIR, module.so)."""
     accepted = tomllib.loads(BOTS.read_text(encoding="utf-8"))["bot"]
     seen: dict[str, dict[str, str]] = {}
     problems = []
@@ -418,20 +343,14 @@ def oss_bots(plans: list[dict]) -> list[str]:
     return sorted({m["p1"]["name"] for p in plans for m in p["matchup"] if m["p1"]["kind"] == "oss"})
 
 
-# ---------------------------------------------------------------- diagnostics (cue_diag, dead_channels)
-# 050-R9 "추가 지표" (user decisions 2026-11-10, AMB-050-4 / -5 / -6): cue_diag = `python -m uranium diag` on
-# the pinned hold-outs (lineage.toml [metric.cue_diag.<set>]); dead_channels = the run's 041-R25 training-log
-# records (tools/eval/spatial_logs.py). `diag` prints (or with --run, runs) the commands; `check-diag`
-# refuses outputs made with other settings, data or checkpoint, or without the finished record.
-
 DIAG_KINDS = ("diag_cue", "diag_train_log")
 DIAG_RECORD = "protocol.json"
-RUNNING = "running.json"  # the attempt marker of `diag --run` (becomes protocol.json when it finishes)
-COPY = "copy"  # the step that copies a local dump to <out>/<set>/dump (.part, then rename)
-FETCH = "fetch"  # `--part cpu`: <out>/<set>/dump to this host's cache (.part, then rename)
-GPU_STEPS = ("dump", COPY)  # `diag --run --part gpu`; the rest is `--part cpu`
-HOLDOUT_DIR = "diag_holdout"  # under ec.cache_dir(): the hold-out link trees
-LOCAL_DUMP_DIR = "diag_dump"  # under ec.cache_dir(): the dumps before their copy to the shared drive
+RUNNING = "running.json"
+COPY = "copy"
+FETCH = "fetch"
+GPU_STEPS = ("dump", COPY)
+HOLDOUT_DIR = "diag_holdout"
+LOCAL_DUMP_DIR = "diag_dump"
 TRAIN_LOG = "spatial_log.json"
 
 
@@ -447,15 +366,11 @@ def cue_set(lin: dict, name: str) -> dict:
 
 
 def files_fingerprint(src: Path, parts: list[str]) -> tuple[int, str]:
-    """(file count, sha256 of the sorted "<part>/<file> <bytes>" lines) of the shard files under src/<part>/
-    (a source on the shared drive or a link tree of it)."""
     lines = sorted(f"{p}/{f.name} {f.stat().st_size}" for p in parts for f in (src / p).glob("shard_*.bin.zst"))
     return len(lines), hashlib.sha256("".join(l + "\n" for l in lines).encode()).hexdigest()
 
 
 def manifest_fingerprint(shared: Path, datasets: list[str]) -> tuple[int, str]:
-    """(file count, sha256 of the sorted "<source>/<file> <sha256> <bytes>" lines) of datasets' manifest.json
-    (061-R7; <shared>/datasets/<dataset>/manifest.json, source = the dataset's folder name)."""
     lines = []
     for ds in datasets:
         m = json.loads((shared / "datasets" / ds / "manifest.json").read_text(encoding="utf-8"))
@@ -470,15 +385,6 @@ def _check_files(name: str, got: tuple[int, str], want: tuple[int, str], where) 
 
 
 def set_data(lin: dict, name: str, shared: Path | None = None, work: Path | None = None, create: bool = True) -> list[str]:
-    """The data arguments of a cue hold-out set on this host, after its fingerprint check:
-    - `holdout` (link trees): `--shards <work>/by_name/<name>` per entry (per_action.link_tree of the pinned
-      parts; work = <cache>/diag_holdout); the source and, once linked, the link tree are checked. The folder
-      is named after the entry because the shard reader orders the games by `<folder>/<part>/shard_*`
-      (data::shard_keys): `hold_macro2/...` before `hold_orig/...`, the order of the U1 parity and the lambda
-      runs (their folders <data>/hold_orig, <data>/hold_macro2). The earlier `<name>/botgen` trees read every
-      `hold_orig` game first: the same rows, other game ids, so other folds and other probe values.
-      create=False: only the paths (and the source check), nothing written.
-    - `datasets`: `--dataset <name>` per dataset, the manifests checked."""
     import per_action
 
     s = cue_set(lin, name)
@@ -500,30 +406,23 @@ def set_data(lin: dict, name: str, shared: Path | None = None, work: Path | None
 
 
 def data_tails(s: dict) -> list[str]:
-    """The ends of the data folders a dump of the set records (`diag dump` manifest `data`, in its order): the
-    datasets, or the hold-out entries' names (the folder name orders the games, `set_data`)."""
     if "datasets" in s:
-        return sorted(s["datasets"])  # storage::dataset_dirs sorts the dataset names
+        return sorted(s["datasets"])
     return [h["name"] for h in s["holdout"]]
 
 
 def output_name(checkpoint: str) -> str:
-    """`<run>__<ckpt>` of a checkpoint path (an RL agent folder adds its tail: ckpt-N-agents-main)."""
     parts = [s for s in checkpoint.replace("\\", "/").split("/") if s]
     i = next((k for k, s in enumerate(parts) if s.startswith("ckpt-")), len(parts) - 1)
     return f"{run_of(checkpoint)}__{'-'.join(parts[i:])}"
 
 
 def diag_out(lin: dict, metric: str, checkpoint: str) -> str:
-    """The output folder of a checkpoint's diagnostics, relative to URANIUM_SHARED_DIR."""
     run, ck = output_name(checkpoint).split("__", 1)
     return diag_metric(lin, metric)["output"].replace("<run>", run).replace("<ckpt>", ck)
 
 
 def cue_commands(lin: dict, name: str, ckpt: str, out: Path, data: list[str], py: str = "python", dump: Path | None = None) -> list[list[str]]:
-    """The pinned `python -m uranium diag` commands of a cue hold-out set for the checkpoint folder `ckpt` (a
-    path on the running host) writing into `out` (<out>/<set>); the dump goes to `dump` (default <out>/dump;
-    `diag --run` dumps into this host's cache and copies it to <out>/dump afterwards)."""
     m = diag_metric(lin, "cue_diag")
     s = cue_set(lin, name)
     d, p = s["dump"], s["probes"]
@@ -548,7 +447,6 @@ def cue_commands(lin: dict, name: str, ckpt: str, out: Path, data: list[str], py
 
 
 def summary_command(lin: dict, pt: dict, name: str, out: Path, py: str = "python") -> list[str]:
-    """`diag summary` of one cue set (<out>/<set>/summary.json)."""
     cmd = [py, "-m", "uranium", "diag", "summary", "--point", pt["id"], "--probes", str(out / "probes.json")]
     if "intervene" in cue_set(lin, name):
         cmd += ["--intervene", str(out / "intervene.json")]
@@ -556,8 +454,6 @@ def summary_command(lin: dict, pt: dict, name: str, out: Path, py: str = "python
 
 
 def train_log_command(lin: dict, pt: dict, checkpoint: str, log: str, ckpt: str, out: Path, py: str = "python") -> list[str]:
-    """tools/eval/spatial_logs.py on the run's training log: records from the pinned update to the checkpoint's
-    (BC family: ckpt-N = update N; RL: the whole log of agent `main`)."""
     m = diag_metric(lin, "dead_channels")
     cmd = [py, "tools/eval/spatial_logs.py", log, "--checkpoint", ckpt, "--from-update", str(m["from_update"])]
     n = re.match(r"ckpt-(\d+)$", Path(checkpoint).name)
@@ -582,7 +478,6 @@ def _load(f: Path, problems: list[str]) -> dict | None:
 
 
 def check_cue_set(lin: dict, name: str, d: Path, sha: str | None) -> list[str]:
-    """Problems of one cue set's outputs (<out>/<set>) against its pinned settings."""
     m = diag_metric(lin, "cue_diag")
     s = cue_set(lin, name)
     dm, p, rep = s["dump"], s["probes"], s["report"]
@@ -594,9 +489,6 @@ def check_cue_set(lin: dict, name: str, d: Path, sha: str | None) -> list[str]:
             problems.append(f"{name} {what}: {got!r}, pinned {want!r}")
 
     def data(what: str, got) -> None:
-        # the folders in the pinned order, each named as its hold-out entry (this tool's link trees by_name/<name>,
-        # the lambda runs' <data>/<name>): the folder name orders the games (set_data); the row / game counts
-        # fingerprint the content
         got = list(got or [])
         if len(got) != len(tails) or not all(_ends_with(g, t) for g, t in zip(got, tails)):
             problems.append(f"{name} {what} data {got}: not the pinned hold-out (.../{', .../'.join(tails)}; a folder named otherwise orders the games otherwise)")
@@ -614,7 +506,7 @@ def check_cue_set(lin: dict, name: str, d: Path, sha: str | None) -> list[str]:
         for k, got in (("expect_games", man.get("games")), ("expect_rows", st.get("rows")), ("expect_act_rows", st.get("act_rows"))):
             if k in dm:
                 same(f"dump {k.removeprefix('expect_')}", got, dm[k])
-        if "expect_game_rows_sha256" in dm:  # the game order: the folds and bootstrap follow the game ids
+        if "expect_game_rows_sha256" in dm:
             same("dump game order (game_rows_sha256)", game_rows_sha256(d / "dump"), dm["expect_game_rows_sha256"])
         if dm["cf"]:
             same("dump cf_starts", man.get("cf_starts"), {r: list(v) for r, v in dm["cf_starts"].items()})
@@ -641,7 +533,6 @@ def check_cue_set(lin: dict, name: str, d: Path, sha: str | None) -> list[str]:
             for t, (rows, games) in p["expect_tasks"].items():
                 x = tasks.get(t, {})
                 same(f"probes {race} {t} rows / games", [x.get("rows"), x.get("games")], [rows, games])
-            # a race's task the user marked not measurable on this data (AMB-050-4, 2026-11-11) is not required
             for t in set(p["expect_tasks"]) | (set(rep.get("required", [])) - set(not_measurable(rep, race))):
                 x = tasks.get(t, {})
                 if "metrics" not in x:
@@ -666,15 +557,10 @@ def check_cue_set(lin: dict, name: str, d: Path, sha: str | None) -> list[str]:
 
 
 def not_measurable(rep: dict, race: str) -> dict[str, str]:
-    """{task: reason} of a cue set's `report.not_measurable` for `race`: probed, not required, labelled in the tables
-    (user decision 2026-11-11, AMB-050-4: the human TvT barracks count)."""
     return dict((rep.get("not_measurable") or {}).get(race, {}))
 
 
 def game_rows_sha256(dump: Path) -> str | None:
-    """sha256 of the dump's rows per game id ("n0,n1,..." in id order): fixes which game got which id, so the
-    probes' game folds and bootstrap (050-R9: the same numbers as the lambda runs on the same weights).
-    None without rows."""
     import numpy as np
 
     parts = sorted(Path(dump).glob("rows_p*.npz"))
@@ -685,8 +571,6 @@ def game_rows_sha256(dump: Path) -> str | None:
 
 
 def data_fingerprint(lin: dict, name: str, d: Path) -> dict | None:
-    """What a cue set's outputs say about its data only (the same for every checkpoint): the dump's games /
-    rows / activation rows and the reported probe tasks' rows / games per race."""
     f = d / "dump" / "manifest.json"
     if not f.is_file():
         return None
@@ -703,9 +587,6 @@ def data_fingerprint(lin: dict, name: str, d: Path) -> dict | None:
 
 
 def data_consistency(lin: dict, name: str, d: Path) -> list[str]:
-    """The set's data fingerprint against every other finished output folder beside this one
-    (<shared>/artifacts/diag/*/<set>): the same hold-out gives the same numbers for every checkpoint, so a
-    difference means other data (guards the sets whose fingerprint is not pinned yet)."""
     mine = data_fingerprint(lin, name, d)
     out = d.parent
     if mine is None or not out.parent.is_dir():
@@ -728,7 +609,6 @@ def data_consistency(lin: dict, name: str, d: Path) -> list[str]:
 
 
 def unpinned(lin: dict, out: Path) -> list[str]:
-    """The data fingerprints a set does not pin yet (TBD, measured on the first run): the values found."""
     notes = []
     for name in diag_metric(lin, "cue_diag")["sets"]:
         dm = cue_set(lin, name)["dump"]
@@ -756,9 +636,6 @@ def check_train_log(lin: dict, out: Path) -> list[str]:
 
 
 def check_diag(lin: dict, metric: str, out: Path, sha: str | None = None) -> list[str]:
-    """Problems of a diagnostic output folder against the pinned settings (empty = conforms). `sha` = the
-    checkpoint's weights sha256 the outputs must be of. The folder needs the finished protocol.json of
-    `diag --run` with the checkpoint sha256, the metric and the git commit (050-R9 record)."""
     m = diag_metric(lin, metric)
     problems: list[str] = []
     rec = _load(out / DIAG_RECORD, problems)
@@ -782,7 +659,6 @@ def check_diag(lin: dict, metric: str, out: Path, sha: str | None = None) -> lis
 
 
 def next_failed(p: Path) -> Path:
-    """<p>.failed-<k> with the first free k (a failed attempt is renamed, never deleted)."""
     k = 1
     while p.with_name(f"{p.name}.failed-{k}").exists():
         k += 1
@@ -790,7 +666,6 @@ def next_failed(p: Path) -> Path:
 
 
 def copy_dump(src: Path, dst: Path) -> None:
-    """A local dump to the shared drive: copy into <dst>.part, then rename (as the lambda-run scripts)."""
     import shutil
 
     part = dst.with_name(dst.name + ".part")
@@ -801,24 +676,18 @@ def copy_dump(src: Path, dst: Path) -> None:
 
 
 def diag_record_cmd(c: list[str], roots: dict[str, Path]) -> list[str]:
-    """A command as protocol.json keeps it: `python` for the interpreter, host paths as <shared> / <cache>."""
     return redact_cmd(c if c[0] in (COPY, FETCH) else ["python", *c[1:]], roots)
 
 
 def final_only_metrics(pt: dict) -> list[str]:
-    """The diagnostics a point takes at its run's final checkpoint only: `diag_final_only = true` = cue_diag (s1e2,
-    AMB-050-6: dead_channels not restricted), or a list (rl-fix: cue_diag and dead_channels, user decision 2026-11-14)."""
     f = pt.get("diag_final_only")
     return list(f) if isinstance(f, list) else (["cue_diag"] if f else [])
 
 
 def check_final_only(pt: dict, checkpoint: str) -> None:
-    """A point with `diag_final_only` (s1e2, AMB-050-6): the cue diagnostics at the run's final checkpoint only
-    (the run folder has DONE and no later ckpt-N)."""
     if not pt.get("diag_final_only"):
         return
     d = checkpoint_dir(checkpoint)
-    # BC: <run>/ckpt-N; RL (rl-fix, user decision 2026-11-14): <run>/ckpt-N/agents/<agent>
     d = next((p for p in (d, d.parent, d.parent.parent) if p.name.startswith("ckpt-")), d)
     run = d.parent
     steps = sorted(int(x.name[5:]) for x in run.glob("ckpt-*") if x.name[5:].isdigit())
@@ -829,7 +698,6 @@ def check_final_only(pt: dict, checkpoint: str) -> None:
 
 
 def step_part_name(step: str) -> str:
-    """`gpu` for the steps of `diag --run --part gpu` (the dumps and their copies), else `cpu`."""
     return "gpu" if step in GPU_STEPS else "cpu"
 
 
@@ -838,8 +706,6 @@ def step_part(c: list[str]) -> str:
 
 
 def cpu_order(cmds: list[list[str]], out: Path, local: Path) -> list[list[str]]:
-    """The cpu steps of `cmds` for `--part cpu`: per cue set, the dump fetched from <out>/<set>/dump into this
-    host's cache (the path the probes / intervene commands read) before its first analysis."""
     todo, fetched = [], set()
     for c in cmds:
         if step_part(c) != "cpu":
@@ -854,17 +720,6 @@ def cpu_order(cmds: list[list[str]], out: Path, local: Path) -> list[list[str]]:
 
 
 def cmd_diag(a) -> None:
-    """050-R9 diagnostics of a lineage point's checkpoint. Without --run: the pinned commands for this host
-    (paths of this host; nothing is written). With --run: builds the hold-out link trees, marks the attempt
-    (<out>/running.json), runs the commands with the dumps in this host's cache, copies each dump to
-    <out>/<set>/dump, writes <out>/protocol.json and runs `check-diag`. A folder without a finished
-    protocol.json (an earlier attempt that failed) is renamed to <out>.failed-<k> first. Run it on a Linux
-    ROCm host (the pinned backend).
-
-    `--part gpu` / `--part cpu` split one attempt over two hosts at the same git commit: `gpu` (the Linux ROCm
-    host) runs the dumps and their copies to the shared drive and leaves running.json; `cpu` (any Linux host,
-    the probes run on the CPU: `--device cpu`) fetches the dumps into its cache, runs the probes,
-    interventions, summaries and the training-log step, and finishes the record. Every step records its host."""
     lin = load_lineage()
     pt = point(lin, a.point)
     metrics = [x.strip() for x in a.metrics.split(",") if x.strip()]
@@ -890,7 +745,6 @@ def cmd_diag(a) -> None:
     cmds = []
     if "cue_diag" in metrics:
         for name in diag_metric(lin, "cue_diag")["sets"]:
-            # the cpu part reads the dumps, not the shards: no link trees there
             cmds += cue_commands(lin, name, ck, out / name, set_data(lin, name, shared, create=a.run and a.part != "cpu"), py, dump=local / name / "dump")
             cmds.append([COPY, str(local / name / "dump"), str(out / name / "dump")])
             cmds.append(summary_command(lin, pt, name, out / name, py))
@@ -927,13 +781,12 @@ def cmd_diag(a) -> None:
     now = lambda: datetime.datetime.now().astimezone().isoformat(timespec="seconds")  # noqa: E731
     if a.part == "cpu":
         rec = cpu_record(out, sha, metrics, git, a.takeover)
-        if local.exists():  # an earlier cpu attempt on this host: kept under another name
+        if local.exists():
             moved = next_failed(local)
             local.rename(moved)
             print(f"[diag] earlier local copy kept as {moved}", flush=True)
         rec["parts"]["cpu"] = {"host": host, "platform": sys.platform, "git": git, "started": now(), "finished": None}
         rec["train_log"] = {"file": Path(a.train_log).name, "sha256": log_sha} if log_sha else None
-        # the gpu part's commands, then this attempt's (an earlier failed cpu attempt's are not repeated)
         rec["commands"] = [c for c in rec["commands"] if step_part(c) == "gpu"] + [diag_record_cmd(c, roots) for c in cmds]
     else:
         if (out / RUNNING).is_file() and not a.takeover:
@@ -945,7 +798,7 @@ def cmd_diag(a) -> None:
                 raise Refused(f"{out / RUNNING}: an attempt in progress (host {prev.get('host', '?')}, started {prev.get('started', '?')}, "
                               f"no failed step); --takeover when its host is gone")
         for p in (out, local):
-            if p.exists():  # an earlier attempt without a finished record: kept under another name
+            if p.exists():
                 moved = next_failed(p)
                 p.rename(moved)
                 print(f"[diag] earlier attempt kept as {moved}", flush=True)
@@ -1010,8 +863,6 @@ def cmd_diag(a) -> None:
 
 
 def cpu_record(out: Path, sha: str, metrics: list[str], git: dict, takeover: bool) -> dict:
-    """The running.json a `--part cpu` attempt continues: its gpu part finished at the same git commit, for the
-    same checkpoint and metrics; an earlier cpu attempt failed (or `--takeover`)."""
     f = out / RUNNING
     if not f.is_file():
         raise Refused(f"no {f}: run `diag --run --part gpu` first (on the Linux ROCm host)")
@@ -1043,7 +894,7 @@ def cmd_check_diag(a) -> None:
     metrics = [x.strip() for x in a.metrics.split(",") if x.strip()]
     problems = [p for metric in metrics for p in check_diag(lin, metric, Path(a.out), sha)]
     rec_f = Path(a.out) / DIAG_RECORD
-    if rec_f.is_file():  # where the parts ran (050-R9 record: the probes' CPU host changes MLP values up to 0.005)
+    if rec_f.is_file():
         rec = json.loads(rec_f.read_text(encoding="utf-8"))
         parts = rec.get("parts") or {"all": {"host": rec.get("host")}}
         print("hosts:", ", ".join(f"{k} {v.get('host')}" for k, v in parts.items()))
@@ -1057,14 +908,7 @@ def cmd_check_diag(a) -> None:
     print(f"{a.out}: {', '.join(metrics)} conform to the protocol")
 
 
-# ---------------------------------------------------------------- commands
-
-
 def job_names(job: str, groups: dict[bool, list]) -> dict[bool, str]:
-    """Job folder name of each zero_last_failed group (050-R9): `job` alone for one group, else
-    `job-<metrics of the group>`. One metric can have plans in both groups (ac1 on a BC point: ac1_stoch_lf0
-    with zero_last_failed true, ac1_stoch_real / ac1_argmax_real false); groups whose metric names coincide
-    get -lf0 (true) / -real (false) after them, the plan id suffixes of the two ac1 conditions."""
     if len(groups) == 1:
         return {zlf: job for zlf in groups}
     base = {zlf: job + "-" + "-".join(dict.fromkeys(m for m, _, _ in items)) for zlf, items in groups.items()}
@@ -1077,7 +921,7 @@ def cmd_job(a) -> None:
     lin = load_lineage()
     pt = point(lin, a.point)
     metrics = [m.strip() for m in a.metrics.split(",") if m.strip()]
-    stages: list[tuple[str, str]] = []  # (metric, plan id)
+    stages: list[tuple[str, str]] = []
     for m in metrics:
         check_new_measurement(lin, a.lineage, m, pt)
         spec = check_metric(lin, pt, m)
@@ -1092,8 +936,6 @@ def cmd_job(a) -> None:
         raise Refused("uncommitted protocol files (" + ", ".join(git["dirty_paths"]) + "); --allow-dirty records them in protocol.json")
     sha = checkpoint_sha256(a.checkpoint)
     label = a.label or run_of(a.checkpoint)
-    # A job's stages that share the model must agree on zero_last_failed (crates/uranium-runner eval.rs):
-    # one job per value, as the Checkpoint 1 jobs did (rush + macro in one job, TvZ apart).
     groups: dict[bool, list[tuple[str, str, str]]] = {}
     for m, p in stages:
         text = render(lin, p, a.checkpoint.replace("\\", "/"), f"{label}-{p.replace('_', '-')}")
@@ -1148,8 +990,6 @@ def cmd_render(a) -> None:
 
 
 def verify_job(lin: dict, job: Path, lineage: str, pt: dict) -> list[str]:
-    """Problems of an eval job against the protocol (050-AC5; empty = conforms). Jobs of a lineage measured
-    after the protocol must carry protocol.json; Checkpoint 1 jobs predate it."""
     problems = []
     rec = read_record(job)
     if rec is None:
@@ -1216,8 +1056,6 @@ def cmd_verify(a) -> None:
 
 
 def cmd_tables(a) -> None:
-    """050-R9: the point's existing Checkpoint 1 eval jobs (ck1_outputs) re-tabulated with both held and
-    both bunker definitions (no new games)."""
     import tables
 
     lin = load_lineage()
@@ -1235,15 +1073,11 @@ def cmd_tables(a) -> None:
 
 
 def output_entries(out) -> list[dict]:
-    """A ck1_outputs value as entries {job, stage?, as_plan?}: a job folder, a list of them, or an inline
-    table naming one stage of a job (`stage`) or a protocol plan whose games lie inside the job (`as_plan`)."""
     items = out if isinstance(out, list) else [out]
     return [{"job": o} if isinstance(o, str) else dict(o) for o in items]
 
 
 def ck1_game_tables(lin: dict, pt: dict, shared: Path, cache: Path, ops: str = "replay", ops_jobs: int = 1) -> dict:
-    """050-R9: the tables of a Checkpoint 1 point's existing game outputs (both held / bunker definitions), and
-    the 052-R8 ops / rush_combat tables, the lineage's new metrics, from replay values (052-R7)."""
     import tables
 
     res: dict = {}
@@ -1267,8 +1101,6 @@ def ck1_game_tables(lin: dict, pt: dict, shared: Path, cache: Path, ops: str = "
 
 
 def cmd_bc_eval(a) -> None:
-    """Prints the pinned bc-eval / per_action command of a teacher-forced metric (run it on a host of the
-    pinned backend)."""
     lin = load_lineage()
     pt = point(lin, a.point)
     check_new_measurement(lin, a.lineage, a.metric, pt)
@@ -1288,7 +1120,6 @@ def cmd_bc_eval(a) -> None:
 
 
 def bc_eval_args(m: dict, checkpoint: str, out: str | None = None, py: str = "python") -> list[str]:
-    """The pinned `bc-eval` command of a bc_eval metric (`--out`: also write the JSON report there)."""
     args = [py, "-m", "uranium", "bc-eval"]
     for d in m["datasets"]:
         args += ["--dataset", d]
@@ -1298,7 +1129,6 @@ def bc_eval_args(m: dict, checkpoint: str, out: str | None = None, py: str = "py
     if m.get("seed") is not None:
         args += ["--seed", str(m["seed"])]
     args += ["--backend", m["backend"], "--config", m["config"]]
-    # 050-R10 ③: val500 / val500_race's --bunker-before 5760 (adds a field, the rest of the output is the same).
     args += [str(x) for x in m.get("extra_args", [])]
     if out:
         args += ["--out", out]
@@ -1306,12 +1136,10 @@ def bc_eval_args(m: dict, checkpoint: str, out: str | None = None, py: str = "py
 
 
 def show(cmd: list[str]) -> str:
-    """A command line to paste into a POSIX shell (an argument with shell syntax such as `;` quoted)."""
     return " ".join(shlex.quote(x) if re.search(r"[\s;&|<>()$`'\"*?]", x) else x for x in cmd)
 
 
 def redact_cmd(cmd: list[str], roots: dict[str, Path]) -> list[str]:
-    """A command with the host's shared drive / cache paths written as `<shared>` / `<cache>` (001-R10)."""
     out = []
     for x in cmd:
         for tag, r in roots.items():
@@ -1330,18 +1158,15 @@ def cmd_check_bc_eval(a) -> None:
         raise Refused(f"{a.metric} is not a bc-eval metric ({', '.join(k for k, v in lin['metric'].items() if v['kind'] == 'bc_eval')})")
     d = json.loads(Path(a.output).read_text(encoding="utf-8"))
     if "chain_start_sources" in d:
-        # 041-R30 ⑤: pinned bc-eval metrics are current-observation scores.
         raise SystemExit(f"MISMATCH {a.output}: scored with --chain-start-sources {d['chain_start_sources']} (041-R30: pinned metrics use the current observation)")
     want = {"split": m["split"], "games": m.get("expect_games", m.get("games")), "selection_seed": m.get("seed")}
     got = {k: d.get(k) for k in want}
     if got != want:
         raise SystemExit(f"MISMATCH {a.output}: {got} != pinned {want}")
     if "--bunker-before" in [str(x) for x in m.get("extra_args", [])] and "bunker_before" not in d:
-        # 050-R10 ③a input: reported, not refused (an output made before the option still has every other field).
         print(f"WARNING {a.output}: no `bunker_before` (run without --bunker-before 5760): regression gate check 3a will be MISSING")
     field = m.get("requires_field")
     if field:
-        # val500_race (050-R9 / 050-R10 ②): per-enemy-race scores in the bc-eval output.
         per = d.get(field)
         if not isinstance(per, dict) or not set(m["races"]) <= set(per):
             raise SystemExit(f"MISMATCH {a.output}: no `{field}` with {', '.join(m['races'])} ({m['note']})")
@@ -1371,17 +1196,13 @@ def cmd_list(a) -> None:
 
 
 def stage_backends(s: dict) -> list[str]:
-    """`<backend> (<precision>)` of a tables.py stage's inference games (the ledger's backend, 032-R8)."""
     return sorted({f"{b.split('@')[0]} ({x.get('precision', '?')})" for b, x in (s.get("inference") or {}).items()})
 
 
 def backend_notes(a: dict, b: dict) -> list[str]:
-    """050-R9 (user decision 2026-11-14): a comparison marks stages whose inference backend / precision or T1 game
-    platform differ (D and the fixed-RL checks run T1 on whichever host is idle)."""
     out = []
     ba, bb = stage_backends(a), stage_backends(b)
     if not ba or not bb:
-        # e.g. a Checkpoint 1 subset stage (games found inside a larger job): no inference record
         if ba or bb:
             out.append(f"inference backend not recorded on one side: {', '.join(ba) or 'not recorded'} vs {', '.join(bb) or 'not recorded'}")
     elif ba != bb:
@@ -1393,7 +1214,6 @@ def backend_notes(a: dict, b: dict) -> list[str]:
 
 
 def cmd_compare(a) -> None:
-    """Count metrics of two tables.py JSON outputs with Fisher p (050-R2: sampling noise is reported)."""
     A = json.loads(Path(a.a).read_text(encoding="utf-8"))
     B = json.loads(Path(a.b).read_text(encoding="utf-8"))
     for key in sorted(set(A) & set(B)):

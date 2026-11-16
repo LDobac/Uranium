@@ -1,5 +1,3 @@
-# Build ZZZKBot as a BWAPI 4.2 (OpenBW) AI module for use as a T1 opponent (spec 021).
-# Windows counterpart of build_zzzkbot.sh.
 $Root = (Resolve-Path "$PSScriptRoot\..\..").Path
 . "$Root\tools\oss\common.ps1"
 $Src = "$Root\third_party\zzzkbot"

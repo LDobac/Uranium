@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# M2 harness: scripted T0 Terran vs itself on OpenBW, N games, P in parallel (spec 011-AC1..AC4/AC7).
-# Usage: tools/openbw/selfmatch.sh <fighting_spirit|circuit_breaker> <games> [parallel] [seed_base] [extra agent args...]
-# Env (process env or .env, spec 001-R9): URANIUM_DATA_DIR, URANIUM_MAPS_DIR, OUT_DIR (default runs/selfmatch-<map>-<ts>),
-#   PORT (default 7600), SAME_SEED=1 (all games use seed_base)
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT/tools/env.sh"; uranium_load_env "$ROOT"
@@ -16,7 +12,7 @@ case "$MAP_KEY" in
 esac
 OUT_DIR="${OUT_DIR:-$ROOT/runs/selfmatch-$MAP_KEY-$(date +%Y%m%d-%H%M%S)}"
 PORT="${PORT:-7600}"
-SOCK_DIR="/run/user/$(id -u)/uranium"  # short path: unix socket names are limited to 108 bytes
+SOCK_DIR="/run/user/$(id -u)/uranium"
 BWAPI="$ROOT/third_party/bwapi/build"
 BRIDGE="$ROOT/bridge/openbw/build/liburanium_bridge.so"
 AGENT="$ROOT/target/release/uranium-agent"
@@ -28,7 +24,7 @@ AGENT_PID=$!
 trap 'kill $AGENT_PID 2>/dev/null || true' EXIT
 sleep 0.5
 
-play() { # game index
+play() {
   local i="$1" dir="$OUT_DIR/g$1" sock="$SOCK_DIR/$PORT-$1.sock" seed
   if [[ "${SAME_SEED:-0}" == 1 ]]; then seed="$SEED_BASE"; else seed=$((SEED_BASE + i)); fi
   mkdir -p "$dir/p0/bwapi-data" "$dir/p1/bwapi-data"; rm -f "$sock"

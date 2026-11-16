@@ -1,20 +1,4 @@
-"""052-R7 replay values of the comparison sets outside the eval jobs (`tables.py --ops` covers those):
-
-  botgen  teacher botgen runs (<run>/results.jsonl + replays/g<n>.rep): our view = the teacher's slot, the
-          session row whose `t0_build` is the teacher build (default terran_react), so a TvT game is
-          measured from the teacher and not from its Terran opponent
-  human   human replays picked by `uranium-train eval-games` (032-R17 ② fixed-seed shuffle, --target-maps):
-          our view = the shard's `perspective_slot`, the file found by replay SHA-256 in
-          <shared>/datasets/replays/build/hashes/*.sha256 (paths under datasets/replays/raw)
-
-Each game's `uranium-replay opsdump --perspective <slot>` line is cached under --out (as tables.py does,
-eval_common.OPS_CACHE_VERSION; failures are not cached) and every game is written to <out>/<set>.jsonl
-as {"set", "game", "matchup", "held", "rep", "perspective", "ops", "rush_combat", "error"?} (`held`: the
-session row's scv_min_1m / scv_8m, 050-R7, when the set has them). Reported only (052-R9).
-
-    python tools/eval/ops_sets.py botgen <run dir>... --out DIR [--teacher-build terran_react] [--jobs N]
-    python tools/eval/ops_sets.py human <eval-games jsonl>... --out DIR [--jobs N]
-"""
+"""052-R7 replay values of the comparison sets outside the eval jobs (`tables.py --ops` covers those):"""
 
 from __future__ import annotations
 
@@ -29,7 +13,6 @@ import eval_common as ec  # noqa: E402
 
 
 def teacher_games(run: Path, build: str) -> dict[int, dict]:
-    """{game n: the teacher's session row} of a botgen run (052-R7: our view = the teacher slot)."""
     out = {}
     for line in (run / "results.jsonl").read_text(encoding="utf-8").splitlines():
         r = json.loads(line) if line.strip() else {}
@@ -41,7 +24,6 @@ def teacher_games(run: Path, build: str) -> dict[int, dict]:
 
 
 def sha_index(shared: Path) -> dict[str, Path]:
-    """Replay SHA-256 -> file, from the build's `sha256sum` lists (paths relative to datasets/replays/raw)."""
     raw, idx = shared / "datasets/replays/raw", {}
     for f in sorted((shared / "datasets/replays/build/hashes").glob("*.sha256")):
         for line in f.read_text(encoding="utf-8").splitlines():
@@ -52,7 +34,6 @@ def sha_index(shared: Path) -> dict[str, Path]:
 
 
 def measure(items: list[tuple[str, Path, int]], cache: Path, jobs: int) -> dict[str, dict]:
-    """{key: opsdump line} of (key, replay, slot) items, cached as <cache>/<key>.ops.json."""
     got, todo = {}, []
     for key, rep, slot in items:
         j = cache / f"{key}.ops.json"

@@ -1,4 +1,3 @@
-# M3 parity check with M2: T0 Terran mirror on both maps.
 name = "m3-smoke-tvt"
 seed_base = 20000
 [[matchup]]

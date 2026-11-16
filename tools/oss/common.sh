@@ -1,6 +1,3 @@
-# Shared helpers for tools/oss/build_<bot>.sh (spec 021 T1). Source after setting ROOT.
-# Loads .env, defines the BWAPI 4.2 (OpenBW fork) paths and the output layout:
-#   <URANIUM_OSS_BOTS_DIR>/<bot>/{module.so, VERSION, bwapi-data/...}
 source "$ROOT/tools/env.sh"; uranium_load_env "$ROOT"
 BWAPI_INC="$ROOT/third_party/bwapi/bwapi/include"
 BWAPI_LIB="$ROOT/third_party/bwapi/build/lib"
@@ -8,7 +5,6 @@ OSS_OUT_ROOT="${URANIUM_OSS_BOTS_DIR:-$ROOT/build/oss_bots}"
 JOBS="${JOBS:-$(nproc)}"
 [[ -f "$BWAPI_LIB/libBWAPILIB.so" ]] || { echo "run tools/openbw/build.sh first" >&2; exit 1; }
 
-# oss_git_fetch <dir> <url> <commit>: clone once, then pin to the commit (021-R2).
 oss_git_fetch() {
   local dir="$1" url="$2" commit="$3"
   [[ -d "$dir/.git" ]] || git clone -q "$url" "$dir"
@@ -18,8 +14,6 @@ oss_git_fetch() {
   fi
 }
 
-# oss_zip_fetch <dir> <url> <sha256>: download a source archive once, verify, unpack into dir.
-# The unpacked tree is turned into a local git repo so patches apply like for git sources.
 oss_zip_fetch() {
   local dir="$1" url="$2" sha="$3" zip="$ROOT/third_party/$(basename "$1").zip"
   if [[ ! -d "$dir/.git" ]]; then
@@ -33,7 +27,6 @@ oss_zip_fetch() {
   fi
 }
 
-# oss_patch <dir> <patch>: apply once (idempotent).
 oss_patch() {
   local dir="$1" patch="$2"
   if git -C "$dir" apply --reverse --check "$patch" 2>/dev/null; then
@@ -44,7 +37,6 @@ oss_patch() {
   fi
 }
 
-# oss_stale <obj>: true if the object, or any header recorded in its .d file (-MMD), is out of date.
 oss_stale() {
   local o="$1" d="${1%.o}.d" dep
   [[ -f "$o" && -f "$d" ]] || return 0
@@ -54,8 +46,6 @@ oss_stale() {
   return 1
 }
 
-# oss_flags_stamp <obj dir> <flags...>: drop the directory's objects when the compile flags differ
-# from the last build (oss_stale only compares timestamps).
 oss_flags_stamp() {
   local obj="$1"; shift
   local stamp="$obj/.flags" want
@@ -67,12 +57,6 @@ oss_flags_stamp() {
   fi
 }
 
-# oss_compile <obj dir> <cxx flags...> -- <sources...>: parallel incremental g++ -c with header
-# dependency tracking. Prints the object list (one per line) on stdout.
-# -DNDEBUG is always added, as in the bots' own Release projects and the Windows build (CMake
-# Release): their asserts are debug-only traps. Without it Iron's onAssertThrowFailed aborts the
-# process instead of throwing to its per-frame exceptionHandler, and Steamhammer's RC insist()
-# (= assert) aborts on an out-of-range Evaluator input (Linux T1 crashes, 2026-11-07).
 oss_compile() {
   local obj="$1"; shift
   local flags=(-DNDEBUG)
@@ -90,8 +74,6 @@ oss_compile() {
   fi
 }
 
-# oss_link <module.so> <objs...> [-- extra link args]: fails if any object is missing
-# (oss_compile runs inside a process substitution, so its exit status is lost).
 oss_link() {
   local out="$1"; shift
   local objs=() extra=()
@@ -103,7 +85,6 @@ oss_link() {
   g++ -shared -o "$out" "${objs[@]}" "${extra[@]}" -L"$BWAPI_LIB" -lBWAPILIB -Wl,-rpath,"$BWAPI_LIB" -pthread
 }
 
-# oss_finish <bot> <version>: write the opponent ID file (021-R3).
 oss_finish() {
   echo "$1@$2" > "$OSS_OUT_ROOT/$1/VERSION"
   echo "[oss] built $OSS_OUT_ROOT/$1/module.so ($1@$2)"

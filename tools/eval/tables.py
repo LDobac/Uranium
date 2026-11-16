@@ -1,37 +1,4 @@
-"""Result tables of eval jobs (050-R9 / 050-AC5 measurement protocol, 050-R6 / 050-R7 / 050-R8,
-docs/measurement_protocol.md): every stage of each job, by the protocol plan its conditions match
-(config/protocol/lineage.toml; a plan outside the protocol is refused unless --kind names its table):
-
-  rush     050-R6 128-game rush check by start condition: held_8m (scv_8m >= 8), held_s (scv_min_1m > 4,
-           session held), scout before 3:00 (command stream; scout_3m = the old reading the DAgger thresholds
-           use, scout_3m_fixed = the payload read right, 050-R9 2026-11-14), bunker_order_3m / _4m (first Build_Bunker
-           command), bunker_unit_3m / _4m (bunker_s), scv_4m p50, wins; JSON also held_8m_winpass
-           (rush_summary.py: a win before 8:00 passes) and scv_4m_p50_known (g3.py)
-  macro    050-R8 macro 40 by opponent: bunker_order_4m, bunker_unit_4m, CC order by 5:00, scv_8m >= 16
-           (a game over before 8:00 fails, as the Checkpoint 1 model tables), W/D/L; JSON also
-           scv_8m_16_winpass (annihilation win before 8:00 passes, the teacher-table rule)
-  t1       T1 300 by bot and race: W/D/L, surrender wins, minutes p50
-  winrate  T0 / TvZ / AC1: W/D/L per matchup and opponent race, Wilson 95%
-
-Every stage also gets the 052-R8 tables (`ops`, `rush_combat`: by matchup, medians / means, rush entry and
-SCV pull / bunker / focus, split by held_s and held_8m) from `uranium-replay opsdump` replay values (052-R7, cached
-as <cache>/<job>/<stage>/g<n>.ops.json; --ops live reads the session rows' own values, --ops off skips them).
-Every t1 / winrate stage with Terran or Protoss opponents also gets the 050-R10 teacher-mode share (2026-11-14, 044-R6,
-record only): per opponent race, the games with fewer than 150 commands per minute over 0-6 min and no refinery
-build order before 4:00 (eval_common.teacher_mode), W/D/L and losses before 10:00 per mode.
-
-Opponent-crash games (an Aborted attempt where our launcher exited with 0 and the opponent's did not,
-eval_common.opponent_crashes) are invalid in every table. Both held and both bunker definitions are always
-printed. A job with protocol.json also shows its checkpoint sha256, git commit, uncommitted-file flag and
-host platforms.
-Command streams come from `uranium-replay cmddump` (cached as <cache>/<job>/<stage>/g<n>.json).
-
-    python tools/eval/tables.py <job dir>... [--json out.json] [--cache DIR] [--kind <stage name>=<kind>]
-                                [--ops replay|live|off] [--ops-jobs N]
-
-Moved from runs/dagger/test_table.py, t1_table.py, ac1_table.py, runs/tclone_macro/macro_table.py and
-runs/bc_ft_teacher/rush_summary.py with the same counting rules.
-"""
+"""Result tables of eval jobs (050-R9 / 050-AC5 measurement protocol, 050-R6 / 050-R7 / 050-R8,"""
 
 from __future__ import annotations
 
@@ -61,22 +28,15 @@ def rush_table(stage: int, plan: dict, rows: dict[int, dict], invalid: set[int],
         bunker_s = [x.get("bunker_s") for x in m]
         out[c] = {
             "n": len(g),
-            # 050-R7: scv_8m >= 8, a game over before 8:00 fails (runs/dagger/test_table.py, the DAgger tests and
-            # the final gate). held_8m_winpass (JSON only): such a game passes when won (runs/bc_ft_teacher/
-            # rush_summary.py, the earlier gates).
             "held_8m": sum(1 for x in m if (x.get("scv_8m") or 0) >= 8),
             "held_8m_winpass": sum(1 for x, (_, r) in zip(m, g) if (x["scv_8m"] >= 8 if x.get("scv_8m") is not None else bool(r.get("won")))),
             "held_s": sum(1 for x in m if (x.get("scv_min_1m") or 0) > 4),
-            # 050-R9 (2026-11-14 개정, 사용자 결정 2026-11-14): scout_3m keeps the old payload reading (single-unit
-            # Move orders only, one byte off) that 041-R22 ④ / 041-R29 ④ thresholds were set on; scout_3m_fixed
-            # reads 0x14 / 0x15 as stored and also counts ground right clicks.
             "scout_3m": sum(1 for n, _ in g if an[n][1] is not None),
             "scout_3m_fixed": sum(1 for n, _ in g if an[n][2] is not None),
             "bunker_order_3m": sum(1 for f in first if f and f.get(ec.BUNKER, INF) < 3 * 60 * ec.FPS),
             "bunker_order_4m": sum(1 for f in first if f and f.get(ec.BUNKER, INF) < 4 * 60 * ec.FPS),
             "bunker_unit_3m": sum(1 for b in bunker_s if b is not None and b < 180),
             "bunker_unit_4m": sum(1 for b in bunker_s if b is not None and b < 240),
-            # test_table.py (a game over before 4:00 counts 0) and runs/mix/g3.py (such games left out, JSON only).
             "scv_4m_p50": ec.median([x.get("scv_4m") or 0 for x in m]),
             "scv_4m_p50_known": ec.median([x["scv_4m"] for x in m if x.get("scv_4m") is not None]),
             "won": sum(1 for _, r in g if r.get("won") is True),
@@ -100,9 +60,6 @@ def macro_table(stage: int, plan: dict, rows: dict[int, dict], invalid: set[int]
             "bunker_order_4m": sum(1 for f in first if f and f.get(ec.BUNKER, INF) < 4 * 60 * ec.FPS),
             "bunker_unit_4m": sum(1 for x in m if x.get("bunker_s") is not None and x["bunker_s"] < 240),
             "cc_order_5m": sum(1 for f in first if f and f.get(ec.CC, INF) <= 5 * 60 * ec.FPS),
-            # As the Checkpoint 1 model tables (runs/dagger/test_table.py): a game over before 8:00 fails. The
-            # interim rule "an annihilation win before 8:00 passes" (reports/checkpoint1.md 9.2) was applied to
-            # the teacher session tables (summary.md T0 Terran sessions) only; scv_8m_16_winpass (JSON) has it.
             "scv_8m_16": sum(1 for x in m if (x.get("scv_8m") or 0) >= 16),
             "scv_8m_16_winpass": sum(1 for x, (_, r) in zip(m, g) if (x["scv_8m"] >= 16 if x.get("scv_8m") is not None else r.get("won") is True)),
             "won": w, "draw": d, "lost": len(g) - w - d,
@@ -121,7 +78,6 @@ def _blocks(plan: dict):
 
 
 def t1_table(stage: int, plan: dict, rows: dict[int, dict], invalid: set[int]) -> dict:
-    """runs/dagger/t1_table.py per block, minus opponent-crash games (ac1_table.py, checkpoint1.md 7.3)."""
     blocks, per_bot, tot = [], {}, {"n": 0, "won": 0, "draw": 0, "lost": 0, "surrender_wins": 0, "invalid": 0, "missing": 0}
     for m, a, b in _blocks(plan):
         bad = [n for n in range(a, b + 1) if stage * 100000 + n in invalid]
@@ -158,14 +114,11 @@ def winrate_table(stage: int, plan: dict, rows: dict[int, dict], invalid: set[in
     return {"blocks": blocks, "by_race": by_race, "total": tot}
 
 
-# 050-R10 / 044-R6 (2026-11-14): the teacher-mode share is recorded against these races (TvT and TvP apart); a loss
-# before 10:00 is an early loss (the cause analysis' "10분 안 패").
 TEACHER_MODE_RACES = ("terran", "protoss")
 EARLY_LOSS = 10 * 60 * ec.FPS
 
 
 def teacher_mode_games(plan: dict) -> list[int]:
-    """Plan game numbers whose opponent is Terran or Protoss (the plan's p1 race)."""
     return [n for m, a, b in _blocks(plan) if m["p1"].get("race") in TEACHER_MODE_RACES for n in range(a, b + 1)]
 
 
@@ -174,10 +127,6 @@ def _mode_counts() -> dict:
 
 
 def teacher_mode_table(stage: int, plan: dict, rows: dict[int, dict], invalid: set[int], dumps: dict[int, Path]) -> dict:
-    """050-R10 teacher-mode share per opponent race (the plan's p1 race, Terran and Protoss only; map blocks of a race
-    together) over the valid games with a model row: `n` = games with a command stream, `teacher` = teacher-mode
-    games (eval_common.teacher_mode), `no_stream` = games without one (no replay, or the model's player not found),
-    and W/D/L with losses before 10:00 (`lost_10m`, end_frame < 14,400) for the teacher-mode and the other games."""
     out: dict = {}
     for m, a, b in _blocks(plan):
         race = m["p1"].get("race")
@@ -208,9 +157,6 @@ def teacher_mode_table(stage: int, plan: dict, rows: dict[int, dict], invalid: s
 
 def stage_teacher_mode(stage_dir: Path, stage: int, plan: dict, rows: dict[int, dict], invalid: set[int], cache: Path,
                        games: dict[int, int] | None = None) -> dict:
-    """The stage's `teacher_mode` table (empty without Terran / Protoss games). Command streams from `uranium-replay
-    cmddump` (cached as <cache>/g<n>.json; `games` maps a row's n to its replay's game number when they differ). A
-    host without the binary gets an `error` entry instead (the stage's other tables do not need it)."""
     want = [n for n in teacher_mode_games(plan) if n in rows and stage * ec.STAGE_BASE + n not in invalid]
     if not want:
         return {}
@@ -224,7 +170,6 @@ def stage_teacher_mode(stage_dir: Path, stage: int, plan: dict, rows: dict[int, 
 
 
 def add_teacher_mode_counts(res: dict) -> None:
-    """`counts` rows `teacher_mode vs <race>` (input of protocol.py compare: the share with Fisher p)."""
     for race, v in (res.get("teacher_mode") or {}).items():
         if race in TEACHER_MODE_RACES:
             res["counts"][f"teacher_mode vs {race}"] = {"teacher_mode": [v["teacher"], v["n"]]}
@@ -242,7 +187,6 @@ def print_teacher_mode(t: dict) -> None:
               f"{o['won']}/{o['draw']}/{o['lost']}, {o['lost_10m']} | {v['no_stream']}")
 
 
-# 052-R8: the ops keys (052 Interfaces order) and those that are time integrals (also divided by the window length).
 OPS_KEYS = ("end_s", "mined", "gas", "inc_4m", "inc_6m", "inc_8m", "inc_10m", "inc_scv_4m", "inc_scv_6m", "inc_scv_8m", "inc_scv_10m",
             "mline_bldg_n", "mline_bldg_s", "cc_lift_s", "stranded_scv_s", "idle_scv_s", "oversat_scv_s", "sblock_s", "sblock_n",
             "sblock_first_s", "float_min_rs", "float_gas_rs")
@@ -251,7 +195,6 @@ OPS_SOURCES = ("replay", "live", "off")
 
 
 def _matchup(r: dict) -> str:
-    """Our race against the race the enemy actually played (session row), e.g. TvZ."""
     return f"{(r.get('self_race') or 'Terran')[:1]}v{(r.get('enemy_race') or 'Unknown')[:1]}"
 
 
@@ -261,8 +204,6 @@ def _summary(v: list) -> dict:
 
 
 def _rush_stats(items: list[tuple[dict, dict]]) -> dict:
-    """052-R8 rush_combat cells over (row, value) pairs: entries; among them pull_s present (rate, median), scv_lost /
-    kills medians, bunker_load_s present rate, focus_hhi median (games without a value left out)."""
     rc = [v["rush_combat"] for _, v in items if v.get("rush_combat")]
     k = len(rc)
 
@@ -278,10 +219,6 @@ def _rush_stats(items: list[tuple[dict, dict]]) -> dict:
 
 
 def ops_tables(rows: dict[int, dict], values: dict[int, dict]) -> tuple[dict, dict]:
-    """052-R8 tables of one stage's valid model rows (by game n) and their 052 values ({n: {"ops", "rush_combat"}},
-    replay or live): `ops` by matchup (and `all`): games with values, games without (`missing`), each key's
-    n / median / mean (empty values left out), integrals also `<key>_per_s` = mean of value / end_s; `rush_combat`
-    by matchup, each over all games and split by held_s (scv_min_1m > 4) and held_8m (scv_8m >= 8, 050-R7)."""
     groups: dict[str, list[int]] = {"all": sorted(rows)}
     for n in sorted(rows):
         groups.setdefault(_matchup(rows[n]), []).append(n)
@@ -306,10 +243,6 @@ def ops_tables(rows: dict[int, dict], values: dict[int, dict]) -> tuple[dict, di
 
 
 def stage_ops(stage_dir: Path, rows: dict[int, dict], cache: Path, source: str, jobs: int = 1, games: dict[int, int] | None = None) -> dict:
-    """052-R7 / R8: the stage's ops / rush_combat tables from `source`: `replay` = `uranium-replay opsdump` of the
-    stage's replays from the model's slot (cached as <cache>/g<n>.ops.json; `games` maps a row's n to its replay's
-    game number when they differ, e.g. a subset of a larger job), `live` = the session rows' own values. Path
-    comparisons (050-R9) use replay values on both sides."""
     if source not in OPS_SOURCES:
         raise UnknownPlan(f"--ops {source}: one of {', '.join(OPS_SOURCES)}")
     if source == "off":
@@ -335,9 +268,7 @@ class UnknownPlan(Exception):
 
 
 def stage_kind(lin: dict, plan: dict, override: dict[str, str]) -> tuple[str, str | None]:
-    """The protocol plan a stage's conditions match (050-R9); a plan outside the protocol needs --kind."""
     if ec.is_branch_plan(plan):
-        # 050 "분기 게임(051)": branch-game games are never tabulated, --kind included.
         raise UnknownPlan(f"stage {plan['name']}: a branch-game plan (020-R22 keys, 051) is not an evaluation table (050)")
     pid = protocol.identify(lin, plan)
     if plan["name"] in override:
@@ -351,7 +282,6 @@ def stage_kind(lin: dict, plan: dict, override: dict[str, str]) -> tuple[str, st
 
 
 def game_keys(plan: dict) -> dict[tuple, int]:
-    """(seed, map, opponent, sampling) -> plan game number n."""
     seeds = ec.plan_seeds(plan)
     out, n = {}, 0
     for m in plan["matchup"]:
@@ -363,19 +293,15 @@ def game_keys(plan: dict) -> dict[tuple, int]:
 
 
 def subset_tables(job: Path, plan_id: str, lin: dict | None = None, cache: Path | None = None, ops: str = "replay", ops_jobs: int = 1) -> dict:
-    """050-R9: a protocol plan's games found inside a larger Checkpoint 1 job by (seed, map, opponent,
-    sampling), e.g. the T0 Terran / Protoss 32 + 32 (t0_tp) inside the BC baseline's T0 300, or the TvZ 32
-    inside a T0 100. The source stage must have the plan's zero_last_failed and max_frames. With a `cache`, the
-    052-R8 tables of those games too (`stage_ops`; the source stage's replays)."""
     lin = lin or protocol.load_lineage()
     target = tomllib.loads(protocol.render(lin, plan_id, "checkpoints/subset/ckpt-0", plan_id))
     want = game_keys(target)
     rows_all = ec.read_results(job)
     ledger = ec.read_ledger(job)
     invalid = ec.opponent_crashes(ledger)
-    skipped = ec.skipped_lines(rows_all, ledger)  # job-wide, as in job_tables
+    skipped = ec.skipped_lines(rows_all, ledger)
     for k, f, plan in ec.job_stages(job):
-        if ec.is_branch_plan(plan):  # 050 "분기 게임(051)": never a source of an evaluation table
+        if ec.is_branch_plan(plan):
             continue
         have = game_keys(plan)
         if not set(want) <= set(have):
@@ -411,7 +337,6 @@ def job_tables(job: Path, cache: Path, override: dict[str, str] | None = None, l
     rows_all = ec.read_results(job)
     ledger = ec.read_ledger(job)
     invalid = ec.opponent_crashes(ledger)
-    # Job-wide (050-R9): an undecodable line has no readable game id, so every stage carries the job's list.
     skipped = ec.skipped_lines(rows_all, ledger)
     rec = protocol.read_record(job)
     out = {}
@@ -419,7 +344,6 @@ def job_tables(job: Path, cache: Path, override: dict[str, str] | None = None, l
         if stages is not None and plan["name"] not in stages:
             continue
         if ec.is_branch_plan(plan):
-            # 050 "분기 게임(051)": branch-game stages stay out of every table (051 records only).
             print(f"note: {job.name}/{plan['name']}: branch-game stage (051) left out of the tables", file=sys.stderr)
             continue
         kind, pid = stage_kind(lin, plan, override or {})
@@ -451,10 +375,8 @@ def job_tables(job: Path, cache: Path, override: dict[str, str] | None = None, l
             res["table"] = winrate_table(k, plan, rows, invalid)
             res["counts"] = {r: {"won": [v["won"], v["n"]]} for r, v in {**res["table"]["by_race"], "total": res["table"]["total"]}.items()}
         if kind in ("t1", "winrate"):
-            # 050-R10 / 044-R6: the teacher-mode share against Terran / Protoss opponents (record only).
             res.update(stage_teacher_mode(job / plan["name"], k, plan, rows, invalid, cache / job.name / plan["name"]))
             add_teacher_mode_counts(res)
-        # 052-R8: every game stage (opponent-crash games left out, as in the other tables).
         valid = {n: r for n, r in rows.items() if k * ec.STAGE_BASE + n not in invalid}
         res.update(stage_ops(job / plan["name"], valid, cache / job.name / plan["name"], ops, ops_jobs))
         out[f"{job.name}/{plan['name']}"] = res
@@ -473,7 +395,6 @@ def _num(x) -> str:
 
 
 def print_ops(s: dict) -> None:
-    """052-R8: medians (means) of the ops keys and the rush_combat cells per matchup."""
     failed = s.get("ops_failed") or {}
     print(f"052 ops ({s['ops_source']} values" + (f", {len(failed)} replay(s) failed: games {', '.join(failed)}" if failed else "") + ")")
     keys = ["mined", "gas", "inc_4m", "inc_6m", "inc_8m", "inc_10m", "inc_scv_4m", "inc_scv_6m", "inc_scv_8m", "inc_scv_10m",

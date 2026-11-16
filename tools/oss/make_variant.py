@@ -1,25 +1,5 @@
 """021 T1 config variant (2026-11-03 user decision, AMB-042-15): copy a deployed T1 bot folder and
-change its opening config only, so every game host gets the same variant without hand edits.
-
-The variant folder is `<bot><variant>` beside the original, `VERSION` is
-`<bot><variant>@<original version>-<variant>` (its 021-R3 opponent id); the binary stays the
-original's (hash checked). One edit per run, either an exact text replacement that must occur once
-or a 1-based inclusive line range replaced by new text. Prints what `reports/oss_bot_porting.md`
-records per variant (original id, file, lines, before -> after, sha256 of the changed file).
-
-Run with the stdlib only (Linux game hosts: `python3 -I`, Windows: the venv python):
-
-  python3 -I tools/oss/make_variant.py --bot ualbertabot --variant 9pool \\
-      --file bwapi-data/AI/UAlbertaBot_Config.txt \\
-      --replace '"Zerg_ZerglingRush",' '"Zerg_9Pool",'
-  python3 -I tools/oss/make_variant.py --bot steamhammer --variant overpool \\
-      --file bwapi-data/AI/Steamhammer_5.3.6.json --lines 230-249 \\
-      --text '            { "Weight" : 100, "Strategy" : "OverpoolSpeed" }'
-
-The bots folder is `--bots`, else `URANIUM_OSS_BOTS_DIR`, else `build/oss_bots` of the repository.
-An existing variant folder is left alone unless `--force` (then it is rebuilt in a `.part` folder
-and replaced only once that is complete).
-"""
+change its opening config only, so every game host gets the same variant without hand edits."""
 
 import argparse
 import hashlib
@@ -98,7 +78,6 @@ def main() -> int:
         if (src / b).exists() and sha256(src / b) != sha256(tmp / b):
             shutil.rmtree(tmp)
             sys.exit(f"{b} differs from the original after the copy")
-    # Swap only once the new folder is complete: an existing variant is kept until then.
     old = dst.with_name(dst.name + ".old")
     if old.exists():
         shutil.rmtree(old)

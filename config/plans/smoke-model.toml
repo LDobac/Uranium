@@ -1,8 +1,3 @@
-# 020-R11 smoke: model policy (random-init checkpoint) vs T0 Terran / Zerg, both sampling modes.
-# Create the checkpoint once (relative paths are under URANIUM_SHARED_DIR, 061):
-#   python -m uranium random-checkpoint --core lstm --out <URANIUM_SHARED_DIR>/checkpoints/smoke/random-lstm-pt
-# (PyTorch, AMB-000-4; the Burn `random-lstm-fv6` and older `random-lstm` are kept, not loaded)
-# Run on a training host: python -m uranium run --plan config/plans/smoke-model.toml
 name = "smoke-model"
 seed_base = 30000
 max_frames = 12000

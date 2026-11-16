@@ -1,29 +1,4 @@
-"""Per-checkpoint scoring of the second S1 epoch (041-R20 ③; 050-R9 point `s1e2`, "m2-s1e2 체크포인트마다"):
-every checkpoint of the run gets val 500 (the protocol's `val500`, Linux ROCm host f32) and T0 stochastic
-100 games (`t0_100`), and so does the reference, the S1 final (point `s1e1`, scored first). As Checkpoint 1
-did it (reports/m6_bc_eval.md 4: `~/e2val/val_watch.sh`, `~/e2games/games_watch.sh`): each scorer takes the
-newest checkpoint not taken yet when it is free, skips the ones in between, always takes the final one
-(the run's DONE), never stops the run; val runs have a 2-hour limit (the Checkpoint 1 rule after a hung
-run). A failed or timed-out val run is kept as <name>.failed-<k>.* and run again while it is still the
-checkpoint to take, up to VAL_ATTEMPTS in all; `val` exits non-zero when the reference or the final one has
-no return-code-0 record. An existing output is never overwritten. The cue diagnostics of the point run at the
-final checkpoint only (AMB-050-6, `protocol.py diag`). Commands and jobs come from tools/eval/protocol.py
-(same refusals).
-
-    python tools/eval/s1e2_loop.py list   --run m2-s1e2 [--reference checkpoints/m2-s1/ckpt-N]
-    python tools/eval/s1e2_loop.py val    --run m2-s1e2 [--reference ...] [--watch] [--dry-run]
-    python tools/eval/s1e2_loop.py games  --run m2-s1e2 [--reference ...] --hosts tools/eval/hosts.toml [--watch]
-                                          [--worker "--priority 2 --backend rocm --local-hostd <addr> --hostd <bin>"] [--dry-run]
-    python tools/eval/s1e2_loop.py table  --run m2-s1e2 [--reference ...] [--json out.json] [--md out.md]
-
-Outputs (under URANIUM_SHARED_DIR): val `artifacts/bc_e2_val/val500/<run>__<ckpt>.json` (lineage.toml val500
-`output`) with `<...>.protocol.json` (checkpoint sha256, git, backend / precision, 050-R9) and the claim
-`<...>.claim`; games `eval/<games root>/<run>__<ckpt>/` (default `eval/<run>-games`), each an eval job made by
-`protocol.py job` (protocol.json inside) and played by `python -m uranium eval-worker` (`--worker` runs one
-here; else workers are started by hand on the job). The loop writes the job's `status.txt` (eval-status
-output) and `DONE` once eval-status shows every stage played out (nothing in flight, nothing left) in two
-readings a poll apart; one host does it (the job's `.merge-claim`).
-"""
+"""Per-checkpoint scoring of the second S1 epoch (041-R20 ③; 050-R9 point `s1e2`, "m2-s1e2 체크포인트마다"):"""
 
 from __future__ import annotations
 
@@ -46,19 +21,13 @@ import protocol  # noqa: E402
 LINEAGE = "m2"
 POINT, REF_POINT = "s1e2", "s1e1"
 VAL_METRIC, GAME_METRIC = "val500", "t0_100"
-VAL_TIMEOUT_S = 7200  # reports/m6_bc_eval.md 4: "이후 채점마다 2시간 제한을 걸었다"
-# val attempts per checkpoint (041-R20 ③ "최종 체크포인트는 반드시 한다"): a failed or timed-out run is kept
-# as <name>.failed-<k>.* and run again while the checkpoint is still the one to take, up to this many in
-# all (main-session interim decision 2026-11-10: val500 crashed 3 times on one ROCm host before succeeding
-# in the lambda scoring, <shared>/eval/m2-lambda-20261110/claims/worker.log).
+VAL_TIMEOUT_S = 7200
 VAL_ATTEMPTS = 3
-# a claim without a record is stale (its scorer is gone) this long after the run's time limit
 STALE_MARGIN_S = 900
 CKPT_RE = re.compile(r"^ckpt-(\d+)$")
 
 
 def checkpoints(shared: Path, run: str) -> list[str]:
-    """`checkpoints/<run>/ckpt-N` with weights, by N."""
     d = shared / "checkpoints" / run
     found = []
     for c in d.glob("ckpt-*") if d.is_dir() else []:
@@ -86,21 +55,17 @@ def game_job(shared: Path, root: str, checkpoint: str) -> Path:
 
 
 def targets(a, shared: Path) -> list[tuple[str, str]]:
-    """(point, checkpoint) of the reference (first) and of the run's checkpoints."""
     out = [(REF_POINT, a.reference.replace("\\", "/"))] if a.reference else []
     return out + [(POINT, c) for c in checkpoints(shared, a.run)]
 
 
 def required(items: list[tuple[str, str]], done: bool) -> list[str]:
-    """The checkpoints that must have a result: the reference, and the final one once the run is done."""
     out = [c for p, c in items if p == REF_POINT]
     run_items = [c for p, c in items if p == POINT]
     return out + (run_items[-1:] if done else [])
 
 
 def pick(items: list[tuple[str, str]], taken) -> tuple[str, str] | None:
-    """041-R20 ③: the reference while it is not taken, else the newest checkpoint not taken (the ones in
-    between are skipped; the final one is the newest once the run is done)."""
     if items and items[0][0] == REF_POINT and not taken(items[0][1]):
         return items[0]
     run_items = [x for x in items if x[0] == POINT]
@@ -110,7 +75,6 @@ def pick(items: list[tuple[str, str]], taken) -> tuple[str, str] | None:
 
 
 def claim(f: Path, timeout_s: int) -> bool:
-    """Atomic claim file (several scoring hosts share the folder): host, pid, start, the run's time limit."""
     f.parent.mkdir(parents=True, exist_ok=True)
     try:
         with f.open("x", encoding="utf-8") as fh:
@@ -122,7 +86,6 @@ def claim(f: Path, timeout_s: int) -> bool:
 
 
 def read_claim(f: Path) -> dict:
-    """A claim's content ({} for an older plain-text claim)."""
     try:
         d = json.loads(f.read_text(encoding="utf-8"))
         return d if isinstance(d, dict) else {}
@@ -131,18 +94,17 @@ def read_claim(f: Path) -> dict:
 
 
 def pid_alive(pid: int) -> bool:
-    """Whether a process of this host with this id runs (no signal is sent)."""
     if os.name == "nt":
         import ctypes
 
         k = ctypes.windll.kernel32
-        h = k.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        h = k.OpenProcess(0x1000, False, int(pid))
         if not h:
             return False
         code = ctypes.c_ulong()
         ok = k.GetExitCodeProcess(h, ctypes.byref(code))
         k.CloseHandle(h)
-        return bool(ok) and code.value == 259  # STILL_ACTIVE
+        return bool(ok) and code.value == 259
     try:
         os.kill(int(pid), 0)
     except ProcessLookupError:
@@ -154,9 +116,6 @@ def pid_alive(pid: int) -> bool:
 
 def now() -> str:
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-# ---------------------------------------------------------------- val 500
 
 
 def val_files(out: Path) -> dict[str, Path]:
@@ -173,9 +132,6 @@ def val_record(out: Path) -> dict | None:
 
 
 def claim_stale(out: Path, timeout_s: int) -> str | None:
-    """Why a claim without a record is stale (its scorer is gone), else None: older than the run's time limit
-    + STALE_MARGIN_S (a host that crashed, rebooted or was stopped), or made on this host by a process that no
-    longer runs."""
     f = val_files(out)["claim"]
     try:
         age = time.time() - f.stat().st_mtime
@@ -191,22 +147,17 @@ def claim_stale(out: Path, timeout_s: int) -> str | None:
 
 
 def val_state(out: Path, timeout_s: int = VAL_TIMEOUT_S) -> str:
-    """done (a run with return code 0, or an output without a record), running (claimed, no record yet: here
-    or on another host), stale (a claim whose scorer is gone), failed (a record with another return code,
-    not yet set aside), gave_up (VAL_ATTEMPTS failed attempts), open."""
     rec = val_record(out)
     if rec is not None:
         return "done" if rec.get("returncode") == 0 else "failed"
     if out.is_file():
-        return "done"  # an output without a record (made by hand): never overwritten (041-R29 ⑨)
+        return "done"
     if val_files(out)["claim"].exists():
         return "stale" if claim_stale(out, timeout_s) else "running"
     return "gave_up" if failed_attempts(out) >= VAL_ATTEMPTS else "open"
 
 
 def set_aside(out: Path) -> int:
-    """A failed attempt's files renamed to <name>.failed-<k>.* (kept, never deleted); returns k. Order: the
-    output, the log, the record, the claim last, so the state goes failed -> running -> open without a gap."""
     k = failed_attempts(out) + 1
     files = val_files(out)
     for kind in ("out", "log", "record", "claim"):
@@ -217,9 +168,6 @@ def set_aside(out: Path) -> int:
 
 
 def tidy(out: Path, timeout_s: int) -> None:
-    """Before picking: a leftover failed record (a scorer stopped between its record and set_aside) and a stale
-    claim (a record "stale claim" is written first; it counts as an attempt) are set aside. Another host doing
-    the same at once loses the renames (ignored)."""
     st = val_state(out, timeout_s)
     if st not in ("failed", "stale"):
         return
@@ -268,10 +216,10 @@ def score_val(lin: dict, shared: Path, pt_id: str, checkpoint: str, dry: bool, t
             try:
                 protocol.main(["check-bc-eval", str(out), "--metric", VAL_METRIC])
                 rec["check"] = "ok"
-            except SystemExit as e:  # recorded; the loop goes on (a mismatch is not fixed by running again)
+            except SystemExit as e:
                 rec["check"] = str(e.code)
         files["record"].write_text(json.dumps(rec, indent=1), encoding="utf-8")
-    except BaseException as e:  # Ctrl-C, an error before the record: recorded and set aside, never an orphan claim
+    except BaseException as e:
         rec["returncode"] = f"error: {e!r}"
         files["record"].write_text(json.dumps(rec, indent=1), encoding="utf-8")
         k = set_aside(out)
@@ -291,7 +239,7 @@ def cmd_val(a) -> None:
     taken = (lambda c: False) if a.dry_run else (lambda c: val_state(out_of(c), a.timeout_s) != "open")
     waiting = None
     while True:
-        done = run_done(shared, a.run)  # read before picking: the final checkpoint is never missed
+        done = run_done(shared, a.run)
         items = targets(a, shared)
         if a.dry_run:
             for pt_id, c in items:
@@ -322,11 +270,7 @@ def cmd_val(a) -> None:
         return
 
 
-# ---------------------------------------------------------------- T0 100
-
-
 def make_job(lin: dict, shared: Path, a, pt_id: str, checkpoint: str) -> Path | None:
-    """The checkpoint's T0 100 job (protocol.py job); None when another host made it first."""
     job = game_job(shared, a.games_root, checkpoint)
     args = ["job", "--lineage", LINEAGE, "--point", pt_id, "--checkpoint", checkpoint, "--metrics", GAME_METRIC, "--job", job.name,
             "--label", job.name, "--hosts", a.hosts, "--out-root", str(job.parent)]
@@ -346,16 +290,12 @@ STATUS_HEAD = "| stage | games | done | in flight | left | retried records |"
 
 
 def eval_status(job: Path, write: bool) -> str:
-    """`python -m uranium eval-status --job <job>`'s text (020-R15 ⑨); with `write` the merged per-stage
-    records and summaries are rewritten too."""
     from uranium import _core
 
     return _core.eval_status(str(job), write=write)
 
 
 def status_stages(text: str) -> list[dict]:
-    """The per-stage rows of eval-status's table; empty (fail closed) when the table is missing or a row of it
-    does not parse."""
     lines = text.splitlines()
     try:
         i = lines.index(STATUS_HEAD)
@@ -373,8 +313,6 @@ def status_stages(text: str) -> list[dict]:
 
 
 def status_complete(stages: list[dict]) -> bool:
-    """Every stage played out: nothing in flight, nothing left, every game with a final record (given-up games
-    included, as when the worker says "lease period ended: done")."""
     return bool(stages) and all(s["in_flight"] == 0 and s["left"] == 0 and s["done"] == s["games"] for s in stages)
 
 
@@ -383,23 +321,17 @@ def progress(stages: list[dict]) -> str:
 
 
 def write_atomic(f: Path, text: str) -> None:
-    """A temp file next to it, then a rename (several hosts share the folder: a reader never sees half a file)."""
     tmp = f.with_name(f".{f.name}.tmp-{socket.gethostname()}-{os.getpid()}")
     tmp.write_text(text, encoding="utf-8", newline="\n")
     os.replace(tmp, f)
 
 
-# The merge (eval-status with write: summaries rewritten) and the DONE write of a job are done by one host: the
-# one whose exclusive-create claim file this is. A claim older than MERGE_STALE_S without a DONE (its host
-# stopped midway) is set aside (renamed, never deleted) and taken again.
 MERGE_CLAIM = ".merge-claim"
 MERGE_STALE_S = 600
-# jobs with one complete eval-status reading not yet confirmed: str(job) -> time.monotonic() of that reading
 _complete_seen: dict[str, float] = {}
 
 
 def pending(job: Path) -> bool:
-    """A complete reading waits for its confirming one (finish)."""
     return str(job) in _complete_seen
 
 
@@ -409,7 +341,7 @@ def set_aside_merge_claim(job: Path, why: str) -> None:
     try:
         f.rename(job / f"{MERGE_CLAIM}.{why}-{k}")
     except OSError:
-        pass  # another host set it aside first
+        pass
 
 
 def take_merge_claim(job: Path, quiet: bool) -> bool:
@@ -431,8 +363,6 @@ def take_merge_claim(job: Path, quiet: bool) -> bool:
 
 
 def read_status(job: Path, write: bool) -> tuple[str, list[dict], str | None]:
-    """eval-status's text, its stage rows and why they do not show a played-out job (None: they do). Every stage
-    of job.toml must have a row."""
     text = eval_status(job, write=write)
     stages = status_stages(text)
     n = len(ec.job_stages(job))
@@ -442,18 +372,13 @@ def read_status(job: Path, write: bool) -> tuple[str, list[dict], str | None]:
 
 
 def finish(job: Path, gap_s: float = 0, quiet: bool = False) -> bool:
-    """041-R20 ③ (the step of Checkpoint 1's games_watch.sh after each worker run): whether the job has its
-    DONE. Without one, eval-status decides. A played-out job (every stage: nothing in flight, nothing left) is
-    confirmed by a second reading at least `gap_s` later (a later call); then this host takes the merge claim,
-    runs eval-status with write (the merged summaries), and writes `status.txt` (its text) and `DONE`, each
-    atomically. An incomplete job, an unreadable status or a failed step never gets a DONE."""
     done, key = job / "DONE", str(job)
     if done.is_file():
         _complete_seen.pop(key, None)
         return True
     try:
         _, stages, why = read_status(job, write=False)
-    except Exception as e:  # a job still being made, the shared drive away: asked again later
+    except Exception as e:
         _complete_seen.pop(key, None)
         if not quiet:
             print(f"{now()} {job.name}: eval-status read failed ({e!r}); no DONE", flush=True)
@@ -507,8 +432,6 @@ def play(job: Path, shared: Path, worker: str | None, poll_s: int) -> None:
 
 
 def sweep(shared: Path, root: str, poll_s: int) -> list[Path]:
-    """finish() on every job folder of the games root without DONE (a job played out by hand-started workers or
-    by another host); returns those waiting for their confirming reading."""
     d = shared / root
     jobs = [j for j in sorted(d.iterdir()) if (j / "job.toml").is_file() and not (j / "DONE").is_file()] if d.is_dir() else []
     return [j for j in jobs if not finish(j, poll_s, quiet=True) and pending(j)]
@@ -521,8 +444,6 @@ def cmd_games(a) -> None:
     joined: set[str] = set()
 
     def taken(c: str) -> bool:
-        # with --worker, an existing job that is not DONE is joined once (another host made it); else taken.
-        # A job played out (DONE written by the sweep, or waiting for its confirming reading) is not joined.
         j = game_job(shared, a.games_root, c)
         return j.exists() and (a.worker is None or j.name in joined or (j / "DONE").is_file() or pending(j))
 
@@ -549,9 +470,6 @@ def cmd_games(a) -> None:
             print(f"{now()} games: nothing left" + (" (run done)" if done else ""), flush=True)
             return
         time.sleep(a.poll_s)
-
-
-# ---------------------------------------------------------------- list, table
 
 
 def cmd_list(a) -> None:
@@ -592,8 +510,6 @@ def collect(lin: dict, shared: Path, a) -> list[dict]:
             r["val500_problem"] = None if got == want else f"{got} != pinned {want}"
         j = game_job(shared, root, c)
         if (j / "DONE").is_file():
-            # 052-R8 tables from the rows' live values here (no OpenBW replays in the loop); path comparisons
-            # use replay values (tables.py / protocol.py tables, 052-R7).
             res = tables.job_tables(j, cache, lin=lin, ops="live")
             (t,) = res.values()
             r["t0_100"] = t

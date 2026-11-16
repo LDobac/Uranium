@@ -1,11 +1,7 @@
-//! Which files OpenBW needs (from `third_party/openbw/bwgame.h` `global_init`) and how to
-//! resolve them against the file list of a StarCraft: Remastered CASC storage.
-
 use std::collections::HashMap;
 
 use anyhow::{Result, bail};
 
-/// Files read unconditionally by OpenBW's `global_init`.
 pub fn fixed_files() -> Vec<String> {
     let mut v: Vec<String> = [
         "arr/units.dat",
@@ -23,7 +19,6 @@ pub fn fixed_files() -> Vec<String> {
     .iter()
     .map(|s| s.to_string())
     .collect();
-    // Same order and spelling as `tileset_names` in bwgame.h.
     for ts in ["badlands", "platform", "install", "AshWorld", "Jungle", "Desert", "Ice", "Twilight"] {
         v.push(format!("Tileset/{ts}.vf4"));
         v.push(format!("Tileset/{ts}.cv5"));
@@ -31,7 +26,6 @@ pub fn fixed_files() -> Vec<String> {
     v
 }
 
-/// Parses a `.tbl` string table: `u16 count`, `u16 offsets[count]`, NUL-terminated strings.
 pub fn parse_tbl(data: &[u8]) -> Result<Vec<String>> {
     let u16_at = |i: usize| -> Result<usize> {
         match data.get(i..i + 2) {
@@ -52,7 +46,6 @@ pub fn parse_tbl(data: &[u8]) -> Result<Vec<String>> {
         .collect()
 }
 
-/// `unit/<name>` paths for every images.tbl entry (GRPs and LO* overlays loaded by OpenBW).
 pub fn unit_files(images_tbl: &[u8]) -> Result<Vec<String>> {
     let mut v: Vec<String> = parse_tbl(images_tbl)?
         .into_iter()
@@ -64,7 +57,6 @@ pub fn unit_files(images_tbl: &[u8]) -> Result<Vec<String>> {
     Ok(v)
 }
 
-/// Lower-case, forward slashes, no `namespace:` prefix.
 fn normalize(name: &str) -> String {
     let n = name.trim().replace('\\', "/").to_ascii_lowercase();
     match n.split_once(':') {
@@ -73,9 +65,6 @@ fn normalize(name: &str) -> String {
     }
 }
 
-/// Index of a CASC listing, resolving OpenBW paths to stored names.
-///
-/// Preference: the classic path itself, then an `sd/` copy. HD asset trees are never used.
 pub struct Index {
     by_norm: HashMap<String, String>,
 }
@@ -115,7 +104,6 @@ mod tests {
 
     #[test]
     fn tbl_roundtrip() {
-        // 2 entries: "terran\\marine.grp" at offset 6, "" at offset 24
         let mut d = vec![2, 0, 6, 0, 24, 0];
         d.extend_from_slice(b"terran\\marine.grp\0\0");
         assert_eq!(parse_tbl(&d).unwrap(), vec!["terran\\marine.grp".to_string(), String::new()]);

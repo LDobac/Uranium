@@ -1,17 +1,8 @@
-"""032-R20 ③: writes config/plans/arch-abl-pt-league.toml, the league of the architecture
-comparison. Every pair of the seven models (ckpt-10000 of each run) plays 100 games: per map
-2 x 25 games, the slots swapped after 25 (as the core-ablation head-to-head). The LSTM-GTrXL pair
-is left out: its games are the second core ablation's head-to-head (core-ablation-pt-h2h.toml).
-
-    python tools/ablation/league_plan.py            # rewrites the plan file
-"""
-
 import itertools
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "config" / "plans" / "arch-abl-pt-league.toml"
-# Order fixes the matchup numbering (and so the game seeds): baseline, LSTM, variants.
 MODELS = [
     "core-abl-gtrxl-pt",
     "core-abl-lstm-pt",
@@ -23,8 +14,7 @@ MODELS = [
 ]
 REUSED = {("core-abl-gtrxl-pt", "core-abl-lstm-pt")}
 MAPS = ("fighting_spirit", "circuit_breaker")
-GAMES = 25  # per map and slot order
-# Above every other plan's games (core-ablation-pt-t0: 32800 + 600) and below 40000.
+GAMES = 25
 SEED_BASE = 35000
 
 

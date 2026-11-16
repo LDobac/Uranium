@@ -1,22 +1,4 @@
-"""041-R25 dead-channel record summary of a training run log (050-R9 `dead_channels`, user decision
-2026-11-10 AMB-050-5: the training-log statistics only; config/protocol/lineage.toml [metric.dead_channels],
-docs/measurement_protocol.md).
-
-A BC run logs its `[monitor] spatial_every` records as JSON lines on stderr (`{"step", "loss": {sp_*...}}`,
-041-R25 ②) and a WARNING line per alarm (041-R25 ③); an RL run has the same values as train.csv columns
-(042-R21 ③, rows of one agent) while its alarm WARNING lines go to the RL process's stderr, not train.csv:
-for a train.csv the alarm lines are not counted, only the records crossing the alarm rule
-(`crossing_records`). From the records at updates `from_update` (the alarm's start, 600) .. `until_update`: the
-max dead share per ReLU output layer (stem, c0-c3, r0-r5, the alarm layers), the max const S8 / s_pool, the
-min positive share per layer, the alarm lines / records, the last record's dead counts; for a BC log also
-the training-loss mean of the last 100 updates. Channel counts come from the checkpoint's model config
-(`--checkpoint`, meta.json `config.spatial`) or the SpatialConfig defaults.
-
-    python tools/eval/spatial_logs.py <log>... [--checkpoint <ckpt dir>] [--from-update N] [--until-update N] [--agent main] [--out <json>]
-
-Moved from the 041-R24 lambda-run script (<shared>/eval/m2-lambda-20261110/scripts/spatial_logs.py) with the
-same rules; the per-run JSON is the value of one log's entry.
-"""
+"""041-R25 dead-channel record summary of a training run log (050-R9 `dead_channels`, user decision"""
 
 from __future__ import annotations
 
@@ -33,15 +15,12 @@ TAIL_KEYS = ("action", "total", "aux_priv", "aux_jepa", "jepa_tgt_std")
 
 
 def alarm_rules() -> tuple[int, float, tuple[str, ...]]:
-    """(from update, share, ReLU output layers) of the 041-R25 alarm (uranium.model.monitor)."""
     from uranium.model.monitor import ALARM_FROM, ALARM_LAYERS, ALARM_SHARE
 
     return ALARM_FROM, ALARM_SHARE, ALARM_LAYERS
 
 
 def channels(spatial: dict | None = None) -> dict[str, int]:
-    """Channels per 041-R25 alarm layer and const point of a SpatialConfig (dict form; None = defaults):
-    stem, c<i> / r<i> = stage i, r4 / r5 (bottleneck) and S8 = the last stage, s_pool = pool."""
     if spatial is None:
         from uranium.model.config import SpatialConfig
 
@@ -62,7 +41,6 @@ def checkpoint_channels(ckpt: Path) -> dict[str, int]:
 
 
 def read_records(path: Path, agent: str = "main") -> tuple[list[dict], list[str]]:
-    """({"step", "loss": {...}} records, alarm lines) of a BC stderr log or an RL train.csv."""
     if path.suffix == ".csv":
         recs = []
         with path.open(encoding="utf-8", newline="") as fh:
@@ -91,7 +69,6 @@ def read_records(path: Path, agent: str = "main") -> tuple[list[dict], list[str]
 
 
 def default_from_update() -> int:
-    """lineage.toml [metric.dead_channels] from_update (the protocol value)."""
     import tomllib
 
     lin = tomllib.loads((Path(__file__).resolve().parents[2] / "config" / "protocol" / "lineage.toml").read_text(encoding="utf-8"))
@@ -123,7 +100,6 @@ def scan(path: Path, ch: dict[str, int], from_update: int | None = None, agent: 
         out["min_pos"] = {k: min(r["loss"][f"sp_pos_{k}"] for r in late) for k in layers}
         out["min_pos_any"] = min(out["min_pos"].values())
         out["dead_last"] = {k: late[-1]["loss"][f"sp_dead_{k}"] for k in layers} | {"step": late[-1]["step"]}
-        # the alarm rule recomputed from the records (041-R25 ③): records crossing it
         out["crossing_records"] = [r["step"] for r in late if any(r["loss"][f"sp_dead_{k}"] >= share * ch[k] for k in layers)
                                    or any(r["loss"][k] >= share * ch[k] for k in CONST)]
     tail = recs[-100:]

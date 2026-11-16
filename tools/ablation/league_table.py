@@ -1,19 +1,3 @@
-"""032-R20 ③: the league table of the architecture comparison from `python -m uranium run` outputs.
-
-    python tools/ablation/league_table.py --run <out dir> <plan.toml> [--run ...]... [--out table.md]
-
-Each `--run` is an output folder of model-vs-model games (games.jsonl, results.jsonl) with the
-plan it played; several runs are joined (the league and the second core ablation's head-to-head
-for the LSTM-GTrXL pair). The winner is read from the winning session's policy id, so the
-in-game slot (not always the plan's p0/p1) does not matter; a policy id is named by the run folder
-of its plan checkpoint (games.jsonl `opponent` is p1's id, the game's other session is p0).
-Games are counted as the runner's summary.md counts them (`load`); the others are listed by
-reason. Per pair: wins, losses, draws, win rate over all counted games with a Wilson 95% interval
-(as reports/m6_core_ablation.md 4) and the decisive games' share. Then a score matrix (win 1,
-draw 0.5) and a Bradley-Terry ranking with draws as half wins and a bootstrap 95% interval over
-games.
-"""
-
 import argparse
 import json
 import math
@@ -46,18 +30,10 @@ def name_of(player: dict) -> str:
     return Path(player["checkpoint"]).parent.name if player.get("kind") == "model" else player.get("kind", "?")
 
 
-# As the runner's own summary (crates/uranium-runner/src/report.rs, 020-R13).
 SHORT_FRAMES = 300
 
 
 def load(out: Path, plan_path: Path) -> tuple[list[tuple[str, str, int | None]], dict]:
-    """(player a, player b, 0 if a won / 1 if b won / None for a draw) per counted game, and the
-    games not counted by reason. A game counts when a session reported a real end (no error, not
-    a disconnect), whatever hostd's outcome (a result written just before the wall-time limit
-    counts, as in reports/m6_core_ablation.md 4); the deciding session is the one that ended last
-    (020-R13). Not counted: no such session (e.g. cut at the wall-time limit), a mutual leave
-    (both claim the win, a drop) and games under 300 frames (suspect), the rules of the runner's
-    summary.md."""
     plan = tomllib.loads(plan_path.read_text(encoding="utf-8"))
     sides = [(name_of(m["p0"]), name_of(m["p1"])) for m in plan["matchup"]]
     kinds = [(m["p0"].get("kind"), m["p1"].get("kind")) for m in plan["matchup"]]
@@ -65,7 +41,6 @@ def load(out: Path, plan_path: Path) -> tuple[list[tuple[str, str, int | None]],
     sessions: dict[int, list] = defaultdict(list)
     for r in read_jsonl(out / "results.jsonl"):
         sessions[r["game_id"]].append(r)
-    # Model policy id -> run name: p1's id is in games.jsonl, the game's other model session is p0.
     names: dict[str, str] = {}
 
     def name(policy: str, run: str) -> None:
@@ -106,8 +81,6 @@ def load(out: Path, plan_path: Path) -> tuple[list[tuple[str, str, int | None]],
         if winner in names:
             winner_run = names[winner]
         elif winner is None or not str(winner).startswith("model:"):
-            # No session for the winning slot, or a scripted player's: the winner is the side
-            # whose session is not a known model loser.
             loser = next((names[s["policy"]] for s in ss if s["slot"] != w and s.get("policy") in names), None)
             if loser is not None:
                 winner_run = b if loser == a else a
@@ -122,8 +95,6 @@ def load(out: Path, plan_path: Path) -> tuple[list[tuple[str, str, int | None]],
 
 
 def bradley_terry(games, players, iters=500) -> dict[str, float]:
-    """Strengths by the MM algorithm, draws as half a win to each side; log-strengths centred at 0
-    and shown on the Elo scale (400 log10)."""
     wins = defaultdict(float)
     n = defaultdict(int)
     for a, b, w in games:
@@ -158,7 +129,7 @@ def main() -> int:
         for k, v in s.items():
             skipped[k] += v
     players = sorted({x for g in games for x in g[:2]})
-    pair = defaultdict(lambda: [0, 0, 0])  # (a, b) with a < b: a wins, b wins, draws
+    pair = defaultdict(lambda: [0, 0, 0])
     for p0, p1, w in games:
         a_, b_ = sorted((p0, p1))
         rec = pair[(a_, b_)]

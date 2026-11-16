@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Build McRave (Protoss/Zerg/Terran, MIT; BWEM + BWEB + Horizon included) as a BWAPI 4.2 (OpenBW)
-# AI module for use as a T1 opponent (spec 021).
-# Output: <URANIUM_OSS_BOTS_DIR>/mcrave/{module.so, VERSION, bwapi-data/}
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT/tools/oss/common.sh"
@@ -10,8 +7,6 @@ COMMIT=7d1719a22d8b896f957abae50e2ea5efff974fe2
 OUT="$OSS_OUT_ROOT/mcrave"
 
 oss_git_fetch "$SRC" https://github.com/Cmccrave/McRave.git "$COMMIT"
-# Patch 0009: Linux entry points, and MSVC-only constructs GCC rejects (rvalues bound to
-# non-const references, void ternaries, lookups into incomplete types, Windows headers).
 oss_patch "$SRC" "$ROOT/third_party/patches/0009-mcrave-linux-bwapi42.patch"
 
 S="$SRC/Source"

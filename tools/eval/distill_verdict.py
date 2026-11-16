@@ -1,54 +1,4 @@
-"""044-R6 round verdict of a distillation round (spec/044 044-R6 / 044-R7, AMB-044-7 Resolved 2026-11-14;
-docs/measurement_protocol.md "증류 라운드 판정"). It only reports: whatever the verdict, the round's results go to
-the user and the next step is the user's (044-R6, as 050-R10).
-
-  pass  = the whole 050-R10 gate against m2-s2e2 (tools/eval/regression_gate.py: checks 1, 2, 3a, 3b all PASS)
-          + TvZ kept (041-R29 ④ qualification: TvZ 32 >= 16 wins, late held_8m >= 24 / 64)
-          + held sum (early + late held_8m of the rush 128) >= S's held sum - 6
-  d2    = (round d1 only) not passed, but T0 Protoss wins (t0_tp) >= S's + 4 and TvZ kept
-  stop  = TvZ not kept, or T0 Protoss wins < S's + 4; and a d2 that does not pass (d2 is the last round)
-
-The teacher round t1 (044-R8, user decision 2026-11-14: one round after the distillation rounds, judged by the 044-R6
-rules) is `--round t1`: pass or stop only, no "d2" (t1 is the last round; user confirmed 2026-11-14). Its jobs are of
-lineage point t1; S is the 041-R29 ④ selection, r2 (m2-dagger-r2/ckpt-1408), as for the distillation rounds (the tool
-refuses another S point for t1). A passing t1 is D (044-R7, user confirmed 2026-11-14).
-
-From t1 on (044-R6 / 050-R10 amended 2026-11-15, user-delegated, Fable advice 2026-11-15) the verdict changes; d1 and d2
-are judged as before (their verdict files stand):
-  - 050-R10 ② per-race `nll.action` is recorded only: RECORD, or WARN above baseline + 0.03; it never fails the gate
-    (top-1 -0.5 %p, check 1 T0 wins, 3a / 3b bunker stay). The baseline val is m2-s2e2 measured on the candidate's
-    backend and precision (044-R6, 2026-11-14), as for d2.
-  - pass also needs teacher-mode games (050-R10 definition, tables.teacher_mode_table) <= 3 of the round's t0_tp games
-    against Terran and against Protoss apart. A cell without data (no Terran / Protoss games, a game without a command
-    stream, a t0_tp game without a result) fails, as a MISSING gate check.
-  - 044-R7 RL start D (no stop either way): D = t1 when it passes, or when TvZ >= 16 / 32, late held_8m >= 24 / 64,
-    held sum (early + late) >= 60, T0 Terran + Protoss wins >= 20 / 64 and teacher-mode TvT and TvP <= 3 / 32 each all
-    hold; otherwise D = d1 (checkpoints/m2-distill-d1/ckpt-2000). Printed, in the JSON (`d_choice`) and as comment
-    lines of the verdict file (whose first line stays pass / stop).
-  - With --verdict the tool also refuses (no verdict, no file) when no round job has a protocol.json (D's checkpoint
-    unknown) and while a valid T0 TvT / TvP game of the round has no command stream or the streams were not counted
-    (a passing cmddump failure would fail the teacher-mode cell for good); without --verdict such a cell shows MISSING.
-
-Only these three verdicts (user decision 2026-11-14): a gate check that is MISSING or a cell without a value (games
-without a row, no val output) counts as failed. To keep the never-overwritten verdict file right, the tool refuses to
-run (no verdict, no file) while an input job is unfinished (no DONE) or has undecodable result / ledger lines. The
-baseline job must be of point s2e2 and S's two jobs of one selection candidate point (r1 / r2 / r3 / s2e2) and checkpoint.
-
-S = the 041-R29 ④ selection (the Checkpoint 1 counterpart model); its rush 128 and t0_tp jobs give the held sum and
-the Protoss wins the round is compared with. Boundaries are inclusive (">= 16", ">= 24", ">= S - 6", ">= S + 4").
-The teacher-mode share (050-R10, TvT / TvP) of the round's and S's t0_tp games is recorded, not judged, for d1 / d2
-(the round's is judged from t1 on, below; S's stays recorded).
-
-    python tools/eval/distill_verdict.py --round d1 \\
-        --baseline-val <m2-s2e2 val500 json> --candidate-val <round val500 json> \\
-        --baseline-games <m2-s2e2 t0_tp job> --candidate-games <round t0_tp job> \\
-        --candidate-tvz <round job with the TvZ 32 stage> --candidate-rush <round job with the rush 128 stage> \\
-        --s-games <S's t0_tp job> --s-rush <S's rush 128 job> \\
-        [--verdict <shared>/eval/m2-lineage/d1_first_test.verdict] [--json out.json] [--cache DIR]
-
-Rush and TvZ counts come from the session rows (held_8m = scv_8m >= 8, 050-R7; opponent-crash games invalid), as
-tools/eval/tables.py. A verdict file is never overwritten (041-R29 ⑨).
-"""
+"""044-R6 round verdict of a distillation round (spec/044 044-R6 / 044-R7, AMB-044-7 Resolved 2026-11-14;"""
 
 from __future__ import annotations
 
@@ -64,33 +14,27 @@ import protocol  # noqa: E402
 import regression_gate as rg  # noqa: E402
 import tables  # noqa: E402
 
-# AMB-044-7 Resolved 2026-11-14 (044-R6): the thresholds.
-TVZ_WINS = 16          # TvZ 32 >= 16 wins (041-R29 ④ qualification)
-LATE_HELD = 24         # late (missed-first-target) held_8m >= 24 / 64
-HELD_SUM_SLACK = 6     # held sum (early + late held_8m) >= S's - 6
-D2_PROTOSS_GAIN = 4    # d2: T0 Protoss wins >= S's + 4
-# 044-R8: t1 = the teacher round (pass or stop only; user confirmed 2026-11-14).
+TVZ_WINS = 16
+LATE_HELD = 24
+HELD_SUM_SLACK = 6
+D2_PROTOSS_GAIN = 4
 ROUNDS = ("d1", "d2", "t1")
 RUSH_PLANS = ("rush_check",)
 TVZ_PLANS = ("tvz_bc", "tvz_rl")
 PASS, D2, STOP = "pass", "d2", "stop"
-# 044-R6 (2026-11-15): the rounds judged with the 050-R10 ② per-race NLL as a gate check; later rounds (t1) record it.
 NLL_JUDGED_ROUNDS = ("d1", "d2")
-NLL_WARN = 0.03        # t1 on: WARN when nll.action > baseline + 0.03 (record only)
+NLL_WARN = 0.03
 RECORD, WARN = "RECORD", "WARN"
-TEACHER_MODE_MAX = 3   # t1 on: teacher-mode games <= 3 (of 32) against Terran and against Protoss apart
-# 044-R7 (2026-11-15): D = t1 when t1 passes or meets all of these, else d1.
-D_HELD_SUM = 60        # held sum (early + late held_8m) >= 60
-D_T0_WINS = 20         # T0 Terran + Protoss wins >= 20 / 64
+TEACHER_MODE_MAX = 3
+D_HELD_SUM = 60
+D_T0_WINS = 20
 D1_CHECKPOINT = "checkpoints/m2-distill-d1/ckpt-2000"
-T1_S_POINT = "r2"      # 044-R8 ④: t1's S is r2 (m2-dagger-r2/ckpt-1408)
-# 041-R29 ④: S is r1, r2 or r3 (r3 runs, user decision 2026-11-14), or the BC baseline when no candidate qualifies.
+T1_S_POINT = "r2"
 S_POINTS = ("r1", "r2", "r3", "s2e2")
 BASELINE_POINT = "s2e2"
 
 
 def ge(x: int | None, y: int | None) -> bool:
-    """x >= y; a missing value fails (user decision 2026-11-14)."""
     return x is not None and y is not None and x >= y
 
 
@@ -102,8 +46,6 @@ def one_stage(job: Path, lin: dict, plan_ids: tuple[str, ...]) -> tuple[int, Pat
 
 
 def stage_rows(job: Path, k: int, plan: dict) -> tuple[dict[int, dict], set[int], int, int]:
-    """(model rows by game n, opponent-crash game keys, planned games with neither a row nor an invalid mark,
-    undecodable job lines)."""
     results, ledger = ec.read_results(job), ec.read_ledger(job)
     rows = ec.model_rows(results, k)
     invalid = ec.opponent_crashes(ledger)
@@ -113,8 +55,6 @@ def stage_rows(job: Path, k: int, plan: dict) -> tuple[dict[int, dict], set[int]
 
 
 def rush_counts(job: Path, lin: dict) -> dict:
-    """held_8m by start condition of the job's rush 128 stage (tables.rush_table, session rows); `complete` = every
-    planned game has a row or an invalid mark and no job line was undecodable."""
     k, _, plan = one_stage(job, lin, RUSH_PLANS)
     rows, invalid, missing, skipped = stage_rows(job, k, plan)
     t = tables.rush_table(k, plan, rows, invalid, {})
@@ -132,15 +72,12 @@ def tvz_counts(job: Path, lin: dict) -> dict:
 
 
 def t0_teacher_mode(job: Path, cache: Path, lin: dict) -> dict:
-    """050-R10 teacher-mode share of the job's t0_tp / t0_tp_rl stage (record only)."""
     k, _, plan = one_stage(job, lin, rg.T0_TP_PLANS)
     rows, invalid, _, _ = stage_rows(job, k, plan)
     return tables.stage_teacher_mode(job / plan["name"], k, plan, rows, invalid, cache / job.name / plan["name"]).get("teacher_mode", {})
 
 
 def nll_record_only(g: dict) -> dict:
-    """044-R6 / 050-R10 (2026-11-15, t1 on): the gate with the ② per-race `nll.action` checks recorded only (RECORD, or
-    WARN above baseline + 0.03); the overall result is that of the other checks."""
     checks = []
     for c in g["checks"]:
         if c["check"] == "2" and c["metric"] == rg.NLL_HEAD:
@@ -155,10 +92,6 @@ def nll_record_only(g: dict) -> dict:
 
 
 def teacher_cells(tm: dict, c: dict | None) -> dict:
-    """044-R6 (2026-11-15, t1 on) teacher-mode cells of the round's t0_tp job against Terran and Protoss: `ok` =
-    teacher-mode games <= 3. A cell without data fails (`missing` says why): no games of the race, no command streams
-    at all (`error`), a game without one (`no_stream`), a planned game without a result (t0_tp_counts `missing`) or
-    undecodable job lines."""
     out = {}
     for race in tables.TEACHER_MODE_RACES:
         v = None if "error" in tm else tm.get(race)
@@ -175,9 +108,6 @@ def teacher_cells(tm: dict, c: dict | None) -> dict:
 
 
 def stream_gaps(tm: dict) -> None:
-    """Refuse a t1 verdict file (no verdict, no file) while a valid T0 TvT / TvP game has no command stream or the
-    streams were not counted: a passing cmddump failure would otherwise fail the teacher-mode cell, and with it D = t1,
-    for good in the never-overwritten file (as check_finished, 044-R6). Without --verdict the cell shows MISSING."""
     if "error" in tm:
         raise SystemExit(f"044-R6: no verdict while the round's t0_tp command streams are not counted ({tm['error']})")
     gaps = [f"Tv{r[0].upper()} {v['no_stream']}" for r, v in tm.items() if v.get("no_stream")]
@@ -187,7 +117,6 @@ def stream_gaps(tm: dict) -> None:
 
 
 def t0_wins(c: dict | None) -> int | None:
-    """T0 Terran + Protoss wins of t0_tp counts; unknown for a job with a game missing or undecodable lines."""
     rs = [(c or {}).get(r) for r in rg.RACES]
     if not c or c.get("skipped_lines") or not all(rs) or any(r.get("missing") for r in rs):
         return None
@@ -195,8 +124,6 @@ def t0_wins(c: dict | None) -> int | None:
 
 
 def d_choice(word: str, tvz: dict | None, rush: dict | None, wins: int | None, tcells: dict, checkpoint: str | None) -> dict:
-    """044-R7 (2026-11-15) RL start after the t1 verdict: D = t1 if it passed or meets every condition, else d1
-    (no stop either way). A value that is missing fails its condition."""
     ok = lambda c: c is not None and c["complete"]  # noqa: E731
     held = rush["early"] + rush["late"] if ok(rush) else None
     cond = {
@@ -228,8 +155,6 @@ def d_choice_lines(d: dict) -> list[str]:
 
 
 def protoss_wins(c: dict | None) -> int | None:
-    """T0 Protoss wins of t0_tp counts (regression_gate.t0_tp_counts); unknown for an unfinished job or one with
-    undecodable lines."""
     if not c or c.get("skipped_lines") or not c.get("protoss") or c["protoss"].get("missing"):
         return None
     return c["protoss"]["won"]
@@ -237,9 +162,6 @@ def protoss_wins(c: dict | None) -> int | None:
 
 def decide(rnd: str, gate_overall: str | None, tvz: dict | None, rush: dict | None, s_rush: dict | None,
            protoss: int | None, s_protoss: int | None, tcells: dict | None = None) -> tuple[str, dict]:
-    """The 044-R6 verdict and its conditions. A gate that is not PASS (FAIL or MISSING) and a count of a job with
-    games missing count as failed (user decision 2026-11-14). From t1 on (2026-11-15) `gate_overall` is that of
-    nll_record_only and pass also needs both teacher_cells ok (`tcells` None fails)."""
     if rnd not in ROUNDS:
         raise SystemExit(f"044-R6: round {rnd!r} is not one of {', '.join(ROUNDS)} (d2 is the last round; t1 the teacher round, 044-R8)")
     ok = lambda c: c is not None and c["complete"]  # noqa: E731
@@ -287,7 +209,6 @@ def report_lines(rnd: str, word: str, cond: dict, g: dict, tvz: dict, rush: dict
     held = rush["early"] + rush["late"]
     s_held = s_rush["early"] + s_rush["late"]
     if rnd not in NLL_JUDGED_ROUNDS:
-        # 044-R6 (2026-11-15, t1 on): ② NLL recorded only, teacher mode judged, then the 044-R7 RL start.
         nll = [c for c in g["checks"] if c["check"] == "2" and c["metric"] == rg.NLL_HEAD]
         bad = [c for c in g["checks"] if c["result"] not in (rg.PASS, RECORD, WARN)]
         return [
@@ -319,8 +240,6 @@ def report_lines(rnd: str, word: str, cond: dict, g: dict, tvz: dict, rush: dict
 
 
 def candidate_records(jobs: list[Path], rnd: str) -> dict:
-    """protocol.json of the round's jobs: every one of point `rnd` and one checkpoint (a job without the record is
-    noted, e.g. one rendered by hand)."""
     recs = {j.name: protocol.read_record(j) for j in dict.fromkeys(jobs)}
     for name, r in recs.items():
         if r is not None and r.get("point") != rnd:
@@ -334,8 +253,6 @@ def candidate_records(jobs: list[Path], rnd: str) -> dict:
 
 
 def reference_records(baseline: Path, s_jobs: list[Path]) -> dict:
-    """The baseline job is of point s2e2 (050-R10: m2-s2e2) and S's jobs of one selection candidate point (041-R29 ④)
-    and one checkpoint; each needs its lineage-2 protocol.json."""
     def rec(j: Path) -> dict:
         r = protocol.read_record(j)
         if r is None or r.get("lineage") != "m2":
@@ -353,8 +270,6 @@ def reference_records(baseline: Path, s_jobs: list[Path]) -> dict:
 
 
 def check_finished(jobs: list[Path]) -> None:
-    """Refuse (no verdict, no file) while an input job is unfinished or has undecodable lines (user decision
-    2026-11-14: the verdict file is never overwritten, so it is written from finished jobs only)."""
     problems = []
     for j in dict.fromkeys(jobs):
         if not (j / "DONE").is_file():
@@ -384,7 +299,6 @@ def main(argv=None) -> dict:
     if a.verdict is not None and a.verdict.exists():
         raise SystemExit(f"{a.verdict} exists: a verdict is not overwritten (041-R29 ⑨)")
     if a.verdict is not None:
-        # A forgotten or mistyped val path would fail gate check 2 / 3a for good in a never-overwritten file.
         for flag, v in (("--baseline-val", a.baseline_val), ("--candidate-val", a.candidate_val)):
             if v is None or not Path(v).is_file():
                 raise SystemExit(f"044-R6: --verdict needs {flag} (an existing bc-eval JSON); got {v!r}")
@@ -398,7 +312,6 @@ def main(argv=None) -> dict:
     if later and ref["s_point"] != T1_S_POINT:
         raise SystemExit(f"044-R8: round {a.round}'s S is {T1_S_POINT} (m2-dagger-r2/ckpt-1408); S's jobs are of point {ref['s_point']!r}")
     if later and a.verdict is not None and not rec["checkpoint"]:
-        # 044-R7: the never-overwritten file must name D's checkpoint; t1's comes from the round jobs' protocol.json.
         raise SystemExit(f"044-R7: --verdict for round {a.round} needs the round's checkpoint (D) from a round job's {protocol.RECORD}; "
                          f"none has one ({', '.join(rec['no_protocol_json'])})")
     bg = rg.t0_tp_counts(a.baseline_games, cache, lin)

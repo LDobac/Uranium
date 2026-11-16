@@ -1,4 +1,3 @@
-# 021-AC2 (stage 1): T0 Terran vs UAlbertaBot, 10 games per opponent race.
 name = "m3-uab"
 seed_base = 41000
 [[matchup]]

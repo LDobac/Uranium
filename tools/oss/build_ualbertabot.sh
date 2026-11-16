@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Build UAlbertaBot as a BWAPI 4.2 (OpenBW) AI module for use as a T1 opponent (spec 021).
-# Output: <URANIUM_OSS_BOTS_DIR>/ualbertabot/{module.so, VERSION, bwapi-data/AI/UAlbertaBot_Config.txt}
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT/tools/oss/common.sh"

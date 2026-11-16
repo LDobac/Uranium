@@ -1,4 +1,3 @@
-# 021-AC1: T0 bots of all three races play each other, 50 games per map per pairing.
 name = "m3-cross"
 seed_base = 30000
 [[matchup]]

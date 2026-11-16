@@ -1,13 +1,3 @@
-//! Generates `crates/uranium-env/tables/{unit,tech,upgrade,weapon}_types.toml` from the BWAPI 4.2
-//! sources (`third_party/bwapi/bwapi`). Version-specific ids and stats live in data tables only
-//! (013-R1); prerequisites feed the 034-R3 type mask.
-//!
-//! The BWAPI type data is a set of static arrays indexed by the type enums
-//! (`name[XTypes::Enum::MAX] = { ... };`). Arrays shorter than MAX are zero / None filled, like
-//! C++ aggregate initialisation.
-//!
-//! Usage: cargo run -p bwapi-tables -- third_party/bwapi/bwapi crates/uranium-env/tables
-
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
@@ -23,7 +13,6 @@ struct Args {
     out: PathBuf,
 }
 
-/// Removes `//` and `/* */` comments.
 fn strip_comments(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut chars = src.chars().peekable();
@@ -65,7 +54,6 @@ fn strip_comments(src: &str) -> String {
     out
 }
 
-/// Ordered enum member names (`enum Enum { A = 0, B, ..., MAX }`), honouring explicit values.
 fn enum_names(header: &str, namespace: &str) -> Result<Vec<String>> {
     let src = strip_comments(header);
     let ns = src.find(&format!("namespace {namespace}")).with_context(|| format!("namespace {namespace}"))?;
@@ -96,14 +84,12 @@ fn enum_names(header: &str, namespace: &str) -> Result<Vec<String>> {
     Ok(names.into_iter().enumerate().map(|(i, n)| n.unwrap_or_else(|| format!("Unused_{i}"))).collect())
 }
 
-/// The brace block that initialises `name[...]`, split into top-level items.
 fn array(src: &str, name: &str) -> Result<Vec<String>> {
     let key = format!("{name}[");
     let mut from = 0;
     let pos = loop {
         let p = src[from..].find(&key).with_context(|| format!("array {name}"))? + from;
         let before = src[..p].chars().last().unwrap_or(' ');
-        // Skip longer identifiers ending in `name` and the `ACTUAL` copies without initialisers.
         let stmt_end = src[p..].find(';').map_or(src.len(), |e| e + p);
         if !(before.is_alphanumeric() || before == '_') && src[p..stmt_end].contains('{') {
             break p;
@@ -115,7 +101,6 @@ fn array(src: &str, name: &str) -> Result<Vec<String>> {
     Ok(split_top(block))
 }
 
-/// Text between the brace at `open` and its matching close brace.
 fn balanced(src: &str, open: usize) -> Result<&str> {
     let mut depth = 0;
     for (i, c) in src[open..].char_indices() {
@@ -155,7 +140,6 @@ fn split_top(block: &str) -> Vec<String> {
     items
 }
 
-/// Pads to `len` with `fill` (C++ aggregate initialisation) and rejects longer arrays.
 fn fit(mut v: Vec<String>, len: usize, fill: &str, what: &str) -> Result<Vec<String>> {
     ensure!(v.len() <= len, "{what}: {} items > {len}", v.len());
     v.resize(len, fill.to_string());
@@ -166,7 +150,6 @@ fn ints(v: &[String], what: &str) -> Result<Vec<i32>> {
     v.iter().map(|s| s.parse::<i32>().with_context(|| format!("{what}: `{s}`"))).collect()
 }
 
-/// Strips namespace qualifiers: `UnitTypes::Terran_SCV` -> `Terran_SCV`.
 fn ident(s: &str) -> &str {
     s.rsplit("::").next().unwrap_or(s).trim()
 }
@@ -177,7 +160,6 @@ impl Ids {
     fn new(names: &[String]) -> Self {
         Self(names.iter().enumerate().map(|(i, n)| (n.clone(), i as i32)).collect())
     }
-    /// `None` -> -1; everything else must be a known member.
     fn get(&self, s: &str, what: &str) -> Result<i32> {
         let s = ident(s);
         if s == "None" {
@@ -206,10 +188,8 @@ struct UnitRow {
     space_provided: i32,
     tile_width: i32,
     tile_height: i32,
-    /// Pixel extents from the centre: left, up, right, down.
     dimensions: [i32; 4],
     what_builds: i32,
-    /// (unit type id, count): `UnitType::requiredUnits()`.
     required_units: Vec<[i32; 2]>,
     required_tech: i32,
     sight_range: i32,
@@ -229,7 +209,6 @@ struct TechRow {
     research_time: i32,
     energy: i32,
     what_researches: i32,
-    /// `TechType::requiredUnit()`.
     required_unit: i32,
     targets_unit: bool,
     targets_position: bool,
@@ -248,7 +227,6 @@ struct UpgradeRow {
     time_factor: i32,
     max_repeats: i32,
     what_upgrades: i32,
-    /// Required unit type per level 1..=3 (-1 = none).
     required_units: [i32; 3],
 }
 
@@ -292,7 +270,6 @@ fn main() -> Result<()> {
     let weapons = Ids::new(&wpn_names);
     let nu = unit_names.len();
 
-    // ---------------------------------------------------------------- units
     let src = read(&srcd.join("UnitType.cpp"))?;
     let flag_block = {
         let p = src.find("namespace UnitPrototypeFlags").context("UnitPrototypeFlags")?;
@@ -322,12 +299,10 @@ fn main() -> Result<()> {
     let size = a("unitSize", "None")?;
     let speed = a("unitTopSpeeds", "0")?;
 
-    // requiredUnits(): whatBuilds plus the explicit `req[A][B] = n;` lines.
     let mut required: Vec<BTreeMap<i32, i32>> = vec![BTreeMap::new(); nu];
     for (i, w) in wb.iter().enumerate() {
         let id = units.get(w, "whatBuilds")?;
         if id >= 0 && ident(w) != "Unknown" {
-            // Archons are merged from two templars (`UnitType::whatBuilds` count 2).
             let count = if matches!(unit_names[i].as_str(), "Protoss_Archon" | "Protoss_Dark_Archon") { 2 } else { 1 };
             required[i].insert(id, count);
         }
@@ -360,7 +335,6 @@ fn main() -> Result<()> {
             flags: fl,
             max_hp: hp[i],
             max_shields: sp[i],
-            // BWAPI `maxEnergy()`: 200 for spellcasters before energy upgrades.
             max_energy: if spellcaster { 200 } else { 0 },
             armor: armor[i],
             minerals: ore[i],
@@ -384,7 +358,6 @@ fn main() -> Result<()> {
         });
     }
 
-    // ---------------------------------------------------------------- techs
     let src = read(&srcd.join("TechType.cpp"))?;
     let nt = tech_names.len();
     let a = |name: &str, fill: &str| fit(array(&src, name)?, nt, fill, name);
@@ -411,14 +384,12 @@ fn main() -> Result<()> {
             research_time: time[i],
             energy: energy[i],
             what_researches: if ident(&what[i]) == "Unknown" { -1 } else { units.get(&what[i], "whatResearches")? },
-            // BWAPI `TechType::requiredUnit()`.
             required_unit: if name == "Lurker_Aspect" { units.get("Zerg_Lair", "tech req")? } else { -1 },
             targets_unit: tflags[i] & 1 != 0,
             targets_position: tflags[i] & 2 != 0,
         });
     }
 
-    // ---------------------------------------------------------------- upgrades
     let src = read(&srcd.join("UpgradeType.cpp"))?;
     let ng = upg_names.len();
     let a = |name: &str, fill: &str| fit(array(&src, name)?, ng, fill, name);
@@ -452,7 +423,6 @@ fn main() -> Result<()> {
     }
     let _ = upgs;
 
-    // ---------------------------------------------------------------- weapons
     let src = read(&srcd.join("WeaponType.cpp"))?;
     let nw = wpn_names.len();
     let a = |name: &str| -> Result<Vec<i32>> { ints(&fit(array(&src, name)?, nw, "0", name)?, name) };
@@ -474,7 +444,6 @@ fn main() -> Result<()> {
     write("upgrade_types.toml", toml::to_string(&Table { source: source.clone(), rows: upg_rows })?)?;
     write("weapon_types.toml", toml::to_string(&Table { source: source.clone(), rows: wpn_rows })?)?;
 
-    // ---------------------------------------------------------------- orders (names only)
     let order_names = enum_names(&std::fs::read_to_string(inc.join("Order.h"))?, "Orders")?;
     let order_rows: Vec<OrderRow> = order_names.into_iter().enumerate().map(|(i, name)| OrderRow { id: i as i32, name }).collect();
     write("order_types.toml", toml::to_string(&Table { source, rows: order_rows })?)?;

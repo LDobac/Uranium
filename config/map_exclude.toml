@@ -1,10 +1,3 @@
-# 040-R16: maps excluded from `uranium-replay build` because their measured desync rate
-# (replayed views, 040-R8) is above 10%. A replay's map title is matched case-insensitively
-# against `name_patterns` (substring, color/control codes removed) or its CHK SHA-256 against
-# `chk_sha256`. Patterns carry the map version: other versions are measured before they are
-# added. Target-map families (map_families.toml) must not be listed. Analysis:
-# reports/m4_scr_desync.md.
-
 [[map]]
 name = "Attitude SE 2.1"
 name_patterns = ["attitude se 2.1"]

@@ -1,4 +1,3 @@
-# Quick cross-race check of the T0 bots.
 name = "m3-smoke-cross"
 seed_base = 21000
 [[matchup]]

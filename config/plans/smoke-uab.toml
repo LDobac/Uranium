@@ -1,4 +1,3 @@
-# T1 stage 1 smoke: T0 Terran vs UAlbertaBot (each race).
 name = "m3-smoke-uab"
 seed_base = 40000
 [[matchup]]

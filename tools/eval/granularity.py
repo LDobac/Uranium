@@ -34,7 +34,7 @@ Metrics (per group of games):
 Game groups: "early" = the 050-R6 / 020-R21 seed condition (opponent's first target is our main,
 `eval_common.start_condition`) for plan games; people have no seed, so their "rush" is observed
 contact: at least 2 zerglings within 20 tiles of our start by 3:30 and at least 4 by 4:30.
-Held (docs/measurement_protocol.md, 050-R9): `held_8m` = at least 8 own SCVs at 8:00, a game that
+Held (docs/guide/measurement_protocol.md, 050-R9): `held_8m` = at least 8 own SCVs at 8:00, a game that
 ended before 8:00 fails; `held_8m_winpass` also passes a game won before 8:00. Both counts are
 reported; held / lost groups are split by `held_8m_winpass`, because the teacher wins about half of
 its botgen rush games before 8:00 (the opponent is eliminated or leaves) and `held_8m` would count
@@ -68,12 +68,12 @@ import eval_common as ec  # noqa: E402
 
 ROOT = ec.ROOT
 FPS = ec.FPS
-WIN = (3600, 6480)  # 2:30-4:30
-BIN = 5 * FPS  # 5 s
+WIN = (3600, 6480)
+BIN = 5 * FPS
 TILE = 32
-NEAR_SEL = 8 * TILE  # 12-cap eligibility radius around the selection centre
-NEAR_MAIN = 20 * TILE  # enemy army "near the main"
-CONTACT_BY = 3 * 60 * FPS + 30 * FPS  # 3:30
+NEAR_SEL = 8 * TILE
+NEAR_MAIN = 20 * TILE
+CONTACT_BY = 3 * 60 * FPS + 30 * FPS
 AT_8M = ec.CUT
 BUCKETS = [(1, 1), (2, 2), (3, 4), (5, 8), (10, 16), (20, 32)]
 GROUPS = {
@@ -106,13 +106,9 @@ ANAME, UID, ZERG_ARMY = load_tables()
 AID = {v: k for k, v in ANAME.items()}
 SCV, MARINE, BUNKER, LING = UID["Terran_SCV"], UID["Terran_Marine"], UID["Terran_Bunker"], UID["Zerg_Zergling"]
 COMPLETED = 1
-# Dump rows: label (frame, action, delay, queued, selected, target unit); own unit (id, type, x, y,
-# flags, hp, loaded); enemy unit (id, type, x, y).
 
 
 def group_of(label, state=None):
-    """Action group of a label; a right click on a unit that is neither own nor enemy in the decision
-    state (a mineral field or geyser) is a mining click (Gather)."""
     n = ANAME.get(label[1], "?")
     if n.startswith("Train_"):
         return "Train"
@@ -139,7 +135,6 @@ def load(path):
 
 
 class Game:
-    """One dumped game and its derived facts."""
 
     def __init__(self, d):
         self.d = d
@@ -149,19 +144,14 @@ class Game:
         self.labels = d["labels"]
         self.contact, self.lings_max = self._contact()
         scv8 = d["scv_at"]
-        # docs/measurement_protocol.md: held_8m fails a game that ended before 8:00; the old
-        # rush_summary.py passed one won before 8:00 (held_8m_winpass).
         self.held_8m = scv8 is not None and scv8 >= 8
         self.held_8m_winpass = self.held_8m or (d["end_frame"] < AT_8M - 32 and d["result"] == 1)
 
     @property
     def rush(self):
-        """People rush rule (observed contact): >= 2 zerglings within 20 tiles of our start by 3:30
-        and >= 4 at some point by 4:30."""
         return self.contact is not None and self.contact <= CONTACT_BY and self.lings_max >= 4
 
     def state_at(self, f):
-        """Last state at or before frame f."""
         i = bisect.bisect_right(self.frames, f) - 1
         return self.states[i] if i >= 0 else None
 
@@ -181,7 +171,6 @@ class Game:
         return any(t in ZERG_ARMY and d2((x, y), self.start) <= NEAR_MAIN ** 2 for (_, t, x, y) in s["enemy"]) if self.start else False
 
     def bunker(self):
-        """(completion frame, id, first HP-drop frame) of the first own bunker completed in the dump."""
         done, bid, hp, drop = None, None, None, None
         for s in self.states:
             for u in s["own"]:
@@ -195,7 +184,6 @@ class Game:
 
 
 def game_stats(g):
-    """Per-game contributions to every metric."""
     out = {"delays": collections.defaultdict(list), "sel": collections.Counter(), "sizes": [], "bursts": [0, 0],
            "micro": [], "micro_any": [], "fight_cmds": [], "fight_delays": [], "bunker": {}}
     lab = [l for l in g.labels if WIN[0] <= l[0] < WIN[1]]
@@ -229,7 +217,6 @@ def game_stats(g):
             c[f"{k}_sat12"] += len(l[4]) == 12 and elig > 12
             c[f"{k}_ge6"] += len(l[4]) >= 6
         out["sizes"].append(len(l[4]))
-    # SCV micro per 5 s bin with enemy army near the main.
     for b0 in range(WIN[0], WIN[1], BIN):
         if not any(g.army_near(s) for s in g.states if b0 <= s["f"] < b0 + BIN):
             continue
@@ -249,7 +236,6 @@ def game_stats(g):
         out["fight_cmds"].append(n_cmd)
         out["micro"].append(len(scvs))
         out["micro_any"].append(len(scvs_any))
-    # Bunker: completion -> first load; first HP drop -> first repair of that bunker.
     done, bid, drop = g.bunker()
     if done is not None and done <= WIN[1]:
         b = out["bunker"]
@@ -358,7 +344,6 @@ def tables_md(rows):
 
 
 def plan_games(dump, plan_path, opponents, job=None, stage=None):
-    """[(Game, early, agent decisions per 1,000 frames or None)] of one dump of plan games."""
     plan = tomllib.loads(Path(plan_path).read_text(encoding="utf-8"))
     seeds, opps = ec.plan_seeds(plan), ec.game_opponents(plan)
     rows = ec.model_rows(ec.read_results(Path(job)), int(stage)) if job else {}
@@ -374,8 +359,6 @@ def plan_games(dump, plan_path, opponents, job=None, stage=None):
 
 
 def people_games(paths, every):
-    """(rush games, every-th game of all by replay hash, total): streamed for memory; the sample is a
-    stable function of the replay, not of the dump order."""
     sample, rush, total = [], [], 0
     for h in paths:
         for d in load(h):

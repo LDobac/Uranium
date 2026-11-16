@@ -1,32 +1,4 @@
-"""050-R10 Terran / Protoss regression gate (050-AC5, AMB-050-3 Resolved 2026-11-09; docs/measurement_protocol.md
-"회귀 게이트"): a lineage-2 point (mix epoch, DAgger round, the Checkpoint 1 counterpart) against the lineage-2 BC
-baseline `m2-s2e2`. It only reports: a failed check goes to the user with the point's results, nothing is
-stopped (050-R10).
-
-Checks (thresholds of AMB-050-3 = reports/jepa_survey.md 7.5 main criterion; Terran and Protoss opponents):
-  1  T0 standard Terran / Protoss 32 games each (protocol plan `t0_tp`): candidate win rate >= the baseline's
-     win rate on the same games (wins / valid games; draws are not wins; opponent-crash games invalid).
-  2  val500 per enemy race (bc-eval `by_enemy_race`, protocol metric val500_race): action top-1 >= baseline
-     - 0.5 %p and action-type NLL (`nll.action`, user confirmed 2026-11-10) <= baseline + 0.01.
-  3  bunker before 4:00 does not increase:
-     3a human TvT / TvP val games: the mean teacher-forced p(Build_Bunker) over the scored steps before 4:00
-        (bc-eval --bunker-before 5760 -> `bunker_before.by_enemy_race`) <= the baseline's;
-     3b the T0 Terran / Protoss games of check 1: the share of games with bunker_order_4m (first Build_Bunker
-        command < 4:00, command stream) and with bunker_unit_4m (session bunker_s < 240) <= the baseline's.
-Boundaries are inclusive ("within", "at least", "does not increase"). Every check also prints the numbers;
-game counts carry Wilson 95% intervals and the two-sided Fisher p (050-R2): 32 games are about +-12 %p of
-noise per condition, so a small difference is reported for the user to judge (AMB-050-3 note).
-A check whose inputs are not given, or whose T0 job has unfinished games, is MISSING (e.g. a mix epoch
-without the T0 games). 3a is a step mean (main-session interim decision 2026-11-10).
-
-    python tools/eval/regression_gate.py --baseline-val <bc-eval json> --candidate-val <bc-eval json> \\
-        --baseline-games <eval job dir> --candidate-games <eval job dir> [--json out.json] [--cache DIR]
-
-The job dirs are eval jobs (protocol.py job) with a stage whose plan is the protocol plan `t0_tp` (or `t0_tp_rl`, an RL
-checkpoint's; since 2026-11-14 the gate also covers the distillation rounds, the fixed model D and the fixed-RL checks,
-044-R6 / R7 / R11); the T0
-bunker command streams come from `uranium-replay cmddump` like tables.py (cached under --cache).
-"""
+"""050-R10 Terran / Protoss regression gate (050-AC5, AMB-050-3 Resolved 2026-11-09; docs/guide/measurement_protocol.md"""
 
 from __future__ import annotations
 
@@ -40,15 +12,12 @@ import eval_common as ec  # noqa: E402
 import protocol  # noqa: E402
 import tables  # noqa: E402
 
-# 050-R10 / AMB-050-3: the gate's races, thresholds and the 4:00 boundary.
 RACES = ("terran", "protoss")
-TOP1_DROP = 0.005   # (2) per-race val top-1 within -0.5 %p of the baseline
-NLL_RISE = 0.01     # (2) per-race val NLL within +0.01 of the baseline
-NLL_HEAD = "nll.action"  # (2) the action-type head NLL (user confirmed 2026-11-10, AMB-050-3)
-BUNKER_BEFORE = 4 * 60 * ec.FPS  # 3: before 4:00 = frame < 5,760
-# (1) / (3b) games: t0_tp, or t0_tp_rl at the 044-R11 fixed-RL checks (2026-11-14: the gate applies there too, 050-R10).
+TOP1_DROP = 0.005
+NLL_RISE = 0.01
+NLL_HEAD = "nll.action"
+BUNKER_BEFORE = 4 * 60 * ec.FPS
 T0_TP_PLANS = ("t0_tp", "t0_tp_rl")
-# Float slack of the inclusive boundaries (the inputs are rounded JSON floats).
 EPS = 1e-9
 PASS, FAIL, MISSING = "PASS", "FAIL", "MISSING"
 
@@ -65,7 +34,6 @@ def _same_selection(base: dict, cand: dict) -> None:
 
 
 def judge_val(base: dict | None, cand: dict | None) -> list[dict]:
-    """(2): per-race top-1 and action NLL of two bc-eval reports."""
     out = []
     if base is None or cand is None:
         return [_check("2", r, m, None, None, t, MISSING, "no bc-eval output") for r in RACES
@@ -86,7 +54,6 @@ def judge_val(base: dict | None, cand: dict | None) -> list[dict]:
 
 
 def judge_tf_bunker(base: dict | None, cand: dict | None) -> list[dict]:
-    """(3a): mean p(Build_Bunker) before 4:00 on the human val games against Terran / Protoss."""
     thr = "<= baseline"
     bb, cb = (base or {}).get("bunker_before"), (cand or {}).get("bunker_before")
     if not bb or not cb:
@@ -114,11 +81,6 @@ def _rate_note(bk: int, bn: int, ck: int, cn: int) -> str:
 
 
 def judge_games(base: dict | None, cand: dict | None) -> list[dict]:
-    """(1) and (3b) from the per-race T0 counts {race: {n, won, bunker_order_4m, bunker_unit_4m, dumped, missing}}.
-    A job with planned games that have neither a result row nor an invalid mark (`missing`, an unfinished job)
-    is not judged. Neither is a job with undecodable result / ledger lines (`skipped_lines`, 050-R9): a lost
-    Aborted ledger entry or a lost retry row changes the counts unseen, and the line cannot be tied to a race,
-    so every race is MISSING (fail closed)."""
     out = []
     sb, sc = len((base or {}).get("skipped_lines") or []), len((cand or {}).get("skipped_lines") or [])
     for r in RACES:
@@ -140,19 +102,12 @@ def judge_games(base: dict | None, cand: dict | None) -> list[dict]:
                                   f"command streams missing (dumped {b['dumped']}/{b['n']} vs {c['dumped']}/{c['n']})"))
                 continue
             bk, bn, ck, cn = b[metric], b["n"], c[metric], c["n"]
-            # Rates compared exactly: ck / cn vs bk / bn.
             ok = ck * bn >= bk * cn if metric == "won" else ck * bn <= bk * cn
             out.append(_check(chk, r, metric, [bk, bn], [ck, cn], thr, PASS if ok else FAIL, _rate_note(bk, bn, ck, cn)))
     return out
 
 
 def t0_tp_counts(job: Path, cache: Path, lin: dict | None = None) -> dict:
-    """Per opponent race of the job's `t0_tp` stage: valid games, wins, games with a Build_Bunker command
-    before 4:00 (bunker_order_4m), games whose bunker unit appeared before 240 s (bunker_unit_4m), games
-    with a command stream (dumped), planned games (games) and planned games with neither a result row nor
-    an invalid mark (missing: the job has not finished them). Opponent-crash games are invalid (tables.py).
-    `skipped_lines`: the job's undecodable result / ledger lines (eval_common.read_jsonl_dir); a game whose only row was on
-    such a line is missing, so its race is not judged."""
     lin = lin or protocol.load_lineage()
     stages = [(k, f, p) for k, f, p in ec.job_stages(job) if protocol.identify(lin, p) in T0_TP_PLANS]
     if len(stages) != 1:
@@ -181,7 +136,7 @@ def t0_tp_counts(job: Path, cache: Path, lin: dict | None = None) -> dict:
             c["bunker_unit_4m"] += bs is not None and bs < 240
             if n in dumps:
                 c["dumped"] += 1
-                first = ec.analyze(dumps[n], r.get("slot", 0))[0]  # TvT: the model's player at its slot (2026-11-14 fix)
+                first = ec.analyze(dumps[n], r.get("slot", 0))[0]
                 c["bunker_order_4m"] += first.get(ec.BUNKER, tables.INF) < BUNKER_BEFORE
     return out
 

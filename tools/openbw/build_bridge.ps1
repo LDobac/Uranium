@@ -1,11 +1,8 @@
-# Build uranium_bridge.dll (spec 011, 001-R8): Rust staticlib + thin C++ shim.
-# Windows counterpart of build_bridge.sh. Requires tools\openbw\build.ps1 first.
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path "$PSScriptRoot\..\..").Path
 $Generator = if ($env:URANIUM_CMAKE_GENERATOR) { $env:URANIUM_CMAKE_GENERATOR } else { 'Visual Studio 18 2026' }
 
 function Invoke-Native([string]$Exe, [string[]]$Argv) {
-    # PowerShell 5.1 turns redirected native stderr into errors; judge by exit code only.
     $ErrorActionPreference = 'Continue'
     & $Exe @Argv 2>&1 | ForEach-Object { "$_" }
     if ($LASTEXITCODE -ne 0) { throw "$Exe $($Argv -join ' ') failed ($LASTEXITCODE)" }

@@ -1,12 +1,3 @@
-# Game hosts of protocol eval jobs (tools/eval/protocol.py, 050-R9). Copy to tools/eval/hosts.toml (git-ignored,
-# 001-R10) and fill in the addresses. `addr` / `max_games` go into the job's hosts.toml (020); the other keys
-# are for protocol.py:
-#   platform = "windows" | "linux"   required in T1 jobs: T1 runs on the platform of the point's Checkpoint 1
-#                                    counterpart (config/protocol/lineage.toml t1_platforms)
-#   local = true                     this PC: bot hashes from <URANIUM_OSS_BOTS_DIR>/<bot>/module.dll|.so
-#   ssh = "<alias>"                  a Linux host reachable with `ssh <alias>` (key login) ...
-#   oss_bots_dir = "<dir>"           ... and its URANIUM_OSS_BOTS_DIR (module.so files), required with ssh
-
 [[host]]
 addr = "<this PC>:7700"
 max_games = 6

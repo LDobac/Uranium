@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Build liburanium_bridge.so (spec 011): Rust staticlib + thin C++ shim. Requires tools/openbw/build.sh first.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 [[ -f "$ROOT/third_party/bwapi/build/lib/libBWAPILIB.so" ]] || { echo "run tools/openbw/build.sh first" >&2; exit 1; }

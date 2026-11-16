@@ -1,45 +1,4 @@
-"""Per-action teacher-forced accuracy of a checkpoint on the teacher hold-out (050-R9 protocol metric
-`per_action`, config/protocol/lineage.toml; 041-R21): the val split of the botgen teacher games, scored with the
-same loop as python/uranium/bc/eval.py evaluate() plus per-label-action counts, top-1 / top-5, mean
-p(label), delay MAE, target tile / unit accuracy, selection F1 and the argmax confusion of key actions.
-Read-only; writes one JSON (input of tools/eval/per_action_table.py).
-
-    python tools/eval/per_action.py --checkpoint <dir> --out <json> [--holdout orig|full] [--backend cuda]
-
---holdout orig (the protocol value): the 2026-11-06 teacher shards only (165 val games, 94,433 steps),
-the hold-out of the BC / FT / clone / bc-mix columns of Checkpoint 1. `full` = the parts registered in the botgen
-manifest but the 022 TvT / TvP teacher's teacher-tp-* (teacher-20261107-macro2 and teacher-20261109-macro3 too;
-041-R27 is about the Zerg teacher, 044-R8 adds teacher-tp-*-v2 to botgen). --shards DIR... scores other source folders.
-
-Moved from runs/mix/per_action.py (a copy of runs/adv8/per_action.py) with the loop unchanged. The
-`orig` source folder (four parts of botgen) is rebuilt from links under <URANIUM_CACHE_DIR or runs>/
-per_action_holdout/botgen, as runs/mix/holdout_orig/botgen was; `full` likewise under per_action_holdout_full/botgen
-(the manifest's shard files; refused when the part folders or file sizes on disk differ from the manifest).
-
-041-R27 (AMB-041-16): the hold-out games are also split by the teacher game's opponent, `rush` (the
-four rush opponents of plan teacher_botgen_rush) or `macro` (the five macro opponents of plans
-teacher_botgen_macro / macro2 / macro3, 040-R23). Each game's class comes from the generating plan's
-games.jsonl (`opponent`) and the SHA-256 of its replay file, which is the shard's `replay_sha256`
-(<shared>/datasets/replays/raw/botgen/teacher-*/teacher_botgen_*/, cached in <URANIUM_CACHE_DIR or
-runs>/per_action_holdout/teacher_classes.json); teacher-tp-* (the TvT / TvP teacher, 044-R8) has no class and is
-in no hold-out. The JSON then also has `by_class` (the same per-action
-rows per class, and the mean p(Build_Bunker) over the scored steps before 4:00) and `r27`: the bunker
-top-1 of the bc-mix extension rule (041-R21 6, counted on rush-opponent games only) and the macro
-games' mean p(Build_Bunker) before 4:00 (recorded only). The `per_action` list over every game is
-unchanged. The recorded macro value is over the macro games of the `full` hold-out (main-session interim
-decision 2026-11-10: 117 games instead of the 36 of `orig`): with `--holdout orig` the other botgen parts
-(macro2, macro3) are scored in a second pass for it only (`r27.macro_holdout`); `by_class` and every other
-number stay those of the scored hold-out. `--classes none` turns the split off, `--classes <json>` ({replay_sha256: rush|macro})
-gives the classes of other shard folders. Needs `uranium._core` with `Batch.lane_games`.
-
-041-R30 ⑤ (user decision 2026-11-12, AMB-041-19): the hold-out is scored both ways. Every field above is the
-current-observation score (each step its own observation, comparable with Checkpoint 1; the Checkpoint 1 lineage's
-bc-mix extension rule `r27.rush_bunker_top1` < 70% and side-arm threshold < 50% read these, recorded only for
-lineage 2). `chain_start` holds the same report (`games`, `steps`, `per_action`, and with classes `by_class` / `r27`)
-scored with the chain-start observation of the `--chain-start` sources (default botgen); lineage 2 (041-R29 3) judges
-the extension rule and the side-arm threshold on its `r27.rush_bunker_top1`, same 70% / 50% (user decision 2026-11-12). `--chain-start none` skips it (half the time). The
-config's [data] chain_start_sources is not followed: only this option turns it on.
-"""
+"""Per-action teacher-forced accuracy of a checkpoint on the teacher hold-out (050-R9 protocol metric"""
 
 from __future__ import annotations
 
@@ -60,21 +19,14 @@ ORIG = ["teacher-20261106-a", "teacher-20261106-b", "teacher-20261106-c", "teach
 KEY = {"Build_Bunker", "Load_Unit", "Attack_Unit", "Repair_Unit", "Move_Pos", "Build_Barracks", "Build_SupplyDepot", "Build_CommandCenter", "Hold",
        "Attack_Pos", "Gather_Unit", "Smart_Unit", "Train_Marine", "Train_SCV", "NoOp"}
 
-# 041-R27 / 040 teacher botgen opponents (spec/040-replay-dataset.md, teacher botgen row; 040-R23 macro3
-# reuses the macro five), as the generating plans' games.jsonl names them (`<name>@<version>`).
 RUSH_OPPONENTS = ("t0-zerg-rush", "ualbertabot12poollings", "ualbertabot9pool10lings", "ualbertabot9poolhydra")
 MACRO_OPPONENTS = ("ualbertabot2hatchhydra", "ualbertabot3hatchmuta", "steamhammer2hatchmuta", "t0-zerg-muta", "t0-zerg")
 CLASSES = ("rush", "macro")
-# 044-R8 / 022-R12: the TvT / TvP teacher's botgen folders (raw and shards botgen/teacher-tp-*) are not part of the
-# 041-R27 Zerg-teacher hold-out: no rush / macro class, not in the `full` macro pass.
 TP_PREFIX = "teacher-tp-"
-# 041-R27: "before 4:00" = observation frame < 5,760 (24 frames per game second, 042-R14).
 BUNKER_BEFORE = 4 * 60 * ec.FPS
 
 
 def opponent_class(opponent: str) -> str:
-    """rush / macro of a teacher botgen game's `opponent` (`<name>@<version>`); another name is an error
-    (a new plan's opponents must be added here, not guessed)."""
     name = opponent.split("@", 1)[0]
     if name in RUSH_OPPONENTS:
         return "rush"
@@ -93,18 +45,13 @@ def file_sha256(p: Path) -> str:
 
 
 def teacher_classes(raw_root: Path, cache: Path | None = None) -> dict[str, dict]:
-    """{replay_sha256: {"class", "opponent", "plan"}} of every teacher botgen game under raw_root
-    (`teacher-*/teacher_botgen_*/games.jsonl` and `replays/g<game_id>.rep`). A plan folder is hashed again
-    only when its games.jsonl changed (cache: {plan folder: {"games_jsonl", "games": {sha: {"opponent"}}}};
-    the class is derived from the opponent on every call, so a changed opponent list is never stale). A
-    replay hash listed twice with different classes is an error."""
     old = {}
     if cache is not None and cache.exists():
         old = json.loads(cache.read_text(encoding="utf-8"))
     new, out = {}, {}
     for games in sorted(raw_root.glob("teacher-*/teacher_botgen_*/games.jsonl")):
         if games.parent.parent.name.startswith(TP_PREFIX):
-            continue  # 044-R8: the 022 teacher's games
+            continue
         plan = games.parent
         key = plan.relative_to(raw_root).as_posix()
         sig = file_sha256(games)
@@ -134,8 +81,6 @@ def teacher_classes(raw_root: Path, cache: Path | None = None) -> dict[str, dict
 
 
 def load_classes(spec: str | None, holdout: str | None) -> dict[str, str] | None:
-    """{replay_sha256: rush|macro}: `auto` = the teacher botgen plans (only for the --holdout sets),
-    `none` = no split, else a JSON file {sha: class} (or {sha: {"class": ...}})."""
     if spec is None:
         spec = "auto" if holdout in ("orig", "full") else "none"
     if spec == "none":
@@ -157,13 +102,10 @@ SHARD_GLOB = "shard_*.bin.zst"
 
 
 def is_link(p: Path) -> bool:
-    """A symbolic link or (Windows) a directory junction."""
     return p.is_symlink() or p.is_junction()
 
 
 def remove_entry(p: Path) -> None:
-    """Remove a link-tree entry: a link, junction or file (only the entry itself), or a real folder of links (the
-    source files stay). An entry already gone (another process building the same tree) is not an error."""
     try:
         if p.is_junction():
             os.rmdir(p)
@@ -180,9 +122,6 @@ def _under(p: Path, root: Path) -> bool:
 
 
 def check_link_root(src_root: Path, parts: list[str], dst_root: Path) -> None:
-    """041-R27 / 044-R8: a pruned link tree must be a real folder of its own: dst_root and its part folders are
-    neither links / junctions nor inside src_root (nor src_root inside dst_root), so pruning never removes a
-    source file."""
     for d in (dst_root, *(dst_root / part for part in parts)):
         if is_link(d):
             raise SystemExit(f"041-R27: link tree folder {d} is a symbolic link or junction; remove it (the tree is rebuilt)")
@@ -192,7 +131,6 @@ def check_link_root(src_root: Path, parts: list[str], dst_root: Path) -> None:
 
 
 def _link(f: Path, t: Path) -> None:
-    """t -> f: hard link, else symbolic link, else copy; a t made meanwhile by another process is kept."""
     try:
         os.link(f, t)
     except FileExistsError:
@@ -208,13 +146,6 @@ def _link(f: Path, t: Path) -> None:
 
 def link_tree(src_root: Path, parts: list[str], dst_root: Path, prune: bool = False,
               files: dict[str, list[str]] | None = None) -> Path:
-    """dst_root/<part>/shard_* linked to src_root/<part>/shard_* (hard link, else symbolic link, else
-    copy): a source folder that holds only some parts of a source (the shard reader takes a source
-    folder, 040-R13 / 041-R13). `files` {part: [file name]}: the files of each part (default: its shard_* on
-    disk). prune (per_action's own trees, 041-R27 / 044-R8): the tree holds exactly these parts and files;
-    subfolders of dst_root not in `parts` and unwanted files in a part are removed, after check_link_root.
-    Without prune (050-R9 protocol.set_data) nothing is removed: a stray file is left for its fingerprint
-    check to refuse. Returns dst_root."""
     if prune:
         check_link_root(src_root, parts, dst_root)
         if dst_root.exists():
@@ -251,11 +182,6 @@ def botgen_src() -> Path:
 
 
 def holdout_parts(src: Path) -> tuple[list[str], dict[str, list[str]]]:
-    """041-R27 / 044-R8: (parts, {part: shard file names}) of the Zerg-teacher hold-out `full`: the parts registered
-    in the botgen manifest (src/manifest.json, 061) except the 022 TvT / TvP teacher's teacher-tp-* (no rush /
-    macro class), with the manifest's shard files. Refused when the part folders on disk (teacher-tp-* aside) are
-    not the manifest's parts, or a listed shard is missing or its size is not the manifest `bytes`. `orig` is
-    ORIG, the rest is added_dirs()."""
     mf = src / "manifest.json"
     if not mf.exists():
         raise SystemExit(f"041-R27: no botgen manifest {mf}")
@@ -279,8 +205,6 @@ def holdout_parts(src: Path) -> tuple[list[str], dict[str, list[str]]]:
 
 
 def holdout_dirs(holdout: str) -> tuple[list[str], list[str]]:
-    """(datasets, shard folders) of a hold-out name: `orig` = the ORIG parts, `full` = holdout_parts() (the
-    parts registered in the botgen manifest but teacher-tp-*), each one source folder of links."""
     if holdout == "full":
         src = botgen_src()
         parts, files = holdout_parts(src)
@@ -294,8 +218,6 @@ def holdout_dirs(holdout: str) -> tuple[list[str], list[str]]:
 
 
 def added_dirs() -> list[str]:
-    """041-R27: the `full` parts outside `orig` (teacher-20261107-macro2, teacher-20261109-macro3, ...) as one
-    source folder of links (<URANIUM_CACHE_DIR or runs>/per_action_holdout_added/botgen); [] without any."""
     src = botgen_src()
     parts, files = holdout_parts(src)
     parts = [p for p in parts if p not in ORIG]
@@ -306,9 +228,6 @@ def added_dirs() -> list[str]:
 
 
 def macro_full(r27: dict, added_macro: dict | None) -> dict:
-    """041-R27 recorded macro value over the `full` hold-out's macro games (main-session interim decision
-    2026-11-10): the scored hold-out's macro tally plus `added_macro` (by_class.macro of the pass over the other
-    botgen parts), step-weighted. Returns a new r27."""
     out = {**r27, "macro_holdout": "full" if added_macro is not None else r27.get("macro_holdout")}
     if added_macro is None:
         return out
@@ -324,8 +243,6 @@ def macro_full(r27: dict, added_macro: dict | None) -> dict:
 
 
 class Tally:
-    """Per-label-action counts of a set of scored steps (the per_action report), plus the mean
-    p(Build_Bunker) over its steps before 4:00 (041-R27) and the games it saw."""
 
     def __init__(self):
         self.n = collections.Counter(); self.top1 = collections.Counter(); self.psum = collections.defaultdict(float); self.top5 = collections.Counter()
@@ -358,12 +275,10 @@ class Tally:
         return rep
 
     def early_report(self) -> dict:
-        """041-R27: mean p(Build_Bunker) over the scored steps observed before 4:00."""
         return {"before_frame": BUNKER_BEFORE, "steps": self.early_n, "mean_p": self.early_p / self.early_n if self.early_n else None}
 
 
 def action_top1(rep: list[dict], action: str) -> tuple[float | None, int]:
-    """(top-1, steps) of one label action in a per_action list."""
     for r in rep:
         if r["action"] == action:
             return r["top1"], r["n"]
@@ -371,7 +286,6 @@ def action_top1(rep: list[dict], action: str) -> tuple[float | None, int]:
 
 
 def class_report(tallies: dict, names: dict, key_ids: set) -> tuple[dict, dict]:
-    """(by_class, r27) of the per-class tallies (041-R27)."""
     by = {}
     for c in CLASSES:
         tl = tallies[c]
@@ -387,14 +301,11 @@ def class_report(tallies: dict, names: dict, key_ids: set) -> tuple[dict, dict]:
 def score(ckpt_dir: str, datasets: list[str], shards: list[str], backend_name: str, config: str,
           classes: dict[str, str] | None = None, maps_dir=None, synthetic_maps: bool = False, split: str = "val",
           chain_start: list[str] | None = None) -> dict:
-    """`classes` {replay_sha256: rush|macro}: also tally per class (041-R27); a scored game without a
-    class is an error. `chain_start`: 041-R30 ⑤ scoring option, chained steps of these sources observed through
-    their chain-start step (None = each step its own observation)."""
     import torch
 
     from uranium import _core, ckpt
     from uranium.device import autocast, configure, resolve
-    from uranium.diag.tables import FRAME_SCALE  # observation scalar 0 = frame / 86,400 (030 §1)
+    from uranium.diag.tables import FRAME_SCALE
     from uranium.model import to_obs
 
     names = {a["id"]: a["name"] for a in tomllib.loads((ec.ROOT / "crates/uranium-env/tables/actions.toml").read_text(encoding="utf-8"))["action"]}
@@ -480,7 +391,6 @@ def score(ckpt_dir: str, datasets: list[str], shards: list[str], backend_name: s
                 rows = ok.nonzero().flatten().tolist()
                 la = lab_a.tolist(); pr = pred.tolist(); bt = better.tolist(); pp = p_lab.tolist(); da = dabs.tolist(); hll = hl.tolist(); sll = sl.tolist()
                 if tallies is not None:
-                    # 041-R27: p(Build_Bunker) and the observation frame of each row (scalar 0 = frame / 86,400).
                     pb = d["action"][:, bunker_id].float().exp().tolist()
                     fr = [round(x * FRAME_SCALE) for x in hg["scalar"][:, 0].tolist()]
                 for r in rows:
@@ -548,14 +458,10 @@ def main(argv=None) -> None:
     classes = load_classes(a.classes, None if a.shards else a.holdout)
     chain = chain_sources(a.chain_start)
     holdout = "shards" if a.shards else a.holdout
-    # 041-R27 / 044-R8: the parts of the macro pass, once and before any scoring (a botgen manifest mismatch stops
-    # here, not after the GPU pass; both observation passes read the same parts).
     extra = added_dirs() if classes is not None and holdout == "orig" else []
     res = score_holdout(str(ck), datasets, shards, a.backend, a.config, classes, holdout, None, extra)
-    # The current-observation report (Checkpoint 1 lineage extension rule input) is written before the second pass.
     a.out.write_text(json.dumps(res, indent=1), encoding="utf-8")
     if chain:
-        # 041-R30 ⑤: the same report with the chain-start observation (lineage 2 extension rule input, 2026-11-12).
         cs = score_holdout(str(ck), datasets, shards, a.backend, a.config, classes, holdout, chain, extra)
         res["chain_start"] = {"sources": chain, **{k: cs[k] for k in ("games", "steps", "per_action", "by_class", "r27") if k in cs}}
         a.out.write_text(json.dumps(res, indent=1), encoding="utf-8")
@@ -566,7 +472,6 @@ def main(argv=None) -> None:
 
 
 def chain_sources(text: str) -> list[str]:
-    """041-R30 ⑤ `--chain-start`: [] for none, else the listed sources (botgen, dagger)."""
     if text.strip().lower() == "none":
         return []
     out = [s.strip() for s in text.split(",") if s.strip()]
@@ -578,15 +483,11 @@ def chain_sources(text: str) -> list[str]:
 
 def score_holdout(ck: str, datasets: list[str], shards: list[str], backend: str, config: str, classes: dict | None, holdout: str,
                   chain: list[str] | None, extra: list[str]) -> dict:
-    """One scoring of the hold-out (the current observation when `chain` is None, 041-R30 ⑤), with the 041-R27
-    recorded macro value over the full hold-out's macro games for `orig`: `extra` = added_dirs(), taken by the
-    caller before any scoring ([] = no added part)."""
     res = score(ck, datasets, shards, backend, config, classes, chain_start=chain)
     res["holdout"] = holdout
     if classes is not None:
         res["r27"]["macro_holdout"] = holdout
         if holdout == "orig":
-            # 041-R27 interim decision: the recorded macro value over the full hold-out's macro games.
             added = score(ck, [], extra, backend, config, classes, chain_start=chain)["by_class"]["macro"] if extra else None
             res["r27"] = macro_full(res["r27"], added)
     return res

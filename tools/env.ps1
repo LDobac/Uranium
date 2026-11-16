@@ -1,8 +1,3 @@
-# Dot-source this file, then call `Import-UraniumEnv <repo root>` (spec 001-R9).
-# Loads <repo root>\.env (or $env:URANIUM_ENV_FILE) into the process environment.
-# Variables already set in the process environment win over .env values.
-# Supported syntax: `KEY=value`, optional `export ` prefix, one level of matching quotes,
-# whole-line `#` comments. No `~`/`$VAR` expansion (same rule as tools/env.sh and the Rust loader).
 function Import-UraniumEnv([string]$Root) {
     $file = if ($env:URANIUM_ENV_FILE) { $env:URANIUM_ENV_FILE } else { Join-Path $Root '.env' }
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return }

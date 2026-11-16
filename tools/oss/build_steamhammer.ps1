@@ -1,5 +1,3 @@
-# Build Steamhammer as a BWAPI 4.2 (OpenBW) AI module for use as a T1 opponent (spec 021).
-# Windows counterpart of build_steamhammer.sh.
 $Root = (Resolve-Path "$PSScriptRoot\..\..").Path
 . "$Root\tools\oss\common.ps1"
 $Ver = '5.3.6'

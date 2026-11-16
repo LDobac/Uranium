@@ -1,46 +1,4 @@
-"""Branch-game plans (spec 051): the trunk plan, and from the trunk job's results the decision points
-(`points.jsonl`), the branch list and the branch plan. Deterministic: the same inputs give the same files.
-
-    python tools/eval/branch_plan.py trunk --config config/branch_b1.toml --out <trunk job>/plans/trunk.toml
-    python tools/eval/branch_plan.py branches --trunk-job <dir> --stage <stage> --config config/branch_b1.toml \\
-        --out <shared>/eval/branch-b1-<date> [--hosts <hosts file>] [--replacements <plan.toml>]
-
-`trunk` (051-R11 ①, 051-R15, AMB-051-1): per map of `[trunks] maps`, the first `hit` first-target-hit and
-`miss` miss seeds (020-R21 generator) of the rush check plan's block against `[trunks] opponent`, in list
-order; the model `checkpoint` (stochastic) as players[0]; the 051-R1 ③ settings (zero_last_failed, surrender
-off, replays, max_frames = H + 48), `act_log` and the config's `[[snapshots]]` decision-point rules (020-R22).
-`--exclude-job <dir>` leaves out the seeds of that job's stages (a replacement trunk stage, see below).
-
-`branches` reads the trunk stages after `python -m uranium eval-status --job <trunk job>` (the merged
-`<stage>/games.jsonl` and `results.jsonl`, last attempt of each game) and per trunk game n:
-- the act logs `<stage>/acts/g<n>-p0.jsonl` (ours) and `-p1.jsonl` (the T0 opponent), complete (051-R2);
-- the model session record's `snapshots` (uranium_env::branch::SnapshotTaken: rules, state, state_sha256, i,
-  frame, digest, type_mask, scalar) and its state files `<stage>/states/<state>.state`;
-then checks (051-R10): act logs complete; our log line i is the snapshot's (frame, digest, state, sha256)
-with a decision; the state file exists with that sha256; the checkpoint's `model.safetensors` sha256 starts
-with the act log policy's 12 hex digits; the T0 policy is `t0@<workspace version>` (`--t0-policy`); both
-logs' feature / action schemas are those of the built `uranium._core` (`--schemas F,A`). A point that fails
-is written with `valid = false` and its `skip_reason`; a rule that never fired, or fired on the decision of
-an earlier rule (two points on one decision count once: rules without `after_rule`; a rule with it moves
-off its earlier rule's decision in the game, 051-R3, 051-R11 ①), has no record and is listed in
-`branch_plan.json`. A trunk is used when every config point is valid; per (map, condition) the first
-`hit` / `miss` usable trunks in rush-plan seed order are used (later ones `cell full`). A short cell is
-reported, and `--replacements <plan.toml>` writes a trunk stage with the next seeds of that map and
-condition not used in the trunk job (add it to the trunk job's stages, play it, run `branches` again with
-every trunk stage).
-
-Outputs under `--out` (the branch job folder = the 051-R12 output folder):
-- `points.jsonl`: one uranium_env::branch::PointRecord per point (051-R12);
-- `plans/branches_plan.jsonl`: one uranium_env::branch::BranchPlanLine per branch game (051-R10), repeats
-  outermost, then the points (map order of the config, trunk order, rule order), then the alternatives
-  (config order); an alternative whose t-only `force` action is closed at t is dropped there (051-R11 ②);
-- `plans/<name>.toml`: the branch plan (020-R22 `branches`, seeds / maps / opponent of each line's trunk,
-  the trunks' checkpoint and T0 side, `act_log`, `--verify-state` for 051-AC6);
-- `branch_plan.json`: trunks used and skipped with reasons, cells, dropped alternatives;
-- `job.toml` with `--hosts` (020-R15 job of the one stage).
-Paths in the records and the branch list are relative to the shared drive (`--root`, default
-URANIUM_SHARED_DIR; 051-R10).
-"""
+"""Branch-game plans (spec 051): the trunk plan, and from the trunk job's results the decision points"""
 
 from __future__ import annotations
 
@@ -59,9 +17,6 @@ SNAPSHOT_KEYS = {"name", "from_frame", "to_frame", "any_open", "after_rule", "af
 RULE_KEYS = {"op", "action", "from_s", "to_s"}
 
 
-# ---------------------------------------------------------------- config
-
-
 def load_config(path: Path) -> dict:
     cfg = tomllib.loads(Path(path).read_text(encoding="utf-8"))
     for k in ("name", "checkpoint", "horizon", "repeats", "trunks", "snapshots", "alternative"):
@@ -77,7 +32,6 @@ def load_config(path: Path) -> dict:
         for a in s.get("any_open", []):
             if a not in ids:
                 raise Refused(f"{path}: snapshot rule {s['name']}: unknown action {a} (034)")
-        # 051-R3 after_rule / after_s (user decision 2026-11-13): an earlier rule, both keys together.
         if ("after_rule" in s) != ("after_s" in s):
             raise Refused(f"{path}: snapshot rule {s['name']}: after_rule and after_s go together (051-R3)")
         if "after_rule" in s and (s["after_rule"] not in names[:names.index(s["name"])] or not isinstance(s["after_s"], int)
@@ -105,7 +59,6 @@ def max_frames(cfg: dict) -> int:
 
 
 def rush_blocks(cfg: dict) -> dict[str, list[int]]:
-    """map -> the rush check plan's seeds against `[trunks] opponent` on that map, in list order (051-R15)."""
     t = cfg["trunks"]
     plan = tomllib.loads((bc.ROOT / t["rush_plan"]).read_text(encoding="utf-8"))
     out: dict[str, list[int]] = {m: [] for m in t["maps"]}
@@ -119,7 +72,6 @@ def rush_blocks(cfg: dict) -> dict[str, list[int]]:
 
 
 def pick_seeds(seeds: list[int], counts: dict[str, int], cond, exclude: set[int] = frozenset()) -> list[int]:
-    """The first counts[c] seeds of each condition c in list order, list order kept."""
     left = dict(counts)
     out = []
     for s in seeds:
@@ -136,7 +88,6 @@ def pick_seeds(seeds: list[int], counts: dict[str, int], cond, exclude: set[int]
 
 
 def plan_head(name: str, cfg: dict, header: list[str]) -> list[str]:
-    """051-R1 ③ settings of trunk and branch plans."""
     return [*(f"# {h}" for h in header),
             f"name = {bc.toml_value(name)}",
             "save_replay = true",
@@ -176,7 +127,6 @@ def render_trunk(name: str, cfg: dict, blocks: list[tuple[str, list[int]]], head
 
 
 def job_stages(job: Path) -> list:
-    """`ec.job_stages`, a missing or unreadable job / stage plan file refused (not a bare OSError)."""
     try:
         return ec.job_stages(job)
     except (OSError, ValueError) as e:
@@ -192,7 +142,6 @@ def job_seeds(job: Path) -> set[int]:
 
 
 def trunk_plan(cfg: dict, name: str, cond, exclude: set[int] = frozenset(), counts: dict[str, int] | None = None) -> str:
-    """051-R11 ①: per map the first hit / miss seeds of the rush block (list order)."""
     t = cfg["trunks"]
     counts = counts or {"hit": int(t["hit"]), "miss": int(t["miss"])}
     blocks = [(m, pick_seeds(seeds, counts, cond, exclude)) for m, seeds in rush_blocks(cfg).items()]
@@ -200,9 +149,6 @@ def trunk_plan(cfg: dict, name: str, cond, exclude: set[int] = frozenset(), coun
               f"Per map the first {counts.get('hit', 0)} first-target-hit and {counts.get('miss', 0)} miss seeds of {t['rush_plan']}",
               f"against {t['opponent']} in list order (051-R11 1, 051-R15, 020-R21); 051-R1 settings, H + 48 frames."]
     return render_trunk(name, cfg, blocks, header)
-
-
-# ---------------------------------------------------------------- trunk results
 
 
 def merged(stage_dir: Path, what: str) -> list[dict]:
@@ -218,7 +164,6 @@ def checkpoint_sha(root: Path, checkpoint: str) -> str | None:
 
 
 def policy_hex(policy: str) -> str | None:
-    """`model:<folder>@<12 hex>:<sample>` -> the 12 hex digits (020-R5)."""
     if not policy.startswith("model:"):
         return None
     ident = policy[len("model:"):].rsplit(":", 1)[0]
@@ -226,15 +171,12 @@ def policy_hex(policy: str) -> str | None:
 
 
 def end_of(rec: dict, horizon: int) -> dict:
-    """051-R9 ④ from a session record (uranium_env::branch::BranchEnd)."""
     won = rec.get("won")
     result = "draw" if won is None else ("win" if won else "loss")
     return {"result": result, "end_frame": rec.get("end_frame"), "reason": rec.get("reason"), "before_horizon": (rec.get("end_frame") or 0) < horizon}
 
 
 def trunk_outcome(rec: dict, horizon: int) -> dict:
-    """051-R9 ② ④ of the trunk's model session (control only, 051-R11 ⑤): the 050-R7 / 042 metrics of its
-    `model` object, held_8m (scv_8m >= 8) and held_s (scv_min_1m > 4) as tools/eval/tables.py, and `end`."""
     m = rec.get("model") or {}
     out = {"held_8m": (m.get("scv_8m") or 0) >= 8, "held_s": (m.get("scv_min_1m") or 0) > 4}
     out.update({k: m[k] for k in bc.SESSION_METRICS if k in m})
@@ -248,8 +190,8 @@ class Trunk:
         self.seed, self.map, self.p0, self.p1 = int(game["seed"]), game["map"], game["p0"], game["p1"]
         self.condition: str | None = None
         self.reasons: list[str] = []
-        self.points: dict[str, dict] = {}  # rule -> PointRecord (valid or not)
-        self.missing: dict[str, str] = {}  # rule -> why it has no record
+        self.points: dict[str, dict] = {}
+        self.missing: dict[str, str] = {}
         self.order = (k, n)
         self.used = False
 
@@ -312,7 +254,6 @@ def read_trunk(t: Trunk, sd: Path, game: dict | None, recs: list[dict], rules: l
         ours, opp = bc.ActLog.read(acts), bc.ActLog.read(opp_acts)
     except (OSError, Refused, json.JSONDecodeError, KeyError) as e:
         return miss_all(f"act log: {e}")
-    # 051-R1 ④ / 051-R10: the same checkpoint, T0 policy version and schemas as the branch plan.
     if ours.end.get("players_index") != 0 or opp.end.get("players_index") != 1:
         t.reasons.append("act logs are not players[0] / players[1]")
     if ckpt_sha is None:
@@ -330,7 +271,7 @@ def read_trunk(t: Trunk, sd: Path, game: dict | None, recs: list[dict], rules: l
     trunk_ref = {"job": job.name, "stage": t.stage, "plan_game": t.n, "hostd_game": int(game.get("hostd_id", 0)),
                  "replay": rel(sd / "replays" / f"g{t.n}.rep"), "acts": rel(acts), "opponent_acts": rel(opp_acts)}
     backend = game.get("backend") or "?"
-    seen: dict[str, str] = {}  # state id -> rule of the point it is
+    seen: dict[str, str] = {}
     for rule in rules:
         ent = next((s for s in snaps if rule in (s.get("rules") or [])), None)
         if ent is None:
@@ -383,7 +324,6 @@ def read_trunk(t: Trunk, sd: Path, game: dict | None, recs: list[dict], rules: l
 
 
 def select(trunks: list[Trunk], cfg: dict, counts: dict[str, int], rush: dict[str, list[int]]) -> dict:
-    """Per (map, condition) the first usable trunks in rush-plan seed order (051-R11 1)."""
     pos = {m: {s: i for i, s in enumerate(seeds)} for m, seeds in rush.items()}
     cells = {}
     for m in cfg["trunks"]["maps"]:
@@ -399,7 +339,6 @@ def select(trunks: list[Trunk], cfg: dict, counts: dict[str, int], rush: dict[st
                     for p in t.points.values():
                         p["valid"], p["skip_reason"] = False, "cell full (051-R11 1)"
                 else:
-                    # A trunk with fewer valid points than rules is replaced: none of its points is branched.
                     for p in t.points.values():
                         if p["valid"]:
                             p["valid"], p["skip_reason"] = False, "trunk replaced (051-R11 1)"
@@ -408,7 +347,6 @@ def select(trunks: list[Trunk], cfg: dict, counts: dict[str, int], rush: dict[st
 
 
 def dropped_alts(point: dict, cfg: dict, ids: dict[str, int]) -> list[dict]:
-    """051-R10 / 051-R11 ②: alternatives whose t-only force action is closed in the t observation's mask."""
     out = []
     for a in cfg["alternative"]:
         closed = [r["action"] for r in a["rules"] if r["op"] == "force" and r["from_s"] == r["to_s"] == 0 and ids[r["action"]] not in point["type_mask"]]
@@ -492,7 +430,6 @@ def build(a) -> dict:
             need = {c: short.get(f"{m}/{c}", 0) for c in ("hit", "miss")}
             if any(need.values()):
                 blocks.append((m, pick_seeds(seeds, need, a.condition_fn, exclude)))
-        # A stage name the trunk job does not use yet (a second replacement round gets -r2, -r3, ...).
         taken = {plan["name"] for _, _, plan in job_stages(job)} if (job / "job.toml").is_file() else set()
         rname = a.replacement_name or f"{name}-trunk-r"
         if rname in taken:

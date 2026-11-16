@@ -1,23 +1,4 @@
-"""Tables of the 050-R9 diagnostics (cue_diag, dead_channels; config/protocol/lineage.toml, docs/
-measurement_protocol.md) from the output folders `protocol.py diag --run` writes: one row per checkpoint.
-
-- cue probes, per cue hold-out set (teacher: Zerg; human: Terran / Protoss) and race: rows / games, ridge R2
-  (AUC for a class task) with the game-bootstrap 95% CI at the reported stages for each reported task
-  (`report.stages`, `report.tasks`), the h_t MLP(64) value, the nuisance-only ridge, the gain over the
-  nuisance at h_t; a skipped task shows its reason. The enemy max-seen production-building count
-  (`count|focus_rows`) has values on the human Protoss rows; on the Zerg teacher rows it is constant (skipped);
-  on the human Terran rows it is "측정 불가" (not measurable, `report.not_measurable`, user decision 2026-11-11).
-- intervention (teacher set, all classes): games / edited, mean delta [CI] of every reported effect and metric
-- dead channels (041-R25 training-log records, `spatial_log.json`, tools/eval/spatial_logs.py): alarms, worst
-  dead layer share, max const S8 / s_pool, min positive share. Checkpoint 1 lineage: not measured (no
-  training-log statistics).
-
-Every folder is checked first (`protocol.py check-diag`); a folder that does not conform is refused unless
---no-check (then marked). Moved from the probe-table part of the 041-R24 lambda-run summary
-(<shared>/eval/m2-lambda-20261110/scripts/summary.py) with the same cells.
-
-    python tools/eval/diag_table.py <label>=<output folder>... [--metrics cue_diag,dead_channels] [--json out.json] [--md out.md] [--no-check]
-"""
+"""Tables of the 050-R9 diagnostics (cue_diag, dead_channels; config/protocol/lineage.toml, docs/guide/"""
 
 from __future__ import annotations
 
@@ -42,7 +23,6 @@ def ci(m: dict | None, pt: str = "pt", lo: str = "lo", hi: str = "hi", d: int = 
 
 
 def cue_rows(lin: dict, name: str, pr: dict) -> dict:
-    """{race: {task: cells}} of a `diag probes` output of one cue set for its reported tasks / stages."""
     s = protocol.cue_set(lin, name)
     rep = s["report"]
     out = {}
@@ -52,7 +32,7 @@ def cue_rows(lin: dict, name: str, pr: dict) -> dict:
         rr = {}
         for t in rep["tasks"]:
             x = tasks.get(t, {})
-            if t in nm:  # user decision 2026-11-11 (AMB-050-4): labelled, its values not compared
+            if t in nm:
                 rr[t] = {"not_measurable": nm[t], "rows": x.get("rows"), "games": x.get("games")}
                 continue
             if "metrics" not in x:

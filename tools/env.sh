@@ -1,8 +1,3 @@
-# Source this file, then call `uranium_load_env <repo root>` (spec 001-R9).
-# Loads <repo root>/.env (or $URANIUM_ENV_FILE) and exports each KEY=VALUE.
-# Variables already set in the process environment win over .env values.
-# Supported syntax: `KEY=value`, optional `export ` prefix, one level of matching quotes,
-# whole-line `#` comments. No `~`/`$VAR` expansion (same rule as the Rust loader).
 uranium_load_env() {
   local file="${URANIUM_ENV_FILE:-$1/.env}" line key val
   [[ -f "$file" ]] || return 0

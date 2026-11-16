@@ -1,12 +1,4 @@
 #!/usr/bin/env bash
-# Build Stardust (Protoss; MIT with a no-tournament-forks condition) as an AI module for our
-# OpenBW BWAPI 4.2 fork, for use as a T1 opponent (spec 021).
-# Output: <URANIUM_OSS_BOTS_DIR>/stardust/{module.so, VERSION, bwapi-data/}
-#
-# Stardust's own Linux build targets the author's extended OpenBW fork (IS_OPENBW). Those
-# extensions (mining-path simulation, CherryVis instrumentation) are only used under
-# IS_OPENBW / INSTRUMENTATION_ENABLED, so we build without them against our headers, as the
-# tournament (Windows) build does.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT/tools/oss/common.sh"
@@ -18,7 +10,6 @@ OBJ="$ROOT/build/obj/stardust"
 oss_git_fetch "$SRC" https://github.com/bmnielsen/Stardust.git "$COMMIT"
 oss_patch "$SRC" "$ROOT/third_party/patches/0008-stardust-linux-bwapi42.patch"
 
-# Vendored zstd (C) for zstdstream, which the mining-path serializer links against.
 Z="$SRC/3rdparty/zstd/lib"
 zflags=(-O2 -fPIC -DNDEBUG -DZSTD_DISABLE_ASM -I"$Z" -I"$Z/common")
 oss_flags_stamp "$OBJ/zstd" "${zflags[@]}"

@@ -1,17 +1,12 @@
-# Build OpenBW + BWAPI (OpenBW fork) headless with MSVC for Uranium (spec 011, 001-R8).
-# Windows counterpart of build.sh: same pinned commits and patches, Release build.
-# Usage: powershell -ExecutionPolicy Bypass -File tools\openbw\build.ps1
 $ErrorActionPreference = 'Stop'
 
 $Root = (Resolve-Path "$PSScriptRoot\..\..").Path
 $TP = Join-Path $Root 'third_party'
 $OpenbwCommit = '4b046d5f65302b10cb0a745f0fecd37ec85b20a8'
 $BwapiCommit = '48124ba8ed1b4d52b3dfd52acbaf34afb9a37fe2'
-# Override with e.g. "Visual Studio 17 2022" on hosts with an older Visual Studio.
 $Generator = if ($env:URANIUM_CMAKE_GENERATOR) { $env:URANIUM_CMAKE_GENERATOR } else { 'Visual Studio 18 2026' }
 
 function Invoke-Native([string]$Exe, [string[]]$Argv) {
-    # PowerShell 5.1 turns redirected native stderr into errors; judge by exit code only.
     $ErrorActionPreference = 'Continue'
     & $Exe @Argv 2>&1 | ForEach-Object { "$_" }
     if ($LASTEXITCODE -ne 0) { throw "$Exe $($Argv -join ' ') failed ($LASTEXITCODE)" }
@@ -19,7 +14,6 @@ function Invoke-Native([string]$Exe, [string[]]$Argv) {
 
 function Get-Pinned([string]$Dir, [string]$Url, [string]$Commit) {
     if (-not (Test-Path (Join-Path $Dir '.git'))) {
-        # Patches use LF line endings: keep checkouts byte-identical to Linux.
         Invoke-Native git @('-c', 'core.autocrlf=false', 'clone', '-q', $Url, $Dir)
         Invoke-Native git @('-C', $Dir, 'config', 'core.autocrlf', 'false')
     }
@@ -30,7 +24,6 @@ function Get-Pinned([string]$Dir, [string]$Url, [string]$Commit) {
 }
 
 function Add-Patch([string]$Dir, [string]$Patch) {
-    # PowerShell 5.1 turns native stderr into a terminating error under 'Stop'.
     $ErrorActionPreference = 'Continue'
     git -C $Dir apply --reverse --check $Patch 2>$null
     $ErrorActionPreference = 'Stop'

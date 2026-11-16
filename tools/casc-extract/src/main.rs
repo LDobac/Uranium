@@ -1,12 +1,3 @@
-//! Extracts the files OpenBW needs from a StarCraft: Remastered install into a loose-file
-//! directory usable with `URANIUM_DATA_DIR` (spec 011, AMB-011-1 path (b)).
-//!
-//! Uses the third-party `casc` CLI (casc-cli 0.1.6, CascLib): `cargo install casc --version 0.1.6 --locked`.
-//!
-//! Usage: `casc-extract <scr_data_dir> <out_dir>` where `<scr_data_dir>` is the `Data` folder of
-//! the install (its parent must contain `.build.info`). Writes `<out_dir>/manifest.toml`
-//! (sizes, SHA-256, CASC names) and exits with code 2 if a required file is missing.
-
 mod files;
 
 use std::fmt::Write as _;
@@ -99,7 +90,6 @@ fn extract_all(
     Ok(())
 }
 
-/// Where casc-cli wrote `name` (internal structure kept, namespace prefix dropped).
 fn staged_file(staging: &Path, name: &str) -> Result<PathBuf> {
     let rel = name.replace('\\', "/");
     let candidates = [rel.clone(), rel.split_once(':').map(|(_, r)| r.trim_start_matches('/').to_string()).unwrap_or_default()];
@@ -127,9 +117,6 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Host-independent digest of the extracted set (011-R13): SHA-256 over
-/// `<path>\t<size>\t<sha256>\n` lines sorted by path. Unlike the manifest file it does not
-/// include the absolute source path, so every host extracting the same build gets the same value.
 fn content_sha256(done: &[Extracted]) -> String {
     let mut lines: Vec<String> = done.iter().map(|e| format!("{}\t{}\t{}\n", e.path.replace('\\', "/"), e.size, e.sha256)).collect();
     lines.sort();

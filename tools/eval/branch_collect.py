@@ -1,34 +1,4 @@
-"""Branch-game results (spec 051): one `branches.jsonl` line per played branch game (051-R12), from the
-branch job after `python -m uranium eval-status --job <branch job>` (the merged `<stage>/games.jsonl` and
-`results.jsonl`, last attempt of each game).
-
-    python tools/eval/branch_collect.py --job <shared>/eval/branch-b1-<date> [--stage <stage>] [--root <shared>]
-
-Per plan game n with line n of the stage's branch list (020-R22 `branches`, 051-R10): the model session
-record's `branch` object (uranium_env::branch::BranchOutcome, 051-R9) gives `valid` / `invalid`, the prefix
-counts, `state_check`, `intervention`, `samples`, `metrics`, `dilution` and `end` as they are; the line gives
-`point`, `alt`, `rules`, `repeat`; the ledger gives `game` (job, stage, plan game, hostd id, attempt, replay,
-game host, inference backend and precision; `infer_seed` from the session record, 051-R8); `points.jsonl`
-the point's `checkpoint_sha256`; our branch act log's end line the `git` commit.
-
-`prefix.opponent` compares the opponent's act log of the branch game (`<stage>/acts/g<n>-p1.jsonl`) with
-the trunk's (`opponent_acts` of the line) before f_t (051-R12, uranium_env::branch::compare_prefix; null when
-either log is missing). A branch the session called valid whose opponent prefix differs from the trunk's
-(fewer matched than compared observations, or the first difference at or before f_t) is marked invalid here
-(`invalid = {"reason": "digest", "obs": null, "frame": <first different frame>, "side": "opponent"}`): the
-game did not reproduce the trunk up to t (051-R5 ①, interim decision of the tool). A valid branch whose own
-act log end line names another model policy (checkpoint id) than the point's `policy`, or whose opponent's
-names another T0 policy than the point's `t0_policy`, is invalid too (051-R1 ④:
-`{"reason": "missing_input", ..., "policy_mismatch": {key: {"branch", "trunk"}}}`, the U1 reasons having no
-version reason).
-
-Games without a finished branch outcome (not played, Aborted, given up, session lost, or an outcome with
-`end = null`: the session never saw GameEnd) get no line; they are counted
-in `branch_collect.json` with the invalid branches by reason, the counts per alternative, the games whose
-act logs are missing or cut short (`act_log_incomplete`: those policies were not checked) and the games
-whose opponent prefix could not be compared (`opponent_prefix_unchecked`). Branch games
-are never part of the evaluation tables (050 "분기 게임(051)"; tools/eval/tables.py leaves the stage out).
-"""
+"""Branch-game results (spec 051): one `branches.jsonl` line per played branch game (051-R12), from the"""
 
 from __future__ import annotations
 
@@ -42,7 +12,6 @@ import branch_common as bc  # noqa: E402
 import eval_common as ec  # noqa: E402
 
 Refused = bc.Refused
-# Fields of BranchOutcome copied into the record as they are (051-R9, 051-R12).
 OUTCOME_FIELDS = ("state_check", "intervention", "samples", "metrics", "dilution", "end")
 
 
@@ -80,8 +49,8 @@ def collect(job: Path, stage: str | None, root: Path) -> dict:
     for r in bc.read_jsonl(results_p):
         recs.setdefault(int(r["game_id"]), []).append(r)
     rows, missing = [], []
-    no_end: dict[str, list[int]] = {"ours": [], "opponent": []}  # branch act logs missing or cut short
-    no_opp_prefix: list[int] = []  # opponent prefix not compared (a log missing)
+    no_end: dict[str, list[int]] = {"ours": [], "opponent": []}
+    no_opp_prefix: list[int] = []
     for n, line in enumerate(lines, start=1):
         game = games.get(n)
         if game is None:
@@ -90,7 +59,6 @@ def collect(job: Path, stage: str | None, root: Path) -> dict:
         outcome = next((r["branch"] for r in recs.get(n, []) if r.get("model") and r.get("branch")), None)
         model = next((r for r in recs.get(n, []) if r.get("model")), {})
         if outcome is not None and outcome.get("end") is None:
-            # A session that never saw GameEnd (aborted game) leaves an unfinished outcome: no result.
             outcome = None
         if outcome is None:
             why = game.get("no_result") or ("given up" if game.get("gave_up") else None) or f"no branch outcome ({game.get('outcome')})"
@@ -114,13 +82,11 @@ def collect(job: Path, stage: str | None, root: Path) -> dict:
         if opp is None:
             no_opp_prefix.append(n)
         valid, invalid = bool(outcome.get("valid")), outcome.get("invalid")
-        # 051-R1 ④: the branch game ran the trunk's checkpoint and T0 policy version (act-log end lines).
         got = {"policy": (ours or {}).get("policy"), "t0_policy": (theirs or {}).get("policy")}
         want = {"policy": point["policy"], "t0_policy": point["t0_policy"]}
         diff = {k: {"branch": got[k], "trunk": want[k]} for k in got if got[k] is not None and got[k] != want[k]}
         if valid and diff:
             valid, invalid = False, {"reason": "missing_input", "obs": None, "frame": None, "policy_mismatch": diff}
-        # 051-R5 ①: the opponent saw the trunk's observations up to t (its first difference after f_t).
         first = None if opp is None else opp["first_mismatch_frame"]
         if valid and opp is not None and (opp["matched"] < opp["obs"] or (first is not None and first <= int(line["f_t"]))):
             valid, invalid = False, {"reason": "digest", "obs": None, "frame": first, "side": "opponent"}
