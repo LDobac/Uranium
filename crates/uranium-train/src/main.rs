@@ -358,7 +358,7 @@ fn main() -> Result<()> {
                 uranium_store::storage::verify_dir(&dir)?
             } else {
                 let jobs = std::thread::available_parallelism().map_or(4, |n| n.get());
-                let (shards, games) = uranium_replay::shard::validate_tree(&dir, jobs)?;
+                let (shards, games) = uranium_data::shard::validate_tree(&dir, jobs)?;
                 if shards > 0 {
                     eprintln!("[manifest] {shards} shards decode ({games} games, 040-R17)");
                 }

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
-use uranium_replay::shard::{ShardGame, read};
+use crate::shard::{ShardGame, read};
 use super::{StepSource, GameId, SourcePos, HasMeta, Rng};
 
 pub struct ShardSource {

@@ -43,6 +43,7 @@ pub enum DecisionLogLine {
 }
 
 pub const UNKNOWN_ACTION: u16 = u16::MAX;
+pub const LABELER_VERSION: u32 = 2;
 pub const UNKNOWN_REASON: &str = "unknown";
 
 impl Label {

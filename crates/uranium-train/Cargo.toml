@@ -8,7 +8,6 @@ publish.workspace = true
 
 [dependencies]
 uranium-env.workspace = true
-uranium-replay.workspace = true
 uranium-data.workspace = true
 uranium-store.workspace = true
 uranium-proto.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "uranium-data"
-description = "BC data side (spec 041): shard sources, game order, data RNG, lanes, batches, prefetch, host collate (030 §1 layout), config fingerprints"
+description = "BC data side (spec 041): shard format, read and write (040), train/val/test split rule, game order, data RNG, dataset fingerprints, lanes, batches, prefetch, packed storage, config fingerprints (collate comes from uranium-env)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -11,10 +11,10 @@ testkit = ["uranium-env/testkit"]
 
 [dependencies]
 uranium-env.workspace = true
-uranium-replay.workspace = true
 uranium-store.workspace = true
 uranium-proto.workspace = true
 anyhow.workspace = true
+postcard.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

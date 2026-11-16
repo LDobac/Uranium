@@ -7,14 +7,14 @@ use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use uranium_env::features::label::{HeadChoice, Label, label_of_choice, label_validity_with_memory};
-use uranium_replay::shard::{self, Shard, ShardGame, ShardHeader};
+use crate::shard::{self, Shard, ShardGame, ShardHeader};
 
 use crate::bc::{Batch, BcConfig, Feeder, feed_threads};
 use crate::data::{GameId, MapStore, StepSource, shard_files};
 
-pub use uranium_replay::shard::staging_dir;
+pub use crate::shard::staging_dir;
 
-pub const DISTILL_SRC: &str = uranium_replay::pipeline::DISTILL_SRC;
+pub const DISTILL_SRC: &str = "distill";
 pub const LABEL_MODES: [&str; 2] = ["sample", "argmax"];
 
 pub fn game_seed(replay_sha256: &str, perspective_slot: u8, label_seed: u64) -> u64 {
@@ -65,8 +65,16 @@ pub fn read_labelled(records: &Path) -> Result<Labelled> {
     Ok(l)
 }
 
+pub fn path_within(p: &Path, root: &Path) -> bool {
+    let abs = |x: &Path| std::path::absolute(x).unwrap_or_else(|_| x.to_path_buf());
+    let (p, root) = (abs(p), abs(root));
+    let (mut a, b) = (p.components(), root.components());
+    b.into_iter().all(|rc| {
+        a.next().is_some_and(|pc| if cfg!(windows) { pc.as_os_str().eq_ignore_ascii_case(rc.as_os_str()) } else { pc == rc })
+    })
+}
+
 pub fn check_args(input: &Path, out: &Path, records: &Path, mode: &str, bc_shards_root: Option<&Path>) -> Result<Vec<String>> {
-    use uranium_replay::pipeline::path_within;
     ensure!(LABEL_MODES.contains(&mode), "--mode {mode:?}: expected one of {LABEL_MODES:?} (044-R3)");
     ensure!(input.is_dir(), "--in {}: not a folder", input.display());
     let files = input_files(input)?;

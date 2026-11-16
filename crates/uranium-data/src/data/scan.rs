@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use anyhow::{Context, Result};
-use uranium_replay::shard::{GameMeta, read};
+use crate::shard::{GameMeta, read};
 use super::source::{ShardSource, key_cmp, key_hash_text};
 use super::HasMeta;
 use super::maps::MapStore;

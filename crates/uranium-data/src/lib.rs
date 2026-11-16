@@ -6,6 +6,7 @@ pub mod distill;
 pub mod eval;
 pub mod mix;
 pub mod pack;
+pub mod shard;
 pub mod split;
 pub mod state;
 pub mod table;

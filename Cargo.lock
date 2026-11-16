@@ -1444,6 +1444,7 @@ name = "uranium-data"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "postcard",
  "serde",
  "serde_json",
  "sha2",
@@ -1451,7 +1452,6 @@ dependencies = [
  "uranium-data",
  "uranium-env",
  "uranium-proto",
- "uranium-replay",
  "uranium-store",
  "zstd",
 ]
@@ -1559,6 +1559,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "toml",
+ "uranium-data",
  "uranium-env",
  "uranium-proto",
  "uranium-scripted",
@@ -1621,7 +1622,6 @@ dependencies = [
  "uranium-data",
  "uranium-env",
  "uranium-proto",
- "uranium-replay",
  "uranium-store",
 ]
 

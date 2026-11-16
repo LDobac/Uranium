@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 pub const BRANCH_SRC: &str = "branch";
-pub const DISTILL_SRC: &str = "distill";
+pub use uranium_data::distill::{DISTILL_SRC, path_within};
 
 fn isolated(src: &str) -> bool {
     src == BRANCH_SRC || src == DISTILL_SRC
@@ -46,15 +46,6 @@ pub fn check_isolated_build(src: &str, records: &Path, time_limit: Option<u32>) 
         anyhow::ensure!(!dir.join(other).exists(), "--records {}: its folder holds {other} (the 051-R12 output folder); give the build records a folder of their own (e.g. <out folder>/build/)", records.display());
     }
     Ok(())
-}
-
-pub fn path_within(p: &Path, root: &Path) -> bool {
-    let abs = |x: &Path| std::path::absolute(x).unwrap_or_else(|_| x.to_path_buf());
-    let (p, root) = (abs(p), abs(root));
-    let (mut a, b) = (p.components(), root.components());
-    b.into_iter().all(|rc| {
-        a.next().is_some_and(|pc| if cfg!(windows) { pc.as_os_str().eq_ignore_ascii_case(rc.as_os_str()) } else { pc == rc })
-    })
 }
 
 pub fn unique_stems(files: &[PathBuf]) -> Result<()> {

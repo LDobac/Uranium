@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use serde::Serialize;
 use uranium_env::surrender::SurrenderJudge;
-use uranium_replay::shard::ShardGame;
+use crate::shard::ShardGame;
 
 use crate::bc::{Batch, BcConfig, Feeder, eval_games};
 use crate::data::{ChosenGames, GameId, MapStore, ShardSource, StepSource, cut_game};

@@ -13,9 +13,7 @@ pub const GAME_START_FRAME: u32 = 1;
 
 pub const ORDERS_TOML: &str = include_str!("../tables/replay_orders.toml");
 
-pub const LABELER_VERSION: u32 = 2;
-
-pub use uranium_env::features::label::UNKNOWN_ACTION;
+pub use uranium_env::features::label::{LABELER_VERSION, UNKNOWN_ACTION};
 
 #[derive(Deserialize)]
 struct OrderRow {

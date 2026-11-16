@@ -4,8 +4,8 @@ use uranium_env::features::augment::Sym;
 use uranium_env::features::extract::action_table;
 use uranium_env::testkit::{flat_game_info, unit};
 use uranium_proto::*;
-use uranium_replay::label::Label;
-use uranium_replay::shard::{GameMeta, ShardGame, Step};
+use uranium_env::features::label::Label;
+use uranium_data::shard::{GameMeta, ShardGame, Step};
 
 const W: u16 = 32;
 

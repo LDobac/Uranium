@@ -564,7 +564,7 @@ mod tests {
     }
 
     fn summary(i: u64, src: &str, mu: &str, slot: u8, steps: usize) -> GameSummary {
-        let meta = uranium_replay::shard::GameMeta {
+        let meta = crate::shard::GameMeta {
             map_hash: String::new(),
             map_family: "fighting_spirit".into(),
             matchup: mu.into(),

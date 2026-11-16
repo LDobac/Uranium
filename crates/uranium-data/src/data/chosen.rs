@@ -1,6 +1,6 @@
 use std::collections::{HashSet, VecDeque};
 use anyhow::Result;
-use uranium_replay::shard::ShardGame;
+use crate::shard::ShardGame;
 use super::{StepSource, GameId};
 use super::source::ShardSource;
 

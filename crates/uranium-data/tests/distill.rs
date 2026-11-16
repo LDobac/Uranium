@@ -10,7 +10,7 @@ use uranium_env::features::augment::Sym;
 use uranium_env::features::extract::action_table;
 use uranium_env::features::label::{HeadChoice, bucket_index, host_label_check, label_of_choice};
 use uranium_env::features::{DELAY_BUCKETS, MAP};
-use uranium_replay::shard::{self, Shard, ShardGame, ShardHeader};
+use uranium_data::shard::{self, Shard, ShardGame, ShardHeader};
 
 const TINY: &str = "lanes = 2\nseq_len = 4\nmicro_lanes = 1\npad_entities = 0\nlr = 3e-3\nmin_lr = 3e-3\nwarmup_steps = 1\ntotal_steps = 100\nweight_decay = 0.0\ngrad_clip = 1.0\ns2_lr_scale = 0.1\n\n[heads]\naction = 1.0\ndelay = 0.5\nqueued = 0.2\nselected = 1.0\ntarget_unit = 1.0\ntarget_loc = 1.0\n\n[value]\nwin = 0.5\n\n[data]\nz_drop = 0.0\naugment = true\nseed = 1\ncheckpoint_every = 1000\ncheckpoint_minutes = 0\nenemy_race_mask = 0.5\n";
 

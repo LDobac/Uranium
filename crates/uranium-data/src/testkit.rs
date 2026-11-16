@@ -5,9 +5,9 @@ use uranium_env::features::extract::action_table;
 pub use uranium_env::testkit::unit;
 use uranium_env::testkit::flat_game_info;
 use uranium_proto::*;
-use uranium_replay::label::Label;
+use uranium_env::features::label::Label;
 use uranium_env::features::label::{MemoryAction, UNKNOWN_ACTION};
-use uranium_replay::shard::{GameMeta, Shard, ShardGame, ShardHeader, Step, write};
+use crate::shard::{GameMeta, Shard, ShardGame, ShardHeader, Step, write};
 
 pub const W: u16 = 32;
 

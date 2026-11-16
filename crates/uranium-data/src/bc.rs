@@ -771,7 +771,7 @@ pub fn eval_games(src: &ShardSource, scan: &[Vec<GameSummary>], n: usize, seed: 
     sample_games(&counts, n, seed)
 }
 
-pub fn eval_game_metas(src: &ShardSource, scan: &[Vec<GameSummary>], n: usize, seed: u64, target_only: bool) -> Vec<uranium_replay::shard::GameMeta> {
+pub fn eval_game_metas(src: &ShardSource, scan: &[Vec<GameSummary>], n: usize, seed: u64, target_only: bool) -> Vec<crate::shard::GameMeta> {
     let per_file: Vec<Vec<GameSummary>> = scan
         .iter()
         .enumerate()

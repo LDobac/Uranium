@@ -3,7 +3,7 @@ use uranium_env::features::augment::{Sym, transform_target_loc, transform_with_s
 use uranium_env::features::extract::dims;
 use uranium_env::features::*;
 use uranium_env::features::label::{LabelWalker, UNKNOWN_REASON};
-use uranium_replay::shard::ShardGame;
+use crate::shard::ShardGame;
 use uranium_env::maps::family_index;
 use super::{TrainStep, GameSeq, value_weight, replay_z};
 use super::maps::MapStore;
@@ -44,7 +44,7 @@ pub struct GameStream {
     pending_events: Vec<uranium_proto::GameEvent>,
 }
 
-pub fn chained_step(steps: &[uranium_replay::shard::Step], i: usize) -> bool {
+pub fn chained_step(steps: &[crate::shard::Step], i: usize) -> bool {
     i > 0 && i < steps.len() && steps[i].raw_frame.frame <= steps[i - 1].raw_frame.frame.saturating_add(1) && steps[i - 1].action_label.action != NOOP_ACTION
 }
 

@@ -7,8 +7,8 @@ use uranium_env::features::extract::action_table;
 use uranium_env::testkit::{flat_game_info, unit};
 use uranium_env::types::TypeTables;
 use uranium_proto::*;
-use uranium_replay::label::Label;
-use uranium_replay::shard::{GameMeta, ShardGame, Step};
+use uranium_env::features::label::Label;
+use uranium_data::shard::{GameMeta, ShardGame, Step};
 
 fn short_stage_warmup(steps: usize) -> usize {
     (steps * 5 + 50) / 100
@@ -163,21 +163,6 @@ fn label_check_train_supply_matches_mask_034_ac4() {
             assert_eq!((fails, supply), (4, 4), "every queue empty: supply");
         }
     }
-}
-
-#[test]
-fn invalid_label_share_filters_perspective_040_r19() {
-    use uranium_env::features::label::INVALID_LABEL_MAX;
-    use uranium_replay::pipeline::invalid_label_filter;
-    assert_eq!(INVALID_LABEL_MAX, 0.20);
-    assert_eq!(invalid_label_filter(&game_with_invalid(20, 0), None).unwrap(), None);
-    assert_eq!(invalid_label_filter(&game_with_invalid(20, 3), None).unwrap(), None, "15% is kept");
-    let r = invalid_label_filter(&game_with_invalid(20, 4), None).unwrap().expect("20% is rejected");
-    assert_eq!(r, "invalid_labels>=20% (20.0%, 4/20) (040-R19)");
-    assert_eq!(uranium_replay::stats::filter_group(&r), uranium_replay::stats::INVALID_LABEL_GROUP);
-    let r = invalid_label_filter(&game_with_invalid(20, 11), None).unwrap().unwrap();
-    assert!(r.starts_with("invalid_labels>=20% (55.0%, 11/20)"), "{r}");
-    assert_eq!(invalid_label_filter(&game_with_invalid(20, 11), None).unwrap().unwrap(), r);
 }
 
 #[test]
@@ -365,7 +350,7 @@ fn game_len(len: usize, tag: u32) -> ShardGame {
 }
 
 fn shard_dir(name: &str, games: &[ShardGame], per_file: usize) -> std::path::PathBuf {
-    use uranium_replay::shard::{Shard, ShardHeader, write};
+    use uranium_data::shard::{Shard, ShardHeader, write};
     let root = std::env::temp_dir().join(format!("uranium-bc-{name}-{}", std::process::id()));
     std::fs::remove_dir_all(&root).ok();
     for (k, chunk) in games.chunks(per_file).enumerate() {
@@ -457,7 +442,7 @@ fn memory_action_none_keeps_batches_bit_identical_041_r28() {
 
 const MEMORY_NONE_DIGEST: &str = "6f5f4b068ce79a7f107ad978578b23eed0fbbda5527517048c5b9d2f562a617f";
 
-fn label_records(g: &ShardGame) -> Vec<uranium_replay::shard::MemoryAction> {
+fn label_records(g: &ShardGame) -> Vec<uranium_data::shard::MemoryAction> {
     use uranium_env::features::label::{LabelWalker, acting_ids};
     let maps = MapStore::synthetic();
     let pre = maps.get(&g.meta.map_hash).unwrap();
@@ -466,7 +451,7 @@ fn label_records(g: &ShardGame) -> Vec<uranium_replay::shard::MemoryAction> {
         .iter()
         .map(|s| {
             let (o, h, _) = w.step(&s.raw_frame, &s.action_label, None);
-            uranium_replay::shard::MemoryAction { action: h.action, delay_bucket: h.delay_bucket as u32, units: acting_ids(&h, &o) }
+            uranium_data::shard::MemoryAction { action: h.action, delay_bucket: h.delay_bucket as u32, units: acting_ids(&h, &o) }
         })
         .collect()
 }
@@ -506,7 +491,7 @@ fn loader_reads_memory_action_041_r28() {
 fn memory_action_shards_end_to_end_041_r28() {
     let same: Vec<ShardGame> = varied_games().into_iter().map(with_label_memory).collect();
     let root = shard_dir("memory-same", &same, 4);
-    assert_eq!(uranium_replay::shard::read(&root.join("p0/shard_00000.bin.zst")).unwrap().header.schema_version, 7);
+    assert_eq!(uranium_data::shard::read(&root.join("p0/shard_00000.bin.zst")).unwrap().header.schema_version, 7);
     assert_eq!(epoch_digest(&root), MEMORY_NONE_DIGEST);
     std::fs::remove_dir_all(&root).ok();
     let mixed: Vec<ShardGame> = varied_games().into_iter().enumerate().map(|(i, g)| if i % 2 == 0 { with_label_memory(g) } else { g }).collect();
@@ -821,7 +806,7 @@ fn eval_game_metas_are_the_eval_games_052_r7() {
     while let Some(g) = chosen.next_game().unwrap() {
         want.push(g.meta.replay_sha256.clone());
     }
-    let sha = |v: Vec<uranium_replay::shard::GameMeta>| v.into_iter().map(|m| m.replay_sha256).collect::<Vec<_>>();
+    let sha = |v: Vec<uranium_data::shard::GameMeta>| v.into_iter().map(|m| m.replay_sha256).collect::<Vec<_>>();
     assert_eq!(sha(eval_game_metas(&src(), &scan, 6, 1, false)), want, "the bc-eval games");
     let t = eval_game_metas(&src(), &scan, 6, 1, true);
     assert_eq!(t.len(), 6);

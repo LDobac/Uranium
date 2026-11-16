@@ -3,7 +3,7 @@ use anyhow::Result;
 use uranium_env::features::extract::{action_table, dims};
 use uranium_env::features::*;
 use uranium_env::features::label::HostLabel;
-use uranium_replay::shard::{GameMeta, ShardGame, result_source};
+use crate::shard::{GameMeta, ShardGame, result_source};
 pub use uranium_env::maps::family_index;
 pub use uranium_env::features::label::{UNKNOWN_REASON, acting_ids, host_label, host_label_check};
 
@@ -42,11 +42,11 @@ pub struct SourcePos {
 }
 
 pub trait HasMeta {
-    fn meta(&self) -> &uranium_replay::shard::GameMeta;
+    fn meta(&self) -> &crate::shard::GameMeta;
 }
 
 impl HasMeta for ShardGame {
-    fn meta(&self) -> &uranium_replay::shard::GameMeta {
+    fn meta(&self) -> &crate::shard::GameMeta {
         &self.meta
     }
 }

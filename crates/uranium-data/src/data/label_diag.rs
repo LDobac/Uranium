@@ -4,7 +4,7 @@ use uranium_env::actions::CAPABILITIES;
 use uranium_env::features::extract::action_table;
 use uranium_env::features::*;
 use uranium_env::features::label::{LabelWalker, UNKNOWN_REASON};
-use uranium_replay::shard::ShardGame;
+use crate::shard::ShardGame;
 use uranium_env::maps::family_index;
 use super::maps::MapStore;
 
