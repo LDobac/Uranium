@@ -10,11 +10,11 @@ publish.workspace = true
 testkit = []
 
 [dependencies]
-uranium-env = { path = "../uranium-env" }
-uranium-data = { path = "../uranium-data" }
-uranium-store = { path = "../uranium-store" }
+uranium-env.workspace = true
+uranium-data.workspace = true
+uranium-store.workspace = true
 uranium-agent.workspace = true
-uranium-runner = { path = "../uranium-runner" }
+uranium-runner.workspace = true
 uranium-proto.workspace = true
 anyhow.workspace = true
 clap.workspace = true

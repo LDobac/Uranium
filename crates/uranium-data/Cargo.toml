@@ -10,16 +10,16 @@ publish.workspace = true
 testkit = []
 
 [dependencies]
-uranium-env = { path = "../uranium-env" }
-uranium-replay = { path = "../uranium-replay" }
-uranium-store = { path = "../uranium-store" }
+uranium-env.workspace = true
+uranium-replay.workspace = true
+uranium-store.workspace = true
 uranium-proto.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 toml.workspace = true
-zstd = "0.13"
+zstd.workspace = true
 
 [[test]]
 name = "distill"

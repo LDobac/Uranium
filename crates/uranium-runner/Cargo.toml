@@ -10,14 +10,11 @@ publish.workspace = true
 name = "uranium-env"
 path = "src/main.rs"
 
-[features]
-cuda = []
-
 [dependencies]
 uranium-proto.workspace = true
 uranium-agent.workspace = true
-uranium-env = { path = "../uranium-env" }
-uranium-store = { path = "../uranium-store" }
+uranium-env.workspace = true
+uranium-store.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true

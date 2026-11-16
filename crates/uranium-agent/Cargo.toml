@@ -12,11 +12,10 @@ testkit = []
 [dependencies]
 uranium-proto.workspace = true
 uranium-scripted.workspace = true
-uranium-env = { path = "../uranium-env" }
-uranium-data = { path = "../uranium-data" }
+uranium-env.workspace = true
+uranium-data.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-toml.workspace = true

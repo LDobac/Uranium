@@ -1424,7 +1424,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "toml",
  "uranium-data",
  "uranium-env",
  "uranium-proto",
@@ -1613,15 +1612,12 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "sha2",
  "toml",
  "uranium-data",
  "uranium-env",
  "uranium-proto",
  "uranium-replay",
  "uranium-store",
- "windows-sys 0.61.2",
- "zstd",
 ]
 
 [[package]]

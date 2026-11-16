@@ -16,13 +16,13 @@ doctest = false
 extension-module = ["pyo3/extension-module"]
 
 [dependencies]
-uranium-data = { path = "../uranium-data", features = ["testkit"] }
-uranium-agent = { path = "../uranium-agent", features = ["testkit"] }
-uranium-runner = { path = "../uranium-runner" }
-uranium-league = { path = "../uranium-league", features = ["testkit"] }
-uranium-env = { path = "../uranium-env" }
+uranium-data = { workspace = true, features = ["testkit"] }
+uranium-agent = { workspace = true, features = ["testkit"] }
+uranium-runner.workspace = true
+uranium-league = { workspace = true, features = ["testkit"] }
+uranium-env.workspace = true
 uranium-proto.workspace = true
-uranium-store = { path = "../uranium-store" }
+uranium-store.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 pyo3 = "0.30"
