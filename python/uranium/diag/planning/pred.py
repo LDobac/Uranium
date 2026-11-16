@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from uranium.diag.plan_dump import load as load_dump
+from uranium.diag.planning.dump import load as load_dump
 
 VARIANTS = ("U", "A", "Ad", "H", "S")
 KINDS = ("human", "teacher", "model")

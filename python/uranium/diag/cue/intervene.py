@@ -7,8 +7,8 @@ from pathlib import Path
 import numpy as np
 
 from uranium import tables as tb
-from uranium.diag.dump import load
-from uranium.diag.probes import game_table
+from uranium.diag.cue.dump import load
+from uranium.diag.cue.probes import game_table
 
 
 def add_args(p) -> None:

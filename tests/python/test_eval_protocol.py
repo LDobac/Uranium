@@ -567,7 +567,7 @@ def test_ops_tables_on_every_menu_052_r8(tmp_path):
 
 
 def test_diag_settings_are_the_tools_050_r9():
-    from uranium.diag import dump, probes
+    from uranium.diag.cue import dump, probes
     from uranium.model import monitor
 
     assert {r: tuple(v) for r, v in TEACHER["dump"]["cf_starts"].items()} == dump.CF_STARTS

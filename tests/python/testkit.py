@@ -205,7 +205,7 @@ def rel(a, b):
 
 def fake_dump(path: Path, n_games=24, rows=60, seed=0, kind_shift=0.0, d=16, sha_prefix="a", race="Z", void_every=0, chain_every=0, f32_frames=False):
     from uranium import tables as tb
-    from uranium.diag.plan_dump import RowWriter, op_actions, own_columns
+    from uranium.diag.planning.dump import RowWriter, op_actions, own_columns
 
     rng = np.random.default_rng(seed)
     names, _, of_action = own_columns()

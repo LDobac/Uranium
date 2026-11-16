@@ -6,9 +6,9 @@ from pathlib import Path
 import numpy as np
 
 from uranium import tables as tb
-from uranium.diag.dump import load
+from uranium.diag.cue.dump import load
 from uranium.diag.probe import boot, folds_of, r2, ridge_cv, ridge_cv_multi
-from uranium.diag.probes import game_table, select_rows
+from uranium.diag.cue.probes import game_table, select_rows
 
 RETENTION_VARS = ("frame", "sc_worker", "sc_focus", "sc_enemy_total", "own_marine", "own_rax", "vis_enemy", "tok_enemy", "n_foc", "foc_rem")
 

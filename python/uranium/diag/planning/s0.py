@@ -8,9 +8,9 @@ import numpy as np
 import torch
 
 from uranium import tables as tb
-from uranium.diag import plan_pred as pp
-from uranium.diag import plan_stats as ps
-from uranium.diag.plan_dump import own_columns
+from uranium.diag.planning import pred as pp
+from uranium.diag.planning import stats as ps
+from uranium.diag.planning.dump import own_columns
 from uranium.provenance import redact
 
 M0_TOP = (4, 8, 16)

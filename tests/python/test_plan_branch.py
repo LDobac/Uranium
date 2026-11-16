@@ -7,10 +7,10 @@ import pytest
 from testkit import fake_dump
 
 from uranium import tables as tb
-from uranium.diag import plan_branch as pb
-from uranium.diag import plan_pred as pp
-from uranium.diag import plan_s0
-from uranium.diag.plan_dump import own_columns
+from uranium.diag.planning import branch as pb
+from uranium.diag.planning import pred as pp
+from uranium.diag.planning import s0 as plan_s0
+from uranium.diag.planning.dump import own_columns
 
 BUNKER = "Build_Bunker"
 ALTS = {

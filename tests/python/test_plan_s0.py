@@ -7,10 +7,10 @@ import torch
 
 from uranium import _core, ckpt
 from uranium import tables as tb
-from uranium.diag import plan_pred as pp
-from uranium.diag import plan_stats as ps
+from uranium.diag.planning import pred as pp
+from uranium.diag.planning import stats as ps
 from uranium.diag import probe
-from uranium.diag.plan_dump import load, load_rows, model_rows, op_actions, own_columns, own_state
+from uranium.diag.planning.dump import load, load_rows, model_rows, op_actions, own_columns, own_state
 from uranium.model import UraniumNet, UraniumNetConfig, action_columns, input_dims
 from uranium.model.config import VariantConfig
 
@@ -401,7 +401,7 @@ def test_predictor_training_is_deterministic_and_q_all_matches_forward(tmp_path,
 
 
 def test_m2b_direction_and_candidates(tmp_path):
-    from uranium.diag.plan_s0 import candidates
+    from uranium.diag.planning.s0 import candidates
 
     p = fake_dump(tmp_path / "a")
     data = pp.Data([pp.Source("a", "teacher", "eval", str(p))], ks=(8,))
@@ -487,7 +487,7 @@ def _report(*, a=(0.05, 0.02, 0.08), s=(0.01, -0.01, 0.03), h=(0.1, 0.05, 0.15),
 
 
 def test_verdict_rows():
-    from uranium.diag.plan_s0 import TH_DEFAULTS, verdict
+    from uranium.diag.planning.s0 import TH_DEFAULTS, verdict
 
     th = dict(TH_DEFAULTS)
     rows = lambda rep: [r["matched"] for r in verdict(rep, th, [8, 32])["win"]["rows"]]  # noqa: E731
@@ -506,7 +506,7 @@ def test_verdict_rows():
 
 
 def test_verdict_own_state_criterion():
-    from uranium.diag.plan_s0 import TH_DEFAULTS, verdict
+    from uranium.diag.planning.s0 import TH_DEFAULTS, verdict
 
     th = dict(TH_DEFAULTS, own_k=8)
     rows = lambda rep, t=th: [r["matched"] for r in verdict(rep, t, [8, 32])["win"]["rows"]]  # noqa: E731

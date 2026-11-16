@@ -529,13 +529,13 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
   - 공간 단계(stem·stride-2 conv·ResBlock 안팎·bottleneck·s8), 엔티티 FFN, 헤드 ResMlp, 코어 FFN마다 `pos`(0보다 큰 비율)·`dead`(한 번도 안 켜진 채널 수). `S8` 채널·`s_pool` 차원 중 묶음 안 sd가 문턱([AMB-041-14](../spec/README.md)) 아래인 수 `const`와 정밀도(bf16 autocast 반올림 잡음 1e-4 근처 가능).
   - 학습기 연동([041-R25](../spec/2026_10_15_22_24_041-imitation-learning.md)·[042-R21](../spec/2026_10_15_22_24_042-rl-training.md)): `python/uranium/model/monitor.py` `relu_stats(points="spatial")`·`packed`(열 순서 `SPEC_COLUMNS`). 계약(update 전 s0, 상태 저장 없음, no_grad·eval, RNG 미사용, [032-AC15](../spec/2026_10_15_22_24_032-model-architecture.md))은 그 파일 머리말.
 - 코어 분해: `python -m uranium diag core-split <dump> --checkpoint <ckpt>`: 미완성 기준 건물 행 지점별 HP R², GRU 게이트마다 (1−z)·x·z·h~ 분산 비율과 R², 변수별 x_in→h_t 잔존 비율.
-- 요약: `python -m uranium diag summary --point <경로 지점> [--probes <json>] [--intervene <json>] [--spatial <json>] [--core-split <json>] --out <json>`(스키마 `uranium.diag.summary/1`, `python/uranium/diag/summary.py`).
+- 요약: `python -m uranium diag summary --point <경로 지점> [--probes <json>] [--intervene <json>] [--spatial <json>] [--core-split <json>] --out <json>`(스키마 `uranium.diag.summary/1`, `python/uranium/diag/cue/summary.py`).
 - 경로 측정([050-R9](../spec/2026_10_15_22_24_050-evaluation.md))의 `cue_diag`(교사 보관분 + 사람 TvT·TvP)·`dead_channels`(학습 로그 `sp_*`, `tools/eval/spatial_logs.py`)는 `python tools/eval/protocol.py diag ... [--run]`이 고정 설정으로 만듦. 확인 `check-diag`, 표 `tools/eval/diag_table.py`([measurement_protocol](measurement_protocol.md) 4). `diag spatial`은 프로토콜 밖([AMB-050-5](../spec/README.md)).
 - 설정: 기본 = 10.1 저그 진단(활성값 4:00까지, 판당 상한 없음). 테란·프로토스 사람 리플레이(10.2.3)는 `dump --act-until 8640 --act-every 4`, `probes --cap 60 --boot 300`.
 - 재현 기준값(Checkpoint 1, 교사 보관분 433판, Linux ROCm f32): 미완성 풀 HP R² 토큰 0.991·e_pool 0.868·h_t 0.227, s8 양수 0%·128/128, `const` S8 128/128·`s_pool` 256/256.
 
 ## 11. 계획 JEPA S0
-측정 도구([jepa_planning](../report/plan/2026_11_11_14_56_jepa_planning.md) 6절). 모델·spec·계획 모듈은 바꾸지 않음. 덤프(GPU 1회) → 예측기 학습·표(CPU). 코드: `python/uranium/diag/plan_dump.py`(덤프), `plan_pred.py`(데이터·예측기), `plan_stats.py`(판 bootstrap·AUC·R²·Spearman), `plan_s0.py`(학습·표·판정).
+측정 도구([jepa_planning](../report/plan/2026_11_11_14_56_jepa_planning.md) 6절). 모델·spec·계획 모듈은 바꾸지 않음. 덤프(GPU 1회) → 예측기 학습·표(CPU). 코드: `python/uranium/diag/planning/dump.py`(덤프), `pred.py`(데이터·예측기), `stats.py`(판 bootstrap·AUC·R²·Spearman), `s0.py`(학습·표·판정).
 
 ### plan-dump
 `python -m uranium diag plan-dump --checkpoint <ckpt> (--dataset <rel> | --shards <dir>)... --out <dir> [--splits val,test] [--games N] [--seed 1] [--backend cuda|rocm|cpu] [--lanes-per-group 8] [--row-until 14400] [--read-until F] [--gk 8,32] [--classes <json>] [--skip-views <json>]`
@@ -547,7 +547,7 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
 
 ### plan-s0
 `python -m uranium diag plan-s0 --src <이름>:<human|teacher|model>:<train|eval|split>=<덤프> ... --out <dir> [--stage all|train|report] [--ks 8,32] [--steps 3000] [--batch 512] [--lr 1e-3] [--seed 0] [--threads N] [--eval-frac 0.2] [--split-seed 1] [--boot 1000] [--drop <src>=<json>] [--keep-bot-perspective] [--maps 0,1] [--m3b-races Z] [--m3b-window 2880,5040] [--m3b-macro macro] [--tag <이름>] [--th-s-ratio 2 --th-r-min 0.2 --th-r-noise 0.1 --th-m2b 0.9 --th-m2a 0.5 --th-m3a 0.01 --th-own-k 8] [--v1 | --chains drop|keep --chain-kinds teacher,model --own-input on|off --own-target delta|level --s-partner other-game|same-game --k-unit dec|frame]`
-- 설계(`plan_pred.Design`, jepa_planning 6.8): 기본 = 체인 행 빼기(교사·모델 판), 모든 예측기에 o_t 입력, ô 정답 = o_{t+k} − o_t, S 대조 상대 = 같은 출처 다른 판, k 단위 = 결정. `--v1` = 첫 실행 설계·판정표(다른 설계 플래그·`--th-own-k`와 함께면 거부). 설계는 모델 파일 지문에 들어가 다른 설계로 `--stage report`면 거부.
+- 설계(`planning/pred.py`의 `Design`, jepa_planning 6.8): 기본 = 체인 행 빼기(교사·모델 판), 모든 예측기에 o_t 입력, ô 정답 = o_{t+k} − o_t, S 대조 상대 = 같은 출처 다른 판, k 단위 = 결정. `--v1` = 첫 실행 설계·판정표(다른 설계 플래그·`--th-own-k`와 함께면 거부). 설계는 모델 파일 지문에 들어가 다른 설계로 `--stage report`면 거부.
 - 체인 행: 같은 판 앞 결정(dec − 1)이 1프레임 이내 명령(NoOp 아닌 레이블, 무효 포함)인 행. 교사·모델 판에서만 기본 제외(사람은 제외 안 함). 제외 행도 t+k 정답·H 오라클 행동으로는 남음. 수는 `[data] chained rows` 줄.
 - `--k-unit frame`: k = 프레임, t+k = k프레임 이상 뒤 첫 행, H 오라클 = 그 사이 결정 행동 비율, g_k 기준선 없음. 결정 k의 프레임 간격은 출처마다 다름(사람 k = 8 약 82프레임, 교사·모델 약 143프레임).
 - 역할: `train` 모든 판 학습, `eval` 모든 판 평가, `split` 고정 seed 판 단위 분할(평가 20%, 한 리플레이 두 관점은 같은 쪽). 분할은 (`--split-seed`, `--src` 이름 crc32) → 이름을 바꾸면 분할도 바뀜. 모델 파일에 판·역할 지문 → 다른 분할(`--eval-frac`·`--split-seed`·`--drop`·`--maps`)로 `--stage report`면 거부.

@@ -1,15 +1,15 @@
 import importlib
 
 COMMANDS = {
-    "dump": ("dump", "teacher-forced pass: per-row features, labels and stage activations (--cf: counterfactual passes)"),
-    "probes": ("probes", "cue probes per enemy race on a dump (ridge + MLP, game CV, bootstrap, nuisance gain)"),
-    "intervene": ("intervene", "counterfactual effects on P(bunker) / marines / 2nd barracks from a dump with --cf"),
-    "spatial": ("spatial", "dead-channel statistics (pos / dead / const) of the ReLU-bearing layers"),
-    "core-split": ("core_split", "probes at the GTrXL sub-points and the gate decomposition, on a dump"),
-    "summary": ("summary", "the per-lineage-point summary JSON from the other commands' outputs"),
-    "plan-dump": ("plan_dump", "JEPA planning S0 rows: h', JEPA target, privileged, own state, action, log-probs, g_k, win_open"),
-    "plan-s0": ("plan_s0", "JEPA planning S0 predictors U / A / A+d / H / S and the M0-M3d tables on plan-dump folders"),
-    "plan-branch": ("plan_branch", "branch games: paired effects (trunk bootstrap, split-half), M3u and M2c vs the S0b predictor A"),
+    "dump": ("cue.dump", "teacher-forced pass: per-row features, labels and stage activations (--cf: counterfactual passes)"),
+    "probes": ("cue.probes", "cue probes per enemy race on a dump (ridge + MLP, game CV, bootstrap, nuisance gain)"),
+    "intervene": ("cue.intervene", "counterfactual effects on P(bunker) / marines / 2nd barracks from a dump with --cf"),
+    "spatial": ("cue.spatial", "dead-channel statistics (pos / dead / const) of the ReLU-bearing layers"),
+    "core-split": ("cue.core_split", "probes at the GTrXL sub-points and the gate decomposition, on a dump"),
+    "summary": ("cue.summary", "the per-lineage-point summary JSON from the other commands' outputs"),
+    "plan-dump": ("planning.dump", "JEPA planning S0 rows: h', JEPA target, privileged, own state, action, log-probs, g_k, win_open"),
+    "plan-s0": ("planning.s0", "JEPA planning S0 predictors U / A / A+d / H / S and the M0-M3d tables on plan-dump folders"),
+    "plan-branch": ("planning.branch", "branch games: paired effects (trunk bootstrap, split-half), M3u and M2c vs the S0b predictor A"),
 }
 
 

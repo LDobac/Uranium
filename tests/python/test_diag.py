@@ -9,8 +9,8 @@ import torch
 from uranium import _core, ckpt
 from uranium import tables as tb
 from uranium.diag import cli, probe
-from uranium.diag.dump import edit_count, edit_start, pad_one
-from uranium.diag.summary import SCHEMA, build, validate
+from uranium.diag.cue.dump import edit_count, edit_start, pad_one
+from uranium.diag.cue.summary import SCHEMA, build, validate
 from uranium.model import UraniumNet, UraniumNetConfig, action_columns, input_dims
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "burn_parity"
@@ -243,7 +243,7 @@ def test_diag_chain_on_synthetic_shards(tiny_config, shards, tmp_path, kind, mon
                  "--act-until", "1e9", "--row-until", "1e9", *common]) == 0
     man = json.loads((out / "manifest.json").read_text())
     assert man["games"] == 15 and man["stats"]["rows"] > 0 and man["passes"][0] == "real" and len(man["passes"]) == 7
-    from uranium.diag.dump import load
+    from uranium.diag.cue.dump import load
 
     R, A, games, _ = load(out)
     assert len(R["frame"]) == man["stats"]["rows"] and R["pb"].shape[1:] == (7, 3)
@@ -299,7 +299,7 @@ def test_diag_chain_on_synthetic_shards(tiny_config, shards, tmp_path, kind, mon
 
 @pytest.mark.parametrize("kind", ["Gtrxl", "Lstm"])
 def test_action_seq_is_forward_seq_action_head_050_r9(tiny_config, shards, tmp_path, kind):
-    from uranium.diag.capture import Capture
+    from uranium.diag.cue.capture import Capture
     from uranium.model import to_obs
 
     net, _ = ckpt.load_model(tiny_checkpoint(tmp_path / "ck", kind), torch.device("cpu"))
@@ -353,7 +353,7 @@ def test_action_seq_with_outer_and_bypass_050_r9(variant):
 
 def test_dump_read_until_keeps_the_rows_050_r9(tiny_config, shards, tmp_path, monkeypatch):
     from uranium.__main__ import main
-    from uranium.diag.dump import load
+    from uranium.diag.cue.dump import load
 
     monkeypatch.setattr(_core, "EvalStream", _PoolStream)
     ck = tiny_checkpoint(tmp_path / "ck")

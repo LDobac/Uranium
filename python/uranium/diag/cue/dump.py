@@ -161,7 +161,7 @@ def run(a) -> int:
 
     from uranium import _core, ckpt
     from uranium.device import autocast
-    from uranium.diag.capture import Capture
+    from uranium.diag.cue.capture import Capture
     from uranium.model import to_obs
     from uranium.passes import ForcedPass, fixed_device
 
