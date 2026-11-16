@@ -1563,7 +1563,6 @@ dependencies = [
  "uranium-proto",
  "uranium-scripted",
  "uranium-store",
- "zstd",
 ]
 
 [[package]]
