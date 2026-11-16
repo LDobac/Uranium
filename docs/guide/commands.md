@@ -13,6 +13,9 @@
 - 학습 호스트 필수: `URANIUM_SHARED_DIR`, `URANIUM_MAPS_DIR`, `URANIUM_CACHE_DIR`, `URANIUM_PYTHON`(venv python, 작업자·감시가 학습 자식을 띄울 때 씀). Linux ROCm 호스트는 `MIOPEN_USER_DB_PATH`(고정 로컬 폴더)도.
 - 작업 로그·생성 파일·일회용 스크립트: `<repo>/local/work/<작업>/`. 호스트별 스크립트: `<repo>/local/scripts/`. 게임 데이터: `<repo>/local/sc_data/`(`openbw/`, `maps/`).
 
+### Git LFS
+- `releases/**/model.safetensors`는 Git LFS. 장비마다 한 번 `git lfs install`, 받은 뒤 포인터만 있으면 `git lfs pull`. 가중치를 안 쓰는 장비는 포인터로 둬도 됨.
+
 ### Python·PyTorch ([AMB-000-4](../spec/README.md), [001-R8](../spec/2026_10_15_22_24_001-system-architecture.md))
 - 학습·추론은 Python 3.14 + PyTorch 2.14(`python/uranium`). `uranium` 패키지 = Python + Rust 확장 `uranium._core`(crate `uranium-py`, maturin). Rust를 고치면 같은 설치 명령으로 다시 설치.
 - 호스트마다 venv → torch(Linux ROCm은 그 GPU용 빌드) → 저장소 루트에서 `-e .` 설치. 명령은 아래 블록.
