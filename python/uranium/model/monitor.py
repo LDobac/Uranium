@@ -224,7 +224,7 @@ class ReluMonitor:
                 for s in range(0, spatial.shape[0], step):
                     sub = {k: obs[k][s:s + step] for k in ("entity_mask", "entity_cell")}
                     x = torch.cat([spatial[s:s + step], m.scatter_mean(sub, e[s:s + step], h, w).to(spatial.dtype)], 1)
-                    self._add("spatial.stem", F.relu(m.stem(conv_layout(x))), None if rows is None else rows[s:s + step], channel_dim=1)
+                    self._add("spatial.stem", F.relu(m.stem(conv_layout(x, m.channels_last))), None if rows is None else rows[s:s + step], channel_dim=1)
 
         def spatial_out(m, args, kwargs, out):
             self._moments("spatial.s8.const", out["s8"], self._sp_rows, 1)

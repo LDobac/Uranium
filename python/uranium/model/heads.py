@@ -79,15 +79,16 @@ class LocationHead(nn.Module):
         self.out = nn.Conv2d(32, 1, 1)
         self.ar_channels = h.loc_ar_channels
         self.out_mode = env_choice("URANIUM_LOC_OUT", LOC_OUT_MODES, "conv")
+        self.channels_last: bool | None = None
 
     def forward(self, ar, sp: dict):
         b, _, s, _ = sp["s8"].shape
-        x = conv_layout(torch.cat([F.relu(self.ar(ar)).view(b, self.ar_channels, s, s), sp["s8"]], 1))
+        x = conv_layout(torch.cat([F.relu(self.ar(ar)).view(b, self.ar_channels, s, s), sp["s8"]], 1), self.channels_last)
         skips = [sp["skips"][2], sp["skips"][1], sp["skips"][0]]
         for i, up in enumerate(self.ups):
             x = F.relu(up(x))
             if i < 3:
-                x = conv_layout(torch.cat([x, skips[i]], 1))
+                x = conv_layout(torch.cat([x, skips[i]], 1), self.channels_last)
         m = x.shape[2]
         if self.out_mode == "mulsum" and self.out.kernel_size == (1, 1) and self.out.out_channels == 1 and self.out.groups == 1:
             w = self.out.weight.view(1, -1, 1, 1).to(x.dtype)

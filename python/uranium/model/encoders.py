@@ -143,17 +143,19 @@ class SpatialEncoder(nn.Module):
         self.downs = nn.ModuleList(downs)
         self.bottleneck = nn.ModuleList(ResBlock(c_in, preact) for _ in range(2))
         self.pool = Linear(c_in * side * side, c.pool)
+        self.channels_last: bool | None = None
+        self.stem_pad: bool | None = None
 
     def forward(self, obs: dict, e, film=None):
         spatial = obs["spatial"]
         h, w = spatial.shape[2], spatial.shape[3]
         parts = [spatial, self.scatter_mean(obs, e, h, w).to(spatial.dtype)]
-        pad = stem_pad(self.stem, spatial)
+        pad = stem_pad(self.stem, spatial, self.stem_pad)
         if pad:
             parts.append(spatial.new_zeros(spatial.shape[0], pad, h, w))
-            x = F.conv2d(conv_layout(torch.cat(parts, 1)), F.pad(self.stem.weight, (0, 0, 0, 0, 0, pad)), self.stem.bias, self.stem.stride, self.stem.padding)
+            x = F.conv2d(conv_layout(torch.cat(parts, 1), self.channels_last), F.pad(self.stem.weight, (0, 0, 0, 0, 0, pad)), self.stem.bias, self.stem.stride, self.stem.padding)
         else:
-            x = conv_wgrad(self.stem, conv_layout(torch.cat(parts, 1)))
+            x = conv_wgrad(self.stem, conv_layout(torch.cat(parts, 1), self.channels_last))
         x = F.relu(x)
         if film is not None:
             g, b = film

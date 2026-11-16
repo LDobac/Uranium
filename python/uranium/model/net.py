@@ -133,6 +133,11 @@ class UraniumNet(nn.Module):
         if env_choice("URANIUM_CHANNELS_LAST", CHANNELS_LAST_MODES, "off") == "on":
             self.to(memory_format=torch.channels_last)
 
+    def conv_layout(self, channels_last: bool, stem_pad: bool) -> "UraniumNet":
+        self.spatial.channels_last = self.heads.location.channels_last = channels_last
+        self.spatial.stem_pad = stem_pad
+        return self.to(memory_format=torch.channels_last if channels_last else torch.contiguous_format)
+
     @property
     def outer(self):
         return None if self.variant is None else self.variant.outer

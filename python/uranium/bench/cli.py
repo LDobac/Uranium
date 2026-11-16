@@ -156,7 +156,7 @@ def rl_main(a) -> int:
     from uranium import _core, ckpt
     from uranium.bench.report import environment
     from uranium.bench.rl import OFF, SyntheticSegments, markdown, run_learner
-    from uranium.device import configure, resolve
+    from uranium.device import configure, impl_settings, resolve
     from uranium.rl.learner import MICRO_LANES_ENV
 
     backend, device, precision = resolve(a.backend)
@@ -164,7 +164,7 @@ def rl_main(a) -> int:
     bad = [x for x in off if x not in OFF]
     if bad:
         raise SystemExit(f"--off {bad}: expected some of {list(OFF)}")
-    configure(backend)
+    configure(backend, rl=True)
     log = lambda m: print(m, file=sys.stderr, flush=True)  # noqa: E731
     if os.environ.get(MICRO_LANES_ENV, "").strip():
         log(f"[bench rl] {MICRO_LANES_ENV} is not used here: --groups sets the lane group sizes")
@@ -177,7 +177,7 @@ def rl_main(a) -> int:
         net, _ = ckpt.load_model(Path(a.checkpoint), device, adjust=ckpt.no_dropout)
         batch = SyntheticSegments(net, cfg["lanes"], cfg["seq_len"], (lo, hi), a.templates, a.seed)
         net = net.cpu()
-    env = environment(backend, precision, device) | {"checkpoint": Path(a.checkpoint).name, "lanes": cfg["lanes"], "seq_len": cfg["seq_len"], "entities": a.entities}
+    env = environment(backend, precision, device) | {"checkpoint": Path(a.checkpoint).name, "lanes": cfg["lanes"], "seq_len": cfg["seq_len"], "entities": a.entities, "switches": " ".join(impl_settings())}
     cmd = "python -m uranium bench " + " ".join(sys.argv[2:])
     runs: list = []
     md = ""

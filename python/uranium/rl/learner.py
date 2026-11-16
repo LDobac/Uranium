@@ -1,3 +1,4 @@
+import contextlib
 import copy
 import json
 import math
@@ -9,11 +10,14 @@ from concurrent.futures import ThreadPoolExecutor
 
 import torch
 
+from uranium import kernels
 from uranium.clip import clip_global_norm
-from uranium.device import adam_impl, autocast
+from uranium.device import DEVICE_LOCK, RL_CHANNELS_LAST, RL_COMPILE, adam_impl, autocast, compile_graphs, compiled, mark_dynamic
+from uranium.env import env_choice
 from uranium.model import to_obs
 from uranium.model.auxiliary import aux_loss, jepa_std
 from uranium.model.config import AUX_JEPA_SLOTS, check_aux
+from uranium.model.layers import CHANNELS_LAST_MODES
 from uranium.model.monitor import SPEC_COLUMNS, ReluMonitor, channel_counts_of, packed, relu_stats, spatial_alarm, spatial_due, spatial_every
 from uranium.model.net import LABEL_KEYS, OBS_KEYS, phase_split, stage, to_device, trim_entity_pad
 from uranium.model.state import leaves, rebuild
@@ -27,6 +31,7 @@ AUX_PARTS = 2 + AUX_JEPA_SLOTS
 PARTS = BASE_PARTS + AUX_PARTS
 SIL_PARTS = 3
 REF_RACES = ("zerg", "terran", "protoss", "random")
+CAPTURE_VISITS = 2
 
 
 def host_micro_lanes(cfg: dict) -> int:
@@ -218,6 +223,18 @@ class Learner:
         if race_ref is not None and (len(race_ref) != len(REF_RACES) or any(not 0 <= int(i) < len(self.refs) for i in race_ref)):
             raise ValueError(f"044-R9: race_ref {race_ref} needs one index into the {len(self.refs)} references per race {REF_RACES}")
         self.race_ref = None if race_ref is None else [int(i) for i in race_ref]
+        if env_choice(RL_CHANNELS_LAST, CHANNELS_LAST_MODES, "off") == "on":
+            for m in (self.net, *self.refs):
+                m.conv_layout(True, True)
+        fns = [self.net.forward_seq, *(r.forward_seq for r in self.refs)]
+        self.forward_seq, *self.ref_forward = [compiled(f, RL_COMPILE) for f in fns]
+        self.compiling = self.forward_seq is not fns[0]
+        self.graphs = self.compiling and compile_graphs(RL_COMPILE)
+        self._visits: dict = defaultdict(int)
+        if self.compiling:
+            kernels.warm(device)
+        if self.graphs and self.net.outer is not None:
+            print(f"[rl] WARNING: {RL_COMPILE} records one CUDA graph per lane count, entity width, location rows and outer phase lengths; RL segments start at any decision, so new shapes keep coming (032 2.7)", file=sys.stderr, flush=True)
         self.update_count = update
         self.kl_scale = kl_head_scale(cfg)
         self.micro_lanes = host_micro_lanes(cfg) if micro_lanes is None else micro_lanes
@@ -455,18 +472,49 @@ class Learner:
         self.update_count += 1
         return stats
 
-    def group_loss(self, g: dict, n: int, weights, coef_kl: float, ppo_targets: list, gi: int, aux: dict | None = None, moments: torch.Tensor | None = None,
-                   mon: ReluMonitor | None = None, ref: int = 0) -> tuple[torch.Tensor, dict, torch.Tensor]:
-        cfg, dev, net, pin = self.cfg, self.device, self.net, self.pinned
-        t = g["t"]
+    def inputs(self, g: dict) -> tuple:
+        dev, net, pin = self.device, self.net, self.pinned
         obs, labels = to_obs(g, dev, pinned=pin), net.labels(g, dev, pinned=pin)
         priv = to_device(g["privileged"], dev, pin).float()
         mask = to_device(g["mask"], dev, pin).float()
         s0 = state0_of(net, g, dev, pin)
         phases = [to_device(i, dev, pin) for i in g["phases"]] if "phases" in g else None
+        if self.compiling:
+            full = g["b"] * net.outer.segment if phases else 0
+            mark_dynamic(obs, labels, tuple(i for i in phases or () if i.numel() != full))
+        return obs, labels, priv, mask, s0, phases
+
+    def capture(self, inp: tuple, *path):
+        if not self.graphs:
+            return contextlib.nullcontext()
+        obs, labels, _, _, _, phases = inp
+        rows = labels["loc_rows"].shape[0] if "loc_rows" in labels else 0
+        key = (*path, *obs["entity_mask"].shape, rows, *(i.numel() for i in phases or ()))
+        self._visits[key] += 1
+        torch.compiler.cudagraph_mark_step_begin()
+        return DEVICE_LOCK.exclusive() if self._visits[key] <= CAPTURE_VISITS else contextlib.nullcontext()
+
+    def backward(self, loss: torch.Tensor) -> None:
+        fresh = [p for p in self.net.parameters() if p.grad is None] if self.graphs else ()
+        loss.backward()
+        for p in fresh:
+            if p.grad is not None:
+                p.grad = p.grad.clone()
+
+    def group_loss(self, g: dict, n: int, weights, coef_kl: float, ppo_targets: list, gi: int, aux: dict | None = None, moments: torch.Tensor | None = None,
+                   mon: ReluMonitor | None = None, ref: int = 0) -> tuple[torch.Tensor, dict, torch.Tensor]:
+        inp = self.inputs(g)
         self.tick("h2d")
+        with self.capture(inp, ref, aux is not None):
+            return self.group_terms(g, inp, n, weights, coef_kl, ppo_targets, gi, aux, moments, mon, ref)
+
+    def group_terms(self, g: dict, inp: tuple, n: int, weights, coef_kl: float, ppo_targets: list, gi: int, aux: dict | None, moments: torch.Tensor | None,
+                    mon: ReluMonitor | None, ref: int) -> tuple[torch.Tensor, dict, torch.Tensor]:
+        cfg, dev, net, pin = self.cfg, self.device, self.net, self.pinned
+        t = g["t"]
+        obs, labels, priv, mask, s0, phases = inp
         with autocast(dev, self.precision):
-            out = net.forward_seq(obs, labels, priv, s0, t, phased=True, phases=phases, **({"aux": True} if aux else {}))
+            out = self.forward_seq(obs, labels, priv, s0, t, phased=True, phases=phases, **({"aux": True} if aux else {}))
         logp = sum(out["logp"][k].float() for k in HEADS)
         values = out["value"].float()
         tg = ppo_targets[gi]
@@ -476,7 +524,7 @@ class Learner:
         ent_terms = [(out["entropy"][h].float() * mask).sum() / n for h in HEADS]
         entropy = sum(e[h] * term for h, term in zip(HEADS, ent_terms))
         with torch.no_grad(), autocast(dev, self.precision):
-            bc = self.refs[ref].forward_seq(obs, labels, priv, s0, t, phased=True, phases=phases)
+            bc = self.ref_forward[ref](obs, labels, priv, s0, t, phased=True, phases=phases)
         self.tick("bc_forward")
         kl = kl_per_head({k: (v.float() if v.is_floating_point() else v) for k, v in out["dists"].items()}, {k: (v.float() if v.is_floating_point() else v) for k, v in bc["dists"].items()})
         kl_terms = [(kl[h] * mask).sum() / n for h in HEADS]
@@ -514,7 +562,7 @@ class Learner:
         if aux is not None:
             loss, aux_part = self.aux_loss(out, g, priv, mask, real, lane_rows, t, aux, moments, loss)
         self.tick("loss")
-        loss.backward()
+        self.backward(loss)
         self.tick("backward")
         if mon is not None:
             with mon:
@@ -533,15 +581,16 @@ class Learner:
         return loss, torch.stack(parts)
 
     def sil_group_loss(self, g: dict, n_sil: int, sil: dict) -> torch.Tensor:
-        dev, net, pin = self.device, self.net, self.pinned
+        inp = self.inputs(g)
+        with self.capture(inp, "sil"):
+            return self.sil_terms(g, inp, n_sil, sil)
+
+    def sil_terms(self, g: dict, inp: tuple, n_sil: int, sil: dict) -> torch.Tensor:
+        dev = self.device
         t = g["t"]
-        obs, labels = to_obs(g, dev, pinned=pin), net.labels(g, dev, pinned=pin)
-        priv = to_device(g["privileged"], dev, pin).float()
-        mask = to_device(g["mask"], dev, pin).float()
-        s0 = state0_of(net, g, dev, pin)
-        phases = [to_device(i, dev, pin) for i in g["phases"]] if "phases" in g else None
+        obs, labels, priv, mask, s0, phases = inp
         with autocast(dev, self.precision):
-            out = net.forward_seq(obs, labels, priv, s0, t, phased=True, phases=phases)
+            out = self.forward_seq(obs, labels, priv, s0, t, phased=True, phases=phases)
         logp = sum(out["logp"][k].float() for k in HEADS)
         v_win = out["value"].float()[:, 0]
         ret = torch.as_tensor(g["sil_return"], dtype=torch.float32).reshape(-1).repeat_interleave(t).to(dev)
@@ -550,7 +599,7 @@ class Learner:
         pg = (-(logp * a) * mask).sum() / n_sil
         vl = (0.5 * adv * adv * mask).sum() / n_sil
         loss = sil["w_pg"] * pg + sil["w_v"] * vl
-        loss.backward()
+        self.backward(loss)
         self.tick("sil")
         return torch.stack([loss.detach(), ((a > 0).float() * mask).sum(), mask.sum()]).double()
 

@@ -41,13 +41,20 @@ TRAIN_DEFAULTS = {
     "cuda": {"URANIUM_H2D": "pinned", "URANIUM_CHANNELS_LAST": "on", "URANIUM_SPATIAL_BF16": "on", "URANIUM_STEM_PAD": "on", "URANIUM_COMPILE": "reduce-overhead"},
     "cpu": {},
 }
+RL_DEFAULTS = {
+    "rocm": {},
+    "cuda": {},
+    "cpu": {},
+}
+RL_COMPILE = "URANIUM_RL_COMPILE"
+RL_CHANNELS_LAST = "URANIUM_RL_CHANNELS_LAST"
 
 
 IMPL_SWITCHES = (
     "URANIUM_LOC_ROWS", "URANIUM_LOC_OUT", "URANIUM_H2D", "URANIUM_BIAS_GRAD", "URANIUM_CONV_WGRAD", "URANIUM_LINEAR_WGRAD",
     "URANIUM_ENTITY_ATTN", "URANIUM_ADAM", "URANIUM_COMPILE", "URANIUM_COMPILE_DYNAMIC", "URANIUM_COMPILE_RNG", "URANIUM_INFER_GRAPH",
     "URANIUM_INFER_COMPILE", "URANIUM_INFER_STREAM", "URANIUM_INFER_GRAPH_MAX_BATCH", "URANIUM_CHANNELS_LAST", "URANIUM_SPATIAL_BF16", "URANIUM_STEM_PAD",
-    "URANIUM_BC_PAD_ENTITIES",
+    "URANIUM_BC_PAD_ENTITIES", RL_COMPILE, RL_CHANNELS_LAST,
 )
 
 
@@ -55,9 +62,9 @@ def impl_settings() -> list[str]:
     return [f"{k}={os.environ[k]}" for k in IMPL_SWITCHES if os.environ.get(k)]
 
 
-def configure(backend: str, train: bool = False) -> None:
+def configure(backend: str, train: bool = False, rl: bool = False) -> None:
     torch.backends.cudnn.benchmark = backend == "cuda"
-    for k, v in (IMPL_DEFAULTS[backend] | (TRAIN_DEFAULTS[backend] if train else {})).items():
+    for k, v in (IMPL_DEFAULTS[backend] | (TRAIN_DEFAULTS[backend] if train else {}) | (RL_DEFAULTS[backend] if rl else {})).items():
         os.environ.setdefault(k, v)
 
 
@@ -94,7 +101,9 @@ def adam_impl() -> dict:
     return {} if mode == "default" else {"fused": True} if mode == "fused" else {"foreach": mode == "foreach"}
 
 
-def mark_dynamic(obs: dict, labels: dict) -> None:
+def mark_dynamic(obs: dict, labels: dict, lengths: tuple = ()) -> None:
+    for x in lengths:
+        torch._dynamo.maybe_mark_dynamic(x, 0)
     n = obs["entity_mask"].shape[1]
     for v in obs.values():
         if isinstance(v, torch.Tensor) and v.dim() >= 2 and v.shape[1] == n:

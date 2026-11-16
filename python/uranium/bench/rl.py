@@ -162,13 +162,15 @@ def run_learner(kind: str, group: int, net, cfg: dict, batch, device: torch.devi
         l.trim_pad = trim
     reset_peak(device)
     res: list[dict] = []
+    frames = compiled_frames if kind == "new" and l.compiling else None
+    base = frames() if frames else 0
     for step in range(updates + 1):
         sync(device)
         u = time.perf_counter()
         s = l.update(batch, WEIGHTS)
         sync(device)
         wall = time.perf_counter() - u
-        res.append({"update": step, "wall_s": round(wall, 4), "stats": {k: s[k] for k in STAT_KEYS if k in s}} | ({"phases": s["phases"]} if "phases" in s else {}))
+        res.append({"update": step, "wall_s": round(wall, 4), "stats": {k: s[k] for k in STAT_KEYS if k in s}} | ({"phases": s["phases"]} if "phases" in s else {}) | ({"frames": frames() - base} if frames else {}))
         log(f"[bench rl] {kind} group {group} update {step}: {wall:.2f}s loss {s['loss']:.6f} kl {s['kl']:.3e}")
     walls = [x["wall_s"] for x in res[1:]]
     out = {
@@ -177,6 +179,9 @@ def run_learner(kind: str, group: int, net, cfg: dict, batch, device: torch.devi
         "p95_s": sorted(walls)[min(len(walls) - 1, math.ceil(0.95 * len(walls)) - 1)] if walls else None,
         "peak_gib": peak_gib(device), "peak_rss_gib": peak_rss_gib(),
     }
+    if frames:
+        out["compile"] = {"first_s": res[0]["wall_s"], "frames_first": res[0]["frames"], "frames_later": res[-1]["frames"] - res[0]["frames"],
+                          "later_at": [x["update"] for a, x in zip(res, res[1:]) if x["frames"] > a["frames"]], "graphs": l.graphs}
     if walls and phases:
         names = sorted({k for x in res[1:] for k in x.get("phases", {})})
         out["phase_median_s"] = {k: round(statistics.median(x["phases"].get(k, 0.0) for x in res[1:]), 4) for k in names}
@@ -187,6 +192,12 @@ def run_learner(kind: str, group: int, net, cfg: dict, batch, device: torch.devi
     if device.type == "cuda":
         torch.cuda.empty_cache()
     return out
+
+
+def compiled_frames() -> int:
+    import torch._dynamo.utils as du
+
+    return du.counters["frames"]["ok"]
 
 
 def compare(base: dict, cand: dict) -> dict:
@@ -221,6 +232,10 @@ def markdown(runs: list[dict], env: dict, command: str) -> str:
         last = r["updates"][-1]["stats"]["loss"] if r["updates"] else None
         name = r["learner"] + (f" (off: {', '.join(r['off'])})" if r.get("off") else "") + (" (trim)" if r.get("trim") else "") + (f" ({r['references']} KL references)" if r.get("references", 1) > 1 else "")
         out.append(f"| {name} | {r['group']} | {max(len(r['updates']) - 1, 0)} | {fmt(r['median_s'], '.2f')} ({fmt(r['p95_s'], '.2f')}) | {fmt(r['mean_s'], '.2f')} | {fmt(r['peak_gib'], '.2f')} | {fmt(r['peak_rss_gib'], '.2f')} | {fmt(last, '.6f')} |")
+    for r in runs:
+        c = r.get("compile")
+        if c:
+            out += ["", f"torch.compile, {r['learner']} lane group {r['group']}: first update {c['first_s']:.1f} s with {c['frames_first']} compiled frames, {c['frames_later']} more in later updates {c['later_at']}" + (", CUDA graphs" if c["graphs"] else "") + "."]
     phased = [r for r in runs if r.get("phase_median_s")]
     if phased:
         names = sorted({k for r in phased for k in r["phase_median_s"]})

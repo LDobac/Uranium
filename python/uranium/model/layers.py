@@ -83,14 +83,18 @@ CHANNELS_LAST_MODES = ("off", "on")
 STEM_PAD_MODES = ("off", "on")
 
 
-def stem_pad(conv: nn.Conv2d, x) -> int:
-    if env_choice("URANIUM_STEM_PAD", STEM_PAD_MODES, "off") != "on" or bmm_wgrad_active(conv, x):
+def stem_pad(conv: nn.Conv2d, x, on: bool | None = None) -> int:
+    if on is None:
+        on = env_choice("URANIUM_STEM_PAD", STEM_PAD_MODES, "off") == "on"
+    if not on or bmm_wgrad_active(conv, x):
         return 0
     return -conv.in_channels % 8
 
 
-def conv_layout(x: torch.Tensor) -> torch.Tensor:
-    if env_choice("URANIUM_CHANNELS_LAST", CHANNELS_LAST_MODES, "off") == "on":
+def conv_layout(x: torch.Tensor, on: bool | None = None) -> torch.Tensor:
+    if on is None:
+        on = env_choice("URANIUM_CHANNELS_LAST", CHANNELS_LAST_MODES, "off") == "on"
+    if on:
         return x.contiguous(memory_format=torch.channels_last)
     return x
 

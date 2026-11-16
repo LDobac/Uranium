@@ -442,3 +442,31 @@ def test_init_without_main_agent_is_an_error_042(monkeypatch, tmp_path):
     bc = save_ckpt(tmp_path / "bc", tiny_net(5), {})
     with pytest.raises(FileNotFoundError, match="agents/main"):
         make_learners(monkeypatch, tmp_path, bc, bc, None)
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_learner_channels_last_stays_out_of_the_served_model_032_r19(monkeypatch, tmp_path):
+    from uranium import ckpt
+    from uranium.device import RL_CHANNELS_LAST
+    from uranium.rl.run import AGENTS
+
+    bc = save_ckpt(tmp_path / "bc" / "ckpt-11", tiny_net(5), {"step": 11})
+    monkeypatch.setenv(RL_CHANNELS_LAST, "on")
+    ls = make_learners(monkeypatch, tmp_path / "a", bc, None, None)
+    l, served = ls.learners[0], ls.servers[0].net
+    plain = lambda net: {p.is_contiguous() for p in net.parameters() if p.dim() == 4 and p.shape[-1] > 1}  # noqa: E731
+    flags = lambda net: (net.spatial.channels_last, net.spatial.stem_pad, net.heads.location.channels_last)  # noqa: E731
+    assert plain(l.net) == {False} and plain(l.bc) == {False} and flags(l.net) == (True, True, True)
+    assert plain(served) == {True} and flags(served) == (None, None, None)
+    ls.update(0, OnPolicy(_core.test_segments(2, 4), tiny_net()), [1.0, 0.3, 0.3, 0.05])
+    ls.push(0)
+    assert plain(served) == {True} and same(served, l.net) and not same(served, tiny_net(5))
+    resume = tmp_path / "ckpt-1"
+    for i, name in enumerate(AGENTS):
+        ls.save(i, str(resume / ckpt.AGENTS_DIR / name), json.dumps({"update": ls.version(i), "agent": name}))
+    monkeypatch.delenv(RL_CHANNELS_LAST)
+    again = make_learners(monkeypatch, tmp_path / "b", bc, None, resume).learners[0]
+    assert plain(again.net) == {True} and flags(again.net) == (None, None, None) and same(again.net, l.net)
+    moments = lambda x: [x.opt.state[p][k] for p in x.net.parameters() if p in x.opt.state for k in ("exp_avg", "exp_avg_sq")]  # noqa: E731
+    assert moments(l) and all(torch.equal(a, b) for a, b in zip(moments(again), moments(l), strict=True))
+    assert {m.is_contiguous() for m in moments(again) if m.dim() == 4 and m.shape[-1] > 1} == {True}

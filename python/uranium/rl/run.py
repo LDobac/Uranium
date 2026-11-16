@@ -52,6 +52,7 @@ class Learners:
         self.snapshot_tokens = 0
         self.starts: list = []
         for name, (net, update, optim_dir, start) in zip(AGENTS, start_policies(bc_dir, bc, init, resume, device), strict=True):
+            served = _copy(net)
             l = Learner(cfg, net, _copy(bc), device, precision, algo, update, refs=refs, race_ref=race_ref)
             if optim_dir is not None:
                 ckpt.load_optimizer(optim_dir, ckpt.OPTIM_MAIN, l.net, l.opt)
@@ -62,7 +63,7 @@ class Learners:
             ckpt.save_model(d, l.net)
             ckpt.save_meta(d, l.net.cfg, {"agent": name, "update": update}, precision, impl_settings())
             b = _core.Broker(str(d), "stochastic", max_batch=max_batch, max_wait_ms=max_wait_ms, warmup_entities=_n_max())
-            s = InferenceServer(b, device, precision, net=_copy(l.net))
+            s = InferenceServer(b, device, precision, net=served)
             s.swap(l.net.state_dict(), update)
             s.start()
             self.brokers_.append(b)
@@ -288,7 +289,7 @@ def main(a) -> int:
     from uranium.rl.learner import MICRO_LANES_ENV, host_micro_lanes
 
     backend, device, precision = resolve(a.backend)
-    configure(backend)
+    configure(backend, rl=True)
     a.logs = str(logs_dir(a.logs))
     m = host_micro_lanes(json.loads(_core.rl_config(a.config)))
     src = MICRO_LANES_ENV if os.environ.get(MICRO_LANES_ENV, "").strip() else "config micro_lanes"

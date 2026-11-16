@@ -509,3 +509,48 @@ def test_sil_off_keeps_the_update_042_r16():
     with pytest.raises(ValueError, match="042-R16"):
         sil_lane_count(bad)
     assert sil_lane_count(Segments(3, 4, tiny_net(0, seed=6), 0, sil_returns=(None, 1.0, 1.0))) == 2
+
+
+def test_learner_channels_last_keeps_the_update_032_r19(monkeypatch):
+    from uranium.device import RL_CHANNELS_LAST
+
+    off = run(Learner, "vtrace", 2, 2, updates=1)
+    monkeypatch.setenv(RL_CHANNELS_LAST, "on")
+    spatial = Learner(rl_cfg(), tiny_net(2), tiny_net(2), CPU, "f32", "vtrace").net.spatial
+    assert spatial.channels_last and spatial.stem_pad
+    on = run(Learner, "vtrace", 2, 2, updates=1)
+    close_stats(on[0][0], off[0][0], 1e-5, 1e-6)
+    for i, rtol in ((2, 1e-4), (1, 1e-5)):
+        assert on[i].keys() == off[i].keys()
+        for k in off[i]:
+            assert torch.allclose(on[i][k], off[i][k], atol=1e-6, rtol=rtol), k
+
+
+@pytest.mark.gpu
+def test_learner_compile_no_recompile_per_update_032_r19(monkeypatch):
+    if not torch.cuda.is_available() or torch.version.hip is not None:
+        pytest.skip("CUDA only (ROCm trains in f32 without torch.compile, 032-R8)")
+    import torch._dynamo.utils as du
+
+    from uranium.device import RL_COMPILE
+
+    dev = torch.device("cuda")
+    net = lambda seed=5: testkit.tiny_net(seed, name="tiny-gtrxl", variant=VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=2))  # noqa: E731
+    batch = Segments(4, 4, net(6), 2)
+    monkeypatch.setenv("URANIUM_LOC_ROWS", "pow2")
+    res = {}
+    for mode in ("off", "default"):
+        monkeypatch.setenv(RL_COMPILE, mode)
+        torch._dynamo.reset()
+        l = Learner(rl_cfg(lanes=4), net(), net(), dev, "bf16", "vtrace", micro_lanes=2)
+        if mode != "off" and not l.compiling:
+            pytest.skip("no Triton")
+        frames = []
+        res[mode] = []
+        for _ in range(4):
+            res[mode].append(l.update(batch, WEIGHTS))
+            frames.append(du.counters["frames"]["ok"])
+    print("compiled frames after each update", frames)
+    assert frames[0] > 0 and frames[-1] == frames[0], f"compiled frames after each update {frames}: a recompile after the first"
+    for a, b in zip(res["default"], res["off"]):
+        close_stats(a, b, 1e-3, 1e-5)
