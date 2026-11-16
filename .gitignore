@@ -16,7 +16,6 @@ __pycache__/
 !/third_party/patches/
 
 # Game data (copyrighted, never commit) — see spec 011 / config/assets.toml
-/sc_data/
 *.mpq
 *.MPQ
 *.scx

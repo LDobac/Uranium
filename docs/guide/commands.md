@@ -50,7 +50,7 @@ cargo build --release -p uranium-train
   - 게임 호스트마다 같은 인자로(Windows는 venv python). 예시는 스크립트 머리말.
 
 ### 게임 데이터·표
-- 추출([011-R13](../spec/2026_10_15_22_24_011-bridge-openbw.md)): `cargo install casc --version 0.1.6 --locked` 후 `cargo run -p casc-extract -- <SC:R Data> <출력>` → `.env` `URANIUM_DATA_DIR`.
+- 추출([011-R13](../spec/2026_10_15_22_24_011-bridge-openbw.md)): `cargo install casc --version 0.1.6 --locked` 후 `cargo run -p casc-extract -- <SC:R Data> local/sc_data/openbw` → `.env` `URANIUM_DATA_DIR`.
 - BWAPI 타입 표([013-R1](../spec/2026_10_15_22_24_013-version-mapping.md)): `cargo run -p bwapi-tables -- third_party/bwapi/bwapi crates/uranium-env/tables`.
 - 맵 사전계산(v2): 학습 호스트는 build 산출물을 `URANIUM_MAPS_DIR`에 복사. 없으면 `bc` 시작 검사에서 "map hash(es) ... have no map precompute v2"로 끝나고 작업자가 재시작 반복.
 ```bash
@@ -646,9 +646,9 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
 ([spec 020](../spec/2026_10_15_22_24_020-env-orchestration.md)) 학습 호스트 = 스케줄러(에이전트 서버 내장, `python -m uranium run` 또는 `uranium-env run`) + 로컬 hostd. 원격 Linux 게임 호스트 = hostd만. 원격 브리지는 학습 호스트 에이전트에 접속.
 - 원격 게임 호스트:
   1. `git pull --ff-only` → `tools/openbw/build.sh` → `tools/openbw/build_bridge.sh` → `cargo build --release -p uranium-hostd -p uranium-runner -p uranium-agent` → `tools/oss/build_<bot>.sh`(패치가 바뀐 봇은 먼저 `git -C third_party/<bot> reset --hard && git -C third_party/<bot> clean -fdx`).
-  2. 게임 데이터 복사 → `config/assets.toml`로 검증.
+  2. 게임 데이터를 `local/sc_data/`(`openbw/`, `maps/`)에 복사 → `config/assets.toml`로 검증.
   3. `.env`: `URANIUM_DATA_DIR`·`URANIUM_MAPS_DIR`·`URANIUM_CACHE_DIR`·`URANIUM_BWAPI_DIR`·`URANIUM_BRIDGE_LIB`·`URANIUM_OSS_BOTS_DIR`, `URANIUM_HOSTD_LISTEN=<LAN 주소>:7700`.
-  4. `uranium-env calibrate` 한 번 → `setsid nohup target/release/uranium-hostd serve > /tmp/hostd.log 2>&1 < /dev/null &`.
+  4. `uranium-env calibrate` 한 번 → `mkdir -p local/work/hostd && setsid nohup target/release/uranium-hostd serve > local/work/hostd/hostd.log 2>&1 < /dev/null &`.
   - 원격 `pkill -f uranium-hostd`는 SSH 명령 자신도 죽임 → `pkill -x uranium-hostd`.
 - 학습 호스트: `config/hosts.toml`(git 미추적, 형식 `config/hosts.example.toml`)에 로컬·원격 hostd. `.env` `URANIUM_HOSTS_FILE`, `URANIUM_AGENT_LISTEN=0.0.0.0:7600`, `URANIUM_AGENT_PUBLIC_ADDR=<원격에서 닿는 주소>:7600`(로컬 게임도 이 주소).
   - Windows는 들어오는 TCP 7600 방화벽 허용(관리자): `New-NetFirewallRule -DisplayName 'Uranium agent' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 7600 -Program <python 또는 uranium-env.exe> -Profile Any`.

@@ -2,8 +2,8 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT/tools/env.sh"; uranium_load_env "$ROOT"
-DATA_DIR="${URANIUM_DATA_DIR:-$HOME/sc_data/openbw}"
-MAPS_DIR="${URANIUM_MAPS_DIR:-$HOME/sc_data/maps}"
+DATA_DIR="${URANIUM_DATA_DIR:-$ROOT/local/sc_data/openbw}"
+MAPS_DIR="${URANIUM_MAPS_DIR:-$ROOT/local/sc_data/maps}"
 MAP_KEY="$1"; GAMES="$2"; PAR="${3:-4}"; SEED_BASE="${4:-1000}"; shift $(( $# < 4 ? $# : 4 ))
 case "$MAP_KEY" in
   fighting_spirit) MAP="$MAPS_DIR/fighting_spirit_1.3.scx" ;;
