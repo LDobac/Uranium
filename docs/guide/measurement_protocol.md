@@ -161,8 +161,8 @@
      - 죽은 채널: 기록 수, 경보 줄·기록·규칙을 넘은 기록, 가장 많이 죽은 층, 최대 `const` S8·`s_pool`, 최소 양수 비율
    - `spatial_logs.py`: BC는 stderr 로그의 JSON 줄·경보 줄. RL은 `train.csv` 열(RL 경보 줄은 RL 프로세스 stderr라 안 세고 규칙을 넘은 기록만 셈). 채널 수는 체크포인트 모델 설정(`meta.json`). λ run 스크립트에서 옮김, `m2-lam-base` 로그에서 같은 값.
    - λ run 출력(`<shared>/eval/m2-lambda-20261110/`)은 반사실 pass 없는 덤프·`protocol.json` 없음 → `check-diag` 불통과. 실제 pass 활성값은 `--cf` 무관이라 교사 probe 수치는 비교 가능.
-5. **`s1e2` 체크포인트마다**([041-R20][s041] ③, [050-R9][s050] "`m2-s1e2` 체크포인트마다"): 반복 도구 없음(run `m2-s1e2`가 끝나 지움).
-   - 체크포인트 하나: val 500은 `protocol.py bc-eval --metric val500 --lineage m2 --point s1e2 --checkpoint <ckpt>` 명령 → `check-bc-eval`, T0 100판은 `protocol.py job --lineage m2 --point s1e2 --metrics t0_100`.
+5. **`s1e2` 체크포인트마다**([041-R20][s041] ③, [050-R9][s050] "`m2-s1e2` 체크포인트마다"): 체크포인트 하나씩.
+   - val 500은 `protocol.py bc-eval --metric val500 --lineage m2 --point s1e2 --checkpoint <ckpt>` 명령 → `check-bc-eval`, T0 100판은 `protocol.py job --lineage m2 --point s1e2 --metrics t0_100`.
    - 진단은 최종 체크포인트에서 `protocol.py diag --point s1e2`로 한 번([AMB-050-6][amb]).
 
 ## 거부하는 경우
