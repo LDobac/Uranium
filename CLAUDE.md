@@ -1,47 +1,42 @@
 # CLAUDE.md — Uranium
 
-스타크래프트1 **테란 밀리 AI 봇**을 구현하고 강화학습하는 프로젝트. 학습은 OpenBW(1.16.1), 최종 실행은 SC:R.
+스타크래프트1 **테란 밀리 AI 봇** 구현·강화학습. 학습 OpenBW(1.16.1), 실전 SC:R.
 
 ## 진행 상황
-- 시간순 기록: `docs/timeline.md`
-- BC 본학습: 끝(두 번째 epoch까지), 결과 `docs/report/experiment/2026_10_29_15_37_m6_bc_eval.md`, 실행 안내 루트 `README.md`
-- RL 착수 점검(남은 결정·작업): `docs/report/review/2026_10_31_11_13_m6_pre_rl_review.md`
-- RL 042-AC1 결과: `docs/report/experiment/2026_11_02_23_37_m6_ac1.md`
-- Checkpoint 1(모델·종합 리포트): `docs/report/release/2026_11_08_12_21_checkpoint1.md`, `releases/checkpoint-1/`(태그 `checkpoint-1`)
-- Checkpoint 1 RL(RL 모델·리포트): `docs/report/release/2026_11_08_13_35_checkpoint1_rl.md`, `releases/checkpoint-1-rl/`(태그 `checkpoint-1-rl`)
-- 마일스톤별 결과: `docs/report/` (m2~m7)
-- M7 SC:R 남은 과제: `docs/report/milestone/2026_10_23_00_16_m7_scr_bridge.md` 4절
-- PyTorch 전환(1단계 이식·2단계 최적화 완료): `docs/spec/README.md` AMB-000-4, 이식 `docs/report/bench/2026_10_24_02_42_pytorch_port.md`, 최적화 `docs/report/bench/2026_10_24_07_03_pytorch_opt.md`
-- 학습 방향 TF, JEPA 선행 조사(구현·spec 변경 없음): `docs/report/survey/2026_11_08_19_26_jepa_survey.md`
+- [timeline](docs/timeline.md)
+- 현재 모델: [model2](docs/report/plan/2026_11_09_22_18_model2.md)
+- Checkpoint 1: [리포트](docs/report/release/2026_11_08_12_21_checkpoint1.md), `releases/checkpoint-1/`
+- Checkpoint 1 RL: [리포트](docs/report/release/2026_11_08_13_35_checkpoint1_rl.md), `releases/checkpoint-1-rl/`
+- SC:R 남은 과제: [m7_scr_bridge](docs/report/milestone/2026_10_23_00_16_m7_scr_bridge.md) 4절
+- JEPA 계획 설계: [jepa_planning](docs/report/plan/2026_11_11_14_56_jepa_planning.md)
 
 ## 고정 조건
 | 항목 | 값 |
 |---|---|
 | 종족 | 테란 고정. 상대 T / P / Z |
 | 맵 | 투혼(Fighting Spirit), 서킷브레이커(Circuit Breaker) |
-| 학습 호스트 | Linux ROCm 호스트 또는 CUDA 호스트(Linux/Windows) (060). 직접 쓴 CUDA·HIP 커널 허용: 소스 하나를 두 백엔드에서 빌드, 기준 구현·끄는 설정 필수 (060-R1) |
-| 프레임워크 | 학습·추론은 Python **3.14** + PyTorch **2.14.x**(`python/uranium`), 게임 연동·feature·데이터 공급·저장소는 Rust(PyO3 `uranium._core`) (001, AMB-000-4). 정밀도는 032-R8(CUDA bf16 혼합, ROCm f32). 테스트 기준은 CPU, 비트 일치는 CPU에서만. Linux·Windows 모두 빌드 (001-R8) |
-| 시뮬레이터 | OpenBW + BWAPI 4.2 포크, Linux 헤드리스. 다른 LAN 호스트에서 실행될 수 있음 |
-| SC:R 연동 | samase 플러그인 DLL + samase_scarf. **로컬/LAN 커스텀 게임만**, 배틀넷 공개 게임·래더 대상 아님 |
+| 학습 호스트 | Linux ROCm 또는 CUDA(Linux/Windows) (060). 직접 쓴 커널은 한 소스로 CUDA·HIP 빌드, 기준 구현·끄는 설정 필수 (060-R1) |
+| 프레임워크 | 학습·추론 Python **3.14** + PyTorch **2.14.x**, 게임 연동·feature·데이터·저장소 Rust(PyO3 `uranium._core`) (001, AMB-000-4). 정밀도 032-R8(CUDA bf16 혼합, ROCm f32). 테스트·비트 일치 기준 CPU. Linux·Windows 빌드 (001-R8) |
+| 시뮬레이터 | OpenBW + BWAPI 4.2 포크, Linux 헤드리스. 다른 LAN 호스트 가능 |
+| SC:R 연동 | samase 플러그인 DLL + samase_scarf. **로컬/LAN 커스텀 게임만**, 배틀넷 공개 게임·래더 금지 |
 | 체크포인트·데이터 | 공용 드라이브(SMB, `URANIUM_SHARED_DIR`). pull → 학습 → push, run당 한 호스트(heartbeat 잠금) (061) |
-| C++ | OpenBW 브리지의 얇은 shim과 PyTorch 확장 커널(CUDA·HIP, 060-R1)만. 나머지는 Rust 또는 Python |
+| C++ | OpenBW 브리지 shim과 PyTorch 확장 커널(060-R1)만. 나머지 Rust·Python |
 
 ## Spec Driven 규칙 (필수)
-1. **`docs/spec/`이 단일 진실 공급원.** 작업 전에 `docs/spec/README.md`와 관련 spec을 읽는다.
+1. **`docs/spec/`이 단일 진실 공급원.** 작업 전 [docs/spec/README.md](docs/spec/README.md)와 관련 spec을 읽는다.
 2. `Approved`가 아닌 spec은 구현하지 않고 사용자에게 알린다.
-3. 동작 변경 순서: **spec 수정 → 사용자 확인 → 코드**. 코드와 spec이 다르면 코드를 고치거나 spec 변경을 제안한다.
-4. 주석·테스트 이름·커밋 메시지에 요구사항 ID(`010-R3` 등)를 적는다.
-5. 새 spec은 공통 템플릿(`Status / Purpose / Scope & Non-goals / Requirements / Interfaces / Acceptance Criteria / Risks & Open Questions / Related`)을 따르고 `docs/spec/README.md`에 추가한다. 번호는 영역 대역(00x 개요, 01x 게임 연동, 02x 실행 환경, 03x 모델, 04x 데이터·학습, 05x 평가, 06x 인프라)이고 바꾸지 않는다. 구현 순서는 마일스톤 M0~M7.
-6. 큰 작업(새 crate, 아키텍처 변경, 여러 spec에 걸친 변경)은 Plan 모드로 승인을 받는다.
+3. 동작 변경: **spec 수정 → 사용자 확인 → 코드**. 코드와 spec이 다르면 코드를 고치거나 spec 변경을 제안.
+4. 요구사항 ID(`010-R3` 등)는 테스트 이름과 커밋 메시지 body에 적는다.
+5. 새 spec: `docs/spec/<YYYY_MM_DD_HH_mm>_<NNN-name>.md`, 템플릿 `Status / Purpose / Scope & Non-goals / Requirements / Interfaces / Acceptance Criteria / Risks & Open Questions / Related`, README에 추가. 번호 대역 불변(00x 개요, 01x 게임 연동, 02x 실행 환경, 03x 모델, 04x 데이터·학습, 05x 평가, 06x 인프라). 구현 순서 M0~M7.
+6. 큰 작업(새 crate, 아키텍처 변경, 여러 spec에 걸친 변경)은 Plan 모드로 승인받는다.
 
 ## 모호함 처리 (필수)
-- 사용자 결정이 필요한 부분은 `[SPEC AMBIGUOUS] AMB-<spec>-<n>`으로 표기하고 `docs/spec/README.md` 레지스트리에 등록한다.
-- **추측하지 않고 사용자에게 묻는다.** 기본안은 "기본안(미확정)"으로만 제시한다. 사용자가 정하지 않은 수치·정책·범위(승률 목표, APM 제한, 데이터 출처, 실행 환경 등)를 확정하지 않는다.
-- `[SPEC AMBIGUOUS]`에 의존하는 코드는 쓰지 않는다.
-- `[SPEC DEFERRED(Mx)]`: 결정을 뒤 마일스톤으로 미룬 항목. spec 승인은 막지 않지만 의존 코드는 쓰지 않고, 그 마일스톤 시작 전에 다시 묻는다. 목록은 레지스트리 참조.
-- 확정되면: 본문 반영 → 태그 제거 → 레지스트리 `Resolved (YYYY-MM-DD: 결정)`.
-- `TBD(Mx)`는 측정하면 정해지는 값, `[SPEC AMBIGUOUS]`는 사용자 판단이 필요한 값.
-- 남은 작업·대규모 배치 전 점검에서는 태그만 보지 말고 spec의 미이행 약속("Mx에서 ~", "비교해 채택")과 미실행 AC도 확인한다.
+- **추측하지 않는다. 결정이 필요하면 사용자에게 묻는다. 질문은 모아서 한 번에.** 기본안은 "기본안(미확정)"으로만. 사용자가 정하지 않은 수치·정책·범위(승률 목표, APM 제한, 데이터 출처, 실행 환경 등)는 확정하지 않는다.
+- `[SPEC AMBIGUOUS] AMB-<spec>-<n>`: 사용자 판단이 필요한 값. README 레지스트리에 등록, 의존 코드 금지.
+- `[SPEC DEFERRED(Mx)]`: 뒤 마일스톤으로 미룬 결정. spec 승인은 막지 않음, 의존 코드 금지, 그 마일스톤 전에 다시 묻는다.
+- `TBD(Mx)`: 측정하면 정해지는 값.
+- 확정: 본문 반영 → 태그 제거 → 레지스트리 `Resolved (YYYY-MM-DD: 결정)`.
+- 남은 작업·대규모 배치 전 점검: 태그 외에 미이행 약속("Mx에서 ~", "비교해 채택")·미실행 AC도.
 
 ## 아키텍처 원칙
 - 에이전트 코어는 게임 버전을 모른다 (001-R1). 버전 의존 코드는 `bridge/*`와 013 매핑 테이블에만.
@@ -50,59 +45,63 @@
 - **맵핵 금지**: 관측은 자기 시야 기준 (010-R5, 011-R5, 012-R3, 030-R2).
 - SC:R 명령은 네트워크 커맨드 경로로만, 유닛 메모리 직접 수정 금지 (012-R4).
 - 학습은 lockstep, SC:R 실전은 realtime (001-R5).
-- 맵 고정은 RL·평가에만. BC는 전체 맵으로 사전학습하고 대상 맵으로 파인튜닝 (041).
+- 맵 고정은 RL·평가만. BC는 전체 맵 사전학습 → 대상 맵 파인튜닝 (041).
 
 ## 저장소 구조
 ```
-docs/spec/               스펙 (먼저 읽을 것)
-crates/
-  uranium-proto          공통 스키마·프레이밍
-  uranium-env            feature·마스크·보상·executor·맵 사전계산 (라이브러리)
-  uranium-data           BC 데이터 공급(041): shard·게임 순서·Feeder·prefetch·host collate·지문
-  uranium-store          공용 드라이브(061): 잠금·push/pull·Manifest·학습 상태 파일
-  uranium-league         RL(042): 리그·궤적·세그먼트 큐·리턴 타깃·RL 실행 루프(학습기는 Python)
-  uranium-py             PyO3 확장 `uranium._core`: 위 Rust 기능을 Python에 노출, 추론 Broker
-  uranium-train          run 큐 작업자·감시(학습 자식은 Python), 호스트 데이터 명령
-  uranium-replay         .rep 파서·데이터셋 build
-  uranium-ladder         SC:R 래더 리플레이 수집 (043, Windows)
-  uranium-hostd          OpenBW 인스턴스 데몬
-  uranium-agent          에이전트 서버(정책 라우팅, 추론 Broker. 모델은 Python)
-  uranium-runner         게임 스케줄러 (바이너리 이름 uranium-env)
-  uranium-bridge-openbw  브리지 Rust 절반 (C ABI)
-  uranium-scripted       T0 규칙 기반 봇
-python/uranium           학습·추론(PyTorch): model/, bc/, rl/, agent/, ckpt.py. 진입점 `python -m uranium`
+docs/
+  spec/                  스펙, README.md = 목록·레지스트리
+  report/<목적>/          milestone, investigation, bench, experiment, review, advice, plan, survey, release
+  guide/                 commands.md, scr.md, measurement_protocol.md
+  timeline.md
+crates/                  uranium-{proto, env, data, store, league, py, train, replay, ladder, hostd, agent, runner, bridge-openbw, scripted} (역할: spec 001)
+python/uranium           model/, bc/, rl/, agent/, distill/, diag/, bench/, kernels/, ckpt.py. 진입점 `python -m uranium`
 bridge/openbw            BWAPI shim(C++) → liburanium_bridge
-bridge/scr               samase 플러그인 (M7, 자체 Cargo workspace, 표는 tables/)
-tools/                   casc-extract, bwapi-tables, openbw/, oss/, scr/, worker/, env 로더
+bridge/scr               samase 플러그인 (자체 Cargo workspace, 표 tables/)
+tools/                   openbw/, oss/, scr/, eval/(평가·측정), ablation/, worker/, casc-extract/, bwapi-tables/, env.sh·env.ps1
 tests/python             pytest (CPU 기준, `-m gpu` 장치 비교), fixtures/
-config/                  plans/, ladder/, bc.toml, rl.toml, reward.toml, map_families.toml, map_exclude.toml
-docs/                    commands.md(명령 상세·Windows·여러 호스트), scr.md
-third_party/             OpenBW·BWAPI·T1 봇 소스(git 미추적) + patches/
-docs/report/             리포트, timeline.md
+config/                  bc*.toml, rl*.toml, plans/, protocol/, ladder/, reward·map_*·assets.toml, hosts.example.toml
+releases/                checkpoint-1/, checkpoint-1-rl/
+third_party/             OpenBW·BWAPI·T1 봇 소스(git 제외) + patches/
+runs/                    코드 기본 출력 (git 제외)
+local/                   장비별 (git 제외)
+  work/<작업>/ scripts/ sc_data/(맵·OpenBW 데이터·캐시) raw/(옛 벤치 로그)
 ```
 
 ## 코딩 규칙
-- 모델 코드는 장치 무관, 실행 시 `torch.device`로 고른다. 단위 테스트는 CPU, 장치 비교는 pytest `gpu` 마커 (032-R1).
-- **최적화는 모델 동작 유지** (032-R19): 같은 수식을 빠르게 계산하는 구현만. 구조·헤드 방식·해상도·distance bias·dropout·손실·하이퍼파라미터는 바꾸지 않는다. 학습 설정은 Linux ROCm 호스트 메모리 예산(060-R3) 안에서 최악 모양으로 돌아야 채택.
-- 버전별 ID·오프셋은 데이터 테이블로만 관리한다 (013-R1).
-- **개인·보안 정보 금지** (001-R10): spec·문서·리포트·주석·커밋에 IP, 호스트 이름, 계정, 이메일, 개인 경로, 자격 증명을 쓰지 않는다. `<server>`, "Linux ROCm 호스트" 같은 표기를 쓴다. 추적 파일(spec·코드·주석·추적 config·docs·CLAUDE.md·tools)에는 장비 종류·모델명·번호·상태를 쓰지 않고 OS·백엔드로만 적는다. 장비 표기는 추적하지 않는 config와 `docs/report/`에만 둔다.
-- **설정은 `.env`** (001-R9): 저장소 루트 `.env`(git 미추적), 프로세스 환경변수 우선. 새 키는 `.env.example`에도 추가.
+- 모델 코드는 장치 무관, 실행 시 `torch.device`로 고른다. 단위 테스트 CPU, 장치 비교 pytest `gpu` 마커 (032-R1).
+- **최적화는 모델 동작 유지** (032-R19): 같은 수식의 빠른 구현만. 구조·헤드·해상도·distance bias·dropout·손실·하이퍼파라미터 불변. Linux ROCm 호스트 메모리 예산(060-R3)에서 최악 모양이 돌아야 채택.
+- 버전별 ID·오프셋은 데이터 테이블로만 (013-R1).
+- **개인·보안 정보 금지** (001-R10): spec·문서·리포트·커밋에 IP, 호스트 이름, 계정, 이메일, 개인 경로, 자격 증명 금지(`<server>`, "Linux ROCm 호스트"로). 장비 종류·모델명·번호·상태는 추적하지 않는 config, `docs/report/`, `docs/timeline.md`에만. 나머지 추적 파일은 OS·백엔드로만.
+- **설정은 `.env`** (001-R9): 루트 `.env`(git 제외), 프로세스 환경변수 우선. 새 키는 `.env.example`에도.
 - 결정론: executor와 feature 추출은 같은 입력이면 같은 출력 (031-R7, 030-R1).
-- 각 spec의 AC는 테스트나 벤치로 검증한다.
-- **리뷰**: 코드 수정이 끝나면 master 반영 전에 별개의 리뷰어 에이전트로 spec 적합성과 코드 품질을 리뷰하고, 지적 사항을 반영하거나 반영하지 않은 이유를 남긴다.
-- **git**: worktree 브랜치는 `fetch` → `rebase origin/master` → 테스트 → `push origin HEAD:master`(fast-forward). merge 커밋 금지. push 뒤 메인 작업 사본(저장소 루트 `master`)도 `pull --ff-only`로 맞춘다. 커밋 안 된 변경이 있거나 `master`가 아니면 건드리지 않고 알린다.
-- **기록**: 결정·발견·장시간 실행의 시작과 끝·새 리포트는 `docs/timeline.md`에 한 줄씩 덧붙인다(수정·삭제 금지). 실험 리포트에는 실험 전 배경·예상과 진행 기록을 남긴다. 체크포인트·로그·평가 출력 같은 중간 산출물은 지우지 않고 위치를 적는다.
-- **작업 산출물 위치**: 모든 호스트에서 작업 중 생기는 로그·생성 파일·임시 출력·일회용 스크립트는 홈 디렉터리에 두지 않고 `local/work/`(Windows `local/work/`)에 둔다. 다른 호스트와 나눌 결과는 공용 드라이브에 둔다.
-- **대규모 배치(4시간 이상) 전**: 출력에 영향을 주는 결정이 모두 확정·구현됐는지 확인하고, 표본으로 끝까지(build → 학습) 먼저 돌린다.
+- 각 spec의 AC는 테스트나 벤치로 검증.
+- **주석 금지**: 코드·config에 주석을 쓰지 않는다. 예외는 실행에 쓰이는 것만: 지시문(`# noqa`, shebang), argparse가 `__doc__`로 보여 주는 모듈 설명, clap `///` 도움말. 생성 스크립트도 생성 파일에 주석을 쓰지 않는다.
+- **리뷰**: master 반영 전 별개 리뷰어 에이전트로 spec 적합성·코드 품질 리뷰. 지적은 반영하거나 안 한 이유를 남긴다.
+- **git**: worktree 브랜치 `fetch` → `rebase origin/master` → 테스트 → `push origin HEAD:master`(fast-forward), merge 커밋 금지. 뒤에 메인 사본(루트 `master`) `pull --ff-only`. 커밋 안 된 변경이 있거나 `master`가 아니면 건드리지 않고 알린다.
+- **커밋 메시지**: `<type>: <subject>` + 빈 줄 + `[body]`. type은 feat, fix, docs, test, chore, refactor, style. 제목 50자 이내. 요구사항 ID는 body에.
+- **대규모 배치(4시간 이상) 전**: 출력에 영향 주는 결정이 모두 확정·구현됐는지 확인, 표본으로 build → 학습 끝까지 먼저.
 - 게임 데이터(MPQ, CASC 추출물, 맵, 리플레이)는 커밋하지 않는다.
 
+## 문서 규칙
+- 문서는 `docs/` 안에만(폴더는 저장소 구조). 새 문서 이름 `YYYY_MM_DD_HH_mm_<이름>.md`(작성 시각). 고정 이름: `docs/timeline.md`, `docs/guide/*`, `docs/spec/README.md`. 루트에는 `CLAUDE.md`, `README.md`만.
+- 짧게: 단답형, 표·목록. 서술·경위·중복 금지. 다른 문서 내용은 링크.
+- 코드(`042-AC1`, `AMB-…`, BC 같은 약어)만 쓰지 않는다. 문서에서는 출처 문서를 링크하고, 사용자에게 설명할 때는 그 코드가 담긴 문서를 함께 밝힌다.
+- timeline: `## YYYY-MM-DD` 아래 `- HH:MM — 한 일 ([근거](경로))` 한 줄. 결정·발견·장시간 실행 시작/끝·새 리포트. 지우지 않고 `정정:`. 상세 [머리말](docs/timeline.md).
+- 실험 리포트에는 실험 전 배경·예상과 진행 기록. 중간 산출물(체크포인트·로그·평가 출력)은 지우지 않고 위치를 적는다.
+
+## 파일 생성 규칙
+- 로그·임시 출력·일회용 스크립트 `local/work/<작업>/`, 장비별 재사용 스크립트 `local/scripts/`, 게임 데이터 `local/sc_data/`. 저장소 밖(홈, `/tmp`, 다른 폴더)·루트·추적 폴더에 만들지 않는다. 모든 장비 동일.
+- 백업 파일(`.bak`, `.orig`, 복사본) 금지. 되돌릴 것은 git으로.
+- 임시 문서 금지. 끝난 임시 파일은 그 작업에서 지운다(리포트가 근거로 가리키는 산출물은 남김).
+- `local/`은 커밋하지 않는다(장비 고유). 다른 장비와 나눌 결과는 공용 드라이브.
+
 ## 명령어
-상세 옵션은 `docs/guide/commands.md`.
-- 테스트: `cargo test --workspace`, `<venv python> -m pytest tests/python` (GPU 호스트는 `-m gpu`도)
-- 빌드: `tools/openbw/build.sh` → `tools/openbw/build_bridge.sh` (Windows는 `.ps1`), `cargo build --release`, Python 패키지 `uv pip install --python <venv python> -e .`
+상세: [commands.md](docs/guide/commands.md), SC:R [scr.md](docs/guide/scr.md).
+- 테스트: `cargo test --workspace`, `<venv python> -m pytest tests/python`(GPU 호스트 `-m gpu`도)
+- 빌드: `tools/openbw/build.sh` → `build_bridge.sh`(Windows `.ps1`), `cargo build --release`, `uv pip install --python <venv python> -e .`
 - 게임: `uranium-hostd serve`, `python -m uranium run --plan config/plans/<plan>.toml`(스크립트 플레이어만이면 `uranium-env run`), `uranium-env calibrate`
-- 리플레이: `uranium-replay build <dir> --src <tag> --records <jsonl> [--part i --parts N]`
-- BC: `python -m uranium bc --dataset replays/shards/<src>... --run <id> --backend <cuda|rocm>`, `bc-eval`, `bc-profile`. 데이터: `uranium-train bc-epoch | split-stats | manifest`
-- 작업자: `uranium-train worker --queue <큐> --backend <cuda|rocm> --priority <n>`(자식 `URANIUM_PYTHON -m uranium`), 감시 `uranium-train supervise -- <인자>`
-- RL: `python -m uranium rl --run <id> --bc <ckpt> --logs <dir>`
-- SC:R 실전(`docs/guide/scr.md`): `tools\scr\build.ps1` → `python -m uranium scr --checkpoint <ckpt>` → `tools\scr\run.ps1` → 게임 시작은 사람이
+- 리플레이: `uranium-replay build`
+- 학습: `python -m uranium bc | rl`, 작업자 `uranium-train worker`, 감시 `uranium-train supervise`
+- SC:R 실전: `tools\scr\build.ps1` → `python -m uranium scr --checkpoint <ckpt>` → `tools\scr\run.ps1` → 게임 시작은 사람이
+- 평가·측정: [measurement_protocol.md](docs/guide/measurement_protocol.md), `tools/eval/`
