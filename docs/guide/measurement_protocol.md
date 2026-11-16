@@ -18,7 +18,6 @@
 | `tools/eval/per_action.py`, `per_action_table.py` | 교사 보관분 행동별 채점·표 |
 | `tools/eval/diag_table.py` | 진단(`cue_diag`·`dead_channels`) 출력 폴더의 표 |
 | `tools/eval/spatial_logs.py` | 학습 로그의 죽은 채널 기록([041-R25][s041]) 요약 |
-| `tools/eval/s1e2_loop.py` | `s1e2` 체크포인트마다 val 500·T0 100판([041-R20][s041] ③) |
 | `tools/eval/hosts.toml` | 게임 호스트 목록(git 미추적, 예시 `hosts.example.toml`) |
 
 - 명령 스트림: `uranium-replay cmddump`(`cargo build --release -p uranium-replay`, 다른 위치면 `.env`의 `URANIUM_REPLAY_BIN`).
@@ -156,32 +155,9 @@
      - 죽은 채널: 기록 수, 경보 줄·기록·규칙을 넘은 기록, 가장 많이 죽은 층, 최대 `const` S8·`s_pool`, 최소 양수 비율
    - `spatial_logs.py`: BC는 stderr 로그의 JSON 줄·경보 줄. RL은 `train.csv` 열(RL 경보 줄은 RL 프로세스 stderr라 안 세고 규칙을 넘은 기록만 셈). 채널 수는 체크포인트 모델 설정(`meta.json`). λ run 스크립트에서 옮김, `m2-lam-base` 로그에서 같은 값.
    - λ run 출력(`<shared>/eval/m2-lambda-20261110/`)은 반사실 pass 없는 덤프·`protocol.json` 없음 → `check-diag` 불통과. 실제 pass 활성값은 `--cf` 무관이라 교사 probe 수치는 비교 가능.
-5. **`s1e2` 체크포인트마다**([041-R20][s041] ③, 050-R9 "`m2-s1e2` 체크포인트마다"): `python tools/eval/s1e2_loop.py`
-   - Checkpoint 1 방식([m6_bc_eval] 4절) 그대로: 채점기가 빌 때마다 아직 안 잡힌 가장 새 체크포인트를 잡고 그 사이는 건너뜀, 최종(run `DONE`)은 반드시 잼. 기준 S1 최종(`s1e1` 지점, `--reference`)을 먼저. 학습은 멈추지 않음.
-   - val 500(Linux ROCm 호스트): `python tools/eval/s1e2_loop.py val --run m2-s1e2 --reference checkpoints/m2-s1/ckpt-N --watch`
-     - 체크포인트마다 `protocol.py` 고정 명령: `python -m uranium bc-eval --dataset replays/shards/stardata --dataset replays/shards/community --dataset replays/shards/scr_ladder --dataset replays/shards/personal --checkpoint <shared>/checkpoints/<run>/ckpt-N --split val --games 500 --seed 1 --backend rocm --config config/bc.toml --bunker-before 5760 --out <shared>/artifacts/bc_e2_val/val500/<run>__ckpt-N.json`
-     - 2시간 제한(Checkpoint 1 규칙). 호스트가 여럿이면 `<...>.claim` 파일로 나눠 잡음.
-     - 결과 옆 `<...>.protocol.json`: 체크포인트 sha256, git, backend·정밀도, 종료 코드, 시도 번호, `check-bc-eval` 결과. 확인이 어긋나도 기록하고 다음으로.
-     - 실패·시간 초과·중단(Ctrl-C, 기록 전 오류): 그 시도 파일을 `<...>.failed-<k>.*`로 바꿔 남김(결과 → 로그 → 기록 → claim 순), 아직 잡을 대상이면 다시. 체크포인트마다 모두 3번까지(메인 임시 결정: λ 채점 때 한 ROCm 호스트에서 val500이 3번 죽은 뒤 성공).
-     - 기록 없는 claim = 채점기 사라짐(claim에 호스트·pid·시간 제한 기록) → "stale claim" 기록 후 같은 방식으로 남기고 다시(시도 1번으로 셈). 조건: 시간 제한 + 15분보다 오래됨, 또는 이 호스트 claim인데 그 프로세스 없음. 기다리는 동안 어느 체크포인트가 어느 호스트에서 도는지 출력.
-     - 있는 결과는 덮어쓰지 않음([041-R29][s041] ⑨). 손으로 만든 결과도 잡힌 것으로 봄.
-     - 끝날 때 기준·최종에 종료 코드 0 기록이 없으면 그 목록과 함께 0 아닌 코드로 끝남. 기록 없이 손으로 만든 결과는 NOTE.
-     - `--dry-run`: 모든 체크포인트 명령 출력만.
-   - T0 100판: `python tools/eval/s1e2_loop.py games --run m2-s1e2 --reference ... --hosts tools/eval/hosts.toml --watch --worker "--priority 2 --backend rocm --local-hostd <주소> --hostd <uranium-hostd>"`
-     - 체크포인트마다 `protocol.py job --lineage m2 --point s1e2 --metrics t0_100`으로 `<shared>/eval/<run>-games/<run>__ckpt-N/` job(`--games-root`로 바꿈). 다른 호스트가 먼저 만든 job은 잡힌 것.
-     - 그 job을 이 호스트 `eval-worker`로 돌리고 `DONE`을 기다린 뒤 다음 체크포인트. `--worker` 없으면 job만 만들고 작업자는 따로. `--worker` 있으면 다른 호스트가 만든 끝나지 않은 job에도 작업자로 붙음.
-     - `DONE`은 작업자가 아니라 이 루프가 씀(Checkpoint 1 `games_watch.sh` 역할):
-       - 작업자 실행 끝·기다리는 동안·매 반복마다 games 폴더의 `DONE` 없는 job을 훑어 `eval-status` 확인.
-       - 모든 단계 진행 중 0·남은 판 0이고 표 단계 수가 `job.toml`과 같으면 한 poll 뒤 한 번 더 확인 → job `.merge-claim`을 먼저 만든 한 호스트만 `status.txt`(`eval-status` 출력, 단계별 병합 기록·요약도 다시 씀)와 `DONE`을 임시 파일 → 이름 바꾸기로 씀.
-       - 10분 넘게 `DONE` 없이 남은 claim은 `.merge-claim.stale-<k>`로 옮기고(지우지 않음) 다시 잡음.
-       - 끝나지 않았거나 표를 못 읽었거나 쓰기 실패한 job에는 안 씀(실패 claim `.merge-claim.failed-<k>`).
-       - 다른 호스트가 끝낸 job도 이렇게 `DONE`을 받고 다시 붙지 않음.
-   - 진행: `s1e2_loop.py list --run m2-s1e2 --reference ...`
-   - 표: `s1e2_loop.py table --run m2-s1e2 --reference ... [--json] [--md]`
-     - val: top-1, 헤드별 NLL(action·delay·selected·target_unit·target_loc), win_open MSE, step 수
-     - T0 100: 종족별 승/패/무, 합계, Wilson 95%
-     - 조건이 고정값과 다른 val 출력, `verify`에 걸린 job은 MISMATCH 표시.
-   - 진단은 최종 체크포인트에서 `protocol.py diag --point s1e2`로 한 번([AMB-050-6][amb]). 이 반복은 진단 안 돌림.
+5. **`s1e2` 체크포인트마다**([041-R20][s041] ③, [050-R9][s050] "`m2-s1e2` 체크포인트마다"): 반복 도구 없음(run `m2-s1e2`가 끝나 지움).
+   - 체크포인트 하나: val 500은 `protocol.py bc-eval --metric val500 --lineage m2 --point s1e2 --checkpoint <ckpt>` 명령 → `check-bc-eval`, T0 100판은 `protocol.py job --lineage m2 --point s1e2 --metrics t0_100`.
+   - 진단은 최종 체크포인트에서 `protocol.py diag --point s1e2`로 한 번([AMB-050-6][amb]).
 
 ## 거부하는 경우
 
@@ -246,7 +222,6 @@
 | λ run `scripts/spatial_logs.py` | `spatial_logs.py`(같은 값, `m2-lam-base` 로그로 확인) |
 | λ run `scripts/summary.py`의 probe 표·공간 표 | `diag_table.py`(같은 칸, `m2-lam-base` probe 값 같음) |
 | λ run 호스트 스크립트(`worker.sh` 등의 dump·probes 줄) | `protocol.py diag`(교사 보관분 설정 같고 `--cf` 추가, 사람 보관분 추가) |
-| 호스트 `~/e2val/val_watch.sh`, `~/e2games/games_watch.sh`(Checkpoint 1 `s1e2`) | `s1e2_loop.py val`, `games` |
 
 - 예외 1: e10 운영형 `scv_8m ≥ 16`은 `tables.py`로 26. Checkpoint 1 리포트의 25는 옛 `macro_table.py`가 40번 판에서 모델 행 대신 모델 정보 없는 마지막 행을 읽은 값(리포트에 정정 주석).
 - 예외 2: 재시도 판.
@@ -336,5 +311,4 @@
 [checkpoint1]: ../report/release/2026_11_08_12_21_checkpoint1.md
 [checkpoint1_rl]: ../report/release/2026_11_08_13_35_checkpoint1_rl.md
 [jepa_survey]: ../report/survey/2026_11_08_19_26_jepa_survey.md
-[m6_bc_eval]: ../report/experiment/2026_10_29_15_37_m6_bc_eval.md
 [commands]: commands.md
