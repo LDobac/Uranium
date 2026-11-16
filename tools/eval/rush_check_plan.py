@@ -1,4 +1,4 @@
-"""050-R6 (AMB-042-19): writes the condition-controlled rush check plan, by default the tracked"""
+"""Writes the rush check plan and the teacher, botgen, DAgger and distillation game plans"""
 
 import argparse
 import tomllib
@@ -526,32 +526,32 @@ def render(checkpoint: str | None, name: str) -> str:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0], formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog=f"--teacher-round follow-up (044-R8):\n  {TEACHER_ROUND_FOLLOW_UP}")
-    ap.add_argument("--checkpoint", default=None, help="model checkpoint (relative = under URANIUM_SHARED_DIR; default the AC1 one, --dagger bc-mix-e10)")
-    ap.add_argument("--teacher", action="store_true", help="the 021-R8 teacher plays players[0] instead of a model (050-R8)")
+    ap.add_argument("--checkpoint", default=None, help="model checkpoint (relative = under URANIUM_SHARED_DIR; default ac1-vtrace-s1, --dagger bc-mix-e10)")
+    ap.add_argument("--teacher", action="store_true", help="the scripted teacher plays players[0] instead of a model")
     ap.add_argument("--name", default=None, help="plan name (the evaluation stage name; default rush5-check / teacher-check)")
     ap.add_argument("--out", type=Path, default=None)
-    ap.add_argument("--botgen", action="store_true", help="write the two teacher botgen plans (040-R14 / 050-R8)")
-    ap.add_argument("--out-dir", type=Path, default=ROOT / "config" / "plans", help="--botgen / --dagger / --distill output folder (and the seed disjointness scan; --distill also scans subfolders)")
+    ap.add_argument("--botgen", action="store_true", help="write the two teacher botgen plans")
+    ap.add_argument("--out-dir", type=Path, default=ROOT / "config" / "plans", help="--botgen / --dagger / --distill output folder, also scanned for seed overlap")
     ap.add_argument("--first-game", type=int, default=None,
                     help="--botgen: write one more macro plan from this botgen game number (> 2,000) instead")
-    ap.add_argument("--dagger", action="store_true", help="write a DAgger round plan (10th advisory 2.2)")
-    ap.add_argument("--distill", action="store_true", help="write a self-game distillation round plan (044-R1; needs --checkpoint)")
+    ap.add_argument("--dagger", action="store_true", help="write a DAgger round plan")
+    ap.add_argument("--distill", action="store_true", help="write a self-game distillation round plan (needs --checkpoint)")
     ap.add_argument("--round", type=int, default=None, help="--dagger / --distill: round number, default 1 (seeds per round disjoint)")
-    ap.add_argument("--half", action="store_true", help="--dagger / --distill: half-size round plan, 300 games (11th advisory 2, 044-R1 d2)")
+    ap.add_argument("--half", action="store_true", help="--dagger / --distill: half-size round plan, 300 games")
     ap.add_argument("--extra-p", type=int, default=0,
-                    help="--botgen-tp: N more 022 teacher botgen games against Protoss (044-R8, user decisions 2026-11-14; a multiple of 16)")
+                    help="--botgen-tp: N more teacher botgen games against Protoss (a multiple of 16)")
     ap.add_argument("--extra-t", type=int, default=0,
-                    help="--botgen-tp: M more 022 teacher botgen games against Terran (a multiple of 16; N + M <= 992 per --part)")
+                    help="--botgen-tp: M more teacher botgen games against Terran (multiple of 16; N + M <= 992 per --part)")
     ap.add_argument("--extra", type=int, default=0,
-                    help="--distill: a top-up plan of N more games of round --round (044-R5 (3), user decision 2026-11-14; N a multiple of 20)")
+                    help="--distill: a top-up plan of N more games of round --round (a multiple of 20)")
     ap.add_argument("--part", type=int, default=None,
-                    help="--distill --extra / --botgen-tp --extra-p / --extra-t (required there): top-up part number 1..10, a new one per top-up (its own seed block)")
+                    help="top-up part 1..10, a new one per top-up (own seed block); required with --extra, --extra-p/-t")
     ap.add_argument("--memory-log", action="store_true",
-                    help="--dagger: the model writes decision logs for the memory_action relabel (041-R28); --distill / --teacher-round: always on")
-    ap.add_argument("--teacher-tp", action="store_true", help="write the 022-R11 check plan of the 022 teacher terran_tp (config/plans/teacher_tp_check.toml)")
-    ap.add_argument("--botgen-tp", action="store_true", help="write the 022-R12 botgen plan of the 022 teacher terran_tp (config/plans/teacher_botgen_tp.toml)")
+                    help="--dagger: write decision logs for the memory_action relabel (always on: --distill, --teacher-round)")
+    ap.add_argument("--teacher-tp", action="store_true", help="write the check plan of the terran_tp teacher (config/plans/teacher_tp_check.toml)")
+    ap.add_argument("--botgen-tp", action="store_true", help="write the botgen plan of the terran_tp teacher (config/plans/teacher_botgen_tp.toml)")
     ap.add_argument("--teacher-round", action="store_true",
-                    help="write the 044-R8 teacher round t1 self-game plan config/plans/dagger_m2_t1.toml (300 games, the 044-R1 composition; needs --checkpoint)")
+                    help="write the teacher round t1 self-game plan config/plans/dagger_m2_t1.toml (needs --checkpoint)")
     a = ap.parse_args()
     if a.teacher_tp or a.botgen_tp:
         assert not (a.teacher_tp and a.botgen_tp), "--teacher-tp and --botgen-tp are separate plans"

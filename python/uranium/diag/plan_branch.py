@@ -1,4 +1,4 @@
-"""`python -m uranium diag plan-branch` (051-R13): the branch-game analysis on CPU. Measurement only."""
+"""Branch-game analysis on CPU (measurement only)"""
 
 import glob
 import hashlib
@@ -22,7 +22,7 @@ OWN_SAMPLES = ("t60", "t120", "t240", "horizon", "d8", "d32")
 
 
 def add_args(p) -> None:
-    p.add_argument("--dir", required=True, help="branch output folder (points.jsonl, branches.jsonl; 051-R12)")
+    p.add_argument("--dir", required=True, help="branch output folder (points.jsonl, branches.jsonl)")
     p.add_argument("--points", help="points file (default <dir>/points.jsonl)")
     p.add_argument("--branches", help="branches file (default <dir>/branches.jsonl)")
     p.add_argument("--out", help="output folder (default <dir>/analysis)")
@@ -30,16 +30,16 @@ def add_args(p) -> None:
     p.add_argument("--s0", help="plan-s0 folder with models/A_k<k>.pt (the S0b predictor A; M3u / M2c)")
     p.add_argument("--root", help="base of the relative trunk replay paths (default URANIUM_SHARED_DIR, then --dir)")
     p.add_argument("--outcomes", default=",".join(OUTCOMES),
-                   help="outcomes Y (051-R11 ④: main held_8m, held_s, then the auxiliary ones; metrics / end fields, dotted paths, own@<sample>:<column>)")
+                   help="outcomes Y, main ones first: metric / end fields, dotted paths, own@<sample>:<column>")
     p.add_argument("--own-samples", default=",".join(OWN_SAMPLES),
-                   help="branch samples whose own state is an outcome (051-R11 ④: t + 1 / 2 / 4 min, H = 8:00, t + 8 / 32 decisions; empty = none)")
+                   help="branch samples whose own state is an outcome (empty = none)")
     p.add_argument("--own-cols", default=",".join(plan_s0.OWN_HEADLINE), help="own-state columns of those outcomes (own@<sample>:<column>)")
-    p.add_argument("--m3u-outcome", default="held_8m", help="the measured outcome M3u compares with the scv8 head (050-R6 ③)")
-    p.add_argument("--baseline", default="none", help="alternative the effects are taken against (051-R7 no intervention)")
+    p.add_argument("--m3u-outcome", default="held_8m", help="the measured outcome M3u compares with the scv8 head")
+    p.add_argument("--baseline", default="none", help="alternative the effects are taken against (none = no intervention)")
     p.add_argument("--ks", default="8,32", help="predictor k of M3u / M2c (models A_k<k>.pt)")
     p.add_argument("--sample-k8", default="d8", help="branch sample of the 8th decision after t (M2c k = 8)")
     p.add_argument("--sample-k32", default="d32", help="branch sample of the 32nd decision after t (M2c k = 32)")
-    p.add_argument("--row-lag", type=int, default=2, help="live frame f_t -> dump row at playback frame f_t - lag (041-R28 ②)")
+    p.add_argument("--row-lag", type=int, default=2, help="live frame f_t -> dump row at playback frame f_t - lag")
     p.add_argument("--boot", type=int, default=2000)
     p.add_argument("--boot-seed", type=int, default=7)
 

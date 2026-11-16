@@ -1,4 +1,4 @@
-"""Result tables of eval jobs (050-R9 / 050-AC5 measurement protocol, 050-R6 / 050-R7 / 050-R8,"""
+"""Result tables of eval jobs (rush, macro, T1, win rate)"""
 
 from __future__ import annotations
 
@@ -466,7 +466,7 @@ def main(argv=None) -> None:
     ap.add_argument("--json", type=Path, default=None, help="write every stage's numbers (input of protocol.py compare)")
     ap.add_argument("--cache", type=Path, default=None, help="command stream cache (default <URANIUM_CACHE_DIR or runs>/eval_cmddump)")
     ap.add_argument("--kind", action="append", default=[], help="<stage name>=<rush|macro|t1|winrate> for a plan outside the protocol")
-    ap.add_argument("--ops", choices=OPS_SOURCES, default="replay", help="052-R8 tables from opsdump replay values (default), the session rows' live values, or none")
+    ap.add_argument("--ops", choices=OPS_SOURCES, default="replay", help="ops tables from opsdump replay values (default), the session rows' live values, or none")
     ap.add_argument("--ops-jobs", type=int, default=1, help="parallel opsdump processes (OpenBW playbacks: not on a training host)")
     a = ap.parse_args(argv)
     ec.load_env()

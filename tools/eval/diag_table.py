@@ -1,4 +1,4 @@
-"""Tables of the 050-R9 diagnostics (cue_diag, dead_channels; config/protocol/lineage.toml, docs/guide/"""
+"""Tables of the pinned diagnostics (cue_diag, dead_channels) of lineage points"""
 
 from __future__ import annotations
 

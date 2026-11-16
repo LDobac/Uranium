@@ -1,4 +1,4 @@
-"""Branch-game results (spec 051): one `branches.jsonl` line per played branch game (051-R12), from the"""
+"""Collect branch-game results: one branches.jsonl line per played branch game"""
 
 from __future__ import annotations
 
@@ -130,7 +130,7 @@ def collect(job: Path, stage: str | None, root: Path) -> dict:
 
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--job", required=True, type=Path, help="branch job folder (051-R12 output folder; as given if it exists, else under URANIUM_SHARED_DIR)")
+    ap.add_argument("--job", required=True, type=Path, help="branch job folder (as given if it exists, else under URANIUM_SHARED_DIR)")
     ap.add_argument("--stage", default=None, help="branch stage name (default: the job's only branch stage)")
     ap.add_argument("--root", default=None, help="shared drive (default URANIUM_SHARED_DIR)")
     a = ap.parse_args(argv)

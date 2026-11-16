@@ -1,4 +1,4 @@
-"""050-R10 Terran / Protoss regression gate (050-AC5, AMB-050-3 Resolved 2026-11-09; docs/guide/measurement_protocol.md"""
+"""Terran / Protoss regression gate of a candidate against its baseline"""
 
 from __future__ import annotations
 

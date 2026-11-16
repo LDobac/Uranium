@@ -4,7 +4,7 @@ import time
 
 
 def add_parser(sub) -> None:
-    p = sub.add_parser("bc-profile", help="time per phase and operator of BC updates (060-AC4)")
+    p = sub.add_parser("bc-profile", help="time per phase and operator of BC updates")
     p.add_argument("--dataset", action="append", default=[])
     p.add_argument("--shards", action="append", default=[])
     p.add_argument("--batches", type=int, default=3, help="measured updates after one warm-up update")

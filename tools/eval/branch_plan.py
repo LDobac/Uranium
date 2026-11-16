@@ -1,4 +1,4 @@
-"""Branch-game plans (spec 051): the trunk plan, and from the trunk job's results the decision points"""
+"""Branch-game plans: the trunk plan, then points, branch list and branch plan from the trunk job"""
 
 from __future__ import annotations
 
@@ -440,25 +440,25 @@ def build(a) -> dict:
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    t = sub.add_parser("trunk", help="write the trunk plan (051-R11 1)")
+    t = sub.add_parser("trunk", help="write the trunk plan")
     t.add_argument("--config", type=Path, default=bc.ROOT / "config" / "branch_b1.toml")
     t.add_argument("--out", type=Path, required=True)
     t.add_argument("--name", default=None, help="plan (stage) name, default <config name>-trunk")
     t.add_argument("--exclude-job", type=Path, action="append", default=[], help="leave out the seeds of this job's stages")
     t.add_argument("--hit", type=int, default=None, help="first-target-hit trunks per map (default the config's)")
     t.add_argument("--miss", type=int, default=None, help="miss trunks per map (default the config's)")
-    b = sub.add_parser("branches", help="points, branch list and branch plan from the trunk job (051-R10)")
+    b = sub.add_parser("branches", help="points, branch list and branch plan from the trunk job")
     b.add_argument("--trunk-job", required=True, help="trunk job folder (as given if it exists, else under URANIUM_SHARED_DIR)")
     b.add_argument("--stage", action="append", required=True, help="trunk stage name (repeat for replacement stages)")
     b.add_argument("--config", type=Path, default=bc.ROOT / "config" / "branch_b1.toml")
-    b.add_argument("--out", required=True, help="branch job folder (051-R12 output folder; as given if it exists or is absolute, else under URANIUM_SHARED_DIR)")
+    b.add_argument("--out", required=True, help="branch job folder (as given if it exists or is absolute, else under URANIUM_SHARED_DIR)")
     b.add_argument("--root", default=None, help="shared drive (default URANIUM_SHARED_DIR)")
     b.add_argument("--name", default=None, help="branch plan (stage) name, default the config name")
-    b.add_argument("--alts", default=None, help="comma list of alternatives to keep (default all, 051-AC6 uses none,force_bunker)")
+    b.add_argument("--alts", default=None, help="comma list of alternatives to keep (default all; e.g. none,force_bunker)")
     b.add_argument("--repeats", type=int, default=None)
     b.add_argument("--hit", type=int, default=None)
     b.add_argument("--miss", type=int, default=None)
-    b.add_argument("--verify-state", action="store_true", help="verify_state = true (051-R6 test option, 051-AC6)")
+    b.add_argument("--verify-state", action="store_true", help="set verify_state = true (test option)")
     b.add_argument("--hosts", default=None, help="also write job.toml with this hosts file (relative to the job folder)")
     b.add_argument("--replacements", default=None, help="write the replacement trunk plan here when a cell is short")
     b.add_argument("--replacement-name", default=None)

@@ -1,6 +1,4 @@
-"""`python -m uranium diag plan-dump` (jepa_planning S0, docs/report/plan/2026_11_11_14_56_jepa_planning.md 6.3; 050-R9 diagnostics
-tooling, 032-R24 aux outputs): one teacher-forced pass of a checkpoint over the games of a shard source;
-every real step before `--row-until` becomes one row of the S0 feasibility test (`diag plan-s0`)."""
+"""One teacher-forced pass over shard games; each real step before --row-until is one plan-s0 row"""
 
 import functools
 import json
@@ -68,22 +66,21 @@ def scv_done(scalar: np.ndarray) -> np.ndarray:
 
 
 def add_args(p) -> None:
-    p.add_argument("--checkpoint", required=True, help="checkpoint folder or a 061 run folder (its LATEST)")
-    p.add_argument("--dataset", action="append", default=[], help="dataset under the shared drive (041-R9), repeatable")
+    p.add_argument("--checkpoint", required=True, help="checkpoint folder or a run folder (its LATEST)")
+    p.add_argument("--dataset", action="append", default=[], help="dataset under the shared drive, repeatable")
     p.add_argument("--shards", action="append", default=[], help="shard folder, repeatable")
     p.add_argument("--splits", default="val,test", help="comma-separated splits to read")
-    p.add_argument("--games", type=int, help="only this many games per split (fixed-seed shuffle, 032-R17 ②; n is a prefix of a larger n)")
+    p.add_argument("--games", type=int, help="only this many games per split (fixed-seed shuffle; n is a prefix of a larger n)")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--config", default="config/bc.toml")
     p.add_argument("--backend", choices=["cuda", "rocm", "cpu"])
     p.add_argument("--out", required=True, help="output folder (must not hold a finished dump)")
-    p.add_argument("--row-until", type=float, default=14400, help="rows before this frame (default 10:00, 6.2)")
+    p.add_argument("--row-until", type=float, default=14400, help="rows before this frame (default 10:00)")
     p.add_argument("--read-until", type=float, default=-1,
                    help="read each game only up to this frame (default: --row-until; 0 = whole games); the rows are the same")
     p.add_argument("--gk", default="8,32", help="g_k outputs to keep (the k the model has; empty = none)")
     p.add_argument("--classes", help="JSON {replay_sha256: class or {\"class\": ...}}: a given build class per game (cls_given)")
-    p.add_argument("--skip-views", help="views JSON ({\"bot\": [[sha256, start], ...], ...}, config/plan_s0/jepa_diag_tp_views.json): the streams "
-                   "of the \"bot\" list get no rows (games.json `skipped`), and a lane group whose lanes are all such streams skips its forward")
+    p.add_argument("--skip-views", help="views JSON {\"bot\": [[sha256, start], ...], ...}: streams in the \"bot\" list get no rows")
     p.add_argument("--lanes-per-group", type=int, default=8)
     p.add_argument("--limit-batches", type=int, default=0)
     p.add_argument("--maps-dir", help="map folder (else from .env)")

@@ -1,4 +1,4 @@
-"""Per-action teacher-forced accuracy of a checkpoint on the teacher hold-out (050-R9 protocol metric"""
+"""Per-action teacher-forced accuracy of a checkpoint on the teacher hold-out"""
 
 from __future__ import annotations
 
@@ -445,11 +445,9 @@ def main(argv=None) -> None:
     ap.add_argument("--backend", default="cuda")
     ap.add_argument("--config", default=str(ec.ROOT / "config" / "bc.toml"))
     ap.add_argument("--classes", default=None,
-                    help="041-R27 rush / macro split: auto (the teacher botgen plans; default for --holdout), none (default for --shards), "
-                         "or a JSON file {replay_sha256: rush|macro}")
+                    help="rush/macro split: auto, none or JSON {replay_sha256: rush|macro} (default auto; none with --shards)")
     ap.add_argument("--chain-start", default="botgen",
-                    help="041-R30 ⑤: also score with the chain-start observation of these sources (comma list of botgen, dagger; "
-                         "default botgen) into `chain_start`; none = current observation only")
+                    help="also score from the chain-start observation of these sources (botgen, dagger; none = off)")
     a = ap.parse_args(argv)
     ec.load_env()
     ck = Path(a.checkpoint)

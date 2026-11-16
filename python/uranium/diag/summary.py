@@ -1,7 +1,4 @@
-"""Per-lineage-point diagnostic summary (050-R9: the measurement protocol records one per checkpoint):
-`python -m uranium diag summary` merges the outputs of `probes`, `intervene`, `spatial` and
-`core-split` into one small JSON of the headline numbers. All inputs must be of one checkpoint
-(sha256); the spatial entry is picked by it."""
+"""Merge the probes, intervene, spatial and core-split outputs of one checkpoint into one JSON"""
 
 import datetime
 import json

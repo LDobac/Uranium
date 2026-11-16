@@ -1,4 +1,4 @@
-"""Per-action teacher hold-out table (050-R9 protocol metric `per_action`, 041-R21): one column per"""
+"""Per-action teacher hold-out table: one column per per_action JSON"""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("columns", nargs="+", help="<label>=<per_action json>")
     ap.add_argument("--json", type=Path, default=None)
-    ap.add_argument("--chain-start", action="store_true", help="041-R30 ⑤: the chain-start observation block of each JSON")
+    ap.add_argument("--chain-start", action="store_true", help="the chain-start observation block of each JSON")
     a = ap.parse_args(argv)
     data = {}
     for c in a.columns:

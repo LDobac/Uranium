@@ -1,5 +1,4 @@
-"""021 T1 config variant (2026-11-03 user decision, AMB-042-15): copy a deployed T1 bot folder and
-change its opening config only, so every game host gets the same variant without hand edits."""
+"""Copy a deployed T1 bot folder as a variant with one opening-config edit"""
 
 import argparse
 import hashlib

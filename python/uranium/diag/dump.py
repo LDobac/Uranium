@@ -1,7 +1,4 @@
-"""`python -m uranium diag dump`: one teacher-forced pass of a checkpoint over the games of a shard
-source (docs/report/survey/2026_11_08_19_26_jepa_survey.md 7.2), per-row features and offline labels, the activations at the
-stages, and with `--cf` the counterfactual passes of the intervention (7.2 (4)), each with its own
-recurrent state from the game start."""
+"""One teacher-forced pass over shard games: per-row features, labels, activations, --cf passes"""
 
 import json
 import os
@@ -27,11 +24,11 @@ STAGES = ("token", "e_pool", "sp_pool", "c", "h")
 
 
 def add_args(p) -> None:
-    p.add_argument("--checkpoint", required=True, help="checkpoint folder, a 061 run folder (its LATEST), or `none` (features only)")
-    p.add_argument("--dataset", action="append", default=[], help="dataset under the shared drive (041-R9), repeatable")
+    p.add_argument("--checkpoint", required=True, help="checkpoint folder, a run folder (its LATEST), or `none` (features only)")
+    p.add_argument("--dataset", action="append", default=[], help="dataset under the shared drive, repeatable")
     p.add_argument("--shards", action="append", default=[], help="shard folder, repeatable")
     p.add_argument("--splits", default="val,test", help="comma-separated splits to read (holdouts: val,test)")
-    p.add_argument("--games", type=int, help="only this many games per split (fixed-seed shuffle, 032-R17 ②)")
+    p.add_argument("--games", type=int, help="only this many games per split (fixed-seed shuffle)")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--config", default="config/bc.toml")
     p.add_argument("--backend", choices=["cuda", "rocm", "cpu"])
@@ -40,8 +37,7 @@ def add_args(p) -> None:
     p.add_argument("--act-until", type=float, default=5760, help="model passes and activations before this frame (default 4:00)")
     p.add_argument("--act-every", type=int, default=1, help="activations of every k-th step")
     p.add_argument("--read-until", type=float, default=0,
-                   help="read each game only up to this frame (0 = whole games; at least --row-until and --act-until): the same rows, "
-                        "fewer steps to extract (the rows' order in the parts differs)")
+                   help="read each game only up to this frame (0 = whole games; at least --row-until and --act-until)")
     p.add_argument("--lanes-per-group", type=int, default=8)
     p.add_argument("--core-points", choices=["none", "gate", "full"], default="gate", help="GTrXL sub-points to keep")
     p.add_argument("--cf", action="store_true", help="also run the counterfactual passes (`diag intervene`)")

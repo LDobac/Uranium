@@ -1,6 +1,4 @@
-"""`python -m uranium diag plan-s0` (jepa_planning S0, docs/report/plan/2026_11_11_14_56_jepa_planning.md 6.4-6.5; 050-R9 diagnostics):
-the S0 feasibility test on `diag plan-dump` folders, on CPU. Measurement only (no model, spec or
-planner change)."""
+"""S0 feasibility test on `diag plan-dump` folders, on CPU (measurement only)"""
 
 import json
 import time
@@ -21,7 +19,7 @@ TH_DEFAULTS = {"s_ratio": 2.0, "r_min": 0.2, "r_noise": 0.1, "m2b": 0.90, "m2a":
 
 
 def add_args(p) -> None:
-    p.add_argument("--src", action="append", required=True, help="NAME:KIND:ROLE=PATH, a plan-dump folder (KIND human|teacher|model, ROLE train|eval|split), repeatable")
+    p.add_argument("--src", action="append", required=True, help="NAME:KIND:ROLE=PATH plan-dump folder (KIND human|teacher|model, ROLE train|eval|split), repeatable")
     p.add_argument("--out", required=True, help="output folder (models/, s0.json, s0.md)")
     p.add_argument("--tag", default="", help="report file suffix (s0-<tag>.json / .md), e.g. a second report with other M3b races")
     p.add_argument("--stage", choices=["all", "train", "report"], default="all")
@@ -36,26 +34,24 @@ def add_args(p) -> None:
     p.add_argument("--retrain", action="store_true")
     p.add_argument("--eval-frac", type=float, default=0.2, help="eval share of a `split` source (game level)")
     p.add_argument("--split-seed", type=int, default=1)
-    p.add_argument("--drop", action="append", default=[], help="NAME=JSON: the views of source NAME ({\"bot\": [[sha256, start], ...], \"model\": [...]}, "
-                   "config/plan_s0/jepa_diag_tp_views.json): bot views left out, every stream must be listed")
+    p.add_argument("--drop", action="append", default=[], help="NAME=JSON views of NAME ({\"bot\": [...], \"model\": [...]}, every stream listed): bot views dropped")
     p.add_argument("--keep-bot-perspective", action="store_true", help="accept a model source's Terran-enemy streams without --drop (both TvT views)")
     p.add_argument("--maps", default="", help="only games of these map families (e.g. 0,1 = the target maps; empty = all)")
     p.add_argument("--boot", type=int, default=1000)
     p.add_argument("--boot-seed", type=int, default=7)
     p.add_argument("--bands", default="2880,5760,8640,14400", help="M3a time bands (frame edges; the first..last span is `all`)")
-    p.add_argument("--m3b-races", default="Z", help="enemy races of the M3b / M3c rows (6.4: Zerg)")
+    p.add_argument("--m3b-races", default="Z", help="enemy races of the M3b / M3c rows")
     p.add_argument("--m3b-window", default="2880,5040", help="M3b frame window (2:00-3:30)")
     p.add_argument("--m3b-macro", default="macro", help="build classes counted as macro (comma-separated)")
     for k, v in TH_DEFAULTS.items():
-        p.add_argument(f"--th-{k.replace('_', '-')}", type=float, default=v, help=f"6.5 threshold, 기본안(미확정) {v}")
-    p.add_argument("--th-own-k", type=int, help="k of the M1 own-state criterion (기본안(미확정) 8; 0 = no own-state criterion; not with --v1, which has none)")
+        p.add_argument(f"--th-{k.replace('_', '-')}", type=float, default=v, help=f"verdict threshold (default {v})")
+    p.add_argument("--th-own-k", type=int, help="k of the M1 own-state criterion (default 8; 0 = none; not with --v1)")
     d = pp.Design()
-    p.add_argument("--v1", action="store_true", help="the first S0 run's design (every valid row, h' only, level targets, same-game S partner) "
-                   "and verdict: its models and numbers")
+    p.add_argument("--v1", action="store_true", help="the first S0 run's design and verdict (every valid row, h' only, level targets, same-game S)")
     p.add_argument("--chains", choices=["drop", "keep"], help="chained rows of --chain-kinds: drop (default) or keep (--v1)")
     p.add_argument("--chain-kinds", help=f"source kinds whose chained rows are dropped (default {','.join(d.chain_kinds)})")
     p.add_argument("--own-input", choices=["on", "off"], help="o_t as a predictor input (default on; --v1 off)")
-    p.add_argument("--own-target", choices=["delta", "level"], help="ô target: o_{t+k} - o_t (default) or o_{t+k} (--v1)")
+    p.add_argument("--own-target", choices=["delta", "level"], help="own-state target: o_{t+k} - o_t (default) or o_{t+k} (--v1)")
     p.add_argument("--s-partner", choices=["other-game", "same-game"], help="S control partner row: another game of the source (default) or the same game (--v1)")
     p.add_argument("--k-unit", choices=["dec", "frame"], help="k in decisions (default) or frames (t+k = the first row k frames or more later)")
 

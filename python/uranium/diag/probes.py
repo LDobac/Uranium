@@ -1,6 +1,4 @@
-"""`python -m uranium diag probes`: cue probes per enemy race on a `diag dump` (docs/report/survey/2026_11_08_19_26_jepa_survey.md
-7.2-7.4; never pooled over races). Offline labels from the privileged counts; the stages are the
-model's own activations."""
+"""Cue probes per enemy race on a `diag dump` (offline labels from privileged counts)"""
 
 import json
 import time

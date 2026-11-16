@@ -22,22 +22,21 @@ UNITS = {
 
 
 def add_parser(sub) -> None:
-    p = sub.add_parser("bc-eval", help="041 offline metrics of a checkpoint on a split")
+    p = sub.add_parser("bc-eval", help="offline BC metrics of a checkpoint on a split")
     p.add_argument("--dataset", action="append", default=[])
     p.add_argument("--shards", action="append", default=[])
-    p.add_argument("--checkpoint", required=True, help="checkpoint folder, or a 061 run folder (its LATEST)")
+    p.add_argument("--checkpoint", required=True, help="checkpoint folder, or a run folder on the shared drive (its LATEST)")
     p.add_argument("--split", choices=["train", "val", "test"], default="test")
     p.add_argument("--backend", choices=["cuda", "rocm", "cpu"])
     p.add_argument("--core", choices=["lstm", "gtrxl"], help="checked against the checkpoint")
-    p.add_argument("--games", type=int, help="score this many games by a fixed-seed shuffle of the split (032-R17 ②)")
+    p.add_argument("--games", type=int, help="score this many games by a fixed-seed shuffle of the split")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--config", default="config/bc.toml")
-    p.add_argument("--out", help="also write the JSON report to this file (032-R20 ③ val scoring)")
+    p.add_argument("--out", help="also write the JSON report to this file")
     p.add_argument("--bunker-before", type=int, metavar="FRAME",
-                   help="also report the mean p(Build_Bunker) over the scored steps before this frame, per enemy race (050-R10 ③; 4:00 = 5760)")
+                   help="also report mean p(Build_Bunker) on scored steps before this frame, per enemy race (4:00 = 5760)")
     p.add_argument("--chain-start-sources", nargs="+", metavar="SRC", choices=["botgen", "dagger"],
-                   help="041-R30 ⑤: score chained steps of these sources with their chain-start observation (the config's "
-                        "[data] chain_start_sources is not followed; default: every step its own observation)")
+                   help="score these sources' chained steps from their chain-start observation (default none; config ignored)")
     p.add_argument("--maps-dir", help=argparse.SUPPRESS)
     p.add_argument("--synthetic-maps", action="store_true", help=argparse.SUPPRESS)
     p.set_defaults(fn=main)

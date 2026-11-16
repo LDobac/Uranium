@@ -1,4 +1,4 @@
-"""052-R7 replay values of the comparison sets outside the eval jobs (`tables.py --ops` covers those):"""
+"""Replay ops values of comparison sets outside the eval jobs (botgen or human replays)"""
 
 from __future__ import annotations
 

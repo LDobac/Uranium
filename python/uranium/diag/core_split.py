@@ -1,5 +1,4 @@
-"""`python -m uranium diag core-split`: where inside the GTrXL core a cue is lost (docs/report/survey/
-2026_11_08_19_26_jepa_survey.md 10.3), on a `diag dump` with the core sub-points (`--core-points gate` or `full`)."""
+"""Where inside the GTrXL core a cue is lost, on a `diag dump` made with --core-points gate or full"""
 
 import json
 from pathlib import Path

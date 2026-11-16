@@ -1,4 +1,4 @@
-"""Per-checkpoint scoring of the second S1 epoch (041-R20 ③; 050-R9 point `s1e2`, "m2-s1e2 체크포인트마다"):"""
+"""Per-checkpoint scoring of the second S1 epoch: val 500 and T0 100 jobs and their table"""
 
 from __future__ import annotations
 

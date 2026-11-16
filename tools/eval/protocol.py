@@ -1,4 +1,4 @@
-"""Lineage measurement protocol (050-R9, 050-AC5; plan "측정 프로토콜", docs/guide/measurement_protocol.md):"""
+"""Lineage measurement protocol (docs/guide/measurement_protocol.md)"""
 
 from __future__ import annotations
 
@@ -1237,7 +1237,7 @@ def main(argv=None) -> None:
     s.add_argument("--point", required=True)
     s.add_argument("--checkpoint", required=True, help="relative to URANIUM_SHARED_DIR")
     s.add_argument("--metrics", required=True, help="comma separated game metrics of the point's menu")
-    s.add_argument("--job", required=True, help="job folder name under <shared>/eval (per zero_last_failed group: -<metrics>, plus -lf0 / -real when two groups have the same metrics)")
+    s.add_argument("--job", required=True, help="job folder name under <shared>/eval (one folder per zero_last_failed group, suffixed)")
     s.add_argument("--label", default=None, help="stage name prefix (default the run name)")
     s.add_argument("--hosts", default=str(HOSTS))
     s.add_argument("--bot-hashes", default=None, help="file of `<addr> <bot> <sha256>` lines for hosts without local / ssh")
@@ -1250,7 +1250,7 @@ def main(argv=None) -> None:
     s.add_argument("--point", required=True)
     s.add_argument("--json", default=None)
     s.add_argument("--cache", default=None)
-    s.add_argument("--ops", choices=("replay", "live", "off"), default="replay", help="052-R8 tables: opsdump replay values (the path comparison's), live row values, or none")
+    s.add_argument("--ops", choices=("replay", "live", "off"), default="replay", help="ops tables: opsdump replay values (the path comparison's), live row values, or none")
     s.add_argument("--ops-jobs", type=int, default=1, help="parallel opsdump processes")
     s.set_defaults(f=cmd_tables)
     s = sub.add_parser("render", help="one measurement plan from its template")
@@ -1259,7 +1259,7 @@ def main(argv=None) -> None:
     s.add_argument("--name", required=True)
     s.add_argument("--out", default=None)
     s.set_defaults(f=cmd_render)
-    s = sub.add_parser("verify", help="check an eval job against the protocol (050-AC5)")
+    s = sub.add_parser("verify", help="check an eval job against the protocol")
     s.add_argument("job")
     s.add_argument("--lineage", required=True)
     s.add_argument("--point", required=True)
@@ -1282,11 +1282,11 @@ def main(argv=None) -> None:
     s.add_argument("--metrics", default="cue_diag,dead_channels")
     s.add_argument("--train-log", default=None, help="dead_channels: the run's training log (BC stderr log or RL train.csv)")
     s.add_argument("--out", default=None, help="default <shared>/<metric output>")
-    s.add_argument("--run", action="store_true", help="run the commands here (else print them; nothing is written, the hold-out link trees are made by --run)")
+    s.add_argument("--run", action="store_true", help="run the commands here (else only print them; nothing is written)")
     s.add_argument("--allow-dirty", action="store_true")
-    s.add_argument("--takeover", action="store_true", help="redo a folder whose running.json shows an attempt in progress (its host is gone); kept as .failed-<k>")
+    s.add_argument("--takeover", action="store_true", help="redo a folder whose running.json shows an attempt of a gone host; kept as .failed-<k>")
     s.add_argument("--part", choices=["all", "gpu", "cpu"], default="all",
-                   help="gpu: the dumps and their copies (Linux ROCm host), leaving running.json; cpu: the rest on another host at the same commit")
+                   help="gpu: the dumps and their copies, leaving running.json; cpu: the rest, on a host at the same commit")
     s.set_defaults(f=cmd_diag)
     s = sub.add_parser("check-diag", help="refuse diagnostic outputs made with other settings or data")
     s.add_argument("out", help="the diagnostics output folder")

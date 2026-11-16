@@ -1,10 +1,4 @@
-"""`python -m uranium diag spatial`: dead-channel check (032-R25, docs/report/survey/2026_11_08_19_26_jepa_survey.md 10.4). Per
-checkpoint, teacher-forced passes over a few batches of real steps: every ReLU-bearing point's
-positive fraction and never-active channel count (`uranium.model.monitor` with `points="all"`:
-spatial stages incl. the bottleneck / s8, entity FFN, head ResMlp, core FFN), the near-constant S8
-channels and s_pool dimensions (`const`, std below `--const-threshold`), and the spatial convs'
-weight sums (a filter whose weights sum far below zero on a non-negative input is what killed s8).
-The same games for every checkpoint (a fresh stream each)."""
+"""Dead-channel check per checkpoint: positive fraction, never-active and near-constant channels"""
 
 import json
 import time
@@ -20,12 +14,12 @@ def add_args(p) -> None:
     p.add_argument("--split", default="val")
     p.add_argument("--config", default="config/bc.toml")
     p.add_argument("--backend", choices=["cuda", "rocm", "cpu"])
-    p.add_argument("--precision", choices=["auto", "f32"], default="auto", help="auto = the backend's (032-R8); f32 = no autocast")
+    p.add_argument("--precision", choices=["auto", "f32"], default="auto", help="auto = the backend's training precision; f32 = no autocast")
     p.add_argument("--batches", type=int, default=2, help="batches recorded")
     p.add_argument("--skip-batches", type=int, default=2, help="batches run first without recording (recurrent state warm-up)")
     p.add_argument("--lanes-per-group", type=int, default=8)
     p.add_argument("--no-inner", action="store_true", help="skip the ResBlocks' inner ReLU (one conv recomputed per block)")
-    p.add_argument("--const-threshold", type=float, default=1e-4, help="032-R25 ③ const: std below this (AMB-041-14)")
+    p.add_argument("--const-threshold", type=float, default=1e-4, help="a channel or dimension is const when its std is below this")
     p.add_argument("--out", required=True, help="output JSON")
     p.add_argument("--maps-dir", help="map folder (else from .env)")
     p.add_argument("--synthetic-maps", action="store_true", help="tests: synthetic maps")

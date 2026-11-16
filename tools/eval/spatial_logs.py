@@ -1,4 +1,4 @@
-"""041-R25 dead-channel record summary of a training run log (050-R9 `dead_channels`, user decision"""
+"""Dead-channel record summary of a training run log (BC stderr log or RL train.csv)"""
 
 from __future__ import annotations
 

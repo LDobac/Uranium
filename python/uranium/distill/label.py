@@ -10,8 +10,8 @@ FRAMES_PER_MINUTE = 24 * 60
 
 
 def add_parser(sub) -> None:
-    p = sub.add_parser("distill-label", help="044-R3 policy labels for distill_pre shards (self-game distillation)")
-    p.add_argument("--checkpoint", required=True, help="labeller checkpoint folder, or a 061 run folder (its LATEST)")
+    p = sub.add_parser("distill-label", help="policy labels for distill_pre shards (self-game distillation)")
+    p.add_argument("--checkpoint", required=True, help="labeller checkpoint folder, or a run folder (its LATEST)")
     p.add_argument("--mode", choices=["sample", "argmax"], default="sample", help="sample: one draw at temperature 1 (training data); argmax: tool option only")
     p.add_argument("--label-seed", type=int, required=True, help="seed of the per-view draws (with the replay hash and perspective)")
     p.add_argument("--in", dest="input", required=True, help="distill_pre shard folder (uranium-replay build --src distill --out)")
@@ -20,7 +20,7 @@ def add_parser(sub) -> None:
     p.add_argument("--config", default="config/bc.toml", help="BC config: lanes and seq_len of the pass (data settings as bc-eval)")
     p.add_argument("--backend", choices=["cuda", "rocm", "cpu"])
     p.add_argument("--micro-lanes", type=int, help="lanes per forward (default: the config's micro_lanes, as bc-eval)")
-    p.add_argument("--threads", type=int, help="040-R19 check threads (default URANIUM_BC_FEED_THREADS)")
+    p.add_argument("--threads", type=int, help="shard check threads (default URANIUM_BC_FEED_THREADS)")
     p.add_argument("--maps-dir", help=argparse.SUPPRESS)
     p.add_argument("--synthetic-maps", action="store_true", help=argparse.SUPPRESS)
     p.set_defaults(fn=main)

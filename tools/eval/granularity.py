@@ -1,44 +1,4 @@
-"""G0 decision-granularity measurement (model-2 plan P0 "G0"; docs/report/investigation/2026_11_04_22_20_m6_rl_rootcause.md section 4).
-
-Input of the deferred decision AMB-031-7 (031 "결정 단위", [SPEC DEFERRED(G0)]): does the 031-R3
-12-unit selection cap bind in rush defence, or is the rush-defence failure set by what the policy
-learned (031 delay buckets, one command per decision)? The measurement changes no action space;
-whether to keep it is the user's AMB-031-7 decision. Compared in the window 2:30-4:30 (frames
-3,600-6,480, 24 frames/s as everywhere in this repo) of rush games:
-
-- people: S2 human shards (040-R9), TvZ on the target maps, labels as stored (040-R3, R4). These
-  passed the 040 5-minute filter, so a person who lost to a rush in under 5 minutes is missing;
-- the 021-R8 scripted teacher: its botgen rush games (replays), its own commands;
-- Checkpoint 1 (bc-dagger-r1/ckpt-1137): its rush-check and DAgger-round-2 games (replays).
-
-Replays go through the same 040 labeler as the shards (`uranium-replay granularity --replays`: one
-label per command, same-frame commands become delay-1 chains, 031-R11 floor buckets), with no
-5-minute bar, so games lost early to a rush stay in. Everything is read from the per-game dumps of
-`uranium-replay granularity` (labels + compact own/enemy states).
-
-Metrics (per group of games):
-1. delay-bucket histogram per action group (labelled delay = frames to the next command label),
-   with the games contributing, the most labels one game gives, and the per-game median of the
-   game's mean delay;
-2. 12-cap saturation: share of unit-command selections of exactly 12 units while more than 12
-   eligible own SCVs/marines (completed, not loaded) were within 8 tiles of the selection centre;
-3. same-frame bursts: share of command labels at most 2 frames after the previous one;
-4. SCV micro: distinct SCVs given a combat command (move/attack/smart/repair/hold/stop/patrol;
-   a right click on a neutral unit is a mining click = Gather, not combat) per 5 s bin with enemy
-   army near the main; bunker completion -> first load (Load_Unit or a marine's right click on the
-   bunker); the bunker's first HP drop -> first repair of that bunker (Repair_Unit or an SCV's right
-   click on it), with the games that got no repair in the window (censored);
-5. command labels per 1,000 frames in the window (and, for model games, the agent's own
-   decisions per 1,000 frames over the whole game from the eval results).
-
-Game groups: "early" = the 050-R6 / 020-R21 seed condition (opponent's first target is our main,
-`eval_common.start_condition`) for plan games; people have no seed, so their "rush" is observed
-contact: at least 2 zerglings within 20 tiles of our start by 3:30 and at least 4 by 4:30.
-Held (docs/guide/measurement_protocol.md, 050-R9): `held_8m` = at least 8 own SCVs at 8:00, a game that
-ended before 8:00 fails; `held_8m_winpass` also passes a game won before 8:00. Both counts are
-reported; held / lost groups are split by `held_8m_winpass`, because the teacher wins about half of
-its botgen rush games before 8:00 (the opponent is eliminated or leaves) and `held_8m` would count
-those defences as failures.
+"""Decision-granularity tables of rush defence 2:30-4:30: people, teacher and model games.
 
     # dumps (CPU; replays need the OpenBW launcher and bridge from .env)
     uranium-replay granularity <shard dirs> --matchup TvZ --stage S2 \\
@@ -49,9 +9,6 @@ those defences as failures.
         --teacher <out>/teacher_botgen.jsonl.gz <plan.toml> \\
         --model <out>/model_check.jsonl.gz <job>/plans/01-rush5check.toml <job> 1 ... \\
         --out <out>/granularity.md --json <out>/granularity.json
-
-Plan games are matched to seeds by the replay name `g<n>` (game n = seeds[n - 1], matchups in
-order); `--opponents` keeps the opponents of the 050-R6 rush check (T0 zerg_rush, UAB 12-pool).
 """
 import argparse
 import bisect
