@@ -1,5 +1,6 @@
 import functools
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -270,3 +271,53 @@ def test_entity_recompute_keeps_the_update_041_r17(tiny_config, shards):
         after[chunk] = params_of(t.net)
     for k in after[0]:
         assert torch.allclose(after[3][k], after[0][k], atol=1e-6, rtol=1e-5), k
+
+
+class Widths:
+    def __init__(self, batch):
+        self.batch, self.seen = batch, []
+
+    def __getattr__(self, name):
+        return getattr(self.batch, name)
+
+    def group(self, *args):
+        g = self.batch.group(*args)
+        self.seen.append(g["entity_mask"].shape[1])
+        return g
+
+
+def test_bc_pad_entities_key_sets_the_group_width_041(tiny_config, shards, monkeypatch):
+    b = feeder(tiny_config, shards).next()
+    widths = {}
+    for unit in (None, "32"):
+        monkeypatch.delenv("URANIUM_BC_PAD_ENTITIES", raising=False)
+        if unit:
+            monkeypatch.setenv("URANIUM_BC_PAD_ENTITIES", unit)
+        t = BcTrainer(bc_cfg(tiny_config, pad_entities=64), tiny_net(), CPU, "f32")
+        w = Widths(b)
+        t.train_batch(w, 3e-3, 0)
+        widths[unit] = (t.pad_entities, w.seen)
+    assert widths[None][0] == 64 and all(n % 64 == 0 for n in widths[None][1])
+    assert widths["32"][0] == 32 and widths["32"][1] and all(n == 32 for n in widths["32"][1])
+
+
+@pytest.mark.parametrize("raw", ["0", "-32", "x", "3.5", "48", "1024"])
+def test_bc_pad_entities_key_refuses_a_bad_value_041(tiny_config, monkeypatch, raw):
+    monkeypatch.setenv("URANIUM_BC_PAD_ENTITIES", raw)
+    with pytest.raises(ValueError, match="URANIUM_BC_PAD_ENTITIES"):
+        BcTrainer(bc_cfg(tiny_config), tiny_net(), CPU, "f32")
+
+
+def test_bc_pad_entities_default_is_rocm_training_only_041(monkeypatch):
+    from uranium.device import IMPL_SWITCHES, configure, impl_settings
+
+    for backend, train, want in (("rocm", True, "32"), ("rocm", False, None), ("cuda", True, None)):
+        for k in IMPL_SWITCHES:
+            monkeypatch.setenv(k, "")
+            monkeypatch.delenv(k)
+        configure(backend, train=train)
+        assert os.environ.get("URANIUM_BC_PAD_ENTITIES") == want, (backend, train)
+        assert ("URANIUM_BC_PAD_ENTITIES=32" in impl_settings()) == (want is not None)
+    monkeypatch.setenv("URANIUM_BC_PAD_ENTITIES", "64")
+    configure("rocm", train=True)
+    assert os.environ["URANIUM_BC_PAD_ENTITIES"] == "64"

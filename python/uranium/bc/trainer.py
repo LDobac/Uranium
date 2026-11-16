@@ -24,12 +24,25 @@ AUX_PARTS = ("aux_priv", "aux_jepa", *(f"aux_jepa_slot{i + 1}" for i in range(AU
 VALUE_WIN = 0
 ADAM_BETAS = (0.9, 0.999)
 ADAM_EPS = 1e-5
+PAD_KEY = "URANIUM_BC_PAD_ENTITIES"
 
 
 def dropout_seed(seed: int, step: int, group: int) -> int:
     x = (seed * 0x9E3779B97F4A7C15 + (step << 20) + group * 0xBF58476D1CE4E5B9) & ((1 << 64) - 1)
     x ^= x >> 31
     return x & ((1 << 63) - 1)
+
+
+def bc_pad_entities(configured: int) -> int:
+    raw = os.environ.get(PAD_KEY, "")
+    if not raw:
+        return configured
+    from uranium import _core
+
+    n_max = json.loads(_core.feature_dims())["n_max"]
+    if not (raw.isascii() and raw.isdigit()) or int(raw) < 1 or n_max % int(raw):
+        raise ValueError(f"{PAD_KEY}={raw!r}: expected a positive integer that divides the entity limit {n_max}")
+    return int(raw)
 
 
 def bc_aux_counts(batch, t: int, ks: list) -> dict:
@@ -47,6 +60,7 @@ class BcTrainer:
         self.device = device
         self.precision = precision
         self.entity_chunk = entity_chunk
+        self.pad_entities = bc_pad_entities(cfg["pad_entities"])
         self.params = list(self.net.parameters())
         self.apart = self.net.win_open_params()
         self.opt = torch.optim.AdamW(self.params, lr=cfg["lr"], betas=ADAM_BETAS, eps=ADAM_EPS, weight_decay=cfg["weight_decay"], **adam_impl())
@@ -107,7 +121,7 @@ class BcTrainer:
         moments = torch.zeros(4, self.net.cfg.entity.d_model + self.net.cfg.spatial.pool, dtype=torch.float64, device=dev) if "jepa" in self.aux else None
         mon = ReluMonitor(self.net, points="spatial") if spatial_due(self.monitor_every, step + 1) else None
         k = self.net.cfg.variant.tokens()
-        collate = lambda i: stage(trim_entity_pad(batch.group(i * g, min((i + 1) * g, lanes), cfg["seq_len"], cfg["pad_entities"], self.net.cfg.heads.max_select), k), dev, self.precision)  # noqa: E731
+        collate = lambda i: stage(trim_entity_pad(batch.group(i * g, min((i + 1) * g, lanes), cfg["seq_len"], self.pad_entities, self.net.cfg.heads.max_select), k), dev, self.precision)  # noqa: E731
         nxt = self._collate.submit(collate, 0)
         for i in range(groups):
             self.tick("other")

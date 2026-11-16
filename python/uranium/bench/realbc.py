@@ -52,7 +52,7 @@ def run_group(a, group: int, device: torch.device, precision: str, log=print) ->
         log(f"[bench bc] group {group} update {step}: {wall:.2f}s (wait {wait:.2f}s) loss {out['total']:.5f}")
     walls = [x["wall_s"] for x in updates[1:]]
     res = {
-        "group": group, "lanes": cfg["lanes"], "seq_len": cfg["seq_len"], "entity_chunk": chunk, "updates": updates,
+        "group": group, "lanes": cfg["lanes"], "seq_len": cfg["seq_len"], "entity_chunk": chunk, "pad_entities": t.pad_entities, "updates": updates,
         "median_s": statistics.median(walls) if walls else None, "mean_s": statistics.fmean(walls) if walls else None,
         "p95_s": sorted(walls)[min(len(walls) - 1, math.ceil(0.95 * len(walls)) - 1)] if walls else None,
         "wait_median_s": statistics.median(x["wait_s"] for x in updates[1:]) if walls else None,
