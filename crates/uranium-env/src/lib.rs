@@ -8,4 +8,6 @@ pub mod ops;
 pub mod reward;
 pub mod scout;
 pub mod surrender;
+#[cfg(feature = "testkit")]
+pub mod testkit;
 pub mod types;

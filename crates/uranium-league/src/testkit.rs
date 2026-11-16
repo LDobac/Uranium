@@ -1,54 +1,12 @@
-use uranium_env::features::{AgentMemory, MapInfo, ORDER_NONE, Observation, extract};
-use uranium_env::types::TypeTables;
+use uranium_env::features::{AgentMemory, MapInfo, Observation, extract};
+use uranium_env::testkit::{flat_game_info, unit};
 use uranium_proto::*;
 
 const W: u16 = 64;
 const H: u16 = 64;
 
 pub fn game_info() -> GameInfo {
-    let n = W as usize * H as usize;
-    GameInfo {
-        map_name: "synthetic".into(),
-        map_hash: [0; 32],
-        map_size_tiles: (W, H),
-        self_player: 0,
-        players: vec![
-            PlayerInfo { id: 0, name: "uranium-p0".into(), race: Race::Terran, start_tile: Some((8, 8)), is_self: true, is_enemy: false },
-            PlayerInfo { id: 1, name: "uranium-p1".into(), race: Race::Zerg, start_tile: Some((50, 50)), is_self: false, is_enemy: true },
-        ],
-        static_map: StaticMap {
-            width_tiles: W,
-            height_tiles: H,
-            walkable: BitGrid::from_bytes(W * 4, H * 4, &vec![1; n * 16]),
-            buildable: BitGrid::from_bytes(W, H, &vec![1; n]),
-            ground_height: vec![0; n],
-            start_locations: vec![(8, 8), (50, 50)],
-        },
-        latency_frames: 0,
-    }
-}
-
-fn unit(id: u32, owner: u8, name: &str, tile: (i32, i32)) -> UnitState {
-    let t = TypeTables::get().unit_by_name(name).unwrap_or_else(|| panic!("{name}"));
-    let none = TypeTables::get().unit_by_name("None").unwrap().id as u16;
-    let pos = if t.is_building() || t.is_resource() {
-        ((tile.0 * 32 + t.tile_width * 16) as u16, (tile.1 * 32 + t.tile_height * 16) as u16)
-    } else {
-        ((tile.0 * 32 + 16) as u16, (tile.1 * 32 + 16) as u16)
-    };
-    UnitState {
-        id,
-        owner,
-        unit_type: t.id as u16,
-        pos,
-        hp: t.max_hp as u16,
-        shield: t.max_shields as u16,
-        order: ORDER_NONE,
-        flags: flags::COMPLETED,
-        build_queue: [none; 5],
-        resources: if t.is_resource() { 1500 } else { 0 },
-        ..Default::default()
-    }
+    flat_game_info("synthetic", (W, H), ["uranium-p0", "uranium-p1"], [(8, 8), (50, 50)])
 }
 
 pub fn frame(i: u32) -> RawFrame {

@@ -1,5 +1,4 @@
-#[path = "../../uranium-env/tests/common/mod.rs"]
-mod common;
+use uranium_env::testkit as common;
 
 use std::io::{BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};

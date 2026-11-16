@@ -2,34 +2,12 @@ use uranium_data::bc::{BcConfig, Feeder};
 use uranium_data::data::{GameStream, MapStore, TrainStep, VecSource, chained_step, check_chain_start_sources, prepare};
 use uranium_env::features::augment::Sym;
 use uranium_env::features::extract::action_table;
-use uranium_env::types::TypeTables;
+use uranium_env::testkit::{flat_game_info, unit};
 use uranium_proto::*;
 use uranium_replay::label::Label;
 use uranium_replay::shard::{GameMeta, ShardGame, Step};
 
 const W: u16 = 32;
-
-fn unit(id: u32, owner: u8, name: &str, tile: (i32, i32)) -> UnitState {
-    let t = TypeTables::get().unit_by_name(name).unwrap();
-    let pos = if t.is_building() || t.is_resource() {
-        ((tile.0 * 32 + t.tile_width * 16) as u16, (tile.1 * 32 + t.tile_height * 16) as u16)
-    } else {
-        ((tile.0 * 32 + 16) as u16, (tile.1 * 32 + 16) as u16)
-    };
-    let none = TypeTables::get().unit_by_name("None").unwrap().id as u16;
-    UnitState {
-        id,
-        owner,
-        unit_type: t.id as u16,
-        pos,
-        hp: t.max_hp as u16,
-        flags: flags::COMPLETED,
-        build_queue: [none; 5],
-        resources: if t.is_resource() { 1500 } else { 0 },
-        order: 189,
-        ..Default::default()
-    }
-}
 
 const FRAMES: [u32; 16] = [0, 8, 9, 10, 18, 20, 21, 29, 37, 38, 46, 54, 55, 63, 71, 79];
 const CHAINED: [usize; 4] = [2, 3, 6, 9];
@@ -37,25 +15,7 @@ const HATCH: u32 = 50;
 
 fn chain_game(src: &str) -> ShardGame {
     let n = W as usize * W as usize;
-    let info = GameInfo {
-        map_name: "tiny".into(),
-        map_hash: [0; 32],
-        map_size_tiles: (W, W),
-        self_player: 0,
-        players: vec![
-            PlayerInfo { id: 0, name: "t".into(), race: Race::Terran, start_tile: Some((4, 4)), is_self: true, is_enemy: false },
-            PlayerInfo { id: 1, name: "z".into(), race: Race::Zerg, start_tile: Some((26, 26)), is_self: false, is_enemy: true },
-        ],
-        static_map: StaticMap {
-            width_tiles: W,
-            height_tiles: W,
-            walkable: BitGrid::from_bytes(W * 4, W * 4, &vec![1; n * 16]),
-            buildable: BitGrid::from_bytes(W, W, &vec![1; n]),
-            ground_height: vec![0; n],
-            start_locations: vec![(4, 4), (26, 26)],
-        },
-        latency_frames: 0,
-    };
+    let info = flat_game_info("tiny", (W, W), ["t", "z"], [(4, 4), (26, 26)]);
     let own = vec![unit(1, 0, "Terran_Command_Center", (4, 4)), unit(2, 0, "Terran_SCV", (9, 5)), unit(3, 11, "Resource_Mineral_Field", (14, 4))];
     let full = |v: bool| BitGrid::from_bytes(W, W, &vec![v as u8; n]);
     let id = |name: &str| action_table().by_name(name).unwrap().id;

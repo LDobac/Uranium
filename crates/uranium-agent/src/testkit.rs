@@ -1,7 +1,5 @@
-#[path = "../../uranium-env/tests/common/mod.rs"]
-mod common;
-
 use anyhow::Result;
+use uranium_env::testkit as common;
 use uranium_proto::{Command, RawFrame};
 
 use crate::infer::{HostState, InferenceHandle};

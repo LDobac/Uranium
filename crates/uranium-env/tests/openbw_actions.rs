@@ -1,4 +1,4 @@
-mod common;
+use uranium_env::testkit as common;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::BufReader;

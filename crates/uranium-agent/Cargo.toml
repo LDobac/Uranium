@@ -7,7 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-testkit = []
+testkit = ["uranium-env/testkit"]
 
 [dependencies]
 uranium-proto.workspace = true
@@ -19,3 +19,6 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+
+[dev-dependencies]
+uranium-env = { workspace = true, features = ["testkit"] }

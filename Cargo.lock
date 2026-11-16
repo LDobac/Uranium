@@ -1447,6 +1447,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "toml",
+ "uranium-data",
  "uranium-env",
  "uranium-proto",
  "uranium-replay",
@@ -1465,6 +1466,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "toml",
+ "uranium-env",
  "uranium-proto",
 ]
 
@@ -1510,6 +1512,7 @@ dependencies = [
  "uranium-agent",
  "uranium-data",
  "uranium-env",
+ "uranium-league",
  "uranium-proto",
  "uranium-runner",
  "uranium-store",
@@ -1586,6 +1589,7 @@ dependencies = [
  "serde",
  "uranium-env",
  "uranium-proto",
+ "uranium-scripted",
 ]
 
 [[package]]

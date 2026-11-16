@@ -772,7 +772,7 @@ impl Brain {
     }
 }
 
-#[cfg(any(test, feature = "testkit"))]
+#[cfg(feature = "testkit")]
 pub mod testkit {
     use super::*;
     use crate::react::MapHints;

@@ -1,4 +1,4 @@
-mod common;
+use uranium_env::testkit as common;
 
 use common::*;
 use uranium_env::actions::ActionTable;

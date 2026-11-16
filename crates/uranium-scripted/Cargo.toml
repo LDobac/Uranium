@@ -13,3 +13,6 @@ testkit = []
 uranium-proto.workspace = true
 uranium-env.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+uranium-scripted = { workspace = true, features = ["testkit"] }

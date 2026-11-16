@@ -1,7 +1,5 @@
-#![allow(dead_code)]
-
-use uranium_env::features::{MapInfo, ORDER_NONE};
-use uranium_env::types::{TypeTables, order_id};
+use crate::features::{MapInfo, ORDER_NONE};
+use crate::types::{TypeTables, order_id};
 use uranium_proto::*;
 
 pub const W: u16 = 96;
@@ -14,27 +12,55 @@ pub fn ty(name: &str) -> u16 {
     TypeTables::get().unit_by_name(name).unwrap_or_else(|| panic!("{name}")).id as u16
 }
 
-pub fn game_info() -> GameInfo {
-    let n = W as usize * H as usize;
-    let static_map = StaticMap {
-        width_tiles: W,
-        height_tiles: H,
-        walkable: BitGrid::from_bytes(W * 4, H * 4, &vec![1; n * 16]),
-        buildable: BitGrid::from_bytes(W, H, &vec![1; n]),
-        ground_height: (0..n).map(|i| (i % 6) as u8).collect(),
-        start_locations: vec![(10, 10), (80, 80)],
-    };
+pub fn flat_game_info(map_name: &str, size: (u16, u16), names: [&str; 2], starts: [(u16, u16); 2]) -> GameInfo {
+    let (w, h) = size;
+    let n = w as usize * h as usize;
     GameInfo {
-        map_name: "synthetic".into(),
+        map_name: map_name.into(),
         map_hash: [0; 32],
-        map_size_tiles: (W, H),
+        map_size_tiles: (w, h),
         self_player: SELF,
         players: vec![
-            PlayerInfo { id: SELF, name: "a".into(), race: Race::Terran, start_tile: Some((10, 10)), is_self: true, is_enemy: false },
-            PlayerInfo { id: ENEMY, name: "b".into(), race: Race::Zerg, start_tile: Some((80, 80)), is_self: false, is_enemy: true },
+            PlayerInfo { id: SELF, name: names[0].into(), race: Race::Terran, start_tile: Some(starts[0]), is_self: true, is_enemy: false },
+            PlayerInfo { id: ENEMY, name: names[1].into(), race: Race::Zerg, start_tile: Some(starts[1]), is_self: false, is_enemy: true },
         ],
-        static_map,
+        static_map: StaticMap {
+            width_tiles: w,
+            height_tiles: h,
+            walkable: BitGrid::from_bytes(w * 4, h * 4, &vec![1; n * 16]),
+            buildable: BitGrid::from_bytes(w, h, &vec![1; n]),
+            ground_height: vec![0; n],
+            start_locations: starts.to_vec(),
+        },
         latency_frames: 0,
+    }
+}
+
+pub fn game_info() -> GameInfo {
+    let mut info = flat_game_info("synthetic", (W, H), ["a", "b"], [(10, 10), (80, 80)]);
+    info.static_map.ground_height = (0..W as usize * H as usize).map(|i| (i % 6) as u8).collect();
+    info
+}
+
+pub fn unit(id: u32, owner: u8, name: &str, tile: (i32, i32)) -> UnitState {
+    let t = TypeTables::get().unit_by_name(name).unwrap_or_else(|| panic!("{name}"));
+    let pos = if t.is_building() || t.is_resource() {
+        ((tile.0 * 32 + t.tile_width * 16) as u16, (tile.1 * 32 + t.tile_height * 16) as u16)
+    } else {
+        ((tile.0 * 32 + 16) as u16, (tile.1 * 32 + 16) as u16)
+    };
+    UnitState {
+        id,
+        owner,
+        unit_type: t.id as u16,
+        pos,
+        hp: t.max_hp as u16,
+        shield: t.max_shields as u16,
+        order: ORDER_NONE,
+        flags: flags::COMPLETED,
+        build_queue: [ty("None"); 5],
+        resources: if t.is_resource() { 1500 } else { 0 },
+        ..Default::default()
     }
 }
 
@@ -54,28 +80,9 @@ impl Builder {
 
     pub fn add(&mut self, owner: u8, name: &str, tile: (i32, i32)) -> u32 {
         let t = TypeTables::get().unit_by_name(name).unwrap_or_else(|| panic!("{name}"));
-        let pos = if t.is_building() || t.is_resource() {
-            ((tile.0 * 32 + t.tile_width * 16) as u16, (tile.1 * 32 + t.tile_height * 16) as u16)
-        } else {
-            ((tile.0 * 32 + 16) as u16, (tile.1 * 32 + 16) as u16)
-        };
         let id = self.next;
         self.next += 1;
-        let none = ty("None");
-        self.units.push(UnitState {
-            id,
-            owner,
-            unit_type: t.id as u16,
-            pos,
-            hp: t.max_hp as u16,
-            shield: t.max_shields as u16,
-            energy: if t.max_energy > 0 { 200 } else { 0 },
-            order: ORDER_NONE,
-            flags: flags::COMPLETED,
-            build_queue: [none; 5],
-            resources: if t.is_resource() { 1500 } else { 0 },
-            ..Default::default()
-        });
+        self.units.push(UnitState { energy: if t.max_energy > 0 { 200 } else { 0 }, ..unit(id, owner, name, tile) });
         id
     }
 
@@ -203,13 +210,13 @@ pub fn rich_units() -> Builder {
 }
 
 pub fn valid_action(
-    o: &uranium_env::features::Observation,
-    a: &uranium_env::actions::Action,
+    o: &crate::features::Observation,
+    a: &crate::actions::Action,
     rank: &dyn Fn(Role, usize) -> Option<i64>,
     loc_rank: &dyn Fn(usize) -> Option<i64>,
-) -> Option<uranium_env::features::executor::HostAction> {
-    use uranium_env::actions::{CAPABILITIES, LOC_CLASSES, TargetKind};
-    use uranium_env::features::{CELLS, OWNER_SELF};
+) -> Option<crate::features::executor::HostAction> {
+    use crate::actions::{CAPABILITIES, LOC_CLASSES, TargetKind};
+    use crate::features::{CELLS, OWNER_SELF};
     if !o.masks.type_mask[a.id as usize] {
         return None;
     }
@@ -236,7 +243,7 @@ pub fn valid_action(
         }
         _ => None,
     };
-    Some(uranium_env::features::executor::HostAction { action: a.id, delay_bucket: 0, queued: false, selected, target_unit, target_loc })
+    Some(crate::features::executor::HostAction { action: a.id, delay_bucket: 0, queued: false, selected, target_unit, target_loc })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

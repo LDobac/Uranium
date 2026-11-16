@@ -4,6 +4,6 @@ pub mod league;
 pub mod learner;
 pub mod run;
 pub mod sil;
-#[cfg(any(test, feature = "testkit"))]
+#[cfg(feature = "testkit")]
 pub mod testkit;
 pub mod trajectory;
