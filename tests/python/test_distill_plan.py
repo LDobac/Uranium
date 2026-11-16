@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -25,9 +26,16 @@ FULL = {
 }
 
 
+def _other_plans(tmp_path: Path) -> Path:
+    d = tmp_path / "tracked"
+    if not d.exists():
+        shutil.copytree(PLANS, d, ignore=shutil.ignore_patterns("distill_m2_d*"))
+    return d
+
+
 def _write(tmp_path: Path, rnd: int, half: bool) -> tuple[Path, dict]:
     out = tmp_path / f"d{rnd}{'h' if half else ''}.toml"
-    rcp.write_distill(PLANS, rnd, CKPT, out, half)
+    rcp.write_distill(_other_plans(tmp_path), rnd, CKPT, out, half)
     return out, tomllib.loads(out.read_text(encoding="utf-8"))
 
 
@@ -112,7 +120,7 @@ def test_distill_topup_seeds_disjoint_044_r5(tmp_path):
     seeds = {}
     for rnd, part in ((1, 1), (1, 2), (2, 1)):
         out = tmp_path / f"x{rnd}{part}.toml"
-        rcp.write_distill(PLANS, rnd, CKPT, out, extra=1000, part=part)
+        rcp.write_distill(_other_plans(tmp_path), rnd, CKPT, out, extra=1000, part=part)
         s = tomllib.loads(out.read_text(encoding="utf-8"))["seeds"]
         first = 100000 + (rnd - 1) * 10000 + (part - 1) * 1000 + 1
         assert s == [rcp.splitmix64(80000 + n) >> 32 for n in range(first, first + 1000)]
@@ -173,7 +181,8 @@ def test_distill_plan_not_overwritten_with_other_seeds_044_r5(tmp_path):
 def test_distill_topup_cli_044_r5(tmp_path):
     tool = ROOT / "tools" / "eval" / "rush_check_plan.py"
     run = lambda *a: subprocess.run([sys.executable, str(tool), *a], capture_output=True, text=True, encoding="utf-8", errors="replace")  # noqa: E731
-    r = run("--distill", "--round", "1", "--extra", "60", "--part", "1", "--checkpoint", CKPT, "--out", str(tmp_path / "x.toml"))
+    r = run("--distill", "--round", "1", "--extra", "60", "--part", "1", "--checkpoint", CKPT, "--out", str(tmp_path / "x.toml"),
+            "--out-dir", str(_other_plans(tmp_path)))
     assert r.returncode == 0, r.stderr
     assert tomllib.loads((tmp_path / "x.toml").read_text(encoding="utf-8"))["name"] == "distill-m2-d1-x1"
     r = run("--distill", "--round", "1", "--extra", "60", "--checkpoint", CKPT, "--out", str(tmp_path / "bad.toml"))
