@@ -50,9 +50,9 @@ pub struct SessionRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub act_log: Option<ActLogStatus>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub snapshots: Vec<uranium_env::branch::SnapshotTaken>,
+    pub snapshots: Vec<uranium_match::branch::SnapshotTaken>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub branch: Option<uranium_env::branch::BranchOutcome>,
+    pub branch: Option<uranium_match::branch::BranchOutcome>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub infer_seed: Option<u64>,
 }

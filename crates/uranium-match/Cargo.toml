@@ -1,0 +1,19 @@
+[package]
+name = "uranium-match"
+description = "Per-game judgment and records: branch games (spec 051: act log, record schemas, intervention rules, state file), ops metrics (052), concede (042) and surrender rules"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+uranium-proto.workspace = true
+uranium-env.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+uranium-env = { workspace = true, features = ["testkit"] }
+toml.workspace = true

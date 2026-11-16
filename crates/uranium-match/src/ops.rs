@@ -3,9 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use uranium_proto::{GameEvent, GameInfo, Pos, RawFrame, Tile, UnitId, UnitState, flags};
 
-use crate::features::MapPrecompute;
-use crate::scout::{FPS, is_army_type, is_ground_army_type};
-use crate::types::{NO_TYPE, TypeTables, order_id};
+use uranium_env::features::MapPrecompute;
+use uranium_env::scout::{FPS, is_army_type, is_ground_army_type};
+use uranium_env::types::{NO_TYPE, TypeTables, order_id};
 
 pub const WINDOW_END: u32 = 14_400;
 pub const RUSH_BEFORE: u32 = 7_200;
@@ -652,7 +652,7 @@ impl OpsTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::MapResource;
+    use uranium_env::features::MapResource;
     use uranium_proto::{BitGrid, PlayerInfo, PlayerState, Race, StaticMap};
 
     const ME: u8 = 0;
@@ -693,7 +693,7 @@ mod tests {
 
     fn pre(fields: &[(Pos, u32)], base_locs: Vec<Tile>) -> MapPrecompute {
         let resources = fields.iter().map(|&(pos, amount)| MapResource { unit_type: ty("Resource_Mineral_Field"), pos, amount }).collect();
-        MapPrecompute { version: crate::features::PRECOMPUTE_VERSION, base_locs, chokes: vec![], wall_candidates: vec![], resources }
+        MapPrecompute { version: uranium_env::features::PRECOMPUTE_VERSION, base_locs, chokes: vec![], wall_candidates: vec![], resources }
     }
 
     fn tracker() -> OpsTracker {

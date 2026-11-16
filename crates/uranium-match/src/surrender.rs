@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use uranium_proto::{flags, RawFrame, UnitState};
 
-use crate::features::memory::AgentMemory;
-use crate::types::TypeTables;
+use uranium_env::features::memory::AgentMemory;
+use uranium_env::types::TypeTables;
 
 pub const MIN_FRAME: u32 = 14_400;
 pub const HOLD_FRAMES: u32 = 720;

@@ -1,7 +1,7 @@
 use uranium_proto::{BitGrid, CancelKind, CmdOrder, Command, PlayerState, Target};
 
 use super::*;
-use crate::features::extract::action_table;
+use uranium_env::features::extract::action_table;
 
 fn id(name: &str) -> u16 {
     action_table().by_name(name).unwrap().id

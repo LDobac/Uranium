@@ -1425,6 +1425,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "uranium-env",
+ "uranium-match",
  "uranium-proto",
  "uranium-scripted",
  "uranium-store",
@@ -1450,6 +1451,7 @@ dependencies = [
  "toml",
  "uranium-data",
  "uranium-env",
+ "uranium-match",
  "uranium-proto",
  "uranium-store",
  "zstd",
@@ -1462,8 +1464,6 @@ dependencies = [
  "anyhow",
  "proptest",
  "serde",
- "serde_json",
- "sha2",
  "toml",
  "uranium-env",
  "uranium-proto",
@@ -1512,9 +1512,23 @@ dependencies = [
  "uranium-data",
  "uranium-env",
  "uranium-league",
+ "uranium-match",
  "uranium-proto",
  "uranium-runner",
  "uranium-store",
+]
+
+[[package]]
+name = "uranium-match"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toml",
+ "uranium-env",
+ "uranium-proto",
 ]
 
 [[package]]
@@ -1560,6 +1574,7 @@ dependencies = [
  "toml",
  "uranium-data",
  "uranium-env",
+ "uranium-match",
  "uranium-proto",
  "uranium-scripted",
  "uranium-store",
@@ -1577,6 +1592,7 @@ dependencies = [
  "toml",
  "uranium-agent",
  "uranium-env",
+ "uranium-match",
  "uranium-proto",
  "uranium-store",
 ]

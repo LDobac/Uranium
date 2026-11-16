@@ -18,8 +18,8 @@ pub struct ScriptedStats {
     pub army_s: Option<f64>,
     pub scv_8m: Option<u32>,
     pub react: Option<ReactRecord>,
-    pub ops: uranium_env::ops::OpsMetrics,
-    pub rush_combat: Option<uranium_env::ops::RushCombat>,
+    pub ops: uranium_match::ops::OpsMetrics,
+    pub rush_combat: Option<uranium_match::ops::RushCombat>,
     pub tp: Option<TpRecord>,
 }
 
@@ -63,7 +63,7 @@ pub struct ReactRecord {
 pub struct ScriptedPolicy {
     bot: Box<dyn uranium_scripted::Bot>,
     scout: Option<uranium_env::scout::ScoutTracker>,
-    ops: Option<uranium_env::ops::OpsTracker>,
+    ops: Option<uranium_match::ops::OpsTracker>,
 }
 
 impl ScriptedPolicy {
@@ -82,7 +82,7 @@ impl ScriptedPolicy {
             (uranium_scripted::MapHints::default(), pre)
         };
         let scout = terran.then(|| uranium_env::scout::ScoutTracker::for_game(info, uranium_env::scout::RewardConfig::default()));
-        let ops = terran.then(|| uranium_env::ops::OpsTracker::for_game(info, pre.as_ref()));
+        let ops = terran.then(|| uranium_match::ops::OpsTracker::for_game(info, pre.as_ref()));
         Ok(Self { bot: uranium_scripted::for_game_hints(info, build, hints), scout, ops })
     }
 }

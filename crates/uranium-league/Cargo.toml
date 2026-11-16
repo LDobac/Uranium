@@ -11,6 +11,7 @@ testkit = ["uranium-env/testkit"]
 
 [dependencies]
 uranium-env.workspace = true
+uranium-match.workspace = true
 uranium-data.workspace = true
 uranium-store.workspace = true
 uranium-agent.workspace = true

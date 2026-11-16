@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-pub use crate::types::FRAMES_PER_SECOND as FPS;
+pub use uranium_env::types::FRAMES_PER_SECOND as FPS;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

@@ -15,6 +15,7 @@ explode = "0.1.2"
 flate2 = "1"
 uranium-proto.workspace = true
 uranium-env.workspace = true
+uranium-match.workspace = true
 uranium-data.workspace = true
 uranium-scripted.workspace = true
 uranium-store.workspace = true

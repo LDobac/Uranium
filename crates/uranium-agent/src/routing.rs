@@ -69,18 +69,18 @@ impl EndBoard {
 }
 
 #[derive(Clone, Default)]
-pub struct ConcedeBoard(Arc<Mutex<HashMap<u64, Arc<uranium_env::concede::ConcedeGame>>>>);
+pub struct ConcedeBoard(Arc<Mutex<HashMap<u64, Arc<uranium_match::concede::ConcedeGame>>>>);
 
 impl ConcedeBoard {
-    pub fn insert(&self, game_id: u64, game: Arc<uranium_env::concede::ConcedeGame>) {
+    pub fn insert(&self, game_id: u64, game: Arc<uranium_match::concede::ConcedeGame>) {
         self.0.lock().unwrap().insert(game_id, game);
     }
 
-    pub fn get(&self, game_id: u64) -> Option<Arc<uranium_env::concede::ConcedeGame>> {
+    pub fn get(&self, game_id: u64) -> Option<Arc<uranium_match::concede::ConcedeGame>> {
         self.0.lock().unwrap().get(&game_id).cloned()
     }
 
-    pub fn take(&self, game_id: u64) -> Option<Arc<uranium_env::concede::ConcedeGame>> {
+    pub fn take(&self, game_id: u64) -> Option<Arc<uranium_match::concede::ConcedeGame>> {
         self.0.lock().unwrap().remove(&game_id)
     }
 }

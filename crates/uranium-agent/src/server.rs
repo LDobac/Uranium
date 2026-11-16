@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use uranium_proto::*;
 use uranium_store::elog;
-use uranium_env::branch::{BranchBoard, GameBranch, fnv1a};
+use uranium_match::branch::{BranchBoard, GameBranch, fnv1a};
 use super::{PolicySpec, Policy, REALTIME_ACT_FRAMES, make_policy};
 use super::routing::{Routes, SessionEnd, EndBoard, ConcedeBoard, T0Builds, spec_index};
 use super::act_log::{ActLogStatus, ActLogFile};
@@ -183,7 +183,7 @@ impl SessionLog {
     fn finish(&mut self, winner: Option<u8>, frame: u32, reason: EndReason, slot: u8, policy: &str) {
         self.end = Some((winner, frame, reason));
         if let Some(l) = self.act_log.as_mut() {
-            l.finish(uranium_env::branch::ActLogEnd {
+            l.finish(uranium_match::branch::ActLogEnd {
                 obs: 0,
                 decisions: 0,
                 end_frame: frame,
@@ -206,9 +206,9 @@ impl SessionLog {
             if let (Some((winner, frame, reason)), Some(b)) = (self.end, &game.branch)
                 && !matches!(reason, EndReason::Aborted | EndReason::AgentTimeout)
             {
-                o.end = Some(uranium_env::branch::BranchEnd::new(winner, slot, frame, reason, b.horizon));
+                o.end = Some(uranium_match::branch::BranchEnd::new(winner, slot, frame, reason, b.horizon));
             }
-            if let Err(e) = uranium_env::branch::FiniteRecord::check_finite(&o) {
+            if let Err(e) = uranium_match::branch::FiniteRecord::check_finite(&o) {
                 elog!("[agent] WARNING: 051-R9 branch outcome of game {} has a value JSON cannot hold: {e:#}", rec.game_id);
             }
             o
@@ -222,7 +222,7 @@ fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, po
     let realtime = hello.mode == Mode::Realtime;
     let mut policy_time = Duration::ZERO;
     let mut first = true;
-    let mut digest: u64 = uranium_env::branch::FNV_OFFSET;
+    let mut digest: u64 = uranium_match::branch::FNV_OFFSET;
     let mut obs_index: u32 = 0;
     let mut last_cmds: Vec<Command> = Vec::new();
     loop {
@@ -236,7 +236,7 @@ fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, po
                 }
             }
             BridgeMsg::Frame(f) => {
-                let bytes = uranium_env::branch::frame_bytes(&f)?;
+                let bytes = uranium_match::branch::frame_bytes(&f)?;
                 digest = fnv1a(digest, &bytes);
                 let i = obs_index;
                 obs_index += 1;
@@ -291,10 +291,10 @@ fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, po
                 }
                 if let Some(l) = log.act_log.as_mut() {
                     let x = policy.act_log_extra().unwrap_or_default();
-                    l.push(&uranium_env::branch::ObsLine {
+                    l.push(&uranium_match::branch::ObsLine {
                         i,
                         frame: f.frame,
-                        digest: uranium_env::branch::obs_digest_bytes(&bytes),
+                        digest: uranium_match::branch::obs_digest_bytes(&bytes),
                         act: act.clone(),
                         decision: x.decision,
                         state: x.state,

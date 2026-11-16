@@ -196,7 +196,7 @@ impl JobSource for LedgerSource {
         stage.plan.memory_log.then(|| self.job.sub(&stage.name).join("memory").join(crate::memory_log_name(k.1)))
     }
 
-    fn game_branch(&self, job: &Job) -> Result<Option<uranium_env::branch::GameBranch>> {
+    fn game_branch(&self, job: &Job) -> Result<Option<uranium_match::branch::GameBranch>> {
         let k = key_of(job.spec.game_id);
         let Some(stage) = self.job.stages.get(k.0) else { return Ok(None) };
         stage.plan.game_branch(k.1, &self.job.sub(&stage.name), plan::shared_dir_env().as_deref())

@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use uranium_agent::T0Build;
 use uranium_agent::infer::{DEFAULT_CHAT, SampleMode, SurrenderMode};
-use uranium_env::branch::{BranchPlanLine, BranchPlayer, GameBranch, HORIZON_MARGIN, Intervention, SnapshotRule, Snapshots};
+use uranium_match::branch::{BranchPlanLine, BranchPlayer, GameBranch, HORIZON_MARGIN, Intervention, SnapshotRule, Snapshots};
 use uranium_env::features::extract::action_table;
 use uranium_proto::Race;
 use uranium_store::elog;
@@ -320,7 +320,7 @@ impl Plan {
         if let Some(file) = &self.branches {
             let path = dir.join(file);
             let f = std::fs::File::open(&path).with_context(|| format!("branch list {}", path.display()))?;
-            let lines: Vec<BranchPlanLine> = uranium_env::branch::read_jsonl(std::io::BufReader::new(f)).with_context(|| format!("branch list {}", path.display()))?;
+            let lines: Vec<BranchPlanLine> = uranium_match::branch::read_jsonl(std::io::BufReader::new(f)).with_context(|| format!("branch list {}", path.display()))?;
             ensure!(lines.len() as u64 == self.games(), "branch list {} has {} lines for {} games (020-R22 ③)", path.display(), lines.len(), self.games());
             for (job, l) in expand(self, "branch-check").iter().zip(&lines) {
                 let n = job.spec.game_id;
@@ -740,7 +740,7 @@ p1={kind='oss',name='iron',race='terran'}";
         d
     }
 
-    fn line(seed: u32, map: &str, alt: uranium_env::branch::Alternative, repeat: u32) -> BranchPlanLine {
+    fn line(seed: u32, map: &str, alt: uranium_match::branch::Alternative, repeat: u32) -> BranchPlanLine {
         BranchPlanLine {
             trunk: "trunk-job/b1-trunk/g1".into(),
             point: "trunk-job/b1-trunk/g1#b1-p1".into(),
@@ -758,15 +758,15 @@ p1={kind='oss',name='iron',race='terran'}";
         }
     }
 
-    fn alt(name: &str, rules: &[(&str, &str, u32, u32)]) -> uranium_env::branch::Alternative {
-        use uranium_env::branch::{InterventionRule, Op};
+    fn alt(name: &str, rules: &[(&str, &str, u32, u32)]) -> uranium_match::branch::Alternative {
+        use uranium_match::branch::{InterventionRule, Op};
         let rules = rules.iter().map(|(op, a, f, t)| InterventionRule { op: if *op == "force" { Op::Force } else { Op::Ban }, action: (*a).into(), from_s: *f, to_s: *t }).collect();
-        uranium_env::branch::Alternative { name: name.into(), rules }
+        uranium_match::branch::Alternative { name: name.into(), rules }
     }
 
     fn write_lines(path: &Path, lines: &[BranchPlanLine]) {
         let mut buf = Vec::new();
-        uranium_env::branch::write_jsonl(&mut buf, lines).unwrap();
+        uranium_match::branch::write_jsonl(&mut buf, lines).unwrap();
         std::fs::write(path, buf).unwrap();
     }
 

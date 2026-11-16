@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use uranium_env::concede::ConcedeConfig;
+use uranium_match::concede::ConcedeConfig;
 use uranium_env::scout::{PseudoMode, RewardConfig};
 
 use crate::league::{BandConfig, LadderEntry, LadderPickSetting, Stage, T1Bot};

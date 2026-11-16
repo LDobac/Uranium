@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
-use uranium_env::branch::fnv1a;
+use uranium_match::branch::fnv1a;
 use uranium_proto::{Act, AgentMsg, BridgeMsg, GameEnd, PrivilegedSummary, RawFrame, read_msg, write_msg};
 
 use crate::Replay;

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use uranium_env::branch::ActLog;
+use uranium_match::branch::ActLog;
 
 use crate::relabel::{DecisionLogRead, LoggedDecision, ModelLog, parse_decision_log};
 
@@ -78,7 +78,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::relabel::bind_logs;
     use crate::shard::MemoryAction;
-    use uranium_env::branch::{ActLogEnd, Decision, ObsLine};
+    use uranium_match::branch::{ActLogEnd, Decision, ObsLine};
     use uranium_proto::{Act, Command, EndReason};
 
     pub(crate) fn obs_line(i: u32, frame: u32, d: Option<(u16, u32, Vec<u32>)>, forced: bool) -> ObsLine {
@@ -102,7 +102,7 @@ pub(crate) mod tests {
             action_schema: 2,
         };
         let mut b = Vec::new();
-        let mut w = uranium_env::branch::ActLogWriter::new(&mut b);
+        let mut w = uranium_match::branch::ActLogWriter::new(&mut b);
         for l in &lines {
             w.push(l).unwrap();
         }

@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 use sha2::Digest as _;
-use uranium_env::ops::{FieldCheck, OpsMetrics, OpsTracker, RushCombat};
+use uranium_match::ops::{FieldCheck, OpsMetrics, OpsTracker, RushCombat};
 
 use crate::Replay;
 use crate::play::{PlayConfig, play_stride, slot_of, terran_perspectives};
 
-pub const UNTIL_FRAME: u32 = uranium_env::ops::WINDOW_END;
+pub const UNTIL_FRAME: u32 = uranium_match::ops::WINDOW_END;
 pub const STRIDE: u32 = 8;
 
 pub fn perspective_slots(rep: &Replay, slot: Option<u8>) -> Result<Vec<u8>> {

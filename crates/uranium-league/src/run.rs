@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use uranium_agent::infer::InferenceHandle;
 use uranium_agent::{ConcedeBoard, EndBoard, Routes, T0Builds};
-use uranium_env::concede::ConcedeConfig;
+use uranium_match::concede::ConcedeConfig;
 use uranium_env::reward::RewardWeights;
 use uranium_env::scout::PseudoMode;
 use uranium_proto::Race;

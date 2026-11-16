@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use uranium_agent::{PolicySpec, T0Build, game_result};
-use uranium_env::concede::{ConcedeGame, LeaveRule};
+use uranium_match::concede::{ConcedeGame, LeaveRule};
 use uranium_env::reward::Outcome;
 use uranium_env::scout::{PseudoMode, seconds};
 use uranium_proto::control::{GameSpec, MapKey, PlayerKind, PlayerSpec};

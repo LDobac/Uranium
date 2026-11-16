@@ -13,6 +13,7 @@ testkit = ["uranium-env/testkit"]
 uranium-proto.workspace = true
 uranium-scripted.workspace = true
 uranium-env.workspace = true
+uranium-match.workspace = true
 uranium-store.workspace = true
 anyhow.workspace = true
 clap.workspace = true

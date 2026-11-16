@@ -628,7 +628,7 @@ mod tests {
     }
 
     fn fnv1a(b: &[u8]) -> u64 {
-        uranium_env::branch::fnv1a(uranium_env::branch::FNV_OFFSET, b)
+        uranium_match::branch::fnv1a(uranium_match::branch::FNV_OFFSET, b)
     }
 
     const REACT_GOLDEN: u64 = 0xcd6e_6f30_2e17_9b1f;

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use serde::Serialize;
-use uranium_env::surrender::SurrenderJudge;
+use uranium_match::surrender::SurrenderJudge;
 use crate::shard::ShardGame;
 
 use crate::bc::{Batch, BcConfig, Feeder, eval_games};

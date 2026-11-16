@@ -545,7 +545,7 @@ fn supply_frames(at: &[(u32, u16)]) -> Vec<RawFrame> {
 
 #[test]
 fn collapse_concede_is_not_a_decision_042_r14() {
-    use uranium_env::concede::{ConcedeConfig, ConcedeGame, Conceded, LeaveRule};
+    use uranium_match::concede::{ConcedeConfig, ConcedeGame, Conceded, LeaveRule};
     use uranium_env::reward::{Outcome, RewardParts};
     type Seen = Arc<Mutex<(usize, Vec<(RewardParts, Option<Outcome>)>)>>;
     struct Obs(Seen);
@@ -602,7 +602,7 @@ fn collapse_concede_is_not_a_decision_042_r14() {
 
 #[test]
 fn collapse_concede_with_scout_rewards_042_r14() {
-    use uranium_env::concede::{ConcedeConfig, ConcedeGame};
+    use uranium_match::concede::{ConcedeConfig, ConcedeGame};
     use uranium_env::reward::{Outcome, RewardParts};
     type Seen = Arc<Mutex<(f32, f32, Vec<RewardParts>)>>;
     struct Obs(Seen);
@@ -690,7 +690,7 @@ fn eval_sessions_record_scout_metrics_042() {
 
 #[test]
 fn surrender_and_concede_share_one_leave_042_r14() {
-    use uranium_env::concede::{ConcedeConfig, ConcedeGame, Conceded, LeaveRule};
+    use uranium_match::concede::{ConcedeConfig, ConcedeGame, Conceded, LeaveRule};
     let h = mock(1, Some(-0.95)).with_surrender(uranium_agent::infer::SurrenderMode::On, "gg");
     let fs: Vec<RawFrame> = supply_frames(&[(15_000, 40), (15_800, 40), (16_000, 40)])
         .into_iter()
@@ -714,7 +714,7 @@ fn surrender_and_concede_share_one_leave_042_r14() {
 
 #[test]
 fn concede_board_reaches_sessions_042_r14() {
-    use uranium_env::concede::{ConcedeConfig, ConcedeGame};
+    use uranium_match::concede::{ConcedeConfig, ConcedeGame};
     let h = mock(1, None);
     let board = uranium_agent::ConcedeBoard::default();
     board.insert(9, Arc::new(ConcedeGame::new(ConcedeConfig { enabled: true, ..Default::default() })));

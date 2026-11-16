@@ -150,7 +150,7 @@ impl GameStream {
             };
             let frame = owned.as_ref().unwrap_or(&s.raw_frame);
             let (o, mut label, why) = self.walker.step_with_memory(frame, &s.action_label, self.z.as_ref(), s.memory_action.as_deref());
-            let surrender_rule = uranium_env::surrender::rule_holds(frame, &self.walker.mem);
+            let surrender_rule = uranium_match::surrender::rule_holds(frame, &self.walker.mem);
             let ok = why.is_none();
             invalid += (!ok && why != Some(UNKNOWN_REASON)) as usize;
             let o = if self.sym == Sym::IDENTITY {

@@ -8,11 +8,11 @@ use serde::{Deserialize, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use uranium_proto::{Act, EndReason, ProtoError, RawFrame, write_msg};
 
-use crate::actions::ActionTable;
-use crate::features::Observation;
-use crate::features::label::MemoryAction;
+use uranium_env::actions::ActionTable;
+use uranium_env::features::Observation;
+use uranium_env::features::label::MemoryAction;
 
-pub use crate::types::FRAMES_PER_SECOND;
+pub use uranium_env::types::FRAMES_PER_SECOND;
 
 pub const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 

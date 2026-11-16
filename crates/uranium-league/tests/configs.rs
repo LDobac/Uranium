@@ -1,4 +1,4 @@
-use uranium_env::concede::ConcedeConfig;
+use uranium_match::concede::ConcedeConfig;
 use uranium_env::scout::*;
 use uranium_league::config::*;
 use uranium_league::league::*;

@@ -7,6 +7,7 @@ members = [
     "crates/uranium-agent",
     "crates/uranium-hostd",
     "crates/uranium-env",
+    "crates/uranium-match",
     "crates/uranium-runner",
     "crates/uranium-replay",
     "crates/uranium-data",
@@ -44,6 +45,7 @@ windows-sys = "0.61"
 ctrlc = "3.5"
 uranium-proto = { path = "crates/uranium-proto" }
 uranium-env = { path = "crates/uranium-env" }
+uranium-match = { path = "crates/uranium-match" }
 uranium-scripted = { path = "crates/uranium-scripted" }
 uranium-replay = { path = "crates/uranium-replay" }
 uranium-store = { path = "crates/uranium-store" }

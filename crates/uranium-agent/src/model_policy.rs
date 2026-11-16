@@ -12,11 +12,11 @@ use uranium_env::features::extract::action_table;
 use uranium_env::features::label::DecisionLogLine;
 use uranium_env::maps::{MapFamilies, PrecomputeSource, family_index, live_precompute_for_session, maps_dir};
 use uranium_env::reward::{Outcome, RewardParts, RewardTracker};
-use uranium_env::ops::{OpsMetrics, OpsTracker, RushCombat};
+use uranium_match::ops::{OpsMetrics, OpsTracker, RushCombat};
 use uranium_env::scout::{RewardConfig, ScoutMetrics, ScoutTracker, seconds};
-use uranium_env::concede::{CollapseJudge, ConcedeGame, LeaveRule};
-use uranium_env::surrender::{DEFAULT_CHAT, SurrenderJudge, SurrenderMode, rule_holds};
-use uranium_env::branch::{
+use uranium_match::concede::{CollapseJudge, ConcedeGame, LeaveRule};
+use uranium_match::surrender::{DEFAULT_CHAT, SurrenderJudge, SurrenderMode, rule_holds};
+use uranium_match::branch::{
     BranchOutcome, BranchPlayer, DilutionTracker, ForcedPrefix, GameBranch, Intervention, Invalid, InvalidReason, PrefixStep, SampleTracker, SnapshotTaken, Snapshots, StateCheck, ActLog, decode_state, encode_state, obs_digest, open_ids, quit_act, sha256_hex, state_id,
 };
 use crate::infer::HostState;
@@ -119,7 +119,7 @@ pub struct ModelPolicy {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct LineExtra {
-    pub decision: Option<uranium_env::branch::Decision>,
+    pub decision: Option<uranium_match::branch::Decision>,
     pub state: Option<String>,
     pub state_sha256: Option<String>,
     pub forced: bool,
@@ -537,7 +537,7 @@ impl ModelPolicy {
 
     fn branch_after_act(&mut self, frame: u32, action: u16, delay_bucket: usize, ids: &[u32], rejected: bool, scalar: &[f32]) {
         let Some(b) = self.branch.as_deref_mut() else { return };
-        b.last.decision = Some(uranium_env::branch::Decision { action, delay_bucket: delay_bucket as u32, units: ids.to_vec(), rejected });
+        b.last.decision = Some(uranium_match::branch::Decision { action, delay_bucket: delay_bucket as u32, units: ids.to_vec(), rejected });
         if let Some(run) = b.player.as_deref_mut().filter(|r| r.at_t) {
             run.intervention.note_executor(frame, rejected);
             run.samples.on_decision(frame, scalar, action != NOOP_ACTION && !rejected);
@@ -795,7 +795,7 @@ mod tests {
     fn outcome_metrics_hold_definitions_051_r9() {
         let m = ScoutMetrics { scv_8m: Some(8), scv_min_1m: Some(4), bunker_frame: Some(240), ..Default::default() };
         let v = outcome_metrics(&m);
-        for k in uranium_env::branch::OUTCOME_METRICS {
+        for k in uranium_match::branch::OUTCOME_METRICS {
             assert!(v.contains_key(*k), "{k}");
         }
         assert_eq!((v["held_8m"].as_bool(), v["held_s"].as_bool(), v["bunker_s"].as_f64()), (Some(true), Some(false), Some(10.0)));

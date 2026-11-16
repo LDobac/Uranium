@@ -1,7 +1,7 @@
 use uranium_env::testkit as common;
 
 use common::*;
-use uranium_env::branch::{Alternative, Intervention, InterventionRule, Op, open_ids};
+use uranium_match::branch::{Alternative, Intervention, InterventionRule, Op, open_ids};
 use uranium_env::features::executor::{HostAction, Rejected, execute};
 use uranium_env::features::extract::action_table;
 use uranium_env::features::world::World;
