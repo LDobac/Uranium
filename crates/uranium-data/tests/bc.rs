@@ -9,6 +9,10 @@ use uranium_proto::*;
 use uranium_replay::label::Label;
 use uranium_replay::shard::{GameMeta, ShardGame, Step};
 
+fn short_stage_warmup(steps: usize) -> usize {
+    (steps * 5 + 50) / 100
+}
+
 fn feeder(cfg: &BcConfig) -> Feeder {
     Feeder::new(cfg).with_maps(std::sync::Arc::new(MapStore::synthetic()))
 }
@@ -353,14 +357,14 @@ fn warmup_cosine_schedule_041_r3() {
     assert_eq!((file.seq_len, file.grad_clip, file.value.win, file.data.z_drop), (64, 1.0, 0.5, 0.25));
     assert_eq!(file.data.enemy_race_mask, 0.05);
     assert!(file.steps.s1 > file.steps.s2 && file.steps.s2 > 0 && file.steps.ablation_a == file.steps.s2);
-    assert_eq!(uranium_data::bc::short_stage_warmup(7915), 396, "395.75 -> 396");
-    assert_eq!(uranium_data::bc::short_stage_warmup(10), 1, "0.5 -> 1");
-    assert_eq!(uranium_data::bc::short_stage_warmup(9), 0, "0.45 -> 0");
-    assert_eq!(file.steps.s2_warmup, uranium_data::bc::short_stage_warmup(file.steps.s2));
-    assert_eq!(file.steps.ablation_a_warmup, uranium_data::bc::short_stage_warmup(file.steps.ablation_a));
+    assert_eq!(short_stage_warmup(7915), 396, "395.75 -> 396");
+    assert_eq!(short_stage_warmup(10), 1, "0.5 -> 1");
+    assert_eq!(short_stage_warmup(9), 0, "0.45 -> 0");
+    assert_eq!(file.steps.s2_warmup, short_stage_warmup(file.steps.s2));
+    assert_eq!(file.steps.ablation_a_warmup, short_stage_warmup(file.steps.ablation_a));
     assert_eq!(file.warmup_steps, 2000, "S1 keeps its warmup");
     let abl = BcConfig::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/bc_core_ablation.toml"))).unwrap();
-    assert_eq!((abl.steps.s1, abl.warmup_steps), (5300, uranium_data::bc::short_stage_warmup(5300)));
+    assert_eq!((abl.steps.s1, abl.warmup_steps), (5300, short_stage_warmup(5300)));
     let mut same = abl.clone();
     same.steps = file.steps.clone();
     same.warmup_steps = file.warmup_steps;
@@ -371,7 +375,7 @@ fn warmup_cosine_schedule_041_r3() {
     assert_eq!(same, file, "032-R17: only the stage lengths, warmup, retention and win_open differ from bc.toml");
     let abl2 = BcConfig::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/bc_core_ablation_pt.toml"))).unwrap();
     assert_eq!((abl2.steps.s1, abl2.warmup_steps, abl2.keep_checkpoints()), (10000, 500, 0));
-    assert_eq!(abl2.warmup_steps, uranium_data::bc::short_stage_warmup(10000));
+    assert_eq!(abl2.warmup_steps, short_stage_warmup(10000));
     let mut same2 = abl2.clone();
     same2.steps.s1 = file.steps.s1;
     same2.warmup_steps = file.warmup_steps;
@@ -1070,7 +1074,7 @@ fn aux_and_monitor_tables_are_checked_041_r23() {
 
 #[test]
 fn fine_tune_config_041_r21() {
-    use uranium_data::bc::{BcStage, short_stage_warmup};
+    use uranium_data::bc::BcStage;
     use uranium_data::split::Subsample;
     let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config"));
     let file = BcConfig::load(&dir.join("bc.toml")).unwrap();

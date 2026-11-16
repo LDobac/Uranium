@@ -2,7 +2,6 @@ pub mod batch;
 pub mod config;
 pub mod league;
 pub mod learner;
-pub mod returns;
 pub mod run;
 pub mod sil;
 #[cfg(any(test, feature = "testkit"))]

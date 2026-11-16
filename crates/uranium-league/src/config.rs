@@ -82,10 +82,6 @@ impl KlReference {
 }
 
 impl KlConfig {
-    pub fn coef(&self, update: u64) -> f32 {
-        (self.init * 0.5f32.powf(update as f32 / self.half_life_updates)).max(self.floor)
-    }
-
     pub fn validate(&self) -> Result<()> {
         let finite = [self.init, self.floor, self.half_life_updates].iter().all(|x| x.is_finite());
         if !finite || self.init <= 0.0 || self.floor < 0.0 || self.floor > self.init || self.half_life_updates <= 0.0 {
@@ -573,9 +569,7 @@ mod tests {
         let c = RlConfig::default_file();
         assert_eq!(c.seq_len, 64, "042-R8");
         assert!(c.league.share_main >= 0.5, "042-R7");
-        assert!((c.kl.coef(0) - 0.1).abs() < 1e-6);
-        assert!((c.kl.coef(20_000) - 0.05).abs() < 1e-6);
-        assert!((c.kl.coef(10_000_000) - 0.01).abs() < 1e-6);
+        assert_eq!((c.kl.init, c.kl.half_life_updates, c.kl.floor), (0.1, 20_000.0, 0.01));
         assert_eq!(c.replays.sample_every, 100, "042-R11");
         assert_eq!(c.actors.queue_full, QueueFull::Wait);
         assert_eq!(c.actors.queue_wait_max_s, 120);
@@ -1065,10 +1059,7 @@ mod tests {
             assert_eq!(rl_with("init = 0.1\nfloor = 0.01\nhalf_life_updates = 20000", to).is_ok(), ok, "{to}");
         }
         let c = rl_with("init = 0.1\nfloor = 0.01\nhalf_life_updates = 20000", "init = 0.03\nfloor = 0.01\nhalf_life_updates = 1500").unwrap();
-        assert!((c.kl.coef(0) - 0.03).abs() < 1e-9, "a new run's update 0 = init");
-        assert!((c.kl.coef(1500) - 0.015).abs() < 1e-7);
-        assert!((c.kl.coef(2_000) - 0.03 * 0.5f32.powf(2_000.0 / 1_500.0)).abs() < 1e-7 && c.kl.coef(2_000) > 0.01);
-        assert!((c.kl.coef(2_400) - 0.01).abs() < 1e-9 && (c.kl.coef(1_000_000) - 0.01).abs() < 1e-9, "floor from about update 2,380");
+        assert_eq!((c.kl.init, c.kl.half_life_updates, c.kl.floor), (0.03, 1_500.0, 0.01));
         let scale = "action = 1.0";
         assert_eq!(rl_with(scale, "action = 2.5").unwrap().kl.head_scale.action, 2.5);
         assert_eq!(rl_with(scale, "action = 0.0").unwrap().kl.head_scale.action, 0.0);

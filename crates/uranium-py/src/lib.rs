@@ -524,14 +524,6 @@ fn lr_at(config: PathBuf, stage: &str, step: usize, scale: f64) -> PyResult<f64>
 }
 
 #[pyfunction]
-#[pyo3(signature = (config, dirs, stage = "s1"))]
-fn dataset_fingerprint(py: Python<'_>, config: PathBuf, dirs: Vec<PathBuf>, stage: &str) -> PyResult<String> {
-    let st = stage_of(stage)?;
-    let cfg = self::config(&config, stage)?;
-    py.detach(move || uranium_data::data::dataset_fingerprint(&source(&dirs, st, &cfg)?)).map_err(err)
-}
-
-#[pyfunction]
 fn epoch_table(py: Python<'_>, config: PathBuf, dirs: Vec<PathBuf>) -> PyResult<String> {
     let cfg = BcConfig::load(&config).map_err(err)?;
     let t = py.detach(move || bc::epoch_table(&dirs, &cfg)).map_err(err)?;
@@ -571,11 +563,6 @@ fn group_fields() -> Vec<&'static str> {
 fn install_stop_handler(tag: String) -> PyResult<()> {
     let tag: &'static str = Box::leak(tag.into_boxed_str());
     uranium_store::install_stop_handler(tag).map(|_| ()).map_err(err)
-}
-
-#[pyfunction]
-fn stop_requested() -> bool {
-    uranium_store::stop_requested()
 }
 
 #[pyfunction]
@@ -629,20 +616,15 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(agent::set_slot_state, m)?)?;
     m.add_class::<rl::SegmentBatch>()?;
     m.add_function(wrap_pyfunction!(rl::run_rl, m)?)?;
-    m.add_function(wrap_pyfunction!(rl::vtrace, m)?)?;
-    m.add_function(wrap_pyfunction!(rl::upgo, m)?)?;
-    m.add_function(wrap_pyfunction!(rl::gae, m)?)?;
     m.add_function(wrap_pyfunction!(rl::test_segments, m)?)?;
     m.add_function(wrap_pyfunction!(rl::rl_config, m)?)?;
     m.add_function(wrap_pyfunction!(bc_config, m)?)?;
     m.add_function(wrap_pyfunction!(lr_at, m)?)?;
-    m.add_function(wrap_pyfunction!(dataset_fingerprint, m)?)?;
     m.add_function(wrap_pyfunction!(epoch_table, m)?)?;
     m.add_function(wrap_pyfunction!(group_fields, m)?)?;
     m.add_function(wrap_pyfunction!(action_columns, m)?)?;
     m.add_function(wrap_pyfunction!(feature_dims, m)?)?;
     m.add_function(wrap_pyfunction!(install_stop_handler, m)?)?;
-    m.add_function(wrap_pyfunction!(stop_requested, m)?)?;
     m.add_function(wrap_pyfunction!(start_slots, m)?)?;
     m.add_function(wrap_pyfunction!(rush_check_seeds, m)?)?;
     m.add_function(wrap_pyfunction!(write_test_shards, m)?)?;

@@ -102,10 +102,6 @@ pub struct StageSteps {
     pub ablation_a_warmup: usize,
 }
 
-pub fn short_stage_warmup(steps: usize) -> usize {
-    (steps * 5 + 50) / 100
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct BcConfig {
     pub lanes: usize,
@@ -557,20 +553,6 @@ impl Feeder {
             src.seek(p)?;
         }
         Ok(())
-    }
-
-    pub fn restore_counters(&mut self, st: &FeedState) {
-        self.rng = Rng::from_state(st.rng);
-        self.games = st.games;
-        self.invalid_labels = st.invalid_labels;
-        self.no_result_games = st.no_result_games;
-        self.reset_lanes();
-    }
-
-    pub fn reset_lanes(&mut self) {
-        for l in &mut self.lanes {
-            *l = Lane::empty();
-        }
     }
 }
 

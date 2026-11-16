@@ -238,33 +238,6 @@ pub fn run_rl(
 }
 
 #[pyfunction]
-pub fn vtrace(rewards: Vec<f32>, values: Vec<f32>, log_rho: Vec<f32>, gamma: f32, lam: f32, rho_bar: f32, c_bar: f32) -> PyResult<(Vec<f32>, Vec<f32>, Vec<f32>)> {
-    check_seq(&rewards, &values, &log_rho)?;
-    let v = uranium_league::returns::vtrace(&uranium_league::returns::Seq { rewards: &rewards, values: &values, log_rho: &log_rho }, gamma, lam, rho_bar, c_bar);
-    Ok((v.vs, v.pg_adv, v.rho))
-}
-
-#[pyfunction]
-pub fn upgo(rewards: Vec<f32>, values: Vec<f32>, log_rho: Vec<f32>, gamma: f32, rho_bar: f32) -> PyResult<Vec<f32>> {
-    check_seq(&rewards, &values, &log_rho)?;
-    Ok(uranium_league::returns::upgo(&uranium_league::returns::Seq { rewards: &rewards, values: &values, log_rho: &log_rho }, gamma, rho_bar))
-}
-
-#[pyfunction]
-pub fn gae(rewards: Vec<f32>, values: Vec<f32>, gamma: f32, lam: f32) -> PyResult<(Vec<f32>, Vec<f32>)> {
-    let zeros = vec![0.0; rewards.len()];
-    check_seq(&rewards, &values, &zeros)?;
-    Ok(uranium_league::returns::gae(&uranium_league::returns::Seq { rewards: &rewards, values: &values, log_rho: &zeros }, gamma, lam))
-}
-
-fn check_seq(r: &[f32], v: &[f32], l: &[f32]) -> PyResult<()> {
-    if v.len() != r.len() + 1 || l.len() != r.len() {
-        return Err(PyValueError::new_err(format!("{} rewards need {} values and log_rhos, got {} and {}", r.len(), r.len() + 1, v.len(), l.len())));
-    }
-    Ok(())
-}
-
-#[pyfunction]
 #[pyo3(signature = (lanes, t, r_value_off = Vec::new(), pseudo_rewards = false, pseudo_scale = Vec::new(), sil_returns = Vec::new(), priv_from = 0, races = Vec::new()))]
 #[allow(clippy::too_many_arguments)]
 pub fn test_segments(lanes: usize, t: usize, r_value_off: Vec<usize>, pseudo_rewards: bool, pseudo_scale: Vec<(f32, f32)>, sil_returns: Vec<Option<f32>>, priv_from: usize, races: Vec<String>) -> PyResult<SegmentBatch> {

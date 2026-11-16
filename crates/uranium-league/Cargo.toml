@@ -1,6 +1,6 @@
 [package]
 name = "uranium-league"
-description = "Reinforcement learning without the model (spec 042): league, trajectories and segment queues, return targets, segment collate and the RL run loop around a learner (PyTorch through uranium._core, AMB-000-4)"
+description = "Reinforcement learning without the model (spec 042): league, trajectories and segment queues, segment collate and the RL run loop around a learner (PyTorch through uranium._core, AMB-000-4)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

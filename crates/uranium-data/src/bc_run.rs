@@ -49,9 +49,6 @@ pub enum BcExit {
     Yielded,
 }
 
-pub const EXIT_BUSY: i32 = 75;
-pub const EXIT_YIELDED: i32 = 76;
-
 pub fn resolve_init(dir: &Path) -> Result<PathBuf> {
     let done = dir.join("DONE");
     if dir.join("LATEST").is_file() || done.exists() {
