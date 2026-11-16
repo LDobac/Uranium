@@ -125,15 +125,6 @@ def edit_count(g: dict, race: str, d: int, token: bool) -> dict:
     return out
 
 
-def cat_state(states):
-    s0 = states[0]
-    if isinstance(s0, (tuple, list)):
-        return type(s0)(cat_state([s[i] for s in states]) for i in range(len(s0)))
-    import torch
-
-    return torch.cat(states, 0)
-
-
 class Parts:
     def __init__(self, out: Path):
         self.out = out
