@@ -1,19 +1,6 @@
 """`python -m uranium diag probes`: cue probes per enemy race on a `diag dump` (docs/report/survey/2026_11_08_19_26_jepa_survey.md
 7.2-7.4; never pooled over races). Offline labels from the privileged counts; the stages are the
-model's own activations.
-
-Targets (rows with an enemy focus token before `--act-until` of the dump):
-- `hp|unf_token`: the token's HP ratio, unfinished tokens (the cue itself; pooling bottleneck)
-- `start|unf_token`, `start|all_token_rows`: the true first start of the focus type (seconds x 1e-3
-  frames), Zerg = completion - build time (the HP clock)
-- `rush|...`, `macro|...`: the build class (7.3 draft rules), AUC
-- `count|focus_rows`: the enemy max-seen count of the focus type (the scalar input the c path
-  carries)
-- `focus2_by_300|all_token_rows`: two focus buildings started before 3:00 (AUC)
-
-Every target: a ridge and an MLP(64) per stage, game-level 5-fold CV, game bootstrap CIs, the
-nuisance-only ridge, each stage's gain over it (`uranium.diag.probe`, `--gain`, default `resid`),
-and a shuffled-label control on [h, c] for per-game targets."""
+model's own activations."""
 
 import json
 import time

@@ -1,18 +1,5 @@
 """`python -m uranium diag intervene`: counterfactual effects from a `diag dump --cf` (docs/report/survey/
-2026_11_08_19_26_jepa_survey.md 7.2 (4), 10.1, 10.2.2), per enemy race.
-
-Per game, window 1:30-4:00 (`--window`) on the steps where the action is allowed (type mask):
-- `bunker_any`: P(at least one Build_Bunker) = 1 - prod(1 - p)
-- `marine_sum`: expected Train_Marine orders = sum p
-- `rax2_any`: P(at least one Build_Barracks) on steps with exactly one own Barracks (the 2nd)
-and `label_p`: p(Build_Bunker) at the game's first teacher bunker label in the window.
-
-Effects (game mean and game-bootstrap CI, share of games >= 0.15, share > 0):
-- `start`: early - late anchor start; games whose anchor is seen before the window end (`edited`),
-  and the subset unfinished at first sight (`edited_unf`)
-- `count_sc`, `count_tok`: max-seen count +1 - (-1), scalar only / scalar + token; games where the
-  focus type was seen before the window end
-- `real`: the unedited pass's values (the base rates)"""
+2026_11_08_19_26_jepa_survey.md 7.2 (4), 10.1, 10.2.2), per enemy race."""
 
 import csv
 import json

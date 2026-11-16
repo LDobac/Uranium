@@ -1,41 +1,7 @@
 """Per-lineage-point diagnostic summary (050-R9: the measurement protocol records one per checkpoint):
 `python -m uranium diag summary` merges the outputs of `probes`, `intervene`, `spatial` and
 `core-split` into one small JSON of the headline numbers. All inputs must be of one checkpoint
-(sha256); the spatial entry is picked by it.
-
-Schema `uranium.diag.summary/1` (every section optional except the header; a missing input is
-`null`):
-
-    {
-      "schema": "uranium.diag.summary/1",
-      "point": str,                       # lineage point id, e.g. "S2e2", "r1", "rl-s1"
-      "checkpoint": str | null,           # path (shared-drive paths as "<shared>/...")
-      "checkpoint_sha256": str | null,    # 020-R5 policy version of the weights
-      "git_commit": str | null,           # commit of the measuring code
-      "created": str,                     # UTC ISO time
-      "data": {"sources": [str], "splits": [str]} | null,
-      "device": {"backend": str, "precision": str} | null,
-      "gain_method": "resid" | "joint" | null,
-      "cue_probes": {                     # per enemy race (T / P / Z), per task, per stage
-        race: {task: {"metric": "r2" | "auc", "rows": int, "games": int,
-                      "nuisance": {"pt", "lo", "hi"},
-                      "stages": {stage: {"pt", "lo", "hi", "gain", "gain_lo", "gain_hi", "mlp"}},
-                      "shuffled": {"pt", "lo", "hi"} | null}}},
-      "intervention": {                   # per race, all classes
-        race: {"games": int, "edited": int,
-               effect: {metric: {"n", "mean", "lo", "hi", "share_ge_0.15"}}}},
-                                          # effect in start / start_unf / count_sc / count_tok / real,
-                                          # metric in bunker_any / marine_sum / rax2_any / label_p
-      "dead_channels": {point: {"pos_frac": float, "never_active": int, "channels": int},
-                        "spatial.s8.const" | "spatial.pool.const":
-                            {"const": int, "channels": int, "threshold": float, "dtype": str}},
-                                          # 032-R25 ①②③ of the summarised checkpoint (by sha256)
-      "core_split": {race: {"hp_r2": {stage: float}, "gates": {gate: {"z_mean", "var_share_keep",
-                                                                       "r2_x", "r2_keep", "r2_write", "r2_g"}}}}
-    }
-
-`stage` "gain" is the stage's metric with the nuisance minus the nuisance alone (`gain_method`,
-uranium.diag.probe); "mlp" the MLP(64) probe's point value (null when not run)."""
+(sha256); the spatial entry is picked by it."""
 
 import datetime
 import json

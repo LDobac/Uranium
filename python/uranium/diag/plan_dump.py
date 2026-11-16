@@ -1,32 +1,6 @@
 """`python -m uranium diag plan-dump` (jepa_planning S0, docs/report/plan/2026_11_11_14_56_jepa_planning.md 6.3; 050-R9 diagnostics
 tooling, 032-R24 aux outputs): one teacher-forced pass of a checkpoint over the games of a shard source;
-every real step before `--row-until` becomes one row of the S0 feasibility test (`diag plan-s0`).
-
-Measurement only, the model is not changed: the trunk and the ActionType head as `UraniumNet.action_seq`
-(the numbers of `forward_seq`'s `dists["action"]`; the location head is not run), with the trunk's
-encoder summaries kept (`trunk_seq(..., aux=True)`, same values), and on h' the training-only JEPA
-predictors g_k and win_open. No counterfactual pass. `diag dump` is a separate command and unchanged.
-
-Rows (`rows/<field>.bin`, raw arrays appended lane group by lane group, row order = write order;
-`rows/schema.json` has each field's dtype and per-row shape and the row count; `load_rows`):
-  game int32 (id in games.json), split int8 (index into manifest `splits`), dec int32 (the step's
-  decision index in its game, from 0, every real step counted), frame float32,
-  h float16 [d] (h', what the heads read), y float16 [d_y] (LN([e_pool, s_pool]), the JEPA target,
-  aux.jepa_target), priv float16 [P] (privileged summary: a training target only, never an input),
-  priv_ok uint8 (the step has one), own float32 [O] (own state from the scalar input, `OWN_COLUMNS`),
-  action int16 / delay int8 / weight float32 (the shard label: action type, delay bucket, label weight;
-  0 = void), logp float16 [A] (ActionType log-probs, masked), mask uint8 [ceil(A/8)] (type_mask,
-  np.packbits), win_open float32 (NaN without the head), g<k> float16 [d_y] (g_k(h'), the k of `--gk`
-  the model has).
-games.json {gid: {split, lane, race (privileged), enemy_race, sha (replay_sha256), occ (n-th stream of
-  that replay in dump order; not a player identity), map (family index, 0/1 = target maps), start (own
-  start slot, scalar_cat[2]: with sha it names the view, e.g. one player of a TvT replay), result (+1 / -1 / 0 = undecided), rows, dec_rows, last_frame, scv8 (own SCVs >= 8 at 8:00,
-  0 if the game ended before, None if not readable), cls (build class from privileged, jepa_survey
-  7.3 draft rules, `features.game_labels`), cls_given (`--classes`), start1, first_sight, skipped
-  (`--skip-views`: a listed stream, no rows)}}.
-manifest.json: checkpoint (sha256), data, selection, windows, backend, precision, stats, own columns.
-
-Memory: bounded (rows streamed to disk per lane group; per lane only the open game's label columns)."""
+every real step before `--row-until` becomes one row of the S0 feasibility test (`diag plan-s0`)."""
 
 import functools
 import json

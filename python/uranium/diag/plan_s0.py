@@ -1,48 +1,6 @@
 """`python -m uranium diag plan-s0` (jepa_planning S0, docs/report/plan/2026_11_11_14_56_jepa_planning.md 6.4-6.5; 050-R9 diagnostics):
 the S0 feasibility test on `diag plan-dump` folders, on CPU. Measurement only (no model, spec or
-planner change).
-
-Stages (`--stage`): `train` trains the predictors (`uranium.diag.plan_pred`) into `<out>/models/`
-(an existing model file is kept unless `--retrain`), `report` computes the tables into `<out>/s0.json`
-and `<out>/s0.md` (`--tag`: s0-<tag>.*), `all` both. Per k of `--ks`: U, A, Ad (A+d), H, S on every training row, and for M3c
-A on the human-only and the model-only training rows. Same steps, batch and seed for every predictor.
-
-Tables (eval games only; CIs: game bootstrap 95 %, `uranium.diag.plan_stats`; the bootstrap unit is the
-replay, so both streams of one replay move together):
-- Design (`plan_pred.Design`, docs/report/plan/2026_11_11_14_56_jepa_planning.md 6.8): the second run's default drops the chained
-  rows of teacher / model sources, gives every predictor o_t, predicts the own-state change and draws
-  the S partner from another game; `--v1` is the first run (2026-11-11) bit for bit (same models, same
-  numbers; the report adds the change-space own-state metrics, the verdict keeps the first run's rows).
-- M0 basics (every row): open action types, policy top-m mass (m = 4, 8, 16), frame gap of the next
-  decision and of the k pairs (and their decision gap with `--k-unit frame`), operation-action share,
-  rows whose policy top 8 has an operation action, chained rows.
-- M1 conditioning gain over U on all rows and on operation-action rows (a_t an operation action), per
-  k: ŷ 1 - cos (and the model's own g_k as a reference, decision k only), p̂ R² and ô R² (standardised,
-  kept dimensions; ô on the 6.3 columns `OWN_HEADLINE`, `o_all` every column, `_own_cols` per column),
-  the own-state change R² `od` / `od_all` (o_{t+k} - o_t standardised by its training sd) with the
-  relative error cut 1 - err_X / err_U (`cut`, the reported own-state metric), win NLL and 8:00 SCV
-  NLL (decided games); gain = L_U - L_X (R²: X - U), the oracle share r = gain_A / gain_H (undefined,
-  and the k not judged, when H gains nothing), the control ratio gain_A / gain_S. Per source kind too:
-  k decisions are a different frame span per source (M0).
-- Views: a `model` source with Terran-enemy streams needs `--drop NAME=<views json>` (bot views out by
-  replay sha256 + own start slot) or `--keep-bot-perspective`. Models record the split digest; a report
-  on another split is refused.
-- M2 on operation-action rows, candidates = policy top 8 open types ∪ {a_t}, predictor A: M2a
-  spread R_t = mean pairwise distance of the candidates' predictions / the RMS error of the actual
-  action's prediction (ŷ scaled to norm sqrt(d), ô / p̂ standardised, ô in the predictor's own target
-  space); M2b direction: share of (row, Build/BuildAddon/Train_X candidate) where ô_X of that candidate
-  (the predicted change with `--own-target delta`) exceeds ô_X of every other candidate.
-- M3a outcome AUC by time band: q̂_A(h'_t, a_t), q̂_U(h'_t), win_open(h'_t), oracle q̂_U(h'_{t+k}).
-- M3b rush check: rows of teacher / model eval games of `--m3b-races` in `--m3b-window` with
-  Build_Bunker open; ΔQ = σq̂(Bunker) - Σ_c π(c) σq̂(c) over the open types; rush minus macro mean
-  ΔQ and the row AUC of ΔQ for rush vs macro. M3c: the same with A trained on human-only and on
-  model-only rows. Build classes: `cls_given` (plan-dump --classes) else the privileged rules.
-- M3d advantage agreement: operation-action rows, Spearman of Â_t = σq̂_A(a_t) - Σ_c π(c) σq̂_A(c)
-  and G_t = outcome - σq̂_U(h'_t).
-- Verdict: the 6.5 table, per scoring target (win, scv8), thresholds `--th-*` (기본안(미확정): the
-  user sets them). Not `--v1`: M1 also needs the own-state criterion at k = `--th-own-k` (A's relative
-  change-error cut over U on pooled operation-action rows: CI above 0 and at least `--th-s-ratio` times
-  the S control's cut), and "A and H both not significant" counts the own-state cuts too."""
+planner change)."""
 
 import json
 import time

@@ -1,25 +1,7 @@
 """`python -m uranium diag dump`: one teacher-forced pass of a checkpoint over the games of a shard
 source (docs/report/survey/2026_11_08_19_26_jepa_survey.md 7.2), per-row features and offline labels, the activations at the
 stages, and with `--cf` the counterfactual passes of the intervention (7.2 (4)), each with its own
-recurrent state from the game start.
-
-Rows: every real row before `--row-until` (labels need the first minutes). Model passes: chunks
-that start before `--act-until`. Activations: rows before `--act-until` with an enemy focus
-token, every `--act-every`-th step. `--read-until`: each game is read only up to that frame (the
-same rows; the lanes run shorter games, so the rows' order in the parts differs). A model pass is
-the trunk and the ActionType head (`UraniumNet.action_seq`, the values of `forward_seq`).
-
-Counterfactual passes (`--cf`), the anchor = the game's first-seen focus token, edited in every
-row that has it (visible or remembered, at the token's last-seen frame):
-  early / late: the anchor started at the race's early / late frame (`--cf-starts`): HP (and
-      Protoss shield) ratio and sqrt, COMPLETED, CONSTRUCTING, order (Nothing / the race's unfinished
-      order, UNFINISHED_ORDER);
-      a token seen before the counterfactual start is masked. Spatial channels are left as they are.
-  sc+1 / sc-1: the enemy max-seen count of the focus type +-1 (rows where it is >= 1), scalar only
-  tok+1 / tok-1: the same, and one focus token duplicated into an extra slot / masked
-
-Output (`--out`): rows_pNN.npz, acts_pNN.npz (float16, `idx` = row index in the part), games.json,
-manifest.json. Paths under the shared drive are written as `<shared>/...` (001-R10)."""
+recurrent state from the game start."""
 
 import json
 import os

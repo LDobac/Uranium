@@ -1,14 +1,5 @@
 """`python -m uranium diag core-split`: where inside the GTrXL core a cue is lost (docs/report/survey/
-2026_11_08_19_26_jepa_survey.md 10.3), on a `diag dump` with the core sub-points (`--core-points gate` or `full`).
-
-Per enemy race, on the rows with an unfinished focus token:
-- probes: ridge R² (game-level CV, game bootstrap CI) of the token's HP ratio at every stage from
-  the token to h_t, in the order the information flows
-- gates: each GRU gate g = (1-z)·x + z·h~ of every layer recomputed from its stored inputs (f32):
-  reconstruction error, mean z, variance shares of the kept residual (1-z)·x and the written z·h~,
-  and the HP R² of x, (1-z)·x, z·h~, h~ and g
-- retention: for a list of row variables, R²(h_t) / R²(core input projection x_in) over every
-  activation row of the race (how selectively the core keeps what reaches it)"""
+2026_11_08_19_26_jepa_survey.md 10.3), on a `diag dump` with the core sub-points (`--core-points gate` or `full`)."""
 
 import json
 from pathlib import Path
