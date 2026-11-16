@@ -706,3 +706,4 @@
 - 05:40 — 판정: Linux ROCm 엔티티 패딩 단위 32·16은 −2.8%·−2.6%(잡음 1.3%)로 기준 3% 미달, `pad_entities` 64 그대로 ([opt_review](report/review/2026_11_16_21_25_opt_review.md) 7.9절)
 - 07:05 — 측정 결과·판정: RL 학습기 compile은 update 6.8 → 3.5초지만 85 update 동안 10회 재컴파일(추론 최장 307초 멈춤)·남은 RAM 0.98 GB → 기본값 켜지 않음, channels-last도 실게임 이득 없음 ([opt_review](report/review/2026_11_16_21_25_opt_review.md) 7.5·7.12절, [032-R19](spec/2026_10_15_22_24_032-model-architecture.md))
 - 07:20 — 반영: shard 파일 미리 읽기(커밋 `b217df6`, 키 `URANIUM_BC_FILE_AHEAD`, 기본 끔·CUDA 호스트 2·Linux ROCm 호스트 끔) ([041-R16](spec/2026_10_15_22_24_041-imitation-learning.md), [opt_review](report/review/2026_11_16_21_25_opt_review.md) 7.11절)
+- 08:25 — 측정 결과: shard 파일 미리 읽기 깊이 1·2·4에서 `m2-teacher-t1` 조합 100 update 데이터 대기 10.3%·9.6%·9.1%(건너뛰기만 13.0%, 원래 31.5%), CUDA 호스트 깊이 2로 둠 ([opt_review](report/review/2026_11_16_21_25_opt_review.md) 7.13절, [041-R16](spec/2026_10_15_22_24_041-imitation-learning.md))
