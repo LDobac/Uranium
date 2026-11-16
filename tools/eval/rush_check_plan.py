@@ -523,7 +523,7 @@ def render(checkpoint: str | None, name: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-if __name__ == "__main__":
+def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0], formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog=f"--teacher-round follow-up (044-R8):\n  {TEACHER_ROUND_FOLLOW_UP}")
     ap.add_argument("--checkpoint", default=None, help="model checkpoint (relative = under URANIUM_SHARED_DIR; default ac1-vtrace-s1, --dagger bc-mix-e10)")
@@ -552,7 +552,7 @@ if __name__ == "__main__":
     ap.add_argument("--botgen-tp", action="store_true", help="write the botgen plan of the terran_tp teacher (config/plans/teacher_botgen_tp.toml)")
     ap.add_argument("--teacher-round", action="store_true",
                     help="write the teacher round t1 self-game plan config/plans/dagger_m2_t1.toml (needs --checkpoint)")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
     if a.teacher_tp or a.botgen_tp:
         assert not (a.teacher_tp and a.botgen_tp), "--teacher-tp and --botgen-tp are separate plans"
         assert not (a.teacher or a.botgen or a.dagger or a.distill or a.teacher_round or a.half or a.memory_log or a.round is not None
@@ -564,7 +564,7 @@ if __name__ == "__main__":
             "--botgen-tp --extra-p N / --extra-t M needs --part K (1 for the first top-up, 2 for the next, ...) and --part needs a count"
         extra = {r: n for r, n in (("P", a.extra_p), ("T", a.extra_t)) if n} if topup else None
         write_tp(a.out_dir, a.teacher_tp, a.out, extra, a.part or 1)
-        raise SystemExit(0)
+        return
     assert not (a.extra_p or a.extra_t), "--extra-p / --extra-t are for --botgen-tp"
     if a.teacher_round:
         assert not (a.teacher or a.botgen or a.dagger or a.distill or a.extra or a.part is not None or a.first_game is not None
@@ -573,7 +573,7 @@ if __name__ == "__main__":
         assert a.checkpoint, "--teacher-round needs --checkpoint (044-R8: the model of the round)"
         write_teacher_round(a.out_dir, a.checkpoint, a.out, a.name)
         print(f"follow-up: {TEACHER_ROUND_FOLLOW_UP}")
-        raise SystemExit(0)
+        return
     rnd = 1 if a.round is None else a.round
     assert not (a.dagger and a.distill), "--dagger and --distill are separate plans"
     assert a.dagger or a.distill or not a.half, "--half needs --dagger or --distill"
@@ -584,18 +584,22 @@ if __name__ == "__main__":
     if a.distill:
         assert a.checkpoint, "--distill needs --checkpoint (044-R1: d1 = the 041-R29 (4) selection S, d2 = the d1 model)"
         write_distill(a.out_dir, rnd, a.checkpoint, a.out, a.half, a.name, a.extra, a.part or 1)
-        raise SystemExit(0)
+        return
     if a.dagger:
         write_dagger(a.out_dir, rnd, a.checkpoint or DAGGER_CHECKPOINT, a.out, a.half, a.memory_log)
-        raise SystemExit(0)
+        return
     if a.first_game is not None:
         assert a.botgen and a.name, "--first-game needs --botgen and --name"
         write_botgen_extra(a.out_dir, a.first_game, a.name)
-        raise SystemExit(0)
+        return
     if a.botgen:
         write_botgen(a.out_dir)
-        raise SystemExit(0)
+        return
     name = a.name or ("teacher-check" if a.teacher else "rush5-check")
     out = a.out or (TEACHER_OUT if a.teacher else OUT)
     out.write_bytes(render(None if a.teacher else (a.checkpoint or CHECKPOINT), name).encode("utf-8"))
     print(f"{out}: {len(OPPONENTS) * len(MAPS)} matchups x {GAMES} games")
+
+
+if __name__ == "__main__":
+    main()
