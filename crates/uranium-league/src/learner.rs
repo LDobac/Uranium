@@ -10,7 +10,9 @@ use crate::trajectory::Segment;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum Algo {
+    /// V-trace + UPGO (042 default).
     Vtrace,
+    /// PPO clip baseline (042 comparison).
     Ppo,
 }
 

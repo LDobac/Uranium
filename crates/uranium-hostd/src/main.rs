@@ -26,6 +26,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Serve control connections (settings from .env, 020-R9).
     Serve,
 }
 

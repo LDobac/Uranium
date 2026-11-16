@@ -13,40 +13,59 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Live map precompute input (031, AMB-031-4): read each map file's CHK resources and write
+    /// `<URANIUM_MAPS_DIR>/<map file sha256>.resources.toml`.
     Mapgen { maps: Vec<PathBuf> },
+    /// Print header, players and per-player command counts / APM as JSON.
     Inspect { rep: PathBuf },
+    /// Write the 1.16.1 (`reRS`, stored chunks) version of a replay for OpenBW.
     Convert { rep: PathBuf, out: PathBuf },
+    /// Parse every `.rep` below a folder and print one JSON line per replay (no names, 040-R14).
     Scan { dir: PathBuf },
+    /// 050-R9 measurement protocol (`tools/eval/tables.py`): print each replay's command stream as
+    /// one JSON line `{"rep", "frames", "players", "cmds": [[frame, player, opcode, payload hex]]}`.
     Cmddump {
         #[arg(required = true)]
         reps: Vec<PathBuf>,
     },
+    /// 052-R7: play each replay again in OpenBW replay mode from our player's view, stopping every
+    /// `--stride` frames, and print the 052 metrics as one JSON line per view `{"rep",
+    /// "perspective", "frames", "ops", "rush_combat"}` (a replay that fails: null objects and
+    /// `error`). Playback stops at the later of `--until-frame` and the rush combat window's end.
     Opsdump {
         #[arg(required = true)]
         reps: Vec<PathBuf>,
+        /// BWAPI slot of our player (the session record's `slot`); default every active Terran.
         #[arg(long)]
         perspective: Option<u8>,
         #[arg(long, default_value_t = uranium_replay::opsdump::UNTIL_FRAME)]
         until_frame: u32,
         #[arg(long, default_value_t = uranium_replay::opsdump::STRIDE)]
         stride: u32,
+        /// 052-AC2 rehearsal: also print the mined fields' depletion (`field_check`).
         #[arg(long)]
         field_check: bool,
     },
+    /// 040-AC1: compare per-player command counts and APM with the screp reference parser.
+    /// Play a replay in OpenBW replay mode and report the 040-R8 desync signals as JSON.
     Play {
         rep: PathBuf,
+        /// Player id to observe (default: every active Terran).
         #[arg(long)]
         perspective: Option<u8>,
     },
+    /// 020-AC4 / 040-AC6: the hostd StartReplay stream equals a local replay bit for bit.
     StreamCheck {
         rep: PathBuf,
         #[arg(long)]
         hostd: String,
+        /// This machine's address as the hostd's launcher reaches it.
         #[arg(long, default_value = "127.0.0.1")]
         agent_ip: String,
         #[arg(long)]
         perspective: Option<u8>,
     },
+    /// Debug (011-AC5): replay `runs` times and print the first observation that differs.
     Nondet {
         rep: PathBuf,
         #[arg(long)]
@@ -54,31 +73,51 @@ enum Cmd {
         #[arg(long, default_value_t = 4)]
         runs: usize,
     },
+    /// Debug: list the map's triggers (CHK `TRIG`): condition and action types with arguments.
     Triggers { rep: PathBuf },
+    /// 040-R6 / 040-AC2 / 040-AC4 (C-4): `reports/dataset_stats.md` from `build` records (games and
+    /// views by map, matchup, src, stage, split; desync rate; result_source; map families).
     #[command(alias = "stats")]
     DatasetStats {
+        /// `build` records (JSON lines); folders are searched for `*.jsonl` (not recursive).
         records: Vec<PathBuf>,
         #[arg(long)]
         out: PathBuf,
     },
+    /// 034-AC3 / AMB-040-6 / B-12: label distribution and GameInfo checks over a shard folder
+    /// (JSON). Exits with an error when a game's GameInfo fails a check (e.g. not exactly one
+    /// `is_enemy` player) or a (replay, perspective) appears twice (040-R20). Subfolders included.
     ShardStats { dir: PathBuf },
+    /// 013-AC4: SC:R -> 1.16.1 conversion round trip over a folder (JSON summary).
     Roundtrip { dir: PathBuf },
+    /// 040-R8 analysis: where a replay starts to diverge in OpenBW (JSON).
     Trace {
         rep: PathBuf,
         #[arg(long)]
         perspective: Option<u8>,
     },
+    /// 013: opcode histogram of a corpus with the OpenBW class of each opcode (JSON).
     Ophist { dir: PathBuf },
+    /// Analysis (G0 decision granularity, `tools/eval/granularity.py`): per game the labels and a
+    /// compact own/enemy state in an early window as gzipped JSON lines, from shards or (with
+    /// `--replays`) from replays through the 040 labeler without the 5-minute bar. Writes no
+    /// dataset. Input of AMB-031-7 (does the 031-R3 12-unit cap bind).
     Granularity {
+        /// Shard / replay files or folders (searched recursively).
         inputs: Vec<PathBuf>,
+        /// File with one more input path per line.
         #[arg(long)]
         list: Option<PathBuf>,
+        /// Inputs are replays (default: shards).
         #[arg(long)]
         replays: bool,
+        /// Output `.jsonl.gz`.
         #[arg(long)]
         out: PathBuf,
+        /// Source tag written into replay games.
         #[arg(long, default_value = "")]
         source: String,
+        /// Shard filters: matchup (e.g. TvZ), stage (S1 / S2 / B), map families (comma list).
         #[arg(long)]
         matchup: Option<String>,
         #[arg(long)]
@@ -96,43 +135,87 @@ enum Cmd {
         #[arg(long, default_value_t = 4)]
         jobs: usize,
     },
+    /// 040: build BC shards from a replay folder (filter, desync check, labels, shards).
     Build {
         dir: PathBuf,
+        /// 040-R14 source tag (stardata, scr_public, community, personal, user, bot, botgen, scr_ladder,
+        /// dagger, distill; `branch` for 051 analysis shards).
         #[arg(long)]
         src: String,
+        /// Shard output folder (default `<URANIUM_SHARED_DIR>/datasets/replays/shards/<src>`, 040-R13).
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Per-replay records (JSON lines).
         #[arg(long)]
         records: PathBuf,
         #[arg(long, default_value_t = 4)]
         jobs: usize,
+        /// Process at most this many replays (sorted by path).
         #[arg(long)]
         limit: Option<usize>,
+        /// Storage budget in GB for this run (060-R7 total is 600).
         #[arg(long, default_value_t = 600)]
         budget_gb: u64,
+        /// This host's part when several hosts split one source (`index % parts == part`).
         #[arg(long, default_value_t = 0)]
         part: usize,
         #[arg(long, default_value_t = 1)]
         parts: usize,
+        /// File of SHA-256 hashes (one per line, first column) to skip as duplicates.
         #[arg(long)]
         skip_hashes: Option<PathBuf>,
+        /// Ladder collection records (043-R8) with recorded winners for 040-R8 (c) / ④. Default for
+        /// `--src scr_ladder`: `<URANIUM_SHARED_DIR>/datasets/replays/ladder/collect.jsonl` if present.
         #[arg(long)]
         ladder_records: Option<PathBuf>,
+        /// 040-R21: store only the steps observed at frames <= this (the 021-R8 teacher data cut
+        /// at 8:00 = 11520). Default: the whole game.
         #[arg(long)]
         until_frame: Option<u32>,
+        /// 040-R21: the generating plan's `max_frames` (OpenBW botgen): in a replay of at least this
+        /// many frames the first leave is the time limit, not a player leaving (no 040-R8
+        /// leaver-ahead signal; the result is undecided, 0).
         #[arg(long)]
         time_limit: Option<u32>,
+        /// 041-R22 DAgger (source `dagger`, required with it): label each Terran view with this
+        /// teacher's commands on the view's observations instead of the replay's own commands
+        /// (`terran_react`, the 021-R8 teacher; `terran_tp`, the 022 TvT / TvP teacher, 022-R9: a
+        /// view against a lobby Zerg or Random is `filtered`, 022-AC3 / 022-R2). No 5-minute filter.
         #[arg(long)]
         relabel: Option<String>,
+        /// 041-R28: folder of the model decision logs (`<replay stem>.jsonl`; a plan with
+        /// `memory_log = true` writes `memory/` beside `replays/`), or of the 051-R2 act logs
+        /// (`<replay stem>-p<players index>.jsonl`, an evaluation job's `acts/`; scripted sessions'
+        /// logs are skipped). With `--relabel`, or without it only with `--src branch` and an
+        /// explicit `--out` outside the BC shards (051-R13 ④ branch trunks: the replay's own
+        /// commands stay the labels, the step memory is the live session's, and every logged
+        /// decision gets an observation / memory only step at its playback frame; not BC data), or
+        /// with `--src distill` (required there, 044-R2: one step per playback frame of the game
+        /// start and the logged decisions, all `unknown` label slots for the 044-R3 policy
+        /// labeller; a view whose log fails 041-R28 ④ / ⑤ is `filtered`; `--out` outside the BC
+        /// shards, `--time-limit` and a `distill*.jsonl` records file required). Each step gets the
+        /// 040-R22 `memory_action` (shard schema 7); a view without a complete log of its player,
+        /// or with more than 1% decisions naming units that are not its own, gets none (records
+        /// `memory`).
         #[arg(long)]
         memory_log: Option<PathBuf>,
+        /// 022-R2 / R12 / AC3: the generating job's games.jsonl (lobby races of each `g<id>.rep`).
+        /// Required with `--relabel terran_tp`; with `--src botgen` it marks a build of the 022
+        /// teacher's botgen games. Only the plan's players[0] (hostd name `p0-...`: the teacher, or
+        /// the model) is a view; a game whose opponent's lobby race is Zerg or Random, without a
+        /// games.jsonl line, not exactly one players[0] name, players[0] not lobby Terran (botgen:
+        /// not the 022 teacher by its hostd name `p0-T0-terran-terran_tp`), or whose lobby race
+        /// differs from the race played is `filtered`. A botgen build without it refuses 022
+        /// teacher games. One plan (stage) folder per build: two replay files of one game id stop it.
         #[arg(long)]
         games: Option<PathBuf>,
     },
     CheckScrep {
         dir: PathBuf,
+        /// screp executable (icza/screp release).
         #[arg(long)]
         screp: PathBuf,
+        /// Check at most this many replays (sorted by path).
         #[arg(long)]
         limit: Option<usize>,
     },

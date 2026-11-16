@@ -18,11 +18,14 @@ pub const HEADS: usize = 6;
 pub const WEIGHTS_FILE: &str = "model.safetensors";
 pub const BURN_WEIGHTS_FILE: &str = "model.bpk";
 
+/// 050-R1 / 032-R15 sampling mode.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum SampleMode {
+    /// temp 0: argmax of every head (deterministic).
     #[default]
     Argmax,
+    /// temp 1: Gumbel-max sampling.
     Stochastic,
 }
 

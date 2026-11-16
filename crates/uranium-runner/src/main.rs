@@ -13,15 +13,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Play every game of a matchup plan of scripted players.
     Run {
         #[arg(long)]
         plan: PathBuf,
+        /// Output directory (default runs/<plan name>).
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Measure how many concurrent games this host sustains within the bridge latency
+    /// target and store it for uranium-hostd (020-R10). Run on the game host itself.
     Calibrate {
+        /// Largest concurrency to try (default: logical cores).
         #[arg(long)]
         max: Option<u32>,
+        /// Frame limit per game.
         #[arg(long, default_value_t = 8000)]
         frames: u32,
     },
