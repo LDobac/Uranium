@@ -1,5 +1,5 @@
-"""`python -m uranium diag core-split`: where inside the GTrXL core a cue is lost (reports/
-jepa_survey.md 10.3), on a `diag dump` with the core sub-points (`--core-points gate` or `full`).
+"""`python -m uranium diag core-split`: where inside the GTrXL core a cue is lost (docs/report/survey/
+2026_11_08_19_26_jepa_survey.md 10.3), on a `diag dump` with the core sub-points (`--core-points gate` or `full`).
 
 Per enemy race, on the rows with an unfinished focus token:
 - probes: ridge R² (game-level CV, game bootstrap CI) of the token's HP ratio at every stage from

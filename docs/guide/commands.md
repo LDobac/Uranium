@@ -10,7 +10,7 @@
 - `cp .env.example .env` 후 값 입력. 새 키는 `.env.example`에도. 프로세스 환경변수 우선.
 - Rust 바이너리는 시작 시 읽음, 셸 스크립트는 `tools/env.sh`(Windows `tools\env.ps1`). Windows 경로는 작은따옴표.
 - 학습 호스트 필수: `URANIUM_SHARED_DIR`, `URANIUM_MAPS_DIR`, `URANIUM_CACHE_DIR`, `URANIUM_PYTHON`(venv python, 작업자·감시가 학습 자식을 띄울 때 씀). Linux ROCm 호스트는 `MIOPEN_USER_DB_PATH`(고정 로컬 폴더)도.
-- 작업 로그·생성 파일·일회용 스크립트: `<repo>/local/work/<작업>/`. 호스트별 스크립트: `<repo>/local/scripts/`.
+- 작업 로그·생성 파일·일회용 스크립트: `<repo>/local/work/<작업>/`. 호스트별 스크립트: `<repo>/local/scripts/`. 게임 데이터: `<repo>/local/sc_data/`(`openbw/`, `maps/`).
 
 ### Python·PyTorch (AMB-000-4, 001-R8)
 - 학습·추론은 Python 3.14 + PyTorch 2.14(`python/uranium`). `uranium` 패키지 = Python + Rust 확장 `uranium._core`(crate `uranium-py`, maturin). Rust를 고치면 같은 설치 명령으로 다시 설치.
@@ -98,7 +98,7 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
 - 각 키 설명은 [7 BC](#7-bc) "메모리·공급 환경변수".
 
 ## 2. 벤치·프로파일
-- 벤치 스위트([060-R2](../spec/2026_10_15_22_24_060-infra.md)): `python -m uranium bench suite [--suite kernels,model,infer] [--filter <regex>] [--precision f32|bf16] [--budget 10] [--out docs/report/bench/<YYYY_MM_DD_HH_mm>_bench_<backend>.md] [--json local/raw/<name>.json]`
+- 벤치 스위트([060-R2](../spec/2026_10_15_22_24_060-infra.md)): `python -m uranium bench suite [--suite kernels,model,infer] [--filter <regex>] [--precision f32|bf16] [--budget 10] [--out docs/report/bench/<YYYY_MM_DD_HH_mm>_bench_<backend>.md] [--json local/work/bench/<name>.json]`
   - 커널·모델·추론 케이스 forward / forward+backward 중앙값·p95, CPU f32 대비 오차, 최대 GPU 할당.
   - 반복은 표준오차 < 평균 1%까지(워밍업 제외, 케이스당 `--budget`초까지).
 - 실데이터 BC update(060-R2, [AMB-041-7](../spec/README.md)): `python -m uranium bench bc (--dataset <rel> | --shards <dir>)... [--groups 1,2,4,8] [--updates 20] [--seed 1] [--phases] [--ops 25] [--json <log>]`

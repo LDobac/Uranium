@@ -1,5 +1,5 @@
-"""`python -m uranium diag intervene`: counterfactual effects from a `diag dump --cf` (reports/
-jepa_survey.md 7.2 (4), 10.1, 10.2.2), per enemy race.
+"""`python -m uranium diag intervene`: counterfactual effects from a `diag dump --cf` (docs/report/survey/
+2026_11_08_19_26_jepa_survey.md 7.2 (4), 10.1, 10.2.2), per enemy race.
 
 Per game, window 1:30-4:00 (`--window`) on the steps where the action is allowed (type mask):
 - `bunker_any`: P(at least one Build_Bunker) = 1 - prod(1 - p)
