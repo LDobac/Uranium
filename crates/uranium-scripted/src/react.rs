@@ -1084,16 +1084,15 @@ impl Brain {
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "testkit"))]
+pub mod testkit {
     use super::*;
     use crate::{Bot, Kit, T0Build};
 
-    const OURS: Tile = (10, 10);
-    const THEIRS: Tile = (110, 110);
-    const NATURAL: Tile = (10, 26);
+    pub const OURS: Tile = (10, 10);
+    pub const THEIRS: Tile = (110, 110);
 
-    fn info() -> GameInfo {
+    pub fn info() -> GameInfo {
         let n = 128usize * 128;
         GameInfo {
             map_name: "t".into(),
@@ -1116,16 +1115,69 @@ mod tests {
         }
     }
 
+    pub fn unit(id: u32, ty: u16, pos: Pos) -> UnitState {
+        UnitState { id, owner: 0, unit_type: ty, pos, hp: 40, flags: flags::COMPLETED | flags::IDLE, ..Default::default() }
+    }
+
+    pub fn frame(n: u32, units: Vec<UnitState>, minerals: i32, supply_used: u16) -> RawFrame {
+        RawFrame {
+            frame: n,
+            self_state: PlayerState { minerals, supply_used, supply_total: 60, upgrades: vec![0; 63], ..Default::default() },
+            units,
+            visibility: BitGrid::from_bytes(128, 128, &[1; 128 * 128]),
+            explored: BitGrid::new(128, 128),
+            creep: BitGrid::new(128, 128),
+            events: vec![],
+            effects: vec![],
+        }
+    }
+
+    pub struct BunkerProbe {
+        pub path: Vec<Tile>,
+        pub natural: Pos,
+        pub site: Option<Tile>,
+        pub bunker: Option<(f64, bool)>,
+    }
+
+    pub fn main_bunker_probe(static_map: &StaticMap, hints: &MapHints, start: Tile, resources: &[(u16, Pos)]) -> BunkerProbe {
+        let mut i = info();
+        i.static_map = static_map.clone();
+        i.map_size_tiles = (i.static_map.width_tiles, i.static_map.height_tiles);
+        i.players[0].start_tile = Some(start);
+        let mut b = Brain::with_hints(&i, Kit::for_build(Race::Terran, T0Build::TerranReact), hints);
+        let h = depot_center(start);
+        let mut units = vec![unit(1, CC, h)];
+        for (k, r) in resources.iter().enumerate().filter(|(_, r)| within(r.1, h, 14)) {
+            units.push(UnitState { owner: 11, ..unit(1_000 + k as u32, r.0, r.1) });
+        }
+        b.act(&frame(100, units, 0, 8));
+        let r = b.react.as_ref().unwrap();
+        let (path, site, natural) = (r.main_path.clone().unwrap(), r.main_site, depot_center(r.natural.unwrap()));
+        let bunker = site.map(|s| {
+            let c = bunker_center(s);
+            let d = (dist2(c, h) as f64).sqrt() / 32.0;
+            let on_path = path.iter().any(|t| within(c, (t.0 * 32 + 16, t.1 * 32 + 16), 2));
+            (d, on_path)
+        });
+        BunkerProbe { path, natural, site, bunker }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Bot, Kit, T0Build};
+
+    use super::testkit::*;
+
+    const NATURAL: Tile = (10, 26);
+
     fn hints() -> MapHints {
         MapHints { base_locs: vec![OURS, THEIRS, NATURAL, (60, 60)], chokes: vec![(24, 10), (10, 40), (100, 100)] }
     }
 
     fn teacher() -> Brain {
         Brain::with_hints(&info(), Kit::for_build(Race::Terran, T0Build::TerranReact), &hints())
-    }
-
-    fn unit(id: u32, ty: u16, pos: Pos) -> UnitState {
-        UnitState { id, owner: 0, unit_type: ty, pos, hp: 40, flags: flags::COMPLETED | flags::IDLE, ..Default::default() }
     }
 
     fn enemy(id: u32, ty: u16, pos: Pos) -> UnitState {
@@ -1146,19 +1198,6 @@ mod tests {
         ];
         v.extend((0..scvs).map(|i| unit(100 + i, SCV, (home().0 - 100, home().1 + 10 * i as u16))));
         v
-    }
-
-    fn frame(n: u32, units: Vec<UnitState>, minerals: i32, supply_used: u16) -> RawFrame {
-        RawFrame {
-            frame: n,
-            self_state: PlayerState { minerals, supply_used, supply_total: 60, upgrades: vec![0; 63], ..Default::default() },
-            units,
-            visibility: BitGrid::from_bytes(128, 128, &[1; 128 * 128]),
-            explored: BitGrid::new(128, 128),
-            creep: BitGrid::new(128, 128),
-            events: vec![],
-            effects: vec![],
-        }
     }
 
     fn builds(act: &Act, ty: u16) -> Vec<Tile> {
@@ -1758,61 +1797,6 @@ mod tests {
         }
         assert_eq!((bunkers, branch(&b)), (0, Branch::Macro));
         assert!(expanded);
-    }
-
-    #[test]
-    #[ignore = "needs URANIUM_MAPS_DIR and URANIUM_TEST_SHARDS with target-map games"]
-    fn target_map_bunker_on_the_ground_path_021_r8() {
-        let maps = std::path::PathBuf::from(std::env::var("URANIUM_MAPS_DIR").expect("URANIUM_MAPS_DIR"));
-        let shards = std::path::PathBuf::from(std::env::var("URANIUM_TEST_SHARDS").expect("URANIUM_TEST_SHARDS"));
-        let families = uranium_env::maps::MapFamilies::load().unwrap();
-        let hashes = [
-            ("fighting_spirit", "226b8267504ef85938621f604e99e74d195a8c87b5beb8ec59542d8d5d218ace"),
-            ("fighting_spirit", "175b118cc1ab70c95e9bfc90cc5640ed300b7370443e9394aeb0d1dce6dbb0bc"),
-            ("circuit_breaker", "8109bae22de8e79ca9ddc9ca4bad343dbf5ac676747d7805f043cd8080bfdf56"),
-        ];
-        let mut found = BTreeSet::new();
-        let mut on_path_starts = 0u32;
-        let mut files: Vec<_> = std::fs::read_dir(&shards).unwrap().filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.to_string_lossy().ends_with(".bin.zst")).collect();
-        files.sort();
-        for path in files {
-            for g in uranium_replay::shard::read(&path).unwrap().games {
-                let family = families.classify(&g.game_info.map_name, "");
-                if !hashes.iter().any(|(f, _)| *f == family) || !found.insert(family.clone()) {
-                    continue;
-                }
-                let pre = uranium_env::maps::live_precompute(&maps, &g.game_info)
-                    .0
-                    .or_else(|| hashes.iter().filter(|(f, _)| *f == family).find_map(|(_, h)| uranium_env::maps::load_precompute(&maps, h)))
-                    .expect("precompute");
-                let hints = MapHints { base_locs: pre.base_locs.clone(), chokes: pre.chokes.clone() };
-                let starts = g.game_info.static_map.start_locations.clone();
-                for s in starts.iter().copied() {
-                    let mut i = info();
-                    i.static_map = g.game_info.static_map.clone();
-                    i.map_size_tiles = (i.static_map.width_tiles, i.static_map.height_tiles);
-                    i.players[0].start_tile = Some(s);
-                    let mut b = Brain::with_hints(&i, Kit::for_build(Race::Terran, T0Build::TerranReact), &hints);
-                    let h = depot_center(s);
-                    let mut units = vec![unit(1, CC, h)];
-                    for (k, r) in pre.resources.iter().enumerate().filter(|(_, r)| within(r.pos, h, 14)) {
-                        units.push(UnitState { owner: 11, ..unit(1_000 + k as u32, r.unit_type, r.pos) });
-                    }
-                    b.act(&frame(100, units, 0, 8));
-                    let r = b.react.as_ref().unwrap();
-                    let (path, site, nat) = (r.main_path.clone().unwrap(), r.main_site, depot_center(r.natural.unwrap()));
-                    assert!(path.last().is_some_and(|t| *t == (nat.0 / 32, nat.1 / 32)), "{family} {s:?}: no path to the natural");
-                    let c = bunker_center(site.unwrap_or_else(|| panic!("{family} {s:?}: no main site")));
-                    let d = (dist2(c, h) as f64).sqrt() / 32.0;
-                    let on_path = path.iter().any(|t| within(c, (t.0 * 32 + 16, t.1 * 32 + 16), 2));
-                    eprintln!("{family} start {s:?}: bunker {site:?} at {d:.1} tiles, on the path {on_path}, path {} tiles", path.len());
-                    assert!(if on_path { (5.0..=7.0).contains(&d) } else { (4.0..=6.0).contains(&d) }, "{family} {s:?}: site {site:?} {d:.1} tiles");
-                    on_path_starts += u32::from(on_path);
-                }
-            }
-        }
-        assert_eq!(found.len(), 2, "both target maps in the shards: {found:?}");
-        assert!(on_path_starts >= 5, "{on_path_starts} starts on the path");
     }
 
     #[test]
