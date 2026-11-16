@@ -428,6 +428,11 @@ def write_tp(out_dir: Path, check: bool, out: Path | None = None, extra: dict[st
 
 TEACHER_ROUND_SEED_KEY = 3_000_000
 TEACHER_ROUND_BLOCK = range(1, 601)
+TEACHER_ROUND_FOLLOW_UP = (
+    "uranium-replay build <dir>/replays --src dagger --relabel terran_tp --games <dir>/games.jsonl"
+    " --memory-log <dir>/memory --until-frame 14400 --time-limit 14400"
+    " --out <shared>/datasets/replays/shards/dagger_m2/t1"
+)
 
 
 def render_teacher_round(checkpoint: str, name: str) -> tuple[str, list[int]]:
@@ -519,7 +524,8 @@ def render(checkpoint: str | None, name: str) -> str:
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0], formatter_class=argparse.RawDescriptionHelpFormatter,
+                                 epilog=f"--teacher-round follow-up (044-R8):\n  {TEACHER_ROUND_FOLLOW_UP}")
     ap.add_argument("--checkpoint", default=None, help="model checkpoint (relative = under URANIUM_SHARED_DIR; default the AC1 one, --dagger bc-mix-e10)")
     ap.add_argument("--teacher", action="store_true", help="the 021-R8 teacher plays players[0] instead of a model (050-R8)")
     ap.add_argument("--name", default=None, help="plan name (the evaluation stage name; default rush5-check / teacher-check)")
@@ -566,6 +572,7 @@ if __name__ == "__main__":
             "--teacher-round (the one round t1, 300 games) takes only --memory-log / --checkpoint / --name / --out / --out-dir")
         assert a.checkpoint, "--teacher-round needs --checkpoint (044-R8: the model of the round)"
         write_teacher_round(a.out_dir, a.checkpoint, a.out, a.name)
+        print(f"follow-up: {TEACHER_ROUND_FOLLOW_UP}")
         raise SystemExit(0)
     rnd = 1 if a.round is None else a.round
     assert not (a.dagger and a.distill), "--dagger and --distill are separate plans"
