@@ -1,7 +1,7 @@
 # 구조 비교(7개 모델, 10,000 update) 결과 독립 검토
 
 - 작성: 2026-10-27, 독립 리뷰어(Claude, Fable 5.1 high, 사용자 요청). 메인 세션이 핵심 수치 두 가지(무승부 879판 중 한쪽만 항복 판정 632판, 모델별 무승부율)를 원자료로 다시 세어 확인했다.
-- 대상: `reports/m6_arch_ablation_pt.md`, `reports/m6_core_ablation_pt.md`, `reports/m6_core_ablation.md`(1차 비교), 원자료 `<shared>/eval/abl-pt/`, `<shared>/artifacts/m6_arch_ablation_pt/val500/`, 학습 로그 `runs/worker-abl-pt.log`(CUDA 호스트 몫만)
+- 대상: `docs/report/experiment/2026_10_25_01_38_m6_arch_ablation_pt.md`, `docs/report/experiment/2026_10_24_21_29_m6_core_ablation_pt.md`, `docs/report/experiment/2026_10_18_18_43_m6_core_ablation.md`(1차 비교), 원자료 `<shared>/eval/abl-pt/`, `<shared>/artifacts/m6_arch_ablation_pt/val500/`, 학습 로그 `runs/worker-abl-pt.log`(CUDA 호스트 몫만)
 - 성격: 읽기 전용 검토. 저장소·데이터는 고치지 않았고, 아래 숫자 중 리포트에 없는 것은 원자료를 다시 읽어 직접 계산했다(스크립트 `analyze_games.py`, `analyze_trainlog.py`, `surrender_adjust.py`와 출력 `games_out.txt`는 `<shared>/artifacts/m6_arch_ablation_pt/review_20261027/`).
 - 표기: "사실"은 기록에서 센 값, "가설"은 내 해석이다. 각 주장 뒤에 확신도를 적었다(높음 / 중간 / 낮음).
 

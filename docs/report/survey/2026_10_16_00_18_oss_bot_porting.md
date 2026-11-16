@@ -92,7 +92,7 @@
 
 ## T1 설정 변형 (021 "T1 설정 변형", 2026-11-03, AMB-042-15)
 
-원본 봇 폴더를 복사해 오프닝 설정만 바꾼 상대다. 라이선스·원본 BWAPI·포팅·빌드 스크립트·고정은 원본 봇 것을 따른다. 바이너리(`module.dll`·`.so`)는 원본과 해시가 같다. 만들기: `tools/oss/make_variant.py`(`docs/commands.md`). 아래 네 변형은 이 스크립트로 다시 만들어 배포된 폴더와 바이트까지 같음을 확인했다(Windows 빌드, 2026-11-03). 오프닝 실측은 `reports/m6_rush_ladder.md` 3절(9풀·오버풀)과 10절(12풀 저글링·9풀 저글링). 원본 기록은 `runs/rushladder_20261103/variants.md`.
+원본 봇 폴더를 복사해 오프닝 설정만 바꾼 상대다. 라이선스·원본 BWAPI·포팅·빌드 스크립트·고정은 원본 봇 것을 따른다. 바이너리(`module.dll`·`.so`)는 원본과 해시가 같다. 만들기: `tools/oss/make_variant.py`(`docs/guide/commands.md`). 아래 네 변형은 이 스크립트로 다시 만들어 배포된 폴더와 바이트까지 같음을 확인했다(Windows 빌드, 2026-11-03). 오프닝 실측은 `docs/report/experiment/2026_11_03_17_56_m6_rush_ladder.md` 3절(9풀·오버풀)과 10절(12풀 저글링·9풀 저글링). 원본 기록은 `runs/rushladder_20261103/variants.md`.
 
 | 변형 (상대 ID, 021-R3) | 원본 상대 ID | 바꾼 파일·줄 | 이전 → 이후 | 바꾼 파일 sha256 |
 |---|---|---|---|---|

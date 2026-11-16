@@ -2,7 +2,7 @@
 
 ## 0. 배경과 예상
 - 사용자 질문: "우리 모델에 FlashAttention을 시도한 흔적이 있나" → "WSL에서는 가능한가" → "WSL에서 FlexAttention 측정해봐".
-- 지금까지의 사정(`reports/pytorch_opt.md` 0.1·2.12절)
+- 지금까지의 사정(`docs/report/bench/2026_10_24_07_03_pytorch_opt.md` 0.1·2.12절)
   - PyTorch SDPA flash 백엔드는 `attn_mask`를 받지 않는다. 학습하는 거리 bias(032 §2.1, 032-R13)와 키 마스크가 있는 엔티티 attention에는 쓸 수 없다. Windows용 PyTorch에는 flash 커널 자체가 없다.
   - FlashAttention 3·4는 Hopper·Blackwell 전용이라 학습 PC(Ada)에서 돌지 않는다. bc250(gfx1013)은 어느 버전도 지원하지 않는다.
   - 그래서 bias를 커널 안에서 읽는 attention 커널(`python/uranium/kernels/attn_bias.cu`, 060-R1)을 직접 만들어 두 장비 기본값으로 쓰고 있다(`URANIUM_ENTITY_ATTN=fused`).
@@ -30,7 +30,7 @@
 - 시간: 워밍업 3회 뒤 20회의 CUDA event 중앙값
 - 오차: f32 기준 구현 대비 상대 오차
 - 재현성: 같은 입력으로 두 번 돌려 gradient가 비트 단위로 같은지 비교
-- 스크립트와 원본: `reports/raw/flex_attention_20261025/`(CUDA 호스트 메인 작업 사본, git 미추적)
+- 스크립트와 원본: `local/raw/flex_attention_20261025/`(CUDA 호스트 메인 작업 사본, git 미추적)
   - `flex_probe.py`, `det_probe.py`, `flex_{win,wsl}.{json,log}`
 
 ## 2. 진행 기록

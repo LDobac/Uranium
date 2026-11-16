@@ -1,19 +1,19 @@
 # Uranium — 모방 학습(BC) 실행 안내
 
-스타크래프트1 테란 봇. 이 문서는 **BC 학습을 돌릴 때 필요한 것만** 모았다. 옵션 상세는 `docs/commands.md`, 규칙은 `spec/`(032·041·060·061), 경위와 결과는 `reports/`에 있다. 학습·추론은 Python + PyTorch(`python -m uranium`), 데이터 공급·저장소·게임 연동은 Rust(`uranium._core`)다(2026-10-23 전환, `reports/pytorch_port.md`).
+스타크래프트1 테란 봇. 이 문서는 **BC 학습을 돌릴 때 필요한 것만** 모았다. 옵션 상세는 `docs/guide/commands.md`, 규칙은 `docs/spec/`(032·041·060·061), 경위와 결과는 `docs/report/`에 있다. 학습·추론은 Python + PyTorch(`python -m uranium`), 데이터 공급·저장소·게임 연동은 Rust(`uranium._core`)다(2026-10-23 전환, `docs/report/bench/2026_10_24_02_42_pytorch_port.md`).
 
 ## 1. 순서
 
 | 단계 | 내용 | 상태 |
 |---|---|---|
-| 0 | 데이터 재build·검증, 벤치, 대전 경로 시험 | 완료 (`reports/m6_rebuild.md` R-5) |
-| 1 | **코어 비교**: LSTM·GTrXL을 S1 5,300 update씩 학습 → 평가 → 사용자가 코어 선택 | 완료 (2026-10-23, **GTrXL 채택**, `reports/m6_core_ablation.md` 4절) |
-| 1.5 | **PyTorch 전환**: 학습·추론 이식, 최적화 | 완료 (2026-10-24, 이식 `reports/pytorch_port.md`, 최적화 `reports/pytorch_opt.md`) |
+| 0 | 데이터 재build·검증, 벤치, 대전 경로 시험 | 완료 (`docs/report/review/2026_10_19_14_28_m6_rebuild.md` R-5) |
+| 1 | **코어 비교**: LSTM·GTrXL을 S1 5,300 update씩 학습 → 평가 → 사용자가 코어 선택 | 완료 (2026-10-23, **GTrXL 채택**, `docs/report/experiment/2026_10_18_18_43_m6_core_ablation.md` 4절) |
+| 1.5 | **PyTorch 전환**: 학습·추론 이식, 최적화 | 완료 (2026-10-24, 이식 `docs/report/bench/2026_10_24_02_42_pytorch_port.md`, 최적화 `docs/report/bench/2026_10_24_07_03_pytorch_opt.md`) |
 | 2 | **BC 본학습 S1**: 전체 맵, GTrXL. 39,096 update(2026-10-23 `bc-epoch`) | 완료 (`bc-s1-pt`) |
-| 3 | **BC S2**: 대상 맵(투혼·서킷브레이커), S1에서 시작 + 비교용 ablation (A) | 완료 (`bc-s2-pt`, `reports/bc_ablation.md`) |
-| 4 | 평가(오프라인 지표, T0 대전) | 완료 (`reports/m6_bc_eval.md` 1~4절) |
-| 5 | **두 번째 epoch**(041-R20): S1 한 번 더(`config/bc_e2.toml`) → S2 다시 | 완료 (`bc-s1e2-pt` → `bc-s2e2-pt`, `reports/m6_bc_eval.md` 5절) |
-| 6 | RL | 착수 점검 `reports/m6_pre_rl_review.md` |
+| 3 | **BC S2**: 대상 맵(투혼·서킷브레이커), S1에서 시작 + 비교용 ablation (A) | 완료 (`bc-s2-pt`, `docs/report/experiment/2026_10_29_15_37_bc_ablation.md`) |
+| 4 | 평가(오프라인 지표, T0 대전) | 완료 (`docs/report/experiment/2026_10_29_15_37_m6_bc_eval.md` 1~4절) |
+| 5 | **두 번째 epoch**(041-R20): S1 한 번 더(`config/bc_e2.toml`) → S2 다시 | 완료 (`bc-s1e2-pt` → `bc-s2e2-pt`, `docs/report/experiment/2026_10_29_15_37_m6_bc_eval.md` 5절) |
+| 6 | RL | 착수 점검 `docs/report/review/2026_10_31_11_13_m6_pre_rl_review.md` |
 
 ## 2. 장비 운영 규칙 (060-R8)
 
@@ -42,7 +42,7 @@ URANIUM_MALLOC_ARENA_MAX=2               # glibc arena 수 제한 (긴 run에서
 URANIUM_BC_MICRO_LANES=1                 # 041-R3 레인 그룹 (AMB-041-7)
 URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3이면 학습과 CPU를 다툼)
 ```
-CUDA 호스트는 `URANIUM_BC_MICRO_LANES=2`. 구현 스위치와 장비별 기본값은 `docs/commands.md`.
+CUDA 호스트는 `URANIUM_BC_MICRO_LANES=2`. 구현 스위치와 장비별 기본값은 `docs/guide/commands.md`.
 
 **설치·갱신**(Python 3.14 venv + PyTorch 2.14 + `uranium` 패키지)
 ```powershell
@@ -107,7 +107,7 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
 - 장비별 update 수·비율: `uranium-train devices --run bc-s1-pt`
 - 체크포인트: `<shared>/checkpoints/bc-s1-pt/` 등(1시간마다, 끝나면 `DONE`)
 
-**예상 속도**(실측, 모두 켬 모델, 32레인 × T64, 데이터 대기 포함): Linux ROCm 호스트 약 12~13 s/update, CUDA 호스트 약 1.3 s/update(2026-10-28 최적화 뒤, `reports/pytorch_opt.md` 6절; 그 전 약 2.0~2.25 s). S1+S2(약 50,500 update) 환산 약 175시간 / 18시간.
+**예상 속도**(실측, 모두 켬 모델, 32레인 × T64, 데이터 대기 포함): Linux ROCm 호스트 약 12~13 s/update, CUDA 호스트 약 1.3 s/update(2026-10-28 최적화 뒤, `docs/report/bench/2026_10_24_07_03_pytorch_opt.md` 6절; 그 전 약 2.0~2.25 s). S1+S2(약 50,500 update) 환산 약 175시간 / 18시간.
 
 **평가**
 - 오프라인 지표: `python -m uranium bc-eval $DATA --checkpoint <shared>/checkpoints/bc-s2-pt --split test`(ablation-a도 같이). 엔티티 조각 재계산 없이 돌므로 메모리가 큰 CUDA 호스트에서 돌린다.
@@ -115,11 +115,11 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
 
 ## 5. 코어 비교 (032-R17) — 완료
 
-- 결과(2026-10-23): 맞대결 100판 GTrXL 42승·LSTM 13승·무 45, T0 상대 승률 GTrXL 약 10%(274판)·LSTM 2.7%(300판), val 500게임 모든 지표 GTrXL 우세 → **GTrXL 채택**. 상세·경위는 `reports/m6_core_ablation.md`.
+- 결과(2026-10-23): 맞대결 100판 GTrXL 42승·LSTM 13승·무 45, T0 상대 승률 GTrXL 약 10%(274판)·LSTM 2.7%(300판), val 500게임 모든 지표 GTrXL 우세 → **GTrXL 채택**. 상세·경위는 `docs/report/experiment/2026_10_18_18_43_m6_core_ablation.md`.
 ## 6. 문제가 생기면
 
 - **PC가 꺼져 잠금이 남음**: 같은 PC에서 다시 띄우면 이어 간다. 다른 PC 작업자는 heartbeat가 10분 멈춘 것을 보고 자동으로 인수한다.
 - **재개가 거부됨**(설정·데이터 지문 다름): 설정이나 데이터가 바뀐 것이다. 같은 run을 억지로 잇지 말고 원인을 확인한다.
 - **작업자가 시작하지 않음 "URANIUM_PYTHON is not set"**: `.env`에 venv의 python 경로를 적는다.
 - **shard를 다시 만들었으면** `uranium-train manifest <shard 폴더>`로 manifest를 다시 만든다. manifest에 없는 shard를 출처 폴더에 두지 않는다(공유 제공 PC의 로컬 모드는 폴더 목록을 읽어 지문이 달라진다, 061-R12).
-- 상세: `docs/commands.md` "감시·작업자", "BC" 절.
+- 상세: `docs/guide/commands.md` "감시·작업자", "BC" 절.

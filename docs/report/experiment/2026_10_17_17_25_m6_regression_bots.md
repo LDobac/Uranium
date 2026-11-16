@@ -1,7 +1,7 @@
 # M6 — E-Regression 전용 T0 봇 (050)
 
 - 날짜: 2026-10-17
-- 범위: [050](../spec/050-evaluation.md) E-Regression 시나리오 봇 4종(저그 초반 러시, 테란 드랍, 프로토스 다크템플러, 저그 뮤탈)과 이를 돌리는 plan
+- 범위: [050](../../spec/2026_10_15_22_24_050-evaluation.md) E-Regression 시나리오 봇 4종(저그 초반 러시, 테란 드랍, 프로토스 다크템플러, 저그 뮤탈)과 이를 돌리는 plan
 - 근거 spec: 050(E-Regression), 021(021-R3·R6·R7), 010(`Command`)
 
 ## 1. 구현 내용

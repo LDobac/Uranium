@@ -1,6 +1,6 @@
 # 후속 검토 — 변형이 세 약점을 보완하지 못한 이유는 무엇인가
 
-- 작성: 2026-10-27, 독립 리뷰어(Claude, Fable 5.1 high, 사용자 후속 질문). 앞 리포트 [`m6_arch_ablation_review.md`](m6_arch_ablation_review.md)와 같은 규칙(읽기 전용, 사실/가설 구분, 확신도 표기). 메인 세션 확인: 학습기가 묶음마다 코어·바깥 LSTM 상태를 모두 detach한다(`python/uranium/bc/trainer.py` 176행, `net.detach_state`). 이 한계는 spec 032 §2.7 위험 항목에 이미 적혀 있었다.
+- 작성: 2026-10-27, 독립 리뷰어(Claude, Fable 5.1 high, 사용자 후속 질문). 앞 리포트 [`m6_arch_ablation_review.md`](2026_10_27_14_52_m6_arch_ablation_review.md)와 같은 규칙(읽기 전용, 사실/가설 구분, 확신도 표기). 메인 세션 확인: 학습기가 묶음마다 코어·바깥 LSTM 상태를 모두 detach한다(`python/uranium/bc/trainer.py` 176행, `net.detach_state`). 이 한계는 spec 032 §2.7 위험 항목에 이미 적혀 있었다.
 - 새로 계산한 것: 같은 step(= 같은 batch)끼리 짝지은 **헤드별 학습 손실 차이**를 1,000 update 창마다 구했다(`paired_loss.py`). 데이터 순서가 같으므로 두 run의 같은 step 손실 차는 순수하게 모델 차이다. 기준은 두 가지다: 진짜 기준 GTrXL(이 호스트 로그에 0~6,048만 있음), 그리고 끝까지 로그가 있는 terrain(기준과 구조·결과가 가장 가까운 run, 기준 대신 쓴 참조). 아래에서 "−"는 변형이 더 잘 맞춘다는 뜻이고, 비율은 그 헤드의 손실 수준(행동 1.04, delay 1.90, 선택 3.38, 대상 유닛 0.22, 위치 3.26) 대비다.
 
 ---

@@ -1,8 +1,8 @@
 # M6 — 시간 축 코어 2차 비교 (PyTorch, LSTM vs GTrXL, 032-R17 ⑥)
 
 - 상태: **평가 끝, 코어 GTrXL 유지** (2026-10-27 사용자 결정, 구조 변형 모두 켬 채택에 포함)
-- spec: [032](../spec/032-model-architecture.md) 032-R17 ⑥, 032-AC7
-- 1차 비교(Burn, 5,300 update, GTrXL 채택): [`m6_core_ablation.md`](m6_core_ablation.md)
+- spec: [032](../../spec/2026_10_15_22_24_032-model-architecture.md) 032-R17 ⑥, 032-AC7
+- 1차 비교(Burn, 5,300 update, GTrXL 채택): [`m6_core_ablation.md`](2026_10_18_18_43_m6_core_ablation.md)
 
 1차 리포트와 같은 규칙으로 쓴다. 배경·예상은 실험 전에 적고 고치지 않는다. 진행 기록은 아래에 시각과 함께 덧붙이기만 한다.
 
@@ -66,7 +66,7 @@ target\release\uranium-train worker --queue <shared>/queue/core-ablation-pt.toml
 
 ## 3. 결과
 
-평가는 구조 변형 비교와 함께 평가 작업 하나로 했다(032-R20 ③, 상세는 [`m6_arch_ablation_pt.md`](m6_arch_ablation_pt.md) 3절). 두 run 모두 10,000 update, 장비 비율 LSTM CUDA 92.6% / ROCm 7.4%, GTrXL 59.0% / 41.0%(4절).
+평가는 구조 변형 비교와 함께 평가 작업 하나로 했다(032-R20 ③, 상세는 [`m6_arch_ablation_pt.md`](2026_10_25_01_38_m6_arch_ablation_pt.md) 3절). 두 run 모두 10,000 update, 장비 비율 LSTM CUDA 92.6% / ROCm 7.4%, GTrXL 59.0% / 41.0%(4절).
 
 | | LSTM | GTrXL |
 |---|---|---|
@@ -108,7 +108,7 @@ target\release\uranium-train worker --queue <shared>/queue/core-ablation-pt.toml
 - 2026-10-24 22:14~22:36 — 원인 좁히기(BC250 1호기, 표본 run `core-abl-smoke-gtrxl-pt`): GTrXL도 같은 증가(50 update에 사용 15.2 GB, swap 6.1 GB) → 코어 무관. 미리 읽기 1 + 엔티티 재계산 16도 GTT만 5.5 → 3.9 GB로 줄 뿐 상주가 10.2 GB + swap 2 GB로 76 update에서 한계. 학습을 빼고 데이터 공급·collate만 돌린 시험(update 대신 8 s 휴식)에서도 상주 3.5 → 13.6 GB(40 update), GTT 0.25 GB 그대로 → **데이터 공급 쪽 누적**. 학습 PC도 학습 프로세스 커밋 18.3 GB(작업 집합 5.6 GB)로 같은 현상.
 - 2026-10-24 22:45~23:08 — 공급 전용 15 update 분해: 기준 3.7 → 7.6 GB(update당 약 +280 MB), batch 압축 끔 13~14 GB로 크지만 증가 없음, 공급 스레드 1·미리 읽기 0은 증가, `MALLOC_ARENA_MAX=2` 3.6 → 5.4 GB. **원인: batch 압축(041-R18)의 `zstd::bulk::compress`가 결과 버퍼를 원본 크기(step당 약 1.9 MB)로 잡아 둠** → batch(2,048 step)마다 약 4 GB가 할당된 채 남음. 압축 결과를 압축 크기로 줄이는 수정 뒤 15 update 3.3 → 4.4 GB, 50 update 3.25 → 5.4 GB(update당 약 44 MB, 중간에 평평한 구간). 로그 BC250 1호기 `~/memdiag/`(`feedonly.py`, `bisect*/`).
 - 2026-10-24 22:3x~22:55 — **발견: 학습 PC Ctrl+C로 작업자가 멈추지 않음**(사용자 보고). 원인: Windows의 "Ctrl+C 무시" 속성이 부모에서 상속됨 → 학습 자식의 정지 핸들러가 불리지 않음. 작업자 창을 Claude 도구 프로세스에서 `Start-Process`로 열어 그 속성을 물려받은 것으로 보임(같은 방식으로 띄운 시험 파이썬은 venv 실행기·기본 인터프리터 모두 `stop_requested=False`, 속성 해제 시 `True`). 작업자·학습 자식·`python -m uranium` 시작 시 속성을 푸는 수정. 그 사이 학습 PC 작업자는 정시 체크포인트 `ckpt-991` push 직후 강제 종료(손실 없음). 학습 PC 데이터 대기(update 2.4~3.8 s 중 0.8~2.6 s)는 메모리 수정 뒤 다시 본다.
-- 메모: 이 리포트 4절 21:24 표본의 메모리 최대(10.8 / 11.5 GB)와 `reports/pytorch_opt.md`의 BC250 1호기 메모리 수치(2.6·2.7·2.23절, 060-R3 판단 근거)는 압축 버그가 있던 때의 12 update 이하 측정이다. 수정 뒤 실제 학습에서 다시 잰다.
+- 메모: 이 리포트 4절 21:24 표본의 메모리 최대(10.8 / 11.5 GB)와 `docs/report/bench/2026_10_24_07_03_pytorch_opt.md`의 BC250 1호기 메모리 수치(2.6·2.7·2.23절, 060-R3 판단 근거)는 압축 버그가 있던 때의 12 update 이하 측정이다. 수정 뒤 실제 학습에서 다시 잰다.
 - 2026-10-24 23:30~23:44 — 압축기·버퍼 재사용 시험(공급 전용): 50 update 3.29 → 5.81 GB로 용량 수정만 한 것(5.40 GB)과 비슷해 반영하지 않음. 100 update에서 step 42 이후 5.8~6.1 GB로 평평 → 남은 증가는 게임 중후반 batch 크기 몫.
 - 2026-10-24 23:5x — **실수와 복구**: 학습 PC 단계별 시간을 재려고 실제 run에 `bc --run core-abl-gtrxl-pt --steps 1352`로 40 update를 돌렸는데, `--steps`에 닿으면 run에 `DONE`을 써서 두 작업자가 GTrXL을 끝난 run으로 건너뜀(BC250 1호기 "no run to take"). 사용자 지적 뒤 `DONE`을 `DONE.mistaken-20261024`로 이름만 바꿔 되돌림. 그 사이 학습 PC 작업자는 LSTM을 잡아 `ckpt-94`부터 학습(BC250 1호기와 잠금 경쟁에서 이김).
 - 2026-10-24 23:3x / 2026-10-25 00:0x — 학습 PC 단계 기록(40 update, 대기 0인 구간): forward + backward 1.73 s, 호스트→GPU 동기 복사 0.34 s, 레인 묶음 준비 대기 0.18 s → update 안에서 약 22% GPU 쉼. 실제 run 대기는 update 셋 중 하나꼴로 약 1 s. 원인과 수정은 `pytorch_opt.md` 5절(페이지 폴트, Windows 할당자 mimalloc: 2.75 → 2.05 s, pinned 복사까지 1.94 s).

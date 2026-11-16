@@ -4,7 +4,7 @@
 
 ## 근거
 - 적 유닛의 `remaining_build`는 항상 0이다(BWAPI `UnitUpdate.cpp` 656행은 `canAccessInside()`에서만 채움). HP는 보이면 쓸 수 있다. OpenBW에서 풀(750 HP·1,200프레임)은 착공 HP 75 + 0.5625 × 경과 → **착공 프레임 = 현재 − (hp − 75) × 16/9**(오차 < 1초). 완성 풀은 "착공 ≤ 현재 − 50초"만 안다.
-- 풀 착공(저그 시점 중앙값, `reports/m6_rush_ladder.md`·`reports/oss_bot_porting.md`): 러시 — UAB 기본 0:45, 9pool계 0:55~0:58, SH 오버풀 1:09, UAB 12poollings 1:17, SH 11pool 1:21, T0 zerg_rush 1:28(1:25~1:32). 운영 — UAB 2hatchhydra 1:54·1:57, 3hatchmuta 1:58·2:04(`runs/macroladder_20261103/smoke/op_*.json`). SH 2hatchmuta·T0 표준은 미측정(추정 1:50~2:05).
+- 풀 착공(저그 시점 중앙값, `docs/report/experiment/2026_11_03_17_56_m6_rush_ladder.md`·`docs/report/survey/2026_10_16_00_18_oss_bot_porting.md`): 러시 — UAB 기본 0:45, 9pool계 0:55~0:58, SH 오버풀 1:09, UAB 12poollings 1:17, SH 11pool 1:21, T0 zerg_rush 1:28(1:25~1:32). 운영 — UAB 2hatchhydra 1:54·1:57, 3hatchmuta 1:58·2:04(`runs/macroladder_20261103/smoke/op_*.json`). SH 2hatchmuta·T0 표준은 미측정(추정 1:50~2:05).
 - 저글링: 러시 첫 저글링 1:55~2:37. UAB 운영 2종은 저글링 0(첫 접촉은 히드라 약 5:00+). SH 2hatchmuta는 발업 저글링 3쌍(추정 3:05~3:30), T0 표준은 12기 웨이브(약 4:15), T0 muta는 홈가드 6기. SH 감시 저글링은 4:00 전 없음.
 - 정찰 도착(추정): 1:35 출발 → 1번째 시작 위치 2:10~2:20, 2번째 2:50~3:00, 3번째 3:30~3:40.
 

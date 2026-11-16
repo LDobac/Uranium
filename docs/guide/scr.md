@@ -1,6 +1,6 @@
 # SC:R 실전 실행 (spec 012)
 
-우리 봇을 StarCraft: Remastered 로컬·LAN 커스텀 게임에서 돌리는 방법이다. 요구사항은 [spec 012](../spec/012-bridge-remastered.md)를 따른다.
+우리 봇을 StarCraft: Remastered 로컬·LAN 커스텀 게임에서 돌리는 방법이다. 요구사항은 [spec 012](../spec/2026_10_15_22_24_012-bridge-remastered.md)를 따른다.
 
 ## 지원 환경
 - **SC:R 1.23.10.13515 x64만 지원한다.**

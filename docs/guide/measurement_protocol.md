@@ -1,6 +1,6 @@
 # 경로 측정 프로토콜 (050-R9, 050-AC5)
 
-Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다음 모델 경로를 **같은 조건·같은 지표**로 재는 방법이다. 조건은 Checkpoint 1을 잴 때 쓴 값으로 고정했다(`reports/checkpoint1.md` 7절, `reports/checkpoint1_rl.md`).
+Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다음 모델 경로를 **같은 조건·같은 지표**로 재는 방법이다. 조건은 Checkpoint 1을 잴 때 쓴 값으로 고정했다(`docs/report/release/2026_11_08_12_21_checkpoint1.md` 7절, `docs/report/release/2026_11_08_13_35_checkpoint1_rl.md`).
 
 ## 파일
 
@@ -21,7 +21,7 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
 
 - 명령 스트림은 `uranium-replay cmddump`로 뽑는다(`cargo build --release -p uranium-replay`, 다른 위치면 `.env`의 `URANIUM_REPLAY_BIN`).
 - 052 운영 지표(`ops`·`rush_combat`, 052-R7·R8)는 같은 바이너리의 `uranium-replay opsdump`로 리플레이를 우리 슬롯 시점에서 8프레임마다 멈춰 다시 센다(OpenBW 재생, `.env`의 `URANIUM_BWAPI_DIR`·`URANIUM_BRIDGE_LIB`·`URANIUM_DATA_DIR`·`URANIUM_MAPS_DIR`). 결과는 `<cache>/<job>/<stage>/g<n>.ops.json`에 남아 다음 집계가 다시 쓴다. 경로 비교는 양쪽 모두 재생 값이다. `tables.py --ops live`는 세션 행의 라이브 값(run 감시용), `--ops off`는 표를 뺀다. 학습 중인 장비가 아닌 CPU 호스트에서 `--ops-jobs N`으로 나눠 돌린다.
-- DAgger 판 생성 plan은 이 프로토콜 밖이다. 기존대로 `tools/eval/rush_check_plan.py --dagger`로 만든다(`docs/commands.md`).
+- DAgger 판 생성 plan은 이 프로토콜 밖이다. 기존대로 `tools/eval/rush_check_plan.py --dagger`로 만든다(`docs/guide/commands.md`).
 
 ## 지점과 지표
 
@@ -72,7 +72,7 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
      - git 커밋. 측정 파일이 커밋 안 됐으면 그 경로와 diff 해시
      - plan 내용 해시와 조건 해시
      - 호스트별 플랫폼과 봇 해시
-   - 돌리기: 평가 작업자(`docs/commands.md` "평가 작업").
+   - 돌리기: 평가 작업자(`docs/guide/commands.md` "평가 작업").
    - 표: `python tools/eval/tables.py <shared>/eval/<job> --json <job>.json`. 단계마다 052 `ops`·`rush_combat` 표(matchup별 중앙값·평균, 러시 진입 판의 SCV 동원·손실·벙커·집중도, `held_s`·`held_8m`별)도 낸다. 단계마다 다음을 함께 적는다.
      - 추론 backend별 판 수와 정밀도(CUDA bf16 혼합, ROCm f32)
      - `protocol.json`의 체크포인트 sha256, 미커밋 표시, 호스트 플랫폼
@@ -99,12 +99,12 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
      - `r2`: `per_action`, `t0_tp`
 4. **진단**(`cue_diag`·`dead_channels`, 모든 지점. 사용자 결정 2026-11-10, AMB-050-4·5·6)
    - `cue_diag`는 보관분 두 개로 잰다. 출력은 `<out>/<teacher|human>/`이다.
-     - `teacher`(교사 보관분): 2026-11-06 교사 판(`teacher-20261106-a`~`d`)과 `teacher-20261107-macro2`의 val + test, 433판, 모두 TvZ다. Checkpoint 1 진단(`reports/jepa_survey.md` 10.1), U1 대조, λ 선택 run과 같은 데이터다. 저그 HP·착공 단서와 반사실 개입 Δ를 잰다.
+     - `teacher`(교사 보관분): 2026-11-06 교사 판(`teacher-20261106-a`~`d`)과 `teacher-20261107-macro2`의 val + test, 433판, 모두 TvZ다. Checkpoint 1 진단(`docs/report/survey/2026_11_08_19_26_jepa_survey.md` 10.1), U1 대조, λ 선택 run과 같은 데이터다. 저그 HP·착공 단서와 반사실 개입 Δ를 잰다.
        - 공용 드라이브 `datasets/replays/shards/botgen`에서 그 파트만 연결한 폴더를 실행 호스트의 `<cache>/diag_holdout/by_name/<hold_orig|hold_macro2>`에 만든다(`<cache>` = `URANIUM_CACHE_DIR`, 없으면 `runs`). `per_action.py`의 `orig`와 같은 방식이다.
        - 폴더 이름이 판 순서를 정한다. shard 리더는 `<폴더 이름>/<파트>/shard_*` 순으로 읽으므로 `hold_macro2`가 먼저다. U1 대조·λ run 덤프(`<data>/hold_orig`, `<data>/hold_macro2`)와 같은 순서여야 판 id가 같고, 판 id로 나누는 probe 겹·bootstrap이 같아 같은 가중치에서 같은 값이 나온다. 2026-11-11 이전의 `<name>/botgen` 연결 폴더는 `hold_orig`를 먼저 읽어 행은 같지만 값이 달랐다(r1 미완성 풀 HP 방해 변수 R² 0.349 대 0.337). `check-diag`는 판 순서 지문(`expect_game_rows_sha256`, 판 id 순 판별 행 수의 sha256)도 본다.
        - 원본과 연결 폴더의 shard 파일 수·지문(파일 이름·크기)이 `lineage.toml`과 다르면 거부한다.
        - 이 보관분의 저그 풀 행에서는 적 최대 관측 수가 늘 1이라 `diag probes`가 건너뛴다. 확인은 그 건너뜀이 났는지만 본다.
-     - `human`(사람 TvT·TvP): 적 최대 관측 생산 건물 수(`count|focus_rows`, 배럭·게이트웨이)를 잰다(AMB-050-4). `reports/jepa_survey.md` 10.2.3 방식이다.
+     - `human`(사람 TvT·TvP): 적 최대 관측 생산 건물 수(`count|focus_rows`, 배럭·게이트웨이)를 잰다(AMB-050-4). `docs/report/survey/2026_11_08_19_26_jepa_survey.md` 10.2.3 방식이다.
        - 데이터: 사람 shard 4개(val500과 같은 `--dataset`)의 val·test에서 각 500게임(032-R17 ② 고정 seed 1). 데이터셋 manifest 지문(2,069 파일)이 다르면 거부한다.
        - 판 수는 사용자 결정이다(사용자 확인 2026-11-10). `diag dump`에 상대 종족 필터가 없어 모든 상대의 1,000게임을 읽는다. val500 종족 비율로 TvT 약 150, TvP 약 500 관점이다(조사의 전체 패스는 497·1,142, 두 체크포인트 약 4.2시간).
        - 설정: 조사의 테란·프로토스 설정(`--act-until 8640 --act-every 4`, `probes --cap 60 --boot 300`), 반사실 pass 없음, ROCm f32, 레인 그룹 4. `probes --races T,P`이고 프로토스의 `count|focus_rows`에 값이 있어야 한다.
@@ -151,7 +151,7 @@ Checkpoint 1 경로(BC → 교사 혼합 → DAgger → RL)의 지점마다, 다
    - `spatial_logs.py`: BC는 stderr 로그의 JSON 줄과 경보 줄을 읽는다. RL은 `train.csv` 열을 읽는데, RL 경보 줄은 RL 프로세스 stderr에 있어 세지 않고 규칙을 넘은 기록만 센다. 채널 수는 체크포인트의 모델 설정(`meta.json`)에서 읽는다. λ run 스크립트에서 옮겼고 `m2-lam-base` 로그에서 같은 값이 나온다.
    - λ run 출력(`<shared>/eval/m2-lambda-20261110/`)은 반사실 pass 없이 덤프했고 `protocol.json`도 없어 `check-diag`를 통과하지 않는다. 실제 pass의 활성값은 `--cf`와 무관하므로 교사 probe 수치는 비교할 수 있다.
 5. **`s1e2` 체크포인트마다**(041-R20 ③, 050-R9 "`m2-s1e2` 체크포인트마다"): `python tools/eval/s1e2_loop.py`
-   - Checkpoint 1 방식(`reports/m6_bc_eval.md` 4절) 그대로다. 채점기가 빌 때마다 아직 안 잡힌 가장 새 체크포인트를 잡고, 그 사이는 건너뛰고, 최종(run의 `DONE`)은 반드시 잰다. 기준인 S1 최종(`s1e1` 지점, `--reference`)을 먼저 잰다. 학습은 멈추지 않는다.
+   - Checkpoint 1 방식(`docs/report/experiment/2026_10_29_15_37_m6_bc_eval.md` 4절) 그대로다. 채점기가 빌 때마다 아직 안 잡힌 가장 새 체크포인트를 잡고, 그 사이는 건너뛰고, 최종(run의 `DONE`)은 반드시 잰다. 기준인 S1 최종(`s1e1` 지점, `--reference`)을 먼저 잰다. 학습은 멈추지 않는다.
    - val 500(Linux ROCm 호스트): `python tools/eval/s1e2_loop.py val --run m2-s1e2 --reference checkpoints/m2-s1/ckpt-N --watch`
      - 체크포인트마다 `protocol.py`의 고정 명령을 돌린다: `python -m uranium bc-eval --dataset replays/shards/stardata --dataset replays/shards/community --dataset replays/shards/scr_ladder --dataset replays/shards/personal --checkpoint <shared>/checkpoints/<run>/ckpt-N --split val --games 500 --seed 1 --backend rocm --config config/bc.toml --bunker-before 5760 --out <shared>/artifacts/bc_e2_val/val500/<run>__ckpt-N.json`
      - 2시간 제한(Checkpoint 1 규칙)을 둔다. 호스트가 여럿이면 `<...>.claim` 파일로 나눠 잡는다.

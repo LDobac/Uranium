@@ -1,15 +1,15 @@
 # 043 — Ladder Replay Collector
 
 - **Status**: Approved (2026-10-16, AMB-043-1~8 확정. 043-AC1 실측 반영. 랭크 A 이상 = bucket ≥ 6. 2026-10-19 개정: R8 랭크·MMR은 S2 선택에 쓰지 않음(041-R13, AMB-040-7), 기록 승자는 040-R8 ④ 대조)
-- **Related**: [040](040-replay-dataset.md), [061](061-shared-storage.md), [001](001-system-architecture.md), [013](013-version-mapping.md)
+- **Related**: [040](2026_10_15_22_24_040-replay-dataset.md), [061](2026_10_15_22_24_061-shared-storage.md), [001](2026_10_15_22_24_001-system-architecture.md), [013](2026_10_15_22_24_013-version-mapping.md)
 
 ## Purpose
 SC:R 래더(매치메이킹) 경기 리플레이를 자동으로 모아 040 파이프라인의 대상 맵(S2) 데이터를 늘린다.
-공개 사이트(cwal.gg 등)는 robots.txt가 자동 수집을 막고 있다(`reports/dataset_sources.md`). 그래서 같은 데이터의 원천인 **로그인된 SC:R 클라이언트의 로컬 웹 API**를 직접 쓴다.
+공개 사이트(cwal.gg 등)는 robots.txt가 자동 수집을 막고 있다(`docs/report/survey/2026_10_16_17_20_dataset_sources.md`). 그래서 같은 데이터의 원천인 **로그인된 SC:R 클라이언트의 로컬 웹 API**를 직접 쓴다.
 
 ## 배경: SC:R 로컬 웹 API (비공식)
 - 배틀넷에 로그인한 SC:R 클라이언트는 `127.0.0.1`의 임의 포트에 HTTP 서버를 연다. 공식 문서는 없고, 커뮤니티가 리버스 엔지니어링으로 정리했다(bw-web-api, bw-web-api-rs, MIT).
-- 엔드포인트(2026-10-16 실측, `reports/m4_ladder_probe.md`). 접두사는 `/web-api`다:
+- 엔드포인트(2026-10-16 실측, `docs/report/milestone/2026_10_16_23_08_m4_ladder_probe.md`). 접두사는 `/web-api`다:
 
   | 용도 | 경로 |
   |---|---|
@@ -64,7 +64,7 @@ uranium-ladder status  [--out <md>]          # 수집 기록 집계(상태별·�
 - 환경변수(`.env.example`에 추가): `URANIUM_SCR_API_PORT`(선택), `URANIUM_LADDER_RPS`(기본 0.5), `URANIUM_LADDER_DAILY_MAX`(기본 1000).
 
 ## Acceptance Criteria
-- 043-AC1: (스파이크) 로그인된 SC:R에서 `probe`가 포트를 탐지하고, 리더보드·전적·경기 정보 응답을 받아 리플레이 1개를 내려받는다. 결과(경로 접두사, 응답 필드, 링크 형식, 필요 헤더)를 `reports/m4_ladder_probe.md`에 개인정보 없이 기록한다.
+- 043-AC1: (스파이크) 로그인된 SC:R에서 `probe`가 포트를 탐지하고, 리더보드·전적·경기 정보 응답을 받아 리플레이 1개를 내려받는다. 결과(경로 접두사, 응답 필드, 링크 형식, 필요 헤더)를 `docs/report/milestone/2026_10_16_23_08_m4_ladder_probe.md`에 개인정보 없이 기록한다.
 - 043-AC2: 픽스처 기반 테스트로 전적 → 경기 → 다운로드 흐름, 중복 제거, 재개, 스키마 불일치 처리를 검증한다.
 - 043-AC3: 실제 수집으로 계획 범위의 리플레이 100개 이상을 받는다. 그 결과를 `uranium-replay build`에 넣어 040-AC5 형식으로 디싱크 비율을 리포트한다.
 - 043-AC4: 속도 제한 준수: 수집 로그에서 초당 요청 수가 설정값을 넘지 않는다.
