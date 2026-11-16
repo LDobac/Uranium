@@ -18,6 +18,12 @@
 | `tools/eval/per_action.py`, `per_action_table.py` | 교사 보관분 행동별 채점·표 |
 | `tools/eval/diag_table.py` | 진단(`cue_diag`·`dead_channels`) 출력 폴더의 표 |
 | `tools/eval/spatial_logs.py` | 학습 로그의 죽은 채널 기록([041-R25][s041]) 요약 |
+| `tools/eval/ops_sets.py` | eval job 밖 비교 집합(교사 botgen, 사람 리플레이)의 `opsdump` 값([052-R7][s052]) |
+| `tools/eval/branch_plan.py`, `branch_collect.py` | 분기 게임([051][s051]) 줄기·분기 plan, 분기 결과 모음. 프로토콜 밖([commands]) |
+| `tools/eval/granularity.py` | 결정 단위 측정 표([031][s031] "결정 단위"). 프로토콜 밖([commands]) |
+| `tools/eval/rush_check_plan.py` | 러시 점검·교사·botgen·DAgger·증류 판 plan 생성. 프로토콜 밖([commands]) |
+| `tools/eval/eval_common.py`, `branch_common.py` | 위 도구들이 함께 쓰는 함수 |
+| `tools/eval/eval_worker.ps1` | Windows CUDA 호스트의 `eval-worker` 실행([commands]) |
 | `tools/eval/hosts.toml` | 게임 호스트 목록(git 미추적, 예시 `hosts.example.toml`) |
 
 - 명령 스트림: `uranium-replay cmddump`(`cargo build --release -p uranium-replay`, 다른 위치면 `.env`의 `URANIUM_REPLAY_BIN`).
@@ -300,12 +306,14 @@
 - 게임 칸에 Wilson 95% 구간·Fisher p 함께. 32판은 조건당 약 ±12%p 잡음, 작은 차이는 사용자 판단.
 
 [s022]: ../spec/2026_11_14_08_18_022-matchup-teacher.md
+[s031]: ../spec/2026_10_15_22_24_031-action-space.md
 [s032]: ../spec/2026_10_15_22_24_032-model-architecture.md
 [s040]: ../spec/2026_10_15_22_24_040-replay-dataset.md
 [s041]: ../spec/2026_10_15_22_24_041-imitation-learning.md
 [s042]: ../spec/2026_10_15_22_24_042-rl-training.md
 [s044]: ../spec/2026_11_14_08_18_044-self-game-distillation.md
 [s050]: ../spec/2026_10_15_22_24_050-evaluation.md
+[s051]: ../spec/2026_11_12_12_39_051-branch-games.md
 [s052]: ../spec/2026_11_13_17_19_052-ops-metrics.md
 [amb]: ../spec/README.md
 [checkpoint1]: ../report/release/2026_11_08_12_21_checkpoint1.md
