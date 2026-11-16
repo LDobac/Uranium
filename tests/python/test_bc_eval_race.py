@@ -1,6 +1,3 @@
-"""050-R9 `val500_race`: bc-eval's `by_enemy_race` and `protocol.py check-bc-eval`; bc-eval's aux
-values for a model with the 032-R24 modules (041-R23 ⑤). CPU."""
-
 import functools
 import json
 from pathlib import Path
@@ -28,7 +25,6 @@ def _tiny_make(variant, aux, cfg_json, start, dir, entity_chunk):
 
 
 def eval_all_splits(dirs: list, ckpt_dir: Path, config: Path) -> list:
-    """bc-eval reports of every split with games (the synthetic games spread over the splits)."""
     from uranium.bc.eval import evaluate
 
     reps = []
@@ -42,11 +38,6 @@ def eval_all_splits(dirs: list, ckpt_dir: Path, config: Path) -> list:
 
 @pytest.mark.parametrize("variant", [None, AUX], ids=["plain", "aux"])
 def test_bc_eval_by_enemy_race_050_r9(tiny_config, tmp_path, variant):
-    """`by_enemy_race` keys each game by the race its enemy played (GameInfo): over every split,
-    each race's steps equal the steps of a bc-eval over only that race's games, and the lobby
-    Random game (matchup `TvR`, played Protoss) counts under protoss, never in an `r` / `random`
-    bucket; top-1 and per-head NLL add up to the whole. A model with aux modules also reports the
-    aux losses (041-R23 ⑤)."""
     shards = tmp_path / "races"
     _core.write_test_shards(str(shards), "races", 4)
     make = functools.partial(_tiny_make, variant, {"priv": 0.2, "jepa": 0.1} if variant else None)

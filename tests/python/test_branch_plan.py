@@ -1,8 +1,3 @@
-"""051 branch-game plan tools (tools/eval/branch_plan.py, branch_collect.py) on synthetic trunk and branch jobs:
-the trunk plan (051-R11 ①), points / branch list / branch plan from trunk results with every 051-R10 refusal,
-determinism and repeat-outermost order, replacement trunks, the branch records (051-R12) and the exclusion
-of branch-game stages from the evaluation tables (050). CPU, no game data."""
-
 import json
 import shutil
 import sys
@@ -27,8 +22,6 @@ SCHEMAS = {"feature": 7, "action": 2}
 T0 = "t0@9.9.9"
 IDS = bc.action_ids()
 BUNKER, MARINE = IDS["Build_Bunker"], IDS["Train_Marine"]
-# Field sets of the U1 records (crates/uranium-env/src/branch.rs): PointRecord, TrunkRef, BranchPlanLine,
-# BranchRecord, GameRef.
 POINT_KEYS = {"point", "trunk", "seed", "map", "opponent", "condition", "checkpoint_sha256", "policy", "t0_policy", "git", "schemas",
               "backend", "precision", "infer_seed", "i_t", "f_t", "digest_t", "type_mask", "scalar_t", "trunk_action", "state",
               "state_sha256", "trunk_outcome", "valid", "skip_reason"}
@@ -40,7 +33,6 @@ GAME_KEYS = {"job", "stage", "plan_game", "hostd_game", "attempt", "replay", "ho
 
 
 def cond(seed: int) -> str:
-    """Stand-in for the 020-R21 generator: odd seeds hit."""
     return "hit" if seed % 2 else "miss"
 
 
@@ -63,8 +55,6 @@ def digest(i: int, salt: int = 0) -> str:
 
 
 class TrunkJob:
-    """A played trunk job: the generated trunk plan, merged stage files, act logs, snapshot records, state files."""
-
     def __init__(self, root: Path, hit: int = 1, miss: int = 1):
         self.root, self.job = root, root / "eval" / "trunk-job"
         cfg = bp.load_config(CONFIG)
@@ -84,7 +74,6 @@ class TrunkJob:
         self.merge()
 
     def play(self, n: int, marine: bool = True, frames=(3300, 4000), same=False, fire=(True, True)):
-        """Game n: 12 observations, b1-p1 at i 5 (frame 3300), b1-p2 at i 8 (frame 4000)."""
         frame_of = {5: frames[0], 8: frames[1]}
         lines, snaps, opp = [], [], []
         f = 100
@@ -140,8 +129,6 @@ def args(tj: TrunkJob, out: Path, **kw):
 
 
 def test_trunk_plan_051_r11():
-    """051-R11 ① / 051-R15: per map the first hit / miss seeds of the rush5 T0 zerg_rush block in list order, the
-    051-R1 settings, act_log and the config's snapshot rules; deterministic; excluded seeds skipped."""
     cfg = bp.load_config(CONFIG)
     text = bp.trunk_plan(cfg, "b1-trunk", cond)
     assert text == bp.trunk_plan(cfg, "b1-trunk", cond)
@@ -149,7 +136,6 @@ def test_trunk_plan_051_r11():
     assert (p["save_replay"], p["zero_last_failed"], p["surrender"], p["max_frames"], p["act_log"]) == (True, True, "off", 11568, True)
     assert [s["name"] for s in p["snapshots"]] == ["b1-p1", "b1-p2"]
     assert p["snapshots"][0] == {"name": "b1-p1", "from_frame": 3240, "to_frame": 5760, "any_open": ["Build_Bunker"]}
-    # 051-R3 / R11 ① (user decision 2026-11-13): b1-p2 moves off b1-p1's decision by 30 s.
     assert p["snapshots"][1] == {"name": "b1-p2", "from_frame": 3960, "to_frame": 5760, "any_open": ["Build_Bunker"], "after_rule": "b1-p1", "after_s": 30}
     rush = bp.rush_blocks(cfg)
     games = bc.plan_games(p)
@@ -167,9 +153,6 @@ def test_trunk_plan_051_r11():
 
 
 def test_branch_plan_points_and_list_051_r10(tmp_path):
-    """051-R10 / 051-R12: points.jsonl and the branch list carry the U1 fields, paths relative to the shared drive;
-    repeats outermost, then points, then alternatives; a force closed at t drops that alternative there; the plan's
-    game n is line n's seed / map / opponent; same inputs give the same bytes."""
     tj = TrunkJob(tmp_path)
     tj.play(2, marine=False)
     tj.merge()
@@ -187,7 +170,6 @@ def test_branch_plan_points_and_list_051_r10(tmp_path):
     assert p["trunk_outcome"]["end"] == {"result": "draw", "end_frame": 11568, "reason": "TimeLimitDraw", "before_horizon": False}
     lines = bc.read_jsonl(out / "plans" / "branches_plan.jsonl")
     assert all(set(x) == LINE_KEYS for x in lines)
-    # 4 trunks x 2 points x 4 alternatives x 4 repeats, minus force_marine at game 2's two points.
     assert len(lines) == s["games"] == (4 * 2 * 4 - 2) * 4
     assert s["dropped"] == [{"point": f"trunk-job/b1-trunk/g2#{r}", "alt": "force_marine", "closed": ["Train_Marine"]} for r in ("b1-p1", "b1-p2")]
     assert [x["repeat"] for x in lines] == sorted(x["repeat"] for x in lines), "repeats outermost"
@@ -203,12 +185,10 @@ def test_branch_plan_points_and_list_051_r10(tmp_path):
     assert [(g["seed"], g["map"]) for g in games] == [(x["seed"], x["map"]) for x in lines]
     assert all(g["p1"] == {"kind": "t0", "race": "zerg", "build": "zerg_rush"} and g["p0"]["checkpoint"] == CKPT for g in games)
     assert (out / "job.toml").read_text(encoding="utf-8") == "stages = [\"plans/branch-b1.toml\"]\nhosts = \"hosts.toml\"\n"
-    # Determinism: the same inputs again, byte for byte.
     out2 = tmp_path / "eval" / "branch-job2"
     bp.build(args(tj, out2, hosts="hosts.toml"))
     for f in ("points.jsonl", "plans/branches_plan.jsonl", "plans/branch-b1.toml", "job.toml"):
         assert (out / f).read_bytes() == (out2 / f).read_bytes(), f
-    # 051-AC6 options: two alternatives, one repeat, verify_state.
     out3 = tmp_path / "eval" / "ac6"
     s = bp.build(args(tj, out3, alts="none,force_bunker", repeats=1, verify_state=True))
     assert s["games"] == 4 * 2 * 2
@@ -217,8 +197,6 @@ def test_branch_plan_points_and_list_051_r10(tmp_path):
 
 @pytest.mark.parametrize("case", ["incomplete", "state_sha", "checkpoint", "t0", "schemas", "not_fired", "same_decision", "aborted", "line"])
 def test_branch_plan_refusals_051_r10(tmp_path, case):
-    """051-R10: each refusal leaves the trunk unused with its reason; the cell is short and --replacements writes the
-    next unused seed of that map and condition (051-R11 ①)."""
     tj = TrunkJob(tmp_path)
     n = 1
     acts = tj.sd / "acts" / f"g{n}-p0.jsonl"
@@ -275,8 +253,6 @@ def test_branch_plan_refusals_051_r10(tmp_path, case):
     assert r["snapshots"] == tj.plan["snapshots"] and r["max_frames"] == 11568
     assert r["name"] == "branch-b1-trunk-r"
     if case == "incomplete":
-        # A second replacement round: the first replacement stage (`rep`, in the trunk job's plans) is a
-        # stage of the trunk job, so the new one gets -r2.
         assert rep.parent == tj.job / "plans"
         (tj.job / "job.toml").write_text("stages = ['plans/trunk.toml', 'plans/trunk-r.toml']\nhosts = 'hosts.toml'\n", encoding="utf-8")
         rep2 = tmp_path / "trunk-r2.toml"
@@ -293,8 +269,6 @@ def branch_job(tmp_path: Path, tj: TrunkJob) -> Path:
 
 
 def test_branch_collect_records_051_r12(tmp_path):
-    """051-R12: one U1 BranchRecord per game with a branch outcome (fields as the session wrote them), the opponent
-    prefix against the trunk's log, a mismatch before f_t marked invalid; games without an outcome counted."""
     tj = TrunkJob(tmp_path)
     out = branch_job(tmp_path, tj)
     lines = bc.read_jsonl(out / "plans" / "branches_plan.jsonl")
@@ -308,24 +282,22 @@ def test_branch_collect_records_051_r12(tmp_path):
                "end": {"result": "draw", "end_frame": 11568, "reason": "TimeLimitDraw", "before_horizon": False}}
     for n, ln in enumerate(lines, start=1):
         if n == 3:
-            continue  # not played
+            continue
         games.append({"game_id": n, "hostd_id": 10_000_000 + 100_000 + n, "outcome": "Finished", "host": "h", "backend": "cuda"})
         if n == 4:
-            results.append({"game_id": n, "model": {"x": 1}})  # no branch outcome
+            results.append({"game_id": n, "model": {"x": 1}})
             continue
-        if n == 7:  # aborted: the session never saw GameEnd (valid, no end) -> no outcome
+        if n == 7:
             results.append({"game_id": n, "model": {"x": 1}, "branch": {**outcome, "end": None}})
             continue
         results.append({"game_id": n, "model": {"x": 1}, "branch": outcome, "infer_seed": 3})
         trunk = bc.read_jsonl(bc.on_shared(tmp_path, ln["opponent_acts"]))[:-1]
         mine = [dict(x) for x in trunk]
-        # The opponent's observations differ from the first one after f_t (game 2: before f_t).
         cut = 2 if n == 2 else next(x["i"] for x in trunk if x["frame"] > ln["f_t"])
         for x in mine[cut:]:
             x["digest"] = digest(x["i"], 555)
-        if n != 6:  # game 6: the opponent's act log is missing
+        if n != 6:
             jsonl(sd / "acts" / f"g{n}-p1.jsonl", [*mine, {"end": {"policy": T0}}])
-        # game 5 ran another checkpoint (051-R1 ④)
         policy = f"model:ckpt-39096@{'0' * 12 if n == 5 else tj.ckpt_sha[:12]}:stochastic"
         jsonl(sd / "acts" / f"g{n}-p0.jsonl", [{"end": {"git": "def", "policy": policy}}])
     (sd / "replays").mkdir(parents=True)
@@ -360,7 +332,6 @@ def test_branch_collect_records_051_r12(tmp_path):
 
 
 def test_branch_stages_left_out_of_tables_050(tmp_path):
-    """050 "분기 게임(051)": a stage with a 020-R22 key is never a protocol plan nor a table, --kind included."""
     plan = {"name": "b", "act_log": True, "matchup": [{"map": "both", "games": 1, "p0": {"kind": "t0", "race": "terran"}, "p1": {"kind": "t0", "race": "zerg"}}]}
     lin = protocol.load_lineage()
     assert ec.is_branch_plan(plan) and not ec.is_branch_plan({**plan, "act_log": False}) and not ec.is_branch_plan({**plan, "act_log": False, "snapshots": []})
@@ -375,8 +346,6 @@ def test_branch_stages_left_out_of_tables_050(tmp_path):
 
 
 def test_act_log_cut_short_is_incomplete_051_r2(tmp_path):
-    """051-R2: a log whose last line was cut mid-write is incomplete: lenient reads keep the lines before it
-    (no end line), strict reads refuse it (no JSONDecodeError escapes)."""
     p = tmp_path / "g1-p1.jsonl"
     p.write_text('{"i":0,"frame":1,"digest":"a"}\n{"i":1,"frame":9,"digest":"b"}\n{"i":2,"fra', encoding="utf-8")
     log = bc.ActLog.read(p, lenient=True)
@@ -386,7 +355,6 @@ def test_act_log_cut_short_is_incomplete_051_r2(tmp_path):
 
 
 def test_compare_prefix_matches_rust_051_r12():
-    """bc.compare_prefix is uranium_env::branch::compare_prefix (branch_compare_prefix_051_r12 cases)."""
     L = lambda fr, d: [{"frame": f, "digest": x} for f, x in zip(fr, d)]  # noqa: E731
     t = L([1, 2, 3, 4], "abcd")
     assert bc.compare_prefix(t, t, 3) == {"obs": 2, "matched": 2, "first_mismatch_frame": None}
@@ -396,12 +364,10 @@ def test_compare_prefix_matches_rust_051_r12():
 
 
 def test_config_checks_051_r7(tmp_path):
-    """The alternative config: 051-R7 rules with known actions and non-empty windows, no NoOp ban."""
     base = CONFIG.read_text(encoding="utf-8")
     p = tmp_path / "c.toml"
     for old, new in (('"Train_Marine"', '"Train_Marne"'), ("from_s = 0, to_s = 90", "from_s = 90, to_s = 0"),
                      ('op = "ban", action = "Build_Bunker"', 'op = "ban", action = "NoOp"'), ('name = "force_marine"', 'name = "none"'),
-                     # 051-R3 after_rule: an earlier rule, with after_s.
                      ('after_rule = "b1-p1"', 'after_rule = "b1-p2"'), ('after_s = 30\n', '\n'), ('after_s = 30\n', 'after_s = 30.5\n'),
                      ('after_s = 30\n', 'after_s = "30"\n')):
         assert old in base

@@ -1,8 +1,3 @@
-"""032-R23 F1 `core_skip` (032 §2.8, 032-AC13): h' = h + Linear(core input), the Linear zero at
-init. Heads, value and win_open read h'; the core's recurrent state and the outer LSTM's h_sum keep
-the pre-skip h. Checked on the GTrXL and the LSTM core, alone and with the four §2.7 switches on
-(the tiny Burn-parity batches, B 2, T 4, outer segment 2)."""
-
 import copy
 from dataclasses import replace
 
@@ -18,7 +13,6 @@ from uranium.model.variants import core_skip_linear
 from test_variants import FIX, HEADS, VARIANTS, net_of, rows_at, state_after, tiny
 
 CORES = ["tiny-gtrxl", "tiny-lstm"]
-# Each case: (the model without the skip, the same model with it).
 OFF = {"skip": VariantConfig(), "skip_all": VARIANTS["all"]}
 ON = {"skip": VariantConfig(core_skip=True), "skip_all": replace(VARIANTS["all"], core_skip=True)}
 SKIP_KEYS = {"variant.core_skip.weight", "variant.core_skip.bias"}
@@ -30,7 +24,6 @@ def setup(core: str, arch: str):
 
 
 def trained_skip(net, seed: int = 11):
-    """The skip as after some training: non-zero weight and bias (a fixed generator)."""
     g = torch.Generator().manual_seed(seed)
     with torch.no_grad():
         for p in net.variant.core_skip.parameters():
@@ -39,17 +32,15 @@ def trained_skip(net, seed: int = 11):
 
 
 def same(a, b, eq=torch.equal) -> bool:
-    """Equal tensors, or both None (a model without the win_open head, 032-R18)."""
     return a is None and b is None if a is None or b is None else eq(a, b)
 
 
 def paths(net):
-    """The training passes of this model: BC, and the RL phased pass when it has `outer`."""
     return ({}, {"phased": True}) if net.outer is not None else ({},)
 
 
 def test_core_skip_linear_is_zero_032_r23():
-    with torch.random.fork_rng(devices=[]):  # as inside `Variants`
+    with torch.random.fork_rng(devices=[]):
         lin = core_skip_linear(7, 5)
     assert lin.weight.shape == (5, 7) and lin.bias.shape == (5,)
     assert not lin.weight.any() and not lin.bias.any()
@@ -58,9 +49,6 @@ def test_core_skip_linear_is_zero_032_r23():
 @pytest.mark.parametrize("core", CORES)
 @pytest.mark.parametrize("arch", ON)
 def test_init_equals_skip_off_032_ac13(core, arch):
-    """032-AC13 ①②: the shared modules start from the weights of the model without the skip (the
-    global RNG not moved) and, the skip being zero, every output and state is that model's, on the
-    BC, RL phased and step paths."""
     cfg_on, b, t, obs, labels, _ = setup(core, arch)
     cfg_off = replace(cfg_on, variant=OFF[arch])
     on = net_of(cfg_on, 9)
@@ -98,9 +86,6 @@ def test_init_equals_skip_off_032_ac13(core, arch):
 @pytest.mark.parametrize("core", CORES)
 @pytest.mark.parametrize("arch", ON)
 def test_gradients_reach_the_skip_032_r23(core, arch):
-    """The zero skip gets a gradient (weight and bias) from the policy and value losses, and adds
-    nothing to the other parameters' gradients (it is zero, so no gradient flows back through
-    it): the first update is the one of the model without it, plus the skip's own."""
     cfg_on, b, t, obs, labels, priv = setup(core, arch)
     cfg_off = replace(cfg_on, variant=OFF[arch])
     for kw in paths(net_of(cfg_on)):
@@ -121,8 +106,6 @@ def test_gradients_reach_the_skip_032_r23(core, arch):
 
 
 def per_decision(net, obs, labels, s0, b: int, t: int):
-    """Head log-probs, values and final state from one decision at a time, the skip written out:
-    the core and the outer LSTM step on the pre-skip h, the heads and value read h + skip."""
     s = s0
     hs, es, sps, scs = [], [], [], []
     for k in range(t):
@@ -150,9 +133,6 @@ def per_decision(net, obs, labels, s0, b: int, t: int):
 @pytest.mark.parametrize("core", CORES)
 @pytest.mark.parametrize("arch", ON)
 def test_step_matches_sequence_032_ac13(core, arch):
-    """032-AC13 ③ with a trained (non-zero) skip: `act` one decision at a time, the BC pass and
-    the RL phased pass from different decisions inside an outer segment give the per-decision
-    log-probs, values, final state and gradients (032-R5)."""
     cfg, b, t, obs, labels, _ = setup(core, arch)
     net = trained_skip(net_of(cfg))
     starts = [None] + ([(1, 2), (3, 0)] if net.outer is not None else [])
@@ -172,7 +152,6 @@ def test_step_matches_sequence_032_ac13(core, arch):
         gb = torch.autograd.grad(loss(logp, value), params)
         for x, y in zip(ga, gb):
             assert torch.allclose(x, y, atol=1e-4, rtol=1e-4), counts
-    # `act` (the inference path) gives the BC pass's values and final state.
     with torch.no_grad():
         seq = net.forward_seq(obs, labels, None, net.init_state(b), t)
         s = net.init_state(b)
@@ -189,8 +168,6 @@ def test_step_matches_sequence_032_ac13(core, arch):
 @pytest.mark.parametrize("core", CORES)
 @pytest.mark.parametrize("arch", ON)
 def test_states_take_the_pre_skip_h_032_r23(core, arch):
-    """The trained skip changes the value but no state: the core state (LSTM h, c / GTrXL memory)
-    and the outer LSTM state equal those of the same model with the skip zeroed, on every path."""
     cfg, b, t, obs, labels, _ = setup(core, arch)
     zero = net_of(cfg)
     net = trained_skip(copy.deepcopy(zero))
@@ -211,8 +188,6 @@ def test_states_take_the_pre_skip_h_032_r23(core, arch):
 
 @pytest.mark.parametrize("core", CORES)
 def test_outer_h_sum_is_the_pre_skip_h_032_r23(core):
-    """After the first decision (the outer segment is 2, so no update yet) the outer h_sum is the
-    core output h itself, not h' = h + skip."""
     cfg, b, t, obs, _, _ = setup(core, "skip_all")
     net = trained_skip(net_of(cfg))
     o = rows_at(obs, b, t, 0)
@@ -229,8 +204,6 @@ def test_outer_h_sum_is_the_pre_skip_h_032_r23(core):
 @pytest.mark.parametrize("core", CORES)
 @pytest.mark.parametrize("arch", ON)
 def test_entity_recompute_keeps_the_update_041_r17(core, arch):
-    """032-AC13 ④ / 041-R17 with a trained skip: the entity encoder recomputed per 3-row chunk
-    gives the gradients of one pass, the skip's and the entity encoder's included."""
     cfg, b, t, obs, labels, priv = setup(core, arch)
     grads = []
     for chunk in (0, 3):
@@ -248,7 +221,6 @@ def test_entity_recompute_keeps_the_update_041_r17(core, arch):
 @pytest.mark.parametrize("core", CORES)
 @pytest.mark.parametrize("arch", ON)
 def test_masks_hold_032_ac4(core, arch):
-    """032-AC4 with a trained skip: sampled action types stay inside the type mask."""
     cfg, b, t, obs, _, _ = setup(core, arch)
     net = trained_skip(net_of(cfg))
     g = torch.Generator().manual_seed(5)
@@ -264,7 +236,6 @@ def test_masks_hold_032_ac4(core, arch):
 @pytest.mark.parametrize("core", CORES)
 @pytest.mark.parametrize("arch", ON)
 def test_checkpoint_round_trip_032_ac13(core, arch, tmp_path):
-    """032-AC13 ④: the trained skip and the switch survive save and load."""
     cfg, b, t, obs, labels, _ = setup(core, arch)
     net = trained_skip(net_of(cfg))
     ckpt.save_model(tmp_path, net)
@@ -279,9 +250,6 @@ def test_checkpoint_round_trip_032_ac13(core, arch, tmp_path):
     assert torch.equal(x["value"], y["value"])
     for k in HEADS:
         assert torch.equal(x["logp"][k], y["logp"][k]), k
-
-
-# --- GPU (pytest -m gpu): the inference graph of a model with the skip (032-AC13, act = eager).
 
 
 @pytest.mark.gpu
@@ -301,13 +269,11 @@ def test_graphed_act_matches_eager_core_skip_032_ac13():
     graphed = GraphedAct(net.act, dev, prec)
     exact = torch.version.hip is None
     close = (lambda a, b: torch.equal(a, b)) if exact else (lambda a, b: torch.allclose(a.float(), b.float(), atol=1e-5, rtol=1e-5))
-    # As test_graphed_act_matches_eager_variant: batch 3, padded to 4 rows by GraphedAct; eager
-    # runs the same 4 rows.
     obs = random_obs(3, 128, net.cfg.input, dev, torch.Generator().manual_seed(1), valid=119)
     pad = torch.tensor([0, 1, 2, 0], device=dev)
     obs4 = {k: x.index_select(0, pad) for k, x in obs.items()}
     s_eager, s_graph = net.init_state(4, dev), net.init_state(3, dev)
-    for _ in range(40):  # past an outer update (every 32 decisions)
+    for _ in range(40):
         with autocast(dev, prec):
             want = net.act(obs4, s_eager, 0.0)
         got = graphed(obs, s_graph, 0.0)

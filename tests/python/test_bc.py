@@ -1,7 +1,3 @@
-"""041 BC trainer in PyTorch (AMB-000-4) on synthetic shards, CPU: micro-lane groups sum to the
-full-batch gradient (041-R3), checkpoints round-trip (061-AC5), a resumed run continues bit for
-bit (061-R10, AC1 on CPU), and `_core.run_bc` runs, checkpoints and resumes a local run."""
-
 import functools
 import json
 from pathlib import Path
@@ -18,7 +14,6 @@ CPU = torch.device("cpu")
 
 
 def tiny_net_config(kind: str = "Lstm", win_open: bool = False) -> UraniumNetConfig:
-    """The tiny parity net with this build's input dims (the collate's real shapes)."""
     cfg = UraniumNetConfig.from_dict(json.loads((FIX / "tiny-lstm" / "meta.json").read_text())["config"])
     cfg.input = input_dims()
     cfg.core.kind = kind
@@ -53,7 +48,6 @@ def params_of(net) -> dict:
 
 
 def test_micro_lanes_match_full_batch_041_r3(tiny_config, shards):
-    """Groups of one lane and one group of all lanes give the same update (float rounding)."""
     b = feeder(tiny_config, shards).next()
     after = {}
     for m in (1, 0):
@@ -75,7 +69,7 @@ def test_resume_continues_bit_identically_061_r10(tiny_config, shards, tmp_path,
         a.train_batch(b, lr(s), s)
     state = b.state_json()
     a.save(str(tmp_path / "ck"), json.dumps({"step": 3}))
-    a.states = []  # the resume point truncates the core state (lanes restart, 061-R10)
+    a.states = []
     kept = [json.loads(a.train_batch(fa.next(), lr(s), s))["total"] for s in (3, 4)]
 
     r = BcTrainer.make(json.dumps(cfg), "resume", str(tmp_path / "ck"), 0, kind.lower(), CPU, "f32")
@@ -85,7 +79,6 @@ def test_resume_continues_bit_identically_061_r10(tiny_config, shards, tmp_path,
     pa, pr = params_of(a.net), params_of(r.net)
     assert all(torch.equal(pa[k], pr[k]) for k in pa)
 
-    # Control: the weights alone (fresh optimizer) do not reproduce the run.
     c = BcTrainer.make(json.dumps(cfg), "init", str(tmp_path / "ck"), 0, kind.lower(), CPU, "f32")
     fc = feeder(tiny_config, shards, restore=state)
     assert [json.loads(c.train_batch(fc.next(), lr(s), s))["total"] for s in (3, 4)] != kept
@@ -93,12 +86,11 @@ def test_resume_continues_bit_identically_061_r10(tiny_config, shards, tmp_path,
 
 def test_checkpoint_round_trip_061_ac5(tiny_config, shards, tmp_path):
     cfg = bc_cfg(tiny_config)
-    cfg["value"]["win_open"] = 0.3  # 041-R19: the head trains, so it has optimizer state too
+    cfg["value"]["win_open"] = 0.3
     t = BcTrainer(cfg, tiny_net("Gtrxl", win_open=True), CPU, "f32")
     t.train_batch(feeder(tiny_config, shards).next(), 3e-3, 0)
     t.save(str(tmp_path / "a"), json.dumps({"step": 1}))
     t.save(str(tmp_path / "b"), json.dumps({"step": 1}))
-    # 061-R10: same weights -> same bytes, so the policy version (020-R5) is stable.
     assert (tmp_path / "a" / ckpt.WEIGHTS_FILE).read_bytes() == (tmp_path / "b" / ckpt.WEIGHTS_FILE).read_bytes()
     assert ckpt.policy_version(tmp_path / "a") == ckpt.policy_version(tmp_path / "b")
     meta = ckpt.read_meta(tmp_path / "a")
@@ -111,7 +103,7 @@ def test_checkpoint_round_trip_061_ac5(tiny_config, shards, tmp_path):
     rnames = dict(r.net.named_parameters())
     assert len(t.opt.state) == len(r.opt.state) > 0
     for k, p in names.items():
-        if p not in t.opt.state:  # no gradient reached it (e.g. unused embedding rows' table)
+        if p not in t.opt.state:
             assert rnames[k] not in r.opt.state, k
             continue
         sa, sr = t.opt.state[p], r.opt.state[rnames[k]]
@@ -126,8 +118,6 @@ def test_burn_checkpoint_is_refused_061_r10(tmp_path):
 
 
 def test_feature_schema_6_checkpoint_loads_030_r5(tmp_path):
-    """030-R5 / 032-R6 (2026-10-31): feature schema 7 changed masks only, so a schema-6 checkpoint
-    (the BC runs) loads as it is; any other schema difference is refused. A new save writes 7."""
     fv, av = ckpt.schema_versions()
     assert (fv, ckpt.feature_load_compat()) == (7, [6])
     net = tiny_net()
@@ -157,8 +147,6 @@ def _tiny_make(kind, cfg_json, start, dir, entity_chunk):
 
 @pytest.mark.parametrize("chunk", ["0", "5"])
 def test_run_bc_local_checkpoints_and_resumes(tiny_config, shards, tmp_path, monkeypatch, chunk):
-    """The Rust run loop drives the Python trainer: `last/` with every checkpoint file, then a
-    resume continues from its step and data position."""
     monkeypatch.setenv("URANIUM_BC_ENTITY_CHUNK", chunk)
     monkeypatch.setenv("URANIUM_BC_PREFETCH", "1")
     make = functools.partial(_tiny_make, "Lstm")
@@ -181,7 +169,6 @@ def test_run_bc_local_checkpoints_and_resumes(tiny_config, shards, tmp_path, mon
 
 
 def test_bc_eval_scores_every_game_once_041(tiny_config, shards, tmp_path):
-    """bc-eval over the three splits reads each synthetic game once and fills the 041 report."""
     from uranium.bc.eval import evaluate
 
     make = functools.partial(_tiny_make, "Gtrxl")
@@ -203,7 +190,6 @@ def test_bc_eval_scores_every_game_once_041(tiny_config, shards, tmp_path):
 
 
 def test_bc_eval_out_writes_the_report_032_r20(tiny_config, shards, tmp_path, capsys):
-    """032-R20 ③ val scoring: `bc-eval --out` writes the printed JSON report to a file too."""
     import argparse
 
     from uranium.bc import eval as bc_eval
@@ -213,7 +199,7 @@ def test_bc_eval_out_writes_the_report_032_r20(tiny_config, shards, tmp_path, ca
     assert _core.run_bc(make, str(tiny_config), out=str(out), shards=[str(shards)], steps=1, synthetic_maps=True) == "done"
     report = tmp_path / "val" / "r.json"
     a = argparse.Namespace(dataset=[], shards=[str(shards)], checkpoint=str(out / "last"), split="train", backend="cpu", core=None, games=None, seed=1, config=str(tiny_config), maps_dir=None, synthetic_maps=True, out=str(report),
-                           bunker_before=None)  # 050-R10 `--bunker-before` (default off)
+                           bunker_before=None)
     assert bc_eval.main(a) == 0
     printed = json.loads(capsys.readouterr().out)
     assert json.loads(report.read_text(encoding="utf-8")) == printed
@@ -221,7 +207,6 @@ def test_bc_eval_out_writes_the_report_032_r20(tiny_config, shards, tmp_path, ca
 
 
 def test_run_bc_refuses_another_run_ident(tiny_config, shards, tmp_path):
-    """B-3: a resume with another config is refused before training."""
     make = functools.partial(_tiny_make, "Lstm")
     out = tmp_path / "out"
     assert _core.run_bc(make, str(tiny_config), out=str(out), shards=[str(shards)], steps=1, synthetic_maps=True) == "done"
@@ -232,8 +217,6 @@ def test_run_bc_refuses_another_run_ident(tiny_config, shards, tmp_path):
 
 
 def _strict_json(s: str) -> dict:
-    """JSON as the Rust loop's serde_json reads it: NaN / Infinity are refused."""
-
     def refuse(c):
         raise ValueError(f"non-JSON constant {c}")
 
@@ -241,8 +224,6 @@ def _strict_json(s: str) -> dict:
 
 
 def _poison(t: BcTrainer, at_step: int) -> None:
-    """Update `at_step` of `t` goes non-finite as an overflowing forward would: NaN total and
-    value loss, NaN gradients and NaN core state (the other parts stay finite)."""
     orig = t.group_loss
     nan = float("nan")
 
@@ -254,7 +235,7 @@ def _poison(t: BcTrainer, at_step: int) -> None:
             if p.grad is not None:
                 p.grad.fill_(nan)
         t.states[group] = torch.utils._pytree.tree_map(lambda x: torch.full_like(x, nan) if isinstance(x, torch.Tensor) else x, t.states[group])
-        return parts.clone().index_fill_(0, torch.tensor([0, 7]), nan)  # total, value
+        return parts.clone().index_fill_(0, torch.tensor([0, 7]), nan)
 
     t.group_loss = group_loss
 
@@ -264,9 +245,6 @@ def _opt_tensors(opt) -> list:
 
 
 def test_non_finite_loss_skips_the_update_041_r3(tiny_config, shards):
-    """041-R3 (2026-11-06): a non-finite loss part skips the optimizer step (weights and optimizer
-    state untouched), the JSON has null for it and counts the skip, NaN core states restart, and
-    the finite updates before and after are those of a run without the bad batch."""
     cfg = bc_cfg(tiny_config)
     f = feeder(tiny_config, shards)
     b0, b1, b2 = f.next(), f.next(), f.next()
@@ -288,8 +266,6 @@ def test_non_finite_loss_skips_the_update_041_r3(tiny_config, shards):
     assert len(opt_after) == len(opt_before) and all(k == j and torch.equal(x, y) for (k, x), (j, y) in zip(opt_before, opt_after))
     assert t.states and all(s is None for s in t.states)
 
-    # The next finite batch: the same update as a run that never saw the bad batch (its lanes
-    # restarted the same way).
     ref.states = [None] * len(ref.states)
     later = _strict_json(t.train_batch(b2, 3e-3, 2))
     assert later == _strict_json(ref.train_batch(b2, 3e-3, 2)) | {"skipped_steps": 1}
@@ -298,8 +274,6 @@ def test_non_finite_loss_skips_the_update_041_r3(tiny_config, shards):
 
 
 def test_run_bc_continues_past_a_non_finite_loss_041_r3(tiny_config, shards, tmp_path):
-    """The Rust loop reads the null loss parts of a skipped update and runs on to the end."""
-
     def make(*a):
         t = _tiny_make("Lstm", *a)
         _poison(t, 1)
@@ -311,8 +285,6 @@ def test_run_bc_continues_past_a_non_finite_loss_041_r3(tiny_config, shards, tmp
 
 
 def test_entity_recompute_keeps_the_update_041_r17(tiny_config, shards):
-    """041-R17: the entity encoder in recomputed row chunks gives the same update (dropout 0 in
-    the tiny net, so the replayed draws do not matter)."""
     b = feeder(tiny_config, shards).next()
     after = {}
     for chunk in (0, 3):

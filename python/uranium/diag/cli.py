@@ -1,8 +1,3 @@
-"""`python -m uranium diag <cmd>` (uranium.diag; 050-R9 lineage measurements, 041-R24 cue probes):
-the subcommands and their arguments. Data paths come from the arguments (`--dataset` names
-resolve under URANIUM_SHARED_DIR, 041-R9; `--shards` are folders as given); nothing is read from a
-fixed location. The command modules are imported when the parser is built (not at package import)."""
-
 import importlib
 
 COMMANDS = {

@@ -1,9 +1,3 @@
-"""050-R9 / 050-AC5 measurement protocol (tools/eval, config/protocol/lineage.toml, docs/measurement_protocol.md):
-the moved table rules (050-R6 / 050-R7 / 050-R8) on small job fixtures, and the protocol refusing anything that
-differs from the pinned Checkpoint 1 conditions; the diagnostics cue_diag / dead_channels (commands, refusal of
-outputs made with other settings, tables, the 041-R25 training-log summary) and the s1e2 per-checkpoint loop
-(041-R20 ③). CPU only, no game data (the shared-drive comparison skips without the shared drive)."""
-
 import argparse
 import copy
 import json
@@ -28,7 +22,6 @@ import tables  # noqa: E402
 
 LIN = protocol.load_lineage()
 
-# 050-AC5: the conditions of every protocol plan, frozen. A change here is a protocol change (spec first).
 FROZEN = {
     "rush_check": "ed79acba03b0cbfe09a2c5fba77384b82609e4bdabd419a505d95e711c996b2b",
     "macro": "8e17896f8f6dbd5ab2992a1a7cce0db82f2f1900ab22d921a9dd24021a91897d",
@@ -43,11 +36,9 @@ FROZEN = {
     "ac1_stoch_real": "26b945e09943581885a45e4cde93f65fd8af45d48c830e0574a12fcf9076d849",
     "ac1_argmax_real": "d6419d130914f07aad97e99e480b0e72a4fab12180cfa9f99dada8902a688917",
     "t0_tp": "0e033d973095d2fa73d140c1385c0daa74a94b7e1173dbf09c108c07f5a9d4a5",
-    # 044-R11 fixed-RL checks (2026-11-14): t0_tp with zero_last_failed false (no Checkpoint 1 source plan).
     "t0_tp_rl": "a176734c88b906a0852d474f1a2ca1fe2c92ccbee078ed4ea93daae68ff4bf98",
 }
 
-# The Checkpoint 1 plans on the shared drive the templates were taken from (relative to URANIUM_SHARED_DIR).
 SHARED_PLANS = [
     ("rush_check", "eval/bc-check-20261105/plans/01-rush5check.toml"),
     ("rush_check", "eval/rush5-20261105/c0-ac1/plans/01-rush5check.toml"),
@@ -66,7 +57,6 @@ SHARED_PLANS = [
     ("t0_tp", "eval/jepa-diag-tp-20261109/plans/02-t0.toml"),
 ]
 
-# The points with a Checkpoint 1 counterpart (050-R9); the 2026-11-14 rows (044: d1, d2, D, rl-fix) have none.
 CK1_POINTS = [p for p in LIN["point"] if p.get("ck1_checkpoint")]
 
 CLEAN_GIT = {"commit": "0" * 40, "protocol_files_dirty": False, "dirty_paths": [], "dirty_diff_sha256": None}
@@ -74,9 +64,6 @@ CLEAN_GIT = {"commit": "0" * 40, "protocol_files_dirty": False, "dirty_paths": [
 
 def plan_file(name: str) -> dict:
     return tomllib.loads((ROOT / "config" / "plans" / name).read_text(encoding="utf-8"))
-
-
-# ------------------------------------------------------------------ protocol: templates and pinned values
 
 
 def test_conditions_frozen_050_ac5():
@@ -87,7 +74,6 @@ def test_conditions_frozen_050_ac5():
 
 
 def test_shared_drive_plans_050_ac5():
-    """Opt-in: runs where the shared drive with the Checkpoint 1 eval jobs is mounted."""
     ec.load_env()
     shared = os.environ.get("URANIUM_SHARED_DIR")
     found = [(pid, Path(shared) / rel) for pid, rel in SHARED_PLANS] if shared else []
@@ -103,7 +89,6 @@ def test_shared_drive_plans_050_ac5():
     ("t0_600", "bc-vs-t0.toml"), ("rush_check", "rush5_check.toml"),
 ])
 def test_templates_are_the_checkpoint1_plans_050_r9(pid, source):
-    """A template rendered with any checkpoint has the conditions of the tracked Checkpoint 1 plan."""
     src = plan_file(source)
     assert protocol.identify(LIN, src) == pid
     text = protocol.render(LIN, pid, "checkpoints/m2-x/ckpt-1", "m2-x")
@@ -113,7 +98,6 @@ def test_templates_are_the_checkpoint1_plans_050_r9(pid, source):
 
 
 def test_zero_last_failed_pinned_per_plan_050_r9():
-    """Checkpoint 1 values: rush / macro false for every family, TvZ / T1 / T0 true for BC, RL false."""
     zlf = {pid: tomllib.loads(protocol.render(LIN, pid, "c", "n"))["zero_last_failed"] for pid in LIN["plan"]}
     assert zlf["rush_check"] is False and zlf["macro"] is False
     assert zlf["tvz_bc"] and zlf["t1_bc"] and zlf["t0_100"] and zlf["t0_300"] and zlf["t0_600"] and zlf["ac1_stoch_lf0"]
@@ -177,7 +161,7 @@ def test_ck1_point_with_another_checkpoint_refused_050_ac5(monkeypatch):
     monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: "a" * 64 if "bc-dagger-r1" in c or "copy-of-r1" in c else "b" * 64)
     pt = protocol.point(LIN, "r1")
     protocol.check_checkpoint(LIN, "ck1", pt, "checkpoints/bc-dagger-r1/ckpt-1137")
-    protocol.check_checkpoint(LIN, "ck1", pt, "eval/x/copy-of-r1/ckpt")  # a copy with the same weights
+    protocol.check_checkpoint(LIN, "ck1", pt, "eval/x/copy-of-r1/ckpt")
     with pytest.raises(protocol.Refused, match="Checkpoint 1 lineage is checkpoints/bc-dagger-r1/ckpt-1137"):
         protocol.check_checkpoint(LIN, "ck1", pt, "checkpoints/bc-dagger-r2/ckpt-1218")
 
@@ -193,7 +177,7 @@ def test_ck1_lineage_takes_no_new_measurements_050_r9(tmp_path):
         protocol.main(["bc-eval", "--metric", "val500", "--lineage", "ck1", "--point", "r1", "--checkpoint", "checkpoints/bc-dagger-r1/ckpt-1137"])
     for pt in CK1_POINTS:
         protocol.check_new_measurement(LIN, "ck1", "cue_diag", pt)
-        with pytest.raises(protocol.Refused, match="not measured"):  # AMB-050-5: no training-log statistics
+        with pytest.raises(protocol.Refused, match="not measured"):
             protocol.check_new_measurement(LIN, "ck1", "dead_channels", pt)
         protocol.check_new_measurement(LIN, "m2", "dead_channels", pt)
     protocol.check_new_measurement(LIN, "m2", "rush", protocol.point(LIN, "r1"))
@@ -201,9 +185,6 @@ def test_ck1_lineage_takes_no_new_measurements_050_r9(tmp_path):
 
 
 def test_lineage_menus_consistent_050_r9():
-    """Every Checkpoint 1 output and supplement is on the point's menu; a supplement is a cell Checkpoint 1 lacks. A
-    point without a Checkpoint 1 counterpart (2026-11-14 rows) has no Checkpoint 1 cells; T1 on a menu has its
-    platform(s) pinned."""
     for pt in LIN["point"]:
         menu = set(pt["metrics"]) | set(pt.get("optional", []))
         assert menu <= set(LIN["metric"]) and not set(pt["metrics"]) & set(pt.get("optional", [])), pt["id"]
@@ -222,7 +203,6 @@ def test_lineage_menus_consistent_050_r9():
 
 
 def test_ck1_supplement_only_for_missing_cells_050_r9(tmp_path, monkeypatch):
-    """050-R9: Checkpoint 1 is measured with the same plan only where the point table has no Checkpoint 1 value."""
     monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
     monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: "a" * 64)
     hosts = tmp_path / "hosts.toml"
@@ -249,7 +229,6 @@ def test_ck1_supplement_only_for_missing_cells_050_r9(tmp_path, monkeypatch):
 
 
 def test_t0_tp_template_050_r10():
-    """T0 standard Terran / Protoss 32 + 32: the first 16 seeds of each map block of the T0 300 (seed_base 41300)."""
     plan = tomllib.loads(protocol.render(LIN, "t0_tp", "c", "n"))
     assert plan["seeds"] == [*range(41301, 41317), *range(41351, 41367), *range(41401, 41417), *range(41451, 41467)]
     assert [(m["map"], m["games"], m["p1"]) for m in plan["matchup"]] == [
@@ -258,18 +237,16 @@ def test_t0_tp_template_050_r10():
     n = protocol.normalize(plan)
     assert n["zero_last_failed"] is True and n["max_frames"] == 86400 and n["wall_timeout_s"] == 7200
     assert {m["p0"]["sample"] for m in n["matchup"]} == {"stochastic"}
-    # the same games as the T0 300's: seed_base + game number, same map and opponent
     t300 = tables.game_keys(tomllib.loads(protocol.render(LIN, "t0_300", "c", "n")))
     assert set(tables.game_keys(plan)) <= set(t300)
 
 
 def test_subset_tables_t0_tp_inside_t0_300_050_r9(tmp_path):
-    """The BC baseline's T0 T / P 32 + 32 is counted from its T0 300 job by seed / map / opponent."""
-    rows = [{**row(1, True), "model": {**row(1, True)["model"], "zero_last_failed": True}},     # T FS seed 41301: in
-            {**row(17, True), "model": {**row(17, True)["model"], "zero_last_failed": True}},   # T FS seed 41317: out
-            {**row(51, None), "model": {**row(51, None)["model"], "zero_last_failed": True}},   # T CB seed 41351: in
-            {**row(116, False), "model": {**row(116, False)["model"], "zero_last_failed": True}}]  # P FS seed 41416: in
-    ledger = [{"game_id": 100151, "outcome": "Aborted", "detail": "launcher exit codes [Some(0), None]"}]  # P CB 41451: invalid
+    rows = [{**row(1, True), "model": {**row(1, True)["model"], "zero_last_failed": True}},
+            {**row(17, True), "model": {**row(17, True)["model"], "zero_last_failed": True}},
+            {**row(51, None), "model": {**row(51, None)["model"], "zero_last_failed": True}},
+            {**row(116, False), "model": {**row(116, False)["model"], "zero_last_failed": True}}]
+    ledger = [{"game_id": 100151, "outcome": "Aborted", "detail": "launcher exit codes [Some(0), None]"}]
     job = make_job(tmp_path, "t0_300", rows, ledger)
     res = tables.subset_tables(job, "t0_tp", LIN)
     (t,) = res.values()
@@ -327,7 +304,6 @@ def job_args(tmp_path, ck, metrics, hosts_text='[[host]]\naddr = "h:7700"\nmax_g
 
 
 def test_job_written_and_recorded_050_r9(tmp_path, monkeypatch):
-    """--metrics rush,tvz on a BC point: two jobs (zero_last_failed false / true), each with protocol.json."""
     monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
     protocol.checkpoint_sha256.cache_clear()
     ck = fake_checkpoint(tmp_path)
@@ -350,7 +326,6 @@ def test_job_written_and_recorded_050_r9(tmp_path, monkeypatch):
         assert protocol.verify_job(LIN, d, "m2", protocol.point(LIN, "s2e2")) == []
     assert json.loads((rush / "protocol.json").read_text(encoding="utf-8"))["bot_hashes"] == {"h:7700": {"ualbertabot12poollings": accepted("ualbertabot12poollings")}}
     assert json.loads((tvz / "protocol.json").read_text(encoding="utf-8"))["bot_hashes"] == {}
-    # 050-AC5: an edited plan file and a dirty record are flagged
     f = rush / "plans" / "01-rush_check.toml"
     f.write_text(f.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     rec = json.loads((tvz / "protocol.json").read_text(encoding="utf-8"))
@@ -361,9 +336,6 @@ def test_job_written_and_recorded_050_r9(tmp_path, monkeypatch):
 
 
 def test_job_ac1_alone_gets_distinct_names_050_r9(tmp_path, monkeypatch):
-    """--metrics ac1 on a BC point has plans in both zero_last_failed groups (ac1_stoch_lf0 true, ac1_stoch_real /
-    ac1_argmax_real false): two jobs j-ac1-lf0 / j-ac1-real, not two of the same name. With another metric the
-    group names differ already and stay as they were (j-t0_300-ac1, j-ac1)."""
     monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
     protocol.checkpoint_sha256.cache_clear()
     ck = fake_checkpoint(tmp_path)
@@ -411,7 +383,6 @@ def test_bot_hash_refused_offline_050_ac5(tmp_path, monkeypatch):
 
 
 def test_t1_platform_refused_050_r9(tmp_path, monkeypatch):
-    """T1 runs on the platform of the point's Checkpoint 1 counterpart (BC baseline: Linux ROCm hosts)."""
     monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
     ck = fake_checkpoint(tmp_path)
     with pytest.raises(SystemExit, match=r"T1 of point s2e2 runs on linux hosts only; host list has h:7700 \(windows\)"):
@@ -446,7 +417,6 @@ def test_check_bc_eval_refuses_other_metrics_050_r9(tmp_path):
 
 
 def test_verify_reports_condition_mismatch_050_ac5(tmp_path):
-    """An eval job whose rows ran with another zero_last_failed, or whose plan is not a protocol plan."""
     job = tmp_path / "job"
     (job / "plans").mkdir(parents=True)
     (job / "results").mkdir()
@@ -461,9 +431,6 @@ def test_verify_reports_condition_mismatch_050_ac5(tmp_path):
     assert any("no protocol.json" in p for p in problems), problems
     assert any("zero_last_failed [False], pinned True" in p for p in problems), problems
     assert any("stage 2" in p and "match no protocol plan" in p for p in problems), problems
-
-
-# ------------------------------------------------------------------ eval_common rules
 
 
 def test_game_ids_and_opponent_crashes_050_r9():
@@ -486,17 +453,13 @@ def test_model_rows_highest_attempt_050_r9():
         {"game_id": 100001, "model": {"scv_8m": 9}},
         {"game_id": 200001, "model": {"scv_8m": 1}},
         {"game_id": 10100002, "model": {"scv_8m": 5}},
-        {"game_id": 100002, "model": {"scv_8m": 4}},  # attempt 0 written after attempt 1: attempt 1 wins
+        {"game_id": 100002, "model": {"scv_8m": 4}},
     ]
     got = ec.model_rows(rows, 1)
     assert sorted(got) == [1, 2] and got[1]["model"]["scv_8m"] == 9 and got[2]["model"]["scv_8m"] == 5
 
 
 def test_corrupt_result_lines_skipped_and_counted_050_r9(tmp_path, capsys):
-    """Shared-drive write corruption in results/*.jsonl and games/*.jsonl: a line of NUL bytes is not a row and
-    not counted; a line is split at NUL runs, so a row after NULs (or after a truncated row and NULs) is kept;
-    a truncated piece is skipped with one warning naming file and line and counted in `skipped_lines` of the
-    tables; every decodable row is kept."""
     rows = [row(1, True), row(2, False), row(3, None)]
     job = make_job(tmp_path, "tvz_bc", [], [{"game_id": 100009, "outcome": "Finished", "detail": None}])
     (job / "results" / "h.jsonl").write_bytes(
@@ -539,7 +502,6 @@ def dump(path: Path, cmds: list, frames: int = 20000) -> None:
 
 
 def build(frame: int, x: int, y: int, ty: int) -> list:
-    """Build command [frame, 0, 12, hex]: order byte, x, y, unit type (u16 little endian)."""
     h = "1e" + "".join(f"{v & 0xFF:02x}{v >> 8:02x}" for v in (x, y, ty))
     return [frame, 0, 12, h]
 
@@ -548,14 +510,14 @@ def test_analyze_first_build_and_scout_050_r6(tmp_path):
     f = tmp_path / "g1.json"
     far_move = "".join(f"{v & 0xFF:02x}{v >> 8:02x}" for v in (3000, 3000, 0xFFFF)) + "e400" + "06" + "00"
     dump(f, [
-        build(500, 10, 10, 109),        # depot: base at (320, 320)
-        [600, 0, 9, "0101"],            # select 1 unit
-        [700, 0, 21, far_move],         # targeted Move far from the base: scout
+        build(500, 10, 10, 109),
+        [600, 0, 9, "0101"],
+        [700, 0, 21, far_move],
         build(4000, 12, 12, ec.BUNKER),
         build(5000, 14, 14, ec.BUNKER),
         build(7200, 20, 20, ec.CC),
-        [800, 1, 12, build(0, 1, 1, ec.BUNKER)[3]],  # the other player's build is ignored
-        build(12000, 5, 5, 111),        # after 8:00: ignored
+        [800, 1, 12, build(0, 1, 1, ec.BUNKER)[3]],
+        build(12000, 5, 5, 111),
     ])
     first, scout = ec.analyze(f)
     assert first == {109: 500, ec.BUNKER: 4000, ec.CC: 7200}
@@ -568,43 +530,37 @@ def le16(*vals: int) -> str:
 
 
 def rclick(frame: int, x: int, y: int, target: int) -> list:
-    """Right click (0x14) as stored: x, y, target, unit type (u16 little endian), queued."""
     return [frame, 0, 20, le16(x, y, target, 228) + "00"]
 
 
 def order(frame: int, x: int, y: int, target: int, order_id: int) -> list:
-    """Targeted order (0x15) as stored: x, y, target, unit type, order byte, queued."""
     return [frame, 0, 21, le16(x, y, target, 228) + f"{order_id:02x}" + "00"]
 
 
 @pytest.mark.parametrize("ground", [0, 0xFFFF])
 def test_scout_fixed_counts_ground_right_click_050_r9(tmp_path, ground):
-    """050-R9 (2026-11-14 개정, 사용자 결정 2026-11-14): `scout_3m_fixed` reads x / y / target at bytes 0 / 2 / 4, so a
-    ground right click far from the base is a scout; the old reading (target from bytes 2-3 = y) never sees one."""
     f = tmp_path / "g1.json"
     dump(f, [
-        build(500, 10, 10, 109),          # base at (320, 320)
-        [600, 0, 9, "0101"],              # select 1 unit
-        rclick(650, 2000, 320, 5),        # right click on a unit (mining, following): not a move
-        rclick(700, 2000, 320, ground),   # ground right click 1,680 px away
-        rclick(4400, 3000, 3000, ground),  # after 3:00: ignored
+        build(500, 10, 10, 109),
+        [600, 0, 9, "0101"],
+        rclick(650, 2000, 320, 5),
+        rclick(700, 2000, 320, ground),
+        rclick(4400, 3000, 3000, ground),
     ])
     assert ec.analyze_both(f)[1:] == (None, 700)
     assert ec.analyze(f)[1] is None, "analyze keeps the old reading (scout_3m)"
 
 
 def test_scout_old_and_fixed_read_move_orders_differently_050_r9(tmp_path):
-    """The old reading takes y from bytes 1-2 (x high byte, y low byte): a Move next to the base counts as far.
-    The fixed reading uses the real y; both keep the one-unit selection and Move-only rules."""
     f = tmp_path / "g1.json"
     dump(f, [
         build(500, 10, 10, 109),
-        [600, 0, 9, "0201"],                          # two units selected: no scout
+        [600, 0, 9, "0201"],
         order(610, 3000, 3000, 0, ec.ORDER_MOVE),
         [650, 0, 9, "0101"],
-        order(660, 3000, 3000, 0, 10),                # far, but not a Move order
-        order(700, 330, 330, 0, ec.ORDER_MOVE),       # next to the base: old y = 0x01 + 256 * 0x4a
-        order(800, 330, 2000, 0, ec.ORDER_MOVE),      # 1,690 px away: the fixed scout
+        order(660, 3000, 3000, 0, 10),
+        order(700, 330, 330, 0, ec.ORDER_MOVE),
+        order(800, 330, 2000, 0, ec.ORDER_MOVE),
     ])
     assert ec.analyze_both(f)[1:] == (700, 800)
 
@@ -635,17 +591,16 @@ def early_games(monkeypatch, k: int) -> list[int]:
 def test_rush_table_both_held_and_bunker_definitions_050_r7(tmp_path, monkeypatch):
     early = early_games(monkeypatch, 4)
     rows = [
-        row(early[0], True, scv_8m=10, scv_min_1m=3, bunker_s=170.0, scv_4m=9),   # held_8m only, unit < 3:00
-        row(early[1], False, scv_8m=None, scv_min_1m=6, bunker_s=200.0, scv_4m=4),  # held_s only, unit < 4:00
-        row(early[2], None, scv_8m=8, scv_min_1m=5, bunker_s=None, scv_4m=None),   # both held, no bunker
-        row(early[3], True, scv_8m=None, scv_min_1m=2, bunker_s=None, scv_4m=6),   # won before 8:00: held_8m_winpass only
+        row(early[0], True, scv_8m=10, scv_min_1m=3, bunker_s=170.0, scv_4m=9),
+        row(early[1], False, scv_8m=None, scv_min_1m=6, bunker_s=200.0, scv_4m=4),
+        row(early[2], None, scv_8m=8, scv_min_1m=5, bunker_s=None, scv_4m=None),
+        row(early[3], True, scv_8m=None, scv_min_1m=2, bunker_s=None, scv_4m=6),
     ]
     job = make_job(tmp_path, "rush_check", rows)
     cache = tmp_path / "cache" / job.name / "rush_check"
-    dump(cache / f"g{early[0]}.json", [build(500, 10, 10, 109), build(4000, 12, 12, ec.BUNKER)])   # order < 3:00
-    # 050-R9 (2026-11-14): one unit right-clicked far on the ground before 3:00: scout_3m_fixed only
+    dump(cache / f"g{early[0]}.json", [build(500, 10, 10, 109), build(4000, 12, 12, ec.BUNKER)])
     dump(cache / f"g{early[1]}.json", [build(500, 10, 10, 109), [600, 0, 9, "0101"], rclick(700, 3000, 320, 0),
-                                       build(5000, 12, 12, ec.BUNKER)])   # order < 4:00
+                                       build(5000, 12, 12, ec.BUNKER)])
     res = tables.job_tables(job, tmp_path / "cache", lin=LIN)
     t = res[f"{job.name}/rush_check"]
     assert t["plan"] == "rush_check" and t["kind"] == "rush" and t["protocol"] is None
@@ -658,7 +613,6 @@ def test_rush_table_both_held_and_bunker_definitions_050_r7(tmp_path, monkeypatc
 
 
 def test_bunker_unit_boundaries_050_r7(tmp_path, monkeypatch):
-    """bunker_unit_3m is bunker_s < 180, bunker_unit_4m < 240 (strict)."""
     early = early_games(monkeypatch, 5)
     rows = [row(n, None, bunker_s=b) for n, b in zip(early, (179.9, 180.0, 239.9, 240.0, None))]
     t = tables.job_tables(make_job(tmp_path, "rush_check", rows), tmp_path / "cache", lin=LIN)
@@ -716,16 +670,8 @@ def test_unknown_plan_needs_kind_050_r9(tmp_path):
         tables.main([str(job), "--cache", str(tmp_path / "cache")])
 
 
-# ------------------------------------------------------------------ 2026-11-14 points (044-R6 / R7 / R11, 050-R9 / R10)
-
-
 def test_distill_fix_points_menus_050_r9():
-    """050-R9 point table rows of 2026-11-14: distillation rounds (val500 by race, teacher hold-out, T0 T / P 32 + 32,
-    TvZ 32, rush 128 + macro 40, teacher-mode share), D (the Checkpoint 1 counterpart model's cells: test, val500 by
-    race, T1 300, T0 T / P), the fixed-RL checks (T0 T / P, TvZ, rush + macro, T1 at the end). No Checkpoint 1
-    counterpart: lineage ck1 refused there."""
     d1, d2, D, rl = (protocol.point(LIN, p) for p in ("d1", "d2", "D", "rl-fix"))
-    # DAgger r3 of lineage 2 (user decision 2026-11-14): r2's menu, no Checkpoint 1 counterpart
     r2, r3 = protocol.point(LIN, "r2"), protocol.point(LIN, "r3")
     assert {k: r3.get(k) for k in ("family", "metrics", "optional", "t1_platforms")} == {k: r2.get(k) for k in ("family", "metrics", "optional", "t1_platforms")}
     assert not r3.get("ck1_checkpoint")
@@ -750,8 +696,6 @@ def test_distill_fix_points_menus_050_r9():
         protocol.check_new_measurement(LIN, "m2", "teacher_mode", pt)
     with pytest.raises(SystemExit, match="REFUSED: point d1 has no Checkpoint 1 counterpart"):
         protocol.main(["tables", "--lineage", "ck1", "--point", "d1"])
-    # 044-R8 teacher round t1 (user decision 2026-11-14): the distillation rounds' menu, run m2-teacher-t1 (메인 임시 결정
-    # 2026-11-14, 사용자 확인 대기), no Checkpoint 1 counterpart.
     t1 = protocol.point(LIN, "t1")
     assert {k: t1.get(k) for k in ("family", "metrics", "optional")} == {k: d1.get(k) for k in ("family", "metrics", "optional")}
     assert not t1.get("ck1_checkpoint")
@@ -762,9 +706,6 @@ def test_distill_fix_points_menus_050_r9():
 
 
 def test_distill_points_run_names_050_r9():
-    """044: round d<R> is run m2-distill-d<R>; D is one of them; the fixed-RL run is m2-rl-fix-<number> (user decision
-    2026-11-14)."""
-    # D is also the teacher round t1 when it passes (044-R7, user confirmed 2026-11-14).
     for pid, ok, bad in (("d1", "m2-distill-d1", "m2-distill-d2"), ("d2", "m2-distill-d2", "m2-dagger-r2"), ("D", "m2-distill-d2", "m2-distill-dx"),
                          ("D", "m2-teacher-t1", "m2-teacher-t2"), ("t1", "m2-teacher-t1", "m2-distill-d1")):
         pt = protocol.point(LIN, pid)
@@ -772,15 +713,13 @@ def test_distill_points_run_names_050_r9():
         with pytest.raises(protocol.Refused, match=rf"point {pid} takes runs m2-<"):
             protocol.check_checkpoint(LIN, "m2", pt, f"checkpoints/{bad}/ckpt-1850")
     protocol.check_checkpoint(LIN, "m2", protocol.point(LIN, "rl-fix"), "checkpoints/m2-rl-fix-1/ckpt-1500000/agents/main")
-    with pytest.raises(protocol.Refused, match=r"point rl-fix takes runs m2-<rl-fix-\[0-9\]\+>"):  # user decision 2026-11-14
+    with pytest.raises(protocol.Refused, match=r"point rl-fix takes runs m2-<rl-fix-\[0-9\]\+>"):
         protocol.check_checkpoint(LIN, "m2", protocol.point(LIN, "rl-fix"), "checkpoints/m2-rl-race-s1/ckpt-1500000/agents/main")
     with pytest.raises(protocol.Refused, match="start with"):
         protocol.check_checkpoint(LIN, "m2", protocol.point(LIN, "d1"), "checkpoints/distill-d1/ckpt-1")
 
 
 def test_t1_platform_of_new_points_050_r9(tmp_path, monkeypatch):
-    """r2 (a candidate of the Checkpoint 1 counterpart model, 041-R29 ④) takes T1 on Windows like that model; D and the
-    fixed-RL checks have no counterpart: T1 on whichever host is idle, platform recorded (user decision 2026-11-14)."""
     r2 = protocol.point(LIN, "r2")
     assert {"t1", "test", "val500_race"} <= set(r2["optional"]) and r2["t1_platforms"] == ["windows"]
     assert protocol.check_t1_platform(r2, [{"addr": "a", "platform": "windows"}]) == ["windows"]
@@ -803,20 +742,17 @@ def test_t1_platform_of_new_points_050_r9(tmp_path, monkeypatch):
 
 
 def test_rl_fix_diagnostics_final_only_050_r9(tmp_path, monkeypatch):
-    """User decision 2026-11-14: the fixed-RL checks take the cue diagnostics at the run's final checkpoint only (DONE and
-    the last ckpt-N), read through the RL checkpoint layout ckpt-N/agents/<agent>."""
     monkeypatch.setenv("URANIUM_SHARED_DIR", str(tmp_path / "shared"))
     run = tmp_path / "shared" / "checkpoints" / "m2-rl-fix-1"
     for n in (1500000, 3000000):
         (run / f"ckpt-{n}" / "agents" / "main").mkdir(parents=True)
     pt = protocol.point(LIN, "rl-fix")
     with pytest.raises(protocol.Refused, match="final checkpoint only"):
-        protocol.check_final_only(pt, "checkpoints/m2-rl-fix-1/ckpt-3000000/agents/main")   # no DONE yet
+        protocol.check_final_only(pt, "checkpoints/m2-rl-fix-1/ckpt-3000000/agents/main")
     (run / "DONE").write_text("", encoding="utf-8")
     protocol.check_final_only(pt, "checkpoints/m2-rl-fix-1/ckpt-3000000/agents/main")
     with pytest.raises(protocol.Refused, match=r"diagnostics \(cue_diag, dead_channels\) at the run's final checkpoint only \(user decision 2026-11-14\)"):
         protocol.check_final_only(pt, "checkpoints/m2-rl-fix-1/ckpt-1500000/agents/main")
-    # both diagnostics restricted at rl-fix; s1e2 restricts cue_diag only (AMB-050-6)
     assert protocol.final_only_metrics(pt) == ["cue_diag", "dead_channels"]
     assert protocol.final_only_metrics(protocol.point(LIN, "s1e2")) == ["cue_diag"]
     assert protocol.final_only_metrics(protocol.point(LIN, "s1e1")) == []
@@ -826,7 +762,6 @@ def test_rl_fix_diagnostics_final_only_050_r9(tmp_path, monkeypatch):
 
 
 def test_compare_marks_backend_and_t1_platform_differences_050_r9(capsys, tmp_path):
-    """User decision 2026-11-14: a comparison marks a stage whose inference backend / precision or T1 platform differ."""
     def stage(backend, prec, platforms=None, kind="t1"):
         return {"kind": kind, "inference": {f"{backend}@h": {"games": 300, "precision": prec}},
                 "protocol": {"t1_platforms": platforms}, "counts": {"total": {"won": [10, 300]}}}
@@ -838,14 +773,12 @@ def test_compare_marks_backend_and_t1_platform_differences_050_r9(capsys, tmp_pa
     assert "NOTE x: inference backend differs: cuda (bf16-mixed) vs rocm (f32)" in out
     assert "NOTE x: T1 platform differs: ['windows'] vs ['linux']" in out
     assert "NOTE y" not in out and "x total won: 10/300 vs 10/300" in out
-    # a side without an inference record (a Checkpoint 1 subset stage) is labelled, not called a difference
     z = stage("rocm", "f32", kind="winrate")
     assert protocol.backend_notes({**z, "inference": {}}, z) == ["inference backend not recorded on one side: not recorded vs rocm (f32)"]
     assert protocol.backend_notes({**z, "inference": {}}, {**z, "inference": {}}) == []
 
 
 def test_t0_tp_rl_template_050_r9():
-    """t0_tp_rl: the t0_tp games, seeds and conditions with zero_last_failed false (RL checkpoints, 050-R9)."""
     bc = tomllib.loads(protocol.render(LIN, "t0_tp", "c", "n"))
     rl = tomllib.loads(protocol.render(LIN, "t0_tp_rl", "c", "n"))
     assert rl["zero_last_failed"] is False and bc["zero_last_failed"] is True
@@ -856,7 +789,6 @@ def test_t0_tp_rl_template_050_r9():
 
 
 def test_rl_fix_job_uses_t0_tp_rl_050_r9(tmp_path, monkeypatch):
-    """A fixed-RL check's t0_tp + tvz job: one job (both zero_last_failed false), plans t0_tp_rl and tvz_rl."""
     monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
     protocol.checkpoint_sha256.cache_clear()
     ck = fake_checkpoint(tmp_path, "m2-rl-fix-1")
@@ -867,17 +799,11 @@ def test_rl_fix_job_uses_t0_tp_rl_050_r9(tmp_path, monkeypatch):
     assert protocol.verify_job(LIN, tmp_path / "eval" / "j", "m2", protocol.point(LIN, "rl-fix")) == []
 
 
-# ------------------------------------------------------------------ teacher-mode share (050-R10, 044-R6)
-
-
 def cmds(n: int, frame: int = 100, player: int = 0) -> list:
-    """n select commands of a player at one frame (every command-stream entry counts)."""
     return [[frame, player, 9, "0101"] for _ in range(n)]
 
 
 def test_teacher_mode_rule_boundaries_050_r10(tmp_path):
-    """< 150 commands per minute over 0-6 min (fewer than 900 entries before frame 8,640, selections included) and no
-    refinery build order before 4:00 (frame < 5,760); the other player's commands do not count."""
     f = tmp_path / "g.json"
 
     def tm(c):
@@ -894,7 +820,6 @@ def test_teacher_mode_rule_boundaries_050_r10(tmp_path):
 
 
 def test_teacher_mode_model_player_050_r10(tmp_path):
-    """The model is the only Terran; in TvT the player at the session row's slot (the players list index)."""
     f = tmp_path / "g.json"
     f.write_text(json.dumps({"players": [{"id": 2, "race": 1}, {"id": 3, "race": 1}], "cmds": cmds(1000, player=2) + cmds(5, player=3)}), encoding="utf-8")
     assert ec.teacher_mode(f, 0)["cmds_0_6m"] == 1000 and ec.teacher_mode(f, 1)["cmds_0_6m"] == 5
@@ -904,9 +829,6 @@ def test_teacher_mode_model_player_050_r10(tmp_path):
 
 
 def test_teacher_mode_table_050_r10(tmp_path, monkeypatch):
-    """Per opponent race of a t0_tp stage: teacher-mode games over the games with a command stream, W/D/L and losses
-    before 10:00 per mode (end_frame < 14,400); opponent-crash games and games without a row are left out, games
-    without a stream counted apart; `counts` gets the share rows for protocol.py compare."""
     rows = [{**row(1, True), "end_frame": 30000}, {**row(2, False), "end_frame": 14399}, {**row(3, False), "end_frame": 14400},
             {**row(4, None), "end_frame": 86400}, row(5, True),
             {**row(33, False), "end_frame": 10000}, {**row(34, True), "end_frame": 20000}, row(35, False)]
@@ -914,10 +836,10 @@ def test_teacher_mode_table_050_r10(tmp_path, monkeypatch):
     job = make_job(tmp_path, "t0_tp", rows, ledger)
     cache = tmp_path / "cache" / job.name / "t0_tp"
     for n in (1, 2, 3, 33):
-        dump(cache / f"g{n}.json", cmds(100))               # teacher mode
+        dump(cache / f"g{n}.json", cmds(100))
     dump(cache / "g4.json", cmds(100) + [build(3000, 20, 20, ec.REFINERY)])
     dump(cache / "g34.json", cmds(2000))
-    dump(cache / "g35.json", cmds(10))                      # invalid game: not counted
+    dump(cache / "g35.json", cmds(10))
     t = tables.job_tables(job, tmp_path / "cache", lin=LIN, ops="off")["t0_tp/t0_tp"]
     tm = t["teacher_mode"]
     assert tm["terran"] == {"n": 4, "teacher": 3, "no_stream": 1,
@@ -929,7 +851,6 @@ def test_teacher_mode_table_050_r10(tmp_path, monkeypatch):
     assert t["counts"]["teacher_mode vs terran"] == {"teacher_mode": [3, 4]} and t["counts"]["teacher_mode vs protoss"] == {"teacher_mode": [1, 2]}
     assert t["table"]["by_race"]["stochastic vs terran"]["n"] == 5, "the win-rate table is unchanged"
     tables.print_tables({"t0_tp/t0_tp": t})
-    # TvZ only: no table; a host without uranium-replay gets an error entry, the other tables stay
     tvz = make_job(tmp_path / "z", "tvz_bc", [row(1, True)])
     assert "teacher_mode" not in tables.job_tables(tvz, tmp_path / "cache", lin=LIN, ops="off")["tvz_bc/tvz_bc"]
     (job / "t0_tp" / "replays").mkdir(parents=True)
@@ -941,19 +862,15 @@ def test_teacher_mode_table_050_r10(tmp_path, monkeypatch):
 
 
 def test_teacher_mode_in_subset_tables_050_r10(tmp_path):
-    """A t0_tp found inside a T0 300 job: the teacher-mode table reads the source stage's command streams."""
     zl = {"zero_last_failed": True}
     rows = [{**row(1, True), "model": {**row(1, True)["model"], **zl}}, {**row(116, False), "model": {**row(116, False)["model"], **zl}}]
     job = make_job(tmp_path, "t0_300", rows)
     cache = tmp_path / "cache" / job.name / "t0_300"
     dump(cache / "g1.json", cmds(2000))
-    dump(cache / "g116.json", cmds(5))   # P FS seed 41416 = t0_tp game 48
+    dump(cache / "g116.json", cmds(5))
     (t,) = tables.subset_tables(job, "t0_tp", LIN, tmp_path / "cache", ops="off").values()
     assert t["teacher_mode"]["terran"]["teacher"] == 0 and t["teacher_mode"]["terran"]["n"] == 1
     assert t["teacher_mode"]["protoss"]["teacher"] == 1 and t["teacher_mode"]["protoss"]["teacher_mode"]["lost"] == 1
-
-
-# ------------------------------------------------------------------ 052 ops / rush_combat tables (052-R7 / R8, 052-AC3)
 
 
 def ops_value(mined: int, end_s: float = 600.0, sblock_first_s=None, cc_lift_s: float = 0.0, rush: dict | None = None) -> dict:
@@ -974,10 +891,6 @@ def write_ops(cache: Path, n: int, value: dict, slot: int = 0, version: int = ec
 
 
 def test_ops_tables_from_replay_values_052_ac3(tmp_path):
-    """052-R8 / 052-AC3: the ops and rush_combat tables of a small job from cached opsdump lines (052-R7): by matchup,
-    medians / means without empty values, integrals per window second, rush entries only among the games that have
-    one, held_s / held_8m splits; games without a value (no replay, a line of another slot) and opponent-crash games
-    are left out; the stage's other tables are unchanged."""
     zerg, terran = {"self_race": "Terran", "enemy_race": "Zerg"}, {"self_race": "Terran", "enemy_race": "Terran"}
     rows = [{**row(1, True, scv_min_1m=6, scv_8m=12), **zerg}, {**row(2, False, scv_min_1m=2, scv_8m=3), **zerg},
             {**row(3, True, scv_min_1m=8, scv_8m=None), **zerg}, {**row(4, None, scv_min_1m=5, scv_8m=9), **terran},
@@ -989,8 +902,8 @@ def test_ops_tables_from_replay_values_052_ac3(tmp_path):
     write_ops(cache, 2, ops_value(2000, end_s=300.0, rush=rush_value(scv_lost=9, kills=1, focus_hhi=0.5)))
     write_ops(cache, 3, ops_value(6000, cc_lift_s=30.0))
     write_ops(cache, 4, ops_value(5000, sblock_first_s=120.0, rush=rush_value(pull_s=10.0, bunker_load_s=12.0)))
-    write_ops(cache, 6, ops_value(1, end_s=60.0), slot=1)  # measured from the other slot: not ours
-    write_ops(cache, 7, ops_value(1))  # opponent crash: invalid
+    write_ops(cache, 6, ops_value(1, end_s=60.0), slot=1)
+    write_ops(cache, 7, ops_value(1))
     res = tables.job_tables(job, tmp_path / "cache", lin=LIN)
     t = res[f"{job.name}/tvz_bc"]
     assert t["table"]["total"]["n"] == 6 and t["ops_source"] == "replay" and t["ops_failed"] == {}
@@ -1010,10 +923,8 @@ def test_ops_tables_from_replay_values_052_ac3(tmp_path):
     assert (held["held_s"]["n"], held["held_s"]["entered"], held["not_held_s"]["n"], held["not_held_s"]["entered"]) == (3, 2, 1, 1)
     assert (held["held_8m"]["n"], held["held_8m"]["entered"], held["not_held_8m"]["entered"]) == (2, 2, 1), "scv_8m 12 and 9 held; 3 and none not"
     assert rush["TvT"]["all"]["entered"] == 1 and rush["TvZ"]["not_held_8m"]["pull_rate"] == 0.0
-    # An empty group: no entries, rates empty.
     none = tables.ops_tables({1: rows[0]}, {})
     assert none[0]["all"]["n"] == 0 and none[1]["all"]["all"]["entered_rate"] is None and none[1]["all"]["held_s"]["pull_rate"] is None
-    # --json carries both tables per stage; --ops off leaves them out; --ops live reads the rows' own values.
     out = tmp_path / "t.json"
     tables.main([str(job), "--cache", str(tmp_path / "cache"), "--json", str(out)])
     j = json.loads(out.read_text(encoding="utf-8"))[f"{job.name}/tvz_bc"]
@@ -1027,8 +938,6 @@ def test_ops_tables_from_replay_values_052_ac3(tmp_path):
 
 
 def test_ops_stage_runs_opsdump_from_our_slot_052_r7(tmp_path, monkeypatch):
-    """052-R7: each replay is measured from the row's slot and cached; a cached line of the same slot is reused, of
-    another slot measured again; a failure is reported and not cached; no replay = no value, no call."""
     stage = tmp_path / "stage"
     (stage / "replays").mkdir(parents=True)
     for n in (1, 2, 3, 5):
@@ -1043,8 +952,8 @@ def test_ops_stage_runs_opsdump_from_our_slot_052_r7(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ec, "_opsdump", fake)
     cache = tmp_path / "cache"
-    write_ops(cache, 2, ops_value(16), slot=0)  # another slot than the row's 1: measured again
-    write_ops(cache, 5, ops_value(16), version=ec.OPS_CACHE_VERSION - 1)  # an older tracker's value: measured again
+    write_ops(cache, 2, ops_value(16), slot=0)
+    write_ops(cache, 5, ops_value(16), version=ec.OPS_CACHE_VERSION - 1)
     got, failed = ec.ops_stage(stage, {1: 0, 2: 1, 3: 0, 4: 1, 5: 0}, cache, binary=binary, jobs=2)
     assert sorted(calls) == [("g1.rep", 0), ("g2.rep", 1), ("g3.rep", 0), ("g5.rep", 0)]
     assert sorted(got) == [1, 2, 5] and got[2]["perspective"] == 1 and got[5]["ops"]["mined"] == 8 and failed == {3: "desync"}
@@ -1053,7 +962,7 @@ def test_ops_stage_runs_opsdump_from_our_slot_052_r7(tmp_path, monkeypatch):
     calls.clear()
     got, failed = ec.ops_stage(stage, {1: 0, 2: 1, 3: 0}, cache, binary=binary)
     assert calls == [("g3.rep", 0)] and sorted(got) == [1, 2], "cached lines reused, the failure tried again"
-    monkeypatch.undo()  # the real ec._opsdump on a broken output line
+    monkeypatch.undo()
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout="{broken\n", stderr=""))
     assert "unreadable opsdump line" in ec._opsdump(binary, stage / "replays" / "g1.rep", 0)["error"]
     with pytest.raises(SystemExit, match="cargo build"):
@@ -1061,9 +970,6 @@ def test_ops_stage_runs_opsdump_from_our_slot_052_r7(tmp_path, monkeypatch):
 
 
 def test_ops_tables_on_every_menu_052_r8(tmp_path):
-    """052-R8 / 052-AC3: ops and rush_combat are tables on every point's menu (not jobs; Checkpoint 1 gets them as new
-    metrics from replay values); the protocol plans and their conditions are unchanged, so the same request makes the
-    same job (test_job_written_and_recorded_050_r9, test_conditions_frozen_050_ac5)."""
     for m in ("ops", "rush_combat"):
         assert LIN["metric"][m]["kind"] == "games_table" and LIN["metric"][m]["source"] == "replay"
     for pt in LIN["point"]:
@@ -1079,8 +985,6 @@ def test_ops_tables_on_every_menu_052_r8(tmp_path):
     assert not (tmp_path / "eval").exists()
 
 
-# ------------------------------------------------------------------ diagnostics (050-R9 cue_diag, dead_channels)
-
 CUE, DEAD = LIN["metric"]["cue_diag"], LIN["metric"]["dead_channels"]
 TEACHER, HUMAN = CUE["teacher"], CUE["human"]
 SHA = "f" * 64
@@ -1089,16 +993,12 @@ TAILS = ["by_name/hold_orig", "by_name/hold_macro2"]
 
 @pytest.fixture(autouse=True)
 def _game_order(monkeypatch):
-    """The outputs written below have no rows parts: their game order is the one a `FAKE_GAME_ROWS` file in the
-    dump names (the pinned value unless a test writes another); `game_rows_sha256` itself is tested apart."""
     real = protocol.game_rows_sha256
     monkeypatch.setattr(protocol, "game_rows_sha256", lambda d: (Path(d) / "FAKE_GAME_ROWS").read_text() if (Path(d) / "FAKE_GAME_ROWS").is_file() else real(d))
 HUMAN_DS = sorted(HUMAN["datasets"])
 
 
 def test_diag_settings_are_the_tools_050_r9():
-    """The pinned values are the diag tools' own (dump CF_STARTS, probes stages, monitor alarm layers / start),
-    and the user decisions of 2026-11-10 (AMB-050-4 / -5 / -6)."""
     from uranium.diag import dump, probes
     from uranium.model import monitor
 
@@ -1106,14 +1006,11 @@ def test_diag_settings_are_the_tools_050_r9():
     assert ",".join(TEACHER["probes"]["stages"]) == ",".join(HUMAN["probes"]["stages"]) == probes.DEFAULT_STAGES
     assert DEAD["layers"] == list(monitor.ALARM_LAYERS) and DEAD["from_update"] == monitor.ALARM_FROM
     assert CUE["sets"] == ["teacher", "human"] and CUE["backend"] == "rocm"
-    # AMB-050-4: the max-seen production-building count on human T / P games; constant (skipped) on the Zerg teacher rows
     assert HUMAN["probes"]["races"] == ["T", "P"] and "count|focus_rows" in HUMAN["report"]["required"]
     assert "count|focus_rows" in TEACHER["probes"]["expect_skipped"] and "intervene" in TEACHER and "intervene" not in HUMAN
     assert (HUMAN["games"], HUMAN["seed"], HUMAN["splits"]) == (500, 1, ["val", "test"]) and HUMAN["datasets"] == LIN["metric"]["val500"]["datasets"]
-    # AMB-050-5: training-log records only, Checkpoint 1 not measured
     assert DEAD["kind"] == "diag_train_log" and "ck1" in DEAD["not_measured"] and LIN["lineage"]["ck1"]["new_metrics"] == ["cue_diag", "ops", "rush_combat"]
-    # AMB-050-6: s1e2 diagnostics at the final checkpoint only
-    assert [p["id"] for p in LIN["point"] if p.get("diag_final_only")] == ["s1e2", "rl-fix"]  # rl-fix: user decision 2026-11-14
+    assert [p["id"] for p in LIN["point"] if p.get("diag_final_only")] == ["s1e2", "rl-fix"]
     for pt in LIN["point"]:
         assert {"cue_diag", "dead_channels"} <= set(pt["metrics"]), pt["id"]
         for s in CUE["sets"]:
@@ -1121,7 +1018,6 @@ def test_diag_settings_are_the_tools_050_r9():
 
 
 def test_diag_commands_pinned_050_r9(tmp_path):
-    """The emitted commands carry every pinned setting (deterministic, explicit flags, not the tools' defaults)."""
     data = ["--shards", "A", "--shards", "B"]
     out = tmp_path / "out" / "teacher"
     dump, probes_c, inter = protocol.cue_commands(LIN, "teacher", "CK", out, data)
@@ -1155,8 +1051,6 @@ def test_diag_commands_pinned_050_r9(tmp_path):
 
 
 def test_game_rows_sha256_is_the_game_order_050_r9(tmp_path):
-    """The dump's rows per game id in id order (the probes' folds follow the ids): the same rows under other ids
-    give another value; parts are concatenated in order; no rows -> None."""
     import hashlib
 
     import numpy as np
@@ -1167,13 +1061,11 @@ def test_game_rows_sha256_is_the_game_order_050_r9(tmp_path):
     np.savez_compressed(d / "rows_p000.npz", game=np.array([0, 0, 1, 2, 2, 2]), frame=np.zeros(6))
     np.savez_compressed(d / "rows_p001.npz", game=np.array([3, 1]), frame=np.zeros(2))
     assert protocol.game_rows_sha256(d) == hashlib.sha256(b"2,2,3,1").hexdigest()
-    np.savez_compressed(d / "rows_p000.npz", game=np.array([1, 1, 0, 2, 2, 2]), frame=np.zeros(6))  # games 0 and 1 swapped ids
+    np.savez_compressed(d / "rows_p000.npz", game=np.array([1, 1, 0, 2, 2, 2]), frame=np.zeros(6))
     assert protocol.game_rows_sha256(d) == hashlib.sha256(b"1,3,3,1").hexdigest()
 
 
 def test_teacher_link_trees_order_games_as_the_lambda_runs_050_r9():
-    """The hold-out folders are named after the entries (by_name/<name>): the shard reader orders by folder name,
-    hold_macro2 before hold_orig, as the U1 parity and lambda runs (<data>/hold_orig, <data>/hold_macro2)."""
     names = [h["name"] for h in TEACHER["holdout"]]
     assert protocol.data_tails(TEACHER) == names and sorted(names) == ["hold_macro2", "hold_orig"]
     assert TEACHER["dump"]["expect_game_rows_sha256"] == "a29f81c1580c83db17e056b45b28de871675b30985735d0c74a67be25371bdf6"
@@ -1198,14 +1090,14 @@ def test_holdout_link_trees_and_fingerprint_050_r9(tmp_path):
          "files": 1, "files_sha256": protocol.files_fingerprint(src, ["teacher-20261107-macro2"])[1]}]
     work = tmp_path / "work"
     assert protocol.set_data(lin, "teacher", shared, work, create=False) == ["--shards", str(work / TAILS[0]), "--shards", str(work / TAILS[1])]
-    assert not work.exists()  # print mode writes nothing
+    assert not work.exists()
     args = protocol.set_data(lin, "teacher", shared, work)
     assert args == ["--shards", str(work / TAILS[0]), "--shards", str(work / TAILS[1])]
     assert sorted(f.name for f in (work / TAILS[0] / "teacher-20261106-a").iterdir()) == ["shard_00000.bin.zst", "shard_00001.bin.zst"]
-    (work / TAILS[1] / "teacher-20261107-macro2" / "shard_00009.bin.zst").write_bytes(b"z")  # a stale file in the link tree
+    (work / TAILS[1] / "teacher-20261107-macro2" / "shard_00009.bin.zst").write_bytes(b"z")
     with pytest.raises(protocol.Refused, match="hold-out hold_macro2 \\(link tree"):
         protocol.set_data(lin, "teacher", shared, work)
-    (src / "teacher-20261107-macro2" / "shard_00001.bin.zst").write_bytes(b"y")  # a shard added to the source
+    (src / "teacher-20261107-macro2" / "shard_00001.bin.zst").write_bytes(b"y")
     with pytest.raises(protocol.Refused, match="hold-out hold_macro2 .*2 files"):
         protocol.set_data(lin, "teacher", shared, work)
 
@@ -1221,7 +1113,6 @@ def fake_datasets(shared: Path, extra: str | None = None) -> None:
 
 
 def test_human_holdout_manifest_fingerprint_050_r9(tmp_path):
-    """AMB-050-4: the human set is the four human datasets as their manifests list them (2,069 files when pinned)."""
     shared = tmp_path / "shared"
     fake_datasets(shared)
     lin = copy.deepcopy(LIN)
@@ -1229,7 +1120,7 @@ def test_human_holdout_manifest_fingerprint_050_r9(tmp_path):
     assert n == 8
     lin["metric"]["cue_diag"]["human"] |= {"files": n, "files_sha256": sha}
     assert protocol.set_data(lin, "human", shared) == [x for ds in HUMAN["datasets"] for x in ("--dataset", ds)]
-    fake_datasets(shared, extra="replays/shards/scr_ladder")  # a newly collected ladder shard
+    fake_datasets(shared, extra="replays/shards/scr_ladder")
     with pytest.raises(protocol.Refused, match="hold-out human \\(dataset manifests\\): 9 files"):
         protocol.set_data(lin, "human", shared)
     with pytest.raises(protocol.Refused, match="2069 files"):
@@ -1242,7 +1133,6 @@ def probe_metrics(stages) -> dict:
 
 
 def set_outputs(d: Path, name: str, sha: str = SHA, **edit) -> Path:
-    """One cue set's outputs (<out>/<set>) as `protocol.py diag --run` leaves them (the pinned settings and data)."""
     s = CUE[name]
     dm, p = s["dump"], s["probes"]
     data = [f"/h/diag_holdout/{t}" for t in TAILS] if name == "teacher" else [f"<shared>/datasets/{x}" for x in HUMAN_DS]
@@ -1305,17 +1195,16 @@ def test_check_diag_accepts_the_pinned_outputs_050_r9(tmp_path, capsys):
     assert protocol.check_diag(LIN, "dead_channels", out, SHA) == []
     protocol.main(["check-diag", str(out)])
     text = capsys.readouterr().out
-    assert "NOTE" not in text and "conform to the protocol" in text  # both sets' data fingerprints pinned
+    assert "NOTE" not in text and "conform to the protocol" in text
 
 
 @pytest.mark.parametrize("name, edit, want", [
-    ("teacher", {"manifest": {"passes": ["real"], "cf_starts": None}}, "made without --cf"),       # a lambda-run dump (no counterfactual)
+    ("teacher", {"manifest": {"passes": ["real"], "cf_starts": None}}, "made without --cf"),
     ("teacher", {"manifest": {"backend": "cuda", "precision": "bf16"}}, "teacher dump backend: 'cuda', pinned 'rocm'"),
     ("teacher", {"manifest": {"splits": ["val"]}}, "teacher dump splits"),
     ("teacher", {"manifest": {"lanes_per_group": 8}}, "teacher dump lanes_per_group"),
     ("teacher", {"manifest": {"games": 202, "stats": {"rows": 82148, "act_rows": 15553}}}, "teacher dump games: 202, pinned 433"),
     ("teacher", {"manifest": {"data": ["/h/some/other"]}}, "not the pinned hold-out"),
-    # the earlier link trees <name>/botgen: the same games, hold_orig read first (other game ids)
     ("teacher", {"manifest": {"data": ["/h/diag_holdout/hold_orig/botgen", "/h/diag_holdout/hold_macro2/botgen"]}}, "orders the games otherwise"),
     ("teacher", {"game_rows": "210c" + "0" * 60}, "teacher dump game order (game_rows_sha256)"),
     ("teacher", {"manifest": {"cf_starts": {"T": [1280.0, 2080.0], "P": [1720.0, 3030.0], "Z": [1500.0, 3240.0]}}}, "teacher dump cf_starts"),
@@ -1329,7 +1218,7 @@ def test_check_diag_accepts_the_pinned_outputs_050_r9(tmp_path, capsys):
     ("human", {"manifest": {"seed": 2}}, "human dump seed"),
     ("human", {"manifest": {"act_every": 1, "act_until": 5760.0}}, "human dump act_until"),
     ("human", {"manifest": {"read_until": None}}, "human dump read_until: None, pinned 8640"),
-    ("teacher", {"manifest": {"read_until": 8640.0}}, "teacher dump read_until: 8640.0, pinned None"),  # another row order
+    ("teacher", {"manifest": {"read_until": 8640.0}}, "teacher dump read_until: 8640.0, pinned None"),
     ("human", {"manifest": {"passes": ["real", "early"]}}, "counterfactual passes not pinned"),
     ("human", {"manifest": {"data": [f"<shared>/datasets/{x}" for x in HUMAN_DS[:3]]}}, "not the pinned hold-out"),
     ("human", {"probes": {"races": {"T": {}}}}, "human probes races"),
@@ -1353,8 +1242,8 @@ def test_check_diag_refuses_tasks_and_checkpoint_050_r9(tmp_path):
     pr["dump"]["checkpoint_sha256"] = "b" * 64
     (out / "teacher" / "probes.json").write_text(json.dumps(pr), encoding="utf-8")
     hp = json.loads((out / "human" / "probes.json").read_text(encoding="utf-8"))
-    hp["races"]["P"]["tasks"]["count|focus_rows"] = {"rows": 9, "skipped": "constant target 1"}  # AMB-050-4: the P count must have values
-    hp["races"]["T"]["tasks"]["count|focus_rows"] = {"rows": 9, "skipped": "constant target 1"}  # T: not measurable (2026-11-11), not required
+    hp["races"]["P"]["tasks"]["count|focus_rows"] = {"rows": 9, "skipped": "constant target 1"}
+    hp["races"]["T"]["tasks"]["count|focus_rows"] = {"rows": 9, "skipped": "constant target 1"}
     (out / "human" / "probes.json").write_text(json.dumps(hp), encoding="utf-8")
     problems = protocol.check_diag(LIN, "cue_diag", out)
     assert any("hp|unf_token rows / games" in p for p in problems), problems
@@ -1367,14 +1256,13 @@ def test_check_diag_refuses_tasks_and_checkpoint_050_r9(tmp_path):
 
 
 @pytest.mark.parametrize("edit, want", [
-    (None, "no "),                                                   # no protocol.json (e.g. made by hand / print mode)
-    ({"finished": None}, "not finished"),                            # an attempt in progress or failed
+    (None, "no "),
+    ({"finished": None}, "not finished"),
     ({"metrics": ["dead_channels"]}, "cue_diag not among the measured metrics"),
     ({"git": {}}, "no git commit"),
     ({"checkpoint_sha256": "c" * 64}, "protocol.json checkpoint_sha256"),
 ])
 def test_check_diag_needs_the_finished_record_050_r9(tmp_path, edit, want):
-    """050-R9 record: every result carries its checkpoint sha256 and git commit (the finished protocol.json)."""
     out = all_outputs(tmp_path / "d")
     if edit is None:
         (out / "protocol.json").unlink()
@@ -1395,8 +1283,6 @@ def test_check_dead_channels_050_r9(tmp_path):
 
 
 def test_diag_metric_refusals_050_r9(tmp_path, monkeypatch):
-    """Diagnostics only through `diag`; the Checkpoint 1 lineage takes the cue diagnostics, its dead-channel cell is
-    not measured; dead_channels needs the training log; s1e2 at the final checkpoint only."""
     monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: SHA)
     with pytest.raises(SystemExit, match="REFUSED: metric cue_diag is a diagnostic"):
         protocol.main(["bc-eval", "--metric", "cue_diag", "--lineage", "m2", "--point", "s1e1", "--checkpoint", "checkpoints/m2-s1/ckpt-1"])
@@ -1420,7 +1306,6 @@ def test_diag_metric_refusals_050_r9(tmp_path, monkeypatch):
 
 
 def test_s1e2_diagnostics_final_only_050_r9(tmp_path, monkeypatch):
-    """AMB-050-6: the s1e2 point takes the diagnostics at the run's final checkpoint only."""
     monkeypatch.setenv("URANIUM_SHARED_DIR", str(tmp_path / "shared"))
     run = tmp_path / "shared" / "checkpoints" / "m2-s1e2"
     for n in (1000, 2000):
@@ -1432,7 +1317,7 @@ def test_s1e2_diagnostics_final_only_050_r9(tmp_path, monkeypatch):
     with pytest.raises(protocol.Refused, match="last ckpt-2000"):
         protocol.check_final_only(pt, "checkpoints/m2-s1e2/ckpt-1000")
     protocol.check_final_only(pt, "checkpoints/m2-s1e2/ckpt-2000")
-    protocol.check_final_only(protocol.point(LIN, "s1e1"), "checkpoints/m2-s1/ckpt-5")  # other points: any checkpoint
+    protocol.check_final_only(protocol.point(LIN, "s1e1"), "checkpoints/m2-s1/ckpt-5")
 
 
 def fake_set_data(lin, name, shared=None, work=None, create=True):
@@ -1441,8 +1326,6 @@ def fake_set_data(lin, name, shared=None, work=None, create=True):
 
 
 def test_diag_prints_the_commands_050_r9(tmp_path, monkeypatch, capsys):
-    """`protocol.py diag` (no --run): the commands for this host, the dump copies, the summaries and the check;
-    nothing written (the link trees are made by --run). Checkpoint 1 lineage: cue_diag."""
     monkeypatch.setenv("URANIUM_SHARED_DIR", str(tmp_path / "shared"))
     monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: SHA)
     monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
@@ -1462,9 +1345,6 @@ def test_diag_prints_the_commands_050_r9(tmp_path, monkeypatch, capsys):
 
 
 def test_diag_run_records_retries_and_checks_050_r9(tmp_path, monkeypatch):
-    """--run: running.json during the attempt, the dumps in the cache copied to the shared drive (.part, rename),
-    protocol.json at the end (sha256, git, backend / precision, `python` and <shared> / <cache> in the commands),
-    check-diag; a finished folder is refused, a failed attempt is kept as .failed-<k> and run again."""
     shared, cache = tmp_path / "shared", tmp_path / "cache"
     monkeypatch.setenv("URANIUM_SHARED_DIR", str(shared))
     monkeypatch.setenv("URANIUM_CACHE_DIR", str(cache))
@@ -1485,7 +1365,7 @@ def test_diag_run_records_retries_and_checks_050_r9(tmp_path, monkeypatch):
             raise subprocess.CalledProcessError(139, cmd)
         if step == "dump":
             name = o.parent.name
-            assert str(o).startswith(str(cache))  # the dump goes to this host's cache first
+            assert str(o).startswith(str(cache))
             set_outputs(tmp_path / "staged" / name, name)
             shutil.copytree(tmp_path / "staged" / name / "dump", o)
         elif step == "probes":
@@ -1511,7 +1391,6 @@ def test_diag_run_records_retries_and_checks_050_r9(tmp_path, monkeypatch):
     assert rec["sets"]["human"]["files"] == 2069 and rec["unpinned"] == []
     with pytest.raises(SystemExit, match="REFUSED: .*protocol.json exists"):
         protocol.main(base + ["checkpoints/m2-s1/ckpt-9"])
-    # a failed attempt: kept (running.json with the error), then run again
     fail.add("probes")
     with pytest.raises(subprocess.CalledProcessError):
         protocol.main(base + ["checkpoints/m2-s1/ckpt-10"])
@@ -1527,11 +1406,6 @@ def test_diag_run_records_retries_and_checks_050_r9(tmp_path, monkeypatch):
 
 
 def test_diag_run_split_over_two_hosts_050_r9(tmp_path, monkeypatch):
-    """--part gpu (the ROCm host: dumps and their copies, running.json kept) then --part cpu on another host at the
-    same commit (dumps fetched into its cache, probes / intervene / summaries / training log, protocol.json, check);
-    every step records its host. The cpu part is refused before the gpu part finished, at another commit, with
-    other uncommitted protocol files or for another checkpoint; protocol.json lists the gpu part's commands, then
-    the cpu part's (with the fetches) once, also after a failed cpu attempt is run again."""
     shared = tmp_path / "shared"
     monkeypatch.setenv("URANIUM_SHARED_DIR", str(shared))
     monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: SHA)
@@ -1553,7 +1427,7 @@ def test_diag_run_split_over_two_hosts_050_r9(tmp_path, monkeypatch):
             set_outputs(tmp_path / "staged" / o.parent.name, o.parent.name)
             shutil.copytree(tmp_path / "staged" / o.parent.name / "dump", o)
         elif step in ("probes", "intervene"):
-            assert Path(cmd[5]).is_dir() and str(cmd[5]).startswith(str(tmp_path / "cache_cpu"))  # the fetched copy
+            assert Path(cmd[5]).is_dir() and str(cmd[5]).startswith(str(tmp_path / "cache_cpu"))
             shutil.copy(tmp_path / "staged" / o.parent.name / f"{step}.json", o)
         elif step == "spatial_logs":
             train_log_output(o.parent)
@@ -1570,13 +1444,13 @@ def test_diag_run_split_over_two_hosts_050_r9(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match="REFUSED: no .*running.json: run `diag --run --part gpu` first"):
         protocol.main(base + ["--part", "cpu", "--train-log", str(log)])
     as_host("gpu")
-    protocol.main(base + ["--part", "gpu"])  # no --train-log needed here
+    protocol.main(base + ["--part", "gpu"])
     assert ran == [("gpu", "dump"), ("gpu", "dump")] and fake_set_data.calls[-2:] == [("teacher", True), ("human", True)]
     rec = json.loads((out / "running.json").read_text(encoding="utf-8"))
     assert [(s["step"], s["host"]) for s in rec["steps"]] == [("dump", "gpu"), ("copy", "gpu"), ("dump", "gpu"), ("copy", "gpu")]
     assert rec["parts"]["gpu"]["finished"] and rec["finished"] is None and not (out / "protocol.json").exists()
     assert (out / "human" / "dump" / "manifest.json").is_file()
-    with pytest.raises(SystemExit, match="an attempt in progress"):  # the dumps are kept: no new attempt over them
+    with pytest.raises(SystemExit, match="an attempt in progress"):
         protocol.main(base + ["--part", "gpu"])
     as_host("cpu")
     monkeypatch.setattr(protocol, "git_state", lambda: {**CLEAN_GIT, "commit": "1" * 40})
@@ -1592,25 +1466,24 @@ def test_diag_run_split_over_two_hosts_050_r9(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match="REFUSED: .*uncommitted protocol files differ between the parts"):
         protocol.main(base + ["--part", "cpu", "--train-log", str(log), "--allow-dirty"])
     monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
-    fail.add("summary")  # a failed cpu attempt, then run again on the same host
+    fail.add("summary")
     with pytest.raises(subprocess.CalledProcessError):
         protocol.main(base + ["--part", "cpu", "--train-log", str(log)])
     ran.clear()
     protocol.main(base + ["--part", "cpu", "--train-log", str(log)])
     assert ran == [("cpu", "probes"), ("cpu", "intervene"), ("cpu", "summary"), ("cpu", "probes"), ("cpu", "summary"), ("cpu", "spatial_logs")]
-    assert fake_set_data.calls[-2:] == [("teacher", False), ("human", False)]  # no link trees on the cpu host
+    assert fake_set_data.calls[-2:] == [("teacher", False), ("human", False)]
     rec = json.loads((out / "protocol.json").read_text(encoding="utf-8"))
-    assert [(s["step"], s["host"]) for s in rec["steps"]][4:] == [("fetch", "cpu"), ("probes", "cpu"), ("intervene", "cpu"), ("summary", "cpu"),  # failed attempt
+    assert [(s["step"], s["host"]) for s in rec["steps"]][4:] == [("fetch", "cpu"), ("probes", "cpu"), ("intervene", "cpu"), ("summary", "cpu"),
                                                                   ("fetch", "cpu"), ("probes", "cpu"), ("intervene", "cpu"), ("summary", "cpu"),
                                                                   ("fetch", "cpu"), ("probes", "cpu"), ("summary", "cpu"), ("spatial_logs", "cpu")]
-    assert "error" in rec["steps"][7] and sum(c[4] == "probes" for c in rec["commands"] if len(c) > 4) == 2  # commands not repeated
+    assert "error" in rec["steps"][7] and sum(c[4] == "probes" for c in rec["commands"] if len(c) > 4) == 2
     assert rec["finished"] and rec["check"] == [] and rec["parts"]["cpu"]["host"] == "cpu" and rec["train_log"]["file"] == "s1.log"
     assert ["fetch", "<shared>/artifacts/diag/m2-s1__ckpt-9/teacher/dump", "<cache>/diag_dump/m2-s1__ckpt-9/teacher/dump"] in rec["commands"]
     assert not (out / "running.json").exists() and (tmp_path / "cache_cpu" / "diag_dump" / "m2-s1__ckpt-9" / "teacher" / "dump" / "manifest.json").is_file()
 
 
 def test_diag_run_in_progress_needs_takeover_050_r9(tmp_path, monkeypatch):
-    """A folder whose running.json has no failed step may be in progress on another host: refused unless --takeover."""
     shared = tmp_path / "shared"
     monkeypatch.setenv("URANIUM_SHARED_DIR", str(shared))
     monkeypatch.setenv("URANIUM_CACHE_DIR", str(tmp_path / "cache"))
@@ -1629,14 +1502,12 @@ def test_diag_run_in_progress_needs_takeover_050_r9(tmp_path, monkeypatch):
     with pytest.raises(subprocess.CalledProcessError):
         protocol.main(base + ["--takeover"])
     assert (out.parent / "m2-s1__ckpt-9.failed-1" / "running.json").is_file() and len(ran) == 1
-    # the attempt just failed (an errored step): no --takeover needed
     with pytest.raises(subprocess.CalledProcessError):
         protocol.main(base)
     assert (out.parent / "m2-s1__ckpt-9.failed-2").is_dir()
 
 
 def test_s1e2_final_only_restricts_cue_diag_only_050_r9(tmp_path, monkeypatch, capsys):
-    """AMB-050-6 restricts the cue diagnostics; dead_channels of a non-final s1e2 checkpoint is accepted."""
     shared = tmp_path / "shared"
     monkeypatch.setenv("URANIUM_SHARED_DIR", str(shared))
     monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: SHA)
@@ -1653,8 +1524,6 @@ def test_s1e2_final_only_restricts_cue_diag_only_050_r9(tmp_path, monkeypatch, c
 
 
 def test_human_data_consistency_across_folders_050_r9(tmp_path):
-    """check-diag compares a set's data fingerprint (and the probe tasks' rows / games) with the other finished
-    folders (the same data for every checkpoint), besides the pinned values."""
     root = tmp_path / "diag"
     a = all_outputs(root / "m2-s1__ckpt-1")
     b = all_outputs(root / "bc-dagger-r1__ckpt-1137")
@@ -1668,9 +1537,9 @@ def test_human_data_consistency_across_folders_050_r9(tmp_path):
     (a / "human" / "probes.json").write_text(json.dumps(hp), encoding="utf-8")
     set_outputs(b / "human", "human")
     assert any("P count|focus_rows [100, 20] vs [7, 20]" in p for p in protocol.check_diag(LIN, "cue_diag", b))
-    record(a, finished=None)  # an unfinished folder is not compared
+    record(a, finished=None)
     assert protocol.check_diag(LIN, "cue_diag", b) == []
-    shutil.copytree(a, root / "m2-s1__ckpt-1.failed-1")  # nor a failed attempt
+    shutil.copytree(a, root / "m2-s1__ckpt-1.failed-1")
     assert protocol.check_diag(LIN, "cue_diag", b) == []
 
 
@@ -1683,7 +1552,6 @@ def test_diag_table_050_r9(tmp_path):
     assert res["intervention"]["teacher"]["Z"]["effects"]["start"]["bunker_any"]["mean"] == 0.01
     md = "\n".join(diag_table.markdown(LIN, {"m2-s1": res}))
     assert "### cue probe, human hold-out, T `count|focus_rows`" in md and "| m2-s1 | 17097 / 154 | 0.500 [0.400, 0.600]" in md
-    # user decision 2026-11-11 (AMB-050-4): the TvT barracks count is labelled, not compared; the P count has values
     assert res["cue"]["human"]["T"]["count|focus_rows"]["not_measurable"].startswith("TvT") and "| m2-s1 | 측정 불가 (not measurable): TvT" in md
     assert "### counterfactual intervention, teacher hold-out, Z" in md and "r4 39.8% (51 @ 3000)" in md
     ck1 = all_outputs(tmp_path / "c")
@@ -1707,7 +1575,6 @@ def bc_log(path: Path, records: list[tuple[int, dict]], warn: list[str] | None =
 
 
 def test_spatial_logs_summary_041_r25(tmp_path):
-    """dead_channels (AMB-050-5): records from update 600 to the checkpoint's, max dead share, const, the alarm rule."""
     ch = spatial_logs.channels()
     assert (ch["stem"], ch["c2"], ch["r4"], ch["r5"], ch["sp_const_s8"], ch["sp_const_pool"]) == (32, 128, 128, 128, 128, 256)
     assert spatial_logs.default_from_update() == DEAD["from_update"]
@@ -1717,9 +1584,9 @@ def test_spatial_logs_summary_041_r25(tmp_path):
                        "[bc] WARNING: update 900: spatial encoder collapse alarm (041-R25): sp_dead_stem = 32 of 32"])
     r = spatial_logs.scan(log, ch, until_update=800)
     assert (r["sp_records"], r["sp_records_from"], r["last_step"], r["until_update"]) == (4, 3, 800, 800)
-    assert r["dead"]["r4"]["max"] == 51 and r["dead"]["r4"]["at"] == 600 and r["dead"]["r4"]["last"] == 10  # update 500 is before the alarm window
+    assert r["dead"]["r4"]["max"] == 51 and r["dead"]["r4"]["at"] == 600 and r["dead"]["r4"]["last"] == 10
     assert r["worst_dead_layer"] == "c3" and r["worst_dead_share"] == 0.5 and r["crossing_records"] == [700]
-    assert r["const"]["sp_const_s8"]["max"] == 3 and r["min_pos_any"] == 0.1 and len(r["alarm_lines"]) == 1  # the update 900 alarm is after the checkpoint
+    assert r["const"]["sp_const_s8"]["max"] == 3 and r["min_pos_any"] == 0.1 and len(r["alarm_lines"]) == 1
     assert r["train_tail100_mean"]["action"] == 1.0
     assert spatial_logs.scan(log, ch)["crossing_records"] == [700, 900]
     cols = [f"sp_{k}_{n}" for k in ("pos", "dead") for n in LAYERS] + ["sp_const_s8", "sp_const_pool"]
@@ -1733,9 +1600,6 @@ def test_spatial_logs_summary_041_r25(tmp_path):
     assert rc["sp_records_from"] == 2 and rc["dead"]["stem"]["max"] == 5 and rc["dead_last"]["step"] == 800 and rc["alarm_lines"] == []
 
 
-# ------------------------------------------------------------------ s1e2 per-checkpoint loop (041-R20 ③)
-
-
 def s1e2_shared(tmp_path: Path, monkeypatch, steps=(1000, 2000, 3000), done=False) -> Path:
     shared = tmp_path / "shared"
     monkeypatch.setenv("URANIUM_SHARED_DIR", str(shared))
@@ -1744,7 +1608,7 @@ def s1e2_shared(tmp_path: Path, monkeypatch, steps=(1000, 2000, 3000), done=Fals
             d = shared / "checkpoints" / run / f"ckpt-{s}"
             d.mkdir(parents=True)
             (d / "model.safetensors").write_bytes(f"{run}{s}".encode())
-    (shared / "checkpoints" / "m2-s1e2" / "ckpt-4000").mkdir()  # no weights yet: not a checkpoint
+    (shared / "checkpoints" / "m2-s1e2" / "ckpt-4000").mkdir()
     if done:
         (shared / "checkpoints" / "m2-s1e2" / "DONE").write_text("", encoding="utf-8")
     protocol.checkpoint_sha256.cache_clear()
@@ -1760,7 +1624,7 @@ def test_s1e2_pick_newest_reference_first_041_r20(tmp_path, monkeypatch):
     taken = set()
     assert s1e2_loop.pick(items, taken.__contains__) == items[0]
     taken.add(items[0][1])
-    assert s1e2_loop.pick(items, taken.__contains__) == items[3]  # the newest; 1000 / 2000 are skipped
+    assert s1e2_loop.pick(items, taken.__contains__) == items[3]
     taken.add(items[3][1])
     assert s1e2_loop.pick(items, taken.__contains__) is None
 
@@ -1794,7 +1658,7 @@ def test_s1e2_val_scores_newest_and_records_041_r20(tmp_path, monkeypatch):
 
     monkeypatch.setattr(s1e2_loop.subprocess, "run", fake_run)
     s1e2_loop.main(["val", "--run", "m2-s1e2", "--reference", "checkpoints/m2-s1/ckpt-39096", "--watch", "--poll-s", "0"])
-    assert calls == [("m2-s1__ckpt-39096.json", 7200), ("m2-s1e2__ckpt-3000.json", 7200)]  # reference, then the final; run done
+    assert calls == [("m2-s1__ckpt-39096.json", 7200), ("m2-s1e2__ckpt-3000.json", 7200)]
     val = shared / "artifacts" / "bc_e2_val" / "val500"
     rec = json.loads((val / "m2-s1e2__ckpt-3000.protocol.json").read_text(encoding="utf-8"))
     assert (rec["point"], rec["metric"], rec["backend"], rec["precision"], rec["returncode"]) == ("s1e2", "val500", "rocm", "f32", 0)
@@ -1804,7 +1668,6 @@ def test_s1e2_val_scores_newest_and_records_041_r20(tmp_path, monkeypatch):
 
 
 def val_runner(calls: list, rcs: dict, games: int = 500):
-    """A fake bc-eval: return codes per output name in order (default 0), a val 500 report on 0."""
     def fake_run(cmd, cwd=None, stdout=None, stderr=None, timeout=None):
         out = Path(cmd[cmd.index("--out") + 1])
         calls.append(out.name)
@@ -1819,8 +1682,6 @@ def val_runner(calls: list, rcs: dict, games: int = 500):
 
 
 def test_s1e2_val_retries_a_failed_final_041_r20(tmp_path, monkeypatch):
-    """041-R20 ③ "최종 체크포인트는 반드시 한다": a crashed / timed-out run is kept as .failed-<k> and run again
-    (up to VAL_ATTEMPTS in all)."""
     shared = s1e2_shared(tmp_path, monkeypatch, done=True)
     monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
     calls = []
@@ -1845,13 +1706,11 @@ def test_s1e2_val_gives_up_and_exits_nonzero_041_r20(tmp_path, monkeypatch):
 
 
 def test_s1e2_val_never_overwrites_and_records_the_check_041_r29(tmp_path, monkeypatch):
-    """041-R29 ⑨: an existing output is never overwritten (taken, and score_val refuses); a check mismatch is
-    recorded and the loop goes on."""
     shared = s1e2_shared(tmp_path, monkeypatch, done=True)
     monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
     val = shared / "artifacts" / "bc_e2_val" / "val500"
     val.mkdir(parents=True)
-    (val / "m2-s1__ckpt-39096.json").write_text("{}", encoding="utf-8")  # made by hand
+    (val / "m2-s1__ckpt-39096.json").write_text("{}", encoding="utf-8")
     calls = []
     monkeypatch.setattr(s1e2_loop.subprocess, "run", val_runner(calls, {}, games=400))
     s1e2_loop.main(["val", "--run", "m2-s1e2", "--reference", "checkpoints/m2-s1/ckpt-39096", "--watch", "--poll-s", "0"])
@@ -1863,7 +1722,6 @@ def test_s1e2_val_never_overwrites_and_records_the_check_041_r29(tmp_path, monke
 
 
 def test_s1e2_games_job_made_elsewhere_041_r20(tmp_path, monkeypatch):
-    """A job another host made first (FileExistsError from protocol.py job) is taken, not an error."""
     shared = s1e2_shared(tmp_path, monkeypatch, done=True)
 
     def raise_exists(args):
@@ -1877,7 +1735,7 @@ def test_s1e2_games_job_made_elsewhere_041_r20(tmp_path, monkeypatch):
 def test_s1e2_games_joins_an_existing_job_with_a_worker_041_r20(tmp_path, monkeypatch):
     shared = s1e2_shared(tmp_path, monkeypatch, steps=(1000,), done=True)
     job = shared / "eval" / "m2-s1e2-games" / "m2-s1e2__ckpt-1000"
-    job.mkdir(parents=True)  # made by another host, not DONE
+    job.mkdir(parents=True)
     played = []
 
     def fake_play(j, shared_, worker, poll_s):
@@ -1891,15 +1749,12 @@ def test_s1e2_games_joins_an_existing_job_with_a_worker_041_r20(tmp_path, monkey
 
 
 def test_s1e2_val_orphan_claim_on_the_final_041_r20(tmp_path, monkeypatch, capsys):
-    """An orphan claim (its scorer crashed / rebooted / was stopped) does not stall the final: a claim older than
-    the time limit + 15 min, or this host's claim whose process is gone, is recorded as "stale claim", kept as
-    .failed-<k> (one attempt) and the checkpoint is run again."""
     shared = s1e2_shared(tmp_path, monkeypatch, done=True)
     monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
     val = shared / "artifacts" / "bc_e2_val" / "val500"
     val.mkdir(parents=True)
     old = val / "m2-s1e2__ckpt-3000.claim"
-    old.write_text("some-host 2026-11-10T01:00:00+09:00\n", encoding="utf-8")  # an older plain-text claim
+    old.write_text("some-host 2026-11-10T01:00:00+09:00\n", encoding="utf-8")
     t = old.stat().st_mtime - (s1e2_loop.VAL_TIMEOUT_S + s1e2_loop.STALE_MARGIN_S + 60)
     os.utime(old, (t, t))
     out = val / "m2-s1e2__ckpt-3000.json"
@@ -1911,16 +1766,15 @@ def test_s1e2_val_orphan_claim_on_the_final_041_r20(tmp_path, monkeypatch, capsy
     stale = json.loads((val / "m2-s1e2__ckpt-3000.failed-1.protocol.json").read_text(encoding="utf-8"))
     assert stale["returncode"] == "stale claim" and "older than" in stale["reason"] and (val / "m2-s1e2__ckpt-3000.failed-1.claim").is_file()
     assert json.loads((val / "m2-s1e2__ckpt-3000.protocol.json").read_text(encoding="utf-8"))["attempt"] == 2
-    # this host's fresh claim of a process that no longer runs
-    p = subprocess.Popen([sys.executable, "-c", "pass"])  # subprocess.run is the fake here
+    p = subprocess.Popen([sys.executable, "-c", "pass"])
     p.wait()
     out2 = val / "m2-s1e2__ckpt-2000.json"
     out2.with_suffix(".claim").write_text(json.dumps({"host": s1e2_loop.socket.gethostname(), "pid": p.pid, "timeout_s": 7200}), encoding="utf-8")
     assert "no longer runs" in s1e2_loop.claim_stale(out2, 7200) and s1e2_loop.val_state(out2) == "stale"
     out2.with_suffix(".claim").write_text(json.dumps({"host": s1e2_loop.socket.gethostname(), "pid": os.getpid() + 0, "timeout_s": 7200}), encoding="utf-8")
-    assert s1e2_loop.val_state(out2) == "running"  # a live claim of this process is not stale
+    assert s1e2_loop.val_state(out2) == "running"
     out2.with_suffix(".claim").write_text(json.dumps({"host": "other-host", "pid": 1, "timeout_s": 7200}), encoding="utf-8")
-    assert s1e2_loop.val_state(out2) == "running"  # another host's recent claim: wait for it
+    assert s1e2_loop.val_state(out2) == "running"
 
 
 def test_s1e2_val_waits_for_a_running_final_and_says_where_041_r20(tmp_path, monkeypatch, capsys):
@@ -1933,7 +1787,7 @@ def test_s1e2_val_waits_for_a_running_final_and_says_where_041_r20(tmp_path, mon
 
     def fake_sleep(s):
         sleeps.append(s)
-        if len(sleeps) == 3:  # the other host finishes
+        if len(sleeps) == 3:
             (val / "m2-s1e2__ckpt-3000.json").write_text("{}", encoding="utf-8")
             (val / "m2-s1e2__ckpt-3000.protocol.json").write_text(json.dumps({"returncode": 0}), encoding="utf-8")
 
@@ -1945,8 +1799,6 @@ def test_s1e2_val_waits_for_a_running_final_and_says_where_041_r20(tmp_path, mon
 
 
 def test_s1e2_val_interrupted_and_leftover_failed_041_r20(tmp_path, monkeypatch):
-    """Ctrl-C / an error between the claim and the record: recorded ("error: ...") and set aside, then re-raised.
-    A leftover failed record (a scorer stopped before setting it aside) is set aside before picking."""
     shared = s1e2_shared(tmp_path, monkeypatch, done=True)
     monkeypatch.setattr(protocol, "git_state", lambda: dict(CLEAN_GIT))
 
@@ -2001,22 +1853,19 @@ def test_s1e2_games_jobs_and_table_041_r20(tmp_path, monkeypatch, capsys):
     text = capsys.readouterr().out
     assert "| reference `checkpoints/m2-s1/ckpt-39096` | not scored |" in text
     assert "| `checkpoints/m2-s1e2/ckpt-1000` | 72.42% | 0.862 |" in text
-    assert "| `checkpoints/m2-s1e2/ckpt-1000` (MISMATCH" in text  # the fixture rows ran another checkpoint id than the job's weights
+    assert "| `checkpoints/m2-s1e2/ckpt-1000` (MISMATCH" in text
     assert "50 / 50 / 0 | 50%" in text
     rows = json.loads((tmp_path / "t.json").read_text(encoding="utf-8"))
     assert rows[1]["t0_100"]["table"]["total"]["n"] == 100
 
 
 def status_text(stages: list[tuple]) -> str:
-    """eval-status's text (020-R15 ⑨, uranium-runner eval::status) with (stage, games, done, in flight, left) rows."""
     rows = "".join(f"| {s} | {n} | {d} | {f} | {left} | 0 |\n" for s, n, d, f, left in stages)
     return ("# Evaluation job `j`\n\nlease `eval-j`: free\nin flight on h's inference: 0 games\n\n"
             "| stage | games | done | in flight | left | retried records |\n|---|---|---|---|---|---|\n" + rows)
 
 
 def fake_status(monkeypatch, state: dict) -> list:
-    """s1e2_loop.eval_status answering from state["stages"] (an Exception: raised; a str: that text), job.toml with
-    state["job_stages"] stages (default: as many as the rows); returns the calls."""
     calls = []
 
     def status(job, write):
@@ -2036,9 +1885,6 @@ def fake_status(monkeypatch, state: dict) -> list:
 
 
 def test_s1e2_games_done_once_from_eval_status_041_r20(tmp_path, monkeypatch, capsys):
-    """050-R9 / 041-R20 ③: no worker writes a job's DONE; after the worker run the loop asks eval-status and, every
-    stage played out in two readings, takes the merge claim and writes status.txt (its text) and DONE atomically,
-    once."""
     job = tmp_path / "eval" / "m2-s1e2-games" / "m2-s1e2__ckpt-1000"
     job.mkdir(parents=True)
     state = {"stages": [("01-t0", 100, 100, 0, 0)]}
@@ -2049,19 +1895,18 @@ def test_s1e2_games_done_once_from_eval_status_041_r20(tmp_path, monkeypatch, ca
     monkeypatch.setattr(s1e2_loop.time, "sleep", lambda s: pytest.fail("poll 0: confirmed at the first wait check"))
     s1e2_loop.play(job, tmp_path, "--priority 2", 0)
     assert len(runs) == 1 and runs[0][2:6] == ["uranium", "eval-worker", "--job", "eval/m2-s1e2-games/m2-s1e2__ckpt-1000"]
-    assert (job / "DONE").is_file() and (job / "status.txt").read_bytes() == status_text(state["stages"]).encode()  # "\n" kept on Windows
-    assert calls == [(job.name, False), (job.name, False), (job.name, True)]  # two readings, the summaries rewritten once
+    assert (job / "DONE").is_file() and (job / "status.txt").read_bytes() == status_text(state["stages"]).encode()
+    assert calls == [(job.name, False), (job.name, False), (job.name, True)]
     assert json.loads((job / ".merge-claim").read_text(encoding="utf-8"))["host"] == s1e2_loop.socket.gethostname()
-    assert sorted(p.name for p in job.iterdir()) == [".merge-claim", "DONE", "status.txt"]  # no temp file left
+    assert sorted(p.name for p in job.iterdir()) == [".merge-claim", "DONE", "status.txt"]
     out = capsys.readouterr().out
     assert "confirming at the next poll" in out and "complete per eval-status (01-t0 100/100 done, 0 in flight, 0 left); wrote status.txt and DONE" in out
     done = (job / "DONE").read_text(encoding="utf-8")
-    assert s1e2_loop.finish(job) and len(calls) == 3 and (job / "DONE").read_text(encoding="utf-8") == done  # not asked or written again
+    assert s1e2_loop.finish(job) and len(calls) == 3 and (job / "DONE").read_text(encoding="utf-8") == done
     assert not s1e2_loop.pending(job)
 
 
 def test_s1e2_games_two_readings_a_poll_apart_041_r20(tmp_path, monkeypatch):
-    """A complete reading is confirmed by a later one at least a poll later; an incomplete reading in between starts over."""
     job = tmp_path / "j"
     job.mkdir()
     state = {"stages": [("01-t0", 100, 100, 0, 0)]}
@@ -2070,8 +1915,8 @@ def test_s1e2_games_two_readings_a_poll_apart_041_r20(tmp_path, monkeypatch):
     monkeypatch.setattr(s1e2_loop.time, "monotonic", lambda: clock[0])
     assert not s1e2_loop.finish(job, 120) and s1e2_loop.pending(job)
     clock[0] += 60
-    assert not s1e2_loop.finish(job, 120)  # too soon
-    state["stages"] = [("01-t0", 100, 99, 1, 0)]  # a game came back for another attempt
+    assert not s1e2_loop.finish(job, 120)
+    state["stages"] = [("01-t0", 100, 99, 1, 0)]
     clock[0] += 60
     assert not s1e2_loop.finish(job, 120) and not s1e2_loop.pending(job)
     state["stages"] = [("01-t0", 100, 100, 0, 0)]
@@ -2081,13 +1926,13 @@ def test_s1e2_games_two_readings_a_poll_apart_041_r20(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("state", [
-    {"stages": [("01-t0", 100, 97, 0, 3)]},  # games left
-    {"stages": [("01-t0", 100, 99, 1, 0)]},  # one in flight
-    {"stages": [("01-t0", 100, 100, 0, 0), ("02-t1", 50, 10, 4, 36)]},  # one stage played out, another not
-    {"stages": [("01-t0", 100, 100, 0, 0)], "job_stages": 2},  # a stage of job.toml without a row
-    {"stages": status_text([("01-t0", 100, 100, 0, 0)]) + "| 02-t1 | 50 | ? | 0 | 0 | 0 |\n"},  # a malformed row
-    {"stages": [], "job_stages": 1},  # no stage table
-    {"stages": RuntimeError("reading job.toml: not found")},  # unreadable (a job being made, the shared drive away)
+    {"stages": [("01-t0", 100, 97, 0, 3)]},
+    {"stages": [("01-t0", 100, 99, 1, 0)]},
+    {"stages": [("01-t0", 100, 100, 0, 0), ("02-t1", 50, 10, 4, 36)]},
+    {"stages": [("01-t0", 100, 100, 0, 0)], "job_stages": 2},
+    {"stages": status_text([("01-t0", 100, 100, 0, 0)]) + "| 02-t1 | 50 | ? | 0 | 0 | 0 |\n"},
+    {"stages": [], "job_stages": 1},
+    {"stages": RuntimeError("reading job.toml: not found")},
 ])
 def test_s1e2_games_incomplete_gets_no_done_041_r20(tmp_path, monkeypatch, state):
     job = tmp_path / "j"
@@ -2095,20 +1940,18 @@ def test_s1e2_games_incomplete_gets_no_done_041_r20(tmp_path, monkeypatch, state
     calls = fake_status(monkeypatch, dict(state, job_stages=state.get("job_stages", 1)))
     assert not s1e2_loop.finish(job) and not s1e2_loop.finish(job)
     assert not (job / "DONE").exists() and not (job / "status.txt").exists() and not (job / ".merge-claim").exists()
-    assert all(not w for _, w in calls)  # the summaries are not rewritten for an incomplete job
+    assert all(not w for _, w in calls)
 
 
 def test_s1e2_games_status_stages_fail_closed_041_r20():
     good = status_text([("01-t0", 100, 100, 0, 0)])
-    assert len(s1e2_loop.status_stages(good + "\nleaving hosts: h\n")) == 1  # the table ends at a blank line
+    assert len(s1e2_loop.status_stages(good + "\nleaving hosts: h\n")) == 1
     assert s1e2_loop.status_stages(good + "| 02-t1 | 50 | 50 | 0 |\n") == []
     assert s1e2_loop.status_stages(good + "02-t1 50 50 0 0 0\n") == []
     assert s1e2_loop.status_stages(good.replace("| in flight |", "| flying |")) == []
 
 
 def test_s1e2_games_merge_claim_one_host_041_r20(tmp_path, monkeypatch, capsys):
-    """Only the host with the job's merge claim runs eval-status with write and writes DONE; a claim older than
-    MERGE_STALE_S without DONE is set aside (kept) and taken again."""
     job = tmp_path / "j"
     job.mkdir()
     calls = fake_status(monkeypatch, {"stages": [("01-t0", 100, 100, 0, 0)]})
@@ -2138,15 +1981,13 @@ def test_s1e2_games_failed_write_sets_the_claim_aside_041_r20(tmp_path, monkeypa
     assert not (job / "DONE").exists() and not (job / ".merge-claim").exists() and (job / ".merge-claim.failed-1").is_file()
     monkeypatch.undo()
     fake_status(monkeypatch, {"stages": [("01-t0", 100, 100, 0, 0)]})
-    assert s1e2_loop.finish(job) and (job / "DONE").is_file()  # still pending: the next try writes it
+    assert s1e2_loop.finish(job) and (job / "DONE").is_file()
 
 
 def test_s1e2_games_job_of_another_host_joined_and_completed_041_r20(tmp_path, monkeypatch):
-    """A job another host made is joined once; this worker ends while the other host still plays, the loop waits on
-    eval-status (not joining again) and writes DONE when the other host's games are in."""
     shared = s1e2_shared(tmp_path, monkeypatch, steps=(1000,), done=True)
     job = shared / "eval" / "m2-s1e2-games" / "m2-s1e2__ckpt-1000"
-    job.mkdir(parents=True)  # made by another host, not DONE
+    job.mkdir(parents=True)
     (job / "job.toml").write_text("", encoding="utf-8")
     state = {"stages": [("01-t0", 100, 60, 4, 36)]}
     fake_status(monkeypatch, state)
@@ -2154,7 +1995,7 @@ def test_s1e2_games_job_of_another_host_joined_and_completed_041_r20(tmp_path, m
 
     def worker(cmd, cwd=None):
         runs.append(cmd)
-        state["stages"] = [("01-t0", 100, 98, 2, 0)]  # this host's share played; the other host's last 2 in flight
+        state["stages"] = [("01-t0", 100, 98, 2, 0)]
         return subprocess.CompletedProcess(cmd, 0)
 
     def sleep(s):
@@ -2166,13 +2007,11 @@ def test_s1e2_games_job_of_another_host_joined_and_completed_041_r20(tmp_path, m
     monkeypatch.setattr(s1e2_loop.time, "sleep", sleep)
     monkeypatch.setattr(s1e2_loop, "make_job", lambda *a: pytest.fail("the job exists"))
     s1e2_loop.main(["games", "--run", "m2-s1e2", "--worker", "--priority 2", "--watch", "--poll-s", "0"])
-    assert len(runs) == 1 and len(sleeps) == 3  # two waits for the other host, one for the confirming reading
+    assert len(runs) == 1 and len(sleeps) == 3
     assert (job / "DONE").is_file() and "| 01-t0 | 100 | 100 | 0 | 0 | 0 |" in (job / "status.txt").read_text(encoding="utf-8")
 
 
 def test_s1e2_games_played_out_job_swept_not_joined_041_r20(tmp_path, monkeypatch):
-    """A job played out without DONE (hand-started workers, or another host's loop stopped) is finished by the
-    sweep, not joined: no worker run."""
     shared = s1e2_shared(tmp_path, monkeypatch, steps=(1000,), done=True)
     job = shared / "eval" / "m2-s1e2-games" / "m2-s1e2__ckpt-1000"
     job.mkdir(parents=True)
@@ -2186,7 +2025,6 @@ def test_s1e2_games_played_out_job_swept_not_joined_041_r20(tmp_path, monkeypatc
 
 
 def test_s1e2_games_status_table_of_the_extension_041_r20(tmp_path, monkeypatch):
-    """Pins eval-status's table format: the real uranium._core.eval_status on a fresh T0 100 job."""
     core = pytest.importorskip("uranium._core")
     if not hasattr(core, "eval_status"):
         pytest.skip("uranium._core without eval_status")

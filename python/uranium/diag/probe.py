@@ -1,33 +1,12 @@
-"""Probe math (reports/jepa_survey.md 7.1-7.2): ridge with an inner-CV penalty, a one-hidden-layer
-MLP(64), K-fold cross-validation by game (every row of a game in one fold), game bootstrap
-confidence intervals, and the gain of a stage over the nuisance baseline.
-
-Gain over nuisance (one definition, `GAIN_METHODS`):
-- `resid` (default): a nuisance ridge, then a ridge of the stage on the nuisance ridge's residual,
-  each with its own inner-CV penalty (the penalty grid of the second goes high enough to switch the
-  stage off). The prediction is their sum, and the gain is metric(sum) - metric(nuisance alone).
-  It cannot do worse than the nuisance except by fold noise.
-- `joint`: one ridge on [stage, nuisance] with a single penalty (the earlier Zerg run, 10.1). A
-  strong penalty for a wide stage also shrinks the nuisance, so the gain can go negative.
-The two earlier workers used one each (10.2.3 note); `resid` is the default.
-
-Confidence intervals resample games of the out-of-fold predictions: they cover the sampling of the
-evaluated games only, not the variance of refitting the probe on other training games. The cue
-regression R² of 041-R24's comparison runs and 050-R9's lineage points comes from here.
-"""
-
 import numpy as np
 
 ALPHAS = [1e-1, 1e0, 1e1, 1e2, 1e3, 1e4, 1e5]
-ALPHAS_RESID = ALPHAS + [1e6, 1e7, 1e9]  # the top values switch the stage off (gain 0)
+ALPHAS_RESID = ALPHAS + [1e6, 1e7, 1e9]
 GAIN_METHODS = ("resid", "joint")
 FOLDS = 5
 
 
 def standardize(xtr, xte):
-    """Columns scaled by the training rows; a (near-)constant training column is dropped (scaled
-    to 0), and values are clipped to +-10 so a column constant in training cannot explode on
-    the held-out games."""
     mu = xtr.mean(0, keepdims=True)
     sd = xtr.std(0, keepdims=True)
     sd = np.where(sd < 1e-4, np.inf, sd)
@@ -35,8 +14,6 @@ def standardize(xtr, xte):
 
 
 def ridge_fit_pred(xtr, ytr, xte, alphas):
-    """Ridge predictions [len(alphas), n_te] (intercept = training mean), float64, one
-    eigendecomposition of X^T X for every penalty. `ytr` [n] or [n, k] (then [A, n_te, k])."""
     X = np.asarray(xtr, np.float64)
     y = np.asarray(ytr, np.float64)
     ym = y.mean(0)
@@ -50,7 +27,6 @@ def ridge_fit_pred(xtr, ytr, xte, alphas):
 
 
 def folds_of(groups, k: int = FOLDS, seed: int = 0) -> np.ndarray:
-    """Fold id per row; every row of a group (game) in the same fold."""
     u = np.unique(groups)
     p = np.random.default_rng(seed).permutation(u)
     fid = {g: i % k for i, g in enumerate(p)}
@@ -58,7 +34,6 @@ def folds_of(groups, k: int = FOLDS, seed: int = 0) -> np.ndarray:
 
 
 def inner_alpha(xtr, ytr, groups_tr, seed: int, alphas) -> float:
-    """The penalty with the least squared error in an inner 3-fold game CV (inputs standardised)."""
     inner = folds_of(groups_tr, 3, seed=seed)
     err = np.zeros(len(alphas))
     for i in range(3):
@@ -71,7 +46,6 @@ def inner_alpha(xtr, ytr, groups_tr, seed: int, alphas) -> float:
 
 
 def ridge_cv(x, y, groups, fold):
-    """Out-of-fold ridge predictions; the penalty chosen per outer fold by an inner game CV."""
     pred = np.zeros(len(y))
     chosen = []
     for f in range(int(fold.max()) + 1):
@@ -86,7 +60,6 @@ def ridge_cv(x, y, groups, fold):
 
 
 def ridge_cv_multi(x, Y, groups, fold):
-    """Out-of-fold ridge predictions of several targets [n, k], one penalty per target."""
     Y = Y.reshape(len(Y), -1)
     pred = np.zeros(Y.shape)
     for f in range(int(fold.max()) + 1):
@@ -109,7 +82,6 @@ def ridge_cv_multi(x, Y, groups, fold):
 
 
 def ridge_cv_resid(x, nz, y, groups, fold):
-    """Gain method `resid`: nuisance ridge + a stage ridge on its residual (module docstring)."""
     pred = np.zeros(len(y))
     for f in range(int(fold.max()) + 1):
         tr, te = fold != f, fold == f
@@ -127,7 +99,6 @@ def ridge_cv_resid(x, nz, y, groups, fold):
 
 
 def ridge_cv_gain(x, nz, y, groups, fold, method: str = "resid"):
-    """Out-of-fold predictions of [stage, nuisance] by the gain method."""
     if method == "resid":
         return ridge_cv_resid(x, nz, y, groups, fold)
     if method == "joint":
@@ -136,8 +107,6 @@ def ridge_cv_gain(x, nz, y, groups, fold, method: str = "resid"):
 
 
 def mlp_cv(x, y, fold, cls: bool, device="cpu", epochs: int = 30, hidden: int = 64, seed: int = 0):
-    """Out-of-fold predictions of Linear(64) -> ReLU -> Dropout(0.2) -> Linear(1), AdamW 3e-3,
-    batch 2048 (logits for a class target, standardised regression otherwise)."""
     import torch
 
     dev = torch.device(device)
@@ -170,7 +139,6 @@ def mlp_cv(x, y, fold, cls: bool, device="cpu", epochs: int = 30, hidden: int = 
 
 
 def auc(y, s) -> float:
-    """ROC AUC with average ranks for ties; NaN for a single class."""
     y = np.asarray(y).astype(bool)
     if y.all() or (~y).all():
         return np.nan
@@ -187,8 +155,6 @@ def r2(y, p) -> float:
 
 
 def boot(metric, y, preds: dict, groups, n: int, rng, base: str | None = None) -> dict:
-    """Game bootstrap: per prediction {"pt", "lo", "hi"} (2.5 / 97.5 percentiles), and against
-    `base` the paired difference {"gain", "gain_lo", "gain_hi"}."""
     ug = np.unique(groups)
     gi = {g: np.nonzero(groups == g)[0] for g in ug}
     pts = {k: metric(y, p) for k, p in preds.items()}
@@ -214,9 +180,6 @@ def _pct(v, q) -> float:
 
 
 def shuffled_labels(y, games, rng) -> np.ndarray:
-    """Control target: each game's label (its first row's) moved to another game, rows keep
-    their game. Valid for labels constant within a game; for per-row targets the whole sequence
-    of the game is not moved, only its first value."""
     ug = np.unique(games)
     first = {g: y[np.argmax(games == g)] for g in ug}
     perm = dict(zip(ug, rng.permutation(ug)))
@@ -231,9 +194,6 @@ def onehot(x) -> np.ndarray:
 
 def run_task(stages: dict, nuis, y, cls: bool, groups, game_ids, rng, *, boot_n: int = 500, mlp: bool = True, gain: str = "resid", shuffled_key: str | None = None,
              mlp_device="cpu") -> dict:
-    """One probe target on one row set: per stage a ridge (and an MLP), the nuisance-only ridge,
-    the gain of each stage over it, and a shuffled-label control on `shuffled_key` (per-game
-    labels only). `stages` {name: [rows, d]}, `nuis` [rows, k]; rows already selected."""
     fold = folds_of(groups)
     preds, alphas = {}, {}
     p, al = ridge_cv(nuis, y, groups, fold)

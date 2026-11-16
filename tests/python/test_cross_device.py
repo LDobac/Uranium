@@ -1,10 +1,3 @@
-"""032-AC1 / AC8 (pytest `gpu`): the same weights and inputs on CPU and on the GPU (CUDA or
-ROCm) give the same forward outputs and gradients within the device tolerance. The f32 check runs
-without TF32 on both backends (the port's math); the CUDA bf16 check (032-R8, training and
-inference precision there) uses the 2026-10-24 tolerances (user decision, about 2x the measured
-values, `reports/pytorch_opt.md` 2.24): forward ≤ 0.15, per-head policy KL mean ≤ 1e-3, greedy
-agreement ≥ 95%, gradient relative L2 median ≤ 3%."""
-
 import json
 import os
 from pathlib import Path
@@ -19,11 +12,8 @@ from uranium.model.burn import burn_to_torch
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "burn_parity"
 HEADS = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
 ROCM = torch.version.hip is not None
-# 032-AC1 forward, 032-AC8 gradient (relative L2), f32 without TF32 (measured: CUDA ≤ 4e-5 /
-# 3e-4, ROCm ≤ 1e-4 / 1e-3).
 FWD_TOL = 1e-4
 GRAD_TOL = 1e-3
-# CUDA bf16 autocast (032-AC1 / AC8, user decision 2026-10-24).
 BF16_FWD_TOL = 0.15
 BF16_KL_MEAN_TOL = 1e-3
 BF16_GREEDY_MIN = 0.95
@@ -51,7 +41,6 @@ def run(d: Path, device: str, bf16: bool = False):
     loss.backward()
     fwd = {f"logp.{k}": out["logp"][k].detach().float().cpu() for k in HEADS} | {"value": out["value"].detach().float().cpu()}
     grads = {k: p.grad.detach().float().cpu() for k, p in net.named_parameters() if p.grad is not None}
-    # Per-head log-prob rows [rows, K] (the Selected head's steps are 3-D, left out).
     dists = {k: v.detach().float().cpu() for k, v in out["dists"].items() if v.dim() == 2}
     return fwd, grads, float(loss), dists
 

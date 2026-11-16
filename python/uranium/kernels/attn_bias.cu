@@ -1,36 +1,19 @@
-// Entity encoder attention with the distance bias, fused (032 §2.1, 032-R13; 060-R1: one source,
-// built as CUDA on CUDA hosts and hipified on ROCm hosts; AMB-000-4 step 2).
-//
-//   s[i,j] = key_ok[j] ? q_i . k_j * scale + table[bucket[i,j], h] : -1e9   (masked_fill, 032-R4)
-//   p = softmax_j(s),  out_i = sum_j p[i,j] v_j
-//
-// The same math as `uranium.model.layers.Attention` with the gathered bias, without the
-// [B, H, N, N] bias / score / probability tensors. Forward keeps each row's log-sum-exp; the
-// backward recomputes p. dQ and the table gradient come from a per-query pass, dK / dV from a
-// per-key pass. The table gradient is summed per block in shared memory and written as block
-// partials (summed by the caller): no global atomics, deterministic.
-
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 
 namespace {
 
-constexpr int DH = 32;        // head dim (d_model 256 / 8 heads)
-constexpr int BQ = 64;        // rows per block, one thread each
-constexpr int BK = 64;        // tile of the other side kept in shared memory
-constexpr int NB_MAX = 64;    // bias buckets (2 x distance_buckets = 32)
-constexpr int BS = BK + 4;    // bucket tile row stride in bytes (odd word stride: no bank conflicts)
+constexpr int DH = 32;
+constexpr int BQ = 64;
+constexpr int BK = 64;
+constexpr int NB_MAX = 64;
+constexpr int BS = BK + 4;
 constexpr float MASKED = -1e9f;
-// Every kernel runs BQ threads per block and says so (__launch_bounds__): without it HIP plans for
-// 1024 threads and caps the registers, and the per-thread row arrays spill to scratch (Linux ROCm
-// host, backward 64 rows x N256: 48 -> 10 ms).
 
 template <typename T>
 __device__ __forceinline__ float f(T x) { return static_cast<float>(x); }
 
-// ---------------------------------------------------------------------------------------------
-// Forward: one thread per query row, online softmax over key tiles.
 template <typename scalar_t>
 __global__ void __launch_bounds__(BQ) fwd_kernel(const scalar_t* __restrict__ q, const scalar_t* __restrict__ k, const scalar_t* __restrict__ v,
                            const uint8_t* __restrict__ bucket, const float* __restrict__ table, const bool* __restrict__ key_ok,
@@ -86,14 +69,11 @@ __global__ void __launch_bounds__(BQ) fwd_kernel(const scalar_t* __restrict__ q,
     const float inv = 1.f / l;
 #pragma unroll
     for (int d = 0; d < DH; ++d) out[base + (size_t)i * DH + d] = static_cast<scalar_t>(o[d] * inv);
-    stats[((size_t)bh * N + i) * 2] = m;  // row max and 1 / sum: p = exp(s - max) / sum, as softmax
+    stats[((size_t)bh * N + i) * 2] = m;
     stats[((size_t)bh * N + i) * 2 + 1] = inv;
   }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Backward, per query row: dQ and the table gradient (block partials [grid.x, B*H, NB]).
-// delta_i = sum_d dout_i * out_i.
 template <typename scalar_t>
 __global__ void __launch_bounds__(BQ) bwd_q_kernel(const scalar_t* __restrict__ q, const scalar_t* __restrict__ k, const scalar_t* __restrict__ v,
                              const uint8_t* __restrict__ bucket, const float* __restrict__ table, const bool* __restrict__ key_ok,
@@ -108,17 +88,12 @@ __global__ void __launch_bounds__(BQ) bwd_q_kernel(const scalar_t* __restrict__ 
   __shared__ bool ok[BK];
   __shared__ uint8_t bk[BQ * BS];
 #ifdef __HIP_PLATFORM_AMD__
-  // Table gradient: one shared histogram, atomics (the Linux ROCm host: bucket crowding made no
-  // difference there, AMB-000-4 step 2).
   __shared__ float hist[NB_MAX];
   for (int t = threadIdx.x; t < NB; t += BQ) {
     tab[t] = table[t * H + h];
     hist[t] = 0.f;
   }
 #else
-  // Table gradient: every thread owns a column of slots[warp][bucket][lane] (bank = lane: no
-  // conflicts, no atomics). Real buckets crowd into a few values, and a shared atomic on one
-  // address serialises the warp on CUDA hosts (bwd_q 3.7x the forward, bwd_kv 1.5x).
   __shared__ float slots[(BQ / 32) * NB_MAX * 32];
   for (int t = threadIdx.x; t < NB; t += BQ) tab[t] = table[t * H + h];
   for (int t = threadIdx.x; t < (BQ / 32) * NB_MAX * 32; t += BQ) slots[t] = 0.f;
@@ -150,7 +125,7 @@ __global__ void __launch_bounds__(BQ) bwd_q_kernel(const scalar_t* __restrict__ 
     if (!row) continue;
     const int jn = min(BK, N - j0);
     for (int jj = 0; jj < jn; ++jj) {
-      if (!ok[jj]) continue;  // masked_fill: no gradient reaches q, k or the bias there
+      if (!ok[jj]) continue;
       float dot = 0.f, dp = 0.f;
 #pragma unroll
       for (int d = 0; d < DH; ++d) {
@@ -187,8 +162,6 @@ __global__ void __launch_bounds__(BQ) bwd_q_kernel(const scalar_t* __restrict__ 
 #endif
 }
 
-// ---------------------------------------------------------------------------------------------
-// Backward, per key row: dK and dV.
 template <typename scalar_t>
 __global__ void __launch_bounds__(BQ) bwd_kv_kernel(const scalar_t* __restrict__ q, const scalar_t* __restrict__ k, const scalar_t* __restrict__ v,
                               const uint8_t* __restrict__ bucket, const float* __restrict__ table, const bool* __restrict__ key_ok,
@@ -203,7 +176,7 @@ __global__ void __launch_bounds__(BQ) bwd_kv_kernel(const scalar_t* __restrict__
   __shared__ float li[BK];
   __shared__ float ds_[BK];
   __shared__ float tab[NB_MAX];
-  __shared__ uint8_t bk[BK * BQ];  // [query in tile][key in block]
+  __shared__ uint8_t bk[BK * BQ];
   for (int t = threadIdx.x; t < NB; t += BQ) tab[t] = table[t * H + h];
   const size_t base = (size_t)bh * N * DH;
   const bool okj = col && key_ok[(size_t)b * N + j];
@@ -272,7 +245,7 @@ void check(const torch::Tensor& q, const torch::Tensor& bucket, const torch::Ten
   TORCH_CHECK(key_ok.scalar_type() == torch::kBool && key_ok.is_contiguous() && key_ok.dim() == 2, "key_ok: contiguous bool [B, N]");
 }
 
-}  // namespace
+}
 
 std::vector<torch::Tensor> attn_bias_fwd(torch::Tensor q, torch::Tensor k, torch::Tensor v, torch::Tensor bucket, torch::Tensor table, torch::Tensor key_ok, double scale) {
   check(q, bucket, table, key_ok);
@@ -309,7 +282,6 @@ std::vector<torch::Tensor> attn_bias_bwd(torch::Tensor q, torch::Tensor k, torch
                                                      delta.data_ptr<float>(), dk.data_ptr<scalar_t>(), dv.data_ptr<scalar_t>(), H, N, NB, (float)scale);
   });
   C10_CUDA_KERNEL_LAUNCH_CHECK();
-  // [grid.x, B, H, NB] -> [NB, H]
   auto dtable = part.view({(long)grid.x, B, H, NB}).sum({0, 1}).t().contiguous();
   return {dq, dk, dv, dtable};
 }

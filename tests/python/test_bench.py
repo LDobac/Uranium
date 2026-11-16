@@ -1,7 +1,3 @@
-"""060-R2 bench suite on CPU: cases run and fill the report table, the real-data BC bench runs a
-lane group sweep on synthetic shards, and two runs from the same seed log the same loss curve
-(the parity comparison of AMB-000-4 step 2 is exact for identical runs)."""
-
 import argparse
 from pathlib import Path
 
@@ -53,8 +49,6 @@ def test_bc_bench_sweeps_groups_and_logs_parity(tiny_config, shards, monkeypatch
     again = run_group(a, 1, CPU, "f32", log=lambda m: None)
     same = compare_losses(runs[0], again)
     assert same["updates"] == 3 and same["max_rel"] == 0.0 and same["finite"]
-    # Another group size draws other dropout masks (041-R3), so the curves differ but stay finite;
-    # the exact group equivalence at dropout 0 is test_bc's 041-R3 test.
     assert compare_losses(runs[0], runs[1])["finite"]
     md = bc_markdown(runs, environment("cpu", "f32", CPU), "test")
     assert md.count("\n| ") >= 3

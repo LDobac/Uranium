@@ -1,5 +1,3 @@
-"""G0 decision-granularity report (tools/eval/granularity.py), input of AMB-031-7 (031-R3 12-unit
-cap): synthetic per-game dumps in the `uranium-replay granularity` layout."""
 import sys
 from pathlib import Path
 
@@ -34,13 +32,10 @@ def test_held_8m_and_winpass_031_r3():
 
 
 def test_people_rush_contact_rule_031_r3():
-    # 2 lings by 3:30, 4 by 4:30: a rush.
     s = [{"f": 4000, "own": [], "enemy": [ling(1), ling(2)]}, {"f": 5000, "own": [], "enemy": [ling(i) for i in range(4)]}]
     assert game(s, []).rush
-    # 2 lings only after 3:30.
     late = [{"f": 5100, "own": [], "enemy": [ling(i) for i in range(4)]}]
     assert not game(late, []).rush
-    # 2 lings by 3:30 but never 4, or the lings far from the main.
     assert not game([{"f": 4000, "own": [], "enemy": [ling(1), ling(2)]}], []).rush
     far = [{"f": 4000, "own": [], "enemy": [ling(i, 5000, 5000) for i in range(6)]}]
     assert not game(far, []).rush
@@ -74,7 +69,6 @@ def test_smart_on_neutral_is_gather_031_r3():
     assert gr.group_of(mineral, state) == "Gather"
     assert gr.group_of(on_bunker, state) == "Smart"
     assert gr.group_of(on_ling, state) == "Smart"
-    # Mining clicks are not combat commands in the SCV micro count.
     fight = {"f": 3990, "own": [scv(1)], "enemy": [ling(50)]}
     st = gr.game_stats(game([fight], [mineral]))
     assert st["micro"] == [0] and st["micro_any"] == [1]

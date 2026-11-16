@@ -46,7 +46,6 @@ def add_args(p) -> None:
 
 
 def game_table(R: dict, games: dict) -> dict:
-    """{gid: labels} for every game of a known race (all its dumped rows, frame order)."""
     order = np.lexsort((R["frame"], R["game"]))
     g = R["game"][order]
     cuts = np.nonzero(np.diff(g))[0] + 1
@@ -80,7 +79,6 @@ def raw_input(r: dict, race: str) -> np.ndarray:
 
 
 def select_rows(R, A, gt, race, cap):
-    """Activation rows of the race's games (index into A), `cap` evenly spaced per game."""
     game = R["game"][A["idx"]]
     ok = np.array([gt.get(int(x), {}).get("race") == race for x in game], bool)
     keep = np.zeros(len(game), bool)
@@ -144,7 +142,6 @@ def probe_race(R, A, gt, race, a, rng) -> dict:
             tasks[name] = {"rows": int(sel.sum()), "skipped": "too few rows or games"}
             return
         if not np.nanstd(y) > 0:
-            # e.g. the Zerg max-seen pool count, always 1 once a pool token exists
             tasks[name] = {"rows": int(sel.sum()), "skipped": f"constant target {float(np.nanmean(y)):g}"}
             return
         if cls_:

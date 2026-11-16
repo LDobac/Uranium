@@ -1,18 +1,3 @@
-"""The RL learner as it was before the 032-R19 ⑥ optimisations (042 learner optimisation, commit
-b9da476): the reference the optimised `Learner` is compared with, bit for bit on CPU where the
-operations are the same (tests/python/test_rl_opt.py), and the baseline of `python -m uranium bench
-rl --learner reference`. Same loss, targets and update; per lane group it reads the targets'
-inputs and the loss parts back (host syncs), copies core_state0 per lane, the outer segments' rows
-come from the device (`nonzero`), the copies are pageable unless `URANIUM_H2D=pinned`, and the
-targets run one reward component at a time. Only additions: the phase marks of `bench rl
---phases`, `grad_norm` in the statistics and r_value's per-lane policy weight (AMB-042-14, the same
-`component_weights` as the learner). AMB-042-17 additions: the per-head KL multipliers (042-R9) and
-the 042-R2 진단 로그 statistics (advantage RMS per channel, value loss per channel, per-step KL p99
-/ max from the trained steps picked out on the host), the reference for the learner's. No
-self-imitation lanes (042-R16), no 042-R21 aux losses or dead-channel statistics (their statistics
-keys are `None`, as the learner's with the defaults), one KL reference (no 044-R9 `[kl.reference]`;
-`kl_ref` `None`). Not used by training."""
-
 import torch
 
 from uranium.agent.infer import leaves, rebuild
@@ -27,13 +12,12 @@ def _valid(length: torch.Tensor, t: int) -> torch.Tensor:
 
 
 def vtrace(rewards, values, log_rho, length, gamma: float, lam: float, rho_bar: float, c_bar: float):
-    """(vs [L,T], pg_adv [L,T], rho [L,T]); c_t = λ min(c̄, π/μ)."""
     l, t = rewards.shape
     valid = _valid(length, t)
     ratio = log_rho.exp()
     rho = torch.clamp(ratio, max=rho_bar) * valid
     c = lam * torch.clamp(ratio, max=c_bar)
-    vs = values.clone()  # positions >= length keep the value (vs[length] = bootstrap)
+    vs = values.clone()
     for i in range(t - 1, -1, -1):
         delta = rho[:, i] * (rewards[:, i] + gamma * values[:, i + 1] - values[:, i])
         step = values[:, i] + delta + gamma * c[:, i] * (vs[:, i + 1] - values[:, i + 1])
@@ -43,12 +27,11 @@ def vtrace(rewards, values, log_rho, length, gamma: float, lam: float, rho_bar: 
 
 
 def upgo(rewards, values, log_rho, length, gamma: float, rho_bar: float):
-    """UPGO advantage [L,T]: the return follows the trajectory while Q_{t+1} >= V_{t+1}."""
     l, t = rewards.shape
     valid = _valid(length, t)
     g = values.clone()
     for i in range(t - 1, -1, -1):
-        last = (i + 1) >= length  # the next position is the bootstrap
+        last = (i + 1) >= length
         if i + 1 < t:
             q_next = rewards[:, i + 1] + gamma * values[:, i + 2]
             follow = torch.where(q_next >= values[:, i + 1], g[:, i + 1], values[:, i + 1])
@@ -62,7 +45,6 @@ def upgo(rewards, values, log_rho, length, gamma: float, rho_bar: float):
 
 
 def gae(rewards, values, length, gamma: float, lam: float):
-    """(advantages [L,T], returns [L,T])."""
     l, t = rewards.shape
     valid = _valid(length, t)
     adv = torch.zeros_like(rewards)
@@ -75,7 +57,6 @@ def gae(rewards, values, length, gamma: float, lam: float):
 
 
 def state0_of(net, g: dict, device):
-    """Core state per lane (042 core_state0); a lane without one starts from zero (032-R5)."""
     s = net.init_state(g["b"], device)
     parts = leaves(s)
     for lane, st in enumerate(g["state0"]):
@@ -87,12 +68,7 @@ def state0_of(net, g: dict, device):
 
 
 class ReferenceLearner(Learner):
-    """`Learner` with the update of commit b9da476."""
-
     def targets(self, g: dict, logp: torch.Tensor, values: torch.Tensor, weights) -> dict:
-        """Per-row coefficients of one lane group from the detached forward (on the host). r_value's
-        policy weight per lane (042 "r_value의 게임별 적용", AMB-042-14) and the build / units
-        multipliers per lane (033-R11, AMB-042-16), as the learner."""
         b, t = g["b"], g["t"]
         weights = component_weights(g, weights)
         l = self.cfg["loss"]
@@ -108,11 +84,9 @@ class ReferenceLearner(Learner):
         up = torch.zeros(b, t)
         vs = torch.zeros(b, t, 4)
         rho_sum = 0.0
-        # 042-R2 진단 로그: each channel's PG advantage squared over the trained steps.
         adv_sq_c = [0.0] * 4
         for c in range(4):
             ext = torch.cat([v[:, :, c], torch.zeros(b, 1)], 1)
-            # Bootstrap after the trained steps: 0 after a terminal step, else the value there.
             boot = torch.where(terminal, torch.zeros(b), ext.gather(1, length[:, None])[:, 0])
             ext = ext.scatter(1, length[:, None], boot[:, None])
             if self.algo == "vtrace":
@@ -135,7 +109,6 @@ class ReferenceLearner(Learner):
         return {"coef": coef.reshape(-1).to(dev), "vs": vs.reshape(-1, 4).to(dev), "rho_sum": rho_sum, "adv_sum": float((pg * valid).sum()), "adv_sq": float((pg * pg * valid).sum()), "adv_sq_c": adv_sq_c}
 
     def update(self, batch, weights) -> dict:
-        """One update over `batch` (a `_core.SegmentBatch`, lanes x T); returns the statistics."""
         import time
 
         cfg, dev = self.cfg, self.device
@@ -203,12 +176,10 @@ class ReferenceLearner(Learner):
         stats["rho_mean"] /= n
         stats["adv_mean"] /= n
         stats["grad_norm"] = None if norm is None else float(norm)
-        # 042-R2 진단 로그 (AMB-042-17): KL p99 / max over the trained steps picked out here.
         x = torch.cat(kl_valid) if kl_valid else torch.zeros(0)
         kl_q = [float(torch.quantile(x, 0.99)), float(x.max())] if x.numel() else [float("nan")] * 2
         stats.update(diagnostics(adv_sq, adv_sq_c, value_ch, kl_q, n))
         stats.update(sil_stats(sil_settings(cfg), [0.0, 0.0, 0.0], 0.0, 0.0))
-        # 042-R21 ③: no aux module and no monitor here (refused at the start of the update).
         stats.update(aux_stats({}, []))
         stats["kl_ref"] = kl_ref_stats(None, None)
         self.tick("stats")

@@ -1,6 +1,3 @@
-"""Building blocks shared by the encoders, core and heads (032 §2): the same math as the Burn
-`layers.rs`, with the same parameter names (032-AC10)."""
-
 import math
 import os
 
@@ -8,29 +5,21 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-MASKED = -1e9  # 032-R4: masked logits
+MASKED = -1e9
 
 
 def env_choice(key: str, choices: tuple, default: str) -> str:
-    """An implementation switch from the environment (AMB-000-4 step 2: same math, chosen per
-    device); an unknown value is an error."""
     v = os.environ.get(key, "") or default
     if v not in choices:
         raise ValueError(f"{key}={v!r}: expected one of {choices}")
     return v
 
 
-# AMB-000-4 step 2: `URANIUM_LINEAR_WGRAD` - a Linear layer's weight gradient grad^T @ x from the
-# vendor GEMM (`vendor`) or split over the rows in pieces of SPLITK_CHUNK, as one batched GEMM and a
-# sum (`splitk`, the same sum in another order). The rows are batch x tokens (12,288 for one lane
-# group of 64 steps x 192 entities); rocBLAS on the Linux ROCm host is slow for that long inner
-# dimension (256x256 layer: 5.4 -> 0.35 ms).
 LINEAR_WGRAD_MODES = ("vendor", "splitk")
 SPLITK_CHUNK = 512
 
 
 def splitk_mm(a, b, chunk: int | None = None):
-    """a^T @ b for a [K, M], b [K, N] with K split in pieces of `chunk` (default SPLITK_CHUNK)."""
     chunk = chunk or SPLITK_CHUNK
     k = a.shape[0]
     p = k // chunk
@@ -60,9 +49,6 @@ class LinearSplitK(torch.autograd.Function):
 
 
 class Linear(nn.Linear):
-    """`nn.Linear` (same parameters) whose weight gradient follows `URANIUM_LINEAR_WGRAD` (f32
-    training only: under autocast or without gradients the library path runs)."""
-
     def forward(self, x):
         if (
             torch.is_grad_enabled()
@@ -76,8 +62,6 @@ class Linear(nn.Linear):
 
 
 class Mlp(nn.Module):
-    """Linear -> ReLU -> Linear."""
-
     def __init__(self, d_in: int, d_hidden: int, d_out: int):
         super().__init__()
         self.l1 = Linear(d_in, d_hidden)
@@ -88,8 +72,6 @@ class Mlp(nn.Module):
 
 
 class ResMlp(nn.Module):
-    """Pre-activation residual MLP block: x + L2(relu(L1(relu(x))))."""
-
     def __init__(self, d: int):
         super().__init__()
         self.l1 = Linear(d, d)
@@ -103,10 +85,6 @@ def conv3x3(c_in: int, c_out: int, stride: int) -> nn.Conv2d:
     return nn.Conv2d(c_in, c_out, 3, stride=stride, padding=1)
 
 
-# 032-R19: `URANIUM_CHANNELS_LAST` - the activations of the spatial encoder and the location head
-# in NCHW (`off`) or channels-last (`on`) memory order. Same values; cuDNN runs its NHWC kernels
-# without converting every conv's input and output (CUDA host, one update: about 180 ms of
-# layout kernels).
 CHANNELS_LAST_MODES = ("off", "on")
 
 
@@ -114,34 +92,23 @@ STEM_PAD_MODES = ("off", "on")
 
 
 def stem_pad(conv: nn.Conv2d, x) -> int:
-    """Zero input channels the stem conv gets under `URANIUM_STEM_PAD=on` (to a multiple of 8;
-    0 when it already is, the switch is off, or the call takes the bmm weight-gradient path,
-    which `conv_wgrad` keeps)."""
     if env_choice("URANIUM_STEM_PAD", STEM_PAD_MODES, "off") != "on" or bmm_wgrad_active(conv, x):
         return 0
     return -conv.in_channels % 8
 
 
 def conv_layout(x: torch.Tensor) -> torch.Tensor:
-    """`x` [B,C,H,W] in the memory order `URANIUM_CHANNELS_LAST` picks (a no-op when it is already)."""
     if env_choice("URANIUM_CHANNELS_LAST", CHANNELS_LAST_MODES, "off") == "on":
         return x.contiguous(memory_format=torch.channels_last)
     return x
 
 
-# AMB-000-4 step 2: `URANIUM_CONV_WGRAD` - the weight gradient of the spatial encoder's stem and
-# stride-2 convs from the vendor library (`vendor`) or from per-sample batched GEMMs over the
-# unfolded input (`bmm`, the same sum). MIOpen's weight gradient on the Linux ROCm host is slow for
-# these shapes (64 rows: stem 67 -> 37 ms, 32->64 s2 @128 35 -> 9 ms); forward and input gradient
-# stay with the library. ResBlocks of at most RES_BMM_MAX_CH channels take it too (64 @ 64^2:
-# 14.4 -> 12.2 ms, 64 @ 32^2: 5.2 -> 3.7 ms); with 128 channels MIOpen is faster.
 CONV_WGRAD_MODES = ("vendor", "bmm")
 WGRAD_CHUNK = 8
 RES_BMM_MAX_CH = 64
 
 
 def bmm_weight_grad(x, gy, stride: int):
-    """d(conv3x3 pad 1)/d(weight) [C_out, C_in, 3, 3] summed over samples in chunks."""
     r, ci = x.shape[:2]
     co = gy.shape[1]
     out = torch.zeros(co, ci * 9, dtype=torch.float32, device=x.device)
@@ -173,32 +140,20 @@ class ConvBmmWgrad(torch.autograd.Function):
 
 
 def bmm_wgrad_fits(conv: nn.Conv2d) -> bool:
-    """The batched-GEMM weight gradient is written for a 3x3, padding 1, dilation 1, ungrouped
-    conv with stride 1 or 2; any other conv keeps the library path."""
     return conv.kernel_size == (3, 3) and conv.padding == (1, 1) and conv.dilation == (1, 1) and conv.groups == 1 and conv.stride[0] == conv.stride[1] in (1, 2) and conv.padding_mode == "zeros"
 
 
 def bmm_wgrad_active(conv: nn.Conv2d, x) -> bool:
-    """`conv_wgrad` takes the bmm weight-gradient path for this call (f32 only: under autocast the
-    library path runs; convs other than 3x3 pad 1 too, `bmm_wgrad_fits`)."""
     return env_choice("URANIUM_CONV_WGRAD", CONV_WGRAD_MODES, "vendor") == "bmm" and x.dtype == torch.float32 and not torch.is_autocast_enabled(x.device.type) and bmm_wgrad_fits(conv)
 
 
 def conv_wgrad(conv: nn.Conv2d, x):
-    """`conv(x)`, its weight gradient as `URANIUM_CONV_WGRAD` picks (`bmm_wgrad_active`)."""
     if bmm_wgrad_active(conv, x):
         return ConvBmmWgrad.apply(x, conv.weight, conv.bias, conv.stride[0])
     return conv(x)
 
 
 class ResBlock(nn.Module):
-    """032 §2.2 ResBlock(2 x Conv3x3): `relu(x + c2(relu(c1(x))))` (post-activation, the default),
-    or with `preact` (032-R22 `spatial_preact`) `x + c2(relu(c1(relu(x))))` (no final ReLU, so the
-    output may be negative). `preact` is a plain attribute: the parameters are the same.
-    `nonneg_input`: the caller guarantees x >= 0 (a spatial stage's block input is
-    relu(stride-2 conv)), so the pre-activation ReLU is the identity and is skipped (032-R19: same
-    values and gradients, bit for bit)."""
-
     def __init__(self, c: int, preact: bool = False, nonneg_input: bool = False):
         super().__init__()
         self.c1 = conv3x3(c, c, 1)
@@ -207,9 +162,6 @@ class ResBlock(nn.Module):
         self.nonneg_input = nonneg_input
 
     def inner_act(self, x):
-        """The block's inner ReLU output, relu(c1(x)), or relu(c1(relu(x))) under `preact`
-        (032-R25 ①, read by `uranium.model.monitor`; one definition for the forward and the
-        monitor)."""
         if self.preact and not self.nonneg_input:
             x = F.relu(x)
         if x.shape[1] <= RES_BMM_MAX_CH:
@@ -225,8 +177,6 @@ class ResBlock(nn.Module):
 
 
 class GruCell(nn.Module):
-    """GRU cell (Selected head query update, 032 §2.5 #4)."""
-
     def __init__(self, d_in: int, d: int):
         super().__init__()
         self.x = Linear(d_in, 3 * d)
@@ -242,9 +192,6 @@ class GruCell(nn.Module):
 
 
 class Attention(nn.Module):
-    """Multi-head attention with an additive logit bias and a key mask (the distance bias, 032
-    §2.1, and the GTrXL relative positions need the bias)."""
-
     def __init__(self, d: int, heads: int):
         super().__init__()
         assert d % heads == 0, "d_model must divide by heads"
@@ -255,8 +202,6 @@ class Attention(nn.Module):
         self.heads = heads
 
     def forward(self, x_q, x_kv, bias, key_ok):
-        """`x_q` [B,Tq,d], `x_kv` [B,Tk,d], `bias` [B or 1,H,Tq,Tk] or None,
-        `key_ok` [B,Tq or 1,Tk] (True = attend)."""
         b, tq, d = x_q.shape
         tk = x_kv.shape[1]
         h, dh = self.heads, d // self.heads
@@ -270,8 +215,6 @@ class Attention(nn.Module):
         return self.o((attn @ v).transpose(1, 2).reshape(b, tq, d))
 
     def forward_fused(self, x, bucket_u8, table, key_ok):
-        """Self-attention of `x` [B,N,d] with `bias = table[bucket]` through the fused kernel
-        (`uranium.kernels.attention`, the same math as `forward`); `key_ok` [B,N]."""
         from uranium.kernels.attention import fused
 
         b, n, d = x.shape
@@ -283,8 +226,6 @@ class Attention(nn.Module):
 
 
 class FeedForward(nn.Module):
-    """Pre-LN transformer feed-forward with GELU (exact erf form, as Burn `gelu`)."""
-
     def __init__(self, d: int, ffn: int, dropout: float):
         super().__init__()
         self.l1 = Linear(d, ffn)
@@ -296,32 +237,22 @@ class FeedForward(nn.Module):
 
 
 def masked_mean(x, mask):
-    """Mean of `x` [B,N,D] over rows where `mask` [B,N] is true (zero when none)."""
     m = mask.to(x.dtype)[..., None]
     return (x * m).sum(1) / m.sum(1).clamp_min(1.0)
 
 
 def log_softmax_f32(logits):
-    """Log-softmax over the last dim in f32 whatever the compute dtype (032-R8)."""
     return F.log_softmax(logits.float(), 1)
 
 
 def masked_log_softmax(logits, allowed):
-    """Masked log-softmax over the last dim of [B,K] in f32 (032-R4, 032-R8)."""
     return F.log_softmax(logits.float().masked_fill(~allowed, MASKED), 1)
 
 
 def gumbel_argmax(logp, temp: float, generator=None):
-    """Gumbel-max sample from log-probs [B,K] (032-R9). `temp == 0` is greedy. Masked entries
-    (-1e9) are never chosen because the noise is bounded. `generator`: None, a `torch.Generator`,
-    or a per-row noise source with `uniform(shape, device)` (044-R3,
-    `uranium.distill.noise.RowNoise`)."""
     if temp <= 0:
         return logp.argmax(1)
     if generator is not None and not isinstance(generator, torch.Generator):
-        # 044-R3 ②: a per-row noise source (`uranium.distill.noise.RowNoise`): uniforms in
-        # (0, 1) of `logp`'s shape that depend only on each row's own seed and the column, not on
-        # the batch shape. Any other caller passes a torch.Generator or None (unchanged).
         u = generator.uniform(logp.shape, logp.device)
     else:
         u = torch.empty(logp.shape, dtype=torch.float32, device=logp.device).uniform_(1e-6, 1.0 - 1e-6, generator=generator)
@@ -330,17 +261,14 @@ def gumbel_argmax(logp, temp: float, generator=None):
 
 
 def tempered(logp, temp: float):
-    """Re-normalised log-probs at a sampling temperature (behaviour log-probs, 042)."""
     if temp <= 0 or abs(temp - 1.0) < 1e-6:
         return logp
     return F.log_softmax(logp / temp, 1)
 
 
 def pick(logp, choice):
-    """log p(choice) from log-probs [B,K] and choice [B] -> [B]."""
     return logp.gather(1, choice[:, None]).squeeze(1)
 
 
 def entropy(logp):
-    """Entropy of the distribution given by log-probs [B,K] -> [B]; masked entries add 0."""
     return -(logp.exp() * logp).sum(1)

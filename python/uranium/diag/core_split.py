@@ -40,14 +40,12 @@ def stage_order(A: dict) -> list[str]:
 
 
 def gate_inputs(l: int, which: int) -> tuple[str, str, str]:
-    """(x key, y key, output key) of gate `which` (1 after attention, 2 after the FFN) of layer l."""
     if which == 1:
         return ("x_in" if l == 1 else f"L{l - 1}.out"), f"L{l}.a", f"L{l}.g1"
     return f"L{l}.g1", f"L{l}.f", f"L{l}.out"
 
 
 def gate_split(gate, x, y):
-    """(keep, write, h~, z) of a GTrXL GRU gate (uranium.model.core.GruGate), f32 numpy."""
     import torch
 
     from uranium.model.core import GATE_BIAS

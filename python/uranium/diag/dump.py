@@ -33,14 +33,8 @@ from uranium.diag.features import fill_race_cols, lane_features, race_of
 from uranium.diag.stream import lane_groups
 
 PASSES = ("real", "early", "late", "sc+1", "sc-1", "tok+1", "tok-1")
-# early / late start frames per race: the rush / macro class medians of the earlier runs (10.1, 10.2.2)
 CF_STARTS = {"T": (1280, 2080), "P": (1720, 3030), "Z": (1800, 3240)}
-# Protoss shield of an unfinished building: (a + b (hp_ratio - 0.1) / 0.9) * max (fit on 978 rows, corr 0.994)
 SHIELD_A, SHIELD_B = 0.104, 0.925
-# The order an unfinished enemy focus building carries in the observations, per race (as observed:
-# Terran / Protoss model games, 10.2.2 counterfactual setup; Zerg teacher holdout, 37,149 unfinished
-# pool rows, 2026-11-09: all IncompleteBuilding, not IncompleteWarping / ZergBuildingMorph). The
-# dump records the observed orders in its manifest (`focus_orders`) and warns when they differ.
 UNFINISHED_ORDER = {"T": "IncompleteBuilding", "P": "IncompleteBuilding", "Z": "IncompleteBuilding"}
 ENT_KEYS = ("entity_cat", "entity_cont", "entity_mask", "entity_cell", "entity_pos", "unit_cap", "is_building")
 
@@ -77,7 +71,6 @@ def add_args(p) -> None:
 
 
 def redact(path) -> str:
-    """A path under the shared drive as `<shared>/...` (001-R10); other paths as given."""
     p = Path(path).resolve()
     sd = os.environ.get("URANIUM_SHARED_DIR")
     if sd:
@@ -98,7 +91,6 @@ def cf_starts(text: str) -> dict:
 
 
 def edit_start(g: dict, frame, anc, race: str, start: float) -> dict:
-    """The anchor token as started at `start` (module docstring), every row that has it."""
     s = tb.race(race)
     mx, msh, bt = s["max_hp"], s["max_shields"], s["build_time"]
     cat = np.array(g["entity_cat"], copy=True)
@@ -129,7 +121,6 @@ def edit_start(g: dict, frame, anc, race: str, start: float) -> dict:
 
 
 def pad_one(g: dict) -> dict:
-    """One more (masked) entity slot in every row."""
     out = dict(g)
     for k in ENT_KEYS:
         a = np.asarray(g[k])
@@ -140,8 +131,6 @@ def pad_one(g: dict) -> dict:
 
 
 def edit_count(g: dict, race: str, d: int, token: bool) -> dict:
-    """Enemy max-seen focus count +-1 where it is >= 1; with `token` also one focus token
-    duplicated into the last (padded) slot (+1) or the row's highest-index focus token masked (-1)."""
     fid = tb.race(race)["focus"]
     col = tb.sc_seen_col(fid)
     sc = np.array(g["scalar"], copy=True)
@@ -184,8 +173,6 @@ def lane_slice(hg: dict, li: int, t: int) -> dict:
 
 
 class Parts:
-    """Rows and activations written in parts (bounded host memory)."""
-
     def __init__(self, out: Path):
         self.out = out
         self.part = 0
@@ -260,9 +247,6 @@ def run(a) -> int:
     splits = [s for s in a.splits.split(",") if s]
     for si, split in enumerate(splits):
         try:
-            # --read-until: a game's steps from that frame on are dropped as it is read (features
-            # are causal, so the kept steps are the same); its lane takes the next game sooner
-            # (one frame of margin over the float frame the rows are cut by)
             until = {"until_frame": int(np.ceil(a.read_until)) + 1} if a.read_until else {}
             stream = _core.EvalStream(a.config, dirs, split=split, games=a.games, seed=a.seed, has_open=False, maps_dir=a.maps_dir, synthetic_maps=a.synthetic_maps, **until)
         except RuntimeError as e:
@@ -270,7 +254,6 @@ def run(a) -> int:
                 raise
             print(f"[{split}] skipped: {e}", flush=True)
             continue
-        # per lane group: {pass: recurrent state}, None = fresh (a drained group, lane_groups)
         gstate: list = [None] * -(-LANES // G)
         lane_game: dict[int, dict] = {}
         nb = 0
@@ -293,7 +276,7 @@ def run(a) -> int:
             bsz = hg["b"]
             keep = np.asarray(hg["keep"]).astype(bool)
             frame_all = np.asarray(hg["scalar"])[:, 0] * tb.FRAME_SCALE
-            lane_rows = []  # (li, features, tok_k, a_k, n, race)
+            lane_rows = []
             for li in range(bsz):
                 lane = start + li
                 n = steps[lane]
@@ -309,7 +292,7 @@ def run(a) -> int:
                     games[gid_next] = {"split": split, "race": race, "lane": lane}
                     gid_next += 1
                 if (np.diff(fr) < -1).any():
-                    stats["frame_resets"] += 1  # a new game inside a chunk: not expected (one game per chunk)
+                    stats["frame_resets"] += 1
                 lg["last"] = float(fr[-1])
                 f, tok, anc = lane_features(lane_slice(hg, li, T), lg["race"], lg, n)
                 fill_race_cols(f, T)
@@ -341,10 +324,6 @@ def run(a) -> int:
                     obs = to_obs(g, device)
                     st = states[p]
                     s0 = net.init_state(bsz, device) if st is None else net.mask_state(st, keep_t)
-                    # The trunk and the ActionType head only (`action_seq`: the numbers of
-                    # forward_seq's dists["action"]; the other heads are not needed, and the
-                    # location head's convolutions over a varying row count made the ROCm
-                    # backend search a new kernel for every new count, 050-R9 human hold-out).
                     with torch.no_grad(), autocast(device, precision):
                         if p == "real":
                             o, acts = cap.run(obs, s0, T)
@@ -355,10 +334,9 @@ def run(a) -> int:
                     pb[:, pi] = o["action"].float().exp()[:, act_cols].cpu().numpy()
                 for li, *_ in lane_rows:
                     if frame_all[li * T] >= a.act_until:
-                        pb[li * T:(li + 1) * T] = np.nan  # outside the model-pass window, like an unforwarded group
+                        pb[li * T:(li + 1) * T] = np.nan
             for li, f, tok, anc, n, lg in lane_rows:
                 if lg["race"] in tb.RACES:
-                    # the order ids the focus tokens carry (the counterfactual's per-race order, manifest)
                     real = (np.arange(T) < n) & ~np.isnan(f["foc_comp"])
                     for done, key in ((False, "unfinished"), (True, "finished")):
                         c = focus_orders.setdefault(lg["race"], {}).setdefault(key, {})
@@ -370,7 +348,7 @@ def run(a) -> int:
                 f["game"] = np.full(T, lg["gid"], np.int64)
                 f["split"] = np.full(T, si, np.int8)
                 f["step"] = np.arange(T, dtype=np.int16)
-                f["pb"] = pb[li * T:(li + 1) * T]  # f32: counterfactual differences are small
+                f["pb"] = pb[li * T:(li + 1) * T]
                 base = parts.add_rows(f, sel)
                 stats["rows"] += len(sel)
                 if acts is None:
@@ -417,8 +395,6 @@ def run(a) -> int:
 
 
 def load(dump: Path, stages: list[str] | None = None) -> tuple[dict, dict, dict, dict]:
-    """(rows {name: [R]}, acts {"idx": [A], stage: [A, d] float32}, games {gid: meta}, manifest)
-    of a dump folder; `stages` limits the activation arrays read."""
     dump = Path(dump)
     man = json.loads((dump / "manifest.json").read_text(encoding="utf-8"))
     games = {int(k): v for k, v in json.loads((dump / "games.json").read_text(encoding="utf-8")).items()}

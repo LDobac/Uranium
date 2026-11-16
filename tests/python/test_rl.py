@@ -1,7 +1,3 @@
-"""042 RL learner in PyTorch (AMB-000-4), CPU: the batched return targets equal the Rust
-reference (`uranium_league::returns`), and the learner's update behaves like the Burn one it
-replaces (trained steps, KL to itself 0, on-policy ρ 1, weights change, PPO, exploiter reset)."""
-
 import json
 from pathlib import Path
 
@@ -69,8 +65,6 @@ def tiny_net(seed=5) -> UraniumNet:
 
 
 class OnPolicy:
-    """A segment batch whose behaviour log-probs are the network's own (π = μ at the start)."""
-
     def __init__(self, batch, net):
         self.batch, self.net = batch, net
 
@@ -109,8 +103,6 @@ def params(net) -> dict:
 
 
 def test_vtrace_update_042():
-    """Trains the right steps (terminal lane: all 4, the other: all but the bootstrap step),
-    starts with KL(π‖π_BC) = 0 and ρ = 1, changes the weights, and KL grows after."""
     l, batch = learner("vtrace")
     before = params(l.net)
     s = l.update(batch, [1.0, 0.3, 0.3, 0.05])
@@ -127,9 +119,6 @@ def test_vtrace_update_042():
 
 
 class PhasedOnPolicy(OnPolicy):
-    """Lanes whose core_state0 sits inside an outer segment and on its boundary (counters 3 and 0,
-    h_sum 0 there as after an update, 032 §2.7)."""
-
     def __init__(self, batch, net):
         super().__init__(batch, net)
         g = torch.Generator().manual_seed(7)
@@ -150,8 +139,6 @@ class PhasedOnPolicy(OnPolicy):
 
 @pytest.mark.parametrize("algo", ["vtrace", "ppo"])
 def test_outer_update_from_inside_a_segment_042(algo):
-    """032 §2.7 / 042: the learner trains an outer-LSTM model on segments that start inside an
-    outer segment (on-policy: KL to itself 0, ρ 1) and changes the weights."""
     from uranium.model.config import VariantConfig
 
     cfg = json.loads(_core.rl_config(str(ROOT / "config" / "rl.toml")))
@@ -193,7 +180,6 @@ def test_reset_to_bc_042():
 
 
 def test_segment_group_layout_042():
-    """Rows b-major, mask on trained steps, rewards on real steps, zero state0 as None."""
     g = _core.test_segments(2, 4).group(0, 2, 6, 12)
     assert g["b"] == 2 and g["t"] == 6
     assert g["mask"].tolist() == [1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0]
@@ -204,15 +190,10 @@ def test_segment_group_layout_042():
 
 
 def test_segment_batch_totals_match_group():
-    """The learner's step total and versions come from `SegmentBatch.trained` / `versions` before
-    collating (the groups are collated one ahead, overlapped with training): same as `group`."""
     b = _core.test_segments(3, 4)
     g = b.group(0, b.lanes, 4, 12)
     assert list(b.trained) == [int(x) for x in g["trained"]]
     assert list(b.versions) == [int(x) for x in g["versions"]]
-
-
-# --- 042 출발 정책 `--init` (AMB-042-13) ---------------------------------------------------
 
 
 def save_ckpt(d: Path, net: UraniumNet, train: dict) -> Path:
@@ -225,7 +206,6 @@ def save_ckpt(d: Path, net: UraniumNet, train: dict) -> Path:
 
 
 def rl_ckpt(root: Path, step: int, nets: dict, update: int) -> Path:
-    """An RL checkpoint folder as the run loop writes it: `agents/<name>/` and `train_state.json`."""
     from uranium import ckpt
     from uranium.rl.run import STATE_FILE
 
@@ -237,10 +217,9 @@ def rl_ckpt(root: Path, step: int, nets: dict, update: int) -> Path:
 
 
 def make_learners(monkeypatch, tmp_path: Path, bc: Path, init, resume):
-    """`Learners` as `_make` builds it, on CPU; its inference servers are stopped right away."""
     from uranium.rl import run
 
-    monkeypatch.setattr(run, "_n_max", lambda: 0)  # no server warm-up (tiny net, CPU)
+    monkeypatch.setattr(run, "_n_max", lambda: 0)
     cfg = json.loads(_core.rl_config(str(ROOT / "config" / "rl.toml")))
     cfg.update(lanes=2, seq_len=4, micro_lanes=1)
     ls = run.Learners(cfg, str(bc), None if init is None else str(init), None if resume is None else str(resume), CPU, "f32", "vtrace", tmp_path / "logs", 4, 5)
@@ -257,7 +236,6 @@ def same(net, other) -> bool:
 
 
 def saved_train(ls, i: int, d: Path) -> dict:
-    """The train JSON `Learners.save` writes for agent `i` (the run loop's fields plus the start)."""
     from uranium import ckpt
     from uranium.rl.run import AGENTS
 
@@ -266,16 +244,11 @@ def saved_train(ls, i: int, d: Path) -> dict:
 
 
 def rec(frm: str, path: Path, **kw) -> dict:
-    """An expected start record: the path as given and resolved (042, AMB-042-13)."""
     return {"from": frm, "path": str(path), "abs_path": str(Path(path).resolve()), **kw}
 
 
-@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")  # the broken warm-up
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 def test_snapshot_server_close_042(monkeypatch, tmp_path):
-    """042 스냅샷 추론 서버 (AMB-042-14): `Learners.snapshot_server(dir)` serves a snapshot's
-    agent folder and names the instance by a token; `close_snapshot_server(token)` stops that
-    thread and frees its model, never a newer server of the same folder (a stale close after a
-    restart); a dead thread reads as not alive; closing again does nothing."""
     from uranium import ckpt
 
     bc = save_ckpt(tmp_path / "bc" / "ckpt-11", tiny_net(5), {"step": 11})
@@ -298,7 +271,6 @@ def test_snapshot_server_close_042(monkeypatch, tmp_path):
     ls.close_snapshot_server(token2)
     s2.join(timeout=10)
     assert not s2.is_alive()
-    # A server whose warm-up fails after `snapshot_server` returned: its thread dies, not alive.
     from uranium.agent.infer import InferenceServer
     from uranium.rl import run
 
@@ -319,9 +291,6 @@ class ExitCalled(BaseException):
 
 
 def test_learner_calls_exit_70_on_a_fatal_device_error_042_r20(monkeypatch, tmp_path):
-    """042-R20: a fatal device error in the run loop's calls into the learners (update, weight
-    push, checkpoint save, snapshot server) ends the process with 70 right away, without writing
-    the checkpoint; an ordinary error still reaches the run loop as an exception."""
     import os
 
     from uranium import ckpt
@@ -355,7 +324,6 @@ def test_learner_calls_exit_70_on_a_fatal_device_error_042_r20(monkeypatch, tmp_
     with pytest.raises(ExitCalled):
         ls.push(0)
     assert codes == [70, 70]
-    # A checkpoint save that meets the error: exit before anything of the agent is written.
     monkeypatch.setattr(ckpt, "save_model", raise_(fatal))
     d = tmp_path / "ckpt-99" / "agents" / "main"
     with pytest.raises(ExitCalled):
@@ -365,9 +333,6 @@ def test_learner_calls_exit_70_on_a_fatal_device_error_042_r20(monkeypatch, tmp_
 
 @pytest.mark.parametrize("agent_folder", [False, True])
 def test_init_main_from_rl_checkpoint_042(monkeypatch, tmp_path, agent_folder):
-    """042 (AMB-042-13): `--init` gives Main its start weights only (update 0, empty optimizer);
-    the KL reference and the exploiters stay the BC model; the start is in the train JSON. The
-    checkpoint folder and its `agents/main` both work."""
     from uranium import ckpt
 
     bc_net, init_net = tiny_net(5), tiny_net(9)
@@ -384,7 +349,6 @@ def test_init_main_from_rl_checkpoint_042(monkeypatch, tmp_path, agent_folder):
     assert t["start"] == rec("init", init, update=1234, step=3133569)
     assert t["update"] == 0 and t["agent"] == "main"
     assert saved_train(ls, 1, tmp_path / "save" / "mx")["start"] == rec("bc", bc)
-    # An exploiter reset goes back to BC, not to --init (042).
     lx.reset_to_bc()
     assert same(lx.net, bc_net)
 
@@ -398,8 +362,6 @@ def test_no_init_starts_all_from_bc_042(monkeypatch, tmp_path):
 
 
 def test_resume_ignores_init_042(monkeypatch, tmp_path):
-    """042-R1 / 061 over AMB-042-13: with a LATEST every agent continues its own folder (weights,
-    update, optimizer) whatever `--init` says, and the start record written there is kept."""
     from uranium import ckpt
     from uranium.rl.run import AGENTS
 
@@ -420,9 +382,6 @@ def test_resume_ignores_init_042(monkeypatch, tmp_path):
 
 
 def test_init_bc_dropout_and_compat_feature_version_042(monkeypatch, tmp_path):
-    """The real pair (042, AMB-042-13): a BC checkpoint with entity dropout 0.1 and an older
-    load-compatible feature schema (030-R5), and an RL `--init` at dropout 0 (032 §2) and the
-    current schema. Same model, so `--init` loads and Main gets its weights."""
     from uranium import ckpt
 
     compat = ckpt.feature_load_compat()
@@ -445,7 +404,6 @@ def test_init_bc_dropout_and_compat_feature_version_042(monkeypatch, tmp_path):
 
 
 def test_init_config_mismatch_is_a_start_error_042(monkeypatch, tmp_path):
-    """042 / 032-R10: an `--init` model other than the BC model fails at start."""
     bc = save_ckpt(tmp_path / "bc", tiny_net(5), {})
     cfg = tiny_net().cfg
     cfg.core.kind = "Gtrxl" if cfg.core.kind != "Gtrxl" else "Lstm"
@@ -456,7 +414,6 @@ def test_init_config_mismatch_is_a_start_error_042(monkeypatch, tmp_path):
 
 
 def test_init_without_main_agent_is_an_error_042(monkeypatch, tmp_path):
-    """A BC checkpoint (no `agents/main`) is not an `--init` (042)."""
     bc = save_ckpt(tmp_path / "bc", tiny_net(5), {})
     with pytest.raises(FileNotFoundError, match="agents/main"):
         make_learners(monkeypatch, tmp_path, bc, bc, None)

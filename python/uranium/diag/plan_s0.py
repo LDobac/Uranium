@@ -57,9 +57,7 @@ from uranium.diag import tables as tb
 
 M0_TOP = (4, 8, 16)
 CAND_TOP = 8
-OUTCOMES = pp.Q_NAMES  # q̂ heads: game won, 8:00 SCVs >= 8
-# 6.5 thresholds, 기본안(미확정) (reports/jepa_planning.md 6.5: the user decides the numbers)
-# 6.3 o_t: the own-state columns of the headline ô metric (the predictors train on every column)
+OUTCOMES = pp.Q_NAMES
 OWN_HEADLINE = ("scv", "supply_used", "supply_total", "barracks", "bunker", "command_center", "supply_depot", "refinery", "factory", "army")
 TH_DEFAULTS = {"s_ratio": 2.0, "r_min": 0.2, "r_noise": 0.1, "m2b": 0.90, "m2a": 0.5, "m3a": 0.01}
 
@@ -93,7 +91,6 @@ def add_args(p) -> None:
     for k, v in TH_DEFAULTS.items():
         p.add_argument(f"--th-{k.replace('_', '-')}", type=float, default=v, help=f"6.5 threshold, 기본안(미확정) {v}")
     p.add_argument("--th-own-k", type=int, help="k of the M1 own-state criterion (기본안(미확정) 8; 0 = no own-state criterion; not with --v1, which has none)")
-    # design (plan_pred.Design; reports/jepa_planning.md 6.8)
     d = pp.Design()
     p.add_argument("--v1", action="store_true", help="the first S0 run's design (every valid row, h' only, level targets, same-game S partner) "
                    "and verdict: its models and numbers")
@@ -106,7 +103,6 @@ def add_args(p) -> None:
 
 
 def design_of(a) -> pp.Design:
-    """`plan_pred.Design` from the flags (`--v1` takes no other design flag, nor --th-own-k)."""
     given = {"chains": a.chains, "chain_kinds": a.chain_kinds, "own_input": a.own_input, "own_target": a.own_target, "partner": a.s_partner, "k_unit": a.k_unit}
     given = {k: v for k, v in given.items() if v is not None}
     if a.v1:
@@ -130,9 +126,6 @@ def model_specs(ks, variants, m3c: bool) -> list[tuple[str, str, int, list | Non
 
 
 def fingerprint(data: pp.Data) -> dict:
-    """What a trained model depends on: checkpoint, rows, sources and the games / roles kept (the split
-    digest covers --eval-frac, --split-seed, --drop and --maps) and the design (absent for `V1`, as the
-    first run's models have it)."""
     fp = {**data.checkpoint, "rows": int(data.N), "games": int(data.G), "sources": [[s.name, s.kind, s.role] for s in data.sources],
           "split_digest": data.split_digest}
     if data.design != pp.V1:
@@ -167,9 +160,6 @@ def train_all(data: pp.Data, a, ks, variants, models: Path) -> dict:
         log[name] = {k_: meta[k_] for k_ in ("rows", "secs")} | {"last": lg[-1] if lg else None}
         print(f"[train] {name}: rows {len(rows)} {meta['secs']}s last {lg[-1] if lg else None}", flush=True)
     return log
-
-
-# ---------------------------------------------------------------- report pieces
 
 
 def m0(data: pp.Data, ks) -> dict:
@@ -214,8 +204,6 @@ def norm_y(x):
 
 
 def targets(data: pp.Data, ev, k, st, with_y: bool = True) -> dict:
-    """The t+k targets of rows `ev` in the predictors' standardised space (float32; left-out
-    dimensions 0)."""
     t = data.nxt[k][ev]
     p_on = np.isfinite(st["p_sd"])
     o_on = np.isfinite(st["o_sd"])
@@ -232,8 +220,6 @@ def targets(data: pp.Data, ev, k, st, with_y: bool = True) -> dict:
 
 
 def eval_rows(nets: dict, data: pp.Data, ev, k, st, chunk: int = 8192) -> tuple[dict, dict]:
-    """Per-row M1 terms of every predictor (and the model's own g_k, ŷ only, decision k) on rows `ev`,
-    chunk by chunk (bounded memory) -> ({name: {metric: [rows]}}, {name: q̂ logits [rows, 2]})."""
     rows = {nm: {m: [] for m in ("y", "p", "o", "o_all", "o_cols", "od", "od_all", "od_cols") + OUTCOMES} for nm in nets}
     rows["gk"] = {"y": []}
     qlog = {nm: [] for nm in nets}
@@ -274,7 +260,6 @@ def per_row(pred: dict, tg: dict) -> dict:
 
 
 def m1_block(boot: ps.Boot, rows: dict, tg: dict, sel: np.ndarray, names: list) -> dict:
-    """One row set: per metric the predictors' values and the gains over U."""
     res = {}
     r2_tgt = {"p": "p", "o": "o", "o_all": "o", "od": "od", "od_all": "od"}
     for met in ("y", "p", "o", "o_all", "od", "od_all") + OUTCOMES:
@@ -298,7 +283,6 @@ def m1_block(boot: ps.Boot, rows: dict, tg: dict, sel: np.ndarray, names: list) 
         r = {"metric": "R2" if higher else ("1-cos" if met == "y" else "NLL"), "values": {nm: ps.ci(v) for nm, v in vals.items()},
              "gain": {nm: ps.ci(g) for nm, g in gain.items()}}
         if errs:
-            # the reported own-state metric: relative change-error cut 1 - err_X / err_U (paired draws)
             r["cut"] = {nm: ps.rel_cut(e, errs["U"]) for nm, e in errs.items() if nm != "U"}
         if "A" in gain and "H" in gain:
             r["r"] = ps.ratio(gain["A"], gain["H"])
@@ -309,8 +293,6 @@ def m1_block(boot: ps.Boot, rows: dict, tg: dict, sel: np.ndarray, names: list) 
 
 
 def own_cols_block(boot: ps.Boot, rows: dict, tg: dict, sel: np.ndarray, names: list, own_names: list) -> dict:
-    """Per own-state column (kept on the training rows): each predictor's R² and the gain of A over U, on the
-    level (o_{t+k}) and under `delta` on the change (o_{t+k} - o_t) with A's relative error cut."""
     out = {}
     for c in np.nonzero(tg["o_all_on"])[0]:
         y = tg["o"][sel][:, [c]]
@@ -341,7 +323,6 @@ def kind_groups(data: pp.Data, ev) -> dict:
 
 
 def candidates(data: pp.Data, rows) -> np.ndarray:
-    """[rows, CAND_TOP + 1] action ids (-1 = none): the policy's top open types ∪ {a_t}."""
     p = data.probs(rows)
     top = np.argsort(-p, 1, kind="stable")[:, :CAND_TOP]
     top = np.where(np.take_along_axis(p, top, 1) > 0, top, -1)
@@ -361,7 +342,6 @@ def m2(data: pp.Data, net, st, k, ev, boot_n, seed) -> dict:
         return {"rows": 0}
     cand = candidates(data, rows)
     tg = targets(data, rows, k, st)
-    # ô in the predictor's own target space (the change with --own-target delta: M2b compares predicted changes)
     if data.design.own_target == "delta":
         tg["o"], tg["o_on"] = tg["od"], tg["od_on"]
     C = cand.shape[1]
@@ -378,7 +358,7 @@ def m2(data: pp.Data, net, st, k, ev, boot_n, seed) -> dict:
         flat_a = np.where(valid, cs, 0).reshape(-1)
         pr = pp.predict(net, data, flat_r, k, st, action=flat_a)
         out = {"y": norm_y(pr["y"]).reshape(n, C, -1), "o": (pr["o"] * tg["o_on"]).reshape(n, C, -1), "p": (pr["p"] * tg["p_on"]).reshape(n, C, -1)}
-        o_dir = pr["o"].reshape(n, C, -1)  # M2b reads the candidate's own column X, every column
+        o_dir = pr["o"].reshape(n, C, -1)
         pair = valid[:, :, None] & valid[:, None, :] & ~np.eye(C, dtype=bool)[None]
         for key, x in out.items():
             d = np.linalg.norm(x[:, :, None] - x[:, None, :], axis=-1)
@@ -391,7 +371,6 @@ def m2(data: pp.Data, net, st, k, ev, boot_n, seed) -> dict:
             if key == "p":
                 e = e[tg["p_ok"][s:s + n]]
             err[key].append(e)
-        # M2b: Build / BuildAddon / Train_X candidates with an own column X
         for j in range(C):
             col = np.array([of_action.get(int(c), -1) for c in cs[:, j]])
             has = valid[:, j] & (col >= 0)
@@ -399,7 +378,7 @@ def m2(data: pp.Data, net, st, k, ev, boot_n, seed) -> dict:
                 continue
             ii = np.nonzero(has)[0]
             mine = o_dir[ii, j, col[ii]]
-            others = o_dir[ii, :, col[ii]]  # [m, C]
+            others = o_dir[ii, :, col[ii]]
             ov = valid[ii].copy()
             ov[:, j] = False
             some = ov.any(1)
@@ -436,7 +415,6 @@ def m2(data: pp.Data, net, st, k, ev, boot_n, seed) -> dict:
 
 @torch.no_grad()
 def q_all(net, data: pp.Data, rows, st, chunk: int = 256) -> np.ndarray:
-    """[rows, A, 2] σq̂ of predictor A (standardisation `st`) for every action type."""
     cand = torch.arange(data.n_act)
     out = []
     for s in range(0, len(rows), chunk):
@@ -447,7 +425,6 @@ def q_all(net, data: pp.Data, rows, st, chunk: int = 256) -> np.ndarray:
 
 
 def delta_q(net, data: pp.Data, rows, action, st) -> np.ndarray:
-    """[rows, 2] σq̂(action) - Σ_c π(c) σq̂(c) (`action` [rows] or an int)."""
     Q = q_all(net, data, rows, st)
     pi = data.probs(rows)
     a = np.broadcast_to(np.asarray(action, np.int64), (len(rows),))
@@ -460,7 +437,7 @@ def m3b(data: pp.Data, nets: dict, sts: dict, a, boot_n, seed) -> dict:
     races = set(a.m3b_races.split(","))
     macro = set(a.m3b_macro.split(","))
     sel = (data.row_eval & np.isin(data.row_kind, [pp.KINDS.index("teacher"), pp.KINDS.index("model")]) & (data.frame >= lo) & (data.frame < hi))
-    sel &= ~data.chain_drop  # a dropped chained row's observation already shows its chain's commands
+    sel &= ~data.chain_drop
     sel &= np.array([data.g_race[g] in races for g in data.game]) if data.N else sel
     rows = np.nonzero(sel)[0]
     if len(rows):
@@ -534,11 +511,7 @@ def m3d(data: pp.Data, nets: dict, k, ev, boot_n, seed) -> dict:
     return out
 
 
-# ---------------------------------------------------------------- verdict
-
-
 def verdict(rep: dict, th: dict, ks) -> dict:
-    """The 6.5 table per scoring target. Each row: matched True / False / None (an input missing)."""
     out = {}
 
     def g(d, *path):
@@ -560,7 +533,6 @@ def verdict(rep: dict, th: dict, ks) -> dict:
                 blk = g(rep, "M1", ks_, "pooled", "op", met)
                 ga, gs, gh, r = g(blk, "gain", "A"), g(blk, "gain", "S"), g(blk, "gain", "H"), g(blk, "r", "pt")
                 name = f"m1_{'y' if met == 'y' else 'outcome'}"
-                # r = A / H is undefined when the oracle gains nothing: that k cannot be judged
                 if ga is None or gs is None or gh is None or not finite(gh["pt"]) or gh["pt"] <= 0 or not finite(r):
                     c[name] = None
                     continue
@@ -571,7 +543,6 @@ def verdict(rep: dict, th: dict, ks) -> dict:
             c["m3a"] = None if d3a is None or not finite(d3a["pt"]) else bool(d3a["pt"] >= th["m3a"])
             d3b = g(rep, "M3b", ks_, "A", "model", q, "rush_minus_macro")
             c["m3b"] = None if d3b is None or not finite(d3b["lo"]) else bool(d3b["pt"] > 0 and d3b["lo"] > 0)
-            # own-state change: A's relative error cut over U, CI above 0 and >= s_ratio x the S control's cut
             ca, cs = g(rep, "M1", ks_, "pooled", "op", "od", "cut", "A"), g(rep, "M1", ks_, "pooled", "op", "od", "cut", "S")
             c["m1_own"] = None if ca is None or cs is None or not finite(ca["lo"]) or not finite(cs["pt"]) else \
                 bool(ca["pt"] > 0 and ca["lo"] > 0 and ca["pt"] >= th["s_ratio"] * cs["pt"])
@@ -596,8 +567,6 @@ def verdict(rep: dict, th: dict, ks) -> dict:
         m3 = lambda c: all3([c["m3a"], c["m3b"]])  # noqa: E731
         row1 = all3([own_pass, any_k(lambda c: all3([m1(c), c["m2a"], m3(c)])), m2b_pass])
         row2 = all3([own_pass, any_k(lambda c: all3([m1(c), c["m2a"], None if m3(c) is None else not m3(c)])), m2b_pass])
-        # A gain in the noise (r < r_noise on ŷ, every k) while the oracle's gain is significant (some k)
-        # (the k where H is significant; r is defined there, H's gain being > 0)
         rs = [g(rep, "M1", str(k), "pooled", "op", "y", "r", "pt") for k in ks]
         h_lo = [g(rep, "M1", str(k), "pooled", "op", "y", "gain", "H", "lo") for k in ks]
         a_lo = [g(rep, "M1", str(k), "pooled", "op", "y", "gain", "A", "lo") for k in ks]
@@ -606,11 +575,10 @@ def verdict(rep: dict, th: dict, ks) -> dict:
             row3 = None
         else:
             row3 = bool(sig) and all(rs[i] < th["r_noise"] for i in sig)
-        if own_k:  # the own-state change cuts of A and H count too
+        if own_k:
             a_lo = a_lo + [g(rep, "M1", str(k), "pooled", "op", "od", "cut", "A", "lo") for k in ks]
             h_lo = h_lo + [g(rep, "M1", str(k), "pooled", "op", "od", "cut", "H", "lo") for k in ks]
         row4 = None if not all(finite(x) for x in a_lo + h_lo) else bool(all(x <= 0 for x in a_lo + h_lo))
-        # human-only: rush-game ΔQ below 0 (CI), model-only: not (its CI reaches 0 or above)
         r5 = []
         for k in ks:
             hu = g(rep, "M3b", str(k), "A-human", "both", q, "rush_mean", "hi")
@@ -632,9 +600,6 @@ def verdict(rep: dict, th: dict, ks) -> dict:
             ],
         }
     return out
-
-
-# ---------------------------------------------------------------- markdown
 
 
 def _f(x, nd=3):
@@ -750,12 +715,9 @@ def markdown(rep: dict) -> str:
     return "\n".join(L) + "\n"
 
 
-# ---------------------------------------------------------------- report
-
-
 def report(data: pp.Data, a, ks, variants, models: Path) -> dict:
     th = {k: getattr(a, f"th_{k}") for k in TH_DEFAULTS}
-    th["own_k"] = a.th_own_k  # resolved in `run` (0 with --v1)
+    th["own_k"] = a.th_own_k
     rep = {"kind": "plan-s0", "checkpoint": data.checkpoint, "data": pp.describe(data),
            "settings": {"ks": ks, "variants": variants, "boot": a.boot, "boot_seed": a.boot_seed, "eval_frac": a.eval_frac, "split_seed": a.split_seed,
                         "design": data.design.as_dict(), "v1": bool(a.v1),
@@ -776,7 +738,7 @@ def report(data: pp.Data, a, ks, variants, models: Path) -> dict:
             if meta.get("data") != fingerprint(data):
                 raise SystemExit(f"{path}: trained on other data; run --stage train (--retrain)")
             label = name.split("_k")[0]
-            if "d_mu" not in st:  # first-run models: the change statistics of their training rows, for the change metrics
+            if "d_mu" not in st:
                 st = {**st, **data.delta_stats(data.pair_rows(k, "train", kinds), k)}
             nets[label], sts[label] = net, st
             rep["models"][name] = {x: meta[x] for x in ("rows", "steps", "batch", "lr", "seed", "secs") if x in meta} | {"last": meta["log"][-1] if meta.get("log") else None}
@@ -784,7 +746,7 @@ def report(data: pp.Data, a, ks, variants, models: Path) -> dict:
         if "U" not in nets or not len(ev):
             rep["M1"][ks_] = {}
             continue
-        st = sts["U"]  # the main predictors of one k share the standardisation (the same training rows)
+        st = sts["U"]
         tg = targets(data, ev, k, st, with_y=False)
         rows, qlog = eval_rows({nm: nets[nm] for nm in variants if nm in nets}, data, ev, k, st)
         names = [n for n in ["U", *[v for v in variants if v != "U"], "gk"] if n in rows]

@@ -1,9 +1,3 @@
-"""Hand-written GPU kernels (060-R1): one `.cu` source per kernel, compiled at first use with
-`torch.utils.cpp_extension` (CUDA hosts as is, ROCm hosts hipified), cached per PyTorch build in
-`URANIUM_KERNEL_DIR` (default `~/.cache/uranium/kernels`). Every kernel has a pure PyTorch
-reference and a switch that turns it off; a kernel that fails to build is reported once and the
-reference runs instead."""
-
 import os
 import shutil
 import subprocess
@@ -25,8 +19,6 @@ def build_dir(name: str) -> Path:
 
 
 def msvc_env() -> None:
-    """Windows CUDA hosts: when `cl` is not on PATH, the environment of the newest Visual Studio's
-    `vcvars64.bat` (found with vswhere), so the extension builds from a plain shell."""
     if sys.platform != "win32" or shutil.which("cl"):
         return
     vswhere = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
@@ -44,8 +36,6 @@ def msvc_env() -> None:
 
 
 def warm(device) -> None:
-    """Loads (builds once) the kernels the switches turn on for `device`, outside any traced code:
-    torch.compile cannot trace the loader's path handling."""
     if torch.device(device).type != "cuda":
         return
     from uranium.model.encoders import ENTITY_ATTN_MODES
@@ -56,7 +46,6 @@ def warm(device) -> None:
 
 
 def load(name: str):
-    """The compiled module for `<name>.cu`, or None when it cannot be built (reason on stderr)."""
     if name in _LOADED:
         return _LOADED[name]
     mod = None
@@ -66,10 +55,9 @@ def load(name: str):
         msvc_env()
         if torch.version.hip and not os.environ.get("PYTORCH_ROCM_ARCH") and torch.cuda.is_available():
             os.environ["PYTORCH_ROCM_ARCH"] = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
-        # CUDA 13's CCCL headers need MSVC's conforming preprocessor.
         win = ["/Zc:preprocessor"] if sys.platform == "win32" else []
         mod = cpp_load(name=f"uranium_{name}", sources=[str(_HERE / f"{name}.cu")], extra_cflags=["-O3", *win], extra_cuda_cflags=["-O3", *(f"-Xcompiler={f}" for f in win)], build_directory=str(build_dir(name)), verbose=False)
-    except Exception as e:  # noqa: BLE001 - the reference path runs instead
+    except Exception as e:  # noqa: BLE001
         print(f"[kernels] {name}: not built ({str(e).splitlines()[0][:200]}), using the PyTorch reference", file=sys.stderr, flush=True)
     _LOADED[name] = mod
     return mod

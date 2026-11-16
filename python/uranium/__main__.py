@@ -1,5 +1,3 @@
-"""`python -m uranium <command>` (001-R9: reads `.env` first; process variables win)."""
-
 import argparse
 import json
 import sys
@@ -8,7 +6,6 @@ from uranium import env
 
 
 def feed_digest(a: argparse.Namespace) -> int:
-    """Same output as `uranium-train feed-digest`, hashed here from the `_core` numpy arrays."""
     from uranium import _core
     from uranium.data import group_digest, groups
 
@@ -24,15 +21,10 @@ def feed_digest(a: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # 042-R10: a Windows process can inherit "ignore Ctrl+C" from whatever started it; clear it
-    # before the slow imports so a Ctrl+C there is a KeyboardInterrupt, not lost.
     if sys.platform == "win32":
         import ctypes
 
         ctypes.windll.kernel32.SetConsoleCtrlHandler(None, False)
-    # `kill -USR1 <pid>` prints every Python thread's stack to stderr (the worker or job log)
-    # and the process goes on: a hung training or inference process can be looked at without
-    # root (ptrace) or stopping it. Not on Windows (no SIGUSR1).
     import signal
 
     if hasattr(signal, "SIGUSR1"):

@@ -1,45 +1,3 @@
-"""Data and predictors of the S0 feasibility test (jepa_planning S0, reports/jepa_planning.md 6.2-6.4;
-050-R9 diagnostics). CPU, deterministic for a seed and thread count.
-
-Data (`Data`): one or more `diag plan-dump` folders, each a source `NAME:KIND:ROLE=PATH`:
-- kind `human` / `teacher` / `model` (M3b reads teacher and model games, M3c trains on human-only and
-  model-only rows),
-- role `train` (every game trains), `eval` (every game evaluates) or `split` (a fixed-seed game-level
-  split, `eval_frac` evaluates; both streams of one replay on the same side, as 041-R12). The split
-  draws from a generator seeded by (`split_seed`, crc32 of the source NAME): renaming a source moves it.
-Pairs (t, t+k): two rows of one game k decisions apart (`dec`; `Design.k_unit` "frame": the first row
-of the game at least k frames later); a row is used (an example) when its label is valid (weight > 0),
-it is not a dropped chained row (below) and its t+k row was dumped. Every predictor of one k sees the
-same rows.
-
-`Design` (reports/jepa_planning.md 6.8, the second S0 run; `V1` = the first run, 2026-11-11):
-- chains: a chained row is a row whose previous row of the game (dec - 1) is a command label
-  (action != NoOp, void or not) observed at most 1 frame earlier. 040-R4 keeps the commands of one
-  frame as consecutive labels and moves the 2nd, 3rd, ... to +1, +2, ... frames, so their
-  observations already show the effect of the commands executed on the first frame (their own
-  included). Teacher commands come every 8 frames and the model's decisions are several frames apart,
-  so in those sources a 1-frame gap after a command is such a chain (in human data it can also be two
-  commands 1 frame apart). `chains` "drop": chained rows of `chain_kinds` are not examples (and not M3b
-  rows); they stay targets and H-oracle actions.
-- own_input: the own state o_t (standardised, `OWN_SD_FLOOR`) is an input of every predictor.
-- own_target: the ô head predicts "delta" (o_{t+k} - o_t, standardised with its own mean / sd, floor
-  `OWN_SD_FLOOR`) or "level" (o_{t+k}).
-- partner: the S control's action comes from a random usable row of another game of the same source
-  ("other-game", the source's action marginal without the game's identity) or of the same game
-  ("same-game", the first run).
-
-Predictors (6.4, one per variant and k; 3.2 shape): input -> Linear 512 -> ReLU -> Linear 512 -> ReLU,
-heads ŷ (d_y, 1 - cos to LN y_{t+k}), p̂ (privileged at t+k, standardised, MSE, rows with one), ô (own
-state, `own_target`, standardised, MSE), q̂ (2 logits: game won, 8:00 SCVs >= 8; BCE where defined).
-Inputs (⊕ o_t after h'_t when `own_input`):
-  U   h'_t
-  A   h'_t ⊕ Emb(a_t) (32)
-  Ad  h'_t ⊕ Emb(a_t) ⊕ Emb(delay bucket) (16)              (A+d)
-  H   h'_t ⊕ action-type shares over decisions [t, t+k) (101) (oracle)
-  S   h'_t ⊕ Emb(action of the partner row, `partner`) (control, `PARTNER_SEED`)
-h' is standardised with the training rows' mean / sd (part of the predictor). Same steps, batch and seed
-for every predictor."""
-
 import hashlib
 import json
 import zlib
@@ -58,28 +16,23 @@ KINDS = ("human", "teacher", "model")
 ROLES = ("train", "eval", "split")
 HIDDEN, EMB_A, EMB_D = 512, 32, 16
 PARTNER_SEED = 12345
-# Standardisation floors (sd used = max(sd, floor); a column constant on the training rows, sd < 1e-6,
-# is left out): own state half a count (supply columns are BWAPI half-supply units, the same floor),
-# privileged 0.05 in its encoded units (a count is log1p(n) / 4: 0 -> 1 is 0.17).
 OWN_SD_FLOOR, PRIV_SD_FLOOR, CONST_SD = 0.5, 0.05, 1e-6
 Q_NAMES = ("win", "scv8")
-NOOP = 0  # action id of NoOp (data/tables actions)
+NOOP = 0
 
 
 @dataclass(frozen=True)
 class Design:
-    """How rows become predictor examples (module docstring). The default is the second S0 run."""
-
-    chains: str = "drop"  # "drop" | "keep"
+    chains: str = "drop"
     chain_kinds: tuple = ("teacher", "model")
     own_input: bool = True
-    own_target: str = "delta"  # "delta" | "level"
-    partner: str = "other-game"  # "other-game" | "same-game"
-    k_unit: str = "dec"  # "dec" | "frame"
+    own_target: str = "delta"
+    partner: str = "other-game"
+    k_unit: str = "dec"
 
     def __post_init__(self):
         if self.chains == "keep":
-            object.__setattr__(self, "chain_kinds", ())  # nothing is dropped: no kinds
+            object.__setattr__(self, "chain_kinds", ())
         object.__setattr__(self, "chain_kinds", tuple(self.chain_kinds))
         if self.chains not in ("drop", "keep") or self.own_target not in ("delta", "level") or self.partner not in ("other-game", "same-game") \
                 or self.k_unit not in ("dec", "frame") or any(k not in KINDS for k in self.chain_kinds):
@@ -90,7 +43,6 @@ class Design:
                 "partner": self.partner, "k_unit": self.k_unit}
 
 
-# The first S0 run (2026-11-11, master 5f248af): every valid row, h' only, level targets, same-game partner.
 V1 = Design(chains="keep", chain_kinds=(), own_input=False, own_target="level", partner="same-game", k_unit="dec")
 
 
@@ -103,7 +55,6 @@ class Source:
 
 
 def parse_src(spec: str) -> Source:
-    """`NAME:KIND:ROLE=PATH`."""
     head, sep, path = spec.partition("=")
     parts = head.split(":")
     if not sep or len(parts) != 3 or parts[1] not in KINDS or parts[2] not in ROLES or not parts[0]:
@@ -112,14 +63,12 @@ def parse_src(spec: str) -> Source:
 
 
 def _ms(x, floor) -> tuple[np.ndarray, np.ndarray]:
-    """Column mean and floored sd (float32); a column constant on these rows gets sd inf."""
     x = np.asarray(x, np.float64)
     mu, sd = x.mean(0), x.std(0)
     return mu.astype(np.float32), np.where(sd < CONST_SD, np.inf, np.maximum(sd, floor)).astype(np.float32)
 
 
 def split_eval(keys: list, name: str, frac: float, seed: int) -> set:
-    """The eval share of a `split` source: a fixed-seed permutation of the sorted replay keys."""
     u = sorted(set(keys))
     rng = np.random.default_rng([seed, zlib.crc32(name.encode())])
     p = rng.permutation(len(u))
@@ -128,16 +77,8 @@ def split_eval(keys: list, name: str, frac: float, seed: int) -> set:
 
 
 class Data:
-    """Every row of the sources in memory except the g_k outputs (memmaps): h, y, priv, logp float16."""
-
     def __init__(self, sources: list[Source], ks=(8, 32), eval_frac: float = 0.2, split_seed: int = 1, drop: dict | None = None,
                  keep_bot: bool = False, maps=None, design: Design = Design()):
-        """`drop` {source name: {"bot": [[sha256, start], ...], "model": [...]}}: the views of a source
-        (e.g. config/plan_s0/jepa_diag_tp_views.json); a stream (replay sha256, own start slot
-        `scalar_cat[2]`) in "bot" is left out, and every stream must be in one of the lists. A `model`
-        source with Terran-enemy streams (TvT: both players' views are streams) needs one, or
-        `keep_bot`. `maps`: only games of these map families (0 / 1 = the target maps). `design`:
-        module docstring (`V1` = the first run)."""
         self.sources = sources
         self.ks = list(ks)
         self.design = design
@@ -158,7 +99,6 @@ class Data:
         self.own_names = mans[0]["own_columns"]
         self.op = np.zeros(rows[0]["logp"].shape[1], bool)
         self.op[mans[0]["op_actions"]] = True
-        # global games
         self.game_meta, gid_map = [], []
         drop = drop or {}
         maps = None if maps is None else {int(x) for x in maps}
@@ -177,7 +117,7 @@ class Data:
                 view = (e.get("sha"), int(e.get("start", -1)))
                 if views and view not in bot and view not in ours:
                     raise SystemExit(f"plan-s0: source {s.name} stream {view} is in neither view list of --drop")
-                if view in bot or e.get("skipped"):  # plan-dump --skip-views: a bot view without rows
+                if view in bot or e.get("skipped"):
                     n_bot += 1
                 elif maps is not None and int(e.get("map", -1)) not in maps:
                     n_map += 1
@@ -198,15 +138,13 @@ class Data:
         self.g_kind = np.array([KINDS.index(e["kind"]) for e in self.game_meta], np.int8)
         res = np.array([e.get("result", 0) for e in self.game_meta], np.float64)
         scv = np.array([np.nan if e.get("scv8") is None else e["scv8"] for e in self.game_meta], np.float64)
-        self.g_q = np.stack([np.where(res != 0, (res > 0).astype(np.float64), np.nan), scv], 1)  # [G, 2], NaN = undefined
+        self.g_q = np.stack([np.where(res != 0, (res > 0).astype(np.float64), np.nan), scv], 1)
         self.g_cls = [e.get("cls_given") or e.get("cls") for e in self.game_meta]
         self.g_race = [e.get("race", "U") for e in self.game_meta]
         keys = sorted({e["key"] for e in self.game_meta})
         kid = {k: i for i, k in enumerate(keys)}
-        self.g_unit = np.array([kid[e["key"]] for e in self.game_meta], np.int64)  # bootstrap unit: the replay
-        # the games and their roles (the report refuses models trained on another split)
+        self.g_unit = np.array([kid[e["key"]] for e in self.game_meta], np.int64)
         self.split_digest = hashlib.sha256(json.dumps(sorted([e["key"], e.get("start"), e["role"]] for e in self.game_meta)).encode()).hexdigest()
-        # rows: preallocated, filled source by source from the memmaps (no second copy)
         fields = ("h", "y", "priv", "priv_ok", "own", "action", "delay", "weight", "logp", "mask", "win_open", "frame", "dec")
         sel = []
         for si, r in enumerate(rows):
@@ -220,19 +158,18 @@ class Data:
         for f in fields:
             setattr(self, f, np.empty((total, *rows[0][f].shape[1:]), rows[0][f].dtype))
         self.game = np.empty(total, np.int64)
-        self.gk_rows = []  # per source: (global row offset, local row index array, memmaps)
+        self.gk_rows = []
         off = 0
         for (keep, game), r in zip(sel, rows):
             n = len(keep)
             self.game[off:off + n] = game
             for f in fields:
-                for c in range(0, n, 200_000):  # bounded temporaries
+                for c in range(0, n, 200_000):
                     getattr(self, f)[off + c:off + min(c + 200_000, n)] = r[f][keep[c:c + 200_000]]
             self.gk_rows.append((off, keep, {k: r[k] for k in r if k.startswith("g") and k[1:].isdigit()}))
             off += n
         self.N = len(self.game)
         self.G = G
-        # game-ordered rows: pos, and the t+k row of the same game
         self.order = np.lexsort((self.dec, self.game))
         self.pos = np.empty(self.N, np.int64)
         self.pos[self.order] = np.arange(self.N)
@@ -247,11 +184,8 @@ class Data:
             n = np.full(self.N, -1, np.int64)
             n[self.order[ok]] = self.order[jj[ok]]
             self.nxt[k] = n
-        self.nxt_dec1 = self.nxt[1]  # the next decision (M0 decision gap), whatever the k unit
+        self.nxt_dec1 = self.nxt[1]
         if design.k_unit == "frame":
-            # t+k = the first row of the game at least k frames later (frames do not decrease along dec)
-            # frames rounded: the dump's frame is scalar[0] * FRAME_SCALE from an f32 frame / 86400, so a whole
-            # frame reads up to ~1e-3 off
             fs = np.rint(self.frame[self.order].astype(np.float64))
             key = gs.astype(np.float64) * 1e7 + fs
             for k in self.ks:
@@ -269,8 +203,6 @@ class Data:
         self.row_src = self.g_src[self.game] if self.N else np.zeros(0, np.int64)
         self.valid = self.weight > 0
         self.is_op = self.op[self.action.astype(np.int64)] & self.valid
-        # chained rows (module docstring): the previous decision of the game is a command 1 frame or less earlier
-        # (frames rounded: f32-encoded, a 1-frame gap reads up to ~1.001)
         fo, ao = np.rint(self.frame[self.order].astype(np.float64)), self.action[self.order]
         ch = np.zeros(self.N, bool)
         if self.N:
@@ -287,9 +219,6 @@ class Data:
                                          "chained_op": int((m & self.is_op & self.chained).sum()), "dropped": int((m & self.valid & self.chain_drop).sum()),
                                          "dropped_op": int((m & self.is_op & self.chain_drop).sum())}
         if design.partner == "same-game":
-            # the S control's partner: a random valid-label row of the same game. One generator (seed
-            # PARTNER_SEED) walks the games in global order (sources in --src order, then game id), so the
-            # draws depend on the source list and the games kept.
             starts = np.concatenate([[0], np.nonzero(np.diff(gs))[0] + 1, [self.N]])
             partner = np.arange(self.N, dtype=np.int64)
             rng = np.random.default_rng(PARTNER_SEED)
@@ -299,8 +228,6 @@ class Data:
                 if len(cand):
                     partner[self.order[a:b]] = cand[rng.integers(0, len(cand), b - a)]
         else:
-            # a random usable row of another game of the same source (redrawn while it is the row's own
-            # game; a source with one game keeps same-game draws). One generator, sources in --src order.
             partner = np.arange(self.N, dtype=np.int64)
             rng = np.random.default_rng(PARTNER_SEED)
             for si in range(len(sources)):
@@ -320,21 +247,16 @@ class Data:
         self.n_act = self.logp.shape[1]
         self.n_delay = int(max(16, int(self.delay.max()) + 1 if self.N else 16))
 
-    # ------------------------------------------------------------- selections
     def pair_rows(self, k: int, role: str, kinds=None) -> np.ndarray:
-        """Usable rows (a valid label, not a dropped chained row) with a t+k row, of `role` games (`kinds`:
-        only those source kinds)."""
         m = self.usable & (self.nxt[k] >= 0) & (self.row_eval == (role == "eval"))
         if kinds is not None:
             m &= np.isin(self.row_kind, [KINDS.index(x) for x in kinds])
         return np.nonzero(m)[0]
 
     def mask_rows(self, idx) -> np.ndarray:
-        """[rows, A] bool type_mask."""
         return np.unpackbits(self.mask[idx], axis=1, count=self.n_act).astype(bool)
 
     def probs(self, idx) -> np.ndarray:
-        """[rows, A] policy probabilities renormalised over the open types (float16 log-probs)."""
         lp = self.logp[idx].astype(np.float64)
         m = self.mask_rows(idx)
         p = np.where(m, np.exp(np.where(m, lp, 0.0)), 0.0)
@@ -342,7 +264,6 @@ class Data:
         return np.divide(p, s, out=np.zeros_like(p), where=s > 0)
 
     def gk(self, k: int, idx) -> np.ndarray | None:
-        """[rows, d_y] float32 g_k(h'_t) of the global rows `idx`, None if a source lacks it."""
         out = None
         for off, keep, mm in self.gk_rows:
             m = (idx >= off) & (idx < off + len(keep))
@@ -359,12 +280,7 @@ class Data:
             out[np.nonzero(m)[0]] = vals
         return out
 
-    # ------------------------------------------------------------- standardisation
     def stats(self, rows, k: int | None = None) -> dict:
-        """Mean / sd of h', privileged and own state over `rows` (targets: their t+k rows are the
-        same population), and with `k` of the own-state change o_{t+k} - o_t (`delta_stats`). Targets: sd
-        floored (`OWN_SD_FLOOR`, `PRIV_SD_FLOOR`); a column constant on these rows gets sd inf (left out
-        of losses and R²). h': a constant column is divided by 1."""
         sub = rows if len(rows) <= 200_000 else rows[np.linspace(0, len(rows) - 1, 200_000).astype(np.int64)]
 
         st = {}
@@ -378,21 +294,16 @@ class Data:
         return st
 
     def delta_stats(self, rows, k: int) -> dict:
-        """{d_mu, d_sd}: mean / sd of o_{t+k} - o_t over `rows` (the `stats` subsample and floors)."""
         sub = rows if len(rows) <= 200_000 else rows[np.linspace(0, len(rows) - 1, 200_000).astype(np.int64)]
         d_mu, d_sd = _ms(self.own[self.nxt[k][sub]] - self.own[sub], OWN_SD_FLOOR)
         return {"d_mu": d_mu, "d_sd": d_sd}
 
     def own_in(self, rows, st: dict) -> torch.Tensor:
-        """[rows, O] the standardised own state o_t (an input with `Design.own_input`; columns constant on the
-        training rows are 0)."""
         on = np.isfinite(st["o_sd"])
         x = np.where(on, (self.own[rows] - st["o_mu"]) / np.where(on, st["o_sd"], 1.0), 0.0)
         return torch.from_numpy(x.astype(np.float32))
 
     def own_target(self, idx, t, st: dict) -> np.ndarray:
-        """[rows, O] the ô target of rows `idx` with t+k rows `t` in its standardised space (`Design.own_target`;
-        left-out columns 0)."""
         if self.design.own_target == "delta":
             x, mu, sd = self.own[t] - self.own[idx], st["d_mu"], st["d_sd"]
         else:
@@ -400,7 +311,6 @@ class Data:
         return np.nan_to_num((x - mu) / sd, posinf=0.0, neginf=0.0).astype(np.float32)
 
     def batch(self, idx, k: int, variant: str, st: dict) -> dict:
-        """Tensors of rows `idx` for predictor `variant` at k."""
         t = self.nxt[k][idx]
         b = {"h": torch.from_numpy(self.h[idx].astype(np.float32)), "y": torch.from_numpy(self.y[t].astype(np.float32))}
         p = (self.priv[t].astype(np.float32) - st["p_mu"]) / st["p_sd"]
@@ -414,8 +324,6 @@ class Data:
         return b
 
     def inputs(self, idx, k: int, variant: str, st: dict | None = None, action=None, in_rows=None) -> dict:
-        """The conditioning inputs of `variant` (`action` overrides a_t: candidate scoring; `in_rows`: the rows
-        whose observation (o_t) is the input instead, as their h'). o_t needs the standardisation `st`."""
         out = {}
         if self.design.own_input and st is not None:
             out["own"] = self.own_in(idx if in_rows is None else in_rows, st)
@@ -432,7 +340,6 @@ class Data:
                 w = self.valid[win].astype(np.float32)
                 n_win = k
             else:
-                # the decisions [t, t+k): a variable count per row
                 p0 = self.pos[idx]
                 span = self.pos[self.nxt[k][idx]] - p0
                 n_win = int(span.max()) if len(idx) else 0
@@ -450,7 +357,6 @@ class Data:
 
 class Predictor(nn.Module):
     def __init__(self, variant: str, d_h: int, d_y: int, d_p: int, d_o: int, n_act: int, n_delay: int, own_in: int = 0):
-        """`own_in`: width of the o_t input (0 = none, the first run)."""
         super().__init__()
         if variant not in VARIANTS:
             raise ValueError(f"variant {variant!r}")
@@ -491,8 +397,6 @@ class Predictor(nn.Module):
         return {"y": self.y(z), "p": self.p(z), "o": self.o(z), "q": self.q(z)}
 
     def q_all(self, h, cand, own=None) -> torch.Tensor:
-        """q̂ logits [rows, C, 2] of variant A for every action of `cand` [C] (the same numbers as
-        `forward` with a = c, the first layer split into its state (h', o_t) and Emb(a) parts)."""
         assert self.variant == "A"
         d_s = self.h_mu.shape[0] + self.own_in
         w = self.l1.weight
@@ -503,8 +407,6 @@ class Predictor(nn.Module):
 
 
 def loss_terms(out: dict, b: dict, o_on: torch.Tensor, p_on: torch.Tensor) -> dict:
-    """Per-row loss terms (6.4): y 1 - cos, p / o mean squared error over the kept dimensions,
-    q BCE per target (0 where undefined)."""
     y = 1.0 - F.cosine_similarity(out["y"], b["y"], dim=1)
     p = ((out["p"] - b["p"]) ** 2 * p_on).sum(1) / p_on.sum().clamp_min(1)
     o = ((out["o"] - b["o"]) ** 2 * o_on).sum(1) / o_on.sum().clamp_min(1)
@@ -513,7 +415,6 @@ def loss_terms(out: dict, b: dict, o_on: torch.Tensor, p_on: torch.Tensor) -> di
 
 
 def train_one(data: Data, variant: str, k: int, rows: np.ndarray, st: dict, *, steps: int, batch: int, lr: float, seed: int, log_every: int = 500) -> tuple[Predictor, list]:
-    """One predictor (fixed seed: init, batches); -> (predictor, loss log)."""
     torch.manual_seed(seed)
     net = Predictor(variant, data.h.shape[1], data.y.shape[1], data.priv.shape[1], data.own.shape[1], data.n_act, data.n_delay,
                     own_in=data.own.shape[1] if data.design.own_input else 0)
@@ -548,8 +449,6 @@ def train_one(data: Data, variant: str, k: int, rows: np.ndarray, st: dict, *, s
 
 @torch.no_grad()
 def predict(net: Predictor, data: Data, idx: np.ndarray, k: int, st: dict, chunk: int = 4096, action=None, inputs_h=None, keep=("y", "p", "o", "q")) -> dict:
-    """Outputs `keep` on rows `idx` (`action`: a_t replaced, `inputs_h`: rows whose h' is the input
-    instead, e.g. the t+k rows for the oracle q̂_U(h'_{t+k})) -> {head: numpy float32}."""
     out = {k_: [] for k_ in keep}
     for s in range(0, len(idx), chunk):
         sl = idx[s:s + chunk]
@@ -562,9 +461,6 @@ def predict(net: Predictor, data: Data, idx: np.ndarray, k: int, st: dict, chunk
 
 
 def own_spaces(data: Data, pred_o: np.ndarray, rows, st: dict) -> tuple[np.ndarray, np.ndarray]:
-    """The ô output of rows `rows` (o_t of those rows) in the level space ((o_{t+k} - o_mu) / o_sd) and the
-    change space ((o_{t+k} - o_t - d_mu) / d_sd), whatever the predictor's `own_target` (float32; columns
-    left out of a space 0). `st` needs d_mu / d_sd (`Data.delta_stats`)."""
     o_on, d_on = np.isfinite(st["o_sd"]), np.isfinite(st["d_sd"])
     o_sd, d_sd = np.where(o_on, st["o_sd"], 1.0), np.where(d_on, st["d_sd"], 1.0)
     own_t = data.own[rows]

@@ -1,6 +1,3 @@
-"""Bench reports (060-AC1, AC4, AC5): the generated markdown table in the Burn bench layout (case,
-shape, times, GFLOP/s, error vs CPU, status) plus p95 and peak memory, and the raw JSON."""
-
 import platform
 
 import torch

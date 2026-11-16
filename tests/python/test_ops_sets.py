@@ -1,5 +1,3 @@
-"""052-R7: views of the comparison sets measured outside the eval jobs (tools/eval/ops_sets.py)."""
-
 import json
 import sys
 from pathlib import Path

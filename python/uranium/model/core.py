@@ -1,6 +1,3 @@
-"""Temporal core (032 §2.4): `LstmCore` and `GtrxlCore` behind one interface (032-AC6). State is
-reset per episode by starting from `init_state` (032-R5). Same math as the Burn cores."""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,15 +5,10 @@ import torch.nn.functional as F
 from uranium.model.config import CoreConfig
 from uranium.model.layers import Attention, FeedForward, Linear
 
-# ROCm: MIOpen's fused LSTM backward fails on the Linux ROCm host (2026-10-23), so `nn.LSTM`
-# runs PyTorch's own kernels there; CUDA keeps cuDNN (032 §6 note).
 RNN_DNN = torch.version.hip is None
 
 
 class LstmCore(nn.Module):
-    """`Lstm(d_in -> hidden)`, one layer, sigmoid gates, tanh cell and output (032 §2.4). State =
-    (cell, hidden), each [B, hidden]."""
-
     kind = "Lstm"
 
     def __init__(self, d_in: int, c: CoreConfig):
@@ -44,17 +36,14 @@ class LstmCore(nn.Module):
 
     @staticmethod
     def mask_state(s, keep):
-        """Zero the rows where `keep` [B] is false (episode start in that lane, 032-R5)."""
         k = keep.to(s[0].dtype)[:, None]
         return (s[0] * k, s[1] * k)
 
 
-GATE_BIAS = 2.0  # GTrXL gate bias b_g: starts close to the identity map
+GATE_BIAS = 2.0
 
 
 class GruGate(nn.Module):
-    """GRU-type gating residual of GTrXL: g = (1-z)*x + z*h."""
-
     def __init__(self, d: int):
         super().__init__()
         self.wr = Linear(d, d)
@@ -83,9 +72,6 @@ class GtrxlLayer(nn.Module):
 
 
 class GtrxlCore(nn.Module):
-    """Causal self-attention over the last M core inputs, 2 layers (032 §2.4). State = (memory:
-    per layer the last M layer inputs [B,M,d], valid [B,M] bool)."""
-
     kind = "Gtrxl"
 
     def __init__(self, d_in: int, c: CoreConfig):
@@ -93,7 +79,6 @@ class GtrxlCore(nn.Module):
         d = c.hidden
         self.input = Linear(d_in, d)
         self.layers = nn.ModuleList(GtrxlLayer(d, c.gtrxl_heads) for _ in range(c.gtrxl_layers))
-        # [M+1, layers*heads] relative position bias (distance 0..=M).
         self.rel_table = nn.Parameter(torch.randn(c.gtrxl_memory + 1, c.gtrxl_layers * c.gtrxl_heads) * 0.02)
         self.hidden, self.heads, self.memory = d, c.gtrxl_heads, c.gtrxl_memory
 
@@ -102,7 +87,6 @@ class GtrxlCore(nn.Module):
         return (mem, torch.zeros(b, self.memory, dtype=torch.bool, device=device))
 
     def relative(self, t: int, device):
-        """Relative distance index [T, M+T] and the causal window mask [T, M+T]."""
         m = self.memory
         rel = (m + torch.arange(t, device=device)[:, None]) - torch.arange(m + t, device=device)[None, :]
         inside = (rel >= 0) & (rel <= m)
@@ -113,7 +97,7 @@ class GtrxlCore(nn.Module):
         b, t, _ = x.shape
         m, h = self.memory, self.heads
         idx, window = self.relative(t, x.device)
-        bias_all = F.embedding(idx, self.rel_table).permute(2, 0, 1)  # [L*H, T, M+T]
+        bias_all = F.embedding(idx, self.rel_table).permute(2, 0, 1)
         valid_ext = torch.cat([valid0, torch.ones(b, t, dtype=torch.bool, device=x.device)], 1)
         key_ok = window[None] & valid_ext[:, None, :]
         x = self.input(x)
@@ -134,9 +118,6 @@ class GtrxlCore(nn.Module):
 
     @staticmethod
     def detach_state(s):
-        # Stored in f32 like `init_state` (the memory is cast to the compute dtype where it is
-        # used, so the values are the same): the state's dtype does not change between batches,
-        # which torch.compile would recompile for.
         return ([t.detach().float() for t in s[0]], s[1])
 
     @staticmethod
@@ -146,8 +127,6 @@ class GtrxlCore(nn.Module):
 
 
 def build_core(d_in: int, c: CoreConfig) -> nn.Module:
-    """Every core is causal in time: the phased outer pass (032 §2.7, `UraniumNet._outer_seq_phased`)
-    zero-fills later inputs and relies on that."""
     if c.kind == "Lstm":
         return LstmCore(d_in, c)
     if c.kind == "Gtrxl":

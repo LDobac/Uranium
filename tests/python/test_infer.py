@@ -1,9 +1,3 @@
-"""Model sessions through the inference broker (AMB-000-4) with a tiny PyTorch network on CPU:
-Rust sessions (synthetic frames, feature extraction, executor) on Rust threads, the model on a
-Python thread. 031-R4 masked actions, 031-R7 argmax determinism, 032-R14 batched play = single
-play, 032-R16 slot state. Session plumbing with a mock model is in
-crates/uranium-agent/tests/model_policy.rs."""
-
 import json
 from pathlib import Path
 
@@ -22,9 +16,6 @@ DELAY_BUCKETS = json.loads(_core.feature_dims())["delay_buckets"]
 
 
 def checkpoint(tmp_path: Path, kind: str, model2: bool = False) -> Path:
-    """A random tiny checkpoint; `model2`: with the outer LSTM (segment 4 decisions, 032 §2.7),
-    the head bypass and core skip (032-R21, R23) on, their zero-initialised outputs made non-zero
-    so they change the outputs."""
     cfg = UraniumNetConfig.from_dict(json.loads((FIX / "tiny-lstm" / "meta.json").read_text())["config"])
     cfg.input = input_dims()
     cfg.core.kind = kind
@@ -66,7 +57,6 @@ def test_plays_valid_acts_031_r4(tmp_path, kind):
         assert cmds <= 1, "031-R3: one command per action"
         assert adv in DELAY_BUCKETS, f"031-R9: advance {adv} is not a delay bucket"
     assert stats["decisions"] == 12
-    # 031-AC2: the model samples within the masks, so only executor-side causes can reject.
     assert set(stats["rejected"]) <= {"no_executor_unit"}, stats["rejected"]
     assert stats["map_precompute"] == "missing"
     assert stats["checkpoint"] == b.checkpoint_id
@@ -83,8 +73,6 @@ def test_argmax_is_deterministic_031_r7(tmp_path, kind):
 
 @pytest.mark.parametrize("kind", ["Lstm", "Gtrxl"])
 def test_batched_sessions_match_single_032_r14(tmp_path, kind):
-    """Three sessions batched together act like each session served alone, and their Core states
-    do not mix."""
     d = checkpoint(tmp_path, kind)
     runs = {}
     for max_batch in (3, 1):
@@ -117,19 +105,13 @@ def bits(state) -> list[tuple[list, bytes]]:
 @pytest.mark.parametrize("model2", [False, True], ids=["base", "model2"])
 @pytest.mark.parametrize("kind", ["Lstm", "Gtrxl"])
 def test_set_state_round_trip_and_resume_051_r4(tmp_path, kind, model2, k):
-    """051-R4 (032-R16): a second slot restores the first slot's state from before decision k of
-    12: `state()` -> `set_state()` -> `state()` is bit for bit, the other slot's state is untouched
-    (032-R14), and the 12 - k decisions after the restore (action, log-probs, value) are bit for
-    bit those of the uninterrupted slot, every batch one row. k = 2: the GTrXL memory (4) is not
-    full yet (its valid mask has zeros); k = 5: the memory and the outer segment (4) both roll
-    over after the restore."""
     b, s = server(checkpoint(tmp_path, kind, model2), "argmax", 1)
     r = _core.restore_play(b, k, 12)
     stop(s)
     assert bits(r["restored"]) == bits(r["saved"]), "state() -> set_state() -> state() round trip"
     assert any(np.asarray(v).any() for _, v in r["saved"]), "a non-trivial state"
     if kind == "Gtrxl":
-        mask = np.asarray(r["saved"][2][1])  # leaves: memory per layer (2), valid mask, [outer]
+        mask = np.asarray(r["saved"][2][1])
         assert mask.sum() == min(k, 4), "GTrXL valid mask: k of 4 memory rows"
     assert bits(r["other_after"]) == bits(r["other_before"]), "032-R14: the other slot is unchanged"
     assert len(r["straight"]) == 12 - k
@@ -139,10 +121,6 @@ def test_set_state_round_trip_and_resume_051_r4(tmp_path, kind, model2, k):
 @pytest.mark.gpu
 @pytest.mark.parametrize("graph", ["off", "on"])
 def test_set_state_on_the_device_051_r4(tmp_path, monkeypatch, graph):
-    """051-R4 on a CUDA / ROCm device, eager and with captured graphs (URANIUM_INFER_GRAPH):
-    the round trip is bit for bit (state values are f32 / bool), the decisions after the restore
-    are those of the uninterrupted slot (same actions; log-probs and values within the 032-R19
-    tolerance)."""
     if not torch.cuda.is_available():
         pytest.skip("no CUDA / ROCm device")
     from uranium.device import resolve
@@ -164,9 +142,6 @@ def test_set_state_on_the_device_051_r4(tmp_path, monkeypatch, graph):
 
 
 def test_set_state_refuses_a_mismatch_051_r4(tmp_path):
-    """051-R4: a state of another Core kind or model (part count, shape, a mask part with values
-    other than 0/1) is refused with an error and the slot keeps its state; a fitting state is
-    written."""
     lstm, gtrxl = checkpoint(tmp_path, "Lstm"), checkpoint(tmp_path, "Gtrxl")
     b, s = server(lstm, "argmax", 1)
     bg, sg = server(gtrxl, "argmax", 1)
@@ -195,10 +170,6 @@ def test_set_state_refuses_a_mismatch_051_r4(tmp_path):
 
 
 def test_restore_order_in_one_work_051_r4(tmp_path):
-    """051-R4 (051-AC2 order): one work with a reset, a restore and a state read of slot 1 and a
-    batch of slots 1 and 0 is handled as reset -> restore -> state read -> act: the read gives the
-    restored state, the batch acts from it (slot 0 from its own state), and the rows not in the
-    batch are unchanged (032-R14)."""
     from uranium.agent.infer import leaves, rebuild, select_rows, state_to_host
     from uranium.bench.inputs import random_obs
 
@@ -224,7 +195,6 @@ def test_restore_order_in_one_work_051_r4(tmp_path):
     host = lambda r: bits(zip(*reversed(state_to_host(srv.state, r))))  # noqa: E731
     want, row2 = host(2), host(2)
     parts, shapes = state_to_host(srv.state, 2)
-    # Expected: slot 1 acts from slot 2's state (restored after the reset), slot 0 from its own.
     obs = random_obs(2, 64, net.cfg.input, CPU, torch.Generator().manual_seed(2))
     start = select_rows(srv.state, torch.tensor([2, 0]))
     with torch.no_grad():
@@ -241,11 +211,6 @@ def test_restore_order_in_one_work_051_r4(tmp_path):
 
 
 def test_server_seed_051_r8(tmp_path):
-    """051-R8: the broker carries the process's seed (recorded in 051 session records); the starter
-    seeds torch once its servers are up and before the first game (`seed_inference`), so the same
-    seed gives the same stochastic play (one session at a time); the model thread itself never
-    reseeds (a broker without a seed: RL learners, league snapshots). `new_infer_seed` fits int64.
-    torch's global generator is restored afterwards."""
     from uranium.agent.serve import new_infer_seed, seed_inference
 
     rng = torch.get_rng_state()
@@ -275,8 +240,6 @@ def test_server_seed_051_r8(tmp_path):
 
 
 def test_close_stops_the_thread_and_frees_the_model_042(tmp_path):
-    """042 스냅샷 추론 서버 (AMB-042-14): `close` ends the model thread and drops the model (its
-    device memory); a plain `stop` keeps the model."""
     import weakref
 
     d = checkpoint(tmp_path, "Lstm")
@@ -296,9 +259,6 @@ CUDA_FATAL = "CUDA error: an illegal memory access was encountered\nCUDA kernel 
 
 
 def test_device_fatal_classification_042_r20():
-    """042-R20: which errors end the process. `torch.AcceleratorError`, a message naming a sticky
-    CUDA / HIP error (also through a cause, or as text in a Rust error carrying a traceback) are
-    fatal; out of memory and ordinary errors are not."""
     from uranium.device import is_device_fatal
 
     assert is_device_fatal(RuntimeError(CUDA_FATAL))
@@ -315,7 +275,6 @@ def test_device_fatal_classification_042_r20():
     except ValueError as outer:
         assert is_device_fatal(outer), "a fatal error as the cause"
     assert not is_device_fatal(torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB"))
-    # Out of memory in any form, and CUDA graph capture errors, are never fatal.
     assert not is_device_fatal(RuntimeError("CUDA error: out of memory"))
     assert not is_device_fatal(RuntimeError("HIP error: out of memory"))
     if hasattr(torch, "AcceleratorError"):
@@ -350,9 +309,6 @@ class ExitCalled(BaseException):
 
 
 def test_device_fatal_guard_exits_70_042_r20(monkeypatch, capsys):
-    """042-R20: `device_fatal_guard` turns a fatal device error into one stderr line and
-    `os._exit(70)` after flushing and a 0.2 s pause (so a tee keeps the line); another exception
-    propagates unchanged and nothing exits."""
     import os
     import time
 
@@ -382,15 +338,12 @@ def test_device_fatal_guard_exits_70_042_r20(monkeypatch, capsys):
 
 
 def test_server_exits_70_on_a_fatal_device_error_042_r20(tmp_path, monkeypatch):
-    """042-R20: an inference server whose batch fails with a fatal device error exits the process
-    (70) at once instead of failing every later batch; an ordinary error is still sent to the
-    sessions and the server goes on."""
     import os
     import threading
 
     codes, called = [], threading.Event()
 
-    def fake_exit(code):  # records and returns: the server then handles the error as before
+    def fake_exit(code):
         codes.append(code)
         called.set()
 
@@ -415,9 +368,6 @@ def test_server_exits_70_on_a_fatal_device_error_042_r20(tmp_path, monkeypatch):
 
 
 def test_free_waits_for_the_device_then_drops_graphs_042_r20(tmp_path, monkeypatch):
-    """042-R20 (6th advisory): closing a server frees its device memory only under
-    `DEVICE_LOCK.exclusive()`, after `torch.cuda.synchronize()`, destroying the captured graphs
-    before `empty_cache()`; nothing of it while a shared holder (learner update) still runs."""
     import contextlib
     import threading
     import types
@@ -444,7 +394,7 @@ def test_free_waits_for_the_device_then_drops_graphs_042_r20(tmp_path, monkeypat
     monkeypatch.setattr(device.DEVICE_LOCK, "exclusive", exclusive)
     monkeypatch.setattr(torch.cuda, "synchronize", lambda *a: calls.append("synchronize"))
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append("empty_cache"))
-    s.device = torch.device("cuda")  # only the calls above touch it
+    s.device = torch.device("cuda")
     s.graphed = types.SimpleNamespace(graphs={"a": {"graph": Graph()}, "b": {"graph": Graph()}})
     learner_in, learner_out = threading.Event(), threading.Event()
 
@@ -469,7 +419,6 @@ def test_free_waits_for_the_device_then_drops_graphs_042_r20(tmp_path, monkeypat
 
 
 def test_random_checkpoint_command(tmp_path, python_cmd):
-    """`random-checkpoint` writes a loadable checkpoint and prints its policy version (020-R5)."""
     import subprocess
 
     out = tmp_path / "rand"

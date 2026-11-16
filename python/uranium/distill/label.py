@@ -1,41 +1,3 @@
-"""`python -m uranium distill-label` (044-R3, 040-R24): the policy labeller of the self-game
-distillation. It reads the `distill_pre` shards of `uranium-replay build --src distill` (044-R2:
-one step per playback frame at the game start and the model's decisions, every label an `unknown`
-slot, the model's own decisions in `memory_action`) and labels every step with the labeller
-checkpoint (`m2-s2e2/ckpt-11387`, AMB-044-2).
-
-① Input: exactly what the BC loader gives the trainer, through `uranium._core` (030 features, 034
-masks, 041-R28 ③ memory written from `memory_action` before each observation, never from a label,
-map precomputes, `last_failed` 0), read as `bc-eval` reads a split: no z (`z_present` false), no
-symmetry, no enemy race mask, no chain-start observation; the core state runs from each view's
-first step to its last.
-② Answer: `--mode sample` draws one action per step from the labeller's distribution (temperature
-1, the heads' autoregressive order and masks as in a live session, Gumbel-max, 032-R9). The noise
-of each step is a counter-based hash of (view seed, the step's frame, head draw, column)
-(`uranium.distill.noise`), the view seed a hash of (`replay_sha256`, perspective, `--label-seed`)
-(`_core.distill_game_seed`): a step's draw never depends on the batch it is computed in (lanes,
-`micro_lanes`, `pad_entities`, `seq_len` chunks). On CPU the labels are bit-identical across batch
-shapes (032-R1); on a GPU the logits can move by a few ULPs with the padded shape and flip a
-near-tie, so there the same labels need the same batch shape too (recorded in `label_policy`). `--mode argmax` (temperature 0) is a tool
-option and never training data.
-③ The head values become 040 `action_label`s in Rust (`label_of_choice`): action id, the delay
-bucket's lower bound, queued, the selection's unit ids in pick order, the target unit id, the
-location cell's tile; the BC loader reads them back as the same head indices (044-AC2).
-④ The 040-R19 invalid-label filter (20%) runs on the labelled views as the build runs it, and the
-shards are written with the 040-R17 verified copy, one output file per input file (same relative
-path under `--out`) as soon as all its games are labelled. ⑤ One records line per view with `label_policy` (checkpoint path and sha256,
-mode, label seed, the view's seed, device, precision, git commit, invalid labels, config).
-
-An existing `--records` file continues its labelling (044-R5 ③: the round's top-up games are built
-into the same `distill_pre/d<R>` and labelled into the same `--out`): the input files it names are
-skipped, the others are labelled with the same checkpoint, mode and label seed (else an error),
-and their lines are appended (the batch shape and device may differ: the draws do not depend on
-them). A run stopped part way continues the same way from its last written file.
-
-Records are not named `distill*.jsonl` (the `--src distill` build's resume scan reads those). A
-summary (views, steps, invalid labels, action types per minute of game time) is printed and
-written next to the records (`<records stem>.summary.json`)."""
-
 import argparse
 import json
 from pathlib import Path
@@ -43,9 +5,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-# 044-R3 ② noise scheme of `uranium.distill.noise` (records `label_policy.noise`).
 NOISE_VERSION = "rowhash-1"
-# Game minutes per band of the action-type summary (044 risk: labels in states the labeller never saw).
 FRAMES_PER_MINUTE = 24 * 60
 
 
@@ -67,7 +27,6 @@ def add_parser(sub) -> None:
 
 
 def _rows(x, sl):
-    """Rows `sl` of every tensor in a (nested) dict / list of encoder outputs or observations."""
     if isinstance(x, torch.Tensor):
         return x[sl]
     if isinstance(x, dict):
@@ -84,10 +43,6 @@ def _host(t: torch.Tensor) -> np.ndarray:
 @torch.no_grad()
 def label_games(input_dir: str, ckpt_dir: str, out: str, records: str, config: str, device, precision: str, mode: str, label_seed: int, backend: str = "cpu",
                 micro_lanes: int | None = None, threads: int | None = None, maps_dir=None, synthetic_maps: bool = False, trace=None) -> dict:
-    """Labels every step of the `distill_pre` games under `input_dir` and writes the shards and
-    records (044-R3). `trace(view)`, tests only: called per lane chunk with `game` / `slot` /
-    `frames`, the chosen head values `chosen` (numpy, one row per step; the selection's END is
-    `end`) and the chunk's observation rows `obs` (numpy). Returns the summary."""
     from uranium import _core, ckpt
     from uranium.device import autocast
     from uranium.diag.summary import git_commit
@@ -95,8 +50,6 @@ def label_games(input_dir: str, ckpt_dir: str, out: str, records: str, config: s
     from uranium.distill.noise import RowNoise, row_keys
     from uranium.model.net import OBS_KEYS
 
-    # The input files left to label: an existing records file is continued (044-R5 ③ top-up into
-    # the same round folder, or a run stopped between files), with the same labeller policy.
     todo = _core.distill_check(input_dir, out, records, mode)
     prior = json.loads(_core.distill_records(records))
     sha = ckpt.policy_version(Path(ckpt_dir))
@@ -108,7 +61,7 @@ def label_games(input_dir: str, ckpt_dir: str, out: str, records: str, config: s
     cfg_json, fingerprint = _core.bc_config(config, "s1")
     cfg = json.loads(cfg_json)
     net, _ = ckpt.load_model(Path(ckpt_dir), device)
-    net.eval()  # 032 §2: no dropout
+    net.eval()
     temp = 1.0 if mode == "sample" else 0.0
     t, lanes = cfg["seq_len"], cfg["lanes"]
     mlanes = micro_lanes if micro_lanes is not None else cfg["micro_lanes"]
@@ -121,7 +74,6 @@ def label_games(input_dir: str, ckpt_dir: str, out: str, records: str, config: s
         "config": str(config), "config_fingerprint": fingerprint, "seq_len": t, "lanes": lanes, "micro_lanes": g, "pad_entities": cfg["pad_entities"],
     }
     lab = _core.DistillLabeller(config, input_dir, label_seed, maps_dir=maps_dir, synthetic_maps=synthetic_maps, only=todo)
-    # Each input file is written (and its records lines appended) once all its games are labelled.
     lab.open(out, records, json.dumps(policy), threads)
     states = [None] * groups
     names = _action_names()
@@ -143,16 +95,13 @@ def label_games(input_dir: str, ckpt_dir: str, out: str, records: str, config: s
             keep = torch.as_tensor(hg["keep"]).to(device).bool()
             s = states[gi]
             s0 = net.init_state(hg["b"], device) if s is None else net.mask_state(s, keep)
-            # The group's real steps (lane-major, step order), one heads call over all of them.
             starts = [(lane - start) * t for lane in live]
             idx = torch.tensor([r0 + k for r0, lane in zip(starts, live) for k in range(steps[lane])], dtype=torch.int64, device=device)
             with autocast(device, precision):
                 h, e, sp, sc, _, state = net.trunk_seq(obs, s0, t)
                 u = net._bypass(h, sc, e, obs)
                 states[gi] = state
-                n_ent = e.shape[1]  # the selection's END index (032 §2.5 #4)
-                # 044-R3 ②: each step's draws from its own (view seed, frame) key, independent of
-                # the group's shape (lanes, micro_lanes, pad_entities, seq_len chunks).
+                n_ent = e.shape[1]
                 noise = None
                 if temp > 0:
                     keys = row_keys([seeds[lane] for lane in live for _ in range(steps[lane])], [f for lane in live for f in frames_of[lane]], device)

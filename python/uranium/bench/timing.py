@@ -1,8 +1,3 @@
-"""Timing and memory for the bench suite (060-R2). A case is timed until its median is steady:
-repetitions grow until the standard error of the mean is under `rel_sem` of the mean (or a time /
-count budget runs out), after warm-up calls that are not counted. So two candidates are compared
-on numbers whose noise is known, not on a fixed small sample."""
-
 import ctypes
 import math
 import statistics
@@ -31,7 +26,6 @@ def sync(device: torch.device) -> None:
 
 
 def measure(fn, device: torch.device, warmup: int = 3, min_reps: int = 10, max_reps: int = 500, budget_s: float = 10.0, rel_sem: float = 0.01) -> Timing:
-    """Times `fn()` (device synchronised around each call)."""
     for _ in range(warmup):
         fn()
     sync(device)
@@ -58,15 +52,12 @@ def reset_peak(device: torch.device) -> None:
 
 
 def peak_gib(device: torch.device) -> float | None:
-    """Peak device allocation since the last `reset_peak` (PyTorch allocator)."""
     if device.type != "cuda":
         return None
     return torch.cuda.max_memory_allocated(device) / 2**30
 
 
 def peak_rss_gib() -> float | None:
-    """Peak resident memory of this process (060-R3 counts it with the GPU allocation on a host
-    whose GPU shares RAM)."""
     if sys.platform.startswith("linux"):
         with open("/proc/self/status", encoding="ascii") as f:
             for line in f:
@@ -75,7 +66,6 @@ def peak_rss_gib() -> float | None:
         return None
     if sys.platform == "win32":
         class Counters(ctypes.Structure):
-            # PROCESS_MEMORY_COUNTERS: two DWORDs, then SIZE_T fields.
             _fields_ = [("cb", ctypes.c_uint32), ("PageFaultCount", ctypes.c_uint32)] + [(n, ctypes.c_size_t) for n in ("PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage", "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage", "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage")]
 
         k32, psapi = ctypes.WinDLL("kernel32"), ctypes.WinDLL("psapi")

@@ -1,7 +1,3 @@
-"""Autoregressive action heads (032 §2.5): ActionType -> Delay -> Queued -> Selected ->
-TargetUnit | Location. One code path serves teacher forcing (labels injected) and sampling
-(Gumbel-max inside the forward, 032-R3, 032-R9). Same math and names as Burn `heads.rs`."""
-
 import math
 
 import numpy as np
@@ -15,16 +11,7 @@ from uranium.model.layers import GruCell, Linear, Mlp, ResMlp, conv_layout, entr
 HEAD_NAMES = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
 TARGET_UNIT = 1
 TARGET_LOC = 2
-# AMB-000-4 step 2: teacher forcing computes the location head on the rows whose action uses a
-# location (032-R10). `URANIUM_LOC_ROWS` picks how those rows are found and shaped:
-#   off   - `nonzero` on the device (a host sync; the row count changes every call)
-#   exact - the row list from the host labels (no sync; same shapes as `off`)
-#   mult8 / pow2 - the host list padded to a multiple of 8 / a power of two by repeating a used
-#                  row (fewer distinct shapes for cuDNN / MIOpen and graph capture); the padded
-#                  rows' outputs are dropped, so the result is the same
 LOC_ROW_MODES = ("off", "exact", "mult8", "pow2")
-# `URANIUM_LOC_OUT`: the location head's last 1x1 conv (32 -> 1) as `conv` or as the same sum
-# written out (`mulsum`: multiply, sum the channels), which MIOpen's slow 1x1 backward avoids.
 LOC_OUT_MODES = ("conv", "mulsum")
 
 
@@ -32,15 +19,11 @@ def bucket_rows(k: int, mode: str) -> int:
     if mode == "mult8":
         return -(-k // 8) * 8
     if mode == "pow2":
-        # At least 2: torch.compile specialises a dimension of size 1.
         return 1 << math.ceil(math.log2(k)) if k > 1 else 2 * k
     return k
 
 
 def location_rows(action, target_kind, mode: str) -> tuple[np.ndarray, int]:
-    """Host row list for the location head from the action labels (numpy): (row indices padded
-    to the bucket, number of real rows). No used row, or a bucket that covers the batch: every
-    row, all real (the values of computing every row; one code path for torch.compile)."""
     a = np.clip(np.asarray(action).astype(np.int64).reshape(-1), 0, len(target_kind) - 1)
     used = np.flatnonzero(np.asarray(target_kind)[a] == TARGET_LOC)
     k, b = len(used), len(a)
@@ -51,8 +34,6 @@ def location_rows(action, target_kind, mode: str) -> tuple[np.ndarray, int]:
 
 
 class ActionTable:
-    """034 table columns as device constants for the mask gather (032 §5, 034-R4)."""
-
     def __init__(self, cols: dict, device):
         self.c = {k: torch.tensor(v, dtype=torch.long, device=device) for k, v in cols.items()}
 
@@ -77,13 +58,11 @@ class ActionTable:
 
 
 def gather_cap(unit_cap, cap):
-    """`unit_cap[b, n, cap[b]]` -> [B,N] (034-R4)."""
     b, n, _ = unit_cap.shape
     return unit_cap.gather(2, cap.view(b, 1, 1).expand(b, n, 1)).view(b, n)
 
 
 def gather_loc(loc_class_mask, cls):
-    """`loc_class_mask[b, class[b]]` flattened -> [B,M*M] (034-R4)."""
     b, l, h, w = loc_class_mask.shape
     return loc_class_mask.view(b, l, h * w).gather(1, cls.view(b, 1, 1).expand(b, 1, h * w)).view(b, h * w)
 
@@ -101,7 +80,6 @@ class LocationHead(nn.Module):
         self.out_mode = env_choice("URANIUM_LOC_OUT", LOC_OUT_MODES, "conv")
 
     def forward(self, ar, sp: dict):
-        """-> logits [B, M*M]"""
         b, _, s, _ = sp["s8"].shape
         x = conv_layout(torch.cat([F.relu(self.ar(ar)).view(b, self.ar_channels, s, s), sp["s8"]], 1))
         skips = [sp["skips"][2], sp["skips"][1], sp["skips"][0]]
@@ -110,7 +88,6 @@ class LocationHead(nn.Module):
             if i < 3:
                 x = conv_layout(torch.cat([x, skips[i]], 1))
         m = x.shape[2]
-        # mulsum is the 1x1 conv's sum written out: only for a 1x1, single-output conv.
         if self.out_mode == "mulsum" and self.out.kernel_size == (1, 1) and self.out.out_channels == 1 and self.out.groups == 1:
             w = self.out.weight.view(1, -1, 1, 1).to(x.dtype)
             return ((x * w).sum(1) + self.out.bias.to(x.dtype)).reshape(b, m * m)
@@ -120,39 +97,28 @@ class LocationHead(nn.Module):
 class Heads(nn.Module):
     def __init__(self, inp: InputDims, h: HeadsConfig, s: SpatialConfig, d_core: int, d_ctx: int, d_entity: int):
         super().__init__()
-        # 1 ActionType
         self.type_in = Linear(d_core, h.ar)
         self.type_res = nn.ModuleList(ResMlp(h.ar) for _ in range(2))
         self.type_gate = Linear(d_ctx, h.ar)
         self.type_out = Linear(h.ar, inp.actions)
         self.ar_h = Linear(d_core, h.ar)
         self.ar_action = nn.Embedding(inp.actions, h.ar)
-        # 2 Delay
         self.delay = Mlp(h.ar, 128, h.delay_buckets)
         self.ar_delay = nn.Embedding(h.delay_buckets, h.ar)
-        # 3 Queued
         self.queued = Mlp(h.ar, 64, 2)
         self.ar_queued = nn.Embedding(2, h.ar)
-        # 4 Selected
         self.sel_key = Linear(d_entity, h.key)
         self.sel_end = nn.Parameter(torch.randn(h.key) * 0.02)
         self.sel_query = Linear(h.ar, h.key)
         self.sel_gru = GruCell(h.key, h.key)
         self.ar_selected = Linear(h.key, h.ar)
-        # 5 TargetUnit
         self.tgt_key = Linear(d_entity, h.key)
         self.tgt_query = Linear(h.ar, h.key)
-        # 6 Location
         self.location = LocationHead(inp, h, s)
         self.max_select = h.max_select
-        # Tests only: teacher forcing computes the location head on every row.
         self.location_all_rows = False
 
     def forward(self, labels: dict | None, temp: float, h, c, e, sp: dict, obs: dict, table: ActionTable, generator=None, u=None) -> dict:
-        """`labels` None = sample (temp 0 = argmax); else teacher forcing (032-R3). Returns
-        `chosen` (labels or samples), per-head `logp` / `entropy` [B] (already times the head's
-        use, 032-R10), and the distributions `dists`. `u` [B, ar]: the 032-R21 bypass output,
-        added to the ActionType GLU output and to `ar`; None (bypass off) changes nothing."""
         b, n, _ = e.shape
         temp = 1.0 if labels is not None else temp
 
@@ -161,31 +127,24 @@ class Heads(nn.Module):
                 return labels[key].long().clamp(0, logp.shape[1] - 1)
             return gumbel_argmax(logp, temp, generator)
 
-        # 1 ActionType
         lp_action = tempered(self.action_logp(h, c, obs["type_mask"], u), temp)
         action = choose(lp_action, "action")
         info = table.info(action)
         ar = self.ar_h(h) + self.ar_action(action)
         if u is not None:
-            ar = ar + u.to(ar.dtype)  # 032-R21: ar = Linear(h) + Emb(a) + u
+            ar = ar + u.to(ar.dtype)
 
-        # 2 Delay (always used)
         lp_delay = tempered(log_softmax_f32(self.delay(ar)), temp)
         delay = choose(lp_delay, "delay")
         ar = ar + self.ar_delay(delay)
 
-        # 3 Queued (fixed to 0 when unused)
         lp_queued = tempered(log_softmax_f32(self.queued(ar)), temp)
         queued = choose(lp_queued, "queued") * info["uses_queued"].long()
         ar = ar + self.ar_queued(queued)
 
-        # 4 Selected
         sel, ar = self.selected(ar, e, obs, info, None if labels is None else labels["selected"].long(), temp, generator)
 
-        # 5 TargetUnit
         logits = (self.tgt_key(e) @ self.tgt_query(ar)[:, :, None]).squeeze(2)
-        # 034-R9: never a unit of this step's selection, unless every eligible target was
-        # selected (then the plain mask; the executor rejects the action, 031-R4).
         cap_ok = gather_cap(obs["unit_cap"], info["target_cap"]) & obs["entity_mask"]
         taken = sel["units"] & ~info["self_target"][:, None]
         free = cap_ok & ~taken
@@ -193,7 +152,6 @@ class Heads(nn.Module):
         lp_tu = tempered(masked_log_softmax(logits, free | (cap_ok & none_free)), temp)
         target_unit = choose(lp_tu, "target_unit")
 
-        # 6 Location
         loc_ok = gather_loc(obs["loc_class_mask"], info["loc_class"])
         if labels is not None:
             lp_loc = self.location_used_rows(ar, sp, loc_ok, info["target_loc"], labels.get("loc_rows"), labels.get("loc_w"))
@@ -227,22 +185,15 @@ class Heads(nn.Module):
         return {"chosen": chosen, "logp": logp, "entropy": ent, "dists": dists}
 
     def action_logp(self, h, c, type_mask, u=None):
-        """Head 1 (ActionType): masked log-probs [B, actions] before the temperature; `u` the
-        032-R21 bypass addition (None: off)."""
         x = F.relu(self.type_in(h))
         for r in self.type_res:
             x = r(x)
         x = F.relu(x) * torch.sigmoid(self.type_gate(c))
         if u is not None:
-            x = x + u.to(x.dtype)  # 032-R21
+            x = x + u.to(x.dtype)
         return masked_log_softmax(self.type_out(x), type_mask)
 
     def location_used_rows(self, ar, sp: dict, loc_ok, used, rows=None, w=None):
-        """Masked location log-probs [B, M*M] for the rows whose action uses a location; other rows
-        0 (their terms are multiplied by 0, 032-R10). No used row or all rows: every row. `rows` /
-        `w`: the host row list (`location_rows`) and its weights (1 real, 0 padding: a repeat of a
-        real row, so adding it times 0 keeps the value and gradient); else the rows are found on
-        the device."""
         if self.location_all_rows:
             return masked_log_softmax(self.location(ar, sp), loc_ok)
         b, mm = loc_ok.shape
@@ -257,9 +208,6 @@ class Heads(nn.Module):
         return torch.zeros(b, mm, dtype=lp.dtype, device=lp.device).index_add(0, rows, lp)
 
     def selected(self, ar, e, obs: dict, info: dict, labels, temp: float, generator):
-        """Pointer network over own eligible units with an END key (032 §2.5 #4, 031-R3, 032-R12).
-        At most `max_select[a]` picks; END is allowed after the first pick (or when nothing is
-        eligible); reaching `max_select` ends the selection. 034-R7: a building only alone."""
         b, n, _ = e.shape
         dev = e.device
         keys = self.sel_key(e)
@@ -293,8 +241,6 @@ class Heads(nn.Module):
             ent = ent + entropy(lp) * af
             is_end = choice == n
             take = active & ~is_end
-            # The chosen row gathered (the value and gradient of one-hot @ keys; a one-hot needs
-            # the entity count as a Python int, which pins torch.compile to one shape).
             key = keys_all.gather(1, choice[:, None, None].expand(b, 1, kd)).squeeze(1)
             picked = (torch.arange(n, device=dev)[None] == choice[:, None]) & take[:, None]
             tf = take.float()
@@ -305,7 +251,6 @@ class Heads(nn.Module):
             count = count + tf
             q = self.sel_gru(key, q)
             ended = ended | (active & is_end) | (info["max_select"] <= k + 1)
-            # END for inactive steps so `chosen.selected` is canonical (032-R12).
             choices.append(torch.where(active, choice, torch.full_like(choice, n))[:, None])
             dists.append(lp[:, None])
             actives.append(active[:, None])

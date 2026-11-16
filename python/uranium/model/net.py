@@ -1,7 +1,3 @@
-"""`UraniumNet` (032 §1, §6). Encoders and heads run over all B (or B·T) rows in parallel; only
-the core walks the time axis. Inputs are dicts of tensors in the 030 §1 layout (the keys of a
-`uranium._core` lane group)."""
-
 import functools
 import json
 
@@ -24,7 +20,6 @@ LONG_KEYS = ("entity_cat", "entity_cell", "scalar_cat", "z_build")
 
 
 def action_columns() -> dict:
-    """034 table columns (032 §5) from the Rust action table."""
     from uranium import _core
 
     return json.loads(_core.action_columns())
@@ -34,11 +29,6 @@ H2D_MODES = ("sync", "pinned")
 
 
 def to_device(x, device, pinned: bool | None = None) -> torch.Tensor:
-    """A host array on `device`. `URANIUM_H2D=pinned` stages it in page-locked memory so the copy
-    is asynchronous: a copy from pageable memory waits for the queued GPU work first, so the host
-    cannot launch ahead (AMB-000-4 step 2). Same values either way. `pinned` overrides the switch
-    for one caller (the RL learner, 032-R19 ⑥: not a process setting, the inference servers share
-    the process)."""
     t = torch.as_tensor(x)
     dev = torch.device(device)
     if pinned is None:
@@ -49,9 +39,6 @@ def to_device(x, device, pinned: bool | None = None) -> torch.Tensor:
 
 
 def to_obs(group: dict, device, dtype=torch.float32, pinned: bool | None = None) -> dict:
-    """Observation tensors from a lane group / numpy dict: masks to bool, indices to int64,
-    features to `dtype`; a `spatial` the host already rounded to bf16 (`spatial_bf16`) stays bf16.
-    `pinned`: see `to_device`."""
     out = {}
     for k in OBS_KEYS:
         t = to_device(group[k], device, pinned)
@@ -65,22 +52,10 @@ def to_obs(group: dict, device, dtype=torch.float32, pinned: bool | None = None)
     return out
 
 
-# 032-R19: `URANIUM_SPATIAL_BF16` - under bf16 autocast (032-R8, CUDA host) the spatial planes go to
-# the device as f32 (`off`) or rounded to bf16 on the host (`on`, half the bytes: about 3.5 of the
-# 3.8 GB a BC update copies). Their only consumers are autocast convs / Linears (the stem, the
-# terrain variant's Linear) that round them to bf16 the same way (round to nearest even), after
-# dtype-keeping cat / gather, so the result is the same. Not used with f32 compute.
 SPATIAL_BF16_MODES = ("off", "on")
 
 
 def stage(group: dict, device, precision: str, pinned: bool | None = None, spatial_bf16: bool | None = None, keys=OBS_KEYS) -> dict:
-    """`group` ready for the copy to `device`, on the collate thread (torch copies release the GIL):
-    with `URANIUM_H2D=pinned` every observation array is copied into page-locked memory here, not in
-    `to_device` on the training thread, and with `URANIUM_SPATIAL_BF16=on` under bf16 autocast
-    `spatial` is rounded to bf16 in that same copy. Otherwise `group` itself. `pinned` and
-    `spatial_bf16` override the switches for one caller and `keys` names the arrays (the RL
-    learner, 032-R19 ⑥: its labels, privileged input and mask too; host readers of a staged array
-    get a CPU tensor)."""
     bf16 = precision == "bf16" and (env_choice("URANIUM_SPATIAL_BF16", SPATIAL_BF16_MODES, "off") == "on" if spatial_bf16 is None else spatial_bf16)
     if pinned is None:
         pinned = env_choice("URANIUM_H2D", H2D_MODES, "sync") == "pinned"
@@ -88,7 +63,6 @@ def stage(group: dict, device, precision: str, pinned: bool | None = None, spati
     if not (bf16 or pinned):
         return group
     out = dict(group)
-    # By default the observations only (nearly all the bytes); the labels are also read on the host.
     for k in keys:
         v = group[k]
         if not isinstance(v, np.ndarray) or (not pinned and k != "spatial"):
@@ -100,18 +74,10 @@ def stage(group: dict, device, precision: str, pinned: bool | None = None, spati
     return out
 
 
-# The observations with an entity axis (dim 1, padded to `pad_entities`): the `[r, n, ...]`
-# arrays of the Rust group (`put_obs`, crates/uranium-py).
 ENTITY_KEYS = ("entity_cat", "entity_cont", "entity_mask", "entity_cell", "entity_pos", "unit_cap", "is_building")
 
 
 def trim_entity_pad(group: dict, k: int) -> dict:
-    """032 §2.7 extra tokens, same math (032-R19): the K tokens join after the N entity slots,
-    and N is a multiple of `pad_entities` (64), so N + K starts one more 64-wide tile of the fused
-    attention kernel in every group (CUDA host, B1 N512: +6 ms of 115 per pass). When the last K
-    slots are padding in every row they are dropped and N - K + K stays on the tile. Padding is
-    masked everywhere; the selection's END is index N, and its labels clamp to N. With dropout the
-    draws differ from the untrimmed group's (the dropout tensors are smaller), not their law."""
     m = group["entity_mask"]
     n = m.shape[1]
     if k == 0 or n <= k or m[:, n - k:].any():
@@ -125,11 +91,6 @@ def trim_entity_pad(group: dict, k: int) -> dict:
 
 
 def phase_split(counter: torch.Tensor, t: int, seg: int) -> list[torch.Tensor]:
-    """032 §2.7 `outer`, sequences that start at any decision (`UraniumNet._outer_seq_phased`):
-    the b-major row indices [rows] of each outer segment that has rows, in order, from the outer
-    decision counter [B] before step 0 (row r's first segment is `seg - counter mod seg` steps
-    long). Computed where `counter` is: on the device it reads the row counts back (a host sync),
-    so the RL learner computes it from its host copy of core_state0 (032-R19 ⑥, same indices)."""
     dev = counter.device
     pos = torch.arange(t, device=dev)[None]
     first = (seg - torch.fmod(counter, float(seg))).long()[:, None]
@@ -143,9 +104,6 @@ def phase_split(counter: torch.Tensor, t: int, seg: int) -> list[torch.Tensor]:
 
 
 def join_parts(parts: list[dict], join) -> dict:
-    """The encoder output dicts of the outer segments (032 §2.7) back in one: every key, a tensor
-    joined with `join`, a list of tensors joined item by item. Generic, so an added key (e.g.
-    `pool`, the 032-R24 JEPA target, or 032-R25 statistics) survives the outer paths."""
     return {k: [join([p[k][i] for p in parts]) for i in range(len(v))] if isinstance(v, list) else join([p[k] for p in parts]) for k, v in parts[0].items()}
 
 
@@ -161,39 +119,30 @@ class UraniumNet(nn.Module):
         d_e = cfg.entity.d_model
         d_in = d_e + cfg.spatial.pool + cfg.scalar.hidden
         self.entity = EntityEncoder(cfg.input, cfg.entity)
-        self.spatial = SpatialEncoder(cfg.input, cfg.spatial, d_e, preact=cfg.variant.spatial_preact)  # 032-R22
+        self.spatial = SpatialEncoder(cfg.input, cfg.spatial, d_e, preact=cfg.variant.spatial_preact)
         self.scalar = ScalarEncoder(cfg.input, cfg.scalar)
         self.core = build_core(d_in, cfg.core)
         self.heads = Heads(cfg.input, cfg.heads, cfg.spatial, cfg.core.hidden, cfg.scalar.hidden, d_e)
         self.value = ValueHeads(cfg.input, cfg.value, cfg.core.hidden, cfg.scalar.z_out, cfg.scalar.race_emb)
-        # 032 §2.7: the variant modules are built last (after win_open, 032-R18 ③), and only when a
-        # switch is on, so the default model has the same parameters and initial weights.
         self.variant = Variants(cfg, d_in) if cfg.variant.any() else None
         cols = cols if cols is not None else action_columns()
         assert len(cols["uses_select"]) == cfg.input.actions, "action table size != config.input.actions"
         self._cols = cols
         self.table = ActionTable(cols, "cpu")
         if env_choice("URANIUM_CHANNELS_LAST", CHANNELS_LAST_MODES, "off") == "on":
-            # The conv weights in the activations' memory order too (`conv_layout`), so cuDNN does
-            # not convert them at every call. Checkpoints store the logical order (`ckpt`).
             self.to(memory_format=torch.channels_last)
 
     @property
     def outer(self):
-        """The outer LSTM (032 §2.7), or None."""
         return None if self.variant is None else self.variant.outer
 
     def _apply(self, fn, *args, **kwargs):
-        # Keep the action table constants on the module's device.
         out = super()._apply(fn, *args, **kwargs)
         dev = next(self.parameters()).device
         self.table = self.table.to(dev)
         return out
 
     def entity_chunked(self, obs: dict, rows: int, add=None, tokens=None, tok_bias=None, pool=None):
-        """041-R17: the entity encoder over `rows`-row chunks, each recomputed in the backward
-        pass (its dropout draws replayed), so no chunk's activations stay alive. Same values as
-        one pass; device memory only. The 032 §2.7 per-row inputs are cut with the rows."""
         from torch.utils.checkpoint import checkpoint
 
         n = obs["entity_cat"].shape[0]
@@ -211,16 +160,12 @@ class UraniumNet(nn.Module):
         return torch.cat(es, 0), torch.cat(pools, 0)
 
     def encode(self, obs: dict, entity_chunk: int = 0, h_o=None):
-        """Encoders over all rows -> (core input [rows,768], E, spatial outputs, scalar outputs,
-        e_pool [rows,256]). `h_o` [rows,256]: the outer LSTM output each row uses (032 §2.7
-        `outer`). `e_pool` and `sp["pool"]` are the encoder summaries before the outer LSTM's
-        core input addition (`core_add`): the JEPA targets (032-R24)."""
         v = self.variant
         sc = film = None
         extra = {}
         if v is not None:
             if v.ctx is not None:
-                sc = self.scalar(obs)  # the context token needs c first
+                sc = self.scalar(obs)
             add, tokens, tok_bias = v.entity_inputs(obs, None if sc is None else sc["c"], h_o)
             extra = {"add": add, "tokens": tokens, "tok_bias": tok_bias, "pool": v.pool}
             if v.outer is not None:
@@ -237,24 +182,15 @@ class UraniumNet(nn.Module):
             core_in = core_in + self.outer.core_add(h_o).to(core_in.dtype)
         return core_in, e, sp, sc, e_pool
 
-    # 032 §2.8 hooks (`Variants` docstring): with the switch off each returns its input / None,
-    # so the default model's computation is unchanged (032-AC13).
     def _skip(self, h, core_in):
-        """032-R23 F1 `core_skip`: h' = h + Linear(core input). h' is what the heads, value,
-        win_open and aux read; the outer LSTM's h_sum keeps the core output h (pre-skip, user
-        decision 2026-11-09 on the core fix set) and the core's recurrent state is not touched."""
         m = None if self.variant is None else self.variant.core_skip
         return h if m is None else h + m(core_in).to(h.dtype)
 
     def _bypass(self, h, sc: dict, e, obs: dict):
-        """032-R21 `bypass`: the ActionType head's addition u [rows, heads.ar], or None."""
         m = None if self.variant is None else self.variant.bypass
         return None if m is None else m(h, sc["c"], e, obs)
 
     def _aux(self, h, e_pool, sp_pool) -> dict:
-        """032-R24 (training only, `forward_seq(aux=True)`): `aux_priv` [rows, P], `aux_jepa`
-        {k: [rows, 512]} and `jepa_target` [rows, 512] = [e_pool, s_pool] before `core_add`,
-        detached (stop-grad). Keys only for the modules the model has."""
         v = self.variant
         out = {}
         if v is None:
@@ -267,27 +203,19 @@ class UraniumNet(nn.Module):
         return out
 
     def labels(self, group: dict, device, pinned: bool | None = None) -> dict:
-        """`to_labels` plus the location head's row list from the host labels when
-        `URANIUM_LOC_ROWS` is not `off` (no device sync, bucketed shapes, AMB-000-4 step 2).
-        `pinned`: see `to_device`."""
         out = to_labels(group, device, pinned)
         mode = env_choice("URANIUM_LOC_ROWS", LOC_ROW_MODES, "off")
         if mode != "off":
-            # Weight 1 for the real rows, 0 for the padding: no Python row count reaches the
-            # forward (torch.compile would specialise on it), and always the same keys and types.
             rows, k = location_rows(group["action"], self._cols["target_kind"], mode)
             out["loc_rows"], out["loc_w"] = to_device(rows, device, pinned), to_device((np.arange(len(rows)) < k).astype(np.float32), device, pinned)
         return out
 
-    # The recurrent state of B games: the core's, and with `outer` (032 §2.7) the pair
-    # (core state, outer LSTM state). Reset per episode by `mask_state` / `init_state` (032-R5).
     def init_state(self, b: int, device=None):
         device = device or next(self.parameters()).device
         s = self.core.init_state(b, device)
         return s if self.outer is None else (s, self.outer.zero_state(b, device))
 
     def mask_state(self, s, keep):
-        """Zero the rows where `keep` [B] is false (a new episode in that row)."""
         if self.outer is None:
             return self.core.mask_state(s, keep)
         return (self.core.mask_state(s[0], keep), self.outer.mask(s[1], keep))
@@ -298,8 +226,6 @@ class UraniumNet(nn.Module):
         return (self.core.detach_state(s[0]), self.outer.detach(s[1]))
 
     def act(self, obs: dict, state, temp: float, generator: torch.Generator | None = None) -> dict:
-        """One inference step for B games; sampling inside this forward (032-R9). No privileged
-        input (032-R11). `temp` 0 picks the argmax of every head (032-R15, 050-R1)."""
         if self.outer is None:
             core_in, e, sp, sc, _ = self.encode(obs)
             h, state = self.core.step(core_in, state)
@@ -308,12 +234,11 @@ class UraniumNet(nn.Module):
             cs, os_ = state
             core_in, e, sp, sc, _ = self.encode(obs, h_o=os_[0])
             h, cs = self.core.step(core_in, cs)
-            state = (cs, self.outer.step(h, os_))  # the pre-skip h (032-R23 F1)
+            state = (cs, self.outer.step(h, os_))
             h = self._skip(h, core_in)
-        # 032-R24 / AC14: no aux module and no privileged input on this path.
         out = self.heads(None, temp, h, sc["c"], e, sp, obs, self.table, generator, u=self._bypass(h, sc, e, obs))
         value = self.value(h, sc["z"], sc["race"], None)
-        win_open = self.value.win_open(h, sc["z"], sc["race"])  # 032-R18 ③: last
+        win_open = self.value.win_open(h, sc["z"], sc["race"])
         head_logp = torch.stack([out["logp"][k] for k in HEAD_NAMES], 1)
         return {
             "action": out["chosen"], "log_prob": head_logp.sum(1), "head_log_prob": head_logp,
@@ -322,13 +247,6 @@ class UraniumNet(nn.Module):
         }
 
     def forward_seq(self, obs: dict, labels: dict, priv, s0, t: int, entity_chunk: int = 0, phased: bool = False, phases: list | None = None, aux: bool = False) -> dict:
-        """Teacher-forced training pass over `t` steps per sequence; rows b-major (032 §6).
-        `entity_chunk` > 0: the entity encoder recomputed per row chunk (041-R17). `phased`: with
-        `outer`, the sequences may start anywhere inside an outer segment (RL, 032 §2.7);
-        `phases`: their `phase_split` of s0's counter, on this device, when the caller has it.
-        `aux` (032 §6, 032-R24): also run the training-only aux modules the model has and return
-        `aux_priv`, `aux_jepa` and `jepa_target` (`_aux`); false (the default: RL BC reference
-        pass, self-imitation lanes, diagnostics, `bc-eval`) never runs them and the keys are absent."""
         h, e, sp, sc, e_pool, state = self.trunk_seq(obs, s0, t, entity_chunk, phased, phases, aux)
         out = self.heads(labels, 1.0, h, sc["c"], e, sp, obs, self.table, u=self._bypass(h, sc, e, obs))
         value = self.value(h, sc["z"], sc["race"], priv)
@@ -339,8 +257,6 @@ class UraniumNet(nn.Module):
         return res
 
     def trunk_seq(self, obs: dict, s0, t: int, entity_chunk: int = 0, phased: bool = False, phases: list | None = None, aux: bool = False):
-        """The part of `forward_seq` before the heads: (h' [rows, d], E, spatial outputs, scalar
-        outputs, e_pool (with `outer`: None unless `aux`), state). Same arguments as `forward_seq`."""
         if self.outer is None:
             core_in, e, sp, sc, e_pool = self.encode(obs, entity_chunk)
             bt, d = core_in.shape
@@ -351,19 +267,11 @@ class UraniumNet(nn.Module):
         return self._outer_seq_phased(obs, s0, t, entity_chunk, phases, aux) if phased else self._outer_seq(obs, s0, t, entity_chunk, aux)
 
     def action_seq(self, obs: dict, s0, t: int) -> tuple[dict, torch.Tensor]:
-        """The ActionType log-probs of a teacher-forced pass without the other heads, the value
-        or win_open (`diag dump`: the same numbers as `forward_seq(...)["dists"]["action"]`, the
-        location head's row-count-dependent convolutions not run): ((h', E, spatial, scalar,
-        state), log-probs [rows, actions])."""
         h, e, sp, sc, _, state = self.trunk_seq(obs, s0, t)
         lp = self.heads.action_logp(h, sc["c"], obs["type_mask"], self._bypass(h, sc, e, obs))
         return {"h": h, "e": e, "sp": sp, "sc": sc, "state": state}, lp
 
     def _outer_seq(self, obs: dict, s0, t: int, entity_chunk: int, aux: bool = False):
-        """032 §2.7 `outer`: the `t` steps in segments of `outer` decisions, one after another
-        (each segment's rows in parallel). Segment k uses the outer state updated at the end of
-        segment k-1, through which its loss reaches segment k-1. The sequences start on a segment
-        boundary (BC chunks start at multiples of 64 decisions from the game start)."""
         seg = self.outer.segment
         bt = obs["entity_cat"].shape[0]
         assert t > 0 and bt % t == 0 and t % seg == 0, "batch rows must be B*T, T a multiple of the outer segment"
@@ -375,26 +283,17 @@ class UraniumNet(nn.Module):
             sub = {key: part(x, k) for key, x in obs.items()}
             core_in, e, sp, sc, e_pool = self.encode(sub, entity_chunk, os_[0].repeat_interleave(seg, 0))
             h, cs = self.core.forward_seq(core_in.view(b, seg, -1), cs)
-            # 032-R23 F1: the outer h_sum sums the pre-skip core output; the consumers get h'.
             os_ = self.outer.after_segment(h, os_)
             hs.append(self._skip(h, core_in.view(b, seg, -1)).reshape(b * seg, -1))
             es.append(e)
             sps.append(sp)
             scs.append(sc)
-            if aux:  # 032-R24: the JEPA target rows, kept only when the aux outputs are asked for
+            if aux:
                 eps.append(e_pool)
-        # Back to b-major rows over the whole sequence, as the heads and labels expect.
         join = lambda xs: torch.cat([x.view(b, seg, *x.shape[1:]) for x in xs], 1).reshape(bt, *xs[0].shape[1:])  # noqa: E731
         return join(hs), join(es), join_parts(sps, join), join_parts(scs, join), join(eps) if aux else None, (cs, os_)
 
     def _outer_seq_phased(self, obs: dict, s0, t: int, entity_chunk: int, phases: list | None = None, aux: bool = False):
-        """032 §2.7 `outer` for sequences that start at any decision (RL segments overlap by one
-        step, 042): row r's first outer segment is `outer - n0 mod outer` steps long, then whole
-        segments, then the rest. Segment k gathers every row's steps of its k-th segment, encodes
-        them with that row's h_o, runs the core over the whole sequence (inputs of later steps
-        still zero; the core is causal, so the steps up to segment k are exact) and updates each
-        row's outer state. Same values as one decision at a time (032-R5). `phases`: the segments'
-        row indices (`phase_split`), else computed here from s0's counter."""
         seg = self.outer.segment
         bt = obs["entity_cat"].shape[0]
         assert t > 0 and bt % t == 0, "batch rows must be B*T"
@@ -414,20 +313,16 @@ class UraniumNet(nn.Module):
             count = torch.zeros(b, device=dev).index_add(0, row, torch.ones(idx.numel(), device=dev))
             os_ = self.outer.after_rows(total, count, os_)
             idxs.append(idx)
-            # 032-R23 F1: the outer h_sum above took the pre-skip h; the consumers get h' (these
-            # rows' own core input).
             hs.append(self._skip(h, ci))
             es.append(e)
             sps.append(sp)
             scs.append(sc)
-            if aux:  # 032-R24: the JEPA target rows, kept only when the aux outputs are asked for
+            if aux:
                 eps.append(e_pool)
-        # Back to b-major rows over the whole sequence, as the heads and labels expect.
         perm = torch.cat(idxs)
         inv = torch.empty_like(perm).index_copy(0, perm, torch.arange(bt, device=dev))
         join = lambda xs: torch.cat(xs, 0).index_select(0, inv)  # noqa: E731
         return join(hs), join(es), join_parts(sps, join), join_parts(scs, join), join(eps) if aux else None, (cs, os_)
 
     def win_open_params(self) -> list[nn.Parameter]:
-        """032-R18: the win_open head's parameters (041-R19 clips them apart)."""
         return [] if self.value.open is None else list(self.value.open.parameters())

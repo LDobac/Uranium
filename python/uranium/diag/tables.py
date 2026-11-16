@@ -1,7 +1,3 @@
-"""Feature-schema facts the diagnostics read (030 §1-§4, 013 tables): entity and scalar column
-layout, the privileged per-type counts, unit / action / order ids by name, and per enemy race the
-building whose start is the cue (the "focus" type)."""
-
 import functools
 import tomllib
 from pathlib import Path
@@ -10,18 +6,15 @@ import numpy as np
 
 TABLES = Path(__file__).resolve().parents[3] / "crates" / "uranium-env" / "tables"
 
-# entity_cont columns (crates/uranium-env/src/features/extract.rs)
-HP_RATIO, HP_SQRT, SH_RATIO, SH_SQRT = 0, 1, 2, 3  # hp / max, sqrt(hp) / 16, shields likewise
-COMPLETED = 48  # first of the 12 flags
+HP_RATIO, HP_SQRT, SH_RATIO, SH_SQRT = 0, 1, 2, 3
+COMPLETED = 48
 CONSTRUCTING = 59
 REMEMBERED = 72
-SINCE_SEEN = 73  # frames since seen / 2048
+SINCE_SEEN = 73
 SINCE_SCALE = 2048.0
-# entity_cat columns: unit type, owner (0 self, 1 enemy), order, last action
 OWNER_SELF, OWNER_ENEMY = 0, 1
-# scalar: [0] frame / 86400, [1] log1p(frame) / 12
 FRAME_SCALE = 86400.0
-COUNT_LOG = 4.0  # counts are log1p(n) / 4
+COUNT_LOG = 4.0
 
 
 @functools.cache
@@ -41,7 +34,6 @@ def _playable(u) -> bool:
 
 @functools.cache
 def observed() -> list[int]:
-    """Enemy unit types with a scalar max-seen count and privileged columns (030 §4), id order."""
     us = sorted(units().values(), key=lambda u: u["id"])
     return [u["id"] for u in us if _playable(u) and u["name"] != "Terran_Civilian" and not u["name"].startswith("Zerg_Broodling")]
 
@@ -54,18 +46,14 @@ def terran() -> list[int]:
 
 @functools.cache
 def _sc_enemy_seen() -> int:
-    # time 2, resources 5, upgrades 63, tech 47, researching 47, upgrading 63, own (done, building)
-    # per Terran type, then enemy max-seen per observed type (030 §4)
     return 2 + 5 + 63 + 47 + 47 + 63 + 2 * len(terran())
 
 
 def sc_seen_col(ty: int) -> int:
-    """Scalar column of the enemy max-seen count of unit type `ty`."""
     return _sc_enemy_seen() + observed().index(ty)
 
 
 def sc_own_cols(ty: int) -> tuple[int, int]:
-    """Scalar columns of the own (done, building) counts of Terran type `ty`."""
     base = _sc_enemy_seen() - 2 * len(terran()) + 2 * terran().index(ty)
     return base, base + 1
 
@@ -74,7 +62,7 @@ def sc_enemy_cols() -> slice:
     return slice(_sc_enemy_seen(), _sc_enemy_seen() + len(observed()))
 
 
-PRIV_BASE = 115  # privileged: per observed type (done, in production) from column 115
+PRIV_BASE = 115
 
 
 def priv_col(ty: int, in_prod: bool = False) -> int:
@@ -103,8 +91,6 @@ def order_id(name: str) -> int:
     return next(o["id"] for o in _rows("order_types") if o["name"] == name)
 
 
-# Per enemy race (T, P, Z): the focus building (its start time / HP / count is the cue), worker,
-# town halls, gas, early army (nuisance counts only). 013 ids by name.
 RACES = ("T", "P", "Z")
 RACE_NAMES = {"T": "Terran", "P": "Protoss", "Z": "Zerg"}
 _SPEC = {
@@ -115,7 +101,6 @@ _SPEC = {
     "Z": {"focus": "Zerg_Spawning_Pool", "worker": "Zerg_Drone", "town": ["Zerg_Hatchery", "Zerg_Lair"], "gas": "Zerg_Extractor",
           "army": ["Zerg_Zergling", "Zerg_Hydralisk", "Zerg_Ultralisk"]},
 }
-# Types whose privileged counts the dump keeps (labels: class rules of reports/jepa_survey.md 7.3).
 _PRIV_TYPES = {
     "T": ["Terran_SCV", "Terran_Marine", "Terran_Barracks", "Terran_Refinery", "Terran_Factory", "Terran_Command_Center", "Terran_Bunker", "Terran_Academy"],
     "P": ["Protoss_Probe", "Protoss_Zealot", "Protoss_Gateway", "Protoss_Forge", "Protoss_Cybernetics_Core", "Protoss_Nexus", "Protoss_Assimilator", "Protoss_Photon_Cannon"],
@@ -143,5 +128,4 @@ def own_ids() -> dict:
 
 
 def actions() -> dict:
-    """The three action types the intervention scores."""
     return {"bunker": action_id("Build_Bunker"), "marine": action_id("Train_Marine"), "rax": action_id("Build_Barracks")}

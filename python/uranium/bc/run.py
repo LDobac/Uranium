@@ -1,7 +1,3 @@
-"""`python -m uranium bc` (041, 061): the PyTorch trainer under the Rust run loop. Same flags and
-exit codes as the Burn `uranium-train bc` it replaces: 0 done / stopped / lock lost, 75 the
-run's lock is not ours (061-R5), 76 yielded to the host that asked (061-R14)."""
-
 import argparse
 import functools
 
@@ -40,7 +36,6 @@ def stage_of(a) -> str:
 def main(a) -> int:
     from uranium import _core
 
-    # 042-R10 / 060-R6: first, so a SIGINT during the dataset pull or the model load is kept.
     _core.install_stop_handler("bc")
     if (a.take_over or a.take_over_if) and not a.run:
         raise SystemExit("--take-over needs --run")
@@ -65,8 +60,6 @@ def main(a) -> int:
 
 
 def model_variant(config: str):
-    """The `[model]` table of the BC config file (032 §2.7). Read here because the Rust config
-    loader ignores tables it does not know; unknown keys are refused (032-AC11)."""
     import tomllib
 
     from uranium.model.config import VariantConfig

@@ -1,8 +1,3 @@
-"""`python -m uranium bc-profile` (060-AC4): where a BC update's time goes, on real S1 batches with
-a fresh network. Per update: data wait, collate, host-to-device copy, forward, loss, backward,
-optimizer (device synchronised at each mark), then the operators with the most device time from
-`torch.profiler`. The first batch only warms kernels and autotuning up and is not counted."""
-
 import argparse
 import json
 import time
@@ -42,7 +37,6 @@ def main(a) -> int:
     feeder = _core.Feeder(a.config, dirs, stage="s1", synthetic_maps=a.synthetic_maps)
     from uranium.bc.run import model_variant
 
-    # 032 §2.7: the config's [model] variant, as `python -m uranium bc` builds it.
     net = UraniumNet(new_net_config(a.core, cfg["value"].get("win_open") is not None, model_variant(a.config)))
     chunk = int(os.environ.get("URANIUM_BC_ENTITY_CHUNK", "0") or 0)
     t = BcTrainer(cfg, net, device, precision, chunk)

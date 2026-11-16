@@ -1,9 +1,3 @@
-"""`python -m uranium bench` (060-R2): `suite` (kernel / model / inference cases with errors vs
-CPU), `bc` (real-data BC updates per lane group size, parity log), `loss` (parity of two `bc`
-logs), `rl` (RL learner updates per lane group size and learner, 042) and `rl-parity` (parity of
-two `rl` runs). Candidates of an optimisation are compared by running these under each candidate's setting
-and comparing the JSON (AMB-000-4 step 2)."""
-
 import json
 import sys
 from pathlib import Path
@@ -88,7 +82,6 @@ def write(path: str | None, text: str) -> None:
 
 
 def emit(text: str) -> None:
-    """The report on stdout in UTF-8 (a Windows console code page cannot encode the table)."""
     sys.stdout.flush()
     sys.stdout.buffer.write(text.encode("utf-8"))
     sys.stdout.buffer.flush()
@@ -133,10 +126,9 @@ def bc_main(a) -> int:
     for g in a.groups.split(","):
         try:
             groups.append(run_group(a, int(g), device, precision, log=lambda m: print(m, file=sys.stderr, flush=True)))
-        except torch.OutOfMemoryError as e:  # a group size over the device memory is a result (060-R3)
+        except torch.OutOfMemoryError as e:
             groups.append({"group": int(g), "updates": [], "median_s": None, "mean_s": None, "p95_s": None, "wait_median_s": None, "peak_gib": None, "peak_rss_gib": None, "failed": str(e).splitlines()[0][:160]})
             torch.cuda.empty_cache()
-        # Written after every group: a long sweep that is stopped keeps the groups it finished.
         md = bc_markdown(groups, env, cmd)
         write(a.out, md)
         write(a.json, json.dumps({"env": env, "groups": groups}, indent=1))
@@ -173,7 +165,6 @@ def rl_main(a) -> int:
     bad = [x for x in off if x not in OFF]
     if bad:
         raise SystemExit(f"--off {bad}: expected some of {list(OFF)}")
-    # As `python -m uranium rl`: the backend's defaults only, not the BC trainer's process switches.
     configure(backend)
     log = lambda m: print(m, file=sys.stderr, flush=True)  # noqa: E731
     if os.environ.get(MICRO_LANES_ENV, "").strip():
@@ -183,10 +174,10 @@ def rl_main(a) -> int:
         cfg["lanes"] = a.lanes
     lo, hi = (int(x) for x in a.entities.split(":"))
     net = batch = None
-    if not a.isolate:  # --isolate: the children load the net and build the batch
+    if not a.isolate:
         net, _ = ckpt.load_model(Path(a.checkpoint), device, adjust=_no_dropout)
         batch = SyntheticSegments(net, cfg["lanes"], cfg["seq_len"], (lo, hi), a.templates, a.seed)
-        net = net.cpu()  # each run copies it to the device
+        net = net.cpu()
     env = environment(backend, precision, device) | {"checkpoint": Path(a.checkpoint).name, "lanes": cfg["lanes"], "seq_len": cfg["seq_len"], "entities": a.entities}
     cmd = "python -m uranium bench " + " ".join(sys.argv[2:])
     runs: list = []
@@ -201,10 +192,9 @@ def rl_main(a) -> int:
                 continue
             try:
                 runs.append(run_learner(kind, int(g), net, cfg, batch, device, precision, a.algo, a.updates, a.phases, a.ops, a.trace, log, off, a.trim, a.references))
-            except torch.OutOfMemoryError as e:  # a group size over the device memory is a result (060-R3)
+            except torch.OutOfMemoryError as e:
                 runs.append({"learner": kind, "group": int(g), "off": list(off), "trim": a.trim and kind == "new", "updates": [], "median_s": None, "mean_s": None, "p95_s": None, "peak_gib": None, "peak_rss_gib": None, "failed": str(e).splitlines()[0][:160]})
                 torch.cuda.empty_cache()
-            # Written after every run: a long sweep that is stopped keeps the runs it finished.
             md = markdown(runs, env, cmd)
             write(a.out, md)
             write(a.json, json.dumps({"env": env, "runs": runs}, indent=1))
@@ -213,8 +203,6 @@ def rl_main(a) -> int:
 
 
 def _rl_child(a, kind: str, group: int, log) -> dict:
-    """One `bench rl` run (learner x group) in a child process (`--isolate`): its peak RSS is the
-    child's own (the synthetic batch, the nets and the run; 060-R3)."""
     import subprocess
     import tempfile
 
@@ -227,7 +215,6 @@ def _rl_child(a, kind: str, group: int, log) -> dict:
         log(f"[bench rl] child: {kind} group {group}")
         rc = subprocess.run(argv, stdout=subprocess.DEVNULL).returncode
         if rc != 0 or not out.is_file():
-            # As the in-process path records a failed run: with the requested --off list.
             off = [x.strip() for x in a.off.split(",") if x.strip()]
             return {"learner": kind, "group": group, "off": off, "trim": a.trim and kind == "new", "updates": [], "median_s": None, "mean_s": None, "p95_s": None, "peak_gib": None, "peak_rss_gib": None, "failed": f"child exit {rc}"}
         return json.loads(out.read_text(encoding="utf-8"))["runs"][0]

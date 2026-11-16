@@ -1,8 +1,3 @@
-"""`python -m uranium serve | scr | run | random-checkpoint` (001-R6, 012-R19, 020): the Rust agent
-server, SC:R server and scheduler run their sessions on Rust threads; each model they use gets
-a `Broker` and an `InferenceServer` thread here (AMB-000-4). Ctrl+C ends the process at once, as
-the Rust binaries did (finished sessions are already written)."""
-
 import argparse
 import json
 import signal
@@ -69,29 +64,18 @@ def add_parsers(sub) -> None:
 
 
 def new_infer_seed() -> int:
-    """051-R8: a fresh torch seed for an inference server (63 bits: an int64 in every JSON reader)."""
     import secrets
 
     return secrets.randbits(63)
 
 
 def seed_inference(seed: int) -> None:
-    """051-R8: seeds torch's global generator (every device) once the process's servers are started
-    and warmed up, before any game is handed to them (`serve` / `scr` before accepting sessions,
-    `run` before `run_plan`, `eval-worker` before `dispatch`), so the stochastic draws of the first
-    batch start from the recorded seed. The servers of one process share the generator, hence one
-    seed for them all; a draw is still not reproducible per game (batches mix games), which 051-R8
-    does not ask for."""
     import torch
 
     torch.manual_seed(seed)
 
 
 def start_server(checkpoint: str, sample: str, backend: str | None, max_batch: int, max_wait_ms: int, seed: int, zero_last_failed: bool = False, warmup: bool = False, warm_batches: list[int] | None = None):
-    """A broker for `checkpoint` and its model thread (started). `warm_batches`: the warm-up also
-    runs these batch sizes (see `InferenceServer.warm_up`). `seed`: the process's inference seed
-    (051-R8), recorded on the broker (the sessions' records of plan games with 051 keys carry it as
-    `infer_seed`); the caller sets it with `seed_inference` once its servers are up."""
     from uranium import _core
     from uranium.agent.infer import InferenceServer
     from uranium.device import configure, resolve
@@ -109,8 +93,6 @@ def start_server(checkpoint: str, sample: str, backend: str | None, max_batch: i
 
 
 def _sigint_kills() -> None:
-    # The session loops run in Rust with the GIL released; Python would only see Ctrl+C after they
-    # return. Keep the Rust binaries' behaviour: Ctrl+C ends the process.
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
 
@@ -130,8 +112,6 @@ def serve(a) -> int:
 
 
 def scr(a) -> int:
-    """012-R19: realtime sessions get the Act deadline (012-R7) and last_failed = 0 (012-R14);
-    every padded entity count is warmed up before the first game."""
     from uranium import _core
 
     _sigint_kills()
@@ -149,7 +129,6 @@ def run(a) -> int:
 
     _sigint_kills()
     models = []
-    # 051-R8: one seed for the process's servers (they share torch's global generator).
     seed = new_infer_seed()
     for ckpt, sample in _core.plan_models(a.plan):
         broker, _ = start_server(ckpt, sample, a.backend, a.max_batch, a.max_wait_ms, seed)
@@ -160,10 +139,6 @@ def run(a) -> int:
 
 
 def eval_worker(a) -> int:
-    """020-R15: wait for the job's lease, load the models of the stages with games left, play
-    until the lease goes (yield to a faster host: the games in flight finish here first) or
-    Ctrl+C, unload, repeat. The models stay off the device while another worker holds the lease
-    (a Linux ROCm host shares its memory with a val scoring run)."""
     import gc
 
     import torch
@@ -179,7 +154,6 @@ def eval_worker(a) -> int:
     reload = False
     try:
         while True:
-            # "reload": games are left whose models were not loaded; the lease is still ours.
             if not reload:
                 end = w.wait_lease()
                 if end != "lease":
@@ -188,12 +162,7 @@ def eval_worker(a) -> int:
             reload = False
             models, servers = [], []
             try:
-                # Every power-of-two batch up to max_batch (the graph pads to one) at every entity
-                # count: a shape first met in a game stalls every game of the server for its
-                # capture (seconds to minutes with several models).
                 batches = [1 << i for i in range(max(a.max_batch, 1).bit_length())]
-                # 051-R8: a seed chosen at each lease period's start, one for all its servers (they
-                # share torch's global generator); recorded per game as `infer_seed`.
                 seed = new_infer_seed()
                 for ckpt, sample in _needed_models(w):
                     if w.stop_level() > 0:
@@ -201,11 +170,10 @@ def eval_worker(a) -> int:
                     broker, server = start_server(ckpt, sample, a.backend, a.max_batch, a.max_wait_ms, seed, warmup=not a.no_warmup, warm_batches=batches)
                     models.append((ckpt, sample, broker))
                     servers.append(server)
-                # Ctrl+C while loading: no game was handed out, `close` lets the lease go.
                 if w.stop_level() > 0:
                     end = "stopped"
                 else:
-                    seed_inference(seed)  # 051-R8: after every warm-up, before the first game
+                    seed_inference(seed)
                     end = w.dispatch(models)
             finally:
                 for s in servers:
@@ -223,8 +191,6 @@ def eval_worker(a) -> int:
     finally:
         w.close()
         if hostd is not None:
-            # Another worker may be playing there (020-R15 ⑥): no new game goes there any more,
-            # the ones running finish first (Ctrl+C again: stop now).
             w.wait_local_hostd_idle()
             hostd.terminate()
             try:
@@ -236,8 +202,6 @@ def eval_worker(a) -> int:
 
 
 def _needed_models(w) -> list:
-    """`needed_models`, retried while the shared drive cannot be read (the lease heartbeat goes
-    on meanwhile; 061-R13 workers wait out share trouble); empty after Ctrl+C."""
     import time
 
     while True:
@@ -251,8 +215,6 @@ def _needed_models(w) -> list:
 
 
 def _tee_stderr(path: str) -> None:
-    """File descriptor 2 becomes a pipe; a thread copies it to the old stderr and to `path`, so the
-    Rust log lines (written to fd 2) land in the file as well."""
     import os
     import threading
 
@@ -265,8 +227,6 @@ def _tee_stderr(path: str) -> None:
     sys.stderr = open(2, "w", encoding="utf-8", errors="replace", buffering=1, closefd=False)
 
     def pump() -> None:
-        # A failed write (full log disk, closed console) must not stop the pump: a full pipe would
-        # block every stderr writer, the Rust log lines included.
         while chunk := os.read(r, 65536):
             for out in (lambda c: os.write(console, c), log.write):
                 try:
@@ -278,7 +238,6 @@ def _tee_stderr(path: str) -> None:
     t.start()
 
     def drain() -> None:
-        # The last lines are still in the pipe at exit: close its only writer and let them out.
         sys.stderr.flush()
         os.close(2)
         t.join(timeout=5)
@@ -289,11 +248,6 @@ def _tee_stderr(path: str) -> None:
 
 
 def _start_hostd(exe: str, listen: str | None, log: str | None):
-    """020-R15 ⑥: this PC's hostd for an eval worker, out of reach of the worker's Ctrl+C (own
-    console window on Windows, own session elsewhere) so the games in flight can finish. It listens
-    on `listen` (the address the job's hosts file gives this PC; every worker reads the same file,
-    so it cannot be 127.0.0.1). Elsewhere its output goes to `<log>.hostd` (not the worker's
-    stderr pipe, which ends with the worker)."""
     import os
 
     env = dict(os.environ)

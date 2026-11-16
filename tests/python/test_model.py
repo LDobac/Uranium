@@ -1,7 +1,3 @@
-"""032 model properties (the Burn `uranium-model/tests/model.rs` checks, AMB-000-4): sizes, masks,
-privileged isolation, teacher forcing vs sampling, step vs sequence, location rows, win_open.
-Inputs are the tiny Burn-parity batch (tests/fixtures/burn_parity)."""
-
 import json
 from pathlib import Path
 
@@ -31,8 +27,6 @@ def net_of(cfg, seed=3):
 
 @pytest.mark.parametrize("kind,want", [("Lstm", 11_343_764), ("Gtrxl", 21_715_364)])
 def test_default_size_032_r2(kind, want):
-    """The default config (Burn `UraniumNetConfig::new()`, as the benches) has the Burn sizes;
-    the training config takes its input widths from the feature schema (`input_dims`)."""
     cfg = UraniumNetConfig(core=CoreConfig(kind=kind))
     assert sum(p.numel() for p in UraniumNet(cfg, action_columns()).parameters()) == want
     real = UraniumNetConfig(input=input_dims(), core=CoreConfig(kind=kind))
@@ -41,7 +35,6 @@ def test_default_size_032_r2(kind, want):
 
 @pytest.mark.parametrize("name", CORES)
 def test_masks_hold_032_ac4(name):
-    """Sampled actions always satisfy the masks (032-R4, 034-R7, 034-R9)."""
     cfg, _, obs, _, _ = tiny(name)
     net = net_of(cfg)
     cols = action_columns()
@@ -89,7 +82,6 @@ def test_privileged_only_reaches_value_032_r11(name):
 
 @pytest.mark.parametrize("name", CORES)
 def test_teacher_matches_sampling_032_r3(name):
-    """Teacher forcing with the sampled (argmax) action gives the sampling pass's log-probs."""
     cfg, _, obs, _, _ = tiny(name)
     net = net_of(cfg)
     b = obs["entity_mask"].shape[0]
@@ -129,7 +121,6 @@ def test_location_on_used_rows_matches_all_rows_032_r10(name):
 
 
 def test_win_open_head_leaves_the_rest_unchanged_032_ac9():
-    """The head does not move the other modules' initial weights (032-R18 ③)."""
     cfg, *_ = tiny("tiny-gtrxl")
     off = UraniumNetConfig.from_dict(cfg.to_dict())
     off.value = ValueConfig(hidden=cfg.value.hidden, privileged=cfg.value.privileged, win_open=False)

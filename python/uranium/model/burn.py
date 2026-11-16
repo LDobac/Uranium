@@ -1,20 +1,10 @@
-"""Burn module paths <-> PyTorch parameters (032-AC10, AMB-000-4; used by the parity check until
-Burn is removed). The PyTorch model keeps Burn's module names, so the map is mechanical:
-- `nn.Linear`: Burn stores the weight [in, out] (PyTorch [out, in]): transposed.
-- `nn.LayerNorm`: Burn `gamma` / `beta` = PyTorch `weight` / `bias`.
-- `nn.LSTM`: Burn has one Linear pair per gate (`<gate>_gate.{input,hidden}_transform`); PyTorch
-  packs them in the order input, forget, cell, output (i, f, g, o).
-- Conv2d, ConvTranspose2d, Embedding and plain parameters: the same layout and name."""
-
 import torch
 import torch.nn as nn
 
-LSTM_GATES = ("input", "forget", "cell", "output")  # PyTorch nn.LSTM order i, f, g, o
+LSTM_GATES = ("input", "forget", "cell", "output")
 
 
 def burn_to_torch(model: nn.Module, burn: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    """A `state_dict` for `model` from Burn tensors by module path. Fails on a missing or unused
-    Burn tensor, so a name drift shows at once."""
     out: dict[str, torch.Tensor] = {}
     used: set[str] = set()
 
@@ -51,7 +41,6 @@ def burn_to_torch(model: nn.Module, burn: dict[str, torch.Tensor]) -> dict[str, 
 
 
 def torch_to_burn(model: nn.Module, tensors: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    """The inverse layout map, for comparing PyTorch gradients / parameters with Burn's by path."""
     out: dict[str, torch.Tensor] = {}
     done: set[str] = set()
     for name, mod in model.named_modules():

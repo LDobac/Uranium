@@ -1,6 +1,3 @@
-"""Host settings from `.env` (001-R9): the first `.env` in the working directory or a parent,
-read like the Rust binaries' dotenvy. A variable already in the process environment wins."""
-
 import os
 from pathlib import Path
 
@@ -8,7 +5,7 @@ from pathlib import Path
 def _value(raw: str) -> str:
     raw = raw.strip()
     if len(raw) >= 2 and raw[0] == raw[-1] == "'":
-        return raw[1:-1]  # single quotes: literal (Windows paths, 001-R9 note in docs)
+        return raw[1:-1]
     if len(raw) >= 2 and raw[0] == raw[-1] == '"':
         return bytes(raw[1:-1], "utf-8").decode("unicode_escape")
     return raw.split(" #", 1)[0].strip()
@@ -23,7 +20,6 @@ def find(start: Path | None = None) -> Path | None:
 
 
 def load(path: Path | None = None) -> Path | None:
-    """Loads `.env` into `os.environ` without overriding set variables; returns the file used."""
     path = path or find()
     if path is None:
         return None
@@ -42,18 +38,12 @@ def load(path: Path | None = None) -> Path | None:
     return path
 
 
-# glibc mallopt parameters (malloc.h).
 M_TRIM_THRESHOLD = -1
 M_MMAP_THRESHOLD = -3
 M_ARENA_MAX = -8
 
 
 def apply_malloc() -> int | None:
-    """060-R3: `URANIUM_MALLOC_MMAP_THRESHOLD` (bytes, Linux glibc): blocks at least this large
-    are mapped and given back to the OS when freed. glibc otherwise raises its threshold after
-    such a free and keeps the BC batches' feature blocks (MBs each) in its heap, so a process
-    holding one batch stays at the peak of two (Linux ROCm host: Feeder 8.2 -> 2.4 GB peak RSS at
-    1 MiB, AMB-000-4 step 2). Host memory only; returns the threshold set, or None."""
     import sys
 
     raw = os.environ.get("URANIUM_MALLOC_MMAP_THRESHOLD", "")
@@ -69,13 +59,6 @@ def apply_malloc() -> int | None:
 
 
 def apply_malloc_arenas() -> int | None:
-    """060-R3: `URANIUM_MALLOC_ARENA_MAX` (Linux glibc): at most this many malloc arenas. The BC
-    feed starts new threads per batch and glibc gives threads their own arenas. On the Linux ROCm
-    host a long BC run grew ~25 MB per update until it swapped, the growth all in 64 MB arena
-    heaps (likely small long-lived blocks such as packed planes mixed with short-lived ones); at 2
-    the resident size stayed near 6.6 GB (2026-10-25, `reports/m6_core_ablation_pt.md` 4).
-    Applied in `python -m uranium` before torch is imported or any other thread starts; host
-    memory only, same values (032-R19). Returns the limit set, or None."""
     import sys
 
     raw = os.environ.get("URANIUM_MALLOC_ARENA_MAX", "")

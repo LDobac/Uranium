@@ -1,11 +1,3 @@
-"""032-R25 dead-channel statistics (`uranium.model.monitor`; 041-R25 / 042-R21 record, 032-AC15) on
-the tiny Burn-parity batch, CPU: every point is found (spatial stages incl. s8 and the `const`
-counts; with `points="all"` also entity FFN, head ResMlp, core FFN) in the default model and with
-the 032 §2.7 variants; the counts, the stem and ResBlock inner points and `const` match direct
-computations; the row mask drops rows; the phased RL pass is counted once; a dead block reads as
-dead and constant; `packed` follows the 041-R25 columns; the forward and the mode are unchanged;
-and BC training with the statistics on and off is bit-identical (032-AC15)."""
-
 import json
 from pathlib import Path
 
@@ -48,7 +40,7 @@ def spatial_points(net):
 def test_every_point_is_counted_032_r25(name, variant):
     net, b, t, obs, labels, priv = tiny(name, variant)
     sp = relu_stats(net, obs, labels, priv, net.init_state(b), t)
-    assert set(sp) == spatial_points(net)  # the trainers' default: spatial only
+    assert set(sp) == spatial_points(net)
     st = relu_stats(net, obs, labels, priv, net.init_state(b), t, points="all")
     want = spatial_points(net) | {"entity.L0.ffn", "heads.type_in", "heads.type_res0.inner", "heads.type_res0.out", "heads.type_res1.inner", "heads.type_res1.out"}
     if net.cfg.core.kind == "Gtrxl":
@@ -58,15 +50,13 @@ def test_every_point_is_counted_032_r25(name, variant):
         if k in CONST_POINTS:
             assert isinstance(v["const"], torch.Tensor) and 0 <= int(v["const"]) <= v["channels"], k
             continue
-        assert isinstance(v["pos_frac"], torch.Tensor) and isinstance(v["never_active"], torch.Tensor), k  # no host read inside
+        assert isinstance(v["pos_frac"], torch.Tensor) and isinstance(v["never_active"], torch.Tensor), k
         assert 0.0 <= float(v["pos_frac"]) <= 1.0 and 0 <= int(v["never_active"]) <= v["channels"], k
     assert st["spatial.s8"]["channels"] == net.cfg.spatial.stages[-1]
     assert st["spatial.pool.const"]["channels"] == net.cfg.spatial.pool and st["spatial.s8.const"]["dtype"] == "float32"
 
 
 def test_points_match_direct_computation_032_r25():
-    """pos / dead of s8, a skip, the stem (before FiLM) and every ResBlock's inner ReLU, and
-    const of S8 / s_pool, against the activations computed here."""
     net, b, t, obs, labels, priv = tiny()
     st = relu_stats(net, obs, labels, priv, net.init_state(b), t, points="all")
     sp_ = net.spatial
@@ -97,13 +87,12 @@ def test_points_match_direct_computation_032_r25():
 
 def test_const_counts_flat_channels():
     x = torch.randn(6, 3, 4, 4)
-    x[:, 1] = 0.25  # a constant channel
+    x[:, 1] = 0.25
     x[:, 2] = 0.25
-    x[0, 2, 0, 0] = 0.26  # nearly: std about 6e-4, above 1e-4
+    x[0, 2, 0, 0] = 0.26
     st = const_stats(x)
     assert int(st["const"]) == 1 and st["channels"] == 3
     assert int(const_stats(x, threshold=1e-2)["const"]) == 2
-    # rows: only rows 1.. kept, channel 2 is constant there
     assert int(const_stats(x, rows=torch.tensor([False, True, True, True, True, True]))["const"]) == 2
     p = torch.randn(5, 4)
     p[:, 0] = 3.0
@@ -113,7 +102,7 @@ def test_const_counts_flat_channels():
 def test_row_mask_drops_rows():
     net, b, t, obs, labels, priv = tiny()
     rows = torch.zeros(b * t, dtype=torch.bool)
-    rows[: t] = True  # the first sequence only
+    rows[: t] = True
     st = relu_stats(net, obs, labels, priv, net.init_state(b), t, rows=rows, points="all")
     with torch.no_grad():
         _, _, sp, _, _ = net.encode(obs)
@@ -126,13 +115,9 @@ def test_row_mask_drops_rows():
 
 
 def test_phased_pass_counts_each_row_once():
-    """The RL learner's phased outer pass (032 §2.7): rows start inside an outer segment, the
-    encoders run per phase on a subset of rows and the core once per phase over every row. The
-    spatial counts equal the same rows' activations; the core points are skipped, not doubled,
-    and the row mask works (no crash)."""
     net, b, t, obs, labels, priv = tiny(variant=OUTER)
     s0 = net.init_state(b)
-    s0 = (s0[0], (*s0[1][:3], torch.tensor([1.0, 0.0])))  # row 0 starts one decision into a segment
+    s0 = (s0[0], (*s0[1][:3], torch.tensor([1.0, 0.0])))
     rows = torch.ones(b * t, dtype=torch.bool)
     rows[t - 1] = False
     for r in (None, rows):
@@ -151,8 +136,6 @@ def test_phased_pass_counts_each_row_once():
 
 
 def test_dead_block_reads_dead_and_constant():
-    """10.4: a bottleneck whose second conv only pushes below zero gives s8 = 0 everywhere: every
-    channel dead and constant; s_pool is then constant too."""
     net, b, t, obs, labels, priv = tiny()
     last = net.spatial.bottleneck[-1]
     with torch.no_grad():
@@ -168,8 +151,6 @@ def test_dead_block_reads_dead_and_constant():
 
 
 def test_packed_follows_the_042_r21_columns():
-    """042-R21 ③: every sp_pos in 041-R25 layer order, then every sp_dead in the same order,
-    then sp_const_s8, sp_const_pool (grouped, not interleaved)."""
     net, b, t, obs, labels, priv = tiny()
     st = relu_stats(net, obs, labels, priv, net.init_state(b), t)
     v = packed(st)
@@ -188,8 +169,6 @@ def test_packed_follows_the_042_r21_columns():
 
 
 def test_missing_points_refuse():
-    """No pass with the monitor (or a compiled wrapper that does not call the hooks): no silent
-    empty statistics."""
     net, *_ = tiny()
     with ReluMonitor(net) as mon:
         pass
@@ -218,8 +197,6 @@ def test_monitor_leaves_the_forward_and_mode_unchanged():
 
 
 def test_row_chunks_give_the_same_counts(monkeypatch):
-    """The counts and the recomputed points (stem, ResBlock inner) are taken in row chunks to
-    bound scratch memory; tiny chunks give the same numbers."""
     from uranium.model import monitor
 
     net, b, t, obs, labels, priv = tiny()
@@ -237,7 +214,7 @@ def test_row_chunks_give_the_same_counts(monkeypatch):
 
 
 def test_channel_stats_of_given_activations():
-    x = torch.tensor([[[1.0, -1.0, 0.0], [2.0, -3.0, 0.0]], [[0.5, -1.0, 0.0], [-1.0, -2.0, 0.0]]])  # [r=2, n=2, C=3]
+    x = torch.tensor([[[1.0, -1.0, 0.0], [2.0, -3.0, 0.0]], [[0.5, -1.0, 0.0], [-1.0, -2.0, 0.0]]])
     st = channel_stats(x)
     assert float(st["pos_frac"]) == pytest.approx(3 / 12) and int(st["never_active"]) == 2 and st["channels"] == 3
     mask = torch.tensor([[True, False], [True, False]])
@@ -249,9 +226,6 @@ def test_channel_stats_of_given_activations():
 
 @pytest.mark.parametrize("kind", ["Gtrxl", "Lstm"])
 def test_bc_training_with_and_without_statistics_is_bit_identical_032_ac15(tiny_config, tmp_path, kind):
-    """032-AC15 / 041-R25 ④: the trainer contract (a separate no_grad eval pass per lane group
-    with the pre-update s0, state dropped, no RNG) leaves BC training bit-identical on CPU."""
-
     from uranium import _core
     from uranium.bc.trainer import BcTrainer
     from uranium.model import input_dims
@@ -261,7 +235,7 @@ def test_bc_training_with_and_without_statistics_is_bit_identical_032_ac15(tiny_
     cfg_net = UraniumNetConfig.from_dict(json.loads((FIX / "tiny-lstm" / "meta.json").read_text())["config"])
     cfg_net.input = input_dims()
     cfg_net.core.kind = kind
-    cfg_net.entity.dropout = 0.1  # dropout on: the statistics pass must not use the training RNG
+    cfg_net.entity.dropout = 0.1
     cfg = json.loads(_core.bc_config(str(tiny_config), "s1")[0])
     seen = []
 

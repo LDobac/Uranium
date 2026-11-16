@@ -1,11 +1,3 @@
-"""032-R22 `spatial_preact` (032 §2.8, 032-AC13): with the switch on, the spatial encoder's 6
-ResBlocks (4 stages, 2 bottleneck) compute `x + c2(relu(c1(relu(x))))` with no final ReLU, in
-both ResBlock code paths (the bmm weight-gradient path for <= 64 channels and the library path);
-the monitor's inner point (032-R25 ①) follows; no parameter is added and the shared initial
-weights are the default model's; step = sequence (032-R5, outer segment boundary included);
-masks, entity recompute and the checkpoint round trip hold; off (the default) is the model as it
-was (Burn golden tests and AC11 stay as they are). CPU, tiny Burn-parity batch."""
-
 from dataclasses import replace
 
 import pytest
@@ -32,7 +24,6 @@ def blocks(net):
 
 
 def formula(blk: ResBlock, x, preact: bool):
-    """The 032 §2.2 / 032-R22 definitions written with the library conv."""
     c1 = lambda v: F.conv2d(v, blk.c1.weight, blk.c1.bias, 1, 1)  # noqa: E731
     c2 = lambda v: F.conv2d(v, blk.c2.weight, blk.c2.bias, 1, 1)  # noqa: E731
     if preact:
@@ -40,8 +31,6 @@ def formula(blk: ResBlock, x, preact: bool):
     return F.relu(x + c2(F.relu(c1(x))))
 
 
-# Channels 8 take the `conv_wgrad` branch (<= RES_BMM_MAX_CH), 72 the library branch; under
-# `URANIUM_CONV_WGRAD=bmm` the first one's weight gradient comes from the batched GEMMs.
 @pytest.mark.parametrize("wgrad", ["vendor", "bmm"])
 @pytest.mark.parametrize("ch", [8, RES_BMM_MAX_CH + 8])
 @pytest.mark.parametrize("preact", [False, True])
@@ -61,9 +50,6 @@ def test_resblock_matches_definition_032_r22(monkeypatch, preact, ch, wgrad):
         assert (y >= 0).all()
         assert torch.equal(blk.inner_act(x), F.relu(blk.c1(x)))
     if preact:
-        # A stage block (input relu(stride-2 conv) >= 0) skips the identity pre-activation ReLU
-        # (032-R19): same values, and the same gradients through the relu that makes its input
-        # (at an input of exactly 0 the skipped ReLU would only mask what that relu masks).
         stage = ResBlock(ch, True, nonneg_input=True)
         stage.load_state_dict(blk.state_dict())
         zs = x.detach().clone().requires_grad_(True)
@@ -84,8 +70,6 @@ def test_resblock_matches_definition_032_r22(monkeypatch, preact, ch, wgrad):
 
 
 def test_preact_adds_no_parameters_032_r22():
-    """Same parameter names, shapes and initial values as the switch-off model, the global RNG
-    left where it was (032-AC13 ①), and every one of the 6 ResBlocks switched."""
     cfg, *_ = tiny()
     on = net_of(replace(cfg, variant=PREACT), 9)
     after_on = torch.rand(3)
@@ -98,13 +82,11 @@ def test_preact_adds_no_parameters_032_r22():
     assert torch.equal(after_on, after_off)
     assert len(blocks(on)) == 6 and all(b.preact for b in blocks(on))
     assert not any(b.preact for b in blocks(off))
-    # 032-R19: the stage blocks skip the pre-activation ReLU of their relu(stride-2 conv) input.
     assert all(d.res.nonneg_input for d in on.spatial.downs) and not any(r.nonneg_input for r in on.spatial.bottleneck)
 
 
 @pytest.mark.parametrize("name", CONFIGS)
 def test_preact_changes_the_spatial_outputs_032_r22(name):
-    """The switch reaches the encoder: S8 / skips take negative values and the outputs differ."""
     cfg, b, t, obs, labels, _ = tiny(CONFIGS[name])
     off_cfg = replace(cfg, variant=replace(cfg.variant, spatial_preact=False))
     on, off = net_of(cfg), net_of(off_cfg)
@@ -121,7 +103,6 @@ def test_preact_changes_the_spatial_outputs_032_r22(name):
 
 
 def test_spatial_encoder_matches_definition_032_r22():
-    """The whole encoder against the 032 §2.2 stages written out, with the preact blocks."""
     cfg, b, t, obs, _, _ = tiny(PREACT)
     net = net_of(cfg)
     sp_ = net.spatial
@@ -142,8 +123,6 @@ def test_spatial_encoder_matches_definition_032_r22():
 
 
 def test_monitor_inner_point_under_preact_032_r25():
-    """`.inner` = relu(c1(relu(x))) of each block's input, `.res` / bottleneck / s8 = the block
-    outputs (negative values allowed), against a direct computation."""
     cfg, b, t, obs, labels, priv = tiny(PREACT)
     net = net_of(cfg)
     st = relu_stats(net, obs, labels, priv, net.init_state(b), t)
@@ -165,7 +144,6 @@ def test_monitor_inner_point_under_preact_032_r25():
             acts[f"spatial.bottleneck{j}"] = x
         acts["spatial.s8"] = x
     assert (acts["spatial.s8"] < 0).any()
-    # The bottleneck inputs are block outputs with negative values: the pre-activation ReLU matters.
     assert not torch.equal(acts["spatial.bottleneck1.inner"], F.relu(F.conv2d(acts["spatial.bottleneck0"], sp_.bottleneck[1].c1.weight, sp_.bottleneck[1].c1.bias, 1, 1)))
     for name, act in acts.items():
         want = channel_stats(act, channel_dim=1)
@@ -175,8 +153,6 @@ def test_monitor_inner_point_under_preact_032_r25():
 
 @pytest.mark.parametrize("name", CONFIGS)
 def test_step_matches_sequence_032_ac13(name):
-    """One decision at a time = the training pass (032-R5), across the outer segment boundary
-    for the all-on combination, and the phased RL pass gives the same."""
     from uranium.agent.infer import leaves
 
     cfg, b, t, obs, labels, _ = tiny(CONFIGS[name])
@@ -201,8 +177,6 @@ def test_step_matches_sequence_032_ac13(name):
 
 @pytest.mark.parametrize("name", CONFIGS)
 def test_masks_and_entity_recompute_032_ac13(name):
-    """Sampled actions stay inside the type mask (032-AC4); the entity-chunked recompute gives
-    the same gradients (041-R17)."""
     cfg, b, t, obs, labels, priv = tiny(CONFIGS[name])
     net = net_of(cfg)
     g = torch.Generator().manual_seed(5)
@@ -241,15 +215,12 @@ def test_checkpoint_round_trip_032_ac13(name, tmp_path):
 
 
 def test_default_is_off_032_ac13():
-    """The default config, an old config dict (no `spatial_preact`) and a bare encoder / block
-    are the post-activation model as before."""
     assert VariantConfig().spatial_preact is False and ResBlock(4).preact is False
     cfg, *_ = tiny()
     assert cfg.variant.spatial_preact is False
     net = net_of(cfg)
     assert not any(blk.preact for blk in blocks(net))
     assert UraniumNetConfig.from_dict(UraniumNetConfig().to_dict()).variant.spatial_preact is False
-    # A §2.7 model's meta (Checkpoint 1 form): a variant table without the model 2 keys.
     d = UraniumNetConfig().to_dict()
     d["variant"] = {"terrain": True, "ctx_token": True, "attn_pool": True, "outer": 32}
     old = UraniumNetConfig.from_dict(d)
@@ -261,13 +232,10 @@ def test_default_is_off_032_ac13():
 
 @pytest.mark.gpu
 def test_preact_bmm_matches_vendor_on_device(monkeypatch):
-    """The bmm weight-gradient path and the vendor path agree on the device (f32; TF32 off so
-    both paths sum the same f32 products)."""
     if not torch.cuda.is_available():
         pytest.skip("no CUDA / ROCm device")
     torch.manual_seed(2)
     blk = ResBlock(RES_BMM_MAX_CH, True).cuda()
-    # A small batch so the weight-gradient sums are short enough for test_opt.py's tolerance.
     x0 = torch.randn(4, RES_BMM_MAX_CH, 16, 16, device="cuda")
     g = torch.randn_like(x0)
     res = {}

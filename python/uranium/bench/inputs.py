@@ -1,7 +1,3 @@
-"""Synthetic model inputs for the bench suite: observations of the live feature schema (030) with
-random features and masks, and labels sampled by the network itself so every head's label is legal
-under the masks (teacher forcing then exercises the same paths as real data)."""
-
 import json
 
 import torch
@@ -18,7 +14,6 @@ def feature_dims() -> dict:
 
 
 def random_obs(b: int, n: int, inp: InputDims, device, gen: torch.Generator, valid: int | None = None) -> dict:
-    """`b` rows of `n` entity slots, the first `valid` (default all) of them real."""
     d = feature_dims()
     m = d["map"]
     cpu = torch.device("cpu")
@@ -46,7 +41,6 @@ def random_obs(b: int, n: int, inp: InputDims, device, gen: torch.Generator, val
 
 @torch.no_grad()
 def sampled_labels(net, obs: dict, gen_seed: int) -> dict:
-    """Labels drawn from the network's own distributions (legal under every mask)."""
     dev = obs["entity_mask"].device
     g = torch.Generator(device=dev)
     g.manual_seed(gen_seed)

@@ -1,8 +1,3 @@
-"""044-R1 (AMB-044-3 / AMB-044-4): the self-game distillation plan generator
-`tools/eval/rush_check_plan.py --distill` (CPU, no game): composition, 10-minute cap, decision logs, no
-Random, deterministic seeds disjoint from every tracked plan (050-R9 protocol templates included) and
-between rounds, the d2 `--half` plan, and the runner's plan loader."""
-
 import subprocess
 import sys
 import tomllib
@@ -21,7 +16,6 @@ import rush_check_plan as rcp  # noqa: E402
 
 CKPT = "checkpoints/s-placeholder/ckpt-1"
 MAPS = {"fighting_spirit", "circuit_breaker"}
-# 044-R1: (p1 kind, bot name or T0 race build, race) -> games per map of a full round d1.
 FULL = {
     ("t0", "standard", "protoss"): 120,
     ("t0", "standard", "terran"): 60,
@@ -44,9 +38,6 @@ def _opponent(p1: dict) -> tuple[str, str, str]:
 
 @pytest.mark.parametrize("half", [False, True])
 def test_distill_plan_composition_044_r1(tmp_path, half):
-    """044-R1: d1 600 games (T0 P 2 x 120, T0 T 2 x 60, UAlbertaBot P / Stardust / UAlbertaBot T / Iron 2 x 30;
-    Protoss : Terran = 3 : 2), d2 `--half` 300 of the same composition; the model stochastic as players[0],
-    10 min, replays and decision logs, races fixed, no E-Regression builds or McRave."""
     _, plan = _write(tmp_path, 1, half)
     div = 2 if half else 1
     assert plan["name"] == "distill-m2-d1"
@@ -64,14 +55,10 @@ def test_distill_plan_composition_044_r1(tmp_path, half):
     assert total == 600 // div == len(plan["seeds"])
     protoss = sum(g for ((_, _, race), _), g in games.items() if race == "protoss")
     assert protoss * 2 == (total - protoss) * 3, "Protoss : Terran = 3 : 2"
-    # The runner's loader (020) reads it and finds the one model.
     assert _core.plan_models(str(tmp_path / ("d1h.toml" if half else "d1.toml"))) == [(CKPT, "stochastic")]
 
 
 def test_distill_seeds_disjoint_044_r1(tmp_path):
-    """044-R1: seeds are the game-number hash (deterministic), d2 half = n 601..900 (round stride 600), and
-    none is a seed of any tracked plan (botgen, check, dagger, the 050-R9 protocol templates, in particular
-    t0_tp's T0 standard Terran / Protoss 32 games) or of the other round."""
     _, d1 = _write(tmp_path, 1, False)
     _, d2 = _write(tmp_path, 2, True)
     s1, s2 = d1["seeds"], d2["seeds"]
@@ -80,18 +67,15 @@ def test_distill_seeds_disjoint_044_r1(tmp_path):
     assert len(set(s1)) == 600 and len(set(s2)) == 300 and not set(s1) & set(s2)
     tracked = set()
     for p in PLANS.rglob("*.toml"):
-        if not p.name.startswith("distill_m2_d"):  # a generated round plan is these seeds themselves
+        if not p.name.startswith("distill_m2_d"):
             tracked |= rcp.plan_seeds(p)
     t0_tp = rcp.plan_seeds(PLANS / "protocol" / "t0_tp.toml")
     assert len(t0_tp) == 64 and t0_tp <= tracked
     assert not tracked & (set(s1) | set(s2))
-    # Deterministic: the same round renders the same text.
     assert rcp.render_distill(1, CKPT, "x", False) == rcp.render_distill(1, CKPT, "x", False)
 
 
 def test_distill_rejects_taken_seed_044_r1(tmp_path):
-    """044-R1: a plan anywhere under --out-dir (subfolders too, like config/plans/protocol) that uses a seed of
-    the round stops the generator; the round's own output file is not counted against itself."""
     _, seeds = rcp.render_distill(1, CKPT, "x", False)
     sub = tmp_path / "protocol"
     sub.mkdir()
@@ -109,9 +93,6 @@ def test_distill_rejects_taken_seed_044_r1(tmp_path):
 
 @pytest.mark.parametrize("extra", [20, 120, 1000])
 def test_distill_topup_composition_044_r5(tmp_path, extra):
-    """044-R5 ③ top-up (user decision 2026-11-14): `--extra N` writes N more games of the round with the same
-    model and the exact 044-R1 composition (every block x N / 600), the same 10 min / replays / decision logs,
-    plan name distill-m2-d<R>-x<K>."""
     out = tmp_path / "x.toml"
     rcp.write_distill(PLANS, 1, CKPT, out, extra=extra, part=2)
     plan = tomllib.loads(out.read_text(encoding="utf-8"))
@@ -129,11 +110,6 @@ def test_distill_topup_composition_044_r5(tmp_path, extra):
 
 
 def test_distill_topup_seeds_disjoint_044_r5(tmp_path):
-    """044-R5 ③ top-up: the seeds are the game-number hash of their own block n = 100,000 + (R - 1) * 10,000 +
-    (K - 1) * 1,000 + i, disjoint from every round block (d1 n 1..600, d2 601..900, up to n 6,000), from the
-    other parts and rounds' top-ups and from every tracked plan; N not a multiple of 20 (the ratio) or above
-    1,000, `--half` with `--extra` and a part below 1 are refused; a plan under --out-dir that takes one of its
-    seeds stops the generator."""
     seeds = {}
     for rnd, part in ((1, 1), (1, 2), (2, 1)):
         out = tmp_path / f"x{rnd}{part}.toml"
@@ -157,7 +133,6 @@ def test_distill_topup_seeds_disjoint_044_r5(tmp_path):
             rcp.render_distill(1, CKPT, "x", False, **bad)
     with pytest.raises(AssertionError, match="separate plans"):
         rcp.render_distill(1, CKPT, "x", True, extra=20)
-    # The round plan and an earlier part under --out-dir are scanned; its own file is not counted.
     d = tmp_path / "plans"
     d.mkdir()
     rcp.write_distill(d, 1, CKPT, None)
@@ -172,8 +147,6 @@ def test_distill_topup_seeds_disjoint_044_r5(tmp_path):
 
 
 def test_distill_seed_blocks_bounded_044_r5():
-    """044-R5 ③ top-up: rounds 1..10 and parts 1..10 only, so every allowed (round, part) top-up block is its
-    own and lies above every allowed round block (by game number: the hash is then asserted per plan)."""
     assert (rcp.DISTILL_ROUNDS_RESERVED, rcp.DISTILL_EXTRA_PARTS) == (10, 10)
     rounds = [range(rcp.distill_first(r), rcp.distill_first(r) + rcp.DISTILL_ROUND_STRIDE) for r in range(1, 11)]
     tops = [range(rcp.distill_first(r, 1, k), rcp.distill_first(r, 1, k) + rcp.DISTILL_EXTRA_PART) for r in range(1, 11) for k in range(1, 11)]
@@ -187,8 +160,6 @@ def test_distill_seed_blocks_bounded_044_r5():
 
 
 def test_distill_plan_not_overwritten_with_other_seeds_044_r5(tmp_path):
-    """044-R5 ③ top-up: an existing plan file is rewritten only with the same seeds (same command): another N
-    for the same part, or --half on the round's own file, would replay seeds of games already played."""
     out = rcp.write_distill(tmp_path, 1, CKPT, None, extra=40, part=1)
     assert rcp.write_distill(tmp_path, 1, "checkpoints/other/ckpt-2", None, extra=40, part=1) == out, "same seeds, other model: fine"
     with pytest.raises(AssertionError, match="other seeds"):
@@ -201,8 +172,6 @@ def test_distill_plan_not_overwritten_with_other_seeds_044_r5(tmp_path):
 
 
 def test_distill_topup_cli_044_r5(tmp_path):
-    """044-R5 ③ top-up: `--extra` needs `--part`, `--extra` / `--part` only with `--distill`, `--part` only with
-    `--extra`."""
     tool = ROOT / "tools" / "eval" / "rush_check_plan.py"
     run = lambda *a: subprocess.run([sys.executable, str(tool), *a], capture_output=True, text=True, encoding="utf-8", errors="replace")  # noqa: E731
     r = run("--distill", "--round", "1", "--extra", "60", "--part", "1", "--checkpoint", CKPT, "--out", str(tmp_path / "x.toml"))
@@ -218,8 +187,6 @@ def test_distill_topup_cli_044_r5(tmp_path):
 
 
 def test_plan_seeds_runner_rule_020_r20(tmp_path):
-    """020-R20 (plan.rs `seed_of`): the seed scan counts a plan without `seeds` / `seed_base` as the default
-    seed_base 1,000 + n, and `same_seed` as seed_base alone."""
     body = '[[matchup]]\nmap = "fighting_spirit"\ngames = 3\np0 = { kind = "t0", race = "terran" }\np1 = { kind = "t0", race = "zerg" }\n'
     p = tmp_path / "p.toml"
     p.write_text('name = "x"\n' + body, encoding="utf-8")
@@ -231,7 +198,6 @@ def test_plan_seeds_runner_rule_020_r20(tmp_path):
 
 
 def test_distill_cli_needs_checkpoint_044_r1(tmp_path):
-    """044-R1: the model is S (d1) or the d1 model (d2): `--distill` has no default checkpoint."""
     tool = ROOT / "tools" / "eval" / "rush_check_plan.py"
     r = subprocess.run([sys.executable, str(tool), "--distill", "--out", str(tmp_path / "x.toml")], capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert r.returncode != 0 and "--checkpoint" in r.stderr and not (tmp_path / "x.toml").exists()

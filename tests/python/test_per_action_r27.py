@@ -1,8 +1,3 @@
-"""041-R27 (AMB-041-16): the teacher hold-out scoring split by opponent class (tools/eval/per_action.py): each game's
-class from the generating plan's games.jsonl and its replay file hash; per-class tallies that add up to the whole
-and match scoring only that class's games; the macro games' mean p(Build_Bunker) before 4:00. CPU, synthetic
-shards (uranium._core with Batch.lane_games)."""
-
 import functools
 import hashlib
 import json
@@ -29,7 +24,6 @@ def test_opponent_class_041_r27():
 
 
 def fake_plan(root: Path, folder: str, games: list[tuple[int, str]]) -> dict[str, str]:
-    """A teacher plan folder: games.jsonl rows (game_id, opponent) and replays/g<id>.rep; returns {sha: opponent}."""
     d = root / folder
     (d / "replays").mkdir(parents=True)
     out = {}
@@ -47,27 +41,22 @@ def test_teacher_classes_from_plans_041_r27(tmp_path):
     rush = fake_plan(raw, "teacher-1/teacher_botgen_rush", [(1, "t0-zerg-rush@0.1.0"), (2, "ualbertabot9poolhydra@x")])
     macro = fake_plan(raw, "teacher-1/teacher_botgen_macro", [(1, "t0-zerg@0.1.0")])
     macro3 = fake_plan(raw, "teacher-3-macro3/teacher_botgen_macro3", [(7, "ualbertabot3hatchmuta@x")])
-    # a games.jsonl row without its replay is skipped
     with open(raw / "teacher-1/teacher_botgen_macro/games.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps({"game_id": 9, "opponent": "t0-zerg@0.1.0"}) + "\n")
     cache = tmp_path / "cache" / "classes.json"
     got = pa.teacher_classes(raw, cache)
     assert {s: v["class"] for s, v in got.items()} == {**{s: "rush" for s in rush}, **{s: "macro" for s in {**macro, **macro3}}}
     assert got[next(iter(macro3))] == {"class": "macro", "opponent": "ualbertabot3hatchmuta", "plan": "teacher-3-macro3/teacher_botgen_macro3"}
-    # the cache is reused while games.jsonl is unchanged (a replaced replay is not re-hashed); it keeps the
-    # opponent only, the class is derived on every call
     (raw / "teacher-1/teacher_botgen_rush/replays/g1.rep").write_bytes(b"changed")
     assert pa.teacher_classes(raw, cache) == got
     cached = json.loads(cache.read_text(encoding="utf-8"))
     assert all(set(v) == {"opponent"} for e in cached.values() for v in e["games"].values())
-    # the same replay under two plans with different classes is an error
     dup = raw / "teacher-9/teacher_botgen_macro9"
     (dup / "replays").mkdir(parents=True)
     (dup / "games.jsonl").write_text(json.dumps({"game_id": 2, "opponent": "t0-zerg@0.1.0"}) + "\n", encoding="utf-8")
     (dup / "replays" / "g2.rep").write_bytes(b"teacher-1/teacher_botgen_rush/2")
     with pytest.raises(SystemExit, match="is rush in teacher-1/teacher_botgen_rush and macro in teacher-9/teacher_botgen_macro9"):
         pa.teacher_classes(raw, None)
-    # load_classes: a JSON file of either form
     f = tmp_path / "c.json"
     f.write_text(json.dumps({"a": "rush", "b": {"class": "macro"}}), encoding="utf-8")
     assert pa.load_classes(str(f), None) == {"a": "rush", "b": "macro"}
@@ -79,8 +68,6 @@ def test_teacher_classes_from_plans_041_r27(tmp_path):
 
 @pytest.fixture
 def scored(tiny_config, tmp_path):
-    """A tiny model and the synthetic `races` shards (15 games of 1..16 steps, enemies Terran / Protoss / Zerg),
-    with the race of each game id read from the stream."""
     from uranium import _core
 
     if not hasattr(_core.Batch, "lane_games"):
@@ -105,9 +92,6 @@ def run(cfg, shards, ckpt, classes):
 
 
 def test_rush_macro_split_041_r27(scored, tmp_path):
-    """Zerg-enemy games as `rush`, the rest `macro`: per-class steps and per-action counts add up to the whole,
-    the overall `per_action` is the same as without the split, and the rush class equals scoring only the Zerg
-    games (games, steps, per-action counts)."""
     from uranium import _core
 
     cfg, shards, ckpt, race = scored
@@ -123,11 +107,9 @@ def test_rush_macro_split_041_r27(scored, tmp_path):
     whole = {r["action"]: r["n"] for r in res["per_action"]}
     for a, n in whole.items():
         assert sum({r["action"]: r["n"] for r in by[c]["per_action"]}.get(a, 0) for c in ("rush", "macro")) == n, a
-    # synthetic frames (0..120) are all before 4:00: every scored step of a class counts
     assert by["macro"]["bunker_p_before_4m"]["steps"] == by["macro"]["steps"]
     assert 0.0 <= res["r27"]["macro_bunker_p_before_4m"] <= 1.0
     assert res["r27"]["macro_games"] == by["macro"]["games"] and res["r27"]["rush_games"] == by["rush"]["games"]
-    # Build_Bunker is not a label of the synthetic games: no rush bunker top-1
     assert res["r27"]["rush_bunker_top1"] is None and res["r27"]["rush_bunker_steps"] == 0
 
     only = tmp_path / "only_zerg"
@@ -136,7 +118,6 @@ def test_rush_macro_split_041_r27(scored, tmp_path):
     assert z["games"] == by["rush"]["games"] and z["steps"] == by["rush"]["steps"]
     assert {r["action"]: r["n"] for r in z["per_action"]} == {r["action"]: r["n"] for r in by["rush"]["per_action"]}
 
-    # every game must have a class
     missing = dict(classes)
     missing.pop(next(iter(missing)))
     with pytest.raises(SystemExit, match="has no rush / macro class"):
@@ -144,7 +125,6 @@ def test_rush_macro_split_041_r27(scored, tmp_path):
 
 
 def test_bunker_before_4m_boundary_041_r27(scored, monkeypatch):
-    """Only steps observed before the boundary count (frame < F; synthetic steps are 8 frames apart from 0)."""
     cfg, shards, ckpt, race = scored
     classes = {g: "macro" for g in race}
     full = run(cfg, shards, ckpt, classes)["by_class"]["macro"]
@@ -157,8 +137,6 @@ def test_bunker_before_4m_boundary_041_r27(scored, monkeypatch):
 
 
 def test_per_action_table_r27_rows_041_r27(tmp_path):
-    """per_action_table shows the rush-only bunker top-1 (extension rule input) and its change, and the macro
-    p(bunker) before 4:00; an old column without the split shows '-'."""
     def col(name, top1, r27):
         p = tmp_path / f"{name}.json"
         p.write_text(json.dumps({"steps": 10, "games": 2, "per_action": [{"action": "Build_Bunker", "n": 10, "top1": top1, "loc_n": 0, "tu_n": 0}],
@@ -181,8 +159,6 @@ def test_per_action_table_r27_rows_041_r27(tmp_path):
 
 
 def test_macro_value_over_the_full_hold_out_041_r27():
-    """The recorded macro p(bunker) before 4:00 is the step-weighted value over the orig pass's macro games and
-    the added parts' macro games (main-session interim decision 2026-11-10); the rest of r27 is unchanged."""
     r27 = {"rush_bunker_top1": 0.6, "rush_bunker_steps": 50, "rush_games": 129,
            "macro_bunker_p_before_4m": 0.02, "macro_steps_before_4m": 100, "macro_games": 36, "macro_holdout": "orig"}
     added = {"games": 81, "steps": 900, "bunker_p_before_4m": {"before_frame": 5760, "steps": 300, "mean_p": 0.06}}
@@ -201,14 +177,12 @@ def tree(root: Path) -> dict[str, bytes]:
 
 
 def write_manifest(src: Path, parts) -> None:
-    """botgen/manifest.json (061) listing the shard files on disk of `parts`."""
     files = {f"{p}/{f.name}": {"sha256": hashlib.sha256(f.read_bytes()).hexdigest(), "bytes": f.stat().st_size}
              for p in parts for f in sorted((src / p).glob("shard_*.bin.zst"))}
     (src / "manifest.json").write_text(json.dumps({"files": files}), encoding="utf-8")
 
 
 def botgen(tmp_path, monkeypatch, parts, listed=None):
-    """A fake shared botgen source: one shard per part on disk, the manifest listing `listed` (default all)."""
     shared = tmp_path / "shared"
     src = shared / "datasets" / "replays" / "shards" / "botgen"
     for part in parts:
@@ -225,8 +199,6 @@ TP_V1, TP_V2 = "teacher-tp-20261114", "teacher-tp-20261114-v2"
 
 
 def test_tp_teacher_folders_left_out_044_r8(tmp_path, monkeypatch):
-    """044-R8 / 022-R12: botgen folders of the 022 TvT / TvP teacher (teacher-tp-*) are neither classified (their
-    T0 Protoss / Terran opponents have no 041-R27 class) nor part of the `full` macro pass."""
     raw = tmp_path / "raw"
     rush = fake_plan(raw, "teacher-1/teacher_botgen_rush", [(1, "t0-zerg-rush@0.1.0")])
     fake_plan(raw, "teacher-tp-20261114/teacher_botgen_tp", [(1, "t0-protoss@0.1.0"), (2, "iron@aiide2017")])
@@ -238,11 +210,8 @@ def test_tp_teacher_folders_left_out_044_r8(tmp_path, monkeypatch):
 
 
 def test_full_holdout_excludes_tp_teacher_041_r27_044_r8(tmp_path, monkeypatch):
-    """041-R27 / 044-R8: `--holdout full` is a link tree of the parts registered in the botgen manifest but
-    teacher-tp-* (the -v2 shards listed before teacher round t1; the unlisted v1 folder on disk) = ORIG + the
-    added_dirs() parts, with the manifest's files only; `orig` stays the ORIG parts."""
     src = botgen(tmp_path, monkeypatch, (*pa.ORIG, *ADDED, TP_V1, TP_V2), listed=(*pa.ORIG, *ADDED, TP_V2))
-    (src / ADDED[0] / "shard_00007.bin.zst").write_bytes(b"not in the manifest")  # on disk, not listed: not linked
+    (src / ADDED[0] / "shard_00007.bin.zst").write_bytes(b"not in the manifest")
     parts, files = pa.holdout_parts(src)
     assert parts == sorted([*pa.ORIG, *ADDED]) and files == {p: ["shard_00000.bin.zst"] for p in parts}
     datasets, (full,) = pa.holdout_dirs("full")
@@ -258,15 +227,13 @@ def test_full_holdout_excludes_tp_teacher_041_r27_044_r8(tmp_path, monkeypatch):
 
 
 def test_full_holdout_refuses_a_manifest_mismatch_041_r27_044_r8(tmp_path, monkeypatch):
-    """041-R27 / 044-R8: `full` (and the added pass) stop when the botgen folder does not match its manifest: a
-    non-teacher-tp part folder not registered, a listed shard missing or of another size, no manifest."""
     src = botgen(tmp_path, monkeypatch, (*pa.ORIG, *ADDED, TP_V1), listed=(*pa.ORIG, ADDED[0]))
     with pytest.raises(SystemExit, match="are not the manifest's parts"):
         pa.holdout_dirs("full")
     with pytest.raises(SystemExit, match="are not the manifest's parts"):
         pa.added_dirs()
     write_manifest(src, (*pa.ORIG, *ADDED))
-    assert pa.holdout_parts(src)[0] == sorted([*pa.ORIG, *ADDED])  # the unlisted teacher-tp v1 folder is no mismatch
+    assert pa.holdout_parts(src)[0] == sorted([*pa.ORIG, *ADDED])
     (src / ADDED[1] / "shard_00000.bin.zst").write_bytes(b"other size")
     with pytest.raises(SystemExit, match="the manifest says"):
         pa.holdout_dirs("full")
@@ -279,23 +246,18 @@ def test_full_holdout_refuses_a_manifest_mismatch_041_r27_044_r8(tmp_path, monke
 
 
 def test_link_tree_drops_stale_entries_041_r27_044_r8(tmp_path, monkeypatch):
-    """041-R27 / 044-R8: a rebuilt per_action link tree holds exactly the current parts: a part dropped from the
-    manifest (or a stray teacher-tp-* folder from an older tree) and a shard file no longer listed are removed; the
-    source files stay. Without prune (050-R9 protocol.set_data) nothing is removed."""
     src = botgen(tmp_path, monkeypatch, (*pa.ORIG, *ADDED))
     (src / ADDED[1] / "shard_00001.bin.zst").write_bytes(b"second")
     write_manifest(src, (*pa.ORIG, *ADDED))
     (ad,) = pa.added_dirs()
     work = Path(ad)
     assert sorted(tree(work)) == [f"{ADDED[0]}/shard_00000.bin.zst", f"{ADDED[1]}/shard_00000.bin.zst", f"{ADDED[1]}/shard_00001.bin.zst"]
-    # an older tree's teacher-tp folder, a part no longer in the source, a shard removed from its source part
     (work / TP_V2).mkdir()
     (work / TP_V2 / "shard_00000.bin.zst").write_bytes(b"tp")
     import shutil
     shutil.rmtree(src / ADDED[0])
     (src / ADDED[1] / "shard_00001.bin.zst").unlink()
     write_manifest(src, (*pa.ORIG, ADDED[1]))
-    # without prune nothing goes
     pa.link_tree(src, [ADDED[1]], work)
     assert (work / TP_V2 / "shard_00000.bin.zst").exists() and (work / ADDED[1] / "shard_00001.bin.zst").exists()
     (ad2,) = pa.added_dirs()
@@ -303,14 +265,12 @@ def test_link_tree_drops_stale_entries_041_r27_044_r8(tmp_path, monkeypatch):
     assert tree(work) == {f"{ADDED[1]}/shard_00000.bin.zst": ADDED[1].encode()}
     assert (src / ADDED[1] / "shard_00000.bin.zst").read_bytes() == ADDED[1].encode()
     assert all((src / p / "shard_00000.bin.zst").exists() for p in pa.ORIG)
-    # no added part left: [] (the stale tree is not read)
     shutil.rmtree(src / ADDED[1])
     write_manifest(src, pa.ORIG)
     assert pa.added_dirs() == []
 
 
 def dir_link(link: Path, target: Path) -> None:
-    """A directory symbolic link, else (Windows) a junction; skips the test when the OS allows neither."""
     try:
         os.symlink(target, link, target_is_directory=True)
         return
@@ -325,8 +285,6 @@ def dir_link(link: Path, target: Path) -> None:
 
 
 def test_link_tree_refuses_links_and_trees_inside_the_source_041_r27_044_r8(tmp_path):
-    """041-R27 / 044-R8: a pruned link tree whose root or part folder is a symbolic link / junction, or which lies
-    inside its source, is refused before anything is removed."""
     src = tmp_path / "src"
     for part in ("a", "b"):
         (src / part).mkdir(parents=True)
@@ -351,9 +309,6 @@ def test_link_tree_refuses_links_and_trees_inside_the_source_041_r27_044_r8(tmp_
 
 
 def test_orig_macro_parts_checked_before_scoring_041_r27_044_r8(tmp_path, monkeypatch):
-    """041-R27 / 044-R8: with `--holdout orig` the added parts of the macro pass are taken once, before any scoring:
-    a botgen manifest mismatch stops before score() runs (no silent fallback to the orig macro games), and the
-    current-observation and chain-start passes read the same added folder."""
     src = botgen(tmp_path, monkeypatch, (*pa.ORIG, *ADDED), listed=(*pa.ORIG, ADDED[0]))
     monkeypatch.setattr(pa.ec, "load_env", lambda: None)
     cls = tmp_path / "classes.json"

@@ -1,8 +1,3 @@
-"""032 §2.7 / 032-AC11: the architecture-comparison variants (`[model]` switches). Every switch and
-all of them together: shared initial weights equal to the default model, step = sequence (outer
-segment boundaries included), masks, no privileged path, entity recompute, checkpoint round trip,
-config handling. Inputs are the tiny Burn-parity batch (B 2, T 4); the outer segment is 2 there."""
-
 import json
 import tomllib
 from dataclasses import replace
@@ -29,20 +24,15 @@ VARIANTS = {
     "outer": VariantConfig(outer=SEG),
     "all": VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=SEG),
 }
-# 032 §2.8 `bypass` (032-R21) alone and with the four §2.7 switches, for the tests below that also
-# cover it (inputs widened by `widen_scalar`, output projection made non-zero by `perturb`).
 BYPASS_VARIANTS = {
     "bypass": VariantConfig(bypass=True),
     "bypass_all": VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=SEG, bypass=True),
 }
 WITH_BYPASS = {**VARIANTS, **BYPASS_VARIANTS}
-SEEN = 6  # enemy max-seen columns of the widened tiny scalar (`widen_scalar`)
+SEEN = 6
 
 
 def widen_scalar(cfg, inp: dict) -> dict:
-    """The tiny batch's 10-wide scalar widened to the 030 §4 layout the 032-R21 bypass reads (SEEN
-    enemy max-seen columns): the fixture's columns first, then fixed pseudo-random values in
-    [0, 1). Sets `cfg.input.scalar`; `inp` values are torch tensors or numpy arrays."""
     from uranium.model.variants import SCALAR_BLOCKS, SCALAR_COLUMNS
 
     fixed = sum(w for _, w in SCALAR_BLOCKS) + len(SCALAR_COLUMNS) + 2 * cfg.input.z_units
@@ -55,8 +45,6 @@ def widen_scalar(cfg, inp: dict) -> dict:
 
 
 def perturb(net, scale: float = 0.05):
-    """A non-zero bypass output projection (as after training), so the bypass changes the outputs
-    (032-R21 starts it at 0). No-op without the bypass."""
     if net.variant is None or net.variant.bypass is None:
         return net
     g = torch.Generator().manual_seed(17)
@@ -67,7 +55,6 @@ def perturb(net, scale: float = 0.05):
 
 
 def tiny(variant: VariantConfig | None = None, fixture: Path = FIX, wide: bool = False):
-    """`wide` (implied by the bypass): the scalar widened to the 030 §4 layout (`widen_scalar`)."""
     meta = json.loads((fixture / "meta.json").read_text())
     inp = load_file(fixture / "inputs.safetensors")
     cfg = UraniumNetConfig.from_dict(meta["config"])
@@ -84,7 +71,6 @@ def net_of(cfg, seed=3):
 
 
 def rows_at(obs: dict, b: int, t: int, k: int) -> dict:
-    """Step k of every sequence (rows are b-major)."""
     return {key: x.view(b, t, *x.shape[1:])[:, k] for key, x in obs.items()}
 
 
@@ -94,7 +80,6 @@ def test_config_table_032_ac11():
     for bad in ({"terain": True}, {"terrain": 1}, {"outer": True}, {"outer": -1}, {"outer": 3.0}):
         with pytest.raises(ValueError):
             VariantConfig.from_table(bad)
-    # The default model's config keeps its old form (no "variant" in the checkpoint meta).
     assert "variant" not in UraniumNetConfig().to_dict()
     on = UraniumNetConfig(variant=VariantConfig(attn_pool=True))
     assert UraniumNetConfig.from_dict(on.to_dict()).variant == on.variant
@@ -102,7 +87,6 @@ def test_config_table_032_ac11():
 
 
 def test_comparison_configs_032_r20():
-    """config/bc_arch_abl_<v>_pt.toml = bc_core_ablation_pt.toml + [model] (032-R20 ②)."""
     base = tomllib.loads((ROOT / "config" / "bc_core_ablation_pt.toml").read_text(encoding="utf-8"))
     want = {"terrain": VariantConfig(terrain=True), "ctx": VariantConfig(ctx_token=True), "pool": VariantConfig(attn_pool=True), "outer": VariantConfig(outer=32), "all": VariantConfig(True, True, True, 32)}
     for name, v in want.items():
@@ -111,17 +95,12 @@ def test_comparison_configs_032_r20():
         assert cfg.pop("model") is not None and cfg == base, name
         assert model_variant(str(path)) == v, name
     assert not model_variant(str(ROOT / "config" / "bc_core_ablation_pt.toml")).any()
-    # 032-R20 (4) (user decision 2026-10-27): the main BC config trains the all-on structure.
     assert model_variant(str(ROOT / "config" / "bc.toml")) == want["all"]
-    # 041-R21: the fine-tune starts from bc-s2e2-pt, so its config keeps that structure (a
-    # different [model] is refused at --init, 032-AC11).
     assert model_variant(str(ROOT / "config" / "bc_ft_empty.toml")) == want["all"]
 
 
 @pytest.mark.parametrize("name", VARIANTS)
 def test_shared_initial_weights_032_ac11(name):
-    """A variant adds its own modules after the default ones and leaves the global RNG where it
-    was, so every shared parameter starts as in the default model (032 §2.7)."""
     cfg, *_ = tiny()
     on = replace(cfg, variant=VARIANTS[name])
     a = net_of(on, 9)
@@ -138,8 +117,6 @@ def test_shared_initial_weights_032_ac11(name):
 
 @pytest.mark.parametrize("name", VARIANTS)
 def test_step_matches_sequence_032_ac11(name):
-    """`act` one decision at a time gives the training pass's values and final state (032-R5),
-    across the outer segment boundary."""
     cfg, b, t, obs, labels, _ = tiny(VARIANTS[name])
     net = net_of(cfg)
     with torch.no_grad():
@@ -159,8 +136,6 @@ def test_step_matches_sequence_032_ac11(name):
 
 @pytest.mark.parametrize("name", ["outer", "all"])
 def test_outer_heads_inputs_match_per_decision(name):
-    """The segmented training pass hands the heads the same E, spatial and scalar outputs (back in
-    b-major rows) as encoding one decision at a time: every head's log-prob matches."""
     cfg, b, t, obs, labels, _ = tiny(VARIANTS[name])
     net = net_of(cfg)
     with torch.no_grad():
@@ -185,8 +160,6 @@ def test_outer_heads_inputs_match_per_decision(name):
 
 @pytest.mark.parametrize("name", ["outer", "all"])
 def test_outer_state_carries_across_chunks(name):
-    """Two training chunks of 2 decisions (state detached and kept between them, as the BC
-    trainer does) give the values of one 4-decision pass."""
     cfg, b, t, obs, labels, _ = tiny(VARIANTS[name])
     net = net_of(cfg)
     half = t // 2
@@ -201,7 +174,6 @@ def test_outer_state_carries_across_chunks(name):
 
 
 def test_outer_state_updates_on_segments():
-    """h_o changes only after every SEG decisions and the counter counts decisions."""
     cfg, b, t, obs, _, _ = tiny(VARIANTS["outer"])
     net = net_of(cfg)
     s = net.init_state(b)
@@ -211,7 +183,7 @@ def test_outer_state_updates_on_segments():
             s = net.act(rows_at(obs, b, t, k), s, 0.0)["state"]
             seen.append(s[1][0].clone())
     assert torch.equal(s[1][3], torch.full((b,), float(t)))
-    assert not seen[0].any() and seen[1].any()  # updated at decision 2
+    assert not seen[0].any() and seen[1].any()
     assert torch.equal(seen[1], seen[2]) and not torch.equal(seen[2], seen[3])
     kept = net.mask_state(s, torch.tensor([True, False]))
     assert kept[1][0][0].any() and not kept[1][0][1].any() and kept[1][3].tolist() == [float(t), 0.0]
@@ -219,8 +191,6 @@ def test_outer_state_updates_on_segments():
 
 @pytest.mark.parametrize("name", ["ctx", "outer", "all"])
 def test_tokens_stay_out_of_entities(name):
-    """The extra tokens are dropped from E: same entity count, and the heads' pointers never pick
-    them (selection and targets index entities only)."""
     cfg, b, t, obs, _, _ = tiny(VARIANTS[name])
     net = net_of(cfg)
     n = obs["entity_mask"].shape[1]
@@ -233,8 +203,6 @@ def test_tokens_stay_out_of_entities(name):
 
 @pytest.mark.parametrize("name", ["ctx", "outer", "all", "bypass_all"])
 def test_trimmed_entity_padding_keeps_the_update_032_r19(name):
-    """The trainer drops K trailing padding slots for the K tokens (`trim_entity_pad`): the same
-    losses and gradients as the group padded by K more slots, END labels at the padded N."""
     import numpy as np
 
     from uranium.model.net import ENTITY_KEYS, trim_entity_pad
@@ -250,12 +218,12 @@ def test_trimmed_entity_padding_keeps_the_update_032_r19(name):
     for key in ENTITY_KEYS:
         x = inp[key]
         padded[key] = np.concatenate([x, np.zeros((x.shape[0], k, *x.shape[2:]), x.dtype)], 1)
-    padded["selected"] = np.where(inp["selected"] == n, n + k, inp["selected"])  # END = padded n (032-R12)
+    padded["selected"] = np.where(inp["selected"] == n, n + k, inp["selected"])
     trimmed = trim_entity_pad(padded, k)
     assert trimmed["entity_mask"].shape[1] == n
     keep = dict(padded, entity_mask=padded["entity_mask"].copy())
     keep["entity_mask"][0, -1] = True
-    assert trim_entity_pad(keep, k) is keep  # a real entity in the last slots: no trim
+    assert trim_entity_pad(keep, k) is keep
     res = []
     for g in (padded, trimmed):
         net = perturb(net_of(cfg)).train()
@@ -270,7 +238,6 @@ def test_trimmed_entity_padding_keeps_the_update_032_r19(name):
 
 
 def test_attn_pool_empty_set():
-    """No enemy seen: the enemy queries give zeros, the pool stays finite."""
     cfg, b, t, obs, _, _ = tiny(VARIANTS["pool"])
     net = net_of(cfg)
     e = torch.randn(b, obs["entity_mask"].shape[1], cfg.entity.d_model)
@@ -359,8 +326,6 @@ def test_outer_segment_must_divide_seq_len():
 
 
 def state_after(net, obs, b: int, t: int, counts) -> tuple:
-    """Row r's recurrent state after its first `counts[r]` decisions, one `act` at a time (an RL
-    segment's core_state0, 042)."""
     from uranium.agent.infer import leaves, rebuild
 
     s = net.init_state(b)
@@ -374,7 +339,6 @@ def state_after(net, obs, b: int, t: int, counts) -> tuple:
 
 
 def per_decision(net, obs, labels, s0, b: int, t: int):
-    """Head log-probs, values and final state from encoding one decision at a time."""
     cs, os_ = s0
     hs, es, sps, scs = [], [], [], []
     for k in range(t):
@@ -396,9 +360,6 @@ def per_decision(net, obs, labels, s0, b: int, t: int):
 @pytest.mark.parametrize("name", ["outer", "all"])
 @pytest.mark.parametrize("counts", [(1, 2), (3, 0), (5, 1)])
 def test_phased_matches_per_decision_032_ac11(name, counts, core):
-    """032 §2.7 RL path: sequences starting at different decisions inside an outer segment (row 1
-    of (1, 2) also ends on a multiple with an empty last segment, which must not update again)
-    give the per-decision log-probs, values, final state and gradients."""
     from uranium.agent.infer import leaves
 
     cfg, b, t, obs, labels, _ = tiny(VARIANTS[name], FIX.parent / core)
@@ -422,7 +383,6 @@ def test_phased_matches_per_decision_032_ac11(name, counts, core):
 @pytest.mark.parametrize("name", ["outer", "all"])
 @pytest.mark.parametrize("counts", [(0, 0), (2, 4)])
 def test_phased_zero_phase_matches_bc_path_032_ac11(name, counts):
-    """Sequences that start on segment boundaries give the BC path's values (032 §2.7)."""
     from uranium.agent.infer import leaves
 
     cfg, b, t, obs, labels, _ = tiny(VARIANTS[name])
@@ -436,10 +396,6 @@ def test_phased_zero_phase_matches_bc_path_032_ac11(name, counts):
     assert torch.allclose(bc["value"], rl["value"], atol=1e-6)
     for x, y in zip(leaves(bc["state"]), leaves(rl["state"])):
         assert torch.allclose(x.float(), y.float(), atol=1e-6)
-
-
-# --- GPU (pytest -m gpu): the fused attention kernel with the extra tokens' bias buckets and the
-# inference graph of a variant model (032-AC11, run on the CUDA host before the league games).
 
 
 @pytest.mark.gpu
@@ -465,15 +421,10 @@ def test_fused_entity_attention_with_tokens(monkeypatch):
     assert rel(res["fused"][0], res["torch"][0]) < 1e-4
     assert res["fused"][1].keys() == res["torch"][1].keys()
     assert {"variant.ctx_bias", "variant.outer.tok_bias"} <= res["torch"][1].keys()
-    # As test_entity_encoder_fused_matches_torch: relative L2 floored at 1e-3 of the largest
-    # gradient norm. A max-abs ratio is no measure here: against an f64 run the torch f32 path
-    # itself is off by 2-5e-3 in it on both backends (the fused kernel by the same).
     floor = 1e-3 * max(float(g.norm()) for g in res["torch"][1].values())
     for k, g in res["torch"][1].items():
         err = float((res["fused"][1][k] - g).norm()) / max(float(g.norm()), floor)
         assert err < 1e-3, (k, err)
-    # The tokens' bias rows have gradients far below the floor (norm ~7e-4 vs 5): unfloored
-    # relative L2 for them (f32 noise 1-3e-3 on both backends, a wrong kernel gradient ~1).
     for k in ("variant.ctx_bias", "variant.outer.tok_bias"):
         g = res["torch"][1][k]
         err = float((res["fused"][1][k] - g).norm() / g.norm())
@@ -496,14 +447,11 @@ def test_graphed_act_matches_eager_variant():
     graphed = GraphedAct(net.act, dev, prec)
     exact = torch.version.hip is None
     close = (lambda a, b: torch.equal(a, b)) if exact else (lambda a, b: torch.allclose(a.float(), b.float(), atol=1e-5, rtol=1e-5))
-    # Batch 3, which GraphedAct pads to 4 rows (the padded variant state included). Eager runs the
-    # same 4 rows: cuBLAS picks another kernel for the attention summary's 2048 -> 256 projection
-    # at 4 rows than at 3 (bf16 rounding of the value, eager alone shows it).
     obs = random_obs(3, 128, net.cfg.input, dev, torch.Generator().manual_seed(1), valid=119)
     pad = torch.tensor([0, 1, 2, 0], device=dev)
     obs4 = {k: v.index_select(0, pad) for k, v in obs.items()}
     s_eager, s_graph = net.init_state(4, dev), net.init_state(3, dev)
-    for _ in range(40):  # past an outer update (every 32 decisions)
+    for _ in range(40):
         with autocast(dev, prec):
             want = net.act(obs4, s_eager, 0.0)
         got = graphed(obs, s_graph, 0.0)

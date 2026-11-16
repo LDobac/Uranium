@@ -1,20 +1,3 @@
-"""`python -m uranium bc-eval` (041 offline metrics, 041-AC1, AC4): the indicators on one split
-(default the target-map test set) with the labels fed to the autoregressive heads (teacher
-forcing, as in training): action_type top-1/top-5, delay MAE (frames, E-9), target_loc tile
-error, selected F1 (argmax of every selection step against the label set) and the per-head NLL
-over the steps that use the head. Games are read without z, symmetry or the race mask; with
-`--games N` the N games come from a fixed-seed shuffle (032-R17 ②). With a win_open head
-(032-R18) also its MSE and the 031-R12 surrender check replayed per game (041-AC4, in Rust).
-Same report as the Burn `uranium-train bc-eval`, plus `by_enemy_race` (050-R9 `val500_race`: the
-steps, action top-1 and per-head NLL per race the view's enemy played, from `GameInfo`) and, for a model with the
-032-R24 aux modules, the aux losses as the training log names them (041-R23 ⑤). Such a model runs
-one `forward_seq(aux=True)` per lane group: the aux modules only read h and add outputs, so the
-behaviour metrics are those of `aux=False` (032-AC14).
-
-`--bunker-before F` (050-R10 ③, the regression gate's human TvT / TvP part): also the mean teacher-forced
-p(Build_Bunker) over the scored steps observed before frame F (4:00 = 5,760), per enemy race as
-`by_enemy_race` and over every game, in `bunker_before`. Without the option the report is unchanged."""
-
 import argparse
 import json
 from pathlib import Path
@@ -22,11 +5,8 @@ from pathlib import Path
 import torch
 
 HEADS = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
-# 050-R9 `val500_race`: the report keys, the race the view's enemy played (`GameInfo`,
-# `Batch.lane_enemy_races`); another value (`random`, `unknown`) gets its own key.
 RACES = ("terran", "protoss", "zerg")
 
-# Output fields and their units (E-9), printed with every report.
 UNITS = {
     "action_top1 / action_top5": "share of scored steps",
     "delay_mae_frames": "mean |predicted - label| delay in game frames (bucket values, 031-R11)",
@@ -73,13 +53,10 @@ class Acc:
         self.sel_n = self.sel_tp = self.sel_fp = self.sel_fn = 0
         self.nll = [0.0] * len(HEADS)
         self.nll_n = [0] * len(HEADS)
-        # 050-R9 `val500_race`: {race: {"steps", "top1", "nll", "nll_n"}}.
         self.by_race: dict = {}
 
     @torch.no_grad()
     def score(self, out: dict, g: dict, has_loc, sel_len, races: dict | None = None) -> None:
-        """Adds one lane group (rows with weight 0 are skipped: padding, 041-R11 void labels).
-        `races`: {race name: bool rows} of the group (050-R9 `val500_race`)."""
         d, lp = out["dists"], out["logp"]
         dev = d["action"].device
         ok = torch.as_tensor(g["weights"], device=dev) > 0
@@ -108,11 +85,10 @@ class Acc:
         sl = torch.as_tensor(sel_len, device=dev).long()
         sel_rows = ok & (sl > 0)
         if bool(sel_rows.any()):
-            dist = d["selected"][sel_rows]  # [r, S, n+1]
+            dist = d["selected"][sel_rows]
             s, end = dist.shape[1], dist.shape[2] - 1
             pred = dist.argmax(2)
             n_sel = sl[sel_rows]
-            # Teacher-forced steps 0..=len(label): argmax per step until END.
             k = torch.arange(s, device=dev)[None]
             take = (k < torch.clamp(n_sel + 1, max=s)[:, None]) & ((pred == end).long().cumsum(1) == 0)
             labels = lab["selected"][sel_rows]
@@ -139,8 +115,6 @@ class Acc:
                 acc["nll_n"][h] += int(used.sum())
 
     def race_report(self) -> dict:
-        """050-R9 `val500_race`: the three races always (top-1 null without a step), and any other
-        key the data had."""
         out = {}
         for name in [*RACES, *sorted(set(self.by_race) - set(RACES))]:
             a = self.by_race.get(name, {"steps": 0, "top1": 0, "nll": [0.0] * len(HEADS), "nll_n": [0] * len(HEADS)})
@@ -177,9 +151,6 @@ class Acc:
 
 
 class BunkerAcc:
-    """050-R10 ③: mean teacher-forced p(Build_Bunker) over the scored steps (weight > 0) observed before
-    `before` (frame), per enemy race and over every game."""
-
     def __init__(self, before: int):
         from uranium.diag import tables as tb
 
@@ -192,9 +163,8 @@ class BunkerAcc:
     def add(self, out: dict, g: dict, rows_race: list[str]) -> None:
         dev = out["dists"]["action"].device
         ok = torch.as_tensor(g["weights"], device=dev) > 0
-        from uranium.diag.tables import FRAME_SCALE  # observation scalar 0 = frame / 86,400 (030 §1)
+        from uranium.diag.tables import FRAME_SCALE
 
-        # Only the frame column goes to the device.
         frame = torch.round(torch.as_tensor(g["scalar"][:, 0], device=dev).double() * FRAME_SCALE)
         take = ok & (frame < self.before)
         p = out["dists"]["action"][:, self.action].double().exp()
@@ -221,13 +191,11 @@ def evaluate(dirs: list[str], ckpt_dir: str, split: str, games, seed: int, confi
     from uranium.model import to_obs
 
     cfg = json.loads(_core.bc_config(config, "s1")[0])
-    # 032 §2: no dropout at evaluation (eval mode).
     net, _ = ckpt.load_model(Path(ckpt_dir), device)
     net.eval()
     if core is not None and net.cfg.core.kind.lower() != core:
         raise ValueError(f"checkpoint core {net.cfg.core.kind} != requested {core}")
     has_open = net.value.open is not None
-    # 041-R30 ⑤: the chain-start observation only by this option (None = the stream default, off).
     cs = {} if not chain_start_sources else {"chain_start_sources": list(chain_start_sources)}
     stream = _core.EvalStream(config, dirs, split=split, games=games, seed=seed, has_open=has_open, maps_dir=maps_dir, synthetic_maps=synthetic_maps, **cs)
     t, lanes = cfg["seq_len"], cfg["lanes"]
@@ -276,10 +244,6 @@ def evaluate(dirs: list[str], ckpt_dir: str, split: str, games, seed: int, confi
 
 
 class AuxAcc:
-    """041-R23 ⑤: the aux losses of a model with the 032-R24 modules over the scored split, as the
-    training log names them (means over every masked row / pair of the split, the same masks as
-    the BC trainer: real steps with a privileged summary; pairs of real steps inside a chunk)."""
-
     def __init__(self, net):
         v = net.cfg.variant
         self.priv, self.ks = v.aux_priv, list(v.aux_jepa)

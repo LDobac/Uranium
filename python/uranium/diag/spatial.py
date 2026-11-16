@@ -59,7 +59,7 @@ def run(a) -> int:
     dirs = [str(p) for p in _core.dataset_dirs(a.dataset, a.shards)]
     backend, device, precision = resolve(a.backend)
     configure(backend)
-    torch.backends.cudnn.benchmark = False  # a short read-only pass: no per-shape search
+    torch.backends.cudnn.benchmark = False
     cfg = json.loads(_core.bc_config(a.config, "s1")[0])
     T, LANES = cfg["seq_len"], cfg["lanes"]
     G = min(a.lanes_per_group, LANES)
@@ -73,7 +73,6 @@ def run(a) -> int:
         net.eval()
         for p in net.parameters():
             p.requires_grad_(False)
-        # the same games for every checkpoint: a fresh stream each, one lane group in memory at a time
         stream = _core.EvalStream(a.config, dirs, split=a.split, games=None, seed=1, has_open=False, maps_dir=a.maps_dir, synthetic_maps=a.synthetic_maps)
         states = [None] * -(-LANES // G)
         rows = 0
@@ -81,7 +80,7 @@ def run(a) -> int:
         with ReluMonitor(net, inner=not a.no_inner, points="all", threshold=a.const_threshold) as mon:
             for bi, b, gi, s, steps, hg in lane_groups(stream, LANES, G, T, cfg["pad_entities"], net.cfg.heads.max_select, states, a.skip_batches + a.batches):
                 if bi >= a.skip_batches and not recording:
-                    mon.reset()  # the warm-up batches only carry the recurrent state
+                    mon.reset()
                     recording = True
                 m = real_rows(hg, steps, s, T)
                 keep = np.asarray(hg["keep"]).astype(bool)

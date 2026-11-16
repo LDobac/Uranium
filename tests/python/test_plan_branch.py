@@ -1,7 +1,3 @@
-"""051-R13 `diag plan-branch` on synthetic branch records (CPU): paired effects recover a known effect (all
-branches and executed-only), 0/1 counts, split-half, trunk bootstrap determinism, the dump row of a point
-(041-R28 ② lag, missing rows counted), M3u against the S0b predictor A's ΔQ̂ and M2c against its ô change."""
-
 import json
 from argparse import Namespace
 from pathlib import Path
@@ -27,7 +23,6 @@ EFFECT = {"none": 0.0, "force_bunker": 0.3, "ban_bunker": -0.2, "force_marine": 
 
 
 def scalar_with(counts: dict) -> list:
-    """A 030 §4 scalar vector whose own-state columns (`own_columns`) hold `counts` {column: n}."""
     names, types, _ = own_columns()
     sc = np.zeros(3000, np.float32)
     for col, n in counts.items():
@@ -49,9 +44,6 @@ def write_records(d: Path, points: list, branches: list) -> None:
 
 
 def synthetic(d: Path, n_trunks=10, per_trunk=2, repeats=4, noise=0.05, seed=0, missed_every=0):
-    """Points with a per-point base level and per-point effect variation; every cell's repeat noise sums to 0,
-    so the repeat means are exact: d_p(a) = EFFECT[a] + v_p(a). `missed_every`: every n-th force branch did
-    not fire (`missed`) and its held_s is the baseline's (no effect)."""
     rng = np.random.default_rng(seed)
     points, branches, truth = [], [], {a: [] for a in ALTS if a != "none"}
     n = 0
@@ -63,13 +55,12 @@ def synthetic(d: Path, n_trunks=10, per_trunk=2, repeats=4, noise=0.05, seed=0, 
             for a in ALTS:
                 v = 0.0 if a == "none" else rng.normal(0, 0.05)
                 eps = rng.normal(0, noise, repeats // 2)
-                errs = np.stack([eps, -eps], 1).reshape(-1)  # repeats 2i+1 and 2i+2 cancel: exact cell means, noisy halves
+                errs = np.stack([eps, -eps], 1).reshape(-1)
                 eff_exec = []
                 for r in range(repeats):
                     n += 1
                     missed = bool(missed_every) and a.startswith("force") and n % missed_every == 0
                     eff = 0.0 if missed else EFFECT[a] + v
-                    # `uranium_env::branch::RuleLog` per rule (051-R7 ⑤)
                     iv = [{**rule, "in_window": 1, "applied": 0 if missed else 1, "force_frame": None if missed else 3242, "missed": missed,
                            "rejected": None if missed else False} for rule in ALTS[a]]
                     if not missed:
@@ -80,7 +71,6 @@ def synthetic(d: Path, n_trunks=10, per_trunk=2, repeats=4, noise=0.05, seed=0, 
                                      "end": {"result": "draw", "end_frame": 11568, "reason": "TimeLimitDraw", "before_horizon": False}})
                 if a != "none":
                     truth[a].append(EFFECT[a] + v)
-    # one invalid branch and one skipped point
     branches.append({"point": points[0]["point"], "alt": "force_bunker", "rules": ALTS["force_bunker"], "repeat": 9, "valid": False,
                      "invalid": {"reason": "digest", "obs": 12, "frame": 97}})
     points.append({"point": "job/s/g99#b1-p1", "trunk": {"replay": "x"}, "f_t": 0, "valid": False, "skip_reason": "state_sha256"})
@@ -89,9 +79,6 @@ def synthetic(d: Path, n_trunks=10, per_trunk=2, repeats=4, noise=0.05, seed=0, 
 
 
 def test_paired_effects_recover_known_effect_and_are_deterministic(tmp_path):
-    """051-R13 ①: D(a) is the point mean of the repeat-mean differences (exact here: the repeat noise cancels);
-    the trunk bootstrap interval holds it and is the same for the same seed; 0/1 outcomes get counts; the
-    invalid branch and the skipped point are counted (⑥)."""
     _, _, truth = synthetic(tmp_path / "b")
     rep = pb.analyse(args(tmp_path / "b"))
     for a, t in truth.items():
@@ -99,7 +86,6 @@ def test_paired_effects_recover_known_effect_and_are_deterministic(tmp_path):
         assert D["points"] == 20 and D["trunks"] == 10
         assert D["D"]["pt"] == pytest.approx(np.mean(t), abs=1e-9)
         assert D["D"]["lo"] <= D["D"]["pt"] <= D["D"]["hi"]
-        # every intervention ran: executed-only = all
         assert rep["paired"]["held_s"]["alts"][a]["executed"]["D"] == D["D"]
     held = rep["paired"]["held_8m"]
     assert held["binary"] and held["counts"]["force_bunker"] == {"n": 80, "k": 80, "rate": 1.0}
@@ -109,7 +95,6 @@ def test_paired_effects_recover_known_effect_and_are_deterministic(tmp_path):
     assert dg["alts"]["force_bunker"]["missed_rate"] == 0.0 and dg["alts"]["force_bunker"]["dilution"][f"{BUNKER}.picks_30s"]["mean"] == 1.5
     assert rep["paired"]["end.before_horizon"]["counts"]["none"] == {"n": 80, "k": 0, "rate": 0.0}
     assert rep["M3u"] == {"skipped": "no --dump / --s0"}
-    # determinism: same seed same numbers; another seed other intervals, same points
     again = pb.analyse(args(tmp_path / "b"))
     assert json.dumps(again, sort_keys=True, default=float) == json.dumps(rep, sort_keys=True, default=float)
     other = pb.analyse(args(tmp_path / "b", boot_seed=8))
@@ -118,20 +103,15 @@ def test_paired_effects_recover_known_effect_and_are_deterministic(tmp_path):
 
 
 def test_executed_only_and_split_half(tmp_path):
-    """051-R13 ①: the secondary analysis keeps only branches whose force fired (a missed force carries no
-    effect here, so executed-only recovers the effect); without repeat noise the split halves agree
-    (Spearman-Brown 1), with noise larger than the point spread they agree less."""
     _, _, truth = synthetic(tmp_path / "b", noise=0.0, missed_every=3)
     rep = pb.analyse(args(tmp_path / "b"))
     r = rep["paired"]["held_s"]["alts"]["force_bunker"]
     assert r["executed"]["D"]["pt"] == pytest.approx(np.mean(truth["force_bunker"]), abs=1e-9)
-    assert r["all"]["D"]["pt"] < r["executed"]["D"]["pt"]  # missed branches dilute the primary analysis
+    assert r["all"]["D"]["pt"] < r["executed"]["D"]["pt"]
     dg = rep["diagnostics"]["alts"]["force_bunker"]
     assert dg["missed_rate"] == pytest.approx(1 - dg["executed"] / dg["branches"]) and 0 < dg["missed_rate"] < 1
-    # the ban alternative is not affected by missed forces: split halves agree exactly without noise
     sh = rep["paired"]["held_s"]["alts"]["ban_bunker"]["split_half"]
     assert sh["pairs"] == 20 and sh["r"] == pytest.approx(1.0) and sh["spearman_brown"] == pytest.approx(1.0)
-    # repeat noise far above the point spread: the halves no longer agree
     synthetic(tmp_path / "n", noise=0.5, seed=1)
     noisy = pb.analyse(args(tmp_path / "n"))
     assert noisy["paired"]["held_s"]["alts"]["ban_bunker"]["split_half"]["spearman_brown"] < 0.9
@@ -146,7 +126,6 @@ def test_outcome_fields_and_executed():
     with pytest.raises(SystemExit, match="own column"):
         pb.outcome(b, "own@d8:nope")
     assert "bunker" in names
-    # list-form samples
     assert pb.outcome({"samples": [{"name": "d8", "scalar": scalar_with({"bunker": 1})}]}, "own@d8:bunker") == 1
     f = ALTS["force_bunker"]
     assert pb.executed({"rules": f, "intervention": [{"applied": 1, "frame": 10, "rejected": False}]})
@@ -157,13 +136,11 @@ def test_outcome_fields_and_executed():
     assert pb.executed({"rules": ALTS["ban_bunker"], "intervention": [{"applied": 3}]}) and pb.executed({"rules": []})
     assert pb.one_decision_force(f) == tb.action_id(BUNKER) and pb.one_decision_force(ALTS["ban_bunker"]) is None
     assert pb.one_decision_force([{"op": "force", "action": 5, "from_s": 0, "to_s": 30}]) is None
-    # sign agreement: ties (either side 0) and non-finite pairs are left out, ties counted
     agree, ties = pb.sign_agreement([0.2, -0.1, 0.0, 0.3, np.nan], [1.0, 1.0, 1.0, 0.0, 1.0])
     assert ties == 2 and np.array_equal(agree[:2], [1.0, 0.0]) and np.isnan(agree[2:]).all()
 
 
 def predictors(dump: Path, s0: Path) -> pp.Data:
-    """S0b-style predictor A at k = 8 and 32 trained briefly on the fake dump, saved as plan-s0 models."""
     design = pp.Design()
     data = pp.Data([pp.Source("a", "teacher", "train", str(dump))], ks=(8, 32), design=design)
     for k in (8, 32):
@@ -176,10 +153,6 @@ def predictors(dump: Path, s0: Path) -> pp.Data:
 
 
 def test_m3u_and_m2c_against_the_predictor(tmp_path):
-    """051-R13 ② ③ ④: the point's dump row is the playback frame f_t - 2 of its trunk's game; M3u's ΔQ̂ is
-    `plan_s0.delta_q` on the scv8 head there, so measured effects equal to it give sign agreement 1 and Spearman
-    1; M2c's predicted change is ô(a) - Σ π ô in counts, and measured changes of its sign agree 1. A point whose
-    frame has no row, and one whose replay is not in the dump, are left out and counted."""
     dump = fake_dump(tmp_path / "dump", n_games=6, rows=60)
     s0 = tmp_path / "s0"
     predictors(dump, s0)
@@ -189,7 +162,6 @@ def test_m3u_and_m2c_against_the_predictor(tmp_path):
     names, _, of_action = own_columns()
     bunker, marine = tb.action_id(BUNKER), tb.action_id("Train_Marine")
     pts, brs = [], []
-    # 6 trunks x 2 points at dump rows 10 and 30 (frames 2880 + 24 i -> live f_t = frame + 2)
     rows = {}
     for g in range(6):
         for j, i in enumerate((10, 30)):
@@ -198,7 +170,6 @@ def test_m3u_and_m2c_against_the_predictor(tmp_path):
             pts.append({"point": pid, "trunk": {"replay": "absent.rep", "replay_sha256": games[str(g)]["sha"]}, "f_t": f_t, "checkpoint_sha256": "s", "valid": True})
             r = int(np.nonzero((data.game == g) & (np.rint(data.frame) == f_t - 2))[0][0])
             rows[pid] = r
-    # the fake dump's mask opens Move / SCV / Gather / Bunker only: open Train_Marine too for the test rows
     m = data.mask_rows(np.arange(data.N))
     m[:, marine] = True
     data.mask = np.packbits(m, axis=1)
@@ -221,26 +192,23 @@ def test_m3u_and_m2c_against_the_predictor(tmp_path):
                     cnt = {"bunker": 5, "marine": 5}
                     if a != "none":
                         col = names[of_action[bunker if a == "force_bunker" else marine]]
-                        s = np.sign(pred[k][a][pi, names.index(col)])  # NaN: a column constant in the predictor's data
+                        s = np.sign(pred[k][a][pi, names.index(col)])
                         cnt[col] += int(s) if np.isfinite(s) else 0
                     samples[name] = {"frame": p["f_t"] + 100, "scalar": scalar_with(cnt)}
                 brs.append({"point": p["point"], "alt": a, "rules": ALTS[a], "repeat": r, "valid": True,
                             "intervention": [{"applied": 1, "frame": p["f_t"], "rejected": False}] if ALTS[a] else [],
                             "metrics": {"score": score, "held_8m": 1}, "samples": samples})
-    # a point between rows (no row at f_t - 2) and one of a replay not in the dump
     pts.append({"point": "job/s/g0#late", "trunk": {"replay_sha256": games["0"]["sha"]}, "f_t": 2880 + 24 * 5 + 14, "valid": True})
     pts.append({"point": "job/s/gx#p0", "trunk": {"replay_sha256": "f" * 64}, "f_t": 2882, "valid": True})
     for p in pts[-2:]:
         for a in ("none", "force_bunker"):
             brs.append({"point": p["point"], "alt": a, "rules": ALTS[a], "repeat": 1, "valid": True, "metrics": {"score": 0.0}})
     write_records(tmp_path / "b", pts, brs)
-    # the analysis builds its own Data: patch the mask through the dump file (Train_Marine open)
     mm = np.memmap(dump / "rows" / "mask.bin", dtype=np.uint8, mode="r+", shape=data.mask.shape)
     mm[:] = data.mask
     mm.flush()
     del mm
     rep = pb.analyse(args(tmp_path / "b", dump=str(dump), s0=str(s0), outcomes="score", m3u_outcome="score", own_samples="d8"))
-    # 051-R11 ④ own-state outcome: the bunker count at the 8th decision moved by the sign of the k = 8 prediction
     ob = rep["paired"]["own@d8:bunker"]["alts"]["force_bunker"]["all"]
     assert ob["points"] == 12 and ob["D"]["pt"] == pytest.approx(np.sign(pred[8]["force_bunker"][:, names.index("bunker")]).mean())
     miss = rep["rows_missing"]

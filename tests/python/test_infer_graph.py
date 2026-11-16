@@ -1,7 +1,3 @@
-"""URANIUM_INFER_GRAPH (pytest `gpu`): `act` replayed from captured graphs gives the eager outputs,
-including a batch padded to the next power of two, a second call on the same graph and a weight
-swap after capture (AMB-000-4 step 2)."""
-
 import pytest
 import torch
 
@@ -26,7 +22,7 @@ def test_graphed_act_matches_eager():
     torch.manual_seed(0)
     net = UraniumNet(new_net_config("gtrxl", True), action_columns()).to(dev).eval()
     graphed = GraphedAct(net.act, dev, prec)
-    exact = torch.version.hip is None  # MIOpen may pick another algorithm inside the capture
+    exact = torch.version.hip is None
 
     def eager(obs, state):
         with autocast(dev, prec):
@@ -41,14 +37,12 @@ def test_graphed_act_matches_eager():
         assert close(got["value"], want["value"], exact) and close(got["log_prob"], want["log_prob"], exact)
         for x, y in zip(got["state"][0], want["state"][0]):
             assert x.shape == y.shape and close(x, y, exact)
-    assert len(graphed.graphs) == 2  # batch 3 padded to 4 (captured once), batch 1
-    # Above URANIUM_INFER_GRAPH_MAX_BATCH the act runs eagerly (same outputs, no new graph).
+    assert len(graphed.graphs) == 2
     graphed.max_batch = 2
     obs = random_obs(3, 128, net.cfg.input, dev, torch.Generator().manual_seed(1), valid=119)
     want, got = eager(obs, net.init_state(3, dev)), graphed(obs, net.init_state(3, dev), 0.0)
     assert all(torch.equal(got["action"][k], want["action"][k]) for k in want["action"]) and len(graphed.graphs) == 2
     graphed.max_batch = 0
-    # A weight swap after capture is seen by the graph (parameters copied in place).
     other = UraniumNet(new_net_config("gtrxl", True), action_columns()).to(dev).eval()
     net.load_state_dict(other.state_dict())
     obs = random_obs(3, 128, net.cfg.input, dev, torch.Generator().manual_seed(5), valid=100)
@@ -57,8 +51,6 @@ def test_graphed_act_matches_eager():
 
 
 def test_capture_while_another_thread_trains():
-    """RL runs a learner thread and inference threads in one process: capturing a new shape must
-    not fail the learner's backward (or itself) when they overlap."""
     if not torch.cuda.is_available():
         pytest.skip("no CUDA / ROCm device")
     import threading
@@ -76,10 +68,10 @@ def test_capture_while_another_thread_trains():
         try:
             x = torch.randn(4096, 512, device=dev)
             while not stop.is_set():
-                with DEVICE_LOCK.shared():  # as the RL learner's update
+                with DEVICE_LOCK.shared():
                     trainee(x).square().mean().backward()
                     torch.cuda.synchronize()
-        except Exception as e:  # noqa: BLE001 - reported below
+        except Exception as e:  # noqa: BLE001
             errors.append(e)
 
     t = threading.Thread(target=train)
@@ -87,7 +79,7 @@ def test_capture_while_another_thread_trains():
     try:
         with torch.no_grad():
             for b, n in ((1, 64), (2, 128), (4, 192), (8, 64)):
-                with DEVICE_LOCK.shared():  # as the server's request handling; the capture takes it over
+                with DEVICE_LOCK.shared():
                     obs = random_obs(b, n, net.cfg.input, dev, torch.Generator().manual_seed(b + n), valid=n - 5)
                     graphed(obs, net.init_state(b, dev), 1.0)["action"]["action"].cpu()
     finally:

@@ -1,6 +1,3 @@
-"""`uranium._core` data side (041, AMB-000-4 step 1-2): the Python trainer reads exactly the
-batches of the Rust Feeder."""
-
 import json
 import os
 from pathlib import Path
@@ -19,9 +16,6 @@ def test_group_fields_match_rust():
 
 
 def test_start_slots_generator_020_r21():
-    """020-R21 / 020-AC8 (AMB-042-19): the Rust generator through `uranium._core` — the rush-s4 c0
-    replay headers (seed, our slot, enemy slot), Random draws first, and the 050-R6 check list as
-    in the tracked plan config/plans/rush5_check.toml."""
     headers = [(43001, 2, 3), (43002, 1, 3), (43003, 1, 3), (43004, 0, 3), (43005, 1, 3), (43006, 1, 0), (43007, 0, 1), (43008, 1, 0)]
     for seed, a, b in headers:
         assert _core.start_slots(seed) == (a, b, a == min(i for i in range(4) if i != b))
@@ -51,13 +45,10 @@ def test_feeder_groups_have_the_030_layout(tiny_config, tmp_path):
     assert g["spatial"].shape[0] == r and g["spatial"].shape[2:] == (128, 128)
     assert g["selected"].shape == (r, 12)
     assert g["keep"].shape == (2,) and not g["keep"].any(), "first batch: every lane starts a game"
-    # END = padded n after the selection (032-R12).
     assert (g["selected"][:, -1] == n).all()
 
 
 def test_epoch_walk_and_restore_061_r10(tiny_config, tmp_path):
-    """The batch sequence is the Rust lane walk (041-R13 count) and a Feeder restored from a
-    batch's state gives the batches that followed (061-R10)."""
     shards = tmp_path / "shards"
     _core.write_test_shards(str(shards), "varied")
     f = _core.Feeder(str(tiny_config), [str(shards)], prefetch=2, synthetic_maps=True)
@@ -71,8 +62,6 @@ def test_epoch_walk_and_restore_061_r10(tiny_config, tmp_path):
     for want_state, want in seq[k + 1:]:
         b = r.next()
         assert b.state_json() == want_state
-        # Lanes restored mid-game start with a fresh core state (061-R10), so `keep` differs on
-        # the first batch only; the data is the same.
         got = [group_digest(g) for g in groups(b, 1, 4, 0, 12)]
         if want_state == seq[k + 1][0]:
             continue
@@ -87,7 +76,6 @@ def test_lr_schedule_reference(tiny_config):
 
 @pytest.mark.parametrize("pack", [False, True])
 def test_digest_matches_rust_feed_digest(tiny_config, tmp_path, train_bin, python_cmd, pack):
-    """Byte equality with the Rust Feeder through an independent hash (041-R18 packed or not)."""
     shards = tmp_path / "shards"
     _core.write_test_shards(str(shards), "mixed")
     args = ["feed-digest", "--config", str(tiny_config), "--shards", str(shards), "--batches", "5", "--synthetic-maps"] + (["--pack"] if pack else [])
@@ -98,7 +86,6 @@ def test_digest_matches_rust_feed_digest(tiny_config, tmp_path, train_bin, pytho
 
 @pytest.mark.data
 def test_real_shards_match_rust(train_bin, python_cmd):
-    """Real BC shards and map precomputes (`URANIUM_TEST_SHARDS`, `URANIUM_MAPS_DIR`)."""
     dirs = [d for d in os.environ.get("URANIUM_TEST_SHARDS", "").split(os.pathsep) if d]
     if not dirs:
         pytest.skip("URANIUM_TEST_SHARDS not set")

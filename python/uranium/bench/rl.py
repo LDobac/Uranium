@@ -1,15 +1,3 @@
-"""RL learner updates for the bench suite (060-R2, 042 learner optimisation, 032-R19 ⑥): the
-learner's `update` without games, on one fixed synthetic batch of segments (`SyntheticSegments`,
-the layout of `_core.SegmentBatch.group`) from a checkpoint's weights (dropout 0, as `python -m
-uranium rl`). Lane group sizes and the learner before the optimisations (`reference`) are swept in
-one run from the same weights and batch, so the times compare and the per-update statistics are a
-parity log (`bench rl-parity`: losses, KL, gradient norm per update, 042 lane-group equivalence).
-The first update warms kernels up (cuDNN benchmark per shape) and is not counted in the medians.
-Process settings as in an RL run: `configure(backend)` without the BC trainer's defaults.
-`references` > 1 (044-R9, 060-AC7 ②): that many distinct KL reference models resident (copies of
-the checkpoint) and the lanes' lobby races cycling zerg, terran, protoss, random, so the update runs
-the race-aware reference path (lane groups by reference)."""
-
 import copy
 import json
 import math
@@ -24,32 +12,19 @@ from uranium.bench.inputs import random_obs
 from uranium.bench.timing import peak_gib, peak_rss_gib, reset_peak, sync
 from uranium.model.net import ENTITY_KEYS, LABEL_KEYS, OBS_KEYS
 
-# 033 reward weights of config/reward.toml (initial values, without the league's decay).
 WEIGHTS = [1.0, 0.3, 0.3, 0.05]
 STAT_KEYS = ("loss", "policy", "value", "kl", "win_open", "rho_mean", "adv_mean", "grad_norm", "kl_heads", "entropy_heads", "aux_priv", "aux_jepa")
-PAD = 64  # entity padding of learner batches (uranium_league::batch::PAD_ENTITIES, 030-R7)
-# `--off` names: the new learner's attribute each one clears (the entity padding cut is off by
-# default; `--trim` turns it on).
+PAD = 64
 OFF = {"pinned": "pinned", "spatial_bf16": "spatial_bf16"}
 
 
 class SyntheticSegments:
-    """A fixed RL batch of `lanes` segments of `t` steps in the layout of `_core.SegmentBatch`
-    (`lanes`, `trained`, `versions`, `group`), with real-game-like sizes: each lane takes one of
-    `templates` synthetic step blocks (random features, `entities` = (lo, hi) own and enemy
-    entities, padded to 64 per lane group like the Rust collate) whose labels the network sampled
-    under the masks (legal actions; behaviour log-probs from that sampling, so ρ is near but not 1).
-    Every lane but the first has a core_state0 (mid-game memory, outer counters at varied phases);
-    1 lane in 8 is terminal with a shorter trained length, the others train T-1 steps (the last is
-    the bootstrap step). Same seed, same batch."""
-
     def __init__(self, net, lanes: int, t: int, entities: tuple[int, int] = (64, 192), templates: int = 8, seed: int = 1, device=None):
         from uranium import _core
 
         device = torch.device(device or next(net.parameters()).device)
         self.lanes, self.t = lanes, t
         max_select = net.cfg.heads.max_select
-        # The Rust collate's dtypes per array.
         ref = _core.test_segments(1, 1).group(0, 1, 1, max_select)
         self.dtypes = {k: v.dtype for k, v in ref.items() if isinstance(v, np.ndarray)}
         gen = torch.Generator().manual_seed(seed)
@@ -85,8 +60,6 @@ class SyntheticSegments:
             self.lane.append({"block": i % len(self.blocks), "terminal": terminal, "trained": trained, "rewards": r, "state0": None if i == 0 else self._state0(rng, i)})
 
     def _state0(self, rng, lane: int) -> list:
-        """One lane's core_state0 as the Rust group gives it: (shape, float32 values) per state
-        tensor; memory masks all set; the outer counter at phase `13·lane mod 32` of a later segment."""
         parts = []
         for k, (shape, dtype) in enumerate(self.leaves):
             if dtype == torch.bool:
@@ -106,10 +79,6 @@ class SyntheticSegments:
     def versions(self) -> list[int]:
         return [0] * self.lanes
 
-    # 042-R21 ①: the host-side aux divisors (`rl_aux_counts`), as `group` lays the lanes out.
-    # The synthetic layout keeps every row real (no fill rows past a short segment: `real` all 1,
-    # the bootstrap step included) and gives every trained step a privileged summary
-    # (`priv_present` all 1), unlike real segments.
     @property
     def real_steps(self) -> list[int]:
         return [self.t] * self.lanes
@@ -120,7 +89,6 @@ class SyntheticSegments:
 
     @property
     def ref_races(self) -> list[int]:
-        """044-R9: lane i's lobby race key index (`REF_RACES`) is i mod 4."""
         return [i % 4 for i in range(self.lanes)]
 
     def group(self, start: int, end: int, t: int, max_select: int) -> dict:
@@ -139,7 +107,7 @@ class SyntheticSegments:
                 if k in ENTITY_KEYS and n_b < n:
                     v = np.pad(v, [(0, 0), (0, n - n_b)] + [(0, 0)] * (v.ndim - 2))
                 elif k == "selected":
-                    v = np.where(v >= n_b, n, v)  # END is the group's entity count
+                    v = np.where(v >= n_b, n, v)
                 cols[k].append(v)
         g = {k: np.concatenate(v).astype(self.dtypes.get(k, v[0].dtype), copy=False) for k, v in cols.items()}
         g["mask"] = np.concatenate([(np.arange(t) < x["trained"]).astype(np.float32) for x in lanes]).astype(self.dtypes["mask"])
@@ -147,14 +115,10 @@ class SyntheticSegments:
         g["terminal"] = np.array([x["terminal"] for x in lanes], dtype=self.dtypes["terminal"])
         g["trained"] = np.array([x["trained"] for x in lanes], dtype=self.dtypes["trained"])
         g["versions"] = np.zeros(len(lanes), dtype=self.dtypes["versions"])
-        # Every lane's game keeps r_value's policy weight (AMB-042-14): the measured update as before.
         g["r_value_policy"] = np.ones(len(lanes), dtype=self.dtypes["r_value_policy"])
-        # Build / units multipliers 1 (033-R11, AMB-042-16): the measured update as before.
         g["pseudo_scale"] = np.ones((len(lanes), 2), dtype=self.dtypes["pseudo_scale"])
-        # Queue lanes only, no self-imitation buffer lanes (042-R16, AMB-042-17).
         g["sil_return"] = np.full(len(lanes), np.nan, dtype=self.dtypes["sil_return"])
         g["ref_race"] = np.array([i % 4 for i in idx], dtype=self.dtypes["ref_race"])
-        # 042-R21 ①: whole segments (every row a real step) with a privileged summary each.
         g["real"] = np.ones(len(lanes) * t, dtype=self.dtypes["real"])
         g["priv_present"] = np.ones(len(lanes) * t, dtype=self.dtypes["priv_present"])
         g["state0"] = [x["state0"] for x in lanes]
@@ -163,8 +127,6 @@ class SyntheticSegments:
 
 
 def profile_update(learner, batch, device: torch.device, n_ops: int, trace: str | None = None) -> dict:
-    """The operators with the most device time (CPU time on CPU) in one update, and the host
-    syncs and copies of it (CUDA runtime calls)."""
     acts = [torch.profiler.ProfilerActivity.CPU] + ([torch.profiler.ProfilerActivity.CUDA] if device.type == "cuda" else [])
     with torch.profiler.profile(activities=acts) as prof:
         learner.update(batch, WEIGHTS)
@@ -179,9 +141,6 @@ def profile_update(learner, batch, device: torch.device, n_ops: int, trace: str 
 
 
 def race_refs(references: int) -> tuple[int, list | None]:
-    """044-R9 bench setting: (other reference models, race_ref) for `references` distinct KL
-    reference models: race i (`REF_RACES` order) on model i + 1 while there is one, the rest on
-    --bc's (2 = the lineage 2 fixed RL: zerg on one model, terran / protoss / random on --bc's)."""
     if references <= 1:
         return 0, None
     k = min(references, 4)
@@ -189,10 +148,6 @@ def race_refs(references: int) -> tuple[int, list | None]:
 
 
 def run_learner(kind: str, group: int, net, cfg: dict, batch, device: torch.device, precision: str, algo: str, updates: int, phases: bool, n_ops: int = 0, trace: str | None = None, log=print, off: tuple = (), trim: bool = False, references: int = 1) -> dict:
-    """`updates` + 1 updates of a fresh learner (`new` or `reference`) from `net`'s weights;
-    `off`: staging steps of the new learner left out (`OFF`), to measure each alone; `trim`: the
-    new learner with the 032 §2.7 entity padding cut (off by default); `references` > 1: that
-    many distinct KL reference models resident (044-R9, `race_refs`; the new learner only)."""
     from uranium.rl.learner import Learner
     from uranium.rl.reference import ReferenceLearner
 
@@ -235,8 +190,6 @@ def run_learner(kind: str, group: int, net, cfg: dict, batch, device: torch.devi
 
 
 def compare(base: dict, cand: dict) -> dict:
-    """Parity of two `bench rl` runs (042 lane-group equivalence, 032-R19 ⑤): per statistic, the
-    largest absolute and relative difference over the common updates."""
     ub = {u["update"]: u["stats"] for u in base["updates"]}
     uc = {u["update"]: u["stats"] for u in cand["updates"]}
     steps = sorted(set(ub) & set(uc))

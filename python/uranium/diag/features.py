@@ -1,24 +1,11 @@
-"""Per-row features of a lane's chunk (own-vision inputs and the privileged offline labels) and the
-per-game labels (reports/jepa_survey.md 7.2-7.3), for one enemy race.
-
-The focus building of the race (Barracks / Gateway / Spawning Pool, `tables.race`):
-- the row's focus token (`tok_k`): a visible one first, else the most recently seen remembered one
-  (the probes' token, as the earlier Zerg run)
-- the game's anchor (`a_k`): the first focus token seen in the game, followed by its position (the
-  counterfactual edits' token, as the earlier Terran / Protoss run)
-- own-vision start estimate of an unfinished token: seen frame - (hp - 0.1 max) * build / (0.9 max)
-"""
-
 import numpy as np
 
 from uranium.diag import tables as tb
 
-RACE_INPUT = {0: "T", 1: "P", 2: "Z"}  # scalar_cat[0]: enemy race input (3 = unknown)
+RACE_INPUT = {0: "T", 1: "P", 2: "Z"}
 
 
 def race_of(hg: dict, rows: np.ndarray) -> str:
-    """The enemy race of a lane's game from the privileged counts of the first real row (workers
-    and town halls exist from the start), else the race input, else "U"."""
     if len(rows):
         pv = np.asarray(hg["privileged"])[rows[0]]
         score = {}
@@ -39,9 +26,6 @@ def est_start(seen, hp, max_hp, build_time):
 
 
 def lane_features(g: dict, race: str, lg: dict, n: int) -> tuple[dict, np.ndarray, np.ndarray]:
-    """Features of one lane's chunk `g` (T rows, the first `n` real) for enemy race `race`;
-    `lg` carries the game's anchor across chunks. -> (features {name: [T]}, tok_k [T], a_k [T])
-    (token indices, -1 = none)."""
     cat = np.asarray(g["entity_cat"])
     cont = np.asarray(g["entity_cont"])
     m = np.asarray(g["entity_mask"]).astype(bool)
@@ -69,7 +53,6 @@ def lane_features(g: dict, race: str, lg: dict, n: int) -> tuple[dict, np.ndarra
         unf = foc & ~comp
         est_all = est_start(seen_all, hp_all, mx, bt)
         est_min = np.where(unf, est_all, np.inf).min(1)
-        # the row's token: visible first, else the most recently seen remembered one
         score = np.where(foc, 1e6 * (~rem) - cont[:, :, tb.SINCE_SEEN], -np.inf)
         has = foc.any(1)
         tok = np.where(has, score.argmax(1), -1)
@@ -85,7 +68,6 @@ def lane_features(g: dict, race: str, lg: dict, n: int) -> tuple[dict, np.ndarra
             "foc_seen": np.where(has, seen_all[rows, k], np.nan), "foc_est": np.where(has & ~comp[rows, k], est_all[rows, k], np.nan),
             "est_min": np.where(np.isfinite(est_min), est_min, np.nan),
         })
-        # anchor: the first focus token of the game, by position
         anc = np.full(t, -1)
         for r in range(n):
             if lg.get("anchor") is None and foc[r].any():
@@ -130,8 +112,6 @@ def lane_features(g: dict, race: str, lg: dict, n: int) -> tuple[dict, np.ndarra
     return f, tok, anc
 
 
-# Columns every race's rows have (so rows of different races concatenate); filled with a default
-# for a race without them ("U").
 RACE_COLS = {
     "n_foc": 0, "n_foc_vis": 0, "n_foc_unf": 0, "n_foc_done": 0, "foc_vis": False, "foc_rem": False, "foc_hp": np.nan, "foc_hpr": np.nan, "foc_shield": np.nan,
     "foc_comp": np.nan, "foc_cons": np.nan, "foc_order": -1, "foc_since": np.nan, "foc_seen": np.nan, "foc_est": np.nan, "est_min": np.nan,
@@ -147,10 +127,8 @@ def fill_race_cols(f: dict, t: int) -> dict:
     return f
 
 
-# ---------------------------------------------------------------- per-game labels
-
 F230, F300, F400, F430, F500 = 3600, 4320, 5760, 6480, 7200
-RUSH_Z = 2280  # the teacher's pool start threshold (react.rs pool_start_max, 95 s)
+RUSH_Z = 2280
 
 
 def _first(mask, fr):
@@ -159,9 +137,6 @@ def _first(mask, fr):
 
 
 def game_labels(r: dict, race: str) -> dict:
-    """Labels of one game from its rows `r` (frame-sorted, every dumped row): true starts of the
-    focus type (privileged), the build class (7.3 draft rules), first sight and the own-vision
-    estimate at first sight."""
     s = tb.race(race)
     F, mx, bt = s["focus"], s["max_hp"], s["build_time"]
     fr = r["frame"]
@@ -188,7 +163,6 @@ def game_labels(r: dict, race: str) -> dict:
         macro = by(u("Protoss_Nexus"), 2, F430) or one_gate_core
         e["cls"] = "rush" if rush else ("macro" if macro else "other")
     else:
-        # the HP clock runs from completion - build time; else the first in-production step
         d1 = _first(done(F) >= 1, fr)
         e["start1"] = (d1 - bt) if d1 is not None else e["start1"]
         hatch2 = (tot(u("Zerg_Hatchery")) >= 2) & (fr < (d1 if d1 is not None else np.inf))

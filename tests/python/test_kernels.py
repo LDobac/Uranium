@@ -1,7 +1,3 @@
-"""060-R1 hand-written kernels against their PyTorch references (pytest `gpu`): the fused entity
-attention with the distance bias (forward, dq, dk, dv, table gradient; masked keys and a fully
-masked row), and the entity encoder with `URANIUM_ENTITY_ATTN=fused` against the PyTorch path."""
-
 import json
 import math
 from pathlib import Path
@@ -72,8 +68,6 @@ def test_entity_encoder_fused_matches_torch(monkeypatch):
         res[mode] = (e.detach(), {k: p.grad.clone() for k, p in net.entity.named_parameters() if p.grad is not None})
     assert rel(res["fused"][0], res["torch"][0]) < 1e-4
     assert res["fused"][1].keys() == res["torch"][1].keys()
-    # Relative L2 with the denominator floored at 1e-3 of the largest gradient norm (as the
-    # cross-device test): the key projection bias has a zero gradient up to rounding noise.
     floor = 1e-3 * max(float(g.norm()) for g in res["torch"][1].values())
     for k, g in res["torch"][1].items():
         err = float((res["fused"][1][k] - g).norm()) / max(float(g.norm()), floor)

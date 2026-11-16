@@ -1,8 +1,3 @@
-"""041-R30 ⑤ / 041-AC7 (AMB-041-19): scoring with the chain-start observation is an explicit option of bc-eval and
-tools/eval/per_action.py (the config's [data] chain_start_sources is not followed); per_action reports both ways,
-its existing fields being the current-observation score. CPU, synthetic shards (`chains`: botgen games whose
-Gather_Unit steps are chained one frame after a Move_Pos)."""
-
 import functools
 import sys
 from pathlib import Path
@@ -53,9 +48,7 @@ def test_per_action_both_ways_041_r30(trained):
     assert cs["steps"] == cur["steps"] and cs["games"] == cur["games"] and counts(cs) == counts(cur), "labels and step counts unchanged"
     p = lambda res, a: next(r["mean_p"] for r in res["per_action"] if r["action"] == a)  # noqa: E731
     assert p(cs, "Gather_Unit") != p(cur, "Gather_Unit"), "the chained steps see their chain start"
-    # The config's key is not followed: the keyed config scores like the plain one without the option.
     assert score(keyed, chains, ckpt, None)["per_action"] == cur["per_action"]
-    # Games of a source that is not listed (the `varied` games are `test`) read the same either way.
     assert score(cfg, varied, ckpt, ["botgen"])["per_action"] == score(cfg, varied, ckpt, None)["per_action"]
 
 

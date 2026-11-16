@@ -1,9 +1,3 @@
-"""Real-data BC updates for the bench suite (060-R2, 041): the same initial weights (seeded) and
-the same batches (a fresh Rust feeder) for every candidate, so the update times compare and the
-per-update losses are a parity curve (`bench loss`: a candidate must keep the curve of the
-baseline within noise, AMB-000-4 step 2). Lane group sizes (041-R3, AMB-041-7) are swept in one
-run. The first update warms kernels up and is not counted in the medians."""
-
 import copy
 import json
 import math
@@ -19,7 +13,6 @@ LOSS_KEYS = ("total", "action", "delay", "queued", "selected", "target_unit", "t
 
 
 def profile_update(trainer, batch, lr: float, step: int, device: torch.device, n_ops: int, trace: str | None = None) -> list[dict]:
-    """The operators with the most device time (CPU time on CPU) in one update."""
     acts = [torch.profiler.ProfilerActivity.CPU] + ([torch.profiler.ProfilerActivity.CUDA] if device.type == "cuda" else [])
     with torch.profiler.profile(activities=acts) as prof:
         trainer.train_batch(batch, lr, step)
@@ -42,7 +35,6 @@ def run_group(a, group: int, device: torch.device, precision: str, log=print) ->
     from uranium.bc.run import model_variant
 
     torch.manual_seed(a.seed)
-    # 032 §2.7: the config's [model] variant, as `python -m uranium bc` builds it.
     net = UraniumNet(new_net_config(a.core, cfg["value"].get("win_open") is not None, model_variant(a.config)))
     chunk = int(os.environ.get("URANIUM_BC_ENTITY_CHUNK", "0") or 0)
     t = BcTrainer(cfg, net, device, precision, chunk)
@@ -78,8 +70,6 @@ def run_group(a, group: int, device: torch.device, precision: str, log=print) ->
 
 
 def compare_losses(base: dict, cand: dict, window: int = 20) -> dict:
-    """Parity of two `bench bc` runs of one group size: per-update and window-mean relative
-    differences of the total loss (the 1-6 comparison, AMB-000-4)."""
     lb = {u["step"]: u["loss"]["total"] for u in base["updates"]}
     lc = {u["step"]: u["loss"]["total"] for u in cand["updates"]}
     steps = sorted(set(lb) & set(lc))

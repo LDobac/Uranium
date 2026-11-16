@@ -1,8 +1,3 @@
-"""050-R10 / 050-AC5 regression gate (tools/eval/regression_gate.py): every check splits at its AMB-050-3 threshold
-(inclusive boundary passes, just past it fails), missing inputs are MISSING, the T0 t0_tp counts come from an eval job
-like tables.py (opponent-crash games invalid, both bunker definitions); and bc-eval `--bunker-before` (050-R10 3,
-the human TvT / TvP part) adds only the `bunker_before` field. CPU, no game data."""
-
 import json
 import sys
 from pathlib import Path
@@ -20,8 +15,6 @@ from test_eval_protocol import LIN, build, dump, make_job, row  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def no_dotenv(monkeypatch):
-    """The tools read the repository .env (eval_common.load_env); kept out so later tests in the process see
-    the plain test environment."""
     monkeypatch.setattr(ec, "load_env", lambda: None)
 
 
@@ -39,11 +32,10 @@ def results(checks, check, race, metric):
 
 
 def test_val_top1_and_nll_boundaries_050_r10():
-    """(2): top-1 within -0.5 %p and action NLL within +0.01 of the baseline, boundaries inclusive."""
     base = val({"terran": 0.700, "protoss": 0.650, "zerg": 0.6}, {"terran": 0.90, "protoss": 1.00, "zerg": 1.0})
     at = val({"terran": 0.695, "protoss": 0.645, "zerg": 0.1}, {"terran": 0.91, "protoss": 1.01, "zerg": 9.0})
     c = rg.judge_val(base, at)
-    assert {x["result"] for x in c} == {"PASS"}, c  # zerg is not judged (Terran / Protoss gate)
+    assert {x["result"] for x in c} == {"PASS"}, c
     assert {x["race"] for x in c} == {"terran", "protoss"}
     past = val({"terran": 0.69499, "protoss": 0.645}, {"terran": 0.90, "protoss": 1.01001})
     c = rg.judge_val(base, past)
@@ -55,7 +47,6 @@ def test_val_top1_and_nll_boundaries_050_r10():
 
 
 def test_tf_bunker_does_not_increase_050_r10():
-    """(3a): mean p(Build_Bunker) before 4:00 on human TvT / TvP val games <= the baseline."""
     t = {"terran": 0.9, "protoss": 0.9}
     base = val(t, t, {"terran": 0.020, "protoss": 0.010})
     c = rg.judge_tf_bunker(base, val(t, t, {"terran": 0.020, "protoss": 0.005}))
@@ -74,8 +65,6 @@ def counts(won, order, unit, n=32, dumped=None):
 
 
 def test_games_win_rate_and_bunker_boundaries_050_r10():
-    """(1) win rate >= the baseline's on the same 32 games; (3b) bunker_order / bunker_unit shares <= the baseline's.
-    Rates are compared exactly when invalid games make the counts differ."""
     base = {"terran": counts(12, 3, 2), "protoss": counts(5, 1, 1)}
     same = {"terran": counts(12, 3, 2), "protoss": counts(5, 1, 1)}
     assert {x["result"] for x in rg.judge_games(base, same)} == {"PASS"}
@@ -83,11 +72,9 @@ def test_games_win_rate_and_bunker_boundaries_050_r10():
     c = rg.judge_games(base, worse)
     assert results(c, "1", "terran", "won") == "FAIL" and results(c, "3b", "terran", "bunker_order_4m") == "FAIL"
     assert results(c, "3b", "terran", "bunker_unit_4m") == "PASS" and results(c, "3b", "protoss", "bunker_unit_4m") == "FAIL"
-    # 11 / 29 = 37.9% >= 12 / 32 = 37.5%; 10 / 27 = 37.04% < 37.5%; bunker 3 / 29 > 3 / 32
     c = rg.judge_games(base, {"terran": counts(11, 3, 2, n=29), "protoss": counts(5, 1, 1)})
     assert results(c, "1", "terran", "won") == "PASS" and results(c, "3b", "terran", "bunker_order_4m") == "FAIL"
     assert results(rg.judge_games(base, {"terran": counts(10, 0, 0, n=27), "protoss": counts(5, 1, 1)}), "1", "terran", "won") == "FAIL"
-    # a game without its command stream: bunker_order is not judged
     c = rg.judge_games(base, {"terran": counts(12, 3, 2, dumped=31), "protoss": counts(5, 1, 1)})
     assert results(c, "3b", "terran", "bunker_order_4m") == "MISSING" and results(c, "3b", "terran", "bunker_unit_4m") == "PASS"
     assert {x["result"] for x in rg.judge_games(base, None)} == {"MISSING"}
@@ -112,8 +99,6 @@ def t0_tp_job(tmp_path: Path, name: str, rows, ledger=None) -> Path:
 
 
 def test_t0_tp_counts_from_a_job_050_r10(tmp_path):
-    """Games 1..32 are T0 Terran, 33..64 T0 Protoss (t0_tp template); bunker_order_4m from the command stream
-    (< 5,760), bunker_unit_4m from bunker_s (< 240), opponent-crash games invalid."""
     rows = [row(1, True, bunker_s=239.9), row(2, None, bunker_s=240.0), row(3, False), row(33, True), row(34, False, bunker_s=100.0)]
     ledger = [{"game_id": 100035, "outcome": "Aborted", "detail": "launcher exit codes [Some(0), None]"}]
     job = t0_tp_job(tmp_path, "cand", rows + [row(35, True)], ledger)
@@ -126,7 +111,6 @@ def test_t0_tp_counts_from_a_job_050_r10(tmp_path):
     assert c["terran"] == {"n": 3, "won": 1, "bunker_order_4m": 1, "bunker_unit_4m": 1, "dumped": 3, "invalid": 0, "games": 32, "missing": 29}
     assert c["protoss"] == {"n": 2, "won": 1, "bunker_order_4m": 0, "bunker_unit_4m": 1, "dumped": 1, "invalid": 1, "games": 32, "missing": 29}
     assert c["skipped_lines"] == []
-    # 050-R9: a NUL line is ignored, a truncated line is skipped and counted; the decodable rows are kept
     f = job / "results" / "h.jsonl"
     f.write_bytes(f.read_bytes() + b"\x00" * 64 + b"\n" + b'{"game_id": 100036, "won"\n')
     c2 = rg.t0_tp_counts(job, tmp_path / "cache", LIN)
@@ -137,14 +121,12 @@ def test_t0_tp_counts_from_a_job_050_r10(tmp_path):
 
 
 def test_tvt_bunker_order_reads_the_models_player_050_r10(tmp_path):
-    """(3b) in TvT both players are Terran: bunker_order_4m reads the model's player at the row's slot (the players list
-    index), not the first Terran (the T0 opponent whenever the model plays slot 1; fixed 2026-11-14)."""
     rows = [{**row(1, True), "slot": 1}, {**row(2, True), "slot": 0}]
     job = t0_tp_job(tmp_path, "tvt", rows)
     cache = tmp_path / "cache" / job.name / "t0_tp"
     players = [{"id": 2, "race": 1}, {"id": 3, "race": 1}]
     bunker = build(4000, 12, 12, ec.BUNKER)[3]
-    for n in (1, 2):   # the player at list index 0 (id 2) orders a bunker before 4:00, the one at index 1 (id 3) does not
+    for n in (1, 2):
         f = cache / f"g{n}.json"
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(json.dumps({"players": players, "cmds": [[500, 2, 12, build(0, 10, 10, 109)[3]], [4000, 2, 12, bunker],
@@ -155,8 +137,6 @@ def test_tvt_bunker_order_reads_the_models_player_050_r10(tmp_path):
 
 
 def test_unfinished_t0_job_is_missing_050_r10(tmp_path):
-    """A job with planned games that have neither a result nor an invalid mark is not judged (1 and 3b MISSING),
-    even when its finished games would pass; once every game has a result or is invalid it is judged."""
     def job(name, rows, ledger=None):
         j = t0_tp_job(tmp_path, name, rows, ledger)
         for n in range(1, 65):
@@ -164,7 +144,7 @@ def test_unfinished_t0_job_is_missing_050_r10(tmp_path):
         return rg.t0_tp_counts(j, tmp_path / "cache", LIN)
 
     base = job("base", [row(n, n % 2 == 1) for n in range(1, 65)])
-    half = job("half", [row(n, True) for n in range(1, 65) if n != 40])   # Protoss game 40 not played yet
+    half = job("half", [row(n, True) for n in range(1, 65) if n != 40])
     assert base["protoss"]["missing"] == 0 and half["protoss"]["missing"] == 1 and half["terran"]["missing"] == 0
     c = rg.judge_games(base, half)
     assert {x["result"] for x in c if x["race"] == "protoss"} == {"MISSING"}
@@ -176,9 +156,6 @@ def test_unfinished_t0_job_is_missing_050_r10(tmp_path):
 
 
 def test_undecodable_lines_are_missing_050_r10(tmp_path):
-    """050-R9 / 050-R10: a corrupt line in a job's files fails closed. A lost Aborted ledger entry would turn an
-    invalid opponent-crash game into a counted win with no `missing` sign, and a lost counted row makes the game
-    missing; either way every race of the games checks (1, 3b) is MISSING with the undecodable-line note."""
     crash = {"game_id": 100040, "outcome": "Aborted", "detail": "launcher exit codes [Some(0), None]"}
 
     def job(name, rows, ledger=None):
@@ -192,7 +169,6 @@ def test_undecodable_lines_are_missing_050_r10(tmp_path):
     cand = rg.t0_tp_counts(cj, tmp_path / "cache", LIN)
     assert cand["protoss"]["invalid"] == 1 and cand["skipped_lines"] == []
     assert {x["result"] for x in rg.judge_games(base, cand)} == {"PASS"}
-    # the Aborted entry corrupted: game 40 would count again, so nothing is judged
     line = json.dumps(crash).encode()
     (cj / "games" / "h.jsonl").write_bytes(line[:30] + b"\x00" * 20 + b"\n")
     lost = rg.t0_tp_counts(cj, tmp_path / "cache", LIN)
@@ -201,11 +177,10 @@ def test_undecodable_lines_are_missing_050_r10(tmp_path):
     assert {x["result"] for x in c} == {"MISSING"} and {x["race"] for x in c} == {"terran", "protoss"}
     assert all(x["note"] == "1 undecodable lines in the job files: 0 (baseline) / 1 (candidate)" for x in c)
     assert {x["result"] for x in rg.judge_games(lost, base)} == {"MISSING"}
-    # a counted row corrupted: that game becomes missing
     (cj / "games" / "h.jsonl").write_bytes(line + b"\n")
     f = cj / "results" / "h.jsonl"
     lines = f.read_bytes().splitlines(keepends=True)
-    f.write_bytes(b"".join(lines[:4]) + lines[4][:25] + b"\n" + b"".join(lines[5:]))  # game 5 (Terran)
+    f.write_bytes(b"".join(lines[:4]) + lines[4][:25] + b"\n" + b"".join(lines[5:]))
     bad = rg.t0_tp_counts(cj, tmp_path / "cache", LIN)
     assert bad["terran"]["missing"] == 1 and len(bad["skipped_lines"]) == 1
     c = rg.judge_games(base, bad)
@@ -213,9 +188,8 @@ def test_undecodable_lines_are_missing_050_r10(tmp_path):
 
 
 def test_gate_cli_end_to_end_050_ac5(tmp_path):
-    """main(): bc-eval JSONs and t0_tp jobs in, one verdict per check and the JSON out."""
     base_rows = [row(n, n % 2 == 1, bunker_s=None) for n in range(1, 65)]
-    cand_rows = [row(n, n % 2 == 1 and n != 1, bunker_s=None) for n in range(1, 65)]   # one Terran win fewer
+    cand_rows = [row(n, n % 2 == 1 and n != 1, bunker_s=None) for n in range(1, 65)]
     bj, cj = t0_tp_job(tmp_path, "base", base_rows), t0_tp_job(tmp_path, "cand", cand_rows)
     for j in (bj, cj):
         for n in range(1, 65):
@@ -235,8 +209,6 @@ def test_gate_cli_end_to_end_050_ac5(tmp_path):
 
 
 def test_bc_eval_bunker_before_050_r10(tiny_config, tmp_path):
-    """bc-eval --bunker-before F: per-race steps before F add up to the whole, every scored step counts when F
-    is past the games, none at 0, p within [0, 1]; without the option the report has no such field."""
     from uranium import _core
     from uranium.bc.eval import evaluate
 
@@ -260,15 +232,12 @@ def test_bc_eval_bunker_before_050_r10(tiny_config, tmp_path):
     assert all(x["steps"] == full["by_enemy_race"][r]["steps"] for r, x in bb["by_enemy_race"].items())
     assert 0.0 <= bb["all"]["mean_p"] <= 1.0
     assert {k: v for k, v in full.items() if k != "bunker_before"} == plain
-    # synthetic steps are 8 frames apart from 0: frame < 64 keeps the first 8 steps of each game
     early = ev(64)["bunker_before"]
     assert 0 < early["all"]["steps"] < full["steps"]
     assert ev(0)["bunker_before"]["all"] == {"steps": 0, "mean_p": None}
 
 
 def test_protocol_bc_eval_prints_bunker_before_050_r10(capsys, tmp_path, monkeypatch):
-    """val500_race (and val500, the same output file) run bc-eval with --bunker-before 5760; check-bc-eval warns
-    when an output lacks `bunker_before` (gate check 3a would be MISSING) and is quiet when it has it."""
     import protocol
 
     monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: "a" * 64)

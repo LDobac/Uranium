@@ -1,10 +1,3 @@
-"""Checkpoint files (032-R6, 061-R10): `model.safetensors` (f32 weights, names sorted, so the same
-weights give the same bytes), `optim-<name>.safetensors` (per-parameter AdamW state and step),
-`meta.json` (net config, schema versions, normalisation stats, training summary, framework,
-precision, hand-written kernels). `train_state.json`, `run_ident.json` and `config/` are written
-by the Rust run loop (`uranium._core.run_bc`). The policy version (020-R5) is the SHA-256 of
-`model.safetensors`."""
-
 import hashlib
 import json
 from pathlib import Path
@@ -18,12 +11,10 @@ WEIGHTS_FILE = "model.safetensors"
 META_FILE = "meta.json"
 BURN_WEIGHTS_FILE = "model.bpk"
 OPTIM_MAIN = "main"
-# RL checkpoints: one folder per learning agent, `agents/<name>/` (061-R10, 042).
 AGENTS_DIR = "agents"
 
 
 def schema_versions() -> tuple[int, int]:
-    """(feature, action) schema versions of this build (030, 034)."""
     from uranium import _core
 
     d = json.loads(_core.feature_dims())
@@ -31,8 +22,6 @@ def schema_versions() -> tuple[int, int]:
 
 
 def feature_load_compat() -> list[int]:
-    """030-R5: earlier feature schemas whose checkpoints this build loads as they are (they differ
-    only in mask meaning, not in model inputs)."""
     from uranium import _core
 
     return list(json.loads(_core.feature_dims())["feature_load_compat"])
@@ -71,7 +60,6 @@ def read_meta(dir: Path) -> dict:
         raise FileNotFoundError(f"{dir}: no {WEIGHTS_FILE}")
     meta = json.loads((dir / META_FILE).read_text(encoding="utf-8"))
     fv, av = schema_versions()
-    # 032-R6 / 030-R5: the current feature schema or one on its load-compatible list.
     compat = feature_load_compat()
     if meta["feature_version"] != fv and meta["feature_version"] not in compat:
         raise ValueError(f"{dir}: feature schema {meta['feature_version']} != {fv} (load-compatible: {compat})")
@@ -81,8 +69,6 @@ def read_meta(dir: Path) -> dict:
 
 
 def load_model(dir: Path, device="cpu", adjust=None) -> tuple[UraniumNet, dict]:
-    """The net of a checkpoint and its metadata; `adjust(cfg)` changes weightless settings
-    (032 §2: dropout) before the net is built."""
     meta = read_meta(dir)
     cfg = UraniumNetConfig.from_dict(meta["config"])
     if adjust is not None:
@@ -96,7 +82,6 @@ def load_model(dir: Path, device="cpu", adjust=None) -> tuple[UraniumNet, dict]:
 
 
 def policy_version(dir: Path) -> str:
-    """020-R5: SHA-256 of the weights file."""
     h = hashlib.sha256()
     with open(Path(dir) / WEIGHTS_FILE, "rb") as f:
         for block in iter(lambda: f.read(1 << 20), b""):
@@ -105,7 +90,6 @@ def policy_version(dir: Path) -> str:
 
 
 def save_optimizer(dir: Path, name: str, net: torch.nn.Module, opt: torch.optim.Optimizer) -> None:
-    """AdamW state per parameter name: `<p>.exp_avg`, `<p>.exp_avg_sq`, `<p>.step`."""
     out = {}
     for pname, p in net.named_parameters():
         st = opt.state.get(p)
@@ -118,7 +102,6 @@ def save_optimizer(dir: Path, name: str, net: torch.nn.Module, opt: torch.optim.
 
 
 def load_optimizer(dir: Path, name: str, net: torch.nn.Module, opt: torch.optim.Optimizer) -> None:
-    """Puts the saved AdamW state back into `opt` (built over `net.parameters()`)."""
     t = load_file(str(Path(dir) / optim_file(name)))
     names = {k.rsplit(".", 1)[0] for k in t}
     params = dict(net.named_parameters())
@@ -130,7 +113,6 @@ def load_optimizer(dir: Path, name: str, net: torch.nn.Module, opt: torch.optim.
         p = params[pname]
         opt.state[p] = {
             "step": t[f"{pname}.step"].reshape(()).to(p.device if fused else "cpu"),
-            # In the parameter's memory format (channels-last conv weights, 032-R19).
             "exp_avg": torch.empty_like(p).copy_(t[f"{pname}.exp_avg"]),
             "exp_avg_sq": torch.empty_like(p).copy_(t[f"{pname}.exp_avg_sq"]),
         }

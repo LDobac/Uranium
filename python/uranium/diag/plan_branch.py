@@ -73,11 +73,9 @@ from uranium.diag import plan_stats as ps
 from uranium.diag import tables as tb
 from uranium.diag.plan_dump import own_columns, own_state
 
-SCV8 = pp.Q_NAMES.index("scv8")  # the q̂ head of 8:00 SCVs >= 8 (= 050-R6 ③, held_8m)
+SCV8 = pp.Q_NAMES.index("scv8")
 GAME_START_FRAME = 1
-# 051-R11 ④ (AMB-051-4): main results, then the auxiliary 050 metrics and the end before the horizon
 OUTCOMES = ("held_8m", "held_s", "scv_8m", "scv_min_1m", "bunker_s", "barracks_s", "army_s", "end.before_horizon")
-# 051-R9 ① sample names: f_t + 60 / 120 / 240 s, the horizon H, the 8th / 32nd decision after t
 OWN_SAMPLES = ("t60", "t120", "t240", "horizon", "d8", "d32")
 
 
@@ -104,9 +102,6 @@ def add_args(p) -> None:
     p.add_argument("--boot-seed", type=int, default=7)
 
 
-# ---------------------------------------------------------------- reading
-
-
 def read_jsonl(path) -> list[dict]:
     out = []
     for n, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
@@ -126,7 +121,6 @@ def trunk_of(point: dict) -> str:
 
 
 def _num(v) -> float:
-    """A number (true / false as 1 / 0), NaN for anything else."""
     return float(v) if isinstance(v, (int, float)) else float("nan")
 
 
@@ -150,7 +144,6 @@ def own_of(scalar) -> np.ndarray:
 
 
 def sample_own(br: dict, name: str) -> np.ndarray | None:
-    """Own state of a branch's sample `name` (None without it), cached on the branch line."""
     cache = br.setdefault("_own", {})
     if name not in cache:
         s = samples_of(br).get(name)
@@ -159,7 +152,6 @@ def sample_own(br: dict, name: str) -> np.ndarray | None:
 
 
 def outcome(br: dict, name: str) -> float:
-    """The value of outcome `name` in a branch line (module docstring), NaN when missing."""
     if name.startswith("own@"):
         sample, _, col = name[4:].partition(":")
         names = own_columns()[0]
@@ -182,7 +174,6 @@ def action_of(x) -> int:
 
 
 def one_decision_force(rules) -> int | None:
-    """The action of a one-decision `force` alternative (one rule, from_s = to_s = 0), else None."""
     if not rules or len(rules) != 1:
         return None
     r = rules[0]
@@ -196,7 +187,6 @@ def _missed(r: dict) -> bool:
 
 
 def executed(br: dict) -> bool:
-    """The intervention ran (module docstring 1, secondary analysis). No rules: True."""
     rules = br.get("rules") or []
     iv = br.get("intervention") or []
     if isinstance(iv, dict):
@@ -211,8 +201,6 @@ def executed(br: dict) -> bool:
 
 
 class Branches:
-    """The valid points and branches: cells[(point, alt)] = [(repeat, branch line)]."""
-
     def __init__(self, points: list[dict], branches: list[dict], baseline: str):
         self.baseline = baseline
         self.all_points = {p["point"]: p for p in points}
@@ -243,8 +231,6 @@ class Branches:
         self.n_valid = sum(len(v) for v in self.cells.values())
 
     def items(self, p: str, alt: str, only_executed: bool = False, half: int | None = None) -> list[dict]:
-        """The valid branches of (point, alternative); `only_executed` drops those whose intervention did not
-        run (not the baseline's), `half` keeps the odd (1) or even (0) repeat numbers."""
         return [b for rep, b in self.cells.get((p, alt), [])
                 if not (only_executed and alt != self.baseline and not executed(b)) and (half is None or rep % 2 == half)]
 
@@ -258,13 +244,11 @@ def _mean(v: np.ndarray) -> float:
 
 
 def _own_mean(B: Branches, p: str, alt: str, sample: str) -> np.ndarray | None:
-    """Mean own state (`own_columns`) of sample `sample` over the valid branches of (p, alt) that have it."""
     v = [o for b in B.items(p, alt) if (o := sample_own(b, sample)) is not None]
     return np.mean(v, 0) if v else None
 
 
 def point_effects(B: Branches, alt: str, fn, only_executed=False, half=None) -> np.ndarray:
-    """d_p(alt) per point of `B.points` (NaN without both sides)."""
     d = np.full(len(B.points), np.nan)
     for i, p in enumerate(B.points):
         a = _mean(B.values(p, alt, fn, only_executed, half))
@@ -274,8 +258,6 @@ def point_effects(B: Branches, alt: str, fn, only_executed=False, half=None) -> 
 
 
 def split_half(B: Branches, alt_list, fn, sel=None) -> dict:
-    """Split-half agreement of d_p over the (point, alternative) pairs of `alt_list` (module docstring 1):
-    odd against even repeat numbers; `sel` limits the points (indices into `B.points`)."""
     sel = np.arange(len(B.points)) if sel is None else sel
     h = [np.concatenate([point_effects(B, a, fn, half=x)[sel] for a in alt_list]) if alt_list else np.zeros(0) for x in (1, 0)]
     ok = np.isfinite(h[0]) & np.isfinite(h[1])
@@ -319,9 +301,6 @@ def paired_table(B: Branches, outcomes: list[str], boot: ps.Boot) -> dict:
     return out
 
 
-# ---------------------------------------------------------------- dump rows and predictors
-
-
 def file_sha256(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -331,7 +310,6 @@ def file_sha256(path: Path) -> str:
 
 
 def replay_sha(point: dict, roots: list[Path], cache: dict | None = None) -> str | None:
-    """sha256 of the point's trunk replay (`trunk.replay_sha256`, else the file hashed once per path)."""
     t = point.get("trunk") or {}
     if t.get("replay_sha256"):
         return t["replay_sha256"]
@@ -346,7 +324,6 @@ def replay_sha(point: dict, roots: list[Path], cache: dict | None = None) -> str
 
 
 def find_rows(B: Branches, data, roots: list[Path], lag: int) -> tuple[dict, dict]:
-    """{point: dump row} and {point: why not} (module docstring 4)."""
     by_sha: dict = {}
     for gi, e in enumerate(data.game_meta):
         by_sha.setdefault(e.get("sha"), []).append(gi)
@@ -402,7 +379,6 @@ def load_predictor(s0: Path, k: int, data):
 
 
 def predictor_design(s0: Path, ks):
-    """The `plan_pred.Design` and checkpoint of the S0b models (from the first model's meta)."""
     for k in ks:
         path = s0 / "models" / f"A_k{k}.pt"
         if path.is_file():
@@ -414,8 +390,6 @@ def predictor_design(s0: Path, ks):
 
 
 def own_change_pred(net, st, data, rows, k: int, chunk_rows: int = 64) -> tuple[np.ndarray, np.ndarray]:
-    """([rows, A, O] ô change per candidate action in counts, [rows, O] its policy expectation); columns
-    left out of the predictor's target space are NaN."""
     A = data.n_act
     design = data.design
     sd = st["d_sd"] if design.own_target == "delta" else st["o_sd"]
@@ -433,7 +407,6 @@ def own_change_pred(net, st, data, rows, k: int, chunk_rows: int = 64) -> tuple[
 
 
 def s0_m3b(s0: Path, k: int) -> dict | None:
-    """S0b M3b ΔQ (predictor A, teacher and model rows) of the 8:00 SCV head from `<s0>/s0*.json`."""
     for f in sorted(glob.glob(str(s0 / "s0*.json"))):
         rep = json.loads(Path(f).read_text(encoding="utf-8"))
         blk = (((rep.get("M3b") or {}).get(str(k)) or {}).get("A") or {}).get("both") or {}
@@ -443,9 +416,6 @@ def s0_m3b(s0: Path, k: int) -> dict | None:
 
 
 def sign_agreement(pred, meas) -> tuple[np.ndarray, int]:
-    """Per pair 1 / 0 = the signs of `pred` and `meas` agree / differ; NaN for a pair left out: not
-    finite, or a tie (`pred` == 0 or `meas` == 0, no direction to agree with), counted in the second
-    value."""
     pred, meas = np.asarray(pred, np.float64), np.asarray(meas, np.float64)
     fin = np.isfinite(pred) & np.isfinite(meas)
     tie = fin & ((pred == 0) | (meas == 0))
@@ -469,7 +439,6 @@ def m3u(B: Branches, data, rows: dict, nets: dict, y: str, boot_n: int, seed: in
     pidx = {p: i for i, p in enumerate(B.points)}
     sel = np.array([pidx[p] for p in pts], np.int64)
     eff = {a: point_effects(B, a, fn)[sel] for a in forced}
-    # the noise ceiling of the pairs M3u reads (every one-decision force alternative)
     out["split_half"] = split_half(B, list(forced), fn, sel)
     sb = out["split_half"]["spearman_brown"]
     for k, (net, st, _) in nets.items():
@@ -526,19 +495,17 @@ def m2c(B: Branches, data, rows: dict, nets: dict, samples: dict, boot_n: int, s
         P, M, U, dirs = [], [], [], []
         base = [_own_mean(B, p, B.baseline, sname) for p in pts]
         for a, act in forced.items():
-            pred = o_all[:, act] - o_pi  # [points, O]
+            pred = o_all[:, act] - o_pi
             meas = np.full_like(pred, np.nan)
             for i, p in enumerate(pts):
                 ma = _own_mean(B, p, a, sname)
                 if ma is not None and base[i] is not None:
                     meas[i] = ma - base[i]
             col = of_action.get(int(act))
-            # the pairs M3u reads: the forced action open at t (051-R10)
             ok = np.isfinite(meas).all(1) & data.mask_rows(pi_rows)[:, act]
             ent = {"action": int(act), "column": None if col is None else names[col], "pairs": int(ok.sum())}
             if col is not None and ok.any():
                 pm, mm = pred[ok, col], meas[ok, col]
-                # ties (no predicted or no measured change) and columns the predictor leaves out (NaN) are not counted
                 agree, ties = sign_agreement(pm, mm)
                 ent["direction"] = {"pairs": int(np.isfinite(agree).sum()), "ties": ties, "agree": _rate(agree),
                                     "pred_mean": float(pm.mean()) if np.isfinite(pm).all() else None, "meas_mean": float(mm.mean())}
@@ -564,7 +531,6 @@ def m2c(B: Branches, data, rows: dict, nets: dict, samples: dict, boot_n: int, s
 
 
 def diagnostics(B: Branches) -> dict:
-    """Invalid branches, refused / missed rates of the force rules, dilution means (module docstring 5)."""
     inv_total = sum(sum(v.values()) for v in B.invalid.values())
     out = {"branches": B.n_branches, "valid": B.n_valid, "invalid": inv_total,
            "invalid_rate": inv_total / B.n_branches if B.n_branches else None, "invalid_by_alt": B.invalid,
@@ -590,8 +556,6 @@ def diagnostics(B: Branches) -> dict:
 
 
 def _leaves(d, prefix=""):
-    """(dotted key, number) of every numeric leaf; a list of `{action, ...}` entries (051-R9 ③
-    `DilutionEntry`) is keyed by the action."""
     if isinstance(d, list):
         for i, v in enumerate(d):
             key = v.get("action", i) if isinstance(v, dict) else i
@@ -601,9 +565,6 @@ def _leaves(d, prefix=""):
             yield from _leaves(v, f"{prefix}{k}.")
     elif isinstance(d, (int, float)) and not isinstance(d, bool):
         yield prefix[:-1], float(d)
-
-
-# ---------------------------------------------------------------- report
 
 
 def _f(x, nd=3):
@@ -701,7 +662,6 @@ def markdown(rep: dict) -> str:
 
 
 def analyse(a) -> dict:
-    """The report dict (module docstring)."""
     d = Path(a.dir)
     points = read_jsonl(a.points or d / "points.jsonl")
     branches = read_jsonl(a.branches or d / "branches.jsonl")
@@ -726,7 +686,6 @@ def analyse(a) -> dict:
            "alts": {x: B.rules[x] for x in B.alts}, "trunks": len(trunks)}
     rep["paired"] = paired_table(B, outcomes, boot) if boot is not None else {}
 
-    # 051-R13 ②: the bunker force / ban effects of the M3u outcome (ΔQ̂ and the S0b M3b ΔQ added below)
     bunker = tb.action_id("Build_Bunker")
     rep["bunker"] = {}
     for x in B.alts:

@@ -1,9 +1,3 @@
-"""`python -m uranium rl` (042): the Rust run loop (league, games, segment queues, snapshots,
-checkpoints, 061 lock) with the PyTorch learners and the agents' inference servers in this
-process (AMB-000-4). Exit codes as before: 75 when the run's lock is another host's (061-R5);
-70 (`os._exit`, no save) on a fatal device error in any of the learners' or servers' calls
-(042-R20), so the 060-R6 watchdog restarts the run from LATEST."""
-
 import argparse
 import functools
 import json
@@ -13,15 +7,8 @@ from pathlib import Path
 
 AGENTS = ("main", "main-exploiter", "league-exploiter")
 EXIT_BUSY = 75
-# Key of the start record in each agent's train JSON (`meta.json` "train"): where its weights
-# started, {"from": "init" | "bc", "path" (as given), "abs_path", and for init "update" /
-# "step"} (042, AMB-042-13).
 START_KEY = "start"
-# 044-R9: key of the KL reference record in each agent's train JSON (only with `[kl.reference]`):
-# per lobby race {"path" (as configured, "--bc" for the --bc model), "abs_path", "sha256" (weights,
-# 020-R5)}.
 KL_REFERENCE_KEY = "kl_reference"
-# Written by the Rust run loop at a checkpoint's root (uranium_store::ckpt::STATE_FILE, 061).
 STATE_FILE = "train_state.json"
 
 
@@ -48,9 +35,6 @@ def add_parser(sub) -> None:
 
 
 class Learners:
-    """The three learning agents and their inference servers, for the Rust run loop
-    (`uranium_league::learner::RlLearners`)."""
-
     def __init__(self, cfg: dict, bc_dir: str, init: str | None, resume: str | None, device, precision: str, algo: str, logs: Path, max_batch: int, max_wait_ms: int):
         from uranium import _core, ckpt
         from uranium.agent.infer import InferenceServer
@@ -59,18 +43,13 @@ class Learners:
 
         self.device, self.precision = device, precision
         self.max_batch, self.max_wait_ms = max_batch, max_wait_ms
-        # KL reference (AMB-042-9) and exploiter reset policy: always --bc, also with --init (042).
         bc, _ = ckpt.load_model(Path(bc_dir), device, adjust=_no_dropout)
-        # 044-R9: the other [kl.reference] models, loaded once and shared by the three learners
-        # (frozen; the run loop runs one learner update at a time).
         refs, race_ref, self.kl_reference = kl_references(cfg, bc_dir, bc, device)
         self.learners: list = []
         self.servers: list = []
         self.brokers_: list = []
-        # League snapshot / anchor servers by instance token (042, AMB-042-14).
         self.snapshot_servers: dict = {}
         self.snapshot_tokens = 0
-        # Per agent: where its weights started (042, AMB-042-13), written into every checkpoint.
         self.starts: list = []
         for name, (net, update, optim_dir, start) in zip(AGENTS, start_policies(bc_dir, bc, init, resume, device), strict=True):
             l = Learner(cfg, net, _copy(bc), device, precision, algo, update, refs=refs, race_ref=race_ref)
@@ -78,7 +57,6 @@ class Learners:
                 ckpt.load_optimizer(optim_dir, ckpt.OPTIM_MAIN, l.net, l.opt)
             self.learners.append(l)
             self.starts.append(start)
-            # The server starts from the learner's current weights (folder for the 020-R5 id).
             d = logs / "infer" / name
             d.mkdir(parents=True, exist_ok=True)
             ckpt.save_model(d, l.net)
@@ -96,8 +74,6 @@ class Learners:
     def version(self, i: int) -> int:
         return self.learners[i].update_count
 
-    # Device work of the run loop's callbacks is `DEVICE_LOCK.shared()`: an inference server may
-    # be capturing a graph meanwhile (uranium.device.DeviceLock).
     def update(self, i: int, batch, weights) -> str:
         from uranium.device import DEVICE_LOCK, device_fatal_guard
 
@@ -108,7 +84,7 @@ class Learners:
             t1 = time.time_ns()
             out = json.dumps(self.learners[i].update(batch, weights))
         prof = os.environ.get("URANIUM_INFER_PROFILE", "")
-        if prof:  # learner update spans next to the servers' batches (AMB-042-10)
+        if prof:
             with open(f"{prof}-learner.jsonl", "a", encoding="utf-8") as f:
                 f.write(json.dumps({"agent": i, "t0": t0, "t_lock": t1, "t1": time.time_ns()}) + "\n")
         return out
@@ -133,21 +109,17 @@ class Learners:
         d = Path(dir)
         d.mkdir(parents=True, exist_ok=True)
         l = self.learners[i]
-        # 042-R20: a checkpoint after a fatal device error is never written (exit 70).
         with device_fatal_guard(f"learner {AGENTS[i]} save"), DEVICE_LOCK.shared():
             ckpt.save_model(d, l.net)
             ckpt.save_optimizer(d, ckpt.OPTIM_MAIN, l.net, l.opt)
         train = json.loads(train_json)
-        if self.starts[i] is not None:  # None: resumed from a checkpoint written before the record
+        if self.starts[i] is not None:
             train[START_KEY] = self.starts[i]
-        if self.kl_reference is not None:  # 044-R9: which checkpoint each race's KL used
+        if self.kl_reference is not None:
             train[KL_REFERENCE_KEY] = self.kl_reference
         ckpt.save_meta(d, l.net.cfg, train, self.precision, impl_settings())
 
     def snapshot_server(self, dir: str) -> tuple:
-        """A league snapshot's or the anchor's agent as an opponent (stochastic, 042): (broker,
-        token). The token names this server instance for `snapshot_server_alive` and
-        `close_snapshot_server` (another server of the same folder is a different instance)."""
         from uranium import _core
         from uranium.agent.infer import InferenceServer
 
@@ -162,29 +134,16 @@ class Learners:
         return b, self.snapshot_tokens
 
     def snapshot_server_alive(self, token: int) -> bool:
-        """The server still serves: its model thread runs without an error (a failed warm-up
-        ends it after `snapshot_server` returned), and it was not closed."""
         s = self.snapshot_servers.get(token)
         return s is not None and s.is_alive() and s.error is None and not s.stop.is_set()
 
     def close_snapshot_server(self, token: int) -> None:
-        """042 스냅샷 추론 서버 (AMB-042-14): the run loop calls this once no game uses the server
-        and no opponent choice can pick it (or its thread died); its thread stops and frees the
-        model's device memory (the snapshot's files stay). Only this instance: a newer server of
-        the same folder has another token."""
         s = self.snapshot_servers.pop(token, None)
         if s is not None:
             s.close()
 
 
 def start_policies(bc_dir: str, bc, init: str | None, resume: str | None, device) -> list[tuple]:
-    """042 출발 정책 `--init` (AMB-042-13): per agent of `AGENTS`, (net, update, optimizer folder
-    or None, start record or None). `bc` is the net loaded from `bc_dir` (copied, not re-read).
-
-    - `resume` (the run's LATEST, 042-R1 / 061) wins over `init`: every agent continues its own
-      folder (weights, optimizer, update) and keeps the start record written there.
-    - otherwise Main starts from `init` when given (weights only: new optimizer, update 0) and
-      the other agents from `bc_dir`."""
     from uranium import ckpt
 
     out = []
@@ -209,9 +168,6 @@ def start_policies(bc_dir: str, bc, init: str | None, resume: str | None, device
 
 
 def reference_dir(path: str) -> Path:
-    """A `[kl.reference]` value as a folder (044-R9): absolute as given, relative under
-    `URANIUM_SHARED_DIR` (as `[league] anchor`, 020-R11; `--bc` itself stays relative to the
-    working folder)."""
     p = Path(path.strip())
     if p.is_absolute():
         return p
@@ -222,21 +178,12 @@ def reference_dir(path: str) -> Path:
 
 
 def model_key(d: Path, cfg) -> tuple:
-    """What makes two checkpoints the same KL reference (044-R9): the weights file's SHA-256
-    (the 020-R5 policy version) and the model config."""
     from uranium import ckpt
 
     return ckpt.policy_version(d), json.dumps(_flat(cfg.to_dict()), sort_keys=True, default=str)
 
 
 def kl_references(cfg: dict, bc_dir: str, bc, device) -> tuple[list, list | None, dict | None]:
-    """044-R9 `[kl.reference]`: (the reference models other than `--bc`, each loaded once; per
-    lobby race in `REF_RACES` order the index of its reference in `[bc, *models]`; the record
-    each checkpoint keeps, `KL_REFERENCE_KEY`), or `([], None, None)` without the table (one
-    reference, `--bc`, as before). A race without a key uses `--bc`;
-    keys naming the same checkpoint (same weights and config, `model_key`) share one model, and
-    one naming `--bc`'s uses `--bc` itself. A model config other than `--bc`'s is a start error
-    (the KL compares the same heads' distributions, 042 출발 정책, 032-R10)."""
     from uranium import ckpt
     from uranium.rl.learner import REF_RACES
 
@@ -271,9 +218,6 @@ def kl_references(cfg: dict, bc_dir: str, bc, device) -> tuple[list, list | None
 
 
 def same_model(bc_cfg, cfg, what: str) -> None:
-    """A model config other than the BC model's (`bc_cfg`) is a start error: the KL compares the
-    same heads' distributions (042, 032-R10). Both pass the schema check of `ckpt.read_meta`, so
-    a feature version on the load-compatible list (030-R5) is not a model difference."""
     want, got = _flat(bc_cfg.to_dict()), _flat(cfg.to_dict())
     if got != want:
         diff = sorted(k for k in want.keys() | got.keys() if want.get(k) != got.get(k))
@@ -281,8 +225,6 @@ def same_model(bc_cfg, cfg, what: str) -> None:
 
 
 def init_agent_dir(init: str) -> Path:
-    """`--init` as Main's model folder: an RL checkpoint folder (`ckpt-<step>`, its
-    `agents/main`) or that `agents/main` folder itself (042, AMB-042-13)."""
     from uranium import ckpt
 
     p = Path(init)
@@ -295,11 +237,6 @@ def init_agent_dir(init: str) -> Path:
 
 
 def load_init(init: str, bc_cfg, device) -> tuple:
-    """Main's start net from `--init` (weights only) and its start record: the path as given and
-    resolved to an absolute path, the update in its train JSON and its checkpoint's step (`train_state.json`) when present.
-    A model config other than the BC model's (`bc_cfg`) is a start error: the KL compares the same
-    heads' distributions (042, 032-R10). Both pass the schema check of `ckpt.read_meta`, so a
-    feature version on the load-compatible list (030-R5) is not a model difference (same inputs)."""
     from uranium import ckpt
 
     d = init_agent_dir(init)
@@ -323,23 +260,16 @@ def _flat(d: dict, prefix: str = "") -> dict:
 
 
 def logs_dir(logs: str) -> Path:
-    """`--logs` as an absolute path (042 `--logs` path, 2026-10-31 fix): the inference servers'
-    model folders `<logs>/infer/<agent>` go to the Rust Broker, which resolves a relative
-    checkpoint path against `URANIUM_SHARED_DIR` (020-R11), so a relative `--logs` is made
-    absolute against the working directory first."""
     return Path(logs).absolute()
 
 
 def _n_max() -> int:
-    """Entity count the servers warm up to (012-R19, the server thread does it before serving)."""
     from uranium import _core
 
     return json.loads(_core.feature_dims())["n_max"]
 
 
 def _no_dropout(c):
-    # 032 §2: dropout 0 in RL (0.1 is the BC setting). The actors run without dropout, so a
-    # learner with dropout would see π ≠ μ even on-policy (V-trace ρ, KL to π_BC).
     c.entity.dropout = 0.0
     return c
 
@@ -357,7 +287,6 @@ def _make(a, device, precision, cfg_json, resume):
 def main(a) -> int:
     from uranium import _core
 
-    # 042-R10 / 060-R6: first, so a SIGINT during the pull or the model load is kept.
     _core.install_stop_handler("rl")
     from uranium.device import configure, resolve
 
@@ -366,14 +295,11 @@ def main(a) -> int:
     backend, device, precision = resolve(a.backend)
     configure(backend)
     a.logs = str(logs_dir(a.logs))
-    # The learners read the same value (an invalid override fails here, before the lock is taken).
     m = host_micro_lanes(json.loads(_core.rl_config(a.config)))
     src = MICRO_LANES_ENV if os.environ.get(MICRO_LANES_ENV, "").strip() else "config micro_lanes"
     print(f"[rl] {backend} ({precision}), algo {a.algo}, learner lane group {m if m else 'all'} lanes ({src}), logs {a.logs}", file=sys.stderr, flush=True)
     from uranium.device import device_fatal_guard
 
-    # 042-R20: a fatal device error that reached the run loop as an error (its message carries the
-    # Python traceback) exits 70 too, like one caught in the learners' calls.
     with device_fatal_guard("rl run loop"):
         end = _core.run_rl(
             functools.partial(_make, a, device, precision), a.run, a.config, algo=a.algo, seed=a.seed, take_over=a.take_over, logs=a.logs,

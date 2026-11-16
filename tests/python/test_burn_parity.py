@@ -1,9 +1,3 @@
-"""032-AC10 (AMB-000-4): the PyTorch UraniumNet reproduces the Burn model on CPU — forward
-outputs, BC loss, every gradient, the global clip (041-R3, R19) and one AdamW step — from the
-dumps of `tools/burn-parity` (tiny configs in tests/fixtures/burn_parity, full-size dumps via
-`URANIUM_PARITY_DIRS`). Burn's one-hot distance / relative-position bias is a gather here
-(032-R13 2026-10-23): the same forward values, the gradient summed in another order."""
-
 import json
 import os
 from pathlib import Path
@@ -27,8 +21,6 @@ def dumps() -> list[Path]:
 
 
 def loss_of(out: dict, inp: dict, meta: dict) -> torch.Tensor:
-    """The BC loss of the dump (041-R1, R7, R19): per-head CE over the batch-wide valid steps,
-    win MSE over decided steps, win_open MSE added last."""
     w = inp["weights"]
     ce = lambda lp: (-lp * w).sum() / meta["valid"]  # noqa: E731
     target, vw = inp["results"], inp["value_w"]

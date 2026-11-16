@@ -1,8 +1,3 @@
-"""Bench cases (060-R2). Kernel cases keep the names of the 2026-10-23 Burn bench so the reports
-compare; they run the model's own modules where one exists (core, attention, location head ups,
-pointer loop), so an optimisation of the model shows up here. Each case times forward (no grad) and
-forward+backward, and checks the forward output against CPU f32 on the same inputs and weights."""
-
 import os
 import re
 from dataclasses import dataclass, field
@@ -60,8 +55,6 @@ def seeded(seed: int) -> torch.Generator:
 
 
 def op_case(ctx: Ctx, name: str, shape: str, make, flops: float | None = None, backward: bool = True, accuracy: bool = True, note: str = "") -> Row:
-    """`make(device)` -> (leaf tensors and modules that take gradients, `f()` -> output tensor),
-    built deterministically so the CPU and device copies hold the same values."""
     row = Row(name, shape, note=note)
     leaves, f = make(ctx.device)
     params = [p for x in leaves for p in (x.parameters() if isinstance(x, nn.Module) else [x])]
@@ -95,8 +88,6 @@ def op_case(ctx: Ctx, name: str, shape: str, make, flops: float | None = None, b
     return row
 
 
-# --- kernel cases ---------------------------------------------------------------------------
-
 def matmul(ctx: Ctx, dtype: torch.dtype, n: int) -> Row:
     def make(dev):
         g = seeded(1)
@@ -124,7 +115,6 @@ def conv2d_stem(ctx: Ctx) -> Row:
 
 
 def location_ups(ctx: Ctx, rows: int) -> Row:
-    """The four ConvTranspose2d of `LocationHead` (032 §2.5 #6) on `rows` rows."""
     cfg = UraniumNetConfig()
     c1, c2, c3, c4 = cfg.spatial.stages
     layers = [(cfg.heads.loc_ar_channels + c4, c3, 8), (2 * c3, c2, 16), (2 * c2, c1, 32), (2 * c1, 32, 64)]
@@ -168,8 +158,6 @@ def lstm_step(ctx: Ctx) -> Row:
 
 
 class EncoderStack(nn.Module):
-    """Pre-LN attention + FFN layers of the entity encoder (032 §2.1), optional distance bias."""
-
     def __init__(self, d: int, heads: int, ffn: int, layers: int, buckets: int):
         super().__init__()
         self.ln1 = nn.ModuleList(nn.LayerNorm(d) for _ in range(layers))
@@ -256,7 +244,6 @@ def masked_softmax(ctx: Ctx) -> Row:
 
 
 def pointer_loop(ctx: Ctx, net_cache: dict) -> Row:
-    """`Heads.selected`: the 12-step pointer network (032 §2.5 #4)."""
     def make(dev):
         net = model(net_cache, "Gtrxl", dev)
         g = seeded(11)
@@ -271,9 +258,6 @@ def pointer_loop(ctx: Ctx, net_cache: dict) -> Row:
     return op_case(ctx, "pointer_gru_12step", "keys[16,256], 12 steps", make, accuracy=False)
 
 
-# --- model cases ----------------------------------------------------------------------------
-
-# 032-R20: the comparison runs' structure switches (`[model]` of config/bc_arch_abl_*_pt.toml).
 VARIANTS = {
     "terrain": VariantConfig(terrain=True),
     "ctx": VariantConfig(ctx_token=True),
@@ -305,7 +289,7 @@ def net_act(ctx: Ctx, cache: dict, kind: str, b: int, n: int, name: str | None =
     def act():
         with torch.no_grad(), autocast(ctx.device, ctx.precision):
             out = net.act(obs, state, 1.0, gen.manual_seed(20))
-        out["action"]["action"].cpu()  # the broker reads the actions back each batch
+        out["action"]["action"].cpu()
 
     reset_peak(ctx.device)
     row = Row(name or f"net_act_{kind.lower()}_b{b}_n{n}", f"B={b} N={n}", fwd=measure(act, ctx.device, budget_s=ctx.budget_s))
@@ -316,9 +300,6 @@ def net_act(ctx: Ctx, cache: dict, kind: str, b: int, n: int, name: str | None =
 
 
 def net_train(ctx: Ctx, cache: dict, kind: str, b: int, t: int, n: int, variant: str | None = None) -> Row:
-    """One lane group's forward + loss + backward as `BcTrainer.group_loss` (041), synthetic
-    data; peak device memory is the 060-R3 figure for this shape. The entity padding is not cut
-    for a variant's extra tokens (`trim_entity_pad`): N + K here, one tile more than training."""
     net = model(cache, kind, ctx.device, variant=variant).train()
     chunk = int(os.environ.get("URANIUM_BC_ENTITY_CHUNK", "0") or 0)
     obs = random_obs(b * t, n, net.cfg.input, ctx.device, seeded(30))
@@ -344,10 +325,7 @@ def net_train(ctx: Ctx, cache: dict, kind: str, b: int, t: int, n: int, variant:
     return row
 
 
-# --- suites ---------------------------------------------------------------------------------
-
 def suite(name: str, ctx: Ctx, cache: dict):
-    """(case name, thunk) pairs of a suite; names are filterable before anything runs."""
     if name == "kernels":
         out = [(f"matmul_{d}_{n}", lambda dt=dt, n=n: matmul(ctx, dt, n)) for d, dt in (("f32", torch.float32), ("f16", torch.float16), ("bf16", torch.bfloat16)) for n in (1024, 2048, 4096)]
         out += [
@@ -378,7 +356,6 @@ def suite(name: str, ctx: Ctx, cache: dict):
     if name == "infer":
         return [(f"net_act_gtrxl_b{b}_n{n}", lambda b=b, n=n: net_act(ctx, cache, "Gtrxl", b, n)) for n in (128, 256, 512) for b in (1, 4, 16, 32)]
     if name == "variants":
-        # 032-R20: inference and the worst training shape (060-R3) of each comparison variant.
         out = []
         for v in VARIANTS:
             out.append((f"net_act_gtrxl_{v}", lambda v=v: net_act(ctx, cache, "Gtrxl", 16, 256, f"net_act_gtrxl_{v}", v)))
@@ -397,7 +374,7 @@ def run_suites(names: list[str], ctx: Ctx, pattern: str | None, log=print) -> li
                 continue
             try:
                 row = thunk()
-            except Exception as e:  # noqa: BLE001 - a failing case is a reported result
+            except Exception as e:  # noqa: BLE001
                 row = Row(case, "", status="failed", note=str(e).splitlines()[0][:160])
                 if ctx.device.type == "cuda":
                     torch.cuda.empty_cache()

@@ -1,7 +1,3 @@
-"""AMB-000-4 step 2 optimisations keep the model's results (032-R19), CPU: the location head row
-list from the host labels (exact / bucketed) gives the same log-probs and gradients as the device
-`nonzero` path, and the 1x1 output written as multiply-and-sum equals the conv."""
-
 import json
 import os
 from pathlib import Path
@@ -27,18 +23,18 @@ def tiny_net(seed: int = 7) -> UraniumNet:
 
 def test_location_rows_buckets():
     tk = np.array([0, 2, 1, 2])
-    actions = np.array([1, 0, 3, 3, 2, 1, 0, 0, 0, 0])  # rows 0, 2, 3, 5 use a location
+    actions = np.array([1, 0, 3, 3, 2, 1, 0, 0, 0, 0])
     rows, k = location_rows(actions, tk, "exact")
     assert k == 4 and rows.tolist() == [0, 2, 3, 5]
     rows, k = location_rows(actions, tk, "mult8")
     assert k == 4 and rows.tolist() == [0, 2, 3, 5, 0, 0, 0, 0]
-    rows, k = location_rows(actions[:6], tk, "mult8")  # the bucket covers the batch: every row
+    rows, k = location_rows(actions[:6], tk, "mult8")
     assert k == 6 and rows.tolist() == list(range(6))
-    rows, k = location_rows(np.zeros(5, dtype=np.int64), tk, "pow2")  # no used row: every row
+    rows, k = location_rows(np.zeros(5, dtype=np.int64), tk, "pow2")
     assert k == 5 and rows.tolist() == list(range(5))
     rows, k = location_rows(np.array([1, 1, 1, 0, 0, 0, 0, 0]), tk, "pow2")
     assert k == 3 and len(rows) == 4
-    rows, k = location_rows(np.array([1, 0, 0, 0, 0, 0, 0, 0]), tk, "pow2")  # never one row
+    rows, k = location_rows(np.array([1, 0, 0, 0, 0, 0, 0, 0]), tk, "pow2")
     assert k == 1 and rows.tolist() == [0, 0]
 
 
@@ -63,7 +59,6 @@ def group(tiny_config, tmp_path):
 @pytest.mark.parametrize("mode", ["exact", "mult8", "pow2"])
 def test_host_location_rows_keep_the_result(group, mode, monkeypatch):
     net = tiny_net()
-    # Make some rows use a location so the sub-batch path runs.
     tk = np.asarray(net._cols["target_kind"])
     loc_actions = np.flatnonzero(tk == TARGET_LOC)
     hg = dict(group)
@@ -97,8 +92,6 @@ def test_location_out_mulsum_equals_conv(group, monkeypatch):
 
 
 def test_bias_gather_modes_equal_embedding(group, monkeypatch):
-    """URANIUM_BIAS_GRAD: index_add and the transposed-table gather give the embedding path's
-    bias and table gradient (032-R13)."""
     grads = {}
     obs = to_obs(group, "cpu")
     for mode in ("embedding", "index_add", "table_t"):
@@ -114,7 +107,6 @@ def test_bias_gather_modes_equal_embedding(group, monkeypatch):
 
 
 def test_apply_malloc_threshold(monkeypatch):
-    """URANIUM_MALLOC_MMAP_THRESHOLD: set through mallopt on Linux glibc, ignored elsewhere."""
     import sys
 
     from uranium import env
@@ -126,7 +118,6 @@ def test_apply_malloc_threshold(monkeypatch):
 
 
 def test_apply_malloc_arenas(monkeypatch):
-    """URANIUM_MALLOC_ARENA_MAX: set through mallopt on Linux glibc, ignored elsewhere."""
     import sys
 
     from uranium import env
@@ -138,7 +129,6 @@ def test_apply_malloc_arenas(monkeypatch):
 
 
 def test_conv_wgrad_bmm_equals_vendor(group, monkeypatch):
-    """URANIUM_CONV_WGRAD=bmm: the spatial encoder's gradients equal the library conv's."""
     obs = to_obs(group, "cpu")
     grads = {}
     for mode in ("vendor", "bmm"):
@@ -164,8 +154,6 @@ def test_splitk_mm_equals_mm():
 
 
 def test_linear_wgrad_splitk_equals_vendor(group, monkeypatch):
-    """URANIUM_LINEAR_WGRAD=splitk: every Linear weight gradient of a full update equals the
-    library path (pieces small enough that the split runs on the test group)."""
     import uranium.model.layers as layers
 
     monkeypatch.setattr(layers, "SPLITK_CHUNK", 8)
@@ -183,9 +171,6 @@ def test_linear_wgrad_splitk_equals_vendor(group, monkeypatch):
 
 
 def test_switches_fall_back_on_other_layer_shapes(group, monkeypatch):
-    """A layer changed away from the shape an optimisation is written for takes the library
-    path: a 5x5 / dilated / grouped / stride-3 conv under URANIUM_CONV_WGRAD=bmm, a 3x3 location
-    output conv under URANIUM_LOC_OUT=mulsum."""
     import torch.nn as nn
 
     from uranium.model.layers import conv_wgrad
@@ -212,8 +197,6 @@ def test_switches_fall_back_on_other_layer_shapes(group, monkeypatch):
 
 
 def test_channels_last_keeps_the_result_032_r19(group, monkeypatch):
-    """URANIUM_CHANNELS_LAST=on: the spatial encoder and location head on channels-last
-    activations give the NCHW path's log-probs and gradients."""
     res = {}
     for mode in ("off", "on"):
         monkeypatch.setenv("URANIUM_CHANNELS_LAST", mode)
@@ -229,9 +212,6 @@ def test_channels_last_keeps_the_result_032_r19(group, monkeypatch):
 
 
 def test_spatial_bf16_is_bit_identical_under_autocast_032_r19(group, monkeypatch):
-    """URANIUM_SPATIAL_BF16=on rounds the spatial planes to bf16 on the host; under bf16 autocast
-    their consumers round them the same way, so log-probs and gradients are bit-identical (CPU
-    autocast stands in for the CUDA host). With f32 compute the switch does nothing."""
     from uranium.device import autocast
     from uranium.model.net import stage
 
@@ -253,8 +233,6 @@ def test_spatial_bf16_is_bit_identical_under_autocast_032_r19(group, monkeypatch
 
 
 def test_stem_pad_keeps_the_result_032_r19(group, monkeypatch):
-    """URANIUM_STEM_PAD=on: the stem conv over zero-padded input channels (and zero weight
-    columns) gives the plain conv's log-probs and gradients."""
     res = {}
     for mode in ("off", "on"):
         monkeypatch.setenv("URANIUM_STEM_PAD", mode)
@@ -270,8 +248,6 @@ def test_stem_pad_keeps_the_result_032_r19(group, monkeypatch):
 
 
 def test_training_defaults_win_over_backend_defaults(monkeypatch):
-    """`configure(train=True)` puts the BC trainer's CUDA defaults (`TRAIN_DEFAULTS`) in front of
-    the backend ones; `configure()` alone leaves the inference defaults."""
     from uranium.device import IMPL_DEFAULTS, TRAIN_DEFAULTS, configure
 
     for k in set(IMPL_DEFAULTS["cuda"]) | set(TRAIN_DEFAULTS["cuda"]):

@@ -39,27 +39,20 @@ from uranium.diag import tables as tb
 from uranium.diag.features import fill_race_cols, game_labels, lane_features, race_of
 from uranium.diag.stream import lane_groups
 
-F8M = 8 * 60 * 24  # 8:00 (frames, 24 per game second): the held_8m survival check (docs/measurement_protocol.md)
+F8M = 8 * 60 * 24
 SCV8_MIN = 8
-# game_labels inputs kept per open game (the rest of lane_features is not needed for the classes)
 LABEL_KEYS = ("frame", "foc_vis", "foc_comp", "foc_hp", "foc_seen", "a_has", "a_comp", "sc_focus")
-# The 2.2 operation actions (build 12, addon 6, train 14, research 11, upgrade 15, lift / land, cancel)
 OP_GROUPS = ("build", "addon", "train", "research", "upgrade", "cancel")
 OP_EXTRA = ("Lift", "Land_Pos", "Land_CommandCenter_Pos")
 SIEGE = ("Terran_Siege_Tank_Tank_Mode", "Terran_Siege_Tank_Siege_Mode")
 
 
 def op_actions() -> list[int]:
-    """Action ids of the operation actions (reports/jepa_planning.md 2.2, 6.4 M0)."""
     return sorted(a["id"] for a in tb._rows("actions") if a["group"] in OP_GROUPS or a["name"] in OP_EXTRA)
 
 
 @functools.cache
 def own_columns() -> tuple[list[str], dict[int, list[int]], dict[int, int]]:
-    """(column names, {column: Terran unit ids summed}, {action id: column}) of the own-state vector:
-    done + in-production count (scalar input, own vision) of every Terran type a Build / BuildAddon /
-    Train action makes (siege tank: both modes), then supply used / total (BWAPI half-supply units:
-    a Marine is 2) and the army (every trained type but the SCV), 6.3 o_t. `{action: column}` is the M2b direction map."""
     terran = set(tb.terran())
     names, types, of_action = [], {}, {}
     for a in sorted(tb._rows("actions"), key=lambda a: a["id"]):
@@ -83,7 +76,6 @@ def _group(aid: int) -> str:
 
 
 def own_state(scalar: np.ndarray) -> np.ndarray:
-    """[rows, O] float32 own-state vector (`own_columns`) from the 030 §4 scalar input."""
     names, types, _ = own_columns()
     sc = np.asarray(scalar, np.float32)
     out = np.zeros((len(sc), len(names)), np.float32)
@@ -125,8 +117,6 @@ def add_args(p) -> None:
 
 
 class RowWriter:
-    """Append-only raw columns (module docstring); the schema's row count is written by `close`."""
-
     def __init__(self, out: Path, schema: dict):
         self.dir = out / "rows"
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -156,7 +146,6 @@ class RowWriter:
 
 
 def load_rows(dump, fields=None) -> dict:
-    """{field: read-only np.memmap [rows, *shape]} of a plan-dump folder (`fields` limits them)."""
     d = Path(dump) / "rows"
     js = json.loads((d / "schema.json").read_text(encoding="utf-8"))
     if js["rows"] is None:
@@ -172,7 +161,6 @@ def load_rows(dump, fields=None) -> dict:
 
 
 def load(dump) -> tuple[dict, dict, dict]:
-    """(rows memmaps, games {gid: meta}, manifest) of a plan-dump folder."""
     dump = Path(dump)
     man = json.loads((dump / "manifest.json").read_text(encoding="utf-8"))
     games = {int(k): v for k, v in json.loads((dump / "games.json").read_text(encoding="utf-8")).items()}
@@ -180,9 +168,6 @@ def load(dump) -> tuple[dict, dict, dict]:
 
 
 def model_rows(net, obs: dict, s0, t: int, gk: list[int]) -> dict:
-    """One teacher-forced pass over b*t rows: the `action_seq` path with the encoder summaries kept
-    (`trunk_seq(aux=True)` only also returns e_pool; same values) -> {h, y (f32 LN target),
-    logp, win_open (None without the head), g {k: [rows, d_y]}, state}."""
     import torch
 
     from uranium.model.auxiliary import jepa_target
@@ -199,7 +184,6 @@ def model_rows(net, obs: dict, s0, t: int, gk: list[int]) -> dict:
 
 
 def read_skip_views(path) -> set:
-    """{(replay sha256, own start slot)} of the "bot" list of a views JSON (`--skip-views`)."""
     if not path:
         return set()
     got = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -214,12 +198,10 @@ def read_classes(path) -> dict:
 
 
 def finish_game(lg: dict, games: dict, read_until: float) -> None:
-    """Per-game labels of a lane's finished (or cut) game into `games` (module docstring)."""
     e = games[lg["gid"]]
     acc = lg.pop("acc")
     e["dec_rows"] = lg["dec"]
     e["last_frame"] = lg["last"]
-    # the 8:00 SCV check needs the steps up to 8:00 read; a game whose last step is before 8:00 ended there
     readable = (not read_until or read_until > F8M + 1) and not lg["skip"]
     e["scv8"] = None if not readable else int(lg["last"] >= F8M and lg["scv_at8"] >= SCV8_MIN)
     e["cls"] = e["start1"] = e["first_sight"] = None
@@ -338,7 +320,6 @@ def run(a) -> int:
                     stats["frame_resets"] += 1
                 lg["last"] = float(fr[-1])
                 if lg["skip"]:
-                    # --skip-views: no rows, no labels; the decision index still counts the steps
                     lanes.append((li, np.zeros(0, np.int64), lg["gid"], lg["dec"]))
                     lg["dec"] += n
                     continue
@@ -357,9 +338,6 @@ def run(a) -> int:
             if not lanes:
                 continue
             if all(lane_game[start + li]["skip"] for li, _, _, _ in lanes):
-                # every lane with steps is a skipped view: no forward. The group state stays as it was;
-                # only skipped streams continue from it (a new stream on a lane starts from a reset
-                # state, `keep` False), so the written rows are those of a full walk.
                 stats["skipped_groups"] += 1
                 continue
             stats["groups"] += 1

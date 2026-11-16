@@ -1,8 +1,3 @@
-"""`python -m uranium diag` (reports/jepa_survey.md 7, 10) on CPU: the probe math (ridge, game-level
-folds, the two gain-over-nuisance methods, AUC, bootstrap, shuffled control), the counterfactual
-edits, argument parsing of every subcommand, and the whole chain (dump with counterfactual passes
--> probes / intervene / core-split / spatial -> summary) on synthetic shards with a tiny net."""
-
 import argparse
 import json
 from pathlib import Path
@@ -19,9 +14,6 @@ from uranium.diag.summary import SCHEMA, build, validate
 from uranium.model import UraniumNet, UraniumNetConfig, action_columns, input_dims
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "burn_parity"
-
-
-# ---------------------------------------------------------------- probe math
 
 
 def toy(n_games=40, rows=30, seed=0):
@@ -54,8 +46,6 @@ def test_ridge_cv_recovers_a_linear_signal():
 
 @pytest.mark.parametrize("method", probe.GAIN_METHODS)
 def test_gain_over_nuisance(method):
-    """An informative stage gains over the nuisance; a noise stage gains about 0 (resid: never
-    clearly below, since the residual ridge can switch the stage off)."""
     games, nuis, y, info, noise = toy()
     fold = probe.folds_of(games)
     base = probe.r2(y, probe.ridge_cv(nuis, y, games, fold)[0])
@@ -77,7 +67,7 @@ def test_resid_gain_is_the_default():
 def test_auc_matches_pairwise_count():
     rng = np.random.default_rng(1)
     y = rng.random(200) < 0.3
-    s = np.round(rng.normal(size=200) + y, 1)  # ties
+    s = np.round(rng.normal(size=200) + y, 1)
     pos, neg = s[y], s[~y]
     want = ((pos[:, None] > neg[None]).sum() + 0.5 * (pos[:, None] == neg[None]).sum()) / (len(pos) * len(neg))
     assert probe.auc(y, s) == pytest.approx(want)
@@ -93,7 +83,6 @@ def test_bootstrap_and_shuffled_control():
         assert v["lo"] <= v["pt"] <= v["hi"] or np.isnan(v["lo"]), k
     assert m["info+nuis|ridge"]["gain"] > 0.5 and m["info+nuis|ridge"]["gain_lo"] > 0
     assert m["info|mlp"]["pt"] > 0.5
-    # per-game labels shuffled among games: nothing to learn
     assert m["shuffled|info"]["pt"] < 0.1
     assert res["metric"] == "r2" and res["games"] == 40 and res["gain_method"] == "resid"
 
@@ -105,9 +94,6 @@ def test_shuffled_labels_move_whole_games():
     for g in range(10):
         assert len(set(ys[games == g])) == 1
     assert sorted(set(ys)) == sorted(set(y))
-
-
-# ---------------------------------------------------------------- counterfactual edits
 
 
 def one_token_group(race="Z", hp=300.0, remembered=False, since=0.0, frame=2400.0):
@@ -131,8 +117,6 @@ def one_token_group(race="Z", hp=300.0, remembered=False, since=0.0, frame=2400.
 
 
 def test_edit_start_is_consistent_with_the_hp_clock():
-    """Zerg pool started 1800 seen at 2400: hp 75 + 0.5625 * 600 (the earlier run's formula);
-    started at 1000: complete (Nothing order); seen before the start: masked."""
     g, fr = one_token_group()
     anc = np.zeros(2, int)
     e = edit_start(g, fr, anc, "Z", 1800)
@@ -143,15 +127,13 @@ def test_edit_start_is_consistent_with_the_hp_clock():
     assert done["entity_cat"][0, 0, 2] == tb.order_id("Nothing")
     gone = edit_start(g, fr, anc, "Z", 3000)
     assert not gone["entity_mask"][0, 0]
-    # a remembered token: edited at its last-seen frame (2400 - 600)
     g2, fr2 = one_token_group(remembered=True, since=600.0)
     e2 = edit_start(g2, fr2, anc, "Z", 1500)
     assert e2["entity_cont"][0, 0, tb.HP_RATIO] * 750 == pytest.approx(np.rint(75 + 0.5625 * 300))
-    # Protoss: the shield follows
     gp, frp = one_token_group("P", hp=200.0)
     ep = edit_start(gp, frp, anc, "P", 2000)
     assert 0 < ep["entity_cont"][0, 0, tb.SH_RATIO] < 1
-    assert g["entity_cont"][0, 0, tb.HP_RATIO] == pytest.approx(300 / 750)  # input not modified
+    assert g["entity_cont"][0, 0, tb.HP_RATIO] == pytest.approx(300 / 750)
 
 
 def test_edit_count_scalar_and_token():
@@ -164,9 +146,6 @@ def test_edit_count_scalar_and_token():
     assert tb.decode_count(down["scalar"][:, col]).tolist() == [0, 0] and not down["entity_mask"][:, 0].any()
     sc_only = edit_count(g, "T", 1, False)
     assert (sc_only["entity_mask"] == g["entity_mask"]).all()
-
-
-# ---------------------------------------------------------------- CLI
 
 
 def parse(argv):
@@ -199,9 +178,6 @@ def test_cli_parses_every_subcommand():
     assert e.value.code == 0
 
 
-# ---------------------------------------------------------------- end to end (synthetic shards)
-
-
 def tiny_checkpoint(path: Path, kind="Gtrxl") -> Path:
     cfg = UraniumNetConfig.from_dict(json.loads((FIX / "tiny-gtrxl" / "meta.json").read_text())["config"])
     cfg.input = input_dims()
@@ -222,9 +198,6 @@ def shards(tmp_path: Path) -> Path:
 
 
 class _PoolBatch:
-    """A synthetic batch whose own SCVs read as unfinished enemy Spawning Pools (the synthetic
-    games have no enemy units), HP rising with the frame, the pool in production (privileged)."""
-
     def __init__(self, b):
         self.b = b
 
@@ -272,7 +245,6 @@ def test_diag_chain_on_synthetic_shards(tiny_config, shards, tmp_path, kind, mon
     ck = tiny_checkpoint(tmp_path / "ck", kind)
     out = tmp_path / "dump"
     common = ["--config", str(tiny_config), "--backend", "cpu", "--synthetic-maps", "--shards", str(shards)]
-    # synthetic games last 120 frames: counterfactual starts before them (else both mask the token)
     assert main(["diag", "dump", "--checkpoint", str(ck), "--out", str(out), "--splits", "train,val,test", "--cf", "--cf-starts", "Z:-1000,-200",
                  "--act-until", "1e9", "--row-until", "1e9", *common]) == 0
     man = json.loads((out / "manifest.json").read_text())
@@ -285,17 +257,14 @@ def test_diag_chain_on_synthetic_shards(tiny_config, shards, tmp_path, kind, mon
     real = R["pb"][:, 0].astype(np.float32)
     assert np.isfinite(R["pb"].astype(np.float32)).all() and ((real >= 0) & (real <= 1)).all()
     assert {games[g]["race"] for g in games} == {"Z"} and R["foc_vis"].any() and (R["foc_comp"][R["foc_vis"]] == 0).all()
-    # an earlier counterfactual start reads as more HP on the same token
     early, late = R["pb"][:, 1], R["pb"][:, 2]
     assert not np.array_equal(early, late)
     assert A["h"].shape[0] == len(A["idx"]) and A["token"].shape[1] == 32 and len(A["idx"]) == int(R["foc_vis"].sum())
     if kind == "Gtrxl":
         assert {"x_in", "L1.a", "L1.g1", "L1.f", "L1.out", "L2.out"} <= set(A)
-        # the last layer's output is h_t
         assert np.allclose(A["L2.out"].astype(np.float32), A["h"].astype(np.float32), atol=1e-3)
     else:
         assert "x_in" not in A
-    # the analyses run (synthetic games are few: tasks may be skipped) and the summary is valid
     assert main(["diag", "probes", str(out), "--boot", "20", "--no-mlp", "--min-rows", "1", "--min-games", "2"]) == 0
     assert main(["diag", "intervene", str(out), "--boot", "20"]) == 0
     spj = tmp_path / "spatial.json"
@@ -307,7 +276,7 @@ def test_diag_chain_on_synthetic_shards(tiny_config, shards, tmp_path, kind, mon
     pr = json.loads((out / "probes.json").read_text())["races"]["Z"]["tasks"]
     hp = pr["hp|unf_token"]["metrics"]
     assert {"nuis|ridge", "token|ridge", "token+nuis|ridge", "h|ridge", "hc|ridge"} <= set(hp)
-    assert hp["token|ridge"]["pt"] > 0.5  # the token after the encoder carries its own HP
+    assert hp["token|ridge"]["pt"] > 0.5
     iv = json.loads((out / "intervene.json").read_text())["races"]["Z"]
     assert iv["games"] == 15 and iv["edited"] > 0
     args = ["--point", "test", "--probes", str(out / "probes.json"), "--intervene", str(out / "intervene.json"), "--spatial", str(spj)]
@@ -318,17 +287,14 @@ def test_diag_chain_on_synthetic_shards(tiny_config, shards, tmp_path, kind, mon
     s = json.loads((tmp_path / "summary.json").read_text())
     assert s["schema"] == SCHEMA and validate(s) == [] and s["checkpoint_sha256"] == ckpt.policy_version(ck)
     assert {"spatial.s8.const", "spatial.pool.const"} <= set(s["dead_channels"]) and s["dead_channels"]["spatial.s8.const"]["dtype"] == "float32"
-    # the order ids the focus tokens carried, per race, in the manifest
     assert man["focus_orders"]["Z"]["unfinished"] == {str(tb.order_id("IncompleteBuilding")): int((R["foc_comp"] < 0.5).sum())}
     assert man["cf_orders"]["Z"]["unfinished"] == tb.order_id("IncompleteBuilding")
 
-    # S7: chunks that start at or after --act-until get no probabilities, and intervene refuses a
-    # window past it
     late = tmp_path / "late"
     assert main(["diag", "dump", "--checkpoint", str(ck), "--out", str(late), "--splits", "train", "--cf", "--act-until", "40", "--row-until", "1e9", *common]) == 0
     R2, _, _, _ = load(late)
     chunk_start = np.zeros(len(R2["frame"]))
-    for i, st in enumerate(R2["step"]):  # rows are written chunk by chunk, step 0 first
+    for i, st in enumerate(R2["step"]):
         chunk_start[i] = R2["frame"][i] if st == 0 else chunk_start[i - 1]
     lates = chunk_start >= 40
     assert lates.any() and (~lates).any()
@@ -339,8 +305,6 @@ def test_diag_chain_on_synthetic_shards(tiny_config, shards, tmp_path, kind, mon
 
 @pytest.mark.parametrize("kind", ["Gtrxl", "Lstm"])
 def test_action_seq_is_forward_seq_action_head_050_r9(tiny_config, shards, tmp_path, kind):
-    """050-R9 `diag dump` runs the trunk and the ActionType head only (`action_seq`): the same log-probs, state and
-    head inputs as `forward_seq` (which also runs the location head over a varying row count)."""
     from uranium.diag.capture import Capture
     from uranium.model import to_obs
 
@@ -373,8 +337,6 @@ def test_action_seq_is_forward_seq_action_head_050_r9(tiny_config, shards, tmp_p
 
 @pytest.mark.parametrize("variant", ["outer", "model2", "model2_all"])
 def test_action_seq_with_outer_and_bypass_050_r9(variant):
-    """`action_seq` = `forward_seq(...)["dists"]["action"]` (and the state) with the outer LSTM, the head bypass
-    (032-R21, made non-zero) and core_skip (032-R23) on: the model 2 path of the diagnostics."""
     from test_variants import SEG, net_of, perturb, tiny
 
     from uranium.model.config import VariantConfig
@@ -383,7 +345,7 @@ def test_action_seq_with_outer_and_bypass_050_r9(variant):
          "model2_all": VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=SEG, bypass=True, core_skip=True)}[variant]
     cfg, b, t, obs, labels, priv = tiny(v)
     net = perturb(net_of(cfg))
-    if net.variant.core_skip is not None:  # zero-initialised: non-zero as after training
+    if net.variant.core_skip is not None:
         with torch.no_grad():
             for p in net.variant.core_skip.parameters():
                 p.copy_(torch.randn(p.shape, generator=torch.Generator().manual_seed(5)) * 0.05)
@@ -396,8 +358,6 @@ def test_action_seq_with_outer_and_bypass_050_r9(variant):
 
 
 def test_dump_read_until_keeps_the_rows_050_r9(tiny_config, shards, tmp_path, monkeypatch):
-    """`diag dump --read-until`: each game read only up to that frame; the rows (and their game ids) are the
-    dumped rows without it, in another order (the lanes run shorter games); a cut before the row window is refused."""
     from uranium.__main__ import main
     from uranium.diag.dump import load
 
@@ -411,9 +371,9 @@ def test_dump_read_until_keeps_the_rows_050_r9(tiny_config, shards, tmp_path, mo
     R1, A1, g1, m1 = load(tmp_path / "cut")
     assert m1["read_until"] == 50 and m0["read_until"] is None
     lane_free = lambda g: {k: {f: v for f, v in e.items() if f != "lane"} for k, e in g.items()}  # noqa: E731
-    assert lane_free(g0) == lane_free(g1) and {e["lane"] for e in g0.values()} != {None}  # the same game ids; lanes may differ
+    assert lane_free(g0) == lane_free(g1) and {e["lane"] for e in g0.values()} != {None}
     assert m0["stats"]["rows"] == m1["stats"]["rows"] and m0["stats"]["act_rows"] == m1["stats"]["act_rows"]
-    assert m1["stats"]["batches"] < m0["stats"]["batches"]  # the steps after the cut were not read
+    assert m1["stats"]["batches"] < m0["stats"]["batches"]
     o0, o1 = np.argsort(R0["game"], kind="stable"), np.argsort(R1["game"], kind="stable")
     for k in R0:
         a, b = R0[k][o0], R1[k][o1]
@@ -421,7 +381,6 @@ def test_dump_read_until_keeps_the_rows_050_r9(tiny_config, shards, tmp_path, mo
             assert np.allclose(a, b, atol=1e-6, equal_nan=True)
         else:
             assert np.array_equal(a, b, equal_nan=a.dtype.kind == "f"), k
-    # activation rows: the same (game, step) rows
     key = lambda R, A: sorted(zip(R["game"][A["idx"]].tolist(), R["frame"][A["idx"]].tolist()))  # noqa: E731
     assert key(R0, A0) == key(R1, A1)
     with pytest.raises(SystemExit, match="cuts rows before"):
@@ -439,7 +398,6 @@ def test_summary_schema_validation():
 
 
 def test_summary_inputs_must_be_one_checkpoint():
-    """S6: inputs of different checkpoints are refused; the spatial entry is picked by sha256."""
     entry = lambda sha: {"sha256": sha, "points": {"spatial.s8": {"pos_frac": 0.0, "never_active": 8, "channels": 8, "elements": 64}}}  # noqa: E731
     spatial = {"backend": "cpu", "precision": "f32", "checkpoints": {"a": entry("aa"), "b": entry("bb")}}
     probes = {"dump": {"checkpoint": "b", "checkpoint_sha256": "bb"}, "gain_method": "resid", "races": {}}

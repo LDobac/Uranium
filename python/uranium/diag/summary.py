@@ -94,7 +94,6 @@ def intervention_section(iv: dict) -> dict:
 
 
 def spatial_entry(sp: dict, sha: str | None) -> tuple[str, dict]:
-    """The `diag spatial` entry of checkpoint `sha` (or its only entry when `sha` is None)."""
     cks = sp.get("checkpoints", {})
     if sha is None:
         if len(cks) != 1:
@@ -107,7 +106,6 @@ def spatial_entry(sp: dict, sha: str | None) -> tuple[str, dict]:
 
 
 def dead_section(entry: dict) -> dict:
-    """032-R25 per point: pos / dead (`never_active`), and the S8 / s_pool `const` counts."""
     out = {}
     for k, v in entry["points"].items():
         if "const" in v:
@@ -134,8 +132,6 @@ def git_commit() -> str | None:
 
 
 def build(point: str, probes=None, intervene=None, spatial=None, core_split=None, commit: str | None = None) -> dict:
-    """The summary dict from the loaded command outputs (each may be None). Every input must be of
-    the same checkpoint (sha256); the spatial entry is picked by it. Raises ValueError otherwise."""
     dumps = [d["dump"] for d in (probes, intervene, core_split) if d and d.get("dump")]
     shas = {d.get("checkpoint_sha256") for d in dumps}
     if len(shas) > 1:
@@ -167,7 +163,6 @@ def build(point: str, probes=None, intervene=None, spatial=None, core_split=None
 
 
 def validate(s: dict) -> list[str]:
-    """Problems of a summary against the schema (empty = valid)."""
     errs = []
     if s.get("schema") != SCHEMA:
         errs.append(f"schema {s.get('schema')!r} != {SCHEMA!r}")

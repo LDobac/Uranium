@@ -1,9 +1,3 @@
-"""032 §2.8 model 2 plumbing (032-R21..R24, AC13, AC14; 041-R23 ④; 042-R21 ①): the `[model]`
-switches and their config handling, the `[aux]` key / module start check, the hook points the
-model 2 modules plug into (`Variants.bypass`, `core_skip`, `aux_priv`, `aux_jepa`) and the
-`forward_seq(aux=...)` outputs. The modules themselves come later; here the hooks are exercised
-with stand-in modules, and every switch off must leave the model as it was (Checkpoint 1)."""
-
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -29,7 +23,6 @@ def test_switches_default_off_032_ac13():
     v = VariantConfig()
     assert not v.any() and not v.model2() and not v.aux() and v.tokens() == 0
     assert VariantConfig.from_table(None) == v == VariantConfig.from_table({})
-    # The model 2 switches add no entity token.
     m2 = VariantConfig(bypass=True, spatial_preact=True, core_skip=True, aux_priv=True, aux_jepa=[1, 8, 32])
     assert m2.any() and m2.model2() and not m2.arch() and m2.aux() and m2.tokens() == 0
     assert replace(ALL_ARCH, aux_priv=True).tokens() == ALL_ARCH.tokens() == 2
@@ -38,9 +31,6 @@ def test_switches_default_off_032_ac13():
 
 
 def test_model_table_032_r21_r24():
-    """`[model]` accepts the 032 §2.8 keys (bool, and the `aux_jepa` integer list) and refuses
-    wrong types, bad k lists and keys outside the spec (032-AC13: unknown key / bad value = start
-    error), F2 `recency_init` included (not adopted, 032-R23)."""
     v = VariantConfig.from_table({"terrain": True, "outer": 32, "bypass": True, "spatial_preact": True, "core_skip": True, "aux_priv": True, "aux_jepa": [1, 8, 32]})
     assert v == VariantConfig(terrain=True, outer=32, bypass=True, spatial_preact=True, core_skip=True, aux_priv=True, aux_jepa=[1, 8, 32])
     assert VariantConfig.from_table({"aux_jepa": []}) == VariantConfig()
@@ -58,8 +48,6 @@ def test_model_table_032_r21_r24():
 
 
 def test_config_dict_keeps_old_forms_032_ac13():
-    """`to_dict` (the checkpoint meta) leaves the model 2 keys out while off: the default model
-    has no `variant`, a §2.7 model the four keys of before; on, they round-trip."""
     assert "variant" not in UraniumNetConfig().to_dict()
     assert UraniumNetConfig(variant=ALL_ARCH).to_dict()["variant"] == {"terrain": True, "ctx_token": True, "attn_pool": True, "outer": SEG}
     on = UraniumNetConfig(variant=VariantConfig(bypass=True, aux_jepa=[1, 8]))
@@ -71,7 +59,6 @@ def test_config_dict_keeps_old_forms_032_ac13():
 
 @pytest.mark.parametrize("release", ["checkpoint-1", "checkpoint-1-rl"])
 def test_checkpoint1_meta_round_trip_032_ac13(release):
-    """Checkpoint 1's model config reads and writes back unchanged (no model 2 key appears)."""
     meta = json.loads((RELEASES / release / "meta.json").read_text(encoding="utf-8"))
     cfg = UraniumNetConfig.from_dict(meta["config"])
     assert not cfg.variant.model2() and cfg.variant.arch()
@@ -79,8 +66,6 @@ def test_checkpoint1_meta_round_trip_032_ac13(release):
 
 
 def test_checkpoint1_loads_with_the_same_parameters_032_ac13():
-    """Checkpoint 1 loads strictly into the new code: the model's parameter list is exactly the
-    weights file's (no model 2 module is built with the switches off)."""
     d = RELEASES / "checkpoint-1"
     net, meta = ckpt.load_model(d)
     with safe_open(str(d / ckpt.WEIGHTS_FILE), "pt") as f:
@@ -91,8 +76,6 @@ def test_checkpoint1_loads_with_the_same_parameters_032_ac13():
 
 
 def test_check_aux_041_r23_042_r21():
-    """041-R23 ④ / 042-R21 ①: an [aux] key without its module, or a module without its key, is a
-    start error; weights must be finite and >= 0; 0 is a valid key (the loss is not added)."""
     off = VariantConfig()
     assert check_aux(off, None) == {} and check_aux(off, {}) == {}
     priv, jepa = VariantConfig(aux_priv=True), VariantConfig(aux_jepa=[1, 8, 32])
@@ -111,7 +94,6 @@ def test_check_aux_041_r23_042_r21():
 
 
 def test_trainers_refuse_aux_mismatch_041_r23():
-    """The BC trainer and the RL learner check [aux] against the model at start."""
     from uranium.bc.trainer import BcTrainer
     from uranium.rl.learner import Learner
 
@@ -126,8 +108,6 @@ def test_trainers_refuse_aux_mismatch_041_r23():
 
 
 def test_bc_config_passes_aux_to_python_041_r23(tiny_config):
-    """`[aux]` / `[monitor]` reach the Python trainer's config JSON through the Rust BcConfig;
-    absent, the JSON and the fingerprint are those of before the keys."""
     from uranium import _core
 
     js, fp = _core.bc_config(str(tiny_config), "s1")
@@ -148,7 +128,6 @@ def test_bc_config_passes_aux_to_python_041_r23(tiny_config):
 
 
 def test_bc_group_has_the_aux_masks_041_r23(tiny_config, tmp_path):
-    """The collated lane group carries `real` and `priv_present` [rows] bool (032 §2.8)."""
     import numpy as np
 
     from uranium import _core
@@ -163,13 +142,10 @@ def test_bc_group_has_the_aux_masks_041_r23(tiny_config, tmp_path):
     steps = b.lane_steps()
     want = np.array([k < steps[lane] for lane in range(2) for k in range(4)])
     assert (g["real"] == want).all()
-    # Rows of a real step whose label is void still count as real (aux targets need no label).
     assert ((g["weights"] > 0) <= g["real"]).all()
 
 
 def test_rl_group_has_the_aux_masks_042_r21():
-    """RL lane groups carry `real` (non-fill steps, the bootstrap step included) and
-    `priv_present` (`Step::has_privileged`, before the first summary false)."""
     import numpy as np
 
     from uranium import _core
@@ -180,18 +156,10 @@ def test_rl_group_has_the_aux_masks_042_r21():
     assert g["real"].dtype == np.bool_ and g["priv_present"].dtype == np.bool_
     assert g["real"].all(), "full segments: every row is a real step"
     assert (g["priv_present"].reshape(2, t) == np.array([False, True, True, True])).all()
-    # The non-terminal lane's last step only bootstraps (mask 0) but is a real step.
     assert g["mask"].reshape(2, t)[1, -1] == 0 and g["real"].reshape(2, t)[1, -1]
 
 
-# --- Hook points, with stand-in modules for the model 2 modules (032 §2.8, `Variants` docstring).
-# These check the hook contract only; the real `core_skip` module (032-R23) is tested in
-# test_core_skip.py.
-
-
 class Bypass(nn.Module):
-    """Stand-in for 032-R21: u = Linear(h) (the hook's contract: (h, c, e, obs) -> [rows, ar])."""
-
     def __init__(self, d_core: int, d_ar: int, zero: bool):
         super().__init__()
         self.lin = nn.Linear(d_core, d_ar)
@@ -204,7 +172,6 @@ class Bypass(nn.Module):
 
 
 def with_hooks(cfg, zero: bool, seed: int = 3):
-    """A net with the §2.7 variant `cfg` and stand-ins in every 032 §2.8 hook."""
     net = net_of(cfg, seed)
     g = torch.Generator().manual_seed(11)
     with torch.no_grad():
@@ -221,8 +188,6 @@ def with_hooks(cfg, zero: bool, seed: int = 3):
 
 @pytest.mark.parametrize("name", ["pool", "all"])
 def test_zero_hooks_keep_outputs_032_ac13(name):
-    """Zero-initialised bypass and core skip (032-R21 ②, 032-R23) give the outputs of the model
-    without them, through every path (BC sequence, step, RL phased)."""
     cfg, b, t, obs, labels, _ = tiny(VARIANTS[name])
     ref = net_of(cfg).eval()
     net = with_hooks(cfg, zero=True)
@@ -240,9 +205,6 @@ def test_zero_hooks_keep_outputs_032_ac13(name):
 
 @pytest.mark.parametrize("name", ["pool", "outer", "all"])
 def test_hooks_step_matches_sequence_032_ac13(name):
-    """With non-zero stand-ins the hooks act where 032-R23 puts them (heads, value and aux read
-    h' = h + skip; the outer h_sum takes the pre-skip h): one decision at a time = the training
-    pass (032-R5, outer segments), and the phased RL pass gives the same (032 §2.7)."""
     from uranium.agent.infer import leaves
 
     cfg, b, t, obs, labels, _ = tiny(VARIANTS[name])
@@ -270,9 +232,6 @@ def test_hooks_step_matches_sequence_032_ac13(name):
 
 @pytest.mark.parametrize("phased", [False, True])
 def test_core_skip_leaves_recurrent_and_outer_state_032_r23(phased):
-    """F1 (user decision 2026-11-09): h' = h + skip feeds the heads and value only; the core state
-    and the outer LSTM state (its h_sum takes the pre-skip h) are those of the model without it.
-    Hook contract with a stand-in Linear; the real module is tested in test_core_skip.py."""
     from uranium.agent.infer import leaves
 
     cfg, b, t, obs, labels, _ = tiny(ALL_ARCH)
@@ -292,7 +251,6 @@ def test_core_skip_leaves_recurrent_and_outer_state_032_r23(phased):
 
 
 def test_bypass_reaches_action_type_and_ar_032_r21():
-    """`u` changes the ActionType distribution and, through `ar`, the later heads."""
     cfg, b, t, obs, labels, _ = tiny(VARIANTS["pool"])
     net = net_of(cfg).eval()
     with torch.no_grad():
@@ -306,9 +264,6 @@ def test_bypass_reaches_action_type_and_ar_032_r21():
 
 @pytest.mark.parametrize("name", ["pool", "outer", "all"])
 def test_aux_outputs_032_ac14(name):
-    """`forward_seq(aux=True)` adds `aux_priv`, `aux_jepa` {k} and `jepa_target` (= [e_pool,
-    s_pool] before `core_add`, no gradient); `aux=False` (and `act`) runs no aux module and
-    returns the same policy outputs."""
     cfg, b, t, obs, labels, priv = tiny(VARIANTS[name])
     net = with_hooks(cfg, zero=False).train()
     calls = []
@@ -327,7 +282,6 @@ def test_aux_outputs_032_ac14(name):
     assert set(on["aux_jepa"]) == {1, 2} and all(v.shape == (b * t, d_y) for v in on["aux_jepa"].values())
     y = on["jepa_target"]
     assert y.shape == (b * t, d_y) and not y.requires_grad
-    # The target is the encoders' summary before the outer LSTM's core input addition.
     net.eval()
     with torch.no_grad():
         o = rows_at(obs, b, t, 0)
@@ -346,8 +300,6 @@ def test_aux_outputs_032_ac14(name):
 
 @pytest.mark.parametrize("name", ["outer", "all"])
 def test_jepa_target_matches_per_decision_032_ac14(name):
-    """In the outer paths (BC segments, RL phased) the target rows are each decision's own
-    encoder summary, in b-major order."""
     cfg, b, t, obs, labels, _ = tiny(VARIANTS[name])
     net = with_hooks(cfg, zero=False)
     with torch.no_grad():
@@ -376,7 +328,6 @@ def test_aux_without_modules_adds_nothing_032_ac14():
 
 
 def test_join_parts_keeps_every_key():
-    """The outer paths rebuild the encoder dicts generically, so a key added later survives."""
     a = {"s8": torch.ones(2, 1), "skips": [torch.zeros(2, 1)], "pool": torch.full((2, 1), 2.0), "extra": torch.full((2, 1), 3.0)}
     b = {k: [x + 10 for x in v] if isinstance(v, list) else v + 10 for k, v in a.items()}
     out = join_parts([a, b], lambda xs: torch.cat(xs, 0))
