@@ -6,10 +6,8 @@ from pathlib import Path
 
 import pytest
 
-import eval_helpers  # noqa: F401
-
-import per_action as pa
-import per_action_table as pat
+from uranium.measure import per_action as pa
+from uranium.measure import per_action_table as pat
 
 
 def test_opponent_class_041_r27():

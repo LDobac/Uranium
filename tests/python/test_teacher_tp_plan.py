@@ -8,7 +8,7 @@ import pytest
 
 from eval_helpers import ROOT, opponent
 
-import rush_check_plan as rcp
+from uranium.measure import rush_check_plan as rcp
 
 PLANS = ROOT / "config" / "plans"
 

@@ -1,13 +1,12 @@
 import json
 import os
 import subprocess
-import sys
 
 import pytest
 
 from eval_helpers import build, cmds, dump, ops_value, order, rclick, write_ops
 
-import eval_common as ec
+from uranium.measure import eval_common as ec
 
 
 def test_game_ids_and_opponent_crashes_050_r9():
@@ -149,15 +148,13 @@ def test_ops_stage_runs_opsdump_from_our_slot_052_r7(tmp_path, monkeypatch):
         ec.ops_stage(stage, {3: 0}, tmp_path / "c2", binary=tmp_path / "missing")
 
 
-@pytest.mark.parametrize("package", [True, False], ids=["uranium", "fallback"])
+@pytest.mark.parametrize("package", [True], ids=["uranium"])
 def test_load_env_honours_env_file_001_r9(tmp_path, monkeypatch, package):
     key = "URANIUM_TEST_TOOLS_ENV_FILE_VALUE"
     (tmp_path / ".env").write_text(f"{key}=repo\n", encoding="utf-8")
     other = tmp_path / "other.env"
     other.write_text(f"{key}=file\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
-    if not package:
-        monkeypatch.setitem(sys.modules, "uranium", None)
     monkeypatch.setenv("URANIUM_ENV_FILE", str(tmp_path / "missing.env"))
     ec.load_env()
     assert key not in os.environ, "a missing URANIUM_ENV_FILE loads nothing"

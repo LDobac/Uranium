@@ -4,7 +4,7 @@ import pytest
 
 from eval_helpers import LIN, all_outputs, fake_game_order, record
 
-import diag_table
+from uranium.measure import diag_table
 
 
 @pytest.fixture(autouse=True)

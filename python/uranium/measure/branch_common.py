@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import json
-import sys
 import tomllib
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import eval_common as ec  # noqa: E402
+from uranium.measure import eval_common as ec
 
 ROOT = ec.ROOT
 HORIZON_MARGIN = 48

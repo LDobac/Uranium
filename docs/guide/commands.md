@@ -566,7 +566,7 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
      ```
      export LD_LIBRARY_PATH=<그 호스트의 rocBLAS 경로> HSA_ENABLE_SDMA=0 MALLOC_ARENA_MAX=2 URANIUM_BC_FEED_THREADS=5
      mkdir -p local/work/plan_s0
-     python -c "import os, sys, json; sys.path.insert(0, 'tools/eval'); import per_action as p; json.dump(p.load_classes('auto', 'orig'), open('local/work/plan_s0/teacher_classes.json', 'w'))"
+     python -c "import os, sys, json; from uranium.measure import per_action as p; json.dump(p.load_classes('auto', 'orig'), open('local/work/plan_s0/teacher_classes.json', 'w'))"
      python -m uranium diag plan-dump --checkpoint <ckpt> --dataset replays/shards/stardata --dataset replays/shards/community --dataset replays/shards/scr_ladder --dataset replays/shards/personal --splits train --games 400 --seed 1 --config config/bc.toml --backend rocm --lanes-per-group 4 --out <D>/human_train
      python -m uranium diag plan-dump --checkpoint <ckpt> --dataset replays/shards/stardata --dataset replays/shards/community --dataset replays/shards/scr_ladder --dataset replays/shards/personal --splits val --games 150 --seed 1 --config config/bc.toml --backend rocm --lanes-per-group 4 --out <D>/human_val
      python -m uranium diag plan-dump --checkpoint <ckpt> --shards <cache>/diag_holdout/by_name/hold_orig --shards <cache>/diag_holdout/by_name/hold_macro2 --splits val,test --config config/bc.toml --backend rocm --lanes-per-group 4 --classes local/work/plan_s0/teacher_classes.json --out <D>/teacher

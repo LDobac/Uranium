@@ -9,7 +9,7 @@ import pytest
 from eval_helpers import ROOT, opponent
 from uranium import _core
 
-import rush_check_plan as rcp
+from uranium.measure import rush_check_plan as rcp
 
 PLANS = ROOT / "config" / "plans"
 TOOL = ROOT / "tools" / "eval" / "rush_check_plan.py"

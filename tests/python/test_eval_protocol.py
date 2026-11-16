@@ -27,9 +27,9 @@ from eval_helpers import (
     train_log_output,
 )
 
-import eval_common as ec
-import protocol
-import tables
+from uranium.measure import eval_common as ec
+from uranium.measure import lineage, protocol
+from uranium.measure import tables
 
 
 @pytest.fixture(autouse=True)
@@ -82,8 +82,8 @@ def plan_file(name: str) -> dict:
 def test_conditions_frozen_050_ac5():
     assert {p: s["conditions_sha256"] for p, s in LIN["plan"].items()} == FROZEN
     for pid in LIN["plan"]:
-        plan = protocol.check_template(LIN, pid)
-        assert plan["name"] == protocol.NAME and protocol.conditions_sha256(plan) == FROZEN[pid]
+        plan = lineage.check_template(LIN, pid)
+        assert plan["name"] == lineage.NAME and lineage.conditions_sha256(plan) == FROZEN[pid]
 
 
 @pytest.mark.host_env
@@ -108,7 +108,7 @@ def test_templates_are_the_checkpoint1_plans_050_r9(pid, source):
     text = protocol.render(LIN, pid, "checkpoints/m2-x/ckpt-1", "m2-x")
     plan = tomllib.loads(text)
     assert plan["name"] == "m2-x" and {s["checkpoint"] for s in protocol.model_sides(plan)} == {"checkpoints/m2-x/ckpt-1"}
-    assert protocol.conditions_sha256(plan) == protocol.conditions_sha256(src)
+    assert lineage.conditions_sha256(plan) == lineage.conditions_sha256(src)
 
 
 def test_zero_last_failed_pinned_per_plan_050_r9():
@@ -135,14 +135,14 @@ def test_template_needs_placeholders_050_ac5(tmp_path):
     f.write_text(text, encoding="utf-8")
     lin["plan"]["tvz_bc"]["template"] = str(f)
     with pytest.raises(protocol.Refused, match="placeholders"):
-        protocol.check_template(lin, "tvz_bc")
+        lineage.check_template(lin, "tvz_bc")
 
 
 def test_pinned_value_mismatch_is_refused_050_ac5():
     lin = copy.deepcopy(LIN)
     lin["plan"]["macro"]["max_frames"] = 86400
     with pytest.raises(protocol.Refused, match="differs from lineage.toml"):
-        protocol.check_template(lin, "macro")
+        lineage.check_template(lin, "macro")
 
 
 def test_family_and_menu_refusals_050_ac5():
@@ -248,7 +248,7 @@ def test_t0_tp_template_050_r10():
     assert [(m["map"], m["games"], m["p1"]) for m in plan["matchup"]] == [
         ("fighting_spirit", 16, {"kind": "t0", "race": "terran"}), ("circuit_breaker", 16, {"kind": "t0", "race": "terran"}),
         ("fighting_spirit", 16, {"kind": "t0", "race": "protoss"}), ("circuit_breaker", 16, {"kind": "t0", "race": "protoss"})]
-    n = protocol.normalize(plan)
+    n = lineage.normalize(plan)
     assert n["zero_last_failed"] is True and n["max_frames"] == 86400 and n["wall_timeout_s"] == 7200
     assert {m["p0"]["sample"] for m in n["matchup"]} == {"stochastic"}
     t300 = tables.game_keys(tomllib.loads(protocol.render(LIN, "t0_300", "c", "n")))
@@ -533,7 +533,7 @@ def test_t0_tp_rl_template_050_r9():
     bc = tomllib.loads(protocol.render(LIN, "t0_tp", "c", "n"))
     rl = tomllib.loads(protocol.render(LIN, "t0_tp_rl", "c", "n"))
     assert rl["zero_last_failed"] is False and bc["zero_last_failed"] is True
-    assert {k: v for k, v in protocol.normalize(rl).items() if k != "zero_last_failed"} == {k: v for k, v in protocol.normalize(bc).items() if k != "zero_last_failed"}
+    assert {k: v for k, v in lineage.normalize(rl).items() if k != "zero_last_failed"} == {k: v for k, v in lineage.normalize(bc).items() if k != "zero_last_failed"}
     assert tables.game_keys(rl) == tables.game_keys(bc)
     assert protocol.identify(LIN, rl) == "t0_tp_rl" and protocol.identify(LIN, bc) == "t0_tp"
     assert LIN["plan"]["t0_tp_rl"]["families"] == ["rl"]

@@ -6,10 +6,10 @@ import pytest
 
 from eval_helpers import LIN, build, dump, make_job, row, val
 
-import distill_verdict as dv
-import eval_common as ec
-import protocol
-import regression_gate as rg
+from uranium.measure import distill_verdict as dv
+from uranium.measure import eval_common as ec
+from uranium.measure import protocol
+from uranium.measure import regression_gate as rg
 
 
 def tvz(won, missing=0, n=32):

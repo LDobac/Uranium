@@ -10,7 +10,9 @@ import sys
 import tomllib
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+from uranium import env
+
+ROOT = Path(__file__).resolve().parents[3]
 ACTIONS_TOML = ROOT / "crates" / "uranium-env" / "tables" / "actions.toml"
 PRECISION = {"cuda": "bf16-mixed", "rocm": "f32", "cpu": "f32"}
 
@@ -39,31 +41,7 @@ def actions() -> list[dict]:
 
 
 def load_env() -> None:
-    try:
-        from uranium import env
-    except ImportError:
-        env = None
-    if env is not None:
-        env.load()
-        return
-    if "URANIUM_ENV_FILE" in os.environ:
-        files = [Path(os.environ["URANIUM_ENV_FILE"])]
-    else:
-        d = Path.cwd().resolve()
-        files = [p / ".env" for p in [d, *d.parents, ROOT]]
-    for f in files:
-        if f.is_file():
-            for line in f.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                key, sep, raw = line.removeprefix("export ").partition("=")
-                raw = raw.strip()
-                if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
-                    raw = raw[1:-1]
-                if sep and key.strip() and key.strip() not in os.environ:
-                    os.environ[key.strip()] = raw
-            return
+    env.load()
 
 
 def shared_dir() -> Path:

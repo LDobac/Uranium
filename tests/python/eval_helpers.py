@@ -1,20 +1,16 @@
 import json
-import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-TOOLS_EVAL = str(ROOT / "tools" / "eval")
-if TOOLS_EVAL not in sys.path:
-    sys.path.insert(0, TOOLS_EVAL)
+from uranium.measure import eval_common as ec
 
-import eval_common as ec  # noqa: E402
+ROOT = Path(__file__).resolve().parents[2]
 
 _LINEAGE: dict = {}
 
 
 def _lineage() -> dict:
     if not _LINEAGE:
-        import protocol
+        from uranium.measure import protocol
 
         lin = protocol.load_lineage()
         cue = lin["metric"]["cue_diag"]
@@ -59,7 +55,7 @@ def make_job(tmp_path: Path, pid: str, rows: list[dict], ledger: list[dict] | No
     (job / "plans").mkdir(parents=True)
     (job / "results").mkdir()
     (job / "games").mkdir()
-    import protocol
+    from uranium.measure import protocol
 
     (job / "plans" / "01.toml").write_text(plan_text or protocol.render(_lineage()["LIN"], pid, "checkpoints/m2-r1/ckpt-5", pid), encoding="utf-8")
     (job / "job.toml").write_text('stages = ["plans/01.toml"]\nhosts = "hosts.toml"\n', encoding="utf-8")
@@ -78,7 +74,7 @@ def cmds(n: int, frame: int = 100, player: int = 0) -> list:
 
 
 def ops_value(mined: int, end_s: float = 600.0, sblock_first_s=None, cc_lift_s: float = 0.0, rush: dict | None = None) -> dict:
-    import tables
+    from uranium.measure import tables
 
     keys = dict.fromkeys(tables.OPS_KEYS, 0.0)
     keys.update(end_s=end_s, mined=mined, sblock_first_s=sblock_first_s, cc_lift_s=cc_lift_s, inc_10m=None if end_s < 600 else 900.0)
@@ -165,7 +161,7 @@ def all_outputs(out: Path, sha: str = SHA) -> Path:
 
 
 def fake_game_order(monkeypatch) -> None:
-    import protocol
+    from uranium.measure import protocol
 
     real = protocol.game_rows_sha256
     monkeypatch.setattr(protocol, "game_rows_sha256", lambda d: (Path(d) / "FAKE_GAME_ROWS").read_text() if (Path(d) / "FAKE_GAME_ROWS").is_file() else real(d))

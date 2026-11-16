@@ -1,6 +1,4 @@
-import eval_helpers  # noqa: F401
-
-import granularity as gr
+from uranium.measure import granularity as gr
 
 START = (1000, 1000)
 A = gr.AID

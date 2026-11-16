@@ -22,7 +22,8 @@
 | `tools/eval/branch_plan.py`, `branch_collect.py` | 분기 게임([051][s051]) 줄기·분기 plan, 분기 결과 모음. 프로토콜 밖([commands]) |
 | `tools/eval/granularity.py` | 결정 단위 측정 표([031][s031] "결정 단위"). 프로토콜 밖([commands]) |
 | `tools/eval/rush_check_plan.py` | 러시 점검·교사·botgen·DAgger·증류 판 plan 생성. 프로토콜 밖([commands]) |
-| `tools/eval/eval_common.py`, `branch_common.py` | 위 도구들이 함께 쓰는 함수 |
+| `python/uranium/measure/` | 위 `tools/eval/*.py`의 코드(같은 이름 모듈). `tools/eval/*.py`는 그 모듈의 `main`만 부르는 실행 파일이라 `uranium`을 설치한 venv python으로 실행 |
+| `python/uranium/measure/lineage.py`, `eval_common.py`, `branch_common.py` | 위 도구들이 함께 쓰는 함수(`lineage.py`: `lineage.toml` 읽기·plan 조건 해시·템플릿) |
 | `tools/eval/eval_worker.ps1` | Windows CUDA 호스트의 `eval-worker` 실행([commands]) |
 | `tools/eval/hosts.toml` | 게임 호스트 목록(git 미추적, 예시 `hosts.example.toml`) |
 
@@ -175,7 +176,7 @@
 - 체크포인트 가중치 파일 없음
 - T1 job 호스트 중 `platform`이 없거나 지점 `t1_platforms`가 아닌 것
 - job에 OSS 봇이 있는데 호스트 봇 해시를 읽을 수 없거나 `t1_bots.toml`에 없음. 해결: 호스트 목록에 `local = true`, 또는 `ssh = "<별칭>"`과 `oss_bots_dir`(그 호스트의 `URANIUM_OSS_BOTS_DIR`), 또는 `--bot-hashes <파일>`(`<주소> <봇> <sha256>` 줄)
-- 측정 파일(`tools/eval`, `config/plans/protocol`, `config/protocol`)에 미커밋 변경. `--allow-dirty`면 경로·diff 해시를 `protocol.json`에 기록하고 진행, `verify`가 그 job 표시
+- 측정 파일(`python/uranium/measure`, `tools/eval`, `config/plans/protocol`, `config/protocol`)에 미커밋 변경. `--allow-dirty`면 경로·diff 해시를 `protocol.json`에 기록하고 진행, `verify`가 그 job 표시
 - git 작업 사본이 아님
 - 진단: `bc-eval`·`job`에 진단 지표(`diag`만), 보관분 shard·데이터셋 manifest가 고정 지문과 다름, 출력 폴더에 끝난 `protocol.json`이 이미 있음(측정은 폴더마다 한 번, 다른 폴더는 `--out`), Checkpoint 1 경로 `dead_channels`, `--train-log` 없는 `dead_channels`, `s1e2`의 최종 아닌 체크포인트, `check-diag`가 다른 설정·데이터·체크포인트나 끝나지 않은 기록을 찾음
 - `tables.py`에서 조건이 어떤 프로토콜 plan과도 안 맞는 단계. `--kind <단계 이름>=<rush|macro|t1|winrate>`를 주면 집계

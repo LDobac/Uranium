@@ -5,8 +5,8 @@ import pytest
 
 from eval_helpers import LIN, build, dump, make_job, row, val
 
-import eval_common as ec
-import regression_gate as rg
+from uranium.measure import eval_common as ec
+from uranium.measure import regression_gate as rg
 
 
 def results(checks, check, race, metric):
@@ -221,7 +221,7 @@ def test_bc_eval_bunker_before_050_r10(tiny_config, tmp_path):
 
 
 def test_protocol_bc_eval_prints_bunker_before_050_r10(capsys, tmp_path, monkeypatch):
-    import protocol
+    from uranium.measure import protocol
 
     monkeypatch.setattr(protocol, "checkpoint_sha256", lambda c: "a" * 64)
     monkeypatch.setattr(protocol, "git_state", lambda: {"commit": "0" * 40})

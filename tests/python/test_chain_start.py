@@ -1,17 +1,12 @@
 import functools
-import sys
-from pathlib import Path
 
 import pytest
 
 from uranium import _core
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools" / "eval"))
+from uranium.measure import per_action as pa
 
-import per_action as pa  # noqa: E402
-
-from testkit import CPU  # noqa: E402
+from testkit import CPU
 
 
 @pytest.fixture
@@ -71,7 +66,7 @@ def test_bc_eval_option_041_r30(trained):
 def test_table_reads_either_block_041_r30(tmp_path):
     import json
 
-    import per_action_table as pat
+    from uranium.measure import per_action_table as pat
 
     row = lambda top1: {"action": "Build_Bunker", "n": 2, "top1": top1}  # noqa: E731
     f = tmp_path / "pa.json"

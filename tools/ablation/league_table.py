@@ -7,8 +7,7 @@ import tomllib
 from collections import defaultdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "eval"))
-import eval_common as ec  # noqa: E402
+from uranium.measure import eval_common as ec
 
 Z = 1.959964
 

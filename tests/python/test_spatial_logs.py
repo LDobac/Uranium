@@ -3,7 +3,7 @@ from pathlib import Path
 
 from eval_helpers import DEAD
 
-import spatial_logs
+from uranium.measure import spatial_logs
 
 
 LAYERS = ("stem", "c0", "c1", "c2", "c3", "r0", "r1", "r2", "r3", "r4", "r5")

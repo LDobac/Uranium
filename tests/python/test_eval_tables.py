@@ -5,9 +5,9 @@ import pytest
 
 from eval_helpers import LIN, build, cmds, dump, make_job, ops_value, rclick, row, rush_value, write_ops
 
-import eval_common as ec
-import protocol
-import tables
+from uranium.measure import eval_common as ec
+from uranium.measure import protocol
+from uranium.measure import tables
 
 
 def test_subset_tables_t0_tp_inside_t0_300_050_r9(tmp_path):

@@ -7,12 +7,12 @@ import pytest
 
 from eval_helpers import ROOT
 
-import branch_collect as bcol
-import branch_common as bc
-import branch_plan as bp
-import eval_common as ec
-import protocol
-import tables
+from uranium.measure import branch_collect as bcol
+from uranium.measure import branch_common as bc
+from uranium.measure import branch_plan as bp
+from uranium.measure import eval_common as ec
+from uranium.measure import protocol
+from uranium.measure import tables
 
 CONFIG = ROOT / "config" / "branch_b1.toml"
 CKPT = "checkpoints/m2-s1/ckpt-39096"

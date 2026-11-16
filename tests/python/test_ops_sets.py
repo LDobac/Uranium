@@ -1,8 +1,6 @@
 import json
 
-import eval_helpers  # noqa: F401
-
-import ops_sets
+from uranium.measure import ops_sets
 
 
 def test_botgen_view_is_the_teacher_slot_in_tvt_052_r7(tmp_path):

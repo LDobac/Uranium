@@ -55,10 +55,7 @@ def test_bc_eval_by_enemy_race_050_r9(tiny_config, tmp_path, variant):
 
 
 def test_check_bc_eval_refuses_a_race_without_steps_050_r9(tmp_path):
-    import sys
-
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools" / "eval"))
-    import protocol
+    from uranium.measure import protocol
 
     f = tmp_path / "v.json"
     per = {r: {"steps": 10, "action_top1": 0.7, "nll": {"action": 0.9}} for r in ("terran", "protoss", "zerg")}

@@ -3,10 +3,9 @@ from pathlib import Path
 
 import pytest
 
-import eval_helpers  # noqa: F401
 from uranium import _core
 
-import rush_check_plan as gen
+from uranium.measure import rush_check_plan as gen
 
 
 def test_lambda_run_configs_041_r24():
