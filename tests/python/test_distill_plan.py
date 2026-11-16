@@ -6,13 +6,12 @@ from pathlib import Path
 
 import pytest
 
+from eval_helpers import ROOT
 from uranium import _core
 
-ROOT = Path(__file__).resolve().parents[2]
-PLANS = ROOT / "config" / "plans"
-sys.path.insert(0, str(ROOT / "tools" / "eval"))
+import rush_check_plan as rcp
 
-import rush_check_plan as rcp  # noqa: E402
+PLANS = ROOT / "config" / "plans"
 
 CKPT = "checkpoints/s-placeholder/ckpt-1"
 MAPS = {"fighting_spirit", "circuit_breaker"}

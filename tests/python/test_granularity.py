@@ -1,10 +1,6 @@
-import sys
-from pathlib import Path
+import eval_helpers  # noqa: F401
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools" / "eval"))
-
-import granularity as gr  # noqa: E402
+import granularity as gr
 
 START = (1000, 1000)
 A = gr.AID

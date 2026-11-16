@@ -1,24 +1,41 @@
 import copy
+import hashlib
 import json
 import os
 import shutil
 import subprocess
-import sys
 import tomllib
 from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools" / "eval"))
+from eval_helpers import (
+    CLEAN_GIT,
+    CUE,
+    DEAD,
+    HUMAN,
+    HUMAN_DS,
+    LIN,
+    ROOT,
+    SHA,
+    TAILS,
+    TEACHER,
+    all_outputs,
+    fake_game_order,
+    record,
+    set_outputs,
+    train_log_output,
+)
 
-import diag_table  # noqa: E402
-import eval_common as ec  # noqa: E402
-import protocol  # noqa: E402
-import spatial_logs  # noqa: E402
-import tables  # noqa: E402
+import eval_common as ec
+import protocol
+import tables
 
-LIN = protocol.load_lineage()
+
+@pytest.fixture(autouse=True)
+def _game_order(monkeypatch):
+    fake_game_order(monkeypatch)
+
 
 FROZEN = {
     "rush_check": "ed79acba03b0cbfe09a2c5fba77384b82609e4bdabd419a505d95e711c996b2b",
@@ -56,8 +73,6 @@ SHARED_PLANS = [
 ]
 
 CK1_POINTS = [p for p in LIN["point"] if p.get("ck1_checkpoint")]
-
-CLEAN_GIT = {"commit": "0" * 40, "protocol_files_dirty": False, "dirty_paths": [], "dirty_diff_sha256": None}
 
 
 def plan_file(name: str) -> dict:
@@ -239,32 +254,6 @@ def test_t0_tp_template_050_r10():
     assert set(tables.game_keys(plan)) <= set(t300)
 
 
-def test_subset_tables_t0_tp_inside_t0_300_050_r9(tmp_path):
-    rows = [{**row(1, True), "model": {**row(1, True)["model"], "zero_last_failed": True}},
-            {**row(17, True), "model": {**row(17, True)["model"], "zero_last_failed": True}},
-            {**row(51, None), "model": {**row(51, None)["model"], "zero_last_failed": True}},
-            {**row(116, False), "model": {**row(116, False)["model"], "zero_last_failed": True}}]
-    ledger = [{"game_id": 100151, "outcome": "Aborted", "detail": "launcher exit codes [Some(0), None]"}]
-    job = make_job(tmp_path, "t0_300", rows, ledger)
-    res = tables.subset_tables(job, "t0_tp", LIN)
-    (t,) = res.values()
-    assert t["plan"] == "t0_tp" and t["games_planned"] == 64 and t["rows"] == 3 and t["invalid_games"] == [100049]
-    tot = t["table"]["by_race"]
-    assert tot["stochastic vs terran"]["won"] == 1 and tot["stochastic vs terran"]["draw"] == 1 and tot["stochastic vs terran"]["n"] == 2
-    assert tot["stochastic vs protoss"]["lost"] == 1 and tot["stochastic vs protoss"]["invalid"] == 1
-    bad = make_job(tmp_path / "b", "t0_300", rows, plan_text=protocol.render(LIN, "t0_300", "c", "t0_300").replace("zero_last_failed = true", "zero_last_failed = false"))
-    with pytest.raises(protocol.Refused, match="zero_last_failed differs"):
-        tables.subset_tables(bad, "t0_tp", LIN)
-    with pytest.raises(protocol.Refused, match="no stage holds every game"):
-        tables.subset_tables(make_job(tmp_path / "c", "macro", []), "t0_tp", LIN)
-
-
-def test_job_tables_stage_filter_050_r9(tmp_path):
-    job = make_job(tmp_path, "tvz_bc", [row(1, True)])
-    assert tables.job_tables(job, tmp_path / "cache", lin=LIN, stages={"other"}) == {}
-    assert list(tables.job_tables(job, tmp_path / "cache", lin=LIN, stages={"tvz_bc"})) == ["tvz_bc/tvz_bc"]
-
-
 def test_val500_race_needs_per_race_output_050_r9(tmp_path):
     f = tmp_path / "v.json"
     base = {"split": "val", "games": 500, "selection_seed": 1, "action_top1": 0.72}
@@ -431,243 +420,6 @@ def test_verify_reports_condition_mismatch_050_ac5(tmp_path):
     assert any("stage 2" in p and "match no protocol plan" in p for p in problems), problems
 
 
-def test_game_ids_and_opponent_crashes_050_r9():
-    assert ec.game_key(10100188) == 100188 and ec.stage_of(10100188) == 1 and ec.stage_of(300070) == 3
-    ledger = [
-        {"game_id": 300070, "outcome": "Aborted", "detail": "launcher exit codes [Some(0), Some(-1073741819)]; p0: ..."},
-        {"game_id": 100260, "outcome": "Aborted", "detail": "launcher exit codes [Some(0), None]; p0: ..."},
-        {"game_id": 100005, "outcome": "Aborted", "detail": "launcher exit codes [None, Some(0)]; p0: ..."},
-        {"game_id": 100006, "outcome": "Aborted", "detail": "launcher exit codes [None, None]; p0: ..."},
-        {"game_id": 10100007, "outcome": "Aborted", "detail": "launcher exit codes [Some(0), Some(1)]"},
-        {"game_id": 100008, "outcome": "Finished", "detail": None},
-    ]
-    assert ec.opponent_crashes(ledger) == {300070, 100260, 100007}
-
-
-def test_model_rows_highest_attempt_050_r9():
-    rows = [
-        {"game_id": 100001, "model": {"scv_8m": 3}},
-        {"game_id": 100001, "model": None},
-        {"game_id": 100001, "model": {"scv_8m": 9}},
-        {"game_id": 200001, "model": {"scv_8m": 1}},
-        {"game_id": 10100002, "model": {"scv_8m": 5}},
-        {"game_id": 100002, "model": {"scv_8m": 4}},
-    ]
-    got = ec.model_rows(rows, 1)
-    assert sorted(got) == [1, 2] and got[1]["model"]["scv_8m"] == 9 and got[2]["model"]["scv_8m"] == 5
-
-
-def test_corrupt_result_lines_skipped_and_counted_050_r9(tmp_path, capsys):
-    rows = [row(1, True), row(2, False), row(3, None)]
-    job = make_job(tmp_path, "tvz_bc", [], [{"game_id": 100009, "outcome": "Finished", "detail": None}])
-    (job / "results" / "h.jsonl").write_bytes(
-        (json.dumps(rows[0]) + "\n").encode() + b"\x00" * 300 + b"\n"
-        + json.dumps(rows[1])[:30].encode() + b"\x00" * 50 + (json.dumps(rows[1]) + "\n").encode()
-        + json.dumps(rows[2])[:40].encode() + b"\n"
-        + (json.dumps(rows[2]) + "\r\n").encode())
-    (job / "games" / "h.jsonl").write_bytes(b'{"game_id": 100009, "outco\n[1, 2]\n' + b"\x00" * 8)
-    got = ec.read_results(job)
-    assert list(got) == rows
-    assert [(s["file"], s["line"]) for s in got.skipped] == [("h.jsonl", 3), ("h.jsonl", 4)]
-    assert ec.read_ledger(job) == [] and len(ec.read_ledger(job).skipped) == 2
-    err = capsys.readouterr().err
-    assert err.count(f"{job / 'results' / 'h.jsonl'}:4: skipped an undecodable line") == 1, "warned once per line"
-    assert f"{job / 'results' / 'h.jsonl'}:3: skipped an undecodable line" in err
-    assert err.count(f"{job / 'games' / 'h.jsonl'}:2: skipped an undecodable line (not a JSON object (list))") == 1
-    (t,) = tables.job_tables(job, tmp_path / "cache", lin=LIN).values()
-    assert capsys.readouterr().err == "", "lines warned about already are not warned again"
-    assert t["rows"] == 3
-    assert [(s["file"], s["line"]) for s in t["skipped_lines"]] == [("results/h.jsonl", 3), ("results/h.jsonl", 4), ("games/h.jsonl", 1), ("games/h.jsonl", 2)]
-    tables.print_tables({"tvz_bc/tvz_bc": t})
-    assert "SKIPPED 4 undecodable line(s) of the job (counted as no row): results/h.jsonl:3, results/h.jsonl:4, games/h.jsonl:1, games/h.jsonl:2" in capsys.readouterr().out
-    clean = make_job(tmp_path / "clean", "tvz_bc", rows)
-    (t,) = tables.job_tables(clean, tmp_path / "cache", lin=LIN).values()
-    assert t["skipped_lines"] == [] and t["rows"] == 3
-
-
-def test_wilson_and_fisher_050_r2():
-    lo, hi = ec.wilson(33, 300)
-    assert (round(100 * lo, 1), round(100 * hi, 1)) == (7.9, 15.0)
-    lo, hi = ec.wilson(158, 200)
-    assert (round(100 * lo, 1), round(100 * hi, 1)) == (72.8, 84.1)
-    assert ec.fisher_p(5, 10, 5, 10) == pytest.approx(1.0)
-    assert ec.fisher_p(10, 10, 0, 10) == pytest.approx(1.0825088224469026e-05)
-
-
-def dump(path: Path, cmds: list, frames: int = 20000) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"rep": "x", "frames": frames, "players": [{"id": 0, "race": 1}, {"id": 1, "race": 0}], "cmds": cmds}), encoding="utf-8")
-
-
-def build(frame: int, x: int, y: int, ty: int) -> list:
-    h = "1e" + "".join(f"{v & 0xFF:02x}{v >> 8:02x}" for v in (x, y, ty))
-    return [frame, 0, 12, h]
-
-
-def test_analyze_first_build_and_scout_050_r6(tmp_path):
-    f = tmp_path / "g1.json"
-    far_move = "".join(f"{v & 0xFF:02x}{v >> 8:02x}" for v in (3000, 3000, 0xFFFF)) + "e400" + "06" + "00"
-    dump(f, [
-        build(500, 10, 10, 109),
-        [600, 0, 9, "0101"],
-        [700, 0, 21, far_move],
-        build(4000, 12, 12, ec.BUNKER),
-        build(5000, 14, 14, ec.BUNKER),
-        build(7200, 20, 20, ec.CC),
-        [800, 1, 12, build(0, 1, 1, ec.BUNKER)[3]],
-        build(12000, 5, 5, 111),
-    ])
-    first, scout = ec.analyze(f)
-    assert first == {109: 500, ec.BUNKER: 4000, ec.CC: 7200}
-    assert scout == 700
-    assert ec.analyze_both(f) == (first, 700, 700)
-
-
-def le16(*vals: int) -> str:
-    return "".join(f"{v & 0xFF:02x}{v >> 8:02x}" for v in vals)
-
-
-def rclick(frame: int, x: int, y: int, target: int) -> list:
-    return [frame, 0, 20, le16(x, y, target, 228) + "00"]
-
-
-def order(frame: int, x: int, y: int, target: int, order_id: int) -> list:
-    return [frame, 0, 21, le16(x, y, target, 228) + f"{order_id:02x}" + "00"]
-
-
-@pytest.mark.parametrize("ground", [0, 0xFFFF])
-def test_scout_fixed_counts_ground_right_click_050_r9(tmp_path, ground):
-    f = tmp_path / "g1.json"
-    dump(f, [
-        build(500, 10, 10, 109),
-        [600, 0, 9, "0101"],
-        rclick(650, 2000, 320, 5),
-        rclick(700, 2000, 320, ground),
-        rclick(4400, 3000, 3000, ground),
-    ])
-    assert ec.analyze_both(f)[1:] == (None, 700)
-    assert ec.analyze(f)[1] is None, "analyze keeps the old reading (scout_3m)"
-
-
-def test_scout_old_and_fixed_read_move_orders_differently_050_r9(tmp_path):
-    f = tmp_path / "g1.json"
-    dump(f, [
-        build(500, 10, 10, 109),
-        [600, 0, 9, "0201"],
-        order(610, 3000, 3000, 0, ec.ORDER_MOVE),
-        [650, 0, 9, "0101"],
-        order(660, 3000, 3000, 0, 10),
-        order(700, 330, 330, 0, ec.ORDER_MOVE),
-        order(800, 330, 2000, 0, ec.ORDER_MOVE),
-    ])
-    assert ec.analyze_both(f)[1:] == (700, 800)
-
-
-def make_job(tmp_path: Path, pid: str, rows: list[dict], ledger: list[dict] | None = None, plan_text: str | None = None) -> Path:
-    job = tmp_path / pid
-    (job / "plans").mkdir(parents=True)
-    (job / "results").mkdir()
-    (job / "games").mkdir()
-    (job / "plans" / "01.toml").write_text(plan_text or protocol.render(LIN, pid, "checkpoints/m2-r1/ckpt-5", pid), encoding="utf-8")
-    (job / "job.toml").write_text('stages = ["plans/01.toml"]\nhosts = "hosts.toml"\n', encoding="utf-8")
-    (job / "results" / "h.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
-    (job / "games" / "h.jsonl").write_text("".join(json.dumps(g) + "\n" for g in ledger or []), encoding="utf-8")
-    return job
-
-
-def row(n: int, won, **model) -> dict:
-    return {"game_id": 100000 + n, "slot": 0, "won": won, "reason": "Elimination", "end_frame": 1440 * n,
-            "model": {"checkpoint": "ckpt-5@0", "zero_last_failed": False, "sample": "stochastic", **model}}
-
-
-def early_games(monkeypatch, k: int) -> list[int]:
-    monkeypatch.setattr(ec, "start_condition", lambda seed: "early" if seed % 2 else "late")
-    seeds = tomllib.loads(protocol.render(LIN, "rush_check", "c", "n"))["seeds"]
-    return [n for n in range(1, 129) if seeds[n - 1] % 2][:k]
-
-
-def test_rush_table_both_held_and_bunker_definitions_050_r7(tmp_path, monkeypatch):
-    early = early_games(monkeypatch, 4)
-    rows = [
-        row(early[0], True, scv_8m=10, scv_min_1m=3, bunker_s=170.0, scv_4m=9),
-        row(early[1], False, scv_8m=None, scv_min_1m=6, bunker_s=200.0, scv_4m=4),
-        row(early[2], None, scv_8m=8, scv_min_1m=5, bunker_s=None, scv_4m=None),
-        row(early[3], True, scv_8m=None, scv_min_1m=2, bunker_s=None, scv_4m=6),
-    ]
-    job = make_job(tmp_path, "rush_check", rows)
-    cache = tmp_path / "cache" / job.name / "rush_check"
-    dump(cache / f"g{early[0]}.json", [build(500, 10, 10, 109), build(4000, 12, 12, ec.BUNKER)])
-    dump(cache / f"g{early[1]}.json", [build(500, 10, 10, 109), [600, 0, 9, "0101"], rclick(700, 3000, 320, 0),
-                                       build(5000, 12, 12, ec.BUNKER)])
-    res = tables.job_tables(job, tmp_path / "cache", lin=LIN)
-    t = res[f"{job.name}/rush_check"]
-    assert t["plan"] == "rush_check" and t["kind"] == "rush" and t["protocol"] is None
-    e = t["table"]["early"]
-    assert (e["n"], e["held_8m"], e["held_8m_winpass"], e["held_s"]) == (4, 2, 3, 2)
-    assert (e["bunker_order_3m"], e["bunker_order_4m"], e["bunker_unit_3m"], e["bunker_unit_4m"]) == (1, 2, 1, 2)
-    assert e["scv_4m_p50"] == 5 and e["scv_4m_p50_known"] == 6 and e["won"] == 2 and e["dumped"] == 2
-    assert t["counts"]["early"]["held_s"] == [2, 4] and t["table"]["late"]["n"] == 0
-    assert (e["scout_3m"], e["scout_3m_fixed"]) == (0, 1) and t["counts"]["early"]["scout_3m_fixed"] == [1, 4]
-
-
-def test_bunker_unit_boundaries_050_r7(tmp_path, monkeypatch):
-    early = early_games(monkeypatch, 5)
-    rows = [row(n, None, bunker_s=b) for n, b in zip(early, (179.9, 180.0, 239.9, 240.0, None))]
-    t = tables.job_tables(make_job(tmp_path, "rush_check", rows), tmp_path / "cache", lin=LIN)
-    e = next(iter(t.values()))["table"]["early"]
-    assert (e["bunker_unit_3m"], e["bunker_unit_4m"]) == (1, 3)
-    m = tables.job_tables(make_job(tmp_path / "m", "macro", [row(n, None, bunker_s=b) for n, b in zip(range(1, 5), (239.9, 240.0, 179.9, None))]),
-                          tmp_path / "cache", lin=LIN)
-    assert next(iter(m.values()))["table"]["total"]["bunker_unit_4m"] == 2
-
-
-def test_macro_table_050_r8(tmp_path):
-    rows = [row(1, True, scv_8m=16, bunker_s=230.0), row(2, None, scv_8m=15, bunker_s=250.0), row(11, False, scv_8m=None, bunker_s=None),
-            row(12, True, scv_8m=None, bunker_s=None)]
-    job = make_job(tmp_path, "macro", rows)
-    cache = tmp_path / "cache" / job.name / "macro"
-    dump(cache / "g1.json", [build(500, 10, 10, 109), build(5000, 12, 12, ec.BUNKER), build(7200, 20, 20, ec.CC)])
-    dump(cache / "g2.json", [build(500, 10, 10, 109), build(5760, 12, 12, ec.BUNKER), build(7201, 20, 20, ec.CC)])
-    t = tables.job_tables(job, tmp_path / "cache", lin=LIN)[f"{job.name}/macro"]["table"]
-    a = t["ualbertabot2hatchhydra"]
-    assert (a["n"], a["bunker_order_4m"], a["bunker_unit_4m"], a["cc_order_5m"], a["scv_8m_16"]) == (2, 1, 1, 1, 1)
-    assert (a["won"], a["draw"], a["lost"]) == (1, 1, 0)
-    b = t["ualbertabot3hatchmuta"]
-    assert (b["lost"], b["won"], b["scv_8m_16"], b["scv_8m_16_winpass"]) == (1, 1, 0, 1)
-    assert t["total"]["n"] == 4 and t["total"]["scv_8m_16"] == 1 and t["total"]["scv_8m_16_winpass"] == 2
-
-
-def test_t1_table_drops_opponent_crash_games_050_r9(tmp_path):
-    rows = [row(1, True), row(2, False), {**row(19, True), "reason": "Surrender"}, {**row(20, True), "reason": "Surrender"}]
-    ledger = [{"game_id": 100020, "outcome": "Aborted", "detail": "launcher exit codes [Some(0), None]"}]
-    job = make_job(tmp_path, "t1_bc", rows, ledger)
-    t = tables.job_tables(job, tmp_path / "cache", lin=LIN)[f"{job.name}/t1_bc"]
-    assert t["invalid_games"] == [100020]
-    uab_z, uab_p = t["table"]["blocks"][0], t["table"]["blocks"][1]
-    assert (uab_z["bot"], uab_z["n"], uab_z["won"], uab_z["missing"]) == ("ualbertabot", 2, 1, 16)
-    assert (uab_p["n"], uab_p["won"], uab_p["surrender_wins"], uab_p["invalid"]) == (1, 1, 1, 1)
-    assert t["table"]["total"]["won"] == 2 and t["table"]["total"]["n"] == 3
-
-
-def test_winrate_table_tvz_050_r9(tmp_path):
-    rows = [row(1, True), row(2, None), row(17, False), row(18, True)]
-    job = make_job(tmp_path, "tvz_bc", [{**r, "model": {**r["model"], "zero_last_failed": True}} for r in rows])
-    t = tables.job_tables(job, tmp_path / "cache", lin=LIN)[f"{job.name}/tvz_bc"]
-    assert t["plan"] == "tvz_bc" and t["zero_last_failed"] == [True]
-    assert t["table"]["total"] == {"n": 4, "won": 2, "draw": 1, "lost": 1, "invalid": 0, "missing": 28}
-
-
-def test_unknown_plan_needs_kind_050_r9(tmp_path):
-    text = protocol.render(LIN, "tvz_bc", "checkpoints/m2-r1/ckpt-5", "odd").replace("save_replay = true", "save_replay = false")
-    job = make_job(tmp_path, "tvz_bc", [row(1, True)], plan_text=text)
-    with pytest.raises(tables.UnknownPlan, match="match no protocol plan"):
-        tables.job_tables(job, tmp_path / "cache", lin=LIN)
-    t = tables.job_tables(job, tmp_path / "cache", {"odd": "winrate"}, lin=LIN)["tvz_bc/odd"]
-    assert t["plan"] is None and t["table"]["total"]["won"] == 1
-    with pytest.raises(SystemExit, match="REFUSED: stage odd"):
-        tables.main([str(job), "--cache", str(tmp_path / "cache")])
-
-
 def test_distill_fix_points_menus_050_r9():
     d1, d2, D, rl = (protocol.point(LIN, p) for p in ("d1", "d2", "D", "rl-fix"))
     r2, r3 = protocol.point(LIN, "r2"), protocol.point(LIN, "r3")
@@ -797,176 +549,6 @@ def test_rl_fix_job_uses_t0_tp_rl_050_r9(tmp_path, monkeypatch):
     assert protocol.verify_job(LIN, tmp_path / "eval" / "j", "m2", protocol.point(LIN, "rl-fix")) == []
 
 
-def cmds(n: int, frame: int = 100, player: int = 0) -> list:
-    return [[frame, player, 9, "0101"] for _ in range(n)]
-
-
-def test_teacher_mode_rule_boundaries_050_r10(tmp_path):
-    f = tmp_path / "g.json"
-
-    def tm(c):
-        dump(f, c)
-        return ec.teacher_mode(f, 0)
-
-    t = tm(cmds(899) + [[8640, 0, 9, "0101"]] * 50 + cmds(500, player=1))
-    assert t == {"cmds_0_6m": 899, "cmds_per_min_0_6m": 899 / 6, "refinery_order_4m": False, "teacher_mode": True}
-    assert tm(cmds(900))["teacher_mode"] is False
-    assert tm(cmds(10) + [build(5759, 20, 20, ec.REFINERY)]) == {"cmds_0_6m": 11, "cmds_per_min_0_6m": 11 / 6, "refinery_order_4m": True, "teacher_mode": False}
-    assert tm(cmds(10) + [build(5760, 20, 20, ec.REFINERY)])["teacher_mode"] is True
-    assert tm(cmds(10) + [build(100, 20, 20, 109)])["teacher_mode"] is True, "another building is not a refinery"
-    assert tm(cmds(10) + [[100, 1, 12, build(0, 20, 20, ec.REFINERY)[3]]])["teacher_mode"] is True, "the opponent's refinery"
-
-
-def test_teacher_mode_model_player_050_r10(tmp_path):
-    f = tmp_path / "g.json"
-    f.write_text(json.dumps({"players": [{"id": 2, "race": 1}, {"id": 3, "race": 1}], "cmds": cmds(1000, player=2) + cmds(5, player=3)}), encoding="utf-8")
-    assert ec.teacher_mode(f, 0)["cmds_0_6m"] == 1000 and ec.teacher_mode(f, 1)["cmds_0_6m"] == 5
-    assert ec.model_player({"players": [{"id": 4, "race": 2}, {"id": 5, "race": 1}]}, 0) == 5
-    assert ec.model_player({"players": [{"id": 4, "race": 2}, {"id": 5, "race": 0}]}, 0) is None
-    assert ec.model_player({"players": [{"id": 2, "race": 1}, {"id": 3, "race": 1}]}, 2) is None
-
-
-def test_teacher_mode_table_050_r10(tmp_path, monkeypatch):
-    rows = [{**row(1, True), "end_frame": 30000}, {**row(2, False), "end_frame": 14399}, {**row(3, False), "end_frame": 14400},
-            {**row(4, None), "end_frame": 86400}, row(5, True),
-            {**row(33, False), "end_frame": 10000}, {**row(34, True), "end_frame": 20000}, row(35, False)]
-    ledger = [{"game_id": 100035, "outcome": "Aborted", "detail": "launcher exit codes [Some(0), None]"}]
-    job = make_job(tmp_path, "t0_tp", rows, ledger)
-    cache = tmp_path / "cache" / job.name / "t0_tp"
-    for n in (1, 2, 3, 33):
-        dump(cache / f"g{n}.json", cmds(100))
-    dump(cache / "g4.json", cmds(100) + [build(3000, 20, 20, ec.REFINERY)])
-    dump(cache / "g34.json", cmds(2000))
-    dump(cache / "g35.json", cmds(10))
-    t = tables.job_tables(job, tmp_path / "cache", lin=LIN, ops="off")["t0_tp/t0_tp"]
-    tm = t["teacher_mode"]
-    assert tm["terran"] == {"n": 4, "teacher": 3, "no_stream": 1,
-                            "teacher_mode": {"n": 3, "won": 1, "draw": 0, "lost": 2, "lost_10m": 1},
-                            "other": {"n": 1, "won": 0, "draw": 1, "lost": 0, "lost_10m": 0}}
-    assert tm["protoss"] == {"n": 2, "teacher": 1, "no_stream": 0,
-                             "teacher_mode": {"n": 1, "won": 0, "draw": 0, "lost": 1, "lost_10m": 1},
-                             "other": {"n": 1, "won": 1, "draw": 0, "lost": 0, "lost_10m": 0}}
-    assert t["counts"]["teacher_mode vs terran"] == {"teacher_mode": [3, 4]} and t["counts"]["teacher_mode vs protoss"] == {"teacher_mode": [1, 2]}
-    assert t["table"]["by_race"]["stochastic vs terran"]["n"] == 5, "the win-rate table is unchanged"
-    tables.print_tables({"t0_tp/t0_tp": t})
-    tvz = make_job(tmp_path / "z", "tvz_bc", [row(1, True)])
-    assert "teacher_mode" not in tables.job_tables(tvz, tmp_path / "cache", lin=LIN, ops="off")["tvz_bc/tvz_bc"]
-    (job / "t0_tp" / "replays").mkdir(parents=True)
-    (job / "t0_tp" / "replays" / "g5.rep").write_bytes(b"rep")
-    monkeypatch.setenv("URANIUM_REPLAY_BIN", str(tmp_path / "missing-uranium-replay"))
-    t2 = tables.job_tables(job, tmp_path / "cache", lin=LIN, ops="off")["t0_tp/t0_tp"]
-    assert "cargo build" in t2["teacher_mode"]["error"] and t2["table"] == t["table"]
-    tables.print_tables({"t0_tp/t0_tp": t2})
-
-
-def test_teacher_mode_in_subset_tables_050_r10(tmp_path):
-    zl = {"zero_last_failed": True}
-    rows = [{**row(1, True), "model": {**row(1, True)["model"], **zl}}, {**row(116, False), "model": {**row(116, False)["model"], **zl}}]
-    job = make_job(tmp_path, "t0_300", rows)
-    cache = tmp_path / "cache" / job.name / "t0_300"
-    dump(cache / "g1.json", cmds(2000))
-    dump(cache / "g116.json", cmds(5))
-    (t,) = tables.subset_tables(job, "t0_tp", LIN, tmp_path / "cache", ops="off").values()
-    assert t["teacher_mode"]["terran"]["teacher"] == 0 and t["teacher_mode"]["terran"]["n"] == 1
-    assert t["teacher_mode"]["protoss"]["teacher"] == 1 and t["teacher_mode"]["protoss"]["teacher_mode"]["lost"] == 1
-
-
-def ops_value(mined: int, end_s: float = 600.0, sblock_first_s=None, cc_lift_s: float = 0.0, rush: dict | None = None) -> dict:
-    keys = dict.fromkeys(tables.OPS_KEYS, 0.0)
-    keys.update(end_s=end_s, mined=mined, sblock_first_s=sblock_first_s, cc_lift_s=cc_lift_s, inc_10m=None if end_s < 600 else 900.0)
-    return {"ops": keys, "rush_combat": rush}
-
-
-def rush_value(pull_s=None, scv_lost: int = 0, kills: int = 0, bunker_load_s=None, focus_hhi=None) -> dict:
-    return {"in_s": 200.0, "enemy_max": 6, "pull_s": pull_s, "pull_max": 3, "scv_move_max": 0, "scv_lost": scv_lost, "kills": kills,
-            "bunker_marines_max": 0, "bunker_load_s": bunker_load_s, "bunker_empty_s": 0.0, "focus_hhi": focus_hhi, "focus_obs": 1}
-
-
-def write_ops(cache: Path, n: int, value: dict, slot: int = 0, version: int = ec.OPS_CACHE_VERSION) -> None:
-    cache.mkdir(parents=True, exist_ok=True)
-    line = {"rep": f"g{n}.rep", "perspective": slot, "frames": 20000, **value, "cache_version": version}
-    (cache / f"g{n}.ops.json").write_text(json.dumps(line) + "\n", encoding="utf-8")
-
-
-def test_ops_tables_from_replay_values_052_ac3(tmp_path):
-    zerg, terran = {"self_race": "Terran", "enemy_race": "Zerg"}, {"self_race": "Terran", "enemy_race": "Terran"}
-    rows = [{**row(1, True, scv_min_1m=6, scv_8m=12), **zerg}, {**row(2, False, scv_min_1m=2, scv_8m=3), **zerg},
-            {**row(3, True, scv_min_1m=8, scv_8m=None), **zerg}, {**row(4, None, scv_min_1m=5, scv_8m=9), **terran},
-            {**row(5, False), **terran}, {**row(6, True), **zerg}, {**row(7, True), **zerg}]
-    ledger = [{"game_id": 100007, "outcome": "Aborted", "detail": "launcher exit codes [Some(0), None]"}]
-    job = make_job(tmp_path, "tvz_bc", rows, ledger)
-    cache = tmp_path / "cache" / job.name / "tvz_bc"
-    write_ops(cache, 1, ops_value(4000, sblock_first_s=90.0, cc_lift_s=60.0, rush=rush_value(pull_s=4.0, scv_lost=2, kills=3, bunker_load_s=0.0, focus_hhi=1.0)))
-    write_ops(cache, 2, ops_value(2000, end_s=300.0, rush=rush_value(scv_lost=9, kills=1, focus_hhi=0.5)))
-    write_ops(cache, 3, ops_value(6000, cc_lift_s=30.0))
-    write_ops(cache, 4, ops_value(5000, sblock_first_s=120.0, rush=rush_value(pull_s=10.0, bunker_load_s=12.0)))
-    write_ops(cache, 6, ops_value(1, end_s=60.0), slot=1)
-    write_ops(cache, 7, ops_value(1))
-    res = tables.job_tables(job, tmp_path / "cache", lin=LIN)
-    t = res[f"{job.name}/tvz_bc"]
-    assert t["table"]["total"]["n"] == 6 and t["ops_source"] == "replay" and t["ops_failed"] == {}
-    ops, rush = t["ops"], t["rush_combat"]
-    assert sorted(ops) == ["TvT", "TvZ", "all"]
-    a = ops["all"]
-    assert (a["n"], a["missing"]) == (4, 2), "games 5 (no replay) and 6 (another slot) have no value; 7 is invalid"
-    assert a["mined"] == {"n": 4, "median": 4500.0, "mean": 4250.0}
-    assert a["sblock_first_s"] == {"n": 2, "median": 105.0, "mean": 105.0}, "empty values left out"
-    assert a["inc_10m"]["n"] == 3 and a["cc_lift_s_per_s"]["mean"] == (0.1 + 0.0 + 0.05 + 0.0) / 4
-    assert (ops["TvZ"]["n"], ops["TvZ"]["missing"], ops["TvT"]["n"], ops["TvT"]["missing"]) == (3, 1, 1, 1)
-    r = rush["all"]["all"]
-    assert (r["n"], r["entered"], r["entered_rate"]) == (4, 3, 0.75)
-    assert (r["pull_n"], r["pull_rate"], r["pull_s_p50"]) == (2, 2 / 3, 7.0)
-    assert (r["scv_lost_p50"], r["kills_p50"], r["bunker_load_n"], r["bunker_load_rate"], r["focus_hhi_p50"]) == (2, 1, 2, 2 / 3, 0.75)
-    held = rush["all"]
-    assert (held["held_s"]["n"], held["held_s"]["entered"], held["not_held_s"]["n"], held["not_held_s"]["entered"]) == (3, 2, 1, 1)
-    assert (held["held_8m"]["n"], held["held_8m"]["entered"], held["not_held_8m"]["entered"]) == (2, 2, 1), "scv_8m 12 and 9 held; 3 and none not"
-    assert rush["TvT"]["all"]["entered"] == 1 and rush["TvZ"]["not_held_8m"]["pull_rate"] == 0.0
-    none = tables.ops_tables({1: rows[0]}, {})
-    assert none[0]["all"]["n"] == 0 and none[1]["all"]["all"]["entered_rate"] is None and none[1]["all"]["held_s"]["pull_rate"] is None
-    out = tmp_path / "t.json"
-    tables.main([str(job), "--cache", str(tmp_path / "cache"), "--json", str(out)])
-    j = json.loads(out.read_text(encoding="utf-8"))[f"{job.name}/tvz_bc"]
-    assert j["ops"]["all"]["mined"]["median"] == 4500.0 and j["rush_combat"]["all"]["all"]["entered"] == 3
-    assert "ops" not in tables.job_tables(job, tmp_path / "cache", lin=LIN, ops="off")[f"{job.name}/tvz_bc"]
-    live_rows = [{**rows[0], "model": {**rows[0]["model"], **ops_value(777, rush=rush_value(pull_s=1.0))}}, rows[1]]
-    live = tables.job_tables(make_job(tmp_path / "l", "tvz_bc", live_rows), tmp_path / "cache", lin=LIN, ops="live")
-    (lt,) = live.values()
-    assert lt["ops_source"] == "live" and lt["ops"]["all"]["n"] == 1 and lt["ops"]["all"]["missing"] == 1
-    assert lt["ops"]["all"]["mined"]["median"] == 777 and lt["rush_combat"]["all"]["all"]["pull_s_p50"] == 1.0
-
-
-def test_ops_stage_runs_opsdump_from_our_slot_052_r7(tmp_path, monkeypatch):
-    stage = tmp_path / "stage"
-    (stage / "replays").mkdir(parents=True)
-    for n in (1, 2, 3, 5):
-        (stage / "replays" / f"g{n}.rep").write_bytes(b"rep")
-    binary = tmp_path / "uranium-replay"
-    binary.write_bytes(b"")
-    calls = []
-
-    def fake(b, rep, slot):
-        calls.append((rep.name, slot))
-        return {"rep": rep.name, "error": "desync"} if rep.name == "g3.rep" else {"rep": rep.name, "perspective": slot, "frames": 1, **ops_value(8)}
-
-    monkeypatch.setattr(ec, "_opsdump", fake)
-    cache = tmp_path / "cache"
-    write_ops(cache, 2, ops_value(16), slot=0)
-    write_ops(cache, 5, ops_value(16), version=ec.OPS_CACHE_VERSION - 1)
-    got, failed = ec.ops_stage(stage, {1: 0, 2: 1, 3: 0, 4: 1, 5: 0}, cache, binary=binary, jobs=2)
-    assert sorted(calls) == [("g1.rep", 0), ("g2.rep", 1), ("g3.rep", 0), ("g5.rep", 0)]
-    assert sorted(got) == [1, 2, 5] and got[2]["perspective"] == 1 and got[5]["ops"]["mined"] == 8 and failed == {3: "desync"}
-    assert json.loads((cache / "g5.ops.json").read_text(encoding="utf-8"))["cache_version"] == ec.OPS_CACHE_VERSION
-    assert not (cache / "g3.ops.json").exists() and json.loads((cache / "g2.ops.json").read_text(encoding="utf-8"))["perspective"] == 1
-    calls.clear()
-    got, failed = ec.ops_stage(stage, {1: 0, 2: 1, 3: 0}, cache, binary=binary)
-    assert calls == [("g3.rep", 0)] and sorted(got) == [1, 2], "cached lines reused, the failure tried again"
-    monkeypatch.undo()
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout="{broken\n", stderr=""))
-    assert "unreadable opsdump line" in ec._opsdump(binary, stage / "replays" / "g1.rep", 0)["error"]
-    with pytest.raises(SystemExit, match="cargo build"):
-        ec.ops_stage(stage, {3: 0}, tmp_path / "c2", binary=tmp_path / "missing")
-
-
 def test_ops_tables_on_every_menu_052_r8(tmp_path):
     for m in ("ops", "rush_combat"):
         assert LIN["metric"][m]["kind"] == "games_table" and LIN["metric"][m]["source"] == "replay"
@@ -981,19 +563,6 @@ def test_ops_tables_on_every_menu_052_r8(tmp_path):
     with pytest.raises(SystemExit, match="REFUSED: metric ops is a table of the point's game jobs"):
         protocol.main(job_args(tmp_path, ck, "ops"))
     assert not (tmp_path / "eval").exists()
-
-
-CUE, DEAD = LIN["metric"]["cue_diag"], LIN["metric"]["dead_channels"]
-TEACHER, HUMAN = CUE["teacher"], CUE["human"]
-SHA = "f" * 64
-TAILS = ["by_name/hold_orig", "by_name/hold_macro2"]
-
-
-@pytest.fixture(autouse=True)
-def _game_order(monkeypatch):
-    real = protocol.game_rows_sha256
-    monkeypatch.setattr(protocol, "game_rows_sha256", lambda d: (Path(d) / "FAKE_GAME_ROWS").read_text() if (Path(d) / "FAKE_GAME_ROWS").is_file() else real(d))
-HUMAN_DS = sorted(HUMAN["datasets"])
 
 
 def test_diag_settings_are_the_tools_050_r9():
@@ -1123,68 +692,6 @@ def test_human_holdout_manifest_fingerprint_050_r9(tmp_path):
         protocol.set_data(lin, "human", shared)
     with pytest.raises(protocol.Refused, match="2069 files"):
         protocol.set_data(LIN, "human", shared)
-
-
-def probe_metrics(stages) -> dict:
-    m = {f"{s}|ridge": {"pt": 0.5, "lo": 0.4, "hi": 0.6} for s in stages} | {f"{s}+nuis|ridge": {"pt": 0.6, "gain": 0.1, "gain_lo": 0.05, "gain_hi": 0.15} for s in stages}
-    return m | {"nuis|ridge": {"pt": 0.3, "lo": 0.2, "hi": 0.4}, "h|mlp": {"pt": 0.45}}
-
-
-def set_outputs(d: Path, name: str, sha: str = SHA, **edit) -> Path:
-    s = CUE[name]
-    dm, p = s["dump"], s["probes"]
-    data = [f"/h/diag_holdout/{t}" for t in TAILS] if name == "teacher" else [f"<shared>/datasets/{x}" for x in HUMAN_DS]
-    man = {"checkpoint": "<shared>/checkpoints/m2-s1/ckpt-9", "checkpoint_sha256": sha, "data": data, "splits": ["val", "test"], "games_per_split": s.get("games"),
-           "seed": 1, "config": "config/bc.toml", "lanes_per_group": 4, "row_until": 8640.0, "act_until": float(dm["act_until"]), "act_every": dm["act_every"],
-           "read_until": float(dm["read_until"]) if dm.get("read_until") else None,
-           "passes": ["real", "early", "late", "sc+1", "sc-1", "tok+1", "tok-1"] if dm["cf"] else ["real"],
-           "cf_starts": {r: [float(x) for x in v] for r, v in dm["cf_starts"].items()} if dm["cf"] else None,
-           "stages": ["token", "e_pool", "sp_pool", "c", "h", "x_in", "L1.a", "L1.g1", "L1.f", "L1.out"], "backend": "rocm", "precision": "f32",
-           "games": dm.get("expect_games", 1000), "stats": {"rows": dm.get("expect_rows", 500000), "act_rows": dm.get("expect_act_rows", 90000)}} | edit.get("manifest", {})
-    head = {"checkpoint": man["checkpoint"], "checkpoint_sha256": sha, "data": data, "splits": ["val", "test"], "backend": "rocm", "precision": "f32"}
-    metric = probe_metrics(p["stages"])
-    races = {}
-    for race in p["races"]:
-        tasks = {t: {"metric": "r2", "rows": 100, "games": 20, "metrics": metric} for t in s["report"]["tasks"]}
-        tasks |= {t: {"metric": "r2", "rows": r, "games": g, "metrics": metric} for t, (r, g) in p["expect_tasks"].items()}
-        tasks |= {t: {"rows": 36516, "skipped": "constant target 1"} for t in p["expect_skipped"]}
-        races[race] = {"tasks": tasks}
-    probes_o = {"dump": head, "gain_method": "resid", "boot": p["boot"], "cap": p["cap"], "mlp": True, "races": races} | edit.get("probes", {})
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "dump").mkdir(exist_ok=True)
-    (d / "dump" / "manifest.json").write_text(json.dumps(man), encoding="utf-8")
-    (d / "dump" / "FAKE_GAME_ROWS").write_text(edit.get("game_rows", dm.get("expect_game_rows_sha256", "")), encoding="utf-8")
-    (d / "probes.json").write_text(json.dumps(probes_o), encoding="utf-8")
-    if "intervene" in s:
-        eff = {"n": 100, "mean": 0.01, "lo": -0.01, "hi": 0.03, "share_ge_0.15": 0.0}
-        allc = {e: {m: eff for m in ("bunker_any", "marine_sum", "rax2_any", "label_p")} for e in ("start", "start_unf", "count_sc", "count_tok", "real")}
-        inter = {"dump": head, "window": [2160.0, 5760.0], "races": {"Z": {"games": 433, "edited": 300, "edited_unf": 120, "count_edited": 310, "by_class": {"all": allc}}}} | edit.get("intervene", {})
-        (d / "intervene.json").write_text(json.dumps(inter), encoding="utf-8")
-    return d
-
-
-def train_log_output(out: Path, **edit) -> Path:
-    r = {"log": "s1.log", "from_update": 600, "until_update": 39096, "sp_records_from": 25, "alarm_lines": [], "alarm_records": [], "crossing_records": [],
-         "dead": {k: {"max": 3, "max_share": 0.05, "at": 700, "last": 1} for k in DEAD["layers"]} | {"r4": {"max": 51, "max_share": 0.398, "at": 3000, "last": 51}},
-         "worst_dead_layer": "r4", "worst_dead_share": 0.398, "const": {"sp_const_s8": {"max": 0, "share": 0.0}, "sp_const_pool": {"max": 0, "share": 0.0}},
-         "min_pos_any": 0.2} | edit
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "spatial_log.json").write_text(json.dumps(r), encoding="utf-8")
-    return out
-
-
-def record(out: Path, metrics=("cue_diag", "dead_channels"), sha: str = SHA, **edit) -> Path:
-    out.mkdir(parents=True, exist_ok=True)
-    rec = {"metrics": list(metrics), "checkpoint_sha256": sha, "git": dict(CLEAN_GIT), "finished": "2026-11-10T00:00:00+09:00"} | edit
-    (out / "protocol.json").write_text(json.dumps(rec), encoding="utf-8")
-    return out
-
-
-def all_outputs(out: Path, sha: str = SHA) -> Path:
-    for s in CUE["sets"]:
-        set_outputs(out / s, s, sha)
-    train_log_output(out)
-    return record(out, sha=sha)
 
 
 def test_check_diag_accepts_the_pinned_outputs_050_r9(tmp_path, capsys):
@@ -1539,60 +1046,3 @@ def test_human_data_consistency_across_folders_050_r9(tmp_path):
     assert protocol.check_diag(LIN, "cue_diag", b) == []
     shutil.copytree(a, root / "m2-s1__ckpt-1.failed-1")
     assert protocol.check_diag(LIN, "cue_diag", b) == []
-
-
-def test_diag_table_050_r9(tmp_path):
-    out = all_outputs(tmp_path / "d")
-    res = diag_table.folder_table(LIN, out, ["cue_diag", "dead_channels"])
-    hp = res["cue"]["teacher"]["Z"]["hp|unf_token"]
-    assert (hp["rows"], hp["games"], hp["stages"]["h"]["pt"], hp["h_mlp"]) == (17097, 154, 0.5, 0.45)
-    assert res["cue"]["human"]["P"]["count|focus_rows"]["stages"]["h"]["pt"] == 0.5
-    assert res["intervention"]["teacher"]["Z"]["effects"]["start"]["bunker_any"]["mean"] == 0.01
-    md = "\n".join(diag_table.markdown(LIN, {"m2-s1": res}))
-    assert "### cue probe, human hold-out, T `count|focus_rows`" in md and "| m2-s1 | 17097 / 154 | 0.500 [0.400, 0.600]" in md
-    assert res["cue"]["human"]["T"]["count|focus_rows"]["not_measurable"].startswith("TvT") and "| m2-s1 | 측정 불가 (not measurable): TvT" in md
-    assert "### counterfactual intervention, teacher hold-out, Z" in md and "r4 39.8% (51 @ 3000)" in md
-    ck1 = all_outputs(tmp_path / "c")
-    (ck1 / "spatial_log.json").unlink()
-    r1 = diag_table.folder_table(LIN, record(ck1, metrics=["cue_diag"]), ["cue_diag"]) | {"train_log": None}
-    assert "| ck1 | not measured (no training-log statistics) |" in "\n".join(diag_table.markdown(LIN, {"ck1": r1}))
-    iv = json.loads((out / "teacher" / "intervene.json").read_text(encoding="utf-8"))
-    (out / "teacher" / "intervene.json").write_text(json.dumps({**iv, "window": [0.0, 1.0]}), encoding="utf-8")
-    with pytest.raises(SystemExit, match="REFUSED: .*intervene window"):
-        diag_table.main([f"x={out}"])
-
-
-LAYERS = ("stem", "c0", "c1", "c2", "c3", "r0", "r1", "r2", "r3", "r4", "r5")
-
-
-def bc_log(path: Path, records: list[tuple[int, dict]], warn: list[str] | None = None) -> Path:
-    base = {f"sp_dead_{n}": 0 for n in LAYERS} | {f"sp_pos_{n}": 0.3 for n in LAYERS} | {"sp_const_s8": 0, "sp_const_pool": 0}
-    lines = [json.dumps({"step": step, "loss": {"action": 1.0, "total": 2.0, **base, **sp}}) for step, sp in records]
-    path.write_text("[bc] start\n" + "\n".join(lines + (warn or [])) + "\n", encoding="utf-8")
-    return path
-
-
-def test_spatial_logs_summary_041_r25(tmp_path):
-    ch = spatial_logs.channels()
-    assert (ch["stem"], ch["c2"], ch["r4"], ch["r5"], ch["sp_const_s8"], ch["sp_const_pool"]) == (32, 128, 128, 128, 128, 256)
-    assert spatial_logs.default_from_update() == DEAD["from_update"]
-    log = bc_log(tmp_path / "s1.log", [(500, {"sp_dead_r4": 100}), (600, {"sp_dead_r4": 51, "sp_pos_c3": 0.1}), (700, {"sp_dead_c3": 64, "sp_const_s8": 3}),
-                                       (800, {"sp_dead_r4": 10}), (900, {"sp_dead_stem": 32})],
-                 warn=["[bc] WARNING: update 700: spatial encoder collapse alarm (041-R25): sp_dead_c3 = 64 of 128",
-                       "[bc] WARNING: update 900: spatial encoder collapse alarm (041-R25): sp_dead_stem = 32 of 32"])
-    r = spatial_logs.scan(log, ch, until_update=800)
-    assert (r["sp_records"], r["sp_records_from"], r["last_step"], r["until_update"]) == (4, 3, 800, 800)
-    assert r["dead"]["r4"]["max"] == 51 and r["dead"]["r4"]["at"] == 600 and r["dead"]["r4"]["last"] == 10
-    assert r["worst_dead_layer"] == "c3" and r["worst_dead_share"] == 0.5 and r["crossing_records"] == [700]
-    assert r["const"]["sp_const_s8"]["max"] == 3 and r["min_pos_any"] == 0.1 and len(r["alarm_lines"]) == 1
-    assert r["train_tail100_mean"]["action"] == 1.0
-    assert spatial_logs.scan(log, ch)["crossing_records"] == [700, 900]
-    cols = [f"sp_{k}_{n}" for k in ("pos", "dead") for n in LAYERS] + ["sp_const_s8", "sp_const_pool"]
-    rows = ["time_s,agent,update,loss," + ",".join(cols)]
-    for agent, up, dead in (("main", 600, "2"), ("exploiter", 600, "99"), ("main", 700, None), ("main", 800, "5")):
-        vals = ["" if dead is None else "0.3" if c.startswith("sp_pos") else dead for c in cols]
-        rows.append(f"1,{agent},{up},0.5," + ",".join(vals))
-    csv_log = tmp_path / "train.csv"
-    csv_log.write_text("\n".join(rows) + "\n", encoding="utf-8")
-    rc = spatial_logs.scan(csv_log, ch)
-    assert rc["sp_records_from"] == 2 and rc["dead"]["stem"]["max"] == 5 and rc["dead_last"]["step"] == 800 and rc["alarm_lines"] == []

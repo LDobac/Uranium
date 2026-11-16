@@ -1,29 +1,17 @@
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools" / "eval"))
+from eval_helpers import LIN, build, dump, make_job, row, val
 
-import eval_common as ec  # noqa: E402
-import regression_gate as rg  # noqa: E402
-
-from test_eval_protocol import LIN, build, dump, make_job, row  # noqa: E402
+import eval_common as ec
+import regression_gate as rg
 
 
 @pytest.fixture(autouse=True)
 def no_dotenv(monkeypatch):
     monkeypatch.setattr(ec, "load_env", lambda: None)
-
-
-def val(top1: dict, nll: dict, bunker: dict | None = None) -> dict:
-    d = {"split": "val", "games": 500, "selection_seed": 1,
-         "by_enemy_race": {r: {"steps": 100, "action_top1": top1[r], "nll": {"action": nll[r]}} for r in top1}}
-    if bunker is not None:
-        d["bunker_before"] = {"before_frame": 5760, "by_enemy_race": {r: {"steps": 40, "mean_p": p} for r, p in bunker.items()}}
-    return d
 
 
 def results(checks, check, race, metric):

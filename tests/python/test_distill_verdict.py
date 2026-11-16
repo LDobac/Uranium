@@ -1,20 +1,15 @@
 import json
-import sys
 import tomllib
 from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools" / "eval"))
+from eval_helpers import LIN, build, dump, make_job, row, val
 
-import distill_verdict as dv  # noqa: E402
-import eval_common as ec  # noqa: E402
-import protocol  # noqa: E402
-import regression_gate as rg  # noqa: E402
-
-from test_eval_protocol import LIN, build, dump, make_job, row  # noqa: E402
-from test_regression_gate import val  # noqa: E402
+import distill_verdict as dv
+import eval_common as ec
+import protocol
+import regression_gate as rg
 
 
 @pytest.fixture(autouse=True)

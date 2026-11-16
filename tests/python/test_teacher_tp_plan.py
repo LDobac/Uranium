@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
-PLANS = ROOT / "config" / "plans"
-sys.path.insert(0, str(ROOT / "tools" / "eval"))
+from eval_helpers import ROOT
 
-import rush_check_plan as rcp  # noqa: E402
+import rush_check_plan as rcp
+
+PLANS = ROOT / "config" / "plans"
 
 TEACHER = {"kind": "t0", "race": "terran", "build": "terran_tp"}
 MAPS = {"fighting_spirit", "circuit_breaker"}

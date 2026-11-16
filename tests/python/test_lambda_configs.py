@@ -3,7 +3,10 @@ from pathlib import Path
 
 import pytest
 
+import eval_helpers  # noqa: F401
 from uranium import _core
+
+import rush_check_plan as gen
 
 
 def test_lambda_run_configs_041_r24():
@@ -198,11 +201,8 @@ _M2_DAGGER_PLAN = {
     3: (300, "checkpoints/m2-dagger-r2/ckpt-1408", 2),
 }
 
-
 @pytest.mark.parametrize("rnd", sorted(_M2_DAGGER_PLAN))
 def test_m2_dagger_plan_041_r28(rnd):
-    import importlib.util
-
     games, ckpt, ck1_round = _M2_DAGGER_PLAN[rnd]
     root = Path(__file__).resolve().parents[2] / "config" / "plans"
     new, ck1 = _toml(root / f"dagger_m2_r{rnd}.toml"), _toml(root / f"dagger_r{ck1_round}.toml")
@@ -210,9 +210,6 @@ def test_m2_dagger_plan_041_r28(rnd):
     apart = ("memory_log", "matchup") + (("name", "seeds") if ck1_round != rnd else ())
     assert {k: x for k, x in new.items() if k not in apart} == {k: x for k, x in ck1.items() if k not in apart}
     if ck1_round != rnd:
-        spec = importlib.util.spec_from_file_location("rush_check_plan", root.parents[1] / "tools" / "eval" / "rush_check_plan.py")
-        gen = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(gen)
         first = (rnd - 1) * gen.DAGGER_ROUND_STRIDE + 1
         assert new["name"] == f"dagger-r{rnd}"
         assert new["seeds"] == [gen.splitmix64(gen.DAGGER_SEED_KEY + k) >> 32 for k in range(first, first + games)]

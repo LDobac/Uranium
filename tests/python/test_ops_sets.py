@@ -1,9 +1,8 @@
 import json
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools" / "eval"))
-import ops_sets  # noqa: E402
+import eval_helpers  # noqa: F401
+
+import ops_sets
 
 
 def test_botgen_view_is_the_teacher_slot_in_tvt_052_r7(tmp_path):

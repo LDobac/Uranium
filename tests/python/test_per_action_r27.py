@@ -2,16 +2,14 @@ import functools
 import hashlib
 import json
 import os
-import sys
 from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools" / "eval"))
+import eval_helpers  # noqa: F401
 
-import per_action as pa  # noqa: E402
-import per_action_table as pat  # noqa: E402
+import per_action as pa
+import per_action_table as pat
 
 
 def test_opponent_class_041_r27():

@@ -1,20 +1,18 @@
 import json
 import shutil
-import sys
 import tomllib
 from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools" / "eval"))
+from eval_helpers import ROOT
 
-import branch_collect as bcol  # noqa: E402
-import branch_common as bc  # noqa: E402
-import branch_plan as bp  # noqa: E402
-import eval_common as ec  # noqa: E402
-import protocol  # noqa: E402
-import tables  # noqa: E402
+import branch_collect as bcol
+import branch_common as bc
+import branch_plan as bp
+import eval_common as ec
+import protocol
+import tables
 
 CONFIG = ROOT / "config" / "branch_b1.toml"
 CKPT = "checkpoints/m2-s1/ckpt-39096"
