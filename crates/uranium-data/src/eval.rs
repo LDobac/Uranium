@@ -93,7 +93,7 @@ impl EvalStream {
                 let ids = eval_games(&src, &scan, n, sel.seed);
                 Source::Chosen(ChosenGames::with_until(src, &ids, sel.until_frame))
             }
-            None => Source::All(src),
+            None => Source::All(src.skip_empty(&scan)),
         };
         Ok(Self { feeder, source, until_frame: sel.until_frame, has_open, judges: vec![None; cfg.lanes], sur: SurrenderEval::default(), held_frames: Vec::new(), open_se: 0.0, open_n: 0 })
     }

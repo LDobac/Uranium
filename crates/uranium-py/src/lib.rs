@@ -71,7 +71,8 @@ impl Feeder {
             });
             let mut src = source(&dirs, st, &cfg)?;
             if check_maps && !synthetic_maps {
-                uranium_data::data::check_maps(&src, Some(st.selection()), &maps)?;
+                let scan = uranium_data::data::check_maps(&src, Some(st.selection()), &maps)?;
+                src = src.skip_empty(&scan);
             }
             let files = src.fingerprint();
             let mut feeder = bc::Feeder::new(&cfg).with_maps(maps);

@@ -103,6 +103,7 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
     let maps = args.maps.clone().unwrap_or_else(|| Arc::new(MapStore::from_env()));
     let src = cfg.train_source(&args.dirs, args.stage.selection())?;
     let scan = crate::data::check_maps(&src, Some(args.stage.selection()), &maps)?;
+    let src = src.skip_empty(&scan);
     if let Some(s) = &cfg.data.subsample {
         let per = crate::bc::subsample_counts(&scan, args.stage.selection(), s, cfg.data.seed);
         let absent: Vec<&String> = s.keep_sources.iter().filter(|k| !per.contains_key(*k)).collect();

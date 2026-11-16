@@ -64,6 +64,7 @@ impl ShardSource {
         shuffle(&mut order, &mut Rng::new(seed));
         self.files = order.iter().map(|&i| self.files[i].clone()).collect();
         self.keys = order.iter().map(|&i| self.keys[i].clone()).collect();
+        self.only_files = self.only_files.map(|keep| (0..order.len()).filter(|&k| keep.contains(&order[k])).collect());
         self.seed = Some(seed);
         self
     }
@@ -85,6 +86,16 @@ impl ShardSource {
         self
     }
 
+    pub fn skip_empty<T: HasMeta>(self, scan: &[Vec<T>]) -> Self {
+        assert_eq!(scan.len(), self.files.len(), "one scan entry per shard file, in the source's file order");
+        let keep = (0..scan.len()).filter(|&k| scan[k].iter().any(|g| self.keeps(g.meta()))).collect();
+        self.only_files(keep)
+    }
+
+    fn keeps(&self, meta: &crate::shard::GameMeta) -> bool {
+        self.select.is_none_or(|sel| crate::split::selects(sel, meta)) && self.subsample.as_ref().is_none_or(|(sub, seed)| sub.keeps(meta, *seed))
+    }
+
     pub fn fingerprint(&self) -> String {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
@@ -103,12 +114,7 @@ impl ShardSource {
     }
 
     pub fn order_file<T: HasMeta>(&self, k: usize, mut games: Vec<T>) -> Vec<T> {
-        if let Some(sel) = self.select {
-            games.retain(|g| crate::split::selects(sel, g.meta()));
-        }
-        if let Some((sub, seed)) = &self.subsample {
-            games.retain(|g| sub.keeps(g.meta(), *seed));
-        }
+        games.retain(|g| self.keeps(g.meta()));
         if let Some(seed) = self.seed {
             shuffle(&mut games, &mut Rng::new(seed ^ (k as u64 + 1).wrapping_mul(0xD1B5_4A32_D192_ED03)));
         }

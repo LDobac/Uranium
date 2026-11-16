@@ -1521,3 +1521,43 @@ fn build_layout_keeps_the_old_dataset_order_and_fingerprints_041_r13() {
     }
     std::fs::remove_dir_all(&base).ok();
 }
+
+#[test]
+fn empty_files_are_skipped_without_changing_the_walk_041_r13() {
+    use uranium_data::data::{GameId, SourcePos, StepSource, scan_files};
+    use uranium_data::split::{Selection, Subsample};
+    let games: Vec<ShardGame> = (0..40).map(|i| game_len(1 + (i % 16) as usize, i + 1)).collect();
+    let root = shard_dir("skip-empty", &games, 2);
+    let mut cfg = tiny_bc(1, 0);
+    cfg.data.subsample = Some(Subsample { fraction: 0.2, keep_sources: vec![], fraction_by_race: None, fraction_by_source: None });
+    let plain = || cfg.train_source(std::slice::from_ref(&root), Selection::S1).unwrap();
+    let scan = scan_files(plain().files()).unwrap();
+    let skipping = || plain().skip_empty(&scan);
+    let walk = |mut s: ShardSource, from: Option<SourcePos>| -> Vec<(String, Option<GameId>, SourcePos)> {
+        if let Some(pos) = from {
+            s.seek(pos).unwrap();
+        }
+        let mut out = Vec::new();
+        while let Some(g) = s.next_game().unwrap() {
+            out.push((g.meta.replay_sha256, s.last_id(), s.position()));
+        }
+        out.push((String::new(), s.last_id(), s.position()));
+        out
+    };
+    let want = walk(plain(), None);
+    let empty: Vec<usize> = (0..scan.len()).filter(|&k| plain().file_games(k).unwrap().is_empty()).collect();
+    assert!(want.len() > 3 && !empty.is_empty() && empty.len() < scan.len(), "{} games, {} of {} files empty", want.len() - 1, empty.len(), scan.len());
+    assert_eq!(walk(skipping(), None), want, "same games, ids and positions");
+    let mut seeks: Vec<SourcePos> = want.iter().map(|w| w.2).collect();
+    seeks.extend(empty.iter().map(|&k| SourcePos { next: GameId { file: k, game: 0 } }));
+    for pos in seeks {
+        assert_eq!(walk(skipping(), Some(pos)), walk(plain(), Some(pos)), "after a seek to {pos:?}");
+    }
+    let files = plain().files().to_vec();
+    for &k in &empty {
+        std::fs::write(&files[k], b"not a shard").unwrap();
+    }
+    assert!(plain().file_games(empty[0]).is_err());
+    assert_eq!(walk(skipping(), None), want, "the empty files are not opened");
+    std::fs::remove_dir_all(&root).ok();
+}
