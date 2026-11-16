@@ -999,6 +999,11 @@ mod tests {
     }
 
     #[test]
+    fn fixture_ids_match_the_type_tables_013_r1() {
+        assert_eq!(uranium_env::types::TypeTables::get().unit_by_name("Protoss_Dragoon").map(|u| u.id as u16), Some(DRAGOON));
+    }
+
+    #[test]
     fn rush_rules_022_r4() {
         let p = TpParams::default();
         let depots = [home()];

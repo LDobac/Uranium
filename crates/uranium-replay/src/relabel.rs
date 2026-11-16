@@ -9,6 +9,7 @@ use crate::cmd::{Cmd, op};
 use crate::label::GAME_START_FRAME;
 use crate::shard::MemoryAction;
 use uranium_env::features::label::DecisionLogLine;
+use uranium_env::types::NO_TYPE;
 
 pub fn teacher_build(name: &str) -> Result<T0Build> {
     match name {
@@ -229,7 +230,6 @@ impl MemoryCheck {
 }
 
 pub const UNMODELED_OP: u8 = 0xff;
-const NO_TYPE: u16 = 228;
 const LAST_SLOT: u16 = 254;
 const SHUTTLE: u16 = 72;
 

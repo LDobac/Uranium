@@ -131,3 +131,69 @@ pub fn building_tile(u: &UnitState) -> Tile {
     let (w, h) = tile_size(u.unit_type);
     ((u.pos.0.saturating_sub(w * 16)) / 32, (u.pos.1.saturating_sub(h * 16)) / 32)
 }
+
+#[cfg(test)]
+mod tests {
+    use uranium_env::types::TypeTables;
+
+    use super::*;
+
+    #[test]
+    fn unit_and_tech_ids_match_the_type_tables_013_r1() {
+        let t = TypeTables::get();
+        let units = [
+            (MARINE, "Terran_Marine"),
+            (SCV, "Terran_SCV"),
+            (DROPSHIP, "Terran_Dropship"),
+            (CC, "Terran_Command_Center"),
+            (DEPOT, "Terran_Supply_Depot"),
+            (REFINERY, "Terran_Refinery"),
+            (BARRACKS, "Terran_Barracks"),
+            (FACTORY, "Terran_Factory"),
+            (STARPORT, "Terran_Starport"),
+            (CONTROL_TOWER, "Terran_Control_Tower"),
+            (BUNKER, "Terran_Bunker"),
+            (SIEGE_TANK, "Terran_Siege_Tank_Tank_Mode"),
+            (SIEGE_TANK_SIEGED, "Terran_Siege_Tank_Siege_Mode"),
+            (MACHINE_SHOP, "Terran_Machine_Shop"),
+            (ZERGLING, "Zerg_Zergling"),
+            (HYDRALISK, "Zerg_Hydralisk"),
+            (MUTALISK, "Zerg_Mutalisk"),
+            (LARVA, "Zerg_Larva"),
+            (DRONE, "Zerg_Drone"),
+            (OVERLORD, "Zerg_Overlord"),
+            (HATCHERY, "Zerg_Hatchery"),
+            (LAIR, "Zerg_Lair"),
+            (HIVE, "Zerg_Hive"),
+            (SPIRE, "Zerg_Spire"),
+            (SPAWNING_POOL, "Zerg_Spawning_Pool"),
+            (EXTRACTOR, "Zerg_Extractor"),
+            (DARK_TEMPLAR, "Protoss_Dark_Templar"),
+            (PROBE, "Protoss_Probe"),
+            (ZEALOT, "Protoss_Zealot"),
+            (NEXUS, "Protoss_Nexus"),
+            (PYLON, "Protoss_Pylon"),
+            (ASSIMILATOR, "Protoss_Assimilator"),
+            (GATEWAY, "Protoss_Gateway"),
+            (CITADEL, "Protoss_Citadel_of_Adun"),
+            (CYBERNETICS_CORE, "Protoss_Cybernetics_Core"),
+            (TEMPLAR_ARCHIVES, "Protoss_Templar_Archives"),
+            (MINERAL_FIELDS[0], "Resource_Mineral_Field"),
+            (MINERAL_FIELDS[1], "Resource_Mineral_Field_Type_2"),
+            (MINERAL_FIELDS[2], "Resource_Mineral_Field_Type_3"),
+            (GEYSER, "Resource_Vespene_Geyser"),
+        ];
+        for (id, name) in units {
+            assert_eq!(t.unit_by_name(name).map(|u| u.id as u16), Some(id), "{name}");
+        }
+        assert_eq!(t.techs.iter().find(|x| x.name == "Tank_Siege_Mode").map(|x| x.id as u16), Some(TECH_TANK_SIEGE));
+    }
+
+    #[test]
+    fn is_building_matches_the_type_tables_013_r1() {
+        let race_units = TypeTables::get().units.iter().filter(|u| ["Terran_", "Zerg_", "Protoss_"].iter().any(|p| u.name.starts_with(p)));
+        for u in race_units {
+            assert_eq!(is_building(u.id as u16), u.is_building(), "{}", u.name);
+        }
+    }
+}

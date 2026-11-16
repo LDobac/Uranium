@@ -5,7 +5,7 @@ use uranium_proto::{GameEvent, GameInfo, Pos, RawFrame, Tile, UnitId, UnitState,
 
 use crate::features::MapPrecompute;
 use crate::scout::{FPS, is_army_type, is_ground_army_type};
-use crate::types::{TypeTables, order_id};
+use crate::types::{NO_TYPE, TypeTables, order_id};
 
 pub const WINDOW_END: u32 = 14_400;
 pub const RUSH_BEFORE: u32 = 7_200;
@@ -22,7 +22,6 @@ const PULL_MIN: u32 = 3;
 const SUPPLY_CAP: u16 = 400;
 const TRIP: u32 = 8;
 const FIELD_MATCH: i64 = 32;
-const NO_TYPE: u16 = 228;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct OpsMetrics {

@@ -15,6 +15,8 @@ struct OrderRow {
     name: String,
 }
 
+pub const NO_TYPE: u16 = 228;
+
 pub fn order_id(name: &str) -> Option<u16> {
     static O: OnceLock<Vec<OrderRow>> = OnceLock::new();
     O.get_or_init(|| toml::from_str::<Rows<OrderRow>>(ORDER_TYPES_TOML).expect("order table").rows).iter().find(|o| o.name == name).map(|o| o.id)

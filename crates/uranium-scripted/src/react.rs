@@ -1229,6 +1229,15 @@ mod tests {
     }
 
     #[test]
+    fn order_ids_match_the_order_table_013_r1() {
+        use uranium_env::types::order_id;
+        assert_eq!(order_id("ConstructingBuilding"), Some(ORDER_CONSTRUCTING));
+        assert_eq!(order_id("PlaceBuilding"), Some(ORDER_PLACE_BUILDING));
+        assert_eq!(order_id("Move"), Some(ORDER_MOVE));
+        assert_eq!(["Attack1", "Attack2", "AttackUnit", "AttackFixedRange", "AttackMove"].map(|n| order_id(n).unwrap()), ATTACK_ORDERS);
+    }
+
+    #[test]
     fn rush_rules_021_r8() {
         let p = ReactParams::default();
         let depots = [home()];
