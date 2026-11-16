@@ -16,6 +16,8 @@ struct OrderRow {
 }
 
 pub const NO_TYPE: u16 = 228;
+pub const NEUTRAL_PLAYER: u8 = 11;
+pub const FRAMES_PER_SECOND: u32 = 24;
 
 pub fn order_id(name: &str) -> Option<u16> {
     static O: OnceLock<Vec<OrderRow>> = OnceLock::new();

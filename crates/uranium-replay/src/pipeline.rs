@@ -216,7 +216,7 @@ pub(crate) fn own_labels(rep: &Replay, perspective: u8, labeler: &Labeler, units
     Ok(labeler.label(&cmds, rep.header.frames, |f| units_at.get(&f).unwrap_or(&empty)))
 }
 
-pub(crate) fn hex(b: &[u8]) -> String {
+pub fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 

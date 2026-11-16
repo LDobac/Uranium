@@ -6,7 +6,7 @@ use uranium_proto::{RawFrame, UnitId, UnitState, flags};
 use super::map::MapInfo;
 use super::memory::{AgentMemory, ResourceTile, resource_tile};
 use super::schema::{CELLS, MAP, ORDER_NONE, OWNER_ENEMY, OWNER_NEUTRAL, OWNER_SELF};
-use crate::types::{TypeTables, UnitType};
+use crate::types::{NEUTRAL_PLAYER, TypeTables, UnitType};
 
 #[derive(Debug)]
 pub struct Ids {
@@ -204,8 +204,6 @@ fn unseen_resources(mem: &AgentMemory, map: &MapInfo, visible: &std::collections
     }
     out.into_values().collect()
 }
-
-const NEUTRAL_PLAYER: u8 = 11;
 
 pub fn tile_of(u: &UnitState) -> (i32, i32) {
     (u.pos.0 as i32 / 32, u.pos.1 as i32 / 32)

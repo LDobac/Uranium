@@ -7,7 +7,7 @@ use uranium_proto::*;
 use crate::types::*;
 use crate::{Brain, dist2, done, is_neutral_owner, nearest};
 
-pub const FPS: u32 = 24;
+pub use uranium_env::types::FRAMES_PER_SECOND as FPS;
 const TILE: i64 = 32;
 pub const BUNKER_HP: u16 = 350;
 const CHOKE_MIN: i64 = 8;

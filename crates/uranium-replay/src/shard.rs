@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use uranium_env::branch::sha256_hex;
 use uranium_proto::{GameInfo, PrivilegedSummary, RawFrame};
 
 use crate::label::Label;
@@ -216,10 +216,6 @@ pub fn next_shard_index(dir: &Path) -> u32 {
 
 pub fn staging_dir() -> PathBuf {
     std::env::var_os(STAGING_DIR_ENV).filter(|v| !v.is_empty()).map_or_else(|| std::env::temp_dir().join("uranium-replay").join("shard-staging"), PathBuf::from)
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 pub type CopyFn = fn(&Path, &Path) -> std::io::Result<u64>;

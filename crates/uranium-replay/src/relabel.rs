@@ -623,7 +623,7 @@ mod tests {
     }
 
     fn fnv1a(b: &[u8]) -> u64 {
-        b.iter().fold(0xcbf2_9ce4_8422_2325, |h, &x| (h ^ x as u64).wrapping_mul(0x0100_0000_01b3))
+        uranium_env::branch::fnv1a(uranium_env::branch::FNV_OFFSET, b)
     }
 
     const REACT_GOLDEN: u64 = 0xcd6e_6f30_2e17_9b1f;

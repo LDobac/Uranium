@@ -6,7 +6,7 @@ pub const W: u16 = 96;
 pub const H: u16 = 96;
 pub const SELF: u8 = 0;
 pub const ENEMY: u8 = 1;
-pub const NEUTRAL: u8 = 11;
+pub const NEUTRAL: u8 = crate::types::NEUTRAL_PLAYER;
 
 pub fn ty(name: &str) -> u16 {
     TypeTables::get().unit_by_name(name).unwrap_or_else(|| panic!("{name}")).id as u16

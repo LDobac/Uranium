@@ -529,13 +529,11 @@ pub struct SessionRecord {
     pub infer_seed: Option<u64>,
 }
 
-const NEUTRAL_PLAYER: u8 = 11;
-
 fn revealed_enemy_race(f: &RawFrame, me: u8) -> Option<String> {
     let types = uranium_env::types::TypeTables::get();
     f.units
         .iter()
-        .filter(|u| u.owner != me && u.owner != NEUTRAL_PLAYER)
+        .filter(|u| u.owner != me && u.owner != uranium_env::types::NEUTRAL_PLAYER)
         .filter_map(|u| types.unit(u.unit_type))
         .find(|t| matches!(t.race.as_str(), "Terran" | "Protoss" | "Zerg"))
         .map(|t| t.race.clone())
@@ -544,7 +542,7 @@ fn revealed_enemy_race(f: &RawFrame, me: u8) -> Option<String> {
 fn visibility_violations(f: &RawFrame, me: u8) -> u64 {
     f.units
         .iter()
-        .filter(|u| u.owner != me && u.owner != NEUTRAL_PLAYER)
+        .filter(|u| u.owner != me && u.owner != uranium_env::types::NEUTRAL_PLAYER)
         .filter(|u| {
             let (w, h) = uranium_scripted::types::tile_size(u.unit_type);
             let (x0, y0) = ((u.pos.0 as i32 - w as i32 * 16) / 32 - 1, (u.pos.1 as i32 - h as i32 * 16) / 32 - 1);

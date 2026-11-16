@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
+use uranium_env::branch::fnv1a;
 use uranium_proto::{Act, AgentMsg, BridgeMsg, GameEnd, PrivilegedSummary, RawFrame, read_msg, write_msg};
 
 use crate::Replay;
@@ -310,14 +311,6 @@ fn check_step(h: u64, state: &[u8], events: &mut Vec<Vec<u8>>) -> Result<u64> {
     write_msg(&mut ev, events)?;
     events.clear();
     Ok(fnv1a(fnv1a(h, state), &ev))
-}
-
-fn fnv1a(mut h: u64, bytes: &[u8]) -> u64 {
-    for &b in bytes {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100_0000_01b3);
-    }
-    h
 }
 
 fn session(rep: &Replay, perspective: u8, stream: TcpStream, extra_stops: &[u32], on_info: &mut OnInfo, on_frame: &mut OnFrame) -> Result<PlayResult> {

@@ -6,7 +6,7 @@ use uranium_proto::{GameInfo, RawFrame, Tile, UnitId, flags};
 
 use crate::types::{TypeTables, UnitType};
 
-pub const FPS: f64 = 24.0;
+pub const FPS: f64 = crate::types::FRAMES_PER_SECOND as f64;
 pub const FRAME_4M: u32 = 5_760;
 pub const FRAME_6M: u32 = 8_640;
 pub const FRAME_1M: u32 = 1_440;

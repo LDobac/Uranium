@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use serde_json::Value;
+use uranium_store::elog;
 
 use crate::plan::{Plan, Side};
 

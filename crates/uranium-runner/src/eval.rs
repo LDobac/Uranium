@@ -9,7 +9,8 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use uranium_agent::infer::InferenceHandle;
 use uranium_agent::{EndBoard, Routes, T0Builds};
-use uranium_store::storage::{self, ContentObserver, Lease, LockObserver, LockStatus, LockView, StorageConfig, TakeOver, Watched, YieldObserver};
+use uranium_store::elog;
+use uranium_store::storage::{self, ContentObserver, Lease, LockObserver, LockStatus, LockView, StorageConfig, TakeOver, Watched, YieldObserver, now_secs};
 
 use crate::plan::{self, HostEntry, ModelKey, Plan};
 use crate::{BRIDGE_NEVER_CONNECTED, Dispatch, InferTag, Job, JobOutcome, JobSource, Models, capabilities};
@@ -229,10 +230,6 @@ pub struct Inflight {
     pub pid: u32,
     pub time: u64,
     pub games: Vec<u64>,
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 fn read_inflight(job: &EvalJob) -> Result<Vec<Inflight>> {

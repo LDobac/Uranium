@@ -13,6 +13,7 @@ use clap::{Args, Parser, Subcommand};
 use sha2::{Digest, Sha256};
 
 use crate::api::{Api, Http};
+use crate::collect::hex;
 use crate::env::Settings;
 use crate::limit::Daily;
 
@@ -196,10 +197,6 @@ fn print_shape(body: &[u8]) {
         Ok(v) => println!("{}", serde_json::to_string_pretty(&redact::shape(&v)).unwrap_or_default()),
         Err(_) => println!("<non-JSON body, {} bytes>", body.len()),
     }
-}
-
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 #[cfg(test)]

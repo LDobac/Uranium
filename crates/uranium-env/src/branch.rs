@@ -12,7 +12,7 @@ use crate::actions::ActionTable;
 use crate::features::Observation;
 use crate::features::label::MemoryAction;
 
-pub const FRAMES_PER_SECOND: u32 = 24;
+pub use crate::types::FRAMES_PER_SECOND;
 
 pub const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 

@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 use sha2::Digest as _;
+use uranium_replay::pipeline::hex;
 
 #[derive(Parser)]
 struct Cli {
@@ -243,10 +244,6 @@ fn write_map_resources(map: &Path) -> Result<(PathBuf, usize)> {
     let chk_sha256: String = Sha256::digest(&chk).iter().map(|b| format!("{b:02x}")).collect();
     std::fs::write(&path, toml::to_string(&MapResources::new(source, chk_sha256, resources))?)?;
     Ok((path, n))
-}
-
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 fn load(p: &Path) -> Result<uranium_replay::Replay> {

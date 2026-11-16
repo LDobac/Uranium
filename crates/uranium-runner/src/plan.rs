@@ -7,6 +7,7 @@ use uranium_agent::infer::{DEFAULT_CHAT, SampleMode, SurrenderMode};
 use uranium_env::branch::{BranchPlanLine, BranchPlayer, GameBranch, HORIZON_MARGIN, Intervention, SnapshotRule, Snapshots};
 use uranium_env::features::extract::action_table;
 use uranium_proto::Race;
+use uranium_store::elog;
 use uranium_proto::control::{GameSpec, MapKey, PlayerKind, PlayerSpec};
 
 #[derive(Deserialize, Debug, Clone)]

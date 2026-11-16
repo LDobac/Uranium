@@ -1,10 +1,3 @@
-macro_rules! elog {
-    ($($t:tt)*) => {{
-        use std::io::Write as _;
-        let _ = writeln!(std::io::stderr(), $($t)*);
-    }};
-}
-
 pub mod calibrate;
 pub mod eval;
 pub mod plan;
@@ -26,6 +19,7 @@ use uranium_agent::{ConcedeBoard, EndBoard, PolicySpec, RejectionLog, Routes, Se
 use uranium_env::branch::{BranchBoard, GameBranch};
 use uranium_proto::control::*;
 use uranium_proto::{read_msg, write_msg};
+use uranium_store::elog;
 
 pub use crate::plan::{HostEntry, Job, ModelKey};
 
