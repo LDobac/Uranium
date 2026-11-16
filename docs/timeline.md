@@ -11,7 +11,7 @@
 - 2026-11-16에 기존 항목을 이 형식으로 줄였다. 줄이기 전 원문은 git 기록(`git log --follow docs/timeline.md`)에 있다.
 
 ## 2026-10-15
-- 22:24 — M0: spec 000–061 작성, spec driven 규칙 도입 (커밋 "M0: spec-driven project setup")
+- 22:24 — M0: [spec 000–061](spec/README.md) 작성, spec driven 규칙 도입 (커밋 "M0: spec-driven project setup")
 - 22:24 — M1: Burn/Vulkan 벤치([bench_bc250](report/bench/2026_10_15_22_24_bench_bc250.md)), OpenBW 빌드([openbw_spike](report/milestone/2026_10_15_22_24_openbw_spike.md)), CASC 추출([mpq_extraction](report/milestone/2026_10_15_22_24_mpq_extraction.md))
 - 22:29 — M2: proto·브리지·T0 테란 봇·셀프매치 ([m2_selfmatch](report/milestone/2026_10_15_22_29_m2_selfmatch.md))
 
@@ -134,7 +134,7 @@
 - 시각 없음 — 결정·구현([AMB-030-5](spec/README.md), 사용자): 보이는 적 유닛 내부 정보(생산 큐·진행도·핵 장전)는 0으로 숨김(재build 없음, BC 본학습부터) ([030 §2](spec/2026_10_15_22_24_030-observation.md))
 - 시각 없음 — 결정(사용자): SC:R 지연은 보정 없이 기록만·명령 유효 기한 관측 + 24프레임([AMB-012-5](spec/README.md)), `uranium-adapter` 안 만듦(AMB-001-5), SC:R `CommandFailed`는 Deferred(AMB-012-6)
 - 시각 없음 — spec 012·013 M7 개정안(Review) 작성·승인 요청: 스파이크 실측·결정·관측 시점·종료 판정·AC 재구성, `uranium-adapter` 삭제 ([012](spec/2026_10_15_22_24_012-bridge-remastered.md), [013](spec/2026_10_15_22_24_013-version-mapping.md))
-- 시각 없음 — 승인(사용자): spec 012·013 M7 개정안 Approved([012-R15](spec/2026_10_15_22_24_012-bridge-remastered.md) 시간 제한 없음 포함), 다음은 구현 계획
+- 시각 없음 — 승인(사용자): spec 012·[013](spec/2026_10_15_22_24_013-version-mapping.md) M7 개정안 Approved([012-R15](spec/2026_10_15_22_24_012-bridge-remastered.md) 시간 제한 없음 포함), 다음은 구현 계획
 - 시각 없음 — 구현(M7 1단계, [012-R18](spec/2026_10_15_22_24_012-bridge-remastered.md)): 에이전트 Realtime 모드(`valid_until_frame`, `last_failed` 0, privileged 미전달), 새 명령 `uranium-agent scr`(루프백 7700)
 - 시각 없음 — 구현(M7 2단계, [013-R1](spec/2026_10_15_22_24_013-version-mapping.md)): `bridge/scr` samase 플러그인 — 관측·이벤트·종료·명령·I/O 스레드, 표 `bridge/scr/tables`, 테스트 13개 통과, 실게임 검증 전 ([012](spec/2026_10_15_22_24_012-bridge-remastered.md))
 - 시각 없음 — 구현(M7 3단계): `tools/scr/build.ps1`·`run.ps1`, `.env.example` SC:R 절, [scr](guide/scr.md)·[commands](guide/commands.md) 갱신
@@ -557,7 +557,7 @@
 - 02:13 — 장애·재실행: 11-12 23:07경 bc250_2가 mix-e5 val500 중 멈춤 → 드라이버 재시작 뒤 재채점 끝(top-1 72.21%), 첫 시도는 `<shared>/artifacts/bc_e2_val/val500/m2-mix-e5__ckpt-1187.failed-1.*`로 보존
 - 02:37 — 결과: 경로 2 s2e2 test(대상 맵 1,199게임, CUDA bf16) top-1 72.14%·NLL 0.868(Checkpoint 1 72.15%·0.871). `<shared>/artifacts/bc_main_eval/test_cuda/m2-s2e2.json` ([050-R9](spec/2026_10_15_22_24_050-evaluation.md), [041-AC1](spec/2026_10_15_22_24_041-imitation-learning.md))
 - 09:42 — 결과(s2e2 게임, 모델 2 대 Checkpoint 1): T0 300 46.3% 대 39.3%(p 0.099), T1 300 8.0% 대 4.3%, AC1 stochastic lf0 80.0% 대 68.3%(p 0.009); p < 0.01은 AC1 lf0뿐, 러시 막음은 그대로. 표 `local/work/m2_main/s2e2_tables.md` ([050-R9](spec/2026_10_15_22_24_050-evaluation.md))
-- 16:54 — 결정 반영(사용자 2026-11-12 승인): spec 051 Approved, AMB-051-1~5 기본안 채택(B1 1,280판, 8:00까지), 020·031·032·041·050 문구 반영 ([051](spec/2026_11_12_12_39_051-branch-games.md), [AMB-051-1~5](spec/README.md))
+- 16:54 — 결정 반영(사용자 2026-11-12 승인): spec 051 Approved, AMB-051-1~5 기본안 채택(B1 1,280판, 8:00까지), [020](spec/2026_10_15_22_24_020-env-orchestration.md)·[031](spec/2026_10_15_22_24_031-action-space.md)·[032](spec/2026_10_15_22_24_032-model-architecture.md)·[041](spec/2026_10_15_22_24_041-imitation-learning.md)·[050](spec/2026_10_15_22_24_050-evaluation.md) 문구 반영 ([051](spec/2026_11_12_12_39_051-branch-games.md), [AMB-051-1~5](spec/README.md))
 - 17:00 — 새 리포트 절·발견: model2 9절 "모델 2 경로 지점별 비교" — val500 차이 작음, 풀 HP R² 0.51~0.56(Checkpoint 1 0.29~0.31)이나 반사실 개입 효과는 작음; 회귀 게이트 mix-e7 ③a 실패(사용자 보고 대상). 표 `local/work/m2_report/` ([model2](report/plan/2026_11_09_22_18_model2.md) 9절, [050-R9·R10](spec/2026_10_15_22_24_050-evaluation.md))
 - 시각 없음 — 결정·발견·준비(사용자 결정: 경로 2 DAgger r1은 `m2-mix-e7/ckpt-1212`에서, 교사 + dagger 몫은 Checkpoint 1 r1 실현 몫): 재계산 59.54%, plan `config/plans/dagger_m2_r1.toml`·설정 `config/bc_m2_dagger_r1.toml` 준비, `mix-fractions --teacher-share` 추가 ([041-R29·R21·R22](spec/2026_10_15_22_24_041-imitation-learning.md) ④)
 - 17:1x — 결정·spec 승인(사용자): 리플레이 약점 네 가지(채취 효율, 서플라이 막힘, 자원 묵힘, 초반 러시 전투)를 세션 지표로 재는 새 spec 052 Approved, AMB-052-2·6·10은 사용자 결정·나머지 기본안, 보고만 ([052](spec/2026_11_13_17_19_052-ops-metrics.md), [AMB-052-1~10](spec/README.md))
@@ -602,7 +602,7 @@
 - 09:05 — U9 구현: RL 종족별 참조 KL `[kl.reference]`, `train.csv` `kl_ref_<종족>` 4열, `bench rl --references K`; 표가 없으면 비트 동일 ([044-R9·AC4](spec/2026_11_14_08_18_044-self-game-distillation.md), [042-R22](spec/2026_10_15_22_24_042-rl-training.md) ①)
 - 09:05 — spec 반영·준비(사용자 결정): R29 ④ 경로 2 예외(r2 뒤에도 DAgger r3), plan `config/plans/dagger_m2_r3.toml`·설정 `config/bc_m2_dagger_r3.toml`(data seed 15), 실행 순서 `<shared>/eval/m2-lineage/scripts/dagger_r3.sh` ([041-R29·R22·R28](spec/2026_10_15_22_24_041-imitation-learning.md) ④)
 - 09:12 — 정정: 10:2x "결정(남은 질문 일괄)" 줄의 실제 기록 시각은 09:02(커밋 3d0b767), 같은 날 x 표기 시각도 대략값
-- 09:12 — 결정(사용자): 경로 2에도 r4 규칙 적용, 022 교사가 합격선 미달이면 방향 안 수치 조정 반복, 증류 d1·d2 모두 실패하면 T0 프로토스가 높은 쪽에서 RL, B1은 장비가 빌 때마다 ([041-R29](spec/2026_10_15_22_24_041-imitation-learning.md) ④, [051-R14](spec/2026_11_12_12_39_051-branch-games.md))
+- 09:12 — 결정(사용자): 경로 2에도 r4 규칙 적용, [022](spec/2026_11_14_08_18_022-matchup-teacher.md) 교사가 합격선 미달이면 방향 안 수치 조정 반복, 증류 d1·d2 모두 실패하면 T0 프로토스가 높은 쪽에서 RL, B1은 장비가 빌 때마다 ([041-R29](spec/2026_10_15_22_24_041-imitation-learning.md) ④, [051-R14](spec/2026_11_12_12_39_051-branch-games.md))
 - 09:14 — 장시간 실행 시작: DAgger r3 판 300판(`m2-dagger-r2/ckpt-1408`) `<shared>/eval/dagger-m2-r3-20261114/`, 학습은 `r2_first_test.verdict`의 `proceed` 필요 ([041-R29·R22·R28](spec/2026_10_15_22_24_041-imitation-learning.md) ④)
 - 09:15 — U10 구현: `config/rl_m2_race.toml`(로비 종족 테란 24·프로토스 28·저그 28·Random 20, `[kl.reference]`), 사다리 항목 `race = "Random"` 허용, 메인 임시 결정 3가지 ([044-R10·R11·AC7](spec/2026_11_14_08_18_044-self-game-distillation.md), [042-R22](spec/2026_10_15_22_24_042-rl-training.md), [021-R7](spec/2026_10_15_22_24_021-opponent-pool.md))
 - 09:46 — 결정(사용자, 단계 끝 일괄 질문): 증류 레이블 마스크·직전 실패 명령 규칙, `r_value_stages = ["C0", "C1"]`, T1 몫, r4 방식 확정; 021·042·044 표기를 "사용자 확인 2026-11-14"로 ([044-R3](spec/2026_11_14_08_18_044-self-game-distillation.md), [021](spec/2026_10_15_22_24_021-opponent-pool.md), [042](spec/2026_10_15_22_24_042-rl-training.md))
@@ -631,7 +631,7 @@
 - 16:56 — 수정(사용자 결정 ②): 022 교사만 바꿔 라이브 교사와 그림자 재레이블이 같은 결정을 내리게 함(021-R8 교사는 바이트 동일), 개발 seed 6판 일치 95.0~97.7%, 커밋 dc1f8d9 ([022-R9·AC3](spec/2026_11_14_08_18_022-matchup-teacher.md), [021-R8](spec/2026_10_15_22_24_021-opponent-pool.md))
 - 16:56 — 실행 시작(022-AC2 공식 점검 3회차): 208판, 교사 7b24d7d, Linux CPU 호스트 3슬롯만. 산출물 `local/work/teacher_tp_check/check3/` ([022-AC2](spec/2026_11_14_08_18_022-matchup-teacher.md))
 - 17:33 — 결과(044-R12 표본 end-to-end): 증류 판 20판 → build → 레이블 → `mix-fractions` → BC 50 update → 측정 job → RL 100 update 정상(CUDA), 600판이면 약 490판 보충 필요 추정, ROCm BC·RL은 사용자 지시로 멈춤. `<shared>/eval/distill-d1-sample-20261114/` ([044-R12·AC5](spec/2026_11_14_08_18_044-self-game-distillation.md))
-- 17:46 — 결정(사용자, 표본 뒤 일괄 질문): 증류 d1은 600판 + 보충 500판을 한 번에, 레이블 seed 1, T1 크래시 판은 build 전에 뺌, 판 추론은 CUDA 호스트; 022 botgen 보충 규칙 확정 ([044](spec/2026_11_14_08_18_044-self-game-distillation.md))
+- 17:46 — 결정(사용자, 표본 뒤 일괄 질문): 증류 d1은 600판 + 보충 500판을 한 번에, 레이블 seed 1, T1 크래시 판은 build 전에 뺌, 판 추론은 CUDA 호스트; [022](spec/2026_11_14_08_18_022-matchup-teacher.md) botgen 보충 규칙 확정 ([044](spec/2026_11_14_08_18_044-self-game-distillation.md))
 - 17:46 — 결정·준비(사용자): 보충 plan `config/plans/distill_m2_d1_x1.toml`(500판), ROCm RL 최악 모양 메모리는 Linux ROCm 호스트를 다시 쓸 수 있을 때 재측정, spec 044 반영 ([044-R1·R2·R3](spec/2026_11_14_08_18_044-self-game-distillation.md), [050-R9](spec/2026_10_15_22_24_050-evaluation.md))
 - 17:49 — 실행 끝·결과(022-AC2 3회차): T0 프로토스 53승 3무 8패·테란 60승 3무 1패 → 합격선 통과, 크래시 0 ([022-AC2](spec/2026_11_14_08_18_022-matchup-teacher.md))
 - 18:08 — 실행 시작(022-R12 교사 botgen v2): 800판, 교사 7b24d7d, Linux CPU 호스트 3슬롯만 ([022-R12](spec/2026_11_14_08_18_022-matchup-teacher.md))
@@ -649,12 +649,12 @@
 
 ## 2026-11-15
 - 00:21 — 결과(044-AC5 ROCm 부분): RL learner 최악 모양 벤치(참조 모델 2개) 6.82 GiB로 12 GiB 안 → 통과. 산출물 `<shared>/eval/m2-lineage/logs/rocm_rl_mem_bench_20261115-0019.*` ([044-AC5](spec/2026_11_14_08_18_044-self-game-distillation.md), [060-AC7](spec/2026_10_15_22_24_060-infra.md) ②)
-- 01:22 — 수정(별개 리뷰어 2회): `per_action.py`가 botgen manifest 파트에서 022 교사 `teacher-tp-*`를 빼고 씀, 디스크·manifest가 다르면 멈춤; d2 행동별 지표는 이전 코드로 잼 ([041-R27](spec/2026_10_15_22_24_041-imitation-learning.md), [044-R8](spec/2026_11_14_08_18_044-self-game-distillation.md), [050-R9](spec/2026_10_15_22_24_050-evaluation.md))
+- 01:22 — 수정(별개 리뷰어 2회): `per_action.py`가 botgen manifest 파트에서 [022](spec/2026_11_14_08_18_022-matchup-teacher.md) 교사 `teacher-tp-*`를 빼고 씀, 디스크·manifest가 다르면 멈춤; d2 행동별 지표는 이전 코드로 잼 ([041-R27](spec/2026_10_15_22_24_041-imitation-learning.md), [044-R8](spec/2026_11_14_08_18_044-self-game-distillation.md), [050-R9](spec/2026_10_15_22_24_050-evaluation.md))
 - 02:07 — 장시간 실행 끝·결과: `m2-distill-d2` 학습(2,014 update) → 지점 측정 → 판정 stop(`<shared>/eval/m2-lineage/d2_first_test.verdict`): T0 프로토스 12/32·테란 15/32, 막음 합 45 < 70, 게이트 FAIL ([044-R5·R6](spec/2026_11_14_08_18_044-self-game-distillation.md), [050-R9·R10](spec/2026_10_15_22_24_050-evaluation.md))
 - 02:10 — 결정(사용자 위임·Fable 자문): 교사 라운드 t1은 d1(`m2-distill-d1/ckpt-2000`)에서 시작(data.seed 17), t1부터 종족별 NLL은 기록만·교사 모드 판 ≤ 3/32를 통과 조건에, RL 출발점 규칙(D = t1 또는 d1) ([044-R6·R7·R8](spec/2026_11_14_08_18_044-self-game-distillation.md), [050-R10](spec/2026_10_15_22_24_050-evaluation.md))
 - 02:20 — 데이터 변경(사용자 위임·자문 권고): 022 botgen v2를 botgen manifest에 넣고 v1은 `<shared>/datasets/replays/shards_unused/botgen/teacher-tp-20261114`로 옮김(되돌리지 말 것), 이전 manifest 백업 `local/work/botgen_manifest_pre_t1_20261115.json` ([044-R8](spec/2026_11_14_08_18_044-self-game-distillation.md), [022-R12](spec/2026_11_14_08_18_022-matchup-teacher.md), [061](spec/2026_10_15_22_24_061-shared-storage.md))
 - 02:22 — 구현·결정(사용자 위임·Fable 자문): `distill_verdict.py`에 t1 판정·RL 출발점 `d_choice` 반영(리뷰 반영), `m2-rl-fix-1`은 `--bc <D>`·`--init` 없음; d2 하락은 개막이 아니라 수비 동작. `<shared>/eval/m2-lineage/logs/rush_opening_diag.md` ([044-R6·R7·R11](spec/2026_11_14_08_18_044-self-game-distillation.md), [050-R10](spec/2026_10_15_22_24_050-evaluation.md), [042-R22](spec/2026_10_15_22_24_042-rl-training.md))
-- 02:36 — 표본 끝: 교사 라운드 t1 표본 end-to-end(d1 20판 → 022 교사 그림자 재레이블 → `mix-fractions` → BC 50 update) 정상. `<shared>/eval/teacher-t1-sample-20261115` ([044-R12·R8](spec/2026_11_14_08_18_044-self-game-distillation.md))
+- 02:36 — 표본 끝: 교사 라운드 t1 표본 end-to-end(d1 20판 → [022](spec/2026_11_14_08_18_022-matchup-teacher.md) 교사 그림자 재레이블 → `mix-fractions` → BC 50 update) 정상. `<shared>/eval/teacher-t1-sample-20261115` ([044-R12·R8](spec/2026_11_14_08_18_044-self-game-distillation.md))
 - 02:36 — 장시간 실행 시작: t1 자기 판 300판(`config/plans/dagger_m2_t1.toml`, d1 stochastic), job `<shared>/eval/teacher-m2-t1-20261115` ([044-R8](spec/2026_11_14_08_18_044-self-game-distillation.md) ②)
 - 03:03 — 실행 끝·결과: t1 300판 → 재레이블 `shards/dagger_m2/t1`(308,707 스텝) → 교사 안 종족 비율 기준 미달 → 022 교사 botgen 보충 프로토스 1,296·테란 608판 plan 둘(`teacher_botgen_tp_x1.toml`·`_x2.toml`) ([044-R8](spec/2026_11_14_08_18_044-self-game-distillation.md) ②③, [022-R12](spec/2026_11_14_08_18_022-matchup-teacher.md))
 - 03:29 — 표본 끝: RL 100 update 표본 `t1-rl-sample-cuda`(`--bc` d1, `--init` 없음) 정상, 종족별 참조 KL 확인. `local/work/m2_rl_fix/t1-rl-sample-cuda` ([044-R12·R11](spec/2026_11_14_08_18_044-self-game-distillation.md))

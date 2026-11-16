@@ -25,8 +25,8 @@ StarCraft: Remastered 로컬·LAN 커스텀 게임에서 봇 실행. 요구사�
 5. **끝나면 결과 화면에서 나감.** 봇 항복은 "gg" 채팅 → 명령 정지 → 항복 기록, 창은 사람이 닫음([012-R11](../spec/2026_10_15_22_24_012-bridge-remastered.md)). 다음 게임은 메뉴에서 다시, 게임마다 새로 접속.
 
 ## 기록·문제 해결
-- 브리지 로그 `URANIUM_SCR_LOG_DIR\uranium_bridge_scr.log`(run.ps1 기본 `runs\scr\logs`): 시작 검사([012-R6](../spec/2026_10_15_22_24_012-bridge-remastered.md)), 게임 정보(맵·플레이어), 게임 종료, 프레임 훅 지연(012-AC4), 관측 → 명령 지연·만료 Act 수(012-AC6).
+- 브리지 로그 `URANIUM_SCR_LOG_DIR\uranium_bridge_scr.log`(run.ps1 기본 `runs\scr\logs`): 시작 검사([012-R6](../spec/2026_10_15_22_24_012-bridge-remastered.md)), 게임 정보(맵·플레이어), 게임 종료, 프레임 훅 지연([012-AC4](../spec/2026_10_15_22_24_012-bridge-remastered.md)), 관측 → 명령 지연·만료 Act 수([012-AC6](../spec/2026_10_15_22_24_012-bridge-remastered.md)).
 - samase 로그: 모드 폴더의 상위 폴더 `samase.log`.
-- 화면에 "uranium: agent not connected"(012-R16): 에이전트가 떠 있는지, `URANIUM_SCR_AGENT_ADDR` 확인.
+- 화면에 "uranium: agent not connected"([012-R16](../spec/2026_10_15_22_24_012-bridge-remastered.md)): 에이전트가 떠 있는지, `URANIUM_SCR_AGENT_ADDR` 확인.
 - "012-R6: the bridge stays off": exe 해시·samase 버전·API 중 하나 불일치, 이유는 로그.
 - 정적 맵 확인: `URANIUM_SCR_DUMP_GAMEINFO=<파일>` → 게임 시작 때 `GameInfo`를 postcard 메시지로 저장.

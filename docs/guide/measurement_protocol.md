@@ -12,7 +12,7 @@
 | `config/plans/protocol/*.toml` | Checkpoint 1 측정 plan 사본 13개 + `t0_tp_rl`(`t0_tp`에서 `zero_last_failed`만 false, 수정 RL 점검용). 바뀌는 것은 이름(`@NAME@`)·체크포인트(`@CHECKPOINT@`)뿐 |
 | `config/protocol/t1_bots.toml` | 허용 OSS 봇 바이너리 sha256(NDEBUG 빌드) |
 | `tools/eval/protocol.py` | job 생성·조건 검사·기록, Checkpoint 1 job 재집계, teacher-forced 명령, 봇 해시 확인, 비교 |
-| `tools/eval/tables.py` | 평가 job 결과 표(러시·운영형·T1·승률), 모든 단계의 052 `ops`·`rush_combat` 표, 테란·프로토스 상대 단계의 교사 모드 판 비율([050-R10][s050]) |
+| `tools/eval/tables.py` | 평가 job 결과 표(러시·운영형·T1·승률), 모든 단계의 [052][s052] `ops`·`rush_combat` 표, 테란·프로토스 상대 단계의 교사 모드 판 비율([050-R10][s050]) |
 | `tools/eval/regression_gate.py` | 050-R10 회귀 게이트(아래 "회귀 게이트") |
 | `tools/eval/distill_verdict.py` | [044-R6][s044] 증류 라운드 판정(아래 "증류 라운드 판정") |
 | `tools/eval/per_action.py`, `per_action_table.py` | 교사 보관분 행동별 채점·표 |
@@ -35,8 +35,8 @@
 - Checkpoint 1 대응 없는 경로 2 지점([050-R9][s050] 지점 표 2026-11-14 행, [044-R6·R7·R11][s044]): `ck1_checkpoint` 없음 → `--lineage ck1` 거부.
   - `r3`: 경로 2 DAgger 3라운드(사용자 결정 2026-11-14, [041-R29][s041] ④). 메뉴 = `r2`(Checkpoint 1 대응 모델 후보라 test·val 500 종족별·T1(Windows)도 `optional`).
   - `d1`, `d2`: 증류 라운드(run `m2-distill-d<R>`만, `run_pattern`). val 500(종족별), 교사 hold-out, T0 표준 테란·프로토스 각 32판, TvZ 32판, 러시 128판 + 운영형 40판, 교사 모드 판 비율, 진단.
-  - `D`: 경로 2 수정 모델(044-R7, 통과 라운드의 체크포인트). Checkpoint 1 대응 모델 행과 같은 test 1,199, val 500(종족별), T1 300판, T0 표준 테란·프로토스. 진단은 그 라운드 지점과 같은 체크포인트·출력 폴더.
-  - `rl-fix`: 경로 2 수정 RL 점검(044-R11, 150만 step마다). T0 표준 테란·프로토스(`t0_tp_rl`), TvZ(`tvz_rl`), 러시 128 + 운영형 40, 끝에 T1 300(`t1_rl`). 단서 진단·죽은 채널은 최종 체크포인트만(`diag_final_only = ["cue_diag", "dead_channels"]`, 사용자 결정 2026-11-14). run 이름 `m2-rl-fix-<번호>`만(사용자 결정 2026-11-14).
+  - `D`: 경로 2 수정 모델([044-R7][s044], 통과 라운드의 체크포인트). Checkpoint 1 대응 모델 행과 같은 test 1,199, val 500(종족별), T1 300판, T0 표준 테란·프로토스. 진단은 그 라운드 지점과 같은 체크포인트·출력 폴더.
+  - `rl-fix`: 경로 2 수정 RL 점검([044-R11][s044], 150만 step마다). T0 표준 테란·프로토스(`t0_tp_rl`), TvZ(`tvz_rl`), 러시 128 + 운영형 40, 끝에 T1 300(`t1_rl`). 단서 진단·죽은 채널은 최종 체크포인트만(`diag_final_only = ["cue_diag", "dead_channels"]`, 사용자 결정 2026-11-14). run 이름 `m2-rl-fix-<번호>`만(사용자 결정 2026-11-14).
   - 네 지점 모두 050-R10 게이트 적용, 교사 모드 판 비율 기록.
 - `metrics` = Checkpoint 1 경로에서 잰 지표(바로 비교 가능). `optional` = Checkpoint 1 값 없는 지표. 그중 050-R9 지점 표가 요구하는 칸은 `ck1_supplement`로 Checkpoint 1 쪽 보충 측정 가능.
 
@@ -56,7 +56,7 @@
 | `t1` | T1 봇 6종 × 50판 | seed_base 46000, BC 계열 true / RL false, NDEBUG 봇, 플랫폼 고정 |
 | `ac1` | [042-AC1][s042] 200판 | seed_base 42000(argmax 42200), BC 기준선은 a·b·c 세 plan |
 | `cue_diag` | 단서 진단(050-R9): 적 생산 건물 HP·착공의 지점별 ridge R²(h_t까지), 적 최대 관측 생산 건물 수, 반사실 개입 Δ | 교사 보관분 433판(저그, `diag dump --cf`, `probes --races Z --boot 500`, `intervene`) + 사람 TvT·TvP(val·test 각 500게임, `probes --races T,P --cap 60 --boot 300`), ROCm f32·레인 그룹 4(아래 4) |
-| `dead_channels` | 죽은 채널 통계([032-R25][s032]·041-R25) | 그 run 학습 로그 `sp_*` 기록, update 600부터 체크포인트까지. Checkpoint 1 경로는 재지 않음(학습 기록 없음) |
+| `dead_channels` | 죽은 채널 통계([032-R25][s032]·[041-R25][s041]) | 그 run 학습 로그 `sp_*` 기록, update 600부터 체크포인트까지. Checkpoint 1 경로는 재지 않음(학습 기록 없음) |
 
 - `zero_last_failed`: plan마다 Checkpoint 1 값 그대로. 러시·운영형은 BC·RL 모두 false, TvZ·T1·T0·AC1(a)는 BC 계열 true → TvZ·T1·AC1은 계열(`bc`/`rl`)마다 plan 따로.
 - T1은 지점의 Checkpoint 1 상대와 같은 플랫폼에서만(사용자 결정 2026-11-09, 봇 바이너리가 플랫폼마다 다름).
@@ -75,7 +75,7 @@
    - job마다 `protocol.json`: 체크포인트 sha256, git 커밋(측정 파일 미커밋이면 경로·diff 해시), plan 내용 해시·조건 해시, 호스트별 플랫폼·봇 해시.
    - 돌리기: 평가 작업자([commands] "평가 작업").
    - 표: `python tools/eval/tables.py <shared>/eval/<job> --json <job>.json`.
-     - 단계마다 052 `ops`·`rush_combat` 표(matchup별 중앙값·평균, 러시 진입 판의 SCV 동원·손실·벙커·집중도, `held_s`·`held_8m`별).
+     - 단계마다 [052][s052] `ops`·`rush_combat` 표(matchup별 중앙값·평균, 러시 진입 판의 SCV 동원·손실·벙커·집중도, `held_s`·`held_8m`별).
      - 단계마다 함께 적음: 추론 backend별 판 수·정밀도(CUDA bf16 혼합, ROCm f32); `protocol.json`의 체크포인트 sha256·미커밋 표시·호스트 플랫폼; 결과·ledger 파일의 깨진 줄(공용 드라이브 쓰기 손상: NUL 줄, 잘린 줄).
      - 깨진 줄: NUL만 있는 줄은 무시, 읽을 수 없는 줄은 건너뛰고 `SKIPPED` 파일:줄(JSON `skipped_lines`). 회귀 게이트는 깨진 줄이 있는 쪽이 있으면 게임 판정(1, 3b) 모두 MISSING.
    - 확인: `python tools/eval/protocol.py verify <shared>/eval/<job> --lineage m2 --point s2e2`. 실패 조건(하나라도): `protocol.json` 없음, plan 파일이 기록 해시와 다름, 미커밋 측정 파일로 만든 job, plan 조건·행의 `zero_last_failed`·행의 체크포인트 id(sha256 앞 12자리)·T1 플랫폼 불일치.
@@ -111,7 +111,7 @@
        - 테란(TvT) `count|focus_rows`(적 최대 관측 배럭 수) = "이 데이터로 측정 불가"(사용자 확인 2026-11-11, AMB-050-4 후속). 6:00 전 상대 배럭이 거의 늘 1개(Checkpoint 1 r1: probe 행 6,557개 중 6,497개가 1, 나머지 60개는 한 판). probe는 돌지만 `check-diag`가 요구하지 않고 표는 "측정 불가"(`lineage.toml` `report.not_measurable`). 지점 비교는 프로토스(게이트웨이 수)만.
        - `--read-until 8640`: 판을 6:00까지만 읽음(쓰는 행·활성값은 같음, parts 안 행 순서만 다름). 교사 보관분에는 안 씀(λ run과 같은 행 순서 유지).
        - 데이터 지문(판·행·활성값 행 수) 고정값(첫 측정 2026-11-11 r1): 판 1,000·행 763,946·활성값 행 85,872. `check-diag`는 옆 끝난 출력 폴더(`<shared>/artifacts/diag/*/<set>`)와 판·행·활성값 행 수, 과제별 행·판 수도 맞춰 보고 다르면 거부.
-   - `dead_channels`: 그 run 학습 로그 `sp_*` 기록(041-R25·[042-R21][s042])만([AMB-050-5][amb]). update 600부터 그 체크포인트 update까지(BC: `ckpt-N` = update N, RL: agent `main` 로그 전체).
+   - `dead_channels`: 그 run 학습 로그 `sp_*` 기록([041-R25][s041]·[042-R21][s042])만([AMB-050-5][amb]). update 600부터 그 체크포인트 update까지(BC: `ckpt-N` = update N, RL: agent `main` 로그 전체).
      - Checkpoint 1 경로 칸 = "재지 않음(학습 기록 없음)". `--lineage ck1`의 `dead_channels` 거부.
      - `diag spatial`은 프로토콜에서 뺌(필요하면 따로 쓰는 도구).
    - 최종 체크포인트 제한: `s1e2`의 `cue_diag`는 run 최종 체크포인트(`DONE`이 있고 가장 늦은 `ckpt-N`)만([AMB-050-6][amb]), `dead_channels`는 제한 없음. `rl-fix`는 `cue_diag`·`dead_channels` 모두 최종만(사용자 결정 2026-11-14, RL 체크포인트 `ckpt-N/agents/<agent>`의 `ckpt-N` 기준).
@@ -156,7 +156,7 @@
      - 죽은 채널: 기록 수, 경보 줄·기록·규칙을 넘은 기록, 가장 많이 죽은 층, 최대 `const` S8·`s_pool`, 최소 양수 비율
    - `spatial_logs.py`: BC는 stderr 로그의 JSON 줄·경보 줄. RL은 `train.csv` 열(RL 경보 줄은 RL 프로세스 stderr라 안 세고 규칙을 넘은 기록만 셈). 채널 수는 체크포인트 모델 설정(`meta.json`). λ run 스크립트에서 옮김, `m2-lam-base` 로그에서 같은 값.
    - λ run 출력(`<shared>/eval/m2-lambda-20261110/`)은 반사실 pass 없는 덤프·`protocol.json` 없음 → `check-diag` 불통과. 실제 pass 활성값은 `--cf` 무관이라 교사 probe 수치는 비교 가능.
-5. **`s1e2` 체크포인트마다**(041-R20 ③, 050-R9 "`m2-s1e2` 체크포인트마다"): `python tools/eval/s1e2_loop.py`
+5. **`s1e2` 체크포인트마다**([041-R20][s041] ③, 050-R9 "`m2-s1e2` 체크포인트마다"): `python tools/eval/s1e2_loop.py`
    - Checkpoint 1 방식([m6_bc_eval] 4절) 그대로: 채점기가 빌 때마다 아직 안 잡힌 가장 새 체크포인트를 잡고 그 사이는 건너뜀, 최종(run `DONE`)은 반드시 잼. 기준 S1 최종(`s1e1` 지점, `--reference`)을 먼저. 학습은 멈추지 않음.
    - val 500(Linux ROCm 호스트): `python tools/eval/s1e2_loop.py val --run m2-s1e2 --reference checkpoints/m2-s1/ckpt-N --watch`
      - 체크포인트마다 `protocol.py` 고정 명령: `python -m uranium bc-eval --dataset replays/shards/stardata --dataset replays/shards/community --dataset replays/shards/scr_ladder --dataset replays/shards/personal --checkpoint <shared>/checkpoints/<run>/ckpt-N --split val --games 500 --seed 1 --backend rocm --config config/bc.toml --bunker-before 5760 --out <shared>/artifacts/bc_e2_val/val500/<run>__ckpt-N.json`
@@ -209,11 +209,11 @@
   - `bunker_unit_<t>`: 세션 행 `bunker_s` < t(벙커 유닛 생긴 시각)
   - 러시 3:00·4:00, 운영형 4:00. 경계는 미만(180초·240초 불포함).
 - 정찰(두 정의 같이, [050-R9][s050] 2026-11-14 개정, 사용자 결정 2026-11-14). 규칙: 3:00 전, 유닛 1기를 고른 뒤 첫 건물 위치에서 맨해튼 거리 1,200픽셀 넘게 보낸 땅 이동 명령. 8:00까지 명령만.
-  - `scout_3m`: 기존 값. 우클릭(0x14)·대상 지정 명령(0x15)의 y를 바이트 1~2, 대상을 2~3에서 읽어(실제 y 2~3, 대상 4~5) 땅 우클릭을 못 세고 사실상 한 유닛 `Move`만 셈. [041-R22][s041] ④·041-R29 ④ 정찰 문턱이 이 값 기준 → 판정은 이 값.
+  - `scout_3m`: 기존 값. 우클릭(0x14)·대상 지정 명령(0x15)의 y를 바이트 1~2, 대상을 2~3에서 읽어(실제 y 2~3, 대상 4~5) 땅 우클릭을 못 세고 사실상 한 유닛 `Move`만 셈. [041-R22][s041] ④·[041-R29][s041] ④ 정찰 문턱이 이 값 기준 → 판정은 이 값.
   - `scout_3m_fixed`: 바이트를 바로 읽은 값. 땅 우클릭(대상 0 또는 0xFFFF)과 `Move`를 셈. 기록·비교용. 선택 유닛 종류는 명령 스트림에 없어 SCV 여부를 안 봄 → 건물 1기 선택 후 멀리 땅 우클릭(랠리)도 정찰로 셈.
   - 둘 다 명령 스트림 캐시(`g<n>.json`)에서 집계마다 계산(캐시 삭제 불필요). `compare`는 두 JSON 중 한쪽이라도 이 키가 없으면(옛·새 JSON 비교 포함) 건너뜀.
 - 명령 스트림 모델 플레이어: 테란이 하나면 그 플레이어, TvT면 세션 행 `slot` 자리 플레이어(cmddump `players` 순서 = 세션 slot, TvP 판에서 확인). 2026-11-14 전에는 첫 테란을 읽어 `t0_tp` 테란전에서 모델이 slot 1인 판(32판 중 30판)은 상대 T0 명령을 셌음. 영향은 회귀 게이트 3b 테란전 `bunker_order_4m`뿐(러시·운영형은 저그전이라 같음).
-- 교사 모드 판(050-R10·044 용어, 원인 분석 판별 규칙): 0~6분 분당 명령 < 150이고 4:00 전 리파이너리 지시 없는 판.
+- 교사 모드 판([050-R10][s050]·[044][s044] 용어, 원인 분석 판별 규칙): 0~6분 분당 명령 < 150이고 4:00 전 리파이너리 지시 없는 판.
   - 분당 명령 = 모델 플레이어 명령 스트림 항목(선택 명령 포함) 중 프레임 < 8,640인 수 ÷ 6. 6:00 전에 끝나도 6으로 나눔. 비교는 정수(항목 수 < 900).
   - 리파이너리 지시 = 프레임 < 5,760의 Build(0x0c) 중 유닛 종류 110.
   - 표: 상대 종족(plan p1 종족, 테란·프로토스)마다 명령 스트림 있는 유효 판 중 교사 모드 판 수, 모드별 승·무·패와 10:00 전 패(`end_frame` < 14,400). 상대 크래시 판 제외. 명령 스트림 없는 판은 `no_stream`. JSON `counts`의 `teacher_mode vs <종족>` 줄로 `compare`가 Fisher p.
@@ -301,7 +301,7 @@
 
 | 판정 | 조건 |
 |---|---|
-| `pass` | 050-R10 게이트 전부 PASS(1, 2, 3a, 3b) + TvZ 32판 ≥ 16승 + 늦은 막음(`held_8m`) ≥ 24/64 + 막음 합(이른 + 늦은 `held_8m`) ≥ S의 막음 합 − 6 |
+| `pass` | [050-R10][s050] 게이트 전부 PASS(1, 2, 3a, 3b) + TvZ 32판 ≥ 16승 + 늦은 막음(`held_8m`) ≥ 24/64 + 막음 합(이른 + 늦은 `held_8m`) ≥ S의 막음 합 − 6 |
 | `d2` | d1만. 통과하지 못했지만 T0 프로토스 승 ≥ S + 4이고 TvZ 유지(≥ 16승, 늦은 막음 ≥ 24/64) |
 | `stop` | TvZ 유지 실패 또는 T0 프로토스 승 < S + 4. d2가 통과하지 못하면 늘 `stop`(d2가 마지막) |
 
@@ -317,7 +317,7 @@
 - t1부터 바뀐 판정(044-R6·R7·050-R10 2026-11-15 개정, 사용자 위임·Fable 자문 2026-11-15). d1·d2는 전과 같고 이미 낸 판정 파일은 다시 만들지 않음.
   - 050-R10 ② 종족별 `nll.action`은 기록만: 결과 칸 `RECORD`, 기준 + 0.03 넘으면 `WARN`, 게이트를 떨어뜨리지 않음. top-1 −0.5%p, 1(T0 승), 3a·3b(4:00 전 벙커)는 그대로. 종족별 val 기준은 그대로 후보와 같은 백엔드로 잰 `m2-s2e2`.
   - `pass`에 교사 모드 판("지표 정의", `tables.py` `teacher_mode`) ≤ 3/32를 TvT·TvP 따로 추가(라운드 `t0_tp` job, 무효 판 뺀 절대 수 ≤ 3). 칸에 값이 없으면(그 종족 판 없음, 명령 스트림 없는 판, 결과 없는 판, 깨진 줄) 실패. S의 교사 모드는 기록만.
-  - 판정 뒤 044-R7 RL 출발점 D 산출(멈추지 않음): `pass`면 D = t1. 아니어도 TvZ ≥ 16/32, 늦은 막음 ≥ 24/64, 막음 합(이른 + 늦은) ≥ 60, T0 테란 + 프로토스 승 합 ≥ 20/64, 교사 모드 TvT·TvP 각 ≤ 3/32를 모두 만족하면 D = t1, 그 밖에는 D = d1(`checkpoints/m2-distill-d1/ckpt-2000`). 조건별 값·통과 여부·고른 체크포인트를 출력, `--json`의 `d_choice`, 판정 파일 `# 044-R7 ...` 줄에 남김(첫 줄은 그대로 `pass`·`stop`).
+  - 판정 뒤 [044-R7][s044] RL 출발점 D 산출(멈추지 않음): `pass`면 D = t1. 아니어도 TvZ ≥ 16/32, 늦은 막음 ≥ 24/64, 막음 합(이른 + 늦은) ≥ 60, T0 테란 + 프로토스 승 합 ≥ 20/64, 교사 모드 TvT·TvP 각 ≤ 3/32를 모두 만족하면 D = t1, 그 밖에는 D = d1(`checkpoints/m2-distill-d1/ckpt-2000`). 조건별 값·통과 여부·고른 체크포인트를 출력, `--json`의 `d_choice`, 판정 파일 `# 044-R7 ...` 줄에 남김(첫 줄은 그대로 `pass`·`stop`).
   - t1의 S job이 `r2` 지점이 아니면 거부.
   - `--verdict`를 주면 다음 경우도 판정·파일 없이 거부: 라운드 job에 `protocol.json`이 하나도 없어 D 체크포인트를 모름, 라운드 T0 테란·프로토스 유효 판에 명령 스트림이 없거나 셀 수 없음. `--verdict` 없이 돌리면 그 교사 모드 칸은 값 없음(실패)으로 보임.
 - 판정 파일: 첫 줄 판정, 나머지 `# ` 줄(조건별 값). 있으면 덮어쓰지 않음([041-R29][s041] ⑨).
