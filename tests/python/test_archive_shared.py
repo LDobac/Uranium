@@ -9,7 +9,8 @@ TOOL = Path(__file__).resolve().parents[2] / "tools" / "archive" / "archive_shar
 
 
 @pytest.fixture
-def tool():
+def tool(monkeypatch):
+    monkeypatch.setenv("URANIUM_SHARED_LOCAL", "1")
     spec = importlib.util.spec_from_file_location("archive_shared", TOOL)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -162,3 +163,157 @@ def test_restore_checks_manifest_and_never_overwrites_061_ac10_061_r17(tool, sha
             m["sha256"] = "0" * 64
     man_path.write_text(json.dumps(man), encoding="utf-8")
     assert tool.main(restore + ["--only", "checkpoints/old-a/ckpt-10"]) == 1
+
+
+def make_link(link: Path, target: Path) -> None:
+    try:
+        if os.name == "nt":
+            import _winapi
+
+            _winapi.CreateJunction(str(target), str(link))
+        else:
+            link.symlink_to(target, target_is_directory=True)
+    except OSError as e:
+        pytest.skip(f"cannot create a link: {e}")
+
+
+def test_kept_top_folders_are_not_packed_061_r17(tool, shared, tmp_path):
+    (shared / "runs/old-a").mkdir(parents=True)
+    (shared / "runs/old-a/devices.jsonl").write_text("{}", encoding="utf-8")
+    assert pack(tool, shared, plan(tmp_path, {"u1": ["runs/old-a", "locks", "checkpoints/old-a/ckpt-10"]})) == 0
+    assert (shared / "runs/old-a/devices.jsonl").exists()
+    assert index(shared)["units"][0]["items"] == ["checkpoints/old-a/ckpt-10"]
+    assert pack(tool, shared, plan(tmp_path, {"u2": ["Runs/old-a"]})) == 1
+
+
+@pytest.mark.parametrize("bad", [".", "..", "x/../runs", "checkpoints/./old-a", "C:x", "C:/x", "/checkpoints/old-a", "old-a.", "a|b"])
+def test_bad_item_paths_fail_the_unit_061_ac10_061_r17(tool, shared, tmp_path, bad):
+    before = tree(shared)
+    assert pack(tool, shared, plan(tmp_path, {"u1": ["checkpoints/old-a/ckpt-10", bad]})) == 1
+    assert tree(shared) == before | {"archive/": None}
+
+
+@pytest.mark.parametrize("unit", ["a/b", "..", "a:b", "x."])
+def test_bad_unit_names_fail_061_r17(tool, shared, tmp_path, unit):
+    before = tree(shared)
+    assert pack(tool, shared, plan(tmp_path, {unit: ["checkpoints/old-a/ckpt-10"]})) == 1
+    assert tree(shared) == before | {"archive/": None}
+
+
+def test_units_option_must_name_plan_units_061_r17(tool, shared, tmp_path):
+    p = plan(tmp_path, {"u1": ["checkpoints/old-a/ckpt-10"]})
+    assert pack(tool, shared, p, "nope") == 1
+    assert tool.main(["pack", "--shared", str(shared), "--plan", str(p), "--units"]) == 1
+    assert (shared / "checkpoints/old-a/ckpt-10").exists()
+
+
+def test_items_use_the_real_case_and_drop_nested_items_061_r17(tool, shared, tmp_path):
+    assert pack(tool, shared, plan(tmp_path, {"u1": ["CHECKPOINTS/Old-A", "checkpoints/old-a/ckpt-10"]})) == 0
+    assert index(shared)["units"][0]["items"] == ["checkpoints/old-a"]
+    man = json.loads((shared / "archive/u1.manifest.json").read_text(encoding="utf-8"))
+    assert all(m["path"].startswith("checkpoints/old-a/") for m in man["files"])
+
+
+def test_link_inside_an_item_fails_the_unit_061_ac10_061_r17(tool, shared, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.bin").write_bytes(b"keep")
+    make_link(shared / "checkpoints/old-a/ckpt-10/linked", outside)
+    assert pack(tool, shared, plan(tmp_path, {"u1": ["checkpoints/old-a/ckpt-10", "checkpoints/old-b"]})) == 1
+    assert (outside / "keep.bin").read_bytes() == b"keep"
+    assert (shared / "checkpoints/old-a/ckpt-10/meta.json").exists() and (shared / "checkpoints/old-b/ckpt-10").exists()
+    assert not (shared / "archive/u1.tar.zst").exists()
+
+
+def test_link_as_the_item_fails_the_unit_061_r17(tool, shared, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.bin").write_bytes(b"keep")
+    make_link(shared / "checkpoints/linked", outside)
+    assert pack(tool, shared, plan(tmp_path, {"u1": ["checkpoints/linked/keep.bin"]})) == 1
+    assert (outside / "keep.bin").read_bytes() == b"keep"
+
+
+def interrupt_delete(tool, monkeypatch):
+    real = tool.remove_originals
+
+    def fail_once(root, items, files):
+        monkeypatch.setattr(tool, "remove_originals", real)
+        raise OSError("share dropped")
+
+    monkeypatch.setattr(tool, "remove_originals", fail_once)
+
+
+@pytest.mark.parametrize("damage", ["missing", "flipped"])
+def test_resume_checks_the_archive_first_061_ac10_061_r17(tool, shared, tmp_path, monkeypatch, damage):
+    interrupt_delete(tool, monkeypatch)
+    p = plan(tmp_path, {"u1": ["checkpoints/old-a/ckpt-10"]})
+    with pytest.raises(OSError):
+        pack(tool, shared, p)
+    final = shared / "archive/u1.tar.zst"
+    if damage == "missing":
+        final.unlink()
+    else:
+        b = bytearray(final.read_bytes())
+        b[-5] ^= 0xFF
+        final.write_bytes(bytes(b))
+    assert pack(tool, shared, p) == 1
+    assert (shared / "checkpoints/old-a/ckpt-10/model.safetensors").exists()
+    assert index(shared)["units"][0]["originals_removed"] is False
+
+
+def test_nested_eval_job_lock_protects_the_job_061_ac10_061_r17(tool, shared, tmp_path):
+    job = shared / "eval/grp/sub/job7"
+    job.mkdir(parents=True)
+    (job / "result.json").write_text("{}", encoding="utf-8")
+    (shared / "locks/eval-job7.json").write_text("{}", encoding="utf-8")
+    assert pack(tool, shared, plan(tmp_path, {"u1": ["eval/grp", "checkpoints/old-b/ckpt-10"]})) == 0
+    assert (job / "result.json").exists() and not (shared / "checkpoints/old-b/ckpt-10").exists()
+    assert index(shared)["units"][0]["items"] == ["checkpoints/old-b/ckpt-10"]
+
+
+def test_lock_taken_before_delete_keeps_originals_061_ac10_061_r17(tool, shared, tmp_path, monkeypatch):
+    real = tool.verify
+
+    def lock_then_verify(path, manifest):
+        (shared / "locks/old-a.json").write_text("{}", encoding="utf-8")
+        return real(path, manifest)
+
+    monkeypatch.setattr(tool, "verify", lock_then_verify)
+    p = plan(tmp_path, {"u1": ["checkpoints/old-a/ckpt-10"]})
+    assert pack(tool, shared, p) == 1
+    assert (shared / "checkpoints/old-a/ckpt-10/model.safetensors").exists()
+    assert index(shared)["units"][0]["originals_removed"] is False
+    monkeypatch.setattr(tool, "verify", real)
+    (shared / "locks/old-a.json").unlink()
+    assert pack(tool, shared, p) == 0
+    assert not (shared / "checkpoints/old-a/ckpt-10").exists() and index(shared)["units"][0]["originals_removed"] is True
+
+
+def test_pack_lock_refuses_a_second_pack_061_r17(tool, shared, tmp_path):
+    (shared / "archive").mkdir()
+    (shared / "archive/.pack.lock").write_text("{}", encoding="utf-8")
+    assert pack(tool, shared, plan(tmp_path, {"u1": ["checkpoints/old-a/ckpt-10"]})) == 1
+    assert (shared / "checkpoints/old-a/ckpt-10").exists() and not (shared / "archive/INDEX.json").exists()
+
+
+def test_pack_lock_is_released_061_r17(tool, shared, tmp_path):
+    assert pack(tool, shared, plan(tmp_path, {"u1": ["checkpoints/old-a/ckpt-10"]})) == 0
+    assert not (shared / "archive/.pack.lock").exists()
+
+
+def test_windows_pack_needs_shared_local_061_r17(tool, shared, tmp_path, monkeypatch):
+    monkeypatch.setattr(tool, "shared_local", lambda: False)
+    monkeypatch.setattr(tool.os, "name", "nt")
+    assert pack(tool, shared, plan(tmp_path, {"u1": ["checkpoints/old-a/ckpt-10"]})) == 1
+    assert (shared / "checkpoints/old-a/ckpt-10").exists()
+
+
+def test_restore_refuses_a_damaged_archive_061_ac10_061_r17(tool, shared, tmp_path):
+    assert pack(tool, shared, plan(tmp_path, {"u1": ["checkpoints/old-a/ckpt-10"]})) == 0
+    final = shared / "archive/u1.tar.zst"
+    b = bytearray(final.read_bytes())
+    b[-5] ^= 0xFF
+    final.write_bytes(bytes(b))
+    assert tool.main(["restore", "--shared", str(shared), "--unit", "u1"]) == 1
+    assert not (shared / "checkpoints/old-a/ckpt-10").exists()
