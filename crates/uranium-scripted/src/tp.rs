@@ -4,10 +4,10 @@ use serde::Serialize;
 use uranium_env::scout::{is_army_type, is_ground_army_type};
 use uranium_proto::*;
 
-use crate::react::{Branch, FPS, bunker_center, depot_center, is_enemy, toward, within};
+use crate::react::{Branch, FPS, bunker_center, depot_center, toward, within};
 use crate::types::*;
 use crate::brain::Brain;
-use crate::util::{centroid, dist2, done};
+use crate::util::{centroid, dist2, done, is_enemy};
 
 const SCV_HP: u32 = 60;
 const OUT_TILES: i64 = crate::brain::DEFEND_RADIUS / 32;

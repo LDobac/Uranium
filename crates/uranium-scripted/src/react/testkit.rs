@@ -1,4 +1,9 @@
-use super::*;
+use uranium_proto::*;
+
+use super::{MapHints, bunker_center, depot_center, within};
+use crate::brain::Brain;
+use crate::types::*;
+use crate::util::dist2;
 use crate::{Bot, Kit, T0Build};
 
 pub const OURS: Tile = (10, 10);

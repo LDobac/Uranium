@@ -23,3 +23,7 @@ pub(crate) fn nearest<'a>(p: Pos, units: &[&'a UnitState]) -> Option<&'a UnitSta
 pub(crate) fn is_neutral_owner(owner: u8) -> bool {
     owner >= 8
 }
+
+pub(crate) fn is_enemy(u: &UnitState, me: u8) -> bool {
+    u.owner != me && !is_neutral_owner(u.owner)
+}

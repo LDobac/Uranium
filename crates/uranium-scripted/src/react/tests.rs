@@ -1,7 +1,14 @@
-use super::*;
-use crate::{Bot, Kit, T0Build};
+use std::collections::BTreeSet;
 
+use uranium_proto::*;
+
+use super::bunker::clear_of_units;
 use super::testkit::*;
+use super::*;
+use crate::brain::Brain;
+use crate::types::*;
+use crate::util::dist2;
+use crate::{Bot, Kit, T0Build};
 
 const NATURAL: Tile = (10, 26);
 
