@@ -13,7 +13,7 @@ from uranium import ckpt, kernels
 from uranium.clip import clip_global_norm
 from uranium.device import adam_impl, autocast, compile_graphs, compiled, impl_settings, mark_dynamic
 from uranium.model import UraniumNet, to_obs
-from uranium.model.auxiliary import jepa_mean, jepa_moments, jepa_std, jepa_sums, priv_sum
+from uranium.model.auxiliary import aux_loss, jepa_std
 from uranium.model.config import AUX_JEPA_SLOTS, CORES, VariantConfig, check_aux, new_net_config
 from uranium.model.monitor import SPEC_COLUMNS, ReluMonitor, channel_counts_of, packed, relu_stats, spatial_alarm, spatial_due, spatial_every
 from uranium.model.net import stage, to_device, trim_entity_pad
@@ -249,22 +249,8 @@ class BcTrainer:
     def aux_loss(self, out: dict, hg: dict, priv, b: int, t: int, aux: dict, moments, loss):
         dev = self.device
         real = to_device(hg["real"], dev).bool()
-        zero = torch.zeros((), device=dev)
-        l_priv, l_jepa, per = zero, zero, [zero] * AUX_JEPA_SLOTS
-        if "priv" in self.aux:
-            rows = (real & to_device(hg["priv_present"], dev).bool()).float()
-            l_priv = priv_sum(out["aux_priv"], priv, rows) / max(aux["priv"], 1)
-            if self.aux["priv"] > 0:
-                loss = loss + l_priv * self.aux["priv"]
-        if "jepa" in self.aux:
-            r = real.view(b, t)
-            sums = jepa_sums(out["aux_jepa"], out["jepa_target"], r, r, self.ks)
-            l_jepa, per_k = jepa_mean(sums, aux["pairs"])
-            per = per_k + [zero] * (AUX_JEPA_SLOTS - len(per_k))
-            moments += jepa_moments(out["jepa_target"], real.float())
-            if self.aux["jepa"] > 0:
-                loss = loss + l_jepa * self.aux["jepa"]
-        return loss, [l_priv, l_jepa, *per]
+        present = lambda: to_device(hg["priv_present"], dev).bool()  # noqa: E731
+        return aux_loss(out, priv, present, real, real, lambda: real, (b, t), self.aux, aux, self.ks, moments, loss, dev)
 
     def save(self, dir: str, train_json: str) -> None:
         d = Path(dir)

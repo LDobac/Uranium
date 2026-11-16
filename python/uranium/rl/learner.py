@@ -12,7 +12,7 @@ import torch
 from uranium.clip import clip_global_norm
 from uranium.device import adam_impl, autocast
 from uranium.model import to_obs
-from uranium.model.auxiliary import jepa_mean, jepa_moments, jepa_std, jepa_sums, priv_sum
+from uranium.model.auxiliary import aux_loss, jepa_std
 from uranium.model.config import AUX_JEPA_SLOTS, check_aux
 from uranium.model.monitor import SPEC_COLUMNS, ReluMonitor, channel_counts_of, packed, relu_stats, spatial_alarm, spatial_due, spatial_every
 from uranium.model.net import LABEL_KEYS, OBS_KEYS, phase_split, stage, to_device, trim_entity_pad
@@ -527,24 +527,10 @@ class Learner:
 
     def aux_loss(self, out: dict, g: dict, priv, mask, real, lane_rows, t: int, aux: dict, moments, loss):
         dev = self.device
-        b = g["b"]
         trained = (mask > 0) & lane_rows
-        zero = torch.zeros((), device=dev)
-        l_priv, l_jepa, per = zero, zero, [zero] * AUX_JEPA_SLOTS
-        if "priv" in self.aux:
-            rows = (trained & to_device(g["priv_present"], dev, self.pinned).bool()).float()
-            l_priv = priv_sum(out["aux_priv"], priv, rows) / max(aux["priv"], 1)
-            if self.aux["priv"] > 0:
-                loss = loss + l_priv * self.aux["priv"]
-        if "jepa" in self.aux:
-            sums = jepa_sums(out["aux_jepa"], out["jepa_target"], trained.view(b, t), real.view(b, t), self.ks)
-            l_jepa, per_k = jepa_mean(sums, aux["pairs"])
-            per = per_k + [zero] * (AUX_JEPA_SLOTS - len(per_k))
-            if moments is not None:
-                moments += jepa_moments(out["jepa_target"], (real & lane_rows).float())
-            if self.aux["jepa"] > 0:
-                loss = loss + l_jepa * self.aux["jepa"]
-        return loss, torch.stack([l_priv, l_jepa, *per])
+        present = lambda: to_device(g["priv_present"], dev, self.pinned).bool()  # noqa: E731
+        loss, parts = aux_loss(out, priv, present, trained, real, lambda: real & lane_rows, (g["b"], t), self.aux, aux, self.ks, moments, loss, dev)
+        return loss, torch.stack(parts)
 
     def sil_group_loss(self, g: dict, n_sil: int, sil: dict) -> torch.Tensor:
         dev, net, pin = self.device, self.net, self.pinned

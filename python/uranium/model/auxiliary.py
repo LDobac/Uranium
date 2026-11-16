@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from uranium.model.config import AUX_JEPA_SLOTS
 from uranium.model.value import fixed_linear
 
 AUX_PRIV_HIDDEN = 256
@@ -69,3 +70,23 @@ def jepa_mean(sums: list, counts: list) -> tuple:
     live = [x for x, c in zip(per, counts) if c > 0]
     total = sum(live) / len(live) if live else sums[0] * 0.0
     return total, per
+
+
+def aux_loss(out: dict, priv, present, src, tgt, stat_rows, shape: tuple, weights: dict, counts: dict, ks: list, moments, loss, device) -> tuple:
+    b, t = shape
+    zero = torch.zeros((), device=device)
+    l_priv, l_jepa, per = zero, zero, [zero] * AUX_JEPA_SLOTS
+    if "priv" in weights:
+        rows = (src & present()).float()
+        l_priv = priv_sum(out["aux_priv"], priv, rows) / max(counts["priv"], 1)
+        if weights["priv"] > 0:
+            loss = loss + l_priv * weights["priv"]
+    if "jepa" in weights:
+        sums = jepa_sums(out["aux_jepa"], out["jepa_target"], src.view(b, t), tgt.view(b, t), ks)
+        l_jepa, per_k = jepa_mean(sums, counts["pairs"])
+        per = per_k + [zero] * (AUX_JEPA_SLOTS - len(per_k))
+        if moments is not None:
+            moments += jepa_moments(out["jepa_target"], stat_rows().float())
+        if weights["jepa"] > 0:
+            loss = loss + l_jepa * weights["jepa"]
+    return loss, [l_priv, l_jepa, *per]
