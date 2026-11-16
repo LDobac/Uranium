@@ -7,10 +7,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use uranium_data::table::{ActionColumns, TARGET_LOC, TARGET_UNIT};
+use uranium_env::host::table::{ActionColumns, TARGET_LOC, TARGET_UNIT};
 use uranium_env::features::Observation;
 use uranium_env::features::executor::HostAction;
-pub use uranium_data::state::HostState;
+pub use uranium_env::host::state::HostState;
 pub use uranium_env::surrender::{DEFAULT_CHAT, SurrenderMode};
 
 pub const HEADS: usize = 6;

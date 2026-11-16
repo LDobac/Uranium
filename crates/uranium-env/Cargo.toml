@@ -1,6 +1,6 @@
 [package]
 name = "uranium-env"
-description = "Observation features, masks, executor, rewards and map data shared by the agent, training and replay tools (spec 030, 031, 033, 034)"
+description = "Observation features, masks, executor, rewards, map data and the host batch layout (030 §1: collate, ActionColumns, HostState) shared by the agent, training and replay tools (spec 030, 031, 033, 034)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

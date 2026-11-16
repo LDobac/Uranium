@@ -1424,7 +1424,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "uranium-data",
  "uranium-env",
  "uranium-proto",
  "uranium-scripted",
