@@ -29,7 +29,7 @@ __pycache__/
 /runs/
 *.mpk
 
-# Large raw reports
+# Per-host work files and raw outputs
 /local/
 /bridge/openbw/build/
 /runs/

@@ -41,7 +41,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 - 마지막 Burn 커밋은 태그 `burn-final`이다. Burn 체크포인트(`model.bpk`)는 보관만 하고 읽지 않는다(061-R10).
 
 ## 벤치·프로파일
-- 벤치 스위트(060-R2): `python -m uranium bench suite [--suite kernels,model,infer] [--filter <regex>] [--precision f32|bf16] [--budget 10] [--out docs/report/bench/bench_<backend>.md] [--json local/raw/<name>.json]`. 커널·모델·추론 케이스의 forward / forward+backward 중앙값·p95, CPU f32 대비 오차, 최대 GPU 할당. 반복 횟수는 표준오차가 평균의 1% 아래가 될 때까지 늘린다(워밍업 제외, 케이스당 `--budget`초까지).
+- 벤치 스위트(060-R2): `python -m uranium bench suite [--suite kernels,model,infer] [--filter <regex>] [--precision f32|bf16] [--budget 10] [--out docs/report/bench/<YYYY_MM_DD_HH_mm>_bench_<backend>.md] [--json local/raw/<name>.json]`. 커널·모델·추론 케이스의 forward / forward+backward 중앙값·p95, CPU f32 대비 오차, 최대 GPU 할당. 반복 횟수는 표준오차가 평균의 1% 아래가 될 때까지 늘린다(워밍업 제외, 케이스당 `--budget`초까지).
 - 실데이터 BC update(060-R2, AMB-041-7): `python -m uranium bench bc (--dataset <rel> | --shards <dir>)... [--groups 1,2,4,8] [--updates 20] [--seed 1] [--phases] [--ops 25] [--json <log>]`. 그룹 크기마다 같은 초기 가중치·같은 batch로 update 시간, 데이터 대기, 최대 GPU 할당·상주 메모리(060-R3), update별 손실을 기록한다. 첫 update는 워밍업이라 중앙값에서 뺀다.
 - 최적화 후보의 동등성(AMB-000-4 2단계): 기준과 후보를 같은 `--seed`·데이터로 `bench bc --updates 100 --json`한 뒤 `python -m uranium bench loss <기준.json> <후보.json> [--group N] [--window 20]`. 구간 평균 손실의 상대 차이를 낸다(그룹 크기가 다르면 dropout 난수열이 달라진다).
 - BC update 구간별 시간과 연산별 장치 시간(060-AC4): `python -m uranium bc-profile (--dataset <rel> | --shards <dir>)... [--backend cuda|rocm|cpu] [--core gtrxl|lstm] [--batches 3] [--ops 25] [--trace <chrome trace json>]`. 학습 중에는 `URANIUM_BC_PROFILE=1`로 update마다 구간 시간을 로그에 쓴다.
@@ -107,7 +107,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
 ## 리플레이(040)
 `uranium-replay`:
 - `inspect <rep>`, `convert <rep> <out>`(SC:R → 1.16.1, 맵 CHK 정규화 포함, 013), `check-screp <dir> --screp <exe>`(040-AC1), `ophist <dir>`, `play <rep>`(재생·디싱크 신호), `shard-stats <dir>`(하위 폴더 포함. GameInfo `is_enemy`가 정확히 1명이 아닌 게임(B-12)이나 같은 (리플레이, 시점) 게임이 두 번 있으면(040-R20) 실패), `mapgen`, `roundtrip <dir>`(013-R7), `cmddump <rep>...`(리플레이마다 명령 스트림 JSON 한 줄, 측정 표 `tools/eval/tables.py`용), `opsdump <rep>... [--perspective <slot>] [--until-frame 14400] [--stride 8] [--field-check]`(052-R7: OpenBW 재생으로 우리 시점(세션 행의 `slot`, 없으면 테란 플레이어마다)에서 8프레임마다 멈춰 052 `ops`·`rush_combat`를 센다. 시점마다 JSON 한 줄 `{"rep", "perspective", "frames", "ops", "rush_combat"}`, 실패하면 둘 다 null과 `error`. 10:00과 러시 전투 창 끝 중 늦은 쪽에서 끊는다. `--field-check`는 052-AC2 리허설용으로 끝에 `field_check`(창 안에 우리 SCV가 반납한 필드의 초기량 − 마지막 잔량 합 `depleted`, 그 필드 수 `fields`, 초기량 모르는 필드 수 `unknown_fields`, 우리 유닛이 있던 창 안 마지막 관측의 SCV 수 `scvs`, 창 안 한 관측의 최대 SCV 수 `scvs_max`, 마지막 관측에서 미네랄 운반 중 SCV 수 `carrying`, 미네랄 운반 중 죽은 SCV마다 8인 `lost_cargo`. 052-AC2: |`depleted` − 8 × `carrying` − `lost_cargo` − `mined`| ≤ 8 × `scvs_max`)를 더한다), `granularity <shard 폴더…> | --replays <rep…>`(결정 단위 측정 G0·AMB-031-7용 판마다 레이블·압축 상태 `.jsonl.gz`, 분석 전용).
-- `dataset-stats <records.jsonl 또는 폴더>... --out docs/report/survey/2026_10_20_12_52_dataset_stats.md`: build 기록으로 맵·매치업·src·stage·분할별 게임·시점 수, 디싱크 폐기율, `result_source` 분포를 쓴다(040-R6, 040-AC2, 040-AC4).
+- `dataset-stats <records.jsonl 또는 폴더>... --out docs/report/survey/<YYYY_MM_DD_HH_mm>_dataset_stats.md`: build 기록으로 맵·매치업·src·stage·분할별 게임·시점 수, 디싱크 폐기율, `result_source` 분포를 쓴다(040-R6, 040-AC2, 040-AC4).
 - `build <dir> --src <tag> --records <jsonl> [--jobs N --limit N --part i --parts N --ladder-records <collect.jsonl>]`: 필터 → 013-R7 왕복 검증 → 재생 → 레이블 → shard. 기본 출력 `<URANIUM_SHARED_DIR>/datasets/replays/shards/<src>`. 원본은 `datasets/replays/raw/<src>/`(040-R13). 맵 사전계산은 `URANIUM_MAPS_DIR`에 쓴다.
   - shard는 `URANIUM_SHARD_STAGING_DIR`(로컬)에 먼저 쓰고, 공용 경로에 `<이름>.tmp`로 복사해 fsync 뒤 클라이언트 캐시를 거치지 않고 다시 읽은 SHA-256을 맞춘 뒤 rename한다. 불일치는 3회 재시도, 그래도 실패하면 build가 오류로 멈추고 로컬 사본이 남는다(040-R17).
   - 승패(`result`)는 브리지 승자 → 첫 LEAVE 이탈자 패배 → 기록 승자(`--ladder-records`, `--src scr_ladder`이면 `datasets/replays/ladder/collect.jsonl` 기본) → 판정 불가(0) 순서다(040-R8).
@@ -187,12 +187,12 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
   - 표는 `<out>/s0.json`·`s0.md`(`--tag`면 `s0-<tag>.*`): M0, M1(전체 행·운영 행동 행, 출처 묶음별), M2a·M2b, M3a(시간대별), M3b·M3c, M3d, 6.5 판정표(채점 대상 판 결과·8:00 SCV 따로). 신뢰구간은 판(리플레이) 단위 bootstrap 95%다. 문턱 기본값은 기본안(미확정)이다. `--v1`이 아니면 1·2행의 M1에 내 상태 기준(k = `--th-own-k`, pooled 운영 행동 행의 A 변화 오차 감소 신뢰구간 > 0이고 S 대조 감소의 `--th-s-ratio`배 이상)이 더해지고, 4행(A·H 모두 유의하지 않음)은 ŷ와 함께 A·H의 변화 오차 감소도 본다. `--th-own-k 0`이면 내 상태 기준을 쓰지 않는다.
   - 메모리: 행당 약 3.2 KB(h', y, privileged, log-prob, 내 상태)를 미리 잡은 배열에 출처별로 채운다(두 번째 사본 없음). 130만 행이면 약 4.2 GB, 학습·표 포함 최대 약 5~6 GB.
 - 실행 순서(2026-11-11 사용자 결정: 덤프는 Linux ROCm 호스트에서 표본을 줄여, 학습·표는 Linux CPU 호스트)
-  1. 표본 확인(수 분): 아래 덤프 명령에 `--games 4 --limit-batches 20`, 출력은 `local/work/plan_s0/smoke/...`. 이어 같은 호스트에서 `plan-s0 ... --steps 50 --boot 20 --out local/work/plan_s0/smoke/s0`.
-  2. 덤프(Linux ROCm 호스트, 사용자가 비워 둔 장비에서 학습·측정 job이 없을 때). `<ckpt>` = `<shared>/checkpoints/m2-s1/ckpt-39096`, `<D>` = `local/work/plan_s0/m2-s1__ckpt-39096`(호스트 생성 파일 폴더 규칙):
+  1. 표본 확인(수 분, 저장소 루트에서): 아래 덤프 명령에 `--games 4 --limit-batches 20`, 출력은 `local/work/plan_s0/smoke/...`. 이어 같은 호스트에서 `plan-s0 ... --steps 50 --boot 20 --out local/work/plan_s0/smoke/s0`.
+  2. 덤프(Linux ROCm 호스트, 저장소 루트에서, 사용자가 비워 둔 장비에서 학습·측정 job이 없을 때). `<ckpt>` = `<shared>/checkpoints/m2-s1/ckpt-39096`, `<D>` = `local/work/plan_s0/m2-s1__ckpt-39096`(호스트 생성 파일 폴더 규칙):
      ```
      export LD_LIBRARY_PATH=<그 호스트의 rocBLAS 경로> HSA_ENABLE_SDMA=0 MALLOC_ARENA_MAX=2 URANIUM_BC_FEED_THREADS=5
      mkdir -p local/work/plan_s0
-     python -c "import os, sys, json; sys.path.insert(0, 'tools/eval'); import per_action as p; json.dump(p.load_classes('auto', 'orig'), open(os.path.expanduser('local/work/plan_s0/teacher_classes.json'), 'w'))"
+     python -c "import os, sys, json; sys.path.insert(0, 'tools/eval'); import per_action as p; json.dump(p.load_classes('auto', 'orig'), open('local/work/plan_s0/teacher_classes.json', 'w'))"
      python -m uranium diag plan-dump --checkpoint <ckpt> --dataset replays/shards/stardata --dataset replays/shards/community --dataset replays/shards/scr_ladder --dataset replays/shards/personal --splits train --games 400 --seed 1 --config config/bc.toml --backend rocm --lanes-per-group 4 --out <D>/human_train
      python -m uranium diag plan-dump --checkpoint <ckpt> --dataset replays/shards/stardata --dataset replays/shards/community --dataset replays/shards/scr_ladder --dataset replays/shards/personal --splits val --games 150 --seed 1 --config config/bc.toml --backend rocm --lanes-per-group 4 --out <D>/human_val
      python -m uranium diag plan-dump --checkpoint <ckpt> --shards <cache>/diag_holdout/by_name/hold_orig --shards <cache>/diag_holdout/by_name/hold_macro2 --splits val,test --config config/bc.toml --backend rocm --lanes-per-group 4 --classes local/work/plan_s0/teacher_classes.json --out <D>/teacher
@@ -202,7 +202,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
      - 교사 보관분 연결 폴더(`hold_orig`·`hold_macro2`)는 `protocol.py diag`가 그 호스트에 만든 것이다(`docs/guide/measurement_protocol.md` 4). `teacher_classes.json`은 `per_action.py`의 러시·운영형 분류(041-R27)를 {sha256: 분류}로 펼친 것이다.
      - 사람 `--splits train`은 S1 학습 분할(모든 맵)이다. `EvalStream`에 대상 맵 선택이 없어 6.2의 "S2 학습 분할"과 다르다. 맵 계열은 `games.json`의 `map`(0·1 = 대상 맵)에 남는다. val 150판은 val500(같은 seed)의 앞 150판이다.
      - 모델 판 shard 520 스트림 중 160은 테란전의 봇 관점이다(`docs/report/survey/2026_11_08_19_26_jepa_survey.md` 10.2.1). 덤프는 모두 읽고, `plan-s0 --drop model=config/plan_s0/jepa_diag_tp_views.json`이 뺀다.
-  3. 학습·표(Linux CPU 호스트, 덤프를 공용 드라이브에서 그 호스트의 같은 `<D>`로 먼저 복사):
+  3. 학습·표(Linux CPU 호스트, 저장소 루트에서, 덤프를 공용 드라이브에서 그 호스트의 같은 `<D>`로 먼저 복사):
      ```
      python -m uranium diag plan-s0 --src human-train:human:train=<D>/human_train --src human-val:human:eval=<D>/human_val --src teacher:teacher:split=<D>/teacher --src model:model:split=<D>/model --drop model=config/plan_s0/jepa_diag_tp_views.json --threads 4 --out <D>/s0
      python -m uranium diag plan-s0 <같은 --src·--drop> --threads 4 --stage report --m3b-races T,P --tag tp --out <D>/s0
@@ -210,7 +210,7 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
      ```
      - 둘째 줄은 모델 판(테란·프로토스 상대만 있음)의 M3b·M3c 표다. 6.4의 M3b는 저그 상대 행인데 모델 판 shard에는 저그 상대가 없다.
      - 판정표 읽는 법: 1·2행(계획 가능 / 채점이 약함)은 "M3b(모델 판)"이 필요하므로 `s0-tp.md`에서 읽는다(첫 보고서에서는 모델 판 M3b 행이 없어 "판단 불가"). 5행(M3c 착각)은 저그 교사 보관분 행이 있는 첫 보고서 `s0.md`에서 읽는다. 3·4·6행은 두 보고서가 같다(M1·M2는 M3b 설정과 무관).
-  4. 비교 체크포인트(6.2: 학습 길이에 따라 행동 조건 이득이 달라지는지, M1만 본다): `<ckpt2>` = `<shared>/checkpoints/m2-lam-base/ckpt-3000`, `<D2>` = `local/work/plan_s0/m2-lam-base__ckpt-3000`로 2의 덤프 네 줄을 같은 판 수로 다시 하고(같은 표본이어야 비교가 된다, 덤프 시간도 같음), 3의 첫 줄을 `<D2>`·`--no-m3c`로 돌린다. 두 `s0.md`의 M1 표(운영 행동 행, k = 8·32)를 나란히 본다.
+  4. 비교 체크포인트(6.2: 학습 길이에 따라 행동 조건 이득이 달라지는지, M1만 본다, 저장소 루트에서): `<ckpt2>` = `<shared>/checkpoints/m2-lam-base/ckpt-3000`, `<D2>` = `local/work/plan_s0/m2-lam-base__ckpt-3000`로 2의 덤프 네 줄을 같은 판 수로 다시 하고(같은 표본이어야 비교가 된다, 덤프 시간도 같음), 3의 첫 줄을 `<D2>`·`--no-m3c`로 돌린다. 두 `s0.md`의 M1 표(운영 행동 행, k = 8·32)를 나란히 본다.
 - 시간(추정, 실행 전): 덤프는 행 수로 정해진다. `diag dump` 실측(Linux ROCm 호스트, 레인 그룹 4)은 행당 약 2.3 ms다(사람 1,000판 6:00까지 763,946행 1,772초, 교사 433판 pass 7번 2,054초). 위 표본은 사람 학습 400판 약 51만 행(10:00까지 판당 약 1,270행 가정), val 150판 약 19만, 교사 433판 최대 29만, 모델 판 520 스트림(봇 관점 160 포함, 분석에서 뺌) 최대 34만, 합계 약 130만 행이다. 4의 비교 덤프는 같은 시간이 한 번 더 든다. 6:00 뒤 행은 유닛이 많아 행당 비용이 더 클 수 있어 1~2시간으로 본다(shard 훑기 포함). 디스크는 약 7 GB(`--gk ''`면 약 4 GB). 학습·표는 Linux CPU 호스트에서 예측기 14개 × 3,000 step(CUDA 호스트 CPU 4스레드에서 약 20 ms/step, Linux CPU 호스트는 2~3배로 가정) 약 40분~1시간과 표 약 20~30분이다.
 - 둘째 실행(S0b, 2026-11-12 사용자 결정: 첫 실행의 세 문제를 고쳐 재측정, `docs/report/plan/2026_11_11_14_56_jepa_planning.md` 6.8). 위 1~4의 명령은 이제 둘째 설계로 돈다. 첫 실행을 그대로 다시 내려면 `plan-s0`에 `--v1`을 붙인다(첫 실행의 모델 파일로 `--stage report --v1`도 된다). `<J>` = `<shared>/eval/jepa-diag-tp-20261109`(11-09 모델 판 원본), `<O>` = `<shared>/eval/jepa-plan-feas-20261112`. 사람·교사 덤프는 첫 실행 것(`<shared>/eval/jepa-plan-feas-20261111/dump/`, 같은 체크포인트)을 그대로 쓰고 모델 판만 다시 만든다.
   1. 모델 판 다시 build(Linux CPU 호스트, 저장소 루트, 약 20~25분 추정: 11-09 build는 `--jobs 6`으로 320판 20분 + 40판 1.5분, 표본 6판은 `--jobs 4`로 40초). 레이블은 리플레이에 기록된 모델 자신의 명령이다(`--relabel` 없음, 그래서 출처 태그는 `dagger`가 아니라 `botgen`, 040-R14). 다른 build 옵션은 11-09와 같다.
@@ -226,19 +226,19 @@ CLAUDE.md에는 자주 쓰는 명령만 두고, 옵션과 동작 설명은 여�
      ```
      - `botgen`에는 5분 기준이 있어(040 품질 표, `dagger`만 예외) 5:00 전에 끝난 리플레이(11-09 기준 tp 4판)는 `filtered`(shorter than 5 minutes)로 빠진다. 테란전 봇 관점은 봇 APM만큼 step이 많고(판당 수천), 일부는 무효 레이블 20% 이상(040-R19)으로 빠진다. 빠진 스트림은 분석에 없을 뿐이고, 봇 관점은 어차피 관점 표가 뺀다. 관점 키(리플레이 sha256, 자기 시작 슬롯)는 레이블과 무관해서 `config/plan_s0/jepa_diag_tp_views.json`이 그대로 맞는다(표본 build에서 테란전 두 관점이 모두 기록됨을 확인).
      - 확인: `$O/logs/build_*.log` 마지막 줄의 `by_outcome`, records의 `filtered` 사유.
-  2. 모델 판 덤프(Linux ROCm 호스트, 약 15~30분 추정: 모델 관점 약 22만 행. 봇 관점은 행을 쓰지 않고, forward는 레인 그룹이 모두 봇 관점일 때만 건너뛰므로 건너뛰는 몫에 달린다. 첫 실행 모델 판 32만 행 700초). S0 전용 사본(`local/work/s0/repo`를 이 변경이 들어간 origin/master로. Rust 변경이 없어 그 사본의 `_core` 그대로)에서:
+  2. 모델 판 덤프(Linux ROCm 호스트, 약 15~30분 추정: 모델 관점 약 22만 행. 봇 관점은 행을 쓰지 않고, forward는 레인 그룹이 모두 봇 관점일 때만 건너뛰므로 건너뛰는 몫에 달린다. 첫 실행 모델 판 32만 행 700초). S0 전용 사본(저장소 루트에서, `local/work/s0/repo`를 이 변경이 들어간 origin/master로. Rust 변경이 없어 그 사본의 `_core` 그대로)에서:
      ```
      export LD_LIBRARY_PATH=<그 호스트의 rocBLAS 경로> HSA_ENABLE_SDMA=0 MALLOC_ARENA_MAX=2 URANIUM_BC_FEED_THREADS=5
-     cd local/work/s0/repo && git fetch -q origin && git checkout -q --detach origin/master && export PYTHONPATH=$PWD/python
-     D=local/work/s0b/m2-s1__ckpt-39096
+     R=$PWD; cd $R/local/work/s0/repo && git fetch -q origin && git checkout -q --detach origin/master && export PYTHONPATH=$PWD/python
+     D=$R/local/work/s0b/m2-s1__ckpt-39096
      <venv python> -m uranium diag plan-dump --checkpoint <shared>/checkpoints/m2-s1/ckpt-39096 --shards <O>/shards/model_own --splits train,val,test \
        --skip-views config/plan_s0/jepa_diag_tp_views.json --config config/bc.toml --backend rocm --lanes-per-group 4 --out $D/model_own
      mkdir -p <O>/dump && cp -r $D/model_own <O>/dump/model_own.part && mv <O>/dump/model_own.part <O>/dump/model_own
      ```
-  3. 학습·표(Linux CPU 호스트, 같은 S0 사본, 본 표 약 25~30분 + `tp` 표 약 7분 추정: 첫 실행 21분·6.5분, o_t 입력과 변화 지표가 조금 더한다). 첫 실행 덤프가 `local/work/s0/m2-s1__ckpt-39096`에 있으면 그것을 쓴다(없으면 `<shared>/eval/jepa-plan-feas-20261111/dump/`에서 복사):
+  3. 학습·표(Linux CPU 호스트, 저장소 루트에서, 같은 S0 사본, 본 표 약 25~30분 + `tp` 표 약 7분 추정: 첫 실행 21분·6.5분, o_t 입력과 변화 지표가 조금 더한다). 첫 실행 덤프가 `local/work/s0/m2-s1__ckpt-39096`에 있으면 그것을 쓴다(없으면 `<shared>/eval/jepa-plan-feas-20261111/dump/`에서 복사):
      ```
-     cd local/work/s0/repo && git fetch -q origin && git checkout -q --detach origin/master && export PYTHONPATH=$PWD/python
-     D1=local/work/s0/m2-s1__ckpt-39096; D=local/work/s0b/m2-s1__ckpt-39096
+     R=$PWD; cd $R/local/work/s0/repo && git fetch -q origin && git checkout -q --detach origin/master && export PYTHONPATH=$PWD/python
+     D1=$R/local/work/s0/m2-s1__ckpt-39096; D=$R/local/work/s0b/m2-s1__ckpt-39096
      mkdir -p $D && cp -r <O>/dump/model_own $D/model_own
      SRC="--src human-train:human:train=$D1/human_train --src human-val:human:eval=$D1/human_val --src teacher:teacher:split=$D1/teacher --src model:model:split=$D/model_own --drop model=config/plan_s0/jepa_diag_tp_views.json --threads 4"
      <venv python> -m uranium diag plan-s0 $SRC --out $D/s0b
