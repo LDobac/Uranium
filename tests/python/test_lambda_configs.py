@@ -282,7 +282,6 @@ def test_m2_teacher_t1_config_044_r8(tmp_path):
     assert new["data.chain_start_sources"] == ["botgen"]
     assert vars(model_variant(str(p))) == _ALL_ON
     text = p.read_text(encoding="utf-8")
-    assert "--teacher-share 0.65 --teacher-races Z=0.5,P=0.3,T=0.2" in text
     fr = [new[k] for k in sorted(_RACE_FRACTIONS)]
     if all(f == 0 for f in fr):
         assert (new["steps.s2"], new["steps.s2_warmup"]) == (0, 0)

@@ -802,7 +802,7 @@ mod tests {
         let text: String = include_str!("../../../config/rl.toml").lines().filter(|l| !l.starts_with("c1_ladder =") && !l.starts_with("ladder_pick =")).map(|l| format!("{l}\n")).collect();
         let text = text.replace("[curriculum]\n", &format!("[curriculum]\n{curriculum}\n"));
         let start = text.find("\n[concede]").unwrap() + 1;
-        let end = start + text[start..].find("\n# T1 bots").unwrap();
+        let end = start + text[start..].find("\n[[t1]]").unwrap();
         let text = format!("{}[concede]\n{concede}{}\n{extra}", &text[..start], &text[end..]);
         let c: RlConfig = toml::from_str(&text)?;
         c.validate()?;
@@ -1083,8 +1083,8 @@ mod tests {
         let c = RlConfig::default_file();
         assert!(c.kl.reference.is_empty());
         assert!(!serde_json::to_string(&c).unwrap().contains("reference"), "absent: the JSON as before");
-        let tail = "target_loc = 1.0\n\n# 044-R9";
-        let with = |body: &str| rl_with(tail, &format!("target_loc = 1.0\n\n[kl.reference]\n{body}\n\n# 044-R9"));
+        let tail = "target_loc = 1.0\n";
+        let with = |body: &str| rl_with(tail, &format!("target_loc = 1.0\n\n[kl.reference]\n{body}\n"));
         let r = with("zerg = \"checkpoints/s/ckpt-1\"\nrandom = \"checkpoints/b/ckpt-2\"").unwrap().kl.reference;
         assert_eq!(r, KlReference { zerg: Some("checkpoints/s/ckpt-1".into()), random: Some("checkpoints/b/ckpt-2".into()), ..Default::default() });
         assert_eq!(r.by_race().map(|(k, _)| k), ["zerg", "terran", "protoss", "random"]);
@@ -1210,7 +1210,7 @@ mod tests {
             assert!(json["league"].get("rush_judge").is_none(), "checkpoint config as before");
             assert_eq!(serde_json::from_value::<RlConfig>(json).unwrap(), c);
         }
-        assert!(!include_str!("../../../config/rl.toml").lines().any(|l| l.starts_with("[league.rush_judge]") || l.starts_with("wins_only")), "rl.toml: comments only");
+        assert!(!include_str!("../../../config/rl.toml").lines().any(|l| l.starts_with("[league.rush_judge]") || l.starts_with("wins_only")), "rl.toml: not set");
     }
 
     #[test]
@@ -1316,7 +1316,7 @@ mod tests {
             assert!(json["ladder"].as_array().unwrap().iter().all(|e| e.get("weight").is_none()), "checkpoint config as before");
         }
         let rl = include_str!("../../../config/rl.toml");
-        assert!(!rl.lines().any(|l| ["[league.start_mix]", "rush_hit_share", "select_keys", "select_army_before_s", "select_start_hit", "[[ladder]]"].iter().any(|k| l.starts_with(k))), "rl.toml: comments only");
+        assert!(!rl.lines().any(|l| ["[league.start_mix]", "rush_hit_share", "select_keys", "select_army_before_s", "select_start_hit", "[[ladder]]"].iter().any(|k| l.starts_with(k))), "rl.toml: not set");
     }
 
     #[test]

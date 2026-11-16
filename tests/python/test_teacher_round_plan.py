@@ -56,8 +56,11 @@ def test_teacher_round_plan_composition_044_r8(tmp_path):
     assert games == Counter({(o, mp): g // 2 for o, g in FULL.items() for mp in MAPS})
     assert sum(games.values()) == 300 == len(plan["seeds"])
     assert _core.plan_models(str(out)) == [(CKPT, "stochastic")]
-    text = out.read_text(encoding="utf-8")
-    assert "--relabel terran_tp --games" in text and "--until-frame 14400 --time-limit 14400" in text and "11520" not in text
+    guide = (ROOT / "docs" / "guide" / "commands.md").read_text(encoding="utf-8")
+    assert "--relabel terran_tp --games" in guide
+    section = guide[guide.index("### 교사 라운드 t1"):]
+    section = section[:section.index("\n#", 1)]
+    assert "--until-frame 14400 --time-limit 14400" in section and "11520" not in section
 
 
 def test_teacher_round_seeds_disjoint_044_r8():
