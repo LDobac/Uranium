@@ -214,7 +214,7 @@ pub fn run_rl(
                         let close = Box::new(move || {
                             Python::attach(|py| {
                                 if let Err(e) = obj.bind(py).call_method1("close_snapshot_server", (token,)) {
-                                    uranium_data::elog!("[rl] closing the inference server of {}: {:#}", path.display(), py_error(py, e));
+                                    uranium_store::elog!("[rl] closing the inference server of {}: {:#}", path.display(), py_error(py, e));
                                 }
                             })
                         });
@@ -230,7 +230,7 @@ pub fn run_rl(
     match res {
         Ok(()) => Ok("done"),
         Err(e) if e.downcast_ref::<uranium_store::storage::LockBusy>().is_some() => {
-            uranium_data::elog!("{e:#}");
+            uranium_store::elog!("{e:#}");
             Ok("busy")
         }
         Err(e) => Err(err(e)),

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
-use uranium_train::storage::{self, LockBusy, LockInfo, LockObserver, LockView, Run, StorageConfig, TakeOver};
+use uranium_store::storage::{self, LockBusy, LockInfo, LockObserver, LockView, Run, StorageConfig, TakeOver};
 use uranium_train::supervise::{Ending, SuperviseArgs};
 use uranium_train::worker::{Defaults, Launcher, Observers, Pick, Queue, QueueRun, WorkerArgs, pick, preempt_target, work};
 
@@ -219,20 +219,6 @@ fn init_run_not_done_is_not_taken_061_r13() {
 }
 
 #[test]
-fn init_needs_a_finished_run_061_r13() {
-    let root = tmp("h1-init");
-    let run = root.join("s1");
-    std::fs::create_dir_all(run.join("ckpt-5")).unwrap();
-    std::fs::write(run.join("LATEST"), "ckpt-5\n").unwrap();
-    let err = uranium_train::bc_run::resolve_init(&run).unwrap_err();
-    assert!(format!("{err:#}").contains("not finished"), "{err:#}");
-    std::fs::write(run.join("DONE"), "ckpt-5\n").unwrap();
-    assert_eq!(uranium_train::bc_run::resolve_init(&run).unwrap(), run.join("ckpt-5"));
-    assert_eq!(uranium_train::bc_run::resolve_init(&run.join("ckpt-5")).unwrap(), run.join("ckpt-5"));
-    std::fs::remove_dir_all(&root).ok();
-}
-
-#[test]
 fn unknown_share_state_takes_nothing_061_r13() {
     let root = tmp("h2-pick");
     let cfg = local_cfg(&root, "me");
@@ -356,7 +342,7 @@ fn logging_survives_a_closed_stderr_060_r6() {
         std::thread::sleep(Duration::from_millis(300));
         for i in 0..2000 {
             if mode == "elog" {
-                uranium_train::elog!("line {i} after the watchdog died");
+                uranium_store::elog!("line {i} after the watchdog died");
             } else {
                 eprintln!("line {i} after the watchdog died");
             }

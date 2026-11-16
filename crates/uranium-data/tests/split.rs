@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use sha2::{Digest, Sha256};
 use uranium_proto::*;
 use uranium_replay::shard::{GameMeta, Shard, ShardGame, ShardHeader, write};
-use uranium_train::data::{ShardSource, StepSource};
-use uranium_train::split::{Selection, Split, selects, split_of};
+use uranium_data::data::{ShardSource, StepSource};
+use uranium_data::split::{Selection, Split, selects, split_of};
 
 fn hash(i: usize) -> String {
     Sha256::digest(format!("replay-{i}").as_bytes()).iter().map(|b| format!("{b:02x}")).collect()

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use crate::storage::{self, LockObserver, LockView, StorageConfig, TakeOver, Watched, YieldObserver};
+use uranium_store::storage::{self, LockObserver, LockView, StorageConfig, TakeOver, Watched, YieldObserver};
 use crate::supervise::{Decision, Ending, SuperviseArgs, Watch, decide};
 
 #[derive(Deserialize, Debug, Clone, Default)]

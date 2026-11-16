@@ -449,7 +449,7 @@ pub fn check_maps(src: &ShardSource, sel: Option<crate::split::Selection>, maps:
     let games: Vec<&GameSummary> = scan.iter().flatten().filter(|g| sel.is_none_or(|s| crate::split::selects(s, &g.meta))).collect();
     maps.check(&games)?;
     let n_maps = games.iter().map(|g| g.meta.map_hash.as_str()).collect::<HashSet<_>>().len();
-    crate::elog!("{}", serde_json::json!({ "map_precomputes": "ok (B-2)", "games": games.len(), "maps": n_maps, "secs": started.elapsed().as_secs() }));
+    uranium_store::elog!("{}", serde_json::json!({ "map_precomputes": "ok (B-2)", "games": games.len(), "maps": n_maps, "secs": started.elapsed().as_secs() }));
     Ok(scan)
 }
 
@@ -489,7 +489,7 @@ pub fn scan_cached_in(src: &ShardSource, cache: Option<&Path>) -> Result<Vec<Vec
     });
     let by_sorted: Vec<Vec<GameSummary>> = match cached {
         Some(c) => {
-            crate::elog!("[scan] {} files from the cache {}", c.files.len(), path.as_ref().unwrap().display());
+            uranium_store::elog!("[scan] {} files from the cache {}", c.files.len(), path.as_ref().unwrap().display());
             c.files.into_iter().map(|(_, g)| g).collect()
         }
         None => {
@@ -504,7 +504,7 @@ pub fn scan_cached_in(src: &ShardSource, cache: Option<&Path>) -> Result<Vec<Vec
                     Ok(())
                 };
                 if let Err(e) = write() {
-                    crate::elog!("[scan] could not write the scan cache {} ({e:#}); the next start scans again", p.display());
+                    uranium_store::elog!("[scan] could not write the scan cache {} ({e:#}); the next start scans again", p.display());
                 }
             }
             scan
@@ -641,6 +641,12 @@ impl StepSource for ChosenGames {
     fn last_id(&self) -> Option<GameId> {
         self.last
     }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct ZEntry {
+    pub build: Vec<u16>,
+    pub units: Vec<f32>,
 }
 
 pub fn replay_z(game: &ShardGame) -> Strategy {

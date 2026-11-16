@@ -691,7 +691,7 @@ pub fn read_ident(dir: &Path) -> Result<Option<RunIdent>> {
 
 pub fn check_ident(dir: &Path, want: &RunIdent) -> Result<()> {
     let Some(have) = read_ident(dir)? else {
-        crate::elog!("[bc] WARNING: {} has no stage / config / dataset fingerprint (written before B-3); resuming unchecked", dir.display());
+        uranium_store::elog!("[bc] WARNING: {} has no stage / config / dataset fingerprint (written before B-3); resuming unchecked", dir.display());
         return Ok(());
     };
     let mut diff = Vec::new();

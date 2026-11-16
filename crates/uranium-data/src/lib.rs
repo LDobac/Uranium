@@ -1,5 +1,3 @@
-pub use uranium_store::elog;
-
 pub mod bc;
 pub mod bc_run;
 pub mod collate;

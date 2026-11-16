@@ -1617,7 +1617,6 @@ dependencies = [
  "toml",
  "uranium-data",
  "uranium-env",
- "uranium-league",
  "uranium-proto",
  "uranium-replay",
  "uranium-store",

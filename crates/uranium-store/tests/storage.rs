@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use uranium_train::storage::{LockBusy, LockStatus, Manifest, PushOutcome, PushStage, Run, StorageConfig, check_name, ckpt_name, open_dataset, pull_tree, verify_dir};
+use uranium_store::storage::{LockBusy, LockStatus, Manifest, PushOutcome, PushStage, Run, StorageConfig, check_name, ckpt_name, open_dataset, pull_tree, verify_dir};
 
 struct Tmp(PathBuf);
 
@@ -253,38 +253,6 @@ fn failed_prune_delete_is_a_warning_061_r6_b7() {
 }
 
 #[test]
-fn same_step_is_never_written_twice_b8() {
-    use uranium_train::bc_run::run_checkpoint;
-    for share_has_it in [false, true] {
-        let t = Tmp::new(&format!("b8-{share_has_it}"));
-        let mut run = Run::acquire(cfg(&t, "pc-a"), "run1", false).unwrap();
-        let mut sealed_at = None;
-        let write = |d: &Path| -> anyhow::Result<()> {
-            fs::write(d.join("model.bpk"), "weights 7")?;
-            Ok(())
-        };
-        assert_eq!(run_checkpoint(&mut run, 5, &mut sealed_at, write).unwrap(), PushOutcome::Pushed);
-        let lock = run.lock_path();
-        let held = fs::read(&lock).unwrap();
-        if share_has_it {
-            write_ckpt(&mut run, 7);
-            sealed_at = Some(7);
-            assert_eq!(run.push_until(7, PushStage::Renamed).unwrap(), PushOutcome::Pushed);
-        } else {
-            fs::remove_file(&lock).unwrap();
-            assert!(matches!(run_checkpoint(&mut run, 7, &mut sealed_at, write).unwrap(), PushOutcome::Deferred(_)));
-            fs::write(&lock, &held).unwrap();
-        }
-        assert_eq!(sealed_at, Some(7));
-        let id = uranium_train::storage::ckpt_id(&run.cache_dir().join(ckpt_name(7))).unwrap();
-        let rewrite = |_: &Path| -> anyhow::Result<()> { panic!("step 7 written twice (B-8)") };
-        assert_eq!(run_checkpoint(&mut run, 7, &mut sealed_at, rewrite).unwrap(), PushOutcome::Pushed, "share has it: {share_has_it}");
-        assert_eq!(uranium_train::storage::ckpt_id(&run.cache_dir().join(ckpt_name(7))).unwrap(), id, "the first copy is kept");
-        assert_eq!(latest_verified(&run), Some(7));
-    }
-}
-
-#[test]
 fn pull_skips_done_files_and_rejects_corruption_061_r11() {
     let t = Tmp::new("pulltree");
     let src = t.0.join("src");
@@ -384,7 +352,7 @@ fn unpushed_checkpoint_of_an_old_lineage_is_not_recovered_061_r14() {
 #[test]
 fn device_spans_follow_the_line_format_061_r15() {
     use serde_json::json;
-    use uranium_train::storage::device_spans;
+    use uranium_store::storage::device_spans;
     let start = |h: &str, s: u64, b: &str| json!({ "event": "start", "host": h, "step": s, "time": 1, "backend": b, "precision": "f32", "core": "Lstm", "stage": "S1" });
     let ckpt = |h: &str, s: u64| json!({ "event": "checkpoint", "host": h, "step": s, "time": 1 });
     let stop = |h: &str, s: u64, r: &str| json!({ "event": "stop", "host": h, "step": s, "time": 1, "reason": r });

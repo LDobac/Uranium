@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use uranium_train::bc::{BcConfig, BcStage};
-use uranium_train::data::ShardSource;
+use uranium_data::bc::{BcConfig, BcStage};
+use uranium_data::data::ShardSource;
 
 /// Device of the PyTorch training children.
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -188,7 +188,7 @@ struct DataArgs {
 
 impl DataArgs {
     fn dirs(&self) -> Result<Vec<PathBuf>> {
-        uranium_train::storage::dataset_dirs(&self.dataset, &self.shards)
+        uranium_store::storage::dataset_dirs(&self.dataset, &self.shards)
     }
 }
 
@@ -209,7 +209,7 @@ impl GroupArgs {
         }
         for g in &self.dataset_group {
             let names: Vec<PathBuf> = g.split(',').filter(|s| !s.is_empty()).map(PathBuf::from).collect();
-            out.push(uranium_train::storage::dataset_dirs(&names, &[])?);
+            out.push(uranium_store::storage::dataset_dirs(&names, &[])?);
         }
         out.extend(self.group.iter().map(|g| g.split(',').filter(|s| !s.is_empty()).map(PathBuf::from).collect::<Vec<_>>()));
         anyhow::ensure!(out.iter().any(|g| !g.is_empty()), "pass --dataset, --shards or --group");
@@ -284,14 +284,14 @@ fn parse_teacher_races(s: &str) -> std::result::Result<std::collections::BTreeMa
 
 fn teacher_race_report(
     races: Option<&std::collections::BTreeMap<String, f64>>,
-    mix: uranium_train::mix::MixShares,
-    epoch: &uranium_train::mix::SourceRaceCounts,
-    s2: &[uranium_train::data::GameSummary],
-    all: &[uranium_train::data::GameSummary],
-) -> Result<(uranium_train::mix::MixShares, Option<uranium_train::mix::TeacherRaces>)> {
+    mix: uranium_data::mix::MixShares,
+    epoch: &uranium_data::mix::SourceRaceCounts,
+    s2: &[uranium_data::data::GameSummary],
+    all: &[uranium_data::data::GameSummary],
+) -> Result<(uranium_data::mix::MixShares, Option<uranium_data::mix::TeacherRaces>)> {
     let Some(r) = races else { return Ok((mix, None)) };
     let mix = mix.with_teacher_races(epoch, r);
-    let tr = uranium_train::mix::TeacherRaces::new(s2, all, &mix.teacher_sources, r, &mix)?;
+    let tr = uranium_data::mix::TeacherRaces::new(s2, all, &mix.teacher_sources, r, &mix)?;
     for (race, x) in &tr.short {
         eprintln!(
             "[mix-fractions] teacher race {race}: below its share band, {} steps below its target ({:.0} steps per counted game, {:.1}% of its games in the selection): about {} more games of it (044-R8 top-up, user decisions 2026-11-14: 022 botgen games against the short race(s) only, plus the build's filtered share)",
@@ -332,7 +332,7 @@ fn main() -> Result<()> {
             let mut src = ShardSource::new(&shards)?;
             let mut f = std::io::BufWriter::new(std::fs::File::create(&out)?);
             let (mut seen, mut kept) = (0usize, 0usize);
-            while let Some(g) = uranium_train::data::StepSource::next_game(&mut src)? {
+            while let Some(g) = uranium_data::data::StepSource::next_game(&mut src)? {
                 seen += 1;
                 let me = g.game_info.players.iter().find(|p| p.id == g.game_info.self_player);
                 if me.map(|p| p.race) != Some(uranium_proto::Race::Terran) {
@@ -341,11 +341,11 @@ fn main() -> Result<()> {
                 if !all_maps && families.classify(&g.game_info.map_name, "") == "other" {
                     continue;
                 }
-                let z = uranium_train::data::replay_z(&g);
+                let z = uranium_data::data::replay_z(&g);
                 if z.build.is_empty() {
                     continue;
                 }
-                let e = uranium_league::run::ZEntry { build: z.build, units: z.units };
+                let e = uranium_data::data::ZEntry { build: z.build, units: z.units };
                 writeln!(f, "{}", serde_json::to_string(&e)?)?;
                 kept += 1;
             }
@@ -355,14 +355,14 @@ fn main() -> Result<()> {
         }
         Cmd::Manifest { dir, verify } => {
             let m = if verify {
-                uranium_train::storage::verify_dir(&dir)?
+                uranium_store::storage::verify_dir(&dir)?
             } else {
                 let jobs = std::thread::available_parallelism().map_or(4, |n| n.get());
                 let (shards, games) = uranium_replay::shard::validate_tree(&dir, jobs)?;
                 if shards > 0 {
                     eprintln!("[manifest] {shards} shards decode ({games} games, 040-R17)");
                 }
-                let m = uranium_train::storage::Manifest::build(&dir)?;
+                let m = uranium_store::storage::Manifest::build(&dir)?;
                 m.write(&dir)?;
                 m
             };
@@ -375,12 +375,12 @@ fn main() -> Result<()> {
         }
         Cmd::SplitStats { data } => {
             let src = ShardSource::from_dirs(&data.dirs()?)?;
-            let scan = uranium_train::data::scan_cached(&src)?;
-            println!("{}", serde_json::to_string_pretty(&uranium_train::split::split_stats(scan.iter().flatten()))?);
+            let scan = uranium_data::data::scan_cached(&src)?;
+            println!("{}", serde_json::to_string_pretty(&uranium_data::split::split_stats(scan.iter().flatten()))?);
             Ok(())
         }
         Cmd::EvalGames { data, split, games, seed, target_maps } => {
-            use uranium_train::split::{Selection, Split};
+            use uranium_data::split::{Selection, Split};
             let sp = match split.as_str() {
                 "train" => Split::Train,
                 "val" => Split::Val,
@@ -388,8 +388,8 @@ fn main() -> Result<()> {
                 _ => anyhow::bail!("--split {split}: expected train, val or test"),
             };
             let src = ShardSource::from_dirs(&data.dirs()?)?.select(Selection::Only(sp));
-            let scan = uranium_train::data::scan_cached(&src)?;
-            for m in uranium_train::bc::eval_game_metas(&src, &scan, games, seed, target_maps) {
+            let scan = uranium_data::data::scan_cached(&src)?;
+            for m in uranium_data::bc::eval_game_metas(&src, &scan, games, seed, target_maps) {
                 let row = serde_json::json!({ "replay_sha256": m.replay_sha256, "perspective_slot": m.perspective_slot, "src": m.src, "map_family": m.map_family, "matchup": m.matchup, "split": split });
                 println!("{row}");
             }
@@ -397,18 +397,18 @@ fn main() -> Result<()> {
         }
         Cmd::LabelCheck { data, games } => {
             let mut src = ShardSource::from_dirs(&data.dirs()?)?;
-            let maps = uranium_train::data::MapStore::from_env();
-            uranium_train::data::check_maps(&src, None, &maps)?;
-            let (mut st, mut n) = (uranium_train::data::LabelStats::default(), 0usize);
-            while let Some(g) = uranium_train::data::StepSource::next_game(&mut src)? {
-                uranium_train::data::label_check(&g, &mut st, &maps)?;
+            let maps = uranium_data::data::MapStore::from_env();
+            uranium_data::data::check_maps(&src, None, &maps)?;
+            let (mut st, mut n) = (uranium_data::data::LabelStats::default(), 0usize);
+            while let Some(g) = uranium_data::data::StepSource::next_game(&mut src)? {
+                uranium_data::data::label_check(&g, &mut st, &maps)?;
                 n += 1;
                 if games.is_some_and(|m| n >= m) {
                     break;
                 }
             }
             let unknown = st.totals.get("Unknown").copied().unwrap_or(0);
-            let invalid: usize = st.fails.iter().filter(|((_, w), _)| *w != uranium_train::data::UNKNOWN_REASON).map(|(_, c)| c).sum();
+            let invalid: usize = st.fails.iter().filter(|((_, w), _)| *w != uranium_data::data::UNKNOWN_REASON).map(|(_, c)| c).sum();
             let mut rows: Vec<_> = st
                 .fails
                 .iter()
@@ -432,7 +432,7 @@ fn main() -> Result<()> {
         }
         Cmd::BcEpoch { data, groups, config } => {
             let cfg = BcConfig::load(&config)?;
-            let out = uranium_train::bc::epoch_table_groups(&groups.groups(&data)?, &cfg)?;
+            let out = uranium_data::bc::epoch_table_groups(&groups.groups(&data)?, &cfg)?;
             println!("{}", serde_json::to_string_pretty(&out)?);
             Ok(())
         }
@@ -440,9 +440,9 @@ fn main() -> Result<()> {
             let cfg = BcConfig::load(&config)?;
             let sub = cfg.data.subsample.clone().ok_or_else(|| anyhow::anyhow!("{}: no [data.subsample] (its keep_sources are the teacher, 041-R21 ⑥)", config.display()))?;
             let groups = groups.groups(&data)?;
-            let scan = uranium_train::bc::scan_groups(&groups)?;
-            let all: Vec<uranium_train::data::GameSummary> = scan.into_values().flatten().collect();
-            let s2: Vec<uranium_train::data::GameSummary> = all.iter().filter(|g| uranium_train::split::selects(uranium_train::split::Selection::S2, &g.meta)).cloned().collect();
+            let scan = uranium_data::bc::scan_groups(&groups)?;
+            let all: Vec<uranium_data::data::GameSummary> = scan.into_values().flatten().collect();
+            let s2: Vec<uranium_data::data::GameSummary> = all.iter().filter(|g| uranium_data::split::selects(uranium_data::split::Selection::S2, &g.meta)).cloned().collect();
             let mut with = cfg.clone();
             let (f, source_fractions) = match &share {
                 None => {
@@ -451,15 +451,15 @@ fn main() -> Result<()> {
                         teacher_races.is_none() || !s2.iter().any(|g| g.meta.src == "distill"),
                         "--teacher-races without --share: the data has distill games, but the teacher round has no distill share (044-R8); leave distill_m2 out"
                     );
-                    let f = uranium_train::mix::race_fractions(&s2, &sub.keep_sources, cfg.data.seed, teacher_share)?;
-                    with.data.subsample = Some(uranium_train::split::Subsample { fraction: f.fraction, keep_sources: sub.keep_sources.clone(), fraction_by_race: Some(f.fraction_by_race.clone()), fraction_by_source: None });
+                    let f = uranium_data::mix::race_fractions(&s2, &sub.keep_sources, cfg.data.seed, teacher_share)?;
+                    with.data.subsample = Some(uranium_data::split::Subsample { fraction: f.fraction, keep_sources: sub.keep_sources.clone(), fraction_by_race: Some(f.fraction_by_race.clone()), fraction_by_source: None });
                     (f, None)
                 }
                 Some(sh) => {
                     let unnamed: Vec<String> = sub.share_sources().into_iter().filter(|s| !sh.sources.contains_key(s)).collect();
                     anyhow::ensure!(unnamed.is_empty(), "{}: fraction_by_source {unnamed:?} has no --share target (044-R5 ③)", config.display());
-                    let (f, sf) = uranium_train::mix::share_fractions(&s2, &sub.keep_sources, &sh.sources, cfg.data.seed, sh.teacher)?;
-                    with.data.subsample = Some(uranium_train::split::Subsample {
+                    let (f, sf) = uranium_data::mix::share_fractions(&s2, &sub.keep_sources, &sh.sources, cfg.data.seed, sh.teacher)?;
+                    with.data.subsample = Some(uranium_data::split::Subsample {
                         fraction: f.fraction,
                         keep_sources: sub.keep_sources.clone(),
                         fraction_by_race: Some(f.fraction_by_race.clone()),
@@ -469,7 +469,7 @@ fn main() -> Result<()> {
                     (f, Some(sf))
                 }
             };
-            let t = uranium_train::bc::epoch_table_groups(&groups, &with)?;
+            let t = uranium_data::bc::epoch_table_groups(&groups, &with)?;
             let warmup = (t.s2.updates as f64 * 0.05 + 0.5).floor() as u64;
             let mix = t.s2_mix.clone().expect("the config has [data.subsample]");
             if let Some(sh) = &share {
@@ -536,13 +536,13 @@ fn main() -> Result<()> {
             };
             let cfg = BcConfig::load(&config)?.for_stage(stage);
             let src = cfg.train_source(&data.dirs()?, stage.selection())?;
-            let mut feeder = uranium_train::bc::Feeder::new(&cfg);
+            let mut feeder = uranium_data::bc::Feeder::new(&cfg);
             if synthetic_maps {
-                feeder.set_maps(std::sync::Arc::new(uranium_train::data::MapStore::synthetic()));
+                feeder.set_maps(std::sync::Arc::new(uranium_data::data::MapStore::synthetic()));
             }
             feeder.set_pack(pack);
             let mut batches_left = batches;
-            let mut p = uranium_train::bc::Prefetch::start(feeder, src, 0);
+            let mut p = uranium_data::bc::Prefetch::start(feeder, src, 0);
             let mut k = 0;
             while batches_left > 0 {
                 let Some(b) = p.next()? else { break };
@@ -589,8 +589,8 @@ fn main() -> Result<()> {
             })
         }
         Cmd::Devices { run } => {
-            let cfg = uranium_train::storage::StorageConfig::from_env()?;
-            let spans = uranium_train::storage::device_spans(&uranium_train::storage::read_devices(&cfg, &run)?);
+            let cfg = uranium_store::storage::StorageConfig::from_env()?;
+            let spans = uranium_store::storage::device_spans(&uranium_store::storage::read_devices(&cfg, &run)?);
             let total: u64 = spans.iter().map(|s| s.to - s.from).sum();
             let mut by_host: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
             for s in &spans {

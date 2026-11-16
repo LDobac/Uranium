@@ -115,14 +115,14 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
             let missing: Vec<String> = s.share_sources().into_iter().filter(|k| !per.contains_key(k)).collect();
             line["fraction_by_source_absent"] = serde_json::json!(missing);
         }
-        crate::elog!("{line}");
+        uranium_store::elog!("{line}");
     }
     let ident = RunIdent { stage: format!("{:?}", args.stage), config: cfg.fingerprint(), dataset: crate::data::dataset_fingerprint(&src)? };
-    crate::elog!("{}", serde_json::json!({ "run_ident": ident, "keep_checkpoints": cfg.keep_checkpoints() }));
+    uranium_store::elog!("{}", serde_json::json!({ "run_ident": ident, "keep_checkpoints": cfg.keep_checkpoints() }));
 
     let stop = args.stop.clone();
     if uranium_store::stopping(&stop) {
-        crate::elog!("[bc] Ctrl+C before start: not started");
+        uranium_store::elog!("[bc] Ctrl+C before start: not started");
         return Ok(BcExit::Stopped);
     }
     let init_dir = args.init.as_deref().map(resolve_init).transpose()?;
@@ -142,7 +142,7 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
                 }
                 Ok(Some(_)) => {
                     if let Err(e) = storage::clear_yield(&r.cfg, id) {
-                        crate::elog!("[bc] could not remove this host's yield request on {id} ({e:#}); it expires after 30 min (061-R14)");
+                        uranium_store::elog!("[bc] could not remove this host's yield request on {id} ({e:#}); it expires after 30 min (061-R14)");
                     }
                 }
                 Ok(None) => {}
@@ -159,7 +159,7 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
     let resume_dir = match begun {
         Some(Ok(res)) => res.map(|res| res.dir),
         Some(Err(e)) if e.downcast_ref::<uranium_store::Interrupted>().is_some() => {
-            crate::elog!("[bc] {e:#}; releasing the lock (042-R10)");
+            uranium_store::elog!("[bc] {e:#}; releasing the lock (042-R10)");
             run.take().expect("run mode").release()?;
             return Ok(BcExit::Stopped);
         }
@@ -169,7 +169,7 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
     if uranium_store::stopping(&stop)
         && let Some(r) = run.take()
     {
-        crate::elog!("[bc] Ctrl+C during start: releasing the lock, nothing to save (042-R10)");
+        uranium_store::elog!("[bc] Ctrl+C during start: releasing the lock, nothing to save (042-R10)");
         r.release()?;
         return Ok(BcExit::Stopped);
     }
@@ -184,7 +184,7 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
     check_disks(&args, &run);
     let depth = crate::bc::prefetch_depth()?;
     let (entity_chunk, pack) = (crate::bc::entity_chunk()?, crate::bc::pack_batch()?);
-    crate::elog!("{}", serde_json::json!({ "prefetch": depth, "entity_chunk": entity_chunk, "pack_batch": pack, "micro_lanes": cfg.micro_lanes }));
+    uranium_store::elog!("{}", serde_json::json!({ "prefetch": depth, "entity_chunk": entity_chunk, "pack_batch": pack, "micro_lanes": cfg.micro_lanes }));
     let start = match (&resume_dir, &init_dir) {
         (Some(d), _) => Start::Resume(d),
         (None, Some(d)) => Start::Init(d),
@@ -211,9 +211,9 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
     if let Some(dir) = &resume_dir {
         p = Progress::load(dir)?;
         feeder.restore(&p.data, &mut src)?;
-        crate::elog!("{}", serde_json::json!({ "resumed": dir, "step": p.step, "games": p.data.games, "source": p.data.source }));
+        uranium_store::elog!("{}", serde_json::json!({ "resumed": dir, "step": p.step, "games": p.data.games, "source": p.data.source }));
     }
-    crate::elog!("{}", serde_json::json!({ "stage": format!("{:?}", args.stage), "total_steps": total, "stop_at": stop_at, "lr_scale": p.lr_scale }));
+    uranium_store::elog!("{}", serde_json::json!({ "stage": format!("{:?}", args.stage), "total_steps": total, "stop_at": stop_at, "lr_scale": p.lr_scale }));
     let device_log = |r: &Option<Run>, line: serde_json::Value| {
         if let Some(r) = r {
             storage::log_device(&r.cfg, &r.run_id, line);
@@ -250,7 +250,7 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
         let waited = Instant::now();
         let Some(batch) = data.next()? else {
             exhausted = true;
-            crate::elog!("data exhausted after {} updates (end of the epoch)", p.step);
+            uranium_store::elog!("data exhausted after {} updates (end of the epoch)", p.step);
             break;
         };
         let wait_secs = waited.elapsed().as_secs_f64();
@@ -260,7 +260,7 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
         let loss = trainer.train_batch(batch, lr, p.step)?;
         p.step += 1;
         p.data = state;
-        crate::elog!(
+        uranium_store::elog!(
             "{}",
             serde_json::json!({ "step": p.step, "loss": loss, "lr": lr, "games": p.data.games, "invalid_labels": p.data.invalid_labels, "no_result_games": p.data.no_result_games, "secs": (started.elapsed().as_secs_f64() * 100.0).round() / 100.0, "wait_secs": (wait_secs * 100.0).round() / 100.0 })
         );
@@ -271,11 +271,11 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
             match r.heartbeat() {
                 LockStatus::Held => {}
                 LockStatus::Lost(l) => {
-                    crate::elog!("[bc] lock lost to {l:?}: stopping without a push (061-R5)");
+                    uranium_store::elog!("[bc] lock lost to {l:?}: stopping without a push (061-R5)");
                     lock_lost = true;
                     break;
                 }
-                LockStatus::Unreachable(e) => crate::elog!("[bc] heartbeat: share unreachable ({e}), continuing (061-R11-3)"),
+                LockStatus::Unreachable(e) => uranium_store::elog!("[bc] heartbeat: share unreachable ({e}), continuing (061-R11-3)"),
             }
         }
         if p.step % every == 0 || (!every_time.is_zero() && last_ckpt.elapsed() >= every_time) {
@@ -285,7 +285,7 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
                     saved_at = Some(p.step);
                 }
                 Some(PushOutcome::LockLost(l)) => {
-                    crate::elog!("[bc] lock lost to {l:?}: stopping without a push (061-R11-4)");
+                    uranium_store::elog!("[bc] lock lost to {l:?}: stopping without a push (061-R11-4)");
                     lock_lost = true;
                     break;
                 }
@@ -299,13 +299,13 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
         }
         if let Some(req) = request {
             if saved_at == Some(p.step) {
-                crate::elog!("[bc] yield requested by {} (priority {}): checkpoint pushed, releasing (061-R14)", req.host, req.priority);
+                uranium_store::elog!("[bc] yield requested by {} (priority {}): checkpoint pushed, releasing (061-R14)", req.host, req.priority);
                 yielded = true;
                 break;
             }
             if !yield_waiting {
                 yield_waiting = true;
-                crate::elog!("[bc] yield requested by {} (priority {}): checkpoint and release (061-R14)", req.host, req.priority);
+                uranium_store::elog!("[bc] yield requested by {} (priority {}): checkpoint and release (061-R14)", req.host, req.priority);
                 match save(trainer.as_mut(), &p, &mut run, false, &mut sealed_at)? {
                     Some(PushOutcome::Pushed) => {
                         device_log(&run, serde_json::json!({ "event": "checkpoint", "step": p.step }));
@@ -314,11 +314,11 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
                         break;
                     }
                     Some(PushOutcome::LockLost(l)) => {
-                        crate::elog!("[bc] lock lost to {l:?}: stopping without a push (061-R11-4)");
+                        uranium_store::elog!("[bc] lock lost to {l:?}: stopping without a push (061-R11-4)");
                         lock_lost = true;
                         break;
                     }
-                    other => crate::elog!("[bc] yield: push {other:?}; keeping the lock and training on, yielding after the next pushed checkpoint (061-R14 ②)"),
+                    other => uranium_store::elog!("[bc] yield: push {other:?}; keeping the lock and training on, yielding after the next pushed checkpoint (061-R14 ②)"),
                 }
                 last_ckpt = Instant::now();
             }
@@ -331,7 +331,7 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
     let finished = exhausted || p.step >= stop_at;
     let no_update = p.step == start_step && (resume_dir.is_some() || (run.is_some() && !finished));
     let pushed = if no_update || saved_at == Some(p.step) {
-        crate::elog!("[bc] step {} is already saved: nothing more to save", p.step);
+        uranium_store::elog!("[bc] step {} is already saved: nothing more to save", p.step);
         Some(PushOutcome::Pushed)
     } else {
         save(trainer.as_mut(), &p, &mut run, true, &mut sealed_at)?
@@ -352,11 +352,11 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
                 }
                 r.release()?
             }
-            other => crate::elog!("[bc] final push {other:?}: keeping the lock so the next start recovers it (061-R11-5/6)"),
+            other => uranium_store::elog!("[bc] final push {other:?}: keeping the lock so the next start recovers it (061-R11-5/6)"),
         }
     }
     if finished {
-        crate::elog!("{}", serde_json::json!({ "done": true, "step": p.step, "games": p.data.games }));
+        uranium_store::elog!("{}", serde_json::json!({ "done": true, "step": p.step, "games": p.data.games }));
     }
     Ok(if yielded {
         BcExit::Yielded
@@ -382,7 +382,7 @@ fn check_disks(args: &BcRunArgs, run: &Option<Run>) {
 
 pub fn run_checkpoint(r: &mut Run, step: u64, sealed_at: &mut Option<usize>, write: impl FnOnce(&Path) -> Result<()>) -> Result<PushOutcome> {
     let out = if *sealed_at == Some(step as usize) {
-        crate::elog!("[bc] {} is already written: pushing it again instead of writing it twice (B-8)", storage::ckpt_name(step));
+        uranium_store::elog!("[bc] {} is already written: pushing it again instead of writing it twice (B-8)", storage::ckpt_name(step));
         r.push(step)?
     } else {
         let dir = r.stage_dir(step)?;
@@ -391,12 +391,12 @@ pub fn run_checkpoint(r: &mut Run, step: u64, sealed_at: &mut Option<usize>, wri
         *sealed_at = Some(step as usize);
         r.push(step)?
     };
-    crate::elog!("[bc] checkpoint {} {:?}", storage::ckpt_name(step), out);
+    uranium_store::elog!("[bc] checkpoint {} {:?}", storage::ckpt_name(step), out);
     if out == PushOutcome::Pushed {
         match r.prune() {
             Ok(0) => {}
-            Ok(n) => crate::elog!("[bc] prune: {n} checkpoint folder(s) not deleted, left for the next prune (061-R6)"),
-            Err(e) => crate::elog!("[bc] WARNING: prune failed ({e:#}); training goes on (061-R6)"),
+            Ok(n) => uranium_store::elog!("[bc] prune: {n} checkpoint folder(s) not deleted, left for the next prune (061-R6)"),
+            Err(e) => uranium_store::elog!("[bc] WARNING: prune failed ({e:#}); training goes on (061-R6)"),
         }
     }
     Ok(out)

@@ -7,11 +7,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 use uranium_agent::infer::InferenceHandle;
 use uranium_agent::model_policy::{LearnerHook, SessionObserver};
 use uranium_agent::{ConcedeBoard, EndBoard, PolicySpec, Routes, T0Build, T0Builds, game_result};
 use uranium_env::concede::{ConcedeConfig, ConcedeGame, LeaveRule};
+use uranium_data::data::ZEntry;
 use uranium_env::features::Strategy;
 use uranium_env::reward::{Outcome, RewardWeights};
 use uranium_env::scout::{PseudoMode, RewardConfig, ScoutMetrics, seconds};
@@ -19,19 +19,13 @@ use uranium_proto::control::{GameSpec, MapKey, PlayerKind, PlayerSpec};
 use uranium_proto::{EndReason, GameInfo, Race};
 use uranium_runner::{Dispatch, HostEntry, Job, JobOutcome, JobSource};
 
-use crate::ckpt::{self, TrainState};
+use uranium_store::ckpt::{self, TrainState};
 use crate::config::{LeagueConfig, RlConfig};
 use crate::league::{AgentKind, Class, League, Opponent, Pick};
 use crate::learner::{Algo, HEAD_NAMES, RlLearners, SnapshotServers, UpdateStats, spatial_columns};
 use crate::sil::{SilBuffer, SilConfig};
-use crate::storage::{LockStatus, PushOutcome, Run, StorageConfig};
+use uranium_store::storage::{LockStatus, PushOutcome, Run, StorageConfig};
 use crate::trajectory::{GameResult, Segment, SegmentQueue, TrajectoryObserver, trained_steps as trained_steps_of};
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct ZEntry {
-    pub build: Vec<u16>,
-    pub units: Vec<f32>,
-}
 
 pub struct RlArgs {
     pub run: String,
@@ -105,7 +99,7 @@ impl SilState {
             return true;
         }
         if !self.off_stage_logged.swap(true, Ordering::SeqCst) {
-            crate::elog!("[rl] [sil] is on but the stage is {stage:?}: no self-imitation lanes outside C1 (042-R16)");
+            uranium_store::elog!("[rl] [sil] is on but the stage is {stage:?}: no self-imitation lanes outside C1 (042-R16)");
         }
         false
     }
@@ -252,7 +246,7 @@ fn prune_servers(shared: &Shared) {
     let closers = shared.snapshots.lock().unwrap().prune(&in_use);
     for (key, close) in closers {
         close();
-        crate::elog!("[rl] inference server of {key} shut down: no opponent choice uses it (042)");
+        uranium_store::elog!("[rl] inference server of {key} shut down: no opponent choice uses it (042)");
     }
 }
 
@@ -364,7 +358,7 @@ fn mixed_seed(id: u64, share: f64, hit: impl Fn(u32) -> bool) -> u32 {
     if let Some(s) = (0..START_MIX_TRIES).map(candidate).find(|&s| hit(s) == target) {
         return s;
     }
-    crate::elog!("[rl] game {id}: 042-R18 none of {START_MIX_TRIES} seeds gives the target start condition (first-target hit = {target}); keeping the game's seed {s0}");
+    uranium_store::elog!("[rl] game {id}: 042-R18 none of {START_MIX_TRIES} seeds gives the target start condition (first-target hit = {target}); keeping the game's seed {s0}");
     s0
 }
 
@@ -390,7 +384,7 @@ impl LeagueSource {
                 }
                 Err(e) => {
                     let key = s.league.lock().unwrap().self_play_key();
-                    crate::elog!("[rl] game {id}: opponent {} cannot be served ({e:#}); playing the current Main instead (042)", pick.key);
+                    uranium_store::elog!("[rl] game {id}: opponent {} cannot be served ({e:#}); playing the current Main instead (042)", pick.key);
                     pick = Pick { opponent: Opponent::SelfPlay, key, class: Class::Model, ..pick };
                 }
             }
@@ -489,7 +483,7 @@ impl JobSource for LeagueSource {
         if outcome == JobOutcome::Finished {
             s.finished_games.fetch_add(1, Ordering::SeqCst);
             if result.is_none() {
-                crate::elog!("[rl] game {id}: finished without a report of the learning session; not counted for the no-decision streak (042-R20)");
+                uranium_store::elog!("[rl] game {id}: finished without a report of the learning session; not counted for the no-decision streak (042-R20)");
             }
         }
         match bad_learning_session(outcome, result.as_ref()) {
@@ -534,15 +528,15 @@ impl JobSource for LeagueSource {
                     Some(Some(n)) => {
                         let judged = judge.judge(n);
                         judge_scv = Some(n);
-                        crate::elog!("[rl] game {id}: 042-R17 rush judge at {} s: {n} own SCVs (win at >= {}) -> {judged:?} (bridge {o:?})", judge.at_s, judge.min_scv);
+                        uranium_store::elog!("[rl] game {id}: 042-R17 rush judge at {} s: {n} own SCVs (win at >= {}) -> {judged:?} (bridge {o:?})", judge.at_s, judge.min_scv);
                         Some(judged)
                     }
                     Some(None) => {
-                        crate::elog!("[rl] game {id}: 042-R17 rush judge at {} s: no observation of the learning session to count SCVs; no result, not trained (042-R3)", judge.at_s);
+                        uranium_store::elog!("[rl] game {id}: 042-R17 rush judge at {} s: no observation of the learning session to count SCVs; no result, not trained (042-R3)", judge.at_s);
                         None
                     }
                     None => {
-                        crate::elog!("[rl] game {id}: 042-R17 rush judge at {} s: no session report of the learning session (timeout); no result, not trained (042-R3)", judge.at_s);
+                        uranium_store::elog!("[rl] game {id}: 042-R17 rush judge at {} s: no session report of the learning session (timeout); no result, not trained (042-R3)", judge.at_s);
                         None
                     }
                 }
@@ -593,7 +587,7 @@ impl JobSource for LeagueSource {
         };
         if let Some(c) = conceded {
             let who = if c.side == 0 { "learning agent" } else { "opponent" };
-            crate::elog!("[rl] game {id}: 042-R14 collapse concede by the {who} side (players index {}) at frame {}; result {:?}", c.side, c.frame, decided);
+            uranium_store::elog!("[rl] game {id}: 042-R14 collapse concede by the {who} side (players index {}) at frame {}; result {:?}", c.side, c.frame, decided);
         }
         if let Some(sil) = &s.sil {
             let scout = result.as_ref().and_then(|r| r.scout);
@@ -607,7 +601,7 @@ impl JobSource for LeagueSource {
             (Some(why), Some(bytes)) => match keep_replay(&s.replay_dir, id, why, &bytes) {
                 Ok(name) => (format!("replays/{name}"), why),
                 Err(e) => {
-                    crate::elog!("[rl] replay of game {id} not kept: {e:#}");
+                    uranium_store::elog!("[rl] replay of game {id} not kept: {e:#}");
                     (String::new(), "")
                 }
             },
@@ -693,9 +687,9 @@ impl StallWatch {
 
 fn stage_advanced(s: &Shared) {
     let stage = s.league.lock().unwrap().stage;
-    crate::elog!("[rl] curriculum advanced to {stage:?} (042-R5)");
+    uranium_store::elog!("[rl] curriculum advanced to {stage:?} (042-R5)");
     if let Some(w) = scout_stage_warning(s.pseudo, stage) {
-        crate::elog!("{w}");
+        uranium_store::elog!("{w}");
     }
 }
 
@@ -771,7 +765,7 @@ fn scout_columns(mode: PseudoMode, result: Option<&GameResult>, ladder_group: Op
 }
 
 fn checkpoint_pseudo(dir: &Path) -> Option<PseudoMode> {
-    let meta = dir.join(crate::ckpt::AGENTS_DIR).join(AgentKind::Main.name()).join("meta.json");
+    let meta = dir.join(uranium_store::ckpt::AGENTS_DIR).join(AgentKind::Main.name()).join("meta.json");
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(meta).ok()?).ok()?;
     let rl = v.get("train")?.get("rl")?;
     match rl.get("reward").and_then(|r| r.get("pseudo")) {
@@ -865,10 +859,10 @@ fn open_csv(path: &Path, header: &str) -> Result<std::fs::File> {
             let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
             let old = path.with_file_name(format!("{stem}-{secs}.csv"));
             match std::fs::rename(path, &old) {
-                Ok(()) => crate::elog!("[rl] {name} has other columns: kept as {}, new file started (042-R2)", old.display()),
+                Ok(()) => uranium_store::elog!("[rl] {name} has other columns: kept as {}, new file started (042-R2)", old.display()),
                 Err(e) => {
                     target = path.with_file_name(format!("{stem}-{secs}-new.csv"));
-                    crate::elog!("[rl] WARNING: {name} has other columns and cannot be moved ({e}); writing {} instead (042-R2)", target.display());
+                    uranium_store::elog!("[rl] WARNING: {name} has other columns and cannot be moved ({e}); writing {} instead (042-R2)", target.display());
                 }
             }
         }
@@ -917,15 +911,15 @@ fn save_checkpoint(run: &mut Run, step: u64, learners: &mut dyn RlLearners, cfg:
 }
 
 fn check_storage(run: &Run) {
-    crate::disk::warn_storage("rl", &run.cfg);
-    crate::disk::spawn_replay_check(&run.cfg.shared, crate::disk::REPLAY_BUDGET_BYTES);
+    uranium_store::disk::warn_storage("rl", &run.cfg);
+    uranium_store::disk::spawn_replay_check(&run.cfg.shared, uranium_store::disk::REPLAY_BUDGET_BYTES);
 }
 
 fn prune_logged(run: &mut Run) {
     match run.prune() {
         Ok(0) => {}
-        Ok(n) => crate::elog!("[rl] prune: {n} checkpoint folder(s) not deleted, left for the next prune (061-R6)"),
-        Err(e) => crate::elog!("[rl] WARNING: prune failed ({e:#}); training goes on (061-R6)"),
+        Ok(n) => uranium_store::elog!("[rl] prune: {n} checkpoint folder(s) not deleted, left for the next prune (061-R6)"),
+        Err(e) => uranium_store::elog!("[rl] WARNING: prune failed ({e:#}); training goes on (061-R6)"),
     }
 }
 
@@ -941,8 +935,8 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         Some(_) => Some(crate::config::anchor_agent_dir(&storage.shared, &cfg.league.anchor)?),
         None => None,
     };
-    if crate::stopping(&stop) {
-        crate::elog!("[rl] Ctrl+C before start: not started");
+    if uranium_store::stopping(&stop) {
+        uranium_store::elog!("[rl] Ctrl+C before start: not started");
         return Ok(());
     }
     let mut storage = storage;
@@ -951,15 +945,15 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     check_storage(&run);
     let resume = match run.begin() {
         Ok(r) => r,
-        Err(e) if e.downcast_ref::<crate::Interrupted>().is_some() => {
-            crate::elog!("[rl] {e:#}; releasing the lock (042-R10)");
+        Err(e) if e.downcast_ref::<uranium_store::Interrupted>().is_some() => {
+            uranium_store::elog!("[rl] {e:#}; releasing the lock (042-R10)");
             run.release()?;
             return Ok(());
         }
         Err(e) => return Err(e),
     };
-    if crate::stopping(&stop) {
-        crate::elog!("[rl] Ctrl+C during start: releasing the lock, nothing to save (042-R10)");
+    if uranium_store::stopping(&stop) {
+        uranium_store::elog!("[rl] Ctrl+C during start: releasing the lock, nothing to save (042-R10)");
         run.release()?;
         return Ok(());
     }
@@ -988,10 +982,10 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     };
     let cc = &cfg.curriculum;
     match &resume {
-        Some(r) => crate::elog!("[rl] resumed {} at step {} (recovered {}), stage {:?}", args.run, r.step, r.recovered, league.stage),
-        None => crate::elog!("[rl] new league {}, stage {:?}", args.run, league.stage),
+        Some(r) => uranium_store::elog!("[rl] resumed {} at step {} (recovered {}), stage {:?}", args.run, r.step, r.recovered, league.stage),
+        None => uranium_store::elog!("[rl] new league {}, stage {:?}", args.run, league.stage),
     }
-    crate::elog!("[rl] curriculum: auto_advance {}, r_value in {:?}, {} T1 bot(s) (042-R5, 033)", cc.auto_advance, cc.r_value_stages, cfg.t1.len());
+    uranium_store::elog!("[rl] curriculum: auto_advance {}, r_value in {:?}, {} T1 bot(s) (042-R5, 033)", cc.auto_advance, cc.r_value_stages, cfg.t1.len());
 
     let handles: Vec<InferenceHandle> = AgentKind::ALL.iter().map(|a| learners.handle(a.index())).collect();
     let mut snap_dirs: HashMap<String, PathBuf> = HashMap::new();
@@ -1001,14 +995,14 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
             league.mark_published(&id);
             snap_dirs.insert(id, d);
         } else {
-            crate::elog!("[rl] snapshot {id}: no model files in {}, not an opponent (042)", d.display());
+            uranium_store::elog!("[rl] snapshot {id}: no model files in {}, not an opponent (042)", d.display());
         }
     }
     let anchor_key = league.anchor_key();
     if let (Some(k), Some(d)) = (&anchor_key, &anchor_dir) {
         snap_dirs.insert(k.clone(), d.clone());
     }
-    crate::elog!(
+    uranium_store::elog!(
         "[rl] C1 opponents: t0 {} t1 {} current Main {} snapshots {} (latest {} published, 0 = all) anchor {} ({}); r_value vs models {} (042, AMB-042-14)",
         cc.c1_t0,
         cc.c1_t1,
@@ -1020,38 +1014,38 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
         cc.r_value_vs_model
     );
     let ladder: Vec<String> = cfg.ladder.iter().filter_map(|e| e.opponent().ok()).map(|(_, k, _)| k).collect();
-    crate::elog!("[rl] C1 rush ladder: share {} ({:?}) {:?} (042, AMB-042-15)", cc.c1_ladder, cc.ladder_pick, ladder);
+    uranium_store::elog!("[rl] C1 rush ladder: share {} ({:?}) {:?} (042, AMB-042-15)", cc.c1_ladder, cc.ladder_pick, ladder);
     if !cc.ladder_groups.is_empty() {
         let groups: Vec<String> = cc.ladder_groups.iter().map(|(g, x)| format!("{g} {x} ({} entries)", cfg.ladder.iter().filter(|e| &e.group == g).count())).collect();
-        crate::elog!("[rl] ladder groups: {} (042, AMB-042-16)", groups.join(", "));
+        uranium_store::elog!("[rl] ladder groups: {} (042, AMB-042-16)", groups.join(", "));
     }
-    crate::elog!("[rl] win table decay {} (042 승률 표)", cfg.league.win_rate_decay);
+    uranium_store::elog!("[rl] win table decay {} (042 승률 표)", cfg.league.win_rate_decay);
     let b = &cfg.curriculum.band;
-    crate::elog!("[rl] ladder pick {:?}, band center {} width {} exclude below {} (042, AMB-042-17)", cc.ladder_pick, b.center, b.width, b.exclude_below);
+    uranium_store::elog!("[rl] ladder pick {:?}, band center {} width {} exclude below {} (042, AMB-042-17)", cc.ladder_pick, b.center, b.width, b.exclude_below);
     match cfg.league.model_game_max_s {
-        0 => crate::elog!("[rl] games against a model: no time cap (60 minutes, 020-R3)"),
-        s => crate::elog!("[rl] games against a model end as a draw at {s} game seconds ({} frames, 042-R15)", cfg.league.game_max_frames(true)),
+        0 => uranium_store::elog!("[rl] games against a model: no time cap (60 minutes, 020-R3)"),
+        s => uranium_store::elog!("[rl] games against a model end as a draw at {s} game seconds ({} frames, 042-R15)", cfg.league.game_max_frames(true)),
     }
     let rj = &cfg.league.rush_judge;
     if rj.groups.is_empty() {
-        crate::elog!("[rl] rush mini-game off (042-R17)");
+        uranium_store::elog!("[rl] rush mini-game off (042-R17)");
     } else {
-        crate::elog!("[rl] rush mini-game: ladder groups {:?} end at {} game seconds ({} frames); a TimeLimitDraw there is a win with >= {} own SCVs, else a loss (042-R17)", rj.groups, rj.at_s, rj.max_frames(), rj.min_scv);
+        uranium_store::elog!("[rl] rush mini-game: ladder groups {:?} end at {} game seconds ({} frames); a TimeLimitDraw there is a win with >= {} own SCVs, else a loss (042-R17)", rj.groups, rj.at_s, rj.max_frames(), rj.min_scv);
     }
     let weights: Vec<String> = cfg.ladder.iter().filter(|e| e.weight.is_some()).filter_map(|e| e.opponent().ok().map(|(_, k, _)| format!("{k} {}", e.fixed_weight()))).collect();
     if !weights.is_empty() {
-        crate::elog!("[rl] \"fixed\" ladder weights: {} (absent = 1.0, 042-R19)", weights.join(", "));
+        uranium_store::elog!("[rl] \"fixed\" ladder weights: {} (absent = 1.0, 042-R19)", weights.join(", "));
     }
     let sm = &cfg.league.start_mix;
     match sm.rush_hit_share {
-        None => crate::elog!("[rl] start condition mix off: every game keeps its hash seed (042-R18)"),
-        Some(x) => crate::elog!("[rl] start condition mix: ladder groups {:?} take a seed whose first-target hit (020-R21) matches a target drawn with hit share {x} (042-R18)", sm.groups),
+        None => uranium_store::elog!("[rl] start condition mix off: every game keeps its hash seed (042-R18)"),
+        Some(x) => uranium_store::elog!("[rl] start condition mix: ladder groups {:?} take a seed whose first-target hit (020-R21) matches a target drawn with hit share {x} (042-R18)", sm.groups),
     }
     let k = &cfg.kl;
-    crate::elog!("[rl] KL coefficient max({}, {} x 0.5^(update / {})) from this run's update 0, head multipliers {:?}; td_lambda {} (042-R9)", k.floor, k.init, k.half_life_updates, k.head_scale.by_head(), cfg.loss.td_lambda);
+    uranium_store::elog!("[rl] KL coefficient max({}, {} x 0.5^(update / {})) from this run's update 0, head multipliers {:?}; td_lambda {} (042-R9)", k.floor, k.init, k.half_life_updates, k.head_scale.by_head(), cfg.loss.td_lambda);
     let sc = &cfg.sil;
     if sc.enabled {
-        crate::elog!(
+        uranium_store::elog!(
             "[rl] self-imitation ON (Main in C1 only): mode {:?}, {} lanes of {} from a buffer of {} segments, group {:?} {}{}{}{}, segments before {} s, w_pg {} w_v {} max_uses {} (042-R16)",
             sc.mode,
             sc.lanes,
@@ -1068,15 +1062,15 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
             sc.max_uses
         );
     } else {
-        crate::elog!("[rl] self-imitation off (042-R16)");
+        uranium_store::elog!("[rl] self-imitation off (042-R16)");
     }
     let c = &cfg.concede;
-    crate::elog!("[rl] collapse concede: {} (screen supply <= {} for {} s from {} s, 042-R14)", if c.enabled { "on" } else { "off" }, c.max_supply, c.hold_s, c.after_s);
+    uranium_store::elog!("[rl] collapse concede: {} (screen supply <= {} for {} s from {} s, 042-R14)", if c.enabled { "on" } else { "off" }, c.max_supply, c.hold_s, c.after_s);
     let rw = &cfg.reward;
     match rw.pseudo {
-        PseudoMode::Z => crate::elog!("[rl] reward channels: z (r_build / r_units, 033-R11)"),
+        PseudoMode::Z => uranium_store::elog!("[rl] reward channels: z (r_build / r_units, 033-R11)"),
         PseudoMode::Scout => {
-            crate::elog!(
+            uranium_store::elog!(
                 "[rl] reward channels: scout (033-R11) - r_scout weight {} cap {} vs models x{}, r_survive weight {} vs models x{} ({}-{} s, {} SCVs)",
                 rw.scout.weight,
                 rw.scout.cap,
@@ -1088,7 +1082,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
                 rw.survive.scv_target
             );
             if let Some(w) = scout_stage_warning(rw.pseudo, league.stage) {
-                crate::elog!("{w}");
+                uranium_store::elog!("{w}");
             }
         }
     }
@@ -1135,7 +1129,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     });
     let z = load_z(&args.z_table)?;
     if z.is_empty() {
-        crate::elog!("[rl] no z table: every game runs without z, pseudo-rewards off (033-R8)");
+        uranium_store::elog!("[rl] no z table: every game runs without z, pseudo-rewards off (033-R8)");
     }
     let hooks: Vec<Arc<Hook>> = AgentKind::ALL
         .iter()
@@ -1162,18 +1156,18 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     let mut steps_per_s = 0.0f64;
     let mut stall = StallWatch::new(cfg.actors.dead_learner_minutes, Instant::now(), 0);
     match cfg.actors.dead_learner_minutes {
-        0 => crate::elog!("[rl] dead learner check off ([actors] dead_learner_minutes = 0, 042-R20)"),
-        m => crate::elog!("[rl] dead learner check: abnormal end after {DEAD_LEARNER_GAMES}+ finished games without an update for {m} min, or {BAD_SESSION_STREAK} finished games in a row without a learning-session decision (042-R20)"),
+        0 => uranium_store::elog!("[rl] dead learner check off ([actors] dead_learner_minutes = 0, 042-R20)"),
+        m => uranium_store::elog!("[rl] dead learner check: abnormal end after {DEAD_LEARNER_GAMES}+ finished games without an update for {m} min, or {BAD_SESSION_STREAK} finished games in a row without a learning-session decision (042-R20)"),
     }
     let mut steps_reached = false;
     loop {
         let steps_hit = args.max_agent_steps > 0 && shared.agent_steps.load(Ordering::SeqCst) >= args.max_agent_steps;
         if steps_hit {
-            crate::elog!("[rl] {} agent steps reached: clean stop (042-R12)", args.max_agent_steps);
+            uranium_store::elog!("[rl] {} agent steps reached: clean stop (042-R12)", args.max_agent_steps);
             steps_reached = true;
         }
         let limit_hit = steps_hit || (args.max_updates > 0 && updates_this_run >= args.max_updates) || (args.max_minutes > 0 && started.elapsed() >= Duration::from_secs(args.max_minutes * 60));
-        if crate::stopping(&stop) || limit_hit {
+        if uranium_store::stopping(&stop) || limit_hit {
             break;
         }
         if last_beat.elapsed() >= Duration::from_secs(60) {
@@ -1181,15 +1175,15 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
             match run.heartbeat() {
                 LockStatus::Held => {}
                 LockStatus::Lost(l) => {
-                    crate::elog!("[rl] lock lost to {l:?}: stopping (061-R5)");
+                    uranium_store::elog!("[rl] lock lost to {l:?}: stopping (061-R5)");
                     lock_lost = true;
                     break;
                 }
-                LockStatus::Unreachable(e) => crate::elog!("[rl] heartbeat: share unreachable ({e}), continuing (061-R11-3)"),
+                LockStatus::Unreachable(e) => uranium_store::elog!("[rl] heartbeat: share unreachable ({e}), continuing (061-R11-3)"),
             }
         }
         if let Some(why) = stall.check(Instant::now(), shared.finished_games.load(Ordering::SeqCst), shared.bad_sessions.load(Ordering::SeqCst)) {
-            crate::elog!("[rl] {why}: ending abnormally without a checkpoint, the watchdog restarts from LATEST (042-R20)");
+            uranium_store::elog!("[rl] {why}: ending abnormally without a checkpoint, the watchdog restarts from LATEST (042-R20)");
             anyhow::bail!("042-R20 stall: {why}");
         }
         let ready: Vec<AgentKind> = AgentKind::ALL.iter().copied().filter(|a| queues[a.index()].len() >= cfg.lanes).collect();
@@ -1228,11 +1222,11 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
                     Ok(dir) => {
                         shared.snapshots.lock().unwrap().dirs.insert(id.clone(), dir.join(ckpt::AGENTS_DIR).join(agent.name()));
                         shared.league.lock().unwrap().mark_published(&id);
-                        crate::elog!("[rl] snapshot {id}");
+                        uranium_store::elog!("[rl] snapshot {id}");
                     }
-                    Err(e) => crate::elog!("[rl] snapshot {id} not published ({e:#}): not an opponent (042)"),
+                    Err(e) => uranium_store::elog!("[rl] snapshot {id} not published ({e:#}): not an opponent (042)"),
                 },
-                other => crate::elog!("[rl] snapshot {id} not published: {other:?}"),
+                other => uranium_store::elog!("[rl] snapshot {id} not published: {other:?}"),
             }
             prune_servers(&shared);
             if reset {
@@ -1246,7 +1240,7 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
             step += 1;
             let league_now = shared.league.lock().unwrap().clone();
             let out = save_checkpoint(&mut run, step, learners.as_mut(), &cfg, &league_now, &args, state_extra(&shared, trained_steps))?;
-            crate::elog!("[rl] checkpoint {} {:?}", crate::storage::ckpt_name(step), out);
+            uranium_store::elog!("[rl] checkpoint {} {:?}", uranium_store::storage::ckpt_name(step), out);
             if out == PushOutcome::Pushed {
                 prune_logged(&mut run);
             }
@@ -1258,13 +1252,13 @@ pub fn run(args: RlArgs, make: impl FnOnce(&RlConfig, Option<&Path>) -> Result<(
     halt.stop();
     let _ = games_thread.join();
     if lock_lost {
-        crate::elog!("[rl] lock lost: no final push, lock left as is (061-R11-4)");
+        uranium_store::elog!("[rl] lock lost: no final push, lock left as is (061-R11-4)");
         return Ok(());
     }
     step = step.max(shared.agent_steps.load(Ordering::SeqCst)) + 1;
     let league_now = shared.league.lock().unwrap().clone();
     let out = save_checkpoint(&mut run, step, learners.as_mut(), &cfg, &league_now, &args, state_extra(&shared, trained_steps))?;
-    crate::elog!("[rl] final checkpoint {}: {out:?}", crate::storage::ckpt_name(step));
+    uranium_store::elog!("[rl] final checkpoint {}: {out:?}", uranium_store::storage::ckpt_name(step));
     finish_run(run, out, steps_reached, step)
 }
 
@@ -1272,13 +1266,13 @@ fn finish_run(run: Run, out: PushOutcome, steps_reached: bool, step: u64) -> Res
     match out {
         PushOutcome::Pushed => {
             if steps_reached {
-                crate::storage::mark_done(&run.cfg, &run.run_id, step)?;
-                crate::elog!("[rl] {} finished: DONE at {} (061-R13)", run.run_id, crate::storage::ckpt_name(step));
+                uranium_store::storage::mark_done(&run.cfg, &run.run_id, step)?;
+                uranium_store::elog!("[rl] {} finished: DONE at {} (061-R13)", run.run_id, uranium_store::storage::ckpt_name(step));
             }
             run.release()
         }
         other => {
-            crate::elog!("[rl] push {other:?}: keeping the lock so the next start recovers it (061-R11-5/6)");
+            uranium_store::elog!("[rl] push {other:?}: keeping the lock so the next start recovers it (061-R11-5/6)");
             Ok(())
         }
     }
@@ -1372,11 +1366,11 @@ mod tests {
             let lock = run.lock_path();
             assert!(lock.is_file(), "{run_id}");
             finish_run(run, out, reached, 3_000_007).unwrap();
-            assert_eq!(crate::storage::is_done(&cfg, run_id).unwrap(), done, "{run_id}");
+            assert_eq!(uranium_store::storage::is_done(&cfg, run_id).unwrap(), done, "{run_id}");
             assert_eq!(!lock.exists(), released, "{run_id}");
         }
-        let p = crate::storage::done_path(&cfg, "rl-done");
-        assert_eq!(std::fs::read_to_string(p).unwrap().trim(), crate::storage::ckpt_name(3_000_007));
+        let p = uranium_store::storage::done_path(&cfg, "rl-done");
+        assert_eq!(std::fs::read_to_string(p).unwrap().trim(), uranium_store::storage::ckpt_name(3_000_007));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1384,7 +1378,7 @@ mod tests {
     fn snapshot_names_are_smb_safe_061_r9() {
         let n = snapshot_name("uranium-main-exploiter@run1/4000");
         assert_eq!(n, "main-exploiter-run1-4000");
-        crate::storage::check_name(&n).unwrap();
+        uranium_store::storage::check_name(&n).unwrap();
     }
 
     #[test]
@@ -2185,7 +2179,7 @@ mod tests {
         assert!(check_pseudo(&cfg, None, Some(PseudoMode::Z)).is_err(), "resume a z checkpoint in scout");
         let dir = std::env::temp_dir().join(format!("uranium-rl-pseudo-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let main = dir.join(crate::ckpt::AGENTS_DIR).join("main");
+        let main = dir.join(uranium_store::ckpt::AGENTS_DIR).join("main");
         std::fs::create_dir_all(&main).unwrap();
         assert_eq!(checkpoint_pseudo(&dir), None, "no meta.json");
         let write = |rl: serde_json::Value| std::fs::write(main.join("meta.json"), serde_json::json!({ "train": { "rl": rl, "update": 3 } }).to_string()).unwrap();

@@ -297,7 +297,7 @@ impl LeagueConfig {
         let n = parts.len();
         match n {
             0 => None,
-            _ if n >= 3 && parts[n - 1] == "main" && parts[n - 2] == crate::ckpt::AGENTS_DIR => Some(parts[n - 3].to_string()),
+            _ if n >= 3 && parts[n - 1] == "main" && parts[n - 2] == uranium_store::ckpt::AGENTS_DIR => Some(parts[n - 3].to_string()),
             _ => Some(parts[n - 1].to_string()),
         }
     }
@@ -310,11 +310,11 @@ pub fn has_model_files(d: &Path) -> bool {
 pub fn anchor_agent_dir(shared: &Path, anchor: &str) -> Result<PathBuf> {
     let p = Path::new(anchor.trim());
     let p = if p.is_absolute() { p.to_path_buf() } else { shared.join(p) };
-    let main = p.join(crate::ckpt::AGENTS_DIR).join("main");
+    let main = p.join(uranium_store::ckpt::AGENTS_DIR).join("main");
     if has_model_files(&main) {
         return Ok(main);
     }
-    let is_main = p.file_name().is_some_and(|n| n == "main") && p.parent().and_then(|q| q.file_name()).is_some_and(|n| n == crate::ckpt::AGENTS_DIR);
+    let is_main = p.file_name().is_some_and(|n| n == "main") && p.parent().and_then(|q| q.file_name()).is_some_and(|n| n == uranium_store::ckpt::AGENTS_DIR);
     if is_main && has_model_files(&p) {
         return Ok(p);
     }

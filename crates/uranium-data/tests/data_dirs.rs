@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use uranium_train::data::{shard_files, shard_keys};
+use uranium_data::data::{shard_files, shard_keys};
 
 fn touch(root: &Path, rel: &str) {
     let p = root.join(rel);

@@ -489,11 +489,11 @@ fn run_bc(
         Ok(BcExit::LockLost) => Ok("lock_lost"),
         Ok(BcExit::Yielded) => Ok("yielded"),
         Err(e) if e.downcast_ref::<storage::LockBusy>().is_some() => {
-            uranium_data::elog!("{e:#}");
+            uranium_store::elog!("{e:#}");
             Ok("busy")
         }
         Err(e) if e.downcast_ref::<uranium_store::Interrupted>().is_some() => {
-            uranium_data::elog!("[bc] {e:#}");
+            uranium_store::elog!("[bc] {e:#}");
             Ok("stopped")
         }
         Err(e) => Err(err(e)),
