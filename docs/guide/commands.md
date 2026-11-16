@@ -75,7 +75,7 @@ cp -n <shared>/datasets/replays/build/maps/*.toml <URANIUM_MAPS_DIR>/     # Wind
 | `URANIUM_LINEAR_WGRAD` | Linear 가중치 gradient(f32만) | `vendor` | `splitk` |
 | `URANIUM_ENTITY_ATTN` | 엔티티 attention 직접 작성 커널([060-R1](../spec/2026_10_15_22_24_060-infra.md)) | `fused` | `fused` |
 | `URANIUM_INFER_GRAPH` | 추론 `act`를 CUDA/HIP graph로 | `on` | `on` |
-| `URANIUM_INFER_GRAPH_MAX_BATCH` | graph 최대 배치(넘으면 eager) | 제한 없음 | `1`([060-R3](../spec/2026_10_15_22_24_060-infra.md) 추론 2 GiB) |
+| `URANIUM_INFER_GRAPH_MAX_BATCH` | graph 최대 배치(넘으면 eager) | 제한 없음 | `4`([060-R3](../spec/2026_10_15_22_24_060-infra.md) 추론 2.5 GiB) |
 | `URANIUM_INFER_COMPILE` | 추론 `act` torch.compile(그래프 안) | `default` | `off` |
 | `URANIUM_H2D` | 호스트→GPU 복사를 page-locked에서 비동기로(BC는 collate 스레드에서 준비) | 학습 `pinned` | `sync` |
 | `URANIUM_CHANNELS_LAST` | 공간 인코더·위치 헤드 activation·conv 가중치 channels-last | 학습 `on` | `off` |

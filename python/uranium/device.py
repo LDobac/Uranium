@@ -32,7 +32,7 @@ def resolve(backend: str | None) -> tuple[str, torch.device, str]:
 
 
 IMPL_DEFAULTS = {
-    "rocm": {"URANIUM_LOC_ROWS": "exact", "URANIUM_LOC_OUT": "mulsum", "URANIUM_BIAS_GRAD": "table_t", "URANIUM_CONV_WGRAD": "bmm", "URANIUM_ENTITY_ATTN": "fused", "URANIUM_LINEAR_WGRAD": "splitk", "URANIUM_INFER_GRAPH": "on", "URANIUM_INFER_GRAPH_MAX_BATCH": "1"},
+    "rocm": {"URANIUM_LOC_ROWS": "exact", "URANIUM_LOC_OUT": "mulsum", "URANIUM_BIAS_GRAD": "table_t", "URANIUM_CONV_WGRAD": "bmm", "URANIUM_ENTITY_ATTN": "fused", "URANIUM_LINEAR_WGRAD": "splitk", "URANIUM_INFER_GRAPH": "on", "URANIUM_INFER_GRAPH_MAX_BATCH": "4"},
     "cuda": {"URANIUM_LOC_ROWS": "pow2", "URANIUM_ENTITY_ATTN": "fused", "URANIUM_COMPILE": "default", "URANIUM_INFER_GRAPH": "on", "URANIUM_INFER_COMPILE": "default"},
     "cpu": {},
 }

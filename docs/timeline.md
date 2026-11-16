@@ -697,3 +697,8 @@
 - 21:03 — 결정(사용자)·구조 변경: 릴리스 가중치를 Git LFS로 전환, 2026-11-08 이후 커밋 370개 해시가 바뀜(문서 속 인용은 새 해시로 고침, 옛 해시 대응표 [lfs_commit_map](report/release/2026_11_16_21_03_lfs_commit_map.md))
 - 21:48 — 새 리포트·측정 결과: 학습 최적화 여지 검토 — BC 섞기 run은 shard 파일의 66~79%가 0판인데 전부 디코드(데이터 대기 34~52%), CUDA RL 학습기 벤치 3.66초/update(레인 그룹 2, eager), ROCm RL 병목은 추론 대기, ROCm 모델 2 BC 10.70초/update ([opt_review](report/review/2026_11_16_21_25_opt_review.md))
 - 21:48 — 결정(사용자): 빈 shard 파일 건너뛰기·시작 스캔 파일 단위 캐시·shard 파일 미리 읽기를 spec에 적음, RL 레인 그룹은 2 그대로 ([041-R13·R16](spec/2026_10_15_22_24_041-imitation-learning.md), [opt_review](report/review/2026_11_16_21_25_opt_review.md) 3절)
+
+## 2026-11-17
+- 01:27 — 측정 결과·판정: CUDA RL 실게임 100 update — 벤치 3.66초 대 실게임 6.82초의 차이는 추론 동시 실행 약 +2.2초; 레인 그룹 4는 최악 모양 추정 18.5 GiB로 탈락, 2 유지 ([opt_review](report/review/2026_11_16_21_25_opt_review.md) 7.2·7.3절, [042](spec/2026_10_15_22_24_042-rl-training.md))
+- 02:55 — 반영·검증: 빈 shard 파일 건너뛰기·시작 스캔 파일 단위 캐시(커밋 `9ac0e75`·`050eb4c`·`ac83c02`), 실데이터 300 batch digest 일치 ([041-R13](spec/2026_10_15_22_24_041-imitation-learning.md), [opt_review](report/review/2026_11_16_21_25_opt_review.md) 5절·7.8절)
+- 05:25 — 결정(사용자)·채택: Linux ROCm 호스트 추론 graph 배치 4까지(생성 속도 +25.0%, 잡음 0.2%), 추론 서버 메모리 상한 2 → 2.5 GiB ([060-R3](spec/2026_10_15_22_24_060-infra.md), [opt_review](report/review/2026_11_16_21_25_opt_review.md) 7.6·7.7절)
