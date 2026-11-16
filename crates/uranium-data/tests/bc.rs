@@ -838,28 +838,49 @@ fn split_stats_privileged_none_and_result_sources_e10() {
 }
 
 #[test]
-fn scan_cache_follows_the_dataset_fingerprint() {
+fn scan_cache_is_per_file_041_r13() {
     use uranium_data::data::{scan_cached_in, scan_files};
+    use uranium_data::shard::{Shard, ShardHeader, write};
     let root = shard_dir("scan-cache", &varied_games(), 4);
     let cache = std::env::temp_dir().join(format!("uranium-scan-cache-dir-{}", std::process::id()));
     std::fs::remove_dir_all(&cache).ok();
     let src = ShardSource::new(&root).unwrap().shuffled(3);
     let fresh = scan_files(src.files()).unwrap();
     assert_eq!(scan_cached_in(&src, Some(&cache)).unwrap(), fresh, "first call scans");
-    let files: Vec<_> = std::fs::read_dir(&cache).unwrap().flatten().map(|e| e.path()).collect();
-    assert_eq!(files.len(), 1, "one cache file: {files:?}");
-    assert!(files[0].file_name().unwrap().to_string_lossy().starts_with("scan-"));
-    let text = std::fs::read_to_string(&files[0]).unwrap().replace("\"privileged_none\":0", "\"privileged_none\":7");
-    std::fs::write(&files[0], text).unwrap();
+    let entries = || -> Vec<std::path::PathBuf> { std::fs::read_dir(&cache).unwrap().flatten().map(|e| e.path()).collect() };
+    let edit = |from: &str, to: &str| {
+        for f in entries() {
+            std::fs::write(&f, std::fs::read_to_string(&f).unwrap().replace(from, to)).unwrap();
+        }
+    };
+    assert_eq!(entries().len(), src.files().len(), "one cache entry per shard file: {:?}", entries());
+    assert!(entries().iter().all(|f| f.file_name().unwrap().to_string_lossy().starts_with("file-")));
+    edit("\"privileged_none\":0", "\"privileged_none\":7");
     let other_order = ShardSource::new(&root).unwrap();
     let got = scan_cached_in(&other_order, Some(&cache)).unwrap();
     assert!(got.iter().flatten().all(|g| g.privileged_none == 7), "served from the cache");
     let want: Vec<usize> = scan_files(other_order.files()).unwrap().iter().map(|f| f.len()).collect();
     assert_eq!(got.iter().map(|f| f.len()).collect::<Vec<_>>(), want, "in the source's file order");
+    let added = root.join("p9");
+    std::fs::create_dir_all(&added).unwrap();
+    write(&added.join("shard_00000.bin.zst"), &Shard { header: ShardHeader::default(), games: vec![game_len(5, 99)] }).unwrap();
+    let grown = ShardSource::new(&root).unwrap().shuffled(3);
+    let got = scan_cached_in(&grown, Some(&cache)).unwrap();
+    assert_eq!(got.len(), src.files().len() + 1);
+    for (f, games) in grown.files().iter().zip(&got) {
+        let want = if f.starts_with(&added) { 0 } else { 7 };
+        assert!(!games.is_empty() && games.iter().all(|g| g.privileged_none == want), "only the added file is read: {}", f.display());
+    }
+    assert_eq!(entries().len(), grown.files().len());
+    edit("\"version\":2", "\"version\":1");
+    let again = scan_cached_in(&grown, Some(&cache)).unwrap();
+    assert!(again.iter().flatten().all(|g| g.privileged_none == 0), "another cache version is scanned again");
+    assert_eq!(entries().len(), grown.files().len());
+    edit("\"privileged_none\":0", "\"privileged_none\":7");
     uranium_store::storage::Manifest::build(&root).unwrap().write(&root).unwrap();
     let again = scan_cached_in(&ShardSource::new(&root).unwrap(), Some(&cache)).unwrap();
     assert!(again.iter().flatten().all(|g| g.privileged_none == 0), "not the stale cache");
-    assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 2);
+    assert_eq!(entries().len(), 2 * grown.files().len());
     std::fs::remove_dir_all(&root).ok();
     std::fs::remove_dir_all(&cache).ok();
 }
