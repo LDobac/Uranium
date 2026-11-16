@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from uranium import _core
-from uranium.data import GROUP_FIELDS, group_digest, groups
+from uranium.bc.feed_digest import GROUP_FIELDS, group_digest, groups
 
 from conftest import run
 
