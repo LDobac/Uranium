@@ -1,5 +1,7 @@
 import numpy as np
 
+from uranium.diag.stats import pct, summary
+
 ALPHAS = [1e-1, 1e0, 1e1, 1e2, 1e3, 1e4, 1e5]
 ALPHAS_RESID = ALPHAS + [1e6, 1e7, 1e9]
 GAIN_METHODS = ("resid", "joint")
@@ -166,17 +168,12 @@ def boot(metric, y, preds: dict, groups, n: int, rng, base: str | None = None) -
     out = {}
     for k in preds:
         v = np.array(reps[k], np.float64)
-        out[k] = {"pt": float(pts[k]), "lo": _pct(v, 2.5), "hi": _pct(v, 97.5)}
+        out[k] = summary(pts[k], v)
         if base is not None and k != base and base in reps:
             d = v - np.array(reps[base], np.float64)
             out[k]["gain"] = float(pts[k] - pts[base])
-            out[k]["gain_lo"], out[k]["gain_hi"] = _pct(d, 2.5), _pct(d, 97.5)
+            out[k]["gain_lo"], out[k]["gain_hi"] = pct(d, 2.5), pct(d, 97.5)
     return out
-
-
-def _pct(v, q) -> float:
-    v = v[np.isfinite(v)]
-    return float(np.percentile(v, q)) if len(v) else float("nan")
 
 
 def shuffled_labels(y, games, rng) -> np.ndarray:

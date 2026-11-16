@@ -107,3 +107,8 @@ class ForcedPass:
     def unload(self) -> None:
         self.net = None
         self.reset()
+
+
+def lane_slice(hg: dict, li: int, t: int) -> dict:
+    b = hg["b"]
+    return {k: (v[li * t:(li + 1) * t] if isinstance(v, np.ndarray) and v.ndim and v.shape[0] == b * t else v) for k, v in hg.items()}

@@ -92,6 +92,11 @@ def action_names() -> dict:
 
 
 @functools.cache
+def action_group(aid: int) -> str:
+    return next(a["group"] for a in rows("actions") if a["id"] == aid)
+
+
+@functools.cache
 def order_id(name: str) -> int:
     return next(o["id"] for o in rows("order_types") if o["name"] == name)
 

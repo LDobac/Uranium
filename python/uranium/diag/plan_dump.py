@@ -9,6 +9,8 @@ import numpy as np
 
 from uranium import tables as tb
 from uranium.diag.features import fill_race_cols, game_labels, lane_features, race_of
+from uranium.passes import lane_slice
+from uranium.provenance import redact
 
 F8M = 8 * 60 * 24
 SCV8_MIN = 8
@@ -35,15 +37,10 @@ def own_columns() -> tuple[list[str], dict[int, list[int]], dict[int, int]]:
         of_action[a["id"]] = len(names)
         types[len(names)] = ids
         names.append("siege_tank" if name == SIEGE[0] else name.removeprefix("Terran_").lower())
-    trained = [types[c] for aid, c in of_action.items() if _group(aid) == "train" and names[c] != "scv"]
+    trained = [types[c] for aid, c in of_action.items() if tb.action_group(aid) == "train" and names[c] != "scv"]
     names += ["supply_used", "supply_total", "army"]
     types[len(names) - 1] = [i for ids in trained for i in ids]
     return names, types, of_action
-
-
-@functools.cache
-def _group(aid: int) -> str:
-    return next(a["group"] for a in tb.rows("actions") if a["id"] == aid)
 
 
 def own_state(scalar: np.ndarray) -> np.ndarray:
@@ -187,7 +184,6 @@ def run(a) -> int:
 
     from uranium import _core, ckpt
     from uranium.device import autocast
-    from uranium.diag.dump import lane_slice, redact
     from uranium.model import to_obs
     from uranium.passes import ForcedPass, fixed_device
 

@@ -43,10 +43,10 @@ def run(a) -> int:
 
     from uranium import _core, ckpt
     from uranium.device import autocast
-    from uranium.diag.dump import redact
     from uranium.model import to_obs
     from uranium.model.monitor import ROWS_KEY, ReluMonitor, stats_to_host
     from uranium.passes import ForcedPass, fixed_device, real_rows
+    from uranium.provenance import redact
 
     dirs = [str(p) for p in _core.dataset_dirs(a.dataset, a.shards)]
     backend, device, precision = fixed_device(a.backend)

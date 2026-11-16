@@ -1,7 +1,6 @@
 """One teacher-forced pass over shard games: per-row features, labels, activations, --cf passes"""
 
 import json
-import os
 import time
 from pathlib import Path
 
@@ -9,6 +8,8 @@ import numpy as np
 
 from uranium import tables as tb
 from uranium.diag.features import fill_race_cols, lane_features, race_of
+from uranium.passes import lane_slice
+from uranium.provenance import redact
 
 PASSES = ("real", "early", "late", "sc+1", "sc-1", "tok+1", "tok-1")
 CF_STARTS = {"T": (1280, 2080), "P": (1720, 3030), "Z": (1800, 3240)}
@@ -45,17 +46,6 @@ def add_args(p) -> None:
     p.add_argument("--limit-batches", type=int, default=0)
     p.add_argument("--maps-dir", help="map folder (else from .env)")
     p.add_argument("--synthetic-maps", action="store_true", help="tests: synthetic maps")
-
-
-def redact(path) -> str:
-    p = Path(path).resolve()
-    sd = os.environ.get("URANIUM_SHARED_DIR")
-    if sd:
-        try:
-            return "<shared>/" + p.relative_to(Path(sd).resolve()).as_posix()
-        except ValueError:
-            pass
-    return Path(path).as_posix()
 
 
 def cf_starts(text: str) -> dict:
@@ -142,11 +132,6 @@ def cat_state(states):
     import torch
 
     return torch.cat(states, 0)
-
-
-def lane_slice(hg: dict, li: int, t: int) -> dict:
-    b = hg["b"]
-    return {k: (v[li * t:(li + 1) * t] if isinstance(v, np.ndarray) and v.ndim and v.shape[0] == b * t else v) for k, v in hg.items()}
 
 
 class Parts:

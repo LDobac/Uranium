@@ -6,7 +6,9 @@ from pathlib import Path
 import numpy as np
 
 from uranium import tables as tb
+from uranium.diag.dump import load
 from uranium.diag.probe import boot, folds_of, r2, ridge_cv, ridge_cv_multi
+from uranium.diag.probes import game_table, select_rows
 
 RETENTION_VARS = ("frame", "sc_worker", "sc_focus", "sc_enemy_total", "own_marine", "own_rax", "vis_enemy", "tok_enemy", "n_foc", "foc_rem")
 
@@ -54,8 +56,6 @@ def run(a) -> int:
     import torch
 
     from uranium import _core, ckpt
-    from uranium.diag.dump import load
-    from uranium.diag.probes import game_table, select_rows
 
     R, A, games, man = load(Path(a.dump))
     if not any(k.startswith("L1.") for k in A):

@@ -7,6 +7,8 @@ from pathlib import Path
 import numpy as np
 
 from uranium import tables as tb
+from uranium.diag.dump import load
+from uranium.diag.probes import game_table
 
 
 def add_args(p) -> None:
@@ -64,9 +66,6 @@ def effects(G: list, a_pass: str, b_pass: str, boot: int, rng) -> dict:
 
 
 def run(a) -> int:
-    from uranium.diag.dump import load
-    from uranium.diag.probes import game_table
-
     R, _, games, man = load(Path(a.dump), stages=[])
     passes = man["passes"]
     if "early" not in passes:

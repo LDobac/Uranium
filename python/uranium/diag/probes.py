@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from uranium import tables as tb
+from uranium.diag.dump import load
 from uranium.diag.features import game_labels
 from uranium.diag.probe import GAIN_METHODS, onehot, run_task
 
@@ -157,8 +158,6 @@ def probe_race(R, A, gt, race, a, rng) -> dict:
 
 
 def run(a) -> int:
-    from uranium.diag.dump import load
-
     stages = [s for s in a.stages.split(",") if s != "hc"] + (["h", "c"] if "hc" in a.stages.split(",") else [])
     R, A, games, man = load(Path(a.dump), stages)
     if "idx" not in A:

@@ -10,6 +10,8 @@ import torch
 from uranium import tables as tb
 from uranium.diag import plan_pred as pp
 from uranium.diag import plan_stats as ps
+from uranium.diag.plan_dump import own_columns
+from uranium.provenance import redact
 
 M0_TOP = (4, 8, 16)
 CAND_TOP = 8
@@ -286,8 +288,6 @@ def candidates(data: pp.Data, rows) -> np.ndarray:
 
 
 def m2(data: pp.Data, net, st, k, ev, boot_n, seed) -> dict:
-    from uranium.diag.plan_dump import _group, own_columns
-
     names, _, of_action = own_columns()
     if names != data.own_names:
         raise SystemExit("plan-s0: own-state columns differ from this code's")
@@ -340,7 +340,7 @@ def m2(data: pp.Data, net, st, k, ev, boot_n, seed) -> dict:
             dir_ok.append((mine > best)[some])
             dir_unit.append(data.row_unit[r[ii[some]]])
             dir_act.append(cs[ii[some], j])
-            dir_kind.append(np.array(["train" if _group(int(c)) == "train" else "build" for c in cs[ii[some], j]]))
+            dir_kind.append(np.array(["train" if tb.action_group(int(c)) == "train" else "build" for c in cs[ii[some], j]]))
     res = {"rows": int(len(rows)), "candidates": ps.quantiles(((cand >= 0).sum(1)).astype(float))}
     bt = ps.Boot(data.row_unit[rows], boot_n, seed)
     for key in ("y", "o", "p"):
@@ -736,8 +736,6 @@ def report(data: pp.Data, a, ks, variants, models: Path) -> dict:
 
 
 def run(a) -> int:
-    from uranium.diag.dump import redact
-
     if a.threads:
         torch.set_num_threads(a.threads)
     torch.use_deterministic_algorithms(True)

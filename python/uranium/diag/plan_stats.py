@@ -1,14 +1,6 @@
 import numpy as np
 
-
-def _pct(v, q) -> float:
-    v = np.asarray(v, np.float64)
-    v = v[np.isfinite(v)]
-    return float(np.percentile(v, q)) if len(v) else float("nan")
-
-
-def summary(pt, reps) -> dict:
-    return {"pt": float(pt), "lo": _pct(reps, 2.5), "hi": _pct(reps, 97.5)}
+from uranium.diag.stats import summary
 
 
 class Boot:
