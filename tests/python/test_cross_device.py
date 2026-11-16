@@ -7,7 +7,8 @@ import torch
 from safetensors.torch import load_file
 
 from uranium.model import UraniumNet, UraniumNetConfig, action_columns, to_labels, to_obs
-from uranium.model.burn import burn_to_torch
+
+from burn_keys import burn_to_torch
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "burn_parity"
 HEADS = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
