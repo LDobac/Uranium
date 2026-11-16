@@ -709,3 +709,4 @@
 - 08:25 — 측정 결과: shard 파일 미리 읽기 깊이 1·2·4에서 `m2-teacher-t1` 조합 100 update 데이터 대기 10.3%·9.6%·9.1%(건너뛰기만 13.0%, 원래 31.5%), CUDA 호스트 깊이 2로 둠 ([opt_review](report/review/2026_11_16_21_25_opt_review.md) 7.13절, [041-R16](spec/2026_10_15_22_24_041-imitation-learning.md))
 - 08:40 — 결정(사용자)·정정: 05:40의 "`pad_entities` 64 그대로" 판정을 뒤집어 Linux ROCm 호스트 BC 학습 엔티티 패딩 단위 32 채택(−2.8% ± 0.4%p), 키 `URANIUM_BC_PAD_ENTITIES` ([041](spec/2026_10_15_22_24_041-imitation-learning.md) 구현 메모, [opt_review](report/review/2026_11_16_21_25_opt_review.md) 7.14절)
 - 09:10 — 반영: RL 학습기 compile·channels-last 스위치(기본 끔, 커밋 `2e5b92e`·`06358d8`·`b760226`) ([032-R19](spec/2026_10_15_22_24_032-model-architecture.md), [opt_review](report/review/2026_11_16_21_25_opt_review.md) 7.12·7.15절)
+- 09:30 — 배포·확인: Linux ROCm 호스트 두 대에 `bab6cbc` 배포·재빌드, 추론 graph 배치 4·BC 패딩 32 기본 적용 확인(BC 벤치 10.68 → 10.40초), 시작 스캔 캐시 미리 채움 ([opt_review](report/review/2026_11_16_21_25_opt_review.md) 7.16절·10절)
