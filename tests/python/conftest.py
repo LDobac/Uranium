@@ -39,6 +39,24 @@ enemy_race_mask = 0.0
 """
 
 
+@pytest.fixture(autouse=True)
+def environ_restored():
+    before = dict(os.environ)
+    yield
+    for k in set(os.environ) - set(before):
+        del os.environ[k]
+    os.environ.update(before)
+
+
+@pytest.fixture(autouse=True)
+def torch_determinism_restored():
+    import torch
+
+    before = torch.are_deterministic_algorithms_enabled(), torch.is_deterministic_algorithms_warn_only_enabled()
+    yield
+    torch.use_deterministic_algorithms(before[0], warn_only=before[1])
+
+
 @pytest.fixture
 def tiny_config(tmp_path: Path) -> Path:
     p = tmp_path / "bc_tiny.toml"
