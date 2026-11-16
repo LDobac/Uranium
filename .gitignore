@@ -31,6 +31,7 @@ __pycache__/
 
 # Large raw reports
 /reports/raw/
+/local/
 /bridge/openbw/build/
 /runs/
 
