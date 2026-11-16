@@ -9,7 +9,6 @@ import numpy as np
 
 from uranium import tables as tb
 from uranium.diag.features import fill_race_cols, game_labels, lane_features, race_of
-from uranium.diag.stream import lane_groups
 
 F8M = 8 * 60 * 24
 SCV8_MIN = 8
@@ -187,9 +186,10 @@ def run(a) -> int:
     import torch
 
     from uranium import _core, ckpt
-    from uranium.device import autocast, configure, resolve
+    from uranium.device import autocast
     from uranium.diag.dump import lane_slice, redact
     from uranium.model import to_obs
+    from uranium.passes import ForcedPass, fixed_device
 
     read_until = a.row_until if a.read_until < 0 else a.read_until
     if read_until and read_until < a.row_until:
@@ -200,17 +200,11 @@ def run(a) -> int:
     dirs = [str(p) for p in _core.dataset_dirs(a.dataset, a.shards)]
     if not dirs:
         raise SystemExit("diag plan-dump: no data (--dataset / --shards)")
-    backend, device, precision = resolve(a.backend)
-    configure(backend)
-    torch.backends.cudnn.benchmark = False
-    cfg = json.loads(_core.bc_config(a.config, "s1")[0])
-    T, LANES = cfg["seq_len"], cfg["lanes"]
-    G = min(a.lanes_per_group, LANES)
+    backend, device, precision = fixed_device(a.backend)
+    fp = ForcedPass(a.config, device, precision, lanes_per_group=a.lanes_per_group)
+    T, LANES, G = fp.t, fp.lanes, fp.g
     ckpt_dir = Path(_core.resolve_checkpoint(a.checkpoint))
-    net, _ = ckpt.load_model(ckpt_dir, device)
-    net.eval()
-    for p in net.parameters():
-        p.requires_grad_(False)
+    net = fp.load(ckpt_dir, frozen=True)
     want_gk = [int(x) for x in a.gk.split(",") if x.strip()]
     v = net.variant
     gk = [k for k in want_gk if v is not None and v.aux_jepa is not None and str(k) in v.aux_jepa]
@@ -237,17 +231,17 @@ def run(a) -> int:
     for si, split in enumerate(splits):
         try:
             until = {"until_frame": int(np.ceil(read_until)) + 1} if read_until else {}
-            stream = _core.EvalStream(a.config, dirs, split=split, games=a.games, seed=a.seed, has_open=False, maps_dir=a.maps_dir, synthetic_maps=a.synthetic_maps, **until)
+            stream = fp.stream(dirs, split, games=a.games, seed=a.seed, has_open=False, maps_dir=a.maps_dir, synthetic_maps=a.synthetic_maps, **until)
         except RuntimeError as e:
             if "no game" not in str(e).lower() and "empty" not in str(e).lower():
                 raise
             print(f"[{split}] skipped: {e}", flush=True)
             continue
-        gstate: list = [None] * -(-LANES // G)
+        gstate = fp.states
         lane_game: dict[int, dict] = {}
         nb = 0
         batch_meta = (None, None, None)
-        for bi, b, gi, start, steps, hg in lane_groups(stream, LANES, G, T, cfg["pad_entities"], net.cfg.heads.max_select, gstate, a.limit_batches):
+        for bi, b, gi, start, _, steps, hg in fp.groups(stream, a.limit_batches):
             if bi != batch_meta[0]:
                 shas = b.lane_games() if hasattr(b, "lane_games") else [""] * LANES
                 races = b.lane_enemy_races() if hasattr(b, "lane_enemy_races") else [""] * LANES
@@ -313,8 +307,7 @@ def run(a) -> int:
                 continue
             stats["groups"] += 1
             obs = to_obs(hg, device)
-            st = gstate[gi]
-            s0 = net.init_state(bsz, device) if st is None else net.mask_state(st, torch.as_tensor(keep, device=device))
+            s0 = fp.state0(hg, gstate[gi])
             with torch.no_grad(), autocast(device, precision):
                 o = model_rows(net, obs, s0, T, gk)
             gstate[gi] = o["state"]

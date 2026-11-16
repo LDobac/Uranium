@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from uranium import tables as tb
+from uranium.passes import ForcedPass
 from uranium.provenance import git_commit
 
 NOISE_VERSION = "rowhash-1"
@@ -62,13 +63,10 @@ def label_games(input_dir: str, ckpt_dir: str, out: str, records: str, config: s
                                  "one round folder has one labeller policy (044-R3); give a new --out and --records")
     cfg_json, fingerprint = _core.bc_config(config, "s1")
     cfg = json.loads(cfg_json)
-    net, _ = ckpt.load_model(Path(ckpt_dir), device)
-    net.eval()
+    fp = ForcedPass(config, device, precision, micro_lanes=micro_lanes, cfg=cfg)
+    net = fp.load(ckpt_dir)
     temp = 1.0 if mode == "sample" else 0.0
-    t, lanes = cfg["seq_len"], cfg["lanes"]
-    mlanes = micro_lanes if micro_lanes is not None else cfg["micro_lanes"]
-    g = lanes if mlanes == 0 else min(mlanes, lanes)
-    groups = -(-lanes // g)
+    t, lanes, g = fp.t, fp.lanes, fp.g
     max_select = net.cfg.heads.max_select
     policy = {
         "checkpoint": str(ckpt_dir), "checkpoint_sha256": sha, "mode": mode, "label_seed": label_seed, "noise": NOISE_VERSION,
@@ -77,56 +75,48 @@ def label_games(input_dir: str, ckpt_dir: str, out: str, records: str, config: s
     }
     lab = _core.DistillLabeller(config, input_dir, label_seed, maps_dir=maps_dir, synthetic_maps=synthetic_maps, only=todo)
     lab.open(out, records, json.dumps(policy), threads)
-    states = [None] * groups
     names = tb.action_names()
     bands: dict = {}
     steps_total = 0
-    while (b := lab.next()) is not None:
-        steps = b.lane_steps()
-        seeds = [None if x is None else x[1] for x in lab.lanes(b)]
-        frames_of = {lane: b.lane_frames(lane) for lane in range(lanes) if steps[lane]}
-        views = list(zip(b.lane_games(), b.lane_perspectives()))
-        for gi in range(groups):
-            start, end = gi * g, min((gi + 1) * g, lanes)
-            live = [lane for lane in range(start, end) if steps[lane]]
-            if not live:
-                states[gi] = None
-                continue
-            hg = b.group(start, end, t, cfg["pad_entities"], max_select)
-            obs = to_obs(hg, device)
-            keep = torch.as_tensor(hg["keep"]).to(device).bool()
-            s = states[gi]
-            s0 = net.init_state(hg["b"], device) if s is None else net.mask_state(s, keep)
-            starts = [(lane - start) * t for lane in live]
-            idx = torch.tensor([r0 + k for r0, lane in zip(starts, live) for k in range(steps[lane])], dtype=torch.int64, device=device)
-            with autocast(device, precision):
-                h, e, sp, sc, _, state = net.trunk_seq(obs, s0, t)
-                u = net._bypass(h, sc, e, obs)
-                states[gi] = state
-                n_ent = e.shape[1]
-                noise = None
-                if temp > 0:
-                    keys = row_keys([seeds[lane] for lane in live for _ in range(steps[lane])], [f for lane in live for f in frames_of[lane]], device)
-                    noise = RowNoise(keys, n_ent, max_select, net.cfg.input.actions, net.cfg.heads.delay_buckets, net.cfg.input.map_size ** 2)
-                o = net.heads(None, temp, h[idx], sc["c"][idx], e[idx], _rows(sp, idx), _rows(obs, idx), net.table, noise, u=None if u is None else u[idx])
-                if noise is not None:
-                    noise.finished()
-            chosen = {key: _host(v) for key, v in o["chosen"].items()}
-            at = 0
-            for lane, r0 in zip(live, starts):
-                k = steps[lane]
-                ch = {key: v[at:at + k] for key, v in chosen.items()}
-                at += k
-                lab.put(b, lane, ch["action"], ch["delay"], ch["queued"], ch["selected"], n_ent, ch["target_unit"], ch["target_loc"])
-                steps_total += k
-                for f, a in zip(frames_of[lane], ch["action"].tolist()):
-                    band = bands.setdefault(str(f // FRAMES_PER_MINUTE), {})
-                    name = names.get(a, str(a))
-                    band[name] = band.get(name, 0) + 1
-                if trace is not None:
-                    trace({"game": views[lane][0], "slot": views[lane][1], "frames": frames_of[lane], "chosen": ch, "end": n_ent,
-                           "obs": {key: np.asarray(hg[key])[r0:r0 + k] for key in OBS_KEYS}})
-        lab.flush()
+    seen = -1
+    for bi, b, gi, start, end, steps, hg in fp.groups(lab, after_batch=lab.flush):
+        if bi != seen:
+            seen = bi
+            seeds = [None if x is None else x[1] for x in lab.lanes(b)]
+            frames_of = {lane: b.lane_frames(lane) for lane in range(lanes) if steps[lane]}
+            views = list(zip(b.lane_games(), b.lane_perspectives()))
+        live = [lane for lane in range(start, end) if steps[lane]]
+        obs = to_obs(hg, device)
+        s0 = fp.state0(hg, fp.states[gi])
+        starts = [(lane - start) * t for lane in live]
+        idx = torch.tensor([r0 + k for r0, lane in zip(starts, live) for k in range(steps[lane])], dtype=torch.int64, device=device)
+        with autocast(device, precision):
+            h, e, sp, sc, _, state = net.trunk_seq(obs, s0, t)
+            u = net._bypass(h, sc, e, obs)
+            fp.states[gi] = state
+            n_ent = e.shape[1]
+            noise = None
+            if temp > 0:
+                keys = row_keys([seeds[lane] for lane in live for _ in range(steps[lane])], [f for lane in live for f in frames_of[lane]], device)
+                noise = RowNoise(keys, n_ent, max_select, net.cfg.input.actions, net.cfg.heads.delay_buckets, net.cfg.input.map_size ** 2)
+            o = net.heads(None, temp, h[idx], sc["c"][idx], e[idx], _rows(sp, idx), _rows(obs, idx), net.table, noise, u=None if u is None else u[idx])
+            if noise is not None:
+                noise.finished()
+        chosen = {key: _host(v) for key, v in o["chosen"].items()}
+        at = 0
+        for lane, r0 in zip(live, starts):
+            k = steps[lane]
+            ch = {key: v[at:at + k] for key, v in chosen.items()}
+            at += k
+            lab.put(b, lane, ch["action"], ch["delay"], ch["queued"], ch["selected"], n_ent, ch["target_unit"], ch["target_loc"])
+            steps_total += k
+            for f, a in zip(frames_of[lane], ch["action"].tolist()):
+                band = bands.setdefault(str(f // FRAMES_PER_MINUTE), {})
+                name = names.get(a, str(a))
+                band[name] = band.get(name, 0) + 1
+            if trace is not None:
+                trace({"game": views[lane][0], "slot": views[lane][1], "frames": frames_of[lane], "chosen": ch, "end": n_ent,
+                       "obs": {key: np.asarray(hg[key])[r0:r0 + k] for key in OBS_KEYS}})
     written = json.loads(lab.finish())
     summary = {"input": str(input_dir), "out": str(out), "records": str(records), "input_files": len(todo), "views_before": prior["views"],
                "games": lab.games, "steps_labelled": steps_total, **written,

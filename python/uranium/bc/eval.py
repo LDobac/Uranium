@@ -5,6 +5,7 @@ from pathlib import Path
 import torch
 
 from uranium import tables as tb
+from uranium.passes import ForcedPass
 
 HEADS = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
 RACES = ("terran", "protoss", "zerg")
@@ -183,51 +184,40 @@ class BunkerAcc:
 @torch.no_grad()
 def evaluate(dirs: list[str], ckpt_dir: str, split: str, games, seed: int, config: str, device, precision: str, core=None, maps_dir=None, synthetic_maps=False,
              bunker_before: int | None = None, chain_start_sources: list[str] | None = None) -> dict:
-    from uranium import _core, ckpt
+    from uranium import _core
     from uranium.device import autocast
     from uranium.model import to_obs
 
-    cfg = json.loads(_core.bc_config(config, "s1")[0])
-    net, _ = ckpt.load_model(Path(ckpt_dir), device)
-    net.eval()
+    fp = ForcedPass(config, device, precision)
+    net = fp.load(ckpt_dir)
     if core is not None and net.cfg.core.kind.lower() != core:
         raise ValueError(f"checkpoint core {net.cfg.core.kind} != requested {core}")
     has_open = net.value.open is not None
     cs = {} if not chain_start_sources else {"chain_start_sources": list(chain_start_sources)}
-    stream = _core.EvalStream(config, dirs, split=split, games=games, seed=seed, has_open=has_open, maps_dir=maps_dir, synthetic_maps=synthetic_maps, **cs)
-    t, lanes = cfg["seq_len"], cfg["lanes"]
-    g = lanes if cfg["micro_lanes"] == 0 else min(cfg["micro_lanes"], lanes)
-    groups = -(-lanes // g)
-    states = [None] * groups
+    stream = fp.stream(dirs, split, games=games, seed=seed, has_open=has_open, maps_dir=maps_dir, synthetic_maps=synthetic_maps, **cs)
+    t = fp.t
     acc = Acc(json.loads(_core.feature_dims())["delay_buckets"])
     aux = AuxAcc(net) if net.cfg.variant.aux() else None
     bunker = BunkerAcc(bunker_before) if bunker_before is not None else None
-    while (b := stream.next()) is not None:
-        steps = b.lane_steps()
-        lane_race = [r or "unknown" for r in b.lane_enemy_races()]
-        for gi in range(groups):
-            start, end = gi * g, min((gi + 1) * g, lanes)
-            if all(steps[l] == 0 for l in range(start, end)):
-                states[gi] = None
-                continue
-            hg = b.group(start, end, t, cfg["pad_entities"], net.cfg.heads.max_select)
-            obs, labels = to_obs(hg, device), net.labels(hg, device)
-            priv = torch.as_tensor(hg["privileged"]).to(device, torch.float32)
-            keep = torch.as_tensor(hg["keep"]).to(device).bool()
-            s = states[gi]
-            s0 = net.init_state(hg["b"], device) if s is None else net.mask_state(s, keep)
-            with autocast(device, precision):
-                out = net.forward_seq(obs, labels, priv, s0, t, **({"aux": True} if aux else {}))
-            states[gi] = out["state"]
-            has_loc, sel_len = b.label_extras(start, end, t)
-            rows = [lane_race[l] for l in range(start, end) for _ in range(t)]
-            acc.score(out, hg, has_loc, sel_len, {r: torch.tensor([x == r for x in rows]) for r in set(rows)})
-            if bunker is not None:
-                bunker.add(out, hg, rows)
-            if aux is not None:
-                aux.add(out, hg, priv, hg["b"], t)
-            if out["win_open"] is not None:
-                stream.decide(b, start, end, t, out["win_open"].float().cpu().numpy())
+    lane_race, seen = None, -1
+    for bi, b, gi, start, end, _, hg in fp.groups(stream):
+        if bi != seen:
+            lane_race, seen = [r or "unknown" for r in b.lane_enemy_races()], bi
+        obs, labels = to_obs(hg, device), net.labels(hg, device)
+        priv = torch.as_tensor(hg["privileged"]).to(device, torch.float32)
+        s0 = fp.state0(hg, fp.states[gi])
+        with autocast(device, precision):
+            out = net.forward_seq(obs, labels, priv, s0, t, **({"aux": True} if aux else {}))
+        fp.states[gi] = out["state"]
+        has_loc, sel_len = b.label_extras(start, end, t)
+        rows = [lane_race[l] for l in range(start, end) for _ in range(t)]
+        acc.score(out, hg, has_loc, sel_len, {r: torch.tensor([x == r for x in rows]) for r in set(rows)})
+        if bunker is not None:
+            bunker.add(out, hg, rows)
+        if aux is not None:
+            aux.add(out, hg, priv, hg["b"], t)
+        if out["win_open"] is not None:
+            stream.decide(b, start, end, t, out["win_open"].float().cpu().numpy())
     rep = acc.report(ckpt_dir, split, stream.games, seed if games is not None else None)
     tail = json.loads(stream.finish())
     rep["win_open_mse"], rep["surrender"] = tail["win_open_mse"], tail["surrender"]

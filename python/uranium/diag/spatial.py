@@ -4,8 +4,6 @@ import json
 import time
 from pathlib import Path
 
-import numpy as np
-
 
 def add_args(p) -> None:
     p.add_argument("--checkpoint", action="append", required=True, help="checkpoint folder (repeatable)")
@@ -44,44 +42,36 @@ def run(a) -> int:
     import torch
 
     from uranium import _core, ckpt
-    from uranium.device import autocast, configure, resolve
+    from uranium.device import autocast
     from uranium.diag.dump import redact
-    from uranium.diag.stream import lane_groups, real_rows
     from uranium.model import to_obs
     from uranium.model.monitor import ROWS_KEY, ReluMonitor, stats_to_host
+    from uranium.passes import ForcedPass, fixed_device, real_rows
 
     dirs = [str(p) for p in _core.dataset_dirs(a.dataset, a.shards)]
-    backend, device, precision = resolve(a.backend)
-    configure(backend)
-    torch.backends.cudnn.benchmark = False
-    cfg = json.loads(_core.bc_config(a.config, "s1")[0])
-    T, LANES = cfg["seq_len"], cfg["lanes"]
-    G = min(a.lanes_per_group, LANES)
+    backend, device, precision = fixed_device(a.backend)
+    fp = ForcedPass(a.config, device, precision, lanes_per_group=a.lanes_per_group)
+    T = fp.t
     prec = "f32" if a.precision == "f32" else precision
     res = {"data": [redact(d) for d in dirs], "split": a.split, "batches": a.batches, "skip_batches": a.skip_batches, "backend": backend,
            "precision": prec, "const_threshold": a.const_threshold, "checkpoints": {}}
     for spec in a.checkpoint:
         t0 = time.time()
         cdir = Path(_core.resolve_checkpoint(spec))
-        net, _ = ckpt.load_model(cdir, device)
-        net.eval()
-        for p in net.parameters():
-            p.requires_grad_(False)
-        stream = _core.EvalStream(a.config, dirs, split=a.split, games=None, seed=1, has_open=False, maps_dir=a.maps_dir, synthetic_maps=a.synthetic_maps)
-        states = [None] * -(-LANES // G)
+        net = fp.load(cdir, frozen=True)
+        stream = fp.stream(dirs, a.split, games=None, seed=1, has_open=False, maps_dir=a.maps_dir, synthetic_maps=a.synthetic_maps)
+        states = fp.states
         rows = 0
         recording = False
         with ReluMonitor(net, inner=not a.no_inner, points="all", threshold=a.const_threshold) as mon:
-            for bi, b, gi, s, steps, hg in lane_groups(stream, LANES, G, T, cfg["pad_entities"], net.cfg.heads.max_select, states, a.skip_batches + a.batches):
+            for bi, _, gi, s, _, steps, hg in fp.groups(stream, a.skip_batches + a.batches):
                 if bi >= a.skip_batches and not recording:
                     mon.reset()
                     recording = True
                 m = real_rows(hg, steps, s, T)
-                keep = np.asarray(hg["keep"]).astype(bool)
                 obs = to_obs(hg, device)
                 obs[ROWS_KEY] = torch.as_tensor(m, device=device)
-                st = states[gi]
-                s0 = net.init_state(hg["b"], device) if st is None else net.mask_state(st, torch.as_tensor(keep, device=device))
+                s0 = fp.state0(hg, states[gi])
                 ctx = autocast(device, precision) if a.precision == "auto" else torch.autocast(device.type, enabled=False)
                 with torch.no_grad(), ctx:
                     out = net.forward_seq(obs, net.labels(hg, device), torch.as_tensor(hg["privileged"]).to(device, torch.float32), s0, T)
@@ -103,6 +93,7 @@ def run(a) -> int:
             if "pos_frac" in v:
                 print(f"  {k:28} pos {v['pos_frac']:.4f} never {v['never_active']}/{v['channels']}")
         del net
+        fp.unload()
         if device.type == "cuda":
             torch.cuda.empty_cache()
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)

@@ -9,7 +9,6 @@ import numpy as np
 
 from uranium import tables as tb
 from uranium.diag.features import fill_race_cols, lane_features, race_of
-from uranium.diag.stream import lane_groups
 
 PASSES = ("real", "early", "late", "sc+1", "sc-1", "tok+1", "tok-1")
 CF_STARTS = {"T": (1280, 2080), "P": (1720, 3030), "Z": (1800, 3240)}
@@ -185,29 +184,24 @@ def run(a) -> int:
     import torch
 
     from uranium import _core, ckpt
-    from uranium.device import autocast, configure, resolve
+    from uranium.device import autocast
     from uranium.diag.capture import Capture
     from uranium.model import to_obs
+    from uranium.passes import ForcedPass, fixed_device
 
     if a.read_until and a.read_until < max(a.row_until, a.act_until):
         raise SystemExit(f"diag dump: --read-until {a.read_until:g} cuts rows before --row-until {a.row_until:g} / --act-until {a.act_until:g}")
     dirs = [str(p) for p in _core.dataset_dirs(a.dataset, a.shards)]
     if not dirs:
         raise SystemExit("diag dump: no data (--dataset / --shards)")
-    backend, device, precision = resolve(a.backend)
-    configure(backend)
-    torch.backends.cudnn.benchmark = False
-    cfg = json.loads(_core.bc_config(a.config, "s1")[0])
-    T, LANES = cfg["seq_len"], cfg["lanes"]
-    G = min(a.lanes_per_group, LANES)
+    backend, device, precision = fixed_device(a.backend)
+    fp = ForcedPass(a.config, device, precision, lanes_per_group=a.lanes_per_group)
+    T, LANES, G = fp.t, fp.lanes, fp.g
     net = cap = None
     ckpt_dir = None
     if a.checkpoint != "none":
         ckpt_dir = Path(_core.resolve_checkpoint(a.checkpoint))
-        net, _ = ckpt.load_model(ckpt_dir, device)
-        net.eval()
-        for p in net.parameters():
-            p.requires_grad_(False)
+        net = fp.load(ckpt_dir, frozen=True)
         cap = Capture(net, a.core_points)
     max_sel = 64 if net is None else net.cfg.heads.max_select
     passes = PASSES if (a.cf and net is not None) else ("real",)
@@ -226,13 +220,13 @@ def run(a) -> int:
     for si, split in enumerate(splits):
         try:
             until = {"until_frame": int(np.ceil(a.read_until)) + 1} if a.read_until else {}
-            stream = _core.EvalStream(a.config, dirs, split=split, games=a.games, seed=a.seed, has_open=False, maps_dir=a.maps_dir, synthetic_maps=a.synthetic_maps, **until)
+            stream = fp.stream(dirs, split, games=a.games, seed=a.seed, has_open=False, maps_dir=a.maps_dir, synthetic_maps=a.synthetic_maps, **until)
         except RuntimeError as e:
             if "no game" not in str(e).lower() and "empty" not in str(e).lower():
                 raise
             print(f"[{split}] skipped: {e}", flush=True)
             continue
-        gstate: list = [None] * -(-LANES // G)
+        gstate = fp.states
         lane_game: dict[int, dict] = {}
         nb = 0
 
@@ -243,7 +237,7 @@ def run(a) -> int:
             if n_done % 50 == 0:
                 print(f"[{split}] batch {n_done} games {gid_next} rows {stats['rows']} act_rows {stats['act_rows']} {time.time() - t0:.0f}s", flush=True)
 
-        for bi, b, gi, start, steps, hg in lane_groups(stream, LANES, G, T, cfg["pad_entities"], max_sel, gstate, a.limit_batches):
+        for bi, b, gi, start, _, steps, hg in fp.groups(stream, a.limit_batches, max_sel):
             if bi + 1 > nb:
                 if nb:
                     batch_done(nb)
@@ -280,7 +274,6 @@ def run(a) -> int:
             acts = None
             if fwd:
                 stats["groups_forwarded"] += 1
-                keep_t = torch.as_tensor(keep, device=device)
                 for pi, p in enumerate(passes):
                     g = hg
                     if p != "real":
@@ -301,7 +294,7 @@ def run(a) -> int:
                         g.update(ent)
                     obs = to_obs(g, device)
                     st = states[p]
-                    s0 = net.init_state(bsz, device) if st is None else net.mask_state(st, keep_t)
+                    s0 = fp.state0(hg, st)
                     with torch.no_grad(), autocast(device, precision):
                         if p == "real":
                             o, acts = cap.run(obs, s0, T)
