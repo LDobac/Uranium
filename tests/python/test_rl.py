@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -8,7 +9,7 @@ import torch
 from uranium import _core
 from uranium.model import UraniumNet, UraniumNetConfig, action_columns, input_dims, to_labels, to_obs
 from uranium.rl.learner import HEADS, Learner, kl_coef
-from uranium.rl.returns import upgo, vtrace
+from uranium.rl.returns import gae, upgo, vtrace
 
 ROOT = Path(__file__).resolve().parents[2]
 FIX = ROOT / "tests" / "fixtures" / "burn_parity"
@@ -31,8 +32,51 @@ def test_targets_are_zero_past_the_lane_042(seed):
     gamma, lam, rho_bar, c_bar = 0.99, 0.8, 1.0, 1.0
     vs, pg, rho = vtrace(r, v, lr, length, gamma, lam, rho_bar, c_bar)
     up = upgo(r, v, lr, length, gamma, rho_bar)
+    adv, ret = gae(r, v, length, gamma, 0.95)
     for i, n in enumerate(lengths):
         assert (vs[i, n:] == 0).all() and (pg[i, n:] == 0).all() and (up[i, n:] == 0).all()
+        assert (adv[i, n:] == 0).all() and (ret[i, n:] == 0).all()
+
+
+def one_lane(rewards, values, log_rho):
+    r, v, lr = (torch.tensor([x], dtype=torch.float32) for x in (rewards, values, log_rho))
+    return r, v, lr, torch.tensor([len(rewards)])
+
+
+def close(a, b):
+    a, b = [float(x) for x in a], [float(x) for x in b]
+    assert len(a) == len(b) and all(abs(x - y) < 1e-5 for x, y in zip(a, b)), (a, b)
+
+
+def test_vtrace_on_policy_is_td_lambda_042():
+    rewards, values = [0.0, 1.0, 0.0, -1.0], [0.5, 0.2, -0.1, 0.3, 0.0]
+    gamma, lam = 1.0, 0.8
+    vs, pg, _ = vtrace(*one_lane(rewards, values, [0.0] * 4), gamma, lam, 1.0, 1.0)
+    g = [0.0] * 5
+    g[4] = values[4]
+    for i in range(3, -1, -1):
+        g[i] = rewards[i] + gamma * ((1.0 - lam) * values[i + 1] + lam * g[i + 1])
+    close(vs[0], g[:4])
+    close(pg[0], [rewards[i] + gamma * (float(vs[0, i + 1]) if i + 1 < 4 else values[4]) - values[i] for i in range(4)])
+
+
+def test_vtrace_off_policy_by_hand_042():
+    vs, pg, rho = vtrace(*one_lane([1.0, 0.0], [0.0, 0.5, 2.0], [math.log(2.0), math.log(0.5)]), 1.0, 1.0, 1.0, 1.0)
+    close(vs[0], [2.25, 1.25])
+    close(rho[0], [1.0, 0.5])
+    close(pg[0], [2.25, 0.75])
+
+
+def test_upgo_by_hand_042():
+    u = upgo(*one_lane([0.0, 0.0, 1.0], [0.5, 1.0, 0.2, 0.0], [0.0] * 3), 1.0, 1.0)
+    close(u[0], [1.0 - 0.5, 1.0 - 1.0, 1.0 - 0.2])
+
+
+def test_gae_by_hand_042():
+    r, v, _, length = one_lane([1.0, 0.0], [0.0, 0.5, 2.0], [0.0] * 2)
+    adv, ret = gae(r, v, length, 1.0, 0.5)
+    close(adv[0], [2.25, 1.5])
+    close(ret[0], [2.25, 2.0])
 
 
 def test_kl_schedule_042():
