@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import argparse
 import collections
-import hashlib
 import json
 import os
 import shutil
 import sys
-import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -36,14 +34,6 @@ def opponent_class(opponent: str) -> str:
                      f"({', '.join(MACRO_OPPONENTS)}); add it to tools/eval/per_action.py")
 
 
-def file_sha256(p: Path) -> str:
-    h = hashlib.sha256()
-    with open(p, "rb") as f:
-        for b in iter(lambda: f.read(1 << 20), b""):
-            h.update(b)
-    return h.hexdigest()
-
-
 def teacher_classes(raw_root: Path, cache: Path | None = None) -> dict[str, dict]:
     old = {}
     if cache is not None and cache.exists():
@@ -54,7 +44,7 @@ def teacher_classes(raw_root: Path, cache: Path | None = None) -> dict[str, dict
             continue
         plan = games.parent
         key = plan.relative_to(raw_root).as_posix()
-        sig = file_sha256(games)
+        sig = ec.file_sha256(games)
         if old.get(key, {}).get("games_jsonl") == sig:
             got = old[key]["games"]
         else:
@@ -65,7 +55,7 @@ def teacher_classes(raw_root: Path, cache: Path | None = None) -> dict[str, dict
                 g = json.loads(line)
                 rep = plan / "replays" / f"g{g['game_id']}.rep"
                 if rep.exists():
-                    got[file_sha256(rep)] = {"opponent": g["opponent"]}
+                    got[ec.file_sha256(rep)] = {"opponent": g["opponent"]}
         new[key] = {"games_jsonl": sig, "games": got}
         for sha, v in got.items():
             e = {"class": opponent_class(v["opponent"]), "opponent": v["opponent"].split("@", 1)[0], "plan": key}
@@ -308,7 +298,7 @@ def score(ckpt_dir: str, datasets: list[str], shards: list[str], backend_name: s
     from uranium.diag.tables import FRAME_SCALE
     from uranium.model import to_obs
 
-    names = {a["id"]: a["name"] for a in tomllib.loads((ec.ROOT / "crates/uranium-env/tables/actions.toml").read_text(encoding="utf-8"))["action"]}
+    names = {a["id"]: a["name"] for a in ec.actions()}
     key_ids = {i for i, n in names.items() if n in KEY}
     bunker_id = next(i for i, n in names.items() if n == "Build_Bunker")
     backend, device, precision = resolve(backend_name)

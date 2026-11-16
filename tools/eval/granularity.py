@@ -50,7 +50,7 @@ DEFAULT_OPPONENTS = "t0 zerg_rush,ualbertabot12poollings"
 
 
 def load_tables():
-    acts = tomllib.loads((ROOT / "crates/uranium-env/tables/actions.toml").read_text(encoding="utf-8"))["action"]
+    acts = ec.actions()
     units = tomllib.loads((ROOT / "crates/uranium-env/tables/unit_types.toml").read_text(encoding="utf-8"))["rows"]
     name = {a["id"]: a["name"] for a in acts}
     uid = {u["name"]: u["id"] for u in units}

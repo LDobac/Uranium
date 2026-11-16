@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
 import tomllib
@@ -10,17 +9,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import eval_common as ec  # noqa: E402
 
 ROOT = ec.ROOT
-ACTIONS_TOML = ROOT / "crates" / "uranium-env" / "tables" / "actions.toml"
 HORIZON_MARGIN = 48
 FPS = 24
-PRECISION = {"cuda": "bf16-mixed", "rocm": "f32", "cpu": "f32"}
 OUTCOME_METRICS = ("held_8m", "held_s", "scv_8m", "scv_min_1m", "bunker_s", "barracks_s", "army_s")
 SESSION_METRICS = ("scv_8m", "scv_min_1m", "scv_4m", "bunker_s", "barracks_s", "army_s", "scout_main_s", "scout_types_4m", "scout_types_6m")
 MAP_KEYS = {"FightingSpirit": "fighting_spirit", "CircuitBreaker": "circuit_breaker"}
 
 
-class Refused(Exception):
-    pass
+Refused = ec.Refused
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -42,14 +38,6 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
     text = "".join(dumps(r) + "\n" for r in rows)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(text.encode("utf-8"))
-
-
-def file_sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def shared_root(arg: str | None) -> Path:
@@ -74,8 +62,7 @@ def on_shared(root: Path, rel: str) -> Path:
 
 
 def action_ids() -> dict[str, int]:
-    t = tomllib.loads(ACTIONS_TOML.read_text(encoding="utf-8"))
-    return {a["name"]: int(a["id"]) for a in t["action"]}
+    return {a["name"]: int(a["id"]) for a in ec.actions()}
 
 
 def workspace_version() -> str:
@@ -104,10 +91,6 @@ def plan_games(plan: dict) -> list[dict]:
             mp = m["map"] if m["map"] != "both" else ("fighting_spirit" if g % 2 == 0 else "circuit_breaker")
             out.append({"seed": seeds[len(out)], "map": mp, "matchup": mi, "p0": m["p0"], "p1": m["p1"]})
     return out
-
-
-def is_branch_plan(plan: dict) -> bool:
-    return ec.is_branch_plan(plan)
 
 
 def toml_value(v) -> str:

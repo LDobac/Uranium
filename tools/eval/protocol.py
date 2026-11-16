@@ -30,11 +30,9 @@ PLATFORMS = ("windows", "linux")
 PLAN_DEFAULTS = {"seed_base": 1000, "same_seed": False, "max_frames": 86_400, "wall_timeout_s": 1800, "privileged": False,
                  "save_replay": False, "zero_last_failed": False, "surrender": "shadow", "surrender_chat": "gg"}
 CKPT, NAME = "@CHECKPOINT@", "@NAME@"
-PRECISION = {"cuda": "bf16-mixed", "rocm": "f32", "cpu": "f32"}
 
 
-class Refused(Exception):
-    pass
+Refused = ec.Refused
 
 
 def load_lineage(path: Path = LINEAGE) -> dict:
@@ -245,10 +243,6 @@ def git_state() -> dict:
             "dirty_diff_sha256": h.hexdigest() if paths else None}
 
 
-def file_sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def read_record(job: Path) -> dict | None:
     f = job / RECORD
     return json.loads(f.read_text(encoding="utf-8")) if f.is_file() else None
@@ -288,7 +282,7 @@ def local_bot_hashes(bots: list[str]) -> dict[str, str]:
         for name in ("module.dll", "module.so"):
             f = d / b / name
             if f.is_file():
-                out[b] = file_sha256(f)
+                out[b] = ec.file_sha256(f)
                 break
     return out
 
@@ -497,7 +491,7 @@ def check_cue_set(lin: dict, name: str, d: Path, sha: str | None) -> list[str]:
     if man is not None:
         data("dump", man.get("data"))
         for k, want in (("splits", s["splits"]), ("games_per_split", s.get("games")), ("config", m["config"]), ("backend", m["backend"]),
-                        ("precision", PRECISION[m["backend"]]), ("lanes_per_group", dm["lanes_per_group"]), ("row_until", dm["row_until"]),
+                        ("precision", ec.PRECISION[m["backend"]]), ("lanes_per_group", dm["lanes_per_group"]), ("row_until", dm["row_until"]),
                         ("act_until", dm["act_until"]), ("act_every", dm["act_every"]), ("read_until", dm.get("read_until"))):
             same(f"dump {k}", man.get(k), want)
         if s.get("games"):
@@ -753,7 +747,7 @@ def cmd_diag(a) -> None:
         log = Path(a.train_log)
         if not log.is_file():
             raise Refused(f"no training log {log}")
-        log_sha = file_sha256(log)
+        log_sha = ec.file_sha256(log)
         cmds.append(train_log_command(lin, pt, a.checkpoint, str(log), ck, out, py))
     if a.part == "cpu":
         cmds = cpu_order(cmds, out, local)
@@ -809,7 +803,7 @@ def cmd_diag(a) -> None:
         rec = {"protocol": "config/protocol/lineage.toml (050-R9)", "lineage": a.lineage, "point": pt["id"], "family": pt["family"],
                "metrics": metrics, "checkpoint": a.checkpoint, "checkpoint_sha256": sha, "checkpoint_id": f"{Path(a.checkpoint).name}@{sha[:12]}",
                "backend": diag_metric(lin, "cue_diag")["backend"] if "cue_diag" in metrics else None,
-               "precision": PRECISION[diag_metric(lin, "cue_diag")["backend"]] if "cue_diag" in metrics else None,
+               "precision": ec.PRECISION[diag_metric(lin, "cue_diag")["backend"]] if "cue_diag" in metrics else None,
                "sets": {n: {k: v for k, v in cue_set(lin, n).items() if k in ("holdout", "datasets", "files", "files_sha256", "splits", "games", "seed")}
                         for n in diag_metric(lin, "cue_diag")["sets"]} if "cue_diag" in metrics else None,
                "train_log": {"file": Path(a.train_log).name, "sha256": log_sha} if log_sha else None,
@@ -962,7 +956,7 @@ def cmd_job(a) -> None:
             f = d / "plans" / f"{i:02d}-{p}.toml"
             f.write_bytes(text.encode("utf-8"))
             stage_files.append(f"plans/{f.name}")
-            rec_plans.append({"metric": m, "plan": p, "file": f"plans/{f.name}", "content_sha256": file_sha256(f),
+            rec_plans.append({"metric": m, "plan": p, "file": f"plans/{f.name}", "content_sha256": ec.file_sha256(f),
                               "conditions_sha256": lin["plan"][p]["conditions_sha256"], "template": lin["plan"][p]["template"]})
         (d / "job.toml").write_text("stages = [" + ", ".join(f'"{s}"' for s in stage_files) + ']\nhosts = "hosts.toml"\n', encoding="utf-8")
         (d / "hosts.toml").write_text(job_hosts_toml(hosts), encoding="utf-8")
@@ -1000,7 +994,7 @@ def verify_job(lin: dict, job: Path, lineage: str, pt: dict) -> list[str]:
             problems.append(f"{RECORD} is for {rec.get('lineage')} / {rec.get('point')}")
         for p in rec.get("plans", []):
             f = job / p["file"]
-            if not f.is_file() or file_sha256(f) != p["content_sha256"]:
+            if not f.is_file() or ec.file_sha256(f) != p["content_sha256"]:
                 problems.append(f"{p['file']} differs from its recorded content_sha256")
         git = rec.get("git", {})
         if git.get("protocol_files_dirty"):
@@ -1116,7 +1110,7 @@ def cmd_bc_eval(a) -> None:
     else:
         raise Refused(f"metric {a.metric} is not teacher-forced")
     print(" ".join(args))
-    print(f"# pinned: backend {m['backend']} ({PRECISION[m['backend']]}); checkpoint sha256 {checkpoint_sha256(a.checkpoint)}; git {git_state()['commit']}")
+    print(f"# pinned: backend {m['backend']} ({ec.PRECISION[m['backend']]}); checkpoint sha256 {checkpoint_sha256(a.checkpoint)}; git {git_state()['commit']}")
 
 
 def bc_eval_args(m: dict, checkpoint: str, out: str | None = None, py: str = "python") -> list[str]:

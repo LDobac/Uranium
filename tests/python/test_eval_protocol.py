@@ -308,7 +308,7 @@ def test_job_written_and_recorded_050_r9(tmp_path, monkeypatch):
     protocol.main(job_args(tmp_path, ck, "rush,tvz", bot_lines=[f"h:7700 ualbertabot12poollings {accepted('ualbertabot12poollings')}"]))
     rush, tvz = tmp_path / "eval" / "j-rush", tmp_path / "eval" / "j-tvz"
     assert sorted(p.name for p in (tmp_path / "eval").iterdir()) == ["j-rush", "j-tvz"]
-    sha = protocol.file_sha256(ck / "model.safetensors")
+    sha = ec.file_sha256(ck / "model.safetensors")
     for d, zlf, pid in ((rush, False, "rush_check"), (tvz, True, "tvz_bc")):
         rec = json.loads((d / "protocol.json").read_text(encoding="utf-8"))
         assert (rec["lineage"], rec["point"], rec["family"], rec["zero_last_failed"]) == ("m2", "s2e2", "bc", zlf)
@@ -316,7 +316,7 @@ def test_job_written_and_recorded_050_r9(tmp_path, monkeypatch):
         assert rec["git"] == CLEAN_GIT and rec["hosts"] == [{"addr": "h:7700", "platform": None}] and rec["t1_platforms"] is None
         (p,) = rec["plans"]
         assert p["plan"] == pid and p["conditions_sha256"] == FROZEN[pid]
-        assert protocol.file_sha256(d / p["file"]) == p["content_sha256"]
+        assert ec.file_sha256(d / p["file"]) == p["content_sha256"]
         plan = tomllib.loads((d / p["file"]).read_text(encoding="utf-8"))
         assert plan["zero_last_failed"] is zlf and protocol.identify(LIN, plan) == pid
         assert tomllib.loads((d / "job.toml").read_text(encoding="utf-8"))["stages"] == [p["file"]]
@@ -1382,7 +1382,7 @@ def test_diag_run_records_retries_and_checks_050_r9(tmp_path, monkeypatch):
     assert (out / "teacher" / "dump" / "manifest.json").is_file() and not (out / "teacher" / "dump.part").exists() and not (out / "running.json").exists()
     rec = json.loads((out / "protocol.json").read_text(encoding="utf-8"))
     assert (rec["lineage"], rec["point"], rec["checkpoint_sha256"], rec["git"], rec["backend"], rec["precision"]) == ("m2", "s1e1", SHA, CLEAN_GIT, "rocm", "f32")
-    assert rec["finished"] and rec["check"] == [] and rec["train_log"] == {"file": "s1.log", "sha256": protocol.file_sha256(log)}
+    assert rec["finished"] and rec["check"] == [] and rec["train_log"] == {"file": "s1.log", "sha256": ec.file_sha256(log)}
     assert [s["step"] for s in rec["steps"]] == ["dump", "probes", "intervene", "copy", "summary", "dump", "probes", "copy", "summary", "spatial_logs"]
     assert rec["commands"][0][0] == "python" and rec["commands"][0][6] == "<shared>/checkpoints/m2-s1/ckpt-9"
     assert rec["commands"][0][-1] == "<cache>/diag_dump/m2-s1__ckpt-9/teacher/dump" and rec["commands"][3] == ["copy", "<cache>/diag_dump/m2-s1__ckpt-9/teacher/dump", "<shared>/artifacts/diag/m2-s1__ckpt-9/teacher/dump"]

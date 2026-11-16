@@ -67,7 +67,7 @@ class TrunkJob:
         ck = root / CKPT
         ck.mkdir(parents=True)
         (ck / "model.safetensors").write_bytes(b"weights")
-        self.ckpt_sha = bc.file_sha256(ck / "model.safetensors")
+        self.ckpt_sha = ec.file_sha256(ck / "model.safetensors")
         self.sd = self.job / "b1-trunk"
         for n in range(1, len(self.games) + 1):
             self.play(n)
@@ -92,7 +92,7 @@ class TrunkJob:
             body = f"state {n} {i}".encode()
             (self.sd / "states").mkdir(parents=True, exist_ok=True)
             (self.sd / "states" / f"{sid}.state").write_bytes(body)
-            sha = bc.file_sha256(self.sd / "states" / f"{sid}.state")
+            sha = ec.file_sha256(self.sd / "states" / f"{sid}.state")
             lines[i]["state"], lines[i]["state_sha256"] = sid, sha
             mask = [0, BUNKER] + ([MARINE] if marine else [])
             snaps.append({"rules": [rule], "state": sid, "state_sha256": sha, "i": i, "frame": lines[i]["frame"], "digest": lines[i]["digest"],

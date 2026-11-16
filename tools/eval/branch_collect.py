@@ -16,7 +16,7 @@ OUTCOME_FIELDS = ("state_check", "intervention", "samples", "metrics", "dilution
 
 
 def stage_of(job: Path, name: str | None) -> tuple[int, Path, dict]:
-    stages = [s for s in ec.job_stages(job) if bc.is_branch_plan(s[2]) and s[2].get("branches")]
+    stages = [s for s in ec.job_stages(job) if ec.is_branch_plan(s[2]) and s[2].get("branches")]
     if name is not None:
         stages = [s for s in stages if s[2]["name"] == name]
     if len(stages) != 1:
@@ -97,7 +97,7 @@ def collect(job: Path, stage: str | None, root: Path) -> dict:
             "repeat": line["repeat"],
             "game": {"job": job.name, "stage": name, "plan_game": n, "hostd_game": hostd, "attempt": ec.attempt_of(hostd),
                      "replay": bc.rel_to(root, replay) if replay.is_file() else None, "host": game.get("host", ""),
-                     "backend": backend, "precision": bc.PRECISION.get(backend, "?"), "infer_seed": model.get("infer_seed")},
+                     "backend": backend, "precision": ec.PRECISION.get(backend, "?"), "infer_seed": model.get("infer_seed")},
             "checkpoint_sha256": point["checkpoint_sha256"],
             "git": git or "unknown",
             "valid": valid,

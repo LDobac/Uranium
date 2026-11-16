@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -10,6 +11,8 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+ACTIONS_TOML = ROOT / "crates" / "uranium-env" / "tables" / "actions.toml"
+PRECISION = {"cuda": "bf16-mixed", "rocm": "f32", "cpu": "f32"}
 
 FPS = 24
 CUT = 11520
@@ -17,6 +20,22 @@ RACE_TERRAN = 1
 BUNKER, CC = 125, 106
 OP_BUILD, OP_SELECT, OP_SEL_ADD, OP_RCLICK, OP_ORDER = 12, 9, 10, 20, 21
 ORDER_MOVE = 6
+
+
+class Refused(Exception):
+    pass
+
+
+def file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def actions() -> list[dict]:
+    return tomllib.loads(ACTIONS_TOML.read_text(encoding="utf-8"))["action"]
 
 
 def load_env() -> None:

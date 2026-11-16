@@ -313,7 +313,7 @@ def subset_tables(job: Path, plan_id: str, lin: dict | None = None, cache: Path 
         rows = {m: src[have[key]] for key, m in want.items() if have[key] in src}
         bad = {ec.STAGE_BASE + m for key, m in want.items() if k * ec.STAGE_BASE + have[key] in invalid}
         res = {"job": job.name, "stage": k, "plan_file": f.name, "plan": plan_id, "kind": "winrate", "subset_of": plan["name"],
-               "protocol": None, "conditions_sha256": lin["plan"][plan_id]["conditions_sha256"], "plan_sha256": protocol.file_sha256(f),
+               "protocol": None, "conditions_sha256": lin["plan"][plan_id]["conditions_sha256"], "plan_sha256": ec.file_sha256(f),
                "games_planned": len(want), "rows": len(rows), "invalid_games": sorted(bad),
                "skipped_lines": skipped,
                "checkpoints": sorted({r["model"].get("checkpoint") for r in rows.values()}),
@@ -353,14 +353,14 @@ def job_tables(job: Path, cache: Path, override: dict[str, str] | None = None, l
                    "lineage": rec.get("lineage"), "point": rec.get("point"), "checkpoint_sha256": rec.get("checkpoint_sha256"),
                    "git_commit": rec.get("git", {}).get("commit"), "protocol_files_dirty": rec.get("git", {}).get("protocol_files_dirty"),
                    "platforms": sorted({h.get("platform") or "?" for h in rec.get("hosts", [])}), "t1_platforms": rec.get("t1_platforms")},
-               "conditions_sha256": protocol.conditions_sha256(plan), "plan_sha256": protocol.file_sha256(f),
+               "conditions_sha256": protocol.conditions_sha256(plan), "plan_sha256": ec.file_sha256(f),
                "games_planned": sum(m["games"] for m in plan["matchup"]), "rows": len(rows),
                "invalid_games": sorted(g for g in invalid if ec.stage_of(g) == k),
                "skipped_lines": skipped,
                "checkpoints": sorted({r["model"].get("checkpoint") for r in rows.values()}),
                "zero_last_failed": sorted({r["model"].get("zero_last_failed") for r in rows.values()}),
                "sample": sorted({r["model"].get("sample") for r in rows.values()}),
-               "inference": {b: {"games": c, "precision": protocol.PRECISION.get(b.split("@")[0], "?")} for b, c in ec.ledger_backends([g for g in ledger if ec.stage_of(g["game_id"]) == k]).items()}}
+               "inference": {b: {"games": c, "precision": ec.PRECISION.get(b.split("@")[0], "?")} for b, c in ec.ledger_backends([g for g in ledger if ec.stage_of(g["game_id"]) == k]).items()}}
         if kind in ("rush", "macro"):
             dumps = ec.dump_stage(job / plan["name"], sorted(rows), cache / job.name / plan["name"])
             res["table"] = rush_table(k, plan, rows, invalid, dumps) if kind == "rush" else macro_table(k, plan, rows, invalid, dumps)

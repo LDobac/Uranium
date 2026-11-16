@@ -154,7 +154,7 @@ def merged(stage_dir: Path, what: str) -> list[dict]:
 
 def checkpoint_sha(root: Path, checkpoint: str) -> str | None:
     p = bc.on_shared(root, checkpoint) / "model.safetensors"
-    return bc.file_sha256(p) if p.is_file() else None
+    return ec.file_sha256(p) if p.is_file() else None
 
 
 def policy_hex(policy: str) -> str | None:
@@ -286,7 +286,7 @@ def read_trunk(t: Trunk, sd: Path, game: dict | None, recs: list[dict], rules: l
         sf = sd / "states" / f"{ent['state']}.state"
         if not sf.is_file():
             why.append(f"state file {ent['state']}.state missing")
-        elif bc.file_sha256(sf) != ent["state_sha256"]:
+        elif ec.file_sha256(sf) != ent["state_sha256"]:
             why.append(f"state file {ent['state']}.state sha256 differs")
         t.points[rule] = {
             "point": f"{job.name}/{t.stage}/g{t.n}#{rule}",
@@ -301,7 +301,7 @@ def read_trunk(t: Trunk, sd: Path, game: dict | None, recs: list[dict], rules: l
             "git": ours.end.get("git", ""),
             "schemas": {"feature": ours.end.get("feature_schema"), "action": ours.end.get("action_schema")},
             "backend": backend,
-            "precision": bc.PRECISION.get(backend, "?"),
+            "precision": ec.PRECISION.get(backend, "?"),
             "infer_seed": rec.get("infer_seed"),
             "i_t": i,
             "f_t": int(ent["frame"]),

@@ -7,17 +7,14 @@ import tomllib
 from collections import defaultdict
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "eval"))
+import eval_common as ec  # noqa: E402
+
 Z = 1.959964
 
 
 def wilson(k: float, n: int) -> tuple[float, float]:
-    if n == 0:
-        return (0.0, 1.0)
-    p = k / n
-    d = 1 + Z * Z / n
-    c = (p + Z * Z / (2 * n)) / d
-    h = Z * math.sqrt(p * (1 - p) / n + Z * Z / (4 * n * n)) / d
-    return (max(0.0, c - h), min(1.0, c + h))
+    return ec.wilson(k, n, Z)
 
 
 def read_jsonl(path: Path) -> list[dict]:
