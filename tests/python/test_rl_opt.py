@@ -527,7 +527,8 @@ def test_learner_channels_last_keeps_the_update_032_r19(monkeypatch):
 
 
 @pytest.mark.gpu
-def test_learner_compile_no_recompile_per_update_032_r19(monkeypatch):
+@pytest.mark.parametrize("precision", ["f32", "bf16"])
+def test_learner_compile_no_recompile_per_update_032_r19(monkeypatch, precision):
     if not torch.cuda.is_available() or torch.version.hip is not None:
         pytest.skip("CUDA only (ROCm trains in f32 without torch.compile, 032-R8)")
     import torch._dynamo.utils as du
@@ -547,11 +548,15 @@ def test_learner_compile_no_recompile_per_update_032_r19(monkeypatch):
 
     batches = [batch(1, (3, 60), (6.0, 4.0, 3.0)), batch(2, (70, 120), (7.0, 6.0, 6.0))]
     monkeypatch.setenv("URANIUM_LOC_ROWS", "pow2")
+    rtol, atol, compared = (1e-4, 1e-5, 4) if precision == "f32" else (5e-3, 5e-4, 1)
     res, shapes = {}, []
     for mode in ("off", "default"):
         monkeypatch.setenv(RL_COMPILE, mode)
         torch._dynamo.reset()
-        l = Learner(rl_cfg(lanes=4, seq_len=t), net(), net(), dev, "f32", "vtrace", micro_lanes=2)
+        cfg = rl_cfg(lanes=4, seq_len=t)
+        if precision == "bf16":
+            cfg["loss"]["upgo"] = 0.0
+        l = Learner(cfg, net(), net(), dev, precision, "vtrace", micro_lanes=2)
         if mode != "off" and not l.compiling:
             pytest.skip("no Triton")
         shapes = [[(g["entity_mask"].shape[1], [int(i.numel()) for i in g["phases"]]) for g in (l.prepare(b, (s, s + 2), t) for s in (0, 2))] for b in batches]
@@ -564,5 +569,5 @@ def test_learner_compile_no_recompile_per_update_032_r19(monkeypatch):
     print("lane group shapes per batch", shapes, "compiled frames after each update", frames)
     assert shapes[0] == [(64, [6, 8, 2]), (64, [5, 8, 3])] and shapes[1] == [(128, [5, 8, 3]), (128, [4, 8, 4])]
     assert frames[0] > 0 and frames[1:] == [frames[1]] * 3, f"compiled frames after each update {frames}: a recompile after both batches were seen"
-    for a, b in zip(res["default"], res["off"]):
-        close_stats(a, b, 1e-4, 1e-5)
+    for a, b in zip(res["default"][:compared], res["off"][:compared]):
+        close_stats(a, b, rtol, atol)

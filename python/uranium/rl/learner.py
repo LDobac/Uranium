@@ -278,7 +278,11 @@ class Learner:
         g = stage(g, self.device, self.precision, pinned=self.pinned, spatial_bf16=self.spatial_bf16, keys=STAGE_KEYS)
         s = state0_host(net, g)
         if net.outer is not None:
-            g["phases"] = [self.pin(i) for i in phase_split(s[1][3], t, net.outer.segment)]
+            phases = phase_split(s[1][3], t, net.outer.segment)
+            lens = [int(i.numel()) for i in phases]
+            if sum(lens) != g["b"] * t:
+                raise ValueError(f"outer phase lengths {lens} cover {sum(lens)} rows, the lane group has {g['b']}x{t}")
+            g["phases"] = [self.pin(i) for i in phases]
         g["state0_host"] = rebuild(s, iter([self.pin(p) for p in leaves(s)]))
         return g
 
