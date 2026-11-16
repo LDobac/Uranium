@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from uranium import tables as tb
+from uranium.provenance import git_commit
 
 NOISE_VERSION = "rowhash-1"
 FRAMES_PER_MINUTE = 24 * 60
@@ -47,7 +48,6 @@ def label_games(input_dir: str, ckpt_dir: str, out: str, records: str, config: s
                 micro_lanes: int | None = None, threads: int | None = None, maps_dir=None, synthetic_maps: bool = False, trace=None) -> dict:
     from uranium import _core, ckpt
     from uranium.device import autocast
-    from uranium.diag.summary import git_commit
     from uranium.model import to_obs
     from uranium.distill.noise import RowNoise, row_keys
     from uranium.model.net import OBS_KEYS

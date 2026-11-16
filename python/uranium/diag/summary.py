@@ -2,8 +2,9 @@
 
 import datetime
 import json
-import subprocess
 from pathlib import Path
+
+from uranium.provenance import git_commit
 
 SCHEMA = "uranium.diag.summary/1"
 HEADER = ("schema", "point", "checkpoint", "checkpoint_sha256", "git_commit", "created")
@@ -85,13 +86,6 @@ def core_section(cs: dict) -> dict:
         out[race] = {"hp_r2": None if hp is None else {k: v["pt"] for k, v in hp.items()},
                      "gates": {k: _pick(v, ("z_mean", "var_share_keep", "r2_x", "r2_keep", "r2_write", "r2_g")) for k, v in rr.get("gates", {}).items()}}
     return out
-
-
-def git_commit() -> str | None:
-    try:
-        return subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True, cwd=Path(__file__).resolve().parent).stdout.strip()
-    except (OSError, subprocess.CalledProcessError):
-        return None
 
 
 def build(point: str, probes=None, intervene=None, spatial=None, core_split=None, commit: str | None = None) -> dict:
