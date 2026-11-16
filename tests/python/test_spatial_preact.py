@@ -11,7 +11,7 @@ from uranium.model.encoders import SpatialEncoder
 from uranium.model.layers import RES_BMM_MAX_CH, ResBlock, conv_layout
 from uranium.model.monitor import channel_stats, relu_stats
 
-from test_variants import HEADS, VARIANTS, net_of, rows_at, tiny
+from testkit import HEADS, VARIANTS, net_of, rows_at, tiny
 
 PREACT = VariantConfig(spatial_preact=True)
 PREACT_ALL = replace(VARIANTS["all"], spatial_preact=True)

@@ -4,7 +4,6 @@ from pathlib import Path
 import pytest
 import torch
 import torch.nn.functional as F
-from safetensors.torch import load_file
 
 from uranium.model import UraniumNet, UraniumNetConfig, action_columns, to_labels, to_obs
 from uranium.model.config import VariantConfig
@@ -12,19 +11,17 @@ from uranium.model.layers import conv_layout
 from uranium.model.monitor import (CONST_POINTS, ROWS_KEY, SPEC_COLUMNS, SPEC_LAYERS, ReluMonitor, channel_stats, const_stats, packed, relu_stats,
                                    stats_to_host)
 
+from testkit import fixture, net_of
+
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "burn_parity"
 OUTER = VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=2)
 
 
 def tiny(name="tiny-gtrxl", variant=None):
-    meta = json.loads((FIX / name / "meta.json").read_text())
-    inp = load_file(FIX / name / "inputs.safetensors")
-    cfg = UraniumNetConfig.from_dict(meta["config"])
+    cfg, meta, inp = fixture(name)
     if variant is not None:
         cfg.variant = variant
-    torch.manual_seed(3)
-    net = UraniumNet(cfg, action_columns()).eval()
-    return net, meta["b"], meta["t"], to_obs(inp, "cpu"), to_labels(inp, "cpu"), inp["privileged"]
+    return net_of(cfg), meta["b"], meta["t"], to_obs(inp, "cpu"), to_labels(inp, "cpu"), inp["privileged"]
 
 
 def spatial_points(net):

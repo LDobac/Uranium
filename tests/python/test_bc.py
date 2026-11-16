@@ -7,44 +7,21 @@ import torch
 
 from uranium import _core, ckpt
 from uranium.bc.trainer import BcTrainer
-from uranium.model import UraniumNet, UraniumNetConfig, action_columns, input_dims
+from uranium.model import UraniumNet, UraniumNetConfig
+
+import testkit
+from testkit import bc_cfg, feeder, params_of
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "burn_parity"
 CPU = torch.device("cpu")
 
 
 def tiny_net_config(kind: str = "Lstm", win_open: bool = False) -> UraniumNetConfig:
-    cfg = UraniumNetConfig.from_dict(json.loads((FIX / "tiny-lstm" / "meta.json").read_text())["config"])
-    cfg.input = input_dims()
-    cfg.core.kind = kind
-    cfg.value.win_open = win_open
-    return cfg
+    return testkit.net_config(kind=kind, win_open=win_open)
 
 
 def tiny_net(kind="Lstm", seed=7, win_open=False) -> UraniumNet:
-    torch.manual_seed(seed)
-    return UraniumNet(tiny_net_config(kind, win_open), action_columns())
-
-
-def bc_cfg(config: Path, **over) -> dict:
-    cfg = json.loads(_core.bc_config(str(config), "s1")[0])
-    cfg.update(over)
-    return cfg
-
-
-def feeder(config: Path, shards: Path, restore: str | None = None):
-    return _core.Feeder(str(config), [str(shards)], prefetch=0, synthetic_maps=True, check_maps=False, restore=restore)
-
-
-@pytest.fixture
-def shards(tmp_path: Path) -> Path:
-    d = tmp_path / "shards"
-    _core.write_test_shards(str(d), "mixed", 2)
-    return d
-
-
-def params_of(net) -> dict:
-    return {k: v.detach().clone() for k, v in net.state_dict().items()}
+    return testkit.tiny_net(seed, kind=kind, win_open=win_open)
 
 
 def test_micro_lanes_match_full_batch_041_r3(tiny_config, shards):

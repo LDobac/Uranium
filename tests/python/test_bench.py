@@ -1,10 +1,8 @@
 import argparse
 from pathlib import Path
 
-import pytest
 import torch
 
-from uranium import _core
 from uranium.bench.cases import Ctx, run_suites
 from uranium.bench.realbc import compare_losses, run_group
 from uranium.bench.report import bc_markdown, environment, markdown
@@ -27,13 +25,6 @@ def test_suite_cases_fill_the_report():
     assert rows[2].fwd_bwd is not None
     md = markdown(rows, environment("cpu", "f32", CPU), "test")
     assert "| softmax_masked_128sq |" in md and "failed: none" in md
-
-
-@pytest.fixture
-def shards(tmp_path: Path) -> Path:
-    d = tmp_path / "shards"
-    _core.write_test_shards(str(d), "mixed", 2)
-    return d
 
 
 def bc_args(config: Path, shards: Path, updates: int) -> argparse.Namespace:

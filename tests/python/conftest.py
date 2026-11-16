@@ -1,6 +1,4 @@
 import os
-import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -49,6 +47,16 @@ def tiny_config(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def shards(request, tmp_path: Path) -> Path:
+    from uranium import _core
+
+    kind, per_file = getattr(request.module, "SHARDS", ("mixed", 2))
+    d = tmp_path / "shards"
+    _core.write_test_shards(str(d), kind, per_file)
+    return d
+
+
+@pytest.fixture
 def train_bin() -> Path:
     if os.environ.get("URANIUM_TRAIN_BIN"):
         return Path(os.environ["URANIUM_TRAIN_BIN"])
@@ -58,16 +66,8 @@ def train_bin() -> Path:
     return max(found, key=lambda p: p.stat().st_mtime)
 
 
-def run(cmd: list[str]) -> str:
-    return subprocess.run(cmd, check=True, capture_output=True, text=True, cwd=ROOT).stdout
-
-
 @pytest.fixture
 def python_cmd() -> list[str]:
     import sys
 
     return [sys.executable, "-m", "uranium"]
-
-
-def which(name: str) -> str | None:
-    return shutil.which(name)

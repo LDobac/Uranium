@@ -10,7 +10,8 @@ from uranium.model import UraniumNet, action_columns
 from uranium.model.config import VariantConfig
 from uranium.model.variants import core_skip_linear
 
-from test_variants import FIX, HEADS, VARIANTS, net_of, rows_at, state_after, tiny
+from testkit import HEADS, VARIANTS, net_of, rows_at, state_after, tiny
+from testkit import TINY_GTRXL as FIX
 
 CORES = ["tiny-gtrxl", "tiny-lstm"]
 OFF = {"skip": VariantConfig(), "skip_all": VARIANTS["all"]}

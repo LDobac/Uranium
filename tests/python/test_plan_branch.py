@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from test_plan_s0 import fake_dump
+from testkit import fake_dump
 
 from uranium import tables as tb
 from uranium.diag import plan_branch as pb

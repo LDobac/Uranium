@@ -13,65 +13,15 @@ from uranium.bc.trainer import BcTrainer
 from uranium.model import UraniumNet, UraniumNetConfig, action_columns, to_labels, to_obs
 from uranium.model.config import VariantConfig
 
+from testkit import HEADS, SEG, VARIANTS, net_of, perturb, rows_at, state_after, tiny, widen_scalar
+
 ROOT = Path(__file__).resolve().parents[2]
 FIX = ROOT / "tests" / "fixtures" / "burn_parity" / "tiny-gtrxl"
-HEADS = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
-SEG = 2
-VARIANTS = {
-    "terrain": VariantConfig(terrain=True),
-    "ctx": VariantConfig(ctx_token=True),
-    "pool": VariantConfig(attn_pool=True),
-    "outer": VariantConfig(outer=SEG),
-    "all": VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=SEG),
-}
 BYPASS_VARIANTS = {
     "bypass": VariantConfig(bypass=True),
     "bypass_all": VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=SEG, bypass=True),
 }
 WITH_BYPASS = {**VARIANTS, **BYPASS_VARIANTS}
-SEEN = 6
-
-
-def widen_scalar(cfg, inp: dict) -> dict:
-    from uranium.model.variants import SCALAR_BLOCKS, SCALAR_COLUMNS
-
-    fixed = sum(w for _, w in SCALAR_BLOCKS) + len(SCALAR_COLUMNS) + 2 * cfg.input.z_units
-    width = fixed + SEEN + cfg.input.actions + cfg.heads.delay_buckets + 1
-    sc = torch.as_tensor(inp["scalar"])
-    extra = torch.rand(sc.shape[0], width - sc.shape[1], generator=torch.Generator().manual_seed(21)).to(sc.dtype)
-    wide = torch.cat([sc, extra], 1)
-    cfg.input.scalar = width
-    return dict(inp, scalar=wide if isinstance(inp["scalar"], torch.Tensor) else wide.numpy())
-
-
-def perturb(net, scale: float = 0.05):
-    if net.variant is None or net.variant.bypass is None:
-        return net
-    g = torch.Generator().manual_seed(17)
-    with torch.no_grad():
-        for p in net.variant.bypass.out.parameters():
-            p.copy_(torch.randn(p.shape, generator=g) * scale)
-    return net
-
-
-def tiny(variant: VariantConfig | None = None, fixture: Path = FIX, wide: bool = False):
-    meta = json.loads((fixture / "meta.json").read_text())
-    inp = load_file(fixture / "inputs.safetensors")
-    cfg = UraniumNetConfig.from_dict(meta["config"])
-    if variant is not None:
-        cfg.variant = variant
-    if wide or cfg.variant.bypass:
-        inp = widen_scalar(cfg, inp)
-    return cfg, meta["b"], meta["t"], to_obs(inp, "cpu"), to_labels(inp, "cpu"), inp["privileged"]
-
-
-def net_of(cfg, seed=3):
-    torch.manual_seed(seed)
-    return UraniumNet(cfg, action_columns()).eval()
-
-
-def rows_at(obs: dict, b: int, t: int, k: int) -> dict:
-    return {key: x.view(b, t, *x.shape[1:])[:, k] for key, x in obs.items()}
 
 
 def test_config_table_032_ac11():
@@ -325,19 +275,6 @@ def test_outer_segment_must_divide_seq_len():
         BcTrainer.make(cfg_json, "new", None, 0, "gtrxl", torch.device("cpu"), "f32", VariantConfig(outer=48))
 
 
-def state_after(net, obs, b: int, t: int, counts) -> tuple:
-    from uranium.model.state import leaves, rebuild
-
-    s = net.init_state(b)
-    snaps = [s]
-    with torch.no_grad():
-        for k in range(max(counts)):
-            s = net.act(rows_at(obs, b, t, k % t), s, 0.0)["state"]
-            snaps.append(s)
-    parts = [leaves(snaps[c]) for c in counts]
-    return rebuild(snaps[0], iter([torch.stack([parts[r][i][r] for r in range(b)]) for i in range(len(parts[0]))]))
-
-
 def per_decision(net, obs, labels, s0, b: int, t: int):
     cs, os_ = s0
     hs, es, sps, scs = [], [], [], []
@@ -400,7 +337,7 @@ def test_phased_zero_phase_matches_bc_path_032_ac11(name, counts):
 
 @pytest.mark.gpu
 def test_fused_entity_attention_with_tokens(monkeypatch):
-    from test_kernels import kernel_or_skip, rel
+    from testkit import kernel_or_skip, rel
 
     from uranium.model.config import new_net_config
     from uranium.bench.inputs import random_obs

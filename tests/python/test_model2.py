@@ -12,7 +12,7 @@ from uranium.model import UraniumNet, UraniumNetConfig, action_columns
 from uranium.model.config import AUX_JEPA_SLOTS, MODEL2_KEYS, VariantConfig, check_aux
 from uranium.model.net import join_parts
 
-from test_variants import HEADS, SEG, VARIANTS, net_of, rows_at, tiny
+from testkit import HEADS, SEG, VARIANTS, net_of, rows_at, tiny
 
 ROOT = Path(__file__).resolve().parents[2]
 RELEASES = ROOT / "releases"

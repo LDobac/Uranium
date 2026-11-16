@@ -6,17 +6,18 @@ import pytest
 import torch
 
 from uranium import _core
-from uranium.model.state import leaves
-from uranium.model import UraniumNet, UraniumNetConfig, action_columns, input_dims, to_labels, to_obs
+from uranium.model import UraniumNet, to_obs
 from uranium.model.config import VariantConfig
 from uranium.rl import reference, returns
 from uranium.rl.learner import HEADS, MICRO_LANES_ENV, Learner, host_micro_lanes, state0_of
 from uranium.rl.reference import ReferenceLearner
 
+import testkit
+from testkit import WEIGHTS, Segments, rl_cfg
+
 ROOT = Path(__file__).resolve().parents[2]
 FIX = ROOT / "tests" / "fixtures" / "burn_parity"
 CPU = torch.device("cpu")
-WEIGHTS = [1.0, 0.3, 0.3, 0.05]
 
 
 def lanes_of(seed: int, lengths: list[int], t: int):
@@ -39,48 +40,7 @@ def test_targets_are_bit_identical_to_the_reference_032_r19(seed):
 
 
 def tiny_net(outer: int, seed: int = 5) -> UraniumNet:
-    cfg = UraniumNetConfig.from_dict(json.loads((FIX / "tiny-lstm" / "meta.json").read_text())["config"])
-    cfg.input = input_dims()
-    if outer:
-        cfg.variant = VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=outer)
-    torch.manual_seed(seed)
-    return UraniumNet(cfg, action_columns())
-
-
-class Segments:
-    def __init__(self, lanes: int, t: int, net, outer: int, r_value_off: tuple = (), pseudo_rewards: bool = False, pseudo_scale: tuple = (), sil_returns: tuple = (), priv_from: int = 0):
-        self.batch, self.net = _core.test_segments(lanes, t, list(r_value_off), pseudo_rewards, list(pseudo_scale), list(sil_returns), priv_from), net
-        g = torch.Generator().manual_seed(7)
-        s = net.init_state(lanes, CPU)
-        cs = [torch.randn(x.shape, generator=g) * 0.1 for x in leaves(s if not outer else s[0])]
-        self.state = cs
-        if outer:
-            h_o, c_o, h_sum, _ = s[1]
-            counter = torch.tensor([0.0] + [(5.0, 4.0, 3.0, 7.0)[(i - 1) % 4] for i in range(1, lanes)])
-            self.state = (cs, (torch.randn(h_o.shape, generator=g), torch.randn(c_o.shape, generator=g), torch.randn(h_sum.shape, generator=g), counter))
-
-    lanes = property(lambda self: self.batch.lanes)
-    trained = property(lambda self: self.batch.trained)
-    versions = property(lambda self: self.batch.versions)
-    sil_returns = property(lambda self: self.batch.sil_returns)
-    real_steps = property(lambda self: self.batch.real_steps)
-    priv_trained = property(lambda self: self.batch.priv_trained)
-
-    def group(self, start, end, t, max_select):
-        g = self.batch.group(start, end, t, max_select)
-        g["state0"] = [None if lane == 0 else [(tuple(x[lane:lane + 1].shape), x[lane:lane + 1].numpy().astype(np.float32).ravel()) for x in leaves(self.state)] for lane in range(start, end)]
-        with torch.no_grad():
-            out = self.net.forward_seq(to_obs(g, CPU), to_labels(g, CPU), torch.as_tensor(g["privileged"]).float(), state0_of(self.net, g, CPU), t, phased=True)
-        g["behaviour"] = sum(out["logp"][k] for k in HEADS).numpy().astype(np.float32)
-        return g
-
-
-def rl_cfg(**over) -> dict:
-    cfg = json.loads(_core.rl_config(str(ROOT / "config" / "rl.toml")))
-    cfg.update(seq_len=4, micro_lanes=1)
-    cfg["optimizer"]["lr"] = 1e-3
-    cfg.update(over)
-    return cfg
+    return testkit.tiny_net(seed, variant=VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=outer) if outer else None)
 
 
 def run(cls, algo: str, outer: int, group: int, lanes: int = 4, updates: int = 2, trim: bool = True, r_value_off: tuple = (), weights=WEIGHTS, pseudo_rewards: bool = False, pseudo_scale: tuple = ()):

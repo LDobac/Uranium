@@ -7,9 +7,11 @@ import pytest
 import torch
 
 from uranium import _core
-from uranium.model import UraniumNet, UraniumNetConfig, action_columns, input_dims, to_labels, to_obs
+from uranium.model import UraniumNet, action_columns, to_labels, to_obs
 from uranium.rl.learner import HEADS, Learner, kl_coef
 from uranium.rl.returns import gae, upgo, vtrace
+
+from testkit import tiny_net
 
 ROOT = Path(__file__).resolve().parents[2]
 FIX = ROOT / "tests" / "fixtures" / "burn_parity"
@@ -85,13 +87,6 @@ def test_kl_schedule_042():
     assert kl_coef(cfg, 0) == pytest.approx(k["init"])
     assert kl_coef(cfg, int(k["half_life_updates"])) == pytest.approx(max(k["floor"], k["init"] / 2))
     assert kl_coef(cfg, 10**9) == pytest.approx(k["floor"])
-
-
-def tiny_net(seed=5) -> UraniumNet:
-    cfg = UraniumNetConfig.from_dict(json.loads((FIX / "tiny-lstm" / "meta.json").read_text())["config"])
-    cfg.input = input_dims()
-    torch.manual_seed(seed)
-    return UraniumNet(cfg, action_columns())
 
 
 class OnPolicy:

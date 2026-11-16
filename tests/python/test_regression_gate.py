@@ -200,14 +200,14 @@ def test_bc_eval_bunker_before_050_r10(tiny_config, tmp_path):
     from uranium import _core
     from uranium.bc.eval import evaluate
 
-    from test_bc_eval_race import _tiny_make
+    from testkit import tiny_make as _tiny_make
     import functools
 
     shards = tmp_path / "races"
     _core.write_test_shards(str(shards), "races", 4)
     out = tmp_path / "out"
     assert _core.run_bc(functools.partial(_tiny_make, None, None), str(tiny_config), out=str(out), shards=[str(shards)], steps=1, synthetic_maps=True) == "done"
-    from test_aux import CPU
+    from testkit import CPU
 
     def ev(before):
         return evaluate([str(shards)], str(out / "last"), "train", None, 1, str(tiny_config), CPU, "f32", synthetic_maps=True, bunker_before=before)

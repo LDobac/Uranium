@@ -1,28 +1,21 @@
-import json
 from pathlib import Path
 
 import pytest
 import torch
-from safetensors.torch import load_file
 
 from uranium.model import UraniumNet, UraniumNetConfig, action_columns, input_dims, to_labels, to_obs
 from uranium.model.config import CoreConfig, ValueConfig
 from uranium.model.heads import gather_cap, gather_loc
+
+from testkit import fixture, net_of
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "burn_parity"
 CORES = ["tiny-lstm", "tiny-gtrxl"]
 
 
 def tiny(name: str):
-    meta = json.loads((FIX / name / "meta.json").read_text())
-    inp = load_file(FIX / name / "inputs.safetensors")
-    cfg = UraniumNetConfig.from_dict(meta["config"])
+    cfg, meta, inp = fixture(name)
     return cfg, meta, to_obs(inp, "cpu"), to_labels(inp, "cpu"), inp["privileged"]
-
-
-def net_of(cfg, seed=3):
-    torch.manual_seed(seed)
-    return UraniumNet(cfg, action_columns()).eval()
 
 
 @pytest.mark.parametrize("kind,want", [("Lstm", 11_343_764), ("Gtrxl", 21_715_364)])

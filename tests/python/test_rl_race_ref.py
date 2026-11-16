@@ -8,29 +8,16 @@ import pytest
 import torch
 
 from uranium import _core
-from uranium.model import UraniumNet, UraniumNetConfig, action_columns, input_dims, to_labels, to_obs
+from uranium.model import UraniumNet, action_columns, to_labels, to_obs
 from uranium.rl.learner import HEADS, REF_RACES, Learner, kl_per_head, lanes_by_ref
+
+from testkit import WEIGHTS, rl_cfg, tiny_net
 
 ROOT = Path(__file__).resolve().parents[2]
 FIX = ROOT / "tests" / "fixtures" / "burn_parity"
 CPU = torch.device("cpu")
-WEIGHTS = [1.0, 0.3, 0.3, 0.05]
 RACES = ["zerg", "terran", "protoss", "random", "zerg", "unknown"]
 STAT_KEYS = ("loss", "policy", "value", "kl", "win_open", "kl_heads", "entropy_heads", "rho_mean", "adv_mean", "grad_norm", "adv_rms", "adv_rms_channels", "value_loss_channels", "kl_p99", "kl_max")
-
-
-def tiny_net(seed=5) -> UraniumNet:
-    cfg = UraniumNetConfig.from_dict(json.loads((FIX / "tiny-lstm" / "meta.json").read_text())["config"])
-    cfg.input = input_dims()
-    torch.manual_seed(seed)
-    return UraniumNet(cfg, action_columns())
-
-
-def rl_cfg(lanes: int) -> dict:
-    cfg = json.loads(_core.rl_config(str(ROOT / "config" / "rl.toml")))
-    cfg.update(lanes=lanes, seq_len=4, micro_lanes=1)
-    cfg["optimizer"]["lr"] = 1e-3
-    return cfg
 
 
 class OnPolicy:

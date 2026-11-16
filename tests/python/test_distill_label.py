@@ -10,7 +10,7 @@ from uranium.distill.label import label_games
 from uranium.model import action_columns
 from uranium.model.net import OBS_KEYS
 
-from test_aux import CPU, make_net
+from testkit import CPU, make_net
 
 POLICY_KEYS = {"checkpoint", "checkpoint_sha256", "mode", "label_seed", "game_seed", "temperature", "device", "precision", "git_commit", "invalid_labels",
                "config", "config_fingerprint", "seq_len", "lanes", "micro_lanes", "pad_entities", "noise"}

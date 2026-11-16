@@ -14,6 +14,7 @@ from uranium.diag.summary import SCHEMA, build, validate
 from uranium.model import UraniumNet, UraniumNetConfig, action_columns, input_dims
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "burn_parity"
+SHARDS = ("varied", 5)
 
 
 def toy(n_games=40, rows=30, seed=0):
@@ -190,13 +191,6 @@ def tiny_checkpoint(path: Path, kind="Gtrxl") -> Path:
     return path
 
 
-@pytest.fixture
-def shards(tmp_path: Path) -> Path:
-    d = tmp_path / "shards"
-    _core.write_test_shards(str(d), "varied", 5)
-    return d
-
-
 class _PoolBatch:
     def __init__(self, b):
         self.b = b
@@ -337,7 +331,7 @@ def test_action_seq_is_forward_seq_action_head_050_r9(tiny_config, shards, tmp_p
 
 @pytest.mark.parametrize("variant", ["outer", "model2", "model2_all"])
 def test_action_seq_with_outer_and_bypass_050_r9(variant):
-    from test_variants import SEG, net_of, perturb, tiny
+    from testkit import SEG, net_of, perturb, tiny
 
     from uranium.model.config import VariantConfig
 

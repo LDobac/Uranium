@@ -10,7 +10,7 @@ from uranium.model import UraniumNetConfig
 from uranium.model.config import VariantConfig, input_dims
 from uranium.model.variants import BYPASS_DIM, PRIVILEGED_FIXED, S_RAW, SCALAR_BLOCKS, SCALAR_COLUMNS, SEED_BYPASS, HeadBypass, Variants, scalar_layout, s_raw_slices
 
-from test_variants import HEADS, SEEN, SEG, net_of, perturb, rows_at, tiny
+from testkit import HEADS, SEEN, SEG, net_of, perturb, rows_at, tiny
 
 ROOT = Path(__file__).resolve().parents[2]
 EXTRACT = ROOT / "crates" / "uranium-env" / "src" / "features" / "extract.rs"

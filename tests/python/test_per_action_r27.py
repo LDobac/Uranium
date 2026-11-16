@@ -70,7 +70,7 @@ def scored(tiny_config, tmp_path):
 
     if not hasattr(_core.Batch, "lane_games"):
         pytest.skip("uranium._core without Batch.lane_games (rebuild the extension)")
-    from test_bc_eval_race import _tiny_make
+    from testkit import tiny_make as _tiny_make
 
     shards = tmp_path / "races"
     _core.write_test_shards(str(shards), "races", 4)

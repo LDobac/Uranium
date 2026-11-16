@@ -107,13 +107,6 @@ def test_compiled_graphed_act_no_recompile_032_ac13(monkeypatch):
     assert worst < 5e-2, worst
 
 
-@pytest.fixture
-def shards(tmp_path: Path) -> Path:
-    d = tmp_path / "shards"
-    _core.write_test_shards(str(d), "mixed", 2)
-    return d
-
-
 BC_FULL = """
 lanes = 4
 seq_len = 64

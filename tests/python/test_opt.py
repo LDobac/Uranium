@@ -7,18 +7,17 @@ import pytest
 import torch
 
 from uranium import _core
-from uranium.model import UraniumNet, UraniumNetConfig, action_columns, input_dims, to_obs
+from uranium.model import UraniumNet, to_obs
 from uranium.model.heads import TARGET_LOC, location_rows
+
+import testkit
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "burn_parity"
 HEADS = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
 
 
 def tiny_net(seed: int = 7) -> UraniumNet:
-    cfg = UraniumNetConfig.from_dict(json.loads((FIX / "tiny-gtrxl" / "meta.json").read_text())["config"])
-    cfg.input = input_dims()
-    torch.manual_seed(seed)
-    return UraniumNet(cfg, action_columns())
+    return testkit.tiny_net(seed, "tiny-gtrxl")
 
 
 def test_location_rows_buckets():

@@ -7,21 +7,10 @@ import torch
 
 from uranium.model import UraniumNet, UraniumNetConfig, action_columns, input_dims
 
+from testkit import kernel_or_skip, rel
+
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "burn_parity"
 pytestmark = pytest.mark.gpu
-
-
-def kernel_or_skip():
-    if not torch.cuda.is_available():
-        pytest.skip("no CUDA / ROCm device")
-    from uranium.kernels.attention import available
-
-    if not available("cuda"):
-        pytest.skip("attn_bias kernel not built on this host")
-
-
-def rel(a, b):
-    return ((a.float() - b.float()).abs().max() / b.float().abs().max().clamp_min(1e-12)).item()
 
 
 @pytest.mark.parametrize("n,valid,all_masked", [(100, 77, False), (130, 90, True), (64, 64, False)])

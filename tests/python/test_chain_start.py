@@ -11,12 +11,12 @@ sys.path.insert(0, str(ROOT / "tools" / "eval"))
 
 import per_action as pa  # noqa: E402
 
-from test_aux import CPU  # noqa: E402
+from testkit import CPU  # noqa: E402
 
 
 @pytest.fixture
 def trained(tiny_config, tmp_path):
-    from test_bc_eval_race import _tiny_make
+    from testkit import tiny_make as _tiny_make
 
     try:
         _core.write_test_shards(str(tmp_path / "probe"), "chains", 4)

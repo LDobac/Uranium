@@ -4,24 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from uranium import _core, ckpt
-from uranium.bc.trainer import BcTrainer
+from uranium import _core
 
-from test_aux import AUX, CPU, make_net
-
-
-def _tiny_make(variant, aux, cfg_json, start, dir, entity_chunk):
-    cfg = json.loads(cfg_json)
-    if aux:
-        cfg["aux"] = aux
-    if start == "new":
-        net = make_net(variant)
-    else:
-        net, _ = ckpt.load_model(Path(dir))
-    t = BcTrainer(cfg, net, CPU, "f32", entity_chunk)
-    if start == "resume":
-        ckpt.load_optimizer(Path(dir), ckpt.OPTIM_MAIN, t.net, t.opt)
-    return t
+from testkit import AUX, CPU, tiny_make
 
 
 def eval_all_splits(dirs: list, ckpt_dir: Path, config: Path) -> list:
@@ -40,7 +25,7 @@ def eval_all_splits(dirs: list, ckpt_dir: Path, config: Path) -> list:
 def test_bc_eval_by_enemy_race_050_r9(tiny_config, tmp_path, variant):
     shards = tmp_path / "races"
     _core.write_test_shards(str(shards), "races", 4)
-    make = functools.partial(_tiny_make, variant, {"priv": 0.2, "jepa": 0.1} if variant else None)
+    make = functools.partial(tiny_make, variant, {"priv": 0.2, "jepa": 0.1} if variant else None)
     out = tmp_path / "out"
     assert _core.run_bc(make, str(tiny_config), out=str(out), shards=[str(shards)], steps=1, synthetic_maps=True) == "done"
     reps = eval_all_splits([shards], out / "last", tiny_config)

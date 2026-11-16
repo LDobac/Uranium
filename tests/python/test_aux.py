@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 from uranium import _core, ckpt
 from uranium.bc.trainer import AUX_PARTS, BcTrainer, bc_aux_counts
-from uranium.model import UraniumNet, UraniumNetConfig, action_columns, input_dims, to_labels, to_obs
+from uranium.model import UraniumNet, action_columns, to_labels, to_obs
 from uranium.model.auxiliary import AUX_JEPA_HIDDEN, AUX_PRIV_HIDDEN, jepa_mean, jepa_moments, jepa_std, jepa_sums, priv_sum
 from uranium.model.config import VariantConfig
 from uranium.model.monitor import ALARM_FROM, SPEC_COLUMNS, spatial_alarm
@@ -18,50 +18,10 @@ from uranium.model.variants import SEED_AUX_PRIV, seed_aux_jepa
 from uranium.rl.learner import HEADS, Learner, rl_aux_counts, state0_of
 from uranium.rl.reference import ReferenceLearner
 
-from test_rl_opt import WEIGHTS, Segments, rl_cfg
+from testkit import AUX, CPU, KS, WEIGHTS, Segments, bc_cfg, feeder, make_net, net_cfg, params_of, rl_cfg
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "burn_parity"
-CPU = torch.device("cpu")
-KS = [1, 2, 8]
-AUX = VariantConfig(aux_priv=True, aux_jepa=KS)
 ARCH = dict(terrain=True, ctx_token=True, attn_pool=True, outer=2)
-
-
-def net_cfg(variant: VariantConfig | None = None, kind: str = "Lstm", dropout: float | None = None) -> UraniumNetConfig:
-    cfg = UraniumNetConfig.from_dict(json.loads((FIX / "tiny-lstm" / "meta.json").read_text())["config"])
-    cfg.input = input_dims()
-    cfg.core.kind = kind
-    if dropout is not None:
-        cfg.entity.dropout = dropout
-    if variant is not None:
-        cfg.variant = variant
-    return cfg
-
-
-def make_net(variant: VariantConfig | None = None, seed: int = 7, **kw) -> UraniumNet:
-    torch.manual_seed(seed)
-    return UraniumNet(net_cfg(variant, **kw), action_columns())
-
-
-def params_of(net) -> dict:
-    return {k: v.detach().clone() for k, v in net.state_dict().items()}
-
-
-def bc_cfg(config: Path, **over) -> dict:
-    cfg = json.loads(_core.bc_config(str(config), "s1")[0])
-    cfg.update(over)
-    return cfg
-
-
-@pytest.fixture
-def shards(tmp_path: Path) -> Path:
-    d = tmp_path / "shards"
-    _core.write_test_shards(str(d), "mixed", 2)
-    return d
-
-
-def feeder(config: Path, shards: Path):
-    return _core.Feeder(str(config), [str(shards)], prefetch=0, synthetic_maps=True, check_maps=False)
 
 
 def test_aux_modules_shapes_and_fixed_seeds_032_r24():

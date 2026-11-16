@@ -8,7 +8,7 @@ import pytest
 from uranium import _core
 from uranium.bc.feed_digest import GROUP_FIELDS, group_digest, groups
 
-from conftest import run
+from testkit import run
 
 
 def test_group_fields_match_rust():
