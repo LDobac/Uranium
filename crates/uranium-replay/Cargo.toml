@@ -14,7 +14,6 @@ serde_json.workspace = true
 explode = "0.1.2"
 flate2 = "1"
 uranium-proto.workspace = true
-dotenvy.workspace = true
 uranium-env = { path = "../uranium-env" }
 uranium-scripted = { path = "../uranium-scripted" }
 toml.workspace = true

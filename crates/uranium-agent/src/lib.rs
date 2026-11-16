@@ -560,18 +560,6 @@ fn visibility_violations(f: &RawFrame, me: u8) -> u64 {
 
 pub use uranium_env::branch::fnv1a;
 
-pub fn load_env() {
-    let res = match std::env::var_os("URANIUM_ENV_FILE") {
-        Some(path) => dotenvy::from_path(path),
-        None => dotenvy::dotenv().map(|_| ()),
-    };
-    if let Err(e) = res {
-        if !e.not_found() {
-            elog!("warning: failed to load .env: {e}");
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct ServeOptions {
     pub default: PolicySpec,

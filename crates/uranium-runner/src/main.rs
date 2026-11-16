@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
-use uranium_agent::load_env;
+use uranium_env::dotenv::load_env;
 use uranium_runner::{Models, calibrate, plan, plan_models, run_plan};
 
 #[derive(Parser)]

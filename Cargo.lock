@@ -1421,7 +1421,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "dotenvy",
  "serde",
  "serde_json",
  "sha2",
@@ -1461,6 +1460,7 @@ name = "uranium-env"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dotenvy",
  "proptest",
  "serde",
  "serde_json",
@@ -1549,7 +1549,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "dotenvy",
  "encoding_rs",
  "explode",
  "flate2",
@@ -1612,7 +1611,6 @@ dependencies = [
  "anyhow",
  "clap",
  "ctrlc",
- "dotenvy",
  "libc",
  "regex",
  "serde",

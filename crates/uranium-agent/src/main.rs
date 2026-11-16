@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
-use uranium_agent::{PolicyKind, PolicySpec, RejectionLog, ServeOptions, load_env, serve_addr, summary};
+use uranium_agent::{PolicyKind, PolicySpec, RejectionLog, ServeOptions, serve_addr, summary};
+use uranium_env::dotenv::load_env;
 
 #[derive(Parser)]
 struct Cli {
