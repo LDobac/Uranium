@@ -74,6 +74,7 @@ impl Feeder {
                 let scan = uranium_data::data::check_maps(&src, Some(st.selection()), &maps)?;
                 src = src.skip_empty(&scan);
             }
+            src = src.read_ahead(bc::file_ahead()?);
             let files = src.fingerprint();
             let mut feeder = bc::Feeder::new(&cfg).with_maps(maps);
             feeder.set_pack(match pack {

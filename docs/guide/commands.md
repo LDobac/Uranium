@@ -88,7 +88,7 @@ cp -n <shared>/datasets/replays/build/maps/*.toml <URANIUM_MAPS_DIR>/     # Wind
 - 직접 작성 커널: 첫 사용 때 빌드해 `URANIUM_KERNEL_DIR`(기본 `~/.cache/uranium/kernels`). Windows는 `cl`이 PATH에 없으면 최신 Visual Studio vcvars64를 불러옴.
 
 ### 호스트 메모리 설정 (`.env`)
-- CUDA 호스트(RAM을 평소 작업과 나눠 씀): `URANIUM_BC_MICRO_LANES=2`, `URANIUM_BC_PREFETCH=1`, `URANIUM_BC_PACK_BATCH=1`.
+- CUDA 호스트(RAM을 평소 작업과 나눠 씀): `URANIUM_BC_MICRO_LANES=2`, `URANIUM_BC_PREFETCH=1`, `URANIUM_BC_PACK_BATCH=1`, `URANIUM_BC_FILE_AHEAD=2`.
 - Linux ROCm 호스트(GPU와 RAM 공유): 아래. 결과 값을 바꾸지 않으므로 장비 사이 재개에 영향 없음. 근거 [m6_core_ablation_pt](../report/experiment/2026_10_24_21_29_m6_core_ablation_pt.md) 4절, [pytorch_opt](../report/bench/2026_10_24_07_03_pytorch_opt.md).
 ```bash
 URANIUM_BC_PREFETCH=2                    # 041-R16 미리 읽기 깊이 (데이터 대기 0)
@@ -368,6 +368,7 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
 ### 메모리·공급 환경변수
 모두 batch 내용·순서를 바꾸지 않음 → 값이 다른 호스트끼리 같은 run 이어 하기 가능. 시작 줄 `{"prefetch": N, ...}`, `entity_chunk`·`pack_batch`·`micro_lanes`로 확인. 호스트별 값은 [1](#호스트-메모리-설정-env).
 - `URANIUM_BC_PREFETCH`([041-R16](../spec/2026_10_15_22_24_041-imitation-learning.md), 기본 2): batch 하나 약 4 GB, 깊이 + 2개까지 메모리. Linux ROCm 호스트도 `URANIUM_MALLOC_MMAP_THRESHOLD=1048576`과 함께 2(최대 상주 약 10 → 6.3 GiB, 데이터 대기 0). `0` = 데이터 스레드 없이 batch 1개(대기 약 4~6초/update). 다음 레인 그룹 collate는 늘 작업 스레드에서 미리.
+- `URANIUM_BC_FILE_AHEAD`([041-R16](../spec/2026_10_15_22_24_041-imitation-learning.md), 기본 0 = 끔, CUDA 호스트 2, Linux ROCm 호스트는 두지 않음(끔)): 다음 shard 파일을 읽기 스레드가 미리 디코드해 남는 게임만 보관하는 파일 수. 켜면 디코드 중인 파일 1개(필터 전, 순간 약 1.7 GiB)와 보관 파일(통째로 남는 출처는 하나당 약 0.65 GiB)이 추가로 메모리에 있음. 시작 줄 `file_ahead`로 확인.
 - `URANIUM_BC_ENTITY_CHUNK`([041-R17](../spec/2026_10_15_22_24_041-imitation-learning.md), 기본 0 = 끔, `torch.utils.checkpoint`), `URANIUM_BC_PACK_BATCH`([041-R18](../spec/2026_10_15_22_24_041-imitation-learning.md), 기본 0): Linux ROCm 호스트 `0`·`1`([AMB-041-8](../spec/README.md): 재계산 끄면 약 15% 빠름, 최악 모양 GPU 5.7 GiB; 16이면 1.8 GiB). 재계산 dropout 난수 열만 다름.
 - `URANIUM_BC_MICRO_LANES`(041-R3, [AMB-041-7](../spec/README.md)): 한 번에 forward·backward하는 레인 수(없으면 설정 `micro_lanes`). CUDA 호스트 2, Linux ROCm 호스트 1. dropout 난수 묶음만 다름.
 - `URANIUM_BC_FEED_THREADS`(기본 3): 레인별 feature 추출·레인 그룹 압축 해제 스레드. 늘리면 학습 스레드와 CPU를 다퉈 느려짐.

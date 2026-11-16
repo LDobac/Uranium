@@ -597,6 +597,15 @@ pub fn prefetch_depth() -> Result<usize> {
     }
 }
 
+pub const FILE_AHEAD_DEFAULT: usize = 0;
+
+pub fn file_ahead() -> Result<usize> {
+    match std::env::var("URANIUM_BC_FILE_AHEAD") {
+        Ok(v) if !v.trim().is_empty() => v.trim().parse().with_context(|| format!("URANIUM_BC_FILE_AHEAD={v:?}: expected a shard file count (0 = no read-ahead thread)")),
+        _ => Ok(FILE_AHEAD_DEFAULT),
+    }
+}
+
 pub fn entity_chunk() -> Result<usize> {
     match std::env::var("URANIUM_BC_ENTITY_CHUNK") {
         Ok(v) if !v.trim().is_empty() => v.trim().parse().with_context(|| format!("URANIUM_BC_ENTITY_CHUNK={v:?}: expected a row count (0 = off)")),

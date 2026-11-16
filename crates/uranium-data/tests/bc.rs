@@ -1574,3 +1574,81 @@ fn empty_files_are_skipped_without_changing_the_walk_041_r13() {
     assert!(!read_all, "a new selection drops the skipped set");
     std::fs::remove_dir_all(&root).ok();
 }
+
+#[test]
+fn file_ahead_from_env_041_r16() {
+    unsafe { std::env::remove_var("URANIUM_BC_FILE_AHEAD") };
+    assert_eq!((uranium_data::bc::file_ahead().unwrap(), uranium_data::bc::FILE_AHEAD_DEFAULT), (0, 0));
+    for (v, want) in [("0", Some(0)), (" 2 ", Some(2)), ("", Some(uranium_data::bc::FILE_AHEAD_DEFAULT)), ("two", None), ("-1", None)] {
+        unsafe { std::env::set_var("URANIUM_BC_FILE_AHEAD", v) };
+        assert_eq!(uranium_data::bc::file_ahead().ok(), want, "{v:?}");
+    }
+    unsafe { std::env::remove_var("URANIUM_BC_FILE_AHEAD") };
+}
+
+#[test]
+fn file_read_ahead_keeps_the_walk_041_r16() {
+    use uranium_data::data::{GameId, SourcePos, StepSource, scan_files};
+    use uranium_data::split::{Selection, Subsample};
+    let games: Vec<ShardGame> = (0..40).map(|i| game_len(1 + (i % 16) as usize, i + 1)).collect();
+    let root = shard_dir("file-ahead", &games, 2);
+    let mut cfg = tiny_bc(1, 0);
+    cfg.data.subsample = Some(Subsample { fraction: 0.5, keep_sources: vec![], fraction_by_race: None, fraction_by_source: None });
+    let plain = || cfg.train_source(std::slice::from_ref(&root), Selection::S1).unwrap();
+    let scan = scan_files(plain().files()).unwrap();
+    let make = |skip: bool, depth: usize| if skip { plain().skip_empty(&scan).read_ahead(depth) } else { plain().read_ahead(depth) };
+    let walk = |mut s: ShardSource, from: Option<SourcePos>| -> Vec<(String, Option<GameId>, SourcePos)> {
+        if let Some(pos) = from {
+            s.seek(pos).unwrap();
+        }
+        let mut out = Vec::new();
+        loop {
+            let (text, end) = match s.next_game() {
+                Ok(Some(g)) => (g.meta.replay_sha256, false),
+                Ok(None) => (String::new(), true),
+                Err(e) => (format!("error: {e:#}"), false),
+            };
+            out.push((text, s.last_id(), s.position()));
+            if end {
+                return out;
+            }
+        }
+    };
+    let variants = [(false, 1), (false, 3), (true, 0), (true, 1), (true, 3)];
+    let want = walk(make(false, 0), None);
+    let used: std::collections::BTreeSet<usize> = want.iter().filter_map(|w| w.1).map(|id| id.file).collect();
+    assert!(used.len() > 4 && used.len() < scan.len(), "{} of {} files hold games", used.len(), scan.len());
+    for (skip, depth) in variants {
+        assert_eq!(walk(make(skip, depth), None), want, "skip {skip}, depth {depth}");
+        for w in &want {
+            assert_eq!(walk(make(skip, depth), Some(w.2)), walk(make(false, 0), Some(w.2)), "skip {skip}, depth {depth}, after a seek to {:?}", w.2);
+        }
+    }
+    let warm = |skip: bool, depth: usize, n: usize| {
+        let mut s = make(skip, depth);
+        for w in &want[..n] {
+            assert_eq!(s.next_game().unwrap().map(|g| g.meta.replay_sha256).as_ref(), Some(&w.0));
+        }
+        s
+    };
+    for (skip, depth) in variants {
+        for pos in [want[0].2, want[3].2, want[want.len() - 2].2] {
+            assert_eq!(walk(warm(skip, depth, 3), Some(pos)), walk(warm(false, 0, 3), Some(pos)), "skip {skip}, depth {depth}, a live reader then a seek to {pos:?}");
+        }
+        assert_eq!(walk(warm(skip, depth, 3).skip_empty(&scan), None), want[3..], "skip {skip}, depth {depth}, a live reader then skip_empty");
+        assert_eq!(walk(warm(skip, depth, 3).select(Selection::S1), None), want[3..], "skip {skip}, depth {depth}, a live reader then select");
+        drop(warm(skip, depth, 3));
+        let waiting = warm(skip, depth, 1);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        drop(waiting);
+    }
+    let middle = *used.iter().nth(used.len() / 2).unwrap();
+    std::fs::write(&plain().files()[middle], b"not a shard").unwrap();
+    let broken = walk(make(false, 0), None);
+    assert_eq!(broken.iter().filter(|w| w.0.starts_with("error: ")).count(), 1, "one failed call");
+    assert!(!broken.last().unwrap().0.starts_with("error: "), "the walk goes on after the failed file");
+    for (skip, depth) in variants {
+        assert_eq!(walk(make(skip, depth), None), broken, "the same error at the same call: skip {skip}, depth {depth}");
+    }
+    std::fs::remove_dir_all(&root).ok();
+}

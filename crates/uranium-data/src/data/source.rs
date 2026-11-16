@@ -11,11 +11,79 @@ pub struct ShardSource {
     games: VecDeque<(usize, ShardGame)>,
     cur_file: usize,
     last: Option<GameId>,
+    order: FileOrder,
+    only_files: Option<HashSet<usize>>,
+    dirs: Vec<PathBuf>,
+    ahead: usize,
+    reader: Option<Reader>,
+}
+
+#[derive(Clone, Default)]
+struct FileOrder {
     select: Option<crate::split::Selection>,
     subsample: Option<(crate::split::Subsample, u64)>,
     seed: Option<u64>,
-    only_files: Option<HashSet<usize>>,
-    dirs: Vec<PathBuf>,
+}
+
+impl FileOrder {
+    fn keeps(&self, meta: &crate::shard::GameMeta) -> bool {
+        self.select.is_none_or(|sel| crate::split::selects(sel, meta)) && self.subsample.as_ref().is_none_or(|(sub, seed)| sub.keeps(meta, *seed))
+    }
+
+    fn apply<T: HasMeta>(&self, k: usize, mut games: Vec<T>) -> Vec<T> {
+        games.retain(|g| self.keeps(g.meta()));
+        if let Some(seed) = self.seed {
+            shuffle(&mut games, &mut Rng::new(seed ^ (k as u64 + 1).wrapping_mul(0xD1B5_4A32_D192_ED03)));
+        }
+        games
+    }
+
+    fn read(&self, k: usize, f: &Path) -> Result<Vec<ShardGame>> {
+        Ok(self.apply(k, read(f).with_context(|| f.display().to_string())?.games))
+    }
+}
+
+struct Reader {
+    rx: Option<std::sync::mpsc::Receiver<(usize, Result<Vec<ShardGame>>)>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Reader {
+    fn start(todo: Vec<(usize, PathBuf)>, order: FileOrder, ahead: usize) -> Self {
+        let (tx, rx) = std::sync::mpsc::sync_channel(ahead.saturating_sub(1));
+        let thread = std::thread::spawn(move || {
+            for (k, f) in todo {
+                let r = order.read(k, &f);
+                let failed = r.is_err();
+                if tx.send((k, r)).is_err() || failed {
+                    return;
+                }
+            }
+        });
+        Self { rx: Some(rx), thread: Some(thread) }
+    }
+
+    fn next(&mut self, k: usize) -> Result<Vec<ShardGame>> {
+        match self.rx.as_ref().expect("an open reader").recv() {
+            Ok((got, r)) => {
+                anyhow::ensure!(got == k, "the shard read-ahead thread gave file {got}, not {k}");
+                r
+            }
+            Err(_) => match self.thread.take().map(|t| t.join()) {
+                Some(Err(p)) => anyhow::bail!("the shard read-ahead thread panicked: {}", super::chosen::panic_text(&*p)),
+                _ => anyhow::bail!("the shard read-ahead thread stopped before file {k}"),
+            },
+        }
+    }
+}
+
+impl Drop for Reader {
+    fn drop(&mut self) {
+        self.rx.take();
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
 }
 
 impl ShardSource {
@@ -46,18 +114,20 @@ impl ShardSource {
             );
         }
         let (keys, files) = found.into_iter().unzip();
-        Ok(Self { files, keys, next_file: 0, games: VecDeque::new(), cur_file: 0, last: None, select: None, subsample: None, seed: None, only_files: None, dirs: dirs.to_vec() })
+        Ok(Self { files, keys, next_file: 0, games: VecDeque::new(), cur_file: 0, last: None, order: FileOrder::default(), only_files: None, dirs: dirs.to_vec(), ahead: 0, reader: None })
     }
 
     pub fn select(mut self, sel: crate::split::Selection) -> Self {
-        self.select = Some(sel);
+        self.order.select = Some(sel);
         self.only_files = None;
+        self.reader = None;
         self
     }
 
     pub fn subsample(mut self, sub: Option<crate::split::Subsample>, seed: u64) -> Self {
-        self.subsample = sub.map(|s| (s, seed));
+        self.order.subsample = sub.map(|s| (s, seed));
         self.only_files = None;
+        self.reader = None;
         self
     }
 
@@ -67,7 +137,8 @@ impl ShardSource {
         self.files = order.iter().map(|&i| self.files[i].clone()).collect();
         self.keys = order.iter().map(|&i| self.keys[i].clone()).collect();
         self.only_files = self.only_files.map(|keep| (0..order.len()).filter(|&k| keep.contains(&order[k])).collect());
-        self.seed = Some(seed);
+        self.order.seed = Some(seed);
+        self.reader = None;
         self
     }
 
@@ -85,19 +156,22 @@ impl ShardSource {
 
     pub fn only_files(mut self, keep: HashSet<usize>) -> Self {
         self.only_files = Some(keep);
+        self.reader = None;
+        self
+    }
+
+    pub fn read_ahead(mut self, files: usize) -> Self {
+        self.ahead = files;
+        self.reader = None;
         self
     }
 
     pub fn skip_empty<T: HasMeta>(self, scan: &[Vec<T>]) -> Self {
         assert_eq!(scan.len(), self.files.len(), "one scan entry per shard file, in the source's file order");
-        let kept: Vec<usize> = scan.iter().map(|games| games.iter().filter(|g| self.keeps(g.meta())).count()).collect();
+        let kept: Vec<usize> = scan.iter().map(|games| games.iter().filter(|g| self.order.keeps(g.meta())).count()).collect();
         let keep: HashSet<usize> = (0..kept.len()).filter(|&k| kept[k] > 0).collect();
         uranium_store::elog!("{}", serde_json::json!({ "skip_empty": { "files": kept.len(), "skipped": kept.len() - keep.len(), "games": kept.iter().sum::<usize>() }, "note": "041-R13" }));
         self.only_files(keep)
-    }
-
-    fn keeps(&self, meta: &crate::shard::GameMeta) -> bool {
-        self.select.is_none_or(|sel| crate::split::selects(sel, meta)) && self.subsample.as_ref().is_none_or(|(sub, seed)| sub.keeps(meta, *seed))
     }
 
     pub fn fingerprint(&self) -> String {
@@ -112,17 +186,27 @@ impl ShardSource {
     }
 
     pub fn file_games(&self, k: usize) -> Result<Vec<ShardGame>> {
-        let f = &self.files[k];
-        let games = read(f).with_context(|| f.display().to_string())?.games;
-        Ok(self.order_file(k, games))
+        self.order.read(k, &self.files[k])
     }
 
-    pub fn order_file<T: HasMeta>(&self, k: usize, mut games: Vec<T>) -> Vec<T> {
-        games.retain(|g| self.keeps(g.meta()));
-        if let Some(seed) = self.seed {
-            shuffle(&mut games, &mut Rng::new(seed ^ (k as u64 + 1).wrapping_mul(0xD1B5_4A32_D192_ED03)));
+    pub fn order_file<T: HasMeta>(&self, k: usize, games: Vec<T>) -> Vec<T> {
+        self.order.apply(k, games)
+    }
+
+    fn skipped(&self, k: usize) -> bool {
+        self.only_files.as_ref().is_some_and(|keep| !keep.contains(&k))
+    }
+
+    fn ahead_games(&mut self, k: usize) -> Result<Vec<ShardGame>> {
+        if self.reader.is_none() {
+            let todo = (k..self.files.len()).filter(|&i| !self.skipped(i)).map(|i| (i, self.files[i].clone())).collect();
+            self.reader = Some(Reader::start(todo, self.order.clone(), self.ahead));
         }
-        games
+        let r = self.reader.as_mut().expect("a reader").next(k);
+        if r.is_err() {
+            self.reader = None;
+        }
+        r
     }
 
     pub fn position(&self) -> SourcePos {
@@ -133,6 +217,7 @@ impl ShardSource {
     }
 
     pub fn seek(&mut self, pos: SourcePos) -> Result<()> {
+        self.reader = None;
         self.games.clear();
         self.next_file = pos.next.file;
         if pos.next.file < self.files.len() {
@@ -231,11 +316,12 @@ impl StepSource for ShardSource {
             }
             let k = self.next_file;
             self.next_file += 1;
-            if self.only_files.as_ref().is_some_and(|keep| !keep.contains(&k)) {
+            if self.skipped(k) {
                 continue;
             }
             self.cur_file = k;
-            self.games = self.file_games(k)?.into_iter().enumerate().collect();
+            let games = if self.ahead > 0 { self.ahead_games(k)? } else { self.file_games(k)? };
+            self.games = games.into_iter().enumerate().collect();
         }
         let (i, g) = self.games.pop_front().unwrap();
         self.last = Some(GameId { file: self.cur_file, game: i });

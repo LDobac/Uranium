@@ -102,8 +102,9 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
 
     let maps = args.maps.clone().unwrap_or_else(|| Arc::new(MapStore::from_env()));
     let src = cfg.train_source(&args.dirs, args.stage.selection())?;
+    let file_ahead = crate::bc::file_ahead()?;
     let scan = crate::data::check_maps(&src, Some(args.stage.selection()), &maps)?;
-    let src = src.skip_empty(&scan);
+    let src = src.skip_empty(&scan).read_ahead(file_ahead);
     if let Some(s) = &cfg.data.subsample {
         let per = crate::bc::subsample_counts(&scan, args.stage.selection(), s, cfg.data.seed);
         let absent: Vec<&String> = s.keep_sources.iter().filter(|k| !per.contains_key(*k)).collect();
@@ -182,7 +183,7 @@ pub fn run(args: BcRunArgs, make: impl FnOnce(&BcConfig, Start<'_>, usize) -> Re
     check_disks(&args, &run);
     let depth = crate::bc::prefetch_depth()?;
     let (entity_chunk, pack) = (crate::bc::entity_chunk()?, crate::bc::pack_batch()?);
-    uranium_store::elog!("{}", serde_json::json!({ "prefetch": depth, "entity_chunk": entity_chunk, "pack_batch": pack, "micro_lanes": cfg.micro_lanes }));
+    uranium_store::elog!("{}", serde_json::json!({ "prefetch": depth, "file_ahead": file_ahead, "entity_chunk": entity_chunk, "pack_batch": pack, "micro_lanes": cfg.micro_lanes }));
     let start = match (&resume_dir, &init_dir) {
         (Some(d), _) => Start::Resume(d),
         (None, Some(d)) => Start::Init(d),
