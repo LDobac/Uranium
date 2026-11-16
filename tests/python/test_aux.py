@@ -494,8 +494,8 @@ def test_model_seed_sets_a_new_nets_weights_041_r24(tiny_config, tmp_path):
 
 @pytest.mark.gpu
 def test_bc_aux_compiled_graph_no_recompile_per_batch(tiny_config, shards, monkeypatch):
-    if not torch.cuda.is_available():
-        pytest.skip("no CUDA device")
+    if not torch.cuda.is_available() or torch.version.hip is not None:
+        pytest.skip("CUDA only (ROCm trains in f32 without torch.compile, 032-R8)")
     import torch._dynamo.utils as du
 
     monkeypatch.setenv("URANIUM_COMPILE", "reduce-overhead")

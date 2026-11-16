@@ -1,5 +1,3 @@
-use uranium_proto::*;
-
 use crate::brain::{CELL, DROP_SIZE};
 use crate::types::*;
 use crate::*;
