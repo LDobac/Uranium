@@ -83,7 +83,7 @@ cp -n <shared>/datasets/replays/build/maps/*.toml <URANIUM_MAPS_DIR>/     # Wind
 | `URANIUM_STEM_PAD` | stem conv 입력 채널을 8의 배수로 0 채움 | 학습 `on` | `off` |
 | `URANIUM_BC_PAD_ENTITIES` | BC 학습 엔티티 패딩 단위(엔티티 상한 512의 약수; 평가·RL·추론은 설정값 그대로; CUDA에서 바꾸면 폭 종류가 늘어 torch.compile graph가 늘 수 있음, [041](../spec/2026_10_15_22_24_041-imitation-learning.md) 구현 메모) | 설정값(64) | 학습 `32` |
 | `URANIUM_COMPILE` | BC forward torch.compile(Triton 필요); `reduce-overhead` = CUDA graph 재생 | 학습 `reduce-overhead` | `off` |
-| `URANIUM_RL_COMPILE` | RL 학습기 forward·KL 참조 forward torch.compile(값은 `URANIUM_COMPILE`과 같음, Triton 필요) | `off` | `off` |
+| `URANIUM_RL_COMPILE` | RL 학습기 forward·KL 참조 forward torch.compile(값은 `URANIUM_COMPILE`과 같음, Triton 필요). graph 모드(`reduce-overhead`)는 바깥 LSTM 모델의 실게임 RL에서 추론 서버를 오래 멈출 수 있어 권장하지 않음 | `off` | `off` |
 | `URANIUM_RL_CHANNELS_LAST` | RL 학습기·KL 참조 모델만 channels-last + stem 채움(추론 서버 모델은 그대로) | `off` | `off` |
 | `URANIUM_ADAM`, `URANIUM_COMPILE_DYNAMIC`, `URANIUM_COMPILE_RNG`, `URANIUM_INFER_STREAM` | 기본값 유지(`INFER_STREAM=own`은 Linux ROCm 호스트에서 멈춤, `COMPILE_DYNAMIC=on`은 재컴파일 못 없앰) | - | - |
 

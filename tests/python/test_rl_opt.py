@@ -532,25 +532,37 @@ def test_learner_compile_no_recompile_per_update_032_r19(monkeypatch):
         pytest.skip("CUDA only (ROCm trains in f32 without torch.compile, 032-R8)")
     import torch._dynamo.utils as du
 
+    from uranium.bench.rl import SyntheticSegments
     from uranium.device import RL_COMPILE
 
-    dev = torch.device("cuda")
-    net = lambda seed=5: testkit.tiny_net(seed, name="tiny-gtrxl", variant=VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=2))  # noqa: E731
-    batch = Segments(4, 4, net(6), 2)
+    seg, t, dev = 4, 8, torch.device("cuda")
+    net = lambda seed=5: testkit.tiny_net(seed, name="tiny-gtrxl", variant=VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=seg))  # noqa: E731
+
+    def batch(seed: int, entities: tuple, counters: tuple):
+        b = SyntheticSegments(net(6), 4, t, entities, templates=2, seed=seed)
+        for lane, c in zip(b.lane[1:], counters, strict=True):
+            shape, _ = lane["state0"][-1]
+            lane["state0"][-1] = (shape, np.full(shape, c, np.float32).ravel())
+        return b
+
+    batches = [batch(1, (3, 60), (6.0, 4.0, 3.0)), batch(2, (70, 120), (7.0, 6.0, 6.0))]
     monkeypatch.setenv("URANIUM_LOC_ROWS", "pow2")
-    res = {}
+    res, shapes = {}, []
     for mode in ("off", "default"):
         monkeypatch.setenv(RL_COMPILE, mode)
         torch._dynamo.reset()
-        l = Learner(rl_cfg(lanes=4), net(), net(), dev, "bf16", "vtrace", micro_lanes=2)
+        l = Learner(rl_cfg(lanes=4, seq_len=t), net(), net(), dev, "f32", "vtrace", micro_lanes=2)
         if mode != "off" and not l.compiling:
             pytest.skip("no Triton")
+        shapes = [[(g["entity_mask"].shape[1], [int(i.numel()) for i in g["phases"]]) for g in (l.prepare(b, (s, s + 2), t) for s in (0, 2))] for b in batches]
+        base = du.counters["frames"]["ok"]
         frames = []
         res[mode] = []
-        for _ in range(4):
-            res[mode].append(l.update(batch, WEIGHTS))
-            frames.append(du.counters["frames"]["ok"])
-    print("compiled frames after each update", frames)
-    assert frames[0] > 0 and frames[-1] == frames[0], f"compiled frames after each update {frames}: a recompile after the first"
+        for b in batches * 2:
+            res[mode].append(l.update(b, WEIGHTS))
+            frames.append(du.counters["frames"]["ok"] - base)
+    print("lane group shapes per batch", shapes, "compiled frames after each update", frames)
+    assert shapes[0] == [(64, [6, 8, 2]), (64, [5, 8, 3])] and shapes[1] == [(128, [5, 8, 3]), (128, [4, 8, 4])]
+    assert frames[0] > 0 and frames[1:] == [frames[1]] * 3, f"compiled frames after each update {frames}: a recompile after both batches were seen"
     for a, b in zip(res["default"], res["off"]):
-        close_stats(a, b, 1e-3, 1e-5)
+        close_stats(a, b, 1e-4, 1e-5)

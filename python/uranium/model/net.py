@@ -326,7 +326,7 @@ class UraniumNet(nn.Module):
             if aux:
                 eps.append(e_pool)
         perm = torch.cat(idxs)
-        inv = torch.empty_like(perm).index_copy(0, perm, torch.arange(bt, device=dev))
+        inv = perm.new_empty(bt).index_copy(0, perm, torch.arange(perm.numel(), device=dev))
         join = lambda xs: torch.cat(xs, 0).index_select(0, inv)  # noqa: E731
         return join(hs), join(es), join_parts(sps, join), join_parts(scs, join), join(eps) if aux else None, (cs, os_)
 
