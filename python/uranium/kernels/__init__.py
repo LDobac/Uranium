@@ -9,6 +9,7 @@ import torch
 from uranium.env import env_choice
 
 ENTITY_ATTN_MODES = ("torch", "fused")
+MASKED = -1e9
 _HERE = Path(__file__).resolve().parent
 _LOADED: dict = {}
 

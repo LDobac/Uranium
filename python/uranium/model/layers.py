@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from uranium.env import env_choice
-from uranium.kernels.attention import MASKED, fused
+from uranium.kernels import MASKED
 
 LINEAR_WGRAD_MODES = ("vendor", "splitk")
 SPLITK_CHUNK = 512
@@ -207,6 +207,8 @@ class Attention(nn.Module):
         return self.o((attn @ v).transpose(1, 2).reshape(b, tq, d))
 
     def forward_fused(self, x, bucket_u8, table, key_ok):
+        from uranium.kernels.attention import fused
+
         b, n, d = x.shape
         h, dh = self.heads, d // self.heads
         q = self.q(x).view(b, n, h, dh).transpose(1, 2)

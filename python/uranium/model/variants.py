@@ -3,9 +3,9 @@ import math
 import torch
 import torch.nn as nn
 
+from uranium.kernels import MASKED
 from uranium.model.auxiliary import aux_jepa_modules, aux_priv_module
 from uranium.model.config import UraniumNetConfig
-from uranium.model.layers import MASKED
 from uranium.model.value import fixed_linear
 
 TERRAIN_CHANNELS = 10

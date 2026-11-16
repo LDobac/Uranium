@@ -2,9 +2,8 @@ import math
 
 import torch
 
-from uranium.kernels import load
+from uranium.kernels import MASKED, load
 
-MASKED = -1e9
 HEAD_DIM = 32
 
 

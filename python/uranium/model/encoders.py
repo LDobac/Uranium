@@ -6,7 +6,6 @@ import torch.nn.functional as F
 
 from uranium.env import env_choice
 from uranium.kernels import ENTITY_ATTN_MODES
-from uranium.kernels.attention import HEAD_DIM, available
 from uranium.model.config import EntityConfig, InputDims, ScalarConfig, SpatialConfig
 from uranium.model.layers import Attention, FeedForward, Linear, Mlp, ResBlock, conv3x3, conv_layout, conv_wgrad, masked_mean, stem_pad
 
@@ -94,6 +93,8 @@ class EntityEncoder(nn.Module):
     def use_fused(self, x, table) -> bool:
         if env_choice("URANIUM_ENTITY_ATTN", ENTITY_ATTN_MODES, "torch") != "fused" or x.device.type != "cuda":
             return False
+        from uranium.kernels.attention import HEAD_DIM, available
+
         return x.shape[-1] // self.heads == HEAD_DIM and table.shape[0] <= 64 and available(x.device)
 
     def distance_bias(self, idx, table):
