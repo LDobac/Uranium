@@ -65,7 +65,15 @@ gn 기준 값(새 판별, 테란 + 프로토스):
 1. t2 표본: 20판 → 재레이블 → 50 update.
 2. t2 본 실행([044-R8](../../spec/2026_11_14_08_18_044-self-game-distillation.md) ⑤, 두 plan 모두 10분 상한):
    - 테란·프로토스 300판(gn stochastic, t1 구성, seed n = 301..600) → 022 교사 그림자 재레이블 `--relabel terran_tp`(10:00 절단) → `dagger_m2/t2`.
-   - 저그 DAgger 판(T0 표준·러시 사다리·T1 저그, `mix-fractions` 부족분, 판 수 TBD(표본 측정) 어림 400~600, 새 seed 블록) → 저그전 교사 그림자 `--relabel terran_react`(10:00 절단, `terran_tp`는 로비 저그 판을 거부) → `dagger_m2/t2z`.
+   - 저그 DAgger 판 N판(아래 표) → 저그전 교사 그림자 `--relabel terran_react`(`terran_tp`는 로비 저그 판을 거부) → `dagger_m2/t2z`. 절단 10:00은 기본안(미확정), 대안 8:00(r1~r3과 같음)([AMB-044-12](../../spec/README.md) ⑥).
+
+     | 항목 | 값 |
+     |---|---|
+     | 생성 | `python tools/eval/rush_check_plan.py --teacher-round --round t2 --zerg <N> --checkpoint checkpoints/m2-gn-t1e2/ckpt-2844` → `config/plans/dagger_m2_t2_z.toml` |
+     | 구성 | N은 150의 배수. 150판마다 맵당 러시 4상대(T0 `zerg_rush`, UAlbertaBot `12poollings`·`9pool10lings`·`9poolhydra`) × 10 + 운영형 5상대(UAlbertaBot `2hatchhydra`·`3hatchmuta`, Steamhammer `2hatchmuta`, T0 `zerg_muta`, T0 표준) × 7, 두 맵. N = 600이면 `dagger_m2_r1.toml` 구성 |
+     | seed | `splitmix64(5,000,000 + n) >> 32`, n = 1..3000 예약 |
+     | N | TBD(표본 측정). 어림: t1 `mix-fractions` 기준 테란·프로토스 t2 추가 뒤 저그 46.3% → 부족 약 31만 step, 저그 판당 학습 step 약 533(10:00)·474(8:00) → 약 580판. 600판이면 50.3%(8:00이면 49.9%) |
+
    - 학습 `m2-teacher-t2`(`--init` gn, `data.seed` 18, 교사 + dagger 65 / 사람 35, 저그 : 프로토스 : 테란 50 : 30 : 20).
 3. 지점 `t2` 측정 → 합격 기준 판정. 실패면 멈추고 사용자에게 보고.
 4. 통과면 바로 `m2-rl-fix-3`([044-R11](../../spec/2026_11_14_08_18_044-self-game-distillation.md)): `--bc` t2, 참조 네 키 = t2, 600만 agent step, 100 update 표본 먼저.
@@ -87,7 +95,8 @@ gn 기준 값(새 판별, 테란 + 프로토스):
 | 승 T1 테란 + 프로토스 | ≥ 21/196 | 27 |
 | TvZ T0 | ≥ 20/32 | 26 |
 | 러시 막음 합(이른 + 늦은, `held_8m`) | ≥ 48 | 54 |
-| T1 저그 상대 승 | ≥ gn − 8 | TBD(측정) |
+| T1 저그 상대 승 | ≥ 14/104 (gn − 8) | 22/104 |
+- T1 저그 gn 값: `<shared>/eval/m2-gn-20261117-t1/`(`m2-gn-t1e2-t1-bc`) UAlbertaBot 11·Steamhammer 9·ZZZKBot 0·McRave 2승 / 104판.
 - 검출력: 32판 칸 약 35%p, 64판 약 25%p, T1 196판 약 10%p 차이부터.
 
 ### 계획형 JEPA와의 관계

@@ -112,7 +112,7 @@ source = "replay"
 
 [metric.teacher_mode]
 kind = "games_table"
-description = "050-R10 teacher-mode game share (TvT and TvP apart): games with fewer than 150 commands per minute over 0-6 min and no refinery build order before 4:00 (the cause analysis' rule), with W/D/L and losses before 10:00 per mode"
+description = "050-R10 game style (TvT and TvP apart): zerg_build games (fewer than 150 commands per minute over 0-6 min and no refinery or factory build order before 5:00) and tp_style games (fewer than 120 commands per minute and not zerg_build), with W/D/L and losses before 10:00 per style (zerg_build / tp_style / human); the old teacher_mode rule (fewer than 150 commands per minute over 0-6 min and no refinery build order before 4:00) stays as a recorded field with its own W/D/L"
 source = "cmd"
 
 [metric.cue_diag]
