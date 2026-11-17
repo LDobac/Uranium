@@ -79,13 +79,14 @@ def load_model(dir: Path, device="cpu", adjust=None, graft=None) -> tuple[Uraniu
     cfg = UraniumNetConfig.from_dict(meta["config"])
     if adjust is not None:
         cfg = adjust(cfg)
-    grafted = graft is not None and graft.grafts_onto(cfg.variant)
-    if grafted:
+    fresh_norm = False
+    if graft is not None and graft.grafts_onto(cfg.variant):
+        fresh_norm = cfg.variant.spatial_norm == 0
         cfg.variant = graft
     net = UraniumNet(cfg)
     sd = load_file(str(Path(dir) / WEIGHTS_FILE))
     missing, unexpected = net.load_state_dict(sd, strict=False)
-    if grafted:
+    if fresh_norm:
         missing = [k for k in missing if not k.startswith(SPATIAL_NORM_PREFIX)]
     if missing or unexpected:
         raise ValueError(f"{dir}: missing tensors {missing}, unexpected {unexpected}")

@@ -93,15 +93,15 @@ class BcTrainer:
             net = UraniumNet(new_net_config(core, cfg["value"].get("win_open") is not None, variant))
         else:
             net, meta = ckpt.load_model(Path(dir), graft=variant if start == "init" else None)
+            if net.cfg.core.kind != CORES[core]:
+                raise ValueError(f"checkpoint core {net.cfg.core.kind} != requested {CORES[core]}")
+            if net.cfg.variant != variant:
+                raise ValueError(f"checkpoint [model] {net.cfg.variant} != requested {variant}")
             was = meta["config"].get("variant") or {}
             added = [f"{k} = {getattr(net.cfg.variant, k)}" for k in GRAFT_KEYS if getattr(net.cfg.variant, k) and not was.get(k)]
             if added:
                 fresh = ", GroupNorm starts at scale 1, bias 0" if not was.get("spatial_norm") else ""
                 print(f"[bc] --init: {', '.join(added)} added to the checkpoint's model{fresh} (041-R4, 032-R26, 032-R27)", flush=True)
-            if net.cfg.core.kind != CORES[core]:
-                raise ValueError(f"checkpoint core {net.cfg.core.kind} != requested {CORES[core]}")
-            if net.cfg.variant != variant:
-                raise ValueError(f"checkpoint [model] {net.cfg.variant} != requested {variant}")
         t = cls(cfg, net, device, precision, entity_chunk)
         if start == "resume":
             ckpt.load_optimizer(Path(dir), ckpt.OPTIM_MAIN, t.net, t.opt)

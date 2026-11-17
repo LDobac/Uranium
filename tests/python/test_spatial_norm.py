@@ -7,6 +7,7 @@ import pytest
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from safetensors.torch import save_file
 
 from uranium import ckpt
 from uranium.bc.trainer import BcTrainer
@@ -309,6 +310,13 @@ def test_weights_only_graft_032_ac16(tmp_path):
     ckpt.save_meta(ends, relu.cfg, {}, "f32")
     assert ckpt.load_model(ends)[0].cfg.variant == RELU
     assert ckpt.load_model(ends, graft=NORM)[0].cfg.variant == RELU, "on -> off is not grafted"
+    cut = tmp_path / "cut"
+    cut.mkdir()
+    ckpt.save_meta(cut, net.cfg, {}, "f32")
+    save_file({k: v for k, v in net.state_dict().items() if k != PREFIX + "stem.weight"}, str(cut / ckpt.WEIGHTS_FILE))
+    for want in (None, RELU):
+        with pytest.raises(ValueError, match="missing tensors"):
+            ckpt.load_model(cut, graft=want)
 
 
 def test_end_relu_switch_032_r27():
