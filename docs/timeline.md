@@ -714,3 +714,5 @@
 - 10:0x — 결정(사용자)·반영: 공간 인코더에 GroupNorm 스위치 `spatial_norm`(pre-activation ResNet 위치, 그룹당 16채널), Checkpoint 2에서 BC 3,000 update로 죽은 채널이 살아나는지 시험 ([032-R26](spec/2026_10_15_22_24_032-model-architecture.md), [gn_resume](report/experiment/2026_11_17_10_05_gn_resume.md))
 - 10:03 — 시작: `m2-gn-t1`(Windows CUDA 호스트, Checkpoint 2 가중치 + GroupNorm, BC 3,000 update); update 100에서 c3·r4 죽은 채널 0 ([gn_resume](report/experiment/2026_11_17_10_05_gn_resume.md))
 - 10:4x — 결정(사용자)·반영: 같은 구조에 블록 끝 ReLU만 다시 넣는 스위치 `spatial_end_relu`로 두 번째 시험 `m2-gn-relu-t1` ([032-R27](spec/2026_10_15_22_24_032-model-architecture.md), [gn_resume](report/experiment/2026_11_17_10_05_gn_resume.md))
+- 11:18 — 끝·결과: `m2-gn-t1` 2,844 update(한 epoch 데이터 소진, 3,000 미달) — c3·r4 죽은 채널 80.9·84.9 → 0, r5 90.7 → 1, 재붕괴·경보 없음; 이어서 `m2-gn-relu-t1` 시작 ([gn_resume](report/experiment/2026_11_17_10_05_gn_resume.md) 3절)
+- 12:37 — 끝·결과: `m2-gn-relu-t1` 2,844 update — 끝 ReLU를 넣으면 bottleneck 출력 죽은 채널 0 → 약 10, `S8` 상수 채널 0 → 약 10(128 중), 블록 안 ReLU는 유지 → 끝 ReLU 없는 쪽이 나음 ([gn_resume](report/experiment/2026_11_17_10_05_gn_resume.md) 3절)
