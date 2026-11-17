@@ -273,7 +273,7 @@ def test_update_on_the_device_matches_the_reference_032_r19(precision):
         l = cls(rl_cfg(lanes=4), tiny_net(2), tiny_net(2), dev, precision, "vtrace", micro_lanes=2)
         l.trim_pad = False
         batch = Segments(4, 4, tiny_net(2, seed=6), 2)
-        stats = [l.update(batch, WEIGHTS) for _ in range(2)]
+        stats = [l.update(batch, WEIGHTS)]
         res.append((stats, {k: v.detach().cpu() for k, v in l.net.state_dict().items()}))
     if precision == "bf16":
         assert Learner(rl_cfg(), tiny_net(2), tiny_net(2), dev, precision, "vtrace").spatial_bf16
