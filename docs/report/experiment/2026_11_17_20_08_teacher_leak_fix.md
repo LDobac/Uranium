@@ -70,7 +70,7 @@ gn 기준 값(새 판별, 테란 + 프로토스):
      | 항목 | 값 |
      |---|---|
      | 생성 | `python tools/eval/rush_check_plan.py --teacher-round --round t2 --zerg 600 --checkpoint checkpoints/m2-gn-t1e2/ckpt-2844` → `config/plans/dagger_m2_t2_z.toml` |
-     | 구성 | N은 150의 배수. 150판마다 맵당 러시 4상대(T0 `zerg_rush`, UAlbertaBot `12poollings`·`9pool10lings`·`9poolhydra`) × 10 + 운영형 5상대(UAlbertaBot `2hatchhydra`·`3hatchmuta`, Steamhammer `2hatchmuta`, T0 `zerg_muta`, T0 표준) × 7, 두 맵. N = 600이면 `dagger_m2_r1.toml` 구성 |
+     | 구성 | 맵당 러시 4상대(T0 `zerg_rush`, UAlbertaBot `12poollings`·`9pool10lings`·`9poolhydra`) × 40 + 운영형 5상대(UAlbertaBot `2hatchhydra`·`3hatchmuta`, Steamhammer `2hatchmuta`, T0 `zerg_muta`, T0 표준) × 28, 두 맵(`dagger_m2_r1.toml` 구성) |
      | seed | `splitmix64(5,000,000 + n) >> 32`, n = 1..3000 예약 |
      | N | 600(사용자 결정 2026-11-17). 어림: 테란·프로토스 t2 추가 뒤 저그 46.3% → 부족 약 31만 step, 저그 판당 학습 step 약 533(10:00 절단) → 약 580판, 600판이면 50.3% |
      | N 출처 | t1 `mix-fractions` 출력 `<shared>/eval/m2-lineage/logs/t1_t1_mixfrac2.json`(종족별 스텝), 저그 판당 step은 경로 2 r1–r3 기록·판 생성 job `results.jsonl`의 `end_frame` |
