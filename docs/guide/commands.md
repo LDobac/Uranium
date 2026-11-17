@@ -39,6 +39,7 @@ cargo build --release -p uranium-train
 - 평가·RL용 게임 호스트는 OpenBW·BWAPI·브리지도 같은 커밋으로 다시 빌드하고 hostd 재시작.
 - 직접 빌드한 torch 보호: torchvision·torchaudio 등 torch 의존 패키지는 공식 torch를 끌어옴 → 소스 빌드 또는 `--no-deps`(GPU 연산자는 따로 빌드). 설치 뒤 `python -c "import torch; print(torch.__version__, torch.cuda.get_arch_list())"`로 버전·GPU 아키텍처 확인. `uranium`은 torch에 의존하지 않음, `[compile]`(triton-windows)은 Windows에서만 설치.
 - Linux ROCm 호스트 실행 환경: 그 호스트 rocBLAS 경로를 `LD_LIBRARY_PATH`에, `HSA_ENABLE_SDMA=0`.
+- Linux ROCm 호스트의 ROCm 패키지 버전이 바뀌면([rocm_10_1](../report/investigation/2026_11_17_16_27_rocm_10_1.md)): 그 GPU용 rocBLAS를 같은 버전 소스로 다시 빌드. torch가 다른 MIOpen 버전으로 빌드돼 있으면 `.env`에 `PYTORCH_SKIP_CUDNN_COMPATIBILITY_CHECK=1`(pytest는 `.env`를 읽지 않으므로 셸에 export). 직접 쓴 커널 캐시는 torch 빌드 때의 HIP 버전으로 구분돼 자동으로 다시 빌드되지 않음(옛 캐시도 동작, 새로 빌드하려면 `~/.cache/uranium/kernels` 삭제). 확인: `-m gpu` 테스트, `bench suite`, `bench bc`.
 - 정밀도([032-R8](../spec/2026_10_15_22_24_032-model-architecture.md)): CUDA bf16 혼합, ROCm f32. 커널 선택([041-R15](../spec/2026_10_15_22_24_041-imitation-learning.md)): cuDNN benchmark는 CUDA만, ROCm은 MIOpen find-db(`MIOPEN_USER_DB_PATH`)만(ROCm benchmark는 모양마다 수 초~수 분 탐색).
 - Burn: 마지막 커밋 태그 `burn-final`. Burn 체크포인트(`model.bpk`)는 보관만, 읽지 않음([061-R10](../spec/2026_10_15_22_24_061-shared-storage.md)).
 
