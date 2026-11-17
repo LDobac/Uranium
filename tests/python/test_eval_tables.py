@@ -152,7 +152,7 @@ def test_unknown_plan_needs_kind_050_r9(tmp_path):
         tables.main([str(job), "--cache", str(tmp_path / "cache")])
 
 
-def test_teacher_mode_table_050_r10(tmp_path, monkeypatch):
+def test_teacher_mode_table_050_r10(tmp_path, monkeypatch, capsys):
     rows = [{**row(1, True), "end_frame": 30000}, {**row(2, False), "end_frame": 14399}, {**row(3, False), "end_frame": 14400},
             {**row(4, None), "end_frame": 86400}, row(5, True),
             {**row(33, False), "end_frame": 10000}, {**row(34, True), "end_frame": 20000}, row(35, False)]
@@ -166,15 +166,32 @@ def test_teacher_mode_table_050_r10(tmp_path, monkeypatch):
     dump(cache / "g35.json", cmds(10))
     t = tables.job_tables(job, tmp_path / "cache", lin=LIN, ops="off")["t0_tp/t0_tp"]
     tm = t["teacher_mode"]
+    zero = {"n": 0, "won": 0, "draw": 0, "lost": 0, "lost_10m": 0}
     assert tm["terran"] == {"n": 4, "teacher": 3, "no_stream": 1,
                             "teacher_mode": {"n": 3, "won": 1, "draw": 0, "lost": 2, "lost_10m": 1},
-                            "other": {"n": 1, "won": 0, "draw": 1, "lost": 0, "lost_10m": 0}}
+                            "other": {"n": 1, "won": 0, "draw": 1, "lost": 0, "lost_10m": 0},
+                            "zerg_build": 3, "tp_style": 1,
+                            "style": {"zerg_build": {"n": 3, "won": 1, "draw": 0, "lost": 2, "lost_10m": 1},
+                                      "tp_style": {"n": 1, "won": 0, "draw": 1, "lost": 0, "lost_10m": 0}, "human": zero}}
     assert tm["protoss"] == {"n": 2, "teacher": 1, "no_stream": 0,
                              "teacher_mode": {"n": 1, "won": 0, "draw": 0, "lost": 1, "lost_10m": 1},
-                             "other": {"n": 1, "won": 1, "draw": 0, "lost": 0, "lost_10m": 0}}
+                             "other": {"n": 1, "won": 1, "draw": 0, "lost": 0, "lost_10m": 0},
+                             "zerg_build": 1, "tp_style": 0,
+                             "style": {"zerg_build": {"n": 1, "won": 0, "draw": 0, "lost": 1, "lost_10m": 1},
+                                       "tp_style": zero, "human": {"n": 1, "won": 1, "draw": 0, "lost": 0, "lost_10m": 0}}}
     assert t["counts"]["teacher_mode vs terran"] == {"teacher_mode": [3, 4]} and t["counts"]["teacher_mode vs protoss"] == {"teacher_mode": [1, 2]}
+    assert t["counts"]["zerg_build vs terran"] == {"zerg_build": [3, 4]} and t["counts"]["tp_style vs terran"] == {"tp_style": [1, 4]}
+    assert t["counts"]["zerg_build vs protoss"] == {"zerg_build": [1, 2]} and t["counts"]["tp_style vs protoss"] == {"tp_style": [0, 2]}
     assert t["table"]["by_race"]["stochastic vs terran"]["n"] == 5, "the win-rate table is unchanged"
     tables.print_tables({"t0_tp/t0_tp": t})
+    a = tmp_path / "a.json"
+    a.write_text(json.dumps({"t0_tp/t0_tp": t}), encoding="utf-8")
+    capsys.readouterr()
+    protocol.main(["compare", str(a), str(a)])
+    out = capsys.readouterr().out
+    assert "t0_tp/t0_tp zerg_build vs terran zerg_build: 3/4 vs 3/4  Fisher p 1.000" in out
+    assert "t0_tp/t0_tp tp_style vs protoss tp_style: 0/2 vs 0/2  Fisher p 1.000" in out
+    assert "t0_tp/t0_tp teacher_mode vs terran teacher_mode: 3/4 vs 3/4" in out
     tvz = make_job(tmp_path / "z", "tvz_bc", [row(1, True)])
     assert "teacher_mode" not in tables.job_tables(tvz, tmp_path / "cache", lin=LIN, ops="off")["tvz_bc/tvz_bc"]
     (job / "t0_tp" / "replays").mkdir(parents=True)

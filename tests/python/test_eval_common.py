@@ -99,12 +99,40 @@ def test_teacher_mode_rule_boundaries_050_r10(tmp_path):
         return ec.teacher_mode(f, 0)
 
     t = tm(cmds(899) + [[8640, 0, 9, "0101"]] * 50 + cmds(500, player=1))
-    assert t == {"cmds_0_6m": 899, "cmds_per_min_0_6m": 899 / 6, "refinery_order_4m": False, "teacher_mode": True}
+    assert t == {"cmds_0_6m": 899, "cmds_per_min_0_6m": 899 / 6, "refinery_order_4m": False, "teacher_mode": True,
+                 "refinery_order_5m": False, "factory_order_5m": False, "zerg_build": True, "tp_style": False}
     assert tm(cmds(900))["teacher_mode"] is False
-    assert tm(cmds(10) + [build(5759, 20, 20, ec.REFINERY)]) == {"cmds_0_6m": 11, "cmds_per_min_0_6m": 11 / 6, "refinery_order_4m": True, "teacher_mode": False}
+    assert tm(cmds(10) + [build(5759, 20, 20, ec.REFINERY)]) == {"cmds_0_6m": 11, "cmds_per_min_0_6m": 11 / 6, "refinery_order_4m": True, "teacher_mode": False,
+                                                                 "refinery_order_5m": True, "factory_order_5m": False, "zerg_build": False, "tp_style": True}
     assert tm(cmds(10) + [build(5760, 20, 20, ec.REFINERY)])["teacher_mode"] is True
     assert tm(cmds(10) + [build(100, 20, 20, 109)])["teacher_mode"] is True, "another building is not a refinery"
     assert tm(cmds(10) + [[100, 1, 12, build(0, 20, 20, ec.REFINERY)[3]]])["teacher_mode"] is True, "the opponent's refinery"
+
+
+def test_zerg_build_and_tp_style_boundaries_050_r10(tmp_path):
+    f = tmp_path / "g.json"
+
+    def tm(c):
+        dump(f, c)
+        return ec.teacher_mode(f, 0)
+
+    def style(c):
+        t = tm(c)
+        return t["zerg_build"], t["tp_style"]
+
+    assert style(cmds(899)) == (True, False)
+    assert style(cmds(900)) == (False, False)
+    assert style(cmds(719)) == (True, False), "a zerg build is not tp_style"
+    assert style(cmds(10) + [build(7199, 20, 20, ec.REFINERY)]) == (False, True)
+    assert style(cmds(10) + [build(7200, 20, 20, ec.REFINERY)]) == (True, False)
+    assert style(cmds(10) + [build(7199, 20, 20, ec.FACTORY)]) == (False, True)
+    assert style(cmds(10) + [build(7200, 20, 20, ec.FACTORY)]) == (True, False)
+    assert style(cmds(10) + [[100, 1, 12, build(0, 20, 20, ec.FACTORY)[3]]]) == (True, False), "the opponent's factory"
+    assert style(cmds(718) + [build(7000, 20, 20, ec.FACTORY)]) == (False, True)
+    assert style(cmds(719) + [build(7000, 20, 20, ec.FACTORY)]) == (False, False), "the build order counts as a command"
+    t = tm(cmds(10) + [build(6000, 20, 20, ec.REFINERY)])
+    assert t["teacher_mode"] is True and t["refinery_order_4m"] is False and t["refinery_order_5m"] is True and t["zerg_build"] is False, \
+        "the old rule (refinery before 4:00) is kept apart from the new one"
 
 
 def test_teacher_mode_model_player_050_r10(tmp_path):

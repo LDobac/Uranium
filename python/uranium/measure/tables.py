@@ -121,8 +121,26 @@ def teacher_mode_games(plan: dict) -> list[int]:
     return [n for m, a, b in _blocks(plan) if m["p1"].get("race") in TEACHER_MODE_RACES for n in range(a, b + 1)]
 
 
+STYLES = ("zerg_build", "tp_style", "human")
+
+
 def _mode_counts() -> dict:
     return {"n": 0, "won": 0, "draw": 0, "lost": 0, "lost_10m": 0}
+
+
+def _tally(g: dict, r: dict) -> None:
+    g["n"] += 1
+    if r.get("won") is True:
+        g["won"] += 1
+    elif r.get("won") is None:
+        g["draw"] += 1
+    else:
+        g["lost"] += 1
+        g["lost_10m"] += (r.get("end_frame") if r.get("end_frame") is not None else INF) < EARLY_LOSS
+
+
+def game_style(tm: dict) -> str:
+    return "zerg_build" if tm["zerg_build"] else "tp_style" if tm["tp_style"] else "human"
 
 
 def teacher_mode_table(stage: int, plan: dict, rows: dict[int, dict], invalid: set[int], dumps: dict[int, Path]) -> dict:
@@ -131,7 +149,8 @@ def teacher_mode_table(stage: int, plan: dict, rows: dict[int, dict], invalid: s
         race = m["p1"].get("race")
         if race not in TEACHER_MODE_RACES:
             continue
-        c = out.setdefault(race, {"n": 0, "teacher": 0, "no_stream": 0, "teacher_mode": _mode_counts(), "other": _mode_counts()})
+        c = out.setdefault(race, {"n": 0, "teacher": 0, "no_stream": 0, "teacher_mode": _mode_counts(), "other": _mode_counts(),
+                                  "zerg_build": 0, "tp_style": 0, "style": {k: _mode_counts() for k in STYLES}})
         for n in range(a, b + 1):
             if n not in rows or stage * ec.STAGE_BASE + n in invalid:
                 continue
@@ -142,15 +161,10 @@ def teacher_mode_table(stage: int, plan: dict, rows: dict[int, dict], invalid: s
                 continue
             c["n"] += 1
             c["teacher"] += tm["teacher_mode"]
-            g = c["teacher_mode" if tm["teacher_mode"] else "other"]
-            g["n"] += 1
-            if r.get("won") is True:
-                g["won"] += 1
-            elif r.get("won") is None:
-                g["draw"] += 1
-            else:
-                g["lost"] += 1
-                g["lost_10m"] += (r.get("end_frame") if r.get("end_frame") is not None else INF) < EARLY_LOSS
+            c["zerg_build"] += tm["zerg_build"]
+            c["tp_style"] += tm["tp_style"]
+            _tally(c["teacher_mode" if tm["teacher_mode"] else "other"], r)
+            _tally(c["style"][game_style(tm)], r)
     return out
 
 
@@ -172,6 +186,8 @@ def add_teacher_mode_counts(res: dict) -> None:
     for race, v in (res.get("teacher_mode") or {}).items():
         if race in TEACHER_MODE_RACES:
             res["counts"][f"teacher_mode vs {race}"] = {"teacher_mode": [v["teacher"], v["n"]]}
+            for k in ("zerg_build", "tp_style"):
+                res["counts"][f"{k} vs {race}"] = {k: [v[k], v["n"]]}
 
 
 def print_teacher_mode(t: dict) -> None:
@@ -184,6 +200,12 @@ def print_teacher_mode(t: dict) -> None:
         a, o = v["teacher_mode"], v["other"]
         print(f"  | {race} | {v['n']} | {_pct(v['teacher'], v['n'])} | {a['won']}/{a['draw']}/{a['lost']}, {a['lost_10m']} | "
               f"{o['won']}/{o['draw']}/{o['lost']}, {o['lost_10m']} | {v['no_stream']}")
+    print("game style (050-R10: zerg_build = < 150 commands/min over 0-6 min and no refinery or factory order before 5:00; "
+          "tp_style = < 120 commands/min and not zerg_build; else human) | vs | games | zerg_build games | tp_style games | "
+          "zerg_build W/D/L, lost < 10:00 | tp_style W/D/L, lost < 10:00 | human W/D/L, lost < 10:00")
+    for race, v in t.items():
+        w = " | ".join(f"{g['won']}/{g['draw']}/{g['lost']}, {g['lost_10m']}" for g in (v["style"][k] for k in STYLES))
+        print(f"  | {race} | {v['n']} | {_pct(v['zerg_build'], v['n'])} | {_pct(v['tp_style'], v['n'])} | {w}")
 
 
 OPS_KEYS = ("end_s", "mined", "gas", "inc_4m", "inc_6m", "inc_8m", "inc_10m", "inc_scv_4m", "inc_scv_6m", "inc_scv_8m", "inc_scv_10m",

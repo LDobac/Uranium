@@ -262,6 +262,10 @@ TEACHER_MODE_CMD_MINUTES = 6
 TEACHER_MODE_CMDS_PER_MIN = 150
 TEACHER_MODE_REFINERY_BEFORE = 4 * 60 * FPS
 REFINERY = 110
+FACTORY = 113
+INF_FRAME = 10**9
+ZERG_BUILD_BEFORE = 5 * 60 * FPS
+TP_STYLE_CMDS_PER_MIN = 120
 
 
 def model_player(d: dict, slot: int) -> int | None:
@@ -279,16 +283,21 @@ def teacher_mode(path: Path, slot: int) -> dict | None:
     pid = model_player(d, slot)
     if pid is None:
         return None
-    cmds, refinery = 0, None
+    cmds, first = 0, {}
     for f, p, op, h in d["cmds"]:
         if p != pid:
             continue
         if f < TEACHER_MODE_CMD_UNTIL:
             cmds += 1
-        if op == OP_BUILD and refinery is None and f < TEACHER_MODE_REFINERY_BEFORE and u16(h, 5) == REFINERY:
-            refinery = f
-    return {"cmds_0_6m": cmds, "cmds_per_min_0_6m": cmds / TEACHER_MODE_CMD_MINUTES, "refinery_order_4m": refinery is not None,
-            "teacher_mode": cmds < TEACHER_MODE_CMDS_PER_MIN * TEACHER_MODE_CMD_MINUTES and refinery is None}
+        if op == OP_BUILD and f < ZERG_BUILD_BEFORE:
+            first.setdefault(u16(h, 5), f)
+    refinery_4m = first.get(REFINERY, INF_FRAME) < TEACHER_MODE_REFINERY_BEFORE
+    refinery_5m, factory_5m = REFINERY in first, FACTORY in first
+    zerg_build = cmds < TEACHER_MODE_CMDS_PER_MIN * TEACHER_MODE_CMD_MINUTES and not refinery_5m and not factory_5m
+    return {"cmds_0_6m": cmds, "cmds_per_min_0_6m": cmds / TEACHER_MODE_CMD_MINUTES, "refinery_order_4m": refinery_4m,
+            "teacher_mode": cmds < TEACHER_MODE_CMDS_PER_MIN * TEACHER_MODE_CMD_MINUTES and not refinery_4m,
+            "refinery_order_5m": refinery_5m, "factory_order_5m": factory_5m, "zerg_build": zerg_build,
+            "tp_style": cmds < TP_STYLE_CMDS_PER_MIN * TEACHER_MODE_CMD_MINUTES and not zerg_build}
 
 
 def dump_stage(stage_dir: Path, games: list[int], out: Path, binary: Path | None = None) -> dict[int, Path]:
