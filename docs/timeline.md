@@ -732,3 +732,12 @@
 - 20:1x — 결정(사용자): 새 판별 `zerg_build`·`tp_style`(기존 교사 모드는 기록만), gn 대비 합격 기준·최종 가중치 선택 순서, 지점 `t2`·`rl-fix-3`; 게이트 기록만·중단 세부는 메인 임시 결정(사용자 확인 전, [AMB-044-12](spec/README.md)) ([050-R9·R10](spec/2026_10_15_22_24_050-evaluation.md), [044-R13](spec/2026_11_14_08_18_044-self-game-distillation.md))
 - 21:45 — 새 리포트·결정(사용자): Linux ROCm 호스트에서 학습·추론 가능한 모델 확대 수단 실측 — 코어 확대는 싸고 엔티티 인코더 확대는 비쌈, 3억 이상은 옵티마이저 상태로 메모리 초과; 확대한다면 후보 B(1억 5,630만), 진행은 모델 구조 변경 테스트 뒤 ([model_scaleup](report/bench/2026_11_17_21_45_model_scaleup.md), [032-R2](spec/2026_10_15_22_24_032-model-architecture.md), [060-R3](spec/2026_10_15_22_24_060-infra.md))
 - 22:2x — 결정(사용자): 교사 모드 누출 수정 세부 확정 — t2 저그 DAgger 판 600·저그 판 재레이블 절단 10:00(8:00 버림), 게이트·교사 모드 ≤ 3/32 기록만, T0 하락 두 점검 연속(기준 t2), 가벼운 점검도 점검으로 셈, RL 끝 최종은 T1 테란 + 프로토스 ≥ t2 − 6 ([044-R8·R11·R13](spec/2026_11_14_08_18_044-self-game-distillation.md), [teacher_leak_fix](report/experiment/2026_11_17_20_08_teacher_leak_fix.md) 3절)
+- 22:54 — 끝: t2 표본 끝까지(판 → 재레이블 → BC 50 update) 통과 ([teacher_leak_fix](report/experiment/2026_11_17_20_08_teacher_leak_fix.md) 4절)
+- 23:00 — 시작: t2 판(테란·프로토스 300 + 저그 600) → 재레이블 → BC `m2-teacher-t2`(Windows CUDA 호스트) ([044-R8](spec/2026_11_14_08_18_044-self-game-distillation.md), [teacher_leak_fix](report/experiment/2026_11_17_20_08_teacher_leak_fix.md) 4절)
+- 23:52 — 끝: S0b 예측기를 gn으로 다시 학습(1,340판, 행동을 주면 내 상태 오차 −21%, 이전과 같음) ([051-R1](spec/2026_11_12_12_39_051-branch-games.md) ②, [jepa_planning](report/plan/2026_11_11_14_56_jepa_planning.md))
+- 23:58 — 시작: 분기 게임 B1(Linux 호스트 3대 전용, 작은 끝-끝 먼저) ([051-AC7](spec/2026_11_12_12_39_051-branch-games.md))
+
+## 2026-11-18
+- 00:56 — 끝: BC `m2-teacher-t2` 3,258 update(update당 1.46초); 저그 판 재생 불일치 25/600(이전 라운드보다 많음) ([teacher_leak_fix](report/experiment/2026_11_17_20_08_teacher_leak_fix.md) 4절)
+- 01:00 — 측정 시작: `m2-teacher-t2/ckpt-3258`를 지점 `t2`로 gn과 같은 표(Windows CUDA 호스트만) ([050-R9](spec/2026_10_15_22_24_050-evaluation.md), [044-R13](spec/2026_11_14_08_18_044-self-game-distillation.md))
+- 01:10 — 끝·새 리포트: B1 분기 1,272판 무효 0 — 벙커 90초 금지 `held_8m` −16%p, 벙커 한 결정 강제 `held_s` +19%p, 마린 효과 없음; S0b 채점은 한 결정 효과를 못 맞힘(부호 일치 약 0.5), 내 상태 변화 방향은 맞힘(k8 0.91) ([branch_b1](report/experiment/2026_11_18_01_10_branch_b1.md), [051-R13](spec/2026_11_12_12_39_051-branch-games.md))

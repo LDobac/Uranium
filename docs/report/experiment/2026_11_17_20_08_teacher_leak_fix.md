@@ -105,3 +105,8 @@ gn 기준 값(새 판별, 테란 + 프로토스):
 
 ## 4. 진행 기록
 - 22:2x — 결정(사용자): 저그 DAgger 판 600, 저그 판 절단 10:00, 메인 임시 결정 세부 모두 확정([AMB-044-12](../../spec/README.md)). plan `config/plans/dagger_m2_t2_z.toml`.
+- 22:54 — t2 표본 끝까지 통과: 테란·프로토스·저그 판 → 재레이블 → BC 50 update(`<shared>/eval/t2-sample-20261117/`, 체크포인트 `m2-teacher-t2-sample/ckpt-50`).
+- 23:00~23:31 — t2 판·재레이블(`<shared>/eval/dagger-m2-t2-20261117/`): 테란·프로토스 300판 중 299(1판 Iron 런처 비정상 종료, [050-R9](../../spec/2026_10_15_22_24_050-evaluation.md) 규칙으로 뺌), 저그 600판 중 575(재생 불일치 25판 = 4.2%, 이전 라운드 12/1,500보다 많음, 상대·호스트에 몰리지 않음).
+- 23:32 — `mix-fractions`: 교사 + dagger 몫 0.6496, 그 안 저그 51.1%·프로토스 29.5%·테란 19.4%(`logs/t2_mixfrac.json`). 설정 `config/bc_m2_teacher_t2.toml`.
+- 23:32~00:56 — BC `m2-teacher-t2` 3,258 update(Windows CUDA 호스트, update당 1.46초), 체크포인트 `ckpt-3258`. 마지막 100 update 손실 total 6.30(처음 100 5.95, t1도 같은 모양). 로그 `<shared>/eval/m2-lineage/train_logs/m2-teacher-t2.log`.
+- 11-18 01:00 — t2 측정 시작(지점 `t2`, gn과 같은 표, Windows CUDA 호스트만 — 분기 게임과 장비 분리 [051-R14](../../spec/2026_11_12_12_39_051-branch-games.md)): `<shared>/eval/m2-t2-20261118-{t1,tvz-t0_tp,rush-macro}/`.
