@@ -92,7 +92,7 @@ class BcTrainer:
             net = UraniumNet(new_net_config(core, cfg["value"].get("win_open") is not None, variant))
         else:
             net, meta = ckpt.load_model(Path(dir), graft=variant if start == "init" else None)
-            if start == "init" and variant.spatial_norm and not (meta["config"].get("variant") or {}).get("spatial_norm"):
+            if net.cfg.variant.spatial_norm and not (meta["config"].get("variant") or {}).get("spatial_norm"):
                 print(f"[bc] --init: spatial_norm = {variant.spatial_norm} added to the checkpoint's model, GroupNorm starts at scale 1, bias 0 (041-R4, 032-R26)", flush=True)
             if net.cfg.core.kind != CORES[core]:
                 raise ValueError(f"checkpoint core {net.cfg.core.kind} != requested {CORES[core]}")

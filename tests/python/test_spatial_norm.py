@@ -53,27 +53,30 @@ def conv(m: nn.Conv2d, x):
     return F.conv2d(x, m.weight, m.bias, m.stride, 1)
 
 
-def block(blk: ResBlock, x):
-    n1, n2 = blk.norms
-    h = x if blk.nonneg_input else F.relu(gn(n1, x))
+def block(blk: ResBlock, x, n1, n2):
+    h = x if n1 is None else F.relu(gn(n1, x))
     return x + conv(blk.c2, F.relu(gn(n2, conv(blk.c1, h))))
 
 
-def spatial_acts(net, obs):
+def spatial_acts(net, obs, film=None):
     sp_, n = net.spatial, net.variant.spatial_norm
     _, e, sp, _, _ = net.encode(obs)
+    if film is not None:
+        sp = sp_(obs, e, film)
     spatial = obs["spatial"]
     x = F.relu(gn(n.stem, conv(sp_.stem, conv_layout(torch.cat([spatial, sp_.scatter_mean(obs, e, spatial.shape[2], spatial.shape[3])], 1)))))
     acts = {"spatial.stem": x}
+    if film is not None:
+        x = x * (1.0 + film[0][:, :, None, None]) + film[1][:, :, None, None]
     for i, d in enumerate(sp_.downs):
         y = F.relu(gn(n.down[i], conv(d.conv, x)))
         acts[f"spatial.down{i}.conv"] = y
         acts[f"spatial.down{i}.inner"] = F.relu(gn(n.down_res[i], conv(d.res.c1, y)))
-        x = block(d.res, y)
+        x = block(d.res, y, None, n.down_res[i])
         acts[f"spatial.down{i}.res"] = x
     for j, r in enumerate(sp_.bottleneck):
         acts[f"spatial.bottleneck{j}.inner"] = F.relu(gn(n.bottleneck_mid[j], conv(r.c1, F.relu(gn(n.bottleneck_in[j], x)))))
-        x = block(r, x)
+        x = block(r, x, n.bottleneck_in[j], n.bottleneck_mid[j])
         acts[f"spatial.bottleneck{j}"] = x
     return sp, acts
 
@@ -153,7 +156,7 @@ def test_resblock_matches_definition_032_ac16(monkeypatch, nonneg, ch, wgrad):
     x = x0.clone().requires_grad_(True)
     y = blk(x)
     x2 = x0.clone().requires_grad_(True)
-    want = block(blk, x2)
+    want = block(blk, x2, None if nonneg else norms[0], norms[1])
     assert torch.allclose(y, want, atol=1e-5, rtol=1e-5)
     assert (y < 0).any()
     with torch.no_grad():
@@ -177,13 +180,20 @@ def test_group_norm_is_per_sample_032_r26():
 
 
 @pytest.mark.parametrize("wgrad", ["vendor", "bmm"])
-def test_spatial_encoder_matches_definition_032_ac16(monkeypatch, wgrad):
+@pytest.mark.parametrize("with_film", [False, True])
+def test_spatial_encoder_matches_definition_032_ac16(monkeypatch, with_film, wgrad):
     monkeypatch.setenv("URANIUM_CONV_WGRAD", wgrad)
     cfg, b, t, obs, _, _ = tiny(NORM)
     net = norm_net(cfg)
+    g = torch.Generator().manual_seed(6)
+    film = tuple(torch.randn(b * t, cfg.spatial.stem_channels, generator=g) for _ in range(2)) if with_film else None
     params = [p for p in [*net.spatial.parameters(), *net.variant.spatial_norm.parameters()] if p is not net.spatial.pool.weight and p is not net.spatial.pool.bias]
-    sp, acts = spatial_acts(net, obs)
+    sp, acts = spatial_acts(net, obs, film)
     x = acts["spatial.bottleneck1"]
+    if with_film:
+        pre = acts["spatial.stem"]
+        swapped = F.relu(pre * (1.0 + film[0][:, :, None, None]) + film[1][:, :, None, None])
+        assert not torch.equal(swapped, pre * (1.0 + film[0][:, :, None, None]) + film[1][:, :, None, None]), "the FiLM output goes negative, so its place matters"
     assert torch.allclose(sp["s8"], x, atol=1e-5)
     for got, i in zip(sp["skips"], range(3), strict=True):
         assert torch.allclose(got, acts[f"spatial.down{i}.res"], atol=1e-5)
@@ -279,7 +289,7 @@ def test_weights_only_graft_032_ac16(tmp_path):
     assert ckpt.load_model(on, graft=PREACT)[0].cfg.variant == NORM
 
 
-def test_bc_init_grafts_and_resume_refuses_041_r4(tiny_config, shards, tmp_path):
+def test_bc_init_grafts_and_resume_refuses_041_r4(tiny_config, shards, tmp_path, capsys):
     cfg = bc_cfg(tiny_config)
     a = BcTrainer(cfg, make_net(PREACT), CPU, "f32")
     a.train_batch(feeder(tiny_config, shards).next(), 3e-3, 0)
@@ -290,7 +300,9 @@ def test_bc_init_grafts_and_resume_refuses_041_r4(tiny_config, shards, tmp_path)
         BcTrainer.make(cfg_json, "resume", str(start), 0, "lstm", CPU, "f32", NORM)
     with pytest.raises(ValueError, match=r"\[model\]"):
         BcTrainer.make(cfg_json, "init", str(start), 0, "lstm", CPU, "f32", replace(NORM, core_skip=True))
+    assert "spatial_norm" not in capsys.readouterr().out, "no graft message before a refusal"
     t = BcTrainer.make(cfg_json, "init", str(start), 0, "lstm", CPU, "f32", NORM)
+    assert "spatial_norm = 4 added" in capsys.readouterr().out
     assert t.net.cfg.variant == NORM
     pa, pt = params_of(a.net), params_of(t.net)
     assert all(torch.equal(pa[k], pt[k]) for k in pa) and len(pt) == len(pa) + 26
