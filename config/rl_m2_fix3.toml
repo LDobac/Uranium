@@ -1,0 +1,275 @@
+lanes = 32
+seq_len = 64
+micro_lanes = 1
+keep_checkpoints = 0
+
+[optimizer]
+lr = 3e-5
+beta1 = 0.0
+beta2 = 0.99
+eps = 1e-5
+weight_decay = 0.0
+grad_clip = 1.0
+
+[loss]
+gamma = 1.0
+td_lambda = 0.8
+vtrace_rho_bar = 1.0
+vtrace_c_bar = 1.0
+pg = 1.0
+upgo = 1.0
+value = 0.5
+win_open = 0.5
+
+[entropy]
+action = 3e-3
+delay = 1e-3
+queued = 1e-3
+selected = 1e-3
+target_unit = 1e-3
+target_loc = 1e-3
+
+[kl]
+init = 0.1
+floor = 0.01
+half_life_updates = 20000
+
+[kl.head_scale]
+action = 1.0
+delay = 1.0
+queued = 1.0
+selected = 1.0
+target_unit = 1.0
+target_loc = 1.0
+
+[kl.reference]
+zerg = ""
+terran = ""
+protoss = ""
+random = ""
+
+[actors]
+weight_push_every = 4
+max_policy_lag = 32
+queue_batches = 4
+queue_full = "wait"
+queue_wait_max_s = 120
+game_wall_timeout_s = 7200
+
+[league]
+share_main = 0.5
+share_main_exploiter = 0.25
+share_league_exploiter = 0.25
+main_pfsp = 0.5
+main_self = 0.35
+main_t1 = 0.15
+pfsp_power = 2.0
+main_exploiter_fallback_win_rate = 0.2
+main_exploiter_fallback_share = 0.5
+win_rate_decay = 0.99
+win_rate_prior = 0.5
+race_uniform_mix = 0.5
+bot_random_race = 0.2
+anchor = ""
+model_game_max_s = 0
+
+[snapshot]
+main_every_updates = 2000
+exploiter_win_rate = 0.7
+exploiter_win_window = 200
+exploiter_max_updates = 4000
+league_exploiter_reset_prob = 0.25
+main_candidates = 4
+
+[curriculum]
+window_games = 300
+c0_t0 = 0.8
+c0_self = 0.2
+c0_to_c1_win_rate_vs_t0 = 0.7
+c1_t0 = 0.0
+c1_t1 = 0.0
+c1_self = 0.0
+c1_snapshot = 0.0
+c1_anchor = 0.0
+c1_ladder = 1.0
+ladder_pick = "fixed"
+ladder_groups = { terran = 0.24, protoss = 0.28, zerg = 0.28, random = 0.20 }
+c1_to_c2_win_rate_vs_t1 = 0.5
+pseudo_reward_decay_updates = 20000
+start_stage = "C1"
+auto_advance = false
+r_value_stages = ["C0", "C1"]
+r_value_vs_model = true
+
+[curriculum.band]
+center = 0.5
+width = 0.15
+exclude_below = 0.10
+
+[ppo]
+clip = 0.2
+gae_lambda = 0.95
+epochs = 2
+adopt_margin = 0.03
+
+[replays]
+sample_every = 100
+
+[reward]
+pseudo = "z"
+
+[reward.scout]
+weight = 0.15
+cap = 1.0
+vs_model = 0.5
+full_until_s = 240.0
+zero_at_s = 480.0
+main_radius_tiles = 10.0
+workers_min = 4
+main = 0.3
+building_type = 0.1
+expansion = 0.1
+workers = 0.1
+army = 0.1
+
+[reward.survive]
+weight = 0.1
+vs_model = 0.0
+from_s = 180.0
+until_s = 480.0
+scv_target = 20
+
+[concede]
+enabled = false
+max_supply = 4
+hold_s = 120
+after_s = 180
+
+[[t1]]
+name = "ualbertabot"
+races = ["Terran", "Protoss", "Zerg"]
+[[t1]]
+name = "steamhammer"
+races = ["Terran", "Zerg"]
+[[t1]]
+name = "stardust"
+races = ["Protoss"]
+[[t1]]
+name = "zzzkbot"
+races = ["Zerg"]
+[[t1]]
+name = "iron"
+races = ["Terran"]
+
+[[ladder]]
+kind = "t0"
+build = "standard"
+race = "Terran"
+group = "terran"
+weight = 3.0
+[[ladder]]
+kind = "t1"
+name = "ualbertabot"
+race = "Terran"
+group = "terran"
+weight = 1.0
+[[ladder]]
+kind = "t1"
+name = "steamhammer"
+race = "Terran"
+group = "terran"
+weight = 1.0
+[[ladder]]
+kind = "t1"
+name = "iron"
+race = "Terran"
+group = "terran"
+weight = 1.0
+
+[[ladder]]
+kind = "t0"
+build = "standard"
+race = "Protoss"
+group = "protoss"
+weight = 2.0
+[[ladder]]
+kind = "t1"
+name = "ualbertabot"
+race = "Protoss"
+group = "protoss"
+weight = 1.0
+[[ladder]]
+kind = "t1"
+name = "stardust"
+race = "Protoss"
+group = "protoss"
+weight = 1.0
+
+[[ladder]]
+kind = "t0"
+build = "standard"
+race = "Zerg"
+group = "zerg"
+weight = 12.0
+[[ladder]]
+kind = "t0"
+build = "zerg_rush"
+race = "Zerg"
+group = "zerg"
+weight = 3.0
+[[ladder]]
+kind = "t1"
+name = "ualbertabot9pool10lings"
+race = "Zerg"
+group = "zerg"
+weight = 3.0
+[[ladder]]
+kind = "t1"
+name = "ualbertabot9pool12lings"
+race = "Zerg"
+group = "zerg"
+weight = 3.0
+[[ladder]]
+kind = "t1"
+name = "ualbertabot9poolhydra"
+race = "Zerg"
+group = "zerg"
+weight = 3.0
+[[ladder]]
+kind = "t1"
+name = "ualbertabot"
+race = "Zerg"
+group = "zerg"
+weight = 8.0
+[[ladder]]
+kind = "t1"
+name = "steamhammer"
+race = "Zerg"
+group = "zerg"
+weight = 8.0
+[[ladder]]
+kind = "t1"
+name = "zzzkbot"
+race = "Zerg"
+group = "zerg"
+weight = 8.0
+
+[[ladder]]
+kind = "t0"
+build = "standard"
+race = "Random"
+group = "random"
+weight = 1.0
+[[ladder]]
+kind = "t1"
+name = "ualbertabot"
+race = "Random"
+group = "random"
+weight = 1.0
+
+[aux]
+priv = 0.2
+jepa = 0.1
+
+[monitor]
+spatial_every = 100

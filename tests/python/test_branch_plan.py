@@ -15,7 +15,7 @@ from uranium.measure import protocol
 from uranium.measure import tables
 
 CONFIG = ROOT / "config" / "branch_b1.toml"
-CKPT = "checkpoints/m2-s1/ckpt-39096"
+CKPT = "checkpoints/m2-gn-t1e2/ckpt-2844"
 SCHEMAS = {"feature": 7, "action": 2}
 T0 = "t0@9.9.9"
 IDS = bc.action_ids()
@@ -91,7 +91,7 @@ class TrunkJob:
             snaps.append({"rules": [rule], "state": sid, "state_sha256": sha, "i": i, "frame": lines[i]["frame"], "digest": lines[i]["digest"],
                           "type_mask": mask, "scalar": [0.5, float(n)]})
         end = {"obs": 12, "decisions": 12, "end_frame": 11568, "reason": "TimeLimitDraw", "player": 0, "players_index": 0,
-               "policy": f"model:ckpt-39096@{self.ckpt_sha[:12]}:stochastic", "git": "abc", "feature_schema": 7, "action_schema": 2}
+               "policy": f"model:ckpt-2844@{self.ckpt_sha[:12]}:stochastic", "git": "abc", "feature_schema": 7, "action_schema": 2}
         jsonl(self.sd / "acts" / f"g{n}-p0.jsonl", [*lines, {"end": end}])
         oend = {**end, "decisions": 0, "player": 1, "players_index": 1, "policy": T0}
         jsonl(self.sd / "acts" / f"g{n}-p1.jsonl", [*opp, {"end": oend}])
@@ -199,7 +199,7 @@ def test_branch_plan_refusals_051_r10(tmp_path, case):
         (tj.sd / "states" / f"g{n}-o5.state").write_bytes(b"other")
     elif case == "checkpoint":
         rows = bc.read_jsonl(acts)
-        rows[-1]["end"]["policy"] = "model:ckpt-39096@000000000000:stochastic"
+        rows[-1]["end"]["policy"] = "model:ckpt-2844@000000000000:stochastic"
         jsonl(acts, rows)
     elif case == "t0":
         rows = bc.read_jsonl(tj.sd / "acts" / f"g{n}-p1.jsonl")
@@ -291,7 +291,7 @@ def test_branch_collect_records_051_r12(tmp_path):
             x["digest"] = digest(x["i"], 555)
         if n != 6:
             jsonl(sd / "acts" / f"g{n}-p1.jsonl", [*mine, {"end": {"policy": T0}}])
-        policy = f"model:ckpt-39096@{'0' * 12 if n == 5 else tj.ckpt_sha[:12]}:stochastic"
+        policy = f"model:ckpt-2844@{'0' * 12 if n == 5 else tj.ckpt_sha[:12]}:stochastic"
         jsonl(sd / "acts" / f"g{n}-p0.jsonl", [{"end": {"git": "def", "policy": policy}}])
     (sd / "replays").mkdir(parents=True)
     (sd / "replays" / "g1.rep").write_bytes(b"rep")

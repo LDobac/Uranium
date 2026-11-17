@@ -359,7 +359,7 @@ def tp_extra_block(part: int) -> set[int]:
     return {splitmix64(TP_SEED_KEY + k) >> 32 for k in range(first, first + TP_EXTRA_PART)}
 
 
-def reserved_seeds(skip_teacher_round: bool = False, skip_tp_extra_part: int | None = None) -> set[int]:
+def reserved_seeds(skip_teacher_round: bool = False, skip_tp_extra_part: int | None = None, skip_teacher_round_z: bool = False) -> set[int]:
     n = RESERVED_ROUNDS * DAGGER_ROUND_STRIDE
     s = {splitmix64(DAGGER_SEED_KEY + k) >> 32 for k in range(1, n + 1)}
     s |= {splitmix64(DISTILL_SEED_KEY + k) >> 32 for k in range(1, DISTILL_ROUNDS_RESERVED * DISTILL_ROUND_STRIDE + 1)}
@@ -367,6 +367,8 @@ def reserved_seeds(skip_teacher_round: bool = False, skip_tp_extra_part: int | N
     s |= {splitmix64(DISTILL_SEED_KEY + k) >> 32 for k in top}
     if not skip_teacher_round:
         s |= {splitmix64(TEACHER_ROUND_SEED_KEY + k) >> 32 for k in TEACHER_ROUND_BLOCK}
+    if not skip_teacher_round_z:
+        s |= teacher_round_z_block()
     for part in range(1, TP_EXTRA_PARTS + 1):
         if part != skip_tp_extra_part:
             s |= tp_extra_block(part)
@@ -433,16 +435,68 @@ TEACHER_ROUND_FOLLOW_UP = (
     " --memory-log <dir>/memory --until-frame 14400 --time-limit 14400"
     " --out <shared>/datasets/replays/shards/dagger_m2/t1"
 )
+TEACHER_ROUND_GAMES = 300
+TEACHER_ROUNDS = ("t1", "t2")
+TEACHER_ROUND_Z_ROUNDS = ("t2",)
+TEACHER_ROUND_Z_SEED_KEY = 5_000_000
+TEACHER_ROUND_Z_BLOCK = range(1, 3001)
+TEACHER_ROUND_Z_HALF = (len(BOTGEN_RUSH) * DAGGER_HALF_RUSH_GAMES + len(BOTGEN_MACRO) * DAGGER_HALF_MACRO_GAMES) * len(MAPS)
+TEACHER_ROUND_Z_UNIT = TEACHER_ROUND_Z_HALF // 2
+TEACHER_ROUND_Z_FOLLOW_UP = (
+    "uranium-replay build <dir>/replays --src dagger --relabel terran_react"
+    " --memory-log <dir>/memory --until-frame 14400 --time-limit 14400"
+    " --out <shared>/datasets/replays/shards/dagger_m2/{rnd}z"
+)
 
 
-def render_teacher_round(checkpoint: str, name: str) -> tuple[str, list[int]]:
+def teacher_round_follow_up(rnd: str = "t1", zerg: bool = False) -> str:
+    assert rnd in TEACHER_ROUNDS, f"--round of --teacher-round is one of {', '.join(TEACHER_ROUNDS)}"
+    if zerg:
+        return TEACHER_ROUND_Z_FOLLOW_UP.format(rnd=rnd)
+    return TEACHER_ROUND_FOLLOW_UP.replace("dagger_m2/t1", f"dagger_m2/{rnd}")
+
+
+def teacher_round_seeds(rnd: str) -> list[int]:
+    assert rnd in TEACHER_ROUNDS, f"--round of --teacher-round is one of {', '.join(TEACHER_ROUNDS)}"
+    first = TEACHER_ROUND_BLOCK[0] + TEACHER_ROUNDS.index(rnd) * TEACHER_ROUND_GAMES
+    last = first + TEACHER_ROUND_GAMES - 1
+    assert last <= TEACHER_ROUND_BLOCK[-1], "the round plan must fit in its seed block"
+    return [splitmix64(TEACHER_ROUND_SEED_KEY + k) >> 32 for k in range(first, last + 1)]
+
+
+def render_teacher_round(checkpoint: str, name: str, rnd: str = "t1") -> tuple[str, list[int]]:
     blocks = distill_blocks(half=True)
     n = sum(g for *_, g in blocks)
-    assert n <= len(TEACHER_ROUND_BLOCK), "the round plan must fit in its seed block"
-    first = TEACHER_ROUND_BLOCK[0]
-    last = first + n - 1
-    seeds = [splitmix64(TEACHER_ROUND_SEED_KEY + k) >> 32 for k in range(first, last + 1)]
+    assert n == TEACHER_ROUND_GAMES, "a teacher round is the 044-R1 composition halved"
+    seeds = teacher_round_seeds(rnd)
     assert len(set(seeds)) == n, "teacher round seeds repeat"
+    return render_model_games(checkpoint, name, blocks, seeds), seeds
+
+
+def teacher_round_z_blocks(games: int) -> list[tuple[str, str, str, int]]:
+    assert games > 0 and games % TEACHER_ROUND_Z_UNIT == 0 and games <= len(TEACHER_ROUND_Z_BLOCK), (
+        f"--zerg must be a multiple of {TEACHER_ROUND_Z_UNIT} (the DAgger round composition exactly) "
+        f"in {TEACHER_ROUND_Z_UNIT}..{len(TEACHER_ROUND_Z_BLOCK)} (its seed block); round it up")
+    blocks = [(o, p1, m, DAGGER_HALF_RUSH_GAMES * games // TEACHER_ROUND_Z_HALF) for o, p1 in BOTGEN_RUSH for m in MAPS]
+    blocks += [(o, p1, m, DAGGER_HALF_MACRO_GAMES * games // TEACHER_ROUND_Z_HALF) for o, p1 in BOTGEN_MACRO for m in MAPS]
+    assert sum(b[3] for b in blocks) == games
+    return blocks
+
+
+def teacher_round_z_block() -> set[int]:
+    return {splitmix64(TEACHER_ROUND_Z_SEED_KEY + k) >> 32 for k in TEACHER_ROUND_Z_BLOCK}
+
+
+def render_teacher_round_z(checkpoint: str, name: str, games: int, rnd: str = "t2") -> tuple[str, list[int]]:
+    assert rnd in TEACHER_ROUND_Z_ROUNDS, f"--zerg goes with --round {' / '.join(TEACHER_ROUND_Z_ROUNDS)} (its own seed block)"
+    blocks = teacher_round_z_blocks(games)
+    first = TEACHER_ROUND_Z_BLOCK[0]
+    seeds = [splitmix64(TEACHER_ROUND_Z_SEED_KEY + k) >> 32 for k in range(first, first + games)]
+    assert len(set(seeds)) == games, "teacher round Zerg seeds repeat"
+    return render_model_games(checkpoint, name, blocks, seeds), seeds
+
+
+def render_model_games(checkpoint: str, name: str, blocks, seeds: list[int]) -> str:
     p0 = f'{{ kind = "model", checkpoint = "{checkpoint}", sample = "stochastic" }}'
     lines = [
         f'name = "{name}"',
@@ -459,18 +513,24 @@ def render_teacher_round(checkpoint: str, name: str) -> tuple[str, list[int]]:
         for i in range(0, games, 8):
             lines.append("  " + ", ".join(str(s) for s in block[i:i + 8]) + ",")
         k += games
+    assert k == len(seeds)
     lines.append("]")
     for _, p1, m, games in blocks:
         lines += ["[[matchup]]", f'map = "{m}"', f"games = {games}", f"p0 = {p0}", f"p1 = {p1}"]
-    return "\n".join(lines) + "\n", seeds
+    return "\n".join(lines) + "\n"
 
 
-def write_teacher_round(out_dir: Path, checkpoint: str, out: Path | None = None, name: str | None = None) -> Path:
-    stem = "dagger_m2_t1"
+def write_teacher_round(out_dir: Path, checkpoint: str, out: Path | None = None, name: str | None = None,
+                        rnd: str = "t1", zerg: int = 0) -> Path:
+    stem = f"dagger_m2_{rnd}_z" if zerg else f"dagger_m2_{rnd}"
     own = out_dir / f"{stem}.toml"
     out = out or own
-    text, seeds = render_teacher_round(checkpoint, name or stem.replace("_", "-"))
-    taken = taken_seeds(out_dir, (out, own)) | reserved_seeds(skip_teacher_round=True)
+    if zerg:
+        text, seeds = render_teacher_round_z(checkpoint, name or stem.replace("_", "-"), zerg, rnd)
+        taken = taken_seeds(out_dir, (out, own)) | reserved_seeds(skip_teacher_round_z=True)
+    else:
+        text, seeds = render_teacher_round(checkpoint, name or stem.replace("_", "-"), rnd)
+        taken = taken_seeds(out_dir, (out, own)) | reserved_seeds(skip_teacher_round=True)
     assert not taken & set(seeds), "a seed of this plan is another plan's (botgen, check, dagger, distill, 022 teacher, protocol or a reserved block)"
     for f in {out.resolve(), own.resolve()}:
         if f.exists():
@@ -525,7 +585,9 @@ def render(checkpoint: str | None, name: str) -> str:
 
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0], formatter_class=argparse.RawDescriptionHelpFormatter,
-                                 epilog=f"--teacher-round follow-up (044-R8):\n  {TEACHER_ROUND_FOLLOW_UP}")
+                                 epilog=f"--teacher-round follow-up (044-R8):\n  {TEACHER_ROUND_FOLLOW_UP}\n"
+                                        f"--teacher-round --round t2 follow-up:\n  {teacher_round_follow_up('t2')}\n"
+                                        f"--teacher-round --round t2 --zerg N follow-up (021-R8 teacher, 022-R2):\n  {teacher_round_follow_up('t2', zerg=True)}")
     ap.add_argument("--checkpoint", default=None, help="model checkpoint (relative = under URANIUM_SHARED_DIR; default ac1-vtrace-s1, --dagger bc-mix-e10)")
     ap.add_argument("--teacher", action="store_true", help="the scripted teacher plays players[0] instead of a model")
     ap.add_argument("--name", default=None, help="plan name (the evaluation stage name; default rush5-check / teacher-check)")
@@ -536,7 +598,8 @@ def main(argv=None) -> None:
                     help="--botgen: write one more macro plan from this botgen game number (> 2,000) instead")
     ap.add_argument("--dagger", action="store_true", help="write a DAgger round plan")
     ap.add_argument("--distill", action="store_true", help="write a self-game distillation round plan (needs --checkpoint)")
-    ap.add_argument("--round", type=int, default=None, help="--dagger / --distill: round number, default 1 (seeds per round disjoint)")
+    ap.add_argument("--round", default=None,
+                    help="--dagger / --distill: round number, default 1 (seeds per round disjoint); --teacher-round: t1 (default) or t2")
     ap.add_argument("--half", action="store_true", help="--dagger / --distill: half-size round plan, 300 games")
     ap.add_argument("--extra-p", type=int, default=0,
                     help="--botgen-tp: N more teacher botgen games against Protoss (a multiple of 16)")
@@ -551,12 +614,14 @@ def main(argv=None) -> None:
     ap.add_argument("--teacher-tp", action="store_true", help="write the check plan of the terran_tp teacher (config/plans/teacher_tp_check.toml)")
     ap.add_argument("--botgen-tp", action="store_true", help="write the botgen plan of the terran_tp teacher (config/plans/teacher_botgen_tp.toml)")
     ap.add_argument("--teacher-round", action="store_true",
-                    help="write the teacher round t1 self-game plan config/plans/dagger_m2_t1.toml (needs --checkpoint)")
+                    help="write the teacher round self-game plan config/plans/dagger_m2_<round>.toml (needs --checkpoint)")
+    ap.add_argument("--zerg", type=int, default=0,
+                    help=f"--teacher-round --round t2: write its Zerg DAgger plan dagger_m2_t2_z.toml of N games instead (a multiple of {TEACHER_ROUND_Z_UNIT})")
     a = ap.parse_args(argv)
     if a.teacher_tp or a.botgen_tp:
         assert not (a.teacher_tp and a.botgen_tp), "--teacher-tp and --botgen-tp are separate plans"
         assert not (a.teacher or a.botgen or a.dagger or a.distill or a.teacher_round or a.half or a.memory_log or a.round is not None
-                    or a.first_game is not None or a.checkpoint or a.name or a.extra), \
+                    or a.first_game is not None or a.checkpoint or a.name or a.extra or a.zerg), \
             "--teacher-tp / --botgen-tp take only --out-dir / --out (--botgen-tp also --extra-p / --extra-t / --part)"
         topup = bool(a.extra_p or a.extra_t)
         assert a.botgen_tp or not (topup or a.part is not None), "--extra-p / --extra-t / --part are for --botgen-tp, not --teacher-tp"
@@ -568,13 +633,19 @@ def main(argv=None) -> None:
     assert not (a.extra_p or a.extra_t), "--extra-p / --extra-t are for --botgen-tp"
     if a.teacher_round:
         assert not (a.teacher or a.botgen or a.dagger or a.distill or a.extra or a.part is not None or a.first_game is not None
-                    or a.round is not None or a.half), (
-            "--teacher-round (the one round t1, 300 games) takes only --memory-log / --checkpoint / --name / --out / --out-dir")
+                    or a.half), (
+            "--teacher-round (a round t1 / t2, 300 games, or the t2 Zerg plan) takes only --round / --zerg / --memory-log / --checkpoint / --name / --out / --out-dir")
+        rnd = a.round or "t1"
+        assert rnd in TEACHER_ROUNDS, f"--teacher-round --round is one of {', '.join(TEACHER_ROUNDS)}"
+        assert a.zerg >= 0, "--zerg is a game count"
+        assert not a.zerg or rnd in TEACHER_ROUND_Z_ROUNDS, f"--zerg goes with --round {' / '.join(TEACHER_ROUND_Z_ROUNDS)}"
         assert a.checkpoint, "--teacher-round needs --checkpoint (044-R8: the model of the round)"
-        write_teacher_round(a.out_dir, a.checkpoint, a.out, a.name)
-        print(f"follow-up: {TEACHER_ROUND_FOLLOW_UP}")
+        write_teacher_round(a.out_dir, a.checkpoint, a.out, a.name, rnd, a.zerg)
+        print(f"follow-up: {teacher_round_follow_up(rnd, zerg=bool(a.zerg))}")
         return
-    rnd = 1 if a.round is None else a.round
+    assert not a.zerg, "--zerg needs --teacher-round --round t2"
+    assert a.round is None or a.round.isdigit(), "--dagger / --distill --round is a round number"
+    rnd = 1 if a.round is None else int(a.round)
     assert not (a.dagger and a.distill), "--dagger and --distill are separate plans"
     assert a.dagger or a.distill or not a.half, "--half needs --dagger or --distill"
     assert a.dagger or a.distill or not a.memory_log, "--memory-log needs --dagger or --distill"

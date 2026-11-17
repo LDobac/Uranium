@@ -300,3 +300,50 @@ def test_m2_teacher_t1_config_044_r8(tmp_path):
     assert {k: x for k, x in cfg["data"].items() if k not in dskip} == {k: x for k, x in ref["data"].items() if k not in dskip}
     assert cfg["lr"] * cfg["s2_lr_scale"] == pytest.approx(3e-5) and cfg["min_lr"] * cfg["s2_lr_scale"] == pytest.approx(3e-7)
     assert fp != ref_fp
+
+
+def test_m2_teacher_t2_config_044_r8(tmp_path):
+    from uranium.model.config import model_variant
+
+    root = Path(__file__).resolve().parents[2] / "config"
+    p = root / "bc_m2_teacher_t2.toml"
+    new, gn = (_flat(_toml(root / f)) for f in (p.name, "bc_m2_gn_t1.toml"))
+    assert new.keys() == gn.keys(), "gn's tables, no distill share"
+    assert {k for k in gn if new[k] != gn[k]} <= {"data.seed"} | _COUNTED
+    assert new["data.seed"] == 18 and new["data.subsample.keep_sources"] == ["botgen", "dagger"]
+    assert new["data.chain_start_sources"] == ["botgen"]
+    assert vars(model_variant(str(p))) == {**_ALL_ON, "spatial_norm": 16}
+    text = p.read_text(encoding="utf-8").replace("\r\n", "\n")
+    if all(new[k] == 0 for k in _RACE_FRACTIONS):
+        assert (new["steps.s2"], new["steps.s2_warmup"]) == (0, 0)
+        with pytest.raises(Exception, match="fraction_by_race"):
+            _bc(p, "s2")
+        table = "[data.subsample.fraction_by_race]\nT = 0.0\nP = 0.0\nZ = 0.0\n"
+        assert text.count(table) == 1
+        p = tmp_path / "count.toml"
+        p.write_text(text.replace(table, ""), encoding="utf-8")
+    else:
+        assert all(0 < new[k] <= 1 for k in _RACE_FRACTIONS) and new["steps.s2"] > 0
+        assert new["steps.s2_warmup"] == int(new["steps.s2"] * 0.05 + 0.5)
+    cfg, fp = _bc(p, "s2")
+    ref, ref_fp = _bc(root / "bc_m2_gn_t1.toml", "s2")
+    assert "fraction_by_source" not in cfg["data"]["subsample"]
+    skip = ("data", "steps", "total_steps", "warmup_steps")
+    assert {k: x for k, x in cfg.items() if k not in skip} == {k: x for k, x in ref.items() if k not in skip}
+    dskip = ("seed", "subsample")
+    assert {k: x for k, x in cfg["data"].items() if k not in dskip} == {k: x for k, x in ref["data"].items() if k not in dskip}
+    assert fp != ref_fp
+
+
+def test_m2_rl_fix3_config_044_r9():
+    root = Path(__file__).resolve().parents[2] / "config"
+    a = (root / "rl_m2_race.toml").read_text(encoding="utf-8").replace("\r\n", "\n").split("\n")
+    b = (root / "rl_m2_fix3.toml").read_text(encoding="utf-8").replace("\r\n", "\n").split("\n")
+    assert len(a) == len(b)
+    changed = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
+    assert [b[i].split(" = ")[0] for i in changed] == ["zerg", "terran", "protoss", "random"]
+    assert b[changed[0] - 1] == "[kl.reference]" and changed == list(range(changed[0], changed[0] + 4))
+    refs = _toml(root / "rl_m2_fix3.toml")["kl"]["reference"]
+    assert len(set(refs.values())) == 1, "all four keys are the RL start model t2"
+    ref = refs["zerg"]
+    assert ref == "" or (ref.startswith("checkpoints/m2-teacher-t2/ckpt-") and ref.split("ckpt-")[1].isdigit())

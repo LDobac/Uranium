@@ -546,6 +546,24 @@ metrics = ["test", "val500", "val500_race", "t1", "t0_tp", "tvz", "rush", "macro
 optional = ["per_action", "ops", "rush_combat"]
 
 [[point]]
+id = "t2"
+family = "bc"
+note = "teacher round t2 (044-R8 (5), user decision 2026-11-17: the teacher-mode leak fix from gn, run m2-teacher-t2), measured as point gn; the 050-R10 gate is not applied, the verdict is the 044-R13 (1) pass criteria against gn"
+run_pattern = "teacher-t2"
+t1_platforms = ["windows", "linux"]
+metrics = ["test", "val500", "val500_race", "t1", "t0_tp", "tvz", "rush", "macro", "teacher_mode", "cue_diag", "dead_channels"]
+optional = ["per_action", "ops", "rush_combat"]
+
+[[point]]
+id = "rl-fix-3"
+family = "rl"
+note = "the final checkpoint of the third path-2 fixed RL run (044-R11, user decision 2026-11-17: run m2-rl-fix-3 from t2), measured as point gn; the 050-R10 gate is not applied, the verdict is the 044-R13 (1) pass criteria against gn"
+run_pattern = "rl-fix-3"
+t1_platforms = ["windows", "linux"]
+metrics = ["t1", "t0_tp", "tvz", "rush", "macro", "teacher_mode", "cue_diag", "dead_channels"]
+optional = ["test", "val500", "val500_race", "per_action", "ops", "rush_combat"]
+
+[[point]]
 id = "rl-fix"
 family = "rl"
 note = "path-2 fixed RL checks (044-R11: every 1.5M agent steps, T1 300 at the end), from D"
