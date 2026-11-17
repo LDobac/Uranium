@@ -166,6 +166,7 @@ class ResBlock(nn.Module):
         self.preact = preact
         self.nonneg_input = nonneg_input
         self.norms: tuple | None = None
+        self.end_relu = False
 
     def inner_act(self, x):
         n = self.norms
@@ -179,7 +180,7 @@ class ResBlock(nn.Module):
             y = x + conv_wgrad(self.c2, self.inner_act(x))
         else:
             y = x + self.c2(self.inner_act(x))
-        return y if self.preact else F.relu(y)
+        return y if self.preact and not self.end_relu else F.relu(y)
 
 
 class GruCell(nn.Module):

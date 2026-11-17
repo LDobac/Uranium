@@ -22,7 +22,11 @@ PER = 4
 PREACT = VariantConfig(spatial_preact=True)
 NORM = VariantConfig(spatial_preact=True, spatial_norm=PER)
 NORM_ALL = replace(VARIANTS["all"], spatial_preact=True, spatial_norm=PER)
+RELU = replace(NORM, spatial_end_relu=True)
+RELU_ALL = replace(NORM_ALL, spatial_end_relu=True)
 CONFIGS = {"norm": NORM, "norm_all": NORM_ALL}
+STRUCTURES = {"norm": NORM, "end_relu": RELU}
+ALL_CONFIGS = CONFIGS | {"end_relu": RELU, "end_relu_all": RELU_ALL}
 PREFIX = ckpt.SPATIAL_NORM_PREFIX
 
 
@@ -53,13 +57,14 @@ def conv(m: nn.Conv2d, x):
     return F.conv2d(x, m.weight, m.bias, m.stride, 1)
 
 
-def block(blk: ResBlock, x, n1, n2):
+def block(blk: ResBlock, x, n1, n2, end: bool = False):
     h = x if n1 is None else F.relu(gn(n1, x))
-    return x + conv(blk.c2, F.relu(gn(n2, conv(blk.c1, h))))
+    y = x + conv(blk.c2, F.relu(gn(n2, conv(blk.c1, h))))
+    return F.relu(y) if end else y
 
 
 def spatial_acts(net, obs, film=None):
-    sp_, n = net.spatial, net.variant.spatial_norm
+    sp_, n, end = net.spatial, net.variant.spatial_norm, net.cfg.variant.spatial_end_relu
     _, e, sp, _, _ = net.encode(obs)
     if film is not None:
         sp = sp_(obs, e, film)
@@ -72,11 +77,11 @@ def spatial_acts(net, obs, film=None):
         y = F.relu(gn(n.down[i], conv(d.conv, x)))
         acts[f"spatial.down{i}.conv"] = y
         acts[f"spatial.down{i}.inner"] = F.relu(gn(n.down_res[i], conv(d.res.c1, y)))
-        x = block(d.res, y, None, n.down_res[i])
+        x = block(d.res, y, None, n.down_res[i], end)
         acts[f"spatial.down{i}.res"] = x
     for j, r in enumerate(sp_.bottleneck):
         acts[f"spatial.bottleneck{j}.inner"] = F.relu(gn(n.bottleneck_mid[j], conv(r.c1, F.relu(gn(n.bottleneck_in[j], x)))))
-        x = block(r, x, n.bottleneck_in[j], n.bottleneck_mid[j])
+        x = block(r, x, n.bottleneck_in[j], n.bottleneck_mid[j], end)
         acts[f"spatial.bottleneck{j}"] = x
     return sp, acts
 
@@ -144,21 +149,23 @@ def test_norm_adds_only_groupnorm_032_ac16(name):
 @pytest.mark.parametrize("wgrad", ["vendor", "bmm"])
 @pytest.mark.parametrize("ch", [8, RES_BMM_MAX_CH + 8])
 @pytest.mark.parametrize("nonneg", [False, True])
-def test_resblock_matches_definition_032_ac16(monkeypatch, nonneg, ch, wgrad):
+@pytest.mark.parametrize("end", [False, True])
+def test_resblock_matches_definition_032_ac16_ac17(monkeypatch, end, nonneg, ch, wgrad):
     monkeypatch.setenv("URANIUM_CONV_WGRAD", wgrad)
     torch.manual_seed(1)
     blk = ResBlock(ch, True, nonneg_input=nonneg)
     norms = shake(nn.ModuleList([group_norm(ch, PER), group_norm(ch, PER)]))
     blk.norms = (None if nonneg else norms[0], norms[1])
+    blk.end_relu = end
     x0 = torch.randn(3, ch, 6, 6)
     x0 = F.relu(x0) if nonneg else x0
     params = [*blk.parameters(), *(p for m in blk.norms if m is not None for p in m.parameters())]
     x = x0.clone().requires_grad_(True)
     y = blk(x)
     x2 = x0.clone().requires_grad_(True)
-    want = block(blk, x2, None if nonneg else norms[0], norms[1])
+    want = block(blk, x2, None if nonneg else norms[0], norms[1], end)
     assert torch.allclose(y, want, atol=1e-5, rtol=1e-5)
-    assert (y < 0).any()
+    assert (y >= 0).all() and (y == 0).any() if end else (y < 0).any()
     with torch.no_grad():
         h = x0 if nonneg else F.relu(gn(norms[0], x0))
         assert torch.allclose(blk.inner_act(x0), F.relu(gn(norms[1], conv(blk.c1, h))), atol=1e-5, rtol=1e-5)
@@ -181,9 +188,10 @@ def test_group_norm_is_per_sample_032_r26():
 
 @pytest.mark.parametrize("wgrad", ["vendor", "bmm"])
 @pytest.mark.parametrize("with_film", [False, True])
-def test_spatial_encoder_matches_definition_032_ac16(monkeypatch, with_film, wgrad):
+@pytest.mark.parametrize("structure", STRUCTURES)
+def test_spatial_encoder_matches_definition_032_ac16_ac17(monkeypatch, structure, with_film, wgrad):
     monkeypatch.setenv("URANIUM_CONV_WGRAD", wgrad)
-    cfg, b, t, obs, _, _ = tiny(NORM)
+    cfg, b, t, obs, _, _ = tiny(STRUCTURES[structure])
     net = norm_net(cfg)
     g = torch.Generator().manual_seed(6)
     film = tuple(torch.randn(b * t, cfg.spatial.stem_channels, generator=g) for _ in range(2)) if with_film else None
@@ -195,6 +203,7 @@ def test_spatial_encoder_matches_definition_032_ac16(monkeypatch, with_film, wgr
         swapped = F.relu(pre * (1.0 + film[0][:, :, None, None]) + film[1][:, :, None, None])
         assert not torch.equal(swapped, pre * (1.0 + film[0][:, :, None, None]) + film[1][:, :, None, None]), "the FiLM output goes negative, so its place matters"
     assert torch.allclose(sp["s8"], x, atol=1e-5)
+    assert (sp["s8"] >= 0).all() if cfg.variant.spatial_end_relu else (sp["s8"] < 0).any()
     for got, i in zip(sp["skips"], range(3), strict=True):
         assert torch.allclose(got, acts[f"spatial.down{i}.res"], atol=1e-5)
     assert torch.allclose(sp["pool"], net.spatial.pool(x.flatten(1)), atol=1e-5)
@@ -212,8 +221,9 @@ def test_stem_pad_and_channels_last_032_ac16():
     assert torch.allclose(got["s8"], want["s8"], atol=1e-5) and torch.allclose(got["pool"], want["pool"], atol=1e-5)
 
 
-def test_monitor_points_under_norm_032_r25():
-    cfg, b, t, obs, labels, priv = tiny(NORM)
+@pytest.mark.parametrize("structure", STRUCTURES)
+def test_monitor_points_under_norm_032_r25(structure):
+    cfg, b, t, obs, labels, priv = tiny(STRUCTURES[structure])
     net = norm_net(cfg)
     st = relu_stats(net, obs, labels, priv, net.init_state(b), t)
     with torch.no_grad():
@@ -228,11 +238,11 @@ def test_monitor_points_under_norm_032_r25():
         assert int(st[name]["never_active"]) == int(want["never_active"]), name
 
 
-@pytest.mark.parametrize("name", CONFIGS)
-def test_step_matches_sequence_032_ac16(name):
+@pytest.mark.parametrize("name", ALL_CONFIGS)
+def test_step_matches_sequence_032_ac16_ac17(name):
     from uranium.model.state import leaves
 
-    cfg, b, t, obs, labels, _ = tiny(CONFIGS[name])
+    cfg, b, t, obs, labels, _ = tiny(ALL_CONFIGS[name])
     net = norm_net(cfg)
     with torch.no_grad():
         seq = net.forward_seq(obs, labels, None, net.init_state(b), t)
@@ -287,9 +297,46 @@ def test_weights_only_graft_032_ac16(tmp_path):
     ckpt.save_model(on, net)
     ckpt.save_meta(on, net.cfg, {}, "f32")
     assert ckpt.load_model(on, graft=PREACT)[0].cfg.variant == NORM
+    for src in (tmp_path, on):
+        relu, _ = ckpt.load_model(src, graft=RELU)
+        assert relu.cfg.variant == RELU and relu.state_dict().keys() == sa.keys()
+        assert all(r.end_relu for r in [*(d.res for d in relu.spatial.downs), *relu.spatial.bottleneck])
+        for k, v in sb.items():
+            assert torch.equal(relu.state_dict()[k], v), k
+    ends = tmp_path / "ends"
+    ends.mkdir()
+    ckpt.save_model(ends, relu)
+    ckpt.save_meta(ends, relu.cfg, {}, "f32")
+    assert ckpt.load_model(ends)[0].cfg.variant == RELU
+    assert ckpt.load_model(ends, graft=NORM)[0].cfg.variant == RELU, "on -> off is not grafted"
 
 
-def test_bc_init_grafts_and_resume_refuses_041_r4(tiny_config, shards, tmp_path, capsys):
+def test_end_relu_switch_032_r27():
+    assert VariantConfig().spatial_end_relu is False and ResBlock(4).end_relu is False
+    assert VariantConfig.from_table({"spatial_preact": True, "spatial_norm": 16, "spatial_end_relu": True}) == VariantConfig(spatial_preact=True, spatial_norm=16, spatial_end_relu=True)
+    for t in ({"spatial_end_relu": True}, {"spatial_preact": True, "spatial_end_relu": True}, {"spatial_preact": True, "spatial_norm": 16, "spatial_end_relu": 1}):
+        with pytest.raises(ValueError):
+            VariantConfig.from_table(t)
+    d = UraniumNetConfig(variant=NORM).to_dict()
+    assert "spatial_end_relu" not in d["variant"] and UraniumNetConfig.from_dict(d).variant == NORM
+    on = UraniumNetConfig(variant=RELU)
+    assert on.to_dict()["variant"]["spatial_end_relu"] is True
+    assert UraniumNetConfig.from_dict(json.loads(json.dumps(on.to_dict()))).variant == RELU
+    assert RELU.grafts_onto(PREACT) and RELU.grafts_onto(NORM) and NORM.grafts_onto(PREACT)
+    for req, base in ((NORM, RELU), (RELU, RELU), (NORM, NORM), (PREACT, NORM), (RELU, replace(NORM, spatial_norm=2)), (replace(RELU, core_skip=True), NORM), (RELU, VariantConfig())):
+        assert not req.grafts_onto(base), (req, base)
+    cfg, *_ = tiny(RELU)
+    a, b = net_of(cfg, 9), net_of(replace(cfg, variant=NORM), 9)
+    sa, sb = a.state_dict(), b.state_dict()
+    assert list(sa) == list(sb) and all(torch.equal(sa[k], sb[k]) for k in sb), "no parameters added"
+    blocks = lambda n: [*(x.res for x in n.spatial.downs), *n.spatial.bottleneck]  # noqa: E731
+    assert all(r.end_relu and r.preact for r in blocks(a)) and not any(r.end_relu for r in blocks(b))
+    cfg.variant = VariantConfig(spatial_preact=True, spatial_end_relu=True)
+    with pytest.raises(ValueError, match="032-R27"):
+        net_of(cfg)
+
+
+def test_bc_init_grafts_and_resume_refuses_041_r4_032_ac17(tiny_config, shards, tmp_path, capsys):
     cfg = bc_cfg(tiny_config)
     a = BcTrainer(cfg, make_net(PREACT), CPU, "f32")
     a.train_batch(feeder(tiny_config, shards).next(), 3e-3, 0)
@@ -318,9 +365,19 @@ def test_bc_init_grafts_and_resume_refuses_041_r4(tiny_config, shards, tmp_path,
     assert all(torch.equal(moved[k], pr[k]) for k in moved)
     with pytest.raises(ValueError, match=r"\[model\]"):
         BcTrainer.make(cfg_json, "init", str(run), 0, "lstm", CPU, "f32", PREACT)
+    with pytest.raises(ValueError, match=r"\[model\]"):
+        BcTrainer.make(cfg_json, "resume", str(run), 0, "lstm", CPU, "f32", RELU)
+    capsys.readouterr()
+    for src, note in ((start, "spatial_norm = 4, spatial_end_relu = True added to the checkpoint's model, GroupNorm starts"), (run, "--init: spatial_end_relu = True added to the checkpoint's model (")):
+        u = BcTrainer.make(cfg_json, "init", str(src), 0, "lstm", CPU, "f32", RELU)
+        assert note in capsys.readouterr().out
+        assert u.net.cfg.variant == RELU
+        ps, pu = params_of(a.net if src is start else t.net), params_of(u.net)
+        assert all(torch.equal(ps[k], pu[k]) for k in ps) and len(pu) == len(pt)
+    assert json.loads(u.train_batch(feeder(tiny_config, shards).next(), 3e-3, 0))["total"] is not None
 
 
-def test_gn_t1_config_032_r26():
+def test_gn_t1_configs_032_r26_r27():
     import tomllib
 
     def flat(t, pre=""):
@@ -337,3 +394,6 @@ def test_gn_t1_config_032_r26():
     assert v.grafts_onto(model_variant(str(root / "bc_m2_teacher_t1.toml")))
     c = UraniumNetConfig().spatial
     assert not any(ch % v.spatial_norm for ch in (c.stem_channels, *c.stages))
+    relu = flat(tomllib.loads((root / "bc_m2_gn_relu_t1.toml").read_text(encoding="utf-8")))
+    assert {k for k in relu.keys() | new.keys() if relu.get(k) != new.get(k)} == {"model.spatial_end_relu"} and relu["model.spatial_end_relu"] is True
+    assert model_variant(str(root / "bc_m2_gn_relu_t1.toml")).grafts_onto(model_variant(str(root / "bc_m2_teacher_t1.toml")))

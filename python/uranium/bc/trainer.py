@@ -25,6 +25,7 @@ VALUE_WIN = 0
 ADAM_BETAS = (0.9, 0.999)
 ADAM_EPS = 1e-5
 PAD_KEY = "URANIUM_BC_PAD_ENTITIES"
+GRAFT_KEYS = ("spatial_norm", "spatial_end_relu")
 
 
 def dropout_seed(seed: int, step: int, group: int) -> int:
@@ -92,8 +93,11 @@ class BcTrainer:
             net = UraniumNet(new_net_config(core, cfg["value"].get("win_open") is not None, variant))
         else:
             net, meta = ckpt.load_model(Path(dir), graft=variant if start == "init" else None)
-            if net.cfg.variant.spatial_norm and not (meta["config"].get("variant") or {}).get("spatial_norm"):
-                print(f"[bc] --init: spatial_norm = {variant.spatial_norm} added to the checkpoint's model, GroupNorm starts at scale 1, bias 0 (041-R4, 032-R26)", flush=True)
+            was = meta["config"].get("variant") or {}
+            added = [f"{k} = {getattr(net.cfg.variant, k)}" for k in GRAFT_KEYS if getattr(net.cfg.variant, k) and not was.get(k)]
+            if added:
+                fresh = ", GroupNorm starts at scale 1, bias 0" if not was.get("spatial_norm") else ""
+                print(f"[bc] --init: {', '.join(added)} added to the checkpoint's model{fresh} (041-R4, 032-R26, 032-R27)", flush=True)
             if net.cfg.core.kind != CORES[core]:
                 raise ValueError(f"checkpoint core {net.cfg.core.kind} != requested {CORES[core]}")
             if net.cfg.variant != variant:

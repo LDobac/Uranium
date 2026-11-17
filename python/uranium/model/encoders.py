@@ -165,7 +165,7 @@ class SpatialEncoder(nn.Module):
         self.stem_pad: bool | None = None
         self.norms: tuple | None = None
 
-    def set_norms(self, n: SpatialNorms) -> None:
+    def set_norms(self, n: SpatialNorms, end_relu: bool = False) -> None:
         if not all(r.preact for r in self.bottleneck):
             raise ValueError("[model] spatial_norm needs spatial_preact = true (032-R26)")
         self.norms = (n.stem,)
@@ -174,6 +174,8 @@ class SpatialEncoder(nn.Module):
             d.res.norms = (None, b)
         for r, a, b in zip(self.bottleneck, n.bottleneck_in, n.bottleneck_mid, strict=True):
             r.norms = (a, b)
+        for r in [*(d.res for d in self.downs), *self.bottleneck]:
+            r.end_relu = end_relu
 
     def stem_act(self, x):
         return F.relu(x if self.norms is None else self.norms[0](x))

@@ -127,7 +127,7 @@ class UraniumNet(nn.Module):
         self.value = ValueHeads(cfg.input, cfg.value, cfg.core.hidden, cfg.scalar.z_out, cfg.scalar.race_emb)
         self.variant = Variants(cfg, d_in) if cfg.variant.any() else None
         if self.variant is not None and self.variant.spatial_norm is not None:
-            self.spatial.set_norms(self.variant.spatial_norm)
+            self.spatial.set_norms(self.variant.spatial_norm, cfg.variant.spatial_end_relu)
         cols = cols if cols is not None else action_columns()
         assert len(cols["uses_select"]) == cfg.input.actions, "action table size != config.input.actions"
         self._cols = cols

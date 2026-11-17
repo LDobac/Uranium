@@ -38,7 +38,7 @@ def test_lambda_run_configs_041_r24():
     assert runs["seed2"] == (on, True, True, [1, 8, 32], 2)
 
 
-_ALL_ON = dict(terrain=True, ctx_token=True, attn_pool=True, outer=32, bypass=True, spatial_preact=True, core_skip=True, aux_priv=True, aux_jepa=[1, 8, 32], spatial_norm=0)
+_ALL_ON = dict(terrain=True, ctx_token=True, attn_pool=True, outer=32, bypass=True, spatial_preact=True, core_skip=True, aux_priv=True, aux_jepa=[1, 8, 32], spatial_norm=0, spatial_end_relu=False)
 _STRUCT = ("terrain", "ctx_token", "attn_pool", "outer")
 
 

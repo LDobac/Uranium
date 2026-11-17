@@ -92,7 +92,7 @@ class ValueConfig:
     win_open: bool = False
 
 
-MODEL2_KEYS = ("bypass", "spatial_preact", "core_skip", "aux_priv", "aux_jepa", "spatial_norm")
+MODEL2_KEYS = ("bypass", "spatial_preact", "core_skip", "aux_priv", "aux_jepa", "spatial_norm", "spatial_end_relu")
 AUX_JEPA_SLOTS = 3
 
 
@@ -108,12 +108,13 @@ class VariantConfig:
     aux_priv: bool = False
     aux_jepa: list = field(default_factory=list)
     spatial_norm: int = 0
+    spatial_end_relu: bool = False
 
     def arch(self) -> bool:
         return self.terrain or self.ctx_token or self.attn_pool or self.outer > 0
 
     def model2(self) -> bool:
-        return self.bypass or self.spatial_preact or self.core_skip or self.aux_priv or bool(self.aux_jepa) or self.spatial_norm != 0
+        return self.bypass or self.spatial_preact or self.core_skip or self.aux_priv or bool(self.aux_jepa) or self.spatial_norm != 0 or self.spatial_end_relu
 
     def any(self) -> bool:
         return self.arch() or self.model2()
@@ -145,10 +146,14 @@ class VariantConfig:
             raise ValueError(f"[model] spatial_norm = {self.spatial_norm}: expected 0 (off) or the channels per group (032-R26)")
         if self.spatial_norm and not self.spatial_preact:
             raise ValueError(f"[model] spatial_norm = {self.spatial_norm} needs spatial_preact = true (032-R26)")
+        if self.spatial_end_relu and not self.spatial_norm:
+            raise ValueError("[model] spatial_end_relu = true needs spatial_norm (032-R27)")
         return self
 
     def grafts_onto(self, base: "VariantConfig") -> bool:
-        return self.spatial_norm > 0 and base.spatial_norm == 0 and replace(self, spatial_norm=0) == base
+        if self == base or self.spatial_norm <= 0 or base.spatial_norm not in (0, self.spatial_norm) or (base.spatial_end_relu and not self.spatial_end_relu):
+            return False
+        return replace(self, spatial_norm=base.spatial_norm, spatial_end_relu=base.spatial_end_relu) == base
 
     @classmethod
     def from_table(cls, table: dict | None) -> "VariantConfig":
