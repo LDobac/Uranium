@@ -99,7 +99,7 @@ def test_trainers_refuse_aux_mismatch_041_r23():
 
     cfg, *_ = tiny()
     net = net_of(cfg)
-    bc = {"lr": 1e-3, "weight_decay": 0.0, "seq_len": 4, "lanes": 2, "micro_lanes": 0, "value": {}}
+    bc = {"lr": 1e-3, "weight_decay": 0.0, "seq_len": 4, "lanes": 2, "micro_lanes": 0, "pad_entities": 0, "value": {}}
     with pytest.raises(ValueError, match="041-R23"):
         BcTrainer(dict(bc, aux={"priv": 0.2}), net, torch.device("cpu"), "f32")
     assert BcTrainer(bc, net, torch.device("cpu"), "f32").aux == {}

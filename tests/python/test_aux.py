@@ -154,7 +154,7 @@ def test_bc_aux_counts_match_the_group_masks_041_r23(tiny_config, shards):
 
 def test_bc_aux_loss_masks_padding_and_missing_privileged_041_ac6():
     net = make_net(AUX)
-    tr = BcTrainer({"lr": 1e-3, "weight_decay": 0.0, "seq_len": 3, "lanes": 2, "micro_lanes": 0, "value": {}, "aux": {"priv": 1.0, "jepa": 1.0}}, net, CPU, "f32")
+    tr = BcTrainer({"lr": 1e-3, "weight_decay": 0.0, "seq_len": 3, "lanes": 2, "micro_lanes": 0, "pad_entities": 0, "value": {}, "aux": {"priv": 1.0, "jepa": 1.0}}, net, CPU, "f32")
     b, t, p, d = 2, 3, net.cfg.input.privileged, net.cfg.entity.d_model + net.cfg.spatial.pool
     g = torch.Generator().manual_seed(4)
     out = {"aux_priv": torch.randn(b * t, p, generator=g), "aux_jepa": {k: torch.randn(b * t, d, generator=g) for k in KS}, "jepa_target": torch.randn(b * t, d, generator=g)}
