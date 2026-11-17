@@ -712,3 +712,5 @@
 - 09:10 — 반영: RL 학습기 compile·channels-last 스위치(기본 끔, 커밋 `2e5b92e`·`06358d8`·`b760226`) ([032-R19](spec/2026_10_15_22_24_032-model-architecture.md), [opt_review](report/review/2026_11_16_21_25_opt_review.md) 7.12·7.15절)
 - 09:30 — 배포·확인: Linux ROCm 호스트 두 대에 `bab6cbc` 배포·재빌드, 추론 graph 배치 4·BC 패딩 32 기본 적용 확인(BC 벤치 10.68 → 10.40초), 시작 스캔 캐시 미리 채움 ([opt_review](report/review/2026_11_16_21_25_opt_review.md) 7.16절·10절)
 - 10:0x — 결정(사용자)·반영: 공간 인코더에 GroupNorm 스위치 `spatial_norm`(pre-activation ResNet 위치, 그룹당 16채널), Checkpoint 2에서 BC 3,000 update로 죽은 채널이 살아나는지 시험 ([032-R26](spec/2026_10_15_22_24_032-model-architecture.md), [gn_resume](report/experiment/2026_11_17_10_05_gn_resume.md))
+- 10:03 — 시작: `m2-gn-t1`(Windows CUDA 호스트, Checkpoint 2 가중치 + GroupNorm, BC 3,000 update); update 100에서 c3·r4 죽은 채널 0 ([gn_resume](report/experiment/2026_11_17_10_05_gn_resume.md))
+- 10:4x — 결정(사용자)·반영: 같은 구조에 블록 끝 ReLU만 다시 넣는 스위치 `spatial_end_relu`로 두 번째 시험 `m2-gn-relu-t1` ([032-R27](spec/2026_10_15_22_24_032-model-architecture.md), [gn_resume](report/experiment/2026_11_17_10_05_gn_resume.md))
