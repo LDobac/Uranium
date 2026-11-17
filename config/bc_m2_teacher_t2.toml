@@ -21,9 +21,9 @@ target_loc = 1.0
 
 [steps]
 s1 = 0
-s2 = 0
+s2 = 3258
 ablation_a = 0
-s2_warmup = 0
+s2_warmup = 163
 
 [value]
 win = 0.5
@@ -39,13 +39,13 @@ checkpoint_minutes = 60
 chain_start_sources = ["botgen"]
 
 [data.subsample]
-fraction = 0.0857
+fraction = 0.0988
 keep_sources = ["botgen", "dagger"]
 
 [data.subsample.fraction_by_race]
-T = 0.0
-P = 0.0
-Z = 0.0
+T = 0.09
+P = 0.099
+Z = 0.1072
 
 [model]
 terrain = true
