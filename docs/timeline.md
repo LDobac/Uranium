@@ -725,3 +725,4 @@
 - 17:5x — 결정(사용자): 다음 작업(계획형 JEPA, 교사 모드 누출 수정, T1 패배 분석)의 바탕 가중치는 `m2-gn-t1e2/ckpt-2844`, 정식 Checkpoint 지정은 아님 ([gn_resume](report/experiment/2026_11_17_10_05_gn_resume.md) 4절)
 - 17:1x — 정정: 바로 위 줄의 시각 17:5x는 17:1x
 - 17:29 — 결정(사용자): `gn` 지점은 050-R10 게이트 미적용·지표 기록만, T1 플랫폼 고정 안 함; 죽은 채널 경보 대상 `S8` 상수 채널 확인(블록 출력 제외, 문턱 50% 유지 — 끝 ReLU 시험의 13/128 같은 부분 붕괴는 경보 없이 로그 열로 봄, [gn_resume](report/experiment/2026_11_17_10_05_gn_resume.md) 3절); RL 장치 비교 테스트는 첫 update만 비교 ([050-R9](spec/2026_10_15_22_24_050-evaluation.md), [041-R25](spec/2026_10_15_22_24_041-imitation-learning.md), [opt_review](report/review/2026_11_16_21_25_opt_review.md) 7.15절)
+- 19:3x — 결정(사용자)·끝: torch를 ROCm 10.1에 맞춰 재빌드(같은 커밋·옵션, 약 1시간 38분), 장치 테스트·벤치 스위트 통과, BC 벤치 손실·속도·메모리 같은 범위, 두 Linux ROCm 호스트 전환·MIOpen 검사 건너뛰기 제거(둘째 호스트도 같은 날 ROCm 10.1로 올림) ([rocm_10_1](report/investigation/2026_11_17_16_27_rocm_10_1.md) 9절)
