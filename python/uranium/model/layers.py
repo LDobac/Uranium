@@ -149,6 +149,15 @@ def conv_wgrad(conv: nn.Conv2d, x):
     return conv(x)
 
 
+GROUP_NORM_EPS = 1e-5
+
+
+def group_norm(channels: int, per_group: int) -> nn.GroupNorm:
+    if per_group < 1 or channels % per_group:
+        raise ValueError(f"[model] spatial_norm = {per_group}: {channels} channels do not divide into groups of {per_group} (032-R26)")
+    return nn.GroupNorm(channels // per_group, channels, eps=GROUP_NORM_EPS, affine=True)
+
+
 class ResBlock(nn.Module):
     def __init__(self, c: int, preact: bool = False, nonneg_input: bool = False):
         super().__init__()
@@ -156,13 +165,14 @@ class ResBlock(nn.Module):
         self.c2 = conv3x3(c, c, 1)
         self.preact = preact
         self.nonneg_input = nonneg_input
+        self.norms: tuple | None = None
 
     def inner_act(self, x):
+        n = self.norms
         if self.preact and not self.nonneg_input:
-            x = F.relu(x)
-        if x.shape[1] <= RES_BMM_MAX_CH:
-            return F.relu(conv_wgrad(self.c1, x))
-        return F.relu(self.c1(x))
+            x = F.relu(x if n is None else n[0](x))
+        y = conv_wgrad(self.c1, x) if x.shape[1] <= RES_BMM_MAX_CH else self.c1(x)
+        return F.relu(y if n is None else n[1](y))
 
     def forward(self, x):
         if x.shape[1] <= RES_BMM_MAX_CH:

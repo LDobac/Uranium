@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from uranium.env import env_choice
 from uranium.kernels import ENTITY_ATTN_MODES
 from uranium.model.config import EntityConfig, InputDims, ScalarConfig, SpatialConfig
-from uranium.model.layers import Attention, FeedForward, Linear, Mlp, ResBlock, conv3x3, conv_layout, conv_wgrad, masked_mean, stem_pad
+from uranium.model.layers import Attention, FeedForward, Linear, Mlp, ResBlock, conv3x3, conv_layout, conv_wgrad, group_norm, masked_mean, stem_pad
 
 BIAS_GRAD_MODES = ("embedding", "index_add", "table_t")
 
@@ -127,6 +127,24 @@ class Down(nn.Module):
         super().__init__()
         self.conv = conv3x3(c_in, c_out, 2)
         self.res = ResBlock(c_out, preact, nonneg_input=True)
+        self.norms: tuple | None = None
+
+    def act(self, x):
+        return F.relu(x if self.norms is None else self.norms[0](x))
+
+
+BOTTLENECK_BLOCKS = 2
+
+
+class SpatialNorms(nn.Module):
+    def __init__(self, c: SpatialConfig, per_group: int):
+        super().__init__()
+        last = c.stages[-1]
+        self.stem = group_norm(c.stem_channels, per_group)
+        self.down = nn.ModuleList(group_norm(s, per_group) for s in c.stages)
+        self.down_res = nn.ModuleList(group_norm(s, per_group) for s in c.stages)
+        self.bottleneck_in = nn.ModuleList(group_norm(last, per_group) for _ in range(BOTTLENECK_BLOCKS))
+        self.bottleneck_mid = nn.ModuleList(group_norm(last, per_group) for _ in range(BOTTLENECK_BLOCKS))
 
 
 class SpatialEncoder(nn.Module):
@@ -141,10 +159,24 @@ class SpatialEncoder(nn.Module):
         self.scatter = Linear(d_entity, c.scatter_channels)
         self.stem = conv3x3(inp.spatial_channels + c.scatter_channels, c.stem_channels, 1)
         self.downs = nn.ModuleList(downs)
-        self.bottleneck = nn.ModuleList(ResBlock(c_in, preact) for _ in range(2))
+        self.bottleneck = nn.ModuleList(ResBlock(c_in, preact) for _ in range(BOTTLENECK_BLOCKS))
         self.pool = Linear(c_in * side * side, c.pool)
         self.channels_last: bool | None = None
         self.stem_pad: bool | None = None
+        self.norms: tuple | None = None
+
+    def set_norms(self, n: SpatialNorms) -> None:
+        if not all(r.preact for r in self.bottleneck):
+            raise ValueError("[model] spatial_norm needs spatial_preact = true (032-R26)")
+        self.norms = (n.stem,)
+        for d, a, b in zip(self.downs, n.down, n.down_res, strict=True):
+            d.norms = (a,)
+            d.res.norms = (None, b)
+        for r, a, b in zip(self.bottleneck, n.bottleneck_in, n.bottleneck_mid, strict=True):
+            r.norms = (a, b)
+
+    def stem_act(self, x):
+        return F.relu(x if self.norms is None else self.norms[0](x))
 
     def forward(self, obs: dict, e, film=None):
         spatial = obs["spatial"]
@@ -156,13 +188,13 @@ class SpatialEncoder(nn.Module):
             x = F.conv2d(conv_layout(torch.cat(parts, 1), self.channels_last), F.pad(self.stem.weight, (0, 0, 0, 0, 0, pad)), self.stem.bias, self.stem.stride, self.stem.padding)
         else:
             x = conv_wgrad(self.stem, conv_layout(torch.cat(parts, 1), self.channels_last))
-        x = F.relu(x)
+        x = self.stem_act(x)
         if film is not None:
             g, b = film
             x = x * (1.0 + g.to(x.dtype)[:, :, None, None]) + b.to(x.dtype)[:, :, None, None]
         outs = []
         for d in self.downs:
-            x = d.res(F.relu(conv_wgrad(d.conv, x)))
+            x = d.res(d.act(conv_wgrad(d.conv, x)))
             outs.append(x)
         for r in self.bottleneck:
             x = r(x)

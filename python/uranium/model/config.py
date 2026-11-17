@@ -1,5 +1,5 @@
 import math
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, replace
 
 
 def _load(cls, d: dict | None):
@@ -92,7 +92,7 @@ class ValueConfig:
     win_open: bool = False
 
 
-MODEL2_KEYS = ("bypass", "spatial_preact", "core_skip", "aux_priv", "aux_jepa")
+MODEL2_KEYS = ("bypass", "spatial_preact", "core_skip", "aux_priv", "aux_jepa", "spatial_norm")
 AUX_JEPA_SLOTS = 3
 
 
@@ -107,12 +107,13 @@ class VariantConfig:
     core_skip: bool = False
     aux_priv: bool = False
     aux_jepa: list = field(default_factory=list)
+    spatial_norm: int = 0
 
     def arch(self) -> bool:
         return self.terrain or self.ctx_token or self.attn_pool or self.outer > 0
 
     def model2(self) -> bool:
-        return self.bypass or self.spatial_preact or self.core_skip or self.aux_priv or bool(self.aux_jepa)
+        return self.bypass or self.spatial_preact or self.core_skip or self.aux_priv or bool(self.aux_jepa) or self.spatial_norm != 0
 
     def any(self) -> bool:
         return self.arch() or self.model2()
@@ -140,7 +141,14 @@ class VariantConfig:
             raise ValueError(f"[model] aux_jepa = {ks!r}: a k appears twice (032-R24)")
         if len(ks) > AUX_JEPA_SLOTS:
             raise ValueError(f"[model] aux_jepa = {ks!r}: at most {AUX_JEPA_SLOTS} k (the logs' aux_jepa_slot1..{AUX_JEPA_SLOTS}, 041-R23 ⑤)")
+        if self.spatial_norm < 0:
+            raise ValueError(f"[model] spatial_norm = {self.spatial_norm}: expected 0 (off) or the channels per group (032-R26)")
+        if self.spatial_norm and not self.spatial_preact:
+            raise ValueError(f"[model] spatial_norm = {self.spatial_norm} needs spatial_preact = true (032-R26)")
         return self
+
+    def grafts_onto(self, base: "VariantConfig") -> bool:
+        return self.spatial_norm > 0 and base.spatial_norm == 0 and replace(self, spatial_norm=0) == base
 
     @classmethod
     def from_table(cls, table: dict | None) -> "VariantConfig":

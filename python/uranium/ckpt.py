@@ -12,6 +12,7 @@ META_FILE = "meta.json"
 BURN_WEIGHTS_FILE = "model.bpk"
 OPTIM_MAIN = "main"
 AGENTS_DIR = "agents"
+SPATIAL_NORM_PREFIX = "variant.spatial_norm."
 
 
 def schema_versions() -> tuple[int, int]:
@@ -73,14 +74,19 @@ def no_dropout(cfg: UraniumNetConfig) -> UraniumNetConfig:
     return cfg
 
 
-def load_model(dir: Path, device="cpu", adjust=None) -> tuple[UraniumNet, dict]:
+def load_model(dir: Path, device="cpu", adjust=None, graft=None) -> tuple[UraniumNet, dict]:
     meta = read_meta(dir)
     cfg = UraniumNetConfig.from_dict(meta["config"])
     if adjust is not None:
         cfg = adjust(cfg)
+    grafted = graft is not None and graft.grafts_onto(cfg.variant)
+    if grafted:
+        cfg.variant = graft
     net = UraniumNet(cfg)
     sd = load_file(str(Path(dir) / WEIGHTS_FILE))
     missing, unexpected = net.load_state_dict(sd, strict=False)
+    if grafted:
+        missing = [k for k in missing if not k.startswith(SPATIAL_NORM_PREFIX)]
     if missing or unexpected:
         raise ValueError(f"{dir}: missing tensors {missing}, unexpected {unexpected}")
     return net.to(device), meta

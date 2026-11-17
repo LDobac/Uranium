@@ -1,5 +1,6 @@
 import json
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from uranium.model.monitor import SPEC_COLUMNS
 
 ROOT = Path(__file__).resolve().parents[2]
 ALL_ON = VariantConfig(terrain=True, ctx_token=True, attn_pool=True, outer=32, bypass=True, spatial_preact=True, core_skip=True, aux_priv=True, aux_jepa=[1, 8, 32])
+SWITCHES = {"all_on": ALL_ON, "norm_032_ac16": replace(ALL_ON, spatial_norm=16)}
 
 
 def test_all_on_matches_the_lambda_base_config_041_r24():
@@ -30,9 +32,9 @@ def copied(state):
     return rebuild(state, iter([t.clone() for t in leaves(state)]))
 
 
-def full_net(dev) -> UraniumNet:
+def full_net(dev, variant: VariantConfig = ALL_ON) -> UraniumNet:
     torch.manual_seed(0)
-    net = UraniumNet(new_net_config("gtrxl", True, ALL_ON), action_columns())
+    net = UraniumNet(new_net_config("gtrxl", True, variant), action_columns())
     g = torch.Generator().manual_seed(17)
     with torch.no_grad():
         for p in list(net.variant.bypass.out.parameters()) + list(net.variant.core_skip.parameters()):
@@ -63,12 +65,13 @@ def run_steps(net, act, dev, prec, steps: int, exact: bool, check=None):
 
 
 @pytest.mark.gpu
+@pytest.mark.parametrize("switches", SWITCHES)
 @torch.no_grad()
-def test_graphed_act_matches_eager_all_switches_032_ac13():
+def test_graphed_act_matches_eager_all_switches_032_ac13(switches):
     if not torch.cuda.is_available():
         pytest.skip("no CUDA / ROCm device")
     _, dev, prec = resolve(None)
-    net = full_net(dev)
+    net = full_net(dev, SWITCHES[switches])
     graphed = GraphedAct(net.act, dev, prec)
     exact = torch.version.hip is None
     run_steps(net, graphed, dev, prec, 70, exact, check=lambda i: (len(graphed.graphs) == 1) or pytest.fail(f"step {i}: {len(graphed.graphs)} graphs"))
@@ -76,8 +79,9 @@ def test_graphed_act_matches_eager_all_switches_032_ac13():
 
 
 @pytest.mark.gpu
+@pytest.mark.parametrize("switches", SWITCHES)
 @torch.no_grad()
-def test_compiled_graphed_act_no_recompile_032_ac13(monkeypatch):
+def test_compiled_graphed_act_no_recompile_032_ac13(monkeypatch, switches):
     if not torch.cuda.is_available() or torch.version.hip is not None:
         pytest.skip("no CUDA device (the compiled act is the CUDA host default)")
     import torch._dynamo.utils as du
@@ -86,7 +90,7 @@ def test_compiled_graphed_act_no_recompile_032_ac13(monkeypatch):
         monkeypatch.setenv(k, v)
     torch._dynamo.reset()
     _, dev, prec = resolve(None)
-    net = full_net(dev)
+    net = full_net(dev, SWITCHES[switches])
     graphed = GraphedAct(compiled(net.act, "URANIUM_INFER_COMPILE"), dev, prec)
     assert graphed.act is not net.act
     s_eager, s_graph = net.init_state(4, dev), net.init_state(4, dev)
@@ -152,7 +156,8 @@ spatial_every = 2
 
 
 @pytest.mark.gpu
-def test_bc_compiled_all_switches_no_recompile_per_batch_032_ac13(tmp_path, shards, monkeypatch):
+@pytest.mark.parametrize("switches", SWITCHES)
+def test_bc_compiled_all_switches_no_recompile_per_batch_032_ac13(tmp_path, shards, monkeypatch, switches):
     if not torch.cuda.is_available() or torch.version.hip is not None:
         pytest.skip("no CUDA device (reduce-overhead is the CUDA training default)")
     import torch._dynamo.utils as du
@@ -168,7 +173,7 @@ def test_bc_compiled_all_switches_no_recompile_per_batch_032_ac13(tmp_path, shar
     assert cfg["micro_lanes"] == 2 and cfg["aux"] == {"priv": 0.2, "jepa": 0.1} and cfg["monitor"] == {"spatial_every": 2}, cfg
     dev = torch.device("cuda")
     torch.manual_seed(1)
-    tr = BcTrainer(cfg, UraniumNet(new_net_config("gtrxl", True, ALL_ON), action_columns()), dev, "bf16")
+    tr = BcTrainer(cfg, UraniumNet(new_net_config("gtrxl", True, SWITCHES[switches]), action_columns()), dev, "bf16")
     assert tr.graphs
 
     def feeder():

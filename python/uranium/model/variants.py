@@ -6,6 +6,7 @@ import torch.nn as nn
 from uranium.kernels import MASKED
 from uranium.model.auxiliary import aux_jepa_modules, aux_priv_module
 from uranium.model.config import UraniumNetConfig
+from uranium.model.encoders import SpatialNorms
 from uranium.model.value import fixed_linear
 
 TERRAIN_CHANNELS = 10
@@ -224,6 +225,7 @@ class Variants(nn.Module):
             d_y = d + cfg.spatial.pool
             self.aux_priv = aux_priv_module(cfg.core.hidden, cfg.input.privileged, SEED_AUX_PRIV) if vc.aux_priv else None
             self.aux_jepa = aux_jepa_modules(cfg.core.hidden, d_y, vc.aux_jepa, seed_aux_jepa) if vc.aux_jepa else None
+            self.spatial_norm = SpatialNorms(cfg.spatial, vc.spatial_norm) if vc.spatial_norm else None
 
     def entity_inputs(self, obs: dict, c, h_o):
         add = self.terrain(terrain_cells(obs, self.terrain_ch)) if self.terrain is not None else None
