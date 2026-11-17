@@ -741,3 +741,5 @@
 - 00:56 — 끝: BC `m2-teacher-t2` 3,258 update(update당 1.46초); 저그 판 재생 불일치 25/600(이전 라운드보다 많음) ([teacher_leak_fix](report/experiment/2026_11_17_20_08_teacher_leak_fix.md) 4절)
 - 01:00 — 측정 시작: `m2-teacher-t2/ckpt-3258`를 지점 `t2`로 gn과 같은 표(Windows CUDA 호스트만) ([050-R9](spec/2026_10_15_22_24_050-evaluation.md), [044-R13](spec/2026_11_14_08_18_044-self-game-distillation.md))
 - 01:10 — 끝·새 리포트: B1 분기 1,272판 무효 0 — 벙커 90초 금지 `held_8m` −16%p, 벙커 한 결정 강제 `held_s` +19%p, 마린 효과 없음; S0b 채점은 한 결정 효과를 못 맞힘(부호 일치 약 0.5), 내 상태 변화 방향은 맞힘(k8 0.91) ([branch_b1](report/experiment/2026_11_18_01_10_branch_b1.md), [051-R13](spec/2026_11_12_12_39_051-branch-games.md))
+- 04:06 — 측정 끝·결과: t2 — `zerg_build` T0 4/64(gn 10)·T1 16/195(26), `tp_style` T0 55/64·T1 142/195, 승 T0 테란 + 프로토스 38/64(36)·T1 19/195(27)·T1 전체 49/299(49/300), TvZ 27/32, 러시 막음 56(54), val500 71.99%(71.94%) → 합격 기준 불합격(`zerg_build`·T1 승) ([044-R13](spec/2026_11_14_08_18_044-self-game-distillation.md), [teacher_leak_fix](report/experiment/2026_11_17_20_08_teacher_leak_fix.md) 4절)
+- 04:1x — 결정(사용자): 기준 완화 — t2에서 `m2-rl-fix-3` 시작, RL 끝이 조건을 못 넘으면 최종 가중치 t2 ([044-R13](spec/2026_11_14_08_18_044-self-game-distillation.md) ⑤)

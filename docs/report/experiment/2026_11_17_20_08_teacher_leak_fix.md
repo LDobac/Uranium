@@ -110,3 +110,19 @@ gn 기준 값(새 판별, 테란 + 프로토스):
 - 23:32 — `mix-fractions`: 교사 + dagger 몫 0.6496, 그 안 저그 51.1%·프로토스 29.5%·테란 19.4%(`<shared>/eval/dagger-m2-t2-20261117/logs/t2_mixfrac.json`). 설정 `config/bc_m2_teacher_t2.toml`.
 - 23:32~00:56 — BC `m2-teacher-t2` 3,258 update(Windows CUDA 호스트, update당 1.46초), 체크포인트 `ckpt-3258`. 마지막 100 update 손실 total 6.30(처음 100 5.95, t1도 같은 모양). 로그 `<shared>/eval/m2-lineage/train_logs/m2-teacher-t2.log`.
 - 11-18 01:00 — t2 측정 시작(지점 `t2`, gn과 같은 표, Windows CUDA 호스트만 — 분기 게임과 장비 분리 [051-R14](../../spec/2026_11_12_12_39_051-branch-games.md)): `<shared>/eval/m2-t2-20261118-{t1,tvz-t0_tp,rush-macro}/`.
+- 11-18 01:00~04:06 — t2 측정(게임은 Windows CUDA 호스트만, val500·단서 진단은 B1 뒤 Linux ROCm 호스트). 표 `<shared>/eval/m2-lineage/logs/t2_tables.*`·`t2_t1_tables.*`·`t2_diag_table.*`, 비교 `t2_compare_gn.txt`·`t2_t1_compare_gn.txt`·`t2_val500_compare_gn.txt`.
+
+| 기준([044-R13](../../spec/2026_11_14_08_18_044-self-game-distillation.md) ①) | t2 | gn | 판정 |
+|---|---|---|---|
+| `zerg_build` T0 ≤ 2/64 | 4/64 | 10 | 불합격 |
+| `zerg_build` T1 ≤ 6/196 | 16/195 | 26 | 불합격 |
+| `tp_style` T0 ≥ 44/64 | 55/64 | 50 | 통과 |
+| `tp_style` T1 ≥ 140/196 | 142/195 | 150 | 통과 |
+| 승 T0 ≥ 30/64 | 38/64 | 36 | 통과 |
+| 승 T1 ≥ 21/196 | 19/195 | 27 | 불합격 |
+| TvZ T0 ≥ 20/32 | 27/32 | 26 | 통과 |
+| 러시 막음 합 ≥ 48 | 56 | 54 | 통과 |
+| T1 저그 상대 승 ≥ 14/104 | 30/104 | 22 | 통과 |
+- 그 밖: T1 전체 49/299(gn 49/300, 무효 1 상대 크래시), Iron 0/50(gn 5/50, t2 무승부 10), test 71.78%(71.73%), val500 71.99%(71.94%), 단서 진단·죽은 채널 gn과 같은 범위(경보 0). 모든 칸 차이 Fisher p ≥ 0.056.
+- 누출은 줄었지만(T0 10 → 4, T1 26 → 16) 기준 미달. T1 테란 + 프로토스 승 −8은 잡음 범위.
+- 04:1x — 결정(사용자): 기준 완화, t2에서 `m2-rl-fix-3` 시작, 대안 최종 가중치 t2([044-R13](../../spec/2026_11_14_08_18_044-self-game-distillation.md) ⑤). `config/rl_m2_fix3.toml` KL 참조 네 키 = `m2-teacher-t2/ckpt-3258`.

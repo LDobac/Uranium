@@ -43,10 +43,10 @@ target_unit = 1.0
 target_loc = 1.0
 
 [kl.reference]
-zerg = ""
-terran = ""
-protoss = ""
-random = ""
+zerg = "checkpoints/m2-teacher-t2/ckpt-3258"
+terran = "checkpoints/m2-teacher-t2/ckpt-3258"
+protoss = "checkpoints/m2-teacher-t2/ckpt-3258"
+random = "checkpoints/m2-teacher-t2/ckpt-3258"
 
 [actors]
 weight_push_every = 4
