@@ -1,0 +1,298 @@
+{
+  "kind": "bc",
+  "step": 2844,
+  "update": 2844,
+  "policy_version": 2844,
+  "rng": [
+    11310451235393090068
+  ],
+  "extra": {
+    "data": {
+      "files": "2159:01796ee390e92a5a",
+      "games": 6218,
+      "invalid_labels": 85617,
+      "lanes": [
+        {
+          "id": {
+            "file": 2141,
+            "game": 62
+          },
+          "pos": 128,
+          "sym": 3,
+          "z_present": false
+        },
+        null,
+        null,
+        {
+          "id": {
+            "file": 2141,
+            "game": 51
+          },
+          "pos": 384,
+          "sym": 2,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2141,
+            "game": 53
+          },
+          "pos": 256,
+          "sym": 0,
+          "z_present": false
+        },
+        {
+          "id": {
+            "file": 2009,
+            "game": 0
+          },
+          "pos": 11008,
+          "sym": 1,
+          "z_present": false
+        },
+        {
+          "id": {
+            "file": 2141,
+            "game": 54
+          },
+          "pos": 256,
+          "sym": 3,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2141,
+            "game": 52
+          },
+          "pos": 320,
+          "sym": 2,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2141,
+            "game": 56
+          },
+          "pos": 192,
+          "sym": 0,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2141,
+            "game": 57
+          },
+          "pos": 192,
+          "sym": 0,
+          "z_present": true
+        },
+        null,
+        {
+          "id": {
+            "file": 2141,
+            "game": 48
+          },
+          "pos": 448,
+          "sym": 1,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2141,
+            "game": 46
+          },
+          "pos": 640,
+          "sym": 1,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2141,
+            "game": 58
+          },
+          "pos": 192,
+          "sym": 0,
+          "z_present": false
+        },
+        {
+          "id": {
+            "file": 2141,
+            "game": 65
+          },
+          "pos": 64,
+          "sym": 2,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2141,
+            "game": 47
+          },
+          "pos": 576,
+          "sym": 0,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2141,
+            "game": 55
+          },
+          "pos": 256,
+          "sym": 3,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2141,
+            "game": 59
+          },
+          "pos": 192,
+          "sym": 1,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2141,
+            "game": 44
+          },
+          "pos": 704,
+          "sym": 1,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2141,
+            "game": 60
+          },
+          "pos": 192,
+          "sym": 1,
+          "z_present": false
+        },
+        {
+          "id": {
+            "file": 2145,
+            "game": 0
+          },
+          "pos": 64,
+          "sym": 3,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2141,
+            "game": 63
+          },
+          "pos": 128,
+          "sym": 2,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2141,
+            "game": 49
+          },
+          "pos": 448,
+          "sym": 3,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2141,
+            "game": 39
+          },
+          "pos": 768,
+          "sym": 2,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2136,
+            "game": 0
+          },
+          "pos": 2048,
+          "sym": 2,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2141,
+            "game": 45
+          },
+          "pos": 704,
+          "sym": 0,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2117,
+            "game": 0
+          },
+          "pos": 3776,
+          "sym": 3,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2139,
+            "game": 0
+          },
+          "pos": 2048,
+          "sym": 1,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2146,
+            "game": 0
+          },
+          "pos": 64,
+          "sym": 0,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2141,
+            "game": 50
+          },
+          "pos": 448,
+          "sym": 1,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2141,
+            "game": 64
+          },
+          "pos": 128,
+          "sym": 2,
+          "z_present": true
+        },
+        {
+          "id": {
+            "file": 2141,
+            "game": 61
+          },
+          "pos": 192,
+          "sym": 0,
+          "z_present": false
+        }
+      ],
+      "no_result_games": 3348,
+      "rng": 11310451235393090068,
+      "source": {
+        "next": {
+          "file": 2147,
+          "game": 0
+        }
+      }
+    },
+    "games": 6218,
+    "invalid_labels": 85617,
+    "lr_scale": 0.1,
+    "run": {
+      "config": "1c0b336d1bd985c4",
+      "dataset": "2159:9262c31e6bbb444a",
+      "stage": "S2"
+    }
+  }
+}

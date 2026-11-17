@@ -6,7 +6,7 @@
 ## 현재 상태
 - 시간순 기록: [docs/timeline.md](docs/timeline.md)
 - 모델 2 계획·진행: [model2](docs/report/plan/2026_11_09_22_18_model2.md)
-- 릴리스: [checkpoint1](docs/report/release/2026_11_08_12_21_checkpoint1.md), [checkpoint1_rl](docs/report/release/2026_11_08_13_35_checkpoint1_rl.md)
+- 릴리스: [checkpoint1](docs/report/release/2026_11_08_12_21_checkpoint1.md), [checkpoint1_rl](docs/report/release/2026_11_08_13_35_checkpoint1_rl.md), [checkpoint2](docs/report/release/2026_11_17_09_05_checkpoint2.md)
 
 ## 문서 위치
 - 요구사항(단일 진실 공급원): [docs/spec/](docs/spec/README.md)

@@ -1,0 +1,48 @@
+{
+  "checkpoint": "checkpoint-2-rl",
+  "date": "2026-11-17",
+  "model": "m2-ac1-vtrace-s1/ckpt-3024918 (Main agent)",
+  "source": "<shared>/checkpoints/m2-ac1-vtrace-s1/ckpt-3024918/agents/main (061 checkpoint; optimizer state, league.bin and the exploiter agents (BC copies) stay there, not released)",
+  "lineage": [
+    "m2-s1/ckpt-39096 -> m2-s1e2/ckpt-39094 -> m2-s2e2/ckpt-11387 (BC, 041-R29)",
+    "m2-ac1-vtrace-s1/ckpt-3024918 (042-R21 item 4, 042-AC1 V-trace seed 1, end checkpoint)"
+  ],
+  "training": {
+    "kind": "rl",
+    "agent_steps": 3024918,
+    "updates": 1507,
+    "trained_steps": 3005787,
+    "config": "config/rl_m2.toml, config/reward.toml",
+    "init": "m2-s2e2/ckpt-11387 (also the KL reference)",
+    "precision": "bf16 on CUDA, f32 on ROCm (device moved twice during the run)"
+  },
+  "report": "docs/report/release/2026_11_17_09_05_checkpoint2.md",
+  "companion": "checkpoint-2 (m2-teacher-t1/ckpt-2844)",
+  "load": "uranium.ckpt.load_model(\"releases/checkpoint-2-rl\") (model.safetensors + meta.json; checked 2026-11-17 on CPU); plans name checkpoints under the shared drive, so copy this folder there to play it",
+  "files": {
+    "lineage.json": {
+      "sha256": "9922615b50abd91e06a1ba04412bcd53cd6fa270960d318ed1d5013b4c4b8830",
+      "bytes": 2011
+    },
+    "meta.json": {
+      "sha256": "3e29bdd4b47976bccfeac0b01b5156de70ee3e6cf79d21567a8b5964654c6ecb",
+      "bytes": 7609
+    },
+    "model.safetensors": {
+      "sha256": "9153879647ef260bfdf870cfce5907ad76efea065a588aa4a92b312295f12cc5",
+      "bytes": 105739248
+    },
+    "train_state.json": {
+      "sha256": "83563015b6c3a7b08d7623835ab805e0c03e6f3315579ee15b84a4e95362f805",
+      "bytes": 159
+    },
+    "config/reward.toml": {
+      "sha256": "bad66748e32d8890484b9188e16ccb86b2d6add75dfac9b2d5d44f872331873a",
+      "bytes": 301
+    },
+    "config/rl_m2.toml": {
+      "sha256": "16bef6ecf1fd6b7c7ac7fa6afe2f40e154a2186e87eff8b7ce94a3c1aed23fa3",
+      "bytes": 15677
+    }
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "checkpoint": "checkpoint-2",
+  "date": "2026-11-17",
+  "model": "m2-teacher-t1/ckpt-2844",
+  "source": "<shared>/checkpoints/m2-teacher-t1/ckpt-2844 (061 checkpoint; optim-main.safetensors stays there, not released)",
+  "lineage": [
+    "m2-s1/ckpt-39096 -> m2-s1e2/ckpt-39094 -> m2-s2e2/ckpt-11387 (BC, 041-R29)",
+    "m2-mix-e1 ... m2-mix-e7/ckpt-1212 (041-R21 mix)",
+    "m2-dagger-r1/ckpt-1285 -> m2-dagger-r2/ckpt-1408 (041-R22 DAgger, selected S)",
+    "m2-distill-d1/ckpt-2000 (044-R5 distillation round d1)",
+    "m2-teacher-t1/ckpt-2844 (044-R8 teacher round t1, result model D by 044-R7 revision 3)"
+  ],
+  "training": {
+    "kind": "bc",
+    "updates": 2844,
+    "games": 6218,
+    "config": "config/bc_m2_teacher_t1.toml",
+    "init": "m2-distill-d1/ckpt-2000",
+    "precision": "bf16"
+  },
+  "selection": "docs/report/plan/2026_11_09_22_18_model2.md sections 10.3 and 11.4 (044-R7 revision 3: D = t1; m2-rl-fix-2 kept as record only)",
+  "report": "docs/report/release/2026_11_17_09_05_checkpoint2.md",
+  "companion": "checkpoint-2-rl (m2-ac1-vtrace-s1/ckpt-3024918)",
+  "load": "uranium.ckpt.load_model(\"releases/checkpoint-2\") (model.safetensors + meta.json; checked 2026-11-17 on CPU); plans name checkpoints under the shared drive, so copy this folder there to play it",
+  "files": {
+    "lineage.json": {
+      "sha256": "e537f6b3f7fb31058e851d0506373162b68c3d128fd72e1d7e507100e7a9b002",
+      "bytes": 68
+    },
+    "meta.json": {
+      "sha256": "e720b10e7d60cf4e7ac2899d8667fa5fbf0fff7c64dbe1e8927bc64f3a9bacb2",
+      "bytes": 3877
+    },
+    "model.safetensors": {
+      "sha256": "6c0cfb025eb05368c730a4dad465b62a0ce3eb2bbf5bc6d76cfd6b875ae978f6",
+      "bytes": 105739248
+    },
+    "train_state.json": {
+      "sha256": "ef22e2e11df5abf2fc57f2365e0369f47b886bbc6fd5e0e9faefb90ae665f73c",
+      "bytes": 5628
+    },
+    "config/bc_m2_teacher_t1.toml": {
+      "sha256": "74e255e2390001aa14663cb03b23ddd636ae999c91412f5b50ed5269308022a7",
+      "bytes": 7691
+    }
+  }
+}
