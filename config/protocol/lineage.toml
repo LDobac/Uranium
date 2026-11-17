@@ -539,7 +539,7 @@ optional = ["per_action", "tvz", "rush", "macro", "ops", "rush_combat"]
 [[point]]
 id = "gn"
 family = "bc"
-note = "GroupNorm continuation model (032-R26, user decision 2026-11-17: spatial_norm 16 on the Checkpoint 2 weights, BC continued; run m2-gn-t1 or its further epochs m2-gn-t1e<n>), measured as the whole Checkpoint 2 table"
+note = "GroupNorm continuation model (032-R26, user decision 2026-11-17: spatial_norm 16 on the Checkpoint 2 weights, BC continued; run m2-gn-t1 or its further epochs m2-gn-t1e<n>), measured as the whole Checkpoint 2 table; the 050-R10 gate is not applied, its metrics are recorded only (user decision 2026-11-17)"
 run_pattern = "gn-t1(e[0-9]+)?"
 t1_platforms = ["windows", "linux"]
 metrics = ["test", "val500", "val500_race", "t1", "t0_tp", "tvz", "rush", "macro", "teacher_mode", "cue_diag", "dead_channels"]
