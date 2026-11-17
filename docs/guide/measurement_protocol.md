@@ -45,7 +45,7 @@
   - `rl-fix`: 경로 2 수정 RL 점검([044-R11][s044], 150만 step마다). T0 표준 테란·프로토스(`t0_tp_rl`), TvZ(`tvz_rl`), 러시 128 + 운영형 40, 끝에 T1 300(`t1_rl`). 단서 진단·죽은 채널은 최종 체크포인트만(`diag_final_only = ["cue_diag", "dead_channels"]`, 사용자 결정 2026-11-14). run 이름 `m2-rl-fix-<번호>`만(사용자 결정 2026-11-14).
   - 네 지점 모두 050-R10 게이트 적용, 교사 모드 판 비율 기록.
   - `gn`: GroupNorm 이어 학습 모델([050-R9][s050] 지점 표 2026-11-17 행, 사용자 결정 2026-11-17, [gn_resume](../report/experiment/2026_11_17_10_05_gn_resume.md) 3절). run `m2-gn-t1`·`m2-gn-t1e<번호>`만. [Checkpoint 2 표](../report/release/2026_11_17_09_05_checkpoint2.md)(3절) 전체: test 1,199, val 500(종족별), T1 300판(Windows·Linux), T0 표준 테란·프로토스 각 32판, TvZ 32판, 러시 128판 + 운영형 40판, 교사 모드 판 비율, 진단. 050-R10 게이트는 적용하지 않음, 그 지표(종족별 val, T0 표준 테란·프로토스, 교사 모드 판 비율)는 측정·기록만(사용자 결정 2026-11-17).
-  - `t2`(run `m2-teacher-t2`, [044-R8][s044] ⑤)·`rl-fix-3`(run `m2-rl-fix-3` 끝 체크포인트, [044-R11][s044]): `gn`과 같은 표 + `zerg_build`·`tp_style`. 050-R10 게이트 미적용, 판정은 [044-R13][s044] 합격 기준(gn 대비, 사용자 결정 2026-11-17).
+  - `t2`(run `m2-teacher-t2`, [044-R8][s044] ⑤)·`rl-fix-3`(run `m2-rl-fix-3` 끝 체크포인트, [044-R11][s044]; 점검은 기존 `rl-fix` 지점): `gn`과 같은 표 + `zerg_build`·`tp_style`. 050-R10 게이트 미적용, 판정은 [044-R13][s044] 합격 기준(gn 대비, 사용자 결정 2026-11-17).
 - `metrics` = Checkpoint 1 경로에서 잰 지표(바로 비교 가능). `optional` = Checkpoint 1 값 없는 지표. 그중 050-R9 지점 표가 요구하는 칸은 `ck1_supplement`로 Checkpoint 1 쪽 보충 측정 가능.
 
 | 지표 | 내용 | 고정 조건 |
