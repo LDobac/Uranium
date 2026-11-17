@@ -291,6 +291,7 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
 - 분석: `python -m uranium diag plan-branch --dir <shared>/eval/branch-<날짜> [--dump <줄기 plan-dump> --s0 <plan-s0 폴더>]` → `<dir>/analysis/plan-branch.md`·`analysis.json`(짝 효과·줄기 bootstrap·split-half, M3u·M2c, 무효·거절·missed·희석; `--help`).
 
 ### 분기 게임 B1 실행 순서 ([spec 051](../spec/2026_11_12_12_39_051-branch-games.md))
+- B1 체크포인트 `m2-gn-t1e2/ckpt-2844`([051-R1](../spec/2026_11_12_12_39_051-branch-games.md) ②, 사용자 결정 2026-11-17, `config/branch_b1.toml`). 누출 수정 최종 가중치 F가 다르면 S0b·줄기 덤프를 F로 다시(게임은 그대로).
 - 기호: `<S>` = `URANIUM_SHARED_DIR`, `<D>` = 실행 날짜, `<T>` = `eval/branch-b1-<D>/trunks`(줄기 job, 공용 드라이브 기준), `<O>` = `<S>/eval/branch-b1-<D>`(분기 job = 051-R12 출력 폴더).
 - 줄기·분기 판을 두는 모든 PC는 같은 커밋의 hostd·에이전트·`_core`.
 - 경로 측정([050-R9](../spec/2026_10_15_22_24_050-evaluation.md)) 게임과 hostd 자리·추론 GPU 공유 금지([051-R14](../spec/2026_11_12_12_39_051-branch-games.md)): 측정 전에 분기 작업자를 Ctrl+C 한 번으로 멈추고, 끝나면 같은 명령으로 재시작(남은 판부터).
@@ -303,8 +304,8 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
    - 둘째 시점이 4:00 전에 없거나(`rule did not fire`) 다른 검사에 걸린 줄기는 교체, (맵, 조건) 칸이 모자라면 교체 plan 작성 → `<T>/job.toml` `stages`에 덧붙여 2번 재실행(남은 판만) → 3번을 모든 줄기 stage(`--stage branch-b1-trunk --stage branch-b1-trunk-r ...`)와 새 `--replacements <S>/<T>/plans/03-trunk-r2.toml`로 재실행(교체 stage 이름 `-r`, `-r2`, … 자동). 칸이 다 차면 교체 plan 없음.
 4. 분기 판(추론 PC): `python -m uranium eval-worker --job eval/branch-b1-<D> --priority <n> [--backend ...]` → `python -m uranium eval-status --job eval/branch-b1-<D>` → `python tools/eval/branch_collect.py --job eval/branch-b1-<D>`(`<O>/branches.jsonl`, `branch_collect.json`: 무효 사유별·대안별 수·빠진 판). plan 경로는 공용 드라이브 기준이라 작업자마다 `URANIUM_SHARED_DIR` 필요. 1,280판 4~6시간(경로 측정 틈에 나눠).
 5. 줄기 shard(Linux CPU 호스트, 저장소 루트, `URANIUM_MAPS_DIR=<S>/datasets/replays/build/maps`, `mkdir -p <O>/build`): 줄기 stage마다 같은 `--out`·records로 `target/release/uranium-replay build <S>/<T>/<stage>/replays --src branch --out <O>/shards/trunks --records <O>/build/branch_build.jsonl --memory-log <S>/<T>/<stage>/acts --time-limit 11568 --jobs 4`. shard는 출처 폴더 아래 한 단계(`<O>/shards/trunks/shard_*.bin.zst`)여야 덤프가 `--shards <O>/shards`로 읽음(`<O>/shards`에 바로 쓰면 [040-R13](../spec/2026_10_15_22_24_040-replay-dataset.md) 깊이 검사로 거부).
-6. 덤프(CPU로 충분): `python -m uranium diag plan-dump --checkpoint <S>/checkpoints/m2-s1/ckpt-39096 --shards <O>/shards --splits train,val,test --config config/bc.toml --backend cpu --out <O>/dump`. 기본 `--splits val,test`는 줄기 대부분을 뺌(manifest 없는 줄기 shard는 모두 `train`) → 셋 다 줌. 줄기 4판 CPU 약 2분 반.
-7. 분석: `python -m uranium diag plan-branch --dir <O> --dump <O>/dump --s0 <S>/eval/jepa-plan-feas-20261112/s0b`(`--s0` = S0b 예측기 A `models/A_k8.pt`·`A_k32.pt`가 있는 `plan-s0` 출력 폴더) → `<O>/analysis/plan-branch.md`·`analysis.json`, 리포트 `docs/report/experiment/<YYYY_MM_DD_HH_mm>_branch_b1.md`([051-AC7](../spec/2026_11_12_12_39_051-branch-games.md)).
+6. 덤프(CPU로 충분): `python -m uranium diag plan-dump --checkpoint <S>/checkpoints/m2-gn-t1e2/ckpt-2844 --shards <O>/shards --splits train,val,test --config config/bc.toml --backend cpu --out <O>/dump`. 기본 `--splits val,test`는 줄기 대부분을 뺌(manifest 없는 줄기 shard는 모두 `train`) → 셋 다 줌. 줄기 4판 CPU 약 2분 반.
+7. 분석: `python -m uranium diag plan-branch --dir <O> --dump <O>/dump --s0 <S>/eval/jepa-plan-feas-<날짜>/s0b`(`--s0` = S0b 예측기 A `models/A_k8.pt`·`A_k32.pt`가 있는 `plan-s0` 출력 폴더, B1 체크포인트 `m2-gn-t1e2/ckpt-2844`로 다시 학습한 것 — 아래 "둘째 실행 S0b" 끝. 11-12 S0b(`m2-s1/ckpt-39096`)는 sha256이 달라 쓰지 않음) → `<O>/analysis/plan-branch.md`·`analysis.json`, 리포트 `docs/report/experiment/<YYYY_MM_DD_HH_mm>_branch_b1.md`([051-AC7](../spec/2026_11_12_12_39_051-branch-games.md)).
 - [051-AC6](../spec/2026_11_12_12_39_051-branch-games.md) 작은 확인(Linux CPU 호스트 하나, CPU 추론): 1번에 `--hit 1 --miss 0`(맵마다 1판), 3번에 `--hit 1 --miss 0 --alts none,force_bunker --repeats 1 --verify-state`, 작업자 `--backend cpu --no-warmup --max-batch 4 --local-hostd <주소> --hostd target/release/uranium-hostd`.
   - `--verify-state`는 plan 판 모두에 앞부분 추론을 켬 → B1 본 plan에는 주지 않음(시험은 판 1~2개 stage 따로).
   - 여러 판이 한 배치면 앞부분 추론 배치 구성이 줄기와 달라 `state_check`가 비트 일치 안 할 수 있음(3판 동시 최대 차이 1e-6~1e-5, 혼자 `--max-batch 1`이면 일치).
@@ -632,6 +633,7 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
      ```
    - 판정표는 첫 실행 3과 같음. 내 상태 기준(k = 8) = "M1 내 상태 변화 오차 감소" 표 pooled·운영 행동 행 A 감소.
 4. 선택 비교(각 3과 같은 시간, `$SRC` 그대로): 레이블 고침만 `--v1 --out $D/s0b-v1`, 프레임 k `--k-unit frame --ks 144,576 --th-own-k 144 --out $D/s0b-frame`(결정 k = 8·32에 가까운 6초·24초).
+- B1 분석용 다시 학습([051-R1](../spec/2026_11_12_12_39_051-branch-games.md) ②, 사용자 결정 2026-11-17): 체크포인트를 `<shared>/checkpoints/m2-gn-t1e2/ckpt-2844`로, 폴더 이름을 `m2-gn-t1e2__ckpt-2844`로. 예측기 입력 h'가 체크포인트마다 달라 첫 실행 2의 사람·교사 덤프도 이 체크포인트로 다시. 출력 `<shared>/eval/jepa-plan-feas-<날짜>/s0b`.
 
 ## 12. 래더 수집
 ([spec 043](../spec/2026_10_16_22_48_043-ladder-replay-collector.md), Windows, SC:R 로그인 상태)

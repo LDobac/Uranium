@@ -45,6 +45,7 @@
   - `rl-fix`: 경로 2 수정 RL 점검([044-R11][s044], 150만 step마다). T0 표준 테란·프로토스(`t0_tp_rl`), TvZ(`tvz_rl`), 러시 128 + 운영형 40, 끝에 T1 300(`t1_rl`). 단서 진단·죽은 채널은 최종 체크포인트만(`diag_final_only = ["cue_diag", "dead_channels"]`, 사용자 결정 2026-11-14). run 이름 `m2-rl-fix-<번호>`만(사용자 결정 2026-11-14).
   - 네 지점 모두 050-R10 게이트 적용, 교사 모드 판 비율 기록.
   - `gn`: GroupNorm 이어 학습 모델([050-R9][s050] 지점 표 2026-11-17 행, 사용자 결정 2026-11-17, [gn_resume](../report/experiment/2026_11_17_10_05_gn_resume.md) 3절). run `m2-gn-t1`·`m2-gn-t1e<번호>`만. [Checkpoint 2 표](../report/release/2026_11_17_09_05_checkpoint2.md)(3절) 전체: test 1,199, val 500(종족별), T1 300판(Windows·Linux), T0 표준 테란·프로토스 각 32판, TvZ 32판, 러시 128판 + 운영형 40판, 교사 모드 판 비율, 진단. 050-R10 게이트는 적용하지 않음, 그 지표(종족별 val, T0 표준 테란·프로토스, 교사 모드 판 비율)는 측정·기록만(사용자 결정 2026-11-17).
+  - `t2`(run `m2-teacher-t2`, [044-R8][s044] ⑤)·`rl-fix-3`(run `m2-rl-fix-3` 끝 체크포인트, [044-R11][s044]): `gn`과 같은 표 + `zerg_build`·`tp_style`. 050-R10 게이트 미적용, 판정은 [044-R13][s044] 합격 기준(gn 대비, 사용자 결정 2026-11-17).
 - `metrics` = Checkpoint 1 경로에서 잰 지표(바로 비교 가능). `optional` = Checkpoint 1 값 없는 지표. 그중 050-R9 지점 표가 요구하는 칸은 `ck1_supplement`로 Checkpoint 1 쪽 보충 측정 가능.
 
 | 지표 | 내용 | 고정 조건 |
@@ -60,6 +61,7 @@
 | `t0_tp` | T0 표준 테란·프로토스 각 32판(050-R10 ①) | T0 300 맵 블록마다 첫 16 seed: T 41301–41316·41351–41366, P 41401–41416·41451–41466. stochastic, 60분, true |
 | `t0_tp`(RL) | 같은 64판, RL 점검용 plan `t0_tp_rl` | 같은 seed·조건, `zero_last_failed` false(050-R9 RL 규칙) |
 | `teacher_mode` | 교사 모드 판 비율(050-R10, 기록만). job이 아니라 `tables.py`가 T0·T1 단계의 테란·프로토스 상대 판마다 셈(아래 "지표 정의") | 명령 스트림(`uranium-replay cmddump`) |
+| `zerg_build`·`tp_style` | 저그전 교사 빌드 판·022 교사 방식 판(050-R10 2026-11-17, [044-R13][s044] 판정). `teacher_mode`처럼 `tables.py`가 셈 | 명령 스트림 |
 | `t1` | T1 봇 6종 × 50판 | seed_base 46000, BC 계열 true / RL false, NDEBUG 봇, 플랫폼 고정 |
 | `ac1` | [042-AC1][s042] 200판 | seed_base 42000(argmax 42200), BC 기준선은 a·b·c 세 plan |
 | `cue_diag` | 단서 진단(050-R9): 적 생산 건물 HP·착공의 지점별 ridge R²(h_t까지), 적 최대 관측 생산 건물 수, 반사실 개입 Δ | 교사 보관분 433판(저그, `diag dump --cf`, `probes --races Z --boot 500`, `intervene`) + 사람 TvT·TvP(val·test 각 500게임, `probes --races T,P --cap 60 --boot 300`), ROCm f32·레인 그룹 4(아래 4) |
@@ -202,6 +204,13 @@
   - 리파이너리 지시 = 프레임 < 5,760의 Build(0x0c) 중 유닛 종류 110.
   - 표: 상대 종족(plan p1 종족, 테란·프로토스)마다 명령 스트림 있는 유효 판 중 교사 모드 판 수, 모드별 승·무·패와 10:00 전 패(`end_frame` < 14,400). 상대 크래시 판 제외. 명령 스트림 없는 판은 `no_stream`. JSON `counts`의 `teacher_mode vs <종족>` 줄로 `compare`가 Fisher p.
   - 원인 분석 값과 같음(2026-11-14 확인): 테란전·프로토스전 교사 모드 판 경로 2 s2e2 0·0/32, mix-e7 18·19/32, r1 25·30/32, Checkpoint 1 r1 22·27/32. 모드별 승·10분 안 패도 같음.
+  - 2026-11-17부터 기록 필드만(과거 값·t1 판정 재현). gn·t1은 분당 명령 조건이 늘 참([teacher_leak_fix](../report/experiment/2026_11_17_20_08_teacher_leak_fix.md)).
+- 방식 판별([050-R10][s050] 2026-11-17, 사용자 결정 2026-11-17, [044-R13][s044] 판정):
+  - `zerg_build`: 0~6분 분당 명령 < 150(항목 수 < 900)이고 프레임 < 7,200(5:00)의 Build(0x0c) 중 리파이너리(유닛 종류 110)도 팩토리(113)도 없는 판. 저그전 교사(021-R8) 빌드.
+  - `tp_style`: 0~6분 분당 명령 < 120(항목 수 < 720)이고 `zerg_build` 아닌 판. 022 교사 방식.
+  - 나머지: 사람 방식. 분당 명령 세는 법은 교사 모드 판과 같음.
+  - 표: T0·T1 단계, 상대 종족(테란·프로토스)마다 세 방식 판 수와 승·무·패. 상대 크래시 판 제외, 명령 스트림 없는 판 `no_stream`.
+  - 기준 값(gn T0 / T1, 테란 + 프로토스): `zerg_build` 10/64 · 26/196, `tp_style` 50/64 · 150/196.
 - 운영형 경제: CC 지시 ≤ 5:00, `scv_8m` ≥ 16
   - 8:00 전에 끝난 판은 `scv_8m` ≥ 16 실패(Checkpoint 1 모델 표 `test_table.py`와 같음).
   - Checkpoint 1 임시 결정 "섬멸 승으로 8:00 전에 끝난 판은 통과"는 교사 세션 표(`summary.md`의 T0 Terran sessions)에만 적용 → JSON `scv_8m_16_winpass`로만(r1 31 → 37, r2 34 → 37, e10 26 → 32, Checkpoint 1 RL 37 → 37).

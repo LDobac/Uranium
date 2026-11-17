@@ -1,5 +1,5 @@
 name = "branch-b1"
-checkpoint = "checkpoints/m2-s1/ckpt-39096"
+checkpoint = "checkpoints/m2-gn-t1e2/ckpt-2844"
 horizon = 11520
 wall_timeout_s = 7200
 repeats = 4
