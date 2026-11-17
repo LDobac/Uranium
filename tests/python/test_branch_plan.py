@@ -145,14 +145,18 @@ def test_trunk_plan_051_r11():
     assert first not in ec.plan_seeds(again)
 
 
-
-def test_exclude_job_resolves_under_shared_or_refuses_051_r11(tmp_path):
+def test_exclude_job_resolves_under_shared_or_refuses_051_r11(tmp_path, monkeypatch):
     tj = TrunkJob(tmp_path)
     rel = tj.job.relative_to(tmp_path)
+    assert bp.job_seeds(tj.job)
     assert bp.excluded_seeds([rel], tmp_path) == bp.job_seeds(tj.job)
-    assert bp.excluded_seeds([rel], tmp_path)
+    monkeypatch.delenv("URANIUM_SHARED_DIR", raising=False)
+    assert bp.excluded_seeds([tj.job], None) == bp.job_seeds(tj.job)
     with pytest.raises(bc.Refused, match="no job.toml"):
         bp.excluded_seeds([Path("eval/missing")], tmp_path)
+    with pytest.raises(SystemExit, match="no job.toml"):
+        bp.main(["trunk", "--out", str(tmp_path / "trunk.toml"), "--root", str(tmp_path), "--exclude-job", "eval/missing"])
+
 
 def test_branch_plan_points_and_list_051_r10(tmp_path):
     tj = TrunkJob(tmp_path)

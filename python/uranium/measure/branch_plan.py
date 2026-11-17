@@ -136,10 +136,11 @@ def job_seeds(job: Path) -> set[int]:
     return out
 
 
-def excluded_seeds(jobs: list[Path], root: Path) -> set[int]:
+def excluded_seeds(jobs: list[Path], root: str | Path | None) -> set[int]:
     out: set[int] = set()
     for j in jobs:
-        job = bc.job_dir(j, root)
+        p = Path(j)
+        job = p if p.is_absolute() or p.exists() else bc.shared_root(root) / p
         if not (job / "job.toml").is_file():
             raise Refused(f"--exclude-job {j}: no job.toml in {job}")
         out |= job_seeds(job)
@@ -453,6 +454,7 @@ def main(argv=None) -> None:
     t.add_argument("--out", type=Path, required=True)
     t.add_argument("--name", default=None, help="plan (stage) name, default <config name>-trunk")
     t.add_argument("--exclude-job", type=Path, action="append", default=[], help="leave out the seeds of this job's stages (as given if it exists, else under URANIUM_SHARED_DIR)")
+    t.add_argument("--root", default=None, help="shared drive for --exclude-job (default URANIUM_SHARED_DIR)")
     t.add_argument("--hit", type=int, default=None, help="first-target-hit trunks per map (default the config's)")
     t.add_argument("--miss", type=int, default=None, help="miss trunks per map (default the config's)")
     b = sub.add_parser("branches", help="points, branch list and branch plan from the trunk job")
@@ -478,7 +480,7 @@ def main(argv=None) -> None:
         if a.cmd == "trunk":
             cfg = load_config(a.config)
             counts = {"hit": int(cfg["trunks"]["hit"] if a.hit is None else a.hit), "miss": int(cfg["trunks"]["miss"] if a.miss is None else a.miss)}
-            exclude = excluded_seeds(a.exclude_job, bc.shared_root(None)) if a.exclude_job else set()
+            exclude = excluded_seeds(a.exclude_job, a.root) if a.exclude_job else set()
             text = trunk_plan(cfg, a.name or f"{cfg['name']}-trunk", a.condition_fn, exclude, counts)
             a.out.parent.mkdir(parents=True, exist_ok=True)
             a.out.write_bytes(text.encode("utf-8"))
