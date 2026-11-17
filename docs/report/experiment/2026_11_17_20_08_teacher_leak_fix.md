@@ -1,6 +1,6 @@
 # 교사 모드 누출 수정 (교사 라운드 t2 → `m2-rl-fix-3`)
 
-spec [044](../../spec/2026_11_14_08_18_044-self-game-distillation.md) R8 ⑤·R9·R11·R13, [050](../../spec/2026_10_15_22_24_050-evaluation.md) R9·R10. 결정은 사용자 결정 2026-11-17. 예외: 메인 임시 결정(사용자 확인 전, [AMB-044-12](../../spec/README.md))은 따로 표시.
+spec [044](../../spec/2026_11_14_08_18_044-self-game-distillation.md) R8 ⑤·R9·R11·R13, [050](../../spec/2026_10_15_22_24_050-evaluation.md) R9·R10. 결정은 사용자 결정 2026-11-17. 메인 임시 결정이던 세부([AMB-044-12](../../spec/README.md))도 2026-11-17 사용자 결정으로 확정(저그 판 600·절단 10:00).
 
 ## 용어
 | 이름 | 뜻 |
@@ -65,14 +65,15 @@ gn 기준 값(새 판별, 테란 + 프로토스):
 1. t2 표본: 20판 → 재레이블 → 50 update.
 2. t2 본 실행([044-R8](../../spec/2026_11_14_08_18_044-self-game-distillation.md) ⑤, 두 plan 모두 10분 상한):
    - 테란·프로토스 300판(gn stochastic, t1 구성, seed n = 301..600) → 022 교사 그림자 재레이블 `--relabel terran_tp`(10:00 절단) → `dagger_m2/t2`.
-   - 저그 DAgger 판 N판(아래 표) → 저그전 교사 그림자 `--relabel terran_react`(`terran_tp`는 로비 저그 판을 거부) → `dagger_m2/t2z`. 절단 10:00은 기본안(미확정), 대안 8:00(r1~r3과 같음)([AMB-044-12](../../spec/README.md) ⑥).
+   - 저그 DAgger 판 N판(아래 표) → 저그전 교사 그림자 `--relabel terran_react`(`terran_tp`는 로비 저그 판을 거부) → `dagger_m2/t2z`. 절단 10:00(사용자 결정 2026-11-17, [AMB-044-12](../../spec/README.md)).
 
      | 항목 | 값 |
      |---|---|
-     | 생성 | `python tools/eval/rush_check_plan.py --teacher-round --round t2 --zerg <N> --checkpoint checkpoints/m2-gn-t1e2/ckpt-2844` → `config/plans/dagger_m2_t2_z.toml` |
+     | 생성 | `python tools/eval/rush_check_plan.py --teacher-round --round t2 --zerg 600 --checkpoint checkpoints/m2-gn-t1e2/ckpt-2844` → `config/plans/dagger_m2_t2_z.toml` |
      | 구성 | N은 150의 배수. 150판마다 맵당 러시 4상대(T0 `zerg_rush`, UAlbertaBot `12poollings`·`9pool10lings`·`9poolhydra`) × 10 + 운영형 5상대(UAlbertaBot `2hatchhydra`·`3hatchmuta`, Steamhammer `2hatchmuta`, T0 `zerg_muta`, T0 표준) × 7, 두 맵. N = 600이면 `dagger_m2_r1.toml` 구성 |
      | seed | `splitmix64(5,000,000 + n) >> 32`, n = 1..3000 예약 |
-     | N | TBD(표본 측정). 어림: t1 `mix-fractions` 기준 테란·프로토스 t2 추가 뒤 저그 46.3% → 부족 약 31만 step, 저그 판당 학습 step 약 533(10:00)·474(8:00) → 약 580판. 600판이면 50.3%(8:00이면 49.9%) |
+     | N | 600(사용자 결정 2026-11-17). 어림: 테란·프로토스 t2 추가 뒤 저그 46.3% → 부족 약 31만 step, 저그 판당 학습 step 약 533(10:00 절단) → 약 580판, 600판이면 50.3% |
+     | N 출처 | t1 `mix-fractions` 출력 `<shared>/eval/m2-lineage/logs/t1_t1_mixfrac2.json`(종족별 스텝), 저그 판당 step은 경로 2 r1–r3 기록·판 생성 job `results.jsonl`의 `end_frame` |
 
    - 학습 `m2-teacher-t2`(`--init` gn, `data.seed` 18, 교사 + dagger 65 / 사람 35, 저그 : 프로토스 : 테란 50 : 30 : 20).
 3. 지점 `t2` 측정 → 합격 기준 판정. 실패면 멈추고 사용자에게 보고.
@@ -80,9 +81,9 @@ gn 기준 값(새 판별, 테란 + 프로토스):
    - 가벼운 점검: 0.3M 이후 첫 체크포인트. 전체 점검: 150만·300만·450만·600만, 끝 T1 300. 모든 점검에서 `zerg_build`·`tp_style`.
    - 점검·끝 측정은 RL 조건(`zero_last_failed` false) → BC 조건인 gn·t2와 비교할 때 조건이 다름.
    - 중단(t2 기준): T0 테란 또는 프로토스 6판 이상 하락, `tp_style` T0 < 32/64, TvZ < 16/32.
-   - 메인 임시 결정(사용자 확인 전, AMB-044-12): T0 하락은 두 점검 연속, 가벼운 점검 = T0 테란·프로토스 64판 + 방식 판 수이고 T0 하락·`tp_style` 규칙의 점검으로 셈, TvZ 규칙은 TvZ를 재는 점검에만.
-5. 최종 가중치 F 선택([044-R13](../../spec/2026_11_14_08_18_044-self-game-distillation.md) ②): RL 끝 > t2 > gn 유지·보고. 각 run의 끝 체크포인트. RL 끝은 합격 기준 통과 + T1 테란 + 프로토스 승 ≥ t2 − 6(기준 폭 6판은 메인 임시 결정, AMB-044-12).
-- 050-R10 게이트·교사 모드 ≤ 3/32는 t2·`m2-rl-fix-3`에서 기록만(메인 임시 결정, AMB-044-12).
+   - 세부(사용자 결정 2026-11-17, AMB-044-12): T0 하락은 두 점검 연속, 가벼운 점검 = T0 테란·프로토스 64판 + 방식 판 수이고 T0 하락·`tp_style` 규칙의 점검으로 셈, TvZ 규칙은 TvZ를 재는 점검에만.
+5. 최종 가중치 F 선택([044-R13](../../spec/2026_11_14_08_18_044-self-game-distillation.md) ②): RL 끝 > t2 > gn 유지·보고. 각 run의 끝 체크포인트. RL 끝은 합격 기준 통과 + T1 테란 + 프로토스 승 ≥ t2 − 6(기준 폭 6판, 사용자 결정 2026-11-17).
+- 050-R10 게이트·교사 모드 ≤ 3/32는 t2·`m2-rl-fix-3`에서 기록만(사용자 결정 2026-11-17, AMB-044-12).
 
 ### 합격 기준 (gn 대비, [044-R13](../../spec/2026_11_14_08_18_044-self-game-distillation.md) ①)
 | 지표 | 기준 | gn |
@@ -103,3 +104,4 @@ gn 기준 값(새 판별, 테란 + 프로토스):
 - B1 체크포인트 = gn([051-R1](../../spec/2026_11_12_12_39_051-branch-games.md) ②), S0b는 gn으로 다시 학습. F가 gn과 다르면 S0b·B1 줄기 feature를 F로 다시(게임은 그대로, TvZ 개막 결정이 뚜렷이 다르면 사용자에게 물음).
 
 ## 4. 진행 기록
+- 22:2x — 결정(사용자): 저그 DAgger 판 600, 저그 판 절단 10:00, 메인 임시 결정 세부 모두 확정([AMB-044-12](../../spec/README.md)). plan `config/plans/dagger_m2_t2_z.toml`.
