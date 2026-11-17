@@ -136,6 +136,16 @@ def job_seeds(job: Path) -> set[int]:
     return out
 
 
+def excluded_seeds(jobs: list[Path], root: Path) -> set[int]:
+    out: set[int] = set()
+    for j in jobs:
+        job = bc.job_dir(j, root)
+        if not (job / "job.toml").is_file():
+            raise Refused(f"--exclude-job {j}: no job.toml in {job}")
+        out |= job_seeds(job)
+    return out
+
+
 def trunk_plan(cfg: dict, name: str, cond, exclude: set[int] = frozenset(), counts: dict[str, int] | None = None) -> str:
     t = cfg["trunks"]
     counts = counts or {"hit": int(t["hit"]), "miss": int(t["miss"])}
@@ -442,7 +452,7 @@ def main(argv=None) -> None:
     t.add_argument("--config", type=Path, default=bc.ROOT / "config" / "branch_b1.toml")
     t.add_argument("--out", type=Path, required=True)
     t.add_argument("--name", default=None, help="plan (stage) name, default <config name>-trunk")
-    t.add_argument("--exclude-job", type=Path, action="append", default=[], help="leave out the seeds of this job's stages")
+    t.add_argument("--exclude-job", type=Path, action="append", default=[], help="leave out the seeds of this job's stages (as given if it exists, else under URANIUM_SHARED_DIR)")
     t.add_argument("--hit", type=int, default=None, help="first-target-hit trunks per map (default the config's)")
     t.add_argument("--miss", type=int, default=None, help="miss trunks per map (default the config's)")
     b = sub.add_parser("branches", help="points, branch list and branch plan from the trunk job")
@@ -468,7 +478,7 @@ def main(argv=None) -> None:
         if a.cmd == "trunk":
             cfg = load_config(a.config)
             counts = {"hit": int(cfg["trunks"]["hit"] if a.hit is None else a.hit), "miss": int(cfg["trunks"]["miss"] if a.miss is None else a.miss)}
-            exclude = set().union(*(job_seeds(j) for j in a.exclude_job)) if a.exclude_job else set()
+            exclude = excluded_seeds(a.exclude_job, bc.shared_root(None)) if a.exclude_job else set()
             text = trunk_plan(cfg, a.name or f"{cfg['name']}-trunk", a.condition_fn, exclude, counts)
             a.out.parent.mkdir(parents=True, exist_ok=True)
             a.out.write_bytes(text.encode("utf-8"))

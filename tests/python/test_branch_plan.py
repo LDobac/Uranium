@@ -145,6 +145,15 @@ def test_trunk_plan_051_r11():
     assert first not in ec.plan_seeds(again)
 
 
+
+def test_exclude_job_resolves_under_shared_or_refuses_051_r11(tmp_path):
+    tj = TrunkJob(tmp_path)
+    rel = tj.job.relative_to(tmp_path)
+    assert bp.excluded_seeds([rel], tmp_path) == bp.job_seeds(tj.job)
+    assert bp.excluded_seeds([rel], tmp_path)
+    with pytest.raises(bc.Refused, match="no job.toml"):
+        bp.excluded_seeds([Path("eval/missing")], tmp_path)
+
 def test_branch_plan_points_and_list_051_r10(tmp_path):
     tj = TrunkJob(tmp_path)
     tj.play(2, marine=False)
