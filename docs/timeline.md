@@ -711,3 +711,4 @@
 - 09:05 — 체크포인트(사용자 결정 2026-11-17): Checkpoint 2 = `m2-teacher-t1/ckpt-2844`(태그 `checkpoint-2`), Checkpoint 2 RL = `m2-ac1-vtrace-s1/ckpt-3024918` Main(태그 `checkpoint-2-rl`), `releases/checkpoint-2/`·`releases/checkpoint-2-rl/` ([checkpoint2](report/release/2026_11_17_09_05_checkpoint2.md))
 - 09:10 — 반영: RL 학습기 compile·channels-last 스위치(기본 끔, 커밋 `2e5b92e`·`06358d8`·`b760226`) ([032-R19](spec/2026_10_15_22_24_032-model-architecture.md), [opt_review](report/review/2026_11_16_21_25_opt_review.md) 7.12·7.15절)
 - 09:30 — 배포·확인: Linux ROCm 호스트 두 대에 `bab6cbc` 배포·재빌드, 추론 graph 배치 4·BC 패딩 32 기본 적용 확인(BC 벤치 10.68 → 10.40초), 시작 스캔 캐시 미리 채움 ([opt_review](report/review/2026_11_16_21_25_opt_review.md) 7.16절·10절)
+- 10:0x — 결정(사용자)·반영: 공간 인코더에 GroupNorm 스위치 `spatial_norm`(pre-activation ResNet 위치, 그룹당 16채널), Checkpoint 2에서 BC 3,000 update로 죽은 채널이 살아나는지 시험 ([032-R26](spec/2026_10_15_22_24_032-model-architecture.md), [gn_resume](report/experiment/2026_11_17_10_05_gn_resume.md))
