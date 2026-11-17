@@ -44,6 +44,7 @@
   - `D`: 경로 2 수정 모델([044-R7][s044], 통과 라운드의 체크포인트). Checkpoint 1 대응 모델 행과 같은 test 1,199, val 500(종족별), T1 300판, T0 표준 테란·프로토스. 진단은 그 라운드 지점과 같은 체크포인트·출력 폴더.
   - `rl-fix`: 경로 2 수정 RL 점검([044-R11][s044], 150만 step마다). T0 표준 테란·프로토스(`t0_tp_rl`), TvZ(`tvz_rl`), 러시 128 + 운영형 40, 끝에 T1 300(`t1_rl`). 단서 진단·죽은 채널은 최종 체크포인트만(`diag_final_only = ["cue_diag", "dead_channels"]`, 사용자 결정 2026-11-14). run 이름 `m2-rl-fix-<번호>`만(사용자 결정 2026-11-14).
   - 네 지점 모두 050-R10 게이트 적용, 교사 모드 판 비율 기록.
+  - `gn`: GroupNorm 이어 학습 모델([050-R9][s050] 지점 표 2026-11-17 행, 사용자 결정 2026-11-17, [gn_resume](../report/experiment/2026_11_17_10_05_gn_resume.md) 3절). run `m2-gn-t1`·`m2-gn-t1e<번호>`만. [Checkpoint 2 표](../report/release/2026_11_17_09_05_checkpoint2.md)(3절) 전체: test 1,199, val 500(종족별), T1 300판(Windows·Linux), T0 표준 테란·프로토스 각 32판, TvZ 32판, 러시 128판 + 운영형 40판, 교사 모드 판 비율, 진단. 050-R10 게이트 적용 여부는 미결정.
 - `metrics` = Checkpoint 1 경로에서 잰 지표(바로 비교 가능). `optional` = Checkpoint 1 값 없는 지표. 그중 050-R9 지점 표가 요구하는 칸은 `ck1_supplement`로 Checkpoint 1 쪽 보충 측정 가능.
 
 | 지표 | 내용 | 고정 조건 |
@@ -70,7 +71,7 @@
   - Checkpoint 1(`r1`): Windows 호스트
   - Checkpoint 1 RL(`rl-s1`): 둘 다(실제로 섞여 돌았음)
   - `r2`: Windows. 경로 2 Checkpoint 1 대응 모델은 r1·r2 중 041-R29 ④로 고르므로 r2도 그 모델 행 칸(test, val 500 종족별, T1, T0 표준 테란·프로토스)을 `optional`로 받음.
-  - `D`·`rl-fix`: Checkpoint 1 대응 없음 → 빈 호스트(Windows·Linux 모두, 사용자 결정 2026-11-14). job `protocol.json`에 호스트 플랫폼, `tables.py`에 단계별 추론 backend·정밀도. `compare`는 두 쪽 backend나 T1 플랫폼이 다르면 `NOTE` 줄.
+  - `D`·`rl-fix`: Checkpoint 1 대응 없음 → 빈 호스트(Windows·Linux 모두, 사용자 결정 2026-11-14). `gn`도 같게 둠(기본안(미확정)). job `protocol.json`에 호스트 플랫폼, `tables.py`에 단계별 추론 backend·정밀도. `compare`는 두 쪽 backend나 T1 플랫폼이 다르면 `NOTE` 줄.
   - `t1_platforms` 없는 지점은 T1 안 받음.
 
 ## 재는 법
@@ -171,8 +172,8 @@
 - Checkpoint 1 경로에서 이미 잰 칸의 재측정(그 지점의 `ck1_supplement`와 진단 지표만 받음)
 - 지점 메뉴에 없는 지표, 다른 계열의 plan(예: BC 지점에 `tvz_rl`)
 - 템플릿 조건 해시나 고정값(판 수·표집·`zero_last_failed`·`max_frames`)이 `lineage.toml`과 다름. 이름·체크포인트(p0·p1의 모델 모두)가 자리표시가 아님
-- `m2` 경로인데 run 이름이 `m2-`로 시작 안 함, `run_pattern` 있는 지점(`d1`·`d2`·`t1`·`D`·`rl-fix`)에서 run 이름 불일치
-- Checkpoint 1 대응 없는 지점(`r3`·`d1`·`d2`·`t1`·`D`·`rl-fix`)의 `--lineage ck1`
+- `m2` 경로인데 run 이름이 `m2-`로 시작 안 함, `run_pattern` 있는 지점(`d1`·`d2`·`t1`·`D`·`gn`·`rl-fix`)에서 run 이름 불일치
+- Checkpoint 1 대응 없는 지점(`r3`·`d1`·`d2`·`t1`·`D`·`gn`·`rl-fix`)의 `--lineage ck1`
 - 체크포인트 가중치 파일 없음
 - T1 job 호스트 중 `platform`이 없거나 지점 `t1_platforms`가 아닌 것
 - job에 OSS 봇이 있는데 호스트 봇 해시를 읽을 수 없거나 `t1_bots.toml`에 없음. 해결: 호스트 목록에 `local = true`, 또는 `ssh = "<별칭>"`과 `oss_bots_dir`(그 호스트의 `URANIUM_OSS_BOTS_DIR`), 또는 `--bot-hashes <파일>`(`<주소> <봇> <sha256>` 줄)

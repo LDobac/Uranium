@@ -458,7 +458,8 @@ def test_distill_fix_points_menus_050_r9():
 
 def test_distill_points_run_names_050_r9():
     for pid, ok, bad in (("d1", "m2-distill-d1", "m2-distill-d2"), ("d2", "m2-distill-d2", "m2-dagger-r2"), ("D", "m2-distill-d2", "m2-distill-dx"),
-                         ("D", "m2-teacher-t1", "m2-teacher-t2"), ("t1", "m2-teacher-t1", "m2-distill-d1")):
+                         ("D", "m2-teacher-t1", "m2-teacher-t2"), ("t1", "m2-teacher-t1", "m2-distill-d1"),
+                         ("gn", "m2-gn-t1e2", "m2-gn-relu-t1"), ("gn", "m2-gn-t1", "m2-gn-t2")):
         pt = protocol.point(LIN, pid)
         protocol.check_checkpoint(LIN, "m2", pt, f"checkpoints/{ok}/ckpt-1850")
         with pytest.raises(protocol.Refused, match=rf"point {pid} takes runs m2-<"):
@@ -475,7 +476,7 @@ def test_t1_platform_of_new_points_050_r9(tmp_path, monkeypatch):
     assert {"t1", "test", "val500_race"} <= set(r2["optional"]) and r2["t1_platforms"] == ["windows"]
     assert protocol.check_t1_platform(r2, [{"addr": "a", "platform": "windows"}]) == ["windows"]
     hosts = [{"addr": "a", "platform": "windows"}, {"addr": "b", "platform": "linux"}]
-    for pid in ("D", "rl-fix"):
+    for pid in ("D", "rl-fix", "gn"):
         assert protocol.check_t1_platform(protocol.point(LIN, pid), hosts) == ["linux", "windows"]
         with pytest.raises(protocol.Refused, match=r"b \(no platform\)"):
             protocol.check_t1_platform(protocol.point(LIN, pid), [hosts[0], {"addr": "b"}])
