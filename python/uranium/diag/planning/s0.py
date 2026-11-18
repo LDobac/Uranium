@@ -9,6 +9,7 @@ import numpy as np
 import torch
 
 from uranium import tables as tb
+from uranium.diag.planning import decisions as dec_rows
 from uranium.diag.planning import labels as pl
 from uranium.diag.planning import pred as pp
 from uranium.diag.planning import stats as ps
@@ -75,6 +76,14 @@ def add_args(p) -> None:
     p.add_argument("--val-rows", type=int, default=50000, help="with --val-frac: at most this many validation rows (evenly spaced)")
     p.add_argument("--split-nets", action="store_true", help="separate world (y, p, o) and score (q) nets, each kept at its best validation step")
     p.add_argument("--score-wd", type=float, default=0.01, help="with --split-nets: AdamW weight decay of the score net (world net 0)")
+    p.add_argument("--explore", action="append", default=[],
+                   help="NAME=<job>[,...]: exploration games (054) of decision source NAME; explore decisions weigh 1 / propensity (cap 10), "
+                        "20%% of the games held out (053-R8)")
+    p.add_argument("--pairs", action="append", default=[], help="NAME=<branch folder>: branch pair loss data (053-R8; trunks played by the dump checkpoint)")
+    p.add_argument("--pair-dump", action="append", default=[], help="NAME=<plan-dump>: trunk dump of --pairs NAME (decision rows at f_t - 2)")
+    p.add_argument("--pair-root", help="base of the relative trunk replay paths of --pairs (default URANIUM_SHARED_DIR, then the branch folder)")
+    p.add_argument("--pair-w", type=float, default=1.0, help="with --pairs: weight of the pair loss")
+    p.add_argument("--pair-batch", type=int, default=64, help="with --pairs: pairs per step")
 
 
 def design_of(a) -> pp.Design:
@@ -100,7 +109,7 @@ def model_specs(ks, variants, m3c: bool) -> list[tuple[str, str, int, list | Non
     return out
 
 
-def fingerprint(data: pp.Data) -> dict:
+def fingerprint(data: pp.Data, pairs: dict | None = None) -> dict:
     fp = {**data.checkpoint, "rows": int(data.N), "games": int(data.G),
           "sources": [[s.name, s.kind, s.role] + ([s.rows] if s.rows != "all" else []) for s in data.sources],
           "split_digest": data.split_digest}
@@ -109,6 +118,10 @@ def fingerprint(data: pp.Data) -> dict:
     if data.q_names != pp.Q_NAMES or data.labeled:
         fp["q_heads"] = list(data.q_names)
         fp["q_digest"] = hashlib.sha256(np.ascontiguousarray(data.g_q).tobytes()).hexdigest()
+    if data.weighted:
+        fp["row_w_digest"] = hashlib.sha256(np.ascontiguousarray(data.row_w).tobytes()).hexdigest()
+    if pairs:
+        fp["pairs"] = {n: {**x.info, "digest": x.digest()} for n, x in pairs.items()}
     return fp
 
 
@@ -123,6 +136,12 @@ def training(a) -> dict:
         out["split_nets"] = {"score_wd": a.score_wd}
         if a.val_frac > 0 and a.score_val_every != a.val_every:
             out["val"]["score_every"] = a.score_val_every
+    if a.explore:
+        out["explore"] = {"cap": pp.EXPLORE_CAP, "hold": pp.EXPLORE_HOLDOUT}
+    if a.pairs:
+        from uranium.diag.planning.pairs import PAIR_HOLDOUT
+
+        out["pairs"] = {"w": a.pair_w, "batch": a.pair_batch, "hold": PAIR_HOLDOUT}
     return out
 
 
@@ -133,7 +152,11 @@ def val_rows(data: pp.Data, k: int, kinds, cap: int) -> np.ndarray:
     return v
 
 
-def train_all(data: pp.Data, a, ks, variants, models: Path) -> dict:
+def with_pairs(v: str, kinds) -> bool:
+    return v == "A" and kinds is None
+
+
+def train_all(data: pp.Data, a, ks, variants, models: Path, pairs: dict | None = None) -> dict:
     log = {}
     stats = {}
     tr = training(a)
@@ -142,9 +165,10 @@ def train_all(data: pp.Data, a, ks, variants, models: Path) -> dict:
     for name, v, k, kinds in model_specs(ks, variants, not a.no_m3c):
         path = models / f"{name}.pt"
         rows = data.pair_rows(k, "train", kinds)
+        mp = pairs if with_pairs(v, kinds) else None
         if path.exists() and not a.retrain:
             _, _, meta = pp.load(path, data)
-            if meta.get("data") != fingerprint(data):
+            if meta.get("data") != fingerprint(data, mp):
                 raise SystemExit(f"{path}: trained on other data ({meta.get('data')}); --retrain")
             if meta.get("training", {}) != tr:
                 raise SystemExit(f"{path}: trained with other mix / validation settings ({meta.get('training', {})}); --retrain")
@@ -168,10 +192,14 @@ def train_all(data: pp.Data, a, ks, variants, models: Path) -> dict:
             extra.update(val_every=a.val_every, patience=a.patience)
         if a.split_nets:
             extra.update(split_nets=True, score_wd=a.score_wd, score_val_every=a.score_val_every)
+        if mp:
+            from uranium.diag.planning.pairs import PairUnion
+
+            extra.update(pairs=PairUnion(list(pairs.values())), pair_w=a.pair_w, pair_batch=a.pair_batch)
         steps = a.max_steps if "val" in tr else a.steps
         net, lg = pp.train_one(data, v, k, rows, stats[key], steps=steps, batch=a.batch, lr=a.lr, seed=a.seed, info=info, **extra)
         meta = {"variant": v, "k": k, "kinds": kinds, "rows": int(len(rows)), "steps": steps, "batch": a.batch, "lr": a.lr, "seed": a.seed,
-                "threads": torch.get_num_threads(), "log": lg, "secs": round(time.time() - t0, 1), "data": fingerprint(data)}
+                "threads": torch.get_num_threads(), "log": lg, "secs": round(time.time() - t0, 1), "data": fingerprint(data, mp)}
         if tr:
             meta["training"] = tr
             if mix is not None:
@@ -698,6 +726,7 @@ def markdown(rep: dict) -> str:
     L += ["", f"- S 대조 상대 행이 같은 판인 행: {rep['data'].get('partner_same_game_rows', '-')}",
           "- 체인 행: 같은 판의 앞 결정이 1프레임 이내의 명령(NoOp 아님)인 행(040-R4가 한 프레임 명령 묶음의 2번째부터를 +1, +2, … 프레임으로 민 것). 관측에 묶음 명령의 효과가 이미 들어 있다."]
     L += training_markdown(rep, qn)
+    L += stage4_markdown(rep)
     frame_k = (rep["settings"].get("design") or {}).get("k_unit") == "frame"
     L += ["", "## M0 기초", "", "| 묶음 | 행 | 열린 종류 p50 | top4 / top8 / top16 확률 합(평균) | 결정 간격 p50(프레임) | k 쌍 간격 p50 | 운영 행동 비율 | top8에 운영 행동 | 체인 행 / 뺀 행 |",
           "|---|---|---|---|---|---|---|---|---|"]
@@ -785,7 +814,7 @@ def markdown(rep: dict) -> str:
     return "\n".join(L) + "\n"
 
 
-def report(data: pp.Data, a, ks, variants, models: Path) -> dict:
+def report(data: pp.Data, a, ks, variants, models: Path, pairs: dict | None = None) -> dict:
     th = {k: getattr(a, f"th_{k}") for k in TH_DEFAULTS}
     th["own_k"] = a.th_own_k
     rep = {"kind": "plan-s0", "checkpoint": data.checkpoint, "data": pp.describe(data),
@@ -799,6 +828,10 @@ def report(data: pp.Data, a, ks, variants, models: Path) -> dict:
     tr = training(a)
     if tr:
         rep["settings"]["training"] = tr
+    if data.explore_info:
+        rep["explore"] = explore_summary(data)
+    if pairs:
+        rep["pairs"] = {"sets": {n: x.info for n, x in pairs.items()}}
     if data.q_names != pp.Q_NAMES:
         rep["settings"]["q_heads"] = list(data.q_names)
     bands = [float(x) for x in a.bands.split(",")]
@@ -810,7 +843,7 @@ def report(data: pp.Data, a, ks, variants, models: Path) -> dict:
             if not path.exists():
                 continue
             net, st, meta = pp.load(path, data)
-            if meta.get("data") != fingerprint(data):
+            if meta.get("data") != fingerprint(data, pairs if with_pairs(v, kinds) else None):
                 raise SystemExit(f"{path}: trained on other data; run --stage train (--retrain)")
             if meta.get("training", {}) != tr:
                 raise SystemExit(f"{path}: trained with other mix / validation settings ({meta.get('training', {})}); run --stage train (--retrain)")
@@ -847,6 +880,10 @@ def report(data: pp.Data, a, ks, variants, models: Path) -> dict:
                 blk["_own_cols"] = own_cols_block(bt, rows, tg, sel, names, data.own_names)
                 rep["M1"][ks_][gname][rs] = blk
         print(f"[report] k={k} M1 done", flush=True)
+        if "A" in nets and pairs:
+            from uranium.diag.planning.pairs import evaluate
+
+            rep["pairs"][ks_] = {n: evaluate(nets["A"], x, sts["A"]) for n, x in pairs.items()}
         if "A" in nets:
             rep["M2"][ks_] = m2(data, nets["A"], sts["A"], k, ev, a.boot, a.boot_seed)
             print(f"[report] k={k} M2 done", flush=True)
@@ -860,6 +897,36 @@ def report(data: pp.Data, a, ks, variants, models: Path) -> dict:
             print(f"[report] k={k} M3 done", flush=True)
     rep["verdict"] = verdict(rep, th, ks, data.q_names)
     return rep
+
+
+def explore_summary(data: pp.Data) -> dict:
+    e = data.explore_pts
+    role = np.where(data.row_eval[e["row"]], "eval", np.where(data.row_val[e["row"]], "val", "train"))
+    w = {f"{x:g}": int((e["weight"] == x).sum()) for x in np.unique(e["weight"])}
+    return {"sources": data.explore_info, "weights": w, "cap": pp.EXPLORE_CAP, "hold": pp.EXPLORE_HOLDOUT,
+            "points_by_role": {r: {"forced": int((e["forced"] & (role == r)).sum()), "control": int((~e["forced"] & (role == r)).sum())} for r in ("train", "val", "eval")}}
+
+
+def stage4_markdown(rep: dict) -> list:
+    L = []
+    ex = rep.get("explore")
+    if ex:
+        L += ["", f"## 탐색 행 가중치 (053-R8 ①, 1 / propensity, 상한 {ex['cap']:g}, 떼어 둠 {ex['hold']:g})", "",
+              "| 출처 | 탐색 결정 | 행 | forced / control | 행 없음 | 판 없음 |", "|---|---|---|---|---|---|"]
+        for n, x in ex["sources"].items():
+            L.append(f"| {n} | {x['points']} | {x['rows']} | {x['forced']} / {x['control']} | {x['no_row']} | {x['no_game']} |")
+        L += ["", f"- 가중치별 행: {json.dumps(ex['weights'])}, 역할별: {json.dumps(ex['points_by_role'])}"]
+    pr = rep.get("pairs")
+    if pr:
+        L += ["", "## 분기 짝 손실 (053-R8 ①, 떼어 둔 줄기 25%)", "", "| k | 묶음 | 부분 | 머리 | 짝 | MSE | 예측 평균 | 측정 평균 | 부호 일치 |", "|---|---|---|---|---|---|---|---|---|"]
+        for k, sets in pr.items():
+            if k == "sets":
+                continue
+            for n, parts in sets.items():
+                for part, e in parts.items():
+                    for h, x in (e.get("heads") or {}).items():
+                        L.append(f"| {k} | {n} | {part} | {h} | {x['pairs']} | {_f(x['mse'], 4)} | {_f(x['pred_mean'], 4)} | {_f(x['measured_mean'], 4)} | {_f(x['sign_agree'])} |")
+    return L
 
 
 def memory_of(data: pp.Data) -> dict:
@@ -913,6 +980,52 @@ def source_labels(a, srcs: list, qn: tuple, drop: dict) -> tuple[dict, dict]:
     return labels, joins
 
 
+def explore_points(a, srcs: list) -> dict:
+    jobs = _named(a.explore, "--explore", {s.name for s in srcs})
+    out = {}
+    for s in srcs:
+        if s.name not in jobs:
+            continue
+        if s.role != "split" or s.rows != "decision":
+            raise SystemExit(f"--explore {s.name}: the source must be NAME:model:split:decision (20% of its games held out, 053-R8 2)")
+        games = dec_rows.load(s.path)[1]
+        pts, st = {}, {}
+        for job in [x for x in jobs[s.name].split(",") if x]:
+            got, why = dec_rows.read_explore(Path(job), games)
+            pts.update(got)
+            for k, v in why.items():
+                st[k] = st.get(k, 0) + v
+        out[s.name] = (pts, st)
+    return out
+
+
+def pair_sets(a, data: pp.Data) -> dict:
+    if not a.pairs:
+        if a.pair_dump:
+            raise SystemExit("plan-s0: --pair-dump without --pairs")
+        return {}
+    from uranium.diag.planning.pairs import PairSet
+
+    if not a.split_nets:
+        raise SystemExit("plan-s0: --pairs needs --split-nets (the pair loss trains the score net only, 053-R4 2)")
+    if "A" not in [v for v in a.variants.split(",") if v]:
+        raise SystemExit("plan-s0: --pairs needs the predictor A among --variants")
+    folders = _named(a.pairs, "--pairs", {x.partition("=")[0] for x in a.pairs})
+    dumps = _named(a.pair_dump, "--pair-dump", set(folders))
+    if missing := sorted(set(folders) - set(dumps)):
+        raise SystemExit(f"plan-s0: --pairs {missing} need --pair-dump")
+    out = {}
+    trained = {e.get("sha") for e in data.game_meta if e["role"] in ("train", "val")}
+    for n, d in folders.items():
+        out[n] = PairSet(n, d, dumps[n], data, root=a.pair_root, split_seed=a.split_seed)
+        if leak := sorted(out[n].held_shas() & trained):
+            raise SystemExit(f"plan-s0: --pairs {n}: held-out trunks {leak[:3]} are training games of a --src (053-R8 2)")
+        if not len(out[n].train_pairs()):
+            raise SystemExit(f"plan-s0: --pairs {n}: no training pairs ({json.dumps(out[n].info)})")
+        print(f"[data] pairs {n}: {json.dumps(out[n].info)}", flush=True)
+    return out
+
+
 def coverage(data: pp.Data, joins: dict) -> dict:
     out = {}
     for si, s in enumerate(data.sources):
@@ -964,8 +1077,12 @@ def run(a) -> int:
         raise SystemExit(f"plan-s0: --score-val-every {a.score_val_every} is not in 1..--max-steps {a.max_steps}")
     t0 = time.time()
     labels, joins = source_labels(a, srcs, qn, drop)
+    explore = explore_points(a, srcs)
     data = pp.Data(srcs, ks, a.eval_frac, a.split_seed, drop, keep_bot=a.keep_bot_perspective, maps=maps, design=design, mmap=a.mmap, q_names=qn,
-                   labels=labels, val_frac=a.val_frac)
+                   labels=labels, val_frac=a.val_frac, explore=explore, hold={n: pp.EXPLORE_HOLDOUT for n in explore})
+    if explore:
+        print(f"[data] explore: {json.dumps(explore_summary(data))}", flush=True)
+    pairs = pair_sets(a, data)
     cov = None
     if qn != pp.Q_NAMES or labels:
         cov = coverage(data, joins)
@@ -981,10 +1098,10 @@ def run(a) -> int:
     models = out / "models"
     out.mkdir(parents=True, exist_ok=True)
     if a.stage in ("all", "train"):
-        log = train_all(data, a, ks, variants, models)
+        log = train_all(data, a, ks, variants, models, pairs)
         (out / "train_log.json").write_text(json.dumps(log, indent=1), encoding="utf-8")
     if a.stage in ("all", "report"):
-        rep = report(data, a, ks, variants, models)
+        rep = report(data, a, ks, variants, models, pairs)
         if cov is not None:
             rep["coverage"] = cov
         rep["sources"] = [{"name": s.name, "kind": s.kind, "role": s.role, "path": redact(s.path)} for s in srcs]

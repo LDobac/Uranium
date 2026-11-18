@@ -244,6 +244,64 @@ def build(dump: Path, jobs: list[Path], records: list, out: Path) -> dict:
     return summary
 
 
+def parse_explore(text: str) -> dict | None:
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return {"complete": False, "reason": "empty log", "points": [], "decisions": 0}
+    try:
+        rows = [json.loads(ln) for ln in lines]
+    except json.JSONDecodeError as e:
+        return {"complete": False, "reason": f"not JSON: {e}", "points": [], "decisions": 0}
+    end = rows[-1].get("end")
+    if not isinstance(end, dict):
+        return {"complete": False, "reason": "no end line", "points": [], "decisions": 0}
+    if str(end.get("policy", "")).startswith("t0"):
+        return None
+    pts, n = [], 0
+    for r in rows[:-1]:
+        d = r.get("decision")
+        if d is None:
+            continue
+        e = r.get("explore")
+        if isinstance(e, dict) and "coin" in e:
+            pts.append({"ord": n, "live": int(r["frame"]), "action": int(d["action"]), "rejected": bool(d.get("rejected")), "coin": e["coin"],
+                        "propensity": float(e["propensity"]), "a0": int(e["a0"]), "c": None if e.get("c") is None else int(e["c"]),
+                        "cands": [int(x[0]) for x in e.get("cands") or []], "point": int(e.get("point", 0)), "epsilon": float(e["epsilon"])})
+        n += 1
+    return {"complete": int(end.get("decisions", n)) == n, "reason": None, "points": pts, "decisions": n}
+
+
+def read_explore(job: Path, games: dict) -> tuple[dict, dict]:
+    acts = Path(job) / "acts"
+    if not acts.is_dir():
+        raise SystemExit(f"plan-s0: {job} has no acts/ (054-R4 act logs)")
+    out, st = {}, {}
+    for gid, m in games.items():
+        if m.get("status") != "ok" or m.get("job") != Path(job).name:
+            continue
+        stem = m["replay"]
+        one = acts / f"{stem}.jsonl"
+        found, two = None, False
+        for p in [one] if one.is_file() else sorted(acts.glob(f"{stem}-p*.jsonl")):
+            got = parse_explore(p.read_text(encoding="utf-8"))
+            if got is not None:
+                two = found is not None
+                found = got
+        if two:
+            why = "two_model_logs"
+        elif found is None:
+            why = "no_act_log"
+        elif not found["complete"]:
+            why = "incomplete"
+        elif found["decisions"] != int(m.get("decisions", -1)):
+            why = "decision_count"
+        else:
+            why = "ok"
+            out[int(gid)] = found["points"]
+        st[why] = st.get(why, 0) + 1
+    return out, st
+
+
 def load(dump) -> tuple[dict, dict]:
     d = Path(dump) / SIDECAR
     if not (d / "rows.npz").is_file():

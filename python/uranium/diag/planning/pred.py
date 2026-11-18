@@ -22,6 +22,8 @@ PARTNER_SEED = 12345
 OWN_SD_FLOOR, PRIV_SD_FLOOR, CONST_SD = 0.5, 0.05, 1e-6
 Q_NAMES = ("win", "scv8")
 NOOP = 0
+EXPLORE_CAP = 10.0
+EXPLORE_HOLDOUT = 0.2
 
 
 @dataclass(frozen=True)
@@ -85,7 +87,8 @@ def split_eval(keys: list, name: str, frac: float, seed: int) -> set:
 
 class Data:
     def __init__(self, sources: list[Source], ks=(8, 32), eval_frac: float = 0.2, split_seed: int = 1, drop: dict | None = None,
-                 keep_bot: bool = False, maps=None, design: Design = Design(), mmap=None, q_names=Q_NAMES, labels: dict | None = None, val_frac: float = 0.0):
+                 keep_bot: bool = False, maps=None, design: Design = Design(), mmap=None, q_names=Q_NAMES, labels: dict | None = None, val_frac: float = 0.0,
+                 explore: dict | None = None, hold: dict | None = None):
         self.sources = sources
         self.ks = list(ks)
         self.design = design
@@ -145,7 +148,8 @@ class Data:
                 else:
                     m[gid] = None
             self.dropped[s.name] = {"bot_view": n_bot, "map": n_map, **({"decision_status": n_dec} if dc is not None else {})}
-            ev = split_eval([keyf(k, g[k]) for k in m], s.name, eval_frac, split_seed) if s.role == "split" else set()
+            frac = (hold or {}).get(s.name, eval_frac)
+            ev = split_eval([keyf(k, g[k]) for k in m], s.name, frac, split_seed) if s.role == "split" else set()
             va = set()
             if val_frac > 0 and s.role != "eval":
                 va = split_eval([keyf(k, g[k]) for k in m if keyf(k, g[k]) not in ev], f"{s.name}/val", val_frac, split_seed)
@@ -300,6 +304,11 @@ class Data:
         self.partner = partner
         self.partner_same_game = int((self.game[partner] == self.game).sum()) if self.N else 0
         self.n_act = self.logp.shape[1]
+        self.weighted = bool(explore)
+        self.row_w = np.ones(self.N, np.float32)
+        self.explore_info, self.explore_pts = {}, None
+        if explore:
+            self._explore(explore, gid_map)
         self.n_delay = int(max(16, int(self.delay.max()) + 1 if self.N else 16))
         c_sha = str(self.checkpoint["checkpoint_sha256"])
         played = np.array([bool((e.get("decisions") or {}).get("policy_sha")) and c_sha.startswith(e["decisions"]["policy_sha"]) for e in self.game_meta], bool)
@@ -312,6 +321,55 @@ class Data:
                                               "unmatched": sum(e["decisions"]["unmatched"] for e in gm),
                                               "played_by_checkpoint_games": int(played[[e["si"] == si for e in self.game_meta]].sum()) if self.G else 0,
                                               "excluded": self.dropped[s.name].get("decision_status", {})}
+
+    def _explore(self, explore: dict, gid_map: list) -> None:
+        key = self.game[self.order] * dec_rows.FRAME_KEY + self.dec[self.order].astype(np.int64)
+        cols = {k: [] for k in ("row", "propensity", "forced", "a0", "c", "point")}
+        cands = []
+        for si, s in enumerate(self.sources):
+            if s.name not in explore:
+                continue
+            if s.rows != "decision":
+                raise SystemExit(f"plan-s0: explore source {s.name} must be a decision-row source (:decision, 053-R5 / 053-R8)")
+            pts, info = explore[s.name]
+            if bad := {k: v for k, v in info.items() if k != "ok"}:
+                raise SystemExit(f"plan-s0: explore source {s.name}: games without a usable act log {bad} (053-R8 1 needs every explore decision)")
+            n = {"points": 0, "rows": 0, "no_game": 0, "no_row": 0, "forced": 0, "control": 0}
+            for gid, plist in pts.items():
+                gi = gid_map[si].get(gid)
+                n["points"] += len(plist)
+                if gi is None:
+                    n["no_game"] += len(plist)
+                    continue
+                for p in plist:
+                    want = p["epsilon"] / len(p["cands"]) if p["coin"] == "forced" and p["cands"] else 1.0 - p["epsilon"]
+                    if p["coin"] not in ("forced", "control") or not 0 < p["propensity"] <= 1 or abs(p["propensity"] - want) > 1e-6:
+                        raise SystemExit(f"plan-s0: explore source {s.name} game {gid}: bad explore record {p} (054-R4 propensity)")
+                    q = gi * dec_rows.FRAME_KEY + p["ord"]
+                    at = int(np.searchsorted(key, q))
+                    if at >= len(key) or key[at] != q:
+                        n["no_row"] += 1
+                        continue
+                    r = int(self.order[at])
+                    if int(np.rint(self.frame[r])) != max(p["live"] - dec_rows.LIVE_LAG, dec_rows.GAME_START_FRAME) or int(self.action[r]) != p["action"]:
+                        raise SystemExit(f"plan-s0: explore source {s.name} game {gid} decision {p['ord']}: the act log does not match the decision row")
+                    forced = p["coin"] == "forced"
+                    for k_, v in (("row", r), ("propensity", p["propensity"]), ("forced", forced), ("a0", p["a0"]),
+                                  ("c", -1 if p["c"] is None else p["c"]), ("point", p["point"])):
+                        cols[k_].append(v)
+                    cands.append(list(p["cands"]))
+                    n["rows"] += 1
+                    n["forced" if forced else "control"] += 1
+            self.explore_info[s.name] = {**n, "games": info}
+        pts = {k: np.asarray(v, np.float64 if k == "propensity" else np.int64) for k, v in cols.items()}
+        pts["forced"] = pts["forced"].astype(bool)
+        width = max([len(c) for c in cands], default=0)
+        pts["cands"] = np.array([c + [-1] * (width - len(c)) for c in cands], np.int64).reshape(len(cands), width)
+        if len(np.unique(pts["row"])) != len(pts["row"]):
+            raise SystemExit("plan-s0: two explore decisions on one row")
+        pts["weight"] = explore_weight(pts["propensity"])
+        self.row_w[pts["row"]] = pts["weight"].astype(np.float32)
+        self.explore_pts = pts
 
     def _decision_pairs(self, sel, decs, dec_ks) -> None:
         off = 0
@@ -411,6 +469,8 @@ class Data:
         q = self.row_q[idx]
         b["q"] = torch.from_numpy(np.nan_to_num(q, nan=0.0).astype(np.float32))
         b["q_ok"] = torch.from_numpy(np.isfinite(q).astype(np.float32))
+        if self.weighted:
+            b["w"] = torch.from_numpy(self.row_w[idx])
         b.update(self.inputs(idx, k, variant, st))
         return b
 
@@ -444,6 +504,10 @@ class Data:
             hist /= np.maximum(hist.sum(1, keepdims=True), 1.0)
             out["hist"] = torch.from_numpy(hist)
         return out
+
+
+def explore_weight(propensity) -> np.ndarray:
+    return np.minimum(EXPLORE_CAP, 1.0 / np.asarray(propensity, np.float64))
 
 
 def game_q(e: dict, name: str, lab: dict | None) -> float:
@@ -515,7 +579,19 @@ def loss_terms(out: dict, b: dict, o_on: torch.Tensor, p_on: torch.Tensor) -> di
     p = ((out["p"] - b["p"]) ** 2 * p_on).sum(1) / p_on.sum().clamp_min(1)
     o = ((out["o"] - b["o"]) ** 2 * o_on).sum(1) / o_on.sum().clamp_min(1)
     q = F.binary_cross_entropy_with_logits(out["q"], b["q"], reduction="none") * b["q_ok"]
+    if "w" in b:
+        w = b["w"]
+        return {"y": y * w, "p": p * b["p_ok"] * w, "o": o * w, "q": q * w[:, None]}
     return {"y": y, "p": p * b["p_ok"], "o": o, "q": q}
+
+
+def pair_loss(score, t: dict) -> torch.Tensor:
+    n_act = t["pi"].shape[1]
+    Q = torch.sigmoid(score.q_all(t["h"], torch.arange(n_act), t.get("own")))
+    qa = Q[torch.arange(len(t["c"])), t["c"]]
+    qn = (t["pi"][:, :, None] * Q).sum(1)
+    e = (qa - qn - t["d"]) ** 2 * t["ok"]
+    return e.sum() / t["ok"].sum().clamp_min(1)
 
 
 WORLD_HEADS, SCORE_HEADS = ("y", "p", "o"), ("q",)
@@ -623,7 +699,8 @@ def val_loss(net, data: Data, rows: np.ndarray, k: int, variant: str, st: dict, 
 
 def train_one(data: Data, variant: str, k: int, rows: np.ndarray, st: dict, *, steps: int, batch: int, lr: float, seed: int, log_every: int = 500,
               weights: np.ndarray | None = None, val_rows: np.ndarray | None = None, val_every: int = 500, patience: int = 4,
-              split_nets: bool = False, score_wd: float = 0.0, score_val_every: int | None = None, info: dict | None = None) -> tuple[Predictor, list]:
+              split_nets: bool = False, score_wd: float = 0.0, score_val_every: int | None = None, info: dict | None = None,
+              pairs=None, pair_w: float = 1.0, pair_batch: int = 64) -> tuple[Predictor, list]:
     torch.manual_seed(seed)
     if split_nets:
         net = Split(new_net(data, variant, st), new_net(data, variant, st))
@@ -636,6 +713,12 @@ def train_one(data: Data, variant: str, k: int, rows: np.ndarray, st: dict, *, s
     o_on = torch.from_numpy(np.isfinite(st["d_sd" if data.design.own_target == "delta" else "o_sd"]).astype(np.float32))
     p_on = torch.from_numpy(np.isfinite(st["p_sd"]).astype(np.float32))
     rng = np.random.default_rng(seed)
+    if pairs is not None and variant != "A":
+        raise ValueError("the branch pair loss needs the action-conditioned predictor A (053-R8)")
+    pair_rng = np.random.default_rng([seed, 8])
+    pair_pool = None if pairs is None else pairs.train_pairs()
+    score_net = (net.score if split_nets else net) if pairs is not None else None
+    score_group = "score" if split_nets else "all"
     cum = None if weights is None else np.cumsum(np.asarray(weights, np.float64))
     val = None if val_rows is None else {g: {"best": float("inf"), "step": 0, "state": None, "bad": 0, "stopped": False} for g in groups}
     every = {g: (score_val_every if g == "score" and score_val_every else val_every) for g in groups}
@@ -657,7 +740,12 @@ def train_one(data: Data, variant: str, k: int, rows: np.ndarray, st: dict, *, s
         lt = loss_terms(out, b, o_on, p_on)
         parts = loss_parts(lt, b)
         active = [g for g in groups if val is None or not val[g]["stopped"]]
+        if pair_pool is not None and len(pair_pool) and score_group in active:
+            pick = np.sort(pair_pool[pair_rng.integers(0, len(pair_pool), min(pair_batch, len(pair_pool)))])
+            parts["pair"] = pair_loss(score_net, pairs.tensors(pick, st))
         loss = sum(parts[h] for g in active for h in groups[g][1])
+        if "pair" in parts:
+            loss = loss + pair_w * parts["pair"]
         for g in active:
             opts[g].zero_grad(set_to_none=True)
         loss.backward()
