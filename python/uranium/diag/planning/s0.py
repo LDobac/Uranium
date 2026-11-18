@@ -21,7 +21,8 @@ TH_DEFAULTS = {"s_ratio": 2.0, "r_min": 0.2, "r_noise": 0.1, "m2b": 0.90, "m2a":
 
 
 def add_args(p) -> None:
-    p.add_argument("--src", action="append", required=True, help="NAME:KIND:ROLE=PATH plan-dump folder (KIND human|teacher|model, ROLE train|eval|split), repeatable")
+    p.add_argument("--src", action="append", required=True, help="NAME:KIND:ROLE[:decision]=PATH plan-dump folder (KIND human|teacher|model, ROLE train|eval|split; "
+                   ":decision = only the decision rows of diag plan-decisions, 053-R5), repeatable")
     p.add_argument("--out", required=True, help="output folder (models/, s0.json, s0.md)")
     p.add_argument("--tag", default="", help="report file suffix (s0-<tag>.json / .md), e.g. a second report with other M3b races")
     p.add_argument("--stage", choices=["all", "train", "report"], default="all")
@@ -38,6 +39,7 @@ def add_args(p) -> None:
     p.add_argument("--split-seed", type=int, default=1)
     p.add_argument("--drop", action="append", default=[], help="NAME=JSON views of NAME ({\"bot\": [...], \"model\": [...]}, every stream listed): bot views dropped")
     p.add_argument("--keep-bot-perspective", action="store_true", help="accept a model source's Terran-enemy streams without --drop (both TvT views)")
+    p.add_argument("--mmap", help="local folder: memory-map h, y, priv, logp from local copies there (053-R6; not on the shared drive)")
     p.add_argument("--maps", default="", help="only games of these map families (e.g. 0,1 = the target maps; empty = all)")
     p.add_argument("--boot", type=int, default=1000)
     p.add_argument("--boot-seed", type=int, default=7)
@@ -758,7 +760,7 @@ def run(a) -> int:
     if a.th_own_k and a.th_own_k not in ks:
         raise SystemExit(f"plan-s0: --th-own-k {a.th_own_k} is not among --ks {ks} (0 = no own-state criterion)")
     t0 = time.time()
-    data = pp.Data(srcs, ks, a.eval_frac, a.split_seed, drop, keep_bot=a.keep_bot_perspective, maps=maps, design=design)
+    data = pp.Data(srcs, ks, a.eval_frac, a.split_seed, drop, keep_bot=a.keep_bot_perspective, maps=maps, design=design, mmap=a.mmap)
     print(f"[data] design: {design.as_dict()}", flush=True)
     print(f"[data] left out: {data.dropped}", flush=True)
     print(f"[data] chained rows (valid label / dropped / dropped operation actions): "

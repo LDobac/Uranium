@@ -8,6 +8,7 @@ COMMANDS = {
     "core-split": ("cue.core_split", "probes at the GTrXL sub-points and the gate decomposition, on a dump"),
     "summary": ("cue.summary", "the per-lineage-point summary JSON from the other commands' outputs"),
     "plan-dump": ("planning.dump", "JEPA planning S0 rows: h', JEPA target, privileged, own state, action, log-probs, g_k, win_open"),
+    "plan-decisions": ("planning.decisions", "decision rows of a model-played plan-dump: logged decision at live L -> row at L - 2 (053-R5)"),
     "plan-s0": ("planning.s0", "JEPA planning S0 predictors U / A / A+d / H / S and the M0-M3d tables on plan-dump folders"),
     "plan-branch": ("planning.branch", "branch games: paired effects (trunk bootstrap, split-half), M3u and M2c vs the S0b predictor A"),
 }

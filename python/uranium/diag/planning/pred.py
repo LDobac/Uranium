@@ -9,6 +9,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from uranium.diag.planning import decisions as dec_rows
+from uranium.diag.planning import store as dst
 from uranium.diag.planning.dump import load as load_dump
 
 VARIANTS = ("U", "A", "Ad", "H", "S")
@@ -52,14 +54,18 @@ class Source:
     kind: str
     role: str
     path: str
+    rows: str = "all"
+
+
+ROW_KINDS = ("all", "decision")
 
 
 def parse_src(spec: str) -> Source:
     head, sep, path = spec.partition("=")
     parts = head.split(":")
-    if not sep or len(parts) != 3 or parts[1] not in KINDS or parts[2] not in ROLES or not parts[0]:
-        raise SystemExit(f"--src {spec!r}: expected NAME:KIND:ROLE=PATH, KIND in {KINDS}, ROLE in {ROLES}")
-    return Source(parts[0], parts[1], parts[2], path)
+    if not sep or len(parts) not in (3, 4) or parts[1] not in KINDS or parts[2] not in ROLES or not parts[0] or parts[3:4] not in ([], ["decision"]):
+        raise SystemExit(f"--src {spec!r}: expected NAME:KIND:ROLE[:decision]=PATH, KIND in {KINDS}, ROLE in {ROLES}")
+    return Source(parts[0], parts[1], parts[2], path, parts[3] if len(parts) == 4 else "all")
 
 
 def _ms(x, floor) -> tuple[np.ndarray, np.ndarray]:
@@ -78,16 +84,20 @@ def split_eval(keys: list, name: str, frac: float, seed: int) -> set:
 
 class Data:
     def __init__(self, sources: list[Source], ks=(8, 32), eval_frac: float = 0.2, split_seed: int = 1, drop: dict | None = None,
-                 keep_bot: bool = False, maps=None, design: Design = Design()):
+                 keep_bot: bool = False, maps=None, design: Design = Design(), mmap=None):
         self.sources = sources
         self.ks = list(ks)
         self.design = design
-        rows, games, mans = [], [], []
+        self.store = None if mmap is None else dst.Store(mmap)
+        rows, games, mans, decs = [], [], [], []
         for s in sources:
-            r, g, m = load_dump(s.path)
+            if s.rows not in ROW_KINDS:
+                raise SystemExit(f"plan-s0: source {s.name} rows {s.rows!r}, expected {ROW_KINDS}")
+            r, g, m = load_dump(s.path) if self.store is None else dst.load(s.path)
             rows.append(r)
             games.append(g)
             mans.append(m)
+            decs.append(dec_rows.load(s.path) if s.rows == "decision" else None)
         shas = {m["checkpoint_sha256"] for m in mans}
         if len(shas) != 1:
             raise SystemExit(f"plan-s0: the sources come from different checkpoints {sorted(shas)}")
@@ -103,34 +113,39 @@ class Data:
         drop = drop or {}
         maps = None if maps is None else {int(x) for x in maps}
         self.dropped = {}
-        for s, g in zip(sources, games):
+        self.decision_info = {}
+        for s, g, dc in zip(sources, games, decs):
             views = drop.get(s.name)
             bot = {(x[0], int(x[1])) for x in views["bot"]} if views else set()
             ours = {(x[0], int(x[1])) for x in views["model"]} if views else set()
-            if s.kind == "model" and not views and not keep_bot and any(e.get("race") == "T" for e in g.values()):
+            if s.kind == "model" and dc is None and not views and not keep_bot and any(e.get("race") == "T" for e in g.values()):
                 raise SystemExit(f"plan-s0: model source {s.name} has Terran-enemy streams (the bot's view of a TvT replay is a stream too): "
                                  f"--drop {s.name}=<views json> or --keep-bot-perspective")
             keyf = lambda gid, e: e.get("sha") or f"gid{gid}"  # noqa: E731
-            m, n_bot, n_map = {}, 0, 0
+            m, n_bot, n_map, n_dec = {}, 0, 0, {}
             for gid in sorted(g):
                 e = g[gid]
                 view = (e.get("sha"), int(e.get("start", -1)))
                 if views and view not in bot and view not in ours:
                     raise SystemExit(f"plan-s0: source {s.name} stream {view} is in neither view list of --drop")
+                st = None if dc is None else dc[1].get(gid, {}).get("status", "no_decisions")
                 if view in bot or e.get("skipped"):
                     n_bot += 1
+                elif st is not None and st != "ok":
+                    n_dec[st] = n_dec.get(st, 0) + 1
                 elif maps is not None and int(e.get("map", -1)) not in maps:
                     n_map += 1
                 else:
                     m[gid] = None
-            self.dropped[s.name] = {"bot_view": n_bot, "map": n_map}
+            self.dropped[s.name] = {"bot_view": n_bot, "map": n_map, **({"decision_status": n_dec} if dc is not None else {})}
             ev = split_eval([keyf(k, g[k]) for k in m], s.name, eval_frac, split_seed) if s.role == "split" else set()
             for gid in m:
                 e = g[gid]
                 key = keyf(gid, e)
                 role = s.role if s.role != "split" else ("eval" if key in ev else "train")
                 m[gid] = len(self.game_meta)
-                self.game_meta.append({**e, "src": s.name, "kind": s.kind, "role": role, "gid": gid, "key": f"{s.name}/{key}", "si": len(gid_map)})
+                dm = {} if dc is None else {"rows": dc[1][gid]["matched"], "dump_rows": e.get("rows"), "decisions": dc[1][gid]}
+                self.game_meta.append({**e, **dm, "src": s.name, "kind": s.kind, "role": role, "gid": gid, "key": f"{s.name}/{key}", "si": len(gid_map)})
             gid_map.append(m)
         G = len(self.game_meta)
         self.g_src = np.array([e["si"] for e in self.game_meta], np.int64)
@@ -146,28 +161,53 @@ class Data:
         self.g_unit = np.array([kid[e["key"]] for e in self.game_meta], np.int64)
         self.split_digest = hashlib.sha256(json.dumps(sorted([e["key"], e.get("start"), e["role"]] for e in self.game_meta)).encode()).hexdigest()
         fields = ("h", "y", "priv", "priv_ok", "own", "action", "delay", "weight", "logp", "mask", "win_open", "frame", "dec")
-        sel = []
+        sel, ovr = [], []
         for si, r in enumerate(rows):
             gm = np.full(max(games[si], default=-1) + 1, -1, np.int64)
             for gid, j in gid_map[si].items():
                 gm[gid] = j
-            game = gm[np.asarray(r["game"])] if len(r["game"]) else np.zeros(0, np.int64)
-            keep = np.nonzero(game >= 0)[0]
-            sel.append((keep, game[keep]))
+            if decs[si] is None:
+                game = gm[np.asarray(r["game"])] if len(r["game"]) else np.zeros(0, np.int64)
+                keep = np.nonzero(game >= 0)[0]
+                sel.append((keep, game[keep]))
+                ovr.append({})
+                continue
+            d = decs[si][0]
+            dgame = d["game"].astype(np.int64)
+            dg = np.where(dgame < len(gm), gm[np.minimum(dgame, len(gm) - 1)], -1) if len(gm) else np.full(len(dgame), -1)
+            on = (dg >= 0) & (d["row"] >= 0)
+            o = np.argsort(d["row"][on], kind="stable")
+            keep = d["row"][on][o].astype(np.int64)
+            sel.append((keep, dg[on][o]))
+            ovr.append({"action": d["action"][on][o], "delay": d["delay"][on][o], "weight": np.ones(len(keep), np.float32), "dec": d["ord"][on][o]})
         total = sum(len(k) for k, _ in sel)
+        self.game = np.concatenate([g for _, g in sel]).astype(np.int64) if sel else np.zeros(0, np.int64)
+        if self.store is not None:
+            self.store.bind(sources, sel, ovr)
         for f in fields:
-            setattr(self, f, np.empty((total, *rows[0][f].shape[1:]), rows[0][f].dtype))
-        self.game = np.empty(total, np.int64)
+            shape, dtype = rows[0][f].shape[1:], rows[0][f].dtype
+            big = self.store is not None and self.store.large(f)
+            col = self.store.cached(f, total, shape, dtype) if big else None
+            if col is None:
+                dest = self.store.column(f, total, shape, dtype) if big else np.empty((total, *shape), dtype)
+                off = 0
+                for (keep, _), r, ov in zip(sel, rows, ovr):
+                    n = len(keep)
+                    for c in range(0, n, 200_000):
+                        dest[off + c:off + min(c + 200_000, n)] = ov[f][c:c + 200_000] if f in ov else r[f][keep[c:c + 200_000]]
+                    off += n
+                col = self.store.finish(f, dest) if big else dest
+            setattr(self, f, col)
         self.gk_rows = []
         off = 0
-        for (keep, game), r in zip(sel, rows):
-            n = len(keep)
-            self.game[off:off + n] = game
-            for f in fields:
-                for c in range(0, n, 200_000):
-                    getattr(self, f)[off + c:off + min(c + 200_000, n)] = r[f][keep[c:c + 200_000]]
+        for (keep, _), r in zip(sel, rows):
             self.gk_rows.append((off, keep, {k: r[k] for k in r if k.startswith("g") and k[1:].isdigit()}))
-            off += n
+            off += len(keep)
+        self.row_src_dec = np.zeros(total, bool)
+        off = 0
+        for (keep, _), dc in zip(sel, decs):
+            self.row_src_dec[off:off + len(keep)] = dc is not None
+            off += len(keep)
         self.N = len(self.game)
         self.G = G
         self.order = np.lexsort((self.dec, self.game))
@@ -184,6 +224,8 @@ class Data:
             n = np.full(self.N, -1, np.int64)
             n[self.order[ok]] = self.order[jj[ok]]
             self.nxt[k] = n
+        if design.k_unit == "dec":
+            self._decision_pairs(sel, decs, dec_ks)
         self.nxt_dec1 = self.nxt[1]
         if design.k_unit == "frame":
             fs = np.rint(self.frame[self.order].astype(np.float64))
@@ -246,6 +288,40 @@ class Data:
         self.partner_same_game = int((self.game[partner] == self.game).sum()) if self.N else 0
         self.n_act = self.logp.shape[1]
         self.n_delay = int(max(16, int(self.delay.max()) + 1 if self.N else 16))
+        c_sha = str(self.checkpoint["checkpoint_sha256"])
+        played = np.array([bool((e.get("decisions") or {}).get("policy_sha")) and c_sha.startswith(e["decisions"]["policy_sha"]) for e in self.game_meta], bool)
+        self.prop_ok = self.row_src_dec & played[self.game] if self.N else np.zeros(0, bool)
+        for si, s in enumerate(sources):
+            if s.rows == "decision":
+                gm = [e for e in self.game_meta if e["si"] == si]
+                m = self.row_src == si
+                self.decision_info[s.name] = {"games": len(gm), "rows": int(m.sum()), "noop_rows": int((m & (self.action == NOOP)).sum()),
+                                              "unmatched": sum(e["decisions"]["unmatched"] for e in gm),
+                                              "played_by_checkpoint_games": int(played[[e["si"] == si for e in self.game_meta]].sum()) if self.G else 0,
+                                              "excluded": self.dropped[s.name].get("decision_status", {})}
+
+    def _decision_pairs(self, sel, decs, dec_ks) -> None:
+        off = 0
+        for (keep, _), dc in zip(sel, decs):
+            n = len(keep)
+            if dc is not None:
+                d = dc[0]
+                pos = np.searchsorted(keep, d["row"])
+                hit = (d["row"] >= 0) & (pos < n) & (keep[np.minimum(pos, max(n - 1, 0))] == d["row"]) if n else np.zeros(len(d["row"]), bool)
+                didx = np.where(hit, off + pos, -1)
+                for k in dec_ks:
+                    nx = dec_rows.next_decision(d["game"], d["ord"], d["action"] == NOOP, k)
+                    tgt = np.where(nx >= 0, didx[np.maximum(nx, 0)], -1)
+                    self.nxt[k][off:off + n] = -1
+                    src = hit & (tgt >= 0)
+                    self.nxt[k][didx[src]] = tgt[src]
+            off += n
+
+    def propensity(self, idx, action=None) -> np.ndarray:
+        idx = np.asarray(idx, np.int64)
+        a = (self.action[idx] if action is None else np.asarray(action)).astype(np.int64)
+        p = self.probs(idx)[np.arange(len(idx)), a]
+        return np.where(self.prop_ok[idx], p, np.nan)
 
     def pair_rows(self, k: int, role: str, kinds=None) -> np.ndarray:
         m = self.usable & (self.nxt[k] >= 0) & (self.row_eval == (role == "eval"))
@@ -334,7 +410,7 @@ class Data:
         if variant == "S":
             out["a"] = torch.from_numpy(self.action[self.partner[idx]].astype(np.int64))
         if variant == "H":
-            if self.design.k_unit == "dec":
+            if self.design.k_unit == "dec" and not self.row_src_dec.any():
                 win = self.order[self.pos[idx][:, None] + np.arange(k)[None]]
                 acts = self.action[win].astype(np.int64)
                 w = self.valid[win].astype(np.float32)
@@ -492,5 +568,6 @@ def describe(data: Data) -> dict:
     for s in data.sources:
         gm = [e for e in data.game_meta if e["src"] == s.name]
         out["sources"].append({"name": s.name, "kind": s.kind, "role": s.role, "games": len(gm), "eval_games": sum(e["role"] == "eval" for e in gm),
-                               "rows": int(sum(e.get("rows", 0) for e in gm)), "chains": data.chain_counts[s.name]})
+                               "rows": int(sum(e.get("rows", 0) for e in gm)), "chains": data.chain_counts[s.name],
+                               **({"decision_rows": data.decision_info[s.name]} if s.name in data.decision_info else {})})
     return json.loads(json.dumps(out))
