@@ -252,7 +252,7 @@ def test_053_AC12_R8_held_out_trunk_as_training_source_refused(tmp_path):
     data = pp.Data([pp.Source("trunk-rows", "model", "train", str(dump))], ks=(8,), keep_bot=True, q_names=("held_8m",), labels={"trunk-rows": {}})
     branch_set(tmp_path / "b2", dump)
     a = Namespace(pairs=[f"b2={tmp_path / 'b2'}"], pair_dump=[f"b2={dump}"], pair_root=None, split_seed=1, split_nets=True, variants="U,A")
-    with pytest.raises(SystemExit, match="held-out trunks"):
+    with pytest.raises(SystemExit, match="held-out or validation trunks"):
         plan_s0.pair_sets(a, data)
 
 

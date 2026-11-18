@@ -1019,7 +1019,7 @@ def pair_sets(a, data: pp.Data) -> dict:
     for n, d in folders.items():
         out[n] = PairSet(n, d, dumps[n], data, root=a.pair_root, split_seed=a.split_seed)
         if leak := sorted(out[n].held_shas() & trained):
-            raise SystemExit(f"plan-s0: --pairs {n}: held-out trunks {leak[:3]} are training games of a --src (053-R8 2)")
+            raise SystemExit(f"plan-s0: --pairs {n}: held-out or validation trunks {leak[:3]} are training games of a --src (053-R8)")
         if not len(out[n].train_pairs()):
             raise SystemExit(f"plan-s0: --pairs {n}: no training pairs ({json.dumps(out[n].info)})")
         print(f"[data] pairs {n}: {json.dumps(out[n].info)}", flush=True)

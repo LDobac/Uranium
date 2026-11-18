@@ -40,11 +40,12 @@ class PairSet:
         trunks = sorted({pb.trunk_of(B.all_points[p]) for p in B.points})
         self.held_trunks = pp.split_eval(trunks, SPLIT_NAME, PAIR_HOLDOUT, split_seed)
         cache: dict = {}
-        held_sha = {p: pb.replay_sha(B.all_points[p], roots, cache) for p in B.points if pb.trunk_of(B.all_points[p]) in self.held_trunks}
-        if unknown := sorted(p for p, sha in held_sha.items() if not sha):
-            raise SystemExit(f"plan-s0: --pairs {name}: held-out trunk points {unknown[:3]} have no replay to check against the training games (--pair-root)")
-        self.held_trunk_shas = set(held_sha.values())
         self.val_trunks = pp.split_eval([t for t in trunks if t not in self.held_trunks], f"{SPLIT_NAME}/val", PAIR_VAL, split_seed)
+        kept = self.held_trunks | self.val_trunks
+        held_sha = {p: pb.replay_sha(B.all_points[p], roots, cache) for p in B.points if pb.trunk_of(B.all_points[p]) in kept}
+        if unknown := sorted(p for p, sha in held_sha.items() if not sha):
+            raise SystemExit(f"plan-s0: --pairs {name}: held-out / validation trunk points {unknown[:3]} have no replay to check against the training games (--pair-root)")
+        self.held_trunk_shas = set(held_sha.values())
         q = list(main.q_names)
         cols = {k: [] for k in ("row", "c", "trunk_held", "trunk_val", "point")}
         ds, oks, skip = [], [], {"no_row": len(missing), "closed": 0, "no_label": 0, "no_action": 0, "not_one_decision_force": 0}
