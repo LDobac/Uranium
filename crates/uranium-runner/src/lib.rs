@@ -68,7 +68,7 @@ pub const AGENT_READS_BRANCH_BOARD: bool = true;
 
 pub fn check_branch_support(plan: &plan::Plan) -> Result<()> {
     if plan.uses_branch_keys() && !AGENT_READS_BRANCH_BOARD {
-        bail!("plan `{}` uses branch-game keys (act_log / snapshots / branches / verify_state, 020-R22) but this agent build does not act on them yet (051)", plan.name);
+        bail!("plan `{}` uses branch-game keys (act_log / snapshots / branches / verify_state / explore, 020-R22) but this agent build does not act on them yet (051)", plan.name);
     }
     Ok(())
 }

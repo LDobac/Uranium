@@ -482,7 +482,7 @@ impl ModelPolicy {
         let b = self.branch.as_deref_mut().expect("an explore point needs the 054 session");
         let run = b.explore.as_mut().expect("an explore point needs the 054 run");
         let logp = r0.type_logp.as_deref().context("054-R5: the inference reply has no type_logp for the explore decision")?;
-        let entry = run.decide(p, frame, r0.action.action, logp, &r0.obs.masks.type_mask);
+        let entry = run.decide(p, frame, r0.action.action, logp, &r0.obs.masks.type_mask)?;
         let c = entry.c;
         b.last.explore = Some(entry);
         let Some(c) = c else { return Ok(r0) };
@@ -768,6 +768,11 @@ impl ModelPolicy {
         self.batch_sum += r.batch as u64;
         if let Some(act) = self.surrender_check(f, r.win_open) {
             self.stats.decisions += 1;
+            if let Some(b) = self.branch.as_deref_mut()
+                && let (Some(e), Some(run)) = (b.last.explore.take(), b.explore.as_mut())
+            {
+                run.surrendered(e.point);
+            }
             return Ok(act);
         }
         let t2 = Instant::now();

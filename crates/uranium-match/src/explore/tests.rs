@@ -148,7 +148,7 @@ fn coin_choice_and_propensity_are_seeded_054_ac1() {
             let run = || {
                 let mut r = ExploreRun::new(&game(seed), action_table()).unwrap();
                 let t = r.taus()[p];
-                r.decide(p, t + 1, open[1], &logp, &mask)
+                r.decide(p, t + 1, open[1], &logp, &mask).unwrap()
             };
             let e = run();
             assert_eq!(e, run(), "seed {seed} point {p}");
@@ -172,15 +172,41 @@ fn coin_choice_and_propensity_are_seeded_054_ac1() {
     assert!(picked.values().all(|&n| (100..200).contains(&n)), "uniform over the candidates: {picked:?}");
     let few = mask_with(&open[..2]);
     let mut r = ExploreRun::new(&game(3), action_table()).unwrap();
-    let e = r.decide(0, 3_000, 0, &logp, &few);
+    let e = r.decide(0, 3_000, 0, &logp, &few).unwrap();
     assert_eq!(e.cands.len(), 2);
     if e.coin == Coin::Forced {
         assert_eq!(e.propensity, 0.25, "ε / |cands|");
     }
     let never = ExploreGame { cfg: ExploreConfig { epsilon: 0.0, ..ExploreConfig::default() }, seed: 1 };
     let always = ExploreGame { cfg: ExploreConfig { epsilon: 1.0, ..ExploreConfig::default() }, seed: 1 };
-    assert_eq!(ExploreRun::new(&never, action_table()).unwrap().decide(0, 3_000, 0, &logp, &mask).coin, Coin::Control);
-    assert_eq!(ExploreRun::new(&always, action_table()).unwrap().decide(0, 3_000, 0, &logp, &mask).coin, Coin::Forced);
+    assert_eq!(ExploreRun::new(&never, action_table()).unwrap().decide(0, 3_000, 0, &logp, &mask).unwrap().coin, Coin::Control);
+    assert_eq!(ExploreRun::new(&always, action_table()).unwrap().decide(0, 3_000, 0, &logp, &mask).unwrap().coin, Coin::Forced);
+    let none = mask_with(&[open[0]]);
+    let mut r = ExploreRun::new(&always, action_table()).unwrap();
+    assert!(format!("{:#}", r.decide(0, 3_000, open[0], &logp, &none).unwrap_err()).contains("no candidate"), "never a control fallback");
+    assert!(r.summary().entries.is_empty());
+}
+
+#[test]
+fn surrendered_decisions_leave_entries_for_missed_054_r4() {
+    let two = mask_with(&[id("Build_Bunker"), id("Train_Marine")]);
+    let mut logp = vec![f32::NEG_INFINITY; two.len()];
+    logp[0] = -0.1;
+    logp[id("Build_Bunker") as usize] = -2.0;
+    logp[id("Train_Marine") as usize] = -3.0;
+    let mut r = ExploreRun::new(&game(9), action_table()).unwrap();
+    let t = r.taus().to_vec();
+    assert_eq!(r.check(t[0], &two), Some(0));
+    r.decide(0, t[0], 0, &logp, &two).unwrap();
+    assert_eq!(r.check(t[1], &two), Some(1));
+    r.decide(1, t[1], 0, &logp, &two).unwrap();
+    r.surrendered(2);
+    r.finish(false, Some(t[1] + 1));
+    let s = r.summary();
+    assert_eq!(s.entries.iter().map(|e| e.point).collect::<Vec<_>>(), vec![1], "no entry and no propensity for a decision not sent");
+    assert_eq!(s.missed, vec![ExploreMiss { point: 2, tau: t[1], reason: MissReason::Surrendered }, ExploreMiss { point: 3, tau: t[2], reason: MissReason::GameEnd }]);
+    assert_eq!(serde_json::to_string(&s.missed[0].reason).unwrap(), r#""surrendered""#);
+    assert_eq!(r.end().missed, s.missed);
 }
 
 #[test]

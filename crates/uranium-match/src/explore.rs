@@ -172,6 +172,7 @@ pub enum MissReason {
     WindowEnd,
     GameEnd,
     Aborted,
+    Surrendered,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -241,20 +242,26 @@ impl ExploreRun {
         Some(p)
     }
 
-    pub fn decide(&mut self, p: usize, frame: u32, a0: u16, type_logp: &[f32], type_mask: &[bool]) -> ExploreEntry {
+    pub fn decide(&mut self, p: usize, frame: u32, a0: u16, type_logp: &[f32], type_mask: &[bool]) -> Result<ExploreEntry> {
         let point = p as u32 + 1;
         let cands = candidates(type_logp, type_mask, &self.ops, a0, self.cfg.k as usize);
+        ensure!(!cands.is_empty(), "054-R3: explore point {point} at frame {frame} has no candidate (min_open >= 2 keeps one open op action besides a0)");
         let (coin, pick) = draw(&self.cfg, self.seed, point);
-        let (coin, c, propensity) = match (coin, cands.len()) {
-            (Coin::Forced, n) if n > 0 => {
-                let i = ((pick * n as f64) as usize).min(n - 1);
-                (Coin::Forced, Some(cands[i].0), self.cfg.epsilon / n as f64)
-            }
-            _ => (Coin::Control, None, 1.0 - self.cfg.epsilon),
+        let n = cands.len();
+        let (c, propensity) = match coin {
+            Coin::Forced => (Some(cands[((pick * n as f64) as usize).min(n - 1)].0), self.cfg.epsilon / n as f64),
+            Coin::Control => (None, 1.0 - self.cfg.epsilon),
         };
         let e = ExploreEntry { point, tau: self.taus[p], frame, epsilon: self.cfg.epsilon, k: self.cfg.k, cands, a0, coin, c, rejected: None, propensity };
         self.entries.push(e.clone());
-        e
+        Ok(e)
+    }
+
+    pub fn surrendered(&mut self, point: u32) {
+        if let Some(k) = self.entries.iter().rposition(|e| e.point == point) {
+            let e = self.entries.remove(k);
+            self.missed.push(ExploreMiss { point, tau: e.tau, reason: MissReason::Surrendered });
+        }
     }
 
     pub fn note_rejected(&mut self, rejected: bool) {
@@ -272,7 +279,9 @@ impl ExploreRun {
         } else {
             MissReason::GameEnd
         };
-        self.missed = (0..self.taus.len()).filter(|&i| !self.fired[i]).map(|i| ExploreMiss { point: i as u32 + 1, tau: self.taus[i], reason }).collect();
+        self.missed.retain(|m| m.reason == MissReason::Surrendered);
+        self.missed.extend((0..self.taus.len()).filter(|&i| !self.fired[i]).map(|i| ExploreMiss { point: i as u32 + 1, tau: self.taus[i], reason }));
+        self.missed.sort_by_key(|m| m.point);
     }
 
     pub fn end(&self) -> ExploreEnd {
