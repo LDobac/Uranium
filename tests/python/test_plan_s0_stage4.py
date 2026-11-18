@@ -409,10 +409,13 @@ def test_053_AC12_R8_pair_targets_read_branch_labels_for_win_and_alive(tmp_path)
     branch_set(tmp_path / "b2", dump)
     brs = [json.loads(x) for x in (tmp_path / "b2" / "branches.jsonl").read_text().splitlines()]
     for b in brs:
-        b["labels"] = {"alive_10m": 1, "win": 1 if b["alt"] == "force_bunker" else (None if b["repeat"] == 2 else 0)}
+        b["labels"] = {"held_8m": None if b["alt"] == "force_marine" else 1, "alive_10m": 1,
+                       "win": None if b["alt"] == "none" and b["repeat"] == 2 else 1}
     (tmp_path / "b2" / "branches.jsonl").write_text("".join(json.dumps(b) + "\n" for b in brs))
     ps_ = pr.PairSet("b2", tmp_path / "b2", dump, data)
     jb = np.nonzero(ps_.c == BUNKER)[0]
     ja, jw = q.index("alive_10m"), q.index("win")
     assert (ps_.ok[jb, ja] == 1).all() and (ps_.d[jb, ja] == 0).all()
-    assert (ps_.ok[jb, jw] == 1).all() and np.allclose(ps_.d[jb, jw], 1.0), "win from labels, undecided games left out of the mean (053-R2, R8 3)"
+    assert (ps_.ok[jb, jw] == 1).all() and np.allclose(ps_.d[jb, jw], 0.0), "win from labels, undecided games left out of the mean (053-R2, R8 3)"
+    jm = np.nonzero(ps_.c == MARINE)[0]
+    assert (ps_.ok[jm, q.index("held_8m")] == 0).all(), "a label of None (Aborted, 053-R2 8) is no target even with session metrics"
