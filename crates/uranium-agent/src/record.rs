@@ -54,6 +54,8 @@ pub struct SessionRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<uranium_match::branch::BranchOutcome>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub explore: Option<uranium_match::explore::ExploreSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub infer_seed: Option<u64>,
 }
 

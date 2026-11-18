@@ -80,6 +80,10 @@ pub trait Policy: Send {
     fn branch_record(&mut self) -> Option<model_policy::BranchSessionPart> {
         None
     }
+    fn note_end(&mut self, _won: Option<bool>, _end_frame: u32) {}
+    fn explore_end(&mut self) -> Option<uranium_match::explore::ExploreEnd> {
+        None
+    }
 }
 
 pub const REALTIME_ACT_FRAMES: u32 = 24;
@@ -151,5 +155,13 @@ impl Policy for ModelPolicy {
 
     fn branch_record(&mut self) -> Option<model_policy::BranchSessionPart> {
         ModelPolicy::branch_record(self)
+    }
+
+    fn note_end(&mut self, won: Option<bool>, end_frame: u32) {
+        ModelPolicy::note_end(self, won, end_frame)
+    }
+
+    fn explore_end(&mut self) -> Option<uranium_match::explore::ExploreEnd> {
+        ModelPolicy::explore_end(self)
     }
 }

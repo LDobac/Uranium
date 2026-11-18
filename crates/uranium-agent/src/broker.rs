@@ -14,6 +14,7 @@ const SLOW_BATCH: Duration = Duration::from_secs(5);
 struct Pending {
     slot: usize,
     obs: Box<Observation>,
+    type_logp: bool,
     reply: Sender<Result<ActReply>>,
     since: Instant,
 }
@@ -28,6 +29,7 @@ pub struct Work {
 pub struct WorkBatch {
     pub slots: Vec<usize>,
     pub obs: HostObsBatch,
+    pub logp_rows: Vec<usize>,
     pub wait_mean: Duration,
     pub wait_max: Duration,
     pub formed_unix_ns: u64,
@@ -58,11 +60,13 @@ pub struct BatchOut<'a> {
     pub head_log_prob: &'a [f32],
     pub value: &'a [f32],
     pub win_open: Option<&'a [f32]>,
+    pub type_logp: Option<&'a [f32]>,
 }
 
 struct InFlight {
     batch: Vec<Pending>,
     n: usize,
+    a: usize,
     started: Instant,
 }
 
@@ -121,7 +125,7 @@ impl Broker {
                 self.resets.retain(|s| *s != slot);
                 self.restores.retain(|(s, _, _)| *s != slot);
             }
-            Req::Act { slot, obs, reply } => self.pending.push(Pending { slot, obs, reply, since: Instant::now() }),
+            Req::Act { slot, obs, type_logp, reply } => self.pending.push(Pending { slot, obs, type_logp, reply, since: Instant::now() }),
             Req::Swap { reply, .. } => {
                 let _ = reply.send(Err(anyhow!("this server swaps weights in its model thread (032-R16), not through the handle")));
             }
@@ -190,11 +194,12 @@ impl Broker {
             let refs: Vec<&Observation> = batch.iter().map(|p| &*p.obs).collect();
             let obs = obs_batch(&refs, self.opts.pad_entities);
             let slots = batch.iter().map(|p| p.slot).collect();
+            let logp_rows = batch.iter().enumerate().filter(|(_, p)| p.type_logp).map(|(r, _)| r).collect();
             let waits: Vec<Duration> = batch.iter().map(|p| p.since.elapsed()).collect();
             let wait_mean = waits.iter().sum::<Duration>() / waits.len().max(1) as u32;
             let wait_max = waits.iter().copied().max().unwrap_or_default();
-            self.inflight = Some(InFlight { n: obs.n, batch, started: Instant::now() });
-            WorkBatch { slots, obs, wait_mean, wait_max, formed_unix_ns: unix_ns() }
+            self.inflight = Some(InFlight { n: obs.n, a: obs.a, batch, started: Instant::now() });
+            WorkBatch { slots, obs, logp_rows, wait_mean, wait_max, formed_unix_ns: unix_ns() }
         });
         (!resets.is_empty() || !restores.is_empty() || !states.is_empty() || batch.is_some()).then_some(Work { resets, restores, states, batch })
     }
@@ -225,6 +230,9 @@ impl Broker {
         let b = f.batch.len();
         ensure!(out.action.len() == b && out.log_prob.len() == b && out.head_log_prob.len() == b * HEADS && out.value.len() == b * 4, "batch output of {} rows has the wrong shape", b);
         let s = out.selected.len() / b.max(1);
+        let asked = f.batch.iter().filter(|p| p.type_logp).count();
+        ensure!(out.type_logp.map_or(0, <[f32]>::len) == asked * f.a, "type_logp of {} values for {asked} requested rows of {} actions (054-R5)", out.type_logp.map_or(0, <[f32]>::len), f.a);
+        let mut logp_rows = out.type_logp.unwrap_or(&[]).chunks_exact(f.a.max(1));
         let run = f.started.elapsed();
         if run >= SLOW_BATCH {
             let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
@@ -238,6 +246,7 @@ impl Broker {
                 head_log_prob: std::array::from_fn(|h| out.head_log_prob[r * HEADS + h]),
                 value: std::array::from_fn(|v| out.value[r * 4 + v]),
                 win_open: out.win_open.map(|w| w[r]),
+                type_logp: if p.type_logp { logp_rows.next().map(<[f32]>::to_vec) } else { None },
                 obs: *p.obs,
                 batch: b,
                 run,

@@ -61,6 +61,7 @@ pub struct ActReply {
     pub head_log_prob: [f32; HEADS],
     pub value: [f32; 4],
     pub win_open: Option<f32>,
+    pub type_logp: Option<Vec<f32>>,
     pub obs: Observation,
     pub batch: usize,
     pub run: Duration,
@@ -69,7 +70,7 @@ pub struct ActReply {
 
 pub enum Req {
     Open(Sender<Result<usize>>),
-    Act { slot: usize, obs: Box<Observation>, reply: Sender<Result<ActReply>> },
+    Act { slot: usize, obs: Box<Observation>, type_logp: bool, reply: Sender<Result<ActReply>> },
     Close(usize),
     Swap { net: Box<dyn Any + Send>, version: u64, reply: Sender<Result<()>> },
     State { slot: usize, reply: Sender<Result<HostState>> },
@@ -161,8 +162,12 @@ pub struct InferSession {
 
 impl InferSession {
     pub fn act(&self, obs: Observation) -> Result<ActReply> {
+        self.act_with(obs, false)
+    }
+
+    pub fn act_with(&self, obs: Observation, type_logp: bool) -> Result<ActReply> {
         let (tx, rx) = mpsc::channel();
-        self.tx.send(Req::Act { slot: self.slot, obs: Box::new(obs), reply: tx }).map_err(|_| anyhow!("inference server is gone"))?;
+        self.tx.send(Req::Act { slot: self.slot, obs: Box::new(obs), type_logp, reply: tx }).map_err(|_| anyhow!("inference server is gone"))?;
         rx.recv().map_err(|_| anyhow!("inference server dropped the request"))?
     }
 

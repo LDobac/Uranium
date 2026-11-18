@@ -97,6 +97,10 @@ pub struct ObsLine {
     pub state_sha256: Option<String>,
     #[serde(default)]
     pub forced: bool,
+    #[serde(default)]
+    pub policy_top: Option<Vec<(u16, f32)>>,
+    #[serde(default)]
+    pub explore: Option<crate::explore::ExploreEntry>,
 }
 
 impl ObsLine {
@@ -123,6 +127,12 @@ impl Serialize for ObsLine {
             m.serialize_entry("state_sha256", h)?;
         }
         m.serialize_entry("forced", &self.forced)?;
+        if let Some(p) = &self.policy_top {
+            m.serialize_entry("policy_top", p)?;
+        }
+        if let Some(e) = &self.explore {
+            m.serialize_entry("explore", e)?;
+        }
         m.end()
     }
 }
@@ -139,6 +149,8 @@ pub struct ActLogEnd {
     pub git: String,
     pub feature_schema: u32,
     pub action_schema: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explore: Option<crate::explore::ExploreEnd>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -996,6 +1008,8 @@ pub struct GameBranch {
     pub snapshots: Vec<SnapshotRule>,
     pub states_dir: Option<std::path::PathBuf>,
     pub branch: Option<BranchPlayer>,
+    #[serde(default)]
+    pub explore: Option<crate::explore::ExploreGame>,
 }
 
 impl GameBranch {

@@ -88,6 +88,67 @@ pub fn restore_play(h: &InferenceHandle, k: usize, steps: usize) -> Result<Resto
     Ok(RestorePlay { saved, restored, other_before, other_after, straight, resumed })
 }
 
+pub struct ExploreRestore {
+    pub first: ActBits,
+    pub again: ActBits,
+    pub again_type_logp: bool,
+    pub type_logp: Vec<f32>,
+    pub type_mask: Vec<bool>,
+    pub c: u16,
+    pub forced_action: u16,
+    pub forced: ActBits,
+    pub forced_fresh: ActBits,
+    pub other_before: HostState,
+    pub other_after: HostState,
+}
+
+pub fn explore_restore(h: &InferenceHandle, k: usize, steps: usize) -> Result<ExploreRestore> {
+    use uranium_env::features::{AgentMemory, MapInfo, extract};
+    use uranium_match::explore::{force_mask, op_actions};
+    let info = game_info();
+    let map = MapInfo::new(&info, 0, None)?;
+    let observe = |kk: usize| {
+        let mut mem = AgentMemory::new(&info);
+        frames(kk, steps).iter().map(|f| extract(f, &mut mem, &map, None)).collect::<Vec<_>>()
+    };
+    let (obs, other) = (observe(0), observe(1));
+    anyhow::ensure!(k < steps, "k = {k} is not below steps = {steps}");
+    let a = h.open()?;
+    let b = h.open()?;
+    for (o, p) in obs[..k].iter().zip(&other) {
+        a.act(o.clone())?;
+        b.act(p.clone())?;
+    }
+    let other_before = b.state()?;
+    let saved = a.state()?;
+    let r1 = a.act_with(obs[k].clone(), true)?;
+    a.set_state(saved.clone())?;
+    let r2 = a.act(obs[k].clone())?;
+    let mask = obs[k].masks.type_mask.clone();
+    let c = op_actions(uranium_env::features::extract::action_table()).into_iter().rev().find(|&x| mask.get(x as usize).copied().unwrap_or(false)).ok_or_else(|| anyhow::anyhow!("no open op action"))?;
+    let mut forced_obs = obs[k].clone();
+    forced_obs.masks.type_mask = force_mask(&mask, c);
+    a.set_state(saved.clone())?;
+    let rf = a.act(forced_obs.clone())?;
+    let fresh = h.open()?;
+    fresh.set_state(saved)?;
+    let rg = fresh.act(forced_obs)?;
+    let other_after = b.state()?;
+    Ok(ExploreRestore {
+        first: act_bits(&r1),
+        again: act_bits(&r2),
+        again_type_logp: r2.type_logp.is_some(),
+        type_logp: r1.type_logp.clone().ok_or_else(|| anyhow::anyhow!("no type_logp in the requested reply"))?,
+        type_mask: mask,
+        c,
+        forced_action: rf.action.action,
+        forced: act_bits(&rf),
+        forced_fresh: act_bits(&rg),
+        other_before,
+        other_after,
+    })
+}
+
 pub fn set_and_read(h: &InferenceHandle, state: HostState) -> Result<(HostState, std::result::Result<(), String>, HostState)> {
     use uranium_env::features::{AgentMemory, MapInfo, extract};
     let info = game_info();

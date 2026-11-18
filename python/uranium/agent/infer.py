@@ -42,6 +42,15 @@ def state_from_host(s, parts: list, device: torch.device):
     return rebuild(s, iter(out))
 
 
+def type_logp_rows(type_logp, type_mask, rows: list):
+    if not rows:
+        return None
+    idx = torch.tensor(rows, device=type_logp.device)
+    lp = type_logp.index_select(0, idx).float()
+    open_ = type_mask.index_select(0, idx).to(torch.bool)
+    return torch.where(open_, lp, torch.full_like(lp, float("-inf"))).reshape(-1).cpu().numpy()
+
+
 def _tree(x, f):
     if isinstance(x, torch.Tensor):
         return f(x)
@@ -285,6 +294,7 @@ class InferenceServer(threading.Thread):
             i64(a["action"]), i64(a["delay"]), i64(a["queued"]), i64(a["selected"]), i64(a["target_unit"]), i64(a["target_loc"]),
             f32(out["log_prob"]), f32(out["head_log_prob"]), f32(out["value"]),
             None if out["win_open"] is None else f32(out["win_open"]),
+            type_logp_rows(out["type_logp"], obs["type_mask"], b.get("logp_rows") or []),
         )
         if self.prof:
             t_end = time.time_ns()

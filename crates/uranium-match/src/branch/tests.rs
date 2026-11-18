@@ -111,6 +111,8 @@ fn model_line(i: u32, frame: u32, digest: u64, a: Act) -> ObsLine {
         state: None,
         state_sha256: None,
         forced: false,
+        policy_top: None,
+        explore: None,
     }
 }
 
@@ -126,6 +128,7 @@ fn end(obs: u64, decisions: u64) -> ActLogEnd {
         git: "d45cb8c".into(),
         feature_schema: 7,
         action_schema: 2,
+        explore: None,
     }
 }
 
@@ -174,7 +177,7 @@ fn branch_act_log_t0_lines_have_no_decision_051_r2() {
     let mut buf = Vec::new();
     let mut w = ActLogWriter::new(&mut buf);
     for i in 0..3 {
-        w.push(&ObsLine { i, frame: 10 * i, digest: i as u64, act: act(vec![], 10), decision: None, state: None, state_sha256: None, forced: false }).unwrap();
+        w.push(&ObsLine { i, frame: 10 * i, digest: i as u64, act: act(vec![], 10), decision: None, state: None, state_sha256: None, forced: false, policy_top: None, explore: None }).unwrap();
     }
     w.finish(end(99, 99)).unwrap();
     let text = String::from_utf8(buf).unwrap();

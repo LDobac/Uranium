@@ -18,7 +18,26 @@ use uranium_proto::*;
 
 type Seen = Arc<Mutex<Vec<(usize, Vec<u16>)>>>;
 
+#[derive(Debug, Clone, PartialEq)]
+enum Ev {
+    State(usize),
+    Restore(usize),
+    Act { slot: usize, open: Vec<u16>, logp: bool },
+}
+
+type Events = Arc<Mutex<Vec<Ev>>>;
+
+fn mock_logp(mask: &[bool]) -> Vec<f32> {
+    let logits: Vec<f32> = (0..mask.len()).map(|k| -((k % 17) as f32) * 0.25).collect();
+    let z = mask.iter().zip(&logits).filter(|(m, _)| **m).map(|(_, l)| l.exp()).sum::<f32>().ln();
+    mask.iter().zip(&logits).map(|(m, l)| if *m { l - z } else { f32::NEG_INFINITY }).collect()
+}
+
 fn mock() -> (InferenceHandle, Seen) {
+    mock_with(Events::default())
+}
+
+fn mock_with(events: Events) -> (InferenceHandle, Seen) {
     let opts = InferOptions { max_batch: 1, max_wait: Duration::from_millis(50), capacity: 8, ..InferOptions::default() };
     let (mut b, h) = Broker::new("mock@000000000000".into(), SampleMode::Stochastic, opts).unwrap();
     let seen: Seen = Arc::default();
@@ -30,6 +49,7 @@ fn mock() -> (InferenceHandle, Seen) {
             for s in w.resets {
                 decisions[s] = 0;
             }
+            events.lock().unwrap().extend(w.restores.iter().map(|(s, _)| Ev::Restore(*s)).chain(w.states.iter().map(|&s| Ev::State(s))));
             let errors = w
                 .restores
                 .iter()
@@ -52,8 +72,10 @@ fn mock() -> (InferenceHandle, Seen) {
                     if open.len() == 1 {
                         action[row] = open[0] as i64;
                     }
+                    events.lock().unwrap().push(Ev::Act { slot: s, open: open.clone(), logp: batch.logp_rows.contains(&row) });
                     log.lock().unwrap().push((s, open));
                 }
+                let type_logp: Vec<f32> = batch.logp_rows.iter().flat_map(|&row| mock_logp(&batch.obs.type_mask[row * a..(row + 1) * a])).collect();
                 let delay: Vec<i64> = batch.slots.iter().map(|&s| (decisions[s] % DELAY_BUCKETS.len()) as i64).collect();
                 for &s in &batch.slots {
                     decisions[s] += 1;
@@ -64,7 +86,7 @@ fn mock() -> (InferenceHandle, Seen) {
                 let heads: Vec<f32> = (0..r).flat_map(|_| [-0.5f32, 0.0, 0.0, 0.0, 0.0, 0.0]).collect();
                 assert_eq!(heads.len(), r * HEADS);
                 let value = vec![0.25f32; r * 4];
-                let out = BatchOut { action: &action, delay: &delay, queued: &zeros, selected: &sel, target_unit: &zeros, target_loc: &zeros, log_prob: &lp, head_log_prob: &heads, value: &value, win_open: None };
+                let out = BatchOut { action: &action, delay: &delay, queued: &zeros, selected: &sel, target_unit: &zeros, target_loc: &zeros, log_prob: &lp, head_log_prob: &heads, value: &value, win_open: None, type_logp: Some(&type_logp) };
                 b.reply(out).unwrap();
             }
         }
@@ -103,7 +125,7 @@ const I_T: u32 = 5;
 
 fn trunk_game(dir: &Path) -> Arc<GameBranch> {
     let rule = SnapshotRule { name: "p".into(), from_frame: 24 * I_T + 1, to_frame: 100_000, any_open: vec![], after_rule: None, after_s: None };
-    Arc::new(GameBranch { plan_game: 1, acts_dir: Some(dir.join("acts")), snapshots: vec![rule], states_dir: Some(dir.join("states")), branch: None })
+    Arc::new(GameBranch { plan_game: 1, acts_dir: Some(dir.join("acts")), snapshots: vec![rule], states_dir: Some(dir.join("states")), branch: None, explore: None })
 }
 
 fn play_logged(p: &mut ModelPolicy, fs: &[RawFrame]) -> (Vec<Act>, ActLog) {
@@ -112,7 +134,7 @@ fn play_logged(p: &mut ModelPolicy, fs: &[RawFrame]) -> (Vec<Act>, ActLog) {
     for (i, f) in fs.iter().enumerate() {
         let act = p.on_frame(f).unwrap();
         let x = p.act_log_extra().expect("051 session");
-        lines.push(ObsLine { i: i as u32, frame: f.frame, digest: obs_digest(f).unwrap(), act: act.clone(), decision: x.decision, state: x.state, state_sha256: x.state_sha256, forced: x.forced });
+        lines.push(ObsLine { i: i as u32, frame: f.frame, digest: obs_digest(f).unwrap(), act: act.clone(), decision: x.decision, state: x.state, state_sha256: x.state_sha256, forced: x.forced, policy_top: x.policy_top, explore: x.explore });
         acts.push(act);
         if act_is_leave(acts.last().unwrap()) {
             break;
@@ -120,7 +142,7 @@ fn play_logged(p: &mut ModelPolicy, fs: &[RawFrame]) -> (Vec<Act>, ActLog) {
     }
     let last = fs[lines.len() - 1].frame;
     p.on_end(Some(uranium_env::reward::Outcome::Draw), None);
-    let end = ActLogEnd { obs: lines.len() as u64, decisions: lines.iter().filter(|l| l.decision.is_some()).count() as u64, end_frame: last, reason: EndReason::TimeLimitDraw, player: SELF, players_index: 0, policy: "model:mock".into(), git: "x".into(), feature_schema: 7, action_schema: 2 };
+    let end = ActLogEnd { obs: lines.len() as u64, decisions: lines.iter().filter(|l| l.decision.is_some()).count() as u64, end_frame: last, reason: EndReason::TimeLimitDraw, player: SELF, players_index: 0, policy: "model:mock".into(), git: "x".into(), feature_schema: 7, action_schema: 2, explore: None };
     (acts, ActLog { lines, end })
 }
 
@@ -168,7 +190,7 @@ fn branch_game(t: &Trunk, alt: Alternative, verify_state: bool) -> Arc<GameBranc
         repeat: 1,
     };
     let player = BranchPlayer { line, acts: t.acts_path.clone(), state: t.state.clone(), horizon: 24 * 9 + 1, none_actions: vec!["Build_Bunker".into(), "Train_Marine".into()], verify_state };
-    Arc::new(GameBranch { plan_game: 2, acts_dir: None, snapshots: vec![], states_dir: None, branch: Some(player) })
+    Arc::new(GameBranch { plan_game: 2, acts_dir: None, snapshots: vec![], states_dir: None, branch: Some(player), explore: None })
 }
 
 fn none() -> Alternative {
@@ -192,6 +214,22 @@ fn trunk_saves_the_state_at_the_snapshot_decision_051_r3() {
     assert_eq!((at.state.as_deref(), at.state_sha256.as_deref()), (Some(state_id(1, I_T).as_str()), Some(t.sha.as_str())));
     assert!(t.log.lines.iter().filter(|l| l.state.is_some()).count() == 1, "the rule fires once");
     assert!(t.log.lines.iter().all(|l| l.decision.is_some() && !l.forced));
+    let map = MapInfo::new(&game_info(), 0, None).unwrap();
+    let mut mem = AgentMemory::new(&game_info());
+    let mask = fs.iter().map(|f| extract(f, &mut mem, &map, None)).nth(I_T as usize).unwrap().masks.type_mask;
+    let top = at.policy_top.clone().expect("051-R2: policy_top on the snapshot line");
+    let want: Vec<(u16, f32)> = {
+        let lp = mock_logp(&mask);
+        let mut v: Vec<(u16, f32)> = open_ids(&mask).into_iter().map(|a| (a, lp[a as usize].exp())).collect();
+        v.sort_by(|x, y| y.1.total_cmp(&x.1).then(x.0.cmp(&y.0)));
+        v
+    };
+    assert_eq!(top, want, "open actions, π from the masked log-probs, descending");
+    assert!(top.len() > 1 && top.windows(2).all(|w| w[0].1 >= w[1].1));
+    assert!((top.iter().map(|x| x.1).sum::<f32>() - 1.0).abs() < 1e-5);
+    assert!(t.log.lines.iter().filter(|l| l.policy_top.is_some()).count() == 1, "only the snapshot decision");
+    let text = std::fs::read_to_string(dir.join("acts").join(act_log_name(1, 0))).unwrap();
+    assert!(ActLog::read(text.as_bytes()).unwrap().lines[I_T as usize].policy_top == Some(top), "round trip");
     let mut q = ModelPolicy::new(&h, &game_info()).unwrap().with_branch(trunk_game(&dir.join("other")), 1).unwrap();
     let (_, log) = play_logged(&mut q, &fs);
     assert!(log.lines.iter().all(|l| l.state.is_none()) && q.branch_record().unwrap().snapshots.is_empty());
@@ -553,5 +591,142 @@ fn decision_log_marks_forced_decisions_051_r5() {
     q.on_end(Some(uranium_env::reward::Outcome::Draw), None);
     let want = concat!(r#"{"frame":1,"action":0,"delay_bucket":0,"units":[]}"#, "\n", r#"{"frame":25,"action":0,"delay_bucket":1,"units":[]}"#, "\n", r#"{"decisions":2,"end_frame":null,"player":0}"#, "\n");
     assert_eq!(std::fs::read_to_string(&plain).unwrap(), want);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn branch_held_8m_counts_a_win_before_8m_053_r2() {
+    use uranium_env::reward::Outcome;
+    let dir = temp("held");
+    let (h, _) = mock();
+    let fs = frames(8);
+    let t = trunk(&h, &dir, &fs);
+    for (won, end, outcome, want) in [(Some(true), 5_000, Outcome::Win, true), (Some(false), 5_000, Outcome::Loss, false), (Some(true), 11_520, Outcome::Win, false), (None, 14_400, Outcome::Draw, false)] {
+        let mut p = ModelPolicy::new(&h, &game_info()).unwrap().with_branch(branch_game(&t, none(), false), 0).unwrap();
+        for f in &fs {
+            p.on_frame(f).unwrap();
+        }
+        p.note_end(won, end);
+        p.on_end(Some(outcome), None);
+        let o = p.branch_record().unwrap().outcome.unwrap();
+        assert_eq!((o.metrics["scv_8m"].clone(), o.metrics["held_8m"].as_bool()), (serde_json::Value::Null, Some(want)), "{won:?} at {end}");
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+fn explore_game(dir: &Path, seed: u32) -> Arc<GameBranch> {
+    use uranium_match::explore::{ExploreConfig, ExploreGame};
+    let cfg = ExploreConfig { window_s: [0, 30], gap_s: 5, ..ExploreConfig::default() };
+    Arc::new(GameBranch { plan_game: 1, acts_dir: Some(dir.join("acts")), explore: Some(ExploreGame { cfg, seed }), ..Default::default() })
+}
+
+#[test]
+fn explore_decisions_restore_then_force_054_r3_r4() {
+    use uranium_match::explore::{Coin, MissReason, op_actions};
+    let dir = temp("explore");
+    let fs = frames(45);
+    let map = MapInfo::new(&game_info(), 0, None).unwrap();
+    let mut mem = AgentMemory::new(&game_info());
+    let masks: Vec<Vec<bool>> = fs.iter().map(|f| extract(f, &mut mem, &map, None).masks.type_mask).collect();
+    let ops = op_actions(action_table());
+    assert!(masks.iter().all(|m| ops.iter().filter(|&&a| m[a as usize]).count() >= 2), "the test frames open two op actions");
+    let mut coins = std::collections::BTreeSet::new();
+    let coin_name = |c: Coin| format!("{c:?}");
+    for seed in 1..=8u32 {
+        let events = Events::default();
+        let (h, _) = mock_with(events.clone());
+        let log = dir.join(format!("memory-{seed}.jsonl"));
+        let game = explore_game(&dir, seed);
+        let mut p = ModelPolicy::new(&h.clone().with_memory_log(log.clone()), &game_info()).unwrap().with_branch(game.clone(), 0).unwrap();
+        let (acts, alog) = play_logged(&mut p, &fs);
+        let rec = p.branch_record().unwrap();
+        let sum = rec.explore.clone().expect("054-R4 summary");
+        assert_eq!(sum.taus, uranium_match::explore::schedule(&game.explore.as_ref().unwrap().cfg, seed).unwrap());
+        assert_eq!(sum.entries.len() + sum.missed.len(), 3, "seed {seed}: every point fires or has a reason");
+        assert!(sum.missed.iter().all(|m| m.reason == MissReason::GameEnd || m.reason == MissReason::WindowEnd));
+        let lines: Vec<&ObsLine> = alog.lines.iter().filter(|l| l.explore.is_some()).collect();
+        assert_eq!(lines.len(), sum.entries.len());
+        let ev = events.lock().unwrap().clone();
+        let acts_ev: Vec<usize> = ev.iter().enumerate().filter(|(_, e)| matches!(e, Ev::Act { .. })).map(|(k, _)| k).collect();
+        let mut k_act = 0usize;
+        let memory = std::fs::read_to_string(&log).unwrap();
+        let memory: Vec<&str> = memory.lines().collect();
+        for (i, l) in alog.lines.iter().enumerate() {
+            let at = acts_ev[k_act];
+            let Some(e) = &l.explore else {
+                assert!(matches!(&ev[at], Ev::Act { logp: false, .. }), "no type_logp without a request (054-R5)");
+                k_act += 1;
+                continue;
+            };
+            coins.insert(coin_name(e.coin));
+            let d = l.decision.clone().unwrap();
+            assert_eq!(e, &sum.entries[lines.iter().position(|x| x.i == l.i).unwrap()]);
+            assert_eq!(e.frame, l.frame);
+            assert!(e.frame >= e.tau && e.rejected == Some(d.rejected));
+            assert_eq!(e.cands, uranium_match::explore::candidates(&mock_logp(&masks[i]), &masks[i], &ops, e.a0, 4));
+            assert!(matches!(&ev[at - 1], Ev::State(0)), "state saved before the first act (054-R3 ①)");
+            assert!(matches!(&ev[at], Ev::Act { slot: 0, logp: true, .. }), "a0 pass asks for type_logp");
+            match e.coin {
+                Coin::Forced => {
+                    let c = e.c.unwrap();
+                    assert_eq!((d.action, e.propensity), (c, 0.5 / e.cands.len() as f64), "the sent action is c");
+                    assert_eq!(ev[at + 1], Ev::Restore(0), "restore before the forced act");
+                    assert_eq!(ev[at + 2], Ev::Act { slot: 0, open: vec![c], logp: false }, "the forced act sees {{c}} only");
+                    assert_eq!(acts_ev[k_act + 1], at + 2);
+                    assert_eq!(acts[i].advance_frames, DELAY_BUCKETS[i % DELAY_BUCKETS.len()], "the restored state (mock count) drives the forced act");
+                    k_act += 2;
+                }
+                Coin::Control => {
+                    assert_eq!((d.action, e.c, e.propensity), (e.a0, None, 0.5));
+                    k_act += 1;
+                }
+            }
+            let mline: serde_json::Value = serde_json::from_str(memory[i]).unwrap();
+            assert_eq!(mline["action"], d.action, "the memory log keeps the sent decision");
+        }
+        assert_eq!(k_act, acts_ev.len());
+        let mut buf = Vec::new();
+        alog.write(&mut buf).unwrap();
+        assert_eq!(ActLog::read(buf.as_slice()).unwrap(), alog, "explore fields round trip");
+    }
+    assert_eq!(coins.len(), 2, "both coins over the seeds");
+
+    let board = BranchBoard::default();
+    board.lock().unwrap().insert(41, explore_game(&dir.join("serve"), 3));
+    let (h, _) = mock();
+    let recs = serve_games(&h, board, &[(41, 0, fs.clone())]);
+    let text = std::fs::read_to_string(dir.join("serve").join("acts").join(act_log_name(1, 0))).unwrap();
+    let log = ActLog::read(text.as_bytes()).unwrap();
+    let sum: uranium_match::explore::ExploreSummary = serde_json::from_value(recs[0]["explore"].clone()).unwrap();
+    let end = log.end.explore.clone().expect("054-R4 end line");
+    assert_eq!((end.taus.clone(), end.missed.clone()), (sum.taus.clone(), sum.missed.clone()));
+    assert_eq!(log.lines.iter().filter_map(|l| l.explore.clone()).collect::<Vec<_>>(), sum.entries);
+    assert!(text.lines().last().unwrap().contains(r#""explore":{"taus":["#));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn explore_only_for_players_index_0_and_late_points_miss_054_r2() {
+    use uranium_match::explore::MissReason;
+    let dir = temp("explore-miss");
+    let events = Events::default();
+    let (h, _) = mock_with(events.clone());
+    let mut q = ModelPolicy::new(&h, &game_info()).unwrap().with_branch(explore_game(&dir, 5), 1).unwrap();
+    let (_, log) = play_logged(&mut q, &frames(40));
+    assert!(log.lines.iter().all(|l| l.explore.is_none()) && q.branch_record().unwrap().explore.is_none());
+    assert!(events.lock().unwrap().iter().all(|e| matches!(e, Ev::Act { logp: false, .. })), "no state read, no type_logp");
+    let mut p = ModelPolicy::new(&h, &game_info()).unwrap().with_branch(explore_game(&dir, 5), 0).unwrap();
+    for f in frames(2) {
+        p.on_frame(&f).unwrap();
+    }
+    p.note_end(Some(false), 100);
+    p.on_end(Some(uranium_env::reward::Outcome::Loss), None);
+    let s = p.branch_record().unwrap().explore.unwrap();
+    let late = s.taus.iter().filter(|&&t| t > 25).count();
+    assert!(s.missed.len() >= late && s.missed.iter().all(|m| m.reason == MissReason::GameEnd));
+    let mut a = ModelPolicy::new(&h, &game_info()).unwrap().with_branch(explore_game(&dir, 5), 0).unwrap();
+    a.on_abort();
+    let s = a.branch_record().unwrap().explore.unwrap();
+    assert!(s.missed.len() == 3 && s.missed.iter().all(|m| m.reason == MissReason::Aborted));
     std::fs::remove_dir_all(&dir).ok();
 }

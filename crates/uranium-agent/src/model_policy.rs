@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Serialize;
 use uranium_env::features::executor::{Rejected, execute};
 use uranium_env::features::world::World;
@@ -19,7 +19,9 @@ use uranium_match::surrender::{DEFAULT_CHAT, SurrenderJudge, SurrenderMode, rule
 use uranium_match::branch::{
     BranchOutcome, BranchPlayer, DilutionTracker, ForcedPrefix, GameBranch, Intervention, Invalid, InvalidReason, PrefixStep, SampleTracker, SnapshotTaken, Snapshots, StateCheck, ActLog, decode_state, encode_state, obs_digest, open_ids, quit_act, sha256_hex, state_id,
 };
-use crate::infer::HostState;
+use uranium_match::explore::{ExploreEnd, ExploreRun, ExploreSummary, force_mask, policy_top};
+use crate::infer::{ActReply, HostState};
+use uranium_env::scout::FRAME_8M;
 use uranium_proto::{Act, GameInfo, RawFrame};
 use uranium_store::elog;
 
@@ -115,6 +117,8 @@ pub struct ModelPolicy {
     concede_reward: Option<RewardParts>,
     decision_log: Option<DecisionLog>,
     branch: Option<Box<BranchSession>>,
+    won_at: Option<u32>,
+    end_frame: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -123,12 +127,15 @@ pub struct LineExtra {
     pub state: Option<String>,
     pub state_sha256: Option<String>,
     pub forced: bool,
+    pub policy_top: Option<Vec<(u16, f32)>>,
+    pub explore: Option<uranium_match::explore::ExploreEntry>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct BranchSessionPart {
     pub snapshots: Vec<SnapshotTaken>,
     pub outcome: Option<BranchOutcome>,
+    pub explore: Option<ExploreSummary>,
 }
 
 struct BranchSession {
@@ -136,6 +143,7 @@ struct BranchSession {
     last: LineExtra,
     trunk: Option<TrunkSnapshots>,
     player: Option<Box<BranchRun>>,
+    explore: Option<ExploreRun>,
 }
 
 struct TrunkSnapshots {
@@ -239,10 +247,10 @@ pub fn compare_states(a: &HostState, b: &HostState) -> StateCheck {
     StateCheck::new(bit_equal, max)
 }
 
-pub fn outcome_metrics(m: &ScoutMetrics) -> serde_json::Map<String, serde_json::Value> {
+pub fn outcome_metrics(m: &ScoutMetrics, won_at: Option<u32>) -> serde_json::Map<String, serde_json::Value> {
     let secs = |f: Option<u32>| f.map(seconds);
     let v = serde_json::json!({
-        "held_8m": m.scv_8m.is_some_and(|n| n >= 8),
+        "held_8m": m.scv_8m.is_some_and(|n| n >= 8) || won_at.is_some_and(|f| f < FRAME_8M),
         "held_s": m.scv_min_1m.is_some_and(|n| n > 4),
         "scv_8m": m.scv_8m,
         "scv_min_1m": m.scv_min_1m,
@@ -396,12 +404,15 @@ impl ModelPolicy {
             concede_reward: None,
             decision_log: handle.memory_log.as_deref().map(|p| DecisionLog::create(p, self_player)),
             branch: None,
+            won_at: None,
+            end_frame: None,
         })
     }
 
     pub fn with_branch(mut self, game: Arc<GameBranch>, players_index: u8) -> Result<Self> {
-        let mut b = BranchSession { obs: 0, last: LineExtra::default(), trunk: None, player: None };
+        let mut b = BranchSession { obs: 0, last: LineExtra::default(), trunk: None, player: None, explore: None };
         if players_index == 0 {
+            b.explore = game.explore.as_ref().map(|g| ExploreRun::new(g, action_table())).transpose()?;
             if !game.snapshots.is_empty() {
                 let rules = Snapshots::new(&game.snapshots, action_table())?;
                 anyhow::ensure!(game.states_dir.is_some(), "051-R3: snapshot rules without a states folder");
@@ -424,7 +435,7 @@ impl ModelPolicy {
     pub fn branch_record(&mut self) -> Option<BranchSessionPart> {
         let m = self.scout_metrics();
         let b = self.branch.as_ref()?;
-        let metrics = outcome_metrics(&m);
+        let metrics = outcome_metrics(&m, self.won_at);
         let outcome = b.player.as_ref().map(|r| BranchOutcome {
             valid: r.invalid.is_none(),
             invalid: r.invalid.clone(),
@@ -437,7 +448,48 @@ impl ModelPolicy {
             dilution: r.dilution.entries(),
             end: None,
         });
-        Some(BranchSessionPart { snapshots: b.trunk.as_ref().map(|t| t.taken.clone()).unwrap_or_default(), outcome })
+        Some(BranchSessionPart { snapshots: b.trunk.as_ref().map(|t| t.taken.clone()).unwrap_or_default(), outcome, explore: b.explore.as_ref().map(ExploreRun::summary) })
+    }
+
+    pub fn note_end(&mut self, won: Option<bool>, end_frame: u32) {
+        self.end_frame = Some(end_frame);
+        self.won_at = (won == Some(true)).then_some(end_frame);
+    }
+
+    pub fn explore_end(&self) -> Option<ExploreEnd> {
+        self.branch.as_ref()?.explore.as_ref().map(ExploreRun::end)
+    }
+
+    fn explore_point(&mut self, frame: u32, type_mask: &[bool]) -> Option<usize> {
+        self.branch.as_deref_mut()?.explore.as_mut()?.check(frame, type_mask)
+    }
+
+    fn wants_policy_top(&self) -> bool {
+        self.branch.as_ref().is_some_and(|b| b.last.state.is_some())
+    }
+
+    fn note_policy_top(&mut self, r: &ActReply) -> Result<()> {
+        if !self.wants_policy_top() {
+            return Ok(());
+        }
+        let logp = r.type_logp.as_deref().context("051-R2: the inference reply has no type_logp for the snapshot decision (054-R5)")?;
+        let b = self.branch.as_deref_mut().expect("checked in wants_policy_top");
+        b.last.policy_top = Some(policy_top(logp, &r.obs.masks.type_mask));
+        Ok(())
+    }
+
+    fn explore_step(&mut self, p: usize, frame: u32, r0: ActReply, saved: HostState) -> Result<ActReply> {
+        let b = self.branch.as_deref_mut().expect("an explore point needs the 054 session");
+        let run = b.explore.as_mut().expect("an explore point needs the 054 run");
+        let logp = r0.type_logp.as_deref().context("054-R5: the inference reply has no type_logp for the explore decision")?;
+        let entry = run.decide(p, frame, r0.action.action, logp, &r0.obs.masks.type_mask);
+        let c = entry.c;
+        b.last.explore = Some(entry);
+        let Some(c) = c else { return Ok(r0) };
+        self.sess.set_state(saved).context("054-R3: restoring the saved state")?;
+        let mut obs = r0.obs;
+        obs.masks.type_mask = force_mask(&obs.masks.type_mask, c);
+        self.sess.act(obs)
     }
 
     pub fn memory(&self) -> &AgentMemory {
@@ -483,7 +535,7 @@ impl ModelPolicy {
         if let Some(l) = self.decision_log.as_mut() {
             l.decision(f.frame, d.action, d.delay_bucket as usize, &d.units, true);
         }
-        b.last = LineExtra { decision: Some(d), state: None, state_sha256: None, forced: true };
+        b.last = LineExtra { decision: Some(d), forced: true, ..Default::default() };
         Ok(Some(line.act))
     }
 
@@ -538,6 +590,10 @@ impl ModelPolicy {
     fn branch_after_act(&mut self, frame: u32, action: u16, delay_bucket: usize, ids: &[u32], rejected: bool, scalar: &[f32]) {
         let Some(b) = self.branch.as_deref_mut() else { return };
         b.last.decision = Some(uranium_match::branch::Decision { action, delay_bucket: delay_bucket as u32, units: ids.to_vec(), rejected });
+        if let (Some(e), Some(run)) = (b.last.explore.as_mut(), b.explore.as_mut()) {
+            e.rejected = Some(rejected);
+            run.note_rejected(rejected);
+        }
         if let Some(run) = b.player.as_deref_mut().filter(|r| r.at_t) {
             run.intervention.note_executor(frame, rejected);
             run.samples.on_decision(frame, scalar, action != NOOP_ACTION && !rejected);
@@ -567,6 +623,10 @@ impl ModelPolicy {
     pub fn on_end(&mut self, outcome: Option<Outcome>, final_frame: Option<&RawFrame>) {
         if let Some(l) = self.decision_log.as_mut() {
             l.end(final_frame.map(|f| f.frame));
+        }
+        let end_frame = self.end_frame.or(final_frame.map(|f| f.frame));
+        if let Some(run) = self.branch.as_deref_mut().and_then(|b| b.explore.as_mut()) {
+            run.finish(outcome.is_none(), end_frame);
         }
         if let Some(b) = self.branch.as_deref_mut() {
             let next = b.obs;
@@ -685,6 +745,11 @@ impl ModelPolicy {
         if let Some(act) = self.branch_before_act(f, &mut obs)? {
             return Ok(act);
         }
+        let explore = self.explore_point(f.frame, &obs.masks.type_mask);
+        let saved = match explore {
+            Some(_) => Some(self.sess.state()?),
+            None => None,
+        };
         let reward_before = self.reward.as_mut().map(|r| r.step(f)).unwrap_or_default();
         let state = match self.observer.as_ref() {
             Some(o) if o.wants_state() => Some(self.sess.state()?),
@@ -692,7 +757,12 @@ impl ModelPolicy {
         };
         let host_extract = t0.elapsed();
         let t1 = Instant::now();
-        let r = self.sess.act(obs)?;
+        let r = self.sess.act_with(obs, explore.is_some() || self.wants_policy_top())?;
+        self.note_policy_top(&r)?;
+        let r = match (explore, saved) {
+            (Some(p), Some(saved)) => self.explore_step(p, f.frame, r, saved)?,
+            _ => r,
+        };
         self.decide.push(t1.elapsed().as_secs_f32() * 1e3);
         self.run.push(r.run.as_secs_f32() * 1e3);
         self.batch_sum += r.batch as u64;
@@ -794,13 +864,25 @@ mod tests {
     #[test]
     fn outcome_metrics_hold_definitions_051_r9() {
         let m = ScoutMetrics { scv_8m: Some(8), scv_min_1m: Some(4), bunker_frame: Some(240), ..Default::default() };
-        let v = outcome_metrics(&m);
+        let v = outcome_metrics(&m, None);
         for k in uranium_match::branch::OUTCOME_METRICS {
             assert!(v.contains_key(*k), "{k}");
         }
         assert_eq!((v["held_8m"].as_bool(), v["held_s"].as_bool(), v["bunker_s"].as_f64()), (Some(true), Some(false), Some(10.0)));
-        let v = outcome_metrics(&ScoutMetrics { scv_8m: None, scv_min_1m: Some(5), ..Default::default() });
+        let v = outcome_metrics(&ScoutMetrics { scv_8m: None, scv_min_1m: Some(5), ..Default::default() }, None);
         assert_eq!((v["held_8m"].as_bool(), v["held_s"].as_bool()), (Some(false), Some(true)));
+    }
+
+    #[test]
+    fn held_8m_counts_a_win_before_8m_050_r6_053_r2() {
+        let held = |scv_8m: Option<u32>, won_at: Option<u32>| outcome_metrics(&ScoutMetrics { scv_8m, ..Default::default() }, won_at)["held_8m"].as_bool();
+        assert_eq!(held(Some(8), None), Some(true));
+        assert_eq!(held(Some(7), None), Some(false));
+        assert_eq!(held(None, Some(5_000)), Some(true), "won before 8:00");
+        assert_eq!(held(None, Some(11_519)), Some(true));
+        assert_eq!(held(None, Some(11_520)), Some(false), "won at 8:00 has its scv_8m");
+        assert_eq!(held(Some(3), Some(14_000)), Some(false), "won after 8:00 with 3 SCVs");
+        assert_eq!(held(None, None), Some(false), "lost or drew before 8:00");
     }
 
     #[test]

@@ -51,7 +51,7 @@ fn mock(max_batch: usize, win_open: Option<f32>) -> InferenceHandle {
                 let heads: Vec<f32> = (0..r).flat_map(|_| HEAD_LOGP).collect();
                 let value = vec![0.25f32; r * 4];
                 let open = win_open.map(|v| vec![v; r]);
-                let out = BatchOut { action: &zeros, delay: &delay, queued: &zeros, selected: &sel, target_unit: &zeros, target_loc: &zeros, log_prob: &lp, head_log_prob: &heads, value: &value, win_open: open.as_deref() };
+                let out = BatchOut { action: &zeros, delay: &delay, queued: &zeros, selected: &sel, target_unit: &zeros, target_loc: &zeros, log_prob: &lp, head_log_prob: &heads, value: &value, win_open: open.as_deref(), type_logp: None };
                 b.reply(out).unwrap();
             }
         }

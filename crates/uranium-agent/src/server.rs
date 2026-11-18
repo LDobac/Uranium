@@ -115,6 +115,7 @@ pub fn session(stream: TcpStream, opts: &ServeOptions) -> SessionRecord {
         act_log: None,
         snapshots: Vec::new(),
         branch: None,
+        explore: None,
         infer_seed: None,
     };
     let mut rejections = Vec::new();
@@ -180,7 +181,7 @@ struct SessionLog {
 }
 
 impl SessionLog {
-    fn finish(&mut self, winner: Option<u8>, frame: u32, reason: EndReason, slot: u8, policy: &str) {
+    fn finish(&mut self, winner: Option<u8>, frame: u32, reason: EndReason, slot: u8, policy: &str, explore: Option<uranium_match::explore::ExploreEnd>) {
         self.end = Some((winner, frame, reason));
         if let Some(l) = self.act_log.as_mut() {
             l.finish(uranium_match::branch::ActLogEnd {
@@ -194,6 +195,7 @@ impl SessionLog {
                 git: git_commit().to_string(),
                 feature_schema: uranium_env::features::FEATURE_SCHEMA_VERSION,
                 action_schema: uranium_env::actions::ACTION_SCHEMA_VERSION,
+                explore,
             });
         }
     }
@@ -202,6 +204,7 @@ impl SessionLog {
         rec.act_log = self.act_log.as_ref().map(|l| ActLogStatus { path: l.path.display().to_string(), complete: l.complete, error: l.error.clone() });
         let Some(part) = policy.branch_record() else { return };
         rec.snapshots = part.snapshots;
+        rec.explore = part.explore;
         rec.branch = part.outcome.map(|mut o| {
             if let (Some((winner, frame, reason)), Some(b)) = (self.end, &game.branch)
                 && !matches!(reason, EndReason::Aborted | EndReason::AgentTimeout)
@@ -300,6 +303,8 @@ fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, po
                         state: x.state,
                         state_sha256: x.state_sha256,
                         forced: x.forced,
+                        policy_top: x.policy_top,
+                        explore: x.explore,
                     });
                 }
                 write_msg(&mut writer, &AgentMsg::Act(act))?;
@@ -320,10 +325,12 @@ fn play(reader: &mut BufReader<TcpStream>, writer: &mut BufWriter<TcpStream>, po
                     rec.final_frame = Some((last.frame, last.units.len(), last.events.len()));
                     record_unit_rejections(last, &last_cmds, hello, rec, rejections);
                 }
+                policy.note_end(rec.won, end.frame);
                 policy.on_end(outcome, end.final_frame.as_deref());
                 rec.model = policy.model_stats();
                 rec.scripted = policy.scripted_stats();
-                log.finish(end.winner, end.frame, end.reason, hello.slot, &rec.policy);
+                let explore = policy.explore_end();
+                log.finish(end.winner, end.frame, end.reason, hello.slot, &rec.policy, explore);
                 return Ok(());
             }
             other => bail!("unexpected message {other:?}"),

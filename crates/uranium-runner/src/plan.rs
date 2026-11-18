@@ -5,6 +5,7 @@ use serde::Deserialize;
 use uranium_agent::T0Build;
 use uranium_agent::infer::{DEFAULT_CHAT, SampleMode, SurrenderMode};
 use uranium_match::branch::{BranchPlanLine, BranchPlayer, GameBranch, HORIZON_MARGIN, Intervention, SnapshotRule, Snapshots};
+use uranium_match::explore::{ExploreConfig, ExploreGame};
 use uranium_env::features::extract::action_table;
 use uranium_proto::Race;
 use uranium_store::elog;
@@ -44,6 +45,8 @@ pub struct Plan {
     pub branches: Option<String>,
     #[serde(default)]
     pub verify_state: bool,
+    #[serde(default)]
+    pub explore: Option<ExploreConfig>,
     #[serde(skip)]
     pub branch_lines: Vec<BranchPlanLine>,
     #[serde(rename = "matchup")]
@@ -278,7 +281,7 @@ impl Plan {
     }
 
     pub fn uses_branch_keys(&self) -> bool {
-        self.act_log || !self.snapshots.is_empty() || self.branches.is_some() || self.verify_state
+        self.act_log || !self.snapshots.is_empty() || self.branches.is_some() || self.verify_state || self.explore.is_some()
     }
 
     pub fn horizon(&self) -> Option<u32> {
@@ -295,7 +298,19 @@ impl Plan {
         out
     }
 
+    fn check_explore_keys(&self) -> Result<()> {
+        let Some(cfg) = &self.explore else { return Ok(()) };
+        cfg.validate()?;
+        ensure!(self.act_log && self.memory_log, "explore needs act_log = true and memory_log = true (020-R22 ⑤)");
+        ensure!(self.snapshots.is_empty() && self.branches.is_none(), "explore with snapshots or branches: an exploration game is neither a trunk nor a branch (054)");
+        for (i, m) in self.matchups.iter().enumerate() {
+            ensure!(matches!(m.p0, Side::Model { sample: SampleMode::Stochastic, .. }), "explore: matchup {i}: players[0] must be a model with sample = \"stochastic\" (054-R1)");
+        }
+        Ok(())
+    }
+
     fn check_branch_keys(&mut self, dir: &Path) -> Result<()> {
+        self.check_explore_keys()?;
         ensure!(!self.verify_state || self.branches.is_some(), "verify_state goes with branches (020-R22 ③)");
         let trunk = !self.snapshots.is_empty();
         let branch = self.branches.is_some();
@@ -370,6 +385,7 @@ impl Plan {
             snapshots: self.snapshots.clone(),
             states_dir: (!self.snapshots.is_empty()).then(|| stage_dir.join("states")),
             branch,
+            explore: self.explore.clone().map(|cfg| ExploreGame { cfg, seed: self.seed_of(n) }),
         }))
     }
 }
@@ -902,6 +918,43 @@ p1={kind='oss',name='iron',race='terran'}";
         assert!(load_plan(&path).is_err(), "unknown fields");
         std::fs::write(&path, format!("name='x'\n{BRANCH_HEAD}{seeds}branches='missing.jsonl'\n{BRANCH_GAMES}")).unwrap();
         assert!(format!("{:#}", load_plan(&path).unwrap_err()).contains("missing.jsonl"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    const EXPLORE_HEAD: &str = "save_replay=true\nmemory_log=true\nact_log=true\nmax_frames=14400\nseeds=[7001, 7002, 7003]\n";
+    const EXPLORE_GAMES: &str = "[[matchup]]\nmap='both'\ngames=2\np0={kind='model',checkpoint='checkpoints/f/ckpt-1',sample='stochastic'}\np1={kind='t0',race='zerg',build='zerg_rush'}\n[[matchup]]\nmap='circuit_breaker'\ngames=1\np0={kind='model',checkpoint='checkpoints/f/ckpt-1',sample='stochastic'}\np1={kind='oss',name='stardust',race='protoss'}\n";
+
+    #[test]
+    fn explore_plan_key_020_r22_054_r1() {
+        let dir = temp_dir("explore");
+        let path = dir.join("p.toml");
+        let load = |text: String| {
+            std::fs::write(&path, text).unwrap();
+            load_plan(&path).map_err(|e| format!("{e:#}"))
+        };
+        let explore = "[explore]\npoints=3\nwindow_s=[120, 540]\ngap_s=60\nk=4\nepsilon=0.5\nmin_open=2\n";
+        let plan = load(format!("name='x'\n{EXPLORE_HEAD}{explore}{EXPLORE_GAMES}")).unwrap();
+        assert_eq!(plan.explore, Some(ExploreConfig::default()));
+        assert!(plan.uses_branch_keys());
+        let g = plan.game_branch(2, Path::new("stage"), None).unwrap().unwrap();
+        assert_eq!(g.explore, Some(ExploreGame { cfg: ExploreConfig::default(), seed: 7002 }), "the plan game's seed (054-R2)");
+        assert_eq!(g.act_log_path(0), Some(Path::new("stage").join("acts").join("g2-p0.jsonl")));
+        assert!(g.states_dir.is_none() && g.branch.is_none() && g.snapshots.is_empty());
+        assert_eq!(load(format!("name='x'\n{EXPLORE_HEAD}[explore]\n{EXPLORE_GAMES}")).unwrap().explore, Some(ExploreConfig::default()), "the 020-R22 values by default");
+        let bad = |text: String, want: &str| {
+            let e = load(text).unwrap_err();
+            assert!(e.contains(want), "{want}: {e}");
+        };
+        bad(format!("name='x'\n{}{explore}{EXPLORE_GAMES}", EXPLORE_HEAD.replace("act_log=true\n", "")), "act_log = true and memory_log = true");
+        bad(format!("name='x'\n{}{explore}{EXPLORE_GAMES}", EXPLORE_HEAD.replace("memory_log=true\n", "")), "act_log = true and memory_log = true");
+        bad(format!("name='x'\n{EXPLORE_HEAD}{explore}{}", EXPLORE_GAMES.replacen(",sample='stochastic'", "", 1)), "stochastic");
+        bad(format!("name='x'\n{EXPLORE_HEAD}{}{EXPLORE_GAMES}", explore.replace("epsilon=0.5", "epsilon=2.0")), "epsilon");
+        bad(format!("name='x'\n{EXPLORE_HEAD}{}{EXPLORE_GAMES}", explore.replace("k=4", "k=4\nbogus=1")), "bogus");
+        bad(format!("name='x'\n{EXPLORE_HEAD}{SNAPSHOTS}{explore}{EXPLORE_GAMES}"), "neither a trunk nor a branch");
+        let plain = load(format!("name='x'\n{EXPLORE_HEAD}{EXPLORE_GAMES}")).unwrap();
+        assert!(plain.explore.is_none() && plain.game_branch(1, Path::new("stage"), None).unwrap().unwrap().explore.is_none());
+        let specs = |p: &Plan| expand(p, "a:1").into_iter().map(|j| (j.spec, j.models, j.t0_builds)).collect::<Vec<_>>();
+        assert_eq!(specs(&plan), specs(&plain), "explore changes no game spec");
         std::fs::remove_dir_all(&dir).ok();
     }
 

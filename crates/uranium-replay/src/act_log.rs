@@ -85,7 +85,7 @@ pub(crate) mod tests {
         let act = Act { cmds: vec![Command::Train { building: 3, unit_type: 7 }], advance_frames: 8, valid_until_frame: None, surrender: None };
         let decision = d.map(|(action, delay_bucket, units)| Decision { action, delay_bucket, units, rejected: action % 2 == 1 });
         let model = decision.is_some();
-        ObsLine { i, frame, digest: 0x9f1c_0000_0000_abcd ^ u64::from(i), act, decision, state: None, state_sha256: None, forced: forced && model }
+        ObsLine { i, frame, digest: 0x9f1c_0000_0000_abcd ^ u64::from(i), act, decision, state: None, state_sha256: None, forced: forced && model, policy_top: None, explore: None }
     }
 
     pub(crate) fn log_text(lines: Vec<ObsLine>, end_frame: u32, player: u8, policy: &str) -> String {
@@ -100,6 +100,7 @@ pub(crate) mod tests {
             git: "abc".into(),
             feature_schema: 7,
             action_schema: 2,
+            explore: None,
         };
         let mut b = Vec::new();
         let mut w = uranium_match::branch::ActLogWriter::new(&mut b);

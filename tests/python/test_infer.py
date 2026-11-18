@@ -211,6 +211,83 @@ def test_restore_order_in_one_work_051_r4(tmp_path):
     assert host(2) == row2, "032-R14: the row outside the batch is unchanged"
 
 
+@pytest.mark.parametrize("k", [2, 5])
+@pytest.mark.parametrize("model2", [False, True], ids=["base", "model2"])
+@pytest.mark.parametrize("kind", ["Lstm", "Gtrxl"])
+def test_explore_restore_then_act_is_bit_equal_054_ac2(tmp_path, kind, model2, k):
+    b, s = server(checkpoint(tmp_path, kind, model2), "argmax", 1)
+    r = _core.explore_restore(b, k, 12)
+    stop(s)
+    assert r["again"] == r["first"], "save -> act -> restore -> act: the second act equals the first"
+    assert not r["again_type_logp"], "054-R5: no type_logp without a request"
+    assert r["forced_fresh"] == r["forced"], "the forced pass from the restored state equals a fresh slot restored to it"
+    assert r["forced_action"] == r["c"] and f"action: {r['c']}," in r["forced"][0], "the forced act samples c"
+    mask = np.asarray(r["type_mask"])
+    assert mask[r["forced_action"]]
+    assert bits(r["other_after"]) == bits(r["other_before"]), "032-R14: the other slot is unchanged"
+    lp = np.asarray(r["type_logp"])
+    assert lp.shape == mask.shape and np.isneginf(lp[~mask]).all() and np.isfinite(lp[mask]).all()
+    assert abs(np.logaddexp.reduce(lp[mask].astype(np.float64))) < 1e-5
+
+
+def _fake_server(tmp_path):
+    class FakeBroker:
+        checkpoint_id, temp, capacity, pad_entities, warmup_entities = "fake@0", 1.0, 3, 64, 0
+        out = None
+
+        def reply_restores(self, errors):
+            pass
+
+        def reply_states(self, parts, shapes):
+            pass
+
+        def reply(self, *arrays):
+            self.out = arrays
+
+    net, _ = ckpt.load_model(checkpoint(tmp_path, "Gtrxl", True), CPU)
+    fb = FakeBroker()
+    return fb, InferenceServer(fb, CPU, "f32", net=net), net
+
+
+def test_type_logp_is_the_heads_masked_log_prob_054_ac3(tmp_path):
+    from uranium.bench.inputs import random_obs
+
+    fb, srv, net = _fake_server(tmp_path)
+    obs = random_obs(3, 64, net.cfg.input, CPU, torch.Generator().manual_seed(4))
+    obs["type_mask"][:, 0] = True
+    seen = []
+    real = net.heads.action_logp
+
+    def spy(*a, **kw):
+        out = real(*a, **kw)
+        seen.append(out.detach().clone())
+        return out
+
+    batch = {"slots": [0, 1, 2], "n": 64, **{k: v.numpy() for k, v in obs.items()}}
+    outs = {}
+    for rows in ([], [0, 2]):
+        srv.state = net.init_state(3, CPU)
+        net.heads.action_logp = spy
+        try:
+            torch.manual_seed(9)
+            srv.handle({"resets": [], "restores": [], "states": [], "batch": {**batch, "logp_rows": rows}})
+        finally:
+            net.heads.action_logp = real
+        outs[tuple(rows)] = fb.out
+    plain, asked = outs[()], outs[(0, 2)]
+    assert plain[10] is None, "no type_logp without a request"
+    for x, y in zip(plain[:10], asked[:10]):
+        assert (x is None and y is None) or x.tobytes() == y.tobytes(), "054-R5: the act outputs do not change"
+    head = seen[-1]
+    a = head.shape[1]
+    got = asked[10].reshape(2, a)
+    mask = obs["type_mask"].numpy()
+    for i, row in enumerate((0, 2)):
+        m = mask[row]
+        assert got[i][m].tobytes() == head[row].numpy()[m].tobytes(), "bit-equal to heads.action_logp on open actions"
+        assert np.isneginf(got[i][~m]).all(), "closed actions are -inf"
+
+
 def test_server_seed_051_r8(tmp_path):
     from uranium.agent.serve import new_infer_seed, seed_inference
 

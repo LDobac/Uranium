@@ -106,6 +106,7 @@ fn step_plan(n: u32, frames: u32) -> Plan {
         snapshots: Vec::new(),
         branches: None,
         verify_state: false,
+        explore: None,
         branch_lines: Vec::new(),
         matchups,
     }

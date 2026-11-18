@@ -116,6 +116,7 @@ impl Broker {
                 let bd = PyDict::new(py);
                 bd.set_item("slots", b.slots)?;
                 bd.set_item("n", b.obs.n)?;
+                bd.set_item("logp_rows", b.logp_rows)?;
                 bd.set_item("wait_mean_ns", b.wait_mean.as_nanos() as u64)?;
                 bd.set_item("wait_max_ns", b.wait_max.as_nanos() as u64)?;
                 bd.set_item("formed_unix_ns", b.formed_unix_ns)?;
@@ -128,7 +129,7 @@ impl Broker {
         Ok(Some(d))
     }
 
-    #[pyo3(signature = (action, delay, queued, selected, target_unit, target_loc, log_prob, head_log_prob, value, win_open = None))]
+    #[pyo3(signature = (action, delay, queued, selected, target_unit, target_loc, log_prob, head_log_prob, value, win_open = None, type_logp = None))]
     #[allow(clippy::too_many_arguments)]
     fn reply(
         &self,
@@ -143,15 +144,17 @@ impl Broker {
         head_log_prob: PyReadonlyArray1<'_, f32>,
         value: PyReadonlyArray1<'_, f32>,
         win_open: Option<PyReadonlyArray1<'_, f32>>,
+        type_logp: Option<PyReadonlyArray1<'_, f32>>,
     ) -> PyResult<()> {
         let s = |a: &PyReadonlyArray1<'_, i64>| a.as_slice().map(|x| x.to_vec()).map_err(|e| PyValueError::new_err(e.to_string()));
         let f = |a: &PyReadonlyArray1<'_, f32>| a.as_slice().map(|x| x.to_vec()).map_err(|e| PyValueError::new_err(e.to_string()));
         let (a, d, q, sel, tu, tl) = (s(&action)?, s(&delay)?, s(&queued)?, s(&selected)?, s(&target_unit)?, s(&target_loc)?);
         let (lp, hl, v) = (f(&log_prob)?, f(&head_log_prob)?, f(&value)?);
         let wo = win_open.as_ref().map(f).transpose()?;
+        let tlp = type_logp.as_ref().map(f).transpose()?;
         let inner = &self.inner;
         py.detach(move || {
-            let out = BatchOut { action: &a, delay: &d, queued: &q, selected: &sel, target_unit: &tu, target_loc: &tl, log_prob: &lp, head_log_prob: &hl, value: &v, win_open: wo.as_deref() };
+            let out = BatchOut { action: &a, delay: &d, queued: &q, selected: &sel, target_unit: &tu, target_loc: &tl, log_prob: &lp, head_log_prob: &hl, value: &v, win_open: wo.as_deref(), type_logp: tlp.as_deref() };
             inner.lock().unwrap().reply(out)
         })
         .map_err(err)
@@ -344,6 +347,26 @@ pub fn restore_play<'py>(py: Python<'py>, broker: PyRef<'py, Broker>, k: usize, 
     d.set_item("other_after", host_to_py(py, r.other_after))?;
     d.set_item("straight", r.straight)?;
     d.set_item("resumed", r.resumed)?;
+    Ok(d)
+}
+
+#[pyfunction]
+pub fn explore_restore<'py>(py: Python<'py>, broker: PyRef<'py, Broker>, k: usize, steps: usize) -> PyResult<Bound<'py, PyDict>> {
+    let h = broker.handle.clone();
+    drop(broker);
+    let r = py.detach(move || uranium_agent::testkit::explore_restore(&h, k, steps)).map_err(err)?;
+    let d = PyDict::new(py);
+    d.set_item("first", r.first)?;
+    d.set_item("again", r.again)?;
+    d.set_item("again_type_logp", r.again_type_logp)?;
+    d.set_item("type_logp", r.type_logp.into_pyarray(py))?;
+    d.set_item("type_mask", r.type_mask)?;
+    d.set_item("c", r.c)?;
+    d.set_item("forced_action", r.forced_action)?;
+    d.set_item("forced", r.forced)?;
+    d.set_item("forced_fresh", r.forced_fresh)?;
+    d.set_item("other_before", host_to_py(py, r.other_before))?;
+    d.set_item("other_after", host_to_py(py, r.other_after))?;
     Ok(d)
 }
 

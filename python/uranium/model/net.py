@@ -251,7 +251,7 @@ class UraniumNet(nn.Module):
         return {
             "action": out["chosen"], "log_prob": head_logp.sum(1), "head_log_prob": head_logp,
             "entropy": torch.stack([out["entropy"][k] for k in HEAD_NAMES], 1).sum(1),
-            "value": value, "win_open": win_open, "state": state,
+            "value": value, "win_open": win_open, "state": state, "type_logp": out["dists"]["action"],
         }
 
     def forward_seq(self, obs: dict, labels: dict, priv, s0, t: int, entity_chunk: int = 0, phased: bool = False, phases: list | None = None, aux: bool = False) -> dict:

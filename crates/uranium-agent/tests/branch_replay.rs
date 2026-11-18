@@ -71,7 +71,7 @@ fn forced_session(stream: TcpStream, m: Forced) -> Result<Trace, String> {
                     }
                     _ => own,
                 };
-                log.push(&ObsLine { i, frame: f.frame, digest, act: act.clone(), decision: None, state: None, state_sha256: None, forced: !branched }).map_err(|x| x.to_string())?;
+                log.push(&ObsLine { i, frame: f.frame, digest, act: act.clone(), decision: None, state: None, state_sha256: None, forced: !branched, policy_top: None, explore: None }).map_err(|x| x.to_string())?;
                 i += 1;
                 if write_msg(&mut w, &AgentMsg::Act(act)).is_err() {
                     return Ok(t);
@@ -79,7 +79,7 @@ fn forced_session(stream: TcpStream, m: Forced) -> Result<Trace, String> {
             }
             BridgeMsg::End(end) => {
                 t.end = Some(format!("{:?} at frame {}, winner {:?}", end.reason, end.frame, end.winner));
-                let end = ActLogEnd { obs: 0, decisions: 0, end_frame: end.frame, reason: end.reason, player: hello.slot, players_index: 0, policy: "test-forced".into(), git: uranium_agent::git_commit().into(), feature_schema: 0, action_schema: 0 };
+                let end = ActLogEnd { obs: 0, decisions: 0, end_frame: end.frame, reason: end.reason, player: hello.slot, players_index: 0, policy: "test-forced".into(), git: uranium_agent::git_commit().into(), feature_schema: 0, action_schema: 0, explore: None };
                 log.finish(end).map_err(|x| x.to_string())?;
                 return Ok(t);
             }
