@@ -131,8 +131,8 @@ def write(out_dir: Path, checkpoint: str, name: str, games: int, first: int, zer
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--checkpoint", required=True, help="the F checkpoint (054-R1; relative = under URANIUM_SHARED_DIR)")
-    ap.add_argument("--zero-last-failed", required=True, choices=("true", "false"), help="F's 050 evaluation setting (054-R1)")
-    ap.add_argument("--surrender", required=True, choices=("off", "shadow", "on"), help="F's 050 evaluation setting (054-R1)")
+    ap.add_argument("--zero-last-failed", required=True, choices=("true", "false"), help="as in F's (t2) win / discrimination measurement plans t0_tp, tvz_bc, t1_bc: true (054-R1)")
+    ap.add_argument("--surrender", required=True, choices=("off", "shadow", "on"), help="as in F's (t2) win / discrimination measurement plans t0_tp, tvz_bc, t1_bc: shadow (054-R1)")
     ap.add_argument("--games", type=int, default=PILOT_GAMES, help="game count (054-R6 pilot 1,000)")
     ap.add_argument("--first", type=int, default=1, help=f"first game number in the explore seed block {EXPLORE_BLOCK[0]}..{EXPLORE_BLOCK[-1]} (a later plan starts after the earlier ones)")
     ap.add_argument("--name", default="explore-pilot", help="plan name (the evaluation stage name)")
