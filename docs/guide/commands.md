@@ -576,13 +576,16 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
   - 확인: records `memory.status` = `ok`, `memory.decision_steps`(재생 L − 2에 더한 결정 스텝).
   - 시간(Windows CPU 표본 15판, 2026-11-18): 판당 job 1개 약 6초(TvZ 러시)~11초(TvT·TvP 10분). 3,800판 `--jobs 6` 약 2시간(추정).
 - 덤프: `plan-dump --shards <O>/shards/<출처> --splits train,val,test ...`(manifest 없는 shard는 모두 `train`, 그래도 build가 판을 val·test로도 나눔). CPU 2스레드 약 5.6행/초라 본 덤프는 Linux ROCm 호스트.
-- 결정 행: `python -m uranium diag plan-decisions --dump <덤프> --job <R> [--job ...] --records <O>/build/branch_<출처>.jsonl` → `<덤프>/decisions/`(`rows.npz`, `games.json`, `manifest.json`).
+- 결정 행: `python -m uranium diag plan-decisions --dump <덤프> --job <R> [--job ...] --records <O>/build/branch_<출처>.jsonl`(`--records` 필수) → `<덤프>/decisions/`(`rows.npz`, `games.json`, `manifest.json`).
   - 기록된 결정(라이브 L)마다 재생 프레임 max(L − 2, 1)의 첫 행. 같은 행 프레임에 두 번째 결정(라이브 1·3)은 행 없음(`collisions`). 10:00 뒤 결정은 `beyond`.
   - `--job` = `replays/`와 `memory/` 또는 `acts/`(분기 줄기 행동 기록, T0 기록은 건너뜀)가 있는 폴더, `results.jsonl`이 있으면 판별 정책 sha256 앞자리(`policy_sha`).
-  - 판 상태: `ok`, `no_log`, `incomplete`, `record_<memory.status>`(records), `other_view`(같은 리플레이의 다른 스트림), `no_replay`, `duplicate_replay`. `ok`만 씀(053-R5 ⑥).
-- `plan-s0 --src <이름>:model:split:decision=<덤프>`: 그 출처는 결정 행만 예시(행동·지연 = 기록된 결정, NoOp 결정 행 포함, 명령 레이블 행은 없음). k = NoOp이 아닌 결정 수(051-R9 ① 단위, 거절 여부 없음). H 창 = t부터 t+k 결정 행 앞까지. 정책 확률 `Data.propensity` = 덤프 π, 덤프 체크포인트가 둔 판(`policy_sha`)만, 나머지 NaN.
-  - 설계 기본 체인 행 빼기(`--chains drop`)도 결정 행에 같은 규칙(앞 결정이 1프레임 이내·NoOp 아님)으로 적용됨(t2 표본 결정 행의 14%).
-- `plan-s0 --mmap <로컬 폴더>`: h·y·priv·logp를 그 폴더의 로컬 사본(`<필드>.bin`)으로 메모리 매핑, 나머지 필드는 RAM. 덤프는 파일 읽기로만(매핑 없음). 같은 출처·선택이면 사본 재사용. 공용 드라이브 안 폴더는 거부.
+  - 판 상태: `ok`, `no_record`(records에 없음), `no_log`, `incomplete`, `record_<memory.status>`(records), `other_view`(같은 리플레이의 다른 스트림), `no_replay`, `duplicate_replay`. `ok`만 씀(053-R5 ⑥).
+- `plan-s0 --src <이름>:model:split:decision=<덤프>`: 그 출처는 결정 행만 예시(행동·지연 = 기록된 결정, NoOp 결정 행 포함, 명령 레이블 행은 없음). k = NoOp이 아닌 결정 수(051-R9 ① 단위). 행동 기록(`acts/`)의 거절 결정도 세지 않음, 기억 기록은 거절 여부가 없어 NoOp만 뺌. `--k-unit frame`과 함께면 거부. H 창 = t부터 t+k 결정 행 앞까지. 정책 확률 `Data.propensity` = 덤프 π, 덤프 체크포인트가 둔 판(`policy_sha`)만, 나머지 NaN.
+  - 체인 행 빼기(`--chains drop`)는 결정 행 출처에 적용하지 않음(053-R5 ③, 사용자 결정 2026-11-18). 다른 출처는 그대로.
+- `plan-s0 --mmap <로컬 폴더>`: h·y·priv·logp를 `<폴더>/<지문 앞 16자>/<필드>.bin` 로컬 사본으로 메모리 매핑, 나머지 필드는 RAM. 덤프는 파일 읽기로만(매핑 없음). 같은 출처·선택이면 사본 재사용, 다른 선택은 다른 하위 폴더.
+  - 거부: 폴더가 `URANIUM_SHARED_DIR` 안(실제 경로 비교). 공용 드라이브가 다른 드라이브 문자·마운트 경로로 붙어 있으면 막지 못함.
+  - `s0.json` `memory`·`s0.md` 끝 줄: 프로세스 최대 RSS(Linux VmHWM, Windows 최대 working set), mmap 사본 폴더·재사용·새로 쓴 필드.
+  - 053-AC10(1,000만 행 1,000 step)은 단계 2 전체 덤프 때 잼. 2026-11-18 Windows 표본(119만 행, 2스레드): RAM 최대 private 7.7 GB → mmap 4.3 GB, 사본 3.3 GB.
 
 ### 첫 실행 순서 (덤프 Linux ROCm 호스트, 학습·표 Linux CPU 호스트)
 1. 표본(수 분, 저장소 루트): 아래 덤프에 `--games 4 --limit-batches 20`, 출력 `local/work/plan_s0/smoke/...` → 같은 호스트 `plan-s0 ... --steps 50 --boot 20 --out local/work/plan_s0/smoke/s0`.
