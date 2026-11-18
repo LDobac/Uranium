@@ -239,6 +239,12 @@ def test_053_AC12_R8_b1_and_other_checkpoint_trunks_refused(tmp_path):
     branch_set(tmp_path / "bx", other)
     with pytest.raises(SystemExit, match="053-R1"):
         pr.PairSet("bx", tmp_path / "bx", other, data)
+    pts = branch_set(tmp_path / "bn", dump)
+    for q in pts:
+        q["trunk"].pop("replay_sha256")
+    (tmp_path / "bn" / "points.jsonl").write_text("".join(json.dumps(q) + "\n" for q in pts))
+    with pytest.raises(SystemExit, match="no replay"):
+        pr.PairSet("bn", tmp_path / "bn", dump, data)
 
 
 def test_053_AC12_R8_held_out_trunk_as_training_source_refused(tmp_path):
