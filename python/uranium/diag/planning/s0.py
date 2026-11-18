@@ -121,7 +121,7 @@ def training(a) -> dict:
         out["val"] = {"val_frac": a.val_frac, "every": a.val_every, "patience": a.patience, "max_steps": a.max_steps, "rows": a.val_rows}
     if a.split_nets:
         out["split_nets"] = {"score_wd": a.score_wd}
-        if a.val_frac > 0:
+        if a.val_frac > 0 and a.score_val_every != a.val_every:
             out["val"]["score_every"] = a.score_val_every
     return out
 
@@ -896,7 +896,8 @@ def source_labels(a, srcs: list, qn: tuple, drop: dict) -> tuple[dict, dict]:
     for s in srcs:
         if s.name in files:
             labels[s.name] = pl.read(files[s.name], s.path)
-            joins[s.name] = {"labels": redact(files[s.name])}
+            js = json.loads(Path(files[s.name]).read_text(encoding="utf-8"))
+            joins[s.name] = {"labels": redact(files[s.name]), "join": js["join"]}
         elif s.name in res:
             if s.kind not in pl.BOT_KINDS:
                 raise SystemExit(f"--results {s.name}: a {s.kind} source has no session results (its labels come from the dump)")

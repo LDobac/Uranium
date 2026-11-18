@@ -2,6 +2,7 @@
 
 import json
 import re
+import sys
 import tomllib
 from pathlib import Path
 
@@ -135,6 +136,8 @@ def session_games(job: Path | None, files: list, side: str) -> tuple[dict, dict]
     builds = p0_builds(Path(files[0]).parent) if side == "scripted" and not job and files else {}
     ledger = ledger_files(job, files)
     aborted, n_ledger = aborted_ids(ledger)
+    if not ledger:
+        print(f"plan-label: no games ledger beside {redact(job / 'results' if job else files[0])}: Aborted games are not checked (053-R2 8)", file=sys.stderr)
     st = {"files": len(files), "rows": len(rows), "bad_lines": bad, "bot_rows": 0, "other_rows": 0, "error_rows": 0, "retries_dropped": 0,
           "ambiguous_slot": 0, "games": 0, "p0_build_known": bool(builds), "ledger_files": len(ledger), "ledger_rows": n_ledger, "aborted": 0}
     best: dict = {}
@@ -261,6 +264,8 @@ def read(path, dump) -> dict:
     js = json.loads(Path(path).read_text(encoding="utf-8"))
     if js.get("kind") != "plan-label":
         raise SystemExit(f"{path}: not a plan-label file")
+    if "aborted" not in (js.get("join") or {}):
+        raise SystemExit(f"{path}: made before Aborted games lost their labels (053-R2 8); run diag plan-label again")
     games = json.loads((Path(dump) / "games.json").read_text(encoding="utf-8"))
     live = {int(k) for k, e in games.items() if not e.get("skipped")}
     lab = {int(k): v for k, v in js["games"].items()}

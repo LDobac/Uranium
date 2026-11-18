@@ -268,6 +268,7 @@ def test_053_plan_s0_with_labels_mix_validation_and_split_nets(tmp_path):
     i = args3.index(f"teach={lab}")
     args3[i - 1] = "--labels"
     assert main([*args3, "--out", str(tmp_path / "o3"), "--stage", "train"]) == 0
+    assert json.loads((tmp_path / "o3" / "coverage.json").read_text())["teach"]["source"]["join"]["aborted"] == 0
     for f in ("U_k8.pt", "A_k8.pt"):
         x, y = torch.load(out / "models" / f, weights_only=False), torch.load(tmp_path / "o3" / "models" / f, weights_only=False)
         assert all(torch.equal(p, q) for p, q in zip(x["state"].values(), y["state"].values()))
