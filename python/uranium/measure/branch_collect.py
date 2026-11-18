@@ -25,10 +25,19 @@ def own_at(samples: dict, name: str) -> dict | None:
     return {c: float(v) for c, v in zip(own_columns()[0], o)}
 
 
-def outcome_extras(model: dict, aborted: bool, samples: dict) -> dict:
-    return {"labels": dict(pl.NONE) if aborted or not model else pl.bot_heads(model, "model"),
+def score(labels: dict, end: dict | None) -> float | None:
+    end = end or {}
+    if all(v is None for v in labels.values()) or end.get("result") not in bc.SCORE:
+        return None
+    return bc.SCORE[end["result"]] if end.get("before_horizon") else bc.SCORE["draw"]
+
+
+def outcome_extras(model: dict, aborted: bool, samples: dict, end: dict | None = None) -> dict:
+    labels = dict(pl.NONE) if aborted or not model else pl.bot_heads(model, "model")
+    return {"labels": labels,
             "ops": (model.get("model") or {}).get("ops"),
-            "own_horizon": own_at(samples, "horizon")}
+            "own_horizon": own_at(samples, "horizon"),
+            "score": score(labels, end)}
 
 
 def stage_of(job: Path, name: str | None) -> tuple[int, Path, dict]:
@@ -126,7 +135,7 @@ def collect(job: Path, stage: str | None, root: Path) -> dict:
         row["metrics"] = row["metrics"] or {}
         row["intervention"] = row["intervention"] or []
         row["dilution"] = row["dilution"] or []
-        row.update(outcome_extras(model, game.get("outcome") == "Aborted", row["samples"]))
+        row.update(outcome_extras(model, game.get("outcome") == "Aborted", row["samples"], row["end"]))
         rows.append(row)
     bc.write_jsonl(job / "branches.jsonl", rows)
     by_reason: dict[str, int] = {}

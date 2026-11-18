@@ -26,7 +26,7 @@ POINT_KEYS = {"point", "trunk", "seed", "map", "opponent", "condition", "checkpo
 TRUNK_KEYS = {"job", "stage", "plan_game", "hostd_game", "replay", "acts", "opponent_acts"}
 LINE_KEYS = {"trunk", "point", "acts", "opponent_acts", "state", "state_sha256", "i_t", "f_t", "seed", "map", "opponent", "alt", "repeat"}
 RECORD_KEYS = {"point", "alt", "rules", "repeat", "game", "checkpoint_sha256", "git", "valid", "invalid", "prefix", "state_check",
-               "intervention", "samples", "metrics", "dilution", "end", "labels", "ops", "own_horizon"}
+               "intervention", "samples", "metrics", "dilution", "end", "labels", "ops", "own_horizon", "score"}
 GAME_KEYS = {"job", "stage", "plan_game", "hostd_game", "attempt", "replay", "host", "backend", "precision", "infer_seed"}
 
 
@@ -571,3 +571,70 @@ def test_b2_collect_outcome_extras_051_r16_053_r2(tmp_path):
     assert recs[1]["ops"]["inc_10m"] == 812.0
     from uranium.diag.planning.dump import own_columns
     assert list(recs[1]["own_horizon"]) == own_columns()[0] and recs[1]["own_horizon"]["supply_used"] == 0.0
+
+
+B3 = ROOT / "config" / "branch_b3.toml"
+B3_PLANS = {
+    "none": [],
+    "cc_now": [("force", "Build_CommandCenter", 0, 90)],
+    "cc_late": [("ban", "Build_CommandCenter", 0, 180)],
+    "factory_now": [("force", "Build_Factory", 0, 60), ("ban", "Build_Barracks", 0, 120)],
+    "rax_more": [("force", "Build_Barracks", 0, 30), ("force", "Build_Barracks", 30, 75), ("ban", "Build_Factory", 0, 180)],
+    "scv_cut": [("ban", "Train_SCV", 0, 90)],
+    "bunker_now": [("force", "Build_Bunker", 0, 30)],
+}
+
+
+def b3_args(tj: MixTrunkJob, out: Path, **kw):
+    return args(tj, out, config=B3, stage=["b2-trunk"], hit=None, miss=None, **{"games": None, **kw})
+
+
+def test_b3_config_reuses_b2_trunks_055_r2_r3(tmp_path):
+    b2, b3 = bp.load_config(B2), bp.load_config(B3)
+    assert {k: b3[k] for k in ("checkpoint", "horizon", "trunks", "snapshots")} == {k: b2[k] for k in ("checkpoint", "horizon", "trunks", "snapshots")}
+    assert (b3["name"], b3["repeats"]) == ("branch-b3", 1)
+    assert {a["name"]: [(r["op"], r["action"], r["from_s"], r["to_s"]) for r in a["rules"]] for a in b3["alternative"]} == B3_PLANS
+    tj = MixTrunkJob(tmp_path)
+    out = tmp_path / "eval" / "b3"
+    s = bp.build(b3_args(tj, out, hosts="hosts.toml"))
+    assert s["dropped"] == [] and s["repeats"] == 1 and s["alternatives"] == list(B3_PLANS)
+    lines = bc.read_jsonl(out / "plans" / "branches_plan.jsonl")
+    assert len(lines) == s["games"] == 4 * 3 * 7, "every point gets all seven plans (no t-only force to drop)"
+    for p in {x["point"] for x in lines}:
+        got = [(x["alt"]["name"], [(r["op"], r["action"], r["from_s"], r["to_s"]) for r in x["alt"]["rules"]]) for x in lines if x["point"] == p]
+        assert got == list(B3_PLANS.items())
+    union = list(dict.fromkeys(r["action"] for x in lines for r in x["alt"]["rules"]))
+    assert union == ["Build_CommandCenter", "Build_Factory", "Build_Barracks", "Train_SCV", "Build_Bunker"], "none dilution list (055-R1)"
+    plan = tomllib.loads((out / "plans" / "branch-b3.toml").read_text(encoding="utf-8"))
+    assert (plan["name"], plan["max_frames"], plan["surrender"], plan["zero_last_failed"]) == ("branch-b3", 17328, "off", True)
+    b2out = tmp_path / "eval" / "b2"
+    bp.build(b2_args(tj, b2out, hosts="hosts.toml"))
+    assert (out / "points.jsonl").read_bytes() == (b2out / "points.jsonl").read_bytes(), "B3 points are the B2 points"
+    again = tmp_path / "eval" / "b3-again"
+    bp.build(b3_args(tj, again, hosts="hosts.toml"))
+    for f in ("points.jsonl", "plans/branches_plan.jsonl", "plans/branch-b3.toml"):
+        assert (out / f).read_bytes() == (again / f).read_bytes(), f
+
+
+def test_b3_collect_score_055_r6(tmp_path):
+    tj = MixTrunkJob(tmp_path, games=2)
+    out = tmp_path / "eval" / "b3"
+    bp.build(b3_args(tj, out, alts="none,cc_now", hosts="h.toml"))
+    lines = bc.read_jsonl(out / "plans" / "branches_plan.jsonl")
+    sd = out / "branch-b3"
+    ends = {1: ("win", True), 2: ("draw", None), 3: ("loss", False), 4: ("win", True), 5: ("win", True), 6: ("loss", False)}
+    games, results = [], []
+    for n, ln in enumerate(lines, start=1):
+        result, won = ends.get(n, ("draw", None))
+        outcome = {"valid": True, "invalid": None, "prefix_obs": 3, "prefix_matched": 3, "state_check": None, "intervention": [],
+                   "samples": {}, "metrics": {}, "dilution": [], "end": {"result": result, "end_frame": 9000, "reason": "x", "before_horizon": n != 5}}
+        games.append({"game_id": n, "hostd_id": 100_000 + n, "outcome": "Aborted" if n == 4 else "Finished", "host": "h", "backend": "rocm"})
+        results.append({"game_id": n, "won": won, "end_frame": 9000, "reason": "x", "branch": outcome, "model": {"scv_8m": 12, "scv_min_1m": 5},
+                        **({"error": "x"} if n == 6 else {})})
+        jsonl(sd / "acts" / f"g{n}-p1.jsonl", [*bc.read_jsonl(bc.on_shared(tmp_path, ln["opponent_acts"]))[:-1], {"end": {"policy": T0}}])
+    jsonl(sd / "games.jsonl", games)
+    jsonl(sd / "results.jsonl", results)
+    bcol.collect(out, None, tmp_path)
+    recs = {r["game"]["plan_game"]: r for r in bc.read_jsonl(out / "branches.jsonl")}
+    assert all(set(r) == RECORD_KEYS for r in recs.values())
+    assert [recs[n]["score"] for n in (1, 2, 3, 4, 5, 6)] == [1.0, 0.5, 0.0, None, 0.5, None],         "win 1, draw 0.5, loss 0, Aborted none, end after H 0.5, session error none (055-R6, 053-R2 8)"

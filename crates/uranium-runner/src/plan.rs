@@ -932,6 +932,13 @@ p1={kind='oss',name='iron',race='terran'}";
         err(edit(1, &|l| l.alt = alt("x", &[("force", "Build_Bunkr", 0, 0)])), "Build_Bunkr");
         err(edit(1, &|l| l.alt = alt("x", &[("ban", "NoOp", 0, 90)])), "NoOp");
         err(edit(1, &|l| l.alt = alt("x", &[("ban", "Build_Bunker", 90, 0)])), "empty window");
+        let plans = [
+            alt("cc_now", &[("force", "Build_CommandCenter", 0, 90)]),
+            alt("factory_now", &[("force", "Build_Factory", 0, 60), ("ban", "Build_Barracks", 0, 120)]),
+            alt("rax_more", &[("force", "Build_Barracks", 0, 30), ("force", "Build_Barracks", 30, 75), ("ban", "Build_Factory", 0, 180), ("ban", "Train_SCV", 0, 90), ("force", "Build_Bunker", 0, 30)]),
+        ];
+        let b3: Vec<_> = good.iter().zip(plans).map(|(l, a)| BranchPlanLine { alt: a, ..l.clone() }).collect();
+        assert_eq!(load(&b3, "").unwrap().branch_none_actions(), ["Build_CommandCenter", "Build_Factory", "Build_Barracks", "Train_SCV", "Build_Bunker"], "055-R1");
         std::fs::write(dir.join("branches_plan.jsonl"), "{\"bogus\":1}\n").unwrap();
         std::fs::write(&path, format!("name='x'\n{BRANCH_HEAD}{seeds}branches='branches_plan.jsonl'\n{BRANCH_GAMES}")).unwrap();
         assert!(load_plan(&path).is_err(), "unknown fields");

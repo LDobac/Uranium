@@ -1,0 +1,73 @@
+name = "branch-b3"
+checkpoint = "checkpoints/m2-teacher-t2/ckpt-3258"
+horizon = 17280
+wall_timeout_s = 7200
+repeats = 1
+
+[trunks]
+games = 100
+maps = ["fighting_spirit", "circuit_breaker"]
+opponents = [
+  { share = 25, p1 = { kind = "t0", race = "zerg" } },
+  { share = 25, p1 = { kind = "t0", race = "zerg", build = "zerg_rush" } },
+  { share = 30, p1 = { kind = "t0", race = "protoss" } },
+  { share = 20, p1 = { kind = "t0", race = "terran" } },
+]
+
+[[snapshots]]
+name = "b2-p1"
+from_frame = 4320
+to_frame = 11520
+min_open_ops = 3
+
+[[snapshots]]
+name = "b2-p2"
+from_frame = 4320
+to_frame = 11520
+min_open_ops = 3
+after_rule = "b2-p1"
+after_s = 60
+after_gap = true
+
+[[snapshots]]
+name = "b2-p3"
+from_frame = 4320
+to_frame = 11520
+min_open_ops = 3
+after_rule = "b2-p2"
+after_s = 60
+after_gap = true
+
+[[alternative]]
+name = "none"
+
+[[alternative]]
+name = "cc_now"
+rules = [{ op = "force", action = "Build_CommandCenter", from_s = 0, to_s = 90 }]
+
+[[alternative]]
+name = "cc_late"
+rules = [{ op = "ban", action = "Build_CommandCenter", from_s = 0, to_s = 180 }]
+
+[[alternative]]
+name = "factory_now"
+rules = [
+  { op = "force", action = "Build_Factory", from_s = 0, to_s = 60 },
+  { op = "ban", action = "Build_Barracks", from_s = 0, to_s = 120 },
+]
+
+[[alternative]]
+name = "rax_more"
+rules = [
+  { op = "force", action = "Build_Barracks", from_s = 0, to_s = 30 },
+  { op = "force", action = "Build_Barracks", from_s = 30, to_s = 75 },
+  { op = "ban", action = "Build_Factory", from_s = 0, to_s = 180 },
+]
+
+[[alternative]]
+name = "scv_cut"
+rules = [{ op = "ban", action = "Train_SCV", from_s = 0, to_s = 90 }]
+
+[[alternative]]
+name = "bunker_now"
+rules = [{ op = "force", action = "Build_Bunker", from_s = 0, to_s = 30 }]

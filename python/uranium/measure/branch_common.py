@@ -8,6 +8,7 @@ from uranium.measure import eval_common as ec
 
 ROOT = ec.ROOT
 HORIZON_MARGIN = 48
+SCORE = {"win": 1.0, "draw": 0.5, "loss": 0.0}
 FPS = 24
 OUTCOME_METRICS = ("held_8m", "held_s", "scv_8m", "scv_min_1m", "bunker_s", "barracks_s", "army_s")
 SESSION_METRICS = ("scv_8m", "scv_min_1m", "scv_4m", "bunker_s", "barracks_s", "army_s", "scout_main_s", "scout_types_4m", "scout_types_6m")
