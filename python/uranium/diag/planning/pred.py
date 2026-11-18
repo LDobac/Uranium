@@ -98,6 +98,8 @@ class Data:
             games.append(g)
             mans.append(m)
             decs.append(dec_rows.load(s.path) if s.rows == "decision" else None)
+        if design.k_unit != "dec" and any(d is not None for d in decs):
+            raise SystemExit("plan-s0: decision-row sources count k in decisions (053-R5 4); --k-unit frame is not supported with :decision")
         shas = {m["checkpoint_sha256"] for m in mans}
         if len(shas) != 1:
             raise SystemExit(f"plan-s0: the sources come from different checkpoints {sorted(shas)}")
@@ -252,7 +254,7 @@ class Data:
         self.chained = np.empty(self.N, bool)
         self.chained[self.order] = ch
         drop_kinds = [KINDS.index(x) for x in design.chain_kinds] if design.chains == "drop" else []
-        self.chain_drop = self.chained & np.isin(self.row_kind, drop_kinds)
+        self.chain_drop = self.chained & np.isin(self.row_kind, drop_kinds) & ~self.row_src_dec
         self.usable = self.valid & ~self.chain_drop
         self.chain_counts = {}
         for si, s in enumerate(sources):
@@ -310,7 +312,7 @@ class Data:
                 hit = (d["row"] >= 0) & (pos < n) & (keep[np.minimum(pos, max(n - 1, 0))] == d["row"]) if n else np.zeros(len(d["row"]), bool)
                 didx = np.where(hit, off + pos, -1)
                 for k in dec_ks:
-                    nx = dec_rows.next_decision(d["game"], d["ord"], d["action"] == NOOP, k)
+                    nx = dec_rows.next_decision(d["game"], d["ord"], dec_rows.counted(d["action"], d["rejected"]), k)
                     tgt = np.where(nx >= 0, didx[np.maximum(nx, 0)], -1)
                     self.nxt[k][off:off + n] = -1
                     src = hit & (tgt >= 0)

@@ -24,7 +24,8 @@ def add_args(p) -> None:
     p.add_argument("--dump", required=True, help="plan-dump folder of a no-relabel --memory-log build (053-R5)")
     p.add_argument("--job", action="append", default=[], required=True,
                    help="game folder with replays/, the model's logs in memory/ or acts/, optional results.jsonl; repeatable")
-    p.add_argument("--records", action="append", default=[], help="the build's records (JSON lines): memory.status per replay; repeatable")
+    p.add_argument("--records", action="append", default=[], required=True,
+                   help="the build's records (JSON lines): memory.status per replay; a stream without a record is left out; repeatable")
     p.add_argument("--out", help="sidecar folder (default <dump>/decisions)")
 
 
@@ -197,7 +198,9 @@ def build(dump: Path, jobs: list[Path], records: list, out: Path) -> dict:
         base = {"job": ent["job"], "replay": ent["stem"]}
         log = read_logs(ent["logs"], ent["stem"])
         bad = [s for s in rec.get(sha, []) if s != "ok"] if sha in rec and "ok" not in rec[sha] else []
-        if log is None:
+        if sha not in rec:
+            status = "no_record"
+        elif log is None:
             status = "no_log"
         elif not log["complete"]:
             status = "incomplete"
@@ -219,7 +222,7 @@ def build(dump: Path, jobs: list[Path], records: list, out: Path) -> dict:
         n_in = len(t["row"])
         meta[best] = {**base, "status": "ok", "decisions": len(log["decisions"]), "in_range": n_in, "matched": int((t["row"] >= 0).sum()),
                       "unmatched": int((t["row"] < 0).sum()), "collisions": t["collisions"], "beyond": t["beyond"],
-                      "noop": int((t["action"] == NOOP).sum()), "policy": pol, "policy_sha": policy_sha(pol)}
+                      "noop": int((t["action"] == NOOP).sum()), "rejected": int((t["rejected"] == 1).sum()), "policy": pol, "policy_sha": policy_sha(pol)}
         for k in cols:
             cols[k].append(np.full(n_in, best, np.int32) if k == "game" else t[k])
     arrs = {k: (np.concatenate(v) if v else np.zeros(0, np.int64)) for k, v in cols.items()}
@@ -235,6 +238,7 @@ def build(dump: Path, jobs: list[Path], records: list, out: Path) -> dict:
                "jobs": [redact(j) for j in jobs], "records": [redact(r) for r in records], "streams": len(meta), "status": st,
                "decisions": sum(m["decisions"] for m in ok), "in_range": sum(m["in_range"] for m in ok), "matched": sum(m["matched"] for m in ok),
                "unmatched": sum(m["unmatched"] for m in ok), "collisions": sum(m["collisions"] for m in ok), "noop": sum(m["noop"] for m in ok),
+               "rejected": sum(m["rejected"] for m in ok),
                "played_by_dump_checkpoint": sum(bool(m["policy_sha"]) and str(man.get("checkpoint_sha256", "")).startswith(m["policy_sha"]) for m in ok)}
     (out / "manifest.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     return summary
@@ -250,9 +254,13 @@ def load(dump) -> tuple[dict, dict]:
     return arrs, games
 
 
-def next_decision(game: np.ndarray, ord_: np.ndarray, noop: np.ndarray, k: int) -> np.ndarray:
+def counted(action, rejected) -> np.ndarray:
+    return (np.asarray(action) != NOOP) & (np.asarray(rejected) != 1)
+
+
+def next_decision(game: np.ndarray, ord_: np.ndarray, count: np.ndarray, k: int) -> np.ndarray:
     o = np.lexsort((ord_, game))
-    g, nn = np.asarray(game, np.int64)[o], ~np.asarray(noop, bool)[o]
+    g, nn = np.asarray(game, np.int64)[o], np.asarray(count, bool)[o]
     c = np.cumsum(nn)
     starts = np.ones(len(g), bool)
     starts[1:] = g[1:] != g[:-1]

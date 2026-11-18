@@ -84,7 +84,8 @@ def model_specs(ks, variants, m3c: bool) -> list[tuple[str, str, int, list | Non
 
 
 def fingerprint(data: pp.Data) -> dict:
-    fp = {**data.checkpoint, "rows": int(data.N), "games": int(data.G), "sources": [[s.name, s.kind, s.role] for s in data.sources],
+    fp = {**data.checkpoint, "rows": int(data.N), "games": int(data.G),
+          "sources": [[s.name, s.kind, s.role] + ([s.rows] if s.rows != "all" else []) for s in data.sources],
           "split_digest": data.split_digest}
     if data.design != pp.V1:
         fp["design"] = data.design.as_dict()
@@ -737,6 +738,20 @@ def report(data: pp.Data, a, ks, variants, models: Path) -> dict:
     return rep
 
 
+def memory_of(data: pp.Data) -> dict:
+    from uranium.bench.timing import peak_rss_gib
+
+    peak = peak_rss_gib()
+    return {"peak_rss_gib": None if peak is None else round(peak, 3), "mmap": data.store.describe() if data.store is not None else None}
+
+
+def memory_line(m: dict) -> str:
+    peak = "-" if m["peak_rss_gib"] is None else f"{m['peak_rss_gib']:.2f} GiB"
+    st = m["mmap"]
+    where = "RAM" if st is None else f"mmap 사본 `{st['folder']}`(재사용 {','.join(st['reused']) or '-'}, 새로 씀 {','.join(st['written']) or '-'})"
+    return f"\n- 프로세스 최대 RSS(053-R6): {peak}, 큰 배열 {where}\n"
+
+
 def run(a) -> int:
     if a.threads:
         torch.set_num_threads(a.threads)
@@ -776,8 +791,10 @@ def run(a) -> int:
         rep = report(data, a, ks, variants, models)
         rep["sources"] = [{"name": s.name, "kind": s.kind, "role": s.role, "path": redact(s.path)} for s in srcs]
         rep["secs"] = round(time.time() - t0, 1)
+        rep["memory"] = memory_of(data)
         stem = "s0" + (f"-{a.tag}" if a.tag else "")
         (out / f"{stem}.json").write_text(json.dumps(rep, indent=1, default=float), encoding="utf-8")
-        (out / f"{stem}.md").write_text(markdown(rep), encoding="utf-8")
+        (out / f"{stem}.md").write_text(markdown(rep) + memory_line(rep["memory"]), encoding="utf-8")
         print(f"[out] {out / (stem + '.json')} {out / (stem + '.md')}", flush=True)
+    print(f"[memory] {json.dumps(memory_of(data))}", flush=True)
     return 0

@@ -58,9 +58,11 @@ def test_mmap_cache_reuse_and_refresh_053_r6(tmp_path):
     again = pp.Data(srcs, (2,), mmap=local)
     assert sorted(again.store.reused) == sorted(dst.LARGE) and not again.store.written
     assert np.array_equal(np.asarray(again.h), np.asarray(first.h))
-    del first, again
+    assert first.store.dir == again.store.dir == local / first.store.key[:16]
     other = pp.Data(srcs, (2,), maps=[0], mmap=local)
     assert sorted(other.store.written) == sorted(dst.LARGE)
+    assert other.store.dir != first.store.dir and np.array_equal(np.asarray(again.h), np.asarray(first.h)), "another selection gets its own folder"
+    assert not list(local.rglob("*.part"))
     assert np.array_equal(np.asarray(other.h), np.asarray(pp.Data(srcs, (2,), maps=[0]).h))
 
 
@@ -81,4 +83,20 @@ def test_mmap_folder_must_be_local_053_r6(tmp_path, monkeypatch):
     monkeypatch.setenv("URANIUM_SHARED_DIR", str(tmp_path / "shared"))
     with pytest.raises(SystemExit):
         dst.Store(tmp_path / "shared" / "eval" / "x")
+    with pytest.raises(SystemExit):
+        dst.Store(tmp_path / "local" / ".." / "shared" / "y")
     dst.Store(tmp_path / "local")
+
+
+def test_s0_reports_peak_rss_and_store_053_r6(tmp_path):
+    from uranium.diag.planning import s0
+
+    srcs = _sources(tmp_path)
+    ram = pp.Data(srcs, (2,))
+    mm = pp.Data(srcs, (2,), mmap=tmp_path / "local")
+    m_ram, m_mm = s0.memory_of(ram), s0.memory_of(mm)
+    assert m_ram["peak_rss_gib"] > 0 and m_ram["mmap"] is None
+    assert sorted(m_mm["mmap"]["written"]) == sorted(dst.LARGE) and m_mm["mmap"]["folder"] == mm.store.key[:16]
+    assert "RSS" in s0.memory_line(m_ram) and m_mm["mmap"]["folder"] in s0.memory_line(m_mm)
+    fp = s0.fingerprint(ram)
+    assert fp["sources"] == [["a", "teacher", "split"], ["b", "model", "split"]], "old fingerprints unchanged"

@@ -27,9 +27,14 @@ def _decision_log(decisions, player=0) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _act_log(decisions, policy) -> str:
-    lines = [json.dumps({"i": i, "frame": int(f), "digest": "0" * 16, "act": {}, "decision": {"action": int(a), "delay_bucket": 1, "units": [], "rejected": False},
-                         "state": None, "forced": False}) for i, (f, a) in enumerate(decisions)]
+def _rejected(decisions) -> list:
+    return [i % 4 == 3 and a != 0 for i, (_, a) in enumerate(decisions)]
+
+
+def _act_log(decisions, policy, rejected=None) -> str:
+    rejected = rejected or [False] * len(decisions)
+    lines = [json.dumps({"i": i, "frame": int(f), "digest": "0" * 16, "act": {}, "decision": {"action": int(a), "delay_bucket": 1, "units": [], "rejected": r},
+                         "state": None, "forced": False}) for i, ((f, a), r) in enumerate(zip(decisions, rejected))]
     lines.append(json.dumps({"end": {"obs": len(decisions), "decisions": len(decisions), "end_frame": 9000, "reason": "TimeLimitDraw", "player": 0,
                                      "players_index": 0, "policy": policy}}))
     return "\n".join(lines) + "\n"
@@ -40,6 +45,11 @@ def _game_decisions(g: int) -> list:
     lives = [1, 3] + [3 + 4 * i for i in range(1, 18) if i != 6] + [3 + 4 * 6 - 2]
     lives = sorted(lives)
     return [(L, acts[(i + g) % len(acts)]) for i, L in enumerate(lives)]
+
+
+def _records(path: Path, shas, status="ok") -> Path:
+    path.write_text("".join(json.dumps({"replay_sha256": s, "outcome": "written", "memory": {"status": status}}) + "\n" for s in shas))
+    return path
 
 
 @pytest.fixture
@@ -62,12 +72,15 @@ def setup(tmp_path):
     man.update({"checkpoint_sha256": C_SHA, "row_until": 14400})
     (dump / "manifest.json").write_text(json.dumps(man))
     logs = {g: _game_decisions(g) for g in range(n_games)}
+    rej = {g: [False] * len(logs[g]) for g in logs}
+    rej[1] = _rejected(logs[1])
     (job / "memory" / "g1.jsonl").write_text(_decision_log(logs[0]))
-    (job / "memory" / "g2.jsonl").write_text(_act_log(logs[1], f"model:ckpt-1@{C_SHA[:12]}:stochastic"))
+    (job / "memory" / "g2.jsonl").write_text(_act_log(logs[1], f"model:ckpt-1@{C_SHA[:12]}:stochastic", rej[1]))
     (job / "memory" / "g3.jsonl").write_text(_decision_log(logs[2])[:-60])
     (job / "memory" / "g5.jsonl").write_text(_decision_log(logs[4]))
     (job / "results.jsonl").write_text("\n".join(json.dumps({"game_id": i, "model": {}, "policy": "model:ckpt-9@123456789abc:stochastic"}) for i in (1, 5)) + "\n")
-    return dump, job, logs
+    rec = _records(tmp_path / "branch_build.jsonl", sorted({e["sha"] for e in games.values()}))
+    return dump, job, logs, rej, rec
 
 
 def _expected_rows(decisions):
@@ -82,8 +95,8 @@ def _expected_rows(decisions):
 
 
 def test_decision_rows_join_and_status_053_r5(setup, tmp_path):
-    dump, job, logs = setup
-    s = dr.build(dump, [job], [], dump / dr.SIDECAR)
+    dump, job, logs, rej, rec = setup
+    s = dr.build(dump, [job], [rec], dump / dr.SIDECAR)
     meta = json.loads((dump / dr.SIDECAR / "games.json").read_text())
     st = {int(k): v["status"] for k, v in meta.items()}
     assert st[0] == "ok" and st[1] == "ok" and st[2] == "incomplete" and st[3] == "no_log"
@@ -93,29 +106,46 @@ def test_decision_rows_join_and_status_053_r5(setup, tmp_path):
     assert m0["matched"] == sum(ok for *_, ok in exp) and m0["unmatched"] == sum(not ok for *_, ok in exp)
     assert m0["collisions"] == 1 and m0["unmatched"] == 2
     assert m0["policy_sha"] == "123456789abc" and meta["1"]["policy_sha"] == C_SHA[:12]
+    assert m0["rejected"] == 0 and meta["1"]["rejected"] == sum(rej[1])
     assert s["played_by_dump_checkpoint"] == 1 and s["status"]["ok"] == 3
     arr, _ = dr.load(dump)
     g0 = arr["game"] == 0
     rows0 = arr["row"][g0]
     assert np.array_equal(arr["action"][g0], [a for _, a in logs[0]])
     assert np.array_equal(rows0 >= 0, [ok for *_, ok in exp])
+    assert (arr["rejected"][g0] == -1).all() and np.array_equal(arr["rejected"][arr["game"] == 1] == 1, rej[1])
     fr = np.fromfile(dump / "rows" / "frame.bin", np.float32)
     assert np.array_equal(fr[rows0[rows0 >= 0]], [p for p, _, ok in exp if ok])
 
 
-def test_decision_records_reject_bad_memory_041_r28_053_r5(setup):
-    dump, job, _ = setup
-    rec = dump.parent / "branch_build.jsonl"
-    sha0 = json.loads((dump / "games.json").read_text())["0"]["sha"]
-    rec.write_text(json.dumps({"replay_sha256": sha0, "outcome": "written", "memory": {"status": "unit_mismatch"}}) + "\n")
-    dr.build(dump, [job], [rec], dump / dr.SIDECAR)
+def test_decision_records_required_and_bad_memory_041_r28_053_r5(setup, tmp_path):
+    dump, job, _, _, rec = setup
+    games = json.loads((dump / "games.json").read_text())
+    bad = _records(tmp_path / "branch_bad.jsonl", [games["0"]["sha"]], "unit_mismatch")
+    part = _records(tmp_path / "branch_part.jsonl", [games["1"]["sha"]])
+    dr.build(dump, [job], [bad, part], dump / dr.SIDECAR)
     meta = json.loads((dump / dr.SIDECAR / "games.json").read_text())
     assert meta["0"]["status"] == "record_unit_mismatch" and meta["1"]["status"] == "ok"
+    assert meta["4"]["status"] == meta["5"]["status"] == "no_record", "a stream without a build record is left out"
+    p = __import__("argparse").ArgumentParser()
+    dr.add_args(p)
+    with pytest.raises(SystemExit):
+        p.parse_args(["--dump", str(dump), "--job", str(job)])
+
+
+def _count_target(exp, rejected, j, k):
+    cnt = 0
+    for q in range(j + 1, len(exp)):
+        if exp[q][1] != 0 and not rejected[q]:
+            cnt += 1
+            if cnt == k:
+                return exp[q]
+    return None
 
 
 def test_data_decision_rows_examples_and_k_pairs_053_r5(setup):
-    dump, job, logs = setup
-    dr.build(dump, [job], [], dump / dr.SIDECAR)
+    dump, job, logs, rej, rec = setup
+    dr.build(dump, [job], [rec], dump / dr.SIDECAR)
     src = pp.parse_src(f"m:model:split:decision={dump}")
     assert src.rows == "decision"
     d = pp.Data([src], (2, 3), eval_frac=0.0)
@@ -131,19 +161,12 @@ def test_data_decision_rows_examples_and_k_pairs_053_r5(setup):
         m = d.game == gi
         assert sorted(fr[m].tolist()) == sorted(p for p, _, k in exp if k), "only decision rows; command rows are no examples"
         for k in (1, 2, 3):
-            lives = [(p, a, okk) for p, a, okk in exp]
-            for j, (p, a, okk) in enumerate(lives):
+            for j, (p, a, okk) in enumerate(exp):
                 if not okk:
                     continue
                 here = np.nonzero(m & (fr == p))[0]
                 assert len(here) == 1
-                cnt, want = 0, None
-                for q in range(j + 1, len(lives)):
-                    if lives[q][1] != 0:
-                        cnt += 1
-                        if cnt == k:
-                            want = lives[q]
-                            break
+                want = _count_target(exp, rej[e["gid"]], j, k)
                 got = d.nxt[k][here[0]]
                 if want is None or not want[2]:
                     assert got == -1, (e["gid"], k, j)
@@ -155,13 +178,46 @@ def test_data_decision_rows_examples_and_k_pairs_053_r5(setup):
     p = d.propensity(idx)
     assert np.isnan(p[~d.prop_ok]).all()
     assert np.allclose(p[d.prop_ok], d.probs(idx[d.prop_ok])[np.arange(int(d.prop_ok.sum())), d.action[d.prop_ok]])
+    from uranium.diag.planning import s0
+    assert s0.fingerprint(d)["sources"] == [["m", "model", "split", "decision"]]
     info = pp.describe(d)["sources"][0]["decision_rows"]
     assert info["rows"] == d.N and info["played_by_checkpoint_games"] == 1 and info["noop_rows"] == int((d.action == 0).sum())
 
 
+def test_rejected_decisions_not_counted_in_k_051_r9_053_r5():
+    game = np.zeros(6, np.int64)
+    ord_ = np.arange(6)
+    action = np.array([TRAIN, TRAIN, 0, TRAIN, TRAIN, TRAIN])
+    rejected = np.array([-1, 1, -1, 0, 1, 0])
+    nx = dr.next_decision(game, ord_, dr.counted(action, rejected), 1)
+    assert nx.tolist() == [3, 3, 3, 5, 5, -1]
+    nx_mem = dr.next_decision(game, ord_, dr.counted(action, np.full(6, -1)), 1)
+    assert nx_mem.tolist() == [1, 3, 3, 4, 5, -1], "memory logs (no rejected field) count every non-NoOp decision"
+
+
+def test_decision_rows_keep_chains_and_need_decision_k_053_r5(setup):
+    dump, job, logs, rej, rec = setup
+    n_games = 6
+    fr = np.tile(np.arange(1, ROWS + 1, dtype=np.float32), n_games)
+    fr.tofile(dump / "rows" / "frame.bin")
+    for g in (0, 4):
+        dec = [(int(f) + 2, TRAIN) for f in range(1, ROWS + 1)]
+        (job / "memory" / f"g{g + 1}.jsonl").write_text(_decision_log(dec))
+    (job / "memory" / "g2.jsonl").unlink()
+    dr.build(dump, [job], [rec], dump / dr.SIDECAR)
+    dec_src = pp.parse_src(f"m:model:split:decision={dump}")
+    d = pp.Data([dec_src], (2,), eval_frac=0.0)
+    assert d.N > 0 and d.chained.sum() > d.N // 2, "consecutive decisions are chained"
+    assert not d.chain_drop.any() and d.usable.all(), "decision-row sources keep chain rows (user decision 2026-11-18)"
+    old = pp.Data([pp.Source("m", "model", "split", str(dump))], (2,), eval_frac=0.0, keep_bot=True)
+    assert old.chain_drop.any(), "other sources keep the old rule"
+    with pytest.raises(SystemExit):
+        pp.Data([dec_src], (144,), eval_frac=0.0, design=pp.Design(k_unit="frame"))
+
+
 def test_decision_rows_with_mmap_and_h_window_053_r5_053_r6(setup, tmp_path):
-    dump, job, _ = setup
-    dr.build(dump, [job], [], dump / dr.SIDECAR)
+    dump, job, _, _, rec = setup
+    dr.build(dump, [job], [rec], dump / dr.SIDECAR)
     src = pp.parse_src(f"m:model:split:decision={dump}")
     a, b = pp.Data([src], (2,), eval_frac=0.0), pp.Data([src], (2,), eval_frac=0.0, mmap=tmp_path / "local")
     for f in ("h", "action", "dec", "frame", "logp"):

@@ -81,7 +81,7 @@ def load(dump) -> tuple[dict, dict, dict]:
 
 
 def within(path: Path, root: Path) -> bool:
-    p, r = os.path.normcase(os.path.abspath(path)), os.path.normcase(os.path.abspath(root))
+    p, r = os.path.normcase(os.path.realpath(path)), os.path.normcase(os.path.realpath(root))
     return p == r or p.startswith(r.rstrip("\\/") + os.sep)
 
 
@@ -95,7 +95,7 @@ class Column:
     def __init__(self, path: Path, total: int, shape: tuple, dtype):
         self.path, self.total, self.shape, self.dtype = path, total, tuple(shape), np.dtype(dtype)
         self.done = 0
-        self.part = path.with_suffix(".part")
+        self.part = path.with_name(f"{path.stem}.{os.getpid()}.part")
         self.f = open(self.part, "wb")
 
     def __setitem__(self, key: slice, values) -> None:
@@ -134,6 +134,7 @@ class Store:
         check_local(self.root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.key = None
+        self.dir = None
         self.reused = []
         self.written = []
 
@@ -149,10 +150,12 @@ class Store:
                 st = (Path(s.path) / "rows" / f"{f}.bin").stat()
                 parts.append([f, st.st_size, st.st_mtime_ns])
         self.key = _digest(parts)
+        self.dir = self.root / self.key[:16]
+        self.dir.mkdir(parents=True, exist_ok=True)
 
     def cached(self, field: str, total: int, shape: tuple, dtype) -> np.ndarray | None:
-        meta = self.root / f"{field}.json"
-        path = self.root / f"{field}.bin"
+        meta = self.dir / f"{field}.json"
+        path = self.dir / f"{field}.bin"
         if not meta.is_file() or not path.is_file():
             return None
         m = json.loads(meta.read_text(encoding="utf-8"))
@@ -163,15 +166,15 @@ class Store:
         return open_column(path, total, tuple(shape), dtype)
 
     def column(self, field: str, total: int, shape: tuple, dtype) -> Column:
-        (self.root / f"{field}.json").unlink(missing_ok=True)
-        return Column(self.root / f"{field}.bin", total, shape, dtype)
+        (self.dir / f"{field}.json").unlink(missing_ok=True)
+        return Column(self.dir / f"{field}.bin", total, shape, dtype)
 
     def finish(self, field: str, col: Column) -> np.ndarray:
         arr = col.finish()
         meta = {"key": self.key, "rows": col.total, "shape": list(col.shape), "dtype": col.dtype.str}
-        (self.root / f"{field}.json").write_text(json.dumps(meta), encoding="utf-8")
+        (self.dir / f"{field}.json").write_text(json.dumps(meta), encoding="utf-8")
         self.written.append(field)
         return arr
 
     def describe(self) -> dict:
-        return {"key": self.key, "reused": self.reused, "written": self.written}
+        return {"key": self.key, "folder": self.key and self.key[:16], "reused": self.reused, "written": self.written}
