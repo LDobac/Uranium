@@ -750,3 +750,6 @@
 - 09:58 — 끝(중단 규칙): `m2-rl-fix-3` 0.36M step 첫 점검 — 테란·프로토스전 `tp_style` 13/64(< 32), `zerg_build` 51/64, 가스 중앙값 0 → 최종 가중치 F = t2(`m2-teacher-t2/ckpt-3258`) ([044-R11·R13](spec/2026_11_14_08_18_044-self-game-distillation.md) ⑤)
 - 10:59 — 측정 끝·결과: t2를 RL 점검 조건(직전 실패 명령 보임, Linux ROCm)으로 64판 — `zerg_build` 3/64·`tp_style` 52/64, 직전 실패 명령 가림 5/64·53/64 → 붕괴는 측정 조건이 아니라 RL 204 update 탓 ([teacher_leak_fix](report/experiment/2026_11_17_20_08_teacher_leak_fix.md) 4절)
 - 11:0x — 결정(사용자): 탐색 판 plan 설정은 t2 승·판별 측정 plan과 같게(`zero_last_failed = true`, 항복 기록만), F = t2 ([054-R1](spec/2026_11_18_08_58_054-exploration-games.md))
+- 11:44 — 끝·결과: 계획 예측기 단계 1 비교(gn 덤프, 사람 몫 0·20·35%) — 20%가 가장 고름, 벙커 행동 민감도 0.005 → 0.85(실제 0.90), B1 부호 일치 k8 0.47 → 0.66, 결과 망은 첫 검사(500 step)가 늘 최저 ([s0c_stage1_compare](report/experiment/2026_11_18_13_42_s0c_stage1_compare.md))
+- 13:31 — 끝: t2로 단계 2 덤프 전체(S0b 출처·B1 줄기·모델 판 9출처·탐색 판) ([053-R1·R5](spec/2026_11_18_08_58_053-planning-predictor-data.md))
+- 13:3x — 결정(사용자): `Aborted` 판(상대 봇 크래시)은 결과 정답 없음(상태 행은 학습에 남김), 결과 망 검증 100 step마다(세계 망 500, 참을성 각 4회) ([053](spec/2026_11_18_08_58_053-planning-predictor-data.md) R2 ⑧·R4 ④, [s0c_stage1_compare](report/experiment/2026_11_18_13_42_s0c_stage1_compare.md))
