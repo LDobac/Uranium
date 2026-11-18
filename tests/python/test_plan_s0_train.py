@@ -93,6 +93,8 @@ def test_053_AC2_R3_realized_shares_within_one_point(tmp_path):
     sh = rare["op_actions"][bunker]["row_share"]
     assert sh < 0.05 and min(20.0, 0.05 / sh) > 5.0 and rare["op_actions"][bunker]["multiplier"] == pytest.approx(min(20.0, 0.05 / sh))
     assert rare["op_actions"][scv]["row_share"] >= 0.05 and rare["op_actions"][scv]["multiplier"] == 5.0
+    _, near = pp.mix_weights(data, few, {"human": 0.2}, op_x=5.0, rare_share=2 * sh, rare_x=20.0)
+    assert 2 * sh / 5 < sh < 2 * sh and near["op_actions"][bunker]["multiplier"] == 5.0
     _, nohum = pp.mix_weights(data, rows[data.row_kind[rows] != pp.KINDS.index("human")], {"human": 0.2})
     assert "human" not in nohum["kinds"] and sum(e["target"] for e in nohum["kinds"].values()) == pytest.approx(1.0)
     with pytest.raises(SystemExit):
@@ -211,6 +213,11 @@ def test_053_plan_s0_with_labels_mix_validation_and_split_nets(tmp_path):
     assert rep["settings"]["q_heads"] == heads.split(",") and set(rep["verdict"]) == set(heads.split(","))
     assert rep["settings"]["training"]["split_nets"] == {"score_wd": 0.01} and rep["coverage"]["mod"]["games"] == 30
     assert set(rep["M1"]["8"]["pooled"]["all"]) >= set(heads.split(",")) and "val" in rep["models"]["A_k8"]
+    srcs = [pp.Source("teach", "teacher", "split", str(a)), pp.Source("mod", "model", "split", str(m)), pp.Source("hum", "human", "train", str(h))]
+    d = pp.Data(srcs, ks=(8,), val_frac=0.25)
+    ev = d.pair_rows(8, "eval")
+    assert rep["M1"]["8"]["pooled"]["all"]["_rows"] == len(ev) and not d.row_val[ev].any() and d.row_eval[ev].all()
+    assert len(d.pair_rows(8, "val")) > 0 and rep["M2"]["8"]["rows"] == int(d.is_op[ev].sum())
     ck = torch.load(out / "models" / "A_k8.pt", weights_only=False)
     assert ck["split"] and ck["q_names"] == heads.split(",") and ck["meta"]["training"]["mix"]["shares"] == {"human": 0.2}
     md = (out / "s0.md").read_text(encoding="utf-8")

@@ -52,22 +52,44 @@ def test_053_R2_bot_labels_join_rules_and_coverage(tmp_path):
     (plan / "results.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
     dump = _games(tmp_path / "dump", shas[:6] + ["f" * 64, shas[6]], {7: {"skipped": True}})
     js = pl.build(dump, "model", [plan / "results.jsonl"])
-    g = {int(k): v for k, v in js["games"].items()}
+    g = {int(k): {h: v[h] for h in (*pl.HEADS, "from")} for k, v in js["games"].items()}
     assert g[0] == {"held_8m": 1, "held_s": 1, "alive_10m": 0, "win": 0, "from": "results"}
     assert g[1] == {"held_8m": 1, "held_s": 0, "alive_10m": 1, "win": 1, "from": "results"}
     assert g[2] == {"held_8m": 0, "held_s": 1, "alive_10m": 0, "win": 0, "from": "results"}
     assert g[3] == {"held_8m": 0, "held_s": 1, "alive_10m": 1, "win": None, "from": "results"}
     assert g[4]["held_8m"] == 0 and g[4]["win"] == 0 and g[4]["alive_10m"] == 0
-    assert g[5] == {"held_8m": None, "held_s": None, "alive_10m": None, "win": None, "from": "results"}
+    assert g[5] == {"held_8m": None, "held_s": None, "alive_10m": None, "win": None, "from": "error"}
     assert g[6] == {"held_8m": None, "held_s": None, "alive_10m": None, "win": None, "from": None}
-    assert 7 not in g
-    assert js["join"] == {"results": 6, "dump": 0, "unmatched": 1, "skipped_view": 1}
+    assert 7 not in g and js["games"]["6"]["sha"] == "f" * 64 and js["games"]["0"]["start"] == 0
+    assert js["join"] == {"results": 5, "dump": 0, "unmatched": 1, "skipped_view": 1, "other_view": 0, "ambiguous_view": 0, "error": 1}
     st = js["results_stats"]["files"][next(iter(js["results_stats"]["files"]))]
     assert st["bot_rows"] == 8 and st["other_rows"] == 2 and st["games"] == 7 and st["error_rows"] == 1
     cov = js["coverage"]
-    assert cov["games"] == 7
+    assert cov["games"] == 7 and cov["error"] == 1
     assert cov["held_8m"] == {"labeled": 5, "rate": 5 / 7, "positive": 2}
     assert cov["win"]["labeled"] == 4 and cov["alive_10m"]["labeled"] == 5 and cov["held_s"]["labeled"] == 5
+    (tmp_path / "labels.json").write_text(json.dumps(js))
+    assert pl.read(tmp_path / "labels.json", dump)[1]["win"] == 1
+    other = _games(tmp_path / "other", shas[:5] + [shas[6], "f" * 64, shas[5]], {7: {"skipped": True}})
+    with pytest.raises(SystemExit, match="another dump"):
+        pl.read(tmp_path / "labels.json", other)
+    moved = _games(tmp_path / "moved", shas[:6] + ["f" * 64, shas[6]], {7: {"skipped": True}, 2: {"start": 3}})
+    with pytest.raises(SystemExit, match="another dump"):
+        pl.read(tmp_path / "labels.json", moved)
+
+
+def test_053_R2_two_views_only_the_model_view_is_labeled(tmp_path):
+    plan = tmp_path / "plan"
+    a, b = _replay(plan / "replays", 1), _replay(plan / "replays", 2)
+    (plan / "results.jsonl").write_text("\n".join(json.dumps(r) for r in [_row(1, won=True, end=9000), _row(2, won=False, end=9000)]))
+    dump = _games(tmp_path / "dump", [a, a, b], {1: {"start": 2}})
+    views = {"bot": [[a, 2]], "model": [[a, 0], [b, 0]]}
+    js = pl.build(dump, "model", [plan / "results.jsonl"], views=views)
+    assert js["games"]["0"]["win"] == 1 and js["games"]["1"]["win"] is None and js["games"]["1"]["from"] == "other_view"
+    assert js["games"]["2"]["win"] == 0 and js["join"]["other_view"] == 1
+    blind = pl.build(dump, "model", [plan / "results.jsonl"])
+    assert blind["games"]["0"]["from"] == blind["games"]["1"]["from"] == "ambiguous_view" and blind["games"]["0"]["win"] is None
+    assert blind["games"]["2"]["win"] == 0 and blind["join"]["ambiguous_view"] == 2
 
 
 def test_053_R2_retries_take_the_last_attempt_and_scripted_side(tmp_path):
@@ -99,12 +121,62 @@ def test_053_R2_retries_take_the_last_attempt_and_scripted_side(tmp_path):
         pl.build(d2, "teacher", [])
 
 
+def test_053_R2_job_attempts_on_two_host_files_and_broken_lines(tmp_path):
+    job = tmp_path / "job"
+    (job / "plans").mkdir(parents=True)
+    (job / "plans" / "a.toml").write_text('name = "stage"\nseeds = [1]\n')
+    (job / "job.toml").write_text('stages = ["plans/a.toml"]\n')
+    s3, s4 = _replay(job / "stage" / "replays", 3), _replay(job / "stage" / "replays", 4)
+    (job / "results").mkdir()
+    (job / "results" / "host1.jsonl").write_text(json.dumps(_row(10_100_003, won=True, end=8000)) + "\n{broken\n" + json.dumps(_row(100004, won=False, end=7000)))
+    (job / "results" / "host2.jsonl").write_bytes((json.dumps(_row(100003, won=False, end=5000)) + "\n\x00\x00" + json.dumps(_opp(100003))).encode())
+    dump = _games(tmp_path / "dump", [s3, s4])
+    js = pl.build(dump, "model", [job / "results" / "host2.jsonl"])
+    assert js["games"]["0"]["win"] == 1 and js["games"]["1"]["win"] == 0
+    st = next(iter(js["results_stats"]["files"].values()))
+    assert st["files"] == 2 and st["bad_lines"] == 1 and st["retries_dropped"] == 1 and st["games"] == 2
+    both = pl.build(dump, "model", [job / "results" / "host1.jsonl", job / "results" / "host2.jsonl"])
+    assert len(both["results_stats"]["files"]) == 1 and both["games"] == js["games"]
+
+
+def test_053_R2_teacher_tvt_row_is_the_players0_build(tmp_path):
+    plan = tmp_path / "teach"
+    sha = _replay(plan / "replays", 1)
+    (plan / "plan.toml").write_text('name = "t"\nseeds = [1]\n[[matchup]]\nmap = "fighting_spirit"\ngames = 1\n'
+                                    'p0 = { kind = "t0", race = "terran", build = "terran_tp" }\np1 = { kind = "t0", race = "terran" }\n')
+    (plan / "games.jsonl").write_text(json.dumps({"game_id": 1, "matchup": 0}) + "\n")
+    rows = [_row(1, side="scripted", slot=0, won=False, end=9500, t0_build="standard"), _row(1, side="scripted", slot=1, won=True, end=9500, t0_build="terran_tp")]
+    (plan / "results.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
+    js = pl.build(_games(tmp_path / "d", [sha]), "teacher", [plan / "results.jsonl"])
+    assert js["games"]["0"]["win"] == 1
+    st = next(iter(js["results_stats"]["files"].values()))
+    assert st["p0_build_known"] and st["ambiguous_slot"] == 0 and st["other_rows"] == 1
+    (plan / "plan.toml").unlink()
+    js = pl.build(_games(tmp_path / "d2", [sha]), "teacher", [plan / "results.jsonl"])
+    assert js["games"]["0"]["win"] is None and next(iter(js["results_stats"]["files"].values()))["ambiguous_slot"] == 1
+
+
 def test_053_R2_human_labels_from_the_dump():
-    assert pl.human_heads({"result": 1, "last_frame": 9000.0, "scv8": None}) == {"held_8m": 1, "held_s": None, "alive_10m": None, "win": 1}
-    assert pl.human_heads({"result": -1, "last_frame": 9000.0, "scv8": None})["held_8m"] == 0
-    assert pl.human_heads({"result": 0, "last_frame": 9000.0, "scv8": None}) == {"held_8m": None, "held_s": None, "alive_10m": None, "win": None}
+    assert pl.human_heads({"result": 1, "last_frame": 9000.0, "scv8": 0}) == {"held_8m": 1, "held_s": None, "alive_10m": None, "win": 1}
+    assert pl.human_heads({"result": -1, "last_frame": 9000.0, "scv8": 0})["held_8m"] == 0
+    assert pl.human_heads({"result": 0, "last_frame": 9000.0, "scv8": 0}) == {"held_8m": None, "held_s": None, "alive_10m": None, "win": None}
     assert pl.human_heads({"result": -1, "last_frame": 14000.0, "scv8": 1})["held_8m"] == 1
+    assert pl.human_heads({"result": 1, "last_frame": 5000.0, "scv8": None})["held_8m"] is None
     assert pl.held_8m(None, None, 14401) is None and pl.alive_10m(None, 9000) is None and pl.alive_10m(False, 14400) == 1
+    assert pl.bot_heads({"won": True, "end_frame": 9000, "error": "crash", "model": {"scv_8m": 9, "scv_min_1m": 9}}, "model") == pl.NONE
+
+
+def test_053_R2_branch_outcome_recomputes_held_8m():
+    from uranium.diag.planning import branch as pbr
+
+    br = {"metrics": {"held_8m": False, "scv_8m": None}, "end": {"result": "win", "end_frame": 9000}}
+    assert pbr.outcome(br, "held_8m") == 1.0
+    assert pbr.outcome({**br, "end": {"result": "loss", "end_frame": 9000}}, "held_8m") == 0.0
+    assert pbr.outcome({"metrics": {"held_8m": True, "scv_8m": 9}, "end": {"result": "draw", "end_frame": 11568}}, "held_8m") == 1.0
+    assert np.isnan(pbr.outcome({"metrics": {"held_8m": False, "scv_8m": None}, "end": {"result": "draw", "end_frame": 11568}}, "held_8m"))
+    assert pbr.outcome({"metrics": {"held_8m": 1}}, "held_8m") == 1.0
+
+
 
 
 def _labels_for(path: Path, seed: int = 0) -> dict:

@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 from uranium import tables as tb
+from uranium.diag.planning import labels as pl
 from uranium.diag.planning import pred as pp
 from uranium.diag.planning import s0 as plan_s0
 from uranium.diag.planning import stats as ps
@@ -105,6 +106,11 @@ def outcome(br: dict, name: str) -> float:
         return float("nan") if o is None else float(o[names.index(col)])
     if "." in name:
         return _num(_path(br, name))
+    if name == "held_8m" and "scv_8m" in (br.get("metrics") or {}):
+        end = br.get("end") or {}
+        won = {"win": True, "loss": False}.get(end.get("result"))
+        v = pl.held_8m(br["metrics"]["scv_8m"], won, end.get("end_frame"))
+        return float("nan") if v is None else float(v)
     for where in (br.get("metrics") or {}, br.get("end") or {}, br):
         if name in where:
             return _num(where[name])

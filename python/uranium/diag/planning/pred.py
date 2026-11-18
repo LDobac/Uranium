@@ -93,6 +93,7 @@ class Data:
         self.q_names = tuple(q_names)
         self.val_frac = float(val_frac)
         labels = labels or {}
+        self.labeled = bool(labels)
         rows, games, mans, decs = [], [], [], []
         for s in sources:
             if s.rows not in ROW_KINDS:
@@ -567,7 +568,7 @@ def mix_weights(data: Data, rows: np.ndarray, shares: dict, op_x: float = 5.0, r
     n = len(rows)
     a_rows = np.bincount(act[op], minlength=data.n_act)
     a_share = a_rows / max(n, 1)
-    mult_a = np.where(a_share < rare_share, np.minimum(rare_x, rare_share / np.maximum(a_share, 1e-300)), op_x)
+    mult_a = np.where(a_share < rare_share, np.maximum(op_x, np.minimum(rare_x, rare_share / np.maximum(a_share, 1e-300))), op_x)
     m = np.where(op, mult_a[act], 1.0)
     n_k = np.bincount(kind, minlength=len(KINDS))
     tgt = np.zeros(len(KINDS))

@@ -65,8 +65,8 @@ def add_args(p) -> None:
     p.add_argument("--side", action="append", default=[], help="NAME=model|scripted: results field of the bot's session (default teacher scripted, model model)")
     p.add_argument("--mix", default="", help="source-kind shares of the training batches, e.g. human=0.2 (others by row count; empty = uniform rows)")
     p.add_argument("--op-x", type=float, default=5.0, help="with --mix: weight of operation-action rows")
-    p.add_argument("--rare-share", type=float, default=0.001, help="with --mix: operation actions under this training-row share get --rare-x weighting")
-    p.add_argument("--rare-x", type=float, default=20.0, help="with --mix: rare operation-action weight min(this, --rare-share / share)")
+    p.add_argument("--rare-share", type=float, default=0.001, help="with --mix: operation actions under this training-row share get the rare weight")
+    p.add_argument("--rare-x", type=float, default=20.0, help="with --mix: rare operation-action weight max(--op-x, min(this, --rare-share / share))")
     p.add_argument("--val-frac", type=float, default=0.0, help="validation share of the training games (game level; 0 = no validation, fixed --steps)")
     p.add_argument("--val-every", type=int, default=500, help="with --val-frac: steps between validation losses")
     p.add_argument("--patience", type=int, default=4, help="with --val-frac: checks without a lower validation loss before a net stops")
@@ -105,7 +105,7 @@ def fingerprint(data: pp.Data) -> dict:
           "split_digest": data.split_digest}
     if data.design != pp.V1:
         fp["design"] = data.design.as_dict()
-    if data.q_names != pp.Q_NAMES:
+    if data.q_names != pp.Q_NAMES or data.labeled:
         fp["q_heads"] = list(data.q_names)
         fp["q_digest"] = hashlib.sha256(np.ascontiguousarray(data.g_q).tobytes()).hexdigest()
     return fp
@@ -883,7 +883,7 @@ def _named(specs: list, flag: str, names: set) -> dict:
     return out
 
 
-def source_labels(a, srcs: list, qn: tuple) -> tuple[dict, dict]:
+def source_labels(a, srcs: list, qn: tuple, drop: dict) -> tuple[dict, dict]:
     names = {s.name for s in srcs}
     res, files, sides = _named(a.results, "--results", names), _named(a.labels, "--labels", names), _named(a.side, "--side", names)
     if both := sorted(set(res) & set(files)):
@@ -892,12 +892,12 @@ def source_labels(a, srcs: list, qn: tuple) -> tuple[dict, dict]:
     labels, joins = {}, {}
     for s in srcs:
         if s.name in files:
-            labels[s.name] = pl.read(files[s.name])
+            labels[s.name] = pl.read(files[s.name], s.path)
             joins[s.name] = {"labels": redact(files[s.name])}
         elif s.name in res:
             if s.kind not in pl.BOT_KINDS:
                 raise SystemExit(f"--results {s.name}: a {s.kind} source has no session results (its labels come from the dump)")
-            js = pl.build(s.path, s.kind, [x for x in res[s.name].split(",") if x], sides.get(s.name))
+            js = pl.build(s.path, s.kind, [x for x in res[s.name].split(",") if x], sides.get(s.name), drop.get(s.name))
             labels[s.name] = {int(k): v for k, v in js["games"].items()}
             joins[s.name] = {"join": js["join"], "results": js["results_stats"], "side": js["side"]}
         elif s.kind == "human" and need:
@@ -957,7 +957,7 @@ def run(a) -> int:
     if a.val_frac > 0 and a.max_steps < a.val_every:
         raise SystemExit(f"plan-s0: --max-steps {a.max_steps} is below --val-every {a.val_every}")
     t0 = time.time()
-    labels, joins = source_labels(a, srcs, qn)
+    labels, joins = source_labels(a, srcs, qn, drop)
     data = pp.Data(srcs, ks, a.eval_frac, a.split_seed, drop, keep_bot=a.keep_bot_perspective, maps=maps, design=design, mmap=a.mmap, q_names=qn,
                    labels=labels, val_frac=a.val_frac)
     cov = None
@@ -981,7 +981,7 @@ def run(a) -> int:
         rep = report(data, a, ks, variants, models)
         if cov is not None:
             rep["coverage"] = cov
-        rep["sources"] =[{"name": s.name, "kind": s.kind, "role": s.role, "path": redact(s.path)} for s in srcs]
+        rep["sources"] = [{"name": s.name, "kind": s.kind, "role": s.role, "path": redact(s.path)} for s in srcs]
         rep["secs"] = round(time.time() - t0, 1)
         rep["memory"] = memory_of(data)
         stem = "s0" + (f"-{a.tag}" if a.tag else "")
