@@ -445,7 +445,8 @@ def test_plan_s0_end_to_end_on_known_structure(tmp_path):
     assert "판정표" in md and "M2 구별" in md
     assert main([*args, "--out", str(tmp_path / "o1"), "--stage", "report"]) == 0
     rep2 = json.loads((tmp_path / "o1" / "s0.json").read_text())
-    rep.pop("secs"), rep2.pop("secs")
+    for r in (rep, rep2):
+        r.pop("secs"), r.pop("memory")
     assert rep == rep2
     with pytest.raises(SystemExit, match="other data"):
         main([*args, "--out", str(tmp_path / "o1"), "--stage", "report", "--split-seed", "2"])

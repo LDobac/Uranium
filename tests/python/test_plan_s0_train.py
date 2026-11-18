@@ -258,7 +258,8 @@ def test_053_plan_s0_with_labels_mix_validation_and_split_nets(tmp_path):
     assert "coverage" in md and "행 섞기" in md and "검증·조기 멈춤" in md and "held_8m" in md
     assert main([*args, "--out", str(out), "--stage", "report"]) == 0
     rep2 = json.loads((out / "s0.json").read_text())
-    rep.pop("secs"), rep2.pop("secs")
+    for r in (rep, rep2):
+        r.pop("secs"), r.pop("memory")
     assert rep == rep2
     with pytest.raises(SystemExit, match="mix / validation"):
         main([*args[:-1], "--out", str(out), "--stage", "report"])
