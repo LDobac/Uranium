@@ -52,7 +52,8 @@ rules = [{ op = "ban", action = "Build_CommandCenter", from_s = 0, to_s = 180 }]
 [[alternative]]
 name = "factory_now"
 rules = [
-  { op = "force", action = "Build_Factory", from_s = 0, to_s = 60 },
+  { op = "force", action = "Build_Refinery", from_s = 0, to_s = 30 },
+  { op = "force", action = "Build_Factory", from_s = 60, to_s = 180 },
   { op = "ban", action = "Build_Barracks", from_s = 0, to_s = 120 },
 ]
 

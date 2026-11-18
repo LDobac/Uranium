@@ -578,7 +578,7 @@ B3_PLANS = {
     "none": [],
     "cc_now": [("force", "Build_CommandCenter", 0, 90)],
     "cc_late": [("ban", "Build_CommandCenter", 0, 180)],
-    "factory_now": [("force", "Build_Factory", 0, 60), ("ban", "Build_Barracks", 0, 120)],
+    "factory_now": [("force", "Build_Refinery", 0, 30), ("force", "Build_Factory", 60, 180), ("ban", "Build_Barracks", 0, 120)],
     "rax_more": [("force", "Build_Barracks", 0, 30), ("force", "Build_Barracks", 30, 75), ("ban", "Build_Factory", 0, 180)],
     "scv_cut": [("ban", "Train_SCV", 0, 90)],
     "bunker_now": [("force", "Build_Bunker", 0, 30)],
@@ -604,7 +604,7 @@ def test_b3_config_reuses_b2_trunks_055_r2_r3(tmp_path):
         got = [(x["alt"]["name"], [(r["op"], r["action"], r["from_s"], r["to_s"]) for r in x["alt"]["rules"]]) for x in lines if x["point"] == p]
         assert got == list(B3_PLANS.items())
     union = list(dict.fromkeys(r["action"] for x in lines for r in x["alt"]["rules"]))
-    assert union == ["Build_CommandCenter", "Build_Factory", "Build_Barracks", "Train_SCV", "Build_Bunker"], "none dilution list (055-R1)"
+    assert union == ["Build_CommandCenter", "Build_Refinery", "Build_Factory", "Build_Barracks", "Train_SCV", "Build_Bunker"], "none dilution list (055-R1)"
     plan = tomllib.loads((out / "plans" / "branch-b3.toml").read_text(encoding="utf-8"))
     assert (plan["name"], plan["max_frames"], plan["surrender"], plan["zero_last_failed"]) == ("branch-b3", 17328, "off", True)
     b2out = tmp_path / "eval" / "b2"

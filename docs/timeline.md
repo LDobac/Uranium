@@ -763,3 +763,7 @@
 - 19:44 — 끝·새 리포트: 단계 4 r4(탐색 + B2 짝 손실) — 떼어 둔 B2 줄기에서 r2·r3보다 낫지 않음(`held_8m` Spearman −0.04·+0.01, 짝 손실 0 예측보다 큼), 학습 줄기만 외움; B1 M3u Spearman 0.27·0.22로 오름; 짝 손실이 `win`·`alive_10m`을 못 읽던 문제 고침 ([s0c_stage4_b2](report/experiment/2026_11_18_19_50_s0c_stage4_b2.md), [053-R8](spec/2026_11_18_08_58_053-planning-predictor-data.md))
 - 20:18 — 진단(사용자 승인): t2 몸통 고정, 보조 예측기만 다시 맞춤 — 떼어 둔 판 aux_jepa 0.053 → 0.031(eps 1e-5, lr 3e-5 일정·3,258 update) → 0.022(eps 1e-8), 상수 예측 대비 0.33 → 0.14; 예측기는 최적에서 멀고 eps가 거기로 가는 속도를 늦춤(추론), priv는 여지 작음 ([aux_jepa_adam_eps](report/investigation/2026_11_18_19_12_aux_jepa_adam_eps.md) 7절)
 - 20:30 — 결정(사용자)·spec: 계획 단위 분기 B3 기본안 확정 — 계획 6개(CC 이르게·늦게, 팩토리, 배럭 추가, SCV 끊기, 벙커) + `none`, B2 줄기 재사용 2,100판(12:00), 주 결과 score, T0 상대 4칸, 줄기 추가는 결과 뒤 → spec 055 Approved ([055](spec/2026_11_18_20_30_055-plan-branch-games.md))
+- 23:40 — 결정(사용자): B3 표본에서 `factory_now`의 팩토리 강제 6/6 `missed`(F는 그 시점까지 가스 0) → 리파이너리 강제 [0, 30초) 뒤 팩토리 강제 [60, 180초)로 바꿈 ([055-R2](spec/2026_11_18_20_30_055-plan-branch-games.md), [branch_b3](report/experiment/2026_11_18_20_36_branch_b3.md))
+
+## 2026-11-19
+- 08:53 — 시작: B3 2,100판(재표본 12판에서 `factory_now` `missed` 0) ([branch_b3](report/experiment/2026_11_18_20_36_branch_b3.md))
