@@ -749,4 +749,4 @@
 - 09:1x — 결정(사용자): 예측기 학습 세부 기본안 확정(500 step·참을성 4·최대 20,000 등), 탐색 판 상대 세부 기본안 확정, B2 상대·맵·시점은 B2 판 직전에 정함 → spec 053·054 Approved ([053](spec/2026_11_18_08_58_053-planning-predictor-data.md), [054](spec/2026_11_18_08_58_054-exploration-games.md), [051](spec/2026_11_12_12_39_051-branch-games.md) R16)
 - 09:58 — 끝(중단 규칙): `m2-rl-fix-3` 0.36M step 첫 점검 — 테란·프로토스전 `tp_style` 13/64(< 32), `zerg_build` 51/64, 가스 중앙값 0 → 최종 가중치 F = t2(`m2-teacher-t2/ckpt-3258`) ([044-R11·R13](spec/2026_11_14_08_18_044-self-game-distillation.md) ⑤)
 - 10:59 — 측정 끝·결과: t2를 RL 점검 조건(직전 실패 명령 보임, Linux ROCm)으로 64판 — `zerg_build` 3/64·`tp_style` 52/64, 직전 실패 명령 가림 5/64·53/64 → 붕괴는 측정 조건이 아니라 RL 204 update 탓 ([teacher_leak_fix](report/experiment/2026_11_17_20_08_teacher_leak_fix.md) 4절)
-- 11:0x — 결정(사용자): 탐색 판은 t2 합격 측정 조건(`zero_last_failed = true`, 항복 기록만) ([054-R1](spec/2026_11_18_08_58_054-exploration-games.md))
+- 11:0x — 결정(사용자): 탐색 판 plan 설정은 t2 승·판별 측정 plan과 같게(`zero_last_failed = true`, 항복 기록만), F = t2 ([054-R1](spec/2026_11_18_08_58_054-exploration-games.md))
