@@ -174,7 +174,7 @@ FORCE = {"none": [], "force_bunker": [{"op": "force", "action": "Build_Bunker", 
          "ban_bunker": [{"op": "ban", "action": "Build_Bunker", "from_s": 0, "to_s": 90}]}
 
 
-def branch_set(d: Path, dump: Path, n=8, sha=C_SHA, ys=None):
+def branch_set(d: Path, dump: Path, n=8, sha=C_SHA, ys=None, rules=None):
     games = json.loads((dump / "games.json").read_text())
     pts, brs = [], []
     ys = ys or {}
@@ -186,7 +186,7 @@ def branch_set(d: Path, dump: Path, n=8, sha=C_SHA, ys=None):
             for a in FORCE:
                 for r in (1, 2):
                     y = ys.get((pid, a), (g + j + (a == "force_bunker")) % 2)
-                    brs.append({"point": pid, "alt": a, "rules": FORCE[a], "repeat": r, "valid": True,
+                    brs.append({"point": pid, "alt": a, "rules": (rules or {}).get((pid, a), FORCE[a]), "repeat": r, "valid": True,
                                 "metrics": {"held_8m": int(y) if r == 1 else int(ys.get((pid, a, 2), y)), "held_s": 0.5}})
     d.mkdir(parents=True, exist_ok=True)
     (d / "points.jsonl").write_text("".join(json.dumps(p) + "\n" for p in pts))
@@ -208,7 +208,7 @@ def test_053_AC12_R8_held_out_trunks_never_in_pair_batches(tmp_path, monkeypatch
     branch_set(tmp_path / "b2", dump)
     ps_ = pr.PairSet("b2", tmp_path / "b2", dump, data)
     assert ps_.info["trunks"] == 8 and ps_.info["held_trunks"] == 2, "25% of the trunks (053-R8 2)"
-    assert ps_.info["alts"] == {"force_bunker": BUNKER, "force_marine": MARINE} and ps_.info["skipped"]["not_one_decision_force"] == 1
+    assert ps_.info["alts"] == {"force_bunker": [BUNKER], "force_marine": [MARINE]} and ps_.info["skipped"]["not_one_decision_force"] == 1
     trunk_of = np.array([ps_.points[i].split("#")[0] for i in ps_.point])
     for t in set(trunk_of):
         h = ps_.held[trunk_of == t]
@@ -271,6 +271,11 @@ def test_053_AC12_R8_pair_loss_only_within_a_point(tmp_path):
     assert ps_.d[a0, j] == pytest.approx(1.0) and ps_.d[a1, j] == pytest.approx(-0.5)
     assert ps_.ok[a0, data.q_names.index("held_s")] == 1 and ps_.d[a0, data.q_names.index("held_s")] == 0.0
     assert ps_.row[a0] != ps_.row[a1]
+    scv = tb.action_id("Train_SCV")
+    branch_set(tmp_path / "b2r", dump, ys=ys, rules={(p1, "force_marine"): [{"op": "force", "action": "Train_SCV", "from_s": 0, "to_s": 0}]})
+    psr = pr.PairSet("b2r", tmp_path / "b2r", dump, data)
+    cm = {int(ps_.point[i]): int(psr.c[i]) for i in np.nonzero(psr.c != BUNKER)[0]}
+    assert cm[pid[p1]] == scv and cm[pid[p0]] == MARINE, "the forced action is read per point (B2 policy-rank alternatives)"
     ys2 = {**ys, (p1, "none"): 0, (p1, "none", 2): 0}
     branch_set(tmp_path / "b2x", dump, ys=ys2)
     ps2 = pr.PairSet("b2x", tmp_path / "b2x", dump, data)

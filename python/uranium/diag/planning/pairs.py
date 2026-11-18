@@ -45,16 +45,10 @@ class PairSet:
         self.held_trunk_shas = set(held_sha.values())
         q = list(main.q_names)
         cols = {k: [] for k in ("row", "c", "trunk_held", "point")}
-        ds, oks, skip = [], [], {"no_row": len(missing), "closed": 0, "no_label": 0, "not_one_decision_force": 0}
-        forced = {}
-        for a in B.alts:
-            if a == BASELINE:
-                continue
-            c = pb.one_decision_force(B.rules[a])
-            if c is None:
-                skip["not_one_decision_force"] += 1
-            else:
-                forced[a] = c
+        ds, oks, skip = [], [], {"no_row": len(missing), "closed": 0, "no_label": 0, "no_action": 0, "not_one_decision_force": 0}
+        forced = [a for a in B.alts if a != BASELINE and pb.one_decision_force(B.rules[a]) is not None]
+        skip["not_one_decision_force"] = sum(a != BASELINE for a in B.alts) - len(forced)
+        used: dict = {}
         for pi, p in enumerate(B.points):
             if p not in rows:
                 continue
@@ -62,7 +56,11 @@ class PairSet:
             trunk = pb.trunk_of(B.all_points[p])
             base = np.array([np.nanmean(v) if np.isfinite(v := B.values(p, BASELINE, lambda b, h=h: pb.outcome(b, h))).any() else np.nan for h in q])
             mask = self.data.mask_rows(np.array([r]))[0]
-            for a, c in forced.items():
+            for a in forced:
+                c = pb.one_decision_force(B.point_rules.get((p, a)))
+                if c is None:
+                    skip["no_action"] += 1
+                    continue
                 if not mask[c]:
                     skip["closed"] += 1
                     continue
@@ -71,6 +69,7 @@ class PairSet:
                 if not np.isfinite(d).any():
                     skip["no_label"] += 1
                     continue
+                used.setdefault(a, set()).add(int(c))
                 cols["row"].append(r)
                 cols["c"].append(c)
                 cols["trunk_held"].append(trunk in self.held_trunks)
@@ -85,7 +84,8 @@ class PairSet:
         self.ok = np.asarray(oks, np.float32).reshape(len(self.row), len(q))
         self.points = B.points
         self.info = {"points": len(B.points), "pairs": int(len(self.row)), "held_pairs": int(self.held.sum()), "trunks": len(trunks),
-                     "held_trunks": len(self.held_trunks), "skipped": skip, "alts": {a: int(c) for a, c in forced.items()}}
+                     "held_trunks": len(self.held_trunks), "skipped": skip,
+                     "alts": {a: sorted(used.get(a, ())) for a in forced}}
 
     def held_shas(self) -> set:
         return set(self.held_trunk_shas)
