@@ -396,3 +396,23 @@ def test_053_AC12_R8_validation_trunks_out_of_pair_batches_and_in_score_validati
     for c in curve:
         assert c["pair"] is not None and c["pair"] > 0
         assert c["score"] == pytest.approx(sum(v for v in c["q"].values() if v is not None) + 0.5 * c["pair"])
+
+
+def test_053_AC12_R8_pair_targets_read_branch_labels_for_win_and_alive(tmp_path):
+    p = fake_dump(tmp_path / "main", n_games=12, sha_prefix="e")
+    man = json.loads((p / "manifest.json").read_text())
+    man["checkpoint_sha256"] = C_SHA
+    (p / "manifest.json").write_text(json.dumps(man))
+    q = ("held_8m", "alive_10m", "win")
+    data = pp.Data([pp.Source("m", "teacher", "split", str(p))], ks=(8,), q_names=q, labels={"m": {}})
+    dump = trunk_dump(tmp_path)
+    branch_set(tmp_path / "b2", dump)
+    brs = [json.loads(x) for x in (tmp_path / "b2" / "branches.jsonl").read_text().splitlines()]
+    for b in brs:
+        b["labels"] = {"alive_10m": 1, "win": 1 if b["alt"] == "force_bunker" else (None if b["repeat"] == 2 else 0)}
+    (tmp_path / "b2" / "branches.jsonl").write_text("".join(json.dumps(b) + "\n" for b in brs))
+    ps_ = pr.PairSet("b2", tmp_path / "b2", dump, data)
+    jb = np.nonzero(ps_.c == BUNKER)[0]
+    ja, jw = q.index("alive_10m"), q.index("win")
+    assert (ps_.ok[jb, ja] == 1).all() and (ps_.d[jb, ja] == 0).all()
+    assert (ps_.ok[jb, jw] == 1).all() and np.allclose(ps_.d[jb, jw], 1.0), "win from labels, undecided games left out of the mean (053-R2, R8 3)"

@@ -111,7 +111,7 @@ def outcome(br: dict, name: str) -> float:
         won = {"win": True, "loss": False}.get(end.get("result"))
         v = pl.held_8m(br["metrics"]["scv_8m"], won, end.get("end_frame"))
         return float("nan") if v is None else float(v)
-    for where in (br.get("metrics") or {}, br.get("end") or {}, br):
+    for where in (br.get("metrics") or {}, br.get("end") or {}, br.get("labels") or {}, br):
         if name in where:
             return _num(where[name])
     return float("nan")
