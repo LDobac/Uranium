@@ -67,6 +67,9 @@ pub(super) fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &
     let last = until_frame.map_or(rep.header.frames, |u| u.saturating_add(32)).min(rep.header.frames);
     let mut own_at: HashMap<u32, std::collections::HashSet<u32>> = HashMap::new();
     let bound = o.memory.map(|reads| crate::relabel::bind_logs(reads, me, rep.header.frames));
+    if let Some(reason) = other_player_view(o.relabel.is_some() || o.distill, bound.as_ref()) {
+        return Ok(Err(Outcome::Filtered { reason }));
+    }
     if o.distill {
         let reason = match &bound {
             Some(Ok(_)) => None,
@@ -170,6 +173,17 @@ pub(super) fn build_view(rep: &Replay, view: &View, cfg: &PlayConfig, labeler: &
         return Ok(Err(Outcome::Error { reason: "distill step without memory_action (044-R2)".into() }));
     }
     Ok(Ok(ViewGame { steps, coverage, result, result_source, game_info, repeats_dropped, memory }))
+}
+
+pub const OTHER_PLAYER_VIEW: &str = "not the logged model's view";
+
+pub fn other_player_view(relabel_or_distill: bool, bound: Option<&Result<&crate::relabel::ModelLog, MemoryCheck>>) -> Option<String> {
+    match bound {
+        Some(Err(m)) if !relabel_or_distill && m.status == "other_player" => {
+            Some(format!("{OTHER_PLAYER_VIEW} (041-R28, 053-R5: players[0] only): {}", m.reason.as_deref().unwrap_or("")))
+        }
+        _ => None,
+    }
 }
 
 pub fn decision_steps(
@@ -292,6 +306,19 @@ mod tests {
         assert_eq!(v.len(), 5);
         cut_after(&mut v, Some(11_520), |f| *f);
         assert_eq!(v, vec![1, 11_519, 11_520]);
+    }
+
+    #[test]
+    fn no_relabel_memory_builds_keep_the_model_view_only_041_r28_053_r5() {
+        use crate::relabel::{DecisionLogRead, ModelLog};
+        let other = MemoryCheck { status: "other_player", reason: Some("the log is player 0's, this view is player 1's".into()), decisions: 3, checked: 0, mismatched: 0, decision_steps: None };
+        let log = ModelLog { decisions: vec![], end_frame: Some(10), player: 0 };
+        let got = other_player_view(false, Some(&Err(other.clone()))).expect("the other player's view is filtered");
+        assert!(got.starts_with(OTHER_PLAYER_VIEW) && got.contains("player 1's"), "{got}");
+        assert_eq!(other_player_view(true, Some(&Err(other))), None, "DAgger relabel and distill builds unchanged");
+        assert_eq!(other_player_view(false, Some(&Err(MemoryCheck::without_log(&DecisionLogRead::Missing)))), None, "no log: written without memory as before");
+        assert_eq!(other_player_view(false, Some(&Ok(&log))), None);
+        assert_eq!(other_player_view(false, None), None);
     }
 
     #[test]
