@@ -16,6 +16,7 @@ from uranium.diag.planning import stats as ps
 from uranium.diag.planning.dump import own_columns, own_state
 
 SCV8 = pp.Q_NAMES.index("scv8")
+Q_HEAD_DEFAULT = ("held_8m", "scv8")
 GAME_START_FRAME = 1
 OUTCOMES = ("held_8m", "held_s", "scv_8m", "scv_min_1m", "bunker_s", "barracks_s", "army_s", "end.before_horizon")
 OWN_SAMPLES = ("t60", "t120", "t240", "horizon", "d8", "d32")
@@ -34,7 +35,8 @@ def add_args(p) -> None:
     p.add_argument("--own-samples", default=",".join(OWN_SAMPLES),
                    help="branch samples whose own state is an outcome (empty = none)")
     p.add_argument("--own-cols", default=",".join(plan_s0.OWN_HEADLINE), help="own-state columns of those outcomes (own@<sample>:<column>)")
-    p.add_argument("--m3u-outcome", default="held_8m", help="the measured outcome M3u compares with the scv8 head")
+    p.add_argument("--m3u-outcome", default="held_8m", help="the measured outcome M3u compares with the --q-head head")
+    p.add_argument("--q-head", help="predictor outcome head M3u scores with (default held_8m if the predictor has it, else scv8)")
     p.add_argument("--baseline", default="none", help="alternative the effects are taken against (none = no intervention)")
     p.add_argument("--ks", default="8,32", help="predictor k of M3u / M2c (models A_k<k>.pt)")
     p.add_argument("--sample-k8", default="d8", help="branch sample of the 8th decision after t (M2c k = 8)")
@@ -348,13 +350,26 @@ def own_change_pred(net, st, data, rows, k: int, chunk_rows: int = 64) -> tuple[
     return o_all, np.einsum("ra,rao->ro", pi, np.nan_to_num(o_all)) + np.where(on, 0.0, np.nan)
 
 
-def s0_m3b(s0: Path, k: int) -> dict | None:
+def s0_m3b(s0: Path, k: int, head: str = "scv8") -> dict | None:
     for f in sorted(glob.glob(str(s0 / "s0*.json"))):
         rep = json.loads(Path(f).read_text(encoding="utf-8"))
         blk = (((rep.get("M3b") or {}).get(str(k)) or {}).get("A") or {}).get("both") or {}
-        if "scv8" in blk:
-            return {"file": Path(f).name, **{x: blk["scv8"].get(x) for x in ("rush_mean", "macro_mean", "rush_minus_macro")}}
+        if head in blk:
+            return {"file": Path(f).name, **{x: blk[head].get(x) for x in ("rush_mean", "macro_mean", "rush_minus_macro")}}
     return None
+
+
+def q_head_of(nets: dict, want: str | None) -> str:
+    names = [tuple(net.q_names) for net, _, _ in nets.values()]
+    if not names:
+        return want or "scv8"
+    if want is None:
+        want = next((h for h in Q_HEAD_DEFAULT if all(h in n for n in names)), None)
+        if want is None:
+            raise SystemExit(f"plan-branch: the predictors' heads {sorted(set(names))} have none of {Q_HEAD_DEFAULT}; --q-head")
+    if any(want not in n for n in names):
+        raise SystemExit(f"plan-branch: --q-head {want}: not a head of every predictor ({sorted(set(names))})")
+    return want
 
 
 def sign_agreement(pred, meas) -> tuple[np.ndarray, int]:
@@ -369,12 +384,12 @@ def _rate(v: np.ndarray) -> float | None:
     return float(v.mean()) if len(v) else None
 
 
-def m3u(B: Branches, data, rows: dict, nets: dict, y: str, boot_n: int, seed: int, s0: Path | None) -> dict:
+def m3u(B: Branches, data, rows: dict, nets: dict, y: str, boot_n: int, seed: int, s0: Path | None, head: str = "scv8") -> dict:
     fn = (lambda b: outcome(b, y))
     forced = {a: one_decision_force(B.rules[a]) for a in B.alts if a != B.baseline}
     forced = {a: x for a, x in forced.items() if x is not None}
     pts = [p for p in B.points if p in rows]
-    out = {"outcome": y, "alts": sorted(forced), "points_with_row": len(pts)}
+    out = {"outcome": y, "q_head": head, "alts": sorted(forced), "points_with_row": len(pts)}
     if not forced or not pts:
         return out
     pi_rows = np.array([rows[p] for p in pts], np.int64)
@@ -388,7 +403,7 @@ def m3u(B: Branches, data, rows: dict, nets: dict, y: str, boot_n: int, seed: in
         dq_all, d_all, unit = [], [], []
         for a, act in forced.items():
             open_ = data.mask_rows(pi_rows)[:, act]
-            dq = plan_s0.delta_q(net, data, pi_rows, act, st)[:, SCV8]
+            dq = plan_s0.delta_q(net, data, pi_rows, act, st)[:, net.q_names.index(head)]
             dq = np.where(open_, dq, np.nan)
             d = eff[a]
             ok = np.isfinite(dq) & np.isfinite(d)
@@ -410,7 +425,7 @@ def m3u(B: Branches, data, rows: dict, nets: dict, y: str, boot_n: int, seed: in
             res["noise_ceiling"] = ceil
             res["ratio_to_ceiling"] = (rho[0] / ceil) if ceil else None
         if s0 is not None:
-            res["s0b_m3b"] = s0_m3b(s0, k)
+            res["s0b_m3b"] = s0_m3b(s0, k, head)
         out[f"k{k}"] = res
     return out
 
@@ -551,7 +566,7 @@ def markdown(rep: dict) -> str:
             L.append(f"| {y[4:]} | " + " | ".join(_f(rep["paired"][y]["alts"][x]["all"]["D"], 2) for x in alts) + " |")
         L.append("")
     m = rep.get("M3u") or {}
-    L += ["## 2. M3u (scv8 머리 ΔQ̂ 대 분기 효과)", ""]
+    L += [f"## 2. M3u ({m.get('q_head', 'scv8')} 머리 ΔQ̂ 대 분기 효과)", ""]
     if m.get("skipped"):
         L += [f"- 건너뜀: {m['skipped']}", ""]
     else:
@@ -658,7 +673,9 @@ def analyse(a) -> dict:
             reasons[v["reason"]] = reasons.get(v["reason"], 0) + 1
         rep["rows_missing"] = {"points": len(missing), "by_reason": reasons, "detail": missing}
         nets = {k: m for k in ks if (m := load_predictor(s0, k, data)) is not None}
-        rep["M3u"] = m3u(B, data, rows, nets, a.m3u_outcome, a.boot, a.boot_seed, s0)
+        head = q_head_of(nets, getattr(a, "q_head", None))
+        rep["settings"]["q_head"] = head
+        rep["M3u"] = m3u(B, data, rows, nets, a.m3u_outcome, a.boot, a.boot_seed, s0, head)
         rep["M2c"] = m2c(B, data, rows, nets, {8: a.sample_k8, 32: a.sample_k32}, a.boot, a.boot_seed)
         for x, ent in rep["bunker"].items():
             for k in ks:

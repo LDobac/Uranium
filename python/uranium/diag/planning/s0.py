@@ -1,5 +1,6 @@
 """S0 feasibility test on `diag plan-dump` folders, on CPU (measurement only)"""
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -8,6 +9,7 @@ import numpy as np
 import torch
 
 from uranium import tables as tb
+from uranium.diag.planning import labels as pl
 from uranium.diag.planning import pred as pp
 from uranium.diag.planning import stats as ps
 from uranium.diag.planning.dump import own_columns
@@ -15,7 +17,6 @@ from uranium.provenance import redact
 
 M0_TOP = (4, 8, 16)
 CAND_TOP = 8
-OUTCOMES = pp.Q_NAMES
 OWN_HEADLINE = ("scv", "supply_used", "supply_total", "barracks", "bunker", "command_center", "supply_depot", "refinery", "factory", "army")
 TH_DEFAULTS = {"s_ratio": 2.0, "r_min": 0.2, "r_noise": 0.1, "m2b": 0.90, "m2a": 0.5, "m3a": 0.01}
 
@@ -58,6 +59,21 @@ def add_args(p) -> None:
     p.add_argument("--own-target", choices=["delta", "level"], help="own-state target: o_{t+k} - o_t (default) or o_{t+k} (--v1)")
     p.add_argument("--s-partner", choices=["other-game", "same-game"], help="S control partner row: another game of the source (default) or the same game (--v1)")
     p.add_argument("--k-unit", choices=["dec", "frame"], help="k in decisions (default) or frames (t+k = the first row k frames or more later)")
+    p.add_argument("--q-heads", default=",".join(pp.Q_NAMES), help=f"outcome heads (default {','.join(pp.Q_NAMES)}; 053-R2 heads {','.join(pl.HEADS)})")
+    p.add_argument("--results", action="append", default=[], help="NAME=<results.jsonl>[,...]: session results of a bot source (053-R2), repeatable")
+    p.add_argument("--labels", action="append", default=[], help="NAME=<labels.json>: a `diag plan-label` file of a source, repeatable")
+    p.add_argument("--side", action="append", default=[], help="NAME=model|scripted: results field of the bot's session (default teacher scripted, model model)")
+    p.add_argument("--mix", default="", help="source-kind shares of the training batches, e.g. human=0.2 (others by row count; empty = uniform rows)")
+    p.add_argument("--op-x", type=float, default=5.0, help="with --mix: weight of operation-action rows")
+    p.add_argument("--rare-share", type=float, default=0.001, help="with --mix: operation actions under this training-row share get --rare-x weighting")
+    p.add_argument("--rare-x", type=float, default=20.0, help="with --mix: rare operation-action weight min(this, --rare-share / share)")
+    p.add_argument("--val-frac", type=float, default=0.0, help="validation share of the training games (game level; 0 = no validation, fixed --steps)")
+    p.add_argument("--val-every", type=int, default=500, help="with --val-frac: steps between validation losses")
+    p.add_argument("--patience", type=int, default=4, help="with --val-frac: checks without a lower validation loss before a net stops")
+    p.add_argument("--max-steps", type=int, default=20000, help="with --val-frac: step limit (replaces --steps)")
+    p.add_argument("--val-rows", type=int, default=50000, help="with --val-frac: at most this many validation rows (evenly spaced)")
+    p.add_argument("--split-nets", action="store_true", help="separate world (y, p, o) and score (q) nets, each kept at its best validation step")
+    p.add_argument("--score-wd", type=float, default=0.01, help="with --split-nets: AdamW weight decay of the score net (world net 0)")
 
 
 def design_of(a) -> pp.Design:
@@ -89,12 +105,37 @@ def fingerprint(data: pp.Data) -> dict:
           "split_digest": data.split_digest}
     if data.design != pp.V1:
         fp["design"] = data.design.as_dict()
+    if data.q_names != pp.Q_NAMES:
+        fp["q_heads"] = list(data.q_names)
+        fp["q_digest"] = hashlib.sha256(np.ascontiguousarray(data.g_q).tobytes()).hexdigest()
     return fp
+
+
+def training(a) -> dict:
+    out = {}
+    mix = pp.parse_mix(a.mix)
+    if mix is not None:
+        out["mix"] = {"shares": mix, "op_x": a.op_x, "rare_share": a.rare_share, "rare_x": a.rare_x}
+    if a.val_frac > 0:
+        out["val"] = {"val_frac": a.val_frac, "every": a.val_every, "patience": a.patience, "max_steps": a.max_steps, "rows": a.val_rows}
+    if a.split_nets:
+        out["split_nets"] = {"score_wd": a.score_wd}
+    return out
+
+
+def val_rows(data: pp.Data, k: int, kinds, cap: int) -> np.ndarray:
+    v = data.pair_rows(k, "val", kinds)
+    if len(v) > cap:
+        v = v[np.unique(np.linspace(0, len(v) - 1, cap).astype(np.int64))]
+    return v
 
 
 def train_all(data: pp.Data, a, ks, variants, models: Path) -> dict:
     log = {}
     stats = {}
+    tr = training(a)
+    mix = tr.get("mix")
+    mix_out = {}
     for name, v, k, kinds in model_specs(ks, variants, not a.no_m3c):
         path = models / f"{name}.pt"
         rows = data.pair_rows(k, "train", kinds)
@@ -102,6 +143,8 @@ def train_all(data: pp.Data, a, ks, variants, models: Path) -> dict:
             _, _, meta = pp.load(path, data)
             if meta.get("data") != fingerprint(data):
                 raise SystemExit(f"{path}: trained on other data ({meta.get('data')}); --retrain")
+            if meta.get("training", {}) != tr:
+                raise SystemExit(f"{path}: trained with other mix / validation settings ({meta.get('training', {})}); --retrain")
             log[name] = {"kept": True, "rows": meta["rows"]}
             continue
         if len(rows) == 0:
@@ -112,13 +155,49 @@ def train_all(data: pp.Data, a, ks, variants, models: Path) -> dict:
         if key not in stats:
             stats[key] = data.stats(rows, k)
         t0 = time.time()
-        net, lg = pp.train_one(data, v, k, rows, stats[key], steps=a.steps, batch=a.batch, lr=a.lr, seed=a.seed)
-        meta = {"variant": v, "k": k, "kinds": kinds, "rows": int(len(rows)), "steps": a.steps, "batch": a.batch, "lr": a.lr, "seed": a.seed,
+        extra, info = {}, ({} if tr else None)
+        if mix is not None:
+            extra["weights"], plan = pp.mix_weights(data, rows, mix["shares"], a.op_x, a.rare_share, a.rare_x)
+        if "val" in tr:
+            extra["val_rows"] = val_rows(data, k, kinds, a.val_rows)
+            if not len(extra["val_rows"]):
+                raise SystemExit(f"plan-s0: {name}: no validation rows (--val-frac {a.val_frac})")
+            extra.update(val_every=a.val_every, patience=a.patience)
+        if a.split_nets:
+            extra.update(split_nets=True, score_wd=a.score_wd)
+        steps = a.max_steps if "val" in tr else a.steps
+        net, lg = pp.train_one(data, v, k, rows, stats[key], steps=steps, batch=a.batch, lr=a.lr, seed=a.seed, info=info, **extra)
+        meta = {"variant": v, "k": k, "kinds": kinds, "rows": int(len(rows)), "steps": steps, "batch": a.batch, "lr": a.lr, "seed": a.seed,
                 "threads": torch.get_num_threads(), "log": lg, "secs": round(time.time() - t0, 1), "data": fingerprint(data)}
+        if tr:
+            meta["training"] = tr
+            if mix is not None:
+                meta["mix"] = mix_out[name] = {"plan": plan, "drawn": info["drawn"]}
+            if "val" in info:
+                meta["val"] = info["val"]
+                vd = models.parent / "val"
+                vd.mkdir(parents=True, exist_ok=True)
+                (vd / f"{name}.json").write_text(json.dumps(info["val"], indent=1), encoding="utf-8")
         pp.save(net, stats[key], path, meta)
         log[name] = {k_: meta[k_] for k_ in ("rows", "secs")} | {"last": lg[-1] if lg else None}
-        print(f"[train] {name}: rows {len(rows)} {meta['secs']}s last {lg[-1] if lg else None}", flush=True)
+        if "val" in meta:
+            log[name]["val_best"] = meta["val"]["best"]
+        print(f"[train] {name}: rows {len(rows)} {meta['secs']}s last {lg[-1] if lg else None}"
+              + (f" val best {meta['val']['best']}" if "val" in meta else ""), flush=True)
+    if mix_out:
+        (models.parent / "mix.json").write_text(json.dumps(mix_report(mix_out), indent=1), encoding="utf-8")
     return log
+
+
+def mix_report(mix_out: dict) -> dict:
+    names = tb.action_names()
+    out = {}
+    for name, m in mix_out.items():
+        pl_, dr = m["plan"], m["drawn"]
+        out[name] = {"settings": {k: pl_[k] for k in ("shares", "op_x", "rare_share", "rare_x")}, "drawn_rows": dr["rows"],
+                     "kinds": {k: {**e, "drawn": dr["kinds"].get(k, 0.0)} for k, e in pl_["kinds"].items()},
+                     "op_actions": {names[int(x)]: {**e, "drawn": dr["op_actions"].get(int(x), 0.0)} for x, e in pl_["op_actions"].items()}}
+    return out
 
 
 def m0(data: pp.Data, ks) -> dict:
@@ -172,14 +251,14 @@ def targets(data: pp.Data, ev, k, st, with_y: bool = True) -> dict:
     od = np.where(d_on, (data.own[t] - data.own[ev] - st["d_mu"]) / np.where(d_on, st["d_sd"], 1.0), 0.0).astype(np.float32)
     head = np.isin(np.array(data.own_names), OWN_HEADLINE)
     out = {"p": p, "p_ok": data.priv_ok[t] > 0, "o": o, "p_on": p_on, "o_on": o_on & head, "o_all_on": o_on, "q": data.row_q[ev],
-           "od": od, "od_on": d_on & head, "od_all_on": d_on}
+           "od": od, "od_on": d_on & head, "od_all_on": d_on, "q_names": data.q_names}
     if with_y:
         out["y"] = data.y[t].astype(np.float32)
     return out
 
 
 def eval_rows(nets: dict, data: pp.Data, ev, k, st, chunk: int = 8192) -> tuple[dict, dict]:
-    rows = {nm: {m: [] for m in ("y", "p", "o", "o_all", "o_cols", "od", "od_all", "od_cols") + OUTCOMES} for nm in nets}
+    rows = {nm: {m: [] for m in ("y", "p", "o", "o_all", "o_cols", "od", "od_all", "od_cols") + data.q_names} for nm in nets}
     rows["gk"] = {"y": []}
     qlog = {nm: [] for nm in nets}
     for s in range(0, len(ev), chunk):
@@ -197,7 +276,7 @@ def eval_rows(nets: dict, data: pp.Data, ev, k, st, chunk: int = 8192) -> tuple[
         elif "gk" in rows:
             rows["gk"]["y"].append(1.0 - cosine(gk, tg["y"]))
     cat = lambda xs: np.concatenate(xs) if xs else np.zeros(0)  # noqa: E731
-    return {nm: {m: cat(v) for m, v in d.items()} for nm, d in rows.items()}, {nm: cat(v).reshape(-1, len(OUTCOMES)) for nm, v in qlog.items()}
+    return {nm: {m: cat(v) for m, v in d.items()} for nm, d in rows.items()}, {nm: cat(v).reshape(-1, len(data.q_names)) for nm, v in qlog.items()}
 
 
 def cosine(a, b) -> np.ndarray:
@@ -212,7 +291,7 @@ def per_row(pred: dict, tg: dict) -> dict:
         out[sp] = (oc * tg[f"{sp}_on"]).sum(1)
         out[f"{sp}_all"] = oc.sum(1)
         out[f"{sp}_cols"] = oc
-    for j, q in enumerate(OUTCOMES):
+    for j, q in enumerate(tg["q_names"]):
         yq = tg["q"][:, j]
         out[q] = np.where(np.isfinite(yq), ps.bce(pred["q"][:, j], np.nan_to_num(yq)), np.nan)
     return out
@@ -221,7 +300,7 @@ def per_row(pred: dict, tg: dict) -> dict:
 def m1_block(boot: ps.Boot, rows: dict, tg: dict, sel: np.ndarray, names: list) -> dict:
     res = {}
     r2_tgt = {"p": "p", "o": "o", "o_all": "o", "od": "od", "od_all": "od"}
-    for met in ("y", "p", "o", "o_all", "od", "od_all") + OUTCOMES:
+    for met in ("y", "p", "o", "o_all", "od", "od_all") + tuple(tg["q_names"]):
         vals, errs = {}, {}
         for nm in names:
             if met not in rows[nm]:
@@ -378,7 +457,7 @@ def q_all(net, data: pp.Data, rows, st, chunk: int = 256) -> np.ndarray:
         r = rows[s:s + chunk]
         own = data.own_in(r, st) if net.own_in else None
         out.append(ps.sigmoid(net.q_all(torch.from_numpy(data.h[r].astype(np.float32)), cand, own).numpy()))
-    return np.concatenate(out) if out else np.zeros((0, data.n_act, len(OUTCOMES)))
+    return np.concatenate(out) if out else np.zeros((0, data.n_act, len(net.q_names)))
 
 
 def delta_q(net, data: pp.Data, rows, action, st) -> np.ndarray:
@@ -420,7 +499,7 @@ def m3b(data: pp.Data, nets: dict, sts: dict, a, boot_n, seed) -> dict:
             ru = rush[gm]
             ent = {"rows": int(len(rr)), "rush_rows": int(ru.sum()), "macro_rows": int((~ru).sum()),
                    "rush_games": int(len(np.unique(data.game[rr][ru]))), "macro_games": int(len(np.unique(data.game[rr][~ru])))}
-            for j, q in enumerate(OUTCOMES):
+            for j, q in enumerate(data.q_names):
                 d = dq[gm, j]
                 mr, mm = bt.mean(np.where(ru, d, np.nan)), bt.mean(np.where(~ru, d, np.nan))
                 ent[q] = {"rush_mean": ps.ci(mr), "macro_mean": ps.ci(mm), "rush_minus_macro": ps.diff(mr, mm), "row_auc": ps.ci(bt.auc(ru, d))}
@@ -435,7 +514,7 @@ def m3a(data: pp.Data, ev, preds: dict, bands, boot_n, seed) -> dict:
     edges = list(bands)
     spans = {f"{edges[i]:g}-{edges[i + 1]:g}": (edges[i], edges[i + 1]) for i in range(len(edges) - 1)} | {"all": (edges[0], edges[-1])}
     wo = data.win_open[ev].astype(np.float64)
-    for j, q in enumerate(OUTCOMES):
+    for j, q in enumerate(data.q_names):
         yq = data.row_q[ev][:, j]
         out[q] = {}
         for sname, (lo, hi) in spans.items():
@@ -462,13 +541,13 @@ def m3d(data: pp.Data, nets: dict, k, ev, boot_n, seed) -> dict:
     qu = ps.sigmoid(pp.predict(nets["U"], data, rows, k, nets["U_st"])["q"])
     out = {"rows": int(len(rows))}
     bt = ps.Boot(data.row_unit[rows], boot_n, seed)
-    for j, q in enumerate(OUTCOMES):
+    for j, q in enumerate(data.q_names):
         g = data.row_q[rows][:, j] - qu[:, j]
         out[q] = {"spearman": ps.ci(bt.spearman(adv[:, j], g)), "rows": int(np.isfinite(g).sum())}
     return out
 
 
-def verdict(rep: dict, th: dict, ks) -> dict:
+def verdict(rep: dict, th: dict, ks, qn=pp.Q_NAMES) -> dict:
     out = {}
 
     def g(d, *path):
@@ -481,7 +560,7 @@ def verdict(rep: dict, th: dict, ks) -> dict:
     def finite(x):
         return x is not None and np.isfinite(x)
 
-    for q in OUTCOMES:
+    for q in qn:
         crit = {}
         for k in ks:
             ks_ = str(k)
@@ -573,7 +652,37 @@ def _f(x, nd=3):
     return "-" if not np.isfinite(x) else f"{x:.{nd}f}"
 
 
+def training_markdown(rep: dict, qn) -> list:
+    L = []
+    cov = rep.get("coverage")
+    if cov:
+        L += ["", "## 결과 정답 coverage (053-R2, 정답 있는 판 / 판)", "", "| 출처 | 종류 | 판 | " + " | ".join(qn) + " |", "|---|---|---|" + "---|" * len(qn)]
+        for name, e in cov.items():
+            L.append(f"| {name} | {e['kind']} | {e['games']} | " + " | ".join(f"{e[q]['labeled']} ({_f(e[q]['rate'])}, 1: {e[q]['positive']})" for q in qn) + " |")
+    tr = rep["settings"].get("training") or {}
+    mixed = {n: m["mix"] for n, m in rep["models"].items() if m.get("mix")}
+    if mixed:
+        L += ["", f"## 행 섞기 (053-R3, {json.dumps(tr.get('mix'))})", "", "| 모델 | 출처 종류 | 행 | 목표 몫 | 실현 몫 |", "|---|---|---|---|---|"]
+        for n, m in mixed.items():
+            for kind, e in m["kinds"].items():
+                L.append(f"| {n} | {kind} | {e['rows']:,} | {_f(e['target'])} | {_f(e['drawn'])} |")
+        n0, m0_ = next(iter(mixed.items()))
+        L += ["", f"### 운영 행동 몫 ({n0})", "", "| 행동 | 학습 행 몫 | 배율 | 기대 몫 | 실현 몫 |", "|---|---|---|---|---|"]
+        for act, e in sorted(m0_["op_actions"].items(), key=lambda kv: -kv[1]["row_share"]):
+            L.append(f"| {act} | {_f(e['row_share'], 5)} | {_f(e['multiplier'], 2)} | {_f(e['expected_share'], 5)} | {_f(e['drawn'], 5)} |")
+    vals = {n: m["val"] for n, m in rep["models"].items() if m.get("val")}
+    if vals:
+        L += ["", f"## 검증·조기 멈춤 (053-R4, {json.dumps(tr.get('val'))}, 망 분리 {json.dumps(tr.get('split_nets'))})", "",
+              "| 모델 | 검증 행 | 마지막 step | 망 | 고른 step | 검증 손실 | 멈춤 |", "|---|---|---|---|---|---|---|"]
+        for n, v in vals.items():
+            for g, b in v["best"].items():
+                L.append(f"| {n} | {v['rows']:,} | {v['last_step']} | {g} | {b['step']} | {_f(b['loss'], 4)} | {'예' if b['stopped'] else '아니오'} |")
+        L += ["", "- 곡선: `val/<모델>.json`. 보고 지표(아래 표)는 평가 판만."]
+    return L
+
+
 def markdown(rep: dict) -> str:
+    qn = rep["data"].get("q_heads") or list(pp.Q_NAMES)
     L = ["# S0 가능성 시험 결과 (jepa_planning S0)", "", f"- 체크포인트 sha256: `{rep['checkpoint']['checkpoint_sha256']}`",
          f"- 행 {rep['data']['rows']:,}, 판 {rep['data']['games']:,}, bootstrap {rep['settings']['boot']}회(판 단위, 95%)",
          f"- 판정 문턱(기본안(미확정)): {json.dumps(rep['settings']['thresholds'])}",
@@ -585,6 +694,7 @@ def markdown(rep: dict) -> str:
                  f"{ch.get('dropped', 0):,} ({ch.get('dropped_op', 0):,}) |")
     L += ["", f"- S 대조 상대 행이 같은 판인 행: {rep['data'].get('partner_same_game_rows', '-')}",
           "- 체인 행: 같은 판의 앞 결정이 1프레임 이내의 명령(NoOp 아님)인 행(040-R4가 한 프레임 명령 묶음의 2번째부터를 +1, +2, … 프레임으로 민 것). 관측에 묶음 명령의 효과가 이미 들어 있다."]
+    L += training_markdown(rep, qn)
     frame_k = (rep["settings"].get("design") or {}).get("k_unit") == "frame"
     L += ["", "## M0 기초", "", "| 묶음 | 행 | 열린 종류 p50 | top4 / top8 / top16 확률 합(평균) | 결정 간격 p50(프레임) | k 쌍 간격 p50 | 운영 행동 비율 | top8에 운영 행동 | 체인 행 / 뺀 행 |",
           "|---|---|---|---|---|---|---|---|---|"]
@@ -648,12 +758,12 @@ def markdown(rep: dict) -> str:
                 if not e.get("rows"):
                     L.append(f"| {k} | {pname} | {gname} | - | 0 | - | - | - | - |")
                     continue
-                for q in OUTCOMES:
+                for q in qn:
                     x = e[q]
                     L.append(f"| {k} | {pname} | {gname} | {q} | {e['rush_rows']}/{e['macro_rows']} | {_f(x['rush_mean'], 4)} | {_f(x['macro_mean'], 4)} | {_f(x['rush_minus_macro'], 4)} | {_f(x['row_auc'])} |")
     L += ["", "## M3d advantage 일치 (운영 행동 행, Spearman)", "", "| k | 채점 대상 | 행 | Spearman |", "|---|---|---|---|"]
     for k, m in rep["M3d"].items():
-        for q in OUTCOMES:
+        for q in qn:
             if q in m:
                 L.append(f"| {k} | {q} | {m[q]['rows']:,} | {_f(m[q]['spearman'])} |")
     L += ["", "## 판정표 (6.5, 문턱 기본안(미확정))", ""]
@@ -683,6 +793,11 @@ def report(data: pp.Data, a, ks, variants, models: Path) -> dict:
                         "maps": a.maps, "left_out": data.dropped, "own_headline": list(OWN_HEADLINE),
                         "sd_floors": {"own": pp.OWN_SD_FLOOR, "privileged": pp.PRIV_SD_FLOOR}},
            "M0": m0(data, ks), "M1": {}, "M2": {}, "M3a": {}, "M3b": {}, "M3d": {}, "models": {}}
+    tr = training(a)
+    if tr:
+        rep["settings"]["training"] = tr
+    if data.q_names != pp.Q_NAMES:
+        rep["settings"]["q_heads"] = list(data.q_names)
     bands = [float(x) for x in a.bands.split(",")]
     for k in ks:
         ks_ = str(k)
@@ -694,11 +809,17 @@ def report(data: pp.Data, a, ks, variants, models: Path) -> dict:
             net, st, meta = pp.load(path, data)
             if meta.get("data") != fingerprint(data):
                 raise SystemExit(f"{path}: trained on other data; run --stage train (--retrain)")
+            if meta.get("training", {}) != tr:
+                raise SystemExit(f"{path}: trained with other mix / validation settings ({meta.get('training', {})}); run --stage train (--retrain)")
             label = name.split("_k")[0]
             if "d_mu" not in st:
                 st = {**st, **data.delta_stats(data.pair_rows(k, "train", kinds), k)}
             nets[label], sts[label] = net, st
             rep["models"][name] = {x: meta[x] for x in ("rows", "steps", "batch", "lr", "seed", "secs") if x in meta} | {"last": meta["log"][-1] if meta.get("log") else None}
+            if "val" in meta:
+                rep["models"][name]["val"] = {"best": meta["val"]["best"], "last_step": meta["val"]["last_step"], "rows": meta["val"]["rows"]}
+            if "mix" in meta:
+                rep["models"][name]["mix"] = mix_report({name: meta["mix"]})[name]
         ev = data.pair_rows(k, "eval")
         if "U" not in nets or not len(ev):
             rep["M1"][ks_] = {}
@@ -734,7 +855,7 @@ def report(data: pp.Data, a, ks, variants, models: Path) -> dict:
             rep["M3b"][ks_] = m3b(data, m3nets, sts, a, a.boot, a.boot_seed)
             rep["M3d"][ks_] = m3d(data, {"A": nets["A"], "U": nets["U"], "U_st": st, "A_st": sts["A"]}, k, ev, a.boot, a.boot_seed)
             print(f"[report] k={k} M3 done", flush=True)
-    rep["verdict"] = verdict(rep, th, ks)
+    rep["verdict"] = verdict(rep, th, ks, data.q_names)
     return rep
 
 
@@ -750,6 +871,61 @@ def memory_line(m: dict) -> str:
     st = m["mmap"]
     where = "RAM" if st is None else f"mmap 사본 `{st['folder']}`(재사용 {','.join(st['reused']) or '-'}, 새로 씀 {','.join(st['written']) or '-'})"
     return f"\n- 프로세스 최대 RSS(053-R6): {peak}, 큰 배열 {where}\n"
+
+
+def _named(specs: list, flag: str, names: set) -> dict:
+    out = {}
+    for spec in specs:
+        name, sep, val = spec.partition("=")
+        if not sep or name not in names or name in out:
+            raise SystemExit(f"{flag} {spec!r}: expected NAME=VALUE with NAME a --src name, once per source")
+        out[name] = val
+    return out
+
+
+def source_labels(a, srcs: list, qn: tuple) -> tuple[dict, dict]:
+    names = {s.name for s in srcs}
+    res, files, sides = _named(a.results, "--results", names), _named(a.labels, "--labels", names), _named(a.side, "--side", names)
+    if both := sorted(set(res) & set(files)):
+        raise SystemExit(f"plan-s0: {both}: --results or --labels, not both")
+    need = [q for q in qn if q in ("held_8m", "held_s", "alive_10m")]
+    labels, joins = {}, {}
+    for s in srcs:
+        if s.name in files:
+            labels[s.name] = pl.read(files[s.name])
+            joins[s.name] = {"labels": redact(files[s.name])}
+        elif s.name in res:
+            if s.kind not in pl.BOT_KINDS:
+                raise SystemExit(f"--results {s.name}: a {s.kind} source has no session results (its labels come from the dump)")
+            js = pl.build(s.path, s.kind, [x for x in res[s.name].split(",") if x], sides.get(s.name))
+            labels[s.name] = {int(k): v for k, v in js["games"].items()}
+            joins[s.name] = {"join": js["join"], "results": js["results_stats"], "side": js["side"]}
+        elif s.kind == "human" and need:
+            js = pl.build(s.path, "human")
+            labels[s.name] = {int(k): v for k, v in js["games"].items()}
+            joins[s.name] = {"join": js["join"]}
+        elif need:
+            raise SystemExit(f"plan-s0: heads {need} need the session results of {s.kind} source {s.name} (--results or --labels, 053-R2)")
+    return labels, joins
+
+
+def coverage(data: pp.Data, joins: dict) -> dict:
+    out = {}
+    for si, s in enumerate(data.sources):
+        m = data.g_src == si
+        ent = {"kind": s.kind, "games": int(m.sum())}
+        for role in ("train", "val", "eval"):
+            rm = m & np.array([e["role"] == role for e in data.game_meta], bool)
+            if rm.any():
+                ent[f"{role}_games"] = int(rm.sum())
+        for j, q in enumerate(data.q_names):
+            v = data.g_q[m, j]
+            ok = np.isfinite(v)
+            ent[q] = {"labeled": int(ok.sum()), "rate": float(ok.mean()) if m.any() else None, "positive": int((v[ok] > 0.5).sum())}
+        if s.name in joins:
+            ent["source"] = joins[s.name]
+        out[s.name] = ent
+    return out
 
 
 def run(a) -> int:
@@ -774,8 +950,22 @@ def run(a) -> int:
     a.th_own_k = 0 if a.v1 else (8 if a.th_own_k is None else a.th_own_k)
     if a.th_own_k and a.th_own_k not in ks:
         raise SystemExit(f"plan-s0: --th-own-k {a.th_own_k} is not among --ks {ks} (0 = no own-state criterion)")
+    qn = tuple(x for x in a.q_heads.split(",") if x)
+    if not qn or len(set(qn)) != len(qn) or any(x not in pl.ALL_HEADS for x in qn):
+        raise SystemExit(f"--q-heads {a.q_heads!r}: distinct names among {pl.ALL_HEADS}")
+    training(a)
+    if a.val_frac > 0 and a.max_steps < a.val_every:
+        raise SystemExit(f"plan-s0: --max-steps {a.max_steps} is below --val-every {a.val_every}")
     t0 = time.time()
-    data = pp.Data(srcs, ks, a.eval_frac, a.split_seed, drop, keep_bot=a.keep_bot_perspective, maps=maps, design=design, mmap=a.mmap)
+    labels, joins = source_labels(a, srcs, qn)
+    data = pp.Data(srcs, ks, a.eval_frac, a.split_seed, drop, keep_bot=a.keep_bot_perspective, maps=maps, design=design, mmap=a.mmap, q_names=qn,
+                   labels=labels, val_frac=a.val_frac)
+    cov = None
+    if qn != pp.Q_NAMES or labels:
+        cov = coverage(data, joins)
+        Path(a.out).mkdir(parents=True, exist_ok=True)
+        (Path(a.out) / "coverage.json").write_text(json.dumps(cov, indent=1), encoding="utf-8")
+        print(f"[data] label coverage: { {n: {q: (e[q]['labeled'], e['games']) for q in qn} for n, e in cov.items()} }", flush=True)
     print(f"[data] design: {design.as_dict()}", flush=True)
     print(f"[data] left out: {data.dropped}", flush=True)
     print(f"[data] chained rows (valid label / dropped / dropped operation actions): "
@@ -789,7 +979,9 @@ def run(a) -> int:
         (out / "train_log.json").write_text(json.dumps(log, indent=1), encoding="utf-8")
     if a.stage in ("all", "report"):
         rep = report(data, a, ks, variants, models)
-        rep["sources"] = [{"name": s.name, "kind": s.kind, "role": s.role, "path": redact(s.path)} for s in srcs]
+        if cov is not None:
+            rep["coverage"] = cov
+        rep["sources"] =[{"name": s.name, "kind": s.kind, "role": s.role, "path": redact(s.path)} for s in srcs]
         rep["secs"] = round(time.time() - t0, 1)
         rep["memory"] = memory_of(data)
         stem = "s0" + (f"-{a.tag}" if a.tag else "")

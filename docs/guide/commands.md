@@ -288,7 +288,8 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
 - 스텝 기억을 라이브 세션 것으로 채우고, 기록된 결정마다(NoOp 포함) 재생 프레임 L − 2에 관측·기억 전용 스텝(`unknown` 레이블, BC 가중치 0, delay는 다음 스텝까지·마지막은 판 끝까지, records `memory.decision_steps`)을 더해 결정 시점 덤프 행 보장([041-R28](../spec/2026_10_15_22_24_041-imitation-learning.md)).
 - BC 학습 데이터 아님: 재레이블 없는 `--memory-log`는 `--src branch`만, BC shard 폴더(`<shared>/datasets/replays/shards`) 밖 `--out` 필수(APM·5분 기준 없음).
 - 기록 파일: `g<id>.jsonl`이 있으면 그것, 없으면 [051-R2](../spec/2026_11_12_12_39_051-branch-games.md) 행동 기록 `g<id>-p<players 인덱스>.jsonl`(T0 세션 기록은 건너뜀), 시점 BWAPI 플레이어 = 끝 줄 플레이어인 기록. 정렬·판 단위 전부 아니면 없음·유닛 확인·records `memory`는 DAgger 재레이블과 같음. 기록이 다른 플레이어 것인 관점(테란전 상대)은 쓰지 않음(records `filtered`, 053-R5).
-- 분석: `python -m uranium diag plan-branch --dir <shared>/eval/branch-<날짜> [--dump <줄기 plan-dump> --s0 <plan-s0 폴더>]` → `<dir>/analysis/plan-branch.md`·`analysis.json`(짝 효과·줄기 bootstrap·split-half, M3u·M2c, 무효·거절·missed·희석; `--help`).
+- 분석: `python -m uranium diag plan-branch --dir <shared>/eval/branch-<날짜> [--dump <줄기 plan-dump> --s0 <plan-s0 폴더>] [--q-head <머리>]` → `<dir>/analysis/plan-branch.md`·`analysis.json`(짝 효과·줄기 bootstrap·split-half, M3u·M2c, 무효·거절·missed·희석; `--help`).
+  - `--q-head`: M3u 채점 머리. 기본 = 예측기에 `held_8m` 머리가 있으면 그것, 없으면 `scv8`(S0b)([051-R13](../spec/2026_11_12_12_39_051-branch-games.md) ②). `--m3u-outcome`(비교할 분기 측정 결과, 기본 `held_8m`)과 다름.
 
 ### 분기 게임 B1 실행 순서 ([spec 051](../spec/2026_11_12_12_39_051-branch-games.md))
 - B1 체크포인트 `m2-gn-t1e2/ckpt-2844`([051-R1](../spec/2026_11_12_12_39_051-branch-games.md) ②, 사용자 결정 2026-11-17, `config/branch_b1.toml`). 누출 수정 최종 가중치 F가 다르면 S0b·줄기 덤프를 F로 다시(게임은 그대로).
@@ -549,7 +550,7 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
 - 재현 기준값(Checkpoint 1, 교사 보관분 433판, Linux ROCm f32): 미완성 풀 HP R² 토큰 0.991·e_pool 0.868·h_t 0.227, s8 양수 0%·128/128, `const` S8 128/128·`s_pool` 256/256.
 
 ## 11. 계획 JEPA S0
-측정 도구([jepa_planning](../report/plan/2026_11_11_14_56_jepa_planning.md) 6절). 모델·spec·계획 모듈은 바꾸지 않음. 덤프(GPU 1회) → 예측기 학습·표(CPU). 코드: `python/uranium/diag/planning/dump.py`(덤프), `pred.py`(데이터·예측기), `stats.py`(판 bootstrap·AUC·R²·Spearman), `s0.py`(학습·표·판정).
+측정 도구([jepa_planning](../report/plan/2026_11_11_14_56_jepa_planning.md) 6절). 모델·spec·계획 모듈은 바꾸지 않음. 덤프(GPU 1회) → 예측기 학습·표(CPU). 코드: `python/uranium/diag/planning/dump.py`(덤프), `pred.py`(데이터·예측기), `stats.py`(판 bootstrap·AUC·R²·Spearman), `s0.py`(학습·표·판정), `labels.py`(053 결과 정답).
 
 ### plan-dump
 `python -m uranium diag plan-dump --checkpoint <ckpt> (--dataset <rel> | --shards <dir>)... --out <dir> [--splits val,test] [--games N] [--seed 1] [--backend cuda|rocm|cpu] [--lanes-per-group 8] [--row-until 14400] [--read-until F] [--gk 8,32] [--classes <json>] [--skip-views <json>]`
@@ -591,6 +592,18 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
   - 거부: 폴더가 `URANIUM_SHARED_DIR` 안(실제 경로 비교). 공용 드라이브가 다른 드라이브 문자·마운트 경로로 붙어 있으면 막지 못함.
   - `s0.json` `memory`·`s0.md` 끝 줄: 프로세스 최대 RSS(Linux VmHWM, Windows 최대 working set), mmap 사본 폴더·재사용·새로 쓴 필드.
   - 053-AC10(1,000만 행 1,000 step)은 단계 2 전체 덤프 때 잼. 2026-11-18 Windows 표본(119만 행, 2스레드): RAM 최대 private 7.7 GB → mmap 4.3 GB, 사본 3.3 GB.
+
+### 053 결과 정답·섞기·검증 ([spec 053](../spec/2026_11_18_08_58_053-planning-predictor-data.md) R2~R4)
+`plan-s0` 새 플래그(기본 = S0b 동작, 같은 스레드 수면 모델·표 비트 동일): `[--q-heads held_8m,held_s,alive_10m,win] [--results <src>=<results.jsonl>[,…] | --labels <src>=<labels.json>] [--side <src>=model|scripted] [--mix human=0.2 [--op-x 5 --rare-share 0.001 --rare-x 20]] [--val-frac 0.1 [--val-every 500 --patience 4 --max-steps 20000 --val-rows 50000]] [--split-nets [--score-wd 0.01]]`
+- 결과 정답(053-R2): `--q-heads` 이름 목록(기본 `win,scv8`; 쓸 수 있는 이름 `held_8m`·`held_s`·`alive_10m`·`win`·`scv8`). `held_8m`·`held_s`·`alive_10m`이 있으면 교사·모델 출처마다 `--results` 또는 `--labels` 필수, 사람 출처는 덤프에서(`held_8m`·`win`만). `scv8`은 늘 덤프 값.
+  - 봇 줄: `--side` 필드(기본 교사 `scripted`, 모델 `model`; 교사 botgen 결과는 교사 T0 세션 지표가 `scripted`에 있음)가 null이 아닌 줄. 판 id마다 마지막 시도(job 형식 `<job>/results/*.jsonl`은 판 id의 시도 번호, plan 폴더 형식은 마지막 줄). 리플레이: job 형식 `<job>/<단계 이름>/replays/g<n>.rep`, plan 폴더 형식 `<results 폴더>/replays/g<id>.rep` → sha256 → 덤프 `games.json` `sha`.
+  - 정의: `held_8m` = `scv_8m` ≥ 8 또는 (`won`이고 `end_frame` < 11,520), 8:00 전 패 0, 그 밖 없음. `held_s` = `scv_min_1m` > 4. `alive_10m` = 14,400 전 패 0, 승 또는 끝 ≥ 14,400이면 1. `win` = 승패 난 판만. 잇지 못한 판·`skipped` 관점은 없음(0 아님), 없는 정답은 손실·표에서 뺌.
+  - coverage(출처·머리별 정답 판 수·비율·1 수, 학습·검증·평가 판 수) → `<out>/coverage.json`, `[data] label coverage` 줄, `s0.md` 표.
+- `python -m uranium diag plan-label --dump <덤프> --kind human|teacher|model [--results <results.jsonl>[,…]] [--side model|scripted] --out <labels.json>`: 같은 정답을 파일로(판 id → 머리 값, `join`·`coverage`·결과 파일별 줄 수·재시도·리플레이 없음). `plan-s0 --labels`가 읽음(`--results`와 같은 모델).
+- 섞기(053-R3, `--mix`가 있을 때만): 배치를 출처 종류 몫으로(지정 안 한 종류는 남은 몫을 행 수 비례, 행 없는 종류는 빼고 다시 맞춤), 종류 안 운영 행동 행 × `--op-x`, 학습 행 몫 < `--rare-share`인 운영 행동은 대신 min(`--rare-x`, `--rare-share` ÷ 몫). 목표·기대·실현 몫(뽑은 행 기준) → `<out>/mix.json`, `s0.md` 표.
+- 검증(053-R4, `--val-frac` > 0일 때만): 학습 판(`train` 출처 전체, `split` 출처의 평가 아닌 판)의 몫을 판 단위(리플레이 sha256, 두 관점 같은 쪽)로 검증 판으로, seed는 `--split-seed`와 `<src>/val` crc32. `--val-every` step마다 검증 손실(행 균등, 최대 `--val-rows`행), 망마다 최저 step 가중치를 남기고 `--patience`번 연속 안 낮아지면 그 망만 멈춤, 최대 `--max-steps`(`--steps` 대신). 곡선·고른 step → `<out>/val/<모델>.json`, `s0.md` 표. 보고 지표는 평가 판만.
+- `--split-nets`: 세계 망(ŷ·p̂·ô, Adam) + 결과 망(q̂, AdamW `--score-wd`) 따로, 같은 배치. 검증 손실 세계 = y + p + o, 결과 = 결과 머리 합. 없으면 한 망·검증 손실은 둘의 합.
+- 결과 머리·정답(`q_digest`)·분할은 모델 지문에, 섞기·검증·망 설정은 모델 `training`에 → 다르면 `--stage report`·재사용 거부(`--retrain`).
 
 ### 첫 실행 순서 (덤프 Linux ROCm 호스트, 학습·표 Linux CPU 호스트)
 1. 표본(수 분, 저장소 루트): 아래 덤프에 `--games 4 --limit-batches 20`, 출력 `local/work/plan_s0/smoke/...` → 같은 호스트 `plan-s0 ... --steps 50 --boot 20 --out local/work/plan_s0/smoke/s0`.

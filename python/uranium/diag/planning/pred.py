@@ -16,6 +16,7 @@ from uranium.diag.planning.dump import load as load_dump
 VARIANTS = ("U", "A", "Ad", "H", "S")
 KINDS = ("human", "teacher", "model")
 ROLES = ("train", "eval", "split")
+ROLE_IDS = {"train": 0, "eval": 1, "val": 2}
 HIDDEN, EMB_A, EMB_D = 512, 32, 16
 PARTNER_SEED = 12345
 OWN_SD_FLOOR, PRIV_SD_FLOOR, CONST_SD = 0.5, 0.05, 1e-6
@@ -84,11 +85,14 @@ def split_eval(keys: list, name: str, frac: float, seed: int) -> set:
 
 class Data:
     def __init__(self, sources: list[Source], ks=(8, 32), eval_frac: float = 0.2, split_seed: int = 1, drop: dict | None = None,
-                 keep_bot: bool = False, maps=None, design: Design = Design(), mmap=None):
+                 keep_bot: bool = False, maps=None, design: Design = Design(), mmap=None, q_names=Q_NAMES, labels: dict | None = None, val_frac: float = 0.0):
         self.sources = sources
         self.ks = list(ks)
         self.design = design
         self.store = None if mmap is None else dst.Store(mmap)
+        self.q_names = tuple(q_names)
+        self.val_frac = float(val_frac)
+        labels = labels or {}
         rows, games, mans, decs = [], [], [], []
         for s in sources:
             if s.rows not in ROW_KINDS:
@@ -141,10 +145,15 @@ class Data:
                     m[gid] = None
             self.dropped[s.name] = {"bot_view": n_bot, "map": n_map, **({"decision_status": n_dec} if dc is not None else {})}
             ev = split_eval([keyf(k, g[k]) for k in m], s.name, eval_frac, split_seed) if s.role == "split" else set()
+            va = set()
+            if val_frac > 0 and s.role != "eval":
+                va = split_eval([keyf(k, g[k]) for k in m if keyf(k, g[k]) not in ev], f"{s.name}/val", val_frac, split_seed)
             for gid in m:
                 e = g[gid]
                 key = keyf(gid, e)
                 role = s.role if s.role != "split" else ("eval" if key in ev else "train")
+                if role == "train" and key in va:
+                    role = "val"
                 m[gid] = len(self.game_meta)
                 dm = {} if dc is None else {"rows": dc[1][gid]["matched"], "dump_rows": e.get("rows"), "decisions": dc[1][gid]}
                 self.game_meta.append({**e, **dm, "src": s.name, "kind": s.kind, "role": role, "gid": gid, "key": f"{s.name}/{key}", "si": len(gid_map)})
@@ -152,10 +161,10 @@ class Data:
         G = len(self.game_meta)
         self.g_src = np.array([e["si"] for e in self.game_meta], np.int64)
         self.g_role_eval = np.array([e["role"] == "eval" for e in self.game_meta], bool)
+        self.g_role_val = np.array([e["role"] == "val" for e in self.game_meta], bool)
         self.g_kind = np.array([KINDS.index(e["kind"]) for e in self.game_meta], np.int8)
-        res = np.array([e.get("result", 0) for e in self.game_meta], np.float64)
-        scv = np.array([np.nan if e.get("scv8") is None else e["scv8"] for e in self.game_meta], np.float64)
-        self.g_q = np.stack([np.where(res != 0, (res > 0).astype(np.float64), np.nan), scv], 1)
+        self.g_q = np.array([[game_q(e, q, labels[e["src"]].get(e["gid"], {}) if e["src"] in labels else None) for q in self.q_names]
+                             for e in self.game_meta], np.float64).reshape(len(self.game_meta), len(self.q_names))
         self.g_cls = [e.get("cls_given") or e.get("cls") for e in self.game_meta]
         self.g_race = [e.get("race", "U") for e in self.game_meta]
         keys = sorted({e["key"] for e in self.game_meta})
@@ -241,7 +250,8 @@ class Data:
                 n[self.order[ok]] = self.order[jj[ok]]
                 self.nxt[k] = n
         self.row_eval = self.g_role_eval[self.game] if self.N else np.zeros(0, bool)
-        self.row_q = self.g_q[self.game] if self.N else np.zeros((0, 2))
+        self.row_val = self.g_role_val[self.game] if self.N else np.zeros(0, bool)
+        self.row_q = self.g_q[self.game] if self.N else np.zeros((0, len(self.q_names)))
         self.row_unit = self.g_unit[self.game] if self.N else np.zeros(0, np.int64)
         self.row_kind = self.g_kind[self.game] if self.N else np.zeros(0, np.int8)
         self.row_src = self.g_src[self.game] if self.N else np.zeros(0, np.int64)
@@ -326,7 +336,9 @@ class Data:
         return np.where(self.prop_ok[idx], p, np.nan)
 
     def pair_rows(self, k: int, role: str, kinds=None) -> np.ndarray:
-        m = self.usable & (self.nxt[k] >= 0) & (self.row_eval == (role == "eval"))
+        if role not in ROLE_IDS:
+            raise ValueError(f"role {role!r}")
+        m = self.usable & (self.nxt[k] >= 0) & (self.row_eval == (role == "eval")) & (self.row_val == (role == "val"))
         if kinds is not None:
             m &= np.isin(self.row_kind, [KINDS.index(x) for x in kinds])
         return np.nonzero(m)[0]
@@ -433,13 +445,26 @@ class Data:
         return out
 
 
+def game_q(e: dict, name: str, lab: dict | None) -> float:
+    if name == "scv8":
+        return np.nan if e.get("scv8") is None else float(e["scv8"])
+    if lab is not None:
+        v = lab.get(name)
+        return np.nan if v is None else float(v)
+    if name == "win":
+        r = e.get("result", 0)
+        return np.nan if r == 0 else float(r > 0)
+    return np.nan
+
+
 class Predictor(nn.Module):
-    def __init__(self, variant: str, d_h: int, d_y: int, d_p: int, d_o: int, n_act: int, n_delay: int, own_in: int = 0):
+    def __init__(self, variant: str, d_h: int, d_y: int, d_p: int, d_o: int, n_act: int, n_delay: int, own_in: int = 0, q_names=Q_NAMES):
         super().__init__()
         if variant not in VARIANTS:
             raise ValueError(f"variant {variant!r}")
         self.variant = variant
         self.own_in = own_in
+        self.q_names = tuple(q_names)
         self.register_buffer("h_mu", torch.zeros(d_h))
         self.register_buffer("h_sd", torch.ones(d_h))
         self.emb_a = nn.Embedding(n_act, EMB_A) if variant in ("A", "Ad", "S") else None
@@ -450,7 +475,7 @@ class Predictor(nn.Module):
         self.y = nn.Linear(HIDDEN, d_y)
         self.p = nn.Linear(HIDDEN, d_p)
         self.o = nn.Linear(HIDDEN, d_o)
-        self.q = nn.Linear(HIDDEN, len(Q_NAMES))
+        self.q = nn.Linear(HIDDEN, len(self.q_names))
 
     def _state_in(self, h, own):
         x = [(h - self.h_mu) / self.h_sd]
@@ -492,36 +517,182 @@ def loss_terms(out: dict, b: dict, o_on: torch.Tensor, p_on: torch.Tensor) -> di
     return {"y": y, "p": p * b["p_ok"], "o": o, "q": q}
 
 
-def train_one(data: Data, variant: str, k: int, rows: np.ndarray, st: dict, *, steps: int, batch: int, lr: float, seed: int, log_every: int = 500) -> tuple[Predictor, list]:
-    torch.manual_seed(seed)
+WORLD_HEADS, SCORE_HEADS = ("y", "p", "o"), ("q",)
+
+
+class Split(nn.Module):
+    def __init__(self, world: Predictor, score: Predictor):
+        super().__init__()
+        self.world = world
+        self.score = score
+        self.variant = world.variant
+        self.own_in = world.own_in
+        self.q_names = score.q_names
+
+    def forward(self, h, a=None, d=None, hist=None, own=None) -> dict:
+        out = self.world(h, a, d, hist, own)
+        out["q"] = self.score(h, a, d, hist, own)["q"]
+        return out
+
+    def q_all(self, h, cand, own=None) -> torch.Tensor:
+        return self.score.q_all(h, cand, own)
+
+
+def new_net(data: Data, variant: str, st: dict) -> Predictor:
     net = Predictor(variant, data.h.shape[1], data.y.shape[1], data.priv.shape[1], data.own.shape[1], data.n_act, data.n_delay,
-                    own_in=data.own.shape[1] if data.design.own_input else 0)
+                    own_in=data.own.shape[1] if data.design.own_input else 0, q_names=data.q_names)
     net.h_mu.copy_(torch.from_numpy(st["h_mu"]))
     net.h_sd.copy_(torch.from_numpy(st["h_sd"]))
+    return net
+
+
+def parse_mix(spec: str) -> dict | None:
+    if not spec or spec == "off":
+        return None
+    out = {}
+    for part in spec.split(","):
+        k, sep, v = part.partition("=")
+        if not sep or k not in KINDS or k in out:
+            raise SystemExit(f"--mix {spec!r}: expected KIND=SHARE[,...] with KIND in {KINDS}, each once")
+        out[k] = float(v)
+    if any(v < 0 for v in out.values()) or sum(out.values()) > 1 + 1e-9:
+        raise SystemExit(f"--mix {spec!r}: shares must be >= 0 and sum to 1 or less")
+    return out
+
+
+def mix_weights(data: Data, rows: np.ndarray, shares: dict, op_x: float = 5.0, rare_share: float = 0.001, rare_x: float = 20.0) -> tuple[np.ndarray, dict]:
+    kind = data.row_kind[rows].astype(np.int64)
+    act = data.action[rows].astype(np.int64)
+    op = data.is_op[rows]
+    n = len(rows)
+    a_rows = np.bincount(act[op], minlength=data.n_act)
+    a_share = a_rows / max(n, 1)
+    mult_a = np.where(a_share < rare_share, np.minimum(rare_x, rare_share / np.maximum(a_share, 1e-300)), op_x)
+    m = np.where(op, mult_a[act], 1.0)
+    n_k = np.bincount(kind, minlength=len(KINDS))
+    tgt = np.zeros(len(KINDS))
+    given = {KINDS.index(k): v for k, v in shares.items()}
+    rest = [i for i in range(len(KINDS)) if i not in given]
+    for i, v in given.items():
+        tgt[i] = v
+    n_rest = sum(int(n_k[i]) for i in rest)
+    for i in rest:
+        tgt[i] = (1.0 - sum(given.values())) * n_k[i] / n_rest if n_rest else 0.0
+    tgt[n_k == 0] = 0.0
+    if tgt.sum() <= 0:
+        raise SystemExit(f"plan-s0: --mix {shares} gives no weight to the kinds of these rows ({dict(zip(KINDS, n_k.tolist()))})")
+    tgt = tgt / tgt.sum()
+    w = np.zeros(n)
+    for i in range(len(KINDS)):
+        sel = kind == i
+        if sel.any():
+            w[sel] = tgt[i] * m[sel] / m[sel].sum()
+    plan = {"shares": dict(shares), "op_x": op_x, "rare_share": rare_share, "rare_x": rare_x,
+            "kinds": {KINDS[i]: {"rows": int(n_k[i]), "target": float(tgt[i])} for i in range(len(KINDS)) if n_k[i]},
+            "op_actions": {int(x): {"rows": int(a_rows[x]), "row_share": float(a_share[x]), "multiplier": float(mult_a[x]),
+                                    "expected_share": float(w[op & (act == x)].sum())} for x in np.nonzero(a_rows)[0]}}
+    return w, plan
+
+
+def loss_parts(lt: dict, b: dict) -> dict:
+    return {"y": lt["y"].mean(), "p": lt["p"].sum() / b["p_ok"].sum().clamp_min(1),
+            "o": lt["o"].mean(), "q": lt["q"].sum(0).div(b["q_ok"].sum(0).clamp_min(1)).sum()}
+
+
+@torch.no_grad()
+def val_loss(net, data: Data, rows: np.ndarray, k: int, variant: str, st: dict, o_on, p_on, chunk: int = 4096) -> dict:
+    nq = len(net.q_names)
+    y = p = p_n = o = 0.0
+    q, q_n = np.zeros(nq), np.zeros(nq)
+    for s in range(0, len(rows), chunk):
+        b = data.batch(rows[s:s + chunk], k, variant, st)
+        out = net(b["h"], b.get("a"), b.get("d"), b.get("hist"), b.get("own"))
+        lt = loss_terms(out, b, o_on, p_on)
+        y += float(lt["y"].double().sum())
+        p += float(lt["p"].double().sum())
+        p_n += float(b["p_ok"].double().sum())
+        o += float(lt["o"].double().sum())
+        q += lt["q"].double().sum(0).numpy()
+        q_n += b["q_ok"].double().sum(0).numpy()
+    n = max(len(rows), 1)
+    heads = {nm: (float(q[i] / q_n[i]) if q_n[i] else None) for i, nm in enumerate(net.q_names)}
+    return {"y": y / n, "p": p / max(p_n, 1.0), "o": o / n, "q": heads, "world": y / n + p / max(p_n, 1.0) + o / n,
+            "score": float(sum(v for v in heads.values() if v is not None))}
+
+
+def train_one(data: Data, variant: str, k: int, rows: np.ndarray, st: dict, *, steps: int, batch: int, lr: float, seed: int, log_every: int = 500,
+              weights: np.ndarray | None = None, val_rows: np.ndarray | None = None, val_every: int = 500, patience: int = 4,
+              split_nets: bool = False, score_wd: float = 0.0, info: dict | None = None) -> tuple[Predictor, list]:
+    torch.manual_seed(seed)
+    if split_nets:
+        net = Split(new_net(data, variant, st), new_net(data, variant, st))
+        opts = {"world": torch.optim.Adam(net.world.parameters(), lr=lr), "score": torch.optim.AdamW(net.score.parameters(), lr=lr, weight_decay=score_wd)}
+        groups = {"world": (net.world, WORLD_HEADS), "score": (net.score, SCORE_HEADS)}
+    else:
+        net = new_net(data, variant, st)
+        opts = {"all": torch.optim.Adam(net.parameters(), lr=lr)}
+        groups = {"all": (net, WORLD_HEADS + SCORE_HEADS)}
     o_on = torch.from_numpy(np.isfinite(st["d_sd" if data.design.own_target == "delta" else "o_sd"]).astype(np.float32))
     p_on = torch.from_numpy(np.isfinite(st["p_sd"]).astype(np.float32))
-    opt = torch.optim.Adam(net.parameters(), lr=lr)
     rng = np.random.default_rng(seed)
+    cum = None if weights is None else np.cumsum(np.asarray(weights, np.float64))
+    val = None if val_rows is None else {g: {"best": float("inf"), "step": 0, "state": None, "bad": 0, "stopped": False} for g in groups}
+    curve = []
+    drawn_kind, drawn_act = np.zeros(len(KINDS), np.int64), np.zeros(data.n_act, np.int64)
     log = []
     acc = {}
+    step = 0
     for step in range(1, steps + 1):
-        idx = np.sort(rows[rng.integers(0, len(rows), batch)])
+        if cum is None:
+            idx = np.sort(rows[rng.integers(0, len(rows), batch)])
+        else:
+            idx = np.sort(rows[np.minimum(np.searchsorted(cum, rng.random(batch) * cum[-1], side="right"), len(rows) - 1)])
+        if info is not None:
+            drawn_kind += np.bincount(data.row_kind[idx], minlength=len(KINDS))
+            drawn_act += np.bincount(data.action[idx][data.is_op[idx]].astype(np.int64), minlength=data.n_act)
         b = data.batch(idx, k, variant, st)
         out = net(b["h"], b.get("a"), b.get("d"), b.get("hist"), b.get("own"))
         lt = loss_terms(out, b, o_on, p_on)
-        parts = {"y": lt["y"].mean(), "p": lt["p"].sum() / b["p_ok"].sum().clamp_min(1),
-                 "o": lt["o"].mean(), "q": lt["q"].sum(0).div(b["q_ok"].sum(0).clamp_min(1)).sum()}
-        loss = sum(parts.values())
-        opt.zero_grad(set_to_none=True)
+        parts = loss_parts(lt, b)
+        active = [g for g in groups if val is None or not val[g]["stopped"]]
+        loss = sum(parts[h] for g in active for h in groups[g][1])
+        for g in active:
+            opts[g].zero_grad(set_to_none=True)
         loss.backward()
-        opt.step()
+        for g in active:
+            opts[g].step()
         for kk, v in parts.items():
             acc[kk] = acc.get(kk, 0.0) + float(v.detach())
         if step % log_every == 0 or step == steps:
             n = log_every if step % log_every == 0 else step % log_every
             log.append({"step": step, **{kk: v / n for kk, v in acc.items()}})
             acc = {}
+        if val is not None and (step % val_every == 0 or step == steps):
+            v = val_loss(net, data, val_rows, k, variant, st, o_on, p_on)
+            curve.append({"step": step, **v})
+            for g in active:
+                cur = v["world"] + v["score"] if g == "all" else v[g]
+                if cur < val[g]["best"]:
+                    val[g].update(best=cur, step=step, bad=0, state={kk: t.detach().clone() for kk, t in groups[g][0].state_dict().items()})
+                else:
+                    val[g]["bad"] += 1
+                    val[g]["stopped"] = val[g]["bad"] >= patience
+            if all(e["stopped"] for e in val.values()):
+                break
+    if acc:
+        log.append({"step": step, **{kk: v / (step % log_every) for kk, v in acc.items()}})
+    if val is not None:
+        for g, e in val.items():
+            if e["state"] is not None:
+                groups[g][0].load_state_dict(e["state"])
     net.eval()
+    if info is not None:
+        total = max(int(drawn_kind.sum()), 1)
+        info["drawn"] = {"rows": int(drawn_kind.sum()), "kinds": {KINDS[i]: float(drawn_kind[i] / total) for i in range(len(KINDS)) if drawn_kind[i]},
+                         "op_actions": {int(x): float(drawn_act[x] / total) for x in np.nonzero(drawn_act)[0]}}
+        if val is not None:
+            info["val"] = {"rows": int(len(val_rows)), "every": val_every, "patience": patience, "last_step": step, "curve": curve,
+                           "best": {g: {"step": e["step"], "loss": e["best"], "stopped": e["stopped"]} for g, e in val.items()}}
     return net, log
 
 
@@ -551,14 +722,25 @@ def own_spaces(data: Data, pred_o: np.ndarray, rows, st: dict) -> tuple[np.ndarr
     return np.where(o_on, lvl, 0.0).astype(np.float32), np.where(d_on, dlt, 0.0).astype(np.float32)
 
 
-def save(net: Predictor, st: dict, path: Path, meta: dict) -> None:
+def save(net, st: dict, path: Path, meta: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"state": net.state_dict(), "variant": net.variant, "own_in": net.own_in, "stats": {k: v.tolist() for k, v in st.items()}, "meta": meta}, path)
+    ck = {"state": net.state_dict(), "variant": net.variant, "own_in": net.own_in, "stats": {k: v.tolist() for k, v in st.items()}, "meta": meta}
+    if tuple(net.q_names) != Q_NAMES:
+        ck["q_names"] = list(net.q_names)
+    if isinstance(net, Split):
+        ck["split"] = True
+    torch.save(ck, path)
 
 
 def load(path: Path, data: Data) -> tuple[Predictor, dict, dict]:
     ck = torch.load(path, map_location="cpu", weights_only=False)
-    net = Predictor(ck["variant"], data.h.shape[1], data.y.shape[1], data.priv.shape[1], data.own.shape[1], data.n_act, data.n_delay, own_in=ck.get("own_in", 0))
+    q = tuple(ck.get("q_names", Q_NAMES))
+
+    def mk():
+        return Predictor(ck["variant"], data.h.shape[1], data.y.shape[1], data.priv.shape[1], data.own.shape[1], data.n_act, data.n_delay,
+                         own_in=ck.get("own_in", 0), q_names=q)
+
+    net = Split(mk(), mk()) if ck.get("split") else mk()
     net.load_state_dict(ck["state"])
     net.eval()
     st = {k: np.asarray(v, np.float32) for k, v in ck["stats"].items()}
@@ -572,4 +754,8 @@ def describe(data: Data) -> dict:
         out["sources"].append({"name": s.name, "kind": s.kind, "role": s.role, "games": len(gm), "eval_games": sum(e["role"] == "eval" for e in gm),
                                "rows": int(sum(e.get("rows", 0) for e in gm)), "chains": data.chain_counts[s.name],
                                **({"decision_rows": data.decision_info[s.name]} if s.name in data.decision_info else {})})
+        if data.val_frac > 0:
+            out["sources"][-1]["val_games"] = sum(e["role"] == "val" for e in gm)
+    if data.q_names != Q_NAMES:
+        out["q_heads"] = list(data.q_names)
     return json.loads(json.dumps(out))

@@ -9,6 +9,7 @@ COMMANDS = {
     "summary": ("cue.summary", "the per-lineage-point summary JSON from the other commands' outputs"),
     "plan-dump": ("planning.dump", "JEPA planning S0 rows: h', JEPA target, privileged, own state, action, log-probs, g_k, win_open"),
     "plan-decisions": ("planning.decisions", "decision rows of a model-played plan-dump: logged decision at live L -> row at L - 2 (053-R5)"),
+    "plan-label": ("planning.labels", "053-R2 outcome labels (held_8m, held_s, alive_10m, win) of a plan-dump's games from session results"),
     "plan-s0": ("planning.s0", "JEPA planning S0 predictors U / A / A+d / H / S and the M0-M3d tables on plan-dump folders"),
     "plan-branch": ("planning.branch", "branch games: paired effects (trunk bootstrap, split-half), M3u and M2c vs the S0b predictor A"),
 }
