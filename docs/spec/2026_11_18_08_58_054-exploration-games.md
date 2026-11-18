@@ -1,6 +1,6 @@
 # 054 — Exploration Games (탐색 판)
 
-- **Status**: Review (2026-11-18 작성. 내용은 사용자 결정 2026-11-18, 근거 [jepa_predictor_data](../report/investigation/2026_11_18_08_58_jepa_predictor_data.md) 8·9절. `[SPEC AMBIGUOUS] AMB-054-1`(상대 세부·plan 설정)이 남아 Approved 전)
+- **Status**: Approved (2026-11-18, 사용자 확인 2026-11-18. 내용은 사용자 결정 2026-11-18, 근거 [jepa_predictor_data](../report/investigation/2026_11_18_08_58_jepa_predictor_data.md) 8·9절. AMB-054-1 Resolved 2026-11-18: 기본안 확정)
 - **Related**: [020](2026_10_15_22_24_020-env-orchestration.md)(plan·평가 작업 R15·R22), [021](2026_10_15_22_24_021-opponent-pool.md)(T0·T1), [031](2026_10_15_22_24_031-action-space.md)(031-R4 마스크), [032](2026_10_15_22_24_032-model-architecture.md)(032-R16 상태), [034](2026_10_15_22_24_034-action-table.md)(`type_mask`), [041](2026_10_15_22_24_041-imitation-learning.md)(041-R28 기억 기록), [044](2026_11_14_08_18_044-self-game-distillation.md)(044-R13 ⑤ F), [050](2026_10_15_22_24_050-evaluation.md), [051](2026_11_12_12_39_051-branch-games.md)(051-R2 행동 기록, R4 상태 되살리기, R7 강제, R14 장비), [053](2026_11_18_08_58_053-planning-predictor-data.md)(053-R8 학습)
 
 ## Purpose
@@ -26,7 +26,7 @@
 ## Requirements
 | ID | 요구사항 |
 |---|---|
-| 054-R1 | **MUST** 판 구성. `players[0]` = F, `stochastic`. 상대 종족 판 기준 저그 50 : 프로토스 30 : 테란 20, T0 스크립트 봇과 공개 OSS 봇(종족 안 몫·빌드·봇 목록·맵 몫은 AMB-054-1). 10:00 상한(`max_frames = 14400`). 리플레이·기억 기록(041-R28 `memory_log`)·행동 기록(051-R2 `act_log`) 켬 |
+| 054-R1 | **MUST** 판 구성. `players[0]` = F, `stochastic`. 상대 종족 판 기준 저그 50 : 프로토스 30 : 테란 20, 종족마다 T0 스크립트 봇 50 · 공개 OSS 봇(T1) 50. T0 빌드: 저그 = 021 표준·`zerg_rush` 반반, 프로토스·테란 = 021 표준. T1 = 021 그 종족 OSS 목록 균등. 맵 투혼·서킷브레이커 반반. plan 설정(`zero_last_failed`, `surrender`)은 F의 050 평가 설정과 같게. 10:00 상한(`max_frames = 14400`). 리플레이·기억 기록(041-R28 `memory_log`)·행동 기록(051-R2 `act_log`) 켬 |
 | 054-R2 | **MUST** 탐색 시점. 판마다 3개, 판 seed만으로 정한다(같은 seed → 같은 시각). 창 [2:00, 9:00)(2,880~12,960프레임), 시각끼리 60초 이상 떨어짐. 각 시점은 프레임 ≥ τ인 첫 결정 중 열린 운영 행동(034 `type_mask`)이 2개 이상인 결정에서 걸린다. 한 결정에는 한 시점만(먼저 걸린 시점, 나머지는 다음 맞는 결정으로). 9:00 전에 맞는 결정이 없으면 그 시점은 걸리지 않고 사유를 남긴다 |
 | 054-R3 | **MUST** 선택. 탐색 결정에서 ① feature 추출 뒤 자기 슬롯 Core 상태를 저장한다(051-R3 시점과 같음). ② 평소대로 추론해 a0를 뽑는다. ③ C = 열린 운영 행동을 π 내림차순으로 a0를 빼고 상위 K = 4개. ④ 확률 ε = 0.5로: 저장한 상태를 되살리고(051-R4 `SetState`) C에서 균등하게 뽑은 c로 `type_mask`를 {c}만 남겨(051-R7 ① `force`와 같은 좁히기) 다시 추론한다. 그 결과가 보낼 결정이다. ⑤ 아니면 a0를 그대로 보낸다(대조). ⑥ 위치·유닛·지연은 모델이 뽑는다. 기억 기록·행동 기록은 보낸 결정으로 남긴다. ⑦ 동전·c 뽑기는 판 seed와 시점 번호로 정한 난수(결정론) |
 | 054-R4 | **MUST** 기록. 탐색 결정마다 행동 기록 줄에 `explore`: 시점 번호, τ, 프레임, ε, K, 후보(id, π) 목록(C 전체), a0, 동전(`forced`/`control`), c(대조면 null), 보낸 결정의 executor 거절 여부, propensity = ε / \|C\|(대조면 null). 걸리지 않은 시점은 끝 줄에 사유와 함께. 판 결과는 세션 결과(053-R2) |
@@ -62,7 +62,7 @@ min_open = 2
 map = "fighting_spirit"
 games = <n>
 p0 = { kind = "model", checkpoint = "checkpoints/<F>", sample = "stochastic" }
-p1 = { kind = "t0", race = "zerg", build = "<AMB-054-1>" }
+p1 = { kind = "t0", race = "zerg", build = "zerg_rush" }
 ```
 
 **행동 기록 `explore` 필드(054-R4)**
@@ -85,12 +85,9 @@ p1 = { kind = "t0", race = "zerg", build = "<AMB-054-1>" }
 - **OSS 비결정성**: 같은 seed로 판을 다시 둘 수 없다. 이 spec은 다시 두기를 쓰지 않으므로 무관하다.
 - **추론 비용**: `forced` 탐색 결정(판마다 평균 1.5개)만 추론이 한 번 더. 영향 TBD(시범).
 
-### 모호함
-> **[SPEC AMBIGUOUS] AMB-054-1**: 상대 세부와 plan 설정. 사용자 결정(2026-11-18)은 종족 몫 50 : 30 : 20과 "T0·공개 OSS 봇"까지다. 기본안(미확정):
-> - 종족 안 T0 50 · T1 50(044-R10과 같은 방식).
-> - T0 빌드: 저그 = 021 표준 + 러시(`zerg_rush`) 반반, 프로토스·테란 = 021 표준. T1 = 021 그 종족 OSS 목록 균등.
-> - 맵 투혼 · 서킷브레이커 반반.
-> - plan 설정(`zero_last_failed`, `surrender`)은 F의 050 평가 설정과 같게.
+### 모호함 (AMB-054-1 Resolved 2026-11-18: 기본안 확정, 사용자 결정 2026-11-18)
+> **AMB-054-1 (Resolved 2026-11-18: 기본안 확정, 사용자 결정 2026-11-18)**: 상대 세부와 plan 설정.
+> - 결정: 종족 안 T0 50 · T1 50, 저그 T0 = 021 표준·`zerg_rush` 반반, 프로토스·테란 T0 = 021 표준, T1 = 021 그 종족 OSS 목록 균등, 맵 반반, `zero_last_failed`·`surrender`는 F의 050 평가 설정과 같게(054-R1).
 
 ## Related
 - 근거: [jepa_predictor_data](../report/investigation/2026_11_18_08_58_jepa_predictor_data.md), [branch_b1](../report/experiment/2026_11_18_01_10_branch_b1.md).
