@@ -287,7 +287,7 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
 - 거부: `--time-limit` 없음(줄기 plan `max_frames` = H + 48, 줄기는 모두 시간 상한으로 끝나 없으면 [040-R8](../spec/2026_10_15_22_24_040-replay-dataset.md) 디싱크 검사가 시점을 버릴 수 있음), records 이름이 `branch`로 시작하지 않음(이어 하기 검사), records 폴더가 `branches.jsonl`·`points.jsonl`이 있는 [051-R12](../spec/2026_11_12_12_39_051-branch-games.md) 출력 폴더. records는 자기 폴더(`build/`, 미리 만듦).
 - 스텝 기억을 라이브 세션 것으로 채우고, 기록된 결정마다(NoOp 포함) 재생 프레임 L − 2에 관측·기억 전용 스텝(`unknown` 레이블, BC 가중치 0, delay는 다음 스텝까지·마지막은 판 끝까지, records `memory.decision_steps`)을 더해 결정 시점 덤프 행 보장([041-R28](../spec/2026_10_15_22_24_041-imitation-learning.md)).
 - BC 학습 데이터 아님: 재레이블 없는 `--memory-log`는 `--src branch`만, BC shard 폴더(`<shared>/datasets/replays/shards`) 밖 `--out` 필수(APM·5분 기준 없음).
-- 기록 파일: `g<id>.jsonl`이 있으면 그것, 없으면 [051-R2](../spec/2026_11_12_12_39_051-branch-games.md) 행동 기록 `g<id>-p<players 인덱스>.jsonl`(T0 세션 기록은 건너뜀), 시점 BWAPI 플레이어 = 끝 줄 플레이어인 기록. 정렬·판 단위 전부 아니면 없음·유닛 확인·records `memory`는 DAgger 재레이블과 같음.
+- 기록 파일: `g<id>.jsonl`이 있으면 그것, 없으면 [051-R2](../spec/2026_11_12_12_39_051-branch-games.md) 행동 기록 `g<id>-p<players 인덱스>.jsonl`(T0 세션 기록은 건너뜀), 시점 BWAPI 플레이어 = 끝 줄 플레이어인 기록. 정렬·판 단위 전부 아니면 없음·유닛 확인·records `memory`는 DAgger 재레이블과 같음. 기록이 다른 플레이어 것인 관점(테란전 상대)은 쓰지 않음(records `filtered`, 053-R5).
 - 분석: `python -m uranium diag plan-branch --dir <shared>/eval/branch-<날짜> [--dump <줄기 plan-dump> --s0 <plan-s0 폴더>]` → `<dir>/analysis/plan-branch.md`·`analysis.json`(짝 효과·줄기 bootstrap·split-half, M3u·M2c, 무효·거절·missed·희석; `--help`).
 
 ### 분기 게임 B1 실행 순서 ([spec 051](../spec/2026_11_12_12_39_051-branch-games.md))
@@ -568,6 +568,21 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
 - 표 `<out>/s0.json`·`s0.md`(`--tag`면 `s0-<tag>.*`): M0, M1(전체·운영 행동 행, 출처 묶음별), M2a·M2b, M3a(시간대별), M3b·M3c, M3d, 6.5 판정표(채점 대상 판 결과·8:00 SCV 따로). 구간은 판 단위 bootstrap 95%. 문턱 기본값은 기본안(미확정).
   - `--v1`이 아니면 1·2행 M1에 내 상태 기준(k = `--th-own-k`, pooled 운영 행동 행 A 변화 오차 감소 구간 > 0이고 S 대조 감소의 `--th-s-ratio`배 이상), 4행은 ŷ와 함께 A·H 변화 오차 감소도. `--th-own-k 0` = 내 상태 기준 끔.
 - 메모리: 행당 약 3.2 KB를 출처별 미리 잡은 배열에(사본 없음). 130만 행 약 4.2 GB, 최대 약 5~6 GB.
+
+### 모델 판 출처·결정 행 ([053](../spec/2026_11_18_08_58_053-planning-predictor-data.md)-R5·R6)
+- 원본 `<shared>/datasets/replays/raw/`: `dagger_m2/{r1,r2,r3,t1,t2,t2z}`, `distill/d1/{distill-m2-d1,distill-m2-d1-x1}`, `distill/d2/distill-m2-d2`. 폴더마다 `replays/`, `memory/`(기억 기록 `g<id>.jsonl`), `results.jsonl`.
+- build(재레이블 없음, 출처마다 `<R>` = 원본 폴더, 저장소 루트, `URANIUM_MAPS_DIR` 필요): `uranium-replay build <R>/replays --src branch --out <O>/shards/<출처>/<출처> --records <O>/build/branch_<출처>.jsonl --memory-log <R>/memory --time-limit 14400 --until-frame 14400 --jobs N`
+  - 기억 기록 관점(`players[0]`, 모델)만 씀. 테란전 상대 관점은 records `filtered`(`not the logged model's view`, [041-R28](../spec/2026_10_15_22_24_041-imitation-learning.md)). BC 데이터 아님([040-R25](../spec/2026_10_15_22_24_040-replay-dataset.md)), `--out`은 BC shard 폴더 밖.
+  - 확인: records `memory.status` = `ok`, `memory.decision_steps`(재생 L − 2에 더한 결정 스텝).
+  - 시간(Windows CPU 표본 15판, 2026-11-18): 판당 job 1개 약 6초(TvZ 러시)~11초(TvT·TvP 10분). 3,800판 `--jobs 6` 약 2시간(추정).
+- 덤프: `plan-dump --shards <O>/shards/<출처> --splits train,val,test ...`(manifest 없는 shard는 모두 `train`, 그래도 build가 판을 val·test로도 나눔). CPU 2스레드 약 5.6행/초라 본 덤프는 Linux ROCm 호스트.
+- 결정 행: `python -m uranium diag plan-decisions --dump <덤프> --job <R> [--job ...] --records <O>/build/branch_<출처>.jsonl` → `<덤프>/decisions/`(`rows.npz`, `games.json`, `manifest.json`).
+  - 기록된 결정(라이브 L)마다 재생 프레임 max(L − 2, 1)의 첫 행. 같은 행 프레임에 두 번째 결정(라이브 1·3)은 행 없음(`collisions`). 10:00 뒤 결정은 `beyond`.
+  - `--job` = `replays/`와 `memory/` 또는 `acts/`(분기 줄기 행동 기록, T0 기록은 건너뜀)가 있는 폴더, `results.jsonl`이 있으면 판별 정책 sha256 앞자리(`policy_sha`).
+  - 판 상태: `ok`, `no_log`, `incomplete`, `record_<memory.status>`(records), `other_view`(같은 리플레이의 다른 스트림), `no_replay`, `duplicate_replay`. `ok`만 씀(053-R5 ⑥).
+- `plan-s0 --src <이름>:model:split:decision=<덤프>`: 그 출처는 결정 행만 예시(행동·지연 = 기록된 결정, NoOp 결정 행 포함, 명령 레이블 행은 없음). k = NoOp이 아닌 결정 수(051-R9 ① 단위, 거절 여부 없음). H 창 = t부터 t+k 결정 행 앞까지. 정책 확률 `Data.propensity` = 덤프 π, 덤프 체크포인트가 둔 판(`policy_sha`)만, 나머지 NaN.
+  - 설계 기본 체인 행 빼기(`--chains drop`)도 결정 행에 같은 규칙(앞 결정이 1프레임 이내·NoOp 아님)으로 적용됨(t2 표본 결정 행의 14%).
+- `plan-s0 --mmap <로컬 폴더>`: h·y·priv·logp를 그 폴더의 로컬 사본(`<필드>.bin`)으로 메모리 매핑, 나머지 필드는 RAM. 덤프는 파일 읽기로만(매핑 없음). 같은 출처·선택이면 사본 재사용. 공용 드라이브 안 폴더는 거부.
 
 ### 첫 실행 순서 (덤프 Linux ROCm 호스트, 학습·표 Linux CPU 호스트)
 1. 표본(수 분, 저장소 루트): 아래 덤프에 `--games 4 --limit-batches 20`, 출력 `local/work/plan_s0/smoke/...` → 같은 호스트 `plan-s0 ... --steps 50 --boot 20 --out local/work/plan_s0/smoke/s0`.
