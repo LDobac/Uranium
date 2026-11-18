@@ -13,6 +13,7 @@ from uranium.measure import eval_common as ec
 Refused = bc.Refused
 SNAPSHOT_KEYS = {"name", "from_frame", "to_frame", "any_open", "after_rule", "after_s"}
 RULE_KEYS = {"op", "action", "from_s", "to_s"}
+F8M = 8 * 60 * 24
 
 
 def load_config(path: Path) -> dict:
@@ -181,7 +182,8 @@ def end_of(rec: dict, horizon: int) -> dict:
 
 def trunk_outcome(rec: dict, horizon: int) -> dict:
     m = rec.get("model") or {}
-    out = {"held_8m": (m.get("scv_8m") or 0) >= 8, "held_s": (m.get("scv_min_1m") or 0) > 4}
+    won_early = rec.get("won") is True and isinstance(rec.get("end_frame"), int) and rec["end_frame"] < F8M
+    out = {"held_8m": (m.get("scv_8m") or 0) >= 8 or won_early, "held_s": (m.get("scv_min_1m") or 0) > 4}
     out.update({k: m[k] for k in bc.SESSION_METRICS if k in m})
     out["end"] = end_of(rec, horizon)
     return out

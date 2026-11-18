@@ -382,3 +382,11 @@ def test_config_checks_051_r7(tmp_path):
             bp.load_config(p)
     shutil.copy(CONFIG, p)
     assert [a["name"] for a in bp.load_config(p)["alternative"]] == ["none", "force_bunker", "ban_bunker_90s", "force_marine"]
+
+
+def test_053_R2_trunk_held_8m_counts_a_win_before_8m():
+    base = {"model": {"scv_8m": None, "scv_min_1m": 2}, "end_frame": 9000, "reason": "Elimination"}
+    assert bp.trunk_outcome({**base, "won": True}, 11520)["held_8m"] is True
+    assert bp.trunk_outcome({**base, "won": False}, 11520)["held_8m"] is False
+    assert bp.trunk_outcome({**base, "won": True, "end_frame": 12000}, 11520)["held_8m"] is False
+    assert bp.trunk_outcome({**base, "won": None, "model": {"scv_8m": 8}}, 11520)["held_8m"] is True
