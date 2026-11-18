@@ -585,13 +585,28 @@ def loss_terms(out: dict, b: dict, o_on: torch.Tensor, p_on: torch.Tensor) -> di
     return {"y": y, "p": p * b["p_ok"], "o": o, "q": q}
 
 
-def pair_loss(score, t: dict) -> torch.Tensor:
+def pair_sums(score, t: dict) -> tuple[torch.Tensor, torch.Tensor]:
     n_act = t["pi"].shape[1]
     Q = torch.sigmoid(score.q_all(t["h"], torch.arange(n_act), t.get("own")))
     qa = Q[torch.arange(len(t["c"])), t["c"]]
     qn = (t["pi"][:, :, None] * Q).sum(1)
     e = (qa - qn - t["d"]) ** 2 * t["ok"]
-    return e.sum() / t["ok"].sum().clamp_min(1)
+    return e.sum(), t["ok"].sum()
+
+
+def pair_loss(score, t: dict) -> torch.Tensor:
+    e, n = pair_sums(score, t)
+    return e / n.clamp_min(1)
+
+
+@torch.no_grad()
+def pair_val_loss(score, pairs, idx: np.ndarray, st: dict, chunk: int = 256) -> float | None:
+    e = n = 0.0
+    for a in range(0, len(idx), chunk):
+        se, sn = pair_sums(score, pairs.tensors(idx[a:a + chunk], st))
+        e += float(se.double())
+        n += float(sn.double())
+    return e / n if n else None
 
 
 WORLD_HEADS, SCORE_HEADS = ("y", "p", "o"), ("q",)
@@ -717,6 +732,7 @@ def train_one(data: Data, variant: str, k: int, rows: np.ndarray, st: dict, *, s
         raise ValueError("the branch pair loss needs the action-conditioned predictor A (053-R8)")
     pair_rng = np.random.default_rng([seed, 8])
     pair_pool = None if pairs is None else pairs.train_pairs()
+    pair_val = None if pairs is None else pairs.val_pairs()
     score_net = (net.score if split_nets else net) if pairs is not None else None
     score_group = "score" if split_nets else "all"
     cum = None if weights is None else np.cumsum(np.asarray(weights, np.float64))
@@ -760,6 +776,10 @@ def train_one(data: Data, variant: str, k: int, rows: np.ndarray, st: dict, *, s
         due = [] if val is None else [g for g in active if step % every[g] == 0 or step == steps]
         if due:
             v = val_loss(net, data, val_rows, k, variant, st, o_on, p_on)
+            if pair_val is not None and len(pair_val):
+                v["pair"] = pair_val_loss(score_net, pairs, pair_val, st)
+                if v["pair"] is not None:
+                    v["score"] += pair_w * v["pair"]
             curve.append({"step": step, **v, "nets": due})
             for g in due:
                 cur = v["world"] + v["score"] if g == "all" else v[g]

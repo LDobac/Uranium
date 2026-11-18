@@ -10,6 +10,7 @@ from uranium.diag.planning import branch as pb
 from uranium.diag.planning import pred as pp
 
 PAIR_HOLDOUT = 0.25
+PAIR_VAL = 0.1
 BASELINE = "none"
 SPLIT_NAME = "pairs"
 CHUNK = 256
@@ -43,8 +44,9 @@ class PairSet:
         if unknown := sorted(p for p, sha in held_sha.items() if not sha):
             raise SystemExit(f"plan-s0: --pairs {name}: held-out trunk points {unknown[:3]} have no replay to check against the training games (--pair-root)")
         self.held_trunk_shas = set(held_sha.values())
+        self.val_trunks = pp.split_eval([t for t in trunks if t not in self.held_trunks], f"{SPLIT_NAME}/val", PAIR_VAL, split_seed)
         q = list(main.q_names)
-        cols = {k: [] for k in ("row", "c", "trunk_held", "point")}
+        cols = {k: [] for k in ("row", "c", "trunk_held", "trunk_val", "point")}
         ds, oks, skip = [], [], {"no_row": len(missing), "closed": 0, "no_label": 0, "no_action": 0, "not_one_decision_force": 0}
         forced = [a for a in B.alts if a != BASELINE and pb.one_decision_force(B.rules[a]) is not None]
         skip["not_one_decision_force"] = sum(a != BASELINE for a in B.alts) - len(forced)
@@ -73,17 +75,20 @@ class PairSet:
                 cols["row"].append(r)
                 cols["c"].append(c)
                 cols["trunk_held"].append(trunk in self.held_trunks)
+                cols["trunk_val"].append(trunk in self.val_trunks)
                 cols["point"].append(pi)
                 ds.append(np.nan_to_num(d))
                 oks.append(np.isfinite(d))
         self.row = np.asarray(cols["row"], np.int64)
         self.c = np.asarray(cols["c"], np.int64)
         self.held = np.asarray(cols["trunk_held"], bool)
+        self.val = np.asarray(cols["trunk_val"], bool)
         self.point = np.asarray(cols["point"], np.int64)
         self.d = np.asarray(ds, np.float32).reshape(len(self.row), len(q))
         self.ok = np.asarray(oks, np.float32).reshape(len(self.row), len(q))
         self.points = B.points
-        self.info = {"points": len(B.points), "pairs": int(len(self.row)), "held_pairs": int(self.held.sum()), "trunks": len(trunks),
+        self.info = {"points": len(B.points), "pairs": int(len(self.row)), "held_pairs": int(self.held.sum()), "val_pairs": int(self.val.sum()),
+                     "trunks": len(trunks), "val_trunks": len(self.val_trunks),
                      "held_trunks": len(self.held_trunks), "skipped": skip,
                      "alts": {a: sorted(used.get(a, ())) for a in forced}}
 
@@ -93,12 +98,15 @@ class PairSet:
     def digest(self) -> str:
         h = hashlib.sha256(json.dumps(self.data.checkpoint, sort_keys=True).encode())
         h.update(json.dumps([[e.get("sha"), e.get("start")] for e in self.data.game_meta]).encode())
-        for x in (self.row, self.c, self.d, self.ok, self.held):
+        for x in (self.row, self.c, self.d, self.ok, self.held, self.val):
             h.update(np.ascontiguousarray(x).tobytes())
         return h.hexdigest()
 
     def train_pairs(self) -> np.ndarray:
-        return np.nonzero(~self.held)[0]
+        return np.nonzero(~self.held & ~self.val)[0]
+
+    def val_pairs(self) -> np.ndarray:
+        return np.nonzero(self.val)[0]
 
     def tensors(self, idx, st: dict) -> dict:
         r = self.row[idx]
@@ -117,6 +125,9 @@ class PairUnion:
     def train_pairs(self) -> np.ndarray:
         return np.concatenate([s.train_pairs() + o for s, o in zip(self.sets, self.offsets[:-1])]) if self.sets else np.zeros(0, np.int64)
 
+    def val_pairs(self) -> np.ndarray:
+        return np.concatenate([s.val_pairs() + o for s, o in zip(self.sets, self.offsets[:-1])]) if self.sets else np.zeros(0, np.int64)
+
     def tensors(self, idx, st: dict) -> dict:
         parts = []
         for s, a, b in zip(self.sets, self.offsets[:-1], self.offsets[1:]):
@@ -130,7 +141,7 @@ class PairUnion:
 def evaluate(net, ps_: PairSet, st: dict) -> dict:
     out = {}
     score = net.score if isinstance(net, pp.Split) else net
-    for part, sel in (("train", ~ps_.held), ("held", ps_.held)):
+    for part, sel in (("train", ~ps_.held & ~ps_.val), ("val", ps_.val), ("held", ps_.held)):
         idx = np.nonzero(sel)[0]
         if not len(idx):
             out[part] = {"pairs": 0}

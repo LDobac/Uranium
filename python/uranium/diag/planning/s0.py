@@ -139,9 +139,9 @@ def training(a) -> dict:
     if a.explore:
         out["explore"] = {"cap": pp.EXPLORE_CAP, "hold": pp.EXPLORE_HOLDOUT}
     if a.pairs:
-        from uranium.diag.planning.pairs import PAIR_HOLDOUT
+        from uranium.diag.planning.pairs import PAIR_HOLDOUT, PAIR_VAL
 
-        out["pairs"] = {"w": a.pair_w, "batch": a.pair_batch, "hold": PAIR_HOLDOUT}
+        out["pairs"] = {"w": a.pair_w, "batch": a.pair_batch, "hold": PAIR_HOLDOUT, "val": PAIR_VAL}
     return out
 
 

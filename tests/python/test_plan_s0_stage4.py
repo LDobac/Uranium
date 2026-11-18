@@ -345,8 +345,54 @@ def test_053_R8_plan_s0_cli_with_pairs(tmp_path):
     assert main([*base, "--split-nets", "--out", str(out)]) == 0
     rep = json.loads((out / "s0.json").read_text(encoding="utf-8"))
     assert rep["pairs"]["sets"]["b2"]["held_trunks"] == 2 and rep["settings"]["training"]["pairs"]["hold"] == pr.PAIR_HOLDOUT
-    assert {"train", "held"} <= set(rep["pairs"]["8"]["b2"]) and rep["pairs"]["8"]["b2"]["held"]["pairs"] > 0
+    assert {"train", "val", "held"} <= set(rep["pairs"]["8"]["b2"]) and rep["pairs"]["8"]["b2"]["held"]["pairs"] > 0
+    assert rep["settings"]["training"]["pairs"]["val"] == pr.PAIR_VAL
     assert "분기 짝 손실" in (out / "s0.md").read_text(encoding="utf-8")
     meta_a = torch.load(out / "models" / "A_k8.pt", weights_only=False)["meta"]["data"]
     meta_u = torch.load(out / "models" / "U_k8.pt", weights_only=False)["meta"]["data"]
     assert "pairs" in meta_a and "pairs" not in meta_u
+
+
+def test_053_AC12_R8_validation_trunks_out_of_pair_batches_and_in_score_validation(tmp_path, monkeypatch):
+    p = fake_dump(tmp_path / "main", n_games=12, sha_prefix="e")
+    man = json.loads((p / "manifest.json").read_text())
+    man["checkpoint_sha256"] = C_SHA
+    (p / "manifest.json").write_text(json.dumps(man))
+    data = pp.Data([pp.Source("m", "teacher", "split", str(p))], ks=(8,), q_names=("held_8m", "held_s"), labels={"m": {}}, val_frac=0.2)
+    dump = trunk_dump(tmp_path)
+    branch_set(tmp_path / "b2", dump)
+    ps_ = pr.PairSet("b2", tmp_path / "b2", dump, data)
+    assert ps_.info["held_trunks"] == 2 and ps_.info["val_trunks"] == 1, "10% of the training trunks validate (053-R8 1)"
+    assert not (ps_.val & ps_.held).any() and ps_.val.any()
+    trunk_of = np.array([ps_.points[i].split("#")[0] for i in ps_.point])
+    assert set(trunk_of[ps_.val]) == ps_.val_trunks and not set(trunk_of[~ps_.val]) & ps_.val_trunks, "whole trunks"
+    train_seen, in_val = [], [False]
+    orig_t, orig_v = pr.PairSet.tensors, pp.pair_val_loss
+    val_seen = []
+
+    def spy_t(self, idx, st):
+        (val_seen if in_val[0] else train_seen).append(np.asarray(idx).copy())
+        return orig_t(self, idx, st)
+
+    def spy_v(*a, **kw):
+        in_val[0] = True
+        try:
+            return orig_v(*a, **kw)
+        finally:
+            in_val[0] = False
+
+    monkeypatch.setattr(pr.PairSet, "tensors", spy_t)
+    monkeypatch.setattr(pp, "pair_val_loss", spy_v)
+    rows = data.pair_rows(8, "train")
+    st = data.stats(rows, 8)
+    info = {}
+    pp.train_one(data, "A", 8, rows, st, steps=12, batch=32, lr=1e-3, seed=2, split_nets=True, pairs=pr.PairUnion([ps_]), pair_batch=8, pair_w=0.5,
+                 val_rows=data.pair_rows(8, "val"), val_every=4, score_val_every=4, patience=10, info=info)
+    trained = np.concatenate(train_seen)
+    assert len(trained) and not ps_.val[trained].any() and not ps_.held[trained].any()
+    assert np.array_equal(np.unique(np.concatenate(val_seen)), ps_.val_pairs())
+    curve = info["val"]["curve"]
+    assert len(curve) == 3
+    for c in curve:
+        assert c["pair"] is not None and c["pair"] > 0
+        assert c["score"] == pytest.approx(sum(v for v in c["q"].values() if v is not None) + 0.5 * c["pair"])
