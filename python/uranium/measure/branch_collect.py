@@ -6,11 +6,29 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
+
+from uranium.diag.planning import labels as pl
+from uranium.diag.planning.dump import own_columns, own_state
 from uranium.measure import branch_common as bc
 from uranium.measure import eval_common as ec
 
 Refused = bc.Refused
 OUTCOME_FIELDS = ("state_check", "intervention", "samples", "metrics", "dilution", "end")
+
+
+def own_at(samples: dict, name: str) -> dict | None:
+    s = (samples or {}).get(name)
+    if not isinstance(s, dict) or s.get("scalar") is None:
+        return None
+    o = own_state(np.asarray(s["scalar"], np.float32)[None])[0]
+    return {c: float(v) for c, v in zip(own_columns()[0], o)}
+
+
+def outcome_extras(model: dict, aborted: bool, samples: dict) -> dict:
+    return {"labels": dict(pl.NONE) if aborted or not model else pl.bot_heads(model, "model"),
+            "ops": (model.get("model") or {}).get("ops"),
+            "own_horizon": own_at(samples, "horizon")}
 
 
 def stage_of(job: Path, name: str | None) -> tuple[int, Path, dict]:
@@ -108,6 +126,7 @@ def collect(job: Path, stage: str | None, root: Path) -> dict:
         row["metrics"] = row["metrics"] or {}
         row["intervention"] = row["intervention"] or []
         row["dilution"] = row["dilution"] or []
+        row.update(outcome_extras(model, game.get("outcome") == "Aborted", row["samples"]))
         rows.append(row)
     bc.write_jsonl(job / "branches.jsonl", rows)
     by_reason: dict[str, int] = {}

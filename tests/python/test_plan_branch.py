@@ -243,3 +243,53 @@ def test_cli_writes_json_and_markdown(tmp_path):
     assert rep["kind"] == "plan-branch" and rep["settings"]["boot"] == 50
     md = (out / "plan-branch.md").read_text(encoding="utf-8")
     assert "짝 효과" in md and "force_bunker" in md and "M3u" in md
+
+
+def test_m3u_m2c_take_the_force_action_per_point_051_r16(tmp_path):
+    dump = fake_dump(tmp_path / "dump", n_games=6, rows=60)
+    s0 = tmp_path / "s0"
+    predictors(dump, s0)
+    games = json.loads((dump / "games.json").read_text())
+    data = pp.Data([pp.Source("trunk", "model", "eval", str(dump))], ks=(8, 32), keep_bot=True, design=pp.Design())
+    nets = {k: pb.load_predictor(s0, k, data) for k in (8, 32)}
+    names, _, of_action = own_columns()
+    bunker, marine = tb.action_id(BUNKER), tb.action_id("Train_Marine")
+    m = data.mask_rows(np.arange(data.N))
+    m[:, marine] = True
+    data.mask = np.packbits(m, axis=1)
+    mm = np.memmap(dump / "rows" / "mask.bin", dtype=np.uint8, mode="r+", shape=data.mask.shape)
+    mm[:] = data.mask
+    mm.flush()
+    del mm
+    pts, rows = [], {}
+    for g in range(6):
+        for j, i in enumerate((10, 30)):
+            pid = f"job/s/g{g}#p{j}"
+            f_t = int(2880 + 24 * i + 2)
+            pts.append({"point": pid, "trunk": {"replay": "absent.rep", "replay_sha256": games[str(g)]["sha"]}, "f_t": f_t, "checkpoint_sha256": "s", "valid": True})
+            rows[pid] = int(np.nonzero((data.game == g) & (np.rint(data.frame) == f_t - 2))[0][0])
+    idx = np.array([rows[p["point"]] for p in pts])
+    act = np.array([bunker if n % 2 else marine for n in range(len(pts))])
+    dq = plan_s0.delta_q(nets[8][0], data, idx, act, nets[8][1])[:, pb.SCV8]
+    o_all, o_pi = pb.own_change_pred(nets[8][0], nets[8][1], data, idx, 8)
+    brs = []
+    for n, p in enumerate(pts):
+        col = names[of_action[int(act[n])]]
+        s = np.sign(o_all[n, act[n], names.index(col)] - o_pi[n, names.index(col)])
+        for a, rules in (("none", []), ("top1", [{"op": "force", "action": tb.action_names()[int(act[n])], "from_s": 0, "to_s": 0}])):
+            for r in (1, 2):
+                cnt = {"bunker": 5, "marine": 5}
+                if a != "none":
+                    cnt[col] += int(s) if np.isfinite(s) else 0
+                brs.append({"point": p["point"], "alt": a, "rules": rules, "repeat": r, "valid": True,
+                            "intervention": [{"applied": 1, "frame": p["f_t"], "rejected": False}] if rules else [],
+                            "metrics": {"score": 0.0 if a == "none" else float(dq[n]) * (1 + 0.1 * r)},
+                            "samples": {"d8": {"frame": p["f_t"] + 100, "scalar": scalar_with(cnt)}}})
+    write_records(tmp_path / "b", pts, brs)
+    rep = pb.analyse(args(tmp_path / "b", dump=str(dump), s0=str(s0), outcomes="score", m3u_outcome="score", own_samples="d8", ks="8"))
+    r = rep["M3u"]["k8"]["alts"]["top1"]
+    assert r["action"] == sorted([bunker, marine]) and r["pairs"] == 12
+    assert r["dq_mean"] == pytest.approx(float(dq.mean()), rel=1e-6)
+    assert rep["M3u"]["k8"]["sign_agree"]["pt"] == 1.0
+    c = rep["M2c"]["k8"]["alts"]["top1"]
+    assert sorted(c["column"]) == ["bunker", "marine"] and c["direction"]["agree"] == 1.0

@@ -124,7 +124,7 @@ fn postcard(a: &Act) -> Vec<u8> {
 const I_T: u32 = 5;
 
 fn trunk_game(dir: &Path) -> Arc<GameBranch> {
-    let rule = SnapshotRule { name: "p".into(), from_frame: 24 * I_T + 1, to_frame: 100_000, any_open: vec![], after_rule: None, after_s: None };
+    let rule = SnapshotRule { name: "p".into(), from_frame: 24 * I_T + 1, to_frame: 100_000, any_open: vec![], after_rule: None, after_s: None, after_gap: false, min_open_ops: None };
     Arc::new(GameBranch { plan_game: 1, acts_dir: Some(dir.join("acts")), snapshots: vec![rule], states_dir: Some(dir.join("states")), branch: None, explore: None })
 }
 

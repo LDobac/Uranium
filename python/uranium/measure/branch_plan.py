@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import tomllib
+from fractions import Fraction
 from pathlib import Path
 
+from uranium.diag.planning.dump import op_actions
 from uranium.measure import branch_common as bc
 from uranium.measure import eval_common as ec
+from uranium.measure import rush_check_plan as rcp
 
 Refused = bc.Refused
-SNAPSHOT_KEYS = {"name", "from_frame", "to_frame", "any_open", "after_rule", "after_s"}
+SNAPSHOT_KEYS = {"name", "from_frame", "to_frame", "any_open", "after_rule", "after_s", "after_gap", "min_open_ops"}
 RULE_KEYS = {"op", "action", "from_s", "to_s"}
+MIX_KEYS = {"games", "maps", "opponents"}
+B2_SAMPLE_FIRST = 991
 F8M = 8 * 60 * 24
 
 
@@ -36,11 +42,19 @@ def load_config(path: Path) -> dict:
         if "after_rule" in s and (s["after_rule"] not in names[:names.index(s["name"])] or not isinstance(s["after_s"], int)
                                   or isinstance(s["after_s"], bool) or not 0 <= s["after_s"] < 2**32 // 24):
             raise Refused(f"{path}: snapshot rule {s['name']}: after_rule {s['after_rule']} must be an earlier rule, after_s an integer >= 0 (051-R3)")
+        if s.get("after_gap", False) is not False and (s["after_gap"] is not True or s.get("after_s", 0) < 1):
+            raise Refused(f"{path}: snapshot rule {s['name']}: after_gap = true goes with after_rule and after_s >= 1 (051-R3)")
+        if "min_open_ops" in s and (not isinstance(s["min_open_ops"], int) or isinstance(s["min_open_ops"], bool) or s["min_open_ops"] < 1):
+            raise Refused(f"{path}: snapshot rule {s['name']}: min_open_ops is an integer >= 1 (051-R3)")
     alts = [a["name"] for a in cfg["alternative"]]
     if len(set(alts)) != len(alts):
         raise Refused(f"{path}: alternative names must be unique")
     for a in cfg["alternative"]:
         a.setdefault("rules", [])
+        if "policy_rank" in a:
+            k = a["policy_rank"]
+            if a["rules"] or not isinstance(k, int) or isinstance(k, bool) or k < 1:
+                raise Refused(f"{path}: alternative {a['name']}: policy_rank is an integer >= 1 without rules (051-R16 3)")
         for r in a["rules"]:
             if set(r) != RULE_KEYS or r["op"] not in ("force", "ban") or r["action"] not in ids:
                 raise Refused(f"{path}: alternative {a['name']}: rule {r} (051-R7: op force / ban, a 034 action, from_s, to_s)")
@@ -50,7 +64,73 @@ def load_config(path: Path) -> dict:
                 raise Refused(f"{path}: alternative {a['name']}: NoOp cannot be banned (051-R7 ③)")
     if int(cfg["horizon"]) <= 0 or int(cfg["repeats"]) < 1:
         raise Refused(f"{path}: horizon > 0 and repeats >= 1")
+    if is_mix(cfg):
+        t = cfg["trunks"]
+        if set(t) != MIX_KEYS or int(t["games"]) < 1 or not t["maps"] or not t["opponents"]:
+            raise Refused(f"{path}: [trunks] of an opponent mix has exactly {sorted(MIX_KEYS)}, games >= 1 (051-R16)")
+        for o in t["opponents"]:
+            if (set(o) != {"share", "p1"} or o["p1"].get("kind") != "t0" or "race" not in o["p1"] or set(o["p1"]) - {"kind", "race", "build"}
+                    or not int(o["share"]) > 0):
+                raise Refused(f"{path}: [trunks] opponent {o}: share > 0 and a T0 p1 (051-R1 1)")
     return cfg
+
+
+def is_mix(cfg: dict) -> bool:
+    return "opponents" in cfg["trunks"]
+
+
+def split(n: int, weights: list[int]) -> list[int]:
+    total = sum(weights)
+    ideal = [Fraction(n * w, total) for w in weights]
+    base = [int(x) for x in ideal]
+    for i in sorted(range(len(weights)), key=lambda i: (-(ideal[i] - base[i]), i))[:n - sum(base)]:
+        base[i] += 1
+    return base
+
+
+def mix_cells(cfg: dict, games: int | None = None) -> list[tuple[str, dict, int]]:
+    t = cfg["trunks"]
+    games = int(t["games"] if games is None else games)
+    maps = list(t["maps"])
+    out, per_map = [], dict.fromkeys(maps, 0)
+    for o, n in zip(t["opponents"], split(games, [int(o["share"]) for o in t["opponents"]])):
+        half = dict.fromkeys(maps, n // len(maps))
+        for m in sorted(maps, key=lambda m: (per_map[m], maps.index(m)))[:n % len(maps)]:
+            half[m] += 1
+        for m in maps:
+            per_map[m] += half[m]
+            if half[m]:
+                out.append((m, o["p1"], half[m]))
+    return out
+
+
+def cell_key(m: str, p1: dict) -> str:
+    return f"{m}/{p1['race']}" + (f"-{p1['build']}" if p1.get("build") else "")
+
+
+def b2_seeds(first: int, n: int, exclude: set[int] = frozenset(), end: int | None = None) -> list[int]:
+    out, k = [], first
+    while len(out) < n:
+        if k not in rcp.BRANCH_B2_BLOCK or (end is not None and k >= end):
+            raise Refused(f"the B2 seed block {rcp.BRANCH_B2_BLOCK[0]}..{rcp.BRANCH_B2_BLOCK[-1]} is used up from {first} (051-R16)")
+        s = rcp.branch_b2_seed(k)
+        if s not in exclude:
+            out.append(s)
+        k += 1
+    others = rcp.taken_seeds(bc.ROOT / "config" / "plans", ()) | rcp.reserved_seeds(skip_branch_b2=True)
+    if others & set(out):
+        raise Refused("a B2 seed is another plan's or another reserved block's (051-R16)")
+    return out
+
+
+def mix_trunk_plan(cfg: dict, name: str, first: int = 1, games: int | None = None) -> str:
+    cells = mix_cells(cfg, games)
+    seeds = b2_seeds(first, sum(n for *_, n in cells))
+    blocks, k = [], 0
+    for m, p1, n in cells:
+        blocks.append((m, p1, seeds[k:k + n]))
+        k += n
+    return render_trunk(name, cfg, blocks)
 
 
 def max_frames(cfg: dict) -> int:
@@ -96,9 +176,9 @@ def plan_head(name: str, cfg: dict) -> list[str]:
             "act_log = true"]
 
 
-def seeds_and_matchups(blocks: list[tuple[str, list[int]]], p0: dict, p1: dict) -> tuple[list[str], list[str]]:
+def seeds_and_matchups(blocks: list[tuple[str, dict, list[int]]], p0: dict) -> tuple[list[str], list[str]]:
     seeds, matchups = ["seeds = ["], []
-    for m, block in blocks:
+    for m, p1, block in blocks:
         for i in range(0, len(block), 8):
             seeds.append("  " + ", ".join(str(s) for s in block[i:i + 8]) + ",")
         matchups += ["[[matchup]]", f"map = {bc.toml_value(m)}", f"games = {len(block)}", f"p0 = {bc.toml_value(p0)}", f"p1 = {bc.toml_value(p1)}"]
@@ -113,12 +193,16 @@ def snapshot_tables(cfg: dict) -> list[str]:
                 f"to_frame = {int(s['to_frame'])}", f"any_open = {bc.toml_value(list(s.get('any_open', [])))}"]
         if "after_rule" in s:
             out += [f"after_rule = {bc.toml_value(s['after_rule'])}", f"after_s = {int(s['after_s'])}"]
+        if s.get("after_gap"):
+            out.append("after_gap = true")
+        if "min_open_ops" in s:
+            out.append(f"min_open_ops = {int(s['min_open_ops'])}")
     return out
 
 
-def render_trunk(name: str, cfg: dict, blocks: list[tuple[str, list[int]]]) -> str:
+def render_trunk(name: str, cfg: dict, blocks: list[tuple[str, dict, list[int]]]) -> str:
     p0 = {"kind": "model", "checkpoint": cfg["checkpoint"], "sample": "stochastic"}
-    seeds, matchups = seeds_and_matchups(blocks, p0, cfg["trunks"]["opponent"])
+    seeds, matchups = seeds_and_matchups(blocks, p0)
     return "\n".join([*plan_head(name, cfg), *seeds, *snapshot_tables(cfg), *matchups]) + "\n"
 
 
@@ -151,7 +235,7 @@ def excluded_seeds(jobs: list[Path], root: str | Path | None) -> set[int]:
 def trunk_plan(cfg: dict, name: str, cond, exclude: set[int] = frozenset(), counts: dict[str, int] | None = None) -> str:
     t = cfg["trunks"]
     counts = counts or {"hit": int(t["hit"]), "miss": int(t["miss"])}
-    blocks = [(m, pick_seeds(seeds, counts, cond, exclude)) for m, seeds in rush_blocks(cfg).items()]
+    blocks = [(m, t["opponent"], pick_seeds(seeds, counts, cond, exclude)) for m, seeds in rush_blocks(cfg).items()]
     return render_trunk(name, cfg, blocks)
 
 
@@ -205,6 +289,10 @@ class Trunk:
         return not self.reasons and not self.missing and all(p["valid"] for p in self.points.values())
 
 
+def norm_rule(s: dict) -> dict:
+    return {**s, "any_open": list(s.get("any_open", [])), "after_gap": bool(s.get("after_gap", False))}
+
+
 def read_trunks(a, cfg: dict, root: Path, job: Path, expect: dict) -> list[Trunk]:
     rules = [s["name"] for s in cfg["snapshots"]]
     horizon = int(cfg["horizon"])
@@ -215,8 +303,8 @@ def read_trunks(a, cfg: dict, root: Path, job: Path, expect: dict) -> list[Trunk
         if stage not in stages:
             raise Refused(f"{job}: no stage {stage}")
         k, _, plan = stages[stage]
-        want = [{**s, "any_open": list(s.get("any_open", []))} for s in cfg["snapshots"]]
-        have = [{**s, "any_open": list(s.get("any_open", []))} for s in plan.get("snapshots", [])]
+        want = [norm_rule(s) for s in cfg["snapshots"]]
+        have = [norm_rule(s) for s in plan.get("snapshots", [])]
         if have != want:
             raise Refused(f"stage {stage}: its [[snapshots]] are not the config's (051-R11 1)")
         if int(plan.get("max_frames", 86_400)) != max_frames(cfg):
@@ -229,7 +317,7 @@ def read_trunks(a, cfg: dict, root: Path, job: Path, expect: dict) -> list[Trunk
         for n, game in enumerate(bc.plan_games(plan), start=1):
             t = Trunk(stage, k, n, game)
             out.append(t)
-            t.condition = a.condition_fn(t.seed)
+            t.condition = None if is_mix(cfg) else a.condition_fn(t.seed)
             ckpt = t.p0.get("checkpoint", "")
             if ckpt not in sha_cache:
                 sha_cache[ckpt] = checkpoint_sha(root, ckpt)
@@ -320,6 +408,7 @@ def read_trunk(t: Trunk, sd: Path, game: dict | None, recs: list[dict], rules: l
             "type_mask": [int(x) for x in ent["type_mask"]],
             "scalar_t": ent["scalar"],
             "trunk_action": line["decision"],
+            "policy_top": line.get("policy_top"),
             "state": bc.rel_to(root, sf),
             "state_sha256": ent["state_sha256"],
             "trunk_outcome": trunk_outcome(rec, horizon),
@@ -351,9 +440,53 @@ def select(trunks: list[Trunk], cfg: dict, counts: dict[str, int], rush: dict[st
     return cells
 
 
-def dropped_alts(point: dict, cfg: dict, ids: dict[str, int]) -> list[dict]:
+def select_mix(trunks: list[Trunk], cfg: dict, games: int | None = None) -> dict:
+    quota: dict[str, int] = {}
+    for m, p1, n in mix_cells(cfg, games):
+        quota[cell_key(m, p1)] = quota.get(cell_key(m, p1), 0) + n
+    used: dict[str, int] = dict.fromkeys(quota, 0)
+    for t in sorted(trunks, key=lambda t: t.order):
+        c = cell_key(t.map, t.p1)
+        if t.usable and used.get(c, 0) < quota.get(c, 0):
+            t.used = True
+            used[c] += 1
+            continue
+        why = "cell full (051-R16)" if t.usable else "trunk replaced (051-R16)"
+        for p in t.points.values():
+            if p["valid"]:
+                p["valid"], p["skip_reason"] = False, why
+    return {c: {"quota": q, "used": used[c], "short": q - used[c]} for c, q in quota.items()}
+
+
+@functools.cache
+def op_set() -> frozenset[int]:
+    return frozenset(op_actions())
+
+
+def ranked_ops(point: dict) -> list[int]:
+    ops = op_set()
+    return [int(a) for a, _ in point.get("policy_top") or [] if int(a) in ops]
+
+
+def point_alts(point: dict, alts: list[dict], names: dict[int, str]) -> list[dict]:
     out = []
-    for a in cfg["alternative"]:
+    for a in alts:
+        if "policy_rank" not in a:
+            out.append({"name": a["name"], "rules": [dict(x) for x in a["rules"]]})
+            continue
+        ranked, k = ranked_ops(point), a["policy_rank"]
+        rules = [{"op": "force", "action": names[ranked[k - 1]], "from_s": 0, "to_s": 0}] if len(ranked) >= k else []
+        out.append({"name": a["name"], "rules": rules, "policy_rank": k})
+    return out
+
+
+def dropped_alts(point: dict, alts: list[dict], ids: dict[str, int]) -> list[dict]:
+    out = []
+    for a in alts:
+        if "policy_rank" in a and not a["rules"]:
+            out.append({"point": point["point"], "alt": a["name"], "closed": [],
+                        "why": f"policy_top has fewer than {a['policy_rank']} open op actions (051-R16 3)"})
+            continue
         closed = [r["action"] for r in a["rules"] if r["op"] == "force" and r["from_s"] == r["to_s"] == 0 and ids[r["action"]] not in point["type_mask"]]
         if closed:
             out.append({"point": point["point"], "alt": a["name"], "closed": closed})
@@ -365,49 +498,62 @@ def build(a) -> dict:
     root = bc.shared_root(a.root)
     job = bc.job_dir(a.trunk_job, root)
     out = bc.job_dir(a.out, root)
-    counts = {"hit": int(cfg["trunks"]["hit"] if a.hit is None else a.hit), "miss": int(cfg["trunks"]["miss"] if a.miss is None else a.miss)}
+    counts = {} if is_mix(cfg) else {"hit": int(cfg["trunks"]["hit"] if a.hit is None else a.hit), "miss": int(cfg["trunks"]["miss"] if a.miss is None else a.miss)}
     alts = [x for x in cfg["alternative"] if a.alts is None or x["name"] in a.alts.split(",")]
     if a.alts is not None and len(alts) != len(a.alts.split(",")):
         raise Refused(f"--alts {a.alts}: not all in the config ({[x['name'] for x in cfg['alternative']]})")
     repeats = int(cfg["repeats"] if a.repeats is None else a.repeats)
     expect = {"t0_policy": a.t0_policy or f"t0@{bc.workspace_version()}", "schemas": a.schemas_fn()}
     trunks = read_trunks(a, cfg, root, job, expect)
-    rush = rush_blocks(cfg)
-    cells = select(trunks, cfg, counts, rush)
+    mix = is_mix(cfg)
+    if any("policy_rank" in x for x in alts):
+        for t in trunks:
+            for p in t.points.values():
+                if p["policy_top"] is None:
+                    p["valid"] = False
+                    p["skip_reason"] = "; ".join(filter(None, [p["skip_reason"], "no policy_top on the act log line (051-R2)"]))
+    rush = None if mix else rush_blocks(cfg)
+    cells = select_mix(trunks, cfg, a.games) if mix else select(trunks, cfg, counts, rush)
     rules = [s["name"] for s in cfg["snapshots"]]
     ids = bc.action_ids()
+    names = {v: k for k, v in ids.items()}
     map_order = {m: i for i, m in enumerate(cfg["trunks"]["maps"])}
-    used = sorted((t for t in trunks if t.used), key=lambda t: (map_order[t.map], t.order))
+    used = sorted((t for t in trunks if t.used), key=lambda t: t.order if mix else (map_order[t.map], t.order))
     points = [t.points[r] for t in sorted(trunks, key=lambda t: t.order) for r in rules if r in t.points]
-    dropped = [d for t in used for r in rules for d in dropped_alts(t.points[r], {**cfg, "alternative": alts}, ids)]
+    per_point = {t.points[r]["point"]: point_alts(t.points[r], alts, names) for t in used for r in rules}
+    dropped = [d for t in used for r in rules for d in dropped_alts(t.points[r], per_point[t.points[r]["point"]], ids)]
     drop = {(d["point"], d["alt"]) for d in dropped}
     lines = []
     for rep in range(1, repeats + 1):
         for t in used:
             for r in rules:
                 p = t.points[r]
-                for alt in alts:
+                for alt in per_point[p["point"]]:
                     if (p["point"], alt["name"]) in drop:
                         continue
                     lines.append({"trunk": p["point"].split("#")[0], "point": p["point"], "acts": p["trunk"]["acts"],
                                   "opponent_acts": p["trunk"]["opponent_acts"], "state": p["state"], "state_sha256": p["state_sha256"],
                                   "i_t": p["i_t"], "f_t": p["f_t"], "seed": p["seed"], "map": p["map"], "opponent": p["opponent"],
-                                  "alt": {"name": alt["name"], "rules": [dict(x) for x in alt["rules"]]}, "repeat": rep})
+                                  "alt": {"name": alt["name"], "rules": alt["rules"]}, "repeat": rep})
     if not lines:
         raise Refused("no branch game: no usable trunk point")
-    sides = {(json.dumps(t.p0, sort_keys=True), json.dumps(t.p1, sort_keys=True)) for t in used}
-    if len(sides) != 1:
-        raise Refused(f"the used trunks differ in checkpoint or opponent side (051-R1 4): {sorted(sides)}")
-    p0, p1 = (json.loads(x) for x in next(iter(sides)))
-    blocks: list[tuple[str, list[int]]] = []
+    p0s = {json.dumps(t.p0, sort_keys=True) for t in used}
+    if len(p0s) != 1:
+        raise Refused(f"the used trunks differ in the model side (051-R1 4): {sorted(p0s)}")
+    if not mix and len({json.dumps(t.p1, sort_keys=True) for t in used}) != 1:
+        raise Refused("the used trunks differ in the opponent side (051-R1 4)")
+    p0 = json.loads(next(iter(p0s)))
+    side = {t.points[r]["point"]: t.p1 for t in used for r in rules}
+    blocks: list[tuple[str, dict, list[int]]] = []
     for ln in lines:
-        if blocks and blocks[-1][0] == ln["map"]:
-            blocks[-1][1].append(ln["seed"])
+        p1 = side[ln["point"]]
+        if blocks and blocks[-1][0] == ln["map"] and blocks[-1][1] == p1:
+            blocks[-1][2].append(ln["seed"])
         else:
-            blocks.append((ln["map"], [ln["seed"]]))
+            blocks.append((ln["map"], p1, [ln["seed"]]))
     name = a.name or cfg["name"]
     head = plan_head(name, cfg) + ['branches = "branches_plan.jsonl"'] + (["verify_state = true"] if a.verify_state else [])
-    seeds, matchups = seeds_and_matchups(blocks, p0, p1)
+    seeds, matchups = seeds_and_matchups(blocks, p0)
     text = "\n".join([*head, *seeds, *matchups]) + "\n"
     plans = out / "plans"
     plans.mkdir(parents=True, exist_ok=True)
@@ -428,10 +574,18 @@ def build(a) -> dict:
     if short and a.replacements:
         exclude = job_seeds(job)
         blocks = []
-        for m, seeds in rush.items():
-            need = {c: short.get(f"{m}/{c}", 0) for c in ("hit", "miss")}
-            if any(need.values()):
-                blocks.append((m, pick_seeds(seeds, need, a.condition_fn, exclude)))
+        if mix:
+            fresh = iter(b2_seeds(rcp.BRANCH_B2_BLOCK[0], sum(short.values()), exclude, B2_SAMPLE_FIRST))
+            for m, p1, _ in mix_cells(cfg, a.games):
+                c = cell_key(m, p1)
+                if short.get(c):
+                    blocks.append((m, p1, [next(fresh) for _ in range(short.pop(c))]))
+            short = {k: v["short"] for k, v in cells.items() if v["short"] > 0}
+        else:
+            for m, seeds in rush.items():
+                need = {c: short.get(f"{m}/{c}", 0) for c in ("hit", "miss")}
+                if any(need.values()):
+                    blocks.append((m, cfg["trunks"]["opponent"], pick_seeds(seeds, need, a.condition_fn, exclude)))
         taken = {plan["name"] for _, _, plan in job_stages(job)} if (job / "job.toml").is_file() else set()
         rname = a.replacement_name or f"{name}-trunk-r"
         if rname in taken:
@@ -459,6 +613,8 @@ def main(argv=None) -> None:
     t.add_argument("--root", default=None, help="shared drive for --exclude-job (default URANIUM_SHARED_DIR)")
     t.add_argument("--hit", type=int, default=None, help="first-target-hit trunks per map (default the config's)")
     t.add_argument("--miss", type=int, default=None, help="miss trunks per map (default the config's)")
+    t.add_argument("--games", type=int, default=None, help="trunk games of an opponent-mix config (default the config's; 051-R16)")
+    t.add_argument("--first", type=int, default=1, help="first game number in the B2 seed block of an opponent-mix config (051-R16)")
     b = sub.add_parser("branches", help="points, branch list and branch plan from the trunk job")
     b.add_argument("--trunk-job", required=True, help="trunk job folder (as given if it exists, else under URANIUM_SHARED_DIR)")
     b.add_argument("--stage", action="append", required=True, help="trunk stage name (repeat for replacement stages)")
@@ -470,6 +626,7 @@ def main(argv=None) -> None:
     b.add_argument("--repeats", type=int, default=None)
     b.add_argument("--hit", type=int, default=None)
     b.add_argument("--miss", type=int, default=None)
+    b.add_argument("--games", type=int, default=None, help="trunk games of an opponent-mix config the cells are filled to (default the config's; 051-R16)")
     b.add_argument("--verify-state", action="store_true", help="set verify_state = true (test option)")
     b.add_argument("--hosts", default=None, help="also write job.toml with this hosts file (relative to the job folder)")
     b.add_argument("--replacements", default=None, help="write the replacement trunk plan here when a cell is short")
@@ -481,21 +638,30 @@ def main(argv=None) -> None:
     try:
         if a.cmd == "trunk":
             cfg = load_config(a.config)
-            counts = {"hit": int(cfg["trunks"]["hit"] if a.hit is None else a.hit), "miss": int(cfg["trunks"]["miss"] if a.miss is None else a.miss)}
-            exclude = excluded_seeds(a.exclude_job, a.root) if a.exclude_job else set()
-            text = trunk_plan(cfg, a.name or f"{cfg['name']}-trunk", a.condition_fn, exclude, counts)
+            if is_mix(cfg):
+                if a.exclude_job or a.hit is not None or a.miss is not None:
+                    raise Refused("--exclude-job, --hit and --miss are for the B1 rush config; an opponent-mix config takes --games and --first")
+                text = mix_trunk_plan(cfg, a.name or f"{cfg['name']}-trunk", a.first, a.games)
+                n = sum(x for *_, x in mix_cells(cfg, a.games))
+            else:
+                counts = {"hit": int(cfg["trunks"]["hit"] if a.hit is None else a.hit), "miss": int(cfg["trunks"]["miss"] if a.miss is None else a.miss)}
+                exclude = excluded_seeds(a.exclude_job, a.root) if a.exclude_job else set()
+                text = trunk_plan(cfg, a.name or f"{cfg['name']}-trunk", a.condition_fn, exclude, counts)
+                n = sum(counts.values()) * len(cfg["trunks"]["maps"])
             a.out.parent.mkdir(parents=True, exist_ok=True)
             a.out.write_bytes(text.encode("utf-8"))
-            print(f"{a.out}: {sum(counts.values()) * len(cfg['trunks']['maps'])} trunk games")
+            print(f"{a.out}: {n} trunk games")
             return
         if a.schemas:
             f, s = (int(x) for x in a.schemas.split(","))
             a.schemas_fn = lambda: {"feature": f, "action": s}
         else:
             a.schemas_fn = bc.current_schemas
+        if a.cmd == "branches" and is_mix(load_config(a.config)) and (a.hit is not None or a.miss is not None):
+            raise Refused("--hit and --miss are for the B1 rush config; an opponent-mix config takes --games")
         s = build(a)
     except Refused as e:
         raise SystemExit(f"REFUSED: {e}") from e
     print(f"{a.out}: {s['games']} branch games from {sum(t['used'] for t in s['trunks'])} trunks; cells {s['cells']}")
     if s["dropped"]:
-        print(f"dropped alternatives (force action closed at t): {len(s['dropped'])}")
+        print(f"dropped alternatives (051-R10, 051-R16 3; reasons in branch_plan.json): {len(s['dropped'])}")

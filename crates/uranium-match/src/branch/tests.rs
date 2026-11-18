@@ -278,7 +278,7 @@ fn mask_with(open: &[&str]) -> Vec<bool> {
 }
 
 fn rule(name: &str, from: u32, to: u32, any_open: &[&str]) -> SnapshotRule {
-    SnapshotRule { name: name.into(), from_frame: from, to_frame: to, any_open: any_open.iter().map(|s| s.to_string()).collect(), after_rule: None, after_s: None }
+    SnapshotRule { name: name.into(), from_frame: from, to_frame: to, any_open: any_open.iter().map(|s| s.to_string()).collect(), after_rule: None, after_s: None, after_gap: false, min_open_ops: None }
 }
 
 fn after(mut r: SnapshotRule, earlier: &str, secs: u32) -> SnapshotRule {
@@ -315,6 +315,59 @@ fn branch_snapshot_after_rule_051_r3() {
     assert!(Snapshots::new(&[rule("a", 0, 9, &[]), after(rule("b", 0, 9, &[]), "a", u32::MAX)], t).is_err(), "after_s overflow");
     let r: SnapshotRule = toml::from_str("name = \"b1-p2\"\nfrom_frame = 3960\nto_frame = 5760\nany_open = [\"Build_Bunker\"]\nafter_rule = \"b1-p1\"\nafter_s = 30").unwrap();
     assert_eq!(r, b1()[1]);
+}
+
+#[test]
+fn branch_snapshot_b2_gap_and_open_ops_051_r3_r16() {
+    let t = action_table();
+    let gap = |r: SnapshotRule, earlier: &str| {
+        let mut r = after(r, earlier, 60);
+        r.after_gap = true;
+        r.min_open_ops = Some(3);
+        r
+    };
+    let mut p1 = rule("b2-p1", 4320, 11520, &[]);
+    p1.min_open_ops = Some(3);
+    let b2 = || [p1.clone(), gap(rule("b2-p2", 4320, 11520, &[]), "b2-p1"), gap(rule("b2-p3", 4320, 11520, &[]), "b2-p2")];
+    let three = mask_with(&["Train_SCV", "Build_SupplyDepot", "Build_Barracks", "Move_Pos"]);
+    let two = mask_with(&["Train_SCV", "Build_SupplyDepot", "Move_Pos", "Attack_Pos"]);
+    let mut s = Snapshots::new(&b2(), t).unwrap();
+    assert!(s.check(0, 4319, &three).is_empty(), "before 3:00");
+    assert!(s.check(1, 4400, &two).is_empty(), "two open op actions");
+    assert_eq!(s.check(2, 4410, &three), vec!["b2-p1"]);
+    assert!(s.check(3, 5849, &three).is_empty(), "before p1 + 60 s");
+    assert!(s.check(4, 5850, &two).is_empty(), "gap reached, two open op actions");
+    assert_eq!(s.check(5, 5860, &three), vec!["b2-p2"]);
+    assert!(s.check(6, 7299, &three).is_empty());
+    assert_eq!(s.check(7, 7300, &three), vec!["b2-p3"]);
+    assert_eq!(s.fired().collect::<Vec<_>>(), vec![("b2-p1", Some(2)), ("b2-p2", Some(5)), ("b2-p3", Some(7))]);
+    let mut s = Snapshots::new(&b2(), t).unwrap();
+    assert_eq!(s.check(0, 10_100, &three), vec!["b2-p1"]);
+    assert!(s.check(1, 11_519, &three).is_empty(), "p2 needs p1 + 60 s inside the window");
+    assert_eq!(s.fired().collect::<Vec<_>>(), vec![("b2-p1", Some(0)), ("b2-p2", None), ("b2-p3", None)]);
+    let mut s = Snapshots::new(&[gap(rule("a", 0, 99_999, &[]), "x"), p1.clone()], t);
+    assert!(s.is_err(), "after_rule must be earlier");
+    s = Snapshots::new(&[p1.clone(), { let mut r = gap(rule("b", 0, 9, &[]), "b2-p1"); r.after_s = Some(0); r }], t);
+    assert!(s.is_err(), "after_gap with after_s 0");
+    let mut lone = rule("b", 0, 9, &[]);
+    lone.after_gap = true;
+    assert!(Snapshots::new(&[p1.clone(), lone], t).is_err(), "after_gap without after_rule");
+    let mut zero = rule("z", 0, 9, &[]);
+    zero.min_open_ops = Some(0);
+    assert!(Snapshots::new(&[zero], t).is_err());
+    let r: SnapshotRule = toml::from_str("name = \"b2-p2\"
+from_frame = 4320
+to_frame = 11520
+after_rule = \"b2-p1\"
+after_s = 60
+after_gap = true
+min_open_ops = 3").unwrap();
+    assert_eq!(r, b2()[1]);
+    assert_eq!(toml::to_string(&rule("q", 0, 1, &[])).unwrap(), "name = \"q\"
+from_frame = 0
+to_frame = 1
+any_open = []
+", "B1 rules serialize as before");
 }
 
 #[test]

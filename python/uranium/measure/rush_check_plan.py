@@ -367,8 +367,21 @@ def explore_block() -> set[int]:
     return {splitmix64(EXPLORE_SEED_KEY + k) >> 32 for k in EXPLORE_BLOCK}
 
 
+BRANCH_B2_SEED_KEY = 9_000_000
+BRANCH_B2_BLOCK = range(1, 1001)
+
+
+def branch_b2_seed(n: int) -> int:
+    assert n in BRANCH_B2_BLOCK, f"B2 trunk game number {n} is outside the B2 seed block {BRANCH_B2_BLOCK[0]}..{BRANCH_B2_BLOCK[-1]}"
+    return splitmix64(BRANCH_B2_SEED_KEY + n) >> 32
+
+
+def branch_b2_block() -> set[int]:
+    return {branch_b2_seed(k) for k in BRANCH_B2_BLOCK}
+
+
 def reserved_seeds(skip_teacher_round: bool = False, skip_tp_extra_part: int | None = None, skip_teacher_round_z: bool = False,
-                   skip_explore: bool = False) -> set[int]:
+                   skip_explore: bool = False, skip_branch_b2: bool = False) -> set[int]:
     n = RESERVED_ROUNDS * DAGGER_ROUND_STRIDE
     s = {splitmix64(DAGGER_SEED_KEY + k) >> 32 for k in range(1, n + 1)}
     s |= {splitmix64(DISTILL_SEED_KEY + k) >> 32 for k in range(1, DISTILL_ROUNDS_RESERVED * DISTILL_ROUND_STRIDE + 1)}
@@ -383,6 +396,8 @@ def reserved_seeds(skip_teacher_round: bool = False, skip_tp_extra_part: int | N
             s |= tp_extra_block(part)
     if not skip_explore:
         s |= explore_block()
+    if not skip_branch_b2:
+        s |= branch_b2_block()
     return s | tp_dev_seeds()
 
 

@@ -825,6 +825,25 @@ p1={kind='oss',name='iron',race='terran'}";
     }
 
     #[test]
+    fn b2_trunk_plan_loads_051_r16() {
+        let dir = temp_dir("b2");
+        let path = dir.join("p.toml");
+        let rule = |n: u32, after: &str| format!("[[snapshots]]\nname='b2-p{n}'\nfrom_frame=4320\nto_frame=11520\nany_open=[]\nmin_open_ops=3\n{after}");
+        let snaps = format!("{}{}{}", rule(1, ""), rule(2, "after_rule='b2-p1'\nafter_s=60\nafter_gap=true\n"), rule(3, "after_rule='b2-p2'\nafter_s=60\nafter_gap=true\n"));
+        let p0 = "p0={kind='model',checkpoint='checkpoints/m2-teacher-t2/ckpt-3258',sample='stochastic'}";
+        let games = format!("[[matchup]]\nmap='fighting_spirit'\ngames=1\n{p0}\np1={{kind='t0',race='zerg'}}\n[[matchup]]\nmap='circuit_breaker'\ngames=1\n{p0}\np1={{kind='t0',race='protoss'}}\n");
+        let head = BRANCH_HEAD.replace("max_frames=11568", "max_frames=17328");
+        std::fs::write(&path, format!("name='b2'\n{head}{snaps}{games}")).unwrap();
+        let plan = load_plan(&path).unwrap();
+        assert_eq!(plan.horizon(), Some(17_280));
+        let g = plan.game_branch(2, Path::new("stage"), None).unwrap().unwrap();
+        assert_eq!(g.snapshots.iter().map(|r| (r.name.as_str(), r.after_gap, r.min_open_ops)).collect::<Vec<_>>(), [("b2-p1", false, Some(3)), ("b2-p2", true, Some(3)), ("b2-p3", true, Some(3))]);
+        std::fs::write(&path, format!("name='b2'\n{head}{}{games}", rule(1, "after_gap=true\n"))).unwrap();
+        assert!(load_plan(&path).is_err(), "after_gap without after_rule");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn branch_plan_load_checks_051_r1() {
         let dir = temp_dir("checks");
         let path = dir.join("p.toml");

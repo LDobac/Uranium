@@ -22,11 +22,11 @@ IDS = bc.action_ids()
 BUNKER, MARINE = IDS["Build_Bunker"], IDS["Train_Marine"]
 POINT_KEYS = {"point", "trunk", "seed", "map", "opponent", "condition", "checkpoint_sha256", "policy", "t0_policy", "git", "schemas",
               "backend", "precision", "infer_seed", "i_t", "f_t", "digest_t", "type_mask", "scalar_t", "trunk_action", "state",
-              "state_sha256", "trunk_outcome", "valid", "skip_reason"}
+              "state_sha256", "trunk_outcome", "valid", "skip_reason", "policy_top"}
 TRUNK_KEYS = {"job", "stage", "plan_game", "hostd_game", "replay", "acts", "opponent_acts"}
 LINE_KEYS = {"trunk", "point", "acts", "opponent_acts", "state", "state_sha256", "i_t", "f_t", "seed", "map", "opponent", "alt", "repeat"}
 RECORD_KEYS = {"point", "alt", "rules", "repeat", "game", "checkpoint_sha256", "git", "valid", "invalid", "prefix", "state_check",
-               "intervention", "samples", "metrics", "dilution", "end"}
+               "intervention", "samples", "metrics", "dilution", "end", "labels", "ops", "own_horizon"}
 GAME_KEYS = {"job", "stage", "plan_game", "hostd_game", "attempt", "replay", "host", "backend", "precision", "infer_seed"}
 
 
@@ -390,3 +390,184 @@ def test_053_R2_trunk_held_8m_counts_a_win_before_8m():
     assert bp.trunk_outcome({**base, "won": False}, 11520)["held_8m"] is False
     assert bp.trunk_outcome({**base, "won": True, "end_frame": 12000}, 11520)["held_8m"] is False
     assert bp.trunk_outcome({**base, "won": None, "model": {"scv_8m": 8}}, 11520)["held_8m"] is True
+
+
+B2 = ROOT / "config" / "branch_b2.toml"
+F = "checkpoints/m2-teacher-t2/ckpt-3258"
+OPS = {a: IDS[a] for a in ("Train_SCV", "Build_SupplyDepot", "Build_Barracks", "Build_Refinery")}
+B2_RULES = ("b2-p1", "b2-p2", "b2-p3")
+
+
+def test_b2_trunk_plan_051_r16():
+    cfg = bp.load_config(B2)
+    text = bp.mix_trunk_plan(cfg, "branch-b2-trunk")
+    assert text == bp.mix_trunk_plan(cfg, "branch-b2-trunk"), "deterministic"
+    p = tomllib.loads(text)
+    assert (p["save_replay"], p["zero_last_failed"], p["surrender"], p["max_frames"], p["act_log"]) == (True, True, "off", 17280 + 48, True)
+    assert [s["name"] for s in p["snapshots"]] == list(B2_RULES)
+    assert all((s["from_frame"], s["to_frame"], s["min_open_ops"]) == (4320, 11520, 3) for s in p["snapshots"])
+    assert [(s.get("after_rule"), s.get("after_s"), s.get("after_gap", False)) for s in p["snapshots"]] == [(None, None, False), ("b2-p1", 60, True), ("b2-p2", 60, True)]
+    games = bc.plan_games(p)
+    assert len(games) == 100 and ec.plan_seeds(p) == [bp.rcp.branch_b2_seed(k) for k in range(1, 101)]
+    by = lambda key: {k: sum(1 for g in games if key(g) == k) for k in {key(g) for g in games}}  # noqa: E731
+    assert by(lambda g: g["map"]) == {"fighting_spirit": 50, "circuit_breaker": 50}
+    assert by(lambda g: g["p1"]["race"]) == {"zerg": 50, "protoss": 30, "terran": 20}
+    assert by(lambda g: g["p1"].get("build")) == {None: 75, "zerg_rush": 25}
+    assert all(g["p1"]["kind"] == "t0" and g["p0"] == {"kind": "model", "checkpoint": F, "sample": "stochastic"} for g in games)
+    assert not set(ec.plan_seeds(p)) & (bp.rcp.taken_seeds(ROOT / "config" / "plans", ()) | bp.rcp.reserved_seeds(skip_branch_b2=True))
+    assert bp.rcp.branch_b2_block() <= bp.rcp.reserved_seeds(), "other generators keep out of the B2 block"
+    small = bc.plan_games(tomllib.loads(bp.mix_trunk_plan(cfg, "s", first=991, games=2)))
+    assert [(g["map"], g["p1"]["race"], g["seed"]) for g in small] == [("fighting_spirit", "zerg", bp.rcp.branch_b2_seed(991)),
+                                                                       ("circuit_breaker", "protoss", bp.rcp.branch_b2_seed(992))]
+    with pytest.raises(bp.Refused, match="used up"):
+        bp.mix_trunk_plan(cfg, "s", first=999, games=4)
+
+
+class MixTrunkJob(TrunkJob):
+    def __init__(self, root: Path, games: int = 4):
+        self.root, self.job = root, root / "eval" / "b2-trunks"
+        self.cfg = bp.load_config(B2)
+        text = bp.mix_trunk_plan(self.cfg, "b2-trunk", first=101, games=games)
+        (self.job / "plans").mkdir(parents=True)
+        (self.job / "plans" / "trunk.toml").write_text(text, encoding="utf-8")
+        (self.job / "job.toml").write_text("stages = ['plans/trunk.toml']\nhosts = 'hosts.toml'\n", encoding="utf-8")
+        self.plan = tomllib.loads(text)
+        self.games = bc.plan_games(self.plan)
+        ck = root / F
+        ck.mkdir(parents=True)
+        (ck / "model.safetensors").write_bytes(b"weights")
+        self.ckpt_sha = ec.file_sha256(ck / "model.safetensors")
+        self.sd = self.job / "b2-trunk"
+        self.snaps = {}
+        for n in range(1, len(self.games) + 1):
+            self.play(n)
+        self.merge()
+
+    def play(self, n: int, top=None, fire: int = 3, no_top: bool = False):
+        top = top or [[0, 0.4], [IDS["Move_Pos"], 0.2], [OPS["Train_SCV"], 0.15], [OPS["Build_SupplyDepot"], 0.1],
+                      [OPS["Build_Barracks"], 0.08], [OPS["Build_Refinery"], 0.02]]
+        at = {3: 4400, 6: 5900, 9: 7400}
+        lines, opp, snaps = [], [], []
+        f = 100
+        for i in range(12):
+            f = at.get(i, f + 100)
+            lines.append({"i": i, "frame": f, "digest": digest(i, n), "act": act(i),
+                          "decision": {"action": 0, "delay_bucket": 1, "units": [], "rejected": False}, "state": None, "forced": False})
+            opp.append({"i": i, "frame": f, "digest": digest(i, 1000 + n), "act": act(i), "forced": False})
+        for rule, i in list(zip(B2_RULES, (3, 6, 9)))[:fire]:
+            sid = f"g{n}-o{i}"
+            (self.sd / "states").mkdir(parents=True, exist_ok=True)
+            (self.sd / "states" / f"{sid}.state").write_bytes(f"state {n} {i}".encode())
+            sha = ec.file_sha256(self.sd / "states" / f"{sid}.state")
+            lines[i].update({"state": sid, "state_sha256": sha})
+            if not no_top:
+                lines[i]["policy_top"] = top
+            snaps.append({"rules": [rule], "state": sid, "state_sha256": sha, "i": i, "frame": lines[i]["frame"], "digest": lines[i]["digest"],
+                          "type_mask": sorted(int(a) for a, _ in top), "scalar": [0.5, float(n)]})
+        end = {"obs": 12, "decisions": 12, "end_frame": 17328, "reason": "TimeLimitDraw", "player": 0, "players_index": 0,
+               "policy": f"model:ckpt-3258@{self.ckpt_sha[:12]}:stochastic", "git": "abc", "feature_schema": 7, "action_schema": 2}
+        jsonl(self.sd / "acts" / f"g{n}-p0.jsonl", [*lines, {"end": end}])
+        jsonl(self.sd / "acts" / f"g{n}-p1.jsonl", [*opp, {"end": {**end, "decisions": 0, "player": 1, "players_index": 1, "policy": T0}}])
+        self.snaps[n] = snaps
+
+    def merge(self, outcomes=None):
+        super().merge(outcomes)
+        rows = bc.read_jsonl(self.sd / "games.jsonl")
+        for r, g in zip(rows, self.games):
+            r["opponent"] = f"t0-{g['p1']['race']}" + (f"-{g['p1']['build'].replace('_', '-')}" if g["p1"].get("build") else "") + "@9.9.9"
+        jsonl(self.sd / "games.jsonl", rows)
+
+
+def b2_args(tj: MixTrunkJob, out: Path, **kw):
+    return args(tj, out, config=B2, stage=["b2-trunk"], hit=None, miss=None, **{"games": None, **kw})
+
+
+def test_b2_points_and_policy_rank_alternatives_051_r16_r10(tmp_path):
+    tj = MixTrunkJob(tmp_path)
+    tj.play(2, top=[[0, 0.5], [OPS["Train_SCV"], 0.3], [IDS["Move_Pos"], 0.1], [OPS["Build_SupplyDepot"], 0.1]])
+    tj.play(3, no_top=True)
+    tj.play(4, fire=2)
+    tj.merge()
+    out = tmp_path / "eval" / "b2"
+    rep = tj.job / "plans" / "trunk-r.toml"
+    s = bp.build(b2_args(tj, out, hosts="hosts.toml", replacements=str(rep)))
+    points = bc.read_jsonl(out / "points.jsonl")
+    assert all(set(p) == POINT_KEYS for p in points)
+    first = [p for p in points if p["point"].startswith("b2-trunks/b2-trunk/g1#")]
+    assert [p["point"].split("#")[1] for p in first] == list(B2_RULES) and all(p["valid"] for p in first)
+    assert first[0]["policy_top"][1] == [IDS["Move_Pos"], 0.2]
+    assert all(not p["valid"] and "policy_top" in p["skip_reason"] for p in points if "/g3#" in p["point"])
+    assert {t["trunk"].split("/")[-1]: t["used"] for t in s["trunks"]} == {"g1": True, "g2": True, "g3": False, "g4": False}
+    lines = bc.read_jsonl(out / "plans" / "branches_plan.jsonl")
+    g1 = [x for x in lines if x["point"] == first[0]["point"] and x["repeat"] == 1]
+    assert [(x["alt"]["name"], [r["action"] for r in x["alt"]["rules"]]) for x in g1] == [
+        ("none", []), ("top1", ["Train_SCV"]), ("top2", ["Build_SupplyDepot"]), ("top3", ["Build_Barracks"])]
+    assert g1[1]["alt"]["rules"] == [{"op": "force", "action": "Train_SCV", "from_s": 0, "to_s": 0}]
+    assert [(d["point"].split("/")[-1], d["alt"]) for d in s["dropped"]] == [(f"g2#{r}", "top3") for r in B2_RULES]
+    assert all(not (x["point"].startswith("b2-trunks/b2-trunk/g2#") and x["alt"]["name"] == "top3") for x in lines), "a missing rank drops out"
+    assert len(lines) == s["games"] == (3 * 4 + 3 * 3) * 2
+    assert [x["repeat"] for x in lines] == sorted(x["repeat"] for x in lines), "repeats outermost"
+    plan = tomllib.loads((out / "plans" / "branch-b2.toml").read_text(encoding="utf-8"))
+    assert (plan["max_frames"], plan["surrender"], plan["zero_last_failed"]) == (17328, "off", True) and "snapshots" not in plan
+    games = bc.plan_games(plan)
+    assert [(g["seed"], g["map"]) for g in games] == [(x["seed"], x["map"]) for x in lines]
+    p1 = {tg["seed"]: tg["p1"] for tg in tj.games}
+    assert all(g["p1"] == p1[g["seed"]] and g["p0"]["checkpoint"] == F for g in games), "each branch plays its trunk's opponent"
+    assert [(m["map"], m["p1"].get("build")) for m in plan["matchup"]] == [("fighting_spirit", None), ("circuit_breaker", "zerg_rush")] * 2
+    assert s["cells"]["fighting_spirit/zerg"] == {"quota": 13, "used": 1, "short": 12}
+    assert s["cells"]["circuit_breaker/zerg-zerg_rush"] == {"quota": 13, "used": 1, "short": 12}
+    assert s["cells"]["fighting_spirit/protoss"]["used"] == 0 and sum(v["short"] for v in s["cells"].values()) == 98
+    r = tomllib.loads(rep.read_text(encoding="utf-8"))
+    assert len(ec.plan_seeds(r)) == 98 and not set(ec.plan_seeds(r)) & set(ec.plan_seeds(tj.plan))
+    assert ec.plan_seeds(r)[0] == bp.rcp.branch_b2_seed(1), "replacements take the first unused game numbers of the block"
+    assert r["snapshots"] == tj.plan["snapshots"] and r["max_frames"] == 17328
+    assert all(p["condition"] is None for p in points)
+    small = bp.build(b2_args(tj, tmp_path / "eval" / "b2-small", games=4, replacements=str(tmp_path / "r4.toml")))
+    assert small["cells"]["circuit_breaker/terran"] == {"quota": 1, "used": 0, "short": 1}
+    assert sum(v["short"] for v in small["cells"].values()) == 2 and len(ec.plan_seeds(tomllib.loads((tmp_path / "r4.toml").read_text(encoding="utf-8")))) == 2
+    with pytest.raises(SystemExit, match="opponent-mix"):
+        bp.main(["branches", "--config", str(B2), "--trunk-job", str(tj.job), "--stage", "b2-trunk", "--out", str(out), "--hit", "1"])
+    out2 = tmp_path / "eval" / "b2-again"
+    bp.build(b2_args(tj, out2, hosts="hosts.toml"))
+    for f in ("points.jsonl", "plans/branches_plan.jsonl", "plans/branch-b2.toml"):
+        assert (out / f).read_bytes() == (out2 / f).read_bytes(), f
+
+
+def test_b2_config_checks_051_r16(tmp_path):
+    base = B2.read_text(encoding="utf-8")
+    p = tmp_path / "c.toml"
+    for old, new in (("policy_rank = 1", "policy_rank = 0"), ("policy_rank = 2", 'policy_rank = 2\nrules = [{ op = "force", action = "Train_SCV", from_s = 0, to_s = 0 }]'),
+                     ("min_open_ops = 3\n\n", "min_open_ops = 0\n\n"), ("after_s = 60\nafter_gap = true\n\n[[snapshots]]", "after_s = 0\nafter_gap = true\n\n[[snapshots]]"),
+                     ('race = "terran" }', 'race = "terran", name = "x" }'), ('{ kind = "t0", race = "protoss" }', '{ kind = "t0" }'), ('{ share = 20, p1 = { kind = "t0"', '{ share = 20, p1 = { kind = "oss"')):
+        assert old in base, old
+        p.write_text(base.replace(old, new, 1), encoding="utf-8")
+        with pytest.raises(bc.Refused):
+            bp.load_config(p)
+
+
+def test_b2_collect_outcome_extras_051_r16_053_r2(tmp_path):
+    tj = MixTrunkJob(tmp_path, games=2)
+    out = tmp_path / "eval" / "b2"
+    bp.build(b2_args(tj, out, alts="none,top1", repeats=1, hosts="h.toml"))
+    lines = bc.read_jsonl(out / "plans" / "branches_plan.jsonl")
+    sd = out / "branch-b2"
+    scalar = [0.0] * 567
+    outcome = {"valid": True, "invalid": None, "prefix_obs": 3, "prefix_matched": 3, "state_check": None, "intervention": [],
+               "samples": {"horizon": {"frame": 17280, "scalar": scalar}}, "metrics": {"held_8m": True}, "dilution": [],
+               "end": {"result": "draw", "end_frame": 17328, "reason": "TimeLimitDraw", "before_horizon": False}}
+    games, results = [], []
+    for n, ln in enumerate(lines, start=1):
+        games.append({"game_id": n, "hostd_id": 100_000 + n, "outcome": "Aborted" if n == 2 else "Finished", "host": "h", "backend": "rocm"})
+        results.append({"game_id": n, "won": None, "end_frame": 17328, "reason": "TimeLimitDraw", "branch": outcome,
+                        "model": {"scv_8m": 12, "scv_min_1m": 5, "ops": {"inc_10m": 812.0, "inc_scv_10m": 30.5}}})
+        jsonl(sd / "acts" / f"g{n}-p1.jsonl", [*bc.read_jsonl(bc.on_shared(tmp_path, ln["opponent_acts"]))[:-1], {"end": {"policy": T0}}])
+    jsonl(sd / "games.jsonl", games)
+    jsonl(sd / "results.jsonl", results)
+    bcol.collect(out, None, tmp_path)
+    recs = {r["game"]["plan_game"]: r for r in bc.read_jsonl(out / "branches.jsonl")}
+    assert all(set(r) == RECORD_KEYS for r in recs.values())
+    assert recs[1]["labels"] == {"held_8m": 1, "held_s": 1, "alive_10m": 1, "win": None}
+    assert recs[2]["labels"] == {"held_8m": None, "held_s": None, "alive_10m": None, "win": None}, "Aborted: no outcome label (053-R2 8)"
+    assert recs[1]["ops"]["inc_10m"] == 812.0
+    from uranium.diag.planning.dump import own_columns
+    assert list(recs[1]["own_horizon"]) == own_columns()[0] and recs[1]["own_horizon"]["supply_used"] == 0.0

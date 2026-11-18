@@ -158,6 +158,7 @@ class Branches:
         self.skipped_points = {k: self.all_points[k].get("skip_reason") for k in sorted(self.all_points) if k not in self.points}
         self.trunks = [trunk_of(self.all_points[k]) for k in self.points]
         self.alts, self.rules = [], {}
+        self.point_rules: dict = {}
         self.cells: dict = {}
         self.invalid: dict = {}
         self.outside_points = 0
@@ -167,6 +168,7 @@ class Branches:
             if alt not in self.rules:
                 self.rules[alt] = b.get("rules") or []
                 self.alts.append(alt)
+            self.point_rules.setdefault((b.get("point"), alt), b.get("rules") or [])
             if not b.get("valid", True):
                 inv = b.get("invalid")
                 why = inv.get("reason") if isinstance(inv, dict) else inv
@@ -390,11 +392,25 @@ def _rate(v: np.ndarray) -> float | None:
     return float(v.mean()) if len(v) else None
 
 
+def forced_actions(B: Branches, pts: list[str]) -> dict[str, np.ndarray]:
+    out = {}
+    for a in B.alts:
+        if a == B.baseline or one_decision_force(B.rules[a]) is None:
+            continue
+        acts = [one_decision_force(B.point_rules.get((p, a))) for p in pts]
+        out[a] = np.asarray([-1 if x is None else x for x in acts], np.int64)
+    return out
+
+
+def action_field(acts: np.ndarray):
+    u = sorted({int(x) for x in acts if x >= 0})
+    return u[0] if len(u) == 1 else u
+
+
 def m3u(B: Branches, data, rows: dict, nets: dict, y: str, boot_n: int, seed: int, s0: Path | None, head: str = "scv8") -> dict:
     fn = (lambda b: outcome(b, y))
-    forced = {a: one_decision_force(B.rules[a]) for a in B.alts if a != B.baseline}
-    forced = {a: x for a, x in forced.items() if x is not None}
     pts = [p for p in B.points if p in rows]
+    forced = forced_actions(B, pts)
     out = {"outcome": y, "q_head": head, "alts": sorted(forced), "points_with_row": len(pts)}
     if not forced or not pts:
         return out
@@ -407,13 +423,14 @@ def m3u(B: Branches, data, rows: dict, nets: dict, y: str, boot_n: int, seed: in
     for k, (net, st, _) in nets.items():
         res = {"alts": {}}
         dq_all, d_all, unit = [], [], []
-        for a, act in forced.items():
-            open_ = data.mask_rows(pi_rows)[:, act]
+        for a, acts in forced.items():
+            act = np.maximum(acts, 0)
+            open_ = data.mask_rows(pi_rows)[np.arange(len(act)), act] & (acts >= 0)
             dq = plan_s0.delta_q(net, data, pi_rows, act, st)[:, net.q_names.index(head)]
             dq = np.where(open_, dq, np.nan)
             d = eff[a]
             ok = np.isfinite(dq) & np.isfinite(d)
-            res["alts"][a] = {"action": act, "pairs": int(ok.sum()), "dq_mean": float(dq[ok].mean()) if ok.any() else None,
+            res["alts"][a] = {"action": action_field(acts), "pairs": int(ok.sum()), "dq_mean": float(dq[ok].mean()) if ok.any() else None,
                               "d_mean": float(d[ok].mean()) if ok.any() else None,
                               "sign_agree": _rate(sign_agreement(dq[ok], d[ok])[0])}
             dq_all.append(dq[ok])
@@ -440,9 +457,8 @@ def m2c(B: Branches, data, rows: dict, nets: dict, samples: dict, boot_n: int, s
     names, _, of_action = own_columns()
     if list(names) != list(data.own_names):
         raise SystemExit("plan-branch: the dump's own-state columns differ from this code's")
-    forced = {a: one_decision_force(B.rules[a]) for a in B.alts if a != B.baseline}
-    forced = {a: x for a, x in forced.items() if x is not None}
     pts = [p for p in B.points if p in rows]
+    forced = forced_actions(B, pts)
     out = {"alts": sorted(forced), "points_with_row": len(pts), "columns": list(names)}
     if not forced or not pts:
         return out
@@ -457,22 +473,26 @@ def m2c(B: Branches, data, rows: dict, nets: dict, samples: dict, boot_n: int, s
         o_all, o_pi = own_change_pred(net, st, data, pi_rows, k)
         P, M, U, dirs = [], [], [], []
         base = [_own_mean(B, p, B.baseline, sname) for p in pts]
-        for a, act in forced.items():
-            pred = o_all[:, act] - o_pi
+        for a, acts in forced.items():
+            act = np.maximum(acts, 0)
+            pred = o_all[np.arange(len(act)), act] - o_pi
             meas = np.full_like(pred, np.nan)
             for i, p in enumerate(pts):
                 ma = _own_mean(B, p, a, sname)
                 if ma is not None and base[i] is not None:
                     meas[i] = ma - base[i]
-            col = of_action.get(int(act))
-            ok = np.isfinite(meas).all(1) & data.mask_rows(pi_rows)[:, act]
-            ent = {"action": int(act), "column": None if col is None else names[col], "pairs": int(ok.sum())}
-            if col is not None and ok.any():
-                pm, mm = pred[ok, col], meas[ok, col]
+            ok = np.isfinite(meas).all(1) & data.mask_rows(pi_rows)[np.arange(len(act)), act] & (acts >= 0)
+            cols = np.asarray([of_action.get(int(x), -1) for x in act], np.int64)
+            used = sorted({int(c) for c in cols[ok] if c >= 0})
+            column = (names[used[0]] if len(used) == 1 else [names[c] for c in used]) if used else None
+            ent = {"action": action_field(acts), "column": column, "pairs": int(ok.sum())}
+            dirok = ok & (cols >= 0)
+            if dirok.any():
+                pm, mm = pred[dirok, cols[dirok]], meas[dirok, cols[dirok]]
                 agree, ties = sign_agreement(pm, mm)
                 ent["direction"] = {"pairs": int(np.isfinite(agree).sum()), "ties": ties, "agree": _rate(agree),
                                     "pred_mean": float(pm.mean()) if np.isfinite(pm).all() else None, "meas_mean": float(mm.mean())}
-                dirs.append((agree, [trunk[i] for i in np.nonzero(ok)[0]]))
+                dirs.append((agree, [trunk[i] for i in np.nonzero(dirok)[0]]))
             res["alts"][a] = ent
             P.append(pred[ok])
             M.append(meas[ok])

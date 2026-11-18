@@ -356,6 +356,10 @@ pub struct SnapshotRule {
     pub after_rule: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_s: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub after_gap: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_open_ops: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -363,6 +367,7 @@ pub struct Snapshots {
     rules: Vec<(SnapshotRule, Vec<u16>, Option<(usize, u32)>)>,
     fired: Vec<Option<(u32, u32)>>,
     not_before: Vec<u32>,
+    ops: Vec<u16>,
 }
 
 impl Snapshots {
@@ -383,9 +388,12 @@ impl Snapshots {
                 }
                 _ => anyhow::bail!("snapshot rule `{}`: after_rule and after_s go together (051-R3)", r.name),
             };
+            ensure!(!r.after_gap || r.after_s.is_some_and(|s| s > 0), "snapshot rule `{}`: after_gap needs after_rule and after_s >= 1 (051-R3)", r.name);
+            ensure!(r.min_open_ops != Some(0), "snapshot rule `{}`: min_open_ops must be at least 1 (051-R3)", r.name);
             out.push((r.clone(), ids, after));
         }
-        Ok(Self { fired: vec![None; out.len()], not_before: vec![0; out.len()], rules: out })
+        let ops = if out.iter().any(|(r, _, _)| r.min_open_ops.is_some()) { crate::explore::op_actions(table) } else { vec![] };
+        Ok(Self { fired: vec![None; out.len()], not_before: vec![0; out.len()], rules: out, ops })
     }
 
     pub fn check(&mut self, obs: u32, frame: u32, type_mask: &[bool]) -> Vec<String> {
@@ -395,10 +403,20 @@ impl Snapshots {
             if self.fired[k].is_some() || frame < r.from_frame.max(self.not_before[k]) || frame >= r.to_frame {
                 continue;
             }
-            if !(ids.is_empty() || ids.iter().any(|&a| type_mask.get(a as usize).copied().unwrap_or(false))) {
+            let open = |a: u16| type_mask.get(a as usize).copied().unwrap_or(false);
+            if !(ids.is_empty() || ids.iter().any(|&a| open(a))) {
                 continue;
             }
-            if let Some((i, delay)) = *after
+            if r.min_open_ops.is_some_and(|n| self.ops.iter().filter(|&&a| open(a)).count() < n as usize) {
+                continue;
+            }
+            if r.after_gap {
+                let (i, delay) = after.expect("after_gap goes with after_rule (checked in new)");
+                match self.fired[i] {
+                    Some((_, f)) if frame >= f.saturating_add(delay) => {}
+                    _ => continue,
+                }
+            } else if let Some((i, delay)) = *after
                 && let Some((o, f)) = self.fired[i]
                 && o == obs
             {

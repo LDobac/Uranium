@@ -312,6 +312,16 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
   - 여러 판이 한 배치면 앞부분 추론 배치 구성이 줄기와 달라 `state_check`가 비트 일치 안 할 수 있음(3판 동시 최대 차이 1e-6~1e-5, 혼자 `--max-batch 1`이면 일치).
   - 8:00 판 하나 약 1분(3판 동시, 앞부분 추론 포함 1~1.5분). 확인 기록 `<S>/eval/branch-ac6-20261113/`.
 
+### 분기 게임 B2 ([051-R16](../spec/2026_11_12_12_39_051-branch-games.md))
+- 설정 `config/branch_b2.toml`: F `m2-teacher-t2/ckpt-3258`, 12:00(`max_frames` 17,328), 줄기 100(T0 저그 표준 25·`zerg_rush` 25·프로토스 30·테란 20, 맵 반반), 시점 3개(3:00~8:00 열린 운영 행동 ≥ 3, `after_gap` 60초), 대안 `none`·`top1`~`top3`(줄기 `policy_top`의 운영 행동 순위 강제), 반복 2.
+- B1 순서와 같고 다른 점만:
+  - B1 1번(줄기 plan): `python tools/eval/branch_plan.py trunk --config config/branch_b2.toml --out <S>/<T>/plans/01-trunk.toml [--games N --first n]`. seed는 B2 블록(키 9,000,000, 줄기·교체 n = 1..990), 표본은 `--games 2 --first 991`. `--hit`·`--miss`·`--exclude-job`은 B1 전용.
+  - B1 3번(시점·분기 plan): `branch_plan.py branches --config config/branch_b2.toml --stage branch-b2-trunk ... [--games N]`(표본은 줄기와 같은 `--games`). 칸은 (맵, 상대), 교체 plan은 블록 앞에서부터 줄기 job이 쓰지 않은 seed. 순위 대안은 시점마다 규칙이 다르고(`branches_plan.jsonl` `alt.rules`), 열린 운영 행동이 모자라면 빠짐(`branch_plan.json` `dropped`).
+  - B1 4번: `branch_collect.py`가 `labels`(053-R2)·`ops`(052, `inc_10m`)·`own_horizon`(12:00 내 상태)을 더함.
+  - B1 5번: 줄기 build `--time-limit 17328`.
+  - B1 6번: 덤프 체크포인트는 F `m2-teacher-t2/ckpt-3258`.
+  - B1 7번: 짝 효과만이면 `--outcomes held_8m,held_s,labels.alive_10m,labels.win,ops.inc_10m,end.before_horizon --own-samples t60,t120,t240,horizon`. M3u·M2c의 강제 행동은 시점마다 그 분기 규칙의 행동.
+
 ### 탐색 판 ([spec 054](../spec/2026_11_18_08_58_054-exploration-games.md))
 - plan(venv python, `uranium._core` 필요): `python tools/eval/explore_plan.py --checkpoint <F> --zero-last-failed <true|false> --surrender <off|shadow|on> [--games 1000 --first 1 --name explore-pilot --out <파일>]`. 두 설정은 F의 050 평가 plan 값([054-R1](../spec/2026_11_18_08_58_054-exploration-games.md)), 기본값 없음.
 - 상대 몫·맵 반반은 판 수에 맞춰 최대 나머지로 반올림(160의 배수면 정확). 시드는 탐색 블록(키 7,000,000, 게임 번호 1~10,100), 다음 plan은 `--first`를 앞 plan 뒤로.
