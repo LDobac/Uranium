@@ -359,7 +359,16 @@ def tp_extra_block(part: int) -> set[int]:
     return {splitmix64(TP_SEED_KEY + k) >> 32 for k in range(first, first + TP_EXTRA_PART)}
 
 
-def reserved_seeds(skip_teacher_round: bool = False, skip_tp_extra_part: int | None = None, skip_teacher_round_z: bool = False) -> set[int]:
+EXPLORE_SEED_KEY = 7_000_000
+EXPLORE_BLOCK = range(1, 10_101)
+
+
+def explore_block() -> set[int]:
+    return {splitmix64(EXPLORE_SEED_KEY + k) >> 32 for k in EXPLORE_BLOCK}
+
+
+def reserved_seeds(skip_teacher_round: bool = False, skip_tp_extra_part: int | None = None, skip_teacher_round_z: bool = False,
+                   skip_explore: bool = False) -> set[int]:
     n = RESERVED_ROUNDS * DAGGER_ROUND_STRIDE
     s = {splitmix64(DAGGER_SEED_KEY + k) >> 32 for k in range(1, n + 1)}
     s |= {splitmix64(DISTILL_SEED_KEY + k) >> 32 for k in range(1, DISTILL_ROUNDS_RESERVED * DISTILL_ROUND_STRIDE + 1)}
@@ -372,6 +381,8 @@ def reserved_seeds(skip_teacher_round: bool = False, skip_tp_extra_part: int | N
     for part in range(1, TP_EXTRA_PARTS + 1):
         if part != skip_tp_extra_part:
             s |= tp_extra_block(part)
+    if not skip_explore:
+        s |= explore_block()
     return s | tp_dev_seeds()
 
 

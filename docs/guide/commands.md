@@ -311,6 +311,11 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
   - 여러 판이 한 배치면 앞부분 추론 배치 구성이 줄기와 달라 `state_check`가 비트 일치 안 할 수 있음(3판 동시 최대 차이 1e-6~1e-5, 혼자 `--max-batch 1`이면 일치).
   - 8:00 판 하나 약 1분(3판 동시, 앞부분 추론 포함 1~1.5분). 확인 기록 `<S>/eval/branch-ac6-20261113/`.
 
+### 탐색 판 ([spec 054](../spec/2026_11_18_08_58_054-exploration-games.md))
+- plan(venv python, `uranium._core` 필요): `python tools/eval/explore_plan.py --checkpoint <F> --zero-last-failed <true|false> --surrender <off|shadow|on> [--games 1000 --first 1 --name explore-pilot --out <파일>]`. 두 설정은 F의 050 평가 plan 값([054-R1](../spec/2026_11_18_08_58_054-exploration-games.md)), 기본값 없음.
+- 상대 몫·맵 반반은 판 수에 맞춰 최대 나머지로 반올림(160의 배수면 정확). 시드는 탐색 블록(키 7,000,000, 게임 번호 1~10,100), 다음 plan은 `--first`를 앞 plan 뒤로.
+- plan `[explore]`([020-R22](../spec/2026_10_15_22_24_020-env-orchestration.md) ⑤)이 있으면 `players[0]` 모델 세션이 판 시드로 시점 3개를 정하고 행동 기록 줄 `explore`, 끝 줄 `explore`(`taus`·`missed`), 세션 결과 `explore`를 남긴다. 실행은 평가 작업(`python -m uranium eval-worker --job <job>`), 경로 측정과 hostd 자리·추론 GPU 공유 금지([054-R7](../spec/2026_11_18_08_58_054-exploration-games.md)).
+
 ### 경로 측정·결정 단위 측정
 - 경로 측정 프로토콜(050-R9, [measurement_protocol](measurement_protocol.md)): Checkpoint 1 job 재집계 `python tools/eval/protocol.py tables --lineage ck1 --point <지점>`, 새 평가 job `python tools/eval/protocol.py job --lineage <ck1|m2> --point <지점> --checkpoint <ckpt> --metrics <지표,...> --job <이름>`, 결과 표 `python tools/eval/tables.py <job>... [--json <파일>]`(러시·운영형·T1·승률; 명령 스트림 `uranium-replay cmddump`), 교사 보관분 행동별 채점 `tools/eval/per_action.py`·`per_action_table.py`. 호스트 목록 git 미추적 `tools/eval/hosts.toml`(예시 `hosts.example.toml`).
 - 결정 단위 측정(G0, 분석 전용):
